@@ -117,6 +117,16 @@ struct FloatValue {
 }
 
 #[repr(C)]
+#[derive(Default)]
+struct IntValue {
+    cur: i64,
+    max: i64,
+    min: i64,
+    inc: i64,
+    reserved: [u32; 16],
+}
+
+#[repr(C)]
 struct EnumValue {
     cur: c_uint,
     supported_num: c_uint,
@@ -142,6 +152,8 @@ type FnSetEnumStr = unsafe extern "system" fn(Handle, *const c_char, *const c_ch
 type FnSetFloat = unsafe extern "system" fn(Handle, *const c_char, f32) -> i32;
 type FnGetFloat = unsafe extern "system" fn(Handle, *const c_char, *mut FloatValue) -> i32;
 type FnSetInt = unsafe extern "system" fn(Handle, *const c_char, i64) -> i32;
+type FnGetInt = unsafe extern "system" fn(Handle, *const c_char, *mut IntValue) -> i32;
+type FnGetNodeType = unsafe extern "system" fn(Handle, *const c_char, *mut i32) -> i32;
 type FnGetBool = unsafe extern "system" fn(Handle, *const c_char, *mut bool) -> i32;
 type FnSetBool = unsafe extern "system" fn(Handle, *const c_char, bool) -> i32;
 type FnCommand = unsafe extern "system" fn(Handle, *const c_char) -> i32;
@@ -169,6 +181,8 @@ pub struct Api {
     set_float: FnSetFloat,
     get_float: FnGetFloat,
     set_int: FnSetInt,
+    get_int: FnGetInt,
+    get_node_type: FnGetNodeType,
     set_bool: FnSetBool,
     get_bool: FnGetBool,
     command: FnCommand,
@@ -248,6 +262,8 @@ impl Api {
             set_float: sym!("MV_CC_SetFloatValue"),
             get_float: sym!("MV_CC_GetFloatValue"),
             set_int: sym!("MV_CC_SetIntValueEx"),
+            get_int: sym!("MV_CC_GetIntValueEx"),
+            get_node_type: sym!("MV_XML_GetNodeInterfaceType"),
             set_bool: sym!("MV_CC_SetBoolValue"),
             get_bool: sym!("MV_CC_GetBoolValue"),
             command: sym!("MV_CC_SetCommandValue"),
@@ -408,6 +424,69 @@ impl Device {
 
     pub fn set_int(&self, key: &str, value: i64) -> Result<(), String> {
         check(unsafe { (self.api.set_int)(self.handle, Self::key(key).as_ptr(), value) }, &format!("{key} = {value}"))
+    }
+
+    pub fn get_int(&self, key: &str) -> Result<i64, String> {
+        let mut value = IntValue::default();
+        check(
+            unsafe { (self.api.get_int)(self.handle, Self::key(key).as_ptr(), &mut value) },
+            &format!("读取 {key}"),
+        )?;
+        Ok(value.cur)
+    }
+
+    pub fn has_node(&self, key: &str) -> Result<bool, String> {
+        let mut node_type = 0;
+        let code = unsafe {
+            (self.api.get_node_type)(self.handle, Self::key(key).as_ptr(), &mut node_type)
+        };
+        if code as u32 == 0x80000109 {
+            return Ok(false);
+        }
+        check(code, &format!("读取 {key} 节点类型"))?;
+        Ok(true)
+    }
+
+    pub fn set_trigger_delay(&self, value: f32) -> Result<(), String> {
+        let key = "TriggerDelay";
+        if !value.is_finite() || value < 0.0 {
+            return Err("触发延迟必须是非负有限数值".into());
+        }
+        let mut node_type = 0;
+        check(
+            unsafe {
+                (self.api.get_node_type)(self.handle, Self::key(key).as_ptr(), &mut node_type)
+            },
+            "读取 TriggerDelay 节点类型",
+        )?;
+        match node_type {
+            2 => {
+                if value.fract() != 0.0 || value as f64 >= i64::MAX as f64 {
+                    return Err("当前相机的触发延迟仅支持整数微秒".into());
+                }
+                let expected = value as i64;
+                self.set_int(key, expected)?;
+                let actual = self.get_int(key)?;
+                if actual != expected {
+                    return Err(format!("TriggerDelay 回读 {actual} µs，期望 {expected} µs"));
+                }
+            }
+            5 => {
+                self.set_float(key, value)?;
+                let actual = self.get_float(key)?;
+                if !actual.is_finite()
+                    || (actual - value).abs() > (value.abs() * f32::EPSILON * 4.0).max(0.001)
+                {
+                    return Err(format!("TriggerDelay 回读 {actual} µs，期望 {value} µs"));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "TriggerDelay 节点类型 {node_type} 不是 Integer 或 Float"
+                ))
+            }
+        }
+        Ok(())
     }
 
     pub fn set_bool(&self, key: &str, value: bool) -> Result<(), String> {

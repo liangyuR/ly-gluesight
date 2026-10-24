@@ -27,13 +27,15 @@ Jinghang JHEM131GC-XS 的实际节点需实机确认。当前实现要求设备�
 
 配方的建立流程（候选工作区）：整圈采集 → 段列表 → 每台相机的走廊示教 → 多轮标定（默认 ≥ 10 轮，得 ΣN_exp、建议容差由操作员确认、标准件轮次得 x_ref）→ 独立样本验证 → 发布。见 [配方创建流程](architecture/recipe-creation-workflow.md) 的“段配方流程”。
 
+采集完成后支持轮次手动分段、模板套用和边界复核，以及带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除标定图像取样。手动分段暂不接入逐段标定、生产分段或独立样本判定，操作及失效规则见[轮次分段复核与帧组屏蔽](architecture/recipe-creation-workflow.md#轮次分段复核与帧组屏蔽)。
+
 ### 协议 6 要点
 
 - `protocolVersion` / `pcProtocolVersion` = 6，其他值（含 5）拒绝；DB4 / DB2 布局、28 个点位、握手顺序、心跳与复位都同协议 5。
-- `shotCount` = `deviceShots` = ΣN_exp：生产请求在接件时精确核对，不符返回 90/94；段配方的示教采集不核对、不限 1–64（参考 FB 要求估算值大于 0）。
+- `shotCount` = `deviceShots` = ΣN_exp：生产请求在接件时精确核对，不符返回 90/94；示教采集使用独立 DB6 / DB12，不发送预估帧数，见 [示教采集接口 V1](integration/teaching-capture-sequence.md)。
 - `partEnd` 不再比较计数；`deviceTriggers` 不参与丢帧告警、收尾等待或基线计算，partEnd 后等待完整 drain 窗口并完成已接受帧的测量。段配方每台相机的下一件基线 = 本件见到的最高帧号（D-SB-7）。
 - 重新标定使 N_exp 或 ΣN_exp 变化时分配新的 `planVersion`，PLC 须同步 `shotCount` / `deviceShots`。
-- 结果码：96 对段配方不再使用；示教采集失败为 90 配 98（相机断连、会话变化）或 99（写盘超时、中止）。PLC 不提交 partStart = 本件未检，PC 无记录；提前 partEnd 照常判并加 `short_part`。
+- 结果码：96 对段配方不再使用；示教通过独立状态及原因报告完成、失败或取消，不产生生产结果。生产中 PLC 不提交 partStart = 本件未检，PC 无记录；提前 partEnd 照常判并加 `short_part`。
 
 细节见 [PLC 通讯协议](integration/plc-communication-protocol.md)、[一期 S7 握手契约](integration/plc-s7-phase1.md)、[交互表适配决策的协议 6 节](decisions/plc-table.md#协议-6-适配分段连拍)。
 

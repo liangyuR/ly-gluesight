@@ -46,6 +46,7 @@ mod store;
 mod storage;
 mod managed_samples;
 mod teach;
+mod teaching;
 mod timeline;
 mod vision;
 mod workspace;
@@ -212,6 +213,7 @@ pub fn run() {
             recipe_capture::recipe_capture_start,
             recipe_capture::recipe_capture_get,
             recipe_capture::recipe_capture_stop,
+            recipe_capture::recipe_capture_plc_status,
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_image,
             recipe_capture::recipe_capture_frame_image,
@@ -262,6 +264,11 @@ pub fn run() {
             workspace::workspace_calibration_add_round,
             workspace::workspace_calibration_remove_round,
             workspace::workspace_calibration_apply,
+            workspace::workspace_capture_review_save,
+            workspace::workspace_capture_review_confirm,
+            workspace::workspace_capture_review_set_template,
+            workspace::workspace_capture_review_apply_template,
+            workspace::workspace_capture_review_exclude,
             workspace::workspace_confirm_tolerance,
             workspace::workspace_record_frame_image,
         ])

@@ -9,7 +9,8 @@ export function cameraState(config: CameraConfig, status: CameraStatus | null): 
   if (status?.released) return { tone:"warn", label:"已释放", text:"已释放给 MVS" };
   if (status?.ready) return { tone:"ok", label:"已连接", text:status.device ? `${status.device.model} · ${status.device.serial}` : sourceText[config.source] };
   if (config.source === "mvs" && !config.serial) return { tone:"warn", label:"未绑定", text:"未绑定设备" };
-  return { tone:"off", label:"未连接", text:status?.message || "未连接" };
+  if (!status) return { tone:"off", label:"读取中", text:"正在读取相机状态" };
+  return { tone:"warn", label:"未就绪", text:status.message || "相机未就绪" };
 }
 
 export default function CameraList({ configs, statuses, selected, disabled, onSelect, onRefresh, refreshing }: {

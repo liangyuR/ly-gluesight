@@ -244,7 +244,7 @@ pub(super) fn frame_without_metrics(camera: usize, seq: u64, state: FrameState, 
 // ───────────── 段列表与配方编辑 ─────────────
 
 /// 清空全部 N_exp、标定统计、整件标定与 x_ref。
-fn clear_calibration(doc: &mut RecipeDoc) {
+pub(super) fn clear_calibration(doc: &mut RecipeDoc) {
     for segment in &mut doc.segments {
         segment.expected_frames = None;
         segment.calib = None;
@@ -343,6 +343,7 @@ fn teaching_source<'a>(round: &'a CaptureRoundV2, recipe_id: &str, camera: &str,
 /// 示教帧选定后写进候选：草稿写进这台相机的 inspect（当量缺省时沿用已有值或工位标定），记下示教帧。
 pub(super) fn apply_camera_teaching(w: &mut Workspace, teaching: CameraTeaching, draft: CameraTeachDraft, default_scale: Option<f64>) -> Result<(), String> {
     require_burst(&w.doc)?;
+    capture_review::require_available(w, &teaching.round, teaching.seq)?;
     if draft.corridor.len() > 10_000 || draft.corridor.iter().flatten().any(|v| !v.is_finite()) {
         return Err("走廊最多 10000 点，坐标必须为有限数".into());
     }
@@ -690,10 +691,19 @@ fn add_round(app: AppHandle, id: String, revision: u64, round_id: String, standa
     }).collect::<Result<Vec<_>, String>>()?;
     let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
     let run = vision::unique_run_id(&format!("calibration-{id}-{round_id}"));
-    let metrics = measure_round(&cameras, &round, |camera, camera_id, seq| {
-        let image = crate::image_file::load(&capture.burst_frame_path(&round_id, camera_id, seq)?)?;
-        vision::measure_frame(&engine, &graphs[camera], &image, seq, &format!("{run}-c{camera}-{seq}")).map(|m| m.metrics)
-    });
+    let metrics =
+        capture_review::measure_calibration_round(&w, &round, |camera, camera_id, seq| {
+            let image =
+                crate::image_file::load(&capture.burst_frame_path(&round_id, camera_id, seq)?)?;
+            vision::measure_frame(
+                &engine,
+                &graphs[camera],
+                &image,
+                seq,
+                &format!("{run}-c{camera}-{seq}"),
+            )
+            .map(|m| m.metrics)
+        });
     let outcome = segment_round(&w.doc.segments, cameras.len(), round.group_count, &metrics);
     let entry = calibration_round(&w.doc, &round, standard, &metrics);
     let mut items = host.items.lock().unwrap();
@@ -713,16 +723,24 @@ pub fn workspace_calibration_remove_round(app: AppHandle, id: String, revision: 
     let mut items = host.items.lock().unwrap();
     let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
     w.expect(revision)?;
-    require_burst(&w.doc)?;
-    let before = w.calibration.rounds.len();
-    w.calibration.rounds.retain(|r| r.round_id != round);
-    if w.calibration.rounds.len() == before { return Err(format!("采集轮次 {round} 不在多轮标定里")); }
-    w.changed();
+    remove_calibration_round(&mut w, &round)?;
     host.save(&w)?;
     // 只删本候选标定目录下这一轮的特征（轮次编号来自已加入的记录，只含字母、数字与短横线）
     if round.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') { let _ = std::fs::remove_dir_all(host.dir(&id).join(CALIBRATION_DIR).join(&round)); }
     items.insert(id, w.clone());
     view(&app, w)
+}
+
+pub fn remove_calibration_round(w: &mut Workspace, round: &str) -> Result<(), String> {
+    require_burst(&w.doc)?;
+    let before = w.calibration.rounds.len();
+    w.calibration.rounds.retain(|r| r.round_id != round);
+    if w.calibration.rounds.len() == before {
+        return Err(format!("采集轮次 {round} 不在多轮标定里"));
+    }
+    clear_calibration(&mut w.doc);
+    w.changed();
+    Ok(())
 }
 
 /// 应用多轮标定（结果在 `plan.calibration`）。
@@ -760,7 +778,7 @@ pub fn workspace_confirm_tolerance(app: AppHandle, id: String, revision: u64, se
     view(&app, w)
 }
 
-/// 整体替换候选的段列表；拒绝直接改 N_exp、标定统计与 x_ref，段序列或类型变化时清空全部标定。
+// 整体替换候选的段列表；拒绝直接改 N_exp、标定统计与 x_ref，段序列或类型变化时清空全部标定。
 #[tauri::command]
 pub fn workspace_update_segments(app: AppHandle, id: String, revision: u64, segments: Vec<PathSegment>) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::Sender;
 
-use crate::cycle::{self, CycleHost, Phase};
+use crate::cycle::{self, CycleHost};
 use crate::frame::{BudgetExceeded, CounterSource, Frame, FrameImage, FramePool, GrayError};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
 use crate::recipe::{legacy_camera_id, valid_camera_id, CameraImaging, Recipe};
@@ -1169,11 +1169,32 @@ fn configure_trigger(d: &mvs::Device, c: &CameraConfig) -> Result<Option<f32>, S
     set_enum_verified(d, "AcquisitionMode", "Continuous")?;
     let selectors = d.enum_entries("TriggerSelector")?;
     let selector = if c.trigger_source == "Software" {
-        "FrameStart"
+        ["FrameStart", "FrameBurstStart"]
+            .into_iter()
+            .find(|name| selectors.iter().any(|s| s == name))
+            .ok_or_else(|| {
+                format!(
+                    "相机 {} 不支持 Software 单帧触发（TriggerSelector: {}）",
+                    d.summary.model,
+                    selectors.join("、")
+                )
+            })?
     } else {
         ["FrameBurstActive", "AcquisitionActive"].into_iter()
             .find(|name| selectors.iter().any(|s| s == name))
-            .ok_or_else(|| format!("相机 {} 未提供已确认的高电平门控节点（TriggerSelector: {}），不能启用连续采集", d.summary.model, selectors.join("、")))?
+            .or_else(|| {
+                (c.trigger_source == "Line0"
+                    && d.summary.model == "JHEM131GC-XS"
+                    && selectors.iter().any(|s| s == "FrameBurstStart"))
+                .then_some("FrameBurstStart")
+            })
+            .ok_or_else(|| {
+                format!(
+                    "相机 {} 未提供当前支持的高电平门控节点（TriggerSelector: {}），不能启用连续采集",
+                    d.summary.model,
+                    selectors.join("、")
+                )
+            })?
     };
     for entry in &selectors {
         set_enum_verified(d, "TriggerSelector", entry)?;
@@ -1181,8 +1202,24 @@ fn configure_trigger(d: &mvs::Device, c: &CameraConfig) -> Result<Option<f32>, S
     }
     set_enum_verified(d, "TriggerSelector", selector)?;
     set_enum_verified(d, "TriggerSource", &c.trigger_source)?;
+    if selector == "FrameBurstStart" {
+        d.set_int("AcquisitionBurstFrameCount", 1)?;
+        let actual = d.get_int("AcquisitionBurstFrameCount")?;
+        if actual != 1 {
+            return Err(format!(
+                "AcquisitionBurstFrameCount 要求为 1，回读为 {actual}"
+            ));
+        }
+    }
     let rate = if c.trigger_source == "Line0" {
         set_enum_verified(d, "TriggerActivation", "LevelHigh")?;
+        if selector == "FrameBurstStart" {
+            d.set_bool("TriggerCacheEnable", false)?;
+            if d.get_bool("TriggerCacheEnable")? {
+                return Err("相机未关闭触发缓存".into());
+            }
+        }
+        d.set_trigger_delay(c.trigger_delay_us)?;
         d.set_bool("AcquisitionFrameRateEnable", true)?;
         if !d.get_bool("AcquisitionFrameRateEnable")? { return Err("相机未启用固定帧率".into()); }
         d.set_float("AcquisitionFrameRate", c.frame_rate)?;
@@ -1205,35 +1242,61 @@ fn apply(d: &mvs::Device, c: &CameraConfig) -> Result<(Vec<String>, Option<f32>,
         Err(e) => { warnings.push(e); false }
     };
     if c.trigger_source == "Line0" {
-        must(d.set_float("TriggerDelay", c.trigger_delay_us));
         must(d.set_enum("LineSelector", "Line0"));
         must(d.set_int("LineDebouncerTime", c.debouncer_us));
     }
     must(d.set_enum("ExposureAuto", "Off"));
     must(d.set_enum("GainAuto", "Off"));
-    if d.set_enum("LineSelector", "Line1").is_ok() {
-        if c.strobe {
-            must(d.set_enum("LineMode", "Strobe"));
-            must(d.set_enum("LineSource", "ExposureStartActive"));
-            must(d.set_bool("StrobeEnable", true));
-        } else {
-            let _ = d.set_bool("StrobeEnable", false);
-        }
+    if c.strobe {
+        must((|| {
+            set_enum_verified(d, "LineSelector", "Line1")?;
+            set_enum_verified(d, "LineMode", "Strobe")?;
+            let sources = d.enum_entries("LineSource")?;
+            let source = ["ExposureStartActive", "ExposureActive"]
+                .into_iter()
+                .find(|name| sources.iter().any(|s| s == name))
+                .ok_or_else(|| {
+                    format!(
+                        "LineSource 不支持曝光频闪输出（可选项：{}）",
+                        sources.join("、")
+                    )
+                })?;
+            set_enum_verified(d, "LineSource", source)?;
+            d.set_bool("StrobeEnable", true)?;
+            if !d.get_bool("StrobeEnable")? {
+                return Err("StrobeEnable 回读为关闭，频闪未启用".into());
+            }
+            Ok(())
+        })());
+    } else if d.set_enum("LineSelector", "Line1").is_ok() {
+        let _ = d.set_bool("StrobeEnable", false);
     }
     let mut chunks = Chunks::default();
     if c.chunk {
-        let active = must(d.set_bool("ChunkModeActive", true));
-        match d.enum_entries("ChunkSelector") {
+        let entries = (|| {
+            for node in ["ChunkModeActive", "ChunkSelector", "ChunkEnable"] {
+                if !d.has_node(node)? {
+                    return Err("该相机不支持 Chunk 附加数据；仍使用 SDK 帧序号进行采集诊断".into());
+                }
+            }
+            d.set_bool("ChunkModeActive", true)?;
+            if !d.get_bool("ChunkModeActive")? {
+                return Err("ChunkModeActive 回读为关闭，Chunk 未启用".into());
+            }
+            d.enum_entries("ChunkSelector")
+        })();
+        match entries {
             Ok(entries) => {
                 let wanted: Vec<_> = entries.iter().filter_map(|e| chunk_item(e).map(|item| (e, item))).collect();
                 if wanted.is_empty() {
                     must(Err(format!("相机不支持帧计数 / 触发计数 Chunk（可选项：{}）", entries.join("、"))));
                 }
                 for (e, item) in wanted {
-                    let on = must(d.set_enum("ChunkSelector", e)) & must(d.set_bool("ChunkEnable", true));
+                    let on = must(set_enum_verified(d, "ChunkSelector", e))
+                        && must(d.set_bool("ChunkEnable", true));
                     match item {
-                        ChunkItem::Trigger => chunks.trigger |= active && on,
-                        ChunkItem::Frame => chunks.frame |= active && on,
+                        ChunkItem::Trigger => chunks.trigger |= on,
+                        ChunkItem::Frame => chunks.frame |= on,
                         ChunkItem::Timestamp => {}
                     }
                 }
@@ -1639,11 +1702,80 @@ fn check_user_editable(app: &AppHandle, config: Option<&CameraConfig>) -> Result
 
 /// 相机组增删只能在空闲或故障时做：相机序号会重排（编号不变）。
 pub(crate) fn check_idle(cycle: &CycleHost) -> Result<(), String> {
-    if cycle.camera.recipe_capture().active() { return Err("示教整圈采集正在独占设备，请结束本轮采集后操作".into()); }
-    if !cycle.busy() && matches!(cycle.phase(), Phase::Idle | Phase::Fault) {
+    check_access(cycle, CameraAccess::Configuration)
+}
+
+pub enum CameraAccess {
+    Configuration,
+    Maintenance,
+}
+
+impl CameraAccess {
+    pub fn check(self, in_flight: bool, capture_active: bool, pending: bool) -> Result<(), String> {
+        if capture_active {
+            return Err("示教整圈采集正在独占设备，请结束本轮采集后操作".into());
+        }
+        if in_flight {
+            return Err("检测进行中，工件结束后再操作相机".into());
+        }
+        if matches!(self, Self::Configuration) && pending {
+            return Err("PLC 仍有未结事务或握手日志故障，请连接 PLC 并复位后再修改相机或采集；可先释放相机给 MVS 排查".into());
+        }
         Ok(())
-    } else {
-        Err("检测进行中，工件结束后再操作相机".into())
+    }
+}
+
+fn check_access(cycle: &CycleHost, access: CameraAccess) -> Result<(), String> {
+    access.check(
+        cycle.in_flight(),
+        cycle.camera.recipe_capture().active(),
+        cycle.busy(),
+    )
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::CameraAccess;
+
+    #[test]
+    fn unresolved_plc_without_active_capture_allows_maintenance_but_keeps_configuration_locked() {
+        for (case, in_flight, capture_active, pending, maintenance, configuration) in [
+            ("空闲", false, false, false, true, true),
+            (
+                "初始化故障且有历史未结事务",
+                false,
+                false,
+                true,
+                true,
+                false,
+            ),
+            (
+                "真实检测在途且界面快照尚未更新",
+                true,
+                false,
+                false,
+                false,
+                false,
+            ),
+            ("检测及握手在途", true, false, true, false, false),
+            ("示教采集独占", false, true, false, false, false),
+            ("示教采集及未结握手", false, true, true, false, false),
+        ] {
+            assert_eq!(
+                CameraAccess::Maintenance
+                    .check(in_flight, capture_active, pending)
+                    .is_ok(),
+                maintenance,
+                "{case}"
+            );
+            assert_eq!(
+                CameraAccess::Configuration
+                    .check(in_flight, capture_active, pending)
+                    .is_ok(),
+                configuration,
+                "{case}"
+            );
+        }
     }
 }
 
@@ -1747,8 +1879,11 @@ pub async fn camera_set_imaging(app: AppHandle, cam: usize, id: String, imaging:
 pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
-    check_idle(&cycle)?;
+    let _gate = cycle
+        .plc_gate
+        .try_lock()
+        .map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+    check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     let config = slot.config();
     if config.source != CameraSource::Mvs {
@@ -1767,8 +1902,11 @@ pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
 pub async fn camera_reconnect(app: AppHandle, cam: usize) -> Result<String, String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
-    check_idle(&cycle)?;
+    let _gate = cycle
+        .plc_gate
+        .try_lock()
+        .map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+    check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     slot.released.store(false, Ordering::SeqCst);
     let opened = tauri::async_runtime::spawn_blocking(move || slot.open()).await.map_err(|e| e.to_string())?;

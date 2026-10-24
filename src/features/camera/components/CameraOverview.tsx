@@ -33,7 +33,7 @@ export default function CameraOverview({ configs, statuses, lastFrame, lockedRea
       <div className="cg-summary">
         <strong>相机组</strong><span className="mono">{configs.length} / 8</span>
         <StatusBadge tone="ok">{connected} 台已连接</StatusBadge>
-        {down > 0 && <StatusBadge tone="fault">{down} 台未连接</StatusBadge>}
+        {down > 0 && <StatusBadge tone="fault">{down} 台未就绪</StatusBadge>}
         {released > 0 && <StatusBadge tone="warn">{released} 台已释放给 MVS</StatusBadge>}
         {unbound > 0 && <StatusBadge tone="warn">{unbound} 台未绑定</StatusBadge>}
       </div>
@@ -86,7 +86,7 @@ function CameraCard({ index, config, status, frame, now, locked, canReconnect, o
       {img && !fault && age != null && <span className={"cg-tag " + (age < 3000 ? "fresh" : "stale")}>{age < 3000 ? <Activity size={11} /> : <Clock size={11} />}{ago(age)}</span>}
       {img && <span className="cg-tag size">{img.fullWidth}×{img.fullHeight}</span>}
       {img && config.viewCount === 3 && <span className="cg-tag views">三目 · 视角 1/3</span>}
-      {fault && <div className="cg-thumb-fault"><strong><Unplug size={14} />{status?.message || "相机未连接"}</strong>{frame && <span>最后一帧 {clock(frame.ts)} · 后台每 2 秒自动重连</span>}</div>}
+      {fault && <div className="cg-thumb-fault"><strong><Unplug size={14} />{status?.message || "相机未就绪"}</strong>{frame && <span>最后一帧 {clock(frame.ts)} · 后台每 2 秒自动重连</span>}</div>}
     </div>
     <div className="cg-stats">
       <div className="cg-stat"><span>帧计数</span><b>{count(frame?.frameCounter)}</b></div>
@@ -95,7 +95,7 @@ function CameraCard({ index, config, status, frame, now, locked, canReconnect, o
       <div className={"cg-stat" + (fault ? " fault" : "")}><span>最近出图</span><b className="text">{age == null ? "—" : ago(age)}</b></div>
     </div>
     {fault ? <>
-      <Alert tone="fault" action={<>{canReconnect && <Button size="sm" leadingIcon={<RefreshCw size={13} />} onClick={() => void reconnect()} disabled={busy}>{busy ? "连接中…" : "立即重新连接"}</Button>}{detail}</>}>依次检查：网线与交换机端口灯 → 供电 / PoE → IP 是否冲突 → 详情里“重新枚举”确认设备重新出现。</Alert>
+      <Alert tone="fault" action={<>{canReconnect && <Button size="sm" leadingIcon={<RefreshCw size={13} />} onClick={() => void reconnect()} disabled={busy}>{busy ? "连接中…" : "立即重新连接"}</Button>}{detail}</>}>先查看故障详情：参数不支持时核对型号能力与触发配置；找不到设备时检查网络、供电与 IP，并在详情里重新枚举。</Alert>
       {error && <Alert tone="ng">{error}</Alert>}
     </> : <div className="cg-card-foot"><span>{triggerSummary(config)}</span>{status?.ready && <><span>·</span><span className="mono">实际 {status.fps.toFixed(1)} fps</span></>}{detail}</div>}
   </Card>;

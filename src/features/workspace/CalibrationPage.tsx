@@ -54,7 +54,7 @@ export default function CalibrationPage() {
   const applyReason = short > 0 ? `还差 ${short} 轮：至少 ${minRounds} 轮才能标定` : locked ? "正在处理或候选待生效，请稍候" : "";
   const run = (request: () => ReturnType<typeof workspaceApi.calibrationApply>, message: string) => act(request, message);
   const add = (roundId: string, isStandard: boolean) => void run(() => workspaceApi.calibrationAddRound(doc.id, data.workspace.revision, roundId, isStandard), isStandard ? "已加入标定（标准件轮次）" : "已加入多轮标定");
-  const remove = (roundId: string) => void run(() => workspaceApi.calibrationRemoveRound(doc.id, data.workspace.revision, roundId), "已移出多轮标定");
+  const remove = (roundId: string) => void run(() => workspaceApi.calibrationRemoveRound(doc.id, data.workspace.revision, roundId), "已移出标定，请重新应用标定");
   // 重新应用标定：之前键入但没确认的容差不再对应新的统计，一并丢弃，输入框回到新的建议值
   const apply = () => void run(() => workspaceApi.calibrationApply(doc.id, data.workspace.revision), "标定已应用：预期帧数已写入，容差仍待确认").then(next => { if (next) setTyped({ key: "", values: {} }); });
   const confirm = (segment: SegmentCalibView) => {

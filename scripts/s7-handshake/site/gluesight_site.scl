@@ -4,7 +4,7 @@
 // 两层结构：
 //   GlueSightHandshake：纯协议 6 状态机，只读写 "plc_send_vision"（DB4，PLC 写）与 "vision_send_plc"（DB2，PC 写）。
 //   GlueSightStation  ：现场适配，接机器人信号、相机硬触发输出、结果分发与复位操作，内部调用握手层。
-// 本文件不含 DATA_BLOCK：现场已有的 DB4 / DB2 布局与协议 6 一致，按名字引用，不重建、不改 DB 号。
+// 先导入 teaching_v1.scl 并把 teach_pc / teach_plc 分配为 DB6 / DB12；现有 DB4 / DB2 不变。
 // 生成块前确认项目里两个全局 DB 名为 "plc_send_vision"、"vision_send_plc"，均取消“优化的块访问”。
 
 FUNCTION_BLOCK "GlueSightHandshake"
@@ -35,7 +35,7 @@ VERSION : 0.1
    END_VAR
 
    VAR_OUTPUT
-      State : UInt := UINT#90;         // 10 空闲 20 等布防 30 运动触发 40 等结果 50 等 PC 释放 60 等就绪 90 故障 91/92 复位中
+      State : UInt := UINT#90;         // 10 空闲 20 等布防 30 运动触发 40 等结果 50 等 PC 释放 60 等就绪 90 故障 91/92/93 复位中
       ReadyForPart : Bool;
       MotionPermit : Bool;             // 已布防且身份一致，允许运动（不含剩余触发数条件）
       TriggerPermit : Bool;            // 允许相机高电平采集
@@ -60,7 +60,6 @@ VERSION : 0.1
       ResetLowSeen : Bool;
       PcHeartbeatPrevious : Bool;
       PcHeartbeatSeen : Bool;
-      ResetReadyLowSeen : Bool;
       TimerState : UInt;
       FrozenSeq : DInt;
       FrozenSn : String[50];
@@ -102,7 +101,6 @@ BEGIN
       #PreviousNewPart := #NewPart;
       #PcHeartbeatPrevious := "vision_send_plc".pcHeartbeat;
       #PcHeartbeatSeen := FALSE;
-      #ResetReadyLowSeen := FALSE;
       #Pending := #Pending OR "plc_send_vision".partStart
          OR "plc_send_vision".partEnd OR "plc_send_vision".resultAck
          OR "vision_send_plc".armed OR "vision_send_plc".busy
@@ -142,13 +140,13 @@ BEGIN
             #PhaseLimit := #MotionTimeout;
          40:
             #PhaseLimit := #ResultTimeout;
-         91, 92:
+         91, 92, 93:
             #PhaseLimit := #ResetTimeout;
       END_CASE;
       // 60 不计时：PC 暂缓就绪（审计未落盘、设备未就绪、暂停接件）属于空闲恢复，不是故障
       #PhaseTimed := (#State = UINT#20) OR (#State = UINT#30)
          OR (#State = UINT#40) OR (#State = UINT#60)
-         OR (#State = UINT#91) OR (#State = UINT#92);
+         OR (#State = UINT#91) OR (#State = UINT#92) OR (#State = UINT#93);
       #PhaseTimer.TON(IN := #PhaseTimed AND (#TimerState = #State), PT := #PhaseLimit);
       #TimerState := #State;
       #NeutralTimer.TON(IN := (#State = UINT#91) AND #PcAlive
@@ -200,7 +198,6 @@ BEGIN
                "plc_send_vision".partEnd := FALSE;
                "plc_send_vision".resultAck := FALSE;
                "plc_send_vision".faultReset := FALSE;
-               #ResetReadyLowSeen := FALSE;
                #State := UINT#91;
             ELSIF #NewPartEdge AND #PcAlive AND "vision_send_plc".visionReady
                AND NOT "vision_send_plc".armed AND NOT "vision_send_plc".busy
@@ -343,28 +340,26 @@ BEGIN
                "plc_send_vision".partEnd := FALSE;
                "plc_send_vision".resultAck := FALSE;
                "plc_send_vision".faultReset := FALSE;
-               #ResetReadyLowSeen := FALSE;
                #State := UINT#91;
             END_IF;
 
          91:
             // 中性输入保持 1 s 后给出新的 faultReset 上升沿
             IF #NeutralTimer.Q THEN
-               #ResetReadyLowSeen := NOT "vision_send_plc".visionReady;
                "plc_send_vision".faultReset := TRUE;
                #State := UINT#92;
             END_IF;
 
          92:
-            IF NOT "vision_send_plc".visionReady THEN
-               #ResetReadyLowSeen := TRUE;
+            IF #ResetHoldTimer.Q AND #PcAlive AND "vision_send_plc".visionFault THEN
+               "plc_send_vision".faultReset := FALSE;
+               #State := UINT#93;
             END_IF;
-            IF #ResetReadyLowSeen AND #ResetHoldTimer.Q AND #PcAlive
-               AND "vision_send_plc".visionReady
-               AND ("vision_send_plc".pcProtocolVersion = INT#6)
+
+         93:
+            IF #PcAlive AND ("vision_send_plc".pcProtocolVersion = INT#6)
                AND NOT "vision_send_plc".armed AND NOT "vision_send_plc".busy
                AND NOT "vision_send_plc".done AND NOT "vision_send_plc".visionFault THEN
-               "plc_send_vision".faultReset := FALSE;
                #Pending := FALSE;
                #LocalDiagnostic := UINT#0;
                #ResetComplete := TRUE;
@@ -382,7 +377,6 @@ BEGIN
       #ResetLowSeen := FALSE;
       #PreviousReset := #ResetRequest;
       #PcHeartbeatSeen := FALSE;
-      #ResetReadyLowSeen := FALSE;
       "plc_send_vision".faultReset := FALSE;
    END_IF;
 
@@ -417,7 +411,9 @@ VERSION : 0.1
       ReconcileConfirmed : Bool;       // TODO-4：触摸屏“已处置未结件”确认
       SeqRestart : Bool;               // TODO-4：维护用，复位时清零事务序号
       SafetyFault : Bool;              // TODO-5：急停、安全门、机器人报警等外部互锁
-      TeachMode : Bool;                // TODO-6：示教整圈采集为 TRUE；在新件提交时锁存，事务内不得切换
+      TeachMode : Bool;                // 现场示教许可，不代 PC 发请求
+      RobotReady : Bool;
+      RobotStopped : Bool;
       PartSn : String[50];             // TODO-7：工件 SN 来源，1–50 个 ASCII 可打印字符
       ProductCode : Int;               // TODO-7：与 PC 配方产品代码一致，1–32767
       PlanVersion : DInt;              // TODO-7：PC 配方总览“PLC 对接参数”里的计划版本
@@ -435,8 +431,10 @@ VERSION : 0.1
       ReadyForPart : Bool;             // TODO-10：给机器人 / 线体的“视觉可接件”
       ResultValid : Bool;              // 生产结论有效，保持到下一件请求
       ResultBits : Array[0..15] of Bool;   // TODO-11：按交互表 Q1152.0–Q1153.7 顺序，见 README
-      CaptureComplete : Bool;          // 示教：采集完成（resultCode=1，不是合格）
-      CaptureFailed : Bool;            // 示教：采集失败（resultCode=90）
+      CaptureComplete : Bool;          // DB6/DB12 示教完成，不是生产合格
+      CaptureFailed : Bool;
+      TeachState : Int;
+      TeachReason : Int;
       ResultCode : Int;
       FaultCode : Int;
       VisionAlarm : Bool;              // 需要人工处置并复位
@@ -448,6 +446,7 @@ VERSION : 0.1
 
    VAR
       Handshake : "GlueSightHandshake";
+      Teaching : "GlueSightTeaching";
       ResetPrevious : Bool;
       NewPartPrevious : Bool;
       MotionLatch : Bool;
@@ -455,12 +454,12 @@ VERSION : 0.1
       ResultPrevious : Bool;
       StatePrevious : UInt;
       StationFault : Bool;
-      TxTeach : Bool;                  // 本件提交时锁存的示教用途
       AwaitMotionEnd : Bool;           // 本件已提交、机器人尚未报告运动结束
    END_VAR
 
    VAR RETAIN
       LastSeq : DInt;                  // 断电保持的最近事务序号，PLC 重启后序号不回到 1
+      LastTeachRoundId : Int;
    END_VAR
 
    VAR_TEMP
@@ -495,7 +494,8 @@ BEGIN
    END_IF;
 
    #Handshake(Startup := #Startup,
-              NewPart := #NewPart AND NOT #AwaitMotionEnd AND NOT #StationFault,
+              NewPart := #NewPart AND NOT #AwaitMotionEnd AND NOT #StationFault
+                 AND NOT #Teaching.Active,
               ResetRequest := #ResetButton,
               ReconcileConfirmed := #ReconcileConfirmed,
               SeqRestart := #SeqRestart,
@@ -513,15 +513,12 @@ BEGIN
               ResetTimeout := #ResetTimeout,
               LastSeq := #LastSeq);
 
-   REGION 新件提交与用途锁存
+   REGION 新件提交
       IF (#Handshake.State = UINT#20) AND (#StatePrevious <> UINT#20) THEN
-         // 新请求刚提交：锁存用途，清掉上一件的结论，避免机器人读到残留结果
-         #TxTeach := #TeachMode;
+         // 新请求刚提交：清掉上一件的结论，避免机器人读到残留结果
          #AwaitMotionEnd := TRUE;
          #NewPartIgnored := FALSE;
          #ResultValid := FALSE;
-         #CaptureComplete := FALSE;
-         #CaptureFailed := FALSE;
          #ResultCode := INT#0;
          #FaultCode := INT#0;
          FOR #Index := 0 TO 15 DO
@@ -530,16 +527,30 @@ BEGIN
       ELSIF #NewPartEdge AND (#Handshake.State = UINT#10) THEN
          #NewPartIgnored := TRUE;
       END_IF;
-      IF (#Handshake.State >= UINT#20) AND (#Handshake.State <= UINT#60) AND (#TeachMode <> #TxTeach) THEN
-         // 事务进行中切换示教 / 生产：结论的含义不再确定，停线处置
-         #StationFault := TRUE;
-         #StationDiagnostic := UINT#7013;
-      END_IF;
       #StatePrevious := #Handshake.State;
    END_REGION
 
+   #Teaching(Startup := #Startup,
+             BaseResetComplete := #Handshake.ResetComplete,
+             BaseResetting := (#Handshake.State = UINT#91) OR (#Handshake.State = UINT#92) OR (#Handshake.State = UINT#93),
+             BaseReady := #Handshake.State = UINT#10,
+             PcAlive := #Handshake.PcAlive,
+             TeachPermit := #TeachMode,
+             RobotReady := #RobotReady,
+             RobotStopped := #RobotStopped,
+             ProductionBusy := #Handshake.Pending OR #AwaitMotionEnd,
+             ProductionRequest := #NewPartEdge,
+             MotionActive := #MotionActive,
+             MotionComplete := #MotionComplete,
+             ExternalFault := #SafetyFault OR #StationFault,
+             LastRoundId := #LastTeachRoundId);
+   #CaptureComplete := #Teaching.CaptureComplete;
+   #CaptureFailed := #Teaching.CaptureFailed;
+   #TeachState := #Teaching.State;
+   #TeachReason := #Teaching.Reason;
+
    REGION 相机硬触发
-      #CameraTrigger := #Handshake.TriggerPermit AND #MotionActive
+      #CameraTrigger := (#Handshake.TriggerPermit OR #Teaching.TriggerPermit) AND #MotionActive
          AND NOT #MotionComplete AND NOT #StationFault AND NOT #SafetyFault;
    END_REGION
 
@@ -547,11 +558,6 @@ BEGIN
       IF #Handshake.ResultLatched AND NOT #ResultPrevious THEN
          #ResultCode := #Handshake.CapturedResultCode;
          #FaultCode := #Handshake.CapturedFaultCode;
-         IF #TxTeach THEN
-            // 示教的 1 只表示采集完成，不得当作合格输出给机器人
-            #CaptureComplete := #ResultCode = INT#1;
-            #CaptureFailed := #ResultCode = INT#90;
-         ELSE
             CASE #ResultCode OF
                1:
                   #ResultBits[0] := TRUE;   // Q1152.0 合格
@@ -572,15 +578,14 @@ BEGIN
                   END_IF;
             END_CASE;
             #ResultValid := TRUE;
-         END_IF;
       END_IF;
       #ResultPrevious := #Handshake.ResultLatched;
    END_REGION
 
-   #MotionPermit := #Handshake.MotionPermit;
+   #MotionPermit := #Handshake.MotionPermit OR #Teaching.MotionPermit;
    // PC 提前终止后，要等机器人走完本件路径才接下一件
-   #ReadyForPart := #Handshake.ReadyForPart AND NOT #StationFault AND NOT #AwaitMotionEnd;
-   #VisionAlarm := #Handshake.ResetRequired OR #StationFault;
+   #ReadyForPart := #Handshake.ReadyForPart AND NOT #StationFault AND NOT #AwaitMotionEnd AND NOT #Teaching.Active;
+   #VisionAlarm := #Handshake.ResetRequired OR #StationFault OR #Teaching.Faulted;
    #State := #Handshake.State;
    #Diagnostic := #Handshake.LocalDiagnostic;
 END_FUNCTION_BLOCK

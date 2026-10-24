@@ -16,25 +16,27 @@ use crate::release::ValidationSite;
 use crate::store::{self, Store};
 use crate::vision;
 
-mod comparisons;
-mod recorded;
-mod history_samples;
-mod reproduce;
-mod workflow;
-mod fixture;
 mod burst;
 mod burst_history;
 mod burst_release;
-pub(crate) mod centerline;
-pub mod progress;
-#[cfg(test)]
-mod burst_tests;
 #[cfg(test)]
 mod burst_release_tests;
-pub use workflow::*;
-pub use fixture::*;
+#[cfg(test)]
+mod burst_tests;
+mod capture_review;
+pub(crate) mod centerline;
+mod comparisons;
+mod fixture;
+mod history_samples;
+pub mod progress;
+mod recorded;
+mod reproduce;
+mod workflow;
 pub use burst::*;
 pub use burst_history::*;
+pub use capture_review::*;
+pub use fixture::*;
+pub use workflow::*;
 
 fn state_value(value: &impl Serialize) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
@@ -282,6 +284,8 @@ pub struct Workspace {
     /// 段配方：多轮标定加入的轮次（旧拍照点配方为空）
     #[serde(default)]
     pub calibration: burst::Calibration,
+    #[serde(default)]
+    pub capture_review: capture_review::CaptureReview,
 }
 
 /// 按拍照点用到的相机整理配方的成像参数：不再用到的挪到 unbound，新用到的优先取 unbound 里调好的，没有就用默认值。
@@ -337,6 +341,7 @@ impl Workspace {
             unbound_imaging: BTreeMap::new(),
             camera_teaching: Vec::new(),
             calibration: burst::Calibration::default(),
+            capture_review: capture_review::CaptureReview::default(),
         }
     }
 
@@ -361,6 +366,7 @@ impl Workspace {
     }
 
     fn changed(&mut self) {
+        capture_review::refresh(self);
         self.revision += 1;
         self.validation = None;
         self.updated_at = ly_plc::now_ms();

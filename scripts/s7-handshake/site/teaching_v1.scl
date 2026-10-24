@@ -1,0 +1,268 @@
+DATA_BLOCK "teach_pc"
+{ S7_Optimized_Access := 'FALSE' }
+VERSION : 1.0
+   STRUCT
+      teachPcVersion : Int;
+      teachPcState : Int;
+      teachRoundId : Int;
+      teachPcReason : Int;
+      teachPcReserved : Int;
+   END_STRUCT;
+BEGIN
+END_DATA_BLOCK
+
+DATA_BLOCK "teach_plc"
+{ S7_Optimized_Access := 'FALSE' }
+VERSION : 1.0
+   STRUCT
+      teachPlcVersion : Int := 1;
+      teachPlcState : Int := 50;
+      teachRoundIdEcho : Int;
+      teachPlcReason : Int := 5;
+      teachPlcReserved : Int;
+   END_STRUCT;
+BEGIN
+END_DATA_BLOCK
+
+FUNCTION_BLOCK "GlueSightTeaching"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 1.0
+   VAR_INPUT
+      Startup : Bool;
+      BaseResetComplete : Bool;
+      BaseResetting : Bool;
+      BaseReady : Bool;
+      PcAlive : Bool;
+      TeachPermit : Bool;
+      RobotReady : Bool;
+      RobotStopped : Bool;
+      ProductionBusy : Bool;
+      ProductionRequest : Bool;
+      MotionActive : Bool;
+      MotionComplete : Bool;
+      ExternalFault : Bool;
+      MotionTimeout : Time := T#120s;
+      ResultTimeout : Time := T#15s;
+      ReleaseTimeout : Time := T#10s;
+   END_VAR
+   VAR_IN_OUT
+      LastRoundId : Int;
+   END_VAR
+   VAR_OUTPUT
+      State : Int := 50;
+      Reason : Int := 5;
+      Active : Bool;
+      MotionPermit : Bool;
+      TriggerPermit : Bool;
+      CaptureComplete : Bool;
+      CaptureFailed : Bool;
+      CapturedPcState : Int;
+      CapturedPcReason : Int;
+      Faulted : Bool;
+   END_VAR
+   VAR
+      Initialized : Bool;
+      Previous : Array[0..4] of Int;
+      PreviousValid : Bool;
+      FrozenId : Int;
+      ConsumedPcState : Int := -1;
+      ConsumedPcReason : Int;
+      ConsumedPcId : Int;
+      TimerState : Int;
+      TimerPcState : Int;
+      ResetPending : Bool;
+      MotionIssued : Bool;
+      EndSeen : Bool;
+      PhaseTimer : IEC_TIMER;
+   END_VAR
+   VAR_TEMP
+      Current : Array[0..4] of Int;
+      Stable : Bool;
+      Valid : Bool;
+      RawRequest : Bool;
+      Trip : Int;
+      Limit : Time;
+      InputReason : Int;
+      Index : Int;
+   END_VAR
+BEGIN
+   #Current[0] := "teach_pc".teachPcVersion;
+   #Current[1] := "teach_pc".teachPcState;
+   #Current[2] := "teach_pc".teachRoundId;
+   #Current[3] := "teach_pc".teachPcReason;
+   #Current[4] := "teach_pc".teachPcReserved;
+   #Stable := #PreviousValid;
+   FOR #Index := 0 TO 4 DO
+      #Stable := #Stable AND (#Current[#Index] = #Previous[#Index]);
+      #Previous[#Index] := #Current[#Index];
+   END_FOR;
+   #PreviousValid := TRUE;
+   #Trip := 0;
+   IF #Startup OR NOT #Initialized THEN
+      #Initialized := TRUE;
+      #State := 50;
+      #Reason := 5;
+      #PreviousValid := FALSE;
+      #Stable := FALSE;
+      #ResetPending := FALSE;
+      #MotionIssued := FALSE;
+      #LastRoundId := MAX(IN1 := #LastRoundId, IN2 := "teach_plc".teachRoundIdEcho);
+      #FrozenId := #LastRoundId;
+   END_IF;
+   IF #BaseResetComplete THEN
+      #ResetPending := TRUE;
+   END_IF;
+   #InputReason := #Current[3];
+   IF (#Current[1] = #ConsumedPcState) AND (#Current[2] = #ConsumedPcId) THEN
+      #InputReason := #ConsumedPcReason;
+   END_IF;
+   #Valid := (#Current[0] = 1) AND (#Current[4] = 0) AND (#Current[2] >= 0)
+      AND ((#Current[1] = 0)
+      OR (((#Current[1] = 10) OR (#Current[1] = 20)) AND (#InputReason = 0) AND (#Current[2] > 0))
+      OR ((#Current[1] = 30) AND (#InputReason >= 3) AND (#InputReason <= 7) AND (#Current[2] > 0))
+      OR ((#Current[1] = 40) AND (#InputReason >= 1) AND (#InputReason <= 2) AND (#Current[2] > 0)));
+   #RawRequest := (#Current[0] = 1) AND (#Current[1] = 10)
+      AND (#Current[2] = #FrozenId) AND (#Current[4] = 0);
+   #Limit := #ReleaseTimeout;
+   IF (#State = 10) AND (#Current[1] = 10) THEN
+      #Limit := #MotionTimeout;
+   ELSIF (#State = 20) AND (#Current[1] = 10) THEN
+      #Limit := #ResultTimeout;
+   END_IF;
+   #PhaseTimer.TON(IN := (#State <> 0) AND (#State <> 50)
+      AND (#TimerState = #State) AND (#TimerPcState = #Current[1]), PT := #Limit);
+   #TimerState := #State;
+   #TimerPcState := #Current[1];
+
+   IF #State <> 50 THEN
+      IF #BaseResetting THEN
+         #Trip := 5;
+      ELSIF NOT #PcAlive THEN
+         #Trip := 6;
+      ELSIF #ExternalFault THEN
+         #Trip := 9;
+      ELSIF ((#State = 10) OR (#State = 20)) AND NOT #BaseReady THEN
+         #Trip := 9;
+      ELSIF ((#State = 10) OR (#State = 20)) AND NOT #TeachPermit THEN
+         #Trip := 4;
+      ELSIF #Stable AND NOT #Valid THEN
+         #Trip := 5;
+      ELSIF #Stable AND (#State <> 0) AND (#Current[2] <> #FrozenId) THEN
+         #Trip := 5;
+      ELSIF #PhaseTimer.Q THEN
+         IF (#State = 10) AND (#Current[1] = 10) THEN
+            #Trip := 7;
+         ELSIF (#State = 20) AND (#Current[1] = 10) THEN
+            #Trip := 8;
+         ELSE
+            #Trip := 10;
+         END_IF;
+      END_IF;
+   END_IF;
+
+   IF (#Trip = 0) AND #Stable AND #Valid THEN
+      #ConsumedPcState := #Current[1];
+      #ConsumedPcId := #Current[2];
+      #ConsumedPcReason := #InputReason;
+   END_IF;
+   IF (#Trip = 0) AND #Stable THEN
+      CASE #State OF
+         0:
+            IF #Valid AND (#Current[1] <> 0) THEN
+               IF (#Current[2] <= #LastRoundId) OR (#Current[1] = 20) THEN
+                  #Trip := 5;
+               ELSE
+                  #FrozenId := #Current[2];
+                  #LastRoundId := #FrozenId;
+                  #MotionIssued := FALSE;
+                  #EndSeen := FALSE;
+                  #CapturedPcState := 0;
+                  #CapturedPcReason := 0;
+                  #CaptureComplete := FALSE;
+                  #CaptureFailed := FALSE;
+                  #Reason := 0;
+                  IF (#Current[1] = 30) OR (#Current[1] = 40) THEN
+                     #CapturedPcState := #Current[1];
+                     #CapturedPcReason := #InputReason;
+                     #CaptureFailed := TRUE;
+                     #State := 30;
+                  ELSIF #ProductionBusy OR #ProductionRequest THEN
+                     #State := 40;
+                     #Reason := 3;
+                  ELSIF NOT #BaseReady OR NOT #TeachPermit THEN
+                     #State := 40;
+                     #Reason := 1;
+                  ELSIF NOT #RobotReady OR NOT #RobotStopped OR #MotionComplete THEN
+                     #State := 40;
+                     #Reason := 2;
+                  ELSE
+                     #State := 10;
+                  END_IF;
+               END_IF;
+            END_IF;
+         10, 20:
+            IF (#Current[1] = 30) OR (#Current[1] = 40) THEN
+               IF NOT #MotionIssued OR #RobotStopped THEN
+                  #CapturedPcState := #Current[1];
+                  #CapturedPcReason := #InputReason;
+                  #CaptureFailed := TRUE;
+                  #State := 30;
+               END_IF;
+            ELSIF (#State = 20) AND (#Current[1] = 20) THEN
+               #CapturedPcState := 20;
+               #CapturedPcReason := 0;
+               #CaptureComplete := TRUE;
+               #State := 30;
+            ELSIF #Current[1] <> 10 THEN
+               #Trip := 5;
+            ELSIF (#State = 10) AND #EndSeen THEN
+               #State := 20;
+            END_IF;
+         30:
+            IF #Current[1] = 0 THEN
+               #State := 0;
+               #Reason := 0;
+            ELSIF (#Current[1] <> #CapturedPcState) OR (#InputReason <> #CapturedPcReason) THEN
+               #Trip := 5;
+            END_IF;
+         40:
+            IF #Current[1] = 0 THEN
+               #State := 0;
+               #Reason := 0;
+            ELSIF (#Current[1] <> 10) AND (#Current[1] <> 40) AND (#Current[1] <> 30) THEN
+               #Trip := 5;
+            END_IF;
+         50:
+            IF #ResetPending AND #BaseReady AND #PcAlive AND NOT #ExternalFault
+               AND #RobotStopped AND #Valid AND (#Current[1] = 0) THEN
+               #LastRoundId := MAX(IN1 := #LastRoundId, IN2 := #Current[2]);
+               #FrozenId := #LastRoundId;
+               #State := 0;
+               #Reason := 0;
+               #ResetPending := FALSE;
+               #MotionIssued := FALSE;
+            END_IF;
+         ELSE
+            #Trip := 5;
+      END_CASE;
+   END_IF;
+   IF #Trip <> 0 THEN
+      #State := 50;
+      #Reason := #Trip;
+      #ResetPending := FALSE;
+   END_IF;
+   IF (#State = 10) AND #MotionComplete THEN
+      #EndSeen := TRUE;
+   END_IF;
+   #MotionPermit := (#State = 10) AND #RawRequest AND #PcAlive AND #TeachPermit
+      AND #BaseReady AND NOT #ExternalFault AND NOT #ProductionBusy AND NOT #MotionComplete AND NOT #EndSeen;
+   #TriggerPermit := #MotionPermit AND #MotionActive;
+   #MotionIssued := #MotionIssued OR #MotionPermit;
+   #Active := (#State <> 0) AND (#State <> 40);
+   #Faulted := #State = 50;
+   "teach_plc".teachPlcVersion := 1;
+   "teach_plc".teachRoundIdEcho := #FrozenId;
+   "teach_plc".teachPlcReason := #Reason;
+   "teach_plc".teachPlcReserved := 0;
+   "teach_plc".teachPlcState := #State;
+END_FUNCTION_BLOCK

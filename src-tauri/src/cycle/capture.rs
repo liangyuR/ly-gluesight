@@ -1,6 +1,4 @@
 use super::*;
-use crate::plc_plan::PlcPlan;
-use crate::recipe_capture::AnyRound;
 
 impl Machine {
     pub(super) fn capture_devices_ready(&self) -> Result<(), String> {
@@ -11,73 +9,119 @@ impl Machine {
         rig.check_ready_at(&cams)
     }
 
-    pub(super) async fn start_capture_s7(&mut self, request: Request) {
-        self.part = None;
-        self.current_cycle_id = None;
-        self.done_at = None;
-        self.ack_alarmed = false;
+    pub(super) async fn poll_teaching(&mut self, reset: bool, base_ready: bool) {
+        use crate::teaching::TeachEvent;
         let app = self.app.clone();
-        let rig = &host(&app).camera;
-        let capture = rig.recipe_capture().clone();
-        let attempt = async {
-            let round = capture.current_any().ok_or("没有正在执行的示教采集")?;
-            let device_ids = capture_device_ids(&rig.configs(), &round.camera_ids())?;
-            self.capture_devices_ready()?;
-            let plan = match &round {
-                // 段配方的新轮次：PLC 的 shotCount / deviceShots 是估算值，只记进轮次，不限 1–64、不核对（规格 §5）
-                AnyRound::Burst(round) => {
-                    let plan = PlcPlan::teaching(round.recipe_id.clone(), request.plan_version, device_ids)?;
-                    self.s7.bind_capture_id(&round.round_id)?;
-                    self.s7.validate_plan(&plan)?;
-                    capture.burst_plc_started(request.shot_count, request.plan_version)?;
-                    plan
-                }
-                AnyRound::Legacy(_) => return Err("旧拍照点采集已停用，请使用段配方整轮采集".into()),
-            };
-            self.s7.arm(plc(&app), &plan).await
-        }.await;
-        match attempt {
-            Ok(()) => {
+        let cycle = host(&app);
+        let capture = cycle.camera.recipe_capture();
+        let mut teaching = cycle.teaching.lock().await;
+        if reset && teaching.busy() {
+            capture.interrupt("示教事务复位，请整圈重采");
+        }
+        teaching.set_origin(crate::offline::enabled(&app));
+        crate::offline::service_teaching_idle(&app, teaching.reset_pending() && base_ready);
+        let was_busy = teaching.busy();
+        if was_busy && self.s7.request().is_none() {
+            self.close_routing(None);
+            self.part = None;
+            self.current_cycle_id = None;
+            self.done_at = None;
+            self.ack_alarmed = false;
+        }
+        let event = match teaching.poll(plc(&app), reset, base_ready).await {
+            Ok(event) => event,
+            Err(error) => teaching.force_fault(error),
+        };
+        match event {
+            TeachEvent::Accepted => {
                 self.set_phase(Phase::Acquire);
-                log(&app, "info", "示教采集布防", "已接受 PLC 采集事务，等待各相机硬触发图像；本轮不产生生产检测结果");
             }
-            Err(error) => {
-                capture.fail(error.clone());
-                self.s7.fault(plc(&app), error.clone()).await;
-                self.enter_fault(error);
+            TeachEvent::Ended => {
+                if capture.active() {
+                    if let Err(error) = capture.burst_plc_ended(None) {
+                        capture.fail(error);
+                    }
+                }
+                self.set_phase(Phase::Drain);
+            }
+            TeachEvent::Rejected(reason) => {
+                capture.fail(reason);
+                if production_start_pending(plc(&app)).await.unwrap_or(false) {
+                    cycle.teaching_preempted.store(true, Ordering::SeqCst);
+                }
+                if self.s7.request().is_none() {
+                    self.set_phase(Phase::Release);
+                }
+            }
+            TeachEvent::Released => {
+                cycle.teaching_preempted.store(false, Ordering::SeqCst);
+                if self.s7.request().is_none() {
+                    self.set_phase(Phase::Idle);
+                }
+            }
+            TeachEvent::Fault(reason) if was_busy => {
+                capture.fail(reason.clone());
+                self.s7.fault(plc(&app), reason.clone()).await;
+                self.enter_fault(reason);
+            }
+            _ => {}
+        }
+        if teaching.busy() && !reset && matches!(self.s7.phase(), SessionPhase::Fault) {
+            let reason = self
+                .s7
+                .view()
+                .message
+                .unwrap_or_else(|| "生产基础握手故障，示教需要复位".into());
+            teaching.force_fault(reason.clone());
+            capture.fail(reason);
+        }
+        let view = teaching.view();
+        if view.phase == "fault" && teaching.busy() && self.s7.phase() != SessionPhase::Fault {
+            self.s7.fault(plc(&app), view.message.clone()).await;
+            self.enter_fault(view.message.clone());
+        }
+        if matches!(
+            view.phase.as_str(),
+            "cancelling" | "fault" | "releasing" | "reporting"
+        ) && capture.active()
+        {
+            capture.interrupt(view.message.clone());
+        }
+        if matches!(view.phase.as_str(), "requested" | "accepted" | "draining") {
+            if let Some(round) = capture
+                .current_any()
+                .filter(|round| Some(round.round_id()) == teaching.bound_round_id())
+            {
+                if let Some((result, _)) = round.plc_report() {
+                    let reason = match &round {
+                        crate::recipe_capture::AnyRound::Burst(round) => match round
+                            .failure
+                            .as_ref()
+                        {
+                            Some(
+                                crate::recipe_capture::CaptureFailureV2::Camera { .. }
+                                | crate::recipe_capture::CaptureFailureV2::SessionChanged { .. },
+                            ) => 3,
+                            Some(crate::recipe_capture::CaptureFailureV2::WriteTimeout {
+                                ..
+                            }) => 5,
+                            Some(crate::recipe_capture::CaptureFailureV2::Plc) => 6,
+                            Some(crate::recipe_capture::CaptureFailureV2::StartTimeout) => 7,
+                            _ => 4,
+                        },
+                        _ => 6,
+                    };
+                    if let Err(error) = teaching.finish(plc(&app), result == 1, reason).await {
+                        teaching.force_fault(error.clone());
+                        self.s7.fault(plc(&app), error.clone()).await;
+                        self.enter_fault(error);
+                    } else {
+                        self.set_phase(Phase::Report);
+                    }
+                }
             }
         }
-    }
-
-    /// PLC partEnd 后进入完整收尾窗口。
-    pub(super) fn end_capture(&self, device_triggers: Option<u16>) {
-        let rig = &host(&self.app).camera;
-        let capture = rig.recipe_capture();
-        let result = (|| {
-            let round = capture.current_any().ok_or("采集轮次不存在")?;
-            capture_device_ids(&rig.configs(), &round.camera_ids())?;
-            match round {
-                AnyRound::Burst(_) => capture.burst_plc_ended(device_triggers),
-                AnyRound::Legacy(_) => Err("旧拍照点采集已停用".into()),
-            }
-        })();
-        if let Err(error) = result { capture.fail(error); }
-    }
-
-    pub(super) async fn finish_capture_s7(&mut self) {
-        if !matches!(self.s7.phase(), SessionPhase::Acquiring | SessionPhase::Draining) { return; }
-        let app = self.app.clone();
-        let capture = host(&app).camera.recipe_capture();
-        let Some(round) = capture.current_any().filter(|round| Some(round.round_id()) == self.s7.capture_id()) else { return; };
-        let Some((result, code)) = round.plc_report() else { return; };
-        match self.s7.report(plc(&app), result, code).await {
-            Ok(()) => {
-                self.done_at = Some(Instant::now());
-                self.set_phase(Phase::Report);
-                log(&app, if result == 1 { "ok" } else { "err" }, "示教采集交付", format!("采集轮次 {} 完成码 {result}/{code}；等待 PLC 确认，不计入生产 OK/NG", round.round_id()));
-            }
-            Err(error) => self.enter_fault(error),
-        }
+        cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
     }
 }
 

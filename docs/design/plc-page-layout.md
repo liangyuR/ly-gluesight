@@ -118,7 +118,7 @@ B 区在 `handshake === null`（没有 S7 会话，例如预览模式）时整�
 
 | phase | 中文 | 等待方 | 文案（“现在在等”） |
 | --- | --- | --- | --- |
-| `resetRequired` | 待复位 | PLC（操作员） | `PLC：先把 partStart/partEnd/resultAck 置 0 并保持 faultReset 低 ≥1 s，再发 faultReset 上升沿；也可在在线检测页点“复位故障”` |
+| `resetRequired` | 待复位 | PLC（操作员） | `PLC：清 partStart/partEnd/resultAck，faultReset 低 ≥1 s 后置高；高 ≥500 ms 且看到 visionFault=1 后拉低，再等 visionFault=0；也可在在线检测页点“复位故障”` |
 | `idle` | 空闲 | PLC | `PLC：写 requestSeq、partSn、productCode、shotCount 与 deviceShots（预期总帧数 ΣN_exp）、planVersion，最后置 partStart`；若 `message` 以 `S7 空闲：` 开头，直接显示该 message（PLC 仍持有 end/ACK，或 PC 设备未就绪撤了 ready） |
 | `validating` | 校验请求 | PC | `PC：核对请求、撤 visionReady、写 acceptedSeq，置 busy，最后置 armed（PLC 此时禁止触发）` |
 | `acquiring` | 采集中 | PLC | `PLC：相机使能为高时连续发脉冲（deviceTriggers 只作参考，不要求等于预期总帧数），运动结束、脉冲停发后写最终计数并置 partEnd` |

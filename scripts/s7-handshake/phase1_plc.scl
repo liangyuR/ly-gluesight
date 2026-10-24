@@ -103,7 +103,6 @@ VERSION : 0.1
       ResetLowSeen : Bool;
       PcHeartbeatPrevious : Bool;
       PcHeartbeatSeen : Bool;
-      ResetReadyLowSeen : Bool;
       TimerState : UInt;
       FrozenSeq : DInt;
       FrozenSn : String[50];
@@ -145,7 +144,6 @@ BEGIN
       #PreviousNewPart := #NewPart;
       #PcHeartbeatPrevious := "GlueSightPcArea".pcHeartbeat;
       #PcHeartbeatSeen := FALSE;
-      #ResetReadyLowSeen := FALSE;
       #Pending := #Pending OR "GlueSightPlcArea".partStart
          OR "GlueSightPlcArea".partEnd OR "GlueSightPlcArea".resultAck
          OR "GlueSightPcArea".armed OR "GlueSightPcArea".busy
@@ -180,11 +178,11 @@ BEGIN
       20: #PhaseLimit := #ArmTimeout;
       30: #PhaseLimit := #MotionTimeout;
       40: #PhaseLimit := #ResultTimeout;
-      91, 92: #PhaseLimit := #ResetTimeout;
+      91, 92, 93: #PhaseLimit := #ResetTimeout;
    END_CASE;
    #PhaseTimed := (#State = UINT#20) OR (#State = UINT#30)
       OR (#State = UINT#40) OR (#State = UINT#50)
-      OR (#State = UINT#60) OR (#State = UINT#91) OR (#State = UINT#92);
+      OR (#State = UINT#60) OR (#State = UINT#91) OR (#State = UINT#92) OR (#State = UINT#93);
    #PhaseTimer.TON(IN := #PhaseTimed AND (#TimerState = #State), PT := #PhaseLimit);
    #TimerState := #State;
    #NeutralTimer.TON(IN := (#State = UINT#91) AND #PcAlive
@@ -351,25 +349,22 @@ BEGIN
                "GlueSightPlcArea".partEnd := FALSE;
                "GlueSightPlcArea".resultAck := FALSE;
                "GlueSightPlcArea".faultReset := FALSE;
-               #ResetReadyLowSeen := FALSE;
                #State := UINT#91;
             END_IF;
          91:
             IF #NeutralTimer.Q THEN
-               #ResetReadyLowSeen := NOT "GlueSightPcArea".visionReady;
                "GlueSightPlcArea".faultReset := TRUE;
                #State := UINT#92;
             END_IF;
          92:
-            IF NOT "GlueSightPcArea".visionReady THEN
-               #ResetReadyLowSeen := TRUE;
+            IF #ResetHoldTimer.Q AND #PcAlive AND "GlueSightPcArea".visionFault THEN
+               "GlueSightPlcArea".faultReset := FALSE;
+               #State := UINT#93;
             END_IF;
-            IF #ResetReadyLowSeen AND #ResetHoldTimer.Q AND #PcAlive
-               AND "GlueSightPcArea".visionReady
-               AND ("GlueSightPcArea".pcProtocolVersion = INT#6)
+         93:
+            IF #PcAlive AND ("GlueSightPcArea".pcProtocolVersion = INT#6)
                AND NOT "GlueSightPcArea".armed AND NOT "GlueSightPcArea".busy
                AND NOT "GlueSightPcArea".done AND NOT "GlueSightPcArea".visionFault THEN
-               "GlueSightPlcArea".faultReset := FALSE;
                #Pending := FALSE;
                #LocalDiagnostic := UINT#0;
                #ResetComplete := TRUE;
@@ -386,7 +381,6 @@ BEGIN
       #ResetLowSeen := FALSE;
       #PreviousReset := #ResetRequest;
       #PcHeartbeatSeen := FALSE;
-      #ResetReadyLowSeen := FALSE;
       "GlueSightPlcArea".faultReset := FALSE;
    END_IF;
 

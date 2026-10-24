@@ -91,6 +91,8 @@ pub struct CaptureRoundV2 {
     /// PLC 写来的 shotCount：示教轮次可为估算值，只记录不核对
     pub plc_shot_count: Option<u16>,
     pub plc_plan_version: Option<u32>,
+    #[serde(default)]
+    pub teaching_round_id: Option<u16>,
     /// partEnd 时的 deviceTriggers，只作参考
     pub device_triggers: Option<u16>,
     /// 帧组数 = 各相机最大 seq 的最大值
@@ -324,10 +326,26 @@ impl RecipeCaptureHost {
         let n = devices.len();
         let cameras = devices.into_iter().map(|d| CaptureCamera { camera_id: d.camera_id, camera_config: d.camera_config, imaging: d.imaging, device_session: d.session, received_count: 0 }).collect();
         let round = CaptureRoundV2 {
-            format: FORMAT, round_id: round_id.clone(), recipe_id, cameras, state: CaptureState::WaitingStart,
-            plc_shot_count: None, plc_plan_version: None, device_triggers: None,
-            group_count: 0, camera_frames: vec![0; n], incomplete_groups: Vec::new(), missing_frames: Vec::new(), loss_alarms: Vec::new(), alarms: Vec::new(),
-            created_at, ended_at: None, error: None, failure: None, simulated,
+            format: FORMAT,
+            round_id: round_id.clone(),
+            recipe_id,
+            cameras,
+            state: CaptureState::WaitingStart,
+            plc_shot_count: None,
+            plc_plan_version: None,
+            teaching_round_id: None,
+            device_triggers: None,
+            group_count: 0,
+            camera_frames: vec![0; n],
+            incomplete_groups: Vec::new(),
+            missing_frames: Vec::new(),
+            loss_alarms: Vec::new(),
+            alarms: Vec::new(),
+            created_at,
+            ended_at: None,
+            error: None,
+            failure: None,
+            simulated,
         };
         self.save_burst(&round).map_err(Rejected::Io)?;
         *self.journal.lock().unwrap() = Some(Journal { round_id, file });
@@ -368,6 +386,29 @@ impl RecipeCaptureHost {
         let camera_id = run.round.cameras[j].camera_id.clone();
         let error = format!("相机 {camera_id} 断连，请整圈重采");
         self.fail_burst(run, CaptureFailureV2::Camera { camera_id }, error);
+    }
+
+    pub fn burst_ready(&self, teaching_round_id: u16) -> Result<(), String> {
+        let mut guard = self.burst.lock().unwrap();
+        let run = guard
+            .as_mut()
+            .filter(|r| r.round.state.active())
+            .ok_or("没有等待开始的示教采集")?;
+        if run.round.state != CaptureState::WaitingStart
+            || !(1..=32767).contains(&teaching_round_id)
+        {
+            let error = "示教准备状态或轮次编号无效".to_string();
+            self.fail_burst(run, CaptureFailureV2::Plc, error.clone());
+            return Err(error);
+        }
+        run.round.teaching_round_id = Some(teaching_round_id);
+        run.round.state = CaptureState::Receiving;
+        run.deadline = Instant::now() + Duration::from_secs(130);
+        if let Err(e) = self.save_burst(&run.round) {
+            self.fail_burst(run, CaptureFailureV2::Other, e.clone());
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// PLC 开始：shotCount 只记录（可为估算值，不限 1–64、不核对）；计划版本须为正数（协议 4.1）。
@@ -614,13 +655,38 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
         || round.loss_alarms != loss_alarms(&round.camera_frames) {
         return Err("采集记录的帧组、缺帧或丢帧告警统计不自洽".into());
     }
+    let teaching = round
+        .teaching_round_id
+        .is_some_and(|id| (1..=32767).contains(&id))
+        && round.plc_shot_count.is_none()
+        && round.plc_plan_version.is_none()
+        && round.device_triggers.is_none();
+    if round.teaching_round_id.is_some() && !teaching {
+        return Err("示教 V1 轮次编号或元数据不一致".into());
+    }
+    let started = teaching
+        || (round.plc_plan_version.is_some_and(|v| v > 0) && round.plc_shot_count.is_some());
     let terminal_ok = match round.state {
-        CaptureState::WaitingStart => round.plc_shot_count.is_none() && round.plc_plan_version.is_none() && round.device_triggers.is_none()
-            && round.group_count == 0 && round.ended_at.is_none() && round.error.is_none() && round.failure.is_none(),
-        CaptureState::Receiving => round.plc_plan_version.is_some_and(|v| v > 0) && round.plc_shot_count.is_some() && round.device_triggers.is_none()
-            && round.ended_at.is_none() && round.error.is_none() && round.failure.is_none(),
-        CaptureState::Draining | CaptureState::Complete => round.plc_plan_version.is_some_and(|v| v > 0) && round.plc_shot_count.is_some()
-            && round.ended_at.is_some() && round.error.is_none() && round.failure.is_none(),
+        CaptureState::WaitingStart => {
+            round.teaching_round_id.is_none()
+                && round.plc_shot_count.is_none()
+                && round.plc_plan_version.is_none()
+                && round.device_triggers.is_none()
+                && round.group_count == 0
+                && round.ended_at.is_none()
+                && round.error.is_none()
+                && round.failure.is_none()
+        }
+        CaptureState::Receiving => {
+            started
+                && round.device_triggers.is_none()
+                && round.ended_at.is_none()
+                && round.error.is_none()
+                && round.failure.is_none()
+        }
+        CaptureState::Draining | CaptureState::Complete => {
+            started && round.ended_at.is_some() && round.error.is_none() && round.failure.is_none()
+        }
         CaptureState::Failed => round.error.is_some() && round.failure.is_some(),
     };
     if !terminal_ok { return Err("采集记录的状态与 PLC 开始、结束或失败原因不一致".into()); }

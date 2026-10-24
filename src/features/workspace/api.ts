@@ -40,6 +40,7 @@ export const workspaceApi = {
   captureStart: (recipeId: string, cameraIds: string[], drainTimeoutMs: number) => desktopCall<CaptureRound | CaptureRoundV2>("recipe_capture_start", { recipeId, cameraIds, drainTimeoutMs }),
   captureGet: (roundId?: string) => desktopCall<CaptureRound | CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
   captureStop: () => desktopCall<CaptureRound | CaptureRoundV2 | null>("recipe_capture_stop"),
+  capturePlcStatus: () => desktopCall<import("./types").CapturePlcStatus>("recipe_capture_plc_status"),
   adoptCapture: (id: string, revision: number, roundId: string, reuseTeaching: boolean, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_adopt_capture", { id, revision, roundId, reuseTeaching, correspondenceConfirmed }),
   captureSample: (id: string, revision: number, roundId: string, expected: import("../cycle/types").Verdict, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_capture_sample", { id, revision, roundId, expected, correspondenceConfirmed }),
   setViews: (id: string, revision: number, k: number, views: number[], skip: boolean) => desktopCall<WorkspaceView>("workspace_set_views", { id, revision, k, views, skip }),
@@ -113,6 +114,16 @@ export const workspaceApi = {
     desktopCall<WorkspaceView>("workspace_calibration_add_round", { id, revision, round, standard }),
   calibrationRemoveRound: (id: string, revision: number, round: string) =>
     desktopCall<WorkspaceView>("workspace_calibration_remove_round", { id, revision, round }),
+  captureReviewSave: (id: string, revision: number, round: string, cuts: number[]) =>
+    desktopCall<WorkspaceView>("workspace_capture_review_save", { id, revision, round, cuts }),
+  captureReviewConfirm: (id: string, revision: number, round: string) =>
+    desktopCall<WorkspaceView>("workspace_capture_review_confirm", { id, revision, round }),
+  captureReviewSetTemplate: (id: string, revision: number, round: string) =>
+    desktopCall<WorkspaceView>("workspace_capture_review_set_template", { id, revision, round }),
+  captureReviewApplyTemplate: (id: string, revision: number, round: string, mode: "proportional" | "original") =>
+    desktopCall<WorkspaceView>("workspace_capture_review_apply_template", { id, revision, round, mode }),
+  captureReviewExclude: (id: string, revision: number, round: string, start: number, end: number, excluded: boolean, reason: string) =>
+    desktopCall<WorkspaceView>("workspace_capture_review_exclude", { id, revision, round, start, end, excluded, reason }),
   /** 按已加入的轮次算 N_exp / 整件 ΣN_exp 与建议容差，结果在 plan.calibration；建议容差要再经 confirmTolerance 才写入 */
   calibrationApply: (id: string, revision: number) =>
     desktopCall<WorkspaceView>("workspace_calibration_apply", { id, revision }),

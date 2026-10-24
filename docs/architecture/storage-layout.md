@@ -26,6 +26,12 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 同一资料目录使用文件锁独占。不同目录不表示可以同时占用相同的 PLC 或相机。业务资料在同一环境中由整机账号共享，最后打开的工作区等界面偏好按账号隔离。
 
+## 采集轮次整理记录
+
+`workspaces/<配方>/workspace.json` 的 `captureReview` 保存候选的轮次分段与屏蔽记录，旧候选缺省为空。`rounds` 以轮次 ID 为键，保存原始 `groupCount`、边界 `cuts`、`draft/confirmed/stale` 状态、带原因的 `excludedGroups`、段结构与采集配置签名以及来源模板版本；`template` 保存已确认参考轮次的边界快照和版本。
+
+标注随候选修订原子保存，不改写 `recipe-capture/` 下的 `round.json`、`frames.jsonl` 或 PGM。边界使用原始帧组序号，屏蔽与恢复不重排、不扣减原始采集计数。这里的手动边界与 `calibration/<轮次>/boundaries.json` 的算法输出是不同数据：本阶段后者及生产分段仍为未分段。屏蔽只作用于候选标定取样，不写入发布包或生产检测记录。
+
 ## 升级到段模型（协议 6）前
 
 升级只保证旧数据被安全拒绝或备份，不做迁移（D-0，项目尚未上线）。升级前逐项核对：

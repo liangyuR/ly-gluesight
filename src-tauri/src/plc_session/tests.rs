@@ -214,6 +214,34 @@ async fn s7_wire_part_end_ignores_reserved_trigger_count() {
 }
 
 #[tokio::test]
+async fn plc_reset_high_waits_for_release_then_completes_without_production_intake() {
+    let mut rig = Rig::new("reset-without-production").await;
+    rig.plc.set(&[("faultReset", 1)]);
+    rig.fresh().await;
+    assert!(matches!(
+        rig.session
+            .poll_gated(&rig.engine, false, true, true, false)
+            .await,
+        SessionEvent::None
+    ));
+    assert!(rig.plc.on("visionFault"));
+    assert!(!rig.plc.on("visionReady"));
+    assert_eq!(rig.session.phase(), SessionPhase::ResetRequired);
+    rig.plc.set(&[("faultReset", 0)]);
+    rig.fresh().await;
+    assert!(matches!(
+        rig.session
+            .poll_gated(&rig.engine, false, true, true, false)
+            .await,
+        SessionEvent::Ready
+    ));
+    assert!(!rig.plc.on("visionFault"));
+    assert!(!rig.plc.on("visionReady"));
+    assert_eq!(rig.session.phase(), SessionPhase::Idle);
+    assert_eq!(rig.audit().last().unwrap()["action"], "resetCompleted");
+}
+
+#[tokio::test]
 async fn s7_wire_disconnect_after_done_applied_never_commits_success() {
     let mut rig = Rig::new("disconnect-after-apply").await;
     rig.request(1, "SN-50").await;

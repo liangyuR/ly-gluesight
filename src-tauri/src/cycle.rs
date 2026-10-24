@@ -387,6 +387,10 @@ struct Shared {
 pub struct CycleHost {
     pub tx: UnboundedSender<Input>,
     pub plc_gate: tokio::sync::Mutex<()>,
+    pub teaching: tokio::sync::Mutex<crate::teaching::Teaching>,
+    teaching_busy: AtomicBool,
+    teaching_switch_block: AtomicBool,
+    teaching_preempted: AtomicBool,
     pub camera: CameraRig,
     pub recipes: RecipeStore,
     pub recorders: Recorders,
@@ -397,8 +401,10 @@ pub struct CycleHost {
     settings_path: PathBuf,
     shared: Mutex<Shared>,
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
-    /// 节拍不在空闲或故障（开工那一刻就置上，比发布的快照早）
+    /// 有在途工件或未结 PLC 事务。
     busy: AtomicBool,
+    /// 节拍不在空闲或故障（开工那一刻就置上，比发布的快照早）
+    in_flight: AtomicBool,
     /// 检测侧不允许切换站点模式的原因：有在途工件，或有只能在真机 PLC 上复位的未结事务
     switch_block: Mutex<Option<String>>,
     settings_note: Option<String>,
@@ -441,13 +447,27 @@ impl CycleHost {
                 }
             })), crate::recorder::Cleanup { protection, warning, release })
         };
-        let recorders = Recorders::new(recorder(data.join("records"), HistoryScope::Real),
-            recorder(data.join("records-offline"), HistoryScope::Offline));
+        let recorders = Recorders::new(
+            recorder(data.join("records"), HistoryScope::Real),
+            recorder(data.join("records-offline"), HistoryScope::Offline),
+        );
+        let teaching = crate::teaching::Teaching::open(
+            crate::storage::state(app).join("teaching-handshake.json"),
+        );
+        let teaching_busy = teaching.busy();
+        let teaching_switch_block = teaching.blocks_site_switch();
         Ok(Self {
             camera,
             tx,
             plc_gate: tokio::sync::Mutex::new(()),
-            recipes: RecipeStore::open_with_floors(data.join("recipes"), &app.state::<crate::store::Store>().recipe_version_floors()?)?,
+            teaching: tokio::sync::Mutex::new(teaching),
+            teaching_busy: AtomicBool::new(teaching_busy),
+            teaching_switch_block: AtomicBool::new(teaching_switch_block),
+            teaching_preempted: AtomicBool::new(false),
+            recipes: RecipeStore::open_with_floors(
+                data.join("recipes"),
+                &app.state::<crate::store::Store>().recipe_version_floors()?,
+            )?,
             recorders,
             cycle_ids: crate::cycle_ids::CycleIds::default(),
             audit,
@@ -463,6 +483,7 @@ impl CycleHost {
             settings_path,
             rx: Mutex::new(Some((rx, frame_rx))),
             busy: AtomicBool::new(false),
+            in_flight: AtomicBool::new(false),
             switch_block: Mutex::new(None),
             settings_note,
             interrupted_recordings,
@@ -517,15 +538,30 @@ impl CycleHost {
     }
 
     pub fn busy(&self) -> bool {
-        self.busy.load(Ordering::SeqCst)
+        self.busy.load(Ordering::SeqCst) || self.teaching_busy.load(Ordering::SeqCst)
+    }
+
+    pub fn in_flight(&self) -> bool {
+        self.in_flight.load(Ordering::SeqCst) || self.teaching_busy.load(Ordering::SeqCst)
     }
 
     pub fn switch_block(&self) -> Option<String> {
-        self.switch_block.lock().unwrap().clone()
+        if self.teaching_switch_block.load(Ordering::SeqCst) {
+            Some("示教握手尚未结束，请等待 PLC 释放或显式复位".into())
+        } else {
+            self.switch_block.lock().unwrap().clone()
+        }
+    }
+
+    pub fn store_teaching_busy(&self, busy: bool, blocks_switch: bool) {
+        self.teaching_busy.store(busy, Ordering::SeqCst);
+        self.teaching_switch_block
+            .store(blocks_switch, Ordering::SeqCst);
     }
 
     fn store_busy(&self, phase: Phase, s7: &PlcSession) {
         let in_flight = !matches!(phase, Phase::Idle | Phase::Fault);
+        self.in_flight.store(in_flight, Ordering::SeqCst);
         self.busy.store(in_flight || s7.pending(), Ordering::SeqCst);
         *self.switch_block.lock().unwrap() = if in_flight {
             Some("检测仍有在途工件，完成握手或复位故障后再切换站点模式".into())
@@ -624,6 +660,27 @@ pub(crate) fn record_interrupted_part(app: &AppHandle, s7: &PlcSession, stats: &
         Ok(()) => log_with(app, "warn", "中断工件补记录", format!("SN={} 请求序号 {}：进程在事务中中断，已按 ERR 补入历史（{label}）；PLC 事务仍需复位处置", request.sn, request.request_seq),
             Fields { cycle_id: Some(cycle_id.into()), sn: Some(request.sn.clone()), request_seq: Some(request.request_seq), ..Fields::default() }),
         Err(error) => log(app, "err", "中断工件补记录", format!("cycleId={cycle_id}：{error}")),
+    }
+}
+
+pub(crate) async fn production_start_pending(engine: &PlcEngine) -> Result<bool, String> {
+    let config = engine.config();
+    let point = config
+        .points
+        .iter()
+        .find(|p| {
+            p.tags
+                .iter()
+                .any(|t| t == crate::inspection::tag::PART_START)
+        })
+        .ok_or("缺少生产开始点位")?;
+    match engine
+        .read_now(&point.id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        ly_plc::PlcValue::Bool(value) => Ok(value),
+        _ => Err("生产开始点位类型错误".into()),
     }
 }
 
@@ -1749,16 +1806,32 @@ impl Machine {
             self.dirty = true;
         }
         self.sync_recording_alarm();
-        let cameras = if capture_host.active() { capture::capture_readiness(self.service_ready(), || self.capture_devices_ready()) } else { match self.phase {
-            // 在途的件只看它自己用的相机；等 PLC 确认结果时相机掉线不打断握手，回到空闲再查
-            Phase::Acquire | Phase::Drain => match self.part.as_ref() {
-                Some(p) if p.rig_gen != host(&self.app).camera.generation() => Err("检测中增删了相机".into()),
-                Some(p) => self.check_part_cams(p),
-                None => Ok(()),
-            },
-            Phase::Report | Phase::Release => Ok(()),
-            _ => self.check_idle_devices(),
-        } };
+        {
+            let mut teaching = host(&app).teaching.lock().await;
+            let requested = teaching.view().phase == "requested";
+            if requested && production_start_pending(plc(&app)).await.unwrap_or(false) {
+                capture_host.interrupt("生产请求优先，本轮示教已取消");
+                if teaching.cancel(plc(&app), 1).await.is_ok() {
+                    host(&app).teaching_preempted.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        let cameras = if capture_host.active() {
+            capture::capture_readiness(self.service_ready(), || self.capture_devices_ready())
+        } else {
+            match self.phase {
+                // 在途的件只看它自己用的相机；等 PLC 确认结果时相机掉线不打断握手，回到空闲再查
+                Phase::Acquire | Phase::Drain => match self.part.as_ref() {
+                    Some(p) if p.rig_gen != host(&self.app).camera.generation() => {
+                        Err("检测中增删了相机".into())
+                    }
+                    Some(p) => self.check_part_cams(p),
+                    None => Ok(()),
+                },
+                Phase::Report | Phase::Release => Ok(()),
+                _ => self.check_idle_devices(),
+            }
+        };
         let dropped = host(&self.app).camera.dropped_total();
         if dropped > self.dropped_seen {
             log(&self.app, "warn", "丢帧", format!("帧通道满，累计丢弃 {dropped} 帧：检测节拍处理不过来"));
@@ -1775,11 +1848,23 @@ impl Machine {
                     return;
                 }
             };
-            let intake_ready = self.disk_space_ready();
-            let devices = if matches!(self.phase, Phase::Report | Phase::Release) {
+            let teaching_requested = host(&app).teaching.lock().await.view().phase == "requested";
+            let resetting = matches!(
+                self.s7.phase(),
+                SessionPhase::ResetRequired | SessionPhase::Fault
+            ) || self.s7_reset_requested;
+            let intake_ready = self.disk_space_ready()
+                && (!resetting || self.check_idle_devices().is_ok())
+                && (!host(&app).teaching_busy.load(Ordering::SeqCst)
+                    || teaching_requested
+                    || host(&app).teaching_preempted.load(Ordering::SeqCst));
+            let devices = if resetting {
+                self.service_ready()
+            } else if teaching_requested || matches!(self.phase, Phase::Report | Phase::Release) {
                 self.check_idle_devices()
             } else { cameras.clone() };
             let reset = std::mem::take(&mut self.s7_reset_requested);
+            self.poll_teaching(reset, false).await;
             let previous = self.s7.phase();
             let previous_reset_blocked = self.s7.view().reset_blocked_reason;
             let had_ack = self.s7.acknowledged();
@@ -1796,6 +1881,7 @@ impl Machine {
             }
             match event {
                 SessionEvent::Ready => {
+                    self.poll_teaching(true, true).await;
                     self.ledgers.clear_floors();
                     self.fault = None;
                     self.alarms.clear();
@@ -1804,13 +1890,31 @@ impl Machine {
                     applog::end_cycle();
                 }
                 SessionEvent::Start(request) => {
-                    if capture_host.active() { self.start_capture_s7(request).await; }
-                    else { self.start_part(request).await; }
-                },
-                SessionEvent::End(_, device_triggers) if self.s7.capture_id().is_some() => {
-                    self.end_capture(device_triggers);
-                    self.set_phase(Phase::Drain);
-                },
+                    let mut teaching = host(&app).teaching.lock().await;
+                    let view = teaching.view();
+                    if view.busy {
+                        if view.phase == "requested" {
+                            capture_host.interrupt("生产请求优先，本轮示教已取消");
+                            if let Err(error) = teaching.cancel(plc(&app), 1).await {
+                                self.s7.fault(plc(&app), error.clone()).await;
+                                drop(teaching);
+                                self.enter_fault(error);
+                                return;
+                            }
+                            host(&app).teaching_preempted.store(true, Ordering::SeqCst);
+                        } else if !host(&app).teaching_preempted.load(Ordering::SeqCst) {
+                            let error = "PLC 在示教已占用资源时提交生产请求".to_string();
+                            teaching.force_fault(error.clone());
+                            capture_host.interrupt(error.clone());
+                            self.s7.fault(plc(&app), error.clone()).await;
+                            drop(teaching);
+                            self.enter_fault(error);
+                            return;
+                        }
+                    }
+                    drop(teaching);
+                    self.start_part(request).await;
+                }
                 SessionEvent::End(ended_at, device_triggers) => {
                     if let Some(part) = self.part.as_mut() {
                         part.end_at = Some(ended_at);
@@ -1861,7 +1965,8 @@ impl Machine {
             if previous != self.s7.phase() || previous_reset_blocked != self.s7.view().reset_blocked_reason { self.dirty = true; }
             host(&app).store_busy(self.phase, &self.s7);
         }
-        if self.s7.capture_id().is_some() { self.finish_capture_s7().await; }
+        self.poll_teaching(false, self.s7.phase() == SessionPhase::Idle)
+            .await;
         let timeouts = host(&self.app).settings().timeouts;
         if matches!(self.phase, Phase::Acquire | Phase::Drain) {
             if let Some(part) = self.part.as_mut() {
@@ -2109,7 +2214,12 @@ impl Machine {
 
     fn enter_fault(&mut self, reason: String) {
         self.close_routing(None);
-        let in_flight = matches!(self.phase, Phase::Validate | Phase::Acquire | Phase::Drain | Phase::Judge);
+        let production_pending = self.s7.request().is_some();
+        let in_flight = production_pending
+            && matches!(
+                self.phase,
+                Phase::Validate | Phase::Acquire | Phase::Drain | Phase::Judge
+            );
         if in_flight {
             let sn = self.part.as_ref().map(|p| p.sn.clone()).or_else(|| self.s7.request().map(|r| r.sn.clone())).unwrap_or_default();
             let judgement = Judgement::error(fault::DEVICE_LOST, format!("{reason}，结果未回写"));
@@ -2123,8 +2233,16 @@ impl Machine {
             let burst = self.burst_outcome(&sn, self.part.as_ref().map(|p| &*p.recipe), &judgement).map(|record| record.judgement);
             self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement, burst });
         }
-        if fault_fails_delivery(self.phase) && self.result.is_some() { self.fail_delivery(&reason); }
-        log_with(&self.app, "err", "故障", reason.clone(), Fields::stage("fault"));
+        if production_pending && fault_fails_delivery(self.phase) && self.result.is_some() {
+            self.fail_delivery(&reason);
+        }
+        log_with(
+            &self.app,
+            "err",
+            "故障",
+            reason.clone(),
+            Fields::stage("fault"),
+        );
         self.fault = Some(reason);
         self.set_phase(Phase::Fault);
     }

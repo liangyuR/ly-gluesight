@@ -17,7 +17,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 
 `49152` 是示例；客户端必须使用实际返回端口。Rust 集成测试可用 `Command` 启动该文件，将 stdin/stdout 设为管道，读取 ready 后配置 `ly-plc` 的 S7 host/port。控制命令每行一个 JSON，响应为 `{"id":原id,"ok":true,"result":...}` 或 `{"id":原id,"ok":false,"error":"..."}`。stdout 不包含日志；协议事件从 `trace` 读取。EOF 或 `shutdown` 会退出服务。调用方应在测试结束时关闭 stdin、等待并回收子进程。
 
-默认按握手协议 6（分段连拍；布局沿用协议 5 的交互表 V1.1）的 S7-1200 布局：PLC 区 DB4（PLC 写、PC 读）、PC 区 DB2（PC 写、PLC 读），PDU 240，SN 为 S7 STRING[50]。可选 `--plc-db 321 --pc-db 322` 改两个 DB 号（范围 1–65535，两者不能相同）；`--db-size` 为两个 DB 各自的大小，默认 1024，范围 90–65536；`--pdu-size` 默认 240，范围 240–960。S7 实际协商取客户端请求与服务端配置的较小值：PC 请求 480，默认按 240 协商（S7-1200 常见协商结果，也是轮询 DB4 90 字节、DB2 72 字节的较紧约束）；需要模拟更大协商结果时传 `--pdu-size 480`。参数不接受前缀缩写，旧的 `--db`、`--sn-format` 已删除，传入即报错退出。
+默认按握手协议 6（分段连拍；布局沿用协议 5 的交互表 V1.1）的 S7-1200 布局：PLC 区 DB4（PLC 写、PC 读）、PC 区 DB2（PC 写、PLC 读），PDU 240，SN 为 S7 STRING[50]。可选 `--plc-db 321 --pc-db 322` 改两个 DB 号（范围 1–65535，两者不能相同，也不能占用示教保留的 DB6 / DB12）；`--db-size` 为两个 DB 各自的大小，默认 1024，范围 90–65536；`--pdu-size` 默认 240，范围 240–960。S7 实际协商取客户端请求与服务端配置的较小值：PC 请求 480，默认按 240 协商（S7-1200 常见协商结果，也是轮询 DB4 90 字节、DB2 72 字节的较紧约束）；需要模拟更大协商结果时传 `--pdu-size 480`。参数不接受前缀缩写，旧的 `--db`、`--sn-format` 已删除，传入即报错退出。
 
 ```powershell
 python -u scripts/s7-handshake/s7_test_plc.py --port 0 --plc-db 4 --pc-db 2
@@ -27,7 +27,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0 --plc-db 4 --pc-db 2
 
 多字节数值使用大端字节序。16 位字段为 Int（有符号 16 位，协议只用 0–32767），序号类字段为 DInt（有符号 32 位，协议只用 0–2147483647）。PLC `protocolVersion` 初始为 6（协议 5 的 PLC 程序会被 PC 拒绝），`partSn`/`resultSn` 初始为空串（头为 `32 00`），其他数据初始为 0；`plcHeartbeat` 每 500 ms 翻转。PC 字段由被测客户端写入。
 
-协议 6 是三台独立相机共用一个触发，点表仍只有一组计数：`shotCount`、`deviceShots` 是预期总数 ΣN_exp（测试 PLC 不做任何核对，示教可填估算值），`deviceTriggers` 是本件共用触发实际已发脉冲数，只作参考，不要求等于 `deviceShots`；不按相机分别计数。旧协议的六个 `camera1/2/3Shots`、`camera1/2/3Triggers` 标签已删除，控制 API 及自定义映射均直接拒绝，不读取兼容。PLC 区至少 90 字节（0–89），DBX0.5–0.7、DBB1、DBB22–27、DBB34–37 为保留；PC 区至少 72 字节（0–71），DBX0.6–0.7、DBB1 为保留（保持 0，不配置点位）。当前点表共 28 个字段，布局与协议 5 完全相同；协议 6 与协议 4（单个 DB1、WORD、200 SMART 字符串）布局不兼容。
+协议 6 是三台独立相机共用 Line0 高电平门控，相机按固定帧率采集。点表仍只有一组计数：`shotCount`、`deviceShots` 是预期总数 ΣN_exp（测试 PLC 不做任何核对），`deviceTriggers` 为预留字段，PLC 写 0，PC 不以它判断采集或排空完成；不按相机分别计数。旧协议的六个 `camera1/2/3Shots`、`camera1/2/3Triggers` 标签已删除，控制 API 及自定义映射均直接拒绝，不读取兼容。PLC 区至少 90 字节（0–89），DBX0.5–0.7、DBB1、DBB22–27、DBB34–37 为保留；PC 区至少 72 字节（0–71），DBX0.6–0.7、DBB1 为保留（保持 0，不配置点位）。当前点表共 28 个字段，布局与协议 5 完全相同；协议 6 与协议 4（单个 DB1、WORD、200 SMART 字符串）布局不兼容。
 
 工件 SN 只用 S7 STRING[50]，共 52 字节：首字节为声明最大长度 50，第二字节为实际长度，随后 50 字节为字符，未用字符补 0。SN 为 1–50 个 ASCII 可打印字符（0x20–0x7E），去首尾空白后不能为空；原样保存与回显，不做 trim 或大小写变换。PLC 只在 `resultSn` 与 `partSn` 的头字节及每个字符逐字节相等时接受结果。
 
@@ -40,7 +40,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0 --plc-db 4 --pc-db 2
 | PLC → PC | DB4.DBD12 / DBD16 | planVersion / planReserved（填 0） |
 | PLC → PC | DB4.DBW20 | deviceShots（Int，预期总数 ΣN_exp） |
 | PLC → PC | DB4.DBD28 | ackSeq |
-| PLC → PC | DB4.DBW32 | deviceTriggers（Int，参考计数） |
+| PLC → PC | DB4.DBW32 | deviceTriggers（Int，预留，填 0） |
 | PLC → PC | DB4.DBB38–89 | partSn（S7 STRING[50]） |
 | PC → PLC | DB2.DBX0.0 / .1 / .2 / .3 / .4 / .5 | visionReady / armed / busy / done / visionFault / pcHeartbeat |
 | PC → PLC | DB2.DBW2 | pcProtocolVersion（Int，6） |
@@ -48,6 +48,23 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0 --plc-db 4 --pc-db 2
 | PC → PLC | DB2.DBW8 / DBW10 | resultCode / faultCode（Int） |
 | PC → PLC | DB2.DBD12 / DBD16 | acceptedSeq / acceptedPlanReserved（填 0） |
 | PC → PLC | DB2.DBB20–71 | resultSn（S7 STRING[50]） |
+
+## 示教 V1 数据区
+
+服务额外创建 DB6（PC 写）和 DB12（PLC 写），各恰好 10 字节，不受 `--db-size` 影响。五个 Int 在偏移 0 / 2 / 4 / 6 / 8：
+
+| DB | 字段顺序 |
+| --- | --- |
+| DB6 | teachPcVersion / teachPcState / teachRoundId / teachPcReason / teachPcReserved |
+| DB12 | teachPlcVersion / teachPlcState / teachRoundIdEcho / teachPlcReason / teachPlcReserved |
+
+DB12 初始版本 1、状态 50、原因 5，要求复位；其余为 0。服务不自动执行示教状态机，调用方通过 `plc_values` 或原始 DB 写入模拟状态和异常，也可向 DB6 / DB12 定向注入读写失败。控制命令一批写入原子应用，可拆为多条命令模拟状态最后提交的中间快照。协议细节见 [示教时序](../../docs/integration/teaching-capture-sequence.md)，现场 SCL 见 [整站接入](site/README.md)。
+
+```json
+{"id":40,"op":"plc_values","values":{"teachPlcVersion":1,"teachRoundIdEcho":7,"teachPlcReason":0,"teachPlcState":10}}
+{"id":41,"op":"read_db","db":6,"byte":0,"size":10}
+{"id":42,"op":"fault","function":"write","kind":"reject","db":6,"byte":2,"count":1}
+```
 
 ## 控制命令
 
@@ -66,7 +83,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0 --plc-db 4 --pc-db 2
 
 ```json
 {"id":10,"op":"plc_request","values":{"requestSeq":17,"partSn":"SN-12345","productCode":7,"shotCount":4,"planVersion":1,"planReserved":0,"deviceShots":4}}
-{"id":11,"op":"plc_values","values":{"partEnd":true,"deviceTriggers":4}}
+{"id":11,"op":"plc_values","values":{"partEnd":true,"deviceTriggers":0}}
 {"id":12,"op":"plc_ack"}
 {"id":13,"op":"plc_release"}
 ```
@@ -100,5 +117,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0 --plc-db 4 --pc-db 2
 Python 测试直接通过 socket 发送固定十六进制报文，并逐字节断言 COTP CC、S7 ACK_DATA、PDU reference、DB 字节/bit 数据、以 bit 为单位的长度、multi-item 填充以及 S7 错误码；不调用服务自身的报文编码函数充当客户端。还覆盖分包/粘包、读写拒绝、延迟超时、执行前后断线、重新连接、心跳冻结、子进程控制 API、请求/ACK/释放和非默认 DB 号。
 
 Windows 受限环境若在 `socket.connect` 返回 `WinError 10013`，需在获准的主机环境运行同一测试命令；不能跳过 TCP 断言后记录为通过。2026-10-22 已在主机环境运行上述命令，27 项全部通过，包含 DB4/DB2 线报文偏移（协议 5 与协议 6 布局相同）、S7 STRING 头字节与补 0、不合规 SN 原子拒绝、`resultSn` 不等时拒绝 ACK，以及 PC 经 S7 写入 DB2.DBB20 `resultSn` 的线报文。
+
+2026-10-24 已在获准主机环境运行同一命令，28 项全部通过；新增真实 TCP 用例验证 DB6 / DB12 与 DB2 / DB4 独立、拒绝写状态时保留旧请求、DB12 越界访问返回错误。它不验证 SCL 状态机执行。
 
 这些 Python 测试证明受支持的 S7 线协议和测试服务行为。2026-10-09 的 17 项生产 `ly_plc::PlcEngine` 线协议联调及 1 项事务文件恢复测试属于旧协议历史证据，不能作为协议 5 或协议 6 的通过记录；命令与历史证据见 [S7 测试记录](../../docs/testing/TESTING.md#s7-一期握手)。`phase1_plc.scl` 是 S7-1200/1500 接入参考（GlueSightPlcArea 设为 DB4、GlueSightPcArea 设为 DB2），仅完成静态核对，尚未在 TIA Portal 编译。接真实 Siemens CPU 的 PUT/GET、机架/插槽、网络和现场节拍验收仍属于后续硬件验证。

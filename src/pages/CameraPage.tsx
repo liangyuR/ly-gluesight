@@ -73,8 +73,9 @@ export default function CameraPage() {
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
   const released=!!status?.released;
+  const handOverBlocked=!desktop||readOnly||busy||!!action||configSaving||loading;
   const handOver=async()=>{
-    if(!config||pending.current||configSaving)return;
+    if(!config||config.source!=="mvs"||!config.serial||pending.current||handOverBlocked)return;
     pending.current=true;setAction(released?"reconnect":"release");setHandError("");
     try{if(released)await cameraApi.reconnect(cam);else await cameraApi.release(cam);}
     catch(e){if(mounted.current)setHandError(errorText(e));}
@@ -94,7 +95,7 @@ export default function CameraPage() {
   if(!config)return <div className="cg-page">
     <ReturnButton disabled={!!action} guard={guard} hint="配置后保存并应用，再返回继续。"/>
     {notice}
-    <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} lockedReason={lockedReason} canReconnect={desktop&&!readOnly} loading={loading} adding={action==="add"} error={error}
+    <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} lockedReason={lockedReason} canReconnect={desktop&&!readOnly&&!busy} loading={loading} adding={action==="add"} error={error}
       onOpen={open} onRefresh={()=>void reload()} onAdd={readOnly?undefined:()=>void add()} onReconnect={i=>cameraApi.reconnect(i)}
       footer={<div className="cg-row" style={{justifyContent:"flex-end"}}>{calibration("前往标定")}</div>}/>
     {dialog}
@@ -103,7 +104,7 @@ export default function CameraPage() {
   const health=cameraHealth(config,status);
   const warnings=status?.warnings??[];
   const mvs=config.source==="mvs";
-  const handOverButton=!readOnly&&mvs&&!!config.serial&&<Button leadingIcon={released?<RefreshCw size={15}/>:<ExternalLink size={15}/>} onClick={()=>void handOver()} disabled={!desktop||!!action||configSaving||(!released&&busy)} title={released?"收回相机并重新打开":"关闭相机，供海康 MVS 客户端连接调焦"}>{action==="release"?"释放中…":action==="reconnect"?"连接中…":released?"重新连接":"释放给 MVS"}</Button>;
+  const handOverButton=!readOnly&&mvs&&!!config.serial&&<Button leadingIcon={released?<RefreshCw size={15}/>:<ExternalLink size={15}/>} onClick={()=>void handOver()} disabled={handOverBlocked} title={released?"收回相机并重新打开":"关闭相机，供海康 MVS 客户端连接调焦"}>{action==="release"?"释放中…":action==="reconnect"?"连接中…":released?"重新连接":"释放给 MVS"}</Button>;
   const leading=!readOnly&&<div className="cg-remove">
     <Button size="sm" leadingIcon={<Trash2 size={13}/>} onClick={()=>void remove()} disabled={locked||loading||configSaving||!!removeBlocked}>{action==="remove"?"移除中…":"移除相机"}</Button>
     <small className={removeError?"cg-err":undefined}>{removeError||removeBlocked||(referencedBy.length?"":"未被任何配方引用，可移除。")}{!referencesReady&&referenceError&&<> <Link className="cg-link" to="/recipe">在配方库处理</Link></>}</small>

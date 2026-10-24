@@ -106,7 +106,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
   const label = (text: string, key?: keyof CameraConfig) => <span>{text}{key && fieldWarnings(key).length > 0 && <AlertTriangle size={13} aria-label="相机未接受" />}</span>;
   const note = (hint?: ReactNode, key?: keyof CameraConfig) => {
     const items = key ? fieldWarnings(key) : [];
-    return hint || items.length ? <>{hint}{items.map(w => <span key={w} className="cg-rejected">相机未接受：{w}。相机保持写入前的值。</span>)}</> : undefined;
+    return hint || items.length ? <>{hint}{items.map(w => <span key={w} className="cg-rejected">相机未接受：{w}。部分参数可能已写入，请核对设备实际值；未进行整组回滚。</span>)}</> : undefined;
   };
   const numberLabels={triggerDelayUs:"触发延时（µs）",debouncerUs:"输入滤波（µs）"};
   const num = (key: keyof typeof numberLabels, text: string, hint?: ReactNode) => (
@@ -161,7 +161,8 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
         if (!c.serial) { items.push({ id: c.id, name: c.name, tone: "off", text: "跳过：未绑定设备" }); continue; }
         if (st?.released) { items.push({ id: c.id, name: c.name, tone: "warn", text: "跳过：已释放给 MVS，重新连接后再应用" }); continue; }
         try {
-          const w = await cameraApi.saveConfig(j, { ...c, ...wiring(baseline) });
+          const next = { ...c, ...wiring(baseline) };
+          const w = await cameraApi.saveConfig(j, next);
           items.push(w.length ? { id: c.id, name: c.name, tone: "warn", text: `已应用，${w.length} 项参数相机未接受`, list: w } : { id: c.id, name: c.name, tone: "ok", text: "已应用" });
         } catch (e) { items.push({ id: c.id, name: c.name, tone: "ng", text: "未能应用：" + errorText(e) }); }
       }
@@ -186,7 +187,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
   const [, setSentAt] = useState(0);
   const exposureUs = Number(exposure), gainDb = Number(gain);
   const imagingInvalid = exposure === "" || gain === "" ? "填写曝光与增益" : !(exposureUs >= 1 && exposureUs <= 1_000_000) ? "曝光需在 1–1000000 µs 之间" : !(Number.isFinite(gainDb) && gainDb >= 0) ? "增益需为不小于 0 的数" : "";
-  const imagingBlocked = status?.released ? "已释放给 MVS，重新连接后再下发" : !status?.ready ? "相机未连接" : "";
+  const imagingBlocked = status?.released ? "已释放给 MVS，重新连接后再下发" : !status?.ready ? status?.message || "相机未就绪" : "";
   const sendImaging = async () => {
     if (imagingBusy || imagingInvalid || imagingBlocked) return;
     setImagingBusy(true); setImagingError("");
