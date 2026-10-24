@@ -306,7 +306,10 @@ fn manifest_head(
     }
 }
 
-fn copy_hashed(mut from: impl Read, mut to: impl Write) -> std::io::Result<(u64, String)> {
+pub(crate) fn copy_hashed(
+    mut from: impl Read,
+    mut to: impl Write,
+) -> std::io::Result<(u64, String)> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1 << 20];
     let mut total = 0u64;
@@ -660,6 +663,41 @@ fn prepare_import<'a>(
         }
     }
     Ok((w, renames, notes))
+}
+
+/// 项目整包导入时整理候选：回到草稿，不带待生效版本与验证结论；计划版本按本机新号改写；
+/// 没带检测记录时去掉来自来源机检测历史的验证样本。
+pub(crate) fn reset_for_project_import(
+    path: &Path,
+    plans: &BTreeMap<u32, u32>,
+    keep_history: bool,
+) -> Result<Vec<String>, String> {
+    let text = crate::fsio::read_text(path).map_err(|e| e.to_string())?;
+    let mut w: Workspace = serde_json::from_str(&text)
+        .map_err(|e| format!("候选 {} 无法读取：{e}", path.display()))?;
+    let mut notes = Vec::new();
+    if let Some(plan) = plans.get(&w.doc.plan_version) {
+        w.doc.plan_version = *plan;
+    }
+    w.pending = None;
+    w.publish = PublishState::Draft;
+    if !keep_history {
+        let before = w.samples.len();
+        w.samples.retain(|s| s.history_id.is_none());
+        if w.samples.len() < before {
+            notes.push(format!(
+                "候选 {} 的 {} 个来自检测历史的验证样本未导入",
+                w.doc.id,
+                before - w.samples.len()
+            ));
+        }
+    }
+    w.changed();
+    crate::fsio::write_atomic(
+        path,
+        &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?,
+    )?;
+    Ok(notes)
 }
 
 fn capture_root(app: &AppHandle) -> PathBuf {

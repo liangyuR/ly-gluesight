@@ -27,6 +27,16 @@ export function projectNameError(name: string, entries: ProjectEntry[], self?: s
   return "";
 }
 
+export function importedProjectName(sourceName: string, entries: ProjectEntry[]): string {
+  const base = sourceName.trim();
+  const taken = new Set(entries.flatMap(entry => entry.meta ? [entry.meta.name.trim()] : []));
+  if (!taken.has(base)) return base;
+  for (let n = 1; ; n++) {
+    const name = n === 1 ? `${base}（导入）` : `${base}（导入 ${n}）`;
+    if (!taken.has(name)) return name;
+  }
+}
+
 export const projectLabel = (entry: ProjectEntry) => entry.meta?.name ?? entry.id;
 
 export function formatBytes(bytes: number): string {

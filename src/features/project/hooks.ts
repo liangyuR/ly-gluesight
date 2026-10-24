@@ -13,6 +13,12 @@ export function onProjectsChanged(listener: () => void) {
   return () => window.removeEventListener(CHANGED, listener);
 }
 
+export function useAlive() {
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  return alive;
+}
+
 export function useProjectUsage(ids: string[], version = 0): Record<string, UsageState> {
   const key = ids.join("\n");
   const [states, setStates] = useState<Record<string, UsageState>>({});

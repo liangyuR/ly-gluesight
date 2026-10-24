@@ -54,7 +54,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 候选工作区 | `workspace.rs`（`WorkspaceView.plan` 分流）、`workspace/burst.rs`（走廊示教、多轮标定、x_ref）、`workspace/burst_release.rs`（验证与发布）、`workspace/burst_history.rs`（历史读图与复测） |
 | 发布包 | `release.rs`（`publish_burst`，schema 4） |
 | 记录、录制、审计 | `store.rs`（`part_frames`，库版本 9）、`recorder.rs`、`audit/` |
-| 项目（资料归属、启动解析、切换、管理） | `project.rs`（`ActiveProject`、`resolve`、`project_switch`）、`project/manage.rs`（新建、重命名、删除、统计）、`storage_startup.rs`（启动时选择项目）；前端 `src/pages/ProjectsPage.tsx`、`src/features/project/` |
+| 项目（资料归属、启动解析、切换、管理） | `project.rs`（`ActiveProject`、`resolve`、`project_switch`）、`project/manage.rs`（新建、重命名、删除、统计）、`project/transfer.rs`（整个项目导出导入）、`storage_startup.rs`（启动时选择项目）；前端 `src/pages/ProjectsPage.tsx`、`src/features/project/` |
 | 离线仿真 | `offline/line.rs`（脉冲串 `run_burst`）、`offline/scenario.rs`、`offline/sample_set.rs`（`camera_frames`）、`simimage.rs` |
 | 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`CapturePage`、`PlanProgress`；`src/features/plan/` |
 
