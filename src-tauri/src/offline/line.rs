@@ -779,10 +779,15 @@ mod tests {
         };
         let abort = AtomicBool::new(false);
         let pc = async {
-            while line.read(tag::FAULT_RESET) == 0 {
+            let mut raised = Instant::now();
+            loop {
+                let probe = Instant::now();
+                if line.read(tag::FAULT_RESET) != 0 {
+                    break;
+                }
+                raised = probe;
                 sleep(timing.poll).await;
             }
-            let raised = Instant::now();
             while line.read(tag::FAULT_RESET) == 1 {
                 sleep(timing.poll).await;
             }
