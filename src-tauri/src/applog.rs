@@ -9,6 +9,7 @@ use serde_json::Value;
 use tauri::AppHandle;
 
 pub mod codes;
+pub mod throttle;
 
 use codes::Event;
 

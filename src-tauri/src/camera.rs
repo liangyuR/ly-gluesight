@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::Sender;
 
+use crate::applog::throttle::{Tally, Throttle};
+use crate::applog::{codes, Fields};
 use crate::cycle::{self, CycleHost};
 use crate::frame::{BudgetExceeded, CounterSource, Frame, FrameImage, FramePool, GrayError};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
@@ -1529,13 +1531,16 @@ impl CameraRig {
     }
 }
 
+/// 重连约每 2 s 一次，失败日志按相机聚合的窗口。
+const RECONNECT_LOG_WINDOW: Duration = Duration::from_secs(60);
+
 /// 每台相机一个后台循环：海康相机掉线或未打开时每 2 s 重连（已释放给 MVS 的不连）。相机被移出相机组后循环自己结束。
 fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>, auto_connect: bool) {
     if !slot.supervision.start(auto_connect) { return; }
     let slot = Arc::downgrade(slot);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut last_error: Option<String> = None;
+        let mut noise = Throttle::new(RECONNECT_LOG_WINDOW);
         let mut next_retry = Instant::now();
         loop {
             let Some(s) = slot.upgrade() else { break };
@@ -1568,18 +1573,47 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>, auto_connect: bool) {
                     attempt
                 };
                 if let Some((config, lost, result)) = attempt {
-                    if lost {
-                        cycle::log(&app, "err", "相机断线", format!("{}：尝试重新连接", config.name));
-                    }
                     match result {
                         Ok(Ok(msg)) => {
-                            last_error = None;
+                            if let Some(summary) =
+                                noise.end(&codes::CAMERA_RECONNECT_FAILED_SUMMARY, &config.id)
+                            {
+                                cycle::log_event(&app, summary.event, summary.msg, summary.fields);
+                            }
+                            if lost {
+                                cycle::log(
+                                    &app,
+                                    "err",
+                                    "相机断线",
+                                    format!("{}：尝试重新连接", config.name),
+                                );
+                            }
                             cycle::log(&app, "ok", "相机", format!("{}：{msg}", config.name));
                         }
                         Ok(Err(e)) => {
-                            if last_error.as_ref() != Some(&e) {
-                                cycle::log(&app, "warn", "相机", format!("{}：{e}", config.name));
-                                last_error = Some(e);
+                            let msg = if lost {
+                                format!("{}：断线，重新连接失败：{e}", config.name)
+                            } else {
+                                format!("{}：{e}", config.name)
+                            };
+                            let fields = Fields {
+                                camera: Some(config.id.clone()),
+                                ..Fields::default()
+                            }
+                            .with_data(serde_json::json!({"error": e, "lost": lost}));
+                            if noise.observe(
+                                &codes::CAMERA_RECONNECT_FAILED_SUMMARY,
+                                &config.id,
+                                now_ms(),
+                                Tally::None,
+                                fields.clone(),
+                            ) {
+                                cycle::log_event(
+                                    &app,
+                                    &codes::CAMERA_RECONNECT_FAILED,
+                                    msg,
+                                    fields,
+                                );
                             }
                         }
                         Err(e) => s.state.lock().unwrap().message = e.to_string(),
@@ -1587,7 +1621,13 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>, auto_connect: bool) {
                 }
             }
             drop(s);
+            for summary in noise.flush(now_ms()) {
+                cycle::log_event(&app, summary.event, summary.msg, summary.fields);
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        for summary in noise.drain() {
+            cycle::log_event(&app, summary.event, summary.msg, summary.fields);
         }
     });
 }
