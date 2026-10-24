@@ -8,7 +8,6 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import type { FrameView, PointVis, Recipe } from "../cycle/types";
 import { framePose, movedBox, poseReasonText, poseTransform, viewSpec, viewStations, type Pt } from "../cycle/pose";
-import { FIXTURE_PAD_PX } from "./teach";
 import { shotSegment, visColor } from "../cycle/vis";
 import type { GrayImage, GrayPixels } from "./types";
 import { errorText } from "../../lib/errors";
@@ -112,6 +111,8 @@ export interface FixtureOverlay {
   replay?: BoxPolygon | null;
 }
 const identityPoint = (p: Pt): Pt => p;
+/** 定位模板外圈（与 recipe.rs 的 FIXTURE_TEMPLATE_PAD_PX 一致） */
+const FIXTURE_PAD_PX = 4;
 /**
  * 配方布局里拍照点 k 的示教中线与各站（图像像素），给了 vis 时各站按测量状态着色。
  * 给了 frame 且投影视图有特征定位时按该帧记录的位姿叠图：位姿被采用 → 中线、站点、内框与外圈都画在 T(·)；
@@ -167,7 +168,7 @@ export interface PathEditing {
 }
 
 /**
- * controlsAt="footer"（仅单帧示教页）：缩放与显示开关下沉到底部信息行，左侧放 summary，
+ * controlsAt="footer"（仅走廊示教页）：缩放与显示开关下沉到底部信息行，左侧放 summary，
  * 开关文案为“中线 / 搜索带 / 点柄”，操作提示由页面自己给；默认 "header" 的外观与行为不变。
  */
 export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, onRegionDone, brush, onBrush, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {

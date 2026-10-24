@@ -45,7 +45,7 @@ fn validation_without_expected_total_blocks_publish_and_names_each_segment() {
     // （名称，段类型，整件标定，能否发布，段标定详情里必须出现的文字）
     let cases: [(&str, &[SegmentKind], Option<u32>, bool, &[&str]); 3] = [
         ("三段都待标定", &[Straight, Corner, Straight], None, false, &["还差 10 轮", "第 1 段（直线）待标定", "第 2 段（弯道）待标定", "第 3 段（直线）待标定"]),
-        ("三段只有整件 ΣN_exp", &[Straight, Corner, Straight], Some(30), true, &["整件预期 30 ± 3", "第 2 段（弯道）待分段算法"]),
+        ("三段只有整件 ΣN_exp", &[Straight, Corner, Straight], Some(30), true, &["整件预期 30 ± 3", "第 2 段（弯道）待逐段标定"]),
         ("单段已标定", &[Straight], Some(20), true, &["整件预期 20 ± 1", "第 1 段（直线）N_exp 20 ± 1"]),
     ];
     for (name, kinds, total, publishable, texts) in cases {

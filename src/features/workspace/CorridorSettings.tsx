@@ -26,7 +26,7 @@ interface Props {
 
 const polarity = { dark: "暗胶", light: "亮胶" };
 
-/** 段配方走廊示教的右栏：像素当量、检测参数与按段的检测项。旧拍照点配方用 TeachingSettings（标定核对、判定限值）。 */
+/** 段配方走廊示教的右栏：像素当量、检测参数与按段的检测项。 */
 export function CorridorSettings({ teach, defaults, segments, disabled, checksDisabled, onChange, onSegmentChecks }: Props) {
   const location = useLocation();
   const [segment, setSegment] = useState(segments[0]?.index ?? 1);

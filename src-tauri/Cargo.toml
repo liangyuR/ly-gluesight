@@ -32,6 +32,9 @@ libloading = "0.8"
 # 诊断包 ZIP：与 png 解码共用已锁定的版本
 flate2 = "1"
 crc32fast = "1"
+# 配方迁移包：读写需 ZIP64（多轮原图可超过 4 GB）与 SHA-256 清单校验
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+sha2 = "0.10"
 rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # tag 必须属于 packaging/runtime.json 的 lyflow.series；升级用 pnpm deps:lyflow:update。

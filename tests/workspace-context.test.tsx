@@ -13,7 +13,7 @@ import type { WorkspaceView } from "../src/features/workspace/types";
 import { burstRecipe, burstSummary, burstWorkspaceView, deferred } from "./fixtures";
 vi.mock("../src/lib/storage", () => ({ storageApi: { preferences: async () => ({}), updatePreferences: vi.fn(async () => ({})) } }));
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDraft: vi.fn(), saveDoc: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDoc: vi.fn() } }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn(), preview: vi.fn() } }));
 vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigConfig: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ subscribe: vi.fn() }));
@@ -25,7 +25,6 @@ beforeEach(() => {
   vi.mocked(workspaceApi.list).mockResolvedValue([a.workspace, b.workspace]);
   vi.mocked(workspaceApi.get).mockImplementation(async id => burstView(id));
   vi.mocked(workspaceApi.saveDoc).mockResolvedValue(a);
-  vi.mocked(workspaceApi.saveDraft).mockReset().mockResolvedValue(a);
   vi.mocked(recipeApi.preview).mockResolvedValue(a.layout);
   vi.mocked(cameraApi.rigConfig).mockResolvedValue([]);
   vi.mocked(subscribe).mockImplementation((event, callback) => {

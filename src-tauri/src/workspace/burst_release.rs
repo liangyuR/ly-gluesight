@@ -130,7 +130,7 @@ pub(super) fn debug_sizes(w: &Workspace, current: &BTreeMap<String, Value>) -> R
 }
 
 /// 段标定（规格 §1 未标定不能发布；决策补充“多段配方的发布与运行”）：整件 ΣN_exp 已由多轮标定得出即通过，
-/// 各段 N_exp 可以为空（待分段算法）；逐段列出 N_exp 或待定原因。
+/// 各段 N_exp 可以为空（标定轮次未全部确认手动分段）；逐段列出 N_exp 或待定原因。
 fn segment_check(w: &Workspace) -> Check {
     let doc = &w.doc;
     let total = doc.expected_total();
@@ -145,7 +145,7 @@ fn segment_check(w: &Workspace) -> Check {
         let kind = kind_label(s.kind);
         match (s.expected_frames, total) {
             (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n} ± {}", s.index, s.tolerance),
-            (None, Some(_)) => format!("第 {} 段（{kind}）待分段算法，容差 ±{}", s.index, s.tolerance),
+            (None, Some(_)) => format!("第 {} 段（{kind}）待逐段标定，容差 ±{}", s.index, s.tolerance),
             (None, None) => format!("第 {} 段（{kind}）待标定", s.index),
         }
     }).collect();
