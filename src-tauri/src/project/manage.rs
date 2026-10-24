@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager};
 
 use super::{ActiveProject, ProjectMeta};
 
-static LOCK: Mutex<()> = Mutex::new(());
+pub(super) static LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,7 +30,7 @@ pub struct ProjectUsage {
     pub bytes: u64,
 }
 
-fn check_name(data: &Path, name: &str, except: Option<&str>) -> Result<String, String> {
+pub(super) fn check_name(data: &Path, name: &str, except: Option<&str>) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("项目名称不能为空".into());
@@ -50,7 +50,7 @@ fn trash_id(name: &str) -> &str {
     name.split('.').next().unwrap_or_default()
 }
 
-fn check_new_id(data: &Path, id: &str) -> Result<(), String> {
+pub(super) fn check_new_id(data: &Path, id: &str) -> Result<(), String> {
     if !super::valid_id(id) {
         return Err("项目编号只能包含字母、数字、- 和 _".into());
     }
