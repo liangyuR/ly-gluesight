@@ -22,7 +22,7 @@ function Registers({ side, value, violation }: { side: "pc" | "plc"; value: Teac
   const label = side === "pc" ? "PC" : "PLC";
   const fields = value ? [
     { key: "state", label: "状态", value: teachingStateName(side, value.state), raw: `${side === "pc" ? "teachPcState" : "teachPlcState"}：${value.state}` },
-    { key: "roundId", label: "轮次", value: String(value.roundId), raw: `${side === "pc" ? "teachRoundId" : "teachRoundIdEcho"}：${value.roundId}` },
+    { key: "roundId", label: "握手编号", value: String(value.roundId), raw: `${side === "pc" ? "teachRoundId" : "teachRoundIdEcho"}：${value.roundId}`, hint: "每轮示教请求加 1，跨重启递增，与配方无关" },
     { key: "reason", label: "原因", value: teachingReasonName(side, value.reason), raw: `${side === "pc" ? "teachPcReason" : "teachPlcReason"}：${value.reason}` },
   ] : [];
   return <div className="plc-values-row" role="group" aria-label={`${label} 示教寄存器`}>
@@ -31,6 +31,7 @@ function Registers({ side, value, violation }: { side: "pc" | "plc"; value: Teac
       {fields.map(field => <Tooltip key={field.label} content={<div className="plc-signal-details">
         <span className="mono">{field.raw}</span>
         <span>协议版本：{value.version}</span>
+        {"hint" in field && <span>{field.hint}</span>}
       </div>}>
         <div tabIndex={0} className={violation?.field === field.key ? "violation" : undefined}><dt>{field.label}</dt><dd>{field.value}</dd></div>
       </Tooltip>)}

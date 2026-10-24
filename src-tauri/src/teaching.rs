@@ -123,7 +123,7 @@ impl TeachingReply {
             return violation("state", format!("状态 {state} 不是协议状态（0/10/20/30/40/50）"));
         }
         if self.id > 32767 || (state != 0 && state != 50 && self.id == 0) {
-            return violation("roundId", format!("状态 {state} 时轮次回显为 {}：PLC 须把 PC 的 teachRoundId 写回 teachRoundIdEcho", self.id));
+            return violation("roundId", format!("状态 {state} 时握手编号回显为 {}：PLC 须把 PC 的 teachRoundId 写回 teachRoundIdEcho", self.id));
         }
         match state {
             0 if reason != 0 => violation("reason", format!("回空闲后原因码 {reason} 未清 0")),
