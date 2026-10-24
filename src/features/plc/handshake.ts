@@ -12,7 +12,7 @@ const waitingTexts: Record<Phase, string> = {
   resetRequired: "PLC：清 partStart/partEnd/resultAck，faultReset 低 ≥1 s 后置高；高 ≥500 ms 且看到 visionFault=1 后拉低，再等 visionFault=0；也可在在线检测页点“复位故障”",
   idle: "PLC：写 requestSeq、partSn、productCode、shotCount 与 deviceShots（预期总帧数 ΣN_exp）、planVersion，最后置 partStart",
   validating: "PC：核对请求、撤 visionReady、写 acceptedSeq，置 busy，最后置 armed（PLC 此时禁止触发）",
-  acquiring: "PLC：相机使能为高时连续发脉冲（deviceTriggers 只作参考，不要求等于预期总帧数），运动结束、脉冲停发后写最终计数并置 partEnd",
+  acquiring: "PLC：采集区间保持 Line0 高电平，相机按设定帧率采集；运动结束后先拉低 Line0，再置 partEnd。deviceTriggers 为预留字段，固定写 0",
   draining: "PC：收尾收帧、等待测量完成，写结果码/异常码/resultSn/resultSeq，最后置 done",
   awaitAck: "PLC：核对 resultSeq=requestSeq、resultSn=partSn 与结果码，写 ackSeq，再置 resultAck",
   releasing: "PLC：看到 done=busy=0 后清 partStart/partEnd/resultAck；PLC 清完后 PC 落盘并置 visionReady",
@@ -25,9 +25,8 @@ export function handshakeWaiting({ phase, message }: Pick<PlcHandshakeState, "ph
   return waitingTexts[phase];
 }
 
-export const plcToPcBits = ["partStart", "partEnd", "resultAck", "faultReset", "plcHeartbeat"] as const;
-export const pcToPlcBits = ["visionReady", "armed", "busy", "done", "visionFault", "pcHeartbeat"] as const;
-export const heartbeatTags = new Set<string>(["plcHeartbeat", "pcHeartbeat"]);
+export const plcToPcBits = ["partStart", "partEnd", "resultAck"] as const;
+export const pcToPlcBits = ["visionReady", "armed", "busy", "done"] as const;
 /** 协议 §1 心跳失活阈值 */
 export const heartbeatStaleMs = 3000;
 

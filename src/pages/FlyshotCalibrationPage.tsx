@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { CalibPanel, FeasibilityCalc, useRigStatus, type FeasibilitySources } from "../features/camera";
-import CameraList from "../features/camera/components/CameraList";
+import { CalibPanel, cameraApi, FeasibilityCalc, useRigStatus, type CameraConfig, type FeasibilitySources } from "../features/camera";
+import CameraList, { type CalibrationSummary } from "../features/camera/components/CameraList";
 import { useRigConfig } from "../features/camera/useRigConfig";
 import { useCycle, useSiteStatus } from "../features/cycle";
 import { desktopAvailable } from "../lib/desktop";
@@ -10,6 +10,20 @@ import StationCapture, { type StationView } from "../features/workspace/StationC
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
 import { ReturnButton } from "../features/workspace/returnNavigation";
 import { productionBusy } from "../features/cycle/phase";
+
+async function calibrationSummary(config: CameraConfig, cam: number): Promise<CalibrationSummary> {
+  if(config.source==="sim")return {tone:"ok",text:"内置标定 · 0.08 mm/px"};
+  const views=config.viewCount===3?[1,2,3]:[1];
+  try{
+    const infos=await Promise.all(views.map(view=>cameraApi.calibInfo(cam,view)));
+    const done=infos.filter(info=>info?.mmPerPx!=null);
+    if(!done.length)return {tone:"warn",text:"未标定"};
+    if(done.length<views.length)return {tone:"warn",text:`已标定 ${done.length}/${views.length}`};
+    return {tone:"ok",text:views.length>1?`已标定 ${views.length}/${views.length}`:`已标定 · ${done[0]!.mmPerPx!.toFixed(4)} mm/px`};
+  }catch{
+    return {tone:"off",text:"标定读取失败"};
+  }
+}
 
 export default function FlyshotCalibrationPage() {
   const location=useLocation();
@@ -23,8 +37,19 @@ export default function FlyshotCalibrationPage() {
   const [calibView,setCalibView]=useState(1);
   const [sample,setSample]=useState<StationView|null>(null);
   const [calibMm,setCalibMm]=useState<number|null>(null);
+  const [calibration,setCalibration]=useState<Record<string,CalibrationSummary>>();
+  const [calibReload,setCalibReload]=useState(0),[calibLoading,setCalibLoading]=useState(false);
   useEffect(()=>setSample(null),[cam,configs[cam],calibView]);
   useEffect(()=>setCalibView(1),[cam]);
+  useEffect(()=>{
+    if(!desktopAvailable())return;
+    let alive=true;
+    setCalibLoading(true);
+    void Promise.all(configs.map(async(config,i)=>[config.id,await calibrationSummary(config,i)] as const))
+      .then(entries=>{if(alive)setCalibration(Object.fromEntries(entries));})
+      .finally(()=>{if(alive)setCalibLoading(false);});
+    return()=>{alive=false;};
+  },[configs,calibMm,calibReload]);
   const config=configs[cam]??null;
   const status=statuses.find(s=>s.cam===cam)??null;
   const busy=productionBusy(snapshot);
@@ -36,10 +61,10 @@ export default function FlyshotCalibrationPage() {
   };
   const notice=error?<Notice title="操作未完成" tone="warn">{error}</Notice>:busy?<Notice title="当前工件正在检测">取样与标定在工件结束后可操作。</Notice>:sampleSet?<Notice title="离线样本集可跳过工位标定">{sampleSet.mmPerPx?`样本集「${sampleSet.name}」已声明像素当量 ${sampleSet.mmPerPx} mm/px，采用采集轮次时自动作为当量依据；本页的工位标定不影响离线流程。`:`样本集「${sampleSet.name}」没有声明像素当量，示教时需要用已知尺寸人工验证当量；本页的工位标定不影响离线流程。`}</Notice>:null;
 
-  return <div className="cam-page">
+  return <div className="cam-page calib-page">
     <ReturnButton hint="标定完成后返回继续。"/>
     {notice&&<div className="cam-notice">{notice}</div>}
-    <CameraList configs={configs} statuses={statuses} selected={cam} onSelect={setCam} onRefresh={()=>void reload()} refreshing={loading}/>
+    <CameraList configs={configs} statuses={statuses} selected={cam} onSelect={setCam} onRefresh={()=>{void reload();setCalibReload(n=>n+1);}} refreshing={loading||calibLoading} calibration={calibration}/>
     {config?<main className="cam-main">
       <div className="cam-body">
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area cam-image-area">

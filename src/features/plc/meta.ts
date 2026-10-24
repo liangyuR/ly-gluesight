@@ -47,6 +47,7 @@ export const dataTypeLabels: Record<DataType, string> = {
   f64: "Float64 (LReal)",
   string: "String (S7 STRING)",
   smartString: "String (200 SMART)",
+  bytes: "Bytes",
 };
 
 export function isText(dataType: DataType) {
@@ -100,6 +101,7 @@ export function formatValue(v: PointValue | undefined) {
   if (v.error) return v.error;
   if (v.value === null) return "--";
   if (typeof v.value === "boolean") return v.value ? "1" : "0";
+  if (Array.isArray(v.value)) return v.value.map(byte => byte.toString(16).padStart(2, "0")).join(" ").toUpperCase();
   return String(v.value);
 }
 

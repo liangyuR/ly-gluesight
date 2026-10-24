@@ -2,6 +2,7 @@ import { phaseOccupied } from "../cycle/phase";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
+import type { CapturePlcStatus } from "../workspace/types";
 import type {
   ConnectionConfig,
   DataType,
@@ -66,9 +67,34 @@ export const plcApi = {
   checkAddress: (connection: ConnectionConfig, address: string, dataType: DataType) =>
     call<string>("plc_check_address", { connection, address, dataType }, () => "预览模式不校验"),
   s7Phase1Template: (plcDb: number, pcDb: number) =>
-    call<PlcConfig>("plc_s7_phase1_template", { plcDb, pcDb }, () => { throw new Error("一期 S7 点表需要桌面后端生成"); }),
+    call<PlcConfig>("plc_s7_phase1_template", { plcDb, pcDb }, () => { throw new Error("重置 S7 通讯配置需要桌面后端"); }),
   getOperationState: () => call<PlcOperationState | null>("cycle_snapshot", undefined, () => null),
+  getTeachingStatus: () => call<CapturePlcStatus | null>("recipe_capture_plc_status", undefined, () => null),
 };
+
+export function useTeachingStatus(link: PlcStatus | null) {
+  const [result, setResult] = useState<{ status: CapturePlcStatus | null; error: string; connection: string }>({ status: null, error: "", connection: "" });
+  const connection = link?.state === "connected" ? `${link.since}:${link.dials}` : "";
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setResult({ status: null, error: "", connection });
+    if (!connection) return;
+    const poll = async () => {
+      try {
+        const status = await plcApi.getTeachingStatus();
+        if (alive) setResult({ status, error: status ? "" : "示教状态不可用", connection });
+      } catch (error) {
+        if (alive) setResult({ status: null, error: `示教状态读取失败：${String(error)}`, connection });
+      } finally {
+        if (alive) timer = setTimeout(() => void poll(), 500);
+      }
+    };
+    void poll();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [connection]);
+  return connection && result.connection === connection ? result : { status: null, error: "" };
+}
 
 export function usePlcOperationState() {
   const [operation, setOperation] = useState<{ blockedReason: string; handshake: PlcHandshakeState | null }>({

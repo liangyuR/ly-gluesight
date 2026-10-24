@@ -13,7 +13,7 @@ interface WriteDialogProps {
 }
 
 export default function WriteDialog({ point, current, blockedReason = "", onWrite, onClose }: WriteDialogProps) {
-  const [text, setText] = useState(current?.value !== null && current?.value !== undefined ? typeof current.value === "string" ? current.value : String(Number(current.value)) : "");
+  const [text, setText] = useState(current?.value !== null && current?.value !== undefined ? Array.isArray(current.value) ? formatValue(current) : typeof current.value === "string" ? current.value : String(Number(current.value)) : "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const writing = useRef(false);
@@ -41,6 +41,11 @@ export default function WriteDialog({ point, current, blockedReason = "", onWrit
 
   const submitValue = () => {
     if (isString) return write(text);
+    if (point.dataType === "bytes") {
+      const bytes = text.trim().split(/\s+/);
+      if (!text.trim() || bytes.some(byte => !/^[\da-f]{2}$/i.test(byte))) return setError("请输入空格分隔的两位十六进制字节，如 00 01 FF");
+      return write(bytes.map(byte => parseInt(byte, 16)));
+    }
     const n = Number(text);
     if (text.trim() === "" || !Number.isFinite(n)) return setError("请输入有效数值");
     write(n);

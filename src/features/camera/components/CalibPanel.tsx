@@ -74,7 +74,7 @@ export default function CalibPanel({ cam, view=1, multiView=false, isSim, imageI
   };
 
   return (
-    <Card title={<div className="calc-title"><Heading level={3}>{multiView?`图 ${view} · `:""}标定板参数</Heading><ContextHelp label="标定板参数说明">内角点为棋盘格内部交点，格长为单个方格的边长（mm）。</ContextHelp></div>} actions={
+    <Card title={<div className="calc-title"><Heading level={3}>{multiView?`图 ${view} · `:""}标定板参数</Heading><ContextHelp label="标定板参数说明">内角点是四个方格相交的点，不含棋盘外边缘，所以按方格数各减 1 填写。例如棋盘有 9 列 × 8 行方格，内角点（列）填 8，内角点（行）填 7。格长填单个方格的边长，单位 mm。</ContextHelp></div>} actions={
       <Button variant={imageId&&!isSim?"filled":"tonal"} leadingIcon={<Crosshair size={15} />} onClick={()=>void run()} disabled={busy || loading || isSim || !imageId||!isTauri()||!valid}>{busy ? "标定中…" : "标定"}</Button>
     }>
       <Stack direction="column" align="stretch" gap={10} wrap={false}>

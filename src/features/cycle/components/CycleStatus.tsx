@@ -41,7 +41,7 @@ export function SignalLamps() {
     const id = byTag.get(tag);
     const on = id !== undefined && !!values[id]?.value;
     return (
-      <span key={tag} className={`lamp${pc ? " pc" : ""}${on ? " on" : ""}${id ? "" : " unbound"}`} title={id ? `点位 ${id}` : "地址表中未绑定该标签"}>
+      <span key={tag} className={`lamp mono${pc ? " pc" : ""}${on ? " on" : ""}${id ? "" : " unbound"}`} title={id ? `点位 ${id}` : "地址表中未绑定该标签"}>
         {tag}
       </span>
     );

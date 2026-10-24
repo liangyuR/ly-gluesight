@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { RefreshCw } from "lucide-react";
-import { IconButton, List, ListItem } from "qing-steel";
+import { Button, List, ListItem } from "qing-steel";
 import type { CameraConfig, CameraStatus } from "../types";
 
 const sourceText = { mvs:"海康 MVS",sim:"合成图（离线）",sampleSet:"样本集（离线）" } as const;
@@ -13,7 +13,9 @@ export function cameraState(config: CameraConfig, status: CameraStatus | null): 
   return { tone:"warn", label:"未就绪", text:status.message || "相机未就绪" };
 }
 
-export default function CameraList({ configs, statuses, selected, disabled, onSelect, onRefresh, refreshing }: {
+export interface CalibrationSummary { tone: "ok" | "warn" | "off"; text: string }
+
+export default function CameraList({ configs, statuses, selected, disabled, onSelect, onRefresh, refreshing, calibration }: {
   configs: CameraConfig[];
   statuses: CameraStatus[];
   selected: number;
@@ -21,6 +23,8 @@ export default function CameraList({ configs, statuses, selected, disabled, onSe
   onSelect: (cam: number) => void;
   onRefresh?: () => void;
   refreshing?: boolean;
+  /** 按相机 id 给出标定状态；相机就绪后用它替换设备状态那一行。 */
+  calibration?: Record<string, CalibrationSummary>;
 }) {
   const root=useRef<HTMLElement>(null);
   useLayoutEffect(()=>{
@@ -37,16 +41,22 @@ export default function CameraList({ configs, statuses, selected, disabled, onSe
     const observer=new ResizeObserver(reveal);observer.observe(list);
     return()=>observer.disconnect();
   },[selected,configs]);
+  const calibrated=calibration&&configs.length>0&&configs.every(config=>calibration[config.id])
+    ?configs.filter(config=>calibration[config.id]!.tone==="ok").length:null;
   return <aside ref={root} className="cam-list" aria-label="相机列表">
-    <div className="cam-list-head"><span>相机 {configs.length}/8</span>{onRefresh&&<IconButton size="sm" onClick={onRefresh} disabled={refreshing||disabled} aria-label="刷新相机配置" title="刷新相机配置"><RefreshCw size={14}/></IconButton>}</div>
+    <div className="cam-list-head">{calibrated===null
+      ?<span>相机 {configs.length} 台</span>
+      :<span className={calibrated===configs.length?"ok":undefined}>标定 {calibrated} / {configs.length}</span>}</div>
     <List>
       {configs.map((config,i)=>{
         const state=cameraState(config,statuses.find(s=>s.cam===i)??null);
+        const calib=state.tone==="ok"?calibration?.[config.id]:undefined;
         return <ListItem key={config.id} selected={i===selected} disabled={disabled} onClick={()=>onSelect(i)}
-          leading={<span className={"dot "+state.tone}/>}
+          leading={<span className={"dot "+(calib?.tone??state.tone)}/>}
           title={<><strong>{config.name}</strong> <span className="mono muted">{config.id}</span></>}
-          description={state.text}/>;
+          description={calib?<span className={"cam-calib "+calib.tone} title={state.text}>{calib.text}</span>:state.text}/>;
       })}
     </List>
+    {onRefresh&&<Button className="cam-list-refresh" variant="tonal" size="sm" leadingIcon={<RefreshCw size={14}/>} loading={refreshing} disabled={refreshing||disabled} onClick={onRefresh}>刷新</Button>}
   </aside>;
 }

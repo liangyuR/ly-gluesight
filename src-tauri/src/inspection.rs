@@ -98,7 +98,7 @@ pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
             ..PlcPoint::default()
         })
         .collect();
-    if ![plc_db, pc_db].iter().any(|db| matches!(db, 6 | 8)) {
+    if ![plc_db, pc_db].iter().any(|db| matches!(db, 6 | 12)) {
         points.extend(teaching_points());
     }
     let config = PlcConfig {

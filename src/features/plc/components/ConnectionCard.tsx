@@ -1,5 +1,5 @@
 import { ChevronUp, Pencil } from "lucide-react";
-import { Alert, Button, Card, Checkbox, Heading, NumberField, Select, Stack, Text } from "qing-steel";
+import { Alert, Button, Card, Checkbox, Heading, NumberField, Select, Stack, Text, Tooltip } from "qing-steel";
 import ConnectionForm from "./ConnectionForm";
 import { cpuPresetLabel } from "../meta";
 import type { PlcConfig } from "../types";
@@ -8,26 +8,26 @@ const fieldsetStyle = { border: 0, padding: 0, margin: 0, minWidth: 0 };
 const hex = (n: number | null) => n === null ? "自动" : Number.isFinite(n) ? `0x${n.toString(16).toUpperCase().padStart(4, "0")}` : "无效";
 const num = (n: number) => Number.isFinite(n) ? String(n) : "未填";
 
-type SummaryItem = { key: string; text: string };
+type SummaryItem = { key: string; label: string; value: string; detail?: string };
 
 function summaryLines(config: PlcConfig): SummaryItem[][] {
   const c = config.connection;
   const heartbeatPoint = config.points.find(p => p.id === config.heartbeat.pointId);
   return [[
-    { key: "cpu", text: cpuPresetLabel(c) },
-    { key: "host", text: `${c.host || "未填地址"}:${num(c.port)}` },
-    { key: "rackSlot", text: `Rack ${num(c.s7.rack)} / Slot ${num(c.s7.slot)}` },
-    { key: "type", text: c.s7.connectionType === "basic" ? "S7 Basic" : c.s7.connectionType.toUpperCase() },
-    { key: "tsap", text: `TSAP ${hex(c.s7.localTsap)}/${hex(c.s7.remoteTsap)}` },
-    { key: "pdu", text: `PDU ${num(c.s7.pduSize)}` },
+    { key: "cpu", label: "CPU 型号", value: cpuPresetLabel(c) },
+    { key: "host", label: "PLC 地址", value: `${c.host || "未填地址"}:${num(c.port)}` },
+    { key: "rackSlot", label: "Rack / Slot", value: `${num(c.s7.rack)} / ${num(c.s7.slot)}` },
+    { key: "type", label: "连接类型", value: c.s7.connectionType === "basic" ? "S7 Basic" : c.s7.connectionType.toUpperCase() },
+    { key: "tsap", label: "TSAP（本地 / 远端）", value: `${hex(c.s7.localTsap)} / ${hex(c.s7.remoteTsap)}` },
+    { key: "pdu", label: "PDU", value: num(c.s7.pduSize) },
   ], [
-    { key: "poll", text: `轮询 ${num(c.pollIntervalMs)} ms` },
-    { key: "timeout", text: `超时 ${num(c.timeoutMs)} ms` },
-    { key: "reconnect", text: `重连 ${num(c.reconnectIntervalMs)} ms` },
-    { key: "heartbeat", text: !config.heartbeat.pointId ? "心跳 不启用"
-      : `心跳 ${heartbeatPoint ? `${heartbeatPoint.name} (${heartbeatPoint.address})` : config.heartbeat.pointId} / ${num(config.heartbeat.intervalMs)} ms` },
-    { key: "log", text: config.logRetentionDays === 0 ? "日志保留 永久" : `日志保留 ${num(config.logRetentionDays)} 天` },
-    { key: "auto", text: `启动自动连接 ${config.autoConnect ? "开" : "关"}` },
+    { key: "poll", label: "轮询周期", value: `${num(c.pollIntervalMs)} ms` },
+    { key: "timeout", label: "通讯超时", value: `${num(c.timeoutMs)} ms` },
+    { key: "reconnect", label: "重连间隔", value: `${num(c.reconnectIntervalMs)} ms` },
+    { key: "heartbeat", label: "心跳", value: !config.heartbeat.pointId ? "未启用" : heartbeatPoint?.name || config.heartbeat.pointId,
+      detail: config.heartbeat.pointId ? `${heartbeatPoint ? `${heartbeatPoint.address} · ` : ""}${num(config.heartbeat.intervalMs)} ms` : undefined },
+    { key: "log", label: "日志保留", value: config.logRetentionDays === 0 ? "永久" : `${num(config.logRetentionDays)} 天` },
+    { key: "auto", label: "启动自动连接", value: config.autoConnect ? "开启" : "关闭" },
   ]];
 }
 
@@ -47,7 +47,8 @@ interface ConnectionCardProps {
 }
 
 export default function ConnectionCard({ draft, saved, onChange, cpuPreset, open, onOpenChange, editBlockedReason, blockedReason, connected, reconnectSaved }: ConnectionCardProps) {
-  const savedText = new Map(saved ? summaryLines(saved).flat().map(item => [item.key, item.text]) : []);
+  const summaryText = (item: SummaryItem) => [item.value, item.detail].filter(Boolean).join(" · ");
+  const savedText = new Map(saved ? summaryLines(saved).flat().map(item => [item.key, summaryText(item)]) : []);
   const writablePoints = draft.points.filter(p => p.access === "readWrite");
   return <Card role="region" aria-label="连接配置" title={<Heading level={3}>连接配置</Heading>}
     actions={open
@@ -56,11 +57,19 @@ export default function ConnectionCard({ draft, saved, onChange, cpuPreset, open
         onClick={() => onOpenChange(true)}>编辑</Button>}>
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
       <div className="plc-conn-summary">
-        {summaryLines(draft).map((line, i) => <p key={i}>{line.map(item => {
+        {summaryLines(draft).map((line, i) => <dl className="plc-summary-grid" key={i}>{line.map(item => {
           const before = savedText.get(item.key);
-          const changed = before !== undefined && before !== item.text;
-          return <span key={item.key} className={changed ? "plc-diff" : undefined} title={changed ? `已保存：${before}` : undefined}>{item.text}</span>;
-        })}</p>)}
+          const changed = before !== undefined && before !== summaryText(item);
+          return <Tooltip key={item.key} content={<div className="plc-signal-details">
+            <span>{item.label}：{summaryText(item)}</span>
+            {changed && <span>已保存：{before}</span>}
+          </div>}>
+            <div className={`plc-summary-item${changed ? " plc-summary-item-changed" : ""}`} tabIndex={0}>
+              <dt>{item.label}{changed && <span className="plc-summary-changed">已修改</span>}</dt>
+              <dd>{item.value}</dd>
+            </div>
+          </Tooltip>;
+        })}</dl>)}
       </div>
       {reconnectSaved && <Text as="p" variant="label" muted>重连使用后端已保存的配置，当前草稿不会保存或应用。</Text>}
       {open && <>

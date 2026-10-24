@@ -648,7 +648,11 @@ pub async fn recipe_capture_stop(app: AppHandle) -> Result<Option<AnyRound>, Str
 
 #[tauri::command]
 pub async fn recipe_capture_plc_status(app: AppHandle) -> crate::teaching::TeachingView {
-    app.state::<CycleHost>().teaching.lock().await.view()
+    app.state::<CycleHost>()
+        .teaching
+        .lock()
+        .await
+        .monitor_view(app.state::<crate::plc::PlcHost>().engine())
 }
 
 #[tauri::command]

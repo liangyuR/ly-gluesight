@@ -18,7 +18,7 @@ interface PointEditorProps {
   onClose: () => void;
 }
 
-export const templateLockedHint = "握手点位由模板定义，改地址请重新载入一期 S7 点表";
+export const templateLockedHint = "握手点位由模板定义，调整地址请使用「重置 S7 通讯配置」";
 
 export default function PointEditor({ initial, isNew, existingIds, connection, tagPresets, blockedReason = "", templateLocked = false, onSave, onClose }: PointEditorProps) {
   const [p, setP] = useState<PlcPoint>(initial);

@@ -28,6 +28,37 @@ pub struct TeachingView {
     pub round_id: Option<u16>,
     pub phase: String,
     pub message: String,
+    pub monitor: TeachingMonitor,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeachingMonitor {
+    pub pc: Option<TeachingRegisters>,
+    pub plc: Option<TeachingRegisters>,
+    pub fresh: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeachingRegisters {
+    pub version: u16,
+    pub state: u16,
+    pub round_id: u16,
+    pub reason: u16,
+    pub reserved: u16,
+}
+
+impl From<TeachingReply> for TeachingRegisters {
+    fn from(reply: TeachingReply) -> Self {
+        Self {
+            version: reply.version,
+            state: reply.state,
+            round_id: reply.id,
+            reason: reply.reason,
+            reserved: reply.reserved,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -101,6 +132,9 @@ pub struct Teaching {
     message: String,
     previous: Option<TeachingReply>,
     last_reply: Option<TeachingReply>,
+    monitor: TeachingMonitor,
+    monitor_observed_at: Option<Instant>,
+    monitor_retry_at: Option<Instant>,
     connection: Option<(i64, u64)>,
     since: Instant,
 }
@@ -142,6 +176,9 @@ impl Teaching {
             message: "示教接口等待连接和显式复位".into(),
             previous: None,
             last_reply: None,
+            monitor: TeachingMonitor::default(),
+            monitor_observed_at: None,
+            monitor_retry_at: None,
             connection: None,
             since: Instant::now(),
         }
@@ -154,6 +191,8 @@ impl Teaching {
             self.resetting = false;
             self.previous = None;
             self.last_reply = None;
+            self.monitor = TeachingMonitor::default();
+            self.monitor_retry_at = None;
             self.connection = None;
             self.message = "示教来源已切换，需要显式复位".into();
         }
@@ -212,13 +251,26 @@ impl Teaching {
                 Some(_) => "requested",
             }
         };
+        let mut monitor = self.monitor.clone();
+        monitor.fresh &= self
+            .monitor_observed_at
+            .is_some_and(|at| at.elapsed() <= Duration::from_secs(3));
         TeachingView {
             available: self.configured && self.ready && !self.faulted && self.load_error.is_none(),
             busy: self.busy(),
             round_id: self.journal.pending.as_ref().map(|p| p.id),
             phase: phase.into(),
             message: self.message.clone(),
+            monitor,
         }
+    }
+
+    pub fn monitor_view(&self, engine: &PlcEngine) -> TeachingView {
+        let mut view = self.view();
+        let status = engine.status();
+        view.monitor.fresh &= status.state == LinkState::Connected
+            && self.connection == Some((status.since, status.dials));
+        view
     }
 
     fn save(&mut self) -> Result<(), String> {
@@ -463,7 +515,8 @@ impl Teaching {
         })
     }
 
-    async fn publish(&self, engine: &PlcEngine) -> Result<(), String> {
+    async fn publish(&mut self, engine: &PlcEngine) -> Result<(), String> {
+        self.monitor.pc = None;
         let ids = Self::points(engine, &PC_TAGS, 6, Access::ReadWrite)?;
         let (id, state, reason) = self
             .journal
@@ -486,6 +539,13 @@ impl Teaching {
                 .await
                 .map_err(|e| e.to_string())?;
         }
+        self.monitor.pc = Some(TeachingRegisters {
+            version: 1,
+            state,
+            round_id: id,
+            reason,
+            reserved: 0,
+        });
         Ok(())
     }
 
@@ -586,6 +646,8 @@ impl Teaching {
             }
             Err(error) => {
                 self.configured = false;
+                self.monitor = TeachingMonitor::default();
+                self.previous = None;
                 self.ready = false;
                 self.message = error.clone();
                 return if self.busy() {
@@ -599,12 +661,15 @@ impl Teaching {
         if status.state != LinkState::Connected {
             self.previous = None;
             self.connection = None;
+            self.monitor = TeachingMonitor::default();
             return Ok(self.fail("PLC 连接中断，示教须核对并复位".into()));
         }
         let key = (status.since, status.dials);
         if self.connection != Some(key) {
             self.connection = Some(key);
             self.previous = None;
+            self.monitor = TeachingMonitor::default();
+            self.monitor_retry_at = None;
             self.ready = false;
             self.resetting = false;
             self.message = "PLC 示教新连接，等待显式复位".into();
@@ -627,16 +692,42 @@ impl Teaching {
             }
             self.since = Instant::now();
         }
-        if !self.ready && !self.resetting {
+        if !self.ready
+            && !self.resetting
+            && self.monitor_retry_at.is_some_and(|at| Instant::now() < at)
+        {
             return Ok(TeachEvent::None);
         }
         let reply = match Self::read(engine, &ids).await {
-            Ok(reply) => reply,
-            Err(error) => return Ok(self.fail(error)),
+            Ok(reply) => {
+                self.monitor_retry_at = None;
+                reply
+            }
+            Err(error) => {
+                self.monitor.fresh = false;
+                self.previous = None;
+                self.monitor_retry_at = Some(Instant::now() + Duration::from_secs(1));
+                if !self.ready && !self.resetting {
+                    if !self.faulted {
+                        self.message = format!("示教状态读取失败：{error}；请核对连接并显式复位");
+                    }
+                    return Ok(TeachEvent::None);
+                }
+                return Ok(self.fail(error));
+            }
         };
         let stable = self.previous == Some(reply);
         self.previous = Some(reply);
         if !stable {
+            return Ok(TeachEvent::None);
+        }
+        self.monitor.plc = Some(reply.into());
+        self.monitor.fresh = true;
+        self.monitor_observed_at = Some(Instant::now());
+        if !self.ready && !self.resetting {
+            if !self.faulted && self.message.starts_with("示教状态读取失败：") {
+                self.message = "示教通讯已恢复，等待显式复位".into();
+            }
             return Ok(TeachEvent::None);
         }
         let mut reply = reply;
