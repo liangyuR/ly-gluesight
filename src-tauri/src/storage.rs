@@ -121,6 +121,15 @@ pub fn root(app: &AppHandle) -> PathBuf {
 pub fn config(app: &AppHandle) -> PathBuf {
     root(app).join("config")
 }
+pub fn projects_root(app: &AppHandle) -> PathBuf {
+    crate::project::projects_root(&root(app))
+}
+pub fn project(app: &AppHandle) -> PathBuf {
+    app.state::<crate::project::ActiveProject>().root.clone()
+}
+pub fn project_config(app: &AppHandle) -> PathBuf {
+    project(app).join("config")
+}
 pub fn state(app: &AppHandle) -> PathBuf {
     root(app).join("state")
 }

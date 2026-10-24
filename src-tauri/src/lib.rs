@@ -30,6 +30,7 @@ mod plc;
 mod plc_plan;
 mod plc_session;
 mod production;
+mod project;
 mod recipe;
 mod recipe_capture;
 mod recipe_api;
@@ -72,7 +73,17 @@ pub mod probe_api {
 }
 
 fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
-    store::Store::open_deferred_recovery(&storage::root(app).join("inspection.db"))
+    store::Store::open_deferred_recovery(&storage::project(app).join("inspection.db"))
+}
+
+fn open_project(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), String> {
+    match project::resolve(root)? {
+        project::Resolution::Open(active) => {
+            app.manage(active);
+            Ok(())
+        }
+        project::Resolution::NeedsChoice(reason) => Err(format!("{reason}，请选择要打开的项目")),
+    }
 }
 
 pub fn run() {
@@ -138,6 +149,13 @@ pub fn run() {
             storage_startup::storage_startup_answer,
             storage::storage_status,
             storage::storage_open_directory,
+            project::project_current,
+            project::project_list,
+            project::manage::project_usage,
+            project::manage::project_create,
+            project::manage::project_rename,
+            project::manage::project_delete,
+            project::project_switch,
             storage::storage_preferences_get,
             storage::storage_preferences_update,
             commands::app_info,
@@ -295,6 +313,7 @@ fn startup_failed(app: tauri::AppHandle, error: String) {
 
 fn start_services(app: &tauri::AppHandle, root: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(error) = applog::init(app) { eprintln!("{error}"); }
+    open_project(app, &root)?;
     app.manage(open_store(app)?);
     app.manage(vision::VisionHost::default());
     app.manage(production::ProductionHost::default());
