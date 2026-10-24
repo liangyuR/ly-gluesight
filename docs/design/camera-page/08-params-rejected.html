@@ -59,7 +59,7 @@
               <span class="lbl">触发沿</span><label class="select"><select class="input"><option>上升沿</option></select></label>
               <span class="lbl">输入滤波</span><div class="unit"><input class="input mono" value="5"><small>µs</small></div>
               <span class="lbl">触发延时<span class="lbl-mark" title="相机未接受"><i data-icon="alert-triangle"></i></span></span><div class="unit"><input class="input mono invalid" value="1500000"><small>µs</small></div>
-              <span class="hint warn"><i data-icon="alert-triangle"></i><span>相机未接受：TriggerDelay 写入失败，超出范围 0–1 000 000。相机保持写入前的值（不回读具体数值）。</span></span>
+              <span class="hint warn"><i data-icon="alert-triangle"></i><span>相机未接受：TriggerDelay 写入失败，超出范围 0–1 000 000。部分参数可能已写入，请核对相机实际值。</span></span>
               <span class="lbl">Line1 输出<span class="lbl-mark" title="相机未接受"><i data-icon="alert-triangle"></i></span></span><label class="check"><input type="checkbox" checked>曝光信号驱动频闪</label>
               <span class="hint warn"><i data-icon="alert-triangle"></i><span>相机未接受：LineMode=Strobe 写入失败，该型号 Line1 为输入线，不能输出频闪。</span></span>
               <span class="lbl">Chunk 数据</span><label class="check"><input type="checkbox" checked>帧计数、触发计数、时间戳</label>
@@ -103,7 +103,7 @@
                 <li><b>触发延时</b> — <code>TriggerDelay 写入失败：超出范围 0–1000000</code></li>
                 <li><b>Line1 输出</b> — <code>LineMode=Strobe 写入失败：Line1 为输入线</code></li>
               </ul>
-              <div class="foot">其余参数已生效；这两项相机保持原值。配置文件已按新值保存，修正后重新“保存并应用”，或在海康 MVS 客户端核对该型号支持的范围。设备不回读逐字段值，此列表来自保存返回与状态里的 warnings。</div>
+              <div class="foot">配置文件已按新值保存，部分参数可能已写入设备，未进行整组回滚。请核对设备实际值及该型号支持的范围，修正后重新“保存并应用”。</div>
             </div>
           </section>
         </div>

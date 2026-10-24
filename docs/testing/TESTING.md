@@ -2,6 +2,26 @@
 
 更新时间：2026-10-23（同步到段模型，即分段连拍飞拍；2026-10-22 起测试范围按选择收缩，测试删除不改变产品业务规则或运行时校验）。前端与后端的分组见[前端轻量测试](frontend-lightweight-tests.md)、[后端轻量测试](backend-lightweight-tests.md)。
 
+## 频闪、Chunk 能力与参数反馈（2026-10-24）
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib camera:: -- --nocapture`：19 项通过，完成新增 SDK 能力查询和配置分支的编译，未替代真机验证。
+- 相机页面测试文件 18 项及 `pnpm typecheck` 通过。新增一个参数化回归（0 / 1 条参数问题）：保护 JHEM131GC-XS 验收提醒不计入失败数量，并防止恢复“保持写入前的值”的错误承诺。
+- 真机待验收：LineSource 仅提供 ExposureActive 时频闪配置写入、回读成功；设备没有 Chunk 节点时只显示一条不支持提示；验收提醒独立显示。参数写入不执行整组回滚。
+
+## Software 单帧与 TriggerDelay 兼容（2026-10-24）
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib camera:: -- --nocapture`：19 项通过，包含现有 Software 帧归属与触发完成保护；本次 SDK 适配代码完成编译，不代表设备写入已实测。
+- 本机 MVS DLL 导出检查：`MV_XML_GetNodeInterfaceType`、`MV_CC_GetIntValueEx` 均存在；绑定布局与安装 SDK 头文件核对。
+- 真机待验收：仅有 FrameBurstStart 的设备切换到 Software 后，回读 BurstFrameCount=1，每次手动命令只得到一帧；具有 FrameStart 的设备继续选择 FrameStart。
+- 真机待验收：Integer TriggerDelay 写入整数微秒并回读一致，小数应明确失败；Float 节点继续接受浮点值。类型查询、写入或回读失败时相机不得就绪。
+- 后续按用户要求，仅对 JHEM131GC-XS 放开 Line0 的 FrameBurstStart + LevelHigh 配置，强制回读 BurstFrameCount=1、触发缓存关闭及已有帧率和触发参数。其他型号不增加 FrameBurstStart 门控回退。高低电平时序由用户在软件中实测，尚未完成硬件验收；未实现生产自动分段。
+
+## 相机故障维护与状态提示（2026-10-24）
+
+- `camera::access_tests::unresolved_plc_without_active_capture_allows_maintenance_but_keeps_configuration_locked`：一个参数化回归覆盖六种工况，防止历史未结 PLC 事务被误当实际采集阻止释放/重连，同时保护真实在途、示教采集和普通配置操作。`cargo test --manifest-path src-tauri/Cargo.toml --lib camera::access_tests -- --nocapture` 通过。
+- `tests/camera-page.test.tsx` 新增初始化失败回归：参数面板保留原始门控错误，不把未就绪误报物理未连接，Fault 加历史 PLC 锁仍可发起释放。该文件 16 项及 `pnpm typecheck` 通过。
+- 差异检查通过。未操作现场 PLC 或状态文件，未通过程序执行真机释放或复位，也未放宽门控节点检查；用户反馈复位后可释放与重连，是原未结事务阻塞的现场佐证，不代表高电平连续采集已验收。
+
 ## 高电平门控与 Software 调试验证（2026-10-23）
 
 | 检查 | 本轮结果 |

@@ -397,8 +397,10 @@ pub struct CycleHost {
     settings_path: PathBuf,
     shared: Mutex<Shared>,
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
-    /// 节拍不在空闲或故障（开工那一刻就置上，比发布的快照早）
+    /// 有在途工件或未结 PLC 事务。
     busy: AtomicBool,
+    /// 节拍不在空闲或故障（开工那一刻就置上，比发布的快照早）
+    in_flight: AtomicBool,
     /// 检测侧不允许切换站点模式的原因：有在途工件，或有只能在真机 PLC 上复位的未结事务
     switch_block: Mutex<Option<String>>,
     settings_note: Option<String>,
@@ -463,6 +465,7 @@ impl CycleHost {
             settings_path,
             rx: Mutex::new(Some((rx, frame_rx))),
             busy: AtomicBool::new(false),
+            in_flight: AtomicBool::new(false),
             switch_block: Mutex::new(None),
             settings_note,
             interrupted_recordings,
@@ -520,12 +523,17 @@ impl CycleHost {
         self.busy.load(Ordering::SeqCst)
     }
 
+    pub fn in_flight(&self) -> bool {
+        self.in_flight.load(Ordering::SeqCst)
+    }
+
     pub fn switch_block(&self) -> Option<String> {
         self.switch_block.lock().unwrap().clone()
     }
 
     fn store_busy(&self, phase: Phase, s7: &PlcSession) {
         let in_flight = !matches!(phase, Phase::Idle | Phase::Fault);
+        self.in_flight.store(in_flight, Ordering::SeqCst);
         self.busy.store(in_flight || s7.pending(), Ordering::SeqCst);
         *self.switch_block.lock().unwrap() = if in_flight {
             Some("检测仍有在途工件，完成握手或复位故障后再切换站点模式".into())

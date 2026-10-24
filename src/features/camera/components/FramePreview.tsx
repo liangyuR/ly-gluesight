@@ -3,7 +3,7 @@ import { Activity, Clock, Unplug, Zap } from "lucide-react";
 import { Alert, Button, Card, Heading, SegmentedControl, Stack, StatusBadge } from "qing-steel";
 import { cameraApi, usePreviewCanvas } from "../api";
 import type { CameraConfig, CameraStatus, Frame } from "../types";
-import { ago, clock, count, useNow } from "./health";
+import { ago, clock, count, gateAcceptanceReminder, useNow } from "./health";
 
 export default function FramePreview({ cam, status, lastFrame, config, blockedReason, actions }: { cam: number; status: CameraStatus | null; lastFrame: Frame | undefined; config: CameraConfig | null; blockedReason?: string; actions?: ReactNode }) {
   const scope=JSON.stringify([cam,config?.id,config?.source,config?.serial,config?.triggerSource,config?.frameRate,lastFrame?.session,config?.viewCount]);
@@ -21,7 +21,7 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
   const mvs = config?.source === "mvs";
   const software = config?.triggerSource === "Software";
   const unbound = mvs && !config?.serial;
-  const reason = blockedReason || (!status?.ready ? (status?.message || "相机未连接") : "");
+  const reason = blockedReason || (!status?.ready ? (status?.message || "相机未就绪") : "");
   const canTrigger = !reason && mvs && software;
   const soft = async () => {
     if(pending.current||!canTrigger)return;
@@ -50,7 +50,7 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
           {!img && !fault && <span className="cg-thumb-empty">等待第一帧</span>}
           {img && !fault && age != null && <span className={"cg-tag " + (age < 3000 ? "fresh" : "stale")}>{age < 3000 ? <Activity size={11} /> : <Clock size={11} />}{ago(age)} · {clock(lastFrame!.ts, true)}</span>}
           {img && <span className="cg-tag size">{img.fullWidth}×{img.fullHeight} · 缩略图</span>}
-          {fault && <div className="cg-thumb-fault"><strong><Unplug size={14} />{status?.message || "相机未连接"}</strong>{lastFrame && <span>最后一帧 {clock(lastFrame.ts)} · 后台每 2 秒自动重连</span>}</div>}
+          {fault && <div className="cg-thumb-fault"><strong><Unplug size={14} />{status?.message || "相机未就绪"}</strong>{lastFrame && <span>最后一帧 {clock(lastFrame.ts)} · 后台每 2 秒自动重连</span>}</div>}
         </div>}
         <div className="cg-stats">
           <div className="cg-stat"><span>帧计数</span><b>{count(lastFrame?.frameCounter)}</b></div>
@@ -71,14 +71,16 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
   );
 }
 
-/** 参数是否生效：设备不回读逐字段的值，只能以保存返回与状态里的“未接受”列表为准。 */
 export function AppliedPanel({ config, status }: { config: CameraConfig; status: CameraStatus | null }) {
   const warnings = status?.warnings ?? [];
+  const reminder = gateAcceptanceReminder(config, status);
   const body = config.source !== "mvs"
     ? <><StatusBadge tone="off">不适用</StatusBadge><p>离线图像源没有设备参数可写入，也不会产生“未接受”列表。</p></>
     : !config.serial ? <><StatusBadge tone="off">未绑定设备</StatusBadge><p>绑定并保存后由设备确认参数。</p></>
-    : !status?.ready ? <><StatusBadge tone="off">{status?.released ? "已释放给 MVS" : "相机未连接"}</StatusBadge><p>重新连接时按已保存的参数写入相机，写入结果在这里显示。</p></>
-    : warnings.length ? <><StatusBadge tone="warn">已应用，{warnings.length} 项参数相机未接受</StatusBadge><ul>{warnings.map(w => <li key={w}>{w}</li>)}</ul><p>其余参数已生效；这些项相机保持写入前的值。配置已按新值保存，修正后重新“保存并应用”，或在海康 MVS 客户端核对该型号支持的范围。</p></>
+    : !status ? <><StatusBadge tone="off">正在读取相机状态</StatusBadge><p>状态返回后显示参数写入结果。</p></>
+    : status.released ? <><StatusBadge tone="off">已释放给 MVS</StatusBadge><p>重新连接时按已保存的参数写入相机，写入结果在这里显示。</p></>
+    : !status.ready ? <><StatusBadge tone="fault">相机未就绪，参数尚未确认</StatusBadge>{status.message && <p>{status.message}</p>}<p>请根据故障详情检查设备或参数支持情况；相机就绪后再核对参数写入结果。</p></>
+    : warnings.length ? <><StatusBadge tone="warn">已应用，{warnings.length} 项参数相机未接受</StatusBadge><ul>{warnings.map(w => <li key={w}>{w}</li>)}</ul><p>配置已按新值保存，部分参数可能已写入设备，未进行整组回滚。请核对设备实际值及该型号支持的范围，修正后重新“保存并应用”。</p></>
     : <><StatusBadge tone="ok">已应用，相机全部接受</StatusBadge><p>关键触发参数及帧率已通过设备回读核验；其他参数以“未接受”列表为准。调试曝光 / 增益不在此列表内。</p></>;
-  return <Card role="region" aria-label="参数生效情况" title={<Heading level={3}>参数生效情况</Heading>}><div className="cg-applied">{body}</div></Card>;
+  return <Card role="region" aria-label="参数生效情况" title={<Heading level={3}>参数生效情况</Heading>}><div className="cg-applied">{body}{reminder && <Alert tone="warn" title="实机验收提醒">{reminder}</Alert>}</div></Card>;
 }

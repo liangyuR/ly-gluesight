@@ -59,3 +59,21 @@ pnpm package:deps:publish -Archive 'C:\release\gluesight-vendor-runtime-win-x64-
 ```powershell
 & 'C:\Apps\GlueSight\GlueSight.exe' --check-packaged-runtime 'C:\reports\runtime.json'
 ```
+
+## 相机未就绪与释放给 MVS
+
+相机未就绪不等于物理未连接：设备打开后写入触发配置失败，也会保持未就绪。参数生效面板显示具体失败原因，不将未确认的参数标为已生效。
+
+JHEM131GC-XS 已按现场测试要求允许 Line0 使用 `FrameBurstStart + LevelHigh`。仅对该精确型号增加回退选择，其他型号继续要求 `FrameBurstActive` / `AcquisitionActive`。写入并回读 Continuous、Line0、LevelHigh、BurstFrameCount=1、TriggerCacheEnable=false、触发延迟、固定帧率使能及指定帧率，最后开启并回读 TriggerMode=On；任何失败均不进入就绪状态。软件显示门控待实机验收提示，配置成功不代表高低电平时序已验收。
+
+Software 单帧优先使用 `FrameStart`；设备只提供 `FrameBurstStart` 时改用该节点，并强制写入、回读 `AcquisitionBurstFrameCount=1`，失败则不进入就绪状态。Line0 的 `TriggerDelay` 按 SDK 查询到的 Integer / Float 类型写入并回读；Integer 仅接受整数微秒，不静默截断小数。延迟配置失败会阻止就绪。
+
+曝光频闪按 LineSource 可选值优先选择 ExposureStartActive，否则选择 ExposureActive，并回读 LineSelector、LineMode、LineSource 和 StrobeEnable；任一步失败停止后续频闪配置并报告问题。Chunk 启用前检查 ChunkModeActive、ChunkSelector、ChunkEnable，缺少节点时只显示一条“不支持 Chunk 附加数据”，采集诊断继续使用 SDK 帧序号。门控验收提醒独立显示，不计入参数问题数量。参数应用不具备整组回滚，部分参数可能已经写入，失败后应核对设备实际状态。
+
+后续现场导出的 JHEM131GC-XS XML 已确认只定义 `FrameBurstStart`，`LevelHigh` 由能力位控制且仅在 Line0 下可用，`TriggerDelay` 为 Integer。MVS 已显示 Level High 选项；持续高电平重复采集及拉低停止新曝光仍待实测。
+
+2026-10-24 初步调查（现场 XML 导出前）：旧实现的拒绝发生在读取或设置 `TriggerActivation` 之前，只能说明程序的 selector 白名单未匹配，不能证明设备不支持 `LevelHigh`。[京航官方 JHEM 手册](https://www.jinghangtech.com/media/ds/jhem/JHEM%E5%8D%83%E5%85%86%E7%BD%91%E5%B7%A5%E4%B8%9A%E7%9B%B8%E6%9C%BA%E7%94%A8%E6%88%B7%E6%89%8B%E5%86%8C.pdf)本次下载版第 89–91 页说明 Continuous、帧率控制和可写的 Trigger Activation，但只列 FrameStart，未确认该 XS 固件的 FrameBurstStart + LevelHigh 语义。本机 SDK 只读枚举成功但发现 0 台相机，缓存中也无该型号设备 XML，当时尚无实机能力结论；后续 XML 和截图证据见上文。
+
+现场在软件中设置 Line0 高电平、10 fps、触发延迟 0，确认参数应用成功后取流。验证持续低电平不曝光、高电平保持 2 秒及 5 秒时分别约 20 帧及 50 帧、帧间隔约 100 ms、拉低后不再开始新曝光（允许在途帧到达），并验证再次拉高恢复采集。选项可写不等于已证明持续门控；不要用 TriggerMode=Off 的自由运行或大 burst 数替代低电平停止这一要求。
+
+没有实际在途工件或示教采集时，即使 PLC 留有未结事务，也可释放相机给 MVS 或重新连接以排查故障。释放只关闭设备并停止自动重连，不清理 PLC 未结事务、不解除生产复位要求；真正采集、排空、判定和结果握手期间仍禁止释放与重连。其他相机配置操作继续遵守未结 PLC 事务限制，并提示完成握手或复位。
