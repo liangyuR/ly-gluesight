@@ -1264,13 +1264,27 @@ pub struct RecipeStore {
 impl RecipeStore {
     #[cfg(test)]
     pub fn open(root: PathBuf) -> Result<Self, String> {
-        Self::open_with_floors(root.join("recipes"), root.join("state").join("plan-version"), &BTreeMap::new())
+        Self::open_with_floors(
+            root.join("recipes"),
+            root.join("state").join("plan-version"),
+            &BTreeMap::new(),
+        )
     }
 
     /// `plan_file` 是本机共用的计划版本记录：PLC 是同一台，换项目也不能发出用过的计划版本。
-    pub fn open_with_floors(dir: PathBuf, plan_file: PathBuf, floors: &BTreeMap<String, u32>) -> Result<Self, String> {
+    pub fn open_with_floors(
+        dir: PathBuf,
+        plan_file: PathBuf,
+        floors: &BTreeMap<String, u32>,
+    ) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建配方目录失败：{e}"))?;
-        let store = Self { dir, plan_file, inner: RwLock::new(Vec::new()), errors: RwLock::new(Vec::new()), unavailable: RwLock::new(Vec::new()) };
+        let store = Self {
+            dir,
+            plan_file,
+            inner: RwLock::new(Vec::new()),
+            errors: RwLock::new(Vec::new()),
+            unavailable: RwLock::new(Vec::new()),
+        };
         store.seed_version_floor(floors)?;
         store.retire_outdated_sources()?;
         store.revision_sources()?;
@@ -1728,13 +1742,30 @@ mod tests {
 
     /// 设计 project.md 第五节：计划版本记录在本机共用，同一台 PLC 换项目后不能收到用过的计划版本。
     #[test]
-    fn switching_to_another_project_with_shared_plan_file_then_plan_version_exceeds_previous_project() {
-        let root = std::env::temp_dir().join(format!("gluesight-project-plan-version-{}-{}", std::process::id(), ly_plc::now_ms()));
+    fn switching_to_another_project_with_shared_plan_file_then_plan_version_exceeds_previous_project(
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "gluesight-project-plan-version-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
         let plan_file = root.join("state").join("plan-version");
-        let open = |project: &str| RecipeStore::open_with_floors(root.join(project).join("recipes"), plan_file.clone(), &BTreeMap::new()).unwrap();
+        let open = |project: &str| {
+            RecipeStore::open_with_floors(
+                root.join(project).join("recipes"),
+                plan_file.clone(),
+                &BTreeMap::new(),
+            )
+            .unwrap()
+        };
         let a = open("a").save(samples_burst(), None).unwrap();
         let b = open("b").save(samples_burst(), None).unwrap();
-        assert!(b.plan_version > a.plan_version, "项目 B 的计划版本 {} 没有大于项目 A 的 {}", b.plan_version, a.plan_version);
+        assert!(
+            b.plan_version > a.plan_version,
+            "项目 B 的计划版本 {} 没有大于项目 A 的 {}",
+            b.plan_version,
+            a.plan_version
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

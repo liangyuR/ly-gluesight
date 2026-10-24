@@ -110,10 +110,18 @@ pub struct ProjectSwitch {
 }
 
 pub fn check_project_switch(pre: &ProjectSwitch) -> Result<(), String> {
-    if let Some(reason) = &pre.block { return Err(reason.replace("站点模式", "项目")); }
-    if pre.busy { return Err("检测仍有在途事务，完成握手或复位故障后再切换项目".into()); }
-    if pre.capturing { return Err("示教整圈采集正在进行，结束本轮采集后再切换项目".into()); }
-    if pre.audit_pending { return Err("上一件的录制或追溯还没写完，稍后再切换项目".into()); }
+    if let Some(reason) = &pre.block {
+        return Err(reason.replace("站点模式", "项目"));
+    }
+    if pre.busy {
+        return Err("检测仍有在途事务，完成握手或复位故障后再切换项目".into());
+    }
+    if pre.capturing {
+        return Err("示教整圈采集正在进行，结束本轮采集后再切换项目".into());
+    }
+    if pre.audit_pending {
+        return Err("上一件的录制或追溯还没写完，稍后再切换项目".into());
+    }
     Ok(())
 }
 

@@ -82,7 +82,9 @@ fn open_project(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), St
             app.manage(active);
             Ok(())
         }
-        project::Resolution::NeedsChoice(reason) => Err(format!("{}{reason}", storage_startup::CHOOSE_PROJECT)),
+        project::Resolution::NeedsChoice(reason) => {
+            Err(format!("{}{reason}", storage_startup::CHOOSE_PROJECT))
+        }
     }
 }
 
@@ -107,8 +109,13 @@ pub fn run() {
                 }
             }
             if let Err(error) = &prepared {
-                eprintln!("{}", error.trim_start_matches(storage_startup::CHOOSE_PROJECT));
-                if headless(app.handle()) { std::process::exit(1); }
+                eprintln!(
+                    "{}",
+                    error.trim_start_matches(storage_startup::CHOOSE_PROJECT)
+                );
+                if headless(app.handle()) {
+                    std::process::exit(1);
+                }
             }
             let profile = match &prepared {
                 Ok(root) => storage::webview(&storage::bootstrap_root(root))?,
@@ -306,7 +313,10 @@ fn headless(app: &tauri::AppHandle) -> bool {
 }
 
 fn startup_failed(app: tauri::AppHandle, error: String) {
-    eprintln!("{}", error.trim_start_matches(storage_startup::CHOOSE_PROJECT));
+    eprintln!(
+        "{}",
+        error.trim_start_matches(storage_startup::CHOOSE_PROJECT)
+    );
     if headless(&app) {
         app.exit(1);
         return;
@@ -314,13 +324,27 @@ fn startup_failed(app: tauri::AppHandle, error: String) {
     storage_startup::report(&app, error);
 }
 
-fn start_services(app: &tauri::AppHandle, root: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    if let Err(error) = applog::init(app) { eprintln!("{error}"); }
-    if let Err(error) = project::manage::purge_trash(&root) { applog::write("warn", "项目删除未完成", &error); }
+fn start_services(
+    app: &tauri::AppHandle,
+    root: std::path::PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Err(error) = applog::init(app) {
+        eprintln!("{error}");
+    }
+    if let Err(error) = project::manage::purge_trash(&root) {
+        applog::write("warn", "项目删除未完成", &error);
+    }
     open_project(app, &root)?;
     let leftovers = project::legacy_leftovers(&root);
     if !leftovers.is_empty() {
-        applog::write("warn", "旧资料未读取", &format!("资料目录根下仍有项目化之前的资料，软件不再读取，可人工清理：{}", leftovers.join("、")));
+        applog::write(
+            "warn",
+            "旧资料未读取",
+            &format!(
+                "资料目录根下仍有项目化之前的资料，软件不再读取，可人工清理：{}",
+                leftovers.join("、")
+            ),
+        );
     }
     app.manage(open_store(app)?);
     app.manage(vision::VisionHost::default());

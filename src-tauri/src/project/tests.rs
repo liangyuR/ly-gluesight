@@ -4,7 +4,11 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("gluesight-project-{name}-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let path = std::env::temp_dir().join(format!(
+            "gluesight-project-{name}-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
         std::fs::create_dir_all(&path).unwrap();
         Self(path)
     }
@@ -23,7 +27,9 @@ fn add(data: &Path, id: &str) {
 #[test]
 fn no_project_on_this_machine_then_default_is_created_and_opened() {
     let data = TempDir::new("empty");
-    let Resolution::Open(active) = resolve(&data.0).unwrap() else { panic!("应直接打开默认项目") };
+    let Resolution::Open(active) = resolve(&data.0).unwrap() else {
+        panic!("应直接打开默认项目")
+    };
     assert_eq!(active.id, DEFAULT_ID);
     assert_eq!(read_meta(&active.root).unwrap().id, DEFAULT_ID);
     assert_eq!(read_pointer(&data.0).as_deref(), Some(DEFAULT_ID));
@@ -49,6 +55,9 @@ fn invalid_current_pointer_then_operator_must_choose_instead_of_another_project_
         let data = TempDir::new(name);
         add(&data.0, "line-a");
         setup(&data.0);
-        assert!(matches!(resolve(&data.0).unwrap(), Resolution::NeedsChoice(_)), "{name}");
+        assert!(
+            matches!(resolve(&data.0).unwrap(), Resolution::NeedsChoice(_)),
+            "{name}"
+        );
     }
 }

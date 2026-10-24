@@ -14,7 +14,9 @@ pub fn restart(app: &tauri::AppHandle) -> ! {
 }
 
 pub fn acquire(data: &Path) -> Result<InstanceLease, String> {
-    let wait = std::env::var_os(RESTARTING).is_some().then_some(RESTART_WAIT);
+    let wait = std::env::var_os(RESTARTING)
+        .is_some()
+        .then_some(RESTART_WAIT);
     std::env::remove_var(RESTARTING);
     acquire_within(data, wait.unwrap_or_default())
 }
@@ -28,7 +30,12 @@ fn acquire_within(data: &Path, wait: Duration) -> Result<InstanceLease, String> 
         match file.try_lock() {
             Ok(()) => return Ok(InstanceLease { _file: file }),
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
-            Err(error) => return Err(format!("无法取得数据目录独占锁，请关闭使用同一数据目录的其它实例：{}：{error}", data.display())),
+            Err(error) => {
+                return Err(format!(
+                    "无法取得数据目录独占锁，请关闭使用同一数据目录的其它实例：{}：{error}",
+                    data.display()
+                ))
+            }
         }
     }
 }
@@ -57,9 +64,16 @@ mod tests {
 
     #[test]
     fn restarted_instance_waits_for_the_previous_one_to_release_the_directory() {
-        let root = std::env::temp_dir().join(format!("gluesight-restart-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let root = std::env::temp_dir().join(format!(
+            "gluesight-restart-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
         let previous = acquire(&root).unwrap();
-        let release = std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(500)); drop(previous); });
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            drop(previous);
+        });
         assert!(acquire_within(&root, RESTART_WAIT).is_ok());
         release.join().unwrap();
         fs::remove_dir_all(root).unwrap();

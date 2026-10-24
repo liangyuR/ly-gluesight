@@ -74,20 +74,36 @@ fn pointer_path(data: &Path) -> PathBuf {
 }
 
 pub fn valid_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 pub fn read_meta(dir: &Path) -> Result<ProjectMeta, String> {
     let id = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    let text = crate::fsio::read_text(&dir.join("project.json")).map_err(|e| format!("project.json 读不了：{e}"))?;
-    let meta: ProjectMeta = serde_json::from_str(&text).map_err(|e| format!("project.json 无法解析：{e}"))?;
-    if meta.schema != SCHEMA { return Err(format!("project.json 格式版本 {} 不认识", meta.schema)); }
-    if meta.id != id { return Err(format!("project.json 记的编号 {} 与目录名 {id} 不一致", meta.id)); }
+    let text = crate::fsio::read_text(&dir.join("project.json"))
+        .map_err(|e| format!("project.json 读不了：{e}"))?;
+    let meta: ProjectMeta =
+        serde_json::from_str(&text).map_err(|e| format!("project.json 无法解析：{e}"))?;
+    if meta.schema != SCHEMA {
+        return Err(format!("project.json 格式版本 {} 不认识", meta.schema));
+    }
+    if meta.id != id {
+        return Err(format!(
+            "project.json 记的编号 {} 与目录名 {id} 不一致",
+            meta.id
+        ));
+    }
     Ok(meta)
 }
 
 pub fn write_meta(dir: &Path, meta: &ProjectMeta) -> Result<(), String> {
-    crate::fsio::write_atomic(&dir.join("project.json"), &serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?)
+    crate::fsio::write_atomic(
+        &dir.join("project.json"),
+        &serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?,
+    )
 }
 
 pub fn read_pointer(data: &Path) -> Option<String> {
@@ -97,12 +113,17 @@ pub fn read_pointer(data: &Path) -> Option<String> {
 }
 
 pub fn write_pointer(data: &Path, id: &str) -> Result<(), String> {
-    crate::fsio::write_atomic(&pointer_path(data), &serde_json::json!({"schema": SCHEMA, "current": id}).to_string())
+    crate::fsio::write_atomic(
+        &pointer_path(data),
+        &serde_json::json!({"schema": SCHEMA, "current": id}).to_string(),
+    )
 }
 
 fn project_dirs(data: &Path) -> Result<Vec<PathBuf>, String> {
     let root = projects_root(data);
-    if !root.exists() { return Ok(Vec::new()); }
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
         .map_err(|e| format!("读取项目目录失败：{e}"))?
         .filter_map(Result::ok)
@@ -124,19 +145,35 @@ pub fn list(data: &Path) -> Result<Vec<ProjectEntry>, String> {
                 Ok(meta) => (Some(meta), None),
                 Err(error) => (None, Some(error)),
             };
-            ProjectEntry { current: current.as_deref() == Some(id.as_str()), id, meta, error }
+            ProjectEntry {
+                current: current.as_deref() == Some(id.as_str()),
+                id,
+                meta,
+                error,
+            }
         })
         .collect())
 }
 
-pub fn create_dir(data: &Path, meta: &ProjectMeta, fill: impl FnOnce(&Path) -> Result<(), String>) -> Result<PathBuf, String> {
-    if !valid_id(&meta.id) { return Err("项目编号只能包含字母、数字、- 和 _".into()); }
+pub fn create_dir(
+    data: &Path,
+    meta: &ProjectMeta,
+    fill: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    if !valid_id(&meta.id) {
+        return Err("项目编号只能包含字母、数字、- 和 _".into());
+    }
     let target = dir(data, &meta.id);
-    if target.exists() { return Err(format!("项目编号 {} 已被占用", meta.id)); }
+    if target.exists() {
+        return Err(format!("项目编号 {} 已被占用", meta.id));
+    }
     let staging = projects_root(data).join(format!(".new-{}-{}", meta.id, ly_plc::now_ms()));
-    std::fs::create_dir_all(staging.join("config")).map_err(|e| format!("创建项目目录失败：{e}"))?;
+    std::fs::create_dir_all(staging.join("config"))
+        .map_err(|e| format!("创建项目目录失败：{e}"))?;
     let built = fill(&staging).and_then(|_| write_meta(&staging, meta));
-    let moved = built.and_then(|_| std::fs::rename(&staging, &target).map_err(|e| format!("创建项目目录失败：{e}")));
+    let moved = built.and_then(|_| {
+        std::fs::rename(&staging, &target).map_err(|e| format!("创建项目目录失败：{e}"))
+    });
     if let Err(error) = moved {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
@@ -146,14 +183,24 @@ pub fn create_dir(data: &Path, meta: &ProjectMeta, fill: impl FnOnce(&Path) -> R
 
 pub fn next_id(data: &Path) -> String {
     let day = chrono::Local::now().format("%Y%m%d");
-    (1..).map(|n| format!("p-{day}-{n:02}")).find(|id| !dir(data, id).exists()).unwrap()
+    (1..)
+        .map(|n| format!("p-{day}-{n:02}"))
+        .find(|id| !dir(data, id).exists())
+        .unwrap()
 }
 
 pub fn resolve(data: &Path) -> Result<Resolution, String> {
     if project_dirs(data)?.is_empty() {
-        let root = create_dir(data, &ProjectMeta::new(DEFAULT_ID, "默认项目", "", None), |_| Ok(()))?;
+        let root = create_dir(
+            data,
+            &ProjectMeta::new(DEFAULT_ID, "默认项目", "", None),
+            |_| Ok(()),
+        )?;
         write_pointer(data, DEFAULT_ID)?;
-        return Ok(Resolution::Open(ActiveProject { id: DEFAULT_ID.into(), root }));
+        return Ok(Resolution::Open(ActiveProject {
+            id: DEFAULT_ID.into(),
+            root,
+        }));
     }
     let Some(id) = read_pointer(data) else {
         return Ok(Resolution::NeedsChoice("没有记录当前项目".into()));
@@ -162,8 +209,13 @@ pub fn resolve(data: &Path) -> Result<Resolution, String> {
         return Ok(Resolution::NeedsChoice(format!("当前项目 {id} 不存在")));
     }
     match read_meta(&dir(data, &id)) {
-        Ok(_) => Ok(Resolution::Open(ActiveProject { root: dir(data, &id), id })),
-        Err(error) => Ok(Resolution::NeedsChoice(format!("当前项目 {id} 不可用：{error}"))),
+        Ok(_) => Ok(Resolution::Open(ActiveProject {
+            root: dir(data, &id),
+            id,
+        })),
+        Err(error) => Ok(Resolution::NeedsChoice(format!(
+            "当前项目 {id} 不可用：{error}"
+        ))),
     }
 }
 
@@ -183,16 +235,32 @@ pub fn project_list(app: AppHandle) -> Result<Vec<ProjectEntry>, String> {
 }
 
 const LEGACY: [&str; 13] = [
-    "config/cameras.json", "config/plc.json", "config/cycle.json", "config/feasibility.json", "calib", "recipes", "workspaces",
-    "vision", "recipe-capture", "inspection.db", "records", "records-offline", "audit-spool",
+    "config/cameras.json",
+    "config/plc.json",
+    "config/cycle.json",
+    "config/feasibility.json",
+    "calib",
+    "recipes",
+    "workspaces",
+    "vision",
+    "recipe-capture",
+    "inspection.db",
+    "records",
+    "records-offline",
+    "audit-spool",
 ];
 
 pub fn legacy_leftovers(data: &Path) -> Vec<&'static str> {
-    LEGACY.into_iter().filter(|name| data.join(name).exists()).collect()
+    LEGACY
+        .into_iter()
+        .filter(|name| data.join(name).exists())
+        .collect()
 }
 
 pub fn open_target(data: &Path, id: &str) -> Result<ProjectMeta, String> {
-    if !valid_id(id) || !dir(data, id).is_dir() { return Err(format!("项目 {id} 不存在")); }
+    if !valid_id(id) || !dir(data, id).is_dir() {
+        return Err(format!("项目 {id} 不存在"));
+    }
     read_meta(&dir(data, id)).map_err(|error| format!("项目 {id} 不可用：{error}"))
 }
 
@@ -201,13 +269,17 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<(), String> {
     use crate::cycle::{CycleHost, Phase};
     let data = crate::storage::root(&app);
     let from = current_id(&app);
-    if id == from { return Err("已经是当前项目".into()); }
+    if id == from {
+        return Err("已经是当前项目".into());
+    }
     let target = open_target(&data, &id)?;
     let cycle = app.state::<CycleHost>();
     let _link = cycle.link_gate.lock().await;
     let _config = cycle.config_gate.lock().await;
-    let audit_pending = !matches!(cycle.audit.readiness(), Ok(crate::audit::AuditReadiness::Ready))
-        || !cycle.audit.protected_cycle_ids()?.is_empty();
+    let audit_pending = !matches!(
+        cycle.audit.readiness(),
+        Ok(crate::audit::AuditReadiness::Ready)
+    ) || !cycle.audit.protected_cycle_ids()?.is_empty();
     crate::site::check_project_switch(&crate::site::ProjectSwitch {
         block: cycle.switch_block(),
         busy: !matches!(cycle.phase(), Phase::Idle | Phase::Fault),
@@ -215,7 +287,11 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<(), String> {
         audit_pending,
     })?;
     write_pointer(&data, &id)?;
-    crate::applog::write("info", "项目切换", &format!("{from} → {}（{}），重启软件", target.id, target.name));
+    crate::applog::write(
+        "info",
+        "项目切换",
+        &format!("{from} → {}（{}），重启软件", target.id, target.name),
+    );
     crate::instance::restart(&app)
 }
 

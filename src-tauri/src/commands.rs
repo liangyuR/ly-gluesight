@@ -33,7 +33,9 @@ pub fn config_summary(app: &AppHandle) -> serde_json::Value {
         .try_state::<crate::plc::PlcHost>()
         .map(|plc| plc.engine().config().connection);
     let project = app.state::<crate::project::ActiveProject>();
-    let name = crate::project::read_meta(&project.root).ok().map(|meta| meta.name);
+    let name = crate::project::read_meta(&project.root)
+        .ok()
+        .map(|meta| meta.name);
     serde_json::json!({
         "project": {"id": project.id, "name": name},
         "offline": crate::offline::enabled(app),

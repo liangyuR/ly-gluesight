@@ -5,7 +5,11 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("gluesight-manage-{name}-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let path = std::env::temp_dir().join(format!(
+            "gluesight-manage-{name}-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
         std::fs::create_dir_all(&path).unwrap();
         Self(path)
     }
@@ -47,7 +51,8 @@ fn delete_current_is_refused_and_deleted_project_leaves_list_at_once_then_purge_
 }
 
 #[test]
-fn create_with_conflicting_or_invalid_id_or_duplicate_name_is_refused_and_existing_project_untouched() {
+fn create_with_conflicting_or_invalid_id_or_duplicate_name_is_refused_and_existing_project_untouched(
+) {
     let cases = [
         ("same-id", "line-a", "新项目"),
         ("trash-id", "old", "新项目"),
@@ -59,13 +64,30 @@ fn create_with_conflicting_or_invalid_id_or_duplicate_name_is_refused_and_existi
         add(&data.0, "line-a", "A 线");
         std::fs::create_dir_all(trash_root(&data.0).join("old.1700000000000")).unwrap();
         let before = read_meta(&dir(&data.0, "line-a")).unwrap();
-        let active = ActiveProject { id: "line-a".into(), root: dir(&data.0, "line-a") };
+        let active = ActiveProject {
+            id: "line-a".into(),
+            root: dir(&data.0, "line-a"),
+        };
 
-        let request = CreateProject { id: id.into(), name: name.into(), description: String::new(), copy_hardware: true };
+        let request = CreateProject {
+            id: id.into(),
+            name: name.into(),
+            description: String::new(),
+            copy_hardware: true,
+        };
         assert!(create(&data.0, Some(&active), &request).is_err(), "{case}");
 
         assert_eq!(ids(&data.0), ["line-a"], "{case}");
-        assert_eq!(read_meta(&dir(&data.0, "line-a")).unwrap(), before, "{case}");
-        assert_eq!(std::fs::read_to_string(dir(&data.0, "line-a").join("config").join("plc.json")).unwrap(), "line-a", "{case}");
+        assert_eq!(
+            read_meta(&dir(&data.0, "line-a")).unwrap(),
+            before,
+            "{case}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir(&data.0, "line-a").join("config").join("plc.json"))
+                .unwrap(),
+            "line-a",
+            "{case}"
+        );
     }
 }

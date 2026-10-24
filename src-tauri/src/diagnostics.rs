@@ -376,7 +376,10 @@ fn part_images<W: std::io::Write>(app: &AppHandle, package: &mut Package<W>, det
     if count == 0 && files.is_empty() {
         package.notes.push(format!("记录 #{id} 没有保留原图（录制状态：{:?}）", detail.recording.state));
     }
-    let comparisons = crate::storage::project(app).join("workspaces").join("comparisons").join(id.to_string());
+    let comparisons = crate::storage::project(app)
+        .join("workspaces")
+        .join("comparisons")
+        .join(id.to_string());
     package.copy_dir(&comparisons, &format!("{folder}/comparisons"), &[])?;
     Ok(count)
 }
@@ -437,7 +440,9 @@ fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &
     package.copy_file(&project.join("project.json"), "project.json")?;
     package.copy_dir(&crate::storage::project_config(app), "config", &[])?;
     let machine = crate::storage::config(app).join("site-offline.json");
-    if machine.is_file() { package.copy_file(&machine, "machine/site-offline.json")?; }
+    if machine.is_file() {
+        package.copy_file(&machine, "machine/site-offline.json")?;
+    }
     let state = crate::storage::state(app);
     package.copy_dir(&state, "state", &[AUDIT_FILE])?;
     package.copy_handshake_audit(&state.join(AUDIT_FILE), request.from, request.to)?;

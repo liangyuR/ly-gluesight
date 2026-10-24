@@ -48,41 +48,67 @@ fn choose_project(app: &AppHandle, reason: &str) {
             pending.status.request_id += 1;
             pending.status.kind = "chooseProject".into();
             pending.status.title = "选择要打开的项目".into();
-            pending.status.message = format!("{reason}。检测服务、相机与 PLC 尚未启动，选定项目后软件会重启。");
+            pending.status.message =
+                format!("{reason}。检测服务、相机与 PLC 尚未启动，选定项目后软件会重启。");
         }
     }
 }
 
 fn expect_choosing(host: &Startup) -> Result<(), String> {
     let pending = host.pending.lock().map_err(|e| e.to_string())?;
-    if pending.status.kind != "chooseProject" { return Err("当前不在选择项目状态".into()); }
+    if pending.status.kind != "chooseProject" {
+        return Err("当前不在选择项目状态".into());
+    }
     Ok(())
 }
 
 #[tauri::command]
-pub fn storage_startup_projects(host: State<'_, Startup>) -> Result<Vec<crate::project::ProjectEntry>, String> {
+pub fn storage_startup_projects(
+    host: State<'_, Startup>,
+) -> Result<Vec<crate::project::ProjectEntry>, String> {
     expect_choosing(&host)?;
     crate::project::list(&crate::storage::selected_root()?)
 }
 
 #[tauri::command]
-pub fn storage_startup_open_project(app: AppHandle, host: State<'_, Startup>, id: String) -> Result<(), String> {
+pub fn storage_startup_open_project(
+    app: AppHandle,
+    host: State<'_, Startup>,
+    id: String,
+) -> Result<(), String> {
     expect_choosing(&host)?;
     let data = crate::storage::selected_root()?;
     let meta = crate::project::open_target(&data, &id)?;
     crate::project::write_pointer(&data, &meta.id)?;
-    crate::applog::write("info", "项目选择", &format!("启动时选择项目 {}（{}），重启软件", meta.id, meta.name));
+    crate::applog::write(
+        "info",
+        "项目选择",
+        &format!("启动时选择项目 {}（{}），重启软件", meta.id, meta.name),
+    );
     crate::instance::restart(&app)
 }
 
 #[tauri::command]
-pub fn storage_startup_create_project(app: AppHandle, host: State<'_, Startup>, name: String) -> Result<(), String> {
+pub fn storage_startup_create_project(
+    app: AppHandle,
+    host: State<'_, Startup>,
+    name: String,
+) -> Result<(), String> {
     expect_choosing(&host)?;
     let data = crate::storage::selected_root()?;
-    let request = crate::project::manage::CreateProject { id: crate::project::next_id(&data), name, description: String::new(), copy_hardware: false };
+    let request = crate::project::manage::CreateProject {
+        id: crate::project::next_id(&data),
+        name,
+        description: String::new(),
+        copy_hardware: false,
+    };
     let meta = crate::project::manage::create(&data, None, &request)?;
     crate::project::write_pointer(&data, &meta.id)?;
-    crate::applog::write("info", "项目选择", &format!("启动时新建项目 {}（{}），重启软件", meta.id, meta.name));
+    crate::applog::write(
+        "info",
+        "项目选择",
+        &format!("启动时新建项目 {}（{}），重启软件", meta.id, meta.name),
+    );
     crate::instance::restart(&app)
 }
 
