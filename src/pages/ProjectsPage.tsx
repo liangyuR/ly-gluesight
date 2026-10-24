@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { FolderKanban, Plus, RefreshCw } from "lucide-react";
+import { FolderKanban, Plus, RefreshCw, Upload } from "lucide-react";
 import { Alert, Button, Card, EmptyState, Heading, IconButton, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
-import { projectApi, type ProjectEntry, type ProjectMeta, type ProjectUsage } from "../lib/project";
+import { projectApi, projectTransferApi, type ProjectEntry, type ProjectImportPreview, type ProjectMeta, type ProjectUsage } from "../lib/project";
 import { desktopAvailable } from "../lib/desktop";
 import { errorText } from "../lib/errors";
 import { onProjectsChanged, useProjectUsage } from "../features/project/hooks";
 import { formatBytes, formatDate, formatDateTime, projectLabel, type UsageState } from "../features/project/rules";
 import { CreateProjectDialog, DeleteProjectDialog, RenameProjectDialog } from "../features/project/ProjectDialogs";
 import SwitchProjectDialog from "../features/project/SwitchProjectDialog";
+import { ExportProjectDialog, ImportProjectDialog } from "../features/project/TransferDialogs";
 import "../features/project/project.css";
 
-type Open = { kind: "create" } | { kind: "rename"; project: ProjectMeta } | { kind: "delete"; entry: ProjectEntry } | { kind: "switch"; project: ProjectMeta };
+type Open = { kind: "create" } | { kind: "rename"; project: ProjectMeta } | { kind: "delete"; entry: ProjectEntry } | { kind: "switch"; project: ProjectMeta }
+  | { kind: "export"; project: ProjectMeta } | { kind: "import"; preview: ProjectImportPreview };
 
 function UsageCell({ state, format }: { state: UsageState | undefined; format: (usage: ProjectUsage) => ReactNode }) {
   if (!state || state.status === "loading") return <span className="muted">计算中</span>;
@@ -29,6 +31,8 @@ export default function ProjectsPage() {
   const [error, setError] = useState("");
   const [version, setVersion] = useState(0);
   const [open, setOpen] = useState<Open | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [pickError, setPickError] = useState("");
   const serial = useRef(0);
   const reload = useCallback(async () => {
     if (!desktopAvailable()) return;
@@ -51,6 +55,19 @@ export default function ProjectsPage() {
   const usage = useProjectUsage(entries?.map(entry => entry.id) ?? [], version);
   const refresh = () => { setVersion(v => v + 1); void reload(); };
   const close = () => setOpen(null);
+  const pickImport = async () => {
+    if (picking) return;
+    setPicking(true);
+    setPickError("");
+    try {
+      const preview = await projectTransferApi.pickImport();
+      if (preview) setOpen({ kind: "import", preview });
+    } catch (e) {
+      setPickError(errorText(e));
+    } finally {
+      setPicking(false);
+    }
+  };
 
   const columns: TableColumn<ProjectEntry>[] = [
     { key: "name", header: "名称", rowHeader: true, render: entry => <div className="pj-name">
@@ -68,6 +85,7 @@ export default function ProjectsPage() {
       return <div className="pj-actions">
         {meta && !entry.current && <Button size="sm" variant="tonal" onClick={() => setOpen({ kind: "switch", project: meta })}>切换</Button>}
         {meta && <Button size="sm" variant="text" onClick={() => setOpen({ kind: "rename", project: meta })}>重命名</Button>}
+        {meta && <Button size="sm" variant="text" onClick={() => setOpen({ kind: "export", project: meta })}>导出</Button>}
         {entry.current
           ? <span title="先切换到其他项目"><Button size="sm" variant="text" danger disabled aria-label="删除（先切换到其他项目）">删除</Button></span>
           : <Button size="sm" variant="text" danger onClick={() => setOpen({ kind: "delete", entry })}>删除</Button>}
@@ -77,10 +95,11 @@ export default function ProjectsPage() {
 
   return <Card role="region" aria-label="项目" className="pj-page" title={<Heading level={3}>项目</Heading>}
     description="一个项目是一套完整的检测方案：相机组、PLC、节拍、标定、配方以及它产生的检测记录。同一时刻只运行当前项目。"
-    actions={available && <><IconButton aria-label="刷新项目列表" title="刷新" disabled={loading} onClick={refresh}><RefreshCw size={16} /></IconButton><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!entries} onClick={() => setOpen({ kind: "create" })}>新建项目</Button></>}>
+    actions={available && <><IconButton aria-label="刷新项目列表" title="刷新" disabled={loading} onClick={refresh}><RefreshCw size={16} /></IconButton><Button variant="outlined" leadingIcon={<Upload size={16} />} disabled={!entries || picking} onClick={() => void pickImport()}>{picking ? "正在读取…" : "导入项目"}</Button><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!entries} onClick={() => setOpen({ kind: "create" })}>新建项目</Button></>}>
     {!available
       ? <EmptyState icon={<FolderKanban size={30} aria-hidden="true" />} title="项目管理需要桌面后端" description="请在 GlueSight · 胶路智检 桌面软件中查看和管理项目。" />
       : <>
+        {pickError && <Alert tone="ng" title="无法读取项目包" onClose={() => setPickError("")}>{pickError}</Alert>}
         {error && <Alert tone="ng" title="项目列表读取失败" action={<Button size="sm" onClick={refresh}>重试</Button>}>{error}</Alert>}
         {entries && <Table<ProjectEntry> caption="本机项目" rows={entries} columns={columns} rowKey={entry => entry.id} loading={loading} keepRowsWhileLoading
           getRowProps={entry => entry.meta ? undefined : { tone: "warn" }}
@@ -91,5 +110,7 @@ export default function ProjectsPage() {
     {open?.kind === "rename" && entries && <RenameProjectDialog project={open.project} entries={entries} onClose={close} />}
     {open?.kind === "delete" && <DeleteProjectDialog entry={open.entry} usage={usage[open.entry.id]} onClose={close} />}
     {open?.kind === "switch" && <SwitchProjectDialog target={open.project} onClose={close} />}
+    {open?.kind === "export" && <ExportProjectDialog project={open.project} usage={usage[open.project.id]} onClose={close} />}
+    {open?.kind === "import" && entries && <ImportProjectDialog preview={open.preview} entries={entries} onClose={close} onSwitch={project => setOpen({ kind: "switch", project })} />}
   </Card>;
 }
