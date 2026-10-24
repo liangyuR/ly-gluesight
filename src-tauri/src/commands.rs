@@ -26,26 +26,31 @@ pub fn app_info(app: AppHandle) -> AppInfo {
     }
 }
 
-/// 运行日志 app.config：PLC 连接、相机组与检测设置的当前值，启动完成与相关配置保存后各记一次。
-pub fn log_config(app: &AppHandle) {
+/// PLC 连接、相机组与检测设置的当前值：运行日志 app.config 的 data，诊断包 manifest 的 configSummary。
+pub fn config_summary(app: &AppHandle) -> serde_json::Value {
     let cycle = app.state::<crate::cycle::CycleHost>();
     let connection = app
         .try_state::<crate::plc::PlcHost>()
         .map(|plc| plc.engine().config().connection);
-    let cameras = cycle.camera.configs();
-    let plc_text = connection.as_ref().map_or_else(
-        || "未初始化".to_string(),
-        |c| format!("{}:{}", c.host, c.port),
-    );
-    let data = serde_json::json!({
+    serde_json::json!({
         "offline": crate::offline::enabled(app),
         "plc": connection,
-        "cameras": cameras,
+        "cameras": cycle.camera.configs(),
         "settings": cycle.settings(),
-    });
+    })
+}
+
+/// 运行日志 app.config：启动完成与相关配置保存后各记一次。
+pub fn log_config(app: &AppHandle) {
+    let data = config_summary(app);
+    let plc_text = match (data["plc"]["host"].as_str(), data["plc"]["port"].as_u64()) {
+        (Some(host), Some(port)) => format!("{host}:{port}"),
+        _ => "未初始化".to_string(),
+    };
+    let cameras = data["cameras"].as_array().map_or(0, Vec::len);
     crate::applog::emit_event(
         &crate::applog::codes::APP_CONFIG,
-        &format!("PLC {plc_text}，相机 {} 台", cameras.len()),
+        &format!("PLC {plc_text}，相机 {cameras} 台"),
         crate::applog::Fields::default().with_data(data),
     );
 }
