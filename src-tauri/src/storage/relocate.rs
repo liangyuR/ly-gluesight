@@ -189,7 +189,7 @@ pub(super) fn database(path: &Path, source: &Path, target: &Path) -> Result<(), 
     transaction.commit().map_err(|e| e.to_string())
 }
 
-pub(super) fn tree_references(root: &Path, source: &Path, target: &Path) -> Result<(), String> {
+pub(crate) fn tree_references(root: &Path, source: &Path, target: &Path) -> Result<(), String> {
     fn visit(root: &Path, directory: &Path, source: &Path, target: &Path) -> Result<(), String> {
         crate::image_file::checked_source_path(directory)?;
         for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
@@ -213,7 +213,7 @@ pub(super) fn tree_references(root: &Path, source: &Path, target: &Path) -> Resu
     visit(root, root, source, target)
 }
 
-pub(super) fn validate_references(
+pub(crate) fn validate_references(
     staging: &Path,
     source: &Path,
     target: &Path,

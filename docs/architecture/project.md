@@ -1,6 +1,6 @@
 # 项目（Project）设计
 
-> 现状：一期已实施（2026-10-25，分支 `feat/project`）；二期（复制整个项目、整个项目导出导入）未开始。
+> 现状：一期已实施（2026-10-25，分支 `feat/project`）；二期的整个项目导出导入已实施（分支 `feat/project-transfer`），复制整个项目未做。
 
 ## 一、目标
 
@@ -143,6 +143,15 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 - 确认框列出将被永久删除的内容：配方数、候选数、采集轮次数、检测记录数及时间范围、占用空间，要求输入项目名称后才能确认。
 - 删除先把目录原子改名到 `projects/.trash/<id>.<毫秒时间戳>`，列表立即不再出现该项目，再在后台删除；中途退出时下次启动继续清理。删除失败（文件被占用等）写日志，残留留在 `.trash` 等下次启动清理。
 
+### 导出与导入
+
+- **导出**：任一可用项目都能导出为 ZIP（`project/transfer.rs`，格式版本 1）。包内是 `project/` 下的 `project.json`、`config/`、`calib/`、`recipes/`（含修订来源记录）、`workspaces/`、`vision/`、`recipe-capture/`；勾选“包含检测记录与历史原图”时另含 `inspection.db`（用 `VACUUM INTO` 做含 WAL 的一致性快照）、`records/`、`records-offline/`，默认不含。`audit-spool/` 不导出。`manifest.json` 记格式版本、来源项目、来源项目目录、导出时间、来源软件版本、是否含记录及每个文件的字节数与 SHA-256。导出当前项目前按切换的条件检查：没有在途件与未结事务、没有在采集、录制与追溯已写完。
+- **导入**：先完整解到 `cache/project-import-*` 暂存目录，格式版本不认识、路径不在白名单结构内（含 `..`）、清单外条目、重复条目、字节数或校验和不符都整包拒绝，暂存目录用后删除，不留下半个项目。导入为新项目，编号与名称按新建项目的规则校验；`project.json` 的 `copiedFrom` 记来源项目编号。
+- **路径**：`storage/relocate.rs` 把 `workspace.json`、采集轮次 `round.json` 与记录库原图目录中指向来源项目目录的绝对路径改写到新项目目录，再核对没有残留的来源路径。
+- **计划版本**：生产配方保持可生产，发布包一起导入；配方文件、`.revision-sources` 与（含记录时）记录库配方快照中用到的计划版本，按本机 `state/plan-version` 整体换成新号（同一旧号换成同一新号），修订号不变。发布包与发布归档里冻结的配方文档保留原号，它们只按修订号与生产配方对应，不发给 PLC。
+- **候选**：回到草稿，清掉待生效版本与验证结论；没带检测记录时去掉来自检测历史的验证样本。
+- 导入完成后提示核对相机组、PLC 配置与标定；切换到该项目仍按切换流程重启。
+
 ## 七、旧资料不迁移
 
 项目尚未上线，旧资料全部抛弃（同 D-0）：新版本不读取根目录下的 `config/cameras.json`、`plc.json`、`cycle.json`、`feasibility.json`、`calib/`、`recipes/`、`workspaces/`、`vision/releases/`、`recipe-capture/`、`inspection.db`、`records/`、`records-offline/`、`audit-spool/`，首次启动新建空的默认项目。软件不自动删除这些旧文件，启动时检测到它们就写一条提示日志，由人工清理。旧 `recipes/.plan-version` 也不读取，`state/plan-version` 从头开始计数。
@@ -153,6 +162,7 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 | --- | --- |
 | `storage.rs` | 新增 `projects_root`、`project(app)`（当前项目根）、`project_config(app)`；`config(app)` 只留本机配置 |
 | 新增 `project.rs` | `ProjectMeta`、`ActiveProject` 托管状态、`current-project.json` 读写、列表、启动解析、`project_switch` |
+| 新增 `project/transfer.rs` | 项目导出包的打包、校验、导入（路径改写、计划版本重新分配、候选回到草稿） |
 | 新增 `project/manage.rs` | 新建（空 / 复制硬件配置）、重命名、删除（`.trash` 改名与后台清理）、项目统计（只读打开其他项目的记录库、统计目录大小） |
 | `lib.rs` | `ActiveProject` 在记录库之前解析，`open_store` 改用项目路径；无效时只启动选择项目所需的命令 |
 | 路径调用方 | `camera.rs`（`cameras.json`、`recipe-capture`）、`plc.rs`（`plc.json`）、`cycle.rs`（`cycle.json`、`recipes`、`records`、`records-offline`、`audit-spool`）、`vision.rs`（`calib`）、`workspace.rs` 与 `workspace/transfer.rs`（`workspaces`、`vision/releases`、`recipe-capture`）、`diagnostics.rs`、`storage.rs` 的飞拍估算参数 |
@@ -164,7 +174,7 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 ## 九、分期
 
 1. **一期**：目录结构（含记录与历史归项目）、启动解析、重启式切换、项目管理页（新建、重命名、删除）、全局计划号。PLC 握手不改；旧资料不迁移。
-2. **二期**：复制整个项目、整个项目导出导入。
+2. **二期**：整个项目导出导入（已实施）；复制整个项目（未做，可用导出再导入代替）。
 3. **以后可选**：不重启的热切换。
 
 ## 十、已确认（2026-10-24）

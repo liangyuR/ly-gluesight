@@ -1,15 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Alert, Button, Checkbox, Dialog, RadioGroup, Stack, TextArea, TextField, useSnackbar } from "qing-steel";
 import { projectApi, type ProjectEntry, type ProjectMeta } from "../../lib/project";
 import { errorText } from "../../lib/errors";
-import { notifyProjectsChanged, useProjectSwitch, useUnsavedCandidate } from "./hooks";
+import { notifyProjectsChanged, useAlive, useProjectSwitch, useUnsavedCandidate } from "./hooks";
 import { defaultProjectId, formatBytes, projectIdError, projectLabel, projectNameError, recordsText, type UsageState } from "./rules";
-
-function useAlive() {
-  const alive = useRef(true);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  return alive;
-}
 
 const contentOptions = [
   { value: "empty", label: "空项目" },

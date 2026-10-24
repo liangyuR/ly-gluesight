@@ -1,4 +1,4 @@
-mod relocate;
+pub(crate) mod relocate;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{

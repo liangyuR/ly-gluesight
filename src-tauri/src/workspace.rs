@@ -32,6 +32,7 @@ pub mod progress;
 mod recorded;
 mod reproduce;
 mod transfer;
+pub(crate) use transfer::{copy_hashed, reset_for_project_import};
 mod workflow;
 pub use burst::*;
 pub use burst_history::*;

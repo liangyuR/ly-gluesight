@@ -1,4 +1,5 @@
 pub mod manage;
+pub mod transfer;
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -264,28 +265,34 @@ pub fn open_target(data: &Path, id: &str) -> Result<ProjectMeta, String> {
     read_meta(&dir(data, id)).map_err(|error| format!("项目 {id} 不可用：{error}"))
 }
 
+/// 当前项目此刻能否安全离开（切换或导出）：没有在途件与未结事务、没有在采集、录制与追溯已写完。
+pub fn switch_state(app: &AppHandle) -> Result<crate::site::ProjectSwitch, String> {
+    use crate::cycle::{CycleHost, Phase};
+    let cycle = app.state::<CycleHost>();
+    let audit_pending = !matches!(
+        cycle.audit.readiness(),
+        Ok(crate::audit::AuditReadiness::Ready)
+    ) || !cycle.audit.protected_cycle_ids()?.is_empty();
+    Ok(crate::site::ProjectSwitch {
+        block: cycle.switch_block(),
+        busy: !matches!(cycle.phase(), Phase::Idle | Phase::Fault),
+        capturing: cycle.camera.recipe_capture().active(),
+        audit_pending,
+    })
+}
+
 #[tauri::command]
 pub async fn project_switch(app: AppHandle, id: String) -> Result<(), String> {
-    use crate::cycle::{CycleHost, Phase};
     let data = crate::storage::root(&app);
     let from = current_id(&app);
     if id == from {
         return Err("已经是当前项目".into());
     }
     let target = open_target(&data, &id)?;
-    let cycle = app.state::<CycleHost>();
+    let cycle = app.state::<crate::cycle::CycleHost>();
     let _link = cycle.link_gate.lock().await;
     let _config = cycle.config_gate.lock().await;
-    let audit_pending = !matches!(
-        cycle.audit.readiness(),
-        Ok(crate::audit::AuditReadiness::Ready)
-    ) || !cycle.audit.protected_cycle_ids()?.is_empty();
-    crate::site::check_project_switch(&crate::site::ProjectSwitch {
-        block: cycle.switch_block(),
-        busy: !matches!(cycle.phase(), Phase::Idle | Phase::Fault),
-        capturing: cycle.camera.recipe_capture().active(),
-        audit_pending,
-    })?;
+    crate::site::check_project_switch(&switch_state(&app)?)?;
     write_pointer(&data, &id)?;
     crate::applog::write(
         "info",
