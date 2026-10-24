@@ -46,6 +46,7 @@ mod store;
 mod storage;
 mod managed_samples;
 mod teach;
+mod teaching;
 mod timeline;
 mod vision;
 mod workspace;
@@ -212,6 +213,7 @@ pub fn run() {
             recipe_capture::recipe_capture_start,
             recipe_capture::recipe_capture_get,
             recipe_capture::recipe_capture_stop,
+            recipe_capture::recipe_capture_plc_status,
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_image,
             recipe_capture::recipe_capture_frame_image,

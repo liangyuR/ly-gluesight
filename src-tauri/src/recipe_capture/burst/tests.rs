@@ -269,3 +269,20 @@ fn persisted_record_cannot_redirect_images_or_forge_frames() {
     }
     assert!(host.get_any("capture-../../outside").is_err());
 }
+
+#[test]
+fn teaching_ready_receives_before_plc_acceptance_and_persists_without_production_metadata() {
+    let host = host();
+    let initial = start(&host);
+    host.burst_ready(12).unwrap();
+    for cam in 0..3 { offer(&host, frame(cam, 1)); }
+    let done = finish(&host, None);
+    assert_eq!(done.state, CaptureState::Complete, "{:?}", done.error);
+    assert_eq!(done.group_count, 1);
+    assert_eq!(done.teaching_round_id, Some(12));
+    assert!(done.plc_plan_version.is_none() && done.plc_shot_count.is_none());
+    let saved = host.get_burst(&initial.round_id).unwrap();
+    assert_eq!(saved.state, CaptureState::Complete);
+    assert_eq!(saved.teaching_round_id, Some(12));
+    assert_eq!(pixel(&host, &initial.round_id, "cam1", 1), 1);
+}

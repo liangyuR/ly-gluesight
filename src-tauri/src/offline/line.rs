@@ -66,8 +66,11 @@ impl Layout {
             let end = (slot.byte + slot.len) as usize;
             extents.entry(slot.db).and_modify(|e| *e = (*e).max(end)).or_insert(end);
         }
+        extents.entry(6).or_insert(10);
+        extents.entry(12).or_insert(10);
         let mut memory = Memory::default();
         for (db, end) in extents { memory.create(db, end.max(1024)); }
+        let _ = memory.write(12, 0, &1u16.to_be_bytes());
         self.set(&mut memory, tag::PROTOCOL_VERSION, PROTOCOL_VERSION as u32);
         for (field, slot) in &self.slots {
             if slot.text_header.is_some() { self.set_text(&mut memory, field, ""); }
@@ -274,13 +277,14 @@ enum Wait {
 
 /// 虚拟产线：扮演 PLC 程序与机器人，直接读写进程内 S7 服务的 DB，严格按一期握手推进一件。
 pub struct Line {
+    teaching_previous: Mutex<Option<[u16; 5]>>,
     memory: SharedMemory,
     layout: Layout,
 }
 
 impl Line {
     pub fn new(memory: SharedMemory, layout: Layout) -> Self {
-        Self { memory, layout }
+        Self { memory, layout, teaching_previous: Mutex::new(None) }
     }
 
     pub(crate) fn read(&self, field: &str) -> u32 {
@@ -379,16 +383,105 @@ impl Line {
             self.write(&[(tag::FAULT_RESET, 0)]);
             sleep(timing.settle).await;
             if !self.press_reset() { return Ok(()); }
-            let window = RESET_RETRY.min(deadline.saturating_duration_since(Instant::now()));
-            let ready = self.wait(timing, window, abort, false, |line| line.ready() || line.read(tag::PART_START) == 1).await;
+            let raised = Instant::now();
+            let prepared = self.wait(timing, deadline.saturating_duration_since(Instant::now()), abort, false,
+                |line| line.read(tag::PART_START) == 1 || (line.read(tag::VISION_FAULT) == 1 && raised.elapsed() >= Duration::from_millis(500))).await;
             self.write(&[(tag::FAULT_RESET, 0)]);
-            match ready {
+            match prepared {
+                Wait::Done if self.read(tag::PART_START) == 1 => return Ok(()),
+                Wait::Done => {}
+                Wait::Aborted => return Err(ABORTED.into()),
+                _ => return Err("PLC 复位准备确认超时：PC 未保持 visionFault".into()),
+            }
+            let completed = self.wait(timing, RESET_RETRY.min(deadline.saturating_duration_since(Instant::now())), abort, false,
+                |line| line.read(tag::VISION_FAULT) == 0 || line.read(tag::PART_START) == 1).await;
+            match completed {
                 Wait::Done => return Ok(()),
                 Wait::Aborted => return Err(ABORTED.into()),
-                _ if Instant::now() >= deadline => return Err("PLC 已发 faultReset，视觉仍未就绪：查看在线检测页的故障原因".into()),
+                _ if Instant::now() >= deadline => return Err("PLC 已释放 faultReset，PC 复位尚未完成".into()),
                 _ => {}
             }
         }
+    }
+
+    fn teach_read(&self, offset: u32) -> u16 {
+        self.memory.lock().unwrap().read(6, offset, 2).map(|b| u16::from_be_bytes([b[0], b[1]])).unwrap_or(0)
+    }
+
+    fn teach_reply(&self, state: u16, id: u16, reason: u16) {
+        let mut memory = self.memory.lock().unwrap();
+        for (offset, value) in [(0, 1u16), (4, id), (6, reason), (8, 0), (2, state)] {
+            let _ = memory.write(12, offset, &value.to_be_bytes());
+        }
+    }
+
+    pub fn service_teaching_idle(&self, allow_reset: bool) {
+        let mut memory = self.memory.lock().unwrap();
+        let Ok(bytes) = memory.read(6, 0, 10) else { return };
+        let values: [u16; 5] = std::array::from_fn(|i| u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]));
+        let mut previous = self.teaching_previous.lock().unwrap();
+        let stable = *previous == Some(values);
+        *previous = Some(values);
+        if !stable || values[0] != 1 || values[4] != 0 || values[2] > 32767 { return; }
+        let Ok(reply) = memory.read(12, 0, 10) else { return };
+        let state = u16::from_be_bytes([reply[2], reply[3]]);
+        let id = u16::from_be_bytes([reply[4], reply[5]]);
+        let next = if values[1] == 0 && values[3] == 0 && (allow_reset || (state == 30 && values[2] == id)) {
+            Some((0u16, values[2]))
+        } else if (state == 0 && values[2] > id || state == 30 && values[2] == id)
+            && ((values[1] == 40 && (1..=2).contains(&values[3])) || (values[1] == 30 && (3..=7).contains(&values[3]))) {
+            Some((30, values[2]))
+        } else { None };
+        if let Some((state, id)) = next {
+            for (offset, value) in [(0, 1u16), (4, id), (6, 0), (8, 0), (2, state)] {
+                let _ = memory.write(12, offset, &value.to_be_bytes());
+            }
+        }
+    }
+
+    pub async fn run_capture(&self, timing: &Timing, order: &PartOrder,
+        mut fire: impl FnMut(usize, Option<&Pulse>), abort: &AtomicBool) -> Result<Outcome, String> {
+        let id = self.teach_read(4);
+        if self.teach_read(0) != 1 || self.teach_read(2) != 10 || id == 0 || self.teach_read(6) != 0 || self.teach_read(8) != 0 {
+            return Err("未收到有效的示教 V1 请求".into());
+        }
+        sleep(timing.poll).await;
+        if self.teach_read(4) != id || self.teach_read(2) != 10 { return Err("示教请求已撤销".into()); }
+        self.teach_reply(10, id, 0);
+        let pulses = order.profile.as_ref().map(|p| p.pulses(&[]));
+        let count = pulses.as_ref().map_or(order.shot_count as usize, Vec::len);
+        let period = order.profile.as_ref().map_or(timing.shot_interval, PulseProfile::period);
+        let started = Instant::now();
+        for index in 0..count {
+            let deadline = started + period * (index as u32 + 1);
+            while Instant::now() < deadline && self.teach_read(2) == 10 && !abort.load(Ordering::SeqCst) {
+                sleep(timing.poll.min(deadline.saturating_duration_since(Instant::now()))).await;
+            }
+            if abort.load(Ordering::SeqCst) || self.read(tag::VISION_FAULT) != 0 || self.teach_read(4) != id {
+                self.teach_reply(50, id, 6);
+                return Err("示教仿真停止，需要显式复位".into());
+            }
+            if self.teach_read(2) != 10 { break; }
+            fire(index, pulses.as_ref().map(|p| &p[index]));
+        }
+        if self.teach_read(2) == 10 { self.teach_reply(20, id, 0); }
+        let deadline = Instant::now() + timing.result_timeout;
+        while !matches!(self.teach_read(2), 20 | 30 | 40) {
+            if Instant::now() >= deadline || abort.load(Ordering::SeqCst) {
+                self.teach_reply(50, id, 8);
+                return Err("示教等待 PC 结果超时".into());
+            }
+            sleep(timing.poll).await;
+        }
+        let success = self.teach_read(2) == 20;
+        self.teach_reply(30, id, 0);
+        let deadline = Instant::now() + timing.release_timeout;
+        while self.teach_read(2) != 0 {
+            if Instant::now() >= deadline { self.teach_reply(50, id, 8); return Err("示教等待 PC 释放超时".into()); }
+            sleep(timing.poll).await;
+        }
+        self.teach_reply(0, id, 0);
+        Ok(Outcome { request_seq: id as u32, sn: order.sn.clone(), result_code: if success { 1 } else { 90 }, fault_code: 0 })
     }
 
     pub async fn run_part(&self, timing: &Timing, order: &PartOrder, scenario: Scenario,
@@ -504,6 +597,72 @@ mod tests {
     use super::*;
     use crate::plan::{new_segment, KindDefaults};
 
+    fn write_teach(memory: &SharedMemory, db: u16, state: u16, id: u16, reason: u16) {
+        let bytes: Vec<u8> = [1u16, state, id, reason, 0].into_iter().flat_map(u16::to_be_bytes).collect();
+        memory.lock().unwrap().write(db, 0, &bytes).unwrap();
+    }
+
+    fn teach_state(memory: &SharedMemory) -> u16 {
+        let b = memory.lock().unwrap().read(12, 2, 2).unwrap();
+        u16::from_be_bytes([b[0], b[1]])
+    }
+
+    #[test]
+    fn idle_teaching_cancel_releases_and_fault_only_clears_on_explicit_reset() {
+        let layout = Layout::from_config(&crate::inspection::default_plc_config()).unwrap();
+        let memory = layout.memory();
+        let line = Line::new(memory.clone(), layout);
+        write_teach(&memory, 6, 40, 1, 1);
+        line.service_teaching_idle(false);
+        line.service_teaching_idle(false);
+        assert_eq!(teach_state(&memory), 30);
+        write_teach(&memory, 6, 0, 1, 0);
+        line.service_teaching_idle(false);
+        line.service_teaching_idle(false);
+        assert_eq!(teach_state(&memory), 0);
+        write_teach(&memory, 12, 50, 1, 6);
+        line.service_teaching_idle(false);
+        assert_eq!(teach_state(&memory), 50);
+        line.service_teaching_idle(true);
+        assert_eq!(teach_state(&memory), 0);
+    }
+
+    #[tokio::test]
+    async fn teaching_capture_completes_using_db6_db12_without_production_part_start() {
+        let layout = Layout::from_config(&crate::inspection::default_plc_config()).unwrap();
+        let memory = layout.memory();
+        let line = Line::new(memory.clone(), layout);
+        let timing = Timing {
+            poll: Duration::from_millis(1), shot_interval: Duration::from_millis(2),
+            end_delay: Duration::ZERO, ack_delay: Duration::ZERO, settle: Duration::ZERO,
+            arm_timeout: Duration::from_secs(2), result_timeout: Duration::from_secs(2),
+            ready_timeout: Duration::from_secs(2), release_timeout: Duration::from_secs(2),
+        };
+        write_teach(&memory, 6, 10, 7, 0);
+        let order = PartOrder::legacy("teach".into(), 1, 1, 3, 3);
+        let abort = AtomicBool::new(false);
+        let mut frames = 0;
+        let pc = async {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                assert!(Instant::now() < deadline);
+                assert_eq!(line.read(tag::PART_START), 0);
+                assert_eq!(line.read(tag::PART_END), 0);
+                match teach_state(&memory) {
+                    20 => write_teach(&memory, 6, 20, 7, 0),
+                    30 => { write_teach(&memory, 6, 0, 7, 0); break; }
+                    _ => {}
+                }
+                sleep(timing.poll).await;
+            }
+        };
+        let (outcome, ()) = tokio::join!(line.run_capture(&timing, &order, |_, _| frames += 1, &abort), pc);
+        assert_eq!(outcome.unwrap().result_code, 1);
+        assert_eq!(frames, 3);
+        assert_eq!(teach_state(&memory), 0);
+        assert_eq!(line.read(tag::PART_START), 0);
+    }
+
     /// 离线脉冲剖面取自配方：各段已标定用 N_exp；有段待标定时按段长 × 频率 / 速度估算（没有段长按类型取默认帧数），
     /// 已有整件标定时缩放到 ΣN_exp、已标定的段不动——否则正常件的帧数落在 ΣN_exp ± Σtol 之外，被当成帧数异常。
     #[test]
@@ -520,6 +679,31 @@ mod tests {
             let frames = nominal_frames(&segments, part_total, 20.0);
             assert_eq!(frames.iter().map(|&(_, n)| n).collect::<Vec<_>>(), expected, "{case}");
         }
+    }
+
+    #[tokio::test]
+    async fn reset_holds_preparation_then_finishes_without_published_recipe_ready() {
+        let layout = Layout::from_config(&crate::inspection::default_plc_config()).unwrap();
+        let line = Line::new(layout.memory(), layout);
+        line.write(&[(tag::VISION_FAULT, 1), (tag::VISION_READY, 0)]);
+        let timing = Timing {
+            poll: Duration::from_millis(2), shot_interval: Duration::ZERO,
+            end_delay: Duration::ZERO, ack_delay: Duration::ZERO, settle: Duration::ZERO,
+            arm_timeout: Duration::from_secs(2), result_timeout: Duration::from_secs(2),
+            ready_timeout: Duration::from_secs(3), release_timeout: Duration::from_secs(2),
+        };
+        let abort = AtomicBool::new(false);
+        let pc = async {
+            while line.read(tag::FAULT_RESET) == 0 { sleep(timing.poll).await; }
+            let raised = Instant::now();
+            while line.read(tag::FAULT_RESET) == 1 { sleep(timing.poll).await; }
+            assert!(raised.elapsed() >= Duration::from_millis(490));
+            line.write(&[(tag::VISION_FAULT, 0)]);
+        };
+        let (result, ()) = tokio::join!(line.ensure_ready(&timing, &abort), pc);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(line.read(tag::VISION_READY), 0);
+        assert_eq!(line.read(tag::FAULT_RESET), 0);
     }
 
     /// 进入离线的自动复位还在重按时，运行或整圈采集见到就绪发出 partStart（落在它松开等待或按住等待期间），

@@ -9,7 +9,7 @@ export const handshakePhaseLabels: Record<Phase, string> = {
 
 /** 协议 §5 阶段表与 §8 复位流程推导出的“现在在等谁”。 */
 const waitingTexts: Record<Phase, string> = {
-  resetRequired: "PLC：先把 partStart/partEnd/resultAck 置 0 并保持 faultReset 低 ≥1 s，再发 faultReset 上升沿；也可在在线检测页点“复位故障”",
+  resetRequired: "PLC：清 partStart/partEnd/resultAck，faultReset 低 ≥1 s 后置高；高 ≥500 ms 且看到 visionFault=1 后拉低，再等 visionFault=0；也可在在线检测页点“复位故障”",
   idle: "PLC：写 requestSeq、partSn、productCode、shotCount 与 deviceShots（预期总帧数 ΣN_exp）、planVersion，最后置 partStart",
   validating: "PC：核对请求、撤 visionReady、写 acceptedSeq，置 busy，最后置 armed（PLC 此时禁止触发）",
   acquiring: "PLC：相机使能为高时连续发脉冲（deviceTriggers 只作参考，不要求等于预期总帧数），运动结束、脉冲停发后写最终计数并置 partEnd",

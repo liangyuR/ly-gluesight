@@ -24,7 +24,8 @@ impl PlcHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
         let config_path = crate::storage::config(app).join("plc.json");
         let log_path = crate::storage::root(app).join("logs").join("plc.db");
-        let config = PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);
+        let mut config = PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);
+        inspection::add_teaching_points(&mut config);
         let handle = app.clone();
         let last_link = std::sync::Mutex::new(None);
         let sink: EventSink = Arc::new(move |event| match event {

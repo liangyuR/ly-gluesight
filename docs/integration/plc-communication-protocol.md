@@ -1,6 +1,6 @@
 # GlueSight PLC 通讯协议
 
-文档修订：4.2；审核日期：2026-10-23；线上握手协议版本：6。
+文档修订：4.3；更新日期：2026-10-24；线上握手协议版本：6。
 
 本次改为 Line0 高电平连续采集，协议版本保持 6，DB4 / DB2 布局、字段名、类型、偏移、握手顺序、心跳及复位不变。PLC 负责运动与采集使能门控，相机按软件设定帧率自行曝光，默认 10 fps。
 
@@ -8,7 +8,7 @@
 
 三台相机按各自 SDK 帧号配组，不保证曝光时刻同步。Software 单帧触发仅用于标定和调试；PLC 整轮采集和生产必须使用 Line0。一件只有一个在途事务，完成结果确认和双方释放后才能开始下一件。
 
-同一组 DB 承载生产与示教，线上没有用途字段。PLC 必须在外部锁定用途；示教的结果 1/0 只表示采集完成，不能据此放行良品。参考 SCL 未在 TIA Portal 或真实 CPU 编译运行，仍须现场验证。
+生产使用 DB2 / DB4 协议 6；整圈示教使用独立 [示教接口 V1](teaching-capture-sequence.md) 的 DB6 / DB12，不再复用生产开始、结束和结果握手。示教完成不产生生产良品信号。双方须成套更新；参考 SCL 未在 TIA Portal 或真实 CPU 编译运行，仍须现场验证。
 
 ## 1 通讯参数与分工
 
@@ -48,11 +48,11 @@ DB4 点位在 PC 点表中必须设为只读，DB2 点位设为读写。PLC 程�
 | DB4.DBB1 | 1.0 | Byte | 保留 | 保持 0 |
 | DB4.DBW2 | 2.0 | Int | `protocolVersion` | 固定 6；其他值（含 5）拒绝 |
 | DB4.DBD4 | 4.0 | DInt | `requestSeq` | 本件事务序号，1–2147483647，非零且递增 |
-| DB4.DBW8 | 8.0 | Int | `productCode` | 生产配方产品代码，1–32767；PC 手动选配方时也必须匹配。示教采集不据此选择候选 |
-| DB4.DBW10 | 10.0 | Int | `shotCount` | 与 shotCount 填同一 expectedTotal；生产核对计划，示教不核对实际帧数 |
-| DB4.DBD12 | 12.0 | DInt | `planVersion` | 生产使用 PC 分配并导出的计划版本；示教见第 4.1 节，均不得为 0 或负数 |
+| DB4.DBW8 | 8.0 | Int | `productCode` | 生产配方产品代码，1–32767；PC 手动选配方时也必须匹配。示教 V1 不使用本字段 |
+| DB4.DBW10 | 10.0 | Int | `shotCount` | 与 shotCount 填同一 expectedTotal；生产核对计划，示教 V1 不使用本字段 |
+| DB4.DBD12 | 12.0 | DInt | `planVersion` | 生产使用 PC 分配并导出的计划版本，不得为 0 或负数；示教 V1 不使用本字段 |
 | DB4.DBD16 | 16.0 | DInt | `planReserved` | 固定 0，非零拒绝处理 |
-| DB4.DBW20 | 20.0 | Int | `deviceShots` | 与 shotCount 填同一 expectedTotal；生产核对计划，示教不核对实际帧数 |
+| DB4.DBW20 | 20.0 | Int | `deviceShots` | 与 shotCount 填同一 expectedTotal；生产核对计划，示教 V1 不使用本字段 |
 | DB4.DBB22–27 | 22.0 | Byte ×6 | 保留 | 保持 0 |
 | DB4.DBD28 | 28.0 | DInt | `ackSeq` | 确认时回显本件 resultSeq，新件开始前清为 0 |
 | DB4.DBW32 | 32.0 | Int | `deviceTriggers` | 保留字段，PLC 始终写 0；PC 不用于告警、收尾或基线计算 |
@@ -75,7 +75,7 @@ DB4 点位在 PC 点表中必须设为只读，DB2 点位设为读写。PLC 程�
 | DB2.DBB1 | 1.0 | Byte | 保留 | PC 写 0 |
 | DB2.DBW2 | 2.0 | Int | `pcProtocolVersion` | 成功复位后为 6 |
 | DB2.DBD4 | 4.0 | DInt | `resultSeq` | 本件结果事务序号，应等于 requestSeq |
-| DB2.DBW8 | 8.0 | Int | `resultCode` | 生产整件结果或示教采集完成码，须结合外部锁定的用途，见第 6 节 |
+| DB2.DBW8 | 8.0 | Int | `resultCode` | 生产整件结果，见第 6 节；示教 V1 不使用本字段 |
 | DB2.DBW10 | 10.0 | Int | `faultCode` | 检测异常码，正常质量结果为 0 |
 | DB2.DBD12 | 12.0 | DInt | `acceptedSeq` | 已接受并布防的 requestSeq |
 | DB2.DBD16 | 16.0 | DInt | `acceptedPlanReserved` | 布防时写 0，核对接受状态时应为 0 |
@@ -115,9 +115,17 @@ SN 规则：
 
 生产请求携带 PC 导出的产品代码、计划版本与 expectedTotal。PC 核对相机绑定、已发布配方及标定环境。帧率改变需要重新标定、验证和发布，不直接复用旧的预期帧数。
 
-整轮示教允许 PLC 填估算帧数，不按估算值截帧；实际接收的帧按 SDK 帧号归组。示教成功返回 1/0，失败返回 90 配 98/99。旧拍照点采集已停用。
+整轮示教由 PC 发起，按实际 SDK 帧号归组，不发送估算帧数或生产结果码；通过独立示教状态通知结束、确认和释放，见第 4.1 节。旧拍照点采集已停用。
 
 帧号缺口、传输丢帧和相机之间帧数差异用于诊断。帧数相差超过 1 的孤立相机产生丢帧告警；整件帧组数超出标定值及容差产生帧数异常标记。deviceTriggers 不参与任何比较。
+
+### 4.1 整圈示教采集的用途与请求
+
+整圈采集已改为 [示教接口 V1](teaching-capture-sequence.md)：DB6 由 PC 写，DB12 由 PLC 写，各 10 字节、五个 Int。轮次编号范围 1–32767；一次点击启动一轮，PLC 接受后无需等待 PC 再布防。
+
+PC 发请求前准备图像接收及保存；PLC 负责现场许可、生产互斥、运动和 Line0。原图完成后仍需等待 PLC 确认及双方释放。取消不会立即解除互锁。生产 partStart 不再被重定向为示教请求；生产字段和握手只按本节后续生产流程解释。
+
+首次部署需应用包含示教 V1 的点表并导入对应 PLC 程序。PC 不写 PLC 所有字段，禁止以手动写点代替示教状态机。现场已确认 DB6 / DB12 可用；真实 CPU 编译与联调仍由现场完成。
 
 ## 5 单件握手流程
 
@@ -142,7 +150,7 @@ partEnd 后不因当前帧数达到某个值而提前结束，等待完整 drain
 
 ## 6 结果与异常码
 
-下表的质量语义仅适用于外部已锁定为生产的事务。示教采集只用 `1/0` 表示采集完成、`90` 配 `98/99` 表示可报告的采集失败，详见第 4.1 节；线上结果本身不能区分两种用途。
+下表仅适用于 DB2 / DB4 的生产事务。示教采集使用独立 DB6 / DB12 状态与原因码，不返回本表结果；详见第 4.1 节。
 
 | resultCode | 名称 | PLC 处理 |
 | --- | --- | --- |
@@ -166,8 +174,8 @@ partEnd 后不因当前帧数达到某个值而提前结束，等待完整 drain
 | 95 | 配方不可用 |
 | 96 | 多余帧。协议 6 起段配方不再使用：帧数超出 N_exp ± 容差只记“帧数异常”告警；常量与本表保留，当前不再产生 |
 | 97 | 运动结束超时 |
-| 98 | 设备丢失（含段配方示教采集时相机断连、会话变化） |
-| 99 | 布防或处理超时、测量执行失败等处理异常（含段配方示教采集的写盘超时、等待开始超时、操作员中止），结合 PC 原因查看 |
+| 98 | 设备丢失，包括相机断连、会话变化 |
+| 99 | 布防或处理超时、测量执行失败等处理异常，结合 PC 原因查看 |
 | 100 | 计划版本、相机绑定或计划内容与 PC 不一致 |
 
 `visionFault` 是握手层故障信号，与 `faultCode` 不同。心跳失活、请求身份变化或回写失败可能只有 visionFault 和 PC 错误原因，没有可提交的 done；此时保留未结事务，不能拿残留结果 ACK。
@@ -188,7 +196,7 @@ PLC 参考 FB 的 `LocalDiagnostic` 只在本地使用，不写 `faultCode`（DB
 
 布防回写或读回确认失败、超时时，PC 进入 visionFault 并保留事务，不保证还有 done/99，PLC 应按故障处置。PLC 的 ArmTimeout 从 partStart↑ 计时，须覆盖 PC 开始双读确认（约 2 个轮询周期）、请求落盘、`arm_ms` 与布防落盘。两次落盘在磁盘繁忙时实测各可达约 0.65 s，合计最坏约 `arm_ms` + 1.4 s，因此 ArmTimeout 不得小于 `arm_ms` + 2 s，建议保持默认 10 s（覆盖 PC 上限 5000 ms 及上述开销）。PC 负载很高时发现 partStart 还会再滞后，不要把 ArmTimeout 压到下限。ACK 或释放等待超过 PC 阈值只告警并保持事务，不自动丢弃 done 或开始下一件。PC S7 模板心跳默认 500 ms，契约允许配置 100–1000 ms；两端失活阈值均为 3 s。
 
-示教采集不使用生产 `arm_ms/motion_ms/proc_ms` 预算：PC 启动采集后等待 start 最长 120 s，接受 start 后重新计时，接收至 partEnd 最长 120 s。partEnd 后使用独立 `drainTimeoutMs`，默认 1000 ms、范围 200–30000 ms；即使提前收齐，也等完整窗口结束才确认完成。PLC `ResultTimeout` 必须覆盖该窗口和保存、通讯耗时，默认 10 s 不适用于例如 30 s 采集收尾。采集 ACK/释放仍使用上述 `ack_ms` 告警与事务保持规则。
+示教 V1 使用独立接受、运动、收尾、确认和释放预算，见 [示教接口 V1](teaching-capture-sequence.md) 第 5 节。生产超时设置不替代示教状态机的时限。
 
 | PLC 参考 FB 输入 | 默认 | 作用 |
 | --- | --- | --- |
@@ -196,7 +204,7 @@ PLC 参考 FB 的 `LocalDiagnostic` 只在本地使用，不写 `faultCode`（DB
 | MotionTimeout | 30 s | 等待本件运动与触发结束 |
 | ResultTimeout | 10 s | 等待 PC 结果，包括提前终止后的结果 |
 | ReleaseTimeout | 10 s | 等待 PC 释放及下一次就绪，各阶段分别计时 |
-| ResetTimeout | 10 s | 复位中性阶段与等待就绪阶段分别计时 |
+| ResetTimeout | 10 s | 复位中性、请求确认及等待完成三个阶段分别计时 |
 
 PLC 阶段超时锁入故障并停止新触发，保留 pending。现场根据实际运动时间、网络与处理耗时调整双方预算，预留余量；不要把 50 ms 轮询周期当作相机触发间隔或节拍保证。
 
@@ -210,8 +218,10 @@ PC 写入或读取遇到断开、通讯超时或应答帧异常时，立即关�
 2. 操作员确认处置完成，再允许 `ReconcileConfirmed`。该输入不应永久接 TRUE。
 3. 对参考 FB 的本地 `ResetRequest` 先置低，再发新上升沿；PLC 释放 partStart/partEnd/resultAck。运行中的未结件不能直接清输入强切下一件。
 4. 保持 faultReset 为低至少 1 s，保持 requestSeq、ackSeq 基线不变，随后置 faultReset 高至少 500 ms，形成 PC 可观察的新边沿。
-5. PC 在设备就绪、PLC 心跳有变化且输入中性时清输出、记录复位审计并结束原 pending，最后置 visionReady。
-6. PLC 必须看到 ready 低状态后再到高状态，且 pcProtocolVersion=6、armed/busy/done/visionFault 全为 0，才认定复位成功。超时则重新处置并发新低→高复位请求。
+5. PC 核验基础服务、PLC 心跳及中性输入，保持 visionFault=1；PLC 观察到该高电平且 faultReset 已保持至少 500 ms 后，将 faultReset 拉低，进入等待完成阶段。
+6. PC 观察到 faultReset 拉低后清本侧其他输出，记录复位审计并持久化结束原 pending，最后清 visionFault。PLC 确认 pcProtocolVersion=6、armed/busy/done/visionFault 全为 0 且心跳正常，才认定基础复位成功。超时则重新处置并发新低→高复位请求。
+
+基础复位不依赖已发布生产配方；visionReady 仅在生产条件满足且无示教占用时置 1。PLC 基础复位完成后仍须 visionReady 才能接生产件。此复位确认顺序与示教扩展一起更新，PC 和参考 PLC 程序必须配套部署，旧的“保持 faultReset 高并等待 ready”程序不可继续使用。
 
 段配方每台相机的帧归属以 SDK 帧号为准：本件帧序号 = 帧号 − 该相机基线，下一件基线取当前会话观察到的最高帧号。`deviceTriggers` 不参与。持续缺帧、传输丢帧或相机间帧数偏差根据对应原因排查采集使能、相机取流与带宽。
 
@@ -283,12 +293,17 @@ sequenceDiagram
     PLC->>PC: 4. PLC 建立中性输入，并保持复位低电平<br/>partStart=partEnd=resultAck=0<br/>faultReset=0 持续至少 1 s
     Note over OP,PC: 复位期间保持 requestSeq、ackSeq 及连接会话基线稳定；PLC 须确认 PC 心跳活跃。
     PLC->>PC: 5. PLC 产生 PC 可观察的新 faultReset 上升沿<br/>faultReset=1，保持至少 500 ms
-    PC->>PC: 6. PC 核验复位条件，再清本侧输出<br/>设备就绪、PLC 心跳有变化、审计可用<br/>输入中性且基线稳定；清 armed / done / busy / visionFault<br/>pcProtocolVersion=6；visionReady 仍为 0
-    PC->>PLC: 7. PC 完成复位审计与持久化，再提交 ready<br/>记录原事务与复位审计，结束原 pending<br/>再次核验中性输入、连接与序号基线稳定<br/>最后置 visionReady=1
-    PLC->>PLC: 8. PLC 观察 ready 从低到高，完成放行核验<br/>必须已见 visionReady=0，然后观察到 1<br/>pcProtocolVersion=6；armed=busy=done=visionFault=0<br/>PC 心跳活跃，faultReset 高保持已满 500 ms
-    Note over OP,PC: PLC 清 faultReset，结束本地 pending，复位成功后才允许接收下一件。
-    Note over OP,PC: 复位超时、条件未满足或 ready 未形成低→高：仍禁止生产。<br/>重新核对实物与未结事务处置，再发新的低→高复位请求；不要重复使用旧高电平。<br/>复位过程与真实触发、相机会话的重新对齐仍须现场验收。
+    PC->>PLC: 6. PC 核验基础服务、心跳和中性输入<br/>保持 visionFault=1，visionReady=0
+    PLC->>PC: 7. 已观察到 visionFault=1 且请求高满 500 ms<br/>拉低 faultReset，等待完成
+    PC->>PLC: 8. PC 清其他输出，完成复位审计与事务持久化<br/>再次核验中性输入、连接与序号基线稳定<br/>最后清 visionFault=0；生产条件满足时才置 visionReady
+    PLC->>PLC: 9. 核验 pcProtocolVersion=6，心跳活跃<br/>armed=busy=done=visionFault=0，基础复位完成
+    Note over OP,PC: 基础复位完成可初始化示教；生产仍须 visionReady=1。无已发布配方不阻止首次示教。
+    Note over OP,PC: 复位超时或条件未满足仍禁止启动。<br/>重新核对实物与未结事务处置，再发新的低→高复位请求；不要重复使用旧高电平。<br/>复位过程与真实触发、相机会话的重新对齐仍须现场验收。
 ```
+
+### 9.4 整圈示教采集 V1
+
+PC 发起启动的第一版接口及示教时序图独立维护于 [整圈示教采集接口 V1](teaching-capture-sequence.md)，分配 DB6（PC 写）和 DB12（PLC 写），通过一个轮次编号及双方状态握手。PC 和 PLC 参考程序已接入，现场 DB 编号已确认，仍需 TIA 编译及现场验收；生产协议 6 和 DB2 / DB4 保持不变。
 
 ## 10 验收与实施依据
 

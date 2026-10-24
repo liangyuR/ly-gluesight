@@ -535,15 +535,32 @@ fn view_count(camera_config: &serde_json::Value) -> usize {
 /// 开始一轮段配方整圈采集。
 #[tauri::command]
 pub async fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_ids: Vec<String>, drain_timeout_ms: Option<u64>) -> Result<AnyRound, String> {
-    tauri::async_runtime::spawn_blocking(move || start_capture(app, recipe_id, camera_ids, drain_timeout_ms)).await.map_err(|e| e.to_string())?
+    let cycle = app.state::<CycleHost>();
+    let _gate = cycle.plc_gate.lock().await;
+    if cycle.busy() { return Err("在途事务尚未结束，请等待握手释放或复位".into()); }
+    if crate::cycle::production_start_pending(app.state::<crate::plc::PlcHost>().engine()).await? { return Err("PLC 已发出生产请求，请等待生产完成".into()); }
+    let mut teaching = cycle.teaching.lock().await;
+    let status = teaching.view();
+    if !status.available || status.busy { return Err(status.message); }
+    let capture_app = app.clone();
+    let round = tauri::async_runtime::spawn_blocking(move || start_capture(capture_app, recipe_id, camera_ids, drain_timeout_ms)).await.map_err(|e| e.to_string())??;
+    let result = async {
+        let id = teaching.prepare_request(round.round_id())?;
+        cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
+        cycle.camera.recipe_capture().burst_ready(id)?;
+        teaching.commit_request(app.state::<crate::plc::PlcHost>().engine()).await?;
+        Ok::<(), String>(())
+    }.await;
+    cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
+    if let Err(error) = result { cycle.camera.recipe_capture().fail(error.clone()); return Err(error); }
+    cycle.camera.recipe_capture().current_any().ok_or("采集轮次不存在".into())
 }
 
 fn start_capture(app: AppHandle, recipe_id: String, camera_ids: Vec<String>, drain_timeout_ms: Option<u64>) -> Result<AnyRound, String> {
     let cycle = app.state::<CycleHost>();
     if recipe_id.trim().is_empty() { return Err("请先创建配方草稿".into()); }
     if camera_ids.is_empty() { return Err("请至少选择一台采集相机".into()); }
-    let Some(_gate) = crate::workspace::wait_idle_plc_gate(&cycle, "开始整圈采集")? else { return Err("工件正在检测，结束后再开始整圈采集".into()) };
-    if !matches!(cycle.phase(), Phase::Idle | Phase::Fault) { return Err("节拍尚未回到空闲，稍后再试".into()); }
+    if cycle.phase() != Phase::Idle { return Err("节拍尚未回到空闲，请先复位".into()); }
     let mut slots = Vec::with_capacity(camera_ids.len());
     for camera_id in &camera_ids {
         let cam = cycle.camera.require(camera_id)?;
@@ -582,10 +599,20 @@ pub fn recipe_capture_get(app: AppHandle, round_id: Option<String>) -> Result<Op
 }
 
 #[tauri::command]
-pub fn recipe_capture_stop(app: AppHandle) -> Option<AnyRound> {
+pub async fn recipe_capture_stop(app: AppHandle) -> Result<Option<AnyRound>, String> {
     let cycle = app.state::<CycleHost>();
+    let _gate = cycle.plc_gate.lock().await;
+    let mut teaching = cycle.teaching.lock().await;
+    let result = teaching.cancel(app.state::<crate::plc::PlcHost>().engine(), 1).await;
+    cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
     cycle.camera.recipe_capture().interrupt("操作员中止本轮采集，请整圈重采");
-    cycle.camera.recipe_capture().current_any()
+    result?;
+    Ok(cycle.camera.recipe_capture().current_any())
+}
+
+#[tauri::command]
+pub async fn recipe_capture_plc_status(app: AppHandle) -> crate::teaching::TeachingView {
+    app.state::<CycleHost>().teaching.lock().await.view()
 }
 
 #[tauri::command]

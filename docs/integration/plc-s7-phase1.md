@@ -2,13 +2,17 @@
 
 线上协议版本保持 **6**。DB4 / DB2 布局、字段名、类型、偏移和握手顺序不变，完整契约见 [PLC 通讯协议](plc-communication-protocol.md)。
 
+## 示教采集扩展 V1
+
+整圈示教改为 PC 发起，使用 DB6（PC 写）和 DB12（PLC 写），每块 10 字节、五个 Int；接口、状态与时序见 [示教采集接口 V1](teaching-capture-sequence.md)。PC 发请求即已准备好接收，PLC 不再为示教发送生产 partStart。生产与示教互斥，示教完成不产生生产质量结果，完整释放前保持设备占用。双方需成套更新点表、PC 和现场 PLC 程序。
+
 ## 高电平连续采集
 
 PLC 在相机已布防、事务身份有效、运动采集使能为高期间向 Line0 输出高电平；结束前、故障时或 PC 撤销 armed 时立即拉低。相机自身按软件设定帧率连续曝光，默认 10 fps。PLC 不产生逐帧脉冲，也不计曝光次数。
 
 `deviceTriggers`（DB4.DBW32，Int）保留，PLC 始终写 0。PC 不用该字段做丢帧告警、收尾判断或下一件帧号基线。三台相机按各自 SDK 帧号减基线配组；相机间帧数差异、帧号缺口和传输丢帧用于诊断，不声称曝光同步。
 
-`shotCount` / `deviceShots` 仍是 PC 导出计划的 expectedTotal，生产核对计划身份。整轮示教采集使用估算值，不再精确核对收图数；现场参考 FB 要求估算值大于 0。
+`shotCount` / `deviceShots` 仍是 PC 导出计划的 expectedTotal，生产核对计划身份。示教 V1 不使用这些生产字段，不发送预计帧数。
 
 ## 收尾与隔离
 
@@ -30,7 +34,7 @@ PC 启动、重新建立 S7 连接或发现配置变化后进入复位要求态�
 
 恢复顺序：确认实物工件和动作已被处理 → 查看并记录双方 pending、SN、序号、已收结果 → 操作员设置 `ReconcileConfirmed` → 将本地 `ResetRequest` 先置低，再发新的上升沿。`ReconcileConfirmed` 不应永久接常量 TRUE。复位不是自动重试原件：PC 明确复位会结束未结事务，需先决定这件是隔离、复检还是已有有效结果。
 
-参考 FB 收到合格复位请求后释放 PLC 的 start/end/ACK，将 `faultReset` 保持低至少 1 s，再置高并保持至少 500 ms，直到看到 **ready 的低状态再到高状态**、`pcProtocolVersion=6`，且 armed/busy/done/visionFault 全低。这样可覆盖初始 Fault/ResetRequired，以及无在途时从 Idle 发起明确复位；不会把先前残留的 ready 高电平认作复位成功。若现场扫描错过 ready 低相或 PC 未处理请求，复位超时停在故障态，必须重做新低→高请求，不能直接放行。
+参考 FB 收到合格复位请求后释放 PLC 的 start/end/ACK，将 `faultReset` 保持低至少 1 s，再置高至少 500 ms。观察到 `visionFault=1` 后拉低 `faultReset`，等待 PC 完成审计、结束原事务并最后清 `visionFault`；核对 `pcProtocolVersion=6`、armed/busy/done/visionFault 全低及心跳活跃后，基础复位完成。生产仍须 `visionReady=1`，无已发布配方可先完成复位并示教。PC 和 PLC 参考程序必须一起更新，旧的保持请求高并等待 ready 程序不兼容此确认顺序。超时仍停在故障态，必须重做新低→高请求。
 
 如果 PC 还有在途请求，应先让该请求进入明确故障并完成实物处置；不能在运转中清 PLC 输入来强行切下一件。中性基线期间保持 requestSeq、ackSeq 不变。两个方向的心跳都要求观察**变化**；恒定 1 与恒定 0 都不是活性证据。参考 PLC 在 PC 心跳 3 s 不变时停新触发并锁故障；PC 对 PLC 心跳同样使用 3 s 变化超时。
 

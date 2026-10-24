@@ -17,7 +17,7 @@ import { scrollBehavior } from "./motion";
 import { Button, Checkbox, IconButton, SegmentedControl, Select, Surface } from "qing-steel";
 import { Badge, Notice, NumberField, Panel, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
 import "./capture.css";
-import type { CaptureRound, GrayImage } from "./types";
+import type { CapturePlcStatus, CaptureRound, GrayImage } from "./types";
 import { frameArrived, lossAlarmText, readRoundFrame, roundView, type AnyRound } from "./captureRound";
 import { DEFAULT_IMAGING, type CameraImaging, type Verdict } from "../cycle/types";
 import { expectedChoices } from "./progress";
@@ -25,7 +25,12 @@ import type { CaptureNavigationState } from "./captureNavigation";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
 import CaptureReviewPanel from "./CaptureReviewPanel";
 
-const stateLabels: Record<CaptureRound["state"],string> = { waitingStart:"等待现场启动", receiving:"接收中", draining:"PLC 已结束，等待在途图像", complete:"采集完成", failed:"采集异常" };
+const stateLabels: Record<CaptureRound["state"],string> = { waitingStart:"等待 PLC 接受", receiving:"接收中", draining:"PLC 已结束，等待在途图像", complete:"采集完成", failed:"采集异常" };
+const teachingLabels: Record<CapturePlcStatus["phase"], string> = {
+  unavailable: "示教接口未就绪", resetRequired: "示教需要复位", idle: "可开始示教",
+  requested: "等待 PLC 接受", accepted: "PLC 已接受，运动采集中", draining: "等待尾帧保存",
+  reporting: "等待 PLC 确认结果", cancelling: "等待 PLC 确认取消", releasing: "等待 PLC 释放", fault: "示教握手故障",
+};
 const MAX_LISTED_GROUPS = 12;
 const imagingInvalid = (imaging: CameraImaging) => !(imaging.exposureUs>=1 && imaging.exposureUs<=1_000_000) ? "曝光时间需在 1–1000000 µs 之间" : !(Number.isFinite(imaging.gainDb) && imaging.gainDb>=0) ? "增益需为不小于 0 的有限数" : "";
 
@@ -47,6 +52,7 @@ export default function CapturePage() {
   const [roundId,setRoundId] = useState<string | undefined>();
   const [previewK,setPreviewK] = useState(0), [previewCamera,setPreviewCamera] = useState(""), [preview,setPreview] = useState<{k: number; camera: string; image: GrayImage} | null>(null), [previewError,setPreviewError] = useState("");
   const [plcState,setPlcState] = useState<LinkState | null>(null);
+  const [teaching,setTeaching] = useState<CapturePlcStatus | null>(null);
   const [sampleExpected,setSampleExpected] = useState<Verdict>("OK");
   const [confirmed,setConfirmed] = useState(false);
   const [imagingDrafts,setImagingDrafts] = useState<Record<string,CameraImaging>>({}), [applyErrors,setApplyErrors] = useState<Record<string,string>>({});
@@ -58,9 +64,9 @@ export default function CapturePage() {
     const refresh = async () => {
       if(pending) return; pending=true;
       try {
-        const [r,status,devices,rounds] = await Promise.all([workspaceApi.captureGet(roundId),plcApi.getStatus(),cameraApi.rigStatus(),doc ? workspaceApi.captureList(doc.id) : Promise.resolve([])]);
-        if(alive) { setHistory(rounds); setRound(r?.recipeId === doc?.id ? r : null); setPlcState(status.state); setRig(devices); }
-      } catch(e) { if(alive) setError(errorText(e)); } finally { pending=false; }
+        const [r,status,devices,rounds,teach] = await Promise.all([workspaceApi.captureGet(roundId),plcApi.getStatus(),cameraApi.rigStatus(),doc ? workspaceApi.captureList(doc.id) : Promise.resolve([]),workspaceApi.capturePlcStatus()]);
+        if(alive) { setHistory(rounds); setRound(r?.recipeId === doc?.id ? r : null); setPlcState(status.state); setRig(devices); setTeaching(teach); }
+      } catch(e) { if(alive) { setTeaching(null); setError(errorText(e)); } } finally { pending=false; }
     };
     void refresh(); const timer=setInterval(() => void refresh(),700);
     return () => {alive=false;clearInterval(timer);};
@@ -99,7 +105,9 @@ export default function CapturePage() {
     wasActive.current=active;
   },[active,round?.roundId]);
   if(!doc || !data) return <WorkspaceEmpty/>;
+  const handshakeBusy=!!teaching?.busy;
   const locked=busy || working || dirty || frameDirty || !!data.workspace.pending;
+  const deviceLocked=locked || active || handshakeBusy;
   const productionBusy=isProductionBusy(snapshot);
   if (!data.plan) return <Notice title="该草稿不是段配方" tone="warn">请新建段配方后采集，旧拍照点草稿不再支持。</Notice>;
   const plan = data.plan;
@@ -116,23 +124,22 @@ export default function CapturePage() {
   const notReady = chosen.filter(id=>!readyIds.includes(id));
   const plcConnected = plcState === "connected", plc = plcState ? linkStateLabels[plcState] : "读取中";
   const modeBlocked = cameras.filter(c=>chosen.includes(c.id)&&c.source==="mvs"&&c.triggerSource!=="Line0");
-  const startBlocked = modeBlocked.length ? `请将采集相机切换为 Line0 高电平：${modeBlocked.map(c=>c.name).join("、")}。` : !plcConnected ? `PLC ${plcState === "connecting" ? "连接中" : "未连接"}：整圈采集依赖 PLC 的开始 / 结束信号。` : !chosen.length ? "请至少选择一台采集相机。" : notReady.length ? `采集相机未就绪：${notReady.map(nameOf).join("、")}。` : productionBusy ? "当前工件结束后才能占用设备采集。" : "";
+  const startBlocked = modeBlocked.length ? `请将采集相机切换为 Line0 高电平：${modeBlocked.map(c=>c.name).join("、")}。` : !plcConnected ? `PLC ${plcState === "connecting" ? "连接中" : "未连接"}：整圈采集需要 PLC 示教接口。` : !chosen.length ? "请至少选择一台采集相机。" : notReady.length ? `采集相机未就绪：${notReady.map(nameOf).join("、")}。` : productionBusy ? "当前工件结束后才能占用设备采集。" : !teaching ? "正在读取示教接口状态。" : !teaching.available || handshakeBusy ? teaching.message || teachingLabels[teaching.phase] : "";
   const start=async () => {
-    if(locked || active) return; setWorking(true); setConfirmed(false);
-    try { const next=await workspaceApi.captureStart(doc.id,chosen,drain); if(current.current.alive && current.current.id===doc.id) {setRoundId(next.roundId); setRound(next); setPreviewK(0);} }
+    if(locked || active || startBlocked) return; setWorking(true); setConfirmed(false);
+    try { const next=await workspaceApi.captureStart(doc.id,chosen,drain); if(current.current.alive && current.current.id===doc.id) {setRoundId(next.roundId); setRound(next); setTeaching(prev=>prev ? {...prev,available:false,busy:true,phase:"requested",message:"等待 PLC 接受示教请求"} : null); setPreviewK(0);} }
     catch(e) {if(current.current.alive && current.current.id===doc.id)setError(errorText(e));} finally {if(current.current.alive && current.current.id===doc.id)setWorking(false);}
   };
   const offlineSampleSet = site?.mode==="offline" && site.source==="sampleSet" ? site.sampleSet : null;
-  /** 合成图离线环境也能为段配方的新轮次送一圈（E1：按候选配方的名义帧数发脉冲串、按段出合成图）；旧拍照点配方的轮次仍只接受样本集 */
   const offlineSynthetic = site?.mode==="offline" && site.source==="synthetic";
-  const offlineReady = (!!offlineSampleSet || offlineSynthetic) && !site?.running && round?.state==="waitingStart";
-  const offlineHint = !offlineReady && <p className="muted hint">{site?.running ? "离线产线正在连续运行，停止后再送一圈。" : "开始接收并等待现场启动后，才能送一圈。"}</p>;
+  const offlineReady = (!!offlineSampleSet || offlineSynthetic) && !site?.running && active && teaching?.phase==="requested";
+  const offlineHint = !offlineReady && <p className="muted hint">{site?.running ? "离线产线正在连续运行，停止后再送一圈。" : "先发起整圈采集，再模拟 PLC 接受并送一圈。"}</p>;
   const sendOffline=async () => {
     if(offlineSending) return; setOfflineSending(true);
     try { await cycleApi.offlineCapture(offlinePart && offlineSampleSet?.parts.some(p=>p.partId===offlinePart) ? offlinePart : null); }
     catch(e) {if(current.current.alive && current.current.id===doc.id)setError(errorText(e));} finally {if(current.current.alive)setOfflineSending(false);}
   };
-  const stop=async () => { if(locked) return; setWorking(true); try {const next=await workspaceApi.captureStop();if(current.current.alive && current.current.id===doc.id)setRound(next);} catch(e) {if(current.current.alive && current.current.id===doc.id)setError(errorText(e));} finally {if(current.current.alive && current.current.id===doc.id)setWorking(false);} };
+  const stop=async () => { if(locked) return; setWorking(true); try {const next=await workspaceApi.captureStop();if(current.current.alive && current.current.id===doc.id){setRound(next);setTeaching(prev=>prev ? {...prev,available:false,busy:true,phase:"cancelling",message:"取消请求已提交，等待 PLC 确认"} : null);}} catch(e) {if(current.current.alive && current.current.id===doc.id)setError(errorText(e));} finally {if(current.current.alive && current.current.id===doc.id)setWorking(false);} };
   const savedSample = validation && !!round && data.workspace.sampleBank.some(sample => sample.id === round.roundId);
   const gotoGroup=(k: number) => setPreviewK(Math.min(Math.max(0,groupCount-1),Math.max(0,Number.isFinite(k) ? Math.trunc(k) : 0)));
   const groupKey=(e: KeyboardEvent<HTMLDivElement>) => {
@@ -146,7 +153,7 @@ export default function CapturePage() {
   const cameraName=(index: number) => nameOf(view?.cameras[index]?.cameraId ?? "");
   const addToCalibration=(standard: boolean) => { if(round) void act(() => workspaceApi.calibrationAddRound(doc.id,data.workspace.revision,round.roundId,standard),standard ? "已加入标定（标准件轮次）" : "已加入多轮标定"); };
   const removeFromCalibration=() => { if(round) void act(() => workspaceApi.calibrationRemoveRound(doc.id,data.workspace.revision,round.roundId),"已移出标定，请重新应用标定"); };
-  const finished=!!round && !active, collapsed=finished && prepOpenFor!==round.roundId;
+  const finished=!!round && !active && !handshakeBusy, collapsed=finished && teaching?.available && prepOpenFor!==round.roundId;
   const savedImaging=(id: string) => data.workspace.doc.cameras?.[id] ?? data.workspace.unboundImaging?.[id] ?? DEFAULT_IMAGING;
   const imagingOf=(id: string) => imagingDrafts[id] ?? savedImaging(id);
   const changedImaging=chosen.filter(id=>{ const now=imagingOf(id), saved=savedImaging(id); return now.exposureUs!==saved.exposureUs || now.gainDb!==saved.gainDb || !!applyErrors[id]; });
@@ -163,43 +170,44 @@ export default function CapturePage() {
   const tooFast = maxSpeed != null && flyPrefs.speed != null && flyPrefs.speed > maxSpeed;
   const cameraProblem = !cameras.length ? "尚未配置" : !chosen.length ? "未选择相机" : notReady.length ? `${notReady.length} 台未就绪` : "";
   const imagingProblem = chosen.some(id=>!!imagingInvalid(imagingOf(id)) || !!applyErrors[id]);
-  const pendingChecks = [!!cameraProblem, !plcConnected, drainInvalid].filter(Boolean).length;
+  const pendingChecks = [!!cameraProblem, !plcConnected, !teaching?.available || handshakeBusy, drainInvalid].filter(Boolean).length;
   const startReason = startBlocked || (drainInvalid ? "在途图像等待时间需在 200–30000 ms 之间。" : "");
-  const prepPanel = <Panel key="prep" title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="PLC 使能为高时连续发脉冲，各相机同时触发；同一触发序号的各相机帧配成一个帧组" actions={<>{!active && <Badge tone={pendingChecks ? "warn" : "ok"}>{pendingChecks ? `${pendingChecks} 项未就绪` : "可以开始"}</Badge>}{finished && <Button size="sm" onClick={()=>setPrepOpenFor(null)}>收起</Button>}</>}>
+  const prepPanel = <Panel key="prep" title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="PC 发起一轮示教，PLC 接受后执行运动；采集区间 Line0 为高，相机按设定帧率出图" actions={<>{!active && <Badge tone={pendingChecks ? "warn" : "ok"}>{pendingChecks ? `${pendingChecks} 项未就绪` : "可以开始"}</Badge>}{finished && <Button size="sm" onClick={()=>setPrepOpenFor(null)}>收起</Button>}</>}>
     <ul className="wp-capture-checks" aria-label="开始前检查">
       <li className={cameraProblem ? "bad" : ""}><span><Camera size={14} aria-hidden="true"/>相机</span><strong>{cameraProblem || `${chosen.length} 台就绪`}</strong><Link to="/camera" state={navigationState}>配置设备<ArrowRight size={12} aria-hidden="true"/></Link></li>
       <li className={plcConnected ? "" : "bad"}><span><Cable size={14} aria-hidden="true"/>PLC</span><strong>{plc}</strong><Link to="/plc" state={navigationState}>{plcConnected ? "PLC 通讯" : "前往 PLC 通讯"}<ArrowRight size={12} aria-hidden="true"/></Link></li>
       <li className={tooFast ? "bad" : ""} title={maxSpeed == null ? "需要标定当量、相机帧率、曝光与飞拍最小拍照点间距后核算" : tooFast ? `当前速度 ${flyPrefs.speed} mm/s 超出允许值` : undefined}><span><Crosshair size={14} aria-hidden="true"/>飞拍</span><strong>{maxSpeed == null ? "未核算" : `${tooFast ? "超速 · " : ""}最高 ${maxSpeed} mm/s`}</strong><Link to="/camera/calibration" state={navigationState}>飞拍标定<ArrowRight size={12} aria-hidden="true"/></Link></li>
-      <li className={drainInvalid ? "bad" : ""}><NumberField label="在途图像等待时间" value={drain} min={200} max={30000} unit="ms" onChange={setDrain} disabled={locked || active}/></li>
+      <li className={drainInvalid ? "bad" : ""}><NumberField label="在途图像等待时间" value={drain} min={200} max={30000} unit="ms" onChange={setDrain} disabled={deviceLocked}/></li>
     </ul>
+    <Notice title={teaching ? teachingLabels[teaching.phase] : "正在读取示教接口状态"} tone={teaching?.available && !handshakeBusy ? "ok" : "warn"}><p>{teaching?.message || "连接 PLC 后确认 DB6 / DB12 示教接口及复位状态。"}{teaching?.roundId != null && ` · 通讯轮次 ${teaching.roundId}`}</p>{handshakeBusy && <p>本轮握手释放前不能开始下一轮或修改设备；取消后请等待 PLC 确认。</p>}</Notice>
     <div className="wp-capture-start">
-      <Button variant="filled" leadingIcon={<Play size={15} aria-hidden="true"/>} disabled={startDisabled} onClick={() => void start()}>开始接收</Button>
-      {active ? <Button danger disabled={locked} onClick={() => void stop()}>中止本轮</Button> : startReason && <p className="wp-capture-reason"><AlertTriangle size={14} aria-hidden="true"/><span>{startReason}</span></p>}
+      <Button variant="filled" leadingIcon={<Play size={15} aria-hidden="true"/>} disabled={startDisabled} onClick={() => void start()}>开始整圈采集</Button>
+      {(active || handshakeBusy) ? <Button danger disabled={locked || !teaching || ["cancelling","reporting","releasing","fault","resetRequired"].includes(teaching.phase)} onClick={() => void stop()}>{teaching?.phase==="cancelling" ? "等待取消确认" : "取消本轮"}</Button> : startReason && <p className="wp-capture-reason"><AlertTriangle size={14} aria-hidden="true"/><span>{startReason}</span></p>}
     </div>
-    {offlineSampleSet && <div className="wp-stack wp-offline-feed"><strong>离线样本集送一圈</strong><p className="muted">① 先点“开始接收”；② 选择样本件；③ 点“离线产线送一圈”，虚拟 PLC 发开始 / 结束边沿，图像来自所选样本件。</p><div className="wp-actions"><SamplePartSelect sampleSet={offlineSampleSet} nextPart={site?.nextPart ?? null} value={offlinePart} onChange={setOfflinePart} disabled={offlineSending || !offlineReady} label="离线样本件"/><Button disabled={offlineSending || !offlineReady} onClick={() => void sendOffline()}>离线产线送一圈</Button></div>{offlineHint}</div>}
-    {offlineSynthetic && <div className="wp-stack wp-offline-feed"><strong>合成图送一圈</strong><p className="muted">① 先点“开始接收”；② 点“离线产线送一圈”，虚拟 PLC 按已保存候选的名义帧数发脉冲串（首尾 ±1、弯道 ±2 帧波动），三台相机按段出合成图；每轮帧数略有不同，可用于多轮标定。</p><div className="wp-actions"><Button disabled={offlineSending || !offlineReady} onClick={() => void sendOffline()}>离线产线送一圈</Button></div>{offlineHint}</div>}
+    {offlineSampleSet && <div className="wp-stack wp-offline-feed"><strong>离线样本集送一圈</strong><p className="muted">① 先点“开始整圈采集”；② 选择样本件；③ 点“离线产线送一圈”，虚拟 PLC 通过示教状态接受请求并通知采集结束，图像来自所选样本件。</p><div className="wp-actions"><SamplePartSelect sampleSet={offlineSampleSet} nextPart={site?.nextPart ?? null} value={offlinePart} onChange={setOfflinePart} disabled={offlineSending || !offlineReady} label="离线样本件"/><Button disabled={offlineSending || !offlineReady} onClick={() => void sendOffline()}>离线产线送一圈</Button></div>{offlineHint}</div>}
+    {offlineSynthetic && <div className="wp-stack wp-offline-feed"><strong>合成图送一圈</strong><p className="muted">① 先点“开始整圈采集”；② 点“离线产线送一圈”，虚拟 PLC 接受示教请求后，按已保存候选的名义帧数模拟采集（首尾 ±1、弯道 ±2 帧波动），三台相机按段出合成图；每轮帧数略有不同，可用于多轮标定。</p><div className="wp-actions"><Button disabled={offlineSending || !offlineReady} onClick={() => void sendOffline()}>离线产线送一圈</Button></div>{offlineHint}</div>}
     <details className="wp-capture-more">
       <summary>现场操作步骤</summary>
-      <ol><li>确认合格涂胶工件、轨迹和触发顺序。</li><li>点“开始接收”，等待 GS 就绪。</li><li>现场启动机械臂；帧数由实际触发决定，不预先给定。PLC 写来的预期总数只作参考，不核对。</li></ol>
+      <ol><li>确认工件、现场已选轨迹和示教许可，确保生产没有在途事务。</li><li>点击“开始整圈采集”，PC 准备设备后自动向 PLC 发请求，无需再次现场启动。</li><li>PLC 接受后执行运动，高电平期间按设定帧率采集；结束后等待尾帧保存和双方确认释放。</li></ol>
     </details>
     <details className="wp-capture-more" open={imagingOpen || imagingProblem} onToggle={e=>setImagingOpen(e.currentTarget.open)}>
       <summary>采集相机与成像参数<small>{cameras.length ? `已选 ${chosen.length} / ${cameras.length} 台` : "尚未配置相机"}</small></summary>
       <div className="wp-capture-cameras" role="group" aria-label="采集相机">{cameras.map(c=>{
         const on=chosen.includes(c.id), imaging=imagingOf(c.id), invalid=on ? imagingInvalid(imaging) : "", ready=readyIds.includes(c.id);
         return <div key={c.id} className={"wp-capture-camera" + (on ? "" : " off")}>
-          <div className="wp-capture-camera-head"><Checkbox label={`${c.name} · ${c.serial || c.source}`} checked={on} disabled={locked || active} onCheckedChange={checked=>toggleCamera(c.id,checked)}/><Badge tone={ready ? "ok" : "warn"}>{ready ? "就绪" : "未就绪"}</Badge></div>
-          {on && <div className="wp-form-grid"><NumberField label={`${c.name} 曝光时间（µs）`} value={imaging.exposureUs} min={1} max={1_000_000} onChange={v=>editImaging(c.id,"exposureUs",v)} disabled={locked || active}/><NumberField label={`${c.name} 增益（dB）`} value={imaging.gainDb} min={0} step={0.5} onChange={v=>editImaging(c.id,"gainDb",v)} disabled={locked || active}/></div>}
+          <div className="wp-capture-camera-head"><Checkbox label={`${c.name} · ${c.serial || c.source}`} checked={on} disabled={deviceLocked} onCheckedChange={checked=>toggleCamera(c.id,checked)}/><Badge tone={ready ? "ok" : "warn"}>{ready ? "就绪" : "未就绪"}</Badge></div>
+          {on && <div className="wp-form-grid"><NumberField label={`${c.name} 曝光时间（µs）`} value={imaging.exposureUs} min={1} max={1_000_000} onChange={v=>editImaging(c.id,"exposureUs",v)} disabled={deviceLocked}/><NumberField label={`${c.name} 增益（dB）`} value={imaging.gainDb} min={0} step={0.5} onChange={v=>editImaging(c.id,"gainDb",v)} disabled={deviceLocked}/></div>}
           {invalid ? <p className="c-ng" role="alert">{c.name}：{invalid}</p> : on && applyErrors[c.id] && <Notice title={`${c.name} 已写入候选配方，但没能下发到相机`} tone="warn">{applyErrors[c.id]}</Notice>}
         </div>;
       })}{!cameras.length && <p className="muted">配置相机后，可在此选择参与采集的相机并调整曝光与增益。</p>}</div>
-      {cameras.length > 0 && <div className="wp-actions"><Button disabled={locked || active || !changedImaging.length || changedImaging.some(id=>!!imagingInvalid(imagingOf(id)))} onClick={applyImaging}>应用</Button><span className="muted">按相机分别写入候选配方并立即下发</span></div>}
+      {cameras.length > 0 && <div className="wp-actions"><Button disabled={deviceLocked || !changedImaging.length || changedImaging.some(id=>!!imagingInvalid(imagingOf(id)))} onClick={applyImaging}>应用</Button><span className="muted">按相机分别写入候选配方并立即下发</span></div>}
     </details>
   </Panel>;
-  const historyPanel = <Panel key="history" title="采集历史" detail="保留异常轮次供追溯，重新采集不会混用旧图">{history.length ? <Select aria-label="采集历史" value={roundId ?? ""} disabled={active || working} options={[{value:"",label:"最近轮次"},...history.map(r=>({value:r.roundId,label:`${new Date(r.createdAt).toLocaleString("zh-CN")} · ${stateLabels[r.state]} · ${r.cameraIds.length} 台相机 · 已接收 ${r.receivedCount} 帧组`}))]} onValueChange={value=>{setRoundId(value || undefined);setPreviewK(0);}}/> :<p className="wp-capture-empty">暂无采集轮次。完成第一圈采集后，可在此回看各轮结果。</p>}</Panel>;
+  const historyPanel = <Panel key="history" title="采集历史" detail="保留异常轮次供追溯，重新采集不会混用旧图">{history.length ? <Select aria-label="采集历史" value={roundId ?? ""} disabled={active || handshakeBusy || working} options={[{value:"",label:"最近轮次"},...history.map(r=>({value:r.roundId,label:`${new Date(r.createdAt).toLocaleString("zh-CN")} · ${stateLabels[r.state]} · ${r.cameraIds.length} 台相机 · 已接收 ${r.receivedCount} 帧组`}))]} onValueChange={value=>{setRoundId(value || undefined);setPreviewK(0);}}/> :<p className="wp-capture-empty">暂无采集轮次。完成第一圈采集后，可在此回看各轮结果。</p>}</Panel>;
   const lossTexts = view?.lossAlarms.map(alarm => lossAlarmText(alarm,cameraName)) ?? [];
   const incompleteShown = view?.incompleteGroups.slice(0,MAX_LISTED_GROUPS) ?? [];
   const resultPanel = round && view && <div key="result" ref={resultRef} className="wp-capture-anchor"><Panel title="采集结果" actions={<Badge tone={round.state==="complete" ? "ok" : round.state==="failed" ? "warn" : "info"}>{stateLabels[round.state]}</Badge>}>
-    {active && <div className="wp-capture-live" role="status" aria-label="采集进度"><strong>{round.state==="waitingStart" ? "等待 PLC 开始信号" : `已收到 ${groupCount} 个帧组`}</strong><span className="muted">{round.state==="waitingStart" ? "现场启动后开始接收；需要停止时点“中止本轮”" : round.state==="draining" ? "PLC 已结束，正在等待在途图像" : "PLC 使能为高时连续接收；收到 PLC 结束信号后再等待在途图像"}</span></div>}
+    {active && <div className="wp-capture-live" role="status" aria-label="采集进度"><strong>{round.state==="waitingStart" ? "等待 PLC 接受" : `已收到 ${groupCount} 个帧组`}</strong><span className="muted">{round.state==="waitingStart" ? "PC 正在准备采集并请求 PLC；需要停止时点“取消本轮”" : round.state==="draining" ? "PLC 已结束，正在等待在途图像" : "PLC 使能为高时连续接收；收到 PLC 结束信号后再等待在途图像"}</span></div>}
     <div className="wp-capture-summary">
       <span className="wp-capture-chip"><small>轮次</small><strong className="mono">{round.roundId}</strong></span>
       <span className="wp-capture-chip"><small>帧组</small><strong>{groupCount} 个</strong></span>
@@ -257,5 +265,5 @@ export default function CapturePage() {
     <span className="wp-capture-chip"><small>在途图像等待</small><strong>{drain} ms</strong></span>
     <div className="wp-actions"><Button onClick={()=>setPrepOpenFor(round?.roundId ?? null)}>展开设备准备</Button><Button variant={recaptureNext ? "filled" : "tonal"} data-variant={recaptureNext ? "filled" : "tonal"} disabled={startDisabled} title={startReason || undefined} onClick={() => void start()}>{validation ? "采集新一圈样本" : "整圈重采"}</Button></div>
   </Surface>;
-  return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{resultPanel}{historyPanel}</>}</div><section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>按帧号配组，不按到达顺序</strong><p>同一触发序号的各相机帧配成一个帧组。某台相机缺帧只告警：该组标“检测不完整”，其余相机照常检测，不整轮重采，也不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>收到 PLC 结束通知，等待在途图像到期，已收到的帧全部写盘后本轮完成。PLC 的预期总数与累计触发只作参考；某台相机帧数与累计触发或另一台相机相差超过 1 时提示疑似丢帧。</p></div></section></div></div>;
+  return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{resultPanel}{historyPanel}</>}</div><section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>按帧号配组，不按到达顺序</strong><p>同一触发序号的各相机帧配成一个帧组。某台相机缺帧只告警：该组标“检测不完整”，其余相机照常检测，不整轮重采，也不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>收到 PLC 结束通知，等待在途图像到期，已收到的帧全部写盘后本轮完成。示教不下发预期帧数；图片保存完成后还需等待 PLC 确认和释放。相机帧号缺口及相机间帧数差异用于丢帧诊断。</p></div></section></div></div>;
 }

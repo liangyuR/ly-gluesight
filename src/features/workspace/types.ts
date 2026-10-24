@@ -190,3 +190,11 @@ export interface CaptureRound {
   frames: { shotId: string; ordinal: number; cameras: CaptureCameraFrame[] }[];
 }
 export interface CaptureSummary { roundId: string; recipeId: string; cameraIds: string[]; plannedCount: number | null; receivedCount: number; state: CaptureRound["state"]; createdAt: number; error: string | null }
+
+export interface CapturePlcStatus {
+  available: boolean;
+  busy: boolean;
+  roundId: number | null;
+  phase: "unavailable" | "resetRequired" | "idle" | "requested" | "accepted" | "draining" | "reporting" | "cancelling" | "releasing" | "fault";
+  message: string;
+}

@@ -94,14 +94,25 @@ def handshake_fields(plc_db=4, pc_db=2):
     return fields
 
 
+def teaching_fields():
+    fields = {}
+    for db, names in ((6, ("teachPcVersion", "teachPcState", "teachRoundId", "teachPcReason", "teachPcReserved")),
+                      (12, ("teachPlcVersion", "teachPlcState", "teachRoundIdEcho", "teachPlcReason", "teachPlcReserved"))):
+        for index, name in enumerate(names):
+            fields[name] = {"db": db, "byte": index * 2, "type": "i16"}
+    return fields
+
+
 class PlcState:
     def __init__(self, db_size=1024, pdu_size=240, plc_db=4, pc_db=2):
         if plc_db == pc_db:
             raise ValueError("PLC and PC area DBs must differ")
+        if plc_db in (6, 12) or pc_db in (6, 12):
+            raise ValueError("production DBs must not overlap teaching DB6/DB12")
         self.lock = threading.RLock()
         self.stopping = threading.Event()
         self.default_db = plc_db
-        self.dbs = {plc_db: bytearray(db_size), pc_db: bytearray(db_size)}
+        self.dbs = {plc_db: bytearray(db_size), pc_db: bytearray(db_size), 6: bytearray(10), 12: bytearray(10)}
         self.pdu_size = pdu_size
         self.faults = deque()
         self.events = deque(maxlen=512)
@@ -109,8 +120,8 @@ class PlcState:
         self.counts = dict(connections=0, active_connections=0, requests=0, reads=0, writes=0, faults=0)
         self.heartbeat_enabled = True
         self.heartbeat_ms = 500
-        self.configure_fields(handshake_fields(plc_db, pc_db))
-        self.plc_values({"protocolVersion": PROTOCOL_VERSION}, None)
+        self.configure_fields({**handshake_fields(plc_db, pc_db), **teaching_fields()})
+        self.plc_values({"protocolVersion": PROTOCOL_VERSION, "teachPlcVersion": 1, "teachPlcState": 50, "teachPlcReason": 5}, None)
 
     def event(self, event_kind, **details):
         with self.lock:

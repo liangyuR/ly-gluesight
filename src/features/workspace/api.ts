@@ -40,6 +40,7 @@ export const workspaceApi = {
   captureStart: (recipeId: string, cameraIds: string[], drainTimeoutMs: number) => desktopCall<CaptureRound | CaptureRoundV2>("recipe_capture_start", { recipeId, cameraIds, drainTimeoutMs }),
   captureGet: (roundId?: string) => desktopCall<CaptureRound | CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
   captureStop: () => desktopCall<CaptureRound | CaptureRoundV2 | null>("recipe_capture_stop"),
+  capturePlcStatus: () => desktopCall<import("./types").CapturePlcStatus>("recipe_capture_plc_status"),
   adoptCapture: (id: string, revision: number, roundId: string, reuseTeaching: boolean, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_adopt_capture", { id, revision, roundId, reuseTeaching, correspondenceConfirmed }),
   captureSample: (id: string, revision: number, roundId: string, expected: import("../cycle/types").Verdict, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_capture_sample", { id, revision, roundId, expected, correspondenceConfirmed }),
   setViews: (id: string, revision: number, k: number, views: number[], skip: boolean) => desktopCall<WorkspaceView>("workspace_set_views", { id, revision, k, views, skip }),

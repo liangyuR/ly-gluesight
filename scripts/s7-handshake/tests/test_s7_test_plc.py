@@ -84,6 +84,22 @@ class S7WireTests(unittest.TestCase):
         self.connection = connect(self.server.server_address)
         self.addCleanup(self.connection.close)
 
+    def test_teaching_blocks_are_independent_and_failed_state_write_preserves_request(self):
+        production = {db: bytes(self.state.dbs[db]) for db in (2, 4)}
+        request = bytes.fromhex("0001000a000700000000")
+        self.assertEqual(exchange(self.connection, write_bytes_packet(10, 6, 0, request))[-1], 0xff)
+        self.assertEqual(self.state.field_values()["teachRoundId"], 7)
+        self.assertEqual(self.state.field_values()["teachPcState"], 10)
+        self.state.control({"op": "fault", "function": "write", "kind": "reject", "db": 6, "byte": 2})
+        self.assertEqual(exchange(self.connection, write_bytes_packet(11, 6, 2, bytes.fromhex("0028")))[-1], 3)
+        self.assertEqual(self.state.field_values()["teachPcState"], 10)
+        self.state.control({"op": "plc_values", "values": {"teachRoundIdEcho": 7, "teachPlcState": 10, "teachPlcReason": 0}})
+        read = READ_BYTES.replace(bytes.fromhex("0008000484000020"), bytes.fromhex("000a000c84000000"))
+        self.assertEqual(exchange(self.connection, read)[-10:], bytes.fromhex("0001000a000700000000"))
+        self.assertEqual({db: bytes(self.state.dbs[db]) for db in (2, 4)}, production)
+        outside = READ_BYTES.replace(bytes.fromhex("0008000484000020"), bytes.fromhex("0002000c84000050"))
+        self.assertEqual(exchange(self.connection, outside)[21], 5)
+
     def test_byte_read_write_matches_fixed_wire_packets(self):
         self.assertEqual(exchange(self.connection, WRITE_BYTES), WRITE_ACK)
         self.state.control({"op": "write_db", "byte": 8, "hex": "12345678"})
@@ -378,7 +394,7 @@ class S7ProcessApiTests(unittest.TestCase):
                 response = self.fixture.command("configure_handshake", fields={"deviceShots": {"byte": 20, "type": "i16"}, name: {"byte": 22, "type": "i16"}})
                 self.assertFalse(response["ok"])
                 fields = self.fixture.command("status")["result"]["fields"]
-                self.assertEqual(len(fields), 28)
+                self.assertNotIn(name, fields)
                 self.assertEqual(fields["requestSeq"], 0)
                 self.assertFalse(fields["partStart"])
 
