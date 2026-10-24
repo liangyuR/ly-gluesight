@@ -70,6 +70,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const [search] = useSearchParams();
   const tasks = cameraTeachingTasks(plan);
   const requestedCamera = search.get("camera");
+  const requestedRound = search.get("round");
   const [selected, setSelected] = useState(requestedCamera ?? (tasks.find(item => item.status !== "done") ?? tasks[0])?.camera ?? "");
   useEffect(() => { if (requestedCamera) setSelected(requestedCamera); }, [doc.id, requestedCamera]);
   const index = Math.max(0, tasks.findIndex(item => item.camera === selected));
@@ -77,7 +78,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const camera = task?.camera ?? "";
   const frame = task?.frame;
   const [working, setWorking] = useState(false);
-  const [choosing, setChoosing] = useState(false);
+  const [choosing, setChoosing] = useState(!!requestedRound);
   const [operation, setOperation] = useState<"extract" | null>(null);
   const [extractionHint, setExtractionHint] = useState("");
   const [extractionFailure, setExtractionFailure] = useState<{ point: ImagePoint; reason: string; message: string } | null>(null);
@@ -109,27 +110,43 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
 
   // 示教帧选择：从一轮完整采集里选这台相机的一个帧组
   const [rounds, setRounds] = useState<CaptureSummary[]>([]);
-  const [pickRoundId, setPickRoundId] = useState(search.get("round") ?? "");
+  const [pickRoundId, setPickRoundId] = useState(requestedRound ?? "");
   const [picked, setPicked] = useState<{ round: AnyRound; view: RoundView } | null>(null);
   const [pickSeq, setPickSeq] = useState(1);
+  const [roundsError, setRoundsError] = useState("");
   const [pickError, setPickError] = useState("");
   const choosingNow = !!task && (!frame || choosing);
   useEffect(() => {
+    if (!requestedRound) return;
+    setPickRoundId(requestedRound); setPickSeq(1); setChoosing(true);
+  }, [doc.id, camera, requestedRound]);
+  useEffect(() => {
     if (!choosingNow) return;
-    let alive = true;
-    void workspaceApi.captureList(doc.id).then(list => { if (alive) setRounds(list.filter(item => item.state === "complete")); }).catch(e => { if (alive) setPickError(errorText(e)); });
-    return () => { alive = false; };
+    let alive = true, pending = false;
+    setRounds([]); setRoundsError("");
+    const refresh = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const list = await workspaceApi.captureList(doc.id);
+        if (alive) { setRounds(list.filter(item => item.state === "complete")); setRoundsError(""); }
+      } catch (e) { if (alive) setRoundsError(errorText(e)); }
+      finally { pending = false; }
+    };
+    void refresh(); const timer = setInterval(() => void refresh(), 700);
+    return () => { alive = false; clearInterval(timer); };
   }, [doc.id, choosingNow]);
   useEffect(() => {
     if (!pickRoundId && rounds.length) setPickRoundId([...rounds].sort((a, b) => b.createdAt - a.createdAt)[0].roundId);
   }, [rounds, pickRoundId]);
+  const selectedRoundId = rounds.find(item => item.roundId === pickRoundId)?.roundId;
   useEffect(() => {
-    if (!choosingNow || !pickRoundId) { setPicked(null); return; }
+    setPicked(null); setPickError("");
+    if (!choosingNow || !selectedRoundId) return;
     let alive = true;
-    setPickError("");
-    void workspaceApi.captureGet(pickRoundId).then(round => { if (alive) setPicked(round ? { round, view: roundView(round) } : null); }).catch(e => { if (alive) { setPicked(null); setPickError(errorText(e)); } });
+    void workspaceApi.captureGet(selectedRoundId).then(round => { if (alive) setPicked(round?.recipeId === doc.id && round.state === "complete" ? { round, view: roundView(round) } : null); }).catch(e => { if (alive) setPickError(errorText(e)); });
     return () => { alive = false; };
-  }, [pickRoundId, choosingNow, doc.id]);
+  }, [selectedRoundId, choosingNow, doc.id]);
   const pickGroups = picked?.view.groupCount ?? 0;
   const pickSeqSafe = Math.min(Math.max(1, pickSeq), Math.max(1, pickGroups));
   const arrived = !!picked && frameArrived(picked.view, camera, pickSeqSafe);
@@ -310,7 +327,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       <div className="wp-stack wp-mid">
         {plan.cameras.length !== 3 && <Notice title="段配方需要 3 台相机" tone="warn">当前计划相机 {plan.cameras.length} 台：三台相机共用一个触发，缺相机的配方不能发布。</Notice>}
         {choosingNow && pickPanel}
-        {pickError && choosingNow && <p className="c-warn wp-picker-warn" role="alert">{pickError}</p>}
+        {(roundsError || pickError) && choosingNow && <p className="c-warn wp-picker-warn" role="alert">{roundsError || pickError}</p>}
         {!choosingNow && frame && <Surface role="region" className="wp-picker wp-corridor-frame" aria-label="示教帧">
           <h2>{camera}<small>示教帧</small></h2>
           <span className="muted wp-corridor-source">{frame.source} · {frame.id}</span>

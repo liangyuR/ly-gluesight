@@ -172,7 +172,7 @@ export default function CapturePage() {
   const imagingProblem = chosen.some(id=>!!imagingInvalid(imagingOf(id)) || !!applyErrors[id]);
   const pendingChecks = [!!cameraProblem, !plcConnected, !teaching?.available || handshakeBusy, drainInvalid].filter(Boolean).length;
   const startReason = startBlocked || (drainInvalid ? "在途图像等待时间需在 200–30000 ms 之间。" : "");
-  const prepPanel = <Panel key="prep" title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="PC 发起一轮示教，PLC 接受后执行运动；采集区间 Line0 为高，相机按设定帧率出图" actions={<>{!active && <Badge tone={pendingChecks ? "warn" : "ok"}>{pendingChecks ? `${pendingChecks} 项未就绪` : "可以开始"}</Badge>}{finished && <Button size="sm" onClick={()=>setPrepOpenFor(null)}>收起</Button>}</>}>
+  const prepPanel = <Panel key="prep" title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} actions={<>{!active && <Badge tone={pendingChecks ? "warn" : "ok"}>{pendingChecks ? `${pendingChecks} 项未就绪` : "可以开始"}</Badge>}{finished && <Button size="sm" onClick={()=>setPrepOpenFor(null)}>收起</Button>}</>}>
     <ul className="wp-capture-checks" aria-label="开始前检查">
       <li className={cameraProblem ? "bad" : ""}><span><Camera size={14} aria-hidden="true"/>相机</span><strong>{cameraProblem || `${chosen.length} 台就绪`}</strong><Link to="/camera" state={navigationState}>配置设备<ArrowRight size={12} aria-hidden="true"/></Link></li>
       <li className={plcConnected ? "" : "bad"}><span><Cable size={14} aria-hidden="true"/>PLC</span><strong>{plc}</strong><Link to="/plc" state={navigationState}>{plcConnected ? "PLC 通讯" : "前往 PLC 通讯"}<ArrowRight size={12} aria-hidden="true"/></Link></li>

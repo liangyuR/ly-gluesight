@@ -11,8 +11,8 @@
 .wp-recipe-picker { display:flex; align-items:center; gap:8px; color:var(--on-surface-variant); }
 .wp-recipe-picker select { width:200px; max-width:100%; }
 .wp-empty { display:flex; flex-direction:column; min-height:380px; justify-content:center; align-items:center; gap:14px; text-align:center; background:var(--surface-low); border-radius:var(--r-lg); padding:30px; }
-.wp-workbench-bar > .wp-steps { flex:1 1 640px; min-width:0; }
-.wp-steps { display:flex; align-items:stretch; gap:4px; padding:4px; border-radius:var(--r-lg); background:var(--surface-low); overflow-x:auto; scrollbar-width:thin; }
+.wp-save-state { margin-left:auto; }
+.wp-steps { display:flex; align-items:stretch; gap:4px; min-width:0; padding:4px; border-radius:var(--r-lg); background:var(--surface-low); overflow-x:auto; scrollbar-width:thin; }
 .wp-steps a { display:flex; align-items:center; gap:8px; min-height:42px; flex:1 0 auto; color:var(--on-surface-variant); padding:8px 12px; border-radius:var(--r-md); font-size:13px; white-space:nowrap; text-decoration:none; transition:background-color var(--dur-medium) var(--ease-standard), color var(--dur-medium) var(--ease-standard); }
 .wp-steps a.wp-step-home { flex:0 0 auto; margin-right:4px; }
 .wp-steps a:hover:not(.active) { background:var(--state-hover); color:var(--on-surface); }

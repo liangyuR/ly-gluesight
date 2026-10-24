@@ -45,6 +45,7 @@ function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = 
     history_query: () => ({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } }),
     recipe_capture_list: () => [],
     recipe_capture_get: () => null,
+    recipe_capture_plc_status: () => ({ available: true, busy: false, roundId: null, phase: "idle", message: "示教接口就绪" }),
     ...handlers,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -208,27 +209,54 @@ it("自动提取失败后按笔划生成 → 定位原因并保留原线，人�
   expect(screen.getByRole("button", { name: "保存走廊" })).toBeEnabled();
 });
 
-// 防的回归：选帧后后端冻结的是别的帧，或页面仍停在选帧面板、示教帧显示不出来
-it("为未选示教帧的相机从采集轮次选一帧 → 按所选轮次、帧组冻结，选帧面板收起并显示这一帧", async () => {
+it("停留选帧页时采集由接收到收尾再完成 → 未完成轮次不能选，完成后自动列出并预览", async () => {
+  const candidate = corridorCandidate();
+  let state: "receiving" | "draining" | "complete" = "receiving";
+  mockSite(candidate, {
+    recipe_capture_list: () => [{ roundId: "round-new", recipeId: "A", cameraIds: ["CAM-1", "CAM-2", "CAM-3"], plannedCount: null, receivedCount: 12, state, createdAt: 2, error: null }],
+    recipe_capture_get: () => captureRoundV2({ recipeId: "A", roundId: "round-new", state }),
+  });
+  vi.spyOn(workspaceApi, "captureFrameImage").mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
+  renderWorkspace("/recipe/teach?camera=CAM-3");
+  await screen.findByText(/还没有完整的采集轮次/);
+  expect(screen.getByRole("combobox", { name: "采集轮次" })).toBeDisabled();
+  state = "draining";
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(screen.getByRole("combobox", { name: "采集轮次" })).toBeDisabled();
+  state = "complete";
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(await screen.findByRole("img", { name: "CAM-3 · 帧组 1 · 候选示教帧" })).toBeVisible();
+  expect(screen.getByRole("combobox", { name: "采集轮次" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "用此帧示教 CAM-3" })).toBeEnabled();
+});
+
+it("已有旧示教帧时点击用于走廊示教 → 直接选择本轮帧，确认后显示新帧并保持编辑", async () => {
   const candidate = corridorCandidate();
   const response = structuredClone(candidate);
   response.workspace.revision++;
-  response.plan!.cameraTeaching[2].frame = { ...candidate.plan!.cameraTeaching[1].frame!, id: "S-CAM-3-frame", camera: "CAM-3" };
+  const frame = { ...candidate.plan!.cameraTeaching[1].frame!, id: "S-CAM-2-new-frame", source: "capture:round-new" };
+  response.plan!.cameraTeaching[1].frame = frame;
+  response.workspace.cameraTeaching[1] = { camera: "CAM-2", frame, round: "round-new", seq: 7 };
   const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
   mockSite(candidate, {
-    recipe_capture_list: () => [{ roundId: "round-1", recipeId: "A", cameraIds: ["CAM-1", "CAM-2", "CAM-3"], plannedCount: 12, receivedCount: 12, state: "complete", createdAt: 1, error: null }],
-    recipe_capture_get: () => captureRoundV2({ recipeId: "A" }),
+    recipe_capture_list: () => ["round-other", "round-new"].map((roundId, index) => ({ roundId, recipeId: "A", cameraIds: ["CAM-1", "CAM-2", "CAM-3"], plannedCount: 12, receivedCount: 12, state: "complete", createdAt: 3 - index, error: null })),
+    recipe_capture_get: ({ roundId }) => captureRoundV2({ recipeId: "A", roundId: typeof roundId === "string" ? roundId : "round-new" }),
     workspace_teach_camera: () => response,
   });
   const frameImage = vi.spyOn(workspaceApi, "captureFrameImage").mockResolvedValue(picture);
-  const user = renderWorkspace("/recipe/teach?camera=CAM-3&round=round-1");
+  const user = renderWorkspace("/recipe/capture");
+  await user.click(await screen.findByRole("link", { name: "用于走廊示教" }));
   await screen.findByRole("region", { name: "示教帧选择" });
+  expect(screen.queryByRole("img", { name: CAM2 })).not.toBeInTheDocument();
+  expect(await screen.findByRole("img", { name: "CAM-2 · 帧组 1 · 候选示教帧" })).toBeVisible();
   fireEvent.change(await screen.findByRole("spinbutton", { name: "帧组序号" }), { target: { value: "7" } });
-  await waitFor(() => expect(frameImage).toHaveBeenLastCalledWith("round-1", "CAM-3", 7));
-  const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-3" });
+  await waitFor(() => expect(frameImage).toHaveBeenLastCalledWith("round-new", "CAM-2", 7));
+  const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2" });
   await waitFor(() => expect(choose).toBeEnabled());
   await user.click(choose);
-  expect(calls("workspace_teach_camera")).toEqual([{ id: "A", revision: 3, camera: "CAM-3", round: "round-1", seq: 7, draft: { corridor: [[10, 30], [90, 30]], mmPerPx: .1, detect: null } }]);
-  expect(await screen.findByRole("img", { name: "CAM-3 · 示教帧" })).toBeVisible();
+  expect(calls("workspace_teach_camera")).toEqual([{ id: "A", revision: 3, camera: "CAM-2", round: "round-new", seq: 7, draft: { corridor: [[10, 30], [90, 30]], mmPerPx: .1, detect: null } }]);
+  expect(await screen.findByRole("img", { name: CAM2 })).toBeVisible();
+  expect(screen.getByText("capture:round-new · S-CAM-2-new-frame")).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
   expect(screen.queryByRole("region", { name: "示教帧选择" })).not.toBeInTheDocument();
 });

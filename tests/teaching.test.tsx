@@ -56,7 +56,7 @@ describe("示教帧选择", () => {
 
   // 防的回归：选了缺帧的帧组仍能提交，后端冻结不到图（规格 §3：缺帧只告警，但这一帧没有图可示教）
   it("所选帧组这台相机缺帧 → 不读图、用此帧示教禁用并说明缺帧", async () => {
-    show("/recipe/teach?camera=CAM-2&round=round-1");
+    show("/recipe/teach?camera=CAM-2");
     await userEvent.click(await screen.findByRole("button", { name: "重新选帧" }));
     fireEvent.change(await screen.findByRole("spinbutton", { name: "帧组序号" }), { target: { value: "5" } });
     const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2" });
