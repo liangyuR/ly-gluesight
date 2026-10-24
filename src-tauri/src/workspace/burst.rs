@@ -760,7 +760,7 @@ pub fn workspace_confirm_tolerance(app: AppHandle, id: String, revision: u64, se
     view(&app, w)
 }
 
-/// 整体替换候选的段列表；拒绝直接改 N_exp、标定统计与 x_ref，段序列或类型变化时清空全部标定。
+// 整体替换候选的段列表；拒绝直接改 N_exp、标定统计与 x_ref，段序列或类型变化时清空全部标定。
 #[tauri::command]
 pub fn workspace_update_segments(app: AppHandle, id: String, revision: u64, segments: Vec<PathSegment>) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();

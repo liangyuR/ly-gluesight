@@ -40,7 +40,7 @@ Push-Location -LiteralPath $projectRoot
 try {
     # 预发布开 release 增量编译：改动后重编从约 4 分钟降到 1 分钟内，优化略弱；正式版显式关闭，不受外部环境变量影响
     $env:CARGO_PROFILE_RELEASE_INCREMENTAL = if ($Pre) { 'true' } else { 'false' }
-    & pnpm exec tauri build --no-bundle --target x86_64-pc-windows-msvc --config $configPath -- --locked
+    & node (Join-Path $projectRoot 'node_modules/@tauri-apps/cli/tauri.js') build --no-bundle --target x86_64-pc-windows-msvc --config $configPath -- --locked
     if ($LASTEXITCODE -ne 0) { throw "Windows 应用构建失败（退出码 $LASTEXITCODE）" }
     Complete-Stage 'build'
     $targetRoot = if ($env:CARGO_TARGET_DIR) {
@@ -54,7 +54,7 @@ try {
     # 旧版本的安装包留在输出目录会让下面“只有一个安装包”的检查失败；历史安装包在 dist-installers
     $bundleRoot = Join-Path $releaseRoot 'bundle/nsis'
     Get-ChildItem -LiteralPath $bundleRoot -File -Filter '*-setup.exe' -ErrorAction SilentlyContinue | Remove-Item -Force
-    & pnpm exec tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config $configPath
+    & node (Join-Path $projectRoot 'node_modules/@tauri-apps/cli/tauri.js') bundle --bundles nsis --target x86_64-pc-windows-msvc --config $configPath
     if ($LASTEXITCODE -ne 0) { throw "Windows 安装包生成失败（退出码 $LASTEXITCODE）" }
     Complete-Stage 'bundle'
     $installers = @(Get-ChildItem -LiteralPath $bundleRoot -File -Filter '*-setup.exe')

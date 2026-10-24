@@ -33,6 +33,8 @@ pnpm package
 
 默认恢复 lyFlow 系列最新运行库和厂商包，再完成前端、Rust 与 NSIS 构建（不做安装验证）；实际打包的 lyFlow 版本写入 `runtime/manifest.json` 与 `release-manifest.json`。不搜索相邻 lyFlow 构建目录，也不自动使用系统 MVS。诊断构建可显式提供 `-LyFlowRuntime`、`-MvsRuntime`、`-VcRuntime` 和 `-MvsLicense`，仍执行系列版本及实际组件检查。
 
+打包脚本通过 Node 直接调用项目本地 Tauri CLI，保留 `-- --locked` 参数分隔符，将 `--locked` 传给 Cargo，避免 PowerShell 的 `pnpm.ps1` 入口吞掉分隔符。
+
 厂商运行库变更时增加 `bundleVersion`、tag 和资产名，并从明确路径导出、验证和发布，禁止覆盖旧资产：
 
 ```powershell
