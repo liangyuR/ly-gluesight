@@ -5,7 +5,8 @@
 //! 规则见 docs/decisions/segment-burst.md（第二节、第六节口径与 D-SB-18/20/21/36）：
 //! - N_exp、标定统计、整件标定与 x_ref 只能由多轮标定写入；段的序列或类型变化时一并清空；
 //! - 标定轮次（不含标准件轮次）不少于配方的 `calibration_rounds`；帧数 = 帧组数；
-//! - 本轮没有分段算法：每轮帧组数写整件标定，单段计划同时写这一段的 N_exp 与 calib，多段计划各段保持待标定；
+//! - 本轮没有分段算法：每轮帧组数写整件标定，单段计划同时写这一段的 N_exp 与 calib；多段计划只有每个标定轮次都确认了
+//!   手动分段时才按边界逐段标定，否则各段保持待标定；
 //! - 建议容差只放在视图里，操作员确认（workspace_confirm_tolerance）后才写进配方；
 //! - x_ref 只用标准件轮次、只给直线段（AbsoluteX），每轮去掉首尾各一帧取胶中心 x 均值，再取各轮均值与极差。
 
@@ -576,6 +577,36 @@ fn standard_x(rounds: &[CalibrationRound], camera: &str, tag: &Value) -> Vec<f64
     }).collect()
 }
 
+/// 多段计划逐段标定的输入：每个标定轮次（不含标准件）按已确认的手动分段得出各段帧组数，按段排列（外层段、内层轮次）；
+/// 有轮次没确认分段时返回这些轮次。
+fn segment_counts(
+    doc: &RecipeDoc,
+    rounds: &[CalibrationRound],
+    reviews: &BTreeMap<String, RoundReview>,
+) -> Result<Vec<Vec<u32>>, Vec<String>> {
+    let mut counts = vec![Vec::new(); doc.segments.len()];
+    let mut unconfirmed = Vec::new();
+    for round in rounds.iter().filter(|r| !r.standard) {
+        match capture_review::confirmed_segment_counts(
+            doc,
+            reviews,
+            &round.round_id,
+            round.group_count,
+        ) {
+            Some(round_counts) => counts
+                .iter_mut()
+                .zip(round_counts)
+                .for_each(|(segment, n)| segment.push(n)),
+            None => unconfirmed.push(round.round_id.clone()),
+        }
+    }
+    if unconfirmed.is_empty() {
+        Ok(counts)
+    } else {
+        Err(unconfirmed)
+    }
+}
+
 fn calib_error(error: CalibError) -> String {
     match error {
         CalibError::TooFewRounds { have, need } => format!("标定轮次不足：已加入 {have} 轮（不含标准件轮次），至少 {need} 轮"),
@@ -585,8 +616,13 @@ fn calib_error(error: CalibError) -> String {
 
 /// 应用多轮标定（D-SB-21）：标定轮次（不含标准件）帧组数做 `calibrate_counts`，轮数不少于配方的 `calibration_rounds`。
 /// 结果写整件标定；单段计划同时写这一段的 N_exp 与 calib，并按标准件轮次写直线段的 x_ref（ToEdge 不写）；
-/// 多段计划各段保持待标定（分段算法未就绪）。容差不写，建议值在视图里，由操作员确认。失败时配方不变。
-pub(super) fn apply_calibration(doc: &mut RecipeDoc, rounds: &[CalibrationRound]) -> Result<(), String> {
+/// 多段计划在每个标定轮次都确认了手动分段时逐段标定（各段 N_exp 之和即 ΣN_exp），否则各段保持待标定。
+/// 容差不写，建议值在视图里，由操作员确认。失败时配方不变。
+pub(super) fn apply_calibration(
+    doc: &mut RecipeDoc,
+    rounds: &[CalibrationRound],
+    reviews: &BTreeMap<String, RoundReview>,
+) -> Result<(), String> {
     require_burst(doc)?;
     let cameras = doc.plan_cameras();
     let planned: BTreeSet<&String> = cameras.iter().collect();
@@ -610,39 +646,121 @@ pub(super) fn apply_calibration(doc: &mut RecipeDoc, rounds: &[CalibrationRound]
         }),
         _ => None,
     };
+    let per_segment = match doc.segments.len() {
+        1 => None,
+        _ => segment_counts(doc, rounds, reviews)
+            .ok()
+            .map(|counts| {
+                counts
+                    .iter()
+                    .zip(&doc.segments)
+                    .map(|(counts, segment)| {
+                        calibration::calibrate_counts(
+                            counts,
+                            doc.calibration_rounds,
+                            kind_default(doc, segment.kind),
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()
+            .map_err(calib_error)?,
+    };
     doc.part_calib = Some(PartCalib { expected_total: outcome.n_exp, calib: outcome.calib.clone() });
     if let [segment] = doc.segments.as_mut_slice() {
         segment.expected_frames = Some(outcome.n_exp);
         segment.calib = Some(outcome.calib);
         if reference.is_some() { segment.offset_ref = reference; }
+    } else {
+        for (k, segment) in doc.segments.iter_mut().enumerate() {
+            let calibrated = per_segment.as_ref().map(|outcomes| &outcomes[k]);
+            segment.expected_frames = calibrated.map(|o| o.n_exp);
+            segment.calib = calibrated.map(|o| o.calib.clone());
+        }
     }
     Ok(())
 }
 
 /// 多轮标定的视图：由配方当前的标定结果与已加入的轮次算出（建议容差 = max(该类段默认容差, N − min, max − N)）。
-pub(super) fn calibration_view(doc: &RecipeDoc, rounds: &[CalibrationRound], production: Option<&RecipeDoc>) -> CalibrationView {
+pub(super) fn calibration_view(
+    doc: &RecipeDoc,
+    rounds: &[CalibrationRound],
+    reviews: &BTreeMap<String, RoundReview>,
+    production: Option<&RecipeDoc>,
+) -> CalibrationView {
     let cameras = doc.plan_cameras();
     let normal = rounds.iter().filter(|r| !r.standard).count() as u32;
     let single = doc.segments.len() == 1;
     let outcome = |n: u32, calib: &crate::plan::SegmentCalib, default: u32| CalibOutcome {
         n_exp: n, calib: calib.clone(), suggested_tolerance: calibration::suggest_tolerance(n, calib.min, calib.max, default),
     };
-    let not_applied = || if normal < doc.calibration_rounds { format!("还差 {} 轮", doc.calibration_rounds - normal) } else { "尚未应用标定".into() };
-    let segments = doc.segments.iter().map(|segment| {
-        let calibrated = segment.expected_frames.zip(segment.calib.as_ref()).map(|(n, calib)| outcome(n, calib, kind_default(doc, segment.kind)));
-        let pending = calibrated.is_none().then(|| if single { not_applied() } else { "分段算法未就绪".into() });
-        let x_ref = segment.offset_ref.as_ref().and_then(|r| Some(XRefView { x_ref: r.x_ref?, spread: r.spread? }));
-        let x_ref_pending = match (segment.kind, &x_ref, offset_reference(segment, &cameras)) {
-            (SegmentKind::Corner, ..) | (_, Some(_), _) => None,
-            (_, None, None) => Some("未启用胶偏检测".into()),
-            (_, None, Some(_)) if !single => Some("分段算法未就绪".into()),
-            (_, None, Some(reference)) if reference.measure == OffsetMeasure::ToEdge => Some("测量量未实现".into()),
-            (_, None, Some(reference)) => Some(if !rounds.iter().any(|r| r.standard) { "还没有标准件轮次".into() }
-                else if standard_x(rounds, &reference.camera, &corridor_tag(doc, &reference.camera)).is_empty() { "标准件轮次的走廊已变化或没有测成的帧，请重新加入标准件轮次".into() }
-                else { not_applied() }),
-        };
-        SegmentCalibView { index: segment.index, kind: segment.kind, outcome: calibrated, pending, tolerance: segment.tolerance, x_ref, x_ref_pending }
-    }).collect();
+    let not_applied = || {
+        if normal < doc.calibration_rounds {
+            format!("还差 {} 轮", doc.calibration_rounds - normal)
+        } else {
+            "尚未应用标定".into()
+        }
+    };
+    let unconfirmed = if single {
+        Vec::new()
+    } else {
+        segment_counts(doc, rounds, reviews)
+            .err()
+            .unwrap_or_default()
+    };
+    let segments = doc
+        .segments
+        .iter()
+        .map(|segment| {
+            let calibrated = segment
+                .expected_frames
+                .zip(segment.calib.as_ref())
+                .map(|(n, calib)| outcome(n, calib, kind_default(doc, segment.kind)));
+            let pending = calibrated.is_none().then(|| {
+                if unconfirmed.is_empty() {
+                    not_applied()
+                } else {
+                    format!("待确认分段：{}", unconfirmed.join("、"))
+                }
+            });
+            let x_ref = segment.offset_ref.as_ref().and_then(|r| {
+                Some(XRefView {
+                    x_ref: r.x_ref?,
+                    spread: r.spread?,
+                })
+            });
+            let x_ref_pending = match (segment.kind, &x_ref, offset_reference(segment, &cameras)) {
+                (SegmentKind::Corner, ..) | (_, Some(_), _) => None,
+                (_, None, None) => Some("未启用胶偏检测".into()),
+                (_, None, Some(_)) if !single => Some("分段算法未就绪".into()),
+                (_, None, Some(reference)) if reference.measure == OffsetMeasure::ToEdge => {
+                    Some("测量量未实现".into())
+                }
+                (_, None, Some(reference)) => Some(if !rounds.iter().any(|r| r.standard) {
+                    "还没有标准件轮次".into()
+                } else if standard_x(
+                    rounds,
+                    &reference.camera,
+                    &corridor_tag(doc, &reference.camera),
+                )
+                .is_empty()
+                {
+                    "标准件轮次的走廊已变化或没有测成的帧，请重新加入标准件轮次".into()
+                } else {
+                    not_applied()
+                }),
+            };
+            SegmentCalibView {
+                index: segment.index,
+                kind: segment.kind,
+                outcome: calibrated,
+                pending,
+                tolerance: segment.tolerance,
+                x_ref,
+                x_ref_pending,
+            }
+        })
+        .collect();
     let default: u32 = doc.segments.iter().map(|s| kind_default(doc, s.kind)).sum();
     let expected_total = doc.expected_total();
     CalibrationView {
@@ -758,7 +876,7 @@ pub fn workspace_calibration_apply(app: AppHandle, id: String, revision: u64) ->
     let current = configs.iter().map(|c| (c.id.clone(), state_value(c))).collect();
     check_calibration_devices(&w.calibration.rounds, &current)?;
     let mut doc = w.doc.clone();
-    apply_calibration(&mut doc, &w.calibration.rounds)?;
+    apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds)?;
     doc.build()?;
     if doc != w.doc { w.doc = doc; w.changed(); }
     host.save(&w)?;
@@ -853,7 +971,15 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
                 target: TargetV2::Calibration }],
         };
         let detail = match total {
-            Some(total) => format!("整件预期 {total} ± {} 个帧组{}", crate::plan::tolerance_total(&doc.segments), if doc.segments.len() > 1 { "；各段待分段算法" } else { "" }),
+            Some(total) => format!(
+                "整件预期 {total} ± {} 个帧组{}",
+                crate::plan::tolerance_total(&doc.segments),
+                if doc.segments.iter().any(|s| s.expected_frames.is_none()) {
+                    "；各段待逐段标定"
+                } else {
+                    ""
+                }
+            ),
             None => format!("{normal} / {min} 轮"),
         };
         StepV2 { id: StepIdV2::Calibration, label: "多轮标定", optional: false, status, detail, blockers }
@@ -929,8 +1055,14 @@ pub(super) fn plan_view(app: &AppHandle, w: &Workspace, layout: &Recipe, product
         expected_total,
         tolerance_total: crate::plan::tolerance_total(&doc.segments),
         calibrated: expected_total.is_some(),
-        calibration: Some(calibration_view(doc, &w.calibration.rounds, production_doc)),
-        shot_count_changed: production_export.as_ref().and_then(|e| e.expected_total) != expected_total,
+        calibration: Some(calibration_view(
+            doc,
+            &w.calibration.rounds,
+            &w.capture_review.rounds,
+            production_doc,
+        )),
+        shot_count_changed: production_export.as_ref().and_then(|e| e.expected_total)
+            != expected_total,
         production_export,
         candidate_export,
         candidate_export_error,

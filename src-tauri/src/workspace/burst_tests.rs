@@ -58,14 +58,26 @@ fn calibration_apply_writes_expected_frames_and_calib_but_leaves_tolerance_until
     let mut w = burst_workspace(&[Straight]);
     for (i, n) in [20, 21, 20, 22, 20, 20, 21, 20, 20, 19].into_iter().enumerate() { add(&mut w, &format!("capture-{i}"), n, false, |_, _| 0.0); }
     let mut doc = w.doc.clone();
-    apply_calibration(&mut doc, &w.calibration.rounds).unwrap();
+    apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds).unwrap();
     let calib = SegmentCalib { rounds: 10, min: 19, max: 22, mean: 20.3 };
     assert_eq!((doc.segments[0].expected_frames, doc.segments[0].calib.clone()), (Some(20), Some(calib.clone())));
     assert_eq!(doc.part_calib.as_ref().map(|p| (p.expected_total, p.calib.clone())), Some((20, calib)));
     assert_eq!(doc.segments[0].tolerance, 1, "建议容差不直接写进配方");
     w.doc = doc;
-    let view = calibration_view(&w.doc, &w.calibration.rounds, None);
-    assert_eq!(view.segments[0].outcome.as_ref().map(|o| o.suggested_tolerance), Some(2), "max(默认 1, 20 − 19, 22 − 20)");
+    let view = calibration_view(
+        &w.doc,
+        &w.calibration.rounds,
+        &w.capture_review.rounds,
+        None,
+    );
+    assert_eq!(
+        view.segments[0]
+            .outcome
+            .as_ref()
+            .map(|o| o.suggested_tolerance),
+        Some(2),
+        "max(默认 1, 20 − 19, 22 − 20)"
+    );
     confirm_tolerance(&mut w, 1, 2).unwrap();
     assert_eq!(w.doc.segments[0].tolerance, 2);
 }
@@ -79,24 +91,83 @@ fn calibration_with_fewer_rounds_than_recipe_setting_is_rejected() {
         for i in 0..normal { add(&mut w, &format!("capture-n{i}"), 20, false, |_, _| 0.0); }
         for i in 0..standard { add(&mut w, &format!("capture-s{i}"), 20, true, |_, _| 0.0); }
         let mut doc = w.doc.clone();
-        let result = apply_calibration(&mut doc, &w.calibration.rounds);
+        let result = apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds);
         assert_eq!(result.is_ok(), accepted, "{name}：{result:?}");
         if accepted { assert_eq!(doc.expected_total(), Some(20), "{name}"); } else { assert_eq!(doc, w.doc, "{name}：配方不变"); }
     }
 }
 
 #[test]
-fn multi_segment_calibration_writes_part_total_and_leaves_segments_pending_on_segmenter() {
-    // 防的回归（决策补充第二节、D-SB-21）：没有分段算法时把整件帧组数摊到各段，或多段计划拿不到整件 ΣN_exp 而无法发布
-    let mut w = burst_workspace(&[Straight, Corner, Straight]);
-    for (i, n) in [30, 31, 30, 30, 29, 30, 30, 31, 30, 30].into_iter().enumerate() { add(&mut w, &format!("capture-{i}"), n, false, |_, _| 0.0); }
-    let mut doc = w.doc.clone();
-    apply_calibration(&mut doc, &w.calibration.rounds).unwrap();
-    assert_eq!(doc.expected_total(), Some(30));
-    assert!(doc.segments.iter().all(|s| s.expected_frames.is_none() && s.calib.is_none()), "{:?}", doc.segments);
-    let view = calibration_view(&doc, &w.calibration.rounds, None);
-    assert_eq!(view.part.as_ref().map(|p| p.n_exp), Some(30));
-    assert!(view.segments.iter().all(|s| s.outcome.is_none() && s.pending.is_some()), "{:?}", view.segments);
+fn multi_segment_calibration_uses_confirmed_manual_cuts_of_every_round_or_leaves_segments_pending()
+{
+    // 防的回归（决策补充第二节、D-SB-21，轮次分段复核）：多段计划不看手动分段就把整件帧组数摊到各段；有标定轮次没确认分段（只是草稿）
+    // 也逐段标定；逐段标定后 ΣN_exp 不等于各段之和；或多段计划拿不到整件 ΣN_exp 而无法发布
+    let totals = [30, 31, 30, 30, 29, 30, 30, 31, 30, 30];
+    for (name, confirm_all) in [
+        ("全部轮次已确认分段", true),
+        ("最后一轮只保存了边界草稿", false),
+    ] {
+        let mut w = burst_workspace(&[Straight, Corner, Straight]);
+        for (i, n) in totals.into_iter().enumerate() {
+            let id = format!("capture-{i}");
+            let round = capture_round(&id, &w.doc, n, DEVICE, &[]);
+            apply_capture_review(&mut w, &round, CaptureReviewEdit::Save(vec![10, n - 8])).unwrap();
+            if confirm_all || i + 1 < totals.len() {
+                apply_capture_review(&mut w, &round, CaptureReviewEdit::Confirm).unwrap();
+            }
+            add(&mut w, &id, n, false, |_, _| 0.0);
+        }
+        let mut doc = w.doc.clone();
+        apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds).unwrap();
+        assert_eq!(
+            doc.part_calib.as_ref().map(|p| p.expected_total),
+            Some(30),
+            "{name}"
+        );
+        let view = calibration_view(&doc, &w.calibration.rounds, &w.capture_review.rounds, None);
+        if confirm_all {
+            let frames: Vec<_> = doc
+                .segments
+                .iter()
+                .map(|s| (s.expected_frames, s.calib.as_ref().map(|c| (c.min, c.max))))
+                .collect();
+            assert_eq!(
+                frames,
+                [
+                    (Some(10), Some((10, 10))),
+                    (Some(12), Some((11, 13))),
+                    (Some(8), Some((8, 8)))
+                ],
+                "{name}"
+            );
+            assert_eq!(doc.expected_total(), Some(30), "{name}：ΣN_exp = 各段之和");
+            assert_eq!(
+                view.segments[1]
+                    .outcome
+                    .as_ref()
+                    .map(|o| o.suggested_tolerance),
+                Some(1),
+                "{name}：max(弯道默认, 12 − 11, 13 − 12)"
+            );
+        } else {
+            assert!(
+                doc.segments
+                    .iter()
+                    .all(|s| s.expected_frames.is_none() && s.calib.is_none()),
+                "{name}：{:?}",
+                doc.segments
+            );
+            assert_eq!(doc.expected_total(), Some(30), "{name}：凭整件均值仍可发布");
+            assert!(
+                view.segments.iter().all(|s| s.outcome.is_none()
+                    && s.pending
+                        .as_deref()
+                        .is_some_and(|p| p.contains("capture-9"))),
+                "{name}：{:?}",
+                view.segments
+            );
+        }
+    }
 }
 
 #[test]
@@ -121,7 +192,7 @@ fn standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner() {
             add(&mut w, &format!("capture-s{i}"), 20, true, move |camera, seq| match (camera, seq) { (1, 1 | 20) => 5.0, (1, _) => middle, _ => 1.0 });
         }
         let mut doc = w.doc.clone();
-        apply_calibration(&mut doc, &w.calibration.rounds).unwrap();
+        apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds).unwrap();
         let reference = doc.segments[0].offset_ref.as_ref().and_then(|r| r.x_ref.zip(r.spread));
         match (reference, expected) {
             (Some((x, spread)), Some((want_x, want_spread))) => assert!((x - want_x).abs() < 1e-9 && (spread - want_spread).abs() < 1e-9, "{name}：{x} ± {spread}"),
@@ -129,7 +200,7 @@ fn standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner() {
             other => panic!("{name}：{other:?}"),
         }
         if kind == Corner { assert!(doc.segments[0].offset_ref.is_none(), "{name}：弯道段没有胶偏参考"); }
-        let view = calibration_view(&doc, &w.calibration.rounds, None);
+        let view = calibration_view(&doc, &w.calibration.rounds, &w.capture_review.rounds, None);
         assert_eq!(view.segments[0].x_ref_pending.is_some(), pending, "{name}：{:?}", view.segments[0].x_ref_pending);
     }
 }
@@ -143,7 +214,7 @@ fn editing_expected_frames_directly_is_rejected_and_kind_change_clears_calibrati
         for i in 0..10 { add(&mut w, &format!("capture-n{i}"), 20, false, |_, _| 0.0); }
         for i in 0..2 { add(&mut w, &format!("capture-s{i}"), 20, true, |_, _| 0.5); }
         let mut doc = w.doc.clone();
-        apply_calibration(&mut doc, &w.calibration.rounds).unwrap();
+        apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds).unwrap();
         w.doc = doc;
         w
     }

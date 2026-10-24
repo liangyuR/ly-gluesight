@@ -15,4 +15,3 @@
 .wp-validate-anchor { scroll-margin-top:16px; }
 .wp-publish-button { width:100%; margin-top:16px; }
 .wp-publish-button + .wp-validate-reason { margin-top:8px; text-align:center; }
-.qs-modal-content.wp-import-dialog { width:min(650px, calc(100vw - 32px)); }

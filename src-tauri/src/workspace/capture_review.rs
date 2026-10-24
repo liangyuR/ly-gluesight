@@ -103,6 +103,31 @@ pub(super) fn refresh(w: &mut Workspace) {
     }
 }
 
+/// 本轮已确认、与当前段列表及帧组数一致的手动分段，按段顺序给出各段帧组数；未确认或已失效为 None。
+pub(super) fn confirmed_segment_counts(
+    w_doc: &RecipeDoc,
+    reviews: &BTreeMap<String, RoundReview>,
+    round: &str,
+    group_count: u64,
+) -> Option<Vec<u32>> {
+    let review = reviews.get(round)?;
+    if review.status != ReviewStatus::Confirmed
+        || review.group_count != group_count
+        || review.segment_signature != segment_signature(w_doc)
+        || validate_cuts(&review.cuts, group_count, w_doc.segments.len()).is_err()
+    {
+        return None;
+    }
+    let bounds: Vec<u64> = std::iter::once(0)
+        .chain(review.cuts.iter().copied())
+        .chain(std::iter::once(group_count))
+        .collect();
+    bounds
+        .windows(2)
+        .map(|pair| u32::try_from(pair[1] - pair[0]).ok())
+        .collect()
+}
+
 pub(super) fn require_available(w: &Workspace, round: &str, seq: u64) -> Result<(), String> {
     if w.capture_review
         .rounds

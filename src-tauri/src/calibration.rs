@@ -2,7 +2,7 @@
 //! 记录 min / max / mean，并按 min / max 给容差建议；标准件轮次给出胶偏参考 x_ref。
 //!
 //! 同一套统计既用于单段（写 `PathSegment.expected_frames` / `calib`），也用于整件
-//! （写 `plan::PartCalib`：本轮多段配方各段待分段算法，凭整件帧组数发布）。调用方是候选工作区的多轮标定（workspace/burst.rs）。
+//! （写 `plan::PartCalib`）；多段配方按已确认的手动分段逐段调用。调用方是候选工作区的多轮标定（workspace/burst.rs）。
 
 use serde::{Deserialize, Serialize};
 

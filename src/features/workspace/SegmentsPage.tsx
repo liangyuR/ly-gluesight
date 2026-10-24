@@ -34,11 +34,7 @@ export default function SegmentsPage() {
   selected.current = selectedId;
   if (!data || !doc) return <WorkspaceEmpty />;
   const plan = data.plan;
-  if (!plan) return <div className="wp-page"><WorkspaceBar />
-    <Panel title="段列表" detail="沿胶路的直线段与弯道段、各段预期帧数与容差、检测项">
-      <Notice title="当前配方按拍照点模型配置">段列表只用于段配方；拍照点配方继续使用原有步骤。</Notice>
-    </Panel>
-  </div>;
+  if (!plan) return <Notice title="该草稿不是段配方" tone="warn">请新建段配方后编辑段列表，旧拍照点草稿不再支持。</Notice>;
   return <SegmentsEditor key={doc.id} plan={plan} selected={selected} />;
 }
 
@@ -136,7 +132,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
         <span className="muted">ΣN_exp ± Σtol{plan.cameras.length !== PLAN_CAMERAS && `（需要 ${PLAN_CAMERAS} 台相机，当前 ${plan.cameras.length} 台）`}</span>
         {plan.expectedTotal == null
           ? <Badge tone="warn">待标定{pending.length > 0 && "：" + pending.map(index => `段 ${index}`).join("、")}</Badge>
-          : pending.length > 0 && <Badge tone="neutral">{pending.map(index => `段 ${index}`).join("、")} 待分段算法，运行时按整件核对帧数</Badge>}
+          : pending.length > 0 && <Badge tone="neutral">{pending.map(index => `段 ${index}`).join("、")} 待逐段标定，运行时按整件核对帧数</Badge>}
         <Link className="wp-progress-link" to="/recipe/calibration">前往多轮标定</Link>
       </div>
       <p className="muted">按段类型的默认检测项与帧数容差（默认 ±1）在“默认参数”页设置，新建段时取用。</p>

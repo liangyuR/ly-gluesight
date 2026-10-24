@@ -31,11 +31,13 @@ mod history_samples;
 pub mod progress;
 mod recorded;
 mod reproduce;
+mod transfer;
 mod workflow;
 pub use burst::*;
 pub use burst_history::*;
 pub use capture_review::*;
 pub use fixture::*;
+pub use transfer::*;
 pub use workflow::*;
 
 fn state_value(value: &impl Serialize) -> Value {

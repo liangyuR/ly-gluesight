@@ -1,43 +1,12 @@
 import type { Verdict } from "../cycle/types";
 import type { ProgressTargetV2, ProgressV2, StepIdV2 } from "../plan/types";
 import { corridorPath } from "./cameraTasks";
-import type { CalibrationState, Progress, ProgressTarget, ShotState, StepId, StepStatus, ViewProgress } from "./types";
+import type { StepStatus } from "./types";
 
 export const stepStatusText: Record<StepStatus, string> = { notStarted: "未开始", inProgress: "进行中", done: "完成", blocked: "阻塞", optional: "可选" };
 export const stepStatusTone: Record<StepStatus, "info" | "ok" | "warn" | "neutral"> = { notStarted: "neutral", inProgress: "info", done: "ok", blocked: "warn", optional: "neutral" };
-export const shotStateText: Record<ShotState, string> = {
-  recapture: "需重新采集", unconfigured: "未配置", draft: "编辑草稿", pendingTrial: "待试测", trialFailed: "试测异常",
-  trialPassed: "试测通过", taught: "已示教", skipped: "不检",
-};
 
-export function calibrationText(c: CalibrationState) {
-  switch (c.state) {
-    case "unverified": return "标定未验证";
-    case "stale": return "当量或设备已变，需重新验证";
-    case "verified": return `人工标定验证通过 · 误差 ${c.errorMm.toFixed(3)} mm`;
-    case "failed": return `人工标定验证未通过 · 误差 ${c.errorMm.toFixed(3)} mm`;
-    case "sampleSet": return `样本集声明当量 ${c.mmPerPx} mm/px（样本集 ${c.setId}）`;
-  }
-}
-
-export function viewStateText(v: Pick<ViewProgress, "state" | "trialStale">) {
-  return v.trialStale ? "试测已过期" : shotStateText[v.state];
-}
-
-export function targetPath(target: ProgressTarget) {
-  switch (target.page) {
-    case "capture": return "/recipe/capture";
-    case "teach": return `/recipe/teach?frame=${target.k}`;
-    case "validation": return "/recipe/validation";
-    case "camera": return "/camera";
-  }
-}
-
-export function stepOf(progress: Progress, id: StepId) {
-  return progress.steps.find(step => step.id === id)!;
-}
-
-/** 段配方（StepIdV2）进度目标的路由；旧拍照点配方用上面的 targetPath。 */
+/** 段配方（StepIdV2）进度目标的路由。 */
 export function targetPathV2(target: ProgressTargetV2) {
   switch (target.page) {
     case "capture": return "/recipe/capture";
