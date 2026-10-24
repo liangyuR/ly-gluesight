@@ -72,7 +72,7 @@ pub fn storage_startup_open_project(app: AppHandle, host: State<'_, Startup>, id
     let meta = crate::project::open_target(&data, &id)?;
     crate::project::write_pointer(&data, &meta.id)?;
     crate::applog::write("info", "项目选择", &format!("启动时选择项目 {}（{}），重启软件", meta.id, meta.name));
-    app.restart()
+    crate::instance::restart(&app)
 }
 
 #[tauri::command]
@@ -83,7 +83,7 @@ pub fn storage_startup_create_project(app: AppHandle, host: State<'_, Startup>, 
     let meta = crate::project::manage::create(&data, None, &request)?;
     crate::project::write_pointer(&data, &meta.id)?;
     crate::applog::write("info", "项目选择", &format!("启动时新建项目 {}（{}），重启软件", meta.id, meta.name));
-    app.restart()
+    crate::instance::restart(&app)
 }
 
 pub fn failed(app: &AppHandle, error: String) {

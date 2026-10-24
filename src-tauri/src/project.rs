@@ -216,7 +216,7 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<(), String> {
     })?;
     write_pointer(&data, &id)?;
     crate::applog::write("info", "项目切换", &format!("{from} → {}（{}），重启软件", target.id, target.name));
-    app.restart()
+    crate::instance::restart(&app)
 }
 
 #[cfg(test)]
