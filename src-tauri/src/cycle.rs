@@ -419,8 +419,8 @@ pub struct CycleHost {
 
 impl CycleHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
-        let settings_path = crate::storage::config(app).join("cycle.json");
-        let data = crate::storage::root(app);
+        let settings_path = crate::storage::project_config(app).join("cycle.json");
+        let data = crate::storage::project(app);
         let (tx, rx) = unbounded_channel();
         let (frame_tx, frame_rx) = channel(FRAME_QUEUE);
         let (settings, settings_note) = CycleSettings::load(&settings_path);
@@ -473,6 +473,7 @@ impl CycleHost {
             teaching_preempted: AtomicBool::new(false),
             recipes: RecipeStore::open_with_floors(
                 data.join("recipes"),
+                crate::storage::state(app).join("plan-version"),
                 &app.state::<crate::store::Store>().recipe_version_floors()?,
             )?,
             recorders,

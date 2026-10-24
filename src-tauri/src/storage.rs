@@ -651,6 +651,10 @@ pub fn storage_open_directory(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+const LAST_WORKSPACE_BY_PROJECT: &str = "lastWorkspaceByProject";
+fn project_id(app: &AppHandle) -> String {
+    app.state::<crate::project::ActiveProject>().id.clone()
+}
 fn preference_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(config(app).join(format!("preferences-{}.json", user_key()?)))
 }
@@ -666,13 +670,21 @@ fn read_object(path: &Path) -> Result<Value, String> {
     }
     Ok(value)
 }
+fn feasibility_file(app: &AppHandle) -> PathBuf {
+    project_config(app).join("feasibility.json")
+}
 fn preferences(app: &AppHandle) -> Result<Value, String> {
     let mut value = read_object(&preference_file(app)?)?;
-    let shared = read_object(&config(app).join("feasibility.json"))?;
-    value
-        .as_object_mut()
-        .unwrap()
-        .extend(shared.as_object().unwrap().clone());
+    let object = value.as_object_mut().unwrap();
+    let last = object
+        .remove(LAST_WORKSPACE_BY_PROJECT)
+        .and_then(|mut map| map.get_mut(project_id(app).as_str()).map(Value::take));
+    object.remove("lastWorkspace");
+    if let Some(last) = last {
+        object.insert("lastWorkspace".into(), last);
+    }
+    let shared = read_object(&feasibility_file(app))?;
+    object.extend(shared.as_object().unwrap().clone());
     Ok(value)
 }
 #[tauri::command]
@@ -687,8 +699,10 @@ pub fn storage_preferences_update(app: AppHandle, patch: Value) -> Result<Value,
     let _guard = paths.preferences.lock().map_err(|e| e.to_string())?;
     let patch = patch.as_object().ok_or("参数补丁必须是对象")?;
     let file = preference_file(&app)?;
-    let shared_file = config(&app).join("feasibility.json");
+    let shared_file = feasibility_file(&app);
+    let project = project_id(&app);
     let mut user = read_object(&file)?;
+    user.as_object_mut().unwrap().remove("lastWorkspace");
     let mut shared = read_object(&shared_file)?;
     for (key, value) in patch {
         let target = match key.as_str() {
@@ -702,7 +716,20 @@ pub fn storage_preferences_update(app: AppHandle, patch: Value) -> Result<Value,
                 if !value.is_null() && !value.is_string() {
                     return Err("工作区标识必须是字符串".into());
                 }
-                &mut user
+                let map = user
+                    .as_object_mut()
+                    .unwrap()
+                    .entry(LAST_WORKSPACE_BY_PROJECT)
+                    .or_insert_with(|| json!({}));
+                if !map.is_object() {
+                    *map = json!({});
+                }
+                if value.is_null() {
+                    map.as_object_mut().unwrap().remove(&project);
+                } else {
+                    map[&project] = value.clone();
+                }
+                continue;
             }
             "legacyImported" => {
                 if !value.is_boolean() {

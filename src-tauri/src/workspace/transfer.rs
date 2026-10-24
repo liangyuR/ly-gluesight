@@ -663,7 +663,7 @@ fn prepare_import<'a>(
 }
 
 fn capture_root(app: &AppHandle) -> PathBuf {
-    crate::storage::root(app).join("recipe-capture")
+    crate::storage::project(app).join("recipe-capture")
 }
 
 fn collect(app: &AppHandle, id: &str) -> Result<Package, String> {
