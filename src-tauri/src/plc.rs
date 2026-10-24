@@ -2,16 +2,18 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ly_plc::{
     describe_address, ConnectionConfig, DataType, EventSink, HistorySample, LogPage, LogQuery, Logbook, PlcConfig,
     PlcEngine, PlcEvent, PlcStatus, PointValue, ProtocolKind,
 };
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::applog::throttle::{self, Tally, Throttle};
+use crate::applog::{self, codes, Fields};
 use crate::cycle::{CycleHost, Input};
 use crate::inspection;
 use crate::handshake::Contract;
@@ -21,6 +23,7 @@ use crate::recipe::Recipe;
 pub struct PlcHost {
     engine: PlcEngine,
     config_path: PathBuf,
+    engine_log: Arc<Mutex<Throttle>>,
 }
 
 impl PlcHost {
@@ -32,6 +35,8 @@ impl PlcHost {
         inspection::add_teaching_points(&mut config);
         let handle = app.clone();
         let last_link = std::sync::Mutex::new(None);
+        let engine_log = Arc::new(Mutex::new(Throttle::new(throttle::WINDOW)));
+        let sink_log = engine_log.clone();
         let sink: EventSink = Arc::new(move |event| match event {
             PlcEvent::Status(s) => {
                 let link = (s.state, s.message.clone());
@@ -48,21 +53,58 @@ impl PlcHost {
                 let _ = handle.emit("plc://values", v);
             }
             PlcEvent::Logs(l) => {
+                let mut throttle = sink_log.lock().unwrap_or_else(|p| p.into_inner());
                 for entry in l.iter().filter(|e| e.level == "warn" || e.level == "error") {
-                    crate::applog::write(&entry.level, &format!("PLC {}", entry.category), &entry.message);
+                    let (event, summary) = if entry.level == "error" {
+                        (&codes::PLC_ENGINE_ERROR, &codes::PLC_ENGINE_ERROR_SUMMARY)
+                    } else {
+                        (&codes::PLC_ENGINE_WARN, &codes::PLC_ENGINE_WARN_SUMMARY)
+                    };
+                    let fields = Fields::default()
+                        .with_data(json!({"category": entry.category, "message": entry.message}));
+                    if throttle.observe(
+                        summary,
+                        &entry.category,
+                        entry.ts,
+                        Tally::None,
+                        fields.clone(),
+                    ) {
+                        applog::emit_event(event, &entry.message, fields);
+                    }
                 }
+                drop(throttle);
                 let _ = handle.emit("plc://log", l);
             }
             PlcEvent::Edge(e) => {
                 let _ = handle.emit("plc://edge", &e);
             }
         });
-        let logbook = Arc::new(Logbook::open(&log_path, sink.clone(), config.log_retention_days)?);
-        Ok(Self { engine: PlcEngine::new(config, logbook, sink), config_path })
+        let logbook = Arc::new(Logbook::open(
+            &log_path,
+            sink.clone(),
+            config.log_retention_days,
+        )?);
+        Ok(Self {
+            engine: PlcEngine::new(config, logbook, sink),
+            config_path,
+            engine_log,
+        })
     }
 
     pub fn engine(&self) -> &PlcEngine {
         &self.engine
+    }
+
+    /// 写出 ly_plc 引擎告警到期的聚合摘要；节拍每拍调用。
+    pub fn flush_logs(&self) {
+        let summaries = self
+            .engine_log
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .flush(ly_plc::now_ms());
+        for summary in summaries {
+            applog::emit_event(summary.event, &summary.msg, summary.fields);
+        }
     }
 
     pub fn start_if_configured(app: &AppHandle) {
@@ -87,6 +129,22 @@ pub fn plc_get_config(plc: State<'_, PlcHost>) -> PlcConfig {
 
 #[tauri::command]
 pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, config: PlcConfig) -> Result<(), String> {
+    let result = plc_save_config_inner(app.clone(), plc, cycle, config).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_PLC,
+        serde_json::json!({"action": "save_config"}),
+        &result,
+    );
+    result
+}
+
+async fn plc_save_config_inner(
+    app: AppHandle,
+    plc: State<'_, PlcHost>,
+    cycle: State<'_, CycleHost>,
+    config: PlcConfig,
+) -> Result<(), String> {
     let _gate = cycle.link_gate.lock().await;
     require_idle(&cycle)?;
     if crate::offline::enabled(&app) { return Err("离线模式由站点模式管理 PLC 配置，退出离线后再修改".into()); }
@@ -97,12 +155,31 @@ pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: Sta
     // 配置保存不一定改变连接状态，配置使用方不能只等 disconnected/connected。
     if r.is_ok() {
         let _ = app.emit("plc://config", ());
+        crate::commands::log_config(&app);
     }
     r
 }
 
 #[tauri::command]
-pub async fn plc_connect(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>) -> Result<(), String> {
+pub async fn plc_connect(
+    app: AppHandle,
+    plc: State<'_, PlcHost>,
+    cycle: State<'_, CycleHost>,
+) -> Result<(), String> {
+    let result = plc_connect_inner(plc, cycle).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_PLC,
+        serde_json::json!({"action": "connect"}),
+        &result,
+    );
+    result
+}
+
+async fn plc_connect_inner(
+    plc: State<'_, PlcHost>,
+    cycle: State<'_, CycleHost>,
+) -> Result<(), String> {
     let _gate = cycle.link_gate.lock().await;
     if plc.engine.status().state == ly_plc::LinkState::Connected { return Ok(()); }
     validate_config(&plc.engine.config())?;
@@ -111,7 +188,25 @@ pub async fn plc_connect(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>) -
 }
 
 #[tauri::command]
-pub async fn plc_disconnect(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>) -> Result<(), String> {
+pub async fn plc_disconnect(
+    app: AppHandle,
+    plc: State<'_, PlcHost>,
+    cycle: State<'_, CycleHost>,
+) -> Result<(), String> {
+    let result = plc_disconnect_inner(plc, cycle).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_PLC,
+        serde_json::json!({"action": "disconnect"}),
+        &result,
+    );
+    result
+}
+
+async fn plc_disconnect_inner(
+    plc: State<'_, PlcHost>,
+    cycle: State<'_, CycleHost>,
+) -> Result<(), String> {
     let _gate = cycle.link_gate.lock().await;
     require_idle(&cycle)?;
     plc.engine.disconnect().await;
@@ -129,7 +224,25 @@ pub fn plc_get_values(plc: State<'_, PlcHost>) -> HashMap<String, PointValue> {
 }
 
 #[tauri::command]
-pub async fn plc_write_point(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, id: String, value: Value) -> Result<(), String> {
+pub async fn plc_write_point(
+    app: AppHandle,
+    plc: State<'_, PlcHost>,
+    cycle: State<'_, CycleHost>,
+    id: String,
+    value: Value,
+) -> Result<(), String> {
+    let data = serde_json::json!({"action": "write_point", "point": id});
+    let result = plc_write_point_inner(plc, cycle, id, value).await;
+    crate::cycle::log_op(&app, &crate::applog::codes::OP_PLC, data, &result);
+    result
+}
+
+async fn plc_write_point_inner(
+    plc: State<'_, PlcHost>,
+    cycle: State<'_, CycleHost>,
+    id: String,
+    value: Value,
+) -> Result<(), String> {
     let _gate = cycle.link_gate.lock().await;
     require_idle(&cycle)?;
     if inspection::reserved_s7_point(&plc.engine.config(), &id) {

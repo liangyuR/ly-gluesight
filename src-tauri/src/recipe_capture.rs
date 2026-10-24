@@ -534,6 +534,20 @@ pub async fn recipe_capture_start(
     camera_ids: Vec<String>,
     drain_timeout_ms: Option<u64>,
 ) -> Result<AnyRound, String> {
+    let mut data = serde_json::json!({"recipeId": recipe_id, "cameraIds": camera_ids});
+    let result =
+        recipe_capture_start_inner(app.clone(), recipe_id, camera_ids, drain_timeout_ms).await;
+    data["roundId"] = serde_json::json!(result.as_ref().ok().map(|round| round.round_id()));
+    crate::cycle::log_op(&app, &crate::applog::codes::OP_CAPTURE_START, data, &result);
+    result
+}
+
+async fn recipe_capture_start_inner(
+    app: AppHandle,
+    recipe_id: String,
+    camera_ids: Vec<String>,
+    drain_timeout_ms: Option<u64>,
+) -> Result<AnyRound, String> {
     let cycle = app.state::<CycleHost>();
     let _link = cycle.link_gate.lock().await;
     let _config = cycle.config_gate.lock().await;
@@ -626,6 +640,17 @@ pub fn recipe_capture_get(app: AppHandle, round_id: Option<String>) -> Result<Op
 
 #[tauri::command]
 pub async fn recipe_capture_stop(app: AppHandle) -> Result<Option<AnyRound>, String> {
+    let result = recipe_capture_stop_inner(app.clone()).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_CAPTURE_STOP,
+        serde_json::json!({}),
+        &result,
+    );
+    result
+}
+
+async fn recipe_capture_stop_inner(app: AppHandle) -> Result<Option<AnyRound>, String> {
     let cycle = app.state::<CycleHost>();
     let _gate = cycle.link_gate.lock().await;
     let mut teaching = cycle.teaching.lock().await;

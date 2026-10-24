@@ -8,17 +8,51 @@ use crate::vision::VisionHost;
 pub struct AppInfo {
     name: String,
     version: String,
+    git_sha: &'static str,
+    build_time: String,
     log_dir: Option<String>,
 }
 
 #[tauri::command]
 pub fn app_info(app: AppHandle) -> AppInfo {
     let pkg = app.package_info();
+    let identity = crate::applog::build_identity();
     AppInfo {
         name: pkg.name.clone(),
         version: pkg.version.to_string(),
+        git_sha: identity.git_sha,
+        build_time: identity.build_time,
         log_dir: crate::applog::dir(&app).ok().map(|dir| dir.display().to_string()),
     }
+}
+
+/// PLC 连接、相机组与检测设置的当前值：运行日志 app.config 的 data，诊断包 manifest 的 configSummary。
+pub fn config_summary(app: &AppHandle) -> serde_json::Value {
+    let cycle = app.state::<crate::cycle::CycleHost>();
+    let connection = app
+        .try_state::<crate::plc::PlcHost>()
+        .map(|plc| plc.engine().config().connection);
+    serde_json::json!({
+        "offline": crate::offline::enabled(app),
+        "plc": connection,
+        "cameras": cycle.camera.configs(),
+        "settings": cycle.settings(),
+    })
+}
+
+/// 运行日志 app.config：启动完成与相关配置保存后各记一次。
+pub fn log_config(app: &AppHandle) {
+    let data = config_summary(app);
+    let plc_text = match (data["plc"]["host"].as_str(), data["plc"]["port"].as_u64()) {
+        (Some(host), Some(port)) => format!("{host}:{port}"),
+        _ => "未初始化".to_string(),
+    };
+    let cameras = data["cameras"].as_array().map_or(0, Vec::len);
+    crate::applog::emit_event(
+        &crate::applog::codes::APP_CONFIG,
+        &format!("PLC {plc_text}，相机 {cameras} 台"),
+        crate::applog::Fields::default().with_data(data),
+    );
 }
 
 #[tauri::command]

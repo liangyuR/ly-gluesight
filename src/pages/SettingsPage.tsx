@@ -325,6 +325,8 @@ export default function SettingsPage() {
           <dd>{info?.name ?? "--"}</dd>
           <dt>版本</dt>
           <dd>{info?.version ?? "--"}</dd>
+          <dt>构建</dt>
+          <dd className="mono">{info?.gitSha ? `${info.gitSha}${info.buildTime ? ` · ${info.buildTime}` : ""}` : "--"}</dd>
           <dt>日志目录</dt>
           <dd className="mono">{info?.logDir ?? "--"}</dd>
         </dl>

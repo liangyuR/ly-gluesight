@@ -77,7 +77,18 @@ mod tests {
     const CYCLE: &str = "0123456789abcdef0123456789abcdef";
 
     fn record(ts: i64, cycle: &str, fields: Fields) -> Record {
-        Record { ts, level: Level::Info, ev: "事件".into(), msg: String::new(), fields: Fields { cycle_id: Some(cycle.into()), ..fields } }
+        Record {
+            ts,
+            level: Level::Info,
+            t: None,
+            code: None,
+            ev: "事件".into(),
+            msg: String::new(),
+            fields: Fields {
+                cycle_id: Some(cycle.into()),
+                ..fields
+            },
+        }
     }
 
     fn interrupted(source: RecordSource) -> Interrupted<'static> {

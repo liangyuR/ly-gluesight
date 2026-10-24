@@ -7,6 +7,7 @@ use ly_plc::{now_ms, LinkState, LogContext, PlcEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::applog::{self, codes, Fields};
 use crate::handshake::{self, Contract, HeartbeatWatch, Request, ResultEnvelope, Snapshot, WriteOp};
 use crate::inspection::tag;
 use crate::plc_plan::PlcPlan;
@@ -187,6 +188,8 @@ pub struct PlcSession {
     heartbeat: Mutex<HeartbeatWatch>,
     fault_written: bool,
     fault_attempted: Option<Instant>,
+    /// 本次进入复位或故障的原因类别，写故障输出时记入运行日志
+    fault_cause: &'static str,
     message: Option<String>,
     reset_blocked_reason: Option<String>,
     /// 设备未就绪时本侧撤销了 visionReady（不是外部改写）
@@ -249,6 +252,7 @@ impl PlcSession {
             origin: Origin::Real,
             fault_written: false,
             fault_attempted: None,
+            fault_cause: "startup",
             message: Some(message),
             reset_blocked_reason: Some("正在核对复位条件".into()),
             withdrawn: false, restores: Vec::new(), ack_triggers: None, reconnect: Mutex::default() }
@@ -356,7 +360,10 @@ impl PlcSession {
                         self.heartbeat.lock().unwrap().observe(snapshot.read_bool(tag::PLC_HEARTBEAT)?, snapshot.heartbeat_changed_at, now_ms())
                     };
                     observation_error = observe().err();
-                    if observation_error.is_some() { let _ = self.stop_outputs(engine).await; }
+                    if let Some(error) = &observation_error {
+                        let result = self.stop_outputs(engine).await;
+                        log_fault_output("observation_failed", Some(error), self.phase, &result);
+                    }
                 }
             }
         }
@@ -427,6 +434,7 @@ impl PlcSession {
     pub async fn fault(&mut self, engine: &PlcEngine, reason: String) {
         self.reset_exchange = None;
         self.phase = SessionPhase::Fault;
+        self.fault_cause = "fault";
         self.reset_blocked_reason = Some(reason.clone());
         self.message = Some(reason);
         let _ = self.ensure_fault_output(engine).await;
@@ -442,6 +450,7 @@ impl PlcSession {
         }
         if engine.status().state != LinkState::Connected || self.contract.is_none() { return Ok(()); }
         let result = self.stop_outputs(engine).await;
+        log_fault_output(self.fault_cause, self.message.as_ref(), self.phase, &result);
         self.fault_attempted = Some(Instant::now());
         self.fault_written = result.is_ok();
         result
@@ -464,6 +473,12 @@ impl PlcSession {
         if stop_confirmed {
             self.reconnect.lock().unwrap().spent = false;
         } else {
+            let error = errors.join("；");
+            applog::emit_event(
+                &codes::S7_RECONNECT_FORCED,
+                &error,
+                Fields::default().with_data(json!({"error": error})),
+            );
             engine.disconnect().await;
             let since = engine.status().since;
             let mut reconnect = self.reconnect.lock().unwrap();
@@ -583,6 +598,7 @@ impl PlcSession {
             self.heartbeat.lock().unwrap().reset();
             self.fault_written = false;
             self.fault_attempted = None;
+            self.fault_cause = "new_connection";
             self.message = Some("S7 连接会话已更新，需确认空闲输入后复位；未结事务保留".into());
         }
         if status.poll_count == 0 || status.last_poll.is_none_or(|polled| polled < status.since) {
@@ -607,13 +623,41 @@ impl PlcSession {
         if !reset_level { self.reset_low_seen = true; }
         let reset_edge = reset_level && !self.reset_level && self.reset_low_seen;
         self.reset_level = reset_level;
-        if let Some(error) = &self.load_error { return Err(error.clone()); }
+        if let Some(error) = &self.load_error {
+            return Err(error.clone());
+        }
+        let reset_source = if reset_requested {
+            "operator"
+        } else {
+            "plc_edge"
+        };
+        if reset_requested || reset_edge {
+            let data = json!({"source": reset_source, "phase": format!("{:?}", self.phase)});
+            applog::emit_event(
+                &codes::S7_RESET_REQUEST,
+                &format!("收到复位（{reset_source}）"),
+                Fields::default().with_data(data),
+            );
+        }
         if (reset_requested || reset_edge) && self.phase == SessionPhase::Idle {
             self.phase = SessionPhase::ResetRequired;
             self.fault_written = false;
             self.fault_attempted = None;
-        } else if (reset_requested || reset_edge) && !matches!(self.phase, SessionPhase::ResetRequired | SessionPhase::Fault) {
-            return Err("在途工件不能直接复位；保留事务进入故障，处理该件并释放 PLC 输入后再次明确复位".into());
+            self.fault_cause = if reset_requested {
+                "reset_operator"
+            } else {
+                "reset_plc_edge"
+            };
+        } else if (reset_requested || reset_edge)
+            && !matches!(
+                self.phase,
+                SessionPhase::ResetRequired | SessionPhase::Fault
+            )
+        {
+            return Err(
+                "在途工件不能直接复位；保留事务进入故障，处理该件并释放 PLC 输入后再次明确复位"
+                    .into(),
+            );
         }
         if matches!(self.phase, SessionPhase::ResetRequired | SessionPhase::Fault) {
             self.ensure_fault_output(engine).await?;
@@ -751,6 +795,12 @@ impl PlcSession {
                 if self.phase == SessionPhase::AwaitAck {
                     let result = self.result().ok_or("S7 结果尚未生成")?;
                     if handshake::matching_ack(&snapshot, result)? {
+                        let data = json!({"requestSeq": result.request_seq, "resultCode": result.result_code, "faultCode": result.fault_code});
+                        applog::emit_event(
+                            &codes::S7_ACK,
+                            &format!("PLC 确认结果，请求序号 {}", result.request_seq),
+                            Fields::default().with_data(data),
+                        );
                         self.ack_triggers = Some(0);
                         self.journal.pending.as_mut().unwrap().acknowledged = true;
                         self.persist(engine).await?;
@@ -942,3 +992,22 @@ impl PlcSession {
 
 #[cfg(test)]
 mod tests;
+
+/// 运行日志 s7.fault_output：PLC 可见的故障输出（或断开通讯）都经过这里，带触发原因。
+fn log_fault_output(
+    cause: &str,
+    reason: Option<&String>,
+    phase: SessionPhase,
+    result: &Result<(), String>,
+) {
+    let data = json!({"cause": cause, "reason": reason, "phase": format!("{phase:?}"), "ok": result.is_ok(), "error": result.as_ref().err()});
+    let msg = format!(
+        "写出故障输出（{cause}）{}",
+        reason.map(|r| format!("：{r}")).unwrap_or_default()
+    );
+    applog::emit_event(
+        &codes::S7_FAULT_OUTPUT,
+        &msg,
+        Fields::default().with_data(data),
+    );
+}

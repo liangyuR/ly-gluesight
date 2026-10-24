@@ -8,6 +8,7 @@
 - 可选项：A 保留文本，查询时用正则解析；B 每行一条 JSON（JSON Lines）；C 写入 SQLite。
 - 采用：B。文件名 `gluesight-YYYY-MM-DD[.N].jsonl`，每行 `{ts, level, ev, msg, cycleId?, sn?, requestSeq?, recipeId?, shotId?, k?, camera?, view?, stage?, data?}`。追加写、崩溃时最多丢最后一行；工具与人都能直接读；查询时按日期文件裁剪范围，再逐行解析。C 需要额外的写入线程与库迁移，收益不明显。
 - 回退：`applog::Sink::write` 改回文本格式即可；查询、时间线、诊断包读取 `.jsonl` 的部分随之失效。
+- 2026-10-24 更新（日志 schema 2）：`level` 之后新增可省略的 `t`（带 UTC 偏移的本地时间）与 `code`（稳定事件编码，见[编码表](../architecture/agent-logging-codes.md)），旧行照常读取；`ts`、`level` 仍是前两个键。设计见[面向 Agent 的日志改造方案](../architecture/agent-logging.md)。
 
 ## 2. 旧文本日志（D-0）
 
@@ -46,7 +47,7 @@
 - 可选项：A 导出目录；B tar；C ZIP（引入 zip crate）；D ZIP（自写最小写入器）。
 - 采用：D。Windows 资源管理器直接打开，不新增依赖（复用已锁定的 `flate2` 与 `crc32fast`）。只写普通 ZIP（无 ZIP64），因此限制：时间范围 ≤ 31 天、记录 ≤ 5000 件、附原图 ≤ 200 件且原图总量 ≤ 2 GB、PLC 日志 ≤ 20 万条；超限部分不打包并写入 `manifest.json` 的 notes。
 - 哈希规则：ZIP 条目的 CRC32 是格式规定的传输校验，由解压工具使用；软件不用它做任何业务匹配、校验或身份关联，不违反“禁止哈希匹配”。
-- 内容：`manifest.json`、`logs/gluesight-*.jsonl`（时间段内）、`logs/plc.jsonl`、`config/`、`state/`（单文件 ≤ 8 MB）、`records/parts.csv` 与 `records/parts.jsonl`（完整明细）、`recipes/<revisionId>.json`（涉及的配方快照）、`records/<记录号>_<cycleId>/`（原图、`part.json`、对照结果）。不含 WebView 资料与样本原件；候选调试件的原图在受管样本中，不重复打包。
+- 内容：`manifest.json`（导出参数、构建信息 `build`、`utcOffset`、`logSchema`、`configSummary`、`notes`，以及除自身外每个文件的 path、bytes、sha256）、`README.md`（包结构、时间口径、事件编码表与推荐分析顺序）、`logs/gluesight-*.jsonl`（时间段内）、`logs/plc.jsonl`（时间段内，时间正序，每行带本地时间 `t`）、`config/`、`state/`（单文件 ≤ 8 MB；握手审计当前文件只写时间段内的行，已滚动分段取与时间段有交集的）、`records/parts.csv` 与 `records/parts.jsonl`（完整明细）、`recipes/<revisionId>.json`（涉及的配方快照）、`records/<记录号>_<cycleId>/`（原图、`part.json`、对照结果）。不含 WebView 资料与样本原件；候选调试件的原图在受管样本中，不重复打包。
 - 原图默认只附异常件（NG / ERR / 局部超差），新的优先；从历史详情导出“本件诊断包”时附该件全部原图。
 - 回退：删除 `diagnostics_export` 命令与界面入口，不影响其他功能。
 

@@ -3,6 +3,8 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 export interface AppInfo {
   name: string;
   version: string;
+  gitSha?: string;
+  buildTime?: string;
   logDir?: string | null;
 }
 
