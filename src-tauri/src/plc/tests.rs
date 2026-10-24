@@ -17,16 +17,26 @@ fn export_spanning_several_pages_writes_every_log_once_in_order() {
             context: None,
         })
         .collect();
-    let labels = LogLabels { levels: HashMap::new(), categories: HashMap::new() };
+    let labels = LogLabels {
+        levels: HashMap::new(),
+        categories: HashMap::new(),
+    };
     let mut out = Vec::new();
     write_log_csv(&mut out, LogQuery::default(), &labels, |q| {
         let offset = q.offset.unwrap_or(0) as usize;
         let limit = q.limit.unwrap_or(200) as usize;
-        Ok(LogPage { total: entries.len() as i64, items: entries.iter().skip(offset).take(limit).cloned().collect() })
+        Ok(LogPage {
+            total: entries.len() as i64,
+            items: entries.iter().skip(offset).take(limit).cloned().collect(),
+        })
     })
     .unwrap();
     let text = String::from_utf8(out).unwrap();
-    let messages: Vec<&str> = text.lines().skip(1).map(|line| line.split(',').nth(4).unwrap()).collect();
+    let messages: Vec<&str> = text
+        .lines()
+        .skip(1)
+        .map(|line| line.split(',').nth(4).unwrap())
+        .collect();
     let expected: Vec<String> = (0..2500).map(|i| format!("m{i}")).collect();
     assert_eq!(messages, expected);
 }

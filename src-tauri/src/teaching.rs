@@ -120,25 +120,38 @@ impl TeachingReply {
             return violation("reserved", format!("保留字段为 {}，应为 0", self.reserved));
         }
         if !matches!(state, 0 | 10 | 20 | 30 | 40 | 50) {
-            return violation("state", format!("状态 {state} 不是协议状态（0/10/20/30/40/50）"));
+            return violation(
+                "state",
+                format!("状态 {state} 不是协议状态（0/10/20/30/40/50）"),
+            );
         }
         if self.id > 32767 || (state != 0 && state != 50 && self.id == 0) {
             return violation("roundId", format!("状态 {state} 时握手编号回显为 {}：PLC 须把 PC 的 teachRoundId 写回 teachRoundIdEcho", self.id));
         }
         match state {
             0 if reason != 0 => violation("reason", format!("回空闲后原因码 {reason} 未清 0")),
-            10 | 20 | 30 if reason != 0 => violation("reason", format!("状态 {state} 时原因码应为 0，实际 {reason}")),
-            40 if !(1..=5).contains(&reason) => violation("reason", format!("拒绝（状态 40）原因码 {reason} 不在 1–5")),
-            50 if !(4..=10).contains(&reason) => violation("reason", format!("故障（状态 50）原因码 {reason} 不在 4–10")),
+            10 | 20 | 30 if reason != 0 => violation(
+                "reason",
+                format!("状态 {state} 时原因码应为 0，实际 {reason}"),
+            ),
+            40 if !(1..=5).contains(&reason) => {
+                violation("reason", format!("拒绝（状态 40）原因码 {reason} 不在 1–5"))
+            }
+            50 if !(4..=10).contains(&reason) => violation(
+                "reason",
+                format!("故障（状态 50）原因码 {reason} 不在 4–10"),
+            ),
             _ => Ok(()),
         }
     }
 
     fn validate(self) -> Result<(), String> {
-        self.check().map_err(|v| format!(
-            "示教 PLC 寄存器不合规：{}（DB12 版本 {} 状态 {} 编号 {} 原因 {} 保留 {}）",
-            v.detail, self.version, self.state, self.id, self.reason, self.reserved
-        ))
+        self.check().map_err(|v| {
+            format!(
+                "示教 PLC 寄存器不合规：{}（DB12 版本 {} 状态 {} 编号 {} 原因 {} 保留 {}）",
+                v.detail, self.version, self.state, self.id, self.reason, self.reserved
+            )
+        })
     }
 }
 
@@ -780,7 +793,11 @@ impl Teaching {
             }
             let waiting = match &self.monitor.violation {
                 Some(v) => format!("PLC 寄存器不合规：{}", v.detail),
-                None if reply.state != 0 => format!("PLC 示教状态 {}（{}）", reply.state, plc_state_name(reply.state)),
+                None if reply.state != 0 => format!(
+                    "PLC 示教状态 {}（{}）",
+                    reply.state,
+                    plc_state_name(reply.state)
+                ),
                 None => "等待基础握手复位完成".into(),
             };
             if self.since.elapsed() > Duration::from_secs(15) {

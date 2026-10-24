@@ -846,7 +846,10 @@ pub async fn workspace_set_camera_imaging(app: AppHandle, id: String, revision: 
 
 fn apply_live_imaging(app: &AppHandle, camera: &str, imaging: &CameraImaging) -> Result<(), String> {
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.config_gate.try_lock().map_err(|_| "正在布防或处理其他配置操作，稍后再点应用下发到相机")?;
+    let _gate = cycle
+        .config_gate
+        .try_lock()
+        .map_err(|_| "正在布防或处理其他配置操作，稍后再点应用下发到相机")?;
     crate::camera::check_idle(&cycle)?;
     let cam = cycle.camera.require(camera)?;
     cycle.camera.slot(cam as usize).ok_or("相机不存在")?.set_imaging(imaging)

@@ -390,13 +390,20 @@ pub fn workspace_abandon_publish(app: AppHandle, id: String, revision: u64) -> R
 
 /// 有界等待配置门：布防、整圈采集开始或离线切换正在进行时排队等它释放，而不是立即拒绝。
 /// 只能在阻塞线程（spawn_blocking 或普通线程）里调用，不能在 async 任务里调用。
-pub(crate) fn lock_config_gate<'a>(gate: &'a tokio::sync::Mutex<()>, within: std::time::Duration, what: &str) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
+pub(crate) fn lock_config_gate<'a>(
+    gate: &'a tokio::sync::Mutex<()>,
+    within: std::time::Duration,
+    what: &str,
+) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
     tauri::async_runtime::block_on(async { tokio::time::timeout(within, gate.lock()).await })
         .map_err(|_| format!("布防或其他配置操作 3 秒内仍未结束，暂不能{what}；请确认在线检测或离线产线已停止后重试"))
 }
 
 /// 等节拍释放上一次握手（busy 清除）后再取配置门；整段最多 3 秒。
-pub(crate) fn wait_idle_config_gate<'a>(cycle: &'a CycleHost, what: &str) -> Result<Option<tokio::sync::MutexGuard<'a, ()>>, String> {
+pub(crate) fn wait_idle_config_gate<'a>(
+    cycle: &'a CycleHost,
+    what: &str,
+) -> Result<Option<tokio::sync::MutexGuard<'a, ()>>, String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         while cycle.busy() && std::time::Instant::now() < deadline { std::thread::sleep(std::time::Duration::from_millis(50)); }
@@ -467,7 +474,9 @@ pub async fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, 
 
 fn adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, reuse_teaching: bool, correspondence_confirmed: bool) -> Result<WorkspaceView, String> {
     let cycle = app.state::<CycleHost>();
-    let Some(_gate) = wait_idle_config_gate(&cycle, "采用采集图像")? else { return Err("请等待当前工件和 PLC 事务结束后采用采集图像".into()) };
+    let Some(_gate) = wait_idle_config_gate(&cycle, "采用采集图像")? else {
+        return Err("请等待当前工件和 PLC 事务结束后采用采集图像".into());
+    };
     let round = capture_for(&app, &id, &round_id)?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
@@ -549,7 +558,9 @@ fn capture_sample(app: AppHandle, id: String, revision: u64, round_id: String, e
     let burst = app.state::<WorkspaceHost>().items.lock().unwrap().get(&id).is_some_and(|w| w.doc.is_burst());
     if burst { return super::burst_release::capture_sample(app, id, revision, round_id, expected); }
     let cycle = app.state::<CycleHost>();
-    let Some(_gate) = wait_idle_config_gate(&cycle, "加入验证样本")? else { return Err("请等待当前工件和 PLC 事务结束后加入验证样本".into()) };
+    let Some(_gate) = wait_idle_config_gate(&cycle, "加入验证样本")? else {
+        return Err("请等待当前工件和 PLC 事务结束后加入验证样本".into());
+    };
     let round = capture_for(&app, &id, &round_id)?;
     let host = app.state::<WorkspaceHost>(); let mut items = host.items.lock().unwrap();
     let mut w = items.get(&id).ok_or("候选不存在")?.clone(); w.expect(revision)?;

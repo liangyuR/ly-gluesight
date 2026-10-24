@@ -147,13 +147,27 @@ fn duplicate_counter_is_dropped_with_alarm_and_the_first_frame_is_kept() {
 #[test]
 fn camera_without_session_baseline_starts_and_groups_from_its_first_frame() {
     let host = host();
-    let devices = (0..3).map(|cam| CaptureDevice { frame_baseline: None, ..device(cam) }).collect();
-    let round = host.start_burst("recipe-a".into(), devices, TEST_DRAIN_MS, true).unwrap();
+    let devices = (0..3)
+        .map(|cam| CaptureDevice {
+            frame_baseline: None,
+            ..device(cam)
+        })
+        .collect();
+    let round = host
+        .start_burst("recipe-a".into(), devices, TEST_DRAIN_MS, true)
+        .unwrap();
     host.burst_plc_started(3, 1).unwrap();
-    for n in 1..=3 { for cam in 0..3 { offer(&host, frame(cam, n + 40)); } }
+    for n in 1..=3 {
+        for cam in 0..3 {
+            offer(&host, frame(cam, n + 40));
+        }
+    }
     let done = finish(&host, Some(0));
     assert_eq!(done.state, CaptureState::Complete, "{:?}", done.error);
-    assert_eq!((done.group_count, done.incomplete_groups.clone()), (3, vec![]));
+    assert_eq!(
+        (done.group_count, done.incomplete_groups.clone()),
+        (3, vec![])
+    );
     assert_eq!(pixel(&host, &round.round_id, "cam2", 1), 41);
 }
 

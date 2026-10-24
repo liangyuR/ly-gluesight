@@ -315,12 +315,31 @@ impl RecipeCaptureHost {
             }
         };
         let dir = self.root.join(&round_id);
-        for d in &devices { std::fs::create_dir(dir.join(&d.camera_id)).map_err(|e| Rejected::Io(e.to_string()))?; }
-        let file = std::fs::OpenOptions::new().create_new(true).append(true).open(dir.join(FRAMES_FILE)).map_err(|e| Rejected::Io(e.to_string()))?;
-        let baselines: Vec<u64> = devices.iter().map(|d| d.frame_baseline.unwrap_or_default()).collect();
-        let cams = devices.iter().map(|d| BurstCam {
-            cam: d.cam, baseline: d.frame_baseline, source: None, last: None, faulted: false, queued: 0, written: 0, saved: BTreeSet::new(),
-        }).collect();
+        for d in &devices {
+            std::fs::create_dir(dir.join(&d.camera_id)).map_err(|e| Rejected::Io(e.to_string()))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(dir.join(FRAMES_FILE))
+            .map_err(|e| Rejected::Io(e.to_string()))?;
+        let baselines: Vec<u64> = devices
+            .iter()
+            .map(|d| d.frame_baseline.unwrap_or_default())
+            .collect();
+        let cams = devices
+            .iter()
+            .map(|d| BurstCam {
+                cam: d.cam,
+                baseline: d.frame_baseline,
+                source: None,
+                last: None,
+                faulted: false,
+                queued: 0,
+                written: 0,
+                saved: BTreeSet::new(),
+            })
+            .collect();
         let n = devices.len();
         let cameras = devices.into_iter().map(|d| CaptureCamera { camera_id: d.camera_id, camera_config: d.camera_config, imaging: d.imaging, device_session: d.session, received_count: 0 }).collect();
         let round = CaptureRoundV2 {
@@ -456,19 +475,35 @@ impl RecipeCaptureHost {
         let Some(j) = run.camera_of(f.cam) else { return true };
         let camera_id = run.round.cameras[j].camera_id.clone();
         let cam = &run.cams[j];
-        let baseline = cam.baseline.unwrap_or_else(|| f.frame_counter.saturating_sub(1));
-        let rejected = if run.round.state == CaptureState::WaitingStart { Some((false, "PLC 开始前收到帧，无法确定本轮归属".to_string())) }
-            else if f.session != run.round.cameras[j].device_session { Some((true, "设备会话已变化，不能混用不同会话的图像".into())) }
-            else if f.manual { Some((false, "本轮收到手动触发图像".into())) }
-            else if f.counter == CounterSource::Synthetic && !run.round.simulated { Some((false, "设备实拍轮次收到模拟计数的帧".into())) }
-            else if cam.source.is_some_and(|source| source != f.counter) { Some((false, "帧计数来源发生变化".into())) }
-            else {
-                match f.frame_counter.checked_sub(baseline).filter(|seq| *seq > 0) {
-                    None => Some((false, format!("帧计数 {} 不大于开始采集时的基线 {baseline}（计数回退或上一轮的迟到帧）", f.frame_counter))),
-                    Some(seq) if seq > MAX_SEQ => Some((false, format!("帧计数比基线大 {seq}，超过一轮上限 {MAX_SEQ}，计数异常"))),
-                    Some(_) => None,
-                }
-            };
+        let baseline = cam
+            .baseline
+            .unwrap_or_else(|| f.frame_counter.saturating_sub(1));
+        let rejected = if run.round.state == CaptureState::WaitingStart {
+            Some((false, "PLC 开始前收到帧，无法确定本轮归属".to_string()))
+        } else if f.session != run.round.cameras[j].device_session {
+            Some((true, "设备会话已变化，不能混用不同会话的图像".into()))
+        } else if f.manual {
+            Some((false, "本轮收到手动触发图像".into()))
+        } else if f.counter == CounterSource::Synthetic && !run.round.simulated {
+            Some((false, "设备实拍轮次收到模拟计数的帧".into()))
+        } else if cam.source.is_some_and(|source| source != f.counter) {
+            Some((false, "帧计数来源发生变化".into()))
+        } else {
+            match f.frame_counter.checked_sub(baseline).filter(|seq| *seq > 0) {
+                None => Some((
+                    false,
+                    format!(
+                        "帧计数 {} 不大于开始采集时的基线 {baseline}（计数回退或上一轮的迟到帧）",
+                        f.frame_counter
+                    ),
+                )),
+                Some(seq) if seq > MAX_SEQ => Some((
+                    false,
+                    format!("帧计数比基线大 {seq}，超过一轮上限 {MAX_SEQ}，计数异常"),
+                )),
+                Some(_) => None,
+            }
+        };
         if let Some((session, error)) = rejected {
             run.cams[j].faulted = true;
             let failure = if session { CaptureFailureV2::SessionChanged { camera_id: camera_id.clone() } } else { CaptureFailureV2::Camera { camera_id: camera_id.clone() } };

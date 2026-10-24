@@ -4,16 +4,34 @@ use crate::frame::CounterSource;
 /// 段配方在途件：samples_burst（cam1–cam3 共用触发、一个直线段 N_exp = 4、容差 1），相机组序号 0–2、会话 11–13，
 /// 按计数账定帧计数基线（模拟相机本会话没见过帧时从 0 起）。
 fn burst_part(cycle_id: &str, ledgers: &Ledgers) -> Part {
-    armed_part(cycle_id, ledgers, Some(CounterSource::Synthetic), Policy::burst_offline(None))
+    armed_part(
+        cycle_id,
+        ledgers,
+        Some(CounterSource::Synthetic),
+        Policy::burst_offline(None),
+    )
 }
 
 /// 同 [`burst_part`]，指定布防前已知的计数来源（海康为空）与布防策略。
-fn armed_part(cycle_id: &str, ledgers: &Ledgers, source: Option<CounterSource>, policy: Policy) -> Part {
+fn armed_part(
+    cycle_id: &str,
+    ledgers: &Ledgers,
+    source: Option<CounterSource>,
+    policy: Policy,
+) -> Part {
     let recipe = Arc::new(crate::recipe::samples_burst().build().unwrap());
     let cameras = recipe.plan_cameras();
-    let identities: Vec<ArmCam> = cameras.iter().enumerate().map(|(cam, id)| ArmCam {
-        cam: cam as u8, camera: id.clone(), session: cam as u64 + 11, source, counter_after_open: None,
-    }).collect();
+    let identities: Vec<ArmCam> = cameras
+        .iter()
+        .enumerate()
+        .map(|(cam, id)| ArmCam {
+            cam: cam as u8,
+            camera: id.clone(),
+            session: cam as u64 + 11,
+            source,
+            counter_after_open: None,
+        })
+        .collect();
     let baselines = arm_frames(&cameras, ledgers, &policy, &identities).unwrap();
     Part {
         cycle_id: cycle_id.into(), bundle_id: None, production: None, candidate: None, sn: "SN-88".into(), scenario: Scenario::Normal,
@@ -180,18 +198,42 @@ fn next_part_baseline_is_each_camera_highest_frame_counter_seen() {
 /// 各相机以本件首帧定基线（首帧算第 1 帧），收尾后下一件的基线接着本件见到的最高帧计数。
 #[test]
 fn hik_camera_without_frames_this_session_arms_and_counts_from_its_first_frame() {
-    let mut p = armed_part("hik-first", &Ledgers::default(), None, Policy::burst_production(None));
-    let sdk = |cam: u8, counter: u64| Frame { counter: CounterSource::SdkFrame, ..burst_frame(cam, counter) };
+    let mut p = armed_part(
+        "hik-first",
+        &Ledgers::default(),
+        None,
+        Policy::burst_production(None),
+    );
+    let sdk = |cam: u8, counter: u64| Frame {
+        counter: CounterSource::SdkFrame,
+        ..burst_frame(cam, counter)
+    };
     for (cam, first) in [(0u8, 57u64), (1, 3), (2, 1)] {
         for seq in 1..=2 {
-            assert_eq!(p.receive_burst(&sdk(cam, first + seq - 1)), Some(burst::Arrival::Accepted { camera: cam as usize, seq }), "相机 {cam}");
+            assert_eq!(
+                p.receive_burst(&sdk(cam, first + seq - 1)),
+                Some(burst::Arrival::Accepted {
+                    camera: cam as usize,
+                    seq
+                }),
+                "相机 {cam}"
+            );
         }
     }
     let mut ledgers = Ledgers::default();
     p.close_routing(&mut ledgers, None);
     let mut next = armed_part("hik-next", &ledgers, None, Policy::burst_production(None));
-    assert!(matches!(next.receive_burst(&sdk(0, 58)), Some(burst::Arrival::Stale { .. })), "上一件的迟到帧");
-    assert_eq!(next.receive_burst(&sdk(0, 59)), Some(burst::Arrival::Accepted { camera: 0, seq: 1 }));
+    assert!(
+        matches!(
+            next.receive_burst(&sdk(0, 58)),
+            Some(burst::Arrival::Stale { .. })
+        ),
+        "上一件的迟到帧"
+    );
+    assert_eq!(
+        next.receive_burst(&sdk(0, 59)),
+        Some(burst::Arrival::Accepted { camera: 0, seq: 1 })
+    );
 }
 
 /// 会话变化仍是设备故障：布防后相机重连过，之后的帧号对不上本件，整件判 ERR 98——重连后又来帧，或重连后没再来帧（收尾时核对会话）。

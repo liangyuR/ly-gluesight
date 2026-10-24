@@ -591,7 +591,10 @@ impl CycleHost {
     }
 
     pub fn save_settings(&self, settings: CycleSettings) -> Result<(), String> {
-        let gate = self.config_gate.try_lock().map_err(|_| "正在布防或处理其他配置操作，请稍后重试")?;
+        let gate = self
+            .config_gate
+            .try_lock()
+            .map_err(|_| "正在布防或处理其他配置操作，请稍后重试")?;
         self.save_settings_locked(settings, &gate)
     }
 
@@ -1504,7 +1507,12 @@ impl Machine {
             };
             for camera in &baselines {
                 if let Some(baseline) = camera.baseline {
-                    self.ledgers.set_frame_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session, baseline });
+                    self.ledgers.set_frame_floor(&Floor {
+                        cam: camera.cam,
+                        camera: camera.camera.clone(),
+                        session: camera.session,
+                        baseline,
+                    });
                 }
             }
             (unrouted(), Some(Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted))), None)
@@ -1798,8 +1806,15 @@ impl Machine {
         let app = self.app.clone();
         let _link = host(&app).link_gate.lock().await;
         // 持有链路门期间站点模式不会切换：新事务按当前站点记来源
-        self.s7.set_origin(if crate::offline::enabled(&app) { Origin::Offline } else { Origin::Real });
-        if !host(&app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) && crate::offline::candidate(&self.app).is_none() {
+        self.s7.set_origin(if crate::offline::enabled(&app) {
+            Origin::Offline
+        } else {
+            Origin::Real
+        });
+        if !host(&app).busy()
+            && matches!(self.phase, Phase::Idle | Phase::Fault)
+            && crate::offline::candidate(&self.app).is_none()
+        {
             // 配置操作进行中就留到下一拍，不让空闲节拍排队
             if let Ok(_config) = host(&app).config_gate.try_lock() {
                 if crate::workspace::apply_pending(&self.app) {
@@ -2355,7 +2370,10 @@ pub fn cycle_save_settings(app: AppHandle, cycle: State<'_, CycleHost>, settings
 /// 人工选择配方，只能在空闲或故障时切换，新配方从下一个工件起生效。
 #[tauri::command]
 pub fn cycle_select_recipe(cycle: State<'_, CycleHost>, recipe_id: String) -> Result<(), String> {
-    let _gate = cycle.config_gate.try_lock().map_err(|_| "正在布防或处理其他配置操作，请稍后重试")?;
+    let _gate = cycle
+        .config_gate
+        .try_lock()
+        .map_err(|_| "正在布防或处理其他配置操作，请稍后重试")?;
     cycle.recipe(&recipe_id).ok_or("配方不存在")?;
     let mut shared = cycle.shared.lock().unwrap();
     let phase = shared.snapshot.as_ref().map_or(Phase::Idle, |s| s.phase);

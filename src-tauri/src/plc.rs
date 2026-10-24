@@ -184,7 +184,11 @@ const LOG_EXPORT_PAGE: u32 = 1000;
 const LOG_EXPORT_CHANGED: &str = "日志在导出期间已变化，未生成完整文件，请重试";
 
 fn csv_cell(s: &str) -> Cow<'_, str> {
-    if s.contains(['"', ',', '\r', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")).into() } else { s.into() }
+    if s.contains(['"', ',', '\r', '\n']) {
+        format!("\"{}\"", s.replace('"', "\"\"")).into()
+    } else {
+        s.into()
+    }
 }
 
 fn write_log_csv(
@@ -193,8 +197,11 @@ fn write_log_csv(
     labels: &LogLabels,
     fetch: impl Fn(&LogQuery) -> Result<LogPage, String>,
 ) -> Result<(), String> {
-    let label = |map: &HashMap<String, String>, key: &str| map.get(key).cloned().unwrap_or_else(|| key.to_string());
-    out.write_all(LOG_CSV_HEADER.as_bytes()).map_err(|e| e.to_string())?;
+    let label = |map: &HashMap<String, String>, key: &str| {
+        map.get(key).cloned().unwrap_or_else(|| key.to_string())
+    };
+    out.write_all(LOG_CSV_HEADER.as_bytes())
+        .map_err(|e| e.to_string())?;
     query.limit = Some(LOG_EXPORT_PAGE);
     let mut offset = 0u32;
     let mut total = None;
@@ -215,8 +222,13 @@ fn write_log_csv(
                 e.new_value.clone().unwrap_or_default(),
                 e.context.clone().unwrap_or_default(),
             ];
-            let row = cells.iter().map(|c| csv_cell(c)).collect::<Vec<_>>().join(",");
-            out.write_all(format!("{row}\r\n").as_bytes()).map_err(|e| e.to_string())?;
+            let row = cells
+                .iter()
+                .map(|c| csv_cell(c))
+                .collect::<Vec<_>>()
+                .join(",");
+            out.write_all(format!("{row}\r\n").as_bytes())
+                .map_err(|e| e.to_string())?;
         }
         offset += page.items.len() as u32;
         if i64::from(offset) >= page.total {
@@ -230,16 +242,25 @@ fn write_log_csv(
 
 /// 按日志页筛选条件导出全部日志（带 BOM），结束时间不晚于导出时刻，返回文件路径。
 #[tauri::command]
-pub async fn plc_export_logs(app: AppHandle, mut query: LogQuery, labels: LogLabels) -> Result<String, String> {
+pub async fn plc_export_logs(
+    app: AppHandle,
+    mut query: LogQuery,
+    labels: LogLabels,
+) -> Result<String, String> {
     let now = ly_plc::now_ms();
     query.end = Some(query.end.map_or(now, |end| end.min(now)));
     let dir = crate::storage::root(&app).join("exports");
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join(format!("PLC日志_{}.csv", chrono::Local::now().format("%Y%m%d_%H%M%S")));
-        let mut f = std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
+        let path = dir.join(format!(
+            "PLC日志_{}.csv",
+            chrono::Local::now().format("%Y%m%d_%H%M%S")
+        ));
+        let mut f =
+            std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
         let logbook = app.state::<PlcHost>().engine.logbook().clone();
-        let written = write_log_csv(&mut f, query, &labels, |q| logbook.query(q)).and_then(|_| f.flush().map_err(|e| e.to_string()));
+        let written = write_log_csv(&mut f, query, &labels, |q| logbook.query(q))
+            .and_then(|_| f.flush().map_err(|e| e.to_string()));
         drop(f);
         if let Err(e) = written {
             let _ = std::fs::remove_file(&path);

@@ -1545,7 +1545,13 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>, auto_connect: bool) {
                 let attempt = {
                     let cycle = app.state::<CycleHost>();
                     // 检测途中不排队等闸门，免得重开相机拖住在途工件的握手
-                    let gate = if cycle.in_flight() { cycle.config_gate.try_lock().ok() } else { tokio::time::timeout(Duration::from_secs(1), cycle.config_gate.lock()).await.ok() };
+                    let gate = if cycle.in_flight() {
+                        cycle.config_gate.try_lock().ok()
+                    } else {
+                        tokio::time::timeout(Duration::from_secs(1), cycle.config_gate.lock())
+                            .await
+                            .ok()
+                    };
                     let attempt = match gate {
                         Some(_gate) => {
                             let config = s.config();
@@ -1858,7 +1864,9 @@ pub fn camera_preview(cycle: State<'_, CycleHost>, cam: usize, view: Option<u8>)
 
 /// 相机操作与布防、配置修改互斥：排队等配置门，3 秒内拿不到才放弃。
 async fn camera_gate(cycle: &CycleHost) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
-    tokio::time::timeout(Duration::from_secs(3), cycle.config_gate.lock()).await.map_err(|_| "布防或其他配置操作 3 秒内仍未结束，请稍后重试相机操作".into())
+    tokio::time::timeout(Duration::from_secs(3), cycle.config_gate.lock())
+        .await
+        .map_err(|_| "布防或其他配置操作 3 秒内仍未结束，请稍后重试相机操作".into())
 }
 
 #[tauri::command]

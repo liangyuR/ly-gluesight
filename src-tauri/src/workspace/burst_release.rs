@@ -347,7 +347,9 @@ pub(super) fn bank_round(w: &mut Workspace, round: &CaptureRoundV2, current: &BT
 /// 帧留在采集轮次目录里，验证时按 (相机, seq) 读。
 pub(super) fn capture_sample(app: AppHandle, id: String, revision: u64, round_id: String, expected: Verdict) -> Result<WorkspaceView, String> {
     let cycle = app.state::<CycleHost>();
-    let Some(_gate) = workflow::wait_idle_config_gate(&cycle, "加入验证样本")? else { return Err("请等待当前工件和 PLC 事务结束后加入验证样本".into()) };
+    let Some(_gate) = workflow::wait_idle_config_gate(&cycle, "加入验证样本")? else {
+        return Err("请等待当前工件和 PLC 事务结束后加入验证样本".into());
+    };
     let round = cycle.camera.recipe_capture().get_burst(&round_id)?;
     let current: BTreeMap<String, Value> = cycle.camera.configs().iter().map(|c| (c.id.clone(), state_value(c))).collect();
     let host = app.state::<WorkspaceHost>();
