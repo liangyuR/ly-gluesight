@@ -1336,13 +1336,13 @@ impl CameraRig {
     pub fn recipe_capture(&self) -> &Arc<crate::recipe_capture::RecipeCaptureHost> { &self.rig.recipe_capture }
 
     pub fn new(app: &AppHandle, tx: Sender<Frame>) -> Result<Self, String> {
-        let dir = crate::storage::config(app);
-        let path = dir.join("cameras.json");
+        let path = crate::storage::project_config(app).join("cameras.json");
         let (mut file, mut notes, retired) = load_rig_file(&path);
         if file.cameras.is_empty() {
-            // 单相机时代的 camera.json 迁移成相机组的第 1 台
-            let old = std::fs::read_to_string(dir.join("camera.json")).ok().and_then(|s| serde_json::from_str::<CameraConfig>(&s).ok());
-            file.cameras.push(CameraConfig { name: "相机 1".into(), ..old.unwrap_or_default() });
+            file.cameras.push(CameraConfig {
+                name: "相机 1".into(),
+                ..Default::default()
+            });
         }
         let offline_sources: Vec<String> = file.cameras.iter_mut().filter(|c| c.source != CameraSource::Mvs).map(|c| {
             c.source = CameraSource::Mvs;
@@ -1356,7 +1356,9 @@ impl CameraRig {
             app: app.clone(),
             tx,
             capture: AtomicBool::new(false),
-            recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(crate::storage::root(app).join("recipe-capture"))?,
+            recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(
+                crate::storage::project(app).join("recipe-capture"),
+            )?,
         });
         let slots = file.cameras.into_iter().enumerate().map(|(i, c)| Arc::new(CameraSlot::new(&rig, i as u8, c))).collect();
         let mut this = Self { rig, slots: RwLock::new(slots), path, next_id: Mutex::new(file.next_id), save_lock: Mutex::new(()), generation: AtomicU64::new(0), notes };

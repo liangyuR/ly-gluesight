@@ -30,6 +30,7 @@ mod plc;
 mod plc_plan;
 mod plc_session;
 mod production;
+mod project;
 mod recipe;
 mod recipe_capture;
 mod recipe_api;
@@ -72,7 +73,19 @@ pub mod probe_api {
 }
 
 fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
-    store::Store::open_deferred_recovery(&storage::root(app).join("inspection.db"))
+    store::Store::open_deferred_recovery(&storage::project(app).join("inspection.db"))
+}
+
+fn open_project(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), String> {
+    match project::resolve(root)? {
+        project::Resolution::Open(active) => {
+            app.manage(active);
+            Ok(())
+        }
+        project::Resolution::NeedsChoice(reason) => {
+            Err(format!("{}{reason}", storage_startup::CHOOSE_PROJECT))
+        }
+    }
 }
 
 pub fn run() {
@@ -96,8 +109,13 @@ pub fn run() {
                 }
             }
             if let Err(error) = &prepared {
-                eprintln!("{error}");
-                if headless(app.handle()) { std::process::exit(1); }
+                eprintln!(
+                    "{}",
+                    error.trim_start_matches(storage_startup::CHOOSE_PROJECT)
+                );
+                if headless(app.handle()) {
+                    std::process::exit(1);
+                }
             }
             let profile = match &prepared {
                 Ok(root) => storage::webview(&storage::bootstrap_root(root))?,
@@ -108,7 +126,7 @@ pub fn run() {
                 .visible(!headless(app.handle()))
                 .data_directory(profile).build()?;
             if let Err(error) = prepared {
-                storage_startup::failed(app.handle(), error);
+                storage_startup::report(app.handle(), error);
                 return Ok(());
             }
             let app = app.handle().clone();
@@ -136,8 +154,18 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             storage_startup::storage_startup_status,
             storage_startup::storage_startup_answer,
+            storage_startup::storage_startup_projects,
+            storage_startup::storage_startup_open_project,
+            storage_startup::storage_startup_create_project,
             storage::storage_status,
             storage::storage_open_directory,
+            project::project_current,
+            project::project_list,
+            project::manage::project_usage,
+            project::manage::project_create,
+            project::manage::project_rename,
+            project::manage::project_delete,
+            project::project_switch,
             storage::storage_preferences_get,
             storage::storage_preferences_update,
             commands::app_info,
@@ -285,16 +313,39 @@ fn headless(app: &tauri::AppHandle) -> bool {
 }
 
 fn startup_failed(app: tauri::AppHandle, error: String) {
-    eprintln!("{error}");
+    eprintln!(
+        "{}",
+        error.trim_start_matches(storage_startup::CHOOSE_PROJECT)
+    );
     if headless(&app) {
         app.exit(1);
         return;
     }
-    storage_startup::failed(&app, error);
+    storage_startup::report(&app, error);
 }
 
-fn start_services(app: &tauri::AppHandle, root: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    if let Err(error) = applog::init(app) { eprintln!("{error}"); }
+fn start_services(
+    app: &tauri::AppHandle,
+    root: std::path::PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Err(error) = applog::init(app) {
+        eprintln!("{error}");
+    }
+    if let Err(error) = project::manage::purge_trash(&root) {
+        applog::write("warn", "项目删除未完成", &error);
+    }
+    open_project(app, &root)?;
+    let leftovers = project::legacy_leftovers(&root);
+    if !leftovers.is_empty() {
+        applog::write(
+            "warn",
+            "旧资料未读取",
+            &format!(
+                "资料目录根下仍有项目化之前的资料，软件不再读取，可人工清理：{}",
+                leftovers.join("、")
+            ),
+        );
+    }
     app.manage(open_store(app)?);
     app.manage(vision::VisionHost::default());
     app.manage(production::ProductionHost::default());

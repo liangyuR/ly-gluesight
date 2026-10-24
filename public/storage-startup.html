@@ -21,6 +21,14 @@
     button:focus-visible { outline: 3px solid #e2faff; outline-offset: 3px; }
     button:disabled { cursor: wait; opacity: .55; }
     [hidden] { display: none !important; }
+    #projects { margin-top: 20px; display: flex; flex-direction: column; gap: 8px; }
+    .project { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border: 1px solid #34464e; border-radius: 12px; cursor: pointer; }
+    .project:has(input:checked) { border-color: #80d0df; background: #1d2a2e; }
+    .project.unusable { cursor: not-allowed; opacity: .6; }
+    .project small { color: #a9bdc7; display: block; }
+    .create { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+    .create input { font: inherit; flex: 1 1 220px; background: #0e1416; color: #dce7eb; border: 1px solid #34464e; border-radius: 10px; padding: 10px 12px; }
+    .create input:focus-visible { outline: 3px solid #e2faff; outline-offset: 2px; }
     .hint { color: #a9bdc7; font-size: 14px; line-height: 1.6; margin-top: 24px; }
     @media (max-width: 600px) { body { padding: 16px; } main { padding: 20px; } }
   </style>
@@ -34,6 +42,14 @@
     </section>
     <p id="progress" role="status">正在初始化或复制资料…</p>
     <div id="failure" role="alert" hidden></div>
+    <div id="chooser" hidden>
+      <div id="projects" role="radiogroup" aria-label="本机项目"></div>
+      <div class="actions"><button id="open" type="button" class="primary" disabled>打开所选项目</button></div>
+      <div class="create">
+        <input id="newName" type="text" maxlength="64" placeholder="新项目名称" aria-label="新项目名称">
+        <button id="create" type="button">新建空项目并打开</button>
+      </div>
+    </div>
     <div class="actions">
       <button id="accept" type="button" class="primary" hidden>确定</button>
       <button id="cancel" type="button" hidden>取消</button>
@@ -55,6 +71,12 @@
       let answering = false;
       let answeredId = null;
       let connected = false;
+      let listed = null;
+      const chooser = document.getElementById("chooser");
+      const projects = document.getElementById("projects");
+      const open = document.getElementById("open");
+      const create = document.getElementById("create");
+      const newName = document.getElementById("newName");
 
       function invoke(command, args) {
         if (!window.__TAURI_INTERNALS__ || typeof window.__TAURI_INTERNALS__.invoke !== "function") {
@@ -79,13 +101,58 @@
         accept.textContent = kind === "chooseSource" ? "选择已有目录" : "确定";
         cancel.textContent = kind === "chooseSource" ? "空白开始" : kind === "error" ? "关闭" : "取消";
         accept.disabled = cancel.disabled = !!waiting || !connected;
+        chooser.hidden = kind !== "chooseProject";
+        if (kind === "chooseProject") {
+          cancel.hidden = true;
+          if (listed !== state.requestId) { listed = state.requestId; void loadProjects(); }
+        }
+        open.disabled = answering || !projects.querySelector("input:checked");
+        create.disabled = answering || !newName.value.trim();
+      }
+      async function loadProjects() {
+        try {
+          const list = await invoke("storage_startup_projects");
+          projects.replaceChildren(...list.map(entry => {
+            const label = document.createElement("label");
+            label.className = entry.meta ? "project" : "project unusable";
+            const radio = document.createElement("input");
+            radio.type = "radio"; radio.name = "project"; radio.value = entry.id; radio.disabled = !entry.meta;
+            radio.addEventListener("change", render);
+            const text = document.createElement("span");
+            text.textContent = entry.meta ? entry.meta.name : entry.id;
+            const detail = document.createElement("small");
+            detail.textContent = entry.meta ? entry.id : "不可用：" + entry.error;
+            text.append(detail);
+            label.append(radio, text);
+            return label;
+          }));
+        } catch (error) {
+          failure.textContent = "读取项目列表失败：" + errorText(error);
+          failure.dataset.source = "answer";
+          failure.hidden = false;
+        }
+        render();
+      }
+      async function choose(command, args) {
+        if (answering) return;
+        answering = true;
+        failure.hidden = true;
+        render();
+        try {
+          await invoke(command, args);
+          progress.textContent = "正在重启…";
+        } catch (error) {
+          failure.textContent = "操作失败：" + errorText(error);
+          failure.dataset.source = "answer";
+          failure.hidden = false;
+        } finally { answering = false; render(); }
       }
       async function poll() {
         if (polling) return;
         polling = true;
         try {
           const next = await invoke("storage_startup_status");
-          if (!next || !Number.isSafeInteger(next.requestId) || typeof next.title !== "string" || typeof next.message !== "string" || !["working", "confirm", "error", "chooseSource"].includes(next.kind)) {
+          if (!next || !Number.isSafeInteger(next.requestId) || typeof next.title !== "string" || typeof next.message !== "string" || !["working", "confirm", "error", "chooseSource", "chooseProject"].includes(next.kind)) {
             throw new Error("启动状态格式无效，请重试或重新启动软件。");
           }
           state = next;
@@ -120,6 +187,12 @@
       accept.addEventListener("click", () => void answer(true));
       cancel.addEventListener("click", () => void answer(false));
       retry.addEventListener("click", () => void poll());
+      open.addEventListener("click", () => {
+        const picked = projects.querySelector("input:checked");
+        if (picked) void choose("storage_startup_open_project", { id: picked.value });
+      });
+      create.addEventListener("click", () => void choose("storage_startup_create_project", { name: newName.value.trim() }));
+      newName.addEventListener("input", render);
       void poll();
       const timer = window.setInterval(() => void poll(), 500);
       window.addEventListener("pagehide", () => window.clearInterval(timer), { once: true });

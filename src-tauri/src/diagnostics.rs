@@ -36,7 +36,9 @@ const README: &str = r#"# 诊断包说明
 | `README.md` | 本说明 |
 | `logs/gluesight-*.jsonl` | 运行日志，按天分文件，只含导出时间段内的行 |
 | `logs/plc.jsonl` | PLC 日志（连接、点位值变化、写入、边沿、错误与配置事件，按 `category` 区分），只含导出时间段内的行，时间正序 |
-| `config/` | 配置文件（PLC、相机、检测设置等） |
+| `project.json` | 当前项目的编号、名称与描述 |
+| `config/` | 当前项目的配置文件（PLC、相机、检测设置等） |
+| `machine/site-offline.json` | 本机的站点模式与离线选择（没有时不打包） |
 | `state/` | 运行状态文件（S7 握手事务、示教握手等）；`state/plc-handshake.audit.jsonl` 只含导出时间段内的握手审计行 |
 | `state/plc-handshake-audit/` | 与导出时间段有交集的已滚动握手审计分段（整段，可能含时间段外的行） |
 | `records/parts.csv`、`records/parts.jsonl` | 检测记录摘要与完整明细 |
@@ -374,7 +376,10 @@ fn part_images<W: std::io::Write>(app: &AppHandle, package: &mut Package<W>, det
     if count == 0 && files.is_empty() {
         package.notes.push(format!("记录 #{id} 没有保留原图（录制状态：{:?}）", detail.recording.state));
     }
-    let comparisons = crate::storage::root(app).join("workspaces").join("comparisons").join(id.to_string());
+    let comparisons = crate::storage::project(app)
+        .join("workspaces")
+        .join("comparisons")
+        .join(id.to_string());
     package.copy_dir(&comparisons, &format!("{folder}/comparisons"), &[])?;
     Ok(count)
 }
@@ -431,7 +436,13 @@ fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &
     let entries = plc_logs(app, request.from, request.to, &mut package.notes);
     let plc_logs = entries.len() as u64;
     package.add("logs/plc.jsonl", &plc_jsonl(entries))?;
-    package.copy_dir(&crate::storage::config(app), "config", &[])?;
+    let project = crate::storage::project(app);
+    package.copy_file(&project.join("project.json"), "project.json")?;
+    package.copy_dir(&crate::storage::project_config(app), "config", &[])?;
+    let machine = crate::storage::config(app).join("site-offline.json");
+    if machine.is_file() {
+        package.copy_file(&machine, "machine/site-offline.json")?;
+    }
     let state = crate::storage::state(app);
     package.copy_dir(&state, "state", &[AUDIT_FILE])?;
     package.copy_handshake_audit(&state.join(AUDIT_FILE), request.from, request.to)?;

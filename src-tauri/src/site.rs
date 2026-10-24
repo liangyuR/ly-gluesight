@@ -100,6 +100,31 @@ pub fn check_switch(busy: bool, capturing: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 切换项目前要满足的条件：比站点模式切换多一条，件记录与追溯必须已写进本项目。
+pub struct ProjectSwitch {
+    /// 在途工件、未结 S7 事务或示教握手给出的阻止原因
+    pub block: Option<String>,
+    pub busy: bool,
+    pub capturing: bool,
+    pub audit_pending: bool,
+}
+
+pub fn check_project_switch(pre: &ProjectSwitch) -> Result<(), String> {
+    if let Some(reason) = &pre.block {
+        return Err(reason.replace("站点模式", "项目"));
+    }
+    if pre.busy {
+        return Err("检测仍有在途事务，完成握手或复位故障后再切换项目".into());
+    }
+    if pre.capturing {
+        return Err("示教整圈采集正在进行，结束本轮采集后再切换项目".into());
+    }
+    if pre.audit_pending {
+        return Err("上一件的录制或追溯还没写完，稍后再切换项目".into());
+    }
+    Ok(())
+}
+
 /// 一次离线：保存进入前的真实环境，退出时原样交回。
 pub struct OfflineSession {
     kind: SourceKind,

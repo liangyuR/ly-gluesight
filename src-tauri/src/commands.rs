@@ -26,13 +26,18 @@ pub fn app_info(app: AppHandle) -> AppInfo {
     }
 }
 
-/// PLC 连接、相机组与检测设置的当前值：运行日志 app.config 的 data，诊断包 manifest 的 configSummary。
+/// 当前项目、PLC 连接、相机组与检测设置的当前值：运行日志 app.config 的 data，诊断包 manifest 的 configSummary。
 pub fn config_summary(app: &AppHandle) -> serde_json::Value {
     let cycle = app.state::<crate::cycle::CycleHost>();
     let connection = app
         .try_state::<crate::plc::PlcHost>()
         .map(|plc| plc.engine().config().connection);
+    let project = app.state::<crate::project::ActiveProject>();
+    let name = crate::project::read_meta(&project.root)
+        .ok()
+        .map(|meta| meta.name);
     serde_json::json!({
+        "project": {"id": project.id, "name": name},
         "offline": crate::offline::enabled(app),
         "plc": connection,
         "cameras": cycle.camera.configs(),
@@ -48,9 +53,11 @@ pub fn log_config(app: &AppHandle) {
         _ => "未初始化".to_string(),
     };
     let cameras = data["cameras"].as_array().map_or(0, Vec::len);
+    let project_id = data["project"]["id"].as_str().unwrap_or_default();
+    let project_name = data["project"]["name"].as_str().unwrap_or("名称读取失败");
     crate::applog::emit_event(
         &crate::applog::codes::APP_CONFIG,
-        &format!("PLC {plc_text}，相机 {cameras} 台"),
+        &format!("项目 {project_name}（{project_id}），PLC {plc_text}，相机 {cameras} 台"),
         crate::applog::Fields::default().with_data(data),
     );
 }

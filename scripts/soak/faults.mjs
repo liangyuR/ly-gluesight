@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { burstFacts } from "../../tests/native/lib.mjs";
-import { connect, ensureOffline, LogCollector, parseArgs, readSetup, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
+import { connect, ensureOffline, LogCollector, parseArgs, projectRoot, readSetup, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
 
 const OK_CLASS = new Set(["OK", "OK_WITH_EXCURSION"]);
 // 这些注入不损坏本件图像与计数，本件判合格是正确结果；其余注入下本件判合格即为“错误的 OK”。
@@ -212,7 +212,7 @@ const scenarios = {
     } finally { await rename(`${file}.orig`, file); }
   },
   async recordsDirReadOnly(c) {
-    const dir = path.join(c.manifest.dataRoot, "records-offline");
+    const dir = path.join(projectRoot(c.manifest.dataRoot), "records-offline");
     const user = await whoami();
     await icacls(dir, "/deny", `${user}:(OI)(CI)(W)`);
     try {
