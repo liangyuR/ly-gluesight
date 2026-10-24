@@ -141,15 +141,26 @@ fn segment_check(w: &Workspace) -> Check {
         None if normal < doc.calibration_rounds => format!("整件预期帧组数待多轮标定：还差 {} 轮（至少 {} 轮，不含标准件轮次）", doc.calibration_rounds - normal, doc.calibration_rounds),
         None => format!("整件预期帧组数待多轮标定：已有 {normal} 轮，请应用标定"),
     };
-    let segments: Vec<String> = doc.segments.iter().map(|s| {
-        let kind = kind_label(s.kind);
-        match (s.expected_frames, total) {
-            (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n} ± {}", s.index, s.tolerance),
-            (None, Some(_)) => format!("第 {} 段（{kind}）待逐段标定，容差 ±{}", s.index, s.tolerance),
-            (None, None) => format!("第 {} 段（{kind}）待标定", s.index),
-        }
-    }).collect();
-    Check { name: "段标定".into(), passed: total.is_some(), detail: format!("{head}；{}", segments.join("；")) }
+    let segments: Vec<String> = doc
+        .segments
+        .iter()
+        .map(|s| {
+            let kind = kind_label(s.kind);
+            match (s.expected_frames, total) {
+                (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n} ± {}", s.index, s.tolerance),
+                (None, Some(_)) => format!(
+                    "第 {} 段（{kind}）待逐段标定，容差 ±{}",
+                    s.index, s.tolerance
+                ),
+                (None, None) => format!("第 {} 段（{kind}）待标定", s.index),
+            }
+        })
+        .collect();
+    Check {
+        name: "段标定".into(),
+        passed: total.is_some(),
+        detail: format!("{head}；{}", segments.join("；")),
+    }
 }
 
 /// 标准件 x_ref（规格 §0/§1、D-SB-18）：只在有启用胶偏检查的直线段时列出。单段 AbsoluteX 要有标准件多轮得出的 x_ref；

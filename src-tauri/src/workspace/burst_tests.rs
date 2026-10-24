@@ -4,7 +4,6 @@ use super::burst::{add_calibration_round, apply_calibration, calibration_round, 
 use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::plan::{new_segment, OffsetMeasure, OffsetRef, PathSegment, SegmentCalib, SegmentKind::{self, Corner, Straight}};
 use crate::recipe_capture::CaptureRoundV2;
-use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 
 pub(super) const DEVICE: &str = "device-a";
 
@@ -65,8 +64,20 @@ fn calibration_apply_writes_expected_frames_and_calib_but_leaves_tolerance_until
     assert_eq!(doc.part_calib.as_ref().map(|p| (p.expected_total, p.calib.clone())), Some((20, calib)));
     assert_eq!(doc.segments[0].tolerance, 1, "建议容差不直接写进配方");
     w.doc = doc;
-    let view = calibration_view(&w.doc, &w.calibration.rounds, &w.capture_review.rounds, None);
-    assert_eq!(view.segments[0].outcome.as_ref().map(|o| o.suggested_tolerance), Some(2), "max(默认 1, 20 − 19, 22 − 20)");
+    let view = calibration_view(
+        &w.doc,
+        &w.calibration.rounds,
+        &w.capture_review.rounds,
+        None,
+    );
+    assert_eq!(
+        view.segments[0]
+            .outcome
+            .as_ref()
+            .map(|o| o.suggested_tolerance),
+        Some(2),
+        "max(默认 1, 20 − 19, 22 − 20)"
+    );
     confirm_tolerance(&mut w, 1, 2).unwrap();
     assert_eq!(w.doc.segments[0].tolerance, 2);
 }
@@ -87,32 +98,74 @@ fn calibration_with_fewer_rounds_than_recipe_setting_is_rejected() {
 }
 
 #[test]
-fn multi_segment_calibration_uses_confirmed_manual_cuts_of_every_round_or_leaves_segments_pending() {
+fn multi_segment_calibration_uses_confirmed_manual_cuts_of_every_round_or_leaves_segments_pending()
+{
     // 防的回归（决策补充第二节、D-SB-21，轮次分段复核）：多段计划不看手动分段就把整件帧组数摊到各段；有标定轮次没确认分段（只是草稿）
     // 也逐段标定；逐段标定后 ΣN_exp 不等于各段之和；或多段计划拿不到整件 ΣN_exp 而无法发布
     let totals = [30, 31, 30, 30, 29, 30, 30, 31, 30, 30];
-    for (name, confirm_all) in [("全部轮次已确认分段", true), ("最后一轮只保存了边界草稿", false)] {
+    for (name, confirm_all) in [
+        ("全部轮次已确认分段", true),
+        ("最后一轮只保存了边界草稿", false),
+    ] {
         let mut w = burst_workspace(&[Straight, Corner, Straight]);
         for (i, n) in totals.into_iter().enumerate() {
             let id = format!("capture-{i}");
             let round = capture_round(&id, &w.doc, n, DEVICE, &[]);
             apply_capture_review(&mut w, &round, CaptureReviewEdit::Save(vec![10, n - 8])).unwrap();
-            if confirm_all || i + 1 < totals.len() { apply_capture_review(&mut w, &round, CaptureReviewEdit::Confirm).unwrap(); }
+            if confirm_all || i + 1 < totals.len() {
+                apply_capture_review(&mut w, &round, CaptureReviewEdit::Confirm).unwrap();
+            }
             add(&mut w, &id, n, false, |_, _| 0.0);
         }
         let mut doc = w.doc.clone();
         apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds).unwrap();
-        assert_eq!(doc.part_calib.as_ref().map(|p| p.expected_total), Some(30), "{name}");
+        assert_eq!(
+            doc.part_calib.as_ref().map(|p| p.expected_total),
+            Some(30),
+            "{name}"
+        );
         let view = calibration_view(&doc, &w.calibration.rounds, &w.capture_review.rounds, None);
         if confirm_all {
-            let frames: Vec<_> = doc.segments.iter().map(|s| (s.expected_frames, s.calib.as_ref().map(|c| (c.min, c.max)))).collect();
-            assert_eq!(frames, [(Some(10), Some((10, 10))), (Some(12), Some((11, 13))), (Some(8), Some((8, 8)))], "{name}");
+            let frames: Vec<_> = doc
+                .segments
+                .iter()
+                .map(|s| (s.expected_frames, s.calib.as_ref().map(|c| (c.min, c.max))))
+                .collect();
+            assert_eq!(
+                frames,
+                [
+                    (Some(10), Some((10, 10))),
+                    (Some(12), Some((11, 13))),
+                    (Some(8), Some((8, 8)))
+                ],
+                "{name}"
+            );
             assert_eq!(doc.expected_total(), Some(30), "{name}：ΣN_exp = 各段之和");
-            assert_eq!(view.segments[1].outcome.as_ref().map(|o| o.suggested_tolerance), Some(1), "{name}：max(弯道默认, 12 − 11, 13 − 12)");
+            assert_eq!(
+                view.segments[1]
+                    .outcome
+                    .as_ref()
+                    .map(|o| o.suggested_tolerance),
+                Some(1),
+                "{name}：max(弯道默认, 12 − 11, 13 − 12)"
+            );
         } else {
-            assert!(doc.segments.iter().all(|s| s.expected_frames.is_none() && s.calib.is_none()), "{name}：{:?}", doc.segments);
+            assert!(
+                doc.segments
+                    .iter()
+                    .all(|s| s.expected_frames.is_none() && s.calib.is_none()),
+                "{name}：{:?}",
+                doc.segments
+            );
             assert_eq!(doc.expected_total(), Some(30), "{name}：凭整件均值仍可发布");
-            assert!(view.segments.iter().all(|s| s.outcome.is_none() && s.pending.as_deref().is_some_and(|p| p.contains("capture-9"))), "{name}：{:?}", view.segments);
+            assert!(
+                view.segments.iter().all(|s| s.outcome.is_none()
+                    && s.pending
+                        .as_deref()
+                        .is_some_and(|p| p.contains("capture-9"))),
+                "{name}：{:?}",
+                view.segments
+            );
         }
     }
 }
