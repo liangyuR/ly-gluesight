@@ -1206,7 +1206,8 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
 /// 一次预留 `count` 个计划版本号并返回第一个（项目导入用）；与配方库发号共用本机同一份记录。
 pub fn reserve_plan_versions(plan_file: &std::path::Path, count: u32) -> Result<u32, String> {
     let issued: u32 = match crate::fsio::read_text(plan_file) {
-        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("计划版本记录损坏，拒绝分配计划版本：{e}"))?,
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("计划版本记录损坏，拒绝分配计划版本：{e}"))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
         Err(e) => return Err(format!("读取计划版本记录失败：{e}")),
     };
