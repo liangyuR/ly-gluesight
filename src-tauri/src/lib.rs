@@ -262,6 +262,11 @@ pub fn run() {
             workspace::workspace_calibration_add_round,
             workspace::workspace_calibration_remove_round,
             workspace::workspace_calibration_apply,
+            workspace::workspace_capture_review_save,
+            workspace::workspace_capture_review_confirm,
+            workspace::workspace_capture_review_set_template,
+            workspace::workspace_capture_review_apply_template,
+            workspace::workspace_capture_review_exclude,
             workspace::workspace_confirm_tolerance,
             workspace::workspace_record_frame_image,
         ])

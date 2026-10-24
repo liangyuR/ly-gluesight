@@ -23,6 +23,7 @@ import { DEFAULT_IMAGING, type CameraImaging, type Verdict } from "../cycle/type
 import { expectedChoices } from "./progress";
 import type { CaptureNavigationState } from "./captureNavigation";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
+import CaptureReviewPanel from "./CaptureReviewPanel";
 
 const stateLabels: Record<CaptureRound["state"],string> = { waitingStart:"等待现场启动", receiving:"接收中", draining:"PLC 已结束，等待在途图像", complete:"采集完成", failed:"采集异常" };
 const MAX_LISTED_GROUPS = 12;
@@ -144,7 +145,7 @@ export default function CapturePage() {
   const multi=(view?.cameras.length ?? 0) > 1;
   const cameraName=(index: number) => nameOf(view?.cameras[index]?.cameraId ?? "");
   const addToCalibration=(standard: boolean) => { if(round) void act(() => workspaceApi.calibrationAddRound(doc.id,data.workspace.revision,round.roundId,standard),standard ? "已加入标定（标准件轮次）" : "已加入多轮标定"); };
-  const removeFromCalibration=() => { if(round) void act(() => workspaceApi.calibrationRemoveRound(doc.id,data.workspace.revision,round.roundId),"已移出多轮标定"); };
+  const removeFromCalibration=() => { if(round) void act(() => workspaceApi.calibrationRemoveRound(doc.id,data.workspace.revision,round.roundId),"已移出标定，请重新应用标定"); };
   const finished=!!round && !active, collapsed=finished && prepOpenFor!==round.roundId;
   const savedImaging=(id: string) => data.workspace.doc.cameras?.[id] ?? data.workspace.unboundImaging?.[id] ?? DEFAULT_IMAGING;
   const imagingOf=(id: string) => imagingDrafts[id] ?? savedImaging(id);
@@ -248,7 +249,7 @@ export default function CapturePage() {
       </> : null}
     </div>}
     </div></div>
-  </Panel></div>;
+  </Panel>{!validation && !active && groupCount > 0 && <CaptureReviewPanel key={`${doc.id}:${round.roundId}`} roundId={round.roundId} groupCount={groupCount} currentSeq={previewK + 1} currentFrameReady={!!shown && shownK === previewK && previewArrived && !previewError} segments={doc.segments ?? []} disabled={locked || productionBusy || round.state !== "complete" || bankedAsSample} inCalibration={!!calibrationEntry} onNavigate={seq => gotoGroup(seq - 1)}/>}</div>;
   const prepBar = <Surface key="prep-bar" role="region" className="wp-panel wp-capture-prep-bar" aria-label="设备准备">
     <strong>{validation ? "实拍独立验证样本" : "设备准备"}</strong>
     <span className={"wp-capture-chip" + (notReady.length || !chosen.length ? " warn" : "")}><small>相机</small><strong>{(chosen.length ? chosen.map(nameOf).join("、") : "未选择") + " · " + (chosen.length && !notReady.length ? "就绪" : "未就绪")}</strong></span>

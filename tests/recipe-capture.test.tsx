@@ -115,6 +115,23 @@ it("异常轮保留原因，不能用于示教或标定",async()=>{
  expect(screen.queryByRole("link",{name:/用于走廊示教/})).toBeNull();
 });
 
+it("采集页整理已屏蔽轮次并切换预览 → 保留原帧组总数，旧图加载期间不能标记新边界", async () => {
+ ws.data!.workspace.captureReview={rounds:{"round-1":{groupCount:12,cuts:[4,8],status:"draft",excludedGroups:[{seq:1,reason:"反光"}],segmentSignature:null,captureSignature:null,templateVersion:null}},template:null};
+ vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({recipeId:"A"}));
+ vi.mocked(workspaceApi.captureFrameImage).mockImplementation(async (_round,_camera,seq)=>seq===1 ? picture : new Promise(()=>{}));
+ show();
+ expect(await screen.findByRole("heading",{name:"轮次整理"})).toBeVisible();
+ expect(chip("帧组")).toHaveTextContent("12 个");
+ expect(screen.getByText("原始 12 组 · 屏蔽 1 组 · 未屏蔽 11 组")).toBeVisible();
+ expect(screen.getByText("当前帧组 1 已屏蔽")).toBeVisible();
+ const mark=screen.getByRole("button",{name:"以当前帧结束第 1 段"});
+ await waitFor(()=>expect(mark).toBeEnabled());
+ await userEvent.click(screen.getByRole("button",{name:"下一帧组"}));
+ expect(screen.getByRole("spinbutton",{name:"帧组序号"})).toHaveValue(2);
+ expect(mark).toBeDisabled();
+ expect(screen.getByRole("spinbutton",{name:"第 1 段结束帧组"})).toHaveValue(4);
+});
+
 it.each([
  ["段配方：本轮已有相机用作示教帧",()=>{ ws.data!.plan!.cameraTeaching[0].frame!.source="capture:round-1"; },true],
  ["段配方：本轮已加入多轮标定",()=>{ ws.data!.plan!.calibration!.rounds[0].roundId="round-1"; },true],

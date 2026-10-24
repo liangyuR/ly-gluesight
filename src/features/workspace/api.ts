@@ -113,6 +113,16 @@ export const workspaceApi = {
     desktopCall<WorkspaceView>("workspace_calibration_add_round", { id, revision, round, standard }),
   calibrationRemoveRound: (id: string, revision: number, round: string) =>
     desktopCall<WorkspaceView>("workspace_calibration_remove_round", { id, revision, round }),
+  captureReviewSave: (id: string, revision: number, round: string, cuts: number[]) =>
+    desktopCall<WorkspaceView>("workspace_capture_review_save", { id, revision, round, cuts }),
+  captureReviewConfirm: (id: string, revision: number, round: string) =>
+    desktopCall<WorkspaceView>("workspace_capture_review_confirm", { id, revision, round }),
+  captureReviewSetTemplate: (id: string, revision: number, round: string) =>
+    desktopCall<WorkspaceView>("workspace_capture_review_set_template", { id, revision, round }),
+  captureReviewApplyTemplate: (id: string, revision: number, round: string, mode: "proportional" | "original") =>
+    desktopCall<WorkspaceView>("workspace_capture_review_apply_template", { id, revision, round, mode }),
+  captureReviewExclude: (id: string, revision: number, round: string, start: number, end: number, excluded: boolean, reason: string) =>
+    desktopCall<WorkspaceView>("workspace_capture_review_exclude", { id, revision, round, start, end, excluded, reason }),
   /** 按已加入的轮次算 N_exp / 整件 ΣN_exp 与建议容差，结果在 plan.calibration；建议容差要再经 confirmTolerance 才写入 */
   calibrationApply: (id: string, revision: number) =>
     desktopCall<WorkspaceView>("workspace_calibration_apply", { id, revision }),

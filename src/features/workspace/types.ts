@@ -100,6 +100,23 @@ export interface Workspace {
   cameraTeaching: CameraTeaching[];
   /** 段配方：多轮标定加入的轮次（旧拍照点配方为空）；界面读 plan.calibration */
   calibration: { rounds: CalibrationRound[] };
+  captureReview?: CaptureReview;
+}
+export interface CaptureRoundReview {
+  groupCount: number;
+  cuts: number[];
+  status: "draft" | "confirmed" | "stale";
+  excludedGroups: { seq: number; reason: string }[];
+  segmentSignature: unknown;
+  captureSignature: unknown;
+  templateVersion: number | null;
+}
+export interface CaptureReview {
+  rounds: Record<string, CaptureRoundReview>;
+  template: {
+    roundId: string; groupCount: number; cuts: number[];
+    segmentSignature: unknown; captureSignature: unknown; version: number;
+  } | null;
 }
 /** 发布与生效状态（后端显式枚举）。 */
 export type PublishState =

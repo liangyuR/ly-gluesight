@@ -6,6 +6,25 @@
 
 ## 新增测试及各自保护的规则
 
+### 轮次整理（2026-10-23）
+
+Rust 用例位于 `workspace::capture_review::tests`，通过轮次编辑与标定入口验证：
+
+| 用例 | 防止的回归 |
+| --- | --- |
+| `invalid_boundaries_leave_existing_review_unchanged` | 缺少、重复、倒序或越界边界覆盖已有有效记录 |
+| `template_requires_confirmation_and_application_preserves_exclusions_as_draft` | 未确认轮次成为模板，套用直接变为已确认，或覆盖目标轮次的独立屏蔽 |
+| `plan_change_then_revert_keeps_review_stale_and_template_invalid` | 段类型或产品代码变更后继续使用旧模板，改回后自动恢复旧确认 |
+| `mismatched_capture_configuration_rejects_template_without_changing_target` | 跨不匹配采集配置复用模板并污染目标轮次 |
+| `reordered_capture_cameras_reuse_the_same_template` | 相同相机仅枚举顺序变化就无法复用模板 |
+| `removing_an_applied_calibration_source_clears_derived_values_before_exclusion` | 先移出标定再屏蔽后仍保留旧参考与预期帧数 |
+| `exclusion_changes_image_statistics_without_compressing_counts_and_restore_remeasures` | 屏蔽未排除异常胶偏数据、压缩帧号或总数，恢复后仍沿用屏蔽结果 |
+| `corridor_teaching_and_exclusion_cannot_reference_the_same_group` | 已屏蔽图作为示教参考，或已引用示教图被静默屏蔽 |
+
+`tests/capture-review.test.tsx` 的五个界面用例分别保护：套用后待确认与人工复核；屏蔽恢复保留总数、段端点与定位序号；非法边界/范围不可提交且旧预览不可设边界；切轮次保留草稿并禁止模板覆盖；后台边界已变时旧暂存必须明确采纳。`tests/recipe-capture.test.tsx` 新增组合用例保护采集页实际展示屏蔽状态，以及异步换图期间禁止以尚未显示的新帧设置边界。
+
+验证命令：`pnpm typecheck`；`pnpm exec vitest run tests/capture-review.test.tsx tests/recipe-capture.test.tsx tests/recipe-calibration.test.tsx`（37 项通过）；`cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib workspace::capture_review::tests -- --nocapture`（8 项通过）；已有 `workspace::burst_tests` 8 项通过，其中文件持久化用例初次因沙箱临时目录访问失败，改用已忽略的 `output/rust-review-temp` 后单独重跑通过。前端同样使用已忽略的 `output/frontend-test-temp` 作为本次进程的 TEMP/TMP，绕开沙箱默认临时目录缺失。未执行全量构建、全量测试、桌面实机或生产自动分段验收。
+
 
 **A1**
 - `plan::tests::plan_identity_changes_only_with_sequence_kind_frames_cameras_or_product` — 规格 §1 计划版本：段类型、顺序、段数、相机顺序/绑定、各段 N_exp（总数不变也换）、产品代码、整件重新标定变化时换号；容差、限值、x_ref、检测区间、段长、标定统计变化时沿用（参数化）
