@@ -316,6 +316,7 @@ fn startup_failed(app: tauri::AppHandle, error: String) {
 
 fn start_services(app: &tauri::AppHandle, root: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(error) = applog::init(app) { eprintln!("{error}"); }
+    if let Err(error) = project::manage::purge_trash(&root) { applog::write("warn", "项目删除未完成", &error); }
     open_project(app, &root)?;
     let leftovers = project::legacy_leftovers(&root);
     if !leftovers.is_empty() {

@@ -149,17 +149,6 @@ pub fn next_id(data: &Path) -> String {
     (1..).map(|n| format!("p-{day}-{n:02}")).find(|id| !dir(data, id).exists()).unwrap()
 }
 
-pub fn create_empty(data: &Path, name: &str) -> Result<ProjectMeta, String> {
-    let name = name.trim();
-    if name.is_empty() { return Err("项目名称不能为空".into()); }
-    if list(data)?.iter().any(|entry| entry.meta.as_ref().is_some_and(|meta| meta.name == name)) {
-        return Err(format!("已有名为“{name}”的项目"));
-    }
-    let meta = ProjectMeta::new(&next_id(data), name, "", None);
-    create_dir(data, &meta, |_| Ok(()))?;
-    Ok(meta)
-}
-
 pub fn resolve(data: &Path) -> Result<Resolution, String> {
     if project_dirs(data)?.is_empty() {
         let root = create_dir(data, &ProjectMeta::new(DEFAULT_ID, "默认项目", "", None), |_| Ok(()))?;

@@ -79,7 +79,8 @@ pub fn storage_startup_open_project(app: AppHandle, host: State<'_, Startup>, id
 pub fn storage_startup_create_project(app: AppHandle, host: State<'_, Startup>, name: String) -> Result<(), String> {
     expect_choosing(&host)?;
     let data = crate::storage::selected_root()?;
-    let meta = crate::project::create_empty(&data, &name)?;
+    let request = crate::project::manage::CreateProject { id: crate::project::next_id(&data), name, description: String::new(), copy_hardware: false };
+    let meta = crate::project::manage::create(&data, None, &request)?;
     crate::project::write_pointer(&data, &meta.id)?;
     crate::applog::write("info", "项目选择", &format!("启动时新建项目 {}（{}），重启软件", meta.id, meta.name));
     app.restart()
