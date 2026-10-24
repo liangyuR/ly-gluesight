@@ -330,7 +330,8 @@ pub(crate) async fn run_candidate(app: AppHandle, candidate: Arc<crate::candidat
     let offline = app.state::<OfflineHost>();
     let cycle = app.state::<CycleHost>();
     let plc = app.state::<PlcHost>();
-    let _gate = cycle.plc_gate.lock().await;
+    let _link = cycle.link_gate.lock().await;
+    let _config = cycle.config_gate.lock().await;
     crate::candidate::check_start(offline.enabled(), offline.sample_set().is_some(), cycle.busy() || !matches!(cycle.phase(), Phase::Idle | Phase::Fault), cycle.camera.recipe_capture().active(), offline.running.load(Ordering::SeqCst))?;
     let line = connected_line(&plc, &offline)?;
     let set = offline.sample_set().ok_or("候选试运行仅支持离线样本集")?;
@@ -440,7 +441,8 @@ pub(crate) async fn enter(app: &AppHandle, set: Option<Arc<SampleSet>>, lyflow: 
     let plc = app.state::<PlcHost>();
     let cycle = app.state::<CycleHost>();
     let offline = app.state::<OfflineHost>();
-    let _gate = cycle.plc_gate.lock().await;
+    let _link = cycle.link_gate.lock().await;
+    let _config = cycle.config_gate.lock().await;
     if offline.enabled() { return Err("已处于离线模式；切换来源请先退出离线".into()); }
     if let Some(reason) = cycle.switch_block() { return Err(reason); }
     let early = switch_preconditions(&cycle, Ok(()));
@@ -488,7 +490,8 @@ pub(crate) async fn leave(app: &AppHandle) -> Result<(), String> {
     let plc = app.state::<PlcHost>();
     let cycle = app.state::<CycleHost>();
     let offline = app.state::<OfflineHost>();
-    let _gate = cycle.plc_gate.lock().await;
+    let _link = cycle.link_gate.lock().await;
+    let _config = cycle.config_gate.lock().await;
     if !offline.enabled() { return Ok(()); }
     if offline.running.load(Ordering::SeqCst) { return Err("离线产线仍在运行，先停止".into()); }
     if let Some(reason) = cycle.switch_block() { return Err(reason); }

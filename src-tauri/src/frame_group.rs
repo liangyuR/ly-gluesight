@@ -88,6 +88,12 @@ impl Grouper {
         Self { max_counters: baselines.clone(), baselines, seqs: vec![BTreeSet::new(); cams], max_seq: max_seq.min(MAX_SEQ) }
     }
 
+    /// 布防时基线未知的相机，收到第一帧前补上基线。
+    pub fn set_baseline(&mut self, cam: usize, baseline: u64) {
+        self.baselines[cam] = baseline;
+        self.max_counters[cam] = baseline;
+    }
+
     /// seq = frame_counter − 该相机基线。不大于基线为 Stale；超过上限为 OutOfRange（两者都不改 max_counter）；
     /// 同一相机重复的 seq 为 Duplicate，保留先到的那帧。相机下标越界（不是计划相机）按 Stale 丢弃。
     pub fn offer(&mut self, cam: usize, frame_counter: u64) -> Offer {

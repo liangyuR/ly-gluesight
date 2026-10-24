@@ -190,7 +190,8 @@ fn apply(round: &mut CaptureRoundV2, summary: Summary) {
 /// 一台相机在本轮的收帧状态。
 struct BurstCam {
     cam: u8,
-    baseline: u64,
+    /// 开始时本会话还没见过帧则为空，收到本轮第一帧时定为它的帧计数 − 1
+    baseline: Option<u64>,
     /// 本轮第一帧的计数来源；之后变化判失败
     source: Option<CounterSource>,
     /// 本轮见到的最大帧计数
@@ -286,7 +287,7 @@ impl RecipeCaptureHost {
         crate::fsio::write_atomic(&self.root.join(&round.round_id).join("round.json"), &serde_json::to_string_pretty(round).map_err(|e| e.to_string())?)
     }
 
-    /// 段配方开始一轮示教采集：相机须为单视角（三台独立相机共用一个触发，D-SB-11），基线取开始时各相机本会话见到的最高帧计数。
+    /// 段配方开始一轮示教采集：相机须为单视角（三台独立相机共用一个触发，D-SB-11），基线取开始时各相机本会话见到的最高帧计数，没见过帧时取本轮首帧计数 − 1。
     pub fn start_burst(&self, recipe_id: String, devices: Vec<CaptureDevice>, drain_timeout_ms: u64, simulated: bool) -> Result<CaptureRoundV2, CaptureStartRejected> {
         use CaptureStartRejected as Rejected;
         if !(200..=30000).contains(&drain_timeout_ms) { return Err(Rejected::DrainTimeout); }
@@ -299,13 +300,10 @@ impl RecipeCaptureHost {
             if view_count(&d.camera_config) != 1 || d.camera_config.get("compositeLayout").is_some_and(|l| !l.is_null()) {
                 return Err(Rejected::MultiView(id.clone()));
             }
-            if d.frame_baseline.is_none() { return Err(Rejected::MissingBaseline(id.clone())); }
         }
         let legacy = self.current.lock().unwrap();
         let mut guard = self.burst.lock().unwrap();
         if legacy.as_ref().is_some_and(|r| r.round.state.active()) || guard.as_ref().is_some_and(|r| r.round.state.active()) { return Err(Rejected::Busy); }
-        let uncertain: Vec<_> = devices.iter().filter(|d| self.uncertain_sessions.lock().unwrap().contains(&(d.camera_id.clone(), d.session))).map(|d| d.camera_id.clone()).collect();
-        if !uncertain.is_empty() { return Err(Rejected::UncertainSessions(uncertain)); }
         let created_at = ly_plc::now_ms();
         let mut suffix = 0u32;
         let round_id = loop {
@@ -317,12 +315,31 @@ impl RecipeCaptureHost {
             }
         };
         let dir = self.root.join(&round_id);
-        for d in &devices { std::fs::create_dir(dir.join(&d.camera_id)).map_err(|e| Rejected::Io(e.to_string()))?; }
-        let file = std::fs::OpenOptions::new().create_new(true).append(true).open(dir.join(FRAMES_FILE)).map_err(|e| Rejected::Io(e.to_string()))?;
-        let baselines: Vec<u64> = devices.iter().map(|d| d.frame_baseline.unwrap_or_default()).collect();
-        let cams = devices.iter().zip(&baselines).map(|(d, &baseline)| BurstCam {
-            cam: d.cam, baseline, source: None, last: None, faulted: false, queued: 0, written: 0, saved: BTreeSet::new(),
-        }).collect();
+        for d in &devices {
+            std::fs::create_dir(dir.join(&d.camera_id)).map_err(|e| Rejected::Io(e.to_string()))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(dir.join(FRAMES_FILE))
+            .map_err(|e| Rejected::Io(e.to_string()))?;
+        let baselines: Vec<u64> = devices
+            .iter()
+            .map(|d| d.frame_baseline.unwrap_or_default())
+            .collect();
+        let cams = devices
+            .iter()
+            .map(|d| BurstCam {
+                cam: d.cam,
+                baseline: d.frame_baseline,
+                source: None,
+                last: None,
+                faulted: false,
+                queued: 0,
+                written: 0,
+                saved: BTreeSet::new(),
+            })
+            .collect();
         let n = devices.len();
         let cameras = devices.into_iter().map(|d| CaptureCamera { camera_id: d.camera_id, camera_config: d.camera_config, imaging: d.imaging, device_session: d.session, received_count: 0 }).collect();
         let round = CaptureRoundV2 {
@@ -356,13 +373,8 @@ impl RecipeCaptureHost {
         Ok(round)
     }
 
-    /// 结束本轮（失败）：PLC 已结束且 drain 窗口已过、自身没出错的相机不会再有本轮的帧；其余相机的会话都记为可疑，须重连后才能再采。
+    /// 结束本轮（失败）。不封锁设备会话：重采的基线取开始时本会话见到的最高帧计数，PLC 开始前到的迟到帧让新一轮判失败。
     fn fail_burst(&self, run: &mut BurstRun, failure: CaptureFailureV2, error: String) {
-        let drained = run.round.state == CaptureState::Draining && Instant::now() >= run.deadline;
-        let unsettled = run.round.cameras.iter().zip(&run.cams)
-            .filter(|(_, c)| !drained || c.faulted)
-            .map(|(camera, _)| (camera.camera_id.clone(), camera.device_session));
-        self.uncertain_sessions.lock().unwrap().extend(unsettled);
         if !run.cams.is_empty() { let summary = run.summary(); apply(&mut run.round, summary); }
         run.round.state = CaptureState::Failed;
         run.round.error = Some(error);
@@ -463,28 +475,49 @@ impl RecipeCaptureHost {
         let Some(j) = run.camera_of(f.cam) else { return true };
         let camera_id = run.round.cameras[j].camera_id.clone();
         let cam = &run.cams[j];
-        let rejected = if run.round.state == CaptureState::WaitingStart { Some((false, "PLC 开始前收到帧，无法确定本轮归属".to_string())) }
-            else if f.session != run.round.cameras[j].device_session { Some((true, "设备会话已变化，不能混用不同会话的图像".into())) }
-            else if f.manual { Some((false, "本轮收到手动触发图像".into())) }
-            else if f.counter == CounterSource::Synthetic && !run.round.simulated { Some((false, "设备实拍轮次收到模拟计数的帧".into())) }
-            else if cam.source.is_some_and(|source| source != f.counter) { Some((false, "帧计数来源发生变化".into())) }
-            else {
-                match f.frame_counter.checked_sub(cam.baseline).filter(|seq| *seq > 0) {
-                    None => Some((false, format!("帧计数 {} 不大于开始采集时的基线 {}（计数回退或上一轮的迟到帧）", f.frame_counter, cam.baseline))),
-                    Some(seq) if seq > MAX_SEQ => Some((false, format!("帧计数比基线大 {seq}，超过一轮上限 {MAX_SEQ}，计数异常"))),
-                    Some(_) => None,
-                }
-            };
+        let baseline = cam
+            .baseline
+            .unwrap_or_else(|| f.frame_counter.saturating_sub(1));
+        let rejected = if run.round.state == CaptureState::WaitingStart {
+            Some((false, "PLC 开始前收到帧，无法确定本轮归属".to_string()))
+        } else if f.session != run.round.cameras[j].device_session {
+            Some((true, "设备会话已变化，不能混用不同会话的图像".into()))
+        } else if f.manual {
+            Some((false, "本轮收到手动触发图像".into()))
+        } else if f.counter == CounterSource::Synthetic && !run.round.simulated {
+            Some((false, "设备实拍轮次收到模拟计数的帧".into()))
+        } else if cam.source.is_some_and(|source| source != f.counter) {
+            Some((false, "帧计数来源发生变化".into()))
+        } else {
+            match f.frame_counter.checked_sub(baseline).filter(|seq| *seq > 0) {
+                None => Some((
+                    false,
+                    format!(
+                        "帧计数 {} 不大于开始采集时的基线 {baseline}（计数回退或上一轮的迟到帧）",
+                        f.frame_counter
+                    ),
+                )),
+                Some(seq) if seq > MAX_SEQ => Some((
+                    false,
+                    format!("帧计数比基线大 {seq}，超过一轮上限 {MAX_SEQ}，计数异常"),
+                )),
+                Some(_) => None,
+            }
+        };
         if let Some((session, error)) = rejected {
             run.cams[j].faulted = true;
             let failure = if session { CaptureFailureV2::SessionChanged { camera_id: camera_id.clone() } } else { CaptureFailureV2::Camera { camera_id: camera_id.clone() } };
             self.fail_burst(run, failure, format!("相机 {camera_id}：{error}"));
             return true;
         }
+        if run.cams[j].baseline.is_none() {
+            run.cams[j].baseline = Some(baseline);
+            run.grouper.set_baseline(j, baseline);
+        }
         let seq = match run.grouper.offer(j, f.frame_counter) {
             Offer::Accepted { seq } => seq,
             Offer::Duplicate => {
-                let seq = f.frame_counter - run.cams[j].baseline;
+                let seq = f.frame_counter - baseline;
                 run.alarm(CaptureAlarm::Duplicate { camera: j, seq });
                 return true;
             }

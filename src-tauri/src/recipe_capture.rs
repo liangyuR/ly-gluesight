@@ -179,10 +179,7 @@ pub enum CaptureStartRejected {
     InvalidCameraId(String),
     Duplicate(String),
     SessionNotReady(String),
-    MissingBaseline(String),
     Busy,
-    /// 上一轮失败后可能仍有在途旧帧、须重新连接的相机，按选择顺序
-    UncertainSessions(Vec<String>),
     /// 段配方的采集相机不是单视角（三目拼接只服务旧拍照点配方）
     MultiView(String),
     Io(String),
@@ -196,9 +193,7 @@ impl std::fmt::Display for CaptureStartRejected {
             Self::InvalidCameraId(id) => write!(f, "相机编号 {id:?} 无效；多相机采集时相机编号最长 {MAX_MULTI_CAMERA_ID} 个字符"),
             Self::Duplicate(id) => write!(f, "相机 {id} 被重复选择"),
             Self::SessionNotReady(id) => write!(f, "相机 {id}：设备会话尚未就绪"),
-            Self::MissingBaseline(id) => write!(f, "相机 {id}：没有当前会话帧序号基线，请先取得一帧"),
             Self::Busy => write!(f, "已有示教采集正在占用设备"),
-            Self::UncertainSessions(ids) => write!(f, "相机 {}：上一轮采集异常，当前设备会话可能仍有在途旧帧；请重新连接这些相机后整圈重采", ids.join("、")),
             Self::MultiView(id) => write!(f, "相机 {id}：段配方用三台独立的单视角相机共用一个触发，不能用三目拼接或多视角设备采集"),
             Self::Io(e) => write!(f, "{e}"),
         }
@@ -246,7 +241,8 @@ pub struct CaptureDevice {
     pub imaging: CameraImaging,
     pub session: u64,
     pub source: Option<CounterSource>,
-    /// 新轮次：这台相机本会话见到的最高 SDK 帧计数（没见过帧时取开流计数起点），seq = frame_counter − 它（D-SB-10）
+    /// 新轮次：这台相机本会话见到的最高 SDK 帧计数（没见过帧时取开流计数起点），seq = frame_counter − 它（D-SB-10）；
+    /// 两者都没有时为空，本轮按这台相机收到的第一帧定基线
     pub frame_baseline: Option<u64>,
 }
 
@@ -260,8 +256,6 @@ pub struct RecipeCaptureHost {
     burst: Mutex<Option<burst::BurstRun>>,
     /// 新轮次的 frames.jsonl 追加句柄；写盘线程只单独持有它，不与 burst 锁嵌套
     journal: Mutex<Option<burst::Journal>>,
-    /// 设备会话编号每次启动从 1 重新分配，只封锁本进程内失败轮次的会话，重启后不沿用
-    uncertain_sessions: Mutex<std::collections::HashSet<(String, u64)>>,
     /// 新轮次的写盘线程，按本轮相机顺序；排队条数由 MAX_FRAMES_PER_CAMERA 限制
     burst_writers: Vec<mpsc::Sender<burst::BurstItem>>,
 }
@@ -426,7 +420,7 @@ impl RecipeCaptureHost {
         let current = latest.map(|round| Running { round });
         let host = Arc::new(Self {
             root, current: Mutex::new(current), burst: Mutex::new(latest_burst.map(burst::restored_run)), journal: Mutex::new(None),
-            uncertain_sessions: Mutex::new(std::collections::HashSet::new()), burst_writers,
+            burst_writers,
         });
         let weak = Arc::downgrade(&host);
         std::thread::spawn(move || loop {
@@ -541,7 +535,8 @@ pub async fn recipe_capture_start(
     drain_timeout_ms: Option<u64>,
 ) -> Result<AnyRound, String> {
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.lock().await;
+    let _link = cycle.link_gate.lock().await;
+    let _config = cycle.config_gate.lock().await;
     if cycle.busy() {
         return Err("在途事务尚未结束，请等待握手释放或复位".into());
     }
@@ -632,7 +627,7 @@ pub fn recipe_capture_get(app: AppHandle, round_id: Option<String>) -> Result<Op
 #[tauri::command]
 pub async fn recipe_capture_stop(app: AppHandle) -> Result<Option<AnyRound>, String> {
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.lock().await;
+    let _gate = cycle.link_gate.lock().await;
     let mut teaching = cycle.teaching.lock().await;
     let result = teaching
         .cancel(app.state::<crate::plc::PlcHost>().engine(), 1)

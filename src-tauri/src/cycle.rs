@@ -386,7 +386,11 @@ struct Shared {
 
 pub struct CycleHost {
     pub tx: UnboundedSender<Input>,
-    pub plc_gate: tokio::sync::Mutex<()>,
+    /// PLC 链路门：S7 握手与示教轮询、PLC 配置/连接/手动写点、示教 DB6 发布互斥。节拍每个周期都持有。
+    /// 两把门都要时先取 link_gate 再取 config_gate；只持 config_gate 时不能再取 link_gate。
+    pub link_gate: tokio::sync::Mutex<()>,
+    /// 布防与配置门：布防、切换生产配方与相机重配置、配方/设置/标定修改互斥。节拍只在布防到登记在途、切换待生效配方时持有。
+    pub config_gate: tokio::sync::Mutex<()>,
     pub teaching: tokio::sync::Mutex<crate::teaching::Teaching>,
     teaching_busy: AtomicBool,
     teaching_switch_block: AtomicBool,
@@ -459,7 +463,8 @@ impl CycleHost {
         Ok(Self {
             camera,
             tx,
-            plc_gate: tokio::sync::Mutex::new(()),
+            link_gate: tokio::sync::Mutex::new(()),
+            config_gate: tokio::sync::Mutex::new(()),
             teaching: tokio::sync::Mutex::new(teaching),
             teaching_busy: AtomicBool::new(teaching_busy),
             teaching_switch_block: AtomicBool::new(teaching_switch_block),
@@ -586,7 +591,10 @@ impl CycleHost {
     }
 
     pub fn save_settings(&self, settings: CycleSettings) -> Result<(), String> {
-        let gate = self.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试")?;
+        let gate = self
+            .config_gate
+            .try_lock()
+            .map_err(|_| "正在布防或处理其他配置操作，请稍后重试")?;
         self.save_settings_locked(settings, &gate)
     }
 
@@ -1498,7 +1506,14 @@ impl Machine {
                 Err(error) => return self.refuse(sn, id, error.fault(), error.to_string()).await,
             };
             for camera in &baselines {
-                self.ledgers.set_frame_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session, baseline: camera.baseline });
+                if let Some(baseline) = camera.baseline {
+                    self.ledgers.set_frame_floor(&Floor {
+                        cam: camera.cam,
+                        camera: camera.camera.clone(),
+                        session: camera.session,
+                        baseline,
+                    });
+                }
             }
             (unrouted(), Some(Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted))), None)
         };
@@ -1789,12 +1804,24 @@ impl Machine {
 
     async fn on_tick(&mut self) {
         let app = self.app.clone();
-        let _gate = host(&app).plc_gate.lock().await;
-        // 持有 PLC 闸门期间站点模式不会切换：新事务按当前站点记来源
-        self.s7.set_origin(if crate::offline::enabled(&app) { Origin::Offline } else { Origin::Real });
-        if !host(&app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) && crate::offline::candidate(&self.app).is_none() && crate::workspace::apply_pending(&self.app) {
-            self.required = None;
-            self.dirty = true;
+        let _link = host(&app).link_gate.lock().await;
+        // 持有链路门期间站点模式不会切换：新事务按当前站点记来源
+        self.s7.set_origin(if crate::offline::enabled(&app) {
+            Origin::Offline
+        } else {
+            Origin::Real
+        });
+        if !host(&app).busy()
+            && matches!(self.phase, Phase::Idle | Phase::Fault)
+            && crate::offline::candidate(&self.app).is_none()
+        {
+            // 配置操作进行中就留到下一拍，不让空闲节拍排队
+            if let Ok(_config) = host(&app).config_gate.try_lock() {
+                if crate::workspace::apply_pending(&self.app) {
+                    self.required = None;
+                    self.dirty = true;
+                }
+            }
         }
         let connected = plc(&self.app).status().state == LinkState::Connected;
         let capture_host = host(&app).camera.recipe_capture().clone();
@@ -1869,6 +1896,8 @@ impl Machine {
             let previous_reset_blocked = self.s7.view().reset_blocked_reason;
             let had_ack = self.s7.acknowledged();
             let event = self.s7.poll_with_devices(plc(&app), reset, &devices, audit_ready, intake_ready).await;
+            // 布防持有配置门直到下面 store_busy 登记在途，相机与配置操作要么在布防前完成，要么看到在途后拒绝
+            let mut _config = None;
             if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7).filter(|_| self.s7.capture_id().is_none()) {
                 let result = match self.current_cycle_id.as_deref() {
                     Some(cycle_id) => host(&app).audit.delivery_durable(cycle_id, delivery).await,
@@ -1913,6 +1942,7 @@ impl Machine {
                         }
                     }
                     drop(teaching);
+                    _config = Some(host(&app).config_gate.lock().await);
                     self.start_part(request).await;
                 }
                 SessionEvent::End(ended_at, device_triggers) => {
@@ -2340,7 +2370,10 @@ pub fn cycle_save_settings(app: AppHandle, cycle: State<'_, CycleHost>, settings
 /// 人工选择配方，只能在空闲或故障时切换，新配方从下一个工件起生效。
 #[tauri::command]
 pub fn cycle_select_recipe(cycle: State<'_, CycleHost>, recipe_id: String) -> Result<(), String> {
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试")?;
+    let _gate = cycle
+        .config_gate
+        .try_lock()
+        .map_err(|_| "正在布防或处理其他配置操作，请稍后重试")?;
     cycle.recipe(&recipe_id).ok_or("配方不存在")?;
     let mut shared = cycle.shared.lock().unwrap();
     let phase = shared.snapshot.as_ref().map_or(Phase::Idle, |s| s.phase);

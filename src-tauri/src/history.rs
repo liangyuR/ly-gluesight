@@ -24,7 +24,7 @@ pub fn local_day() -> i64 {
     Local::now().date_naive().to_epoch_days() as i64
 }
 
-fn format_ts(ts: i64) -> String {
+pub(crate) fn format_ts(ts: i64) -> String {
     Local.timestamp_millis_opt(ts).single().map_or_else(|| ts.to_string(), |t| t.format("%Y-%m-%d %H:%M:%S%.3f").to_string())
 }
 

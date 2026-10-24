@@ -28,8 +28,14 @@ pub fn recipe_doc(cycle: State<'_, CycleHost>, id: String) -> Result<RecipeDoc, 
 }
 
 #[tauri::command]
-pub fn recipe_delete_unavailable(cycle: State<'_, CycleHost>, file_name: String) -> Result<(), String> {
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试配方操作")?;
+pub fn recipe_delete_unavailable(
+    cycle: State<'_, CycleHost>,
+    file_name: String,
+) -> Result<(), String> {
+    let _gate = cycle
+        .config_gate
+        .try_lock()
+        .map_err(|_| "正在布防或处理其他配置操作，请稍后重试配方操作")?;
     if cycle.busy() {
         return Err("检测结束或故障复位后才能删除不可用配方".into());
     }
@@ -70,9 +76,24 @@ pub fn recipe_plan_export(cycle: State<'_, CycleHost>, id: String) -> Result<Str
 }
 
 #[tauri::command]
-pub fn recipe_delete(app: AppHandle, cycle: State<'_, CycleHost>, id: String) -> Result<(), String> {
-    let gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试生产配方操作")?;
-    if cycle.busy() && app.state::<crate::plc::PlcHost>().engine().config().connection.protocol == ly_plc::ProtocolKind::S7 {
+pub fn recipe_delete(
+    app: AppHandle,
+    cycle: State<'_, CycleHost>,
+    id: String,
+) -> Result<(), String> {
+    let gate = cycle
+        .config_gate
+        .try_lock()
+        .map_err(|_| "正在布防或处理其他配置操作，请稍后重试生产配方操作")?;
+    if cycle.busy()
+        && app
+            .state::<crate::plc::PlcHost>()
+            .engine()
+            .config()
+            .connection
+            .protocol
+            == ly_plc::ProtocolKind::S7
+    {
         return Err("S7 在途事务结束或故障复位后才能删除生产配方".into());
     }
     if cycle.recipe_in_use(&id) {

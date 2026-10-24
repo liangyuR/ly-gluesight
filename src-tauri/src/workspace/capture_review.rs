@@ -346,7 +346,7 @@ fn edit_round(
 ) -> Result<WorkspaceView, String> {
     let cycle = app.state::<CycleHost>();
     let _gate = cycle
-        .plc_gate
+        .config_gate
         .try_lock()
         .map_err(|_| "正在处理采集或设备事务，请稍后整理轮次")?;
     crate::camera::check_idle(&cycle)?;
