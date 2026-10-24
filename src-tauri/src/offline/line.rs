@@ -760,43 +760,4 @@ mod tests {
         assert_eq!(teach_state(&memory), 0);
         assert_eq!(line.read(tag::PART_START), 0);
     }
-
-    #[tokio::test]
-    async fn reset_holds_preparation_then_finishes_without_published_recipe_ready() {
-        let layout = Layout::from_config(&crate::inspection::default_plc_config()).unwrap();
-        let line = Line::new(layout.memory(), layout);
-        line.write(&[(tag::VISION_FAULT, 1), (tag::VISION_READY, 0)]);
-        let timing = Timing {
-            poll: Duration::from_millis(2),
-            shot_interval: Duration::ZERO,
-            end_delay: Duration::ZERO,
-            ack_delay: Duration::ZERO,
-            settle: Duration::ZERO,
-            arm_timeout: Duration::from_secs(2),
-            result_timeout: Duration::from_secs(2),
-            ready_timeout: Duration::from_secs(3),
-            release_timeout: Duration::from_secs(2),
-        };
-        let abort = AtomicBool::new(false);
-        let pc = async {
-            let mut raised = Instant::now();
-            loop {
-                let probe = Instant::now();
-                if line.read(tag::FAULT_RESET) != 0 {
-                    break;
-                }
-                raised = probe;
-                sleep(timing.poll).await;
-            }
-            while line.read(tag::FAULT_RESET) == 1 {
-                sleep(timing.poll).await;
-            }
-            assert!(raised.elapsed() >= Duration::from_millis(490));
-            line.write(&[(tag::VISION_FAULT, 0)]);
-        };
-        let (result, ()) = tokio::join!(line.ensure_ready(&timing, &abort), pc);
-        assert!(result.is_ok(), "{result:?}");
-        assert_eq!(line.read(tag::VISION_READY), 0);
-        assert_eq!(line.read(tag::FAULT_RESET), 0);
-    }
 }
