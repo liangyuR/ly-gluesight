@@ -1,5 +1,5 @@
 import { Card, Heading, StatusBadge, Text, Tooltip, type StatusBadgeTone } from "qing-steel";
-import type { CapturePlcStatus, TeachingRegisters } from "../../workspace/types";
+import type { CapturePlcStatus, TeachingRegisters, TeachingViolation } from "../../workspace/types";
 import { teachingPhaseLabels, teachingReasonName, teachingStateName, teachingWaiting } from "../teaching";
 import { OfflineNote } from "./HandshakeMonitor";
 
@@ -18,12 +18,12 @@ const waitingSummary: Record<CapturePlcStatus["phase"], string> = {
   reporting: "等待 PLC 确认结果", cancelling: "等待 PLC 确认取消", releasing: "等待 PLC 释放", fault: "处置现场后复位",
 };
 
-function Registers({ side, value }: { side: "pc" | "plc"; value: TeachingRegisters | null }) {
+function Registers({ side, value, violation }: { side: "pc" | "plc"; value: TeachingRegisters | null; violation?: TeachingViolation | null }) {
   const label = side === "pc" ? "PC" : "PLC";
   const fields = value ? [
-    { label: "状态", value: teachingStateName(side, value.state), raw: `${side === "pc" ? "teachPcState" : "teachPlcState"}：${value.state}` },
-    { label: "轮次", value: String(value.roundId), raw: `${side === "pc" ? "teachRoundId" : "teachRoundIdEcho"}：${value.roundId}` },
-    { label: "原因", value: teachingReasonName(side, value.reason), raw: `${side === "pc" ? "teachPcReason" : "teachPlcReason"}：${value.reason}` },
+    { key: "state", label: "状态", value: teachingStateName(side, value.state), raw: `${side === "pc" ? "teachPcState" : "teachPlcState"}：${value.state}` },
+    { key: "roundId", label: "轮次", value: String(value.roundId), raw: `${side === "pc" ? "teachRoundId" : "teachRoundIdEcho"}：${value.roundId}` },
+    { key: "reason", label: "原因", value: teachingReasonName(side, value.reason), raw: `${side === "pc" ? "teachPcReason" : "teachPlcReason"}：${value.reason}` },
   ] : [];
   return <div className="plc-values-row" role="group" aria-label={`${label} 示教寄存器`}>
     <span className="plc-values-side">{label}</span>
@@ -32,7 +32,7 @@ function Registers({ side, value }: { side: "pc" | "plc"; value: TeachingRegiste
         <span className="mono">{field.raw}</span>
         <span>协议版本：{value.version}</span>
       </div>}>
-        <div tabIndex={0}><dt>{field.label}</dt><dd>{field.value}</dd></div>
+        <div tabIndex={0} className={violation?.field === field.key ? "violation" : undefined}><dt>{field.label}</dt><dd>{field.value}</dd></div>
       </Tooltip>)}
     </dl> : <Text variant="label" muted>—</Text>}
   </div>;
@@ -42,6 +42,7 @@ export default function TeachingHandshakeMonitor({ status, connected, error }: T
   const fresh = connected && !error && !!status?.monitor?.fresh;
   const pc = fresh ? status?.monitor?.pc ?? null : null;
   const plc = fresh ? status?.monitor?.plc ?? null : null;
+  const violation = plc ? status?.monitor?.violation ?? null : null;
   const unconfirmed = !!status && status.phase === "idle" && !fresh;
   const phase = error ? "读取失败" : unconfirmed ? "状态待确认" : status ? teachingPhaseLabels[status.phase] ?? "未知阶段" : "正在读取";
   const tone: StatusBadgeTone = error ? "fault" : unconfirmed ? "warn" : status ? phaseTones[status.phase] ?? "info" : "neutral";
@@ -59,7 +60,8 @@ export default function TeachingHandshakeMonitor({ status, connected, error }: T
       : <div className="plc-handshake">
         {fresh ? <>
           <Registers side="pc" value={pc} />
-          <Registers side="plc" value={plc} />
+          <Registers side="plc" value={plc} violation={violation} />
+          {violation && <Text as="p" variant="label" role="alert" className="plc-violation">PLC 寄存器不合规：{violation.detail}</Text>}
           {!pc && <Text as="p" variant="label" muted>PC 状态尚未发布确认，PC 寄存器值暂不显示。</Text>}
         </> : <Text as="p" variant="label" muted>尚未取得当前连接的有效快照，双方寄存器值暂不显示。</Text>}
         {status?.message && <Text as="p" variant="label" muted>后端说明：{status.message}</Text>}

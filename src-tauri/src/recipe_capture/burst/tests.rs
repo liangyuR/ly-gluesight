@@ -143,6 +143,20 @@ fn duplicate_counter_is_dropped_with_alarm_and_the_first_frame_is_kept() {
     assert_eq!(pixel(&host, &round.round_id, "cam1", 2), 2, "保留先到的那帧");
 }
 
+/// 现场 bug：Line0 高电平门控时软件取不了帧，开流后本会话没见过帧也要能开始；各相机以本轮首帧定基线，帧组从 1 起。
+#[test]
+fn camera_without_session_baseline_starts_and_groups_from_its_first_frame() {
+    let host = host();
+    let devices = (0..3).map(|cam| CaptureDevice { frame_baseline: None, ..device(cam) }).collect();
+    let round = host.start_burst("recipe-a".into(), devices, TEST_DRAIN_MS, true).unwrap();
+    host.burst_plc_started(3, 1).unwrap();
+    for n in 1..=3 { for cam in 0..3 { offer(&host, frame(cam, n + 40)); } }
+    let done = finish(&host, Some(0));
+    assert_eq!(done.state, CaptureState::Complete, "{:?}", done.error);
+    assert_eq!((done.group_count, done.incomplete_groups.clone()), (3, vec![]));
+    assert_eq!(pixel(&host, &round.round_id, "cam2", 1), 41);
+}
+
 /// 易错边界：帧号回退或不大于基线说明计数不可信（可能是上一轮的迟到帧），整轮失败并指到该相机。
 #[test]
 fn backward_counter_or_counter_not_above_baseline_fails_round_naming_the_camera() {

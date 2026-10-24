@@ -23,11 +23,6 @@ function toggle<T>(list: T[], v: T) {
   return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
 }
 
-function csvCell(v: string | null | undefined) {
-  const s = v ?? "";
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
 const levelTone = { info: "info", warn: "warn", error: "ng" } as const;
 
 export default function PlcLogPage() {
@@ -53,7 +48,10 @@ export default function PlcLogPage() {
   const [configError, setConfigError] = useState("");
   const [exportError, setExportError] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [exported, setExported] = useState<string | null>(null);
+  const [revealing, setRevealing] = useState(false);
   const exportPending = useRef<object | null>(null);
+  const revealPending = useRef(false);
   const requestSerial = useRef(0);
   const configSerial = useRef(0);
   const alive = useRef(true);
@@ -76,7 +74,7 @@ export default function PlcLogPage() {
   }, [loadPoints]);
 
   useEffect(() => {
-    exportPending.current = null; setExporting(false); setExportError("");
+    exportPending.current = null; setExporting(false); setExported(null); setExportError("");
   }, [generation]);
 
   const buildQuery = useCallback((): { query: LogQuery; start: number; end: number } => {
@@ -148,41 +146,27 @@ export default function PlcLogPage() {
     const request = {};
     const exportScope = generation;
     const current = () => alive.current && scope.current.generation === exportScope && exportPending.current === request;
-    exportPending.current = request; setExporting(true); setExportError("");
+    exportPending.current = request; setExporting(true); setExported(null); setExportError("");
     try {
-    const { query, end } = buildQuery();
-    query.end = end;
-    const rows: string[] = ["时间,级别,类别,点位,内容,旧值,新值,事务"];
-    let offset = 0;
-    let total: number | null = null;
-    while (true) {
-      const batch = await plcApi.queryLogs({ ...query, limit: 1000, offset });
-      if (!current()) return;
-      total ??= batch.total;
-      if (!Number.isSafeInteger(total) || total < 0) throw new Error("日志数量无效，请刷新后重试");
-      for (const e of batch.items) {
-        rows.push(
-          [formatTs(e.ts), levelLabels[e.level], categoryLabels[e.category], e.pointName, e.message, e.oldValue, e.newValue, e.context]
-            .map(csvCell)
-            .join(","),
-        );
-      }
-      offset += batch.items.length;
-      if (offset >= total) break;
-      if (batch.items.length === 0) throw new Error("日志在导出期间已变化，未下载不完整文件，请刷新后重试");
-    }
-    if (!current()) return;
-    const blob = new Blob(["﻿" + rows.join("\n")], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `plc-log-${toLocalInput(Date.now()).replace(/[:T]/g, "")}.csv`;
-    try { a.click(); } finally { URL.revokeObjectURL(a.href); }
+      const path = await plcApi.exportLogs(buildQuery().query, { levels: levelLabels, categories: categoryLabels });
+      if (current()) setExported(path);
     } catch (e) { if (current()) setExportError(String(e)); }
     finally {
       if (exportPending.current === request) {
         exportPending.current = null;
         if (alive.current) setExporting(false);
       }
+    }
+  };
+
+  const reveal = async () => {
+    if (!exported || revealPending.current) return;
+    revealPending.current = true; setRevealing(true); setExportError("");
+    try { await plcApi.reveal(exported); }
+    catch (e) { if (alive.current) setExportError(String(e)); }
+    finally {
+      revealPending.current = false;
+      if (alive.current) setRevealing(false);
     }
   };
 
@@ -292,6 +276,11 @@ export default function PlcLogPage() {
       </Card>
 
       {configError && <Alert tone="ng" action={<Button size="sm" onClick={loadPoints}>重新加载点位</Button>}>点位配置：{configError}</Alert>}
+      {exported && (
+        <Alert tone="ok" action={<Button variant="text" size="sm" disabled={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</Button>}>
+          已导出：<span className="mono">{exported}</span>
+        </Alert>
+      )}
       {exportError && <Alert tone="ng">{exportError}</Alert>}
 
       {history && dataScope === generation && dataPage === page && (

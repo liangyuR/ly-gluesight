@@ -156,6 +156,7 @@ pub fn run() {
             plc::plc_get_values,
             plc::plc_write_point,
             plc::plc_query_logs,
+            plc::plc_export_logs,
             plc::plc_point_history,
             plc::plc_check_address,
             plc::plc_s7_phase1_template,

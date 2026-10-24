@@ -1498,7 +1498,9 @@ impl Machine {
                 Err(error) => return self.refuse(sn, id, error.fault(), error.to_string()).await,
             };
             for camera in &baselines {
-                self.ledgers.set_frame_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session, baseline: camera.baseline });
+                if let Some(baseline) = camera.baseline {
+                    self.ledgers.set_frame_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session, baseline });
+                }
             }
             (unrouted(), Some(Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted))), None)
         };

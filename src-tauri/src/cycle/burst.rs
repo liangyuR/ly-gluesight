@@ -86,7 +86,7 @@ impl BurstPart {
         let limit = recipe.expected_total().map_or(MAX_SEQ, |n| u64::from(n) + u64::from(recipe.tolerance_total()) + SEQ_MARGIN);
         let checks = wider_checks(&recipe.path_segments.iter().map(|s| &s.checks).collect::<Vec<_>>());
         Self {
-            grouper: Grouper::with_limit(cams.iter().map(|c| c.baseline).collect(), limit),
+            grouper: Grouper::with_limit(cams.iter().map(|c| c.baseline.unwrap_or_default()).collect(), limit),
             cameras: recipe.plan_cameras(),
             cams,
             frames: BTreeMap::new(),
@@ -98,9 +98,9 @@ impl BurstPart {
         }
     }
 
-    /// 这台相机（相机组序号）在本件的帧计数基线；不是计划相机为空。
+    /// 这台相机（相机组序号）在本件的帧计数基线；不是计划相机、或还在等本件首帧定基线时为空。
     pub(super) fn baseline(&self, cam: u8) -> Option<u64> {
-        self.cams.iter().find(|c| c.cam == cam).map(|c| c.baseline)
+        self.cams.iter().find(|c| c.cam == cam).and_then(|c| c.baseline)
     }
 
     pub(super) fn camera_name(&self, camera: usize) -> &str {
@@ -112,10 +112,12 @@ impl BurstPart {
         self.warned.insert((camera, warning))
     }
 
-    /// 本件收尾：每台相机下一件的帧计数下限 = max(本件基线, 本件见到的最高帧计数)，PLC 报的触发数与计划数都不参与（D-SB-7）。
+    /// 本件收尾：每台相机下一件的帧计数下限 = max(本件基线, 本件见到的最高帧计数)，PLC 报的触发数与计划数都不参与（D-SB-7）；
+    /// 本件一帧没收到、基线仍未定的相机不记下限。
     pub(super) fn close(&self, ledgers: &mut Ledgers) {
         for (i, cam) in self.cams.iter().enumerate() {
-            ledgers.set_frame_floor(&Floor { cam: cam.cam, camera: cam.camera.clone(), session: cam.session, baseline: cam.baseline.max(self.grouper.max_counter(i)) });
+            let Some(baseline) = cam.baseline else { continue };
+            ledgers.set_frame_floor(&Floor { cam: cam.cam, camera: cam.camera.clone(), session: cam.session, baseline: baseline.max(self.grouper.max_counter(i)) });
         }
     }
 
@@ -232,7 +234,15 @@ impl Part {
         } else if !burst.trusted.contains(&frame.counter) {
             format!("相机 {} 的帧计数来源变为{}，本件帧号不可信", armed.camera, frame.counter.label())
         } else {
-            let baseline = armed.baseline;
+            let baseline = match armed.baseline {
+                Some(baseline) => baseline,
+                None => {
+                    let baseline = frame.frame_counter.saturating_sub(1);
+                    burst.cams[camera].baseline = Some(baseline);
+                    burst.grouper.set_baseline(camera, baseline);
+                    baseline
+                }
+            };
             return Some(match burst.grouper.offer(camera, frame.frame_counter) {
                 Offer::Accepted { seq } => {
                     let trigger_counter = matches!(frame.counter, CounterSource::ChunkTrigger | CounterSource::Synthetic).then_some(frame.trigger_counter);

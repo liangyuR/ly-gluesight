@@ -1,4 +1,6 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -6,6 +8,7 @@ use ly_plc::{
     describe_address, ConnectionConfig, DataType, EventSink, HistorySample, LogPage, LogQuery, Logbook, PlcConfig,
     PlcEngine, PlcEvent, PlcStatus, PointValue, ProtocolKind,
 };
+use serde::Deserialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -169,6 +172,85 @@ pub async fn plc_query_logs(plc: State<'_, PlcHost>, query: LogQuery) -> Result<
     plc.engine.logbook().query(&query)
 }
 
+/// 级别、类别的中文文案由前端 meta 传入，后端不另维护一份；未知编码按原值写出。
+#[derive(Deserialize)]
+pub struct LogLabels {
+    levels: HashMap<String, String>,
+    categories: HashMap<String, String>,
+}
+
+const LOG_CSV_HEADER: &str = "\u{feff}时间,级别,类别,点位,内容,旧值,新值,事务\r\n";
+const LOG_EXPORT_PAGE: u32 = 1000;
+const LOG_EXPORT_CHANGED: &str = "日志在导出期间已变化，未生成完整文件，请重试";
+
+fn csv_cell(s: &str) -> Cow<'_, str> {
+    if s.contains(['"', ',', '\r', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")).into() } else { s.into() }
+}
+
+fn write_log_csv(
+    out: &mut impl Write,
+    mut query: LogQuery,
+    labels: &LogLabels,
+    fetch: impl Fn(&LogQuery) -> Result<LogPage, String>,
+) -> Result<(), String> {
+    let label = |map: &HashMap<String, String>, key: &str| map.get(key).cloned().unwrap_or_else(|| key.to_string());
+    out.write_all(LOG_CSV_HEADER.as_bytes()).map_err(|e| e.to_string())?;
+    query.limit = Some(LOG_EXPORT_PAGE);
+    let mut offset = 0u32;
+    let mut total = None;
+    loop {
+        query.offset = Some(offset);
+        let page = fetch(&query)?;
+        if *total.get_or_insert(page.total) != page.total {
+            return Err(LOG_EXPORT_CHANGED.into());
+        }
+        for e in &page.items {
+            let cells = [
+                crate::history::format_ts(e.ts),
+                label(&labels.levels, &e.level),
+                label(&labels.categories, &e.category),
+                e.point_name.clone().unwrap_or_default(),
+                e.message.clone(),
+                e.old_value.clone().unwrap_or_default(),
+                e.new_value.clone().unwrap_or_default(),
+                e.context.clone().unwrap_or_default(),
+            ];
+            let row = cells.iter().map(|c| csv_cell(c)).collect::<Vec<_>>().join(",");
+            out.write_all(format!("{row}\r\n").as_bytes()).map_err(|e| e.to_string())?;
+        }
+        offset += page.items.len() as u32;
+        if i64::from(offset) >= page.total {
+            return Ok(());
+        }
+        if page.items.is_empty() {
+            return Err(LOG_EXPORT_CHANGED.into());
+        }
+    }
+}
+
+/// 按日志页筛选条件导出全部日志（带 BOM），结束时间不晚于导出时刻，返回文件路径。
+#[tauri::command]
+pub async fn plc_export_logs(app: AppHandle, mut query: LogQuery, labels: LogLabels) -> Result<String, String> {
+    let now = ly_plc::now_ms();
+    query.end = Some(query.end.map_or(now, |end| end.min(now)));
+    let dir = crate::storage::root(&app).join("exports");
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(format!("PLC日志_{}.csv", chrono::Local::now().format("%Y%m%d_%H%M%S")));
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
+        let logbook = app.state::<PlcHost>().engine.logbook().clone();
+        let written = write_log_csv(&mut f, query, &labels, |q| logbook.query(q)).and_then(|_| f.flush().map_err(|e| e.to_string()));
+        drop(f);
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&path);
+            return Err(e);
+        }
+        Ok(path.display().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn plc_point_history(
     plc: State<'_, PlcHost>,
@@ -183,3 +265,7 @@ pub async fn plc_point_history(
 pub fn plc_check_address(connection: ConnectionConfig, address: String, data_type: DataType) -> Result<String, String> {
     describe_address(&connection, &address, data_type)
 }
+
+#[cfg(test)]
+#[path = "plc/tests.rs"]
+mod tests;

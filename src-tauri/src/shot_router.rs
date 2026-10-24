@@ -17,7 +17,8 @@
 //! 等故障复位清掉下限（[`Ledgers::clear_floors`]）后按实际见到的计数重新对齐。
 //!
 //! 段配方（`Recipe::is_burst`）不经过拍照点路由：布防用 [`arm_frames`] 按 SDK 帧计数定每台相机的基线，帧归属由
-//! `frame_group::Grouper` 按帧号配组；下一件的帧计数下限记在 [`Ledger::frame_floor`]，
+//! `frame_group::Grouper` 按帧号配组；本会话没见过帧、开流计数起点又未知时不拒绝布防，由本件首帧定基线；
+//! 下一件的帧计数下限记在 [`Ledger::frame_floor`]，
 //! = max(本件基线, 这台相机本件见到的最高帧计数)，PLC 报的触发数与计划数都不参与（D-SB-7）。
 
 use std::collections::BTreeMap;
@@ -235,7 +236,7 @@ impl Ledgers {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Policy {
     pub trusted: Vec<CounterSource>,
-    /// 海康相机打开后、第一个触发之前的触发计数（第一帧是它加一）。台架确认前为空：本次打开后没见过帧就拒绝布防
+    /// 海康相机打开后、第一个触发之前的触发计数（第一帧是它加一）。台架确认前为空：旧拍照点配方本次打开后没见过帧就拒绝布防，段配方改由首帧定基线
     pub counter_after_open: Option<u64>,
 }
 
@@ -645,12 +646,14 @@ pub struct FrameBaseline {
     pub camera: String,
     /// 布防时的会话号
     pub session: u64,
-    pub baseline: u64,
+    /// 本会话还没见过帧、开流计数起点又未知时为空：本件这台相机的第一帧定基线（首帧计数 − 1）
+    pub baseline: Option<u64>,
 }
 
 /// 段配方布防（D-SB-7、D-SB-10）：按计划相机顺序给出每台相机的帧计数基线 =
 /// max(本会话见到的最大 SDK 帧计数, 上一件段配方收尾推算的帧计数下限)；本会话还没见过帧时与 [`ShotRouter::arm`]
-/// 一样取开流后的计数起点（模拟 / 样本集为 0，海康按 `counter_after_open`，未经台架确认就拒绝布防）。
+/// 取开流后的计数起点（模拟 / 样本集为 0，海康按 `counter_after_open`），仍未知时留空，由本件首帧定基线：
+/// Line0 高电平门控下软件取不了帧，而本会话布防前没有帧，布防后这台相机的第一帧必属本件。
 /// 本会话出现过 policy 不信任的计数来源时拒绝。
 pub fn arm_frames(cameras: &[String], ledgers: &Ledgers, policy: &Policy, cams: &[ArmCam]) -> Result<Vec<FrameBaseline>, Refusal> {
     let mut armed: Vec<FrameBaseline> = Vec::with_capacity(cameras.len());
@@ -666,12 +669,9 @@ pub fn arm_frames(cameras: &[String], ledgers: &Ledgers, policy: &Policy, cams: 
             return Err(Refusal::Untrusted { camera, source });
         }
         let baseline = match ledger.and_then(|l| l.last_frame.max(l.frame_floor)) {
-            Some(b) => b,
-            None if source == Some(CounterSource::Synthetic) => SYNTHETIC_START,
-            None => match now.counter_after_open.or(policy.counter_after_open) {
-                Some(b) => b,
-                None => return Err(Refusal::NoBaseline { camera }),
-            },
+            Some(b) => Some(b),
+            None if source == Some(CounterSource::Synthetic) => Some(SYNTHETIC_START),
+            None => now.counter_after_open.or(policy.counter_after_open),
         };
         armed.push(FrameBaseline { cam: now.cam, camera, session: now.session, baseline });
     }

@@ -37,6 +37,15 @@ pub struct TeachingMonitor {
     pub pc: Option<TeachingRegisters>,
     pub plc: Option<TeachingRegisters>,
     pub fresh: bool,
+    pub violation: Option<TeachingViolation>,
+}
+
+/// PLC 示教寄存器不合规的那一项，供现场定位 PLC 程序。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeachingViolation {
+    pub field: &'static str,
+    pub detail: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -101,22 +110,46 @@ pub struct TeachingReply {
 }
 
 impl TeachingReply {
-    fn validate(self) -> Result<(), String> {
-        let valid_reason = match self.state {
-            0 | 10 | 20 | 30 => self.reason == 0,
-            40 => (1..=5).contains(&self.reason),
-            50 => (4..=10).contains(&self.reason),
-            _ => false,
-        };
-        if self.version != 1
-            || self.reserved != 0
-            || self.id > 32767
-            || !valid_reason
-            || (self.state != 0 && self.id == 0 && self.state != 50)
-        {
-            return Err("示教 PLC 版本、状态、编号或原因组合非法".into());
+    fn check(self) -> Result<(), TeachingViolation> {
+        let (state, reason) = (self.state, self.reason);
+        let violation = |field, detail: String| Err(TeachingViolation { field, detail });
+        if self.version != 1 {
+            return violation("version", format!("协议版本为 {}，应为 1", self.version));
         }
-        Ok(())
+        if self.reserved != 0 {
+            return violation("reserved", format!("保留字段为 {}，应为 0", self.reserved));
+        }
+        if !matches!(state, 0 | 10 | 20 | 30 | 40 | 50) {
+            return violation("state", format!("状态 {state} 不是协议状态（0/10/20/30/40/50）"));
+        }
+        if self.id > 32767 || (state != 0 && state != 50 && self.id == 0) {
+            return violation("roundId", format!("状态 {state} 时轮次回显为 {}：PLC 须把 PC 的 teachRoundId 写回 teachRoundIdEcho", self.id));
+        }
+        match state {
+            0 if reason != 0 => violation("reason", format!("回空闲后原因码 {reason} 未清 0")),
+            10 | 20 | 30 if reason != 0 => violation("reason", format!("状态 {state} 时原因码应为 0，实际 {reason}")),
+            40 if !(1..=5).contains(&reason) => violation("reason", format!("拒绝（状态 40）原因码 {reason} 不在 1–5")),
+            50 if !(4..=10).contains(&reason) => violation("reason", format!("故障（状态 50）原因码 {reason} 不在 4–10")),
+            _ => Ok(()),
+        }
+    }
+
+    fn validate(self) -> Result<(), String> {
+        self.check().map_err(|v| format!(
+            "示教 PLC 寄存器不合规：{}（DB12 版本 {} 状态 {} 编号 {} 原因 {} 保留 {}）",
+            v.detail, self.version, self.state, self.id, self.reason, self.reserved
+        ))
+    }
+}
+
+fn plc_state_name(state: u16) -> &'static str {
+    match state {
+        0 => "空闲",
+        10 => "已接受",
+        20 => "采集结束",
+        30 => "已确认",
+        40 => "已拒绝",
+        _ => "故障",
     }
 }
 
@@ -722,6 +755,14 @@ impl Teaching {
             return Ok(TeachEvent::None);
         }
         self.monitor.plc = Some(reply.into());
+        let mut reply = reply;
+        if let Some(last) = self
+            .last_reply
+            .filter(|last| last.state == reply.state && (last.id == reply.id || reply.state == 0))
+        {
+            reply.reason = last.reason;
+        }
+        self.monitor.violation = reply.check().err();
         self.monitor.fresh = true;
         self.monitor_observed_at = Some(Instant::now());
         if !self.ready && !self.resetting {
@@ -730,27 +771,26 @@ impl Teaching {
             }
             return Ok(TeachEvent::None);
         }
-        let mut reply = reply;
-        if let Some(last) = self
-            .last_reply
-            .filter(|last| last.state == reply.state && (last.id == reply.id || reply.state == 0))
-        {
-            reply.reason = last.reason;
-        }
-        if let Err(error) = reply.validate() {
-            return Ok(self.fail(error));
-        }
         if self.resetting {
-            if base_ready && reply.state == 0 {
+            if base_ready && reply.state == 0 && self.monitor.violation.is_none() {
                 match self.initialize_after_reset(reply) {
                     Ok(()) => return Ok(TeachEvent::Released),
                     Err(e) => return Ok(self.fail(e)),
                 }
             }
+            let waiting = match &self.monitor.violation {
+                Some(v) => format!("PLC 寄存器不合规：{}", v.detail),
+                None if reply.state != 0 => format!("PLC 示教状态 {}（{}）", reply.state, plc_state_name(reply.state)),
+                None => "等待基础握手复位完成".into(),
+            };
             if self.since.elapsed() > Duration::from_secs(15) {
-                return Ok(self.fail("示教复位等待 PLC 空闲超时".into()));
+                return Ok(self.fail(format!("示教复位等待 PLC 空闲超时：{waiting}")));
             }
+            self.message = format!("复位等待 PLC 示教回到空闲：{waiting}");
             return Ok(TeachEvent::None);
+        }
+        if let Err(error) = reply.validate() {
+            return Ok(self.fail(error));
         }
         if !self.ready || self.faulted {
             return Ok(TeachEvent::None);
@@ -816,6 +856,21 @@ mod tests {
             state,
             reason,
             reserved: 0,
+        }
+    }
+
+    /// 现场 bug：PLC 已接受（状态 10）却没回显轮次号，PC 只报笼统的"组合非法"；协议规定的原因码边界要指到具体字段。
+    #[test]
+    fn plc_register_violation_names_the_offending_field() {
+        for (case, reply, field) in [
+            ("已接受未回显轮次", reply(0, 10, 0), Some("roundId")),
+            ("回空闲未清原因", reply(5, 0, 3), Some("reason")),
+            ("拒绝原因 0", reply(5, 40, 0), Some("reason")),
+            ("拒绝原因 5", reply(5, 40, 5), None),
+            ("故障原因 3", reply(0, 50, 3), Some("reason")),
+            ("故障不回显轮次", reply(0, 50, 5), None),
+        ] {
+            assert_eq!(reply.check().err().map(|v| v.field), field, "{case}");
         }
     }
 
