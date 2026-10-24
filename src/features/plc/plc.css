@@ -117,20 +117,45 @@ select.input { padding-right: 6px; }
 .plc-kv > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; align-items: baseline; }
 .plc-kv dt { font: var(--text-label); color: var(--on-surface-variant); }
 .plc-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.plc-bits { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; align-items: start; }
-.plc-bits-label { font: var(--text-label); color: var(--on-surface-variant); padding-top: 3px; white-space: nowrap; }
-.plc-bits-grid { display: flex; flex-wrap: wrap; gap: 8px 18px; min-width: 0; }
-.plc-bit { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
-.plc-stale { color: var(--warn); }
+.plc-bit-group { display: grid; gap: 8px; min-width: 0; }
+.plc-common-signals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 24px; padding: 4px 0; }
+.plc-common-signal { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; border-radius: var(--r-sm); }
+.plc-common-signal-name { font: var(--text-body); color: var(--on-surface-variant); }
+.plc .plc-flat-state { height: auto; padding: 0; border-radius: 0; background: transparent; font: var(--text-body); }
+.plc-flat-state.fault { color: var(--fault); }
+.plc-flat-state.info .dot { background: var(--primary); }
+.plc-common-signal-time, .plc-common-protocol { font: var(--text-label); color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
+.plc-common-protocol { justify-self: start; border-radius: var(--r-xs); }
+.plc-common-signal:focus-visible, .plc-common-protocol:focus-visible, .plc-summary-item:focus-visible, .plc-flat-state:focus-visible, .plc-handshake-waiting:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
+.plc-signal-details { display: grid; gap: 4px; }
+.plc-handshake-overview { display: grid; grid-template-columns: minmax(140px, 1fr) 3fr; gap: 16px 24px; margin: 0; }
+.plc-handshake-overview dt { font: var(--text-label); color: var(--on-surface-variant); margin-bottom: 6px; }
+.plc-handshake-overview dd { margin: 0; font: var(--text-body); }
+.plc-handshake-waiting { border-radius: var(--r-xs); }
+.plc-handshake-message { overflow-wrap: anywhere; }
+.plc-handshake-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 24px; margin: 0; }
 .plc-handshake-fields {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px;
   padding-top: 12px; border-top: 1px solid var(--outline-variant);
 }
 
 /* C 连接配置摘要 */
-.plc-conn-summary p { margin: 0; line-height: 1.8; font-size: 13px; }
-.plc-conn-summary span + span::before { content: " · "; color: var(--on-surface-variant); text-decoration: none; display: inline-block; white-space: pre; }
-.plc-diff { text-decoration: underline; text-decoration-color: var(--warn); text-underline-offset: 3px; cursor: help; }
+.plc-conn-summary { display: grid; gap: 20px; container-type: inline-size; }
+.plc-summary-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px 24px; margin: 0; }
+.plc-summary-item { min-width: 0; padding: 4px 0; border-radius: var(--r-xs); }
+.plc-summary-item dt { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin-bottom: 6px; font: var(--text-label); color: var(--on-surface-variant); }
+.plc-summary-item dd { margin: 0; font: var(--text-body); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.plc-summary-item-changed dd { color: var(--warn); }
+.plc-summary-changed { font-size: 11px; color: var(--warn); }
+@container (max-width: 1050px) {
+  .plc-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container (max-width: 560px) {
+  .plc-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 340px) {
+  .plc-summary-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .plc-editor-locked { border: 0; padding: 0; margin: 0; min-width: 0; }
 
 /* D 地址表分组 */
@@ -142,7 +167,11 @@ select.input { padding-right: 6px; }
 .plc-custom-group .qs-accordion-title { flex: 1; min-width: 0; }
 
 @media (max-width: 899px) {
-  .plc-bits { grid-template-columns: minmax(0, 1fr); gap: 6px; }
-  .plc-bits-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .plc-common-signals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plc-handshake-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .plc-handshake-fields { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 420px) {
+  .plc-common-signals { grid-template-columns: minmax(0, 1fr); }
+  .plc-handshake-overview, .plc-handshake-summary { grid-template-columns: minmax(0, 1fr); }
 }

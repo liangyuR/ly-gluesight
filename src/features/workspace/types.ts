@@ -191,10 +191,19 @@ export interface CaptureRound {
 }
 export interface CaptureSummary { roundId: string; recipeId: string; cameraIds: string[]; plannedCount: number | null; receivedCount: number; state: CaptureRound["state"]; createdAt: number; error: string | null }
 
+export interface TeachingRegisters {
+  version: number;
+  state: number;
+  roundId: number;
+  reason: number;
+  reserved: number;
+}
+
 export interface CapturePlcStatus {
   available: boolean;
   busy: boolean;
   roundId: number | null;
   phase: "unavailable" | "resetRequired" | "idle" | "requested" | "accepted" | "draining" | "reporting" | "cancelling" | "releasing" | "fault";
   message: string;
+  monitor?: { pc: TeachingRegisters | null; plc: TeachingRegisters | null; fresh: boolean };
 }

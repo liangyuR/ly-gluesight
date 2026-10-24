@@ -89,14 +89,14 @@ export default function S7Phase1Dialog({ config, dirty, blockedReason, onApply, 
     setConfirmed(false);
   };
 
-  return <Modal title="载入一期 S7 点表" width={800} onClose={onClose} footer={<>
+  return <Modal title="重置 S7 通讯配置" width={800} onClose={onClose} footer={<>
     <Button onClick={onClose}>取消</Button>
     <Button variant="filled" disabled={!!blockedReason || !ready || (replaces && !confirmed)} onClick={apply}>应用到草稿</Button>
   </>}>
     {blockedReason && <Alert tone="warn">{blockedReason}</Alert>}
     <fieldset disabled={!!blockedReason} style={{ border: 0, padding: 0, margin: 0 }}>
       <Grid minWidth={220} gap={14}>
-        <Select label="一期 CPU 预设" value={cpu} onValueChange={value => { setCpu(value); setConfirmed(false); }}
+        <Select label="CPU 预设" value={cpu} onValueChange={value => { setCpu(value); setConfirmed(false); }}
           options={cpuChoices.map(key => ({ value: key, label: s7CpuPresets.find(item => item.key === key)!.label }))} />
         <NumberField label="PLC 区 DB（PLC 写）" min={1} max={65535} step={1} value={dbText.plc === "" ? "" : Number(dbText.plc)}
           aria-invalid={!!invalid} onValueChange={setDb("plc")} />
@@ -104,8 +104,9 @@ export default function S7Phase1Dialog({ config, dirty, blockedReason, onApply, 
           aria-invalid={!!invalid} onValueChange={setDb("pc")} />
       </Grid>
     </fieldset>
-    <p className="muted hint">握手协议 6（点表布局与协议 5 相同）：S7-1200 / 1500 采用机架 0 / 插槽 1。请在 PLC 中启用 PUT/GET，并关闭两个 DB 的优化访问；按点表建立数据块，SN 声明为 String[50]。</p>
-    <p className="muted hint">应用将替换地址表、心跳和 S7 连接预设。IP / 主机名、超时、轮询、重连、日志和自动连接设置保留；之后仍需保存配置。</p>
+    <p className="muted hint">生产握手协议 6：S7-1200 / 1500 采用机架 0 / 插槽 1。示教扩展协议 V1 使用 DB6（PC 写）与 DB12（PLC 写），每块 10 字节。请在 PLC 中启用 PUT/GET，并关闭所用 DB 的优化访问；按点表建立数据块，SN 声明为 String[50]。</p>
+    {(plcDb === 6 || plcDb === 12 || pcDb === 6 || pcDb === 12) && <Alert tone="warn">生产 DB 占用了示教保留区，本次点表不包含示教点位。需要示教时，请为生产区选择其他 DB。</Alert>}
+    <p className="muted hint">将生产与示教点表、心跳及 S7 连接预设恢复为标准配置。保留 IP / 主机名、超时、轮询、重连、日志和自动连接设置；应用后需保存配置。</p>
     {invalid && <Alert tone="ng">{invalid}</Alert>}
     {loading && <p role="status">正在生成点表预览…</p>}
     {error && <Alert tone="ng" action={<Button size="sm" onClick={() => setRetry(value => value + 1)}>重试</Button>}>{error}</Alert>}
@@ -113,6 +114,6 @@ export default function S7Phase1Dialog({ config, dirty, blockedReason, onApply, 
       <p className="hint">PLC 区 DB{plcDb} · PC 区 DB{pcDb} · {preview.config.points.length} 个点位 · {s7CpuPresets.find(item => item.key === cpu)?.label}</p>
       <Table<PlcPoint> caption="点表预览" rows={preview.config.points} columns={previewColumns} rowKey={point => point.id} />
     </>}
-    {replaces && <div style={{ marginTop: 16 }}><Checkbox label={`确认替换当前 ${config.points.length} 个点位和心跳${dirty ? "（当前草稿尚未保存）" : ""}，并应用 S7 连接预设`} checked={confirmed} disabled={!!blockedReason} onCheckedChange={setConfirmed} /></div>}
+    {replaces && <div style={{ marginTop: 16 }}><Checkbox label={`确认重置当前 ${config.points.length} 个点位、心跳和 S7 连接预设${dirty ? "（当前草稿尚未保存）" : ""}`} checked={confirmed} disabled={!!blockedReason} onCheckedChange={setConfirmed} /></div>}
   </Modal>;
 }

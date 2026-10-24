@@ -2,18 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { isTauri } from "@tauri-apps/api/core";
 import { FileJson, Lock, Pencil, PenLine, Plug, PlugZap, Plus, Save, Trash2, Undo2 } from "lucide-react";
-import { Accordion, Button, Card, Chip, Divider, EmptyState, Heading, IconButton, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
+import { Accordion, Button, Card, Chip, Divider, EmptyState, Heading, IconButton, Stack, StatusBadge, Table, Tabs, Text, type TableColumn } from "qing-steel";
 import { connectionError } from "../components/ConnectionForm";
 import ConnectionCard from "../components/ConnectionCard";
-import HandshakeMonitor from "../components/HandshakeMonitor";
+import HandshakeMonitor, { CommonMonitor } from "../components/HandshakeMonitor";
+import TeachingHandshakeMonitor from "../components/TeachingHandshakeMonitor";
 import PlcNotices, { type PlcNotice } from "../components/PlcNotices";
 import PlcStatusBadge from "../components/PlcStatusBadge";
 import PointEditor from "../components/PointEditor";
 import PointsJsonDialog from "../components/PointsJsonDialog";
 import WriteDialog from "../components/WriteDialog";
 import S7Phase1Dialog from "../components/S7Phase1Dialog";
-import { plcApi, usePlcOperationState, usePlcStatus, usePlcValues } from "../api";
-import { inspectionHandshakeTags } from "../../../business/plcTags";
+import { plcApi, usePlcOperationState, usePlcStatus, usePlcValues, useTeachingStatus } from "../api";
+import { commonPlcTags, inspectionHandshakeTags, teachingHandshakeTags } from "../../../business/plcTags";
+import { teachingPointValue } from "../teaching";
 import { asS7, cpuPresetLabel, dataTypeLabels, edgeLabels, effectiveOrder, formatValue, isMultiWord, newPoint } from "../meta";
 import { formatClock } from "../time";
 import { useSnackbar } from "qing-steel";
@@ -30,10 +32,13 @@ const configText = (config: PlcConfig | null) => JSON.stringify(config, (_key, v
   typeof value === "number" && !Number.isFinite(value) ? String(value) : value);
 const settingsText = (config: PlcConfig | null) => configText(config && { ...config, points: [] });
 const fieldsetStyle = { border: 0, padding: 0, margin: 0, minWidth: 0 };
-const isHandshakePoint = (point: PlcPoint) => point.tags.some(tag => inspectionHandshakeTags.has(tag));
+const isTeachingPoint = (point: PlcPoint) => point.tags.some(tag => teachingHandshakeTags.has(tag));
+const isCommonPoint = (point: PlcPoint) => point.tags.some(tag => commonPlcTags.has(tag));
+const isHandshakePoint = (point: PlcPoint) => isTeachingPoint(point) || point.tags.some(tag => inspectionHandshakeTags.has(tag));
 
 export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPageProps) {
   const status = usePlcStatus();
+  const teaching = useTeachingStatus(status);
   const values = usePlcValues();
   const { blockedReason, handshake } = usePlcOperationState();
   const operationLock = useRef(blockedReason);
@@ -50,6 +55,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   const [connectionOpen, setConnectionOpen] = useState(false);
   const connectionToggled = useRef(false);
   const [customOpen, setCustomOpen] = useState("");
+  const [flowTab, setFlowTab] = useState("workpiece");
   const [actionError, setActionError] = useState("");
   const { show: snack } = useSnackbar();
   const [loadError, setLoadError] = useState("");
@@ -174,7 +180,9 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   const lockReason = readOnly ? "离线期间只读" : blockedReason || (busy ? "PLC 操作进行中，请稍候" : "");
   const protocolValue = tagValue("protocolVersion");
   const protocolText = connected && protocolValue && !protocolValue.error && protocolValue.value !== null ? String(protocolValue.value) : "—";
-  const handshakePoints = draft.points.filter(isHandshakePoint);
+  const handshakePoints = draft.points.filter(p => isHandshakePoint(p) && !isTeachingPoint(p) && !isCommonPoint(p));
+  const teachingPoints = draft.points.filter(isTeachingPoint);
+  const commonPoints = draft.points.filter(p => isCommonPoint(p) && !isTeachingPoint(p));
   const customPoints = draft.points.filter(p => !isHandshakePoint(p));
   const brief = saved ? `S7 · ${cpuPresetLabel(saved.connection)} · ${saved.connection.host}:${saved.connection.port}` : "S7 · 配置未读取";
 
@@ -196,6 +204,11 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
     { key: "tags", header: "标签", render: (p) => p.tags.length === 0 ? <span className="muted">—</span> : <Stack gap={4}>{p.tags.map((t) => <Chip key={t}>{tagLabel.get(t) ?? t}</Chip>)}</Stack> },
     { key: "logChanges", header: "记录", render: (p) => p.logChanges ? "是" : <span className="muted">否</span> },
     { key: "value", header: "当前值", render: (p) => {
+      if (isTeachingPoint(p)) {
+        const tag = p.tags.find(tag => teachingHandshakeTags.has(tag))!;
+        const value = teachingPointValue(tag, teaching.status, connected);
+        return <span className="mono plc-value">{!live(p) ? "待保存" : !connected ? "未连接" : value === null ? "—" : formatValue({ value, error: null, errorKind: null, ts: 0 })}</span>;
+      }
       const v = values[p.id];
       return <span className={`mono plc-value ${live(p) && connected && v?.error ? "ng" : ""}`}>
         {!live(p) ? <span className="muted">待保存</span> : connected ? formatValue(v) : <span className="muted">未连接</span>}
@@ -216,8 +229,23 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
       <Trash2 size={16} />
     </IconButton>
   </span>);
-  const loadTemplateButton = <Button disabled={!!lockReason || !tauri} title={lockReason || (!tauri ? "一期 S7 点表需要桌面后端生成" : undefined)}
-    onClick={() => setS7Open(true)}>载入一期 S7 点表</Button>;
+  const loadTemplateButton = <Button disabled={!!lockReason || !tauri} title={lockReason || (!tauri ? "重置 S7 通讯配置需要桌面后端" : undefined)}
+    onClick={() => setS7Open(true)}>重置 S7 通讯配置</Button>;
+  const pointGroup = (title: string, points: PlcPoint[], detail: string) => <fieldset disabled={busy || readOnly || !!blockedReason} style={fieldsetStyle}>
+    <Card role="region" aria-label={title} title={<Heading level={3}>{title}</Heading>}>
+      <section className="plc-point-group">
+        <div className="plc-group-head">
+          <div className="plc-group-title">
+            <span className="muted">{points.length} 个 · {detail}</span>
+            <Chip><Lock size={12} aria-hidden="true" /> 模板生成，不可手动写入</Chip>
+          </div>
+          {loadTemplateButton}
+        </div>
+        <Table<PlcPoint> caption={title} rows={points} columns={handshakeColumns} rowKey={p => p.id}
+          emptyState={<EmptyState title={`尚未载入${title}`} description="使用「重置 S7 通讯配置」生成标准点表，核对生产和示教 DB 后保存配置" action={loadTemplateButton} />} />
+      </section>
+    </Card>
+  </fieldset>;
 
   const notices: PlcNotice[] = [];
   if (actionError) notices.push({ key: "action", tone: "ng", text: actionError });
@@ -269,22 +297,34 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
         <PlcNotices notices={notices} />
       </section>
 
-      <HandshakeMonitor handshake={handshake} connected={connected} tagValue={tagValue} />
+      <CommonMonitor connected={connected} tagValue={tagValue} />
 
-      <fieldset disabled={busy || readOnly} className="stack" style={fieldsetStyle}>
+      <fieldset disabled={busy || readOnly} style={fieldsetStyle}>
         <ConnectionCard draft={draft} saved={saved} onChange={setDraft} cpuPreset={cpuPreset}
           open={connectionOpen} onOpenChange={(open) => { connectionToggled.current = true; setConnectionOpen(open); }}
           editBlockedReason={readOnly ? "离线期间只读" : blockedReason} blockedReason={blockedReason}
           connected={connected} reconnectSaved={reconnectSaved} />
+      </fieldset>
 
-        <fieldset disabled={!!blockedReason} style={fieldsetStyle}>
+      <Tabs label="PLC 流程" value={flowTab} onValueChange={setFlowTab} items={[
+        { value: "workpiece", label: "工件流程", content: <div className="stack plc-flow-panel">
+          <HandshakeMonitor handshake={handshake} connected={connected} tagValue={tagValue} />
+          {pointGroup("握手点位", handshakePoints, `生产协议 ${protocolText}`)}
+        </div> },
+        { value: "teaching", label: "示教流程", content: <div className="stack plc-flow-panel">
+          <TeachingHandshakeMonitor status={teaching.status} error={teaching.error} connected={connected} />
+          {pointGroup("示教点位", teachingPoints, "扩展协议 V1 · PC 写 DB6 / PLC 写 DB12")}
+        </div> },
+      ]} />
+
+      <fieldset disabled={busy || readOnly || !!blockedReason} style={fieldsetStyle}>
           <Card role="region" aria-label="地址表" title={<Heading level={3}>地址表</Heading>}>
             <Stack direction="column" align="stretch" gap={16} wrap={false}>
               <section className="plc-point-group">
                 <div className="plc-group-head">
                   <div className="plc-group-title">
-                    <span className="plc-group-name">握手点位</span>
-                    <span className="muted">{handshakePoints.length} 个 · 协议 {protocolText}</span>
+                    <span className="plc-group-name">通用点位</span>
+                    <span className="muted">{commonPoints.length} 个 · 心跳、故障与复位、生产协议版本</span>
                     <Chip><Lock size={12} aria-hidden="true" /> 模板生成，不可手动写入</Chip>
                   </div>
                   <div className="plc-group-actions">
@@ -292,8 +332,8 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
                     <Button leadingIcon={<FileJson size={16} />} disabled={!!lockReason} title={lockReason || undefined} onClick={() => setJsonOpen(true)}>导入/导出</Button>
                   </div>
                 </div>
-                <Table<PlcPoint> caption="握手点位" rows={handshakePoints} columns={handshakeColumns} rowKey={(p) => p.id}
-                  emptyState={<EmptyState title="尚未载入握手点表" description="点「载入一期 S7 点表」按 CPU 型号生成 28 个握手点位" action={loadTemplateButton} />} />
+                <Table<PlcPoint> caption="通用点位" rows={commonPoints} columns={handshakeColumns} rowKey={(p) => p.id}
+                  emptyState={<EmptyState title="尚未载入通用点位" description="点「重置 S7 通讯配置」生成生产协议 6 与示教扩展协议 V1 点位" action={loadTemplateButton} />} />
               </section>
               <Accordion collapsible ignoreFieldsetDisabled className="plc-custom-group" value={customOpen} onValueChange={setCustomOpen} items={[{
                 value: "custom",
@@ -314,7 +354,6 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
               }]} />
             </Stack>
           </Card>
-        </fieldset>
       </fieldset>
 
       {editing && (
@@ -357,7 +396,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
         setDraft(config);
         setCpuPreset(previous => ({ revision: previous.revision + 1, key: cpu }));
         setS7Open(false);
-        snack({ text: "一期 S7 点表已载入草稿，请核对地址后保存配置", tone: "info" });
+        snack({ text: "S7 通讯配置已重置到草稿，请核对后保存配置", tone: "info" });
       }} />}
     </div>
   );
