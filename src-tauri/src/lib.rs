@@ -82,7 +82,7 @@ fn open_project(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), St
             app.manage(active);
             Ok(())
         }
-        project::Resolution::NeedsChoice(reason) => Err(format!("{reason}，请选择要打开的项目")),
+        project::Resolution::NeedsChoice(reason) => Err(format!("{}{reason}", storage_startup::CHOOSE_PROJECT)),
     }
 }
 
@@ -107,7 +107,7 @@ pub fn run() {
                 }
             }
             if let Err(error) = &prepared {
-                eprintln!("{error}");
+                eprintln!("{}", error.trim_start_matches(storage_startup::CHOOSE_PROJECT));
                 if headless(app.handle()) { std::process::exit(1); }
             }
             let profile = match &prepared {
@@ -119,7 +119,7 @@ pub fn run() {
                 .visible(!headless(app.handle()))
                 .data_directory(profile).build()?;
             if let Err(error) = prepared {
-                storage_startup::failed(app.handle(), error);
+                storage_startup::report(app.handle(), error);
                 return Ok(());
             }
             let app = app.handle().clone();
@@ -147,6 +147,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             storage_startup::storage_startup_status,
             storage_startup::storage_startup_answer,
+            storage_startup::storage_startup_projects,
+            storage_startup::storage_startup_open_project,
+            storage_startup::storage_startup_create_project,
             storage::storage_status,
             storage::storage_open_directory,
             project::project_current,
@@ -303,17 +306,21 @@ fn headless(app: &tauri::AppHandle) -> bool {
 }
 
 fn startup_failed(app: tauri::AppHandle, error: String) {
-    eprintln!("{error}");
+    eprintln!("{}", error.trim_start_matches(storage_startup::CHOOSE_PROJECT));
     if headless(&app) {
         app.exit(1);
         return;
     }
-    storage_startup::failed(&app, error);
+    storage_startup::report(&app, error);
 }
 
 fn start_services(app: &tauri::AppHandle, root: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(error) = applog::init(app) { eprintln!("{error}"); }
     open_project(app, &root)?;
+    let leftovers = project::legacy_leftovers(&root);
+    if !leftovers.is_empty() {
+        applog::write("warn", "旧资料未读取", &format!("资料目录根下仍有项目化之前的资料，软件不再读取，可人工清理：{}", leftovers.join("、")));
+    }
     app.manage(open_store(app)?);
     app.manage(vision::VisionHost::default());
     app.manage(production::ProductionHost::default());

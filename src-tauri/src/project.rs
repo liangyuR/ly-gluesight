@@ -144,6 +144,22 @@ pub fn create_dir(data: &Path, meta: &ProjectMeta, fill: impl FnOnce(&Path) -> R
     Ok(target)
 }
 
+pub fn next_id(data: &Path) -> String {
+    let day = chrono::Local::now().format("%Y%m%d");
+    (1..).map(|n| format!("p-{day}-{n:02}")).find(|id| !dir(data, id).exists()).unwrap()
+}
+
+pub fn create_empty(data: &Path, name: &str) -> Result<ProjectMeta, String> {
+    let name = name.trim();
+    if name.is_empty() { return Err("项目名称不能为空".into()); }
+    if list(data)?.iter().any(|entry| entry.meta.as_ref().is_some_and(|meta| meta.name == name)) {
+        return Err(format!("已有名为“{name}”的项目"));
+    }
+    let meta = ProjectMeta::new(&next_id(data), name, "", None);
+    create_dir(data, &meta, |_| Ok(()))?;
+    Ok(meta)
+}
+
 pub fn resolve(data: &Path) -> Result<Resolution, String> {
     if project_dirs(data)?.is_empty() {
         let root = create_dir(data, &ProjectMeta::new(DEFAULT_ID, "默认项目", "", None), |_| Ok(()))?;
@@ -177,10 +193,41 @@ pub fn project_list(app: AppHandle) -> Result<Vec<ProjectEntry>, String> {
     list(&crate::storage::root(&app))
 }
 
+const LEGACY: [&str; 13] = [
+    "config/cameras.json", "config/plc.json", "config/cycle.json", "config/feasibility.json", "calib", "recipes", "workspaces",
+    "vision", "recipe-capture", "inspection.db", "records", "records-offline", "audit-spool",
+];
+
+pub fn legacy_leftovers(data: &Path) -> Vec<&'static str> {
+    LEGACY.into_iter().filter(|name| data.join(name).exists()).collect()
+}
+
+pub fn open_target(data: &Path, id: &str) -> Result<ProjectMeta, String> {
+    if !valid_id(id) || !dir(data, id).is_dir() { return Err(format!("项目 {id} 不存在")); }
+    read_meta(&dir(data, id)).map_err(|error| format!("项目 {id} 不可用：{error}"))
+}
+
 #[tauri::command]
 pub async fn project_switch(app: AppHandle, id: String) -> Result<(), String> {
-    let _ = (app, id);
-    Err("项目切换尚未实现".into())
+    use crate::cycle::{CycleHost, Phase};
+    let data = crate::storage::root(&app);
+    let from = current_id(&app);
+    if id == from { return Err("已经是当前项目".into()); }
+    let target = open_target(&data, &id)?;
+    let cycle = app.state::<CycleHost>();
+    let _link = cycle.link_gate.lock().await;
+    let _config = cycle.config_gate.lock().await;
+    let audit_pending = !matches!(cycle.audit.readiness(), Ok(crate::audit::AuditReadiness::Ready))
+        || !cycle.audit.protected_cycle_ids()?.is_empty();
+    crate::site::check_project_switch(&crate::site::ProjectSwitch {
+        block: cycle.switch_block(),
+        busy: !matches!(cycle.phase(), Phase::Idle | Phase::Fault),
+        capturing: cycle.camera.recipe_capture().active(),
+        audit_pending,
+    })?;
+    write_pointer(&data, &id)?;
+    crate::applog::write("info", "项目切换", &format!("{from} → {}（{}），重启软件", target.id, target.name));
+    app.restart()
 }
 
 #[cfg(test)]

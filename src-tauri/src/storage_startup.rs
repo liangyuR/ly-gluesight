@@ -33,6 +33,58 @@ pub fn ask(app: &AppHandle, title: &str, message: &str, choose_source: bool) -> 
     Ok(answer)
 }
 
+pub const CHOOSE_PROJECT: &str = "\u{1}choose-project:";
+
+pub fn report(app: &AppHandle, error: String) {
+    match error.strip_prefix(CHOOSE_PROJECT) {
+        Some(reason) => choose_project(app, reason),
+        None => failed(app, error),
+    }
+}
+
+fn choose_project(app: &AppHandle, reason: &str) {
+    if let Some(host) = app.try_state::<Startup>() {
+        if let Ok(mut pending) = host.pending.lock() {
+            pending.status.request_id += 1;
+            pending.status.kind = "chooseProject".into();
+            pending.status.title = "选择要打开的项目".into();
+            pending.status.message = format!("{reason}。检测服务、相机与 PLC 尚未启动，选定项目后软件会重启。");
+        }
+    }
+}
+
+fn expect_choosing(host: &Startup) -> Result<(), String> {
+    let pending = host.pending.lock().map_err(|e| e.to_string())?;
+    if pending.status.kind != "chooseProject" { return Err("当前不在选择项目状态".into()); }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn storage_startup_projects(host: State<'_, Startup>) -> Result<Vec<crate::project::ProjectEntry>, String> {
+    expect_choosing(&host)?;
+    crate::project::list(&crate::storage::selected_root()?)
+}
+
+#[tauri::command]
+pub fn storage_startup_open_project(app: AppHandle, host: State<'_, Startup>, id: String) -> Result<(), String> {
+    expect_choosing(&host)?;
+    let data = crate::storage::selected_root()?;
+    let meta = crate::project::open_target(&data, &id)?;
+    crate::project::write_pointer(&data, &meta.id)?;
+    crate::applog::write("info", "项目选择", &format!("启动时选择项目 {}（{}），重启软件", meta.id, meta.name));
+    app.restart()
+}
+
+#[tauri::command]
+pub fn storage_startup_create_project(app: AppHandle, host: State<'_, Startup>, name: String) -> Result<(), String> {
+    expect_choosing(&host)?;
+    let data = crate::storage::selected_root()?;
+    let meta = crate::project::create_empty(&data, &name)?;
+    crate::project::write_pointer(&data, &meta.id)?;
+    crate::applog::write("info", "项目选择", &format!("启动时新建项目 {}（{}），重启软件", meta.id, meta.name));
+    app.restart()
+}
+
 pub fn failed(app: &AppHandle, error: String) {
     if let Some(host) = app.try_state::<Startup>() {
         if let Ok(mut pending) = host.pending.lock() {
