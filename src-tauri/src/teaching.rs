@@ -398,7 +398,34 @@ impl Teaching {
         Ok(id)
     }
 
+    /// PLC 已置“已接受”却还没写回握手编号。协议要求回显先于状态发布，现场 PLC 可能晚写；
+    /// 等待接受（或接受前取消）期间视为尚未发布，继续等待，由接受超时与取消确认超时兜底。
+    fn awaiting_echo(&self, reply: TeachingReply) -> bool {
+        reply
+            == TeachingReply {
+                version: 1,
+                state: 10,
+                id: 0,
+                reason: 0,
+                reserved: 0,
+            }
+            && self
+                .journal
+                .pending
+                .as_ref()
+                .is_some_and(|p| matches!(p.pc_state, 10 | 40) && !p.accepted)
+    }
+
     pub fn observe_reply(&mut self, mut reply: TeachingReply) -> Result<TeachEvent, String> {
+        if self.awaiting_echo(reply) {
+            let p = self.journal.pending.as_ref().unwrap();
+            self.message = if p.pc_state == 10 {
+                format!("PLC 已置已接受，等待回显握手编号 {}", p.id)
+            } else {
+                format!("正在取消，PLC 尚未回显握手编号 {}", p.id)
+            };
+            return Ok(TeachEvent::None);
+        }
         if let Some(last) = self
             .last_reply
             .filter(|last| last.state == reply.state && (last.id == reply.id || reply.state == 0))
@@ -775,7 +802,12 @@ impl Teaching {
         {
             reply.reason = last.reason;
         }
-        self.monitor.violation = reply.check().err();
+        let awaiting_echo = self.awaiting_echo(reply);
+        self.monitor.violation = if awaiting_echo {
+            None
+        } else {
+            reply.check().err()
+        };
         self.monitor.fresh = true;
         self.monitor_observed_at = Some(Instant::now());
         if !self.ready && !self.resetting {
@@ -806,8 +838,10 @@ impl Teaching {
             self.message = format!("复位等待 PLC 示教回到空闲：{waiting}");
             return Ok(TeachEvent::None);
         }
-        if let Err(error) = reply.validate() {
-            return Ok(self.fail(error));
+        if self.monitor.violation.is_some() {
+            if let Err(error) = reply.validate() {
+                return Ok(self.fail(error));
+            }
         }
         if !self.ready || self.faulted {
             return Ok(TeachEvent::None);
@@ -831,7 +865,15 @@ impl Teaching {
             } else if p.pc_state == 10 && !p.ended && elapsed > Duration::from_secs(130) {
                 self.finish(engine, false, 7).await?;
             } else if matches!(p.pc_state, 0 | 20 | 30 | 40) && elapsed > Duration::from_secs(10) {
-                return Ok(self.fail("示教等待结果确认或释放超时，请处置并复位".into()));
+                let reason = if awaiting_echo {
+                    format!(
+                        "PLC 置已接受后始终未回显握手编号 {}，取消也未确认，请处置并复位",
+                        p.id
+                    )
+                } else {
+                    "示教等待结果确认或释放超时，请处置并复位".into()
+                };
+                return Ok(self.fail(reason));
             }
         }
         Ok(event)
@@ -943,6 +985,25 @@ mod tests {
         assert!(restored.prepare_request("capture-b").is_err());
         restored.initialize_after_reset(reply(id, 0, 0)).unwrap();
         assert_eq!(restored.prepare_request("capture-b").unwrap(), id + 1);
+    }
+
+    /// 现场 bug：PLC 先置“已接受”、晚写握手编号，PC 读到中间状态就判故障；等待接受期间视为尚未发布，
+    /// 回显对上本轮后照常接受，接受之后回显再变 0 仍是违规。
+    #[test]
+    fn acceptance_before_echo_waits_and_accepts_once_echo_matches() {
+        let temp = Temp::new();
+        let mut session = temp.session();
+        session.initialize_after_reset(reply(0, 0, 0)).unwrap();
+        let id = session.prepare_request("capture-a").unwrap();
+        assert_eq!(
+            session.observe_reply(reply(0, 10, 0)).unwrap(),
+            TeachEvent::None
+        );
+        assert_eq!(
+            session.observe_reply(reply(id, 10, 0)).unwrap(),
+            TeachEvent::Accepted
+        );
+        assert!(session.observe_reply(reply(0, 10, 0)).is_err());
     }
 
     #[test]
