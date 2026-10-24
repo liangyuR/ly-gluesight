@@ -8,6 +8,7 @@
 - 可选项：A 保留文本，查询时用正则解析；B 每行一条 JSON（JSON Lines）；C 写入 SQLite。
 - 采用：B。文件名 `gluesight-YYYY-MM-DD[.N].jsonl`，每行 `{ts, level, ev, msg, cycleId?, sn?, requestSeq?, recipeId?, shotId?, k?, camera?, view?, stage?, data?}`。追加写、崩溃时最多丢最后一行；工具与人都能直接读；查询时按日期文件裁剪范围，再逐行解析。C 需要额外的写入线程与库迁移，收益不明显。
 - 回退：`applog::Sink::write` 改回文本格式即可；查询、时间线、诊断包读取 `.jsonl` 的部分随之失效。
+- 2026-10-24 更新（日志 schema 2）：`level` 之后新增可省略的 `t`（带 UTC 偏移的本地时间）与 `code`（稳定事件编码，见[编码表](../architecture/agent-logging-codes.md)），旧行照常读取；`ts`、`level` 仍是前两个键。设计见[面向 Agent 的日志改造方案](../architecture/agent-logging.md)。
 
 ## 2. 旧文本日志（D-0）
 

@@ -8,6 +8,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::AppHandle;
 
+pub mod codes;
+
+use codes::Event;
+
+/// 日志行格式版本：2 起每行带本地时间 t 与事件编码 code（docs/architecture/agent-logging.md）
+pub const SCHEMA: u32 = 2;
+
 const PREFIX: &str = "gluesight-";
 const SUFFIX: &str = ".jsonl";
 const LEGACY_SUFFIX: &str = ".log";
@@ -94,6 +101,10 @@ impl Fields {
 pub struct Record {
     pub ts: i64,
     pub level: Level,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     pub ev: String,
     pub msg: String,
     #[serde(flatten)]
@@ -177,12 +188,22 @@ pub struct Sink {
     seq: u32,
     size: u64,
     file: Option<File>,
+    /// 写不进去的行：次数、首次与最近一次的时间；恢复写入后补记一条 app.log_write_failed
+    failed: Option<(u64, i64, i64)>,
 }
 
 impl Sink {
     pub fn open(dir: PathBuf, today: NaiveDate, limits: Limits) -> Self {
         let seq = latest_seq(&dir, today);
-        let mut sink = Self { dir, limits, date: today, seq, size: 0, file: None };
+        let mut sink = Self {
+            dir,
+            limits,
+            date: today,
+            seq,
+            size: 0,
+            file: None,
+            failed: None,
+        };
         prune(&sink.dir, today, None, limits);
         sink.reopen();
         sink
@@ -212,13 +233,35 @@ impl Sink {
         } else if self.file.is_none() {
             self.reopen();
         }
-        let Ok(mut line) = serde_json::to_string(record) else { return };
-        line.push('\n');
-        if let Some(file) = self.file.as_mut() {
-            if file.write_all(line.as_bytes()).is_ok() {
-                self.size += line.len() as u64;
+        if self.append(record) {
+            if let Some((count, first, last)) = self.failed.take() {
+                let data = serde_json::json!({"count": count, "firstTs": first, "lastTs": last});
+                let lost = build(
+                    &codes::APP_LOG_WRITE_FAILED,
+                    &format!("{count} 行日志未能写入"),
+                    Fields::default().with_data(data),
+                );
+                self.append(&lost);
             }
+        } else {
+            let (count, first, _) = self.failed.unwrap_or((0, record.ts, record.ts));
+            self.failed = Some((count + 1, first, record.ts));
         }
+    }
+
+    fn append(&mut self, record: &Record) -> bool {
+        let Ok(mut line) = serde_json::to_string(record) else {
+            return false;
+        };
+        line.push('\n');
+        let Some(file) = self.file.as_mut() else {
+            return false;
+        };
+        if file.write_all(line.as_bytes()).is_err() {
+            return false;
+        }
+        self.size += line.len() as u64;
+        true
     }
 }
 
@@ -239,11 +282,50 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let thread = std::thread::current();
-        write("panic", "程序异常", &format!("线程 {}：{info}", thread.name().unwrap_or("?")));
+        let msg = format!("线程 {}：{info}", thread.name().unwrap_or("?"));
+        // panic 可能发生在写日志途中、本线程已持有日志锁：拿不到锁就只写 stderr，不自锁
+        let record = build(&codes::APP_PANIC, &msg, Fields::default());
+        match SINK.get().map(Mutex::try_lock) {
+            Some(Ok(mut sink)) => sink.write(&record),
+            Some(Err(std::sync::TryLockError::Poisoned(p))) => p.into_inner().write(&record),
+            _ => eprintln!("{msg}"),
+        }
         previous(info);
     }));
-    write("info", "启动", &format!("{} {}", app.package_info().name, app.package_info().version));
+    let pkg = app.package_info();
+    let identity = build_identity();
+    let data = serde_json::json!({
+        "version": pkg.version.to_string(), "gitSha": identity.git_sha, "buildTime": identity.build_time,
+        "utcOffset": Local::now().format("%:z").to_string(), "dataRoot": crate::storage::root(app).display().to_string(),
+        "logSchema": SCHEMA, "lyflowSeries": crate::vision::LYFLOW_SERIES,
+    });
+    emit_event(
+        &codes::APP_START,
+        &format!("{} {}（{}）", pkg.name, pkg.version, identity.git_sha),
+        Fields::default().with_data(data),
+    );
     Ok(())
+}
+
+pub struct BuildIdentity {
+    pub git_sha: &'static str,
+    /// 构建脚本生成构建信息时的本地时间（RFC 3339）
+    pub build_time: String,
+}
+
+pub fn build_identity() -> BuildIdentity {
+    let ms = env!("GLUESIGHT_BUILD_MS").parse::<i64>().unwrap_or(0);
+    BuildIdentity {
+        git_sha: env!("GLUESIGHT_GIT_SHA"),
+        build_time: local_time(ms).unwrap_or_default(),
+    }
+}
+
+fn local_time(ts: i64) -> Option<String> {
+    Local
+        .timestamp_millis_opt(ts)
+        .single()
+        .map(|t| t.format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string())
 }
 
 pub fn begin_cycle(fields: Fields) {
@@ -259,12 +341,51 @@ pub fn write(tone: &str, ev: &str, msg: &str) {
 }
 
 pub fn emit(level: Level, ev: &str, msg: &str, fields: Fields) -> Record {
+    emit_with(level, None, ev, msg, fields)
+}
+
+/// 按事件编码写一行：编码、事件名与级别取自 codes 表。
+pub fn emit_event(event: &Event, msg: &str, fields: Fields) -> Record {
+    emit_with(event.level, Some(event.code), event.ev, msg, fields)
+}
+
+fn emit_with(level: Level, code: Option<&str>, ev: &str, msg: &str, fields: Fields) -> Record {
     let fields = correlate(ACTIVE.lock().unwrap_or_else(|p| p.into_inner()).as_ref(), fields);
-    let record = Record { ts: ly_plc::now_ms(), level, ev: ev.into(), msg: msg.into(), fields };
+    let record = record(ly_plc::now_ms(), level, code, ev, msg, fields);
     if let Some(sink) = SINK.get() {
         sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).write(&record);
     }
     record
+}
+
+fn build(event: &Event, msg: &str, fields: Fields) -> Record {
+    record(
+        ly_plc::now_ms(),
+        event.level,
+        Some(event.code),
+        event.ev,
+        msg,
+        fields,
+    )
+}
+
+fn record(
+    ts: i64,
+    level: Level,
+    code: Option<&str>,
+    ev: &str,
+    msg: &str,
+    fields: Fields,
+) -> Record {
+    Record {
+        ts,
+        level,
+        t: local_time(ts),
+        code: code.map(str::to_owned),
+        ev: ev.into(),
+        msg: msg.into(),
+        fields,
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -524,4 +645,46 @@ pub async fn applog_query(app: AppHandle, query: Query) -> Result<Page, String> 
 #[tauri::command]
 pub fn applog_usage(app: AppHandle) -> Result<Usage, String> {
     Ok(usage(&dir(&app)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 日志 schema 2 加了 t 与 code：旧行（没有这两个字段）仍要被查询读出，新行仍以 ts、level 开头，供快速筛选与分段裁剪。
+    #[test]
+    fn old_lines_without_time_or_code_stay_queryable_and_new_lines_keep_ts_level_first() {
+        let dir = std::env::temp_dir().join(format!(
+            "gluesight-applog-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let ts = 1_792_837_092_059;
+        let old = format!(r#"{{"ts":{ts},"level":"error","ev":"故障","msg":"旧格式"}}"#);
+        let new = serde_json::to_string(&record(
+            ts + 1,
+            Level::Info,
+            Some(codes::APP_START.code),
+            "启动",
+            "新格式",
+            Fields::default(),
+        ))
+        .unwrap();
+        fs::write(
+            dir.join(file_name(local_date(ts).unwrap(), 0)),
+            format!("{old}\n{new}\n"),
+        )
+        .unwrap();
+        let page = query(&dir, &Query::default());
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(
+            page.items
+                .iter()
+                .map(|r| (r.msg.as_str(), r.code.as_deref()))
+                .collect::<Vec<_>>(),
+            [("新格式", Some("app.start")), ("旧格式", None)]
+        );
+        assert_eq!(head(&new), Some((ts + 1, Level::Info)));
+    }
 }

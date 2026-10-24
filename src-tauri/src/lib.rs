@@ -304,6 +304,7 @@ fn start_services(app: &tauri::AppHandle, root: std::path::PathBuf) -> Result<()
     if let Some(note) = site_note { cycle::log(app, "warn", "站点模式", note); }
     app.manage(workspace::WorkspaceHost::init(app)?);
     app.manage(plc::PlcHost::init(app)?);
+    commands::log_config(app);
     for config in &app.config().app.windows {
         tauri::WebviewWindowBuilder::from_config(app, config)?.data_directory(storage::webview(&root)?).build()?;
     }

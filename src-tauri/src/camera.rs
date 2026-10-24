@@ -1636,6 +1636,7 @@ pub async fn camera_save_config(app: AppHandle, cam: usize, config: CameraConfig
     check_serial(&rig(&app).configs(), cam, &config)?;
     slot.set_config(config);
     let saved = rig(&app).save();
+    crate::commands::log_config(&app);
     let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
     let _ = app.emit("camera://changed", ());
     let warnings = tauri::async_runtime::spawn_blocking(move || slot.apply_config()).await.map_err(|e| e.to_string())??;

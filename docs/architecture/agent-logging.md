@@ -1,6 +1,8 @@
 # 面向 Agent 分析的运行日志改造方案
 
-> 状态：设计稿（2026-10-24），基准 main `c5de426`。尚未实施。实施前须先合入 PR #174（示教诊断、PLC 闸门拆分），本文涉及的 `teaching.rs`、`cycle.rs`、`plc.rs` 以 #174 之后的代码为准。
+> 状态（2026-10-24）：P1 已实施（分支 `codex/agent-logging`，基于合入 PR #174 后的 main），P2～P5 待实施。编码表见 [agent-logging-codes.md](agent-logging-codes.md)。
+>
+> P1 与设计的差异：节拍侧按编码写日志的 `cycle::log_event` 推迟到 P2，随第一个调用方一起加入，P1 不留无调用方的代码；`buildTime` 是构建脚本最近一次运行的时间（源码、分支或 HEAD 变化时重跑），`gitSha` 的 `-dirty` 标记按构建时的已跟踪文件状态判断。
 
 ## 1. 目标与依据
 

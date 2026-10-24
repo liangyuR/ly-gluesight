@@ -8,17 +8,46 @@ use crate::vision::VisionHost;
 pub struct AppInfo {
     name: String,
     version: String,
+    git_sha: &'static str,
+    build_time: String,
     log_dir: Option<String>,
 }
 
 #[tauri::command]
 pub fn app_info(app: AppHandle) -> AppInfo {
     let pkg = app.package_info();
+    let identity = crate::applog::build_identity();
     AppInfo {
         name: pkg.name.clone(),
         version: pkg.version.to_string(),
+        git_sha: identity.git_sha,
+        build_time: identity.build_time,
         log_dir: crate::applog::dir(&app).ok().map(|dir| dir.display().to_string()),
     }
+}
+
+/// 运行日志 app.config：PLC 连接、相机组与检测设置的当前值，启动完成与相关配置保存后各记一次。
+pub fn log_config(app: &AppHandle) {
+    let cycle = app.state::<crate::cycle::CycleHost>();
+    let connection = app
+        .try_state::<crate::plc::PlcHost>()
+        .map(|plc| plc.engine().config().connection);
+    let cameras = cycle.camera.configs();
+    let plc_text = connection.as_ref().map_or_else(
+        || "未初始化".to_string(),
+        |c| format!("{}:{}", c.host, c.port),
+    );
+    let data = serde_json::json!({
+        "offline": crate::offline::enabled(app),
+        "plc": connection,
+        "cameras": cameras,
+        "settings": cycle.settings(),
+    });
+    crate::applog::emit_event(
+        &crate::applog::codes::APP_CONFIG,
+        &format!("PLC {plc_text}，相机 {} 台", cameras.len()),
+        crate::applog::Fields::default().with_data(data),
+    );
 }
 
 #[tauri::command]
