@@ -1190,7 +1190,7 @@ fn configure_trigger(d: &mvs::Device, c: &CameraConfig) -> Result<Option<f32>, S
             })
             .ok_or_else(|| {
                 format!(
-                    "相机 {} 未提供已确认的高电平门控节点（TriggerSelector: {}），不能启用连续采集",
+                    "相机 {} 未提供当前支持的高电平门控节点（TriggerSelector: {}），不能启用连续采集",
                     d.summary.model,
                     selectors.join("、")
                 )

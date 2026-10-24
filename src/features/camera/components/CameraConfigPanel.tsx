@@ -4,7 +4,7 @@ import { Accordion, Alert, Button, Card, Checkbox, FormField, Heading, IconButto
 import { cameraApi } from "../api";
 import type { BandwidthEstimate, CameraConfig, CameraStatus, DeviceSummary } from "../types";
 import { errorText } from "../../../lib/errors";
-import { clock, gateAcceptanceReminder, sourceText } from "./health";
+import { clock, sourceText } from "./health";
 
 export interface CameraConfigHandle {
   save: () => Promise<boolean>;
@@ -34,7 +34,7 @@ interface Props {
 type Wiring = Pick<CameraConfig, "triggerSource" | "triggerActivation" | "frameRate" | "debouncerUs" | "triggerDelayUs" | "strobe" | "chunk">;
 const wiring = (c: CameraConfig): Wiring => ({ triggerSource: c.triggerSource, triggerActivation: c.triggerActivation, frameRate: c.frameRate, debouncerUs: c.debouncerUs, triggerDelayUs: c.triggerDelayUs, strobe: c.strobe, chunk: c.chunk });
 
-interface BatchItem { id: string; name: string; tone: "ok" | "warn" | "ng" | "off"; text: string; list?: string[]; reminder?: string | null }
+interface BatchItem { id: string; name: string; tone: "ok" | "warn" | "ng" | "off"; text: string; list?: string[] }
 
 /** 相机未接受的参数按节点名对到表单字段，方便就地标注；完整列表仍在右侧。 */
 const nodes: [keyof CameraConfig, RegExp][] = [
@@ -163,8 +163,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
         try {
           const next = { ...c, ...wiring(baseline) };
           const w = await cameraApi.saveConfig(j, next);
-          const reminder = gateAcceptanceReminder(next, st);
-          items.push(w.length ? { id: c.id, name: c.name, tone: "warn", text: `已应用，${w.length} 项参数相机未接受`, list: w, reminder } : { id: c.id, name: c.name, tone: "ok", text: "已应用", reminder });
+          items.push(w.length ? { id: c.id, name: c.name, tone: "warn", text: `已应用，${w.length} 项参数相机未接受`, list: w } : { id: c.id, name: c.name, tone: "ok", text: "已应用" });
         } catch (e) { items.push({ id: c.id, name: c.name, tone: "ng", text: "未能应用：" + errorText(e) }); }
       }
     } catch (e) { items.push({ id: "", name: "相机组", tone: "ng", text: "读取相机组失败：" + errorText(e) }); }
@@ -281,7 +280,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
                 {batchBlocked && !locked && <span className="muted cg-small">{batchBlocked}</span>}
                 {batch && <>
                   <StatusBadge tone={batchOk ? "ok" : "warn"}>{clock(batch.at)} 应用到全部相机：{batch.items.filter(i => i.tone === "ok").length} 台已应用{batch.items.some(i => i.tone === "warn" || i.tone === "ng") && `，${batch.items.filter(i => i.tone === "warn" || i.tone === "ng").length} 台需处理`}</StatusBadge>
-                  <ul>{batch.items.map(i => <li key={i.id || i.name}><span className="cg-who">{i.name}<span className="mono">{i.id}</span></span><div><StatusBadge tone={i.tone === "ng" ? "fault" : i.tone}>{i.text}</StatusBadge>{i.list && <ul>{i.list.map(w => <li key={w}>{w}</li>)}</ul>}{i.reminder && <p>{i.reminder}</p>}</div></li>)}</ul>
+                  <ul>{batch.items.map(i => <li key={i.id || i.name}><span className="cg-who">{i.name}<span className="mono">{i.id}</span></span><div><StatusBadge tone={i.tone === "ng" ? "fault" : i.tone}>{i.text}</StatusBadge>{i.list && <ul>{i.list.map(w => <li key={w}>{w}</li>)}</ul>}</div></li>)}</ul>
                 </>}
               </Surface>
             </Stack>

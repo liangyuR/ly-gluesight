@@ -6,12 +6,6 @@ export type Tone = "ok" | "warn" | "fault" | "off";
 
 export const sourceText = { mvs: "海康 MVS", sim: "合成图（离线）", sampleSet: "样本集（离线）" } as const;
 
-export function gateAcceptanceReminder(config: CameraConfig, status: CameraStatus | null | undefined): string | null {
-  return config.source === "mvs" && config.triggerSource === "Line0" && status?.ready && !status.released && status.device?.model === "JHEM131GC-XS"
-    ? "JHEM131GC-XS 高电平门控待实机验收：请验证持续高电平按设定帧率出图，以及拉低后停止新曝光。此提醒不计入参数问题。"
-    : null;
-}
-
 /** 总览与详情共用的相机状态：未绑定、已释放是要人处理的黄色；未就绪是紫色系统故障。 */
 export function cameraHealth(config: CameraConfig, status: CameraStatus | null): { tone: Tone; label: string } {
   if (config.source === "mvs" && !config.serial) return { tone: "warn", label: "未绑定" };

@@ -84,7 +84,7 @@ describe("相机参数校验", () => {
 
 describe("出图验证", () => {
   it("设备因触发参数初始化失败 → 参数面板保留原始故障，Fault 下历史 PLC 锁不阻止释放", async () => {
-    const message = "JHEM131GC-XS 不支持所需的高电平门控，TriggerSelector 仅支持 FrameBurstStart";
+    const message = "未适配型号不支持所需的高电平门控，TriggerSelector 仅支持 FrameBurstStart";
     const original = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation(async (command, args, options) => {
       if (command === "camera_rig_status") return configs.map((c, i) => ({ ...status(i, c), ready: false, device: null, message }));
@@ -114,7 +114,7 @@ describe("出图验证", () => {
 });
 
 describe("应用到全部相机", () => {
-  it.each([{ warnings: [] }, { warnings: ["不支持 Chunk：设备未提供 ChunkModeActive"] }])("JHEM 门控验收提醒与参数问题分开 → 统计只包含参数问题且不承诺回滚（$warnings）", async ({ warnings }) => {
+  it.each([{ warnings: [] }, { warnings: ["不支持 Chunk：设备未提供 ChunkModeActive"] }])("JHEM 门控已验收 → 不再提示待验收且仍显示真实参数问题（$warnings）", async ({ warnings }) => {
     const original = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation(async (command, args, options) => {
       if (command === "camera_rig_status") return configs.map((c, i) => ({ ...status(i, c), device: { ...device(c.serial), model: "JHEM131GC-XS" }, warnings }));
@@ -123,7 +123,7 @@ describe("应用到全部相机", () => {
     });
     await openCamera("左相机 cam1");
     const applied = within(screen.getByRole("region", { name: "参数生效情况" }));
-    expect(applied.getByText("实机验收提醒")).toBeVisible();
+    expect(applied.queryByText("实机验收提醒")).not.toBeInTheDocument();
     expect(applied.getByText(warnings.length ? "已应用，1 项参数相机未接受" : "已应用，相机全部接受")).toBeVisible();
     if (warnings.length) {
       expect(applied.getByText(/部分参数可能已写入设备，未进行整组回滚/)).toBeVisible();
@@ -133,7 +133,7 @@ describe("应用到全部相机", () => {
     const batch = within(screen.getByLabelText("应用到全部相机"));
     await userEvent.click(batch.getByRole("button", { name: "应用到全部相机" }));
     expect(await batch.findByText(warnings.length ? /应用到全部相机：0 台已应用，1 台需处理/ : /应用到全部相机：1 台已应用/)).toBeVisible();
-    expect(batch.getByText(/高电平门控待实机验收/)).toBeVisible();
+    expect(batch.queryByText(/高电平门控待实机验收/)).not.toBeInTheDocument();
     expect(batch.getByText(warnings.length ? "已应用，1 项参数相机未接受" : "已应用")).toBeVisible();
   });
 

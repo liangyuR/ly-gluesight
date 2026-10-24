@@ -8,6 +8,12 @@
 
 本轮 `pnpm test`：103 项全部通过、0 跳过，耗时 41.48 秒；`pnpm typecheck` 通过。保留用例与执行 JSON 逐项匹配，未修改产品运行逻辑或 Vitest 收集配置。本轮未重复执行 Rust、桌面集成或打包，相关历史结果保持原有日期与范围。
 
+## JHEM131GC-XS 高电平门控现场验收（2026-10-24）
+
+用户确认已在现场验证 `FrameBurstStart + LevelHigh`：持续高电平期间按相机设定的 10 FPS 连续采集，拉低后停止新曝光。该型号按已支持设备处理，删除参数页和批量应用结果中的无条件待验收提醒；仍逐项写入并回读校验触发节点、帧率和 BurstFrameCount，失败仍阻止相机就绪。不将此结论推广至其他型号，也不替代 PLC 示教握手、机器人互锁或故障停止验收。
+
+下节记录是当时的历史结果；其中门控验收提醒已由本次实测关闭，频闪、Chunk、Software 单帧和 TriggerDelay 的其他现场项目未据此视为通过。
+
 ## 频闪、Chunk 能力与参数反馈（2026-10-24）
 
 - `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib camera:: -- --nocapture`：19 项通过，完成新增 SDK 能力查询和配置分支的编译，未替代真机验证。
