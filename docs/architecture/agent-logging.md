@@ -1,6 +1,6 @@
 # 面向 Agent 分析的运行日志改造方案
 
-> 状态（2026-10-24）：P1 已实施（分支 `codex/agent-logging`，基于合入 PR #174 后的 main），P2～P5 待实施。编码表见 [agent-logging-codes.md](agent-logging-codes.md)。
+> 状态（2026-10-24）：P1 已实施（分支 `codex/agent-logging`，基于合入 PR #174 后的 main），P2～P4 实施中；原 P5 存量迁移经用户决定不做。编码表见 [agent-logging-codes.md](agent-logging-codes.md)。
 >
 > P1 与设计的差异：节拍侧按编码写日志的 `cycle::log_event` 推迟到 P2，随第一个调用方一起加入，P1 不留无调用方的代码；`buildTime` 是构建脚本最近一次运行的时间（源码、分支或 HEAD 变化时重跑），`gitSha` 的 `-dirty` 标记按构建时的已跟踪文件状态判断。
 
@@ -75,10 +75,12 @@
 ### 4.2 代码组织
 
 - 新增 `src-tauri/src/applog/codes.rs`：每个事件一条常量 `Event { code, ev, level }`，调用方写 `log_event(app, &codes::TEACH_PLC_CHANGED, msg, fields)`，不再手写 `ev` 字符串和级别。
-- 现有 `cycle::log / log_with / trace` 保留为过渡入口，写出的行 `code` 为空；第 9 节分阶段把调用点迁完，最后删除过渡入口。
+- 现有 `cycle::log / log_with / trace` 继续保留，写出的行 `code` 为空。不做全量迁移：只有 P2～P4 新增或改动的事件带 `code`，没有 `code` 的行按 `ev` 与 `msg` 理解。
 - `docs/architecture/agent-logging-codes.md` 为编码表（code、ev、级别、触发时机、`data` 键）。由测试保证与 `codes.rs` 一致（见第 10 节）。
 
 ### 4.3 需要拆分的现有事件
+
+只拆分 P2～P4 本身要改动的事件：`故障`（P2 改为 `fault.enter`）、`PLC {category}` 与 `相机` 断线重试（P3 聚合时改编码）；其余同名事件保持原样。
 
 | 现状 | 问题 | 拆分 |
 |---|---|---|
@@ -200,7 +202,6 @@
 | P2 关键证据 | 示教握手事件与上下文（5.1）、`s7.fault_output` 与复位来源（5.2）、操作员命令（5.3）、`fault.enter` 去重与来源及两个重复根源修复（5.4） | P1 |
 | P3 降噪 | `Throttle` 与第 6 节各来源 | P1 |
 | P4 诊断包 | 第 8 节 | P1（`t`、编码表） |
-| P5 存量迁移 | 其余调用点赋 `code`，关键数值入 `data`（`audit.rs` 约 25 处、`布防阶段`、`检测结果` 等），拆分同名事件，删除过渡入口 | P1～P3 |
 
 P2、P3、P4 改动的文件基本不重叠（`teaching.rs` / `plc_session.rs` / IPC 命令，`cycle.rs` 帧处理 / `camera.rs` / `plc.rs`，`diagnostics.rs`），P1 合入后可并行。P2 与 P3 都会碰 `cycle.rs`，分区段修改并先后合入。
 
