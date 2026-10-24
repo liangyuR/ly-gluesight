@@ -1,6 +1,6 @@
 # 面向 Agent 分析的运行日志改造方案
 
-> 状态（2026-10-24）：P1 已实施（分支 `codex/agent-logging`，基于合入 PR #174 后的 main），P2～P4 实施中；原 P5 存量迁移经用户决定不做。编码表见 [agent-logging-codes.md](agent-logging-codes.md)。
+> 状态（2026-10-24）：P1～P4 已实施（分支 `codex/agent-logging`，基于合入 PR #174 后的 main）；原 P5 存量迁移经用户决定不做。编码表见 [agent-logging-codes.md](agent-logging-codes.md)。
 >
 > P2 已实施，与设计的差异：四类示教超时合为一个编码 `teach.timeout`，用 `data.stage` 区分；`teach.link_lost` / `teach.points_invalid` 并入去重后的 `teach.fault`；`s7.reset.from_idle` 并入 `s7.reset.request`（`phase` 字段）与 `s7.fault_output`（`cause` 为 `reset_operator` / `reset_plc_edge`）；`s7.intake.*` 暂不加，撤销视觉就绪已有“S7 握手”空闲提示；操作员命令按对象合为 `op.camera`、`op.plc`、`op.site`，用 `data.action` 区分。重复故障除去重外修了第三个根源：S7 故障分支会用 S7 原因覆盖示教故障原因，示教故障又覆盖 S7 原因，两边每拍交替；现在各自保留原因、各记一次。
 >

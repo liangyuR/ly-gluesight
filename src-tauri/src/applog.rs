@@ -340,7 +340,7 @@ pub fn build_identity() -> BuildIdentity {
     }
 }
 
-fn local_time(ts: i64) -> Option<String> {
+pub fn local_time(ts: i64) -> Option<String> {
     Local
         .timestamp_millis_opt(ts)
         .single()

@@ -1,6 +1,6 @@
 # Rust 保留测试清单
 
-更新时间：2026-10-24。本轮按业务回归价值收缩到约 100 项：**默认 117 项，手动算法评测 1 项，共 118 项**。每项均在下表列出源码、测试名称及其保护规则；不是按覆盖率或数量补齐用例。
+更新时间：2026-10-24。本轮按业务回归价值收缩到约 100 项：**默认 120 项，手动算法评测 1 项，共 121 项**。每项均在下表列出源码、测试名称及其保护规则；不是按覆盖率或数量补齐用例。
 
 默认集合包含少量真实 S7 TCP 回环、SQLite、图片写盘与审计恢复集成测试，不能把 `cargo test --lib` 全部理解为纯单元测试。默认运行不需要现场相机、PLC、现场样本或 lyFlow DLL；S7 用例需要本机回环连接权限。
 
@@ -11,11 +11,11 @@
 | 分组 | 默认执行 | 手动忽略 |
 | --- | ---: | ---: |
 | 采集、帧组、计划与判定 | 36 | 0 |
-| 生产周期、PLC与调度 | 32 | 0 |
+| 生产周期、PLC与调度 | 33 | 0 |
 | 工作区、发布与视觉 | 31 | 1 |
-| 系统配置与资料安全 | 9 | 0 |
+| 系统配置与资料安全 | 11 | 0 |
 | 持久化、录制与离线 | 9 | 0 |
-| 合计 | 117 | 1 |
+| 合计 | 120 | 1 |
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
@@ -108,71 +108,74 @@ pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1
 | 66 | [teaching.rs](../../src-tauri/src/teaching.rs) | `plc_register_violation_names_the_offending_field` | PLC 示教寄存器不合规时必须指到具体字段：已接受未回显握手编号、原因码与状态不符等协议边界。 |
 | 67 | [teaching.rs](../../src-tauri/src/teaching.rs) | `acceptance_before_echo_waits_and_accepts_once_echo_matches` | PLC 先置已接受、晚写回显时等待接受期间不得判故障，回显对上后照常接受；接受之后回显为 0 仍是违规。 |
 | 68 | [plc/tests.rs](../../src-tauri/src/plc/tests.rs) | `export_spanning_several_pages_writes_every_log_once_in_order` | PLC 日志分页导出不得漏写、重复或乱序。 |
+| 69 | [teaching.rs](../../src-tauri/src/teaching.rs) | `repeated_fault_with_same_reason_is_reported_once` | 示教事务未结、PLC 断线时同一故障只上报一次，原因变化才再报，防止节拍每拍重写故障日志。 |
 
 ## 工作区、发布与视觉
 
 | 序号 | 源码 | 测试名称 | 保护规则 |
 | ---: | --- | --- | --- |
-| 69 | [candidate.rs](../../src-tauri/src/candidate.rs) | `real_or_occupied_environment_rejects_candidate_debug` | 真实设备模式、缺离线样本或存在采集/生产任务时拒绝候选试运行，防止调试与生产争抢设备。 |
-| 70 | [recipe.rs](../../src-tauri/src/recipe.rs) | `publish_reuses_plan_version_for_same_identity_and_issues_new_otherwise` | 限值与容差变化沿用 PLC 计划号，重新标定改变预期帧数必须分配未使用的新计划号。 |
-| 71 | [recipe.rs](../../src-tauri/src/recipe.rs) | `burst_recipe_snapshot_restores_its_path_segments` | 历史快照还原必须读取 pathSegments，不能把旧测量段 segments 当作当前段计划。 |
-| 72 | [recipe.rs](../../src-tauri/src/recipe.rs) | `published_versions_are_assigned_once_and_crash_retries_cannot_overwrite_a_revision` | 当前段配方发布幂等重试沿用版本；相同修订的冲突内容、过期基版本均被拒绝。 |
-| 73 | [recipe.rs](../../src-tauri/src/recipe.rs) | `failed_publish_write_does_not_consume_the_frozen_target_version` | 发布写盘失败后重试仍能使用原冻结目标版本，不能提前消耗版本号。 |
-| 74 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `calibration_apply_writes_expected_frames_and_calib_but_leaves_tolerance_until_confirmed` | 标定输出预期帧数与统计，建议容差须用户确认才写入，避免静默放宽生产门槛。 |
-| 75 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `calibration_with_fewer_rounds_than_recipe_setting_is_rejected` | 正常标定轮次不足时不修改配方，标准件轮次不能充当普通标定轮次。 |
-| 76 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `multi_segment_calibration_uses_confirmed_manual_cuts_of_every_round_or_leaves_segments_pending` | 多段计划只按每个标定轮次已确认的手动分段逐段标定，ΣN_exp 等于各段之和；有轮次只是边界草稿时各段保持待标定并点名该轮，不能把整件总数摊给各段。 |
-| 77 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner` | 胶偏参考只从标准件指定相机的中间帧得出，弯道与未实现的 ToEdge 不能生成错误参考。 |
-| 78 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `editing_expected_frames_directly_is_rejected_and_kind_change_clears_calibration` | 拒绝客户端伪造标定值；段类型、段序列或胶偏参考相机改变时使相关标定失效。 |
-| 79 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `new_candidate_from_copied_burst_recipe_builds_without_its_calibration` | 复制段配方创建候选保留合法成像参数，但不继承另一配方的预期帧数、标定统计和胶偏基准。 |
-| 80 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `calibration_round_writes_per_frame_features_and_boundaries_files` | 特征文件按计划相机与帧序写入缺帧、失败帧及真实指标，边界文件保留未分段状态，避免后续算法读错样本。 |
-| 81 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `validation_without_expected_total_blocks_publish_and_names_each_segment` | 没有整件预期帧数不能发布；具备整件标定的多段配方不被尚未实现的逐段标定永久阻塞。 |
-| 82 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `publish_blocked_when_plan_cameras_not_three_or_corridor_missing` | 三台计划相机、示教帧、帧内走廊、像素当量及当前设备参数必须一致才能通过发布验证。 |
-| 83 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejected` | 示教/标定用轮次不得当独立验证样本；相机身份或设备参数不匹配时拒绝入验证库。 |
-| 84 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `burst_candidate_debug_run_gets_teaching_frame_sizes_in_plan_camera_order` | 候选调试对段配方按计划相机顺序交付各自示教帧尺寸，避免沿旧拍照点路径失败或串用相机尺寸。 |
-| 85 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `changed_frame_rate_blocks_calibration_until_original_configuration_restored` | 当前帧率不同于标定采集帧率时阻止使用旧标定，恢复原配置后才放行。 |
-| 86 | [release.rs](../../src-tauri/src/release.rs) | `tampered_burst_bundle_is_rejected_on_load` | 当前段发布包加载时拒绝走廊篡改、相机换序、旧schema伪装、尺寸变化、清单外文件和缺标定。 |
-| 87 | [release.rs](../../src-tauri/src/release.rs) | `bundle_changed_on_disk_after_publish_is_rejected_by_per_part_verify` | 当前段发布包加载后每件验证仍能发现资源被替换、删改、变目录或清单丢失。 |
-| 88 | [vision/tests.rs](../../src-tauri/src/vision/tests.rs) | `calibration_page_view_on_single_view_camera_also_writes_the_key_burst_recipe_reads` | 标定页面按图1保存的单视角标定也能被段配方按设备读取，三目图N标定不能污染设备标定。 |
-| 89 | [vision/taught/tests.rs](../../src-tauri/src/vision/taught/tests.rs) | `engine_station_output_reduces_to_frame_width_gap_presence_and_x_mm` | 生产走廊输出换算正确的胶宽、最长连续缺胶、有胶比例、法向偏移和相机帧身份。 |
-| 90 | [vision/taught/tests.rs](../../src-tauri/src/vision/taught/tests.rs) | `malformed_engine_output_fails_only_that_frame` | 算法输出违约或尺寸不匹配只拒绝本帧，不能错算指标或破坏后续正常帧的测量。 |
-| 91 | [vision/taught/tests.rs](../../src-tauri/src/vision/taught/tests.rs) | `bead_leaving_through_a_corridor_end_is_out_of_corridor_but_breaks_and_centred_stops_stay_gaps` | 胶条从走廊侧向离开与真实断胶/停胶必须区分，不能错误判缺胶或放过真断胶。 |
-| 92 | [vision/taught/tests.rs](../../src-tauri/src/vision/taught/tests.rs) | `corridor_leaving_the_frame_or_camera_outside_the_plan_is_refused` | 走廊须位于像素中心边界内且归属计划相机，防止无法测量或挂错相机指标。 |
-| 93 | [workspace/centerline.rs](../../src-tauri/src/workspace/centerline.rs) | `brush_follows_requested_glue_instead_of_larger_shadow` | 走廊提取沿用户画笔选择的胶条，而非旁边面积更大的阴影，并兼容明暗极性。 |
-| 94 | [workspace/history_samples.rs](../../src-tauri/src/workspace/history_samples.rs) | `burst_candidate_history_reads_camera_seq_from_that_cameras_own_shot_sequence` | 候选历史按相机自己的帧序读受管样本原图，缺帧不能取别的相机替代，历史计划身份不符须拒绝。 |
-| 95 | [workspace/recorded.rs](../../src-tauri/src/workspace/recorded.rs) | `recorded_burst_frame_is_read_by_camera_and_seq_and_identity_mismatch_is_refused` | 真实 Recorder 写出后按 camera/seq 还原原始像素，拒绝跨件、跨相机、错帧号/触发数或缺帧的原图引用。 |
-| 96 | [workspace/transfer/tests.rs](../../src-tauri/src/workspace/transfer/tests.rs) | `exported_candidate_round_trips_with_referenced_round_images_and_matching_checksums` | 配方迁移包须带上候选引用的采集轮次原图、示教帧与标定特征，解包内容与来源逐字节一致、清单校验和正确。 |
-| 97 | [workspace/transfer/tests.rs](../../src-tauri/src/workspace/transfer/tests.rs) | `tampered_or_unknown_packages_are_rejected_without_writing_outside_staging` | 迁移包含路径穿越、校验和不符、清单外条目或不认识的格式版本时整包拒绝，不能写出暂存目录。 |
-| 98 | [workspace/transfer/tests.rs](../../src-tauri/src/workspace/transfer/tests.rs) | `conflicting_round_id_is_renamed_with_all_candidate_references_and_import_starts_as_draft` | 本机已有同名采集轮次时导入轮次改编号，示教帧、多轮标定、复核记录与标定特征一起改名；导入候选回到草稿，不带来源机发布状态、基准版本与历史记录样本。 |
-| 99 | [workspace/transfer/tests.rs](../../src-tauri/src/workspace/transfer/tests.rs) | `import_with_existing_recipe_id_or_product_code_is_rejected` | 导入不能与本机已有配方编号（不区分大小写）或产品代码冲突。 |
-| 100 | [vision/eval.rs](../../src-tauri/src/vision/eval.rs) | `algorithm_eval` | 手动评测，不进默认集。scripts/Test-AlgorithmEval.ps1 直接调用的现场样本算法评测入口，保留脚本功能，默认 ignored，不计普通 utest。 |
+| 70 | [candidate.rs](../../src-tauri/src/candidate.rs) | `real_or_occupied_environment_rejects_candidate_debug` | 真实设备模式、缺离线样本或存在采集/生产任务时拒绝候选试运行，防止调试与生产争抢设备。 |
+| 71 | [recipe.rs](../../src-tauri/src/recipe.rs) | `publish_reuses_plan_version_for_same_identity_and_issues_new_otherwise` | 限值与容差变化沿用 PLC 计划号，重新标定改变预期帧数必须分配未使用的新计划号。 |
+| 72 | [recipe.rs](../../src-tauri/src/recipe.rs) | `burst_recipe_snapshot_restores_its_path_segments` | 历史快照还原必须读取 pathSegments，不能把旧测量段 segments 当作当前段计划。 |
+| 73 | [recipe.rs](../../src-tauri/src/recipe.rs) | `published_versions_are_assigned_once_and_crash_retries_cannot_overwrite_a_revision` | 当前段配方发布幂等重试沿用版本；相同修订的冲突内容、过期基版本均被拒绝。 |
+| 74 | [recipe.rs](../../src-tauri/src/recipe.rs) | `failed_publish_write_does_not_consume_the_frozen_target_version` | 发布写盘失败后重试仍能使用原冻结目标版本，不能提前消耗版本号。 |
+| 75 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `calibration_apply_writes_expected_frames_and_calib_but_leaves_tolerance_until_confirmed` | 标定输出预期帧数与统计，建议容差须用户确认才写入，避免静默放宽生产门槛。 |
+| 76 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `calibration_with_fewer_rounds_than_recipe_setting_is_rejected` | 正常标定轮次不足时不修改配方，标准件轮次不能充当普通标定轮次。 |
+| 77 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `multi_segment_calibration_uses_confirmed_manual_cuts_of_every_round_or_leaves_segments_pending` | 多段计划只按每个标定轮次已确认的手动分段逐段标定，ΣN_exp 等于各段之和；有轮次只是边界草稿时各段保持待标定并点名该轮，不能把整件总数摊给各段。 |
+| 78 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner` | 胶偏参考只从标准件指定相机的中间帧得出，弯道与未实现的 ToEdge 不能生成错误参考。 |
+| 79 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `editing_expected_frames_directly_is_rejected_and_kind_change_clears_calibration` | 拒绝客户端伪造标定值；段类型、段序列或胶偏参考相机改变时使相关标定失效。 |
+| 80 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `new_candidate_from_copied_burst_recipe_builds_without_its_calibration` | 复制段配方创建候选保留合法成像参数，但不继承另一配方的预期帧数、标定统计和胶偏基准。 |
+| 81 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `calibration_round_writes_per_frame_features_and_boundaries_files` | 特征文件按计划相机与帧序写入缺帧、失败帧及真实指标，边界文件保留未分段状态，避免后续算法读错样本。 |
+| 82 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `validation_without_expected_total_blocks_publish_and_names_each_segment` | 没有整件预期帧数不能发布；具备整件标定的多段配方不被尚未实现的逐段标定永久阻塞。 |
+| 83 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `publish_blocked_when_plan_cameras_not_three_or_corridor_missing` | 三台计划相机、示教帧、帧内走廊、像素当量及当前设备参数必须一致才能通过发布验证。 |
+| 84 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejected` | 示教/标定用轮次不得当独立验证样本；相机身份或设备参数不匹配时拒绝入验证库。 |
+| 85 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `burst_candidate_debug_run_gets_teaching_frame_sizes_in_plan_camera_order` | 候选调试对段配方按计划相机顺序交付各自示教帧尺寸，避免沿旧拍照点路径失败或串用相机尺寸。 |
+| 86 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `changed_frame_rate_blocks_calibration_until_original_configuration_restored` | 当前帧率不同于标定采集帧率时阻止使用旧标定，恢复原配置后才放行。 |
+| 87 | [release.rs](../../src-tauri/src/release.rs) | `tampered_burst_bundle_is_rejected_on_load` | 当前段发布包加载时拒绝走廊篡改、相机换序、旧schema伪装、尺寸变化、清单外文件和缺标定。 |
+| 88 | [release.rs](../../src-tauri/src/release.rs) | `bundle_changed_on_disk_after_publish_is_rejected_by_per_part_verify` | 当前段发布包加载后每件验证仍能发现资源被替换、删改、变目录或清单丢失。 |
+| 89 | [vision/tests.rs](../../src-tauri/src/vision/tests.rs) | `calibration_page_view_on_single_view_camera_also_writes_the_key_burst_recipe_reads` | 标定页面按图1保存的单视角标定也能被段配方按设备读取，三目图N标定不能污染设备标定。 |
+| 90 | [vision/taught/tests.rs](../../src-tauri/src/vision/taught/tests.rs) | `engine_station_output_reduces_to_frame_width_gap_presence_and_x_mm` | 生产走廊输出换算正确的胶宽、最长连续缺胶、有胶比例、法向偏移和相机帧身份。 |
+| 91 | [vision/taught/tests.rs](../../src-tauri/src/vision/taught/tests.rs) | `malformed_engine_output_fails_only_that_frame` | 算法输出违约或尺寸不匹配只拒绝本帧，不能错算指标或破坏后续正常帧的测量。 |
+| 92 | [vision/taught/tests.rs](../../src-tauri/src/vision/taught/tests.rs) | `bead_leaving_through_a_corridor_end_is_out_of_corridor_but_breaks_and_centred_stops_stay_gaps` | 胶条从走廊侧向离开与真实断胶/停胶必须区分，不能错误判缺胶或放过真断胶。 |
+| 93 | [vision/taught/tests.rs](../../src-tauri/src/vision/taught/tests.rs) | `corridor_leaving_the_frame_or_camera_outside_the_plan_is_refused` | 走廊须位于像素中心边界内且归属计划相机，防止无法测量或挂错相机指标。 |
+| 94 | [workspace/centerline.rs](../../src-tauri/src/workspace/centerline.rs) | `brush_follows_requested_glue_instead_of_larger_shadow` | 走廊提取沿用户画笔选择的胶条，而非旁边面积更大的阴影，并兼容明暗极性。 |
+| 95 | [workspace/history_samples.rs](../../src-tauri/src/workspace/history_samples.rs) | `burst_candidate_history_reads_camera_seq_from_that_cameras_own_shot_sequence` | 候选历史按相机自己的帧序读受管样本原图，缺帧不能取别的相机替代，历史计划身份不符须拒绝。 |
+| 96 | [workspace/recorded.rs](../../src-tauri/src/workspace/recorded.rs) | `recorded_burst_frame_is_read_by_camera_and_seq_and_identity_mismatch_is_refused` | 真实 Recorder 写出后按 camera/seq 还原原始像素，拒绝跨件、跨相机、错帧号/触发数或缺帧的原图引用。 |
+| 97 | [workspace/transfer/tests.rs](../../src-tauri/src/workspace/transfer/tests.rs) | `exported_candidate_round_trips_with_referenced_round_images_and_matching_checksums` | 配方迁移包须带上候选引用的采集轮次原图、示教帧与标定特征，解包内容与来源逐字节一致、清单校验和正确。 |
+| 98 | [workspace/transfer/tests.rs](../../src-tauri/src/workspace/transfer/tests.rs) | `tampered_or_unknown_packages_are_rejected_without_writing_outside_staging` | 迁移包含路径穿越、校验和不符、清单外条目或不认识的格式版本时整包拒绝，不能写出暂存目录。 |
+| 99 | [workspace/transfer/tests.rs](../../src-tauri/src/workspace/transfer/tests.rs) | `conflicting_round_id_is_renamed_with_all_candidate_references_and_import_starts_as_draft` | 本机已有同名采集轮次时导入轮次改编号，示教帧、多轮标定、复核记录与标定特征一起改名；导入候选回到草稿，不带来源机发布状态、基准版本与历史记录样本。 |
+| 100 | [workspace/transfer/tests.rs](../../src-tauri/src/workspace/transfer/tests.rs) | `import_with_existing_recipe_id_or_product_code_is_rejected` | 导入不能与本机已有配方编号（不区分大小写）或产品代码冲突。 |
+| 101 | [vision/eval.rs](../../src-tauri/src/vision/eval.rs) | `algorithm_eval` | 手动评测，不进默认集。scripts/Test-AlgorithmEval.ps1 直接调用的现场样本算法评测入口，保留脚本功能，默认 ignored，不计普通 utest。 |
 
 ## 系统配置与资料安全
 
 | 序号 | 源码 | 测试名称 | 保护规则 |
 | ---: | --- | --- | --- |
-| 101 | [disk_guard.rs](../../src-tauri/src/disk_guard.rs) | `low_free_space_pauses_and_recovers_after_recheck_without_restart` | 磁盘空间不足阻止开工，空间恢复后无需重启即可重新就绪 |
-| 102 | [image_file.rs](../../src-tauri/src/image_file.rs) | `frozen_image_id_rewritten_with_different_pixels_is_rejected_and_same_pixels_pass` | 冻结图像ID对应像素变化必须拒绝，防止使用变更原图执行示教与标定 |
-| 103 | [instance.rs](../../src-tauri/src/instance.rs) | `data_directory_is_exclusive_until_the_instance_exits` | 同一资料目录必须独占，前一实例退出后才能重新取得锁 |
-| 104 | [managed_samples.rs](../../src-tauri/src/managed_samples.rs) | `imported_sample_survives_source_removal_and_duplicate_id_cannot_overwrite_it` | 导入样本独立保存且重复ID不能覆盖已导入数据 |
-| 105 | [settings.rs](../../src-tauri/src/settings.rs) | `arm_budget_outside_100_to_5000_ms_is_rejected_so_pc_gives_up_before_plc_arm_timeout` | PC布防预算只能在100至5000ms，不能超出PLC布防等待契约 |
-| 106 | [site/tests.rs](../../src-tauri/src/site/tests.rs) | `entering_offline_is_refused_when_preconditions_fail` | 已有生产或采集事务、设备异常时拒绝切换离线环境 |
-| 107 | [storage.rs](../../src-tauri/src/storage.rs) | `wal_history_and_teaching_references_are_copied_without_changing_source` | 搬迁资料必须包括未checkpoint的WAL与示教引用，原资料不被改写 |
-| 108 | [applog/codes.rs](../../src-tauri/src/applog/codes.rs) | `every_code_is_unique_and_registered_in_the_code_table_document` | 运行日志事件编码是给 Agent 的契约：编码不重复，且与编码表文档的编码、事件名、级别逐条一致。 |
-| 109 | [applog.rs](../../src-tauri/src/applog.rs) | `old_lines_without_time_or_code_stay_queryable_and_new_lines_keep_ts_level_first` | 日志 schema 2 新增字段后旧行仍可查询，新行仍以 ts、level 开头，快速筛选与分段裁剪不失效。 |
+| 102 | [disk_guard.rs](../../src-tauri/src/disk_guard.rs) | `low_free_space_pauses_and_recovers_after_recheck_without_restart` | 磁盘空间不足阻止开工，空间恢复后无需重启即可重新就绪 |
+| 103 | [image_file.rs](../../src-tauri/src/image_file.rs) | `frozen_image_id_rewritten_with_different_pixels_is_rejected_and_same_pixels_pass` | 冻结图像ID对应像素变化必须拒绝，防止使用变更原图执行示教与标定 |
+| 104 | [instance.rs](../../src-tauri/src/instance.rs) | `data_directory_is_exclusive_until_the_instance_exits` | 同一资料目录必须独占，前一实例退出后才能重新取得锁 |
+| 105 | [managed_samples.rs](../../src-tauri/src/managed_samples.rs) | `imported_sample_survives_source_removal_and_duplicate_id_cannot_overwrite_it` | 导入样本独立保存且重复ID不能覆盖已导入数据 |
+| 106 | [settings.rs](../../src-tauri/src/settings.rs) | `arm_budget_outside_100_to_5000_ms_is_rejected_so_pc_gives_up_before_plc_arm_timeout` | PC布防预算只能在100至5000ms，不能超出PLC布防等待契约 |
+| 107 | [site/tests.rs](../../src-tauri/src/site/tests.rs) | `entering_offline_is_refused_when_preconditions_fail` | 已有生产或采集事务、设备异常时拒绝切换离线环境 |
+| 108 | [storage.rs](../../src-tauri/src/storage.rs) | `wal_history_and_teaching_references_are_copied_without_changing_source` | 搬迁资料必须包括未checkpoint的WAL与示教引用，原资料不被改写 |
+| 109 | [applog/codes.rs](../../src-tauri/src/applog/codes.rs) | `every_code_is_unique_and_registered_in_the_code_table_document` | 运行日志事件编码是给 Agent 的契约：编码不重复，且与编码表文档的编码、事件名、级别逐条一致。 |
+| 110 | [applog.rs](../../src-tauri/src/applog.rs) | `old_lines_without_time_or_code_stay_queryable_and_new_lines_keep_ts_level_first` | 日志 schema 2 新增字段后旧行仍可查询，新行仍以 ts、level 开头，快速筛选与分段裁剪不失效。 |
+| 111 | [applog/throttle.rs](../../src-tauri/src/applog/throttle.rs) | `repeats_within_window_write_first_event_then_one_summary_with_full_count` | 高频重复事件窗口内只照写首次并在到期时输出一条摘要，计数与样本范围完整，不丢计数也不退回逐帧刷屏。 |
+| 112 | [diagnostics.rs](../../src-tauri/src/diagnostics.rs) | `plc_logs_fetched_newest_first_are_written_oldest_first_with_matching_t` | 诊断包 PLC 日志按时间正序写出且每行本地时间 t 与 ts 同一时刻，可与运行日志对齐。 |
 
 ## 持久化、录制与离线
 
 | 序号 | 源码 | 测试名称 | 保护规则 |
 | ---: | --- | --- | --- |
-| 110 | [audit/tests.rs](../../src-tauri/src/audit/tests.rs) | `durable_spool_replays_sqlite_commit_before_receipt_cleanup_without_duplicate_or_regression` | 数据库已提交而回执尚未清理时重放，不能重复落库或回退判定与交付证据 |
-| 111 | [audit/tests.rs](../../src-tauri/src/audit/tests.rs) | `burst_part_replays_from_spool_and_links_raw_files_by_camera_seq_beyond_shot_limits` | 段配方审计重启按相机和帧号恢复原图引用，70帧不能被旧拍照点上限截断 |
-| 112 | [history/tests.rs](../../src-tauri/src/history/tests.rs) | `rejudge_skips_when_plan_identity_changed_but_allows_tolerance_only_change` | 计划身份变化拒绝重判，只有容差变化仍允许对照 |
-| 113 | [offline/tests.rs](../../src-tauri/src/offline/tests.rs) | `reserved_plc_count_does_not_change_frame_alarms_or_result` | 预留deviceTriggers值不影响帧数告警和检测结论 |
-| 114 | [recorder/tests.rs](../../src-tauri/src/recorder/tests.rs) | `offline_retention_prunes_only_offline_recordings_and_never_real_raw_images` | 离线保留策略不能删除真机原图 |
-| 115 | [recorder/tests.rs](../../src-tauri/src/recorder/tests.rs) | `recording_with_missing_or_queue_dropped_frames_lists_them_by_camera_seq` | 缺帧和录图队列丢帧必须按相机帧号标记不完整，不能冒充完整录制 |
-| 116 | [store/tests.rs](../../src-tauri/src/store/tests.rs) | `offline_parts_stay_out_of_real_history_statistics_and_rejudge_and_vice_versa` | 真机与离线记录在历史、统计及重判中相互隔离 |
-| 117 | [store/tests.rs](../../src-tauri/src/store/tests.rs) | `burst_record_round_trips_frames_flags_regions_and_device_triggers` | 段配方逐帧、缺帧标记、区域判定和预留字段完整落库读回 |
-| 118 | [store/tests.rs](../../src-tauri/src/store/tests.rs) | `insert_accepts_any_frame_count_but_rejects_duplicate_camera_seq_or_foreign_camera` | 帧数波动允许入库，重复帧身份或非计划相机必须整条拒绝且不留部分行 |
+| 113 | [audit/tests.rs](../../src-tauri/src/audit/tests.rs) | `durable_spool_replays_sqlite_commit_before_receipt_cleanup_without_duplicate_or_regression` | 数据库已提交而回执尚未清理时重放，不能重复落库或回退判定与交付证据 |
+| 114 | [audit/tests.rs](../../src-tauri/src/audit/tests.rs) | `burst_part_replays_from_spool_and_links_raw_files_by_camera_seq_beyond_shot_limits` | 段配方审计重启按相机和帧号恢复原图引用，70帧不能被旧拍照点上限截断 |
+| 115 | [history/tests.rs](../../src-tauri/src/history/tests.rs) | `rejudge_skips_when_plan_identity_changed_but_allows_tolerance_only_change` | 计划身份变化拒绝重判，只有容差变化仍允许对照 |
+| 116 | [offline/tests.rs](../../src-tauri/src/offline/tests.rs) | `reserved_plc_count_does_not_change_frame_alarms_or_result` | 预留deviceTriggers值不影响帧数告警和检测结论 |
+| 117 | [recorder/tests.rs](../../src-tauri/src/recorder/tests.rs) | `offline_retention_prunes_only_offline_recordings_and_never_real_raw_images` | 离线保留策略不能删除真机原图 |
+| 118 | [recorder/tests.rs](../../src-tauri/src/recorder/tests.rs) | `recording_with_missing_or_queue_dropped_frames_lists_them_by_camera_seq` | 缺帧和录图队列丢帧必须按相机帧号标记不完整，不能冒充完整录制 |
+| 119 | [store/tests.rs](../../src-tauri/src/store/tests.rs) | `offline_parts_stay_out_of_real_history_statistics_and_rejudge_and_vice_versa` | 真机与离线记录在历史、统计及重判中相互隔离 |
+| 120 | [store/tests.rs](../../src-tauri/src/store/tests.rs) | `burst_record_round_trips_frames_flags_regions_and_device_triggers` | 段配方逐帧、缺帧标记、区域判定和预留字段完整落库读回 |
+| 121 | [store/tests.rs](../../src-tauri/src/store/tests.rs) | `insert_accepts_any_frame_count_but_rejects_duplicate_camera_seq_or_foreign_camera` | 帧数波动允许入库，重复帧身份或非计划相机必须整条拒绝且不留部分行 |
 
 ## 删除依据
 

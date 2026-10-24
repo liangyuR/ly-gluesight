@@ -3,7 +3,7 @@ use std::fs;
 use std::io::BufWriter;
 use std::path::{Component, Path};
 
-use chrono::{Local, TimeZone};
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -52,7 +52,7 @@ const README: &str = r#"# 诊断包说明
 
 - 运行日志 schema 版本：{logSchema}（即 `manifest.json` 的 `logSchema`）。
 - 每行的 `code` 是稳定的事件编码，含义与 `data` 字段见源码仓库 `docs/architecture/agent-logging-codes.md`（与 `src-tauri/src/applog/codes.rs` 逐条一致）；对应源码版本见 `build.gitSha`。
-- 没有 `code` 的行是尚未迁移的旧调用点，按 `ev` 与 `msg` 理解。
+- 没有 `code` 的行来自未改造的调用点（不做全量迁移），按 `ev` 与 `msg` 理解。
 
 ## 推荐分析顺序
 
@@ -245,13 +245,6 @@ fn audit_lines_in_range(bytes: &[u8], from: i64, to: i64) -> (Vec<u8>, usize) {
     (out, untimed)
 }
 
-fn local_time(ts: i64) -> Option<String> {
-    Local
-        .timestamp_millis_opt(ts)
-        .single()
-        .map(|t| t.format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string())
-}
-
 #[derive(Serialize)]
 struct PlcLine<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -266,7 +259,7 @@ fn plc_jsonl(mut entries: Vec<ly_plc::LogEntry>) -> Vec<u8> {
     let mut out = Vec::new();
     for entry in &entries {
         if let Ok(line) = serde_json::to_string(&PlcLine {
-            t: local_time(entry.ts),
+            t: applog::local_time(entry.ts),
             entry,
         }) {
             out.extend_from_slice(line.as_bytes());
