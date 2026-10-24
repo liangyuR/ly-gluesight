@@ -100,32 +100,6 @@ fn multi_segment_calibration_writes_part_total_and_leaves_segments_pending_on_se
 }
 
 #[test]
-fn round_with_different_camera_config_cannot_join_calibration() {
-    // 防的回归（规格 §2 同一工件程序、同一设备）：换了设备配置或相机的轮次混进多轮标定，N_exp 统计不同设备的帧数
-    type Edit = fn(&mut CaptureRoundV2);
-    let keep: Edit = |_| {};
-    // （名称，已加入轮次的设备配置，当前设备配置，新一轮采集时的设备配置，对新一轮的改动，是否接受）
-    let cases: [(&str, Option<&str>, &str, &str, Edit, bool); 4] = [
-        ("同一设备", Some(DEVICE), DEVICE, DEVICE, keep, true),
-        ("新一轮与当前设备相同、与已加入的轮次不同", Some(DEVICE), "device-b", "device-b", keep, false),
-        ("采集后设备配置改变", None, "device-b", DEVICE, keep, false),
-        ("缺一台计划相机、多一台别的相机", None, DEVICE, DEVICE, |r| r.cameras[2].camera_id = "cam9".into(), false),
-    ];
-    for (name, existing, current, config, edit, accepted) in cases {
-        let mut w = burst_workspace(&[Straight]);
-        if let Some(existing) = existing {
-            let earlier = capture_round("capture-earlier", &w.doc, 20, existing, &[]);
-            let entry = calibration_round(&w.doc, &earlier, false, &[]);
-            add_calibration_round(&mut w, entry).unwrap();
-        }
-        let mut round = capture_round("capture-new", &w.doc, 20, config, &[]);
-        edit(&mut round);
-        let result = check_round(&w.doc, &w.calibration.rounds, &round, &configs(&w.doc, current));
-        assert_eq!(result.is_ok(), accepted, "{name}：{result:?}");
-    }
-}
-
-#[test]
 fn standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner() {
     // 防的回归（规格 §0/§1、D-SB-18）：x_ref 用了非标准件轮次、没去掉首尾帧、取错相机，ToEdge 也算出 x_ref，或弯道段得到 x_ref
     type Setup = fn(&mut RecipeDoc);

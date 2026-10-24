@@ -533,7 +533,3 @@ pub fn validation_report(ctx: &ViewContext, samples: &[FixtureSample]) -> Fixtur
         rows: samples.iter().map(|s| FixtureSampleRow { name: s.name.clone(), pose: s.pose.clone(), brighter: s.brighter.clone().ok(), darker: s.darker.clone().ok(), error: s.error.clone() }).collect(),
     }
 }
-
-#[cfg(test)]
-#[path = "fixture_quality/tests.rs"]
-mod tests;

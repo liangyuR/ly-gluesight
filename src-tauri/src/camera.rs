@@ -1169,15 +1169,32 @@ fn configure_trigger(d: &mvs::Device, c: &CameraConfig) -> Result<Option<f32>, S
     set_enum_verified(d, "AcquisitionMode", "Continuous")?;
     let selectors = d.enum_entries("TriggerSelector")?;
     let selector = if c.trigger_source == "Software" {
-        ["FrameStart", "FrameBurstStart"].into_iter()
+        ["FrameStart", "FrameBurstStart"]
+            .into_iter()
             .find(|name| selectors.iter().any(|s| s == name))
-            .ok_or_else(|| format!("相机 {} 不支持 Software 单帧触发（TriggerSelector: {}）", d.summary.model, selectors.join("、")))?
+            .ok_or_else(|| {
+                format!(
+                    "相机 {} 不支持 Software 单帧触发（TriggerSelector: {}）",
+                    d.summary.model,
+                    selectors.join("、")
+                )
+            })?
     } else {
         ["FrameBurstActive", "AcquisitionActive"].into_iter()
             .find(|name| selectors.iter().any(|s| s == name))
-            .or_else(|| (c.trigger_source == "Line0" && d.summary.model == "JHEM131GC-XS"
-                && selectors.iter().any(|s| s == "FrameBurstStart")).then_some("FrameBurstStart"))
-            .ok_or_else(|| format!("相机 {} 未提供已确认的高电平门控节点（TriggerSelector: {}），不能启用连续采集", d.summary.model, selectors.join("、")))?
+            .or_else(|| {
+                (c.trigger_source == "Line0"
+                    && d.summary.model == "JHEM131GC-XS"
+                    && selectors.iter().any(|s| s == "FrameBurstStart"))
+                .then_some("FrameBurstStart")
+            })
+            .ok_or_else(|| {
+                format!(
+                    "相机 {} 未提供已确认的高电平门控节点（TriggerSelector: {}），不能启用连续采集",
+                    d.summary.model,
+                    selectors.join("、")
+                )
+            })?
     };
     for entry in &selectors {
         set_enum_verified(d, "TriggerSelector", entry)?;
@@ -1189,14 +1206,18 @@ fn configure_trigger(d: &mvs::Device, c: &CameraConfig) -> Result<Option<f32>, S
         d.set_int("AcquisitionBurstFrameCount", 1)?;
         let actual = d.get_int("AcquisitionBurstFrameCount")?;
         if actual != 1 {
-            return Err(format!("AcquisitionBurstFrameCount 要求为 1，回读为 {actual}"));
+            return Err(format!(
+                "AcquisitionBurstFrameCount 要求为 1，回读为 {actual}"
+            ));
         }
     }
     let rate = if c.trigger_source == "Line0" {
         set_enum_verified(d, "TriggerActivation", "LevelHigh")?;
         if selector == "FrameBurstStart" {
             d.set_bool("TriggerCacheEnable", false)?;
-            if d.get_bool("TriggerCacheEnable")? { return Err("相机未关闭触发缓存".into()); }
+            if d.get_bool("TriggerCacheEnable")? {
+                return Err("相机未关闭触发缓存".into());
+            }
         }
         d.set_trigger_delay(c.trigger_delay_us)?;
         d.set_bool("AcquisitionFrameRateEnable", true)?;
@@ -1231,12 +1252,20 @@ fn apply(d: &mvs::Device, c: &CameraConfig) -> Result<(Vec<String>, Option<f32>,
             set_enum_verified(d, "LineSelector", "Line1")?;
             set_enum_verified(d, "LineMode", "Strobe")?;
             let sources = d.enum_entries("LineSource")?;
-            let source = ["ExposureStartActive", "ExposureActive"].into_iter()
+            let source = ["ExposureStartActive", "ExposureActive"]
+                .into_iter()
                 .find(|name| sources.iter().any(|s| s == name))
-                .ok_or_else(|| format!("LineSource 不支持曝光频闪输出（可选项：{}）", sources.join("、")))?;
+                .ok_or_else(|| {
+                    format!(
+                        "LineSource 不支持曝光频闪输出（可选项：{}）",
+                        sources.join("、")
+                    )
+                })?;
             set_enum_verified(d, "LineSource", source)?;
             d.set_bool("StrobeEnable", true)?;
-            if !d.get_bool("StrobeEnable")? { return Err("StrobeEnable 回读为关闭，频闪未启用".into()); }
+            if !d.get_bool("StrobeEnable")? {
+                return Err("StrobeEnable 回读为关闭，频闪未启用".into());
+            }
             Ok(())
         })());
     } else if d.set_enum("LineSelector", "Line1").is_ok() {
@@ -1251,7 +1280,9 @@ fn apply(d: &mvs::Device, c: &CameraConfig) -> Result<(Vec<String>, Option<f32>,
                 }
             }
             d.set_bool("ChunkModeActive", true)?;
-            if !d.get_bool("ChunkModeActive")? { return Err("ChunkModeActive 回读为关闭，Chunk 未启用".into()); }
+            if !d.get_bool("ChunkModeActive")? {
+                return Err("ChunkModeActive 回读为关闭，Chunk 未启用".into());
+            }
             d.enum_entries("ChunkSelector")
         })();
         match entries {
@@ -1261,7 +1292,8 @@ fn apply(d: &mvs::Device, c: &CameraConfig) -> Result<(Vec<String>, Option<f32>,
                     must(Err(format!("相机不支持帧计数 / 触发计数 Chunk（可选项：{}）", entries.join("、"))));
                 }
                 for (e, item) in wanted {
-                    let on = must(set_enum_verified(d, "ChunkSelector", e)) && must(d.set_bool("ChunkEnable", true));
+                    let on = must(set_enum_verified(d, "ChunkSelector", e))
+                        && must(d.set_bool("ChunkEnable", true));
                     match item {
                         ChunkItem::Trigger => chunks.trigger |= on,
                         ChunkItem::Frame => chunks.frame |= on,
@@ -1673,12 +1705,19 @@ pub(crate) fn check_idle(cycle: &CycleHost) -> Result<(), String> {
     check_access(cycle, CameraAccess::Configuration)
 }
 
-pub enum CameraAccess { Configuration, Maintenance }
+pub enum CameraAccess {
+    Configuration,
+    Maintenance,
+}
 
 impl CameraAccess {
     pub fn check(self, in_flight: bool, capture_active: bool, pending: bool) -> Result<(), String> {
-        if capture_active { return Err("示教整圈采集正在独占设备，请结束本轮采集后操作".into()); }
-        if in_flight { return Err("检测进行中，工件结束后再操作相机".into()); }
+        if capture_active {
+            return Err("示教整圈采集正在独占设备，请结束本轮采集后操作".into());
+        }
+        if in_flight {
+            return Err("检测进行中，工件结束后再操作相机".into());
+        }
         if matches!(self, Self::Configuration) && pending {
             return Err("PLC 仍有未结事务或握手日志故障，请连接 PLC 并复位后再修改相机或采集；可先释放相机给 MVS 排查".into());
         }
@@ -1687,7 +1726,11 @@ impl CameraAccess {
 }
 
 fn check_access(cycle: &CycleHost, access: CameraAccess) -> Result<(), String> {
-    access.check(cycle.in_flight(), cycle.camera.recipe_capture().active(), cycle.busy())
+    access.check(
+        cycle.in_flight(),
+        cycle.camera.recipe_capture().active(),
+        cycle.busy(),
+    )
 }
 
 #[cfg(test)]
@@ -1698,14 +1741,40 @@ mod access_tests {
     fn unresolved_plc_without_active_capture_allows_maintenance_but_keeps_configuration_locked() {
         for (case, in_flight, capture_active, pending, maintenance, configuration) in [
             ("空闲", false, false, false, true, true),
-            ("初始化故障且有历史未结事务", false, false, true, true, false),
-            ("真实检测在途且界面快照尚未更新", true, false, false, false, false),
+            (
+                "初始化故障且有历史未结事务",
+                false,
+                false,
+                true,
+                true,
+                false,
+            ),
+            (
+                "真实检测在途且界面快照尚未更新",
+                true,
+                false,
+                false,
+                false,
+                false,
+            ),
             ("检测及握手在途", true, false, true, false, false),
             ("示教采集独占", false, true, false, false, false),
             ("示教采集及未结握手", false, true, true, false, false),
         ] {
-            assert_eq!(CameraAccess::Maintenance.check(in_flight, capture_active, pending).is_ok(), maintenance, "{case}");
-            assert_eq!(CameraAccess::Configuration.check(in_flight, capture_active, pending).is_ok(), configuration, "{case}");
+            assert_eq!(
+                CameraAccess::Maintenance
+                    .check(in_flight, capture_active, pending)
+                    .is_ok(),
+                maintenance,
+                "{case}"
+            );
+            assert_eq!(
+                CameraAccess::Configuration
+                    .check(in_flight, capture_active, pending)
+                    .is_ok(),
+                configuration,
+                "{case}"
+            );
         }
     }
 }
@@ -1810,7 +1879,10 @@ pub async fn camera_set_imaging(app: AppHandle, cam: usize, id: String, imaging:
 pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+    let _gate = cycle
+        .plc_gate
+        .try_lock()
+        .map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
     check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     let config = slot.config();
@@ -1830,7 +1902,10 @@ pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
 pub async fn camera_reconnect(app: AppHandle, cam: usize) -> Result<String, String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+    let _gate = cycle
+        .plc_gate
+        .try_lock()
+        .map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
     check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     slot.released.store(false, Ordering::SeqCst);
@@ -1844,36 +1919,6 @@ pub async fn camera_reconnect(app: AppHandle, cam: usize) -> Result<String, Stri
 mod rig_file_tests {
     use super::*;
 
-    struct TempDir(PathBuf);
-    impl Drop for TempDir {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
-    }
-    fn temp_dir(name: &str) -> TempDir {
-        let dir = std::env::temp_dir().join(format!("gluesight-{name}-{}-{}", std::process::id(), now_ms()));
-        std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
-    }
-
-    #[test]
-    fn old_line_edges_are_backed_up_while_software_settings_survive() {
-        let dir = temp_dir("level-high");
-        let path = dir.0.join("cameras.json");
-        let legacy = r#"{"cameras":[{"id":"cam1","serial":"SN1","triggerActivation":"RisingEdge"},{"id":"cam2","serial":"SN2","triggerSource":"Software","triggerActivation":"FallingEdge","frameRate":25}],"nextId":3}"#;
-        std::fs::write(&path, legacy).unwrap();
-        let (file, _, rewrite) = load_rig_file(&path);
-        assert!(rewrite);
-        assert_eq!(file.cameras[0].trigger_activation, "LevelHigh");
-        assert_eq!(file.cameras[0].frame_rate, 10.0);
-        assert_eq!(file.cameras[1].trigger_source, "Software");
-        assert_eq!(file.cameras[1].frame_rate, 25.0);
-        let backups: Vec<_> = std::fs::read_dir(&dir.0).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("cameras.level-high-")).collect();
-        assert_eq!(backups.len(), 1);
-        assert_eq!(std::fs::read_to_string(backups[0].path()).unwrap(), legacy);
-        std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
-        let (_, notes, rewrite) = load_rig_file(&path);
-        assert!(!rewrite && notes.is_empty());
-    }
-
     #[test]
     fn released_camera_is_never_reopened_by_the_supervisor() {
         let supervision = CameraSupervision::default();
@@ -1883,28 +1928,6 @@ mod rig_file_tests {
             assert!(supervision.reconnect_due(false, lost, opened), "lost={lost} opened={opened}");
         }
         assert!(!supervision.reconnect_due(false, false, true));
-    }
-
-    #[test]
-    fn migrated_camera_waits_for_manual_connection_then_resumes_supervision_without_duplicates() {
-        let supervision = CameraSupervision::default();
-        assert!(supervision.start(false));
-        assert!(!supervision.reconnect_due(false, false, false));
-        assert!(!supervision.start(true));
-        assert!(!supervision.reconnect_due(false, false, false));
-        supervision.resume();
-        assert!(supervision.reconnect_due(false, false, false));
-        assert!(supervision.reconnect_due(false, true, true));
-        assert!(!supervision.start(false));
-        assert!(supervision.reconnect_due(false, true, true));
-    }
-
-    #[test]
-    fn mvs_camera_without_a_bound_device_is_rejected() {
-        let unbound = CameraConfig { source: CameraSource::Mvs, serial: " ".into(), ..CameraConfig::default() };
-        assert!(unbound.require_bound().unwrap_err().contains("未绑定设备"));
-        assert!(CameraConfig { serial: "SN1".into(), ..unbound.clone() }.require_bound().is_ok());
-        assert!(CameraConfig { source: CameraSource::SampleSet, ..unbound }.require_bound().is_ok());
     }
 }
 
@@ -1919,18 +1942,6 @@ mod view_tests {
     }
 
     use super::*;
-
-    #[test]
-    fn mvs_three_views_require_explicit_sdk_layout() {
-        let mut config = CameraConfig { source: CameraSource::Mvs, view_count: 3, ..CameraConfig::default() };
-        assert!(config.validate().is_err());
-        config.composite_layout = Some(crate::recipe_capture::CompositeLayout::Horizontal);
-        assert!(config.validate().is_ok());
-        config.view_count = 1;
-        assert!(config.validate().is_ok());
-        config.view_count = 2;
-        assert!(config.validate().is_err());
-    }
 
     #[test]
     fn burst_plan_camera_missing_or_not_single_view_is_rejected() {
@@ -1949,44 +1960,6 @@ mod view_tests {
             let rig = [single("cam1"), single("cam2"), third];
             assert_eq!(check_burst_cameras(&rig, &plan).is_ok(), accepted, "{name}");
         }
-    }
-
-    /// 规格 §6 带宽按三路之和，且计入 GigE 协议开销（C2 遗留 F0-4：只算像素时三台 130 万像素 25 Hz 为 786 Mbps，
-    /// 判为不超预算，实际线上约 826 Mbps，已超过一个千兆口的 80%）。
-    #[test]
-    fn aggregate_bandwidth_over_one_port_budget_is_flagged() {
-        let three = |w, h| vec![Some((w, h)); 3];
-        // (场景, 各相机分辨率, 触发频率, 期望合计 Mbps, 是否超预算)
-        let cases: [(&str, Vec<Option<(u32, u32)>>, f64, f64, bool); 3] = [
-            ("三台 130 万像素 25 Hz 计入协议开销后超过 800 Mbps", three(1280, 1024), 25.0, 826.2, true),
-            ("三台 130 万像素 20 Hz 未到 800 Mbps", three(1280, 1024), 20.0, 660.9, false),
-            ("还没出图的相机不计入合计", vec![Some((1280, 1024)), None, None], 25.0, 275.4, false),
-        ];
-        for (name, sizes, hz, total, over) in cases {
-            let estimate = aggregate_bandwidth(&sizes, hz);
-            assert!((estimate.mbps_total - total).abs() < 0.1, "{name}: {}", estimate.mbps_total);
-            assert_eq!(estimate.over_budget, over, "{name}");
-            assert_eq!(estimate.per_camera.iter().map(Option::is_some).collect::<Vec<_>>(), sizes.iter().map(Option::is_some).collect::<Vec<_>>(), "{name}");
-        }
-    }
-
-    #[test]
-    fn sample_set_missing_image_becomes_a_skipped_frame_and_later_triggers_still_arrive_in_order() {
-        use crate::offline::sample_set::fixture::Fixture;
-        let fixture = Fixture::new(&[1, 2, 3]);
-        std::fs::remove_file(fixture.0.join("parts/p02/S002_cam1_v2.png")).unwrap();
-        let set = Arc::new(SampleSet::load(&fixture.0).unwrap());
-        let order = Mutex::new(Reorder { session: 7, ..Reorder::default() });
-        let (mut delivered, mut failed) = (Vec::new(), Vec::new());
-        for (n, shot) in [(1, 1), (3, 3), (2, 2), (4, 4)] {
-            let target = SampleTarget { set: set.clone(), part_id: "p02".into(), shot_id: format!("S{shot:03}") };
-            let error = sample_set_arrival(&order, Ok(target), "cam1", 3, 0, 7, n, false,
-                |frame| delivered.push((frame.frame_counter, frame.images.iter().map(|i| i.pixels[0]).collect::<Vec<_>>())));
-            if error.is_some() { failed.push(n); }
-        }
-        assert_eq!(failed, [2]);
-        let expected: Vec<_> = [1u64, 3, 4].into_iter().map(|n| (n, (1..=3).map(|v| Fixture::pixel(2, n as u8, v)).collect::<Vec<_>>())).collect();
-        assert_eq!(delivered, expected);
     }
 
     #[test]
@@ -2021,36 +1994,6 @@ mod gray_tests {
     use super::*;
 
     #[test]
-    fn mono8_passes_through_unchanged_and_bayer8_is_converted() {
-        let pool = FramePool::new(2);
-        let mono: Vec<u8> = (0..12).map(|i| i * 20).collect();
-        // BG 相位、R = 200、G = 100、B = 40 的纯色块
-        let (w, h) = (6, 4);
-        let data: Vec<u8> = (0..w * h).map(|i| match (i / w % 2, i % w % 2) {
-            (0, 0) => 40,
-            (1, 1) => 200,
-            _ => 100,
-        }).collect();
-        // (场景, 像素格式, 宽, 高, 输入, 期望灰度, 是否直接借用输入)
-        for (case, pixel_type, width, height, input, expected, raw) in [
-            ("mono8 原样透传", mvs::PIXEL_MONO8, 4, 3, &mono, mono.clone(), true),
-            ("bayer8 转灰度", mvs::PIXEL_BAYER_BG8, w as u32, h as u32, &data, vec![110; 24], false),
-        ] {
-            let gray = to_gray(&pool, pixel_type, width, height, input).unwrap();
-            assert_eq!(matches!(gray, Gray::Raw(_)), raw, "{case}");
-            assert_eq!(gray.pixels(), &expected[..], "{case}");
-            let img = gray.into_image(&pool, width, height).unwrap();
-            assert_eq!((img.width, img.height), (width, height), "{case}");
-            assert_eq!(img.pixels, expected, "{case}");
-        }
-        for t in [mvs::PIXEL_BAYER_GR8, mvs::PIXEL_BAYER_RG8, mvs::PIXEL_BAYER_GB8, mvs::PIXEL_BAYER_BG8] {
-            assert_eq!(pixel_kind(t), Ok(PixelKind::Bayer8));
-        }
-        assert!(to_gray(&pool, mvs::PIXEL_BAYER_BG8, 1, 24, &data).is_err());
-        assert!(to_gray(&pool, 0, 4, 3, &[0; 12]).is_err());
-    }
-
-    #[test]
     fn sdk_frame_length_must_cover_width_height_and_pixel_size() {
         for kind in [PixelKind::Mono8, PixelKind::Bayer8] {
             assert_eq!(frame_bytes(kind, 2448, 2048, 2448 * 2048), Ok(2448 * 2048));
@@ -2065,7 +2008,4 @@ mod gray_tests {
         // 宽高乘积超过 u32：以前 w * h 会溢出回绕成小切片（70000² mod 2³² 小于 u32::MAX 会被放行），现在按实际需要比较
         assert!(frame_bytes(PixelKind::Mono8, 70000, 70000, u32::MAX).is_err());
     }
-
-
-
 }

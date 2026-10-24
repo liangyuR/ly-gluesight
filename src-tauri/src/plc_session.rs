@@ -227,11 +227,29 @@ impl PlcSession {
         if unfinished {
             load_error = Some("发现未提交的握手事务文件，保留现场信号并核对日志后重启".into());
         }
-        let message = archived.clone().unwrap_or_else(|| "S7 启动后需确认空闲输入并复位握手".into());
-        Self { path, journal, load_error, archived, phase: SessionPhase::ResetRequired, contract: None, arm_timing: None, outputs_armed: false,
-            config_key: String::new(), connection: None, audit_waiting: false, reset_low_seen: false,
-            reset_level: false, reset_exchange: None, heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")), origin: Origin::Real,
-            fault_written: false, fault_attempted: None, message: Some(message),
+        let message = archived
+            .clone()
+            .unwrap_or_else(|| "S7 启动后需确认空闲输入并复位握手".into());
+        Self {
+            path,
+            journal,
+            load_error,
+            archived,
+            phase: SessionPhase::ResetRequired,
+            contract: None,
+            arm_timing: None,
+            outputs_armed: false,
+            config_key: String::new(),
+            connection: None,
+            audit_waiting: false,
+            reset_low_seen: false,
+            reset_level: false,
+            reset_exchange: None,
+            heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")),
+            origin: Origin::Real,
+            fault_written: false,
+            fault_attempted: None,
+            message: Some(message),
             reset_blocked_reason: Some("正在核对复位条件".into()),
             withdrawn: false, restores: Vec::new(), ack_triggers: None, reconnect: Mutex::default() }
     }
@@ -599,16 +617,22 @@ impl PlcSession {
         }
         if matches!(self.phase, SessionPhase::ResetRequired | SessionPhase::Fault) {
             self.ensure_fault_output(engine).await?;
-            if !(reset_requested || reset_edge || self.reset_exchange.is_some()) { return Ok(SessionEvent::None); }
+            if !(reset_requested || reset_edge || self.reset_exchange.is_some()) {
+                return Ok(SessionEvent::None);
+            }
             self.reset_devices_ready(devices)?;
             if !audit_ready { return Ok(SessionEvent::None); }
             let baseline = self.reset_baseline(&snapshot)?;
             if let Some((frozen, since)) = &self.reset_exchange {
                 frozen.verify(&snapshot)?;
-                if since.elapsed() > Duration::from_secs(10) { return Err("等待 PLC 撤下复位请求超时，请重新明确复位".into()); }
+                if since.elapsed() > Duration::from_secs(10) {
+                    return Err("等待 PLC 撤下复位请求超时，请重新明确复位".into());
+                }
             }
             if reset_level {
-                if self.reset_exchange.is_none() { self.reset_exchange = Some((baseline, Instant::now())); }
+                if self.reset_exchange.is_none() {
+                    self.reset_exchange = Some((baseline, Instant::now()));
+                }
                 return Ok(SessionEvent::None);
             }
             let repair = snapshot.sn_repair_plan();
@@ -619,8 +643,19 @@ impl PlcSession {
                 format!("明确复位请求；已把头字节异常的 {tags} 重写为空串；尚未清除未结事务")
             };
             self.audit(engine, "resetRequested", &reason).await?;
-            self.write(engine, handshake::reset_plan().into_iter().filter(|op| op.tag != tag::VISION_FAULT).collect()).await?;
-            let after = Snapshot::capture(engine, self.contract.as_ref().unwrap(), Self::max_age(engine))?;
+            self.write(
+                engine,
+                handshake::reset_plan()
+                    .into_iter()
+                    .filter(|op| op.tag != tag::VISION_FAULT)
+                    .collect(),
+            )
+            .await?;
+            let after = Snapshot::capture(
+                engine,
+                self.contract.as_ref().unwrap(),
+                Self::max_age(engine),
+            )?;
             baseline.verify(&after)?;
             self.audit(engine, "resetCompleted", "明确复位已清除输出并确认中性输入，原事务保留在本审计记录").await?;
             let mut next = self.journal.clone();
@@ -631,7 +666,14 @@ impl PlcSession {
             self.journal = next;
             let before_ready = Snapshot::capture(engine, self.contract.as_ref().unwrap(), Self::max_age(engine))?;
             baseline.verify(&before_ready)?;
-            self.write(engine, vec![WriteOp { tag: tag::VISION_FAULT, value: json!(false) }]).await?;
+            self.write(
+                engine,
+                vec![WriteOp {
+                    tag: tag::VISION_FAULT,
+                    value: json!(false),
+                }],
+            )
+            .await?;
             if intake_ready {
                 self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(true) }]).await?;
             }

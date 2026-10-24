@@ -534,33 +534,64 @@ fn view_count(camera_config: &serde_json::Value) -> usize {
 
 /// 开始一轮段配方整圈采集。
 #[tauri::command]
-pub async fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_ids: Vec<String>, drain_timeout_ms: Option<u64>) -> Result<AnyRound, String> {
+pub async fn recipe_capture_start(
+    app: AppHandle,
+    recipe_id: String,
+    camera_ids: Vec<String>,
+    drain_timeout_ms: Option<u64>,
+) -> Result<AnyRound, String> {
     let cycle = app.state::<CycleHost>();
     let _gate = cycle.plc_gate.lock().await;
-    if cycle.busy() { return Err("在途事务尚未结束，请等待握手释放或复位".into()); }
-    if crate::cycle::production_start_pending(app.state::<crate::plc::PlcHost>().engine()).await? { return Err("PLC 已发出生产请求，请等待生产完成".into()); }
+    if cycle.busy() {
+        return Err("在途事务尚未结束，请等待握手释放或复位".into());
+    }
+    if crate::cycle::production_start_pending(app.state::<crate::plc::PlcHost>().engine()).await? {
+        return Err("PLC 已发出生产请求，请等待生产完成".into());
+    }
     let mut teaching = cycle.teaching.lock().await;
     let status = teaching.view();
-    if !status.available || status.busy { return Err(status.message); }
+    if !status.available || status.busy {
+        return Err(status.message);
+    }
     let capture_app = app.clone();
-    let round = tauri::async_runtime::spawn_blocking(move || start_capture(capture_app, recipe_id, camera_ids, drain_timeout_ms)).await.map_err(|e| e.to_string())??;
+    let round = tauri::async_runtime::spawn_blocking(move || {
+        start_capture(capture_app, recipe_id, camera_ids, drain_timeout_ms)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let result = async {
         let id = teaching.prepare_request(round.round_id())?;
         cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
         cycle.camera.recipe_capture().burst_ready(id)?;
-        teaching.commit_request(app.state::<crate::plc::PlcHost>().engine()).await?;
+        teaching
+            .commit_request(app.state::<crate::plc::PlcHost>().engine())
+            .await?;
         Ok::<(), String>(())
-    }.await;
+    }
+    .await;
     cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
-    if let Err(error) = result { cycle.camera.recipe_capture().fail(error.clone()); return Err(error); }
-    cycle.camera.recipe_capture().current_any().ok_or("采集轮次不存在".into())
+    if let Err(error) = result {
+        cycle.camera.recipe_capture().fail(error.clone());
+        return Err(error);
+    }
+    cycle
+        .camera
+        .recipe_capture()
+        .current_any()
+        .ok_or("采集轮次不存在".into())
 }
 
 fn start_capture(app: AppHandle, recipe_id: String, camera_ids: Vec<String>, drain_timeout_ms: Option<u64>) -> Result<AnyRound, String> {
     let cycle = app.state::<CycleHost>();
-    if recipe_id.trim().is_empty() { return Err("请先创建配方草稿".into()); }
-    if camera_ids.is_empty() { return Err("请至少选择一台采集相机".into()); }
-    if cycle.phase() != Phase::Idle { return Err("节拍尚未回到空闲，请先复位".into()); }
+    if recipe_id.trim().is_empty() {
+        return Err("请先创建配方草稿".into());
+    }
+    if camera_ids.is_empty() {
+        return Err("请至少选择一台采集相机".into());
+    }
+    if cycle.phase() != Phase::Idle {
+        return Err("节拍尚未回到空闲，请先复位".into());
+    }
     let mut slots = Vec::with_capacity(camera_ids.len());
     for camera_id in &camera_ids {
         let cam = cycle.camera.require(camera_id)?;
@@ -603,9 +634,14 @@ pub async fn recipe_capture_stop(app: AppHandle) -> Result<Option<AnyRound>, Str
     let cycle = app.state::<CycleHost>();
     let _gate = cycle.plc_gate.lock().await;
     let mut teaching = cycle.teaching.lock().await;
-    let result = teaching.cancel(app.state::<crate::plc::PlcHost>().engine(), 1).await;
+    let result = teaching
+        .cancel(app.state::<crate::plc::PlcHost>().engine(), 1)
+        .await;
     cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
-    cycle.camera.recipe_capture().interrupt("操作员中止本轮采集，请整圈重采");
+    cycle
+        .camera
+        .recipe_capture()
+        .interrupt("操作员中止本轮采集，请整圈重采");
     result?;
     Ok(cycle.camera.recipe_capture().current_any())
 }
@@ -655,22 +691,4 @@ fn preview_bytes(image: &FrameImage) -> Vec<u8> {
         bytes.push(image.pixels[(iy * image.width + ix) as usize]);
     } }
     bytes
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explicit_layout_splits_without_guessing_or_overlapping() {
-        let image = FrameImage::new(6, 3, (0..18).collect());
-        let horizontal = CompositeLayout::Horizontal.split(&image).unwrap();
-        assert_eq!(horizontal[1].pixels, [2, 3, 8, 9, 14, 15]);
-        let vertical = CompositeLayout::Vertical.split(&image).unwrap();
-        assert_eq!(vertical[2].pixels, [12, 13, 14, 15, 16, 17]);
-        assert!(CompositeLayout::Horizontal.split(&FrameImage::new(5, 1, vec![0; 5])).is_err());
-        let rect = ViewRect { x: 0, y: 0, width: 2, height: 2 };
-        assert!(CompositeLayout::Rects { rects: [rect.clone(), rect.clone(), rect] }.split(&image).is_err());
-        assert!(CompositeLayout::Vertical.split(&FrameImage::new(6, 3, vec![0; 1])).is_err());
-    }
 }

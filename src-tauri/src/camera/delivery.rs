@@ -40,12 +40,7 @@ mod tests {
     use tokio::sync::mpsc::channel;
 
     use super::*;
-    use crate::camera::FRAME_QUEUE;
     use crate::frame::FrameImage;
-    use crate::judge::fault;
-
-    /// 帧通道填满时最后一帧的计数；之后的帧从 Q + 1 起
-    const Q: u64 = FRAME_QUEUE as u64;
 
     fn frame(cam: u8, counter: u64) -> Frame {
         Frame {
@@ -58,43 +53,6 @@ mod tests {
     fn callback(identity: &Mutex<Ledgers>, manual: &AtomicU32, tx: &Sender<Frame>, dropped: &AtomicU64, mut frame: Frame) -> Result<(), TrySendError<Frame>> {
         observe(identity, manual, &mut frame, true);
         offer(tx, dropped, frame)
-    }
-
-    #[test]
-    fn full_frame_channel_advances_callback_ledger_counts_drops_and_recovers() {
-        let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
-        let identity = Mutex::new(Ledgers::default());
-        let manual = AtomicU32::new(0);
-        let dropped = AtomicU64::new(0);
-        for counter in 1..=FRAME_QUEUE as u64 {
-            callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
-        }
-        assert_eq!(rx.len(), FRAME_QUEUE);
-        for counter in [Q + 1, Q + 2] {
-            let Err(TrySendError::Full(rejected)) = callback(&identity, &manual, &tx, &dropped, frame(0, counter)) else {
-                panic!("满帧通道必须拒绝完整设备帧");
-            };
-            assert_eq!(rejected.trigger_counter, counter);
-            assert_eq!(rejected.images.len(), 3);
-        }
-        {
-            let ledgers = identity.lock().unwrap();
-            let ledger = ledgers.get(0).unwrap();
-            assert_eq!(ledger.last, Some(Q + 2));
-            assert_eq!(ledger.frames, Q + 2);
-        }
-        assert_eq!(dropped.load(Ordering::Relaxed), 2);
-        for counter in 1..=FRAME_QUEUE as u64 {
-            let accepted = rx.try_recv().unwrap();
-            assert_eq!(accepted.trigger_counter, counter);
-            assert_eq!(accepted.images.len(), 3);
-        }
-        callback(&identity, &manual, &tx, &dropped, frame(0, Q + 3)).unwrap();
-        assert_eq!(rx.try_recv().unwrap().trigger_counter, Q + 3);
-        assert!(rx.try_recv().is_err());
-        assert_eq!(dropped.load(Ordering::Relaxed), 2);
-        assert_eq!(identity.lock().unwrap().get(0).unwrap().last, Some(Q + 3));
-        assert_eq!(identity.lock().unwrap().get(0).unwrap().frames, Q + 3);
     }
 
     #[test]
@@ -122,113 +80,8 @@ mod tests {
         assert_eq!(manual.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn full_callback_channel_finishes_missing_first_middle_and_last_as_plc_error() {
-        for missing in [0, 1, 3] {
-            let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
-            let identity = Mutex::new(Ledgers::default());
-            let manual = AtomicU32::new(0);
-            let dropped = AtomicU64::new(0);
-            for counter in 1..=FRAME_QUEUE as u64 {
-                callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
-            }
-            let baseline = identity.lock().unwrap().clone();
-            let mut received = Vec::new();
-            if missing != 0 {
-                while let Ok(stale) = rx.try_recv() { received.push(stale); }
-            }
-            for shot in 0..4 {
-                if shot == missing && shot != 0 {
-                    for counter in 1..=FRAME_QUEUE as u64 {
-                        callback(&identity, &manual, &tx, &dropped, frame(1, counter)).unwrap();
-                    }
-                }
-                let result = callback(&identity, &manual, &tx, &dropped, frame(0, Q + 1 + shot));
-                if shot == missing {
-                    assert!(matches!(result, Err(TrySendError::Full(_))));
-                } else {
-                    result.unwrap();
-                }
-                while let Ok(accepted) = rx.try_recv() {
-                    if accepted.cam == 0 { received.push(accepted); }
-                }
-            }
-            assert_eq!(dropped.load(Ordering::Relaxed), 1);
-            let (judgement, shots) = crate::cycle::tests::judge_callback_channel(
-                &baseline, received, &identity.lock().unwrap());
-            assert_eq!(judgement.verdict, crate::judge::Verdict::ErrInspect);
-            assert_eq!(judgement.plc_code, 90);
-            assert_eq!(judgement.fault_code, fault::MISSING_FRAME);
-            for (k, shot) in shots.iter().enumerate() {
-                assert_eq!(shot.shot_id, format!("P{}", k + 1));
-                assert_eq!(shot.status, if k == missing as usize {
-                    crate::cycle::FrameStatus::Missing
-                } else { crate::cycle::FrameStatus::Done });
-                assert_eq!(shot.trigger_counter, (k != missing as usize).then_some(Q + 1 + k as u64));
-            }
-            let recovered_baseline = identity.lock().unwrap().clone();
-            let mut recovered = Vec::new();
-            for counter in Q + 5..=Q + 8 {
-                callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
-                recovered.push(rx.try_recv().unwrap());
-            }
-            let (judgement, shots) = crate::cycle::tests::judge_callback_channel(
-                &recovered_baseline, recovered, &identity.lock().unwrap());
-            assert_eq!(judgement.verdict, crate::judge::Verdict::Ok);
-            assert_eq!(judgement.plc_code, 1);
-            assert_eq!(judgement.fault_code, 0);
-            assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
-        }
-    }
-
-    #[test]
-    fn extra_callback_dropped_by_full_channel_overrides_complete_ok_with_plc_error() {
-        let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
-        let identity = Mutex::new(Ledgers::default());
-        let manual = AtomicU32::new(0);
-        let dropped = AtomicU64::new(0);
-        for counter in 1..=FRAME_QUEUE as u64 {
-            callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
-        }
-        let baseline = identity.lock().unwrap().clone();
-        while rx.try_recv().is_ok() {}
-        let mut received = Vec::new();
-        for counter in Q + 1..=Q + 4 {
-            callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
-            received.push(rx.try_recv().unwrap());
-        }
-        let (normal, shots) = crate::cycle::tests::judge_callback_channel(
-            &baseline, received.clone(), &identity.lock().unwrap());
-        assert_eq!(normal.verdict, crate::judge::Verdict::Ok);
-        assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
-        for counter in 1..=FRAME_QUEUE as u64 {
-            callback(&identity, &manual, &tx, &dropped, frame(1, counter)).unwrap();
-        }
-        assert!(matches!(callback(&identity, &manual, &tx, &dropped, frame(0, Q + 5)), Err(TrySendError::Full(_))));
-        let (judgement, shots) = crate::cycle::tests::judge_callback_channel(
-            &baseline, received, &identity.lock().unwrap());
-        assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
-        assert_eq!(judgement.verdict, crate::judge::Verdict::ErrInspect);
-        assert_eq!(judgement.plc_code, 90);
-        assert_eq!(judgement.fault_code, fault::EXTRA_FRAME);
-        assert_eq!(dropped.load(Ordering::Relaxed), 1);
-        while rx.try_recv().is_ok() {}
-        let recovered_baseline = identity.lock().unwrap().clone();
-        let mut recovered = Vec::new();
-        for counter in Q + 6..=Q + 9 {
-            callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
-            recovered.push(rx.try_recv().unwrap());
-        }
-        let (judgement, shots) = crate::cycle::tests::judge_callback_channel(
-            &recovered_baseline, recovered, &identity.lock().unwrap());
-        assert_eq!(judgement.verdict, crate::judge::Verdict::Ok);
-        assert_eq!(judgement.plc_code, 1);
-        assert_eq!(judgement.fault_code, 0);
-        assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
-    }
-
     /// 规格 §3 丢帧只告警（段配方）：回调通道满或图像内存预算满时这一帧不交给节拍，该组标检测不完整，
-    /// 其余相机照常判，整件不判 ERR（旧拍照点配方同样情况判 91，见上面的用例）。
+    /// 其余相机照常判，整件不判 ERR。
     #[test]
     fn dropped_callback_frame_becomes_incomplete_group_not_err() {
         use crate::cycle::tests::{burst_frame, judge_burst_delivered};

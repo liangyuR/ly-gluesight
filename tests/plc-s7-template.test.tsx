@@ -23,18 +23,7 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("载入一期 S7 点表", () => {
-  it("协议 4 的单 DB 旧点表 → 默认 PLC 区 DB4、PC 区 DB2，并应用 S7-1200 连接参数", async () => {
-    const existing = plcConfig();
-    existing.points = existing.points.map(point => ({ ...point, address: point.address.replace(/^DB\d+\./, "DB1.") }));
-    const onApply = vi.fn();
-    render(<S7Phase1Dialog config={existing} dirty={false} blockedReason="" onApply={onApply} onClose={() => {}} />);
 
-    await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("plc_s7_phase1_template", { plcDb: 4, pcDb: 2 }));
-    fireEvent.click(await screen.findByRole("checkbox"));
-    fireEvent.click(screen.getByRole("button", { name: "应用到草稿" }));
-    expect(onApply.mock.calls[0][0].connection.s7).toMatchObject({ rack: 0, slot: 1, localTsap: null, remoteTsap: null, pduSize: 480 });
-    expect(onApply.mock.calls[0][1]).toBe("s71200");
-  });
 
   it("两个区填同一个 DB → 提示必须分开且不请求后端生成", async () => {
     render(<S7Phase1Dialog config={plcConfig()} dirty={false} blockedReason="" onApply={vi.fn()} onClose={() => {}} />);

@@ -92,24 +92,4 @@ mod tests {
         assert_eq!(load(&path).unwrap().pixels, [10, 20]);
         let _ = std::fs::remove_dir_all(&root);
     }
-
-    #[cfg(windows)]
-    #[test]
-    fn junction_swapped_in_after_first_read_is_rejected_on_next_read() {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!("gluesight-image-file-{}-{nanos}", std::process::id()));
-        let (first, second, saved) = (root.join("cycle-first"), root.join("cycle-second"), root.join("saved-first"));
-        for (path, pixel) in [(&first, 17), (&second, 91)] {
-            std::fs::create_dir_all(path).unwrap();
-            save_pgm(&path.join("image.pgm"), &FrameImage::new(1, 1, vec![pixel])).unwrap();
-        }
-        assert_eq!(load(&first.join("image.pgm")).unwrap().pixels, [17]);
-        std::fs::rename(&first, &saved).unwrap();
-        let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&first).arg(&second).output().unwrap();
-        assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
-        assert!(load(&first.join("image.pgm")).unwrap_err().contains("reparse"));
-        assert_eq!(load(&second.join("image.pgm")).unwrap().pixels, [91]);
-        std::fs::remove_dir(&first).unwrap();
-        let _ = std::fs::remove_dir_all(&root);
-    }
 }

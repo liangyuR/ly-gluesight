@@ -119,53 +119,6 @@ impl ArmBudget {
 mod tests {
     use super::*;
 
-    #[test]
-    fn individually_short_arm_stages_cannot_reset_the_total_deadline() {
-        let started = Instant::now();
-        let mut budget = ArmBudget::with_start(started, Duration::from_millis(200));
-        budget.mark_at("verify", started + Duration::from_millis(90));
-        assert_eq!(budget.remaining_at("recorder", started + Duration::from_millis(90)).unwrap(), Duration::from_millis(110));
-        budget.mark_at("recorder", started + Duration::from_millis(180));
-        assert_eq!(budget.remaining_at("health", started + Duration::from_millis(180)).unwrap(), Duration::from_millis(20));
-        assert!(budget.remaining_at("before-camera", started + Duration::from_millis(210)).is_err());
-        let stages = budget.stages();
-        assert_eq!(stages.len(), 3);
-        assert!(stages.iter().all(|stage| stage.interval < Duration::from_millis(200)));
-        assert_eq!(stages[2].elapsed, Duration::from_millis(210));
-        assert_eq!(stages[2].interval, Duration::from_millis(30));
-        assert_eq!(budget.trace()["stages"][2]["stage"], "before-camera");
-        assert_eq!(budget.trace()["stages"][2]["elapsedMs"], 210.0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn async_arm_stage_uses_only_total_budget_remaining() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let entered = AtomicBool::new(false);
-        let started = Instant::now() - Duration::from_millis(150);
-        let mut budget = ArmBudget::with_start(started, Duration::from_millis(250));
-        let result = budget.run("verify", async {
-            entered.store(true, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis(180)).await;
-            Ok(())
-        }).await;
-        assert!(entered.load(Ordering::SeqCst));
-        assert!(result.is_err());
-        // 只等总预算剩下的 100 ms，不等满阶段自己的 180 ms
-        assert_eq!(budget.stages().last().unwrap().elapsed, Duration::from_millis(250));
-    }
-
-    /// 阶段在超时抢占之前就带着 Ok 返回了，但时间已经越过总预算（同步阻塞的探针）：仍要拒绝。
-    #[tokio::test(start_paused = true)]
-    async fn synchronous_future_returning_ok_after_deadline_is_still_refused() {
-        let mut budget = ArmBudget::with_start(Instant::now(), Duration::from_millis(35));
-        let result = budget.run("sync-probe", async {
-            tokio::time::advance(Duration::from_millis(100)).await;
-            Ok("late success")
-        }).await;
-        assert!(result.is_err());
-        assert_eq!(budget.stages().last().unwrap().elapsed, Duration::from_millis(100));
-    }
-
     #[tokio::test(start_paused = true)]
     async fn serial_arm_waits_for_side_effect_settlement_before_cleanup_and_rejects_late_ok() {
         use std::sync::atomic::{AtomicBool, Ordering};

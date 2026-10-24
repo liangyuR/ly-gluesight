@@ -1,29 +1,31 @@
-.cam-page { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; align-items: start; }
+.cam-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
 .cam-notice { grid-column: 1 / -1; }
 .dev-bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-.cam-list { display: flex; flex-direction: column; gap: 4px; padding: 10px; border-radius: var(--r-lg); background: var(--surface-low); position: sticky; top: 0; }
-.cam-list-head { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 4px; font-size: 12px; color: var(--on-surface-variant); }
+.cam-list { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px; border-radius: var(--r-lg); background: var(--surface-low); }
+.cam-list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: 0 0 96px; font-size: 12px; color: var(--on-surface-variant); }
+.cam-list > .qs-list { display: flex; flex: 1; gap: 8px; min-width: 0; overflow-x: auto; padding: 2px; scrollbar-width: thin; }
+.cam-list .qs-list-item { flex: 0 0 180px; min-width: 0; }
+.cam-list .qs-list-copy { min-width: 0; }
+.cam-list .qs-list-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .cam-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.cam-head { display: flex; align-items: center; gap: 10px; min-height: 36px; flex-wrap: wrap; }
-.cam-head > strong { font-size: 16px; font-weight: 600; }
-.cam-head-info { font-size: 12.5px; }
-.cam-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(440px, 560px); gap: 16px; align-items: start; }
-.cam-body .wp-gray-image { height: clamp(320px, calc(100vh - 430px), 640px); }
-.calib-desc { margin: 0; font-size: 12px; line-height: 1.6; }
-@media (max-width: 1400px) { .cam-body { grid-template-columns: minmax(0, 1fr); } }
+.cam-body { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(380px, 1fr); gap: 16px; align-items: stretch; }
+.cam-image-area > .wp-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.cam-image-area .wp-viewport { display: flex; flex-direction: column; flex: 1; min-height: 420px; }
+.cam-image-area .wp-image-tools { flex-shrink: 0; }
+.cam-image-area :is(.wp-gray-image, .wp-image-empty) { flex: 1; height: 0; min-height: 0; }
+@media (max-width: 1100px) {
+  .cam-body { grid-template-columns: minmax(0, 1fr); }
+  .cam-image-area .wp-viewport { flex: none; height: clamp(360px, 55vh, 560px); min-height: 0; }
+}
 
-.flyshot-guide { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; counter-reset: step; }
-.flyshot-guide li { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px 10px 38px; position: relative; border-radius: var(--r-md); background: var(--surface-mid); counter-increment: step; }
-.flyshot-guide li::before { content: counter(step); position: absolute; left: 12px; top: 10px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--secondary-container); font-size: 11px; color: var(--on-secondary-container); }
-.flyshot-guide strong { font-size: 12px; font-weight: 600; }
-.flyshot-guide span { font-size: 11px; line-height: 1.6; color: var(--on-surface-variant); }
-@media (max-width: 1050px) { .flyshot-guide { grid-template-columns: minmax(0, 1fr); } }
-.calc-cell { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.calc-cell { display: flex; flex-direction: column; gap: 6px; min-width: 0; position: relative; }
+.calc-cell .qs-field > label { display: flex; align-items: center; min-height: 26px; padding-right: 32px; }
+.calc-cell > .context-help-trigger { position: absolute; top: 0; right: 0; }
+.calc-title { display: flex; align-items: center; gap: 6px; }
 .calc-src { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.calc-src.linked { color: var(--primary); }
-.calc-src.changed { color: var(--warn); }
+.calc-src.changed { color: var(--warn); font-size: 12px; }
 .calc-out { display: grid; gap: 6px; font-size: 13px; }
 .calc-out div { display: grid; grid-template-columns: 150px 1fr auto; gap: 10px; align-items: center; padding: 7px 10px; border-radius: var(--r-sm); background: var(--surface-mid); }
 .calc-out div > span:first-child { color: var(--on-surface-variant); }

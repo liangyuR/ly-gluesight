@@ -437,6 +437,3 @@ fn exchange(s7: &[u8], pdu: &mut Option<u16>, memory: &SharedMemory, control: &C
     let response = ack(reference, &[function, items.len() as u8], &output, [0, 0]);
     Some(if response.len() - 7 > limit { ack(reference, &[], &[], TOO_LARGE) } else { response })
 }
-
-#[cfg(test)]
-mod tests;

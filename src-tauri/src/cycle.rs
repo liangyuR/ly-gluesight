@@ -447,9 +447,13 @@ impl CycleHost {
                 }
             })), crate::recorder::Cleanup { protection, warning, release })
         };
-        let recorders = Recorders::new(recorder(data.join("records"), HistoryScope::Real),
-            recorder(data.join("records-offline"), HistoryScope::Offline));
-        let teaching = crate::teaching::Teaching::open(crate::storage::state(app).join("teaching-handshake.json"));
+        let recorders = Recorders::new(
+            recorder(data.join("records"), HistoryScope::Real),
+            recorder(data.join("records-offline"), HistoryScope::Offline),
+        );
+        let teaching = crate::teaching::Teaching::open(
+            crate::storage::state(app).join("teaching-handshake.json"),
+        );
         let teaching_busy = teaching.busy();
         let teaching_switch_block = teaching.blocks_site_switch();
         Ok(Self {
@@ -460,7 +464,10 @@ impl CycleHost {
             teaching_busy: AtomicBool::new(teaching_busy),
             teaching_switch_block: AtomicBool::new(teaching_switch_block),
             teaching_preempted: AtomicBool::new(false),
-            recipes: RecipeStore::open_with_floors(data.join("recipes"), &app.state::<crate::store::Store>().recipe_version_floors()?)?,
+            recipes: RecipeStore::open_with_floors(
+                data.join("recipes"),
+                &app.state::<crate::store::Store>().recipe_version_floors()?,
+            )?,
             recorders,
             cycle_ids: crate::cycle_ids::CycleIds::default(),
             audit,
@@ -539,10 +546,18 @@ impl CycleHost {
     }
 
     pub fn switch_block(&self) -> Option<String> {
-        if self.teaching_switch_block.load(Ordering::SeqCst) { Some("示教握手尚未结束，请等待 PLC 释放或显式复位".into()) } else { self.switch_block.lock().unwrap().clone() }
+        if self.teaching_switch_block.load(Ordering::SeqCst) {
+            Some("示教握手尚未结束，请等待 PLC 释放或显式复位".into())
+        } else {
+            self.switch_block.lock().unwrap().clone()
+        }
     }
 
-    pub fn store_teaching_busy(&self, busy: bool, blocks_switch: bool) { self.teaching_busy.store(busy, Ordering::SeqCst); self.teaching_switch_block.store(blocks_switch, Ordering::SeqCst); }
+    pub fn store_teaching_busy(&self, busy: bool, blocks_switch: bool) {
+        self.teaching_busy.store(busy, Ordering::SeqCst);
+        self.teaching_switch_block
+            .store(blocks_switch, Ordering::SeqCst);
+    }
 
     fn store_busy(&self, phase: Phase, s7: &PlcSession) {
         let in_flight = !matches!(phase, Phase::Idle | Phase::Fault);
@@ -650,8 +665,20 @@ pub(crate) fn record_interrupted_part(app: &AppHandle, s7: &PlcSession, stats: &
 
 pub(crate) async fn production_start_pending(engine: &PlcEngine) -> Result<bool, String> {
     let config = engine.config();
-    let point = config.points.iter().find(|p| p.tags.iter().any(|t| t == crate::inspection::tag::PART_START)).ok_or("缺少生产开始点位")?;
-    match engine.read_now(&point.id).await.map_err(|e| e.to_string())? {
+    let point = config
+        .points
+        .iter()
+        .find(|p| {
+            p.tags
+                .iter()
+                .any(|t| t == crate::inspection::tag::PART_START)
+        })
+        .ok_or("缺少生产开始点位")?;
+    match engine
+        .read_now(&point.id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
         ly_plc::PlcValue::Bool(value) => Ok(value),
         _ => Err("生产开始点位类型错误".into()),
     }
@@ -1789,16 +1816,22 @@ impl Machine {
                 }
             }
         }
-        let cameras = if capture_host.active() { capture::capture_readiness(self.service_ready(), || self.capture_devices_ready()) } else { match self.phase {
-            // 在途的件只看它自己用的相机；等 PLC 确认结果时相机掉线不打断握手，回到空闲再查
-            Phase::Acquire | Phase::Drain => match self.part.as_ref() {
-                Some(p) if p.rig_gen != host(&self.app).camera.generation() => Err("检测中增删了相机".into()),
-                Some(p) => self.check_part_cams(p),
-                None => Ok(()),
-            },
-            Phase::Report | Phase::Release => Ok(()),
-            _ => self.check_idle_devices(),
-        } };
+        let cameras = if capture_host.active() {
+            capture::capture_readiness(self.service_ready(), || self.capture_devices_ready())
+        } else {
+            match self.phase {
+                // 在途的件只看它自己用的相机；等 PLC 确认结果时相机掉线不打断握手，回到空闲再查
+                Phase::Acquire | Phase::Drain => match self.part.as_ref() {
+                    Some(p) if p.rig_gen != host(&self.app).camera.generation() => {
+                        Err("检测中增删了相机".into())
+                    }
+                    Some(p) => self.check_part_cams(p),
+                    None => Ok(()),
+                },
+                Phase::Report | Phase::Release => Ok(()),
+                _ => self.check_idle_devices(),
+            }
+        };
         let dropped = host(&self.app).camera.dropped_total();
         if dropped > self.dropped_seen {
             log(&self.app, "warn", "丢帧", format!("帧通道满，累计丢弃 {dropped} 帧：检测节拍处理不过来"));
@@ -1816,12 +1849,18 @@ impl Machine {
                 }
             };
             let teaching_requested = host(&app).teaching.lock().await.view().phase == "requested";
-            let production_devices_ready = if teaching_requested { self.check_idle_devices().is_ok() } else { cameras.is_ok() };
-            let intake_ready = self.disk_space_ready() && production_devices_ready
-                && (!host(&app).teaching_busy.load(Ordering::SeqCst) || teaching_requested || host(&app).teaching_preempted.load(Ordering::SeqCst));
-            let devices = if matches!(self.s7.phase(), SessionPhase::ResetRequired | SessionPhase::Fault) || self.s7_reset_requested {
+            let resetting = matches!(
+                self.s7.phase(),
+                SessionPhase::ResetRequired | SessionPhase::Fault
+            ) || self.s7_reset_requested;
+            let intake_ready = self.disk_space_ready()
+                && (!resetting || self.check_idle_devices().is_ok())
+                && (!host(&app).teaching_busy.load(Ordering::SeqCst)
+                    || teaching_requested
+                    || host(&app).teaching_preempted.load(Ordering::SeqCst));
+            let devices = if resetting {
                 self.service_ready()
-            } else if matches!(self.phase, Phase::Report | Phase::Release) {
+            } else if teaching_requested || matches!(self.phase, Phase::Report | Phase::Release) {
                 self.check_idle_devices()
             } else { cameras.clone() };
             let reset = std::mem::take(&mut self.s7_reset_requested);
@@ -1851,8 +1890,31 @@ impl Machine {
                     applog::end_cycle();
                 }
                 SessionEvent::Start(request) => {
+                    let mut teaching = host(&app).teaching.lock().await;
+                    let view = teaching.view();
+                    if view.busy {
+                        if view.phase == "requested" {
+                            capture_host.interrupt("生产请求优先，本轮示教已取消");
+                            if let Err(error) = teaching.cancel(plc(&app), 1).await {
+                                self.s7.fault(plc(&app), error.clone()).await;
+                                drop(teaching);
+                                self.enter_fault(error);
+                                return;
+                            }
+                            host(&app).teaching_preempted.store(true, Ordering::SeqCst);
+                        } else if !host(&app).teaching_preempted.load(Ordering::SeqCst) {
+                            let error = "PLC 在示教已占用资源时提交生产请求".to_string();
+                            teaching.force_fault(error.clone());
+                            capture_host.interrupt(error.clone());
+                            self.s7.fault(plc(&app), error.clone()).await;
+                            drop(teaching);
+                            self.enter_fault(error);
+                            return;
+                        }
+                    }
+                    drop(teaching);
                     self.start_part(request).await;
-                },
+                }
                 SessionEvent::End(ended_at, device_triggers) => {
                     if let Some(part) = self.part.as_mut() {
                         part.end_at = Some(ended_at);
@@ -1903,7 +1965,8 @@ impl Machine {
             if previous != self.s7.phase() || previous_reset_blocked != self.s7.view().reset_blocked_reason { self.dirty = true; }
             host(&app).store_busy(self.phase, &self.s7);
         }
-        self.poll_teaching(false, self.s7.phase() == SessionPhase::Idle).await;
+        self.poll_teaching(false, self.s7.phase() == SessionPhase::Idle)
+            .await;
         let timeouts = host(&self.app).settings().timeouts;
         if matches!(self.phase, Phase::Acquire | Phase::Drain) {
             if let Some(part) = self.part.as_mut() {
@@ -2152,7 +2215,11 @@ impl Machine {
     fn enter_fault(&mut self, reason: String) {
         self.close_routing(None);
         let production_pending = self.s7.request().is_some();
-        let in_flight = production_pending && matches!(self.phase, Phase::Validate | Phase::Acquire | Phase::Drain | Phase::Judge);
+        let in_flight = production_pending
+            && matches!(
+                self.phase,
+                Phase::Validate | Phase::Acquire | Phase::Drain | Phase::Judge
+            );
         if in_flight {
             let sn = self.part.as_ref().map(|p| p.sn.clone()).or_else(|| self.s7.request().map(|r| r.sn.clone())).unwrap_or_default();
             let judgement = Judgement::error(fault::DEVICE_LOST, format!("{reason}，结果未回写"));
@@ -2166,8 +2233,16 @@ impl Machine {
             let burst = self.burst_outcome(&sn, self.part.as_ref().map(|p| &*p.recipe), &judgement).map(|record| record.judgement);
             self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement, burst });
         }
-        if production_pending && fault_fails_delivery(self.phase) && self.result.is_some() { self.fail_delivery(&reason); }
-        log_with(&self.app, "err", "故障", reason.clone(), Fields::stage("fault"));
+        if production_pending && fault_fails_delivery(self.phase) && self.result.is_some() {
+            self.fail_delivery(&reason);
+        }
+        log_with(
+            &self.app,
+            "err",
+            "故障",
+            reason.clone(),
+            Fields::stage("fault"),
+        );
         self.fault = Some(reason);
         self.set_phase(Phase::Fault);
     }

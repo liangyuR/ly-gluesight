@@ -4,7 +4,7 @@
 
 应用版本由 `package.json` 管理，Tauri、Cargo 和 Cargo.lock 根包必须一致。`pnpm version:set 0.1.1` 显式升版，`pnpm version:check` 只做检查。正式 tag 为 `vX.Y.Z`，必须与应用版本一致并位于 main 历史中。历史 Release 和同版本资产禁止覆盖。
 
-lyFlow 运行库来自公开仓库 `liangyuR/lyFlow` 的 GitHub Release 资产 `lyflow-runtime-win-x64-v<版本>.zip`，下载无需凭证。`packaging/runtime.json` 的 `lyflow` 段只锁系列（`{ "repository": "liangyuR/lyFlow", "series": "1.1" }`），开发、CI 与发包都取该系列最新正式 Release；`src-tauri/Cargo.toml` 的 `lyflow-client` 用同系列 tag 锁定。来源、校验项、缓存与升级见 [lyFlow 运行库依赖](../architecture/lyflow-dependency.md)。
+lyFlow 运行库来自公开仓库 `liangyuR/lyFlow` 的 GitHub Release 资产 `lyflow-runtime-win-x64-v<版本>.zip`，下载无需凭证。`packaging/runtime.json` 的 `lyflow` 段只锁系列（`{ "repository": "liangyuR/lyFlow", "series": "1.1" }`），开发与发包都取该系列最新正式 Release；普通 PR CI 不恢复运行库。`src-tauri/Cargo.toml` 的 `lyflow-client` 用同系列 tag 锁定。来源、校验项、缓存与升级见 [lyFlow 运行库依赖](../architecture/lyflow-dependency.md)。
 
 ```powershell
 pnpm deps:lyflow:restore
@@ -20,7 +20,7 @@ MVS SDK `4.8.2.2`（取自 MVS 客户端 V5.1.0 安装包内的 SDK 运行库）
 
 依赖缓存在 `src-tauri/target/dependency-cache`：lyFlow 按版本放在 `lyflow/<版本>/`，厂商包按 tag/资产身份隔离。下载在临时目录进行，校验通过才移动到正式缓存目录；命中后仍校验描述文件及实际 DLL。查询或下载 lyFlow 因网络失败时，退回系列内最高的已缓存且校验通过的版本并告警。
 
-CI 先解析 lyFlow 系列最新版本，再以版本为键缓存 `dependency-cache/lyflow`；另分别缓存 pnpm、Cargo、厂商依赖和 Tauri NSIS 工具。最终应用、安装包、组装运行库与验收报告不作为缓存复用。手动运行 `Windows package` 时设置 `use_cache=false` 可跳过全部缓存恢复和保存。
+发包 CI 先解析 lyFlow 系列最新版本，再以版本为键缓存 `dependency-cache/lyflow`；另分别缓存 pnpm、Cargo、厂商依赖和 Tauri NSIS 工具。最终应用、安装包、组装运行库与验收报告不作为缓存复用。手动运行 `Windows package` 时设置 `use_cache=false` 可跳过全部缓存恢复和保存。
 
 不计算发布包或引擎文件的内容哈希，也不锁定 Git 提交。校验使用版本、系列、文件清单、尺寸、路径、架构与 DLL 实际接口和算子。
 
@@ -46,7 +46,7 @@ pnpm package:deps:publish -Archive 'C:\release\gluesight-vendor-runtime-win-x64-
 
 ## CI 与发布门禁
 
-普通 PR 和 main 执行类型检查、前端测试/构建、发包脚本测试及 Rust 回归。影响发包、依赖配置、锁文件、工具链或 workflow 的 PR 额外执行完整 Windows 发包门禁。手动或 tag 触发完整发包，只有 tag 成功后创建草稿 Release；负责人复核后正式发布。
+普通 PR 和 main 仅执行 Rust 格式检查、前端单元测试与 Rust 库单元测试，具体命令见 [测试记录与复现](../testing/TESTING.md#windows-ci-与手动验收)。Windows 发包工作流仅由手动运行或 `v*` tag 触发，PR 不自动执行完整发包门禁。只有 tag 成功后创建草稿 Release；负责人复核后正式发布。
 
 构建使用固定 Node `24.15.0`、pnpm `12.15.0`、Rust `1.99.1`。workflow 保留显式 pnpm、Cargo、Tauri 标准命令，版本及依赖准备脚本与本机共用。构建任务只读，创建草稿 Release 的任务单独获得内容写权限。
 

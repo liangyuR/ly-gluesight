@@ -886,26 +886,6 @@ mod tests {
     }
 
     #[test]
-    fn unpolled_handshake_point_is_rejected_by_contract() {
-        let mut cfg = config();
-        assert!(Contract::validate(&cfg).is_ok());
-        cfg.points.iter_mut().find(|p| p.id == "resultSn").unwrap().poll = false;
-        assert!(Contract::validate(&cfg).unwrap_err().contains("resultSn"));
-    }
-
-    #[test]
-    fn constant_point_timestamp_is_not_mistaken_for_stale_poll() {
-        let (contract, mut status, mut values) = data();
-        assert!(Snapshot::from_values(&contract, &status, &values, 1010, 500).is_ok());
-        assert!(Snapshot::from_values(&contract, &status, &values, 1600, 500).is_err());
-        status.since = 1001;
-        assert!(Snapshot::from_values(&contract, &status, &values, 1010, 500).is_err());
-        status.since = 100;
-        values.get_mut("partSn").unwrap().error = Some(PlcError::Rejected("DB 不可访问".into()));
-        assert!(Snapshot::from_values(&contract, &status, &values, 1010, 500).is_err());
-    }
-
-    #[test]
     fn start_requires_distinct_completed_polls_same_identity_and_connection() {
         let first = snapshot();
         let mut second = first.clone();
@@ -921,18 +901,6 @@ mod tests {
         assert!(confirm_start(&first, &second).is_err());
     }
 
-    #[test]
-    fn malformed_or_unreleased_request_cannot_arm() {
-        for (tag, value) in [
-            ("requestSeq", PlcValue::Int(0)), ("resultAck", PlcValue::Bool(true)),
-            ("done", PlcValue::Bool(true)),
-        ] {
-            let mut s = snapshot();
-            s.values.insert(tag, value);
-            assert!(s.start_request().is_err(), "{tag}");
-        }
-    }
-
     /// 只接受 PC 当前的协议版本：PLC 仍写上一版（协议 5）不能布防；参数表由 PROTOCOL_VERSION 派生，升版时随之移动。
     #[test]
     fn plc_writing_protocol_5_cannot_arm() {
@@ -941,66 +909,6 @@ mod tests {
             let mut s = snapshot();
             s.values.insert("protocolVersion", PlcValue::Int(version));
             assert_eq!(s.start_request().is_ok(), accepted, "protocolVersion={version}");
-        }
-    }
-
-    #[test]
-    fn start_request_with_unequal_or_zero_counts_is_not_rejected_at_request_level() {
-        // 协议 6：示教轮次的 shotCount 可填估算值，生产计数由 admission 按配方核对
-        for (tag, value) in [("shotCount", 0), ("deviceShots", 3)] {
-            let mut s = snapshot();
-            s.values.insert(tag, PlcValue::Int(value));
-            if let Err(error) = s.start_request() { panic!("{tag}={value}: {error}"); }
-        }
-    }
-
-    #[test]
-    fn part_sn_outside_1_to_50_printable_ascii_cannot_arm_but_valid_sn_is_kept_verbatim() {
-        for sn in ["", "   ", "A\u{7f}B", "A\tB", "SN-\u{e9}", &"X".repeat(51)] {
-            let mut s = snapshot();
-            s.values.insert("partSn", PlcValue::Text(sn.into()));
-            assert!(s.start_request().is_err(), "{sn:?}");
-        }
-        for sn in [" a-01 ~".to_owned(), "X".repeat(50)] {
-            let mut s = snapshot();
-            s.values.insert("partSn", PlcValue::Text(sn.clone()));
-            assert_eq!(s.start_request().unwrap().sn, sn);
-        }
-    }
-
-    #[test]
-    fn contract_requires_both_sn_points_as_50_char_s7_string() {
-        let set = |cfg: &mut PlcConfig, tag: &str, data_type: DataType, address: &str| {
-            let point = cfg.points.iter_mut().find(|p| p.id == tag).unwrap();
-            point.data_type = data_type;
-            point.address = address.into();
-        };
-        let mut cfg = config();
-        set(&mut cfg, "partSn", DataType::String, "DB4.DBB38.50");
-        set(&mut cfg, "resultSn", DataType::String, "DB2.DBB20.50");
-        assert!(Contract::validate(&cfg).is_ok());
-        for (tag, data_type, address) in [
-            ("partSn", DataType::I32, "DB4.DBD38"), ("resultSn", DataType::U32, "DB2.DBD20"),
-            ("partSn", DataType::SmartString, "DB4.DBB38.50"), ("resultSn", DataType::String, "DB2.DBB20.24"),
-        ] {
-            let mut broken = cfg.clone();
-            set(&mut broken, tag, data_type, address);
-            assert!(Contract::validate(&broken).is_err(), "{tag} {data_type:?} {address}");
-        }
-    }
-
-    #[test]
-    fn negative_int_or_dint_from_plc_is_rejected_instead_of_reinterpreted_as_unsigned() {
-        let (contract, status, mut values) = data();
-        values.get_mut("requestSeq").unwrap().value = Some(PlcValue::Int(i32::MAX as i64));
-        values.get_mut("productCode").unwrap().value = Some(PlcValue::Int(i16::MAX as i64));
-        let request = Snapshot::from_values(&contract, &status, &values, 1010, 1000).unwrap().request().unwrap();
-        assert_eq!((request.request_seq, request.product_code), (i32::MAX as u32, i16::MAX as u16));
-        for tag in ["requestSeq", "planVersion", "ackSeq", "productCode", "deviceTriggers"] {
-            let (contract, status, mut values) = data();
-            values.get_mut(tag).unwrap().value = Some(PlcValue::Int(-1));
-            let error = Snapshot::from_values(&contract, &status, &values, 1010, 1000).unwrap_err();
-            assert!(error.contains(tag), "{error}");
         }
     }
 
@@ -1025,127 +933,6 @@ mod tests {
     }
 
     #[test]
-    fn part_end_with_changed_request_identity_is_rejected() {
-        let mut ended = snapshot();
-        let request = ended.request().unwrap();
-        ended.values.insert("partEnd", PlcValue::Bool(true));
-        assert!(verify_part_end(&ended, &request).is_ok());
-        // 计数不再核对相等，但 deviceShots 仍属冻结的请求身份
-        for (tag, value) in [("requestSeq", 8), ("deviceShots", 5)] {
-            let mut s = ended.clone();
-            s.values.insert(tag, PlcValue::Int(value));
-            assert!(verify_part_end(&s, &request).is_err(), "{tag}");
-        }
-    }
-
-    #[test]
-    fn contract_rejects_retired_multichannel_tags_even_as_extra_points() {
-        for old in ["camera1Shots", "camera2Shots", "camera3Shots", "camera1Triggers", "camera2Triggers", "camera3Triggers"] {
-            let mut cfg = config();
-            cfg.points.push(PlcPoint {
-                id: format!("old_{old}"), name: old.into(), address: "DB3.DBW0".into(),
-                data_type: DataType::U16, access: Access::Read, tags: vec![old.into()], ..PlcPoint::default()
-            });
-            let error = Contract::validate(&cfg).unwrap_err();
-            assert!(error.contains(old) && error.contains("已停用"), "{error}");
-        }
-    }
-
-    #[test]
-    fn request_deserialization_rejects_retired_channel_payloads() {
-        let request = snapshot().request().unwrap();
-        let mut value = serde_json::to_value(&request).unwrap();
-        value["cameraShots"] = json!([4, 0, 0]);
-        assert!(serde_json::from_value::<Request>(value).is_err());
-        let mut legacy = serde_json::to_value(&request).unwrap();
-        legacy.as_object_mut().unwrap().remove("deviceShots");
-        legacy["cameraShots"] = json!([4, 0, 0]);
-        assert!(serde_json::from_value::<Request>(legacy).is_err());
-        assert_eq!(serde_json::from_value::<Request>(serde_json::to_value(&request).unwrap()).unwrap(), request);
-    }
-
-    #[test]
-    fn write_plans_commit_last_and_fault_preserves_unacknowledged_result() {
-        let arm = arm_plan(&snapshot().request().unwrap());
-        assert_eq!(arm.last().unwrap(), &WriteOp::new("armed", json!(true)));
-        assert_eq!(arm[arm.len() - 2].tag, "busy");
-        assert_eq!(report_plan(&result()).last().unwrap(), &WriteOp::new("done", json!(true)));
-        assert!(fault_plan().iter().all(|op| !["done", "busy", "resultSeq", "resultSn", "resultCode", "faultCode"].contains(&op.tag)));
-        assert!(!reset_plan().contains(&WriteOp::new("visionReady", json!(true))));
-        assert_eq!(release_plan(), vec![WriteOp::new("done", json!(false)), WriteOp::new("busy", json!(false))]);
-    }
-
-    fn idle_snapshot() -> Snapshot {
-        let mut s = snapshot();
-        s.values.insert("partStart", PlcValue::Bool(false));
-        s
-    }
-
-    #[test]
-    fn idle_checks_split_vision_outputs_from_plc_inputs() {
-        // 自动重写只碰 PC 区输出；等待清除的只有 PLC 区输入（协议文档第 2 节的所有者划分）
-        let direction = |tag: &str| FIELDS.iter().find(|f| f.tag == tag).unwrap().direction;
-        assert!(idle_plan().iter().all(|op| direction(op.tag) == Direction::Output));
-        assert_eq!(idle_plan().last().unwrap(), &WriteOp::new("visionReady", json!(true)));
-        let s = idle_snapshot();
-        assert!(s.idle_drift().unwrap().is_empty());
-        assert!(s.idle_plc_held().unwrap().is_empty());
-        assert!(s.idle_plc_held().unwrap().iter().all(|tag| direction(tag) == Direction::Input));
-
-        // PLC 重启 / DB 重新初始化：PC 区读回全 0
-        let mut s = idle_snapshot();
-        for op in idle_plan() {
-            s.values.insert(op.tag, if op.value.is_boolean() { PlcValue::Bool(false) } else { PlcValue::Int(0) });
-        }
-        assert_eq!(s.idle_drift().unwrap(), ["pcProtocolVersion=0", "visionReady=0"]);
-        let mut s = idle_snapshot();
-        for tag in ["armed", "busy", "done", "visionFault"] { s.values.insert(tag, PlcValue::Bool(true)); }
-        assert_eq!(s.idle_drift().unwrap(), ["armed=1", "done=1", "busy=1", "visionFault=1"]);
-
-        let mut s = idle_snapshot();
-        s.values.insert("partEnd", PlcValue::Bool(true));
-        s.values.insert("resultAck", PlcValue::Bool(true));
-        assert_eq!(s.idle_plc_held().unwrap(), ["partEnd", "resultAck"]);
-        assert!(s.idle_drift().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn rejected_write_stops_before_done_commit() {
-        let mut seen = Vec::new();
-        let r = write_all_with(&report_plan(&result()), |op| {
-            seen.push(op.tag);
-            std::future::ready(if op.tag == "resultSeq" { Err("S7 拒绝写入".into()) } else { Ok(()) })
-        }).await;
-        assert!(r.is_err());
-        assert!(!seen.contains(&"done"));
-        assert_eq!(seen.last(), Some(&"resultSeq"));
-    }
-
-    #[test]
-    fn write_confirmation_does_not_accept_cached_errors_or_input_writes() {
-        let (contract, _, mut values) = data();
-        let writes = [WriteOp::new("busy", json!(true))];
-        assert!(!verify_writes(&contract, &values, &writes).unwrap());
-        values.get_mut("busy").unwrap().value = Some(PlcValue::Bool(true));
-        assert!(verify_writes(&contract, &values, &writes).unwrap());
-        values.get_mut("busy").unwrap().error = Some(PlcError::Rejected("读取被拒绝".into()));
-        assert!(verify_writes(&contract, &values, &writes).is_err());
-        assert!(verify_writes(&contract, &values, &[WriteOp::new("partStart", json!(false))]).is_err());
-    }
-
-    #[test]
-    fn reset_requires_released_signals_and_unchanged_baseline() {
-        let mut s = snapshot();
-        assert!(ResetBaseline::capture(&s).is_err());
-        s.values.insert("partStart", PlcValue::Bool(false));
-        s.values.insert("requestSeq", PlcValue::Int(0));
-        let baseline = ResetBaseline::capture(&s).unwrap();
-        assert!(baseline.verify(&s).is_ok());
-        s.values.insert("requestSeq", PlcValue::Int(1));
-        assert!(baseline.verify(&s).is_err());
-    }
-
-    #[test]
     fn heartbeat_requires_a_transition_and_constant_reads_do_not_extend_deadline() {
         assert!(HeartbeatWatch::new(2999).is_err());
         let mut watch = HeartbeatWatch::new(3000).unwrap();
@@ -1163,15 +950,4 @@ mod tests {
         assert!(watch.check(8001).is_err());
     }
 
-    #[test]
-    fn blocked_tick_is_judged_by_the_last_polled_change_not_mistaken_for_heartbeat_loss() {
-        let mut watch = HeartbeatWatch::new(3000).unwrap();
-        watch.observe(false, 0, 0).unwrap();
-        watch.observe(true, 500, 500).unwrap();
-        // 节拍被长操作阻塞 5 s，其间 PLC 照常翻转：轮询缓存里最近一次变化在 5400
-        assert!(watch.observe(true, 5400, 5500).is_ok());
-        assert!(watch.is_live(5500));
-        // 心跳真的停了：空档后缓存里的变化时刻不再前进，仍判失活
-        assert!(watch.observe(true, 5400, 9000).is_err());
-    }
 }

@@ -88,11 +88,6 @@ pub struct Devices {
     pub engine: Option<Value>,
 }
 
-#[cfg(test)]
-impl Progress {
-    pub fn step(&self, id: StepId) -> &Step { self.steps.iter().find(|s| s.id == id).expect("每个步骤都会生成") }
-}
-
 fn view_progress(w: &Workspace, recipe: Option<&Recipe>, devices: &Devices, k: usize, view: u8, enabled: bool) -> ViewProgress {
     let skipped = w.doc.shots[k].skip;
     let projected = recipe.and_then(|r| r.for_view(k, view).ok());

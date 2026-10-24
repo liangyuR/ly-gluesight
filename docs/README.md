@@ -78,7 +78,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 
 - **分段算法**：没有开发。走向、帧间光流、与标定序列 DTW 对齐等线索要等现场按量产曝光与速度拍的含弯道三相机图像；在此之前整条胶路按未分段处理，多段配方各段 N_exp 保持待标定，只凭整件 ΣN_exp 发布与运行（D-SB-21）。
 - **3 × 25 Hz 吞吐门槛**：没有达标，也没有被直接验证。已定（2026-10-23）：门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput`（并重跑 `throughput_probe` 探针）后，再决定降 PLC 频率还是加测量并发；合并前须完成该复测（segment-burst 7.1、第九节第 17 条）。
-- **真引擎测试**：`vision::taught::engine_tests::engine_burst_publish_load_measure_frame_round_trip`（段配方发布包 → 加载 → 预热 → `measure_frame` 的 lyFlow 全链路）标 `#[ignore]`，需设 `LYFLOW_CORE_DLL` 手动运行，见 [测试记录](testing/TESTING.md)。
+- **Rust 回归范围**：当前 106 项默认回归与 1 项手动算法评测，见 [保留测试清单](testing/rust-test-retained-inventory.md)。原 7 项真引擎和 2 项 packaging ignored 测试已删除，原段配方全链路真引擎用例的实测事实仅保留为[历史记录](testing/TESTING.md#特征定位真引擎历史说明)。
 - **已接受、待确认的取舍**：胶偏的 `ToEdge` 测量量未实现；气泡、拉丝不检；“每台相机一条按直线段几何的走廊”没有真实弯道图验证；提前 partEnd 只加 `short_part`、不判 ERR；现场 PLC 草稿 `gluesight_site.scl` 未改，只列改动点。汇总见 [决策索引](decisions/README.md)。
 - **真机验证**：PLC、三台相机共用触发、带宽（三路 25 Hz 估算约 826 Mbps）、现场节拍与检测准确率都没有验证；现有样本集 gs-20261017 是停稳拍数据，段配方上只作冒烟。
 
@@ -89,7 +89,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | [decisions/](decisions/README.md) | 各批工作线的决策记录；[README](decisions/README.md) 标明哪些仍有效、哪些在段配方下或整体被取代 | 历史记录，正文不改写，被取代处只加标注 |
 | [architecture/](architecture) | [配方创建流程](architecture/recipe-creation-workflow.md)、[当前进度](architecture/recipe-creation-progress.md)、[存储布局](architecture/storage-layout.md)、[lyFlow 依赖](architecture/lyflow-dependency.md)描述现状；[P0 计划](architecture/p0-plan.md)、[历史规划](architecture/roadmap.md)、两张架构 HTML 与[工件边缘方案草案](architecture/workpiece-edge-position.md)是历史或草案，开头标有现状 | 现状 + 历史 |
 | [integration/](integration) | [PLC 通讯协议](integration/plc-communication-protocol.md)（另有可离线阅读的 [HTML 版](integration/plc-communication-protocol.html)）、[S7 握手契约](integration/plc-s7-phase1.md)、[离线样本集格式](integration/sample-set-format.md) | 现状契约 |
-| [testing/](testing) | [测试记录与复现](testing/TESTING.md)（现状）、[分段连拍测试清单](testing/segment-burst-test-inventory.md)（新增与删改的测试及其保护的规则）；带日期的文件（如 [UX_FIXES_2026-10-09](testing/UX_FIXES_2026-10-09.md)、[hands-on-2026-10-19](testing/hands-on-2026-10-19.md)、[soak-report](testing/soak-report.md)）是当时的记录，开头标有现状，`evidence/` 是历史证据 | 现状 + 历史 |
+| [testing/](testing) | [测试记录与复现](testing/TESTING.md)（现状）、[前端保留测试清单](testing/frontend-test-retained-inventory.md)与[Rust 保留测试清单](testing/rust-test-retained-inventory.md)（当前逐项保护规则与删除依据）、[分段连拍历史清单](testing/segment-burst-test-inventory.md)（开发期间新增与删改记录）；带日期的文件（如 [UX_FIXES_2026-10-09](testing/UX_FIXES_2026-10-09.md)、[hands-on-2026-10-19](testing/hands-on-2026-10-19.md)、[soak-report](testing/soak-report.md)）是当时的记录，开头标有现状，`evidence/` 是历史证据 | 现状 + 历史 |
 | [design/](design) | 界面设计稿与早期设计状态文件：[PLC 页布局](design/plc-page-layout.md)已按协议 6 与段配方的计划导出更新；单帧示教设计稿（`teaching-page/`）、[`implementation-contract.json`](design/implementation-contract.json) 与 [`black-blue-workflow.json`](design/black-blue-workflow.json) 是旧拍照点模型时期的稿件，开头标有现状（JSON 为 `currentStatus` 字段） | 设计稿，部分为历史 |
 | [discussions/](discussions/fixture-position/README.md) | 特征定位判胶偏的讨论记录（只服务旧配方） | 讨论记录 |
 | [research/](research/glue-position-methods.md) | 胶条位置检测方法调研 | 调研 |

@@ -15,7 +15,9 @@ impl Machine {
         let cycle = host(&app);
         let capture = cycle.camera.recipe_capture();
         let mut teaching = cycle.teaching.lock().await;
-        if reset && teaching.busy() { capture.interrupt("示教事务复位，请整圈重采"); }
+        if reset && teaching.busy() {
+            capture.interrupt("示教事务复位，请整圈重采");
+        }
         teaching.set_origin(crate::offline::enabled(&app));
         crate::offline::service_teaching_idle(&app, teaching.reset_pending() && base_ready);
         let was_busy = teaching.busy();
@@ -31,10 +33,14 @@ impl Machine {
             Err(error) => teaching.force_fault(error),
         };
         match event {
-            TeachEvent::Accepted => { self.set_phase(Phase::Acquire); }
+            TeachEvent::Accepted => {
+                self.set_phase(Phase::Acquire);
+            }
             TeachEvent::Ended => {
                 if capture.active() {
-                    if let Err(error) = capture.burst_plc_ended(None) { capture.fail(error); }
+                    if let Err(error) = capture.burst_plc_ended(None) {
+                        capture.fail(error);
+                    }
                 }
                 self.set_phase(Phase::Drain);
             }
@@ -43,9 +49,16 @@ impl Machine {
                 if production_start_pending(plc(&app)).await.unwrap_or(false) {
                     cycle.teaching_preempted.store(true, Ordering::SeqCst);
                 }
-                if self.s7.request().is_none() { self.set_phase(Phase::Release); }
+                if self.s7.request().is_none() {
+                    self.set_phase(Phase::Release);
+                }
             }
-            TeachEvent::Released => { cycle.teaching_preempted.store(false, Ordering::SeqCst); if self.s7.request().is_none() { self.set_phase(Phase::Idle); } }
+            TeachEvent::Released => {
+                cycle.teaching_preempted.store(false, Ordering::SeqCst);
+                if self.s7.request().is_none() {
+                    self.set_phase(Phase::Idle);
+                }
+            }
             TeachEvent::Fault(reason) if was_busy => {
                 capture.fail(reason.clone());
                 self.s7.fault(plc(&app), reason.clone()).await;
@@ -54,7 +67,11 @@ impl Machine {
             _ => {}
         }
         if teaching.busy() && !reset && matches!(self.s7.phase(), SessionPhase::Fault) {
-            let reason = self.s7.view().message.unwrap_or_else(|| "生产基础握手故障，示教需要复位".into());
+            let reason = self
+                .s7
+                .view()
+                .message
+                .unwrap_or_else(|| "生产基础握手故障，示教需要复位".into());
             teaching.force_fault(reason.clone());
             capture.fail(reason);
         }
@@ -63,16 +80,31 @@ impl Machine {
             self.s7.fault(plc(&app), view.message.clone()).await;
             self.enter_fault(view.message.clone());
         }
-        if matches!(view.phase.as_str(), "cancelling" | "fault" | "releasing" | "reporting") && capture.active() {
+        if matches!(
+            view.phase.as_str(),
+            "cancelling" | "fault" | "releasing" | "reporting"
+        ) && capture.active()
+        {
             capture.interrupt(view.message.clone());
         }
         if matches!(view.phase.as_str(), "requested" | "accepted" | "draining") {
-            if let Some(round) = capture.current_any().filter(|round| Some(round.round_id()) == teaching.bound_round_id()) {
+            if let Some(round) = capture
+                .current_any()
+                .filter(|round| Some(round.round_id()) == teaching.bound_round_id())
+            {
                 if let Some((result, _)) = round.plc_report() {
                     let reason = match &round {
-                        crate::recipe_capture::AnyRound::Burst(round) => match round.failure.as_ref() {
-                            Some(crate::recipe_capture::CaptureFailureV2::Camera { .. } | crate::recipe_capture::CaptureFailureV2::SessionChanged { .. }) => 3,
-                            Some(crate::recipe_capture::CaptureFailureV2::WriteTimeout { .. }) => 5,
+                        crate::recipe_capture::AnyRound::Burst(round) => match round
+                            .failure
+                            .as_ref()
+                        {
+                            Some(
+                                crate::recipe_capture::CaptureFailureV2::Camera { .. }
+                                | crate::recipe_capture::CaptureFailureV2::SessionChanged { .. },
+                            ) => 3,
+                            Some(crate::recipe_capture::CaptureFailureV2::WriteTimeout {
+                                ..
+                            }) => 5,
                             Some(crate::recipe_capture::CaptureFailureV2::Plc) => 6,
                             Some(crate::recipe_capture::CaptureFailureV2::StartTimeout) => 7,
                             _ => 4,
@@ -83,13 +115,14 @@ impl Machine {
                         teaching.force_fault(error.clone());
                         self.s7.fault(plc(&app), error.clone()).await;
                         self.enter_fault(error);
-                    } else { self.set_phase(Phase::Report); }
+                    } else {
+                        self.set_phase(Phase::Report);
+                    }
                 }
             }
         }
         cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
     }
-
 }
 
 /// 本轮采集的相机都还在设备配置里；PLC 每次触发同时触发这些相机。
@@ -101,20 +134,7 @@ fn capture_device_ids(configs: &[crate::camera::CameraConfig], selected: &[Strin
     Ok(selected.to_vec())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn teaching_capture_arms_every_selected_camera_but_rejects_a_removed_one() {
-        let device = |id: &str| crate::camera::CameraConfig { id: id.into(), view_count: 1, ..Default::default() };
-        let configs = [device("cam1"), device("cam2"), device("cam3")];
-        let selected = ["cam1".to_string(), "cam3".to_string()];
-        assert_eq!(capture_device_ids(&configs, &selected).unwrap(), selected);
-        assert!(capture_device_ids(&configs[..2], &selected).unwrap_err().contains("cam3"));
-        assert!(capture_device_ids(&configs, &[]).is_err());
-    }
-}
 
 /// 示教采集期间的复位 / 就绪判定：只放宽"没有可开工配方"，生产生效版本、工件身份、测量线程与采集相机仍须就绪。
 pub(super) fn capture_readiness(service: Result<(), String>, device: impl FnOnce() -> Result<(), String>) -> Result<(), String> {

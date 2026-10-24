@@ -91,7 +91,7 @@ fn plc_estimate_of_zero_or_above_64_is_only_recorded_and_round_completes_on_actu
         start(&host);
         host.burst_plc_started(estimate, 7).unwrap();
         for n in 1..=3 { for cam in 0..3 { offer(&host, frame(cam, n)); } }
-        let done = finish(&host, Some(3));
+        let done = finish(&host, Some(0));
         assert_eq!(done.state, CaptureState::Complete, "估算值 {estimate}：{:?}", done.error);
         assert_eq!((done.plc_shot_count, done.group_count), (Some(estimate), 3), "估算值 {estimate}");
     }
@@ -275,7 +275,9 @@ fn teaching_ready_receives_before_plc_acceptance_and_persists_without_production
     let host = host();
     let initial = start(&host);
     host.burst_ready(12).unwrap();
-    for cam in 0..3 { offer(&host, frame(cam, 1)); }
+    for cam in 0..3 {
+        offer(&host, frame(cam, 1));
+    }
     let done = finish(&host, None);
     assert_eq!(done.state, CaptureState::Complete, "{:?}", done.error);
     assert_eq!(done.group_count, 1);

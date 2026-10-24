@@ -11,7 +11,6 @@ import { WorkspaceProvider } from "../src/features/workspace/context";
 import type { RecipeDoc } from "../src/features/cycle/types";
 import type { WorkspaceView } from "../src/features/workspace/types";
 import { burstCameras, burstRecipe, burstWorkspaceView, pathSegment, progressV2 } from "./fixtures";
-
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
 

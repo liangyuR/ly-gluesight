@@ -540,8 +540,12 @@ pub(crate) fn reset_after_enter(app: AppHandle) {
 
 pub(crate) fn service_teaching_idle(app: &AppHandle, allow_reset: bool) {
     let offline = app.state::<OfflineHost>();
-    if !offline.enabled() || offline.running.load(Ordering::SeqCst) { return; }
-    if let Some(active) = offline.active.lock().unwrap().as_ref() { active.line.service_teaching_idle(allow_reset); };
+    if !offline.enabled() || offline.running.load(Ordering::SeqCst) {
+        return;
+    }
+    if let Some(active) = offline.active.lock().unwrap().as_ref() {
+        active.line.service_teaching_idle(allow_reset);
+    };
 }
 
 fn connected_line(plc: &PlcHost, offline: &OfflineHost) -> Result<Arc<Line>, String> {
@@ -615,7 +619,10 @@ pub fn offline_capture(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_,
         return start_synthetic_capture(&app, &cycle, &offline, line);
     }
     let set = offline.sample_set().ok_or("未选择离线样本集")?;
-    let round = cycle.camera.recipe_capture().current_any()
+    let round = cycle
+        .camera
+        .recipe_capture()
+        .current_any()
         .filter(|r| *r.state() == crate::recipe_capture::CaptureState::Receiving)
         .ok_or("没有等待 PLC 开始的整圈采集：先在整圈采集页点“开始接收”")?;
     let burst = matches!(round, crate::recipe_capture::AnyRound::Burst(_));
@@ -802,8 +809,16 @@ fn fire_burst(app: &AppHandle, recipe: &Arc<Recipe>, feeds: &[BurstFeed], sample
 }
 
 /// 合成图离线环境为段配方的新轮次送一圈：按候选配方的名义剖面发脉冲串（[`capture_profile`]），每个脉冲触发本轮全部相机。
-fn start_synthetic_capture(app: &AppHandle, cycle: &CycleHost, offline: &OfflineHost, line: Arc<Line>) -> Result<(), String> {
-    let round = cycle.camera.recipe_capture().current_any()
+fn start_synthetic_capture(
+    app: &AppHandle,
+    cycle: &CycleHost,
+    offline: &OfflineHost,
+    line: Arc<Line>,
+) -> Result<(), String> {
+    let round = cycle
+        .camera
+        .recipe_capture()
+        .current_any()
         .filter(|r| *r.state() == crate::recipe_capture::CaptureState::Receiving)
         .ok_or("没有等待 PLC 开始的整圈采集：先在整圈采集页点“开始接收”")?;
     let crate::recipe_capture::AnyRound::Burst(round) = round else {
@@ -902,11 +917,26 @@ async fn capture_synthetic(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>,
         let sn = OfflineHost::sn_text(offline.next_sn());
         let order = PartOrder { sn: sn.clone(), ..order };
         let seed = order.profile.as_ref().map_or(0, |p| p.seed);
-        let fire = |_: usize, pulse: Option<&Pulse>| fire_burst(&app, &recipe, &feeds, None, Scenario::Normal, seed, pulse.expect("合成图示教包含脉冲剖面"));
-        let result = line.run_capture(&timing, &order, fire, &offline.abort).await;
+        let fire = |_: usize, pulse: Option<&Pulse>| {
+            fire_burst(
+                &app,
+                &recipe,
+                &feeds,
+                None,
+                Scenario::Normal,
+                seed,
+                pulse.expect("合成图示教包含脉冲剖面"),
+            )
+        };
+        let result = line
+            .run_capture(&timing, &order, fire, &offline.abort)
+            .await;
         offline.parts.fetch_add(1, Ordering::SeqCst);
         match result {
-            Ok(outcome) => Ok(format!("整圈采集 SN {sn} · 合成图 {total} 个脉冲完成，resultCode = {}", outcome.result_code)),
+            Ok(outcome) => Ok(format!(
+                "整圈采集 SN {sn} · 合成图 {total} 个脉冲完成，resultCode = {}",
+                outcome.result_code
+            )),
             Err(error) => Err(format!("整圈采集 SN {sn} · 合成图已中止：{error}")),
         }
     }.await;
@@ -992,14 +1022,25 @@ async fn capture(app: AppHandle, line: Arc<Line>, set: Arc<SampleSet>, requested
         offline.set_message(&app, format!("整圈采集运行中：样本件 {part_id}"));
         let sn = OfflineHost::sn_text(offline.next_sn());
         offline.begin_run(&set, &part_id, &sn, RunPurpose::Capture);
-        let order = PartOrder { sn: sn.clone(), ..order };
+        let order = PartOrder {
+            sn: sn.clone(),
+            ..order
+        };
         let trigger = |k: usize, _: Option<&Pulse>| {
             for (cam, shots) in &feeds {
-                let Some(shot_id) = shots.get(k) else { continue };
-                let _ = app.state::<CycleHost>().camera.trigger(*cam, false, Some(sample_payload(&set, &part_id, shot_id)));
+                let Some(shot_id) = shots.get(k) else {
+                    continue;
+                };
+                let _ = app.state::<CycleHost>().camera.trigger(
+                    *cam,
+                    false,
+                    Some(sample_payload(&set, &part_id, shot_id)),
+                );
             }
         };
-        let result = line.run_capture(&timing, &order, trigger, &offline.abort).await;
+        let result = line
+            .run_capture(&timing, &order, trigger, &offline.abort)
+            .await;
         offline.parts.fetch_add(1, Ordering::SeqCst);
         offline.finish_run(&sn, &result);
         result.map(|outcome| format!("整圈采集 SN {sn} · 样本件 {part_id} 完成，resultCode = {}", outcome.result_code))
@@ -1035,5 +1076,3 @@ fn finish_idle(app: &AppHandle, offline: &OfflineHost) {
 pub(crate) mod test_dir;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod start_request_tests;

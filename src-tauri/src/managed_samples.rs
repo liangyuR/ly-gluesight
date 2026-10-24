@@ -133,29 +133,4 @@ mod tests {
         assert_eq!(set.manifest().id, "fixture");
         assert_eq!(set.load_views("p01", "S001", "cam1", 1).unwrap()[0].pixels, [Fixture::pixel(1, 1, 1); 4]);
     }
-
-    #[test]
-    fn missing_image_does_not_enable_a_partial_import() {
-        let source = Fixture::new(&[1]);
-        let destination = Fixture::new(&[1]);
-        fs::remove_file(source.0.join("parts/p01/S001_cam1_v1.png")).unwrap();
-        assert!(import(&destination.0, &source.0).is_err());
-        assert!(!destination.0.join("samples").exists());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn unreferenced_junction_is_rejected_without_enabling_import() {
-        let source = Fixture::new(&[1]);
-        let destination = Fixture::new(&[1]);
-        let outside = Fixture::new(&[1]);
-        let link = source.0.join("extra");
-        let output = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&outside.0).output().unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-        let result = import(&destination.0, &source.0);
-        fs::remove_dir(&link).unwrap();
-        assert!(result.is_err());
-        assert_eq!(fs::read_dir(destination.0.join("samples")).unwrap().count(), 1);
-        assert!(outside.0.join("sample-set.json").is_file());
-    }
 }

@@ -1,6 +1,6 @@
 # 当前 UI 测试覆盖边界
 
-更新时间：2026-10-23（加入段模型，即分段连拍飞拍）。旧基本操作验收矩阵已删除，其中许多测试文件和覆盖声明已失效。当前用例与复现以[测试说明](TESTING.md)为准，段模型逐条用例见[分段连拍测试清单](segment-burst-test-inventory.md)；[前端轻量测试](frontend-lightweight-tests.md)是 2026-10-12 的快照。
+更新时间：2026-10-23。旧基本操作验收矩阵已删除，其中许多测试文件和覆盖声明已失效。当前前端逐项保护规则见[前端保留测试清单](frontend-test-retained-inventory.md)，整体复现入口见[测试说明](TESTING.md)；[分段连拍测试清单](segment-burst-test-inventory.md)保留开发期间的历史记录。
 
 | 当前覆盖 | 验证方式 |
 | --- | --- |

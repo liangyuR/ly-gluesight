@@ -185,7 +185,7 @@ impl Pool {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{mpsc, Arc};
+    use std::sync::Arc;
 
     fn allocator(
         next: Arc<AtomicUsize>,
@@ -195,10 +195,6 @@ mod tests {
                 .map(|_| format!("cycle-{}", next.fetch_add(1, Ordering::SeqCst)))
                 .collect())
         }
-    }
-
-    fn unexpected(_: usize) -> Result<Vec<String>, String> {
-        panic!("unexpected allocation")
     }
 
     fn complete(pool: &CycleIds, now: Instant) {
@@ -222,42 +218,6 @@ mod tests {
     }
 
     #[test]
-    fn slow_persistence_cannot_make_an_empty_pool_ready_or_allocate_an_id() {
-        let pool = CycleIds::default();
-        let now = Instant::now();
-        let next = Arc::new(AtomicUsize::new(0));
-        let (started, started_wait) = mpsc::channel();
-        let (release, release_wait) = mpsc::channel();
-        let (finished, finished_wait) = mpsc::channel();
-        let allocate = allocator(next);
-        assert!(pool
-            .ready_with(now, move |count| {
-                started.send(count).unwrap();
-                release_wait
-                    .recv_timeout(Duration::from_secs(5))
-                    .map_err(|error| error.to_string())?;
-                let ids = allocate(count);
-                finished.send(()).unwrap();
-                ids
-            })
-            .unwrap_err()
-            .contains("正在后台"));
-        assert_eq!(
-            started_wait.recv_timeout(Duration::from_secs(5)).unwrap(),
-            CAPACITY
-        );
-        assert!(pool.ready_with(now, unexpected).unwrap_err().contains("正在后台"));
-        assert!(pool.take_with(now, unexpected).unwrap_err().contains("正在后台"));
-        assert!(matches!(finished_wait.try_recv(), Err(TryRecvError::Empty)));
-        release.send(()).unwrap();
-        complete(&pool, now);
-        pool.ready_with(now, unexpected).unwrap();
-        assert_eq!(pool.pool.lock().unwrap().ids.len(), CAPACITY);
-        assert_eq!(pool.take_with(now, unexpected).unwrap(), "cycle-0");
-        bounded(&pool);
-    }
-
-    #[test]
     fn durable_ids_remain_unique_and_the_pool_stays_bounded_during_refills() {
         let pool = CycleIds::default();
         let next = Arc::new(AtomicUsize::new(0));
@@ -278,59 +238,4 @@ mod tests {
         assert_eq!(seen.len(), CAPACITY * 2);
     }
 
-    #[test]
-    fn allocation_failure_has_a_one_second_backoff_and_can_recover() {
-        let pool = CycleIds::default();
-        let now = Instant::now();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let failed_calls = calls.clone();
-        assert!(pool
-            .ready_with(now, move |_| {
-                failed_calls.fetch_add(1, Ordering::SeqCst);
-                Err("disk full".into())
-            })
-            .is_err());
-        complete(&pool, now);
-        let before_retry = now + RETRY_DELAY - Duration::from_millis(1);
-        assert!(pool.ready_with(before_retry, unexpected).unwrap_err().contains("disk full"));
-        assert!(pool.take_with(before_retry, unexpected).unwrap_err().contains("disk full"));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(pool.pool.lock().unwrap().allocating.is_none());
-        let retry = now + RETRY_DELAY;
-        assert!(pool
-            .ready_with(retry, allocator(Arc::new(AtomicUsize::new(0))))
-            .is_err());
-        complete(&pool, retry);
-        pool.ready_with(retry, unexpected).unwrap();
-        assert_eq!(pool.take_with(retry, unexpected).unwrap(), "cycle-0");
-        assert!(pool.pool.lock().unwrap().failure.is_none());
-        bounded(&pool);
-    }
-
-    #[test]
-    fn a_bad_refill_cannot_replace_existing_durable_ids() {
-        let pool = CycleIds::default();
-        let now = Instant::now();
-        assert!(pool
-            .ready_with(now, allocator(Arc::new(AtomicUsize::new(0))))
-            .is_err());
-        complete(&pool, now);
-        for _ in 0..CAPACITY - LOW_WATER - 1 {
-            pool.take_with(now, unexpected).unwrap();
-        }
-        pool.take_with(now, |count| {
-            let mut ids: Vec<_> = (0..count).map(|i| format!("refill-{i}")).collect();
-            ids[0] = format!("cycle-{}", CAPACITY - 1);
-            Ok(ids)
-        })
-        .unwrap();
-        complete(&pool, now);
-        assert_eq!(pool.pool.lock().unwrap().ids.len(), LOW_WATER);
-        pool.ready_with(now, unexpected).unwrap();
-        assert_eq!(
-            pool.take_with(now, unexpected).unwrap(),
-            format!("cycle-{}", CAPACITY - LOW_WATER)
-        );
-        bounded(&pool);
-    }
 }

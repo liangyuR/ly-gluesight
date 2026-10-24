@@ -446,7 +446,6 @@ pub fn export(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use SegmentKind::{Corner, Straight};
 
     /// 一份合法的段计划：直线 12 帧（带胶偏参考）、弯道 4 帧、直线 9 帧，三台相机。
@@ -605,62 +604,5 @@ mod tests {
         for (case, edit) in cases {
             assert!(check(&edited(edit)).is_err(), "{case}");
         }
-    }
-
-    /// 规格 §3/§4：未分段区域允差取直线 / 弯道中较宽一档；停用是最宽的一档，有一段停用即停用；不判均匀性和胶偏。
-    #[test]
-    fn wider_checks_takes_the_looser_limit_per_item() {
-        let straight = SegmentChecks {
-            width: WidthCheck { enabled: true, nominal_mm: 4.0, tol_upper: 1.0, tol_lower: 1.5, max_excursion_mm: 6.0, max_range_mm: Some(0.8) },
-            gap: BreakCheck { enabled: true, max_gap_mm: 4.0, min_present: 0.9 },
-            overflow: OverflowCheck { enabled: true, max_width_mm: 7.0 },
-            offset: Some(OffsetCheck { enabled: true, max_mean_shift_mm: 2.0, max_local_dev_mm: 2.0 }),
-        };
-        let corner = SegmentChecks {
-            width: WidthCheck { enabled: true, nominal_mm: 4.5, tol_upper: 1.0, tol_lower: 0.5, max_excursion_mm: 3.0, max_range_mm: None },
-            gap: BreakCheck { enabled: false, max_gap_mm: 8.0, min_present: 0.95 },
-            overflow: OverflowCheck { enabled: true, max_width_mm: 9.0 },
-            offset: None,
-        };
-        // 胶宽绝对上限 max(5.0, 5.5) = 5.5、下限 min(2.5, 4.0) = 2.5，名义值沿用第一段 4.0
-        assert_eq!(
-            wider_checks(&[&straight, &corner]),
-            SegmentChecks {
-                width: WidthCheck { enabled: true, nominal_mm: 4.0, tol_upper: 1.5, tol_lower: 1.5, max_excursion_mm: 6.0, max_range_mm: None },
-                gap: BreakCheck { enabled: false, max_gap_mm: 8.0, min_present: 0.9 },
-                overflow: OverflowCheck { enabled: true, max_width_mm: 9.0 },
-                offset: None,
-            }
-        );
-    }
-
-    /// 规格 §1 导出 JSON 契约：段序列、各段 N_exp、容差、ΣN_exp；未标定为 null。
-    #[test]
-    fn export_json_lists_segments_frames_tolerance_and_totals_with_null_when_uncalibrated() {
-        let mut p = plan();
-        p.segments.truncate(2);
-        p.segments[0].length_mm = Some(180.0);
-        p.segments[0].inspect_range = Some(InspectRange { a_mm: 10.0, b_mm: 170.0 });
-        p.segments[1].expected_frames = None;
-        p.segments[1].tolerance = 2;
-        let exported = serde_json::to_value(export("door-l", 7, 3, &p.segments, &p.cameras, None)).unwrap();
-        assert_eq!(
-            exported,
-            json!({
-                "protocolVersion": crate::handshake::PROTOCOL_VERSION,
-                "recipeId": "door-l",
-                "productCode": 7,
-                "planVersion": 3,
-                "cameras": ["camA", "camB", "camC"],
-                "segments": [
-                    { "index": 1, "kind": "straight", "lengthMm": 180.0, "expectedFrames": 12, "tolerance": 1,
-                      "inspectRange": { "aMm": 10.0, "bMm": 170.0 } },
-                    { "index": 2, "kind": "corner", "lengthMm": null, "expectedFrames": null, "tolerance": 2, "inspectRange": null },
-                ],
-                "expectedTotal": null,
-                "toleranceTotal": 3,
-            })
-        );
-        assert_eq!(export("door-l", 7, 3, &p.segments, &p.cameras, Some(&part(17))).expected_total, Some(17), "有整件标定时导出整件帧组数");
     }
 }

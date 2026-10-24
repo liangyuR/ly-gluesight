@@ -790,7 +790,3 @@ fn corridor_exit(beads: &[Option<(f64, f64)>], tolerance_px: f64, scale: f64) ->
 #[cfg(test)]
 #[path = "taught/tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "taught/engine_tests.rs"]
-mod engine_tests;

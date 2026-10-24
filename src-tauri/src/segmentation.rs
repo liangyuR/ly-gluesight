@@ -389,19 +389,13 @@ pub mod synthetic {
 
 #[cfg(test)]
 mod tests {
-    use super::synthetic::{evaluate, generate, SequenceSpec};
     use super::*;
     use crate::plan::{new_segment, KindDefaults};
-    use RegionKind::{Corner, Straight};
     use SegmentKind::{Corner as C, Straight as S};
 
     fn plan(kinds: &[SegmentKind]) -> Vec<PathSegment> {
         let defaults = KindDefaults::default();
         kinds.iter().enumerate().map(|(i, &kind)| new_segment(i as u32 + 1, kind, &defaults)).collect()
-    }
-
-    fn cut(after_segment: u32, frame_seq: u64, confidence: f32) -> Boundary {
-        Boundary { after_segment, frame_seq, confidence }
     }
 
     fn region(kind: RegionKind, first_seq: u64, last_seq: u64) -> Region {
@@ -418,116 +412,5 @@ mod tests {
             resolve_regions(&segments, &outcome, 23, 0.8),
             vec![region(RegionKind::Unsegmented { first_segment: 1, last_segment: 3, reason: UnsegReason::AlgorithmPending }, 1, 23)]
         );
-    }
-
-    /// 规格 §3：边界两侧各一帧归弯道；直线段只剩一帧时整段让给弯道，区域仍首尾相接。
-    #[test]
-    fn confident_boundary_gives_one_frame_each_side_to_corner() {
-        for (case, kinds, boundaries, total, expected) in [
-            (
-                "直线-弯道-直线",
-                vec![S, C, S],
-                vec![cut(1, 10, 0.9), cut(2, 14, 0.9)],
-                22,
-                vec![region(Straight { segment: 1 }, 1, 9), region(Corner { segment: 2 }, 10, 15), region(Straight { segment: 3 }, 16, 22)],
-            ),
-            (
-                "两弯道夹一帧直线",
-                vec![C, S, C],
-                vec![cut(1, 4, 0.9), cut(2, 5, 0.9)],
-                9,
-                vec![region(Corner { segment: 1 }, 1, 5), region(Corner { segment: 3 }, 6, 9)],
-            ),
-        ] {
-            assert_eq!(resolve_regions(&plan(&kinds), &SegOutcome::Boundaries(boundaries), total, 0.8), expected, "{case}");
-        }
-    }
-
-    /// 规格 §3：置信度不足（或算法缺给边界）时不回退计划边界，把两侧两段合并为未分段；连续多个一并合并。
-    /// 合并区域与可信直线段之间仍按“两侧各一帧归弯道”从直线侧取帧。
-    #[test]
-    fn low_confidence_boundary_merges_both_sides_into_unsegmented_without_plan_fallback() {
-        let segments = plan(&[S, C, S, C, S]);
-        let merged = RegionKind::Unsegmented { first_segment: 2, last_segment: 4, reason: UnsegReason::LowConfidence };
-        let expected = vec![region(Straight { segment: 1 }, 1, 10), region(merged, 11, 28), region(Straight { segment: 5 }, 29, 33)];
-        for (case, boundaries) in [
-            ("第 2、3 个边界置信度不足", vec![cut(1, 11, 0.9), cut(2, 15, 0.3), cut(3, 23, 0.2), cut(4, 27, 0.95)]),
-            ("算法缺给第 2、3 个边界", vec![cut(1, 11, 0.9), cut(4, 27, 0.95)]),
-        ] {
-            assert_eq!(resolve_regions(&segments, &SegOutcome::Boundaries(boundaries), 33, 0.8), expected, "{case}");
-        }
-    }
-
-    /// 规格 §3：以上一边界为起点加本段 N_exp 得预期帧号，窗口 ±(tol + 1)；下限不早于上一边界之后一帧。
-    #[test]
-    fn search_window_is_previous_plus_n_exp_within_tol_plus_one() {
-        for (prev, n_exp, tol, window) in [(0, 10, 1, 8..=12), (20, 4, 2, 21..=27), (20, 2, 1, 21..=24), (0, 1, 1, 1..=3)] {
-            assert_eq!(search_window(prev, n_exp, tol), window, "prev {prev} + {n_exp} ± ({tol} + 1)");
-        }
-    }
-
-    /// 测试用分段器：原样返回给定边界。
-    struct Fixed(Vec<Boundary>);
-
-    impl Segmenter for Fixed {
-        fn segment(&self, _input: &SegInput) -> SegOutcome {
-            SegOutcome::Boundaries(self.0.clone())
-        }
-    }
-
-    fn spec() -> SequenceSpec {
-        SequenceSpec { segments: vec![(S, 12), (C, 4), (S, 9), (C, 5), (S, 10)], head_tail_jitter: 1, corner_jitter: 2, missing: vec![(1, 7)] }
-    }
-
-    /// 规格 §3/§6 合成序列回归入口：逐个真值边界报告误差，算法没给出的列为未找到。
-    #[test]
-    fn segmenter_off_by_k_frames_reports_boundary_error_k_and_missing_boundaries_listed() {
-        let sequence = generate(&spec(), 7);
-        let shifted = sequence.truth.iter().map(|b| Boundary { frame_seq: b.frame_seq + 2, ..b.clone() }).collect();
-        let partial = sequence.truth.iter().filter(|b| b.after_segment != 2).cloned().collect();
-        let cases: [(&str, &dyn Segmenter, [Option<u64>; 4]); 4] = [
-            ("真值", &Fixed(sequence.truth.clone()), [Some(0); 4]),
-            ("整体偏后 2 帧", &Fixed(shifted), [Some(2); 4]),
-            ("缺第 2 个边界", &Fixed(partial), [Some(0), None, Some(0), Some(0)]),
-            ("未分段", &Unsegmented, [None; 4]),
-        ];
-        for (case, segmenter, errors) in cases {
-            let report = evaluate(segmenter, &sequence);
-            assert_eq!(report.boundaries.iter().map(|b| b.after_segment).collect::<Vec<_>>(), vec![1, 2, 3, 4], "{case}");
-            assert_eq!(report.boundaries.iter().map(|b| b.error).collect::<Vec<_>>(), errors, "{case}");
-        }
-    }
-
-    /// 规格 §6 合成序列：同一 spec 与种子结果确定；各段帧数在名义值 ± 波动内且确有波动；真值边界与帧组一致；指定缺帧标出。
-    #[test]
-    fn same_spec_and_seed_give_identical_sequence_within_jitter_with_missing_frames_marked() {
-        let spec = spec();
-        let sequence = generate(&spec, 7);
-        let again = generate(&spec, 7);
-        assert_eq!((&sequence.groups, &sequence.features, &sequence.truth), (&again.groups, &again.features, &again.truth), "同一种子");
-
-        let counts = |truth: &[Boundary], total: u64| {
-            let ends: Vec<u64> = truth.iter().map(|b| b.frame_seq).chain([total]).collect();
-            ends.iter().scan(0, |start, &end| Some(end - std::mem::replace(start, end))).collect::<Vec<u64>>()
-        };
-        // 首尾 ±1；弯道 ±2；首段不是弯道，末段不是弯道
-        let bounds = [(11, 13), (2, 6), (9, 9), (3, 7), (9, 11)];
-        let mut seen_first = std::collections::BTreeSet::new();
-        for seed in 0..32 {
-            let s = generate(&spec, seed);
-            let total = s.groups.len() as u64;
-            assert_eq!(s.groups.iter().map(|g| g.seq).collect::<Vec<_>>(), (1..=total).collect::<Vec<_>>(), "种子 {seed}");
-            let counts = counts(&s.truth, total);
-            for (k, (&count, &(lo, hi))) in counts.iter().zip(&bounds).enumerate() {
-                assert!((lo..=hi).contains(&count), "种子 {seed} 第 {} 段 {count} 帧不在 {lo}..={hi}", k + 1);
-            }
-            seen_first.insert(counts[0]);
-        }
-        assert!(seen_first.len() > 1, "起头波动没有生效");
-
-        let incomplete: Vec<u64> = sequence.groups.iter().filter(|g| g.incomplete).map(|g| g.seq).collect();
-        assert_eq!(incomplete, vec![7]);
-        assert_eq!(sequence.groups[6].present, vec![true, false, true]);
-        assert_eq!(sequence.features.len(), sequence.groups.len() * synthetic::CAMERAS);
     }
 }

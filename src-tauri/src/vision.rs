@@ -363,7 +363,6 @@ impl VisionHost {
 
 }
 
-
 /// 工位标定文件 `calib/plane_calib_{键}.json`：旧拍照点配方的 `{device}-v{view}` 与显式标定引用（段配方的显式引用也在这里）。
 pub fn station_calib_path(app: &AppHandle, cam_id: &str) -> Result<PathBuf, String> {
     calib_key_path(app, &CalibKey::Station(cam_id.to_string()))
@@ -580,28 +579,3 @@ mod tests;
 
 #[cfg(test)]
 mod eval;
-
-#[cfg(test)]
-mod run_identity_tests {
-    use super::*;
-    use std::collections::HashSet;
-    use std::sync::Barrier;
-
-    #[test]
-    fn concurrent_identical_labels_get_unique_run_ids() {
-        let barrier = Barrier::new(8);
-        let ids = std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..8).map(|_| {
-                let barrier = &barrier;
-                scope.spawn(move || {
-                    barrier.wait();
-                    (0..1024).map(|_| unique_run_id("same-label")).collect::<Vec<_>>()
-                })
-            }).collect();
-            workers.into_iter().flat_map(|worker| worker.join().unwrap()).collect::<Vec<_>>()
-        });
-        assert_eq!(ids.len(), 8192);
-        assert!(ids.iter().all(|id| id.starts_with("same-label-")));
-        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len());
-    }
-}

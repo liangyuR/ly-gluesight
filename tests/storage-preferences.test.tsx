@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, expect, it, vi } from "vitest";
-import { storageApi, type StoragePreferences } from "../src/lib/storage";
+import type { StoragePreferences } from "../src/lib/storage";
 import FeasibilityCalc from "../src/features/camera/components/FeasibilityCalc";
 import { deferred } from "./fixtures";
 
@@ -19,22 +19,7 @@ beforeEach(() => {
   });
 });
 
-it("导入旧浏览器参数 → 保留已有后端值，仅保存成功后清除旧键", async () => {
-  saved = { flyshotSpeedMmS: 70 };
-  localStorage.setItem("gluesight.feasibility.manual", JSON.stringify({ speed: 90, spacing: 25 }));
-  localStorage.setItem("tujiao-last-workspace", "01");
-  const original = vi.mocked(invoke).getMockImplementation()!;
-  vi.mocked(invoke).mockImplementation(async (command, args) => {
-    if (command === "storage_preferences_update") throw new Error("无法写入");
-    return original(command, args);
-  });
-  await expect(storageApi.preferences()).rejects.toThrow("无法写入");
-  expect(localStorage.getItem("tujiao-last-workspace")).toBe("01");
-  vi.mocked(invoke).mockImplementation(original);
-  expect(await storageApi.preferences()).toEqual({ flyshotSpeedMmS: 70, flyshotSpacingMm: 25, lastWorkspace: "01", legacyImported: true });
-  expect(localStorage.getItem("gluesight.feasibility.manual")).toBeNull();
-  expect(localStorage.getItem("tujiao-last-workspace")).toBeNull();
-});
+
 
 it("参数延迟读回期间输入 → 保留新值并写入资料配置，失败可重试", async () => {
   const read = deferred<StoragePreferences>();

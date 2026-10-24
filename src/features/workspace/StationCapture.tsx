@@ -1,9 +1,9 @@
 import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { Camera } from "lucide-react";
-import { Button } from "qing-steel";
+import { Button, Card } from "qing-steel";
 import { workspaceApi } from "./api";
-import { GrayViewer, Notice, Panel } from "./components";
+import { GrayViewer, Notice } from "./components";
 import type { FrozenImage, GrayImage } from "./types";
 import ImageImportButton from "./ImageImportButton";
 
@@ -33,9 +33,9 @@ export default function StationCapture({cam,view=1,multiView=false,sample,onSamp
     try{const metadata=await workspaceApi.stationImport(cam,bytes,view);if(!valid())return;const image=await workspaceApi.stationImage(cam,metadata.id,view);if(valid())onSample({metadata,image});}
     finally{if(valid()){pending.current=false;setBusy(false);}}
   };
-  return <Panel title={(multiView?"图 "+view+" · ":"")+"冻结标定样本"} detail="取样或导入本工位的离线原图，再在同一张图像上标定和试测" actions={<div className="wp-actions"><ImageImportButton scope={"station:"+cam+":"+view} disabled={busy} onImport={importImage} onError={setError} onReadingChange={value=>{readingRef.current=value;setReading(value);}}/><Button variant={sample?"tonal":"filled"} leadingIcon={<Camera size={15}/>} disabled={busy||reading} onClick={()=>void capture()}>{busy?"取样中…":"取新样本"}</Button></div>}>
-    <GrayViewer image={sample?.image??null} loading={busy||reading} error={error} label={sample?.metadata.id??"等待标定板样本"} emptyTitle="尚无标定样本" emptyHint="把标定板放在胶路测量平面后点“取新样本”，或导入本工位的离线原图。"/>
+  return <Card level="low" className="panel wp-panel" title={multiView?`图 ${view}`:undefined} actions={<div className="wp-actions"><ImageImportButton label="导入离线图" scope={"station:"+cam+":"+view} disabled={busy} onImport={importImage} onError={setError} onReadingChange={value=>{readingRef.current=value;setReading(value);}}/><Button variant={sample?"tonal":"filled"} leadingIcon={<Camera size={15}/>} disabled={busy||reading} onClick={()=>void capture()}>{busy?"拍照中…":"拍照"}</Button></div>}>
+    <GrayViewer image={sample?.image??null} loading={busy||reading} error={error} label={sample?.metadata.id??""} emptyTitle="尚无标定样本" emptyHint="把标定板放在胶路测量平面后点“拍照”，或导入本工位的离线图。"/>
     {sample&&<p className="muted mono">{sample.metadata.camera} · {sample.metadata.source==="import"?"离线原图":new Date(sample.metadata.capturedAt).toLocaleString("zh-CN")}{sample.metadata.exposureUs!=null&&" · 曝光 "+sample.metadata.exposureUs+" μs"}</p>}
     {error&&<Notice title="未能取样" tone="warn">{error}</Notice>}
-  </Panel>;
+  </Card>;
 }

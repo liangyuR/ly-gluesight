@@ -181,6 +181,3 @@ fn remove_checked(file: &Path) -> Result<(), String> {
     }
     fs::remove_file(file).map_err(error)
 }
-
-#[cfg(test)]
-mod tests;

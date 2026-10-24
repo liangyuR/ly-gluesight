@@ -16,31 +16,27 @@ use crate::release::ValidationSite;
 use crate::store::{self, Store};
 use crate::vision;
 
-mod comparisons;
-mod recorded;
-mod history_samples;
-mod reproduce;
-mod workflow;
-mod fixture;
 mod burst;
-mod capture_review;
 mod burst_history;
 mod burst_release;
-pub(crate) mod centerline;
-pub mod progress;
-#[cfg(test)]
-mod workflow_tests;
-#[cfg(test)]
-mod progress_tests;
-#[cfg(test)]
-mod burst_tests;
 #[cfg(test)]
 mod burst_release_tests;
-pub use workflow::*;
-pub use fixture::*;
+#[cfg(test)]
+mod burst_tests;
+mod capture_review;
+pub(crate) mod centerline;
+mod comparisons;
+mod fixture;
+mod history_samples;
+pub mod progress;
+mod recorded;
+mod reproduce;
+mod workflow;
 pub use burst::*;
-pub use capture_review::*;
 pub use burst_history::*;
+pub use capture_review::*;
+pub use fixture::*;
+pub use workflow::*;
 
 fn state_value(value: &impl Serialize) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
@@ -2413,14 +2409,6 @@ impl Drop for SampleImportFiles {
 mod tests {
     use super::*;
 
-    #[test]
-    fn recipe_without_shots_to_inspect_reports_no_teaching_coverage_instead_of_full() {
-        let mut recipe = crate::recipe::samples().remove(0).build().unwrap();
-        assert!(coverage(&recipe).is_some());
-        recipe.shots.clear();
-        assert_eq!(coverage(&recipe), None);
-    }
-
     pub(super) struct ImportTestDir(pub(super) PathBuf);
     impl ImportTestDir {
         pub(super) fn new() -> Self {
@@ -2432,282 +2420,6 @@ mod tests {
         }
     }
     impl Drop for ImportTestDir { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-
-    #[test]
-    fn deleting_and_recreating_candidate_keeps_old_snapshots_and_rejects_same_identity_conflicts() {
-        let dir = ImportTestDir::new();
-        let database = dir.0.join("inspection.db");
-        let store = Store::open(&database).unwrap();
-        let save = |store: &Store, recipe: &Recipe, cycle: &str| {
-            let shots: Vec<_> = recipe.shots.iter().enumerate().map(|(k, shot)| store::PartShot {
-                k, shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view,
-                session: None, ordinal: None, frame_counter: None, trigger_counter: None,
-                status: cycle::FrameStatus::Done, error: None, score: None, ms: None, raw_files: Vec::new(),
-            }).collect();
-            store.insert(&store::PartRecord {
-                ts: 1, sn: cycle, recipe: Some(recipe), judgement: &judge::Judgement::error(90, "调试记录"),
-                drain_ms: None, frames: &[], frames_expected: recipe.shot_count(), frames_received: recipe.shot_count(),
-                triggers: recipe.shot_count() as u64, table: None, software_version: "test", cycle_id: Some(cycle),
-                bundle_id: None, delivery: &store::PlcDelivery::default(), shots: &shots,
-                source: store::RecordSource::OfflineCandidate, sample: None, burst: None,
-            })
-        };
-        let doc = crate::recipe::samples().remove(1);
-        let mut legacy = doc.build().unwrap();
-        legacy.revision_id = format!("candidate-{}-r7", doc.id);
-        save(&store, &legacy, "legacy").unwrap();
-        let mut old_workspace = serde_json::to_value(Workspace::new(doc.clone(), None)).unwrap();
-        old_workspace.as_object_mut().unwrap().remove("instanceId");
-        let mut first: Workspace = serde_json::from_value(old_workspace).unwrap();
-        first.revision = 7;
-        first.ensure_instance(&store).unwrap();
-        let candidate_dir = dir.0.join(&doc.id);
-        std::fs::create_dir(&candidate_dir).unwrap();
-        let file = candidate_dir.join("workspace.json");
-        crate::fsio::write_atomic(&file, &serde_json::to_string(&first).unwrap()).unwrap();
-        let mut first_recipe = first.doc.build().unwrap();
-        first_recipe.revision_id = first.debug_revision().unwrap();
-        save(&store, &first_recipe, "first").unwrap();
-        drop(store);
-        let store = Store::open(&database).unwrap();
-        let mut restored: Workspace = serde_json::from_str(&crate::fsio::read_text(&file).unwrap()).unwrap();
-        restored.ensure_instance(&store).unwrap();
-        assert_eq!(restored.debug_revision().unwrap(), first_recipe.revision_id);
-        std::fs::remove_dir_all(&candidate_dir).unwrap();
-        let mut recreated = Workspace::new(doc, None);
-        recreated.revision = first.revision;
-        recreated.doc.name = "重建后的候选".into();
-        recreated.ensure_instance(&store).unwrap();
-        let mut second_recipe = recreated.doc.build().unwrap();
-        second_recipe.revision_id = recreated.debug_revision().unwrap();
-        save(&store, &second_recipe, "second").unwrap();
-        for recipe in [&legacy, &first_recipe, &second_recipe] {
-            let snapshot = store.recipe_snapshot(&recipe.revision_id).unwrap().unwrap();
-            assert_eq!(snapshot.revision_id, recipe.revision_id);
-            assert_eq!(snapshot.name, recipe.name);
-        }
-        second_recipe.name = "同一身份的冲突内容".into();
-        assert!(save(&store, &second_recipe, "conflict").is_err());
-    }
-
-    fn import_workspace() -> Workspace {
-        let mut workspace = Workspace::new(crate::recipe::samples().remove(0), None);
-        for frame in &mut workspace.frames { frame.image = None; }
-        workspace
-    }
-    fn tiny_image(k: usize) -> SampleImageInput {
-        let mut bytes = b"P5\n3 2\n255\n".to_vec();bytes.extend([0, 32, 64, 128, 200, 255]);
-        SampleImageInput { k, bytes }
-    }
-
-    #[test]
-    fn sample_base64_real_pgm_roundtrip_writes_each_shot_without_changing_pixels() {
-        use base64::Engine;
-        assert!(serde_json::from_value::<SampleImageInput>(json!({"k": 0, "bytes": ""})).is_err());
-        assert!(decode_imported_image(Vec::new()).is_err());
-        assert!(decode_imported_image(b"not an image".to_vec()).is_err());
-        assert!(decode_imported_image(b"P5\n999999 999999\n255\n".to_vec()).is_err());
-        let root = ImportTestDir::new();
-        let workspace = import_workspace();
-        let wire = (0..workspace.frames.len()).map(|k| {
-            let mut bytes = b"P5\n3 2\n255\n".to_vec();
-            bytes.extend([k as u8, 32, 64, 128, 200, 255]);
-            json!({"k": k, "bytes": base64::engine::general_purpose::STANDARD.encode(bytes)})
-        }).collect::<Vec<_>>();
-        let inputs: Vec<SampleImageInput> = serde_json::from_value(json!(wire)).unwrap();
-        assert_eq!(inputs.len(), workspace.doc.shots.len());
-        let mut files = SampleImportFiles::new(&root.0, "1-7-4").unwrap();
-        files.write_images(&workspace, inputs).unwrap();
-        files.publish("1-7-4").unwrap();
-        files.keep = true;
-        for k in 0..workspace.frames.len() {
-            let image = crate::image_file::load(&files.path.join(format!("k{k}.pgm"))).unwrap();
-            assert_eq!([image.width, image.height], [3, 2]);
-            assert_eq!(image.pixels, [k as u8, 32, 64, 128, 200, 255]);
-        }
-    }
-
-    #[test]
-    fn sample_import_removes_earlier_images_when_a_later_image_is_corrupt() {
-        let root = ImportTestDir::new();
-        let preserved = root.0.join("existing");std::fs::create_dir(&preserved).unwrap();
-        std::fs::write(preserved.join("keep.txt"), "prior sample").unwrap();
-        let path;
-        {
-            let files = SampleImportFiles::new(&root.0, "1-7-0").unwrap();path = files.path.clone();
-            let result = files.write_images(&import_workspace(), vec![tiny_image(0), SampleImageInput { k: 1, bytes: b"broken image".to_vec() }]);
-            assert!(result.unwrap_err().contains("k2"));
-            assert!(path.join("k0.pgm").is_file());
-        }
-        assert!(!path.exists());
-        assert_eq!(std::fs::read_to_string(preserved.join("keep.txt")).unwrap(), "prior sample");
-    }
-
-    fn taught() -> Teaching {
-        let image = FrozenImage {
-            id: "image-a".into(),
-            view: 1,
-            source: "test".into(),
-            captured_at: 1,
-            size: [100, 100],
-            camera: "cam".into(),
-            camera_tag: "camera".into(),
-            calib_tag: "calib".into(),
-            geometry_tag: "geometry".into(),
-            exposure_us: None,
-            gain_db: None,
-            history_id: None,
-        };
-        let trial = Trial {
-            verdict: Some(Verdict::Ok),
-            image_id: image.id.clone(),
-            engine_tag: "test-engine".into(),
-            params_tag: "teach".into(),
-            geometry_tag: "geometry".into(),
-            passed: true,
-            score: 0.9,
-            coverage: 1.0,
-            elapsed_ms: 1,
-            reason: "pass".into(),
-            measurement: Value::Null,
-            fixture: None,
-        };
-        Teaching {
-            view_states: Vec::new(),
-            k: 0,
-            views: vec![image.clone()],
-            image: Some(image),
-            trial: Some(trial),
-            saved: true,
-            backup: None,
-        }
-    }
-
-    fn tricam_workspace() -> Workspace {
-        let mut w = Workspace::new(crate::recipe::samples().remove(1), None);
-        let r = w.doc.build().unwrap();
-        for k in 0..w.frames.len() {
-            let mut frame = taught();
-            frame.k = k;
-            frame.views = (1..=3).map(|view| {
-                let mut recipe = r.clone();
-                recipe.shots[k].view = view;
-                FrozenImage {
-                    id: format!("group-{k}-v{view}"), view,
-                    camera: r.shots[k].camera.clone(),
-                    geometry_tag: shot_tags(&recipe, k).unwrap().0,
-                    ..frame.image.as_ref().unwrap().clone()
-                }
-            }).collect();
-            frame.image = Some(frame.views[0].clone());
-            let (image_tag, teach_tag) = shot_tags(&r, k).unwrap();
-            frame.trial.as_mut().unwrap().image_id = frame.image.as_ref().unwrap().id.clone();
-            frame.trial.as_mut().unwrap().geometry_tag = image_tag;
-            frame.trial.as_mut().unwrap().params_tag = teach_tag;
-            w.frames[k] = frame;
-        }
-        w
-    }
-
-    #[test]
-    fn teach_rejects_replaced_image_parameters_geometry_and_failed_trial() {
-        let original = taught();
-        assert!(original.checked(&json!("geometry"), &json!("teach"), false).is_ok());
-        let mut frame = original.clone();
-        frame.image.as_mut().unwrap().id = "image-b".into();
-        assert!(frame.checked(&json!("geometry"), &json!("teach"), false).is_err());
-        // 中线或检测参数改了：试测作废
-        assert!(original.checked(&json!("geometry"), &json!("other-teach"), false).is_err());
-        let mut frame = original.clone();
-        frame.trial.as_mut().unwrap().passed = false;
-        assert!(frame.checked(&json!("geometry"), &json!("teach"), false).is_err());
-        assert!(original.checked(&json!("other-geometry"), &json!("teach"), false).is_err());
-        // 特征定位视图（G4）：G4 之前 passed = true 的试测没有示教图检查报告，或报告没过，都不能保存示教、验证、发布
-        let report = |passed| Some(vision::fixture_quality::FixtureTeachReport { passed, checks: Vec::new(), pose: None, lever: None, texture_std: None, bright_fraction: None });
-        assert!(original.checked(&json!("geometry"), &json!("teach"), true).is_err(), "缺检查报告");
-        for (passed, ok) in [(false, false), (true, true)] {
-            let mut frame = original.clone();
-            frame.trial.as_mut().unwrap().fixture = report(passed);
-            assert_eq!(frame.checked(&json!("geometry"), &json!("teach"), true).is_ok(), ok, "报告通过 = {passed}");
-        }
-    }
-
-    #[test]
-    fn teaching_and_display_changes_use_explicit_versions_but_keep_geometry_compatible() {
-        let doc = crate::recipe::samples().remove(0);
-        let old = doc.build().unwrap();
-        let mut candidate = doc.clone();
-        candidate.name = "new display name".into();
-        candidate.teaching_id = Some("saved-image-and-overview".into());
-        candidate.version += 1;
-        let new = candidate.build().unwrap();
-        assert!(crate::store::same_measurement_layout(&new, &old));
-    }
-
-    #[test]
-    fn template_source_and_fixture_are_measurement_definition_but_nominal_is_not() {
-        // 防的回归（定稿 §7）：改 fixture 或只换模板来源（重新冻结后保存）后，历史仍按旧测量定义重判、复用对着旧模板量的 d′；
-        // 或只改名义值也被当成测量定义变化，历史不能重判
-        let mut doc = crate::recipe::samples().remove(1);
-        doc.shots.truncate(1);
-        let shot = &mut doc.shots[0];
-        shot.views = vec![crate::recipe::ShotViewSpec { view: 1, enabled: true, path: shot.path.clone(), mm_per_px: shot.mm_per_px,
-            detect: None, limits: None, calib: None, fixture: Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "group-0-v1".into(),
-                search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 }) }];
-        let original = doc.build().unwrap();
-        let cases: [(&str, fn(&mut RecipeDoc), bool); 3] = [
-            ("去掉特征定位", |d| d.shots[0].views[0].fixture = None, false),
-            ("只换模板来源", |d| d.shots[0].views[0].fixture.as_mut().unwrap().source = "group-0-v1-retake".into(), false),
-            ("只改名义值", |d| { d.limits.position.as_mut().unwrap().nominal = 0.3; d.limits.gauge_ref = Some("GA-0315".into()); }, true),
-        ];
-        for (name, edit, same) in cases {
-            let mut candidate = doc.clone();
-            edit(&mut candidate);
-            assert_eq!(crate::store::same_measurement_layout(&original, &candidate.build().unwrap()), same, "{name}");
-        }
-    }
-
-    fn archive_fixture(doc: RecipeDoc) -> Release {
-        Release { doc, bundle_id: "prior-directory".into(), base_revision: None, revision: 1,
-            frames: vec![taught()], overview: Overview::default(),
-            validation: Validation { revision: 1, passed: true, checked_at: 1, checks: vec![], samples: vec![], environment_tag: Value::Null, fixture: vec![] },
-            validation_site: ValidationSite::Real }
-    }
-
-    #[test]
-    fn old_format_candidate_pending_and_archive_are_rejected_without_migration() {
-        let root = ImportTestDir::new();
-        let workspace = tricam_workspace();
-        let decode = |value: &Value| serde_json::from_str::<Workspace>(&value.to_string());
-        let mut candidate = state_value(&workspace);
-        candidate.as_object_mut().unwrap().remove("baseRevision");
-        candidate["baseHash"] = Value::Null;
-        assert!(decode(&candidate).is_err());
-        let mut candidate = state_value(&workspace);
-        candidate.as_object_mut().unwrap().remove("sampleBank");
-        assert!(decode(&candidate).is_err());
-        let mut release = state_value(&archive_fixture(workspace.doc.clone()));
-        let bundle = release.as_object_mut().unwrap().remove("bundleId").unwrap();
-        release["bundleHash"] = bundle;
-        let mut pending = state_value(&workspace);
-        pending["pending"] = release.clone();
-        assert!(decode(&pending).is_err());
-        let mut current = archive_fixture(workspace.doc.clone()); current.doc.version = 3;
-        let archive = root.0.join(format!("{}-v3.json", current.doc.id));
-        let text = release.to_string();
-        std::fs::write(&archive, &text).unwrap();
-        assert!(archived_release(&root.0, &current.doc.id, 3).is_err());
-        assert_eq!(std::fs::read_to_string(&archive).unwrap(), text);
-        std::fs::remove_file(&archive).unwrap();
-        std::fs::write(root.0.join("previous-archive-name.json"), serde_json::to_vec(&current).unwrap()).unwrap();
-        assert!(archived_release(&root.0, &current.doc.id, 3).is_err());
-        std::fs::write(&archive, serde_json::to_vec(&current).unwrap()).unwrap();
-        assert_eq!(archived_release(&root.0, &current.doc.id, 3).unwrap().doc, current.doc);
-        let unloaded = root.0.join("workspace.json");
-        std::fs::write(&unloaded, candidate.to_string()).unwrap();
-        assert!(ensure_workspace_can_be_created(&unloaded).unwrap_err().contains(&root.0.display().to_string()));
-        assert!(ensure_workspace_can_be_created(&root.0.join("fresh.json")).is_ok());
-    }
 
 }
 

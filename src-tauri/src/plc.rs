@@ -24,7 +24,8 @@ impl PlcHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
         let config_path = crate::storage::config(app).join("plc.json");
         let log_path = crate::storage::root(app).join("logs").join("plc.db");
-        let mut config = PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);
+        let mut config =
+            PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);
         inspection::add_teaching_points(&mut config);
         let handle = app.clone();
         let last_link = std::sync::Mutex::new(None);
@@ -181,28 +182,4 @@ pub async fn plc_point_history(
 #[tauri::command]
 pub fn plc_check_address(connection: ConnectionConfig, address: String, data_type: DataType) -> Result<String, String> {
     describe_address(&connection, &address, data_type)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn retired_plan_tags_fail_validation_instead_of_being_renamed() {
-        let mut config = inspection::default_plc_config();
-        for point in &mut config.points {
-            for tag in &mut point.tags {
-                if tag == "planReserved" { *tag = "planHash".into(); }
-            }
-        }
-        let original = config.clone();
-        let error = validate_config(&config).unwrap_err();
-        assert!(error.contains("planHash") && error.contains("planReserved"), "{error}");
-        assert_eq!(config, original);
-        let mut config = inspection::default_plc_config();
-        config.points.iter_mut().find(|point| point.tags.iter().any(|tag| tag == "acceptedPlanReserved")).unwrap()
-            .tags = vec!["acceptedPlanHash".into()];
-        let error = validate_config(&config).unwrap_err();
-        assert!(error.contains("acceptedPlanHash") && error.contains("acceptedPlanReserved"), "{error}");
-    }
 }

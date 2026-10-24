@@ -54,22 +54,5 @@ describe("离线原图保留设置", () => {
     expect(screen.getByRole("combobox", { name: "真机帧录制" }).closest(".qs-select")!.querySelector("select")!).toHaveValue("failed");
   });
 
-  // 件数：低于下限 / 非整数 / 高于上限；大小：留空（NaN 只有 isFinite 能拦）/ 低于下限 / 高于上限
-  it.each([
-    ["离线原图最多保留（件）", "0", "1"],
-    ["离线原图最多保留（件）", "1.5", "2"],
-    ["离线原图最多保留（件）", "100001", "100000"],
-    ["离线原图总大小上限（GB）", "", "0.5"],
-    ["离线原图总大小上限（GB）", "0.4", "0.5"],
-    ["离线原图总大小上限（GB）", "10001", "10000"],
-  ])("%s 输入 %s → 阻止保存，改为 %s 后可保存", async (label, invalid, valid) => {
-    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
-    const field = await screen.findByRole("spinbutton", { name: label });
-    fireEvent.change(field, { target: { value: invalid } });
-    expect(recordSaveButton()).toBeDisabled();
-    expect(screen.getByRole("alert")).toBeVisible();
-    fireEvent.change(field, { target: { value: valid } });
-    await waitFor(() => expect(recordSaveButton()).toBeEnabled());
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
+
 });

@@ -1,10 +1,29 @@
-# 前端主业务测试（2026-10-12）
+# 前端轻量回归
 
-> 2026-10-23 现状：本文是 2026-10-12 的快照，描述的是旧拍照点模型（保留、停用）的前端主流程（逐帧点中线、每组选一张检测图）。分段连拍加入后前端测试文件已增至 50 余个，新增段列表、多轮标定、相机走廊示教、发布确认、按区域与帧组的在线 / 历史展示等用例，`tests/teaching-flow.test.tsx` 同时含旧配方单帧示教与段配方走廊示教；下文的用例数量与“39 / 40 项”不代表当前。当前范围见 [测试记录](TESTING.md#当前保留范围)，段模型逐条用例见 [分段连拍测试清单](segment-burst-test-inventory.md)；`pnpm test:ui:production` 现由 Playwright Test 分旧配方与段配方两个独立用例执行，见 [测试记录](TESTING.md#隔离桌面与证据边界)。
+更新时间：2026-10-23。默认前端测试按具体业务回归价值保留，当前数量、逐项保护规则与删除依据见 [前端保留测试清单](frontend-test-retained-inventory.md)。参数化测试按 Vitest 实际展开的执行用例计数，不使用静态扫描条目数代替。
+
+默认集合集中保护段配方创建与编辑、采集和标定门槛、走廊示教、验证与发布、草稿与请求隔离、生产操作锁、历史帧归属和真机/离线数据隔离。停止维护旧拍照点专属测试，删除只验证文案、默认值、mock 调用或被更高层流程覆盖的重复用例；共享夹具只在确认引用后清理。
+
+测试使用 jsdom、真实页面或业务逻辑及边界接口模拟，不加载现场硬件或 lyFlow DLL；不据此证明真实像素解码、引擎算法和后端落盘。桌面生产落盘保留独立手动入口，范围见 [测试说明](TESTING.md)。
+
+## 运行
+
+```powershell
+pnpm test
+pnpm typecheck
+```
+
+`pnpm test` 执行全部默认前端回归。仅统计实际展开用例使用 `pnpm exec vitest list --no-static-parse --json`；默认 `vitest list` 静态解析不会展开参数化用例，也可能误识别同名局部变量调用。普通 PR 仅执行 Format、前端默认测试与 Rust 默认库回归。
+
+## 历史记录
+
+以下保留 2026-10-12 的旧拍照点主流程快照。旧流程、用例数量、覆盖声明和当时的执行结果均属于历史，不代表当前测试集合；当前规则及命令以上方链接为准。
+
+### 前端主业务测试（2026-10-12）
 
 默认前端回归只保留创建配方、示教到验证发布，以及少量关键失败保护。工件启动到落盘由独立桌面集成测试验证。本轮保留 40 项前端测试，生产落盘继续使用独立桌面测试；覆盖率报告及重复快捷入口已删除。后端收缩范围见[后端轻量测试](backend-lightweight-tests.md)。
 
-## 三条主流程
+### 三条主流程
 
 | 流程 | 实现与边界 |
 | --- | --- |
@@ -14,7 +33,7 @@
 
 前两条验证前端业务接线，图片为内存占位，采集/试测/验证结果来自接口模拟，不证明像素解码、算法或后端发布生效。第三条使用运行时生成的模拟图像、真实后端和磁盘。三条流程均不依赖本机预备图片，也不替代真实 PLC、SDK、LyFlow 引擎或现场验收。
 
-## 保留范围
+### 保留范围
 
 | 范围 | 前端用例数 | 主要保护 |
 | --- | ---: | --- |
@@ -29,7 +48,7 @@
 
 删除 workflow 演示原型的模型、页面及局部组件测试；删除生产配方直改页面后，移除其拍照点表视角测试。相机/标定/PLC 表单、系统设置、日志导出、导航、图表细节、历史筛选与批量重判等辅助功能不再建立 UI 单元测试矩阵；其全部配置和失败路径不保证自动回归。保留的后端与工具范围见后端说明；真实 DLL、性能和现场专项，以及独立冻结资源和质量判定规则测试已按选择删除。
 
-## 运行与换机
+### 运行与换机
 
 当前工具版本以 `package.json` 和锁文件为准。桌面流程还需 Windows、PowerShell 7、Rust MSVC、Visual Studio C++ 构建工具和 WebView2；首次 Cargo 构建需要读取 `Cargo.toml` 中的私有 Git 依赖。Playwright Test 与 Playwright Core 以相同版本作为项目依赖锁定，连接应用 WebView2，无需本机模块绝对路径、Playwright 浏览器下载；旧配方生产冒烟不需要外部测量 DLL，段配方需要 lyFlow。
 
@@ -39,13 +58,13 @@ pnpm test
 pnpm test:ui:production
 ```
 
-`pnpm test` 运行全部 39 项前端测试，包含创建配方及示教发布两个主流程；`pnpm test:ui:production` 运行真实桌面生产落盘流程（默认 all，无 lyFlow 时段配方显示跳过）。Windows PR CI 使用 `pnpm test:ui:production -Suite legacy -ResetData`。生产测试自动构建、启动和关闭隔离实例；已构建时可用 `pnpm test:ui:production -SkipBuild`，端口冲突可传 `-DebugPort 9349`；生产落盘入口支持 `-Grep`。`-SkipBuild` 不检查源码是否变化，须先确保产物最新。框架 HTML / JUnit 报告和失败证据在 `output/playwright/flow-regression/runner/`，业务 JSON 位置不变。
+`pnpm test` 运行前端单元测试，包含创建配方及示教发布主流程，数量以实际执行为准。Windows PR CI 仅执行 Rust 格式检查、`pnpm test` 与 Rust 库单元测试。`pnpm test:ui:production -Suite burst -ResetData` 保留为手动桌面生产落盘入口，需要 lyFlow。生产测试自动构建、启动和关闭隔离实例；已构建时可用 `pnpm test:ui:production -SkipBuild`，端口冲突可传 `-DebugPort 9349`；生产落盘入口支持 `-Grep`。`-SkipBuild` 不检查源码是否变化，须先确保产物最新。框架 HTML / JUnit 报告和失败证据在 `output/playwright/flow-regression/runner/`，业务 JSON 位置不变。
 
 `pnpm typecheck` 检查应用与测试类型；`pnpm build` 检查生产前端构建。
 
 桌面数据位于独立 `com.xyzrobotics.tujiaovision.flow-tests` 应用目录，通过运行中的后端取得实际路径。该 profile 只供这套模拟流程使用，不导入实体设备或生产配置。SQLite、原图和截图保留供复核；产物不提交。真实 DLL、性能及五工况桌面专项已删除。
 
-## 历史验证记录（前轮）
+### 历史验证记录（前轮）
 
 以下为 2026-10-11 的已执行结果，不是本次删减后分支的运行结果。本轮重新执行已通过 14 文件、40 项，以及应用/测试类型检查、生产前端构建和隔离桌面生产落盘（OK、6 帧、460 测量点、6 张 PGM 与历史读回）；日志为 `output/trim-frontend.log`、`output/trim-typecheck.log`、`output/trim-build.log`。
 

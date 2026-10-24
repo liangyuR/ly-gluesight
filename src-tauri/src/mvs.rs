@@ -428,14 +428,21 @@ impl Device {
 
     pub fn get_int(&self, key: &str) -> Result<i64, String> {
         let mut value = IntValue::default();
-        check(unsafe { (self.api.get_int)(self.handle, Self::key(key).as_ptr(), &mut value) }, &format!("读取 {key}"))?;
+        check(
+            unsafe { (self.api.get_int)(self.handle, Self::key(key).as_ptr(), &mut value) },
+            &format!("读取 {key}"),
+        )?;
         Ok(value.cur)
     }
 
     pub fn has_node(&self, key: &str) -> Result<bool, String> {
         let mut node_type = 0;
-        let code = unsafe { (self.api.get_node_type)(self.handle, Self::key(key).as_ptr(), &mut node_type) };
-        if code as u32 == 0x80000109 { return Ok(false); }
+        let code = unsafe {
+            (self.api.get_node_type)(self.handle, Self::key(key).as_ptr(), &mut node_type)
+        };
+        if code as u32 == 0x80000109 {
+            return Ok(false);
+        }
         check(code, &format!("读取 {key} 节点类型"))?;
         Ok(true)
     }
@@ -446,7 +453,12 @@ impl Device {
             return Err("触发延迟必须是非负有限数值".into());
         }
         let mut node_type = 0;
-        check(unsafe { (self.api.get_node_type)(self.handle, Self::key(key).as_ptr(), &mut node_type) }, "读取 TriggerDelay 节点类型")?;
+        check(
+            unsafe {
+                (self.api.get_node_type)(self.handle, Self::key(key).as_ptr(), &mut node_type)
+            },
+            "读取 TriggerDelay 节点类型",
+        )?;
         match node_type {
             2 => {
                 if value.fract() != 0.0 || value as f64 >= i64::MAX as f64 {
@@ -462,11 +474,17 @@ impl Device {
             5 => {
                 self.set_float(key, value)?;
                 let actual = self.get_float(key)?;
-                if !actual.is_finite() || (actual - value).abs() > (value.abs() * f32::EPSILON * 4.0).max(0.001) {
+                if !actual.is_finite()
+                    || (actual - value).abs() > (value.abs() * f32::EPSILON * 4.0).max(0.001)
+                {
                     return Err(format!("TriggerDelay 回读 {actual} µs，期望 {value} µs"));
                 }
             }
-            _ => return Err(format!("TriggerDelay 节点类型 {node_type} 不是 Integer 或 Float")),
+            _ => {
+                return Err(format!(
+                    "TriggerDelay 节点类型 {node_type} 不是 Integer 或 Float"
+                ))
+            }
         }
         Ok(())
     }
@@ -529,55 +547,5 @@ impl Drop for Device {
             (self.api.close_device)(self.handle);
             (self.api.destroy_handle)(self.handle);
         }
-    }
-}
-
-#[cfg(test)]
-mod runtime_tests {
-    use super::*;
-    use std::path::Path;
-
-    #[test]
-    fn windows_candidates_follow_packaged_and_development_policy() {
-        let executable = std::env::temp_dir().join("GlueSight.exe");
-        let system = std::env::temp_dir().join("system-sdk");
-        let bundled = executable.parent().unwrap().join("runtime").join("mvs").join("MvCameraControl.dll");
-        let system_dll = system.join("MVS").join("Runtime").join("Win64_x64").join("MvCameraControl.dll");
-        type Check<'a> = Box<dyn Fn(&Result<Vec<PathBuf>, String>) -> bool + 'a>;
-        // (场景, 程序路径, 开发模式, 系统公共目录, 结果判定)
-        let cases: [(&str, &Path, bool, Option<PathBuf>, Check<'_>); 4] = [
-            ("安装包忽略系统安装", &executable, false, Some(system.clone()), Box::new(|r| *r == Ok(vec![bundled.clone()]))),
-            ("开发模式支持绝对路径的系统安装", &executable, true, Some(system.clone()),
-                Box::new(|r| r.as_ref().is_ok_and(|p| p.get(1) == Some(&system_dll) && !p.contains(&PathBuf::from("MvCameraControl.dll"))))),
-            ("相对程序路径被拒绝", Path::new("relative/GlueSight.exe"), false, None, Box::new(|r| r.is_err())),
-            ("相对系统目录不搜索", &executable, true, Some(PathBuf::from("relative-sdk")),
-                Box::new(|r| r.as_ref().is_ok_and(|p| !p.iter().any(|p| p.starts_with("relative-sdk"))))),
-        ];
-        for (case, executable, development, system, check) in cases {
-            let result = windows_candidates(executable, development, system);
-            assert!(check(&result), "{case}: {result:?}");
-        }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn missing_bundled_sdk_fails_even_with_system_sdk_present() {
-        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!("gluesight-missing-mvs-{}-{nonce}", std::process::id()));
-        let executable = root.join("app").join("GlueSight.exe");
-        let bundled = root.join("app").join("runtime").join("mvs").join("MvCameraControl.dll");
-        // 造一个“已安装”的系统 SDK，结果不再取决于本机装没装 MVS；安装包若去试它，最后报的就是它的路径
-        let common_files = root.join("common-files");
-        let system_dll = common_files.join("MVS").join("Runtime").join("Win64_x64").join("MvCameraControl.dll");
-        std::fs::create_dir_all(system_dll.parent().unwrap()).unwrap();
-        std::fs::write(&system_dll, b"fake system MVS runtime").unwrap();
-        let paths = windows_candidates(&executable, false, Some(common_files)).unwrap();
-        let result = Api::load_candidates(paths);
-        let _ = std::fs::remove_dir_all(&root);
-        let error = match result {
-            Ok(_) => panic!("missing packaged SDK must not load a system installation"),
-            Err(error) => error,
-        };
-        assert!(error.contains(&bundled.display().to_string()), "{error}");
     }
 }

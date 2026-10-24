@@ -691,10 +691,19 @@ fn add_round(app: AppHandle, id: String, revision: u64, round_id: String, standa
     }).collect::<Result<Vec<_>, String>>()?;
     let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
     let run = vision::unique_run_id(&format!("calibration-{id}-{round_id}"));
-    let metrics = capture_review::measure_calibration_round(&w, &round, |camera, camera_id, seq| {
-        let image = crate::image_file::load(&capture.burst_frame_path(&round_id, camera_id, seq)?)?;
-        vision::measure_frame(&engine, &graphs[camera], &image, seq, &format!("{run}-c{camera}-{seq}")).map(|m| m.metrics)
-    });
+    let metrics =
+        capture_review::measure_calibration_round(&w, &round, |camera, camera_id, seq| {
+            let image =
+                crate::image_file::load(&capture.burst_frame_path(&round_id, camera_id, seq)?)?;
+            vision::measure_frame(
+                &engine,
+                &graphs[camera],
+                &image,
+                seq,
+                &format!("{run}-c{camera}-{seq}"),
+            )
+            .map(|m| m.metrics)
+        });
     let outcome = segment_round(&w.doc.segments, cameras.len(), round.group_count, &metrics);
     let entry = calibration_round(&w.doc, &round, standard, &metrics);
     let mut items = host.items.lock().unwrap();
@@ -726,7 +735,9 @@ pub fn remove_calibration_round(w: &mut Workspace, round: &str) -> Result<(), St
     require_burst(&w.doc)?;
     let before = w.calibration.rounds.len();
     w.calibration.rounds.retain(|r| r.round_id != round);
-    if w.calibration.rounds.len() == before { return Err(format!("采集轮次 {round} 不在多轮标定里")); }
+    if w.calibration.rounds.len() == before {
+        return Err(format!("采集轮次 {round} 不在多轮标定里"));
+    }
     clear_calibration(&mut w.doc);
     w.changed();
     Ok(())
