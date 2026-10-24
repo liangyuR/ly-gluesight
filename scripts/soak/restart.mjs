@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { connect, ensureOffline, parseArgs, RECIPE_ID, until, writeJson } from "./lib.mjs";
+import { connect, ensureOffline, parseArgs, projectRoot, RECIPE_ID, until, writeJson } from "./lib.mjs";
 
 const OK_CLASS = new Set(["OK", "OK_WITH_EXCURSION"]);
 
@@ -29,7 +29,7 @@ async function verify({ call, manifest }, out) {
   const before = { mode: site.mode, phase: snapshot.phase, fault: snapshot.fault, handshake: snapshot.plcHandshake,
     interruptedRecords: interrupted.map(i => ({ id: i.id, cycleId: i.cycleId, verdict: i.verdict, reason: i.reason, delivery: i.delivery.state })),
     startupLogs: logs.filter(l => ["err", "warn"].includes(l.level)).map(l => `${l.level} ${l.ev}：${l.msg}`).slice(0, 30) };
-  const pending = async () => (await readdir(path.join(manifest.dataRoot, "records-offline", "_pending")).catch(() => [])).length;
+  const pending = async () => (await readdir(path.join(projectRoot(manifest.dataRoot), "records-offline", "_pending")).catch(() => [])).length;
   before.pendingDirs = await pending();
   try { await ensureOffline(call, out); } catch (error) {
     // 已知问题：离线事务中途崩溃后，重启回到真机模式仍保留该未结事务；真机 PLC 不在线时无法复位，又因“在途事务”进不了离线。

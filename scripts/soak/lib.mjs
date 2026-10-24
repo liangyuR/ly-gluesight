@@ -1,7 +1,7 @@
 import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -134,15 +134,25 @@ async function treeSize(dir) {
   return { bytes, files };
 }
 
-/** 资料目录各部分占用：原图、记录库、日志、握手状态等。 */
+/** 当前项目目录：资料目录下 projects/<config/current-project.json 记的编号>。 */
+export function projectRoot(dataRoot) {
+  const pointer = JSON.parse(readFileSync(path.join(dataRoot, "config", "current-project.json"), "utf8"));
+  return path.join(dataRoot, "projects", pointer.current);
+}
+
+/** 资料目录各部分占用：原图、记录库、日志、握手状态等。项目资料取当前项目。 */
 export async function diskUsage(dataRoot) {
   const result = {};
-  for (const name of ["records-offline", "records", "logs", "state", "audit-spool", "samples", "recipe-capture", "workspaces", "vision", "cache"]) {
+  const project = projectRoot(dataRoot);
+  for (const name of ["records-offline", "records", "audit-spool", "recipe-capture", "workspaces", "vision"]) {
+    result[name] = await treeSize(path.join(project, name));
+  }
+  for (const name of ["logs", "state", "samples", "cache"]) {
     result[name] = await treeSize(path.join(dataRoot, name));
   }
   let db = 0;
   for (const suffix of ["", "-wal", "-shm"]) {
-    const file = path.join(dataRoot, `inspection.db${suffix}`);
+    const file = path.join(project, `inspection.db${suffix}`);
     if (existsSync(file)) db += (await stat(file)).size;
   }
   result["inspection.db"] = { bytes: db, files: 3 };

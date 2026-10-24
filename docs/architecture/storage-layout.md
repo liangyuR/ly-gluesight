@@ -8,21 +8,36 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 本地开发首次在管理员 PowerShell 执行 `pnpm storage:init`，之后正常执行 `pnpm dev`。初始化命令只创建目录并授权，不移动或删除资料。无法写入时应修复权限，不会回退到 AppData。
 
+资料分为本机资料和项目资料。项目是一个工位的完整检测方案（相机组、PLC、标定、配方及其检测历史），设计见 [项目（Project）设计](project.md)。任一时刻只打开一个当前项目，切换项目会重启软件。
+
+**本机资料**（资料目录根下）：
+
 | 位置 | 用途 |
 | --- | --- |
-| `config/` | 相机、PLC、检测配置、离线选择、飞拍估算参数和用户偏好 |
-| `state/` | PLC 握手状态与审计。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
+| `config/` | 本机配置：`current-project.json`（当前项目编号）、`site-offline.json`（离线选择）、`preferences-<SID>.json`（按账号的界面偏好，最后打开的工作区按项目分别记） |
+| `projects/<项目编号>/` | 各项目的资料，见下表；`projects/.trash/` 是删除中的项目，启动时清理 |
+| `state/` | PLC 握手状态与审计，以及所有项目共用的计划号计数 `plan-version`（PLC 是同一台设备，换项目不回退）。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
+| `samples/` | 外部样本导入后的受管副本 |
+| `logs/` | 程序、PLC 日志 |
+| `cache/` | 可重建缓存 |
+| `webview/<SID>/` | 按 Windows 用户隔离的浏览器资料 |
+| `exports/` | 默认导出位置；配方迁移包的保存与选择对话框默认打开这里 |
+| `migration/` | 迁移报告和未完成迁移状态 |
+
+**项目资料**（`projects/<项目编号>/` 下）：
+
+| 位置 | 用途 |
+| --- | --- |
+| `project.json` | 项目编号、名称、描述、创建时间与来源 |
+| `config/` | 相机组 `cameras.json`、PLC `plc.json`、节拍与检测设置 `cycle.json`（含历史保留天数）、飞拍估算参数 `feasibility.json` |
 | `recipes/`、`workspaces/` | 生产配方、候选配方及示教资料。段配方的候选目录 `workspaces/<配方>/` 另有 `calibration/<轮次>/`：每轮标定的 `features.jsonl`（一行一帧 `{camera, seq, metrics}`，1..=帧组数内每台相机每个 seq 一行，缺帧也有）与 `boundaries.json`（分段结果，本轮恒为 `{"kind":"unsegmented"}`，供以后的分段算法和重新标定使用）；各相机的示教帧冻结为 `images/` 下的 PGM |
 | `calib/`、`vision/releases/` | 标定、发布资源。发布包在 `vision/releases/<配方>/<发布 ID>/`，按配方类型分两种格式，加载时格式必须与配方类型一致。**旧拍照点配方（schema 3）：** `manifest.json`、`recipe.json`、`graph.json`，每个（拍照点 kk，图 N）一个 `shots/kk/vN/`，内有 `image.<扩展名>`（示教原图）、`calibration.json`、`centerline.json`、`points.json`，用特征定位的视图另有 `template.pgm`（生产 glue.locate 的 base_dir 就是这个目录）。**段配方（schema 4）：** 同样有 `manifest.json`、`recipe.json`、`graph.json`，每台计划相机一个 `cameras/NN/`（NN 为计划相机下标，从 00 起），内有 `image.<扩展名>`（示教帧）、`calibration.json`（像素当量与标定引用）、`corridor.json`（走廊）。工位标定文件：旧拍照点配方为 `calib/plane_calib_{device}-v{view}.json`（显式标定引用 `{引用}` 为 `calib/plane_calib_{引用}.json`，段配方的显式引用同此）；段配方缺省为设备标定 `calib/device/plane_calib_{device}.json`（发布包 `calibration.json` 的 `reference` 记 `device/{device}`），两者并存、互不读取。设备标定单独放子目录：相机编号允许 `-`，与旧配方共用扁平文件名时相机 `cam1-v1` 的设备标定就是相机 `cam1` 图 1 的旧配方标定文件，一方覆盖另一方 |
 | `recipe-capture/` | 整圈采集原图。旧拍照点配方的轮次：`<轮次>/shot-NNNN/<相机>/`。段配方的轮次：`<轮次>/round.json`（只在状态变化时原子重写）、`frames.jsonl`（每写完一帧追加一行，重启后据此恢复统计）和 `<相机>/<seq:06>.pgm`（无压缩 PGM，一帧一个文件，seq 为相机帧号减该相机基线） |
 | `inspection.db` | 检测历史数据库（版本 9）。旧拍照点配方的 `part_shots`、`part_points` 保留；段配方按每台相机每一帧写 `part_frames` 表，`parts` 另存整份区域判定与整件标记。库版本不符（含更高版本）时先备份为 `.v<版本>.*.bak` 再新建空库 |
 | `records/`、`records-offline/` | 真机、离线历史原图。段配方每件目录 `*_cycle_<cycleId>` 内的原图为 `{相机}_s{seq:06}.pgm`，`part.json` 另列 `missingFrames`（相机没出图，只追溯）与 `rawDropped`（录制队列满没录，证据标不完整）；旧拍照点配方的命名与结构不变 |
-| `samples/` | 外部样本导入后的受管副本 |
-| `logs/`、`audit-spool/` | 程序、PLC 日志及审计。审计 spool 格式为 4（段配方的帧引用 `files[].frame`）；升级前须确认 `audit-spool/` 已清空，见下节 |
-| `cache/` | 可重建缓存 |
-| `webview/<SID>/` | 按 Windows 用户隔离的浏览器资料 |
-| `exports/` | 默认导出位置；配方迁移包的保存与选择对话框默认打开这里 |
-| `migration/` | 迁移报告和未完成迁移状态 |
+| `audit-spool/` | 待入库的件证据与审计。审计 spool 格式为 4（段配方的帧引用 `files[].frame`）；升级前须确认 `audit-spool/` 已清空，见下节；切换项目前必须写完 |
+
+项目化之前放在资料目录根下的 `config/cameras.json`、`plc.json`、`cycle.json`、`feasibility.json`、`calib/`、`recipes/`、`workspaces/`、`vision/`、`recipe-capture/`、`inspection.db`、`records/`、`records-offline/`、`audit-spool/` 不迁移、不读取，也不自动删除；启动时检测到会写一条提示日志，确认不再需要后人工删除。
 
 同一资料目录使用文件锁独占。不同目录不表示可以同时占用相同的 PLC 或相机。业务资料在同一环境中由整机账号共享，最后打开的工作区等界面偏好按账号隔离。
 
