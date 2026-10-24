@@ -179,7 +179,6 @@ export default function CapturePage() {
       <li className={tooFast ? "bad" : ""} title={maxSpeed == null ? "需要标定当量、相机帧率、曝光与飞拍最小拍照点间距后核算" : tooFast ? `当前速度 ${flyPrefs.speed} mm/s 超出允许值` : undefined}><span><Crosshair size={14} aria-hidden="true"/>飞拍</span><strong>{maxSpeed == null ? "未核算" : `${tooFast ? "超速 · " : ""}最高 ${maxSpeed} mm/s`}</strong><Link to="/camera/calibration" state={navigationState}>标定<ArrowRight size={12} aria-hidden="true"/></Link></li>
       <li className={drainInvalid ? "bad" : ""}><NumberField label="在途图像等待时间" value={drain} min={200} max={30000} unit="ms" onChange={setDrain} disabled={deviceLocked}/></li>
     </ul>
-    <Notice title={teaching ? teachingLabels[teaching.phase] : "正在读取示教接口状态"} tone={teaching?.available && !handshakeBusy ? "ok" : "warn"}><p>{teaching?.message || "连接 PLC 后确认 DB6 / DB12 示教接口及复位状态。"}{teaching?.roundId != null && ` · 握手编号 ${teaching.roundId}`}</p>{handshakeBusy && <p>本轮握手释放前不能开始下一轮或修改设备；取消后请等待 PLC 确认。</p>}</Notice>
     <div className="wp-capture-start">
       <Button variant="filled" leadingIcon={<Play size={15} aria-hidden="true"/>} disabled={startDisabled} onClick={() => void start()}>开始整圈采集</Button>
       {(active || handshakeBusy) ? <Button danger disabled={locked || !teaching || ["cancelling","reporting","releasing","fault","resetRequired"].includes(teaching.phase)} onClick={() => void stop()}>{teaching?.phase==="cancelling" ? "等待取消确认" : "取消本轮"}</Button> : startReason && <p className="wp-capture-reason"><AlertTriangle size={14} aria-hidden="true"/><span>{startReason}</span></p>}
@@ -216,8 +215,6 @@ export default function CapturePage() {
       {view.plcEstimate != null && <span className="wp-capture-chip"><small>PLC 预期总数（仅供参考）</small><strong>{view.plcEstimate}</strong></span>}
       <Badge tone={round.simulated ? "warn" : "ok"}>{round.simulated ? "离线 / 模拟（不代表现场硬件验收）" : "设备实拍"}</Badge>
     </div>
-    {round.error && <Notice title="本轮异常，需要重新采集" tone="warn">{round.error}</Notice>}
-    {lossTexts.length>0 && <Notice title="疑似丢帧（只告警）" tone="warn"><ul>{lossTexts.map(text=><li key={text}>{text}</li>)}</ul></Notice>}
     {!active && view.incompleteGroups.length>0 && <p className="muted hint">缺帧只告警：不完整的帧组仍会用其余相机的图检测，并标“检测不完整”；不整轮重采。</p>}
     {multi && <SegmentedControl size="sm" label="查看相机" value={shownCamera} onValueChange={setPreviewCamera} options={view.cameras.map(c=>({ value: c.cameraId, label: nameOf(c.cameraId) }))}/>}
     <div className="wp-capture-result">
@@ -265,5 +262,10 @@ export default function CapturePage() {
     <span className="wp-capture-chip"><small>在途图像等待</small><strong>{drain} ms</strong></span>
     <div className="wp-actions"><Button onClick={()=>setPrepOpenFor(round?.roundId ?? null)}>展开设备准备</Button><Button variant={recaptureNext ? "filled" : "tonal"} data-variant={recaptureNext ? "filled" : "tonal"} disabled={startDisabled} title={startReason || undefined} onClick={() => void start()}>{validation ? "采集新一圈样本" : "整圈重采"}</Button></div>
   </Surface>;
-  return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{resultPanel}{historyPanel}</>}</div><section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>按帧号配组，不按到达顺序</strong><p>同一触发序号的各相机帧配成一个帧组。某台相机缺帧只告警：该组标“检测不完整”，其余相机照常检测，不整轮重采，也不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>收到 PLC 结束通知，等待在途图像到期，已收到的帧全部写盘后本轮完成。示教不下发预期帧数；图片保存完成后还需等待 PLC 确认和释放。相机帧号缺口及相机间帧数差异用于丢帧诊断。</p></div></section></div></div>;
+  const statusPanel = <section className="wp-capture-status" aria-label="示教与采集状态">
+    <Notice title={teaching ? teachingLabels[teaching.phase] : "正在读取示教接口状态"} tone={teaching?.available && !handshakeBusy ? "ok" : "warn"}><p>{teaching?.message || "连接 PLC 后确认 DB6 / DB12 示教接口及复位状态。"}{teaching?.roundId != null && ` · 握手编号 ${teaching.roundId}`}</p>{handshakeBusy && <p>本轮握手释放前不能开始下一轮或修改设备；取消后请等待 PLC 确认。</p>}</Notice>
+    {round?.error && <Notice title="本轮异常，需要重新采集" tone="warn">{round.error}</Notice>}
+    {lossTexts.length>0 && <Notice title="疑似丢帧（只告警）" tone="warn"><ul>{lossTexts.map(text=><li key={text}>{text}</li>)}</ul></Notice>}
+  </section>;
+  return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{resultPanel}{historyPanel}</>}</div><div className="wp-capture-aside">{statusPanel}<section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>按帧号配组，不按到达顺序</strong><p>同一触发序号的各相机帧配成一个帧组。某台相机缺帧只告警：该组标“检测不完整”，其余相机照常检测，不整轮重采，也不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>收到 PLC 结束通知，等待在途图像到期，已收到的帧全部写盘后本轮完成。示教不下发预期帧数；图片保存完成后还需等待 PLC 确认和释放。相机帧号缺口及相机间帧数差异用于丢帧诊断。</p></div></section></div></div></div>;
 }
