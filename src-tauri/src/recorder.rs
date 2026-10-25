@@ -198,7 +198,10 @@ impl Recording {
     }
 
     fn keep(&self) -> bool {
-        self.extra.get("partMode").and_then(serde_json::Value::as_str) == Some("maintenanceCollect")
+        self.extra
+            .get("partMode")
+            .and_then(serde_json::Value::as_str)
+            == Some("maintenanceCollect")
     }
 }
 
@@ -780,7 +783,8 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
         Ok(()) => {
             if rec.keep() {
                 if let Err(error) = std::fs::write(rec.dir.join(KEEP_MARKER), b"") {
-                    rec.errors.push(format!("写入维护采集保留标记失败：{error}"));
+                    rec.errors
+                        .push(format!("写入维护采集保留标记失败：{error}"));
                 }
             }
             if let Err(error) = write_metadata(&rec.dir.join("part.json"), &meta) {
@@ -1025,7 +1029,12 @@ fn prune(root: &Path, keep: usize, max_bytes: u64, in_use: &[PathBuf], release: 
             Ok(entries) => {
                 for entry in entries {
                     match entry {
-                        Ok(entry) if plain_directory(&entry.path()) && !entry.path().join(KEEP_MARKER).exists() => parts.push(entry.path()),
+                        Ok(entry)
+                            if plain_directory(&entry.path())
+                                && !entry.path().join(KEEP_MARKER).exists() =>
+                        {
+                            parts.push(entry.path())
+                        }
                         Ok(_) => {}
                         Err(error) => errors.push(error.to_string()),
                     }

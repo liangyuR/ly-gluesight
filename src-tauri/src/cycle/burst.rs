@@ -269,8 +269,18 @@ impl Part {
                 Offer::Accepted { seq } => {
                     let trigger_counter = matches!(frame.counter, CounterSource::ChunkTrigger | CounterSource::Synthetic).then_some(frame.trigger_counter);
                     let measuring_since = (!burst.collect).then_some(now);
-                    burst.frames.insert((camera, seq), BurstFrame { frame_counter: frame.frame_counter, trigger_counter, measuring_since, metrics: None });
-                    if !burst.collect { burst.pending += 1; }
+                    burst.frames.insert(
+                        (camera, seq),
+                        BurstFrame {
+                            frame_counter: frame.frame_counter,
+                            trigger_counter,
+                            measuring_since,
+                            metrics: None,
+                        },
+                    );
+                    if !burst.collect {
+                        burst.pending += 1;
+                    }
                     Arrival::Accepted { camera, seq }
                 }
                 Offer::Duplicate => Arrival::Duplicate { camera, seq: frame.frame_counter - baseline },

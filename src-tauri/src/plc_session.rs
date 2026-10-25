@@ -81,13 +81,26 @@ fn validate_pending(pending: &Pending, last_request_seq: u32) -> Result<(), Stri
         return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into());
     }
     if pending.request.request_seq != last_request_seq
-        || matches!(pending.phase, SessionPhase::Idle | SessionPhase::ResetRequired)
-        || (matches!(pending.phase, SessionPhase::AwaitAck | SessionPhase::Releasing) && pending.result.is_none())
-        || (pending.acknowledged && (pending.result.is_none()
-            || !matches!(pending.phase, SessionPhase::AwaitAck | SessionPhase::Releasing | SessionPhase::Fault)))
-        || pending.result.as_ref().is_some_and(|result|
-            result.request_seq != pending.request.request_seq || result.sn != pending.request.sn
-            || !result_allowed(pending.mode, result.result_code, result.fault_code)) {
+        || matches!(
+            pending.phase,
+            SessionPhase::Idle | SessionPhase::ResetRequired
+        )
+        || (matches!(
+            pending.phase,
+            SessionPhase::AwaitAck | SessionPhase::Releasing
+        ) && pending.result.is_none())
+        || (pending.acknowledged
+            && (pending.result.is_none()
+                || !matches!(
+                    pending.phase,
+                    SessionPhase::AwaitAck | SessionPhase::Releasing | SessionPhase::Fault
+                )))
+        || pending.result.as_ref().is_some_and(|result| {
+            result.request_seq != pending.request.request_seq
+                || result.sn != pending.request.sn
+                || !result_allowed(pending.mode, result.result_code, result.fault_code)
+        })
+    {
         return Err("握手事务日志的身份或阶段不一致，禁止自动恢复".into());
     }
     Ok(())
@@ -97,7 +110,10 @@ fn validate_pending(pending: &Pending, last_request_seq: u32) -> Result<(), Stri
 fn result_allowed(mode: u16, result_code: u16, fault_code: u16) -> bool {
     match mode {
         MAINTENANCE => result_code == 0 && fault_code == 0,
-        _ => matches!(result_code, 1 | 2 | 11 | 12 | 13 | 14 | 90) && (result_code == 90 || fault_code == 0),
+        _ => {
+            matches!(result_code, 1 | 2 | 11 | 12 | 13 | 14 | 90)
+                && (result_code == 90 || fault_code == 0)
+        }
     }
 }
 
@@ -319,7 +335,10 @@ impl PlcSession {
 
     /// 在途事务是否按维护模式接件（结果码须为 0）。
     pub fn part_maintenance(&self) -> bool {
-        self.journal.pending.as_ref().is_some_and(|pending| pending.mode == MAINTENANCE)
+        self.journal
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.mode == MAINTENANCE)
     }
 
     /// 空闲时的等待提示（以 [`NOTICE`] 开头）；不是故障。
@@ -783,8 +802,18 @@ impl PlcSession {
                 if request.request_seq <= self.journal.last_request_seq {
                     return Err("请求事务序号必须递增；PLC 清零或回绕需先执行复位".into());
                 }
-                self.journal.pending = Some(Pending { origin: Some(self.origin), capture_id: None, request: request.clone(), result: None, phase: SessionPhase::Validating,
-                    cycle_id: None, acknowledged: false, started_at: now_ms(), site: None, mode: self.mode });
+                self.journal.pending = Some(Pending {
+                    origin: Some(self.origin),
+                    capture_id: None,
+                    request: request.clone(),
+                    result: None,
+                    phase: SessionPhase::Validating,
+                    cycle_id: None,
+                    acknowledged: false,
+                    started_at: now_ms(),
+                    site: None,
+                    mode: self.mode,
+                });
                 self.journal.last_request_seq = request.request_seq;
                 self.persist(engine).await?;
                 self.phase = SessionPhase::Validating;
@@ -1062,8 +1091,12 @@ impl PlcSession {
             return Ok(SessionEvent::None);
         }
         let mode_changed = self.mode != self.mode_written;
-        let own = drifted.iter().all(|d| (self.withdrawn && d == "pcState=0") || (mode_changed && d.starts_with("pcMode=")));
-        let reason = if own { String::new() } else {
+        let own = drifted.iter().all(|d| {
+            (self.withdrawn && d == "pcState=0") || (mode_changed && d.starts_with("pcMode="))
+        });
+        let reason = if own {
+            String::new()
+        } else {
             let now = Instant::now();
             self.restores.retain(|at| now.saturating_duration_since(*at) < RESTORE_WINDOW);
             if self.restores.len() >= RESTORE_LIMIT {
@@ -1108,15 +1141,25 @@ impl PlcSession {
 
     /// 写布防输出并读回确认（布防预算只计到这里）；之后必须 [`commit_arm`](Self::commit_arm) 落盘才进入采集阶段。
     /// 没有拍照计划只允许维护模式的生产事务：PLC 照常运动，PC 只采集或不采集，结果码 0。
-    pub async fn arm_outputs(&mut self, engine: &PlcEngine, plan: Option<&PlcPlan>) -> Result<(), String> {
+    pub async fn arm_outputs(
+        &mut self,
+        engine: &PlcEngine,
+        plan: Option<&PlcPlan>,
+    ) -> Result<(), String> {
         self.arm_timing = None;
         self.outputs_armed = false;
         match plan {
             Some(plan) => self.validate_plan(plan)?,
-            None if self.phase == SessionPhase::Validating && self.part_maintenance() && self.capture_id().is_none() => {}
+            None if self.phase == SessionPhase::Validating
+                && self.part_maintenance()
+                && self.capture_id().is_none() => {}
             None => return Err("没有拍照计划只能在维护模式下布防".into()),
         }
-        let mode = self.journal.pending.as_ref().map_or(0, |pending| pending.mode);
+        let mode = self
+            .journal
+            .pending
+            .as_ref()
+            .map_or(0, |pending| pending.mode);
         let attempt: Result<(), String> = async {
             let snapshot = self.snapshot(engine)?;
             let request = self.request().ok_or("缺少 S7 请求")?.clone();
@@ -1169,9 +1212,17 @@ impl PlcSession {
         if !matches!(self.phase, SessionPhase::Validating | SessionPhase::Acquiring | SessionPhase::Draining) {
             return Err("当前 S7 事务不能发布新结果".into());
         }
-        let mode = self.journal.pending.as_ref().map_or(0, |pending| pending.mode);
+        let mode = self
+            .journal
+            .pending
+            .as_ref()
+            .map_or(0, |pending| pending.mode);
         if !result_allowed(mode, result_code, fault_code) {
-            return Err(if mode == MAINTENANCE { "维护模式下结果码须为 0".into() } else { "结果码或异常码与协议 7 不一致".into() });
+            return Err(if mode == MAINTENANCE {
+                "维护模式下结果码须为 0".into()
+            } else {
+                "结果码或异常码与协议 7 不一致".into()
+            });
         }
         if self.phase != SessionPhase::Draining && mode != MAINTENANCE && result_code != 90 {
             return Err("运动结束及触发校验完成前只能提交检测异常结果".into());

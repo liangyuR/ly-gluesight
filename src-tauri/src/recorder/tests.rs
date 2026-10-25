@@ -144,16 +144,45 @@ fn maintenance_collect_recordings_survive_retention() {
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
     let recorder = Recorder::new(dir.root(), Some(callback));
-    let kept: Vec<_> = (0..2).map(|i| { let path = old_recording(&dir.root(), i, 10); std::fs::write(path.join(KEEP_MARKER), b"").unwrap(); path }).collect();
+    let kept: Vec<_> = (0..2)
+        .map(|i| {
+            let path = old_recording(&dir.root(), i, 10);
+            std::fs::write(path.join(KEEP_MARKER), b"").unwrap();
+            path
+        })
+        .collect();
     let pruned = old_recording(&dir.root(), 5, 10);
     let newest = old_recording(&dir.root(), 6, 10);
-    let mut rec = recorder.begin(RecordMode::All, "SN-M", recipe(), "collect-new", None).unwrap();
+    let mut rec = recorder
+        .begin(RecordMode::All, "SN-M", recipe(), "collect-new", None)
+        .unwrap();
     rec.annotate("partMode", serde_json::json!("maintenanceCollect"));
     recorder.burst_frame(&mut rec, &frame(10), 0, 1);
-    recorder.finish(rec, Verdict::ErrInspect, "维护采集", 1, u64::MAX, Vec::new());
+    recorder.finish(
+        rec,
+        Verdict::ErrInspect,
+        "维护采集",
+        1,
+        u64::MAX,
+        Vec::new(),
+    );
     let outcome = wait(&outcomes);
-    assert!(outcome.directory.as_ref().unwrap().join(KEEP_MARKER).is_file(), "维护采集件收尾时要打保留标记");
+    assert!(
+        outcome
+            .directory
+            .as_ref()
+            .unwrap()
+            .join(KEEP_MARKER)
+            .is_file(),
+        "维护采集件收尾时要打保留标记"
+    );
     assert_eq!(metadata(&outcome)["partMode"], "maintenanceCollect");
-    assert!(kept.iter().all(|d| d.is_dir()), "保留数 1 时维护采集样本被清理");
-    assert!(newest.is_dir() && !pruned.is_dir(), "普通旧录制照常按保留数清理，维护采集样本不占保留件数");
+    assert!(
+        kept.iter().all(|d| d.is_dir()),
+        "保留数 1 时维护采集样本被清理"
+    );
+    assert!(
+        newest.is_dir() && !pruned.is_dir(),
+        "普通旧录制照常按保留数清理，维护采集样本不占保留件数"
+    );
 }

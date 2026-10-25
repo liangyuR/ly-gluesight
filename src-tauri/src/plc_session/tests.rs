@@ -404,19 +404,32 @@ async fn maintenance_part_arms_with_pc_mode_1_and_accepts_only_result_code_0() {
     rig.fresh().await;
     let event = rig.session.poll(&rig.engine, false, true).await;
     assert!(matches!(event, SessionEvent::None), "{event:?}");
-    assert_eq!((rig.plc.pc(), rig.plc.get(tag::PC_MODE)), (state::PC_READY, 1));
+    assert_eq!(
+        (rig.plc.pc(), rig.plc.get(tag::PC_MODE)),
+        (state::PC_READY, 1)
+    );
     rig.request(1, "SN-M1").await;
     rig.session.set_maintenance(false);
     assert!(rig.session.part_maintenance());
     rig.session.arm_outputs(&rig.engine, None).await.unwrap();
     rig.session.commit_arm(&rig.engine).await.unwrap();
-    assert_eq!((rig.plc.pc(), rig.plc.get(tag::PC_MODE)), (state::PC_ARMED, 1));
+    assert_eq!(
+        (rig.plc.pc(), rig.plc.get(tag::PC_MODE)),
+        (state::PC_ARMED, 1)
+    );
     rig.end().await;
     assert!(rig.session.report(&rig.engine, 1, 0).await.is_err());
     rig.session.report(&rig.engine, 0, 0).await.unwrap();
-    assert_eq!((rig.plc.pc(), rig.plc.get(tag::RESULT_CODE)), (state::PC_RESULT, 0));
+    assert_eq!(
+        (rig.plc.pc(), rig.plc.get(tag::RESULT_CODE)),
+        (state::PC_RESULT, 0)
+    );
     rig.ack_release().await;
-    assert_eq!(rig.plc.get(tag::PC_MODE), 0, "退出维护模式后空闲输出回到正常模式");
+    assert_eq!(
+        rig.plc.get(tag::PC_MODE),
+        0,
+        "退出维护模式后空闲输出回到正常模式"
+    );
     rig.finish().await;
 }
 

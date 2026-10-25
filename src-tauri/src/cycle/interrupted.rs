@@ -29,8 +29,13 @@ pub(super) fn part(interrupted: &Interrupted, records: &[Record], recipe: impl F
         .and_then(recipe);
     let reason = format!("检测进程在事务中中断（请求序号 {}），本件未完成检测，结果未回写 PLC", interrupted.request_seq);
     let judgement = Judgement::error(fault::DEVICE_LOST, reason.clone());
-    let burst = recipe.as_deref().and_then(|recipe| super::burst::empty_record(recipe, &judgement));
-    let mode = match (interrupted.maintenance, recipe.as_deref().is_some_and(Recipe::is_collect)) {
+    let burst = recipe
+        .as_deref()
+        .and_then(|recipe| super::burst::empty_record(recipe, &judgement));
+    let mode = match (
+        interrupted.maintenance,
+        recipe.as_deref().is_some_and(Recipe::is_collect),
+    ) {
         (false, _) => PartMode::Production,
         (true, true) => PartMode::MaintenanceCollect,
         (true, false) => PartMode::MaintenanceShadow,
@@ -99,7 +104,17 @@ mod tests {
     }
 
     fn interrupted(source: RecordSource) -> Interrupted<'static> {
-        Interrupted { cycle_id: CYCLE, sn: "OFFLINE-0000000007", request_seq: 7, started_at: Some(900), site: PartSite { source, record: RecordMode::All }, maintenance: false }
+        Interrupted {
+            cycle_id: CYCLE,
+            sn: "OFFLINE-0000000007",
+            request_seq: 7,
+            started_at: Some(900),
+            site: PartSite {
+                source,
+                record: RecordMode::All,
+            },
+            maintenance: false,
+        }
     }
 
     /// 中断件补记录（段配方）：带 ΣN_exp 与容差、没有帧、区域判定与摘要同为 ERR 98，按 C5 的记录约束能落库
@@ -115,10 +130,29 @@ mod tests {
         assert_eq!((burst.judgement.verdict, burst.judgement.fault_code), (Verdict::ErrInspect, fault::DEVICE_LOST));
         let directory = crate::offline::test_dir::TestDir::new("cycle-burst-tests", "interrupted");
         let store = crate::store::Store::open(&directory.join("inspection.db")).unwrap();
-        store.insert(&crate::store::PartRecord { mode: part.mode, ts: part.ts, sn: &part.sn, recipe: part.recipe.as_deref(), judgement: &part.judgement,
-            drain_ms: None, frames: &part.frames, frames_expected: part.frames_expected, frames_received: part.frames_received, triggers: part.triggers,
-            table: None, software_version: &part.software_version, cycle_id: Some(&part.cycle_id), bundle_id: None, delivery: &part.delivery,
-            shots: &part.shots, source: part.source, sample: None, burst: part.burst.as_ref() }).unwrap();
+        store
+            .insert(&crate::store::PartRecord {
+                mode: part.mode,
+                ts: part.ts,
+                sn: &part.sn,
+                recipe: part.recipe.as_deref(),
+                judgement: &part.judgement,
+                drain_ms: None,
+                frames: &part.frames,
+                frames_expected: part.frames_expected,
+                frames_received: part.frames_received,
+                triggers: part.triggers,
+                table: None,
+                software_version: &part.software_version,
+                cycle_id: Some(&part.cycle_id),
+                bundle_id: None,
+                delivery: &part.delivery,
+                shots: &part.shots,
+                source: part.source,
+                sample: None,
+                burst: part.burst.as_ref(),
+            })
+            .unwrap();
     }
 
 }

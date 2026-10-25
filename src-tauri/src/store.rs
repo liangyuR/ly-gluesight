@@ -773,8 +773,17 @@ fn extend_candidate_source(conn: &Connection, path: &Path) -> Result<(), String>
 
 /// 记录库 9 版原地加 `mode` 列（维护模式），旧记录都是正式检测件，不重建、不丢记录。
 fn add_part_mode(conn: &Connection) -> Result<(), String> {
-    let sql: Option<String> = conn.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='parts'", [], |r| r.get(0)).optional().map_err(db_err)?;
-    if sql.is_none_or(|sql| sql.contains(" mode TEXT")) { return Ok(()); }
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='parts'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db_err)?;
+    if sql.is_none_or(|sql| sql.contains(" mode TEXT")) {
+        return Ok(());
+    }
     conn.execute_batch("ALTER TABLE parts ADD COLUMN mode TEXT NOT NULL DEFAULT 'production' CHECK(mode IN ('production','maintenanceCollect','maintenanceShadow'))")
         .map_err(|e| format!("记录库加维护模式列失败：{e}"))
 }
@@ -1371,7 +1380,10 @@ impl Store {
             args.push(SqlValue::Text(id.to_string()));
         }
         if !q.modes.is_empty() {
-            clauses.push(format!("{prefix}mode IN ({})", vec!["?"; q.modes.len()].join(",")));
+            clauses.push(format!(
+                "{prefix}mode IN ({})",
+                vec!["?"; q.modes.len()].join(",")
+            ));
             args.extend(q.modes.iter().map(|mode| SqlValue::Text(enum_name(*mode))));
         }
         (format!(" WHERE {}", clauses.join(" AND ")), args)
@@ -1606,19 +1618,41 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(db_err)
     }
 
-    pub fn collection_progress(&self, scope: HistoryScope) -> Result<Vec<CollectionProgress>, String> {
+    pub fn collection_progress(
+        &self,
+        scope: HistoryScope,
+    ) -> Result<Vec<CollectionProgress>, String> {
         let conn = self.conn.lock().unwrap();
         let sql = format!("SELECT recipe_id, recording_available, camera_frames FROM parts WHERE {} AND mode = 'maintenanceCollect' \
             AND recipe_id IS NOT NULL AND recording_directory IS NOT NULL ORDER BY recipe_id", scope.clause(""));
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?, row.get::<_, Option<String>>(2)?))).map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(db_err)?;
         let mut progress: Vec<CollectionProgress> = Vec::new();
         for row in rows {
             let (recipe_id, available, frames) = row.map_err(db_err)?;
-            let frames: Vec<u32> = frames.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
-            let usable = available && frames.first().is_some_and(|&n| n > 0 && frames.iter().all(|&m| m == n));
-            if progress.last().is_none_or(|last| last.recipe_id != recipe_id) {
-                progress.push(CollectionProgress { recipe_id, ..CollectionProgress::default() });
+            let frames: Vec<u32> = frames
+                .and_then(|text| serde_json::from_str(&text).ok())
+                .unwrap_or_default();
+            let usable = available
+                && frames
+                    .first()
+                    .is_some_and(|&n| n > 0 && frames.iter().all(|&m| m == n));
+            if progress
+                .last()
+                .is_none_or(|last| last.recipe_id != recipe_id)
+            {
+                progress.push(CollectionProgress {
+                    recipe_id,
+                    ..CollectionProgress::default()
+                });
             }
             let last = progress.last_mut().unwrap();
             last.recorded += 1;
@@ -1628,7 +1662,14 @@ impl Store {
     }
 
     pub fn counts_since(&self, since: i64, scope: HistoryScope) -> Result<VerdictCounts, String> {
-        self.query(&HistoryQuery { from: Some(since), scope, modes: vec![PartMode::Production], limit: 1, ..Default::default() }).map(|p| p.counts)
+        self.query(&HistoryQuery {
+            from: Some(since),
+            scope,
+            modes: vec![PartMode::Production],
+            limit: 1,
+            ..Default::default()
+        })
+        .map(|p| p.counts)
     }
 
     pub(crate) fn comparison_cycle(&self, id: i64) -> Result<Option<String>, String> {

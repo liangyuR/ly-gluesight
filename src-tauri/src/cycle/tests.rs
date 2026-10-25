@@ -376,7 +376,10 @@ fn collect_part_completes_at_drain_deadline_without_measuring() {
     part.mode = crate::store::PartMode::MaintenanceCollect;
     part.burst.as_mut().unwrap().collect = true;
     for cam in 0..3 {
-        assert!(matches!(part.receive_burst(&burst_frame(cam, 1)), Some(burst::Arrival::Accepted { seq: 1, .. })));
+        assert!(matches!(
+            part.receive_burst(&burst_frame(cam, 1)),
+            Some(burst::Arrival::Accepted { seq: 1, .. })
+        ));
     }
     end(&mut part, None, false);
     assert!(!part.complete(), "收尾窗口内仍收帧");
