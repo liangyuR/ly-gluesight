@@ -50,7 +50,7 @@ pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
     if plc_db == pc_db {
         return Err("PLC 区与 PC 区必须使用两个不同的 DB".into());
     }
-    use DataType::{I16, I32, String as Text};
+    use DataType::{String as Text, I16, I32};
     let input = Access::Read;
     let output = Access::ReadWrite;
     let definitions = [

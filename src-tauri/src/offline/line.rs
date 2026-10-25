@@ -14,8 +14,21 @@ use crate::plan::{PathSegment, SegmentKind};
 use crate::segmentation::synthetic;
 
 const FIELDS: &[&str] = &[
-    tag::PLC_VERSION, tag::PLC_HEARTBEAT, tag::PLC_STATE, tag::PLC_REASON, tag::REQUEST_SEQ, tag::PRODUCT_CODE, tag::SN,
-    tag::PC_VERSION, tag::PC_HEARTBEAT, tag::PC_STATE, tag::PC_MODE, tag::SEQ_ECHO, tag::RESULT_CODE, tag::FAULT_CODE, tag::SN_ECHO,
+    tag::PLC_VERSION,
+    tag::PLC_HEARTBEAT,
+    tag::PLC_STATE,
+    tag::PLC_REASON,
+    tag::REQUEST_SEQ,
+    tag::PRODUCT_CODE,
+    tag::SN,
+    tag::PC_VERSION,
+    tag::PC_HEARTBEAT,
+    tag::PC_STATE,
+    tag::PC_MODE,
+    tag::SEQ_ECHO,
+    tag::RESULT_CODE,
+    tag::FAULT_CODE,
+    tag::SN_ECHO,
 ];
 const FAULTED: &str = "视觉撤下就绪或置故障（pcState 为 0、90 或 99），PLC 撤销本件请求";
 const ABORTED: &str = "已立即停止，PLC 撤销本件请求";
@@ -52,7 +65,11 @@ impl Layout {
     /// 心跳 Int 低字节的最低位：翻转后 plcHeartbeat 在 0/1 间交替。
     pub fn heartbeat(&self) -> BitAddr {
         let slot = self.slots[tag::PLC_HEARTBEAT];
-        BitAddr { db: slot.db, byte: slot.byte + slot.len - 1, bit: 0 }
+        BitAddr {
+            db: slot.db,
+            byte: slot.byte + slot.len - 1,
+            bit: 0,
+        }
     }
 
     /// 按点表分配 DB（至少 1024 字节），PLC 协议版本预置为当前版本，字符串字段预置为空串（S7 STRING 带正确的声明长度）。
@@ -253,7 +270,15 @@ pub struct PartOrder {
 impl PartOrder {
     /// 旧拍照点配方的一件：没有脉冲剖面。
     pub fn legacy(sn: String, product_code: u16, shot_count: u16, device_shots: u16) -> Self {
-        Self { sn, product_code, shot_count, device_shots, profile: None, lost: Vec::new(), early_end_after: None }
+        Self {
+            sn,
+            product_code,
+            shot_count,
+            device_shots,
+            profile: None,
+            lost: Vec::new(),
+            early_end_after: None,
+        }
     }
 }
 
@@ -308,7 +333,10 @@ impl Line {
     }
 
     fn release(&self) {
-        self.write(&[(tag::PLC_REASON, 0), (tag::PLC_STATE, state::PLC_IDLE as u32)]);
+        self.write(&[
+            (tag::PLC_REASON, 0),
+            (tag::PLC_STATE, state::PLC_IDLE as u32),
+        ]);
     }
 
     /// 故障注入：像操作员在现场按住或松开复位一样保持复位请求（plcState=99）。
@@ -316,9 +344,11 @@ impl Line {
         let mut memory = self.memory.lock().unwrap();
         let current = self.layout.get(&memory, tag::PLC_STATE);
         if on && current == state::PLC_IDLE as u32 {
-            self.layout.set(&mut memory, tag::PLC_STATE, state::PLC_RESET as u32);
+            self.layout
+                .set(&mut memory, tag::PLC_STATE, state::PLC_RESET as u32);
         } else if !on && current == state::PLC_RESET as u32 {
-            self.layout.set(&mut memory, tag::PLC_STATE, state::PLC_IDLE as u32);
+            self.layout
+                .set(&mut memory, tag::PLC_STATE, state::PLC_IDLE as u32);
         }
     }
 
@@ -328,16 +358,27 @@ impl Line {
 
     /// 视觉撤下就绪、置故障或请求复位：在途件按协议放弃。
     fn pc_stopped(&self) -> bool {
-        matches!(self.read(tag::PC_STATE) as u16, state::PC_NOT_READY | state::PC_FAULT | state::PC_RESET)
+        matches!(
+            self.read(tag::PC_STATE) as u16,
+            state::PC_NOT_READY | state::PC_FAULT | state::PC_RESET
+        )
     }
 
     async fn wait(&self, timing: &Timing, timeout: Duration, abort: &AtomicBool, fault_stops: bool, done: impl Fn(&Self) -> bool) -> Wait {
         let deadline = Instant::now() + timeout;
         loop {
-            if abort.load(Ordering::SeqCst) { return Wait::Aborted; }
-            if done(self) { return Wait::Done; }
-            if fault_stops && self.pc_stopped() { return Wait::Faulted; }
-            if Instant::now() >= deadline { return Wait::Timeout; }
+            if abort.load(Ordering::SeqCst) {
+                return Wait::Aborted;
+            }
+            if done(self) {
+                return Wait::Done;
+            }
+            if fault_stops && self.pc_stopped() {
+                return Wait::Faulted;
+            }
+            if Instant::now() >= deadline {
+                return Wait::Timeout;
+            }
             sleep(timing.poll).await;
         }
     }
@@ -362,8 +403,12 @@ impl Line {
     /// 等到 `deadline`（脉冲时钟）：轮询间隔不长于剩余时间，定频脉冲不被轮询周期拉长。
     async fn hold_until(&self, timing: &Timing, deadline: Instant, abort: &AtomicBool) -> Result<(), String> {
         loop {
-            if abort.load(Ordering::SeqCst) { return Err(ABORTED.into()); }
-            if self.pc_stopped() { return Err(FAULTED.into()); }
+            if abort.load(Ordering::SeqCst) {
+                return Err(ABORTED.into());
+            }
+            if self.pc_stopped() {
+                return Err(FAULTED.into());
+            }
             let now = Instant::now();
             if now >= deadline { return Ok(()); }
             sleep(timing.poll.min(deadline - now)).await;
@@ -376,13 +421,21 @@ impl Line {
         match self.wait(timing, timing.ready_timeout, abort, true, Self::ready).await {
             Wait::Done => return Ok(()),
             Wait::Aborted => return Err(ABORTED.into()),
-            Wait::Timeout => return Err(format!("{} ms 内视觉未置 pcState=10，查看在线检测页的提示", timing.ready_timeout.as_millis())),
+            Wait::Timeout => {
+                return Err(format!(
+                    "{} ms 内视觉未置 pcState=10，查看在线检测页的提示",
+                    timing.ready_timeout.as_millis()
+                ))
+            }
             Wait::Faulted => {}
         }
         sleep(timing.settle).await;
         self.hold_reset_request(true);
-        let reset = self.wait(timing, timing.ready_timeout, abort, false,
-            |line| line.ready() || line.read(tag::PLC_STATE) == state::PLC_REQUEST as u32).await;
+        let reset = self
+            .wait(timing, timing.ready_timeout, abort, false, |line| {
+                line.ready() || line.read(tag::PLC_STATE) == state::PLC_REQUEST as u32
+            })
+            .await;
         self.hold_reset_request(false);
         match reset {
             Wait::Done => Ok(()),
@@ -557,10 +610,16 @@ impl Line {
     /// 写请求（数据先写，最后置 plcState=10），返回本件 requestSeq。
     fn request(&self, order: &PartOrder) -> u32 {
         let seq = self.read(tag::REQUEST_SEQ) % i32::MAX as u32 + 1;
-        self.write_request(&order.sn, &[
-            (tag::PLC_VERSION, PROTOCOL_VERSION as u32), (tag::REQUEST_SEQ, seq), (tag::PRODUCT_CODE, order.product_code as u32),
-            (tag::PLC_REASON, 0), (tag::PLC_STATE, state::PLC_REQUEST as u32),
-        ]);
+        self.write_request(
+            &order.sn,
+            &[
+                (tag::PLC_VERSION, PROTOCOL_VERSION as u32),
+                (tag::REQUEST_SEQ, seq),
+                (tag::PRODUCT_CODE, order.product_code as u32),
+                (tag::PLC_REASON, 0),
+                (tag::PLC_STATE, state::PLC_REQUEST as u32),
+            ],
+        );
         seq
     }
 
@@ -570,8 +629,18 @@ impl Line {
 
     /// 等布防或拒绝结果；视觉已布防（没有直接发布拒绝结果）时返回 true。
     async fn armed(&self, timing: &Timing, seq: u32, abort: &AtomicBool) -> Result<bool, String> {
-        self.until(timing, timing.arm_timeout, abort, "布防或拒绝结果",
-            |line| (line.read(tag::PC_STATE) == state::PC_ARMED as u32 && line.read(tag::SEQ_ECHO) == seq) || line.published(seq)).await?;
+        self.until(
+            timing,
+            timing.arm_timeout,
+            abort,
+            "布防或拒绝结果",
+            |line| {
+                (line.read(tag::PC_STATE) == state::PC_ARMED as u32
+                    && line.read(tag::SEQ_ECHO) == seq)
+                    || line.published(seq)
+            },
+        )
+        .await?;
         Ok(!self.published(seq))
     }
 
@@ -585,18 +654,47 @@ impl Line {
     }
 
     /// 等本件结果，核对回显后置 30（ackMismatch 时按回显不符置 90），等视觉回就绪后回空闲。
-    async fn conclude(&self, timing: &Timing, scenario: Scenario, seq: u32, abort: &AtomicBool) -> Result<Outcome, String> {
-        self.until(timing, timing.result_timeout, abort, "本件结果", move |line| line.published(seq)).await?;
-        let outcome = Outcome { request_seq: seq, sn: self.read_text(tag::SN_ECHO),
-            result_code: self.read(tag::RESULT_CODE) as u16, fault_code: self.read(tag::FAULT_CODE) as u16 };
+    async fn conclude(
+        &self,
+        timing: &Timing,
+        scenario: Scenario,
+        seq: u32,
+        abort: &AtomicBool,
+    ) -> Result<Outcome, String> {
+        self.until(
+            timing,
+            timing.result_timeout,
+            abort,
+            "本件结果",
+            move |line| line.published(seq),
+        )
+        .await?;
+        let outcome = Outcome {
+            request_seq: seq,
+            sn: self.read_text(tag::SN_ECHO),
+            result_code: self.read(tag::RESULT_CODE) as u16,
+            fault_code: self.read(tag::FAULT_CODE) as u16,
+        };
         self.hold(timing, timing.ack_delay, abort).await?;
         if scenario == Scenario::AckMismatch || outcome.sn != self.read_text(tag::SN) {
-            self.write(&[(tag::PLC_REASON, 5), (tag::PLC_STATE, state::PLC_FAULT as u32)]);
-            let _ = self.wait(timing, timing.release_timeout, abort, true, |_| false).await;
+            self.write(&[
+                (tag::PLC_REASON, 5),
+                (tag::PLC_STATE, state::PLC_FAULT as u32),
+            ]);
+            let _ = self
+                .wait(timing, timing.release_timeout, abort, true, |_| false)
+                .await;
             return Err("PLC 核对回显不符，置故障（plcReason=5）".into());
         }
         self.write(&[(tag::PLC_STATE, state::PLC_CONFIRMED as u32)]);
-        self.until(timing, timing.release_timeout, abort, "视觉回就绪（pcState=10）", Self::ready).await?;
+        self.until(
+            timing,
+            timing.release_timeout,
+            abort,
+            "视觉回就绪（pcState=10）",
+            Self::ready,
+        )
+        .await?;
         self.release();
         Ok(outcome)
     }

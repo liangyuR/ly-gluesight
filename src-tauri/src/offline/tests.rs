@@ -55,9 +55,20 @@ impl Bench {
 
     /// 段计划的一件：一个直线段、名义帧数 = ΣN_exp，不波动、不丢帧。
     fn order(&self, sn: &str) -> PartOrder {
-        let profile = PulseProfile { hz: BENCH_HZ, segments: vec![(crate::plan::SegmentKind::Straight, u32::from(self.plan.shot_count))],
-            head_tail_jitter: 0, corner_jitter: 0, seed: 0 };
-        PartOrder { profile: Some(profile), ..PartOrder::legacy(sn.into(), 3, self.plan.shot_count, self.plan.device_shots) }
+        let profile = PulseProfile {
+            hz: BENCH_HZ,
+            segments: vec![(
+                crate::plan::SegmentKind::Straight,
+                u32::from(self.plan.shot_count),
+            )],
+            head_tail_jitter: 0,
+            corner_jitter: 0,
+            seed: 0,
+        };
+        PartOrder {
+            profile: Some(profile),
+            ..PartOrder::legacy(sn.into(), 3, self.plan.shot_count, self.plan.device_shots)
+        }
     }
 
     /// `poll`：PC 轮询周期；`heartbeat`：虚拟 PLC 心跳翻转间隔。
@@ -118,8 +129,12 @@ impl Bench {
                 match session.poll_gated(engine, false, true, true, intake.load(Ordering::SeqCst)).await {
                     SessionEvent::Start(_) => session.arm(engine, plan).await.unwrap(),
                     SessionEvent::End(_) => {
-                        let judgement = judge_burst_at_drain_deadline(delivered.lock().unwrap().clone(), None);
-                        session.report(engine, judgement.plc_code, judgement.fault_code).await.unwrap();
+                        let judgement =
+                            judge_burst_at_drain_deadline(delivered.lock().unwrap().clone(), None);
+                        session
+                            .report(engine, judgement.plc_code, judgement.fault_code)
+                            .await
+                            .unwrap();
                         *judged = Some(judgement);
                     }
                     _ => {}
@@ -150,11 +165,29 @@ impl Bench {
 async fn simulator_resets_pc_then_part_completes_back_to_idle() {
     let mut bench = Bench::new("normal").await;
     let order = bench.order("SN-OK");
-    let outcome = bench.run_burst_with(order, Scenario::Normal, all_cameras).await.unwrap().unwrap();
+    let outcome = bench
+        .run_burst_with(order, Scenario::Normal, all_cameras)
+        .await
+        .unwrap()
+        .unwrap();
     let judged = bench.judged.take().unwrap();
-    assert_eq!((outcome.result_code, outcome.sn.as_str(), judged.verdict), (1, "SN-OK", Verdict::Ok));
-    assert_eq!(bench.session.phase(), SessionPhase::Idle, "{:?}", bench.session.view());
-    assert_eq!((bench.line.read(tag::PLC_STATE), bench.line.read(tag::PC_STATE)), (0, 10));
+    assert_eq!(
+        (outcome.result_code, outcome.sn.as_str(), judged.verdict),
+        (1, "SN-OK", Verdict::Ok)
+    );
+    assert_eq!(
+        bench.session.phase(),
+        SessionPhase::Idle,
+        "{:?}",
+        bench.session.view()
+    );
+    assert_eq!(
+        (
+            bench.line.read(tag::PLC_STATE),
+            bench.line.read(tag::PC_STATE)
+        ),
+        (0, 10)
+    );
     bench.engine.disconnect().await;
 }
 
@@ -163,14 +196,30 @@ async fn simulator_resets_pc_then_part_completes_back_to_idle() {
 async fn simulator_echo_mismatch_faults_then_plc_reset_restores_ready() {
     let mut bench = Bench::new("echo-mismatch").await;
     let order = bench.order("SN-ACK");
-    assert!(bench.run_burst_with(order, Scenario::AckMismatch, all_cameras).await.is_err());
-    assert_eq!(bench.session.phase(), SessionPhase::Fault, "{:?}", bench.session.view());
+    assert!(bench
+        .run_burst_with(order, Scenario::AckMismatch, all_cameras)
+        .await
+        .is_err());
+    assert_eq!(
+        bench.session.phase(),
+        SessionPhase::Fault,
+        "{:?}",
+        bench.session.view()
+    );
     assert!(bench.session.pending());
     let order = bench.order("SN-NEXT");
-    let outcome = bench.run_burst_with(order, Scenario::Normal, all_cameras).await.unwrap().unwrap();
+    let outcome = bench
+        .run_burst_with(order, Scenario::Normal, all_cameras)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(outcome.sn, "SN-NEXT");
-    assert_eq!(bench.session.phase(), SessionPhase::Idle, "{:?}", bench.session.view());
+    assert_eq!(
+        bench.session.phase(),
+        SessionPhase::Idle,
+        "{:?}",
+        bench.session.view()
+    );
     assert!(!bench.session.pending());
     bench.engine.disconnect().await;
 }
-

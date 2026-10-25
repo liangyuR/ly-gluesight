@@ -7,8 +7,13 @@ use crate::recipe::Recipe;
 /// 人工选型号时 PLC 下发了别的型号，报配方不可用，不让计划编译失败抢先。
 pub(super) fn admit(request: &Request, recipe: &Recipe, plan: Result<PlcPlan, String>) -> Result<PlcPlan, (u16, String)> {
     if request.product_code != recipe.product_code {
-        return Err((fault::NO_RECIPE, format!("PLC 型号 {} 与所选配方 {}（型号 {}）不一致",
-            request.product_code, recipe.id, recipe.product_code)));
+        return Err((
+            fault::NO_RECIPE,
+            format!(
+                "PLC 型号 {} 与所选配方 {}（型号 {}）不一致",
+                request.product_code, recipe.id, recipe.product_code
+            ),
+        ));
     }
     plan.map_err(|reason| (fault::PLAN_MISMATCH, reason))
 }
@@ -24,7 +29,10 @@ mod tests {
         let plan = PlcPlan::from_recipe(&recipe).unwrap();
         let code = recipe.product_code;
         let request = |product_code: u16| Request {
-            protocol_version: crate::handshake::PROTOCOL_VERSION, request_seq: 1, sn: "SN-1".into(), product_code,
+            protocol_version: crate::handshake::PROTOCOL_VERSION,
+            request_seq: 1,
+            sn: "SN-1".into(),
+            product_code,
         };
         let broken = || Err::<PlcPlan, String>("配方用到的相机不在设备配置里".into());
         for (request, compiled, expected) in [

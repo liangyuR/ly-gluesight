@@ -347,7 +347,12 @@ pub(crate) async fn run_candidate(app: AppHandle, candidate: Arc<crate::candidat
     *offline.last_candidate.lock().unwrap() = Some(candidate.clone());
     *offline.candidate.lock().unwrap() = Some(candidate);
     let _ = cycle.tx.send(crate::cycle::Input::Refresh);
-    let order = PartOrder::legacy(String::new(), recipe.product_code, plan.shot_count, plan.device_shots);
+    let order = PartOrder::legacy(
+        String::new(),
+        recipe.product_code,
+        plan.shot_count,
+        plan.device_shots,
+    );
     let run_app = app.clone();
     tauri::async_runtime::spawn(async move {
         match burst {
@@ -585,7 +590,12 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
     if let (Some(set), Some(id)) = (&samples, part_id.as_deref()) {
         set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?;
     }
-    let order = PartOrder::legacy(String::new(), recipe.product_code, plan.shot_count, plan.device_shots);
+    let order = PartOrder::legacy(
+        String::new(),
+        recipe.product_code,
+        plan.shot_count,
+        plan.device_shots,
+    );
     if recipe.is_burst() {
         let feeds = match &samples {
             Some(set) => sample_feeds(&recipe, set).map_err(|reason| format!("样本集与配方不符：{reason}"))?,
@@ -714,7 +724,11 @@ pub fn offline_fault_reset(app: AppHandle, offline: State<'_, OfflineHost>, leve
     if offline.running.load(Ordering::SeqCst) { return Err("离线产线运行中，先停止再操作复位信号".into()); }
     let line = offline.active.lock().unwrap().as_ref().map(|a| a.line.clone()).ok_or("离线模式未启用")?;
     line.hold_reset_request(level);
-    let what = if level { "保持复位请求 plcState=99" } else { "撤下复位请求" };
+    let what = if level {
+        "保持复位请求 plcState=99"
+    } else {
+        "撤下复位请求"
+    };
     crate::cycle::log(&app, "warn", "离线故障注入", format!("虚拟 PLC {what}"));
     Ok(())
 }
@@ -842,7 +856,10 @@ fn start_synthetic_capture(
     let profile = capture_profile(&recipe, hz, ordinal);
     let estimate = u16::try_from(profile.segments.iter().map(|&(_, n)| n).sum::<u32>().min(i16::MAX as u32)).unwrap_or(i16::MAX as u16);
     start_running(offline, false)?;
-    let order = PartOrder { profile: Some(profile), ..PartOrder::legacy(String::new(), 0, estimate, estimate) };
+    let order = PartOrder {
+        profile: Some(profile),
+        ..PartOrder::legacy(String::new(), 0, estimate, estimate)
+    };
     tauri::async_runtime::spawn(capture_synthetic(app.clone(), line, recipe, feeds, order));
     Ok(())
 }

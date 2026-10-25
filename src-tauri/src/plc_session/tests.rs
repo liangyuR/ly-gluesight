@@ -7,7 +7,11 @@ use crate::offline::s7_server::{Fault, S7Server, SharedMemory, WriteTarget};
 use crate::offline::test_dir::TestDir;
 
 /// PC 区（DB2）上的 pcState（DBW4）
-const PC_STATE_WORD: WriteTarget = WriteTarget { db: 2, byte: 4, bit: None };
+const PC_STATE_WORD: WriteTarget = WriteTarget {
+    db: 2,
+    byte: 4,
+    bit: None,
+};
 
 /// 进程内 S7 服务扮演 PLC：测试直接改它的 DB，会话经真实 S7 通讯读写同一块内存。
 struct TestPlc {
@@ -26,7 +30,9 @@ impl TestPlc {
 
     fn get(&self, field: &str) -> u32 { self.layout.get(&self.memory.lock().unwrap(), field) }
 
-    fn pc(&self) -> u16 { self.get(tag::PC_STATE) as u16 }
+    fn pc(&self) -> u16 {
+        self.get(tag::PC_STATE) as u16
+    }
 
     fn text(&self, field: &str) -> String { self.layout.get_text(&self.memory.lock().unwrap(), field) }
 
@@ -35,13 +41,19 @@ impl TestPlc {
         for (field, value) in values { self.layout.set(&mut memory, field, *value); }
     }
 
-    fn plc_state(&self, value: u16) { self.set(&[(tag::PLC_STATE, value as u32)]); }
+    fn plc_state(&self, value: u16) {
+        self.set(&[(tag::PLC_STATE, value as u32)]);
+    }
 
     /// 数据先写，最后置 plcState=10
     fn request(&self, seq: u32, sn: &str) {
         let mut memory = self.memory.lock().unwrap();
         self.layout.set_text(&mut memory, tag::SN, sn);
-        for (field, value) in [(tag::REQUEST_SEQ, seq), (tag::PRODUCT_CODE, 1), (tag::PLC_STATE, state::PLC_REQUEST as u32)] {
+        for (field, value) in [
+            (tag::REQUEST_SEQ, seq),
+            (tag::PRODUCT_CODE, 1),
+            (tag::PLC_STATE, state::PLC_REQUEST as u32),
+        ] {
             self.layout.set(&mut memory, field, value);
         }
     }
@@ -50,7 +62,11 @@ impl TestPlc {
     fn ack(&self) {
         assert_eq!(self.pc(), state::PC_RESULT);
         assert_eq!(self.get(tag::SEQ_ECHO), self.get(tag::REQUEST_SEQ));
-        assert_eq!(self.text(tag::SN_ECHO), self.text(tag::SN), "snEcho 与 sn 不一致时 PLC 不会确认");
+        assert_eq!(
+            self.text(tag::SN_ECHO),
+            self.text(tag::SN),
+            "snEcho 与 sn 不一致时 PLC 不会确认"
+        );
         self.plc_state(state::PLC_CONFIRMED);
     }
 
@@ -147,14 +163,20 @@ impl Rig {
     async fn arm(&mut self) {
         self.session.arm(&self.engine, &self.plan).await.unwrap();
         assert_eq!(self.session.phase(), SessionPhase::Acquiring);
-        assert_eq!((self.plc.pc(), self.plc.get(tag::SEQ_ECHO)), (state::PC_ARMED, self.plc.get(tag::REQUEST_SEQ)));
+        assert_eq!(
+            (self.plc.pc(), self.plc.get(tag::SEQ_ECHO)),
+            (state::PC_ARMED, self.plc.get(tag::REQUEST_SEQ))
+        );
     }
 
     async fn end(&mut self) {
         self.plc.plc_state(state::PLC_MOTION_END);
         self.fresh().await;
         let event = self.session.poll(&self.engine, false, true).await;
-        assert!(matches!(event, SessionEvent::End(_)), "expected motion end, got {event:?}");
+        assert!(
+            matches!(event, SessionEvent::End(_)),
+            "expected motion end, got {event:?}"
+        );
         assert_eq!(self.session.phase(), SessionPhase::Draining);
     }
 
@@ -170,7 +192,11 @@ impl Rig {
         let until = Instant::now() + Duration::from_secs(6);
         while self.plc.pc() != state::PC_READY {
             let event = self.session.poll(&self.engine, false, true).await;
-            assert!(Instant::now() < until, "PC 未回就绪：{:?} {event:?}", self.session.view());
+            assert!(
+                Instant::now() < until,
+                "PC 未回就绪：{:?} {event:?}",
+                self.session.view()
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(self.session.phase(), SessionPhase::Idle);
@@ -199,10 +225,17 @@ async fn s7_wire_part_returns_ready_only_after_plc_latches_result() {
         rig.report().await;
         rig.fresh().await;
         rig.session.poll(&rig.engine, false, true).await;
-        assert_eq!((rig.session.phase(), rig.plc.pc()), (SessionPhase::AwaitAck, state::PC_RESULT), "PLC 未锁存前不得回就绪");
+        assert_eq!(
+            (rig.session.phase(), rig.plc.pc()),
+            (SessionPhase::AwaitAck, state::PC_RESULT),
+            "PLC 未锁存前不得回就绪"
+        );
         rig.ack_release().await;
     }
-    assert!(rig.audit().iter().any(|r| r["action"] == "acknowledged" && r["pending"]["request"]["requestSeq"] == 2));
+    assert!(rig
+        .audit()
+        .iter()
+        .any(|r| r["action"] == "acknowledged" && r["pending"]["request"]["requestSeq"] == 2));
     rig.finish().await;
 }
 
@@ -211,20 +244,36 @@ async fn s7_wire_part_returns_ready_only_after_plc_latches_result() {
 async fn plc_reset_request_completes_without_operator_then_intake_pause_withdraws_ready() {
     let mut rig = Rig::new("plc-reset").await;
     rig.request(1, "SN-50").await;
-    rig.plc.set(&[(tag::PLC_REASON, 11), (tag::PLC_STATE, state::PLC_FAULT as u32)]);
+    rig.plc.set(&[
+        (tag::PLC_REASON, 11),
+        (tag::PLC_STATE, state::PLC_FAULT as u32),
+    ]);
     rig.phase(SessionPhase::Fault).await;
     assert_eq!(rig.plc.pc(), state::PC_FAULT);
     assert!(rig.session.pending());
-    rig.plc.set(&[(tag::PLC_REASON, 0), (tag::PLC_STATE, state::PLC_RESET as u32)]);
+    rig.plc.set(&[
+        (tag::PLC_REASON, 0),
+        (tag::PLC_STATE, state::PLC_RESET as u32),
+    ]);
     rig.fresh().await;
-    assert!(matches!(rig.session.poll_gated(&rig.engine, false, true, true, false).await, SessionEvent::Ready));
+    assert!(matches!(
+        rig.session
+            .poll_gated(&rig.engine, false, true, true, false)
+            .await,
+        SessionEvent::Ready
+    ));
     assert_eq!(rig.plc.pc(), state::PC_READY, "PLC 在 99 只等 pcState=10");
     assert!(!rig.session.pending());
     assert_eq!(rig.audit().last().unwrap()["action"], "resetCompleted");
     rig.plc.plc_state(state::PLC_IDLE);
     rig.fresh().await;
-    rig.session.poll_gated(&rig.engine, false, true, true, false).await;
-    assert_eq!((rig.session.phase(), rig.plc.pc()), (SessionPhase::Idle, state::PC_NOT_READY));
+    rig.session
+        .poll_gated(&rig.engine, false, true, true, false)
+        .await;
+    assert_eq!(
+        (rig.session.phase(), rig.plc.pc()),
+        (SessionPhase::Idle, state::PC_NOT_READY)
+    );
     rig.finish().await;
 }
 
@@ -232,18 +281,39 @@ async fn plc_reset_request_completes_without_operator_then_intake_pause_withdraw
 #[tokio::test]
 async fn software_reset_waits_for_plc_idle_before_ready() {
     let mut rig = Rig::new("software-reset").await;
-    rig.plc.set(&[(tag::PLC_REASON, 9), (tag::PLC_STATE, state::PLC_FAULT as u32)]);
+    rig.plc.set(&[
+        (tag::PLC_REASON, 9),
+        (tag::PLC_STATE, state::PLC_FAULT as u32),
+    ]);
     rig.fresh().await;
     rig.session.poll(&rig.engine, false, true).await;
-    assert!(rig.session.notice().is_some_and(|n| n.contains("plcReason=9")), "{:?}", rig.session.view());
-    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::None));
+    assert!(
+        rig.session
+            .notice()
+            .is_some_and(|n| n.contains("plcReason=9")),
+        "{:?}",
+        rig.session.view()
+    );
+    assert!(matches!(
+        rig.session.poll(&rig.engine, true, true).await,
+        SessionEvent::None
+    ));
     assert_eq!(rig.plc.pc(), state::PC_RESET);
     rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
+    assert!(matches!(
+        rig.session.poll(&rig.engine, false, true).await,
+        SessionEvent::None
+    ));
     assert_eq!(rig.plc.pc(), state::PC_RESET);
-    rig.plc.set(&[(tag::PLC_REASON, 0), (tag::PLC_STATE, state::PLC_IDLE as u32)]);
+    rig.plc.set(&[
+        (tag::PLC_REASON, 0),
+        (tag::PLC_STATE, state::PLC_IDLE as u32),
+    ]);
     rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::Ready));
+    assert!(matches!(
+        rig.session.poll(&rig.engine, false, true).await,
+        SessionEvent::Ready
+    ));
     assert_eq!(rig.plc.pc(), state::PC_READY);
     rig.finish().await;
 }
