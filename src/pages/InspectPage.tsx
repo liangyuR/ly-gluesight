@@ -372,7 +372,7 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
   const card = useRef<HTMLElement>(null);
   const running = !result && phase !== "IDLE" && phase !== "FAULT";
   const stateKey = result ? `${result.cycleId}:${result.ts}` : running ? `run:${part?.cycleId ?? ""}` : "idle";
-  const tone = result ? verdictTone(result.verdict) : running ? "run" : "idle";
+  const tone = result ? (result.mode === "maintenanceCollect" ? "idle" : verdictTone(result.verdict)) : running ? "run" : "idle";
   const initial = useRef(stateKey);
   const animate = useRef(false);
   if (initial.current !== stateKey) animate.current = true;
@@ -381,7 +381,8 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
     if (animate.current && tone === "ng") setEmphasis(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stateKey]);
-  const parts = result ? verdictParts(result.verdict) : null;
+  const parts = result ? (result.mode === "maintenanceCollect" ? { code: "未判定", detail: "维护采集，只录图" }
+    : { ...verdictParts(result.verdict), ...(result.mode === "maintenanceShadow" ? { detail: `试判 · ${verdictParts(result.verdict).detail}` } : {}) }) : null;
   const reason = result ? displayReason(result.reason) : "";
   // 本件有帧没有位置基准：不论整件 NG 还是不可判都挂徽标（NG 优先于基准无效时 PLC 码看不出定位失败）
   const reference = result && part && result.cycleId === part.cycleId ? partReferenceBadge(part) : null;

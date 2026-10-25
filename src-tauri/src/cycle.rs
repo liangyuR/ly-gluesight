@@ -266,6 +266,7 @@ pub struct ResultView {
     pub judgement: Judgement,
     /// 段配方的判定；有值时 judgement 的 verdict / plc_code / fault_code / reason 与它相同。旧拍照点配方为 None
     pub burst: Option<BurstJudgement>,
+    pub mode: crate::store::PartMode,
 }
 
 /// 当日计数，跨天清零。
@@ -1496,12 +1497,9 @@ impl Machine {
         self.dirty = false;
         self.published = Instant::now();
         let host = host(&self.app);
-        if self
-            .collection
-            .1
-            .is_none_or(|at| at.elapsed() > COLLECTION_REFRESH)
-            && host.settings().maintenance.is_some()
-        {
+        if host.settings().maintenance.is_none() {
+            self.collection = (Vec::new(), None);
+        } else if self.collection.1.is_none_or(|at| at.elapsed() > COLLECTION_REFRESH) {
             self.collection = (
                 self.app
                     .state::<Store>()
@@ -2653,7 +2651,7 @@ impl Machine {
             ),
         );
         self.finish_recording(&sn, &judgement);
-        self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id, ts: now_ms(), drain_ms, judgement, burst });
+        self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id, ts: now_ms(), drain_ms, judgement, burst, mode });
         match r {
             Ok(()) => self.set_phase(Phase::Report),
             Err(reason) => {
@@ -2922,7 +2920,8 @@ impl Machine {
             self.finish_recording(&sn, &judgement);
             log_with(&self.app, "err", "在途件中断", format!("SN {sn} 记 ERR 98，需人工处理该件"), Fields::stage("result"));
             let burst = self.burst_outcome(&sn, self.part.as_ref().map(|p| &*p.recipe), &judgement).map(|record| record.judgement);
-            self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement, burst });
+            let mode = self.part_mode(&sn);
+            self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement, burst, mode });
         }
         if production_pending && fault_fails_delivery(self.phase) && self.result.is_some() {
             self.fail_delivery(&reason);

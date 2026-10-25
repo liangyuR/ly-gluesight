@@ -1,4 +1,5 @@
 
+import type { PartMode } from "../history/types";
 import type { BurstJudgement, CameraInspect, KindDefaults, PartCalib, PartViewBurst, PathSegment, RecipeDocSegmentFields } from "../plan/types";
 
 /** 段模型（分段连拍飞拍）的契约类型，定义在 plan/types.ts；这里转出供 cycle 相关页面使用。 */
@@ -328,6 +329,7 @@ export interface ResultView extends Judgement {
   recipeId: string | null;
   ts: number;
   drainMs: number | null;
+  mode?: PartMode;
 }
 
 export interface Snapshot {
