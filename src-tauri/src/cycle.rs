@@ -682,16 +682,16 @@ pub(crate) async fn production_start_pending(engine: &PlcEngine) -> Result<bool,
         .find(|p| {
             p.tags
                 .iter()
-                .any(|t| t == crate::inspection::tag::PART_START)
+                .any(|t| t == crate::inspection::tag::PLC_STATE)
         })
-        .ok_or("缺少生产开始点位")?;
+        .ok_or("缺少 plcState 点位")?;
     match engine
         .read_now(&point.id)
         .await
         .map_err(|e| e.to_string())?
     {
-        ly_plc::PlcValue::Bool(value) => Ok(value),
-        _ => Err("生产开始点位类型错误".into()),
+        ly_plc::PlcValue::Int(value) => Ok(value == i64::from(crate::inspection::state::PLC_REQUEST)),
+        _ => Err("plcState 点位类型错误".into()),
     }
 }
 
@@ -1280,7 +1280,7 @@ impl Machine {
         }
     }
 
-    /// 资料盘空间不足时暂停接件：在途件照常完成释放，回到空闲后撤销 visionReady；空间恢复后自动就绪，无需复位。
+    /// 资料盘空间不足时暂停接件：在途件照常完成释放，回到空闲后 pcState 撤到 0；空间恢复后自动就绪，无需复位。
     fn disk_space_ready(&mut self) -> bool {
         const PREFIX: &str = "资料盘剩余空间";
         let shown = self.alarms.iter().any(|m| m.starts_with(PREFIX));
@@ -1509,13 +1509,13 @@ impl Machine {
         budget.mark("entry-readiness-workspace");
         let app = self.app.clone();
         let engine = plc(&app);
-        let (sn, code, count) = (request.sn.clone(), request.product_code as u32, request.shot_count as usize);
+        let (sn, code) = (request.sn.clone(), request.product_code as u32);
         let host = host(&app);
         let taken = host.cycle_ids.take(&app);
         let context = Fields { cycle_id: taken.as_ref().ok().cloned(), sn: Some(sn.clone()), request_seq: Some(request.request_seq), ..Fields::default() };
         applog::begin_cycle(context.clone());
-        log_with(&app, "info", "partStart↑", format!("SN={sn} 产品代码={code} N={count}"),
-            Fields::stage("partStart").with_data(json!({"productCode": code, "shotCount": count})));
+        log_with(&app, "info", "plcState=10", format!("SN={sn} 型号={code}"),
+            Fields::stage("partStart").with_data(json!({"productCode": code})));
         let cycle_id = match taken {
             Ok(id) => id,
             Err(reason) => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, reason).await,
@@ -2179,22 +2179,18 @@ impl Machine {
                     _config = Some(host(&app).config_gate.lock().await);
                     self.start_part(request).await;
                 }
-                SessionEvent::End(ended_at, device_triggers) => {
+                SessionEvent::End(ended_at) => {
                     if let Some(part) = self.part.as_mut() {
                         part.end_at = Some(ended_at);
-                        part.device_triggers = device_triggers;
                     }
                     self.set_phase(Phase::Drain);
-                    let triggers = self.part.as_ref().map(Part::triggers);
-                    let reported = device_triggers.map_or_else(|| "未报".to_owned(), |n| n.to_string());
-                    log_with(&app, "info", "partEnd↑", format!("PLC 报本件设备触发数 {reported}（只作参考），等待剩余帧"),
-                        Fields::stage("partEnd").with_data(json!({"triggers": triggers, "deviceTriggers": device_triggers})));
+                    log_with(&app, "info", "plcState=20", "PLC 报运动结束，等待剩余帧", Fields::stage("partEnd"));
                 }
-                SessionEvent::Released(triggers) => {
-                    self.close_routing(triggers);
+                SessionEvent::Released => {
+                    self.close_routing(None);
                     self.alarms.retain(|m| !m.starts_with("PLC 未确认"));
                     self.set_phase(Phase::Idle);
-                    log_with(&app, "info", "S7 事务结束", "结果序号已确认，PLC 输入已释放", Fields::stage("released").with_data(json!({"plcTriggers": triggers})));
+                    log_with(&app, "info", "S7 事务结束", "PLC 已锁存结果，视觉已回就绪", Fields::stage("released"));
                     applog::end_cycle();
                 }
                 SessionEvent::Fault(reason) => {
@@ -2256,7 +2252,7 @@ impl Machine {
             Phase::Acquire => {
                 let Some(part) = self.part.as_mut() else { return };
                 if part.armed_at.elapsed() > timeouts.motion() {
-                    part.fault = Some((fault::MOTION_TIMEOUT, format!("布防后 {} s 内未收到 partEnd", timeouts.motion_ms / 1000)));
+                    part.fault = Some((fault::MOTION_TIMEOUT, format!("布防后 {} s 内未收到运动结束（plcState=20）", timeouts.motion_ms / 1000)));
                     part.end_at = Some(Instant::now());
                     log(&self.app, "err", "运动超时", format!("T_motion {} ms", timeouts.motion_ms));
                     self.set_phase(Phase::Drain);
@@ -2270,11 +2266,11 @@ impl Machine {
             Phase::Report => {
                 if !self.ack_alarmed && self.done_at.is_some_and(|t| t.elapsed() > timeouts.ack()) {
                     self.ack_alarmed = true;
-                    self.alarm(format!("PLC 未确认结果（超过 T_ack {} ms），保持 done", timeouts.ack_ms));
+                    self.alarm(format!("PLC 未确认结果（超过 T_ack {} ms），保持 pcState=30", timeouts.ack_ms));
                 }
             }
             Phase::Release if now_ms().saturating_sub(self.since) > timeouts.ack_ms as i64 => {
-                self.alarm("结果已确认，等待 PLC 清除 partStart / partEnd / resultAck；暂不接收下一件".into());
+                self.alarm("PLC 已锁存结果，等待追溯落盘后回就绪；暂不接收下一件".into());
             }
             _ => {}
         }
@@ -2345,7 +2341,7 @@ impl Machine {
         };
         let fault = if judgement.fault_code > 0 { format!(" faultCode={}", judgement.fault_code) } else { String::new() };
         let delivery = if r.is_ok() { "done 已提交" } else { "交付异常，需人工确认" };
-        log_with(&app, level, "检测结果", format!("resultCode={}{fault} resultSn={sn} · {delivery} · {}", judgement.plc_code, judgement.reason),
+        log_with(&app, level, "检测结果", format!("resultCode={}{fault} snEcho={sn} · {delivery} · {}", judgement.plc_code, judgement.reason),
             Fields::stage("result").with_data(json!({"verdict": judgement.verdict, "plcCode": judgement.plc_code,
                 "faultCode": judgement.fault_code, "drainMs": drain_ms, "delivered": r.is_ok()})));
         self.finish_recording(&sn, &judgement);
@@ -2615,7 +2611,7 @@ fn burst_warnings(judgement: &BurstJudgement, camera: impl Fn(usize) -> String) 
         out.push(("帧数异常", format!("整件 {} 个帧组，有区域帧组数超出预期 ± 容差（只告警，不改结论）", judgement.group_count)));
     }
     if judgement.flags.short_part {
-        out.push(("疑似提前终止", format!("整件 {} 个帧组，少于 ΣN_exp − Σtol：疑似 PLC 提前置 partEnd（只告警，不改结论）", judgement.group_count)));
+        out.push(("疑似提前终止", format!("整件 {} 个帧组，少于 ΣN_exp − Σtol：疑似 PLC 提前报运动结束（只告警，不改结论）", judgement.group_count)));
     }
     out
 }
