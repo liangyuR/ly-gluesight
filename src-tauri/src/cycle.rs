@@ -1499,7 +1499,11 @@ impl Machine {
         let host = host(&self.app);
         if host.settings().maintenance.is_none() {
             self.collection = (Vec::new(), None);
-        } else if self.collection.1.is_none_or(|at| at.elapsed() > COLLECTION_REFRESH) {
+        } else if self
+            .collection
+            .1
+            .is_none_or(|at| at.elapsed() > COLLECTION_REFRESH)
+        {
             self.collection = (
                 self.app
                     .state::<Store>()
