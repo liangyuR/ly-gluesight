@@ -2,13 +2,17 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use ly_plc::{Access, DataType, EdgeMode, LinkState, PlcConfig, PlcEngine, PlcError, PlcStatus, PlcValue, PointValue, ProtocolKind, WordOrder};
+use ly_plc::{
+    Access, DataType, LinkState, PlcConfig, PlcEngine, PlcError, PlcStatus, PlcValue, PointValue,
+    ProtocolKind, WordOrder,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// 协议 6（分段连拍）：DB4/DB2 布局与协议 5 相同；partEnd 不再核对 deviceTriggers 等于 deviceShots，
-/// 请求层不再约束 shotCount / deviceShots，计数核对只在生产接件时按配方做。
-pub(crate) const PROTOCOL_VERSION: u16 = 6;
+use crate::inspection::{state, tag};
+
+/// 生产通讯协议 7：双方各一个状态字握手，PC 回显序号与 SN；PLC 只报型号、序号与 SN，不回传计划。
+pub(crate) const PROTOCOL_VERSION: u16 = 7;
 pub(crate) const SN_MAX_LEN: usize = 50;
 const SN_HEADER_ERRORS: [&str; 2] = ["PLC 字符串声明长度", "PLC 字符串实际长度"];
 
@@ -23,54 +27,76 @@ struct Field {
     tag: &'static str,
     data_type: DataType,
     direction: Direction,
-    edge: bool,
 }
 
 const FIELDS: &[Field] = &[
-    input("protocolVersion", DataType::I16, false),
-    input("requestSeq", DataType::I32, false),
-    input("partSn", DataType::String, false),
-    input("productCode", DataType::I16, false),
-    input("shotCount", DataType::I16, false),
-    input("planVersion", DataType::I32, false),
-    input("planReserved", DataType::I32, false),
-    input("deviceShots", DataType::I16, false),
-    input("deviceTriggers", DataType::I16, false),
-    input("ackSeq", DataType::I32, false),
-    input("partStart", DataType::Bool, true),
-    input("partEnd", DataType::Bool, true),
-    input("resultAck", DataType::Bool, true),
-    input("faultReset", DataType::Bool, true),
-    input("plcHeartbeat", DataType::Bool, false),
-    output("visionReady", DataType::Bool),
-    output("armed", DataType::Bool),
-    output("busy", DataType::Bool),
-    output("done", DataType::Bool),
-    output("visionFault", DataType::Bool),
-    output("pcHeartbeat", DataType::Bool),
-    output("pcProtocolVersion", DataType::I16),
-    output("acceptedSeq", DataType::I32),
-    output("acceptedPlanReserved", DataType::I32),
-    output("resultSeq", DataType::I32),
-    output("resultSn", DataType::String),
-    output("resultCode", DataType::I16),
-    output("faultCode", DataType::I16),
+    input(tag::PLC_VERSION, DataType::I16),
+    input(tag::PLC_HEARTBEAT, DataType::I16),
+    input(tag::PLC_STATE, DataType::I16),
+    input(tag::PLC_REASON, DataType::I16),
+    input(tag::REQUEST_SEQ, DataType::I32),
+    input(tag::PRODUCT_CODE, DataType::I16),
+    input(tag::SN, DataType::String),
+    output(tag::PC_VERSION, DataType::I16),
+    output(tag::PC_HEARTBEAT, DataType::I16),
+    output(tag::PC_STATE, DataType::I16),
+    output(tag::PC_MODE, DataType::I16),
+    output(tag::SEQ_ECHO, DataType::I32),
+    output(tag::RESULT_CODE, DataType::I16),
+    output(tag::FAULT_CODE, DataType::I16),
+    output(tag::SN_ECHO, DataType::String),
 ];
 
-/// 已改名的握手标签（D-0 不兼容旧配置）：旧点表直接拒绝，并说清新名字。
+const PROTOCOL_6: &str = "协议 6 的握手标签已停用";
+
+/// 已停用的握手标签（D-0 不兼容旧配置）：旧点表直接拒绝，并说清原因。
 const RETIRED_TAGS: &[(&str, &str)] = &[
-    ("planHash", "请使用 planReserved"), ("acceptedPlanHash", "请使用 acceptedPlanReserved"),
-    ("camera1Shots", "请使用 deviceShots"), ("camera2Shots", "已删除，不再配置设备通道 2"),
-    ("camera3Shots", "已删除，不再配置设备通道 3"), ("camera1Triggers", "请使用 deviceTriggers"),
-    ("camera2Triggers", "已删除，不再配置设备通道 2"), ("camera3Triggers", "已删除，不再配置设备通道 3"),
+    ("planHash", PROTOCOL_6),
+    ("acceptedPlanHash", PROTOCOL_6),
+    ("camera1Shots", PROTOCOL_6),
+    ("camera2Shots", PROTOCOL_6),
+    ("camera3Shots", PROTOCOL_6),
+    ("camera1Triggers", PROTOCOL_6),
+    ("camera2Triggers", PROTOCOL_6),
+    ("camera3Triggers", PROTOCOL_6),
+    ("partStart", PROTOCOL_6),
+    ("partEnd", PROTOCOL_6),
+    ("resultAck", PROTOCOL_6),
+    ("faultReset", PROTOCOL_6),
+    ("visionReady", PROTOCOL_6),
+    ("armed", PROTOCOL_6),
+    ("busy", PROTOCOL_6),
+    ("done", PROTOCOL_6),
+    ("visionFault", PROTOCOL_6),
+    ("acceptedSeq", PROTOCOL_6),
+    ("resultSeq", PROTOCOL_6),
+    ("ackSeq", PROTOCOL_6),
+    ("shotCount", PROTOCOL_6),
+    ("planVersion", PROTOCOL_6),
+    ("planReserved", PROTOCOL_6),
+    ("deviceShots", PROTOCOL_6),
+    ("deviceTriggers", PROTOCOL_6),
+    ("acceptedPlanReserved", PROTOCOL_6),
+    ("partSn", PROTOCOL_6),
+    ("resultSn", PROTOCOL_6),
+    ("protocolVersion", PROTOCOL_6),
+    ("pcProtocolVersion", PROTOCOL_6),
 ];
 
-const fn input(tag: &'static str, data_type: DataType, edge: bool) -> Field {
-    Field { tag, data_type, direction: Direction::Input, edge }
+const fn input(tag: &'static str, data_type: DataType) -> Field {
+    Field {
+        tag,
+        data_type,
+        direction: Direction::Input,
+    }
 }
 
 const fn output(tag: &'static str, data_type: DataType) -> Field {
-    Field { tag, data_type, direction: Direction::Output, edge: false }
+    Field {
+        tag,
+        data_type,
+        direction: Direction::Output,
+    }
 }
 
 /// SN 点位为 S7 STRING（TIA String[n]）：声明长度、实际长度两个头字节加字符区。
@@ -104,7 +130,7 @@ impl Contract {
         config.validate()?;
         for point in &config.points {
             if let Some((old, new)) = RETIRED_TAGS.iter().find(|(old, _)| point.tags.iter().any(|t| t == old)) {
-                return Err(format!("点位 {} 使用已停用的握手标签 {old}（{new}），请按 S7 协议 {PROTOCOL_VERSION} 模板（三台设备共用一个触发、只配一个计数）重新生成点表", point.name));
+                return Err(format!("点位 {} 使用已停用的握手标签 {old}（{new}），请在 PLC 页载入协议 {PROTOCOL_VERSION} 点表", point.name));
             }
         }
         let mut ids = HashMap::new();
@@ -134,9 +160,6 @@ impl Contract {
             }
             if point.word_order.is_some_and(|o| o != WordOrder::Abcd) {
                 return Err(format!("{label} 必须使用 S7 ABCD 字节序"));
-            }
-            if field.edge && !matches!(point.edge, EdgeMode::Rising | EdgeMode::Both) {
-                return Err(format!("{label} 必须启用上升沿检测"));
             }
             let location = ly_plc::resolve(&config.connection, &point.address, point.data_type)?;
             if location.area.code != 0x84 || !point.address.trim().to_ascii_uppercase().starts_with("DB") {
@@ -179,7 +202,7 @@ impl Contract {
                 }
             }
         }
-        if config.heartbeat.point_id.as_deref() != ids.get("pcHeartbeat").map(String::as_str) {
+        if config.heartbeat.point_id.as_deref() != ids.get(tag::PC_HEARTBEAT).map(String::as_str) {
             return Err("通讯心跳必须绑定 pcHeartbeat 点位".into());
         }
         if !(100..=1000).contains(&config.heartbeat.interval_ms) {
@@ -218,6 +241,7 @@ impl Contract {
         let field = FIELDS.iter().find(|f| f.tag == tag).ok_or_else(|| format!("未知握手标签：{tag}"))?;
         let valid = match (field.data_type, value) {
             (DataType::Bool, PlcValue::Bool(_)) => true,
+            (DataType::I16, PlcValue::Int(_)) if tag == tag::PLC_HEARTBEAT => true,
             (DataType::I16, PlcValue::Int(n)) if !(0..=i16::MAX as i64).contains(n) => return Err(out_of_range(tag, *n, INT)),
             (DataType::I32, PlcValue::Int(n)) if !(0..=i32::MAX as i64).contains(n) => return Err(out_of_range(tag, *n, DINT)),
             (DataType::I16 | DataType::I32, PlcValue::Int(_)) => true,
@@ -236,7 +260,9 @@ impl Contract {
     }
 
     fn validate_writes(&self, writes: &[WriteOp]) -> Result<(), String> {
-        let publishes = writes.iter().any(|op| op.tag == "done" && op.value == json!(true));
+        let publishes = writes
+            .iter()
+            .any(|op| op.tag == tag::PC_STATE && op.value == json!(state::PC_RESULT));
         let mut tags = HashSet::new();
         for op in writes {
             let field = FIELDS.iter().find(|f| f.tag == op.tag).ok_or_else(|| format!("未知握手标签：{}", op.tag))?;
@@ -264,13 +290,13 @@ impl Contract {
 pub(crate) fn check_sn(sn: &str) -> Result<(), String> {
     let count = sn.chars().count();
     if !(1..=SN_MAX_LEN).contains(&count) {
-        return Err(format!("partSn 长度 {count} 不在 1–{SN_MAX_LEN} 个字符之间"));
+        return Err(format!("sn 长度 {count} 不在 1–{SN_MAX_LEN} 个字符之间"));
     }
     if let Some(c) = sn.chars().find(|c| !(' '..='~').contains(c)) {
-        return Err(format!("partSn 含非 ASCII 可打印字符 U+{:04X}", c as u32));
+        return Err(format!("sn 含非 ASCII 可打印字符 U+{:04X}", c as u32));
     }
     if sn.trim().is_empty() {
-        return Err("partSn 不能全为空白".into());
+        return Err("sn 不能全为空白".into());
     }
     Ok(())
 }
@@ -286,7 +312,7 @@ fn out_of_range(tag: &str, value: impl std::fmt::Display, kind: &str) -> String 
 pub(crate) struct Snapshot {
     pub(crate) connection_since: i64,
     pub(crate) poll_count: u64,
-    /// plcHeartbeat 在 ly-plc 轮询缓存里的时间戳：值或读错误变化时更新，读错误恢复为原电平也会前进。
+    /// plcHeartbeat 在 ly-plc 轮询缓存里的时间戳：值或读错误变化时更新，读错误恢复为原值也会前进。
     pub(crate) heartbeat_changed_at: i64,
     values: HashMap<&'static str, PlcValue>,
     broken_outputs: Vec<&'static str>,
@@ -338,8 +364,16 @@ impl Snapshot {
             }
             values.insert(field.tag, contract.value(raw, field.tag)?.clone());
         }
-        let heartbeat_changed_at = raw.get(contract.point_id("plcHeartbeat")?).map_or(last_poll, |point| point.ts);
-        Ok(Self { connection_since: status.since, poll_count: status.poll_count, heartbeat_changed_at, values, broken_outputs })
+        let heartbeat_changed_at = raw
+            .get(contract.point_id(tag::PLC_HEARTBEAT)?)
+            .map_or(last_poll, |point| point.ts);
+        Ok(Self {
+            connection_since: status.since,
+            poll_count: status.poll_count,
+            heartbeat_changed_at,
+            values,
+            broken_outputs,
+        })
     }
 
     pub(crate) fn capture(engine: &PlcEngine, contract: &Contract, max_age_ms: u64) -> Result<Self, String> {
@@ -368,13 +402,6 @@ impl Snapshot {
         self.broken_outputs.iter().map(|&tag| WriteOp::new(tag, json!(""))).collect()
     }
 
-    pub(crate) fn read_bool(&self, tag: &str) -> Result<bool, String> {
-        match self.values.get(tag) {
-            Some(PlcValue::Bool(v)) => Ok(*v),
-            _ => Err(format!("{tag} 不是有效 Bool")),
-        }
-    }
-
     pub(crate) fn read_text(&self, tag: &str) -> Result<&str, String> {
         match self.values.get(tag) {
             Some(PlcValue::Text(v)) => Ok(v),
@@ -395,58 +422,82 @@ impl Snapshot {
         u16::try_from(value).ok().filter(|v| *v <= i16::MAX as u16).ok_or_else(|| out_of_range(tag, value, INT))
     }
 
+    pub(crate) fn plc_state(&self) -> Result<u16, String> {
+        self.read_u16(tag::PLC_STATE)
+    }
+
+    pub(crate) fn pc_state(&self) -> Result<u16, String> {
+        self.read_u16(tag::PC_STATE)
+    }
+
+    /// PLC 心跳可加 1 自然回绕，允许负值。
+    pub(crate) fn plc_heartbeat(&self) -> Result<i64, String> {
+        match self.values.get(tag::PLC_HEARTBEAT) {
+            Some(PlcValue::Int(v)) => Ok(*v),
+            _ => Err("plcHeartbeat 不是有效整数".into()),
+        }
+    }
+
+    pub(crate) fn plc_reason(&self) -> Result<String, String> {
+        let code = self.read_u16(tag::PLC_REASON)?;
+        Ok(format!("plcReason={code} {}", plc_reason_text(code)))
+    }
+
     pub(crate) fn request(&self) -> Result<Request, String> {
-        if self.read_u32("planReserved")? != 0 { return Err("PLC 计划保留位必须为零".into()); }
         let request = Request {
-            protocol_version: self.read_u16("protocolVersion")?,
-            request_seq: self.read_u32("requestSeq")?,
-            sn: self.read_text("partSn")?.to_owned(),
-            product_code: self.read_u16("productCode")?,
-            shot_count: self.read_u16("shotCount")?,
-            plan_version: self.read_u32("planVersion")?,
-            device_shots: self.read_u16("deviceShots")?,
+            protocol_version: self.read_u16(tag::PLC_VERSION)?,
+            request_seq: self.read_u32(tag::REQUEST_SEQ)?,
+            sn: self.read_text(tag::SN)?.to_owned(),
+            product_code: self.read_u16(tag::PRODUCT_CODE)?,
         };
         request.validate()?;
         Ok(request)
     }
 
     fn start_request(&self) -> Result<Request, String> {
-        for (tag, expected) in [
-            ("partStart", true), ("partEnd", false), ("resultAck", false), ("visionReady", true),
-            ("armed", false), ("busy", false), ("done", false), ("visionFault", false),
-        ] {
-            if self.read_bool(tag)? != expected {
-                return Err(format!("开始握手要求 {tag}={expected}"));
-            }
+        if self.plc_state()? != state::PLC_REQUEST {
+            return Err("开始握手要求 plcState=10".into());
         }
-        if self.read_u32("pcProtocolVersion")? != PROTOCOL_VERSION as u32 {
+        if self.pc_state()? != state::PC_READY {
+            return Err("开始握手要求 pcState=10".into());
+        }
+        if self.read_u16(tag::PC_VERSION)? != PROTOCOL_VERSION {
             return Err("PC 协议版本尚未确认，需复位".into());
         }
         self.request()
     }
 
-    /// 空闲时仍为 1 的 PLC 所有握手位：partEnd / resultAck 应在 PLC 释放时与 partStart 一起清零。
-    pub(crate) fn idle_plc_held(&self) -> Result<Vec<&'static str>, String> {
-        let mut held = Vec::new();
-        for tag in ["partEnd", "resultAck"] {
-            if self.read_bool(tag)? { held.push(tag); }
-        }
-        Ok(held)
-    }
-
-    /// 偏离空闲状态（[`idle_plan`]）的视觉所有输出，形如 `visionReady=0`。
-    pub(crate) fn idle_drift(&self) -> Result<Vec<String>, String> {
+    /// 偏离空闲状态（[`idle_plan`]）的视觉输出，形如 `pcState=0`。
+    pub(crate) fn idle_drift(&self, mode: u16) -> Result<Vec<String>, String> {
         let mut drifted = Vec::new();
-        for op in idle_plan() {
-            match op.value.as_bool() {
-                Some(expected) => if self.read_bool(op.tag)? != expected { drifted.push(format!("{}={}", op.tag, u8::from(!expected))); },
-                None => {
-                    let actual = self.read_u32(op.tag)?;
-                    if Some(actual as u64) != op.value.as_u64() { drifted.push(format!("{}={actual}", op.tag)); }
-                }
+        for op in idle_plan(mode) {
+            let actual = self.read_u32(op.tag)?;
+            if Some(u64::from(actual)) != op.value.as_u64() {
+                drifted.push(format!("{}={actual}", op.tag));
             }
         }
         Ok(drifted)
+    }
+}
+
+/// PC 置故障（pcState=90）时写入 faultCode 的原因。
+pub(crate) const SESSION_FAULT_CODE: u16 = 99;
+
+pub(crate) fn plc_reason_text(code: u16) -> &'static str {
+    match code {
+        0 => "无",
+        4 => "现场互锁不满足",
+        5 => "协议或状态非法",
+        6 => "PC 心跳失活",
+        7 => "运动超时",
+        8 => "等待 PC 结果超时",
+        9 => "现场执行故障",
+        10 => "等待 PC 回就绪超时",
+        11 => "等待 PC 布防超时",
+        12 => "序号耗尽",
+        13 => "复位条件不满足，拒绝软件复位",
+        14 => "在途中 PC 故障或未就绪",
+        _ => "未定义的原因码",
     }
 }
 
@@ -457,14 +508,10 @@ pub(crate) struct Request {
     pub(crate) request_seq: u32,
     pub(crate) sn: String,
     pub(crate) product_code: u16,
-    pub(crate) shot_count: u16,
-    pub(crate) plan_version: u32,
-    pub(crate) device_shots: u16,
 }
 
 impl Request {
-    /// 请求层只校验协议版本、序号与 SN。shotCount / deviceShots 在协议 6 是预期总数：
-    /// 示教采集轮次可填估算值（含 0、两者不等），生产接件时由 admission 按配方核对。
+    /// 请求层只校验协议版本、序号与 SN；型号由接件按配方核对。
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.protocol_version != PROTOCOL_VERSION {
             return Err(format!("PLC 协议版本 {} 与 PC {} 不一致", self.protocol_version, PROTOCOL_VERSION));
@@ -518,37 +565,38 @@ pub(crate) struct ResultEnvelope {
     pub(crate) fault_code: u16,
 }
 
+/// PLC 置 30 表示已锁存结果；结果身份与 PC 输出必须保持发布时的值。
 pub(crate) fn matching_ack(snapshot: &Snapshot, result: &ResultEnvelope) -> Result<bool, String> {
-    if !snapshot.read_bool("done")? {
-        return Err("待确认结果的 done 已被清除，必须故障复位".into());
+    if snapshot.pc_state()? != state::PC_RESULT {
+        return Err("待确认结果的 pcState 已不是 30，必须故障复位".into());
     }
     for (tag, expected) in [
-        ("requestSeq", result.request_seq), ("resultSeq", result.request_seq),
-        ("resultCode", result.result_code as u32), ("faultCode", result.fault_code as u32),
+        (tag::REQUEST_SEQ, result.request_seq),
+        (tag::SEQ_ECHO, result.request_seq),
+        (tag::RESULT_CODE, result.result_code as u32),
+        (tag::FAULT_CODE, result.fault_code as u32),
     ] {
         if snapshot.read_u32(tag)? != expected {
             return Err(format!("待确认结果的 {tag} 与本次结果不一致"));
         }
     }
-    if snapshot.read_text("resultSn")? != result.sn {
-        return Err("待确认结果的 resultSn 与本次结果不一致".into());
+    if snapshot.read_text(tag::SN_ECHO)? != result.sn {
+        return Err("待确认结果的 snEcho 与本次结果不一致".into());
     }
-    if !snapshot.read_bool("resultAck")? {
-        return Ok(false);
+    match snapshot.plc_state()? {
+        state::PLC_CONFIRMED => Ok(true),
+        state::PLC_REQUEST | state::PLC_MOTION_END => Ok(false),
+        other => Err(format!("等待 PLC 确认结果时 plcState={other}")),
     }
-    if snapshot.read_u32("ackSeq")? != result.request_seq {
-        return Err("ackSeq 与本次 resultSeq 不匹配，保持 done".into());
-    }
-    Ok(true)
 }
 
-/// 运动结束只核对握手与请求身份，返回预留计数 0。
+/// 运动结束只核对 PLC 状态与请求身份，返回预留计数 0。
 pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<u16, String> {
-    if !snapshot.read_bool("partEnd")? || !snapshot.read_bool("partStart")? {
-        return Err("运动结束要求 partEnd 和 partStart 保持有效".into());
+    if snapshot.plc_state()? != state::PLC_MOTION_END {
+        return Err("运动结束要求 plcState=20".into());
     }
     if snapshot.request()? != *request {
-        return Err("运动结束时请求身份或拍照计划已改变".into());
+        return Err("运动结束时请求身份已改变".into());
     }
     Ok(0)
 }
@@ -557,25 +605,28 @@ pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<
 pub(crate) struct ResetBaseline {
     pub(crate) connection_since: i64,
     pub(crate) request_seq: u32,
-    pub(crate) ack_seq: u32,
 }
 
 impl ResetBaseline {
     pub(crate) fn capture(snapshot: &Snapshot) -> Result<Self, String> {
-        if snapshot.read_u32("protocolVersion")? != PROTOCOL_VERSION as u32 {
+        if snapshot.read_u16(tag::PLC_VERSION)? != PROTOCOL_VERSION {
             return Err("PLC 协议版本不一致，不能完成复位".into());
         }
-        for tag in ["partStart", "partEnd", "resultAck"] {
-            if snapshot.read_bool(tag)? {
-                return Err(format!("复位前 PLC 必须释放 {tag}"));
-            }
+        let plc = snapshot.plc_state()?;
+        if !matches!(plc, state::PLC_IDLE | state::PLC_RESET) {
+            return Err(format!(
+                "复位要求 PLC 处于空闲（0）或复位请求（99），当前 plcState={plc}"
+            ));
         }
-        Ok(Self { connection_since: snapshot.connection_since, request_seq: snapshot.read_u32("requestSeq")?, ack_seq: snapshot.read_u32("ackSeq")? })
+        Ok(Self {
+            connection_since: snapshot.connection_since,
+            request_seq: snapshot.read_u32(tag::REQUEST_SEQ)?,
+        })
     }
 
     pub(crate) fn verify(&self, snapshot: &Snapshot) -> Result<(), String> {
         if Self::capture(snapshot)? != *self {
-            return Err("复位期间 PLC 会话或请求基线变化，不能置 visionReady".into());
+            return Err("复位期间 PLC 会话或请求序号变化，不能置就绪".into());
         }
         Ok(())
     }
@@ -593,57 +644,56 @@ impl WriteOp {
     }
 }
 
-pub(crate) fn arm_plan(request: &Request) -> Vec<WriteOp> {
+/// 布防：先写回显与模式，最后单独写状态。
+pub(crate) fn arm_plan(request: &Request, mode: u16) -> Vec<WriteOp> {
     vec![
-        WriteOp::new("visionReady", json!(false)),
-        WriteOp::new("acceptedSeq", json!(request.request_seq)),
-        WriteOp::new("acceptedPlanReserved", json!(0u32)),
-        WriteOp::new("busy", json!(true)),
-        WriteOp::new("armed", json!(true)),
+        WriteOp::new(tag::SEQ_ECHO, json!(request.request_seq)),
+        WriteOp::new(tag::PC_MODE, json!(mode)),
+        WriteOp::new(tag::PC_STATE, json!(state::PC_ARMED)),
     ]
 }
 
 pub(crate) fn report_plan(result: &ResultEnvelope) -> Vec<WriteOp> {
     vec![
-        WriteOp::new("visionReady", json!(false)),
-        WriteOp::new("armed", json!(false)),
-        WriteOp::new("busy", json!(true)),
-        WriteOp::new("resultCode", json!(result.result_code)),
-        WriteOp::new("faultCode", json!(result.fault_code)),
-        WriteOp::new("resultSn", json!(result.sn.as_str())),
-        WriteOp::new("resultSeq", json!(result.request_seq)),
-        WriteOp::new("done", json!(true)),
+        WriteOp::new(tag::SEQ_ECHO, json!(result.request_seq)),
+        WriteOp::new(tag::RESULT_CODE, json!(result.result_code)),
+        WriteOp::new(tag::FAULT_CODE, json!(result.fault_code)),
+        WriteOp::new(tag::SN_ECHO, json!(result.sn.as_str())),
+        WriteOp::new(tag::PC_STATE, json!(state::PC_RESULT)),
     ]
 }
 
-pub(crate) fn release_plan() -> Vec<WriteOp> {
-    vec![WriteOp::new("done", json!(false)), WriteOp::new("busy", json!(false))]
-}
-
-pub(crate) fn fault_plan() -> Vec<WriteOp> {
-    vec![WriteOp::new("visionReady", json!(false)), WriteOp::new("armed", json!(false)), WriteOp::new("visionFault", json!(true))]
-}
-
-/// 空闲（无在途事务）时视觉应保持的输出：其余握手位清零、写当前协议版本，就绪位最后置位。
-pub(crate) fn idle_plan() -> Vec<WriteOp> {
+/// 故障：原因写在 faultCode，最后置 90。
+pub(crate) fn fault_plan(fault_code: u16) -> Vec<WriteOp> {
     vec![
-        WriteOp::new("armed", json!(false)),
-        WriteOp::new("done", json!(false)),
-        WriteOp::new("busy", json!(false)),
-        WriteOp::new("visionFault", json!(false)),
-        WriteOp::new("pcProtocolVersion", json!(PROTOCOL_VERSION)),
-        WriteOp::new("visionReady", json!(true)),
+        WriteOp::new(tag::FAULT_CODE, json!(fault_code)),
+        WriteOp::new(tag::PC_STATE, json!(state::PC_FAULT)),
     ]
 }
 
-pub(crate) fn reset_plan() -> Vec<WriteOp> {
+pub(crate) fn not_ready_plan() -> Vec<WriteOp> {
+    vec![WriteOp::new(tag::PC_STATE, json!(state::PC_NOT_READY))]
+}
+
+pub(crate) fn reset_request_plan() -> Vec<WriteOp> {
+    vec![WriteOp::new(tag::PC_STATE, json!(state::PC_RESET))]
+}
+
+/// 复位完成前清掉上一件留下的结果字段。
+pub(crate) fn reset_clear_plan() -> Vec<WriteOp> {
     vec![
-        WriteOp::new("visionReady", json!(false)),
-        WriteOp::new("armed", json!(false)),
-        WriteOp::new("done", json!(false)),
-        WriteOp::new("busy", json!(false)),
-        WriteOp::new("visionFault", json!(false)),
-        WriteOp::new("pcProtocolVersion", json!(PROTOCOL_VERSION)),
+        WriteOp::new(tag::RESULT_CODE, json!(0)),
+        WriteOp::new(tag::FAULT_CODE, json!(0)),
+        WriteOp::new(tag::SN_ECHO, json!("")),
+    ]
+}
+
+/// 空闲时视觉应保持的输出：版本、模式，最后置就绪。
+pub(crate) fn idle_plan(mode: u16) -> Vec<WriteOp> {
+    vec![
+        WriteOp::new(tag::PC_VERSION, json!(PROTOCOL_VERSION)),
+        WriteOp::new(tag::PC_MODE, json!(mode)),
+        WriteOp::new(tag::PC_STATE, json!(state::PC_READY)),
     ]
 }
 
@@ -753,7 +803,7 @@ pub(crate) struct HeartbeatWatch {
     timeout_ms: u64,
     first_seen: Option<i64>,
     last_seen: Option<i64>,
-    level: Option<bool>,
+    level: Option<i64>,
     changed_at: Option<i64>,
     last_change: Option<i64>,
 }
@@ -772,11 +822,11 @@ impl HeartbeatWatch {
 
     /// `changed_at` 取轮询缓存里心跳点位的时间戳（[`Snapshot::heartbeat_changed_at`]）。
     ///
-    /// 连续观察时先按上次翻转判超时，再记这次读数：翻转间隔超过阈值即判失活，此后的翻转不能抵消。
-    /// 观察出现空档（节拍被长操作阻塞超过 1/3 阈值）时，空档里 PLC 是否翻转只能看轮询缓存：
-    /// 时间戳前进或电平变了就认其最近一次变化的时刻，再判超时，不把 PC 自己没来观察当成 PLC 心跳停止。
-    /// 缓存不区分值变化与读错误恢复：空档里心跳所在读块出错又恢复也算一次翻转，PLC 心跳若恰在空档里停止，空档结束后最多再过一个超时周期才判失活。
-    pub(crate) fn observe(&mut self, level: bool, changed_at: i64, now: i64) -> Result<(), String> {
+    /// 连续观察时先按上次变化判超时，再记这次读数：变化间隔超过阈值即判失活，此后的变化不能抵消。
+    /// 观察出现空档（节拍被长操作阻塞超过 1/3 阈值）时，空档里 PLC 是否变化只能看轮询缓存：
+    /// 时间戳前进或值变了就认其最近一次变化的时刻，再判超时，不把 PC 自己没来观察当成 PLC 心跳停止。
+    /// 缓存不区分值变化与读错误恢复：空档里心跳所在读块出错又恢复也算一次变化，PLC 心跳若恰在空档里停止，空档结束后最多再过一个超时周期才判失活。
+    pub(crate) fn observe(&mut self, level: i64, changed_at: i64, now: i64) -> Result<(), String> {
         if self.last_seen.is_some_and(|last| now < last) {
             return Err("PLC 心跳时钟倒退，必须重新同步".into());
         }
@@ -798,7 +848,7 @@ impl HeartbeatWatch {
         let baseline = self.last_change.or(self.first_seen).ok_or("尚未读取 PLC 心跳")?;
         let age = now.checked_sub(baseline).filter(|v| *v >= 0).ok_or("PLC 心跳时钟倒退")? as u64;
         if age > self.timeout_ms {
-            return Err(format!("PLC 心跳超过 {} ms 未翻转", self.timeout_ms));
+            return Err(format!("PLC 心跳超过 {} ms 未变化", self.timeout_ms));
         }
         Ok(())
     }
@@ -820,7 +870,6 @@ mod tests {
             let offset = offsets[index];
             offsets[index] += if field.data_type == DataType::String { SN_MAX_LEN as u32 + 2 } else { field.data_type.byte_size().max(1) };
             let address = match field.data_type {
-                DataType::Bool => format!("DB{}.DBX{offset}.0", index + 1),
                 DataType::I16 => format!("DB{}.DBW{offset}", index + 1),
                 DataType::String => format!("DB{}.DBB{offset}.{SN_MAX_LEN}", index + 1),
                 _ => format!("DB{}.DBD{offset}", index + 1),
@@ -828,13 +877,23 @@ mod tests {
             PlcPoint {
                 id: field.tag.into(), name: field.tag.into(), address, data_type: field.data_type,
                 access: if field.direction == Direction::Input { Access::Read } else { Access::ReadWrite },
-                edge: if field.edge { EdgeMode::Rising } else { EdgeMode::None },
                 tags: vec![field.tag.into()], ..PlcPoint::default()
             }
         }).collect();
         PlcConfig {
-            connection: ConnectionConfig { protocol: ProtocolKind::S7, host: "127.0.0.1".into(), port: 102, poll_interval_ms: 50, ..ConnectionConfig::default() },
-            points, heartbeat: HeartbeatConfig { point_id: Some("pcHeartbeat".into()), interval_ms: 1000 }, ..PlcConfig::default()
+            connection: ConnectionConfig {
+                protocol: ProtocolKind::S7,
+                host: "127.0.0.1".into(),
+                port: 102,
+                poll_interval_ms: 50,
+                ..ConnectionConfig::default()
+            },
+            points,
+            heartbeat: HeartbeatConfig {
+                point_id: Some(tag::PC_HEARTBEAT.into()),
+                interval_ms: 1000,
+            },
+            ..PlcConfig::default()
         }
     }
 
@@ -844,21 +903,20 @@ mod tests {
             dials: 1, outage_dials: 1, last_dial_error: None, last_error: None };
         let mut values: HashMap<_, _> = FIELDS.iter().map(|f| (f.tag.into(), PointValue {
             value: Some(match f.data_type {
-                DataType::Bool => PlcValue::Bool(false),
                 DataType::String => PlcValue::Text(String::new()),
                 _ => PlcValue::Int(0),
             }), error: None, ts: 1,
         })).collect();
-        values.get_mut("partSn").unwrap().value = Some(PlcValue::Text("SN-42".into()));
+        values.get_mut(tag::SN).unwrap().value = Some(PlcValue::Text("SN-42".into()));
         for (tag, value) in [
-            ("protocolVersion", PROTOCOL_VERSION as i64), ("pcProtocolVersion", PROTOCOL_VERSION as i64), ("requestSeq", 7),
-            ("productCode", 3), ("shotCount", 4), ("planVersion", 2), ("planReserved", 0),
-            ("deviceShots", 4),
+            (tag::PLC_VERSION, PROTOCOL_VERSION as i64),
+            (tag::PC_VERSION, PROTOCOL_VERSION as i64),
+            (tag::REQUEST_SEQ, 7),
+            (tag::PRODUCT_CODE, 3),
+            (tag::PLC_STATE, state::PLC_REQUEST as i64),
+            (tag::PC_STATE, state::PC_READY as i64),
         ] {
             values.get_mut(tag).unwrap().value = Some(PlcValue::Int(value));
-        }
-        for tag in ["partStart", "visionReady"] {
-            values.get_mut(tag).unwrap().value = Some(PlcValue::Bool(true));
         }
         (contract, status, values)
     }
@@ -873,16 +931,25 @@ mod tests {
     }
 
     #[test]
-    fn contract_rejects_cross_owner_bytes_even_when_bits_differ() {
+    fn contract_rejects_plc_and_pc_fields_sharing_bytes() {
         let mut cfg = config();
-        cfg.points.iter_mut().find(|p| p.id == "partStart").unwrap().address = "DB10.DBX0.0".into();
-        cfg.points.iter_mut().find(|p| p.id == "done").unwrap().address = "DB10.DBX0.1".into();
+        cfg.points
+            .iter_mut()
+            .find(|p| p.id == tag::PLC_STATE)
+            .unwrap()
+            .address = "DB10.DBW0".into();
+        cfg.points
+            .iter_mut()
+            .find(|p| p.id == tag::PC_STATE)
+            .unwrap()
+            .address = "DB10.DBW1".into();
         assert!(Contract::validate(&cfg).is_err());
-        cfg.points.iter_mut().find(|p| p.id == "done").unwrap().address = "DB10.DBX1.0".into();
-        cfg.points.iter_mut().find(|p| p.id == "busy").unwrap().address = "DB10.DBX1.1".into();
+        cfg.points
+            .iter_mut()
+            .find(|p| p.id == tag::PC_STATE)
+            .unwrap()
+            .address = "DB10.DBW2".into();
         assert!(Contract::validate(&cfg).is_ok());
-        cfg.points.iter_mut().find(|p| p.id == "busy").unwrap().address = "DB10.DBX1.0".into();
-        assert!(Contract::validate(&cfg).is_err());
     }
 
     #[test]
@@ -892,8 +959,8 @@ mod tests {
         second.poll_count += 1;
         assert!(confirm_start(&first, &second).is_err());
         second.poll_count += 1;
-        assert_eq!(confirm_start(&first, &second).unwrap().device_shots, 4);
-        second.values.insert("planReserved", PlcValue::Int(100));
+        assert_eq!(confirm_start(&first, &second).unwrap().product_code, 3);
+        second.values.insert(tag::PRODUCT_CODE, PlcValue::Int(4));
         assert!(confirm_start(&first, &second).is_err());
         second = first.clone();
         second.poll_count += 2;
@@ -901,53 +968,58 @@ mod tests {
         assert!(confirm_start(&first, &second).is_err());
     }
 
-    /// 只接受 PC 当前的协议版本：PLC 仍写上一版（协议 5）不能布防；参数表由 PROTOCOL_VERSION 派生，升版时随之移动。
+    /// 只接受 PC 当前的协议版本：PLC 仍写上一版（协议 6）不能开始；参数表由 PROTOCOL_VERSION 派生，升版时随之移动。
     #[test]
-    fn plc_writing_protocol_5_cannot_arm() {
+    fn plc_writing_previous_protocol_cannot_start() {
         let current = i64::from(PROTOCOL_VERSION);
         for (version, accepted) in [(current - 1, false), (current, true)] {
             let mut s = snapshot();
-            s.values.insert("protocolVersion", PlcValue::Int(version));
-            assert_eq!(s.start_request().is_ok(), accepted, "protocolVersion={version}");
+            s.values.insert(tag::PLC_VERSION, PlcValue::Int(version));
+            assert_eq!(s.start_request().is_ok(), accepted, "plcVersion={version}");
         }
     }
 
     #[test]
-    fn ack_requires_matching_result_identity_and_retained_done() {
+    fn ack_requires_matching_result_identity_and_retained_result_state() {
         let result = result();
         let mut s = snapshot();
         for op in report_plan(&result) {
             s.values.insert(op.tag, serde_json::from_value(op.value).unwrap());
         }
+        s.values
+            .insert(tag::PLC_STATE, PlcValue::Int(state::PLC_MOTION_END as i64));
         assert!(!matching_ack(&s, &result).unwrap());
-        s.values.insert("resultAck", PlcValue::Bool(true));
-        s.values.insert("ackSeq", PlcValue::Int(6));
-        assert!(matching_ack(&s, &result).is_err());
-        s.values.insert("ackSeq", PlcValue::Int(7));
+        s.values
+            .insert(tag::PLC_STATE, PlcValue::Int(state::PLC_CONFIRMED as i64));
         assert!(matching_ack(&s, &result).unwrap());
-        s.values.insert("resultSn", PlcValue::Text("SN-42 ".into()));
+        s.values.insert(tag::SEQ_ECHO, PlcValue::Int(6));
         assert!(matching_ack(&s, &result).is_err());
-        s.values.insert("resultSn", PlcValue::Text("SN-42".into()));
-        s.values.insert("done", PlcValue::Bool(false));
+        s.values.insert(tag::SEQ_ECHO, PlcValue::Int(7));
+        s.values
+            .insert(tag::SN_ECHO, PlcValue::Text("SN-42 ".into()));
+        assert!(matching_ack(&s, &result).is_err());
+        s.values
+            .insert(tag::SN_ECHO, PlcValue::Text("SN-42".into()));
+        s.values
+            .insert(tag::PC_STATE, PlcValue::Int(state::PC_READY as i64));
         assert!(matching_ack(&s, &result).is_err());
     }
 
     #[test]
-    fn heartbeat_requires_a_transition_and_constant_reads_do_not_extend_deadline() {
+    fn heartbeat_requires_a_change_and_constant_reads_do_not_extend_deadline() {
         assert!(HeartbeatWatch::new(2999).is_err());
         let mut watch = HeartbeatWatch::new(3000).unwrap();
-        watch.observe(false, 100, 100).unwrap();
+        watch.observe(0, 100, 100).unwrap();
         assert!(!watch.is_live(100));
         assert!(watch.check(1000).is_ok());
-        watch.observe(true, 1100, 1100).unwrap();
+        watch.observe(1, 1100, 1100).unwrap();
         assert!(watch.is_live(1100));
-        watch.observe(true, 1100, 4000).unwrap();
+        watch.observe(1, 1100, 4000).unwrap();
         assert!(watch.check(4101).is_err());
-        assert!(watch.observe(false, 4101, 4101).is_err());
+        assert!(watch.observe(2, 4101, 4101).is_err());
         watch.reset();
-        watch.observe(false, 4101, 5000).unwrap();
+        watch.observe(2, 4101, 5000).unwrap();
         assert!(!watch.is_live(5000));
         assert!(watch.check(8001).is_err());
     }
-
 }

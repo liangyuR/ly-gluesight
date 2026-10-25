@@ -29,9 +29,8 @@ use sample_set::{SampleLabel, SampleRef, SampleSet};
 pub use scenario::Scenario;
 
 const RECENT_RUNS: usize = 20;
-const CAPTURE_PLAN_VERSION: u32 = 1;
 const WARMUP_WAIT: Duration = Duration::from_secs(30);
-const NOT_INSPECTED: &str = "本件未检：机器人没等到触发许可，PLC 未提交 partStart，PC 没有这一件的记录";
+const NOT_INSPECTED: &str = "本件未检：机器人没等到触发许可，PLC 未提交请求，PC 没有这一件的记录";
 /// 合成图示教采集每轮的脉冲波动：首尾 ±1、弯道 ±2，按轮序号取种子，多轮标定看得到 min / max 差异。
 const CAPTURE_JITTER: (i32, i32) = (1, 2);
 
@@ -88,7 +87,7 @@ pub enum RunPurpose {
     CandidateDebug,
 }
 
-/// 离线产线跑过的一件：PLC 字符串 partSn ↔ 样本件。标签只用于展示，不参与判定。
+/// 离线产线跑过的一件：PLC 字符串 sn ↔ 样本件。标签只用于展示，不参与判定。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SampleRun {
@@ -248,13 +247,13 @@ impl OfflineHost {
         }
     }
 
-    /// 本件未检：PLC 没有提交 partStart，PC 没有这一件，样本件运行记下原因。
+    /// 本件未检：PLC 没有提交请求，PC 没有这一件，样本件运行记下原因。
     fn skip_run(&self, part_sn: &str) {
         let mut runs = self.runs.lock().unwrap();
         if let Some(run) = runs.iter_mut().find(|r| r.part_sn == part_sn) { run.message = Some(NOT_INSPECTED.into()); }
     }
 
-    /// 生产节拍按 PLC 下发的 partSn 认领样本件，记下 cycleId。只在离线期间生效：真机件不会认领到样本件。
+    /// 生产节拍按 PLC 下发的 sn 认领样本件，记下 cycleId。只在离线期间生效：真机件不会认领到样本件。
     pub fn claim(&self, part_sn: &str, cycle_id: &str) -> Option<SampleRef> {
         if !self.enabled() { return None; }
         let mut runs = self.runs.lock().unwrap();
@@ -348,7 +347,12 @@ pub(crate) async fn run_candidate(app: AppHandle, candidate: Arc<crate::candidat
     *offline.last_candidate.lock().unwrap() = Some(candidate.clone());
     *offline.candidate.lock().unwrap() = Some(candidate);
     let _ = cycle.tx.send(crate::cycle::Input::Refresh);
-    let order = PartOrder::legacy(String::new(), recipe.product_code, plan.plan_version, plan.shot_count, plan.device_shots);
+    let order = PartOrder::legacy(
+        String::new(),
+        recipe.product_code,
+        plan.shot_count,
+        plan.device_shots,
+    );
     let run_app = app.clone();
     tauri::async_runtime::spawn(async move {
         match burst {
@@ -535,7 +539,7 @@ pub(crate) fn reset_after_enter(app: AppHandle) {
         let result = line.ensure_ready(&timing(&app, Duration::ZERO), &AtomicBool::new(false)).await;
         if !offline.enabled() { return; }
         match result {
-            Ok(()) => crate::cycle::log(&app, "info", "站点模式", "离线 PLC 已发 faultReset，视觉就绪"),
+            Ok(()) => crate::cycle::log(&app, "info", "站点模式", "离线 PLC 已现场复位，视觉就绪"),
             Err(error) => offline.set_message(&app, format!("离线 PLC 自动复位未完成：{error}")),
         }
     });
@@ -586,7 +590,12 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
     if let (Some(set), Some(id)) = (&samples, part_id.as_deref()) {
         set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?;
     }
-    let order = PartOrder::legacy(String::new(), recipe.product_code, plan.plan_version, plan.shot_count, plan.device_shots);
+    let order = PartOrder::legacy(
+        String::new(),
+        recipe.product_code,
+        plan.shot_count,
+        plan.device_shots,
+    );
     if recipe.is_burst() {
         let feeds = match &samples {
             Some(set) => sample_feeds(&recipe, set).map_err(|reason| format!("样本集与配方不符：{reason}"))?,
@@ -656,7 +665,7 @@ pub fn offline_capture(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_,
     if let Some(id) = part_id.as_deref() { set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?; }
     start_running(&offline, false)?;
     let n = n as u16;
-    let order = PartOrder::legacy(String::new(), 0, CAPTURE_PLAN_VERSION, n, n);
+    let order = PartOrder::legacy(String::new(), 0, n, n);
     let feeds = feeds.into_iter().map(|(cam, _, shots)| (cam, shots)).collect();
     tauri::async_runtime::spawn(capture(app, line, set, part_id, feeds, order));
     Ok(())
@@ -709,13 +718,18 @@ pub fn offline_pace(app: AppHandle, offline: State<'_, OfflineHost>, pace: Optio
     Ok(())
 }
 
-/// 故障注入：离线产线停止时，让虚拟 PLC 保持 faultReset 电平，用来验证视觉只认“先低后高”的复位上升沿。
+/// 故障注入：离线产线停止时，让虚拟 PLC 保持或撤下现场复位请求（plcState=99），验证 PLC 发起的复位。
 #[tauri::command]
 pub fn offline_fault_reset(app: AppHandle, offline: State<'_, OfflineHost>, level: bool) -> Result<(), String> {
     if offline.running.load(Ordering::SeqCst) { return Err("离线产线运行中，先停止再操作复位信号".into()); }
     let line = offline.active.lock().unwrap().as_ref().map(|a| a.line.clone()).ok_or("离线模式未启用")?;
-    line.hold_fault_reset(level);
-    crate::cycle::log(&app, "warn", "离线故障注入", format!("虚拟 PLC 保持 faultReset={}", level as u8));
+    line.hold_reset_request(level);
+    let what = if level {
+        "保持复位请求 plcState=99"
+    } else {
+        "撤下复位请求"
+    };
+    crate::cycle::log(&app, "warn", "离线故障注入", format!("虚拟 PLC {what}"));
     Ok(())
 }
 
@@ -842,7 +856,10 @@ fn start_synthetic_capture(
     let profile = capture_profile(&recipe, hz, ordinal);
     let estimate = u16::try_from(profile.segments.iter().map(|&(_, n)| n).sum::<u32>().min(i16::MAX as u32)).unwrap_or(i16::MAX as u16);
     start_running(offline, false)?;
-    let order = PartOrder { profile: Some(profile), ..PartOrder::legacy(String::new(), 0, CAPTURE_PLAN_VERSION, estimate, estimate) };
+    let order = PartOrder {
+        profile: Some(profile),
+        ..PartOrder::legacy(String::new(), 0, estimate, estimate)
+    };
     tauri::async_runtime::spawn(capture_synthetic(app.clone(), line, recipe, feeds, order));
     Ok(())
 }

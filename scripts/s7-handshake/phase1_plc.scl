@@ -1,3 +1,4 @@
+// 协议 6，已被 site/gluesight_site.scl（生产通讯协议 7）取代；仅作历史参考，不得与协议 7 的 PC 配套使用。
 // S7-1200/1500 接入参考，尚未在 TIA Portal 编译。握手协议 6（分段连拍；DB4/DB2 布局沿用交互表 V1.1，与协议 5 相同）。
 // 两个标准 DB 均取消“优化的块访问”：GlueSightPlcArea 编号设为 DB4（PLC 写、PC 读，字节 0–89），
 // GlueSightPcArea 编号设为 DB2（PC 写、PLC 读，字节 0–71）。生成块后核对编辑器偏移量列与协议第 2、3 节逐行一致。

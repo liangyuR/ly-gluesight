@@ -17,12 +17,11 @@ pub enum Scenario {
     LocateFail,
     /// 定位失败的那一帧里还断胶：NG 优先于基准无效，整件 NG_GAP
     LocateFailGap,
-    /// 旧拍照点配方：机器人少发一次触发，PLC 报的设备触发数与计划不符；
-    /// 段配方：PLC 多计 2 个脉冲，deviceTriggers 比相机帧数多 2（只告警）
+    /// 旧拍照点配方：机器人少发一次触发；段配方与正常相同（协议 7 不报触发计数）
     CountMismatch,
-    /// 机器人不发 partEnd
+    /// 机器人不报运动结束（PLC 不置 20）
     MotionTimeout,
-    /// PLC 回 ACK 时序号与 resultSeq 不匹配
+    /// PLC 核对 seqEcho / snEcho 不符，置 90（plcReason=5）
     AckMismatch,
     /// 段配方：三台相机之一（第 2 台）第 min(3, 总数) 帧传输丢失，其余相机照常
     CameraLost,
@@ -30,9 +29,9 @@ pub enum Scenario {
     PulseJitter,
     /// 段配方：弯道减速，每个弯道段 ±2 帧波动
     CornerSlowdown,
-    /// 段配方：机器人等不到触发许可，照常涂胶并置“本件未检”；PLC 不提交 partStart，PC 没有这一件
+    /// 段配方：机器人等不到触发许可，照常涂胶并置“本件未检”；PLC 不提交请求，PC 没有这一件
     NotInspected,
-    /// 段配方：PLC 提前置 partEnd（提前终止），只发出约一半脉冲
+    /// 段配方：PLC 提前报运动结束（提前终止），只发出约一半脉冲
     EarlyEnd,
     Random,
 }

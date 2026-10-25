@@ -85,11 +85,11 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
   return (
     <div className="rcp-editor">
       <details className="rcp-section rcp-identity" open={identityChanged || undefined}>
-        <summary><h4 className="sub-title">配方信息{identityChanged && <i className="rcp-changed" title="与生产配方不同" />}</h4><span className="muted">{doc.id} · {doc.name} · 产品代码 {doc.productCode}</span></summary>
+        <summary><h4 className="sub-title">配方信息{identityChanged && <i className="rcp-changed" title="与生产配方不同" />}</h4><span className="muted">{doc.id} · {doc.name} · 型号 {doc.productCode}</span></summary>
         <div className="rcp-grid">
           <Field label="配方编号"><TextField className="mono" aria-label="配方编号" value={doc.id} readOnly disabled /></Field>
           <Field label="名称" changed={changed.has("name")}><TextField aria-label="名称" value={doc.name} onChange={(e) => set("name", e.target.value)} /></Field>
-          <Field label="产品代码（PLC 下发）" changed={changed.has("productCode")}><Num aria="产品代码（PLC 下发）" step={1} value={doc.productCode} onChange={(v) => set("productCode", v)} /></Field>
+          <Field label="型号（PLC 下发）" changed={changed.has("productCode")}><Num aria="型号（PLC 下发）" step={1} value={doc.productCode} onChange={(v) => set("productCode", v)} /></Field>
         </div>
       </details>
 

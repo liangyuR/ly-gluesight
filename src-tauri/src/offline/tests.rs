@@ -55,9 +55,20 @@ impl Bench {
 
     /// 段计划的一件：一个直线段、名义帧数 = ΣN_exp，不波动、不丢帧。
     fn order(&self, sn: &str) -> PartOrder {
-        let profile = PulseProfile { hz: BENCH_HZ, segments: vec![(crate::plan::SegmentKind::Straight, u32::from(self.plan.shot_count))],
-            head_tail_jitter: 0, corner_jitter: 0, seed: 0 };
-        PartOrder { profile: Some(profile), ..PartOrder::legacy(sn.into(), 3, self.plan.plan_version, self.plan.shot_count, self.plan.device_shots) }
+        let profile = PulseProfile {
+            hz: BENCH_HZ,
+            segments: vec![(
+                crate::plan::SegmentKind::Straight,
+                u32::from(self.plan.shot_count),
+            )],
+            head_tail_jitter: 0,
+            corner_jitter: 0,
+            seed: 0,
+        };
+        PartOrder {
+            profile: Some(profile),
+            ..PartOrder::legacy(sn.into(), 3, self.plan.shot_count, self.plan.device_shots)
+        }
     }
 
     /// `poll`：PC 轮询周期；`heartbeat`：虚拟 PLC 心跳翻转间隔。
@@ -91,7 +102,7 @@ impl Bench {
         }
     }
 
-    /// 段配方：虚拟 PLC 按 `order` 的脉冲剖面跑一件，PC 侧按生产节拍驱动 S7 会话：开始 → 布防 → partEnd 后用实收帧
+    /// 段配方：虚拟 PLC 按 `order` 的脉冲剖面跑一件，PC 侧按生产节拍驱动 S7 会话：开始 → 布防 → 运动结束后用实收帧
     /// 走段配方节拍判定（[`judge_burst_at_drain_deadline`]）并回写，判定存进 `judged`。
     /// `fire(pulse)` 模拟相机侧：返回这一脉冲真正交付了帧的相机（计划相机下标），帧计数 = 脉冲序号。
     async fn run_burst_with(&mut self, order: PartOrder, scenario: Scenario, mut fire: impl FnMut(&Pulse) -> Vec<usize>) -> Result<Option<Outcome>, String> {
@@ -117,9 +128,13 @@ impl Bench {
                 assert!(Instant::now() < until, "会话未收敛：{:?}", session.view());
                 match session.poll_gated(engine, false, true, true, intake.load(Ordering::SeqCst)).await {
                     SessionEvent::Start(_) => session.arm(engine, plan).await.unwrap(),
-                    SessionEvent::End(_, triggers) => {
-                        let judgement = judge_burst_at_drain_deadline(delivered.lock().unwrap().clone(), triggers);
-                        session.report(engine, judgement.plc_code, judgement.fault_code).await.unwrap();
+                    SessionEvent::End(_) => {
+                        let judgement =
+                            judge_burst_at_drain_deadline(delivered.lock().unwrap().clone(), None);
+                        session
+                            .report(engine, judgement.plc_code, judgement.fault_code)
+                            .await
+                            .unwrap();
                         *judged = Some(judgement);
                     }
                     _ => {}
@@ -130,8 +145,8 @@ impl Bench {
         tokio::join!(plc, pc).0
     }
 
-    /// 虚拟 PLC 的 faultReset 上升沿只会被会话处理一次：会话还没观察到心跳翻转就按复位，这次复位被拒且不再重发。
-    /// 先让会话轮询到心跳翻转，复位时机就只取决于会话状态，不取决于机器多忙。
+    /// 会话还没观察到 PLC 心跳变化时，虚拟 PLC 的复位请求只能等着；先让会话看到心跳，复位时机就只取决于会话状态。
+    /// 不取决于机器多忙。
     async fn until_heartbeat_live(&mut self) {
         let until = Instant::now() + HANG_GUARD;
         while !self.session.heartbeat_live() {
@@ -145,15 +160,66 @@ impl Bench {
 
 // ───────────── 段配方：脉冲串（S7 闭环，计划 ΣN_exp 4、Σtol 1，三台相机共用触发） ─────────────
 
+/// 虚拟 PLC 与会话按协议 7 闭环：启动时 PC 未就绪，PLC 现场复位让 PC 就绪；一件走完 PLC 回 0、PC 回 10。
 #[tokio::test]
-async fn reserved_plc_count_does_not_change_frame_alarms_or_result() {
-    let mut bench = Bench::new("plc-counts-2-extra").await;
-    let order = bench.order("SN-GAP");
-    let outcome = bench.run_burst_with(order, Scenario::CountMismatch, all_cameras).await.unwrap().unwrap();
+async fn simulator_resets_pc_then_part_completes_back_to_idle() {
+    let mut bench = Bench::new("normal").await;
+    let order = bench.order("SN-OK");
+    let outcome = bench
+        .run_burst_with(order, Scenario::Normal, all_cameras)
+        .await
+        .unwrap()
+        .unwrap();
     let judged = bench.judged.take().unwrap();
-    assert_eq!(bench.line.read(tag::DEVICE_TRIGGERS), 2);
-    assert!(judged.alarms.is_empty());
-    assert_eq!((outcome.result_code, judged.verdict, judged.fault_code), (1, Verdict::Ok, 0));
-    assert_eq!(bench.session.phase(), SessionPhase::Idle, "{:?}", bench.session.view());
+    assert_eq!(
+        (outcome.result_code, outcome.sn.as_str(), judged.verdict),
+        (1, "SN-OK", Verdict::Ok)
+    );
+    assert_eq!(
+        bench.session.phase(),
+        SessionPhase::Idle,
+        "{:?}",
+        bench.session.view()
+    );
+    assert_eq!(
+        (
+            bench.line.read(tag::PLC_STATE),
+            bench.line.read(tag::PC_STATE)
+        ),
+        (0, 10)
+    );
+    bench.engine.disconnect().await;
+}
+
+/// PLC 核对回显不符置 90：会话进入故障并保留事务；下一件前虚拟 PLC 现场复位，会话清事务回就绪。
+#[tokio::test]
+async fn simulator_echo_mismatch_faults_then_plc_reset_restores_ready() {
+    let mut bench = Bench::new("echo-mismatch").await;
+    let order = bench.order("SN-ACK");
+    assert!(bench
+        .run_burst_with(order, Scenario::AckMismatch, all_cameras)
+        .await
+        .is_err());
+    assert_eq!(
+        bench.session.phase(),
+        SessionPhase::Fault,
+        "{:?}",
+        bench.session.view()
+    );
+    assert!(bench.session.pending());
+    let order = bench.order("SN-NEXT");
+    let outcome = bench
+        .run_burst_with(order, Scenario::Normal, all_cameras)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome.sn, "SN-NEXT");
+    assert_eq!(
+        bench.session.phase(),
+        SessionPhase::Idle,
+        "{:?}",
+        bench.session.view()
+    );
+    assert!(!bench.session.pending());
     bench.engine.disconnect().await;
 }

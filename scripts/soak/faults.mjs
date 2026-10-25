@@ -250,19 +250,16 @@ const lateScenarios = {
   async resetWhileInFlight(c) {
     return midPart(c, () => c.call("cycle_reset"));
   },
-  async faultResetEdge(c) {
-    await until(c.snapshot, s => s?.phase === "IDLE" && s.plcHandshake?.phase === "idle", "复位沿验证前节拍未回到空闲", 30000, 100);
-    await c.call("offline_fault_reset", { level: true });
+  async plcResetRequest(c) {
+    await until(c.snapshot, s => s?.phase === "IDLE" && s.plcHandshake?.phase === "idle", "复位请求验证前节拍未回到空闲", 30000, 100);
     await c.call("offline_inject", { fault: "disconnect" });
     await until(() => c.call("plc_get_status"), s => s.state === "connected", "断线后未重连", 30000, 200);
     await sleep(4000);
-    const heldHigh = await c.faultView();
-    await c.call("offline_fault_reset", { level: false });
-    await sleep(1000);
+    const beforeRequest = await c.faultView();
     await c.call("offline_fault_reset", { level: true });
-    const afterEdge = await until(c.faultView, v => v.phase === "IDLE", "先低后高的复位沿未让视觉回到就绪", 15000, 200).catch(error => ({ timeout: error.message }));
+    const afterRequest = await until(c.faultView, v => v.phase === "IDLE", "PLC 复位请求未让视觉回到就绪", 15000, 200).catch(error => ({ timeout: error.message }));
     await c.call("offline_fault_reset", { level: false });
-    return { heldHighPhase: heldHigh.phase, heldHigh, afterEdge };
+    return { beforeRequestPhase: beforeRequest.phase, beforeRequest, afterRequest };
   },
 };
 

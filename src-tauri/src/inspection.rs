@@ -1,37 +1,40 @@
 use ly_plc::{Access, ConnectionConfig, DataType, EdgeMode, HeartbeatConfig, PlcConfig, PlcPoint, ProtocolKind, S7Options};
 
 pub mod tag {
-    pub const PART_START: &str = "partStart";
-    pub const PART_END: &str = "partEnd";
-    pub const RESULT_ACK: &str = "resultAck";
-    pub const FAULT_RESET: &str = "faultReset";
-    pub const PART_SN: &str = "partSn";
+    pub const PLC_VERSION: &str = "plcVersion";
+    pub const PLC_HEARTBEAT: &str = "plcHeartbeat";
+    pub const PLC_STATE: &str = "plcState";
+    pub const PLC_REASON: &str = "plcReason";
+    pub const REQUEST_SEQ: &str = "requestSeq";
     pub const PRODUCT_CODE: &str = "productCode";
-    pub const SHOT_COUNT: &str = "shotCount";
-    pub const VISION_READY: &str = "visionReady";
-    pub const ARMED: &str = "armed";
-    pub const BUSY: &str = "busy";
-    pub const DONE: &str = "done";
+    pub const SN: &str = "sn";
+    pub const PC_VERSION: &str = "pcVersion";
+    pub const PC_HEARTBEAT: &str = "pcHeartbeat";
+    pub const PC_STATE: &str = "pcState";
+    pub const PC_MODE: &str = "pcMode";
+    pub const SEQ_ECHO: &str = "seqEcho";
     pub const RESULT_CODE: &str = "resultCode";
     pub const FAULT_CODE: &str = "faultCode";
-    pub const RESULT_SN: &str = "resultSn";
-    pub const PROTOCOL_VERSION: &str = "protocolVersion";
-    pub const REQUEST_SEQ: &str = "requestSeq";
-    pub const PLAN_VERSION: &str = "planVersion";
-    pub const PLAN_RESERVED: &str = "planReserved";
-    pub const DEVICE_SHOTS: &str = "deviceShots";
-    pub const DEVICE_TRIGGERS: &str = "deviceTriggers";
-    pub const ACK_SEQ: &str = "ackSeq";
-    pub const PLC_HEARTBEAT: &str = "plcHeartbeat";
-    pub const PC_HEARTBEAT: &str = "pcHeartbeat";
-    pub const PC_PROTOCOL_VERSION: &str = "pcProtocolVersion";
-    pub const ACCEPTED_SEQ: &str = "acceptedSeq";
-    pub const ACCEPTED_PLAN_RESERVED: &str = "acceptedPlanReserved";
-    pub const RESULT_SEQ: &str = "resultSeq";
-    pub const VISION_FAULT: &str = "visionFault";
+    pub const SN_ECHO: &str = "snEcho";
 }
 
-/// 涂胶检测通信交互表 V1.1（握手协议 6，点表布局与协议 5 相同）：S7-1200，PLC 写 DB4、PC 写 DB2，两个 DB 都从字节 0 起。
+/// 协议 7 双方状态字的取值。
+pub mod state {
+    pub const PLC_IDLE: u16 = 0;
+    pub const PLC_REQUEST: u16 = 10;
+    pub const PLC_MOTION_END: u16 = 20;
+    pub const PLC_CONFIRMED: u16 = 30;
+    pub const PLC_FAULT: u16 = 90;
+    pub const PLC_RESET: u16 = 99;
+    pub const PC_NOT_READY: u16 = 0;
+    pub const PC_READY: u16 = 10;
+    pub const PC_ARMED: u16 = 20;
+    pub const PC_RESULT: u16 = 30;
+    pub const PC_FAULT: u16 = 90;
+    pub const PC_RESET: u16 = 99;
+}
+
+/// 生产通讯协议 7：S7-1200，PLC 写 DB4、PC 写 DB2，两个 DB 都从字节 0 起、各 68 字节。
 pub const DEFAULT_PLC_HOST: &str = "192.168.2.10";
 pub const DEFAULT_PLC_DB: u16 = 4;
 pub const DEFAULT_PC_DB: u16 = 2;
@@ -47,43 +50,29 @@ pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
     if plc_db == pc_db {
         return Err("PLC 区与 PC 区必须使用两个不同的 DB".into());
     }
-    use DataType::{Bool, I16, I32, String as Text};
-    use EdgeMode::{None as NoEdge, Rising};
+    use DataType::{String as Text, I16, I32};
     let input = Access::Read;
     let output = Access::ReadWrite;
     let definitions = [
-        (tag::PART_START, "工件开始", "DBX0.0", Bool, input, Rising),
-        (tag::PART_END, "触发计划完成", "DBX0.1", Bool, input, Rising),
-        (tag::RESULT_ACK, "结果确认", "DBX0.2", Bool, input, Rising),
-        (tag::FAULT_RESET, "故障复位", "DBX0.3", Bool, input, Rising),
-        (tag::PLC_HEARTBEAT, "PLC 心跳", "DBX0.4", Bool, input, NoEdge),
-        (tag::PROTOCOL_VERSION, "握手协议版本", "DBW2", I16, input, NoEdge),
-        (tag::REQUEST_SEQ, "请求事务序号", "DBD4", I32, input, NoEdge),
-        (tag::PRODUCT_CODE, "产品代码", "DBW8", I16, input, NoEdge),
-        (tag::SHOT_COUNT, "计划拍照总数", "DBW10", I16, input, NoEdge),
-        (tag::PLAN_VERSION, "拍照计划版本", "DBD12", I32, input, NoEdge),
-        (tag::PLAN_RESERVED, "拍照计划保留位", "DBD16", I32, input, NoEdge),
-        (tag::DEVICE_SHOTS, "设备计划触发数", "DBW20", I16, input, NoEdge),
-        (tag::ACK_SEQ, "确认事务序号", "DBD28", I32, input, NoEdge),
-        (tag::DEVICE_TRIGGERS, "采集预留字段（固定 0）", "DBW32", I16, input, NoEdge),
-        (tag::PART_SN, "工件 SN", "DBB38.50", Text, input, NoEdge),
-        (tag::VISION_READY, "视觉就绪", "DBX0.0", Bool, output, NoEdge),
-        (tag::ARMED, "已布防", "DBX0.1", Bool, output, NoEdge),
-        (tag::BUSY, "检测中", "DBX0.2", Bool, output, NoEdge),
-        (tag::DONE, "结果有效", "DBX0.3", Bool, output, NoEdge),
-        (tag::VISION_FAULT, "视觉故障", "DBX0.4", Bool, output, NoEdge),
-        (tag::PC_HEARTBEAT, "上位机心跳", "DBX0.5", Bool, output, NoEdge),
-        (tag::PC_PROTOCOL_VERSION, "上位机协议版本", "DBW2", I16, output, NoEdge),
-        (tag::RESULT_SEQ, "结果事务序号", "DBD4", I32, output, NoEdge),
-        (tag::RESULT_CODE, "结果码", "DBW8", I16, output, NoEdge),
-        (tag::FAULT_CODE, "异常码", "DBW10", I16, output, NoEdge),
-        (tag::ACCEPTED_SEQ, "布防事务序号", "DBD12", I32, output, NoEdge),
-        (tag::ACCEPTED_PLAN_RESERVED, "布防计划保留位", "DBD16", I32, output, NoEdge),
-        (tag::RESULT_SN, "结果 SN", "DBB20.50", Text, output, NoEdge),
+        (tag::PLC_VERSION, "PLC 协议版本", "DBW0", I16, input),
+        (tag::PLC_HEARTBEAT, "PLC 心跳", "DBW2", I16, input),
+        (tag::PLC_STATE, "PLC 状态", "DBW4", I16, input),
+        (tag::PLC_REASON, "PLC 原因码", "DBW6", I16, input),
+        (tag::REQUEST_SEQ, "请求事务序号", "DBD8", I32, input),
+        (tag::PRODUCT_CODE, "型号", "DBW12", I16, input),
+        (tag::SN, "工件 SN", "DBB16.50", Text, input),
+        (tag::PC_VERSION, "上位机协议版本", "DBW0", I16, output),
+        (tag::PC_HEARTBEAT, "上位机心跳", "DBW2", I16, output),
+        (tag::PC_STATE, "上位机状态", "DBW4", I16, output),
+        (tag::PC_MODE, "上位机模式", "DBW6", I16, output),
+        (tag::SEQ_ECHO, "回显事务序号", "DBD8", I32, output),
+        (tag::RESULT_CODE, "结果码", "DBW12", I16, output),
+        (tag::FAULT_CODE, "异常码", "DBW14", I16, output),
+        (tag::SN_ECHO, "回显工件 SN", "DBB16.50", Text, output),
     ];
     let mut points: Vec<_> = definitions
         .into_iter()
-        .map(|(tag, name, address, data_type, access, edge)| PlcPoint {
+        .map(|(tag, name, address, data_type, access)| PlcPoint {
             id: format!("p_{tag}"),
             name: name.into(),
             address: format!(
@@ -92,7 +81,7 @@ pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
             ),
             data_type,
             access,
-            edge,
+            edge: EdgeMode::None,
             tags: vec![tag.into()],
             log_changes: !matches!(tag, tag::PLC_HEARTBEAT | tag::PC_HEARTBEAT),
             ..PlcPoint::default()

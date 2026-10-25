@@ -196,7 +196,7 @@ export async function runProductionFlow(page, options = {}) {
     if (guard.settings.productSource !== "plc") {
       await page.getByRole("link", { name: "系统设置", exact: true }).click();
       await page.getByRole("combobox", { name: "型号来源", exact: true }).click();
-      await page.getByRole("option", { name: "PLC 下发产品代码", exact: true }).click();
+      await page.getByRole("option", { name: "PLC 下发型号", exact: true }).click();
       const cyclePanel = page.getByRole("region", { name: "检测节拍", exact: true });
       await cyclePanel.getByRole("button", { name: "保存", exact: true }).click();
       await until(page, () => invokeRead("cycle_get_settings"), settings => settings.productSource === "plc", "UI 保存型号来源失败");
@@ -222,8 +222,9 @@ export async function runProductionFlow(page, options = {}) {
     assert(offlineCameras.filter(camera => camera.viewCount === 1 && !camera.compositeLayout).length >= 3, "合成图离线环境应至少有三台单视角相机");
     if ((await invokeRead("cycle_snapshot")).phase === "FAULT") {
       await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
-      await page.getByRole("button", { name: "复位故障", exact: true }).click();
-      await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase !== "FAULT", "复位故障后检测仍处于故障", 5000).catch(() => {});
+      await page.getByRole("button", { name: "软件复位", exact: true }).click();
+      await page.getByRole("dialog").getByRole("button", { name: "确认复位", exact: true }).click();
+      await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase !== "FAULT", "软件复位后检测仍处于故障", 5000).catch(() => {});
       await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
     }
     const burst = await runBurstStage(page, invokeRead, navigation, { engine: guard.engine });

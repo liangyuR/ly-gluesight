@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { InspectionStages } from "qing-steel";
 import { plcApi, usePlcValues, type PlcConfig } from "../../plc";
+import { codeName, pcStateNames, plcStateNames } from "../../plc/handshake";
 import type { Phase, Snapshot } from "../types";
 
 const steps: { id: Phase; label: string }[] = [
@@ -21,8 +22,10 @@ export function CycleStepper({ snapshot }: { snapshot: Snapshot | null }) {
   return <InspectionStages steps={steps} currentStepId={phase === "IDLE" ? null : phase} completedStepIds={steps.slice(0, Math.max(0, at)).map(step => step.id)} fault={fault} />;
 }
 
-const plcToPc = ["partStart", "partEnd", "resultAck"];
-const pcToPlc = ["visionReady", "armed", "busy", "done"];
+const sides = [
+  { tag: "plcState", side: "PLC", names: plcStateNames, pc: false },
+  { tag: "pcState", side: "PC", names: pcStateNames, pc: true },
+];
 
 export function SignalLamps() {
   const [config, setConfig] = useState<PlcConfig | null>(null);
@@ -37,21 +40,17 @@ export function SignalLamps() {
     return map;
   }, [config]);
 
-  const lamp = (tag: string, pc: boolean) => {
-    const id = byTag.get(tag);
-    const on = id !== undefined && !!values[id]?.value;
-    return (
-      <span key={tag} className={`lamp mono${pc ? " pc" : ""}${on ? " on" : ""}${id ? "" : " unbound"}`} title={id ? `点位 ${id}` : "地址表中未绑定该标签"}>
-        {tag}
-      </span>
-    );
-  };
-
   return (
     <div className="lamps">
-      {plcToPc.map((t) => lamp(t, false))}
-      <span className="lamp-sep">|</span>
-      {pcToPlc.map((t) => lamp(t, true))}
+      {sides.map(({ tag, side, names, pc }) => {
+        const id = byTag.get(tag);
+        const value = id === undefined ? null : values[id]?.value;
+        const state = typeof value === "number" ? codeName(names, value) : "—";
+        const lit = typeof value === "number" && value !== 0;
+        return <span key={tag} className={`lamp${pc ? " pc" : ""}${value === 90 ? " fault" : lit ? " on" : ""}${id ? "" : " unbound"}`} title={id ? `点位 ${id} · ${tag}` : "地址表中未绑定该标签"}>
+          {side}：{state}
+        </span>;
+      })}
     </div>
   );
 }

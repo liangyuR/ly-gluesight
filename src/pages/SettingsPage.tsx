@@ -7,11 +7,11 @@ import { errorText } from "../lib/errors";
 import { useSnackbar } from "qing-steel";
 
 const timeoutFields: [keyof Timeouts, string, string][] = [
-  ["armMs", "布防预算 T_arm（ms）", "确认 partStart 后到 armed 读回确认，100–5000；回写前超出拒收本件（90/99），回写确认后超出进入视觉故障"],
-  ["motionMs", "运动超时 T_motion（ms）", "armed↑ 后等待 partEnd↑"],
-  ["drainMs", "收尾等待 T_drain（ms）", "partEnd↑ 后等待剩余帧"],
+  ["armMs", "布防预算 T_arm（ms）", "读到 plcState=10 后到 pcState=20 读回确认，100–5000；回写前超出拒收本件（90/99），回写确认后超出进入视觉故障"],
+  ["motionMs", "运动超时 T_motion（ms）", "pcState=20 后等待 plcState=20"],
+  ["drainMs", "收尾等待 T_drain（ms）", "plcState=20 后等待剩余帧"],
   ["procMs", "单帧处理 T_proc（ms）", "单帧入队到测量完成"],
-  ["ackMs", "结果确认 T_ack（ms）", "done↑ 后等待 resultAck↑"],
+  ["ackMs", "结果确认 T_ack（ms）", "pcState=30 后等待 plcState=30"],
 ];
 const timeoutMinimums: Record<keyof Timeouts, number> = { armMs: 100, motionMs: 1000, drainMs: 200, procMs: 200, ackMs: 500 };
 
@@ -128,7 +128,7 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
             label="型号来源"
             value={settings.productSource}
             onValueChange={(value) => update({ ...settings, productSource: value as CycleSettings["productSource"] })}
-            options={[{ value: "plc", label: "PLC 下发产品代码" }, { value: "manual", label: "人工选择配方" }]}
+            options={[{ value: "plc", label: "PLC 下发型号" }, { value: "manual", label: "人工选择配方" }]}
           />
           {settings.productSource === "manual" && (
             <Select
@@ -163,7 +163,7 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
         </Grid>
       </fieldset>
       <Text as="p" variant="label" muted>
-        PLC 下发：按产品代码匹配配方，匹配不到判 ERR 95。人工选择：操作员在实时检测页切换配方，仅空闲时可切换，不读取产品代码。
+        PLC 下发：按型号匹配配方，匹配不到判 ERR 95。人工选择：操作员在实时检测页切换配方，仅空闲时可切换，不读取型号。
       </Text>
       {invalid && <Alert tone="ng">{invalid}</Alert>}
       </>}

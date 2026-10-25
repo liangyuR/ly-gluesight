@@ -100,9 +100,9 @@ fn item(key: ItemKey, title: &'static str, state: ItemState, detail: impl Into<S
 
 fn reset_hint(offline: bool) -> String {
     if offline {
-        "离线模式由离线产线自动复位：进入离线和每次运行前都会由虚拟 PLC 发 faultReset；仍未复位时在离线控制台查看原因".into()
+        "离线模式由离线产线自动复位：进入离线和每次运行前都会由虚拟 PLC 置复位请求（plcState=99）；仍未复位时在离线控制台查看原因".into()
     } else {
-        "复位前提：PLC 已连接且心跳在翻转、相机与追溯就绪、无在途工件。真机由 PLC 发 faultReset 复位，也可在 PLC 侧条件满足后点“复位故障”".into()
+        "复位前提：PLC 已连接且心跳在变化、相机与追溯就绪、无在途工件。真机可在 PLC 现场复位（plcState=99），也可点“软件复位”（PC 置 99，等 PLC 回空闲）".into()
     }
 }
 

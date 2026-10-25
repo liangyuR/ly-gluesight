@@ -26,7 +26,7 @@ export default function RecipeRunSelect({ options, summaries, value, onChange, d
     return {
       value: r.id,
       disabled: !r.runnable,
-      label: `${r.id} · 代码 ${r.productCode}${scale && ` · ${scale}`}${r.runnable ? (r.waiting ? `（${r.waiting}）` : "") : `（不可运行：${r.reason ?? "原因未知"}）`}`,
+      label: `${r.id} · 型号 ${r.productCode}${scale && ` · ${scale}`}${r.runnable ? (r.waiting ? `（${r.waiting}）` : "") : `（不可运行：${r.reason ?? "原因未知"}）`}`,
     };
   });
   return (

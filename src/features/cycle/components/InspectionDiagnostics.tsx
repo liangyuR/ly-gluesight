@@ -78,7 +78,7 @@ export default function InspectionDiagnostics({ group, onGroup, onClose, snapsho
         {frame?.viewResults?.length ? <Table caption="独立检测图结果" rows={frame.viewResults} columns={viewColumns} rowKey={view => String(view.view)} /> : <p className="muted">暂无独立检测图结果</p>}
         {frame?.error && <Alert tone="fault">{frame.error}</Alert>}
       </>}
-      {group === "plc" && <><h3>握手信号</h3><SignalLamps /><CycleStepper snapshot={snapshot} /><p className="muted">信号来自当前 PLC 点位；未绑定标签不代表信号为低。</p></>}
+      {group === "plc" && <><h3>握手状态</h3><SignalLamps /><CycleStepper snapshot={snapshot} /><p className="muted">状态字来自当前 PLC 点位；虚线框表示地址表未绑定该标签。</p></>}
       {group === "events" && <div className="event-log">{logs.length ? logs.slice(-200).reverse().map((line, i) => <div key={`${line.ts}-${i}`} className={`l-${line.level}`}><time className="tm">{new Date(line.ts).toLocaleTimeString("zh-CN", { hour12: false })}.{String(line.ts % 1000).padStart(3, "0")}</time><span className="ev">{line.ev}</span>{line.msg}</div>) : <p className="muted">暂无事件</p>}</div>}
     </section>
   </Drawer>;
