@@ -58,7 +58,7 @@ pnpm test:ui:production
 
 普通后端测试生成临时图片、数据库和录制，不需要预备原图或测量 DLL。首次构建需要 Rust MSVC、Visual Studio C++ 工具和私有 Git 依赖；依赖未缓存时先允许 Cargo 获取。
 
-S7 专项：`plc_session` 用例由进程内 S7Server 驱动，已进默认测试，只需本机 TCP 回环权限；Python 测试 PLC 的线报文自测需要 Python 3。命令见[测试说明](TESTING.md#s7-一期握手)。原审计耐久性子进程夹具已于 2026-10-22 删除（`c6c2ba5`）；当前默认忽略的用例只有需要 lyFlow 运行库或样本集的几项，见[测试说明](TESTING.md#当前保留范围)。
+S7 专项：`plc_session` 用例由进程内 S7Server 驱动，已进默认测试，只需本机 TCP 回环权限。命令见[测试说明](TESTING.md#s7-生产握手)。原审计耐久性子进程夹具已于 2026-10-22 删除（`c6c2ba5`）；当前默认忽略的用例只有需要 lyFlow 运行库或样本集的几项，见[测试说明](TESTING.md#当前保留范围)。
 
 桌面生产流程使用离线·合成图（进程内 S7 与合成图相机）、真实后端、SQLite、PGM 和历史读回，分旧拍照点配方与段配方两段（段配方一段需要 lyFlow，见[测试说明](TESTING.md#隔离桌面与证据边界)）；它不证明真实 PLC、SDK、引擎算法质量、现场节拍或长稳。
 

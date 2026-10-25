@@ -185,7 +185,8 @@ export async function runProductionFlow(page, options = {}) {
     engine: await invokeRead("engine_status").catch(() => null),
   };
   const root = path.join(await realpath(path.dirname(guard.records.root)), path.basename(guard.records.root));
-  assert.equal(path.basename(path.dirname(root)), identifier, "录制目录不属于隔离实例");
+  const segments = root.split(path.sep);
+  assert(segments.includes(identifier) && segments.at(-3) === "projects", `录制目录不属于隔离实例的项目目录：${root}`);
   assert.equal(path.basename(root), "records");
   assert(guard.cameras.length > 0 && guard.cameras.every(camera => camera.source === "mvs"), "真机模式相机组必须全部为海康来源");
   const initialSite = await invokeRead("site_status");
@@ -220,7 +221,9 @@ export async function runProductionFlow(page, options = {}) {
     assert.deepEqual(offlineRig.slice(0, guard.cameras.length), guard.cameras.map(camera => [camera.id, "sim", camera.viewCount]));
     assert(offlineRig.slice(guard.cameras.length).every(([, source, views]) => source === "sim" && views === 1), `补足的相机应是单视角合成图相机：${JSON.stringify(offlineRig)}`);
     assert(offlineCameras.filter(camera => camera.viewCount === 1 && !camera.compositeLayout).length >= 3, "合成图离线环境应至少有三台单视角相机");
-    if ((await invokeRead("cycle_snapshot")).phase === "FAULT") {
+    // 离线产线会以 PLC 现场复位（plcState=99）自动复位；自动复位没完成才点软件复位
+    const cleared = await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase !== "FAULT", "离线自动复位未完成", 15000).then(() => true, () => false);
+    if (!cleared) {
       await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
       await page.getByRole("button", { name: "软件复位", exact: true }).click();
       await page.getByRole("dialog").getByRole("button", { name: "确认复位", exact: true }).click();

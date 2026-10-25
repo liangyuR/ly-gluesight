@@ -27,11 +27,11 @@
 | `teach.reset.begin` | 示教复位开始 | info | 收到复位，PC 写空闲并等待 PLC 回空闲 | `pending`：复位前未结轮次编号，无则 null |
 | `teach.reset.done` | 示教复位完成 | info | PLC 合规空闲，示教接口就绪 | `plc`：DB12 五值，`highWater` |
 | `teach.fault` | 示教故障 | error | 示教握手进入故障或故障原因变化（同一原因不重复记） | `reason`，`pc`、`plc` 五值（可能为 null） |
-| `s7.fault_output` | S7 故障输出 | warn | PC 写出故障输出（视觉故障=1、就绪=0、布防=0），或因无法确认而断开通讯 | `cause`：new_connection / reset_operator / reset_plc_edge / fault / observation_failed，`reason`，`phase`，`ok`，`error` |
-| `s7.reset.request` | S7 复位请求 | info | 收到复位：操作员命令或 PLC faultReset 上升沿 | `source`：operator / plc_edge，`phase`：收到时的会话阶段 |
+| `s7.fault_output` | S7 故障输出 | warn | PC 撤下输出：故障时置 pcState=90、faultCode=101，待复位时置 pcState=0；或因无法确认而断开通讯 | `cause`：startup / new_connection / reset_operator / reset_timeout（软件复位 10 s 内 PLC 未回空闲）/ fault / observation_failed，`reason`，`phase`，`ok`，`error` |
+| `s7.reset.request` | S7 复位请求 | info | 收到复位：操作员软件复位，或 PLC 置复位请求（plcState=99）后 PC 开始完成复位 | `source`：operator / plc，`phase`：收到时的会话阶段 |
 | `s7.reset.done` | S7 复位完成 | info | 复位完成、视觉就绪 | 无 |
 | `s7.ack` | S7 结果确认 | info | PLC 确认本件结果 | `requestSeq`、`resultCode`、`faultCode` |
-| `s7.reconnect.forced` | S7 主动断开 | error | 无法确认撤销布防或置故障，PC 断开通讯以停止心跳 | `error` |
+| `s7.reconnect.forced` | S7 主动断开 | error | 无法确认撤下 pcState，PC 断开通讯以停止心跳 | `error` |
 | `fault.enter` | 故障 | error | 节拍进入故障或故障原因变化 | `reason`、`s7Phase`、`teachPhase`；来源在 `source` |
 | `fault.repeat` | 故障重复 | warn | 同一来源同一原因的故障被再次上报，在原因变化或解除时汇总 | `count`、`firstTs`、`lastTs`、`reason` |
 | `fault.cleared` | 故障解除 | info | S7 复位完成，节拍离开故障 | `reason`：解除前的原因，`durationMs` |

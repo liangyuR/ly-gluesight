@@ -480,8 +480,8 @@ impl Snapshot {
     }
 }
 
-/// PC 置故障（pcState=90）时写入 faultCode 的原因。
-pub(crate) const SESSION_FAULT_CODE: u16 = 99;
+/// PC 置故障（pcState=90）时写入的 faultCode：PC 握手故障，与检测错误 91–100 区分。
+pub(crate) const SESSION_FAULT_CODE: u16 = 101;
 
 pub(crate) fn plc_reason_text(code: u16) -> &'static str {
     match code {

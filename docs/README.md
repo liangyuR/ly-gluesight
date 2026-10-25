@@ -79,7 +79,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 - **分段算法**：没有开发。走向、帧间光流、与标定序列 DTW 对齐等线索要等现场按量产曝光与速度拍的含弯道三相机图像；在此之前整条胶路按未分段处理；多段配方的各段 N_exp 只能由已确认的手动分段逐段标定得出，未确认时保持待标定，凭整件 ΣN_exp 发布与运行（D-SB-21）。
 - **3 × 25 Hz 吞吐门槛**：没有达标，也没有被直接验证。已定（2026-10-23）：门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput`（并重跑 `throughput_probe` 探针）后，再决定降 PLC 频率还是加测量并发；合并前须完成该复测（segment-burst 7.1、第九节第 17 条）。
 - **Rust 回归范围**：当前 106 项默认回归与 1 项手动算法评测，见 [保留测试清单](testing/rust-test-retained-inventory.md)。原 7 项真引擎和 2 项 packaging ignored 测试已删除，原段配方全链路真引擎用例的实测事实仅保留为[历史记录](testing/TESTING.md#特征定位真引擎历史说明)。
-- **已接受、待确认的取舍**：胶偏的 `ToEdge` 测量量未实现；气泡、拉丝不检；“每台相机一条按直线段几何的走廊”没有真实弯道图验证；提前 partEnd 只加 `short_part`、不判 ERR；现场 PLC 参考程序 `gluesight_site.scl` 已按协议 7 重写，尚未在 TIA 编译。汇总见 [决策索引](decisions/README.md)。
+- **已接受、待确认的取舍**：胶偏的 `ToEdge` 测量量未实现；气泡、拉丝不检；“每台相机一条按直线段几何的走廊”没有真实弯道图验证；提前 partEnd 只加 `short_part`、不判 ERR；仓库不保存 PLC 程序，PLC 侧按协议 7 规格由现场工程实现。汇总见 [决策索引](decisions/README.md)。
 - **真机验证**：PLC、三台相机共用触发、带宽（三路 25 Hz 估算约 826 Mbps）、现场节拍与检测准确率都没有验证；现有样本集 gs-20261017 是停稳拍数据，段配方上只作冒烟。
 
 ## 四、各子目录的用途
@@ -95,4 +95,4 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | [research/](research/glue-position-methods.md) | 胶条位置检测方法调研 | 调研 |
 | [deployment/](deployment/PACKAGING.md) | Windows 打包与运行库部署 | 现状 |
 
-PLC SCL 参考程序与 S7 测试 PLC 在 [`scripts/s7-handshake/`](../scripts/s7-handshake/README.md)。架构 HTML 是自包含文件，可离线打开。
+架构 HTML 是自包含文件，可离线打开。

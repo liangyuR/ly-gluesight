@@ -240,6 +240,7 @@ async fn s7_wire_part_returns_ready_only_after_plc_latches_result() {
 }
 
 /// PLC 现场复位（plcState=99）不需要操作员点复位：PC 清事务后置 10；暂停接件时等 PLC 回 0 再撤到 0。
+/// PC 因 PLC 在途故障置 90 时写 faultCode=101，不与检测错误 91–100 混淆。
 #[tokio::test]
 async fn plc_reset_request_completes_without_operator_then_intake_pause_withdraws_ready() {
     let mut rig = Rig::new("plc-reset").await;
@@ -250,6 +251,11 @@ async fn plc_reset_request_completes_without_operator_then_intake_pause_withdraw
     ]);
     rig.phase(SessionPhase::Fault).await;
     assert_eq!(rig.plc.pc(), state::PC_FAULT);
+    assert_eq!(
+        rig.plc.get(tag::FAULT_CODE),
+        101,
+        "PC 故障码须与检测错误 91–100 区分"
+    );
     assert!(rig.session.pending());
     rig.plc.set(&[
         (tag::PLC_REASON, 0),
