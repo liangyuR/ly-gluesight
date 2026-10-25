@@ -1177,29 +1177,36 @@ fn sample_path(k: usize) -> Vec<[f32; 2]> {
 
 /// 自检与回归测试用样例配方，不写入用户配方库。
 pub fn samples() -> Vec<RecipeDoc> {
-    let doc = |id: &str, name: &str, code: u16, n: usize, trigger_mode| { let mut doc = RecipeDoc {
-        id: id.into(),
-        name: name.into(),
-        version: 1,
-        plan_version: u32::from(code),
-        teaching_id: None,
-        product_code: code,
-        stage: RecipeStage::Formal,
-        trigger_mode,
-        schema_version: RECIPE_SCHEMA,
-        spacing: 1.0,
-        filter_window: 5,
-        detect: default_detect(),
-        limits: default_limits(),
-        shots: shot_list(&legacy_camera_id(0), (0..n).map(sample_path).collect()),
-        cameras: BTreeMap::new(),
-        segments: Vec::new(),
-        inspect: Vec::new(),
-        segment_defaults: KindDefaults::default(),
-        calibration_rounds: DEFAULT_CALIBRATION_ROUNDS,
-        part_calib: None,
-    }; doc.sync_imaging(); doc };
-    vec![doc("MTR-HSG-A", "电机壳体 A", 12, 6, TriggerMode::Fly), doc("MTR-HSG-B", "电机壳体 B", 13, 4, TriggerMode::Stop)]
+    let doc = |id: &str, name: &str, code: u16, n: usize, trigger_mode| {
+        let mut doc = RecipeDoc {
+            id: id.into(),
+            name: name.into(),
+            version: 1,
+            plan_version: u32::from(code),
+            teaching_id: None,
+            product_code: code,
+            stage: RecipeStage::Formal,
+            trigger_mode,
+            schema_version: RECIPE_SCHEMA,
+            spacing: 1.0,
+            filter_window: 5,
+            detect: default_detect(),
+            limits: default_limits(),
+            shots: shot_list(&legacy_camera_id(0), (0..n).map(sample_path).collect()),
+            cameras: BTreeMap::new(),
+            segments: Vec::new(),
+            inspect: Vec::new(),
+            segment_defaults: KindDefaults::default(),
+            calibration_rounds: DEFAULT_CALIBRATION_ROUNDS,
+            part_calib: None,
+        };
+        doc.sync_imaging();
+        doc
+    };
+    vec![
+        doc("MTR-HSG-A", "电机壳体 A", 12, 6, TriggerMode::Fly),
+        doc("MTR-HSG-B", "电机壳体 B", 13, 4, TriggerMode::Stop),
+    ]
 }
 
 /// 段配方的起点（D-SB-24）：飞拍、一个直线段（待标定，容差与检测项取配方默认）、按给定顺序的检测相机（走廊待示教）、
@@ -1294,7 +1301,8 @@ impl UnavailableRecipe {
     }
 }
 
-pub const COLLECT_AFTER_FORMAL: &str = "已有正式版，不能再发布采集版：正式版不降级，请继续示教、标定后发布新的正式版";
+pub const COLLECT_AFTER_FORMAL: &str =
+    "已有正式版，不能再发布采集版：正式版不降级，请继续示教、标定后发布新的正式版";
 
 /// 磁盘上的配方库：每个配方一个 `<id>.json`。
 pub struct RecipeStore {
@@ -1711,7 +1719,9 @@ impl RecipeStore {
         if current.map(|(_, recipe)| recipe.revision_id.as_str()) != expected_base {
             return Err("待发布版本与当前生产配方冲突".into());
         }
-        if doc.stage == RecipeStage::Collect && current.is_some_and(|(previous, _)| previous.stage.is_formal()) {
+        if doc.stage == RecipeStage::Collect
+            && current.is_some_and(|(previous, _)| previous.stage.is_formal())
+        {
             return Err(COLLECT_AFTER_FORMAL.into());
         }
         let floor = self.version_after(&doc.id, current.map(|(previous, _)| previous.version))?;
@@ -1873,7 +1883,11 @@ mod tests {
     /// 在线投运：采集版之后照常发布正式版；正式版生效后不能再发布采集版（不降级成只采图的配方）。
     #[test]
     fn collect_then_formal_publishes_but_formal_never_downgrades_to_collect() {
-        let dir = std::env::temp_dir().join(format!("gluesight-collect-stage-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let dir = std::env::temp_dir().join(format!(
+            "gluesight-collect-stage-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
         let store = RecipeStore::open(dir.clone()).unwrap();
         let publish = |stage: RecipeStage, base: Option<&str>| {
             let mut doc = samples_burst();
@@ -1886,7 +1900,10 @@ mod tests {
         assert!(collect.is_collect());
         let formal = publish(RecipeStage::Formal, Some(&collect.revision_id)).unwrap();
         assert!(!formal.is_collect());
-        assert_eq!(publish(RecipeStage::Collect, Some(&formal.revision_id)).unwrap_err(), COLLECT_AFTER_FORMAL);
+        assert_eq!(
+            publish(RecipeStage::Collect, Some(&formal.revision_id)).unwrap_err(),
+            COLLECT_AFTER_FORMAL
+        );
         assert!(!store.get(&formal.id).unwrap().is_collect());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1897,14 +1914,20 @@ mod tests {
     fn recipe_file_without_stage_reads_formal_and_collect_survives_file_and_snapshot() {
         let formal = serde_json::to_value(samples_burst()).unwrap();
         assert!(formal.get("stage").is_none());
-        assert!(serde_json::from_value::<RecipeDoc>(formal).unwrap().stage.is_formal());
+        assert!(serde_json::from_value::<RecipeDoc>(formal)
+            .unwrap()
+            .stage
+            .is_formal());
         let mut doc = samples_burst();
         doc.stage = RecipeStage::Collect;
         let file = serde_json::to_value(&doc).unwrap();
         assert_eq!(file["stage"], "collect");
-        assert!(serde_json::from_value::<RecipeDoc>(file).unwrap().build().unwrap().is_collect());
+        assert!(serde_json::from_value::<RecipeDoc>(file)
+            .unwrap()
+            .build()
+            .unwrap()
+            .is_collect());
         let snapshot = serde_json::to_value(doc.build().unwrap()).unwrap();
         assert!(Recipe::from_snapshot(snapshot).unwrap().is_collect());
     }
-
 }

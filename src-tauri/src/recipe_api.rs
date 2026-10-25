@@ -28,8 +28,20 @@ pub struct RecipeEntry {
 
 #[tauri::command]
 pub fn recipe_list(cycle: State<'_, CycleHost>) -> RecipeListing {
-    let recipes = cycle.recipes.list().iter().map(|r| RecipeEntry { summary: RecipeSummary::from(&**r), stage: r.stage }).collect();
-    RecipeListing { recipes, errors: cycle.recipes.errors(), unavailable: cycle.recipes.unavailable() }
+    let recipes = cycle
+        .recipes
+        .list()
+        .iter()
+        .map(|r| RecipeEntry {
+            summary: RecipeSummary::from(&**r),
+            stage: r.stage,
+        })
+        .collect();
+    RecipeListing {
+        recipes,
+        errors: cycle.recipes.errors(),
+        unavailable: cycle.recipes.unavailable(),
+    }
 }
 
 #[tauri::command]

@@ -18,5 +18,8 @@ fn collect_recipe_is_refused_by_normal_production_admission() {
     let mut doc = crate::recipe::samples_burst();
     assert_eq!(stage_admits(&doc.build().unwrap()), Ok(()));
     doc.stage = crate::recipe::RecipeStage::Collect;
-    assert_eq!(stage_admits(&doc.build().unwrap()), Err(COLLECT_ONLY.to_string()));
+    assert_eq!(
+        stage_admits(&doc.build().unwrap()),
+        Err(COLLECT_ONLY.to_string())
+    );
 }

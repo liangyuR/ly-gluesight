@@ -441,7 +441,11 @@ pub const COLLECT_ONLY: &str = "配方只有采集版，仅维护模式可用";
 
 /// 采集版没有发布包，也没示教、标定，正常生产不能当正式检测运行；维护模式在调用 `ready` 之前自行分流。
 pub fn stage_admits(recipe: &Recipe) -> Result<(), String> {
-    if recipe.is_collect() { Err(COLLECT_ONLY.into()) } else { Ok(()) }
+    if recipe.is_collect() {
+        Err(COLLECT_ONLY.into())
+    } else {
+        Ok(())
+    }
 }
 
 pub fn acquisition_tag(config: &crate::camera::CameraConfig) -> Value {

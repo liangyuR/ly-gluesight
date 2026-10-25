@@ -610,9 +610,22 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         let plan_changed = production.as_ref().is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
         let plan = burst::plan_view(app, &w, &layout, production_recipe.as_deref(), production.as_ref(), production_version);
         return Ok(WorkspaceView {
-            workspace: w, layout, production_version, production_stage, production_plan_version: production.map(|p| p.plan_version), plan_changed,
-            production_plc: None, candidate_plc: None, candidate_plc_error: None, coverage: None,
-            progress: progress::Progress { steps: Vec::new(), shots: Vec::new(), next: None }, plan: Some(plan),
+            workspace: w,
+            layout,
+            production_version,
+            production_stage,
+            production_plan_version: production.map(|p| p.plan_version),
+            plan_changed,
+            production_plc: None,
+            candidate_plc: None,
+            candidate_plc_error: None,
+            coverage: None,
+            progress: progress::Progress {
+                steps: Vec::new(),
+                shots: Vec::new(),
+                next: None,
+            },
+            plan: Some(plan),
         });
     }
     let production_plc = production_recipe.and_then(|r| crate::plc_plan::PlcParams::from_recipe(&r).ok());
@@ -1606,7 +1619,9 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
     let recipe = release.doc.build()?;
     if !recipe.is_collect() {
         let bundle = load_bundle(app, &recipe.id, &release.bundle_id)?;
-        if bundle.recipe != release.doc { return Err("待生效配方与不可变发布包不一致".into()); }
+        if bundle.recipe != release.doc {
+            return Err("待生效配方与不可变发布包不一致".into());
+        }
     }
     if current.as_ref().is_some_and(|saved| saved.revision_id == recipe.revision_id) {
         return cycle.recipes.save_published(release.doc.clone(), release.base_revision.as_deref());
@@ -1719,7 +1734,10 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 w.publish = PublishState::Active { version: saved.version, revision: w.revision, warning: next_version.err(), validation_site: release.validation_site };
                 changed = true;
                 let message = if saved.is_collect() {
-                    format!("{id} v{} 采集版已生效；PLC 型号 {}，仅维护模式可用（只采图不判定）", saved.version, saved.product_code)
+                    format!(
+                        "{id} v{} 采集版已生效；PLC 型号 {}，仅维护模式可用（只采图不判定）",
+                        saved.version, saved.product_code
+                    )
                 } else if saved.is_burst() {
                     // 段配方：shotCount / deviceShots = ΣN_exp（决策补充第二节）；重新标定使 ΣN_exp 变了就换计划版本（默认做法 6）
                     let total = saved.expected_total().map_or("未标定".to_string(), |n| n.to_string());
