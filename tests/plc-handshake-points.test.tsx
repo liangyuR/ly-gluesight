@@ -13,8 +13,8 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 function configWithHandshakePoint(): PlcConfig {
   const config = plcConfig();
-  config.points.push({ id: "p_partStart", name: "工件开始", address: "DB1.DBX0.0", dataType: "bool", wordOrder: null,
-    access: "read", edge: "rising", poll: true, logChanges: true, tags: ["partStart"], description: "" });
+  config.points.push({ id: "p_plcState", name: "PLC 状态", address: "DB1.DBW4", dataType: "i16", wordOrder: null,
+    access: "read", edge: "none", poll: true, logChanges: true, tags: ["plcState"], description: "" });
   return config;
 }
 
@@ -31,7 +31,7 @@ beforeEach(() => {
 
 it("编辑握手点位 → 地址等模板字段不可改，只有描述和记录变化写回草稿", async () => {
   render(<MemoryRouter><SnackbarProvider><PlcPage /></SnackbarProvider></MemoryRouter>);
-  const row = (await screen.findByText("DB1.DBX0.0")).closest("tr")!;
+  const row = (await screen.findByText("DB1.DBW4")).closest("tr")!;
   const edit = within(row).getByRole("button", { name: "编辑" });
   await waitFor(() => expect(edit).toBeEnabled());
   fireEvent.click(edit);
@@ -47,7 +47,7 @@ it("编辑握手点位 → 地址等模板字段不可改，只有描述和记�
   fireEvent.click(screen.getByText("保存配置").closest("button")!);
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("plc_save_config", expect.anything()));
   const savedConfig = vi.mocked(invoke).mock.calls.find(([command]) => command === "plc_save_config")![1] as { config: PlcConfig };
-  expect(savedConfig.config.points.find(p => p.id === "p_partStart")).toEqual({
+  expect(savedConfig.config.points.find(p => p.id === "p_plcState")).toEqual({
     ...configWithHandshakePoint().points[1], description: "联调备注", logChanges: false,
   });
 });

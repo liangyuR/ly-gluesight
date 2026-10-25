@@ -11,8 +11,8 @@ function template({ plcDb, pcDb }: { plcDb: number; pcDb: number }): PlcConfig {
   const config = plcConfig();
   config.connection.s7 = { rack: 0, slot: 1, connectionType: "pg", localTsap: null, remoteTsap: null, pduSize: 480 };
   config.points = [
-    { ...config.points[0], id: "p_partSn", address: `DB${plcDb}.DBB38.50`, dataType: "string", access: "read", tags: ["partSn"] },
-    { ...config.points[0], id: "p_resultSn", address: `DB${pcDb}.DBB20.50`, dataType: "string", access: "readWrite", tags: ["resultSn"] },
+    { ...config.points[0], id: "p_sn", address: `DB${plcDb}.DBB16.50`, dataType: "string", access: "read", tags: ["sn"] },
+    { ...config.points[0], id: "p_snEcho", address: `DB${pcDb}.DBB16.50`, dataType: "string", access: "readWrite", tags: ["snEcho"] },
   ];
   return config;
 }

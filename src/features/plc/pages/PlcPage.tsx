@@ -178,7 +178,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
     : !live(p) ? "点位改动保存后才能写入"
     : blockedReason || protectedWrite(p);
   const lockReason = readOnly ? "离线期间只读" : blockedReason || (busy ? "PLC 操作进行中，请稍候" : "");
-  const protocolValue = tagValue("protocolVersion");
+  const protocolValue = tagValue("plcVersion");
   const protocolText = connected && protocolValue && !protocolValue.error && protocolValue.value !== null ? String(protocolValue.value) : "—";
   const handshakePoints = draft.points.filter(p => isHandshakePoint(p) && !isTeachingPoint(p) && !isCommonPoint(p));
   const teachingPoints = draft.points.filter(isTeachingPoint);
@@ -324,7 +324,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
                 <div className="plc-group-head">
                   <div className="plc-group-title">
                     <span className="plc-group-name">通用点位</span>
-                    <span className="muted">{commonPoints.length} 个 · 心跳、故障与复位、生产协议版本</span>
+                    <span className="muted">{commonPoints.length} 个 · 心跳、生产协议版本</span>
                     <Chip><Lock size={12} aria-hidden="true" /> 模板生成，不可手动写入</Chip>
                   </div>
                   <div className="plc-group-actions">
@@ -333,7 +333,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
                   </div>
                 </div>
                 <Table<PlcPoint> caption="通用点位" rows={commonPoints} columns={handshakeColumns} rowKey={(p) => p.id}
-                  emptyState={<EmptyState title="尚未载入通用点位" description="点「重置 S7 通讯配置」生成生产协议 6 与示教扩展协议 V1 点位" action={loadTemplateButton} />} />
+                  emptyState={<EmptyState title="尚未载入通用点位" description="点「重置 S7 通讯配置」生成生产协议 7 与示教扩展协议 V1 点位" action={loadTemplateButton} />} />
               </section>
               <Accordion collapsible ignoreFieldsetDisabled className="plc-custom-group" value={customOpen} onValueChange={setCustomOpen} items={[{
                 value: "custom",

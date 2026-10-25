@@ -63,6 +63,8 @@ export default function InspectPage() {
   const s7Reset = site?.mode !== "offline" && (handshake?.phase === "fault" || handshake?.phase === "resetRequired") ? handshake : null;
   const resetBlockedReason = s7Reset?.resetBlockedReason || "";
   const resetPendingCheck = !!s7Reset && s7Reset.resetBlockedReason === undefined;
+  const resetInFlight = handshake?.requestSeq != null;
+  const [confirmReset, setConfirmReset] = useState(false);
   const [view, setView] = useState<"image" | "part" | "frame">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
   const [quantity, setQuantity] = useState<"d" | "w">("d");
@@ -208,7 +210,7 @@ export default function InspectPage() {
             options={recipes.map((r) => ({ value: r.id, label: `${r.id} · ${r.name}` }))}
           />
         ) : (
-          <Chip className="prod-recipe" title="型号由 PLC 下发的产品代码匹配">
+          <Chip className="prod-recipe" title="按 PLC 下发的型号匹配配方">
             {debug ? `${debug.recipeId} · 候选修订 ${debug.revision}` : layout ? `${layout.id} · v${layout.version}` : "等待 PLC 下发型号"}
           </Chip>
         )}
@@ -221,9 +223,9 @@ export default function InspectPage() {
         <OfflineControls readiness={readiness} refresh={refreshReadiness} publishedSection={offlineSample} candidateRunning={!!snapshot?.candidateDebug} />
         {phase === "FAULT" && (
           <>
-            <ContextHelp label="复位条件">{site?.mode === "offline" ? "离线：由离线产线自动复位" : "真机：由 PLC 发 faultReset 复位；PLC 已连接、心跳在翻转、设备与追溯就绪且无在途工件时也可点此复位，不满足时右侧显示原因"}</ContextHelp>
-            <Button onClick={resetFault} disabled={action !== null || !!resetBlockedReason} title={resetBlockedReason || undefined} loading={action === "reset"} leadingIcon={<RotateCcw size={15} />}>
-              {action === "reset" ? "复位中…" : "复位故障"}
+            <ContextHelp label="复位条件">{site?.mode === "offline" ? "离线：由离线产线自动复位" : "真机：软件复位由 PC 置复位请求，PLC 在 10 s 内回空闲即完成，未响应可重新发起；PLC 也可在现场发起复位。复位条件不满足时右侧显示原因"}</ContextHelp>
+            <Button onClick={() => setConfirmReset(true)} disabled={action !== null || !!resetBlockedReason} title={resetBlockedReason || undefined} loading={action === "reset"} leadingIcon={<RotateCcw size={15} />}>
+              {action === "reset" ? "复位中…" : "软件复位"}
             </Button>
             {(resetBlockedReason || resetPendingCheck) && <span className="muted" role="note">{resetBlockedReason ? `不能复位：${resetBlockedReason}` : "复位条件核对中"}</span>}
           </>
@@ -320,6 +322,22 @@ export default function InspectPage() {
       </div>
 
       {diagnostics && <InspectionDiagnostics offlineSample={offlineSample} group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={burst || ownLayout ? part : null} selected={selected} selectedSeq={burstSeq} logs={logs} />}
+      {confirmReset && phase === "FAULT" && (
+        <Dialog
+          open
+          title="软件复位"
+          onOpenChange={open => { if (!open) setConfirmReset(false); }}
+          footer={
+            <>
+              <Button onClick={() => setConfirmReset(false)}>取消</Button>
+              <Button variant="filled" disabled={action !== null || !!resetBlockedReason} onClick={() => { setConfirmReset(false); void resetFault(); }}>确认复位</Button>
+            </>
+          }
+        >
+          <p>软件复位：PC 请求复位，等待 PLC 响应（10 s 内）。</p>
+          {resetInFlight && <p role="note">在途件将记为未检后复位。</p>}
+        </Dialog>
+      )}
       {pendingRecipe && (
         <Dialog
           open

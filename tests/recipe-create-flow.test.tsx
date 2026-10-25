@@ -81,8 +81,8 @@ describe("创建配方流程", () => {
     await user.type(dialog.getByRole("textbox", { name: "配方编号" }), "SHELL-2026");
     await user.clear(dialog.getByRole("textbox", { name: "配方名称" }));
     await user.type(dialog.getByRole("textbox", { name: "配方名称" }), " 新壳体配方 ");
-    await user.clear(dialog.getByRole("spinbutton", { name: "产品代码" }));
-    await user.type(dialog.getByRole("spinbutton", { name: "产品代码" }), "27");
+    await user.clear(dialog.getByRole("spinbutton", { name: "型号" }));
+    await user.type(dialog.getByRole("spinbutton", { name: "型号" }), "27");
     await user.click(dialog.getByRole("button", { name: "创建候选" }));
 
     expect(await screen.findByRole("heading", { name: "配方进度" })).toBeVisible();

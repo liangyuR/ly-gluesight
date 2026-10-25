@@ -72,8 +72,20 @@ describe("在线检测离线产线控件", () => {
     state = { ...state, phase: "FAULT", fault: "PLC 心跳失活" };
     plcHandshake = { phase: "fault", requestSeq: null, resultSeq: null, message: "PLC 心跳失活", resetBlockedReason: "尚未观察到 PLC 心跳翻转，不能复位" };
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(screen.getByRole("button", { name: "复位故障" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "软件复位" })).toBeDisabled();
     expect(screen.getByText("不能复位：尚未观察到 PLC 心跳翻转，不能复位")).toBeVisible();
+  });
+
+  it("有在途件时软件复位 → 确认框提示在途件记未检，确认后才请求后端复位", async () => {
+    state = { ...state, phase: "FAULT", fault: "PLC 运动超时" };
+    plcHandshake = { phase: "fault", requestSeq: 17, resultSeq: null, message: "PLC 运动超时", resetBlockedReason: null };
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    await userEvent.click(screen.getByRole("button", { name: "软件复位" }));
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText("在途件将记为未检后复位。")).toBeVisible();
+    expect(cycleApi.reset).not.toHaveBeenCalled();
+    await userEvent.click(dialog.getByRole("button", { name: "确认复位" }));
+    expect(cycleApi.reset).toHaveBeenCalledTimes(1);
   });
 
   it("真机模式 → 不显示离线运行控件", () => {

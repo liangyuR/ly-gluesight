@@ -55,7 +55,7 @@ export const workspaceApi = {
   transferExport: (id: string) => desktopCall<TransferExported | null>("workspace_transfer_export", { id }),
   /** 选择迁移包并读取清单（不解包），取消时为 null */
   transferPick: () => desktopCall<TransferPreview | null>("workspace_transfer_pick"),
-  /** 校验整包后作为新候选导入；编号与产品代码由操作员确认 */
+  /** 校验整包后作为新候选导入；编号与型号由操作员确认 */
   transferImport: (path: string, id: string, name: string, productCode: number) => desktopCall<TransferImported>("workspace_transfer_import", { path, id, name, productCode }),
   saveDoc: (id: string, revision: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, doc }),
   /** 按相机写进候选配方，并在设备空闲时分别下发；applyErrors 为各相机下发失败的原因（参数已保存）。 */

@@ -127,7 +127,7 @@ export interface ExportSegment {
   inspectRange: InspectRange | null;
 }
 
-/** 计划导出 JSON（recipe_plan_export）：PLC 的 shotCount 与 deviceShots 都填 expectedTotal。 */
+/** 计划导出 JSON（recipe_plan_export）；协议 7 下 PLC 不再填计划与帧数。 */
 export interface PlanExport {
   protocolVersion: number;
   recipeId: string;
@@ -465,7 +465,7 @@ export interface CalibrationView {
   /** 应用后的 ΣN_exp */
   expectedTotal: number | null;
   toleranceTotal: number;
-  /** N_exp / expectedTotal 有变化：发布时分配新计划版本，PLC 要同步 shotCount */
+  /** N_exp / expectedTotal 有变化：发布时分配新计划版本 */
   planVersionChange: boolean;
 }
 
@@ -531,7 +531,7 @@ export interface WorkspacePlanView {
   productionExport: PlanExport | null;
   candidateExport: PlanExport | null;
   candidateExportError: string | null;
-  /** 候选 expectedTotal 与生产不同：生效后 PLC 要同步 shotCount / deviceShots */
+  /** 候选 expectedTotal 与生产不同 */
   shotCountChanged: boolean;
   progress: ProgressV2;
 }
