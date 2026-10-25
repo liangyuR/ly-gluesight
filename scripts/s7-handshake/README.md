@@ -49,7 +49,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0 --plc-db 4 --pc-db 2
 | DB6 | teachPcVersion / teachPcState / teachRoundId / teachPcReason / teachPcReserved |
 | DB12 | teachPlcVersion / teachPlcState / teachRoundIdEcho / teachPlcReason / teachPlcReserved |
 
-DB12 初始版本 1、状态 50、原因 5，要求复位；其余为 0。服务不自动执行示教状态机，调用方通过 `plc_values` 或原始 DB 写入模拟状态和异常，也可向 DB6 / DB12 定向注入读写失败。协议细节见 [示教时序](../../docs/integration/teaching-capture-sequence.md)，现场 SCL 见 [整站接入](site/README.md)。
+DB12 初始版本 1、状态 50、原因 5，要求复位；其余为 0。服务不自动执行示教状态机，调用方通过 `plc_values` 或原始 DB 写入模拟状态和异常，也可向 DB6 / DB12 定向注入读写失败。协议细节见 [示教时序](../../docs/integration/teaching-capture-sequence.md)。
 
 ```json
 {"id":40,"op":"plc_values","values":{"teachPlcVersion":1,"teachRoundIdEcho":7,"teachPlcReason":0,"teachPlcState":10}}
@@ -124,4 +124,4 @@ Python 测试直接通过 socket 发送固定十六进制报文，并逐字节�
 
 Windows 受限环境若在 `socket.connect` 返回 `WinError 10013`，需在获准的主机环境运行同一测试命令；不能跳过 TCP 断言后记录为通过。这些测试不验证 SCL 状态机执行。协议 6 及更早的运行记录见 [S7 测试记录](../../docs/testing/TESTING.md#s7-一期握手)。
 
-现场参考程序见 [site/gluesight_site.scl](site/README.md)，尚未在 TIA Portal 编译。`phase1_plc.scl` 是协议 6 的旧参考，已被它取代，仅作历史保留。接真实 Siemens CPU 的 PUT/GET、机架/插槽、网络和现场节拍验收仍属于后续硬件验证。
+仓库不保存 PLC 程序（SCL），PLC 侧按[协议 7 规格](../../docs/integration/plc-communication-protocol.md)由现场工程实现。接真实 Siemens CPU 的 PUT/GET、机架/插槽、网络和现场节拍验收仍属于后续硬件验证。

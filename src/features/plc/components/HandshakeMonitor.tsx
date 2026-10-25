@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Card, EmptyState, Heading, StatusBadge, Text, Tooltip, type StatusBadgeTone } from "qing-steel";
-import { codeName, handshakePhaseLabels, handshakeWaiting, heartbeatStaleMs, pcModeNames, pcStateNames, plcReasonNames, plcStateNames, resultCodeLabel } from "../handshake";
+import { codeName, handshakePhaseLabels, handshakeWaiting, heartbeatStaleMs, pcModeNames, pcStateNames, plcReasonNames, plcStateNames, faultCodeLabel, resultCodeLabel } from "../handshake";
 import { formatTs } from "../time";
 import type { PlcHandshakeState, PlcValue, PointValue } from "../types";
 
@@ -147,7 +147,8 @@ export default function HandshakeMonitor({ handshake, connected, tagValue }: Han
     { label: "回显序号", tag: "seqEcho", value: show(seqEcho), violation: echoing && seqEcho !== null && requestSeq !== null && seqEcho !== requestSeq },
     { label: "结果", tag: "resultCode / faultCode", value: resultText, details: <>
       <span>结果码 resultCode：{show(resultCode)}</span><span>异常码 faultCode：{show(faultCode)}</span>
-      {(pcState === 30 || pcState === 90) && resultCode !== null && <span>{resultCodeLabel(resultCode, faultCode)}</span>}
+      {pcState === 30 && resultCode !== null && <span>{resultCodeLabel(resultCode, faultCode)}</span>}
+      {pcState === 90 && faultCode !== null && <span>{faultCodeLabel(faultCode)}</span>}
     </> },
     { label: "回显 SN", tag: "snEcho", value: show(snEcho), violation: pcState === 30 && snEcho !== null && sn !== null && snEcho !== sn },
   ];
