@@ -6,7 +6,7 @@ import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
 import { errorText } from "../lib/errors";
 import { flagBadges } from "../features/plan/vis";
-import { displayReason, formatTime, historyApi, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, verdictLabel, verdictTone, type HistoryPage as Page, type HistoryQuery, type HistoryScope } from "../features/history";
+import { displayReason, formatTime, historyApi, partVerdict, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, type HistoryPage as Page, type HistoryQuery, type HistoryScope } from "../features/history";
 
 type Item = Page["items"][number];
 
@@ -140,7 +140,7 @@ export default function HistoryPage() {
       key: "ts",
       header: "时间",
       render: (p) => (
-        <Button variant="text" size="sm" className="hist-open mono" data-history-id={p.id} data-tone={verdictTone(p.verdict)} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`)}>
+        <Button variant="text" size="sm" className="hist-open mono" data-history-id={p.id} data-tone={partVerdict(p).tone} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`)}>
           {formatTime(p.ts)}
         </Button>
       ),
@@ -170,7 +170,7 @@ export default function HistoryPage() {
         </span>
       ),
     },
-    { key: "verdict", header: "结果", render: (p) => <StatusBadge tone={verdictTone(p.verdict)}>{verdictLabel[p.verdict]}</StatusBadge> },
+    { key: "verdict", header: "结果", render: (p) => { const v = partVerdict(p); return <StatusBadge tone={v.tone}>{v.label}</StatusBadge>; } },
     { key: "plc", header: "PLC 码", render: (p) => <span className="mono">{p.plcCode}{p.faultCode ? ` / ${p.faultCode}` : ""}</span> },
     { key: "reason", header: "原因", render: (p) => <span className="hist-reason">{displayReason(p.reason)}</span> },
     {

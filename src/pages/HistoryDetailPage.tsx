@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Camera, ChevronLeft, ChevronRight, Scale, ScanEye } from "lucide-react";
 import { Alert, Button, Card, Chip, Dialog, IconButton, SegmentedControl, Select, Stack, StatusBadge, Text } from "qing-steel";
 import { computeVis, partReferenceBadge, shotLabel, ShotTiles, UnrolledCurve, type Measured, type PartView, type Recipe } from "../features/cycle";
-import { displayReason, formatTime, historyApi, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel, verdictTone, type HistoryQuery, type PartDetail } from "../features/history";
+import { displayReason, formatTime, historyApi, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel, verdictTone, type HistoryQuery, type PartDetail } from "../features/history";
 import BurstHistoryDetail from "../features/history/components/BurstDetail";
 import PartTrace from "../features/history/components/PartTrace";
 import ReplayDiff from "../features/history/components/ReplayDiff";
@@ -188,7 +188,7 @@ export default function HistoryDetailPage() {
           {s.source!=="real"&&<StatusBadge tone="off">{sourceLabel[s.source]}</StatusBadge>}
           <Text muted>{formatTime(s.ts)} · {s.recipeId??"无配方"} · {s.source==="offlineCandidate"?"候选修订 "+(s.recipeRevision??"未记录"):"v"+(s.recipeVersion??"—")+" · #"+(s.recipeRevision?.slice(0,6)??"—")} · {triggerModeLabel(s.triggerMode)} · 帧 {s.framesReceived}/{s.framesExpected}</Text>
         </Stack>
-        <StatusBadge tone={verdictTone(s.verdict)}>{verdictLabel[s.verdict]} · PLC {s.plcCode}{s.faultCode?" / "+s.faultCode:""}</StatusBadge>
+        <StatusBadge tone={partVerdict(s).tone}>{partVerdict(s).label} · PLC {s.plcCode}{s.faultCode?" / "+s.faultCode:""}</StatusBadge>
         {reference&&<StatusBadge tone="fault" aria-label={"位置基准："+reference}>{reference}</StatusBadge>}
       </Stack>
     </Card>

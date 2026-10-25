@@ -72,7 +72,11 @@ export interface PartSummary {
   /** 段配方记录的整件标记（疑似提前终止等单独显示）；旧记录为 null。
    * 段配方时 framesExpected = expectedTotal（待标定为 0），framesReceived = 帧组数 */
   flags: Flags | null;
+  /** 维护采集件 verdict 为 ERR、未判定；试判件为真实判定。两者 plcCode 都是 0 */
+  mode?: PartMode;
 }
+
+export type PartMode = "production" | "maintenanceCollect" | "maintenanceShadow";
 
 export interface VerdictCounts {
   ok: number;

@@ -1,6 +1,8 @@
 /* 生产运行页：1920×1080 一屏放下全部关键信息，右栏判定字两米外可读；本件进行中不改变任何区块高度 */
 .prod { display: flex; flex-direction: column; gap: var(--space-8); height: 100%; min-height: 640px; }
 .prod > .qs-banner, .prod > .qs-react-card { flex-shrink: 0; }
+.prod > .maintenance-banner { font-size: 15px; }
+.prod .maintenance-collection ul { display: flex; flex-wrap: wrap; gap: 4px 24px; margin: 0; padding: 0; list-style: none; }
 .prod .qs-react-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; padding: 10px 14px; }
 
 .prod-bar { display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap; flex-shrink: 0; }

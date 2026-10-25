@@ -15,8 +15,8 @@ import type { PlcHandshakeState, PointValue } from "../src/features/plc/types";
 
 vi.mock("../src/features/cycle/api", () => ({
   useCycle: vi.fn(), useRecipes: () => recipeList, useLayout: vi.fn(),
-  useSiteStatus: () => site, useReadiness: () => ({ readiness: report, refresh: async () => report }), cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), offlineRun: vi.fn(), offlineStop: vi.fn() },
-  recipeApi: { doc: vi.fn() },
+  useSiteStatus: () => site, useReadiness: () => ({ readiness: report, refresh: async () => report }), cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), offlineRun: vi.fn(), offlineStop: vi.fn(), setMaintenance: vi.fn() },
+  recipeApi: { doc: vi.fn(), list: vi.fn() },
 }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { runtimeOverview: vi.fn(), liveImage: vi.fn(), list: vi.fn(), debugRun: vi.fn() } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), record: vi.fn() } }));
@@ -43,6 +43,8 @@ beforeEach(() => {
   vi.mocked(cycleApi.reset).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.offlineRun).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.offlineStop).mockReset().mockResolvedValue(undefined);
+  vi.mocked(cycleApi.setMaintenance).mockReset().mockResolvedValue(undefined);
+  vi.mocked(recipeApi.list).mockReset().mockResolvedValue({ recipes: recipeList, errors: [], unavailable: [] });
   vi.mocked(workspaceApi.list).mockReset().mockResolvedValue([candidate().workspace, candidate("B").workspace]);
   vi.mocked(workspaceApi.debugRun).mockReset().mockResolvedValue(undefined);
   vi.mocked(workspaceApi.runtimeOverview).mockReset().mockResolvedValue(null);
@@ -64,6 +66,42 @@ describe("在线检测切型锁定", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("暂时不能切换配方");
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(cycleApi.selectRecipe).not.toHaveBeenCalled();
+  });
+});
+
+describe("维护模式", () => {
+  it("开启维护模式 → 原因为空不能确认，填写后以 enabled=true 与原因调用命令", async () => {
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    await userEvent.click(screen.getByRole("button", { name: "维护模式" }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("向 PLC 回结果码 0");
+    const confirm = within(dialog).getByRole("button", { name: "确认开启" });
+    await userEvent.type(within(dialog).getByLabelText(/开启原因/), "   ");
+    expect(confirm).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText(/开启原因/), "新线投运采图");
+    await userEvent.click(confirm);
+    expect(cycleApi.setMaintenance).toHaveBeenCalledWith(true, "新线投运采图");
+  });
+
+  it("退出维护模式 → 逐个列出只有采集版的配方并提示退出后拒收，正式版不列", async () => {
+    state = { ...state, maintenance: { since: 1, reason: "新线投运" } };
+    vi.mocked(recipeApi.list).mockResolvedValue({ recipes: [{ ...recipeList[0], stage: "formal" }, { ...recipeList[1], stage: "collect" }], errors: [], unavailable: [] });
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    await userEvent.click(screen.getByRole("button", { name: "退出维护模式" }));
+    const list = await within(screen.getByRole("dialog")).findByLabelText("只有采集版的配方");
+    expect(list).toHaveTextContent("B · 段配方 B");
+    expect(list).not.toHaveTextContent("A · 段配方 A");
+    expect(list).toHaveTextContent("退出后这些型号会被拒收（90/95）");
+    await userEvent.click(screen.getByRole("button", { name: "确认退出" }));
+    expect(cycleApi.setMaintenance).toHaveBeenCalledWith(false, "");
+  });
+
+  it("snapshot 带维护模式 → 页头常驻横幅写明不输出 NG 与开启原因", () => {
+    state = { ...state, maintenance: { since: 1, reason: "新线投运" } };
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const banner = screen.getByRole("status", { name: "维护模式" });
+    expect(banner).toHaveTextContent("维护模式：不向 PLC 输出 NG");
+    expect(banner).toHaveTextContent("新线投运");
   });
 });
 

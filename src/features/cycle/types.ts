@@ -349,6 +349,22 @@ export interface Snapshot {
   recordingAlarm?: RecordingAlarm | null;
   /** 连续定位失败告警（当前站点模式的分槽）：同一配方修订、拍照点、图连续 3 件没有位置基准；定位成功后清除，重启清零 */
   locateAlarms?: LocateAlarm[];
+  maintenance?: Maintenance | null;
+  /** 维护采集进度，按配方；只含采集版配方录下的件 */
+  collection?: CollectionProgress[];
+}
+
+/** 维护模式（在线投运）：开启后每件都布防采图，向 PLC 回结果码 0（按未检放行），不输出 NG。 */
+export interface Maintenance {
+  since: number;
+  reason: string;
+}
+
+/** usable：录制完整、各计划相机帧数一致且非零的件数 */
+export interface CollectionProgress {
+  recipeId: string;
+  recorded: number;
+  usable: number;
 }
 
 export interface LocateAlarm {
@@ -425,6 +441,8 @@ export interface CycleSettings {
   recordMaxGb: number;
   offlineRecordKeep: number;
   offlineRecordMaxGb: number;
+  /** 只由 cycle_set_maintenance 改写；保存设置时后端沿用当前值 */
+  maintenance?: Maintenance | null;
 }
 
 export type SiteMode = "real" | "offline";

@@ -13,6 +13,7 @@ import { matchesPart } from "../features/cycle/identity";
 import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
 import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/components/InspectionDiagnostics";
 import ContextHelp from "../features/cycle/components/ContextHelp";
+import { CollectionProgressPanel, MaintenanceBanner, MaintenanceToggle } from "../features/cycle/components/MaintenanceMode";
 import { errorText } from "../lib/errors";
 import {
   computeVis,
@@ -196,6 +197,7 @@ export default function InspectPage() {
   const busy = !!snapshot && phase !== "IDLE" && phase !== "FAULT";
   return (
     <div className="prod">
+      <MaintenanceBanner maintenance={snapshot?.maintenance} />
       {debug && <div className="qs-banner tertiary" role="status"><span><strong>候选配方调试结果</strong> · {debug.recipeId} · 修订 {debug.revision} · 未发布，仅用于离线测试，不作为生产验收。</span></div>}
       <CandidateDebugControls site={site} snapshot={snapshot} />
       <div className="prod-bar">
@@ -222,6 +224,7 @@ export default function InspectPage() {
         </Chip>
         <span className="spacer" />
         <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
+        {snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} />}
         <Button onClick={() => setDiagnostics("readiness")}>诊断</Button>
         <OfflineControls readiness={readiness} refresh={refreshReadiness} publishedSection={offlineSample} candidateRunning={!!snapshot?.candidateDebug} />
         {showReset && (
@@ -254,6 +257,7 @@ export default function InspectPage() {
         {snapshot.locateAlarms.some(alarm => alarm.recipeId !== snapshot.activeRecipeId) && "标“当前未在生产”的是之前生产的配方留下的，换配方不会清除它：要等该配方再生产且定位成功、该配方新修订的第一件测完，或软件重启才消除。"}
       </Alert>}
 
+      <CollectionProgressPanel collection={snapshot?.collection} recipes={recipes} />
       <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="prod-body">
