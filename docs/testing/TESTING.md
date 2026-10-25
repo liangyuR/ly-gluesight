@@ -87,7 +87,7 @@ SDK 枚举成功但本机发现 0 台设备；Jinghang JHEM131GC-XS 的门控节
 | 单台相机缺帧（该组检测不完整） | 第 2 台相机丢第 min(3, 总数) 帧，相机照常计数 | 该帧组标“检测不完整”，丢帧告警，OK/NG 不变，不判 ERR |
 | 脉冲数波动（首尾 ±1 帧） | 首尾各多发或少发 1 个脉冲 | 帧组数偏离名义最多 2 个；在 ΣN_exp ± Σtol 内不告警，越界只告警（帧数异常，低于下限还标疑似提前终止），OK/NG 不变 |
 | 弯道减速（弯道帧数波动） | 每个弯道段帧数 ±2 | 同上 |
-| 本件未检（机器人未得到触发许可） | 机器人照常涂胶，PLC 不提交 partStart | PC 没有该件记录，离线运行记“本件未检” |
+| 本件未检（机器人未得到触发许可） | 机器人照常涂胶，PLC 不提交请求 | PC 没有该件记录，离线运行记“本件未检” |
 | 提前 partEnd（疑似提前终止） | 发约一半、且少于 ΣN_exp − Σtol 个脉冲后置 partEnd | 用已收到的帧照常判，加 `short_part` 与“帧数异常”，不改 OK/NG |
 | 帧数诊断 | 比较 SDK 帧序号、相机间帧数及传输丢帧 | 不以预留字段 `deviceTriggers` 判断丢帧或排空完成 |
 | 传输丢帧 / 缺帧 | 三台相机的同一帧都丢 | 该帧组标检测不完整，不判 ERR |
@@ -104,8 +104,6 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 门槛：现场机用探针得到串行 p95，代入 `ceil(75 fps × p95 / 0.7)` 得到所需测量线程数，不得超过 `min(4, 逻辑核 − 2)`（`MEASURE_WORKERS`）；压测中不得出现图像内存预算满或测量队列满（出现时该帧记缺帧或未测，该组标检测不完整，不会静默丢帧）。不满足时先降低相机设定帧率，各段 N_exp 随之变化，须重新标定并分配新的计划版本。开发笔记本上的实测只是参考，不能外推到现场工控机；测量与写盘是分开测的，二者与界面、SQLite 同时运行的 3 × 25 Hz 压测由 E2 的 `pnpm test:soak:throughput`（`scripts/soak/throughput.mjs`）做，**该门槛目前没有达标，也没有被直接验证，已定（2026-10-23）：门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput` 后再决定降低相机帧率还是加测量并发，合并前须完成该复测**；实测与能证明的范围见“段配方端到端验证（2026-10-23，E2）”。完整数据与降级方案见决策记录 7.1。
 
 **升级前检查。** 升级到协议 6 / 段模型之前，先确认 `audit-spool/` 已清空（审计 spool 格式 3 → 4，残留的旧格式文件会让就绪检查失败、拒绝接件），记录库 8 → 9 会备份后重建；其余升级项见[存储布局](../architecture/storage-layout.md#升级到段模型协议-6前)。
-
-**文档产物核对。** `python scripts/docs/build-plc-protocol.py --check` 核对协议 HTML 与 Markdown 同步。
 
 ## 运行
 
@@ -136,9 +134,9 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 Windows 受限环境遇到 Node realpath EPERM 时，按仓库 AGENTS.md 的 Windows 指引在同一进程加载兼容脚本。需要获准的主机权限时运行相同命令，不修改应用逻辑掩盖环境失败。Cargo 首次构建需要 MSVC、Visual Studio C++ 工具及私有 Git 依赖读取权限；离线执行要求依赖已缓存。
 
-## S7 一期握手
+## S7 生产握手
 
-协议与点表见 [S7 一期握手说明](../integration/plc-s7-phase1.md)。[S7 测试 PLC](../../scripts/s7-handshake/README.md) 仅监听本机回环地址，使用真实 TPKT/COTP/S7 报文。S7 协议版本 6（分段连拍）沿用协议 5 的布局（交互表 V1.1、S7-1200、DB4/DB2 两个标准 DB、Int/DInt、`String[50]` SN），改变的只有计数字段的语义；协议 5 及更早的点表和 PLC 程序被拒绝。下列专项的通过数据：Python 测试 PLC 自测 2026-10-22 在主机环境 27 项通过；`plc_session` 用例 2026-10-22 迁到进程内 S7Server，协议 6 下的运行结果以 CI 为准，本文不记数字。
+协议与点表见 [PLC 通讯协议](../integration/plc-communication-protocol.md)（协议 7，规格在 artifact）。[S7 测试 PLC](../../scripts/s7-handshake/README.md) 仅监听本机回环地址，使用真实 TPKT/COTP/S7 报文。协议 7 沿用 DB4 / DB2，两块各 68 字节，改为状态字握手；协议 6 及更早的点表和 PLC 程序被拒绝。运行结果以 CI 为准，本文不记数字。
 
 ```powershell
 python -m unittest discover -s scripts/s7-handshake/tests -v

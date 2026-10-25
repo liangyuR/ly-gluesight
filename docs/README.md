@@ -29,15 +29,14 @@ Jinghang JHEM131GC-XS 的实际节点需实机确认。当前实现要求设备�
 
 采集完成后支持轮次手动分段、模板套用和边界复核，以及带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除标定图像取样。每个标定轮次都确认手动分段后，多轮标定按边界逐段标定（各段 N_exp 与建议容差，ΣN_exp 取各段之和）；手动分段暂不接入生产分段或独立样本判定，操作及失效规则见[轮次分段复核与帧组屏蔽](architecture/recipe-creation-workflow.md#轮次分段复核与帧组屏蔽)。
 
-### 协议 6 要点
+### 协议 7 要点
 
-- `protocolVersion` / `pcProtocolVersion` = 6，其他值（含 5）拒绝；DB4 / DB2 布局、28 个点位、握手顺序、心跳与复位都同协议 5。
-- `shotCount` = `deviceShots` = ΣN_exp：生产请求在接件时精确核对，不符返回 90/94；示教采集使用独立 DB6 / DB12，不发送预估帧数，见 [示教采集接口 V1](integration/teaching-capture-sequence.md)。
-- `partEnd` 不再比较计数；`deviceTriggers` 不参与丢帧告警、收尾等待或基线计算，partEnd 后等待完整 drain 窗口并完成已接受帧的测量。段配方每台相机的下一件基线 = 本件见到的最高帧号（D-SB-7）。
-- 重新标定使 N_exp 或 ΣN_exp 变化时分配新的 `planVersion`，PLC 须同步 `shotCount` / `deviceShots`。
-- 结果码：96 对段配方不再使用；示教通过独立状态及原因报告完成、失败或取消，不产生生产结果。生产中 PLC 不提交 partStart = 本件未检，PC 无记录；提前 partEnd 照常判并加 `short_part`。
+- 双方各一个状态字握手（plcState / pcState），PC 回显 `seqEcho` / `snEcho`；PLC 只报型号、序号与 SN，不再下发计划或拍照数量，重新标定不用改 PLC。
+- 任何结果都不停线；PC 不在线时 PLC 不等待，本件记未检。复位可由 PLC 现场发起（plcState=99），也可在软件发起（pcState=99，PLC 回空闲后 PC 置就绪）。
+- 示教采集使用独立 DB6 / DB12，见 [示教采集接口 V1](integration/teaching-capture-sequence.md)。运动结束（plcState=20）后等待完整收尾窗口并完成已接受帧的测量；段配方每台相机的下一件基线 = 本件见到的最高帧号（D-SB-7）。
+- 维护模式（`pcMode=1`）协议已预留，PC 侧尚未实现，当前固定为 0。
 
-细节见 [PLC 通讯协议](integration/plc-communication-protocol.md)、[一期 S7 握手契约](integration/plc-s7-phase1.md)、[交互表适配决策的协议 6 节](decisions/plc-table.md#协议-6-适配分段连拍)。
+规格只在 artifact 维护：[生产通讯协议 7](https://claude.ai/artifact/An1Zp8eKdikunc1ixxtWjX)；仓库入口见 [PLC 通讯协议](integration/plc-communication-protocol.md)。
 
 ### 关键模块与文件
 
@@ -80,7 +79,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 - **分段算法**：没有开发。走向、帧间光流、与标定序列 DTW 对齐等线索要等现场按量产曝光与速度拍的含弯道三相机图像；在此之前整条胶路按未分段处理；多段配方的各段 N_exp 只能由已确认的手动分段逐段标定得出，未确认时保持待标定，凭整件 ΣN_exp 发布与运行（D-SB-21）。
 - **3 × 25 Hz 吞吐门槛**：没有达标，也没有被直接验证。已定（2026-10-23）：门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput`（并重跑 `throughput_probe` 探针）后，再决定降 PLC 频率还是加测量并发；合并前须完成该复测（segment-burst 7.1、第九节第 17 条）。
 - **Rust 回归范围**：当前 106 项默认回归与 1 项手动算法评测，见 [保留测试清单](testing/rust-test-retained-inventory.md)。原 7 项真引擎和 2 项 packaging ignored 测试已删除，原段配方全链路真引擎用例的实测事实仅保留为[历史记录](testing/TESTING.md#特征定位真引擎历史说明)。
-- **已接受、待确认的取舍**：胶偏的 `ToEdge` 测量量未实现；气泡、拉丝不检；“每台相机一条按直线段几何的走廊”没有真实弯道图验证；提前 partEnd 只加 `short_part`、不判 ERR；现场 PLC 草稿 `gluesight_site.scl` 未改，只列改动点。汇总见 [决策索引](decisions/README.md)。
+- **已接受、待确认的取舍**：胶偏的 `ToEdge` 测量量未实现；气泡、拉丝不检；“每台相机一条按直线段几何的走廊”没有真实弯道图验证；提前 partEnd 只加 `short_part`、不判 ERR；现场 PLC 参考程序 `gluesight_site.scl` 已按协议 7 重写，尚未在 TIA 编译。汇总见 [决策索引](decisions/README.md)。
 - **真机验证**：PLC、三台相机共用触发、带宽（三路 25 Hz 估算约 826 Mbps）、现场节拍与检测准确率都没有验证；现有样本集 gs-20261017 是停稳拍数据，段配方上只作冒烟。
 
 ## 四、各子目录的用途
@@ -89,11 +88,11 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | --- | --- | --- |
 | [decisions/](decisions/README.md) | 各批工作线的决策记录；[README](decisions/README.md) 标明哪些仍有效、哪些在段配方下或整体被取代 | 历史记录，正文不改写，被取代处只加标注 |
 | [architecture/](architecture) | [配方创建流程](architecture/recipe-creation-workflow.md)、[当前进度](architecture/recipe-creation-progress.md)、[存储布局](architecture/storage-layout.md)、[lyFlow 依赖](architecture/lyflow-dependency.md)描述现状；[面向 Agent 的日志改造方案](architecture/agent-logging.md)为待实施设计稿；[项目（Project）设计](architecture/project.md)一期与二期导出导入已实施；[项目热切换设计](architecture/project-hot-switch.md)已放弃，仅作设计与重启式切换实测的记录；[P0 计划](architecture/p0-plan.md)、[历史规划](architecture/roadmap.md)、两张架构 HTML 与[工件边缘方案草案](architecture/workpiece-edge-position.md)是历史或草案，开头标有现状 | 现状 + 历史 |
-| [integration/](integration) | [PLC 通讯协议](integration/plc-communication-protocol.md)（另有可离线阅读的 [HTML 版](integration/plc-communication-protocol.html)）、[S7 握手契约](integration/plc-s7-phase1.md)、[离线样本集格式](integration/sample-set-format.md) | 现状契约 |
+| [integration/](integration) | [PLC 通讯协议](integration/plc-communication-protocol.md)（指向协议 7 artifact）、[离线样本集格式](integration/sample-set-format.md) | 现状契约 |
 | [testing/](testing) | [测试记录与复现](testing/TESTING.md)（现状）、[前端保留测试清单](testing/frontend-test-retained-inventory.md)与[Rust 保留测试清单](testing/rust-test-retained-inventory.md)（当前逐项保护规则与删除依据）、[分段连拍历史清单](testing/segment-burst-test-inventory.md)（开发期间新增与删改记录）；带日期的文件（如 [UX_FIXES_2026-10-09](testing/UX_FIXES_2026-10-09.md)、[hands-on-2026-10-19](testing/hands-on-2026-10-19.md)、[soak-report](testing/soak-report.md)）是当时的记录，开头标有现状，`evidence/` 是历史证据 | 现状 + 历史 |
-| [design/](design) | 界面设计稿与早期设计状态文件：[PLC 页布局](design/plc-page-layout.md)已按协议 6 与段配方的计划导出更新；单帧示教设计稿（`teaching-page/`）、[`implementation-contract.json`](design/implementation-contract.json) 与 [`black-blue-workflow.json`](design/black-blue-workflow.json) 是旧拍照点模型时期的稿件，开头标有现状（JSON 为 `currentStatus` 字段） | 设计稿，部分为历史 |
+| [design/](design) | 界面设计稿与早期设计状态文件：[PLC 页布局](design/plc-page-layout.md)中的握手位与复位说明仍是协议 6，现行界面以代码为准；单帧示教设计稿（`teaching-page/`）、[`implementation-contract.json`](design/implementation-contract.json) 与 [`black-blue-workflow.json`](design/black-blue-workflow.json) 是旧拍照点模型时期的稿件，开头标有现状（JSON 为 `currentStatus` 字段） | 设计稿，部分为历史 |
 | [discussions/](discussions/fixture-position/README.md) | 特征定位判胶偏的讨论记录（只服务旧配方） | 讨论记录 |
 | [research/](research/glue-position-methods.md) | 胶条位置检测方法调研 | 调研 |
 | [deployment/](deployment/PACKAGING.md) | Windows 打包与运行库部署 | 现状 |
 
-PLC SCL 参考程序与 S7 测试 PLC 在 [`scripts/s7-handshake/`](../scripts/s7-handshake/README.md)。修改协议 Markdown 或其 Mermaid 时序图后，在仓库根目录 `pnpm install`、安装 `scripts/docs/requirements.txt`，运行 `python scripts/docs/build-plc-protocol.py` 重新生成 HTML，加 `--check` 核对生成物是否同步。架构 HTML 与协议 HTML 都是自包含文件，可离线打开。
+PLC SCL 参考程序与 S7 测试 PLC 在 [`scripts/s7-handshake/`](../scripts/s7-handshake/README.md)。架构 HTML 是自包含文件，可离线打开。

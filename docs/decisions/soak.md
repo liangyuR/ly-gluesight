@@ -34,7 +34,7 @@
 - 问题：现有注入（断线、心跳停/复、延迟、拒读写）缺“PLC 停机一段时间”和“按住复位按钮”两类。
 - 采用：在离线模块增量加两项，不改地址表、编解码和握手字段：
   - `offline_inject({ fault: "outage", durationMs })`：断开现有连接，并在 100 ms–120 s 内拒绝新连接，模拟 PLC 停电 / 重启；`clear` 提前结束。注入脚本每个场景后统一 `clear`，所以停机类场景先等停机期满、PC 自动重连再返回，并核对重连发生在停机期满之后。
-  - `offline_fault_reset({ level })`：离线产线停止时让虚拟 PLC 保持 faultReset 电平，用于验证“先见低电平、再见上升沿”才复位。
+  - `offline_fault_reset({ level })`：离线产线停止时让虚拟 PLC 保持 faultReset 电平，用于验证“先见低电平、再见上升沿”才复位。（2026-10-25 协议 7 起改为保持或撤下现场复位请求 plcState=99，对应场景改为 `plcResetRequest`。）
 - 回退：两条命令只被 `scripts/soak` 使用，删除即回到原状。
 
 ## S-5 磁盘满用目录拒写模拟
