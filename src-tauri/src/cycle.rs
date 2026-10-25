@@ -2548,16 +2548,15 @@ impl Machine {
                 None => format!("维护采集：只录图、不判定（{groups} 个帧组）"),
             };
             uninspected_judgement(0, reason)
-        } else { match part.burst_judgement() {
-            Some(decided) => {
-                let burst = part.burst.as_mut().unwrap();
-                warnings = burst_warnings(&decided, |camera| burst.camera_name(camera).to_owned());
-                let summary = burst::summary(&decided);
-                burst.judgement = Some(decided);
-                summary
-            }
-            None => part.judgement(),
-        } };
+        } else if let Some(decided) = part.burst_judgement() {
+            let burst = part.burst.as_mut().unwrap();
+            warnings = burst_warnings(&decided, |camera| burst.camera_name(camera).to_owned());
+            let summary = burst::summary(&decided);
+            burst.judgement = Some(decided);
+            summary
+        } else {
+            part.judgement()
+        };
         let (sn, id, cycle_id) = (part.sn.clone(), part.recipe.id.clone(), part.cycle_id.clone());
         for (ev, message) in warnings {
             log_with(&self.app, "warn", ev, message, Fields { cycle_id: Some(cycle_id.clone()), ..Fields::default() });
