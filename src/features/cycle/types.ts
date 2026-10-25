@@ -148,6 +148,8 @@ export interface Recipe {
   revisionId: string;
   teachingId?: string | null;
   productCode: number;
+  /** 缺省为正式版 */
+  stage?: RecipeStage;
   triggerMode: TriggerMode;
   /** 配方文件格式版本（后端 recipe::RECIPE_SCHEMA） */
   schemaVersion: number;
@@ -184,6 +186,8 @@ export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   planVersion?: number;
   teachingId?: string | null;
   productCode: number;
+  /** 缺省为正式版；发布时由后端写入 */
+  stage?: RecipeStage;
   triggerMode: TriggerMode;
   /** 配方文件格式版本（后端 recipe::RECIPE_SCHEMA）；不符的文件后端拒绝 */
   schemaVersion: number;
@@ -204,6 +208,9 @@ export interface CameraImaging {
 }
 
 export const DEFAULT_IMAGING: CameraImaging = { exposureUs: 60, gainDb: 6 };
+
+/** 配方阶段：collect = 采集版（只供维护模式采图，不判定），formal = 正式版；后端缺省即正式版。 */
+export type RecipeStage = "formal" | "collect";
 
 export interface RecipeSummary {
   id: string;
@@ -226,6 +233,8 @@ export interface RecipeSummary {
   toleranceTotal: number;
   /** expectedTotal 非空 */
   calibrated: boolean;
+  /** 只有配方库列表（recipe_list）给出 */
+  stage?: RecipeStage;
 }
 
 /** 某个视图没有位置基准（帧徽标）：该视图的有胶站已是“有胶、无基准”（st 4），判定只看站状态。 */

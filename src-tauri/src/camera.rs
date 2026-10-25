@@ -208,7 +208,7 @@ impl CameraConfig {
         Ok(())
     }
 
-    fn require_single_view(&self) -> Result<(), String> {
+    pub(crate) fn require_single_view(&self) -> Result<(), String> {
         if self.view_count != 1 || self.composite_layout.is_some() {
             return Err(format!("相机 {} 是三目拼接配置，分段连拍需要三台独立的单视角相机", self.id));
         }

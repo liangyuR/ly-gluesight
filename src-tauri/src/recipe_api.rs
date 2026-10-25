@@ -5,21 +5,43 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::cycle::{CycleHost, Input, RecipeSummary};
 use crate::plan::{self, PlanExport};
-use crate::recipe::{self, Recipe, RecipeDoc};
+use crate::recipe::{self, Recipe, RecipeDoc, RecipeStage};
 use crate::settings::CycleSettings;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecipeListing {
-    pub recipes: Vec<RecipeSummary>,
+    pub recipes: Vec<RecipeEntry>,
     /// 读不了的配方文件
     pub errors: Vec<String>,
     pub unavailable: Vec<recipe::UnavailableRecipe>,
 }
 
+/// 配方库卡片：摘要加阶段（采集版 / 正式版）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipeEntry {
+    #[serde(flatten)]
+    pub summary: RecipeSummary,
+    pub stage: RecipeStage,
+}
+
 #[tauri::command]
 pub fn recipe_list(cycle: State<'_, CycleHost>) -> RecipeListing {
-    RecipeListing { recipes: cycle.recipes.list().iter().map(|r| RecipeSummary::from(&**r)).collect(), errors: cycle.recipes.errors(), unavailable: cycle.recipes.unavailable() }
+    let recipes = cycle
+        .recipes
+        .list()
+        .iter()
+        .map(|r| RecipeEntry {
+            summary: RecipeSummary::from(&**r),
+            stage: r.stage,
+        })
+        .collect();
+    RecipeListing {
+        recipes,
+        errors: cycle.recipes.errors(),
+        unavailable: cycle.recipes.unavailable(),
+    }
 }
 
 #[tauri::command]
