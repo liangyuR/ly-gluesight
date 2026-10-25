@@ -126,7 +126,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
       </ol>
       {!segments.length && <Notice title="尚无段" tone="warn">段配方至少需要一段：添加直线段或弯道段。</Notice>}
     </Panel>
-    <Panel title="整件预期帧数" detail="各段预期帧数之和；各段都待标定时取整件多轮采集的帧组数均值，是 PLC 的 shotCount">
+    <Panel title="整件预期帧数" detail="各段预期帧数之和；各段都待标定时取整件多轮采集的帧组数均值">
       <div className="seg-total">
         <strong aria-label="整件预期总帧数">{expectedText(plan.expectedTotal, plan.toleranceTotal)}</strong>
         <span className="muted">ΣN_exp ± Σtol{plan.cameras.length !== PLAN_CAMERAS && `（需要 ${PLAN_CAMERAS} 台相机，当前 ${plan.cameras.length} 台）`}</span>

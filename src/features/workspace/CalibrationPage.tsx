@@ -111,7 +111,6 @@ export default function CalibrationPage() {
           <span className="wp-capture-chip"><small>建议容差</small><strong>±{calibration.part.suggestedTolerance}</strong></span>
         </div>
         {toleranceTotal < calibration.part.suggestedTolerance && <p className="muted hint">当前 Σ容差 ±{toleranceTotal} 小于整件建议容差 ±{calibration.part.suggestedTolerance}：运行时帧组数可能越界告警（只告警，不影响结论）。</p>}
-        {calibration.planVersionChange && <Notice title="预期总数有变化" tone="warn">发布时会分配新的计划版本；请在 PLC 把 shotCount 与 deviceShots 同步改为 {expectedTotal ?? "—"}。</Notice>}
         <Table className="wp-calib-table" caption="逐段标定结果" columns={columns} rows={calibration.segments} rowKey={row => String(row.index)} />
       </> : <p className="wp-capture-empty">还没有标定结果。加入足够的轮次后点“应用标定”。</p>}
     </Panel>

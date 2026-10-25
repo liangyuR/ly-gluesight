@@ -496,7 +496,7 @@ export interface ReadinessItem {
   title: string;
   state: ReadinessState;
   detail: string;
-  /** 操作前提（如复位故障需要满足的条件） */
+  /** 操作前提（如软件复位需要满足的条件） */
   hint: string | null;
   target: ReadinessTarget | null;
 }

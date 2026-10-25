@@ -18,7 +18,7 @@ export const stagesV2: StageV2[] = [
   { path: "/recipe/geometry", label: "默认参数", hint: "按段类型的默认检测项与帧数容差，新建段时取用", ids: [], optional: true, needsCapture: false },
   { path: "/recipe/teach", label: "走廊示教", hint: "每台相机示教一条检测走廊，所有帧共用", ids: ["corridor"], optional: false, needsCapture: true },
   { path: "/recipe/calibration", label: "多轮标定", hint: "多轮采集取均值得出预期帧数，确认帧数容差", ids: ["calibration"], optional: false, needsCapture: true },
-  { path: "/recipe/validation", label: "验证与发布", hint: "独立样本验证通过后发布生效，PLC 同步 shotCount", ids: ["validation", "publish"], optional: false, needsCapture: true },
+  { path: "/recipe/validation", label: "验证与发布", hint: "独立样本验证通过后发布生效", ids: ["validation", "publish"], optional: false, needsCapture: true },
 ];
 
 export const stageOfV2 = (id: StepIdV2) => stagesV2.find(stage => stage.ids.includes(id));

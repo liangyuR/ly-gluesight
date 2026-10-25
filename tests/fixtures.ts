@@ -121,7 +121,7 @@ export function burstSummary(doc = burstRecipe()): RecipeSummaryV2 {
 }
 
 export function planExport(doc = burstRecipe()): PlanExport {
-  return { protocolVersion: 6, recipeId: doc.id, productCode: doc.productCode, planVersion: doc.planVersion ?? 0, cameras: doc.inspect.map(i => i.camera),
+  return { protocolVersion: 7, recipeId: doc.id, productCode: doc.productCode, planVersion: doc.planVersion ?? 0, cameras: doc.inspect.map(i => i.camera),
     segments: doc.segments.map(({ index, kind, lengthMm, expectedFrames, tolerance, inspectRange }) => ({ index, kind, lengthMm, expectedFrames, tolerance, inspectRange })),
     ...burstTotals(doc) };
 }

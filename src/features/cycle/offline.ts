@@ -8,14 +8,14 @@ export const scenarioOptions: [Scenario, string][] = [
   ["locateFail", "定位失败（胶正常）"],
   ["locateFailGap", "定位失败 + 断胶"],
   ["countMismatch", "计数偏差（只告警）"],
-  ["motionTimeout", "运动超时（不发 partEnd）"],
+  ["motionTimeout", "运动超时（PLC 不报运动结束）"],
   ["ackMismatch", "ACK 序号不匹配"],
   // 以下五种只适用于段配方（分段连拍），旧拍照点配方选了后端会拒绝并说明原因
   ["cameraLost", "单台相机缺帧（该组检测不完整）"],
   ["pulseJitter", "脉冲数波动（首尾 ±1 帧）"],
   ["cornerSlowdown", "弯道减速（弯道帧数波动）"],
   ["notInspected", "本件未检（机器人未得到触发许可）"],
-  ["earlyEnd", "提前 partEnd（疑似提前终止）"],
+  ["earlyEnd", "提前运动结束（疑似提前终止）"],
   ["random", "随机（连续运行用）"],
 ];
 

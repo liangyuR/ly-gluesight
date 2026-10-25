@@ -79,7 +79,7 @@ describe("验证与发布页面", () => {
       expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled();
     });
 
-    it("整件预期总帧数 12 → 14 → 发布确认只列 planVersion 换新号和 shotCount / deviceShots 的变化", async () => {
+    it("整件预期总帧数 12 → 14 → 发布确认对比列出生产值，不再要求 PLC 同步计划与帧数", async () => {
       const view = burst({ planVersion: 3 });
       const plan = view.plan!;
       plan.productionExport = planExport();
@@ -89,11 +89,9 @@ describe("验证与发布页面", () => {
       ws = workspaceState(view);
       show();
       await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
-      const items = within(within(screen.getByRole("dialog")).getByRole("list", { name: "PLC 同步项" })).getAllByRole("listitem");
-      expect(items).toHaveLength(2);
-      expect(items[0]).toHaveTextContent("planVersion：3 → 发布时分配新号");
-      expect(items[1]).toHaveTextContent("shotCount / deviceShots（ΣN_exp）：12 → 14");
-      expect(screen.getByRole("dialog")).toHaveTextContent("预期总帧数 ΣN_exp ± Σtol：14 ± 3（生产：12 ± 3）");
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toHaveTextContent("预期总帧数 ΣN_exp ± Σtol：14 ± 3（生产：12 ± 3）");
+      expect(dialog).not.toHaveTextContent(/shotCount|deviceShots|PLC 要同步/);
     });
   });
 
