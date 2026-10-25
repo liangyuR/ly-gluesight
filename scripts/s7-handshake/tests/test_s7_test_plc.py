@@ -20,8 +20,8 @@ COTP_CR = bytes.fromhex("03000016 11e0 0000 0001 00 c0010a c1020100 c2020102")
 COTP_CC = bytes.fromhex("03000016 11d0 0001 0001 00 c0010a c1020102 c2020100")
 SETUP = bytes.fromhex("03000019 02f080 32010000 0001 0008 0000 f0000001000101e0")
 SETUP_ACK = bytes.fromhex("0300001b 02f080 32030000 0001 0008 0000 0000 f0000001000100f0")
-READ_BYTES = bytes.fromhex("0300001f 02f080 32010000 0002 000e 0000 0401 120a10020008000484000020")
-WRITE_BYTES = bytes.fromhex("03000027 02f080 32010000 0003 000e 0008 0501 120a10020004000484000020 0004002000000007")
+READ_BYTES = bytes.fromhex("0300001f 02f080 32010000 0002 000e 0000 0401 120a10020008000484000040")
+WRITE_BYTES = bytes.fromhex("03000027 02f080 32010000 0003 000e 0008 0501 120a10020004000484000040 0004002000000007")
 WRITE_ACK = bytes.fromhex("03000016 02f080 32030000 0003 0002 0001 0000 0501ff")
 WRITE_DONE = bytes.fromhex("03000024 02f080 32010000 0004 000e 0005 0501 120a10010001000284000003 0003000101")
 DONE_ACK = bytes.fromhex("03000016 02f080 32030000 0004 0002 0001 0000 0501ff")
@@ -38,6 +38,21 @@ def write_bytes_packet(reference, db, byte, data):
     s7 = b"\x32\x01\x00\x00" + reference.to_bytes(2, "big") + len(parameters).to_bytes(2, "big") + len(payload).to_bytes(2, "big") + parameters + payload
     body = b"\x02\xf0\x80" + s7
     return b"\x03\x00" + (len(body) + 4).to_bytes(2, "big") + body
+
+
+def read_bytes_packet(reference, db, byte, size):
+    parameters = b"\x04\x01\x12\x0a\x10\x02" + size.to_bytes(2, "big") + db.to_bytes(2, "big") + b"\x84" + (byte * 8).to_bytes(3, "big")
+    s7 = b"\x32\x01\x00\x00" + reference.to_bytes(2, "big") + len(parameters).to_bytes(2, "big") + b"\x00\x00" + parameters
+    body = b"\x02\xf0\x80" + s7
+    return b"\x03\x00" + (len(body) + 4).to_bytes(2, "big") + body
+
+
+def words(*values):
+    return b"".join(value.to_bytes(2, "big", signed=True) for value in values)
+
+
+def s7_string(text):
+    return bytes([50, len(text)]) + text.encode("ascii") + bytes(50 - len(text))
 
 
 def receive_packet(connection):
@@ -94,15 +109,15 @@ class S7WireTests(unittest.TestCase):
         self.assertEqual(exchange(self.connection, write_bytes_packet(11, 6, 2, bytes.fromhex("0028")))[-1], 3)
         self.assertEqual(self.state.field_values()["teachPcState"], 10)
         self.state.control({"op": "plc_values", "values": {"teachRoundIdEcho": 7, "teachPlcState": 10, "teachPlcReason": 0}})
-        read = READ_BYTES.replace(bytes.fromhex("0008000484000020"), bytes.fromhex("000a000c84000000"))
+        read = READ_BYTES.replace(bytes.fromhex("0008000484000040"), bytes.fromhex("000a000c84000000"))
         self.assertEqual(exchange(self.connection, read)[-10:], bytes.fromhex("0001000a000700000000"))
         self.assertEqual({db: bytes(self.state.dbs[db]) for db in (2, 4)}, production)
-        outside = READ_BYTES.replace(bytes.fromhex("0008000484000020"), bytes.fromhex("0002000c84000050"))
+        outside = READ_BYTES.replace(bytes.fromhex("0008000484000040"), bytes.fromhex("0002000c84000050"))
         self.assertEqual(exchange(self.connection, outside)[21], 5)
 
     def test_byte_read_write_matches_fixed_wire_packets(self):
         self.assertEqual(exchange(self.connection, WRITE_BYTES), WRITE_ACK)
-        self.state.control({"op": "write_db", "byte": 8, "hex": "12345678"})
+        self.state.control({"op": "write_db", "byte": 12, "hex": "12345678"})
         expected = bytes.fromhex("03000021 02f080 32030000 0002 0002 000c 0000 0401 ff040040 0000000712345678")
         self.assertEqual(exchange(self.connection, READ_BYTES), expected)
         self.assertEqual(self.state.field_values()["requestSeq"], 7)
@@ -132,7 +147,7 @@ class S7WireTests(unittest.TestCase):
         self.assertEqual(self.state.control({"op": "read_db", "byte": 8})["hex"], "b2")
 
     def test_unknown_db_and_out_of_bounds_have_s7_item_errors(self):
-        unknown = READ_BYTES.replace(bytes.fromhex("000484000020"), bytes.fromhex("006384000020"))
+        unknown = READ_BYTES.replace(bytes.fromhex("000484000040"), bytes.fromhex("006384000040"))
         self.assertEqual(exchange(self.connection, unknown), bytes.fromhex("03000019 02f080 32030000 0002 0002 0004 0000 04010a000000"))
         outside = READ_BYTES[:-3] + bytes.fromhex("002000")
         self.assertEqual(exchange(self.connection, outside), bytes.fromhex("03000019 02f080 32030000 0002 0002 0004 0000 040105000000"))
@@ -146,7 +161,7 @@ class S7WireTests(unittest.TestCase):
         self.assertEqual(self.state.control({"op": "status"})["counts"]["faults"], 2)
 
     def test_write_rejection_does_not_mutate_db_or_get_consumed_by_reads(self):
-        self.state.control({"op": "fault", "function": "write", "kind": "reject", "byte": 4})
+        self.state.control({"op": "fault", "function": "write", "kind": "reject", "byte": 8})
         exchange(self.connection, READ_BYTES)
         self.assertEqual(exchange(self.connection, WRITE_BYTES), WRITE_ACK[:-1] + b"\x03")
         self.assertEqual(self.state.field_values()["requestSeq"], 0)
@@ -216,17 +231,28 @@ class S7WireTests(unittest.TestCase):
         self.assertEqual(packets[-1]["response"], WRITE_ACK.hex())
         self.assertEqual(packets[-1]["function"], "write")
 
+    def test_protocol7_db4_and_db2_offsets_match_point_table(self):
+        self.state.control({"op": "plc_values", "values": {"plcHeartbeat": 3, "requestSeq": 0x01020304, "productCode": 7, "sn": "SN-1", "plcReason": 6, "plcState": 90}})
+        response = exchange(self.connection, read_bytes_packet(8, 4, 0, 68))
+        self.assertEqual(response[21], 0xFF)
+        self.assertEqual(response[25:], words(7, 3, 90, 6) + bytes.fromhex("01020304") + words(7, 0) + s7_string("SN-1"))
+        pc_area = words(7, 1, 30, 1) + bytes.fromhex("01020304") + words(90, 95) + s7_string("SN-1")
+        self.assertEqual(exchange(self.connection, write_bytes_packet(3, 2, 0, pc_area)), WRITE_ACK)
+        fields = self.state.field_values()
+        self.assertEqual({name: fields[name] for name in ("pcVersion", "pcHeartbeat", "pcState", "pcMode", "seqEcho", "resultCode", "faultCode", "snEcho")},
+                         {"pcVersion": 7, "pcHeartbeat": 1, "pcState": 30, "pcMode": 1, "seqEcho": 0x01020304, "resultCode": 90, "faultCode": 95, "snEcho": "SN-1"})
+
 
 class S7HeartbeatTests(unittest.TestCase):
-    def test_heartbeat_freeze_and_resume(self):
+    def test_int_heartbeat_advances_freezes_and_resumes(self):
         state = PLC.PlcState()
         state.heartbeat_ms = 15
         server = PLC.S7Server(state).start()
         try:
             deadline = time.monotonic() + 1
-            while not state.field_values()["plcHeartbeat"] and time.monotonic() < deadline:
+            while state.field_values()["plcHeartbeat"] < 2 and time.monotonic() < deadline:
                 time.sleep(0.005)
-            self.assertTrue(state.field_values()["plcHeartbeat"])
+            self.assertGreaterEqual(state.field_values()["plcHeartbeat"], 2)
             state.control({"op": "fault", "kind": "heartbeat_stop"})
             frozen = state.field_values()["plcHeartbeat"]
             time.sleep(0.06)
@@ -247,39 +273,101 @@ class S7SerialNumberTests(unittest.TestCase):
         self.state = PLC.PlcState()
         self.state.heartbeat_enabled = False
 
-    def read(self, state, db, byte, size=52):
-        return state.control({"op": "read_db", "db": db, "byte": byte, "size": size})["hex"]
+    def read(self, db, byte, size=52):
+        return self.state.control({"op": "read_db", "db": db, "byte": byte, "size": size})["hex"]
 
     def test_fresh_db_sn_fields_are_empty_s7_strings(self):
-        self.assertEqual(self.read(self.state, 4, 38), self.EMPTY)
-        self.assertEqual(self.read(self.state, 2, 20), self.EMPTY)
+        self.assertEqual(self.read(4, 16), self.EMPTY)
+        self.assertEqual(self.read(2, 16), self.EMPTY)
 
-    def test_shorter_part_sn_after_longest_sn_writes_new_length_and_zero_padding(self):
+    def test_shorter_sn_after_longest_sn_writes_new_length_and_zero_padding(self):
         full = "ABCDEFGHIJKLMNOPQRSTUVWXY-abcdefghijklmnopqrstuvwx"
-        self.state.control({"op": "plc_request", "values": {"partSn": full}})
-        self.assertEqual(self.read(self.state, 4, 38), "3232" + full.encode().hex())
-        self.state.control({"op": "plc_values", "values": {"partSn": "SN-1"}})
-        self.assertEqual(self.read(self.state, 4, 38), "3204" + b"SN-1".hex() + "00" * 46)
-        self.assertEqual(self.state.field_values()["partSn"], "SN-1")
+        self.state.control({"op": "plc_values", "values": {"sn": full}})
+        self.assertEqual(self.read(4, 16), "3232" + full.encode().hex())
+        self.state.control({"op": "plc_values", "values": {"sn": "SN-1"}})
+        self.assertEqual(self.read(4, 16), "3204" + b"SN-1".hex() + "00" * 46)
+        self.assertEqual(self.state.field_values()["sn"], "SN-1")
 
-    def test_invalid_part_sn_rejects_whole_request_and_keeps_memory(self):
-        for value in ("", "A" * 51, "   ", "SN\t1", "SN-é", 12345):
-            with self.subTest(value=value):
+    def test_invalid_value_rejects_whole_batch_and_keeps_memory(self):
+        cases = [{"sn": value} for value in ("", "A" * 51, "   ", "SN\t1", "SN-é", 12345)] + [{"sn": "SN-1", "productCode": 32768}]
+        for values in cases:
+            with self.subTest(values=values):
                 with self.assertRaises(ValueError):
-                    self.state.control({"op": "plc_request", "values": {"requestSeq": 5, "partSn": value}})
-                self.assertEqual(self.read(self.state, 4, 38), self.EMPTY)
+                    self.state.control({"op": "plc_values", "values": {"requestSeq": 5, **values, "plcState": 10}})
+                self.assertEqual(self.read(4, 16), self.EMPTY)
                 self.assertEqual(self.state.field_values()["requestSeq"], 0)
-                self.assertFalse(self.state.field_values()["partStart"])
+                self.assertEqual(self.state.field_values()["plcState"], 0)
 
-    def test_result_sn_not_byte_equal_to_part_sn_blocks_plc_ack(self):
-        self.state.control({"op": "plc_request", "values": {"requestSeq": 9, "partSn": "SN-12345"}})
-        for value in ("sn-12345", "SN-12345 ", "SN-1234"):
-            with self.subTest(value=value):
-                self.state.control({"op": "plc_values", "values": {"resultSeq": 9, "resultSn": value}})
-                with self.assertRaises(ValueError):
-                    self.state.control({"op": "plc_ack"})
-                self.assertFalse(self.state.field_values()["resultAck"])
-                self.assertEqual(self.state.field_values()["ackSeq"], 0)
+
+class ProductionTransitionTests(unittest.TestCase):
+    def setUp(self):
+        self.state = PLC.PlcState()
+        self.state.heartbeat_enabled = False
+
+    def apply(self, op, **command):
+        return self.state.control({"op": op, **command})
+
+    def plc_view(self):
+        fields = self.state.field_values()
+        return fields["plcState"], fields["plcReason"]
+
+    def test_request_needs_idle_plc_and_ready_pc_and_increments_sequence(self):
+        with self.assertRaises(ValueError):
+            self.apply("plc_request", values={"productCode": 7, "sn": "SN-1"})
+        self.assertEqual((self.plc_view(), self.state.field_values()["requestSeq"]), ((0, 0), 0))
+        self.apply("plc_values", values={"pcState": 10})
+        self.assertEqual(self.apply("plc_request", values={"productCode": 7, "sn": "SN-1"})["requestSeq"], 1)
+        self.apply("plc_values", values={"plcState": 0})
+        second = self.apply("plc_request", values={"productCode": 7, "sn": "SN-2"})
+        self.assertEqual((second["requestSeq"], second["plcState"], second["sn"]), (2, 10, "SN-2"))
+        self.apply("plc_values", values={"requestSeq": PLC.MAX_SEQ, "plcState": 0})
+        exhausted = self.apply("plc_request", values={"productCode": 7, "sn": "SN-3"})
+        self.assertEqual((exhausted["plcState"], exhausted["plcReason"], exhausted["requestSeq"]), (90, 12, PLC.MAX_SEQ))
+
+    def test_ack_checks_echo_and_result_combination(self):
+        cases = [
+            (20, {}, (30, 0)),
+            (20, {"snEcho": "sn-12345"}, (90, 5)),
+            (20, {"snEcho": "SN-12345 "}, (90, 5)),
+            (20, {"snEcho": "SN-1234"}, (90, 5)),
+            (20, {"seqEcho": 4}, (90, 5)),
+            (20, {"resultCode": 0}, (90, 5)),
+            (20, {"resultCode": 0, "pcMode": 1}, (30, 0)),
+            (20, {"resultCode": 11, "faultCode": 92}, (90, 5)),
+            (20, {"resultCode": 90, "faultCode": 0}, (90, 5)),
+            (10, {"resultCode": 90, "faultCode": 95}, (30, 0)),
+            (10, {}, (90, 5)),
+        ]
+        for plc_state, overrides, expected in cases:
+            with self.subTest(plc_state=plc_state, overrides=overrides):
+                self.apply("plc_values", values={"requestSeq": 5, "sn": "SN-12345", "plcReason": 0, "plcState": plc_state})
+                self.apply("plc_values", values={"pcMode": 0, "seqEcho": 5, "snEcho": "SN-12345", "resultCode": 1, "faultCode": 0, **overrides, "pcState": 30})
+                self.apply("plc_ack")
+                self.assertEqual(self.plc_view(), expected)
+
+    def test_reset_paths_follow_transition_table(self):
+        cases = [
+            (10, 0, 99, "plc_reset", {}, (0, 0)),
+            (20, 0, 99, "plc_reset", {}, (0, 0)),
+            (30, 0, 99, "plc_reset", {}, (0, 0)),
+            (90, 8, 99, "plc_reset", {}, (0, 0)),
+            (90, 8, 99, "plc_reset", {"allowed": False}, (90, 13)),
+            (90, 8, 0, "plc_reset_request", {}, (99, 0)),
+            (99, 0, 10, "plc_reset", {}, (0, 0)),
+            (99, 0, 99, "plc_reset", {}, (0, 0)),
+            (90, 8, 10, "plc_reset", {}, None),
+            (0, 0, 99, "plc_reset", {}, None),
+        ]
+        for plc_state, reason, pc_state, op, options, expected in cases:
+            with self.subTest(plc_state=plc_state, pc_state=pc_state, op=op, options=options):
+                self.apply("plc_values", values={"plcReason": reason, "plcState": plc_state, "pcState": pc_state})
+                if expected is None:
+                    with self.assertRaises(ValueError):
+                        self.apply(op, **options)
+                    self.assertEqual(self.plc_view(), (plc_state, reason))
+                else:
+                    self.apply(op, **options)
+                    self.assertEqual(self.plc_view(), expected)
 
 
 class ProcessFixture:
@@ -347,64 +435,34 @@ class S7ProcessApiTests(unittest.TestCase):
         self.assertFalse(self.fixture.command("missing")["ok"])
         self.assertTrue(self.fixture.command("status")["ok"])
 
-    def test_request_ack_release_observe_pc_s7_writes(self):
-        response = self.fixture.command("plc_request", values={"requestSeq": 17, "partSn": "SN-12345", "productCode": 7, "shotCount": 4, "deviceShots": 4, "planVersion": 1, "planReserved": 0})
-        self.assertTrue(response["ok"])
-        self.assertTrue(response["result"]["partStart"])
-        self.assertEqual(response["result"]["requestSeq"], 17)
+    def test_normal_cycle_advances_only_on_pc_states_written_over_s7(self):
+        def pc_write(connection, byte, data):
+            self.assertEqual(exchange(connection, write_bytes_packet(3, 2, byte, data)), WRITE_ACK)
+
         with connect((self.fixture.ready["host"], self.fixture.ready["port"])) as connection:
-            result_seq = bytes.fromhex("03000027 02f080 32010000 0003 000e 0008 0501 120a10020004000284000020 0004002000000011")
-            self.assertEqual(exchange(connection, result_seq), WRITE_ACK)
-            result_sn = write_bytes_packet(3, 2, 20, bytes([50, 8]) + b"SN-12345" + bytes(42))
-            self.assertEqual(exchange(connection, result_sn), WRITE_ACK)
-            self.assertEqual(exchange(connection, WRITE_DONE), DONE_ACK)
-            acknowledged = self.fixture.command("plc_ack")
-            self.assertTrue(acknowledged["ok"])
-            self.assertEqual(acknowledged["result"]["ackSeq"], 17)
-            self.assertTrue(acknowledged["result"]["resultAck"])
+            pc_write(connection, 0, words(7, 1, 10, 0))
+            request = self.fixture.command("plc_request", values={"productCode": 7, "sn": "SN-12345"})["result"]
+            self.assertEqual((request["plcState"], request["requestSeq"], request["sn"]), (10, 1, "SN-12345"))
+            self.assertFalse(self.fixture.command("plc_motion_end")["ok"])
+            pc_write(connection, 8, (1).to_bytes(4, "big"))
+            pc_write(connection, 4, words(20))
+            self.assertEqual(self.fixture.command("plc_motion_end")["result"]["plcState"], 20)
+            pc_write(connection, 12, words(1, 0) + s7_string("SN-12345"))
+            pc_write(connection, 4, words(30))
+            self.assertEqual(self.fixture.command("plc_ack")["result"]["plcState"], 30)
             self.assertFalse(self.fixture.command("plc_release")["ok"])
-            self.assertEqual(exchange(connection, WRITE_DONE[:-1] + b"\x00"), DONE_ACK)
+            pc_write(connection, 4, words(10))
         released = self.fixture.command("plc_release")["result"]
-        self.assertFalse(released["partStart"])
-        self.assertFalse(released["partEnd"])
-        self.assertFalse(released["resultAck"])
-
-    def test_field_update_validation_is_atomic(self):
-        result = self.fixture.command("plc_request", values={"requestSeq": 99, "deviceShots": 32768})
-        self.assertFalse(result["ok"])
-        fields = self.fixture.command("status")["result"]["fields"]
-        self.assertEqual(fields["requestSeq"], 0)
-        self.assertFalse(fields["partStart"])
-
-    def test_shared_trigger_counts_sit_at_their_fixed_wire_offsets(self):
-        response = self.fixture.command("plc_request", values={"shotCount": 4, "deviceShots": 4})
-        self.assertTrue(response["ok"])
-        self.assertTrue(self.fixture.command("plc_values", values={"deviceTriggers": 3})["ok"])
-        with connect((self.fixture.ready["host"], self.fixture.ready["port"])) as connection:
-            request = bytes.fromhex("0300001f 02f080 32010000 0002 000e 0000 0401 120a100200120004840000a0")
-            expected = bytes.fromhex("0300002b 02f080 32030000 0002 0002 0016 0000 0401 ff040090 000400000000000000000000000300000000")
-            self.assertEqual(exchange(connection, request), expected)
-
-    def test_removed_camera_fields_are_rejected_atomically(self):
-        removed = ("camera1Shots", "camera2Shots", "camera3Shots", "camera1Triggers", "camera2Triggers", "camera3Triggers")
-        for name in removed:
-            with self.subTest(field=name):
-                response = self.fixture.command("plc_request", values={"requestSeq": 99, name: 1})
-                self.assertFalse(response["ok"])
-                response = self.fixture.command("configure_handshake", fields={"deviceShots": {"byte": 20, "type": "i16"}, name: {"byte": 22, "type": "i16"}})
-                self.assertFalse(response["ok"])
-                fields = self.fixture.command("status")["result"]["fields"]
-                self.assertNotIn(name, fields)
-                self.assertEqual(fields["requestSeq"], 0)
-                self.assertFalse(fields["partStart"])
+        self.assertEqual((released["plcState"], released["plcReason"]), (0, 0))
+        self.assertEqual(self.fixture.command("plc_request", values={"productCode": 7, "sn": "SN-2"})["result"]["requestSeq"], 2)
 
     def test_nondefault_db_is_readable_through_real_s7(self):
         fixture = ProcessFixture("--plc-db", "321", "--pc-db", "322")
         try:
             self.assertEqual((fixture.ready["plc_db"], fixture.ready["pc_db"]), (321, 322))
-            fixture.command("plc_request", values={"requestSeq": 7})
+            fixture.command("plc_values", values={"requestSeq": 7})
             with connect((fixture.ready["host"], fixture.ready["port"])) as connection:
-                request = READ_BYTES.replace(bytes.fromhex("000484000020"), bytes.fromhex("014184000020"))
+                request = READ_BYTES.replace(bytes.fromhex("000484000040"), bytes.fromhex("014184000040"))
                 self.assertEqual(exchange(connection, request)[25:29], b"\x00\x00\x00\x07")
         finally:
             fixture.close()

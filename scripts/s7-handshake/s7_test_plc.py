@@ -19,7 +19,9 @@ def integer(value, name, minimum=0, maximum=65535):
     return value
 
 
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7
+MAX_SEQ = (1 << 31) - 1
+VALID_RESULTS = {1, 2, 11, 12, 13, 14}
 SN_CAPACITY = 50
 # S7 STRING[50]：+0 声明长度 50，+1 实际长度，+2 起字符。
 SN_HEADER = 2
@@ -75,23 +77,26 @@ class Item:
 
 
 def handshake_fields(plc_db=4, pc_db=2):
-    # 协议 6（布局同协议 5）：PLC 区（PLC 写、PC 读）与 PC 区（PC 写、PLC 读）是两个 DB，均从字节 0 起。
     layout = (
-        (plc_db, ("partStart", "partEnd", "resultAck", "faultReset", "plcHeartbeat"),
-         {"protocolVersion": 2, "productCode": 8, "shotCount": 10, "deviceShots": 20, "deviceTriggers": 32},
-         {"requestSeq": 4, "planVersion": 12, "planReserved": 16, "ackSeq": 28}, {"partSn": 38}),
-        (pc_db, ("visionReady", "armed", "busy", "done", "visionFault", "pcHeartbeat"),
-         {"pcProtocolVersion": 2, "resultCode": 8, "faultCode": 10},
-         {"resultSeq": 4, "acceptedSeq": 12, "acceptedPlanReserved": 16}, {"resultSn": 20}),
+        (plc_db, {"plcVersion": 0, "plcHeartbeat": 2, "plcState": 4, "plcReason": 6, "productCode": 12}, {"requestSeq": 8}, {"sn": 16}),
+        (pc_db, {"pcVersion": 0, "pcHeartbeat": 2, "pcState": 4, "pcMode": 6, "resultCode": 12, "faultCode": 14}, {"seqEcho": 8}, {"snEcho": 16}),
     )
     fields = {}
-    for db, bits, words, dwords, strings in layout:
-        for bit, name in enumerate(bits):
-            fields[name] = {"db": db, "byte": 0, "bit": bit, "type": "bool"}
+    for db, words, dwords, strings in layout:
         for kind, addresses in (("i16", words), ("i32", dwords), ("string", strings)):
             for name, byte in addresses.items():
                 fields[name] = {"db": db, "byte": byte, "type": kind}
     return fields
+
+
+def result_valid(mode, code, fault, rejection):
+    if mode == 1:
+        return True
+    if mode != 0:
+        return False
+    if code == 90:
+        return 91 <= fault <= 100
+    return not rejection and code in VALID_RESULTS and fault == 0
 
 
 def teaching_fields():
@@ -121,7 +126,7 @@ class PlcState:
         self.heartbeat_enabled = True
         self.heartbeat_ms = 500
         self.configure_fields({**handshake_fields(plc_db, pc_db), **teaching_fields()})
-        self.plc_values({"protocolVersion": PROTOCOL_VERSION, "teachPlcVersion": 1, "teachPlcState": 50, "teachPlcReason": 5}, None)
+        self.plc_values({"plcVersion": PROTOCOL_VERSION, "teachPlcVersion": 1, "teachPlcState": 50, "teachPlcReason": 5})
 
     def event(self, event_kind, **details):
         with self.lock:
@@ -132,7 +137,7 @@ class PlcState:
             with self.lock:
                 if self.heartbeat_enabled and "plcHeartbeat" in self.fields:
                     current = self.field_values()["plcHeartbeat"]
-                    self.plc_values({"plcHeartbeat": not current}, None)
+                    self.plc_values({"plcHeartbeat": not current if isinstance(current, bool) else (current + 1) % 32768})
 
     def memory(self, db, byte, size):
         if db not in self.dbs:
@@ -222,8 +227,6 @@ class PlcState:
         for name, source in fields.items():
             if not isinstance(name, str) or not name or not isinstance(source, dict):
                 raise ValueError("each field requires a name and address object")
-            if name in {"camera1Shots", "camera2Shots", "camera3Shots", "camera1Triggers", "camera2Triggers", "camera3Triggers"}:
-                raise ValueError(f"removed handshake field: {name}; use deviceShots and deviceTriggers")
             field = {"db": integer(source.get("db", self.default_db), "db", 1), "byte": integer(source.get("byte"), "byte")}
             field["type"] = source.get("type", "bool" if "bit" in source else "u8")
             if field["type"] not in FIELD_SIZES:
@@ -265,13 +268,11 @@ class PlcState:
             byte = field["byte"]
             return bytes(buf[byte:byte + SN_HEADER + min(buf[byte + 1], SN_CAPACITY)])
 
-    def plc_values(self, values, default_signal):
+    def plc_values(self, values):
         if not isinstance(values, dict):
             raise ValueError("values must be an object")
         with self.lock:
             updates = dict(values)
-            if default_signal in self.fields:
-                updates.setdefault(default_signal, True)
             if not updates:
                 raise ValueError("configure handshake fields and provide values first")
             encoded = []
@@ -296,6 +297,51 @@ class PlcState:
                 self.write_item(*update)
             self.event("plc_values", values=updates)
             return self.field_values()
+
+    def transition(self, op, command):
+        with self.lock:
+            current = self.field_values()
+            missing = set(handshake_fields()) - current.keys()
+            if missing:
+                raise ValueError(f"{op} requires the protocol 7 fields: {', '.join(sorted(missing))}")
+            plc, pc = current["plcState"], current["pcState"]
+            if op == "plc_request":
+                if plc != 0 or pc != 10:
+                    raise ValueError("plc_request requires plcState 0 and pcState 10")
+                values = command.get("values", {})
+                if not isinstance(values, dict):
+                    raise ValueError("values must be an object")
+                values = {name: value for name, value in values.items() if name not in ("plcReason", "plcState")}
+                if "requestSeq" not in values:
+                    if current["requestSeq"] >= MAX_SEQ:
+                        return self.plc_values({"plcReason": 12, "plcState": 90})
+                    values["requestSeq"] = max(current["requestSeq"], 0) + 1
+                return self.plc_values({**values, "plcReason": 0, "plcState": 10})
+            if op == "plc_motion_end":
+                if plc != 10 or pc != 20 or current["seqEcho"] != current["requestSeq"]:
+                    raise ValueError("plc_motion_end requires plcState 10, pcState 20 and seqEcho equal to requestSeq")
+                return self.plc_values({"plcState": 20})
+            if op == "plc_ack":
+                if plc not in (10, 20) or pc != 30:
+                    raise ValueError("plc_ack requires plcState 10 or 20 and pcState 30")
+                valid = current["seqEcho"] == current["requestSeq"] and self.string_bytes("snEcho") == self.string_bytes("sn") and result_valid(current["pcMode"], current["resultCode"], current["faultCode"], plc == 10)
+                return self.plc_values({"plcState": 30} if valid else {"plcReason": 5, "plcState": 90})
+            if op == "plc_release":
+                if plc != 30 or pc != 10:
+                    raise ValueError("plc_release requires plcState 30 and pcState 10")
+                return self.plc_values({"plcState": 0})
+            if op == "plc_reset_request":
+                if plc != 90:
+                    raise ValueError("plc_reset_request requires plcState 90")
+                return self.plc_values({"plcReason": 0, "plcState": 99})
+            allowed = command.get("allowed", True)
+            if not isinstance(allowed, bool):
+                raise ValueError("allowed must be a boolean")
+            if (plc == 99 and pc in (10, 99)) or (plc in (10, 20, 30) and pc == 99) or (plc == 90 and pc == 99 and allowed):
+                return self.plc_values({"plcReason": 0, "plcState": 0})
+            if plc == 90 and pc == 99:
+                return self.plc_values({"plcReason": 13, "plcState": 90})
+            raise ValueError("plc_reset requires pcState 99 with plcState 10, 20, 30 or 90, or plcState 99 with pcState 10 or 99")
 
     def control(self, command):
         if not isinstance(command, dict):
@@ -350,23 +396,10 @@ class PlcState:
             return {"cleared": True}
         if op == "configure_handshake":
             return self.configure_fields(command.get("fields"))
-        if op in ("plc_request", "plc_ack", "plc_values"):
-            values = command.get("values", {})
-            with self.lock:
-                if op == "plc_ack" and isinstance(values, dict):
-                    current = self.field_values()
-                    values = dict(values)
-                    if "ackSeq" in current and "resultSeq" in current:
-                        values.setdefault("ackSeq", current["resultSeq"])
-                    if "partSn" in self.fields and "resultSn" in self.fields and self.string_bytes("resultSn") != self.string_bytes("partSn"):
-                        raise ValueError("resultSn does not match partSn byte for byte")
-                return self.plc_values(values, {"plc_request": "partStart", "plc_ack": "resultAck"}.get(op))
-        if op == "plc_release":
-            with self.lock:
-                current = self.field_values()
-                if current.get("done", False) or current.get("busy", False):
-                    raise ValueError("wait for PC done and busy to clear before PLC release")
-                return self.plc_values({name: False for name in ("partStart", "partEnd", "resultAck") if name in current}, None)
+        if op == "plc_values":
+            return self.plc_values(command.get("values", {}))
+        if op in ("plc_request", "plc_motion_end", "plc_ack", "plc_release", "plc_reset", "plc_reset_request"):
+            return self.transition(op, command)
         if op == "heartbeat":
             enabled = command.get("enabled", self.heartbeat_enabled)
             if not isinstance(enabled, bool):
@@ -630,7 +663,7 @@ def main():
     parser.add_argument("--pdu-size", type=int, default=240)
     args = parser.parse_args()
     try:
-        integer(args.db_size, "db-size", 90, 65536)
+        integer(args.db_size, "db-size", 68, 65536)
         integer(args.plc_db, "plc-db", 1, 65535)
         integer(args.pc_db, "pc-db", 1, 65535)
         integer(args.pdu_size, "pdu-size", 240, 960)
