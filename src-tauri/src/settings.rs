@@ -58,6 +58,14 @@ impl Timeouts {
     }
 }
 
+/// 维护模式（在线投运）：开启后每件都布防采图，结果码写 0，PLC 按未检放行；项目级，重启后保持。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Maintenance {
+    pub since: i64,
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CycleSettings {
@@ -71,6 +79,8 @@ pub struct CycleSettings {
     pub record_max_gb: f32,
     pub offline_record_keep: u32,
     pub offline_record_max_gb: f32,
+    /// 只由维护模式命令改写，保存检测设置时沿用当前值
+    pub maintenance: Option<Maintenance>,
 }
 
 impl Default for CycleSettings {
@@ -85,6 +95,7 @@ impl Default for CycleSettings {
             record_max_gb: 20.0,
             offline_record_keep: 300,
             offline_record_max_gb: 10.0,
+            maintenance: None,
         }
     }
 }

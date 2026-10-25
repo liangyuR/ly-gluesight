@@ -222,6 +222,7 @@ mod tests {
 
     fn pending(cycle_id: &str, request_seq: u32, sn: u32) -> Pending {
         Pending {
+            mode: 0,
             origin: Some(crate::plc_session::Origin::Real),
             capture_id: None,
             request: Request {

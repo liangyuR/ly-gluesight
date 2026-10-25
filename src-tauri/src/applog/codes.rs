@@ -276,6 +276,11 @@ pub const OP_SITE: Event = Event {
     ev: "操作：站点模式",
     level: Level::Info,
 };
+pub const OP_MAINTENANCE: Event = Event {
+    code: "op.maintenance",
+    ev: "操作：维护模式",
+    level: Level::Warn,
+};
 pub const OP_RECIPE_DELETE: Event = Event {
     code: "op.recipe.delete",
     ev: "操作：删除配方",
@@ -337,6 +342,7 @@ const ALL: &[&Event] = &[
     &OP_CAMERA,
     &OP_PLC,
     &OP_SITE,
+    &OP_MAINTENANCE,
     &OP_RECIPE_DELETE,
 ];
 

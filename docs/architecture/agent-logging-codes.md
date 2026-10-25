@@ -41,6 +41,7 @@
 | `op.camera` | 操作：相机 | info | 相机释放、重连、保存配置、增删、调试曝光、软触发 | `action`：release / reconnect / save_config / add / remove / set_imaging / soft_trigger，`cam`、`ok`、`error` |
 | `op.plc` | 操作：PLC | info | PLC 连接、断开、保存配置、手动写点 | `action`：connect / disconnect / save_config / write_point，`point`（写点时，只记点位不记值），`ok`、`error` |
 | `op.site` | 操作：站点模式 | info | 进入或退出离线 | `action`：enter_offline / leave_offline，`ok`、`error` |
+| `op.maintenance` | 操作：维护模式 | warn | 开启或退出维护模式（从下一件起生效：pcMode=1，结果码 0，PLC 按未检放行） | `action`：enter / exit，`reason`，`collectOnly`（退出时仍只有采集版的配方），`ok`、`error` |
 | `op.recipe.delete` | 操作：删除配方 | info | 删除生产配方或不可用配方 | `id`、`ok`、`error` |
 | `alarm.raised` | 报警 | error | 节拍界面新增一条报警；同一报警文案 10 分钟内只照写首次，之后（每件开工、复位后重新出现）计入摘要 | `alarm`（报警文案） |
 | `alarm.raised.summary` | 报警汇总 | error | `alarm.raised` 的聚合摘要：10 分钟窗口到期且窗口内有计数 | `alarm`、`count`、`firstTs`、`lastTs` |

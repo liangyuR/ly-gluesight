@@ -198,6 +198,7 @@ pub fn run() {
             cycle::cycle_layout,
             cycle::cycle_get_settings,
             cycle::cycle_save_settings,
+            cycle::cycle_set_maintenance,
             cycle::cycle_select_recipe,
             cycle::cycle_reset,
             cycle::cycle_readiness,

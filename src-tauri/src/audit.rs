@@ -17,7 +17,7 @@ use crate::offline::sample_set::SampleRef;
 use crate::recipe::Recipe;
 use crate::recorder::{RecordedRawFile, RecordingOutcome, RecordingState as RecorderState};
 use crate::store::{
-    BurstRecord, FrameKey, FrameRecord, PartDetail, PartRecord, PartShot, PlcDelivery, PlcDeliveryState, RecordSource, RecordingEvidence, RecordingState,
+    BurstRecord, FrameKey, FrameRecord, PartDetail, PartMode, PartRecord, PartShot, PlcDelivery, PlcDeliveryState, RecordSource, RecordingEvidence, RecordingState,
     ShotRawFile, Store,
 };
 
@@ -49,11 +49,14 @@ pub struct RecordedPart {
     /// 段配方的帧与区域记录；旧拍照点配方为 None
     #[serde(default)]
     pub burst: Option<BurstRecord>,
+    #[serde(default)]
+    pub mode: PartMode,
 }
 
 impl RecordedPart {
     fn borrowed(&self) -> PartRecord<'_> {
         PartRecord {
+            mode: self.mode,
             ts: self.ts,
             sn: &self.sn,
             recipe: self.recipe.as_deref(),

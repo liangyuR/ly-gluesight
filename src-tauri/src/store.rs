@@ -20,6 +20,7 @@ use crate::recipe::Recipe;
 /// `judgement` 是区域判定的摘要（verdict / plc_code / fault_code / reason 与 `burst.judgement` 相同，segments、gaps 为空）；
 /// `frames_expected` = expected_total（待标定为 0）。旧拍照点配方 `burst` 为 None，行为不变。
 pub struct PartRecord<'a> {
+    pub mode: PartMode,
     pub ts: i64,
     pub sn: &'a str,
     pub recipe: Option<&'a Recipe>,
@@ -107,6 +108,16 @@ pub struct BurstSummary {
     pub tolerance_total: u32,
     pub device_triggers: Option<u32>,
     pub camera_frames: Vec<u32>,
+}
+
+/// 件的检测模式：维护模式下 PLC 按未检放行，采集件只录图不判定，试判件的结论不算产线合格率。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PartMode {
+    #[default]
+    Production,
+    MaintenanceCollect,
+    MaintenanceShadow,
 }
 
 /// 记录来源：按写库时的站点模式与离线来源决定。真机件与离线件分开统计、分开保存原图。
@@ -298,6 +309,8 @@ pub struct HistoryQuery {
     pub sn: Option<String>,
     pub recipe_id: Option<String>,
     pub scope: HistoryScope,
+    /// 为空不按模式筛选
+    pub modes: Vec<PartMode>,
     pub offset: u32,
     pub limit: u32,
 }
@@ -331,6 +344,16 @@ pub struct PartSummary {
     /// 段配方记录的帧数；旧记录为 None。只供 CSV 导出
     #[serde(skip)]
     pub burst: Option<BurstSummary>,
+    pub mode: PartMode,
+}
+
+/// 维护采集的进度：每个配方已录件数与完整可用件数（录制完整、各计划相机帧数一致且非零），供判断是否够示教与标定。
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionProgress {
+    pub recipe_id: String,
+    pub recorded: u32,
+    pub usable: u32,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -424,9 +447,9 @@ fn parse_verdict(s: &str) -> Verdict {
 const SUMMARY_COLS: &str = "id, ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
                             reason, drain_ms, frames_expected, frames_received, retest_of, cycle_id, bundle_id, \
                             delivery_state, delivery_updated_at, delivery_message, sample, source, \
-                            flags, expected_total, tolerance_total, device_triggers, camera_frames";
+                            flags, expected_total, tolerance_total, device_triggers, camera_frames, mode";
 /// SUMMARY_COLS 的列数；detail 在其后追加的列从这里起算。
-const SUMMARY_LEN: usize = 27;
+const SUMMARY_LEN: usize = 28;
 
 fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
     let flags: Option<Flags> = row.get::<_, Option<String>>(22)?.map(|text| serde_json::from_str(&text)
@@ -464,6 +487,7 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
         source: enum_column(row, 21)?,
         flags,
         burst,
+        mode: enum_column(row, 27)?,
     })
 }
 
@@ -747,6 +771,14 @@ fn extend_candidate_source(conn: &Connection, path: &Path) -> Result<(), String>
     migrated.map_err(|e| format!("调试记录格式升级失败，旧记录保持原样，备份 {}：{e}", backup.display()))
 }
 
+/// 记录库 9 版原地加 `mode` 列（维护模式），旧记录都是正式检测件，不重建、不丢记录。
+fn add_part_mode(conn: &Connection) -> Result<(), String> {
+    let sql: Option<String> = conn.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='parts'", [], |r| r.get(0)).optional().map_err(db_err)?;
+    if sql.is_none_or(|sql| sql.contains(" mode TEXT")) { return Ok(()); }
+    conn.execute_batch("ALTER TABLE parts ADD COLUMN mode TEXT NOT NULL DEFAULT 'production' CHECK(mode IN ('production','maintenanceCollect','maintenanceShadow'))")
+        .map_err(|e| format!("记录库加维护模式列失败：{e}"))
+}
+
 impl Store {
     #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -774,6 +806,7 @@ impl Store {
             None
         };
         extend_candidate_source(&conn, path)?;
+        add_part_mode(&conn)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
@@ -822,7 +855,8 @@ impl Store {
                  device_triggers INTEGER,
                  camera_frames TEXT,
                  flags TEXT,
-                 burst_judgement TEXT
+                 burst_judgement TEXT,
+                 mode TEXT NOT NULL DEFAULT 'production' CHECK(mode IN ('production','maintenanceCollect','maintenanceShadow'))
              );
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
              CREATE INDEX IF NOT EXISTS parts_source_ts ON parts(source, ts);
@@ -1011,9 +1045,9 @@ impl Store {
             "INSERT INTO parts (ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code,
                  reason, drain_ms, frames_expected, frames_received, triggers, retest_of, software_version, judgement, frames,
                  cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message, sample, source,
-                 expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement)
+                 expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement, mode)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
+                 ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
             params![
                 r.ts,
                 r.sn,
@@ -1046,6 +1080,7 @@ impl Store {
                 burst_columns.3,
                 burst_columns.4,
                 burst_columns.5,
+                enum_name(r.mode),
             ],
         )
         .map_err(db_err)?;
@@ -1335,6 +1370,10 @@ impl Store {
             clauses.push(format!("{prefix}recipe_id = ?"));
             args.push(SqlValue::Text(id.to_string()));
         }
+        if !q.modes.is_empty() {
+            clauses.push(format!("{prefix}mode IN ({})", vec!["?"; q.modes.len()].join(",")));
+            args.extend(q.modes.iter().map(|mode| SqlValue::Text(enum_name(*mode))));
+        }
         (format!(" WHERE {}", clauses.join(" AND ")), args)
     }
 
@@ -1567,8 +1606,29 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(db_err)
     }
 
+    pub fn collection_progress(&self, scope: HistoryScope) -> Result<Vec<CollectionProgress>, String> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!("SELECT recipe_id, recording_available, camera_frames FROM parts WHERE {} AND mode = 'maintenanceCollect' \
+            AND recipe_id IS NOT NULL AND recording_directory IS NOT NULL ORDER BY recipe_id", scope.clause(""));
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?, row.get::<_, Option<String>>(2)?))).map_err(db_err)?;
+        let mut progress: Vec<CollectionProgress> = Vec::new();
+        for row in rows {
+            let (recipe_id, available, frames) = row.map_err(db_err)?;
+            let frames: Vec<u32> = frames.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+            let usable = available && frames.first().is_some_and(|&n| n > 0 && frames.iter().all(|&m| m == n));
+            if progress.last().is_none_or(|last| last.recipe_id != recipe_id) {
+                progress.push(CollectionProgress { recipe_id, ..CollectionProgress::default() });
+            }
+            let last = progress.last_mut().unwrap();
+            last.recorded += 1;
+            last.usable += u32::from(usable);
+        }
+        Ok(progress)
+    }
+
     pub fn counts_since(&self, since: i64, scope: HistoryScope) -> Result<VerdictCounts, String> {
-        self.query(&HistoryQuery { from: Some(since), scope, limit: 1, ..Default::default() }).map(|p| p.counts)
+        self.query(&HistoryQuery { from: Some(since), scope, modes: vec![PartMode::Production], limit: 1, ..Default::default() }).map(|p| p.counts)
     }
 
     pub(crate) fn comparison_cycle(&self, id: i64) -> Result<Option<String>, String> {

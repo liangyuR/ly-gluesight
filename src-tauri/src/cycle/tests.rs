@@ -34,6 +34,7 @@ fn armed_part(
         .collect();
     let baselines = arm_frames(&cameras, ledgers, &policy, &identities).unwrap();
     Part {
+        mode: crate::store::PartMode::Production,
         cycle_id: cycle_id.into(), bundle_id: None, production: None, candidate: None, sn: "SN-88".into(), scenario: Scenario::Normal,
         frames: Vec::new(), measuring_since: Vec::new(), table: Vec::new(), received: 0, extra: 0, queue: 0, router: unrouted(),
         burst: Some(Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted))), issued: None, device_triggers: None,

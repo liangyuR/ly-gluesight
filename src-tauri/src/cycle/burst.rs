@@ -61,6 +61,8 @@ pub(super) struct BurstPart {
     /// 判定后存下，落库与结果显示用
     pub(super) judgement: Option<BurstJudgement>,
     warned: BTreeSet<(usize, Warning)>,
+    /// 维护采集：只录图不送测，收尾只等收尾窗口
+    pub(super) collect: bool,
 }
 
 /// 一帧到达后的去向。
@@ -81,6 +83,10 @@ pub(super) enum Arrival {
 }
 
 impl BurstPart {
+    pub(super) fn group_count(&self) -> u64 {
+        self.grouper.group_count()
+    }
+
     /// 布防：cams 是 `shot_router::arm_frames` 按计划相机顺序给出的帧计数基线。seq 上限 = ΣN_exp + Σtol + 余量。
     pub(super) fn arm(recipe: &Recipe, cams: Vec<FrameBaseline>, trusted: Vec<CounterSource>) -> Self {
         let limit = recipe.expected_total().map_or(MAX_SEQ, |n| u64::from(n) + u64::from(recipe.tolerance_total()) + SEQ_MARGIN);
@@ -100,6 +106,7 @@ impl BurstPart {
             checks,
             judgement: None,
             warned: BTreeSet::new(),
+            collect: false,
         }
     }
 
@@ -261,8 +268,9 @@ impl Part {
             return Some(match burst.grouper.offer(camera, frame.frame_counter) {
                 Offer::Accepted { seq } => {
                     let trigger_counter = matches!(frame.counter, CounterSource::ChunkTrigger | CounterSource::Synthetic).then_some(frame.trigger_counter);
-                    burst.frames.insert((camera, seq), BurstFrame { frame_counter: frame.frame_counter, trigger_counter, measuring_since: Some(now), metrics: None });
-                    burst.pending += 1;
+                    let measuring_since = (!burst.collect).then_some(now);
+                    burst.frames.insert((camera, seq), BurstFrame { frame_counter: frame.frame_counter, trigger_counter, measuring_since, metrics: None });
+                    if !burst.collect { burst.pending += 1; }
                     Arrival::Accepted { camera, seq }
                 }
                 Offer::Duplicate => Arrival::Duplicate { camera, seq: frame.frame_counter - baseline },

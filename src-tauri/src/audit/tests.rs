@@ -126,6 +126,7 @@ fn part(cycle: &str, sn: u32) -> RecordedPart {
     frames[0].metrics = Some(crate::store::burst_fixture::measured(0, 1, 6.5));
     let (judgement, burst) = crate::store::burst_fixture::record(&recipe, frames, None, Some(0));
     RecordedPart {
+        mode: Default::default(),
         ts: 1234,
         sn: format!("SN-{sn}"),
         recipe: Some(recipe),
@@ -198,6 +199,7 @@ fn burst_part_replays_from_spool_and_links_raw_files_by_camera_seq_beyond_shot_l
     let recipe = Arc::new(crate::store::burst_fixture::recipe());
     let (judgement, burst) = crate::store::burst_fixture::record(&recipe, crate::store::burst_fixture::frames(70, &[(1, 2)]), None, Some(70));
     let record = RecordedPart {
+        mode: Default::default(),
         ts: 1234, sn: "SN-B70".into(), recipe: Some(recipe), judgement, drain_ms: None, frames: Vec::new(),
         frames_expected: 4, frames_received: 70, triggers: 70, table: None, software_version: "audit-test".into(),
         cycle_id: "burst-70".into(), bundle_id: None, delivery: delivery(PlcDeliveryState::NotRequired, 0), shots: Vec::new(),
