@@ -911,6 +911,14 @@ impl PlcSession {
                 Some("已发起软件复位（pcState=99），等待 PLC 清除未结事务并回空闲".into());
             return Ok(SessionEvent::None);
         }
+        if plc_reset && !reset_requested {
+            let data = json!({"source": "plc", "phase": format!("{:?}", self.phase)});
+            applog::emit_event(
+                &codes::S7_RESET_REQUEST,
+                "收到复位（plc）",
+                Fields::default().with_data(data),
+            );
+        }
         self.complete_reset(
             engine,
             snapshot,
