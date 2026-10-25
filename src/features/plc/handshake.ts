@@ -51,7 +51,7 @@ const resultCodeNames: Record<number, string> = {
 const faultCodeNames: Record<number, string> = {
   // 91 / 94 / 96：段配方的含义在前；旧拍照点配方仍按旧含义产生这三个码，括号里保留，避免现场按新含义误判。
   91: "整件无图（旧配方：缺帧）", 92: "定位失败", 93: "无效测量点", 94: "预期总数与计划不符（旧配方：拍照点数不符）", 95: "配方不可用", 96: "保留未用（旧配方：多余帧）",
-  97: "运动结束超时", 98: "设备丢失", 99: "处理异常", 100: "计划版本、设备绑定或计划内容与 PC 不一致",
+  97: "运动结束超时", 98: "设备丢失", 99: "处理异常", 100: "配方无法编出拍照计划",
 };
 
 export function resultCodeLabel(resultCode: number, faultCode: number | null) {

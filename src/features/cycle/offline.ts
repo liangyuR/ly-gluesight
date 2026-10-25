@@ -7,9 +7,9 @@ export const scenarioOptions: [Scenario, string][] = [
   ["lostFrame", "传输丢帧 / 缺帧"],
   ["locateFail", "定位失败（胶正常）"],
   ["locateFailGap", "定位失败 + 断胶"],
-  ["countMismatch", "计数偏差（只告警）"],
+  ["countMismatch", "少发一次触发（旧拍照点配方）"],
   ["motionTimeout", "运动超时（PLC 不报运动结束）"],
-  ["ackMismatch", "ACK 序号不匹配"],
+  ["ackMismatch", "PLC 回显核对不符（置 90）"],
   // 以下五种只适用于段配方（分段连拍），旧拍照点配方选了后端会拒绝并说明原因
   ["cameraLost", "单台相机缺帧（该组检测不完整）"],
   ["pulseJitter", "脉冲数波动（首尾 ±1 帧）"],
