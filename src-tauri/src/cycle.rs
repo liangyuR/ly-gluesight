@@ -2651,7 +2651,22 @@ impl Machine {
             ),
         );
         self.finish_recording(&sn, &judgement);
-        self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id, ts: now_ms(), drain_ms, judgement, burst, mode });
+        self.result = Some(ResultView {
+            candidate_debug: self
+                .part
+                .as_ref()
+                .and_then(|p| p.candidate.as_ref())
+                .map(|c| c.info.clone())
+                .or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())),
+            cycle_id: self.current_cycle_id.clone(),
+            sn,
+            recipe_id,
+            ts: now_ms(),
+            drain_ms,
+            judgement,
+            burst,
+            mode,
+        });
         match r {
             Ok(()) => self.set_phase(Phase::Report),
             Err(reason) => {
@@ -2921,7 +2936,22 @@ impl Machine {
             log_with(&self.app, "err", "在途件中断", format!("SN {sn} 记 ERR 98，需人工处理该件"), Fields::stage("result"));
             let burst = self.burst_outcome(&sn, self.part.as_ref().map(|p| &*p.recipe), &judgement).map(|record| record.judgement);
             let mode = self.part_mode(&sn);
-            self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement, burst, mode });
+            self.result = Some(ResultView {
+                candidate_debug: self
+                    .part
+                    .as_ref()
+                    .and_then(|p| p.candidate.as_ref())
+                    .map(|c| c.info.clone())
+                    .or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())),
+                cycle_id: self.current_cycle_id.clone(),
+                sn,
+                recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()),
+                ts: now_ms(),
+                drain_ms: None,
+                judgement,
+                burst,
+                mode,
+            });
         }
         if production_pending && fault_fails_delivery(self.phase) && self.result.is_some() {
             self.fail_delivery(&reason);
