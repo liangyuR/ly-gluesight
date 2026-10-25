@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,7 +10,7 @@ import { historyApi } from "../src/features/history/api";
 import { burstRecipe, burstWorkspaceView, planExport, siteStatus, workspaceState } from "./fixtures";
 vi.mock("../src/features/cycle/api", () => ({ useSiteStatus: vi.fn() }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn(), collectChecks: vi.fn(), publishCollect: vi.fn() } }));
 vi.mock("../src/features/history/api", () => ({ historyApi: { query: vi.fn() } }));
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><ValidationPage /></MemoryRouter>);
@@ -93,6 +93,30 @@ describe("验证与发布页面", () => {
       expect(dialog).toHaveTextContent("预期总帧数 ΣN_exp ± Σtol：14 ± 3（生产：12 ± 3）");
       expect(dialog).not.toHaveTextContent(/shotCount|deviceShots|PLC 要同步/);
     });
+  });
+
+  it("发布采集版 → 逐条列出未满足项且不能确认；全部满足后确认发布同一修订", async () => {
+    vi.mocked(workspaceApi.publishCollect).mockResolvedValue(ws.data!);
+    vi.mocked(workspaceApi.collectChecks).mockResolvedValueOnce([
+      { name: "计划相机", passed: true, detail: "cam1、cam2、cam3 共用一个触发" },
+      { name: "曝光与增益", passed: false, detail: "相机 cam2 缺少曝光与增益" },
+      { name: "生产版本", passed: false, detail: "已有正式版 v3" },
+    ]);
+    show();
+    await userEvent.click(screen.getByRole("button", { name: "发布采集版" }));
+    let dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("采集版只在维护模式下运行，只采图不判定");
+    expect(dialog).toHaveTextContent("2 项未满足");
+    expect(dialog).toHaveTextContent("相机 cam2 缺少曝光与增益");
+    expect(dialog).toHaveTextContent("已有正式版 v3");
+    expect(within(dialog).getByRole("button", { name: /确认发布采集版/ })).toBeDisabled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    vi.mocked(workspaceApi.collectChecks).mockResolvedValueOnce([{ name: "计划相机", passed: true, detail: "cam1、cam2、cam3 共用一个触发" }]);
+    await userEvent.click(screen.getByRole("button", { name: "发布采集版" }));
+    dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: /确认发布采集版/ }));
+    expect(workspaceApi.publishCollect).toHaveBeenCalledWith("A", 7);
+    expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 
   it("验证未通过时不能发布", () => {

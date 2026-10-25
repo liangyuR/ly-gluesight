@@ -281,6 +281,8 @@ pub fn run() {
             workspace::workspace_validate,
             workspace::workspace_import_sample,
             workspace::workspace_publish,
+            workspace::workspace_collect_checks,
+            workspace::workspace_publish_collect,
             workspace::workspace_record_images,
             workspace::workspace_record_image,
             workspace::workspace_history_capture,

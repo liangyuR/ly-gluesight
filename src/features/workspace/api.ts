@@ -1,7 +1,7 @@
 import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
 import type { CameraTeachDraft, CaptureRoundV2, PathSegment } from "../plan/types";
-import type { CaptureRound, CaptureSummary, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, Workspace, WorkspaceView } from "./types";
+import type { CaptureRound, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, Workspace, WorkspaceView } from "./types";
 
 function grayPreview(input: ArrayBuffer | number[]) {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -69,6 +69,10 @@ export const workspaceApi = {
   captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeGray),
   captureList: (recipeId: string) => desktopCall<CaptureSummary[]>("recipe_capture_list", { recipeId }),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
+  /** 采集版检查：计划相机、相机组、曝光与增益、PLC 型号、段、生产版本；不改候选 */
+  collectChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_collect_checks", { id, revision }),
+  /** 发布采集版（只供维护模式采图，不判定），在工件边界生效 */
+  publishCollect: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish_collect", { id, revision }),
   recordImages: (historyId: number) => desktopCall<RecordImages>("workspace_record_images", { historyId }),
   recordImage: (historyId: number, k: number, view?: number) => desktopCall<ArrayBuffer>("workspace_record_image", { historyId, k, view }).then(decodeGray),
   historyCapture: (id: string, revision: number, historyId: number, k: number) =>

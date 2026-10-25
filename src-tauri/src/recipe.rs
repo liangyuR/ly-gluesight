@@ -383,6 +383,22 @@ fn segment_rect_distance(a: [f64; 2], b: [f64; 2], r: [f64; 4]) -> f64 {
         .into_iter().fold(f64::INFINITY, f64::min)
 }
 
+/// 配方阶段（在线投运）：采集版只定了三台计划相机和曝光增益，供维护模式跟着生产采图；正式版走完整发布门槛。
+/// 旧文件没有这一项，按正式版读；正式版不写这一项，旧版本程序照常读取。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecipeStage {
+    #[default]
+    Formal,
+    Collect,
+}
+
+impl RecipeStage {
+    pub fn is_formal(&self) -> bool {
+        *self == Self::Formal
+    }
+}
+
 /// 一台相机在这个配方下的曝光与增益：示教采集和生产布防前下发到相机。
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -641,6 +657,8 @@ pub struct Recipe {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_id: Option<String>,
     pub product_code: u16,
+    #[serde(default, skip_serializing_if = "RecipeStage::is_formal")]
+    pub stage: RecipeStage,
     pub trigger_mode: TriggerMode,
     pub schema_version: u32,
     /// 站距（mm）
@@ -674,6 +692,11 @@ impl Recipe {
     /// 段配方的计划相机（按 inspect 顺序）：PLC 一个触发同时触发它们。旧拍照点配方为空。
     pub fn plan_cameras(&self) -> Vec<String> {
         self.inspect.iter().map(|i| i.camera.clone()).collect()
+    }
+
+    /// 采集版：只能在维护模式下采图，不能当正式检测运行。
+    pub fn is_collect(&self) -> bool {
+        self.stage == RecipeStage::Collect
     }
 
     /// 整件预期帧组数 ΣN_exp（各段都已标定取其和，否则取整件标定）；未标定为 None。
@@ -807,6 +830,9 @@ pub struct RecipeDoc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_id: Option<String>,
     pub product_code: u16,
+    /// 采集版或正式版；缺省为正式版
+    #[serde(default, skip_serializing_if = "RecipeStage::is_formal")]
+    pub stage: RecipeStage,
     /// 段配方固定为 Fly（D-SB-23）；Stop（停稳拍）只供旧拍照点配方
     pub trigger_mode: TriggerMode,
     /// 缺省为 0，校验时报格式版本不符
@@ -1060,6 +1086,7 @@ impl RecipeDoc {
             revision_id: format!("{}-v{}", self.id, self.version.max(1)),
             teaching_id: self.teaching_id.clone(),
             product_code: self.product_code,
+            stage: self.stage,
             trigger_mode: self.trigger_mode,
             schema_version: self.schema_version,
             spacing: self.spacing,
@@ -1157,6 +1184,7 @@ pub fn samples() -> Vec<RecipeDoc> {
         plan_version: u32::from(code),
         teaching_id: None,
         product_code: code,
+        stage: RecipeStage::Formal,
         trigger_mode,
         schema_version: RECIPE_SCHEMA,
         spacing: 1.0,
@@ -1185,6 +1213,7 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
         plan_version: 0,
         teaching_id: None,
         product_code,
+        stage: RecipeStage::Formal,
         trigger_mode: TriggerMode::Fly,
         schema_version: RECIPE_SCHEMA,
         spacing: 1.0,
@@ -1264,6 +1293,8 @@ impl UnavailableRecipe {
         })
     }
 }
+
+pub const COLLECT_AFTER_FORMAL: &str = "已有正式版，不能再发布采集版：正式版不降级，请继续示教、标定后发布新的正式版";
 
 /// 磁盘上的配方库：每个配方一个 `<id>.json`。
 pub struct RecipeStore {
@@ -1680,6 +1711,9 @@ impl RecipeStore {
         if current.map(|(_, recipe)| recipe.revision_id.as_str()) != expected_base {
             return Err("待发布版本与当前生产配方冲突".into());
         }
+        if doc.stage == RecipeStage::Collect && current.is_some_and(|(previous, _)| previous.stage.is_formal()) {
+            return Err(COLLECT_AFTER_FORMAL.into());
+        }
         let floor = self.version_after(&doc.id, current.map(|(previous, _)| previous.version))?;
         let expected_version = if current.is_some() { floor } else { floor.max(doc.version.max(1)) };
         if doc.version != expected_version { return Err("发布版本必须是明确分配的下一版本".into()); }
@@ -1834,6 +1868,43 @@ mod tests {
         assert_eq!(store.get(&doc.id).unwrap().version, 8);
         assert_eq!(store.save(doc, None).unwrap().version, 9);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 在线投运：采集版之后照常发布正式版；正式版生效后不能再发布采集版（不降级成只采图的配方）。
+    #[test]
+    fn collect_then_formal_publishes_but_formal_never_downgrades_to_collect() {
+        let dir = std::env::temp_dir().join(format!("gluesight-collect-stage-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let publish = |stage: RecipeStage, base: Option<&str>| {
+            let mut doc = samples_burst();
+            doc.stage = stage;
+            doc.version = store.next_version(&doc.id).unwrap();
+            doc.plan_version = store.plan_version_for(&doc).unwrap();
+            store.save_published(doc, base)
+        };
+        let collect = publish(RecipeStage::Collect, None).unwrap();
+        assert!(collect.is_collect());
+        let formal = publish(RecipeStage::Formal, Some(&collect.revision_id)).unwrap();
+        assert!(!formal.is_collect());
+        assert_eq!(publish(RecipeStage::Collect, Some(&formal.revision_id)).unwrap_err(), COLLECT_AFTER_FORMAL);
+        assert!(!store.get(&formal.id).unwrap().is_collect());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 文件契约：recipes/<编号>.json 没有 stage 按正式版读，正式版也不写 stage（旧程序照常读）；采集版写 "stage": "collect"，
+    /// 读回与检测记录的配方快照里都还是采集版。
+    #[test]
+    fn recipe_file_without_stage_reads_formal_and_collect_survives_file_and_snapshot() {
+        let formal = serde_json::to_value(samples_burst()).unwrap();
+        assert!(formal.get("stage").is_none());
+        assert!(serde_json::from_value::<RecipeDoc>(formal).unwrap().stage.is_formal());
+        let mut doc = samples_burst();
+        doc.stage = RecipeStage::Collect;
+        let file = serde_json::to_value(&doc).unwrap();
+        assert_eq!(file["stage"], "collect");
+        assert!(serde_json::from_value::<RecipeDoc>(file).unwrap().build().unwrap().is_collect());
+        let snapshot = serde_json::to_value(doc.build().unwrap()).unwrap();
+        assert!(Recipe::from_snapshot(snapshot).unwrap().is_collect());
     }
 
 }
