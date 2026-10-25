@@ -27,3 +27,19 @@ it("换筛选后查询失败 → 不把上一次条件的记录当成新条件�
   expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument();
   expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("离线共 0 件");
 });
+
+it("维护件 → 采集件标“维护采集·未判定”不显示成 ERR，试判件标“试判”加原结论", async () => {
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "history_query") return { total: 2, counts: { ok: 0, excursion: 0, ng: 1, err: 1 }, items: [
+      { ...burstPartSummary(1), mode: "maintenanceCollect", verdict: "ERR_INSPECT", plcCode: 0, reason: "维护采集：只录图" },
+      { ...burstPartSummary(2), mode: "maintenanceShadow", verdict: "NG_GAP", plcCode: 0 },
+    ] };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  const collect = (await row(1)).closest("tr")!;
+  expect(collect).toHaveTextContent("维护采集·未判定");
+  expect(collect).not.toHaveTextContent("ERR · 未测成");
+  expect((await row(2)).closest("tr")).toHaveTextContent("试判 NG · 断胶");
+});
