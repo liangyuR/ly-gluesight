@@ -95,4 +95,4 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | [research/](research/glue-position-methods.md) | 胶条位置检测方法调研 | 调研 |
 | [deployment/](deployment/PACKAGING.md) | Windows 打包与运行库部署 | 现状 |
 
-S7 测试 PLC 在 [`scripts/s7-handshake/`](../scripts/s7-handshake/README.md)。架构 HTML 是自包含文件，可离线打开。
+架构 HTML 是自包含文件，可离线打开。

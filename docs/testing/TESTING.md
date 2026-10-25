@@ -63,9 +63,9 @@ SDK 枚举成功但本机发现 0 台设备；Jinghang JHEM131GC-XS 的门控节
 | --- | --- |
 | 前端 | 103 项默认回归：段配方创建与草稿防丢、采集准入和独立样本、多轮标定与走廊示教、验证发布门槛、周期/帧归属隔离、历史区域重判、PLC 操作锁、单视角标定更新与配置安全；逐项见[前端保留测试清单](frontend-test-retained-inventory.md) |
 | Rust 默认 | 106 项有实际保护规则的回归：当前段配方、帧组与采集、整件标定、未分段判定、PLC、调度、发布与恢复；包含少量真实 S7 TCP 回环、SQLite 和原图录制集成测试，逐项见 [Rust 保留测试清单](rust-test-retained-inventory.md) |
-| S7 专项 | `plc_session` 的 S7 线协议用例（真实生产驱动 + 进程内 S7Server，已进默认 `cargo test`，不再 ignore、不依赖 Python），以及 Python 测试 PLC 自己的线报文自测 |
+| S7 专项 | `plc_session` 的 S7 线协议用例（真实生产驱动 + 进程内 S7Server，已进默认 `cargo test`） |
 | 桌面端到端 | 仅合成图段配方生产落盘：flow 实例内建站、标定、发布、生产、SQLite、原图与历史读回，需要 lyFlow。现场样本集桌面入口和旧拍照点流程已删除 |
-| 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本、S7 Python 服务与 Robot/Modbus 隔离协议 |
+| 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本与 Robot/Modbus 隔离协议 |
 | 手动专项 | 长稳测试、算法评测，需样本集与 lyFlow 运行库，不进 CI；吞吐探针 `throughput_probe`（3 × 25 Hz 门槛的实测依据，见“段模型专项”） |
 
 当前 Rust 共 107 项，其中默认 106 项，唯一 `#[ignore]` 为 `vision::eval::algorithm_eval`，需 lyFlow 与样本集、手动执行。原 7 项真引擎及 2 项 packaging ignored 测试已删除；不会把已删除测试移入其他默认或忽略入口。各层数量以实际源码与 CI（`.github/workflows/windows-ci.yml`）为准，旧拍照点专属测试不再维护，历史结果不能替代本轮验证。
@@ -136,14 +136,13 @@ Windows 受限环境遇到 Node realpath EPERM 时，按仓库 AGENTS.md 的 Win
 
 ## S7 生产握手
 
-协议与点表见 [PLC 通讯协议](../integration/plc-communication-protocol.md)（协议 7，规格在 artifact）。[S7 测试 PLC](../../scripts/s7-handshake/README.md) 仅监听本机回环地址，使用真实 TPKT/COTP/S7 报文。协议 7 沿用 DB4 / DB2，两块各 68 字节，改为状态字握手；协议 6 及更早的点表和 PLC 程序被拒绝。运行结果以 CI 为准，本文不记数字。
+协议与点表见 [PLC 通讯协议](../integration/plc-communication-protocol.md)（协议 7，规格在 artifact）。协议 7 沿用 DB4 / DB2，两块各 68 字节，改为状态字握手；协议 6 及更早的点表被拒绝。运行结果以 CI 为准，本文不记数字。
 
 ```powershell
-python -m unittest discover -s scripts/s7-handshake/tests -v
-cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_session
+cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_session offline::
 ```
 
-`plc_session` 的用例由进程内 S7Server（`src-tauri/src/offline/s7_server.rs`，只监听 127.0.0.1 的随机端口，含仅测试编译的定点故障注入）驱动真实的生产会话，已是默认测试，不再需要 Python 夹具、`--include-ignored` 或 `S7_TEST_PYTHON`；Python 测试 PLC 只剩它自己的线报文自测（`scripts/s7-handshake/tests`，需要 Python 3）。两者都需要本机 TCP 回环权限：Windows 沙箱拒绝 localhost 连接（WinError 10013）时，在获准主机环境运行，不能跳过 TCP 后记为通过。各案例的状态、事务与 DB 快照写在测试临时目录（`s7-session-tests`），通过后自动清理，本机产物不提交。
+`plc_session` 与 `offline` 的用例由进程内 S7Server（`src-tauri/src/offline/s7_server.rs`，只监听 127.0.0.1 的随机端口，含仅测试编译的定点故障注入）驱动真实的生产会话，已是默认测试。原 Python 测试 PLC（`scripts/s7-handshake/`）已于 2026-10-25 删除。用例需要本机 TCP 回环权限：Windows 沙箱拒绝 localhost 连接（WinError 10013）时，在获准主机环境运行，不能跳过 TCP 后记为通过。各案例的状态、事务与 DB 快照写在测试临时目录（`s7-session-tests`），通过后自动清理，本机产物不提交。
 
 ## 特征定位真引擎历史说明
 
