@@ -160,3 +160,39 @@ fn insert_accepts_any_frame_count_but_rejects_duplicate_camera_seq_or_foreign_ca
     let rows = |table: &str| conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0)).unwrap();
     assert_eq!((rows("parts"), rows("part_frames")), (1, 21), "被拒的记录不留任何行");
 }
+
+/// 记录库原地加 mode 列：升级前的记录全部保留并按正式检测件读，之后可写入维护件。
+#[test]
+fn database_without_mode_column_keeps_records_as_production_after_upgrade() {
+    let db = TestDb::new();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) = burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    {
+        let store = Store::open(&db.path()).unwrap();
+        save_burst(&store, &recipe, "before-upgrade", &judgement, &burst).unwrap();
+        store.conn.lock().unwrap().execute_batch("ALTER TABLE parts DROP COLUMN mode").unwrap();
+    }
+    let store = Store::open(&db.path()).unwrap();
+    let mut part = burst_part(&recipe, "after-upgrade", &judgement, &burst);
+    part.mode = PartMode::MaintenanceCollect;
+    store.insert(&part).unwrap();
+    let modes: Vec<_> = store.query(&HistoryQuery::default()).unwrap().items.iter().map(|p| (p.cycle_id.clone().unwrap(), p.mode)).collect();
+    assert_eq!(modes, [("after-upgrade".to_owned(), PartMode::MaintenanceCollect), ("before-upgrade".to_owned(), PartMode::Production)]);
+}
+
+/// 当日统计只算正式检测件：维护采集与试判件不进产线合格率，历史查询照常列出。
+#[test]
+fn today_counts_exclude_maintenance_parts_but_history_lists_them() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) = burst_fixture::record(&recipe, burst_fixture::frames(4, &[(1, 2)]), None, Some(0));
+    for (cycle, mode) in [("production", PartMode::Production), ("collect", PartMode::MaintenanceCollect), ("shadow", PartMode::MaintenanceShadow)] {
+        let mut part = burst_part(&recipe, cycle, &judgement, &burst);
+        part.mode = mode;
+        store.insert(&part).unwrap();
+    }
+    let counts = store.counts_since(0, HistoryScope::Real).unwrap();
+    assert_eq!(counts.ok + counts.excursion + counts.ng + counts.err, 1);
+    assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 3);
+}

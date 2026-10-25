@@ -1070,7 +1070,12 @@ fn annotate_recording(rec: &mut crate::recorder::Recording, host: &CycleHost, mo
     rec.annotate("plc", json!({"requestSeq": request.request_seq, "productCode": request.product_code}));
 }
 
+/// 配方能开工时用到的相机。采集版只在维护模式下开工，只核对相机，不要求走廊、标定与发布包。
 pub fn runnable_cams(app: &AppHandle, recipe: &Recipe) -> Result<Vec<u8>, String> {
+    if recipe.is_collect() && host(app).settings().maintenance.is_some() {
+        return usable_cams(app, recipe);
+    }
+    crate::production::stage_admits(recipe)?;
     ready_to_run(recipe)?;
     crate::production::ready(app, recipe)?;
     usable_cams(app, recipe)

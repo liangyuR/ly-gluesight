@@ -684,10 +684,6 @@ pub struct Recipe {
 }
 
 impl Recipe {
-    pub fn is_collect(&self) -> bool {
-        false
-    }
-
     /// 段配方（分段连拍）：段列表非空。否则是旧拍照点配方。
     pub fn is_burst(&self) -> bool {
         !self.path_segments.is_empty()

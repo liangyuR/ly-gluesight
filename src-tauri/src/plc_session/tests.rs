@@ -394,3 +394,43 @@ async fn s7_wire_teaching_plan_arms_only_in_a_capture_transaction() {
     rig.ack_release().await;
     rig.finish().await;
 }
+
+/// 协议 7 第八节：维护件按 pcMode=1 布防，没有拍照计划也能布防，结果码只能是 0；切换模式不算外部改写，
+/// 在途件按接件时锁存的模式完成。
+#[tokio::test]
+async fn maintenance_part_arms_with_pc_mode_1_and_accepts_only_result_code_0() {
+    let mut rig = Rig::new("maintenance").await;
+    rig.session.set_maintenance(true);
+    rig.fresh().await;
+    let event = rig.session.poll(&rig.engine, false, true).await;
+    assert!(matches!(event, SessionEvent::None), "{event:?}");
+    assert_eq!((rig.plc.pc(), rig.plc.get(tag::PC_MODE)), (state::PC_READY, 1));
+    rig.request(1, "SN-M1").await;
+    rig.session.set_maintenance(false);
+    assert!(rig.session.part_maintenance());
+    rig.session.arm_outputs(&rig.engine, None).await.unwrap();
+    rig.session.commit_arm(&rig.engine).await.unwrap();
+    assert_eq!((rig.plc.pc(), rig.plc.get(tag::PC_MODE)), (state::PC_ARMED, 1));
+    rig.end().await;
+    assert!(rig.session.report(&rig.engine, 1, 0).await.is_err());
+    rig.session.report(&rig.engine, 0, 0).await.unwrap();
+    assert_eq!((rig.plc.pc(), rig.plc.get(tag::RESULT_CODE)), (state::PC_RESULT, 0));
+    rig.ack_release().await;
+    assert_eq!(rig.plc.get(tag::PC_MODE), 0, "退出维护模式后空闲输出回到正常模式");
+    rig.finish().await;
+}
+
+/// 正常件不能没有拍照计划就布防，也不能回结果码 0（0 只属于维护模式，PLC 判非法）。
+#[tokio::test]
+async fn normal_part_cannot_arm_without_plan_or_report_code_0() {
+    let mut rig = Rig::new("normal-no-zero").await;
+    rig.request(1, "SN-N1").await;
+    assert!(rig.session.arm_outputs(&rig.engine, None).await.is_err());
+    assert_eq!(rig.session.phase(), SessionPhase::Validating);
+    rig.arm().await;
+    rig.end().await;
+    assert!(rig.session.report(&rig.engine, 0, 0).await.is_err());
+    rig.report().await;
+    rig.ack_release().await;
+    rig.finish().await;
+}
