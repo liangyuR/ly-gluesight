@@ -157,13 +157,14 @@ describe("在线检测段配方", () => {
     for (const label of hidden) expect(card.queryByText(label)).not.toBeInTheDocument();
   });
 
-  it("维护采集件 → 判定卡显示未判定，不显示成 ERR", () => {
-    const base = burstState({ verdict: "ERR_INSPECT", plcCode: 0, reason: "维护采集：只录图、不判定（12 个帧组）" });
-    state = { ...base, result: { ...base.result!, mode: "maintenanceCollect" } };
+  it("维护件留有异常码 95 → 判定卡显示未判定、PLC 只显示实际回写的 0", () => {
+    const base = burstState({ verdict: "ERR_INSPECT", plcCode: 0, reason: "维护模式：产品代码 1 没有对应的配方；照常布防放行，本件未检" });
+    state = { ...base, result: { ...base.result!, mode: "maintenanceCollect", faultCode: 95 } };
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     const card = within(screen.getByRole("region", { name: "整件判定" }));
     expect(card.getByText("未判定")).toBeVisible();
     expect(card.queryByText("ERR")).not.toBeInTheDocument();
+    expect(card.getByText("PLC 0")).toBeVisible();
   });
 
   it("默认跟随最新帧组；点帧组条 → 按 (相机, seq) 读各相机原图且缺帧的相机不读，返回当前帧组恢复跟随", async () => {

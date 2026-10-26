@@ -1,6 +1,6 @@
 # Rust 保留测试清单
 
-数量（2026-10-26 以 `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib -- --list` 核对）：**默认 167 项，没有手动忽略的用例**。其中 118 项在分组表中逐项列出源码、测试名称及保护规则，49 项列在末节“尚未逐项登记”。测试数量只在本清单维护，其他文档不写数字。
+数量（2026-10-26 以 `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib -- --list` 核对）：**默认 169 项，没有手动忽略的用例**。其中 118 项在分组表中逐项列出源码、测试名称及保护规则，51 项列在末节“尚未逐项登记”。测试数量只在本清单维护，其他文档不写数字。
 
 默认集合包含少量真实 S7 TCP 回环、SQLite、图片写盘与审计恢复集成测试，不能把 `cargo test --lib` 全部理解为纯单元测试。默认运行不需要现场相机、PLC、现场样本或 lyFlow DLL；S7 用例需要本机回环连接权限。不通过 `ignore` 隐藏删除项，也不把不同业务用例塞进一个大循环。运行方法与环境要求见[测试说明](TESTING.md)。
 
@@ -13,8 +13,8 @@
 | 工作区、发布与视觉 | 31 | 0 |
 | 系统配置与资料安全 | 11 | 0 |
 | 持久化、录制与离线 | 8 | 0 |
-| 尚未逐项登记 | 49 | 0 |
-| 合计 | 167 | 0 |
+| 尚未逐项登记 | 51 | 0 |
+| 合计 | 169 | 0 |
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
@@ -220,3 +220,5 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
 | `workspace::capture_review::tests` | `template_requires_confirmation_and_application_preserves_exclusions_as_draft` |
 | `workspace::collect_release_tests` | `missing_camera_imaging_or_formal_exists_then_collect_check_fails` |
 | `workspace::collect_release_tests` | `untaught_uncalibrated_candidate_then_collect_checks_pass_and_store_saves_collect` |
+| `cycle::tests` | `no_runnable_recipe_blocks_only_outside_maintenance` |
+| `cycle::tests` | `run_kind_collect_runs_only_in_maintenance_and_formal_always_needs_corridors` |
