@@ -152,6 +152,15 @@ pub struct CameraTeachingView {
     pub mm_per_px: Option<f64>,
     /// 已选示教帧的段走廊（D-SB-42），按段号
     pub segments: Vec<SegmentTeachingView>,
+    /// 这台相机检测的每一段都已保存段走廊：不再需要默认走廊即可标定（生产暂时仍只用默认走廊）
+    pub covered: bool,
+}
+
+impl CameraTeachingView {
+    /// 走廊示教完成：有像素当量，默认走廊已保存，或它检测的段都有段走廊。
+    pub(super) fn ready(&self) -> bool {
+        self.mm_per_px.is_some() && (self.saved || self.covered)
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1173,7 +1182,9 @@ fn add_round(app: AppHandle, id: String, revision: u64, round_id: String, standa
                         inspect.camera
                     )
                 })?;
-            let default = vision::plan_corridor(inspect, &recipe, teaching.frame.size)?;
+            let default = corridor_saved(inspect, teaching.frame.size)
+                .then(|| vision::plan_corridor(inspect, &recipe, teaching.frame.size))
+                .transpose()?;
             let used: BTreeSet<u32> = choice
                 .get(camera)
                 .into_iter()
@@ -1208,9 +1219,15 @@ fn add_round(app: AppHandle, id: String, revision: u64, round_id: String, standa
                 crate::image_file::load(&capture.burst_frame_path(&round_id, camera_id, seq)?)?;
             let (default, segments) = &graphs[camera];
             let segment = choice[camera][(seq - 1) as usize];
+            let graph = segment
+                .and_then(|s| segments.get(&s))
+                .or(default.as_ref())
+                .ok_or_else(|| {
+                    format!("相机 {camera_id} 第 {seq} 帧组所在段没有段走廊，也没有默认走廊")
+                })?;
             vision::measure_frame(
                 &engine,
-                segment.and_then(|s| segments.get(&s)).unwrap_or(default),
+                graph,
                 &image,
                 seq,
                 &format!("{run}-c{camera}-{seq}"),
@@ -1332,7 +1349,18 @@ pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
                 })
                 .collect();
             segments.sort_by_key(|s| s.segment);
+            let mut detected = w
+                .doc
+                .segments
+                .iter()
+                .filter(|s| {
+                    crate::plan::segment_cameras(s, &w.doc.plan_cameras()).contains(&inspect.camera)
+                })
+                .peekable();
+            let covered = detected.peek().is_some()
+                && detected.all(|s| segments.iter().any(|v| v.segment == s.index && v.saved));
             CameraTeachingView {
+                covered,
                 camera: inspect.camera.clone(),
                 saved: frame
                     .as_ref()
@@ -1370,16 +1398,47 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
         detail: format!("{} 段（直线 {straight}、弯道 {}），帧数容差合计 ±{}", doc.segments.len(), doc.segments.len() - straight, crate::plan::tolerance_total(&doc.segments)),
         blockers: Vec::new() };
     let corridor = {
-        let open: Vec<_> = teaching.iter().filter(|t| !(t.saved && t.mm_per_px.is_some())).collect();
-        let blockers: Vec<_> = open.iter().map(|t| BlockerV2 {
-            message: format!("相机 {}：{}", t.camera, if t.frame.is_none() { "待选示教帧" } else if !t.saved { "待示教走廊" } else { "缺像素当量" }),
-            target: TargetV2::Corridor { camera: t.camera.clone() },
-        }).collect();
-        let status = if !captured { StepStatus::NotStarted } else if open.is_empty() { StepStatus::Done }
-            else if teaching.iter().all(|t| t.frame.is_none()) { StepStatus::NotStarted } else { StepStatus::InProgress };
-        StepV2 { id: StepIdV2::Corridor, label: "走廊示教", optional: false, status,
-            detail: format!("{} / {} 台相机已示教走廊", teaching.len() - open.len(), teaching.len()),
-            blockers: if captured { blockers } else { need_capture() } }
+        let open: Vec<_> = teaching.iter().filter(|t| !t.ready()).collect();
+        let blockers: Vec<_> = open
+            .iter()
+            .map(|t| BlockerV2 {
+                message: format!(
+                    "相机 {}：{}",
+                    t.camera,
+                    if t.frame.is_none() {
+                        "待选示教帧"
+                    } else if !(t.saved || t.covered) {
+                        "待示教走廊"
+                    } else {
+                        "缺像素当量"
+                    }
+                ),
+                target: TargetV2::Corridor {
+                    camera: t.camera.clone(),
+                },
+            })
+            .collect();
+        let status = if !captured {
+            StepStatus::NotStarted
+        } else if open.is_empty() {
+            StepStatus::Done
+        } else if teaching.iter().all(|t| t.frame.is_none()) {
+            StepStatus::NotStarted
+        } else {
+            StepStatus::InProgress
+        };
+        StepV2 {
+            id: StepIdV2::Corridor,
+            label: "走廊示教",
+            optional: false,
+            status,
+            detail: format!(
+                "{} / {} 台相机已示教走廊",
+                teaching.len() - open.len(),
+                teaching.len()
+            ),
+            blockers: if captured { blockers } else { need_capture() },
+        }
     };
     let calibration = {
         let normal = w.calibration.rounds.iter().filter(|r| !r.standard).count() as u32;

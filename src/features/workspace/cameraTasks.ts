@@ -26,7 +26,7 @@ export function corridorPath(camera: string): string {
 }
 
 function phaseOf(teaching: CameraTeachingView | undefined): CameraTeachPhase {
-  if (teaching?.saved) return teaching.mmPerPx != null ? "done" : "scale";
+  if (teaching?.saved || teaching?.covered) return teaching.mmPerPx != null ? "done" : "scale";
   return teaching?.frame ? "teach" : "selectFrame";
 }
 
@@ -35,7 +35,8 @@ export function cameraTeachingTasks(plan: Pick<WorkspacePlanView, "cameras" | "c
   return plan.cameras.map(camera => {
     const teaching = plan.cameraTeaching.find(t => t.camera === camera);
     const status = phaseOf(teaching);
-    return { camera, status, ...(teaching?.frame ? { frame: teaching.frame } : {}), label: phaseLabel[status], href: corridorPath(camera) };
+    const label = status === "done" && !teaching?.saved ? "按段已示教" : phaseLabel[status];
+    return { camera, status, ...(teaching?.frame ? { frame: teaching.frame } : {}), label, href: corridorPath(camera) };
   });
 }
 

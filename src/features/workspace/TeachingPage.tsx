@@ -256,10 +256,11 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const [lengthValue, lengthUnit] = scaled ? [(lengthPx * t.mmPerPx!).toFixed(1), "mm"] : [lengthPx.toFixed(0), "px"];
   const cornerLong = segmentItem?.kind === "corner" && scaled && lengthPx * t.mmPerPx! > CORNER_CORRIDOR_MM;
   const done = segment == null ? task.status === "done" : !!segmentTeaching?.saved;
+  const bySegments = segment == null && !hasPath && !!plan.cameraTeaching.find(item => item.camera === camera)?.covered;
   const groupsLocked = !unlocked || editing || frameDirty;
   const groupLockReason = editing || frameDirty ? "走廊有未保存的修改，先保存或清空后再切换相机" : data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候";
   const [stateText, stateTone]: [string, "ok" | "warn" | "info" | "neutral"] = !frame ? ["待选帧", "neutral"] : data.workspace.pending ? ["候选待生效", "warn"]
-    : choosing ? ["重新选帧中", "info"] : editing ? [invalid ? "走廊已修改 · 未完成" : "走廊已修改 · 待保存", "warn"] : done ? ["已示教", "ok"] : segment == null && task.status === "scale" ? ["缺像素当量", "warn"] : hasPath ? ["已保存 · 待检查", "info"] : ["待示教走廊", "neutral"];
+    : choosing ? ["重新选帧中", "info"] : bySegments && !editing ? ["按段已示教", "ok"] : editing ? [invalid ? "走廊已修改 · 未完成" : "走廊已修改 · 待保存", "warn"] : done ? ["已示教", "ok"] : segment == null && task.status === "scale" ? ["缺像素当量", "warn"] : hasPath ? ["已保存 · 待检查", "info"] : ["待示教走廊", "neutral"];
   // 刷选连续两次找不到连续边缘后，笔划直接生成走廊是唯一的主操作
   const strokeAdvised = selectionTool === "brush" && brushFailures >= 2 && !!extractionFailure;
   const primary = strokeAdvised ? "stroke" : !hasPath ? "extract" : editing ? "save" : "next";
@@ -269,6 +270,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       : working ? "正在处理或保存，请稍候"
         : choosing ? "选定新帧后，现有走廊与参数原样保留"
           : editing ? (invalid ? invalid : "有未保存的修改：保存后写入候选配方，已发布版本不变；也会在停顿后自动保存")
+            : bySegments && !editing ? "各段都已示教段走廊，标定不需要默认走廊；生产暂时只用默认走廊，发布前再补"
             : cornerLong ? `弯道走廊超过 ${CORNER_CORRIDOR_MM} mm：胶条绕出胶点转动，建议只从出胶点起画一小段`
               : segment != null ? (done ? `第 ${segment} 段的帧用这条走廊测量，其余段用默认走廊` : segmentItem?.kind === "corner" ? `弯道：从出胶点起沿胶条画一小段（不超过 ${CORNER_CORRIDOR_MM} mm）` : "直线段：从出胶点一侧起，沿胶条方向画整段走廊")
                 : task.status === "scale" ? "走廊已保存，还缺像素当量"

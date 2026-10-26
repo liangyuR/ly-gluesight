@@ -93,6 +93,7 @@ pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1
 | 39e | [workspace/segment_corridor_tests.rs](../../src-tauri/src/workspace/segment_corridor_tests.rs) | `segment_teaching_frame_must_lie_in_that_segment_of_a_confirmed_round` | 段走廊示教帧须落在已确认分段轮次的本段内，相机须是本段检测相机且已示教默认走廊（D-SB-42，2026-10-26 新增） |
 | 39f | [workspace/segment_corridor_tests.rs](../../src-tauri/src/workspace/segment_corridor_tests.rs) | `calibration_measures_frames_of_a_segment_with_its_saved_corridor_and_others_with_the_default` | 标定按已确认边界选走廊：本段、本相机、已保存的段走廊才用，其余帧和未确认分段的轮次用默认走廊（D-SB-42） |
 | 39g | [workspace/segment_corridor_tests.rs](../../src-tauri/src/workspace/segment_corridor_tests.rs) | `segment_structure_change_drops_segment_corridors_and_their_frames_but_keeps_defaults` | 段类型序列变化清空段走廊与段示教帧、保留默认走廊；只改参数不清；没有示教帧的段走廊不能保存（D-SB-42） |
+| 39h | [workspace/segment_corridor_tests.rs](../../src-tauri/src/workspace/segment_corridor_tests.rs) | `camera_whose_detected_segments_all_have_corridors_is_taught_without_default_corridor` | 相机检测的各段都有段走廊即算走廊示教完成，不必再画默认走廊；只画部分段不算（D-SB-42） |
 | 39a | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `calibrated_multi_segment_recipe_is_judged_by_proportional_regions` | 各段已标定的多段配方在生产节拍中按比例分段，得到直线 / 弯道 / 过渡区域而不是整条未分段（D-SB-40，2026-10-26 新增） |
 | 40 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `next_part_baseline_is_each_camera_highest_frame_counter_seen` | 下一件基线只取每台相机已见最高帧号，迟到帧隔离且漏触发相机下一件首帧不被误丢。 |
 | 41 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `camera_reconnect_during_part_is_err_98` | 生产期间相机重连，无论之后是否再收到帧，都应判设备故障ERR98。 |

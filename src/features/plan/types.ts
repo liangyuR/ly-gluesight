@@ -500,6 +500,8 @@ export interface CameraTeachingView {
   mmPerPx: number | null;
   /** 已选示教帧的段走廊（D-SB-42） */
   segments?: SegmentTeachingView[];
+  /** 这台相机检测的每一段都已保存段走廊：不需要默认走廊即算示教完成（生产暂时仍只用默认走廊） */
+  covered?: boolean;
 }
 
 export interface SegmentTeachingView {

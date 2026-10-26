@@ -96,7 +96,13 @@ fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
             continue;
         };
         if !corridor_saved(inspect, teaching.frame.size) {
-            problems.push(format!("相机 {camera}：走廊未示教或超出示教帧"));
+            problems.push(if inspect.segments.is_empty() {
+                format!("相机 {camera}：走廊未示教或超出示教帧")
+            } else {
+                format!(
+                    "相机 {camera}：生产暂时只用默认走廊（段走廊未接入生产），发布前需示教默认走廊"
+                )
+            });
         } else if inspect.mm_per_px.is_none() {
             problems.push(format!("相机 {camera}：缺像素当量"));
         } else if current.get(camera) != Some(&teaching.frame.camera_tag) {

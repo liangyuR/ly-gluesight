@@ -1,6 +1,6 @@
 use super::burst::{
-    apply_camera_teaching, apply_segment_teaching, corridor_segments, update_segments,
-    CameraTeachDraft, CameraTeaching,
+    apply_camera_teaching, apply_segment_teaching, camera_teaching_views, corridor_segments,
+    update_segments, CameraTeachDraft, CameraTeaching,
 };
 use super::burst_tests::{burst_workspace, capture_round, DEVICE};
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
@@ -163,4 +163,31 @@ fn segment_structure_change_drops_segment_corridors_and_their_frames_but_keeps_d
             corridor: vec![[1.0, 1.0], [50.0, 1.0]],
         });
     assert!(update_doc(&mut w, doc).is_err(), "没有段示教帧的段走廊");
+}
+
+#[test]
+fn camera_whose_detected_segments_all_have_corridors_is_taught_without_default_corridor() {
+    // 防的回归（D-SB-42）：相机检测的各段都画了段走廊、默认走廊清空后，走廊示教仍判“待示教走廊”，标定前被迫再画默认走廊；
+    // 或只画了部分段就算完成
+    for (name, segments, ready) in [
+        ("检测的两段都有段走廊", &[1, 3][..], true),
+        ("只画了一段", &[1][..], false),
+    ] {
+        let (mut w, cameras) = workspace();
+        for &segment in segments {
+            with_segment_corridor(&mut w, &cameras[1], segment, vec![[1.0, 1.0], [50.0, 1.0]]);
+        }
+        let mut doc = w.doc.clone();
+        doc.inspect
+            .iter_mut()
+            .find(|i| i.camera == cameras[1])
+            .unwrap()
+            .corridor
+            .clear();
+        update_doc(&mut w, doc).unwrap();
+        let views = camera_teaching_views(&w);
+        let view = views.iter().find(|v| v.camera == cameras[1]).unwrap();
+        assert!(!view.saved, "{name}");
+        assert_eq!(view.ready(), ready, "{name}");
+    }
 }
