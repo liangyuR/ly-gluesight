@@ -345,7 +345,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     <KV label="曝光">{frame.exposureUs != null ? frame.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.gainDb != null ? frame.gainDb + " dB" : "未记录"}</KV>
     <KV label="示教帧更换">仅通过“重新选帧”</KV>
     {imagingHint && <p className="c-warn" role="note">{imagingHint}；样本仍可用，需要时重新采集</p>}
-    <p className="muted hint">走廊保存进候选配方，已发布版本不变。用于生产前仍需完成多轮标定、代表性样本验证与发布。</p>
+    <p className="muted hint">走廊保存进候选配方，已发布版本不变。用于生产前仍需完成多轮标定与发布。</p>
   </Popover>;
   const pickOptions = rounds.map(item => ({ value: item.roundId, label: `${new Date(item.createdAt).toLocaleString("zh-CN")} · ${item.receivedCount} 帧组${reviews[item.roundId]?.status === "confirmed" ? " · 已确认分段" : ""}` }));
   const pickReason = !picked ? "先选一轮完整的采集" : !range ? "这一轮还没有确认手动分段：先在分段标定里确认边界，或换一轮"

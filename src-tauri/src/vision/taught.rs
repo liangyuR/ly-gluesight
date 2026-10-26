@@ -725,10 +725,6 @@ impl CorridorSet {
     pub fn iter(&self) -> impl Iterator<Item = &CorridorGraph> {
         self.graphs.values()
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.graphs.is_empty()
-    }
 }
 
 /// 用 lyFlow 量一帧（段配方）：见 [`measure_frame_with`]。

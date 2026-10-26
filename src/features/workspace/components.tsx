@@ -49,7 +49,7 @@ export function WorkspaceBar() {
     {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><Button size="sm" variant="outlined" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</Button></Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
-    {publish?.state === "waiting" && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效失败可在验证与发布页重试同一版本。</Notice>}
+    {publish?.state === "waiting" && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效失败可在发布页重试同一版本。</Notice>}
     {publish?.state === "failed" && <Notice title="生效失败，可重试同一版本" tone="warn">{publish.message}</Notice>}
     {publish?.state === "uncertain" && <Notice title="生效状态不确定，请先核实发布状态" tone="ng">{publish.message}</Notice>}
     {publish?.state === "active" && publish.warning && <Notice title={`v${publish.version} 已生效，但候选版本号未能更新`} tone="warn">{publish.warning}</Notice>}

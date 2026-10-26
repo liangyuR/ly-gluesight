@@ -82,6 +82,8 @@ export const workspaceApi = {
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
   /** 采集版检查：计划相机、相机组、曝光与增益、PLC 型号、段、生产版本；不改候选 */
   collectChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_collect_checks", { id, revision }),
+  /** 发布生产配方前检查（设备、走廊示教、段标定、标定采集参数、x_ref、生产版本），当场核对，不改候选（D-SB-46） */
+  publishChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_publish_checks", { id, revision }),
   /** 发布采集版（只供维护模式采图，不判定），在工件边界生效 */
   publishCollect: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish_collect", { id, revision }),
   recordImages: (historyId: number) => desktopCall<RecordImages>("workspace_record_images", { historyId }),

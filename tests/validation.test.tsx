@@ -10,7 +10,7 @@ import { historyApi } from "../src/features/history/api";
 import { burstRecipe, burstWorkspaceView, planExport, siteStatus, workspaceState } from "./fixtures";
 vi.mock("../src/features/cycle/api", () => ({ useSiteStatus: vi.fn() }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn(), collectChecks: vi.fn(), publishCollect: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn(), collectChecks: vi.fn(), publishCollect: vi.fn(), publishChecks: vi.fn() } }));
 vi.mock("../src/features/history/api", () => ({ historyApi: { query: vi.fn() } }));
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><ValidationPage /></MemoryRouter>);
@@ -18,12 +18,14 @@ beforeEach(() => {
   vi.mocked(useSiteStatus).mockReturnValue(siteStatus());
   const view = burstWorkspaceView(burstRecipe({ id: "A" }));
   view.workspace.revision = 7;
+  view.plan!.segments.forEach(segment => { segment.expectedFrames = 4; });
   view.workspace.validation = { revision: 7, passed: true, checkedAt: 1, environmentTag: {}, checks: [], samples: [] };
   view.workspace.sampleBank = [{ id: "good", name: "良品组", geometryTag: null, expected: "OK", createdAt: 1 }];
   view.workspace.samples = [{ historyId: null, sampleId: "good", expected: "OK" }];
   ws = workspaceState(view); vi.mocked(useWorkspace).mockImplementation(() => ws);
   vi.mocked(historyApi.query).mockResolvedValue({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } });
   vi.mocked(workspaceApi.publish).mockResolvedValue(ws.data!);
+  vi.mocked(workspaceApi.publishChecks).mockResolvedValue([{ name: "设备与采集", passed: true, detail: "三台计划相机已就绪" }]);
   vi.mocked(workspaceApi.retryPublish).mockResolvedValue(ws.data!);
 });
 
@@ -73,10 +75,13 @@ describe("验证与发布页面", () => {
       expect(screen.getAllByRole("note").some(note => note.textContent?.includes("段 1、段 2、段 3 待标定"))).toBe(true);
     });
 
-    it("整件已标定、各段预期帧数待分段算法 → 发布可用，不因段待标定而禁用", () => {
+    // 防的回归（D-SB-45 修订 D-SB-21）：多段配方只有整件 ΣN_exp、各段 N_exp 没标定也能发布（生产无法按累计 N_exp 预测每帧所属段）
+    it("多段配方整件已标定、各段预期帧数待标定 → 发布不可用并列出待标定的段号", async () => {
       ws = workspaceState(burst());
       show();
-      expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled();
+      await waitFor(() => expect(workspaceApi.publishChecks).toHaveBeenCalled());
+      expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
+      expect(screen.getAllByRole("note").some(note => note.textContent?.includes("段 1、段 2、段 3 待标定"))).toBe(true);
     });
 
     it("整件预期总帧数 12 → 14 → 发布确认对比列出生产值，不再要求 PLC 同步计划与帧数", async () => {
@@ -86,8 +91,10 @@ describe("验证与发布页面", () => {
       plan.candidateExport = { ...planExport(), expectedTotal: 14 };
       plan.shotCountChanged = true;
       view.planChanged = true; view.productionVersion = 1; view.productionPlanVersion = 3;
+      view.plan!.segments.forEach(segment => { segment.expectedFrames = 4; });
       ws = workspaceState(view);
       show();
+      await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
       await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
       const dialog = screen.getByRole("dialog");
       expect(dialog).toHaveTextContent("预期总帧数 ΣN_exp ± Σtol：14 ± 3（生产：12 ± 3）");
@@ -119,17 +126,24 @@ describe("验证与发布页面", () => {
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 
-  it("验证未通过时不能发布", () => {
-    ws.data!.workspace.validation!.passed = false;
+  // 防的回归（D-SB-46）：发布仍要求先通过独立样本验证；或发布前检查有未满足项（如设备未就绪）时仍能发布
+  it("没有样本验证结果、发布前检查全部满足 → 可以发布；检查有未满足项 → 发布不可用并说明原因", async () => {
+    ws.data!.workspace.validation = null;
+    ws.data!.workspace.samples = [];
+    const page = show();
+    await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
+    page.unmount();
+    vi.mocked(workspaceApi.publishChecks).mockResolvedValue([{ name: "设备与采集", passed: false, detail: "相机 cam2 未就绪" }]);
     show();
+    await waitFor(() => expect(screen.getAllByRole("note").some(note => note.textContent?.includes("设备与采集：相机 cam2 未就绪"))).toBe(true));
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
   });
 
-  it("确认期间候选修订变更必须重新验证和确认",async()=>{
-    const page=show();await userEvent.click(screen.getByRole("button",{name:"发布生产配方"}));
+  it("确认期间候选修订变更必须重新核对发布前检查和确认",async()=>{
+    const page=show();await waitFor(()=>expect(screen.getByRole("button",{name:"发布生产配方"})).toBeEnabled());await userEvent.click(screen.getByRole("button",{name:"发布生产配方"}));
     ws.data!.workspace.revision++;page.rerender(<MemoryRouter><ValidationPage/></MemoryRouter>);
     await waitFor(()=>expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(screen.getByRole("button",{name:"发布生产配方"})).toBeDisabled();expect(screen.getByText("未通过或待重验")).toBeVisible();
+    await waitFor(()=>expect(workspaceApi.publishChecks).toHaveBeenLastCalledWith("A",8));
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 });

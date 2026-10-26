@@ -43,13 +43,12 @@ fn doc_sample_tag(doc: &RecipeDoc) -> Value {
     sample_tag(doc.product_code, &doc.plan_cameras(), &doc.segments)
 }
 
-/// 段配方验证项的输入：设备检查与样本结论由调用方（访问设备、读图、测量）给出，其余只读候选。
+/// 段配方发布前检查的输入：设备检查由调用方（访问设备）给出，其余只读候选。
 pub(super) struct BurstInputs<'a> {
     /// 计划相机解析、三台单视角独立设备、就绪（`cycle::usable_cams` + `check_ready_at`）
     pub device: Result<(), String>,
     /// 当前设备的相机标签（`camera_state`，与示教帧冻结时同一口径），按相机编号
     pub cameras: &'a BTreeMap<String, Value>,
-    pub samples: &'a [SampleResult],
     /// 候选基于当前生产版本
     pub base_matches: bool,
 }
@@ -67,12 +66,6 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
     checks.push(Check { name: "标定采集参数".into(), passed: calibration_devices.is_ok(),
         detail: calibration_devices.err().unwrap_or_else(|| "标定轮次与当前相机采集参数一致".into()) });
     checks.extend(x_ref_check(&w.doc));
-    let normals: Vec<_> = inputs.samples.iter().filter(|r| matches!(r.expected, Verdict::Ok | Verdict::OkWithExcursion)).collect();
-    checks.push(Check {
-        name: "独立正常样本".into(),
-        passed: !normals.is_empty() && normals.iter().all(|r| r.passed),
-        detail: "至少一套独立正常整圈样本（采集轮次独立于走廊示教与多轮标定），所选正常样本均须符合预期；帧组数超出预期只告警；缺陷样本验证结果单独保留".into(),
-    });
     checks.push(Check {
         name: "生产版本".into(),
         passed: inputs.base_matches,
@@ -373,7 +366,69 @@ fn validate_sample(app: &AppHandle, w: &Workspace, recipe: &Recipe, measurer: Re
     ))
 }
 
-/// 段配方的发布前验证（`workspace_validate` 对段配方调用；旧拍照点配方仍走 `super::validation`）。
+/// 可选的独立样本验证结论（D-SB-46：不再是发布前提）：至少一套独立正常整圈样本，所选正常样本均须符合预期。
+fn sample_check(samples: &[SampleResult]) -> Check {
+    let normals: Vec<_> = samples
+        .iter()
+        .filter(|r| matches!(r.expected, Verdict::Ok | Verdict::OkWithExcursion))
+        .collect();
+    Check {
+        name: "独立正常样本".into(),
+        passed: !normals.is_empty() && normals.iter().all(|r| r.passed),
+        detail: "至少一套独立正常整圈样本（采集轮次独立于走廊示教与多轮标定），所选正常样本均须符合预期；帧组数超出预期只告警；缺陷样本验证结果单独保留".into(),
+    }
+}
+
+/// 发布前检查（D-SB-46，发布时当场核对，不跑样本）：设备与采集、走廊示教、段标定、标定采集参数、x_ref、生产版本。
+/// 结果随待生效版本存档（`Release.validation`，样本为空）。
+pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
+    let recipe = w.doc.build()?;
+    let environment_tag = environment(app, &recipe)?;
+    let cycle = app.state::<CycleHost>();
+    let device =
+        cycle::usable_cams(app, &recipe).and_then(|cams| cycle.camera.check_ready_at(&cams));
+    let tags = current_camera_tags(app);
+    let base = cycle.recipe(&recipe.id).map(|r| r.revision_id.clone());
+    let checks = burst_checks(
+        w,
+        BurstInputs {
+            device,
+            cameras: &tags,
+            base_matches: base == w.base_revision,
+        },
+    );
+    Ok(Validation {
+        revision: w.revision,
+        passed: checks.iter().all(|c| c.passed),
+        checked_at: ly_plc::now_ms(),
+        checks,
+        samples: Vec::new(),
+        environment_tag,
+        fixture: Vec::new(),
+    })
+}
+
+/// 发布前检查的结果（验证与发布页展示，不改候选）。
+#[tauri::command]
+pub fn workspace_publish_checks(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+) -> Result<Vec<Check>, String> {
+    let w = {
+        let host = app.state::<WorkspaceHost>();
+        let items = host.items.lock().unwrap();
+        let w = items.get(&id).ok_or("候选配置不存在")?;
+        w.expect(revision)?;
+        w.clone()
+    };
+    if !w.doc.is_burst() {
+        return Err("旧拍照点配方已停用，请创建段配方".into());
+    }
+    publish_checks(&app, &w).map(|v| v.checks)
+}
+
+/// 段配方的独立样本验证（`workspace_validate` 对段配方调用；D-SB-46 起为可选，不是发布前提）。
 pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let recipe = w.doc.build()?;
     let initial_environment = environment(app, &recipe)?;
@@ -387,7 +442,15 @@ pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, S
         .map(|sample| validate_sample(app, w, &recipe, measurer.as_ref(), sample, &current).unwrap_or_else(|reason| failed_sample(sample, reason)))
         .collect();
     let base = cycle.recipe(&recipe.id).map(|r| r.revision_id.clone());
-    let checks = burst_checks(w, BurstInputs { device, cameras: &tags, samples: &samples, base_matches: base == w.base_revision });
+    let mut checks = burst_checks(
+        w,
+        BurstInputs {
+            device,
+            cameras: &tags,
+            base_matches: base == w.base_revision,
+        },
+    );
+    checks.push(sample_check(&samples));
     if environment(app, &recipe)? != initial_environment { return Err("验证期间设备、标定或引擎发生变化，请重新验证".into()); }
     Ok(Validation {
         revision: w.revision,

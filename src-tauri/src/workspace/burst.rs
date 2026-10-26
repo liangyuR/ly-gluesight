@@ -191,6 +191,7 @@ pub enum TargetV2 {
     },
     Calibration,
     Validation,
+    #[allow(dead_code)]
     Camera,
 }
 
@@ -1508,35 +1509,7 @@ pub(super) fn untaught_pairs(w: &Workspace) -> Vec<(String, u32)> {
         .collect()
 }
 
-/// 没通过的验证项跳到哪一页（检查项名称见 `burst_release::burst_checks`）：走廊示教跳到第一条没示教好的段走廊，
-/// 都示教了时跳到第一台缺像素当量的相机。
-fn validation_target(name: &str, w: &Workspace, teaching: &[CameraTeachingView]) -> TargetV2 {
-    match name {
-        "设备与采集" => TargetV2::Camera,
-        "走廊示教" => untaught_pairs(w)
-            .into_iter()
-            .next()
-            .map(|(camera, segment)| TargetV2::Corridor {
-                camera,
-                segment: Some(segment),
-            })
-            .or_else(|| {
-                teaching
-                    .iter()
-                    .find(|t| !t.ready)
-                    .or(teaching.first())
-                    .map(|t| TargetV2::Corridor {
-                        camera: t.camera.clone(),
-                        segment: None,
-                    })
-            })
-            .unwrap_or(TargetV2::Validation),
-        "段标定" | "标准件 x_ref" => TargetV2::Calibration,
-        _ => TargetV2::Validation,
-    }
-}
-
-/// 段配方的进度：采集 → 段列表 → 走廊示教 → 多轮标定 → 验证 → 发布。只读候选与已有完整采集轮数，不访问设备。
+/// 段配方的进度：采集 → 段列表 → 走廊示教 → 多轮标定 → 验证（可选，D-SB-46）→ 发布。只读候选与已有完整采集轮数，不访问设备。
 pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], complete_rounds: usize, production_version: Option<u32>) -> ProgressV2 {
     let doc = &w.doc;
     let captured = complete_rounds > 0;
@@ -1622,48 +1595,84 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
         StepV2 { id: StepIdV2::Calibration, label: "多轮标定", optional: false, status, detail, blockers }
     };
     let active = match &w.publish { PublishState::Active { version, revision, .. } if *revision == w.revision => Some(*version), _ => None };
+    // D-SB-46：独立样本验证可选，不是发布前提；发布只要采集、走廊示教、多轮标定完成（设备与生产版本在发布时当场核对）
     let validation = {
         let current = w.validation.as_ref().filter(|v| v.revision == w.revision);
-        let (status, detail, blockers) = if let Some(version) = active {
-            (StepStatus::Done, format!("已随 v{version} 验证并发布"), Vec::new())
-        } else if let Some(v) = current {
-            if v.passed {
-                (
-                    StepStatus::Done,
-                    format!("当前修订验证通过（{} 件样本）", v.samples.len()),
-                    Vec::new(),
-                )
-            } else {
-                (
-                    StepStatus::Blocked,
-                    "验证未通过".into(),
-                    v.checks
-                        .iter()
-                        .filter(|c| !c.passed)
-                        .map(|c| BlockerV2 {
-                            message: format!("{}：{}", c.name, c.detail),
-                            target: validation_target(&c.name, w, teaching),
-                        })
-                        .collect(),
-                )
-            }
-        } else {
-            let blockers = [&capture, &corridor, &calibration].into_iter().filter(|s| s.status != StepStatus::Done)
-                .map(|s| BlockerV2 { message: format!("先完成{}", s.label), target: s.blockers.first().map_or(TargetV2::Capture, |b| b.target.clone()) }).collect();
-            (StepStatus::NotStarted, if w.validation.is_some() { "候选已修改，需要重新验证" } else { "待独立正常整圈样本验证" }.into(), blockers)
+        let (status, detail) = match current {
+            Some(v) if v.passed => (
+                StepStatus::Done,
+                format!("当前修订验证通过（{} 件样本）", v.samples.len()),
+            ),
+            Some(_) => (
+                StepStatus::Optional,
+                "可选：上次验证未通过，不影响发布".to_string(),
+            ),
+            None => (
+                StepStatus::Optional,
+                "可选：用独立整圈样本试验证，不影响发布".to_string(),
+            ),
         };
-        StepV2 { id: StepIdV2::Validation, label: "验证", optional: false, status, detail, blockers }
+        StepV2 {
+            id: StepIdV2::Validation,
+            label: "验证（可选）",
+            optional: true,
+            status,
+            detail,
+            blockers: Vec::new(),
+        }
     };
     let publish = {
-        let production = production_version.map_or("未发布".to_string(), |v| format!("生产 v{v}"));
-        let pending = w.pending.as_ref().map(|p| p.doc.version).unwrap_or(w.doc.version);
+        let production =
+            production_version.map_or("未发布".to_string(), |v| format!("生产 v{v}"));
+        let pending = w
+            .pending
+            .as_ref()
+            .map(|p| p.doc.version)
+            .unwrap_or(w.doc.version);
+        let open: Vec<BlockerV2> = [&capture, &corridor, &calibration]
+            .into_iter()
+            .filter(|s| s.status != StepStatus::Done)
+            .map(|s| BlockerV2 {
+                message: format!("先完成{}", s.label),
+                target: s
+                    .blockers
+                    .first()
+                    .map_or(TargetV2::Capture, |b| b.target.clone()),
+            })
+            .collect();
         let (status, detail, blockers) = match (&w.publish, active) {
             (_, Some(version)) => (StepStatus::Done, format!("v{version} 已生效"), Vec::new()),
-            (PublishState::Waiting, _) => (StepStatus::InProgress, format!("v{pending} 待生效：等待当前工件结束"), Vec::new()),
-            (PublishState::Failed { message }, _) => (StepStatus::Blocked, format!("v{pending} 生效失败，可重试或放弃该待生效版本"), vec![BlockerV2 { message: message.clone(), target: TargetV2::Validation }]),
-            (PublishState::Uncertain { message }, _) => (StepStatus::Blocked, format!("v{pending} 生效状态不确定"), vec![BlockerV2 { message: message.clone(), target: TargetV2::Validation }]),
-            _ if validation.status == StepStatus::Done => (StepStatus::NotStarted, format!("可发布 v{}（当前{production}）", w.doc.version), Vec::new()),
-            _ => (StepStatus::NotStarted, format!("验证通过后发布（当前{production}）"), vec![BlockerV2 { message: "先通过当前修订的验证".into(), target: TargetV2::Validation }]),
+            (PublishState::Waiting, _) => (
+                StepStatus::InProgress,
+                format!("v{pending} 待生效：等待当前工件结束"),
+                Vec::new(),
+            ),
+            (PublishState::Failed { message }, _) => (
+                StepStatus::Blocked,
+                format!("v{pending} 生效失败，可重试或放弃该待生效版本"),
+                vec![BlockerV2 {
+                    message: message.clone(),
+                    target: TargetV2::Validation,
+                }],
+            ),
+            (PublishState::Uncertain { message }, _) => (
+                StepStatus::Blocked,
+                format!("v{pending} 生效状态不确定"),
+                vec![BlockerV2 {
+                    message: message.clone(),
+                    target: TargetV2::Validation,
+                }],
+            ),
+            _ if open.is_empty() => (
+                StepStatus::NotStarted,
+                format!("可发布 v{}（当前{production}）", w.doc.version),
+                Vec::new(),
+            ),
+            _ => (
+                StepStatus::NotStarted,
+                format!("示教、标定完成后发布（当前{production}）"),
+                open,
+            ),
         };
         StepV2 { id: StepIdV2::Publish, label: "发布与生效", optional: false, status, detail, blockers }
     };
@@ -1682,9 +1691,11 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
             } => format!("设置相机 {camera} 的像素当量"),
             _ => open.label.to_string(),
         };
-        Some(NextV2 { step: open.id, label, target })
-    } else if validation.status != StepStatus::Done {
-        Some(NextV2 { step: StepIdV2::Validation, label: "运行整套验证".into(), target: validation.blockers.first().map_or(TargetV2::Validation, |b| b.target.clone()) })
+        Some(NextV2 {
+            step: open.id,
+            label,
+            target,
+        })
     } else {
         match publish.status {
             StepStatus::Done => None,

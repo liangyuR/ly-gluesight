@@ -72,14 +72,16 @@ fn calibrate(w: &mut Workspace, total: u32) {
     }
 }
 
-fn passing_sample() -> SampleResult {
-    SampleResult { history_id: None, sample_id: Some("capture-sample".into()), name: "独立采集".into(), sn: String::new(),
-        expected: Verdict::Ok, actual: Some(Verdict::Ok), passed: true, reason: String::new() }
-}
-
-/// 设备就绪、样本通过、基于当前生产版本，当前设备标签都是 DEVICE：只剩候选自身的验证项决定能否发布。
+/// 设备就绪、基于当前生产版本，当前设备标签都是 DEVICE，没有任何验证样本（D-SB-46 发布不要求）：只剩候选自身的检查项决定能否发布。
 fn checks(w: &Workspace, cameras: &BTreeMap<String, Value>) -> Vec<Check> {
-    burst_checks(w, BurstInputs { device: Ok(()), cameras, samples: &[passing_sample()], base_matches: true })
+    burst_checks(
+        w,
+        BurstInputs {
+            device: Ok(()),
+            cameras,
+            base_matches: true,
+        },
+    )
 }
 
 fn check<'a>(checks: &'a [Check], name: &str) -> &'a Check {
@@ -152,8 +154,8 @@ fn validation_without_expected_total_blocks_publish_and_names_each_segment() {
 
 #[test]
 fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
-    // 防的回归（规格 §1 Plan.cameras = 3；§4 每台相机的检测走廊）：少一台计划相机、某台没选示教帧、走廊超出示教帧、
-    // 缺像素当量，或示教帧采集后设备参数变了，仍能通过验证去发布
+    // 防的回归（规格 §1 Plan.cameras = 3；§4 每台相机的检测走廊；D-SB-46）：少一台计划相机、某台没选示教帧、走廊超出示教帧、
+    // 缺像素当量，或示教帧采集后设备参数变了，仍能通过发布前检查；或都满足了却因为没有验证样本而不能发布
     type Edit = fn(&mut Workspace, &mut BTreeMap<String, Value>);
     let cases: [(&str, Edit, bool); 6] = [
         ("三台相机都示教好", |_, _| {}, true),

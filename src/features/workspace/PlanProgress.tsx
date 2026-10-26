@@ -10,10 +10,10 @@ import { stageOfV2, stagesV2, stageStatusText, stageStatusTone, stageStatusV2 } 
 
 const actions: Record<string, string> = {
   "/recipe/capture": "查看采集", "/recipe/segments": "编辑段列表", "/recipe/teach": "查看走廊示教",
-  "/recipe/calibration": "查看多轮标定", "/recipe/validation": "查看验证与发布",
+  "/recipe/calibration": "查看多轮标定", "/recipe/validation": "查看发布",
 };
 
-/** 配方进度（段配方）：采集 → 段列表 → 走廊示教 → 多轮标定 → 验证与发布。 */
+/** 配方进度（段配方）：采集 → 段列表 → 走廊示教 → 多轮标定 → 发布（独立样本验证可选）。 */
 export default function PlanProgressPage() {
   const { data } = useWorkspace();
   const location = useLocation();

@@ -24,7 +24,7 @@ export function planCompareItems(production: PlanExport | null, candidate: PlanE
 export function PlanPublishBody({ plan }: { plan: WorkspacePlanView }) {
   const { productionExport: production, candidateExport: candidate } = plan;
   return <>
-    <p className="muted">发布内容包含当前已验证的段列表、各台相机的检测走廊、检测项与帧数容差。等待期间候选已冻结，生效或完成失败处理后再继续编辑。</p>
+    <p className="muted">发布内容包含当前的段列表、各段各台检测相机的走廊、检测项与帧数容差。等待期间候选已冻结，生效或完成失败处理后再继续编辑。</p>
     {candidate ? <ul aria-label="候选与生产对比">{planCompareItems(production, candidate).map(item => <li key={item}>{item}</li>)}</ul>
       : plan.candidateExportError && <Notice tone="warn" title="无法生成对比">{plan.candidateExportError}</Notice>}
   </>;

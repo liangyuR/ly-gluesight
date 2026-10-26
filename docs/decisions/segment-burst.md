@@ -18,6 +18,7 @@
 - D-SB-42：直线段可示教段走廊，弯道用出胶点短走廊，修订 D-SB-17 的“每台相机一条走廊”（示教与标定已实现，生产双测待实现）。
 - D-SB-43：图像运动细化边界列为后续。
 - D-SB-45（2026-10-26 用户确认，已实现；现场吞吐复测待做）：走廊只按段、相机只留参数，取消相机走廊（默认走廊）；生产按预测段选走廊，收尾后补测归属变了的帧。修订 D-SB-17、D-SB-21、D-SB-41、D-SB-42。
+- D-SB-46（2026-10-26 用户要求，已实现）：发布不再要求独立样本验证；发布时当场核对发布前检查，样本验证改为可选。修订 D-SB-20 与规格 §0/§1 的独立验证门槛。
 
 实施顺序：D-SB-40（已实现）→ D-SB-41（已实现）→ D-SB-42（示教与标定已实现）→ D-SB-45（已实现）→ D-SB-43。未实现的条目实现之前，本文其余条目仍是现行依据。
 
@@ -182,6 +183,8 @@
 
 - 问题：`Recipe::ready` = 每个要检的拍照点中线至少 3 个测点（recipe.rs:651-662）；规格 §1 新建时 expected_frames = null 标“待标定”，未标定不能发布，§0 N_exp 不能手填。
 - 采用：新增 `ready_burst`：3 台相机都示教了走廊和当量，且 `expected_total` 非空（第二节：各段 N_exp 可以为 null）。`update_doc` 直接修改 `expected_frames`、`calib`、`part_calib` 时拒绝；段的序列或 kind 改变时清空全部 N_exp、calib、`part_calib`、x_ref。`Recipe::ready` 保留给旧配方。
+
+- 修订（已实现）：D-SB-46 发布不再要求独立正常样本验证，其余发布前置不变。
 
 ### D-SB-21 本轮无分段算法时的标定
 
@@ -403,6 +406,18 @@
   - 示教页：相机行只设像素当量与检测参数，段行是唯一的走廊示教目标（选帧、提取、编辑、保存、清除本段走廊）；帧状态新增“本段不检测”。
   - 未实现：检测相机测成率提示（标定页）；现场吞吐复测（第 5 步）；`boundary_guard` 变化后用存储指标重判时过渡帧的走廊口径未单独校验（计划身份不含 `boundary_guard`）。
 
+### D-SB-46 发布不再要求独立样本验证（修订 D-SB-20；2026-10-26 用户要求，已实现）
+
+- 问题：发布生产配方要先在验证与发布页选独立整圈样本、跑整套图像验证并通过（规格 §0/§1 独立验证，D-SB-20），发布时还要核对验证后相机、标定与生产版本没变。NEW-14 调试中样本轮次已被示教与标定占用，验证成了发布的额外负担；用户要求简化发布逻辑，不再需要验证。
+- 采用：
+  - 发布前检查在发布时当场核对（`burst_release::publish_checks`）：设备与采集、走廊示教、段标定（多段配方要各段 N_exp）、标定采集参数、标准件 x_ref（不阻断项照旧）、生产版本；全部满足即可发布，不再要求 `Workspace.validation` 通过，也不再比对验证时的环境标签。检查结果随待生效版本存档（`Release.validation`，样本为空）。
+  - 新增只读命令 `workspace_publish_checks`，验证与发布页按候选修订当场展示；发布按钮只看这些检查与计划本身（整件 / 逐段标定、三台相机）。
+  - 独立样本验证保留为可选工具（`workspace_validate`，页面“独立样本验证（可选）”），结果照旧展示，不影响发布；进度里“验证”步骤标为可选，“发布”步骤只要求采集、走廊示教、多轮标定完成。
+  - 步骤条与菜单里“验证与发布”改名“发布”。
+- 理由：发布前检查已覆盖设备、示教、标定与生产版本这些硬条件；样本验证的结论由操作员按需在发布前或上线后核对。
+- 风险：发布前不再强制用独立样本跑一遍完整检测，走廊或允差设置有问题时只能在生产或可选验证里发现；离线发布的版本仍只能离线运行（D-SB-30 不变）。
+- 回退：`workspace_publish` 恢复要求当前修订的 `validation.passed` 并比对环境标签，进度把“验证”改回必经步骤。
+
 ## 五、IPC 契约
 
 完整字段以 `src/features/plan/types.ts` 为准（serde camelCase，Rust 的 `Option` 一律序列化为 null）。原则：**只增不删**，段配方的数据挂在现有 DTO 新增的可空字段上，旧配方这些字段为 null、旧字段语义不变。
@@ -461,6 +476,7 @@
 | `workspace_clear_segment_corridor` | `id, revision, camera, segment` | WorkspaceView（去掉这一段这台相机的走廊与示教帧） | D-SB-42/45 |
 | `workspace_calibration_add_round` | `id, revision, round, standard: bool` | WorkspaceView | D2 |
 | `workspace_calibration_remove_round` | `id, revision, round` | WorkspaceView | D2 |
+| `workspace_publish_checks` | `id, revision` | `Check[]`（发布前检查，当场核对，只读） | D-SB-46 |
 | `workspace_calibration_round_features` | `id, round` | `FrameMetrics[]`（加入标定时写下的每帧特征，按当前计划相机编下标，只读） | 逐帧查看 |
 | `workspace_calibration_frame` | `id, round, camera, seq` | `CalibrationFrameView`（`{segment, corridor, searchHalfPx, edges, metrics}`：按已确认分段用当前段走廊重测这一帧，只读；有在途件时拒绝） | 逐帧查看 |
 | `workspace_calibration_apply` | `id, revision` | WorkspaceView（结果在 `plan.calibration`） | D2 |

@@ -312,6 +312,7 @@ pub fn run() {
             workspace::workspace_calibration_remove_round,
             workspace::workspace_calibration_round_features,
             workspace::workspace_calibration_frame,
+            workspace::workspace_publish_checks,
             workspace::workspace_calibration_apply,
             workspace::workspace_capture_review_save,
             workspace::workspace_segment_template_save,

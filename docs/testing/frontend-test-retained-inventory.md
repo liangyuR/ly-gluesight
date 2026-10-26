@@ -69,10 +69,10 @@ pnpm typecheck
 | 33 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 发布失败后冻结样本配置并重试同一待生效版本` | 发布失败后候选样本与验证被冻结，只能重试同一待生效修订，不能另发新版本 |
 | 34 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 生效失败 → 确认后放弃同一修订的待生效版本；状态不确定时不能放弃` | 只有明确失败的待生效版本才能经确认放弃，状态不确定时不得暴露放弃入口 |
 | 35 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 段配方 > 整件预期总帧数未标定 → 发布不可用并列出待标定的段号` | 整件预期总帧数尚未标定时，即使验证通过也不能发布生产配方 |
-| 36 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 段配方 > 整件已标定、各段预期帧数待分段算法 → 发布可用，不因段待标定而禁用` | 整件标定已完成时允许发布，不能因尚无分段算法而要求各段N_exp全部标定 |
+| 36 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 段配方 > 多段配方整件已标定、各段预期帧数待标定 → 发布不可用并列出待标定的段号` | 多段配方各段 N_exp 都已标定才能发布（D-SB-45 修订 D-SB-21） |
 | 37 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 段配方 > 整件预期总帧数 12 → 14 → 发布确认只列 planVersion 换新号和 shotCount / deviceShots 的变化` | 整件标定帧数变化时发布确认须提示新的计划号与PLC预期总数同步，不能混入未变身份项 |
-| 38 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 验证未通过时不能发布` | 验证未通过的当前候选不得发布生产版本 |
-| 39 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 确认期间候选修订变更必须重新验证和确认` | 发布确认期间候选修订变化必须关闭旧确认并重新验证，不能发布过期候选 |
+| 38 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 没有样本验证结果、发布前检查全部满足 → 可以发布；检查有未满足项 → …` | 发布不要求独立样本验证；发布前检查有未满足项时不能发布并说明原因（D-SB-46） |
+| 39 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 确认期间候选修订变更必须重新核对发布前检查和确认` | 发布确认期间候选修订变化必须关闭旧确认、按新修订重新核对发布前检查，旧修订不被发布 |
 | 40 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 选择仅在当前请求真正接受后返回视图，旧请求返回 null` | 配方选择请求乱序完成时只接受最新请求，旧响应不能改当前候选或持久化偏好 |
 | 41 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 刷新请求发出后用户开始编辑，也不能覆盖草稿` | 刷新请求发出后开始编辑时，迟到刷新不得覆盖本地草稿 |
 | 42 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 操作途中离开再选回同一配方，旧操作结果也不能覆盖新选择` | 离开后重新选择同一配方时，旧操作响应不能覆盖新选择的新修订 |
@@ -173,7 +173,7 @@ pnpm typecheck
 | `tests/teaching.test.tsx` | 删除相机列表/总览/采集信息静态展示及与整页流程重复的saveDoc转发；D-SB-45 起相机走廊与 teachCamera 已删，改为段走廊；保留未保存、缺当量和缺帧操作拦截 |
 | `tests/trial-result.test.tsx` | 旧逐站试测结果表的状态/空值投影，不作为当前段配方走廊示教主流程验收 |
 | `tests/unrolled-curve.test.tsx` | 旧逐站布局的段名截断和提示属于样式行为，当前段帧结果界面不以该旧布局验收 |
-| `tests/validation.test.tsx` | 删除旧拍照点发布同步、离线提示文案与重复按钮禁用投影；保留当前段整件标定、验证修订和待生效版本生命周期门槛 |
+| `tests/validation.test.tsx` | 删除旧拍照点发布同步、离线提示文案与重复按钮禁用投影；保留当前段整件 / 逐段标定、发布前检查（D-SB-46 起不要求验证）和待生效版本生命周期门槛 |
 | `tests/workspace-context.test.tsx` | 删除旧拍照点草稿与重复保存/通知行为；保留真实Provider下迟到响应隔离、相机草稿隔离与失败恢复 |
 
 ### 生产周期、就绪与历史
