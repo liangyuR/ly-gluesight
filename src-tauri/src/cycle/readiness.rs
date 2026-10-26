@@ -152,7 +152,11 @@ fn recipe_item(f: &Facts) -> ReadinessItem {
     let checked = production_recipe_item(f);
     if f.maintenance && checked.state == ItemState::Blocked && !f.activation_uncertain {
         let detail = format!("{}；维护模式下来件照常布防放行，本件未检", checked.detail);
-        return ReadinessItem { state: ItemState::Waiting, detail, ..checked };
+        return ReadinessItem {
+            state: ItemState::Waiting,
+            detail,
+            ..checked
+        };
     }
     checked
 }
@@ -314,10 +318,21 @@ fn production_state(app: &AppHandle, recipe: &Recipe) -> Result<Option<String>, 
     }
 }
 
-fn recipe_problem(app: &AppHandle, host: &CycleHost, recipe: &Recipe, image: bool, maintenance: bool, set: Option<&SampleSet>) -> Result<(Vec<u8>, Option<String>), (String, Target)> {
+fn recipe_problem(
+    app: &AppHandle,
+    host: &CycleHost,
+    recipe: &Recipe,
+    image: bool,
+    maintenance: bool,
+    set: Option<&SampleSet>,
+) -> Result<(Vec<u8>, Option<String>), (String, Target)> {
     let workspace = |e: String| (e, Target::Workspace);
     let production = run_kind(recipe, maintenance).map_err(workspace)? == RunKind::Production;
-    let waiting = if image && production { production_state(app, recipe)? } else { None };
+    let waiting = if image && production {
+        production_state(app, recipe)?
+    } else {
+        None
+    };
     let view_count = |id: &str| host.camera.require(id).ok().and_then(|c| host.camera.slot(c as usize)).map(|slot| slot.config().view_count);
     if let Some(reason) = set.and_then(|set| sample_set_mismatch(recipe, set.manifest(), view_count)) {
         return Err((format!("与样本集不符：{reason}"), Target::Workspace));
@@ -351,10 +366,15 @@ pub fn gather(app: &AppHandle) -> Readiness {
     let image = crate::site::image_measurement(app);
     let debug = crate::offline::candidate(app);
     let library: Vec<Arc<Recipe>> = debug.as_ref().map_or_else(|| host.recipes.list(), |c| vec![c.recipe.clone()]);
-    let checked: Vec<(RecipeOption, Option<Vec<u8>>)> = library.iter().map(|recipe| match recipe_problem(app, host, recipe, image, maintenance, set.as_deref()) {
-        Ok((cams, waiting)) => (option(recipe, None, waiting), Some(cams)),
-        Err(problem) => (option(recipe, Some(problem), None), None),
-    }).collect();
+    let checked: Vec<(RecipeOption, Option<Vec<u8>>)> = library
+        .iter()
+        .map(
+            |recipe| match recipe_problem(app, host, recipe, image, maintenance, set.as_deref()) {
+                Ok((cams, waiting)) => (option(recipe, None, waiting), Some(cams)),
+                Err(problem) => (option(recipe, Some(problem), None), None),
+            },
+        )
+        .collect();
     let mut recipes: Vec<RecipeOption> = checked.iter().map(|(o, _)| { let mut o = o.clone(); if debug.is_some() { o.published = false; } o }).collect();
     let mut drafts = crate::workspace::draft_summaries(app);
     drafts.sort_by(|a, b| a.id.cmp(&b.id));

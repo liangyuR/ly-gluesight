@@ -395,15 +395,34 @@ fn run_kind_collect_runs_only_in_maintenance_and_formal_always_needs_corridors()
     use crate::recipe::RecipeStage::{Collect, Formal};
     let cameras: Vec<String> = (0..3).map(crate::recipe::legacy_camera_id).collect();
     let recipe = |stage, taught: bool| {
-        let mut doc = if taught { crate::recipe::samples_burst() } else { crate::recipe::burst_template("NEW-1".into(), "新产线".into(), 21, &cameras) };
+        let mut doc = if taught {
+            crate::recipe::samples_burst()
+        } else {
+            crate::recipe::burst_template("NEW-1".into(), "新产线".into(), 21, &cameras)
+        };
         doc.stage = stage;
         doc.build().unwrap()
     };
     let cases = [
-        ("维护 + 未示教采集版 → 只录图", recipe(Collect, false), true, Some(RunKind::Collect)),
+        (
+            "维护 + 未示教采集版 → 只录图",
+            recipe(Collect, false),
+            true,
+            Some(RunKind::Collect),
+        ),
         ("正常 + 采集版 → 拒收", recipe(Collect, false), false, None),
-        ("维护 + 未示教正式版 → 仍要走廊", recipe(Formal, false), true, None),
-        ("正常 + 已示教正式版 → 生产", recipe(Formal, true), false, Some(RunKind::Production)),
+        (
+            "维护 + 未示教正式版 → 仍要走廊",
+            recipe(Formal, false),
+            true,
+            None,
+        ),
+        (
+            "正常 + 已示教正式版 → 生产",
+            recipe(Formal, true),
+            false,
+            Some(RunKind::Production),
+        ),
     ];
     for (name, recipe, maintenance, expected) in cases {
         assert_eq!(run_kind(&recipe, maintenance).ok(), expected, "{name}");
@@ -414,18 +433,49 @@ fn run_kind_collect_runs_only_in_maintenance_and_formal_always_needs_corridors()
 #[test]
 fn no_runnable_recipe_blocks_only_outside_maintenance() {
     use readiness::{Check, Facts, ItemKey, ItemState, Product, RecipeOption, Site};
-    for (maintenance, ready, state) in [(false, false, ItemState::Blocked), (true, true, ItemState::Waiting)] {
+    for (maintenance, ready, state) in [
+        (false, false, ItemState::Blocked),
+        (true, true, ItemState::Waiting),
+    ] {
         let report = readiness::evaluate(Facts {
-            candidate_debug: None, site: Site::Real, plc_connected: true, session_behind: false,
-            session: Some(crate::plc_session::SessionPhase::Idle), session_message: None, phase: Phase::Idle, fault: None,
-            cameras: Check::Ok, engine: Some(Ok("1.1.5".into())), workers: Ok(()), audit: Check::Ok,
-            record: crate::settings::RecordMode::Off, product: Product::Plc, activation_uncertain: false, maintenance,
+            candidate_debug: None,
+            site: Site::Real,
+            plc_connected: true,
+            session_behind: false,
+            session: Some(crate::plc_session::SessionPhase::Idle),
+            session_message: None,
+            phase: Phase::Idle,
+            fault: None,
+            cameras: Check::Ok,
+            engine: Some(Ok("1.1.5".into())),
+            workers: Ok(()),
+            audit: Check::Ok,
+            record: crate::settings::RecordMode::Off,
+            product: Product::Plc,
+            activation_uncertain: false,
+            maintenance,
             recipes: vec![RecipeOption {
-                id: "NEW-1".into(), name: "新产线".into(), version: 1, product_code: 21, shot_count: 0, published: true,
-                runnable: false, reason: Some("相机 cam1 尚未示教检测走廊".into()), target: None, waiting: None,
+                id: "NEW-1".into(),
+                name: "新产线".into(),
+                version: 1,
+                product_code: 21,
+                shot_count: 0,
+                published: true,
+                runnable: false,
+                reason: Some("相机 cam1 尚未示教检测走廊".into()),
+                target: None,
+                waiting: None,
             }],
         });
-        let recipe = report.items.iter().find(|i| i.key == ItemKey::Recipe).unwrap();
-        assert_eq!((report.ready, recipe.state), (ready, state), "维护模式 {maintenance}");
+        let recipe = report
+            .items
+            .iter()
+            .find(|i| i.key == ItemKey::Recipe)
+            .unwrap();
+        assert_eq!(
+            (report.ready, recipe.state),
+            (ready, state),
+            "维护模式 {maintenance}"
+        );
     }
 }
