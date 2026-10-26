@@ -473,7 +473,12 @@ fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
 
 /// 段配方的计划身份（规格 §1：段序列 / 类型 / N_exp、相机、ΣN_exp、产品代码）。
 fn burst_plan_identity(recipe: &Recipe) -> crate::plan::PlanIdentity {
-    crate::plan::plan_identity(recipe.product_code, &recipe.path_segments, &recipe.plan_cameras(), recipe.expected_total())
+    crate::plan::plan_identity(
+        recipe.product_code,
+        &recipe.path_segments,
+        &recipe.plan_cameras(),
+        recipe.expected_total(),
+    )
 }
 
 /// 已存的每帧指标能否在候选上复用：测量布局与计划身份都相同（计划身份变了，区域与预期帧数的口径就变了，需要原图复测）。
@@ -881,7 +886,9 @@ impl Store {
             }
             match r.burst {
                 Some(burst) => validate_burst(r, recipe, burst)?,
-                None if r.frames_expected != 0 => return Err("段配方记录缺少帧记录，不能声明预期帧组数".into()),
+                None if r.frames_expected != 0 => {
+                    return Err("段配方记录缺少帧记录，不能声明预期帧组数".into())
+                }
                 None => (),
             }
         } else if r.burst.is_some() {
@@ -1370,8 +1377,18 @@ impl Store {
                     recipe_id: row.get(3)?,
                     recipe_revision: row.get(4)?,
                     verdict: parse_verdict(&row.get::<_, String>(5)?),
-                    burst: row.get::<_, Option<String>>(6)?.map(|text| serde_json::from_str(&text)
-                        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e)))).transpose()?,
+                    burst: row
+                        .get::<_, Option<String>>(6)?
+                        .map(|text| {
+                            serde_json::from_str(&text).map_err(|e| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    6,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                )
+                            })
+                        })
+                        .transpose()?,
                 })
             })
             .map_err(db_err)?;

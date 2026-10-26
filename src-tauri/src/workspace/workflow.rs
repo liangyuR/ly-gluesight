@@ -55,7 +55,20 @@ pub(crate) fn wait_idle_config_gate<'a>(
 }
 
 #[tauri::command]
-pub async fn workspace_capture_sample(app: AppHandle, id: String, revision: u64, round_id: String, expected: Verdict, correspondence_confirmed: bool) -> Result<WorkspaceView, String> {
-    if !correspondence_confirmed { return Err("请确认验证采集与示教的轨迹、触发顺序对应一致".into()); }
-    tauri::async_runtime::spawn_blocking(move || super::burst_release::capture_sample(app, id, revision, round_id, expected)).await.map_err(|e| e.to_string())?
+pub async fn workspace_capture_sample(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    round_id: String,
+    expected: Verdict,
+    correspondence_confirmed: bool,
+) -> Result<WorkspaceView, String> {
+    if !correspondence_confirmed {
+        return Err("请确认验证采集与示教的轨迹、触发顺序对应一致".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        super::burst_release::capture_sample(app, id, revision, round_id, expected)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

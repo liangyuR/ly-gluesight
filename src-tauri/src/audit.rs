@@ -507,8 +507,11 @@ struct CycleEntry {
 
 impl CycleEntry {
     fn pending(&self) -> bool {
-        self.record.is_some() || self.delivery != self.saved_delivery || self.drain_ms != self.saved_drain_ms
-            || self.frame_files != self.saved_frame_files || self.recording != self.saved_recording
+        self.record.is_some()
+            || self.delivery != self.saved_delivery
+            || self.drain_ms != self.saved_drain_ms
+            || self.frame_files != self.saved_frame_files
+            || self.recording != self.saved_recording
     }
 
     fn defer_retry(&mut self, now: i64) {
@@ -664,7 +667,10 @@ fn merge_timing(cycle: &str, current: &mut Option<u64>, incoming: Option<u64>, n
 fn raw_file(file: RecordedRawFile) -> Result<(FrameKey, String), String> {
     let key = file.frame;
     if key.seq == 0 || file.width == 0 || file.height == 0 {
-        return Err(format!("原图 相机 {} 第 {} 帧的帧号或尺寸无效", key.camera, key.seq));
+        return Err(format!(
+            "原图 相机 {} 第 {} 帧的帧号或尺寸无效",
+            key.camera, key.seq
+        ));
     }
     if file.file.is_empty() || file.file.contains(['\\', ':', '\0']) || file.file.split('/').any(|part| matches!(part, "" | "." | "..")) {
         return Err("原图文件不是录制根目录内的相对路径".into());
@@ -741,11 +747,26 @@ fn merge_evidence(cycle: &str, current: &mut Option<RecordingEvidence>, evidence
 
 fn restore_existing(cycle: &str, entry: &mut CycleEntry, existing: PartDetail, notices: &mut Vec<Notice>) {
     let frames = existing.burst.map(|burst| burst.frames).unwrap_or_default();
-    restore(cycle, entry, existing.summary.delivery, frames, existing.recording, existing.summary.drain_ms, notices);
+    restore(
+        cycle,
+        entry,
+        existing.summary.delivery,
+        frames,
+        existing.recording,
+        existing.summary.drain_ms,
+        notices,
+    );
 }
 
-fn restore(cycle: &str, entry: &mut CycleEntry, delivery: PlcDelivery, frames: Vec<FrameRecord>, recording: RecordingEvidence,
-    drain_ms: Option<u64>, notices: &mut Vec<Notice>) {
+fn restore(
+    cycle: &str,
+    entry: &mut CycleEntry,
+    delivery: PlcDelivery,
+    frames: Vec<FrameRecord>,
+    recording: RecordingEvidence,
+    drain_ms: Option<u64>,
+    notices: &mut Vec<Notice>,
+) {
     entry.inserted = true;
     let pending_timing = entry.drain_ms.take();
     entry.drain_ms = drain_ms;
@@ -784,7 +805,15 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
             Ok(InsertResult::Inserted(id)) => {
                 let part = entry.record.take().unwrap();
                 let frames = part.burst.map(|burst| burst.frames).unwrap_or_default();
-                restore(cycle, entry, part.delivery, frames, RecordingEvidence::default(), part.drain_ms, notices);
+                restore(
+                    cycle,
+                    entry,
+                    part.delivery,
+                    frames,
+                    RecordingEvidence::default(),
+                    part.drain_ms,
+                    notices,
+                );
                 notices.push(Notice::Inserted(id));
             }
             Ok(InsertResult::Existing(existing)) => {
@@ -993,10 +1022,17 @@ fn recover_cycle(spool: &mut spool::Spool, cycle: &str, sink: &mut impl Sink, no
         }
         let mut files = BTreeSet::new();
         if first.available != (first.state == RecorderState::Complete)
-            || (first.available && (first.directory.is_none() || first.files.is_empty() || !first.errors.is_empty()))
-            || (matches!(first.state, RecorderState::Off | RecorderState::NotRetained) && (first.directory.is_some() || !first.files.is_empty()))
-            || first.files.iter().any(|file| !files.insert(file.frame)) {
-            return Err(format!("cycleId={cycle} 的主记录前录制结构不一致，保留原始 spool"));
+            || (first.available
+                && (first.directory.is_none()
+                    || first.files.is_empty()
+                    || !first.errors.is_empty()))
+            || (matches!(first.state, RecorderState::Off | RecorderState::NotRetained)
+                && (first.directory.is_some() || !first.files.is_empty()))
+            || first.files.iter().any(|file| !files.insert(file.frame))
+        {
+            return Err(format!(
+                "cycleId={cycle} 的主记录前录制结构不一致，保留原始 spool"
+            ));
         }
         spool.archive_preinsert(&events.iter().map(|(receipt, _)| *receipt).collect::<Vec<_>>())?;
         let mut notices = Vec::new();

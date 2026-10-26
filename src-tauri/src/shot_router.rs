@@ -53,12 +53,26 @@ pub struct Ledger {
 
 impl Ledger {
     fn new(session: u64) -> Self {
-        Self { session, source: None, sources: Vec::new(), last: None, last_frame: None, frames: 0, frame_floor: None }
+        Self {
+            session,
+            source: None,
+            sources: Vec::new(),
+            last: None,
+            last_frame: None,
+            frames: 0,
+            frame_floor: None,
+        }
     }
 
     /// 模拟 / 样本集相机的现状：帧计数与触发计数相同。
     pub fn snapshot(session: u64, source: CounterSource, trigger: u64) -> Self {
-        Self { source: Some(source), sources: vec![source], last: Some(trigger), last_frame: Some(trigger), ..Self::new(session) }
+        Self {
+            source: Some(source),
+            sources: vec![source],
+            last: Some(trigger),
+            last_frame: Some(trigger),
+            ..Self::new(session)
+        }
     }
 }
 
@@ -83,7 +97,9 @@ impl Ledgers {
         l.source = Some(f.source);
         if !l.sources.contains(&f.source) { l.sources.push(f.source); }
         let advanced = l.last.is_none_or(|last| f.trigger > last);
-        if advanced { l.last = Some(f.trigger); }
+        if advanced {
+            l.last = Some(f.trigger);
+        }
         advanced
     }
 
@@ -181,9 +197,17 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Refusal::NoCamera { camera } => write!(f, "配方的相机 {camera} 不在相机组里"),
-            Refusal::SharedSlot { camera, other } => write!(f, "相机 {camera} 与 {other} 对到了同一台相机"),
-            Refusal::Untrusted { camera, source: CounterSource::Synthetic } => {
-                write!(f, "相机 {camera} 是模拟 / 样本集相机，生产节拍不能用它的计数配组")
+            Refusal::SharedSlot { camera, other } => {
+                write!(f, "相机 {camera} 与 {other} 对到了同一台相机")
+            }
+            Refusal::Untrusted {
+                camera,
+                source: CounterSource::Synthetic,
+            } => {
+                write!(
+                    f,
+                    "相机 {camera} 是模拟 / 样本集相机，生产节拍不能用它的计数配组"
+                )
             }
             Refusal::Untrusted { camera, source } => {
                 write!(f, "相机 {camera} 的帧只有{}，帧号不可信", source.label())

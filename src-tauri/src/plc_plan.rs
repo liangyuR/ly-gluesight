@@ -45,8 +45,16 @@ impl PlcPlan {
         if device_ids.is_empty() || device_ids.iter().enumerate().any(|(i, id)| id.trim().is_empty() || device_ids[..i].contains(id)) {
             return Err("示教采集必须指定不重复、非空的相机设备 ID".into());
         }
-        Ok(Self { protocol_version: crate::handshake::PROTOCOL_VERSION, recipe_id, plan_version: version,
-            shot_count: 0, device_ids, device_shots: 0, tolerance_total: 0, segments: Vec::new() })
+        Ok(Self {
+            protocol_version: crate::handshake::PROTOCOL_VERSION,
+            recipe_id,
+            plan_version: version,
+            shot_count: 0,
+            device_ids,
+            device_shots: 0,
+            tolerance_total: 0,
+            segments: Vec::new(),
+        })
     }
 
     /// 段计划（规格 §5）：PLC 的 shotCount 与 deviceShots 都等于 ΣN_exp（1–32767）；三台不重复的相机共用一个触发；
@@ -64,9 +72,19 @@ impl PlcPlan {
         if device_ids.len() != plan::PLAN_CAMERAS || device_ids.iter().enumerate().any(|(i, id)| id.trim().is_empty() || device_ids[..i].contains(id)) {
             return Err(format!("段计划需要 {} 台不重复、非空的相机共用一个触发：{device_ids:?}", plan::PLAN_CAMERAS));
         }
-        let tolerance_total = segments.iter().fold(0u32, |sum, segment| sum.saturating_add(segment.tolerance));
-        Ok(Self { protocol_version: crate::handshake::PROTOCOL_VERSION, recipe_id, plan_version: version,
-            shot_count: expected_total as u16, device_ids, device_shots: expected_total as u16, tolerance_total, segments })
+        let tolerance_total = segments
+            .iter()
+            .fold(0u32, |sum, segment| sum.saturating_add(segment.tolerance));
+        Ok(Self {
+            protocol_version: crate::handshake::PROTOCOL_VERSION,
+            recipe_id,
+            plan_version: version,
+            shot_count: expected_total as u16,
+            device_ids,
+            device_shots: expected_total as u16,
+            tolerance_total,
+            segments,
+        })
     }
 
     /// 按计划自身的字段重编一次：内容与计数自洽时与原计划相等（段计划走 compile_burst，示教采集计划走 teaching）。
@@ -74,7 +92,11 @@ impl PlcPlan {
         if self.is_burst() {
             Self::compile_burst(self.recipe_id.clone(), self.plan_version, self.device_ids.clone(), self.segments.clone(), u32::from(self.shot_count))
         } else {
-            Self::teaching(self.recipe_id.clone(), self.plan_version, self.device_ids.clone())
+            Self::teaching(
+                self.recipe_id.clone(),
+                self.plan_version,
+                self.device_ids.clone(),
+            )
         }
     }
 
@@ -85,10 +107,25 @@ impl PlcPlan {
         }
         let export = PlanExport::from_recipe(recipe)?;
         let Some(total) = export.expected_total else {
-            let pending: Vec<String> = export.segments.iter().filter(|s| s.expected_frames.is_none()).map(|s| s.index.to_string()).collect();
-            return Err(format!("配方 {} 的段 {} 待标定，且没有整件标定：标定出预期帧数前编不出 PLC 计划", recipe.id, pending.join("、")));
+            let pending: Vec<String> = export
+                .segments
+                .iter()
+                .filter(|s| s.expected_frames.is_none())
+                .map(|s| s.index.to_string())
+                .collect();
+            return Err(format!(
+                "配方 {} 的段 {} 待标定，且没有整件标定：标定出预期帧数前编不出 PLC 计划",
+                recipe.id,
+                pending.join("、")
+            ));
         };
-        Self::compile_burst(recipe.id.clone(), recipe.plan_version, export.cameras, export.segments, total)
+        Self::compile_burst(
+            recipe.id.clone(),
+            recipe.plan_version,
+            export.cameras,
+            export.segments,
+            total,
+        )
     }
 }
 

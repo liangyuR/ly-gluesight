@@ -300,7 +300,9 @@ fn supported_schema(version: u32) -> Result<(), String> {
         return Err(format!("发布包格式版本 {version} 是旧拍照点配方的发布包，旧拍照点配方已停用，请新建段配方并重新发布"));
     }
     if version != RELEASE_SCHEMA_BURST {
-        return Err(format!("发布包格式版本 {version}，当前为 {RELEASE_SCHEMA_BURST}（段配方），需要重新发布"));
+        return Err(format!(
+            "发布包格式版本 {version}，当前为 {RELEASE_SCHEMA_BURST}（段配方），需要重新发布"
+        ));
     }
     Ok(())
 }
@@ -455,8 +457,12 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
 }
 
 fn read_manifest(root: &Path, bundle_id: &str) -> Result<ReleaseManifest, String> {
-    let value: serde_json::Value = serde_json::from_slice(&read_file(&root.join("manifest.json"))?).map_err(|e| format!("发布清单无法解析：{e}"))?;
-    if let Some(version) = value.get("schemaVersion").and_then(serde_json::Value::as_u64) {
+    let value: serde_json::Value = serde_json::from_slice(&read_file(&root.join("manifest.json"))?)
+        .map_err(|e| format!("发布清单无法解析：{e}"))?;
+    if let Some(version) = value
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+    {
         supported_schema(u32::try_from(version).unwrap_or(u32::MAX))?;
     }
     if value.get("bundleId").is_none() { return Err("发布清单缺少明确 bundleId，旧版发布包不再兼容，请重新发布".into()); }

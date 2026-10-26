@@ -167,7 +167,13 @@ impl AnyRound {
         let Self::Burst(r) = self;
         match r.state {
             CaptureState::Complete => Some((1, 0)),
-            CaptureState::Failed => Some((90, r.failure.as_ref().map_or(crate::judge::fault::PROCESS_TIMEOUT, CaptureFailureV2::fault_code))),
+            CaptureState::Failed => Some((
+                90,
+                r.failure.as_ref().map_or(
+                    crate::judge::fault::PROCESS_TIMEOUT,
+                    CaptureFailureV2::fault_code,
+                ),
+            )),
             _ => None,
         }
     }
@@ -210,18 +216,27 @@ impl RecipeCaptureHost {
             if !path.is_file() { continue; }
             if !std::fs::canonicalize(&path).map_err(|e| e.to_string())?.starts_with(&canonical_root) { return Err("采集记录路径越出保存目录".into()); }
             let text = crate::fsio::read_text(&path).map_err(|e| e.to_string())?;
-            if !burst::is_v2(&text) { continue; }
+            if !burst::is_v2(&text) {
+                continue;
+            }
             match serde_json::from_str::<CaptureRoundV2>(&text) {
                 Ok(round) => {
                     let round = burst::restore(&path, round)?;
-                    if latest_burst.as_ref().is_none_or(|last| round.created_at >= last.created_at) { latest_burst = Some(round); }
+                    if latest_burst
+                        .as_ref()
+                        .is_none_or(|last| round.created_at >= last.created_at)
+                    {
+                        latest_burst = Some(round);
+                    }
                 }
                 Err(_) => backup_broken(&path)?,
             }
         }
         let (burst_writers, burst_receivers): (Vec<_>, Vec<_>) = (0..MAX_CAMERAS).map(|_| mpsc::channel::<burst::BurstItem>()).unzip();
         let host = Arc::new(Self {
-            root, burst: Mutex::new(latest_burst.map(burst::restored_run)), journal: Mutex::new(None),
+            root,
+            burst: Mutex::new(latest_burst.map(burst::restored_run)),
+            journal: Mutex::new(None),
             burst_writers,
         });
         let weak = Arc::downgrade(&host);
@@ -251,8 +266,12 @@ impl RecipeCaptureHost {
     pub fn get_any(&self, round_id: &str) -> Result<AnyRound, String> {
         let dir = self.safe_round_path(round_id)?;
         if self.burst_round_id().as_deref() != Some(round_id)
-            && crate::fsio::read_text(&dir.join("round.json")).is_ok_and(|text| !burst::is_v2(&text)) {
-            return Err(format!("采集轮次 {round_id} 是旧拍照点配方的采集记录，已停用"));
+            && crate::fsio::read_text(&dir.join("round.json"))
+                .is_ok_and(|text| !burst::is_v2(&text))
+        {
+            return Err(format!(
+                "采集轮次 {round_id} 是旧拍照点配方的采集记录，已停用"
+            ));
         }
         self.get_burst(round_id).map(AnyRound::Burst)
     }
@@ -281,12 +300,23 @@ impl RecipeCaptureHost {
             let id = entry.file_name().to_string_lossy().into_owned();
             if !entry.path().join("round.json").is_file() { continue; }
             let burst = live_burst.as_deref() == Some(id.as_str())
-                || crate::fsio::read_text(&entry.path().join("round.json")).is_ok_and(|text| burst::is_v2(&text));
-            if !burst { continue; }
+                || crate::fsio::read_text(&entry.path().join("round.json"))
+                    .is_ok_and(|text| burst::is_v2(&text));
+            if !burst {
+                continue;
+            }
             let r = self.burst_summary(&id)?;
             if r.recipe_id == recipe_id {
-                rounds.push(CaptureSummary { camera_ids: r.camera_ids(), received_count: u32::try_from(r.group_count).unwrap_or(u32::MAX), round_id: r.round_id,
-                    recipe_id: r.recipe_id, planned_count: r.plc_shot_count.map(u32::from), state: r.state, created_at: r.created_at, error: r.error });
+                rounds.push(CaptureSummary {
+                    camera_ids: r.camera_ids(),
+                    received_count: u32::try_from(r.group_count).unwrap_or(u32::MAX),
+                    round_id: r.round_id,
+                    recipe_id: r.recipe_id,
+                    planned_count: r.plc_shot_count.map(u32::from),
+                    state: r.state,
+                    created_at: r.created_at,
+                    error: r.error,
+                });
             }
         }
         rounds.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.round_id.cmp(&a.round_id)));

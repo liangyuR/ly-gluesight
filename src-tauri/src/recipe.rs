@@ -473,11 +473,15 @@ impl RecipeDoc {
         self.validate_burst()?;
         let used = self.plan_cameras();
         if let Some(missing) = used.iter().find(|c| !self.cameras.contains_key(*c)) {
-            return Err(format!("相机 {missing} 被检测相机使用，但配方没有它的曝光与增益"));
+            return Err(format!(
+                "相机 {missing} 被检测相机使用，但配方没有它的曝光与增益"
+            ));
         }
         for (camera, imaging) in &self.cameras {
             if !used.contains(camera) {
-                return Err(format!("配方给了相机 {camera} 的曝光与增益，但没有检测相机使用它"));
+                return Err(format!(
+                    "配方给了相机 {camera} 的曝光与增益，但没有检测相机使用它"
+                ));
             }
             imaging.validate(camera)?;
         }

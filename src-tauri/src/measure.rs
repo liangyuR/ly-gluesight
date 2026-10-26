@@ -467,7 +467,9 @@ mod tests {
             while health.snapshot() != expected {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     fn frame_job(recipe: &Arc<Recipe>, seq: u64) -> FrameJob {
@@ -475,12 +477,28 @@ mod tests {
     }
 
     fn frame_job_within(recipe: &Arc<Recipe>, seq: u64, timeout: Duration) -> FrameJob {
-        FrameJob { cycle_id: "cycle-7".into(), bundle_id: None, production: None, candidate: None, camera_idx: 0, camera: "cam1".into(), seq,
-            image: None, image_measurement: false, recipe: recipe.clone(), scenario: Scenario::Normal, submitted_at: clock(), timeout }
+        FrameJob {
+            cycle_id: "cycle-7".into(),
+            bundle_id: None,
+            production: None,
+            candidate: None,
+            camera_idx: 0,
+            camera: "cam1".into(),
+            seq,
+            image: None,
+            image_measurement: false,
+            recipe: recipe.clone(),
+            scenario: Scenario::Normal,
+            submitted_at: clock(),
+            timeout,
+        }
     }
 
     async fn next_frame(results: &mut UnboundedReceiver<FrameMeasured>) -> FrameMeasured {
-        tokio::time::timeout(Duration::from_secs(2), results.recv()).await.unwrap().unwrap()
+        tokio::time::timeout(Duration::from_secs(2), results.recv())
+            .await
+            .unwrap()
+            .unwrap()
     }
 
     #[tokio::test(start_paused = true)]
@@ -496,23 +514,38 @@ mod tests {
         let (tx, rx) = channel(FRAME_MEASURE_QUEUE);
         let (out, mut results) = unbounded_channel();
         let health = Arc::new(WorkerHealth::new(1));
-        let sink: FrameSink = Arc::new(move |measured| { let _ = out.send(measured); });
+        let sink: FrameSink = Arc::new(move |measured| {
+            let _ = out.send(measured);
+        });
         let runner: Runner<FrameJob> = Arc::new(move |job| {
             calls.fetch_add(1, Ordering::SeqCst);
             if job.seq == 1 {
                 let _ = blocked_tx.send(());
                 gate.wait();
             }
-            FrameMeasured::new(job, Ok(simulate_frame(job.scenario, job.camera_idx, job.seq, &job.recipe)))
+            FrameMeasured::new(
+                job,
+                Ok(simulate_frame(
+                    job.scenario,
+                    job.camera_idx,
+                    job.seq,
+                    &job.recipe,
+                )),
+            )
         });
         let dispatcher = tokio::spawn(dispatch_tasks(rx, health.clone(), runner, sink));
-        tx.send(frame_job_within(&recipe, 1, Duration::from_millis(200))).await.unwrap();
+        tx.send(frame_job_within(&recipe, 1, Duration::from_millis(200)))
+            .await
+            .unwrap();
         blocked.recv().await.unwrap();
         assert_eq!(health.snapshot(), WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 0, available_capacity: 0 });
         assert!(health.can_arm());
         tokio::time::advance(Duration::from_millis(200)).await;
         let result = next_frame(&mut results).await;
-        assert_eq!((result.seq, result.result.clone().unwrap_err()), (1, MeasureError::Timeout));
+        assert_eq!(
+            (result.seq, result.result.clone().unwrap_err()),
+            (1, MeasureError::Timeout)
+        );
         assert!(result.ms >= 200);
         assert!(result.queue_ms.is_some());
         assert!(result.engine_ms.is_none());
@@ -524,12 +557,19 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_secs(30));
             watchdog.release();
         });
-        for seq in [2, 3] { tx.send(frame_job_within(&recipe, seq, Duration::from_millis(30))).await.unwrap(); }
+        for seq in [2, 3] {
+            tx.send(frame_job_within(&recipe, seq, Duration::from_millis(30)))
+                .await
+                .unwrap();
+        }
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(30)).await;
         for seq in [2, 3] {
             let result = next_frame(&mut results).await;
-            assert_eq!((result.seq, result.result.clone().unwrap_err()), (seq, MeasureError::Timeout));
+            assert_eq!(
+                (result.seq, result.result.clone().unwrap_err()),
+                (seq, MeasureError::Timeout)
+            );
             assert!(result.queue_ms.is_none());
             assert!(result.engine_ms.is_none());
         }
@@ -539,7 +579,9 @@ mod tests {
         wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 0, timed_out: 0, available_capacity: 1 }).await;
         assert!(health.can_arm());
         assert!(results.try_recv().is_err());
-        tx.send(frame_job_within(&recipe, 4, Duration::from_secs(1))).await.unwrap();
+        tx.send(frame_job_within(&recipe, 4, Duration::from_secs(1)))
+            .await
+            .unwrap();
         let recovered = next_frame(&mut results).await;
         assert_eq!(recovered.seq, 4);
         assert_eq!(recovered.metrics().state, FrameState::Measured);

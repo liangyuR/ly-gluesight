@@ -35,11 +35,27 @@ fn armed_part(
     let baselines = arm_frames(&cameras, ledgers, &policy, &identities).unwrap();
     Part {
         mode: crate::store::PartMode::Production,
-        cycle_id: cycle_id.into(), bundle_id: None, production: None, candidate: None, sn: "SN-88".into(), scenario: Scenario::Normal,
-        burst: Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted)), device_triggers: None,
-        routing_closed: false, image_measurement: false, proc_timeout: Duration::from_secs(1), drain_timeout: Duration::from_secs(2),
-        armed_at: Instant::now(), end_at: None, fault: None, cams: vec![0, 1, 2], camera_ids: cameras, rig_gen: 1,
-        source: RecordSource::Real, recording: None, recipe,
+        cycle_id: cycle_id.into(),
+        bundle_id: None,
+        production: None,
+        candidate: None,
+        sn: "SN-88".into(),
+        scenario: Scenario::Normal,
+        burst: Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted)),
+        device_triggers: None,
+        routing_closed: false,
+        image_measurement: false,
+        proc_timeout: Duration::from_secs(1),
+        drain_timeout: Duration::from_secs(2),
+        armed_at: Instant::now(),
+        end_at: None,
+        fault: None,
+        cams: vec![0, 1, 2],
+        camera_ids: cameras,
+        rig_gen: 1,
+        source: RecordSource::Real,
+        recording: None,
+        recipe,
     }
 }
 

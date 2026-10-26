@@ -199,7 +199,9 @@ fn burst_part_replayed_from_reopened_spool_links_raw_files_by_camera_seq() {
         source: RecordSource::Real, sample: None, burst: Some(burst),
     };
     let raw = |camera: usize, seq: u64| RecordedRawFile {
-        file: format!("cycle_burst-70/cam{}_s{seq:06}.pgm", camera + 1), width: 2, height: 1,
+        file: format!("cycle_burst-70/cam{}_s{seq:06}.pgm", camera + 1),
+        width: 2,
+        height: 1,
         frame: FrameKey { camera, seq },
     };
     let mut recording = outcome("burst-70", &[], RecorderState::Complete);

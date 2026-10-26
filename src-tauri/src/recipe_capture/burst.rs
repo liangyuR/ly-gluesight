@@ -301,7 +301,9 @@ impl RecipeCaptureHost {
             }
         }
         let mut guard = self.burst.lock().unwrap();
-        if guard.as_ref().is_some_and(|r| r.round.state.active()) { return Err(Rejected::Busy); }
+        if guard.as_ref().is_some_and(|r| r.round.state.active()) {
+            return Err(Rejected::Busy);
+        }
         let created_at = ly_plc::now_ms();
         let mut suffix = 0u32;
         let round_id = loop {

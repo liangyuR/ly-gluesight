@@ -338,7 +338,16 @@ pub(crate) async fn run_candidate(app: AppHandle, candidate: Arc<crate::candidat
     *offline.candidate.lock().unwrap() = Some(candidate);
     let _ = cycle.tx.send(crate::cycle::Input::Refresh);
     let order = PartOrder::new(String::new(), recipe.product_code, plan.shot_count);
-    tauri::async_runtime::spawn(run_burst(app.clone(), line, recipe, order, Scenario::Normal, false, feeds, Some((set, part_id))));
+    tauri::async_runtime::spawn(run_burst(
+        app.clone(),
+        line,
+        recipe,
+        order,
+        Scenario::Normal,
+        false,
+        feeds,
+        Some((set, part_id)),
+    ));
     Ok(())
 }
 
@@ -564,13 +573,27 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
     }
     let order = PartOrder::new(String::new(), recipe.product_code, plan.shot_count);
     let feeds = match &samples {
-        Some(set) => sample_feeds(&recipe, set).map_err(|reason| format!("样本集与配方不符：{reason}"))?,
+        Some(set) => {
+            sample_feeds(&recipe, set).map_err(|reason| format!("样本集与配方不符：{reason}"))?
+        }
         None => synthetic_feeds(&recipe),
     };
     start_running(&offline, continuous)?;
     tauri::async_runtime::spawn(async move {
-        if warming && !wait_warmup(&app, &recipe).await { return finish(&app, &app.state::<OfflineHost>()); }
-        run_burst(app, line, recipe, order, scenario, continuous, feeds, samples.map(|set| (set, part_id))).await
+        if warming && !wait_warmup(&app, &recipe).await {
+            return finish(&app, &app.state::<OfflineHost>());
+        }
+        run_burst(
+            app,
+            line,
+            recipe,
+            order,
+            scenario,
+            continuous,
+            feeds,
+            samples.map(|set| (set, part_id)),
+        )
+        .await
     });
     Ok(())
 }
@@ -603,10 +626,24 @@ pub fn offline_capture(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_,
         }
         feeds.push((cam, config.id, shots.iter().map(|s| s.shot_id.clone()).collect::<Vec<_>>()));
     }
-    if let Some((_, id, _)) = feeds.iter().find(|(_, _, shots)| shots.is_empty()) { return Err(format!("样本集里没有相机 {id} 的图像")); }
-    let n = feeds.iter().map(|(_, _, shots)| shots.len()).max().unwrap_or(0);
-    if n > i16::MAX as usize { return Err(format!("样本集每台相机最多 {} 帧（PLC Int），相机最多有 {n} 帧", i16::MAX)); }
-    if let Some(id) = part_id.as_deref() { set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?; }
+    if let Some((_, id, _)) = feeds.iter().find(|(_, _, shots)| shots.is_empty()) {
+        return Err(format!("样本集里没有相机 {id} 的图像"));
+    }
+    let n = feeds
+        .iter()
+        .map(|(_, _, shots)| shots.len())
+        .max()
+        .unwrap_or(0);
+    if n > i16::MAX as usize {
+        return Err(format!(
+            "样本集每台相机最多 {} 帧（PLC Int），相机最多有 {n} 帧",
+            i16::MAX
+        ));
+    }
+    if let Some(id) = part_id.as_deref() {
+        set.part(id)
+            .ok_or_else(|| format!("样本集里没有样本件 {id}"))?;
+    }
     start_running(&offline, false)?;
     let order = PartOrder::new(String::new(), 0, n as u16);
     let feeds = feeds.into_iter().map(|(cam, _, shots)| (cam, shots)).collect();

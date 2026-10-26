@@ -18,9 +18,9 @@ use crate::applog::{codes, Fields};
 use crate::cycle::{self, CycleHost};
 use crate::frame::{BudgetExceeded, CounterSource, Frame, FrameImage, FramePool, GrayError};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
-use crate::recipe::{legacy_camera_id, valid_camera_id, CameraImaging, Recipe};
 use crate::offline::sample_set::SampleSet;
 use crate::offline::Scenario;
+use crate::recipe::{legacy_camera_id, valid_camera_id, CameraImaging, Recipe};
 use crate::simimage;
 
 mod delivery;
@@ -988,7 +988,9 @@ impl CameraSlot {
             CameraSource::SampleSet => {
                 let target = match payload {
                     Some(TriggerPayload::Sample(target)) => Ok(target),
-                    Some(TriggerPayload::Burst(_)) => Err("样本集相机收到合成图触发，没有样本件身份".to_string()),
+                    Some(TriggerPayload::Burst(_)) => {
+                        Err("样本集相机收到合成图触发，没有样本件身份".to_string())
+                    }
                     None => crate::offline::preview_target(&self.shared.rig.app, &config.id)
                         .ok_or_else(|| format!("未选择离线样本集，或样本集里没有相机 {} 的拍照点", config.id)),
                 };
@@ -1463,7 +1465,9 @@ impl CameraRig {
         if !slot.is_ready() {
             return Err(format!("相机未就绪：{}", slot.status().message));
         }
-        let images = if config.source == CameraSource::Sim && !matches!(payload, Some(TriggerPayload::Burst(_))) {
+        let images = if config.source == CameraSource::Sim
+            && !matches!(payload, Some(TriggerPayload::Burst(_)))
+        {
             let images = slot.last_views();
             if images.is_empty() {
                 return Err("模拟相机尚未出图，请先运行一个模拟工件".into());

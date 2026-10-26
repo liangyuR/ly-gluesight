@@ -60,7 +60,14 @@ impl Engine {
         let version = core.version();
         let (bytes, modified_ms) = file_identity(&resolved)?;
         let identity = format!("{version}:{bytes}:{modified_ms}");
-        Ok(Self { core: Arc::new(core), path: path.to_path_buf(), version, bytes, modified_ms, identity })
+        Ok(Self {
+            core: Arc::new(core),
+            path: path.to_path_buf(),
+            version,
+            bytes,
+            modified_ms,
+            identity,
+        })
     }
 
     /// 跑一次图，返回 run summary 与图级命名输出（都已解析成 JSON）。
@@ -374,7 +381,9 @@ pub fn recipe_source(app: &AppHandle, recipe: &Recipe) -> Result<CameraSource, S
             None => found = Some((source, id)),
         }
     }
-    found.map(|(s, _)| s).ok_or_else(|| format!("配方 {} 没有检测相机", recipe.id))
+    found
+        .map(|(s, _)| s)
+        .ok_or_else(|| format!("配方 {} 没有检测相机", recipe.id))
 }
 
 /// 旧拍照点配方的工位标定键：设备 + 图编号（三目拼接相机每幅图各一份标定）。

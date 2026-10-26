@@ -168,7 +168,9 @@ impl SkipKind {
             Self::SnapshotMissing => "原配方快照缺失，无法核对测点布局",
             Self::LayoutMismatch => "存储的区域或帧与原配方布局不一致",
             Self::NoCandidate => "当前候选配方不存在",
-            Self::LayoutChanged => "当前候选的段序列 / 类型 / 预期帧数、相机或走廊已改变，需要使用原图复测",
+            Self::LayoutChanged => {
+                "当前候选的段序列 / 类型 / 预期帧数、相机或走廊已改变，需要使用原图复测"
+            }
         }
     }
 }
@@ -296,13 +298,17 @@ fn rejudge_rows(
             skip(SkipKind::NoTable);
             continue;
         }
-        if row.recipe_id.as_deref() != Some(original.id.as_str()) || revision_id != original.revision_id
-            || !burst_layout_matches(&original, burst, &frames) {
+        if row.recipe_id.as_deref() != Some(original.id.as_str())
+            || revision_id != original.revision_id
+            || !burst_layout_matches(&original, burst, &frames)
+        {
             skip(SkipKind::LayoutMismatch);
             continue;
         }
         let recipe = if request.use_current_recipe {
-            let Some(candidate) = cached_recipe(&mut candidates, &original.id, || Ok(current(&original.id)))? else {
+            let Some(candidate) =
+                cached_recipe(&mut candidates, &original.id, || Ok(current(&original.id)))?
+            else {
                 skip(SkipKind::NoCandidate);
                 continue;
             };
@@ -318,7 +324,15 @@ fn rejudge_rows(
         total += 1;
         *matrix.entry((row.verdict, j.verdict)).or_default() += 1;
         if j.verdict != row.verdict && changes.len() < 300 {
-            changes.push(Change { id: row.id, sn: row.sn.clone(), ts: row.ts, from: row.verdict, to: j.verdict, reason: j.reason, flags: Some(j.flags) });
+            changes.push(Change {
+                id: row.id,
+                sn: row.sn.clone(),
+                ts: row.ts,
+                from: row.verdict,
+                to: j.verdict,
+                reason: j.reason,
+                flags: Some(j.flags),
+            });
         }
     }
     let mut matrix: Vec<_> = matrix.into_iter().map(|((from, to), count)| MatrixCell { from, to, count }).collect();

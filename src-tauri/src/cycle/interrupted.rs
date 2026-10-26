@@ -44,7 +44,9 @@ pub(super) fn part(interrupted: &Interrupted, records: &[Record], recipe: impl F
         mode,
         ts: interrupted.started_at.unwrap_or(now),
         sn: interrupted.sn.into(),
-        frames_expected: burst.as_ref().map_or(0, |burst| burst.expected_total.unwrap_or(0) as usize),
+        frames_expected: burst
+            .as_ref()
+            .map_or(0, |burst| burst.expected_total.unwrap_or(0) as usize),
         shots: Vec::new(),
         recipe,
         judgement,

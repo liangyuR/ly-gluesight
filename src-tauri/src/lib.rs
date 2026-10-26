@@ -59,11 +59,14 @@ pub use packaging::check_packaged_runtime;
 /// 吞吐探针（examples/throughput_probe.rs）走生产加载路径所需的内部接口，只为 example 暴露；不是稳定 API，应用本身不用。
 #[doc(hidden)]
 pub mod probe_api {
-    pub use crate::image_file::save_pgm;
     pub use crate::burst_judge::FrameState;
+    pub use crate::image_file::save_pgm;
     pub use crate::production::{burst_graphs, Prepared, GRAPH_VERSION_BURST};
     pub use crate::recipe::{burst_template, DetectParams, Polarity, Recipe, RecipeDoc};
-    pub use crate::release::{load as load_release, publish_burst, BurstPublishInput, CameraInput, ResourceSource, ValidationSite, Versions};
+    pub use crate::release::{
+        load as load_release, publish_burst, BurstPublishInput, CameraInput, ResourceSource,
+        ValidationSite, Versions,
+    };
     pub use crate::vision::{Engine, FrameImage};
 
     /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。

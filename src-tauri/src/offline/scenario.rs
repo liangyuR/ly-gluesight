@@ -30,8 +30,18 @@ pub enum Scenario {
 impl Scenario {
     /// 只改变虚拟 PLC / 机器人握手与脉冲串、不依赖合成图的工况；现场原图样本集只能用这些。
     pub fn handshake(self) -> bool {
-        matches!(self, Scenario::Normal | Scenario::LostFrame | Scenario::MotionTimeout | Scenario::AckMismatch | Scenario::CameraLost
-            | Scenario::PulseJitter | Scenario::CornerSlowdown | Scenario::NotInspected | Scenario::EarlyEnd)
+        matches!(
+            self,
+            Scenario::Normal
+                | Scenario::LostFrame
+                | Scenario::MotionTimeout
+                | Scenario::AckMismatch
+                | Scenario::CameraLost
+                | Scenario::PulseJitter
+                | Scenario::CornerSlowdown
+                | Scenario::NotInspected
+                | Scenario::EarlyEnd
+        )
     }
 
     /// 本工况在脉冲剖面上加的 (首尾波动, 弯道波动)。
@@ -47,7 +57,9 @@ impl Scenario {
     pub fn lost_frames(self, total: u64) -> Vec<(usize, u64)> {
         match self {
             Scenario::CameraLost if total > 0 => vec![(1, 3.min(total))],
-            Scenario::LostFrame if total > 0 => (0..3).map(|camera| (camera, 4.min(total))).collect(),
+            Scenario::LostFrame if total > 0 => {
+                (0..3).map(|camera| (camera, 4.min(total))).collect()
+            }
             _ => Vec::new(),
         }
     }

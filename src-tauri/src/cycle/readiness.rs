@@ -241,10 +241,23 @@ pub fn evaluate(mut f: Facts) -> Readiness {
 
 /// 样本集要包含三台计划相机（规格 §1 Plan.cameras），且各有单视角图（视角 1）。
 pub fn sample_set_mismatch(recipe: &Recipe, manifest: &Manifest) -> Option<String> {
-    recipe.plan_cameras().iter().find_map(|id| match manifest.cameras.iter().find(|c| &c.id == id) {
-        None => Some(format!("计划相机 {id} 不在样本集里（样本集相机：{}）", manifest.cameras.iter().map(|c| c.id.as_str()).collect::<Vec<_>>().join("、"))),
-        Some(camera) if !camera.views.contains(&1) => Some(format!("计划相机 {id} 在样本集里没有单视角图（视角 1），只有视角 {:?}", camera.views)),
-        Some(_) => None,
+    recipe.plan_cameras().iter().find_map(|id| {
+        match manifest.cameras.iter().find(|c| &c.id == id) {
+            None => Some(format!(
+                "计划相机 {id} 不在样本集里（样本集相机：{}）",
+                manifest
+                    .cameras
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、")
+            )),
+            Some(camera) if !camera.views.contains(&1) => Some(format!(
+                "计划相机 {id} 在样本集里没有单视角图（视角 1），只有视角 {:?}",
+                camera.views
+            )),
+            Some(_) => None,
+        }
     })
 }
 
@@ -303,8 +316,15 @@ fn recipe_problem(app: &AppHandle, host: &CycleHost, recipe: &Recipe, image: boo
 fn option(recipe: &Recipe, problem: Option<(String, Target)>, waiting: Option<String>) -> RecipeOption {
     let (reason, target) = problem.map_or((None, None), |(reason, target)| (Some(reason), Some(target)));
     RecipeOption {
-        id: recipe.id.clone(), name: recipe.name.clone(), version: recipe.version, product_code: recipe.product_code,
-        published: true, runnable: reason.is_none(), reason, target, waiting,
+        id: recipe.id.clone(),
+        name: recipe.name.clone(),
+        version: recipe.version,
+        product_code: recipe.product_code,
+        published: true,
+        runnable: reason.is_none(),
+        reason,
+        target,
+        waiting,
     }
 }
 
@@ -331,9 +351,15 @@ pub fn gather(app: &AppHandle) -> Readiness {
     for draft in drafts {
         if library.iter().any(|r| r.id == draft.id) { continue; }
         recipes.push(RecipeOption {
-            id: draft.id, name: draft.name, version: draft.version, product_code: draft.product_code,
-            published: false, runnable: false,
-            reason: Some("未发布：在配方工作台验证并发布后才能运行".into()), target: Some(Target::Workspace), waiting: None,
+            id: draft.id,
+            name: draft.name,
+            version: draft.version,
+            product_code: draft.product_code,
+            published: false,
+            runnable: false,
+            reason: Some("未发布：在配方工作台验证并发布后才能运行".into()),
+            target: Some(Target::Workspace),
+            waiting: None,
         });
     }
     let product = if debug.is_some() { Product::Plc } else { match settings.product_source {

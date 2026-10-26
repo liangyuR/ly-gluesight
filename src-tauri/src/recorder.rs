@@ -298,7 +298,10 @@ impl Recorder {
             });
             return None;
         }
-        let burst = BurstFrames { cameras: recipe.plan_cameras(), ..BurstFrames::default() };
+        let burst = BurstFrames {
+            cameras: recipe.plan_cameras(),
+            ..BurstFrames::default()
+        };
         Some(Recording {
             scope: self.scope,
             started: ly_plc::now_ms(),
@@ -571,7 +574,12 @@ fn burst_files(root: &Path, actual_dir: &Path, burst: &mut BurstFrames, results:
         match result {
             Ok(file) => {
                 frame.available = true;
-                files.push(RecordedRawFile { file, width: frame.width, height: frame.height, frame: key });
+                files.push(RecordedRawFile {
+                    file,
+                    width: frame.width,
+                    height: frame.height,
+                    frame: key,
+                });
             }
             Err(error) => {
                 failures += 1;
@@ -642,7 +650,14 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
     let actual_dir = if promoted { target } else { rec.dir.clone() };
     let directory = actual_dir.is_dir().then_some(actual_dir.clone());
     let mut files = Vec::new();
-    burst_files(root, &actual_dir, &mut burst, &mut state.frame_results, &mut files, &mut rec.errors);
+    burst_files(
+        root,
+        &actual_dir,
+        &mut burst,
+        &mut state.frame_results,
+        &mut files,
+        &mut rec.errors,
+    );
     if files.is_empty() {
         rec.errors.push("本件没有已确认写入的原图".into());
     }

@@ -65,9 +65,15 @@ pub fn save_pgm_new(path: &Path, img: &FrameImage) -> Result<(), String> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             checked_source_path(path)?;
-            let existing = std::fs::read(path).map_err(|e| format!("读取已有示教原图 {} 失败：{e}", path.display()))?;
-            if existing == bytes { Ok(()) } else {
-                Err(format!("示教图编号 {} 已存在且内容不同，不能覆盖（示教帧按图编号认来源）", path.file_stem().and_then(|s| s.to_str()).unwrap_or("?")))
+            let existing = std::fs::read(path)
+                .map_err(|e| format!("读取已有示教原图 {} 失败：{e}", path.display()))?;
+            if existing == bytes {
+                Ok(())
+            } else {
+                Err(format!(
+                    "示教图编号 {} 已存在且内容不同，不能覆盖（示教帧按图编号认来源）",
+                    path.file_stem().and_then(|s| s.to_str()).unwrap_or("?")
+                ))
             }
         }
         Err(e) => Err(format!("写示教原图 {} 失败：{e}", path.display())),

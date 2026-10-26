@@ -323,7 +323,9 @@ impl Part {
 
     /// partEnd 后等待完整收尾窗口，并完成所有已接受帧的测量。
     pub(super) fn burst_complete(&self, now: Instant) -> bool {
-        if self.end_at.is_none() || self.burst.pending > 0 { return false; }
+        if self.end_at.is_none() || self.burst.pending > 0 {
+            return false;
+        }
         self.burst_deadline(now)
     }
 
@@ -335,13 +337,34 @@ impl Part {
         let loss = loss_alarms(&burst.grouper.camera_counts());
         if let Some((code, reason)) = &self.fault {
             let group_count = u32::try_from(burst.grouper.group_count()).unwrap_or(u32::MAX);
-            return BurstJudgement { group_count, alarms: loss, ..BurstJudgement::error(*code, reason.clone()) };
+            return BurstJudgement {
+                group_count,
+                alarms: loss,
+                ..BurstJudgement::error(*code, reason.clone())
+            };
         }
         let metrics: Vec<FrameMetrics> = burst.frames.values().filter_map(|frame| frame.metrics.clone()).collect();
         let segments = &self.recipe.path_segments;
-        let outcome = Unsegmented.segment(&SegInput { groups: &groups, features: &metrics, segments });
-        let regions = resolve_regions(segments, &outcome, burst.grouper.group_count(), MIN_CONFIDENCE);
-        burst_judge::judge(segments, self.recipe.expected_total(), &regions, &groups, &metrics, &burst.cameras, &loss)
+        let outcome = Unsegmented.segment(&SegInput {
+            groups: &groups,
+            features: &metrics,
+            segments,
+        });
+        let regions = resolve_regions(
+            segments,
+            &outcome,
+            burst.grouper.group_count(),
+            MIN_CONFIDENCE,
+        );
+        burst_judge::judge(
+            segments,
+            self.recipe.expected_total(),
+            &regions,
+            &groups,
+            &metrics,
+            &burst.cameras,
+            &loss,
+        )
     }
 
     /// 落库用的段配方记录：1..=帧组数内每台相机每一帧一条，缺帧也有。判定取本件的区域判定；结论摘要与它不同

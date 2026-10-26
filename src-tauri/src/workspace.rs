@@ -436,8 +436,14 @@ impl WorkspaceHost {
                     Ok(w)
                 });
             match loaded {
-                Ok(w) => { items.insert(w.doc.id.clone(), w); }
-                Err(error) => notes.push(format!("{} 未加载：{error}。{}", file.display(), unloaded_hint(&entry.path()))),
+                Ok(w) => {
+                    items.insert(w.doc.id.clone(), w);
+                }
+                Err(error) => notes.push(format!(
+                    "{} 未加载：{error}。{}",
+                    file.display(),
+                    unloaded_hint(&entry.path())
+                )),
             }
         }
         Ok(Self {
@@ -473,8 +479,17 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
     let production_version = production_recipe.as_ref().map(|r| r.version);
     let production_stage = production_recipe.as_ref().map(|r| r.stage);
     let production = app.state::<CycleHost>().recipes.doc(&w.doc.id);
-    let plan_changed = production.as_ref().is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
-    let plan = burst::plan_view(app, &w, &layout, production_recipe.as_deref(), production.as_ref(), production_version);
+    let plan_changed = production
+        .as_ref()
+        .is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
+    let plan = burst::plan_view(
+        app,
+        &w,
+        &layout,
+        production_recipe.as_deref(),
+        production.as_ref(),
+        production_version,
+    );
     Ok(WorkspaceView {
         workspace: w,
         layout,
@@ -935,8 +950,15 @@ pub struct DraftSummary {
 pub fn draft_summaries(app: &AppHandle) -> Vec<DraftSummary> {
     let Some(host) = app.try_state::<WorkspaceHost>() else { return Vec::new() };
     let items = host.items.lock().unwrap();
-    items.values().map(|w| DraftSummary { id: w.doc.id.clone(), name: w.doc.name.clone(), version: w.doc.version,
-        product_code: w.doc.product_code }).collect()
+    items
+        .values()
+        .map(|w| DraftSummary {
+            id: w.doc.id.clone(),
+            name: w.doc.name.clone(),
+            version: w.doc.version,
+            product_code: w.doc.product_code,
+        })
+        .collect()
 }
 
 pub fn apply_pending(app: &AppHandle) -> bool {
@@ -972,8 +994,13 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                         saved.version, saved.product_code
                     )
                 } else {
-                    let total = saved.expected_total().map_or("未标定".to_string(), |n| n.to_string());
-                    format!("{id} v{} 已生效；PLC 型号 {}，ΣN_exp = {total}", saved.version, saved.product_code)
+                    let total = saved
+                        .expected_total()
+                        .map_or("未标定".to_string(), |n| n.to_string());
+                    format!(
+                        "{id} v{} 已生效；PLC 型号 {}，ΣN_exp = {total}",
+                        saved.version, saved.product_code
+                    )
                 };
                 cycle::log(app, "info", "发布配方", message);
             }
@@ -1045,12 +1072,26 @@ pub async fn workspace_compare(
             .transpose()?
             .flatten()
             .ok_or("历史配方快照缺失")?;
-        let (judgement, burst) = burst_history::compare(&app, &w, &recipe, &detail, &original, raw)?;
+        let (judgement, burst) =
+            burst_history::compare(&app, &w, &recipe, &detail, &original, raw)?;
         let comparison = Comparison {
-            id: comparison_id(&app, history_id), history_id, source: if raw { "raw".into() } else { "rules".into() },
-            cycle_id: detail.summary.cycle_id.clone().ok_or("历史记录没有工件身份")?, bundle_id: detail.summary.bundle_id.clone(),
-            candidate_id: id.clone(), candidate_revision: revision, candidate_recipe: recipe, original_verdict: detail.summary.verdict,
-            judgement, measurements: Vec::new(), created_at: ly_plc::now_ms(), burst: Some(burst),
+            id: comparison_id(&app, history_id),
+            history_id,
+            source: if raw { "raw".into() } else { "rules".into() },
+            cycle_id: detail
+                .summary
+                .cycle_id
+                .clone()
+                .ok_or("历史记录没有工件身份")?,
+            bundle_id: detail.summary.bundle_id.clone(),
+            candidate_id: id.clone(),
+            candidate_revision: revision,
+            candidate_recipe: recipe,
+            original_verdict: detail.summary.verdict,
+            judgement,
+            measurements: Vec::new(),
+            created_at: ly_plc::now_ms(),
+            burst: Some(burst),
         };
         save_comparison(&app, &comparison)?;
         Ok(comparison)
@@ -1088,11 +1129,23 @@ pub async fn workspace_compare_original(app: AppHandle, history_id: i64) -> Resu
         let engine = app.state::<vision::VisionHost>().engine().ok_or("原版本兼容引擎未加载")?;
         let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
         prepared.verify()?;
-        let (judgement, burst) = burst_history::reproduce_original(&app, &detail, &prepared, &cycle_id)?;
-        let comparison = Comparison { id: comparison_id(&app, history_id), history_id, source: "original".into(),
-            cycle_id, bundle_id: Some(bundle_id.into()), candidate_id: original.id.clone(),
-            candidate_revision: 0, candidate_recipe: original, original_verdict: detail.summary.verdict,
-            judgement, measurements: Vec::new(), created_at: ly_plc::now_ms(), burst: Some(burst) };
+        let (judgement, burst) =
+            burst_history::reproduce_original(&app, &detail, &prepared, &cycle_id)?;
+        let comparison = Comparison {
+            id: comparison_id(&app, history_id),
+            history_id,
+            source: "original".into(),
+            cycle_id,
+            bundle_id: Some(bundle_id.into()),
+            candidate_id: original.id.clone(),
+            candidate_revision: 0,
+            candidate_recipe: original,
+            original_verdict: detail.summary.verdict,
+            judgement,
+            measurements: Vec::new(),
+            created_at: ly_plc::now_ms(),
+            burst: Some(burst),
+        };
         save_comparison(&app, &comparison)?;
         Ok(comparison)
     }).await.map_err(|error| error.to_string())?
@@ -1299,7 +1352,10 @@ pub async fn workspace_debug_run(app: AppHandle, id: String, revision: u64, part
         let sizes = burst_release::debug_sizes(w, &current)?;
         (recipe, sizes)
     };
-    let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
+    let engine = app
+        .state::<vision::VisionHost>()
+        .engine()
+        .ok_or("lyFlow 核心库未加载")?;
     let candidate = crate::candidate::Candidate::new_burst(recipe, revision, engine, &sizes)?;
     crate::offline::run_candidate(app, Arc::new(candidate), set, part_id).await
 }

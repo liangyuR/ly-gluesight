@@ -59,7 +59,11 @@ pub struct Prepared {
 impl Prepared {
     /// 按相机建走廊测量图。发布包与所选生产版本的配方逐项一致、测量图版本与引擎系列匹配、
     /// 包内测量图等于按配方和各相机示教帧尺寸重算的结果、各相机发布标定的当量等于示教当量。
-    pub fn load(bundle: ReleaseBundle, engine: Arc<Engine>, expected: &Recipe) -> Result<Self, String> {
+    pub fn load(
+        bundle: ReleaseBundle,
+        engine: Arc<Engine>,
+        expected: &Recipe,
+    ) -> Result<Self, String> {
         bundle.verify()?;
         if bundle.manifest.schema_version != RELEASE_SCHEMA_BURST {
             return Err("段配方需要按相机组织的发布包（格式版本 4），请重新发布".into());
@@ -91,7 +95,13 @@ impl Prepared {
         let sizes: Vec<[u32; 2]> = corridors.iter().map(|c| c.size).collect();
         if stored != burst_graphs(&recipe, &sizes)? { return Err("发布包算法图与配方走廊不一致".into()); }
         let engine_note = engine_file_note(&bundle.manifest.versions.engine, &engine);
-        Ok(Self { bundle, recipe, engine_note, engine, corridors })
+        Ok(Self {
+            bundle,
+            recipe,
+            engine_note,
+            engine,
+            corridors,
+        })
     }
 
     pub fn verify(&self) -> Result<(), String> {
