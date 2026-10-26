@@ -14,7 +14,8 @@ import PointsJsonDialog from "../components/PointsJsonDialog";
 import WriteDialog from "../components/WriteDialog";
 import S7Phase1Dialog from "../components/S7Phase1Dialog";
 import { plcApi, usePlcOperationState, usePlcStatus, usePlcValues, useTeachingStatus } from "../api";
-import { commonPlcTags, inspectionHandshakeTags, teachingHandshakeTags } from "../../../business/plcTags";
+import { commonPlcTags, inspectionHandshakeTags, plcTagHelp, teachingHandshakeTags } from "../../../business/plcTags";
+import ContextHelp from "../../cycle/components/ContextHelp";
 import { teachingPointValue } from "../teaching";
 import { asS7, cpuPresetLabel, dataTypeLabels, edgeLabels, effectiveOrder, formatValue, isMultiWord, newPoint } from "../meta";
 import { formatClock } from "../time";
@@ -173,11 +174,11 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   const protectedWrite = (point: PlcPoint) => saved?.connection.protocol === "s7"
     && (point.id === saved.heartbeat.pointId || isHandshakePoint(point))
     ? "S7 握手和心跳由检测流程管理，不能手动写入" : "";
-  const writeBlocked = (p: PlcPoint) => p.access !== "readWrite" ? "只读点位不能写入"
+  const lockReason = readOnly ? "离线期间只读" : blockedReason || (busy ? "PLC 操作进行中，请稍候" : "");
+  const writeBlocked = (p: PlcPoint) => lockReason || (p.access !== "readWrite" ? "只读点位不能写入"
     : !connected ? "PLC 未连接"
     : !live(p) ? "点位改动保存后才能写入"
-    : blockedReason || protectedWrite(p);
-  const lockReason = readOnly ? "离线期间只读" : blockedReason || (busy ? "PLC 操作进行中，请稍候" : "");
+    : protectedWrite(p));
   const protocolValue = tagValue("plcVersion");
   const protocolText = connected && protocolValue && !protocolValue.error && protocolValue.value !== null ? String(protocolValue.value) : "—";
   const handshakePoints = draft.points.filter(p => isHandshakePoint(p) && !isTeachingPoint(p) && !isCommonPoint(p));
@@ -186,10 +187,12 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   const customPoints = draft.points.filter(p => !isHandshakePoint(p));
   const brief = saved ? `S7 · ${cpuPresetLabel(saved.connection)} · ${saved.connection.host}:${saved.connection.port}` : "S7 · 配置未读取";
 
+  const help = (p: PlcPoint) => p.tags.map(tag => plcTagHelp[tag]).find(Boolean);
   const columns = (actions: TableColumn<PlcPoint>["render"]): TableColumn<PlcPoint>[] => [
     { key: "name", header: "名称", render: (p) => <>
       <div className="cell-title">
         {p.name}
+        {help(p) && <ContextHelp label={`${p.name}说明`}>{help(p)}</ContextHelp>}
         {draft.heartbeat.pointId === p.id && <span className="plc-heartbeat"><Chip>心跳</Chip></span>}
       </div>
       {p.description && <div className="cell-sub">{p.description}</div>}
@@ -216,7 +219,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
     } },
     { key: "actions", header: "操作", align: "right", render: actions },
   ];
-  const editButton = (p: PlcPoint) => <IconButton variant="text" title="编辑" aria-label="编辑" onClick={() => setEditing({ point: p, isNew: false })}>
+  const editButton = (p: PlcPoint) => <IconButton variant="text" title={lockReason || "编辑"} aria-label="编辑" disabled={!!lockReason} onClick={() => setEditing({ point: p, isNew: false })}>
     <Pencil size={16} />
   </IconButton>;
   const handshakeColumns = columns((p) => editButton(p));
@@ -225,27 +228,25 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
       <PenLine size={16} />
     </IconButton>
     {editButton(p)}
-    <IconButton variant="text" danger title="删除" aria-label="删除" onClick={() => removePoint(p.id)}>
+    <IconButton variant="text" danger title={lockReason || "删除"} aria-label="删除" disabled={!!lockReason} onClick={() => removePoint(p.id)}>
       <Trash2 size={16} />
     </IconButton>
   </span>);
   const loadTemplateButton = <Button disabled={!!lockReason || !tauri} title={lockReason || (!tauri ? "重置 S7 通讯配置需要桌面后端" : undefined)}
     onClick={() => setS7Open(true)}>重置 S7 通讯配置</Button>;
-  const pointGroup = (title: string, points: PlcPoint[], detail: string) => <fieldset disabled={busy || readOnly || !!blockedReason} style={fieldsetStyle}>
-    <Card role="region" aria-label={title} title={<Heading level={3}>{title}</Heading>}>
-      <section className="plc-point-group">
-        <div className="plc-group-head">
-          <div className="plc-group-title">
-            <span className="muted">{points.length} 个 · {detail}</span>
-            <Chip><Lock size={12} aria-hidden="true" /> 模板生成，不可手动写入</Chip>
-          </div>
-          {loadTemplateButton}
+  const pointGroup = (title: string, points: PlcPoint[], detail: string) => <Card role="region" aria-label={title} title={<Heading level={3}>{title}</Heading>}>
+    <section className="plc-point-group">
+      <div className="plc-group-head">
+        <div className="plc-group-title">
+          <span className="muted">{points.length} 个 · {detail}</span>
+          <Chip><Lock size={12} aria-hidden="true" /> 模板生成，不可手动写入</Chip>
         </div>
-        <Table<PlcPoint> caption={title} rows={points} columns={handshakeColumns} rowKey={p => p.id}
-          emptyState={<EmptyState title={`尚未载入${title}`} description="使用「重置 S7 通讯配置」生成标准点表，核对生产和示教 DB 后保存配置" action={loadTemplateButton} />} />
-      </section>
-    </Card>
-  </fieldset>;
+        {loadTemplateButton}
+      </div>
+      <Table<PlcPoint> caption={title} rows={points} columns={handshakeColumns} rowKey={p => p.id}
+        emptyState={<EmptyState title={`尚未载入${title}`} description="使用「重置 S7 通讯配置」生成标准点表，核对生产和示教 DB 后保存配置" action={loadTemplateButton} />} />
+    </section>
+  </Card>;
 
   const notices: PlcNotice[] = [];
   if (actionError) notices.push({ key: "action", tone: "ng", text: actionError });
@@ -317,44 +318,42 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
         </div> },
       ]} />
 
-      <fieldset disabled={busy || readOnly || !!blockedReason} style={fieldsetStyle}>
-          <Card role="region" aria-label="地址表" title={<Heading level={3}>地址表</Heading>}>
-            <Stack direction="column" align="stretch" gap={16} wrap={false}>
-              <section className="plc-point-group">
-                <div className="plc-group-head">
-                  <div className="plc-group-title">
-                    <span className="plc-group-name">通用点位</span>
-                    <span className="muted">{commonPoints.length} 个 · 心跳、生产协议版本</span>
-                    <Chip><Lock size={12} aria-hidden="true" /> 模板生成，不可手动写入</Chip>
-                  </div>
-                  <div className="plc-group-actions">
-                    {loadTemplateButton}
-                    <Button leadingIcon={<FileJson size={16} />} disabled={!!lockReason} title={lockReason || undefined} onClick={() => setJsonOpen(true)}>导入/导出</Button>
-                  </div>
-                </div>
-                <Table<PlcPoint> caption="通用点位" rows={commonPoints} columns={handshakeColumns} rowKey={(p) => p.id}
-                  emptyState={<EmptyState title="尚未载入通用点位" description="点「重置 S7 通讯配置」生成生产协议 7 与示教扩展协议 V1 点位" action={loadTemplateButton} />} />
-              </section>
-              <Accordion collapsible ignoreFieldsetDisabled className="plc-custom-group" value={customOpen} onValueChange={setCustomOpen} items={[{
-                value: "custom",
-                title: <span className="plc-group-head">
-                  <span className="plc-group-title">
-                    <span className="plc-group-name">自定义点位</span>
-                    <span className="muted">{customPoints.length} 个</span>
-                    {customPending && <StatusBadge tone="warn">未保存</StatusBadge>}
-                  </span>
-                  <span className="plc-group-actions">
-                    <Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!!lockReason} title={lockReason || undefined}
-                      onClick={(e) => { e.stopPropagation(); setEditing({ point: newPoint(), isNew: true }); }}
-                      onKeyDown={(e) => e.stopPropagation()}>新增点位</Button>
-                  </span>
-                </span>,
-                content: <Table<PlcPoint> caption="自定义点位" rows={customPoints} columns={customColumns} rowKey={(p) => p.id}
-                  emptyState={<EmptyState title="没有自定义点位" description="联调需要监视或手动写入的额外地址在这里添加；握手点位不在此列" />} />,
-              }]} />
-            </Stack>
-          </Card>
-      </fieldset>
+      <Card role="region" aria-label="地址表" title={<Heading level={3}>地址表</Heading>}>
+        <Stack direction="column" align="stretch" gap={16} wrap={false}>
+          <section className="plc-point-group">
+            <div className="plc-group-head">
+              <div className="plc-group-title">
+                <span className="plc-group-name">通用点位</span>
+                <span className="muted">{commonPoints.length} 个 · 心跳、生产协议版本</span>
+                <Chip><Lock size={12} aria-hidden="true" /> 模板生成，不可手动写入</Chip>
+              </div>
+              <div className="plc-group-actions">
+                {loadTemplateButton}
+                <Button leadingIcon={<FileJson size={16} />} disabled={!!lockReason} title={lockReason || undefined} onClick={() => setJsonOpen(true)}>导入/导出</Button>
+              </div>
+            </div>
+            <Table<PlcPoint> caption="通用点位" rows={commonPoints} columns={handshakeColumns} rowKey={(p) => p.id}
+              emptyState={<EmptyState title="尚未载入通用点位" description="点「重置 S7 通讯配置」生成生产协议 7 与示教扩展协议 V1 点位" action={loadTemplateButton} />} />
+          </section>
+          <Accordion collapsible className="plc-custom-group" value={customOpen} onValueChange={setCustomOpen} items={[{
+            value: "custom",
+            title: <span className="plc-group-head">
+              <span className="plc-group-title">
+                <span className="plc-group-name">自定义点位</span>
+                <span className="muted">{customPoints.length} 个</span>
+                {customPending && <StatusBadge tone="warn">未保存</StatusBadge>}
+              </span>
+              <span className="plc-group-actions">
+                <Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!!lockReason} title={lockReason || undefined}
+                  onClick={(e) => { e.stopPropagation(); setEditing({ point: newPoint(), isNew: true }); }}
+                  onKeyDown={(e) => e.stopPropagation()}>新增点位</Button>
+              </span>
+            </span>,
+            content: <Table<PlcPoint> caption="自定义点位" rows={customPoints} columns={customColumns} rowKey={(p) => p.id}
+              emptyState={<EmptyState title="没有自定义点位" description="联调需要监视或手动写入的额外地址在这里添加；握手点位不在此列" />} />,
+          }]} />
+        </Stack>
+      </Card>
 
       {editing && (
         <PointEditor
