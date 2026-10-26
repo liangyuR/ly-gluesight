@@ -25,6 +25,8 @@ pub enum FrameState {
     Unmeasured,
     /// 胶条走出本相机的走廊（弯道帧常见，默认做法 4）：记检测不完整，不判 NG
     OutOfCorridor,
+    /// 这一帧所在段不由这台相机检测，按设计不测（D-SB-45）：不判定，也不计检测不完整
+    NotInspected,
 }
 
 /// 一台相机一帧的独立指标；示教轮次写进 features.jsonl，供分段算法和标定使用。
@@ -53,6 +55,9 @@ pub struct FrameMetrics {
     pub present_ratio: f64,
     /// 帧内胶中心相对走廊的法向偏移均值（mm），即 AbsoluteX 测量量
     pub x_mm: Option<f64>,
+    /// 测量用的是第几段的走廊（`PathSegment.index`，D-SB-45）；没测或旧记录为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corridor: Option<u32>,
 }
 
 /// 区域内 Measured 帧的胶宽统计（mm）。
@@ -491,15 +496,16 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
                 .count() as u32
         })
         .collect();
-    // 缺帧组：区域检测相机里某台这一组没有测成的帧（缺帧、测量失败、没测、走出走廊）；用全部相机时配组标了 incomplete 也算
+    // 缺帧组：区域检测相机里某台这一组没有测成的帧（缺帧、测量失败、没测、走出走廊）；用全部相机时配组标了 incomplete 也算。
+    // 按设计不测的帧（NotInspected：未分段区域里不检测预测段的相机）不算
     let all_cameras = allowed.len() == cams;
     let incomplete_groups = (region.first_seq..=region.last_seq)
         .filter(|seq| {
             (all_cameras && part.incomplete_seqs.contains(seq))
                 || allowed.iter().any(|&c| {
-                    part.frames
-                        .get(&(*seq, c))
-                        .is_none_or(|m| m.state != FrameState::Measured)
+                    part.frames.get(&(*seq, c)).is_none_or(|m| {
+                        !matches!(m.state, FrameState::Measured | FrameState::NotInspected)
+                    })
                 })
         })
         .collect();
@@ -645,6 +651,7 @@ mod tests {
             widths: vec![Some(4.0); 10],
             spacing_mm: 1.0,
             gap_max_mm: 0.0,
+            corridor: None,
             present_ratio: 1.0,
             x_mm: Some(0.0),
         }

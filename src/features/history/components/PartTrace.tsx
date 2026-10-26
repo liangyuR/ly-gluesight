@@ -84,11 +84,11 @@ export default function PartTrace({ detail, layout, raw, selected, selectedView,
 
 // ───────────── 段配方（分段连拍飞拍）：每相机帧表 ─────────────
 
-const frameStateText: Record<FrameState, string> = { measured: "已测", missing: "缺帧", error: "测量失败", unmeasured: "未测", outOfCorridor: "出走廊" };
+const frameStateText: Record<FrameState, string> = { measured: "已测", missing: "缺帧", error: "测量失败", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测" };
 const mm = (v: number | null | undefined) => v == null ? "—" : v.toFixed(2);
 
-/** 一帧没出完整结果：缺帧、测量失败、未测、走出走廊（都只算检测不完整，不影响 OK/NG）。 */
-export const frameAbnormal = (frame: FrameRecord) => frame.status !== "measured";
+/** 一帧没出完整结果：缺帧、测量失败、未测、走出走廊（都只算检测不完整，不影响 OK/NG）；本段不由这台相机检测的帧按设计不测，不算异常。 */
+export const frameAbnormal = (frame: FrameRecord) => frame.status !== "measured" && frame.status !== "notInspected";
 
 /**
  * 段配方的逐帧追溯：每台相机每个帧组一行（缺帧也有），写帧号、触发计数、所在区域、状态、胶宽与胶中心、原图。
@@ -115,7 +115,7 @@ export function BurstPartTrace({ detail, burst, selected, onSelect }: {
     { key: "counter", header: "帧号 / 触发计数", render: frame => `${frame.frameCounter ?? "—"} / ${frame.triggerCounter ?? "—"}` },
     { key: "region", header: "区域", render: frame => frame.region != null && burst.judgement.regions[frame.region] ? regionKindLabel(burst.judgement.regions[frame.region].region.kind) : "—" },
     { key: "status", header: "状态", render: frame => <>
-      <StatusBadge tone={frame.status === "measured" ? "ok" : frame.status === "error" ? "fault" : "warn"}>{frameStateText[frame.status]}</StatusBadge>
+      <StatusBadge tone={frame.status === "measured" ? "ok" : frame.status === "error" ? "fault" : frame.status === "notInspected" ? "neutral" : "warn"}>{frameStateText[frame.status]}</StatusBadge>
       {frame.metrics?.error && <div>{frame.metrics.error}</div>}
     </> },
     { key: "width", header: "胶宽 min / max / mean", render: frame => frame.metrics && frame.status === "measured" ? `${mm(frame.metrics.widthMin)} / ${mm(frame.metrics.widthMax)} / ${mm(frame.metrics.widthMean)}` : "—" },

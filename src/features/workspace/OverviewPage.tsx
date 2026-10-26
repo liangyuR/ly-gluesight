@@ -8,7 +8,7 @@ import { RecipeIdentity } from "./DocParams";
 import { shotState, shotStateLabel, visColor } from "../cycle/vis";
 import { useWorkspace } from "./context";
 import { Badge, GrayViewer, Notice, Panel, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
-import { cameraTeachingTasks, type CameraTeachingTask } from "./cameraTasks";
+import { corridorTasks, type CorridorTask } from "./cameraTasks";
 import type { Overview } from "./types";
 import "./corridor.css";
 
@@ -69,18 +69,20 @@ export function WorkpieceOverview({layout,overview,selected=0,onSelect,onMove,vi
   </svg>;
 }
 
-function CameraFrame({ docId, task, corridor }: { docId: string; task: CameraTeachingTask; corridor: [number, number][] }) {
+function CorridorFrame({ docId, task, corridor }: { docId: string; task: CorridorTask; corridor: [number, number][] }) {
   const { image, error, loading } = useGrayImage(docId, task.frame?.id ?? null);
+  const name = `${task.camera} · 段 ${task.segment}`;
   return <>
-    <div className="wp-actions"><strong>{task.camera}</strong><Badge tone={task.status === "done" ? "ok" : task.frame ? "warn" : "neutral"}>{task.label}</Badge><Link className="wp-text-link" to={task.href}>{task.frame ? "查看走廊" : "去选示教帧"}</Link></div>
-    <GrayViewer image={image} loading={loading} error={error} label={task.frame ? `${task.camera} · 示教帧` : `${task.camera} · 尚未选示教帧`} overlay={corridor.length >= 2 ? { path: corridor } : undefined}
-      emptyTitle="尚未选示教帧" emptyHint="在“相机走廊示教”里为这台相机从采集轮次选一帧。"/>
+    <div className="wp-actions"><strong>{name}</strong><Badge tone={task.status === "done" ? "ok" : task.frame ? "warn" : "neutral"}>{task.label}</Badge><Link className="wp-text-link" to={task.href}>{task.frame ? "查看走廊" : "去选示教帧"}</Link></div>
+    <GrayViewer image={image} loading={loading} error={error} label={task.frame ? `${name} · 示教帧` : `${name} · 尚未选示教帧`} overlay={corridor.length >= 2 ? { path: corridor } : undefined}
+      emptyTitle="尚未选示教帧" emptyHint="在“走廊示教”里从已确认分段的采集轮次选这一段内的一帧。"/>
   </>;
 }
 
-/** 段配方的总览：三台相机与沿胶路的段条（N_exp 或“待标定”），以及每台相机的示教帧和走廊。 */
+/** 段配方的总览：三台相机与沿胶路的段条（N_exp 或“待标定”），以及每段每台检测相机的示教帧和走廊。 */
 function SegmentOverview({ plan, doc }: { plan: WorkspacePlanView; doc: RecipeDoc }) {
-  const tasks = cameraTeachingTasks(plan);
+  const tasks = corridorTasks(plan);
+  const corridorOf = (task: CorridorTask) => doc.inspect?.find(item => item.camera === task.camera)?.segments?.find(item => item.segment === task.segment)?.corridor ?? [];
   return <div className="wp-page"><WorkspaceBar />
     <Panel title="配方信息" detail="名称与 PLC 下发的型号；改动自动保存为候选配置，发布后生效">
       <RecipeIdentity />
@@ -92,8 +94,8 @@ function SegmentOverview({ plan, doc }: { plan: WorkspacePlanView; doc: RecipeDo
         <Link className="wp-text-link" to="/recipe/segments">段列表</Link><Link className="wp-text-link" to="/recipe/calibration">多轮标定</Link>
       </div>
     </Panel>
-    <Panel title="示教帧与走廊" detail="每台相机一条走廊，按直线段几何，所有帧共用">
-      <ul className="wp-segment-teach" aria-label="各相机示教帧">{tasks.map(task => <li key={task.camera}><CameraFrame docId={doc.id} task={task} corridor={doc.inspect?.find(item => item.camera === task.camera)?.corridor ?? []} /></li>)}</ul>
+    <Panel title="示教帧与走廊" detail="每段的每台检测相机各一条走廊，在这一段内的示教帧上示教">
+      <ul className="wp-segment-teach" aria-label="各段走廊示教帧">{tasks.map(task => <li key={`${task.camera}#${task.segment}`}><CorridorFrame docId={doc.id} task={task} corridor={corridorOf(task)} /></li>)}</ul>
     </Panel>
     <Notice title="总览只读">段配方的总览由计划自动给出，不再摆放拍照点框。</Notice>
   </div>;

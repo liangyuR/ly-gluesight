@@ -11,7 +11,9 @@ use super::*;
 use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
 use crate::frame_group::{FrameGroup, LossAlarm};
 use crate::plan::PathSegment;
-use crate::segmentation::{resolve_regions, Proportional, Region, SegInput, Segmenter};
+use crate::segmentation::{
+    frame_corridors, resolve_regions, Proportional, Region, SegInput, Segmenter,
+};
 use crate::store::{FrameRecord, PartDetail, PartDetailBurst, RecordSource};
 
 /// 区域划分的置信度门槛，与在线节拍（cycle/burst.rs）相同：比例分段器在帧数容差内给 1、之外给 0。
@@ -89,18 +91,90 @@ pub(super) fn judge_frames(
     )
 }
 
-/// 历史帧记录按 (camera, seq) 逐帧重测：缺帧仍记缺帧、不读原图；其余帧交给 `measure`，失败记测量失败。
-/// 结果的帧身份一律取帧记录的 (camera, seq)。
-pub(super) fn remeasure(frames: &[FrameRecord], mut measure: impl FnMut(&FrameRecord) -> Result<FrameMetrics, String>) -> Vec<FrameMetrics> {
-    frames.iter().map(|frame| {
-        if frame.status == FrameState::Missing {
-            return burst::frame_without_metrics(frame.camera, frame.seq, FrameState::Missing, None);
-        }
-        match measure(frame) {
-            Ok(metrics) => FrameMetrics { camera: frame.camera, seq: frame.seq, ..metrics },
-            Err(error) => burst::frame_without_metrics(frame.camera, frame.seq, FrameState::Error, Some(error)),
-        }
-    }).collect()
+/// 按生产规则从原图复测一件（D-SB-45）：由各帧到没到（`frames` 为 (计划相机下标, seq, 到了)）得出帧组数，按比例分段得出区域，
+/// 再按 `frame_corridors` 逐帧选走廊交给 `measure(相机, seq, 段号)`。判定用不到的帧记 NotInspected、不读图；缺帧仍记缺帧；
+/// 读图或测量失败记测量失败。结果的帧身份一律取输入的 (camera, seq)。
+pub(super) fn remeasure_by_rule(
+    segments: &[PathSegment],
+    boundary_guard: u32,
+    cameras: &[String],
+    frames: &[(usize, u64, bool)],
+    mut measure: impl FnMut(usize, u64, u32) -> Result<FrameMetrics, String>,
+) -> Vec<FrameMetrics> {
+    let arrived: Vec<FrameMetrics> = frames
+        .iter()
+        .map(|&(camera, seq, arrived)| {
+            burst::frame_without_metrics(
+                camera,
+                seq,
+                if arrived {
+                    FrameState::NotInspected
+                } else {
+                    FrameState::Missing
+                },
+                None,
+            )
+        })
+        .collect();
+    let groups = frame_groups(&arrived, cameras.len());
+    let total = groups.len() as u64;
+    let outcome = Proportional.segment(&SegInput {
+        groups: &groups,
+        features: &[],
+        segments,
+    });
+    let regions = resolve_regions(segments, &outcome, total, MIN_CONFIDENCE, boundary_guard);
+    let choice = frame_corridors(segments, cameras, &regions, &outcome, total);
+    frames
+        .iter()
+        .zip(arrived)
+        .map(|(&(camera, seq, present), skipped)| {
+            let segment = choice
+                .get(camera)
+                .and_then(|c| c.get((seq as usize).wrapping_sub(1)))
+                .copied()
+                .flatten();
+            match (present, segment) {
+                (false, _) | (true, None) => skipped,
+                (true, Some(segment)) => match measure(camera, seq, segment) {
+                    Ok(metrics) => FrameMetrics {
+                        camera,
+                        seq,
+                        ..metrics
+                    },
+                    Err(error) => FrameMetrics {
+                        corridor: Some(segment),
+                        ..burst::frame_without_metrics(camera, seq, FrameState::Error, Some(error))
+                    },
+                },
+            }
+        })
+        .collect()
+}
+
+/// 历史帧记录按生产规则重测（见 `remeasure_by_rule`）。
+pub(super) fn remeasure(
+    recipe: &Recipe,
+    frames: &[FrameRecord],
+    mut measure: impl FnMut(&FrameRecord, u32) -> Result<FrameMetrics, String>,
+) -> Vec<FrameMetrics> {
+    let keys: Vec<(usize, u64, bool)> = frames
+        .iter()
+        .map(|f| (f.camera, f.seq, f.status != FrameState::Missing))
+        .collect();
+    remeasure_by_rule(
+        &recipe.path_segments,
+        recipe.boundary_guard,
+        &recipe.plan_cameras(),
+        &keys,
+        |camera, seq, segment| {
+            let frame = frames
+                .iter()
+                .find(|f| f.camera == camera && f.seq == seq)
+                .ok_or("没有这一帧的记录")?;
+            measure(frame, segment)
+        },
+    )
 }
 
 /// 记录里存的每帧指标；没存指标的帧按帧状态补一条没有测量值的指标。
@@ -143,26 +217,17 @@ pub fn workspace_record_frame_image(app: AppHandle, history_id: i64, camera: usi
     Ok(preview_response(&frame_image(&app, &detail, camera, seq)?))
 }
 
-/// 用候选当前的走廊量帧：每台计划相机一条走廊测量图，按它冻结的示教帧尺寸建（与加入标定同一做法）。
+/// 用候选当前的走廊量帧：每段每台检测相机一张走廊测量图，按各相机冻结的示教帧尺寸建（与加入标定同一做法）。
 pub(super) struct CandidateMeasurer {
     engine: Arc<vision::Engine>,
-    graphs: Vec<vision::CorridorGraph>,
+    graphs: vision::CorridorSet,
     run: String,
 }
 
 impl CandidateMeasurer {
     pub(super) fn new(app: &AppHandle, w: &Workspace, recipe: &Recipe) -> Result<Self, String> {
-        let graphs = recipe
-            .inspect
-            .iter()
-            .map(|inspect| {
-                let teaching = super::burst::default_teaching(&w.camera_teaching, &inspect.camera)
-                    .ok_or_else(|| {
-                        format!("相机 {} 还没有选示教帧：先完成走廊示教", inspect.camera)
-                    })?;
-                vision::plan_corridor(inspect, recipe, teaching.frame.size)
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
+        let graphs = vision::CorridorSet::build(recipe, &super::burst::teaching_sizes(w)?)?;
         let engine = app
             .state::<vision::VisionHost>()
             .engine()
@@ -174,9 +239,25 @@ impl CandidateMeasurer {
         })
     }
 
-    pub(super) fn measure(&self, camera: usize, seq: u64, image: &FrameImage) -> Result<FrameMetrics, String> {
-        let graph = self.graphs.get(camera).ok_or("候选没有这台相机的走廊测量图")?;
-        vision::measure_frame(&self.engine, graph, image, seq, &format!("{}-c{camera}-{seq}", self.run)).map(|m| m.metrics)
+    pub(super) fn measure(
+        &self,
+        camera: usize,
+        segment: u32,
+        seq: u64,
+        image: &FrameImage,
+    ) -> Result<FrameMetrics, String> {
+        let graph = self
+            .graphs
+            .get(camera, segment)
+            .ok_or("候选没有这台相机在这一段的走廊测量图")?;
+        vision::measure_frame(
+            &self.engine,
+            graph,
+            image,
+            seq,
+            &format!("{}-c{camera}-{seq}", self.run),
+        )
+        .map(|m| m.metrics)
     }
 }
 
@@ -194,9 +275,10 @@ pub(super) fn compare(app: &AppHandle, w: &Workspace, recipe: &Recipe, detail: &
             return Err("原图未完整保留，无法完成整件复测".into());
         }
         let measurer = CandidateMeasurer::new(app, w, recipe)?;
-        let metrics = remeasure(&burst.frames, |frame| {
+        let metrics = remeasure(recipe, &burst.frames, |frame, segment| {
             measurer.measure(
                 frame.camera,
+                segment,
                 frame.seq,
                 &frame_image(app, detail, frame.camera, frame.seq)?,
             )

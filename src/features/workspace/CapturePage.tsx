@@ -112,7 +112,7 @@ export default function CapturePage() {
   if (!data.plan) return <Notice title="该草稿不是段配方" tone="warn">请新建段配方后采集，旧拍照点草稿不再支持。</Notice>;
   const plan = data.plan;
   const calibrationEntry = round ? plan.calibration?.rounds.find(r => r.roundId===round.roundId) : undefined;
-  const teachedCameras = round ? plan.cameraTeaching.filter(t => t.frame?.source.includes(round.roundId)).map(t => t.camera) : [];
+  const teachedCameras = round ? plan.cameraTeaching.filter(t => t.segments.some(s => s.frame.source.includes(round.roundId))).map(t => t.camera) : [];
   const roundUsed = !!calibrationEntry || teachedCameras.length>0;
   const sampleSourceInvalid=validation && roundUsed;
   const bankedAsSample=!validation && !!round && data.workspace.sampleBank.some(sample => sample.captureId===round.roundId);

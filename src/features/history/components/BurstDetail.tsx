@@ -22,7 +22,7 @@ import { RegionReplayDiff } from "./ReplayDiff";
 
 const comparisonLabel = { rules: "规则重判", raw: "候选原图复测", original: "原发布包重现" };
 const recordingReason = { off: "录制关闭，本件未保存原图", notRetained: "按录制策略本件未保存原图", pending: "原图仍在落盘", incomplete: "原图不完整", failed: "原图录制失败", complete: "原图已按保留策略清理或无法核验" };
-const frameStateName = { measured: "已测", missing: "缺帧", error: "测量失败", unmeasured: "未测", outOfCorridor: "出走廊" };
+const frameStateName = { measured: "已测", missing: "缺帧", error: "测量失败", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测" };
 
 /** 历史没有逐帧结论：格子按该帧所在区域的结论着色，没有区域的按整件结论；缺帧、测量失败等状态照常显示为灰色 / 紫色。 */
 export function historyGroups(burst: PartDetailBurst): FrameGroupView[] {
@@ -37,7 +37,7 @@ export function historyGroups(burst: PartDetailBurst): FrameGroupView[] {
       const verdict = frame.status === "measured" ? (frame.region != null ? burst.judgement.regions[frame.region]?.verdict : undefined) ?? burst.judgement.verdict : null;
       return { status: frame.status, verdict, frameCounter: frame.frameCounter };
     });
-    return { seq, incomplete: incomplete.has(seq) || cells.some(cell => cell.status !== "measured"), cells };
+    return { seq, incomplete: incomplete.has(seq) || cells.some(cell => cell.status !== "measured" && cell.status !== "notInspected"), cells };
   });
 }
 
@@ -111,11 +111,11 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     return () => { live = false; };
   }, [s.id, s.recipeId, ws.data?.workspace.revision]);
 
-  // 原图完整：除缺帧外每帧都有录制原图；候选走廊三台相机都示教过，才能从原图复测
+  // 原图完整：除缺帧外每帧都有录制原图；候选的走廊示教完成（各段检测相机都有走廊、相机有像素当量），才能从原图复测
   const rawComplete = detail.recording.available && burst.frames.every(f => f.status === "missing" || !!f.rawFile);
   const candidateReady = !!ws.data && ws.data.workspace.doc.id === s.recipeId && !ws.dirty && !ws.frameDirty;
   const teaching = ws.data?.plan?.cameraTeaching ?? [];
-  const candidateTaught = teaching.length > 0 && teaching.every(c => c.saved);
+  const candidateTaught = teaching.length > 0 && teaching.every(c => c.ready);
   const disabled = working || ws.busy || !candidateReady;
   const blockers = s.source === "offlineCandidate" ? [] : [
     !s.bundleId && "本件没有不可变发布包（布防前被拒或非生产记录），无法按原版本重跑",
@@ -195,13 +195,14 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         options={burst.cameras.map((name, c) => ({ value: String(c), label: name }))} />}>
         <CameraSegmentOverview cameras={burst.cameras} segments={burst.segments} regions={j.regions} />
         <FrameGroupStrip groups={groups} cameras={burst.cameras} selected={selection.seq} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} />
-        <p className="muted">格子颜色是该帧所在区域的结论（历史没有逐帧结论）；灰色为缺帧、未测或走出走廊，只算检测不完整。左右方向键切换帧组。</p>
+        <p className="muted">格子颜色是该帧所在区域的结论（历史没有逐帧结论）；灰色为缺帧、未测或走出走廊，只算检测不完整；浅灰为该帧所在段不由这台相机检测，按设计不测。左右方向键切换帧组。</p>
         <div className="wp-stack">
           <GrayViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={imageLabel} caption={<>原始 SN <span className="sn">{s.sn}</span> · {cameraName} · 帧组 {selection.seq}</>} />
           <div className="wp-runtime-strip">
             <KV label="帧状态">{frame ? frameStateName[frame.status] : "—"}</KV>
             <KV label="帧号 / 触发计数">{frame?.frameCounter ?? "—"} / {frame?.triggerCounter ?? "—"}</KV>
             <KV label="所在区域">{region ? regionKindLabel(region.region.kind) : "—"}</KV>
+            <KV label="所用走廊">{metrics?.corridor != null ? `段 ${metrics.corridor}` : "—"}</KV>
             <KV label="胶宽 min / max / mean">{metrics && frame?.status === "measured" ? `${mm(metrics.widthMin)} / ${mm(metrics.widthMax)} / ${mm(metrics.widthMean)} mm` : "—"}</KV>
             <KV label="胶中心 x">{metrics && frame?.status === "measured" ? `${mm(metrics.xMm)} mm` : "—"}</KV>
           </div>

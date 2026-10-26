@@ -21,12 +21,15 @@ use crate::recipe::{CameraInspect, Recipe};
 pub(crate) mod fixture;
 pub(crate) mod fixture_quality;
 mod taught;
-pub use taught::{build_taught_graph, measure_shot, measure_shot_with_graph, ShotMeasurement, MultiViewMeasurement, ViewMeasurement, PoseRecord, measure_views, measure_views_with};
-pub use taught::{corridor_inside, measure_frame, plan_corridor, CorridorGraph, FrameMeasurement};
 #[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
 pub use taught::measure_frame_with;
 #[cfg(test)]
 use taught::measure_shot_patched;
+pub use taught::{
+    build_taught_graph, measure_shot, measure_shot_with_graph, measure_views, measure_views_with,
+    MultiViewMeasurement, PoseRecord, ShotMeasurement, ViewMeasurement,
+};
+pub use taught::{corridor_inside, measure_frame, CorridorSet, FrameMeasurement};
 
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
 
@@ -164,7 +167,13 @@ impl LyFlowMeasurer {
         if prepared.recipe.inspect.get(job.camera_idx).map(|i| i.camera.as_str()) != Some(job.camera.as_str()) {
             return Err(format!("测量任务的相机 {} 不是发布包的第 {} 台计划相机", job.camera, job.camera_idx + 1));
         }
-        prepared.measure_frame(job.camera_idx, job.seq, image, &format!("frame-{}-{}-{}", job.cycle_id, job.camera_idx, job.seq))
+        prepared.measure_frame(
+            job.camera_idx,
+            job.segment,
+            job.seq,
+            image,
+            &format!("frame-{}-{}-{}", job.cycle_id, job.camera_idx, job.seq),
+        )
     }
 }
 

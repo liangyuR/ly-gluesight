@@ -17,9 +17,9 @@
 - D-SB-41：每段指定检测相机，修订 D-SB-14 的“三台相机每帧取最差”。
 - D-SB-42：直线段可示教段走廊，弯道用出胶点短走廊，修订 D-SB-17 的“每台相机一条走廊”（示教与标定已实现，生产双测待实现）。
 - D-SB-43：图像运动细化边界列为后续。
-- D-SB-45（2026-10-26 用户确认，实施中）：走廊只按段、相机只留参数，取消相机走廊（默认走廊）；生产按预测段选走廊，收尾后补测归属变了的帧。修订 D-SB-17、D-SB-21、D-SB-41、D-SB-42。
+- D-SB-45（2026-10-26 用户确认，已实现；现场吞吐复测待做）：走廊只按段、相机只留参数，取消相机走廊（默认走廊）；生产按预测段选走廊，收尾后补测归属变了的帧。修订 D-SB-17、D-SB-21、D-SB-41、D-SB-42。
 
-实施顺序：D-SB-40（已实现）→ D-SB-41（已实现）→ D-SB-42（示教与标定已实现）→ D-SB-45（实施中）→ D-SB-43。未实现的条目实现之前，本文其余条目仍是现行依据。
+实施顺序：D-SB-40（已实现）→ D-SB-41（已实现）→ D-SB-42（示教与标定已实现）→ D-SB-45（已实现）→ D-SB-43。未实现的条目实现之前，本文其余条目仍是现行依据。
 
 
 > 2026-10-23 测试范围更新：按用户决策删除依赖现场样本集的离线建站及重启、日志回放、特征定位桌面测试（原 `test:e2e:offline`、`test:e2e:log-replay`、`test:e2e:fixture` 及对应脚本）。下文相关命令、脚本和通过记录仅为历史事实，已不是可执行入口或当前覆盖声明；产品功能、长稳、硬件联调与底层业务测试不受影响。当前桌面入口仅保留生产落盘。
@@ -147,7 +147,7 @@
 - 问题：`aggregate_views` 同一拍照点任一视图合格即合格（judge.rs:196-202）；规格 §0 所有帧都参与独立检测。
 - 采用：段配方任一相机任一帧 NG，所在区域即 NG，整件取最严重结论。`aggregate_views` 保留给旧配方。
 - 修订（已实现）：D-SB-41 改为可信段区域只取本段检测相机的最差，未分段区域仍按本条。
-- 修订（实施中）：D-SB-45 改为未分段区域按每帧预测段的检测相机取最差，本条不再适用于段配方。
+- 修订（已实现）：D-SB-45 改为未分段区域按每帧预测段的检测相机取最差，本条不再适用于段配方。
 
 ### D-SB-15 胶偏判定：段级 AbsoluteX，ToEdge 暂不实现
 
@@ -165,7 +165,7 @@
 - 问题：`taught.rs` 要求示教中线完整落在图内、站数固定（taught.rs:334-336）；规格 §4 中线逐点比对停用，保留边缘提取。
 - 采用（默认做法 4）：每台相机示教一条按直线段几何的走廊（`CameraInspect.corridor`），所有帧共用，只决定 ROI 和测站；弯道帧胶条走出走廊时该帧记 `OutOfCorridor`（检测不完整），不判 NG。G3 之后实现，本轮只在类型和本文件中体现。全流程验收用合成直线/弯道三相机；真实样本集 gs-20261017 是停稳拍数据，只做冒烟并报告不完整比例。
 - 修订（示教与标定已实现，生产待实现）：D-SB-42 在本条走廊之外增加直线段的段走廊与弯道的出胶点短走廊，本条走廊改作默认走廊。
-- 修订（实施中）：D-SB-45 取消本条的相机走廊，走廊只按“段 × 检测相机”示教。
+- 修订（已实现）：D-SB-45 取消本条的相机走廊，走廊只按“段 × 检测相机”示教。
 
 ### D-SB-18 胶偏参考值 x_ref
 
@@ -188,7 +188,7 @@
 - 问题：规格 §3 算法验证前整条胶路按未分段，§2 每段 N_exp 由多轮采集得出，§1 未标定不能发布；`Unsegmented` 只能给出整件帧组数。
 - 采用（决策补充第二节，取代计划“多段计划保持待标定”）：每轮帧组数做 `calibrate_counts`，结果写 `part_calib`。单段计划同时写该段 `expected_frames` 和 `calib`；多段计划各段保持 null，界面标“待标定（分段算法未就绪）”，但凭 `expected_total` 可以发布。
 
-- 修订（实施中）：D-SB-45 要求多段配方各段 N_exp 都已标定才能发布，不再凭整件 ΣN_exp 发布多段配方；单段配方不变。
+- 修订（已实现）：D-SB-45 要求多段配方各段 N_exp 都已标定才能发布，不再凭整件 ΣN_exp 发布多段配方；单段配方不变。
 
 ### D-SB-22 检测范围与未检区域
 
@@ -332,7 +332,7 @@
   - 标定：加入标定的轮次已确认手动分段时，落在某段、且这台相机在该段有已保存段走廊的帧用段走廊测量，其余帧用默认走廊；标定轮次的走廊标签含段走廊。
   - 完成判定：相机检测的每一段都有已保存段走廊时，不画默认走廊也算走廊示教完成，标定照常；既没有段走廊也没有默认走廊的帧记测量失败。发布检查仍要求默认走廊（生产暂时只用它）。
   - 未实现：生产、验证样本、历史复测与候选对照仍只用默认走廊；段走廊会随配方发布，但生产不读。双测按上面“待定”在吞吐复测后再做。
-- 修订（实施中）：D-SB-45 取消默认走廊，走廊只按“段 × 检测相机”；生产改为按预测段测量、收尾后补测，取代本条“边界附近双测”。
+- 修订（已实现）：D-SB-45 取消默认走廊，走廊只按“段 × 检测相机”；生产改为按预测段测量、收尾后补测，取代本条“边界附近双测”。
 
 ### D-SB-43 图像运动细化边界（2026-10-26 列入后续，未排期）
 
@@ -349,7 +349,7 @@
 - 后续（同一决策，待实现）：P3 运动曲线与自动建议；P4 即 D-SB-41。
 - 回退：采集页“轮次整理”的数字边界、按比例 / 原帧号套用模板与屏蔽保留不变。
 
-### D-SB-45 走廊只按段，相机只留参数（修订 D-SB-17、D-SB-21、D-SB-41、D-SB-42；2026-10-26 用户确认，实施中）
+### D-SB-45 走廊只按段，相机只留参数（修订 D-SB-17、D-SB-21、D-SB-41、D-SB-42；2026-10-26 用户确认，已实现）
 
 - 问题：
   - 走廊表示一帧里胶条在画面上的位置，这个位置由工件此刻走到胶路的哪一段决定，与相机本身无关。D-SB-42 之后每台相机仍保留一条“默认走廊”，用于兜底：没示教段走廊的段、过渡区、未分段区域，以及相机量它不检测的段（只为追溯）。
@@ -366,7 +366,7 @@
     - 到达时按预测段测：帧到达时总帧组数未知，按标定的累计 N_exp 预测所属段（第 seq 帧属于满足 seq ≤ C_k 的最小 k，超过 ΣN_exp 的帧归最后一段），只用预测段的检测相机、各自在该段的走廊测量。不检测这一段的相机不测这一帧，只录图（不计检测不完整，同 D-SB-41 对未选中相机的口径）。
     - 收尾后补测：drain 完、总帧组数已知后，先按 D-SB-40 得出区域，再找出“判定需要、但到达时没用对应走廊测过”的（帧, 相机）：区域归属与预测段不同的帧；过渡区里需要另一侧检测相机、或需要另一侧走廊的帧。这些帧用解析后所属段（过渡区为该相机检测的那一侧）的走廊补测，补测完再判定。补测期间件仍在收尾中，下一件照常等待当前件释放。
     - 图像保留：预测边界两侧各 `boundary_guard` + m_k 帧（m_k = ⌈Σtol × C_k / ΣN_exp⌉ + 1，即总帧组数在 ΣN_exp ± Σtol 内时比例边界可能偏离预测边界的最大帧数）内、两侧检测相机的图像，测完后留到判定结束，计入 `IMAGE_BUDGET_PER_CAMERA`。预算满按 D-SB-32 丢帧记缺帧；需要补测的帧已无图像时记该帧检测不完整，不改 OK/NG。
-    - 过渡区每台相机取用规则：取它所检测那一侧走廊的结果；两侧它都检测时，取帧所在一侧（按比例边界）的结果，该结果没测成而另一侧测成时取另一侧。
+    - 过渡区每台相机取用规则：帧按比例边界落在哪一侧，该侧检测相机用该侧走廊，只检测另一侧的相机用另一侧走廊；每台相机每帧只用一条走廊，没测成即检测不完整，不再换另一侧补救。
   - 未分段的处理
     - 置信度不足（总帧组数超出 ΣN_exp ± Σtol，D-SB-40）：整件合并为未分段区域，不补测；每帧用到达时的预测段结果、预测段的检测相机，允差取较宽一档，不判胶偏与均匀性（D-SB-16），照常标 `frame_count_anomaly` 与 `unsegmented`。修订 D-SB-41“未分段退回全部计划相机”：其余相机看不到胶条，强行测量只产生检测不完整。
     - 各段 N_exp 未全部标定（`AlgorithmPending`）：多段配方无法预测所属段，也就无法选走廊，因此多段配方须各段 N_exp 都已标定才能发布、进生产与候选试运行（修订 D-SB-21“多段凭 ΣN_exp 可发布”）。单段配方所有帧归第 1 段，不受影响。
@@ -394,6 +394,14 @@
   3. 生产：预测段测量、图像保留、收尾补测、过渡区取用规则、未分段口径；算法图与发布包 schema、旧包兼容加载；预热。
   4. 验证样本、历史复测、候选试运行共用第 3 步；记录增加走廊段号，重判条件。
   5. 现场工控机重跑 7.1 吞吐探针并补收尾补测耗时；用 NEW-14 R15 与新采集轮次做独立样本验证。
+- 实现（2026-10-26，第 1–4 步）：
+  - 模型：`CameraInspect` 去掉 `corridor`、不再拒绝未知字段（旧文件里的相机走廊读入即丢）；`CameraInspect::segment_taught`、`recipe::untaught_corridors` 判每段每台检测相机的走廊。`CameraTeaching.segment` 为空的旧相机示教帧在候选读入时丢弃并回写。`Recipe::ready_burst` 要求每段每台检测相机都有走廊、相机有当量，多段配方各段 N_exp 都已标定。
+  - 选走廊：`plan::predicted_segment` / `plan::arrival_corridor`（到达时）与 `segmentation::frame_corridors`（按解析后的区域）是唯一规则；生产、候选试运行、验证样本、历史复测与原包重现都用它们。复测走 `burst_history::remeasure_by_rule`：先按帧组数比例分段，再逐帧选走廊，用不到的帧记 `NotInspected`、不读图。
+  - 生产：`FrameJob.segment`；`BurstPart` 按预测段送测，不检测预测段的相机这一帧直接记 `NotInspected`；预测边界附近（`retention_bands`）的原图留在 `retained`，`start_post_measure` 在收尾窗口到期、到达送测都测完后排一次补测，`burst_complete` 有补测目标时等补测完。`FrameMetrics.corridor` 记所用段号。`burst_judge` 不把 `NotInspected` 算检测不完整。
+  - 测量图与发布包：`vision::CorridorSet` 按（相机, 段）建图；算法图 `corridor-2`（schema 4，`graphs` 按段列出）；发布包 schema 5：每台相机一份标定，`cameras/{i}/s{segment}/` 下各段一张示教帧与走廊；schema 4 旧包不再加载。
+  - 工作台：去掉 `workspace_teach_camera`；`workspace_teach_segment_corridor` 不再要求相机示教帧，单段配方不要求确认分段，相机还没有当量时用设备标定当量补上，一台相机各段示教帧须同尺寸；段相机变化时去掉不再检测的走廊与示教帧。`cameraTeaching[]` 改为 `{camera, mmPerPx, ready, segments}`；进度、发布检查、跳转目标按（段, 相机）列出（`TargetV2::Corridor` 带 `segment`）。标定按已确认分段只测检测相机（`calibration_corridors`）。
+  - 示教页：相机行只设像素当量与检测参数，段行是唯一的走廊示教目标（选帧、提取、编辑、保存、清除本段走廊）；帧状态新增“本段不检测”。
+  - 未实现：检测相机测成率提示（标定页）；现场吞吐复测（第 5 步）；`boundary_guard` 变化后用存储指标重判时过渡帧的走廊口径未单独校验（计划身份不含 `boundary_guard`）。
 
 ## 五、IPC 契约
 
@@ -449,9 +457,8 @@
 | --- | --- | --- | --- |
 | `recipe_plan_export` | `id` | `Result<String, String>`（PlanExport JSON 文本） | C1 |
 | `workspace_update_segments` | `id, revision, segments: PathSegment[]` | WorkspaceView | D2 |
-| `workspace_teach_camera` | `id, revision, camera, round, seq, draft` | WorkspaceView | D2 |
-| `workspace_teach_segment_corridor` | `id, revision, camera, segment, round, seq` | WorkspaceView（冻结段走廊示教帧） | D-SB-42 |
-| `workspace_clear_segment_corridor` | `id, revision, camera, segment` | WorkspaceView（这一段退回默认走廊） | D-SB-42 |
+| `workspace_teach_segment_corridor` | `id, revision, camera, segment, round, seq` | WorkspaceView（冻结这一段这台相机的示教帧） | D-SB-42/45 |
+| `workspace_clear_segment_corridor` | `id, revision, camera, segment` | WorkspaceView（去掉这一段这台相机的走廊与示教帧） | D-SB-42/45 |
 | `workspace_calibration_add_round` | `id, revision, round, standard: bool` | WorkspaceView | D2 |
 | `workspace_calibration_remove_round` | `id, revision, round` | WorkspaceView | D2 |
 | `workspace_calibration_apply` | `id, revision` | WorkspaceView（结果在 `plan.calibration`） | D2 |
@@ -593,7 +600,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **旧路径不动**：`adopt_shots`、组选图（`workspace_select_group_image`、`check_group_selection`）、旧 `capture_for` 的 1..=64 与计数核对、对 `recipe_shots()` / `planned_count` 的调用都保留，旧配方行为不变；计划中的“删除 / 移除组选图命令”改为在新路径旁新增。新代码在 `workspace/burst.rs`，测试在 `workspace/burst_tests.rs`（计划写的是 workflow.rs / workflow_tests.rs）。
     - **`WorkspaceView.plan` 由 D2 输出**（5.1 原写 D3）：段配方时 productionPlc / candidatePlc / candidatePlcError / coverage 为 null、progress 没有步骤。`plan.progress`（ProgressV2）按整圈采集 → 段列表 → 走廊示教 → 多轮标定 → 验证 → 发布给出：“整圈采集”以本配方有完整采集轮次为完成；验证与发布沿用候选现有的验证记录与发布状态（段配方的验证项与发布切换仍归 D3）。
     - **Workspace 新字段**：`cameraTeaching: [{camera, frame: FrozenImage, round, seq}]`（示教帧冻结为候选 images/ 下的 PGM）、`calibration: {rounds: [CalibrationRound]}`。计划里的 `standard_rounds` 并进 `rounds`（每轮带 `standard`）；不另存 `result`：标定结果写进配方（N_exp、calib、partCalib、x_ref），`plan.calibration`（CalibrationView）每次由配方与轮次算出。建议容差 = max(该类段默认容差, N − min, max − N)，整件取各段默认容差之和。
-    - **走廊示教**：`workspace_teach_camera` 只冻结所选帧、把草稿（走廊、当量、检测参数）写进 inspect，不在这里提取；提取用 `workspace_extract_corridor`（5.4）。当量缺省时沿用已有值，再缺省取这台相机的设备标定 `device/{device}`（模拟相机取模拟当量）。示教帧须来自本候选完整的新轮次、这台相机有这一帧、采集后设备配置没变。`cameraTeaching[].saved` = 走廊至少两点、不短于 1 px 且完整落在示教帧内。
+    - **走廊示教**（D-SB-45 起改为按段）：`workspace_teach_segment_corridor` 只冻结所选帧，走廊随候选整份保存，提取用 `workspace_extract_corridor`（5.4）；相机还没有当量时取这台相机的设备标定 `device/{device}`（模拟相机取模拟当量）。示教帧须来自本候选完整的新轮次、这台相机有这一帧、采集后设备配置没变；多段配方还要求轮次已确认手动分段、帧组落在该段内。`cameraTeaching[].segments[].saved` = 走廊至少两点、不短于 1 px 且完整落在示教帧内。原 `workspace_teach_camera`（相机走廊）已删除。
     - **加入标定**：轮次须属于本候选、已完整完成、相机集合等于计划相机，各相机采集时的设备配置与当前设备、与已加入的轮次都相同；三台相机都已选示教帧且能建走廊测量图。整轮每帧用 `vision::measure_frame` 测（缺帧记 missing、测量失败记 error），每帧特征与分段结果写在候选目录 `calibration/<轮次>/`：`features.jsonl` 一行 `{camera: 相机编号, seq, metrics: FrameMetrics}`，1..=帧组数内每台相机每个 seq 一行，按计划相机、seq 排列；`boundaries.json` 为 SegOutcome（本轮恒为 `{"kind":"unsegmented"}`）。不写进采集轮次目录（特征依赖候选的走廊）。
     - **应用标定**：标定轮次（不含标准件轮次）不少于 `calibrationRounds`，否则报错且配方不变；写 partCalib，单段计划同时写该段 N_exp 与 calib；多段计划各段保持 null（视图 pending “分段算法未就绪”）。容差不写，由 `workspace_confirm_tolerance` 写入。
     - **x_ref**：只给单段计划的直线段；每轮标准件取参考相机去掉首尾各一帧（seq 1 与帧组数）后测成帧的 x 均值，再用 `calibration::x_ref` 取均值与极差，只用走廊与当前相同的标准件轮次。直线段启用了胶偏但没配 offsetRef 时按 AbsoluteX、计划第一台相机补上（D-SB-18 默认）；ToEdge 不写（“测量量未实现”）；多段计划不写（“分段算法未就绪”）。每次应用按当前标准件轮次重算，没有可用轮次时 x_ref 为 null。
@@ -637,7 +644,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **提交署名**：见第一节。
 17. E2 桌面端到端、长稳脚本与吞吐门槛（相对计划步骤的调整，旧路径一律保留）：
     - **分流**：`offline-e2e`、`log-replay` 的驱动脚本按 `--model burst|legacy` 分流（外壳 `-Model`，默认 burst）；旧拍照点配方的原流程原样保留为 `legacy`，只把新建起点换成 `legacyTemplate`（`recipe_template` 现在给段配方，旧配方由它去掉段与相机检测设置得到）。长稳 `setup --model burst|legacy`，`faults` 按 `setup.json` 的 model 选期望。`production-flow-ui` 分两段：旧拍照点配方（显式测试夹具，行为不变）与段配方。计划中的“删除 `fixture-teach-e2e.mjs`、`Test-FixtureE2E.ps1`、`package.json` 的 `test:e2e:fixture`、production-flow-ui 的定位失败工况”改为保留（旧配方的特征定位专项仍然可跑，入口标注“仅旧配方”）。
-    - **段配方流程**：`tests/native/lib.mjs` 新增 `CAMERA_FIXTURES`（按相机夹具）、`teachCorridors`（每台相机一条走廊：`workspace_teach_camera` 冻结示教帧、`workspace_extract_corridor` 提取、再保存）、`calibrate`（10 轮标定加 2 轮标准件、应用、确认建议容差）、`buildBurstRecipe`（建站到发布）、`produceBurst`、`burstFacts`、`checksOff`；`captureRound` 不再核对计划数。合成图夹具把走廊折点间距取允许的最大值 80 px：合成图按走廊逐像素画胶条，折点越多每帧越慢。
+    - **段配方流程**：`tests/native/lib.mjs` 新增 `CAMERA_FIXTURES`（按相机夹具）、`teachCorridors`（D-SB-45 起每段每台检测相机一条走廊：`workspace_teach_segment_corridor` 冻结示教帧、`workspace_extract_corridor` 提取、再保存；多段配方要求示教轮次先确认手动分段）、`calibrate`（10 轮标定加 2 轮标准件、应用、确认建议容差）、`buildBurstRecipe`（建站到发布）、`produceBurst`、`burstFacts`、`checksOff`；`captureRound` 不再核对计划数。合成图夹具把走廊折点间距取允许的最大值 80 px：合成图按走廊逐像素画胶条，折点越多每帧越慢。
     - **合成图来源恒用模拟测量**（`site::measurement_of`），所以“合成图 3 × 25 Hz 在线连续 60 s（且 lyFlow 测量）”按字面做不到：合成图出的帧不经 lyFlow。吞吐门槛改为两种来源分别测（`scripts/soak/throughput.mjs`，`pnpm test:soak:throughput`）：**样本集**（现场原图经真实 lyFlow 测量，唯一能在离线下压 lyFlow 的来源，但每件只有 12 个脉冲、件间有握手开销，是 3 × 25 Hz 的突发而不是持续）与**合成图**（只测帧管线与渲染）。脚本另按每件第一帧到达到最后一帧测完得出突发排空速率，并外推持续压力下队列多久装满，写进结果的 `projection`（估算，不是门槛）。
     - **门槛状态：没有达标，也没有被直接验证，已定（2026-10-23）：门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput` 后再决定降频还是加并发；复测前不能在任何文档里记成已满足。** 实测（2026-10-23，i5-1135G7、调试构建、lyFlow 1.1.5，25 Hz、60 s）：
       - **合成图**：不达标。26 件 885 帧，Unmeasured 12、缺帧 46、13 件标检测不完整，帧到达约 34 帧/s（渲染上限）。合成图恒用模拟测量，lyFlow 没有参与，这一项量的是帧管线与渲染能力，不是测量能力。

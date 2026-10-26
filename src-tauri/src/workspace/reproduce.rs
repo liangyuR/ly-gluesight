@@ -13,9 +13,17 @@ pub(super) fn measure_burst(prepared: &Prepared, frames: &[FrameRecord], loss: &
     let recipe = &prepared.recipe;
     if !recipe.is_burst() { return Err("原发布包是旧拍照点配方，不能按相机帧重现".into()); }
     let run = format!("reproduce-{cycle_id}-{}", ly_plc::now_ms());
-    let metrics = super::burst_history::remeasure(frames, |frame| {
+    let metrics = super::burst_history::remeasure(recipe, frames, |frame, segment| {
         let image = load(frame)?;
-        prepared.measure_frame(frame.camera, frame.seq, &image, &format!("{run}-c{}-{}", frame.camera, frame.seq)).map(|m| m.metrics)
+        prepared
+            .measure_frame(
+                frame.camera,
+                segment,
+                frame.seq,
+                &image,
+                &format!("{run}-c{}-{}", frame.camera, frame.seq),
+            )
+            .map(|m| m.metrics)
     });
     prepared.verify()?;
     Ok(super::burst_history::judge_frames(

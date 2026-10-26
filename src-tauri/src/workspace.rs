@@ -540,8 +540,9 @@ impl WorkspaceHost {
                     if w.doc.id != entry.file_name().to_string_lossy() { return Err("候选编号与目录不一致".into()); }
                     w.doc.build()?;
                     let legacy = w.instance_id == 0;
+                    let dropped = burst::drop_camera_teaching(&mut w);
                     w.ensure_instance(&app.state::<Store>())?;
-                    if legacy {
+                    if legacy || dropped {
                         crate::fsio::write_atomic(&file, &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?)?;
                     }
                     Ok(w)
@@ -930,10 +931,12 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
     }).collect();
     w.frames = frames;
     w.doc = doc;
-    // 不再是计划相机的示教帧不保留（旧拍照点配方没有）
+    // 不再是计划相机、段结构变了或这台相机不再检测所在段的示教帧不保留（旧拍照点配方没有）
     let cameras = w.doc.plan_cameras();
-    w.camera_teaching
-        .retain(|t| cameras.contains(&t.camera) && !(segments_changed && t.segment.is_some()));
+    let doc = &w.doc;
+    w.camera_teaching.retain(|t| {
+        cameras.contains(&t.camera) && burst::teaching_applies(doc, t, segments_changed)
+    });
     for k in 0..w.frames.len() {
         if !w.doc.shots[k].views.is_empty() { let selected = w.doc.shots[k].view; workflow::load_active(w, k, selected)?; }
     }

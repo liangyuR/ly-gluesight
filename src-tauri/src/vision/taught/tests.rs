@@ -10,7 +10,10 @@ fn burst_recipe() -> Recipe {
     doc.spacing = 1.0;
     doc.detect = DetectParams { search_mm: 8.0, polarity: Polarity::Dark, width_range: [2.0, 6.0] };
     for inspect in &mut doc.inspect {
-        inspect.corridor = vec![[40.0, 80.0], [200.0, 80.0]];
+        inspect.segments = vec![crate::recipe::SegmentCorridor {
+            segment: 1,
+            corridor: vec![[40.0, 80.0], [200.0, 80.0]],
+        }];
         inspect.mm_per_px = Some(0.25);
     }
     doc.build().unwrap()
@@ -18,7 +21,7 @@ fn burst_recipe() -> Recipe {
 
 fn corridor(camera: usize) -> CorridorGraph {
     let recipe = burst_recipe();
-    plan_corridor(&recipe.inspect[camera], &recipe, FRAME).unwrap()
+    plan_corridor(&recipe.inspect[camera], 1, &recipe, FRAME).unwrap()
 }
 
 /// 走廊逐站的算法输出（法向 (0, 1)）：beads[i] = Some((胶中心偏移 px, 胶宽 px)) 是有胶站。
@@ -62,12 +65,24 @@ fn engine_station_output_reduces_to_frame_width_gap_presence_and_x_mm() {
     for i in [5, 6, 20, 21, 22, 23, 24] { widths[i] = None; }
     widths[10] = Some(5.0);
     widths[30] = Some(3.5);
-    assert_eq!(m.metrics, FrameMetrics {
-        camera: 1, seq: 7, state: FrameState::Measured, error: None,
-        width_min: Some(3.5), width_max: Some(5.0), width_mean: Some((32.0 * 4.0 + 5.0 + 3.5) / 34.0),
-        widths, spacing_mm: 1.0, gap_max_mm: 5.0, present_ratio: 34.0 / 41.0,
-        x_mm: Some((33.0 * 0.5 - 1.5) / 34.0),
-    });
+    assert_eq!(
+        m.metrics,
+        FrameMetrics {
+            camera: 1,
+            seq: 7,
+            state: FrameState::Measured,
+            error: None,
+            width_min: Some(3.5),
+            width_max: Some(5.0),
+            width_mean: Some((32.0 * 4.0 + 5.0 + 3.5) / 34.0),
+            widths,
+            spacing_mm: 1.0,
+            gap_max_mm: 5.0,
+            present_ratio: 34.0 / 41.0,
+            corridor: Some(1),
+            x_mm: Some((33.0 * 0.5 - 1.5) / 34.0),
+        }
+    );
     assert_eq!(m.edges[0], Some([[40.0, 74.0], [40.0, 90.0]]));
     assert!(m.edges[5].is_none());
 }
@@ -125,9 +140,21 @@ fn corridor_leaving_the_frame_or_camera_outside_the_plan_is_refused() {
     // 帧指标的相机下标就会挂错
     let recipe = burst_recipe();
     let inspect = &recipe.inspect[0];
-    assert!(plan_corridor(inspect, &recipe, [201, 81]).is_ok(), "走廊端点恰在最后一列、最后一行");
-    assert!(plan_corridor(inspect, &recipe, [200, 300]).is_err(), "走廊终点 x = 200 在宽 200 的图外");
-    assert!(plan_corridor(inspect, &recipe, [400, 80]).is_err(), "走廊 y = 80 在高 80 的图外");
-    let stranger = CameraInspect { camera: "cam9".into(), ..inspect.clone() };
-    assert!(plan_corridor(&stranger, &recipe, FRAME).is_err());
+    assert!(
+        plan_corridor(inspect, 1, &recipe, [201, 81]).is_ok(),
+        "走廊端点恰在最后一列、最后一行"
+    );
+    assert!(
+        plan_corridor(inspect, 1, &recipe, [200, 300]).is_err(),
+        "走廊终点 x = 200 在宽 200 的图外"
+    );
+    assert!(
+        plan_corridor(inspect, 1, &recipe, [400, 80]).is_err(),
+        "走廊 y = 80 在高 80 的图外"
+    );
+    let stranger = CameraInspect {
+        camera: "cam9".into(),
+        ..inspect.clone()
+    };
+    assert!(plan_corridor(&stranger, 1, &recipe, FRAME).is_err());
 }

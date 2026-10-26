@@ -30,7 +30,8 @@ pub(super) const FEATURES_FILE: &str = "features.jsonl";
 /// 分段结果（`SegOutcome`）。
 pub(super) const BOUNDARIES_FILE: &str = "boundaries.json";
 
-/// 段配方一台计划相机的示教帧：从完整的示教采集轮次冻结的一帧（原图存为候选 images/ 下的 PGM），走廊在这一帧上示教。
+/// 段配方一段、一台检测相机的示教帧（D-SB-45）：从完整的示教采集轮次冻结的一帧（原图存为候选 images/ 下的 PGM），
+/// 这一段的走廊在它上面示教。旧版的相机级示教帧（`segment` 为空）已放弃，读入时丢弃。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CameraTeaching {
@@ -39,28 +40,36 @@ pub struct CameraTeaching {
     /// 来源采集轮次与帧组序号
     pub round: String,
     pub seq: u64,
-    /// 段走廊的示教帧（D-SB-42）：`PathSegment.index`；为空是这台相机默认走廊的示教帧
+    /// 所属段（`PathSegment.index`）；旧数据为空
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub segment: Option<u32>,
 }
 
-/// 这台相机默认走廊的示教帧（段走廊的示教帧 `segment` 非空，另记）。
-pub(super) fn default_teaching<'a>(
-    teaching: &'a [CameraTeaching],
-    camera: &str,
-) -> Option<&'a CameraTeaching> {
-    teaching
-        .iter()
-        .find(|t| t.camera == camera && t.segment.is_none())
+/// 读入候选时丢弃旧版的相机级示教帧（D-SB-45 放弃相机走廊，不迁移）。返回是否丢弃过。
+pub(super) fn drop_camera_teaching(w: &mut Workspace) -> bool {
+    let before = w.camera_teaching.len();
+    w.camera_teaching.retain(|t| t.segment.is_some());
+    before != w.camera_teaching.len()
 }
 
-/// workspace_teach_camera 的草稿：与 `CameraInspect` 的可编辑部分一一对应（TS `CameraTeachDraft`）。
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CameraTeachDraft {
-    pub corridor: Vec<[f32; 2]>,
-    pub mm_per_px: Option<f64>,
-    pub detect: Option<DetectParams>,
+/// 一台相机的示教帧尺寸：它各段的示教帧同尺寸（示教时保证）；还没有示教帧时为 None。
+fn camera_frame_size(teaching: &[CameraTeaching], camera: &str) -> Option<[u32; 2]> {
+    teaching
+        .iter()
+        .find(|t| t.camera == camera && t.segment.is_some())
+        .map(|t| t.frame.size)
+}
+
+/// 各计划相机的示教帧尺寸（计划相机顺序），建走廊测量图用；有相机还没有示教帧时报错。
+pub(super) fn teaching_sizes(w: &Workspace) -> Result<Vec<[u32; 2]>, String> {
+    w.doc
+        .plan_cameras()
+        .iter()
+        .map(|camera| {
+            camera_frame_size(&w.camera_teaching, camera)
+                .ok_or_else(|| format!("相机 {camera} 还没有示教帧：先完成走廊示教"))
+        })
+        .collect()
 }
 
 /// 加入多轮标定的一轮（D-SB-36）。帧组数用于 N_exp；标准件轮次另用于胶偏参考 x_ref。
@@ -146,21 +155,11 @@ pub struct CalibrationView {
 #[serde(rename_all = "camelCase")]
 pub struct CameraTeachingView {
     pub camera: String,
-    /// 走廊已保存：至少两点、不短于 1 px，且完整落在示教帧内
-    pub saved: bool,
-    pub frame: Option<FrozenImage>,
     pub mm_per_px: Option<f64>,
-    /// 已选示教帧的段走廊（D-SB-42），按段号
+    /// 走廊示教完成：有像素当量，且它检测的每一段都有已保存的走廊（D-SB-45）
+    pub ready: bool,
+    /// 已选示教帧的段，按段号
     pub segments: Vec<SegmentTeachingView>,
-    /// 这台相机检测的每一段都已保存段走廊：不再需要默认走廊即可标定（生产暂时仍只用默认走廊）
-    pub covered: bool,
-}
-
-impl CameraTeachingView {
-    /// 走廊示教完成：有像素当量，默认走廊已保存，或它检测的段都有段走廊。
-    pub(super) fn ready(&self) -> bool {
-        self.mm_per_px.is_some() && (self.saved || self.covered)
-    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -170,7 +169,7 @@ pub struct SegmentTeachingView {
     pub frame: FrozenImage,
     pub round: String,
     pub seq: u64,
-    /// 段走廊已保存且完整落在示教帧内；否则这一段测量用默认走廊
+    /// 走廊已保存且完整落在示教帧内
     pub saved: bool,
 }
 
@@ -186,7 +185,10 @@ pub enum TargetV2 {
     /// 契约里的段列表页；段列表能保存即合法，目前没有指向它的阻塞原因
     #[allow(dead_code)]
     Segments,
-    Corridor { camera: String },
+    Corridor {
+        camera: String,
+        segment: Option<u32>,
+    },
     Calibration,
     Validation,
     Camera,
@@ -259,30 +261,19 @@ fn kind_default(doc: &RecipeDoc, kind: SegmentKind) -> u32 {
     }
 }
 
-/// 一台相机的走廊身份：测每帧特征用到的走廊、当量、检测参数与站距；不是计划相机为 null。
+/// 一台相机的走廊身份：测每帧特征用到的当量、检测参数、站距与各段走廊；不是计划相机为 null。
 pub(super) fn corridor_tag(doc: &RecipeDoc, camera: &str) -> Value {
     doc.inspect
         .iter()
         .find(|i| i.camera == camera)
         .map_or(Value::Null, |i| {
-            let mut tag = json!([
-                i.corridor,
+            json!([
                 i.mm_per_px,
                 i.detect.as_ref().unwrap_or(&doc.detect),
-                doc.spacing
-            ]);
-            if !i.segments.is_empty() {
-                if let Some(items) = tag.as_array_mut() {
-                    items.push(json!(i.segments));
-                }
-            }
-            tag
+                doc.spacing,
+                i.segments
+            ])
         })
-}
-
-/// 走廊已示教且完整落在示教帧内（与 `vision::plan_corridor` 的前置相同）。
-pub(super) fn corridor_saved(inspect: &CameraInspect, size: [u32; 2]) -> bool {
-    path_saved(&inspect.corridor, size)
 }
 
 fn path_saved(corridor: &[[f32; 2]], size: [u32; 2]) -> bool {
@@ -293,8 +284,8 @@ fn path_saved(corridor: &[[f32; 2]], size: [u32; 2]) -> bool {
     corridor.len() >= 2 && length >= 1.0 && vision::corridor_inside(corridor, size)
 }
 
-/// 段走廊可用于测量：已选段示教帧，走廊已保存且落在那一帧内。
-fn segment_corridor_saved(
+/// 段走廊可用于测量：已选这一段的示教帧，走廊已保存且落在那一帧内（与 `vision::plan_corridor` 的前置相同）。
+pub(super) fn segment_corridor_saved(
     inspect: &CameraInspect,
     segment: u32,
     teaching: &[CameraTeaching],
@@ -308,8 +299,9 @@ fn segment_corridor_saved(
     }
 }
 
-/// 段走廊随段结构失效（D-SB-42）：段的类型序列变了，各相机的段走廊清空，返回 true 让调用方一并去掉段示教帧；
-/// 结构不变时每条段走廊都要有对应的段示教帧。
+/// 段走廊随段结构与段相机失效（D-SB-42/45）：段的类型序列变了，各相机的段走廊全部清空、返回 true；
+/// 某段不再由某台相机检测时，去掉它在这一段的走廊。保存的每条段走廊都要有对应的段示教帧。
+/// 调用方据此去掉不再适用的段示教帧（见 `update_doc`）。
 pub(super) fn guard_segment_corridors(
     old: &RecipeDoc,
     new: &mut RecipeDoc,
@@ -328,6 +320,14 @@ pub(super) fn guard_segment_corridors(
         new.inspect.iter_mut().for_each(|i| i.segments.clear());
         return Ok(true);
     }
+    let cameras = new.plan_cameras();
+    let segments = new.segments.clone();
+    for inspect in &mut new.inspect {
+        let camera = inspect.camera.clone();
+        inspect
+            .segments
+            .retain(|s| crate::plan::detects(&segments, s.segment, &camera, &cameras));
+    }
     for inspect in &new.inspect {
         if let Some(s) = inspect.segments.iter().find(|s| {
             !teaching
@@ -335,7 +335,7 @@ pub(super) fn guard_segment_corridors(
                 .any(|t| t.camera == inspect.camera && t.segment == Some(s.segment))
         }) {
             return Err(format!(
-                "相机 {} 第 {} 段还没有选段走廊的示教帧",
+                "相机 {} 第 {} 段还没有选示教帧",
                 inspect.camera, s.segment
             ));
         }
@@ -343,50 +343,107 @@ pub(super) fn guard_segment_corridors(
     Ok(false)
 }
 
-/// 标定按段选走廊（D-SB-42）：本轮已确认手动分段时，落在某段、且这台相机在该段有可用段走廊的帧用段走廊，其余帧用默认走廊。
-/// 按计划相机、seq（1..=帧组数）给出所用段走廊的段号，None 为默认走廊。
-pub(super) fn corridor_segments(
+/// 这条段示教帧在当前段列表下仍适用：段结构没变，且这台相机仍检测这一段。
+pub(super) fn teaching_applies(
+    doc: &RecipeDoc,
+    teaching: &CameraTeaching,
+    structure_changed: bool,
+) -> bool {
+    !structure_changed
+        && teaching.segment.is_some_and(|segment| {
+            crate::plan::detects(
+                &doc.segments,
+                segment,
+                &teaching.camera,
+                &doc.plan_cameras(),
+            )
+        })
+}
+
+/// 标定按段选走廊（D-SB-45）：按本轮已确认的手动分段，每帧只由所在段的检测相机用该段走廊测量，其余相机不测（None）。
+/// 单段配方所有帧属于第 1 段；多段配方本轮没有确认手动分段时报错。按计划相机、seq（1..=帧组数）给出段号。
+pub(super) fn calibration_corridors(
     w: &Workspace,
     round: &str,
     group_count: u64,
-) -> Vec<Vec<Option<u32>>> {
-    let counts = capture_review::confirmed_segment_counts(
-        &w.doc,
-        &w.capture_review.rounds,
-        round,
-        group_count,
-    );
-    let owner: Vec<Option<u32>> = match &counts {
-        Some(counts) => w
-            .doc
-            .segments
+) -> Result<Vec<Vec<Option<u32>>>, String> {
+    let segments = &w.doc.segments;
+    let owner: Vec<u32> = if segments.len() == 1 {
+        vec![segments[0].index; group_count as usize]
+    } else {
+        let counts = capture_review::confirmed_segment_counts(
+            &w.doc,
+            &w.capture_review.rounds,
+            round,
+            group_count,
+        )
+        .ok_or_else(|| {
+            format!(
+                "采集轮次 {round} 还没有确认手动分段：先在分段标定里确认这一轮的边界，再加入标定"
+            )
+        })?;
+        segments
             .iter()
             .zip(counts)
-            .flat_map(|(s, &n)| std::iter::repeat_n(Some(s.index), n as usize))
-            .collect(),
-        None => vec![None; group_count as usize],
+            .flat_map(|(s, n)| std::iter::repeat_n(s.index, n as usize))
+            .collect()
     };
-    w.doc
-        .plan_cameras()
+    let cameras = w.doc.plan_cameras();
+    Ok(cameras
         .iter()
         .map(|camera| {
-            let inspect = w.doc.inspect.iter().find(|i| &i.camera == camera);
             owner
                 .iter()
-                .map(|segment| {
-                    segment.filter(|&s| {
-                        inspect.is_some_and(|i| segment_corridor_saved(i, s, &w.camera_teaching))
-                    })
+                .map(|&segment| {
+                    crate::plan::detects(segments, segment, camera, &cameras).then_some(segment)
                 })
                 .collect()
+        })
+        .collect())
+}
+
+/// 一轮里每台计划相机每个 seq 到没到（缺帧为 false），按计划相机、seq 排列，复测用（见 `burst_history::remeasure_by_rule`）。
+pub(super) fn round_frames(cameras: &[String], round: &CaptureRoundV2) -> Vec<(usize, u64, bool)> {
+    cameras
+        .iter()
+        .enumerate()
+        .flat_map(|(index, camera)| {
+            let source = round.cameras.iter().position(|c| &c.camera_id == camera);
+            (1..=round.group_count).map(move |seq| {
+                let missing = source.is_none_or(|j| {
+                    round
+                        .missing_frames
+                        .iter()
+                        .any(|m| m.camera == j && m.seq == seq)
+                });
+                (index, seq, !missing)
+            })
         })
         .collect()
 }
 
 /// 没有测量值的一帧（缺帧、测量失败）。
-pub(super) fn frame_without_metrics(camera: usize, seq: u64, state: FrameState, error: Option<String>) -> FrameMetrics {
-    FrameMetrics { camera, seq, state, error, width_min: None, width_max: None, width_mean: None, widths: Vec::new(),
-        spacing_mm: 0.0, gap_max_mm: 0.0, present_ratio: 0.0, x_mm: None }
+pub(super) fn frame_without_metrics(
+    camera: usize,
+    seq: u64,
+    state: FrameState,
+    error: Option<String>,
+) -> FrameMetrics {
+    FrameMetrics {
+        camera,
+        seq,
+        state,
+        error,
+        width_min: None,
+        width_max: None,
+        width_mean: None,
+        widths: Vec::new(),
+        spacing_mm: 0.0,
+        gap_max_mm: 0.0,
+        present_ratio: 0.0,
+        x_mm: None,
+        corridor: None,
+    }
 }
 
 // ───────────── 段列表与配方编辑 ─────────────
@@ -488,34 +545,14 @@ fn teaching_source<'a>(round: &'a CaptureRoundV2, recipe_id: &str, camera: &str,
     Ok(source)
 }
 
-/// 示教帧选定后写进候选：草稿写进这台相机的 inspect（当量缺省时沿用已有值或工位标定），记下示教帧。
-pub(super) fn apply_camera_teaching(w: &mut Workspace, teaching: CameraTeaching, draft: CameraTeachDraft, default_scale: Option<f64>) -> Result<(), String> {
-    require_burst(&w.doc)?;
-    capture_review::require_available(w, &teaching.round, teaching.seq)?;
-    if draft.corridor.len() > 10_000 || draft.corridor.iter().flatten().any(|v| !v.is_finite()) {
-        return Err("走廊最多 10000 点，坐标必须为有限数".into());
-    }
-    let mut doc = w.doc.clone();
-    let inspect = doc.inspect.iter_mut().find(|i| i.camera == teaching.camera)
-        .ok_or_else(|| format!("相机 {} 不是段配方的计划相机", teaching.camera))?;
-    inspect.corridor = draft.corridor;
-    inspect.mm_per_px = draft.mm_per_px.or(inspect.mm_per_px).or(default_scale);
-    inspect.detect = draft.detect;
-    doc.build()?;
-    w.doc = doc;
-    w.camera_teaching
-        .retain(|t| t.camera != teaching.camera || t.segment.is_some());
-    w.camera_teaching.push(teaching);
-    w.changed();
-    Ok(())
-}
-
-/// 段走廊的示教帧（D-SB-42）：这台相机是该段的检测相机，已有默认走廊的示教帧（像素当量与检测参数按相机）且尺寸相同；
-/// 示教轮次已确认手动分段，帧组落在这一段内。同一相机同一段只留一帧，已画的段走廊原样保留。
+/// 段走廊的示教帧（D-SB-45）：这台相机是该段的检测相机；示教轮次已确认手动分段（单段配方不需要），帧组落在这一段内；
+/// 与这台相机已有的示教帧同尺寸。同一相机同一段只留一帧，已画的走廊原样保留。相机还没有像素当量时用 `default_scale`
+/// （设备标定的当量）。
 pub(super) fn apply_segment_teaching(
     w: &mut Workspace,
     teaching: CameraTeaching,
     group_count: u64,
+    default_scale: Option<f64>,
 ) -> Result<(), String> {
     require_burst(&w.doc)?;
     let (camera, segment) = (
@@ -528,41 +565,55 @@ pub(super) fn apply_segment_teaching(
         .iter()
         .position(|s| s.index == segment)
         .ok_or_else(|| format!("没有第 {segment} 段"))?;
-    if !crate::plan::segment_cameras(&w.doc.segments[position], &w.doc.plan_cameras())
-        .contains(&camera)
-    {
+    if !crate::plan::detects(&w.doc.segments, segment, &camera, &w.doc.plan_cameras()) {
         return Err(format!("相机 {camera} 不是第 {segment} 段的检测相机"));
     }
-    let default = default_teaching(&w.camera_teaching, &camera)
-        .ok_or_else(|| format!("相机 {camera} 还没有默认走廊的示教帧：先示教默认走廊"))?;
-    if default.frame.size != teaching.frame.size {
-        return Err(format!("这一帧尺寸与相机 {camera} 默认走廊的示教帧不同"));
+    let others = w
+        .camera_teaching
+        .iter()
+        .filter(|t| t.camera == camera && t.segment.is_some_and(|s| s != segment));
+    if others
+        .map(|t| t.frame.size)
+        .any(|size| size != teaching.frame.size)
+    {
+        return Err(format!("这一帧尺寸与相机 {camera} 其他段的示教帧不同"));
     }
     capture_review::require_available(w, &teaching.round, teaching.seq)?;
-    let counts = capture_review::confirmed_segment_counts(
-        &w.doc,
-        &w.capture_review.rounds,
-        &teaching.round,
-        group_count,
-    )
-    .ok_or_else(|| {
-        format!(
-            "采集轮次 {} 还没有确认手动分段：先在分段标定里确认这一轮的边界",
-            teaching.round
+    if w.doc.segments.len() > 1 {
+        let counts = capture_review::confirmed_segment_counts(
+            &w.doc,
+            &w.capture_review.rounds,
+            &teaching.round,
+            group_count,
         )
-    })?;
-    let start = counts[..position]
-        .iter()
-        .map(|&n| u64::from(n))
-        .sum::<u64>()
-        + 1;
-    let end = start + u64::from(counts[position]) - 1;
-    if !(start..=end).contains(&teaching.seq) {
-        return Err(format!(
-            "第 {} 帧组不在第 {segment} 段（这一轮为帧组 {start}–{end}）",
-            teaching.seq
-        ));
+        .ok_or_else(|| {
+            format!(
+                "采集轮次 {} 还没有确认手动分段：先在分段标定里确认这一轮的边界",
+                teaching.round
+            )
+        })?;
+        let start = counts[..position]
+            .iter()
+            .map(|&n| u64::from(n))
+            .sum::<u64>()
+            + 1;
+        let end = start + u64::from(counts[position]) - 1;
+        if !(start..=end).contains(&teaching.seq) {
+            return Err(format!(
+                "第 {} 帧组不在第 {segment} 段（这一轮为帧组 {start}–{end}）",
+                teaching.seq
+            ));
+        }
     }
+    let mut doc = w.doc.clone();
+    let inspect = doc
+        .inspect
+        .iter_mut()
+        .find(|i| i.camera == camera)
+        .ok_or_else(|| format!("相机 {camera} 不是段配方的计划相机"))?;
+    inspect.mm_per_px = inspect.mm_per_px.or(default_scale);
+    doc.build()?;
+    w.doc = doc;
     w.camera_teaching
         .retain(|t| !(t.camera == camera && t.segment == Some(segment)));
     w.camera_teaching.push(teaching);
@@ -570,7 +621,7 @@ pub(super) fn apply_segment_teaching(
     Ok(())
 }
 
-/// 去掉一台相机在某一段的走廊与示教帧，这一段退回默认走廊。
+/// 去掉一台相机在某一段的走廊与示教帧，这一段回到“待示教”。
 pub(super) fn clear_segment_corridor(
     w: &mut Workspace,
     camera: &str,
@@ -587,49 +638,10 @@ pub(super) fn clear_segment_corridor(
         removed |= count != inspect.segments.len();
     }
     if !removed {
-        return Err(format!("相机 {camera} 第 {segment} 段没有单独示教的走廊"));
+        return Err(format!("相机 {camera} 第 {segment} 段没有走廊或示教帧"));
     }
     w.changed();
     Ok(())
-}
-
-/// 用采集轮次 `round` 里相机 `camera` 的第 `seq` 帧示教走廊：冻结这一帧，把草稿写进候选配方的 inspect。
-#[tauri::command]
-pub async fn workspace_teach_camera(app: AppHandle, id: String, revision: u64, camera: String, round: String, seq: u64, draft: CameraTeachDraft) -> Result<WorkspaceView, String> {
-    tauri::async_runtime::spawn_blocking(move || teach_camera(app, id, revision, camera, round, seq, draft)).await.map_err(|e| e.to_string())?
-}
-
-fn teach_camera(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    camera: String,
-    round: String,
-    seq: u64,
-    draft: CameraTeachDraft,
-) -> Result<WorkspaceView, String> {
-    let (frame, default_scale, _) =
-        freeze_teaching_frame(&app, &id, revision, &camera, &round, seq)?;
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let current = items.get_mut(&id).ok_or("候选配置不存在")?;
-    current.expect(revision)?;
-    let mut next = current.clone();
-    apply_camera_teaching(
-        &mut next,
-        CameraTeaching {
-            camera,
-            frame,
-            round,
-            seq,
-            segment: None,
-        },
-        draft,
-        default_scale,
-    )?;
-    host.save(&next)?;
-    *current = next;
-    view(&app, current.clone())
 }
 
 /// 用采集轮次 `round` 里相机 `camera` 的第 `seq` 帧示教第 `segment` 段的走廊（D-SB-42）：冻结这一帧，走廊之后在这一帧上画、随候选保存。
@@ -644,7 +656,7 @@ pub async fn workspace_teach_segment_corridor(
     seq: u64,
 ) -> Result<WorkspaceView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let (frame, _, group_count) =
+        let (frame, default_scale, group_count) =
             freeze_teaching_frame(&app, &id, revision, &camera, &round, seq)?;
         let host = app.state::<WorkspaceHost>();
         let mut items = host.items.lock().unwrap();
@@ -661,6 +673,7 @@ pub async fn workspace_teach_segment_corridor(
                 segment: Some(segment),
             },
             group_count,
+            default_scale,
         )?;
         host.save(&next)?;
         *current = next;
@@ -1169,45 +1182,8 @@ fn add_round(app: AppHandle, id: String, revision: u64, round_id: String, standa
     check_round(&w.doc, &w.calibration.rounds, &round, &current)?;
     let recipe = w.doc.build()?;
     let cameras = w.doc.plan_cameras();
-    let choice = corridor_segments(&w, &round_id, round.group_count);
-    let graphs = recipe
-        .inspect
-        .iter()
-        .enumerate()
-        .map(|(camera, inspect)| {
-            let teaching =
-                default_teaching(&w.camera_teaching, &inspect.camera).ok_or_else(|| {
-                    format!(
-                        "相机 {} 还没有选示教帧：先完成走廊示教再加入标定",
-                        inspect.camera
-                    )
-                })?;
-            let default = corridor_saved(inspect, teaching.frame.size)
-                .then(|| vision::plan_corridor(inspect, &recipe, teaching.frame.size))
-                .transpose()?;
-            let used: BTreeSet<u32> = choice
-                .get(camera)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .copied()
-                .collect();
-            let segments = used
-                .into_iter()
-                .map(|segment| {
-                    let mut one = inspect.clone();
-                    one.corridor = inspect
-                        .segment_corridor(segment)
-                        .map(|s| s.corridor.clone())
-                        .unwrap_or_default();
-                    vision::plan_corridor(&one, &recipe, teaching.frame.size)
-                        .map(|graph| (segment, graph))
-                        .map_err(|e| format!("第 {segment} 段走廊：{e}"))
-                })
-                .collect::<Result<BTreeMap<_, _>, String>>()?;
-            Ok((default, segments))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let choice = calibration_corridors(&w, &round_id, round.group_count)?;
+    let graphs = vision::CorridorSet::build(&recipe, &teaching_sizes(&w)?)?;
     let engine = app
         .state::<vision::VisionHost>()
         .engine()
@@ -1215,16 +1191,19 @@ fn add_round(app: AppHandle, id: String, revision: u64, round_id: String, standa
     let run = vision::unique_run_id(&format!("calibration-{id}-{round_id}"));
     let metrics =
         capture_review::measure_calibration_round(&w, &round, |camera, camera_id, seq| {
+            let Some(segment) = choice[camera][(seq - 1) as usize] else {
+                return Ok(frame_without_metrics(
+                    camera,
+                    seq,
+                    FrameState::NotInspected,
+                    None,
+                ));
+            };
+            let graph = graphs
+                .get(camera, segment)
+                .ok_or_else(|| format!("第 {segment} 段相机 {camera_id} 还没有示教走廊"))?;
             let image =
                 crate::image_file::load(&capture.burst_frame_path(&round_id, camera_id, seq)?)?;
-            let (default, segments) = &graphs[camera];
-            let segment = choice[camera][(seq - 1) as usize];
-            let graph = segment
-                .and_then(|s| segments.get(&s))
-                .or(default.as_ref())
-                .ok_or_else(|| {
-                    format!("相机 {camera_id} 第 {seq} 帧组所在段没有段走廊，也没有默认走廊")
-                })?;
             vision::measure_frame(
                 &engine,
                 graph,
@@ -1327,12 +1306,11 @@ pub fn workspace_update_segments(app: AppHandle, id: String, revision: u64, segm
 // ───────────── WorkspaceView.plan ─────────────
 
 pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
+    let open = untaught_pairs(w);
     w.doc
         .inspect
         .iter()
         .map(|inspect| {
-            let frame =
-                default_teaching(&w.camera_teaching, &inspect.camera).map(|t| t.frame.clone());
             let mut segments: Vec<SegmentTeachingView> = w
                 .camera_teaching
                 .iter()
@@ -1349,36 +1327,59 @@ pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
                 })
                 .collect();
             segments.sort_by_key(|s| s.segment);
-            let mut detected = w
-                .doc
-                .segments
-                .iter()
-                .filter(|s| {
-                    crate::plan::segment_cameras(s, &w.doc.plan_cameras()).contains(&inspect.camera)
-                })
-                .peekable();
-            let covered = detected.peek().is_some()
-                && detected.all(|s| segments.iter().any(|v| v.segment == s.index && v.saved));
             CameraTeachingView {
-                covered,
                 camera: inspect.camera.clone(),
-                saved: frame
-                    .as_ref()
-                    .is_some_and(|f| corridor_saved(inspect, f.size)),
-                frame,
                 mm_per_px: inspect.mm_per_px,
+                ready: inspect.mm_per_px.is_some()
+                    && !open.iter().any(|(camera, _)| camera == &inspect.camera),
                 segments,
             }
         })
         .collect()
 }
 
-/// 没通过的验证项跳到哪一页（检查项名称见 `burst_release::burst_checks`）：走廊示教跳到第一台没示教好的相机。
-fn validation_target(name: &str, teaching: &[CameraTeachingView]) -> TargetV2 {
+/// 还没示教好走廊的（相机, 段）：按段顺序、段内按计划相机顺序；没选示教帧、走廊没保存或超出示教帧都算。
+pub(super) fn untaught_pairs(w: &Workspace) -> Vec<(String, u32)> {
+    let cameras = w.doc.plan_cameras();
+    w.doc
+        .segments
+        .iter()
+        .flat_map(|segment| {
+            crate::plan::segment_cameras(segment, &cameras)
+                .into_iter()
+                .map(move |camera| (camera, segment.index))
+        })
+        .filter(|(camera, segment)| {
+            !w.doc.inspect.iter().any(|i| {
+                &i.camera == camera && segment_corridor_saved(i, *segment, &w.camera_teaching)
+            })
+        })
+        .collect()
+}
+
+/// 没通过的验证项跳到哪一页（检查项名称见 `burst_release::burst_checks`）：走廊示教跳到第一条没示教好的段走廊，
+/// 都示教了时跳到第一台缺像素当量的相机。
+fn validation_target(name: &str, w: &Workspace, teaching: &[CameraTeachingView]) -> TargetV2 {
     match name {
         "设备与采集" => TargetV2::Camera,
-        "走廊示教" => teaching.iter().find(|t| !(t.saved && t.mm_per_px.is_some())).or(teaching.first())
-            .map_or(TargetV2::Validation, |t| TargetV2::Corridor { camera: t.camera.clone() }),
+        "走廊示教" => untaught_pairs(w)
+            .into_iter()
+            .next()
+            .map(|(camera, segment)| TargetV2::Corridor {
+                camera,
+                segment: Some(segment),
+            })
+            .or_else(|| {
+                teaching
+                    .iter()
+                    .find(|t| !t.ready)
+                    .or(teaching.first())
+                    .map(|t| TargetV2::Corridor {
+                        camera: t.camera.clone(),
+                        segment: None,
+                    })
+            })
+            .unwrap_or(TargetV2::Validation),
         "段标定" | "标准件 x_ref" => TargetV2::Calibration,
         _ => TargetV2::Validation,
     }
@@ -1398,31 +1399,39 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
         detail: format!("{} 段（直线 {straight}、弯道 {}），帧数容差合计 ±{}", doc.segments.len(), doc.segments.len() - straight, crate::plan::tolerance_total(&doc.segments)),
         blockers: Vec::new() };
     let corridor = {
-        let open: Vec<_> = teaching.iter().filter(|t| !t.ready()).collect();
+        let open = untaught_pairs(w);
+        let total = doc
+            .segments
+            .iter()
+            .map(|s| crate::plan::segment_cameras(s, &doc.plan_cameras()).len())
+            .sum::<usize>();
         let blockers: Vec<_> = open
             .iter()
-            .map(|t| BlockerV2 {
-                message: format!(
-                    "相机 {}：{}",
-                    t.camera,
-                    if t.frame.is_none() {
-                        "待选示教帧"
-                    } else if !(t.saved || t.covered) {
-                        "待示教走廊"
-                    } else {
-                        "缺像素当量"
-                    }
-                ),
+            .map(|(camera, segment)| BlockerV2 {
+                message: format!("第 {segment} 段相机 {camera}：待示教走廊"),
                 target: TargetV2::Corridor {
-                    camera: t.camera.clone(),
+                    camera: camera.clone(),
+                    segment: Some(*segment),
                 },
             })
+            .chain(
+                teaching
+                    .iter()
+                    .filter(|t| t.mm_per_px.is_none())
+                    .map(|t| BlockerV2 {
+                        message: format!("相机 {}：缺像素当量", t.camera),
+                        target: TargetV2::Corridor {
+                            camera: t.camera.clone(),
+                            segment: None,
+                        },
+                    }),
+            )
             .collect();
         let status = if !captured {
             StepStatus::NotStarted
-        } else if open.is_empty() {
+        } else if blockers.is_empty() {
             StepStatus::Done
-        } else if teaching.iter().all(|t| t.frame.is_none()) {
+        } else if w.camera_teaching.is_empty() {
             StepStatus::NotStarted
         } else {
             StepStatus::InProgress
@@ -1432,11 +1441,7 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
             label: "走廊示教",
             optional: false,
             status,
-            detail: format!(
-                "{} / {} 台相机已示教走廊",
-                teaching.len() - open.len(),
-                teaching.len()
-            ),
+            detail: format!("{} / {total} 条段走廊已示教", total - open.len()),
             blockers: if captured { blockers } else { need_capture() },
         }
     };
@@ -1471,9 +1476,26 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
         let (status, detail, blockers) = if let Some(version) = active {
             (StepStatus::Done, format!("已随 v{version} 验证并发布"), Vec::new())
         } else if let Some(v) = current {
-            if v.passed { (StepStatus::Done, format!("当前修订验证通过（{} 件样本）", v.samples.len()), Vec::new()) }
-            else { (StepStatus::Blocked, "验证未通过".into(), v.checks.iter().filter(|c| !c.passed)
-                .map(|c| BlockerV2 { message: format!("{}：{}", c.name, c.detail), target: validation_target(&c.name, teaching) }).collect()) }
+            if v.passed {
+                (
+                    StepStatus::Done,
+                    format!("当前修订验证通过（{} 件样本）", v.samples.len()),
+                    Vec::new(),
+                )
+            } else {
+                (
+                    StepStatus::Blocked,
+                    "验证未通过".into(),
+                    v.checks
+                        .iter()
+                        .filter(|c| !c.passed)
+                        .map(|c| BlockerV2 {
+                            message: format!("{}：{}", c.name, c.detail),
+                            target: validation_target(&c.name, w, teaching),
+                        })
+                        .collect(),
+                )
+            }
         } else {
             let blockers = [&capture, &corridor, &calibration].into_iter().filter(|s| s.status != StepStatus::Done)
                 .map(|s| BlockerV2 { message: format!("先完成{}", s.label), target: s.blockers.first().map_or(TargetV2::Capture, |b| b.target.clone()) }).collect();
@@ -1498,7 +1520,17 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
         Some(NextV2 { step: StepIdV2::Capture, label: "整圈采集".into(), target: TargetV2::Capture })
     } else if let Some(open) = [&corridor, &calibration].into_iter().find(|s| s.status != StepStatus::Done) {
         let target = open.blockers.first().map_or(TargetV2::Calibration, |b| b.target.clone());
-        let label = match &target { TargetV2::Corridor { camera } => format!("示教相机 {camera} 的走廊"), _ => open.label.to_string() };
+        let label = match &target {
+            TargetV2::Corridor {
+                camera,
+                segment: Some(segment),
+            } => format!("示教第 {segment} 段相机 {camera} 的走廊"),
+            TargetV2::Corridor {
+                camera,
+                segment: None,
+            } => format!("设置相机 {camera} 的像素当量"),
+            _ => open.label.to_string(),
+        };
         Some(NextV2 { step: open.id, label, target })
     } else if validation.status != StepStatus::Done {
         Some(NextV2 { step: StepIdV2::Validation, label: "运行整套验证".into(), target: validation.blockers.first().map_or(TargetV2::Validation, |b| b.target.clone()) })

@@ -281,15 +281,10 @@ fn corridor_teaching_and_exclusion_cannot_reference_the_same_group() {
     let mut w = burst_workspace(&[Straight]);
     let source = round(&w, "source", 5);
     let camera = w.doc.plan_cameras()[0].clone();
-    let teaching: burst::CameraTeaching = serde_json::from_value(json!({"camera":camera,"round":"source","seq":3,
+    let teaching: burst::CameraTeaching = serde_json::from_value(json!({"camera":camera,"round":"source","seq":3,"segment":1,
         "frame":{"id":"image","view":1,"source":"capture:source#3","capturedAt":0,"size":[100,100],
             "camera":camera,"cameraTag":null,"calibTag":null,"geometryTag":null,"exposureUs":null,"gainDb":null,"historyId":null}})).unwrap();
-    let draft = || burst::CameraTeachDraft {
-        corridor: vec![[1.0, 1.0], [50.0, 1.0]],
-        mm_per_px: Some(0.1),
-        detect: None,
-    };
-    burst::apply_camera_teaching(&mut w, teaching.clone(), draft(), None).unwrap();
+    burst::apply_segment_teaching(&mut w, teaching.clone(), 5, None).unwrap();
     let exclude = || CaptureReviewEdit::Exclude {
         start: 3,
         end: 3,
@@ -299,5 +294,5 @@ fn corridor_teaching_and_exclusion_cannot_reference_the_same_group() {
     assert!(apply_capture_review(&mut w, &source, exclude()).is_err());
     w.camera_teaching.clear();
     apply_capture_review(&mut w, &source, exclude()).unwrap();
-    assert!(burst::apply_camera_teaching(&mut w, teaching, draft(), None).is_err());
+    assert!(burst::apply_segment_teaching(&mut w, teaching, 5, None).is_err());
 }

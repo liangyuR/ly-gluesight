@@ -130,6 +130,9 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     else void save();
   };
   const inspect = (camera: string) => doc?.inspect?.find(item => item.camera === camera);
+  // 预览叠加选中帧组所在段的走廊（段结构有改动时还没对应到新段，不叠加）
+  const seqSegment = restructured ? undefined : plan.segments[segmentSpans.findIndex(([first, last]) => seq >= first && seq <= last)];
+  const corridorOf = (camera: string) => inspect(camera)?.segments?.find(item => item.segment === seqSegment?.index)?.corridor ?? [];
   const halfPx = (camera: string) => {
     const item = inspect(camera);
     const mmPerPx = item?.mmPerPx;
@@ -220,7 +223,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
       </div>
       <div className="swb-preview" aria-label={`帧组 ${seq} 三台相机原图`}>
         {plan.cameras.map(camera => <FramePreview key={camera} roundId={roundId} camera={camera} seq={seq}
-          corridor={inspect(camera)?.corridor ?? []} searchHalfPx={halfPx(camera)} />)}
+          corridor={corridorOf(camera)} searchHalfPx={halfPx(camera)} />)}
       </div>
     </div>}
     {confirming && <Dialog open title="段结构将改变" onOpenChange={open => { if (!open) setConfirming(false); }}

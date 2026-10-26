@@ -101,7 +101,7 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
         </div>
       </Section>
 
-      <Section title="检测" extra={burst ? "各台相机的走廊没单独设置时使用；改检测参数后需重新试测" : "拍照点没单独设置时使用；改检测参数后需重新试测"}>
+      <Section title="检测" extra={burst ? "相机没单独设置检测参数时使用；改检测参数后需重新试测" : "拍照点没单独设置时使用；改检测参数后需重新试测"}>
         <DetectEditor value={doc.detect} changed={changed} disabled={disabled} onChange={(v) => set("detect", v)} />
       </Section>
 

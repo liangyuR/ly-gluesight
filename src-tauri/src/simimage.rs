@@ -105,10 +105,24 @@ pub fn corner_angle(kind: SegmentKind, progress: f32) -> f32 {
 pub fn render_burst(r: &BurstRender) -> FrameImage {
     let recipe = &r.recipe;
     let inspect = recipe.inspect.get(r.camera_idx);
-    let path = inspect.filter(|i| i.corridor.len() >= 2).map_or_else(|| burst_default_path(r.camera_idx), |i| i.corridor.clone());
-    let mm = inspect.and_then(|i| i.mm_per_px).map_or(SIM_MM_PER_PX, |v| v as f32);
-    let checks = recipe.path_segments.iter().find(|s| s.kind == r.kind).or(recipe.path_segments.first()).map(|s| &s.checks);
-    let nominal = checks.map_or(BEAD_WIDTH, |c| c.width.nominal_mm as f32) + if r.kind == SegmentKind::Corner { CORNER_EXTRA_WIDTH } else { 0.0 };
+    let path = inspect
+        .and_then(|i| i.segments.iter().find(|s| s.corridor.len() >= 2))
+        .map_or_else(|| burst_default_path(r.camera_idx), |s| s.corridor.clone());
+    let mm = inspect
+        .and_then(|i| i.mm_per_px)
+        .map_or(SIM_MM_PER_PX, |v| v as f32);
+    let checks = recipe
+        .path_segments
+        .iter()
+        .find(|s| s.kind == r.kind)
+        .or(recipe.path_segments.first())
+        .map(|s| &s.checks);
+    let nominal = checks.map_or(BEAD_WIDTH, |c| c.width.nominal_mm as f32)
+        + if r.kind == SegmentKind::Corner {
+            CORNER_EXTRA_WIDTH
+        } else {
+            0.0
+        };
     // 弯道：整条胶绕胶嘴端（中线起点）转动
     let (sin, cos) = corner_angle(r.kind, r.progress).to_radians().sin_cos();
     let o = path[0];

@@ -68,15 +68,40 @@ pub(crate) fn burst_frame(cam: u8, counter: u64) -> Frame {
 }
 
 /// 测量池交回的一帧结果。
-fn frame_result(part: &Part, camera: usize, seq: u64, result: Result<crate::burst_judge::FrameMetrics, measure::MeasureError>) -> FrameMeasured {
-    FrameMeasured { cycle_id: part.cycle_id.clone(), camera_idx: camera, seq, result, ms: 5, queue_ms: None, engine_ms: None }
+fn frame_result(
+    part: &Part,
+    camera: usize,
+    seq: u64,
+    result: Result<crate::burst_judge::FrameMetrics, measure::MeasureError>,
+) -> FrameMeasured {
+    FrameMeasured {
+        cycle_id: part.cycle_id.clone(),
+        camera_idx: camera,
+        seq,
+        segment: 1,
+        result,
+        ms: 5,
+        queue_ms: None,
+        engine_ms: None,
+    }
 }
 
 /// 收一帧；被接受时交回合格的模拟测量结果。
 fn deliver(part: &mut Part, cam: u8, counter: u64) -> burst::Arrival {
     let arrival = part.receive_burst(&burst_frame(cam, counter)).unwrap();
     if let burst::Arrival::Accepted { camera, seq } = arrival {
-        let result = frame_result(part, camera, seq, Ok(measure::simulate_frame(Scenario::Normal, camera, seq, &part.recipe)));
+        let result = frame_result(
+            part,
+            camera,
+            seq,
+            Ok(measure::simulate_frame(
+                Scenario::Normal,
+                camera,
+                seq,
+                1,
+                &part.recipe,
+            )),
+        );
         part.apply_burst(result).unwrap();
     }
     arrival
@@ -99,7 +124,18 @@ pub(crate) fn judge_burst_delivered(received: Vec<Frame>, device_triggers: Optio
     let mut p = burst_part("callback-dropped", &Ledgers::default());
     for frame in received {
         if let Some(burst::Arrival::Accepted { camera, seq }) = p.receive_burst(&frame) {
-            let result = frame_result(&p, camera, seq, Ok(measure::simulate_frame(Scenario::Normal, camera, seq, &p.recipe)));
+            let result = frame_result(
+                &p,
+                camera,
+                seq,
+                Ok(measure::simulate_frame(
+                    Scenario::Normal,
+                    camera,
+                    seq,
+                    1,
+                    &p.recipe,
+                )),
+            );
             p.apply_burst(result).unwrap();
         }
     }
@@ -114,7 +150,18 @@ pub(crate) fn judge_burst_at_drain_deadline(received: Vec<Frame>, device_trigger
     let mut p = burst_part("offline-burst-line", &Ledgers::default());
     for frame in received {
         if let Some(burst::Arrival::Accepted { camera, seq }) = p.receive_burst(&frame) {
-            let result = frame_result(&p, camera, seq, Ok(measure::simulate_frame(Scenario::Normal, camera, seq, &p.recipe)));
+            let result = frame_result(
+                &p,
+                camera,
+                seq,
+                Ok(measure::simulate_frame(
+                    Scenario::Normal,
+                    camera,
+                    seq,
+                    1,
+                    &p.recipe,
+                )),
+            );
             p.apply_burst(result).unwrap();
         }
     }
@@ -176,7 +223,7 @@ fn frames_beyond_expected_total_are_all_measured_and_only_alarm() {
         for cam in 0..3u8 {
             let arrival = p.receive_burst(&burst_frame(cam, counter)).unwrap();
             let burst::Arrival::Accepted { camera, seq } = arrival else { panic!("相机 {cam} 第 {counter} 帧没被接受：{arrival:?}") };
-            let mut metrics = measure::simulate_frame(Scenario::Normal, camera, seq, &p.recipe);
+            let mut metrics = measure::simulate_frame(Scenario::Normal, camera, seq, 1, &p.recipe);
             if (camera, seq) == (2, 7) { metrics.gap_max_mm = 100.0; }
             let result = frame_result(&p, camera, seq, Ok(metrics));
             p.apply_burst(result).unwrap();
@@ -240,6 +287,143 @@ fn calibrated_multi_segment_recipe_is_judged_by_proportional_regions() {
         ]
     );
     assert!(!judgement.flags.unsegmented);
+}
+
+/// D-SB-45：帧到达时按累计 N_exp 预测所属段，只由预测段的检测相机用该段走廊送测，其余相机记“本段不检测”、不送测；
+/// 收尾后按比例边界解析区域，对判定需要、但到达时没用对应走廊送测过的（帧, 相机）用留下的原图补测，补测完才收尾；
+/// 原图没留住的记没测（检测不完整）。直线 5 帧（三台相机）+ 弯道 5 帧（只由第一台相机），本件 12 帧：比例边界在 6、
+/// 预测边界在 5。
+#[test]
+fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_remeasured_after_drain(
+) {
+    use crate::plan::{
+        new_segment,
+        SegmentKind::{Corner, Straight},
+    };
+    use crate::recipe::SegmentCorridor;
+    // 防的回归：不检测某段的相机也被送测（没有它在这段的走廊，只能量出检测不完整）；比例边界相对预测边界移动后，
+    // 移到另一段或进了过渡区的帧仍用到达时的走廊判定；不等补测完就判定；或原图没留住时把没测的帧当测成
+    for (case, keep_images) in [("原图留住", true), ("原图没留住", false)] {
+        let mut doc = crate::recipe::samples_burst();
+        doc.segments = vec![
+            crate::plan::PathSegment {
+                expected_frames: Some(5),
+                ..new_segment(1, Straight, &doc.segment_defaults)
+            },
+            crate::plan::PathSegment {
+                expected_frames: Some(5),
+                cameras: vec![doc.inspect[0].camera.clone()],
+                ..new_segment(2, Corner, &doc.segment_defaults)
+            },
+        ];
+        doc.boundary_guard = 1;
+        let corridor = doc.inspect[0].segments[0].corridor.clone();
+        doc.inspect[0].segments.push(SegmentCorridor {
+            segment: 2,
+            corridor,
+        });
+        let mut p = armed_part_with(
+            doc.build().unwrap(),
+            "burst-post",
+            &Ledgers::default(),
+            Some(CounterSource::Synthetic),
+            Policy::burst_offline(None),
+        );
+        for counter in 1..=12 {
+            for cam in 0..3u8 {
+                let Some(burst::Arrival::Accepted { camera, seq }) =
+                    p.receive_burst(&burst_frame(cam, counter))
+                else {
+                    panic!("{case}")
+                };
+                if keep_images {
+                    p.burst.as_mut().unwrap().retain_image(camera, seq, None);
+                }
+                if let Some(segment) = p.burst.as_ref().unwrap().arrival_corridor(camera, seq) {
+                    let result = FrameMeasured {
+                        segment,
+                        ..frame_result(
+                            &p,
+                            camera,
+                            seq,
+                            Ok(measure::simulate_frame(
+                                Scenario::Normal,
+                                camera,
+                                seq,
+                                segment,
+                                &p.recipe,
+                            )),
+                        )
+                    };
+                    p.apply_burst(result).unwrap();
+                }
+            }
+        }
+        let arrival = |p: &Part, camera: usize, seq: u64| {
+            p.burst.as_ref().unwrap().arrival_corridor(camera, seq)
+        };
+        assert_eq!(
+            (arrival(&p, 0, 5), arrival(&p, 0, 6), arrival(&p, 1, 5)),
+            (None, None, None),
+            "{case}：测完后不再是送测中"
+        );
+        end(&mut p, Some(12), true);
+        assert!(!p.complete(), "{case}：还有要补测的帧，不能收尾");
+        let mut jobs: Vec<(usize, u64, u32)> = p
+            .start_post_measure(Instant::now())
+            .into_iter()
+            .map(|(c, s, g, _)| (c, s, g))
+            .collect();
+        jobs.sort();
+        if keep_images {
+            assert_eq!(
+                jobs,
+                [(0, 6, 1), (1, 6, 1), (1, 7, 1), (2, 6, 1), (2, 7, 1)],
+                "{case}"
+            );
+            assert!(!p.complete(), "{case}：补测完之前不收尾");
+            for (camera, seq, segment) in jobs {
+                let result = FrameMeasured {
+                    segment,
+                    ..frame_result(
+                        &p,
+                        camera,
+                        seq,
+                        Ok(measure::simulate_frame(
+                            Scenario::Normal,
+                            camera,
+                            seq,
+                            segment,
+                            &p.recipe,
+                        )),
+                    )
+                };
+                p.apply_burst(result).unwrap();
+            }
+        } else {
+            assert!(jobs.is_empty(), "{case}");
+        }
+        assert!(p.complete(), "{case}");
+        let judgement = judge_burst(&mut p);
+        assert_eq!(
+            judgement.flags.incomplete, !keep_images,
+            "{case}：{judgement:?}"
+        );
+        let record = p.burst_record(&burst::summary(&judgement)).unwrap();
+        let state = |camera: usize, seq: u64| {
+            record
+                .frames
+                .iter()
+                .find(|f| (f.camera, f.seq) == (camera, seq))
+                .unwrap()
+                .status
+        };
+        assert_eq!(
+            state(1, 10),
+            FrameState::NotInspected,
+            "{case}：弯道段不由第二台相机检测，不测"
+        );
+    }
 }
 
 /// D-SB-7：下一件每台相机的帧计数基线 = max(原基线, 本件见到的最高帧计数)，PLC 报的 deviceTriggers 与计划数都不参与。
@@ -372,7 +556,13 @@ fn unmeasured_frame_marks_group_incomplete_not_err_99() {
                 &p,
                 1,
                 2,
-                Ok(measure::simulate_frame(Scenario::Normal, 1, 2, &p.recipe)),
+                Ok(measure::simulate_frame(
+                    Scenario::Normal,
+                    1,
+                    2,
+                    1,
+                    &p.recipe,
+                )),
             );
             assert!(p.apply_burst(late).is_none());
         }
@@ -394,7 +584,18 @@ fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result(
     assert!(p.expire_burst(Instant::now(), p.proc_timeout).is_empty());
     assert!(!p.complete());
     assert!(p.receive_burst(&burst_frame(1, 5)).is_none());
-    let result = frame_result(&p, 0, 5, Ok(measure::simulate_frame(Scenario::Normal, 0, 5, &p.recipe)));
+    let result = frame_result(
+        &p,
+        0,
+        5,
+        Ok(measure::simulate_frame(
+            Scenario::Normal,
+            0,
+            5,
+            1,
+            &p.recipe,
+        )),
+    );
     assert!(p.apply_burst(result).is_some());
     assert!(p.complete());
     let judgement = judge_burst(&mut p);
@@ -414,6 +615,7 @@ fn same_sn_reinspection_rejects_measurement_from_previous_cycle() {
             Scenario::Normal,
             0,
             1,
+            1,
             &previous.recipe,
         )),
     );
@@ -430,6 +632,7 @@ fn same_sn_reinspection_rejects_measurement_from_previous_cycle() {
         Ok(measure::simulate_frame(
             Scenario::Normal,
             0,
+            1,
             1,
             &current.recipe,
         )),

@@ -55,16 +55,17 @@ pnpm typecheck
 | 22 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `已标定的配方，长度改为 130 mm → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动` | 非结构编辑必须带实际改动保存，同时保留各段预期帧数与胶偏参考 |
 | 23 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `已标定的配方，关掉溢胶检测 → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动` | 非结构编辑必须带实际改动保存，同时保留各段预期帧数与胶偏参考 |
 | 24 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `离开段列表页 > 上一份编辑还在提交时又改了容差并离开 → 等上一份完成，用它返回的新修订提交新编辑` | 保存进行中继续编辑并离页时必须等上次完成，再按返回的新修订提交最新编辑，防止丢改动 |
-| 25 | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 草稿与已保存的走廊只差 f32 精度 → 视为没改；点位、当量或检测参数不同 → 视为已改` | 后端f32往返精度差异不能让走廊永远处于未保存状态，真实点位或检测参数改动仍需识别 |
-| 25a | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 段走廊草稿 → 只写这一段的走廊…` | 段走廊草稿不覆盖默认走廊、相机像素当量与检测参数和其他段；清空即从配方去掉（D-SB-42，2026-10-26） |
+| 25 | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 草稿与已保存的段走廊只差 f32 精度 → 视为没改；点位、当量或检测参数不同 → 视为已改` | 后端f32往返精度差异不能让走廊永远处于未保存状态，真实点位或检测参数改动仍需识别 |
+| 25a | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 段走廊草稿 → 只写这一段的走廊…` | 段走廊草稿不覆盖相机像素当量、检测参数和其他段；清空即从配方去掉（D-SB-42/45） |
 | 25b | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 段帧组范围：%s` | 段示教帧可选范围按已确认边界、含两端不差一帧；只存草稿的轮次不给范围（D-SB-42） |
 | 26 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `手工落点并自动保存 → 保存期间保留缩放与走廊、不能再改点，保存后草稿并入配方且清空` | 手工走廊经真实Provider自动保存时禁止再改点，保存后保留图像视角并只更新对应相机走廊 |
-| 27 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在示教帧上提取一次` | 刷选提取前保存草稿，按当前相机冻结帧、引导笔划、半径与最新修订提取并显示所得走廊 |
+| 27 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在这一段的示教帧上提取一次` | 刷选提取前保存草稿，按这一段这台相机冻结帧、刷选引导与点距提取一次（D-SB-45） |
 | 28 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `自动提取失败后按笔划生成 → 定位原因并保留原线，人工草稿保留转弯且走廊待保存` | 自动提取失败必须保留原走廊及失败位置，操作员仍可按笔划生成保留转弯的待保存走廊 |
-| 29 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `为未选示教帧的相机从采集轮次选一帧 → 按所选轮次、帧组冻结，选帧面板收起并显示这一帧` | 选择采集轮次及帧组后冻结的必须是所选相机帧，并从选帧面板切到该示教图 |
-| 30 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `走廊示教 > 走廊有未保存的修改 → 其他相机不能切换并说明先保存，当前相机可继续编辑` | 当前相机走廊未保存时禁止切换其他相机，防止草稿被隐藏或误写相机 |
-| 31 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `走廊示教 > 走廊草稿缺像素当量 → 保存走廊禁用并说明原因，不写配方` | 缺少像素当量的走廊不得保存为已示教，必须在操作前拦住 |
-| 32 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `示教帧选择 > 所选帧组这台相机缺帧 → 不读图、用此帧示教禁用并说明缺帧` | 所选帧组在当前相机缺帧时不得读取或冻结不存在的图像 |
+| 29 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `段已有旧示教帧时点击用于走廊示教 → 直接在本轮这一段内选帧，确认后显示新帧并保持编辑` | 选帧只能在已确认分段轮次的本段帧组内，提交的就是所选（段, 轮次, 帧组）（D-SB-45） |
+| 29a | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `只指定相机、停留选帧页时采集由接收到收尾再完成 → 定位到该相机第一条未示教的段…` | 只带相机的链接定位到它第一条未示教的段；未完成轮次不能选，完成后自动列出（D-SB-45） |
+| 30 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `走廊示教 > 段走廊有未保存的修改 → 其他段与相机参数不能切换并说明先保存，当前段可继续编辑` | 当前段走廊未保存时禁止切换到其他段或相机参数，防止草稿被丢 |
+| 31 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `走廊示教 > 相机缺像素当量 → 段走廊保存禁用并说明原因，不写配方` | 像素当量随相机，缺了不得把段走廊保存为已示教 |
+| 32 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `示教帧选择 > 链接指定相机与段、所选帧组这台相机缺帧 → …` | 链接指定的段要定位上；所选帧组缺帧时不得读取或冻结不存在的图像 |
 | 33 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 发布失败后冻结样本配置并重试同一待生效版本` | 发布失败后候选样本与验证被冻结，只能重试同一待生效修订，不能另发新版本 |
 | 34 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 生效失败 → 确认后放弃同一修订的待生效版本；状态不确定时不能放弃` | 只有明确失败的待生效版本才能经确认放弃，状态不确定时不得暴露放弃入口 |
 | 35 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 段配方 > 整件预期总帧数未标定 → 发布不可用并列出待标定的段号` | 整件预期总帧数尚未标定时，即使验证通过也不能发布生产配方 |
@@ -76,8 +77,8 @@ pnpm typecheck
 | 41 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 刷新请求发出后用户开始编辑，也不能覆盖草稿` | 刷新请求发出后开始编辑时，迟到刷新不得覆盖本地草稿 |
 | 42 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 操作途中离开再选回同一配方，旧操作结果也不能覆盖新选择` | 离开后重新选择同一配方时，旧操作响应不能覆盖新选择的新修订 |
 | 43 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 操作响应配方不一致时保留当前候选并允许重试` | 操作响应携带其他配方身份时拒绝接受，保留当前候选并允许正确响应重试 |
-| 44 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 某台相机换了示教帧 → 只清除这台相机的旧走廊草稿，别的相机的草稿保留且仍算未保存` | 更换某相机示教帧时只丢弃该相机旧走廊草稿，其他相机未保存草稿必须保留 |
-| 45 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 保存失败保留走廊草稿，重试成功后才显示已保存；草稿并入这台相机的配方项整份提交` | 走廊自动保存失败后保留草稿，重试按相机合并完整配方，成功后才清除未保存状态 |
+| 44 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 某段换了示教帧 → 只清除这一段的旧走廊草稿，同相机别的段的草稿保留且仍算未保存` | 更换某段示教帧只丢弃这一段在旧帧上画的草稿 |
+| 45 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 保存失败保留走廊草稿，重试成功后才显示已保存；草稿并入这台相机这一段的走廊整份提交` | 走廊自动保存失败保留草稿可重试，提交只改这一段这台相机的走廊 |
 
 ### 生产周期、就绪与历史
 
@@ -169,7 +170,7 @@ pnpm typecheck
 | `tests/segments-page.test.tsx` | 删除待标定静态回显、重复类型切换和卸载提交断言；保留标定失效/保留及保存进行中离页不丢编辑，真实Provider离页另有集成覆盖 |
 | `tests/teach-draft.test.ts` | 删除旧拍照点特征定位草稿和被真实走廊保存流程覆盖的局部复制/校验；保留容易导致反复自动保存的f32精度边界 |
 | `tests/teaching-flow.test.tsx` | 删除搜索带/点距局部叠图与重复失败建议文案分支，保留手工自动保存、刷选提取、失败人工恢复及真实选帧完整流程 |
-| `tests/teaching.test.tsx` | 删除相机列表/总览/采集信息静态展示及与整页流程重复的saveDoc/teachCamera转发；保留未保存、缺当量和缺帧操作拦截 |
+| `tests/teaching.test.tsx` | 删除相机列表/总览/采集信息静态展示及与整页流程重复的saveDoc转发；D-SB-45 起相机走廊与 teachCamera 已删，改为段走廊；保留未保存、缺当量和缺帧操作拦截 |
 | `tests/trial-result.test.tsx` | 旧逐站试测结果表的状态/空值投影，不作为当前段配方走廊示教主流程验收 |
 | `tests/unrolled-curve.test.tsx` | 旧逐站布局的段名截断和提示属于样式行为，当前段帧结果界面不以该旧布局验收 |
 | `tests/validation.test.tsx` | 删除旧拍照点发布同步、离线提示文案与重复按钮禁用投影；保留当前段整件标定、验证修订和待生效版本生命周期门槛 |

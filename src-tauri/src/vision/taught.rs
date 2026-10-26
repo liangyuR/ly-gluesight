@@ -572,13 +572,15 @@ fn apply_pose(recipe: &Recipe, p: &ShotPlan, f: &FixtureSpec, record: &Value, no
 /// 默认做法 4 的实现，判据没有经过真实弯道图像验证。
 const EXIT_OFFSET_RATIO: f64 = 0.5;
 
-/// 段配方一台相机的走廊测量图：沿走廊按站距取测站，所有帧共用（D-SB-17）。测站不进配方全局站表，
+/// 段配方一段、一台检测相机的走廊测量图（D-SB-45）：沿走廊按站距取测站。测站不进配方全局站表，
 /// 每帧只输出帧内汇总的 `FrameMetrics`（规格 §4 每帧独立指标）。
 #[derive(Clone, Debug)]
 pub struct CorridorGraph {
     pub camera: String,
     /// 计划相机下标（`Recipe.inspect` 的顺序），即 `FrameMetrics.camera`
     pub camera_idx: usize,
+    /// 走廊所属的段（`PathSegment.index`），即 `FrameMetrics.corridor`
+    pub segment: u32,
     /// 示教帧尺寸；每帧必须与它相同
     pub size: [u32; 2],
     pub graph: Value,
@@ -623,30 +625,110 @@ fn polyline_at(path: &[[f32; 2]], t: f64) -> [f64; 2] {
     path.last().map_or([0.0, 0.0], |p| [p[0] as f64, p[1] as f64])
 }
 
-/// 段配方一台检测相机的走廊测量图：示教帧尺寸为 size。走廊必须完整落在图内（不然 lyFlow 量不到走廊两端）；
-/// 当量、站距与检测参数的取值范围与旧拍照点中线相同；至少三站。
-pub fn plan_corridor(inspect: &CameraInspect, recipe: &Recipe, size: [u32; 2]) -> Result<CorridorGraph, String> {
-    let camera_idx = recipe.inspect.iter().position(|i| i.camera == inspect.camera)
+/// 段配方第 `segment` 段、一台检测相机的走廊测量图：示教帧尺寸为 size。走廊必须完整落在图内（不然 lyFlow 量不到走廊两端）；
+/// 当量与检测参数按相机，站距与取值范围与旧拍照点中线相同；至少三站。
+pub fn plan_corridor(
+    inspect: &CameraInspect,
+    segment: u32,
+    recipe: &Recipe,
+    size: [u32; 2],
+) -> Result<CorridorGraph, String> {
+    let camera_idx = recipe
+        .inspect
+        .iter()
+        .position(|i| i.camera == inspect.camera)
         .ok_or_else(|| format!("相机 {} 不是配方 {} 的检测相机", inspect.camera, recipe.id))?;
-    let fail = |why: &str| format!("相机 {}：{why}", inspect.camera);
-    let Some(scale) = inspect.mm_per_px.filter(|_| inspect.corridor.len() >= 2) else {
-        return Err(fail("尚未示教检测走廊和像素当量"));
+    let fail = |why: &str| format!("第 {segment} 段相机 {}：{why}", inspect.camera);
+    let corridor = inspect
+        .segment_corridor(segment)
+        .map(|s| s.corridor.as_slice())
+        .unwrap_or_default();
+    if corridor.len() < 2 {
+        return Err(fail("尚未示教检测走廊"));
+    }
+    let Some(scale) = inspect.mm_per_px else {
+        return Err(fail("缺少像素当量"));
     };
     let detect = inspect.detect.as_ref().unwrap_or(&recipe.detect);
-    let params = graph_params(&inspect.corridor, scale, recipe.spacing as f64 / scale, detect).map_err(fail)?;
-    if !corridor_inside(&inspect.corridor, size) {
-        return Err(fail(&format!("检测走廊超出示教帧 {}×{}，请在这台相机的帧上重新示教走廊", size[0], size[1])));
+    let params =
+        graph_params(corridor, scale, recipe.spacing as f64 / scale, detect).map_err(fail)?;
+    if !corridor_inside(corridor, size) {
+        return Err(fail(&format!(
+            "检测走廊超出示教帧 {}×{}，请在这一段的示教帧上重新示教走廊",
+            size[0], size[1]
+        )));
     }
     let n = station_count(params.length, params.step);
     if !(3..=200_000).contains(&n) {
         return Err(fail("检测走廊不足三站或超过 20 万站，请调整走廊长度或站距"));
     }
-    let stations = (0..n).map(|i| polyline_at(&inspect.corridor, i as f64 * params.step)).collect();
-    let graph = taught_graph(&inspect.corridor, detect, &params)?;
+    let stations = (0..n)
+        .map(|i| polyline_at(corridor, i as f64 * params.step))
+        .collect();
+    let graph = taught_graph(corridor, detect, &params)?;
     Ok(CorridorGraph {
-        camera: inspect.camera.clone(), camera_idx, size, graph_text: graph.to_string(), graph, stations,
-        scale, step: params.step, half: params.half, tolerance: params.tolerance, spacing_mm: recipe.spacing as f64,
+        camera: inspect.camera.clone(),
+        camera_idx,
+        segment,
+        size,
+        graph_text: graph.to_string(),
+        graph,
+        stations,
+        scale,
+        step: params.step,
+        half: params.half,
+        tolerance: params.tolerance,
+        spacing_mm: recipe.spacing as f64,
     })
+}
+
+/// 段配方全部“段 × 检测相机”的走廊测量图（D-SB-45），按（计划相机下标, 段号）取。`sizes` 为各计划相机的示教帧尺寸
+/// （计划相机顺序，一台相机的各段示教帧同尺寸）。没示教的组合不建图，取用时返回 None。
+#[derive(Clone, Debug, Default)]
+pub struct CorridorSet {
+    graphs: BTreeMap<(usize, u32), CorridorGraph>,
+}
+
+impl CorridorSet {
+    pub fn build(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Self, String> {
+        let cameras = recipe.plan_cameras();
+        let mut graphs = BTreeMap::new();
+        for segment in &recipe.path_segments {
+            for camera in crate::plan::segment_cameras(segment, &cameras) {
+                let Some((idx, inspect)) = recipe
+                    .inspect
+                    .iter()
+                    .enumerate()
+                    .find(|(_, i)| i.camera == camera)
+                else {
+                    continue;
+                };
+                if !inspect.segment_taught(segment.index) {
+                    continue;
+                }
+                let size = *sizes
+                    .get(idx)
+                    .ok_or_else(|| format!("相机 {camera} 没有示教帧尺寸"))?;
+                graphs.insert(
+                    (idx, segment.index),
+                    plan_corridor(inspect, segment.index, recipe, size)?,
+                );
+            }
+        }
+        Ok(Self { graphs })
+    }
+
+    pub fn get(&self, camera: usize, segment: u32) -> Option<&CorridorGraph> {
+        self.graphs.get(&(camera, segment))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &CorridorGraph> {
+        self.graphs.values()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.graphs.is_empty()
+    }
 }
 
 /// 用 lyFlow 量一帧（段配方）：见 [`measure_frame_with`]。
@@ -761,6 +843,7 @@ fn frame_metrics(c: &CorridorGraph, seq: u64, beads: &[Option<(f64, f64)>]) -> F
         widths: widths.iter().map(|w| w.map(|w| w as f32)).collect(),
         spacing_mm: c.spacing_mm,
         gap_max_mm: longest_gap as f64 * c.spacing_mm,
+        corridor: Some(c.segment),
         present_ratio: present.len() as f64 / beads.len().max(1) as f64,
         x_mm: mean(&offsets),
     }

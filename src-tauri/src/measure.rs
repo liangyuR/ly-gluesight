@@ -465,6 +465,8 @@ pub struct FrameJob {
     pub camera: String,
     /// 帧组序号：frame_counter − 该相机基线，从 1 起
     pub seq: u64,
+    /// 用第几段（`PathSegment.index`）的走廊测（D-SB-45）
+    pub segment: u32,
     pub image: Option<Arc<FrameImage>>,
     pub image_measurement: bool,
     pub recipe: Arc<Recipe>,
@@ -508,6 +510,8 @@ pub struct FrameMeasured {
     pub cycle_id: String,
     pub camera_idx: usize,
     pub seq: u64,
+    /// 用第几段的走廊测
+    pub segment: u32,
     pub result: Result<FrameMetrics, MeasureError>,
     /// 提交到交出的总耗时
     pub ms: u32,
@@ -517,7 +521,16 @@ pub struct FrameMeasured {
 
 impl FrameMeasured {
     fn new(job: &FrameJob, result: Result<FrameMetrics, MeasureError>) -> Self {
-        Self { cycle_id: job.cycle_id.clone(), camera_idx: job.camera_idx, seq: job.seq, result, ms: 0, queue_ms: None, engine_ms: None }
+        Self {
+            cycle_id: job.cycle_id.clone(),
+            camera_idx: job.camera_idx,
+            seq: job.seq,
+            segment: job.segment,
+            result,
+            ms: 0,
+            queue_ms: None,
+            engine_ms: None,
+        }
     }
 
     /// 写进整件的帧指标：没测成的帧按原因记 Unmeasured 或 Error，原因放 `error`，数值为空。
@@ -535,6 +548,7 @@ impl FrameMeasured {
                 widths: Vec::new(),
                 spacing_mm: 0.0,
                 gap_max_mm: 0.0,
+                corridor: Some(self.segment),
                 present_ratio: 0.0,
                 x_mm: None,
             },
@@ -599,25 +613,63 @@ fn run_frame(job: &FrameJob) -> Result<FrameMetrics, MeasureError> {
         (None, true) => Err(MeasureError::Failed("这一帧没有图像：相机未拷贝整帧".into())),
         (_, false) => {
             std::thread::sleep(Duration::from_millis(5 + job.seq % 5));
-            Ok(simulate_frame(job.scenario, job.camera_idx, job.seq, &job.recipe))
+            Ok(simulate_frame(
+                job.scenario,
+                job.camera_idx,
+                job.seq,
+                job.segment,
+                &job.recipe,
+            ))
         }
     }
 }
 
-/// 段配方的模拟测量（不看图像）：沿这台相机的走廊按站距取站（未示教时 40 站），胶宽约 4 mm、x 小幅摆动的合格帧。
+/// 段配方的模拟测量（不看图像）：沿这台相机在第 `corridor` 段的走廊按站距取站（未示教时 40 站），胶宽约 4 mm、x 小幅摆动的合格帧。
 /// 按配方名义剖面（与离线虚拟产线发脉冲用的同一剖面，`offline::line::nominal_frames`）找到这一帧所在的段：
 /// 弯道帧胶宽略宽、胶中心 x 随段内进度拱形偏出（峰值 1.5 mm），与合成图里弯道胶条绕胶嘴转动一致；PC 判定照常按未分段。
 /// 断胶工况让第 1 台相机第 2 帧中部缺一段（比该段允许的断口长 2 mm），超差工况让同一帧 3 站胶宽超上限 1 mm
 /// （超差长度在默认允许范围内）。脉冲串类工况（缺帧、波动、提前终止等）不改指标。
-pub(crate) fn simulate_frame(scenario: Scenario, camera_idx: usize, seq: u64, recipe: &Recipe) -> FrameMetrics {
+pub(crate) fn simulate_frame(
+    scenario: Scenario,
+    camera_idx: usize,
+    seq: u64,
+    corridor: u32,
+    recipe: &Recipe,
+) -> FrameMetrics {
     let spacing = f64::from(recipe.spacing);
-    let n = recipe.inspect.get(camera_idx).and_then(|inspect| {
-        let length: f64 = inspect.corridor.windows(2).map(|w| f64::from((w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))).sum();
-        inspect.mm_per_px.map(|scale| (length * scale / spacing).floor() as usize + 1).filter(|&n| n >= 3)
-    }).unwrap_or(40);
-    let profile = crate::offline::line::nominal_frames(&recipe.path_segments, recipe.expected_total(), crate::offline::line::SIM_HZ);
-    let (segment, corner, progress) = crate::offline::line::locate(&profile, seq)
-        .map_or((recipe.path_segments.first(), false, 0.0), |(i, kind, p)| (recipe.path_segments.get(i), kind == crate::plan::SegmentKind::Corner, f64::from(p)));
+    let n = recipe
+        .inspect
+        .get(camera_idx)
+        .and_then(|inspect| {
+            let path = inspect
+                .segment_corridor(corridor)
+                .map(|s| s.corridor.as_slice())
+                .unwrap_or_default();
+            let length: f64 = path
+                .windows(2)
+                .map(|w| f64::from((w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])))
+                .sum();
+            inspect
+                .mm_per_px
+                .map(|scale| (length * scale / spacing).floor() as usize + 1)
+                .filter(|&n| n >= 3)
+        })
+        .unwrap_or(40);
+    let profile = crate::offline::line::nominal_frames(
+        &recipe.path_segments,
+        recipe.expected_total(),
+        crate::offline::line::SIM_HZ,
+    );
+    let (segment, corner, progress) = crate::offline::line::locate(&profile, seq).map_or(
+        (recipe.path_segments.first(), false, 0.0),
+        |(i, kind, p)| {
+            (
+                recipe.path_segments.get(i),
+                kind == crate::plan::SegmentKind::Corner,
+                f64::from(p),
+            )
+        },
+    );
     let base = segment.map_or(4.0, |s| s.checks.width.nominal_mm) + if corner { 0.3 } else { 0.0 };
     let marked = camera_idx == 0 && seq == 2;
     let gap = match (scenario, segment) {
@@ -647,6 +699,7 @@ pub(crate) fn simulate_frame(scenario: Scenario, camera_idx: usize, seq: u64, re
         widths: widths.iter().map(|w| w.map(|w| w as f32)).collect(),
         spacing_mm: spacing,
         gap_max_mm: gap as f64 * spacing,
+        corridor: Some(corridor),
         present_ratio: present.len() as f64 / n as f64,
         x_mm: Some(0.3 * (seq as f64 / 5.0 + camera_idx as f64).sin() + drift),
     }
@@ -844,8 +897,22 @@ mod tests {
     }
 
     fn frame_job(recipe: &Arc<Recipe>, seq: u64) -> FrameJob {
-        FrameJob { cycle_id: "cycle-7".into(), bundle_id: None, production: None, candidate: None, camera_idx: 0, camera: "cam1".into(), seq,
-            image: None, image_measurement: false, recipe: recipe.clone(), scenario: Scenario::Normal, submitted_at: clock(), timeout: Duration::from_secs(5) }
+        FrameJob {
+            cycle_id: "cycle-7".into(),
+            bundle_id: None,
+            production: None,
+            candidate: None,
+            camera_idx: 0,
+            camera: "cam1".into(),
+            seq,
+            segment: 1,
+            image: None,
+            image_measurement: false,
+            recipe: recipe.clone(),
+            scenario: Scenario::Normal,
+            submitted_at: clock(),
+            timeout: Duration::from_secs(5),
+        }
     }
 
     async fn next_frame(results: &mut UnboundedReceiver<FrameMeasured>) -> FrameMeasured {
@@ -866,7 +933,16 @@ mod tests {
         let blocked = gate.clone();
         let runner: Runner<FrameJob> = Arc::new(move |job| {
             blocked.wait();
-            FrameMeasured::new(job, Ok(simulate_frame(job.scenario, job.camera_idx, job.seq, &job.recipe)))
+            FrameMeasured::new(
+                job,
+                Ok(simulate_frame(
+                    job.scenario,
+                    job.camera_idx,
+                    job.seq,
+                    job.segment,
+                    &job.recipe,
+                )),
+            )
         });
         let pool = FramePool { tx, sink: sink.clone(), health: health.clone() };
         let dispatcher = tokio::spawn(dispatch_tasks(rx, health.clone(), runner, sink));

@@ -7,10 +7,17 @@ use crate::recipe_capture::CaptureRoundV2;
 
 pub(super) const DEVICE: &str = "device-a";
 
-/// 段配方候选：三台模拟相机 cam1–cam3、走廊已示教，段按 kinds 新建（N_exp 待标定）。
+/// 段配方候选：三台模拟相机 cam1–cam3（都检测每一段、有像素当量），段按 kinds 新建（N_exp 待标定），还没有走廊与示教帧。
 pub(super) fn burst_workspace(kinds: &[SegmentKind]) -> Workspace {
     let mut doc = crate::recipe::samples_burst();
-    doc.segments = kinds.iter().enumerate().map(|(i, &kind)| new_segment(i as u32 + 1, kind, &doc.segment_defaults)).collect();
+    doc.segments = kinds
+        .iter()
+        .enumerate()
+        .map(|(i, &kind)| new_segment(i as u32 + 1, kind, &doc.segment_defaults))
+        .collect();
+    doc.inspect
+        .iter_mut()
+        .for_each(|inspect| inspect.segments.clear());
     doc.build().unwrap();
     Workspace::new(doc, None)
 }
@@ -39,8 +46,21 @@ pub(super) fn configs(doc: &RecipeDoc, config: &str) -> BTreeMap<String, Value> 
 
 /// 测成的一帧，胶中心偏移 x（mm）；相机下标与 seq 由 measure_round 填。
 pub(super) fn measured(x: f64) -> FrameMetrics {
-    FrameMetrics { camera: 0, seq: 0, state: FrameState::Measured, error: None, width_min: Some(4.0), width_max: Some(4.0), width_mean: Some(4.0),
-        widths: vec![Some(4.0)], spacing_mm: 1.0, gap_max_mm: 0.0, present_ratio: 1.0, x_mm: Some(x) }
+    FrameMetrics {
+        camera: 0,
+        seq: 0,
+        state: FrameState::Measured,
+        error: None,
+        width_min: Some(4.0),
+        width_max: Some(4.0),
+        width_mean: Some(4.0),
+        widths: vec![Some(4.0)],
+        spacing_mm: 1.0,
+        gap_max_mm: 0.0,
+        present_ratio: 1.0,
+        x_mm: Some(x),
+        corridor: None,
+    }
 }
 
 /// 按加入标定的流程加一轮：核对、量每一帧（x 由 x_of(计划相机下标, seq) 给出）、记进候选。

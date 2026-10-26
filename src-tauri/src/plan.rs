@@ -154,6 +154,49 @@ pub fn segment_cameras(segment: &PathSegment, plan_cameras: &[String]) -> Vec<St
         .collect()
 }
 
+/// 帧到达时预测它属于哪一段（D-SB-45），返回段在列表里的下标：按累计 N_exp，第 seq 帧属于满足 seq ≤ C_k 的第一段，
+/// 超过 ΣN_exp 的帧归最后一段；单段配方恒为第 1 段。多段配方有段 N_exp 未标定时无法预测，返回 None。
+pub fn predicted_segment(segments: &[PathSegment], seq: u64) -> Option<usize> {
+    if segments.len() == 1 {
+        return Some(0);
+    }
+    if segments.iter().any(|s| s.expected_frames.is_none()) {
+        return None;
+    }
+    let mut cumulative = 0u64;
+    for (k, segment) in segments.iter().enumerate() {
+        cumulative += u64::from(segment.expected_frames.unwrap_or_default());
+        if seq <= cumulative {
+            return Some(k);
+        }
+    }
+    segments.len().checked_sub(1)
+}
+
+/// 这台相机检测第 `index` 段（`PathSegment.index`）。
+pub fn detects(
+    segments: &[PathSegment],
+    index: u32,
+    camera: &str,
+    plan_cameras: &[String],
+) -> bool {
+    segments
+        .iter()
+        .find(|s| s.index == index)
+        .is_some_and(|s| segment_cameras(s, plan_cameras).iter().any(|c| c == camera))
+}
+
+/// 帧到达时这台相机该用哪一段的走廊测（D-SB-45）：预测段由它检测时为该段，否则不测（None）。
+pub fn arrival_corridor(
+    segments: &[PathSegment],
+    plan_cameras: &[String],
+    camera: usize,
+    seq: u64,
+) -> Option<u32> {
+    let index = segments.get(predicted_segment(segments, seq)?)?.index;
+    detects(segments, index, plan_cameras.get(camera)?, plan_cameras).then_some(index)
+}
+
 /// 整件标定：多轮采集统计整件帧组数（不依赖分段）。本轮各段 N_exp 可以为 None，
 /// 多段配方凭它得到 expected_total 并发布（决策补充“多段配方的发布与运行”）。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

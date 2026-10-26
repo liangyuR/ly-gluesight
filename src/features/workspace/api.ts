@@ -1,6 +1,6 @@
 import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
-import type { CameraTeachDraft, CaptureRoundV2, PathSegment } from "../plan/types";
+import type { CaptureRoundV2, PathSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
 import type { AlignSuggestion, CaptureRound, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, Workspace, WorkspaceView } from "./types";
 
@@ -99,19 +99,16 @@ export const workspaceApi = {
   stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeGray),
 
   // ───── 段配方（分段连拍飞拍）：命令与参数见 docs/decisions/segment-burst.md 5.4，结果都在 WorkspaceView.plan ─────
-  /** 在这台相机冻结的示教帧 imageId 上按选区提取走廊 */
+  /** 在这台相机某段冻结的示教帧 imageId 上按选区提取走廊 */
   extractCorridor: (id: string, revision: number, camera: string, imageId: string, roi: [number, number, number, number], guide?: import("./teachingPath").BrushGuide, pointSpacingPx = 20) =>
     desktopCall<{path: [number, number][]; message: string; failure?: { point: [number, number]; reason: string; message: string } | null}>("workspace_extract_corridor", { id, revision, camera, imageId, roi, guide, pointSpacingPx }),
   /** 整体替换候选的段列表。后端拒绝直接改 expectedFrames / calib；段序列或类型变化时清空全部 N_exp、标定与 xRef */
   updateSegments: (id: string, revision: number, segments: PathSegment[]) =>
     desktopCall<WorkspaceView>("workspace_update_segments", { id, revision, segments }),
-  /** 用采集轮次 round 里这台相机第 seq 帧示教走廊：冻结该帧，按 draft 写进候选配方的 inspect */
-  teachCamera: (id: string, revision: number, camera: string, round: string, seq: number, draft: CameraTeachDraft) =>
-    desktopCall<WorkspaceView>("workspace_teach_camera", { id, revision, camera, round, seq, draft }),
-  /** 段走廊的示教帧（D-SB-42）：轮次须已确认手动分段、帧组落在该段内；相机须已示教默认走廊 */
+  /** 段走廊的示教帧（D-SB-45）：轮次须已确认手动分段、帧组落在该段内；相机还没有像素当量时后端用设备标定的当量填上 */
   teachSegmentCorridor: (id: string, revision: number, camera: string, segment: number, round: string, seq: number) =>
     desktopCall<WorkspaceView>("workspace_teach_segment_corridor", { id, revision, camera, segment, round, seq }),
-  /** 去掉一台相机在某段的走廊与示教帧，这一段退回默认走廊 */
+  /** 去掉一台相机在某段的走廊与示教帧，这一段回到待示教 */
   clearSegmentCorridor: (id: string, revision: number, camera: string, segment: number) =>
     desktopCall<WorkspaceView>("workspace_clear_segment_corridor", { id, revision, camera, segment }),
   /** 把采集轮次加入多轮标定；standard = 标准件轮次（用于胶偏参考 xRef） */

@@ -167,26 +167,42 @@ function planOf(view) {
 }
 
 /**
- * 每台计划相机一条走廊：先在示教采集轮次里冻结这台相机的一帧，再按刷选笔划提取走廊，最后连同当量与检测参数保存。
- * 保存示教用 workspace_teach_camera（冻结帧 + 写入 inspect），提取用 workspace_extract_corridor（走廊示教，不复用旧中线提取）。
+ * 走廊示教（D-SB-45）：每一段、它的每台检测相机各一条走廊。先按示教轮次已确认的手动分段冻结这一段内这台相机的一帧（workspace_teach_segment_corridor），
+ * 再按刷选笔划提取走廊（workspace_extract_corridor），最后整份配方经 workspace_save_doc 写进这台相机的 inspect.segments；夹具给了像素当量或检测参数时一并写进相机参数。
+ * 单段配方（模板默认）在这里把示教轮次确认为一段（不划边界）；多段配方须事先确认这一轮的手动分段，且夹具给的帧组要落在每一段内。
  */
 export async function teachCorridors(ws, round, fixture) {
-  const cameras = planOf(await ws.get()).cameras;
+  const view = await ws.get();
+  const plan = planOf(view);
+  if (view.workspace.captureReview?.rounds?.[round.roundId]?.status !== "confirmed") {
+    assert.equal(plan.segments.length, 1, `多段配方须先在分段标定里确认示教轮次 ${round.roundId} 的手动分段`);
+    await ws.edit("workspace_capture_review_confirm_cuts", { round: round.roundId, cuts: [] });
+  }
+  const inspecting = segment => plan.cameras.filter(camera => !segment.cameras?.length || segment.cameras.includes(camera));
   const taught = [];
-  for (const [index, camera] of cameras.entries()) {
+  for (const [index, camera] of plan.cameras.entries()) {
     const choice = fixture.pick(camera, index);
     assert(choice, `夹具没有覆盖相机 ${camera}`);
-    const draft = (corridor, detect) => ({ corridor, mmPerPx: fixture.mmPerPx ?? null, detect: detect ?? null });
-    const frozen = planOf(await ws.edit("workspace_teach_camera", { camera, round: round.roundId, seq: choice.seq, draft: draft([], choice.detect) }));
-    const frame = frozen.cameraTeaching.find(t => t.camera === camera)?.frame;
-    assert(frame, `相机 ${camera} 没有冻结示教帧`);
-    const extracted = await ws.edit("workspace_extract_corridor", { camera, imageId: frame.id, roi: strokeRoi(choice.guide, frame.size), guide: { points: choice.guide, radiusPx: 30 }, pointSpacingPx: fixture.spacingPx ?? null });
-    assert(extracted.path.length >= 2, `相机 ${camera} 走廊提取失败：${extracted.message}`);
-    const saved = planOf(await ws.edit("workspace_teach_camera", { camera, round: round.roundId, seq: choice.seq, draft: draft(extracted.path, choice.detect) }));
-    const view = saved.cameraTeaching.find(t => t.camera === camera);
-    assert(view.saved && view.mmPerPx > 0, `相机 ${camera} 走廊未保存或缺像素当量：${JSON.stringify(view)}`);
-    taught.push({ camera, seq: choice.seq, points: extracted.path.length, mmPerPx: view.mmPerPx });
+    for (const { index: segment } of plan.segments.filter(s => inspecting(s).includes(camera))) {
+      const frozen = planOf(await ws.edit("workspace_teach_segment_corridor", { camera, segment, round: round.roundId, seq: choice.seq }));
+      const frame = frozen.cameraTeaching.find(t => t.camera === camera)?.segments.find(s => s.segment === segment)?.frame;
+      assert(frame, `相机 ${camera} 段 ${segment} 没有冻结示教帧`);
+      const extracted = await ws.edit("workspace_extract_corridor", { camera, imageId: frame.id, roi: strokeRoi(choice.guide, frame.size), guide: { points: choice.guide, radiusPx: 30 }, pointSpacingPx: fixture.spacingPx ?? null });
+      assert(extracted.path.length >= 2, `相机 ${camera} 段 ${segment} 走廊提取失败：${extracted.message}`);
+      const doc = (await ws.get()).workspace.doc;
+      const inspect = doc.inspect.map(item => item.camera !== camera ? item : {
+        ...item,
+        ...(fixture.mmPerPx != null ? { mmPerPx: fixture.mmPerPx } : {}),
+        ...(choice.detect ? { detect: choice.detect } : {}),
+        segments: [...(item.segments ?? []).filter(s => s.segment !== segment), { segment, corridor: extracted.path }].sort((a, b) => a.segment - b.segment),
+      });
+      const saved = planOf(await ws.edit("workspace_save_doc", { doc: { ...doc, inspect } })).cameraTeaching.find(t => t.camera === camera);
+      assert(saved?.segments.find(s => s.segment === segment)?.saved && saved.mmPerPx > 0, `相机 ${camera} 段 ${segment} 走廊未保存或缺像素当量：${JSON.stringify(saved)}`);
+      taught.push({ camera, segment, seq: choice.seq, points: extracted.path.length, mmPerPx: saved.mmPerPx });
+    }
   }
+  const pending = planOf(await ws.get()).cameraTeaching.filter(t => !t.ready);
+  assert.equal(pending.length, 0, `走廊示教未完成：${JSON.stringify(pending)}`);
   return taught;
 }
 
@@ -236,7 +252,7 @@ export async function publishCandidate(call, ws, id) {
 }
 
 /**
- * 新建段配方并走到发布：模板 → 示教采集 → 三条走廊 →（patchSegments：可选，改各段检测项）→ 10 轮标定 + 标准件 → 验证 → 发布；采集用计划相机（模板取相机组前三台）。
+ * 新建段配方并走到发布：模板 → 示教采集 → 各段 × 检测相机的走廊 →（patchSegments：可选，改各段检测项）→ 10 轮标定 + 标准件 → 验证 → 发布；采集用计划相机（模板取相机组前三台）。
  * 返回 { id, ws, taught, calibration, validation, active }；验证没通过时 active 为 null 且不发布（调用方决定是否算失败）。
  */
 export async function buildBurstRecipe(call, { sourceId, partId = null, rounds = CALIBRATION_ROUNDS, standard = STANDARD_ROUNDS, doc = null, patchSegments = null, log = () => {} }) {
@@ -253,7 +269,7 @@ export async function buildBurstRecipe(call, { sourceId, partId = null, rounds =
   const teachRound = await captureRound(call, id, cameraIds, partId);
   log(`示教采集 ${teachRound.roundId}：${teachRound.groupCount} 个帧组，各相机 ${teachRound.cameraFrames.join("/")} 帧`);
   const taught = await teachCorridors(ws, teachRound, fixture);
-  log(`走廊示教完成：${taught.map(t => `${t.camera}:${t.points}点`).join("、")}`);
+  log(`走廊示教完成：${taught.map(t => `${t.camera} 段 ${t.segment}:${t.points}点`).join("、")}`);
   if (patchSegments) {
     // 改检测项限值不影响已有标定（类型序列不变）；用于冒烟与压测，把对不上走廊的数据放行
     await ws.edit("workspace_update_segments", { segments: patchSegments(planOf(await ws.get()).segments) });

@@ -434,16 +434,14 @@ impl CameraImaging {
     }
 }
 
-/// 段配方里一台检测相机：按直线段几何示教的一条走廊（图像像素，所有帧共用，只决定 ROI 和测站）与像素当量（D-SB-17）。
+/// 段配方里一台检测相机的参数（D-SB-45）：像素当量、标定引用、检测参数，以及它在各段的走廊。
 /// `RecipeDoc.inspect` 的顺序就是计划相机顺序（PLC 一个触发同时触发这三台）。
+/// 不拒绝未知字段：旧版的相机走廊 `corridor` 已放弃，读入时丢弃（D-SB-45 不迁移）。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CameraInspect {
     pub camera: String,
-    /// 走廊中线（图像像素）；少于 2 点为尚未示教
-    #[serde(default)]
-    pub corridor: Vec<[f32; 2]>,
-    /// 示教时的像素当量（mm/px）；为空为尚未示教
+    /// 像素当量（mm/px）；为空为尚未设置
     #[serde(default)]
     pub mm_per_px: Option<f64>,
     /// 标定引用；为空时用这台相机的工位标定
@@ -452,12 +450,12 @@ pub struct CameraInspect {
     /// 为空时用配方的检测参数
     #[serde(default)]
     pub detect: Option<DetectParams>,
-    /// 按段示教的走廊（D-SB-42）：落在该段的帧用它，其余帧用上面的默认走廊；像素当量与检测参数仍按相机
+    /// 这台相机在它检测的各段的走廊（D-SB-42/45）：落在该段的帧用它测量，没有相机级的默认走廊
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segments: Vec<SegmentCorridor>,
 }
 
-/// 一台相机在某一段（`PathSegment.index`）的走廊；少于 2 点为尚未示教，这一段退回默认走廊。
+/// 一台相机在某一段（`PathSegment.index`）的走廊（图像像素，只决定 ROI 和测站）；少于 2 点为尚未示教。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SegmentCorridor {
@@ -467,18 +465,27 @@ pub struct SegmentCorridor {
 }
 
 impl CameraInspect {
-    /// 第 `segment` 段的走廊；没有单独示教时为 None（用默认走廊）。
+    /// 第 `segment` 段的走廊；还没示教时为 None。
     pub fn segment_corridor(&self, segment: u32) -> Option<&SegmentCorridor> {
         self.segments.iter().find(|s| s.segment == segment)
+    }
+
+    /// 第 `segment` 段的走廊已示教：至少 2 点、总长不短于 1 px。
+    pub fn segment_taught(&self, segment: u32) -> bool {
+        self.segment_corridor(segment).is_some_and(|s| {
+            let length: f32 = s
+                .corridor
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+                .sum();
+            s.corridor.len() >= 2 && length >= 1.0
+        })
     }
 
     fn validate(&self) -> Result<(), String> {
         let id = &self.camera;
         if !valid_camera_id(id) {
             return Err(format!("检测相机编号 {id:?} 只能用字母、数字、- 和 _，最长 32 个字符"));
-        }
-        if self.corridor.iter().flatten().any(|v| !v.is_finite()) {
-            return Err(format!("相机 {id} 的走廊坐标必须是有限数"));
         }
         for (i, s) in self.segments.iter().enumerate() {
             if s.corridor.len() > 10_000 || s.corridor.iter().flatten().any(|v| !v.is_finite()) {
@@ -503,18 +510,30 @@ impl CameraInspect {
         Ok(())
     }
 
-    /// 已示教：走廊至少 2 点、总长不短于 1 px，且有像素当量。没示教时返回缺的是什么。
-    fn untaught(&self) -> Option<String> {
-        let length: f32 = self.corridor.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
-        let id = &self.camera;
-        if self.corridor.len() < 2 || length < 1.0 {
-            Some(format!("相机 {id} 尚未示教检测走廊"))
-        } else if self.mm_per_px.is_none() {
-            Some(format!("相机 {id} 缺少像素当量"))
-        } else {
-            None
+}
+
+/// 每一段、它的每一台检测相机都示教了走廊，每台相机都有像素当量（D-SB-45）；没有时逐条列出缺的。
+pub fn untaught_corridors(segments: &[PathSegment], inspect: &[CameraInspect]) -> Vec<String> {
+    let cameras: Vec<String> = inspect.iter().map(|i| i.camera.clone()).collect();
+    let mut reasons: Vec<String> = inspect
+        .iter()
+        .filter(|i| i.mm_per_px.is_none())
+        .map(|i| format!("相机 {} 缺少像素当量", i.camera))
+        .collect();
+    for segment in segments {
+        for camera in plan::segment_cameras(segment, &cameras) {
+            if !inspect
+                .iter()
+                .any(|i| i.camera == camera && i.segment_taught(segment.index))
+            {
+                reasons.push(format!(
+                    "第 {} 段的相机 {camera} 尚未示教走廊",
+                    segment.index
+                ));
+            }
         }
     }
+    reasons
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -747,16 +766,16 @@ impl Recipe {
         plan::tolerance_total(&self.path_segments)
     }
 
-    /// 段配方能不能发布生产（D-SB-20）：三台相机都示教了走廊和当量，且整件预期帧组数已标定
-    /// （各段 N_exp 可以为空，凭整件标定发布，决策补充第二节）。不能时逐条列出原因。
+    /// 段配方能不能发布生产（D-SB-20）：每段每台检测相机都示教了走廊、相机有像素当量，且已标定——单段配方凭整件
+    /// 预期帧组数，多段配方要各段 N_exp 都已标定（D-SB-45：要按累计 N_exp 预测每帧所属段来选走廊）。不能时逐条列出原因。
     /// `Recipe::ready` 保留给旧拍照点配方，段配方过不了它，旧发布与旧节拍因此不会接受段配方。
     pub fn ready_burst(&self) -> Result<(), Vec<String>> {
         let mut reasons: Vec<String> = Vec::new();
         if !self.is_burst() {
             reasons.push(format!("配方 {} 没有段，是旧拍照点配方", self.id));
         }
-        reasons.extend(self.inspect.iter().filter_map(CameraInspect::untaught));
-        if self.expected_total().is_none() {
+        reasons.extend(untaught_corridors(&self.path_segments, &self.inspect));
+        if self.expected_total().is_none() || self.path_segments.len() > 1 {
             reasons.extend(self.path_segments.iter().filter(|s| s.expected_frames.is_none()).map(|s| {
                 let kind = match s.kind { SegmentKind::Straight => "直线段", SegmentKind::Corner => "弯道段" };
                 format!("第 {} 段（{kind}）待标定：预期帧数要由多轮采集得出", s.index)
@@ -1040,13 +1059,15 @@ impl RecipeDoc {
         }
         for inspect in &self.inspect {
             inspect.validate()?;
-            if let Some(s) = inspect
-                .segments
-                .iter()
-                .find(|s| !self.segments.iter().any(|p| p.index == s.segment))
-            {
+            let cameras = self.plan_cameras();
+            if let Some(s) = inspect.segments.iter().find(|s| {
+                !self.segments.iter().any(|p| {
+                    p.index == s.segment
+                        && plan::segment_cameras(p, &cameras).contains(&inspect.camera)
+                })
+            }) {
                 return Err(format!(
-                    "相机 {} 的段走廊指向不存在的第 {} 段",
+                    "相机 {} 的走廊指向第 {} 段，但该段不存在或不由这台相机检测",
                     inspect.camera, s.segment
                 ));
             }
@@ -1299,7 +1320,6 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
             .iter()
             .map(|camera| CameraInspect {
                 camera: camera.clone(),
-                corridor: Vec::new(),
                 mm_per_px: None,
                 calib: None,
                 detect: None,
@@ -1335,7 +1355,10 @@ pub fn samples_burst() -> RecipeDoc {
     let mut doc = burst_template("SEAM-BURST".into(), "分段连拍样例".into(), 14, &cameras);
     doc.plan_version = 14;
     for inspect in &mut doc.inspect {
-        inspect.corridor = sample_path(0);
+        inspect.segments = vec![SegmentCorridor {
+            segment: 1,
+            corridor: sample_path(0),
+        }];
         inspect.mm_per_px = Some(f64::from(SIM_MM_PER_PX));
     }
     doc.segments[0].expected_frames = Some(4);
@@ -1944,7 +1967,7 @@ mod tests {
         assert_eq!(first.revision_id, "EXPLICIT-PUBLISHED-v7");
         assert_eq!(store.save_published(doc.clone(), None).unwrap().version, 7);
         let mut different = doc.clone();
-        different.inspect[0].corridor[0][0] -= 1.0;
+        different.inspect[0].segments[0].corridor[0][0] -= 1.0;
         assert!(store.save_published(different, None).is_err());
         doc.version = 8;
         let second = store.save_published(doc.clone(), Some(&first.revision_id)).unwrap();

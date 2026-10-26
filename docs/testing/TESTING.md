@@ -324,7 +324,7 @@ Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 R
 
 **段配方（`-Model burst`，默认，E2）。** 先合成图主流程，再样本集冒烟，两段共用 `tests/native/lib.mjs` 的 `buildBurstRecipe`（走廊示教 `teachCorridors`、多轮标定 `calibrate`、独立样本验证、发布）：
 
-1. 合成图三相机（进入离线·合成图，脉冲 5 Hz）：新建段配方（`recipe_template`：三台相机、一个直线段）→ 一轮整圈采集选示教帧 → 每台相机一条走廊（`workspace_teach_camera` 冻结示教帧、`workspace_extract_corridor` 刷选提取、再保存当量与检测参数）→ 10 轮多轮标定（合成图每轮首尾 ±1、弯道 ±2 帧的波动，所以 min / max 不同；另加 2 轮标准件给胶偏参考 x_ref）→ 应用标定并确认建议容差（`max(默认, N − min, max − N)`）→ 新采一轮作独立验证样本 → 发布（`validationSite = offline`）。断言：N_exp 等于各轮帧组数均值四舍五入、标定统计只含 10 轮、建议容差 ≥ 1 且已写入配方、x_ref 已得出、导出给 PLC 的 shotCount = ΣN_exp 且协议版本为 6。
+1. 合成图三相机（进入离线·合成图，脉冲 5 Hz）：新建段配方（`recipe_template`：三台相机、一个直线段）→ 一轮整圈采集选示教帧 → 每段每台检测相机一条走廊（D-SB-45：`workspace_teach_segment_corridor` 冻结这一段的示教帧、`workspace_extract_corridor` 刷选提取、再保存；当量与检测参数按相机）→ 10 轮多轮标定（合成图每轮首尾 ±1、弯道 ±2 帧的波动，所以 min / max 不同；另加 2 轮标准件给胶偏参考 x_ref）→ 应用标定并确认建议容差（`max(默认, N − min, max − N)`）→ 新采一轮作独立验证样本 → 发布（`validationSite = offline`）。断言：N_exp 等于各轮帧组数均值四舍五入、标定统计只含 10 轮、建议容差 ≥ 1 且已写入配方、x_ref 已得出、导出给 PLC 的 shotCount = ΣN_exp 且协议版本为 6。
 2. 投产 4 件：正常件、单台相机缺帧（`cameraLost`：该组标检测不完整、OK/NG 不变）、首尾 ±1 脉冲波动（`pulseJitter`：总数最多偏离名义 2 个，是否越出 ΣN_exp ± Σtol 取决于标定轮次观察到的范围，所以只核对帧数异常与疑似提前终止标记和帧组数一致、OK/NG 不变）、断胶（`gap` → NG_GAP，PLC 码 13）。每件断言帧组数、各相机帧数、缺帧、整件标记（未分段、胶偏未判、检测不完整；波动件之外无帧数异常与疑似提前终止）与未检项（气泡、拉丝），再核对历史列表行、CSV 导出末尾五列（ΣN_exp、Σtol、各相机帧数、deviceTriggers、标记）与历史详情。
 3. 退出离线并核对 PLC 与相机组配置恢复，关闭实例后保留数据目录重启，`offline-restart.mjs` 核对：合成图配方从磁盘恢复且真机仍拒绝离线验证发布的版本、再跑一件、修订与 ΣN_exp 不变。
 4. 样本集冒烟（2026-10-17 停稳拍数据，`lyFlow` 测量）：同一流程走一遍。每台相机一条走廊对不上其他点位，帧里多半找不到胶，检测项开着只会判 NG_GAP、验证过不了发布，所以建站时把各段检测项全关（`checksOff`），只断言流程不崩、记录自洽、原包重现与原结论一致（`workspace_compare_original`，区域级），并把帧状态比例（测成、找到胶、缺帧）写进 `result.json` 的 `smoke`，不作门槛；重启续测里发布包按原身份预热、同一样本件的结论、发布包与帧状态分布不变。

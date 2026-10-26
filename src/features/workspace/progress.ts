@@ -11,7 +11,7 @@ export function targetPathV2(target: ProgressTargetV2) {
   switch (target.page) {
     case "capture": return "/recipe/capture";
     case "segments": return "/recipe/segments";
-    case "corridor": return corridorPath(target.camera);
+    case "corridor": return corridorPath(target.camera, target.segment);
     case "calibration": return "/recipe/calibration";
     case "validation": return "/recipe/validation";
     case "camera": return "/camera";

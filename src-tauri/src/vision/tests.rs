@@ -17,7 +17,6 @@ fn calibration_page_view_on_single_view_camera_also_writes_the_key_burst_recipe_
     };
     let burst_reads = camera_calib_key(&CameraInspect {
         camera: "cam1".into(),
-        corridor: Vec::new(),
         mm_per_px: None,
         calib: None,
         detect: None,

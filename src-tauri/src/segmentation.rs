@@ -146,6 +146,56 @@ impl Region {
     }
 }
 
+/// 判定需要的走廊（D-SB-45）：按计划相机、seq（1..=total）给出该用第几段（`PathSegment.index`）的走廊测量，None 为不测。
+/// 可信的直线 / 弯道区域：本段检测相机用本段走廊。过渡区：帧按比例边界落在哪一侧，该侧检测相机用该侧走廊，只检测另一侧的
+/// 相机用另一侧走廊。跳过区域不测。其余未分段区域（置信度不足、算法待定）：用到达时的预测段与它的检测相机（`plan::arrival_corridor`）。
+pub fn frame_corridors(
+    segments: &[PathSegment],
+    cameras: &[String],
+    regions: &[Region],
+    outcome: &SegOutcome,
+    total: u64,
+) -> Vec<Vec<Option<u32>>> {
+    let boundary = |after: u32| match outcome {
+        SegOutcome::Boundaries(boundaries) => boundaries
+            .iter()
+            .find(|b| b.after_segment == after)
+            .map(|b| b.frame_seq),
+        SegOutcome::Unsegmented => None,
+    };
+    let mut out = vec![vec![None; total as usize]; cameras.len()];
+    for region in regions {
+        for seq in region.first_seq.max(1)..=region.last_seq.min(total) {
+            for (c, camera) in cameras.iter().enumerate() {
+                let detects = |index: u32| crate::plan::detects(segments, index, camera, cameras);
+                out[c][(seq - 1) as usize] = match region.kind {
+                    RegionKind::Straight { segment } | RegionKind::Corner { segment } => {
+                        detects(segment).then_some(segment)
+                    }
+                    RegionKind::Skipped { .. } => None,
+                    RegionKind::Unsegmented {
+                        first_segment,
+                        last_segment,
+                        reason: UnsegReason::Transition,
+                    } => {
+                        let near_last = boundary(first_segment).is_some_and(|b| seq > b);
+                        let (near, far) = if near_last {
+                            (last_segment, first_segment)
+                        } else {
+                            (first_segment, last_segment)
+                        };
+                        [near, far].into_iter().find(|&s| detects(s))
+                    }
+                    RegionKind::Unsegmented { .. } => {
+                        crate::plan::arrival_corridor(segments, cameras, c, seq)
+                    }
+                };
+            }
+        }
+    }
+    out
+}
+
 /// 把分段结果解析成区域：Unsegmented 时一个覆盖 1..=total_seq 的区域（AlgorithmPending）；
 /// 置信度低于 min_conf 的边界把两侧两段合并为 Unsegmented(LowConfidence)，连续多个低置信度边界一并合并，不回退计划边界。
 /// 每个可信边界两侧各 `guard` 帧（边界帧 b 时为 b − guard + 1..=b + guard，截在 1..=total_seq 内）划为过渡区
@@ -483,6 +533,7 @@ pub mod synthetic {
                             widths: Vec::new(),
                             spacing_mm: 0.0,
                             gap_max_mm: 0.0,
+                            corridor: None,
                             present_ratio: present_ratio + rng.noise(0.02).min(0.0),
                             x_mm: Some(x + 0.2 * camera as f64 + rng.noise(0.05)),
                         }
@@ -498,6 +549,7 @@ pub mod synthetic {
                             widths: Vec::new(),
                             spacing_mm: 0.0,
                             gap_max_mm: 0.0,
+                            corridor: None,
                             present_ratio: 0.0,
                             x_mm: None,
                         }
@@ -814,6 +866,41 @@ mod tests {
                 expected,
                 "{case}"
             );
+        }
+    }
+
+    /// D-SB-45：判定按区域选走廊。直线 5 帧（三台相机）+ 弯道 5 帧（只由第一台相机）、过渡帧 1。
+    #[test]
+    fn frame_corridors_follow_regions_and_fall_back_to_predicted_segment_when_unsegmented() {
+        // 防的回归：过渡区里只检测另一侧的相机没走廊可用（被当成不测、或用了它不检测的那一侧）；置信度不足时
+        // 退回全部相机（其余相机看不到胶条，只能量出检测不完整）或不按到达时的预测段选走廊
+        let cameras: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
+        let mut segments = calibrated(&[S, C], &[5, 5]);
+        segments[1].cameras = vec!["cam1".into()];
+        // (本件帧组数, seq, 三台相机该用的段)
+        let cases: [(&str, u64, u64, [Option<u32>; 3]); 5] = [
+            ("直线段内", 12, 3, [Some(1), Some(1), Some(1)]),
+            ("过渡区靠直线一侧", 12, 6, [Some(1), Some(1), Some(1)]),
+            (
+                "过渡区靠弯道一侧：只检测直线段的相机用直线段走廊",
+                12,
+                7,
+                [Some(2), Some(1), Some(1)],
+            ),
+            ("弯道段内", 12, 10, [Some(2), None, None]),
+            (
+                "帧数超出容差、置信度不足：按预测段（第 7 帧预测在弯道）",
+                20,
+                7,
+                [Some(2), None, None],
+            ),
+        ];
+        for (name, total, seq, expected) in cases {
+            let outcome = proportional(&segments, total);
+            let regions = resolve_regions(&segments, &outcome, total, 0.5, 1);
+            let choice = frame_corridors(&segments, &cameras, &regions, &outcome, total);
+            let got: Vec<Option<u32>> = choice.iter().map(|c| c[(seq - 1) as usize]).collect();
+            assert_eq!(got, expected, "{name}");
         }
     }
 }

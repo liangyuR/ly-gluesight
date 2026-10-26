@@ -305,7 +305,6 @@ pub fn run() {
             workspace::workspace_station_import,
             workspace::workspace_station_image,
             workspace::workspace_update_segments,
-            workspace::workspace_teach_camera,
             workspace::workspace_teach_segment_corridor,
             workspace::workspace_clear_segment_corridor,
             workspace::workspace_extract_corridor,

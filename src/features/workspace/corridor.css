@@ -27,3 +27,5 @@
 .wp-seg-corridor-note { display:flex; flex-direction:column; gap:8px; padding:12px; }
 .wp-seg-corridor-note h3 { margin:0; font-size:13px; }
 .wp-seg-corridor-note p { margin:0; font-size:12px; }
+.wp-camera-segments { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none; }
+.wp-camera-segments li { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; }

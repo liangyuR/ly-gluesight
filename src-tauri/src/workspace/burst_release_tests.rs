@@ -5,16 +5,32 @@ use super::burst_tests::{burst_workspace, capture_round, configs, DEVICE};
 use crate::plan::{OffsetMeasure, OffsetRef, PartCalib, SegmentCalib, SegmentKind::{self, Corner, Straight}};
 use crate::recipe_capture::CaptureRoundV2;
 
-/// 每台计划相机都选了示教帧（1000×700，采集时设备标签为 device）；样例配方的走廊落在帧内、有当量。
+/// 每段每台检测相机都选了示教帧（1000×700，采集时设备标签为 device）、画了样例走廊（落在帧内），相机有当量。
 fn taught(kinds: &[SegmentKind], device: &str) -> Workspace {
     let mut w = burst_workspace(kinds);
-    for camera in w.doc.plan_cameras() {
+    let corridor = crate::recipe::samples_burst().inspect[0].segments[0]
+        .corridor
+        .clone();
+    for inspect in &mut w.doc.inspect {
+        inspect.segments = (1..=kinds.len() as u32)
+            .map(|segment| crate::recipe::SegmentCorridor {
+                segment,
+                corridor: corridor.clone(),
+            })
+            .collect();
+    }
+    for (camera, segment) in w
+        .doc
+        .plan_cameras()
+        .into_iter()
+        .flat_map(|c| (1..=kinds.len() as u32).map(move |s| (c.clone(), s)))
+    {
         w.camera_teaching.push(CameraTeaching {
             camera: camera.clone(),
             round: "capture-teach".into(),
             seq: 1,
             frame: FrozenImage {
-                id: format!("corridor-{camera}"),
+                id: format!("corridor-{camera}-{segment}"),
                 view: 1,
                 source: "capture:capture-teach#1".into(),
                 captured_at: 1,
@@ -27,17 +43,33 @@ fn taught(kinds: &[SegmentKind], device: &str) -> Workspace {
                 gain_db: None,
                 history_id: None,
             },
-            segment: None,
+            segment: Some(segment),
         });
     }
     w
 }
 
-/// 整件标定 ΣN_exp = total；单段计划同时写这一段的 N_exp（与应用标定的结果相同）。
+/// 整件标定 ΣN_exp = total，并逐段写 N_exp（均分，余数给最后一段；与应用标定的结果同形）。
 fn calibrate(w: &mut Workspace, total: u32) {
     let calib = SegmentCalib { rounds: 10, min: total - 1, max: total + 1, mean: f64::from(total) };
     w.doc.part_calib = Some(PartCalib { expected_total: total, calib: calib.clone() });
-    if let [segment] = w.doc.segments.as_mut_slice() { (segment.expected_frames, segment.calib) = (Some(total), Some(calib)); }
+    let n = w.doc.segments.len() as u32;
+    for (i, segment) in w.doc.segments.iter_mut().enumerate() {
+        let frames = if i as u32 + 1 == n {
+            total - total / n * (n - 1)
+        } else {
+            total / n
+        };
+        (segment.expected_frames, segment.calib) = (
+            Some(frames),
+            Some(SegmentCalib {
+                mean: f64::from(frames),
+                min: frames - 1,
+                max: frames + 1,
+                ..calib.clone()
+            }),
+        );
+    }
 }
 
 fn passing_sample() -> SampleResult {
@@ -56,14 +88,15 @@ fn check<'a>(checks: &'a [Check], name: &str) -> &'a Check {
 
 #[test]
 fn validation_without_expected_total_blocks_publish_and_names_each_segment() {
-    // 防的回归（规格 §1 未标定的计划不能发布；决策补充“多段配方的发布与运行”）：没有整件 ΣN_exp 也能通过验证去发布，
-    // 或要求每段 N_exp 都标定、使多段计划在分段算法就绪前永远发不了；验证项不逐段列出待定原因
-    // （名称，段类型，整件标定，能否发布，段标定详情里必须出现的文字）
-    let cases: [(&str, &[SegmentKind], Option<u32>, bool, &[&str]); 3] = [
+    // 防的回归（规格 §1 未标定的计划不能发布；D-SB-45 修订 D-SB-21）：没有整件 ΣN_exp 也能通过验证去发布；多段配方只有
+    // 整件 ΣN_exp、各段 N_exp 没标定也能发布（生产无法按累计 N_exp 预测每帧所属段、选不了走廊）；验证项不逐段列出待定原因
+    // （名称，段类型，整件标定，逐段标定，能否发布，段标定详情里必须出现的文字）
+    let cases: [(&str, &[SegmentKind], Option<u32>, bool, bool, &[&str]); 4] = [
         (
             "三段都待标定",
             &[Straight, Corner, Straight],
             None,
+            false,
             false,
             &[
                 "还差 10 轮",
@@ -76,20 +109,36 @@ fn validation_without_expected_total_blocks_publish_and_names_each_segment() {
             "三段只有整件 ΣN_exp",
             &[Straight, Corner, Straight],
             Some(30),
-            true,
+            false,
+            false,
             &["整件预期 30 ± 3", "第 2 段（弯道）待逐段标定"],
+        ),
+        (
+            "三段都已逐段标定",
+            &[Straight, Corner, Straight],
+            Some(30),
+            true,
+            true,
+            &["整件预期 30 ± 3", "第 2 段（弯道）N_exp 10 ± 1"],
         ),
         (
             "单段已标定",
             &[Straight],
             Some(20),
             true,
+            true,
             &["整件预期 20 ± 1", "第 1 段（直线）N_exp 20 ± 1"],
         ),
     ];
-    for (name, kinds, total, publishable, texts) in cases {
+    for (name, kinds, total, per_segment, publishable, texts) in cases {
         let mut w = taught(kinds, DEVICE);
         if let Some(total) = total { calibrate(&mut w, total); }
+        if !per_segment && kinds.len() > 1 {
+            w.doc
+                .segments
+                .iter_mut()
+                .for_each(|s| (s.expected_frames, s.calib) = (None, None));
+        }
         // 单段直线段的 x_ref 已由标准件得出，不让它影响本用例
         if let [segment] = w.doc.segments.as_mut_slice() {
             segment.offset_ref = Some(OffsetRef { measure: OffsetMeasure::AbsoluteX, camera: "cam1".into(), x_ref: Some(0.1), spread: Some(0.05) });
@@ -108,11 +157,36 @@ fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
     type Edit = fn(&mut Workspace, &mut BTreeMap<String, Value>);
     let cases: [(&str, Edit, bool); 6] = [
         ("三台相机都示教好", |_, _| {}, true),
-        ("计划相机只有 2 台", |w, _| { w.doc.inspect.truncate(2); w.camera_teaching.truncate(2); }, false),
-        ("一台相机没选示教帧", |w, _| w.camera_teaching.retain(|t| t.camera != "cam2"), false),
-        ("走廊超出示教帧", |w, _| w.doc.inspect[0].corridor[0] = [1200.0, 480.0], false),
-        ("缺像素当量", |w, _| w.doc.inspect[1].mm_per_px = None, false),
-        ("示教帧采集后设备参数改变", |_, current| { current.insert("cam3".into(), json!("device-b")); }, false),
+        (
+            "计划相机只有 2 台",
+            |w, _| {
+                w.doc.inspect.truncate(2);
+                w.camera_teaching.retain(|t| t.camera != "cam3");
+            },
+            false,
+        ),
+        (
+            "一台相机没选示教帧",
+            |w, _| w.camera_teaching.retain(|t| t.camera != "cam2"),
+            false,
+        ),
+        (
+            "走廊超出示教帧",
+            |w, _| w.doc.inspect[0].segments[1].corridor[0] = [1200.0, 480.0],
+            false,
+        ),
+        (
+            "缺像素当量",
+            |w, _| w.doc.inspect[1].mm_per_px = None,
+            false,
+        ),
+        (
+            "示教帧采集后设备参数改变",
+            |_, current| {
+                current.insert("cam3".into(), json!("device-b"));
+            },
+            false,
+        ),
     ];
     for (name, edit, passed) in cases {
         let mut w = taught(&[Straight, Corner], DEVICE);
@@ -158,7 +232,13 @@ fn burst_candidate_debug_run_gets_teaching_frame_sizes_in_plan_camera_order() {
     // 走 workspace_debug_run 锁内调用的同一个分派函数 debug_run_sizes（旧配方的视图检查在这里放行，它只服务旧配方）。
     let mut w = taught(&[Straight, Corner, Straight], DEVICE);
     calibrate(&mut w, 30);
-    for (teaching, width) in w.camera_teaching.iter_mut().zip([1000, 1100, 1200]) { teaching.frame.size = [width, 700]; }
+    let cameras = w.doc.plan_cameras();
+    for teaching in &mut w.camera_teaching {
+        teaching.frame.size = [
+            1000 + 100 * cameras.iter().position(|c| *c == teaching.camera).unwrap() as u32,
+            700,
+        ];
+    }
     w.camera_teaching.reverse();
     let recipe = w.doc.build().unwrap();
     let sizes = debug_run_sizes(&w, &recipe, &configs(&w.doc, DEVICE), |_, _| Ok(())).unwrap();

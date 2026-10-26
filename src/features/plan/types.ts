@@ -197,8 +197,8 @@ export interface Region {
 
 // ───────────── burst_judge.rs ─────────────
 
-/** 除 measured 外都只记“检测不完整”，不影响 OK/NG。 */
-export type FrameState = "measured" | "missing" | "error" | "unmeasured" | "outOfCorridor";
+/** 除 measured、notInspected 外都只记“检测不完整”，不影响 OK/NG；notInspected = 这一帧所在段不由这台相机检测，按设计不测、不判定（D-SB-45）。 */
+export type FrameState = "measured" | "missing" | "error" | "unmeasured" | "outOfCorridor" | "notInspected";
 
 /** 一台相机一帧的独立指标；数值只在 state = measured 时有意义。 */
 export interface FrameMetrics {
@@ -215,6 +215,8 @@ export interface FrameMetrics {
   spacingMm: number;
   gapMaxMm: number;
   presentRatio: number;
+  /** 测量用的是第几段的走廊（PathSegment.index）；旧记录没有 */
+  corridor?: number | null;
   /** 帧内胶中心相对走廊的法向偏移均值（absoluteX） */
   xMm: number | null;
 }
@@ -297,14 +299,13 @@ export interface CalibOutcome {
 
 // ───────────── 配方新增字段（C1，RecipeDoc schema 8）─────────────
 
-/** 一台相机的检测设置：按直线段几何示教的一条走廊（图像像素）与当量。 */
+/** 一台相机的参数（D-SB-45）：像素当量、标定引用与检测参数；走廊只按“段 × 检测相机”示教，存在 segments。 */
 export interface CameraInspect {
   camera: string;
-  corridor: [number, number][];
   mmPerPx: number | null;
   calib: string | null;
   detect: DetectParams | null;
-  /** 按段示教的走廊（D-SB-42）：落在该段的帧用它，其余用默认走廊 corridor */
+  /** 这台相机在它检测的各段的走廊（图像像素） */
   segments?: SegmentCorridor[];
 }
 
@@ -494,14 +495,11 @@ export interface CalibrationView {
 
 export interface CameraTeachingView {
   camera: string;
-  /** 走廊已保存 */
-  saved: boolean;
-  frame: FrozenImage | null;
   mmPerPx: number | null;
-  /** 已选示教帧的段走廊（D-SB-42） */
-  segments?: SegmentTeachingView[];
-  /** 这台相机检测的每一段都已保存段走廊：不需要默认走廊即算示教完成（生产暂时仍只用默认走廊） */
-  covered?: boolean;
+  /** 有像素当量，且它检测的每一段都有已保存的段走廊 */
+  ready: boolean;
+  /** 已选示教帧的段（D-SB-45：走廊只按段示教） */
+  segments: SegmentTeachingView[];
 }
 
 export interface SegmentTeachingView {
@@ -509,17 +507,19 @@ export interface SegmentTeachingView {
   frame: FrozenImage;
   round: string;
   seq: number;
-  /** 段走廊已保存且落在示教帧内；否则这一段测量用默认走廊 */
+  /** 段走廊已保存且落在示教帧内 */
   saved: boolean;
 }
 
-/** 候选里一台计划相机的示教帧（Workspace.cameraTeaching，D2）：从完整的新采集轮次冻结的一帧，走廊在这一帧上示教。 */
+/** 候选里一段一台检测相机的示教帧（Workspace.cameraTeaching，D2 / D-SB-45）：从完整的新采集轮次冻结的一帧，这一段的走廊在这一帧上示教。 */
 export interface CameraTeaching {
   camera: string;
   frame: FrozenImage;
   /** 来源采集轮次与帧组序号 */
   round: string;
   seq: number;
+  /** PathSegment.index */
+  segment?: number | null;
 }
 
 /** 加入多轮标定的一轮（Workspace.calibration.rounds，D2）；界面读 plan.calibration（CalibrationView），这里是候选里存的原始记录。 */
@@ -542,8 +542,7 @@ export interface CalibrationRound {
   xMeans: (number | null)[];
 }
 
-/** workspace_teach_camera 的 draft：在选中帧上定出的走廊（图像像素，按直线段几何）、当量与检测参数，
- * 后端写进 RecipeDoc.inspect 中这台相机的一项（与 CameraInspect 的可编辑部分一一对应）。 */
+/** 走廊示教页里一条段走廊的草稿：走廊（图像像素）按段，像素当量与检测参数随相机（只读，用于校验与换算）。 */
 export interface CameraTeachDraft {
   corridor: [number, number][];
   mmPerPx: number | null;
@@ -587,7 +586,7 @@ export type StepIdV2 = "capture" | "segments" | "corridor" | "calibration" | "va
 export type ProgressTargetV2 =
   | { page: "capture" }
   | { page: "segments" }
-  | { page: "corridor"; camera: string }
+  | { page: "corridor"; camera: string; segment?: number | null }
   | { page: "calibration" }
   | { page: "validation" }
   | { page: "camera" };
