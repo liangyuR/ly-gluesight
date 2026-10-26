@@ -85,7 +85,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
       <div className="wp-calib-grid" role="grid" aria-label="逐帧状态" tabIndex={0} onKeyDown={move} style={{ gridTemplateColumns: `56px repeat(${groups}, minmax(14px, 1fr))` }}>
         <span className="wp-calib-grid-corner">段</span>
         {Array.from({ length: groups }, (_, i) => {
-          const s = segmentOf(i + 1), first = s && segmentOf(i)?.index !== s.index;
+          const s = segmentOf(i + 1), first = s && (i === 0 || segmentOf(i)?.index !== s.index);
           return <span key={i} className={"wp-calib-grid-seg" + (s && s.index % 2 === 0 ? " even" : "")} title={s ? `第 ${s.index} 段（${segmentKindLabel[s.kind]}）· 帧组 ${i + 1}` : `帧组 ${i + 1}`}>{first ? s.index : ""}</span>;
         })}
         {plan.cameras.map((cameraId, cam) => <div key={cameraId} role="row" className="wp-calib-grid-row">
