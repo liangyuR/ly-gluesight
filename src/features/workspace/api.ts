@@ -1,6 +1,7 @@
 import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
 import type { CameraTeachDraft, CaptureRoundV2, PathSegment } from "../plan/types";
+import { decodeThumbStrip } from "./workbenchDraft";
 import type { CaptureRound, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, Workspace, WorkspaceView } from "./types";
 
 function grayPreview(input: ArrayBuffer | number[]) {
@@ -68,6 +69,11 @@ export const workspaceApi = {
   /** 新采集轮次（CaptureRoundV2）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；D1 在 recipe_capture_image 旁新增（决策记录 5.4），缺帧时后端报错。 */
   captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeGray),
   captureList: (recipeId: string) => desktopCall<CaptureSummary[]>("recipe_capture_list", { recipeId }),
+  /** 新轮次一台相机全部帧组的缩略图条带（分段标定工作台） */
+  captureRoundThumbs: (roundId: string, cameraId: string) => desktopCall<ArrayBuffer>("recipe_capture_round_thumbs", { roundId, cameraId }).then(decodeThumbStrip),
+  /** 工作台一次保存：段列表 + 模板轮边界（确认）+ 设为模板（D-SB-44） */
+  segmentTemplateSave: (id: string, revision: number, round: string, segments: PathSegment[], cuts: number[]) =>
+    desktopCall<WorkspaceView>("workspace_segment_template_save", { id, revision, round, segments, cuts }),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
   /** 采集版检查：计划相机、相机组、曝光与增益、PLC 型号、段、生产版本；不改候选 */
   collectChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_collect_checks", { id, revision }),

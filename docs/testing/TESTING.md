@@ -82,6 +82,8 @@ SDK 枚举成功但本机发现 0 台设备；Jinghang JHEM131GC-XS 的门控节
 cargo run --manifest-path src-tauri/Cargo.toml --example segment_eval -- <项目目录> <候选编号>
 ```
 
+分段标定工作台（D-SB-44）的回归：`workspace::capture_review` 的组合保存（结构变 / 不变时其余轮次与标定的失效范围）、`frame_align` 的缩略图条带格式，前端 `tests/workbench-draft.test.ts`（边界插删与保存的段列表）与 `tests/segment-workbench.test.tsx`（结构改变时先列影响、确认后一次提交）。
+
 读该候选 `workspace.json` 的段列表、`boundaryGuard` 与采集页已确认的手动分段，逐轮用其余轮次按多轮标定规则得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；不读图像、不需要 lyFlow。至少要 2 段、2 个已确认轮次。2026-10-26 在人工构造的 8 轮、3 段工作区上冒烟通过；现场 NEW-14（`seg-new14` 项目，16 轮）尚未标手动分段，评估待做。
 
 **真引擎专项的当前状态。** 本轮删除 7 项 `vision::taught::engine_tests` 和 2 项 `packaging` 运行库自检 ignored 测试；原 `engine_burst_publish_load_measure_frame_round_trip` 命令已失效。历史实测事实和证据边界保留在“特征定位真引擎历史说明”。默认回归不加载 lyFlow DLL；唯一保留的手动算法评测为 `vision::eval::algorithm_eval`，入口见“运行”。

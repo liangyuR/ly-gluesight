@@ -652,6 +652,34 @@ impl RecipeCaptureHost {
         Ok(dir.join(camera_id).join(frame_file(seq)))
     }
 
+    /// 某台相机一轮全部帧组（1..=帧组数）的原图路径，缺帧为 None；轮次与帧记录只读一次（缩略图条带用）。
+    pub fn burst_frame_paths(
+        &self,
+        round_id: &str,
+        camera_id: &str,
+    ) -> Result<Vec<Option<PathBuf>>, String> {
+        let dir = self.safe_round_path(round_id)?;
+        let (round, lines) = self.load_burst(round_id, true)?;
+        let camera = round
+            .camera_ids()
+            .iter()
+            .position(|id| id == camera_id)
+            .ok_or_else(|| format!("采集轮次没有相机 {camera_id}"))?;
+        let saved: BTreeSet<u64> = lines
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|line| line.camera == camera)
+            .map(|line| line.seq)
+            .collect();
+        Ok((1..=round.group_count)
+            .map(|seq| {
+                saved
+                    .contains(&seq)
+                    .then(|| dir.join(camera_id).join(frame_file(seq)))
+            })
+            .collect())
+    }
+
     fn load_burst(&self, round_id: &str, deep: bool) -> Result<(CaptureRoundV2, Option<Vec<FrameLine>>), String> {
         let dir = self.safe_round_path(round_id)?;
         let path = std::fs::canonicalize(dir.join("round.json")).map_err(|e| e.to_string())?;

@@ -12,6 +12,7 @@ mod cycle_ids;
 mod diagnostics;
 mod disk_guard;
 mod frame;
+mod frame_align;
 mod frame_group;
 mod fsio;
 mod history;
@@ -255,6 +256,7 @@ pub fn run() {
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_image,
             recipe_capture::recipe_capture_frame_image,
+            recipe_capture::recipe_capture_round_thumbs,
             workspace::workspace_set_views,
             workspace::workspace_select_group_image,
             workspace::workspace_save_draft,
@@ -308,6 +310,7 @@ pub fn run() {
             workspace::workspace_calibration_remove_round,
             workspace::workspace_calibration_apply,
             workspace::workspace_capture_review_save,
+            workspace::workspace_segment_template_save,
             workspace::workspace_capture_review_confirm,
             workspace::workspace_capture_review_set_template,
             workspace::workspace_capture_review_apply_template,

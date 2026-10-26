@@ -41,13 +41,13 @@ pnpm typecheck
 | 11 | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `PLC 未连接 →开始接收禁用并给出 PLC 通讯入口` | PLC断开时禁止开始依赖开始/结束握手的整圈采集，并提供恢复入口 |
 | 12 | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `Software 相机参与整圈采集 → 阻止启动并要求切换 Line0` | Software单帧调试相机不得参与Line0高电平门控整圈采集 |
 | 13 | [recipe-create-flow.test.tsx](../../tests/recipe-create-flow.test.tsx) | `创建配方流程 > 在配方库填写新候选，选中创建结果并继续进入该候选的整圈采集` | 通过真实WorkspaceProvider创建当前段配方后，选中同一候选并进入其采集流程，用户填写字段不能丢失 |
-| 14 | [segment-edit.test.ts](../../tests/segment-edit.test.ts) | `段列表编辑规则 > 添加弯道段 → 全部 N_exp、标定统计与 x_ref 清空，段序号保持从 1 连续` | 段结构或类型改变时清除全部帧数标定与胶偏参考，并维持连续段编号 |
-| 15 | [segment-edit.test.ts](../../tests/segment-edit.test.ts) | `段列表编辑规则 > 删除第 2 段 → 全部 N_exp、标定统计与 x_ref 清空，段序号保持从 1 连续` | 段结构或类型改变时清除全部帧数标定与胶偏参考，并维持连续段编号 |
-| 16 | [segment-edit.test.ts](../../tests/segment-edit.test.ts) | `段列表编辑规则 > 第 3 段上移 → 全部 N_exp、标定统计与 x_ref 清空，段序号保持从 1 连续` | 段结构或类型改变时清除全部帧数标定与胶偏参考，并维持连续段编号 |
-| 17 | [segment-edit.test.ts](../../tests/segment-edit.test.ts) | `段列表编辑规则 > 第 1 段改成弯道 → 全部 N_exp、标定统计与 x_ref 清空，段序号保持从 1 连续` | 段结构或类型改变时清除全部帧数标定与胶偏参考，并维持连续段编号 |
+| 14 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `分段标定工作台的边界编辑`（参数化 3 例：插入、删除、末帧组之后不插入） | 插入边界时所在段一分为二且类型相同，删除时与后一段合并、保留前一段类型，边界个数始终等于段数 − 1（D-SB-44，2026-10-26 取代 segment-edit.test.ts） |
+| 15 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `工作台保存的段列表 > 段的类型序列不变 → 原样保存…` | 只改边界时段参数、N_exp、标定与 x_ref 原样保留 |
+| 16 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `工作台保存的段列表 > 段的类型序列变了 → 序号从 1 连续，N_exp、标定与 x_ref 清空…` | 段结构或类型改变时清除全部帧数标定与胶偏参考并维持连续段编号，同位置同类型的段沿用参数 |
+| 17 | [segment-workbench.test.tsx](../../tests/segment-workbench.test.tsx) | `分段标定工作台改变段结构 > 已标定且另有一轮已确认边界 → 保存前列出失效范围，确认后一次提交…` | 改变段结构前先列出会失效的轮次与标定，确认后一次提交段列表与模板轮边界 |
 | 18 | [segments-page-leave.test.tsx](../../tests/segments-page-leave.test.tsx) | `防抖没到期就离开段列表页 > 换了配方 → 编辑提交到原配方，新配方照常加载出来` | 防抖未到期切换配方时，旧编辑提交给原配方且不得打断新配方加载 |
 | 19 | [segments-page-leave.test.tsx](../../tests/segments-page-leave.test.tsx) | `防抖没到期就离开段列表页 > 仍在这个配方 → 提交后工作区拿到返回的新修订` | 防抖未到期仅离开当前页面时，工作区必须接受保存返回的新修订，避免后续保存冲突 |
-| 20 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `直线段改成弯道 > 已标定的配方 → 各段预期帧数清空为待标定，并提示标定已清空` | 页面修改段类型后立即把所有段的旧预期帧数作废，不能继续显示可用标定 |
+| 20 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | （2026-10-26 删除：段类型改由分段标定工作台编辑，规则见第 16、17 项） | — |
 | 21 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `已标定的配方，帧数容差改为 2 → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动` | 非结构编辑必须带实际改动保存，同时保留各段预期帧数与胶偏参考 |
 | 22 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `已标定的配方，长度改为 130 mm → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动` | 非结构编辑必须带实际改动保存，同时保留各段预期帧数与胶偏参考 |
 | 23 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `已标定的配方，关掉溢胶检测 → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动` | 非结构编辑必须带实际改动保存，同时保留各段预期帧数与胶偏参考 |

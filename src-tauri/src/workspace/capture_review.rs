@@ -1,4 +1,5 @@
 use super::*;
+use crate::plan::PathSegment;
 use crate::recipe_capture::{CaptureRoundV2, CaptureState};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -335,6 +336,48 @@ pub fn apply_capture_review(
         .insert(round.round_id.clone(), review);
     w.changed();
     Ok(())
+}
+
+/// 分段标定工作台的一次保存（D-SB-44）：在候选副本上依次替换段列表（受 `guard_calibration` 约束）、保存并确认
+/// 模板轮边界、设为模板，全部成功才返回新候选。段的类型序列变化时其余轮次按 `refresh` 变“需复核”、标定清空。
+pub fn save_template_round(
+    w: &Workspace,
+    round: &CaptureRoundV2,
+    segments: Vec<PathSegment>,
+    cuts: Vec<u64>,
+) -> Result<Workspace, String> {
+    let mut next = w.clone();
+    burst::update_segments(&mut next, segments)?;
+    apply_capture_review(&mut next, round, CaptureReviewEdit::Save(cuts))?;
+    apply_capture_review(&mut next, round, CaptureReviewEdit::Confirm)?;
+    apply_capture_review(&mut next, round, CaptureReviewEdit::SetTemplate)?;
+    Ok(next)
+}
+
+#[tauri::command]
+pub fn workspace_segment_template_save(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    round: String,
+    segments: Vec<PathSegment>,
+    cuts: Vec<u64>,
+) -> Result<WorkspaceView, String> {
+    let cycle = app.state::<CycleHost>();
+    let _gate = cycle
+        .config_gate
+        .try_lock()
+        .map_err(|_| "正在处理采集或设备事务，请稍后保存分段")?;
+    crate::camera::check_idle(&cycle)?;
+    let captured = cycle.camera.recipe_capture().get_burst(&round)?;
+    let host = app.state::<WorkspaceHost>();
+    let mut items = host.items.lock().unwrap();
+    let current = items.get_mut(&id).ok_or("候选配置不存在")?;
+    current.expect(revision)?;
+    let next = save_template_round(current, &captured, segments, cuts)?;
+    host.save(&next)?;
+    *current = next;
+    view(&app, current.clone())
 }
 
 fn edit_round(
