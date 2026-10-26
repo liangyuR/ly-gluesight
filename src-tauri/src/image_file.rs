@@ -32,7 +32,7 @@ pub fn load(path: &Path) -> Result<FrameImage, String> {
     decode(&bytes).map_err(|e| format!("解码 {} 失败：{e}", path.display()))
 }
 
-/// 按内容识别格式解码成 8 位灰度。工作台裁定位模板与发布包核对模板都经过这里，同样的字节得到同样的像素。
+/// 按内容识别格式解码成 8 位灰度。
 pub fn decode(bytes: &[u8]) -> Result<FrameImage, String> {
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?.into_luma8();
     let (width, height) = img.dimensions();
@@ -48,7 +48,7 @@ pub fn save_pgm(path: &Path, img: &FrameImage) -> Result<(), String> {
     f.flush().map_err(|e| e.to_string())
 }
 
-/// 冻结示教原图：按编号只写一次（定位模板身份的前提，见 `recipe::FixtureSpec`）。文件已在时逐字节比对，
+/// 冻结示教原图：按编号只写一次（发布包按示教图编号认示教帧）。文件已在时逐字节比对，
 /// 相同照常（同一圈重复采用）、不同报错，不覆盖。
 pub fn save_pgm_new(path: &Path, img: &FrameImage) -> Result<(), String> {
     use std::io::Write;
@@ -67,7 +67,7 @@ pub fn save_pgm_new(path: &Path, img: &FrameImage) -> Result<(), String> {
             checked_source_path(path)?;
             let existing = std::fs::read(path).map_err(|e| format!("读取已有示教原图 {} 失败：{e}", path.display()))?;
             if existing == bytes { Ok(()) } else {
-                Err(format!("示教图编号 {} 已存在且内容不同，不能覆盖（定位模板按图编号认来源）", path.file_stem().and_then(|s| s.to_str()).unwrap_or("?")))
+                Err(format!("示教图编号 {} 已存在且内容不同，不能覆盖（示教帧按图编号认来源）", path.file_stem().and_then(|s| s.to_str()).unwrap_or("?")))
             }
         }
         Err(e) => Err(format!("写示教原图 {} 失败：{e}", path.display())),
@@ -80,8 +80,8 @@ mod tests {
 
     #[test]
     fn frozen_image_id_rewritten_with_different_pixels_is_rejected_and_same_pixels_pass() {
-        // 防的回归：冻结图按编号覆盖写（同一圈重复采用、编号碰撞）后，定位框的来源编号没变、模板像素却变了，
-        // 测量定义里的模板身份 (来源, 框, 外圈) 就不再能证明模板相同
+        // 防的回归：冻结图按编号覆盖写（同一圈重复采用、编号碰撞）后，示教图编号没变、像素却变了，
+        // 按编号引用示教帧的走廊示教与发布包就不再能证明用的是同一帧
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let root = std::env::temp_dir().join(format!("gluesight-frozen-once-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();

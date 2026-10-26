@@ -75,11 +75,6 @@ impl Sink for TestSink {
         self.store.update_submission_timing(cycle, drain_ms)
     }
 
-    fn raw_files(&mut self, cycle: &str, k: usize, files: &[ShotRawFile]) -> Result<bool, String> {
-        self.raw_writes += 1;
-        self.store.update_shot_raw_files(cycle, k, files)
-    }
-
     fn frame_files(&mut self, cycle: &str, files: &BTreeMap<FrameKey, String>) -> Result<bool, String> {
         self.raw_writes += 1;
         self.store.update_frame_raw_files(cycle, files)
@@ -102,15 +97,13 @@ fn outcome(cycle: &str, files: &[(usize, u8)], state: RecorderState) -> Recordin
         files: files
             .iter()
             .map(|&(camera, seq)| RecordedRawFile {
-                k: 0,
-                view: 0,
                 width: 100,
                 height: 60,
                 file: format!("cycle_{cycle}/cam{}_s{seq:06}.pgm", camera + 1),
-                frame: Some(FrameKey {
+                frame: FrameKey {
                     camera,
                     seq: u64::from(seq),
-                }),
+                },
             })
             .collect(),
         errors: Vec::new(),
@@ -190,10 +183,10 @@ fn durable_spool_replays_sqlite_commit_before_receipt_cleanup_without_duplicate_
     assert_eq!(sink.detail("committed").summary.delivery, before.summary.delivery);
 }
 
-/// 段配方（D-SB-29）：检测记录带每相机每帧记录经持久 spool 重启后入库，原图引用按 (camera, seq) 关联，
-/// 不受旧拍照点模型 k < 64、视角 1–3 的限制（帧组数 70），录制结果才算可用。
+/// 段配方（D-SB-29）：检测记录带每相机每帧记录经持久 spool 重启后入库，原图引用按 (camera, seq) 关联（帧组数 70），
+/// 录制结果才算可用。
 #[test]
-fn burst_part_replays_from_spool_and_links_raw_files_by_camera_seq_beyond_shot_limits() {
+fn burst_part_replayed_from_reopened_spool_links_raw_files_by_camera_seq() {
     let dir = TestDir::new();
     let path = dir.0.join("spool");
     let recipe = Arc::new(crate::store::burst_fixture::recipe());
@@ -206,8 +199,8 @@ fn burst_part_replays_from_spool_and_links_raw_files_by_camera_seq_beyond_shot_l
         source: RecordSource::Real, sample: None, burst: Some(burst),
     };
     let raw = |camera: usize, seq: u64| RecordedRawFile {
-        k: 0, view: 0, file: format!("cycle_burst-70/cam{}_s{seq:06}.pgm", camera + 1), width: 2, height: 1,
-        frame: Some(FrameKey { camera, seq }),
+        file: format!("cycle_burst-70/cam{}_s{seq:06}.pgm", camera + 1), width: 2, height: 1,
+        frame: FrameKey { camera, seq },
     };
     let mut recording = outcome("burst-70", &[], RecorderState::Complete);
     recording.files = vec![raw(0, 1), raw(2, 70)];

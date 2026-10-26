@@ -22,7 +22,7 @@ impl Machine {
         crate::offline::service_teaching_idle(&app, teaching.reset_pending() && base_ready);
         let was_busy = teaching.busy();
         if was_busy && self.s7.request().is_none() {
-            self.close_routing(None);
+            self.close_routing();
             self.part = None;
             self.current_cycle_id = None;
             self.done_at = None;

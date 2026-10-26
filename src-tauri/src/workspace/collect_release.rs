@@ -185,8 +185,8 @@ pub fn workspace_publish_collect(
         bundle_id: String::new(),
         base_revision: w.base_revision.clone(),
         revision,
-        frames: w.frames.clone(),
-        overview: w.overview.clone(),
+        legacy_frames: Discarded,
+        legacy_overview: Discarded,
         validation: Validation {
             revision,
             passed: true,
@@ -194,7 +194,6 @@ pub fn workspace_publish_collect(
             checks,
             samples: Vec::new(),
             environment_tag: Value::Null,
-            fixture: Vec::new(),
         },
         validation_site: if crate::offline::enabled(&app) {
             ValidationSite::Offline

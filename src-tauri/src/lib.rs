@@ -20,7 +20,6 @@ mod handshake_audit;
 mod inspection;
 mod instance;
 mod judge;
-mod locate_health;
 mod measure;
 mod mvs;
 mod offline;
@@ -61,9 +60,10 @@ pub use packaging::check_packaged_runtime;
 #[doc(hidden)]
 pub mod probe_api {
     pub use crate::image_file::save_pgm;
-    pub use crate::production::{graphs, Prepared, GRAPH_VERSION};
-    pub use crate::recipe::{samples, DetectParams, JudgeParams, Polarity, Recipe, RecipeDoc, ShotLimits};
-    pub use crate::release::{load as load_release, publish as publish_release, PublishInput, ResourceSource, ShotInput, ValidationSite, Versions};
+    pub use crate::burst_judge::FrameState;
+    pub use crate::production::{burst_graphs, Prepared, GRAPH_VERSION_BURST};
+    pub use crate::recipe::{burst_template, DetectParams, Polarity, Recipe, RecipeDoc};
+    pub use crate::release::{load as load_release, publish_burst, BurstPublishInput, CameraInput, ResourceSource, ValidationSite, Versions};
     pub use crate::vision::{Engine, FrameImage};
 
     /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。
@@ -194,7 +194,6 @@ pub fn run() {
             plc::plc_s7_phase1_template,
             cycle::cycle_snapshot,
             cycle::cycle_logs,
-            cycle::cycle_part_data,
             cycle::cycle_recipes,
             cycle::cycle_layout,
             cycle::cycle_get_settings,
@@ -268,14 +267,9 @@ pub fn run() {
             workspace::workspace_publish,
             workspace::workspace_collect_checks,
             workspace::workspace_publish_collect,
-            workspace::workspace_record_images,
-            workspace::workspace_record_image,
-            workspace::workspace_history_capture,
             workspace::workspace_compare,
             workspace::workspace_compare_original,
             workspace::workspace_comparisons,
-            workspace::workspace_runtime_overview,
-            workspace::workspace_live_image,
             workspace::workspace_live_frame_image,
             workspace::workspace_station_capture,
             workspace::workspace_station_import,

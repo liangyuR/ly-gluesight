@@ -1,5 +1,5 @@
 //! 离线样本集 v1：`sample-set.json` + `parts/<partId>/<shotId>_<cameraId>_v<view>.<ext>`。
-//! 业务关联只用 partId / shotId / cameraId / view，不做任何内容比对。
+//! 业务关联只用 partId / shotId / cameraId / view，不做任何内容比对。段配方按相机帧序列解释（[`Manifest::camera_frames`]）。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -192,30 +192,6 @@ impl Manifest {
     /// 第 seq 个拍照点。各相机帧数可以不等，也不要求与配方的 N_exp 相同（帧数本来就会波动）。
     pub fn camera_frames(&self, camera: &str) -> Vec<&SampleShot> {
         self.shots.iter().filter(|s| s.camera_id == camera).collect()
-    }
-
-    /// 旧拍照点模型（段配方用 [`camera_frames`](Self::camera_frames)）：
-    /// 配方各拍照点在样本集里对应的拍照点（按配方拍照点下标）：第 t 次 PLC 触发里相机 c 的拍照点，
-    /// 取样本集里相机 c 的第 t 个拍照点（清单顺序）。按相机编号 + 相机内序号关联，不要求编号相同；
-    /// 配方用到的每台相机在样本集里的拍照点数都必须等于配方触发次数。
-    pub fn recipe_shots(&self, recipe: &crate::recipe::Recipe) -> Result<Vec<&SampleShot>, String> {
-        let groups = crate::plc_plan::trigger_groups(recipe)?;
-        let mut by_camera = BTreeMap::new();
-        for camera in recipe.cameras() {
-            let shots: Vec<&SampleShot> = self.shots.iter().filter(|s| s.camera_id == camera).collect();
-            if shots.len() < groups.len() {
-                return Err(format!("相机 {camera} 在样本集里只有 {} 个拍照点，缺第 {} 个（配方每台相机 {} 次触发）", shots.len(), shots.len() + 1, groups.len()));
-            }
-            if shots.len() > groups.len() {
-                return Err(format!("相机 {camera} 在样本集里有 {} 个拍照点，多于配方每台相机的 {} 次触发；样本集与配方的点位须一一对应", shots.len(), groups.len()));
-            }
-            by_camera.insert(camera, shots);
-        }
-        let mut mapped = vec![None; recipe.shots.len()];
-        for (t, group) in groups.iter().enumerate() {
-            for &k in group { mapped[k] = Some(by_camera[&recipe.shots[k].camera][t]); }
-        }
-        Ok(mapped.into_iter().flatten().collect())
     }
 }
 

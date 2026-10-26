@@ -199,7 +199,7 @@ mod tests {
         let outcome = rx.recv_timeout(Duration::from_secs(10)).expect("真实 Recorder 必须完成收尾");
         let record = |camera: usize, seq: u64| {
             let delivered = delivered.contains(&(camera, seq));
-            let raw_file = outcome.files.iter().find(|f| f.frame.is_some_and(|k| (k.camera, k.seq) == (camera, seq))).map(|f| f.file.clone());
+            let raw_file = outcome.files.iter().find(|f| (f.frame.camera, f.frame.seq) == (camera, seq)).map(|f| f.file.clone());
             FrameRecord { camera, seq, status: if delivered { FrameState::Measured } else { FrameState::Missing },
                 frame_counter: delivered.then(|| frame(camera, seq).frame_counter), trigger_counter: delivered.then_some(50 + seq),
                 region: Some(0), metrics: None, raw_file }

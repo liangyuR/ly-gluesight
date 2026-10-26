@@ -215,8 +215,7 @@ fn lost_packet_budget_dropped_or_queue_full_frame_is_missing_with_alarm_and_roun
     }
 }
 
-/// D-SB-33：采集失败报 90 配 98（相机断连、会话变化等设备原因）或 99（中止、超时等处理原因），不再报计数不符 94；
-/// 旧拍照点配方的旧轮次仍报 94（旧路径行为不变）。
+/// D-SB-33：采集失败报 90 配 98（相机断连、会话变化等设备原因）或 99（中止、超时等处理原因），不再报计数不符 94。
 #[test]
 fn failed_round_reports_device_or_process_fault_not_count_mismatch() {
     let cases: [(&str, fn(&RecipeCaptureHost), (u16, u16)); 8] = [
@@ -251,7 +250,7 @@ fn thousands_of_frames_are_persisted_and_restored_after_restart() {
     for n in 1..=1500 { for cam in 0..3 { offer(&host, frame(cam, n)); } }
     settle(&host);
     let reopened = RecipeCaptureHost::open(host.root.clone()).unwrap();
-    let AnyRound::Burst(restored) = reopened.get_any(&round.round_id).unwrap() else { panic!("新轮次读成了旧轮次") };
+    let AnyRound::Burst(restored) = reopened.get_any(&round.round_id).unwrap();
     assert_eq!((restored.state, restored.failure), (CaptureState::Failed, Some(CaptureFailureV2::Interrupted)));
     assert_eq!((restored.group_count, restored.camera_frames.clone()), (1500, vec![1500; 3]));
     assert!(restored.missing_frames.is_empty());

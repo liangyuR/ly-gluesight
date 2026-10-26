@@ -2,8 +2,7 @@
 //!
 //! 量 1280×1024 单帧在发布加载路径上的测量耗时（p50/p95/max，串行与并发）和 PGM 连续写盘速率，
 //! 数值回填 MEASURE_WORKERS 与 IMAGE_BUDGET_PER_CAMERA。只断言量的是正常路径（胶测得到、文件写满），数值本身不设门槛。
-//! 只用中线测量的算子（glue.taught_path + glue.bead_width），没有特征定位，与段模型走廊测量是同一组算子；
-//! 不要求带 lyFlow#32 的构建，已发布的运行库即可。
+//! 走段配方的发布与加载路径（schema 4：`publish_burst` → `Prepared::load` → `measure_frame`），与生产逐帧测量一致。
 //!
 //! 运行（写约 4 GB 临时文件，结束后自动删除，约 1 分钟；用 dev profile，与 7.1 节记录的数值同一构建配置）：
 //!
@@ -20,8 +19,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gluesight_lib::probe_api::{
-    graphs, load_release, publish_release, samples, save_pgm, warm, DetectParams, Engine, FrameImage, JudgeParams, Polarity, Prepared,
-    PublishInput, RecipeDoc, ResourceSource, ShotInput, ShotLimits, ValidationSite, Versions, GRAPH_VERSION,
+    burst_graphs, burst_template, load_release, publish_burst, save_pgm, warm, BurstPublishInput, CameraInput, DetectParams, Engine,
+    FrameImage, FrameState, Polarity, Prepared, RecipeDoc, ResourceSource, ValidationSite, Versions, GRAPH_VERSION_BURST,
 };
 use serde_json::json;
 
@@ -38,6 +37,8 @@ const PROBE_SYNCED_PGMS: usize = 300;
 const PROBE_WRITERS: usize = 3;
 /// 示教图编号：发布清单里的 imageId，探针不用定位模板，只是发布要求有
 const TEACH_ID: &str = "capture-engine-0-v1";
+/// 三台计划相机（段配方要求恰好三台），测量只用第一台
+const PROBE_CAMERAS: [&str; 3] = ["cam1", "cam2", "cam3"];
 
 const USAGE: &str = "需要环境变量 LYFLOW_CORE_DLL 指向 lyflow_core.dll（已发布的运行库即可，不要求带 lyFlow#32 的构建）。例如（PowerShell，仓库根目录）：
   $env:LYFLOW_CORE_DLL = 'src-tauri\\target\\dependency-cache\\lyflow\\1.1.5\\lyflow_core.dll'
@@ -81,23 +82,18 @@ fn probe_scene() -> FrameImage {
     FrameImage::new(PROBE_W, PROBE_H, px)
 }
 
-/// 单拍照点、无特征定位、走廊横穿整幅图的配方。
+/// 一个直线段、三台相机走廊都横穿整幅图的段配方。
 fn probe_document() -> RecipeDoc {
-    let mut doc = samples().remove(0);
-    doc.shots.truncate(1);
-    let shot = &mut doc.shots[0];
-    shot.path = PROBE_PATH.to_vec();
-    shot.mm_per_px = Some(PROBE_MM_PER_PX);
-    shot.fixture = None;
+    let cameras: Vec<String> = PROBE_CAMERAS.iter().map(|c| c.to_string()).collect();
+    let mut doc = burst_template("PROBE".into(), "吞吐探针".into(), 1, &cameras);
+    doc.plan_version = 1;
     doc.spacing = 1.0;
-    doc.detect = DetectParams { search_mm: 3.0, polarity: Polarity::Dark, width_range: [0.8, 2.4] };
-    doc.limits = ShotLimits {
-        position: Some(JudgeParams { nominal: 0.0, tol_upper: 0.5, tol_lower: 0.5, abs_min: -3.0, abs_max: 3.0, max_excursion_len: 3.0 }),
-        width: Some(JudgeParams { nominal: 1.6, tol_upper: 0.5, tol_lower: 0.5, abs_min: 0.5, abs_max: 3.0, max_excursion_len: 3.0 }),
-        max_gap_len: 1.5,
-        min_present: 0.8,
-        gauge_ref: None,
-    };
+    doc.segments[0].expected_frames = Some(4);
+    for inspect in &mut doc.inspect {
+        inspect.corridor = PROBE_PATH.to_vec();
+        inspect.mm_per_px = Some(f64::from(PROBE_MM_PER_PX));
+        inspect.detect = Some(DetectParams { search_mm: 3.0, polarity: Polarity::Dark, width_range: [0.8, 2.4] });
+    }
     doc
 }
 
@@ -121,21 +117,22 @@ impl Drop for TempDir {
     fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
 }
 
-/// 与生产同一条加载路径：publish → release::load → Prepared::load → warm。目录随它删除。
+/// 与生产同一条加载路径：publish_burst → release::load → Prepared::load → warm。目录随它删除。
 fn probe_production(engine: &Arc<Engine>, teach: &FrameImage) -> (Prepared, TempDir) {
     let root = TempDir::new("release");
     let doc = probe_document();
-    let view = doc.shots[0].view;
     let recipe = doc.build().unwrap();
     let mut pgm = format!("P5\n{} {}\n255\n", teach.width, teach.height).into_bytes();
     pgm.extend_from_slice(&teach.pixels);
-    let graph = serde_json::to_vec(&graphs(&recipe).unwrap()).unwrap();
-    let published = publish_release(&root.0, PublishInput {
+    let sizes = vec![[teach.width, teach.height]; PROBE_CAMERAS.len()];
+    let graph = serde_json::to_vec(&burst_graphs(&recipe, &sizes).unwrap()).unwrap();
+    let calibration = serde_json::to_vec(&json!({"mmPerPx": PROBE_MM_PER_PX as f64})).unwrap();
+    let published = publish_burst(&root.0, BurstPublishInput {
         recipe: doc, validation_site: ValidationSite::Offline,
-        versions: Versions { engine: engine.identity.clone(), graph: GRAPH_VERSION.into() },
+        versions: Versions { engine: engine.identity.clone(), graph: GRAPH_VERSION_BURST.into() },
         graph: ResourceSource::Bytes(graph),
-        shots: vec![ShotInput { k: 0, view, image: Some(ResourceSource::Bytes(pgm)), image_id: Some(TEACH_ID.into()),
-            calibration: Some(ResourceSource::Bytes(serde_json::to_vec(&json!({"mmPerPx": PROBE_MM_PER_PX as f64})).unwrap())) }],
+        cameras: PROBE_CAMERAS.iter().map(|camera| CameraInput { camera: camera.to_string(), image: ResourceSource::Bytes(pgm.clone()),
+            image_id: TEACH_ID.into(), calibration: ResourceSource::Bytes(calibration.clone()) }).collect(),
     }).unwrap();
     let bundle = load_release(&root.0, &recipe.id, &published.id).unwrap();
     let prepared = Prepared::load(bundle, engine.clone(), &recipe).unwrap();
@@ -172,15 +169,20 @@ fn probe_measure(prepared: &Prepared, image: &FrameImage, workers: usize) -> (Ve
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     if i >= PROBE_MEASURES { break ms; }
                     let start = Instant::now();
-                    let m = prepared.measure(0, image, &format!("probe-w{workers}-{w}-{i}")).unwrap();
+                    let m = prepared.measure_frame(0, i as u64 + 1, image, &format!("probe-w{workers}-{w}-{i}")).unwrap().metrics;
                     ms.push(start.elapsed().as_secs_f64() * 1e3);
-                    assert!(m.st.len() > 100 && m.coverage > 0.95, "量到的不是正常路径：站数 {}，有胶比例 {}", m.st.len(), m.coverage);
+                    assert!(normal(m.state, &m.widths), "量到的不是正常路径：状态 {:?}，站数 {}", m.state, m.widths.len());
                 }
             })
         }).collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
     (per_worker.concat(), wall.elapsed().as_secs_f64())
+}
+
+/// 正常路径：测成，站数超过 100，九成五以上的站有胶。
+fn normal(state: FrameState, widths: &[Option<f32>]) -> bool {
+    state == FrameState::Measured && widths.len() > 100 && widths.iter().filter(|w| w.is_some()).count() as f64 > 0.95 * widths.len() as f64
 }
 
 /// 生产录制用的 image_file::save_pgm 连续写 count 张（文件名从 first 起），返回每张耗时（ms）。
@@ -223,7 +225,7 @@ fn main() {
 
     // 一、测量耗时：串行是 p50/p95/max 的依据；并发看 MEASURE_WORKERS 的线性外推是否成立
     let (prepared, _release) = probe_production(&engine, &teach);
-    let stations = prepared.measure(0, &teach, "probe-stations").unwrap().st.len();
+    let stations = prepared.measure_frame(0, 1, &teach, "probe-stations").unwrap().metrics.widths.len();
     println!("[probe] 测点 {stations} 个（间距 1 mm，走廊约 121 mm）");
     let mut levels = vec![1, 2, 3, 4, cores.saturating_sub(2).max(1)];
     levels.sort_unstable();
