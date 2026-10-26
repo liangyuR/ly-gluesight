@@ -189,11 +189,30 @@ fn build_recipe(samples: &[Sample], paths: &[Vec<[f32; 2]>], mm: &BTreeMap<Strin
         fixture: None,
     }).collect();
     let mut doc = RecipeDoc {
-        id: "EVAL-GS".into(), name: "算法评测".into(), version: 1, plan_version: 1, teaching_id: None, product_code: 1,
-        trigger_mode: TriggerMode::Fly, schema_version: RECIPE_SCHEMA, spacing: 1.0, filter_window: 5,
-        detect: detect.clone(), limits: LIMITS.get().cloned().flatten().unwrap_or_else(default_limits), shots, cameras: BTreeMap::new(),
-        segments: Vec::new(), inspect: Vec::new(), segment_defaults: Default::default(),
-        calibration_rounds: crate::recipe::DEFAULT_CALIBRATION_ROUNDS, part_calib: None,
+        id: "EVAL-GS".into(),
+        name: "算法评测".into(),
+        version: 1,
+        plan_version: 1,
+        teaching_id: None,
+        product_code: 1,
+        stage: Default::default(),
+        trigger_mode: TriggerMode::Fly,
+        schema_version: RECIPE_SCHEMA,
+        spacing: 1.0,
+        filter_window: 5,
+        detect: detect.clone(),
+        limits: LIMITS
+            .get()
+            .cloned()
+            .flatten()
+            .unwrap_or_else(default_limits),
+        shots,
+        cameras: BTreeMap::new(),
+        segments: Vec::new(),
+        inspect: Vec::new(),
+        segment_defaults: Default::default(),
+        calibration_rounds: crate::recipe::DEFAULT_CALIBRATION_ROUNDS,
+        part_calib: None,
     };
     doc.sync_imaging();
     doc.build()

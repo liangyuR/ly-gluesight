@@ -1,4 +1,4 @@
-import type { CameraImaging, DetectParams, FixtureSpec, Judgement, Measured, PoseRecord, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
+import type { CameraImaging, DetectParams, FixtureSpec, Judgement, Measured, PoseRecord, Recipe, RecipeDoc, RecipeStage, ShotLimits, Verdict } from "../cycle/types";
 import type { BurstJudgement, CalibrationRound, CameraTeaching, PathSegment, WorkspacePlanView } from "../plan/types";
 
 /** 段模型（分段连拍飞拍）的候选工作区类型，定义在 plan/types.ts；这里转出供工作台页面使用。
@@ -76,9 +76,10 @@ export interface Teaching {
 export interface Overview { background: string | null; positions: [number, number][]; saved: boolean }
 export interface Sample { historyId: number | null; sampleId?: string | null; expected: Verdict }
 export interface BankSample { id:string; name:string; geometryTag: unknown; expected:Verdict; createdAt:number; captureId?: string | null }
+export interface Check { name: string; passed: boolean; detail: string }
 export interface Validation {
   revision: number; passed: boolean; checkedAt: number; environmentTag: unknown;
-  checks: { name: string; passed: boolean; detail: string }[];
+  checks: Check[];
   samples: { historyId: number | null; sampleId:string | null; name:string; sn: string; expected: Verdict; actual: Verdict | null; passed: boolean; reason: string }[];
   /** 每个特征定位视图的统计；G4 之前的验证没有 */
   fixture?: FixtureViewReport[];
@@ -147,6 +148,8 @@ export interface PlcParams { productCode: number; planVersion: number; shotCount
 /** coverage：要检的拍照点里已示教中线的比例（%）；没有要检的拍照点时为 null。 */
 export interface WorkspaceView {
   workspace: Workspace; layout: Recipe; productionVersion: number | null;
+  /** 生产配方是采集版还是正式版；未发布为 null */
+  productionStage?: RecipeStage | null;
   /** 生产配方的计划版本 */
   productionPlanVersion: number | null;
   /** 候选的拍照计划（产品代码、拍照点顺序 / Pose / 相机）与生产不同：发布时分配新的计划版本 */

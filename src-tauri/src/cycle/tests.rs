@@ -34,6 +34,7 @@ fn armed_part(
         .collect();
     let baselines = arm_frames(&cameras, ledgers, &policy, &identities).unwrap();
     Part {
+        mode: crate::store::PartMode::Production,
         cycle_id: cycle_id.into(), bundle_id: None, production: None, candidate: None, sn: "SN-88".into(), scenario: Scenario::Normal,
         frames: Vec::new(), measuring_since: Vec::new(), table: Vec::new(), received: 0, extra: 0, queue: 0, router: unrouted(),
         burst: Some(Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted))), issued: None, device_triggers: None,
@@ -366,4 +367,23 @@ fn same_sn_reinspection_rejects_measurement_from_previous_cycle() {
     );
     assert!(current.apply_burst(valid).is_some());
     assert!(current.complete());
+}
+
+/// 维护采集件只录图不送测：收下的帧不进测量等待，运动结束后收尾窗口一过就能收尾，不会卡在“测量中”。
+#[test]
+fn collect_part_completes_at_drain_deadline_without_measuring() {
+    let mut part = burst_part("maintenance-collect", &Ledgers::default());
+    part.mode = crate::store::PartMode::MaintenanceCollect;
+    part.burst.as_mut().unwrap().collect = true;
+    for cam in 0..3 {
+        assert!(matches!(
+            part.receive_burst(&burst_frame(cam, 1)),
+            Some(burst::Arrival::Accepted { seq: 1, .. })
+        ));
+    }
+    end(&mut part, None, false);
+    assert!(!part.complete(), "收尾窗口内仍收帧");
+    end(&mut part, None, true);
+    assert!(part.complete(), "采集件不等测量结果");
+    assert_eq!(part.burst.as_ref().unwrap().group_count(), 1);
 }

@@ -1,5 +1,5 @@
 import type { SampleLabel, Verdict } from "../cycle/types";
-import type { RecordSource } from "./types";
+import type { PartSummary, RecordSource } from "./types";
 
 export const verdictLabel: Record<Verdict, string> = {
   OK: "OK",
@@ -22,6 +22,13 @@ export function triggerModeLabel(mode: string | null | undefined) {
 
 export function verdictTone(v: Verdict): "ok" | "warn" | "ng" | "fault" {
   return v === "OK" ? "ok" : v === "OK_WITH_EXCURSION" ? "warn" : v === "ERR_INSPECT" ? "fault" : "ng";
+}
+
+/** 记录的结论标签：维护采集件未判定，不显示成 ERR；试判件的结论没有输出给 PLC。 */
+export function partVerdict(p: Pick<PartSummary, "verdict" | "mode">): { label: string; tone: "ok" | "warn" | "ng" | "fault" | "neutral" } {
+  if (p.mode === "maintenanceCollect") return { label: "维护采集·未判定", tone: "neutral" };
+  const label = verdictLabel[p.verdict];
+  return { label: p.mode === "maintenanceShadow" ? "试判 " + label : label, tone: verdictTone(p.verdict) };
 }
 
 export const verdictGroups: { key: string; label: string; verdicts: Verdict[] }[] = [

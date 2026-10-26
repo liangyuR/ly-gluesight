@@ -185,6 +185,24 @@ pub struct Recording {
     errors: Vec<String>,
     /// 段配方（配方 segments 非空）按相机帧录制；旧拍照点配方为 None
     burst: Option<BurstFrames>,
+    /// 收尾时并入 part.json 的附加字段（件的模式、相机设备、PLC 请求）
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// 维护采集件的录制目录里放这个标记：示教与标定的样本，不参与按件数与大小的自动清理，由现场清理。
+pub const KEEP_MARKER: &str = "maintenance-collect";
+
+impl Recording {
+    pub fn annotate(&mut self, key: &str, value: serde_json::Value) {
+        self.extra.insert(key.to_owned(), value);
+    }
+
+    fn keep(&self) -> bool {
+        self.extra
+            .get("partMode")
+            .and_then(serde_json::Value::as_str)
+            == Some("maintenanceCollect")
+    }
 }
 
 pub struct Recorder {
@@ -350,6 +368,7 @@ impl Recorder {
             dropped: 0,
             errors: Vec::new(),
             burst,
+            extra: serde_json::Map::new(),
         })
     }
 
@@ -757,8 +776,17 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
             })
         }
     };
+    for (key, value) in &rec.extra {
+        meta[key] = value.clone();
+    }
     match std::fs::create_dir_all(&rec.dir) {
         Ok(()) => {
+            if rec.keep() {
+                if let Err(error) = std::fs::write(rec.dir.join(KEEP_MARKER), b"") {
+                    rec.errors
+                        .push(format!("写入维护采集保留标记失败：{error}"));
+                }
+            }
             if let Err(error) = write_metadata(&rec.dir.join("part.json"), &meta) {
                 rec.errors.push(error);
             }
@@ -1001,7 +1029,12 @@ fn prune(root: &Path, keep: usize, max_bytes: u64, in_use: &[PathBuf], release: 
             Ok(entries) => {
                 for entry in entries {
                     match entry {
-                        Ok(entry) if plain_directory(&entry.path()) => parts.push(entry.path()),
+                        Ok(entry)
+                            if plain_directory(&entry.path())
+                                && !entry.path().join(KEEP_MARKER).exists() =>
+                        {
+                            parts.push(entry.path())
+                        }
                         Ok(_) => {}
                         Err(error) => errors.push(error.to_string()),
                     }

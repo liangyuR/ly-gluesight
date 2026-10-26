@@ -1,4 +1,5 @@
 
+import type { PartMode } from "../history/types";
 import type { BurstJudgement, CameraInspect, KindDefaults, PartCalib, PartViewBurst, PathSegment, RecipeDocSegmentFields } from "../plan/types";
 
 /** 段模型（分段连拍飞拍）的契约类型，定义在 plan/types.ts；这里转出供 cycle 相关页面使用。 */
@@ -148,6 +149,8 @@ export interface Recipe {
   revisionId: string;
   teachingId?: string | null;
   productCode: number;
+  /** 缺省为正式版 */
+  stage?: RecipeStage;
   triggerMode: TriggerMode;
   /** 配方文件格式版本（后端 recipe::RECIPE_SCHEMA） */
   schemaVersion: number;
@@ -184,6 +187,8 @@ export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   planVersion?: number;
   teachingId?: string | null;
   productCode: number;
+  /** 缺省为正式版；发布时由后端写入 */
+  stage?: RecipeStage;
   triggerMode: TriggerMode;
   /** 配方文件格式版本（后端 recipe::RECIPE_SCHEMA）；不符的文件后端拒绝 */
   schemaVersion: number;
@@ -204,6 +209,9 @@ export interface CameraImaging {
 }
 
 export const DEFAULT_IMAGING: CameraImaging = { exposureUs: 60, gainDb: 6 };
+
+/** 配方阶段：collect = 采集版（只供维护模式采图，不判定），formal = 正式版；后端缺省即正式版。 */
+export type RecipeStage = "formal" | "collect";
 
 export interface RecipeSummary {
   id: string;
@@ -226,6 +234,8 @@ export interface RecipeSummary {
   toleranceTotal: number;
   /** expectedTotal 非空 */
   calibrated: boolean;
+  /** 只有配方库列表（recipe_list）给出 */
+  stage?: RecipeStage;
 }
 
 /** 某个视图没有位置基准（帧徽标）：该视图的有胶站已是“有胶、无基准”（st 4），判定只看站状态。 */
@@ -319,6 +329,7 @@ export interface ResultView extends Judgement {
   recipeId: string | null;
   ts: number;
   drainMs: number | null;
+  mode?: PartMode;
 }
 
 export interface Snapshot {
@@ -340,6 +351,22 @@ export interface Snapshot {
   recordingAlarm?: RecordingAlarm | null;
   /** 连续定位失败告警（当前站点模式的分槽）：同一配方修订、拍照点、图连续 3 件没有位置基准；定位成功后清除，重启清零 */
   locateAlarms?: LocateAlarm[];
+  maintenance?: Maintenance | null;
+  /** 维护采集进度，按配方；只含采集版配方录下的件 */
+  collection?: CollectionProgress[];
+}
+
+/** 维护模式（在线投运）：开启后每件都布防采图，向 PLC 回结果码 0（按未检放行），不输出 NG。 */
+export interface Maintenance {
+  since: number;
+  reason: string;
+}
+
+/** usable：录制完整、各计划相机帧数一致且非零的件数 */
+export interface CollectionProgress {
+  recipeId: string;
+  recorded: number;
+  usable: number;
 }
 
 export interface LocateAlarm {
@@ -416,6 +443,8 @@ export interface CycleSettings {
   recordMaxGb: number;
   offlineRecordKeep: number;
   offlineRecordMaxGb: number;
+  /** 只由 cycle_set_maintenance 改写；保存设置时后端沿用当前值 */
+  maintenance?: Maintenance | null;
 }
 
 export type SiteMode = "real" | "offline";

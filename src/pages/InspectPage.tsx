@@ -13,6 +13,7 @@ import { matchesPart } from "../features/cycle/identity";
 import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
 import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/components/InspectionDiagnostics";
 import ContextHelp from "../features/cycle/components/ContextHelp";
+import { CollectionProgressPanel, MaintenanceBanner, MaintenanceToggle } from "../features/cycle/components/MaintenanceMode";
 import { errorText } from "../lib/errors";
 import {
   computeVis,
@@ -196,6 +197,7 @@ export default function InspectPage() {
   const busy = !!snapshot && phase !== "IDLE" && phase !== "FAULT";
   return (
     <div className="prod">
+      <MaintenanceBanner maintenance={snapshot?.maintenance} />
       {debug && <div className="qs-banner tertiary" role="status"><span><strong>候选配方调试结果</strong> · {debug.recipeId} · 修订 {debug.revision} · 未发布，仅用于离线测试，不作为生产验收。</span></div>}
       <CandidateDebugControls site={site} snapshot={snapshot} />
       <div className="prod-bar">
@@ -222,6 +224,7 @@ export default function InspectPage() {
         </Chip>
         <span className="spacer" />
         <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
+        {snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} />}
         <Button onClick={() => setDiagnostics("readiness")}>诊断</Button>
         <OfflineControls readiness={readiness} refresh={refreshReadiness} publishedSection={offlineSample} candidateRunning={!!snapshot?.candidateDebug} />
         {showReset && (
@@ -254,6 +257,7 @@ export default function InspectPage() {
         {snapshot.locateAlarms.some(alarm => alarm.recipeId !== snapshot.activeRecipeId) && "标“当前未在生产”的是之前生产的配方留下的，换配方不会清除它：要等该配方再生产且定位成功、该配方新修订的第一件测完，或软件重启才消除。"}
       </Alert>}
 
+      <CollectionProgressPanel collection={snapshot?.collection} recipes={recipes} />
       <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="prod-body">
@@ -368,7 +372,7 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
   const card = useRef<HTMLElement>(null);
   const running = !result && phase !== "IDLE" && phase !== "FAULT";
   const stateKey = result ? `${result.cycleId}:${result.ts}` : running ? `run:${part?.cycleId ?? ""}` : "idle";
-  const tone = result ? verdictTone(result.verdict) : running ? "run" : "idle";
+  const tone = result ? (result.mode === "maintenanceCollect" ? "idle" : verdictTone(result.verdict)) : running ? "run" : "idle";
   const initial = useRef(stateKey);
   const animate = useRef(false);
   if (initial.current !== stateKey) animate.current = true;
@@ -377,7 +381,8 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
     if (animate.current && tone === "ng") setEmphasis(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stateKey]);
-  const parts = result ? verdictParts(result.verdict) : null;
+  const parts = result ? (result.mode === "maintenanceCollect" ? { code: "未判定", detail: "维护采集，只录图" }
+    : { ...verdictParts(result.verdict), ...(result.mode === "maintenanceShadow" ? { detail: `试判 · ${verdictParts(result.verdict).detail}` } : {}) }) : null;
   const reason = result ? displayReason(result.reason) : "";
   // 本件有帧没有位置基准：不论整件 NG 还是不可判都挂徽标（NG 优先于基准无效时 PLC 码看不出定位失败）
   const reference = result && part && result.cycleId === part.cycleId ? partReferenceBadge(part) : null;

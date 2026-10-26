@@ -5,7 +5,7 @@ import { matchesPart, mergeMeasurements } from "./identity";
 import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineSource, Readiness, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","site_enter_offline","site_leave_offline","site_preview_sample_set","site_pick_dir","offline_run","offline_stop","offline_inject","offline_capture"].includes(cmd))
+  if (!isTauri() && ["cycle_save_settings","cycle_set_maintenance","cycle_select_recipe","cycle_reset","site_enter_offline","site_leave_offline","site_preview_sample_set","site_pick_dir","offline_run","offline_stop","offline_inject","offline_capture"].includes(cmd))
     return Promise.reject(new Error("生产配置与检测操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -31,6 +31,8 @@ export const cycleApi = {
   layout: (recipeId: string, revisionId?: string) => call<Recipe | null>("cycle_layout", { recipeId, revisionId: revisionId ?? null }, () => null),
   getSettings: () => call<CycleSettings>("cycle_get_settings", undefined, () => structuredClone(defaultSettings)),
   saveSettings: (settings: CycleSettings) => call<void>("cycle_save_settings", { settings }, () => undefined),
+  /** 开启须填原因；从下一件起生效 */
+  setMaintenance: (enabled: boolean, reason: string) => call<void>("cycle_set_maintenance", { enabled, reason }, () => undefined),
   selectRecipe: (recipeId: string) => call<void>("cycle_select_recipe", { recipeId }, () => undefined),
   reset: () => call<void>("cycle_reset", undefined, () => undefined),
   readiness: () => call<Readiness | null>("cycle_readiness", undefined, () => null),

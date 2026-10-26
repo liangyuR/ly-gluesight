@@ -11,7 +11,7 @@ use crate::camera::CameraSource;
 use crate::cycle::{self, CycleHost};
 use crate::frame::FrameImage;
 use crate::judge::{self, PointState, Verdict};
-use crate::recipe::{CameraImaging, DetectParams, Recipe, RecipeDoc};
+use crate::recipe::{CameraImaging, DetectParams, Recipe, RecipeDoc, RecipeStage};
 use crate::release::ValidationSite;
 use crate::store::{self, Store};
 use crate::vision;
@@ -25,6 +25,9 @@ mod burst_release_tests;
 mod burst_tests;
 mod capture_review;
 pub(crate) mod centerline;
+mod collect_release;
+#[cfg(test)]
+mod collect_release_tests;
 mod comparisons;
 mod fixture;
 mod history_samples;
@@ -37,6 +40,7 @@ mod workflow;
 pub use burst::*;
 pub use burst_history::*;
 pub use capture_review::*;
+pub use collect_release::*;
 pub use fixture::*;
 pub use transfer::*;
 pub use workflow::*;
@@ -431,6 +435,8 @@ pub struct WorkspaceView {
     pub workspace: Workspace,
     pub layout: Recipe,
     pub production_version: Option<u32>,
+    /// 生产配方是采集版还是正式版；未发布为空
+    pub production_stage: Option<RecipeStage>,
     /// 生产配方的 PLC 计划版本
     pub production_plan_version: Option<u32>,
     /// 候选的拍照计划与生产配方不同（或还没发布过）：生效后 PLC 侧要同步新的计划版本
@@ -597,15 +603,29 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
     let layout = w.doc.build()?;
     let production_recipe = app.state::<CycleHost>().recipe(&w.doc.id);
     let production_version = production_recipe.as_ref().map(|r| r.version);
+    let production_stage = production_recipe.as_ref().map(|r| r.stage);
     if w.doc.is_burst() {
         // 段配方：旧拍照点的 PLC 参数、示教覆盖率与进度为空，计划导出与进度在 plan（D-SB-25、决策记录 5.1）
         let production = app.state::<CycleHost>().recipes.doc(&w.doc.id);
         let plan_changed = production.as_ref().is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
         let plan = burst::plan_view(app, &w, &layout, production_recipe.as_deref(), production.as_ref(), production_version);
         return Ok(WorkspaceView {
-            workspace: w, layout, production_version, production_plan_version: production.map(|p| p.plan_version), plan_changed,
-            production_plc: None, candidate_plc: None, candidate_plc_error: None, coverage: None,
-            progress: progress::Progress { steps: Vec::new(), shots: Vec::new(), next: None }, plan: Some(plan),
+            workspace: w,
+            layout,
+            production_version,
+            production_stage,
+            production_plan_version: production.map(|p| p.plan_version),
+            plan_changed,
+            production_plc: None,
+            candidate_plc: None,
+            candidate_plc_error: None,
+            coverage: None,
+            progress: progress::Progress {
+                steps: Vec::new(),
+                shots: Vec::new(),
+                next: None,
+            },
+            plan: Some(plan),
         });
     }
     let production_plc = production_recipe.and_then(|r| crate::plc_plan::PlcParams::from_recipe(&r).ok());
@@ -621,6 +641,7 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         workspace: w,
         layout,
         production_version,
+        production_stage,
         production_plan_version: production.map(|p| p.plan_version),
         plan_changed,
         production_plc,
@@ -1568,6 +1589,7 @@ pub fn workspace_publish(
     let cams = cycle::usable_cams(&app, &recipe)?;
     app.state::<CycleHost>().camera.check_ready_at(&cams)?;
     let mut release_doc = w.doc.clone();
+    release_doc.stage = RecipeStage::Formal;
     release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));
     release_doc.plan_version = app.state::<CycleHost>().recipes.plan_version_for(&release_doc)?;
     let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?;
@@ -1595,8 +1617,12 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
     let cycle = app.state::<CycleHost>();
     let current = cycle.recipe(&release.doc.id);
     let recipe = release.doc.build()?;
-    let bundle = load_bundle(app, &recipe.id, &release.bundle_id)?;
-    if bundle.recipe != release.doc { return Err("待生效配方与不可变发布包不一致".into()); }
+    if !recipe.is_collect() {
+        let bundle = load_bundle(app, &recipe.id, &release.bundle_id)?;
+        if bundle.recipe != release.doc {
+            return Err("待生效配方与不可变发布包不一致".into());
+        }
+    }
     if current.as_ref().is_some_and(|saved| saved.revision_id == recipe.revision_id) {
         return cycle.recipes.save_published(release.doc.clone(), release.base_revision.as_deref());
     }
@@ -1707,7 +1733,12 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 w.revision += 1;
                 w.publish = PublishState::Active { version: saved.version, revision: w.revision, warning: next_version.err(), validation_site: release.validation_site };
                 changed = true;
-                let message = if saved.is_burst() {
+                let message = if saved.is_collect() {
+                    format!(
+                        "{id} v{} 采集版已生效；PLC 型号 {}，仅维护模式可用（只采图不判定）",
+                        saved.version, saved.product_code
+                    )
+                } else if saved.is_burst() {
                     // 段配方：shotCount / deviceShots = ΣN_exp（决策补充第二节）；重新标定使 ΣN_exp 变了就换计划版本（默认做法 6）
                     let total = saved.expected_total().map_or("未标定".to_string(), |n| n.to_string());
                     match previous_plan {

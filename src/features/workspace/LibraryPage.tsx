@@ -11,6 +11,12 @@ import { workspaceApi, type TransferExported, type TransferImported, type Transf
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar } from "./components";
 
+/** 阶段标记：只有候选、没发布过是草稿；已发布的按生产配方的阶段。 */
+function stageBadge(production: RecipeSummary | undefined) {
+  if (!production) return <Badge tone="warn">草稿</Badge>;
+  return production.stage === "collect" ? <Badge tone="info">采集版 v{production.version}</Badge> : <Badge tone="ok">正式版 v{production.version}</Badge>;
+}
+
 /** 段配方的规模（段数、ΣN_exp ± Σtol）：有候选时取候选，否则取已发布配方的摘要；没有段时返回 null。 */
 function burstScale(draft: RecipeDoc | undefined, production: RecipeSummary | undefined) {
   if (draft) return draft.segments?.length ? { segmentCount: draft.segments.length, ...planTotals(draft) } : null;
@@ -150,7 +156,7 @@ export default function LibraryPage() {
     {!desktopAvailable() && <Notice title="配方操作需要桌面后端" tone="warn">本页不会在浏览器中创建、保存或发布生产配置。</Notice>}
     {exportingId && <Notice title={"正在导出 " + exportingId}>迁移包含采集原图，轮次多时需要几分钟，请勿关闭软件。</Notice>}
     <div className="wp-library-grid">{visible.map(r => <Panel key={r.id} title={r.name} detail={r.id} className={"wp-recipe-card " + (r.id === selectedId ? "selected" : "")} actions={<Badge tone="neutral">飞拍</Badge>}>
-      <div className="wp-actions"><Badge tone={r.production ? "ok" : "warn"}>{r.production ? "已发布 v" + r.production.version : "未发布"}</Badge>{r.draft && <Badge>候选 v{r.draft.doc.version}</Badge>}{r.draft?.pending && <Badge tone="warn">待生效</Badge>}</div><p className="muted mono">型号 {r.draft?.doc.productCode ?? r.production?.productCode}{r.scale && " · " + planScaleText(r.scale)}</p>{r.production && <p className="muted mono">计划版本 {r.production.planVersion}</p>}
+      <div className="wp-actions">{stageBadge(r.production)}{r.draft && <Badge>候选 v{r.draft.doc.version}</Badge>}{r.draft?.pending && <Badge tone="warn">待生效</Badge>}</div><p className="muted mono">PLC 型号 {r.production?.productCode ?? r.draft?.doc.productCode}{r.scale && " · " + planScaleText(r.scale)}</p>{r.production && <p className="muted mono">计划版本 {r.production.planVersion}</p>}
       <div className="wp-actions"><Button variant="filled" disabled={blocked} onClick={()=>void open(r.id)}>继续配置</Button><IconButton title="复制配方" aria-label={"复制配方 " + r.id} disabled={blocked} onClick={() => void prepare(r.id)}><Copy size={16} /></IconButton><IconButton title={r.draft ? "导出迁移包" : "导出迁移包（只有已发布版本，仅含配方文档）"} aria-label={"导出配方 " + r.id} disabled={blocked} onClick={() => void exportRecipe(r.id)}><Download size={16} /></IconButton><IconButton title="删除配方" aria-label={"删除配方 " + r.id} disabled={blocked || !!r.draft?.pending} onClick={() => {setDeleting(r.id);setRemovedId(null);setDialogError("");}}><Trash2 size={16} /></IconButton></div>
     </Panel>)}{visibleUnavailable.map(r => <Panel key={"unavailable:"+r.fileName} title={r.name || r.id || r.fileName} detail={r.fileName} className="wp-recipe-card" actions={<Badge tone="warn">不可用</Badge>}>
       <p className="muted">文件格式 {r.schemaVersion ?? "未知"} · 当前格式 {r.currentSchemaVersion}</p>

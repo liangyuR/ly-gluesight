@@ -27,6 +27,7 @@
 | 二 | PLC 会话、布防与重连 | [r2-plc.md](r2-plc.md) | #132–#136，ly-plc#4、#5（v0.4.0） | 有效 |
 | 二 | 记录、追溯与告警 | [r2-records.md](r2-records.md) | #121、#124、#126、#128–#130、#137 | 有效 |
 | 二 | 前端性能与内存 | [r2-perf.md](r2-perf.md) | #138、#139、#123 | 有效（段配方的在线读图同样走 P-2 的 canvas 绘制） |
+| 五 | 维护模式与采集版配方（在线投运一期） | [maintenance-mode.md](maintenance-mode.md) | 分支 `feat/maintenance-mode` | 有效 |
 | 三 | qing-steel 0.8.0 界面迁移 | [qing-steel-080.md](qing-steel-080.md) | #141–#146，收尾 PR 见该文档 | 有效，依赖其后已升到 qing-steel 0.9.0 |
 | 四 | 分段连拍飞拍 | [segment-burst.md](segment-burst.md)、[plc-table.md 协议 6 适配](plc-table.md#协议-6-适配分段连拍)、[协议文档](../integration/plc-communication-protocol.md) | 分支 `feat/segment-burst-flyshot`，尚未合入 main（各工作包提交见 segment-burst.md） | 现行基准 |
 
