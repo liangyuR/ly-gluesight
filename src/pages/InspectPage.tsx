@@ -395,7 +395,7 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
       onAnimationEnd={event => { if (event.target === card.current) setEmphasis(false); }}>
       <div className="vh">
         <span title={result ? `SN ${result.sn}` : undefined}>{result ? <>判定结果 · SN <span className="sn">{result.sn}</span></> : "判定结果"}</span>
-        <span className="mono">PLC {result ? `${result.plcCode}${result.faultCode ? ` / ${result.faultCode}` : ""}` : "—"}</span>
+        <span className="mono">PLC {result ? `${result.plcCode}${result.faultCode && (result.mode ?? "production") === "production" ? ` / ${result.faultCode}` : ""}` : "—"}</span>
       </div>
       <Fragment key={stateKey}>
         {result && parts ? <>
