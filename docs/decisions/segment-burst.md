@@ -15,10 +15,10 @@
 
 - D-SB-40：段结构、检测相机与走廊由人定；生产按标定的各段 N_exp 比例与本件总帧组数推算边界，边界两侧各留 `boundary_guard`（默认 2）帧过渡区。
 - D-SB-41：每段指定检测相机，修订 D-SB-14 的“三台相机每帧取最差”。
-- D-SB-42：直线段可示教段走廊，弯道用出胶点短走廊，修订 D-SB-17 的“每台相机一条走廊”。
+- D-SB-42：直线段可示教段走廊，弯道用出胶点短走廊，修订 D-SB-17 的“每台相机一条走廊”（示教与标定已实现，生产双测待实现）。
 - D-SB-43：图像运动细化边界列为后续。
 
-实施顺序：D-SB-40（已实现）→ D-SB-41 → D-SB-42 → D-SB-43。未实现的条目实现之前，本文其余条目仍是现行依据。
+实施顺序：D-SB-40（已实现）→ D-SB-41（已实现）→ D-SB-42（示教与标定已实现）→ D-SB-43。未实现的条目实现之前，本文其余条目仍是现行依据。
 
 
 > 2026-10-23 测试范围更新：按用户决策删除依赖现场样本集的离线建站及重启、日志回放、特征定位桌面测试（原 `test:e2e:offline`、`test:e2e:log-replay`、`test:e2e:fixture` 及对应脚本）。下文相关命令、脚本和通过记录仅为历史事实，已不是可执行入口或当前覆盖声明；产品功能、长稳、硬件联调与底层业务测试不受影响。当前桌面入口仅保留生产落盘。
@@ -162,7 +162,7 @@
 
 - 问题：`taught.rs` 要求示教中线完整落在图内、站数固定（taught.rs:334-336）；规格 §4 中线逐点比对停用，保留边缘提取。
 - 采用（默认做法 4）：每台相机示教一条按直线段几何的走廊（`CameraInspect.corridor`），所有帧共用，只决定 ROI 和测站；弯道帧胶条走出走廊时该帧记 `OutOfCorridor`（检测不完整），不判 NG。G3 之后实现，本轮只在类型和本文件中体现。全流程验收用合成直线/弯道三相机；真实样本集 gs-20261017 是停稳拍数据，只做冒烟并报告不完整比例。
-- 修订（待实现）：D-SB-42 在本条走廊之外增加直线段的段走廊与弯道的出胶点短走廊，本条走廊改作默认走廊。
+- 修订（示教与标定已实现，生产待实现）：D-SB-42 在本条走廊之外增加直线段的段走廊与弯道的出胶点短走廊，本条走廊改作默认走廊。
 
 ### D-SB-18 胶偏参考值 x_ref
 
@@ -309,7 +309,7 @@
 - 回退：各段 `cameras` 设为全部计划相机。
 - 实现（2026-10-26，按用户要求提前到分段标定时选相机）：`PathSegment.cameras`（serde 默认空 = 全部计划相机，`plan::segment_cameras` 给出实际相机）；`validate_segments` 校验子集、不重复、胶偏参考相机属于本段相机；`plan_identity` 纳入各段实际相机（列全三台与不指定等价，不换版本）。`burst_judge`：直线 / 弯道区域只取本段相机的帧判定与计算检测不完整，过渡区取两侧并集，未分段区域全部相机；整件 `flags.incomplete` 改为各区域的检测不完整之并；`camera_frames` 仍按全部相机计数供追溯。分段标定工作台在段下方逐段点选相机（至少一台），没选中的相机缩略图变暗；其余轮次复核每个边界只显示两侧段的相机，相机越少缩略图越大；段列表卡片显示检测相机，胶偏参考相机只能选本段相机。改相机不改段签名，已确认的边界不失效。测成率统计与建议尚未实现。
 
-### D-SB-42 按段示教走廊（修订 D-SB-17，2026-10-26 用户确认，待实现）
+### D-SB-42 按段示教走廊（修订 D-SB-17，2026-10-26 用户确认，示教与标定已实现，生产双测待实现）
 
 - 问题：D-SB-17 每台相机一条走廊、所有帧共用。相机相对胶嘴固定，画面里只有出胶点位置不变；直线段内胶条方向不变，弯道里胶条绕出胶点旋转，一条固定走廊只能对齐示教帧附近的路径，NEW-14 数据上大部分帧走出走廊。
 - 采用：
@@ -320,6 +320,12 @@
 - 待定：双测增加的测量量与边界数成正比，而 3 × 25 Hz 吞吐门槛尚未达标（第九节第 17 条）；实现前须用现场工控机重跑吞吐探针，不达标时改为边界附近帧在收尾后补测（图像已在 `FramePool` 内）。
 - 理由：直线段方向不变，固定走廊可覆盖整段；弯道只能靠贴近出胶点的短走廊减小旋转造成的偏移（约为走廊长度 × 转角正弦）。
 - 回退：不示教段走廊时退回默认走廊，即 D-SB-17 现行做法。
+- 实现（2026-10-26，示教与标定部分）：
+  - 数据：`CameraInspect.segments`（`[{segment, corridor}]`，按 `PathSegment.index`）存段走廊；段示教帧记在 `Workspace.cameraTeaching`，`segment` 非空（默认走廊的示教帧 `segment` 为空），导出、验证样本独立性、屏蔽保护照旧覆盖全部示教帧。`cameraTeaching[].segments` 给出每段示教帧与是否已保存。
+  - 示教：`workspace_teach_segment_corridor` 冻结一帧，要求这台相机是该段检测相机、已有默认走廊示教帧且尺寸相同、示教轮次已确认手动分段、帧组落在该段内；走廊随候选整份保存（`workspace_save_doc`），每条段走廊须有对应段示教帧。`workspace_clear_segment_corridor` 去掉一段的走廊与示教帧，退回默认走廊。段的类型序列变化时段走廊与段示教帧一并清空。
+  - 示教页：相机下列出它检测的段，选段后在已确认分段的轮次里只能选本段帧组；像素当量与检测参数仍在默认走廊里设；弯道走廊超过 8 mm 只提示。
+  - 标定：加入标定的轮次已确认手动分段时，落在某段、且这台相机在该段有已保存段走廊的帧用段走廊测量，其余帧用默认走廊；标定轮次的走廊标签含段走廊。
+  - 未实现：生产、验证样本、历史复测与候选对照仍只用默认走廊；段走廊会随配方发布，但生产不读。双测按上面“待定”在吞吐复测后再做。
 
 ### D-SB-43 图像运动细化边界（2026-10-26 列入后续，未排期）
 
@@ -390,6 +396,8 @@
 | `recipe_plan_export` | `id` | `Result<String, String>`（PlanExport JSON 文本） | C1 |
 | `workspace_update_segments` | `id, revision, segments: PathSegment[]` | WorkspaceView | D2 |
 | `workspace_teach_camera` | `id, revision, camera, round, seq, draft` | WorkspaceView | D2 |
+| `workspace_teach_segment_corridor` | `id, revision, camera, segment, round, seq` | WorkspaceView（冻结段走廊示教帧） | D-SB-42 |
+| `workspace_clear_segment_corridor` | `id, revision, camera, segment` | WorkspaceView（这一段退回默认走廊） | D-SB-42 |
 | `workspace_calibration_add_round` | `id, revision, round, standard: bool` | WorkspaceView | D2 |
 | `workspace_calibration_remove_round` | `id, revision, round` | WorkspaceView | D2 |
 | `workspace_calibration_apply` | `id, revision` | WorkspaceView（结果在 `plan.calibration`） | D2 |

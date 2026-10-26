@@ -34,6 +34,8 @@ mod history_samples;
 pub mod progress;
 mod recorded;
 mod reproduce;
+#[cfg(test)]
+mod segment_corridor_tests;
 mod transfer;
 pub(crate) use transfer::{copy_hashed, reset_for_project_import};
 mod workflow;
@@ -880,6 +882,7 @@ fn apply_live_imaging(app: &AppHandle, camera: &str, imaging: &CameraImaging) ->
 fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
     // 段配方：N_exp、标定统计、整件标定与 x_ref 只能由多轮标定写入，段序列或类型变化时清空（旧拍照点配方不经过）
     burst::guard_calibration(&w.doc, &mut doc)?;
+    let segments_changed = burst::guard_segment_corridors(&w.doc, &mut doc, &w.camera_teaching)?;
     for shot in &mut doc.shots {
         let Some(old_k) = w.doc.shots.iter().position(|old| old.id == shot.id) else { continue };
         let old = &w.doc.shots[old_k];
@@ -929,7 +932,8 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
     w.doc = doc;
     // 不再是计划相机的示教帧不保留（旧拍照点配方没有）
     let cameras = w.doc.plan_cameras();
-    w.camera_teaching.retain(|t| cameras.contains(&t.camera));
+    w.camera_teaching
+        .retain(|t| cameras.contains(&t.camera) && !(segments_changed && t.segment.is_some()));
     for k in 0..w.frames.len() {
         if !w.doc.shots[k].views.is_empty() { let selected = w.doc.shots[k].view; workflow::load_active(w, k, selected)?; }
     }

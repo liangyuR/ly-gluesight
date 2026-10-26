@@ -452,9 +452,26 @@ pub struct CameraInspect {
     /// 为空时用配方的检测参数
     #[serde(default)]
     pub detect: Option<DetectParams>,
+    /// 按段示教的走廊（D-SB-42）：落在该段的帧用它，其余帧用上面的默认走廊；像素当量与检测参数仍按相机
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<SegmentCorridor>,
+}
+
+/// 一台相机在某一段（`PathSegment.index`）的走廊；少于 2 点为尚未示教，这一段退回默认走廊。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SegmentCorridor {
+    pub segment: u32,
+    #[serde(default)]
+    pub corridor: Vec<[f32; 2]>,
 }
 
 impl CameraInspect {
+    /// 第 `segment` 段的走廊；没有单独示教时为 None（用默认走廊）。
+    pub fn segment_corridor(&self, segment: u32) -> Option<&SegmentCorridor> {
+        self.segments.iter().find(|s| s.segment == segment)
+    }
+
     fn validate(&self) -> Result<(), String> {
         let id = &self.camera;
         if !valid_camera_id(id) {
@@ -462,6 +479,17 @@ impl CameraInspect {
         }
         if self.corridor.iter().flatten().any(|v| !v.is_finite()) {
             return Err(format!("相机 {id} 的走廊坐标必须是有限数"));
+        }
+        for (i, s) in self.segments.iter().enumerate() {
+            if s.corridor.len() > 10_000 || s.corridor.iter().flatten().any(|v| !v.is_finite()) {
+                return Err(format!(
+                    "相机 {id} 第 {} 段的走廊最多 10000 点，坐标必须是有限数",
+                    s.segment
+                ));
+            }
+            if self.segments[..i].iter().any(|o| o.segment == s.segment) {
+                return Err(format!("相机 {id} 第 {} 段的走廊重复", s.segment));
+            }
         }
         if let Some(m) = self.mm_per_px.filter(|m| !(m.is_finite() && *m > 0.0 && *m <= 10.0)) {
             return Err(format!("相机 {id} 的像素当量 {m} 需在 0–10 mm/px 之间"));
@@ -1012,6 +1040,16 @@ impl RecipeDoc {
         }
         for inspect in &self.inspect {
             inspect.validate()?;
+            if let Some(s) = inspect
+                .segments
+                .iter()
+                .find(|s| !self.segments.iter().any(|p| p.index == s.segment))
+            {
+                return Err(format!(
+                    "相机 {} 的段走廊指向不存在的第 {} 段",
+                    inspect.camera, s.segment
+                ));
+            }
         }
         plan::validate_segments(&self.segments, &self.plan_cameras())?;
         plan::validate_defaults(&self.segment_defaults)?;
@@ -1252,8 +1290,22 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
         limits: default_limits(),
         shots: Vec::new(),
         cameras: BTreeMap::new(),
-        segments: vec![plan::new_segment(1, SegmentKind::Straight, &segment_defaults)],
-        inspect: cameras.iter().map(|camera| CameraInspect { camera: camera.clone(), corridor: Vec::new(), mm_per_px: None, calib: None, detect: None }).collect(),
+        segments: vec![plan::new_segment(
+            1,
+            SegmentKind::Straight,
+            &segment_defaults,
+        )],
+        inspect: cameras
+            .iter()
+            .map(|camera| CameraInspect {
+                camera: camera.clone(),
+                corridor: Vec::new(),
+                mm_per_px: None,
+                calib: None,
+                detect: None,
+                segments: Vec::new(),
+            })
+            .collect(),
         segment_defaults,
         calibration_rounds: DEFAULT_CALIBRATION_ROUNDS,
         boundary_guard: DEFAULT_BOUNDARY_GUARD,

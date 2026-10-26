@@ -56,6 +56,7 @@ fn fixture(root: &Path) -> (Workspace, PathBuf, PathBuf) {
         frame,
         round: ROUND.into(),
         seq: 1,
+        segment: None,
     });
     w.calibration
         .rounds

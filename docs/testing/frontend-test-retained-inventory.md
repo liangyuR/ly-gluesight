@@ -56,6 +56,8 @@ pnpm typecheck
 | 23 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `已标定的配方，关掉溢胶检测 → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动` | 非结构编辑必须带实际改动保存，同时保留各段预期帧数与胶偏参考 |
 | 24 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `离开段列表页 > 上一份编辑还在提交时又改了容差并离开 → 等上一份完成，用它返回的新修订提交新编辑` | 保存进行中继续编辑并离页时必须等上次完成，再按返回的新修订提交最新编辑，防止丢改动 |
 | 25 | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 草稿与已保存的走廊只差 f32 精度 → 视为没改；点位、当量或检测参数不同 → 视为已改` | 后端f32往返精度差异不能让走廊永远处于未保存状态，真实点位或检测参数改动仍需识别 |
+| 25a | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 段走廊草稿 → 只写这一段的走廊…` | 段走廊草稿不覆盖默认走廊、相机像素当量与检测参数和其他段；清空即从配方去掉（D-SB-42，2026-10-26） |
+| 25b | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 段帧组范围：%s` | 段示教帧可选范围按已确认边界、含两端不差一帧；只存草稿的轮次不给范围（D-SB-42） |
 | 26 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `手工落点并自动保存 → 保存期间保留缩放与走廊、不能再改点，保存后草稿并入配方且清空` | 手工走廊经真实Provider自动保存时禁止再改点，保存后保留图像视角并只更新对应相机走廊 |
 | 27 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在示教帧上提取一次` | 刷选提取前保存草稿，按当前相机冻结帧、引导笔划、半径与最新修订提取并显示所得走廊 |
 | 28 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `自动提取失败后按笔划生成 → 定位原因并保留原线，人工草稿保留转弯且走廊待保存` | 自动提取失败必须保留原走廊及失败位置，操作员仍可按笔划生成保留转弯的待保存走廊 |

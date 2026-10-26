@@ -9,10 +9,26 @@ use crate::recipe_capture::CaptureRoundV2;
 fn taught(kinds: &[SegmentKind], device: &str) -> Workspace {
     let mut w = burst_workspace(kinds);
     for camera in w.doc.plan_cameras() {
-        w.camera_teaching.push(CameraTeaching { camera: camera.clone(), round: "capture-teach".into(), seq: 1, frame: FrozenImage {
-            id: format!("corridor-{camera}"), view: 1, source: "capture:capture-teach#1".into(), captured_at: 1, size: [1000, 700],
-            camera: camera.clone(), camera_tag: json!(device), calib_tag: Value::Null, geometry_tag: Value::Null,
-            exposure_us: None, gain_db: None, history_id: None } });
+        w.camera_teaching.push(CameraTeaching {
+            camera: camera.clone(),
+            round: "capture-teach".into(),
+            seq: 1,
+            frame: FrozenImage {
+                id: format!("corridor-{camera}"),
+                view: 1,
+                source: "capture:capture-teach#1".into(),
+                captured_at: 1,
+                size: [1000, 700],
+                camera: camera.clone(),
+                camera_tag: json!(device),
+                calib_tag: Value::Null,
+                geometry_tag: Value::Null,
+                exposure_us: None,
+                gain_db: None,
+                history_id: None,
+            },
+            segment: None,
+        });
     }
     w
 }

@@ -304,6 +304,14 @@ export interface CameraInspect {
   mmPerPx: number | null;
   calib: string | null;
   detect: DetectParams | null;
+  /** 按段示教的走廊（D-SB-42）：落在该段的帧用它，其余用默认走廊 corridor */
+  segments?: SegmentCorridor[];
+}
+
+export interface SegmentCorridor {
+  /** PathSegment.index */
+  segment: number;
+  corridor: [number, number][];
 }
 
 /** RecipeDoc 新增字段；segments 为空即旧拍照点配方（其余新字段被忽略）。 */
@@ -490,6 +498,17 @@ export interface CameraTeachingView {
   saved: boolean;
   frame: FrozenImage | null;
   mmPerPx: number | null;
+  /** 已选示教帧的段走廊（D-SB-42） */
+  segments?: SegmentTeachingView[];
+}
+
+export interface SegmentTeachingView {
+  segment: number;
+  frame: FrozenImage;
+  round: string;
+  seq: number;
+  /** 段走廊已保存且落在示教帧内；否则这一段测量用默认走廊 */
+  saved: boolean;
 }
 
 /** 候选里一台计划相机的示教帧（Workspace.cameraTeaching，D2）：从完整的新采集轮次冻结的一帧，走廊在这一帧上示教。 */

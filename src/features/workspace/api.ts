@@ -108,6 +108,12 @@ export const workspaceApi = {
   /** 用采集轮次 round 里这台相机第 seq 帧示教走廊：冻结该帧，按 draft 写进候选配方的 inspect */
   teachCamera: (id: string, revision: number, camera: string, round: string, seq: number, draft: CameraTeachDraft) =>
     desktopCall<WorkspaceView>("workspace_teach_camera", { id, revision, camera, round, seq, draft }),
+  /** 段走廊的示教帧（D-SB-42）：轮次须已确认手动分段、帧组落在该段内；相机须已示教默认走廊 */
+  teachSegmentCorridor: (id: string, revision: number, camera: string, segment: number, round: string, seq: number) =>
+    desktopCall<WorkspaceView>("workspace_teach_segment_corridor", { id, revision, camera, segment, round, seq }),
+  /** 去掉一台相机在某段的走廊与示教帧，这一段退回默认走廊 */
+  clearSegmentCorridor: (id: string, revision: number, camera: string, segment: number) =>
+    desktopCall<WorkspaceView>("workspace_clear_segment_corridor", { id, revision, camera, segment }),
   /** 把采集轮次加入多轮标定；standard = 标准件轮次（用于胶偏参考 xRef） */
   calibrationAddRound: (id: string, revision: number, round: string, standard: boolean) =>
     desktopCall<WorkspaceView>("workspace_calibration_add_round", { id, revision, round, standard }),

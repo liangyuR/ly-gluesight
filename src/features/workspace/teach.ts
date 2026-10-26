@@ -33,10 +33,47 @@ export function corridorError(t: CameraTeachDraft) {
   return "";
 }
 
-/** 把一台相机的走廊草稿写进配方副本（保存草稿用：整份配方经 workspace_save_doc 提交）；配方里没有这台相机的项时原样返回。 */
-export function withCorridor(doc: RecipeDoc, camera: string, draft: CameraTeachDraft): RecipeDoc {
-  const inspect = doc.inspect ?? [];
-  if (!inspect.some(item => item.camera === camera)) return doc;
-  return { ...doc, inspect: inspect.map(item => item.camera === camera ? { ...item, corridor: draft.corridor, mmPerPx: draft.mmPerPx, detect: draft.detect } : item) };
+/** 走廊草稿的键：默认走廊为相机编号，段走廊（D-SB-42）为“相机#段号”。 */
+export const draftKey = (camera: string, segment: number | null) => segment == null ? camera : `${camera}#${segment}`;
+
+export function parseDraftKey(key: string): { camera: string; segment: number | null } {
+  const at = key.lastIndexOf("#");
+  return at < 0 ? { camera: key, segment: null } : { camera: key.slice(0, at), segment: Number(key.slice(at + 1)) };
 }
 
+/** 候选里已保存的草稿：段走廊只有走廊本身按段，像素当量与检测参数取这台相机的。 */
+export function savedDraft(doc: RecipeDoc | undefined, key: string): CameraTeachDraft {
+  const { camera, segment } = parseDraftKey(key);
+  const inspect = doc?.inspect?.find(item => item.camera === camera);
+  const draft = corridorDraft(inspect);
+  if (segment == null) return draft;
+  const corridor = inspect?.segments?.find(item => item.segment === segment)?.corridor ?? [];
+  return { ...draft, corridor: corridor.map(([x, y]) => [x, y] as [number, number]) };
+}
+
+/** 把一条走廊草稿写进配方副本（保存草稿用：整份配方经 workspace_save_doc 提交）；配方里没有这台相机的项时原样返回。
+ *  段走廊只写这一段的走廊，不动相机的像素当量与检测参数；清空的段走廊从配方里去掉（示教帧仍在，这一段先用默认走廊）。 */
+export function withCorridor(doc: RecipeDoc, key: string, draft: CameraTeachDraft): RecipeDoc {
+  const { camera, segment } = parseDraftKey(key);
+  const inspect = doc.inspect ?? [];
+  if (!inspect.some(item => item.camera === camera)) return doc;
+  return { ...doc, inspect: inspect.map(item => {
+    if (item.camera !== camera) return item;
+    if (segment == null) return { ...item, corridor: draft.corridor, mmPerPx: draft.mmPerPx, detect: draft.detect };
+    const others = (item.segments ?? []).filter(s => s.segment !== segment);
+    const segments = draft.corridor.length ? [...others, { segment, corridor: draft.corridor }].sort((a, b) => a.segment - b.segment) : others;
+    return { ...item, segments };
+  }) };
+}
+
+
+/** 弯道段走廊的建议长度上限（D-SB-42）：从出胶点起画的短走廊，超过只提示。 */
+export const CORNER_CORRIDOR_MM = 8;
+
+/** 一轮已确认的手动分段里第 `segment` 段的帧组范围（从 1 起，含两端）；没确认或段数对不上时为 null。 */
+export function confirmedSegmentRange(review: { status: string; cuts: number[]; groupCount: number } | undefined, segments: { index: number }[], segment: number): { start: number; end: number } | null {
+  const at = segments.findIndex(item => item.index === segment);
+  if (!review || review.status !== "confirmed" || at < 0 || review.cuts.length !== segments.length - 1) return null;
+  const bounds = [0, ...review.cuts, review.groupCount];
+  return { start: bounds[at] + 1, end: bounds[at + 1] };
+}

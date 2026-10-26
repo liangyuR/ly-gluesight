@@ -152,13 +152,26 @@ pub(super) struct CandidateMeasurer {
 
 impl CandidateMeasurer {
     pub(super) fn new(app: &AppHandle, w: &Workspace, recipe: &Recipe) -> Result<Self, String> {
-        let graphs = recipe.inspect.iter().map(|inspect| {
-            let teaching = w.camera_teaching.iter().find(|t| t.camera == inspect.camera)
-                .ok_or_else(|| format!("相机 {} 还没有选示教帧：先完成走廊示教", inspect.camera))?;
-            vision::plan_corridor(inspect, recipe, teaching.frame.size)
-        }).collect::<Result<Vec<_>, String>>()?;
-        let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
-        Ok(Self { engine, graphs, run: vision::unique_run_id(&format!("candidate-{}", recipe.revision_id)) })
+        let graphs = recipe
+            .inspect
+            .iter()
+            .map(|inspect| {
+                let teaching = super::burst::default_teaching(&w.camera_teaching, &inspect.camera)
+                    .ok_or_else(|| {
+                        format!("相机 {} 还没有选示教帧：先完成走廊示教", inspect.camera)
+                    })?;
+                vision::plan_corridor(inspect, recipe, teaching.frame.size)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let engine = app
+            .state::<vision::VisionHost>()
+            .engine()
+            .ok_or("lyFlow 核心库未加载")?;
+        Ok(Self {
+            engine,
+            graphs,
+            run: vision::unique_run_id(&format!("candidate-{}", recipe.revision_id)),
+        })
     }
 
     pub(super) fn measure(&self, camera: usize, seq: u64, image: &FrameImage) -> Result<FrameMetrics, String> {

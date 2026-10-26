@@ -17,7 +17,9 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use super::burst::{corridor_saved, measure_round, offset_reference, CameraTeaching};
+use super::burst::{
+    corridor_saved, default_teaching, measure_round, offset_reference, CameraTeaching,
+};
 use super::burst_history::{judge_frames, remeasure, CandidateMeasurer};
 use crate::burst_judge::{BurstJudgement, FrameMetrics};
 use crate::frame_group::{loss_alarms, LossAlarm};
@@ -89,7 +91,7 @@ fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
     }
     for inspect in &doc.inspect {
         let camera = &inspect.camera;
-        let Some(teaching) = w.camera_teaching.iter().find(|t| &t.camera == camera) else {
+        let Some(teaching) = default_teaching(&w.camera_teaching, camera) else {
             problems.push(format!("相机 {camera}：待选示教帧"));
             continue;
         };
@@ -117,16 +119,25 @@ pub(super) fn current_camera_tags(app: &AppHandle) -> BTreeMap<String, Value> {
 /// 段配方候选试运行（`workspace_debug_run`）用的各计划相机示教帧尺寸（计划相机顺序，交给 `Candidate::new_burst`）：
 /// 每台都选了示教帧，且示教帧采集后这台相机的设备标签（`current`）没变——与走廊示教验证项同一口径。开跑前
 /// `recheck_debug_candidate` 再核对一次。
-pub(super) fn debug_sizes(w: &Workspace, current: &BTreeMap<String, Value>) -> Result<Vec<[u32; 2]>, String> {
-    w.doc.inspect.iter().map(|inspect| {
-        let camera = &inspect.camera;
-        let teaching = w.camera_teaching.iter().find(|t| &t.camera == camera)
-            .ok_or_else(|| format!("相机 {camera} 还没有选示教帧：先完成走廊示教"))?;
-        if current.get(camera) != Some(&teaching.frame.camera_tag) {
-            return Err(format!("相机 {camera}：示教帧采集后设备参数或样本集已改变，请重新采集并选示教帧"));
-        }
-        Ok(teaching.frame.size)
-    }).collect()
+pub(super) fn debug_sizes(
+    w: &Workspace,
+    current: &BTreeMap<String, Value>,
+) -> Result<Vec<[u32; 2]>, String> {
+    w.doc
+        .inspect
+        .iter()
+        .map(|inspect| {
+            let camera = &inspect.camera;
+            let teaching = default_teaching(&w.camera_teaching, camera)
+                .ok_or_else(|| format!("相机 {camera} 还没有选示教帧：先完成走廊示教"))?;
+            if current.get(camera) != Some(&teaching.frame.camera_tag) {
+                return Err(format!(
+                    "相机 {camera}：示教帧采集后设备参数或样本集已改变，请重新采集并选示教帧"
+                ));
+            }
+            Ok(teaching.frame.size)
+        })
+        .collect()
 }
 
 /// 段标定（规格 §1 未标定不能发布；决策补充“多段配方的发布与运行”）：整件 ΣN_exp 已由多轮标定得出即通过，
@@ -402,7 +413,8 @@ pub(super) fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeD
     let mut sizes = Vec::with_capacity(recipe.inspect.len());
     let mut cameras = Vec::with_capacity(recipe.inspect.len());
     for inspect in &recipe.inspect {
-        let taught = teaching.iter().find(|t| t.camera == inspect.camera).ok_or_else(|| format!("相机 {} 没有示教帧，不能发布", inspect.camera))?;
+        let taught = default_teaching(teaching, &inspect.camera)
+            .ok_or_else(|| format!("相机 {} 没有示教帧，不能发布", inspect.camera))?;
         let external = vision::camera_calib_path(app, inspect)?;
         let source = if external.exists() {
             Some(serde_json::from_str::<Value>(&crate::fsio::read_text(&external).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?)
