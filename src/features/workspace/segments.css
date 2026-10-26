@@ -35,5 +35,6 @@
 .swb-seam { cursor: pointer; }
 .swb-seam:hover { border-color: var(--outline-variant); }
 .swb-seam.on { border-color: var(--ng); color: var(--ng); cursor: grab; }
+.swb-seam.target:hover { border-color: var(--primary); cursor: grabbing; }
 .swb-preview { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; }
 .swb-preview > * { min-height: 280px; }

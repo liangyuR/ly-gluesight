@@ -66,6 +66,14 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   const [edit, setEdit] = useState<{ roundId: string; draft: WorkbenchDraft } | null>(null);
   const [seq, setSeq] = useState(1);
   const [confirming, setConfirming] = useState(false);
+  // 按住一个已有边界拖到另一条竖缝上松开即移动它（指针事件，不用 HTML5 拖放：WebView2 里不可靠）
+  const [dragging, setDragging] = useState<number | null>(null);
+  useEffect(() => {
+    if (dragging == null) return;
+    const end = () => setDragging(null);
+    window.addEventListener("pointerup", end);
+    return () => window.removeEventListener("pointerup", end);
+  }, [dragging]);
   const review = data?.workspace.captureReview;
   const template = review?.template ?? null;
   const docId = doc?.id ?? "";
@@ -206,10 +214,10 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
             const group = k + 1;
             const at = draft.cuts.indexOf(group);
             if (group === groupCount) return <span key="end" className="swb-seam-end">{group}</span>;
-            return <button key={`seam-${group}`} type="button" className={`swb-seam${at >= 0 ? " on" : ""}`} disabled={frozen}
+            return <button key={`seam-${group}`} type="button" className={`swb-seam${at >= 0 ? " on" : ""}${dragging != null && dragging !== at ? " target" : ""}`} disabled={frozen}
               aria-label={at >= 0 ? `删除帧组 ${group} 之后的边界` : `在帧组 ${group} 之后插入边界`}
-              draggable={at >= 0} onDragStart={e => e.dataTransfer.setData("text/plain", String(at))}
-              onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const from = Number(e.dataTransfer.getData("text/plain")); if (Number.isInteger(from)) change(moveCut(draft, from, group)); }}
+              onPointerDown={() => { if (at >= 0) setDragging(at); }}
+              onPointerUp={() => { if (dragging != null && draft.cuts[dragging] !== group) change(moveCut(draft, dragging, group)); }}
               onClick={() => change(toggleCut(draft, group))}>{group}</button>;
           })}
         </div>
