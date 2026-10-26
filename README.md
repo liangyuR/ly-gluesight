@@ -58,7 +58,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml
 
 Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 Rust 默认库回归（`cargo test --locked --lib`）。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、样本转换、打包与长稳脚本检查及桌面 E2E 均不在普通 PR CI 中执行。
 
-前端当前保留 103 项默认回归（32 个文件），逐项规则见[前端保留测试清单](docs/testing/frontend-test-retained-inventory.md)。Rust 保留 106 项默认回归和 1 项手动算法评测，逐项规则见 [Rust 保留测试清单](docs/testing/rust-test-retained-inventory.md)。默认集合包含少量 S7 回环、SQLite 与原图落盘集成测试，不需要现场硬件或 lyFlow DLL。
+测试数量与逐项保护规则见[前端保留测试清单](docs/testing/frontend-test-retained-inventory.md)和 [Rust 保留测试清单](docs/testing/rust-test-retained-inventory.md)。Rust 默认集合包含少量 S7 回环、SQLite 与原图落盘集成测试，不需要现场硬件或 lyFlow DLL；唯一的手动忽略项是算法评测。
 
 桌面 E2E 保留手动入口，使用 Playwright Test 连接应用 WebView2，无需下载 Playwright 浏览器。合成图段配方生产验证需要 lyFlow，无需现场样本集：
 
@@ -68,7 +68,7 @@ pnpm test:ui:production -Suite burst -ResetData
 
 生产落盘入口保留原命令并支持 `-Grep` 筛选，默认构建一次，再由夹具管理实例和失败证据。单独准备构建使用 `pnpm test:desktop:build -Profile flow`；测试加 `-SkipBuild` 可复用该 profile 的产物，但不会检查源码是否更新。HTML、JUnit 和失败截图、trace 位于 `output/playwright/<profile>-regression/runner/`；原业务 JSON 位置保持不变。
 
-依赖现场样本集的离线建站及重启、日志回放、特征定位桌面测试和对应入口已删除。生产落盘的段配方使用合成图，需要 lyFlow；长稳、硬件联调与底层业务验证保留。参数、报告和证据边界见 [测试记录与复现](docs/testing/TESTING.md)。
+长稳与故障注入见[长稳报告](docs/testing/soak-report.md)。参数、隔离实例、现场验收与证据边界见[测试说明](docs/testing/TESTING.md)。
 
 ## 打包
 
