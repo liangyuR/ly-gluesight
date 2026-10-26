@@ -18,10 +18,10 @@ use crate::applog::{codes, Fields};
 use crate::cycle::{self, CycleHost};
 use crate::frame::{BudgetExceeded, CounterSource, Frame, FrameImage, FramePool, GrayError};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
-use crate::recipe::{legacy_camera_id, valid_camera_id, CameraImaging, Recipe};
 use crate::offline::sample_set::SampleSet;
 use crate::offline::Scenario;
-use crate::simimage::{self, PoseError};
+use crate::recipe::{legacy_camera_id, valid_camera_id, CameraImaging, Recipe};
+use crate::simimage;
 
 mod delivery;
 
@@ -77,16 +77,7 @@ fn manual_arm_ready(source: CameraSource, pending: u32) -> Result<(), String> {
     } else { Ok(()) }
 }
 
-/// 模拟相机合成飞拍帧所需的信息：哪个配方的第几个拍照点、什么场景、机器人偏差。旧拍照点模型；段配方用 [`BurstRender`]。
-pub struct SimRender {
-    pub recipe: Arc<Recipe>,
-    pub k: usize,
-    pub scenario: Scenario,
-    pub pose: PoseError,
-    pub seed: u64,
-}
-
-/// 样本集相机取图的身份：哪个样本集的哪一件、哪个拍照点（相机编号与视角取自相机自身配置）。
+/// 样本集相机取图的身份：哪个样本集的哪一件、清单里的哪一帧（shotId；相机编号与视角取自相机自身配置）。
 pub struct SampleTarget {
     pub set: Arc<SampleSet>,
     pub part_id: String,
@@ -115,9 +106,8 @@ pub struct BurstRender {
     pub seed: u64,
 }
 
-/// 触发携带的取图依据：模拟相机按配方合成（旧拍照点配方 `Sim`、段配方 `Burst`），样本集相机按身份取原图。
+/// 触发携带的取图依据：模拟相机按段配方合成，样本集相机按身份取原图。
 pub enum TriggerPayload {
-    Sim(SimRender),
     Burst(BurstRender),
     Sample(SampleTarget),
 }
@@ -973,8 +963,7 @@ impl CameraSlot {
                 tauri::async_runtime::spawn(async move {
                     let started = Instant::now();
                     let images = tauri::async_runtime::spawn_blocking(move || match payload {
-                        Some(TriggerPayload::Sim(r)) => simimage::render_views(&r.recipe, r.k, r.scenario, r.pose, r.seed, config.view_count),
-                        // 段配方：三台独立单视角相机各出一幅（D-SB-11）
+                        // 三台独立单视角相机各出一幅（D-SB-11）
                         Some(TriggerPayload::Burst(r)) if config.view_count == 1 => Ok(vec![Arc::new(simimage::render_burst(&r))]),
                         Some(TriggerPayload::Burst(_)) => Err(format!("段配方的相机必须是单视角，模拟相机 {} 配了 {} 个视角", config.id, config.view_count)),
                         _ if config.view_count == 3 => simimage::background_views(config.view_count, n),
@@ -999,7 +988,9 @@ impl CameraSlot {
             CameraSource::SampleSet => {
                 let target = match payload {
                     Some(TriggerPayload::Sample(target)) => Ok(target),
-                    Some(TriggerPayload::Sim(_) | TriggerPayload::Burst(_)) => Err("样本集相机收到合成图触发，没有样本件身份".to_string()),
+                    Some(TriggerPayload::Burst(_)) => {
+                        Err("样本集相机收到合成图触发，没有样本件身份".to_string())
+                    }
                     None => crate::offline::preview_target(&self.shared.rig.app, &config.id)
                         .ok_or_else(|| format!("未选择离线样本集，或样本集里没有相机 {} 的拍照点", config.id)),
                 };
@@ -1474,7 +1465,9 @@ impl CameraRig {
         if !slot.is_ready() {
             return Err(format!("相机未就绪：{}", slot.status().message));
         }
-        let images = if config.source == CameraSource::Sim && !matches!(payload, Some(TriggerPayload::Sim(_) | TriggerPayload::Burst(_))) {
+        let images = if config.source == CameraSource::Sim
+            && !matches!(payload, Some(TriggerPayload::Burst(_)))
+        {
             let images = slot.last_views();
             if images.is_empty() {
                 return Err("模拟相机尚未出图，请先运行一个模拟工件".into());

@@ -27,12 +27,12 @@ export function projectNameError(name: string, entries: ProjectEntry[], self?: s
   return "";
 }
 
-export function importedProjectName(sourceName: string, entries: ProjectEntry[]): string {
+export function importedProjectName(sourceName: string, entries: ProjectEntry[], label = "导入"): string {
   const base = sourceName.trim();
   const taken = new Set(entries.flatMap(entry => entry.meta ? [entry.meta.name.trim()] : []));
   if (!taken.has(base)) return base;
   for (let n = 1; ; n++) {
-    const name = n === 1 ? `${base}（导入）` : `${base}（导入 ${n}）`;
+    const name = n === 1 ? `${base}（${label}）` : `${base}（${label} ${n}）`;
     if (!taken.has(name)) return name;
   }
 }

@@ -259,7 +259,7 @@ export async function buildBurstRecipe(call, { sourceId, partId = null, rounds =
   const fixture = CAMERA_FIXTURES[sourceId];
   assert(fixture, `没有段配方夹具 ${sourceId}，已有：${Object.keys(CAMERA_FIXTURES).join("、")}`);
   const template = doc ?? await call("recipe_template");
-  assert(template.segments?.length > 0 && template.shots?.length === 0, "recipe_template 应给段配方");
+  assert(template.segments?.length > 0, "recipe_template 应给段配方");
   const created = await call("workspace_create", { doc: template });
   const id = created.workspace.doc.id;
   assert(created.plan, "新建的候选应带 plan（段配方）");

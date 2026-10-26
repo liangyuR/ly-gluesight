@@ -4,13 +4,10 @@
  * 前半部分镜像 src-tauri/src/{plan,frame_group,segmentation,burst_judge,calibration}.rs 的可序列化类型
  * （serde camelCase，Option 一律序列化为 null）；后半部分是各 IPC 新增的 DTO（cycle.rs、store.rs、recipe_capture/burst.rs、
  * workspace/burst.rs、workspace/burst_history.rs），字段与 Rust serde 输出逐一对应。字段口径与命令清单见 docs/decisions/segment-burst.md。
- *
- * 与旧拍照点模型并存：配方 segments 为空即旧模型，cycle/workspace/history 的旧类型不动；
- * 段配方的数据都挂在旧 DTO 新增的可空字段上（PartView.burst、ResultView.burst、PartDetail.burst、WorkspaceView.plan…）。
  */
 import type { DetectParams, RecipeSummary, Verdict } from "../cycle/types";
 import type { PartSummary } from "../history/types";
-import type { CaptureCamera, CaptureRound, FrozenImage, ProgressStep } from "../workspace/types";
+import type { CaptureCamera, FrozenImage, StepStatus } from "../workspace/types";
 
 // ───────────── plan.rs ─────────────
 
@@ -85,7 +82,7 @@ export interface InspectRange {
   bMm: number;
 }
 
-/** 沿胶路的一段（与旧模型 cycle/types 的 Segment 同名不同义，这里叫 PathSegment）。 */
+/** 沿胶路的一段。 */
 export interface PathSegment {
   /** 1..N，沿胶路顺序连续 */
   index: number;
@@ -327,7 +324,7 @@ export interface SegmentCorridor {
   corridor: [number, number][];
 }
 
-/** RecipeDoc 新增字段；segments 为空即旧拍照点配方（其余新字段被忽略）。 */
+/** RecipeDoc 的段模型字段。 */
 export interface RecipeDocSegmentFields {
   segments: PathSegment[];
   /** 有序，计划相机顺序取它 */
@@ -359,7 +356,7 @@ export interface FrameGroupView {
   cells: FrameCellView[];
 }
 
-/** 在线检测：段配方在途件（cycle::PartView.burst，C3）。旧配方为 null。 */
+/** 在线检测：在途件的帧组（cycle::PartView.burst）。 */
 export interface PartViewBurst {
   cameras: string[];
   expectedTotal: number | null;
@@ -391,7 +388,7 @@ export interface FrameRecord {
   rawFile: string | null;
 }
 
-/** 历史详情：段配方的部分（store::PartDetail.burst，C5）。旧记录为 null。 */
+/** 历史详情：段配方的部分（store::PartDetail.burst）；没有帧记录的记录为 null。 */
 export interface PartDetailBurst {
   /** 本件配方快照的段 */
   segments: PathSegment[];
@@ -405,10 +402,12 @@ export interface PartDetailBurst {
   frames: FrameRecord[];
 }
 
-/** 历史列表：段配方记录带标记（疑似提前终止等单独显示）；旧记录 flags 为 null。 */
+/** 历史列表：段配方记录带标记（疑似提前终止等单独显示）；没有帧记录的为 null。 */
 export interface PartSummaryV2 extends PartSummary {
   flags: Flags | null;
 }
+
+export type CaptureState = "waitingStart" | "receiving" | "draining" | "complete" | "failed";
 
 /** 示教采集轮次失败原因（新轮次）；计数不符不再是失败。 */
 export type CaptureFailureV2 =
@@ -444,7 +443,7 @@ export interface CaptureRoundV2 {
   roundId: string;
   recipeId: string;
   cameras: CaptureCamera[];
-  state: CaptureRound["state"];
+  state: CaptureState;
   /** PLC 写来的 shotCount（示教轮次可为估算值，不核对） */
   plcShotCount: number | null;
   plcPlanVersion: number | null;
@@ -562,7 +561,7 @@ export interface CameraTeachDraft {
   detect: DetectParams | null;
 }
 
-/** 候选工作区：段配方的计划部分（WorkspaceView.plan，D2）。旧配方为 null。 */
+/** 候选工作区：段配方的计划部分（WorkspaceView.plan）。 */
 export interface WorkspacePlanView {
   segments: PathSegment[];
   cameras: string[];
@@ -583,7 +582,7 @@ export interface WorkspacePlanView {
   progress: ProgressV2;
 }
 
-/** 配方库：RecipeSummary 新增字段（C1）。旧配方 segmentCount = 0。 */
+/** 配方库摘要的段模型字段。 */
 export interface RecipeSummaryV2 extends RecipeSummary {
   segmentCount: number;
   expectedTotal: number | null;
@@ -603,8 +602,12 @@ export type ProgressTargetV2 =
   | { page: "validation" }
   | { page: "camera" };
 
-export interface ProgressStepV2 extends Omit<ProgressStep, "id" | "blockers"> {
+export interface ProgressStepV2 {
   id: StepIdV2;
+  label: string;
+  optional: boolean;
+  status: StepStatus;
+  detail: string;
   blockers: { message: string; target: ProgressTargetV2 }[];
 }
 

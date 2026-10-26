@@ -66,12 +66,11 @@ export function nextTeachingHref(plan: TeachingPlan): string | null {
 }
 
 /**
- * 走廊示教步骤的状态；没有段计划时为 null。
+ * 走廊示教步骤的状态。
  * 计划相机不是 3 台时阻塞；后端记为完成但仍有相机未就绪时按实际状态显示“进行中”。
  */
-export function cameraTeachStatus(view: Pick<WorkspaceView, "plan">): StepStatus | null {
+export function cameraTeachStatus(view: Pick<WorkspaceView, "plan">): StepStatus {
   const plan = view.plan;
-  if (!plan) return null;
   if (plan.cameras.length !== PLAN_CAMERAS) return "blocked";
   const derived: StepStatus = cameraParamsTasks(plan).every(item => item.ready) ? "done" : corridorTasks(plan).every(task => task.status === "selectFrame") ? "notStarted" : "inProgress";
   const step = plan.progress.steps.find(s => s.id === "corridor");

@@ -2,16 +2,7 @@ use std::path::{Component, Path};
 
 use crate::burst_judge::FrameState;
 use crate::frame::FrameImage;
-use crate::store::{FrameRecord, PartShot, ShotRawFile};
-
-use super::RawFrame;
-
-fn relative_path<'a>(cycle_id: &str, raw: &'a ShotRawFile) -> Result<&'a Path, String> {
-    if !(1..=3).contains(&raw.view) {
-        return Err("历史原图路径与 cycleId 不一致，拒绝读取".into());
-    }
-    cycle_relative(cycle_id, &raw.file)
-}
+use crate::store::FrameRecord;
 
 /// 录制根内的相对路径，且所在目录是本件的录制目录（`*_cycle_{cycleId}`）。
 fn cycle_relative<'a>(cycle_id: &str, file: &'a str) -> Result<&'a Path, String> {
@@ -87,41 +78,6 @@ fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn expected_dimensions(root: &Path, cycle_id: &str, shot: &PartShot, raw: &ShotRawFile) -> Result<Option<[u32; 2]>, String> {
-    let stored = match (raw.width, raw.height) {
-        (Some(width), Some(height)) if width > 0 && height > 0 => Some([width, height]),
-        (None, None) => None,
-        _ => return Err("历史原图的录制尺寸无效".into()),
-    };
-    let relative = relative_path(cycle_id, raw)?;
-    let metadata = cycle_metadata(root, relative, cycle_id)?;
-    let file = relative.file_name().and_then(|name| name.to_str()).ok_or("原图文件名无效")?;
-    let frames = metadata["frames"].as_array().ok_or("录制元数据缺少原图引用")?;
-    let mut matching = frames.iter().filter(|frame| frame["file"].as_str() == Some(file) && frame["view"].as_u64() == Some(u64::from(raw.view)));
-    let frame = matching.next().ok_or("录制元数据缺少对应原图")?;
-    if matching.next().is_some() || frame["cycleId"].as_str() != Some(cycle_id) || frame["available"].as_bool() != Some(true) {
-        return Err("录制元数据的原图身份重复、不一致或未落盘".into());
-    }
-    if shot.shot_id.is_empty() || shot.camera.is_empty() || !(1..=3).contains(&shot.view)
-        || frame["k"].as_u64() != Some(shot.k as u64)
-        || frame["shotId"].as_str() != Some(shot.shot_id.as_str())
-        || frame["camera"].as_str() != Some(shot.camera.as_str())
-        || frame["selectedView"].as_u64() != Some(u64::from(shot.view)) {
-        return Err("录制原图的拍照点、相机或选定视角与历史身份不一致".into());
-    }
-    for (field, expected) in [("session", shot.session), ("ordinal", shot.ordinal),
-        ("frameCounter", shot.frame_counter), ("triggerCounter", shot.trigger_counter)] {
-        let expected = expected.ok_or_else(|| format!("历史原图缺少 {field} 身份，不能核验"))?;
-        if frame[field].as_u64() != Some(expected) {
-            return Err(format!("录制原图的 {field} 与历史身份不一致"));
-        }
-    }
-    let dimension = |field: &str| frame[field].as_u64().and_then(|value| u32::try_from(value).ok()).filter(|value| *value > 0);
-    let size = [dimension("width").ok_or("录制原图宽度无效")?, dimension("height").ok_or("录制原图高度无效")?];
-    if stored.is_some_and(|expected| expected != size) { return Err("录制元数据尺寸与历史原图引用不一致".into()); }
-    Ok(Some(size))
-}
-
 fn checked_dimensions(bytes: &[u8], expected: Option<[u32; 2]>, file: &str) -> Result<(), String> {
     if let Some(expected) = expected {
         let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()
@@ -130,39 +86,6 @@ fn checked_dimensions(bytes: &[u8], expected: Option<[u32; 2]>, file: &str) -> R
         if [width, height] != expected { return Err(format!("原图 {file} 的尺寸与录制尺寸不符")); }
     }
     Ok(())
-}
-
-pub(super) fn load_verified(root: &Path, cycle_id: &str, shot: &PartShot, raw: &ShotRawFile) -> Result<FrameImage, String> {
-    crate::image_file::checked_source_path(root)?;
-    let root = root.canonicalize().map_err(|_| "原图目录不存在或已清理".to_string())?;
-    let bytes = original_bytes(&root, relative_path(cycle_id, raw)?)?;
-    let expected = expected_dimensions(&root, cycle_id, shot, raw)?;
-    checked_dimensions(&bytes, expected, &raw.file)?;
-    let image = image::load_from_memory(&bytes).map_err(|error| format!("原图 {} 解码失败：{error}", raw.file))?.into_luma8();
-    let (width, height) = image.dimensions();
-    Ok(FrameImage::new(width, height, image.into_raw()))
-}
-
-pub(super) fn frames(root: &Path, cycle_id: &str, shots: &[PartShot], ts: i64) -> Result<Vec<RawFrame>, String> {
-    crate::image_file::checked_source_path(root)?;
-    let root = root.canonicalize().map_err(|_| "原图目录不存在或已清理".to_string())?;
-    let mut result = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for shot in shots {
-        for raw in &shot.raw_files {
-            if !(1..=3).contains(&raw.view) || !seen.insert((shot.k, raw.view)) {
-                return Err("历史原图的拍照点或视角重复，不能确定对应图像".into());
-            }
-            let checked = original_bytes(&root, relative_path(cycle_id, raw)?).and_then(|bytes| {
-                checked_dimensions(&bytes, expected_dimensions(&root, cycle_id, shot, raw)?, &raw.file)
-            });
-            result.push(RawFrame { k: shot.k, view: raw.view, camera: shot.camera.clone(), file: raw.file.clone(), ts,
-                available: checked.is_ok(), error: checked.err(), cam: None, frame_counter: shot.frame_counter,
-                trigger_counter: shot.trigger_counter });
-        }
-    }
-    result.sort_by_key(|frame| (frame.k, frame.view));
-    Ok(result)
 }
 
 #[cfg(test)]
@@ -199,10 +122,25 @@ mod tests {
         let outcome = rx.recv_timeout(Duration::from_secs(10)).expect("真实 Recorder 必须完成收尾");
         let record = |camera: usize, seq: u64| {
             let delivered = delivered.contains(&(camera, seq));
-            let raw_file = outcome.files.iter().find(|f| f.frame.is_some_and(|k| (k.camera, k.seq) == (camera, seq))).map(|f| f.file.clone());
-            FrameRecord { camera, seq, status: if delivered { FrameState::Measured } else { FrameState::Missing },
-                frame_counter: delivered.then(|| frame(camera, seq).frame_counter), trigger_counter: delivered.then_some(50 + seq),
-                region: Some(0), metrics: None, raw_file }
+            let raw_file = outcome
+                .files
+                .iter()
+                .find(|f| (f.frame.camera, f.frame.seq) == (camera, seq))
+                .map(|f| f.file.clone());
+            FrameRecord {
+                camera,
+                seq,
+                status: if delivered {
+                    FrameState::Measured
+                } else {
+                    FrameState::Missing
+                },
+                frame_counter: delivered.then(|| frame(camera, seq).frame_counter),
+                trigger_counter: delivered.then_some(50 + seq),
+                region: Some(0),
+                metrics: None,
+                raw_file,
+            }
         };
         let records = recorder.root();
         for &(camera, seq) in &delivered {

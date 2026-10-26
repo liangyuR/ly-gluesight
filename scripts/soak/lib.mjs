@@ -11,7 +11,7 @@ export { until };
 export const identifier = "com.xyzrobotics.tujiaovision.soak-tests";
 export const RECIPE_ID = "SOAK-1";
 export const SAMPLE_PART = "p01";
-// 模拟标定：样本集原件 mmPerPx=null。取 docs/architecture/p0-plan.md 的假设当量 0.112 mm/px，
+// 模拟标定：样本集原件 mmPerPx=null。取同分辨率现场相机的假设当量 0.112 mm/px，
 // 在该当量下 S019 胶宽实测约 3.9 mm，与模板胶宽名义 4 mm 吻合；理由见 docs/decisions/soak.md。
 export const SIMULATED_MM_PER_PX = 0.112;
 const run = promisify(execFile);

@@ -5,7 +5,6 @@ import { StrictMode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
-import OverviewPage from "../src/features/workspace/OverviewPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import CapturePage from "../src/features/workspace/CapturePage";
 import { WorkspaceProvider } from "../src/features/workspace/context";
@@ -15,7 +14,7 @@ import type { WorkspaceView } from "../src/features/workspace/types";
 import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, siteStatus, snapshot, type BurstRecipeDoc } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 // 只替身桌面后端：invoke 按命令名分派到 backend 夹具，其余全是真实模块。
-// 例外：原图解码要用 canvas（jsdom 没有），workspaceApi.image / captureImage 直接给出解码结果。
+// 例外：原图解码要用 canvas（jsdom 没有），workspaceApi.image 直接给出解码结果。
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
 // 整页集成：真实 Provider 加刷选交互，机器忙（并行编译、其余测试）时会超过默认的 5 s
@@ -33,7 +32,6 @@ function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = 
     recipe_list: () => ({ recipes: [burstSummary(candidate.workspace.doc as BurstRecipeDoc)], errors: [], unavailable: [] }),
     workspace_list: () => [candidate.workspace],
     workspace_get: () => candidate,
-    workspace_progress: ({ k, view }) => ({ ...candidate, workspace: { ...candidate.workspace, lastPosition: { k, view } } }),
     camera_rig_config: () => [{ id: "CAM-1", name: "拼接设备", source: "sim", viewCount: 3, serial: "DEVICE",
       triggerSource: "Line0", triggerActivation: "LevelHigh", frameRate: 10, triggerDelayUs: 0, debouncerUs: 0, strobe: false, chunk: true }],
     camera_rig_status: () => [{ id: "CAM-1", ready: true }],
@@ -72,7 +70,6 @@ function renderWorkspace(path: string, strict = false) {
   Object.assign(globalThis, { jest: { advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms) } });
   const workspace = <MemoryRouter initialEntries={[path]}><SnackbarProvider><WorkspaceProvider><Routes>
     <Route path="/recipe/teach" element={<TeachingPage />} />
-    <Route path="/recipe/overview" element={<OverviewPage />} />
     <Route path="/recipe/validation" element={<ValidationPage />} />
     <Route path="/recipe/capture" element={<CapturePage />} />
   </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>;

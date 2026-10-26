@@ -1,5 +1,4 @@
 //! 段配方的示教采集轮次（CaptureRoundV2，D1）：不设数量上限、不核对计数，按 SDK 帧号三路配组，增量持久化。
-//! 旧拍照点配方仍用父模块的 [`CaptureRound`]，两种轮次永久并存，同一时刻只有一轮在采集。
 //!
 //! 规则（docs/decisions/segment-burst.md D-SB-8/9/10/33/35 与第六节口径）：
 //! - seq = frame_counter − 该相机基线（开始采集时这台相机本会话见到的最高帧计数），帧组数 = 各相机最大 seq 的最大值；
@@ -301,9 +300,10 @@ impl RecipeCaptureHost {
                 return Err(Rejected::MultiView(id.clone()));
             }
         }
-        let legacy = self.current.lock().unwrap();
         let mut guard = self.burst.lock().unwrap();
-        if legacy.as_ref().is_some_and(|r| r.round.state.active()) || guard.as_ref().is_some_and(|r| r.round.state.active()) { return Err(Rejected::Busy); }
+        if guard.as_ref().is_some_and(|r| r.round.state.active()) {
+            return Err(Rejected::Busy);
+        }
         let created_at = ly_plc::now_ms();
         let mut suffix = 0u32;
         let round_id = loop {

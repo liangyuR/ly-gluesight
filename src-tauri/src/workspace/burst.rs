@@ -1604,11 +1604,11 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
                 format!("当前修订验证通过（{} 件样本）", v.samples.len()),
             ),
             Some(_) => (
-                StepStatus::Optional,
+                StepStatus::NotStarted,
                 "可选：上次验证未通过，不影响发布".to_string(),
             ),
             None => (
-                StepStatus::Optional,
+                StepStatus::NotStarted,
                 "可选：用独立整圈样本试验证，不影响发布".to_string(),
             ),
         };

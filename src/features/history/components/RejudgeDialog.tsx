@@ -12,8 +12,6 @@ const kindFields: [keyof KindOverride, string][] = [
   ["tolUpper", "上公差"],
   ["tolLower", "下公差"],
   ["maxExcursionLen", "连续超差允许长度"],
-  ["absMin", "绝对限下"],
-  ["absMax", "绝对限上"],
 ];
 const recipeOptions = [
   { value: "recorded", label: "记录当时的配方版本" },
@@ -28,7 +26,7 @@ const orDefault = (value: number | "") => (value === "" ? undefined : value);
 export default function RejudgeDialog({ query, total, onClose }: { query: HistoryQuery; total: number; onClose: () => void }) {
   const navigate = useNavigate();
   const [useCurrent, setUseCurrent] = useState(false);
-  const [overrides, setOverrides] = useState<Overrides>({ position: {}, width: {} });
+  const [overrides, setOverrides] = useState<Overrides>({ straight: {}, corner: {} });
   const [result, setResult] = useState<RejudgeResult | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
@@ -39,12 +37,9 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
   useEffect(()=>{setResult(null);setError("");},[scope]);
   const invalid=Object.values(overrides).some(value=>typeof value==="number"&&!Number.isFinite(value))||
-    [overrides.position,overrides.width,overrides.straight,overrides.corner].some(value=>value&&(
-      Object.values(value).some(v=>v!==undefined&&!Number.isFinite(v))||
-      [value.tolUpper,value.tolLower,value.maxExcursionLen].some(v=>v!==undefined&&v<0)||
-      (value.absMin!==undefined&&value.absMax!==undefined&&value.absMin>value.absMax)))||
-    (overrides.maxGapLen!==undefined&&overrides.maxGapLen<0)||
-    (overrides.filterWindow!==undefined&&(!Number.isInteger(overrides.filterWindow)||overrides.filterWindow<1||overrides.filterWindow>31||overrides.filterWindow%2===0));
+    [overrides.straight,overrides.corner].some(value=>
+      Object.values(value).some(v=>v!==undefined&&(!Number.isFinite(v)||v<0)))||
+    (overrides.maxGapLen!==undefined&&overrides.maxGapLen<0);
   const edit=(next:Overrides)=>{setOverrides(next);setResult(null);setError("");};
 
   const run = async () => {
@@ -63,7 +58,7 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
     }
   };
 
-  const kindName = { position: "位置", width: "胶宽", straight: "直线段胶宽", corner: "弯道段胶宽" };
+  const kindName = { straight: "直线段胶宽", corner: "弯道段胶宽" };
   const kind = (k: keyof typeof kindName, f: keyof KindOverride) => (
     <NumberField
       id={`rj-${k}-${f}`}
@@ -113,22 +108,17 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
           {kindFields.map(([, label]) => (
             <Text key={label} variant="label" muted>{label}（mm）</Text>
           ))}
-          <span title="只作用于判位置的拍照点：胶条中线相对示教中线的横向偏移">位置</span>
-          {kindFields.map(([f]) => <div key={f}>{kind("position", f)}</div>)}
-          <span title="只作用于判胶宽的拍照点">胶宽</span>
-          {kindFields.map(([f]) => <div key={f}>{kind("width", f)}</div>)}
           {(["straight", "corner"] as const).map(k => <Fragment key={k}>
-            <span title={`只作用于段配方记录中${k === "straight" ? "直线" : "弯道"}区域的每帧胶宽；绝对限不适用`}>{k === "straight" ? "直线段" : "弯道段"}</span>
-            {kindFields.map(([f]) => <div key={f}>{f === "absMin" || f === "absMax" ? null : kind(k, f)}</div>)}
+            <span title={`只作用于${k === "straight" ? "直线" : "弯道"}区域的每帧胶宽`}>{k === "straight" ? "直线段" : "弯道段"}</span>
+            {kindFields.map(([f]) => <div key={f}>{kind(k, f)}</div>)}
           </Fragment>)}
         </div>
-        <Text variant="label" muted>位置、胶宽两行只作用于旧拍照点记录；直线段、弯道段两行只作用于段配方记录的胶宽（每帧独立判），未分段区域取两者中较宽的一档。</Text>
+        <Text variant="label" muted>胶宽允差按每帧独立判，未分段区域取直线、弯道中较宽的一档。</Text>
         <div className="rj-pair">
-          <NumberField id="rj-gap" label="允许断胶长度（mm，每个拍照点；段配方为每帧）" aria-label="允许断胶长度（mm）" disabled={running} min={0} step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onValueChange={(value) => edit({ ...overrides, maxGapLen: orDefault(value) })} />
-          <NumberField id="rj-filter" label="滤波窗口（奇数）" aria-label="滤波窗口（奇数）" disabled={running} step={2} min={1} max={31} placeholder="不变" value={overrides.filterWindow ?? ""} onValueChange={(value) => edit({ ...overrides, filterWindow: orDefault(value) })} />
+          <NumberField id="rj-gap" label="允许断胶长度（mm，每帧）" aria-label="允许断胶长度（mm）" disabled={running} min={0} step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onValueChange={(value) => edit({ ...overrides, maxGapLen: orDefault(value) })} />
         </div>
 
-        {invalid&&<Alert tone="ng">试算参数需为有限数，公差与允许长度不能为负，绝对限下需不大于上限；滤波窗口需为 1–31 的奇数。</Alert>}
+        {invalid&&<Alert tone="ng">试算参数需为有限数，公差与允许长度不能为负。</Alert>}
         {error && <Alert tone="ng">{error}</Alert>}
 
         {result && (

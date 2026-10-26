@@ -67,7 +67,7 @@ impl Bench {
         };
         PartOrder {
             profile: Some(profile),
-            ..PartOrder::legacy(sn.into(), 3, self.plan.shot_count, self.plan.device_shots)
+            ..PartOrder::new(sn.into(), 3, self.plan.shot_count)
         }
     }
 

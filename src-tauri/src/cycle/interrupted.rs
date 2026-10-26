@@ -1,6 +1,6 @@
 //! 进程在 S7 事务中退出：握手日志留着在途工件，历史却没有它。启动时按握手日志里的身份与开工场景补一条 ERR 记录，
-//! 配方取本件的运行日志（运行日志不落盘同步，缺失时本件不带配方）。段配方的补记录带预期帧组数 ΣN_exp 与容差、没有帧，
-//! 区域判定同为 ERR 98；旧拍照点配方仍按计划拍照点逐个记缺帧。
+//! 配方取本件的运行日志（运行日志不落盘同步，缺失时本件不带配方）。补记录带预期帧组数 ΣN_exp 与容差、没有帧，
+//! 区域判定同为 ERR 98。
 
 use std::sync::Arc;
 
@@ -28,10 +28,10 @@ pub(super) fn part(interrupted: &Interrupted, records: &[Record], recipe: impl F
         .find_map(|r| r.fields.recipe_id.as_deref())
         .and_then(recipe);
     let reason = format!("检测进程在事务中中断（请求序号 {}），本件未完成检测，结果未回写 PLC", interrupted.request_seq);
-    let judgement = Judgement::error(fault::DEVICE_LOST, reason.clone());
+    let judgement = Judgement::error(fault::DEVICE_LOST, reason);
     let burst = recipe
         .as_deref()
-        .and_then(|recipe| super::burst::empty_record(recipe, &judgement));
+        .map(|recipe| super::burst::empty_record(recipe, &judgement));
     let mode = match (
         interrupted.maintenance,
         recipe.as_deref().is_some_and(Recipe::is_collect),
@@ -44,8 +44,10 @@ pub(super) fn part(interrupted: &Interrupted, records: &[Record], recipe: impl F
         mode,
         ts: interrupted.started_at.unwrap_or(now),
         sn: interrupted.sn.into(),
-        frames_expected: match &burst { Some(burst) => burst.expected_total.unwrap_or(0) as usize, None => recipe.as_ref().map_or(0, |r| r.shot_count()) },
-        shots: super::recorded_shots(recipe.as_deref(), &[], &reason),
+        frames_expected: burst
+            .as_ref()
+            .map_or(0, |burst| burst.expected_total.unwrap_or(0) as usize),
+        shots: Vec::new(),
         recipe,
         judgement,
         drain_ms: None,

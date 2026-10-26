@@ -52,12 +52,27 @@ fn armed_part_with(
     let baselines = arm_frames(&cameras, ledgers, &policy, &identities).unwrap();
     Part {
         mode: crate::store::PartMode::Production,
-        cycle_id: cycle_id.into(), bundle_id: None, production: None, candidate: None, sn: "SN-88".into(), scenario: Scenario::Normal,
-        frames: Vec::new(), measuring_since: Vec::new(), table: Vec::new(), received: 0, extra: 0, queue: 0, router: unrouted(),
-        burst: Some(Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted))), issued: None, device_triggers: None,
-        routing_closed: false, image_measurement: false, proc_timeout: Duration::from_secs(1), drain_timeout: Duration::from_secs(2),
-        armed_at: Instant::now(), end_at: None, fault: None, cams: vec![0, 1, 2], camera_ids: cameras, rig_gen: 1,
-        source: RecordSource::Real, recording: None, recipe,
+        cycle_id: cycle_id.into(),
+        bundle_id: None,
+        production: None,
+        candidate: None,
+        sn: "SN-88".into(),
+        scenario: Scenario::Normal,
+        burst: Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted)),
+        device_triggers: None,
+        routing_closed: false,
+        image_measurement: false,
+        proc_timeout: Duration::from_secs(1),
+        drain_timeout: Duration::from_secs(2),
+        armed_at: Instant::now(),
+        end_at: None,
+        fault: None,
+        cams: vec![0, 1, 2],
+        camera_ids: cameras,
+        rig_gen: 1,
+        source: RecordSource::Real,
+        recording: None,
+        recipe,
     }
 }
 
@@ -114,8 +129,8 @@ fn end(part: &mut Part, device_triggers: Option<u16>, expired: bool) {
 }
 
 fn judge_burst(part: &mut Part) -> BurstJudgement {
-    let judgement = part.burst_judgement().unwrap();
-    part.burst.as_mut().unwrap().judgement = Some(judgement.clone());
+    let judgement = part.burst_judgement();
+    part.burst.judgement = Some(judgement.clone());
     judgement
 }
 
@@ -192,7 +207,7 @@ fn three_camera_frames_out_of_arrival_order_are_grouped_by_frame_counter_minus_b
     end(&mut p, Some(4), false);
     let judgement = judge_burst(&mut p);
     assert_eq!((judgement.verdict, judgement.group_count, judgement.flags.incomplete), (Verdict::Ok, 4, false));
-    let record = p.burst_record(&burst::summary(&judgement)).unwrap();
+    let record = p.burst_record(&burst::summary(&judgement));
     let identities: Vec<(usize, u64, Option<u64>)> = record.frames.iter().map(|f| (f.camera, f.seq, f.frame_counter)).collect();
     let expected: Vec<(usize, u64, Option<u64>)> = (1..=4u64).flat_map(|seq| (0..3usize).map(move |camera| (camera, seq, Some([100, 200, 300][camera] + seq)))).collect();
     assert_eq!(identities, expected);
@@ -233,7 +248,7 @@ fn frames_beyond_expected_total_are_all_measured_and_only_alarm() {
     assert!(p.complete());
     let judgement = judge_burst(&mut p);
     assert_eq!((judgement.verdict, judgement.group_count, judgement.flags.frame_count_anomaly), (Verdict::NgGap, 7, true));
-    let record = p.burst_record(&burst::summary(&judgement)).unwrap();
+    let record = p.burst_record(&burst::summary(&judgement));
     assert_eq!(record.frames.iter().filter(|f| f.status == FrameState::Measured).count(), 21);
 }
 
@@ -337,9 +352,9 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
                     panic!("{case}")
                 };
                 if keep_images {
-                    p.burst.as_mut().unwrap().retain_image(camera, seq, None);
+                    p.burst.retain_image(camera, seq, None);
                 }
-                if let Some(segment) = p.burst.as_ref().unwrap().arrival_corridor(camera, seq) {
+                if let Some(segment) = p.burst.arrival_corridor(camera, seq) {
                     let result = FrameMeasured {
                         segment,
                         ..frame_result(
@@ -359,9 +374,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
                 }
             }
         }
-        let arrival = |p: &Part, camera: usize, seq: u64| {
-            p.burst.as_ref().unwrap().arrival_corridor(camera, seq)
-        };
+        let arrival = |p: &Part, camera: usize, seq: u64| p.burst.arrival_corridor(camera, seq);
         assert_eq!(
             (arrival(&p, 0, 5), arrival(&p, 0, 6), arrival(&p, 1, 5)),
             (None, None, None),
@@ -409,7 +422,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             judgement.flags.incomplete, !keep_images,
             "{case}：{judgement:?}"
         );
-        let record = p.burst_record(&burst::summary(&judgement)).unwrap();
+        let record = p.burst_record(&burst::summary(&judgement));
         let state = |camera: usize, seq: u64| {
             record
                 .frames
@@ -439,7 +452,7 @@ fn next_part_baseline_is_each_camera_highest_frame_counter_seen() {
         for counter in delivered { deliver(&mut first, cam, counter); }
         first.device_triggers = Some(4);
         let mut ledgers = Ledgers::default();
-        first.close_routing(&mut ledgers, None);
+        first.close_routing(&mut ledgers);
         let mut next = burst_part("next", &ledgers);
         if let Some(late) = late {
             assert!(matches!(next.receive_burst(&burst_frame(cam, late)), Some(burst::Arrival::Stale { .. })), "{case}");
@@ -475,7 +488,7 @@ fn hik_camera_without_frames_this_session_arms_and_counts_from_its_first_frame()
         }
     }
     let mut ledgers = Ledgers::default();
-    p.close_routing(&mut ledgers, None);
+    p.close_routing(&mut ledgers);
     let mut next = armed_part("hik-next", &ledgers, None, Policy::burst_production(None));
     assert!(
         matches!(
@@ -503,7 +516,7 @@ fn camera_reconnect_during_part_is_err_98() {
         } else {
             let cameras: Vec<ArmCam> = (0..3u8).map(|cam| ArmCam { cam, camera: p.camera_ids[cam as usize].clone(),
                 session: if cam == 1 { 99 } else { cam as u64 + 11 }, source: Some(CounterSource::Synthetic), counter_after_open: None }).collect();
-            let reason = p.burst.as_ref().unwrap().check_sessions(&cameras).unwrap_err();
+            let reason = p.burst.check_sessions(&cameras).unwrap_err();
             p.fault = Some((fault::DEVICE_LOST, reason));
         }
         end(&mut p, Some(4), false);
@@ -525,7 +538,7 @@ fn no_frame_from_any_camera_is_err_91() {
 }
 
 /// D-SB-13（不裁帧时的背压）：一帧没测成——测量队满、单帧超时、测量失败、超过处理时限仍没结果——只记该组与整件检测不完整，
-/// 其余帧照常判，不像旧拍照点配方那样判 ERR 99。
+/// 其余帧照常判，不判 ERR 99。
 #[test]
 fn unmeasured_frame_marks_group_incomplete_not_err_99() {
     use measure::MeasureError;
@@ -599,7 +612,7 @@ fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result(
     assert!(p.apply_burst(result).is_some());
     assert!(p.complete());
     let judgement = judge_burst(&mut p);
-    let record = p.burst_record(&burst::summary(&judgement)).unwrap();
+    let record = p.burst_record(&burst::summary(&judgement));
     assert_eq!(record.frames.iter().find(|frame| frame.camera == 0 && frame.seq == 5).unwrap().status, FrameState::Measured);
 }
 
@@ -646,7 +659,7 @@ fn same_sn_reinspection_rejects_measurement_from_previous_cycle() {
 fn collect_part_completes_at_drain_deadline_without_measuring() {
     let mut part = burst_part("maintenance-collect", &Ledgers::default());
     part.mode = crate::store::PartMode::MaintenanceCollect;
-    part.burst.as_mut().unwrap().collect = true;
+    part.burst.collect = true;
     for cam in 0..3 {
         assert!(matches!(
             part.receive_burst(&burst_frame(cam, 1)),
@@ -657,5 +670,96 @@ fn collect_part_completes_at_drain_deadline_without_measuring() {
     assert!(!part.complete(), "收尾窗口内仍收帧");
     end(&mut part, None, true);
     assert!(part.complete(), "采集件不等测量结果");
-    assert_eq!(part.burst.as_ref().unwrap().group_count(), 1);
+    assert_eq!(part.burst.group_count(), 1);
+}
+
+/// 维护模式下采集版只核对相机，没示教走廊、没标定也能开工；正常模式不收采集版；正式版不论模式都要走廊与标定。
+/// 防就绪检查与空闲节拍把维护采集版按正式版要求挡在“尚无可开工配方”。
+#[test]
+fn run_kind_collect_runs_only_in_maintenance_and_formal_always_needs_corridors() {
+    use crate::recipe::RecipeStage::{Collect, Formal};
+    let cameras: Vec<String> = (0..3).map(crate::recipe::legacy_camera_id).collect();
+    let recipe = |stage, taught: bool| {
+        let mut doc = if taught {
+            crate::recipe::samples_burst()
+        } else {
+            crate::recipe::burst_template("NEW-1".into(), "新产线".into(), 21, &cameras)
+        };
+        doc.stage = stage;
+        doc.build().unwrap()
+    };
+    let cases = [
+        (
+            "维护 + 未示教采集版 → 只录图",
+            recipe(Collect, false),
+            true,
+            Some(RunKind::Collect),
+        ),
+        ("正常 + 采集版 → 拒收", recipe(Collect, false), false, None),
+        (
+            "维护 + 未示教正式版 → 仍要走廊",
+            recipe(Formal, false),
+            true,
+            None,
+        ),
+        (
+            "正常 + 已示教正式版 → 生产",
+            recipe(Formal, true),
+            false,
+            Some(RunKind::Production),
+        ),
+    ];
+    for (name, recipe, maintenance, expected) in cases {
+        assert_eq!(run_kind(&recipe, maintenance).ok(), expected, "{name}");
+    }
+}
+
+/// 维护模式没有可开工配方时配方项只提示、不阻塞：来件照常布防放行（MM-3），PC 不撤就绪；正常模式仍阻塞。
+#[test]
+fn no_runnable_recipe_blocks_only_outside_maintenance() {
+    use readiness::{Check, Facts, ItemKey, ItemState, Product, RecipeOption, Site};
+    for (maintenance, ready, state) in [
+        (false, false, ItemState::Blocked),
+        (true, true, ItemState::Waiting),
+    ] {
+        let report = readiness::evaluate(Facts {
+            candidate_debug: None,
+            site: Site::Real,
+            plc_connected: true,
+            session_behind: false,
+            session: Some(crate::plc_session::SessionPhase::Idle),
+            session_message: None,
+            phase: Phase::Idle,
+            fault: None,
+            cameras: Check::Ok,
+            engine: Some(Ok("1.1.5".into())),
+            workers: Ok(()),
+            audit: Check::Ok,
+            record: crate::settings::RecordMode::Off,
+            product: Product::Plc,
+            activation_uncertain: false,
+            maintenance,
+            recipes: vec![RecipeOption {
+                id: "NEW-1".into(),
+                name: "新产线".into(),
+                version: 1,
+                product_code: 21,
+                published: true,
+                runnable: false,
+                reason: Some("相机 cam1 尚未示教检测走廊".into()),
+                target: None,
+                waiting: None,
+            }],
+        });
+        let recipe = report
+            .items
+            .iter()
+            .find(|i| i.key == ItemKey::Recipe)
+            .unwrap();
+        assert_eq!(
+            (report.ready, recipe.state),
+            (ready, state),
+            "维护模式 {maintenance}"
+        );
+    }
 }

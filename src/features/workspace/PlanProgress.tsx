@@ -3,10 +3,12 @@ import { AlertTriangle, ArrowRight, Lock } from "lucide-react";
 import { Progress } from "qing-steel";
 import { corridorTasks, nextTeachingHref } from "./cameraTasks";
 import { useWorkspace } from "./context";
+import { RecipeIdentity } from "./DocParams";
 import { Badge, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { stepOfV2, stepStatusText, stepStatusTone, targetPathV2 } from "./progress";
 import { returnState } from "./returnNavigation";
 import { stageOfV2, stagesV2, stageStatusText, stageStatusTone, stageStatusV2 } from "./stages";
+import "./segments.css";
 
 const actions: Record<string, string> = {
   "/recipe/capture": "查看采集", "/recipe/segments": "编辑段列表", "/recipe/teach": "查看走廊示教",
@@ -17,8 +19,8 @@ const actions: Record<string, string> = {
 export default function PlanProgressPage() {
   const { data } = useWorkspace();
   const location = useLocation();
-  const plan = data?.plan;
-  if (!data || !plan) return <WorkspaceEmpty />;
+  if (!data) return <WorkspaceEmpty />;
+  const plan = data.plan;
   const { progress } = plan;
   const tasks = corridorTasks(plan);
   const taught = tasks.filter(task => task.status === "done").length;
@@ -28,7 +30,11 @@ export default function PlanProgressPage() {
   const warning = nextStep?.status === "blocked";
   const reasons = [...new Set(nextStep?.blockers.map(blocker => blocker.message) ?? [])].filter(message => message !== nextStep?.detail).slice(0, 3);
   const back = returnState(location, "进度总览");
-  return <div className="wp-page"><WorkspaceBar /><Panel title="配方进度" className="wp-progress-board">
+  return <div className="wp-page"><WorkspaceBar />
+    <Panel title="配方信息" detail="名称与 PLC 下发的型号；改动自动保存为候选配置，发布后生效">
+      <RecipeIdentity />
+    </Panel>
+    <Panel title="配方进度" className="wp-progress-board">
     {next && <section className={"wp-progress-next " + (warning ? "warn" : "info")} aria-label="下一步">
       {warning ? <AlertTriangle size={22} aria-hidden="true" /> : <ArrowRight size={22} aria-hidden="true" />}
       <div className="wp-progress-next-body">
@@ -50,7 +56,7 @@ export default function PlanProgressPage() {
         <span className={"wp-progress-number" + (stage.optional ? " optional" : "")} aria-hidden="true">{index + 1}</span>
         <div className="wp-progress-row-body">
           <h3>{stage.label}{stage.optional && <small>可选</small>}</h3>
-          <p>{waiting ? "整圈采集完成后可继续" : main?.detail && main.status !== "optional" ? main.detail : stage.hint}</p>
+          <p>{waiting ? "整圈采集完成后可继续" : main?.detail ? main.detail : stage.hint}</p>
           {!waiting && subs.map(step => <p key={step.id} className="wp-progress-sub"><span>{step.id === "publish" ? "发布" : step.label}</span><Badge tone={stepStatusTone[step.status]}>{stepStatusText[step.status]}</Badge>{step.detail}</p>)}
         </div>
         <div className="wp-progress-meter">
@@ -62,7 +68,7 @@ export default function PlanProgressPage() {
         </div>
         <output className="wp-progress-state" aria-label={stage.label + "状态"}>{waiting
           ? <Badge tone="neutral"><Lock size={12} aria-hidden="true" />{stageStatusText.waiting}</Badge>
-          : status && status !== "optional" && <Badge tone={stageStatusTone[status]}>{stageStatusText[status]}</Badge>}</output>
+          : status && <Badge tone={stageStatusTone[status]}>{stageStatusText[status]}</Badge>}</output>
         <Link className="wp-progress-link" to={link.href} state={back}>{link.label}<ArrowRight size={14} aria-hidden="true" /></Link>
       </section>;
     })}</div>

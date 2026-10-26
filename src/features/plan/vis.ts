@@ -1,6 +1,6 @@
 /**
  * 段模型结果的显示映射：在线检测、历史、工作台共用。只把契约类型（plan/types.ts）映射成文字、色调和格子状态，
- * 不做判定——结论、标记、帧数状态都以后端给出的为准。不依赖旧拍照点模型的 cycle/vis.ts 与 cycle/pose.ts。
+ * 不做判定——结论、标记、帧数状态都以后端给出的为准。
  */
 import type { Verdict } from "../cycle/types";
 import type {

@@ -1,14 +1,12 @@
 # 项目（Project）设计
 
-> 现状：一期已实施（2026-10-25，分支 `feat/project`）；二期的整个项目导出导入已实施（分支 `feat/project-transfer`），复制整个项目未做。
-
 ## 一、目标
 
 把“一套可上线的检测方案”收拢成一个**项目**：相机组参数、PLC 配置、节拍设置、工位标定、配方（候选、示教资料、采集轮次、标定轮次、发布包）以及这套方案产生的检测记录与历史原图，都归属于某个项目。软件启动时打开当前项目，操作员可以切换、新建、删除项目。
 
 典型用途：同一台工控机在换线、换夹具或换相机布置后切到另一套方案；调试新方案时不影响已上线的方案。
 
-不在本设计范围：PLC 协议不变（保持版本 6 与现有 DB 布局），PLC 不感知项目；不支持两个项目同时运行；不做按项目的操作权限。
+不在本设计范围：PLC 不感知项目；不支持两个项目同时运行；不做按项目的操作权限。
 
 ## 二、概念与边界
 
@@ -25,7 +23,7 @@
 | 节拍设置 | `config/cycle.json` | 项目 | 含历史保留天数 |
 | 飞拍估算参数 | `config/feasibility.json` | 项目 | |
 | 工位标定 | `calib/` | 项目 | 含 `calib/device/` |
-| 生产配方 | `recipes/` | 项目 | `.plan-version` 除外，见第五节 |
+| 生产配方 | `recipes/` | 项目 | 计划版本计数不在这里，见第五节 |
 | 候选与示教资料 | `workspaces/` | 项目 | 含 `comparisons/` |
 | 发布包 | `vision/releases/` | 项目 | |
 | 整圈采集轮次 | `recipe-capture/` | 项目 | |
@@ -91,7 +89,7 @@
 
 ### 切换
 
-切换采用**写指针后重启进程**：各宿主都在启动时一次性按路径初始化，开发机实测重启式切换约 1.1 秒（见[热切换设计](project-hot-switch.md#实测2026-10-25开发机)），换线场景可以接受。热切换已评估并放弃（见[项目热切换设计](project-hot-switch.md)）。
+切换采用**写指针后重启进程**：各宿主都在启动时一次性按路径初始化，开发机实测重启式切换约 1.1 秒，换线场景可以接受。不做不重启的热切换。
 
 1. 操作员在侧栏的项目菜单或项目管理页选目标项目，确认框显示目标项目名称、编号、配方数与检测记录数，并提示“将重启软件”；候选配置有未保存编辑或保存失败时不能切换。
 2. 后端 `project_switch(id)` 检查前置条件，任一不满足即拒绝并给出原因：
@@ -108,7 +106,7 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 
 ## 五、跨项目约束
 
-- **计划号全局单调**：PLC 是同一台物理设备，不能因为换项目收到用过的 `planVersion`。`.plan-version` 从 `recipes/` 移到本机 `state/plan-version`，所有项目共用一个递增计数。
+- **计划版本全局单调**：计划版本是配方计划的身份，随检测记录追溯；换项目也不能复用用过的号。计数放在本机 `state/plan-version`，所有项目共用一个递增计数（PLC 只发型号，不收计划版本）。
 - **记录与历史按项目隔离**：每个项目一份 `inspection.db`、`records/`、`records-offline/`，历史页只显示当前项目的记录，复测、重判自然只用当前项目的配方。记录库表结构与版本不变。
 - **历史清理**：只清理当前项目的过期记录，保留天数取当前项目的 `cycle.json`。非当前项目不再产生新记录；磁盘空间不足时由操作员在项目管理页删除不用的项目。
 - **审计与诊断**：`applog` 字段增加 `projectId`；诊断包导出当前项目的 `config/` 与 `project.json`。
@@ -117,7 +115,7 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 
 ## 六、项目管理页
 
-入口：侧栏项目卡片菜单的“管理项目…”与导航里的“项目”页（`/projects`）。页面列出本机全部项目，提供新建、重命名、切换、删除。
+入口：侧栏项目卡片菜单的“管理项目…”与导航里的“项目”页（`/projects`）。页面列出本机全部项目，提供新建、重命名、切换、复制、导出、导入、删除。
 
 ### 列表
 
@@ -152,9 +150,15 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 - **候选**：回到草稿，清掉待生效版本与验证结论；没带检测记录时去掉来自检测历史的验证样本。
 - 导入完成后提示核对相机组、PLC 配置与标定；切换到该项目仍按切换流程重启。
 
+### 复制
+
+- 入口：列表中任一可用项目一行的“复制”。填新项目名称（默认“<原名>（副本）”）、编号、描述，可选“包含检测记录与历史原图”（默认不含）。
+- 内容与导出相同（含记录时记录库同样用 `VACUUM INTO` 做快照，`audit-spool/` 不复制）；文件先拷进 `cache/project-copy-*` 暂存目录，再按导入的规则落成新项目：路径改写到新项目目录、计划版本按本机重新分配、候选回到草稿，最后原子移入 `projects/<新编号>/`。来源项目不改动；`copiedFrom` 记来源编号。
+- 复制当前项目前按导出的条件检查。复制后不自动切换，完成框里可直接进入切换流程。
+
 ## 七、旧资料不迁移
 
-项目尚未上线，旧资料全部抛弃（同 D-0）：新版本不读取根目录下的 `config/cameras.json`、`plc.json`、`cycle.json`、`feasibility.json`、`calib/`、`recipes/`、`workspaces/`、`vision/releases/`、`recipe-capture/`、`inspection.db`、`records/`、`records-offline/`、`audit-spool/`，首次启动新建空的默认项目。软件不自动删除这些旧文件，启动时检测到它们就写一条提示日志，由人工清理。旧 `recipes/.plan-version` 也不读取，`state/plan-version` 从头开始计数。
+旧资料全部抛弃、不迁移：新版本不读取根目录下的 `config/cameras.json`、`plc.json`、`cycle.json`、`feasibility.json`、`calib/`、`recipes/`、`workspaces/`、`vision/releases/`、`recipe-capture/`、`inspection.db`、`records/`、`records-offline/`、`audit-spool/`，首次启动新建空的默认项目。软件不自动删除这些旧文件，启动时检测到它们就写一条提示日志，由人工清理。旧 `recipes/.plan-version` 也不读取，`state/plan-version` 从头开始计数。
 
 ## 八、代码改动点
 
@@ -162,29 +166,23 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 | --- | --- |
 | `storage.rs` | 新增 `projects_root`、`project(app)`（当前项目根）、`project_config(app)`；`config(app)` 只留本机配置 |
 | 新增 `project.rs` | `ProjectMeta`、`ActiveProject` 托管状态、`current-project.json` 读写、列表、启动解析、`project_switch` |
-| 新增 `project/transfer.rs` | 项目导出包的打包、校验、导入（路径改写、计划版本重新分配、候选回到草稿） |
+| 新增 `project/transfer.rs` | 项目导出包的打包、校验、导入（路径改写、计划版本重新分配、候选回到草稿）；复制项目复用同一落地流程 |
 | 新增 `project/manage.rs` | 新建（空 / 复制硬件配置）、重命名、删除（`.trash` 改名与后台清理）、项目统计（只读打开其他项目的记录库、统计目录大小） |
 | `lib.rs` | `ActiveProject` 在记录库之前解析，`open_store` 改用项目路径；无效时只启动选择项目所需的命令 |
 | 路径调用方 | `camera.rs`（`cameras.json`、`recipe-capture`）、`plc.rs`（`plc.json`）、`cycle.rs`（`cycle.json`、`recipes`、`records`、`records-offline`、`audit-spool`）、`vision.rs`（`calib`）、`workspace.rs` 与 `workspace/transfer.rs`（`workspaces`、`vision/releases`、`recipe-capture`）、`diagnostics.rs`、`storage.rs` 的飞拍估算参数 |
-| `recipe.rs` | `.plan-version` 改到 `state/plan-version` |
+| `recipe.rs` | 计划版本计数放在 `state/plan-version` |
 | `site.rs` | `check_switch` 抽成站点模式切换与项目切换共用 |
 | 前端 | 侧栏当前项目与切换菜单；项目管理页；启动时的“选择项目”状态；`lastWorkspace` 按项目记 |
 | 文档、脚本 | `storage-layout.md` 改为项目目录结构；`docs/README.md` 关键模块表；`scripts/soak/lib.mjs` 的清理目录 |
 
-## 九、分期
-
-1. **一期**：目录结构（含记录与历史归项目）、启动解析、重启式切换、项目管理页（新建、重命名、删除）、全局计划号。PLC 握手不改；旧资料不迁移。
-2. **二期**：整个项目导出导入（已实施）；复制整个项目（未做，可用导出再导入代替）。
-3. ~~不重启的热切换~~：已放弃，设计与实测见[项目热切换设计](project-hot-switch.md)，仅作记录。
-
-## 十、已确认（2026-10-24）
+## 九、已确认
 
 1. 受管样本 `samples/` 属于本机，各项目共用。
-2. 切换采用写指针后重启软件，一期不做热切换。
+2. 切换采用写指针后重启软件，不做热切换。
 3. 不做按项目的操作权限控制。
 4. 旧资料不迁移，全部抛弃（第七节）。
 5. 检测记录、历史原图与审计 spool 放在项目目录下，历史页按项目隔离。
 6. 记录库每个项目一份，表结构不变，保留 `recipe_snapshots`、`workspace_instances`。
-7. 一期提供项目管理页，支持新建与删除。
+7. 项目管理页支持新建、重命名、切换、复制、导出、导入与删除。
 8. PLC 握手只关心工件，不记录、不核对项目。
 9. 计划号不承接旧 `recipes/.plan-version`，新计数从头开始。

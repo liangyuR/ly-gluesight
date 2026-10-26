@@ -6,7 +6,7 @@ use ly_plc::LinkState;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use super::{host, plc, ready_to_run, usable_cams, CycleHost, Phase};
+use super::{host, plc, run_kind, usable_cams, CycleHost, Phase, RunKind};
 use crate::offline::sample_set::{Manifest, SampleSet};
 use crate::plc_session::{SessionPhase, NOTICE};
 use crate::recipe::Recipe;
@@ -46,7 +46,6 @@ pub struct RecipeOption {
     pub name: String,
     pub version: u32,
     pub product_code: u16,
-    pub shot_count: usize,
     pub published: bool,
     pub runnable: bool,
     pub reason: Option<String>,
@@ -91,6 +90,8 @@ pub struct Facts {
     pub record: RecordMode,
     pub product: Product,
     pub activation_uncertain: bool,
+    /// 维护模式：来件不论配方都照常布防放行，配方问题不阻塞开工
+    pub maintenance: bool,
     pub recipes: Vec<RecipeOption>,
 }
 
@@ -147,6 +148,19 @@ fn recipe_item(f: &Facts) -> ReadinessItem {
             (state == ItemState::Blocked).then_some(Target::Workspace));
     }
 
+    let checked = production_recipe_item(f);
+    if f.maintenance && checked.state == ItemState::Blocked && !f.activation_uncertain {
+        let detail = format!("{}；维护模式下来件照常布防放行，本件未检", checked.detail);
+        return ReadinessItem {
+            state: ItemState::Waiting,
+            detail,
+            ..checked
+        };
+    }
+    checked
+}
+
+fn production_recipe_item(f: &Facts) -> ReadinessItem {
     const TITLE: &str = "可开工配方";
     const CREATE: &str = "去配方工作台新建并发布配方；整圈采集不受影响";
     let blocked = |detail: String, hint: Option<String>, target| item(ItemKey::Recipe, TITLE, ItemState::Blocked, detail, hint, target);
@@ -240,27 +254,26 @@ pub fn evaluate(mut f: Facts) -> Readiness {
     Readiness { candidate_debug: f.candidate_debug, ready: items.iter().all(|i| i.state != ItemState::Blocked), items, recipes: f.recipes }
 }
 
-/// 样本集按相机编号 + 相机内序号取图（见 [`Manifest::recipe_shots`]），且要提供该相机配置的全部视角
-/// （样本集相机每次取 1..=视角数）。段配方（规格 §1 Plan.cameras）只核对三台计划相机都在样本集里、且有单视角图（视角 1）。
-pub fn sample_set_mismatch(recipe: &Recipe, manifest: &Manifest, view_count: impl Fn(&str) -> Option<u8>) -> Option<String> {
-    if recipe.is_burst() {
-        return recipe.plan_cameras().iter().find_map(|id| match manifest.cameras.iter().find(|c| &c.id == id) {
-            None => Some(format!("计划相机 {id} 不在样本集里（样本集相机：{}）", manifest.cameras.iter().map(|c| c.id.as_str()).collect::<Vec<_>>().join("、"))),
-            Some(camera) if !camera.views.contains(&1) => Some(format!("计划相机 {id} 在样本集里没有单视角图（视角 1），只有视角 {:?}", camera.views)),
+/// 样本集要包含三台计划相机（规格 §1 Plan.cameras），且各有单视角图（视角 1）。
+pub fn sample_set_mismatch(recipe: &Recipe, manifest: &Manifest) -> Option<String> {
+    recipe.plan_cameras().iter().find_map(|id| {
+        match manifest.cameras.iter().find(|c| &c.id == id) {
+            None => Some(format!(
+                "计划相机 {id} 不在样本集里（样本集相机：{}）",
+                manifest
+                    .cameras
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、")
+            )),
+            Some(camera) if !camera.views.contains(&1) => Some(format!(
+                "计划相机 {id} 在样本集里没有单视角图（视角 1），只有视角 {:?}",
+                camera.views
+            )),
             Some(_) => None,
-        });
-    }
-    let samples = match manifest.recipe_shots(recipe) {
-        Ok(samples) => samples,
-        Err(reason) => return Some(reason),
-    };
-    for (shot, sample) in recipe.shots.iter().zip(samples) {
-        let needed = view_count(&shot.camera).unwrap_or(1);
-        if let Some(view) = (1..=needed).find(|v| !sample.views.contains(v)) {
-            return Some(format!("拍照点 {}（相机 {}，样本集 {}）需要视角 {view}，样本集只有视角 {:?}", shot.id, shot.camera, sample.shot_id, sample.views));
         }
-    }
-    None
+    })
 }
 
 const FAILED_CHECK_TTL: Duration = Duration::from_secs(5);
@@ -303,30 +316,50 @@ fn production_state(app: &AppHandle, recipe: &Recipe) -> Result<Option<String>, 
     }
 }
 
-fn recipe_problem(app: &AppHandle, host: &CycleHost, recipe: &Recipe, image: bool, set: Option<&SampleSet>) -> Result<(Vec<u8>, Option<String>), (String, Target)> {
+fn recipe_problem(
+    app: &AppHandle,
+    host: &CycleHost,
+    recipe: &Recipe,
+    image: bool,
+    maintenance: bool,
+    set: Option<&SampleSet>,
+) -> Result<(Vec<u8>, Option<String>), (String, Target)> {
     let workspace = |e: String| (e, Target::Workspace);
-    ready_to_run(recipe).map_err(workspace)?;
-    let waiting = if image { production_state(app, recipe)? } else { None };
-    let view_count = |id: &str| host.camera.require(id).ok().and_then(|c| host.camera.slot(c as usize)).map(|slot| slot.config().view_count);
-    if let Some(reason) = set.and_then(|set| sample_set_mismatch(recipe, set.manifest(), view_count)) {
+    let production = run_kind(recipe, maintenance).map_err(workspace)? == RunKind::Production;
+    let waiting = if image && production {
+        production_state(app, recipe)?
+    } else {
+        None
+    };
+    if let Some(reason) = set.and_then(|set| sample_set_mismatch(recipe, set.manifest())) {
         return Err((format!("与样本集不符：{reason}"), Target::Workspace));
     }
     let cams = usable_cams(app, recipe).map_err(|e| (e, Target::Camera))?;
-    crate::plc::recipe_plan(host, recipe).map_err(workspace)?;
+    if production {
+        crate::plc::recipe_plan(host, recipe).map_err(workspace)?;
+    }
     Ok((cams, waiting))
 }
 
 fn option(recipe: &Recipe, problem: Option<(String, Target)>, waiting: Option<String>) -> RecipeOption {
     let (reason, target) = problem.map_or((None, None), |(reason, target)| (Some(reason), Some(target)));
     RecipeOption {
-        id: recipe.id.clone(), name: recipe.name.clone(), version: recipe.version, product_code: recipe.product_code,
-        shot_count: recipe.shot_count(), published: true, runnable: reason.is_none(), reason, target, waiting,
+        id: recipe.id.clone(),
+        name: recipe.name.clone(),
+        version: recipe.version,
+        product_code: recipe.product_code,
+        published: true,
+        runnable: reason.is_none(),
+        reason,
+        target,
+        waiting,
     }
 }
 
 pub fn gather(app: &AppHandle) -> Readiness {
     let host = host(app);
     let settings = host.settings();
+    let maintenance = settings.maintenance.is_some();
     let snapshot = host.shared.lock().unwrap().snapshot.clone();
     let set = crate::offline::sample_set(app);
     let site = match crate::offline::source_kind(app) {
@@ -337,19 +370,30 @@ pub fn gather(app: &AppHandle) -> Readiness {
     let image = crate::site::image_measurement(app);
     let debug = crate::offline::candidate(app);
     let library: Vec<Arc<Recipe>> = debug.as_ref().map_or_else(|| host.recipes.list(), |c| vec![c.recipe.clone()]);
-    let checked: Vec<(RecipeOption, Option<Vec<u8>>)> = library.iter().map(|recipe| match recipe_problem(app, host, recipe, image, set.as_deref()) {
-        Ok((cams, waiting)) => (option(recipe, None, waiting), Some(cams)),
-        Err(problem) => (option(recipe, Some(problem), None), None),
-    }).collect();
+    let checked: Vec<(RecipeOption, Option<Vec<u8>>)> = library
+        .iter()
+        .map(
+            |recipe| match recipe_problem(app, host, recipe, image, maintenance, set.as_deref()) {
+                Ok((cams, waiting)) => (option(recipe, None, waiting), Some(cams)),
+                Err(problem) => (option(recipe, Some(problem), None), None),
+            },
+        )
+        .collect();
     let mut recipes: Vec<RecipeOption> = checked.iter().map(|(o, _)| { let mut o = o.clone(); if debug.is_some() { o.published = false; } o }).collect();
     let mut drafts = crate::workspace::draft_summaries(app);
     drafts.sort_by(|a, b| a.id.cmp(&b.id));
     for draft in drafts {
         if library.iter().any(|r| r.id == draft.id) { continue; }
         recipes.push(RecipeOption {
-            id: draft.id, name: draft.name, version: draft.version, product_code: draft.product_code,
-            shot_count: draft.shot_count, published: false, runnable: false,
-            reason: Some("未发布：在配方工作台验证并发布后才能运行".into()), target: Some(Target::Workspace), waiting: None,
+            id: draft.id,
+            name: draft.name,
+            version: draft.version,
+            product_code: draft.product_code,
+            published: false,
+            runnable: false,
+            reason: Some("未发布：在配方工作台验证并发布后才能运行".into()),
+            target: Some(Target::Workspace),
+            waiting: None,
         });
     }
     let product = if debug.is_some() { Product::Plc } else { match settings.product_source {
@@ -363,7 +407,11 @@ pub fn gather(app: &AppHandle) -> Readiness {
     let cameras = if !groups.is_empty() { camera_check(&groups) } else {
         let all: Vec<u8> = (0..host.camera.slots().len() as u8).collect();
         let checked = if all.is_empty() { Err("相机组里没有相机".to_string()) } else { host.camera.check_ready_at(&all) };
-        checked.map_or_else(Check::Blocked, |()| Check::Ok)
+        match checked {
+            Ok(()) => Check::Ok,
+            Err(reason) if maintenance => Check::Waiting(reason),
+            Err(reason) => Check::Blocked(reason),
+        }
     };
     let engine = image.then(|| {
         let status = app.state::<crate::vision::VisionHost>().status();
@@ -397,6 +445,7 @@ pub fn gather(app: &AppHandle) -> Readiness {
         record: crate::site::record_mode(app),
         product,
         activation_uncertain: crate::workspace::activation_uncertain(app),
+        maintenance,
         recipes,
     })
 }

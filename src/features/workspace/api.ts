@@ -2,7 +2,7 @@ import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { AlignSuggestion, CaptureRound, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, Workspace, WorkspaceView } from "./types";
+import type { AlignSuggestion, CapturePlcStatus, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, ImagingSaved, Sample, Workspace, WorkspaceView } from "./types";
 
 function grayPreview(input: ArrayBuffer | number[]) {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -42,11 +42,10 @@ export interface TransferImported { id: string; kind: TransferKind; rounds: numb
 
 export const workspaceApi = {
   debugRun: (id: string, revision: number, partId: string | null) => desktopCall<void>("workspace_debug_run", { id, revision, partId }),
-  /** 采集轮次：段配方为 CaptureRoundV2（format: 2）；后端对历史拍照点草稿仍可能返回旧的 CaptureRound，页面用 captureRound.ts 的 roundView 统一读取 */
-  captureStart: (recipeId: string, cameraIds: string[], drainTimeoutMs: number) => desktopCall<CaptureRound | CaptureRoundV2>("recipe_capture_start", { recipeId, cameraIds, drainTimeoutMs }),
-  captureGet: (roundId?: string) => desktopCall<CaptureRound | CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
-  captureStop: () => desktopCall<CaptureRound | CaptureRoundV2 | null>("recipe_capture_stop"),
-  capturePlcStatus: () => desktopCall<import("./types").CapturePlcStatus>("recipe_capture_plc_status"),
+  captureStart: (recipeId: string, cameraIds: string[], drainTimeoutMs: number) => desktopCall<CaptureRoundV2>("recipe_capture_start", { recipeId, cameraIds, drainTimeoutMs }),
+  captureGet: (roundId?: string) => desktopCall<CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
+  captureStop: () => desktopCall<CaptureRoundV2 | null>("recipe_capture_stop"),
+  capturePlcStatus: () => desktopCall<CapturePlcStatus>("recipe_capture_plc_status"),
   captureSample: (id: string, revision: number, roundId: string, expected: import("../cycle/types").Verdict, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_capture_sample", { id, revision, roundId, expected, correspondenceConfirmed }),
   list: () => desktopCall<Workspace[]>("workspace_list"),
   get: (id: string) => desktopCall<WorkspaceView>("workspace_get", { id }),
@@ -65,8 +64,7 @@ export const workspaceApi = {
   validate: (id: string, revision: number, samples: Sample[], sourceConfirmed = false) => desktopCall<WorkspaceView>("workspace_validate", { id, revision, samples, sourceConfirmed }),
   retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),
   abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
-  captureImage: (roundId: string, k: number, cameraId: string, view?: number) => desktopCall<ArrayBuffer>("recipe_capture_image", { roundId, k, cameraId, view }).then(decodeGray),
-  /** 新采集轮次（CaptureRoundV2）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；D1 在 recipe_capture_image 旁新增（决策记录 5.4），缺帧时后端报错。 */
+  /** 采集轮次里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
   captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeGray),
   captureList: (recipeId: string) => desktopCall<CaptureSummary[]>("recipe_capture_list", { recipeId }),
   /** 新轮次一台相机全部帧组的缩略图条带（分段标定工作台） */
@@ -86,16 +84,10 @@ export const workspaceApi = {
   publishChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_publish_checks", { id, revision }),
   /** 发布采集版（只供维护模式采图，不判定），在工件边界生效 */
   publishCollect: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish_collect", { id, revision }),
-  recordImages: (historyId: number) => desktopCall<RecordImages>("workspace_record_images", { historyId }),
-  recordImage: (historyId: number, k: number, view?: number) => desktopCall<ArrayBuffer>("workspace_record_image", { historyId, k, view }).then(decodeGray),
-  historyCapture: (id: string, revision: number, historyId: number, k: number) =>
-    desktopCall<WorkspaceView>("workspace_history_capture", { id, revision, historyId, k }),
   compare: (id: string, revision: number, historyId: number, raw: boolean) =>
     desktopCall<Comparison>("workspace_compare", { id, revision, historyId, raw }),
   compareOriginal: (historyId: number) => desktopCall<Comparison>("workspace_compare_original", { historyId }),
   comparisons: (id:string,historyId:number)=>desktopCall<Comparison[]>("workspace_comparisons",{id,historyId}),
-  runtimeOverview: (id: string, revisionId: string) => desktopCall<Overview | null>("workspace_runtime_overview", { id, revisionId }),
-  liveImage: (cycleId:string, revisionId:string, k:number) => desktopCall<ArrayBuffer>("workspace_live_image", {cycleId,revisionId,k}).then(liveGray),
   stationCapture: (cam:number,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,view}),
   stationImport: (cam:number,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes,view}),
   stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeGray),

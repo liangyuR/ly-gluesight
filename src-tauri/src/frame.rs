@@ -92,11 +92,6 @@ pub enum GrayError {
 pub struct FramePool(Arc<PoolInner>);
 
 impl FramePool {
-    /// `keep`：池里最多留几块空闲缓冲。不限在途字节（取图回调已改用 with_budget，现只有测试用）。
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn new(keep: usize) -> Self {
-        Self::build(keep, None)
-    }
 
     /// 在途图像最多 `max_bytes` 字节（每台相机一个池，见 camera::IMAGE_BUDGET_PER_CAMERA）；
     /// 超出时 [`copy`](Self::copy) / [`bayer8_to_gray`](Self::bayer8_to_gray) 返回 BudgetExceeded，
@@ -219,21 +214,6 @@ impl Frame {
         }
     }
 
-    /// 旧拍照点模型：按视角取图（三目拼接拆出的视角 1–3），段配方不经过。
-    pub fn image(&self, view: u8) -> Option<Arc<FrameImage>> {
-        if !(1..=3).contains(&view) {
-            return None;
-        }
-        self.images.get(usize::from(view - 1)).cloned()
-    }
-
-    /// 旧拍照点模型：要求整组视角齐全再按视角取图；段配方用 [`single_image`](Self::single_image)。
-    pub fn require_image(&self, view: u8, expected_views: u8) -> Result<Arc<FrameImage>, String> {
-        if !matches!(expected_views, 1 | 3) || self.images.len() != usize::from(expected_views) {
-            return Err(format!("设备应交付 {expected_views} 个视角，本帧实际 {} 幅图像", self.images.len()));
-        }
-        self.image(view).ok_or_else(|| format!("本帧缺少所选视角 {view} 的图像"))
-    }
 }
 
 #[cfg(test)]

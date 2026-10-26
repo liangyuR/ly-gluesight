@@ -3,10 +3,10 @@
 //! 每个拍照点自成一段，判定在段内做，段与段之间不连。`Recipe` 同时是检测记录里的配方快照。
 //!
 //! 分段连拍（schema 8，docs/decisions/segment-burst.md D-SB-1）：`segments` 非空的配方是段配方——沿胶路的段列表、
-//! 三台检测相机（`inspect`，共用一个触发）、整件标定；`segments` 为空仍是旧拍照点配方，走旧校验、旧节拍、旧发布，两套永久并存。
+//! 三台检测相机（`inspect`）、整件标定；`segments` 为空是旧拍照点配方，不能开工或发布，遗留类型不再维护。
 //! 注意 `Recipe.segments` 是旧模型 build 出的测量段，段配方的段列表在 `Recipe.path_segments`（JSON `pathSegments`）。
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -131,43 +131,6 @@ impl DetectParams {
     }
 }
 
-/// 一段：一个已示教、要检的拍照点。点 `first..first + count` 属于它，段内弧长 `(j - first) * spacing`。
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Segment {
-    pub name: String,
-    /// 拍照点（shots 下标）
-    pub shot: usize,
-    pub view: u8,
-    pub first: usize,
-    pub count: usize,
-    pub position: Option<JudgeParams>,
-    pub width: Option<JudgeParams>,
-    pub max_gap_len: f32,
-    #[serde(default = "default_min_present")]
-    pub min_present: f32,
-}
-
-impl Segment {
-    /// 段内弧长（mm）。
-    pub fn s(&self, j: usize, spacing: f32) -> f32 {
-        (j - self.first) as f32 * spacing
-    }
-
-    pub fn length(&self, spacing: f32) -> f32 {
-        self.count.saturating_sub(1) as f32 * spacing
-    }
-}
-
-/// 各站：所在拍照点图像里的像素位置、所属段与拍照点。
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct PathPoints {
-    pub x: Vec<f32>,
-    pub y: Vec<f32>,
-    pub seg: Vec<u16>,
-    pub k: Vec<u8>,
-}
-
 /// 旧文件里相机写的是相机组序号 k，读进来当作编号 "cam{k+1}"（相机组迁移时就是按位置这样编的号）。
 pub fn legacy_camera_id(k: u8) -> String {
     format!("cam{}", k as u32 + 1)
@@ -178,12 +141,10 @@ pub fn valid_camera_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-fn valid_label(s: &str) -> bool {
-    !s.trim().is_empty() && s.chars().count() <= 32 && !s.chars().any(char::is_control)
-}
-
 /// 配方文件格式版本。不一致的文件列为加载错误，不迁移。8：增加段模型字段（segments、inspect、segmentDefaults、calibrationRounds、partCalib）。
 pub const RECIPE_SCHEMA: u32 = 8;
+/// 没有段的配方文件是已停用的旧拍照点配方。
+pub const LEGACY_RECIPE: &str = "旧拍照点配方已停用，请新建段配方";
 
 /// 段配方连续采集几轮取均值作预期帧数（规格 §2：≥ 10 轮，轮数可配）。
 pub const DEFAULT_CALIBRATION_ROUNDS: u32 = 10;
@@ -201,195 +162,9 @@ fn default_boundary_guard() -> u32 {
     DEFAULT_BOUNDARY_GUARD
 }
 
-/// 定位模板外圈（glue.locate 的 templatePad，lyFlow#32）：模板文件是示教框四周各多裁这么多，
-/// locate 用真实邻域预平滑后再裁回示教框。每个新模板都取 4（平滑核半径）。
-pub const FIXTURE_TEMPLATE_PAD_PX: u32 = 4;
-/// glue.locate 的角度扫描步长（°），只在开转角时起作用
-pub const FIXTURE_ANGLE_STEP_DEG: f32 = 0.5;
-/// 带外圈模板离胶检测走廊（示教中线 ± 搜索半宽）至少再留这么多（px）。阶段 0 评测（P0）选框时要求内框离走廊
-/// 大于 10 px；外圈让框在角上最多近 4√2 px，所以 P0 选出的框到这里还剩约 10 − 4√2 ≈ 4.3 px（不计 P0 每 2 px
-/// 取点的采样误差），取 4。
-pub const FIXTURE_CORRIDOR_MARGIN_PX: f64 = 4.0;
-
-fn one() -> f32 { 1.0 }
-
 /// 冻结示教原图编号（模板来源）：字母、数字和 -，最长 128 个字符。工作台的冻结图编号都满足。
 pub fn valid_image_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-}
-
-/// 特征定位（定稿 §5）：示教框（内框，不含外圈）、模板来源与 glue.locate 门限。模板按 rect 加
-/// FIXTURE_TEMPLATE_PAD_PX 外圈从来源冻结示教原图裁出；改 fixture 就是改测量定义，试测与验证都要重做。
-///
-/// 模板身份是 (source, rect, FIXTURE_TEMPLATE_PAD_PX)，不用内容哈希（D-0）。它成立的前提：冻结图按编号只写一次
-/// （`image_file::save_pgm_new`）、发布包复制的是同一份字节、工作台与发布包都用 `template_pgm(decode(字节), rect)` 裁模板。
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FixtureSpec {
-    /// 示教框 [x, y, w, h]（示教图像素，不含外圈）；anchor 是它的左上角
-    pub rect: [u32; 4],
-    /// 模板来源：裁模板用的冻结示教原图编号。只由工作台后端写入（`bind_fixture_sources`），前端传来的一律不用
-    #[serde(default)]
-    pub source: String,
-    /// 模板中心最多偏开示教位置多远（px）；峰离搜索窗边 ≤ 1 px 判 at_search_edge
-    pub search_radius_px: f32,
-    /// 角度扫描范围 ±（°）；v1 默认 0 = 只找平移（定稿 §10 决定二）
-    #[serde(default)]
-    pub angle_range_deg: f32,
-    pub min_score: f32,
-    /// 次峰 / 主峰上限；1 = 不判
-    #[serde(default = "one")]
-    pub max_peak_ratio: f32,
-    /// 两端切向搬移 |Δ| 的上限（mm），超过判位置基准无效（ERR 92）；为空时用临时默认公式（见 end_shift_limit_mm）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_end_shift_mm: Option<f32>,
-    /// 示教余量 m（mm，定稿 §10 决定一第 3 条）：离胶路首、末弧长不到 m 的站永远不判（超出检测范围、不留胶宽），
-    /// 位姿搬移再从 N 端量起排除 max(m, |Δ|) + 1 个站距。只由验证建议写入（`workspace_apply_fixture_suggestion`），默认 0
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub end_margin_mm: f32,
-}
-
-fn is_zero(v: &f32) -> bool { *v == 0.0 }
-
-impl FixtureSpec {
-    /// 只核对配方本身能判的：右、下边要看图像尺寸，由工作台保存示教与生成模板时核对。
-    fn validate(&self, what: &str) -> Result<(), String> {
-        let [x, y, w, h] = self.rect;
-        let pad = FIXTURE_TEMPLATE_PAD_PX;
-        if x < pad || y < pad {
-            return Err(format!("{what}：定位框离图像左、上边至少 {pad} px（模板要带 {pad} px 外圈）"));
-        }
-        if !(16..=512).contains(&w) || !(16..=512).contains(&h) {
-            return Err(format!("{what}：定位框宽、高需在 16–512 px 之间"));
-        }
-        if !(self.search_radius_px.is_finite() && (3.0..=200.0).contains(&self.search_radius_px)) {
-            return Err(format!("{what}：定位搜索半径需在 3–200 px 之间"));
-        }
-        if !(self.angle_range_deg.is_finite() && (0.0..=10.0).contains(&self.angle_range_deg)) {
-            return Err(format!("{what}：定位角度范围需在 0–10° 之间"));
-        }
-        if !(self.min_score.is_finite() && self.min_score > 0.0 && self.min_score <= 1.0) {
-            return Err(format!("{what}：定位最低分数需在 0–1 之间（不含 0）"));
-        }
-        if !(self.max_peak_ratio.is_finite() && self.max_peak_ratio > 0.0 && self.max_peak_ratio <= 1.0) {
-            return Err(format!("{what}：定位次峰比上限需在 0–1 之间（不含 0）"));
-        }
-        if self.max_end_shift_mm.is_some_and(|m| !(m.is_finite() && m > 0.0)) {
-            return Err(format!("{what}：两端搬移上限必须是正数"));
-        }
-        if !(self.end_margin_mm.is_finite() && (0.0..=100.0).contains(&self.end_margin_mm)) {
-            return Err(format!("{what}：示教余量需在 0–100 mm 之间"));
-        }
-        if !valid_image_id(&self.source) {
-            return Err(format!("{what}：缺少模板来源（示教图编号）。G2 时期的候选需要重建，或在示教页重新保存示教参数"));
-        }
-        Ok(())
-    }
-
-    /// 带外圈的模板放得进 size 大小的示教图：右、下边要看图像尺寸，配方校验查不了，
-    /// 由工作台保存示教、发布与加载发布包时核对（lyFlow 在框离图边不到 templatePad 时判 out_of_image）。
-    pub fn check_image_size(&self, size: [u32; 2]) -> Result<(), String> {
-        crate::vision::fixture::padded_rect(self.rect, size[0], size[1]).map(|_| ()).ok_or_else(|| {
-            format!("定位框加 {FIXTURE_TEMPLATE_PAD_PX} px 外圈超出示教原图（{}×{}），请把框从图边往里收", size[0], size[1])
-        })
-    }
-
-    /// 带外圈模板（按像素中心，[x − pad, x + w + pad − 1] × [y − pad, y + h + pad − 1]）到示教折线及其两端切向延长线的
-    /// 精确距离（px），相交为 0。
-    ///
-    /// 两端各沿末段方向延长到无穷远（对图内的框等价于延到图边，与图像尺寸无关）：枪上相机里同一条胶通常越过示教段两端
-    /// 继续留在画面里，只量示教段（端点处是半圆帽）时，框放在胶的直线延长上也能通过，模板里却有胶。
-    /// 延长段弯走的胶量不到；亮度 ±40 与 peakRatio 也看不见框里的胶，G4 只靠保存示教时的人工确认（定稿 §13）。
-    fn clearance(&self, path: &[[f32; 2]]) -> f64 {
-        let pad = f64::from(FIXTURE_TEMPLATE_PAD_PX);
-        let [x, y, w, h] = self.rect.map(f64::from);
-        let r = [x - pad, y - pad, x + w + pad - 1.0, y + h + pad - 1.0];
-        let path: Vec<[f64; 2]> = path.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
-        let segments = path.windows(2).map(|s| segment_rect_distance(s[0], s[1], r)).fold(f64::INFINITY, f64::min);
-        // 端点沿“相邻的另一个不重合点 → 端点”的方向延长；FAR 远大于任何图像，射线截成线段不影响结果
-        const FAR: f64 = 1.0e7;
-        let ray = |end: [f64; 2], from: Option<&[f64; 2]>| from.map_or(f64::INFINITY, |p| {
-            let (dx, dy) = (end[0] - p[0], end[1] - p[1]);
-            let len = dx.hypot(dy);
-            segment_rect_distance(end, [end[0] + dx / len * FAR, end[1] + dy / len * FAR], r)
-        });
-        let (Some(first), Some(last)) = (path.first(), path.last()) else { return segments; };
-        let head = ray(*first, path.iter().find(|p| *p != first));
-        let tail = ray(*last, path.iter().rev().find(|p| *p != last));
-        segments.min(head).min(tail)
-    }
-
-    /// 模板不得含胶（定稿 §11 跨阶段约束）：带外圈模板离 `lines` 里每条示教中线（含两端切向延长线）都要大于“该线搜索半宽 + 余量”。
-    /// 模板框盖住胶时位姿跟着胶走，d′ 恒约等于 0，真实胶偏会被放行。`lines`：（哪个拍照点的哪幅图，示教中线，搜索半宽 px）。
-    /// 返回每条线的（哪幅图，实际距离，需要大于的距离）。
-    fn corridor_clearances(&self, lines: &[(String, Vec<[f32; 2]>, f64)]) -> Vec<(String, f64, f64)> {
-        lines.iter().map(|(owner, path, half)| (owner.clone(), self.clearance(path), half + FIXTURE_CORRIDOR_MARGIN_PX)).collect()
-    }
-
-    /// 示教框中心（px），与 glue.locate 的 teachCenter 一致：(x + (w − 1)/2, y + (h − 1)/2)。
-    pub fn teach_center(&self) -> [f64; 2] {
-        let [x, y, w, h] = self.rect.map(f64::from);
-        [x + (w - 1.0) / 2.0, y + (h - 1.0) / 2.0]
-    }
-
-    /// 两端切向搬移 |Δ| 的上限（mm）。配方没给时取 locate 接受的位姿能产生的最大 |Δ|（定稿 §10 决定一的临时默认）：
-    /// 方形搜索窗对角平移最多 √2·(searchRadius − 2) px，开转角时端点再绕模板中心切向移 L_端·2·sin(angleRange/2)，
-    /// L_端 是模板中心到较远端点的距离。`ends_px` 是示教胶路首末站（px）。
-    pub fn end_shift_limit_mm(&self, ends_px: [[f64; 2]; 2], mm_per_px: f64) -> f64 {
-        if let Some(limit) = self.max_end_shift_mm { return limit as f64; }
-        let c = self.teach_center();
-        let lever = ends_px.iter().map(|p| (p[0] - c[0]).hypot(p[1] - c[1])).fold(0.0, f64::max) * mm_per_px;
-        std::f64::consts::SQRT_2 * (self.search_radius_px as f64 - 2.0) * mm_per_px
-            + lever * 2.0 * (self.angle_range_deg as f64 / 2.0).to_radians().sin()
-    }
-}
-
-/// 定位框到同一场景一条胶检测走廊的余量（`RecipeDoc::fixture_clearances`）。
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Clearance {
-    /// 框所在的拍照点下标与图号
-    pub k: usize,
-    pub view: u8,
-    /// 走廊属于哪个拍照点的哪幅图（如“拍照点 P2 图 1”）
-    pub owner: String,
-    /// 带外圈模板到示教中线（含两端切向延长）的距离（px）
-    pub clearance: f64,
-    /// 需要大于的距离：该线搜索半宽 + FIXTURE_CORRIDOR_MARGIN_PX
-    pub need: f64,
-}
-
-impl Clearance {
-    pub fn passed(&self) -> bool { self.clearance > self.need }
-
-    pub fn message(&self) -> String {
-        format!("定位框（含 {FIXTURE_TEMPLATE_PAD_PX} px 外圈）压住了{} 的胶检测走廊——离示教中线（含两端切向延长）{:.1} px，\
-            需要大于 {:.1} px（搜索半宽 {:.1} px + 余量 {FIXTURE_CORRIDOR_MARGIN_PX} px）。模板里有胶时位姿跟着胶走、测不出胶偏，请把框移出走廊",
-            self.owner, self.clearance, self.need, self.need - FIXTURE_CORRIDOR_MARGIN_PX)
-    }
-}
-
-/// 线段 ab 到轴对齐矩形 r = [x0, y0, x1, y1] 的精确距离：相交（含端点在矩形内）为 0；否则最近点对一端在线段端点、
-/// 或在矩形角上，取端点到矩形、矩形四角到线段的最小值。
-fn segment_rect_distance(a: [f64; 2], b: [f64; 2], r: [f64; 4]) -> f64 {
-    let d = [b[0] - a[0], b[1] - a[1]];
-    // Liang–Barsky 裁剪：线段与矩形有交即距离 0
-    let (mut t0, mut t1) = (0.0f64, 1.0f64);
-    let mut inside = true;
-    for (p, q) in [(-d[0], a[0] - r[0]), (d[0], r[2] - a[0]), (-d[1], a[1] - r[1]), (d[1], r[3] - a[1])] {
-        if p == 0.0 {
-            if q < 0.0 { inside = false; break; }
-        } else if p < 0.0 { t0 = t0.max(q / p); } else { t1 = t1.min(q / p); }
-        if t0 > t1 { inside = false; break; }
-    }
-    if inside { return 0.0; }
-    let to_rect = |p: [f64; 2]| (r[0] - p[0]).max(p[0] - r[2]).max(0.0).hypot((r[1] - p[1]).max(p[1] - r[3]).max(0.0));
-    let len2 = d[0] * d[0] + d[1] * d[1];
-    let to_segment = |p: [f64; 2]| {
-        let t = if len2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0) } else { 0.0 };
-        (a[0] + d[0] * t - p[0]).hypot(a[1] + d[1] * t - p[1])
-    };
-    [to_rect(a), to_rect(b), to_segment([r[0], r[1]]), to_segment([r[2], r[1]]), to_segment([r[0], r[3]]), to_segment([r[2], r[3]])]
-        .into_iter().fold(f64::INFINITY, f64::min)
 }
 
 /// 配方阶段（在线投运）：采集版只定了三台计划相机和曝光增益，供维护模式跟着生产采图；正式版走完整发布门槛。
@@ -536,169 +311,6 @@ pub fn untaught_corridors(segments: &[PathSegment], inspect: &[CameraInspect]) -
     reasons
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ShotViewSpec {
-    pub view: u8,
-    pub enabled: bool,
-    #[serde(default)]
-    pub path: Vec<[f32; 2]>,
-    pub mm_per_px: Option<f32>,
-    pub detect: Option<DetectParams>,
-    pub limits: Option<ShotLimits>,
-    pub calib: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fixture: Option<FixtureSpec>,
-}
-
-/// 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ShotSpec {
-    /// 配方内唯一，如 P1
-    pub id: String,
-    /// 现场机器人 / PLC 程序里的 Pose 标识；同一 Pose 可同时触发几台相机，不要求唯一
-    pub pose_id: String,
-    /// 相机编号
-    pub camera: String,
-    pub view: u8,
-    #[serde(default)]
-    pub views: Vec<ShotViewSpec>,
-    /// 标定引用；为空时用这台相机的工位标定
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub calib: Option<String>,
-    /// 胶条名：同一条胶上的拍照点同名，结果按胶条汇总
-    pub bead: String,
-    /// 不检：要求这一帧到达，但不量不判（盘圈、大胶堆等示教不出的点）
-    #[serde(default)]
-    pub skip: bool,
-    /// 示教的胶路中线（图像像素，从胶嘴一侧往外）；为空表示尚未示教
-    #[serde(default)]
-    pub path: Vec<[f32; 2]>,
-    /// 示教时的像素当量（mm/px），把站距、搜索宽换成像素
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mm_per_px: Option<f32>,
-    /// 为空时用配方的检测参数
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detect: Option<DetectParams>,
-    /// 为空时用配方的限值
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limits: Option<ShotLimits>,
-    /// 特征定位：为空时胶偏按静态示教线量（d 相对示教中线）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fixture: Option<FixtureSpec>,
-}
-
-impl ShotSpec {
-    pub fn enabled_views(&self) -> Vec<u8> {
-        if self.skip { return Vec::new(); }
-        if self.views.is_empty() { return vec![self.view]; }
-        self.views.iter().filter(|v| v.enabled).map(|v| v.view).collect()
-    }
-
-    pub fn for_view(&self, view: u8) -> Result<Self, String> {
-        let mut shot = self.clone();
-        if let Some(v) = self.views.iter().find(|v| v.view == view) {
-            shot.view = v.view;
-            shot.path = v.path.clone();
-            shot.mm_per_px = v.mm_per_px;
-            shot.detect = v.detect.clone();
-            shot.limits = v.limits.clone();
-            shot.calib = v.calib.clone();
-            shot.fixture = v.fixture.clone();
-        } else if !self.views.is_empty() || view != self.view {
-            return Err(format!("拍照点 {} 没有图 {view}", self.id));
-        }
-        shot.views.clear();
-        Ok(shot)
-    }
-    /// 标定文件的键：标定引用，缺省为相机编号。
-    pub fn calib_ref(&self) -> String {
-        self.calib.clone().unwrap_or_else(|| format!("{}-v{}", self.camera, self.view))
-    }
-
-    /// 要量要判：不是"不检"。
-    pub fn measured(&self) -> bool {
-        !self.skip
-    }
-
-    /// 要检，且启用的视图里有用特征定位的（停用视图上残留的 fixture 不算）。
-    pub fn has_fixture(&self) -> bool {
-        self.measured() && self.enabled_views().into_iter().any(|v| self.for_view(v).is_ok_and(|s| s.fixture.is_some()))
-    }
-
-    /// 已示教：有中线和像素当量。
-    pub fn taught(&self) -> bool {
-        if self.views.is_empty() { return self.path.len() >= 2 && self.path_len_px() >= 1.0 && self.mm_per_px.is_some(); }
-        let views = self.enabled_views();
-        !views.is_empty() && views.into_iter().all(|v| self.for_view(v).is_ok_and(|s| s.taught()))
-    }
-
-    /// 中线总长（px）。
-    pub fn path_len_px(&self) -> f32 {
-        self.path.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum()
-    }
-
-    /// 中线上弧长 t（px）处的点。
-    pub fn path_at(&self, t: f32) -> [f32; 2] {
-        let mut left = t.max(0.0);
-        for w in self.path.windows(2) {
-            let l = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
-            if left <= l && l > 0.0 {
-                let f = left / l;
-                return [w[0][0] + (w[1][0] - w[0][0]) * f, w[0][1] + (w[1][1] - w[0][1]) * f];
-            }
-            left -= l;
-        }
-        self.path.last().copied().unwrap_or([0.0, 0.0])
-    }
-
-    fn validate(&self) -> Result<(), String> {
-        let mut selected = HashSet::new();
-        for v in &self.views {
-            if !(1..=3).contains(&v.view) || !selected.insert(v.view) {
-                return Err(format!("拍照点 {} 的图编号必须在 1–3 内且不能重复", self.id));
-            }
-            self.for_view(v.view)?.validate()?;
-        }
-        let id = &self.id;
-        if !valid_camera_id(id) {
-            return Err(format!("拍照点编号 {id:?} 只能用字母、数字、- 和 _，最长 32 个字符"));
-        }
-        if !valid_label(&self.pose_id) {
-            return Err(format!("拍照点 {id} 的 Pose 标识不能为空，最长 32 个字符"));
-        }
-        if !valid_label(&self.bead) {
-            return Err(format!("拍照点 {id} 的胶条名不能为空，最长 32 个字符"));
-        }
-        if !valid_camera_id(&self.camera) {
-            return Err(format!("拍照点 {id} 的相机编号只能用字母、数字、- 和 _"));
-        }
-        if !(1..=3).contains(&self.view) {
-            return Err(format!("拍照点 {id} 的视角必须在 1–3 之间"));
-        }
-        if self.calib.as_deref().is_some_and(|c| !valid_camera_id(c)) {
-            return Err(format!("拍照点 {id} 的标定引用只能用字母、数字、- 和 _"));
-        }
-        if self.path.iter().flatten().any(|v| !v.is_finite()) {
-            return Err(format!("拍照点 {id} 的中线坐标必须是有限数"));
-        }
-        if let Some(m) = self.mm_per_px.filter(|m| !(m.is_finite() && *m > 0.0 && *m <= 10.0)) {
-            return Err(format!("拍照点 {id} 的像素当量 {m} 需在 0–10 mm/px 之间"));
-        }
-        if let Some(d) = &self.detect {
-            d.validate(&format!("拍照点 {id} 检测参数"))?;
-        }
-        if let Some(l) = &self.limits {
-            l.validate(&format!("拍照点 {id}"))?;
-        }
-        if let Some(f) = &self.fixture {
-            f.validate(&format!("拍照点 {id} 特征定位"))?;
-        }
-        Ok(())
-    }
-}
-
 /// JSON（快照、界面 layout）里的 `segments` / `points` 是 build 生成的旧模型测量段与测点；反序列化不读它们，
 /// 把 `pathSegments` 还原成 `RecipeDoc.segments` 后重新 build（见 `TryFrom<serde_json::Value>`）。
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -723,13 +335,8 @@ pub struct Recipe {
     /// 拍照点没单独设时用的检测参数与限值
     pub detect: DetectParams,
     pub limits: ShotLimits,
-    pub shots: Vec<ShotSpec>,
     #[serde(rename = "cameras")]
     pub camera_imaging: BTreeMap<String, CameraImaging>,
-    /// 旧拍照点模型的测量段（段配方为空）
-    pub segments: Vec<Segment>,
-    /// 旧拍照点模型的测点（段配方为空）
-    pub points: PathPoints,
     /// 段配方的段列表（RecipeDoc.segments）；为空即旧拍照点配方
     pub path_segments: Vec<PathSegment>,
     /// 段配方的检测相机，顺序即计划相机顺序
@@ -809,65 +416,9 @@ impl Recipe {
         self.camera_imaging.get(camera).copied()
     }
 
-    pub fn shot_count(&self) -> usize {
-        self.shots.len()
-    }
-
-    pub fn point_count(&self) -> usize {
-        self.points.k.len()
-    }
-
-    pub fn owned_points(&self, k: usize) -> impl Iterator<Item = usize> + '_ {
-        self.points.k.iter().enumerate().filter(move |(_, &o)| o as usize == k).map(|(j, _)| j)
-    }
-
-    pub fn for_view(&self, k: usize, view: u8) -> Result<Self, String> {
-        let selected = self.shots.get(k).ok_or("拍照点不存在")?.for_view(view)?;
-        let mut recipe = self.clone();
-        for (index, shot) in recipe.shots.iter_mut().enumerate() { if index != k { shot.skip = true; } }
-        recipe.shots[k] = selected;
-        recipe.segments.retain(|s| s.shot == k && s.view == view);
-        Ok(recipe)
-    }
-
-    pub fn view_points(&self, k: usize, view: u8) -> impl Iterator<Item = usize> + '_ {
-        self.segments.iter().filter(move |s| s.shot == k && s.view == view)
-            .flat_map(|s| s.first..s.first + s.count)
-    }
-
-    /// 拍照点 k 的检测参数。
-    pub fn shot_detect(&self, k: usize) -> &DetectParams {
-        self.shots[k].detect.as_ref().unwrap_or(&self.detect)
-    }
-
-    /// 拍照点 k 的段（不检、未示教的拍照点没有）。
-    pub fn shot_segment(&self, k: usize) -> Option<&Segment> {
-        self.segments.iter().find(|g| g.shot == k)
-    }
-
-    /// 能不能开工：要检的拍照点都示教过。
-    pub fn ready(&self) -> Result<(), String> {
-        if !self.shots.iter().any(|s| s.measured() && !s.enabled_views().is_empty()) {
-            return Err("至少需要一个参与检测的拍照点".into());
-        }
-        let untaught: Vec<&str> = self.shots.iter().enumerate().filter(|(k, s)| s.measured() && (!s.taught() || s.enabled_views().into_iter().any(|v| self.view_points(*k, v).count() < 3))).map(|(_, s)| s.id.as_str()).collect();
-        if untaught.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("配方 {} 的拍照点 {} 尚未示教胶路", self.id, untaught.join("、")))
-        }
-    }
-
-    /// 本配方要用到的相机（编号）：旧拍照点配方按第一次出现的拍照点排序；段配方是计划相机。
+    /// 本配方要用到的相机（编号），即计划相机。
     pub fn cameras(&self) -> Vec<String> {
-        if self.is_burst() { return self.plan_cameras(); }
-        let mut out: Vec<String> = Vec::new();
-        for s in &self.shots {
-            if !out.contains(&s.camera) {
-                out.push(s.camera.clone());
-            }
-        }
-        out
+        self.plan_cameras()
     }
 }
 
@@ -899,9 +450,6 @@ pub struct RecipeDoc {
     pub filter_window: usize,
     pub detect: DetectParams,
     pub limits: ShotLimits,
-    /// 旧拍照点模型的拍照点；段配方必须为空
-    #[serde(default)]
-    pub shots: Vec<ShotSpec>,
     /// 各相机的曝光与增益：拍照点与检测相机用到的相机各一组，不多不少
     #[serde(default)]
     pub cameras: BTreeMap<String, CameraImaging>,
@@ -926,13 +474,6 @@ pub struct RecipeDoc {
 }
 
 impl RecipeDoc {
-    pub fn shot_cameras(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for s in &self.shots {
-            if !out.contains(&s.camera) { out.push(s.camera.clone()); }
-        }
-        out
-    }
 
     /// 段配方：段列表非空。
     pub fn is_burst(&self) -> bool {
@@ -942,15 +483,6 @@ impl RecipeDoc {
     /// 段配方的计划相机（按 inspect 顺序）。
     pub fn plan_cameras(&self) -> Vec<String> {
         self.inspect.iter().map(|i| i.camera.clone()).collect()
-    }
-
-    /// 要成像参数的相机：拍照点用到的相机与检测相机的并集（拍照点在前）。
-    fn imaging_cameras(&self) -> Vec<String> {
-        let mut out = self.shot_cameras();
-        for camera in self.plan_cameras() {
-            if !out.contains(&camera) { out.push(camera); }
-        }
-        out
     }
 
     /// 整件预期帧组数 ΣN_exp（见 `plan::expected_total`）。
@@ -965,20 +497,16 @@ impl RecipeDoc {
 
     /// 拍照点与检测相机新用到的相机补默认成像参数，不再用到的相机去掉，返回去掉的那些。
     pub fn sync_imaging(&mut self) -> BTreeMap<String, CameraImaging> {
-        let used = self.imaging_cameras();
+        let used = self.plan_cameras();
         let (kept, dropped): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.cameras).into_iter().partition(|(c, _)| used.contains(c));
         self.cameras = kept;
         for c in used { self.cameras.entry(c).or_default(); }
         dropped
     }
 
-    /// PLC 侧要照着走的那部分：两份配方这几项逐项相同，就是同一份拍照计划（逐字段比较，不算摘要）。
-    /// 旧拍照点身份与段计划身份都相等才算同一计划（D-SB-19）：旧配方段身份恒等，段配方没有拍照点、旧身份恒等。
+    /// 两份配方的段计划身份相同，就是同一份计划（D-SB-19）。
     pub fn same_plan(&self, other: &RecipeDoc) -> bool {
-        self.product_code == other.product_code
-            && self.shots.len() == other.shots.len()
-            && self.shots.iter().zip(&other.shots).all(|(a, b)| a.id == b.id && a.pose_id == b.pose_id && a.camera == b.camera)
-            && self.plan_identity() == other.plan_identity()
+        self.plan_identity() == other.plan_identity()
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -999,50 +527,31 @@ impl RecipeDoc {
         }
         self.detect.validate("检测参数")?;
         self.limits.validate("限值")?;
-        if self.is_burst() {
-            self.validate_burst()?;
-        } else if !self.inspect.is_empty() || self.part_calib.is_some() {
-            return Err("没有段的配方是旧拍照点配方，不能配置检测相机（inspect）或整件标定（partCalib）".into());
+        if !self.is_burst() {
+            return Err(LEGACY_RECIPE.into());
         }
-        if self.shots.len() > 64 {
-            return Err("配方最多允许 64 个拍照点".into());
-        }
-        let mut ids = HashSet::new();
-        for shot in &self.shots {
-            shot.validate()?;
-            if !ids.insert(shot.id.as_str()) {
-                return Err(format!("拍照点编号 {} 重复", shot.id));
-            }
-            // 用了特征定位却不判位置：定位失败、两端搬移超限都报不出 ERR，两端还会按位姿悄悄排除断胶判定
-            for v in shot.enabled_views() {
-                let projected = shot.for_view(v)?;
-                if projected.fixture.is_some() && projected.limits.as_ref().unwrap_or(&self.limits).position.is_none() {
-                    return Err(format!("拍照点 {} 图 {v} 使用了特征定位，必须设置位置判定限值", shot.id));
-                }
-            }
-        }
-        self.check_fixture_corridors()?;
-        let used = self.imaging_cameras();
-        let user = if self.is_burst() { "检测相机" } else { "拍照点" };
+        self.validate_burst()?;
+        let used = self.plan_cameras();
         if let Some(missing) = used.iter().find(|c| !self.cameras.contains_key(*c)) {
-            return Err(format!("相机 {missing} 被{user}使用，但配方没有它的曝光与增益"));
+            return Err(format!(
+                "相机 {missing} 被检测相机使用，但配方没有它的曝光与增益"
+            ));
         }
         for (camera, imaging) in &self.cameras {
             if !used.contains(camera) {
-                return Err(format!("配方给了相机 {camera} 的曝光与增益，但没有{user}使用它"));
+                return Err(format!(
+                    "配方给了相机 {camera} 的曝光与增益，但没有检测相机使用它"
+                ));
             }
             imaging.validate(camera)?;
         }
         Ok(())
     }
 
-    /// 段配方的模型约束（D-SB-1）：不能再有拍照点；只支持飞拍；标定轮数 10..=100；检测相机各自合法；
+    /// 段配方的模型约束（D-SB-1）：只支持飞拍；标定轮数 10..=100；检测相机各自合法；
     /// 段列表与三台计划相机满足 `plan::validate_segments`；直线 / 弯道默认参数满足 `plan::validate_defaults`（新建段取用它）；
-    /// 整件标定的帧组数放得进 PLC shotCount。
+    /// 整件标定的帧组数不超过上限。
     fn validate_burst(&self) -> Result<(), String> {
-        if !self.shots.is_empty() {
-            return Err("段配方不能同时有拍照点：segments 非空时 shots 必须为空，两套模型不能混用".into());
-        }
         if self.trigger_mode != TriggerMode::Fly {
             return Err("段配方只支持飞拍（triggerMode 必须为 fly）".into());
         }
@@ -1082,82 +591,8 @@ impl RecipeDoc {
         Ok(())
     }
 
-    /// 模板与胶检测走廊不重叠（替代 G2 的“含特征定位不能发布”，定稿 §11 跨阶段约束），只查与图像无关的部分；
-    /// 带外圈模板是否在图内要看图像尺寸，由工作台保存示教、发布与加载发布包时查（`FixtureSpec::check_image_size`）。
-    ///
-    /// 同一 Pose、同一相机、同一幅图的几个拍照点拍的是同一场景、同一坐标系的不同帧（同一 Pose 可多次触发）：
-    /// 拍照点 A 的模板可能盖住拍照点 B 的胶，所以每个框要避开组内全部已示教中线的走廊。
-    /// 停用视图、“不检”拍照点上的 fixture 不查（与 `has_fixture` 同口径），它们的中线也不算走廊。
-    fn check_fixture_corridors(&self) -> Result<(), String> {
-        match self.fixture_clearances()?.into_iter().find(|c| !c.passed()) {
-            Some(c) => Err(format!("拍照点 {} 图 {} 特征定位：{}", self.shots[c.k].id, c.view, c.message())),
-            None => Ok(()),
-        }
-    }
-
-    /// 每个启用的定位框到同组（同 Pose、同相机、同一幅图）每条已示教中线走廊的余量，见 `check_fixture_corridors`。
-    /// 配方校验与示教检查（G4 的 `workspace_fixture_check`、试测报告）共用这一份几何。
-    pub(crate) fn fixture_clearances(&self) -> Result<Vec<Clearance>, String> {
-        type Group = (Vec<(String, Vec<[f32; 2]>, f64)>, Vec<(usize, u8, FixtureSpec)>);
-        let mut groups: BTreeMap<(&str, &str, u8), Group> = BTreeMap::new();
-        for (k, shot) in self.shots.iter().enumerate().filter(|(_, s)| s.measured()) {
-            for v in shot.enabled_views() {
-                let projected = shot.for_view(v)?;
-                let label = format!("拍照点 {} 图 {v}", shot.id);
-                let group = groups.entry((shot.pose_id.as_str(), shot.camera.as_str(), v)).or_default();
-                if let (true, Some(mm)) = (projected.path.len() >= 2, projected.mm_per_px) {
-                    let detect = projected.detect.as_ref().unwrap_or(&self.detect);
-                    group.0.push((label, projected.path.clone(), f64::from(detect.search_mm) / f64::from(mm)));
-                }
-                if let Some(f) = projected.fixture { group.1.push((k, v, f)); }
-            }
-        }
-        let mut out = Vec::new();
-        for (lines, fixtures) in groups.values() {
-            for (k, view, f) in fixtures {
-                out.extend(f.corridor_clearances(lines).into_iter().map(|(owner, clearance, need)| Clearance { k: *k, view: *view, owner, clearance, need }));
-            }
-        }
-        Ok(out)
-    }
-
     pub fn build(&self) -> Result<Recipe, String> {
         self.validate()?;
-        let mut points = PathPoints::default();
-        let mut segments = Vec::new();
-        for (k, shot) in self.shots.iter().enumerate() {
-            for view in shot.enabled_views() {
-            let shot = shot.for_view(view)?;
-            if !shot.taught() { continue; }
-            let step = self.spacing / shot.mm_per_px.unwrap();
-            let len = shot.path_len_px();
-            let count = (len / step + 1e-3).floor() as usize + 1;
-            if count < 3 { continue; }
-            if points.k.len() + count > 200_000 {
-                return Err("测量点超过 20 万个，加大站距".into());
-            }
-            let first = points.k.len();
-            for i in 0..count {
-                let [x, y] = shot.path_at(i as f32 * step);
-                points.x.push(x);
-                points.y.push(y);
-                points.seg.push(segments.len() as u16);
-                points.k.push(k as u8);
-            }
-            let limits = shot.limits.as_ref().unwrap_or(&self.limits);
-            segments.push(Segment {
-                name: if self.shots[k].views.is_empty() { format!("{} · {}", shot.id, shot.bead) } else { format!("{} · {} · 图 {view}", shot.id, shot.bead) },
-                shot: k,
-                view,
-                first,
-                count,
-                position: limits.position.clone(),
-                width: limits.width.clone(),
-                max_gap_len: limits.max_gap_len,
-                min_present: limits.min_present,
-            });
-            }
-        }
         let recipe = Recipe {
             id: self.id.clone(),
             name: self.name.trim().to_string(),
@@ -1173,10 +608,7 @@ impl RecipeDoc {
             filter_window: self.filter_window,
             detect: self.detect.clone(),
             limits: self.limits.clone(),
-            shots: self.shots.clone(),
             camera_imaging: self.cameras.clone(),
-            segments,
-            points,
             path_segments: self.segments.clone(),
             inspect: self.inspect.clone(),
             segment_defaults: self.segment_defaults.clone(),
@@ -1224,71 +656,14 @@ pub fn default_detect() -> DetectParams {
 /// 模拟相机的像素当量（与模拟出图一致）。
 pub const SIM_MM_PER_PX: f32 = 0.112;
 
-/// 一台相机按顺序拍几个拍照点：编号 P1、P2…，Pose 同编号，胶条 J1；中线由调用方给（空为未示教）。
-pub fn shot_list(camera: &str, paths: Vec<Vec<[f32; 2]>>) -> Vec<ShotSpec> {
-    paths
-        .into_iter()
-        .enumerate()
-        .map(|(k, path)| ShotSpec {
-            id: format!("P{}", k + 1),
-            pose_id: format!("P{}", k + 1),
-            camera: camera.into(),
-            view: 1,
-            views: Vec::new(),
-            calib: None,
-            bead: "J1".into(),
-            skip: false,
-            mm_per_px: (!path.is_empty()).then_some(SIM_MM_PER_PX),
-            path,
-            detect: None,
-            limits: None,
-            fixture: None,
-        })
-        .collect()
-}
-
 /// 模拟相机画面里的示例中线：胶嘴在右侧，胶条往左拖出（直、缓弯、斜向交替）。
+#[cfg(test)]
 fn sample_path(k: usize) -> Vec<[f32; 2]> {
     match k % 3 {
         0 => vec![[980.0, 480.0], [300.0, 460.0]],
         1 => vec![[980.0, 480.0], [700.0, 420.0], [320.0, 330.0]],
         _ => vec![[980.0, 480.0], [640.0, 560.0], [330.0, 690.0]],
     }
-}
-
-/// 自检与回归测试用样例配方，不写入用户配方库。
-pub fn samples() -> Vec<RecipeDoc> {
-    let doc = |id: &str, name: &str, code: u16, n: usize, trigger_mode| {
-        let mut doc = RecipeDoc {
-            id: id.into(),
-            name: name.into(),
-            version: 1,
-            plan_version: u32::from(code),
-            teaching_id: None,
-            product_code: code,
-            stage: RecipeStage::Formal,
-            trigger_mode,
-            schema_version: RECIPE_SCHEMA,
-            spacing: 1.0,
-            filter_window: 5,
-            detect: default_detect(),
-            limits: default_limits(),
-            shots: shot_list(&legacy_camera_id(0), (0..n).map(sample_path).collect()),
-            cameras: BTreeMap::new(),
-            segments: Vec::new(),
-            inspect: Vec::new(),
-            segment_defaults: KindDefaults::default(),
-            calibration_rounds: DEFAULT_CALIBRATION_ROUNDS,
-            boundary_guard: DEFAULT_BOUNDARY_GUARD,
-            part_calib: None,
-        };
-        doc.sync_imaging();
-        doc
-    };
-    vec![
-        doc("MTR-HSG-A", "电机壳体 A", 12, 6, TriggerMode::Fly),
-        doc("MTR-HSG-B", "电机壳体 B", 13, 4, TriggerMode::Stop),
-    ]
 }
 
 /// 段配方的起点（D-SB-24）：飞拍、一个直线段（待标定，容差与检测项取配方默认）、按给定顺序的检测相机（走廊待示教）、
@@ -1309,7 +684,6 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
         filter_window: 5,
         detect: default_detect(),
         limits: default_limits(),
-        shots: Vec::new(),
         cameras: BTreeMap::new(),
         segments: vec![plan::new_segment(
             1,
@@ -1363,12 +737,6 @@ pub fn samples_burst() -> RecipeDoc {
     }
     doc.segments[0].expected_frames = Some(4);
     doc
-}
-
-/// 测试与重判里需要一份现成配方时用。
-#[cfg(test)]
-pub fn builtin() -> Vec<Arc<Recipe>> {
-    samples().iter().map(|d| Arc::new(d.build().unwrap())).collect()
 }
 
 #[derive(Clone, Debug, Serialize)]

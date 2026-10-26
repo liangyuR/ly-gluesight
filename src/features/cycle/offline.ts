@@ -5,12 +5,8 @@ export const scenarioOptions: [Scenario, string][] = [
   ["excursion", "局部超差（允许）"],
   ["gap", "断胶（超过允许长度）"],
   ["lostFrame", "传输丢帧 / 缺帧"],
-  ["locateFail", "定位失败（胶正常）"],
-  ["locateFailGap", "定位失败 + 断胶"],
-  ["countMismatch", "少发一次触发（旧拍照点配方）"],
   ["motionTimeout", "运动超时（PLC 不报运动结束）"],
   ["ackMismatch", "PLC 回显核对不符（置 90）"],
-  // 以下五种只适用于段配方（分段连拍），旧拍照点配方选了后端会拒绝并说明原因
   ["cameraLost", "单台相机缺帧（该组检测不完整）"],
   ["pulseJitter", "脉冲数波动（首尾 ±1 帧）"],
   ["cornerSlowdown", "弯道减速（弯道帧数波动）"],
@@ -21,7 +17,7 @@ export const scenarioOptions: [Scenario, string][] = [
 
 /** 只改变虚拟 PLC / 机器人握手与脉冲串、不改图像内容的工况；与后端 Scenario::handshake() 白名单一致。 */
 const handshakeScenarios = new Set<Scenario>([
-  "normal", "lostFrame", "countMismatch", "motionTimeout", "ackMismatch",
+  "normal", "lostFrame", "motionTimeout", "ackMismatch",
   "cameraLost", "pulseJitter", "cornerSlowdown", "notInspected", "earlyEnd",
 ]);
 

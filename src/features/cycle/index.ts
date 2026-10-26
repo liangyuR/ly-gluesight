@@ -5,10 +5,6 @@ export { rejectionTarget, runChoice, showChecklist, targetLinks, devLyflowHint, 
 export { default as ReadinessChecklist, TargetLink } from "./components/ReadinessChecklist";
 export { default as RecipeRunSelect } from "./components/RecipeRunSelect";
 export { faultOptions, measurementLabel, scenarioOptions, scenariosFor, siteModeText, sourceLabel } from "./offline";
-export { CAM_COLORS, computeVis, currentFrame, partReferenceBadge, referenceBadge, shotCameras, shotLabel, shotState, shotTaught, teachStatus } from "./vis";
-export { default as ShotTiles } from "./components/ShotTiles";
-export { default as ShotStrip } from "./components/ShotStrip";
-export { default as UnrolledCurve } from "./components/UnrolledCurve";
 export { default as FrameGroupStrip } from "./components/FrameGroupStrip";
 export { default as RegionResultPanel } from "./components/RegionResultPanel";
 export { useBurstSegments } from "./burst";

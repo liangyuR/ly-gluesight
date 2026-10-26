@@ -630,7 +630,6 @@ fn prepare_import<'a>(
     w.instance_id = 0;
     w.pending = None;
     w.publish = PublishState::Draft;
-    w.last_position = None;
     let before = w.samples.len();
     w.samples.retain(|s| s.history_id.is_none());
     if w.samples.len() < before {

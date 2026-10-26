@@ -37,26 +37,16 @@
 
 .detail-head { padding: 10px 14px; }
 .detail-step { display: inline-flex; gap: 4px; }
-.detail-frame-select { width: 260px; }
 .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; grid-template-rows: auto 220px auto; gap: 16px; }
 .detail-grid > * { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
 .detail-grid > .panel { padding: 12px 14px; }
 .detail-grid .side { grid-row: 1 / 3; grid-column: 2; overflow: auto; }
-.detail-grid .curve-panel { grid-column: 1; grid-row: 2; }
 .detail-grid .frames-panel { grid-column: 1 / -1; }
 /* 段配方：没有曲线面板，判定栏只占第一行 */
 .detail-grid.burst { grid-template-rows: auto auto; }
 .detail-grid.burst .side { grid-row: 1; }
 .hist-frames { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
 .reason-box { margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--surface-mid); font-size: 13px; }
-.ng-item { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--r-md); background: var(--ng-container); color: var(--on-ng-container); }
-.ng-title { font-size: 13px; font-weight: 600; }
-.history-segment { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--r-md); }
-.history-segment[data-tone="ok"] { color: var(--on-ok-container); background: var(--ok-container); }
-.history-segment[data-tone="warn"] { color: var(--on-warn-container); background: var(--warn-container); }
-.history-segment[data-tone="ng"] { color: var(--on-ng-container); background: var(--ng-container); }
-.history-segment[data-tone="fault"] { color: var(--on-fault-container); background: var(--fault-container); }
-.hist-detail .shot-tiles { flex: none; max-height: 404px; }
 .detail-grid .kv2 a { color: var(--primary); }
 
 .qs-modal-content.rj-dialog { width: min(820px, calc(100vw - 32px)); }

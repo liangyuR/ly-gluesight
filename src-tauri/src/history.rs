@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 use crate::burst_judge::{self, BurstJudgement, Flags, FrameState};
 use crate::cycle::CycleHost;
 use crate::frame_group::FrameGroup;
-use crate::judge::{self, Verdict};
+use crate::judge::Verdict;
 use crate::plan::{PathSegment, SegmentKind, WidthCheck};
-use crate::recipe::{JudgeParams, Recipe};
+use crate::recipe::Recipe;
 use crate::segmentation::RegionKind;
 use crate::store::{same_measurement_layout, FrameRecord, HistoryPage, HistoryQuery, HistoryScope, PartDetail, PartSummary, Store, StoredMeasurement};
 
@@ -58,57 +58,28 @@ pub async fn history_neighbors(app: AppHandle, id: i64, query: Option<HistoryQue
     }).await.map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-pub fn history_recipe(store: State<'_, Store>, cycle: State<'_, CycleHost>, revision_id: Option<String>, recipe_id: Option<String>) -> Result<Option<Recipe>, String> {
-    record_recipe(&store, revision_id.as_deref(), || recipe_id.as_deref().and_then(|id| cycle.recipe(id)))
-}
-
-fn record_recipe(store: &Store, revision_id: Option<&str>, _current: impl FnOnce() -> Option<Arc<Recipe>>) -> Result<Option<Recipe>, String> {
-    match revision_id {
-        Some(revision_id) => store.recipe_snapshot(revision_id),
-        None => Ok(None),
-    }
-}
-
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct KindOverride {
     pub tol_upper: Option<f32>,
     pub tol_lower: Option<f32>,
-    pub abs_min: Option<f32>,
-    pub abs_max: Option<f32>,
     pub max_excursion_len: Option<f32>,
-}
-
-impl KindOverride {
-    fn apply(&self, p: &mut JudgeParams) {
-        p.tol_upper = self.tol_upper.unwrap_or(p.tol_upper);
-        p.tol_lower = self.tol_lower.unwrap_or(p.tol_lower);
-        p.abs_min = self.abs_min.unwrap_or(p.abs_min);
-        p.abs_max = self.abs_max.unwrap_or(p.abs_max);
-        p.max_excursion_len = self.max_excursion_len.unwrap_or(p.max_excursion_len);
-    }
 }
 
 /// 试算参数：覆盖配方中的判定参数，只用于本次重判，不保存。
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Overrides {
-    /// 允许断胶长度（作用于每个拍照点）
+    /// 允许断胶长度（作用于每段）
     pub max_gap_len: Option<f32>,
-    pub filter_window: Option<usize>,
-    /// 位置限值（只作用于判位置的拍照点）
-    pub position: KindOverride,
-    /// 胶宽限值（只作用于判胶宽的拍照点）
-    pub width: KindOverride,
-    /// 段配方记录：直线段的胶宽允差（上 / 下公差、帧内允许超差长度）；绝对限不适用
+    /// 直线段的胶宽允差（上 / 下公差、帧内允许超差长度）
     pub straight: KindOverride,
-    /// 段配方记录：弯道段的胶宽允差，字段同 straight；未分段区域按所覆盖各段取较宽一档（burst_judge）
+    /// 弯道段的胶宽允差，字段同 straight；未分段区域按所覆盖各段取较宽一档（burst_judge）
     pub corner: KindOverride,
 }
 
 impl KindOverride {
-    /// 段配方：覆盖一段的胶宽允差。abs_min / abs_max 没有对应的段级限值，不适用。
+    /// 覆盖一段的胶宽允差。
     fn apply_width(&self, width: &mut WidthCheck) {
         width.tol_upper = self.tol_upper.map_or(width.tol_upper, f64::from);
         width.tol_lower = self.tol_lower.map_or(width.tol_lower, f64::from);
@@ -117,7 +88,7 @@ impl KindOverride {
 }
 
 impl Overrides {
-    /// 段配方记录：直线段用 straight、弯道段用 corner 覆盖胶宽允差；允许断胶长度作用于每帧（每段）。
+    /// 直线段用 straight、弯道段用 corner 覆盖胶宽允差；允许断胶长度作用于每帧（每段）。
     fn apply_segments(&self, segments: &[PathSegment]) -> Vec<PathSegment> {
         segments
             .iter()
@@ -132,21 +103,6 @@ impl Overrides {
                 segment
             })
             .collect()
-    }
-
-    fn apply(&self, recipe: &Recipe) -> Recipe {
-        let mut r = recipe.clone();
-        r.filter_window = self.filter_window.unwrap_or(r.filter_window);
-        for seg in &mut r.segments {
-            seg.max_gap_len = self.max_gap_len.unwrap_or(seg.max_gap_len);
-            if let Some(p) = seg.position.as_mut() {
-                self.position.apply(p);
-            }
-            if let Some(w) = seg.width.as_mut() {
-                self.width.apply(w);
-            }
-        }
-        r
     }
 }
 
@@ -174,7 +130,7 @@ pub struct Change {
     pub from: Verdict,
     pub to: Verdict,
     pub reason: String,
-    /// 段配方记录重判后的整件标记（检测不完整、疑似提前终止等与阈值无关，照常带出）；旧记录为 None
+    /// 重判后的整件标记（检测不完整、疑似提前终止等与阈值无关，照常带出）
     pub flags: Option<Flags>,
 }
 
@@ -187,7 +143,6 @@ pub enum SkipKind {
     NoRevision,
     SnapshotMissing,
     LayoutMismatch,
-    NoRecipeId,
     NoCandidate,
     LayoutChanged,
 }
@@ -196,13 +151,14 @@ impl SkipKind {
     fn reason(self) -> &'static str {
         match self {
             Self::ErrResult => "原检测为 ERR，不能仅靠判定参数复原测量",
-            Self::NoTable => "原记录缺少测量点数据",
+            Self::NoTable => "原记录缺少段配方帧记录",
             Self::NoRevision => "原记录缺少配方快照身份",
             Self::SnapshotMissing => "原配方快照缺失，无法核对测点布局",
-            Self::LayoutMismatch => "存储测量点与原配方布局不一致",
-            Self::NoRecipeId => "原记录缺少配方编号",
+            Self::LayoutMismatch => "存储的区域或帧与原配方布局不一致",
             Self::NoCandidate => "当前候选配方不存在",
-            Self::LayoutChanged => "当前候选的拍照点、相机、视角、测点几何、特征定位（模板来源）或单位已改变（段配方：段序列 / 类型 / 预期帧数、相机或走廊已改变），需要使用原图复测",
+            Self::LayoutChanged => {
+                "当前候选的段序列 / 类型 / 预期帧数、相机或走廊已改变，需要使用原图复测"
+            }
         }
     }
 }
@@ -229,7 +185,7 @@ pub struct RejudgeResult {
 
 const REJUDGE_LIMIT: usize = 5000;
 
-/// 用存储的测量表重新判定，不需要重新拍照。ERR 件与缺少测量数据的记录跳过。
+/// 用存储的每帧指标重新判定，不需要重新拍照。ERR 件与缺少帧记录的记录跳过。
 #[tauri::command]
 pub async fn history_rejudge(app: AppHandle, request: RejudgeRequest) -> Result<RejudgeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -324,51 +280,10 @@ fn rejudge_rows(
             skip(SkipKind::ErrResult);
             continue;
         }
-        if let Some(burst) = &row.burst {
-            // 段配方记录：区域用记录里的，指标用 part_frames 的，允差按 kind 覆盖；计划身份或走廊变了跳过
-            let Some(revision_id) = row.recipe_revision.as_deref() else {
-                skip(SkipKind::NoRevision);
-                continue;
-            };
-            let Some(original) = cached_recipe(&mut originals, revision_id, || snapshot(revision_id))? else {
-                skip(SkipKind::SnapshotMissing);
-                continue;
-            };
-            let frames = burst_frames(row.id)?;
-            if frames.is_empty() {
-                skip(SkipKind::NoTable);
-                continue;
-            }
-            if !original.is_burst() || row.recipe_id.as_deref() != Some(original.id.as_str()) || revision_id != original.revision_id
-                || !burst_layout_matches(&original, burst, &frames) {
-                skip(SkipKind::LayoutMismatch);
-                continue;
-            }
-            let recipe = if request.use_current_recipe {
-                let Some(candidate) = cached_recipe(&mut candidates, &original.id, || Ok(current(&original.id)))? else {
-                    skip(SkipKind::NoCandidate);
-                    continue;
-                };
-                if !same_measurement_layout(&original, &candidate) {
-                    skip(SkipKind::LayoutChanged);
-                    continue;
-                }
-                candidate
-            } else {
-                original
-            };
-            let j = rejudge_burst(&recipe, &request.overrides, burst, &frames);
-            total += 1;
-            *matrix.entry((row.verdict, j.verdict)).or_default() += 1;
-            if j.verdict != row.verdict && changes.len() < 300 {
-                changes.push(Change { id: row.id, sn: row.sn.clone(), ts: row.ts, from: row.verdict, to: j.verdict, reason: j.reason, flags: Some(j.flags) });
-            }
-            continue;
-        }
-        if row.table.is_empty() {
+        let Some(burst) = &row.burst else {
             skip(SkipKind::NoTable);
             continue;
-        }
+        };
         let Some(revision_id) = row.recipe_revision.as_deref() else {
             skip(SkipKind::NoRevision);
             continue;
@@ -377,16 +292,22 @@ fn rejudge_rows(
             skip(SkipKind::SnapshotMissing);
             continue;
         };
-        if row.table.len() != original.point_count() || row.recipe_id.as_deref() != Some(original.id.as_str()) || revision_id != original.revision_id {
+        let frames = burst_frames(row.id)?;
+        if frames.is_empty() {
+            skip(SkipKind::NoTable);
+            continue;
+        }
+        if row.recipe_id.as_deref() != Some(original.id.as_str())
+            || revision_id != original.revision_id
+            || !burst_layout_matches(&original, burst, &frames)
+        {
             skip(SkipKind::LayoutMismatch);
             continue;
         }
         let recipe = if request.use_current_recipe {
-            let Some(id) = row.recipe_id.as_deref() else {
-                skip(SkipKind::NoRecipeId);
-                continue;
-            };
-            let Some(candidate) = cached_recipe(&mut candidates, id, || Ok(current(id)))? else {
+            let Some(candidate) =
+                cached_recipe(&mut candidates, &original.id, || Ok(current(&original.id)))?
+            else {
                 skip(SkipKind::NoCandidate);
                 continue;
             };
@@ -398,11 +319,19 @@ fn rejudge_rows(
         } else {
             original
         };
-        let j = judge::judge(&request.overrides.apply(&recipe), &row.table);
+        let j = rejudge_burst(&recipe, &request.overrides, burst, &frames);
         total += 1;
         *matrix.entry((row.verdict, j.verdict)).or_default() += 1;
         if j.verdict != row.verdict && changes.len() < 300 {
-            changes.push(Change { id: row.id, sn: row.sn.clone(), ts: row.ts, from: row.verdict, to: j.verdict, reason: j.reason, flags: None });
+            changes.push(Change {
+                id: row.id,
+                sn: row.sn.clone(),
+                ts: row.ts,
+                from: row.verdict,
+                to: j.verdict,
+                reason: j.reason,
+                flags: Some(j.flags),
+            });
         }
     }
     let mut matrix: Vec<_> = matrix.into_iter().map(|((from, to), count)| MatrixCell { from, to, count }).collect();

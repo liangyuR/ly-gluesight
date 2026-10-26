@@ -251,16 +251,13 @@ pub fn locate(frames: &[(SegmentKind, u32)], seq: u64) -> Option<(usize, Segment
     frames.last().map(|&(kind, _)| (frames.len() - 1, kind, 1.0))
 }
 
-/// 虚拟产线的一件：拍照数量取自生效配方编译出的拍照计划，只决定虚拟机器人发多少次触发，不写给 PC。
-/// 旧拍照点配方 `profile` 为空，虚拟机器人按 `device_shots` 精确触发（[`Line::run_part`]）；
-/// 段配方带脉冲剖面，按剖面发脉冲串（[`Line::run_burst`]），`lost` 只丢指定相机的指定帧，
-/// `early_end_after` 为 PLC 提前终止前发出的脉冲数。
+/// 虚拟产线的一件：按脉冲剖面发脉冲串（[`Line::run_burst`]），`lost` 只丢指定相机的指定帧，
+/// `early_end_after` 为 PLC 提前终止前发出的脉冲数。样本集示教采集没有剖面，按 `shot_count` 定频触发（[`Line::run_capture`]）。
 #[derive(Clone, Debug)]
 pub struct PartOrder {
     pub sn: String,
     pub product_code: u16,
     pub shot_count: u16,
-    pub device_shots: u16,
     pub profile: Option<PulseProfile>,
     /// (计划相机下标, seq)
     pub lost: Vec<(usize, u64)>,
@@ -268,13 +265,12 @@ pub struct PartOrder {
 }
 
 impl PartOrder {
-    /// 旧拍照点配方的一件：没有脉冲剖面。
-    pub fn legacy(sn: String, product_code: u16, shot_count: u16, device_shots: u16) -> Self {
+    /// 没有脉冲剖面的一件；需要剖面时再填 `profile`。
+    pub fn new(sn: String, product_code: u16, shot_count: u16) -> Self {
         Self {
             sn,
             product_code,
             shot_count,
-            device_shots,
             profile: None,
             lost: Vec::new(),
             early_end_after: None,
@@ -581,14 +577,7 @@ impl Line {
         })
     }
 
-    pub async fn run_part(&self, timing: &Timing, order: &PartOrder, scenario: Scenario,
-        trigger: impl FnMut(usize, bool), abort: &AtomicBool) -> Result<Outcome, String> {
-        let result = self.drive(timing, order, scenario, trigger, abort).await;
-        if result.is_err() { self.release(); }
-        result
-    }
-
-    /// 段配方的一件（规格 §0/§6）：写请求（plcState=10）→ 布防后相机使能拉高，PLC 按剖面定频发脉冲串，每个脉冲同时触发三台相机
+    /// 一件（规格 §0/§6）：写请求（plcState=10）→ 布防后相机使能拉高，PLC 按剖面定频发脉冲串，每个脉冲同时触发三台相机
     /// → 使能拉低后置 plcState=20 → 等结果、核对回显后置 30。
     /// - `order.lost` 只丢指定相机的指定帧（相机已计数、帧没送到）；
     /// - `order.early_end_after`：PLC 发到这么多脉冲就提前置 20（提前终止）；
@@ -699,22 +688,6 @@ impl Line {
         Ok(outcome)
     }
 
-    /// 旧拍照点配方：按计划精确触发 device_shots 次，第 k 次（0 起）由 `trigger(k, 传输丢帧)` 交给相机。
-    async fn drive(&self, timing: &Timing, order: &PartOrder, scenario: Scenario,
-        mut trigger: impl FnMut(usize, bool), abort: &AtomicBool) -> Result<Outcome, String> {
-        let seq = self.request(order);
-        if self.armed(timing, seq, abort).await? {
-            let n = order.device_shots as usize;
-            for k in 0..n {
-                self.hold(timing, timing.shot_interval, abort).await?;
-                if scenario == Scenario::CountMismatch && k + 1 == n { continue; }
-                trigger(k, scenario.lost_frame(n) == Some(k));
-            }
-            self.end_motion(timing, scenario, abort).await?;
-        }
-        self.conclude(timing, scenario, seq, abort).await
-    }
-
     async fn drive_burst(&self, timing: &Timing, order: &PartOrder, profile: &PulseProfile, scenario: Scenario,
         mut fire: impl FnMut(&Pulse), abort: &AtomicBool) -> Result<Outcome, String> {
         let seq = self.request(order);
@@ -786,7 +759,7 @@ mod tests {
             release_timeout: Duration::from_secs(2),
         };
         write_teach(&memory, 6, 10, 7, 0);
-        let order = PartOrder::legacy("teach".into(), 1, 3, 3);
+        let order = PartOrder::new("teach".into(), 1, 3);
         let abort = AtomicBool::new(false);
         let mut frames = 0;
         let pc = async {

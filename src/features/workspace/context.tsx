@@ -73,7 +73,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const previousCameraSources=cameraSources.current;
     // 某段走廊换了示教帧或相机换了标定：旧草稿是在旧帧上画的，丢弃
     const cameraSourceKeys=Object.fromEntries(inspect.flatMap(item=>{
-      const teaching=next.plan?.cameraTeaching.find(t=>t.camera===item.camera);
+      const teaching=next.plan.cameraTeaching.find(t=>t.camera===item.camera);
       return (teaching?.segments??[]).map(s=>[draftKey(item.camera,s.segment),JSON.stringify([item.calib,s.frame.id])]);
     }));
     cameraSources.current=cameraSourceKeys;

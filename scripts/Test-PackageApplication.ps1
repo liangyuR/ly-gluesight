@@ -40,13 +40,5 @@ try {
 if (-not (Test-Path -LiteralPath $applicationReport -PathType Leaf)) { throw '应用运行库自检未生成报告；停止生成安装包。' }
 $result = Get-Content -LiteralPath $applicationReport -Raw | ConvertFrom-Json
 if ($result.status -ne 'ok') { throw "应用运行库自检报告未通过；请查看 $applicationReport" }
-# 定位冒烟：应用只报告状态（支持却冒烟失败时应用已退出非 0）；运行库不支持带外圈模板时按 locateSmoke 开关放行或失败
-$locate = Get-RuntimeField (Get-RuntimeField $result 'lyflow') 'locate'
-$locateStatus = Get-RuntimeField $locate 'status'
-if ($locateStatus -ceq 'unsupported') {
-    $message = "随包运行库不支持带外圈模板的特征定位：$(Get-RuntimeField $locate 'reason')；$(Get-RuntimeField $locate 'effect')。"
-    if ((Get-LocateSmokePolicy (Get-RuntimeConfiguration)) -ceq 'required') { throw "$message packaging/runtime.json 的 lyflow.locateSmoke 为 required。" }
-    Write-Warning "$message lyflow.locateSmoke 为 optional，只适用于没有特征定位的配方。"
-} elseif ($locateStatus -cne 'ok') { throw "应用运行库自检报告缺少定位冒烟结果；请查看 $applicationReport" }
 $stagedManifest = Get-Content -LiteralPath (Join-Path $sourceRuntime 'manifest.json') -Raw | ConvertFrom-Json
 Assert-LyFlowVersions $result.lyflow.clientAbiVersion $result.lyflow.version '应用客户端与实际引擎' $stagedManifest.lyflow.version

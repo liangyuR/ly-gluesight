@@ -20,9 +20,6 @@
 .wp-calib-tol .qs-input { width:76px; }
 .wp-calib-table td, .wp-calib-table th { white-space:nowrap; }
 
-.wp-segment-teach { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:12px; margin-top:12px; }
-.wp-segment-teach > li { list-style:none; display:flex; flex-direction:column; gap:6px; min-width:0; }
-.wp-segment-teach .wp-viewport { min-height:0; }
 .wp-group-item.wp-group-sub { padding-left:24px; font-size:11.5px; }
 .wp-seg-corridor-note { display:flex; flex-direction:column; gap:8px; padding:12px; }
 .wp-seg-corridor-note h3 { margin:0; font-size:13px; }

@@ -1,5 +1,5 @@
 //! 离线样本集 v1：`sample-set.json` + `parts/<partId>/<shotId>_<cameraId>_v<view>.<ext>`。
-//! 业务关联只用 partId / shotId / cameraId / view，不做任何内容比对。
+//! 业务关联只用 partId / shotId / cameraId / view，不做任何内容比对。段配方按相机帧序列解释（[`Manifest::camera_frames`]）。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -193,30 +193,6 @@ impl Manifest {
     pub fn camera_frames(&self, camera: &str) -> Vec<&SampleShot> {
         self.shots.iter().filter(|s| s.camera_id == camera).collect()
     }
-
-    /// 旧拍照点模型（段配方用 [`camera_frames`](Self::camera_frames)）：
-    /// 配方各拍照点在样本集里对应的拍照点（按配方拍照点下标）：第 t 次 PLC 触发里相机 c 的拍照点，
-    /// 取样本集里相机 c 的第 t 个拍照点（清单顺序）。按相机编号 + 相机内序号关联，不要求编号相同；
-    /// 配方用到的每台相机在样本集里的拍照点数都必须等于配方触发次数。
-    pub fn recipe_shots(&self, recipe: &crate::recipe::Recipe) -> Result<Vec<&SampleShot>, String> {
-        let groups = crate::plc_plan::trigger_groups(recipe)?;
-        let mut by_camera = BTreeMap::new();
-        for camera in recipe.cameras() {
-            let shots: Vec<&SampleShot> = self.shots.iter().filter(|s| s.camera_id == camera).collect();
-            if shots.len() < groups.len() {
-                return Err(format!("相机 {camera} 在样本集里只有 {} 个拍照点，缺第 {} 个（配方每台相机 {} 次触发）", shots.len(), shots.len() + 1, groups.len()));
-            }
-            if shots.len() > groups.len() {
-                return Err(format!("相机 {camera} 在样本集里有 {} 个拍照点，多于配方每台相机的 {} 次触发；样本集与配方的点位须一一对应", shots.len(), groups.len()));
-            }
-            by_camera.insert(camera, shots);
-        }
-        let mut mapped = vec![None; recipe.shots.len()];
-        for (t, group) in groups.iter().enumerate() {
-            for &k in group { mapped[k] = Some(by_camera[&recipe.shots[k].camera][t]); }
-        }
-        Ok(mapped.into_iter().flatten().collect())
-    }
 }
 
 fn image_dimensions(path: &Path) -> Result<[u32; 2], String> {
@@ -290,11 +266,6 @@ impl SampleSet {
         self.part(part_id).map(|p| SampleRef { set_id: self.manifest.id.clone(), part_id: p.part_id.clone(), sn: p.sn.clone(), label: p.label })
     }
 
-    pub fn shot_mm_per_px(&self, shot_id: &str) -> Option<f32> {
-        let shot = self.manifest.shots.iter().find(|s| s.shot_id == shot_id)?;
-        shot.mm_per_px.or(self.manifest.mm_per_px)
-    }
-
     pub fn has_camera(&self, camera_id: &str) -> bool {
         self.manifest.cameras.iter().any(|c| c.id == camera_id)
     }
@@ -366,38 +337,6 @@ pub(crate) mod fixture {
         }
 
         pub fn pixel(part: u8, shot: u8, view: u8) -> u8 { part * 100 + shot * 10 + view }
-
-        /// 段配方用：2 件 × 单视角相机 cam1、cam2…，第 i 台相机 `frames[i]` 帧（不超过 9），清单按帧号先后交错排列。
-        /// 像素值 = [`burst_pixel`](Self::burst_pixel)，按 (件, 帧号, 相机) 可分辨。
-        pub fn burst(frames: &[u8]) -> Self {
-            let root = Self::root();
-            let cameras: Vec<String> = (1..=frames.len()).map(|i| format!("cam{i}")).collect();
-            let mut shots = Vec::new();
-            for seq in 1..=frames.iter().copied().max().unwrap_or(0) {
-                for (camera, _) in cameras.iter().zip(frames).filter(|(_, n)| **n >= seq) {
-                    shots.push((format!("S{:03}", shots.len() + 1), camera.clone(), seq));
-                }
-            }
-            let manifest = serde_json::json!({
-                "schemaVersion": 1, "id": "fixture-burst", "name": "分段连拍测试样本集", "source": "unit", "imageSize": [2, 2], "mmPerPx": null,
-                "cameras": cameras.iter().map(|id| serde_json::json!({"id": id, "views": [1]})).collect::<Vec<_>>(),
-                "shots": shots.iter().map(|(shot, camera, _)| serde_json::json!({"shotId": shot, "cameraId": camera, "views": [1]})).collect::<Vec<_>>(),
-                "parts": [{"partId": "p01", "sn": "A01", "label": "ok"}, {"partId": "p02", "sn": "B02", "label": "ng"}],
-            });
-            std::fs::write(root.join("sample-set.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-            for part in 1..=2u8 {
-                let dir = root.join("parts").join(format!("p{part:02}"));
-                std::fs::create_dir_all(&dir).unwrap();
-                for (shot, camera, seq) in &shots {
-                    let index = cameras.iter().position(|c| c == camera).unwrap() as u8 + 1;
-                    image::save_buffer(dir.join(format!("{shot}_{camera}_v1.png")), &[Self::burst_pixel(part, *seq, index); 4], 2, 2, image::ColorType::L8).unwrap();
-                }
-            }
-            Self(root)
-        }
-
-        /// 段配方样本图的像素值：件序号×100 + 帧号×10 + 相机序号（从 1 起）。
-        pub fn burst_pixel(part: u8, seq: u8, camera: u8) -> u8 { part * 100 + seq * 10 + camera }
 
         fn root() -> PathBuf {
             static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

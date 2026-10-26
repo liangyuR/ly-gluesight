@@ -58,8 +58,8 @@ function useFrameImage(historyId: number, camera: number, seq: number, enabled: 
 }
 
 /**
- * 历史详情（段配方）：按区域展示——整件的段布置与区域结论、帧组条、按 (相机, seq) 选的原图、每相机帧表与时间线。
- * 旧拍照点记录仍由 HistoryDetailPage 自己展示；这里只处理 PartDetail.burst 非空的记录。
+ * 历史详情：按区域展示——整件的段布置与区域结论、帧组条、按 (相机, seq) 选的原图、每相机帧表与时间线。
+ * 只处理 PartDetail.burst 非空的记录。
  */
 export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, onBack }: {
   detail: PartDetail;
@@ -114,7 +114,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   // 原图完整：除缺帧外每帧都有录制原图；候选的走廊示教完成（各段检测相机都有走廊、相机有像素当量），才能从原图复测
   const rawComplete = detail.recording.available && burst.frames.every(f => f.status === "missing" || !!f.rawFile);
   const candidateReady = !!ws.data && ws.data.workspace.doc.id === s.recipeId && !ws.dirty && !ws.frameDirty;
-  const teaching = ws.data?.plan?.cameraTeaching ?? [];
+  const teaching = ws.data?.plan.cameraTeaching ?? [];
   const candidateTaught = teaching.length > 0 && teaching.every(c => c.ready);
   const disabled = working || ws.busy || !candidateReady;
   const blockers = s.source === "offlineCandidate" ? [] : [

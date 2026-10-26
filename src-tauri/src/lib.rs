@@ -21,7 +21,6 @@ mod handshake_audit;
 mod inspection;
 mod instance;
 mod judge;
-mod locate_health;
 mod measure;
 mod mvs;
 mod offline;
@@ -62,14 +61,20 @@ pub use packaging::check_packaged_runtime;
 /// 不是稳定 API，应用本身不用。
 #[doc(hidden)]
 pub mod probe_api {
+    pub use crate::burst_judge::FrameState;
     pub use crate::calibration::calibrate_counts;
     pub use crate::frame_align::{align_cuts, downsample, Sequence, ALIGN_FACTOR};
     pub use crate::frame_group::FrameGroup;
     pub use crate::image_file::{load as load_image, save_pgm};
     pub use crate::plan::SegmentKind;
-    pub use crate::production::{graphs, Prepared, GRAPH_VERSION};
-    pub use crate::recipe::{samples, DetectParams, JudgeParams, Polarity, Recipe, RecipeDoc, ShotLimits};
-    pub use crate::release::{load as load_release, publish as publish_release, PublishInput, ResourceSource, ShotInput, ValidationSite, Versions};
+    pub use crate::production::{burst_graphs, Prepared, GRAPH_VERSION_BURST};
+    pub use crate::recipe::{
+        burst_template, DetectParams, Polarity, Recipe, RecipeDoc, SegmentCorridor,
+    };
+    pub use crate::release::{
+        load as load_release, publish_burst, BurstPublishInput, CameraInput, CorridorInput,
+        ResourceSource, ValidationSite, Versions,
+    };
     pub use crate::segmentation::{Proportional, SegInput, SegOutcome, Segmenter};
     pub use crate::vision::{Engine, FrameImage};
 
@@ -176,6 +181,7 @@ pub fn run() {
             project::transfer::project_export,
             project::transfer::project_import_pick,
             project::transfer::project_import,
+            project::transfer::project_copy,
             storage::storage_preferences_get,
             storage::storage_preferences_update,
             commands::app_info,
@@ -200,7 +206,6 @@ pub fn run() {
             plc::plc_s7_phase1_template,
             cycle::cycle_snapshot,
             cycle::cycle_logs,
-            cycle::cycle_part_data,
             cycle::cycle_recipes,
             cycle::cycle_layout,
             cycle::cycle_get_settings,
@@ -232,7 +237,6 @@ pub fn run() {
             history::history_query,
             history::history_detail,
             history::history_neighbors,
-            history::history_recipe,
             history::history_rejudge,
             history::history_export,
             history::reveal_path,
@@ -255,19 +259,11 @@ pub fn run() {
             recipe_capture::recipe_capture_stop,
             recipe_capture::recipe_capture_plc_status,
             recipe_capture::recipe_capture_list,
-            recipe_capture::recipe_capture_image,
             recipe_capture::recipe_capture_frame_image,
             recipe_capture::recipe_capture_round_thumbs,
-            workspace::workspace_set_views,
-            workspace::workspace_select_group_image,
-            workspace::workspace_save_draft,
-            workspace::workspace_progress,
-            workspace::workspace_check_calibration,
-            workspace::workspace_extract_centerline,
             workspace::workspace_debug_run,
             workspace::workspace_retry_publish,
             workspace::workspace_abandon_publish,
-            workspace::workspace_adopt_capture,
             workspace::workspace_capture_sample,
             workspace::workspace_get,
             workspace::workspace_create,
@@ -277,29 +273,14 @@ pub fn run() {
             workspace::workspace_transfer_import,
             workspace::workspace_save_doc,
             workspace::workspace_set_camera_imaging,
-            workspace::workspace_select_view,
             workspace::workspace_image,
-            workspace::workspace_trial,
-            workspace::workspace_save_params,
-            workspace::workspace_save_teach,
-            workspace::workspace_fixture_check,
-            workspace::workspace_fixture_trial,
-            workspace::workspace_apply_fixture_suggestion,
-            workspace::workspace_restore_teach,
-            workspace::workspace_save_overview,
             workspace::workspace_validate,
-            workspace::workspace_import_sample,
             workspace::workspace_publish,
             workspace::workspace_collect_checks,
             workspace::workspace_publish_collect,
-            workspace::workspace_record_images,
-            workspace::workspace_record_image,
-            workspace::workspace_history_capture,
             workspace::workspace_compare,
             workspace::workspace_compare_original,
             workspace::workspace_comparisons,
-            workspace::workspace_runtime_overview,
-            workspace::workspace_live_image,
             workspace::workspace_live_frame_image,
             workspace::workspace_station_capture,
             workspace::workspace_station_import,

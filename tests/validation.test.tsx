@@ -32,7 +32,7 @@ beforeEach(() => {
 describe("验证与发布页面", () => {
 
   it("发布失败后冻结样本配置并重试同一待生效版本", async () => {
-    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation!, validationSite: "real" };
+    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", validation: ws.data!.workspace.validation!, validationSite: "real" };
     ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
     show();
     expect(screen.getByRole("checkbox", { name: "选用样本 良品组" })).toBeDisabled();
@@ -47,7 +47,7 @@ describe("验证与发布页面", () => {
 
   it("生效失败 → 确认后放弃同一修订的待生效版本；状态不确定时不能放弃", async () => {
     vi.mocked(workspaceApi.abandonPublish).mockResolvedValue(ws.data!);
-    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation!, validationSite: "real" };
+    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", validation: ws.data!.workspace.validation!, validationSite: "real" };
     ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
     const page = show();
     await userEvent.click(screen.getByRole("button", { name: "放弃待生效版本" }));

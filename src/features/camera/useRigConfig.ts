@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { recipeApi } from "../cycle";
-import { shotCameras } from "../cycle/vis";
 import { workspaceApi } from "../workspace/api";
 import { desktopAvailable } from "../../lib/desktop";
 import { errorText } from "../../lib/errors";
@@ -31,7 +30,7 @@ export function useRigConfig({ withReferences, preferredId, reloadKey }: { withR
       production.recipes.forEach(r=>remember(r.cameras,`生产配方 ${r.name}（${r.id}）`));
       drafts.forEach(w=>{
         for(const [doc,label] of [[w.doc,"候选配方"],[w.pending?.doc,"待发布配方"]] as const){
-          if(doc)remember(shotCameras(doc.shots),`${label} ${doc.name}（${doc.id}）`);
+          if(doc)remember(doc.inspect?.map(item=>item.camera)??[],`${label} ${doc.name}（${doc.id}）`);
         }
       });
       return {found,error:""};

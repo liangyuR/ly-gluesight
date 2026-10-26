@@ -76,7 +76,6 @@ export default function ValidationPage() {
     return()=>{alive=false;};
   },[doc?.id,historyScope,recordScope,setError]);
   if(!data||!doc)return <WorkspaceEmpty/>;
-  if(!data.plan)return <Notice title="该草稿不是段配方" tone="warn">请新建段配方后发布，旧拍照点草稿不再支持。</Notice>;
   const plan=data.plan;
   const validation=data.workspace.validation;
   const selectionDirty=JSON.stringify(samples)!==JSON.stringify(data.workspace.samples);

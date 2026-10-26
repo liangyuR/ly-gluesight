@@ -1,5 +1,5 @@
-//! lyFlow 视觉引擎：加载 core DLL，逐帧注入完整图像，沿拍照点示教中线量胶。
-//! 图只量不判，判定在 judge 模块（设计稿 §9）。
+//! lyFlow 视觉引擎：加载 core DLL，逐帧注入完整图像，沿段配方各相机的检测走廊量胶。
+//! 图只量不判，判定在 burst_judge 模块。
 
 use std::ffi::{c_char, c_void};
 use std::path::{Path, PathBuf};
@@ -15,20 +15,12 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::camera::CameraSource;
 use crate::cycle::CycleHost;
 pub use crate::frame::FrameImage;
-use crate::measure::{FrameJob, Job, Measured, Measurer};
+use crate::measure::FrameJob;
 use crate::recipe::{CameraInspect, Recipe};
 
-pub(crate) mod fixture;
-pub(crate) mod fixture_quality;
 mod taught;
 #[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
 pub use taught::measure_frame_with;
-#[cfg(test)]
-use taught::measure_shot_patched;
-pub use taught::{
-    build_taught_graph, measure_shot, measure_shot_with_graph, measure_views, measure_views_with,
-    MultiViewMeasurement, PoseRecord, ShotMeasurement, ViewMeasurement,
-};
 pub use taught::{corridor_inside, measure_frame, CorridorSet, FrameMeasurement};
 
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
@@ -55,8 +47,6 @@ pub struct Engine {
     pub modified_ms: u64,
     /// `版本:文件大小:修改时间`，写进发布包，生产加载时核对
     pub identity: String,
-    /// glue.locate 是否支持带外圈模板（lyFlow#32）。不支持不妨碍加载，只挡含特征定位的拍照点
-    pub locate: Result<(), String>,
 }
 
 impl Engine {
@@ -67,11 +57,17 @@ impl Engine {
         let manifest: Value = serde_json::from_str(&core.manifest_json().map_err(|e| e.to_string())?)
             .map_err(|e| format!("核心库算子清单无效：{e}"))?;
         check_operators(&manifest)?;
-        let locate = locate_support(&manifest);
         let version = core.version();
         let (bytes, modified_ms) = file_identity(&resolved)?;
         let identity = format!("{version}:{bytes}:{modified_ms}");
-        Ok(Self { core: Arc::new(core), path: path.to_path_buf(), version, bytes, modified_ms, identity, locate })
+        Ok(Self {
+            core: Arc::new(core),
+            path: path.to_path_buf(),
+            version,
+            bytes,
+            modified_ms,
+            identity,
+        })
     }
 
     /// 跑一次图，返回 run summary 与图级命名输出（都已解析成 JSON）。
@@ -106,24 +102,6 @@ fn check_operators(manifest: &Value) -> Result<(), String> {
     if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少必需算子：{}。请使用本版本锁定系列的 lyFlow 运行库。", missing.join("、"))) }
 }
 
-/// glue.locate 支持带外圈的模板（参数 templatePad、maxPeakRatio，输出 pose）：lyFlow#32 之后才有。
-/// 已发布的 1.1.x 带的是 1.0.0 的 glue.locate，加载照常，只有含特征定位的拍照点不能测量。
-fn locate_support(manifest: &Value) -> Result<(), String> {
-    let unsupported = || "当前 lyFlow 运行库的 glue.locate 不支持带外圈模板（templatePad，lyFlow#32 之后才有），含特征定位的拍照点不能测量".to_string();
-    let op = manifest["operators"].as_array().into_iter().flatten().find(|op| op["id"] == "glue.locate").ok_or_else(unsupported)?;
-    let has = |list: &str, name: &str| op[list].as_array().is_some_and(|items| items.iter().any(|item| item["name"] == name));
-    if has("params", "templatePad") && has("params", "maxPeakRatio") && has("outputs", "pose") { Ok(()) } else { Err(unsupported()) }
-}
-
-/// 运行库不支持带外圈模板时（`Engine.locate` 为 Err，如已发布的 1.1.4 带的 locate 1.0.0），只挡含特征定位的配方：
-/// 发布前、生产加载与重现时调用；没有特征定位的配方在这样的运行库上照常发布、加载。
-pub fn require_locate(recipe: &Recipe, locate: &Result<(), String>) -> Result<(), String> {
-    match (recipe.shots.iter().find(|shot| shot.has_fixture()), locate) {
-        (Some(shot), Err(why)) => Err(format!("含特征定位的拍照点（{}）：{why}", shot.id)),
-        _ => Ok(()),
-    }
-}
-
 fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
     let count = (image.width as usize).checked_mul(image.height as usize).filter(|&n| n > 0)
         .ok_or("图像尺寸无效")?;
@@ -137,24 +115,8 @@ pub struct RunResult {
     pub outputs: Value,
 }
 
-/// lyFlow 作为测量后端：沿拍照点的示教中线量胶。
+/// lyFlow 作为测量后端：沿检测走廊逐帧量胶。
 pub struct LyFlowMeasurer;
-
-impl Measurer for LyFlowMeasurer {
-    fn measure(&self, job: &Job, image: &FrameImage) -> Result<Measured, String> {
-        if let Some(candidate) = &job.candidate { return candidate.measure(job, image); }
-        let prepared = job.production.as_ref().ok_or("图像检测没有已核验并预热的发布包")?;
-        if job.bundle_id.as_deref() != Some(prepared.bundle.id.as_str()) || job.recipe.revision_id != prepared.recipe.revision_id {
-            return Err("测量任务与已冻结发布包不一致".into());
-        }
-        let run_id = format!("shot-{}-{}", job.cycle_id, job.k);
-        if job.images.is_empty() {
-            Ok(prepared.measure(job.k, image, &run_id)?.into_measured(job))
-        } else {
-            Ok(prepared.measure_views(job.k, &job.images, &run_id)?.into_measured(job))
-        }
-    }
-}
 
 impl LyFlowMeasurer {
     /// 段配方一台相机一帧：候选试运行用候选的走廊测量图，生产用已核验并预热的发布包。
@@ -372,11 +334,6 @@ impl VisionHost {
 
 }
 
-/// 工位标定文件 `calib/plane_calib_{键}.json`：旧拍照点配方的 `{device}-v{view}` 与显式标定引用（段配方的显式引用也在这里）。
-pub fn station_calib_path(app: &AppHandle, cam_id: &str) -> Result<PathBuf, String> {
-    calib_key_path(app, &CalibKey::Station(cam_id.to_string()))
-}
-
 /// 段配方缺省设备标定所在的子目录（相对 `calib/`）。
 const DEVICE_CALIB_DIR: &str = "device";
 
@@ -416,11 +373,6 @@ pub fn calib_key_path(app: &AppHandle, key: &CalibKey) -> Result<PathBuf, String
     Ok(key.file(&crate::storage::project(app).join("calib")))
 }
 
-/// 拍照点 k 的标定文件：按它的标定引用（缺省为相机编号）找工位标定。
-pub fn shot_calib_path(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<PathBuf, String> {
-    station_calib_path(app, &recipe.shots.get(k).ok_or("拍照点不存在")?.calib_ref())
-}
-
 /// 配方各相机的来源：要么全是模拟合成，要么全是真实原图（海康 / 离线样本集），示教资料与标定的来路不同。
 pub fn recipe_source(app: &AppHandle, recipe: &Recipe) -> Result<CameraSource, String> {
     let rig = &app.state::<CycleHost>().camera;
@@ -435,7 +387,9 @@ pub fn recipe_source(app: &AppHandle, recipe: &Recipe) -> Result<CameraSource, S
             None => found = Some((source, id)),
         }
     }
-    found.map(|(s, _)| s).ok_or_else(|| format!("配方 {} 没有拍照点", recipe.id))
+    found
+        .map(|(s, _)| s)
+        .ok_or_else(|| format!("配方 {} 没有检测相机", recipe.id))
 }
 
 /// 旧拍照点配方的工位标定键：设备 + 图编号（三目拼接相机每幅图各一份标定）。
@@ -585,6 +539,3 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod eval;

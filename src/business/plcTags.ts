@@ -36,3 +36,32 @@ export const teachingTagPresets: TagPreset[] = [
 
 export const teachingHandshakeTags = new Set(teachingTagPresets.map(preset => preset.value));
 export const commonPlcTags = new Set(["plcHeartbeat", "pcHeartbeat", "plcVersion", "pcVersion"]);
+
+export const plcTagHelp: Record<string, string> = {
+  plcVersion: "PLC 实现的生产协议版本，应为 7；与 PC 不一致时 PC 不就绪。",
+  plcHeartbeat: "PLC 周期变化的计数；PC 发现 3 s 不变化按 PLC 心跳失活处理。",
+  plcState: "PLC 握手状态：0 空闲、10 请求检测、20 运动结束、30 已确认结果、90 故障、99 复位请求。",
+  plcReason: "PLC 置故障时给出的原因，例如 6 PC 心跳失活、7 运动超时、14 在途中 PC 故障或未就绪；0 表示无。",
+  requestSeq: "每件检测的事务序号，PLC 在置请求检测前写入、逐件递增；PC 回显到回显事务序号供 PLC 核对。",
+  productCode: "本件型号，PLC 在置请求检测前写入；PC 按型号选择配方。",
+  sn: "本件工件 SN，PLC 在置请求检测前写入；PC 记入检测记录，并在写结果时回显。",
+  pcVersion: "PC 实现的生产协议版本，固定写 7。",
+  pcHeartbeat: "PC 周期变化的计数；PLC 发现长时间不变化按 PC 心跳失活（原因码 6）处理。",
+  pcState: "PC 握手状态：0 未就绪、10 就绪、20 已布防、30 结果有效、90 故障、99 复位请求。",
+  pcMode: "0 正常；1 维护：结果码与异常码都写 0，PLC 按未检件放行。切换从下一件生效。",
+  seqEcho: "PC 核对请求后写回本件的请求事务序号；PLC 只认与本件序号一致的布防和结果。",
+  resultCode: "本件结论，PC 在置结果有效前写入：1 OK、2 OK_WITH_EXCURSION、11–14 各类 NG、90 检测异常；维护模式为 0。",
+  faultCode: "结果码为 90 或 PC 故障时的原因，例如 91 整件无图、97 运动结束超时、101 PC 握手故障；其余情况为 0。",
+  snEcho: "PC 写结果时回显本件工件 SN；PLC 核对与本件 SN 一致才锁存结果。",
+  teachPcVersion: "PC 实现的示教扩展协议版本，固定写 1。",
+  teachPcState: "PC 示教状态：0 空闲、10 请求、20 已完成、30 失败、40 取消。",
+  teachRoundId: "每轮示教采集的握手编号，PC 发起请求时写入；PLC 回显到示教握手编号回显。",
+  teachPcReason: "PC 置失败或取消时的原因，例如 1 操作员取消、4 保存失败；0 表示无。",
+  teachPcReserved: "保留字段，PC 写 0。",
+  teachPlcVersion: "PLC 实现的示教扩展协议版本，应为 1。",
+  teachPlcState: "PLC 示教状态：0 空闲、10 已接受、20 采集结束、30 已确认、40 已拒绝、50 故障。处于 10、20、30 时生产不开工。",
+  teachRoundIdEcho: "PLC 回显的本轮示教握手编号；与 PC 写入的编号一致才算对本轮的应答。",
+  teachPlcReason: "PLC 拒绝或故障时的原因，例如 1 示教未许可、2 机器人未就绪、3 生产或其他事务占用；0 表示无。",
+  teachPlcReserved: "保留字段，PLC 应写 0；非 0 按协议非法处理。",
+  teachPlcSnapshot: "PC 一次读出 DB12 前 10 字节，保证 PLC 侧示教字段取自同一时刻；不单独显示。",
+};

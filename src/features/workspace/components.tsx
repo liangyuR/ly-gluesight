@@ -6,9 +6,6 @@ import { Alert, Button, Card, Chip, EmptyState, FormField, IconButton, StatusBad
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import type { FrameView, PointVis, Recipe } from "../cycle/types";
-import { framePose, movedBox, poseReasonText, poseTransform, viewSpec, viewStations, type Pt } from "../cycle/pose";
-import { shotSegment, visColor } from "../cycle/vis";
 import type { GrayImage, GrayPixels } from "./types";
 import { errorText } from "../../lib/errors";
 import { PlanSteps } from "./PlanSteps";
@@ -57,90 +54,31 @@ export function WorkspaceBar() {
 }
 export function Steps() {
   const { data } = useWorkspace();
-  return data?.plan ? <PlanSteps /> : null;
+  return data ? <PlanSteps /> : null;
 }
 
-export function useGrayImage(id: string | null, imageId: string | null, historyId?: number | null, k = 0, view?: number) {
-  const key=JSON.stringify([id,imageId,historyId,k,view]);
+export function useGrayImage(id: string | null, imageId: string | null) {
+  const key=JSON.stringify([id,imageId]);
   const [state, setState] = useState<{key:string;image:GrayImage|null;error:string;loading:boolean}>({key,image:null,error:"",loading:false});
   useEffect(() => {
     let alive = true;
-    setState({key,image:null,error:"",loading:!!imageId||!!historyId});
-    if (!imageId && !historyId) return;
-    const request = historyId ? workspaceApi.recordImage(historyId, k, view) : workspaceApi.image(id!, imageId!);
-    request.then(image => alive && setState({key,image,error:"",loading:false})).catch(e => alive && setState({key,image:null,error:errorText(e),loading:false}));
+    setState({key,image:null,error:"",loading:!!id&&!!imageId});
+    if (!id || !imageId) return;
+    workspaceApi.image(id, imageId).then(image => alive && setState({key,image,error:"",loading:false})).catch(e => alive && setState({key,image:null,error:errorText(e),loading:false}));
     return () => { alive = false; };
-  }, [id, imageId, historyId, k, view]);
-  return state.key===key?state:{image:null,error:"",loading:!!imageId||!!historyId};
+  }, [id, imageId]);
+  return state.key===key?state:{image:null,error:"",loading:!!id&&!!imageId};
 }
 
-/** 叠加在原图上的内容，全部是这张图的像素坐标（示教中线就在这张图里点出；特征定位的拍照点按记录的位姿把中线与站点搬到当帧）。 */
+/** 叠加在原图上的内容（这张图的像素坐标）。 */
 export interface ImageOverlay {
-  /** 示教中线（草稿或已保存的）；按位姿叠图时为搬移后的 N′ = T(N) */
+  /** 走廊中线（草稿或已保存的） */
   path: [number, number][];
-  /** 各站位置（来自配方布局，中线保存后才有）；按位姿叠图时为 T(N_i) */
-  stations?: [number, number][];
   searchHalfPx?: number;
-  /** 各站颜色；不给时统一用强调色 */
-  stationColors?: string[];
-  /** labelOutward：标签沿横线方向放到 to 端外侧（横线即法向，避免压在胶路上） */
-  segments?: { from: [number, number]; to: [number, number]; color: string; label?: string; labelOutward?: boolean }[];
-  /** 中线改了还没保存：各站是旧的，淡显 */
-  stale?: boolean;
+  /** 测量横线（多轮标定逐帧查看：各站两侧边缘） */
+  segments?: { from: [number, number]; to: [number, number]; color: string }[];
   /** 选中的中线点 */
   selected?: number | null;
-  /** 特征定位：示教框、带 4 px 外圈的模板框、搜索范围（框能移到的范围）与杠杆臂 L（模板中心 → 最远站）；blocked 时框标红 */
-  fixture?: FixtureOverlay | null;
-}
-/** 四角多边形（像素中心坐标），见 cycle/pose.ts 的 movedBox */
-export type BoxPolygon = Pt[];
-export interface FixtureOverlay {
-  rect: [number, number, number, number];
-  padded: [number, number, number, number];
-  /** 搜索范围：只有示教页给 */
-  search?: [number, number, number, number];
-  lever?: [[number, number], [number, number]] | null;
-  blocked?: boolean;
-  /** 按位姿搬移后的内框与外圈；有它时示教位置的框淡显 */
-  moved?: { inner: BoxPolygon; padded: BoxPolygon } | null;
-  /** 位姿没被采用的原因：框留在示教位置、用故障色虚线 */
-  failed?: string | null;
-  /** 示教图自定位被拒时的候选落点（故障色虚线），只在示教页画 */
-  candidate?: BoxPolygon | null;
-  /** 复测（重跑）的位姿与原记录不同时，复测定位框（虚线） */
-  replay?: BoxPolygon | null;
-}
-const identityPoint = (p: Pt): Pt => p;
-/** 定位模板外圈（与 recipe.rs 的 FIXTURE_TEMPLATE_PAD_PX 一致） */
-const FIXTURE_PAD_PX = 4;
-/**
- * 配方布局里拍照点 k 的示教中线与各站（图像像素），给了 vis 时各站按测量状态着色。
- * 给了 frame 且投影视图有特征定位时按该帧记录的位姿叠图：位姿被采用 → 中线、站点、内框与外圈都画在 T(·)；
- * 有位姿但没被采用 → 中线与站点留在示教位置、框标“定位未采用”；没有位姿（未测、测量出错）→ 只画示教中线。
- * 没有特征定位的拍照点与原来完全相同。
- */
-export function shotOverlay(layout: Recipe | null | undefined, k: number, vis?: PointVis[], frame?: FrameView | null): ImageOverlay | undefined {
-  const shot = layout?.shots[k];
-  if (!layout || !shot || shot.path.length < 2) return undefined;
-  const spec = viewSpec(shot, shot.view);
-  if (spec?.fixture && spec.path.length >= 2) {
-    const { rect } = spec.fixture, index = viewStations(layout, k, shot.view);
-    const pose = framePose(frame, shot.view), T = poseTransform(rect, pose), move = T ?? identityPoint;
-    const [x, y, w, h] = rect, p = FIXTURE_PAD_PX;
-    return {
-      path: spec.path.map(move),
-      stations: index.map(j => move([layout.points.x[j], layout.points.y[j]])),
-      stationColors: vis ? index.map(j => visColor[vis[j] ?? "none"]) : undefined,
-      fixture: pose ? { rect, padded: [x - p, y - p, w + 2 * p, h + 2 * p], moved: T ? { inner: movedBox(rect, 0, T), padded: movedBox(rect, p, T) } : null, failed: T ? null : poseReasonText(pose.reason) } : null,
-    };
-  }
-  const own = shotSegment(layout, k)?.segment;
-  const index = own ? Array.from({ length: own.count }, (_, i) => own.first + i) : [];
-  return {
-    path: shot.path,
-    stations: index.map(j => [layout.points.x[j], layout.points.y[j]] as [number, number]),
-    stationColors: vis ? index.map(j => visColor[vis[j] ?? "none"]) : undefined,
-  };
 }
 /** 灰度像素直接画进同一块 canvas：换帧只重画，不产生新的图片资源。 */
 function GrayCanvas({ image, pixels }: { image: GrayImage; pixels: GrayPixels }) {
@@ -171,10 +109,8 @@ export interface PathEditing {
  * controlsAt="footer"（仅走廊示教页）：缩放与显示开关下沉到底部信息行，左侧放 summary，
  * 开关文案为“中线 / 搜索带 / 点柄”，操作提示由页面自己给；默认 "header" 的外观与行为不变。
  */
-export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, onRegionDone, brush, onBrush, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
+export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, brush, onBrush, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
   image: GrayImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
-  /** 框选松手：一次拖动结束（定位框据此取整并做检查） */
-  onRegionDone?: () => void;
   brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; extractionFailure?: { point: ImagePoint; message: string } | null; emptyTitle?: string; emptyHint?: string; controlsAt?: "header" | "footer"; summary?: ReactNode;
 }) {
   const [viewport, setViewport] = useState({ zoom: 1, x: 0, y: 0 });
@@ -244,10 +180,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
     return p && image ? [Math.min(p[0], image.width - 1), Math.min(p[1], image.height - 1)] : null;
   };
   const screenPx = (px: number) => px / (fit * zoom);
-  const stations = overlay?.stations ?? [];
-  const gaps = stations.slice(1).map((p, i) => Math.hypot(p[0] - stations[i][0], p[1] - stations[i][1])).filter(d => d > 0).sort((a, b) => a - b);
-  const stationGap = gaps.length ? gaps[gaps.length >> 1] * fit * zoom : Infinity;
-  const handle = screenPx(7), dot = screenPx(Math.min(3, Math.max(1, stationGap / 2)));
+  const handle = screenPx(7);
   const editing = !!onEdit && shown && !editDisabled;
   const path = overlay?.path ?? [];
   const band = searchBand(path, overlay?.searchHalfPx);
@@ -313,7 +246,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
         if (!current || !onEdit || editDisabled) return;
         const p = point(e, current.inverse);
         if (p) onEdit.move(current.index, p);
-      }} onPointerUp={() => { const drawn = !!regionStart.current; stopGesture(); if (drawn) onRegionDone?.(); }} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
+      }} onPointerUp={stopGesture} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
         <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <GrayCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}
           {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--primary)" opacity={.45}>
             <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
@@ -331,38 +264,11 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
             <text textAnchor="middle" dy={screenPx(5.5)} fontSize={screenPx(16)} fontWeight="bold" fill="var(--ng)">!</text>
           </g>}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
-          {overlay?.fixture && shown && (() => {
-            const f = overlay.fixture, color = f.failed ? "var(--fault)" : f.blocked ? "var(--ng)" : "var(--ok)";
-            const polygon = (corners: BoxPolygon, props: Record<string, unknown>) => <polygon points={corners.map(p => p.join(",")).join(" ")} fill="none" vectorEffect="non-scaling-stroke" {...props} />;
-            const box = (r: [number, number, number, number], props: Record<string, unknown>) => polygon(movedBox(r, 0), props);
-            return <g aria-label={f.failed ? "定位未采用：" + f.failed : f.moved ? "定位框（按位姿）" : f.blocked ? "定位框（未通过检查）" : "定位框"} pointerEvents="none">
-              {f.search && box(f.search, { stroke: "var(--primary)", strokeWidth: 1, strokeDasharray: "6 4", opacity: .7, "aria-label": "定位搜索范围" })}
-              {f.moved ? <>
-                {box(f.rect, { stroke: "var(--on-surface-variant)", strokeWidth: 1, strokeDasharray: "2 3", opacity: .6, "aria-label": "定位框示教位置" })}
-                {polygon(f.moved.padded, { stroke: color, strokeWidth: 1, strokeDasharray: "3 3", "aria-label": "模板外圈" })}
-                {polygon(f.moved.inner, { stroke: color, strokeWidth: 2, "aria-label": "定位框" })}
-              </> : <>
-                {box(f.padded, { stroke: color, strokeWidth: 1, strokeDasharray: "3 3", "aria-label": "模板外圈" })}
-                {box(f.rect, { stroke: color, strokeWidth: 2, strokeDasharray: f.failed ? "6 3" : undefined, "aria-label": "定位框" })}
-              </>}
-              {f.candidate && polygon(f.candidate, { stroke: "var(--fault)", strokeWidth: 1.5, strokeDasharray: "4 3", "aria-label": "定位候选落点（未采用）" })}
-              {f.replay && polygon(f.replay, { stroke: "var(--warn)", strokeWidth: 1.5, strokeDasharray: "5 3", "aria-label": "复测定位框" })}
-              {f.lever && <line x1={f.lever[0][0]} y1={f.lever[0][1]} x2={f.lever[1][0]} y2={f.lever[1][1]} stroke="var(--primary)" strokeWidth={1} strokeDasharray="2 4" vectorEffect="non-scaling-stroke" aria-label="杠杆臂 L" />}
-            </g>;
-          })()}
           {overlay && shown && <g aria-label="中线叠加">
-            {stations.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--primary)"} opacity={overlay.stale ? .35 : .9} />)}
             {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
             {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
             {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
-              {overlay.segments.map((segment, i) => <g key={i}>
-                <line x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
-                {segment.label && (segment.labelOutward ? (() => {
-                  const dx = segment.to[0] - segment.from[0], dy = segment.to[1] - segment.from[1], length = Math.hypot(dx, dy) || 1;
-                  const ux = dx / length, uy = dy / length, gap = screenPx(6);
-                  return <text x={segment.to[0] + ux * gap} y={segment.to[1] + uy * gap} dy={screenPx(4)} textAnchor={ux < -.3 ? "end" : ux > .3 ? "start" : "middle"} fontSize={screenPx(12)} fill={segment.color} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{segment.label}</text>;
-                })() : <text x={segment.to[0]} y={segment.to[1]} dx={screenPx(4)} dy={screenPx(-4)} fontSize={screenPx(12)} fill={segment.color} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{segment.label}</text>)}
-              </g>)}
+              {overlay.segments.map((segment, i) => <line key={i} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
             </g>}
           </g>}
         </g></svg>}

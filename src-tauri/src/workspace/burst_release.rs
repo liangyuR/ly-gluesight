@@ -406,7 +406,6 @@ pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validatio
         checks,
         samples: Vec::new(),
         environment_tag,
-        fixture: Vec::new(),
     })
 }
 
@@ -461,7 +460,6 @@ pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, S
         checks,
         samples,
         environment_tag: initial_environment,
-        fixture: Vec::new(),
     })
 }
 

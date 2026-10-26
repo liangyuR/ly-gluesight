@@ -130,11 +130,27 @@ fn recording_with_missing_or_queue_dropped_frames_lists_them_by_camera_seq() {
         let outcome = record_burst(&dir, queued, &frames);
         assert_eq!(outcome.state, state, "{case}: {:?}", outcome.errors);
         let meta = metadata(&outcome);
-        assert_eq!(meta["missingFrames"], json!(missing.into_iter().map(key).collect::<Vec<_>>()), "{case}");
-        assert_eq!(meta["rawDropped"], json!(dropped.iter().copied().map(key).collect::<Vec<_>>()), "{case}");
-        let written: Vec<_> = frames.iter().copied().filter(|frame| !dropped.contains(frame)).collect();
-        let linked: Vec<_> = outcome.files.iter().map(|file| file.frame.map(|f| (f.camera, f.seq))).collect();
-        assert_eq!(linked, written.into_iter().map(Some).collect::<Vec<_>>(), "{case}");
+        assert_eq!(
+            meta["missingFrames"],
+            json!(missing.into_iter().map(key).collect::<Vec<_>>()),
+            "{case}"
+        );
+        assert_eq!(
+            meta["rawDropped"],
+            json!(dropped.iter().copied().map(key).collect::<Vec<_>>()),
+            "{case}"
+        );
+        let written: Vec<_> = frames
+            .iter()
+            .copied()
+            .filter(|frame| !dropped.contains(frame))
+            .collect();
+        let linked: Vec<_> = outcome
+            .files
+            .iter()
+            .map(|file| (file.frame.camera, file.frame.seq))
+            .collect();
+        assert_eq!(linked, written, "{case}");
     }
 }
 

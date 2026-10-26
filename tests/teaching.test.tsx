@@ -8,7 +8,7 @@ import { useCycle } from "../src/features/cycle/api";
 import { burstRecipe, burstWorkspaceView, captureRoundV2, snapshot, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureList: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), captureImage: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureList: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
 const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
@@ -17,7 +17,7 @@ function show(path = "/recipe/teach", page = <TeachingPage />) {
 }
 beforeEach(() => {
   ws = workspaceState(burstWorkspaceView(burstRecipe({ id: "A" }))); vi.mocked(useWorkspace).mockImplementation(() => ws);
-  vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot(), logs: [], measured: [] });
+  vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot(), logs: [] });
   vi.mocked(workspaceApi.image).mockResolvedValue(picture);
   vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);
   vi.mocked(workspaceApi.captureList).mockResolvedValue([{ roundId: "round-1", recipeId: "A", cameraIds: ["CAM-1", "CAM-2", "CAM-3"], plannedCount: 12, receivedCount: 12, state: "complete", createdAt: 1, error: null }]);

@@ -3,8 +3,8 @@ import { cameraTeachStatus } from "./cameraTasks";
 import type { StepStatus, WorkspaceView } from "./types";
 
 export type StageStatus = StepStatus | "waiting";
-export const stageStatusText: Record<StageStatus, string> = { notStarted: "未开始", inProgress: "进行中", done: "完成", blocked: "阻塞", optional: "可选", waiting: "等待采集" };
-export const stageStatusTone: Record<StageStatus, "info" | "ok" | "warn" | "neutral"> = { notStarted: "neutral", inProgress: "info", done: "ok", blocked: "warn", optional: "neutral", waiting: "neutral" };
+export const stageStatusText: Record<StageStatus, string> = { notStarted: "未开始", inProgress: "进行中", done: "完成", blocked: "阻塞", waiting: "等待采集" };
+export const stageStatusTone: Record<StageStatus, "info" | "ok" | "warn" | "neutral"> = { notStarted: "neutral", inProgress: "info", done: "ok", blocked: "warn", waiting: "neutral" };
 
 export interface StageV2 { path: string; label: string; hint: string; ids: StepIdV2[]; optional: boolean; needsCapture: boolean }
 
@@ -23,12 +23,11 @@ export const stagesV2: StageV2[] = [
 export const stageOfV2 = (id: StepIdV2) => stagesV2.find(stage => stage.ids.includes(id));
 
 /**
- * 段配方一个步骤的状态；没有段计划时为 null。
+ * 一个步骤的状态；没有对应后端步骤时为 null。
  * 采集未完成时依赖采集的步骤等待采集；走廊示教按每台相机的实际任务状态（cameraTeachStatus），不照搬后端的完成。
  */
 export function stageStatusV2(view: Pick<WorkspaceView, "plan">, stage: StageV2): StageStatus | null {
   const plan = view.plan;
-  if (!plan) return null;
   const capture = plan.progress.steps.find(step => step.id === "capture");
   if (stage.needsCapture && capture && capture.status !== "done") return "waiting";
   const statuses = stage.ids.flatMap(id => {
@@ -36,5 +35,5 @@ export function stageStatusV2(view: Pick<WorkspaceView, "plan">, stage: StageV2)
     return status ? [status] : [];
   });
   if (!statuses.length) return null;
-  return (["blocked", "inProgress", "notStarted", "optional"] as StepStatus[]).find(status => statuses.includes(status)) ?? "done";
+  return (["blocked", "inProgress", "notStarted"] as StepStatus[]).find(status => statuses.includes(status)) ?? "done";
 }

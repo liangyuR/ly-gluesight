@@ -1,13 +1,13 @@
-//! 模拟相机的合成图像：一台装在胶枪上的相机拍到的一帧——亮的金属面、右侧的胶嘴、沿拍照点示教中线拖出的暗胶条。
-//! 断胶、横向超差、机器人位姿偏差按场景画进图里，让沿中线量胶的流程在没有相机时也能跑。
+//! 模拟相机的合成图像：一台装在胶枪上的相机拍到的一帧——亮的金属面、右侧的胶嘴、沿检测走廊拖出的暗胶条。
+//! 断胶、局部超差按场景画进图里，让沿走廊量胶的流程在没有相机时也能跑。
 //!
-//! 旧拍照点配方按拍照点示教中线画（[`render_views`]）；段配方按脉冲的真值画（[`render_burst`]）：直线段胶条沿这台相机的
-//! 走廊（没示教时按相机取缺省位置），弯道段胶条绕胶嘴在视野内转动，转角随段内进度呈拱形。
+//! 段配方按脉冲的真值画（[`render_burst`]）：直线段胶条沿这台相机的走廊（没示教时按相机取缺省位置），
+//! 弯道段胶条绕胶嘴在视野内转动，转角随段内进度呈拱形。
 
 use crate::camera::BurstRender;
 use crate::frame::FrameImage;
 use crate::plan::SegmentKind;
-use crate::recipe::{Recipe, ShotSpec, SIM_MM_PER_PX};
+use crate::recipe::SIM_MM_PER_PX;
 use crate::offline::Scenario;
 use std::sync::Arc;
 
@@ -16,14 +16,6 @@ pub const SIM_SIZE: [u32; 2] = [1280, 1024];
 /// 名义胶宽（mm），与样例配方的名义值一致。
 const BEAD_WIDTH: f32 = 4.0;
 
-/// 机器人带来的偏差（图像里）：整条胶平移 dx、dy 像素，绕中线起点转 deg 度。
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PoseError {
-    pub dx: f32,
-    pub dy: f32,
-    pub deg: f32,
-}
-
 /// 由像素序号与种子得到 [-1, 1) 的确定性噪声（splitmix64）。
 pub fn noise(i: u64, seed: u64) -> f64 {
     let mut z = i.wrapping_add(seed.wrapping_mul(0x9E3779B97F4A7C15));
@@ -31,11 +23,6 @@ pub fn noise(i: u64, seed: u64) -> f64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
     z ^= z >> 31;
     (z >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
-}
-
-/// 没示教的拍照点画一条缺省中线，示教时照着它点。
-fn default_path() -> Vec<[f32; 2]> {
-    vec![[980.0, 480.0], [300.0, 460.0]]
 }
 
 /// 点 p 到折线的最近距离、最近点所在的弧长（px）与有向横向距离。
@@ -56,13 +43,6 @@ fn nearest(path: &[[f32; 2]], p: [f32; 2]) -> (f32, f32, f32) {
         s0 += l2.sqrt();
     }
     best
-}
-
-pub fn render_views(recipe: &Recipe, k: usize, scenario: Scenario, pose: PoseError, seed: u64, view_count: u8) -> Result<Vec<Arc<FrameImage>>, String> {
-    if !matches!(view_count, 1 | 3) {
-        return Err("视角数量只能是 1 或 3".into());
-    }
-    Ok((1..=view_count).map(|view| Arc::new(render_view(recipe, k, scenario, pose, seed, view))).collect())
 }
 
 pub fn background_views(view_count: u8, seed: u64) -> Result<Vec<Arc<FrameImage>>, String> {
@@ -173,69 +153,4 @@ pub fn render_burst(r: &BurstRender) -> FrameImage {
 
 fn background(x: u32, y: u32, w: u32, h: u32) -> f32 {
     150.0 + 60.0 * (x as f32 / w as f32) + 25.0 * (y as f32 / h as f32) + 6.0 * (x as f32 * 0.05 + y as f32 * 0.31).sin()
-}
-
-fn render_view(recipe: &Recipe, k: usize, scenario: Scenario, pose: PoseError, seed: u64, view: u8) -> FrameImage {
-    let shot: Option<&ShotSpec> = recipe.shots.get(k);
-    let selected = shot.map_or(1, |s| s.view) == view;
-    let path = shot.filter(|s| s.path.len() >= 2).map_or_else(default_path, |s| s.path.clone());
-    let mm = shot.and_then(|s| s.mm_per_px).unwrap_or(SIM_MM_PER_PX);
-    // 位姿偏差：中线绕起点转、再平移
-    let (sin, cos) = pose.deg.to_radians().sin_cos();
-    let o = path[0];
-    let path: Vec<[f32; 2]> = path
-        .iter()
-        .map(|p| {
-            let (x, y) = (p[0] - o[0], p[1] - o[1]);
-            [o[0] + x * cos - y * sin + pose.dx, o[1] + x * sin + y * cos + pose.dy]
-        })
-        .collect();
-    let half = BEAD_WIDTH / mm / 2.0;
-    // 断胶：缺口按站号换成中线弧长（px）
-    let gap: Option<(f32, f32)> = recipe.shot_segment(k).and_then(|g| {
-        let pts: Vec<usize> = scenario.gap_points(recipe).into_iter().filter(|&j| j >= g.first && j < g.first + g.count).collect();
-        let step = recipe.spacing / mm;
-        Some(((pts.first()? - g.first) as f32 * step, (pts.last()? - g.first + 1) as f32 * step))
-    });
-    // 横向超差：最后一段 30% 处偏出约 3 mm
-    let bump = recipe
-        .segments
-        .last()
-        .filter(|g| scenario == Scenario::Excursion && g.shot == k)
-        .map(|g| g.length(recipe.spacing) * 0.3 / mm);
-    let nozzle = {
-        let (a, b) = (path[0], path[1]);
-        let l = (b[0] - a[0]).hypot(b[1] - a[1]).max(1e-6);
-        [a[0] - (b[0] - a[0]) / l * 60.0, a[1] - (b[1] - a[1]) / l * 60.0]
-    };
-    let [w, h] = SIM_SIZE;
-    let mut pixels = Vec::with_capacity((w * h) as usize);
-    for y in 0..h {
-        for x in 0..w {
-            let p = [x as f32, y as f32];
-            // 金属面：左暗右亮的渐变加细纹
-            let mut v = background(x, y, w, h);
-            if selected {
-                let (d, s, side) = nearest(&path, p);
-                let d = match bump {
-                    Some(c) => (side - 3.0 / mm * (-((s - c) * mm / 1.5).powi(2)).exp()).abs(),
-                    None => d,
-                };
-                let missing = gap.is_some_and(|(a, b)| s >= a && s < b);
-                if !missing && s > 0.0 {
-                    // 胶条：中间最暗，边缘 2 px 过渡
-                    let edge = ((half - d) / 2.0).clamp(0.0, 1.0);
-                    v = v * (1.0 - edge) + 38.0 * edge;
-                }
-                // 胶嘴：亮的金属圆
-                let dn = (p[0] - nozzle[0]).hypot(p[1] - nozzle[1]);
-                if dn < 45.0 {
-                    v = 235.0 - dn;
-                }
-            }
-            v += 5.0 * noise((y * w + x) as u64, seed) as f32;
-            pixels.push(v.clamp(0.0, 255.0) as u8);
-        }
-    }
-    FrameImage::new(w, h, pixels)
 }
