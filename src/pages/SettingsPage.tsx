@@ -269,7 +269,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
       {import.meta.env.DEV && visibleEngine && !visibleEngine.ready && <Alert tone="info">{devLyflowHint}</Alert>}
       {engineError && <Alert tone="ng" action={<Button size="sm" onClick={refresh}>重试引擎状态</Button>}>引擎状态读取失败：{engineError}</Alert>}
       <Text as="p" variant="label" muted>
-        真机检测固定使用 lyFlow 流程，需要兼容的核心库和已验证发布的配方：段配方（分段连拍）对三台相机的每一帧沿各自的走廊量胶，旧拍照点配方沿各拍照点的示教中线量胶；离线 · 合成图使用模拟测量；离线 · 样本集使用 lyFlow，候选试运行无需发布。已发布版本运行前需完成发布资源预热。帧录制保存每台相机每个触发帧的原图（旧拍照点配方保存同次触发的全部视角），可用于历史复测。
+        真机检测固定使用 lyFlow 流程，需要兼容的核心库和已验证发布的配方：段配方（分段连拍）对三台相机的每一帧沿各自的走廊量胶；离线 · 合成图使用模拟测量；离线 · 样本集使用 lyFlow，候选试运行无需发布。已发布版本运行前需完成发布资源预热。帧录制保存每台相机每个触发帧的原图，可用于历史复测。
       </Text>
       {saveError && <Alert tone="ng">{saveError}</Alert>}
       </Stack>

@@ -7,19 +7,17 @@ import type { GrayImage } from "../src/features/workspace/types";
 import { deferred } from "./fixtures";
 import { stubScreenCTM, withDOMPoint } from "./svg-pointer";
 
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), recordImage: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn() } }));
 const image: GrayImage = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
 beforeEach(() => {
-  vi.mocked(workspaceApi.image).mockResolvedValue(image);
-  vi.mocked(workspaceApi.recordImage).mockResolvedValue(image);
+  vi.mocked(workspaceApi.image).mockReset().mockResolvedValue(image);
 });
 
 describe("图像查看与加载", () => {
-  it("搜索带沿局部法向显示半宽并裁剪到原图，独立隐藏不影响测量结果", () => {
+  it("搜索带沿局部法向显示半宽并裁剪到原图，与中线叠加各自开关", () => {
     const overlay = {
       path: [[5, 10], [5, 10], [5, 50], [25, 50]] as [number, number][],
       searchHalfPx: 10,
-      segments: [{ from: [2, 20] as [number, number], to: [8, 20] as [number, number], color: "red", label: "候选 0.6 mm" }],
     };
     const { rerender } = render(<GrayViewer image={image} label="带界图像" overlay={overlay} />);
     const band = screen.getByLabelText("搜索带边界");
@@ -35,7 +33,7 @@ describe("图像查看与加载", () => {
     expect(band.querySelector("clipPath rect")).toHaveAttribute("height", "60");
     fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
     expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
-    expect(screen.getByText("候选 0.6 mm")).toBeInTheDocument();
+    expect(screen.getByLabelText("中线叠加")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
     fireEvent.click(screen.getByRole("button", { name: "中线叠加" }));
     expect(screen.getByLabelText("搜索带边界")).toBeInTheDocument();
@@ -44,18 +42,17 @@ describe("图像查看与加载", () => {
       expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
     }
   });
-  it("从候选图切到历史原图后，迟到的旧图不能覆盖当前来源", async () => {
+  it("切换到另一张示教帧后，迟到的上一张图不能覆盖当前图", async () => {
     const old = deferred<GrayImage>();
-    vi.mocked(workspaceApi.image).mockReturnValueOnce(old.promise);
-    const current = { ...image, url: "data:,history-current" };
-    vi.mocked(workspaceApi.recordImage).mockResolvedValueOnce(current);
-    const { result, rerender } = renderHook(({ history }) => useGrayImage(history ? null : "A", history ? null : "candidate-image", history, 1, 3), { initialProps: { history: null as number | null } });
+    const current = { ...image, url: "data:,current" };
+    vi.mocked(workspaceApi.image).mockReturnValueOnce(old.promise).mockResolvedValueOnce(current);
+    const { result, rerender } = renderHook(({ imageId }) => useGrayImage("A", imageId), { initialProps: { imageId: "frame-1" } });
     expect(result.current.loading).toBe(true);
-    rerender({ history: 12 });
+    rerender({ imageId: "frame-2" });
     await waitFor(() => expect(result.current.image).toEqual(current));
     await act(async () => old.resolve(image));
     expect(result.current.image).toEqual(current);
-    expect(workspaceApi.recordImage).toHaveBeenLastCalledWith(12, 1, 3);
+    expect(workspaceApi.image).toHaveBeenLastCalledWith("A", "frame-2");
   });
 
 

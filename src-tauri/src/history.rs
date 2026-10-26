@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 use crate::burst_judge::{self, BurstJudgement, Flags, FrameState};
 use crate::cycle::CycleHost;
@@ -56,18 +56,6 @@ pub async fn history_neighbors(app: AppHandle, id: i64, query: Option<HistoryQue
         let (older, newer) = store.neighbors(&query, id)?;
         Ok(Neighbors { older, newer })
     }).await.map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub fn history_recipe(store: State<'_, Store>, cycle: State<'_, CycleHost>, revision_id: Option<String>, recipe_id: Option<String>) -> Result<Option<Recipe>, String> {
-    record_recipe(&store, revision_id.as_deref(), || recipe_id.as_deref().and_then(|id| cycle.recipe(id)))
-}
-
-fn record_recipe(store: &Store, revision_id: Option<&str>, _current: impl FnOnce() -> Option<Arc<Recipe>>) -> Result<Option<Recipe>, String> {
-    match revision_id {
-        Some(revision_id) => store.recipe_snapshot(revision_id),
-        None => Ok(None),
-    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

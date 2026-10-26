@@ -17,22 +17,6 @@ export interface RecordingEvidence {
   errors: string[];
 }
 
-export interface PartShot {
-  k: number;
-  shotId: string;
-  camera: string;
-  view: number;
-  session: number | null;
-  ordinal: number | null;
-  frameCounter: number | null;
-  triggerCounter: number | null;
-  status: FrameView["status"];
-  error: string | null;
-  score: number | null;
-  ms: number | null;
-  rawFiles: { view: number; file: string }[];
-}
-
 /** 记录来源：真机件与离线件分开统计。 */
 export type RecordSource = "real" | "offlineSynthetic" | "offlineSample" | "offlineCandidate";
 export type HistoryScope = "real" | "offline" | "debug";
@@ -69,8 +53,8 @@ export interface PartSummary {
   delivery: PlcDelivery;
   source: RecordSource;
   sample: { setId: string; partId: string; sn: string; label: SampleLabel } | null;
-  /** 段配方记录的整件标记（疑似提前终止等单独显示）；旧记录为 null。
-   * 段配方时 framesExpected = expectedTotal（待标定为 0），framesReceived = 帧组数 */
+  /** 段配方记录的整件标记（疑似提前终止等单独显示）；没有帧记录的为 null。
+   * framesExpected = expectedTotal（待标定为 0），framesReceived = 帧组数 */
   flags: Flags | null;
   /** 维护采集件 verdict 为 ERR、未判定；试判件为真实判定。两者 plcCode 都是 0 */
   mode?: PartMode;
@@ -94,39 +78,34 @@ export interface HistoryPage {
 export interface PartDetail {
   summary: PartSummary;
   judgement: Judgement;
+  /** 后端保留的旧字段，恒为 [] */
   frames: FrameView[];
   triggers: number;
   softwareVersion: string;
-  /** 逐站：d 只有状态 0（有基准的有胶站）有值；st 码表见 cycle/types 的 ST（3 未测） */
-  points: { d: (number | null)[]; w?: (number | null)[]; st: number[] } | null;
+  /** 后端保留的旧字段，恒为 null */
+  points: null;
   retests: number[];
-  shots: PartShot[];
+  /** 后端保留的旧字段，恒为 [] */
+  shots: unknown[];
   recording: RecordingEvidence;
-  /** 段配方记录；旧记录为 null。有值时 frames、shots 为空，points 为 null */
+  /** 段配方记录；没有帧记录的记录（如布防前被拒）为 null */
   burst: PartDetailBurst | null;
 }
 
 export interface KindOverride {
   tolUpper?: number;
   tolLower?: number;
-  absMin?: number;
-  absMax?: number;
   maxExcursionLen?: number;
 }
 
 /** 重判的试算参数：只用于这次重判，不改配方。 */
 export interface Overrides {
-  /** 允许断胶长度（作用于每个拍照点；段配方记录作用于每帧） */
+  /** 允许断胶长度（作用于每帧） */
   maxGapLen?: number;
-  filterWindow?: number;
-  /** 位置限值（只作用于判位置的拍照点） */
-  position: KindOverride;
-  /** 胶宽限值（只作用于判胶宽的拍照点） */
-  width: KindOverride;
-  /** 段配方记录：直线段的胶宽允差（上 / 下公差、帧内允许超差长度）；绝对限不适用，旧记录忽略。不填时后端按全空处理 */
-  straight?: KindOverride;
-  /** 段配方记录：弯道段的胶宽允差，字段同 straight；未分段区域取直线、弯道中较宽的一档 */
-  corner?: KindOverride;
+  /** 直线段的胶宽允差（上 / 下公差、帧内允许超差长度） */
+  straight: KindOverride;
+  /** 弯道段的胶宽允差，字段同 straight；未分段区域取直线、弯道中较宽的一档 */
+  corner: KindOverride;
 }
 
 export interface RejudgeRequest {
@@ -141,7 +120,7 @@ export interface RejudgeResult {
   skipped: number;
   limitHit: boolean;
   matrix: { from: Verdict; to: Verdict; count: number }[];
-  /** flags：段配方记录重判后的整件标记（检测不完整等与阈值无关，照常带出）；旧记录为 null */
+  /** flags：重判后的整件标记（检测不完整等与阈值无关，照常带出） */
   changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string; flags: Flags | null }[];
   skipReasons: { id: number; sn: string; ts: number; reason: string }[];
 }

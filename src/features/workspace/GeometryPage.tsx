@@ -25,12 +25,12 @@ export default function GeometryPage() {
     recipeApi.doc(doc.id).then(d => { if (alive) setProduction(d); }).catch(() => {});
     return () => { alive = false; };
   }, [doc?.id, productionVersion]);
-  if (!data || !doc || !data.plan) return <WorkspaceEmpty />;
+  if (!data || !doc) return <WorkspaceEmpty />;
   const plan = data.plan;
   const changed = changedFields(doc, production).size;
   const next = plan.progress.next && { label: plan.progress.next.label, stage: stageOfV2(plan.progress.next.step)?.label, path: targetPathV2(plan.progress.next.target) };
-  const taught = plan ? cameraTeachingTasks(plan).filter(task => task.status === "done").length : 0;
-  const straight = plan?.segments.filter(segment => segment.kind === "straight").length ?? 0;
+  const taught = cameraTeachingTasks(plan).filter(task => task.status === "done").length;
+  const straight = plan.segments.filter(segment => segment.kind === "straight").length;
   return <div className="wp-page"><WorkspaceBar />
     <div className="wp-columns wp-defaults">
       <div className="wp-stack">

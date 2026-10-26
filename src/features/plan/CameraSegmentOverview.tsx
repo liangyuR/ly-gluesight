@@ -29,7 +29,7 @@ function segmentAria(s: PathSegment) {
 
 /**
  * 工件总览（段模型）：上面是三台计划相机，下面是沿胶路的段条（直线 / 弯道、N_exp 或“待标定”、容差、检测区间）；
- * 给了 regions 时再画一行区域结果，未分段区域横跨它覆盖的段。只做展示，不依赖旧拍照点模型的 WorkpieceOverview。
+ * 给了 regions 时再画一行区域结果，未分段区域横跨它覆盖的段。只做展示。
  */
 export function CameraSegmentOverview({ cameras, segments, regions }: CameraSegmentOverviewProps) {
   const columns: CSSProperties = { gridTemplateColumns: segmentWeights(segments).map(w => `minmax(0, ${w}fr)`).join(" ") };

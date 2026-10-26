@@ -177,7 +177,7 @@ export default function HistoryPage() {
       key: "frames",
       header: "帧",
       render: (p) => {
-        // 段配方记录：帧组数 / 预期总数 ΣN_exp（待标定为 0），整件标记（检测不完整、帧数异常、疑似提前终止…）单独显示；旧拍照点记录仍是 收到/计划
+        // 帧组数 / 预期总数 ΣN_exp（待标定为 0），整件标记（检测不完整、帧数异常、疑似提前终止…）单独显示；没有帧记录的为 收到/计划
         if (!p.flags) return <span className="mono nowrap">{p.framesExpected ? `${p.framesReceived}/${p.framesExpected}` : "—"}</span>;
         const badges = flagBadges(p.flags);
         return <div className="hist-frames">

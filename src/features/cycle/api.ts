@@ -1,8 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
-import { matchesPart, mergeMeasurements } from "./identity";
-import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineSource, Readiness, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
+import type { CycleSettings, LogLine, OfflineFault, OfflineSource, Readiness, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["cycle_save_settings","cycle_set_maintenance","cycle_select_recipe","cycle_reset","site_enter_offline","site_leave_offline","site_preview_sample_set","site_pick_dir","offline_run","offline_stop","offline_inject","offline_capture"].includes(cmd))
@@ -26,7 +25,6 @@ const defaultSettings: CycleSettings = {
 export const cycleApi = {
   snapshot: () => call<Snapshot | null>("cycle_snapshot", undefined, () => null),
   logs: () => call<LogLine[]>("cycle_logs", undefined, () => []),
-  partData: () => call<Measured[]>("cycle_part_data", undefined, () => []),
   recipes: () => call<RecipeSummary[]>("cycle_recipes", undefined, () => []),
   layout: (recipeId: string, revisionId?: string) => call<Recipe | null>("cycle_layout", { recipeId, revisionId: revisionId ?? null }, () => null),
   getSettings: () => call<CycleSettings>("cycle_get_settings", undefined, () => structuredClone(defaultSettings)),
@@ -141,7 +139,6 @@ export function useRecipes() {
 export function useCycle() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
-  const [measured, setMeasured] = useState<Measured[]>([]);
   const latest = useRef<Snapshot | null>(null);
 
   useEffect(() => {
@@ -154,35 +151,17 @@ export function useCycle() {
       if (retired.size > 128) retired.delete(retired.values().next().value!);
       latest.current = next;
       setSnapshot(next);
-      setMeasured(values => values.filter(value => matchesPart(value, next.part)));
     };
     const offs = [
       subscribe<Snapshot>("cycle://snapshot", value => { receivedSnapshot = true; update(value); }),
       subscribe<LogLine>("cycle://log", line => { if (alive) setLogs(prev => [...prev.slice(-199), line]); }),
-      subscribe<Measured>("cycle://frame", value => {
-        if (!alive) return;
-        const part = latest.current?.part;
-        if (part && matchesPart(value, part)) setMeasured(prev => mergeMeasurements(part, prev, [value]));
-      }),
     ];
     void cycleApi.snapshot().then(value => { if (value && !receivedSnapshot) update(value); }).catch(() => {});
     void cycleApi.logs().then(values => { if (alive) setLogs(prev => [...values, ...prev].slice(-200)); }).catch(() => {});
     return () => { alive = false; offs.forEach(off => off()); };
   }, []);
 
-  const part = snapshot?.part;
-  useEffect(() => {
-    let alive = true;
-    if (!part) return;
-    void cycleApi.partData().then(values => {
-      if (alive && latest.current?.part?.cycleId === part.cycleId && latest.current.part.bundleId === part.bundleId)
-        setMeasured(prev => mergeMeasurements(part, values, prev));
-    }).catch(() => {});
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [part?.cycleId, part?.bundleId]);
-  const current = useMemo(() => measured.filter(value => matchesPart(value, part)), [measured, part]);
-  return { snapshot, logs, measured: current };
+  return { snapshot, logs };
 }
 
 export function useSiteStatus() {

@@ -10,7 +10,7 @@ import { plcApi } from "../src/features/plc/api";
 import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, deferred, readiness, sampleSet, siteStatus, snapshot } from "./fixtures";
 import { burstPartView, burstResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
-import type { LogLine, Measured, Readiness, Recipe, RecipeSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
+import type { LogLine, Readiness, Recipe, RecipeSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
 import type { PlcHandshakeState, PointValue } from "../src/features/plc/types";
 
 vi.mock("../src/features/cycle/api", () => ({
@@ -18,13 +18,13 @@ vi.mock("../src/features/cycle/api", () => ({
   useSiteStatus: () => site, useReadiness: () => ({ readiness: report, refresh: async () => report }), cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), offlineRun: vi.fn(), offlineStop: vi.fn(), setMaintenance: vi.fn() },
   recipeApi: { doc: vi.fn(), list: vi.fn() },
 }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { runtimeOverview: vi.fn(), liveImage: vi.fn(), list: vi.fn(), debugRun: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), debugRun: vi.fn() } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), record: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
   usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {},
   usePlcOperationState: () => ({ blockedReason: "", handshake: plcHandshake }) }));
 
-let state: Snapshot, layout: Recipe | null, logs: LogLine[], measured: Measured[];
+let state: Snapshot, layout: Recipe | null, logs: LogLine[];
 let recipeList: RecipeSummary[];
 let site: SiteStatus;
 let report: Readiness;
@@ -33,11 +33,11 @@ let plcHandshake: PlcHandshakeState | null;
 const recipe = (id = "A") => burstRecipe({ id, name: `段配方 ${id}` });
 const candidate = (id = "A") => burstWorkspaceView(recipe(id));
 beforeEach(() => {
-  state = snapshot(); layout = candidate().layout; logs = []; measured = []; values = {}; plcHandshake = null;
+  state = snapshot(); layout = candidate().layout; logs = []; values = {}; plcHandshake = null;
   recipeList = [burstSummary(recipe()), burstSummary(recipe("B"))];
   site = siteStatus();
   report = readiness();
-  vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, logs, measured }));
+  vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, logs }));
   vi.mocked(useLayout).mockImplementation(() => layout);
   vi.mocked(cycleApi.selectRecipe).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.reset).mockReset().mockResolvedValue(undefined);
@@ -47,8 +47,6 @@ beforeEach(() => {
   vi.mocked(recipeApi.list).mockReset().mockResolvedValue({ recipes: recipeList, errors: [], unavailable: [] });
   vi.mocked(workspaceApi.list).mockReset().mockResolvedValue([candidate().workspace, candidate("B").workspace]);
   vi.mocked(workspaceApi.debugRun).mockReset().mockResolvedValue(undefined);
-  vi.mocked(workspaceApi.runtimeOverview).mockReset().mockResolvedValue(null);
-  vi.mocked(workspaceApi.liveImage).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
   vi.mocked(burstImageApi.live).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
   vi.mocked(recipeApi.doc).mockReset().mockImplementation(async id => recipe(id));
   vi.mocked(plcApi.getConfig).mockReset().mockResolvedValue(plcConfig());
@@ -172,7 +170,6 @@ describe("在线检测段配方", () => {
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     await waitFor(() => expect(burstImageApi.live).toHaveBeenCalledTimes(3));
     expect(live()).toEqual([[0, 12], [1, 12], [2, 12]]);
-    expect(workspaceApi.liveImage).not.toHaveBeenCalled();
     vi.mocked(burstImageApi.live).mockClear();
     await userEvent.click(screen.getByRole("button", { name: "帧组 5 · 不完整" }));
     await waitFor(() => expect(burstImageApi.live).toHaveBeenCalledTimes(2));

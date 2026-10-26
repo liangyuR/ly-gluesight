@@ -27,7 +27,6 @@ const compared: [string, (d: RecipeDoc) => unknown][] = [
   ["name", d => d.name], ["productCode", d => d.productCode], ["triggerMode", d => d.triggerMode], ["spacing", d => d.spacing], ["filterWindow", d => d.filterWindow],
   ["searchMm", d => d.detect.searchMm], ["polarity", d => d.detect.polarity], ["widthRange", d => d.detect.widthRange],
   ["position", d => d.limits.position], ["width", d => d.limits.width], ["maxGapLen", d => d.limits.maxGapLen], ["minPresent", d => d.limits.minPresent],
-  // 段配方的默认参数；旧拍照点配方没有这两项，两边都缺省时视为相同
   ["segmentDefaults", d => d.segmentDefaults], ["calibrationRounds", d => d.calibrationRounds],
 ];
 export function changedFields(doc: RecipeDoc, production: RecipeDoc | null | undefined) {
@@ -79,8 +78,6 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
   const set = <K extends keyof RecipeDoc>(k: K, v: RecipeDoc[K]) => setDoc((previous) => ({ ...previous, [k]: v }));
   const changed = changedFields(doc, production);
   const identityChanged = changed.has("name") || changed.has("productCode");
-  // 有段 = 段配方：默认参数按段类型设（segmentDefaults），不再有触发方式、位置名义值与量具确认件
-  const burst = !!doc.segments?.length;
 
   return (
     <div className="rcp-editor">
@@ -100,25 +97,23 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
         </div>
       </Section>
 
-      <Section title="检测" extra={burst ? "各台相机的走廊没单独设置时使用；改检测参数后需重新试测" : "拍照点没单独设置时使用；改检测参数后需重新试测"}>
+      <Section title="检测" extra="各台相机的走廊没单独设置时使用；改检测参数后需重新试测">
         <DetectEditor value={doc.detect} changed={changed} disabled={disabled} onChange={(v) => set("detect", v)} />
       </Section>
 
-      {burst ? <>
-        <Section title="标定" extra="同一工件程序连续采集多轮，取各轮帧数均值作预期帧数">
-          <div className="rcp-grid">
-            <Field label="标定轮数" changed={changed.has("calibrationRounds")} hint="至少 10 轮，最多 100 轮">
-              <Num aria="标定轮数" unit="轮" step={1} value={doc.calibrationRounds ?? DEFAULT_CALIBRATION_ROUNDS} onChange={(v) => set("calibrationRounds", v)} />
-            </Field>
-          </div>
-        </Section>
-        {doc.segmentDefaults && <Section title="按段类型的默认检测项" extra="新建段时取用；每帧独立检测，弯道段不判胶偏，帧数容差默认 1">
-          {segmentKinds.map(([kind, label]) => <section key={kind} className="rcp-kind" aria-label={`${label}段默认检测项`}>
-            <h5 className="sub-title">{label}段{changed.has("segmentDefaults") && !same(doc.segmentDefaults?.[kind], production?.segmentDefaults?.[kind]) && <i className="rcp-changed" title="与生产配方不同" />}</h5>
-            <KindChecksEditor value={doc.segmentDefaults![kind]} kind={kind} disabled={disabled} onChange={(next: KindDefault) => set("segmentDefaults", { ...doc.segmentDefaults!, [kind]: next })} />
-          </section>)}
-        </Section>}
-      </> : null}
+      <Section title="标定" extra="同一工件程序连续采集多轮，取各轮帧数均值作预期帧数">
+        <div className="rcp-grid">
+          <Field label="标定轮数" changed={changed.has("calibrationRounds")} hint="至少 10 轮，最多 100 轮">
+            <Num aria="标定轮数" unit="轮" step={1} value={doc.calibrationRounds ?? DEFAULT_CALIBRATION_ROUNDS} onChange={(v) => set("calibrationRounds", v)} />
+          </Field>
+        </div>
+      </Section>
+      {doc.segmentDefaults && <Section title="按段类型的默认检测项" extra="新建段时取用；每帧独立检测，弯道段不判胶偏，帧数容差默认 1">
+        {segmentKinds.map(([kind, label]) => <section key={kind} className="rcp-kind" aria-label={`${label}段默认检测项`}>
+          <h5 className="sub-title">{label}段{changed.has("segmentDefaults") && !same(doc.segmentDefaults?.[kind], production?.segmentDefaults?.[kind]) && <i className="rcp-changed" title="与生产配方不同" />}</h5>
+          <KindChecksEditor value={doc.segmentDefaults![kind]} kind={kind} disabled={disabled} onChange={(next: KindDefault) => set("segmentDefaults", { ...doc.segmentDefaults!, [kind]: next })} />
+        </section>)}
+      </Section>}
     </div>
   );
 }

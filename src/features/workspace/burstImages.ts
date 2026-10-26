@@ -3,9 +3,8 @@ import { decodeGray, liveGray } from "./api";
 import type { GrayImage } from "./types";
 
 /**
- * 段配方的原图：按 (相机, seq) 读，camera 是计划相机下标（与 FrameGroupView.cells、FrameRecord.camera 同一口径），不再有拍照点 k 与视角。
+ * 段配方的原图：按 (相机, seq) 读，camera 是计划相机下标（与 FrameGroupView.cells、FrameRecord.camera 同一口径）。
  * 命令见决策记录 5.4（workspace_live_frame_image、workspace_record_frame_image）；未到、缺帧或录制没保存时后端报错，页面按读图失败显示。
- * 旧拍照点配方仍走 workspaceApi.liveImage / recordImage。
  */
 export const burstImageApi = {
   /** 在途件某台相机第 seq 帧的实时原图；revisionId 是本件开工时的配方修订 */

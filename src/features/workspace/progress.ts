@@ -3,8 +3,8 @@ import type { ProgressTargetV2, ProgressV2, StepIdV2 } from "../plan/types";
 import { corridorPath } from "./cameraTasks";
 import type { StepStatus } from "./types";
 
-export const stepStatusText: Record<StepStatus, string> = { notStarted: "未开始", inProgress: "进行中", done: "完成", blocked: "阻塞", optional: "可选" };
-export const stepStatusTone: Record<StepStatus, "info" | "ok" | "warn" | "neutral"> = { notStarted: "neutral", inProgress: "info", done: "ok", blocked: "warn", optional: "neutral" };
+export const stepStatusText: Record<StepStatus, string> = { notStarted: "未开始", inProgress: "进行中", done: "完成", blocked: "阻塞" };
+export const stepStatusTone: Record<StepStatus, "info" | "ok" | "warn" | "neutral"> = { notStarted: "neutral", inProgress: "info", done: "ok", blocked: "warn" };
 
 /** 段配方（StepIdV2）进度目标的路由。 */
 export function targetPathV2(target: ProgressTargetV2) {

@@ -228,7 +228,6 @@ pub fn run() {
             history::history_query,
             history::history_detail,
             history::history_neighbors,
-            history::history_recipe,
             history::history_rejudge,
             history::history_export,
             history::reveal_path,
