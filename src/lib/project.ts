@@ -72,8 +72,17 @@ export interface ProjectImported {
   notes: string[];
 }
 
+export interface CopyProject {
+  sourceId: string;
+  id: string;
+  name: string;
+  description: string;
+  includeRecords: boolean;
+}
+
 export const projectTransferApi = {
   exportProject: (id: string, includeRecords: boolean) => invoke<ProjectExported | null>("project_export", { id, includeRecords }),
   pickImport: () => invoke<ProjectImportPreview | null>("project_import_pick"),
   importProject: (path: string, id: string, name: string) => invoke<ProjectImported>("project_import", { path, id, name }),
+  copyProject: (request: CopyProject) => invoke<ProjectImported>("project_copy", { request }),
 };

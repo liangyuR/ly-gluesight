@@ -511,22 +511,61 @@ fn install(
     staging: &Path,
 ) -> Result<ProjectImported, String> {
     let manifest = extract(package, staging)?;
-    let root = staging.join("project");
+    let mut imported = finish(
+        data,
+        &staging.join("project"),
+        &Source {
+            id: &manifest.project.id,
+            root: Path::new(&manifest.source_root),
+            includes_records: manifest.includes_records,
+        },
+        &New {
+            id,
+            name,
+            description: &manifest.project.description,
+        },
+        plan_file,
+    )?;
+    imported
+        .notes
+        .push("相机组、PLC 配置与标定来自来源项目，切换到该项目前请核对".into());
+    Ok(imported)
+}
+
+struct Source<'a> {
+    id: &'a str,
+    root: &'a Path,
+    includes_records: bool,
+}
+
+pub struct New<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub description: &'a str,
+}
+
+/// 暂存目录 `root` 里的项目内容落成新项目：改写来源目录路径、重新分配计划版本、候选回到草稿，再原子移入 `projects/<id>`。
+fn finish(
+    data: &Path,
+    root: &Path,
+    source: &Source,
+    new: &New,
+    plan_file: &Path,
+) -> Result<ProjectImported, String> {
     let _guard = manage::LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    manage::check_new_id(data, id)?;
-    let name = manage::check_name(data, name, None)?;
-    let target = super::dir(data, id);
+    manage::check_new_id(data, new.id)?;
+    let name = manage::check_name(data, new.name, None)?;
+    let target = super::dir(data, new.id);
     let meta = ProjectMeta::new(
-        id,
+        new.id,
         &name,
-        &manifest.project.description,
-        Some(manifest.project.id.clone()),
+        new.description.trim(),
+        Some(source.id.to_string()),
     );
-    super::write_meta(&root, &meta)?;
-    let source = PathBuf::from(&manifest.source_root);
-    crate::storage::relocate::tree_references(&root, &source, &target)?;
-    let mut notes = crate::storage::relocate::validate_references(&root, &source, &target)?;
-    let plans = remap_plans(&root, plan_file)?;
+    super::write_meta(root, &meta)?;
+    crate::storage::relocate::tree_references(root, source.root, &target)?;
+    let mut notes = crate::storage::relocate::validate_references(root, source.root, &target)?;
+    let plans = remap_plans(root, plan_file)?;
     for entry in std::fs::read_dir(root.join("workspaces"))
         .into_iter()
         .flatten()
@@ -537,7 +576,7 @@ fn install(
             notes.extend(crate::workspace::reset_for_project_import(
                 &candidate,
                 &plans,
-                manifest.includes_records,
+                source.includes_records,
             )?);
         }
     }
@@ -547,10 +586,65 @@ fn install(
             plans.len()
         ));
     }
-    notes.push("相机组、PLC 配置与标定来自来源项目，切换到该项目前请核对".into());
     std::fs::create_dir_all(super::projects_root(data)).map_err(|e| e.to_string())?;
-    std::fs::rename(&root, &target).map_err(|e| format!("移入项目目录失败：{e}"))?;
+    std::fs::rename(root, &target).map_err(|e| format!("移入项目目录失败：{e}"))?;
     Ok(ProjectImported { meta, notes })
+}
+
+/// 把本机项目 `source_id` 复制为新项目：按导出的取舍收集文件（记录库做一致性快照），拷进暂存目录后按导入规则落成新项目。
+pub fn copy_from(
+    data: &Path,
+    source_id: &str,
+    include_records: bool,
+    new: &New,
+    plan_file: &Path,
+    cache: &Path,
+) -> Result<ProjectImported, String> {
+    let staging = staging_dir(cache, "copy")?;
+    let result = copy_into(data, source_id, include_records, new, plan_file, &staging);
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+fn copy_into(
+    data: &Path,
+    source_id: &str,
+    include_records: bool,
+    new: &New,
+    plan_file: &Path,
+    staging: &Path,
+) -> Result<ProjectImported, String> {
+    let source_root = super::dir(data, source_id);
+    let mut notes = Vec::new();
+    let entries = collect(
+        &source_root,
+        include_records,
+        &staging.join("snapshot"),
+        &mut notes,
+    )?;
+    for (name, path) in entries {
+        let target = name
+            .split('/')
+            .fold(staging.to_path_buf(), |path, part| path.join(part));
+        std::fs::create_dir_all(target.parent().ok_or("暂存路径无效")?)
+            .map_err(|e| e.to_string())?;
+        std::fs::copy(&path, &target)
+            .map_err(|e| format!("复制 {} 失败：{e}", path.display()))?;
+    }
+    let mut copied = finish(
+        data,
+        &staging.join("project"),
+        &Source {
+            id: source_id,
+            root: &source_root,
+            includes_records: include_records,
+        },
+        new,
+        plan_file,
+    )?;
+    notes.append(&mut copied.notes);
+    copied.notes = notes;
+    Ok(copied)
 }
 
 fn file_name(name: &str) -> String {
@@ -686,6 +780,57 @@ pub async fn project_import(
             ),
         );
         Ok(imported)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyProject {
+    pub source_id: String,
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub include_records: bool,
+}
+
+#[tauri::command]
+pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<ProjectImported, String> {
+    let data = crate::storage::root(&app);
+    super::open_target(&data, &request.source_id)?;
+    if request.source_id == super::current_id(&app) {
+        crate::site::check_project_switch(&super::switch_state(&app)?)
+            .map_err(|e| e.replace("切换项目", "复制当前项目"))?;
+    }
+    let plan_file = crate::storage::state(&app).join("plan-version");
+    tauri::async_runtime::spawn_blocking(move || {
+        let copied = copy_from(
+            &data,
+            &request.source_id,
+            request.include_records,
+            &New {
+                id: &request.id,
+                name: &request.name,
+                description: &request.description,
+            },
+            &plan_file,
+            &data.join("cache"),
+        )?;
+        crate::applog::write(
+            "info",
+            "项目复制",
+            &format!(
+                "已把项目 {} 复制为 {}（{}）{}",
+                request.source_id,
+                copied.meta.id,
+                copied.meta.name,
+                if request.include_records { "，含检测记录" } else { "" }
+            ),
+        );
+        Ok(copied)
     })
     .await
     .map_err(|e| e.to_string())?
