@@ -64,3 +64,6 @@
 .swb-cam { padding: 1px 6px; border: 1px solid var(--outline-variant); border-radius: var(--r-sm); background: none; color: var(--on-surface-variant); font-size: 11px; font-family: var(--font-mono); cursor: pointer; }
 .swb-cam.on { border-color: var(--primary); background: var(--surface-mid); color: var(--primary); }
 .swb-cell.unused canvas { opacity: .28; }
+.seg-tabs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; }
+.seg-tabs > .plan-seg { color: inherit; text-align: left; cursor: pointer; }
+.seg-tabs > .plan-seg.selected { border-color: var(--primary); box-shadow: inset 0 -2px 0 var(--primary); }

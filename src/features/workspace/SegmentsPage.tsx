@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { Link } from "react-router-dom";
 import { Button, NumberField, Select, Switch } from "qing-steel";
-import { CameraSegmentOverview } from "../plan/CameraSegmentOverview";
 import { KindChecksEditor } from "../plan/KindChecksEditor";
 import type { OffsetMeasure, PathSegment, SegmentChecks, WorkspacePlanView } from "../plan/types";
 import type { WorkspaceView } from "./types";
@@ -14,6 +13,7 @@ import { patchSegment, segmentIssues } from "./segmentEdit";
 import SegmentWorkbench from "./SegmentWorkbench";
 import { segmentCameras } from "./workbenchDraft";
 import AlignReview from "./AlignReview";
+import "../plan/plan.css";
 import "./segments.css";
 
 const DEBOUNCE_MS = 700;
@@ -46,6 +46,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
   const [state, setState] = useState<SaveState>("saved");
   const [retry, setRetry] = useState(0);
   const [workbenchDirty, setWorkbenchDirty] = useState(false);
+  const [tab, setTab] = useState(0);
   const immediate = useRef(false);
   const failed = useRef("");
   const saved = useRef("");
@@ -97,6 +98,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
 
   const edit = (next: PathSegment[]) => { immediate.current = false; setEdits(next); };
   const patch = (at: number, change: Partial<PathSegment>) => edit(patchSegment(segments, at, change));
+  const current = Math.min(tab, Math.max(0, segments.length - 1));
   // 工作台与参数表都会写段列表：一边有未保存的改动时另一边不能提交，避免修订号冲突
   const paramsPending = edits ? "段参数还没保存完，保存后再保存分段" : "";
   const cardsLocked = frozen || workbenchDirty;
@@ -106,17 +108,25 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
     <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
     <AlignReview plan={plan} locked={workbenchDirty ? "上方分段有未保存的改动，先保存或撤销后再确认其余轮次" : paramsPending} />
     <Panel title="段列表" detail="各段帧数容差、长度、检测区间与检测项；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数由多轮采集得出，这里只读">
-      <CameraSegmentOverview cameras={plan.cameras} segments={segments} />
+      {/* 段多时逐段平铺太长：段条当选项卡，下方只显示所选段 */}
+      <div className="seg-tabs" role="tablist" aria-label="段">
+        {segments.map((segment, at) => <button key={at} type="button" role="tab" id={`seg-tab-${at}`} aria-selected={at === current} aria-controls="seg-panel"
+          className={`plan-seg ${segment.kind}${segment.expectedFrames == null ? " pending" : ""}${at === current ? " selected" : ""}`} onClick={() => setTab(at)}>
+          <strong>{segment.index} · {segmentKindLabel[segment.kind]}</strong>
+          <small className="plan-seg-n">{segment.expectedFrames == null ? "待标定" : `预期 ${segment.expectedFrames} ± ${segment.tolerance} 帧`}</small>
+          <small className="plan-mono">{segmentCameras(segment, plan.cameras).join(" · ")}</small>
+        </button>)}
+      </div>
       {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改段列表。</Notice>}
       {workbenchDirty && <Notice title="分段有未保存的改动">先保存或撤销上方的分段改动，再编辑段参数。</Notice>}
       <div className="seg-savebar" role="status" aria-label="段列表保存状态">
         {blocked ? <span className="warn">{issues.join("；")}（修正后自动保存）</span> : <span className={shown === "failed" ? "warn" : undefined}>{saveText[shown]}</span>}
         {shown === "failed" && !blocked && <Button size="sm" onClick={() => { failed.current = ""; setRetry(n => n + 1); }}>重试保存</Button>}
       </div>
-      <ol className="seg-list" aria-label="段">
-        {segments.map((segment, at) => <SegmentCard key={at} segment={segment} cameras={plan.cameras} disabled={cardsLocked}
-          onPatch={change => patch(at, change)} />)}
-      </ol>
+      {segments[current] && <div id="seg-panel" role="tabpanel" aria-labelledby={`seg-tab-${current}`}>
+        <SegmentCard key={current} segment={segments[current]} cameras={plan.cameras} disabled={cardsLocked}
+          onPatch={change => patch(current, change)} />
+      </div>}
     </Panel>
     <Panel title="整件预期帧数" detail="各段预期帧数之和；各段都待标定时取整件多轮采集的帧组数均值">
       <div className="seg-total">
@@ -148,7 +158,7 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: CardProps) {
   const setChecks = (checks: SegmentChecks) => onPatch({ checks });
   // 改胶偏参考的测量量或相机：旧 x_ref 不再适用，清空等标准件标定重算
   const setReference = (next: { measure?: OffsetMeasure; camera?: string }) => onPatch({ offsetRef: { measure, camera, ...next, xRef: null, spread: null } });
-  return <li><section className="seg-card" aria-label={name}>
+  return <section className="seg-card" aria-label={name}>
     <div className="seg-card-head">
       <strong>{name} · {segmentKindLabel[segment.kind]}</strong>
       <Badge tone={segment.expectedFrames == null ? "warn" : "ok"}>{segment.expectedFrames == null ? "待标定" : `预期 ${segment.expectedFrames} ± ${segment.tolerance} 帧`}</Badge>
@@ -184,5 +194,5 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: CardProps) {
       <summary>{name}检测项（{segmentKindLabel[segment.kind]}）</summary>
       <KindChecksEditor value={segment.checks} kind={segment.kind} disabled={disabled} onChange={setChecks} />
     </details>
-  </section></li>;
+  </section>;
 }
