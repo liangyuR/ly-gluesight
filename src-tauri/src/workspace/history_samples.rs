@@ -139,4 +139,3 @@ impl BurstSamples {
         self.set.load_view(&self.part_id, shot, camera_id, 1)
     }
 }
-
