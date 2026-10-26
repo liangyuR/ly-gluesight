@@ -25,7 +25,7 @@ beforeEach(() => {
   ws = workspaceState(view); vi.mocked(useWorkspace).mockImplementation(() => ws);
   vi.mocked(historyApi.query).mockResolvedValue({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } });
   vi.mocked(workspaceApi.publish).mockResolvedValue(ws.data!);
-  vi.mocked(workspaceApi.publishChecks).mockResolvedValue([{ name: "设备与采集", passed: true, detail: "三台计划相机已就绪" }]);
+  vi.mocked(workspaceApi.publishChecks).mockResolvedValue([{ name: "相机配置", passed: true, detail: "三台计划相机已配置" }]);
   vi.mocked(workspaceApi.retryPublish).mockResolvedValue(ws.data!);
 });
 
@@ -126,16 +126,16 @@ describe("验证与发布页面", () => {
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 
-  // 防的回归（D-SB-46）：发布仍要求先通过独立样本验证；或发布前检查有未满足项（如设备未就绪）时仍能发布
+  // 防的回归（D-SB-46）：发布仍要求先通过独立样本验证；或发布前检查有未满足项（如走廊未示教）时仍能发布
   it("没有样本验证结果、发布前检查全部满足 → 可以发布；检查有未满足项 → 发布不可用并说明原因", async () => {
     ws.data!.workspace.validation = null;
     ws.data!.workspace.samples = [];
     const page = show();
     await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
     page.unmount();
-    vi.mocked(workspaceApi.publishChecks).mockResolvedValue([{ name: "设备与采集", passed: false, detail: "相机 cam2 未就绪" }]);
+    vi.mocked(workspaceApi.publishChecks).mockResolvedValue([{ name: "走廊示教", passed: false, detail: "第 2 段相机 cam2 走廊未示教" }]);
     show();
-    await waitFor(() => expect(screen.getAllByRole("note").some(note => note.textContent?.includes("设备与采集：相机 cam2 未就绪"))).toBe(true));
+    await waitFor(() => expect(screen.getAllByRole("note").some(note => note.textContent?.includes("走廊示教：第 2 段相机 cam2 走廊未示教"))).toBe(true));
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
   });
 

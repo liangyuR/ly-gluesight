@@ -5,7 +5,7 @@
 //! 与 workflow.rs，行为不变。
 //!
 //! 验证项（决策记录第九节第 13 条）：
-//! - 设备与采集：计划相机解析、三台单视角独立设备（`check_burst_cameras`）、就绪；
+//! - 相机配置：计划相机解析、三台单视角独立设备（`check_burst_cameras`）；相机是否在线就绪不在发布时核对，布防时再查（D-SB-46）；
 //! - 走廊示教：恰好 3 台计划相机，每台都选了示教帧、走廊完整落在帧内、有像素当量，且示教帧采集后设备配置没变；
 //! - 段标定：整件 ΣN_exp（expected_total）已由多轮标定得出即通过（决策补充“多段配方的发布与运行”），逐段列出 N_exp 或待定原因；
 //! - 标准件 x_ref：只在有启用胶偏检查的直线段时列出；单段 AbsoluteX 要有标准件得出的 x_ref，多段（分段算法未就绪）
@@ -45,7 +45,7 @@ fn doc_sample_tag(doc: &RecipeDoc) -> Value {
 
 /// 段配方发布前检查的输入：设备检查由调用方（访问设备）给出，其余只读候选。
 pub(super) struct BurstInputs<'a> {
-    /// 计划相机解析、三台单视角独立设备、就绪（`cycle::usable_cams` + `check_ready_at`）
+    /// 计划相机解析、三台单视角独立设备（`cycle::usable_cams`）；不含在线就绪
     pub device: Result<(), String>,
     /// 当前设备的相机标签（`camera_state`，与示教帧冻结时同一口径），按相机编号
     pub cameras: &'a BTreeMap<String, Value>,
@@ -56,9 +56,12 @@ pub(super) struct BurstInputs<'a> {
 /// 段配方的全部验证项，按页面展示顺序。
 pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
     let mut checks = vec![Check {
-        name: "设备与采集".into(),
+        name: "相机配置".into(),
         passed: inputs.device.is_ok(),
-        detail: inputs.device.err().unwrap_or_else(|| "三台计划相机已就绪".into()),
+        detail: inputs
+            .device
+            .err()
+            .unwrap_or_else(|| "三台计划相机已配置；是否在线就绪在布防时核对".into()),
     }];
     checks.push(corridor_check(w, inputs.cameras));
     checks.push(segment_check(w));
@@ -379,14 +382,13 @@ fn sample_check(samples: &[SampleResult]) -> Check {
     }
 }
 
-/// 发布前检查（D-SB-46，发布时当场核对，不跑样本）：设备与采集、走廊示教、段标定、标定采集参数、x_ref、生产版本。
+/// 发布前检查（D-SB-46，发布时当场核对，不跑样本，不要求相机在线）：相机配置、走廊示教、段标定、标定采集参数、x_ref、生产版本。
 /// 结果随待生效版本存档（`Release.validation`，样本为空）。
 pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let recipe = w.doc.build()?;
     let environment_tag = environment(app, &recipe)?;
     let cycle = app.state::<CycleHost>();
-    let device =
-        cycle::usable_cams(app, &recipe).and_then(|cams| cycle.camera.check_ready_at(&cams));
+    let device = cycle::usable_cams(app, &recipe).map(|_| ());
     let tags = current_camera_tags(app);
     let base = cycle.recipe(&recipe.id).map(|r| r.revision_id.clone());
     let checks = burst_checks(
@@ -433,7 +435,7 @@ pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, S
     let recipe = w.doc.build()?;
     let initial_environment = environment(app, &recipe)?;
     let cycle = app.state::<CycleHost>();
-    let device = cycle::usable_cams(app, &recipe).and_then(|cams| cycle.camera.check_ready_at(&cams));
+    let device = cycle::usable_cams(app, &recipe).map(|_| ());
     let configs = cycle.camera.configs();
     let tags = current_camera_tags(app);
     let current: BTreeMap<String, Value> = configs.iter().map(|c| (c.id.clone(), state_value(c))).collect();

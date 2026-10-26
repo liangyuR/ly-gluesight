@@ -1593,9 +1593,6 @@ pub fn workspace_publish(
     if let Some(failed) = validated.checks.iter().find(|c| !c.passed) {
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
     }
-    let recipe = w.doc.build()?;
-    let cams = cycle::usable_cams(&app, &recipe)?;
-    app.state::<CycleHost>().camera.check_ready_at(&cams)?;
     let mut release_doc = w.doc.clone();
     release_doc.stage = RecipeStage::Formal;
     release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));
