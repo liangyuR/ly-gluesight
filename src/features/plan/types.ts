@@ -99,6 +99,8 @@ export interface PathSegment {
   checks: SegmentChecks;
   offsetRef: OffsetRef | null;
   inspectRange: InspectRange | null;
+  /** 检测相机（D-SB-41）：计划相机的子集；空 = 全部计划相机 */
+  cameras: string[];
 }
 
 /** 整件标定：多轮整件帧组数统计；本轮多段配方凭它得到 expectedTotal 并发布。 */

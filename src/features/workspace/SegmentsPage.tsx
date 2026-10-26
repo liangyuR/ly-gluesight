@@ -12,6 +12,7 @@ import { Badge, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components
 import { errorText } from "../../lib/errors";
 import { patchSegment, segmentIssues } from "./segmentEdit";
 import SegmentWorkbench from "./SegmentWorkbench";
+import { segmentCameras } from "./workbenchDraft";
 import AlignReview from "./AlignReview";
 import "./segments.css";
 
@@ -141,7 +142,9 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: CardProps) {
   const range = segment.inspectRange;
   const offsetRef = segment.offsetRef;
   const measure = offsetRef?.measure ?? "absoluteX";
-  const camera = offsetRef?.camera ?? cameras[0];
+  // 胶偏参考相机只能是本段的检测相机（D-SB-41），检测相机在上方分段标定里选
+  const inspecting = segmentCameras(segment, cameras);
+  const camera = offsetRef?.camera ?? inspecting[0];
   const setChecks = (checks: SegmentChecks) => onPatch({ checks });
   // 改胶偏参考的测量量或相机：旧 x_ref 不再适用，清空等标准件标定重算
   const setReference = (next: { measure?: OffsetMeasure; camera?: string }) => onPatch({ offsetRef: { measure, camera, ...next, xRef: null, spread: null } });
@@ -149,6 +152,7 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: CardProps) {
     <div className="seg-card-head">
       <strong>{name} · {segmentKindLabel[segment.kind]}</strong>
       <Badge tone={segment.expectedFrames == null ? "warn" : "ok"}>{segment.expectedFrames == null ? "待标定" : `预期 ${segment.expectedFrames} ± ${segment.tolerance} 帧`}</Badge>
+      <span className="muted plan-mono" aria-label={`${name} 检测相机`}>检测相机 {inspecting.join(" · ")}</span>
     </div>
     <div className="seg-fields">
       <div className="seg-readonly">
@@ -171,7 +175,7 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: CardProps) {
     </div>
     {straight && segment.checks.offset?.enabled && <div className="seg-offset" role="group" aria-label={`${name} 胶偏参考`}>
       <Select label="胶偏测量量" aria-label={`${name} 胶偏测量量`} value={measure} options={measureOptions} disabled={disabled} onValueChange={value => setReference({ measure: value as OffsetMeasure })} />
-      <Select label="参考相机" aria-label={`${name} 参考相机`} value={camera} options={cameras.map(id => ({ value: id, label: id }))} disabled={disabled} onValueChange={value => setReference({ camera: value })} />
+      <Select label="参考相机" aria-label={`${name} 参考相机`} value={camera} options={inspecting.map(id => ({ value: id, label: id }))} disabled={disabled} onValueChange={value => setReference({ camera: value })} />
       <p className={offsetRef?.xRef == null ? "muted" : "plan-mono"}>{offsetRef?.xRef != null
         ? `x_ref ${offsetRef.xRef} ± ${offsetRef.spread ?? "—"} mm（标准件多轮测量均值）`
         : measure === "toEdge" ? "到边缘距离的测量量本轮未实现：该段胶偏不判" : "x_ref 待标定：由标准件多轮采集得出，不能手填"}</p>

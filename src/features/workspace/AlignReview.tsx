@@ -6,20 +6,24 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel } from "./components";
 import { ignoreKey, stripGroups, Thumb, useThumbs } from "./thumbs";
-import { moveCut } from "./workbenchDraft";
+import { moveCut, segmentCameras } from "./workbenchDraft";
 import type { AlignSuggestion, CaptureSummary } from "./types";
 import type { ThumbStrip } from "./workbenchDraft";
 
 const statusText = { draft: "草稿", confirmed: "已确认", stale: "需复核" } as const;
 
-/** 一侧（模板或本轮）边界两侧各两帧：三台相机各一行，竖线标在边界处。 */
+/** 缩略图宽度按显示的相机数放大：一台 160 px（缩略图原尺寸），两台 112 px，三台 72 px。 */
+const cellWidth = (cameras: number) => (cameras <= 1 ? 160 : cameras === 2 ? 112 : 72);
+
+/** 一侧（模板或本轮）边界两侧各两帧：边界两侧段的检测相机各一行，竖线标在边界处。 */
 function BoundaryFrames({ label, strips, cameras, cut }: { label: string; strips: Record<string, ThumbStrip>; cameras: string[]; cut: number }) {
   const groups = [cut - 1, cut, cut + 1, cut + 2];
-  return <figure className="alr-side" aria-label={`${label}：帧组 ${cut} 之后`}>
+  const width = cellWidth(cameras.length);
+  return <figure className="alr-side" aria-label={`${label}：帧组 ${cut} 之后`} style={{ ["--alr-cell" as string]: `${width}px` }}>
     <figcaption>{label} · {cut} | {cut + 1}</figcaption>
     {cameras.map(camera => {
       const strip = strips[camera];
-      return <div key={camera} className="alr-row">
+      return <div key={camera} className="alr-row" title={camera}>
         {groups.map(group => <span key={group} className={`alr-cell${group === cut ? " edge" : ""}`} title={`${camera} 帧组 ${group}`}>
           {group >= 1 && strip && group <= strip.frames.length
             ? <Thumb pixels={strip.frames[group - 1]} width={strip.width} height={strip.height} />
@@ -92,7 +96,7 @@ export default function AlignReview({ plan, locked }: { plan: WorkspacePlanView;
   const value = current?.value ?? null;
   const ready = !!value && !!templateThumbs.strips && !!roundThumbs.strips && cuts.length === value.cuts.length;
   const nudge = (at: number, delta: number) => {
-    const next = moveCut({ groupCount, cuts, kinds: [] }, at, cuts[at] + delta);
+    const next = moveCut({ groupCount, cuts, kinds: [], cameras: [] }, at, cuts[at] + delta);
     if (next.cuts !== cuts) { setCuts(next.cuts); setChecked(list => list.map((item, i) => (i === at ? false : item))); }
   };
   const confirmRow = (at: number) => {
@@ -133,16 +137,19 @@ export default function AlignReview({ plan, locked }: { plan: WorkspacePlanView;
     {ready && <div className="alr-body" tabIndex={0} onKeyDown={onKey} aria-label="边界复核">
       {value.cuts.map((item, at) => {
         const cut = cuts[at];
+        // 只看边界两侧段的检测相机（D-SB-41），相机少时缩略图更大
+        const shown = plan.cameras.filter(camera => [plan.segments[at], plan.segments[at + 1]].some(segment => segment && segmentCameras(segment, plan.cameras).includes(camera)));
         return <section key={at} className={`alr-boundary${at === row ? " active" : ""}`} aria-label={`段 ${at + 1} → 段 ${at + 2} 的边界`} onClick={() => setRow(at)}>
           <header>
             <strong>段 {at + 1} → 段 {at + 2}</strong>
+            <span className="plan-mono muted">{shown.join(" · ")}</span>
             <span className="muted">建议 {item.cut}（按比例 {item.proportional}）</span>
             {item.review && <Badge tone="warn">需重点复核</Badge>}
             {checked[at] && <Badge tone="ok">已确认</Badge>}
           </header>
           <div className="alr-compare">
-            <BoundaryFrames label="模板" strips={templateThumbs.strips!} cameras={plan.cameras} cut={value.templateCuts[at]} />
-            <BoundaryFrames label="本轮" strips={roundThumbs.strips!} cameras={plan.cameras} cut={cut} />
+            <BoundaryFrames label="模板" strips={templateThumbs.strips!} cameras={shown} cut={value.templateCuts[at]} />
+            <BoundaryFrames label="本轮" strips={roundThumbs.strips!} cameras={shown} cut={cut} />
           </div>
           <div className="wp-actions">
             <Button size="sm" aria-label={`段 ${at + 1} 边界前移`} onClick={() => nudge(at, -1)}>←</Button>

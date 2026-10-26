@@ -9,7 +9,7 @@ import { Badge, GrayViewer, Notice, Panel } from "./components";
 import { hasCalibration } from "./segmentEdit";
 import { ignoreKey, stripGroups, Thumb, useThumbs } from "./thumbs";
 import {
-  initialDraft, moveCut, segmentsForSave, spans, structureChanged, toggleCut, toggleKind, valid,
+  initialDraft, moveCut, segmentsForSave, spans, structureChanged, toggleCamera, toggleCut, toggleKind, valid,
   type WorkbenchDraft,
 } from "./workbenchDraft";
 import type { CaptureSummary, GrayImage } from "./types";
@@ -84,8 +84,8 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   const groupCount = stripGroups(ready);
   const saved = review?.rounds[roundId] ?? null;
   const baseline = useMemo(
-    () => groupCount ? initialDraft(groupCount, plan.segments.map(s => s.kind), saved) : null,
-    [groupCount, JSON.stringify(plan.segments.map(s => s.kind)), JSON.stringify(saved?.cuts), saved?.status],
+    () => groupCount ? initialDraft(groupCount, plan.segments, plan.cameras, saved) : null,
+    [groupCount, JSON.stringify(plan.segments.map(s => [s.kind, s.cameras])), plan.cameras.join("|"), JSON.stringify(saved?.cuts), saved?.status],
   );
   const draft = edit?.roundId === roundId ? edit.draft : baseline;
   const dirty = !!draft && !!baseline && JSON.stringify(draft) !== JSON.stringify(baseline);
@@ -120,7 +120,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   const blocked = !draft || !valid(draft) || busy || frozen || !!locked || !doc;
   const save = async () => {
     if (!draft || !doc) return;
-    const segments: PathSegment[] = segmentsForSave(plan.segments, draft.kinds, plan.segmentDefaults);
+    const segments: PathSegment[] = segmentsForSave(plan.segments, draft, plan.segmentDefaults, plan.cameras);
     const next = await act(() => workspaceApi.segmentTemplateSave(doc.id, revision, roundId, segments, draft.cuts), "分段已保存，本轮设为分段模板");
     setConfirming(false);
     if (next) setEdit(null);
@@ -141,7 +141,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     label: `${round.roundId} · ${new Date(round.createdAt).toLocaleString("zh-CN")} · ${round.receivedCount} 帧组${round.roundId === template?.roundId ? " · 模板" : ""}`,
   }));
 
-  return <Panel title="分段标定" detail="在模板轮的帧组时间轴上划分直线段与弯道段：点缩略图选中帧组（下方并排显示三台相机原图），再点“在帧组 N 后插入边界”（或按 B，或点时间轴下方对应的 ＋）；点段名切换直线 / 弯道；← → 切换帧组"
+  return <Panel title="分段标定" detail="在模板轮的帧组时间轴上划分直线段与弯道段：点缩略图选中帧组（下方并排显示三台相机原图），再点“在帧组 N 后插入边界”（或按 B，或点时间轴下方对应的 ＋）；点段名切换直线 / 弯道；点段下方的相机名选这段由哪几台相机检测（没选中的相机变暗，判定时不用）；← → 切换帧组"
     actions={<Select aria-label="模板轮" value={roundId} options={roundOptions} disabled={busy || dirty} onValueChange={value => { setEdit(null); setRoundId(value); }} />}>
     {(loadError || thumbs.error) && <Notice title="读取采集图像失败" tone="warn">{loadError || thumbs.error}</Notice>}
     {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改分段。</Notice>}
@@ -154,6 +154,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
           {saved && <Badge tone={saved.status === "confirmed" ? "ok" : "warn"}>{reviewLabel[saved.status]}</Badge>}
           {isTemplate && !dirty && <Badge tone="ok">分段模板</Badge>}
           {restructured && <Badge tone="warn">段结构有改动</Badge>}
+          {!restructured && dirty && JSON.stringify(draft.cameras) !== JSON.stringify(baseline?.cameras) && <Badge tone="warn">检测相机有改动</Badge>}
         </div>
         <div className="wp-actions">
           {locked && <span className="muted">{locked}</span>}
@@ -174,6 +175,16 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
               段 {i + 1} · {segmentKindLabel[kind]} · {last - first + 1} 组
             </button>;
           })}
+          <span className="swb-label" title="点相机名决定该段由哪几台相机检测（至少一台）">检测相机</span>
+          {segmentSpans.map(([first, last], i) => <div key={`cams-${first}`} className="swb-cams" style={{ gridColumn: `${first + 1} / ${last + 2}` }}
+            role="group" aria-label={`段 ${i + 1} 检测相机`}>
+            {plan.cameras.map(camera => {
+              const on = draft.cameras[i]?.includes(camera) ?? false;
+              return <button key={camera} type="button" className={`swb-cam${on ? " on" : ""}`} aria-pressed={on} disabled={frozen}
+                title={on ? `段 ${i + 1} 由 ${camera} 检测，点击取消` : `点击让 ${camera} 检测段 ${i + 1}`}
+                onClick={() => change(toggleCamera(draft, i, camera, plan.cameras))}>{camera}</button>;
+            })}
+          </div>)}
           {plan.cameras.map(camera => {
             const strip = ready[camera];
             return [<span key={`${camera}-label`} className="swb-label">{camera}</span>,
@@ -181,8 +192,10 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
                 const group = k + 1;
                 const pixels = strip?.frames[k] ?? null;
                 const cut = draft.cuts.includes(group);
+                const segment = segmentSpans.findIndex(([first, last]) => group >= first && group <= last);
+                const used = draft.cameras[segment]?.includes(camera) ?? true;
                 return <button key={`${camera}-${group}`} type="button" aria-label={`${camera} 帧组 ${group}`} aria-pressed={group === seq}
-                  className={`swb-cell${group === seq ? " selected" : ""}${cut ? " cut" : ""}`} onClick={() => setSeq(group)}>
+                  className={`swb-cell${group === seq ? " selected" : ""}${cut ? " cut" : ""}${used ? "" : " unused"}`} onClick={() => setSeq(group)}>
                   <Thumb pixels={pixels} width={strip?.width ?? 0} height={strip?.height ?? 0} />
                 </button>;
               })];

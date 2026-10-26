@@ -186,7 +186,8 @@ impl BurstJudgement {
 }
 
 /// 判一件。cameras 是计划相机（`FrameMetrics.camera` 的下标基准，`OffsetRef.camera` 按它找下标）；
-/// expected_total 由 `plan::expected_total` 算出；三台相机取最差。
+/// expected_total 由 `plan::expected_total` 算出；区域内检测相机取最差（D-SB-41：直线 / 弯道区域只用本段检测相机，
+/// 过渡区用两侧段检测相机的并集，未分段区域用全部计划相机）。
 ///
 /// - 每帧独立指标（断胶、有胶比例、胶宽、溢胶）三类区域都跑；只判 Measured 帧，其余状态只记检测不完整。
 /// - 区域允差：直线 / 弯道区域用该段 checks，未分段区域用所覆盖各段的 [`wider_checks`]。
@@ -241,9 +242,8 @@ pub fn judge(
     };
     let anomalous = |status: Option<CountStatus>| matches!(status, Some(CountStatus::Low | CountStatus::High));
     let flags = Flags {
-        incomplete: results.iter().any(|r| !r.incomplete_groups.is_empty())
-            || groups.iter().any(|g| g.incomplete)
-            || frames.values().any(|m| m.state != FrameState::Measured),
+        // 区域首尾相接覆盖全部帧组，各区域只看自己的检测相机（D-SB-41）：没选中的相机缺帧、没测成不算检测不完整
+        incomplete: results.iter().any(|r| !r.incomplete_groups.is_empty()),
         frame_count_anomaly: anomalous(part_status) || results.iter().any(|r| anomalous(r.count_status)),
         offset_unjudged: results.iter().any(|r| r.offset_unjudged.is_some()),
         unsegmented: results.iter().any(|r| matches!(r.region.kind, RegionKind::Unsegmented { reason, .. } if reason != UnsegReason::Transition)),
@@ -381,15 +381,40 @@ fn covered<'a>(segments: &'a [PathSegment], region: &Region) -> Vec<&'a PathSegm
     segments.iter().filter(|segment| (first..=last).contains(&segment.index)).collect()
 }
 
+/// 区域参与判定的相机下标（计划相机顺序）。
+fn region_cameras(part: &PartInput, region: &Region, covered: &[&PathSegment]) -> BTreeSet<usize> {
+    let all = || (0..part.cameras.len()).collect();
+    let pick = |segments: &[&PathSegment]| {
+        segments
+            .iter()
+            .flat_map(|segment| crate::plan::segment_cameras(segment, part.cameras))
+            .filter_map(|id| part.cameras.iter().position(|camera| *camera == id))
+            .collect()
+    };
+    match region.kind {
+        RegionKind::Straight { .. } | RegionKind::Corner { .. } => pick(covered),
+        RegionKind::Unsegmented {
+            reason: UnsegReason::Transition,
+            ..
+        } => pick(covered),
+        RegionKind::Unsegmented { .. } => all(),
+    }
+}
+
 fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
     let covered = covered(part.segments, region);
+    let allowed = region_cameras(part, region, &covered);
     let checks = match region.kind {
         RegionKind::Unsegmented { .. } => wider_checks(&covered.iter().map(|segment| &segment.checks).collect::<Vec<_>>()),
         _ => covered[0].checks.clone(),
     };
     let straight = matches!(region.kind, RegionKind::Straight { .. });
-    let in_region: Vec<&FrameMetrics> =
-        part.frames.range((region.first_seq, 0)..=(region.last_seq, usize::MAX)).map(|(_, &m)| m).collect();
+    let in_region: Vec<&FrameMetrics> = part
+        .frames
+        .range((region.first_seq, 0)..=(region.last_seq, usize::MAX))
+        .map(|(_, &m)| m)
+        .filter(|m| allowed.contains(&m.camera))
+        .collect();
     let measured: Vec<&FrameMetrics> = in_region.iter().copied().filter(|m| m.state == FrameState::Measured).collect();
 
     let mut findings: BTreeSet<Finding> = measured.iter().flat_map(|m| judge_frame(m, &checks)).collect();
@@ -442,14 +467,28 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
     };
 
     let cams = part.cameras.len();
+    // 各相机收到的帧数（全部计划相机，供追溯；不参与判定）
     let camera_frames = (0..cams)
-        .map(|c| in_region.iter().filter(|m| m.camera == c && m.state != FrameState::Missing).count() as u32)
+        .map(|c| {
+            (region.first_seq..=region.last_seq)
+                .filter(|&seq| {
+                    part.frames
+                        .get(&(seq, c))
+                        .is_some_and(|m| m.state != FrameState::Missing)
+                })
+                .count() as u32
+        })
         .collect();
-    // 缺帧组：配组标了 incomplete，或某台相机这一组没有测成的帧（缺帧、测量失败、没测、走出走廊）
+    // 缺帧组：区域检测相机里某台这一组没有测成的帧（缺帧、测量失败、没测、走出走廊）；用全部相机时配组标了 incomplete 也算
+    let all_cameras = allowed.len() == cams;
     let incomplete_groups = (region.first_seq..=region.last_seq)
         .filter(|seq| {
-            part.incomplete_seqs.contains(seq)
-                || (0..cams).any(|c| part.frames.get(&(*seq, c)).is_none_or(|m| m.state != FrameState::Measured))
+            (all_cameras && part.incomplete_seqs.contains(seq))
+                || allowed.iter().any(|&c| {
+                    part.frames
+                        .get(&(*seq, c))
+                        .is_none_or(|m| m.state != FrameState::Measured)
+                })
         })
         .collect();
 
@@ -775,6 +814,50 @@ mod tests {
             (&None, None)
         );
         assert!(!result.flags.offset_unjudged && !result.flags.unsegmented);
+    }
+
+    /// D-SB-41：直线 / 弯道区域只用本段检测相机——没选中的相机这一帧断胶、缺帧都不影响结论与检测不完整；
+    /// 过渡区用两侧段检测相机的并集，选中相机的断胶照常判 NG。
+    #[test]
+    fn segment_regions_judge_only_their_cameras_and_transitions_use_the_union() {
+        let mut segments = plan(&[Straight, Corner]);
+        segments[0].cameras = vec![cameras()[0].clone()];
+        segments[1].cameras = vec![cameras()[1].clone()];
+        let transition = RegionKind::Unsegmented {
+            first_segment: 1,
+            last_segment: 2,
+            reason: UnsegReason::Transition,
+        };
+        let regions = [
+            region(RegionKind::Straight { segment: 1 }, 1, 3),
+            region(transition, 4, 5),
+            region(RegionKind::Corner { segment: 2 }, 6, 8),
+        ];
+        for (case, camera, seq, verdict, incomplete) in [
+            ("段 1 没选中的 cam3 断胶", 2, 2, Verdict::Ok, false),
+            ("段 2 没选中的 cam1 缺帧", 0, 7, Verdict::Ok, false),
+            (
+                "过渡区里 cam2（段 2 选中）断胶",
+                1,
+                4,
+                Verdict::NgGap,
+                false,
+            ),
+            ("段 1 选中的 cam1 缺帧", 0, 3, Verdict::Ok, true),
+        ] {
+            let mut metrics = frames(8);
+            if case.contains("缺帧") {
+                metrics.retain(|m| (m.camera, m.seq) != (camera, seq));
+            } else {
+                at(&mut metrics, camera, seq).gap_max_mm = 10.0;
+            }
+            let result = run(&segments, None, &regions, &metrics);
+            assert_eq!(
+                (result.verdict, result.flags.incomplete),
+                (verdict, incomplete),
+                "{case}"
+            );
+        }
     }
 
     /// 决策 D-SB-14：三台相机取最差——任一相机任一帧 NG，所在区域与整件即 NG（不沿用旧模型“一个视图合格即合格”）。

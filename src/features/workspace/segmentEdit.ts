@@ -12,7 +12,7 @@ export function newSegment(index: number, kind: SegmentKind, defaults: KindDefau
   const base = defaults[kind];
   return {
     index, kind, lengthMm: null, expectedFrames: null, tolerance: base.tolerance, calib: null,
-    checks: structuredClone(base.checks), offsetRef: null, inspectRange: null,
+    checks: structuredClone(base.checks), offsetRef: null, inspectRange: null, cameras: [],
   };
 }
 
