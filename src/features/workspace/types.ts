@@ -1,10 +1,11 @@
 import type { CameraImaging, Judgement, Recipe, RecipeDoc, RecipeStage, Verdict } from "../cycle/types";
-import type { BurstJudgement, CalibrationRound, CameraTeaching, CaptureState, PathSegment, WorkspacePlanView } from "../plan/types";
+import type { BurstJudgement, CalibrationRound, CameraTeaching, CaptureState, PathSegment, RoundOrigin, WorkspacePlanView } from "../plan/types";
+import type { PartMode } from "../history/types";
 
 /** 段模型（分段连拍飞拍）的候选工作区类型，定义在 plan/types.ts；这里转出供工作台页面使用。 */
 export type {
   CalibOutcome, CalibrationRound, CalibrationRoundView, CalibrationView, CameraTeachDraft, CameraTeaching, CameraTeachingView, CaptureFailureV2, CaptureRoundV2, CaptureState, MissingFrame,
-  ProgressStepV2, ProgressTargetV2, ProgressV2, SegmentCalibView, StepIdV2, WorkspacePlanView,
+  ProgressStepV2, ProgressTargetV2, ProgressV2, RoundOrigin, SegmentCalibView, StepIdV2, WorkspacePlanView,
 } from "../plan/types";
 
 export interface FrozenImage {
@@ -93,7 +94,25 @@ export interface GrayImage { url: string; width: number; height: number; pixels?
 export interface ImagingSaved { view: WorkspaceView; applyErrors: Record<string, string> }
 
 export interface CaptureCamera { cameraId: string; deviceSession: number; receivedCount: number; imaging?: CameraImaging }
-export interface CaptureSummary { roundId: string; recipeId: string; cameraIds: string[]; plannedCount: number | null; receivedCount: number; state: CaptureState; createdAt: number; error: string | null }
+export interface CaptureSummary { roundId: string; recipeId: string; cameraIds: string[]; plannedCount: number | null; receivedCount: number; state: CaptureState; createdAt: number; error: string | null; origin?: RoundOrigin | null }
+
+/** “从历史选用”的一行：reasons 为空即可导入 */
+export interface HistoryCandidate {
+  recordId: number;
+  cycleId: string | null;
+  ts: number;
+  sn: string;
+  mode: PartMode;
+  groupCount: number;
+  /** 按录制的计划相机顺序 */
+  cameras: { cameraId: string; frames: number }[];
+  /** 原图完整：无缺帧、无 rawDropped、每帧已落盘 */
+  complete: boolean;
+  reasons: string[];
+  importedRound: string | null;
+}
+
+export interface HistoryPick { recordId: number; standard: boolean }
 
 export interface TeachingRegisters {
   version: number;

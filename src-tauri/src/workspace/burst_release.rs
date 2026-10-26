@@ -335,13 +335,43 @@ fn validate_sample(app: &AppHandle, w: &Workspace, recipe: &Recipe, measurer: Re
     let history_id = sample.history_id.ok_or("样本来源未指定")?;
     let store = app.state::<Store>();
     let detail = store.detail(history_id)?;
-    if detail.summary.source == store::RecordSource::OfflineCandidate { return Err("候选调试记录不能作为独立发布验证样本".into()); }
-    let burst = detail.burst.as_ref().ok_or("旧拍照点记录不能作为段配方的验证样本")?;
-    let original = detail.summary.recipe_revision.as_deref().map(|h| store.recipe_snapshot(h)).transpose()?.flatten().ok_or("原始配方快照缺失")?;
-    if !original.is_burst() || sample_tag(original.product_code, &original.plan_cameras(), &original.path_segments) != doc_sample_tag(&w.doc) {
+    if detail.summary.source == store::RecordSource::OfflineCandidate {
+        return Err("候选调试记录不能作为独立发布验证样本".into());
+    }
+    let origins =
+        history_import::round_origins(app.state::<CycleHost>().camera.recipe_capture(), &w.doc.id)?;
+    let devices = history_import::recorded_devices(app, &detail.recording);
+    history_import::check_history_sample(
+        w,
+        detail.summary.cycle_id.as_deref(),
+        &origins,
+        devices.as_ref(),
+        current,
+    )?;
+    let burst = detail
+        .burst
+        .as_ref()
+        .ok_or("旧拍照点记录不能作为段配方的验证样本")?;
+    let original = detail
+        .summary
+        .recipe_revision
+        .as_deref()
+        .map(|h| store.recipe_snapshot(h))
+        .transpose()?
+        .flatten()
+        .ok_or("原始配方快照缺失")?;
+    if !original.is_burst()
+        || sample_tag(
+            original.product_code,
+            &original.plan_cameras(),
+            &original.path_segments,
+        ) != doc_sample_tag(&w.doc)
+    {
         return Err("历史样本的段序列、计划相机或产品代码与候选不同".into());
     }
-    if !burst_history::raw_complete(&detail, burst) { return Err("历史样本的原图不完整，不能整件复测".into()); }
+    if !burst_history::raw_complete(&detail, burst) {
+        return Err("历史样本的原图不完整，不能整件复测".into());
+    }
     let measurer = measurer.map_err(|e| e.clone())?;
     let metrics = remeasure(recipe, &burst.frames, |frame, segment| {
         measurer.measure(

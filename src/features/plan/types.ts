@@ -437,9 +437,12 @@ export interface CaptureAlarm {
   seq: number;
 }
 
-/** 新示教采集轮次（D1）：按帧号配组，不核对计数；帧元数据在 frames.jsonl，这里只给统计。 */
+/** 历史件导入的轮次的来源（round.json 3，代替示教握手编号）；standard = 导入时操作员确认是标准件，加入标定按标准件轮次 */
+export interface RoundOrigin { kind: "history"; cycleId: string; recordId: number; standard: boolean }
+
+/** 段配方采集轮次（D1）：按帧号配组，不核对计数；帧元数据在 frames.jsonl，这里只给统计。format 3 加 origin。 */
 export interface CaptureRoundV2 {
-  format: 2;
+  format: 2 | 3;
   roundId: string;
   recipeId: string;
   cameras: CaptureCamera[];
@@ -462,6 +465,8 @@ export interface CaptureRoundV2 {
   error: string | null;
   failure: CaptureFailureV2 | null;
   simulated: boolean;
+  /** 历史件导入的轮次；示教实拍为空 */
+  origin?: RoundOrigin | null;
 }
 
 export interface CalibrationRoundView {

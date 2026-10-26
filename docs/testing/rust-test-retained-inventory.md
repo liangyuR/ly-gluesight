@@ -1,6 +1,6 @@
 # Rust 保留测试清单
 
-数量（2026-10-26 以 `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib -- --list` 核对）：**默认 187 项，没有手动忽略的用例**。其中 136 项在分组表中逐项列出源码、测试名称及保护规则，51 项列在末节“尚未逐项登记”。测试数量只在本清单维护，其他文档不写数字。
+数量（2026-10-26 以 `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib -- --list` 核对）：**默认 190 项，没有手动忽略的用例**。其中 139 项在分组表中逐项列出源码、测试名称及保护规则，51 项列在末节“尚未逐项登记”。测试数量只在本清单维护，其他文档不写数字。
 
 默认集合包含少量真实 S7 TCP 回环、SQLite、图片写盘与审计恢复集成测试，不能把 `cargo test --lib` 全部理解为纯单元测试。默认运行不需要现场相机、PLC、现场样本或 lyFlow DLL；S7 用例需要本机回环连接权限。不通过 `ignore` 隐藏删除项，也不把不同业务用例塞进一个大循环。运行方法与环境要求见[测试说明](TESTING.md)。
 
@@ -10,11 +10,11 @@
 | --- | ---: | ---: |
 | 采集、帧组、计划与判定 | 44 | 0 |
 | 生产周期、PLC与调度 | 42 | 0 |
-| 工作区、发布与视觉 | 31 | 0 |
+| 工作区、发布与视觉 | 34 | 0 |
 | 系统配置与资料安全 | 11 | 0 |
 | 持久化、录制与离线 | 8 | 0 |
 | 尚未逐项登记 | 51 | 0 |
-| 合计 | 187 | 0 |
+| 合计 | 190 | 0 |
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
@@ -169,6 +169,9 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
 | 108 | [applog.rs](../../src-tauri/src/applog.rs) | `old_lines_without_time_or_code_stay_queryable_and_new_lines_keep_ts_level_first` | 日志 schema 2 新增字段后旧行仍可查询，新行仍以 ts、level 开头，快速筛选与分段裁剪不失效。 |
 | 109 | [applog/throttle.rs](../../src-tauri/src/applog/throttle.rs) | `repeats_within_window_write_first_event_then_one_summary_with_full_count` | 高频重复事件窗口内只照写首次并在到期时输出一条摘要，计数与样本范围完整，不丢计数也不退回逐帧刷屏。 |
 | 110 | [diagnostics.rs](../../src-tauri/src/diagnostics.rs) | `plc_logs_fetched_newest_first_are_written_oldest_first_with_matching_t` | 诊断包 PLC 日志按时间正序写出且每行本地时间 t 与 ts 同一时刻，可与运行日志对齐。 |
+| 110a | [workspace/history_import_tests.rs](../../src-tauri/src/workspace/history_import_tests.rs) | `history_part_incomplete_different_or_foreign_is_not_importable` | 在线投运 5.2 可用条件（参数化）：缺帧、录制队满、相机配置变过、提前结束、别的型号、少相机、旧录制、离线、原图已清理、已导入的历史件都不能导入为采集轮次（2026-10-26 新增） |
+| 110b | [workspace/history_import_tests.rs](../../src-tauri/src/workspace/history_import_tests.rs) | `imported_round_frames_stay_readable_after_history_recording_is_deleted` | 真实 Recorder 录制件按硬链接物化成 round.json 3 轮次，删除历史录制后轮次原图逐帧仍可读，重启后仍认得已导入的件（2026-10-26 新增） |
+| 110c | [workspace/history_import_tests.rs](../../src-tauri/src/workspace/history_import_tests.rs) | `imported_part_used_for_teaching_or_calibration_is_not_a_validation_sample` | 在线投运 5.3：已导入并用于走廊示教或多轮标定的历史件、录制时相机配置与当前不同的件不能作独立验证样本（2026-10-26 新增） |
 
 ## 持久化、录制与离线
 

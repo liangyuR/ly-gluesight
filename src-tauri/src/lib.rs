@@ -303,6 +303,8 @@ pub fn run() {
             workspace::workspace_capture_review_set_template,
             workspace::workspace_capture_review_apply_template,
             workspace::workspace_capture_review_exclude,
+            workspace::workspace_history_candidates,
+            workspace::workspace_history_import,
             workspace::workspace_confirm_tolerance,
             workspace::workspace_record_frame_image,
         ])

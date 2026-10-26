@@ -261,6 +261,11 @@ pub const OP_CAPTURE_STOP: Event = Event {
     ev: "操作：取消整圈采集",
     level: Level::Info,
 };
+pub const OP_CAPTURE_IMPORT: Event = Event {
+    code: "op.capture.import",
+    ev: "操作：历史件导入为采集轮次",
+    level: Level::Info,
+};
 pub const OP_CAMERA: Event = Event {
     code: "op.camera",
     ev: "操作：相机",
@@ -339,6 +344,7 @@ const ALL: &[&Event] = &[
     &OP_RESET,
     &OP_CAPTURE_START,
     &OP_CAPTURE_STOP,
+    &OP_CAPTURE_IMPORT,
     &OP_CAMERA,
     &OP_PLC,
     &OP_SITE,

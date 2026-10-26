@@ -8,6 +8,7 @@
 //!   各相机帧数只用于丢帧告警（[`loss_alarms`]）；超时只有等待开始超时与写盘超时；
 //! - 持久化：`round.json` 只在状态变化时原子重写；每写完一帧向 `frames.jsonl` 追加一行；图像为无压缩 PGM，
 //!   一帧一个文件 `{相机}/{seq:06}.pgm`。重启时进行中的轮次按 `frames.jsonl` 恢复统计并判中断。
+//! - 历史件导入（[`history`]）：维护模式或生产录制的完整件按同一目录结构物化成已完成的轮次，原图为硬链接，`origin` 记来源。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -16,8 +17,9 @@ use super::*;
 use crate::frame_group::{loss_alarms, Grouper, LossAlarm, Offer};
 use crate::judge::fault;
 
-/// 新轮次记录的格式号（前端按它区分新旧轮次）。
-pub const FORMAT: u8 = 2;
+/// 新轮次记录的格式号。3 加 `origin`（历史件导入）；2 没有 `origin`，照常读取。
+pub const FORMAT: u8 = 3;
+const FORMAT_V2: u8 = 2;
 /// 每台相机写盘队列里最多排队的帧数；满时该帧记缺帧并告警，不判失败（D-SB-8）。图像内存由 FramePool 字节预算封顶。
 pub const MAX_FRAMES_PER_CAMERA: u32 = 8192;
 /// 一轮的帧组序号上限：ΣN_exp 不超过 PLC Int；帧号比基线跳得更远视为计数异常，防止异常帧号生成海量帧组。
@@ -77,6 +79,36 @@ impl CaptureFailureV2 {
     }
 }
 
+/// 轮次的来源：示教握手实拍的轮次为空；历史件导入的轮次记下原记录，代替示教握手编号。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum RoundOrigin {
+    History {
+        cycle_id: String,
+        record_id: i64,
+        /// 操作员导入时确认这一件是标准件：加入标定时按标准件轮次
+        #[serde(default)]
+        standard: bool,
+    },
+}
+
+impl RoundOrigin {
+    pub fn cycle_id(&self) -> &str {
+        let Self::History { cycle_id, .. } = self;
+        cycle_id
+    }
+
+    pub fn standard(&self) -> bool {
+        let Self::History { standard, .. } = self;
+        *standard
+    }
+}
+
 /// 段配方的示教采集轮次。帧元数据在 `frames.jsonl`，这里只有统计（字段与 `src/features/plan/types.ts` 对应）。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -111,6 +143,8 @@ pub struct CaptureRoundV2 {
     pub error: Option<String>,
     pub failure: Option<CaptureFailureV2>,
     pub simulated: bool,
+    #[serde(default)]
+    pub origin: Option<RoundOrigin>,
 }
 
 impl CaptureRoundV2 {
@@ -144,9 +178,12 @@ fn frame_rel_path(camera_id: &str, seq: u64) -> String {
     format!("{camera_id}/{}", frame_file(seq))
 }
 
-/// round.json 文本是不是新轮次（format 2）。
+/// round.json 文本是不是段配方轮次（format 2 或 3）。
 pub(super) fn is_v2(text: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(text).ok().and_then(|v| v.get("format").and_then(serde_json::Value::as_u64)) == Some(FORMAT as u64)
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("format").and_then(serde_json::Value::as_u64))
+        .is_some_and(|format| format == FORMAT as u64 || format == FORMAT_V2 as u64)
 }
 
 /// 由帧组数与各相机已写盘的 seq 得出的统计。
@@ -282,6 +319,20 @@ impl RecipeCaptureHost {
         self.burst.lock().unwrap().as_ref().map(|r| r.round.round_id.clone())
     }
 
+    /// 新建一轮的目录 `capture-{创建时间}-{序号}`。
+    fn new_round_dir(&self) -> Result<(String, i64), String> {
+        let created_at = ly_plc::now_ms();
+        let mut suffix = 0u32;
+        loop {
+            let id = format!("capture-{created_at}-{suffix}");
+            match std::fs::create_dir(self.root.join(&id)) {
+                Ok(()) => return Ok((id, created_at)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => suffix += 1,
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+    }
+
     fn save_burst(&self, round: &CaptureRoundV2) -> Result<(), String> {
         crate::fsio::write_atomic(&self.root.join(&round.round_id).join("round.json"), &serde_json::to_string_pretty(round).map_err(|e| e.to_string())?)
     }
@@ -304,16 +355,7 @@ impl RecipeCaptureHost {
         if guard.as_ref().is_some_and(|r| r.round.state.active()) {
             return Err(Rejected::Busy);
         }
-        let created_at = ly_plc::now_ms();
-        let mut suffix = 0u32;
-        let round_id = loop {
-            let id = format!("capture-{created_at}-{suffix}");
-            match std::fs::create_dir(self.root.join(&id)) {
-                Ok(()) => break id,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => suffix += 1,
-                Err(e) => return Err(Rejected::Io(e.to_string())),
-            }
-        };
+        let (round_id, created_at) = self.new_round_dir().map_err(Rejected::Io)?;
         let dir = self.root.join(&round_id);
         for d in &devices {
             std::fs::create_dir(dir.join(&d.camera_id)).map_err(|e| Rejected::Io(e.to_string()))?;
@@ -363,6 +405,7 @@ impl RecipeCaptureHost {
             error: None,
             failure: None,
             simulated,
+            origin: None,
         };
         self.save_burst(&round).map_err(Rejected::Io)?;
         *self.journal.lock().unwrap() = Some(Journal { round_id, file });
@@ -701,19 +744,49 @@ impl RecipeCaptureHost {
 fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[FrameLine]>) -> Result<(), String> {
     let cameras = &round.cameras;
     let n = cameras.len();
-    if round.format != FORMAT || round.round_id != expected_id || round.recipe_id.is_empty() || n == 0 || n > MAX_CAMERAS
-        || cameras.iter().enumerate().any(|(i, c)| !crate::recipe::valid_camera_id(&c.camera_id) || c.device_session == 0
-            || cameras[..i].iter().any(|o| o.camera_id == c.camera_id)) {
+    let format_ok = round.format == FORMAT || (round.format == FORMAT_V2 && round.origin.is_none());
+    if !format_ok
+        || round.round_id != expected_id
+        || round.recipe_id.is_empty()
+        || n == 0
+        || n > MAX_CAMERAS
+        || cameras.iter().enumerate().any(|(i, c)| {
+            !crate::recipe::valid_camera_id(&c.camera_id)
+                || c.device_session == 0
+                || cameras[..i].iter().any(|o| o.camera_id == c.camera_id)
+        })
+    {
         return Err("采集记录身份或相机无效".into());
     }
-    let missing_ok = round.missing_frames.windows(2).all(|w| (w[0].seq, w[0].camera) < (w[1].seq, w[1].camera))
-        && round.missing_frames.iter().all(|m| m.camera < n && (1..=round.group_count).contains(&m.seq));
+    let missing_ok = round
+        .missing_frames
+        .windows(2)
+        .all(|w| (w[0].seq, w[0].camera) < (w[1].seq, w[1].camera))
+        && round
+            .missing_frames
+            .iter()
+            .all(|m| m.camera < n && (1..=round.group_count).contains(&m.seq));
     let mut incomplete: Vec<u64> = round.missing_frames.iter().map(|m| m.seq).collect();
     incomplete.dedup();
-    if round.group_count > MAX_SEQ || round.camera_frames.len() != n || !missing_ok || incomplete != round.incomplete_groups
-        || cameras.iter().zip(&round.camera_frames).any(|(c, &frames)| c.received_count != frames)
-        || round.camera_frames.iter().enumerate().any(|(i, &frames)| frames as u64 + round.missing_frames.iter().filter(|m| m.camera == i).count() as u64 != round.group_count)
-        || round.loss_alarms != loss_alarms(&round.camera_frames) {
+    if round.group_count > MAX_SEQ
+        || round.camera_frames.len() != n
+        || !missing_ok
+        || incomplete != round.incomplete_groups
+        || cameras
+            .iter()
+            .zip(&round.camera_frames)
+            .any(|(c, &frames)| c.received_count != frames)
+        || round.camera_frames.iter().enumerate().any(|(i, &frames)| {
+            frames as u64
+                + round
+                    .missing_frames
+                    .iter()
+                    .filter(|m| m.camera == i)
+                    .count() as u64
+                != round.group_count
+        })
+        || round.loss_alarms != loss_alarms(&round.camera_frames)
+    {
         return Err("采集记录的帧组、缺帧或丢帧告警统计不自洽".into());
     }
     let teaching = round
@@ -725,7 +798,21 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
     if round.teaching_round_id.is_some() && !teaching {
         return Err("示教 V1 轮次编号或元数据不一致".into());
     }
+    let history = round.origin.is_some();
+    if history
+        && (round.teaching_round_id.is_some()
+            || round.plc_shot_count.is_some()
+            || round.plc_plan_version.is_some()
+            || round.state != CaptureState::Complete
+            || round
+                .origin
+                .as_ref()
+                .is_some_and(|o| !history::valid_cycle_id(o.cycle_id())))
+    {
+        return Err("历史件导入的轮次来源或状态无效".into());
+    }
     let started = teaching
+        || history
         || (round.plc_plan_version.is_some_and(|v| v > 0) && round.plc_shot_count.is_some());
     let terminal_ok = match round.state {
         CaptureState::WaitingStart => {
@@ -794,6 +881,10 @@ pub(super) fn restore(path: &Path, mut round: CaptureRoundV2) -> Result<CaptureR
 pub(super) fn restored_run(round: CaptureRoundV2) -> BurstRun {
     BurstRun::restored(round)
 }
+
+mod history;
+
+pub use history::{HistoryFrame, HistoryRound};
 
 #[cfg(test)]
 mod tests;

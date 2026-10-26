@@ -1244,6 +1244,7 @@ fn add_round(app: AppHandle, id: String, revision: u64, round_id: String, standa
             .map(|m| m.metrics)
         });
     let outcome = segment_round(&w.doc.segments, cameras.len(), round.group_count, &metrics);
+    let standard = standard || round.origin.as_ref().is_some_and(|o| o.standard());
     let entry = calibration_round(&w.doc, &round, standard, &metrics);
     let mut items = host.items.lock().unwrap();
     let current = items.get_mut(&id).ok_or("候选配置不存在")?;

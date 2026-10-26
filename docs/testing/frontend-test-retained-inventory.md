@@ -1,16 +1,16 @@
 # 前端保留测试清单
 
-数量（2026-10-26 以 `pnpm vitest run --reporter=dot` 核对）：**145 项、37 个文件**。数量按 Vitest 实际执行和参数化展开计，逐项统计使用 `pnpm exec vitest list --no-static-parse --json`；默认静态列表不展开参数化用例，不作为执行数量。其中 113 项在分组表中逐项列出保护规则，32 项列在末节“尚未逐项登记”。测试数量只在本清单维护，其他文档不写数字。
+数量（2026-10-26 以 `pnpm vitest run --reporter=dot` 核对）：**146 项、37 个文件**。数量按 Vitest 实际执行和参数化展开计，逐项统计使用 `pnpm exec vitest list --no-static-parse --json`；默认静态列表不展开参数化用例，不作为执行数量。其中 114 项在分组表中逐项列出保护规则，32 项列在末节“尚未逐项登记”。测试数量只在本清单维护，其他文档不写数字。
 
 测试通过真实页面、Provider 或公开业务函数保护规则，Tauri/设备/文件接口在边界模拟；不据此证明真实相机、PLC、lyFlow 算法或后端落盘。不同业务规则不塞入单个循环来缩小数字，也不新增 skip、todo 或排除配置。运行方法见[测试说明](TESTING.md)。
 
 | 分组 | 逐项登记 |
 | --- | ---: |
-| 配方、采集、示教与发布 | 55 |
+| 配方、采集、示教与发布 | 56 |
 | 生产周期、就绪与历史 | 32 |
 | 相机、标定、PLC与配置 | 26 |
 | 尚未逐项登记 | 32 |
-| 合计 | 145 |
+| 合计 | 146 |
 
 ## 逐项保护规则
 
@@ -30,6 +30,7 @@
 | 10 | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `本轮已作为独立验证样本入库 → 不能再用于走廊示教或标定` | 已入独立验证样本库的轮次不能反向用于示教或标定，保持样本独立性 |
 | 11 | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `PLC 未连接 →开始整圈采集禁用并给出 PLC 通讯入口` | PLC断开时禁止开始依赖开始/结束握手的整圈采集，并提供恢复入口 |
 | 12 | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `Software 相机参与整圈采集 → 阻止启动并要求切换 Line0` | Software单帧调试相机不得参与Line0高电平门控整圈采集 |
+| 12a | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `从历史选用 → 不可用件不能勾选并列出原因，勾选可用件标为标准件后批量导入并选中新轮次` | 在线投运 5.2：不可用的历史件不能勾选导入，标准件标记随导入提交，导入后选中新轮次供示教与标定（2026-10-26 新增） |
 | 13 | [recipe-create-flow.test.tsx](../../tests/recipe-create-flow.test.tsx) | `创建配方流程 > 在配方库填写新候选，选中创建结果并继续进入该候选的整圈采集` | 通过真实WorkspaceProvider创建当前段配方后，选中同一候选并进入其采集流程，用户填写字段不能丢失 |
 | 14 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `分段标定工作台的边界编辑`（参数化 3 例：插入、删除、末帧组之后不插入） | 插入边界时所在段一分为二且类型相同，删除时与后一段合并、保留前一段类型，边界个数始终等于段数 − 1（D-SB-44，2026-10-26 取代 segment-edit.test.ts） |
 | 15 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `工作台保存的段列表 > 段的类型序列不变 → 原样保存…` | 只改边界时段参数、N_exp、标定与 x_ref 原样保留 |
