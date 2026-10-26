@@ -117,8 +117,8 @@
 | 87 | [flyshot-calibration.test.tsx](../../tests/flyshot-calibration.test.tsx) | `有图像尺寸和当量 → 视野取所选运动方向的像素数乘当量` | 运动方向切换后按正确图像轴和像素当量重算物理视野。 |
 | 88 | [flyshot-calibration.test.tsx](../../tests/flyshot-calibration.test.tsx) | `手填像素当量后配方曝光更新 → 保留手填当量并重新核算` | 来源参数刷新不能覆盖用户手填当量，曝光更新仍须参与实时核算。 |
 | 89 | [flyshot-calibration.test.tsx](../../tests/flyshot-calibration.test.tsx) | `单视角相机完成标定 → 按冻结图像更新像素当量与飞拍视野，相机条改为已标定并计入标定数` | 当前单视角相机拍照与标定绑定同一冻结图像，标定结果更新飞拍模拟当量与物理视野，并计入已标定相机。 |
-| 90 | [image-viewer.test.tsx](../../tests/image-viewer.test.tsx) | `图像查看与加载 > 搜索带沿局部法向显示半宽并裁剪到原图，独立隐藏不影响测量结果` | 图像搜索带沿局部法向并裁剪到真实原图边界，切换可见性不隐藏测量结果。 |
-| 91 | [image-viewer.test.tsx](../../tests/image-viewer.test.tsx) | `图像查看与加载 > 从候选图切到历史原图后，迟到的旧图不能覆盖当前来源` | 来源切换后丢弃迟到的旧图响应，避免历史记录显示另一原图。 |
+| 90 | [image-viewer.test.tsx](../../tests/image-viewer.test.tsx) | `图像查看与加载 > 搜索带沿局部法向显示半宽并裁剪到原图，与中线叠加各自开关` | 图像搜索带沿局部法向并裁剪到真实原图边界，隐藏搜索带不影响中线叠加。 |
+| 91 | [image-viewer.test.tsx](../../tests/image-viewer.test.tsx) | `图像查看与加载 > 切换到另一张示教帧后，迟到的上一张图不能覆盖当前图` | 切换图像后丢弃迟到的旧图响应，避免显示另一帧的原图。 |
 | 92 | [image-viewer.test.tsx](../../tests/image-viewer.test.tsx) | `图像查看与加载 > 刷选固定按下时图像坐标 → 不修改中线，中键和取消后的移动不继续刷选` | 走廊刷选固定起笔坐标变换且裁剪到合法像素范围，平移/取消不得修改示教。 |
 | 93 | [plc-handshake-points.test.tsx](../../tests/plc-handshake-points.test.tsx) | `编辑握手点位 → 地址等模板字段不可改，只有描述和记录变化写回草稿` | 编辑握手点只允许修改说明与记录选项，不能破坏固定协议地址/名称。 |
 | 94 | [plc-operation-lock.test.tsx](../../tests/plc-operation-lock.test.tsx) | `PLC 操作锁 > 初次状态未知时锁定，空闲快照确认后才开放` | 生产状态未知时默认禁止PLC配置与手动写入，确认空闲后才开放。 |

@@ -11,9 +11,9 @@
 | S7 专项 | `plc_session` 与 `offline` 的 S7 线协议用例（真实生产驱动 + 进程内 S7Server），已进默认 `cargo test` |
 | 桌面端到端 | 仅合成图段配方生产落盘：flow 实例内建站、标定、发布、生产、SQLite、原图与历史读回，需要 lyFlow |
 | 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本 |
-| 手动专项 | 长稳测试、算法评测（需样本集与 lyFlow 运行库，不进 CI）；吞吐探针 `throughput_probe`（见“3 × 25 Hz 吞吐门槛”） |
+| 手动专项 | 长稳测试（需样本集与 lyFlow 运行库，不进 CI）；吞吐探针 `throughput_probe`（见“3 × 25 Hz 吞吐门槛”） |
 
-唯一的 `#[ignore]` 是 `vision::eval::algorithm_eval`，需 lyFlow 与样本集、手动执行。默认回归不加载 lyFlow DLL。保留的主流程可能经过发布和判定，但不据此声明已覆盖被删除测试组的全部规则。
+默认回归没有 `#[ignore]` 用例，也不加载 lyFlow DLL。保留的主流程可能经过发布和判定，但不据此声明已覆盖被删除测试组的全部规则。
 
 ## 运行
 
@@ -35,7 +35,6 @@
 | `node --test tests/packaging/windows-workflow.test.mjs` | Windows 打包工作流门禁：版本与安装方式校验、发布标签须在 main 上、版本设置、SDK 干净环境检查、视觉检查先于打包、依赖缓存标识与发布清单 |
 | `pnpm test:soak:throughput`（即 `Test-Soak.ps1 -Stages throughput`） | 3 × 25 Hz 吞吐门槛，判定口径见下表后说明 |
 | `pnpm test:soak`（即 `pwsh -NoProfile -File scripts/Test-Soak.ps1`） | 长稳测试（隔离 soak 实例）。没有必填参数，但样本集与 lyFlow 运行库必须经 `-SampleSet` / `GLUESIGHT_SAMPLE_SET`、`-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` 提供（不自动恢复运行库，缺失时退出码 3），例如 `pnpm test:soak -SampleSet <样本集目录> -LyFlowRuntime <运行库目录> -Parts 1000`；阶段、参数与退出码见[长稳报告](soak-report.md) |
-| `pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1` | 算法评测（忽略的 cargo 评测 `vision::eval::algorithm_eval`，需样本集与 `lyflow_core.dll`），参数见脚本 |
 | `pwsh -NoProfile -File scripts/Test-DevStartup.ps1` | Windows 旧终端在设置/清除本地运行库后启动，子进程读取最新保存值，参数与退出码保持不变 |
 
 单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`。默认测试不生成覆盖率报告。统计前端实际执行数量（参数化用例展开）使用 `pnpm exec vitest list --no-static-parse --json`；默认静态 `vitest list` 不展开参数化用例。

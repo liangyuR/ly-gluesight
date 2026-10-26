@@ -38,7 +38,7 @@
 | `KV` / `dl.kv` / `kv2` 键值网格 | 没有对应组件 |
 | 判定卡（`InspectPage` 内的 `VerdictCard`，`.fly-verdict` / `.qs-verdict` 标记） | 见缺口“VerdictCard”：局部超差大字、SN 与 PLC 码头部等与 ui-shell §4 冲突 |
 | 今日统计（`.qs-stats`） | `MeasurementReading` 面向测量值，用于计数会重复标签、0 件 NG 也标红 |
-| 逐拍照点格 `ShotTiles`、工件总览 `WorkpieceOverview`、`UnrolledCurve`、`GrayViewer`、`StepChart` | 业务可视化，没有对应组件；`CameraThumbnail` 的待测 / 跳过状态会用文字替换预览，而这里待测时也要显示示教中线 |
+| `GrayViewer`、`StepChart` | 业务可视化，没有对应组件 |
 | 相机总览实时 canvas 预览、新鲜度标签、计数格 | `CameraThumbnail` 只接受 `src` 或只读 `preview`；`MeasurementReading` 不覆盖空格千分位和文字值 |
 | 上下文帮助 `ContextHelp` | `Tooltip` 不支持点击后固定展开，`Popover` 不能悬停 / 聚焦打开且角色是 dialog |
 | 握手信号灯 `SignalLamps` 与顶栏阶段徽标（`.lamp` / `.qs-badge`） | `StatusBadge` 没有中性色调，无法表达灯未亮或空闲 |

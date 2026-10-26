@@ -86,5 +86,4 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | [architecture/](architecture) | [配方创建流程](architecture/recipe-creation-workflow.md)、[在线投运方案](architecture/online-commissioning.md)、[项目设计](architecture/project.md)、[存储布局](architecture/storage-layout.md)、[lyFlow 依赖](architecture/lyflow-dependency.md)、[运行日志](architecture/agent-logging.md)与[事件编码表](architecture/agent-logging-codes.md) |
 | [decisions/](decisions/README.md) | 现行决策：取舍、回退方式与需要用户确认的事项 |
 | [testing/](testing/TESTING.md) | 测试运行与复现、保留测试清单、长稳报告 |
-| [discussions/](discussions/fixture-position/final.md) | 特征定位定稿（只服务仍在代码里的旧模型评测与工作台接线） |
 | [deployment/](deployment/PACKAGING.md) | Windows 打包与运行库部署 |

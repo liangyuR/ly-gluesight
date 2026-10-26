@@ -24,26 +24,11 @@
 
 任一项失败都不写缓存。
 
-`requiredOperators` 是必需算子的唯一来源：打包脚本按它生成 `runtime/manifest.json` 的算子清单并做上面的校验；`src-tauri/build.rs` 在编译时把它带进程序（`GLUESIGHT_REQUIRED_OPERATORS`），加载核心库时 `check_operators` 按同一份清单核对。测量图里出现的算子都必须在清单里（`vision::tests` 有对应测试）。
+`requiredOperators` 是必需算子的唯一来源：打包脚本按它生成 `runtime/manifest.json` 的算子清单并做上面的校验；`src-tauri/build.rs` 在编译时把它带进程序（`GLUESIGHT_REQUIRED_OPERATORS`），加载核心库时 `check_operators` 按同一份清单核对。测量图与标定图里出现的算子都必须在清单里。
 
-## locate 能力检查
-
-段配方的每帧走廊测量只用 `glue.taught_path` 与 `glue.bead_width`。`glue.locate`（特征定位，[定稿](../discussions/fixture-position/final.md)）只服务旧拍照点配方的遗留代码，但仍在 `requiredOperators` 里，打包按下面的规则检查。
-
-特征定位的模板带 4 px 外圈，需要支持参数 `templatePad`、`maxPeakRatio` 与输出 `pose` 的 `glue.locate`（lyFlow 1.1.5 起）。`requiredOperators` 只检查算子存在，因此：
-
-- 加载核心库时另算一次 locate 能力（`Engine.locate`），不支持不妨碍加载，没有特征定位的配方照常测量；
-- 含特征定位的拍照点测量前、候选试运行建立时检查它，不支持时报“当前 lyFlow 运行库的 glue.locate 不支持带外圈模板”；
-- 发布前（`freeze_bundle`）与生产加载、重现（`Prepared::load`）用 `vision::require_locate` 拒绝含特征定位的配方，没有特征定位的配方照常发布、加载；
-- 解析位姿时核对 `templateSize` 等于配方示教框，把带外圈的整个文件当模板（报 w + 8）的旧实现直接判输出契约错误；缺 `angleObservable` 同样判错。
+段配方的每帧走廊测量用 `glue.taught_path` 与 `glue.bead_width`，标定用 `io.load_image`、`image.board_calib` 与 `image.load_calib`。
 
 联合开发 lyFlow 未发布的改动时用本地构建：`GLUESIGHT_LYFLOW_RUNTIME` 指向本地 `build/core/bin`（只在调试构建生效，跳过 `lyflow-runtime.json` 系列核对）；真引擎测试用 `LYFLOW_CORE_DLL` 指向其中的 `lyflow_core.dll`。
-
-打包自检里的 locate 冒烟：
-
-- 应用自检（`--check-packaged-runtime`）报告 `lyflow.locate`：运行库不支持带外圈模板时 `status = unsupported`（写明“含特征定位的配方不能发布，不能在生产加载”），不算失败；支持时在合成图上走产品的 `measure_shot` 路径冒烟（示教图位姿被采用、偏移 ≈ 0，整图平移 (+6, +4) 后偏移 ≈ (6, 4)、胶偏不变），不满足即自检失败；
-- `Test-PackagedRuntime.ps1` 从 `lyflow_manifest_json` 读出 `glue.locate` 的 `templatePad`、`maxPeakRatio` 参数与 `pose` 输出，写进报告 `lyflow.locate`；
-- 放不放行由 `packaging/runtime.json` 的 `lyflow.locateSmoke` 决定（只给打包脚本读，不进 `build.rs`）：`optional` 时运行库不支持只警告，`required` 时失败；不写按 `required`。现为 `required`：打包用的运行库必须能跑带外圈模板的定位冒烟。
 
 ## 缓存
 

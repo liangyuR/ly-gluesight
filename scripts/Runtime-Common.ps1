@@ -17,17 +17,8 @@ function Get-RuntimeField($Object, [string]$Name) {
 function Assert-LyFlowRuntimeConfig($Config) {
     $lyflow = Get-RuntimeField $Config 'lyflow'
     if ($lyflow -isnot [Management.Automation.PSCustomObject]) { throw 'packaging/runtime.json 缺少 lyflow 配置。' }
-    $smoke = Get-RuntimeField $lyflow 'locateSmoke'
-    if ($null -ne $smoke -and ($smoke -isnot [string] -or $smoke -cnotin @('optional', 'required'))) { throw "lyFlow 定位冒烟开关 locateSmoke 只能是 optional 或 required：$smoke" }
     if ($lyflow.repository -isnot [string] -or $lyflow.repository -cnotmatch '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$') { throw "lyFlow 仓库必须写成 owner/name：$($lyflow.repository)" }
     if ($lyflow.series -isnot [string] -or $lyflow.series -cnotmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw "lyFlow 系列必须写成 主.次：$($lyflow.series)" }
-}
-
-# 运行库不支持带外圈模板（glue.locate templatePad，lyFlow#32）时怎么办：optional 只警告（已发布 1.1.4 打无特征定位的包），
-# required 直接失败（L1 发布、运行库升到 deps v4 后改成 required）。没写时按 required。
-function Get-LocateSmokePolicy($Config) {
-    $smoke = Get-RuntimeField (Get-RuntimeField $Config 'lyflow') 'locateSmoke'
-    if ($null -eq $smoke) { 'required' } else { $smoke }
 }
 
 function Test-LyFlowSeriesVersion($Version, [string]$Series) {
