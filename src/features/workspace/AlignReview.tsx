@@ -99,7 +99,7 @@ export default function AlignReview({ plan, locked }: { plan: WorkspacePlanView;
     setChecked(list => list.map((item, i) => (i === at ? true : item)));
     setRow(Math.min(cuts.length - 1, at + 1));
   };
-  const allChecked = checked.length > 0 && checked.every(Boolean);
+  const allChecked = checked.every(Boolean);
   const blocked = !ready || !allChecked || busy || frozen || !!locked || !doc || !data;
   const save = async () => {
     if (!doc || !data) return;

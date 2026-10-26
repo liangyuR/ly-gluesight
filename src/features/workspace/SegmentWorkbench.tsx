@@ -147,11 +147,19 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改分段。</Notice>}
     {!ready && !loadError && !thumbs.error && <p className="muted">正在读取缩略图…</p>}
     {draft && ready && <div className="swb-body" onKeyDown={onKey}>
-      <div className="swb-summary" role="status" aria-label="分段草稿">
-        <span>{groupCount} 个帧组 · {segmentSpans.length} 段 · 边界 {draft.cuts.length ? draft.cuts.join(" / ") : "无"}</span>
-        {saved && <Badge tone={saved.status === "confirmed" ? "ok" : "warn"}>{reviewLabel[saved.status]}</Badge>}
-        {isTemplate && !dirty && <Badge tone="ok">分段模板</Badge>}
-        {restructured && <Badge tone="warn">段结构有改动</Badge>}
+      {/* 操作放在时间轴上方：下方原图预览加载时会改变高度，按钮放在下面会被挤动而点错 */}
+      <div className="swb-toolbar">
+        <div className="swb-summary" role="status" aria-label="分段草稿">
+          <span>{groupCount} 个帧组 · {segmentSpans.length} 段 · 边界 {draft.cuts.length ? draft.cuts.join(" / ") : "无"}</span>
+          {saved && <Badge tone={saved.status === "confirmed" ? "ok" : "warn"}>{reviewLabel[saved.status]}</Badge>}
+          {isTemplate && !dirty && <Badge tone="ok">分段模板</Badge>}
+          {restructured && <Badge tone="warn">段结构有改动</Badge>}
+        </div>
+        <div className="wp-actions">
+          {locked && <span className="muted">{locked}</span>}
+          <Button disabled={!dirty || busy} onClick={() => setEdit(null)}>撤销改动</Button>
+          <Button variant="filled" disabled={blocked} onClick={requestSave}>{isTemplate && !dirty ? "重新保存分段" : "保存分段并设为模板"}</Button>
+        </div>
       </div>
       <div className="swb-scroll">
         <div className="swb-grid" style={{ gridTemplateColumns: columns }}>
@@ -192,11 +200,6 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
       <div className="swb-preview" aria-label={`帧组 ${seq} 三台相机原图`}>
         {plan.cameras.map(camera => <FramePreview key={camera} roundId={roundId} camera={camera} seq={seq}
           corridor={inspect(camera)?.corridor ?? []} searchHalfPx={halfPx(camera)} />)}
-      </div>
-      {locked && <p className="muted">{locked}</p>}
-      <div className="wp-actions">
-        <Button disabled={!dirty || busy} onClick={() => setEdit(null)}>撤销改动</Button>
-        <Button variant="filled" disabled={blocked} onClick={requestSave}>{isTemplate && !dirty ? "重新保存分段" : "保存分段并设为模板"}</Button>
       </div>
     </div>}
     {confirming && <Dialog open title="段结构将改变" onOpenChange={open => { if (!open) setConfirming(false); }}
