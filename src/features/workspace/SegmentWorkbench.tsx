@@ -141,7 +141,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     label: `${round.roundId} · ${new Date(round.createdAt).toLocaleString("zh-CN")} · ${round.receivedCount} 帧组${round.roundId === template?.roundId ? " · 模板" : ""}`,
   }));
 
-  return <Panel title="分段标定" detail="在模板轮的帧组时间轴上划分直线段与弯道段：点帧间竖缝插入或删除边界，点段名切换类型，点缩略图预览三台相机原图；← → 切换帧组，B 在当前帧组后插入或删除边界"
+  return <Panel title="分段标定" detail="在模板轮的帧组时间轴上划分直线段与弯道段：点缩略图选中帧组（下方并排显示三台相机原图），再点“在帧组 N 后插入边界”（或按 B，或点时间轴下方对应的 ＋）；点段名切换直线 / 弯道；← → 切换帧组"
     actions={<Select aria-label="模板轮" value={roundId} options={roundOptions} disabled={busy || dirty} onValueChange={value => { setEdit(null); setRoundId(value); }} />}>
     {(loadError || thumbs.error) && <Notice title="读取采集图像失败" tone="warn">{loadError || thumbs.error}</Notice>}
     {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改分段。</Notice>}
@@ -157,6 +157,9 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
         </div>
         <div className="wp-actions">
           {locked && <span className="muted">{locked}</span>}
+          {seq < groupCount && <Button disabled={frozen} onClick={() => change(toggleCut(draft, seq))}>
+            {draft.cuts.includes(seq) ? `删除帧组 ${seq} 后的边界` : `在帧组 ${seq} 后插入边界`}
+          </Button>}
           <Button disabled={!dirty || busy} onClick={() => setEdit(null)}>撤销改动</Button>
           <Button variant="filled" disabled={blocked} onClick={requestSave}>{isTemplate && !dirty ? "重新保存分段" : "保存分段并设为模板"}</Button>
         </div>
@@ -184,7 +187,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
                 </button>;
               })];
           })}
-          <span className="swb-label">边界</span>
+          <span className="swb-label" title="点 ＋ 在该帧组之后插入边界，点 × 删除">边界</span>
           {Array.from({ length: groupCount }, (_, k) => {
             const group = k + 1;
             const at = draft.cuts.indexOf(group);
@@ -193,7 +196,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
               aria-label={at >= 0 ? `删除帧组 ${group} 之后的边界` : `在帧组 ${group} 之后插入边界`}
               onPointerDown={() => { if (at >= 0) setDragging(at); }}
               onPointerUp={() => { if (dragging != null && draft.cuts[dragging] !== group) change(moveCut(draft, dragging, group)); }}
-              onClick={() => change(toggleCut(draft, group))}>{group}</button>;
+              onClick={() => change(toggleCut(draft, group))}><span>{group}</span><b aria-hidden="true">{at >= 0 ? "×" : "＋"}</b></button>;
           })}
         </div>
       </div>
