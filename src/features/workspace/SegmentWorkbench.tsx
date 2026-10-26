@@ -194,8 +194,13 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
                 const cut = draft.cuts.includes(group);
                 const segment = segmentSpans.findIndex(([first, last]) => group >= first && group <= last);
                 const used = draft.cameras[segment]?.includes(camera) ?? true;
+                // 段首尾跳过的帧（段参数里设置；段结构有改动时还没对应到新段，先不标）
+                const params = restructured ? null : plan.segments[segment];
+                const [first, last] = segmentSpans[segment] ?? [0, 0];
+                const skipped = !!params && (group < first + params.skipHead || group > last - params.skipTail);
                 return <button key={`${camera}-${group}`} type="button" aria-label={`${camera} 帧组 ${group}`} aria-pressed={group === seq}
-                  className={`swb-cell${group === seq ? " selected" : ""}${cut ? " cut" : ""}${used ? "" : " unused"}`} onClick={() => setSeq(group)}>
+                  className={`swb-cell${group === seq ? " selected" : ""}${cut ? " cut" : ""}${used ? "" : " unused"}${skipped ? " skipped" : ""}`} onClick={() => setSeq(group)}
+                  title={skipped ? `帧组 ${group} 在段 ${segment + 1} 的跳过范围内，不判定` : undefined}>
                   <Thumb pixels={pixels} width={strip?.width ?? 0} height={strip?.height ?? 0} />
                 </button>;
               })];

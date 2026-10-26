@@ -124,6 +124,10 @@ pub enum RegionKind {
     Corner { segment: u32 },
     /// 覆盖 first_segment..=last_segment；只跑每帧独立检测，允差取覆盖各段中较宽一档，不判胶偏
     Unsegmented { first_segment: u32, last_segment: u32, reason: UnsegReason },
+    /// 段首尾跳过的帧（`skip_head` / `skip_tail`）：不判定，结果里列为未检区域
+    Skipped {
+        segment: u32,
+    },
 }
 
 /// 判胶的单位：一段连续帧组。
@@ -146,6 +150,8 @@ impl Region {
 /// 置信度低于 min_conf 的边界把两侧两段合并为 Unsegmented(LowConfidence)，连续多个低置信度边界一并合并，不回退计划边界。
 /// 每个可信边界两侧各 `guard` 帧（边界帧 b 时为 b − guard + 1..=b + guard，截在 1..=total_seq 内）划为过渡区
 /// Unsegmented(Transition)，覆盖边界两侧的段；相邻的过渡区（中间的段被取空）合并成一个。guard = 0 时没有过渡区。
+/// 各段的跳过帧（`skip_head` / `skip_tail`）最后划为 Skipped 区域，优先于过渡区：能定位到的段（单段区域）按本段首尾跳过；
+/// 合并区域里只有贴着整件首尾的那一头能定位，只跳过第 1 段的 skip_head 与末段的 skip_tail。
 ///
 /// 算法缺给某个段间边界，或给出的帧号不在上一可信边界之后、不给下一段留帧，都按置信度不足处理。
 /// 区域首尾相接、覆盖 1..=total_seq。没有帧组（total_seq = 0）或没有段时返回空。
@@ -156,76 +162,126 @@ pub fn resolve_regions(
     min_conf: f32,
     guard: u32,
 ) -> Vec<Region> {
-    let (Some(first), Some(last)) = (segments.first(), segments.last()) else {
-        return Vec::new();
-    };
-    if total_seq == 0 {
+    if segments.is_empty() || total_seq == 0 {
         return Vec::new();
     }
-    let boundaries = match outcome {
-        SegOutcome::Unsegmented => {
-            let kind = RegionKind::Unsegmented { first_segment: first.index, last_segment: last.index, reason: UnsegReason::AlgorithmPending };
-            return vec![Region { kind, first_seq: 1, last_seq: total_seq }];
-        }
-        SegOutcome::Boundaries(boundaries) => boundaries,
-    };
-
-    // 每个段间隙的可信边界帧号（第 k 段之后）；None = 置信度不足，两侧合并
-    let mut previous = 0;
-    let cuts: Vec<Option<u64>> = segments
-        .windows(2)
-        .map(|pair| {
-            let cut = boundaries
-                .iter()
-                .find(|b| b.after_segment == pair[0].index)
-                .filter(|b| b.confidence >= min_conf && b.frame_seq > previous && b.frame_seq < total_seq)
-                .map(|b| b.frame_seq);
-            previous = cut.unwrap_or(previous);
-            cut
-        })
-        .collect();
-
     // 按可信边界切成区域，记下每个区域覆盖的段下标范围
     let mut regions: Vec<(Region, usize, usize)> = Vec::new();
-    let (mut start, mut first_seq) = (0, 1);
-    for k in 0..segments.len() {
-        let Some(last_seq) = cuts.get(k).copied().unwrap_or(Some(total_seq)) else { continue };
-        let kind = match (start == k, segments[k].kind) {
-            (true, SegmentKind::Straight) => RegionKind::Straight { segment: segments[k].index },
-            (true, SegmentKind::Corner) => RegionKind::Corner { segment: segments[k].index },
-            (false, _) => RegionKind::Unsegmented {
-                first_segment: segments[start].index,
-                last_segment: segments[k].index,
-                reason: UnsegReason::LowConfidence,
-            },
-        };
-        regions.push((Region { kind, first_seq, last_seq }, start, k));
-        (start, first_seq) = (k + 1, last_seq + 1);
+    match outcome {
+        SegOutcome::Unsegmented => {
+            let kind = RegionKind::Unsegmented {
+                first_segment: segments[0].index,
+                last_segment: segments[segments.len() - 1].index,
+                reason: UnsegReason::AlgorithmPending,
+            };
+            regions.push((
+                Region {
+                    kind,
+                    first_seq: 1,
+                    last_seq: total_seq,
+                },
+                0,
+                segments.len() - 1,
+            ));
+        }
+        SegOutcome::Boundaries(boundaries) => {
+            // 每个段间隙的可信边界帧号（第 k 段之后）；None = 置信度不足，两侧合并
+            let mut previous = 0;
+            let cuts: Vec<Option<u64>> = segments
+                .windows(2)
+                .map(|pair| {
+                    let cut = boundaries
+                        .iter()
+                        .find(|b| b.after_segment == pair[0].index)
+                        .filter(|b| {
+                            b.confidence >= min_conf
+                                && b.frame_seq > previous
+                                && b.frame_seq < total_seq
+                        })
+                        .map(|b| b.frame_seq);
+                    previous = cut.unwrap_or(previous);
+                    cut
+                })
+                .collect();
+            let (mut start, mut first_seq) = (0, 1);
+            for k in 0..segments.len() {
+                let Some(last_seq) = cuts.get(k).copied().unwrap_or(Some(total_seq)) else {
+                    continue;
+                };
+                let kind = match (start == k, segments[k].kind) {
+                    (true, SegmentKind::Straight) => RegionKind::Straight {
+                        segment: segments[k].index,
+                    },
+                    (true, SegmentKind::Corner) => RegionKind::Corner {
+                        segment: segments[k].index,
+                    },
+                    (false, _) => RegionKind::Unsegmented {
+                        first_segment: segments[start].index,
+                        last_segment: segments[k].index,
+                        reason: UnsegReason::LowConfidence,
+                    },
+                };
+                regions.push((
+                    Region {
+                        kind,
+                        first_seq,
+                        last_seq,
+                    },
+                    start,
+                    k,
+                ));
+                (start, first_seq) = (k + 1, last_seq + 1);
+            }
+        }
     }
 
-    if guard == 0 || regions.len() < 2 {
-        return regions.into_iter().map(|(region, _, _)| region).collect();
-    }
-
-    // 逐帧标注：所属区域，或过渡区覆盖的段下标范围（多个边界的过渡区重叠时取并）
+    // 逐帧标注：所属区域、过渡区覆盖的段下标范围（多个边界的过渡区重叠时取并），或跳过的段
     #[derive(Clone, Copy, PartialEq)]
     enum Label {
         Core(usize),
         Transition(usize, usize),
+        Skipped(usize),
     }
     let mut labels: Vec<Label> = Vec::with_capacity(total_seq as usize);
     for (i, (region, _, _)) in regions.iter().enumerate() {
         labels.extend((region.first_seq..=region.last_seq).map(|_| Label::Core(i)));
     }
-    for i in 1..regions.len() {
-        let (cut, left, right) = (regions[i - 1].0.last_seq, regions[i - 1].2, regions[i].1);
-        let from = cut.saturating_sub(u64::from(guard) - 1).max(1);
-        let to = (cut + u64::from(guard)).min(total_seq);
-        for label in &mut labels[from as usize - 1..to as usize] {
-            *label = match *label {
-                Label::Transition(a, b) => Label::Transition(a.min(left), b.max(right)),
-                Label::Core(_) => Label::Transition(left, right),
-            };
+    if guard > 0 {
+        for i in 1..regions.len() {
+            let (cut, left, right) = (regions[i - 1].0.last_seq, regions[i - 1].2, regions[i].1);
+            let from = cut.saturating_sub(u64::from(guard) - 1).max(1);
+            let to = (cut + u64::from(guard)).min(total_seq);
+            for label in &mut labels[from as usize - 1..to as usize] {
+                *label = match *label {
+                    Label::Transition(a, b) => Label::Transition(a.min(left), b.max(right)),
+                    _ => Label::Transition(left, right),
+                };
+            }
+        }
+    }
+    let last_segment = segments.len() - 1;
+    for (region, a, b) in &regions {
+        let (first, last) = (region.first_seq, region.last_seq);
+        let mut skip = |from: u64, to: u64, k: usize| {
+            for seq in from.max(first)..=to.min(last) {
+                labels[seq as usize - 1] = Label::Skipped(k);
+            }
+        };
+        let head = if a == b || *a == 0 {
+            u64::from(segments[*a].skip_head)
+        } else {
+            0
+        };
+        if head > 0 && (a == b || first == 1) {
+            skip(first, first + head - 1, *a);
+        }
+        let tail = if a == b || *b == last_segment {
+            u64::from(segments[*b].skip_tail)
+        } else {
+            0
+        };
+        if tail > 0 && (a == b || last == total_seq) {
+            skip((last + 1).saturating_sub(tail), last, *b);
         }
     }
 
@@ -233,7 +289,12 @@ pub fn resolve_regions(
     for (k, &label) in labels.iter().enumerate() {
         let seq = k as u64 + 1;
         match (out.last_mut(), label) {
-            (Some((Label::Core(a), region)), Label::Core(b)) if *a == b => region.last_seq = seq,
+            (Some((Label::Core(a), region)), Label::Core(b))
+            | (Some((Label::Skipped(a), region)), Label::Skipped(b))
+                if *a == b =>
+            {
+                region.last_seq = seq
+            }
             (Some((Label::Transition(a, b), region)), Label::Transition(c, d)) => {
                 (*a, *b) = ((*a).min(c), (*b).max(d));
                 region.last_seq = seq;
@@ -241,6 +302,9 @@ pub fn resolve_regions(
             _ => {
                 let kind = match label {
                     Label::Core(i) => regions[i].0.kind.clone(),
+                    Label::Skipped(k) => RegionKind::Skipped {
+                        segment: segments[k].index,
+                    },
                     Label::Transition(..) => RegionKind::Unsegmented {
                         first_segment: 0,
                         last_segment: 0,
@@ -682,6 +746,71 @@ mod tests {
         ] {
             assert_eq!(
                 resolve_regions(&segments, &outcome(cut.0, cut.1), 26, 0.5, guard),
+                expected,
+                "{case}"
+            );
+        }
+    }
+
+    /// 段首尾跳过的帧划为 Skipped 区域且优先于过渡区：分段可信时按各段首尾定位；未分段时只有整件首尾能定位
+    /// （第 1 段的 skip_head、末段的 skip_tail），中间段的跳过不生效。
+    #[test]
+    fn skipped_frames_carve_regions_at_located_segment_ends() {
+        let mut segments = plan(&[S, C, S]);
+        segments[0].skip_head = 2;
+        segments[1].skip_tail = 1;
+        segments[2].skip_tail = 3;
+        let skipped = |segment| RegionKind::Skipped { segment };
+        let transition = |first_segment, last_segment| RegionKind::Unsegmented {
+            first_segment,
+            last_segment,
+            reason: UnsegReason::Transition,
+        };
+        let segmented = SegOutcome::Boundaries(vec![
+            Boundary {
+                after_segment: 1,
+                frame_seq: 10,
+                confidence: 1.0,
+            },
+            Boundary {
+                after_segment: 2,
+                frame_seq: 16,
+                confidence: 1.0,
+            },
+        ]);
+        let pending = RegionKind::Unsegmented {
+            first_segment: 1,
+            last_segment: 3,
+            reason: UnsegReason::AlgorithmPending,
+        };
+        for (case, outcome, expected) in [
+            (
+                "分段可信",
+                segmented,
+                vec![
+                    region(skipped(1), 1, 2),
+                    region(RegionKind::Straight { segment: 1 }, 3, 8),
+                    region(transition(1, 2), 9, 12),
+                    region(RegionKind::Corner { segment: 2 }, 13, 14),
+                    region(transition(2, 3), 15, 15),
+                    region(skipped(2), 16, 16),
+                    region(transition(2, 3), 17, 18),
+                    region(RegionKind::Straight { segment: 3 }, 19, 23),
+                    region(skipped(3), 24, 26),
+                ],
+            ),
+            (
+                "未分段",
+                SegOutcome::Unsegmented,
+                vec![
+                    region(skipped(1), 1, 2),
+                    region(pending, 3, 23),
+                    region(skipped(3), 24, 26),
+                ],
+            ),
+        ] {
+            assert_eq!(
+                resolve_regions(&segments, &outcome, 26, 0.5, 2),
                 expected,
                 "{case}"
             );

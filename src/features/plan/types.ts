@@ -98,9 +98,13 @@ export interface PathSegment {
   calib: SegmentCalib | null;
   checks: SegmentChecks;
   offsetRef: OffsetRef | null;
+  /** 已停用的毫米检测区间（判定从未排除区间外的帧），只为读入旧配方保留；改用 skipHead / skipTail */
   inspectRange: InspectRange | null;
   /** 检测相机（D-SB-41）：计划相机的子集；空 = 全部计划相机 */
   cameras: string[];
+  /** 段首、段尾跳过的帧组数：这些帧不判定，结果里列为未检区域 */
+  skipHead: number;
+  skipTail: number;
 }
 
 /** 整件标定：多轮整件帧组数统计；本轮多段配方凭它得到 expectedTotal 并发布。 */
@@ -127,6 +131,8 @@ export interface ExportSegment {
   expectedFrames: number | null;
   tolerance: number;
   inspectRange: InspectRange | null;
+  skipHead?: number;
+  skipTail?: number;
 }
 
 /** 计划导出 JSON（recipe_plan_export）；协议 7 下 PLC 不再填计划与帧数。 */
@@ -178,7 +184,9 @@ export type UnsegReason = "algorithmPending" | "lowConfidence" | "transition";
 export type RegionKind =
   | { type: "straight"; segment: number }
   | { type: "corner"; segment: number }
-  | { type: "unsegmented"; firstSegment: number; lastSegment: number; reason: UnsegReason };
+  | { type: "unsegmented"; firstSegment: number; lastSegment: number; reason: UnsegReason }
+  /** 段首尾跳过的帧：不判定 */
+  | { type: "skipped"; segment: number };
 
 /** 一段连续帧组；帧数 = lastSeq − firstSeq + 1。 */
 export interface Region {
@@ -251,11 +259,14 @@ export interface Flags {
   shortPart: boolean;
 }
 
+/** 未检区域：跳过的帧组 fromSeq–toSeq；2026-10-26 之前的记录按毫米检测区间写 fromMm / toMm。 */
 export interface Uninspected {
   segment: number;
-  fromMm: number;
+  fromSeq?: number | null;
+  toSeq?: number | null;
+  fromMm?: number | null;
   /** 段长未知时为 null */
-  toMm: number | null;
+  toMm?: number | null;
 }
 
 /** 本轮没有算法的检测项（“未检项”）。 */

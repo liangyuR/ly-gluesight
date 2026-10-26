@@ -103,7 +103,8 @@ pub struct SegmentCalib {
     pub mean: f64,
 }
 
-/// 检测区间 [a_mm, b_mm]（沿本段胶路），区间外记“未检区域”。
+/// 检测区间 [a_mm, b_mm]（沿本段胶路）。已停用（2026-10-26）：软件不把毫米换算成帧号，判定从未排除区间外的帧；
+/// 只为读入旧配方保留，改用 `PathSegment.skip_head` / `skip_tail`。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InspectRange {
@@ -136,6 +137,12 @@ pub struct PathSegment {
     /// 检测相机（D-SB-41）：计划相机的子集，按段判定时只用这几台；空 = 全部计划相机（旧数据与新建段的默认）
     #[serde(default)]
     pub cameras: Vec<String>,
+    /// 段首跳过的帧组数：这些帧不判定，结果里列为未检区域（分段可信时按本段首尾定位，未分段时只有整件首尾能定位）
+    #[serde(default)]
+    pub skip_head: u32,
+    /// 段尾跳过的帧组数，同 `skip_head`
+    #[serde(default)]
+    pub skip_tail: u32,
 }
 
 /// 一段实际参与判定的相机（按计划相机顺序）：段没指定时为全部计划相机。
@@ -215,6 +222,10 @@ pub struct ExportSegment {
     pub expected_frames: Option<u32>,
     pub tolerance: u32,
     pub inspect_range: Option<InspectRange>,
+    #[serde(default)]
+    pub skip_head: u32,
+    #[serde(default)]
+    pub skip_tail: u32,
 }
 
 /// 计划导出 JSON（规格 §1）：PLC 的 shotCount 与 deviceShots 都填 expected_total。
@@ -344,6 +355,11 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
                 ));
             }
         }
+        if segment.skip_head > MAX_TOLERANCE || segment.skip_tail > MAX_TOLERANCE {
+            return Err(format!(
+                "第 {index} 段跳过的帧组数需在 0–{MAX_TOLERANCE} 之间"
+            ));
+        }
         if let Some(length) = segment.length_mm {
             if !positive(length) {
                 return Err(format!("第 {index} 段段长 {length} mm 无效：需为正数"));
@@ -451,6 +467,8 @@ pub fn new_segment(index: u32, kind: SegmentKind, defaults: &KindDefaults) -> Pa
         offset_ref: None,
         inspect_range: None,
         cameras: Vec::new(),
+        skip_head: 0,
+        skip_tail: 0,
     }
 }
 
@@ -478,6 +496,8 @@ pub fn export(
                 expected_frames: segment.expected_frames,
                 tolerance: segment.tolerance,
                 inspect_range: segment.inspect_range.clone(),
+                skip_head: segment.skip_head,
+                skip_tail: segment.skip_tail,
             })
             .collect(),
         expected_total: expected_total(segments, part),
@@ -615,7 +635,7 @@ mod tests {
         for (case, edit) in accepted {
             assert_eq!(check(&edited(edit)), Ok(()), "{case}");
         }
-        let cases: [(&str, Edit); 32] = [
+        let cases: [(&str, Edit); 33] = [
             ("没有段", |p| p.segments.clear()),
             ("序号不从 1 起", |p| p.segments.iter_mut().for_each(|segment| segment.index += 1)),
             ("序号跳号", |p| p.segments[2].index = 4),
@@ -714,6 +734,9 @@ mod tests {
                     .max_local_dev_mm = -1.0
             }),
             ("段长为 0", |p| p.segments[2].length_mm = Some(0.0)),
+            ("段首跳过帧超过上限", |p| {
+                p.segments[0].skip_head = MAX_TOLERANCE + 1
+            }),
             ("检测区间终点超出段长", |p| {
                 p.segments[2].length_mm = Some(100.0);
                 p.segments[2].inspect_range = Some(InspectRange { a_mm: 10.0, b_mm: 100.5 });

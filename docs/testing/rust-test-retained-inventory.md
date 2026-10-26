@@ -64,6 +64,8 @@ pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1
 | 23 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `missing_camera_frames_mark_incomplete_without_changing_verdict` | 缺帧和测量失败只标不完整，其余相机有效NG仍须保留 |
 | 24 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `frame_count_anomaly_comes_from_part_total_not_from_segment_regions` | 帧数异常和疑似提前终止仅产生标志，不能覆盖胶路本身OK/NG；帧数只核对整件，直线 / 弯道区域的推算帧数不与本段 N_exp 比（D-SB-40，2026-10-26 由 `region_frame_count_outside_tolerance_raises_anomaly_and_short_part_flags_only` 改写） |
 | 24a | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `transition_region_judges_frames_with_wider_limits_without_offset_or_unsegmented_flag` | 过渡区按两侧较宽允差判每帧指标，不判也不标胶偏，不算“含未分段”（D-SB-40，2026-10-26 新增） |
+| 8e | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `skipped_frames_carve_regions_at_located_segment_ends` | 段首尾跳过帧划为跳过区域并优先于过渡区；未分段时只有整件首尾能定位（D-SB-22 修订，2026-10-26 新增） |
+| 24c | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `skipped_region_is_not_judged_and_listed_as_uninspected` | 跳过的帧不判 NG、不算检测不完整，按帧组号列为未检区域（D-SB-22 修订） |
 | 24b | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `segment_regions_judge_only_their_cameras_and_transitions_use_the_union` | 段区域只用本段检测相机判定与计检测不完整，过渡区用两侧并集（D-SB-41，2026-10-26 新增；plan.rs 计划身份与校验两个参数化测试各补段检测相机用例） |
 | 25 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `any_camera_frame_ng_makes_region_ng` | 任一相机任一帧NG必须使区域及整件NG，防止沿用旧多视图放行规则 |
 | 26 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `frame_exceeding_gap_presence_width_or_overflow_limit_is_ng_with_matching_reason` | 断胶、有胶比例、累计胶宽超差和溢胶必须按各自限值形成正确判定 |

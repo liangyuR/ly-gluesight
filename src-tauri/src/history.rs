@@ -273,10 +273,21 @@ fn burst_layout_matches(recipe: &Recipe, judgement: &BurstJudgement, frames: &[F
     let segments = recipe.path_segments.len() as u32;
     let cameras = recipe.plan_cameras().len();
     let inside = |first: u32, last: u32| 1 <= first && first <= last && last <= segments;
-    judgement.regions.iter().all(|result| match result.region.kind {
-        RegionKind::Straight { segment } | RegionKind::Corner { segment } => inside(segment, segment),
-        RegionKind::Unsegmented { first_segment, last_segment, .. } => inside(first_segment, last_segment),
-    }) && frames.iter().all(|frame| frame.camera < cameras)
+    judgement
+        .regions
+        .iter()
+        .all(|result| match result.region.kind {
+            RegionKind::Straight { segment } | RegionKind::Corner { segment } => {
+                inside(segment, segment)
+            }
+            RegionKind::Unsegmented {
+                first_segment,
+                last_segment,
+                ..
+            } => inside(first_segment, last_segment),
+            RegionKind::Skipped { segment } => inside(segment, segment),
+        })
+        && frames.iter().all(|frame| frame.camera < cameras)
 }
 
 /// 段配方记录重判：用已存的每帧指标、记录里的区域和丢帧告警，按（覆盖了允差的）配方段重跑 burst_judge。

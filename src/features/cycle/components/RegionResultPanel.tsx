@@ -23,19 +23,18 @@ function coveredSegments(region: RegionResult, segments: PathSegment[]) {
 function RegionItem({ result, segments, cameras, onSelectGroup }: { result: RegionResult; segments: PathSegment[]; cameras: string[]; onSelectGroup?: (seq: number) => void }) {
   const badges = regionBadges(result);
   const covered = coveredSegments(result, segments);
-  const range = covered.length === 1 ? covered[0].inspectRange : null;
   const lengths = covered.map(s => s.lengthMm);
   const length = covered.length && lengths.every(v => v != null) ? lengths.reduce<number>((sum, v) => sum + v!, 0) : null;
   const status = result.countStatus === "normal" ? " · 帧数正常" : result.countStatus === null ? ` · ${countStatusLabel(null)}` : "";
   const offset = result.offset
     ? `均值偏移 ${mm(result.offset.meanShift)} · 最大偏差 ${mm(result.offset.maxDev)} mm`
-    : result.region.kind.type === "corner" ? "弯道不判" : "—";
+    : result.region.kind.type === "corner" ? "弯道不判" : result.region.kind.type === "skipped" ? "跳过不检" : "—";
   return <li className="region-item" data-tone={verdictTone(result.verdict)} data-kind={result.region.kind.type}>
     <div className="region-head">
       <strong>{regionKindLabel(result.region.kind)}</strong>
       <StatusBadge tone={verdictTone(result.verdict)}>{verdictLabel[result.verdict]}</StatusBadge>
     </div>
-    <div className="mono">{result.frameCount} 帧 · 预期 {expectedText(result.expected, result.tolerance)}{status}{length != null && ` · 全长 ${length} mm`}{range && ` · 检 ${range.aMm}–${range.bMm} mm`}</div>
+    <div className="mono">{result.frameCount} 帧 · 预期 {expectedText(result.expected, result.tolerance)}{status}{length != null && ` · 全长 ${length} mm`}</div>
     {!!badges.length && <div className="region-badges">{badges.map(b => <StatusBadge key={b.key} tone={b.tone}>{b.label}</StatusBadge>)}</div>}
     <dl className="region-kv">
       <dt>胶宽 min / max / mean</dt>

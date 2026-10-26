@@ -189,6 +189,7 @@
 
 - 问题：首末不判的范围隐含在 `FixtureSpec.end_margin_mm` 里；规格 §0/§1 每段写明 inspect_range [a_mm, b_mm]，结果页标“未检区域”。
 - 采用：`PathSegment.inspect_range` 显式配置；`burst_judge` 按配方算出 `[0, a)` 与 `(b, length_mm]` 放进 `BurstJudgement.uninspected`，段长未知时 `to_mm` 为 null，界面按 mm 展示。
+- 修订（2026-10-26，用户确认）：毫米区间从未在判定中排除帧（软件不把毫米换算成帧号），结果却写“未检区域”，会误导。改为按帧：`PathSegment.skip_head` / `skip_tail`（段首、段尾跳过的帧组数，0–1000，不进计划身份）。`resolve_regions` 把跳过的帧划为 `RegionKind::Skipped`，优先于过渡区；分段可信时按各段首尾定位，未分段或合并区域里只有贴着整件首尾的第 1 段段首、末段段尾能定位。`burst_judge` 对跳过区域不取任何相机：不判定、不计检测不完整；`BurstJudgement.uninspected` 按帧组号列出（`fromSeq` / `toSeq`），旧记录的 `fromMm` / `toMm` 照旧读取显示。`inspect_range` 保留读取但停用，段列表遇到旧区间提示清除；计划导出另带 `skipHead` / `skipTail`。
 
 ### D-SB-23 触发方式 Stop 保留
 

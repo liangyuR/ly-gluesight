@@ -84,7 +84,7 @@ export function kindDefaults(): KindDefaults {
 /** 新建一段（同后端 new_segment）：容差与检测项取该类型默认值，N_exp、标定、胶偏参考为空。 */
 export function pathSegment(index: number, kind: SegmentKind, over: Partial<PathSegment> = {}): PathSegment {
   const d = kindDefaults()[kind];
-  return { index, kind, lengthMm: null, expectedFrames: null, tolerance: d.tolerance, calib: null, checks: d.checks, offsetRef: null, inspectRange: null, cameras: [], ...over };
+  return { index, kind, lengthMm: null, expectedFrames: null, tolerance: d.tolerance, calib: null, checks: d.checks, offsetRef: null, inspectRange: null, cameras: [], skipHead: 0, skipTail: 0, ...over };
 }
 
 /** 后端口径：各段 N_exp 都有时为其和，否则取整件标定；容差为各段之和。 */

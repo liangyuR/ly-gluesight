@@ -40,6 +40,7 @@ export function regionKindLabel(kind: RegionKind): string {
   switch (kind.type) {
     case "straight": return `段 ${kind.segment} · 直线`;
     case "corner": return `段 ${kind.segment} · 弯道`;
+    case "skipped": return `段 ${kind.segment} · 跳过`;
     case "unsegmented": return `${kind.firstSegment === kind.lastSegment ? `段 ${kind.firstSegment}` : `段 ${kind.firstSegment}–${kind.lastSegment}`} · ${kind.reason === "transition" ? "边界过渡" : "未分段"}`;
   }
 }
@@ -59,8 +60,9 @@ export const offsetUnjudgedText: Record<OffsetUnjudged, string> = {
 
 export const uncheckedText: Record<UncheckedItem, string> = { bubble: "气泡", stringing: "拉丝" };
 
-/** 未检区域：“段 1 · 0–5 mm”；段长未知时“段 3 · 75 mm 之后”。 */
+/** 未检区域：“段 1 · 帧组 1–2（跳过）”；旧记录按毫米：“段 1 · 0–5 mm”，段长未知时“段 3 · 75 mm 之后”。 */
 export function uninspectedText(u: Uninspected): string {
+  if (u.fromSeq != null) return `段 ${u.segment} · 帧组 ${u.fromSeq === u.toSeq ? u.fromSeq : `${u.fromSeq}–${u.toSeq}`}（跳过）`;
   return `段 ${u.segment} · ${u.toMm == null ? `${u.fromMm} mm 之后` : `${u.fromMm}–${u.toMm} mm`}`;
 }
 

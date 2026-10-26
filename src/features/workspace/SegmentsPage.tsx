@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { Link } from "react-router-dom";
-import { Button, NumberField, Select, Switch } from "qing-steel";
+import { Button, NumberField, Select } from "qing-steel";
 import { KindChecksEditor } from "../plan/KindChecksEditor";
 import type { OffsetMeasure, PathSegment, SegmentChecks, WorkspacePlanView } from "../plan/types";
 import type { WorkspaceView } from "./types";
@@ -174,15 +174,16 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: CardProps) {
         value={Number.isFinite(segment.tolerance) ? segment.tolerance : ""} onValueChange={value => onPatch({ tolerance: value === "" ? NaN : value })} />
       <NumberField label="长度" unit="mm" aria-label={`${name} 长度`} step={1} min={0} disabled={disabled}
         value={segment.lengthMm ?? ""} onValueChange={value => onPatch({ lengthMm: value === "" ? null : value })} />
-      <Switch label={`${name} 限定检测区间`} checked={!!range} disabled={disabled}
-        onCheckedChange={on => onPatch({ inspectRange: on ? { aMm: 0, bMm: segment.lengthMm ?? 100 } : null })} />
-      {range && <>
-        <NumberField label="检测起点 a" unit="mm" aria-label={`${name} 检测起点`} step={1} min={0} disabled={disabled}
-          value={Number.isFinite(range.aMm) ? range.aMm : ""} onValueChange={value => onPatch({ inspectRange: { ...range, aMm: value === "" ? NaN : value } })} />
-        <NumberField label="检测终点 b" unit="mm" aria-label={`${name} 检测终点`} step={1} min={0} disabled={disabled}
-          value={Number.isFinite(range.bMm) ? range.bMm : ""} onValueChange={value => onPatch({ inspectRange: { ...range, bMm: value === "" ? NaN : value } })} />
-      </>}
+      <NumberField label="段首跳过" unit="帧" aria-label={`${name} 段首跳过帧数`} step={1} min={0} disabled={disabled}
+        value={Number.isFinite(segment.skipHead) ? segment.skipHead : ""} onValueChange={value => onPatch({ skipHead: value === "" ? 0 : value })} />
+      <NumberField label="段尾跳过" unit="帧" aria-label={`${name} 段尾跳过帧数`} step={1} min={0} disabled={disabled}
+        value={Number.isFinite(segment.skipTail) ? segment.skipTail : ""} onValueChange={value => onPatch({ skipTail: value === "" ? 0 : value })} />
     </div>
+    <p className="muted">跳过的帧不判定，结果里列为“未检区域”；分段生效后按本段首尾定位，未分段时只有整件起头（第 1 段段首）和收尾（末段段尾）生效。</p>
+    {range && <Notice title="原毫米检测区间已停用" tone="warn">
+      检 {range.aMm}–{range.bMm} mm 从未在判定中排除帧，现在不再使用，请改用上面的段首 / 段尾跳过帧数。
+      <Button size="sm" disabled={disabled} onClick={() => onPatch({ inspectRange: null })}>清除</Button>
+    </Notice>}
     {straight && segment.checks.offset?.enabled && <div className="seg-offset" role="group" aria-label={`${name} 胶偏参考`}>
       <Select label="胶偏测量量" aria-label={`${name} 胶偏测量量`} value={measure} options={measureOptions} disabled={disabled} onValueChange={value => setReference({ measure: value as OffsetMeasure })} />
       <Select label="参考相机" aria-label={`${name} 参考相机`} value={camera} options={inspecting.map(id => ({ value: id, label: id }))} disabled={disabled} onValueChange={value => setReference({ camera: value })} />

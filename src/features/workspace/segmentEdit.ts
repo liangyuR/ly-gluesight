@@ -12,7 +12,7 @@ export function newSegment(index: number, kind: SegmentKind, defaults: KindDefau
   const base = defaults[kind];
   return {
     index, kind, lengthMm: null, expectedFrames: null, tolerance: base.tolerance, calib: null,
-    checks: structuredClone(base.checks), offsetRef: null, inspectRange: null, cameras: [],
+    checks: structuredClone(base.checks), offsetRef: null, inspectRange: null, cameras: [], skipHead: 0, skipTail: 0,
   };
 }
 
@@ -42,9 +42,8 @@ export function segmentIssues(segments: PathSegment[]): string[] {
     if (!Number.isInteger(segment.tolerance) || segment.tolerance < 0 || segment.tolerance > MAX_TOLERANCE)
       issues.push(`${name} 帧数容差需为 0–${MAX_TOLERANCE} 的整数`);
     if (segment.lengthMm != null && !(segment.lengthMm > 0)) issues.push(`${name} 长度需大于 0`);
-    const range = segment.inspectRange;
-    if (range && !(Number.isFinite(range.aMm) && Number.isFinite(range.bMm) && range.aMm >= 0 && range.aMm < range.bMm))
-      issues.push(`${name} 检测区间需满足 0 ≤ a < b`);
+    for (const [label, value] of [["段首跳过", segment.skipHead], ["段尾跳过", segment.skipTail]] as const)
+      if (!Number.isInteger(value) || value < 0 || value > MAX_TOLERANCE) issues.push(`${name} ${label}帧数需为 0–${MAX_TOLERANCE} 的整数`);
     if (containsNaN(segment.checks)) issues.push(`${name} 检测项有未填写的数值`);
   }
   return issues;
