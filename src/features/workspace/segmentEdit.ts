@@ -26,6 +26,14 @@ export const clearCalibration = (segments: PathSegment[]): PathSegment[] => segm
 export const hasCalibration = (segments: PathSegment[], partCalibrated: boolean) =>
   partCalibrated || segments.some(segment => segment.expectedFrames != null || segment.calib != null || segment.offsetRef?.xRef != null);
 
+/** 把第 at 段的检测项与帧数容差套用到其余同类型段（不改相机、跳过帧数、长度与胶偏参考）：段序列与类型不变，标定保留。 */
+export const applyToKind = (segments: PathSegment[], at: number): PathSegment[] => {
+  const source = segments[at];
+  if (!source) return segments;
+  return segments.map((segment, i) => i !== at && segment.kind === source.kind
+    ? { ...segment, checks: structuredClone(source.checks), tolerance: source.tolerance } : segment);
+};
+
 /** 不改段序列与类型的编辑（长度、容差、检测区间、检测项、胶偏参考）：标定保留。 */
 export const patchSegment = (segments: PathSegment[], at: number, patch: Partial<PathSegment>) =>
   segments.map((segment, i) => i === at ? { ...segment, ...patch } : segment);

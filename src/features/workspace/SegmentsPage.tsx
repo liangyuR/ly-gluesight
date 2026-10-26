@@ -9,7 +9,8 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { errorText } from "../../lib/errors";
-import { patchSegment, segmentIssues } from "./segmentEdit";
+import { applyToKind, patchSegment, segmentIssues } from "./segmentEdit";
+import { BoundaryGuardField } from "./DocParams";
 import SegmentWorkbench from "./SegmentWorkbench";
 import { segmentCameras } from "./workbenchDraft";
 import AlignReview from "./AlignReview";
@@ -107,7 +108,8 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
   return <div className="wp-page"><WorkspaceBar />
     <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
     <AlignReview plan={plan} locked={workbenchDirty ? "上方分段有未保存的改动，先保存或撤销后再确认其余轮次" : paramsPending} />
-    <Panel title="段列表" detail="各段帧数容差、长度、检测区间与检测项；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数由多轮采集得出，这里只读">
+    <Panel title="段列表" detail="各段帧数容差、长度、跳过帧数与检测项；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数由多轮采集得出，这里只读"
+      actions={<BoundaryGuardField locked={edits || workbenchDirty ? "段列表有未保存的改动，保存后再改边界过渡帧数" : ""} />}>
       {/* 段多时逐段平铺太长：段条当选项卡，下方只显示所选段 */}
       <div className="seg-tabs" role="tablist" aria-label="段">
         {segments.map((segment, at) => <button key={at} type="button" role="tab" id={`seg-tab-${at}`} aria-selected={at === current} aria-controls="seg-panel"
@@ -125,7 +127,8 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
       </div>
       {segments[current] && <div id="seg-panel" role="tabpanel" aria-labelledby={`seg-tab-${current}`}>
         <SegmentCard key={current} segment={segments[current]} cameras={plan.cameras} disabled={cardsLocked}
-          onPatch={change => patch(current, change)} />
+          onPatch={change => patch(current, change)} sameKind={segments.filter(s => s.kind === segments[current].kind).length - 1}
+          onApplyToKind={() => edit(applyToKind(segments, current))} />
       </div>}
     </Panel>
     <Panel title="整件预期帧数" detail="各段预期帧数之和；各段都待标定时取整件多轮采集的帧组数均值">
@@ -137,16 +140,18 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
           : pending.length > 0 && <Badge tone="neutral">{pending.map(index => `段 ${index}`).join("、")} 待逐段标定，运行时按整件核对帧数</Badge>}
         <Link className="wp-progress-link" to="/recipe/calibration">前往多轮标定</Link>
       </div>
-      <p className="muted">按段类型的默认检测项与帧数容差（默认 ±1）在“默认参数”页设置，新建段时取用。</p>
+      <p className="muted">新建段时，检测项与帧数容差沿用同类型已有段的设置；可在段列表里用“套用到同类段”一次改齐。</p>
     </Panel>
   </div>;
 }
 
 interface CardProps {
   segment: PathSegment; cameras: string[]; disabled: boolean; onPatch: (change: Partial<PathSegment>) => void;
+  /** 其余同类型段的个数；onApplyToKind 把本段的检测项与帧数容差套用到它们 */
+  sameKind: number; onApplyToKind: () => void;
 }
 
-function SegmentCard({ segment, cameras, disabled, onPatch }: CardProps) {
+function SegmentCard({ segment, cameras, disabled, onPatch, sameKind, onApplyToKind }: CardProps) {
   const name = `段 ${segment.index}`;
   const straight = segment.kind === "straight";
   const range = segment.inspectRange;
@@ -190,6 +195,12 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: CardProps) {
       <p className={offsetRef?.xRef == null ? "muted" : "plan-mono"}>{offsetRef?.xRef != null
         ? `x_ref ${offsetRef.xRef} ± ${offsetRef.spread ?? "—"} mm（标准件多轮测量均值）`
         : measure === "toEdge" ? "到边缘距离的测量量本轮未实现：该段胶偏不判" : "x_ref 待标定：由标准件多轮采集得出，不能手填"}</p>
+    </div>}
+    {sameKind > 0 && <div className="wp-actions">
+      <Button size="sm" disabled={disabled} onClick={onApplyToKind}
+        title={`其余 ${sameKind} 个${segmentKindLabel[segment.kind]}段的检测项与帧数容差改成和${name}一样（不改相机、跳过帧数与胶偏参考）`}>
+        套用到其余 {sameKind} 个{segmentKindLabel[segment.kind]}段
+      </Button>
     </div>}
     <details className="seg-checks">
       <summary>{name}检测项（{segmentKindLabel[segment.kind]}）</summary>

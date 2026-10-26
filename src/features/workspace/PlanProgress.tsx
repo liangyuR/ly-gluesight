@@ -9,7 +9,7 @@ import { returnState } from "./returnNavigation";
 import { stageOfV2, stagesV2, stageStatusText, stageStatusTone, stageStatusV2 } from "./stages";
 
 const actions: Record<string, string> = {
-  "/recipe/capture": "查看采集", "/recipe/segments": "编辑段列表", "/recipe/geometry": "配置参数", "/recipe/teach": "查看走廊示教",
+  "/recipe/capture": "查看采集", "/recipe/segments": "编辑段列表", "/recipe/teach": "查看走廊示教",
   "/recipe/calibration": "查看多轮标定", "/recipe/validation": "查看验证与发布",
 };
 

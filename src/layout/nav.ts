@@ -12,7 +12,6 @@ import ProjectsPage from "../pages/ProjectsPage";
 import LibraryPage from "../features/workspace/LibraryPage";
 import ProgressPage from "../features/workspace/ProgressPage";
 import CapturePage from "../features/workspace/CapturePage";
-import GeometryPage from "../features/workspace/GeometryPage";
 import TeachingPage from "../features/workspace/TeachingPage";
 import OverviewPage from "../features/workspace/OverviewPage";
 import ValidationPage from "../features/workspace/ValidationPage";
@@ -74,7 +73,6 @@ const recipeSteps: PageRoute[] = [
   { path:"/recipe/progress",label:"进度总览",element:ProgressPage },
   { path:"/recipe/capture",label:"整圈采集",element:CapturePage },
   { path:"/recipe/segments",label:"段列表",element:SegmentsPage },
-  { path:"/recipe/geometry",label:"配方默认参数",element:GeometryPage },
   { path:"/recipe/teach",label:"相机走廊示教",element:TeachingPage },
   { path:"/recipe/calibration",label:"多轮标定",element:CalibrationPage },
   { path:"/recipe/overview",label:"工件总览",element:OverviewPage },

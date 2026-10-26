@@ -10,6 +10,7 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, NumberField, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { CaptureSummary } from "./types";
+import { CalibrationRoundsField } from "./DocParams";
 import "./corridor.css";
 
 /**
@@ -88,6 +89,7 @@ export default function CalibrationPage() {
       <div className="wp-calib-need">
         <Badge tone={short > 0 ? "warn" : "ok"}>{short > 0 ? `已加入 ${normal.length} / ${minRounds} 轮，还差 ${short} 轮` : `已加入 ${normal.length} 轮，轮数足够`}</Badge>
         <span className="muted">标准件轮次 {standard.length} 轮</span>
+        <CalibrationRoundsField />
         <Button variant="filled" data-variant="filled" disabled={!!applyReason} title={applyReason || "按已加入的轮次计算预期帧数与建议容差"} onClick={apply}>应用标定</Button>
         {applyReason && <span className="muted" role="note">{applyReason}</span>}
       </div>

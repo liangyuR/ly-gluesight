@@ -4,6 +4,7 @@ import type { PointVis, Recipe, RecipeDoc } from "../cycle/types";
 import { CameraSegmentOverview } from "../plan/CameraSegmentOverview";
 import type { WorkspacePlanView } from "../plan/types";
 import { expectedText } from "../plan/vis";
+import { RecipeIdentity } from "./DocParams";
 import { shotState, shotStateLabel, visColor } from "../cycle/vis";
 import { useWorkspace } from "./context";
 import { Badge, GrayViewer, Notice, Panel, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
@@ -81,6 +82,9 @@ function CameraFrame({ docId, task, corridor }: { docId: string; task: CameraTea
 function SegmentOverview({ plan, doc }: { plan: WorkspacePlanView; doc: RecipeDoc }) {
   const tasks = cameraTeachingTasks(plan);
   return <div className="wp-page"><WorkspaceBar />
+    <Panel title="配方信息" detail="名称与 PLC 下发的型号；改动自动保存为候选配置，发布后生效">
+      <RecipeIdentity />
+    </Panel>
     <Panel title="相机与段" detail="相机由同一路高电平启停，各自按设定帧率采集；段沿胶路顺序排列，预期帧数由多轮标定得出">
       <CameraSegmentOverview cameras={plan.cameras} segments={plan.segments} />
       <div className="wp-actions" style={{ marginTop: 12 }}>

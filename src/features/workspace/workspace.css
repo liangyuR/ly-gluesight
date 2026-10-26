@@ -152,23 +152,6 @@
 @media(max-width:820px) { .wp-teach,.wp-library-grid { grid-template-columns:minmax(0,1fr); } .wp-steps a { flex:0 0 auto; } .wp-recipe-picker select { width:190px; } }
 
 .wp-plain-fieldset { border:0; padding:0; margin:0; min-width:0; }
-.wp-defaults { grid-template-columns:minmax(0,1fr) 260px; }
-.wp-defaults-card h3 { margin:0 0 10px; font-size:14px; font-weight:600; }
-.wp-defaults-card dl { display:grid; grid-template-columns:auto 1fr; gap:8px 12px; margin:0; font-size:13px; }
-.wp-defaults-card dt { color:var(--on-surface-variant); }
-.wp-defaults-card dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; }
-.wp-defaults-card dd small { color:var(--on-surface-variant); }
-.wp-defaults-card p { margin:0; font-size:13px; }
-.wp-defaults-next { display:flex; flex-direction:column; gap:4px; padding:14px 16px; border:1px solid var(--outline-variant); border-radius:var(--r-lg); }
-.wp-defaults-next small { color:var(--on-surface-variant); font-size:12px; }
-.wp-defaults-next strong { font-weight:500; }
-.wp-defaults-next a { display:inline-flex; align-items:center; gap:4px; margin-top:4px; color:var(--primary); font-size:13px; text-decoration:none; }
-.wp-defaults-next a:hover { text-decoration:underline; }
-.wp-defaults-savebar { position:sticky; bottom:0; z-index:2; display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:10px 16px; border:1px solid var(--outline-variant); border-radius:var(--r-lg); background:var(--surface-low); font-size:12px; }
-.wp-defaults-save { display:inline-flex; align-items:center; gap:6px; color:var(--on-surface-variant); }
-.wp-defaults-save.saved { color:var(--ok); }
-.wp-defaults-save.warn, .wp-defaults-save.failed { color:var(--warn); }
-@media(max-width:1050px) { .wp-defaults { grid-template-columns:minmax(0,1fr); } }
 
 .wp-group-item { display:flex; align-items:center; gap:8px; width:100%; min-width:0; padding:7px 8px; border:1px solid transparent; border-radius:var(--r-sm); background:transparent; color:var(--on-surface-variant); font:inherit; font-size:12px; text-align:left; cursor:pointer; }
 .wp-group-item:hover:not(:disabled):not(.selected) { background:var(--state-hover); }

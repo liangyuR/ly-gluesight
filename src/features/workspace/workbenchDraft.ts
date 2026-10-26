@@ -83,7 +83,7 @@ export const structureChanged = (current: PathSegment[], kinds: SegmentKind[]) =
 
 /**
  * 要保存的段列表：类型序列不变时沿用现有段（参数、N_exp、标定都保留），只按草稿改检测相机；变了则按新序列重建，
- * 同位置同类型的段沿用长度、容差、检测区间、检测项与胶偏参考，其余取该类型默认值，N_exp、标定与 x_ref 一律清空。
+ * 同位置同类型的段沿用长度、容差、检测区间、检测项与胶偏参考，其余沿用同类型已有段的检测项与容差（没有时取该类型默认值），N_exp、标定与 x_ref 一律清空。
  * 检测相机选全了存为空（= 全部计划相机）；胶偏参考相机不在本段检测相机里时改为本段第一台并清空 x_ref。都没变时原样返回。
  */
 export function segmentsForSave(current: PathSegment[], draft: Pick<WorkbenchDraft, "kinds" | "cameras">, defaults: KindDefaults, planCameras: string[]): PathSegment[] {
@@ -91,7 +91,11 @@ export function segmentsForSave(current: PathSegment[], draft: Pick<WorkbenchDra
   const base = restructured
     ? clearCalibration(draft.kinds.map((kind, i) => {
       const old = current[i];
-      return old && old.kind === kind ? { ...old, index: i + 1 } : newSegment(i + 1, kind, defaults);
+      if (old && old.kind === kind) return { ...old, index: i + 1 };
+      // 新段沿用同类型已有段的检测项与容差（操作员通常已在段列表里设好），没有同类段时取配方的按类型默认值
+      const like = current.find(segment => segment.kind === kind);
+      const fresh = newSegment(i + 1, kind, defaults);
+      return like ? { ...fresh, checks: structuredClone(like.checks), tolerance: like.tolerance } : fresh;
     }))
     : current;
   const stored = (i: number) => {

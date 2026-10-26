@@ -16,6 +16,7 @@ import { corridorDraft, corridorError, sameCorridor, withCorridor } from "./teac
 import { cameraTeachingTasks } from "./cameraTasks";
 import { frameArrived, readRoundFrame, roundView, type AnyRound, type RoundView } from "./captureRound";
 import { CorridorSettings } from "./CorridorSettings";
+import { MeasureDefaults } from "./DocParams";
 import "./corridor.css";
 
 /** 禁用控件不发指针事件：Tooltip 挂在外包的可聚焦 span 上，原因同时作为控件的无障碍描述。 */
@@ -345,8 +346,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
             editDisabled={!canEdit}
             onEdit={frame && !regionMode ? { add: p => setPath([...t.corridor, p]), move: (i, p) => setPath(t.corridor.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />}
       </div>
-      {frame && !choosingNow ? <div className="wp-stack wp-teach-settings"><CorridorSettings key={scope} teach={t} defaults={defaults} segments={doc.segments ?? []} disabled={!canEdit} checksDisabled={busy || working || !!data.workspace.pending} onChange={update} onSegmentChecks={changeSegmentChecks} /></div>
-        : <div className="wp-teach-settings wp-rail-empty"><span>选定示教帧后，这里显示<br/>像素当量 · 检测参数 · 检测项</span></div>}
+      {frame && !choosingNow ? <div className="wp-stack wp-teach-settings"><MeasureDefaults locked={editing || frameDirty ? "走廊有未保存的修改，先保存后再改默认参数。" : ""} /><CorridorSettings key={scope} teach={t} defaults={defaults} segments={doc.segments ?? []} disabled={!canEdit} checksDisabled={busy || working || !!data.workspace.pending} onChange={update} onSegmentChecks={changeSegmentChecks} /></div>
+        : <div className="wp-teach-settings wp-rail-empty"><MeasureDefaults /><span>选定示教帧后，这里显示<br/>像素当量 · 检测参数 · 检测项</span></div>}
     </div>
     <div className="wp-teach-dock" role="group" aria-label="走廊示教操作">
       <span className="wp-dock-mid"><Badge tone={stateTone}>{stateText}</Badge><span className="wp-dock-hint">{dockHint}</span></span>

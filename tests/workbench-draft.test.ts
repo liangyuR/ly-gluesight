@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PathSegment } from "../src/features/plan/types";
 import { segmentsForSave, spans, toggleCut, valid, type WorkbenchDraft } from "../src/features/workspace/workbenchDraft";
+import { applyToKind } from "../src/features/workspace/segmentEdit";
 
 import { kindDefaults, pathSegment } from "./fixtures";
 
@@ -35,12 +36,24 @@ describe("工作台保存的段列表", () => {
     expect(segmentsForSave(current, { kinds: ["straight", "corner", "straight"], cameras: all(3) }, kindDefaults(), CAMS)).toBe(current);
   });
 
-  it("段的类型序列变了 → 序号从 1 连续，N_exp、标定与 x_ref 清空；同位置同类型的段沿用长度与容差，其余取默认", () => {
+  it("段的类型序列变了 → 序号从 1 连续，N_exp、标定与 x_ref 清空；同位置同类型的段沿用长度与容差，新段沿用同类型已有段的检测项与容差", () => {
     const next = segmentsForSave(calibrated(), { kinds: ["straight", "straight"], cameras: all(2) }, kindDefaults(), CAMS);
     expect(next.map(s => s.index)).toEqual([1, 2]);
     expect(next.every(s => s.expectedFrames === null && s.calib === null && (s.offsetRef?.xRef ?? null) === null)).toBe(true);
+    // 第 2 段由弯道改成直线：新直线段沿用已有直线段（第 1 段）的容差 2，而不是默认 1
     expect([next[0].lengthMm, next[0].tolerance]).toEqual([120, 2]);
     expect(next[1].lengthMm).toBeNull();
+    expect(next[1].tolerance).toBe(2);
+  });
+
+  it("套用到同类段 → 其余同类型段的检测项与容差改成和本段一样，相机、跳过帧数、长度与标定不变", () => {
+    const segments = calibrated();
+    segments[0].checks = { ...segments[0].checks, width: { ...segments[0].checks.width, nominalMm: 5 } };
+    segments[2].cameras = ["CAM-3"];
+    const next = applyToKind(segments, 0);
+    expect([next[2].checks.width.nominalMm, next[2].tolerance]).toEqual([5, 2]);
+    expect([next[2].cameras, next[2].lengthMm, next[2].expectedFrames]).toEqual([["CAM-3"], 80, 3]);
+    expect(next[1]).toBe(segments[1]);
   });
 
   it("只改检测相机 → N_exp 与标定保留；选全存为空（= 全部相机）；胶偏参考相机不在本段时改为本段第一台并清空 x_ref", () => {

@@ -57,7 +57,7 @@ function Section({ title, children, extra }: { title: string; children: ReactNod
   );
 }
 
-function DetectEditor({ value, changed, disabled, onChange }: { value: DetectParams; changed: Set<string>; disabled?: boolean; onChange: (v: DetectParams) => void }) {
+export function DetectEditor({ value, changed, disabled, onChange }: { value: DetectParams; changed: Set<string>; disabled?: boolean; onChange: (v: DetectParams) => void }) {
   const [lo, hi] = value.widthRange;
   const loId = useId(), hiId = useId();
   return (
