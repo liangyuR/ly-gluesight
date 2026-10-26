@@ -72,7 +72,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const camerasChanged=cameraKey!==cameraList.current;cameraList.current=cameraKey;
     const previousCameraSources=cameraSources.current;
     // 这台相机换了示教帧或标定：旧草稿是在旧帧上画的，丢弃
-    const cameraSourceKeys=Object.fromEntries(inspect.map(item=>[item.camera,JSON.stringify([item.calib,next.plan?.cameraTeaching.find(t=>t.camera===item.camera)?.frame?.id??null])]));
+    const cameraSourceKeys=Object.fromEntries(inspect.map(item=>[item.camera,JSON.stringify([item.calib,next.plan.cameraTeaching.find(t=>t.camera===item.camera)?.frame?.id??null])]));
     cameraSources.current=cameraSourceKeys;
     setData(next);
     setDoc(next.workspace.doc);

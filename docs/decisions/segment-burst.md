@@ -175,7 +175,7 @@
 
 ### D-SB-31 隐藏上限
 
-- 问题：原模型 `PathPoints.k: Vec<u8>`，配方最多 64 个拍照点；规格 §0 10～25 Hz，帧数远超 64。
+- 问题：规格 §0 10～25 Hz，一件的帧数远超 64，帧序号与计数不能用 u8。
 - 采用：帧序号用 u64；ΣN_exp 不超过 32767（`plan::MAX_EXPECTED_TOTAL`，也是帧组 seq 的默认上限），单段 tolerance ≤ 1000。
 
 ### D-SB-32 队列容量、内存与背压
@@ -279,7 +279,7 @@
 - **`recipe_plan_export` 前端不调用**：计划导出随 `WorkspaceView.plan.productionExport / candidateExport` 到达，发布确认框（`PlanPublishBody`）用它们列出候选与生产的对比。命令保留给脚本与工程师工具。
 - **相机示教的单帧试测没有命令**：若以后要在相机走廊示教里做单帧试测，由后端先登记命令与 `FrameMetrics` 的返回方式，前端再新增组件。
 
-- **走廊提取**：段配方没有拍照点（`shots = []`），不用按拍照点解析的 `workspace_extract_centerline`，用 `workspace_extract_corridor`：按 `camera`（相机 id）找到 `plan.cameraTeaching` 里这台相机冻结的示教帧，`imageId` 必须等于该帧 id（不等报“图像已变化”），检测极性取这台相机 `inspect.detect`，没有时取配方默认。
+- **走廊提取**：`workspace_extract_corridor` 按 `camera`（相机 id）找到 `plan.cameraTeaching` 里这台相机冻结的示教帧，`imageId` 必须等于该帧 id（不等报“图像已变化”），检测极性取这台相机 `inspect.detect`，没有时取配方默认。
 - **读图命令的参数口径**：`camera` 在在线与历史命令里是计划相机下标（与 `FrameGroupView.cells`、`FrameRecord.camera` 一致）；示教轮次命令用 `cameraId`（与 `CaptureRound.cameras[].cameraId` 一致）。
 - **前端调用**：上表命令前端直接调用（`desktopCall`），失败按普通错误显示。
 
@@ -364,7 +364,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 ## 八、旧拍照点配方
 
-旧拍照点配方（`segments` 为空）从未部署，不能新建、开工或发布，不维护运行入口、迁移与专属测试；通用单帧标定和 Software 调试保留。本地草稿不自动删除。
+旧拍照点配方（`segments` 为空）从未部署，代码已删除。这类配方文件、候选与 schema 3 发布包读入时报“旧拍照点配方已停用”，文件保留不删；候选不加载。通用单帧标定和 Software 调试保留。
 
 ## 九、实现要点
 

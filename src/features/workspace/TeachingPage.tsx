@@ -11,10 +11,10 @@ import type { SegmentChecks, WorkspacePlanView } from "../plan/types";
 import { workspaceApi } from "./api";
 import { useWorkspace, type SnackMessage } from "./context";
 import { Badge, GrayViewer, KV, Notice, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
-import type { CaptureSummary, FrozenImage, GrayImage, WorkspaceView } from "./types";
+import type { CaptureRoundV2, CaptureSummary, FrozenImage, GrayImage, WorkspaceView } from "./types";
 import { corridorDraft, corridorError, sameCorridor, withCorridor } from "./teach";
 import { cameraTeachingTasks } from "./cameraTasks";
-import { frameArrived, readRoundFrame, roundView, type AnyRound, type RoundView } from "./captureRound";
+import { frameArrived, readRoundFrame, roundView, type RoundView } from "./captureRound";
 import { CorridorSettings } from "./CorridorSettings";
 import "./corridor.css";
 
@@ -42,7 +42,7 @@ function extractionAdvice(reason: string, failures: number, brushWidth: number) 
 }
 
 /** 采集轮次里某台相机某个帧组的原图（候选示教帧，还没有冻结进候选配方）。 */
-function useRoundFrame(round: AnyRound | null, camera: string, seq: number, enabled: boolean) {
+function useRoundFrame(round: CaptureRoundV2 | null, camera: string, seq: number, enabled: boolean) {
   const key = JSON.stringify([round?.roundId ?? null, camera, seq, enabled]);
   const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string; loading: boolean }>({ key, image: null, error: "", loading: false });
   useEffect(() => {
@@ -60,7 +60,6 @@ function useRoundFrame(round: AnyRound | null, camera: string, seq: number, enab
 export default function TeachingPage() {
   const { data, doc } = useWorkspace();
   if (!data || !doc) return <WorkspaceEmpty />;
-  if (!data.plan) return <Notice title="该草稿不是段配方" tone="warn">请新建段配方后配置走廊，旧拍照点草稿不再支持。</Notice>;
   return <CorridorTeaching data={data} doc={doc} plan={data.plan} />;
 }
 
@@ -111,7 +110,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   // 示教帧选择：从一轮完整采集里选这台相机的一个帧组
   const [rounds, setRounds] = useState<CaptureSummary[]>([]);
   const [pickRoundId, setPickRoundId] = useState(requestedRound ?? "");
-  const [picked, setPicked] = useState<{ round: AnyRound; view: RoundView } | null>(null);
+  const [picked, setPicked] = useState<{ round: CaptureRoundV2; view: RoundView } | null>(null);
   const [pickSeq, setPickSeq] = useState(1);
   const [roundsError, setRoundsError] = useState("");
   const [pickError, setPickError] = useState("");
@@ -190,7 +189,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         candidateView = savedView;
       }
       let extracted: Awaited<ReturnType<typeof workspaceApi.extractCorridor>> | null = null;
-      // 段配方没有拍照点：按相机 id 在这台相机冻结的示教帧上提取（workspace_extract_corridor），不复用旧命令的 k
+      // 按相机 id 在这台相机冻结的示教帧上提取（workspace_extract_corridor）
       const result = await perform(async () => {
         extracted = await workspaceApi.extractCorridor(doc.id, candidateView.workspace.revision, camera, frame.id, roi, selectionTool === "brush" ? { points: brushPoints, radiusPx: brushWidth / 2 } : undefined, pointSpacing);
         return candidateView;

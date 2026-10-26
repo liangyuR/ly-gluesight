@@ -17,15 +17,15 @@ import { scrollBehavior } from "./motion";
 import { Button, Checkbox, IconButton, SegmentedControl, Select, Surface } from "qing-steel";
 import { Badge, Notice, NumberField, Panel, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
 import "./capture.css";
-import type { CapturePlcStatus, CaptureRound, GrayImage } from "./types";
-import { frameArrived, lossAlarmText, readRoundFrame, roundView, type AnyRound } from "./captureRound";
+import type { CapturePlcStatus, CaptureRoundV2, CaptureState, GrayImage } from "./types";
+import { frameArrived, lossAlarmText, readRoundFrame, roundView } from "./captureRound";
 import { DEFAULT_IMAGING, type CameraImaging, type Verdict } from "../cycle/types";
 import { expectedChoices } from "./progress";
 import type { CaptureNavigationState } from "./captureNavigation";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
 import CaptureReviewPanel from "./CaptureReviewPanel";
 
-const stateLabels: Record<CaptureRound["state"],string> = { waitingStart:"等待 PLC 接受", receiving:"接收中", draining:"PLC 已结束，等待在途图像", complete:"采集完成", failed:"采集异常" };
+const stateLabels: Record<CaptureState,string> = { waitingStart:"等待 PLC 接受", receiving:"接收中", draining:"PLC 已结束，等待在途图像", complete:"采集完成", failed:"采集异常" };
 const teachingLabels: Record<CapturePlcStatus["phase"], string> = {
   unavailable: "示教接口未就绪", resetRequired: "示教需要复位", idle: "可开始示教",
   requested: "等待 PLC 接受", accepted: "PLC 已接受，运动采集中", draining: "等待尾帧保存",
@@ -47,7 +47,7 @@ export default function CapturePage() {
   const [excluded,setExcluded] = useState<string[]>([]), [rig,setRig] = useState<CameraStatus[]>([]);
   const [flyPrefs,setFlyPrefs] = useState<{speed: number | null; spacing: number | null}>({speed:null,spacing:null}), [calib,setCalib] = useState<Record<string,number | null>>({});
   const [drain,setDrain] = useState(1500);
-  const [round,setRound] = useState<AnyRound | null>(null), [working,setWorking] = useState(false);
+  const [round,setRound] = useState<CaptureRoundV2 | null>(null), [working,setWorking] = useState(false);
   const [history,setHistory] = useState<Awaited<ReturnType<typeof workspaceApi.captureList>>>([]);
   const [roundId,setRoundId] = useState<string | undefined>();
   const [previewK,setPreviewK] = useState(0), [previewCamera,setPreviewCamera] = useState(""), [preview,setPreview] = useState<{k: number; camera: string; image: GrayImage} | null>(null), [previewError,setPreviewError] = useState("");
@@ -109,7 +109,6 @@ export default function CapturePage() {
   const locked=busy || working || dirty || frameDirty || !!data.workspace.pending;
   const deviceLocked=locked || active || handshakeBusy;
   const productionBusy=isProductionBusy(snapshot);
-  if (!data.plan) return <Notice title="该草稿不是段配方" tone="warn">请新建段配方后采集，旧拍照点草稿不再支持。</Notice>;
   const plan = data.plan;
   const calibrationEntry = round ? plan.calibration?.rounds.find(r => r.roundId===round.roundId) : undefined;
   const teachedCameras = round ? plan.cameraTeaching.filter(t => t.frame?.source.includes(round.roundId)).map(t => t.camera) : [];

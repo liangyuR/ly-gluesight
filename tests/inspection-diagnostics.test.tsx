@@ -6,7 +6,7 @@ import { snapshot } from "./fixtures";
 
 it("段配方选中的帧组缺一台相机 → 采集与测量按帧组列出每台相机，缺帧的相机写缺帧而不是被略过", () => {
   const part = burstPartView();
-  render(<InspectionDiagnostics group="capture" onGroup={() => {}} onClose={() => {}} snapshot={{ ...snapshot(), part }} readiness={null} layout={null} part={part} selected={0} selectedSeq={5} logs={[]} />);
+  render(<InspectionDiagnostics group="capture" onGroup={() => {}} onClose={() => {}} snapshot={{ ...snapshot(), part }} readiness={null} layout={null} part={part} selectedSeq={5} logs={[]} />);
   const table = within(screen.getByRole("table", { name: "本帧组各相机" }));
   const headers = table.getAllByRole("columnheader").map(header => header.textContent);
   const rows = table.getAllByRole("row").slice(1);

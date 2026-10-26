@@ -20,7 +20,6 @@ mod handshake_audit;
 mod inspection;
 mod instance;
 mod judge;
-mod locate_health;
 mod measure;
 mod mvs;
 mod offline;
@@ -60,10 +59,14 @@ pub use packaging::check_packaged_runtime;
 /// 吞吐探针（examples/throughput_probe.rs）走生产加载路径所需的内部接口，只为 example 暴露；不是稳定 API，应用本身不用。
 #[doc(hidden)]
 pub mod probe_api {
+    pub use crate::burst_judge::FrameState;
     pub use crate::image_file::save_pgm;
-    pub use crate::production::{graphs, Prepared, GRAPH_VERSION};
-    pub use crate::recipe::{samples, DetectParams, JudgeParams, Polarity, Recipe, RecipeDoc, ShotLimits};
-    pub use crate::release::{load as load_release, publish as publish_release, PublishInput, ResourceSource, ShotInput, ValidationSite, Versions};
+    pub use crate::production::{burst_graphs, Prepared, GRAPH_VERSION_BURST};
+    pub use crate::recipe::{burst_template, DetectParams, Polarity, Recipe, RecipeDoc};
+    pub use crate::release::{
+        load as load_release, publish_burst, BurstPublishInput, CameraInput, ResourceSource,
+        ValidationSite, Versions,
+    };
     pub use crate::vision::{Engine, FrameImage};
 
     /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。
@@ -194,7 +197,6 @@ pub fn run() {
             plc::plc_s7_phase1_template,
             cycle::cycle_snapshot,
             cycle::cycle_logs,
-            cycle::cycle_part_data,
             cycle::cycle_recipes,
             cycle::cycle_layout,
             cycle::cycle_get_settings,
@@ -226,7 +228,6 @@ pub fn run() {
             history::history_query,
             history::history_detail,
             history::history_neighbors,
-            history::history_recipe,
             history::history_rejudge,
             history::history_export,
             history::reveal_path,
@@ -249,18 +250,10 @@ pub fn run() {
             recipe_capture::recipe_capture_stop,
             recipe_capture::recipe_capture_plc_status,
             recipe_capture::recipe_capture_list,
-            recipe_capture::recipe_capture_image,
             recipe_capture::recipe_capture_frame_image,
-            workspace::workspace_set_views,
-            workspace::workspace_select_group_image,
-            workspace::workspace_save_draft,
-            workspace::workspace_progress,
-            workspace::workspace_check_calibration,
-            workspace::workspace_extract_centerline,
             workspace::workspace_debug_run,
             workspace::workspace_retry_publish,
             workspace::workspace_abandon_publish,
-            workspace::workspace_adopt_capture,
             workspace::workspace_capture_sample,
             workspace::workspace_get,
             workspace::workspace_create,
@@ -270,29 +263,14 @@ pub fn run() {
             workspace::workspace_transfer_import,
             workspace::workspace_save_doc,
             workspace::workspace_set_camera_imaging,
-            workspace::workspace_select_view,
             workspace::workspace_image,
-            workspace::workspace_trial,
-            workspace::workspace_save_params,
-            workspace::workspace_save_teach,
-            workspace::workspace_fixture_check,
-            workspace::workspace_fixture_trial,
-            workspace::workspace_apply_fixture_suggestion,
-            workspace::workspace_restore_teach,
-            workspace::workspace_save_overview,
             workspace::workspace_validate,
-            workspace::workspace_import_sample,
             workspace::workspace_publish,
             workspace::workspace_collect_checks,
             workspace::workspace_publish_collect,
-            workspace::workspace_record_images,
-            workspace::workspace_record_image,
-            workspace::workspace_history_capture,
             workspace::workspace_compare,
             workspace::workspace_compare_original,
             workspace::workspace_comparisons,
-            workspace::workspace_runtime_overview,
-            workspace::workspace_live_image,
             workspace::workspace_live_frame_image,
             workspace::workspace_station_capture,
             workspace::workspace_station_import,

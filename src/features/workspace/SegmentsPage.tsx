@@ -33,9 +33,7 @@ export default function SegmentsPage() {
   const selected = useRef(selectedId);
   selected.current = selectedId;
   if (!data || !doc) return <WorkspaceEmpty />;
-  const plan = data.plan;
-  if (!plan) return <Notice title="该草稿不是段配方" tone="warn">请新建段配方后编辑段列表，旧拍照点草稿不再支持。</Notice>;
-  return <SegmentsEditor key={doc.id} plan={plan} selected={selected} />;
+  return <SegmentsEditor key={doc.id} plan={data.plan} selected={selected} />;
 }
 
 function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected: MutableRefObject<string | null> }) {

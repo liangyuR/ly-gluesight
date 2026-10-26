@@ -30,7 +30,6 @@ fn burst_row(recipe: &Recipe) -> (StoredMeasurement, Vec<FrameRecord>) {
         recipe_id: Some(recipe.id.clone()),
         recipe_revision: Some(recipe.revision_id.clone()),
         verdict: burst.judgement.verdict,
-        table: Vec::new(),
         burst: Some(burst.judgement),
     };
     (row, burst.frames)

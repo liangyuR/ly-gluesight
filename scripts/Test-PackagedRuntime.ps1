@@ -124,20 +124,11 @@ public static class PackagedRuntimeProbe {
     foreach ($operator in $config.requiredOperators) {
         if ($operator -notin $operators -or $operator -notin $manifest.lyflow.operators) { throw "lyFlow 缺少必需算子：$operator" }
     }
-    # 带外圈模板的 glue.locate（lyFlow#32）：参数 templatePad、maxPeakRatio，输出 pose。缺少时按 locateSmoke 开关警告或失败
-    $locateOp = @($coreManifest.operators | Where-Object { $_.id -ceq 'glue.locate' }) | Select-Object -First 1
-    $hasItem = { param($list, $name) [bool](@(Get-RuntimeField $locateOp $list) | Where-Object { (Get-RuntimeField $_ 'name') -ceq $name }) }
-    $locate = [ordered]@{ templatePad = (& $hasItem 'params' 'templatePad'); maxPeakRatio = (& $hasItem 'params' 'maxPeakRatio'); pose = (& $hasItem 'outputs' 'pose'); policy = (Get-LocateSmokePolicy $config) }
-    if (-not ($locate.templatePad -and $locate.maxPeakRatio -and $locate.pose)) {
-        $message = 'lyFlow 运行库的 glue.locate 不支持带外圈模板（templatePad / maxPeakRatio / pose）：含特征定位的配方不能发布，不能在生产加载。'
-        if ($locate.policy -ceq 'required') { throw "$message packaging/runtime.json 的 lyflow.locateSmoke 为 required。" }
-        Write-Warning "$message lyflow.locateSmoke 为 optional，只适用于没有特征定位的配方。"
-    }
     $mvs = [PackagedRuntimeProbe]::Load((Join-Path $RuntimeRoot 'mvs/MvCameraControl.dll'))
     [PackagedRuntimeProbe]::Require($mvs, @('MV_CC_CreateHandle', 'MV_CC_OpenDevice', 'MV_CC_CloseDevice', 'MV_CC_DestroyHandle', 'MV_CC_StartGrabbing', 'MV_CC_StopGrabbing', 'MV_CC_GetOptimalPacketSize', 'MV_CC_RegisterImageCallBackEx', 'MV_CC_RegisterExceptionCallBack', 'MV_CC_SetEnumValueByString', 'MV_CC_SetFloatValue', 'MV_CC_GetFloatValue', 'MV_CC_SetIntValueEx', 'MV_CC_SetBoolValue', 'MV_CC_SetCommandValue', 'MV_CC_GetEnumValue', 'MV_CC_GetEnumEntrySymbolic'))
     $mvsVersion = [PackagedRuntimeProbe]::ProbeMvs($mvs, $RuntimeRoot)
     if ($mvsVersion -ne $config.mvsVersion) { throw "MVS 实际版本 $mvsVersion 与固定版本 $($config.mvsVersion) 不一致。" }
-    $report.lyflow = @{ version = $version; abiVersion = $abiVersion; declaredAbiVersion = $descriptor.abiVersion; series = $config.lyflow.series; operators = @($operators); locate = $locate }
+    $report.lyflow = @{ version = $version; abiVersion = $abiVersion; declaredAbiVersion = $descriptor.abiVersion; series = $config.lyflow.series; operators = @($operators) }
     $report.mvs = @{ version = $mvsVersion; initialization = 'passed'; enumeration = 'passed' }
     $report.success = $true
     Write-Host '运行库自检通过：文件清单、x64、接口、实际引擎版本与清单一致且属于锁定系列、必需算子及 MVS 初始化/枚举。客户端版本另由应用自检报告验证。'

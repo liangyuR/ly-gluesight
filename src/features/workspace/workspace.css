@@ -142,10 +142,6 @@
 .wp-recipe-card h2 { margin:0; font-size:14px; }
 .wp-recipe-card .wp-actions { margin-top:auto; }
 .wp-recipe-card .mono { overflow-wrap:anywhere; }
-.wp-overview { display:block; width:100%; min-height:260px; height:clamp(260px,40vh,480px); border:1px solid var(--outline-variant); border-radius:var(--r-md); background:var(--surface-lowest); }
-.wp-overview g[role=button] { cursor:pointer; outline:none; }
-.wp-overview.editable g[role=button] { cursor:move; touch-action:none; }
-.wp-overview g[role=button]:focus-visible rect { stroke:var(--primary); stroke-width:3px; }
 .wp-runtime-strip { display:flex; gap:8px; overflow-x:auto; padding:3px 0; }
 @media(max-width:1250px) { .wp-library-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:1050px) { .wp-columns { grid-template-columns:minmax(0,1fr); } .wp-workbench-bar .spacer { display:none; } .wp-steps a { font-size:12px; gap:6px; padding:8px; } .wp-step-status.waiting { font-size:0; gap:0; } .wp-capture-result { grid-template-columns:minmax(0,1fr); } .wp-capture-shots { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); max-height:none; } }

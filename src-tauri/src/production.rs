@@ -11,10 +11,8 @@ use crate::cycle::{CycleHost, Input};
 use crate::frame::FrameImage;
 use crate::recipe::Recipe;
 use crate::release::{ReleaseBundle, ValidationSite, RELEASE_SCHEMA_BURST};
-use crate::vision::{self, CorridorGraph, Engine, FrameMeasurement, ShotMeasurement, VisionHost};
+use crate::vision::{self, CorridorGraph, Engine, FrameMeasurement, VisionHost};
 
-/// 旧拍照点配方的测量图版本（按拍照点 × 视图）。
-pub const GRAPH_VERSION: &str = "taught-path-3-locate";
 /// 段配方的测量图版本（每台相机一条走廊）；发布包 schema 4 的 `versions.graph`。
 pub const GRAPH_VERSION_BURST: &str = "corridor-1";
 
@@ -28,19 +26,6 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
         Ok(json!({"index": corridor.camera_idx, "camera": corridor.camera, "size": size, "graph": corridor.graph}))
     }).collect::<Result<Vec<_>, String>>()?;
     Ok(json!({"schemaVersion": 3, "version": GRAPH_VERSION_BURST, "cameras": cameras}))
-}
-
-/// 旧拍照点配方的测量图（按拍照点 × 视图）。
-pub fn graphs(recipe: &Recipe) -> Result<Value, String> {
-    let mut shots = Vec::new();
-    for (k, shot) in recipe.shots.iter().enumerate() {
-        for view in shot.enabled_views() {
-            let projected = recipe.for_view(k, view)?;
-            shots.push(json!({"k": k, "shotId": shot.id, "camera": shot.camera, "view": view,
-                "graph": vision::build_taught_graph(&projected, k)?}));
-        }
-    }
-    Ok(json!({"schemaVersion": 2, "version": GRAPH_VERSION, "shots": shots}))
 }
 
 /// 同一 主.次 系列的引擎兼容运行：发布时 1.1.0 的版本可以在 1.1.x 上生产。
@@ -67,67 +52,20 @@ pub struct Prepared {
     /// 核心库文件与发布时不同的提示（见 engine_file_note）
     pub engine_note: Option<String>,
     engine: Arc<Engine>,
-    graphs: HashMap<(usize, u8), Value>,
-    sizes: HashMap<(usize, u8), [u32; 2]>,
-    /// 只登记启用 fixture 的视图：glue.locate 的 base_dir = 发布包里这个视图的目录（内有 template.pgm）。
-    /// 其他视图照旧给空串，与工作台、候选试运行一致
-    bases: HashMap<(usize, u8), String>,
-    /// 段配方：按计划相机下标的走廊测量图（旧拍照点配方为空，前面三项只服务旧配方）
+    /// 按计划相机下标的走廊测量图
     corridors: Vec<CorridorGraph>,
 }
 
 impl Prepared {
-    /// 段配方（发布包 schema 4）走 `load_burst`；旧拍照点配方（schema 3）的加载不变。
-    pub fn load(bundle: ReleaseBundle, engine: Arc<Engine>, expected: &Recipe) -> Result<Self, String> {
-        if bundle.recipe.is_burst() || expected.is_burst() {
-            return Self::load_burst(bundle, engine, expected);
-        }
-        bundle.verify()?;
-        let recipe = Arc::new(bundle.recipe.build()?);
-        vision::require_locate(&recipe, &engine.locate)?;
-        if recipe.revision_id != expected.revision_id || recipe.id != expected.id || recipe.version != expected.version
-            || recipe.product_code != expected.product_code || recipe.trigger_mode != expected.trigger_mode || recipe.schema_version != expected.schema_version
-            || recipe.shots != expected.shots || recipe.spacing != expected.spacing || recipe.detect != expected.detect
-            || recipe.limits != expected.limits || recipe.filter_window != expected.filter_window || recipe.teaching_id != expected.teaching_id
-            || recipe.plan_version != expected.plan_version || recipe.camera_imaging != expected.camera_imaging { return Err("发布包配方与所选生产版本不一致，请重新发布".into()); }
-        if bundle.manifest.versions.graph != GRAPH_VERSION || !engine_version_matches(&bundle.manifest.versions.engine, &engine.version) {
-            return Err("发布包的算法图或引擎版本与当前引擎不一致，请重新验证并发布".into());
-        }
-        let stored: Value = serde_json::from_str(&crate::fsio::read_text(&bundle.root.join(&bundle.manifest.graph)).map_err(|e| e.to_string())?)
-            .map_err(|e| format!("发布包算法图无效：{e}"))?;
-        if stored != graphs(&recipe)? { return Err("发布包算法图与配方测点不一致".into()); }
-        let mut values = HashMap::new();
-        let mut sizes = HashMap::new();
-        let mut bases = HashMap::new();
-        for (k, shot) in recipe.shots.iter().enumerate() {
-            for view in shot.enabled_views() {
-                let resource = bundle.view(k, view)?;
-                let projected = recipe.for_view(k, view)?;
-                values.insert((k, view), vision::build_taught_graph(&projected, k)?);
-                sizes.insert((k, view), resource.size.ok_or("发布原图缺少尺寸")?);
-                if projected.shots[k].fixture.is_some() {
-                    if resource.template.is_none() { return Err(format!("拍照点 {} 图 {view} 使用了特征定位，发布包缺少定位模板", shot.id)); }
-                    let dir = resource.dir.to_str().filter(|_| resource.dir.is_absolute())
-                        .ok_or_else(|| format!("发布包目录不是 UTF-8 绝对路径，不能作为定位模板目录：{}", resource.dir.display()))?;
-                    bases.insert((k, view), dir.to_string());
-                }
-                let calibration: Value = serde_json::from_str(&crate::fsio::read_text(resource.calibration.as_ref().ok_or("发布包缺少标定")?).map_err(|e| e.to_string())?)
-                    .map_err(|e| format!("发布包标定无效：{e}"))?;
-                let scale = calibration["mmPerPx"].as_f64().ok_or("发布包标定没有有效像素当量")?;
-                if !scale.is_finite() || (scale - projected.shots[k].mm_per_px.unwrap_or_default() as f64).abs() > 1e-6 {
-                    return Err(format!("拍照点 {} 图 {view} 的发布标定与示教像素当量不一致", shot.id));
-                }
-            }
-        }
-        let engine_note = engine_file_note(&bundle.manifest.versions.engine, &engine);
-        Ok(Self { bundle, recipe, engine_note, engine, graphs: values, sizes, bases, corridors: Vec::new() })
-    }
-
-    /// 段配方：按相机建走廊测量图。发布包与所选生产版本的配方逐项一致、测量图版本与引擎系列匹配、
+    /// 按相机建走廊测量图。发布包与所选生产版本的配方逐项一致、测量图版本与引擎系列匹配、
     /// 包内测量图等于按配方和各相机示教帧尺寸重算的结果、各相机发布标定的当量等于示教当量。
-    fn load_burst(bundle: ReleaseBundle, engine: Arc<Engine>, expected: &Recipe) -> Result<Self, String> {
+    pub fn load(
+        bundle: ReleaseBundle,
+        engine: Arc<Engine>,
+        expected: &Recipe,
+    ) -> Result<Self, String> {
         bundle.verify()?;
-        if bundle.manifest.schema_version != RELEASE_SCHEMA_BURST || !bundle.recipe.is_burst() || !expected.is_burst() {
+        if bundle.manifest.schema_version != RELEASE_SCHEMA_BURST {
             return Err("段配方需要按相机组织的发布包（格式版本 4），请重新发布".into());
         }
         let recipe = Arc::new(bundle.recipe.build()?);
@@ -157,7 +95,13 @@ impl Prepared {
         let sizes: Vec<[u32; 2]> = corridors.iter().map(|c| c.size).collect();
         if stored != burst_graphs(&recipe, &sizes)? { return Err("发布包算法图与配方走廊不一致".into()); }
         let engine_note = engine_file_note(&bundle.manifest.versions.engine, &engine);
-        Ok(Self { bundle, recipe, engine_note, engine, graphs: HashMap::new(), sizes: HashMap::new(), bases: HashMap::new(), corridors })
+        Ok(Self {
+            bundle,
+            recipe,
+            engine_note,
+            engine,
+            corridors,
+        })
     }
 
     pub fn verify(&self) -> Result<(), String> {
@@ -171,8 +115,8 @@ impl Prepared {
         vision::measure_frame(&self.engine, corridor, image, seq, run_id)
     }
 
-    /// 段配方的预热：每台相机在发布包里自己的示教帧上量一次，必须测成（Measured）——现场证明发布包、走廊与运行库接线正确。
-    fn warm_burst(&self) -> Result<(), String> {
+    /// 预热：每台相机在发布包里自己的示教帧上量一次，必须测成（Measured）——现场证明发布包、走廊与运行库接线正确。
+    pub(crate) fn warm(&self) -> Result<(), String> {
         for (idx, corridor) in self.corridors.iter().enumerate() {
             let resource = self.bundle.camera(idx)?;
             let image = crate::image_file::load(&resource.image)?;
@@ -183,59 +127,6 @@ impl Prepared {
             }
         }
         self.verify()
-    }
-
-    pub fn measure(&self, k: usize, image: &FrameImage, run_id: &str) -> Result<ShotMeasurement, String> {
-        let view = self.recipe.shots.get(k).ok_or("拍照点不存在")?.view;
-        self.measure_view(k, view, image, run_id)
-    }
-
-    pub fn measure_view(&self, k: usize, view: u8, image: &FrameImage, run_id: &str) -> Result<ShotMeasurement, String> {
-        if self.sizes.get(&(k, view)).copied() != Some([image.width, image.height]) {
-            return Err(format!("拍照点 {} 图 {view} 的原图尺寸与发布示教图不一致", k + 1));
-        }
-        let graph = self.graphs.get(&(k, view)).ok_or("拍照点图像没有已发布测量图")?;
-        let projected = self.recipe.for_view(k, view)?;
-        let base = self.bases.get(&(k, view)).map_or("", String::as_str);
-        vision::measure_shot_with_graph(&self.engine, &projected, k, image, run_id, base, graph)
-    }
-
-    pub fn measure_views(&self, k: usize, images: &[(u8, Arc<FrameImage>)], run_id: &str) -> Result<vision::MultiViewMeasurement, String> {
-        for (view, image) in images {
-            if self.recipe.shots[k].enabled_views().contains(view) && self.sizes.get(&(k, *view)).copied() != Some([image.width, image.height]) {
-                return Err(format!("拍照点 {} 图 {view} 的收图尺寸与发布资源不一致", k + 1));
-            }
-        }
-        vision::measure_views_with(&self.recipe, k, images, |view, image| {
-            self.measure_view(k, view, image, &format!("{run_id}-v{view}"))
-        })
-    }
-
-    /// 在发布包自己的示教原图上把每个视图跑一遍。用特征定位的视图还要定位验收：位姿在自己的示教图上必须被采用，
-    /// 否则不布防——现场直接证明 base_dir、包内模板与运行库三者接线正确（这是生产接线，不是 G4 的质量门）。
-    pub(crate) fn warm(&self) -> Result<(), String> {
-        if self.recipe.is_burst() { return self.warm_burst(); }
-        for (k, shot) in self.recipe.shots.iter().enumerate() {
-            for view in shot.enabled_views() {
-                let resource = self.bundle.view(k, view)?;
-                let image = crate::image_file::load(resource.image.as_ref().ok_or("发布包缺少示教原图")?)?;
-                let m = self.measure_view(k, view, &image, &format!("warm-{}-{k}-v{view}-{}", self.bundle.id, ly_plc::now_ms()))?;
-                if self.bases.contains_key(&(k, view)) {
-                    warm_located(&shot.id, view, m.pose.as_ref())?;
-                }
-            }
-        }
-        self.verify()
-    }
-
-}
-
-/// 预热的定位验收：示教原图上的位姿没被采用就不布防。
-fn warm_located(shot: &str, view: u8, pose: Option<&vision::PoseRecord>) -> Result<(), String> {
-    match pose {
-        Some(pose) if pose.accepted => Ok(()),
-        _ => Err(format!("拍照点 {shot} 图 {view}：发布包定位模板在自己的示教原图上定位失败（{}），不能布防",
-            pose.and_then(|p| p.reason.as_deref()).unwrap_or("没有定位输出"))),
     }
 }
 

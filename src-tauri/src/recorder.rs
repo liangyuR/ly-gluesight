@@ -15,9 +15,7 @@ use crate::recipe::{valid_camera_id, Recipe};
 use crate::settings::{CycleSettings, RecordMode};
 use crate::store::{FrameKey, HistoryScope, RecordSource};
 
-/// 旧拍照点模型的录制队列：按组（一个拍照点的 1 或 3 个视角）计，行为不变。
-const QUEUE: usize = 48;
-/// 段配方的录制队列：按帧计（D-SB-32），只防失控；图像内存由 FramePool 的每相机字节预算封顶。
+/// 录制队列：按帧计（D-SB-32），只防失控；图像内存由 FramePool 的每相机字节预算封顶。
 /// 队满时该帧原图不录，part.json 记 rawDropped，证据状态 Incomplete，不影响结论。
 const BURST_QUEUE: usize = 1024;
 /// 段配方逐帧写盘错误写进录制结果的条数上限；其余只在 part.json 的 frames 里。
@@ -52,14 +50,11 @@ pub enum RecordingState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordedRawFile {
-    pub k: usize,
-    pub view: u8,
     pub file: String,
     pub width: u32,
     pub height: u32,
-    /// 段配方的帧身份 (计划相机下标, seq)；有值时 k、view 不用（为 0）。旧拍照点模型为 None
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frame: Option<FrameKey>,
+    /// 帧身份 (计划相机下标, seq)
+    pub frame: FrameKey,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -72,41 +67,6 @@ pub struct RecordingOutcome {
     pub retention_errors: Vec<String>,
     pub available: bool,
     pub state: RecordingState,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FrameMeta {
-    cycle_id: String,
-    bundle_id: Option<String>,
-    recipe_revision: String,
-    session: u64,
-    ordinal: u64,
-    k: usize,
-    shot_id: String,
-    selected_view: u8,
-    view: u8,
-    cam: u8,
-    camera: String,
-    seq: u64,
-    file: String,
-    ts: i64,
-    counter: CounterSource,
-    frame_counter: u64,
-    trigger_counter: u64,
-    lost_packets: u32,
-    manual: bool,
-    width: u32,
-    height: u32,
-    queued: bool,
-    available: bool,
-    error: Option<String>,
-}
-
-struct FrameGroup {
-    cycle_id: String,
-    pending: PathBuf,
-    images: Vec<(FrameMeta, Arc<FrameImage>)>,
 }
 
 /// 段配方一帧的录制元数据（part.json 的 frames）。camera 是计划相机下标，与 IPC 的 FrameRecord.camera 同一口径。
@@ -143,6 +103,7 @@ struct BurstFrameJob {
 }
 
 /// 段配方录制的帧状态：按 (计划相机下标, seq) 记，缺帧在收尾时按“1..=最大 seq 内没到的帧”列出。
+#[derive(Default)]
 struct BurstFrames {
     cameras: Vec<String>,
     frames: Vec<BurstFrameMeta>,
@@ -163,7 +124,6 @@ struct FinishJob {
 }
 
 enum Msg {
-    Frames(FrameGroup),
     BurstFrame(BurstFrameJob),
     Finish(FinishJob),
     Prune { keep: u32, max_bytes: u64 },
@@ -179,12 +139,8 @@ pub struct Recording {
     sn: String,
     recipe: Arc<Recipe>,
     mode: RecordMode,
-    frames: Vec<FrameMeta>,
-    seen: HashSet<usize>,
-    dropped: u32,
     errors: Vec<String>,
-    /// 段配方（配方 segments 非空）按相机帧录制；旧拍照点配方为 None
-    burst: Option<BurstFrames>,
+    burst: BurstFrames,
     /// 收尾时并入 part.json 的附加字段（件的模式、相机设备、PLC 请求）
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -240,10 +196,6 @@ impl Recorders {
 
     pub fn begin(&self, source: RecordSource, mode: RecordMode, sn: &str, recipe: Arc<Recipe>, cycle_id: &str, bundle_id: Option<&str>) -> Option<Recording> {
         self.get(HistoryScope::of(source)).begin(mode, sn, recipe, cycle_id, bundle_id)
-    }
-
-    pub fn frame(&self, rec: &mut Recording, frame: &Frame, camera: &str, k: usize, ordinal: u64) {
-        self.get(rec.scope).frame(rec, frame, camera, k, ordinal)
     }
 
     /// 段配方：按 (计划相机下标, seq) 录一帧。
@@ -346,13 +298,10 @@ impl Recorder {
             });
             return None;
         }
-        let burst = recipe.is_burst().then(|| BurstFrames {
+        let burst = BurstFrames {
             cameras: recipe.plan_cameras(),
-            frames: Vec::new(),
-            seen: BTreeSet::new(),
-            dropped: Vec::new(),
-            drop_reason: None,
-        });
+            ..BurstFrames::default()
+        };
         Some(Recording {
             scope: self.scope,
             started: ly_plc::now_ms(),
@@ -363,9 +312,6 @@ impl Recorder {
             sn: sn.into(),
             recipe,
             mode,
-            frames: Vec::new(),
-            seen: HashSet::new(),
-            dropped: 0,
             errors: Vec::new(),
             burst,
             extra: serde_json::Map::new(),
@@ -375,10 +321,7 @@ impl Recorder {
     /// 段配方：按 (计划相机下标, seq) 录一帧，文件名 `{相机}_s{seq:06}.pgm`。同一帧重复到达时保留先到的原图；
     /// 录制队满（BURST_QUEUE 帧）或写入线程停止时该帧原图不录，记进 rawDropped，不影响检测结论。
     pub fn burst_frame(&self, rec: &mut Recording, frame: &Frame, camera: usize, seq: u64) {
-        let Some(burst) = rec.burst.as_mut() else {
-            rec.errors.push("旧拍照点配方的录制不能按相机帧录制".into());
-            return;
-        };
+        let burst = &mut rec.burst;
         let Some(camera_id) = burst.cameras.get(camera).filter(|id| valid_camera_id(id)).cloned() else {
             rec.errors.push(format!("录制相机下标 {camera} 不在原配方的计划相机中"));
             return;
@@ -438,79 +381,6 @@ impl Recorder {
         burst.frames.push(meta);
     }
 
-    pub fn frame(&self, rec: &mut Recording, frame: &Frame, camera: &str, k: usize, ordinal: u64) {
-        let Some(shot) = rec.recipe.shots.get(k) else {
-            rec.errors.push(format!("录制拍照点 k={k} 不在原配方中"));
-            return;
-        };
-        if !valid_camera_id(camera) || !valid_camera_id(&shot.id) || camera != shot.camera {
-            rec.errors.push(format!("录制拍照点 {} 的相机或编号与原配方不一致", shot.id));
-            return;
-        }
-        if !rec.seen.insert(k) {
-            rec.errors.push(format!("拍照点 {} 重复录制，拒绝覆盖原图", shot.id));
-            return;
-        }
-        if !matches!(frame.images.len(), 1 | 3) || frame.image(shot.view).is_none() {
-            rec.errors.push(format!("拍照点 {} 原图不完整：实际 {} 个视角，所选视角 {}", shot.id, frame.images.len(), shot.view));
-            return;
-        }
-        let mut metadata: Vec<_> = frame
-            .images
-            .iter()
-            .enumerate()
-            .map(|(i, image)| {
-                let view = i as u8 + 1;
-                FrameMeta {
-                    cycle_id: rec.cycle_id.clone(),
-                    bundle_id: rec.bundle_id.clone(),
-                    recipe_revision: rec.recipe.revision_id.clone(),
-                    session: frame.session,
-                    ordinal,
-                    k,
-                    shot_id: shot.id.clone(),
-                    selected_view: shot.view,
-                    view,
-                    cam: frame.cam,
-                    camera: camera.into(),
-                    seq: ordinal,
-                    file: format!("k{k:03}_{}_{camera}_v{view}.pgm", shot.id),
-                    ts: frame.ts,
-                    counter: frame.counter,
-                    frame_counter: frame.frame_counter,
-                    trigger_counter: frame.trigger_counter,
-                    lost_packets: frame.lost_packets,
-                    manual: frame.manual,
-                    width: image.width,
-                    height: image.height,
-                    queued: true,
-                    available: false,
-                    error: None,
-                }
-            })
-            .collect();
-        let queue_error = if self.queued.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < QUEUE).then_some(n + 1)).is_err() {
-            Some(format!("录制队列已满（{QUEUE} 组），拍照点 {} 的 {} 个视角整组未入队", shot.id, frame.images.len()))
-        } else {
-            let images = metadata.iter().cloned().zip(frame.images.iter().cloned()).collect();
-            if self.tx.send(Msg::Frames(FrameGroup { cycle_id: rec.cycle_id.clone(), pending: rec.dir.clone(), images })).is_err() {
-                self.queued.fetch_sub(1, Ordering::AcqRel);
-                Some(format!("录制写入线程已停止，拍照点 {} 整组未入队", shot.id))
-            } else {
-                None
-            }
-        };
-        if let Some(error) = queue_error {
-            rec.dropped += 1;
-            rec.errors.push(error.clone());
-            for meta in &mut metadata {
-                meta.queued = false;
-                meta.error = Some(error.clone());
-            }
-        }
-        rec.frames.extend(metadata);
-    }
-
     pub fn finish(&self, rec: Recording, verdict: Verdict, reason: &str, keep: u32, max_bytes: u64, in_use: Vec<PathBuf>) {
         let failed = !matches!(verdict, Verdict::Ok | Verdict::OkWithExcursion);
         let keep_this = rec.mode == RecordMode::All || failed;
@@ -560,8 +430,7 @@ fn notify(callback: &Option<RecordingCallback>, outcome: RecordingOutcome) {
 
 #[derive(Default)]
 struct WriteState {
-    results: HashMap<(usize, u8), Result<(), String>>,
-    /// 段配方逐帧写盘结果；失败原因只在这里，收尾时汇总，不逐帧进 errors
+    /// 逐帧写盘结果；失败原因只在这里，收尾时汇总，不逐帧进 errors
     frame_results: HashMap<FrameKey, Result<(), String>>,
     errors: Vec<String>,
     retention_errors: Vec<String>,
@@ -590,17 +459,6 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
     let mut cycles: HashMap<String, WriteState> = HashMap::new();
     while let Ok(msg) = rx.recv() {
         match msg {
-            Msg::Frames(group) => {
-                let state = cycles.entry(group.cycle_id).or_default();
-                for (meta, image) in group.images {
-                    let result = save_raw(&group.pending.join(&meta.file), &image).map_err(|error| format!("{}：{error}", meta.file));
-                    if let Err(error) = &result {
-                        state.errors.push(error.clone());
-                    }
-                    state.results.insert((meta.k, meta.view), result);
-                }
-                queued.fetch_sub(1, Ordering::AcqRel);
-            }
             Msg::BurstFrame(job) => {
                 let state = cycles.entry(job.cycle_id).or_default();
                 let result = save_raw(&job.pending.join(&job.meta.file), &job.image);
@@ -716,7 +574,12 @@ fn burst_files(root: &Path, actual_dir: &Path, burst: &mut BurstFrames, results:
         match result {
             Ok(file) => {
                 frame.available = true;
-                files.push(RecordedRawFile { k: 0, view: 0, file, width: frame.width, height: frame.height, frame: Some(key) });
+                files.push(RecordedRawFile {
+                    file,
+                    width: frame.width,
+                    height: frame.height,
+                    frame: key,
+                });
             }
             Err(error) => {
                 failures += 1;
@@ -751,31 +614,8 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
             state: RecordingState::NotRetained,
         };
     }
-    let mut burst = rec.burst.take();
-    let mut meta = match burst.as_ref() {
-        Some(burst) => burst_metadata(&mut rec, burst, verdict, &reason),
-        None => {
-            let planned: Vec<_> =
-                rec.recipe.shots.iter().enumerate().map(|(k, shot)| json!({"k": k, "shotId": shot.id, "camera": shot.camera, "selectedView": shot.view})).collect();
-            let missing: Vec<_> = rec
-                .recipe
-                .shots
-                .iter()
-                .enumerate()
-                .filter(|(k, _)| !rec.frames.iter().any(|frame| frame.k == *k))
-                .map(|(k, shot)| json!({"k": k, "shotId": shot.id}))
-                .collect();
-            if !missing.is_empty() {
-                rec.errors.push(format!("{} 个计划拍照点没有录制原图", missing.len()));
-            }
-            json!({
-                "cycleId": rec.cycle_id, "bundleId": rec.bundle_id, "recipeRevision": rec.recipe.revision_id,
-                "startedTs": rec.started, "sn": rec.sn, "mode": rec.mode, "verdict": verdict, "reason": reason,
-                "recipe": &*rec.recipe, "plannedShots": planned, "missingShots": missing,
-                "frames": rec.frames, "droppedFrames": rec.dropped, "available": false, "errors": rec.errors,
-            })
-        }
-    };
+    let mut burst = std::mem::take(&mut rec.burst);
+    let mut meta = burst_metadata(&mut rec, &burst, verdict, &reason);
     for (key, value) in &rec.extra {
         meta[key] = value.clone();
     }
@@ -810,40 +650,14 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
     let actual_dir = if promoted { target } else { rec.dir.clone() };
     let directory = actual_dir.is_dir().then_some(actual_dir.clone());
     let mut files = Vec::new();
-    if let Some(burst) = burst.as_mut() {
-        burst_files(root, &actual_dir, burst, &mut state.frame_results, &mut files, &mut rec.errors);
-    }
-    for frame in &mut rec.frames {
-        let result = match state.results.remove(&(frame.k, frame.view)) {
-            Some(Ok(())) => verify_raw(&actual_dir.join(&frame.file), frame.width, frame.height),
-            Some(Err(error)) => Err(error),
-            None => Err(frame.error.clone().unwrap_or_else(|| "原图未取得写入成功确认".into())),
-        };
-        match result {
-            Ok(()) => {
-                let path = actual_dir.join(&frame.file);
-                let relative = path.strip_prefix(root).map(|p| p.to_string_lossy().replace('\\', "/"));
-                match relative {
-                    Ok(file) => {
-                        frame.available = true;
-                        files.push(RecordedRawFile { k: frame.k, view: frame.view, file, width: frame.width, height: frame.height, frame: None });
-                    }
-                    Err(error) => {
-                        frame.error = Some(format!("原图路径不在录制根目录：{error}"));
-                    }
-                }
-            }
-            Err(error) => {
-                frame.error = Some(error);
-            }
-        }
-        if let Some(error) = &frame.error {
-            let error = format!("{}：{error}", frame.file);
-            if !rec.errors.contains(&error) {
-                rec.errors.push(error);
-            }
-        }
-    }
+    burst_files(
+        root,
+        &actual_dir,
+        &mut burst,
+        &mut state.frame_results,
+        &mut files,
+        &mut rec.errors,
+    );
     if files.is_empty() {
         rec.errors.push("本件没有已确认写入的原图".into());
     }
@@ -852,10 +666,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
     let mut retention_errors = state.retention_errors;
     if !state.retention_blocked { retention_errors.extend(prune(root, keep as usize, max_bytes, &protected, release)); }
     let mut available = promoted && directory.is_some() && !files.is_empty() && rec.errors.is_empty();
-    meta["frames"] = match &burst {
-        Some(burst) => serde_json::to_value(&burst.frames).unwrap(),
-        None => serde_json::to_value(&rec.frames).unwrap(),
-    };
+    meta["frames"] = serde_json::to_value(&burst.frames).unwrap();
     meta["available"] = json!(available);
     meta["errors"] = json!(rec.errors);
     meta["retentionErrors"] = json!(retention_errors);

@@ -46,7 +46,6 @@ pub struct RecipeOption {
     pub name: String,
     pub version: u32,
     pub product_code: u16,
-    pub shot_count: usize,
     pub published: bool,
     pub runnable: bool,
     pub reason: Option<String>,
@@ -255,27 +254,26 @@ pub fn evaluate(mut f: Facts) -> Readiness {
     Readiness { candidate_debug: f.candidate_debug, ready: items.iter().all(|i| i.state != ItemState::Blocked), items, recipes: f.recipes }
 }
 
-/// 样本集按相机编号 + 相机内序号取图（见 [`Manifest::recipe_shots`]），且要提供该相机配置的全部视角
-/// （样本集相机每次取 1..=视角数）。段配方（规格 §1 Plan.cameras）只核对三台计划相机都在样本集里、且有单视角图（视角 1）。
-pub fn sample_set_mismatch(recipe: &Recipe, manifest: &Manifest, view_count: impl Fn(&str) -> Option<u8>) -> Option<String> {
-    if recipe.is_burst() {
-        return recipe.plan_cameras().iter().find_map(|id| match manifest.cameras.iter().find(|c| &c.id == id) {
-            None => Some(format!("计划相机 {id} 不在样本集里（样本集相机：{}）", manifest.cameras.iter().map(|c| c.id.as_str()).collect::<Vec<_>>().join("、"))),
-            Some(camera) if !camera.views.contains(&1) => Some(format!("计划相机 {id} 在样本集里没有单视角图（视角 1），只有视角 {:?}", camera.views)),
+/// 样本集要包含三台计划相机（规格 §1 Plan.cameras），且各有单视角图（视角 1）。
+pub fn sample_set_mismatch(recipe: &Recipe, manifest: &Manifest) -> Option<String> {
+    recipe.plan_cameras().iter().find_map(|id| {
+        match manifest.cameras.iter().find(|c| &c.id == id) {
+            None => Some(format!(
+                "计划相机 {id} 不在样本集里（样本集相机：{}）",
+                manifest
+                    .cameras
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、")
+            )),
+            Some(camera) if !camera.views.contains(&1) => Some(format!(
+                "计划相机 {id} 在样本集里没有单视角图（视角 1），只有视角 {:?}",
+                camera.views
+            )),
             Some(_) => None,
-        });
-    }
-    let samples = match manifest.recipe_shots(recipe) {
-        Ok(samples) => samples,
-        Err(reason) => return Some(reason),
-    };
-    for (shot, sample) in recipe.shots.iter().zip(samples) {
-        let needed = view_count(&shot.camera).unwrap_or(1);
-        if let Some(view) = (1..=needed).find(|v| !sample.views.contains(v)) {
-            return Some(format!("拍照点 {}（相机 {}，样本集 {}）需要视角 {view}，样本集只有视角 {:?}", shot.id, shot.camera, sample.shot_id, sample.views));
         }
-    }
-    None
+    })
 }
 
 const FAILED_CHECK_TTL: Duration = Duration::from_secs(5);
@@ -333,8 +331,7 @@ fn recipe_problem(
     } else {
         None
     };
-    let view_count = |id: &str| host.camera.require(id).ok().and_then(|c| host.camera.slot(c as usize)).map(|slot| slot.config().view_count);
-    if let Some(reason) = set.and_then(|set| sample_set_mismatch(recipe, set.manifest(), view_count)) {
+    if let Some(reason) = set.and_then(|set| sample_set_mismatch(recipe, set.manifest())) {
         return Err((format!("与样本集不符：{reason}"), Target::Workspace));
     }
     let cams = usable_cams(app, recipe).map_err(|e| (e, Target::Camera))?;
@@ -347,8 +344,15 @@ fn recipe_problem(
 fn option(recipe: &Recipe, problem: Option<(String, Target)>, waiting: Option<String>) -> RecipeOption {
     let (reason, target) = problem.map_or((None, None), |(reason, target)| (Some(reason), Some(target)));
     RecipeOption {
-        id: recipe.id.clone(), name: recipe.name.clone(), version: recipe.version, product_code: recipe.product_code,
-        shot_count: recipe.shot_count(), published: true, runnable: reason.is_none(), reason, target, waiting,
+        id: recipe.id.clone(),
+        name: recipe.name.clone(),
+        version: recipe.version,
+        product_code: recipe.product_code,
+        published: true,
+        runnable: reason.is_none(),
+        reason,
+        target,
+        waiting,
     }
 }
 
@@ -381,9 +385,15 @@ pub fn gather(app: &AppHandle) -> Readiness {
     for draft in drafts {
         if library.iter().any(|r| r.id == draft.id) { continue; }
         recipes.push(RecipeOption {
-            id: draft.id, name: draft.name, version: draft.version, product_code: draft.product_code,
-            shot_count: draft.shot_count, published: false, runnable: false,
-            reason: Some("未发布：在配方工作台验证并发布后才能运行".into()), target: Some(Target::Workspace), waiting: None,
+            id: draft.id,
+            name: draft.name,
+            version: draft.version,
+            product_code: draft.product_code,
+            published: false,
+            runnable: false,
+            reason: Some("未发布：在配方工作台验证并发布后才能运行".into()),
+            target: Some(Target::Workspace),
+            waiting: None,
         });
     }
     let product = if debug.is_some() { Product::Plc } else { match settings.product_source {

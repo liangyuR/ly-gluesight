@@ -341,13 +341,12 @@ fn part_images<W: std::io::Write>(app: &AppHandle, package: &mut Package<W>, det
     let folder = format!("records/{id}_{cycle_id}");
     let mut count = 0;
     let mut directory = None;
-    // 旧拍照点配方按拍照点与视角记原图；段配方按 (相机, seq) 记在帧记录里（FrameRecord.raw_file）
-    let shot_files = detail.shots.iter().flat_map(|shot| shot.raw_files.iter().map(move |raw| (format!("k{} 视角 {}", shot.k + 1, raw.view), raw.file.as_str())));
+    // 原图按 (相机, seq) 记在帧记录里（FrameRecord.raw_file）
     let frame_files = detail.burst.iter().flat_map(|burst| burst.frames.iter().filter_map(move |frame| {
         let camera = burst.cameras.get(frame.camera).map_or("?", String::as_str);
         frame.raw_file.as_deref().map(|file| (format!("相机 {camera} 第 {} 帧", frame.seq), file))
     }));
-    let files: Vec<(String, &str)> = shot_files.chain(frame_files).collect();
+    let files: Vec<(String, &str)> = frame_files.collect();
     for (label, file) in &files {
         let Some(path) = relative(file) else {
             package.notes.push(format!("记录 #{id} {label} 的原图路径无效，未打包"));

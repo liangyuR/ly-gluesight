@@ -118,17 +118,17 @@ fn burst_record_round_trips_frames_flags_regions_and_device_triggers() {
     assert_eq!(store.measurements(&HistoryQuery::default(), &[id], 1).unwrap()[0].burst.as_ref(), Some(&burst.judgement));
 }
 
-/// 规格 §2：段配方帧数可以波动，不要求等于预期帧组数；§3：帧身份 (camera, seq) 唯一、相机属于计划相机；
-/// D-SB-1：帧记录只属于段配方。不合格的记录整条不落库。
+/// 规格 §2：段配方帧数可以波动，不要求等于预期帧组数；§3：帧身份 (camera, seq) 唯一、相机属于计划相机。
+/// 不合格的记录整条不落库。
 #[test]
 fn insert_accepts_any_frame_count_but_rejects_duplicate_camera_seq_or_foreign_camera() {
-    type Edit = fn(&mut Recipe, &mut Vec<FrameRecord>);
-    let cases: [(&str, u64, Edit, bool); 4] = [
-        ("帧组数 7 多于预期 4", 7, |_, _| {}, true),
+    type Edit = fn(&mut Vec<FrameRecord>);
+    let cases: [(&str, u64, Edit, bool); 3] = [
+        ("帧组数 7 多于预期 4", 7, |_| {}, true),
         (
             "同一相机同一 seq 两条",
             5,
-            |_, frames| {
+            |frames| {
                 let duplicate = frames[1].clone();
                 frames.push(duplicate);
             },
@@ -137,22 +137,16 @@ fn insert_accepts_any_frame_count_but_rejects_duplicate_camera_seq_or_foreign_ca
         (
             "相机下标 3 不在计划相机内",
             5,
-            |_, frames| frames[0].camera = 3,
-            false,
-        ),
-        (
-            "旧拍照点配方带帧记录",
-            5,
-            |legacy, _| *legacy = crate::recipe::samples().remove(1).build().unwrap(),
+            |frames| frames[0].camera = 3,
             false,
         ),
     ];
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
     for (index, (case, groups, edit, accepted)) in cases.into_iter().enumerate() {
-        let mut recipe = burst_fixture::recipe();
+        let recipe = burst_fixture::recipe();
         let (judgement, mut burst) = burst_fixture::record(&recipe, burst_fixture::frames(groups, &[]), None, None);
-        edit(&mut recipe, &mut burst.frames);
+        edit(&mut burst.frames);
         let result = save_burst(&store, &recipe, &format!("cycle-{index}"), &judgement, &burst);
         assert_eq!(result.is_ok(), accepted, "{case}: {result:?}");
     }

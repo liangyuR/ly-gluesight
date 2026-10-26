@@ -8,7 +8,7 @@ import { stagesV2, stageStatusText, stageStatusV2 } from "./stages";
 export function PlanSteps() {
   const { data } = useWorkspace();
   const { pathname } = useLocation();
-  const tasks = data?.plan ? cameraTeachingTasks(data.plan) : [];
+  const tasks = data ? cameraTeachingTasks(data.plan) : [];
   // 走廊示教页：进行中时以“n / 3 台”代替阶段状态
   const teaching = pathname === "/recipe/teach" && tasks.length ? { done: tasks.filter(task => task.status === "done").length, total: tasks.length } : null;
   return <SelectionTrack as="nav" className="wp-steps" trackId="workspace-steps" activeKey={pathname} aria-label="配方配置步骤">
@@ -21,7 +21,7 @@ export function PlanSteps() {
           ? <small className="wp-step-status waiting"><Lock size={11} aria-hidden="true" />{stageStatusText.waiting}</small>
           : teaching && stage.path === pathname && (status === "inProgress" || status === "notStarted")
             ? <small className="wp-step-status wp-step-count">{teaching.done} / {teaching.total} 台</small>
-            : status && status !== "optional" && <small className={"wp-step-status " + status}>{stageStatusText[status]}</small>}
+            : status && <small className={"wp-step-status " + status}>{stageStatusText[status]}</small>}
       </NavLink>;
     })}
   </SelectionTrack>;

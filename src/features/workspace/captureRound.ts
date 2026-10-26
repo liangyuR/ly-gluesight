@@ -1,23 +1,17 @@
 /**
- * 示教采集轮次的统一读取：段配方的新轮次（CaptureRoundV2，按帧号配组、不核对计数）与按拍照点采的旧轮次（CaptureRound，
- * 后端对旧拍照点配方仍开旧轮次；同一配方编号下的历史轮次两种都可能列出）都先整理成 RoundView，页面只看帧组数、各相机帧数、缺帧的帧组与丢帧告警，不再按 PLC 计划数核对。
+ * 示教采集轮次（CaptureRoundV2，按帧号配组、不核对计数）整理成 RoundView，页面只看帧组数、各相机帧数、缺帧的帧组与丢帧告警。
  * 帧组 = 同一触发序号的各相机帧；seq 从 1 起，页面上的“帧组序号”就是它。
  */
-import type { CaptureRoundV2, LossAlarm } from "../plan/types";
+import type { CaptureRoundV2, CaptureState, LossAlarm } from "../plan/types";
 import { workspaceApi } from "./api";
-import type { CaptureRound, GrayImage } from "./types";
-
-export type AnyRound = CaptureRound | CaptureRoundV2;
-
-export const isRoundV2 = (round: AnyRound): round is CaptureRoundV2 => (round as CaptureRoundV2).format === 2;
+import type { GrayImage } from "./types";
 
 export interface RoundView {
   roundId: string;
   recipeId: string;
-  state: CaptureRound["state"];
+  state: CaptureState;
   simulated: boolean;
   error: string | null;
-  format: 1 | 2;
   /** 按本轮相机顺序；frames 为该相机收到的帧数 */
   cameras: { cameraId: string; frames: number }[];
   /** 帧组数 = 各相机最大 seq 的最大值 */
@@ -33,21 +27,12 @@ export interface RoundView {
   missing: { camera: number; seq: number }[];
 }
 
-export function roundView(round: AnyRound): RoundView {
-  if (isRoundV2(round)) {
-    return {
-      roundId: round.roundId, recipeId: round.recipeId, state: round.state, simulated: round.simulated, error: round.error, format: 2,
-      cameras: round.cameras.map((camera, i) => ({ cameraId: camera.cameraId, frames: round.cameraFrames[i] ?? camera.receivedCount })),
-      groupCount: round.groupCount, incompleteGroups: [...round.incompleteGroups].sort((a, b) => a - b), lossAlarms: round.lossAlarms,
-      plcEstimate: round.plcShotCount, deviceTriggers: round.deviceTriggers, missing: round.missingFrames,
-    };
-  }
-  const missing = round.frames.flatMap((frame, k) => round.cameras.flatMap((camera, i) => frame.cameras.some(c => c.cameraId === camera.cameraId) ? [] : [{ camera: i, seq: k + 1 }]));
+export function roundView(round: CaptureRoundV2): RoundView {
   return {
-    roundId: round.roundId, recipeId: round.recipeId, state: round.state, simulated: round.simulated, error: round.error, format: 1,
-    cameras: round.cameras.map(camera => ({ cameraId: camera.cameraId, frames: camera.receivedCount })),
-    groupCount: round.frames.length, incompleteGroups: [...new Set(missing.map(item => item.seq))],
-    lossAlarms: [], plcEstimate: round.plcPlannedCount ?? round.plannedCount, deviceTriggers: round.plcActualCount ?? null, missing,
+    roundId: round.roundId, recipeId: round.recipeId, state: round.state, simulated: round.simulated, error: round.error,
+    cameras: round.cameras.map((camera, i) => ({ cameraId: camera.cameraId, frames: round.cameraFrames[i] ?? camera.receivedCount })),
+    groupCount: round.groupCount, incompleteGroups: [...round.incompleteGroups].sort((a, b) => a - b), lossAlarms: round.lossAlarms,
+    plcEstimate: round.plcShotCount, deviceTriggers: round.deviceTriggers, missing: round.missingFrames,
   };
 }
 
@@ -58,9 +43,9 @@ export function frameArrived(view: RoundView, cameraId: string, seq: number): bo
   return !view.missing.some(item => item.camera === index && item.seq === seq);
 }
 
-/** 读取第 seq 帧原图：新轮次按帧号，旧轮次按拍照点下标（seq − 1）。 */
-export function readRoundFrame(round: AnyRound, cameraId: string, seq: number): Promise<GrayImage> {
-  return isRoundV2(round) ? workspaceApi.captureFrameImage(round.roundId, cameraId, seq) : workspaceApi.captureImage(round.roundId, seq - 1, cameraId);
+/** 读取第 seq 帧原图（按帧号）。 */
+export function readRoundFrame(round: CaptureRoundV2, cameraId: string, seq: number): Promise<GrayImage> {
+  return workspaceApi.captureFrameImage(round.roundId, cameraId, seq);
 }
 
 /** 丢帧告警的一句话：某台相机帧数与 PLC 累计触发或另一台相机相差超过 1（只告警，不影响采集和采用）。 */

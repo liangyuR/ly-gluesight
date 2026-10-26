@@ -1,36 +1,20 @@
-use std::collections::HashSet;
 use std::path::Path;
 
 use crate::frame::FrameImage;
 use crate::offline::sample_set::{SampleRef, SampleSet};
 use crate::recipe::Recipe;
-use crate::store::{PartDetail, PartShot, RecordSource};
+use crate::store::{PartDetail, RecordSource};
 
-use super::RawFrame;
-
-pub(super) struct HistorySamples {
-    set: SampleSet,
-    reference: SampleRef,
-    sample_shots: Vec<String>,
-    shots: Vec<PartShot>,
-    ts: i64,
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cycle::FrameStatus;
-    use crate::judge::{self, PointState, Verdict};
+    use crate::judge::{Judgement, Verdict};
     use crate::offline::sample_set::fixture::Fixture;
     use crate::store::{PartSummary, PlcDelivery, RecordingEvidence, RecordingState};
 
-    fn history(set: &SampleSet, view: u8) -> (Recipe, PartDetail) {
-        let mut doc = crate::recipe::samples().remove(1);
-        for shot in &mut doc.shots { shot.view = view; }
-        let mut recipe = doc.build().unwrap();
-        recipe.revision_id = format!("candidate-{}-r17", recipe.id);
-        let table = vec![PointState::Pending; recipe.point_count()];
-        let detail = PartDetail {
+    fn history(set: &SampleSet, recipe: &Recipe) -> PartDetail {
+        PartDetail {
             summary: PartSummary {
                 id: 42,
                 ts: 1,
@@ -56,39 +40,19 @@ mod tests {
                 burst: None,
                 mode: Default::default(),
             },
-            judgement: judge::judge(&recipe, &table),
+            judgement: Judgement::error(0, "测试历史"),
             frames: Vec::new(),
             triggers: 4,
             software_version: "test".into(),
             points: None,
             retests: Vec::new(),
-            shots: recipe
-                .shots
-                .iter()
-                .enumerate()
-                .map(|(k, shot)| PartShot {
-                    k,
-                    shot_id: shot.id.clone(),
-                    camera: shot.camera.clone(),
-                    view: shot.view,
-                    session: None,
-                    ordinal: None,
-                    frame_counter: None,
-                    trigger_counter: None,
-                    status: FrameStatus::Done,
-                    error: None,
-                    score: None,
-                    ms: None,
-                    raw_files: Vec::new(),
-                })
-                .collect(),
+            shots: Vec::new(),
             recording: RecordingEvidence {
                 state: RecordingState::Off,
                 ..Default::default()
             },
             burst: None,
-        };
-        (recipe, detail)
+        }
     }
 
     #[test]
@@ -113,9 +77,7 @@ mod tests {
         let set = SampleSet::load(&managed).unwrap();
         let mut recipe = crate::recipe::samples_burst().build().unwrap();
         recipe.revision_id = format!("candidate-{}-r17", recipe.id);
-        let (_, mut detail) = history(&set, 1);
-        (detail.summary.recipe_id, detail.summary.recipe_revision) = (Some(recipe.id.clone()), Some(recipe.revision_id.clone()));
-        detail.shots.clear();
+        let mut detail = history(&set, &recipe);
         detail.burst = Some(crate::store::PartDetailBurst { segments: recipe.path_segments.clone(), cameras: recipe.plan_cameras(),
             expected_total: recipe.expected_total(), tolerance_total: recipe.tolerance_total(), device_triggers: None, camera_frames: vec![2; 3],
             judgement: crate::burst_judge::BurstJudgement::error(0, "测试历史"), frames: Vec::new() });
@@ -175,45 +137,5 @@ impl BurstSamples {
         let shot = usize::try_from(seq).ok().and_then(|seq| seq.checked_sub(1)).and_then(|index| shots.get(index))
             .ok_or_else(|| format!("样本集里相机 {camera_id} 只有 {} 帧，没有第 {seq} 帧组", shots.len()))?;
         self.set.load_view(&self.part_id, shot, camera_id, 1)
-    }
-}
-
-impl HistorySamples {
-    pub(super) fn open(root: &Path, detail: &PartDetail, recipe: &Recipe) -> Result<Self, String> {
-        let (set, reference) = managed_part(root, detail, recipe)?;
-        let reference = &reference;
-        let sample_shots = set.manifest().recipe_shots(recipe)?.iter().map(|shot| shot.shot_id.clone()).collect();
-        let mut seen = HashSet::new();
-        for shot in &detail.shots {
-            let original = recipe.shots.get(shot.k).ok_or("历史拍照点不在冻结配方快照中")?;
-            if !seen.insert(shot.k) || shot.shot_id != original.id || shot.camera != original.camera || shot.view != original.view {
-                return Err("历史拍照点、相机或选定视角与冻结配方快照不一致".into());
-            }
-        }
-        if seen.len() != recipe.shot_count() { return Err("历史拍照点记录不完整，不能确定整圈样本原图".into()); }
-        Ok(Self { set, reference: reference.clone(), sample_shots, shots: detail.shots.clone(), ts: detail.summary.ts })
-    }
-
-    pub(super) fn load(&self, k: usize, view: u8) -> Result<FrameImage, String> {
-        let shot = self.shots.iter().find(|shot| shot.k == k).ok_or("历史拍照点不存在")?;
-        self.set.load_view(&self.reference.part_id, &self.sample_shots[k], &shot.camera, view)
-    }
-
-    pub(super) fn frames(&self) -> Vec<RawFrame> {
-        let mut frames = Vec::new();
-        for shot in &self.shots {
-            let sample_shot = &self.sample_shots[shot.k];
-            let views = &self.set.manifest().shots.iter().find(|sample| sample.shot_id == *sample_shot).unwrap().views;
-            for &view in views {
-                let checked = self.load(shot.k, view);
-                let file = self.set.image_path(&self.reference.part_id, sample_shot, &shot.camera, view)
-                    .map(|path| path.display().to_string()).unwrap_or_else(|_| format!("{}/{sample_shot}_{}_v{view}", self.reference.part_id, shot.camera));
-                let available = checked.is_ok();
-                frames.push(RawFrame { error: checked.err(), k: shot.k, view, camera: shot.camera.clone(), file, ts: self.ts,
-                    available, cam: None, frame_counter: shot.frame_counter, trigger_counter: shot.trigger_counter });
-            }
-        }
-        frames.sort_by_key(|frame| (frame.k, frame.view));
-        frames
     }
 }

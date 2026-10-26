@@ -40,12 +40,11 @@ export function cameraTeachingTasks(plan: Pick<WorkspacePlanView, "cameras" | "c
 }
 
 /**
- * 走廊示教步骤的状态；没有段计划时为 null。
+ * 走廊示教步骤的状态。
  * 计划相机不是 3 台时阻塞；后端记为完成但仍有相机未示教完时按任务实际状态显示“进行中”。
  */
-export function cameraTeachStatus(view: Pick<WorkspaceView, "plan">): StepStatus | null {
+export function cameraTeachStatus(view: Pick<WorkspaceView, "plan">): StepStatus {
   const plan = view.plan;
-  if (!plan) return null;
   if (plan.cameras.length !== PLAN_CAMERAS) return "blocked";
   const tasks = cameraTeachingTasks(plan);
   const derived: StepStatus = tasks.every(task => task.status === "done") ? "done" : tasks.every(task => task.status === "selectFrame") ? "notStarted" : "inProgress";

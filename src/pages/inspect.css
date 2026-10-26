@@ -10,9 +10,6 @@
 .prod-bar .qs-chip b { font-weight: 600; color: var(--on-surface); }
 .prod-bar .qs-chip.prod-sn { max-width: min(100%, 480px); }
 .prod-bar .prod-sn b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.prod .locate-alarms { margin: 0 0 var(--space-4); padding-left: 1.2em; }
-.prod .locate-alarms li.idle { color: var(--on-surface-variant); }
-.prod .locate-alarms li.idle b { font-weight: 600; }
 .prod-bar .qs-select.prod-recipe { max-width: 360px; }
 .prod-phase.run .dot { background: var(--primary); }
 .prod-bar .offline-msg[role="status"] { width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -40,7 +37,6 @@
 
 .prod-view > .panel-head { flex-shrink: 0; }
 .prod-view > .wp-runtime-frame { flex: 1; padding: 0; border: 0; background: transparent; }
-.prod-view > .wp-overview, .prod-view > .shot-tiles { flex: 1; min-height: 0; }
 .prod .wp-runtime-frame.compact { position: relative; display: flex; flex-direction: column; gap: 4px; min-height: 0; }
 .prod .wp-runtime-frame .wp-viewport { min-height: 110px; }
 .prod .wp-runtime-frame .wp-image-tools { min-height: 32px; padding: 2px 8px; gap: 8px; flex-wrap: wrap; }
@@ -50,18 +46,12 @@
 .prod .wp-runtime-strip .wp-kv { flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; padding: 2px 0; border: 0; font-size: 12px; }
 .prod .wp-runtime-strip .wp-kv strong { font-size: 12px; }
 .frame-state.qs-chip { height: 24px; padding: 0 10px; font-size: 12px; }
-.runtime-view-attention { align-self: flex-start; }
-.prod .qs-btn.runtime-view-attention { --btn-fg: var(--warn); }
-.prod .runtime-view-attention { position: absolute; right: 0; bottom: 0; }
 .view-mode { color: var(--primary); font-size: 12px; }
 
 .prod-shots .qs-camera-strip { flex: 1; min-height: 0; }
 /* 预览格子的行列按格子定高，中线 SVG 的 height:100% 才有参照；否则 SVG 按宽度撑高、从顶上溢出被裁，竖长的胶路（加上特征定位的留边）整条落在可见区外 */
 .prod-shots .qs-camera-preview { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 
-.prod-curve .legend { flex: 1; }
-.prod-curve .legend i.tol { background: var(--ok); }
-.prod-curve .legend i.abs { background: var(--ng); }
 
 .prod-side .fly-verdict { min-height: 0; overflow: hidden; grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr); align-items: stretch; }
 .fly-verdict .vh { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 12px; font: var(--text-label); white-space: nowrap; opacity: .9; }
@@ -81,13 +71,6 @@
 .prod-meters > span { color: var(--on-surface-variant); }
 .prod-meters > b { font: 500 13px/1.4 var(--font-mono); text-align: right; white-space: nowrap; }
 
-.prod-segments-unit { font-size: 12px; }
-.prod-seg-list { list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow: auto; display: grid; align-content: start; gap: 4px; }
-.prod-seg { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 10px; padding: 6px 10px; border-radius: var(--r-md); background: var(--surface-mid); transition: background-color var(--dur-medium) var(--ease-standard), color var(--dur-medium) var(--ease-standard); }
-.prod-seg .nm { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.prod-seg .rng { grid-column: 1 / -1; font-size: 12px; color: var(--on-surface-variant); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.prod-seg.s-ng { background: var(--ng-container); color: var(--on-ng-container); }
-.prod-seg.s-ng .rng { color: inherit; }
 
 @media (max-height: 960px) {
   .prod-main { grid-template-rows: minmax(200px, 1fr) 232px clamp(150px, 20vh, 196px); }

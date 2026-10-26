@@ -45,7 +45,7 @@ export function sampleSet(name = "壳体样本"): SampleSetSummary {
 }
 
 export function recipeOption(id: string, runnable = true, over: Partial<RecipeOption> = {}): RecipeOption {
-  return { id, name: `工件 ${id}`, version: 1, productCode: 1, shotCount: 2, published: true, runnable,
+  return { id, name: `工件 ${id}`, version: 1, productCode: 1, published: true, runnable,
     reason: runnable ? null : "与样本集不符", target: runnable ? null : "workspace", waiting: null, ...over };
 }
 
@@ -99,7 +99,7 @@ export function burstRecipe(over: Partial<BurstRecipeDoc> = {}): BurstRecipeDoc 
   const detect: DetectParams = { searchMm: 4, polarity: "dark", widthRange: [1, 6] };
   return {
     id: "S", name: "段配方 S", version: 1, planVersion: 3, productCode: 2, triggerMode: "fly", schemaVersion: 8,
-    spacing: 1, filterWindow: 3, detect, limits: { position: null, width: null, maxGapLen: 6, minPresent: .8 }, shots: [],
+    spacing: 1, filterWindow: 3, detect, limits: { position: null, width: null, maxGapLen: 6, minPresent: .8 },
     cameras: Object.fromEntries(burstCameras.map(c => [c, { exposureUs: 60, gainDb: 6 }])),
     segments: [
       pathSegment(1, "straight", { lengthMm: 120, inspectRange: { aMm: 5, bMm: 115 }, offsetRef: { measure: "absoluteX", camera: "CAM-1", xRef: null, spread: null } }),
@@ -115,7 +115,7 @@ export function burstRecipe(over: Partial<BurstRecipeDoc> = {}): BurstRecipeDoc 
 
 export function burstSummary(doc = burstRecipe()): RecipeSummaryV2 {
   const { expectedTotal, toleranceTotal } = burstTotals(doc);
-  return { id: doc.id, name: doc.name, version: doc.version, revisionId: `revisionId-${doc.id}`, productCode: doc.productCode, shotCount: 0, triggerMode: "fly",
+  return { id: doc.id, name: doc.name, version: doc.version, revisionId: `revisionId-${doc.id}`, productCode: doc.productCode, triggerMode: "fly",
     cameras: doc.inspect.map(i => i.camera), length: doc.segments.reduce((sum, s) => sum + (s.lengthMm ?? 0), 0), planVersion: doc.planVersion ?? 0, triggerCount: expectedTotal,
     segmentCount: doc.segments.length, expectedTotal, toleranceTotal, calibrated: expectedTotal != null };
 }
@@ -170,7 +170,7 @@ function burstFrozen(camera: string): FrozenImage {
     cameraTag: { id: camera, source: "sim", viewCount: 1, acquisition: "triggered" }, calibTag: { path: null, value: null }, geometryTag: [camera], exposureUs: 60, gainDb: 6, historyId: null };
 }
 
-/** 段配方的候选工作区（WorkspaceView.plan）：CAM-1 已示教走廊，CAM-2 已选帧待示教，CAM-3 未选帧；旧字段按决策记录 5.1 取空。 */
+/** 段配方的候选工作区（WorkspaceView.plan）：CAM-1 已示教走廊，CAM-2 已选帧待示教，CAM-3 未选帧。 */
 export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
   const totals = burstTotals(doc);
   const plan: WorkspacePlanView = {
@@ -183,14 +183,13 @@ export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
     ],
     calibration: calibrationView(), productionExport: null, candidateExport: planExport(doc), candidateExportError: null, shotCountChanged: false, progress: progressV2(),
   };
-  const layout: Recipe = { ...structuredClone(doc), planVersion: doc.planVersion ?? 0, revisionId: `revisionId-${doc.id}`, segments: [], points: { x: [], y: [], seg: [], k: [] }, pathSegments: structuredClone(doc.segments) };
+  const layout: Recipe = { ...structuredClone(doc), planVersion: doc.planVersion ?? 0, revisionId: `revisionId-${doc.id}`, pathSegments: structuredClone(doc.segments) };
   const cameraTeaching = plan.cameraTeaching.flatMap(({ camera, frame }) => frame ? [{ camera, frame, round: "round-1", seq: 1 }] : []);
   const rounds = roundGroups.map((groupCount, i) => ({ roundId: `round-${i + 1}`, standard: false, createdAt: i + 1, cameras: plan.cameras, cameraConfig: plan.cameras.map(() => null),
     groupCount, cameraFrames: plan.cameras.map(() => groupCount), incompleteGroups: 0, lossAlarms: 0, corridors: plan.cameras.map(() => null), xMeans: plan.cameras.map(() => null) }));
   return {
-    layout, productionVersion: null, productionPlanVersion: null, planChanged: false, productionPlc: null, candidatePlc: null, candidatePlcError: null, coverage: null,
-    progress: { steps: [], shots: [], next: null }, plan,
-    workspace: { doc, baseRevision: null, revision: 3, updatedAt: 1, publish: { state: "draft" }, pending: null, frames: [], overview: { background: null, positions: [], saved: false },
+    layout, productionVersion: null, productionPlanVersion: null, planChanged: false, plan,
+    workspace: { doc, baseRevision: null, revision: 3, updatedAt: 1, publish: { state: "draft" }, pending: null,
       samples: [], sampleBank: [], validation: null, cameraTeaching, calibration: { rounds } },
   };
 }
@@ -222,7 +221,7 @@ export function burstPartSummary(id = 1): PartSummary {
     source: "real", sample: null, flags: burstJudgement().flags };
 }
 
-/** 段配方一件的历史详情：每台相机每个 seq 一条帧记录（缺帧也有），旧字段按决策记录 5.1 取空。 */
+/** 段配方一件的历史详情：每台相机每个 seq 一条帧记录（缺帧也有）。 */
 export function burstPartDetail(): PartDetail {
   const judgement = burstJudgement();
   const frames: FrameRecord[] = burstCameras.flatMap((camera, c) => Array.from({ length: burstGroups }, (_, i): FrameRecord => {

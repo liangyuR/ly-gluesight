@@ -29,16 +29,12 @@ export default function CalibrationPage() {
   const tolerances = typed.key === resultKey ? typed.values : {};
   const addedKey = (calibration?.rounds ?? []).map(round => round.roundId).join(",");
   useEffect(() => {
-    if (!doc || !plan) return;
+    if (!doc) return;
     let alive = true;
     void workspaceApi.captureList(doc.id).then(list => { if (alive) setAvailable(list.filter(round => round.state === "complete")); }).catch(e => { if (alive) setError(errorText(e)); });
     return () => { alive = false; };
-  }, [doc?.id, !!plan, addedKey]);
-  if (!data || !doc) return <WorkspaceEmpty />;
-  if (!plan) return <div className="wp-page"><WorkspaceBar />
-    <Panel title="多轮标定" detail="同一工件程序连续采集多轮，取帧组数均值作预期帧数，再确认容差">
-      <Notice title="该草稿不是段配方" tone="warn">请新建段配方后进行多轮标定，旧拍照点草稿不再支持。</Notice>
-    </Panel></div>;
+  }, [doc?.id, addedKey]);
+  if (!data || !doc || !plan) return <WorkspaceEmpty />;
 
   const minRounds = calibration?.minRounds ?? plan.calibrationRounds;
   const added = calibration?.rounds ?? [];

@@ -10,10 +10,10 @@ import { useWorkspace } from "../src/features/workspace/context";
 import { burstJudgement, burstPartDetail, burstWorkspaceView, workspaceState } from "./fixtures";
 import type { Comparison } from "../src/features/workspace/types";
 
-vi.mock("../src/features/history/api", () => ({ historyApi: { detail: vi.fn(), recipe: vi.fn(), neighbors: vi.fn() } }));
+vi.mock("../src/features/history/api", () => ({ historyApi: { detail: vi.fn(), neighbors: vi.fn() } }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
-  recordImages: vi.fn(), recordImage: vi.fn(), comparisons: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), historyCapture: vi.fn(), runtimeOverview: vi.fn(),
+  comparisons: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(),
 } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), record: vi.fn() } }));
 let ws: ReturnType<typeof workspaceState>;
@@ -25,10 +25,9 @@ function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rule
 beforeEach(() => {
   ws = workspaceState(burstWorkspaceView());
   detail = burstPartDetail(); vi.mocked(useWorkspace).mockImplementation(() => ws);
-  vi.mocked(historyApi.detail).mockResolvedValue(detail); vi.mocked(historyApi.recipe).mockResolvedValue(ws.data!.layout);
+  vi.mocked(historyApi.detail).mockResolvedValue(detail);
   vi.mocked(historyApi.neighbors).mockResolvedValue({ older: null, newer: null });
-  vi.mocked(workspaceApi.runtimeOverview).mockResolvedValue(null); vi.mocked(workspaceApi.comparisons).mockResolvedValue([]);
-  vi.mocked(workspaceApi.historyCapture).mockResolvedValue(ws.data!);
+  vi.mocked(workspaceApi.comparisons).mockResolvedValue([]);
   vi.mocked(workspaceApi.compare).mockResolvedValue(comparison());
   vi.mocked(workspaceApi.compareOriginal).mockResolvedValue({...comparison(),source:"original"});
   vi.mocked(burstImageApi.record).mockReset().mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
@@ -46,7 +45,6 @@ describe("历史详情（段配方记录）", () => {
     await userEvent.selectOptions(screen.getByLabelText("历史相机选择", { selector: "select" }), "1");
     expect(await screen.findByText(/本帧组缺帧，没有原图/)).toBeVisible();
     expect(burstImageApi.record).toHaveBeenCalledTimes(2);
-    expect(workspaceApi.recordImages).not.toHaveBeenCalled();
   });
 
   it("逐帧追溯每台相机每个帧组一行、缺帧也有 → 只看异常帧后只剩缺帧的那一行", async () => {
