@@ -18,7 +18,14 @@ pub(super) fn measure_burst(prepared: &Prepared, frames: &[FrameRecord], loss: &
         prepared.measure_frame(frame.camera, frame.seq, &image, &format!("{run}-c{}-{}", frame.camera, frame.seq)).map(|m| m.metrics)
     });
     prepared.verify()?;
-    Ok(super::burst_history::judge_frames(&recipe.path_segments, recipe.expected_total(), &recipe.plan_cameras(), &metrics, loss))
+    Ok(super::burst_history::judge_frames(
+        &recipe.path_segments,
+        recipe.boundary_guard,
+        recipe.expected_total(),
+        &recipe.plan_cameras(),
+        &metrics,
+        loss,
+    ))
 }
 
 pub(super) fn measure(prepared: &Prepared, count: usize, sn: &str, cycle_id: &str,

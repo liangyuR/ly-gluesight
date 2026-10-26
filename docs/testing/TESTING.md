@@ -76,7 +76,13 @@ SDK 枚举成功但本机发现 0 台设备；Jinghang JHEM131GC-XS 的门控节
 
 段模型的测试按 AGENTS.md 准入编写：每个用例对应一条业务规则、对外契约或易错边界，名称写成“条件 → 预期结果”，不测 getter、DTO 与框架行为。旧拍照点配方从未部署，已停止使用；不再维护其运行入口、迁移、兼容分支及专属测试。保留通用标定与 Software 单帧调试。PLC 协议保持版本 6 和现有 DB 布局，`deviceTriggers` 为预留字段、PLC 写 0；Line0 高电平门控，帧率由软件设置、默认 10 fps。规则取舍见 [分段连拍决策记录](../decisions/segment-burst.md)，当前保留与删除依据见 [Rust 保留测试清单](rust-test-retained-inventory.md)，此前分段连拍开发过程见 [历史测试清单](segment-burst-test-inventory.md)。
 
-**分段算法未开发。** `segmentation` 只有 `Segmenter` 接口、`Unsegmented` 实现（整条胶路一个未分段区域）和合成序列回归入口（`segmentation::synthetic` 的 `generate` / `evaluate`），走向、光流、DTW 等真正的分段算法要等现场弯道图像；所以现有测试与端到端都只验证“未分段、只跑每帧独立检测、不判胶偏”，不验证分段效果（决策记录第一节、D-SB-21）。
+**分段：比例分段（D-SB-40）。** `segmentation` 有 `Proportional`（按各段 N_exp 比例与本件帧组数推算边界）与 `Unsegmented`，`resolve_regions` 在可信边界两侧切出 `boundaryGuard` 帧过渡区；图像运动细化（D-SB-43）未实现，合成序列回归入口（`segmentation::synthetic`）留给它。单元与生产节拍测试只验证比例公式、可信度、过渡区与判定规则，**不证明现场边界准确**；边界准确性用现场已确认手动分段做留一离线评估，它不是测试、不进 `cargo test`：
+
+```powershell
+cargo run --manifest-path src-tauri/Cargo.toml --example segment_eval -- <项目目录> <候选编号>
+```
+
+读该候选 `workspace.json` 的段列表、`boundaryGuard` 与采集页已确认的手动分段，逐轮用其余轮次按多轮标定规则得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；不读图像、不需要 lyFlow。至少要 2 段、2 个已确认轮次。2026-10-26 在人工构造的 8 轮、3 段工作区上冒烟通过；现场 NEW-14（`seg-new14` 项目，16 轮）尚未标手动分段，评估待做。
 
 **真引擎专项的当前状态。** 本轮删除 7 项 `vision::taught::engine_tests` 和 2 项 `packaging` 运行库自检 ignored 测试；原 `engine_burst_publish_load_measure_frame_round_trip` 命令已失效。历史实测事实和证据边界保留在“特征定位真引擎历史说明”。默认回归不加载 lyFlow DLL；唯一保留的手动算法评测为 `vision::eval::algorithm_eval`，入口见“运行”。
 

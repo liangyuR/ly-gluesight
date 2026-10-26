@@ -192,6 +192,15 @@ pub const CALIBRATION_ROUNDS: std::ops::RangeInclusive<u32> = 10..=100;
 
 fn default_calibration_rounds() -> u32 { DEFAULT_CALIBRATION_ROUNDS }
 
+/// 比例分段边界两侧各留的过渡帧数（D-SB-40）：现场同一程序各轮边界偏差最差约 2 帧。
+pub const DEFAULT_BOUNDARY_GUARD: u32 = 2;
+/// 过渡帧数的可配范围。
+pub const BOUNDARY_GUARD: std::ops::RangeInclusive<u32> = 0..=5;
+
+fn default_boundary_guard() -> u32 {
+    DEFAULT_BOUNDARY_GUARD
+}
+
 /// 定位模板外圈（glue.locate 的 templatePad，lyFlow#32）：模板文件是示教框四周各多裁这么多，
 /// locate 用真实邻域预平滑后再裁回示教框。每个新模板都取 4（平滑核半径）。
 pub const FIXTURE_TEMPLATE_PAD_PX: u32 = 4;
@@ -680,6 +689,7 @@ pub struct Recipe {
     pub inspect: Vec<CameraInspect>,
     pub segment_defaults: KindDefaults,
     pub calibration_rounds: u32,
+    pub boundary_guard: u32,
     pub part_calib: Option<PartCalib>,
 }
 
@@ -860,6 +870,9 @@ pub struct RecipeDoc {
     /// 标定轮数，10..=100
     #[serde(default = "default_calibration_rounds")]
     pub calibration_rounds: u32,
+    /// 比例分段边界两侧的过渡帧数，0..=5（D-SB-40）；不进计划身份
+    #[serde(default = "default_boundary_guard")]
+    pub boundary_guard: u32,
     /// 整件帧组数标定：各段 N_exp 待分段算法时凭它得到 expected_total 并发布（决策补充第二节）；只由标定写入
     #[serde(default)]
     pub part_calib: Option<PartCalib>,
@@ -989,6 +1002,14 @@ impl RecipeDoc {
         if !CALIBRATION_ROUNDS.contains(&self.calibration_rounds) {
             return Err(format!("标定轮数 {} 需在 {}–{} 之间", self.calibration_rounds, CALIBRATION_ROUNDS.start(), CALIBRATION_ROUNDS.end()));
         }
+        if !BOUNDARY_GUARD.contains(&self.boundary_guard) {
+            return Err(format!(
+                "边界过渡帧数 {} 需在 {}–{} 之间",
+                self.boundary_guard,
+                BOUNDARY_GUARD.start(),
+                BOUNDARY_GUARD.end()
+            ));
+        }
         for inspect in &self.inspect {
             inspect.validate()?;
         }
@@ -1101,6 +1122,7 @@ impl RecipeDoc {
             inspect: self.inspect.clone(),
             segment_defaults: self.segment_defaults.clone(),
             calibration_rounds: self.calibration_rounds,
+            boundary_guard: self.boundary_guard,
             part_calib: self.part_calib.clone(),
         };
         Ok(recipe)
@@ -1198,6 +1220,7 @@ pub fn samples() -> Vec<RecipeDoc> {
             inspect: Vec::new(),
             segment_defaults: KindDefaults::default(),
             calibration_rounds: DEFAULT_CALIBRATION_ROUNDS,
+            boundary_guard: DEFAULT_BOUNDARY_GUARD,
             part_calib: None,
         };
         doc.sync_imaging();
@@ -1233,6 +1256,7 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
         inspect: cameras.iter().map(|camera| CameraInspect { camera: camera.clone(), corridor: Vec::new(), mm_per_px: None, calib: None, detect: None }).collect(),
         segment_defaults,
         calibration_rounds: DEFAULT_CALIBRATION_ROUNDS,
+        boundary_guard: DEFAULT_BOUNDARY_GUARD,
         part_calib: None,
     };
     doc.sync_imaging();

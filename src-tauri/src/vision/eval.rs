@@ -212,6 +212,7 @@ fn build_recipe(samples: &[Sample], paths: &[Vec<[f32; 2]>], mm: &BTreeMap<Strin
         inspect: Vec::new(),
         segment_defaults: Default::default(),
         calibration_rounds: crate::recipe::DEFAULT_CALIBRATION_ROUNDS,
+        boundary_guard: crate::recipe::DEFAULT_BOUNDARY_GUARD,
         part_calib: None,
     };
     doc.sync_imaging();

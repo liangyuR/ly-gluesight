@@ -33,14 +33,14 @@ export function countStatusLabel(status: CountStatus | null | undefined): string
   return status ? countStatusText[status] : "未核对帧数";
 }
 
-export const unsegReasonText: Record<UnsegReason, string> = { algorithmPending: "分段算法未就绪", lowConfidence: "分段不确定" };
+export const unsegReasonText: Record<UnsegReason, string> = { algorithmPending: "分段算法未就绪", lowConfidence: "分段不确定", transition: "边界过渡区" };
 
-/** 区域名：“段 1 · 直线”“段 2 · 弯道”“段 1–3 · 未分段”。 */
+/** 区域名：“段 1 · 直线”“段 2 · 弯道”“段 1–3 · 未分段”“段 1–2 · 边界过渡”。 */
 export function regionKindLabel(kind: RegionKind): string {
   switch (kind.type) {
     case "straight": return `段 ${kind.segment} · 直线`;
     case "corner": return `段 ${kind.segment} · 弯道`;
-    case "unsegmented": return `${kind.firstSegment === kind.lastSegment ? `段 ${kind.firstSegment}` : `段 ${kind.firstSegment}–${kind.lastSegment}`} · 未分段`;
+    case "unsegmented": return `${kind.firstSegment === kind.lastSegment ? `段 ${kind.firstSegment}` : `段 ${kind.firstSegment}–${kind.lastSegment}`} · ${kind.reason === "transition" ? "边界过渡" : "未分段"}`;
   }
 }
 

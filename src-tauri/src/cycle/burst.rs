@@ -15,13 +15,13 @@ use crate::judge::{fault, Judgement};
 use crate::measure::{FrameMeasured, MeasureError};
 use crate::plan::{wider_checks, SegmentChecks};
 use crate::recipe::Recipe;
-use crate::segmentation::{resolve_regions, SegInput, Segmenter, Unsegmented};
+use crate::segmentation::{resolve_regions, Proportional, SegInput, Segmenter};
 use crate::shot_router::{ArmCam, Floor, FrameBaseline, Ledger, Ledgers};
 use crate::store::{BurstRecord, FrameRecord};
 
 use super::{FrameCellStatus, FrameCellView, FrameGroupView, Part, PartViewBurst};
 
-/// 分段边界的最低置信度；本轮只有未分段（`Unsegmented`），不会用到。
+/// 分段边界的最低置信度：比例分段器在帧数容差内给 1、之外给 0（D-SB-40）。
 const MIN_CONFIDENCE: f32 = 0.5;
 
 /// 生产的 seq 上限在 ΣN_exp + Σtol 之上留的余量：超出即帧号异常，按 OutOfRange 丢弃并告警（防异常帧号生成海量帧组）。
@@ -331,7 +331,7 @@ impl Part {
         self.burst_deadline(now)
     }
 
-    /// 段配方判定：会话变化、运动超时等故障优先（ERR）；否则未分段 → 区域 → 丢帧告警（各相机帧数彼此比较）
+    /// 段配方判定：会话变化、运动超时等故障优先（ERR）；否则比例分段 → 区域（含过渡区）→ 丢帧告警（各相机帧数彼此比较）
     /// → burst_judge。三台相机整件没有一帧测成时 burst_judge 判 ERR 91。
     pub(super) fn burst_judgement(&self) -> Option<BurstJudgement> {
         let burst = self.burst.as_ref()?;
@@ -343,9 +343,27 @@ impl Part {
         }
         let metrics: Vec<FrameMetrics> = burst.frames.values().filter_map(|frame| frame.metrics.clone()).collect();
         let segments = &self.recipe.path_segments;
-        let outcome = Unsegmented.segment(&SegInput { groups: &groups, features: &metrics, segments });
-        let regions = resolve_regions(segments, &outcome, burst.grouper.group_count(), MIN_CONFIDENCE);
-        Some(burst_judge::judge(segments, self.recipe.expected_total(), &regions, &groups, &metrics, &burst.cameras, &loss))
+        let outcome = Proportional.segment(&SegInput {
+            groups: &groups,
+            features: &metrics,
+            segments,
+        });
+        let regions = resolve_regions(
+            segments,
+            &outcome,
+            burst.grouper.group_count(),
+            MIN_CONFIDENCE,
+            self.recipe.boundary_guard,
+        );
+        Some(burst_judge::judge(
+            segments,
+            self.recipe.expected_total(),
+            &regions,
+            &groups,
+            &metrics,
+            &burst.cameras,
+            &loss,
+        ))
     }
 
     /// 落库用的段配方记录：1..=帧组数内每台相机每一帧一条，缺帧也有。判定取本件的区域判定；结论摘要与它不同

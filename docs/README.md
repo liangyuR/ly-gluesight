@@ -20,14 +20,14 @@ Jinghang JHEM131GC-XS 的实际节点需实机确认。当前实现要求设备�
 2. **PLC**：已布防且运动时向相机输出高电平，结束或故障拉低；`deviceTriggers` 为预留字段，写 0。PLC 不参与分段。
 3. **三台相机**：高电平期间按内部固定帧率曝光，帧序号取 SDK `frame_num`，不按到达顺序；图像内存按每相机字节预算封顶（`FramePool`，256 MiB），预算满或通道满的帧记缺帧。
 4. **帧配组**：seq = frame_counter − 该相机基线，同一 seq 的三帧为一个帧组；缺帧的组标 incomplete；单台相机帧数只用于丢帧告警（与另外每一台相机相差 > 1）。帧数 = 帧组数（第六节口径）。
-5. **分段（现为未分段）**：`Segmenter` 接口只有 `Unsegmented` 实现，整条胶路是一个未分段区域：只跑每帧检测、不判胶偏，只核对整件帧组数 ∈ ΣN_exp ± Σtol。
+5. **分段（比例分段，D-SB-40）**：段结构由人定，各段 N_exp 由已确认手动分段的标定轮次逐段得出；本件收尾后 `Proportional` 按各段 N_exp 比例与本件帧组数推算边界，帧组数在 ΣN_exp ± Σtol 内时边界可信，两侧各 `boundaryGuard`（默认 2）帧为过渡区（只判每帧指标、不判胶偏）。单段配方、有段待标定或帧组数越界时整条胶路（或越界时全部段）按未分段区域判：只跑每帧检测、不判胶偏。帧数只核对整件。
 6. **每帧测量**：每台相机的每一帧沿这台相机示教的走廊用 lyFlow（`glue.taught_path` + `glue.bead_width`）测胶宽、断胶与胶中心偏移 x，输出 `FrameMetrics`；测量队列满、超时记 Unmeasured，走出走廊记 OutOfCorridor，都只算检测不完整。
 7. **区域判定**（`burst_judge`）：每帧胶宽、断胶、溢胶（每帧最大胶宽超过溢胶上限，NG_WIDTH）三类区域都判；胶偏只在直线段，去首尾各一帧后用 x 均值与标准件 x_ref（只实现 AbsoluteX）判整段偏移、最大偏差判局部跑偏；三台相机取最差。结果另带 `flags`（检测不完整、帧数异常、`short_part` 疑似提前终止）、未检区域、未检项（气泡、拉丝）与“胶偏未判”原因，这些都不改 OK/NG；只有三台相机整件没有一帧测成才判 ERR 91。
 8. **落库与历史**：记录库 9 版的 `part_frames` 每台相机每帧一条（缺帧也有），`parts.burst_judgement` 存整份区域判定；原图按帧录制为 `{相机}_s{seq:06}.pgm`；审计 spool 格式 4；历史按 (计划相机, seq) 读图、复测与重判。
 
 配方的建立流程（候选工作区）：整圈采集 → 段列表 → 每台相机的走廊示教 → 多轮标定（默认 ≥ 10 轮，得 ΣN_exp、建议容差由操作员确认、标准件轮次得 x_ref）→ 独立样本验证 → 发布。见 [配方创建流程](architecture/recipe-creation-workflow.md) 的“段配方流程”。
 
-采集完成后支持轮次手动分段、模板套用和边界复核，以及带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除标定图像取样。每个标定轮次都确认手动分段后，多轮标定按边界逐段标定（各段 N_exp 与建议容差，ΣN_exp 取各段之和）；手动分段暂不接入生产分段或独立样本判定，操作及失效规则见[轮次分段复核与帧组屏蔽](architecture/recipe-creation-workflow.md#轮次分段复核与帧组屏蔽)。
+采集完成后支持轮次手动分段、模板套用和边界复核，以及带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除标定图像取样。每个标定轮次都确认手动分段后，多轮标定按边界逐段标定（各段 N_exp 与建议容差，ΣN_exp 取各段之和），生产与独立样本判定再按这些 N_exp 的比例分段；手动边界本身不直接进生产，操作及失效规则见[轮次分段复核与帧组屏蔽](architecture/recipe-creation-workflow.md#轮次分段复核与帧组屏蔽)。
 
 ### 协议 7 要点
 
@@ -47,7 +47,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 配方文档、校验、计划身份 | `recipe.rs`（`RecipeDoc` schema 8、`is_burst`、`same_plan`）、`plan.rs`（`PathSegment`、`PartCalib`、`KindDefaults`、`plan_identity`、`PlanExport`）、`recipe_api.rs`（`recipe_template`、`recipe_plan_export`） |
 | 握手与接件 | `handshake.rs`（`PROTOCOL_VERSION = 6`）、`plc_session.rs`、`inspection.rs`（S7 点表模板）、`cycle/admission.rs`（94 接件核对） |
 | 生产节拍 | `cycle.rs` 布防分流、`cycle/burst.rs`（在途件、收尾与判定）、`shot_router.rs` 的 `arm_frames` |
-| 帧配组、分段、判定、标定 | `frame_group.rs`、`segmentation.rs`、`burst_judge.rs`、`calibration.rs` |
+| 帧配组、分段、判定、标定 | `frame_group.rs`、`segmentation.rs`（`Proportional`、`resolve_regions` 过渡区）、`burst_judge.rs`、`calibration.rs`；离线评估 `examples/segment_eval.rs` |
 | 相机与测量 | `camera.rs`、`frame.rs`、`measure.rs`（`FrameJob`）、`vision.rs` / `vision/taught.rs`（`measure_frame`）、`production.rs`（`burst_graphs`） |
 | 示教采集轮次 | `recipe_capture/burst.rs`（`CaptureRoundV2`） |
 | 候选工作区 | `workspace.rs`（`WorkspaceView.plan` 分流）、`workspace/burst.rs`（走廊示教、多轮标定、x_ref）、`workspace/burst_release.rs`（验证与发布）、`workspace/burst_history.rs`（历史读图与复测） |
@@ -76,7 +76,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 
 ## 三、未完成事项
 
-- **分段算法**：2026-10-26 已确认“人定段结构、生产按比例定位边界、每段指定检测相机与走廊”，待实现，见决策记录 D-SB-40–43；现场 NEW-14 的 16 轮整圈采集可作开发与评估数据。现行代码仍未分段：整条胶路按未分段处理；多段配方的各段 N_exp 只能由已确认的手动分段逐段标定得出，未确认时保持待标定，凭整件 ΣN_exp 发布与运行（D-SB-21）。
+- **分段**：2026-10-26 确认“人定段结构、生产按比例定位边界、每段指定检测相机与走廊”（D-SB-40–43）。D-SB-40 比例分段与过渡区已实现，尚待用现场 NEW-14 的已确认手动分段做离线评估（`examples/segment_eval.rs`）；D-SB-41 每段检测相机、D-SB-42 按段走廊、D-SB-43 图像运动细化未实现。各段 N_exp 未全部标定时仍凭整件 ΣN_exp 发布、整条胶路未分段运行（D-SB-21）。
 - **3 × 25 Hz 吞吐门槛**：没有达标，也没有被直接验证。已定（2026-10-23）：门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput`（并重跑 `throughput_probe` 探针）后，再决定降 PLC 频率还是加测量并发；合并前须完成该复测（segment-burst 7.1、第九节第 17 条）。
 - **Rust 回归范围**：当前 106 项默认回归与 1 项手动算法评测，见 [保留测试清单](testing/rust-test-retained-inventory.md)。原 7 项真引擎和 2 项 packaging ignored 测试已删除，原段配方全链路真引擎用例的实测事实仅保留为[历史记录](testing/TESTING.md#特征定位真引擎历史说明)。
 - **已接受、待确认的取舍**：胶偏的 `ToEdge` 测量量未实现；气泡、拉丝不检；“每台相机一条按直线段几何的走廊”没有真实弯道图验证；提前 partEnd 只加 `short_part`、不判 ERR；仓库不保存 PLC 程序，PLC 侧按协议 7 规格由现场工程实现。汇总见 [决策索引](decisions/README.md)。

@@ -19,7 +19,24 @@ fn armed_part(
     source: Option<CounterSource>,
     policy: Policy,
 ) -> Part {
-    let recipe = Arc::new(crate::recipe::samples_burst().build().unwrap());
+    armed_part_with(
+        crate::recipe::samples_burst().build().unwrap(),
+        cycle_id,
+        ledgers,
+        source,
+        policy,
+    )
+}
+
+/// 同 [`armed_part`]，指定配方。
+fn armed_part_with(
+    recipe: Recipe,
+    cycle_id: &str,
+    ledgers: &Ledgers,
+    source: Option<CounterSource>,
+    policy: Policy,
+) -> Part {
+    let recipe = Arc::new(recipe);
     let cameras = recipe.plan_cameras();
     let identities: Vec<ArmCam> = cameras
         .iter()
@@ -171,6 +188,58 @@ fn frames_beyond_expected_total_are_all_measured_and_only_alarm() {
     assert_eq!((judgement.verdict, judgement.group_count, judgement.flags.frame_count_anomaly), (Verdict::NgGap, 7, true));
     let record = p.burst_record(&burst::summary(&judgement)).unwrap();
     assert_eq!(record.frames.iter().filter(|f| f.status == FrameState::Measured).count(), 21);
+}
+
+/// D-SB-40：各段 N_exp 已标定的多段配方，生产按比例分段（直线 4、弯道 4、直线 4，余量 1）：12 组的边界落在 4、8，
+/// 两侧各 1 帧为过渡区，其余为直线 / 弯道区域；不再整条胶路未分段。
+#[test]
+fn calibrated_multi_segment_recipe_is_judged_by_proportional_regions() {
+    use crate::plan::{
+        new_segment,
+        SegmentKind::{Corner, Straight},
+    };
+    use crate::segmentation::{RegionKind, UnsegReason};
+    let mut doc = crate::recipe::samples_burst();
+    doc.segments = [Straight, Corner, Straight]
+        .into_iter()
+        .enumerate()
+        .map(|(k, kind)| crate::plan::PathSegment {
+            expected_frames: Some(4),
+            ..new_segment(k as u32 + 1, kind, &doc.segment_defaults)
+        })
+        .collect();
+    doc.boundary_guard = 1;
+    let mut p = armed_part_with(
+        doc.build().unwrap(),
+        "burst-proportional",
+        &Ledgers::default(),
+        Some(CounterSource::Synthetic),
+        Policy::burst_offline(None),
+    );
+    deliver_groups(&mut p, 12);
+    end(&mut p, Some(12), true);
+    let judgement = judge_burst(&mut p);
+    let transition = |first_segment, last_segment| RegionKind::Unsegmented {
+        first_segment,
+        last_segment,
+        reason: UnsegReason::Transition,
+    };
+    let regions: Vec<(RegionKind, u64, u64)> = judgement
+        .regions
+        .iter()
+        .map(|r| (r.region.kind.clone(), r.region.first_seq, r.region.last_seq))
+        .collect();
+    assert_eq!(
+        regions,
+        vec![
+            (RegionKind::Straight { segment: 1 }, 1, 3),
+            (transition(1, 2), 4, 5),
+            (RegionKind::Corner { segment: 2 }, 6, 7),
+            (transition(2, 3), 8, 9),
+            (RegionKind::Straight { segment: 3 }, 10, 12),
+        ]
+    );
+    assert!(!judgement.flags.unsegmented);
 }
 
 /// D-SB-7：下一件每台相机的帧计数基线 = max(原基线, 本件见到的最高帧计数)，PLC 报的 deviceTriggers 与计划数都不参与。

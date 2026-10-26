@@ -20,7 +20,7 @@ use crate::frame_group::FrameGroup;
 use crate::plan::{OffsetMeasure, OffsetRef, PartCalib, PathSegment, PlanExport, SegmentKind};
 use crate::recipe::CameraInspect;
 use crate::recipe_capture::{CaptureCamera, CaptureRoundV2, CaptureState};
-use crate::segmentation::{SegInput, SegOutcome, Segmenter, Unsegmented};
+use crate::segmentation::{Proportional, SegInput, SegOutcome, Segmenter};
 use progress::StepStatus;
 
 /// 每轮标定的每帧特征与分段结果放在候选目录 `calibration/<轮次>/` 下（供分段算法与重新标定使用）。
@@ -502,13 +502,34 @@ pub(super) fn measure_round(cameras: &[String], round: &CaptureRoundV2, mut meas
     metrics
 }
 
-/// 用分段接口分段（本轮只有 `Unsegmented`）。
-pub(super) fn segment_round(segments: &[PathSegment], cameras: usize, group_count: u64, metrics: &[FrameMetrics]) -> SegOutcome {
-    let groups: Vec<FrameGroup> = (1..=group_count).map(|seq| {
-        let present: Vec<bool> = (0..cameras).map(|camera| metrics.iter().any(|m| m.camera == camera && m.seq == seq && m.state != FrameState::Missing)).collect();
-        FrameGroup { seq, incomplete: present.contains(&false), present }
-    }).collect();
-    Unsegmented.segment(&SegInput { groups: &groups, features: metrics, segments })
+/// 用比例分段器分段（D-SB-40；各段 N_exp 未全部标定时为未分段），结果写进 boundaries.json 供追溯。
+pub(super) fn segment_round(
+    segments: &[PathSegment],
+    cameras: usize,
+    group_count: u64,
+    metrics: &[FrameMetrics],
+) -> SegOutcome {
+    let groups: Vec<FrameGroup> = (1..=group_count)
+        .map(|seq| {
+            let present: Vec<bool> = (0..cameras)
+                .map(|camera| {
+                    metrics.iter().any(|m| {
+                        m.camera == camera && m.seq == seq && m.state != FrameState::Missing
+                    })
+                })
+                .collect();
+            FrameGroup {
+                seq,
+                incomplete: present.contains(&false),
+                present,
+            }
+        })
+        .collect();
+    Proportional.segment(&SegInput {
+        groups: &groups,
+        features: metrics,
+        segments,
+    })
 }
 
 /// 写每帧特征与分段结果（文件格式见 FEATURES_FILE / BOUNDARIES_FILE）。

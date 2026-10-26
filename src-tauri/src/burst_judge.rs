@@ -191,7 +191,8 @@ impl BurstJudgement {
 /// - 每帧独立指标（断胶、有胶比例、胶宽、溢胶）三类区域都跑；只判 Measured 帧，其余状态只记检测不完整。
 /// - 区域允差：直线 / 弯道区域用该段 checks，未分段区域用所覆盖各段的 [`wider_checks`]。
 /// - 胶宽均匀性与胶偏只在直线区域判；未分段区域覆盖的直线段要判胶偏时记胶偏未判，弯道区域不判也不标。
-/// - 帧数越界、缺帧、疑似提前终止只进 flags，不改 OK/NG。
+/// - 过渡区（D-SB-40）按未分段区域判每帧指标，不判也不标胶偏，不算“含未分段”。
+/// - 帧数越界、缺帧、疑似提前终止只进 flags，不改 OK/NG；帧数只核对整件与未分段区域，直线 / 弯道区域不逐段核对。
 /// - 三台相机整件没有一帧测成时判 ERR 91；区域引用了配方里没有的段时判 ERR 93。
 pub fn judge(
     segments: &[PathSegment],
@@ -245,7 +246,7 @@ pub fn judge(
             || frames.values().any(|m| m.state != FrameState::Measured),
         frame_count_anomaly: anomalous(part_status) || results.iter().any(|r| anomalous(r.count_status)),
         offset_unjudged: results.iter().any(|r| r.offset_unjudged.is_some()),
-        unsegmented: results.iter().any(|r| matches!(r.region.kind, RegionKind::Unsegmented { .. })),
+        unsegmented: results.iter().any(|r| matches!(r.region.kind, RegionKind::Unsegmented { reason, .. } if reason != UnsegReason::Transition)),
         short_part,
     };
     BurstJudgement {
@@ -408,14 +409,21 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
             findings.extend(found);
             (offset, unjudged)
         }
-        RegionKind::Corner { .. } => (None, None),
+        // 过渡区本来就不判胶偏（D-SB-40），不标胶偏未判
+        RegionKind::Corner { .. }
+        | RegionKind::Unsegmented {
+            reason: UnsegReason::Transition,
+            ..
+        } => (None, None),
         RegionKind::Unsegmented { reason, .. } => {
             let would_judge = covered
                 .iter()
                 .any(|segment| segment.kind == SegmentKind::Straight && segment.checks.offset.as_ref().is_some_and(|o| o.enabled));
             let unjudged = match reason {
-                UnsegReason::AlgorithmPending => OffsetUnjudged::Unsegmented,
                 UnsegReason::LowConfidence => OffsetUnjudged::LowConfidence,
+                UnsegReason::AlgorithmPending | UnsegReason::Transition => {
+                    OffsetUnjudged::Unsegmented
+                }
             };
             (None, would_judge.then_some(unjudged))
         }
@@ -452,7 +460,13 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         frame_count,
         expected,
         tolerance,
-        count_status: expected.map(|expected| count_status(frame_count, expected, tolerance)),
+        // 直线 / 弯道区域的帧数由比例边界推算并扣掉过渡区，不与本段 N_exp 核对（D-SB-40）
+        count_status: match region.kind {
+            RegionKind::Straight { .. } | RegionKind::Corner { .. } => None,
+            RegionKind::Unsegmented { .. } => {
+                expected.map(|expected| count_status(frame_count, expected, tolerance))
+            }
+        },
         camera_frames,
         width: width_stats(&measured),
         offset,
@@ -511,6 +525,13 @@ fn region_label(region: &Region) -> String {
     match region.kind {
         RegionKind::Straight { segment } => format!("第 {segment} 段（直线）"),
         RegionKind::Corner { segment } => format!("第 {segment} 段（弯道）"),
+        RegionKind::Unsegmented {
+            first_segment,
+            last_segment,
+            reason: UnsegReason::Transition,
+        } => {
+            format!("第 {first_segment}–{last_segment} 段边界过渡区")
+        }
         RegionKind::Unsegmented { first_segment, last_segment, .. } if first_segment == last_segment => {
             format!("未分段区域（第 {first_segment} 段）")
         }
@@ -685,29 +706,75 @@ mod tests {
     }
 
     /// 规格 §2：帧数超出容差只记帧数异常；默认做法 3：整件帧组数 < ΣN_exp − Σtol 另标疑似提前终止。结论都不变。
-    /// 两段各容差 1：整件 14 ± 2；单段区域与本段 N_exp 比。
+    /// 两段各容差 1：整件 14 ± 2。D-SB-40：直线 / 弯道区域的帧数是比例边界推算并扣掉过渡区的结果，不与本段 N_exp 比。
     #[test]
-    fn region_frame_count_outside_tolerance_raises_anomaly_and_short_part_flags_only() {
+    fn frame_count_anomaly_comes_from_part_total_not_from_segment_regions() {
         let unsegmented = |n| vec![whole(&plan(&[Straight, Corner]), UnsegReason::AlgorithmPending, n)];
-        for (case, n_exp, regions, short_part) in [
-            ("未分段：整件 17 组高于上限 16", None, unsegmented(17), false),
-            ("未分段：整件 11 组低于下限 12", None, unsegmented(11), true),
+        for (case, regions, anomaly, short_part) in [
             (
-                "直线段 12 组高于 10 ± 1，整件 15 组正常",
-                Some([10, 4]),
+                "未分段：整件 17 组高于上限 16",
+                unsegmented(17),
+                true,
+                false,
+            ),
+            ("未分段：整件 11 组低于下限 12", unsegmented(11), true, true),
+            (
+                "直线段区域 12 组、本段 N_exp 10 ± 1，整件 15 组正常",
                 vec![region(RegionKind::Straight { segment: 1 }, 1, 12), region(RegionKind::Corner { segment: 2 }, 13, 15)],
+                false,
                 false,
             ),
         ] {
             let mut segments = plan(&[Straight, Corner]);
-            if let Some(n_exp) = n_exp {
-                segments.iter_mut().zip(n_exp).for_each(|(segment, n)| segment.expected_frames = Some(n));
-            }
+            segments
+                .iter_mut()
+                .zip([10, 4])
+                .for_each(|(segment, n)| segment.expected_frames = Some(n));
             let groups = regions.last().unwrap().last_seq;
             let result = run(&segments, Some(14), &regions, &frames(groups));
             assert_eq!(result.verdict, Verdict::Ok, "{case}");
-            assert_eq!((result.flags.frame_count_anomaly, result.flags.short_part), (true, short_part), "{case}");
+            assert_eq!(
+                (result.flags.frame_count_anomaly, result.flags.short_part),
+                (anomaly, short_part),
+                "{case}"
+            );
         }
+    }
+
+    /// D-SB-40：边界过渡区按两侧段中较宽的允差判每帧指标，不判胶偏、不标胶偏未判，也不算“含未分段”。
+    /// 直线段胶宽上限 5.5、溢胶 8；弯道段 6.5、9；过渡区一帧 9 站 6.0 mm 加 1 站 8.5 mm、x 偏 5 mm。
+    #[test]
+    fn transition_region_judges_frames_with_wider_limits_without_offset_or_unsegmented_flag() {
+        let mut segments = plan(&[Straight, Corner]);
+        segments[0].offset_ref = reference(Some(0.0), OffsetMeasure::AbsoluteX);
+        segments[1].checks.width.tol_upper = 2.5;
+        segments[1].checks.overflow.max_width_mm = 9.0;
+        let mut metrics = frames(9);
+        set_widths(
+            at(&mut metrics, 0, 5),
+            &[6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 8.5],
+        );
+        at(&mut metrics, 0, 5).x_mm = Some(5.0);
+        let transition = RegionKind::Unsegmented {
+            first_segment: 1,
+            last_segment: 2,
+            reason: UnsegReason::Transition,
+        };
+        let regions = [
+            region(RegionKind::Straight { segment: 1 }, 1, 3),
+            region(transition, 4, 6),
+            region(RegionKind::Corner { segment: 2 }, 7, 9),
+        ];
+        let result = run(&segments, None, &regions, &metrics);
+        assert_eq!(
+            (result.regions[1].verdict, result.verdict),
+            (Verdict::OkWithExcursion, Verdict::OkWithExcursion)
+        );
+        assert_eq!(
+            (&result.regions[1].offset, result.regions[1].offset_unjudged),
+            (&None, None)
+        );
+        assert!(!result.flags.offset_unjudged && !result.flags.unsegmented);
     }
 
     /// 决策 D-SB-14：三台相机取最差——任一相机任一帧 NG，所在区域与整件即 NG（不沿用旧模型“一个视图合格即合格”）。

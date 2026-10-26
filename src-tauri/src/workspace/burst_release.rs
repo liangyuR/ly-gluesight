@@ -141,12 +141,18 @@ fn segment_check(w: &Workspace) -> Check {
         None if normal < doc.calibration_rounds => format!("整件预期帧组数待多轮标定：还差 {} 轮（至少 {} 轮，不含标准件轮次）", doc.calibration_rounds - normal, doc.calibration_rounds),
         None => format!("整件预期帧组数待多轮标定：已有 {normal} 轮，请应用标定"),
     };
+    let core_min = 2 * doc.boundary_guard + 1;
+    let multi = doc.segments.len() > 1;
     let segments: Vec<String> = doc
         .segments
         .iter()
         .map(|s| {
             let kind = kind_label(s.kind);
             match (s.expected_frames, total) {
+                (Some(n), _) if multi && s.kind == SegmentKind::Straight && n < core_min => format!(
+                    "第 {} 段（{kind}）N_exp {n} ± {}：短于 {core_min} 帧，两侧过渡区取空后不判胶偏，建议并入相邻弯道段",
+                    s.index, s.tolerance
+                ),
                 (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n} ± {}", s.index, s.tolerance),
                 (None, Some(_)) => format!(
                     "第 {} 段（{kind}）待逐段标定，容差 ±{}",
@@ -164,16 +170,19 @@ fn segment_check(w: &Workspace) -> Check {
 }
 
 /// 标准件 x_ref（规格 §0/§1、D-SB-18）：只在有启用胶偏检查的直线段时列出。单段 AbsoluteX 要有标准件多轮得出的 x_ref；
-/// 多段计划（分段算法未就绪，运行时整条胶路未分段、不判胶偏）与 ToEdge（测量量未实现，结果标胶偏未判）列出原因、不阻断。
+/// 多段计划（暂不计算 x_ref：各段已标定时运行时按比例分段、该段标胶偏未判，否则整条胶路未分段）与 ToEdge
+/// （测量量未实现，结果标胶偏未判）列出原因、不阻断。
 fn x_ref_check(doc: &RecipeDoc) -> Option<Check> {
     let cameras = doc.plan_cameras();
     let single = doc.segments.len() == 1;
+    let segmented = doc.segments.iter().all(|s| s.expected_frames.is_some());
     let items: Vec<(bool, String)> = doc.segments.iter()
         .filter(|s| s.kind == SegmentKind::Straight && s.checks.offset.as_ref().is_some_and(|o| o.enabled))
         .filter_map(|s| offset_reference(s, &cameras).map(|reference| (s.index, reference)))
         .map(|(index, reference)| match (reference.x_ref.zip(reference.spread), reference.measure) {
             (Some((x_ref, spread)), _) => (true, format!("第 {index} 段 x_ref {x_ref:.3} ± {spread:.3} mm（相机 {}）", reference.camera)),
-            (None, _) if !single => (true, format!("第 {index} 段：分段算法未就绪，运行时整条胶路按未分段处理、不判胶偏，暂不需要 x_ref")),
+            (None, _) if !single && segmented => (true, format!("第 {index} 段：多段配方暂不计算 x_ref，运行时按比例分段，该段标胶偏未判（未标定参考值）")),
+            (None, _) if !single => (true, format!("第 {index} 段：各段尚未逐段标定，运行时整条胶路按未分段处理、不判胶偏，暂不需要 x_ref")),
             (None, OffsetMeasure::ToEdge) => (true, format!("第 {index} 段：测量量“到边缘距离”未实现，结果标胶偏未判")),
             (None, OffsetMeasure::AbsoluteX) => (false, format!("第 {index} 段：待标准件轮次得出 x_ref（相机 {}）", reference.camera)),
         })
@@ -219,10 +228,17 @@ fn round_loss(cameras: &[String], round: &CaptureRoundV2) -> Vec<LossAlarm> {
     loss_alarms(&counts)
 }
 
-/// 用当前候选判一轮验证样本：每帧指标（`measure_round` 的结果，按计划相机）→ 未分段区域 → 丢帧告警 → burst_judge。
+/// 用当前候选判一轮验证样本：每帧指标（`measure_round` 的结果，按计划相机）→ 比例分段区域 → 丢帧告警 → burst_judge。
 pub(super) fn judge_round(doc: &RecipeDoc, round: &CaptureRoundV2, metrics: &[FrameMetrics]) -> BurstJudgement {
     let cameras = doc.plan_cameras();
-    judge_frames(&doc.segments, doc.expected_total(), &cameras, metrics, &round_loss(&cameras, round))
+    judge_frames(
+        &doc.segments,
+        doc.boundary_guard,
+        doc.expected_total(),
+        &cameras,
+        metrics,
+        &round_loss(&cameras, round),
+    )
 }
 
 /// 段配方样本的结论：按 burst_judge 的整件结论对照人工期望（规则同 `SampleResult::judged`）。帧组数超出 ΣN_exp ± Σtol
@@ -292,8 +308,22 @@ fn validate_sample(app: &AppHandle, w: &Workspace, recipe: &Recipe, measurer: Re
     let metrics = remeasure(&burst.frames, |frame| {
         measurer.measure(frame.camera, frame.seq, &burst_history::frame_image(app, &detail, frame.camera, frame.seq)?)
     });
-    let judgement = judge_frames(&recipe.path_segments, recipe.expected_total(), &recipe.plan_cameras(), &metrics, &burst.judgement.alarms);
-    Ok(sample_result(sample, format!("SN {}", detail.summary.sn), detail.summary.sn.clone(), &judgement, recipe.expected_total(), tolerance_total))
+    let judgement = judge_frames(
+        &recipe.path_segments,
+        recipe.boundary_guard,
+        recipe.expected_total(),
+        &recipe.plan_cameras(),
+        &metrics,
+        &burst.judgement.alarms,
+    );
+    Ok(sample_result(
+        sample,
+        format!("SN {}", detail.summary.sn),
+        detail.summary.sn.clone(),
+        &judgement,
+        recipe.expected_total(),
+        tolerance_total,
+    ))
 }
 
 /// 段配方的发布前验证（`workspace_validate` 对段配方调用；旧拍照点配方仍走 `super::validation`）。

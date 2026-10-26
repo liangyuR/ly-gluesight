@@ -43,6 +43,10 @@ pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1
 | 6 | [frame_group.rs](../../src-tauri/src/frame_group.rs) | `frame_counter_jump_beyond_seq_limit_is_out_of_range_and_creates_no_groups` | 异常巨大SDK帧号不得创建无界帧组或污染后续基线 |
 | 7 | [frame_group.rs](../../src-tauri/src/frame_group.rs) | `frame_count_at_tolerance_edge_is_normal_and_one_beyond_is_low_or_high` | 帧数容差含上下边界，超出一帧必须报偏高或偏低 |
 | 8 | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `unsegmented_returns_one_pending_region_covering_all_groups` | 真实分段算法未就绪时整件必须作为一个未分段区域覆盖全部帧组 |
+| 8a | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `proportional_boundaries_scale_calibrated_counts_to_actual_total` | 比例边界 = round(本件帧组数 × 前 k 段 N_exp 之和 / ΣN_exp)，不按原帧号（D-SB-40，2026-10-26 新增） |
+| 8b | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `proportional_boundaries_outside_total_tolerance_merge_into_low_confidence_region` | 帧组数超出 ΣN_exp ± Σtol 时比例边界不可信，整件合并为“分段不确定”，不回退计划边界（D-SB-40） |
+| 8c | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `proportional_stays_unsegmented_without_calibrated_counts_or_with_single_segment` | 有段待标定或单段配方时保持未分段，现有配方行为不变（D-SB-40） |
+| 8d | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `trusted_boundaries_get_guard_frames_as_transition_regions` | 可信边界两侧各 guard 帧为过渡区，段被取空时过渡区合并，guard 0 原样切分（D-SB-40） |
 | 9 | [calibration.rs](../../src-tauri/src/calibration.rs) | `n_exp_is_rounded_mean_with_min_max_recorded` | 多轮标定按均值四舍五入生成预期帧数并记录真实波动统计 |
 | 10 | [calibration.rs](../../src-tauri/src/calibration.rs) | `fewer_rounds_than_required_are_rejected_with_have_and_need` | 轮数不足不得产生可用标定，恰达要求可标定 |
 | 11 | [calibration.rs](../../src-tauri/src/calibration.rs) | `suggested_tolerance_covers_observed_spread_never_below_default` | 建议容差覆盖标定中最差实际波动且不低于默认容差 |
@@ -58,7 +62,8 @@ pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1
 | 21 | [camera/delivery.rs](../../src-tauri/src/camera/delivery.rs) | `dropped_callback_frame_becomes_incomplete_group_not_err` | 回调队列或内存预算丢帧只标不完整组，不能把当前段配方整件判成设备错误 |
 | 22 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `unsegmented_region_judges_frames_with_wider_limits_and_flags_offset_unjudged` | 当前未分段区域逐帧按较宽限值判定，并明确胶偏未判状态 |
 | 23 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `missing_camera_frames_mark_incomplete_without_changing_verdict` | 缺帧和测量失败只标不完整，其余相机有效NG仍须保留 |
-| 24 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `region_frame_count_outside_tolerance_raises_anomaly_and_short_part_flags_only` | 帧数异常和疑似提前终止仅产生标志，不能覆盖胶路本身OK/NG |
+| 24 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `frame_count_anomaly_comes_from_part_total_not_from_segment_regions` | 帧数异常和疑似提前终止仅产生标志，不能覆盖胶路本身OK/NG；帧数只核对整件，直线 / 弯道区域的推算帧数不与本段 N_exp 比（D-SB-40，2026-10-26 由 `region_frame_count_outside_tolerance_raises_anomaly_and_short_part_flags_only` 改写） |
+| 24a | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `transition_region_judges_frames_with_wider_limits_without_offset_or_unsegmented_flag` | 过渡区按两侧较宽允差判每帧指标，不判也不标胶偏，不算“含未分段”（D-SB-40，2026-10-26 新增） |
 | 25 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `any_camera_frame_ng_makes_region_ng` | 任一相机任一帧NG必须使区域及整件NG，防止沿用旧多视图放行规则 |
 | 26 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `frame_exceeding_gap_presence_width_or_overflow_limit_is_ng_with_matching_reason` | 断胶、有胶比例、累计胶宽超差和溢胶必须按各自限值形成正确判定 |
 | 27 | [recipe_capture/burst/tests.rs](../../src-tauri/src/recipe_capture/burst/tests.rs) | `plc_estimate_of_zero_or_above_64_is_only_recorded_and_round_completes_on_actual_frames` | PLC开始估算帧数不限制实收帧数，结束预留deviceTriggers写0仍按实收完成 |
@@ -79,6 +84,7 @@ pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1
 | 37 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `three_camera_frames_out_of_arrival_order_are_grouped_by_frame_counter_minus_baseline` | 三台相机按各自帧计数基线配组，乱序到达不得改变帧身份或整件合格判定。 |
 | 38 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `part_end_waits_full_drain_window_regardless_of_reserved_trigger_count` | partEnd后必须等完整排空窗口，deviceTriggers为0、缺省或任意值均不能缩短等待。 |
 | 39 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `frames_beyond_expected_total_are_all_measured_and_only_alarm` | 超出预期帧数的图像全部检测，超额帧中的断胶仍应判NG，帧数异常仅告警。 |
+| 39a | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `calibrated_multi_segment_recipe_is_judged_by_proportional_regions` | 各段已标定的多段配方在生产节拍中按比例分段，得到直线 / 弯道 / 过渡区域而不是整条未分段（D-SB-40，2026-10-26 新增） |
 | 40 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `next_part_baseline_is_each_camera_highest_frame_counter_seen` | 下一件基线只取每台相机已见最高帧号，迟到帧隔离且漏触发相机下一件首帧不被误丢。 |
 | 41 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `camera_reconnect_during_part_is_err_98` | 生产期间相机重连，无论之后是否再收到帧，都应判设备故障ERR98。 |
 | 42 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `no_frame_from_any_camera_is_err_91` | 整件三相机没有任何帧时等到收尾截止并判ERR91，不能提前判合格。 |

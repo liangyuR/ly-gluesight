@@ -172,11 +172,12 @@ export interface Recipe {
   inspect: CameraInspect[];
   segmentDefaults: KindDefaults;
   calibrationRounds: number;
+  boundaryGuard: number;
   partCalib: PartCalib | null;
 }
 
 /** 配方文件内容，配方页编辑它。
- * 段模型字段（segments、inspect、segmentDefaults、calibrationRounds、partCalib）后端 schema 8 起总是输出；前端提交时可缺省（后端按默认值补齐），
+ * 段模型字段（segments、inspect、segmentDefaults、calibrationRounds、boundaryGuard、partCalib）后端 schema 8 起总是输出；前端提交时可缺省（后端按默认值补齐），
  * 所以这里可缺省。segments 为空或缺省 = 旧拍照点配方，非空 = 段配方（此时 shots 为空、triggerMode 为 fly）。 */
 export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   id: string;

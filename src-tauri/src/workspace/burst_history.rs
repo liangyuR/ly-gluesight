@@ -11,10 +11,10 @@ use super::*;
 use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
 use crate::frame_group::{FrameGroup, LossAlarm};
 use crate::plan::PathSegment;
-use crate::segmentation::{resolve_regions, Region, SegInput, Segmenter, Unsegmented};
+use crate::segmentation::{resolve_regions, Proportional, Region, SegInput, Segmenter};
 use crate::store::{FrameRecord, PartDetail, PartDetailBurst, RecordSource};
 
-/// 区域划分的置信度门槛，与在线节拍（cycle/burst.rs）相同；本轮只有 `Unsegmented`，不起作用。
+/// 区域划分的置信度门槛，与在线节拍（cycle/burst.rs）相同：比例分段器在帧数容差内给 1、之外给 0。
 const MIN_CONFIDENCE: f32 = 0.5;
 
 /// 段配方的对照结果（TS `Comparison.burst`）：重判所用的段、计划相机、ΣN_exp 与区域判定。
@@ -56,12 +56,37 @@ pub(super) fn frame_groups(metrics: &[FrameMetrics], cameras: usize) -> Vec<Fram
     }).collect()
 }
 
-/// 按给定的段重新划分区域（本轮 `Unsegmented`：整条胶路一个未分段区域）后判一件；丢帧告警原样带出。
-pub(super) fn judge_frames(segments: &[PathSegment], expected_total: Option<u32>, cameras: &[String], metrics: &[FrameMetrics], loss: &[LossAlarm]) -> BurstJudgement {
+/// 按给定的段比例分段（与生产同一规则，D-SB-40）重新划分区域后判一件；丢帧告警原样带出。
+pub(super) fn judge_frames(
+    segments: &[PathSegment],
+    boundary_guard: u32,
+    expected_total: Option<u32>,
+    cameras: &[String],
+    metrics: &[FrameMetrics],
+    loss: &[LossAlarm],
+) -> BurstJudgement {
     let groups = frame_groups(metrics, cameras.len());
-    let outcome = Unsegmented.segment(&SegInput { groups: &groups, features: metrics, segments });
-    let regions = resolve_regions(segments, &outcome, groups.len() as u64, MIN_CONFIDENCE);
-    burst_judge::judge(segments, expected_total, &regions, &groups, metrics, cameras, loss)
+    let outcome = Proportional.segment(&SegInput {
+        groups: &groups,
+        features: metrics,
+        segments,
+    });
+    let regions = resolve_regions(
+        segments,
+        &outcome,
+        groups.len() as u64,
+        MIN_CONFIDENCE,
+        boundary_guard,
+    );
+    burst_judge::judge(
+        segments,
+        expected_total,
+        &regions,
+        &groups,
+        metrics,
+        cameras,
+        loss,
+    )
 }
 
 /// 历史帧记录按 (camera, seq) 逐帧重测：缺帧仍记缺帧、不读原图；其余帧交给 `measure`，失败记测量失败。
@@ -156,8 +181,21 @@ pub(super) fn compare(app: &AppHandle, w: &Workspace, recipe: &Recipe, detail: &
             return Err("原图未完整保留，无法完成整件复测".into());
         }
         let measurer = CandidateMeasurer::new(app, w, recipe)?;
-        let metrics = remeasure(&burst.frames, |frame| measurer.measure(frame.camera, frame.seq, &frame_image(app, detail, frame.camera, frame.seq)?));
-        judge_frames(&recipe.path_segments, recipe.expected_total(), &cameras, &metrics, &burst.judgement.alarms)
+        let metrics = remeasure(&burst.frames, |frame| {
+            measurer.measure(
+                frame.camera,
+                frame.seq,
+                &frame_image(app, detail, frame.camera, frame.seq)?,
+            )
+        });
+        judge_frames(
+            &recipe.path_segments,
+            recipe.boundary_guard,
+            recipe.expected_total(),
+            &cameras,
+            &metrics,
+            &burst.judgement.alarms,
+        )
     } else {
         if !crate::store::same_measurement_layout(original, recipe) {
             return Err("保存的每帧指标与候选的走廊、当量、检测参数或计划身份不同，不能复用；请从原图复测".into());

@@ -171,7 +171,7 @@ export interface Boundary {
 
 export type SegOutcome = { kind: "unsegmented" } | { kind: "boundaries"; boundaries: Boundary[] };
 
-export type UnsegReason = "algorithmPending" | "lowConfidence";
+export type UnsegReason = "algorithmPending" | "lowConfidence" | "transition";
 
 export type RegionKind =
   | { type: "straight"; segment: number }
@@ -301,6 +301,8 @@ export interface RecipeDocSegmentFields {
   segmentDefaults: KindDefaults;
   /** 标定轮数，默认 10，范围 10..=100 */
   calibrationRounds: number;
+  /** 比例分段边界两侧各留的过渡帧数，默认 2，范围 0..=5（D-SB-40） */
+  boundaryGuard: number;
   partCalib: PartCalib | null;
 }
 
