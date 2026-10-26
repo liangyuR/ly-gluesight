@@ -11,7 +11,7 @@ import {useCycle,useSiteStatus,cycleApi} from "../src/features/cycle/api";
 import type {CameraConfig} from "../src/features/camera/types";
 import {burstRecipe,burstWorkspaceView,captureRoundV2,snapshot,workspaceState} from "./fixtures";
 vi.mock("../src/features/workspace/context",()=>({useWorkspace:vi.fn()}));
-vi.mock("../src/features/workspace/api",()=>({workspaceApi:{setCameraImaging:vi.fn(),captureGet:vi.fn(),capturePlcStatus:vi.fn(),captureList:vi.fn(),captureStart:vi.fn(),captureStop:vi.fn(),captureSample:vi.fn(),captureFrameImage:vi.fn(),calibrationAddRound:vi.fn(),calibrationRemoveRound:vi.fn()}}));
+vi.mock("../src/features/workspace/api",()=>({workspaceApi:{setCameraImaging:vi.fn(),captureGet:vi.fn(),capturePlcStatus:vi.fn(),captureList:vi.fn(),captureStart:vi.fn(),captureStop:vi.fn(),captureSample:vi.fn(),captureFrameImage:vi.fn(),calibrationAddRound:vi.fn(),calibrationRemoveRound:vi.fn(),historyCandidates:vi.fn(),historyImport:vi.fn()}}));
 vi.mock("../src/features/camera/api",()=>({cameraApi:{rigStatus:vi.fn(),calibInfo:vi.fn(async()=>null)}}));
 vi.mock("../src/lib/storage",()=>({storageApi:{preferences:vi.fn(async()=>({}))}}));
 vi.mock("../src/features/plc/api",()=>({plcApi:{getStatus:vi.fn()}}));
@@ -161,4 +161,22 @@ it("取消采集后原图轮次已失败 → 等待 PLC 确认期间仍不能重
  await userEvent.click(await screen.findByRole("button",{name:"取消本轮"}));
  expect(await screen.findByRole("button",{name:"等待取消确认"})).toBeDisabled();
  expect(screen.getByRole("button",{name:"开始整圈采集"})).toBeDisabled();
+});
+
+// 防的回归（在线投运 5.2、第七节）：不可用的历史件也能勾选导入；标准件标记没随导入提交；导入后没选中新轮次，示教与标定找不到它
+it("从历史选用 → 不可用件不能勾选并列出原因，勾选可用件标为标准件后批量导入并选中新轮次",async()=>{
+ const row=(recordId:number,sn:string,reasons:string[])=>({recordId,cycleId:"c-"+recordId,ts:1,sn,mode:"maintenanceCollect" as const,groupCount:12,
+  cameras:["CAM-1","CAM-2","CAM-3"].map(cameraId=>({cameraId,frames:reasons.length ? 11 : 12})),complete:!reasons.length,reasons,importedRound:null});
+ vi.mocked(workspaceApi.historyCandidates).mockResolvedValue([row(1,"SN-1",[]),row(2,"SN-2",["缺帧 1 帧"])]);
+ vi.mocked(workspaceApi.historyImport).mockResolvedValue(["capture-9-0"]);
+ show();
+ await userEvent.click(await screen.findByText("从历史选用"));
+ expect(await screen.findByText("缺帧 1 帧")).toBeVisible();
+ expect(screen.getByRole("checkbox",{name:"选用 SN SN-2"})).toBeDisabled();
+ expect(screen.getByRole("checkbox",{name:"SN SN-1 是标准件"})).toBeDisabled();
+ await userEvent.click(screen.getByRole("checkbox",{name:"选用 SN SN-1"}));
+ await userEvent.click(screen.getByRole("checkbox",{name:"SN SN-1 是标准件"}));
+ await userEvent.click(screen.getByRole("button",{name:"导入选中的 1 件"}));
+ expect(workspaceApi.historyImport).toHaveBeenCalledWith("A",ws.data!.workspace.revision,[{recordId:1,standard:true}]);
+ await waitFor(()=>expect(workspaceApi.captureGet).toHaveBeenLastCalledWith("capture-9-0"));
 });

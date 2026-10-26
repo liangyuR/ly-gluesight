@@ -114,7 +114,7 @@
 
 ### 5.3 操作员命令
 
-改变设备或握手状态的 IPC 命令写 `op.*`，记参数摘要与结果（`ok` / `err` + 错误原文），命令入口处统一包装：`op.reset`、`op.capture.start`、`op.capture.stop`、`op.camera`、`op.plc`、`op.site`（按对象合并，用 `data.action` 区分动作）、`op.maintenance`、`op.recipe.delete`。手动写点只记点位与结果，不记写入值。
+改变设备或握手状态的 IPC 命令写 `op.*`，记参数摘要与结果（`ok` / `err` + 错误原文），命令入口处统一包装：`op.reset`、`op.capture.start`、`op.capture.stop`、`op.capture.import`、`op.camera`、`op.plc`、`op.site`（按对象合并，用 `data.action` 区分动作）、`op.maintenance`、`op.recipe.delete`。手动写点只记点位与结果，不记写入值。
 
 被拒绝的操作也要记（例如复位被拒、闸门超时），这类信息现场最难口述。
 

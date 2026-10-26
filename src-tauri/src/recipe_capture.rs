@@ -12,7 +12,7 @@ use crate::recipe::CameraImaging;
 
 mod burst;
 
-pub use burst::{CaptureFailureV2, CaptureRoundV2};
+pub use burst::{CaptureFailureV2, CaptureRoundV2, HistoryFrame, HistoryRound, RoundOrigin};
 
 /// 三目拼接图的拆分布局。旧拍照点模型：段配方只用单视角相机，不经过这里（D-SB-11）。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -190,6 +190,8 @@ pub struct CaptureSummary {
     pub state: CaptureState,
     pub created_at: i64,
     pub error: Option<String>,
+    /// 历史件导入的轮次的来源；示教实拍为空
+    pub origin: Option<RoundOrigin>,
 }
 
 impl RecipeCaptureHost {
@@ -316,6 +318,7 @@ impl RecipeCaptureHost {
                     state: r.state,
                     created_at: r.created_at,
                     error: r.error,
+                    origin: r.origin,
                 });
             }
         }

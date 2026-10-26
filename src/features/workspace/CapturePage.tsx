@@ -24,6 +24,7 @@ import { expectedChoices } from "./progress";
 import type { CaptureNavigationState } from "./captureNavigation";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
 import CaptureReviewPanel from "./CaptureReviewPanel";
+import HistoryImportPanel from "./HistoryImportPanel";
 
 const stateLabels: Record<CaptureState,string> = { waitingStart:"等待 PLC 接受", receiving:"接收中", draining:"PLC 已结束，等待在途图像", complete:"采集完成", failed:"采集异常" };
 const teachingLabels: Record<CapturePlcStatus["phase"], string> = {
@@ -55,6 +56,7 @@ export default function CapturePage() {
   const [teaching,setTeaching] = useState<CapturePlcStatus | null>(null);
   const [sampleExpected,setSampleExpected] = useState<Verdict>("OK");
   const [confirmed,setConfirmed] = useState(false);
+  const [source,setSource] = useState<"capture" | "history">("capture");
   const [imagingDrafts,setImagingDrafts] = useState<Record<string,CameraImaging>>({}), [applyErrors,setApplyErrors] = useState<Record<string,string>>({});
   const chosen = cameras.filter(c=>!excluded.includes(c.id)).map(c=>c.id);
   const current = useRef({id:doc?.id,alive:true}); current.current.id=doc?.id;
@@ -150,6 +152,7 @@ export default function CapturePage() {
   const shown=preview?.camera===shownCamera ? preview : null, shownK=shown?.k ?? previewK;
   const multi=(view?.cameras.length ?? 0) > 1;
   const cameraName=(index: number) => nameOf(view?.cameras[index]?.cameraId ?? "");
+  const markedStandard=!!round?.origin?.standard;
   const addToCalibration=(standard: boolean) => { if(round) void act(() => workspaceApi.calibrationAddRound(doc.id,data.workspace.revision,round.roundId,standard),standard ? "已加入标定（标准件轮次）" : "已加入多轮标定"); };
   const removeFromCalibration=() => { if(round) void act(() => workspaceApi.calibrationRemoveRound(doc.id,data.workspace.revision,round.roundId),"已移出标定，请重新应用标定"); };
   const finished=!!round && !active && !handshakeBusy, collapsed=finished && teaching?.available && prepOpenFor!==round.roundId;
@@ -201,7 +204,7 @@ export default function CapturePage() {
       {cameras.length > 0 && <div className="wp-actions"><Button disabled={deviceLocked || !changedImaging.length || changedImaging.some(id=>!!imagingInvalid(imagingOf(id)))} onClick={applyImaging}>应用</Button><span className="muted">按相机分别写入候选配方并立即下发</span></div>}
     </details>
   </Panel>;
-  const historyPanel = <Panel key="history" title="采集历史" detail="保留异常轮次供追溯，重新采集不会混用旧图">{history.length ? <Select aria-label="采集历史" value={roundId ?? ""} disabled={active || handshakeBusy || working} options={[{value:"",label:"最近轮次"},...history.map(r=>({value:r.roundId,label:`${r.roundId} · ${new Date(r.createdAt).toLocaleString("zh-CN")} · ${stateLabels[r.state]} · ${r.cameraIds.length} 台相机 · 已接收 ${r.receivedCount} 帧组`}))]} onValueChange={value=>{setRoundId(value || undefined);setPreviewK(0);}}/> :<p className="wp-capture-empty">暂无采集轮次。完成第一圈采集后，可在此回看各轮结果。</p>}</Panel>;
+  const historyPanel = <Panel key="history" title="采集历史" detail="保留异常轮次供追溯，重新采集不会混用旧图">{history.length ? <Select aria-label="采集历史" value={roundId ?? ""} disabled={active || handshakeBusy || working} options={[{value:"",label:"最近轮次"},...history.map(r=>({value:r.roundId,label:`${r.roundId} · ${new Date(r.createdAt).toLocaleString("zh-CN")} · ${r.origin ? "历史件导入" : stateLabels[r.state]} · ${r.cameraIds.length} 台相机 · ${r.origin ? "" : "已接收 "}${r.receivedCount} 帧组`}))]} onValueChange={value=>{setRoundId(value || undefined);setPreviewK(0);}}/> :<p className="wp-capture-empty">暂无采集轮次。完成第一圈采集后，可在此回看各轮结果。</p>}</Panel>;
   const lossTexts = view?.lossAlarms.map(alarm => lossAlarmText(alarm,cameraName)) ?? [];
   const incompleteShown = view?.incompleteGroups.slice(0,MAX_LISTED_GROUPS) ?? [];
   const resultPanel = round && view && <div key="result" ref={resultRef} className="wp-capture-anchor"><Panel title="采集结果" actions={<Badge tone={round.state==="complete" ? "ok" : round.state==="failed" ? "warn" : "info"}>{stateLabels[round.state]}</Badge>}>
@@ -212,7 +215,8 @@ export default function CapturePage() {
       {view.cameras.map(c=><span key={c.cameraId} className={"wp-capture-chip" + (!active && c.frames!==groupCount ? " warn" : "")}><small>{nameOf(c.cameraId)}</small><strong>{c.frames} 帧</strong></span>)}
       {view.incompleteGroups.length>0 && <span className="wp-capture-chip warn"><small>不完整帧组</small><strong>{view.incompleteGroups.length} 个</strong></span>}
       {view.plcEstimate != null && <span className="wp-capture-chip"><small>PLC 预期总数（仅供参考）</small><strong>{view.plcEstimate}</strong></span>}
-      <Badge tone={round.simulated ? "warn" : "ok"}>{round.simulated ? "离线 / 模拟（不代表现场硬件验收）" : "设备实拍"}</Badge>
+      {round.origin && <span className="wp-capture-chip"><small>历史件</small><strong className="mono">{round.origin.cycleId}</strong></span>}
+      <Badge tone={round.simulated ? "warn" : "ok"}>{round.origin ? (markedStandard ? "历史件导入 · 标准件" : "历史件导入") : round.simulated ? "离线 / 模拟（不代表现场硬件验收）" : "设备实拍"}</Badge>
     </div>
     {!active && view.incompleteGroups.length>0 && <p className="muted hint">缺帧只告警：不完整的帧组仍会用其余相机的图检测，并标“检测不完整”；不整轮重采。</p>}
     {multi && <SegmentedControl size="sm" label="查看相机" value={shownCamera} onValueChange={setPreviewCamera} options={view.cameras.map(c=>({ value: c.cameraId, label: nameOf(c.cameraId) }))}/>}
@@ -247,7 +251,7 @@ export default function CapturePage() {
           : <Link className={"qs-btn" + (teachedCameras.length ? "" : " tonal")} data-variant={teachedCameras.length ? "filled" : "tonal"} to={`/recipe/teach?round=${encodeURIComponent(round.roundId)}`}>用于走廊示教<ArrowRight size={15} aria-hidden="true"/></Link>}
         {calibrationEntry
           ? <Button variant="tonal" data-variant="tonal" disabled={locked || productionBusy} onClick={removeFromCalibration}>移出标定</Button>
-          : <><Button variant="tonal" data-variant="tonal" disabled={locked || productionBusy || bankedAsSample} onClick={() => addToCalibration(false)}>加入标定</Button>
+          : <>{!markedStandard && <Button variant="tonal" data-variant="tonal" disabled={locked || productionBusy || bankedAsSample} onClick={() => addToCalibration(false)}>加入标定</Button>}
             <Button variant="tonal" data-variant="tonal" disabled={locked || productionBusy || bankedAsSample} onClick={() => addToCalibration(true)}>加入标定（标准件）</Button></>}
         <Link className="wp-text-link" to="/recipe/calibration">前往多轮标定</Link>
       </>}
@@ -266,5 +270,8 @@ export default function CapturePage() {
     {round?.error && <Notice title="本轮异常，需要重新采集" tone="warn">{round.error}</Notice>}
     {lossTexts.length>0 && <Notice title="疑似丢帧（只告警）" tone="warn"><ul>{lossTexts.map(text=><li key={text}>{text}</li>)}</ul></Notice>}
   </section>;
-  return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{resultPanel}{historyPanel}</>}</div><div className="wp-capture-aside">{statusPanel}<section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>按帧号配组，不按到达顺序</strong><p>同一触发序号的各相机帧配成一个帧组。某台相机缺帧只告警：该组标“检测不完整”，其余相机照常检测，不整轮重采，也不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>收到 PLC 结束通知，等待在途图像到期，已收到的帧全部写盘后本轮完成。示教不下发预期帧数；图片保存完成后还需等待 PLC 确认和释放。相机帧号缺口及相机间帧数差异用于丢帧诊断。</p></div></section></div></div></div>;
+  const sourceSwitch = !validation && <SegmentedControl key="source" label="轮次来源" value={source} onValueChange={value=>setSource(value as "capture" | "history")} options={[{value:"capture",label:"整圈采集"},{value:"history",label:"从历史选用"}]}/>;
+  const importPanel = <HistoryImportPanel key="import" recipeId={doc.id} revision={data.workspace.revision} disabled={locked} nameOf={nameOf} onError={setError} onImported={rounds=>{ if(current.current.alive && current.current.id===doc.id && rounds.length) {setRoundId(rounds[0]); setPreviewK(0);} }}/>;
+  const head = !validation && source==="history" ? importPanel : collapsed ? prepBar : prepPanel;
+  return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack">{sourceSwitch}{head}{resultPanel}{historyPanel}</div><div className="wp-capture-aside">{statusPanel}<section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>按帧号配组，不按到达顺序</strong><p>同一触发序号的各相机帧配成一个帧组。某台相机缺帧只告警：该组标“检测不完整”，其余相机照常检测，不整轮重采，也不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>收到 PLC 结束通知，等待在途图像到期，已收到的帧全部写盘后本轮完成。示教不下发预期帧数；图片保存完成后还需等待 PLC 确认和释放。相机帧号缺口及相机间帧数差异用于丢帧诊断。</p></div></section></div></div></div>;
 }

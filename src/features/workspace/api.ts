@@ -2,7 +2,7 @@ import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { AlignSuggestion, CapturePlcStatus, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, ImagingSaved, Sample, Workspace, WorkspaceView } from "./types";
+import type { AlignSuggestion, CapturePlcStatus, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, HistoryCandidate, HistoryPick, ImagingSaved, Sample, Workspace, WorkspaceView } from "./types";
 
 function grayPreview(input: ArrayBuffer | number[]) {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -67,6 +67,10 @@ export const workspaceApi = {
   /** 采集轮次里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
   captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeGray),
   captureList: (recipeId: string) => desktopCall<CaptureSummary[]>("recipe_capture_list", { recipeId }),
+  /** “从历史选用”：本配方最近的真机录制件与能否导入为采集轮次（只读） */
+  historyCandidates: (id: string) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id }),
+  /** 把选中的历史件导入为采集轮次（硬链接原图），返回新轮次 ID */
+  historyImport: (id: string, revision: number, picks: HistoryPick[]) => desktopCall<string[]>("workspace_history_import", { id, revision, picks }),
   /** 新轮次一台相机全部帧组的缩略图条带（分段标定工作台） */
   captureRoundThumbs: (roundId: string, cameraId: string) => desktopCall<ArrayBuffer>("recipe_capture_round_thumbs", { roundId, cameraId }).then(decodeThumbStrip),
   /** 把分段模板的边界按图像对齐到一轮（只读建议，D-SB-44 P2） */

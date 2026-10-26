@@ -28,6 +28,7 @@ mod collect_release;
 #[cfg(test)]
 mod collect_release_tests;
 mod comparisons;
+mod history_import;
 mod history_samples;
 pub mod progress;
 mod recorded;
@@ -42,6 +43,7 @@ pub use burst_history::*;
 pub use burst_release::*;
 pub use capture_review::*;
 pub use collect_release::*;
+pub use history_import::*;
 pub use transfer::*;
 pub use workflow::*;
 

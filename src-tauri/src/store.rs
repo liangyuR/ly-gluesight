@@ -1438,6 +1438,28 @@ impl Store {
         Ok(progress)
     }
 
+    /// 某配方有录制目录的真机记录（最新在前，最多 limit 件），历史件导入为采集轮次时据此逐件核对。
+    pub fn recorded_parts(
+        &self,
+        recipe_id: &str,
+        limit: u32,
+    ) -> Result<Vec<(PartSummary, RecordingEvidence)>, String> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "SELECT {SUMMARY_COLS}, recording_state, recording_available, recording_directory, recording_errors FROM parts \
+            WHERE {} AND recipe_id = ?1 AND recording_directory IS NOT NULL ORDER BY id DESC LIMIT {}",
+            HistoryScope::Real.clause(""),
+            limit.clamp(1, 500)
+        );
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let rows = stmt
+            .query_map([recipe_id], |row| {
+                Ok((summary(row)?, recording_row(row, SUMMARY_LEN)?))
+            })
+            .map_err(db_err)?;
+        rows.collect::<Result<_, _>>().map_err(db_err)
+    }
+
     pub fn counts_since(&self, since: i64, scope: HistoryScope) -> Result<VerdictCounts, String> {
         self.query(&HistoryQuery {
             from: Some(since),
