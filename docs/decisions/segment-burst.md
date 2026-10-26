@@ -325,11 +325,12 @@
 - 采用（方向）：逐帧估计工件在画面中的平移与旋转（直线段以平移为主，弯道以绕出胶点的旋转为主），在比例边界的 `search_window` 内把边界对准运动转折点，置信度取转折强度。`SegInput` 需扩展运动特征（现只有 `FrameMetrics`）。以 NEW-14 16 轮已确认的手动分段为真值离线评估，验收：≥ 95% 的边界误差 ≤ 1 帧；另需实际涂胶轮次复核。
 - 理由：工件运动不依赖胶嘴是否对准胶条，空跑数据即可开发；边界之外的段结构、相机与走廊仍由人定，只替换比例分段器的边界定位。
 
-### D-SB-44 分段标定工作台（2026-10-26 用户确认，P1 已实现）
+### D-SB-44 分段标定工作台（2026-10-26 用户确认，P1、P2 已实现）
 
 - 问题：段结构在段列表页填表定义、看不到图像；边界在采集页按帧号手填、一次只看一台相机；操作员无法判断怎么分段（NEW-14 调试时卡在这一步）。
 - 采用：段列表页顶部新增分段标定工作台。选一轮完整采集作模板轮，三台相机的缩略图按帧组排成时间轴：点帧间竖缝插入或删除边界（可拖动），点段名切换直线 / 弯道，点缩略图在下方并排预览三台相机原图（叠加已示教走廊）；← → 切换帧组，B 在当前帧组后插入或删除边界。保存时用组合命令在同一候选副本上依次替换段列表（受 `guard_calibration` 约束）、保存并确认模板轮边界、设为分段模板，任一步失败整体不写入。段的类型序列变化时其余已整理轮次按现有规则变“需复核”、标定清空，保存前弹窗列出影响；只改边界时不影响其余轮次。段的数量、顺序与类型只在工作台改，段列表页只编辑各段参数；两边都有未保存改动时互相锁定，避免修订冲突。缩略图由 `recipe_capture_round_thumbs` 按相机一次取整轮（8× 箱式平均下采样，前端 canvas 直接画灰度）。
-- 后续（同一决策，待实现）：P2 其余轮次按图像对齐模板轮给出建议边界、并排复核确认；P3 运动曲线与自动建议；P4 即 D-SB-41。对齐与运动只产生草稿，确认后才成为标定输入，不进生产判定。
+- P2 对齐复核（已实现）：工作台下方“其余轮次复核”。`workspace_capture_review_suggest` 把分段模板的边界按图像对齐到所选轮次（两轮全部帧 32× 箱式平均成 40×32 小图，逐相机平均绝对差除以该相机距离中位数后取平均，首尾固定、带宽 max(3, 0.15·M) 的 DTW；模板帧 c、c + 1 所配目标帧中位数的中点即边界，保持严格递增），与按比例换算相差超过 2 帧或被挪动过的边界标“需重点复核”；有在途件或采集时拒绝，模板与目标轮相机采集配置不一致时拒绝。每个边界一行并排显示模板与本轮边界两侧各两帧（三台相机），← → 微调（不越过相邻边界）、↑ ↓ 换行、Enter 确认；各行都确认后 `workspace_capture_review_confirm_cuts` 一次保存并确认本轮边界（原子写入），再转到下一个未确认的轮次。对齐结果只是草稿，未确认不进标定。
+- 后续（同一决策，待实现）：P3 运动曲线与自动建议；P4 即 D-SB-41。
 - 回退：采集页“轮次整理”的数字边界、按比例 / 原帧号套用模板与屏蔽保留不变。
 
 ## 五、IPC 契约
@@ -393,6 +394,8 @@
 | `workspace_confirm_tolerance` | `id, revision, segment, tolerance` | WorkspaceView | D2 |
 | `workspace_extract_corridor` | `id, revision, camera: String, imageId, roi: [u32; 4], guide: BrushGuide?, pointSpacingPx: f32?` | `Result<CenterlineResult, String>`（与 `workspace_extract_centerline` 相同：`path`、`message`、`failure`） | D2 |
 | `recipe_capture_round_thumbs` | `roundId, cameraId: String` | `Result<tauri::ipc::Response, String>`（头部 [帧组数, 宽, 高] u32 小端，之后每组 1 字节状态 + 宽 × 高 灰度，见 `frame_align::thumb_strip`） | D-SB-44 |
+| `workspace_capture_review_suggest` | `id, round` | `Result<AlignSuggestion, String>`（`{round, templateRound, templateCuts, cuts: [{cut, proportional, review}]}`，只读） | D-SB-44 |
+| `workspace_capture_review_confirm_cuts` | `id, revision, round, cuts: u64[]` | WorkspaceView（保存并确认，原子写入） | D-SB-44 |
 | `workspace_segment_template_save` | `id, revision, round, segments: PathSegment[], cuts: u64[]` | WorkspaceView（段列表 + 模板轮边界确认 + 设为模板，原子写入） | D-SB-44 |
 | `recipe_capture_frame_image` | `roundId, cameraId: String, seq`（帧组序号，从 1 起） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `recipe_capture_image`）；该相机缺这一帧时报错 | D1 |
 | `workspace_live_frame_image` | `cycleId, revisionId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_live_image`）；未到或缺帧时报错 | C3 |

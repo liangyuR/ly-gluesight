@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { Button, Dialog, Select } from "qing-steel";
 import type { PathSegment, WorkspacePlanView } from "../plan/types";
 import { segmentKindLabel } from "../plan/vis";
@@ -7,29 +7,14 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, GrayViewer, Notice, Panel } from "./components";
 import { hasCalibration } from "./segmentEdit";
+import { ignoreKey, stripGroups, Thumb, useThumbs } from "./thumbs";
 import {
   initialDraft, moveCut, segmentsForSave, spans, structureChanged, toggleCut, toggleKind, valid,
-  type ThumbStrip, type WorkbenchDraft,
+  type WorkbenchDraft,
 } from "./workbenchDraft";
 import type { CaptureSummary, GrayImage } from "./types";
 
 const reviewLabel = { draft: "边界草稿待确认", confirmed: "边界已确认", stale: "边界需复核" } as const;
-
-/** 一张灰度缩略图：直接把像素画进 canvas（不生成图片地址）。 */
-function Thumb({ pixels, width, height }: { pixels: Uint8Array | null; width: number; height: number }) {
-  const canvas = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const context = canvas.current?.getContext("2d");
-    if (!context || !pixels || !width || !height) return;
-    const image = context.createImageData(width, height);
-    for (let i = 0; i < pixels.length; i++) {
-      image.data[i * 4] = image.data[i * 4 + 1] = image.data[i * 4 + 2] = pixels[i];
-      image.data[i * 4 + 3] = 255;
-    }
-    context.putImageData(image, 0, 0);
-  }, [pixels, width, height]);
-  return pixels ? <canvas ref={canvas} width={width} height={height} /> : <span className="swb-missing">缺帧</span>;
-}
 
 /** 某台相机某个帧组的原图（预览用）。 */
 function useFrame(roundId: string, camera: string, seq: number) {
@@ -61,7 +46,6 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   const { data, doc, act, busy } = useWorkspace();
   const [rounds, setRounds] = useState<CaptureSummary[] | null>(null);
   const [roundId, setRoundId] = useState("");
-  const [strips, setStrips] = useState<{ roundId: string; strips: Record<string, ThumbStrip> } | null>(null);
   const [loadError, setLoadError] = useState("");
   const [edit, setEdit] = useState<{ roundId: string; draft: WorkbenchDraft } | null>(null);
   const [seq, setSeq] = useState(1);
@@ -95,18 +79,9 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     return () => { alive = false; };
   }, [docId]);
 
-  useEffect(() => {
-    if (!roundId) return;
-    let alive = true;
-    setLoadError("");
-    Promise.all(plan.cameras.map(camera => workspaceApi.captureRoundThumbs(roundId, camera).then(strip => [camera, strip] as const)))
-      .then(entries => alive && setStrips({ roundId, strips: Object.fromEntries(entries) }))
-      .catch(e => alive && setLoadError(errorText(e)));
-    return () => { alive = false; };
-  }, [roundId, plan.cameras.join("|")]);
-
-  const ready = strips?.roundId === roundId ? strips.strips : null;
-  const groupCount = ready ? Math.max(0, ...Object.values(ready).map(strip => strip.frames.length)) : 0;
+  const thumbs = useThumbs(roundId, plan.cameras);
+  const ready = thumbs.strips;
+  const groupCount = stripGroups(ready);
   const saved = review?.rounds[roundId] ?? null;
   const baseline = useMemo(
     () => groupCount ? initialDraft(groupCount, plan.segments.map(s => s.kind), saved) : null,
@@ -118,25 +93,17 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   useEffect(() => () => onDirty(false), []);
 
   const change = (next: WorkbenchDraft) => setEdit({ roundId, draft: next });
-  const draftRef = useRef({ draft, change, groupCount, seq });
-  draftRef.current = { draft, change, groupCount, seq };
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if (e.altKey || e.ctrlKey || e.metaKey || e.defaultPrevented) return;
-      if ((e.target as HTMLElement | null)?.closest?.("input,select,textarea,[contenteditable='true'],[role='dialog'],[role='combobox'],[role='listbox']")) return;
-      const { draft: current, change: apply, groupCount: total, seq: at } = draftRef.current;
-      if (!current) return;
-      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-        e.preventDefault();
-        setSeq(Math.min(total, Math.max(1, at + (e.key === "ArrowLeft" ? -1 : 1))));
-      } else if (e.key === "b" || e.key === "B") {
-        e.preventDefault();
-        apply(toggleCut(current, at));
-      }
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, []);
+  // 快捷键只在工作台内有焦点时生效（下方对齐复核也用方向键）
+  const onKey = (e: KeyboardEvent) => {
+    if (!draft || ignoreKey(e)) return;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      setSeq(Math.min(groupCount, Math.max(1, seq + (e.key === "ArrowLeft" ? -1 : 1))));
+    } else if (e.key === "b" || e.key === "B") {
+      e.preventDefault();
+      change(toggleCut(draft, seq));
+    }
+  };
   useEffect(() => { setSeq(1); }, [roundId]);
 
   if (rounds && !rounds.length) {
@@ -176,10 +143,10 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
 
   return <Panel title="分段标定" detail="在模板轮的帧组时间轴上划分直线段与弯道段：点帧间竖缝插入或删除边界，点段名切换类型，点缩略图预览三台相机原图；← → 切换帧组，B 在当前帧组后插入或删除边界"
     actions={<Select aria-label="模板轮" value={roundId} options={roundOptions} disabled={busy || dirty} onValueChange={value => { setEdit(null); setRoundId(value); }} />}>
-    {loadError && <Notice title="读取采集图像失败" tone="warn">{loadError}</Notice>}
+    {(loadError || thumbs.error) && <Notice title="读取采集图像失败" tone="warn">{loadError || thumbs.error}</Notice>}
     {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改分段。</Notice>}
-    {!ready && !loadError && <p className="muted">正在读取缩略图…</p>}
-    {draft && ready && <>
+    {!ready && !loadError && !thumbs.error && <p className="muted">正在读取缩略图…</p>}
+    {draft && ready && <div className="swb-body" onKeyDown={onKey}>
       <div className="swb-summary" role="status" aria-label="分段草稿">
         <span>{groupCount} 个帧组 · {segmentSpans.length} 段 · 边界 {draft.cuts.length ? draft.cuts.join(" / ") : "无"}</span>
         {saved && <Badge tone={saved.status === "confirmed" ? "ok" : "warn"}>{reviewLabel[saved.status]}</Badge>}
@@ -231,7 +198,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
         <Button disabled={!dirty || busy} onClick={() => setEdit(null)}>撤销改动</Button>
         <Button variant="filled" disabled={blocked} onClick={requestSave}>{isTemplate && !dirty ? "重新保存分段" : "保存分段并设为模板"}</Button>
       </div>
-    </>}
+    </div>}
     {confirming && <Dialog open title="段结构将改变" onOpenChange={open => { if (!open) setConfirming(false); }}
       footer={<><Button disabled={busy} onClick={() => setConfirming(false)}>取消</Button><Button variant="filled" disabled={busy} onClick={() => void save()}>保存并设为模板</Button></>}>
       <div className="wp-stack">

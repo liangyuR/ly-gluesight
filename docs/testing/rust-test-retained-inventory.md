@@ -86,6 +86,7 @@ pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1
 | 39 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `frames_beyond_expected_total_are_all_measured_and_only_alarm` | 超出预期帧数的图像全部检测，超额帧中的断胶仍应判NG，帧数异常仅告警。 |
 | 39b | [workspace/capture_review/tests.rs](../../src-tauri/src/workspace/capture_review/tests.rs) | `template_round_save_confirms_template_and_invalidates_others_only_on_structure_change` | 工作台一次保存：模板轮确认并成为模板；段类型序列变化时其余已确认轮次需复核、标定清空，不变时不受影响（D-SB-44，2026-10-26 新增） |
 | 39c | [frame_align.rs](../../src-tauri/src/frame_align.rs) | `thumb_strip_keeps_group_order_and_marks_missing_frames` | 缩略图条带的字节契约：帧组顺序不变、缺帧占位且状态为 0、下采样取块均值（D-SB-44） |
+| 39d | [frame_align.rs](../../src-tauri/src/frame_align.rs) | `aligned_cuts_follow_scene_positions_under_stretch_drop_and_repeat` | 对齐复核按图像而不是按比例：时间伸缩、前慢后快、丢帧、重复帧下对齐边界与真值相差 ≤ 1 帧（D-SB-44 P2，2026-10-26 新增） |
 | 39a | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `calibrated_multi_segment_recipe_is_judged_by_proportional_regions` | 各段已标定的多段配方在生产节拍中按比例分段，得到直线 / 弯道 / 过渡区域而不是整条未分段（D-SB-40，2026-10-26 新增） |
 | 40 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `next_part_baseline_is_each_camera_highest_frame_counter_seen` | 下一件基线只取每台相机已见最高帧号，迟到帧隔离且漏触发相机下一件首帧不被误丢。 |
 | 41 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `camera_reconnect_during_part_is_err_98` | 生产期间相机重连，无论之后是否再收到帧，都应判设备故障ERR98。 |

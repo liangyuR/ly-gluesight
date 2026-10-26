@@ -38,3 +38,21 @@
 .swb-seam.target:hover { border-color: var(--primary); cursor: grabbing; }
 .swb-preview { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; }
 .swb-preview > * { min-height: 280px; }
+.swb-body { display: flex; flex-direction: column; gap: 12px; outline: none; }
+
+/* 其余轮次的对齐复核（AlignReview） */
+.alr-rounds { display: flex; flex-wrap: wrap; gap: 6px; }
+.alr-round { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--outline-variant); border-radius: var(--r-sm); background: var(--surface-low); color: inherit; font-size: 12px; cursor: pointer; }
+.alr-round.selected { border-color: var(--primary); }
+.alr-body { display: flex; flex-direction: column; gap: 10px; outline: none; }
+.alr-body:focus-visible { box-shadow: 0 0 0 2px var(--primary); border-radius: var(--r-md); }
+.alr-boundary { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--outline-variant); border-radius: var(--r-md); background: var(--surface-low); }
+.alr-boundary.active { border-color: var(--primary); }
+.alr-boundary > header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.alr-compare { display: flex; flex-wrap: wrap; gap: 16px; }
+.alr-side { display: flex; flex-direction: column; gap: 2px; margin: 0; }
+.alr-side > figcaption { font-size: 12px; color: var(--on-surface-variant); font-family: var(--font-mono); }
+.alr-row { display: grid; grid-template-columns: repeat(4, 72px); gap: 2px; }
+.alr-cell { position: relative; display: flex; align-items: center; justify-content: center; height: 58px; overflow: hidden; border-radius: 3px; background: var(--surface-mid); }
+.alr-cell canvas { width: 100%; height: 100%; display: block; }
+.alr-cell.edge::after { content: ""; position: absolute; top: 0; right: -2px; bottom: 0; width: 3px; background: var(--ng); }

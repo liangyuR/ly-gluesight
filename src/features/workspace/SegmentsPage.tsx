@@ -12,6 +12,7 @@ import { Badge, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components
 import { errorText } from "../../lib/errors";
 import { patchSegment, segmentIssues } from "./segmentEdit";
 import SegmentWorkbench from "./SegmentWorkbench";
+import AlignReview from "./AlignReview";
 import "./segments.css";
 
 const DEBOUNCE_MS = 700;
@@ -102,6 +103,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
 
   return <div className="wp-page"><WorkspaceBar />
     <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
+    <AlignReview plan={plan} locked={workbenchDirty ? "上方分段有未保存的改动，先保存或撤销后再确认其余轮次" : paramsPending} />
     <Panel title="段列表" detail="各段帧数容差、长度、检测区间与检测项；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数由多轮采集得出，这里只读">
       <CameraSegmentOverview cameras={plan.cameras} segments={segments} />
       {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改段列表。</Notice>}

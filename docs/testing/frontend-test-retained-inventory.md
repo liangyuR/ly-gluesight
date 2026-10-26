@@ -44,6 +44,7 @@ pnpm typecheck
 | 14 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `分段标定工作台的边界编辑`（参数化 3 例：插入、删除、末帧组之后不插入） | 插入边界时所在段一分为二且类型相同，删除时与后一段合并、保留前一段类型，边界个数始终等于段数 − 1（D-SB-44，2026-10-26 取代 segment-edit.test.ts） |
 | 15 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `工作台保存的段列表 > 段的类型序列不变 → 原样保存…` | 只改边界时段参数、N_exp、标定与 x_ref 原样保留 |
 | 16 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `工作台保存的段列表 > 段的类型序列变了 → 序号从 1 连续，N_exp、标定与 x_ref 清空…` | 段结构或类型改变时清除全部帧数标定与胶偏参考并维持连续段编号，同位置同类型的段沿用参数 |
+| 17a | [align-review.test.tsx](../../tests/align-review.test.tsx) | `其余轮次的对齐复核 > → 微调不越过下一个边界；两行都确认后才保存，且一次提交整轮边界` | 复核微调保持边界严格递增，全部边界确认后才写入且一次提交（D-SB-44 P2） |
 | 17 | [segment-workbench.test.tsx](../../tests/segment-workbench.test.tsx) | `分段标定工作台改变段结构 > 已标定且另有一轮已确认边界 → 保存前列出失效范围，确认后一次提交…` | 改变段结构前先列出会失效的轮次与标定，确认后一次提交段列表与模板轮边界 |
 | 18 | [segments-page-leave.test.tsx](../../tests/segments-page-leave.test.tsx) | `防抖没到期就离开段列表页 > 换了配方 → 编辑提交到原配方，新配方照常加载出来` | 防抖未到期切换配方时，旧编辑提交给原配方且不得打断新配方加载 |
 | 19 | [segments-page-leave.test.tsx](../../tests/segments-page-leave.test.tsx) | `防抖没到期就离开段列表页 > 仍在这个配方 → 提交后工作区拿到返回的新修订` | 防抖未到期仅离开当前页面时，工作区必须接受保存返回的新修订，避免后续保存冲突 |

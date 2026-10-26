@@ -63,8 +63,9 @@ pub use packaging::check_packaged_runtime;
 #[doc(hidden)]
 pub mod probe_api {
     pub use crate::calibration::calibrate_counts;
+    pub use crate::frame_align::{align_cuts, downsample, Sequence, ALIGN_FACTOR};
     pub use crate::frame_group::FrameGroup;
-    pub use crate::image_file::save_pgm;
+    pub use crate::image_file::{load as load_image, save_pgm};
     pub use crate::plan::SegmentKind;
     pub use crate::production::{graphs, Prepared, GRAPH_VERSION};
     pub use crate::recipe::{samples, DetectParams, JudgeParams, Polarity, Recipe, RecipeDoc, ShotLimits};
@@ -311,6 +312,8 @@ pub fn run() {
             workspace::workspace_calibration_apply,
             workspace::workspace_capture_review_save,
             workspace::workspace_segment_template_save,
+            workspace::workspace_capture_review_suggest,
+            workspace::workspace_capture_review_confirm_cuts,
             workspace::workspace_capture_review_confirm,
             workspace::workspace_capture_review_set_template,
             workspace::workspace_capture_review_apply_template,

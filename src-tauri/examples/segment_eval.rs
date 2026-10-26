@@ -3,7 +3,8 @@
 //! 读一个项目里某个候选的 workspace.json：段列表（类型、容差、boundary_guard）与采集页已确认的手动分段（真值）。
 //! 对每个已确认轮次做留一评估：用其余已确认轮次按多轮标定的规则（`calibrate_counts`，均值四舍五入）得出各段 N_exp，
 //! 再用生产的比例分段器（`Proportional`）按这一轮的帧组数推算边界，与它的手动边界比较；同时列出“按原帧号”
-//! （累计 N_exp 不缩放）的误差作对照。只用帧组数与手动边界，不读图像、不需要 lyFlow。
+//! （累计 N_exp 不缩放）的误差作对照。有分段模板时再按图像把模板边界对齐到各已确认轮次（D-SB-44 对齐复核的建议），
+//! 与手动边界比较。读项目 recipe-capture 下的原图，不需要 lyFlow。
 //!
 //! ```powershell
 //! cargo run --manifest-path src-tauri/Cargo.toml --example segment_eval -- C:\ProgramData\ly\GlueSight-dev\projects\seg-new14 NEW-14
@@ -13,8 +14,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use gluesight_lib::probe_api::{
-    calibrate_counts, FrameGroup, Proportional, RecipeDoc, SegInput, SegOutcome, SegmentKind,
-    Segmenter,
+    align_cuts, calibrate_counts, downsample, load_image, FrameGroup, Proportional, RecipeDoc,
+    SegInput, SegOutcome, SegmentKind, Segmenter, Sequence, ALIGN_FACTOR,
 };
 use serde_json::Value;
 
@@ -222,5 +223,65 @@ fn main() -> Result<(), String> {
         "帧组数超出 ΣN_exp ± Σtol、整件按“分段不确定”处理的轮次：{outside} / {}",
         truths.len()
     );
+
+    let template = &workspace["captureReview"]["template"];
+    let (Some(template_round), Some(template_cuts)) =
+        (template["roundId"].as_str(), template["cuts"].as_array())
+    else {
+        println!("没有分段模板：跳过图像对齐评估");
+        return Ok(());
+    };
+    let template_cuts: Vec<u64> = template_cuts.iter().filter_map(Value::as_u64).collect();
+    let cameras = doc.plan_cameras();
+    let capture = PathBuf::from(project).join("recipe-capture");
+    let sequences = |round: &str, groups: u64| -> Vec<Sequence> {
+        cameras
+            .iter()
+            .map(|camera| {
+                (1..=groups)
+                    .map(|seq| {
+                        load_image(
+                            &capture
+                                .join(round)
+                                .join(camera)
+                                .join(format!("{seq:06}.pgm")),
+                        )
+                        .ok()
+                        .map(|image| downsample(&image, ALIGN_FACTOR))
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let Some(template_truth) = truths.iter().find(|t| t.round == template_round) else {
+        println!("模板轮 {template_round} 不在已确认轮次中：跳过图像对齐评估");
+        return Ok(());
+    };
+    let template_images = sequences(template_round, template_truth.total);
+    let mut aligned_errors: BTreeMap<u64, usize> = BTreeMap::new();
+    println!("图像对齐（模板 {template_round}，边界 {template_cuts:?}）：");
+    for truth in truths.iter().filter(|t| t.round != template_round) {
+        let aligned = align_cuts(
+            &template_images,
+            &sequences(&truth.round, truth.total),
+            &template_cuts,
+        );
+        let errors: Vec<u64> = aligned
+            .iter()
+            .zip(&truth.cuts)
+            .map(|(a, &cut)| a.cut.abs_diff(cut))
+            .collect();
+        errors
+            .iter()
+            .for_each(|&e| *aligned_errors.entry(e).or_default() += 1);
+        println!(
+            "  {:<26} 手动 {:?} 对齐 {:?} 误差 {:?}",
+            truth.round,
+            truth.cuts,
+            aligned.iter().map(|a| a.cut).collect::<Vec<_>>(),
+            errors
+        );
+    }
+    summarize("图像对齐（相对模板轮）", &aligned_errors);
     Ok(())
 }
