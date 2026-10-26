@@ -453,12 +453,6 @@ pub fn recipe_capture_list(app: AppHandle, recipe_id: String) -> Result<Vec<Capt
     app.state::<CycleHost>().camera.recipe_capture().list(&recipe_id)
 }
 
-/// 旧拍照点采集轮次按拍照点读图，已停用。
-#[tauri::command]
-pub fn recipe_capture_image(_round_id: String, _k: usize, _camera_id: String, _view: Option<u8>) -> Result<tauri::ipc::Response, String> {
-    Err("旧拍照点配方的采集记录已停用".into())
-}
-
 /// 某台相机第 seq 帧（帧组序号，从 1 起）的原图，格式见 `preview_bytes`；这台相机缺这一帧时报错。
 #[tauri::command]
 pub fn recipe_capture_frame_image(app: AppHandle, round_id: String, camera_id: String, seq: u64) -> Result<tauri::ipc::Response, String> {

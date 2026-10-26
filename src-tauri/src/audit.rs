@@ -578,30 +578,6 @@ impl Coordinator {
         notices
     }
 
-    #[cfg(test)]
-    fn retry(&mut self, sink: &mut impl Sink, now: i64) -> Vec<Notice> {
-        let mut notices = Vec::new();
-        self.trim(now, &mut notices);
-        for cycle in &self.order {
-            let entry = self.entries.get_mut(cycle).unwrap();
-            if entry.pending() && (entry.record.is_some() || entry.inserted || entry.failures > 0) && now >= entry.retry_at {
-                if entry.record.is_none() && entry.failures > 0 {
-                    match sink.find(cycle) {
-                        Ok(Some(existing)) => restore_existing(cycle, entry, existing, &mut notices),
-                        Ok(None) => (),
-                        Err(error) => {
-                            entry.defer_retry(now);
-                            log(&mut notices, "err", "追溯原记录重读失败", cycle, error);
-                            continue;
-                        }
-                    }
-                }
-                flush(cycle, entry, sink, now, &mut notices);
-            }
-        }
-        notices
-    }
-
     fn trim(&mut self, now: i64, notices: &mut Vec<Notice>) {
         let expired = self
             .order

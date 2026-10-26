@@ -248,7 +248,6 @@ pub fn run() {
             recipe_capture::recipe_capture_stop,
             recipe_capture::recipe_capture_plc_status,
             recipe_capture::recipe_capture_list,
-            recipe_capture::recipe_capture_image,
             recipe_capture::recipe_capture_frame_image,
             workspace::workspace_debug_run,
             workspace::workspace_retry_publish,

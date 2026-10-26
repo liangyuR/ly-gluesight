@@ -316,12 +316,6 @@ pub(crate) fn candidate(app: &AppHandle) -> Option<Arc<crate::candidate::Candida
     candidate
 }
 
-pub(crate) fn last_candidate(app: &AppHandle) -> Option<Arc<crate::candidate::Candidate>> {
-    let offline = app.state::<OfflineHost>();
-    let candidate = offline.last_candidate.lock().unwrap().clone();
-    candidate
-}
-
 pub(crate) async fn run_candidate(app: AppHandle, candidate: Arc<crate::candidate::Candidate>, expected_set: Arc<SampleSet>, part_id: Option<String>) -> Result<(), String> {
     let offline = app.state::<OfflineHost>();
     let cycle = app.state::<CycleHost>();

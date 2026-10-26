@@ -185,8 +185,8 @@ pub fn workspace_publish_collect(
         bundle_id: String::new(),
         base_revision: w.base_revision.clone(),
         revision,
-        legacy_frames: Discarded,
-        legacy_overview: Discarded,
+        _frames: Discarded,
+        _overview: Discarded,
         validation: Validation {
             revision,
             passed: true,

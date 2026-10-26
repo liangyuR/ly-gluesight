@@ -844,11 +844,6 @@ impl Store {
         rows.collect::<Result<std::collections::BTreeMap<_, _>, _>>().map_err(db_err)
     }
 
-    #[cfg(test)]
-    pub fn reserve_cycle_id(&self) -> Result<String, String> {
-        Ok(self.reserve_cycle_ids(1)?.remove(0))
-    }
-
     pub(crate) fn workspace_instance(&self, recipe_id: &str, instance_id: u64) -> Result<u64, String> {
         let conn = self.conn.lock().unwrap();
         if instance_id == 0 {

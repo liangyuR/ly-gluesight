@@ -164,9 +164,9 @@ pub struct Release {
     pub validation: Validation,
     pub validation_site: ValidationSite,
     #[serde(default, rename = "frames", skip_serializing)]
-    pub legacy_frames: Discarded,
+    pub _frames: Discarded,
     #[serde(default, rename = "overview", skip_serializing)]
-    pub legacy_overview: Discarded,
+    pub _overview: Discarded,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,11 +197,11 @@ pub struct Workspace {
     #[serde(default)]
     pub capture_review: capture_review::CaptureReview,
     #[serde(default, rename = "frames", skip_serializing)]
-    pub legacy_frames: Discarded,
+    pub _frames: Discarded,
     #[serde(default, rename = "overview", skip_serializing)]
-    pub legacy_overview: Discarded,
+    pub _overview: Discarded,
     #[serde(default, rename = "lastPosition", skip_serializing)]
-    pub legacy_position: Discarded,
+    pub _last_position: Discarded,
 }
 
 /// 按拍照点用到的相机整理配方的成像参数：不再用到的挪到 unbound，新用到的优先取 unbound 里调好的，没有就用默认值。
@@ -254,9 +254,9 @@ impl Workspace {
             camera_teaching: Vec::new(),
             calibration: burst::Calibration::default(),
             capture_review: capture_review::CaptureReview::default(),
-            legacy_frames: Discarded,
-            legacy_overview: Discarded,
-            legacy_position: Discarded,
+            _frames: Discarded,
+            _overview: Discarded,
+            _last_position: Discarded,
         }
     }
 
@@ -349,7 +349,6 @@ pub struct WorkspaceHost {
     root: PathBuf,
     items: Mutex<HashMap<String, Workspace>>,
     pub notes: Vec<String>,
-    live: Mutex<LiveFrames<usize>>,
     /// 段配方在途件的实时原图，按 (计划相机下标, seq)
     live_burst: Mutex<LiveFrames<(usize, u64)>>,
     station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
@@ -358,7 +357,7 @@ pub struct WorkspaceHost {
 }
 
 /// 在途件的实时原图：按工件与配方修订成组，换件即清空；总量超过上限时丢最早的。
-/// 旧拍照点配方按拍照点 k，段配方按 (计划相机下标, seq)。
+/// 键为 (计划相机下标, seq)。
 #[derive(Default)]
 struct LiveFrames<K> {
     key: Option<(String, String)>,
@@ -445,7 +444,6 @@ impl WorkspaceHost {
             root,
             items: Mutex::new(items),
             notes,
-            live: Mutex::new(LiveFrames::default()),
             live_burst: Mutex::new(LiveFrames::default()),
             station: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
@@ -840,8 +838,8 @@ pub fn workspace_publish(
         revision,
         validation: validated.clone(),
         validation_site: bundle.manifest.validation_site,
-        legacy_frames: Discarded,
-        legacy_overview: Discarded,
+        _frames: Discarded,
+        _overview: Discarded,
     }));
     next.publish = PublishState::Waiting;
     host.save(&next)?;
@@ -997,21 +995,6 @@ pub fn apply_pending(app: &AppHandle) -> bool {
 pub fn activation_uncertain(app: &AppHandle) -> bool {
     app.try_state::<WorkspaceHost>().is_some_and(|host| host.items.lock().unwrap().values()
         .any(Workspace::activation_uncertain))
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RawFrame {
-    pub error: Option<String>,
-    pub k: usize,
-    pub view: u8,
-    pub camera: String,
-    pub file: String,
-    pub ts: i64,
-    pub available: bool,
-    pub cam: Option<u8>,
-    pub frame_counter: Option<u64>,
-    pub trigger_counter: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]

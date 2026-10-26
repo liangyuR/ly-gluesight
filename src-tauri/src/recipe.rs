@@ -141,10 +141,6 @@ pub fn valid_camera_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-fn valid_label(s: &str) -> bool {
-    !s.trim().is_empty() && s.chars().count() <= 32 && !s.chars().any(char::is_control)
-}
-
 /// 配方文件格式版本。不一致的文件列为加载错误，不迁移。8：增加段模型字段（segments、inspect、segmentDefaults、calibrationRounds、partCalib）。
 pub const RECIPE_SCHEMA: u32 = 8;
 /// 没有段的配方文件是已停用的旧拍照点配方。
@@ -156,8 +152,6 @@ pub const DEFAULT_CALIBRATION_ROUNDS: u32 = 10;
 pub const CALIBRATION_ROUNDS: std::ops::RangeInclusive<u32> = 10..=100;
 
 fn default_calibration_rounds() -> u32 { DEFAULT_CALIBRATION_ROUNDS }
-
-fn one() -> f32 { 1.0 }
 
 /// 冻结示教原图编号（模板来源）：字母、数字和 -，最长 128 个字符。工作台的冻结图编号都满足。
 pub fn valid_image_id(id: &str) -> bool {
@@ -578,6 +572,7 @@ pub fn default_detect() -> DetectParams {
 pub const SIM_MM_PER_PX: f32 = 0.112;
 
 /// 模拟相机画面里的示例中线：胶嘴在右侧，胶条往左拖出（直、缓弯、斜向交替）。
+#[cfg(test)]
 fn sample_path(k: usize) -> Vec<[f32; 2]> {
     match k % 3 {
         0 => vec![[980.0, 480.0], [300.0, 460.0]],

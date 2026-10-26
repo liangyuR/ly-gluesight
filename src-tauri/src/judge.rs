@@ -29,12 +29,8 @@ impl Verdict {
 
 pub mod fault {
     pub const MISSING_FRAME: u16 = 91;
-    /// 定位失败：只因位置基准无效（见 `SegmentResult::reference_invalid`）判不了，由 judge 给出
-    pub const LOCATE_FAILED: u16 = 92;
     pub const INVALID_POINTS: u16 = 93;
-    pub const SHOT_COUNT_MISMATCH: u16 = 94;
     pub const NO_RECIPE: u16 = 95;
-    pub const EXTRA_FRAME: u16 = 96;
     pub const MOTION_TIMEOUT: u16 = 97;
     pub const DEVICE_LOST: u16 = 98;
     pub const PROCESS_TIMEOUT: u16 = 99;

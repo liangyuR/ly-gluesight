@@ -338,38 +338,6 @@ pub(crate) mod fixture {
 
         pub fn pixel(part: u8, shot: u8, view: u8) -> u8 { part * 100 + shot * 10 + view }
 
-        /// 段配方用：2 件 × 单视角相机 cam1、cam2…，第 i 台相机 `frames[i]` 帧（不超过 9），清单按帧号先后交错排列。
-        /// 像素值 = [`burst_pixel`](Self::burst_pixel)，按 (件, 帧号, 相机) 可分辨。
-        pub fn burst(frames: &[u8]) -> Self {
-            let root = Self::root();
-            let cameras: Vec<String> = (1..=frames.len()).map(|i| format!("cam{i}")).collect();
-            let mut shots = Vec::new();
-            for seq in 1..=frames.iter().copied().max().unwrap_or(0) {
-                for (camera, _) in cameras.iter().zip(frames).filter(|(_, n)| **n >= seq) {
-                    shots.push((format!("S{:03}", shots.len() + 1), camera.clone(), seq));
-                }
-            }
-            let manifest = serde_json::json!({
-                "schemaVersion": 1, "id": "fixture-burst", "name": "分段连拍测试样本集", "source": "unit", "imageSize": [2, 2], "mmPerPx": null,
-                "cameras": cameras.iter().map(|id| serde_json::json!({"id": id, "views": [1]})).collect::<Vec<_>>(),
-                "shots": shots.iter().map(|(shot, camera, _)| serde_json::json!({"shotId": shot, "cameraId": camera, "views": [1]})).collect::<Vec<_>>(),
-                "parts": [{"partId": "p01", "sn": "A01", "label": "ok"}, {"partId": "p02", "sn": "B02", "label": "ng"}],
-            });
-            std::fs::write(root.join("sample-set.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-            for part in 1..=2u8 {
-                let dir = root.join("parts").join(format!("p{part:02}"));
-                std::fs::create_dir_all(&dir).unwrap();
-                for (shot, camera, seq) in &shots {
-                    let index = cameras.iter().position(|c| c == camera).unwrap() as u8 + 1;
-                    image::save_buffer(dir.join(format!("{shot}_{camera}_v1.png")), &[Self::burst_pixel(part, *seq, index); 4], 2, 2, image::ColorType::L8).unwrap();
-                }
-            }
-            Self(root)
-        }
-
-        /// 段配方样本图的像素值：件序号×100 + 帧号×10 + 相机序号（从 1 起）。
-        pub fn burst_pixel(part: u8, seq: u8, camera: u8) -> u8 { part * 100 + seq * 10 + camera }
-
         fn root() -> PathBuf {
             static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

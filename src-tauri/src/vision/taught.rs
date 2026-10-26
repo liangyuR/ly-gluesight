@@ -9,8 +9,6 @@ use crate::recipe::{CameraInspect, DetectParams, Polarity, Recipe};
 
 /// 走廊测量图的像素参数，按 lyFlow 契约约束（glue.taught_path + glue.bead_width）核对。
 struct GraphParams {
-    /// mm/px
-    scale: f64,
     /// 站距（px）
     step: f64,
     /// 搜索半宽（px）
@@ -42,7 +40,7 @@ fn graph_params(path: &[[f32; 2]], scale: f64, step: f64, detect: &DetectParams)
     if !(4.0..=400.0).contains(&hi) { return Err("lyFlow 胶宽搜索上限需在 4–400 px 之间"); }
     let tolerance = half - 0.5 * hi;
     if !(0.0..=400.0).contains(&tolerance) { return Err("lyFlow 中心偏移容差（搜索半宽减去胶宽上限的一半）需在 0–400 px 之间"); }
-    Ok(GraphParams { scale, step, half, lo, hi, tolerance, length })
+    Ok(GraphParams { step, half, lo, hi, tolerance, length })
 }
 
 /// lyFlow 沿中线按站距重采样的站数（含两端）。

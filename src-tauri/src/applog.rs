@@ -88,10 +88,6 @@ pub struct Fields {
 
 impl Fields {
 
-    pub fn shot(k: usize, shot_id: &str, camera: &str) -> Self {
-        Self { k: Some(k), shot_id: Some(shot_id.into()), camera: Some(camera.into()), ..Self::default() }
-    }
-
     pub fn stage(stage: &str) -> Self {
         Self { stage: Some(stage.into()), ..Self::default() }
     }

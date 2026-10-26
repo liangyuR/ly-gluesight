@@ -116,7 +116,6 @@ impl Machine {
                             Some(crate::recipe_capture::CaptureFailureV2::StartTimeout) => 7,
                             _ => 4,
                         },
-                        _ => 6,
                     };
                     if let Err(error) = teaching.finish(plc(&app), result == 1, reason).await {
                         teaching.force_fault(error.clone());
