@@ -628,8 +628,7 @@ fn copy_into(
             .fold(staging.to_path_buf(), |path, part| path.join(part));
         std::fs::create_dir_all(target.parent().ok_or("暂存路径无效")?)
             .map_err(|e| e.to_string())?;
-        std::fs::copy(&path, &target)
-            .map_err(|e| format!("复制 {} 失败：{e}", path.display()))?;
+        std::fs::copy(&path, &target).map_err(|e| format!("复制 {} 失败：{e}", path.display()))?;
     }
     let mut copied = finish(
         data,
@@ -827,7 +826,11 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
                 request.source_id,
                 copied.meta.id,
                 copied.meta.name,
-                if request.include_records { "，含检测记录" } else { "" }
+                if request.include_records {
+                    "，含检测记录"
+                } else {
+                    ""
+                }
             ),
         );
         Ok(copied)
