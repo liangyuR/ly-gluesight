@@ -290,11 +290,6 @@ impl SampleSet {
         self.part(part_id).map(|p| SampleRef { set_id: self.manifest.id.clone(), part_id: p.part_id.clone(), sn: p.sn.clone(), label: p.label })
     }
 
-    pub fn shot_mm_per_px(&self, shot_id: &str) -> Option<f32> {
-        let shot = self.manifest.shots.iter().find(|s| s.shot_id == shot_id)?;
-        shot.mm_per_px.or(self.manifest.mm_per_px)
-    }
-
     pub fn has_camera(&self, camera_id: &str) -> bool {
         self.manifest.cameras.iter().any(|c| c.id == camera_id)
     }

@@ -26,7 +26,6 @@ use std::fmt;
 
 use crate::frame::{CounterSource, Frame};
 use crate::judge::fault;
-use crate::recipe::ShotSpec;
 
 /// 模拟、样本集相机（重新）加载后的触发计数起点：第一帧是 1。
 pub const SYNTHETIC_START: u64 = 0;
@@ -80,10 +79,6 @@ impl Plan {
             }
         }
         plan
-    }
-
-    pub fn from_shots(shots: &[ShotSpec]) -> Self {
-        Self::new(shots.iter().map(|s| (s.id.as_str(), s.camera.as_str())))
     }
 
     pub fn shot_count(&self) -> usize {
@@ -241,10 +236,6 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// 生产（S7）：只认 Chunk 触发计数。
-    pub fn production(counter_after_open: Option<u64>) -> Self {
-        Self { trusted: vec![CounterSource::ChunkTrigger], counter_after_open }
-    }
 
     /// 离线产线（进程内 S7 服务）：模拟、样本集相机的计数也认；接真实 PLC 时不用。
     pub fn offline(counter_after_open: Option<u64>) -> Self {

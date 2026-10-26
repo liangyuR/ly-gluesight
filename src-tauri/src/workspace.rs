@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -41,7 +40,6 @@ pub use burst::*;
 pub use burst_history::*;
 pub use capture_review::*;
 pub use collect_release::*;
-pub use fixture::*;
 pub use transfer::*;
 pub use workflow::*;
 
@@ -73,24 +71,6 @@ fn safe_id(id: &str) -> Result<(), String> {
         return Err("配方编号只能包含字母、数字、下划线和短横线，最多 32 位".into());
     }
     Ok(())
-}
-
-/// 一个拍照点的示教：在冻结原图上点出的胶路中线、像素当量与可选的检测参数，保存进候选配方的这个拍照点。
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ShotTeach {
-    pub path: Vec<[f32; 2]>,
-    pub mm_per_px: f32,
-    #[serde(default)]
-    pub detect: Option<DetectParams>,
-    #[serde(default)]
-    pub limits: Option<crate::recipe::ShotLimits>,
-    /// 特征定位；必须显式发送（可以是 null），漏发时报错，不会悄悄清掉已保存的 fixture
-    #[serde(deserialize_with = "Option::deserialize")]
-    pub fixture: Option<crate::recipe::FixtureSpec>,
-    /// 开转角的人工确认（定稿 §10 决定二）：转角调大时必须带上，只记进应用日志
-    #[serde(default)]
-    pub rotation: Option<fixture::RotationConfirmation>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1180,38 +1160,6 @@ fn decode_imported_image(bytes: Vec<u8>) -> Result<FrameImage, String> {
     Ok(FrameImage::new(image.width(), image.height(), image.into_raw()))
 }
 
-fn select_view(w: &mut Workspace, k: usize, selected: u8) -> Result<(), String> {
-    if !(1..=3).contains(&selected) { return Err("图编号必须在 1–3 之间".into()); }
-    if !w.frames.get(k).is_some_and(|f| f.views.iter().any(|i| i.view == selected)) { return Err("本次冻结图像没有这幅图".into()); }
-    let mut next = w.clone();
-    workflow::initialize_views(&mut next, k);
-    workflow::store_active(&mut next, k);
-    workflow::load_active(&mut next, k, selected)?;
-    let r = next.doc.build()?.for_view(k, selected)?;
-    if next.frames[k].image.as_ref().is_none_or(|i| shot_tags(&r,k).map_or(true, |t| i.geometry_tag != t.0)) { return Err("点位或设备已变化，请重新采集".into()); }
-    next.last_position = Some(workflow::Position { k, view: selected });
-    *w = next;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn workspace_select_view(app: AppHandle, id: String, revision: u64, k: usize, view: u8) -> Result<WorkspaceView, String> {
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
-    w.expect(revision)?;
-    select_view(&mut w, k, view)?;
-    let recipe = w.doc.build()?.for_view(k, view)?;
-    let (camera_tag, calib_tag) = tags(&app, &recipe, k)?;
-    let image = w.frames[k].image.as_ref().ok_or("尚未冻结图像")?;
-    if image.camera_tag != camera_tag || image.calib_tag != calib_tag {
-        return Err("相机参数或标定已变更，请重新冻结全部视角".into());
-    }
-    host.save(&w)?;
-    items.insert(id, w.clone());
-    self::view(&app, w)
-}
-
 fn preview_response(image: &FrameImage) -> tauri::ipc::Response {
     let scale = (image.width as f32 / 900.0)
         .max(image.height as f32 / 650.0)
@@ -1241,269 +1189,6 @@ pub fn workspace_image(
     safe_id(&id)?;
     let image = crate::image_file::load(&image_file(&host, &id, &image_id)?)?;
     Ok(preview_response(&image))
-}
-
-/// 示教帧试测：沿拍照点 k 的示教中线量胶。返回逐站结果、得分、量成比例、是否通过、原因与特征定位的示教图检查报告。
-/// `base`：用特征定位时的模板目录（见 ensure_template），否则为空串；`clearances`：本框到同组各走廊的余量。
-type TrialOutcome = (Value, f64, f64, bool, String, Option<vision::fixture_quality::FixtureTeachReport>);
-fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage, base: &str, clearances: &[crate::recipe::Clearance]) -> Result<TrialOutcome, String> {
-    let shot = r.shots.get(k).ok_or("拍照点不存在")?;
-    if !shot.measured() {
-        return Err("这个拍照点设为不检，不需要试测".into());
-    }
-    if !shot.taught() {
-        return Err("还没有胶路中线：先在原图上点出中线并保存".into());
-    }
-    let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
-    let run_id = format!("trial-{}-{k}-{}", r.revision_id, ly_plc::now_ms());
-    let measured = vision::measure_shot(&engine, r, k, image, &run_id, base)?;
-    let coverage = measured.coverage as f64;
-    let mut table = vec![PointState::Pending; r.point_count()];
-    for (i, &j) in measured.idx.iter().enumerate() {
-        table[j as usize] = crate::measure::point_state(measured.st[i], measured.d[i], measured.w[i]);
-    }
-    let verdict = judge::judge(r, &table).verdict;
-    // 定位验收（定稿 §13）：试测有效 = 胶路判定可用且示教图检查通过。示教图上定位没被采用时，胶路另判 NG 也不算有效试测
-    let report = fixture::teach_report(r, k, image, clearances, measured.pose.as_ref());
-    let blocked = report.as_ref().and_then(|r| vision::fixture_quality::first_block(&r.checks)).map(|c| c.detail.clone());
-    let valid = verdict != Verdict::ErrInspect && blocked.is_none();
-    let mut record = measured.record();
-    record["verdict"] = json!(verdict);
-    let reason = match (verdict != Verdict::ErrInspect, blocked) {
-        (_, Some(detail)) => format!("特征定位检查没通过：{detail}"),
-        (true, None) => "有效试测完成，可保存示教；产品判定单独显示".into(),
-        (false, None) => "测量无法形成有效判定，请检查配置".into(),
-    };
-    Ok((record, coverage, coverage, valid, reason, report))
-}
-
-#[tauri::command]
-pub async fn workspace_trial(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    k: usize,
-    image_id: String,
-) -> Result<WorkspaceView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let (r, frozen, clearances) = {
-            let host = app.state::<WorkspaceHost>();
-            let items = host.items.lock().unwrap();
-            let w = items.get(&id).ok_or("候选配置不存在")?;
-            w.expect(revision)?;
-            let frozen = w
-                .frames
-                .get(k)
-                .ok_or("拍照点不存在")?
-                .image
-                .as_ref()
-                .filter(|i| i.id == image_id)
-                .ok_or("冻结图像已更新，请重新试测")?;
-            let r = w.doc.build()?.for_view(k, w.doc.shots[k].view)?;
-            let (camera_tag, calib_tag) = tags(&app, &r, k)?;
-            if frozen.camera_tag != camera_tag || frozen.calib_tag != calib_tag || frozen.geometry_tag != shot_tags(&r, k)?.0 {
-                return Err("相机参数、工位标定或拍照点已变更，请重新冻结图像".into());
-            }
-            let clearances = fixture::clearances_of(&w.doc, k, w.doc.shots[k].view)?;
-            (r, frozen.clone(), clearances)
-        };
-        let (image_tag, teach_tag) = shot_tags(&r, k)?;
-        let image = crate::image_file::load(&image_file(&app.state::<WorkspaceHost>(), &id, &image_id)?)?;
-        let engine_tag = app.state::<vision::VisionHost>().engine().map(|engine| engine_state(&engine)).unwrap_or_default();
-        let started = Instant::now();
-        // 模板从试测的这张冻结原图裁出（锁外）；裁不出来与测量失败一样记成试测没通过
-        let base = || match &r.shots[k].fixture {
-            Some(fixture) => ensure_template(&app.state::<WorkspaceHost>(), &r.id, &frozen, fixture, Some(&image)),
-            None => Ok(String::new()),
-        };
-        let (measurement, score, coverage, passed, reason, fixture) = base()
-            .and_then(|base| measure_image(&app, &r, k, &image, &base, &clearances))
-            .unwrap_or_else(|e| (Value::Null, 0.0, 0.0, false, e, None));
-        let trial = Trial {
-            image_id,
-            engine_tag,
-            params_tag: teach_tag,
-            geometry_tag: image_tag,
-            passed,
-            score,
-            coverage,
-            elapsed_ms: started.elapsed().as_millis(),
-            reason,
-            verdict: measurement.get("verdict").and_then(|v| serde_json::from_value(v.clone()).ok()),
-            measurement,
-            fixture,
-        };
-        let host = app.state::<WorkspaceHost>();
-        let mut items = host.items.lock().unwrap();
-        let current = items.get_mut(&id).ok_or("候选配置不存在")?;
-        current.expect(revision)?;
-        if current.frames[k].image.as_ref().map(|i| &i.id) != Some(&trial.image_id) {
-            return Err("试测期间图像已更新，结果已丢弃".into());
-        }
-        current.frames[k].trial = Some(trial);
-        current.frames[k].saved = false;
-        workflow::store_active(current, k);
-        current.changed();
-        host.save(current)?;
-        view(&app, current.clone())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// 保存一个拍照点的示教（中线、像素当量、检测参数）进候选配方；这一帧的试测随之作废。
-#[tauri::command]
-pub fn workspace_save_params(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    k: usize,
-    params: ShotTeach,
-) -> Result<WorkspaceView, String> {
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let w = items.get_mut(&id).ok_or("候选配置不存在")?;
-    w.expect(revision)?;
-    apply_params(w, k, params)?;
-    host.save(w)?;
-    view(&app, w.clone())
-}
-
-/// 保存示教参数：特征定位的模板来源在这里（也只在这里）强制改绑到所选视图当前的冻结原图，见 `bind_fixture_sources`；
-/// 转角也只能在这里、带着当前验证的转角证据与人工确认调大（`fixture::confirm_rotation`）；两端参数不能在这里改（`fixture::reject_end_param_edit`）。
-fn apply_params(w: &mut Workspace, k: usize, params: ShotTeach) -> Result<(), String> {
-    let mut doc = w.doc.clone();
-    let shot = doc.shots.get_mut(k).ok_or("拍照点不存在")?;
-    if let Some(fixture) = &params.fixture {
-        // 只看冻结图的尺寸元数据，不读图；模板在试测时按冻结图裁出
-        let frozen = w.frames.get(k).and_then(|f| f.image.as_ref()).ok_or("含特征定位的图需要先冻结示教原图")?;
-        fixture.check_image_size(frozen.size)?;
-    }
-    shot.path = params.path;
-    shot.mm_per_px = Some(params.mm_per_px);
-    shot.detect = params.detect;
-    shot.limits = params.limits;
-    shot.fixture = params.fixture;
-    if let Some(v) = shot.views.iter_mut().find(|v| v.view == shot.view) { v.path = shot.path.clone(); v.mm_per_px = shot.mm_per_px; v.detect = shot.detect.clone(); v.limits = shot.limits.clone(); v.fixture = shot.fixture.clone(); }
-    let selected = shot.view;
-    bind_fixture_sources(w, &mut doc, Some((k, selected)))?;
-    doc.build()?;
-    fixture::reject_end_param_edit(&w.doc, &doc)?;
-    fixture::confirm_rotation(&w.doc, &doc, params.rotation.as_ref(), w.validation.as_ref().filter(|v| v.revision == w.revision))?;
-    if doc != w.doc {
-        w.doc = doc;
-        let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
-        frame.trial = None;
-        frame.saved = false;
-        workflow::store_active(w, k);
-        w.changed();
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn workspace_save_teach(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    k: usize,
-    image_id: String,
-    fixture_reviewed: Option<bool>,
-) -> Result<WorkspaceView, String> {
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let w = items.get_mut(&id).ok_or("候选配置不存在")?;
-    w.expect(revision)?;
-    let r = w.doc.build()?.for_view(k, w.doc.shots[k].view)?;
-    let (image_tag, teach_tag) = shot_tags(&r, k)?;
-    let fixture = r.shots[k].fixture.is_some();
-    // 喷嘴、胶枪是否在框里工具判断不了（定稿 §9）；走廊几何也只认同组示教中线及其直线延长，越过示教段后拐弯的胶、
-    // 其他 Pose 或其他胶路的胶进到框里没有自动门（§12 剩余风险、§13），每次保存都要人工确认
-    if fixture && fixture_reviewed != Some(true) {
-        return Err("请先确认定位框里没有胶（含越过示教段后拐弯、其他 Pose 或其他胶路的胶），也没有喷嘴、胶枪等随相机不动的结构".into());
-    }
-    let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
-    if frame.image.as_ref().map(|i| &i.id) != Some(&image_id) {
-        return Err("图像已变更，请重新试测".into());
-    }
-    frame.checked(&image_tag, &teach_tag, fixture)?;
-    let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
-    frame.checked_engine(&engine_state(&engine))?;
-    let (camera_tag, calib_tag) = tags(&app, &r, k)?;
-    let frozen = frame.image.as_ref().unwrap();
-    if frozen.camera_tag != camera_tag || frozen.calib_tag != calib_tag {
-        return Err("相机或标定已变更，请重新取样".into());
-    }
-    frame.saved = true;
-    workflow::store_active(w, k);
-    w.changed();
-    host.save(w)?;
-    view(&app, w.clone())
-}
-
-#[tauri::command]
-pub fn workspace_restore_teach(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    k: usize,
-) -> Result<WorkspaceView, String> {
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let w = items.get_mut(&id).ok_or("候选配置不存在")?;
-    w.expect(revision)?;
-    w.require_single_frame_source()?;
-    let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
-    if frame.backup.as_ref().and_then(|b| b.image.as_ref()).is_some_and(|i| i.view != w.doc.shots[k].view) {
-        return Err("原始示教属于其他视角，请先选择对应视角".into());
-    }
-    let mut old = *frame.backup.take().ok_or("本帧没有原示教备份")?;
-    old.trial = None;
-    old.saved = false;
-    *frame = old;
-    w.changed();
-    host.save(w)?;
-    view(&app, w.clone())
-}
-
-#[tauri::command]
-pub fn workspace_save_overview(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    mut overview: Overview,
-) -> Result<WorkspaceView, String> {
-    if overview.background.as_ref().is_some_and(|s| {
-        s.len() > 2_000_000
-            || ![
-                "data:image/png;base64,",
-                "data:image/jpeg;base64,",
-                "data:image/webp;base64,",
-            ]
-            .iter()
-            .any(|p| s.starts_with(p))
-    }) {
-        return Err("总览背景只支持 1 MB 以内的 PNG、JPEG、WebP 图像".into());
-    }
-    if overview
-        .positions
-        .iter()
-        .any(|p| p.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)))
-    {
-        return Err("总览显示位置必须在画布范围内".into());
-    }
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let w = items.get_mut(&id).ok_or("候选配置不存在")?;
-    w.expect(revision)?;
-    if overview.positions.len() != w.frames.len() {
-        return Err("总览布置与拍照点数量不同".into());
-    }
-    overview.saved = true;
-    w.overview = overview;
-    w.changed();
-    host.save(w)?;
-    view(&app, w.clone())
 }
 
 impl SampleResult {
@@ -2040,10 +1725,6 @@ fn same_frame_sources(original: &Recipe, candidate: &Recipe) -> bool {
     sources(original) == sources(candidate)
 }
 
-fn same_history_capture_source(original: &Recipe, candidate: &Recipe, teaching_plan: Option<u32>) -> bool {
-    original.plan_version != 0 && teaching_plan == Some(original.plan_version) && same_frame_sources(original, candidate)
-}
-
 fn comparison_id(app: &AppHandle, history_id: i64) -> String {
     let seq = app.state::<WorkspaceHost>().capture_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!("{history_id}-{}-{seq}", ly_plc::now_ms())
@@ -2356,92 +2037,6 @@ fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, s
     Ok((table, measurements))
 }
 
-const SAMPLE_IMAGE_MAX_BYTES: usize = 15_000_000;
-const SAMPLE_IMAGE_MAX_BASE64_BYTES: usize = SAMPLE_IMAGE_MAX_BYTES.div_ceil(3) * 4;
-
-fn decode_sample_base64(encoded: &str) -> Result<Vec<u8>, String> {
-    use base64::Engine;
-    if encoded.is_empty() { return Err("样本原图不得为空".into()); }
-    if encoded.len() > SAMPLE_IMAGE_MAX_BASE64_BYTES { return Err("样本原图单图不超过 15 MB".into()); }
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)
-        .map_err(|error| format!("样本原图不是有效 base64：{error}"))?;
-    if bytes.is_empty() || bytes.len() > SAMPLE_IMAGE_MAX_BYTES {
-        return Err("样本原图不得为空，单图不超过 15 MB".into());
-    }
-    Ok(bytes)
-}
-
-fn deserialize_sample_base64<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-    struct SampleBase64;
-    impl<'de> serde::de::Visitor<'de> for SampleBase64 {
-        type Value = Vec<u8>;
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("原图编码字节的 base64 字符串")
-        }
-        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-            decode_sample_base64(value).map_err(E::custom)
-        }
-    }
-    deserializer.deserialize_str(SampleBase64)
-}
-
-#[derive(Deserialize)]
-pub struct SampleImageInput {
-    pub k: usize,
-    #[serde(deserialize_with = "deserialize_sample_base64")]
-    pub bytes: Vec<u8>,
-}
-
-struct SampleImportFiles {
-    path: PathBuf,
-    keep: bool,
-}
-
-impl SampleImportFiles {
-    fn new(root: &Path, sample_id: &str) -> Result<Self, String> {
-        if sample_id.is_empty() || !sample_id.bytes().all(|c| c.is_ascii_digit() || c == b'-') {
-            return Err("样本目录编号无效".into());
-        }
-        std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
-        let path = root.join(format!(".import-{sample_id}"));
-        // create_dir 不复用已有目录；仅此调用创建成功的目录归本次导入所有。
-        std::fs::create_dir(&path).map_err(|e| e.to_string())?;
-        Ok(Self { path, keep: false })
-    }
-
-    fn write_images(&self, workspace: &Workspace, images: Vec<SampleImageInput>) -> Result<(), String> {
-        for input in images {
-            let image = decode_imported_image(input.bytes).map_err(|e| format!("k{} 图像无法读取：{e}", input.k + 1))?;
-            let frame = workspace.frames.get(input.k).ok_or("原图拍照点不属于当前候选")?;
-            if frame.image.as_ref().is_some_and(|reference| [image.width, image.height] != reference.size) {
-                return Err(format!("k{} 原图尺寸与示教不同", input.k + 1));
-            }
-            crate::image_file::save_pgm(&self.path.join(format!("k{}.pgm", input.k)), &image)?;
-            // 单张解码、落盘、释放；不将整组高分辨率图像同时保留在内存。
-        }
-        Ok(())
-    }
-
-    fn publish(&mut self, sample_id: &str) -> Result<(), String> {
-        if self.path.file_name().and_then(|v| v.to_str()) != Some(format!(".import-{sample_id}").as_str()) {
-            return Err("样本目录编号不匹配".into());
-        }
-        let destination = self.path.parent().ok_or("样本目录无效")?.join(sample_id);
-        if destination.exists() { return Err("样本目录已存在，请重试导入".into()); }
-        std::fs::rename(&self.path, &destination).map_err(|e| e.to_string())?;
-        self.path = destination;
-        Ok(())
-    }
-}
-
-impl Drop for SampleImportFiles {
-    fn drop(&mut self) {
-        if !self.keep {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2458,71 +2053,6 @@ mod tests {
     }
     impl Drop for ImportTestDir { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
 
-}
-
-#[tauri::command]
-pub async fn workspace_import_sample(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    name: String,
-    expected: Verdict,
-    images: Vec<SampleImageInput>,
-) -> Result<WorkspaceView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let host = app.state::<WorkspaceHost>();
-        let w = {
-            let items = host.items.lock().unwrap();
-            let w = items.get(&id).ok_or("候选配置不存在")?;
-            w.expect(revision)?;
-            w.clone()
-        };
-        let r = w.doc.build()?;
-        if r.is_burst() {
-            return Err("段配方的验证样本须来自独立采集轮次（保存为独立验证样本）或原图完整的生产历史，不能按拍照点导入图片".into());
-        }
-        if (0..r.shot_count()).any(|k| workflow::selected_views(&w, k).len() > 1) {
-            return Err("有拍照点选中了多幅图，请使用独立整圈采集或完整历史原图作为验证样本".into());
-        }
-        let mut unique = std::collections::HashSet::new();
-        if images.len() != r.shot_count()
-            || images
-                .iter()
-                .any(|i| i.k >= r.shot_count() || !unique.insert(i.k) || i.bytes.len() > 15_000_000)
-            || images.iter().map(|i| i.bytes.len()).sum::<usize>() > 80_000_000
-        {
-            return Err("每个拍照点需一张原图；单图不超过 15 MB，整组不超过 80 MB".into());
-        }
-        if w.sample_bank.len() >= 100 {
-            return Err("每个候选最多保留 100 个验证样本组".into());
-        }
-        if name.trim().is_empty() { return Err("请填写代表性样本名称".into()); }
-        let seq = host.capture_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let sample_id = format!("{}-{revision}-{seq}", ly_plc::now_ms());
-        let mut files = SampleImportFiles::new(&host.dir(&id).join("samples"), &sample_id)?;
-        files.write_images(&w, images)?;
-        let mut items = host.items.lock().unwrap();
-        let current = items.get_mut(&id).ok_or("候选配置不存在")?;
-        current.expect(revision)?;
-        let mut next = current.clone();
-        next.sample_bank.push(BankSample {
-            id: sample_id.clone(),
-            name: name.trim().chars().take(80).collect(),
-            geometry_tag: images_tag(&r),
-            expected,
-            created_at: ly_plc::now_ms(),
-            capture_id: None,
-            camera_state: state_value(&app.state::<CycleHost>().camera.configs()),
-        });
-        next.changed();
-        files.publish(&sample_id)?;
-        host.save(&next)?;
-        *current = next;
-        files.keep = true;
-        view(&app, current.clone())
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 /// 候选试运行冻结的配方，按配方类型分流（决策记录第九节第 14 条）：段配方过 `Recipe::ready_burst`（三台相机走廊与当量、
