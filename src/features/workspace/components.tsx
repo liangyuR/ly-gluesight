@@ -46,7 +46,7 @@ export function WorkspaceBar() {
     {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><Button size="sm" variant="outlined" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</Button></Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
-    {publish?.state === "waiting" && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效失败可在验证与发布页重试同一版本。</Notice>}
+    {publish?.state === "waiting" && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效失败可在发布页重试同一版本。</Notice>}
     {publish?.state === "failed" && <Notice title="生效失败，可重试同一版本" tone="warn">{publish.message}</Notice>}
     {publish?.state === "uncertain" && <Notice title="生效状态不确定，请先核实发布状态" tone="ng">{publish.message}</Notice>}
     {publish?.state === "active" && publish.warning && <Notice title={`v${publish.version} 已生效，但候选版本号未能更新`} tone="warn">{publish.warning}</Notice>}
@@ -75,6 +75,8 @@ export interface ImageOverlay {
   /** 走廊中线（草稿或已保存的） */
   path: [number, number][];
   searchHalfPx?: number;
+  /** 测量横线（多轮标定逐帧查看：各站两侧边缘） */
+  segments?: { from: [number, number]; to: [number, number]; color: string }[];
   /** 选中的中线点 */
   selected?: number | null;
 }
@@ -265,6 +267,9 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
           {overlay && shown && <g aria-label="中线叠加">
             {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
             {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
+              {overlay.segments.map((segment, i) => <line key={i} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            </g>}
           </g>}
         </g></svg>}
     {footer ? <div className="wp-image-footer">{summary}{controls}</div> : image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onBrush ? "按住左键沿胶路刷过；每一笔重画选区，中键拖动视图" : onRegion ? "拖动框选一段连续胶路区域" : onEdit ? (path.length > 24 && !allHandles ? "密集中线仅显示端点；打开“编辑点”可调整全部点" : "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整") : "原始灰度图像"}</span></div>}

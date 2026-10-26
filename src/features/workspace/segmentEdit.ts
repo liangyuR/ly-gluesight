@@ -1,6 +1,6 @@
 /**
- * 段列表的编辑规则（纯函数，SegmentsPage 用）：与后端 plan::new_segment / validate_segments 与 D-SB-20 对应。
- * N_exp、标定、x_ref 只能由多轮采集得出：段序列或类型变化时一律清空，不在这里手填。
+ * 段列表的编辑规则（纯函数，SegmentsPage 与分段标定工作台用）：与后端 plan::new_segment / validate_segments 与 D-SB-20 对应。
+ * N_exp、标定、x_ref 只能由多轮采集得出：段序列或类型变化时一律清空（见 workbenchDraft.segmentsForSave），不在这里手填。
  */
 import type { KindDefaults, PathSegment, SegmentKind } from "../plan/types";
 
@@ -12,11 +12,9 @@ export function newSegment(index: number, kind: SegmentKind, defaults: KindDefau
   const base = defaults[kind];
   return {
     index, kind, lengthMm: null, expectedFrames: null, tolerance: base.tolerance, calib: null,
-    checks: structuredClone(base.checks), offsetRef: null, inspectRange: null,
+    checks: structuredClone(base.checks), offsetRef: null, inspectRange: null, cameras: [], skipHead: 0, skipTail: 0,
   };
 }
-
-const reindex = (segments: PathSegment[]) => segments.map((segment, i) => ({ ...segment, index: i + 1 }));
 
 /** 清空全部 N_exp、标定与 x_ref（后端在段序列或类型变化时同样清空，D-SB-20）。 */
 export const clearCalibration = (segments: PathSegment[]): PathSegment[] => segments.map(segment => ({
@@ -28,28 +26,13 @@ export const clearCalibration = (segments: PathSegment[]): PathSegment[] => segm
 export const hasCalibration = (segments: PathSegment[], partCalibrated: boolean) =>
   partCalibrated || segments.some(segment => segment.expectedFrames != null || segment.calib != null || segment.offsetRef?.xRef != null);
 
-const structural = (segments: PathSegment[]) => clearCalibration(reindex(segments));
-
-export const addSegment = (segments: PathSegment[], kind: SegmentKind, defaults: KindDefaults) =>
-  structural([...segments, newSegment(segments.length + 1, kind, defaults)]);
-
-export const removeSegment = (segments: PathSegment[], at: number) => structural(segments.filter((_, i) => i !== at));
-
-export function moveSegment(segments: PathSegment[], at: number, delta: -1 | 1) {
-  const to = at + delta;
-  if (to < 0 || to >= segments.length) return segments;
-  const next = [...segments];
-  [next[at], next[to]] = [next[to], next[at]];
-  return structural(next);
-}
-
-/** 改段类型：按新类型的默认值重建检测项与容差（弯道段不带胶偏与胶偏参考），保留长度与检测区间；N_exp 等标定清空。 */
-export function changeKind(segments: PathSegment[], at: number, kind: SegmentKind, defaults: KindDefaults) {
-  const current = segments[at];
-  if (!current || current.kind === kind) return segments;
-  const rebuilt = { ...newSegment(current.index, kind, defaults), lengthMm: current.lengthMm, inspectRange: current.inspectRange };
-  return structural(segments.map((segment, i) => i === at ? rebuilt : segment));
-}
+/** 把第 at 段的检测项与帧数容差套用到其余同类型段（不改相机、跳过帧数、长度与胶偏参考）：段序列与类型不变，标定保留。 */
+export const applyToKind = (segments: PathSegment[], at: number): PathSegment[] => {
+  const source = segments[at];
+  if (!source) return segments;
+  return segments.map((segment, i) => i !== at && segment.kind === source.kind
+    ? { ...segment, checks: structuredClone(source.checks), tolerance: source.tolerance } : segment);
+};
 
 /** 不改段序列与类型的编辑（长度、容差、检测区间、检测项、胶偏参考）：标定保留。 */
 export const patchSegment = (segments: PathSegment[], at: number, patch: Partial<PathSegment>) =>
@@ -67,9 +50,8 @@ export function segmentIssues(segments: PathSegment[]): string[] {
     if (!Number.isInteger(segment.tolerance) || segment.tolerance < 0 || segment.tolerance > MAX_TOLERANCE)
       issues.push(`${name} 帧数容差需为 0–${MAX_TOLERANCE} 的整数`);
     if (segment.lengthMm != null && !(segment.lengthMm > 0)) issues.push(`${name} 长度需大于 0`);
-    const range = segment.inspectRange;
-    if (range && !(Number.isFinite(range.aMm) && Number.isFinite(range.bMm) && range.aMm >= 0 && range.aMm < range.bMm))
-      issues.push(`${name} 检测区间需满足 0 ≤ a < b`);
+    for (const [label, value] of [["段首跳过", segment.skipHead], ["段尾跳过", segment.skipTail]] as const)
+      if (!Number.isInteger(value) || value < 0 || value > MAX_TOLERANCE) issues.push(`${name} ${label}帧数需为 0–${MAX_TOLERANCE} 的整数`);
     if (containsNaN(segment.checks)) issues.push(`${name} 检测项有未填写的数值`);
   }
   return issues;

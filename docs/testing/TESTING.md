@@ -7,7 +7,7 @@
 | 测试层 | 保留验证 |
 | --- | --- |
 | 前端 | 默认 Vitest 回归：段配方创建与草稿防丢、采集准入和独立样本、多轮标定与走廊示教、验证发布门槛、周期/帧归属隔离、历史区域重判、PLC 操作锁、维护模式、项目管理、单视角标定更新与配置安全 |
-| Rust 默认 | `cargo test --lib`：当前段配方、帧组与采集、整件标定、未分段判定、PLC 与示教握手、调度、发布与恢复、项目导出导入与复制；包含少量真实 S7 TCP 回环、SQLite 和原图录制集成测试，不能把全部库测试称为纯单元测试 |
+| Rust 默认 | `cargo test --lib`：当前段配方、帧组与采集、逐段标定、比例分段与区域判定、PLC 与示教握手、调度、发布与恢复、项目导出导入与复制；包含少量真实 S7 TCP 回环、SQLite 和原图录制集成测试，不能把全部库测试称为纯单元测试 |
 | S7 专项 | `plc_session` 与 `offline` 的 S7 线协议用例（真实生产驱动 + 进程内 S7Server），已进默认 `cargo test` |
 | 桌面端到端 | 仅合成图段配方生产落盘：flow 实例内建站、标定、发布、生产、SQLite、原图与历史读回，需要 lyFlow |
 | 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本 |
@@ -69,7 +69,15 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_
 
 段模型的测试按 AGENTS.md 准入编写：每个用例对应一条业务规则、对外契约或易错边界，名称写成“条件 → 预期结果”。Line0 高电平门控，帧率由软件设置、默认 10 fps；记录中的 `deviceTriggers` 为预留字段，不参与采集计数、告警或排空判断。规则取舍见 [分段连拍决策记录](../decisions/segment-burst.md)。
 
-**分段算法未开发。** `segmentation` 只有 `Segmenter` 接口、`Unsegmented` 实现（整条胶路一个未分段区域）和合成序列回归入口（`segmentation::synthetic` 的 `generate` / `evaluate`），走向、光流、DTW 等真正的分段算法要等现场弯道图像；所以现有测试与端到端都只验证“未分段、只跑每帧独立检测、不判胶偏”，不验证分段效果（决策记录第一节、D-SB-21）。
+**分段：比例分段（D-SB-40）。** `segmentation` 有 `Proportional`（按各段 N_exp 比例与本件帧组数推算边界）与 `Unsegmented`，`resolve_regions` 在可信边界两侧切出 `boundaryGuard` 帧过渡区；图像运动细化（D-SB-43）未实现，合成序列回归入口（`segmentation::synthetic`）留给它。单元与生产节拍测试只验证比例公式、可信度、过渡区与判定规则，**不证明现场边界准确**；边界准确性用现场已确认手动分段做留一离线评估，它不是测试、不进 `cargo test`：
+
+```powershell
+cargo run --manifest-path src-tauri/Cargo.toml --example segment_eval -- <项目目录> <候选编号>
+```
+
+分段标定工作台（D-SB-44）的回归：`workspace::capture_review` 的组合保存（结构变 / 不变时其余轮次与标定的失效范围）、`frame_align` 的缩略图条带格式，前端 `tests/workbench-draft.test.ts`（边界插删与保存的段列表）与 `tests/segment-workbench.test.tsx`（结构改变时先列影响、确认后一次提交）；对齐复核（P2）：`frame_align::aligned_cuts_follow_scene_positions_under_stretch_drop_and_repeat`（合成序列在伸缩、前慢后快、丢帧、重复帧下边界误差 ≤ 1 帧；改成按比例换算会失败）与 `tests/align-review.test.tsx`（微调不越过相邻边界、全部确认后一次提交）。`segment_eval` 在有分段模板时另报“图像对齐（相对模板轮）”的误差；2026-10-26 在 NEW-14 原图上冒烟（15 轮 1.2 s），评估待已确认的手动分段。
+
+读该候选 `workspace.json` 的段列表、`boundaryGuard` 与采集页已确认的手动分段，逐轮用其余轮次按多轮标定规则得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；不读图像、不需要 lyFlow。至少要 2 段、2 个已确认轮次。2026-10-26 在人工构造的 8 轮、3 段工作区上冒烟通过；现场 NEW-14（`seg-new14` 项目，16 轮）尚未标手动分段，评估待做。
 
 **离线工况。** 段配方在离线下按脉冲串运行：布防后以固定频率（默认 20 Hz）发脉冲，每个脉冲同时触发三台相机，脉冲发完报运动结束；名义帧数取各段 N_exp（待标定的段按段长 × 频率 ÷ 50 mm/s 估算，已有整件标定时缩放到 ΣN_exp）。下表工况在离线控制台与在线检测页的工况下拉里，样本集与合成图来源都能选，只改变脉冲与握手，不改图像内容。
 

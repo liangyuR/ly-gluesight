@@ -11,21 +11,20 @@ use crate::cycle::{CycleHost, Input};
 use crate::frame::FrameImage;
 use crate::recipe::Recipe;
 use crate::release::{ReleaseBundle, ValidationSite, RELEASE_SCHEMA_BURST};
-use crate::vision::{self, CorridorGraph, Engine, FrameMeasurement, VisionHost};
+use crate::vision::{self, Engine, FrameMeasurement, VisionHost};
 
-/// 段配方的测量图版本（每台相机一条走廊）；发布包 schema 4 的 `versions.graph`。
-pub const GRAPH_VERSION_BURST: &str = "corridor-1";
+/// 段配方的测量图版本（每段每台检测相机一条走廊，D-SB-45）；发布包 schema 5 的 `versions.graph`。
+pub const GRAPH_VERSION_BURST: &str = "corridor-2";
 
-/// 段配方的测量图（发布包 graph.json）：按计划相机顺序，每台相机一条走廊测量图；sizes 是各相机示教帧尺寸。
+/// 段配方的测量图（发布包 graph.json）：每段每台检测相机一张走廊测量图；sizes 是各相机示教帧尺寸。
 pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String> {
     if sizes.len() != recipe.inspect.len() {
         return Err(format!("段配方有 {} 台检测相机，示教帧尺寸却有 {} 份", recipe.inspect.len(), sizes.len()));
     }
-    let cameras = recipe.inspect.iter().zip(sizes).map(|(inspect, &size)| {
-        let corridor = vision::plan_corridor(inspect, recipe, size)?;
-        Ok(json!({"index": corridor.camera_idx, "camera": corridor.camera, "size": size, "graph": corridor.graph}))
-    }).collect::<Result<Vec<_>, String>>()?;
-    Ok(json!({"schemaVersion": 3, "version": GRAPH_VERSION_BURST, "cameras": cameras}))
+    let graphs: Vec<Value> = vision::CorridorSet::build(recipe, sizes)?.iter()
+        .map(|c| json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "graph": c.graph}))
+        .collect();
+    Ok(json!({"schemaVersion": 4, "version": GRAPH_VERSION_BURST, "graphs": graphs}))
 }
 
 /// 同一 主.次 系列的引擎兼容运行：发布时 1.1.0 的版本可以在 1.1.x 上生产。
@@ -52,12 +51,12 @@ pub struct Prepared {
     /// 核心库文件与发布时不同的提示（见 engine_file_note）
     pub engine_note: Option<String>,
     engine: Arc<Engine>,
-    /// 按计划相机下标的走廊测量图
-    corridors: Vec<CorridorGraph>,
+    /// 按（计划相机下标, 段号）的走廊测量图（D-SB-45）
+    corridors: vision::CorridorSet,
 }
 
 impl Prepared {
-    /// 按相机建走廊测量图。发布包与所选生产版本的配方逐项一致、测量图版本与引擎系列匹配、
+    /// 按段与检测相机建走廊测量图。发布包与所选生产版本的配方逐项一致、测量图版本与引擎系列匹配、
     /// 包内测量图等于按配方和各相机示教帧尺寸重算的结果、各相机发布标定的当量等于示教当量。
     pub fn load(
         bundle: ReleaseBundle,
@@ -66,7 +65,7 @@ impl Prepared {
     ) -> Result<Self, String> {
         bundle.verify()?;
         if bundle.manifest.schema_version != RELEASE_SCHEMA_BURST {
-            return Err("段配方需要按相机组织的发布包（格式版本 4），请重新发布".into());
+            return Err(format!("段配方需要按段与相机组织的发布包（格式版本 {RELEASE_SCHEMA_BURST}），请重新示教、验证并发布"));
         }
         let recipe = Arc::new(bundle.recipe.build()?);
         if recipe.revision_id != expected.revision_id || recipe.id != expected.id || recipe.version != expected.version
@@ -79,10 +78,10 @@ impl Prepared {
         if bundle.manifest.versions.graph != GRAPH_VERSION_BURST || !engine_version_matches(&bundle.manifest.versions.engine, &engine.version) {
             return Err("发布包的算法图或引擎版本与当前引擎不一致，请重新验证并发布".into());
         }
-        let mut corridors = Vec::with_capacity(recipe.inspect.len());
+        let mut sizes = Vec::with_capacity(recipe.inspect.len());
         for (idx, inspect) in recipe.inspect.iter().enumerate() {
             let resource = bundle.camera(idx)?;
-            corridors.push(vision::plan_corridor(inspect, &recipe, resource.size)?);
+            sizes.push(resource.size);
             let calibration: Value = serde_json::from_str(&crate::fsio::read_text(&resource.calibration).map_err(|e| e.to_string())?)
                 .map_err(|e| format!("发布包标定无效：{e}"))?;
             let scale = calibration["mmPerPx"].as_f64().ok_or("发布包标定没有有效像素当量")?;
@@ -90,10 +89,15 @@ impl Prepared {
                 return Err(format!("相机 {} 的发布标定与示教像素当量不一致", inspect.camera));
             }
         }
-        let stored: Value = serde_json::from_str(&crate::fsio::read_text(&bundle.root.join(&bundle.manifest.graph)).map_err(|e| e.to_string())?)
-            .map_err(|e| format!("发布包算法图无效：{e}"))?;
-        let sizes: Vec<[u32; 2]> = corridors.iter().map(|c| c.size).collect();
-        if stored != burst_graphs(&recipe, &sizes)? { return Err("发布包算法图与配方走廊不一致".into()); }
+        let stored: Value = serde_json::from_str(
+            &crate::fsio::read_text(&bundle.root.join(&bundle.manifest.graph))
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("发布包算法图无效：{e}"))?;
+        if stored != burst_graphs(&recipe, &sizes)? {
+            return Err("发布包算法图与配方走廊不一致".into());
+        }
+        let corridors = vision::CorridorSet::build(&recipe, &sizes)?;
         let engine_note = engine_file_note(&bundle.manifest.versions.engine, &engine);
         Ok(Self {
             bundle,
@@ -109,21 +113,50 @@ impl Prepared {
         Ok(())
     }
 
-    /// 段配方第 camera_idx 台计划相机的一帧（seq 为帧组序号）：图像尺寸必须与这台相机的发布示教帧相同。
-    pub fn measure_frame(&self, camera_idx: usize, seq: u64, image: &FrameImage, run_id: &str) -> Result<FrameMeasurement, String> {
-        let corridor = self.corridors.get(camera_idx).ok_or_else(|| format!("发布包没有第 {} 台计划相机的走廊测量图", camera_idx + 1))?;
+    /// 段配方第 camera_idx 台计划相机、用第 segment 段走廊量一帧（seq 为帧组序号）：图像尺寸必须与这台相机的发布示教帧相同。
+    pub fn measure_frame(
+        &self,
+        camera_idx: usize,
+        segment: u32,
+        seq: u64,
+        image: &FrameImage,
+        run_id: &str,
+    ) -> Result<FrameMeasurement, String> {
+        let corridor = self.corridors.get(camera_idx, segment).ok_or_else(|| {
+            format!(
+                "发布包没有第 {segment} 段、第 {} 台计划相机的走廊测量图",
+                camera_idx + 1
+            )
+        })?;
         vision::measure_frame(&self.engine, corridor, image, seq, run_id)
     }
 
-    /// 预热：每台相机在发布包里自己的示教帧上量一次，必须测成（Measured）——现场证明发布包、走廊与运行库接线正确。
+    /// 预热：每台相机在它每一段的发布示教帧上用该段走廊量一次，必须测成（Measured）——现场证明发布包、走廊与运行库接线正确。
     pub(crate) fn warm(&self) -> Result<(), String> {
-        for (idx, corridor) in self.corridors.iter().enumerate() {
+        for idx in 0..self.recipe.inspect.len() {
             let resource = self.bundle.camera(idx)?;
-            let image = crate::image_file::load(&resource.image)?;
-            let m = self.measure_frame(idx, 0, &image, &format!("warm-{}-c{idx}-{}", self.bundle.id, ly_plc::now_ms()))?;
-            if m.metrics.state != FrameState::Measured {
-                return Err(format!("相机 {}：发布包走廊在自己的示教帧上没有测成（{}），不能布防",
-                    corridor.camera, m.metrics.error.as_deref().unwrap_or("状态异常")));
+            for corridor in &resource.corridors {
+                let image = crate::image_file::load(&corridor.image)?;
+                let m = self.measure_frame(
+                    idx,
+                    corridor.segment,
+                    0,
+                    &image,
+                    &format!(
+                        "warm-{}-c{idx}-s{}-{}",
+                        self.bundle.id,
+                        corridor.segment,
+                        ly_plc::now_ms()
+                    ),
+                )?;
+                if m.metrics.state != FrameState::Measured {
+                    return Err(format!(
+                        "相机 {} 第 {} 段：发布包走廊在自己的示教帧上没有测成（{}），不能布防",
+                        resource.camera,
+                        corridor.segment,
+                        m.metrics.error.as_deref().unwrap_or("状态异常")
+                    ));
+                }
             }
         }
         self.verify()

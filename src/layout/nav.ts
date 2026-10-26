@@ -12,7 +12,6 @@ import ProjectsPage from "../pages/ProjectsPage";
 import LibraryPage from "../features/workspace/LibraryPage";
 import ProgressPage from "../features/workspace/ProgressPage";
 import CapturePage from "../features/workspace/CapturePage";
-import GeometryPage from "../features/workspace/GeometryPage";
 import TeachingPage from "../features/workspace/TeachingPage";
 import ValidationPage from "../features/workspace/ValidationPage";
 import SegmentsPage from "../features/workspace/SegmentsPage";
@@ -73,10 +72,9 @@ const recipeSteps: PageRoute[] = [
   { path:"/recipe/progress",label:"进度总览",element:ProgressPage },
   { path:"/recipe/capture",label:"整圈采集",element:CapturePage },
   { path:"/recipe/segments",label:"段列表",element:SegmentsPage },
-  { path:"/recipe/geometry",label:"配方默认参数",element:GeometryPage },
-  { path:"/recipe/teach",label:"相机走廊示教",element:TeachingPage },
+  { path:"/recipe/teach",label:"走廊示教",element:TeachingPage },
   { path:"/recipe/calibration",label:"多轮标定",element:CalibrationPage },
-  { path:"/recipe/validation",label:"验证与发布",element:ValidationPage },
+  { path:"/recipe/validation",label:"发布",element:ValidationPage },
 ].map(step => ({ ...step, label:`${recipe.label} · ${step.label}` }));
 
 export const pageRoutes: PageRoute[] = [...navItems, ...recipeSteps, projectsItem, settingsItem];

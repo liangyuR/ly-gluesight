@@ -1,34 +1,40 @@
 import { Link, useLocation } from "react-router-dom";
 import { AlertTriangle, ArrowRight, Lock } from "lucide-react";
 import { Progress } from "qing-steel";
-import { cameraTeachingTasks } from "./cameraTasks";
+import { corridorTasks, nextTeachingHref } from "./cameraTasks";
 import { useWorkspace } from "./context";
+import { RecipeIdentity } from "./DocParams";
 import { Badge, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { stepOfV2, stepStatusText, stepStatusTone, targetPathV2 } from "./progress";
 import { returnState } from "./returnNavigation";
 import { stageOfV2, stagesV2, stageStatusText, stageStatusTone, stageStatusV2 } from "./stages";
+import "./segments.css";
 
 const actions: Record<string, string> = {
-  "/recipe/capture": "查看采集", "/recipe/segments": "编辑段列表", "/recipe/geometry": "配置参数", "/recipe/teach": "查看走廊示教",
-  "/recipe/calibration": "查看多轮标定", "/recipe/validation": "查看验证与发布",
+  "/recipe/capture": "查看采集", "/recipe/segments": "编辑段列表", "/recipe/teach": "查看走廊示教",
+  "/recipe/calibration": "查看多轮标定", "/recipe/validation": "查看发布",
 };
 
-/** 配方进度（段配方）：采集 → 段列表 → 走廊示教 → 多轮标定 → 验证与发布。 */
+/** 配方进度（段配方）：采集 → 段列表 → 走廊示教 → 多轮标定 → 发布（独立样本验证可选）。 */
 export default function PlanProgressPage() {
   const { data } = useWorkspace();
   const location = useLocation();
   if (!data) return <WorkspaceEmpty />;
   const plan = data.plan;
   const { progress } = plan;
-  const tasks = cameraTeachingTasks(plan);
+  const tasks = corridorTasks(plan);
   const taught = tasks.filter(task => task.status === "done").length;
-  const nextTask = tasks.find(task => task.status !== "done");
+  const nextTeaching = nextTeachingHref(plan);
   const next = progress.next;
   const nextStep = next && stepOfV2(progress, next.step);
   const warning = nextStep?.status === "blocked";
   const reasons = [...new Set(nextStep?.blockers.map(blocker => blocker.message) ?? [])].filter(message => message !== nextStep?.detail).slice(0, 3);
   const back = returnState(location, "进度总览");
-  return <div className="wp-page"><WorkspaceBar /><Panel title="配方进度" className="wp-progress-board">
+  return <div className="wp-page"><WorkspaceBar />
+    <Panel title="配方信息" detail="名称与 PLC 下发的型号；改动自动保存为候选配置，发布后生效">
+      <RecipeIdentity />
+    </Panel>
+    <Panel title="配方进度" className="wp-progress-board">
     {next && <section className={"wp-progress-next " + (warning ? "warn" : "info")} aria-label="下一步">
       {warning ? <AlertTriangle size={22} aria-hidden="true" /> : <ArrowRight size={22} aria-hidden="true" />}
       <div className="wp-progress-next-body">
@@ -45,7 +51,7 @@ export default function PlanProgressPage() {
       const subs = stage.ids.slice(1).flatMap(id => stepOfV2(progress, id) ?? []);
       const isCorridor = stage.ids.includes("corridor");
       const isCalibration = stage.ids.includes("calibration");
-      const link = isCorridor && nextTask ? { href: nextTask.href, label: "继续示教" } : { href: stage.path, label: actions[stage.path] };
+      const link = isCorridor && nextTeaching ? { href: nextTeaching, label: "继续示教" } : { href: stage.path, label: actions[stage.path] };
       return <section key={stage.path} className={"wp-progress-row" + (waiting ? " waiting" : "")} aria-label={stage.label + "进度"}>
         <span className={"wp-progress-number" + (stage.optional ? " optional" : "")} aria-hidden="true">{index + 1}</span>
         <div className="wp-progress-row-body">
@@ -56,7 +62,7 @@ export default function PlanProgressPage() {
         <div className="wp-progress-meter">
           {isCorridor && <>
             <Progress label="走廊示教进度" value={taught} max={Math.max(1, tasks.length)} />
-            <output aria-label="已示教相机数">{taught} / {tasks.length} 台已示教</output>
+            <output aria-label="已示教走廊数">{taught} / {tasks.length} 条已示教</output>
           </>}
           {isCalibration && !waiting && plan.calibration && <output aria-label="标定轮数">{plan.calibration.rounds.length} / {plan.calibration.minRounds} 轮</output>}
         </div>

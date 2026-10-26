@@ -8,7 +8,7 @@ import { workspaceApi } from "../src/features/workspace/api";
 import type { PathSegment } from "../src/features/plan/types";
 import { burstRecipe, burstWorkspaceView, deferred, pathSegment, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { updateSegments: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { updateSegments: vi.fn(), captureList: vi.fn(async () => []) } }));
 
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><SegmentsPage /></MemoryRouter>);
@@ -33,19 +33,6 @@ async function openCalibrated() {
   await user.click(first.getByText(/检测项/));
   return { user, first, page };
 }
-
-// 改段类型走 restructure：清空标定并立即保存
-describe("直线段改成弯道", () => {
-  it("已标定的配方 → 各段预期帧数清空为待标定，并提示标定已清空", async () => {
-    const { user, first } = await openCalibrated();
-    expect(screen.getByLabelText("段 2 预期帧数")).toHaveTextContent("4");
-
-    await user.selectOptions(first.getByLabelText("段 1 类型", { selector: "select" }), "corner");
-
-    for (const index of [1, 2, 3]) expect(screen.getByLabelText(`段 ${index} 预期帧数`)).toHaveTextContent("待标定");
-    expect(screen.getByText("各段预期帧数与标定已清空")).toBeVisible();
-  });
-});
 
 // 改长度、容差、检测项走 patch：标定保留，防抖后保存
 it.each<[string, (first: ReturnType<typeof within>) => void, (segment: PathSegment) => unknown, unknown]>([
@@ -72,11 +59,14 @@ describe("离开段列表页", () => {
 
   // 防的回归：上一份还在提交时离开，新编辑直接丢掉，或仍用旧修订提交而被后端按修订冲突拒绝
   it("上一份编辑还在提交时又改了容差并离开 → 等上一份完成，用它返回的新修订提交新编辑", async () => {
-    const { user, first, page } = await openCalibrated();
+    const { first, page } = await openCalibrated();
     const inFlight = deferred<ReturnType<typeof burstWorkspaceView>>();
     vi.mocked(workspaceApi.updateSegments).mockReturnValueOnce(inFlight.promise);
-    await user.selectOptions(first.getByLabelText("段 1 类型", { selector: "select" }), "corner"); // 改类型：立即提交
-    await waitFor(() => expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
+    fireEvent.change(first.getByRole("spinbutton", { name: "段 1 长度" }), { target: { value: "130" } });
+    await act(() => vi.advanceTimersByTimeAsync(1000)); // 越过防抖：第一份开始提交
+    expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
     fireEvent.change(first.getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value: "2" } });
 
     page.unmount();
@@ -87,6 +77,6 @@ describe("离开段列表页", () => {
 
     await waitFor(() => expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(2));
     const [id, revision, sent] = vi.mocked(workspaceApi.updateSegments).mock.calls[1];
-    expect([id, revision, sent[0].kind, sent[0].tolerance]).toEqual(["S", 4, "corner", 2]);
+    expect([id, revision, sent[0].lengthMm, sent[0].tolerance]).toEqual(["S", 4, 130, 2]);
   });
 });

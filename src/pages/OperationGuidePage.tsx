@@ -51,7 +51,7 @@ const journeys: { title: string; detail: string; icon: LucideIcon; action: strin
   { title: "首次建站", detail: "接入设备，完成采集示教与验证发布", icon: Wrench, action: "配置采集设备", path: "/camera", links: [["相机接入", "/camera"], ["PLC 通讯", "/plc"], ["标定", "/camera/calibration"], ["建立配方", "/recipe"]] },
   { title: "日常生产", detail: "开工条件与当前工件状态以在线检测为准", icon: ScanEye, action: "进入在线检测", path: "/inspect", production: true, links: [["核对开工条件", "/inspect"], ["监看检测", "/inspect"], ["查看历史", "/history"]] },
   { title: "缺陷排查", detail: "先查历史的区域结果与各相机帧、原图，再选择候选复测", icon: Bug, action: "打开历史记录", path: "/history", links: [["定位工件与帧组", "/history"], ["选择候选", "/recipe"], ["调整示教", "/recipe/teach"]] },
-  { title: "配置变更", detail: "候选验证后发布；在途工件保持原快照", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["采集 / 示教", "/recipe/capture"], ["验证与发布", "/recipe/validation"], ["核对 PLC 对接参数", "/recipe"]] },
+  { title: "配置变更", detail: "候选示教、标定后发布；在途工件保持原快照", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["采集 / 示教", "/recipe/capture"], ["验证与发布", "/recipe/validation"], ["核对 PLC 对接参数", "/recipe"]] },
 ];
 
 export default function OperationGuidePage() {

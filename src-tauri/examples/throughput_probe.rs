@@ -20,8 +20,8 @@ use std::time::Instant;
 
 use gluesight_lib::probe_api::{
     burst_graphs, burst_template, load_release, publish_burst, save_pgm, warm, BurstPublishInput,
-    CameraInput, DetectParams, Engine, FrameImage, FrameState, Polarity, Prepared, RecipeDoc,
-    ResourceSource, ValidationSite, Versions, GRAPH_VERSION_BURST,
+    CameraInput, CorridorInput, DetectParams, Engine, FrameImage, FrameState, Polarity, Prepared,
+    RecipeDoc, ResourceSource, SegmentCorridor, ValidationSite, Versions, GRAPH_VERSION_BURST,
 };
 use serde_json::json;
 
@@ -95,7 +95,10 @@ fn probe_document() -> RecipeDoc {
     doc.spacing = 1.0;
     doc.segments[0].expected_frames = Some(4);
     for inspect in &mut doc.inspect {
-        inspect.corridor = PROBE_PATH.to_vec();
+        inspect.segments = vec![SegmentCorridor {
+            segment: 1,
+            corridor: PROBE_PATH.to_vec(),
+        }];
         inspect.mm_per_px = Some(f64::from(PROBE_MM_PER_PX));
         inspect.detect = Some(DetectParams {
             search_mm: 3.0,
@@ -152,9 +155,12 @@ fn probe_production(engine: &Arc<Engine>, teach: &FrameImage) -> (Prepared, Temp
                 .iter()
                 .map(|camera| CameraInput {
                     camera: camera.to_string(),
-                    image: ResourceSource::Bytes(pgm.clone()),
-                    image_id: TEACH_ID.into(),
                     calibration: ResourceSource::Bytes(calibration.clone()),
+                    corridors: vec![CorridorInput {
+                        segment: 1,
+                        image: ResourceSource::Bytes(pgm.clone()),
+                        image_id: TEACH_ID.into(),
+                    }],
                 })
                 .collect(),
         },
@@ -216,6 +222,7 @@ fn probe_measure(prepared: &Prepared, image: &FrameImage, workers: usize) -> (Ve
                         let m = prepared
                             .measure_frame(
                                 0,
+                                1,
                                 i as u64 + 1,
                                 image,
                                 &format!("probe-w{workers}-{w}-{i}"),
@@ -300,7 +307,7 @@ fn main() {
     // 一、测量耗时：串行是 p50/p95/max 的依据；并发看 MEASURE_WORKERS 的线性外推是否成立
     let (prepared, _release) = probe_production(&engine, &teach);
     let stations = prepared
-        .measure_frame(0, 1, &teach, "probe-stations")
+        .measure_frame(0, 1, 1, &teach, "probe-stations")
         .unwrap()
         .metrics
         .widths

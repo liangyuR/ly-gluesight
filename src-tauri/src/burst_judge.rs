@@ -25,6 +25,8 @@ pub enum FrameState {
     Unmeasured,
     /// 胶条走出本相机的走廊（弯道帧常见，默认做法 4）：记检测不完整，不判 NG
     OutOfCorridor,
+    /// 这一帧所在段不由这台相机检测，按设计不测（D-SB-45）：不判定，也不计检测不完整
+    NotInspected,
 }
 
 /// 一台相机一帧的独立指标；示教轮次写进 features.jsonl，供分段算法和标定使用。
@@ -53,6 +55,9 @@ pub struct FrameMetrics {
     pub present_ratio: f64,
     /// 帧内胶中心相对走廊的法向偏移均值（mm），即 AbsoluteX 测量量
     pub x_mm: Option<f64>,
+    /// 测量用的是第几段的走廊（`PathSegment.index`，D-SB-45）；没测或旧记录为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corridor: Option<u32>,
 }
 
 /// 区域内 Measured 帧的胶宽统计（mm）。
@@ -129,12 +134,19 @@ pub struct Flags {
     pub short_part: bool,
 }
 
-/// 未检区域：段内 [0, a) 与 (b, length_mm]；length 未知时 to_mm 为 None。
+/// 未检区域：本段跳过的帧组 from_seq..=to_seq（`skip_head` / `skip_tail`）。
+/// 2026-10-26 之前的记录按毫米检测区间写 from_mm / to_mm（判定其实没排除这些帧），读旧记录时保留原样。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Uninspected {
     pub segment: u32,
-    pub from_mm: f64,
+    #[serde(default)]
+    pub from_seq: Option<u64>,
+    #[serde(default)]
+    pub to_seq: Option<u64>,
+    #[serde(default)]
+    pub from_mm: Option<f64>,
+    #[serde(default)]
     pub to_mm: Option<f64>,
 }
 
@@ -186,12 +198,14 @@ impl BurstJudgement {
 }
 
 /// 判一件。cameras 是计划相机（`FrameMetrics.camera` 的下标基准，`OffsetRef.camera` 按它找下标）；
-/// expected_total 由 `plan::expected_total` 算出；三台相机取最差。
+/// expected_total 由 `plan::expected_total` 算出；区域内检测相机取最差（D-SB-41：直线 / 弯道区域只用本段检测相机，
+/// 过渡区用两侧段检测相机的并集，未分段区域用全部计划相机）。
 ///
 /// - 每帧独立指标（断胶、有胶比例、胶宽、溢胶）三类区域都跑；只判 Measured 帧，其余状态只记检测不完整。
 /// - 区域允差：直线 / 弯道区域用该段 checks，未分段区域用所覆盖各段的 [`wider_checks`]。
 /// - 胶宽均匀性与胶偏只在直线区域判；未分段区域覆盖的直线段要判胶偏时记胶偏未判，弯道区域不判也不标。
-/// - 帧数越界、缺帧、疑似提前终止只进 flags，不改 OK/NG。
+/// - 过渡区（D-SB-40）按未分段区域判每帧指标，不判也不标胶偏，不算“含未分段”。
+/// - 帧数越界、缺帧、疑似提前终止只进 flags，不改 OK/NG；帧数只核对整件与未分段区域，直线 / 弯道区域不逐段核对。
 /// - 三台相机整件没有一帧测成时判 ERR 91；区域引用了配方里没有的段时判 ERR 93。
 pub fn judge(
     segments: &[PathSegment],
@@ -240,12 +254,11 @@ pub fn judge(
     };
     let anomalous = |status: Option<CountStatus>| matches!(status, Some(CountStatus::Low | CountStatus::High));
     let flags = Flags {
-        incomplete: results.iter().any(|r| !r.incomplete_groups.is_empty())
-            || groups.iter().any(|g| g.incomplete)
-            || frames.values().any(|m| m.state != FrameState::Measured),
+        // 区域首尾相接覆盖全部帧组，各区域只看自己的检测相机（D-SB-41）：没选中的相机缺帧、没测成不算检测不完整
+        incomplete: results.iter().any(|r| !r.incomplete_groups.is_empty()),
         frame_count_anomaly: anomalous(part_status) || results.iter().any(|r| anomalous(r.count_status)),
         offset_unjudged: results.iter().any(|r| r.offset_unjudged.is_some()),
-        unsegmented: results.iter().any(|r| matches!(r.region.kind, RegionKind::Unsegmented { .. })),
+        unsegmented: results.iter().any(|r| matches!(r.region.kind, RegionKind::Unsegmented { reason, .. } if reason != UnsegReason::Transition)),
         short_part,
     };
     BurstJudgement {
@@ -258,7 +271,7 @@ pub fn judge(
         regions: results,
         flags,
         alarms: loss.to_vec(),
-        uninspected: uninspected(segments),
+        uninspected: uninspected(regions),
         unchecked: vec![UncheckedItem::Bubble, UncheckedItem::Stringing],
     }
 }
@@ -376,19 +389,47 @@ fn covered<'a>(segments: &'a [PathSegment], region: &Region) -> Vec<&'a PathSegm
     let (first, last) = match region.kind {
         RegionKind::Straight { segment } | RegionKind::Corner { segment } => (segment, segment),
         RegionKind::Unsegmented { first_segment, last_segment, .. } => (first_segment, last_segment),
+        RegionKind::Skipped { segment } => (segment, segment),
     };
     segments.iter().filter(|segment| (first..=last).contains(&segment.index)).collect()
 }
 
+/// 区域参与判定的相机下标（计划相机顺序）。
+fn region_cameras(part: &PartInput, region: &Region, covered: &[&PathSegment]) -> BTreeSet<usize> {
+    let all = || (0..part.cameras.len()).collect();
+    let pick = |segments: &[&PathSegment]| {
+        segments
+            .iter()
+            .flat_map(|segment| crate::plan::segment_cameras(segment, part.cameras))
+            .filter_map(|id| part.cameras.iter().position(|camera| *camera == id))
+            .collect()
+    };
+    match region.kind {
+        RegionKind::Straight { .. } | RegionKind::Corner { .. } => pick(covered),
+        RegionKind::Unsegmented {
+            reason: UnsegReason::Transition,
+            ..
+        } => pick(covered),
+        RegionKind::Unsegmented { .. } => all(),
+        // 跳过的帧不判定：不取任何相机，区域里既没有结论也没有检测不完整
+        RegionKind::Skipped { .. } => BTreeSet::new(),
+    }
+}
+
 fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
     let covered = covered(part.segments, region);
+    let allowed = region_cameras(part, region, &covered);
     let checks = match region.kind {
         RegionKind::Unsegmented { .. } => wider_checks(&covered.iter().map(|segment| &segment.checks).collect::<Vec<_>>()),
         _ => covered[0].checks.clone(),
     };
     let straight = matches!(region.kind, RegionKind::Straight { .. });
-    let in_region: Vec<&FrameMetrics> =
-        part.frames.range((region.first_seq, 0)..=(region.last_seq, usize::MAX)).map(|(_, &m)| m).collect();
+    let in_region: Vec<&FrameMetrics> = part
+        .frames
+        .range((region.first_seq, 0)..=(region.last_seq, usize::MAX))
+        .map(|(_, &m)| m)
+        .filter(|m| allowed.contains(&m.camera))
+        .collect();
     let measured: Vec<&FrameMetrics> = in_region.iter().copied().filter(|m| m.state == FrameState::Measured).collect();
 
     let mut findings: BTreeSet<Finding> = measured.iter().flat_map(|m| judge_frame(m, &checks)).collect();
@@ -408,14 +449,22 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
             findings.extend(found);
             (offset, unjudged)
         }
-        RegionKind::Corner { .. } => (None, None),
+        // 过渡区本来就不判胶偏（D-SB-40），不标胶偏未判
+        RegionKind::Corner { .. }
+        | RegionKind::Skipped { .. }
+        | RegionKind::Unsegmented {
+            reason: UnsegReason::Transition,
+            ..
+        } => (None, None),
         RegionKind::Unsegmented { reason, .. } => {
             let would_judge = covered
                 .iter()
                 .any(|segment| segment.kind == SegmentKind::Straight && segment.checks.offset.as_ref().is_some_and(|o| o.enabled));
             let unjudged = match reason {
-                UnsegReason::AlgorithmPending => OffsetUnjudged::Unsegmented,
                 UnsegReason::LowConfidence => OffsetUnjudged::LowConfidence,
+                UnsegReason::AlgorithmPending | UnsegReason::Transition => {
+                    OffsetUnjudged::Unsegmented
+                }
             };
             (None, would_judge.then_some(unjudged))
         }
@@ -431,17 +480,33 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         RegionKind::Straight { .. } | RegionKind::Corner { .. } => (covered[0].expected_frames, covered[0].tolerance),
         RegionKind::Unsegmented { .. } if covers_all => (part.expected_total, part.tol_total),
         RegionKind::Unsegmented { .. } => (None, covered.iter().fold(0u32, |sum, s| sum.saturating_add(s.tolerance))),
+        RegionKind::Skipped { .. } => (None, 0),
     };
 
     let cams = part.cameras.len();
+    // 各相机收到的帧数（全部计划相机，供追溯；不参与判定）
     let camera_frames = (0..cams)
-        .map(|c| in_region.iter().filter(|m| m.camera == c && m.state != FrameState::Missing).count() as u32)
+        .map(|c| {
+            (region.first_seq..=region.last_seq)
+                .filter(|&seq| {
+                    part.frames
+                        .get(&(seq, c))
+                        .is_some_and(|m| m.state != FrameState::Missing)
+                })
+                .count() as u32
+        })
         .collect();
-    // 缺帧组：配组标了 incomplete，或某台相机这一组没有测成的帧（缺帧、测量失败、没测、走出走廊）
+    // 缺帧组：区域检测相机里某台这一组没有测成的帧（缺帧、测量失败、没测、走出走廊）；用全部相机时配组标了 incomplete 也算。
+    // 按设计不测的帧（NotInspected：未分段区域里不检测预测段的相机）不算
+    let all_cameras = allowed.len() == cams;
     let incomplete_groups = (region.first_seq..=region.last_seq)
         .filter(|seq| {
-            part.incomplete_seqs.contains(seq)
-                || (0..cams).any(|c| part.frames.get(&(*seq, c)).is_none_or(|m| m.state != FrameState::Measured))
+            (all_cameras && part.incomplete_seqs.contains(seq))
+                || allowed.iter().any(|&c| {
+                    part.frames.get(&(*seq, c)).is_none_or(|m| {
+                        !matches!(m.state, FrameState::Measured | FrameState::NotInspected)
+                    })
+                })
         })
         .collect();
 
@@ -452,7 +517,15 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         frame_count,
         expected,
         tolerance,
-        count_status: expected.map(|expected| count_status(frame_count, expected, tolerance)),
+        // 直线 / 弯道区域的帧数由比例边界推算并扣掉过渡区，不与本段 N_exp 核对（D-SB-40）
+        count_status: match region.kind {
+            RegionKind::Straight { .. }
+            | RegionKind::Corner { .. }
+            | RegionKind::Skipped { .. } => None,
+            RegionKind::Unsegmented { .. } => {
+                expected.map(|expected| count_status(frame_count, expected, tolerance))
+            }
+        },
         camera_frames,
         width: width_stats(&measured),
         offset,
@@ -511,28 +584,36 @@ fn region_label(region: &Region) -> String {
     match region.kind {
         RegionKind::Straight { segment } => format!("第 {segment} 段（直线）"),
         RegionKind::Corner { segment } => format!("第 {segment} 段（弯道）"),
+        RegionKind::Unsegmented {
+            first_segment,
+            last_segment,
+            reason: UnsegReason::Transition,
+        } => {
+            format!("第 {first_segment}–{last_segment} 段边界过渡区")
+        }
         RegionKind::Unsegmented { first_segment, last_segment, .. } if first_segment == last_segment => {
             format!("未分段区域（第 {first_segment} 段）")
         }
         RegionKind::Unsegmented { first_segment, last_segment, .. } => format!("未分段区域（第 {first_segment}–{last_segment} 段）"),
+        RegionKind::Skipped { segment } => format!("第 {segment} 段（跳过）"),
     }
 }
 
-/// 每段按 inspect_range [a, b] 生成 [0, a) 与 (b, length_mm]：a = 0 时没有起头一截，b ≥ length_mm 时没有收尾一截；
-/// 段长未知时收尾一截 to_mm 为 None。没配检测区间的段整段都检。
-fn uninspected(segments: &[PathSegment]) -> Vec<Uninspected> {
-    let mut out = Vec::new();
-    for segment in segments {
-        let Some(range) = &segment.inspect_range else { continue };
-        if range.a_mm > 0.0 {
-            out.push(Uninspected { segment: segment.index, from_mm: 0.0, to_mm: Some(range.a_mm) });
-        }
-        match segment.length_mm {
-            Some(length) if range.b_mm >= length => {}
-            length => out.push(Uninspected { segment: segment.index, from_mm: range.b_mm, to_mm: length }),
-        }
-    }
-    out
+/// 未检区域：分段解析出的跳过区域（各段 `skip_head` / `skip_tail`），按帧组号给出。
+fn uninspected(regions: &[Region]) -> Vec<Uninspected> {
+    regions
+        .iter()
+        .filter_map(|region| match region.kind {
+            RegionKind::Skipped { segment } => Some(Uninspected {
+                segment,
+                from_seq: Some(region.first_seq),
+                to_seq: Some(region.last_seq),
+                from_mm: None,
+                to_mm: None,
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -570,6 +651,7 @@ mod tests {
             widths: vec![Some(4.0); 10],
             spacing_mm: 1.0,
             gap_max_mm: 0.0,
+            corridor: None,
             present_ratio: 1.0,
             x_mm: Some(0.0),
         }
@@ -685,29 +767,147 @@ mod tests {
     }
 
     /// 规格 §2：帧数超出容差只记帧数异常；默认做法 3：整件帧组数 < ΣN_exp − Σtol 另标疑似提前终止。结论都不变。
-    /// 两段各容差 1：整件 14 ± 2；单段区域与本段 N_exp 比。
+    /// 两段各容差 1：整件 14 ± 2。D-SB-40：直线 / 弯道区域的帧数是比例边界推算并扣掉过渡区的结果，不与本段 N_exp 比。
     #[test]
-    fn region_frame_count_outside_tolerance_raises_anomaly_and_short_part_flags_only() {
+    fn frame_count_anomaly_comes_from_part_total_not_from_segment_regions() {
         let unsegmented = |n| vec![whole(&plan(&[Straight, Corner]), UnsegReason::AlgorithmPending, n)];
-        for (case, n_exp, regions, short_part) in [
-            ("未分段：整件 17 组高于上限 16", None, unsegmented(17), false),
-            ("未分段：整件 11 组低于下限 12", None, unsegmented(11), true),
+        for (case, regions, anomaly, short_part) in [
             (
-                "直线段 12 组高于 10 ± 1，整件 15 组正常",
-                Some([10, 4]),
+                "未分段：整件 17 组高于上限 16",
+                unsegmented(17),
+                true,
+                false,
+            ),
+            ("未分段：整件 11 组低于下限 12", unsegmented(11), true, true),
+            (
+                "直线段区域 12 组、本段 N_exp 10 ± 1，整件 15 组正常",
                 vec![region(RegionKind::Straight { segment: 1 }, 1, 12), region(RegionKind::Corner { segment: 2 }, 13, 15)],
+                false,
                 false,
             ),
         ] {
             let mut segments = plan(&[Straight, Corner]);
-            if let Some(n_exp) = n_exp {
-                segments.iter_mut().zip(n_exp).for_each(|(segment, n)| segment.expected_frames = Some(n));
-            }
+            segments
+                .iter_mut()
+                .zip([10, 4])
+                .for_each(|(segment, n)| segment.expected_frames = Some(n));
             let groups = regions.last().unwrap().last_seq;
             let result = run(&segments, Some(14), &regions, &frames(groups));
             assert_eq!(result.verdict, Verdict::Ok, "{case}");
-            assert_eq!((result.flags.frame_count_anomaly, result.flags.short_part), (true, short_part), "{case}");
+            assert_eq!(
+                (result.flags.frame_count_anomaly, result.flags.short_part),
+                (anomaly, short_part),
+                "{case}"
+            );
         }
+    }
+
+    /// D-SB-40：边界过渡区按两侧段中较宽的允差判每帧指标，不判胶偏、不标胶偏未判，也不算“含未分段”。
+    /// 直线段胶宽上限 5.5、溢胶 8；弯道段 6.5、9；过渡区一帧 9 站 6.0 mm 加 1 站 8.5 mm、x 偏 5 mm。
+    #[test]
+    fn transition_region_judges_frames_with_wider_limits_without_offset_or_unsegmented_flag() {
+        let mut segments = plan(&[Straight, Corner]);
+        segments[0].offset_ref = reference(Some(0.0), OffsetMeasure::AbsoluteX);
+        segments[1].checks.width.tol_upper = 2.5;
+        segments[1].checks.overflow.max_width_mm = 9.0;
+        let mut metrics = frames(9);
+        set_widths(
+            at(&mut metrics, 0, 5),
+            &[6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 8.5],
+        );
+        at(&mut metrics, 0, 5).x_mm = Some(5.0);
+        let transition = RegionKind::Unsegmented {
+            first_segment: 1,
+            last_segment: 2,
+            reason: UnsegReason::Transition,
+        };
+        let regions = [
+            region(RegionKind::Straight { segment: 1 }, 1, 3),
+            region(transition, 4, 6),
+            region(RegionKind::Corner { segment: 2 }, 7, 9),
+        ];
+        let result = run(&segments, None, &regions, &metrics);
+        assert_eq!(
+            (result.regions[1].verdict, result.verdict),
+            (Verdict::OkWithExcursion, Verdict::OkWithExcursion)
+        );
+        assert_eq!(
+            (&result.regions[1].offset, result.regions[1].offset_unjudged),
+            (&None, None)
+        );
+        assert!(!result.flags.offset_unjudged && !result.flags.unsegmented);
+    }
+
+    /// D-SB-41：直线 / 弯道区域只用本段检测相机——没选中的相机这一帧断胶、缺帧都不影响结论与检测不完整；
+    /// 过渡区用两侧段检测相机的并集，选中相机的断胶照常判 NG。
+    #[test]
+    fn segment_regions_judge_only_their_cameras_and_transitions_use_the_union() {
+        let mut segments = plan(&[Straight, Corner]);
+        segments[0].cameras = vec![cameras()[0].clone()];
+        segments[1].cameras = vec![cameras()[1].clone()];
+        let transition = RegionKind::Unsegmented {
+            first_segment: 1,
+            last_segment: 2,
+            reason: UnsegReason::Transition,
+        };
+        let regions = [
+            region(RegionKind::Straight { segment: 1 }, 1, 3),
+            region(transition, 4, 5),
+            region(RegionKind::Corner { segment: 2 }, 6, 8),
+        ];
+        for (case, camera, seq, verdict, incomplete) in [
+            ("段 1 没选中的 cam3 断胶", 2, 2, Verdict::Ok, false),
+            ("段 2 没选中的 cam1 缺帧", 0, 7, Verdict::Ok, false),
+            (
+                "过渡区里 cam2（段 2 选中）断胶",
+                1,
+                4,
+                Verdict::NgGap,
+                false,
+            ),
+            ("段 1 选中的 cam1 缺帧", 0, 3, Verdict::Ok, true),
+        ] {
+            let mut metrics = frames(8);
+            if case.contains("缺帧") {
+                metrics.retain(|m| (m.camera, m.seq) != (camera, seq));
+            } else {
+                at(&mut metrics, camera, seq).gap_max_mm = 10.0;
+            }
+            let result = run(&segments, None, &regions, &metrics);
+            assert_eq!(
+                (result.verdict, result.flags.incomplete),
+                (verdict, incomplete),
+                "{case}"
+            );
+        }
+    }
+
+    /// 段首尾跳过的帧不判定：其中的断胶不判 NG、缺帧不算检测不完整，结果按帧组号列为未检区域。
+    #[test]
+    fn skipped_region_is_not_judged_and_listed_as_uninspected() {
+        let segments = plan(&[Straight]);
+        let regions = [
+            region(RegionKind::Skipped { segment: 1 }, 1, 2),
+            region(RegionKind::Straight { segment: 1 }, 3, 6),
+        ];
+        let mut metrics = frames(6);
+        at(&mut metrics, 0, 1).gap_max_mm = 10.0;
+        metrics.retain(|m| (m.camera, m.seq) != (1, 2));
+        let result = run(&segments, None, &regions, &metrics);
+        assert_eq!(
+            (result.verdict, result.flags.incomplete),
+            (Verdict::Ok, false)
+        );
+        assert_eq!(
+            result.uninspected,
+            vec![Uninspected {
+                segment: 1,
+                from_seq: Some(1),
+                to_seq: Some(2),
+                from_mm: None,
+                to_mm: None
+            }]
+        );
     }
 
     /// 决策 D-SB-14：三台相机取最差——任一相机任一帧 NG，所在区域与整件即 NG（不沿用旧模型“一个视图合格即合格”）。

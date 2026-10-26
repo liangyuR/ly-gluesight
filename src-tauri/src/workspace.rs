@@ -10,7 +10,7 @@ use crate::camera::CameraSource;
 use crate::cycle::{self, CycleHost};
 use crate::frame::FrameImage;
 use crate::judge::{self, Verdict};
-use crate::recipe::{CameraImaging, DetectParams, Recipe, RecipeDoc, RecipeStage};
+use crate::recipe::{CameraImaging, Recipe, RecipeDoc, RecipeStage};
 use crate::release::ValidationSite;
 use crate::store::{self, Store};
 use crate::vision;
@@ -32,11 +32,14 @@ mod history_samples;
 pub mod progress;
 mod recorded;
 mod reproduce;
+#[cfg(test)]
+mod segment_corridor_tests;
 mod transfer;
 pub(crate) use transfer::{copy_hashed, reset_for_project_import};
 mod workflow;
 pub use burst::*;
 pub use burst_history::*;
+pub use burst_release::*;
 pub use capture_review::*;
 pub use collect_release::*;
 pub use transfer::*;
@@ -429,8 +432,9 @@ impl WorkspaceHost {
                     if w.doc.id != entry.file_name().to_string_lossy() { return Err("候选编号与目录不一致".into()); }
                     w.doc.build()?;
                     let legacy = w.instance_id == 0;
+                    let dropped = burst::drop_camera_teaching(&mut w);
                     w.ensure_instance(&app.state::<Store>())?;
-                    if legacy {
+                    if legacy || dropped {
                         crate::fsio::write_atomic(&file, &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?)?;
                     }
                     Ok(w)
@@ -688,15 +692,19 @@ fn apply_live_imaging(app: &AppHandle, camera: &str, imaging: &CameraImaging) ->
 fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
     // N_exp、标定统计、整件标定与 x_ref 只能由多轮标定写入，段序列或类型变化时清空
     burst::guard_calibration(&w.doc, &mut doc)?;
+    let segments_changed = burst::guard_segment_corridors(&w.doc, &mut doc, &w.camera_teaching)?;
     let mut unbound = w.unbound_imaging.clone();
     sync_doc_imaging(&mut doc, &mut unbound);
     doc.build()?;
     if doc == w.doc { return Ok(()); }
     w.unbound_imaging = unbound;
     w.doc = doc;
-    // 不再是计划相机的示教帧不保留
+    // 不再是计划相机、段结构变了或这台相机不再检测所在段的示教帧不保留
     let cameras = w.doc.plan_cameras();
-    w.camera_teaching.retain(|t| cameras.contains(&t.camera));
+    let doc = &w.doc;
+    w.camera_teaching.retain(|t| {
+        cameras.contains(&t.camera) && burst::teaching_applies(doc, t, segments_changed)
+    });
     w.changed();
     Ok(())
 }
@@ -826,19 +834,14 @@ pub fn workspace_publish(
     if w.pending.is_some() {
         return Err("已有待生效版本，请等待工件结束".into());
     }
-    let validated = w
-        .validation
-        .as_ref()
-        .filter(|v| v.revision == revision && v.passed)
-        .ok_or("请先通过当前候选的完整验证")?;
-    let recipe = w.doc.build()?;
-    let environment_tag = environment(&app, &recipe)?;
-    let current_base = app.state::<CycleHost>().recipe(&id).map(|r| r.revision_id.clone());
-    if current_base != w.base_revision || environment_tag != validated.environment_tag {
-        return Err("验证后相机、标定或生产版本已变化，请重新验证".into());
+    if !w.doc.is_burst() {
+        return Err("旧拍照点配方已停用，请创建段配方".into());
     }
-    let cams = cycle::usable_cams(&app, &recipe)?;
-    app.state::<CycleHost>().camera.check_ready_at(&cams)?;
+    // D-SB-46：发布不再要求独立样本验证，发布时当场核对发布前检查
+    let validated = burst_release::publish_checks(&app, w)?;
+    if let Some(failed) = validated.checks.iter().find(|c| !c.passed) {
+        return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
+    }
     let mut release_doc = w.doc.clone();
     release_doc.stage = RecipeStage::Formal;
     release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));

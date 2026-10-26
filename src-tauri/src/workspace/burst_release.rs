@@ -5,7 +5,7 @@
 //! 与 workflow.rs，行为不变。
 //!
 //! 验证项（决策记录第九节第 13 条）：
-//! - 设备与采集：计划相机解析、三台单视角独立设备（`check_burst_cameras`）、就绪；
+//! - 相机配置：计划相机解析、三台单视角独立设备（`check_burst_cameras`）；相机是否在线就绪不在发布时核对，布防时再查（D-SB-46）；
 //! - 走廊示教：恰好 3 台计划相机，每台都选了示教帧、走廊完整落在帧内、有像素当量，且示教帧采集后设备配置没变；
 //! - 段标定：整件 ΣN_exp（expected_total）已由多轮标定得出即通过（决策补充“多段配方的发布与运行”），逐段列出 N_exp 或待定原因；
 //! - 标准件 x_ref：只在有启用胶偏检查的直线段时列出；单段 AbsoluteX 要有标准件得出的 x_ref，多段（分段算法未就绪）
@@ -17,7 +17,9 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use super::burst::{corridor_saved, measure_round, offset_reference, CameraTeaching};
+use super::burst::{
+    offset_reference, round_frames, segment_corridor_saved, untaught_pairs, CameraTeaching,
+};
 use super::burst_history::{judge_frames, remeasure, CandidateMeasurer};
 use crate::burst_judge::{BurstJudgement, FrameMetrics};
 use crate::frame_group::{loss_alarms, LossAlarm};
@@ -41,13 +43,12 @@ fn doc_sample_tag(doc: &RecipeDoc) -> Value {
     sample_tag(doc.product_code, &doc.plan_cameras(), &doc.segments)
 }
 
-/// 段配方验证项的输入：设备检查与样本结论由调用方（访问设备、读图、测量）给出，其余只读候选。
+/// 段配方发布前检查的输入：设备检查由调用方（访问设备）给出，其余只读候选。
 pub(super) struct BurstInputs<'a> {
-    /// 计划相机解析、三台单视角独立设备、就绪（`cycle::usable_cams` + `check_ready_at`）
+    /// 计划相机解析、三台单视角独立设备（`cycle::usable_cams`）；不含在线就绪
     pub device: Result<(), String>,
     /// 当前设备的相机标签（`camera_state`，与示教帧冻结时同一口径），按相机编号
     pub cameras: &'a BTreeMap<String, Value>,
-    pub samples: &'a [SampleResult],
     /// 候选基于当前生产版本
     pub base_matches: bool,
 }
@@ -55,9 +56,12 @@ pub(super) struct BurstInputs<'a> {
 /// 段配方的全部验证项，按页面展示顺序。
 pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
     let mut checks = vec![Check {
-        name: "设备与采集".into(),
+        name: "相机配置".into(),
         passed: inputs.device.is_ok(),
-        detail: inputs.device.err().unwrap_or_else(|| "三台计划相机已就绪".into()),
+        detail: inputs
+            .device
+            .err()
+            .unwrap_or_else(|| "三台计划相机已配置；是否在线就绪在布防时核对".into()),
     }];
     checks.push(corridor_check(w, inputs.cameras));
     checks.push(segment_check(w));
@@ -65,12 +69,6 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
     checks.push(Check { name: "标定采集参数".into(), passed: calibration_devices.is_ok(),
         detail: calibration_devices.err().unwrap_or_else(|| "标定轮次与当前相机采集参数一致".into()) });
     checks.extend(x_ref_check(&w.doc));
-    let normals: Vec<_> = inputs.samples.iter().filter(|r| matches!(r.expected, Verdict::Ok | Verdict::OkWithExcursion)).collect();
-    checks.push(Check {
-        name: "独立正常样本".into(),
-        passed: !normals.is_empty() && normals.iter().all(|r| r.passed),
-        detail: "至少一套独立正常整圈样本（采集轮次独立于走廊示教与多轮标定），所选正常样本均须符合预期；帧组数超出预期只告警；缺陷样本验证结果单独保留".into(),
-    });
     checks.push(Check {
         name: "生产版本".into(),
         passed: inputs.base_matches,
@@ -79,32 +77,50 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
     checks
 }
 
-/// 走廊示教（规格 §1 Plan.cameras = 3、§4 检测走廊）：每台计划相机都有示教帧、走廊完整落在帧内、有像素当量，
-/// 示教帧采集后这台相机的设备配置没变（`current` 是当前设备的相机标签）。
+/// 走廊示教（规格 §1 Plan.cameras = 3、§4 检测走廊、D-SB-45）：每段每台检测相机都有示教帧、走廊完整落在帧内，
+/// 每台相机有像素当量，各示教帧采集后这台相机的设备配置没变（`current` 是当前设备的相机标签）。
 fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
     let doc = &w.doc;
     let mut problems = Vec::new();
     if doc.inspect.len() != PLAN_CAMERAS {
         problems.push(format!("段配方需要恰好 {PLAN_CAMERAS} 台计划相机共用一个触发，当前 {} 台", doc.inspect.len()));
     }
-    for inspect in &doc.inspect {
-        let camera = &inspect.camera;
-        let Some(teaching) = w.camera_teaching.iter().find(|t| &t.camera == camera) else {
-            problems.push(format!("相机 {camera}：待选示教帧"));
-            continue;
-        };
-        if !corridor_saved(inspect, teaching.frame.size) {
-            problems.push(format!("相机 {camera}：走廊未示教或超出示教帧"));
-        } else if inspect.mm_per_px.is_none() {
-            problems.push(format!("相机 {camera}：缺像素当量"));
-        } else if current.get(camera) != Some(&teaching.frame.camera_tag) {
-            problems.push(format!("相机 {camera}：示教帧采集后设备参数或样本集已改变，请重新采集并选示教帧"));
+    problems.extend(
+        untaught_pairs(w).into_iter().map(|(camera, segment)| {
+            format!("第 {segment} 段相机 {camera}：走廊未示教或超出示教帧")
+        }),
+    );
+    problems.extend(
+        doc.inspect
+            .iter()
+            .filter(|i| i.mm_per_px.is_none())
+            .map(|i| format!("相机 {}：缺像素当量", i.camera)),
+    );
+    for teaching in w.camera_teaching.iter().filter(|t| t.segment.is_some()) {
+        if current.get(&teaching.camera) != Some(&teaching.frame.camera_tag) {
+            problems.push(format!(
+                "第 {} 段相机 {}：示教帧采集后设备参数或样本集已改变，请重新采集并重选示教帧",
+                teaching.segment.unwrap_or_default(),
+                teaching.camera
+            ));
         }
     }
+    let pairs: usize = doc
+        .segments
+        .iter()
+        .map(|s| crate::plan::segment_cameras(s, &doc.plan_cameras()).len())
+        .sum();
     Check {
         name: "走廊示教".into(),
         passed: problems.is_empty(),
-        detail: if problems.is_empty() { format!("{} 台计划相机都已示教走廊与像素当量", doc.inspect.len()) } else { problems.join("；") },
+        detail: if problems.is_empty() {
+            format!(
+                "{pairs} 条段走廊都已示教，{} 台相机都有像素当量",
+                doc.inspect.len()
+            )
+        } else {
+            problems.join("；")
+        },
     }
 }
 
@@ -115,22 +131,32 @@ pub(super) fn current_camera_tags(app: &AppHandle) -> BTreeMap<String, Value> {
 }
 
 /// 段配方候选试运行（`workspace_debug_run`）用的各计划相机示教帧尺寸（计划相机顺序，交给 `Candidate::new_burst`）：
-/// 每台都选了示教帧，且示教帧采集后这台相机的设备标签（`current`）没变——与走廊示教验证项同一口径。开跑前
-/// `recheck_debug_candidate` 再核对一次。
-pub(super) fn debug_sizes(w: &Workspace, current: &BTreeMap<String, Value>) -> Result<Vec<[u32; 2]>, String> {
-    w.doc.inspect.iter().map(|inspect| {
-        let camera = &inspect.camera;
-        let teaching = w.camera_teaching.iter().find(|t| &t.camera == camera)
-            .ok_or_else(|| format!("相机 {camera} 还没有选示教帧：先完成走廊示教"))?;
-        if current.get(camera) != Some(&teaching.frame.camera_tag) {
-            return Err(format!("相机 {camera}：示教帧采集后设备参数或样本集已改变，请重新采集并选示教帧"));
-        }
-        Ok(teaching.frame.size)
-    }).collect()
+/// 每段每台检测相机都示教了走廊，且各示教帧采集后这台相机的设备标签（`current`）没变——与走廊示教验证项同一口径。
+/// 开跑前 `recheck_debug_candidate` 再核对一次。
+pub(super) fn debug_sizes(
+    w: &Workspace,
+    current: &BTreeMap<String, Value>,
+) -> Result<Vec<[u32; 2]>, String> {
+    if let Some((camera, segment)) = untaught_pairs(w).into_iter().next() {
+        return Err(format!(
+            "第 {segment} 段相机 {camera} 还没有示教走廊：先完成走廊示教"
+        ));
+    }
+    if let Some(t) = w
+        .camera_teaching
+        .iter()
+        .find(|t| t.segment.is_some() && current.get(&t.camera) != Some(&t.frame.camera_tag))
+    {
+        return Err(format!(
+            "相机 {}：示教帧采集后设备参数或样本集已改变，请重新采集并重选示教帧",
+            t.camera
+        ));
+    }
+    super::burst::teaching_sizes(w)
 }
 
-/// 段标定（规格 §1 未标定不能发布；决策补充“多段配方的发布与运行”）：整件 ΣN_exp 已由多轮标定得出即通过，
-/// 各段 N_exp 可以为空（标定轮次未全部确认手动分段）；逐段列出 N_exp 或待定原因。
+/// 段标定（规格 §1 未标定不能发布）：单段配方整件 ΣN_exp 已由多轮标定得出即通过；多段配方要各段 N_exp 都已标定
+/// （D-SB-45：生产按累计 N_exp 预测每帧所属段来选走廊，修订 D-SB-21）。逐段列出 N_exp 或待定原因。
 fn segment_check(w: &Workspace) -> Check {
     let doc = &w.doc;
     let total = doc.expected_total();
@@ -141,12 +167,18 @@ fn segment_check(w: &Workspace) -> Check {
         None if normal < doc.calibration_rounds => format!("整件预期帧组数待多轮标定：还差 {} 轮（至少 {} 轮，不含标准件轮次）", doc.calibration_rounds - normal, doc.calibration_rounds),
         None => format!("整件预期帧组数待多轮标定：已有 {normal} 轮，请应用标定"),
     };
+    let core_min = 2 * doc.boundary_guard + 1;
+    let multi = doc.segments.len() > 1;
     let segments: Vec<String> = doc
         .segments
         .iter()
         .map(|s| {
             let kind = kind_label(s.kind);
             match (s.expected_frames, total) {
+                (Some(n), _) if multi && s.kind == SegmentKind::Straight && n < core_min => format!(
+                    "第 {} 段（{kind}）N_exp {n} ± {}：短于 {core_min} 帧，两侧过渡区取空后不判胶偏，建议并入相邻弯道段",
+                    s.index, s.tolerance
+                ),
                 (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n} ± {}", s.index, s.tolerance),
                 (None, Some(_)) => format!(
                     "第 {} 段（{kind}）待逐段标定，容差 ±{}",
@@ -158,22 +190,26 @@ fn segment_check(w: &Workspace) -> Check {
         .collect();
     Check {
         name: "段标定".into(),
-        passed: total.is_some(),
+        passed: total.is_some()
+            && (!multi || doc.segments.iter().all(|s| s.expected_frames.is_some())),
         detail: format!("{head}；{}", segments.join("；")),
     }
 }
 
 /// 标准件 x_ref（规格 §0/§1、D-SB-18）：只在有启用胶偏检查的直线段时列出。单段 AbsoluteX 要有标准件多轮得出的 x_ref；
-/// 多段计划（分段算法未就绪，运行时整条胶路未分段、不判胶偏）与 ToEdge（测量量未实现，结果标胶偏未判）列出原因、不阻断。
+/// 多段计划（暂不计算 x_ref：各段已标定时运行时按比例分段、该段标胶偏未判，否则整条胶路未分段）与 ToEdge
+/// （测量量未实现，结果标胶偏未判）列出原因、不阻断。
 fn x_ref_check(doc: &RecipeDoc) -> Option<Check> {
     let cameras = doc.plan_cameras();
     let single = doc.segments.len() == 1;
+    let segmented = doc.segments.iter().all(|s| s.expected_frames.is_some());
     let items: Vec<(bool, String)> = doc.segments.iter()
         .filter(|s| s.kind == SegmentKind::Straight && s.checks.offset.as_ref().is_some_and(|o| o.enabled))
         .filter_map(|s| offset_reference(s, &cameras).map(|reference| (s.index, reference)))
         .map(|(index, reference)| match (reference.x_ref.zip(reference.spread), reference.measure) {
             (Some((x_ref, spread)), _) => (true, format!("第 {index} 段 x_ref {x_ref:.3} ± {spread:.3} mm（相机 {}）", reference.camera)),
-            (None, _) if !single => (true, format!("第 {index} 段：分段算法未就绪，运行时整条胶路按未分段处理、不判胶偏，暂不需要 x_ref")),
+            (None, _) if !single && segmented => (true, format!("第 {index} 段：多段配方暂不计算 x_ref，运行时按比例分段，该段标胶偏未判（未标定参考值）")),
+            (None, _) if !single => (true, format!("第 {index} 段：各段尚未逐段标定，运行时整条胶路按未分段处理、不判胶偏，暂不需要 x_ref")),
             (None, OffsetMeasure::ToEdge) => (true, format!("第 {index} 段：测量量“到边缘距离”未实现，结果标胶偏未判")),
             (None, OffsetMeasure::AbsoluteX) => (false, format!("第 {index} 段：待标准件轮次得出 x_ref（相机 {}）", reference.camera)),
         })
@@ -219,10 +255,17 @@ fn round_loss(cameras: &[String], round: &CaptureRoundV2) -> Vec<LossAlarm> {
     loss_alarms(&counts)
 }
 
-/// 用当前候选判一轮验证样本：每帧指标（`measure_round` 的结果，按计划相机）→ 未分段区域 → 丢帧告警 → burst_judge。
+/// 用当前候选判一轮验证样本：每帧指标（`measure_round` 的结果，按计划相机）→ 比例分段区域 → 丢帧告警 → burst_judge。
 pub(super) fn judge_round(doc: &RecipeDoc, round: &CaptureRoundV2, metrics: &[FrameMetrics]) -> BurstJudgement {
     let cameras = doc.plan_cameras();
-    judge_frames(&doc.segments, doc.expected_total(), &cameras, metrics, &round_loss(&cameras, round))
+    judge_frames(
+        &doc.segments,
+        doc.boundary_guard,
+        doc.expected_total(),
+        &cameras,
+        metrics,
+        &round_loss(&cameras, round),
+    )
 }
 
 /// 段配方样本的结论：按 burst_judge 的整件结论对照人工期望（规则同 `SampleResult::judged`）。帧组数超出 ΣN_exp ± Σtol
@@ -271,10 +314,21 @@ fn validate_sample(app: &AppHandle, w: &Workspace, recipe: &Recipe, measurer: Re
         let round = capture.get_burst(round_id)?;
         check_sample_round(w, &round, current)?;
         let measurer = measurer.map_err(|e| e.clone())?;
-        let metrics = measure_round(&w.doc.plan_cameras(), &round, |camera, camera_id, seq| {
-            let image = crate::image_file::load(&capture.burst_frame_path(round_id, camera_id, seq)?)?;
-            measurer.measure(camera, seq, &image)
-        });
+        let cameras = w.doc.plan_cameras();
+        let metrics = burst_history::remeasure_by_rule(
+            &recipe.path_segments,
+            recipe.boundary_guard,
+            &cameras,
+            &round_frames(&cameras, &round),
+            |camera, seq, segment| {
+                let image = crate::image_file::load(&capture.burst_frame_path(
+                    round_id,
+                    &cameras[camera],
+                    seq,
+                )?)?;
+                measurer.measure(camera, segment, seq, &image)
+            },
+        );
         let judgement = judge_round(&w.doc, &round, &metrics);
         return Ok(sample_result(sample, bank.name.clone(), String::new(), &judgement, recipe.expected_total(), tolerance_total));
     }
@@ -289,19 +343,98 @@ fn validate_sample(app: &AppHandle, w: &Workspace, recipe: &Recipe, measurer: Re
     }
     if !burst_history::raw_complete(&detail, burst) { return Err("历史样本的原图不完整，不能整件复测".into()); }
     let measurer = measurer.map_err(|e| e.clone())?;
-    let metrics = remeasure(&burst.frames, |frame| {
-        measurer.measure(frame.camera, frame.seq, &burst_history::frame_image(app, &detail, frame.camera, frame.seq)?)
+    let metrics = remeasure(recipe, &burst.frames, |frame, segment| {
+        measurer.measure(
+            frame.camera,
+            segment,
+            frame.seq,
+            &burst_history::frame_image(app, &detail, frame.camera, frame.seq)?,
+        )
     });
-    let judgement = judge_frames(&recipe.path_segments, recipe.expected_total(), &recipe.plan_cameras(), &metrics, &burst.judgement.alarms);
-    Ok(sample_result(sample, format!("SN {}", detail.summary.sn), detail.summary.sn.clone(), &judgement, recipe.expected_total(), tolerance_total))
+    let judgement = judge_frames(
+        &recipe.path_segments,
+        recipe.boundary_guard,
+        recipe.expected_total(),
+        &recipe.plan_cameras(),
+        &metrics,
+        &burst.judgement.alarms,
+    );
+    Ok(sample_result(
+        sample,
+        format!("SN {}", detail.summary.sn),
+        detail.summary.sn.clone(),
+        &judgement,
+        recipe.expected_total(),
+        tolerance_total,
+    ))
 }
 
-/// 段配方的发布前验证（`workspace_validate` 对段配方调用；旧拍照点配方仍走 `super::validation`）。
+/// 可选的独立样本验证结论（D-SB-46：不再是发布前提）：至少一套独立正常整圈样本，所选正常样本均须符合预期。
+fn sample_check(samples: &[SampleResult]) -> Check {
+    let normals: Vec<_> = samples
+        .iter()
+        .filter(|r| matches!(r.expected, Verdict::Ok | Verdict::OkWithExcursion))
+        .collect();
+    Check {
+        name: "独立正常样本".into(),
+        passed: !normals.is_empty() && normals.iter().all(|r| r.passed),
+        detail: "至少一套独立正常整圈样本（采集轮次独立于走廊示教与多轮标定），所选正常样本均须符合预期；帧组数超出预期只告警；缺陷样本验证结果单独保留".into(),
+    }
+}
+
+/// 发布前检查（D-SB-46，发布时当场核对，不跑样本，不要求相机在线）：相机配置、走廊示教、段标定、标定采集参数、x_ref、生产版本。
+/// 结果随待生效版本存档（`Release.validation`，样本为空）。
+pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
+    let recipe = w.doc.build()?;
+    let environment_tag = environment(app, &recipe)?;
+    let cycle = app.state::<CycleHost>();
+    let device = cycle::usable_cams(app, &recipe).map(|_| ());
+    let tags = current_camera_tags(app);
+    let base = cycle.recipe(&recipe.id).map(|r| r.revision_id.clone());
+    let checks = burst_checks(
+        w,
+        BurstInputs {
+            device,
+            cameras: &tags,
+            base_matches: base == w.base_revision,
+        },
+    );
+    Ok(Validation {
+        revision: w.revision,
+        passed: checks.iter().all(|c| c.passed),
+        checked_at: ly_plc::now_ms(),
+        checks,
+        samples: Vec::new(),
+        environment_tag,
+    })
+}
+
+/// 发布前检查的结果（验证与发布页展示，不改候选）。
+#[tauri::command]
+pub fn workspace_publish_checks(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+) -> Result<Vec<Check>, String> {
+    let w = {
+        let host = app.state::<WorkspaceHost>();
+        let items = host.items.lock().unwrap();
+        let w = items.get(&id).ok_or("候选配置不存在")?;
+        w.expect(revision)?;
+        w.clone()
+    };
+    if !w.doc.is_burst() {
+        return Err("旧拍照点配方已停用，请创建段配方".into());
+    }
+    publish_checks(&app, &w).map(|v| v.checks)
+}
+
+/// 段配方的独立样本验证（`workspace_validate` 对段配方调用；D-SB-46 起为可选，不是发布前提）。
 pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let recipe = w.doc.build()?;
     let initial_environment = environment(app, &recipe)?;
     let cycle = app.state::<CycleHost>();
-    let device = cycle::usable_cams(app, &recipe).and_then(|cams| cycle.camera.check_ready_at(&cams));
+    let device = cycle::usable_cams(app, &recipe).map(|_| ());
     let configs = cycle.camera.configs();
     let tags = current_camera_tags(app);
     let current: BTreeMap<String, Value> = configs.iter().map(|c| (c.id.clone(), state_value(c))).collect();
@@ -310,7 +443,15 @@ pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, S
         .map(|sample| validate_sample(app, w, &recipe, measurer.as_ref(), sample, &current).unwrap_or_else(|reason| failed_sample(sample, reason)))
         .collect();
     let base = cycle.recipe(&recipe.id).map(|r| r.revision_id.clone());
-    let checks = burst_checks(w, BurstInputs { device, cameras: &tags, samples: &samples, base_matches: base == w.base_revision });
+    let mut checks = burst_checks(
+        w,
+        BurstInputs {
+            device,
+            cameras: &tags,
+            base_matches: base == w.base_revision,
+        },
+    );
+    checks.push(sample_check(&samples));
     if environment(app, &recipe)? != initial_environment { return Err("验证期间设备、标定或引擎发生变化，请重新验证".into()); }
     Ok(Validation {
         revision: w.revision,
@@ -371,19 +512,56 @@ pub(super) fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeD
     let mut sizes = Vec::with_capacity(recipe.inspect.len());
     let mut cameras = Vec::with_capacity(recipe.inspect.len());
     for inspect in &recipe.inspect {
-        let taught = teaching.iter().find(|t| t.camera == inspect.camera).ok_or_else(|| format!("相机 {} 没有示教帧，不能发布", inspect.camera))?;
+        let taught: Vec<&CameraTeaching> = recipe
+            .path_segments
+            .iter()
+            .filter(|s| {
+                crate::plan::segment_cameras(s, &recipe.plan_cameras()).contains(&inspect.camera)
+            })
+            .map(|s| {
+                teaching
+                    .iter()
+                    .find(|t| t.camera == inspect.camera && t.segment == Some(s.index))
+                    .filter(|_| segment_corridor_saved(inspect, s.index, teaching))
+                    .ok_or_else(|| {
+                        format!(
+                            "第 {} 段相机 {} 没有示教帧或走廊，不能发布",
+                            s.index, inspect.camera
+                        )
+                    })
+            })
+            .collect::<Result<_, String>>()?;
         let external = vision::camera_calib_path(app, inspect)?;
         let source = if external.exists() {
             Some(serde_json::from_str::<Value>(&crate::fsio::read_text(&external).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?)
         } else { None };
         let reference = vision::camera_calib_key(inspect)?.reference();
         let calibration = json!({"schemaVersion": 1, "camera": inspect.camera, "reference": reference, "mmPerPx": inspect.mm_per_px, "source": source, "acquisition": crate::production::acquisition_tag(&app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == inspect.camera).ok_or("发布相机不存在")?)});
-        sizes.push(taught.frame.size);
+        sizes.push(
+            taught
+                .first()
+                .map(|t| t.frame.size)
+                .ok_or_else(|| format!("相机 {} 不检测任何一段", inspect.camera))?,
+        );
         cameras.push(crate::release::CameraInput {
             camera: inspect.camera.clone(),
-            image: crate::release::ResourceSource::File(image_file(host, &recipe.id, &taught.frame.id)?),
-            image_id: taught.frame.id.clone(),
-            calibration: crate::release::ResourceSource::Bytes(serde_json::to_vec(&calibration).map_err(|e| e.to_string())?),
+            calibration: crate::release::ResourceSource::Bytes(
+                serde_json::to_vec(&calibration).map_err(|e| e.to_string())?,
+            ),
+            corridors: taught
+                .iter()
+                .map(|t| {
+                    Ok(crate::release::CorridorInput {
+                        segment: t.segment.unwrap_or_default(),
+                        image: crate::release::ResourceSource::File(image_file(
+                            host,
+                            &recipe.id,
+                            &t.frame.id,
+                        )?),
+                        image_id: t.frame.id.clone(),
+                    })
+                })
+                .collect::<Result<_, String>>()?,
         });
     }
     crate::release::publish_burst(&releases_root(app)?, crate::release::BurstPublishInput {

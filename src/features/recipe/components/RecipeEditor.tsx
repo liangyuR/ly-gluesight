@@ -18,6 +18,7 @@ export const defaultWidth: JudgeParams = { nominal: 4, tolUpper: 1.5, tolLower: 
 
 /** 后端 RecipeDoc.calibration_rounds 的默认值（可配范围 10..=100）。 */
 const DEFAULT_CALIBRATION_ROUNDS = 10;
+const DEFAULT_BOUNDARY_GUARD = 2;
 const segmentKinds: [SegmentKind, string][] = [["straight", "直线"], ["corner", "弯道"]];
 const polarityLabel: Record<Polarity, string> = { dark: "暗胶条（比背景暗）", light: "亮胶条（比背景亮）" };
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -27,7 +28,7 @@ const compared: [string, (d: RecipeDoc) => unknown][] = [
   ["name", d => d.name], ["productCode", d => d.productCode], ["triggerMode", d => d.triggerMode], ["spacing", d => d.spacing], ["filterWindow", d => d.filterWindow],
   ["searchMm", d => d.detect.searchMm], ["polarity", d => d.detect.polarity], ["widthRange", d => d.detect.widthRange],
   ["position", d => d.limits.position], ["width", d => d.limits.width], ["maxGapLen", d => d.limits.maxGapLen], ["minPresent", d => d.limits.minPresent],
-  ["segmentDefaults", d => d.segmentDefaults], ["calibrationRounds", d => d.calibrationRounds],
+  ["segmentDefaults", d => d.segmentDefaults], ["calibrationRounds", d => d.calibrationRounds], ["boundaryGuard", d => d.boundaryGuard],
 ];
 export function changedFields(doc: RecipeDoc, production: RecipeDoc | null | undefined) {
   if (!production) return new Set<string>();
@@ -55,7 +56,7 @@ function Section({ title, children, extra }: { title: string; children: ReactNod
   );
 }
 
-function DetectEditor({ value, changed, disabled, onChange }: { value: DetectParams; changed: Set<string>; disabled?: boolean; onChange: (v: DetectParams) => void }) {
+export function DetectEditor({ value, changed, disabled, onChange }: { value: DetectParams; changed: Set<string>; disabled?: boolean; onChange: (v: DetectParams) => void }) {
   const [lo, hi] = value.widthRange;
   const loId = useId(), hiId = useId();
   return (
@@ -97,7 +98,7 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
         </div>
       </Section>
 
-      <Section title="检测" extra="各台相机的走廊没单独设置时使用；改检测参数后需重新试测">
+      <Section title="检测" extra="相机没单独设置检测参数时使用；改检测参数后需重新试测">
         <DetectEditor value={doc.detect} changed={changed} disabled={disabled} onChange={(v) => set("detect", v)} />
       </Section>
 
@@ -105,6 +106,9 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
         <div className="rcp-grid">
           <Field label="标定轮数" changed={changed.has("calibrationRounds")} hint="至少 10 轮，最多 100 轮">
             <Num aria="标定轮数" unit="轮" step={1} value={doc.calibrationRounds ?? DEFAULT_CALIBRATION_ROUNDS} onChange={(v) => set("calibrationRounds", v)} />
+          </Field>
+          <Field label="边界过渡帧数" changed={changed.has("boundaryGuard")} hint="按标定比例推算的段边界两侧各留几帧，只判每帧胶宽、断胶、溢胶，不判胶偏；0–5 帧">
+            <Num aria="边界过渡帧数" unit="帧" step={1} value={doc.boundaryGuard ?? DEFAULT_BOUNDARY_GUARD} onChange={(v) => set("boundaryGuard", v)} />
           </Field>
         </div>
       </Section>

@@ -34,7 +34,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); });
 const burstView = (id = "A") => burstWorkspaceView(burstRecipe({ id }));
-/** 段配方候选：走廊草稿按相机 id 存 */
+/** 段配方候选：走廊草稿按“相机#段号”存 */
 async function openBurst() {
   const view = burstView();
   vi.mocked(recipeApi.list).mockResolvedValue({ recipes: [burstSummary(view.workspace.doc as ReturnType<typeof burstRecipe>)], errors: [], unavailable: [] });
@@ -93,28 +93,28 @@ describe("候选工作台的主流程保护", () => {
     expect(result.current.error).toBe(""); expect(screen.getByRole("status")).toHaveTextContent("当前配方已保存");
   });
 
-  it("某台相机换了示教帧 → 只清除这台相机的旧走廊草稿，别的相机的草稿保留且仍算未保存",async()=>{
+  it("某段换了示教帧 → 只清除这一段的旧走廊草稿，同相机别的段的草稿保留且仍算未保存",async()=>{
     const {result}=await openBurst();
-    act(()=>{result.current.setCorridorDraft("CAM-1",{corridor:[[10,10],[24,10]],mmPerPx:.2,detect:null});result.current.setCorridorDraft("CAM-2",{corridor:[[30,10],[54,10]],mmPerPx:.3,detect:null});});
+    act(()=>{result.current.setCorridorDraft("CAM-1#1",{corridor:[[10,10],[24,10]],mmPerPx:.1,detect:null});result.current.setCorridorDraft("CAM-1#2",{corridor:[[30,10],[54,10]],mmPerPx:.1,detect:null});});
     const next=burstView();
-    const teaching=next.plan!.cameraTeaching[0];
-    teaching.frame={...teaching.frame!,id:"A-CAM-1-other-frame"};
+    const teaching=next.plan!.cameraTeaching[0].segments[0];
+    teaching.frame={...teaching.frame,id:"A-CAM-1-other-frame"};
     await act(()=>result.current.act(async()=>next));
-    expect(result.current.corridorDrafts["CAM-1"]).toBeUndefined();expect(result.current.corridorDrafts["CAM-2"]).toEqual({corridor:[[30,10],[54,10]],mmPerPx:.3,detect:null});
+    expect(result.current.corridorDrafts["CAM-1#1"]).toBeUndefined();expect(result.current.corridorDrafts["CAM-1#2"]).toEqual({corridor:[[30,10],[54,10]],mmPerPx:.1,detect:null});
     expect(result.current.frameDirty).toBe(true);
   });
 
-  it("保存失败保留走廊草稿，重试成功后才显示已保存；草稿并入这台相机的配方项整份提交",async()=>{
+  it("保存失败保留走廊草稿，重试成功后才显示已保存；草稿并入这台相机这一段的走廊整份提交",async()=>{
     const {result}=await openBurst();
-    const draft={corridor:[[10,10],[20,10]] as [number,number][],mmPerPx:.2,detect:null};
+    const draft={corridor:[[10,10],[20,10]] as [number,number][],mmPerPx:.1,detect:null};
     vi.mocked(workspaceApi.saveDoc).mockRejectedValueOnce(new Error("磁盘不可写"));
     vi.useFakeTimers();
-    act(()=>result.current.setCorridorDraft("CAM-2",draft));
+    act(()=>result.current.setCorridorDraft("CAM-2#1",draft));
     await act(()=>vi.advanceTimersByTimeAsync(900));
     expect(result.current.saveState).toBe("failed");
-    expect(result.current.corridorDrafts["CAM-2"]).toEqual(draft);
+    expect(result.current.corridorDrafts["CAM-2#1"]).toEqual(draft);
     const base=burstView().workspace.doc;
-    const merged={...base,inspect:base.inspect!.map(item=>item.camera==="CAM-2"?{...item,...draft}:item)};
+    const merged={...base,inspect:base.inspect!.map(item=>item.camera==="CAM-2"?{...item,segments:[{segment:1,corridor:draft.corridor}]}:item)};
     expect(workspaceApi.saveDoc).toHaveBeenLastCalledWith("A",3,merged);
     const next=burstView();next.workspace.revision=4;next.workspace.doc=merged;
     vi.mocked(workspaceApi.saveDoc).mockResolvedValue(next);

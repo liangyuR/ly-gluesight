@@ -48,6 +48,13 @@ export interface CaptureRoundReview {
   captureSignature: unknown;
   templateVersion: number | null;
 }
+/** 分段模板边界对齐到一轮的建议（workspace_capture_review_suggest）：cut 为上一段最后一个帧组（从 1 起）。 */
+export interface AlignSuggestion {
+  round: string;
+  templateRound: string;
+  templateCuts: number[];
+  cuts: { cut: number; proportional: number; review: boolean }[];
+}
 export interface CaptureReview {
   rounds: Record<string, CaptureRoundReview>;
   template: {

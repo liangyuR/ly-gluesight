@@ -25,6 +25,7 @@ pub(crate) fn measured(camera: usize, seq: u64, width: f64) -> FrameMetrics {
         widths: vec![Some(width as f32); 10],
         spacing_mm: 1.0,
         gap_max_mm: 0.0,
+        corridor: None,
         present_ratio: 1.0,
         x_mm: Some(0.0),
     }
@@ -63,7 +64,15 @@ pub(crate) fn record(recipe: &Recipe, mut frames: Vec<FrameRecord>, regions: Opt
             FrameGroup { seq, incomplete: present.contains(&false), present }
         })
         .collect();
-    let regions = regions.unwrap_or_else(|| resolve_regions(&recipe.path_segments, &SegOutcome::Unsegmented, total, 0.5));
+    let regions = regions.unwrap_or_else(|| {
+        resolve_regions(
+            &recipe.path_segments,
+            &SegOutcome::Unsegmented,
+            total,
+            0.5,
+            recipe.boundary_guard,
+        )
+    });
     let camera_frames: Vec<u32> = (0..cameras.len())
         .map(|camera| frames.iter().filter(|f| f.camera == camera && f.status != FrameState::Missing).count() as u32)
         .collect();

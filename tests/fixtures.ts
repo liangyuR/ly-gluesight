@@ -84,7 +84,7 @@ export function kindDefaults(): KindDefaults {
 /** 新建一段（同后端 new_segment）：容差与检测项取该类型默认值，N_exp、标定、胶偏参考为空。 */
 export function pathSegment(index: number, kind: SegmentKind, over: Partial<PathSegment> = {}): PathSegment {
   const d = kindDefaults()[kind];
-  return { index, kind, lengthMm: null, expectedFrames: null, tolerance: d.tolerance, calib: null, checks: d.checks, offsetRef: null, inspectRange: null, ...over };
+  return { index, kind, lengthMm: null, expectedFrames: null, tolerance: d.tolerance, calib: null, checks: d.checks, offsetRef: null, inspectRange: null, cameras: [], skipHead: 0, skipTail: 0, ...over };
 }
 
 /** 后端口径：各段 N_exp 都有时为其和，否则取整件标定；容差为各段之和。 */
@@ -94,7 +94,7 @@ export function burstTotals(doc: Pick<RecipeDocSegmentFields, "segments" | "part
   return { expectedTotal, toleranceTotal: doc.segments.reduce((sum, s) => sum + s.tolerance, 0) };
 }
 
-/** 三台相机、三段的段配方（schema 8）：走廊已示教，各段 N_exp 待标定，整件已标定（可发布）。新建未标定的配方传 { partCalib: null }。 */
+/** 三台相机、三段的段配方（schema 8）：CAM-1 各段走廊已示教，各段 N_exp 待标定，整件已标定（可发布）。新建未标定的配方传 { partCalib: null }。 */
 export function burstRecipe(over: Partial<BurstRecipeDoc> = {}): BurstRecipeDoc {
   const detect: DetectParams = { searchMm: 4, polarity: "dark", widthRange: [1, 6] };
   return {
@@ -106,8 +106,8 @@ export function burstRecipe(over: Partial<BurstRecipeDoc> = {}): BurstRecipeDoc 
       pathSegment(2, "corner", { lengthMm: 30 }),
       pathSegment(3, "straight", { lengthMm: 80 }),
     ],
-    inspect: burstCameras.map(camera => ({ camera, corridor: [[10, 30], [90, 30]], mmPerPx: .1, calib: null, detect: null })),
-    segmentDefaults: kindDefaults(), calibrationRounds: 10,
+    inspect: burstCameras.map(camera => ({ camera, mmPerPx: .1, calib: null, detect: null, segments: camera === "CAM-1" ? [1, 2, 3].map(segment => ({ segment, corridor: [[10, 30], [90, 30]] as [number, number][] })) : [] })),
+    segmentDefaults: kindDefaults(), calibrationRounds: 10, boundaryGuard: 2,
     partCalib: { expectedTotal: 12, calib: { ...partStats } },
     ...over,
   };
@@ -126,19 +126,19 @@ export function planExport(doc = burstRecipe()): PlanExport {
     ...burstTotals(doc) };
 }
 
-/** 段配方进度的静态样例：采集、段列表完成，走廊 1 / 3 台，尚未标定。 */
+/** 段配方进度的静态样例：采集、段列表完成，走廊 3 / 9 条，尚未标定。 */
 export function progressV2(): ProgressV2 {
   const step = (id: ProgressV2["steps"][number]["id"], label: string, status: ProgressV2["steps"][number]["status"], detail: string) => ({ id, label, optional: false, status, detail, blockers: [] });
   return {
     steps: [
       step("capture", "整圈采集", "done", "已有完整采集轮次"),
       step("segments", "段列表", "done", "3 段"),
-      step("corridor", "走廊示教", "inProgress", "1 / 3 台相机已示教"),
+      step("corridor", "走廊示教", "inProgress", "3 / 9 条走廊已示教"),
       step("calibration", "多轮标定", "notStarted", "0 / 10 轮"),
       step("validation", "验证", "notStarted", "待标定"),
       step("publish", "发布与生效", "notStarted", "未发布"),
     ],
-    next: { step: "corridor", label: "示教 CAM-2 的走廊", target: { page: "corridor", camera: "CAM-2" } },
+    next: { step: "corridor", label: "示教 CAM-2 段 1 的走廊", target: { page: "corridor", camera: "CAM-2", segment: 1 } },
   };
 }
 
@@ -165,26 +165,26 @@ export function captureRoundV2(over: Partial<CaptureRoundV2> = {}): CaptureRound
   };
 }
 
-function burstFrozen(camera: string): FrozenImage {
-  return { id: `S-${camera}-frame`, source: "capture", capturedAt: 1, size: [100, 60], camera, view: 1,
+function burstFrozen(camera: string, segment = 1): FrozenImage {
+  return { id: segment === 1 ? `S-${camera}-frame` : `S-${camera}-frame-${segment}`, source: "capture", capturedAt: 1, size: [100, 60], camera, view: 1,
     cameraTag: { id: camera, source: "sim", viewCount: 1, acquisition: "triggered" }, calibTag: { path: null, value: null }, geometryTag: [camera], exposureUs: 60, gainDb: 6, historyId: null };
 }
 
-/** 段配方的候选工作区（WorkspaceView.plan）：CAM-1 已示教走廊，CAM-2 已选帧待示教，CAM-3 未选帧。 */
+/** 段配方的候选工作区（WorkspaceView.plan）：CAM-1 三段走廊都已示教，CAM-2 段 1 已选帧待画走廊，CAM-3 未选帧。 */
 export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
   const totals = burstTotals(doc);
   const plan: WorkspacePlanView = {
     segments: doc.segments, cameras: doc.inspect.map(i => i.camera), segmentDefaults: doc.segmentDefaults, calibrationRounds: doc.calibrationRounds, partCalib: doc.partCalib,
     ...totals, calibrated: totals.expectedTotal != null,
     cameraTeaching: [
-      { camera: "CAM-1", saved: true, frame: burstFrozen("CAM-1"), mmPerPx: .1 },
-      { camera: "CAM-2", saved: false, frame: burstFrozen("CAM-2"), mmPerPx: null },
-      { camera: "CAM-3", saved: false, frame: null, mmPerPx: null },
+      { camera: "CAM-1", mmPerPx: .1, ready: true, segments: [1, 2, 3].map(segment => ({ segment, frame: burstFrozen("CAM-1", segment), round: "round-1", seq: segment * 4 - 2, saved: true })) },
+      { camera: "CAM-2", mmPerPx: .1, ready: false, segments: [{ segment: 1, frame: burstFrozen("CAM-2"), round: "round-1", seq: 2, saved: false }] },
+      { camera: "CAM-3", mmPerPx: .1, ready: false, segments: [] },
     ],
     calibration: calibrationView(), productionExport: null, candidateExport: planExport(doc), candidateExportError: null, shotCountChanged: false, progress: progressV2(),
   };
   const layout: Recipe = { ...structuredClone(doc), planVersion: doc.planVersion ?? 0, revisionId: `revisionId-${doc.id}`, pathSegments: structuredClone(doc.segments) };
-  const cameraTeaching = plan.cameraTeaching.flatMap(({ camera, frame }) => frame ? [{ camera, frame, round: "round-1", seq: 1 }] : []);
+  const cameraTeaching = plan.cameraTeaching.flatMap(({ camera, segments }) => segments.map(({ segment, frame, round, seq }) => ({ camera, frame, round, seq, segment })));
   const rounds = roundGroups.map((groupCount, i) => ({ roundId: `round-${i + 1}`, standard: false, createdAt: i + 1, cameras: plan.cameras, cameraConfig: plan.cameras.map(() => null),
     groupCount, cameraFrames: plan.cameras.map(() => groupCount), incompleteGroups: 0, lossAlarms: 0, corridors: plan.cameras.map(() => null), xMeans: plan.cameras.map(() => null) }));
   return {

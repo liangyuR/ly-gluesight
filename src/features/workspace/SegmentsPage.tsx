@@ -1,31 +1,33 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { Link } from "react-router-dom";
-import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
-import { Button, IconButton, NumberField, Select, Switch } from "qing-steel";
-import { CameraSegmentOverview } from "../plan/CameraSegmentOverview";
+import { Button, NumberField, Select } from "qing-steel";
 import { KindChecksEditor } from "../plan/KindChecksEditor";
-import type { OffsetMeasure, PathSegment, SegmentChecks, SegmentKind, WorkspacePlanView } from "../plan/types";
+import type { OffsetMeasure, PathSegment, SegmentChecks, WorkspacePlanView } from "../plan/types";
 import type { WorkspaceView } from "./types";
 import { expectedText, PLAN_CAMERAS, segmentKindLabel } from "../plan/vis";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { errorText } from "../../lib/errors";
-import { addSegment, changeKind, hasCalibration, moveSegment, patchSegment, removeSegment, segmentIssues } from "./segmentEdit";
+import { applyToKind, patchSegment, segmentIssues } from "./segmentEdit";
+import { BoundaryGuardField } from "./DocParams";
+import SegmentWorkbench from "./SegmentWorkbench";
+import { segmentCameras } from "./workbenchDraft";
+import AlignReview from "./AlignReview";
+import "../plan/plan.css";
 import "./segments.css";
 
 const DEBOUNCE_MS = 700;
 type SaveState = "saved" | "pending" | "saving" | "failed";
 const saveText: Record<SaveState, string> = { saved: "段列表已保存", pending: "等待保存…", saving: "保存中…", failed: "保存失败" };
-const kindOptions = (["straight", "corner"] as SegmentKind[]).map(kind => ({ value: kind, label: segmentKindLabel[kind] }));
 const measureOptions: { value: OffsetMeasure; label: string }[] = [
   { value: "absoluteX", label: "图像横向坐标（绝对 x）" },
   { value: "toEdge", label: "胶条到边缘距离" },
 ];
 
 /**
- * 段列表与段检测项（段配方，路由 /recipe/segments）：沿胶路划分直线段与弯道段，设各段长度、帧数容差、检测区间与检测项。
- * 预期帧数 N_exp 与标定统计只读：只能由多轮采集得出（多轮标定页）；段序列或类型一变，各段 N_exp 与标定一律清空重来。
+ * 段列表与段检测项（段配方，路由 /recipe/segments）：顶部分段标定工作台（SegmentWorkbench）按图像定段结构与模板轮边界；
+ * 下方设各段长度、帧数容差、检测区间与检测项。预期帧数 N_exp 与标定统计只读：只能由多轮采集得出（多轮标定页）。
  */
 export default function SegmentsPage() {
   const { data, doc, selectedId } = useWorkspace();
@@ -42,7 +44,8 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
   const [edits, setEdits] = useState<PathSegment[] | null>(null);
   const [state, setState] = useState<SaveState>("saved");
   const [retry, setRetry] = useState(0);
-  const [cleared, setCleared] = useState(false);
+  const [workbenchDirty, setWorkbenchDirty] = useState(false);
+  const [tab, setTab] = useState(0);
   const immediate = useRef(false);
   const failed = useRef("");
   const saved = useRef("");
@@ -93,36 +96,38 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
   }, []);
 
   const edit = (next: PathSegment[]) => { immediate.current = false; setEdits(next); };
-  /** 段序列或类型变了：各段 N_exp、标定、x_ref 清空，立即保存并提示。 */
-  const restructure = (next: PathSegment[]) => {
-    if (hasCalibration(segments, plan.partCalib != null)) setCleared(true);
-    immediate.current = true;
-    setEdits(next);
-  };
   const patch = (at: number, change: Partial<PathSegment>) => edit(patchSegment(segments, at, change));
-  const defaults = plan.segmentDefaults;
+  const current = Math.min(tab, Math.max(0, segments.length - 1));
+  // 工作台与参数表都会写段列表：一边有未保存的改动时另一边不能提交，避免修订号冲突
+  const paramsPending = edits ? "段参数还没保存完，保存后再保存分段" : "";
+  const cardsLocked = frozen || workbenchDirty;
   const pending = segments.filter(segment => segment.expectedFrames == null).map(segment => segment.index);
 
   return <div className="wp-page"><WorkspaceBar />
-    <Panel title="段列表" detail="沿胶路的直线段与弯道段、各段帧数容差、检测区间与检测项；预期帧数由多轮采集得出，这里只读"
-      actions={<div className="wp-actions">
-        <Button leadingIcon={<Plus size={15} aria-hidden="true" />} disabled={frozen} onClick={() => restructure(addSegment(segments, "straight", defaults))}>添加直线段</Button>
-        <Button leadingIcon={<Plus size={15} aria-hidden="true" />} disabled={frozen} onClick={() => restructure(addSegment(segments, "corner", defaults))}>添加弯道段</Button>
-      </div>}>
-      <CameraSegmentOverview cameras={plan.cameras} segments={segments} />
+    <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
+    <AlignReview plan={plan} locked={workbenchDirty ? "上方分段有未保存的改动，先保存或撤销后再确认其余轮次" : paramsPending} />
+    <Panel title="段列表" detail="各段帧数容差、长度、跳过帧数与检测项；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数由多轮采集得出，这里只读"
+      actions={<BoundaryGuardField locked={edits || workbenchDirty ? "段列表有未保存的改动，保存后再改边界过渡帧数" : ""} />}>
+      {/* 段多时逐段平铺太长：段条当选项卡，下方只显示所选段 */}
+      <div className="seg-tabs" role="tablist" aria-label="段">
+        {segments.map((segment, at) => <button key={at} type="button" role="tab" id={`seg-tab-${at}`} aria-selected={at === current} aria-controls="seg-panel"
+          className={`plan-seg ${segment.kind}${segment.expectedFrames == null ? " pending" : ""}${at === current ? " selected" : ""}`} onClick={() => setTab(at)}>
+          <strong>{segment.index} · {segmentKindLabel[segment.kind]}</strong>
+          <small className="plan-seg-n">{segment.expectedFrames == null ? "待标定" : `预期 ${segment.expectedFrames} ± ${segment.tolerance} 帧`}</small>
+          <small className="plan-mono">{segmentCameras(segment, plan.cameras).join(" · ")}</small>
+        </button>)}
+      </div>
       {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改段列表。</Notice>}
-      {cleared && <Notice title="各段预期帧数与标定已清空" tone="warn">段序列或类型变了：各段预期帧数、标定统计和胶偏参考都已清空，整件预期总帧数也要重新标定；去“多轮标定”用已有的采集轮次重新应用即可。</Notice>}
+      {workbenchDirty && <Notice title="分段有未保存的改动">先保存或撤销上方的分段改动，再编辑段参数。</Notice>}
       <div className="seg-savebar" role="status" aria-label="段列表保存状态">
         {blocked ? <span className="warn">{issues.join("；")}（修正后自动保存）</span> : <span className={shown === "failed" ? "warn" : undefined}>{saveText[shown]}</span>}
         {shown === "failed" && !blocked && <Button size="sm" onClick={() => { failed.current = ""; setRetry(n => n + 1); }}>重试保存</Button>}
       </div>
-      <ol className="seg-list" aria-label="段">
-        {segments.map((segment, at) => <SegmentCard key={at} segment={segment} cameras={plan.cameras} disabled={frozen} only={segments.length === 1}
-          isFirst={at === 0} isLast={at === segments.length - 1}
-          onKind={kind => restructure(changeKind(segments, at, kind, defaults))} onMove={delta => restructure(moveSegment(segments, at, delta))} onRemove={() => restructure(removeSegment(segments, at))}
-          onPatch={change => patch(at, change)} />)}
-      </ol>
-      {!segments.length && <Notice title="尚无段" tone="warn">段配方至少需要一段：添加直线段或弯道段。</Notice>}
+      {segments[current] && <div id="seg-panel" role="tabpanel" aria-labelledby={`seg-tab-${current}`}>
+        <SegmentCard key={current} segment={segments[current]} cameras={plan.cameras} disabled={cardsLocked}
+          onPatch={change => patch(current, change)} sameKind={segments.filter(s => s.kind === segments[current].kind).length - 1}
+          onApplyToKind={() => edit(applyToKind(segments, current))} />
+      </div>}
     </Panel>
     <Panel title="整件预期帧数" detail="各段预期帧数之和；各段都待标定时取整件多轮采集的帧组数均值">
       <div className="seg-total">
@@ -133,35 +138,34 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
           : pending.length > 0 && <Badge tone="neutral">{pending.map(index => `段 ${index}`).join("、")} 待逐段标定，运行时按整件核对帧数</Badge>}
         <Link className="wp-progress-link" to="/recipe/calibration">前往多轮标定</Link>
       </div>
-      <p className="muted">按段类型的默认检测项与帧数容差（默认 ±1）在“默认参数”页设置，新建段时取用。</p>
+      <p className="muted">新建段时，检测项与帧数容差沿用同类型已有段的设置；可在段列表里用“套用到同类段”一次改齐。</p>
     </Panel>
   </div>;
 }
 
 interface CardProps {
-  segment: PathSegment; cameras: string[]; disabled: boolean; isFirst: boolean; isLast: boolean; only: boolean;
-  onKind: (kind: SegmentKind) => void; onMove: (delta: -1 | 1) => void; onRemove: () => void; onPatch: (change: Partial<PathSegment>) => void;
+  segment: PathSegment; cameras: string[]; disabled: boolean; onPatch: (change: Partial<PathSegment>) => void;
+  /** 其余同类型段的个数；onApplyToKind 把本段的检测项与帧数容差套用到它们 */
+  sameKind: number; onApplyToKind: () => void;
 }
 
-function SegmentCard({ segment, cameras, disabled, isFirst, isLast, only, onKind, onMove, onRemove, onPatch }: CardProps) {
+function SegmentCard({ segment, cameras, disabled, onPatch, sameKind, onApplyToKind }: CardProps) {
   const name = `段 ${segment.index}`;
   const straight = segment.kind === "straight";
   const range = segment.inspectRange;
   const offsetRef = segment.offsetRef;
   const measure = offsetRef?.measure ?? "absoluteX";
-  const camera = offsetRef?.camera ?? cameras[0];
+  // 胶偏参考相机只能是本段的检测相机（D-SB-41），检测相机在上方分段标定里选
+  const inspecting = segmentCameras(segment, cameras);
+  const camera = offsetRef?.camera ?? inspecting[0];
   const setChecks = (checks: SegmentChecks) => onPatch({ checks });
   // 改胶偏参考的测量量或相机：旧 x_ref 不再适用，清空等标准件标定重算
   const setReference = (next: { measure?: OffsetMeasure; camera?: string }) => onPatch({ offsetRef: { measure, camera, ...next, xRef: null, spread: null } });
-  return <li><section className="seg-card" aria-label={name}>
+  return <section className="seg-card" aria-label={name}>
     <div className="seg-card-head">
-      <strong>{name}</strong>
-      <Select aria-label={`${name} 类型`} value={segment.kind} options={kindOptions} disabled={disabled} onValueChange={value => onKind(value as SegmentKind)} />
+      <strong>{name} · {segmentKindLabel[segment.kind]}</strong>
       <Badge tone={segment.expectedFrames == null ? "warn" : "ok"}>{segment.expectedFrames == null ? "待标定" : `预期 ${segment.expectedFrames} ± ${segment.tolerance} 帧`}</Badge>
-      <span className="spacer" />
-      <IconButton aria-label={`${name} 上移`} title="上移" disabled={disabled || isFirst} onClick={() => onMove(-1)}><ArrowUp size={16} /></IconButton>
-      <IconButton aria-label={`${name} 下移`} title="下移" disabled={disabled || isLast} onClick={() => onMove(1)}><ArrowDown size={16} /></IconButton>
-      <IconButton aria-label={`删除${name}`} title={only ? "至少保留一段" : "删除"} disabled={disabled || only} onClick={onRemove}><Trash2 size={16} /></IconButton>
+      <span className="muted plan-mono" aria-label={`${name} 检测相机`}>检测相机 {inspecting.join(" · ")}</span>
     </div>
     <div className="seg-fields">
       <div className="seg-readonly">
@@ -173,25 +177,32 @@ function SegmentCard({ segment, cameras, disabled, isFirst, isLast, only, onKind
         value={Number.isFinite(segment.tolerance) ? segment.tolerance : ""} onValueChange={value => onPatch({ tolerance: value === "" ? NaN : value })} />
       <NumberField label="长度" unit="mm" aria-label={`${name} 长度`} step={1} min={0} disabled={disabled}
         value={segment.lengthMm ?? ""} onValueChange={value => onPatch({ lengthMm: value === "" ? null : value })} />
-      <Switch label={`${name} 限定检测区间`} checked={!!range} disabled={disabled}
-        onCheckedChange={on => onPatch({ inspectRange: on ? { aMm: 0, bMm: segment.lengthMm ?? 100 } : null })} />
-      {range && <>
-        <NumberField label="检测起点 a" unit="mm" aria-label={`${name} 检测起点`} step={1} min={0} disabled={disabled}
-          value={Number.isFinite(range.aMm) ? range.aMm : ""} onValueChange={value => onPatch({ inspectRange: { ...range, aMm: value === "" ? NaN : value } })} />
-        <NumberField label="检测终点 b" unit="mm" aria-label={`${name} 检测终点`} step={1} min={0} disabled={disabled}
-          value={Number.isFinite(range.bMm) ? range.bMm : ""} onValueChange={value => onPatch({ inspectRange: { ...range, bMm: value === "" ? NaN : value } })} />
-      </>}
+      <NumberField label="段首跳过" unit="帧" aria-label={`${name} 段首跳过帧数`} step={1} min={0} disabled={disabled}
+        value={Number.isFinite(segment.skipHead) ? segment.skipHead : ""} onValueChange={value => onPatch({ skipHead: value === "" ? 0 : value })} />
+      <NumberField label="段尾跳过" unit="帧" aria-label={`${name} 段尾跳过帧数`} step={1} min={0} disabled={disabled}
+        value={Number.isFinite(segment.skipTail) ? segment.skipTail : ""} onValueChange={value => onPatch({ skipTail: value === "" ? 0 : value })} />
     </div>
+    <p className="muted">跳过的帧不判定，结果里列为“未检区域”；分段生效后按本段首尾定位，未分段时只有整件起头（第 1 段段首）和收尾（末段段尾）生效。</p>
+    {range && <Notice title="原毫米检测区间已停用" tone="warn">
+      检 {range.aMm}–{range.bMm} mm 从未在判定中排除帧，现在不再使用，请改用上面的段首 / 段尾跳过帧数。
+      <Button size="sm" disabled={disabled} onClick={() => onPatch({ inspectRange: null })}>清除</Button>
+    </Notice>}
     {straight && segment.checks.offset?.enabled && <div className="seg-offset" role="group" aria-label={`${name} 胶偏参考`}>
       <Select label="胶偏测量量" aria-label={`${name} 胶偏测量量`} value={measure} options={measureOptions} disabled={disabled} onValueChange={value => setReference({ measure: value as OffsetMeasure })} />
-      <Select label="参考相机" aria-label={`${name} 参考相机`} value={camera} options={cameras.map(id => ({ value: id, label: id }))} disabled={disabled} onValueChange={value => setReference({ camera: value })} />
+      <Select label="参考相机" aria-label={`${name} 参考相机`} value={camera} options={inspecting.map(id => ({ value: id, label: id }))} disabled={disabled} onValueChange={value => setReference({ camera: value })} />
       <p className={offsetRef?.xRef == null ? "muted" : "plan-mono"}>{offsetRef?.xRef != null
         ? `x_ref ${offsetRef.xRef} ± ${offsetRef.spread ?? "—"} mm（标准件多轮测量均值）`
         : measure === "toEdge" ? "到边缘距离的测量量本轮未实现：该段胶偏不判" : "x_ref 待标定：由标准件多轮采集得出，不能手填"}</p>
+    </div>}
+    {sameKind > 0 && <div className="wp-actions">
+      <Button size="sm" disabled={disabled} onClick={onApplyToKind}
+        title={`其余 ${sameKind} 个${segmentKindLabel[segment.kind]}段的检测项与帧数容差改成和${name}一样（不改相机、跳过帧数与胶偏参考）`}>
+        套用到其余 {sameKind} 个{segmentKindLabel[segment.kind]}段
+      </Button>
     </div>}
     <details className="seg-checks">
       <summary>{name}检测项（{segmentKindLabel[segment.kind]}）</summary>
       <KindChecksEditor value={segment.checks} kind={segment.kind} disabled={disabled} onChange={setChecks} />
     </details>
-  </section></li>;
+  </section>;
 }

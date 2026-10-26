@@ -1,16 +1,16 @@
 # 前端保留测试清单
 
-数量（2026-10-26 以 `pnpm vitest run --reporter=dot` 核对）：**136 项、35 个文件**。数量按 Vitest 实际执行和参数化展开计，逐项统计使用 `pnpm exec vitest list --no-static-parse --json`；默认静态列表不展开参数化用例，不作为执行数量。其中 102 项在分组表中逐项列出保护规则，34 项列在末节“尚未逐项登记”。测试数量只在本清单维护，其他文档不写数字。
+数量（2026-10-26 以 `pnpm vitest run --reporter=dot` 核对）：**145 项、37 个文件**。数量按 Vitest 实际执行和参数化展开计，逐项统计使用 `pnpm exec vitest list --no-static-parse --json`；默认静态列表不展开参数化用例，不作为执行数量。其中 113 项在分组表中逐项列出保护规则，32 项列在末节“尚未逐项登记”。测试数量只在本清单维护，其他文档不写数字。
 
 测试通过真实页面、Provider 或公开业务函数保护规则，Tauri/设备/文件接口在边界模拟；不据此证明真实相机、PLC、lyFlow 算法或后端落盘。不同业务规则不塞入单个循环来缩小数字，也不新增 skip、todo 或排除配置。运行方法见[测试说明](TESTING.md)。
 
 | 分组 | 逐项登记 |
 | --- | ---: |
-| 配方、采集、示教与发布 | 44 |
+| 配方、采集、示教与发布 | 55 |
 | 生产周期、就绪与历史 | 32 |
 | 相机、标定、PLC与配置 | 26 |
-| 尚未逐项登记 | 34 |
-| 合计 | 136 |
+| 尚未逐项登记 | 32 |
+| 合计 | 145 |
 
 ## 逐项保护规则
 
@@ -31,37 +31,44 @@
 | 11 | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `PLC 未连接 →开始整圈采集禁用并给出 PLC 通讯入口` | PLC断开时禁止开始依赖开始/结束握手的整圈采集，并提供恢复入口 |
 | 12 | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `Software 相机参与整圈采集 → 阻止启动并要求切换 Line0` | Software单帧调试相机不得参与Line0高电平门控整圈采集 |
 | 13 | [recipe-create-flow.test.tsx](../../tests/recipe-create-flow.test.tsx) | `创建配方流程 > 在配方库填写新候选，选中创建结果并继续进入该候选的整圈采集` | 通过真实WorkspaceProvider创建当前段配方后，选中同一候选并进入其采集流程，用户填写字段不能丢失 |
-| 14 | [segment-edit.test.ts](../../tests/segment-edit.test.ts) | `段列表编辑规则 > 添加弯道段 → 全部 N_exp、标定统计与 x_ref 清空，段序号保持从 1 连续` | 段结构或类型改变时清除全部帧数标定与胶偏参考，并维持连续段编号 |
-| 15 | [segment-edit.test.ts](../../tests/segment-edit.test.ts) | `段列表编辑规则 > 删除第 2 段 → 全部 N_exp、标定统计与 x_ref 清空，段序号保持从 1 连续` | 段结构或类型改变时清除全部帧数标定与胶偏参考，并维持连续段编号 |
-| 16 | [segment-edit.test.ts](../../tests/segment-edit.test.ts) | `段列表编辑规则 > 第 3 段上移 → 全部 N_exp、标定统计与 x_ref 清空，段序号保持从 1 连续` | 段结构或类型改变时清除全部帧数标定与胶偏参考，并维持连续段编号 |
-| 17 | [segment-edit.test.ts](../../tests/segment-edit.test.ts) | `段列表编辑规则 > 第 1 段改成弯道 → 全部 N_exp、标定统计与 x_ref 清空，段序号保持从 1 连续` | 段结构或类型改变时清除全部帧数标定与胶偏参考，并维持连续段编号 |
+| 14 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `分段标定工作台的边界编辑`（参数化 3 例：插入、删除、末帧组之后不插入） | 插入边界时所在段一分为二且类型相同，删除时与后一段合并、保留前一段类型，边界个数始终等于段数 − 1（D-SB-44，2026-10-26 取代 segment-edit.test.ts） |
+| 15 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `工作台保存的段列表 > 段的类型序列不变 → 原样保存…` | 只改边界时段参数、N_exp、标定与 x_ref 原样保留 |
+| 16 | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `工作台保存的段列表 > 段的类型序列变了 → 序号从 1 连续，N_exp、标定与 x_ref 清空…` | 段结构或类型改变时清除全部帧数标定与胶偏参考并维持连续段编号，同位置同类型的段沿用参数 |
+| 16a | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `工作台保存的段列表 > 只改检测相机 → …` | 只改检测相机时标定保留；选全存为空；胶偏参考相机随本段相机修正并清空 x_ref（D-SB-41） |
+| 16b | [workbench-draft.test.ts](../../tests/workbench-draft.test.ts) | `工作台保存的段列表 > 套用到同类段 → …` | 套用到同类段只改检测项与帧数容差，相机、跳过帧数、长度与标定不变；新建段沿用同类型已有段的检测项与容差（2026-10-26） |
+| 17a | [align-review.test.tsx](../../tests/align-review.test.tsx) | `其余轮次的对齐复核 > → 微调不越过下一个边界；两行都确认后才保存，且一次提交整轮边界` | 复核微调保持边界严格递增，全部边界确认后才写入且一次提交（D-SB-44 P2） |
+| 17 | [segment-workbench.test.tsx](../../tests/segment-workbench.test.tsx) | `分段标定工作台改变段结构 > 已标定且另有一轮已确认边界 → 保存前列出失效范围，确认后一次提交…` | 改变段结构前先列出会失效的轮次与标定，确认后一次提交段列表与模板轮边界 |
 | 18 | [segments-page-leave.test.tsx](../../tests/segments-page-leave.test.tsx) | `防抖没到期就离开段列表页 > 换了配方 → 编辑提交到原配方，新配方照常加载出来` | 防抖未到期切换配方时，旧编辑提交给原配方且不得打断新配方加载 |
 | 19 | [segments-page-leave.test.tsx](../../tests/segments-page-leave.test.tsx) | `防抖没到期就离开段列表页 > 仍在这个配方 → 提交后工作区拿到返回的新修订` | 防抖未到期仅离开当前页面时，工作区必须接受保存返回的新修订，避免后续保存冲突 |
-| 20 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `直线段改成弯道 > 已标定的配方 → 各段预期帧数清空为待标定，并提示标定已清空` | 页面修改段类型后立即把所有段的旧预期帧数作废，不能继续显示可用标定 |
+| 20 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | （2026-10-26 删除：段类型改由分段标定工作台编辑，规则见第 16、17 项） | — |
 | 21 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `已标定的配方，帧数容差改为 2 → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动` | 非结构编辑必须带实际改动保存，同时保留各段预期帧数与胶偏参考 |
 | 22 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `已标定的配方，长度改为 130 mm → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动` | 非结构编辑必须带实际改动保存，同时保留各段预期帧数与胶偏参考 |
 | 23 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `已标定的配方，关掉溢胶检测 → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动` | 非结构编辑必须带实际改动保存，同时保留各段预期帧数与胶偏参考 |
 | 24 | [segments-page.test.tsx](../../tests/segments-page.test.tsx) | `离开段列表页 > 上一份编辑还在提交时又改了容差并离开 → 等上一份完成，用它返回的新修订提交新编辑` | 保存进行中继续编辑并离页时必须等上次完成，再按返回的新修订提交最新编辑，防止丢改动 |
-| 25 | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 草稿与已保存的走廊只差 f32 精度 → 视为没改；点位、当量或检测参数不同 → 视为已改` | 后端f32往返精度差异不能让走廊永远处于未保存状态，真实点位或检测参数改动仍需识别 |
+| 25 | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 草稿与已保存的段走廊只差 f32 精度 → 视为没改；点位、当量或检测参数不同 → 视为已改` | 后端f32往返精度差异不能让走廊永远处于未保存状态，真实点位或检测参数改动仍需识别 |
+| 25a | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 段走廊草稿 → 只写这一段的走廊…` | 段走廊草稿不覆盖相机像素当量、检测参数和其他段；清空即从配方去掉（D-SB-42/45） |
+| 25b | [teach-draft.test.ts](../../tests/teach-draft.test.ts) | `走廊示教草稿 > 段帧组范围：%s` | 段示教帧可选范围按已确认边界、含两端不差一帧；只存草稿的轮次不给范围（D-SB-42） |
 | 26 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `手工落点并自动保存 → 保存期间保留缩放与走廊、不能再改点，保存后草稿并入配方且清空` | 手工走廊经真实Provider自动保存时禁止再改点，保存后保留图像视角并只更新对应相机走廊 |
-| 27 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在示教帧上提取一次` | 刷选提取前保存草稿，按当前相机冻结帧、引导笔划、半径与最新修订提取并显示所得走廊 |
+| 27 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在这一段的示教帧上提取一次` | 刷选提取前保存草稿，按这一段这台相机冻结帧、刷选引导与点距提取一次（D-SB-45） |
 | 28 | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `自动提取失败后按笔划生成 → 定位原因并保留原线，人工草稿保留转弯且走廊待保存` | 自动提取失败必须保留原走廊及失败位置，操作员仍可按笔划生成保留转弯的待保存走廊 |
-| 29 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `走廊示教 > 走廊有未保存的修改 → 其他相机不能切换并说明先保存，当前相机可继续编辑` | 当前相机走廊未保存时禁止切换其他相机，防止草稿被隐藏或误写相机 |
-| 30 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `走廊示教 > 走廊草稿缺像素当量 → 保存走廊禁用并说明原因，不写配方` | 缺少像素当量的走廊不得保存为已示教，必须在操作前拦住 |
-| 31 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `示教帧选择 > 所选帧组这台相机缺帧 → 不读图、用此帧示教禁用并说明缺帧` | 所选帧组在当前相机缺帧时不得读取或冻结不存在的图像 |
+| 28a | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `段已有旧示教帧时点击用于走廊示教 → 直接在本轮这一段内选帧，确认后显示新帧并保持编辑` | 选帧只能在已确认分段轮次的本段帧组内，提交的就是所选（段, 轮次, 帧组）（D-SB-45） |
+| 28b | [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `只指定相机、停留选帧页时采集由接收到收尾再完成 → 定位到该相机第一条未示教的段…` | 只带相机的链接定位到它第一条未示教的段；未完成轮次不能选，完成后自动列出（D-SB-45） |
+| 29 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `走廊示教 > 段走廊有未保存的修改 → 其他段与相机参数不能切换并说明先保存，当前段可继续编辑` | 当前段走廊未保存时禁止切换到其他段或相机参数，防止草稿被丢 |
+| 30 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `走廊示教 > 相机缺像素当量 → 段走廊保存禁用并说明原因，不写配方` | 像素当量随相机，缺了不得把段走廊保存为已示教 |
+| 31 | [teaching.test.tsx](../../tests/teaching.test.tsx) | `示教帧选择 > 链接指定相机与段、所选帧组这台相机缺帧 → …` | 链接指定的段要定位上；所选帧组缺帧时不得读取或冻结不存在的图像 |
 | 32 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 发布失败后冻结样本配置并重试同一待生效版本` | 发布失败后候选样本与验证被冻结，只能重试同一待生效修订，不能另发新版本 |
 | 33 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 生效失败 → 确认后放弃同一修订的待生效版本；状态不确定时不能放弃` | 只有明确失败的待生效版本才能经确认放弃，状态不确定时不得暴露放弃入口 |
 | 34 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 段配方 > 整件预期总帧数未标定 → 发布不可用并列出待标定的段号` | 整件预期总帧数尚未标定时，即使验证通过也不能发布生产配方 |
-| 35 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 段配方 > 整件已标定、各段预期帧数待分段算法 → 发布可用，不因段待标定而禁用` | 整件标定已完成时允许发布，不能因尚无分段算法而要求各段N_exp全部标定 |
+| 35 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 段配方 > 多段配方整件已标定、各段预期帧数待标定 → 发布不可用并列出待标定的段号` | 多段配方各段 N_exp 都已标定才能发布（D-SB-45 修订 D-SB-21） |
 | 36 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 段配方 > 整件预期总帧数 12 → 14 → 发布确认对比列出生产值，不再要求 PLC 同步计划与帧数` | 整件标定帧数变化时发布确认须对比列出变化的生产值，不能再要求PLC同步计划号与帧数 |
-| 37 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 验证未通过时不能发布` | 验证未通过的当前候选不得发布生产版本 |
-| 38 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 确认期间候选修订变更必须重新验证和确认` | 发布确认期间候选修订变化必须关闭旧确认并重新验证，不能发布过期候选 |
+| 37 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 没有样本验证结果、发布前检查全部满足 → 可以发布；检查有未满足项 → …` | 发布不要求独立样本验证；发布前检查有未满足项时不能发布并说明原因（D-SB-46） |
+| 38 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 确认期间候选修订变更必须重新核对发布前检查和确认` | 发布确认期间候选修订变化必须关闭旧确认、按新修订重新核对发布前检查，旧修订不被发布 |
 | 39 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 选择仅在当前请求真正接受后返回视图，旧请求返回 null` | 配方选择请求乱序完成时只接受最新请求，旧响应不能改当前候选或持久化偏好 |
 | 40 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 刷新请求发出后用户开始编辑，也不能覆盖草稿` | 刷新请求发出后开始编辑时，迟到刷新不得覆盖本地草稿 |
 | 41 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 操作途中离开再选回同一配方，旧操作结果也不能覆盖新选择` | 离开后重新选择同一配方时，旧操作响应不能覆盖新选择的新修订 |
 | 42 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 操作响应配方不一致时保留当前候选并允许重试` | 操作响应携带其他配方身份时拒绝接受，保留当前候选并允许正确响应重试 |
-| 43 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 某台相机换了示教帧 → 只清除这台相机的旧走廊草稿，别的相机的草稿保留且仍算未保存` | 更换某相机示教帧时只丢弃该相机旧走廊草稿，其他相机未保存草稿必须保留 |
-| 44 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 保存失败保留走廊草稿，重试成功后才显示已保存；草稿并入这台相机的配方项整份提交` | 走廊自动保存失败后保留草稿，重试按相机合并完整配方，成功后才清除未保存状态 |
+| 43 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 某段换了示教帧 → 只清除这一段的旧走廊草稿，同相机别的段的草稿保留且仍算未保存` | 更换某段示教帧只丢弃这一段在旧帧上画的草稿 |
+| 44 | [workspace-context.test.tsx](../../tests/workspace-context.test.tsx) | `候选工作台的主流程保护 > 保存失败保留走廊草稿，重试成功后才显示已保存；草稿并入这台相机这一段的走廊整份提交` | 走廊自动保存失败保留草稿可重试，提交只改这一段这台相机的走廊 |
 
 ### 生产周期、就绪与历史
 
@@ -133,7 +140,7 @@
 
 ## 尚未逐项登记
 
-以下 34 项在上次逐项整理（2026-10-23）后随采集复核、示教采集握手、生产通讯协议 7、维护模式与项目管理加入，已在默认集合中执行，保护规则待逐项补入上表；补登时按准入规则核对，说不清保护规则的删除。
+以下 32 项在上次逐项整理（2026-10-23）后随采集复核、示教采集握手、生产通讯协议 7、维护模式与项目管理加入，已在默认集合中执行，保护规则待逐项补入上表；补登时按准入规则核对，说不清保护规则的删除。
 
 | 源码 | 实际执行用例 |
 | --- | --- |
@@ -146,7 +153,7 @@
 | [capture-review.test.tsx](../../tests/capture-review.test.tsx) | `模板套用到轮次 → 只生成待确认草稿，人工复核后才能确认` |
 | [capture-review.test.tsx](../../tests/capture-review.test.tsx) | `边界倒序或越界、屏蔽范围倒序 → 阻止保存和屏蔽，旧预览不能用于设边界` |
 | [history-list.test.tsx](../../tests/history-list.test.tsx) | `维护件 → 采集件标“维护采集·未判定”不显示成 ERR，试判件标“试判”加原结论` |
-| [inspect.test.tsx](../../tests/inspect.test.tsx) | `在线检测段配方 > 维护采集件 → 判定卡显示未判定，不显示成 ERR` |
+| [inspect.test.tsx](../../tests/inspect.test.tsx) | `在线检测段配方 > 维护件留有异常码 95 → 判定卡显示未判定、PLC 只显示实际回写的 0` |
 | [inspect.test.tsx](../../tests/inspect.test.tsx) | `在线检测离线产线控件 > 有在途件时软件复位 → 确认框提示在途件记未检，确认后才请求后端复位` |
 | [inspect.test.tsx](../../tests/inspect.test.tsx) | `维护模式 > snapshot 带维护模式 → 页头常驻横幅写明不输出 NG 与开启原因` |
 | [inspect.test.tsx](../../tests/inspect.test.tsx) | `维护模式 > 开启维护模式 → 原因为空不能确认，填写后以 enabled=true 与原因调用命令` |
@@ -168,6 +175,4 @@
 | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `示教接口 unavailable → 即使图片完成也不能启动下一轮` |
 | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `请求已发布且图片接收已准备 → 离线送圈可启动 PLC 接受与采集` |
 | [recipe-capture.test.tsx](../../tests/recipe-capture.test.tsx) | `采集页整理已屏蔽轮次并切换预览 → 保留原帧组总数，旧图加载期间不能标记新边界` |
-| [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `停留选帧页时采集由接收到收尾再完成 → 未完成轮次不能选，完成后自动列出并预览` |
-| [teaching-flow.test.tsx](../../tests/teaching-flow.test.tsx) | `已有旧示教帧时点击用于走廊示教 → 直接选择本轮帧，确认后显示新帧并保持编辑` |
 | [validation.test.tsx](../../tests/validation.test.tsx) | `验证与发布页面 > 发布采集版 → 逐条列出未满足项且不能确认；全部满足后确认发布同一修订` |

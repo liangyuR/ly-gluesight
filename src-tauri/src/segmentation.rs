@@ -1,9 +1,10 @@
-//! 分段（规格 §3）：PC 图像算法在计划预期边界附近划分直线段 / 弯道段。
+//! 分段（规格 §3）：段结构由人定，PC 在每件收尾后定位段间边界（D-SB-40）。
 //!
-//! 本轮没有真实弯道图像，只交付接口、`Unsegmented`（整条胶路一个未分段区域）和合成序列回归入口；
-//! 算法验证前整条胶路按未分段处理：只跑每帧独立检测，不判胶偏。
+//! - `Proportional`：按标定的各段 N_exp 比例与本件帧组数推算边界（生产、标定与历史重判都用它）；
+//! - `Unsegmented`：整条胶路一个未分段区域（各段 N_exp 未标定或单段配方时比例分段器也退回它）；
+//! - 图像运动细化边界（D-SB-43）未实现，合成序列回归入口留给它。
 
-// SegInput 的数据、搜索窗口与合成序列回归入口留给后续分段算法（D2）使用，本轮只有 Unsegmented 与测试读它们。
+// SegInput 的帧特征、搜索窗口与合成序列回归入口留给图像细化（D-SB-43）使用，现在只有测试读它们。
 #![allow(dead_code)]
 
 use std::ops::RangeInclusive;
@@ -45,7 +46,7 @@ pub trait Segmenter {
     fn segment(&self, input: &SegInput) -> SegOutcome;
 }
 
-/// 本轮唯一实现：总是返回 `SegOutcome::Unsegmented`。
+/// 总是返回 `SegOutcome::Unsegmented`。
 pub struct Unsegmented;
 
 impl Segmenter for Unsegmented {
@@ -54,14 +55,65 @@ impl Segmenter for Unsegmented {
     }
 }
 
+/// 比例分段（D-SB-40）：本件帧组数 total 已知时，第 k 个边界 = round(total × 前 k 段 N_exp 之和 / ΣN_exp)，
+/// 每段至少留 1 帧。total ∈ ΣN_exp ± Σtol 时各边界置信度 1，否则 0（由 [`resolve_regions`] 整体合并为置信度不足）。
+/// 单段配方没有边界可定位，任一段 N_exp 未标定时没有比例可用，都返回 Unsegmented（与没有分段算法时相同）。
+pub struct Proportional;
+
+impl Segmenter for Proportional {
+    fn segment(&self, input: &SegInput) -> SegOutcome {
+        let segments = input.segments;
+        let Some(counts) = segments
+            .iter()
+            .map(|s| s.expected_frames.map(u64::from))
+            .collect::<Option<Vec<u64>>>()
+        else {
+            return SegOutcome::Unsegmented;
+        };
+        let expected: u64 = counts.iter().sum();
+        let total = input.groups.iter().map(|g| g.seq).max().unwrap_or(0);
+        if counts.len() < 2 || expected == 0 || total == 0 {
+            return SegOutcome::Unsegmented;
+        }
+        let tolerance: u64 = segments.iter().map(|s| u64::from(s.tolerance)).sum();
+        let confidence = if total.abs_diff(expected) <= tolerance {
+            1.0
+        } else {
+            0.0
+        };
+        let (mut cumulative, mut previous) = (0, 0);
+        let last = counts.len() - 1;
+        let boundaries = counts[..last]
+            .iter()
+            .enumerate()
+            .map(|(k, &n)| {
+                cumulative += n;
+                let scaled = (2 * total * cumulative + expected) / (2 * expected);
+                let frame_seq = scaled
+                    .max(previous + 1)
+                    .min(total.saturating_sub((last - k) as u64));
+                previous = frame_seq;
+                Boundary {
+                    after_segment: segments[k].index,
+                    frame_seq,
+                    confidence,
+                }
+            })
+            .collect();
+        SegOutcome::Boundaries(boundaries)
+    }
+}
+
 /// 未分段的原因。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UnsegReason {
-    /// 分段算法未就绪（本轮恒为此）
+    /// 分段算法未就绪：各段 N_exp 未标定或单段配方
     AlgorithmPending,
     /// 边界置信度不足：两侧两段合并，不回退计划边界
     LowConfidence,
+    /// 可信边界两侧各 `boundary_guard` 帧的过渡区（D-SB-40）：边界位置有 ±1–2 帧的不确定，只判每帧指标、不判胶偏
+    Transition,
 }
 
 /// 区域类型。JSON 里用 `type` 区分，避免与 `Region.kind` 嵌套同名。
@@ -72,6 +124,10 @@ pub enum RegionKind {
     Corner { segment: u32 },
     /// 覆盖 first_segment..=last_segment；只跑每帧独立检测，允差取覆盖各段中较宽一档，不判胶偏
     Unsegmented { first_segment: u32, last_segment: u32, reason: UnsegReason },
+    /// 段首尾跳过的帧（`skip_head` / `skip_tail`）：不判定，结果里列为未检区域
+    Skipped {
+        segment: u32,
+    },
 }
 
 /// 判胶的单位：一段连续帧组。
@@ -90,77 +146,244 @@ impl Region {
     }
 }
 
+/// 判定需要的走廊（D-SB-45）：按计划相机、seq（1..=total）给出该用第几段（`PathSegment.index`）的走廊测量，None 为不测。
+/// 可信的直线 / 弯道区域：本段检测相机用本段走廊。过渡区：帧按比例边界落在哪一侧，该侧检测相机用该侧走廊，只检测另一侧的
+/// 相机用另一侧走廊。跳过区域不测。其余未分段区域（置信度不足、算法待定）：用到达时的预测段与它的检测相机（`plan::arrival_corridor`）。
+pub fn frame_corridors(
+    segments: &[PathSegment],
+    cameras: &[String],
+    regions: &[Region],
+    outcome: &SegOutcome,
+    total: u64,
+) -> Vec<Vec<Option<u32>>> {
+    let boundary = |after: u32| match outcome {
+        SegOutcome::Boundaries(boundaries) => boundaries
+            .iter()
+            .find(|b| b.after_segment == after)
+            .map(|b| b.frame_seq),
+        SegOutcome::Unsegmented => None,
+    };
+    let mut out = vec![vec![None; total as usize]; cameras.len()];
+    for region in regions {
+        for seq in region.first_seq.max(1)..=region.last_seq.min(total) {
+            for (c, camera) in cameras.iter().enumerate() {
+                let detects = |index: u32| crate::plan::detects(segments, index, camera, cameras);
+                out[c][(seq - 1) as usize] = match region.kind {
+                    RegionKind::Straight { segment } | RegionKind::Corner { segment } => {
+                        detects(segment).then_some(segment)
+                    }
+                    RegionKind::Skipped { .. } => None,
+                    RegionKind::Unsegmented {
+                        first_segment,
+                        last_segment,
+                        reason: UnsegReason::Transition,
+                    } => {
+                        let near_last = boundary(first_segment).is_some_and(|b| seq > b);
+                        let (near, far) = if near_last {
+                            (last_segment, first_segment)
+                        } else {
+                            (first_segment, last_segment)
+                        };
+                        [near, far].into_iter().find(|&s| detects(s))
+                    }
+                    RegionKind::Unsegmented { .. } => {
+                        crate::plan::arrival_corridor(segments, cameras, c, seq)
+                    }
+                };
+            }
+        }
+    }
+    out
+}
+
 /// 把分段结果解析成区域：Unsegmented 时一个覆盖 1..=total_seq 的区域（AlgorithmPending）；
-/// 有边界时边界两侧各一帧归弯道；置信度低于 min_conf 的边界把两侧两段合并为 Unsegmented(LowConfidence)，
-/// 连续多个低置信度边界一并合并，不回退计划边界。
+/// 置信度低于 min_conf 的边界把两侧两段合并为 Unsegmented(LowConfidence)，连续多个低置信度边界一并合并，不回退计划边界。
+/// 每个可信边界两侧各 `guard` 帧（边界帧 b 时为 b − guard + 1..=b + guard，截在 1..=total_seq 内）划为过渡区
+/// Unsegmented(Transition)，覆盖边界两侧的段；相邻的过渡区（中间的段被取空）合并成一个。guard = 0 时没有过渡区。
+/// 各段的跳过帧（`skip_head` / `skip_tail`）最后划为 Skipped 区域，优先于过渡区：能定位到的段（单段区域）按本段首尾跳过；
+/// 合并区域里只有贴着整件首尾的那一头能定位，只跳过第 1 段的 skip_head 与末段的 skip_tail。
 ///
 /// 算法缺给某个段间边界，或给出的帧号不在上一可信边界之后、不给下一段留帧，都按置信度不足处理。
-/// “两侧各一帧归弯道”只从解析为直线区域的一侧取帧（弯道侧是弯道或未分段区域都行），直线区域被取空时去掉；
 /// 区域首尾相接、覆盖 1..=total_seq。没有帧组（total_seq = 0）或没有段时返回空。
-pub fn resolve_regions(segments: &[PathSegment], outcome: &SegOutcome, total_seq: u64, min_conf: f32) -> Vec<Region> {
-    let (Some(first), Some(last)) = (segments.first(), segments.last()) else { return Vec::new() };
-    if total_seq == 0 {
+pub fn resolve_regions(
+    segments: &[PathSegment],
+    outcome: &SegOutcome,
+    total_seq: u64,
+    min_conf: f32,
+    guard: u32,
+) -> Vec<Region> {
+    if segments.is_empty() || total_seq == 0 {
         return Vec::new();
     }
-    let boundaries = match outcome {
-        SegOutcome::Unsegmented => {
-            let kind = RegionKind::Unsegmented { first_segment: first.index, last_segment: last.index, reason: UnsegReason::AlgorithmPending };
-            return vec![Region { kind, first_seq: 1, last_seq: total_seq }];
-        }
-        SegOutcome::Boundaries(boundaries) => boundaries,
-    };
-
-    // 每个段间隙的可信边界帧号（第 k 段之后）；None = 置信度不足，两侧合并
-    let mut previous = 0;
-    let cuts: Vec<Option<u64>> = segments
-        .windows(2)
-        .map(|pair| {
-            let cut = boundaries
-                .iter()
-                .find(|b| b.after_segment == pair[0].index)
-                .filter(|b| b.confidence >= min_conf && b.frame_seq > previous && b.frame_seq < total_seq)
-                .map(|b| b.frame_seq);
-            previous = cut.unwrap_or(previous);
-            cut
-        })
-        .collect();
-
     // 按可信边界切成区域，记下每个区域覆盖的段下标范围
     let mut regions: Vec<(Region, usize, usize)> = Vec::new();
-    let (mut start, mut first_seq) = (0, 1);
-    for k in 0..segments.len() {
-        let Some(last_seq) = cuts.get(k).copied().unwrap_or(Some(total_seq)) else { continue };
-        let kind = match (start == k, segments[k].kind) {
-            (true, SegmentKind::Straight) => RegionKind::Straight { segment: segments[k].index },
-            (true, SegmentKind::Corner) => RegionKind::Corner { segment: segments[k].index },
-            (false, _) => RegionKind::Unsegmented {
-                first_segment: segments[start].index,
-                last_segment: segments[k].index,
-                reason: UnsegReason::LowConfidence,
-            },
-        };
-        regions.push((Region { kind, first_seq, last_seq }, start, k));
-        (start, first_seq) = (k + 1, last_seq + 1);
-    }
-
-    // 边界两侧各一帧归弯道：直线区域贴着弯道段的那一帧让给对侧区域
-    for i in 1..regions.len() {
-        let (left, right) = regions.split_at_mut(i);
-        let ((left, _, left_last), (right, right_first, _)) = (&mut left[i - 1], &mut right[0]);
-        let straight = |region: &Region| matches!(region.kind, RegionKind::Straight { .. }) && region.frame_count() > 0;
-        match (segments[*left_last].kind, segments[*right_first].kind) {
-            (SegmentKind::Straight, SegmentKind::Corner) if straight(left) => {
-                left.last_seq -= 1;
-                right.first_seq -= 1;
+    match outcome {
+        SegOutcome::Unsegmented => {
+            let kind = RegionKind::Unsegmented {
+                first_segment: segments[0].index,
+                last_segment: segments[segments.len() - 1].index,
+                reason: UnsegReason::AlgorithmPending,
+            };
+            regions.push((
+                Region {
+                    kind,
+                    first_seq: 1,
+                    last_seq: total_seq,
+                },
+                0,
+                segments.len() - 1,
+            ));
+        }
+        SegOutcome::Boundaries(boundaries) => {
+            // 每个段间隙的可信边界帧号（第 k 段之后）；None = 置信度不足，两侧合并
+            let mut previous = 0;
+            let cuts: Vec<Option<u64>> = segments
+                .windows(2)
+                .map(|pair| {
+                    let cut = boundaries
+                        .iter()
+                        .find(|b| b.after_segment == pair[0].index)
+                        .filter(|b| {
+                            b.confidence >= min_conf
+                                && b.frame_seq > previous
+                                && b.frame_seq < total_seq
+                        })
+                        .map(|b| b.frame_seq);
+                    previous = cut.unwrap_or(previous);
+                    cut
+                })
+                .collect();
+            let (mut start, mut first_seq) = (0, 1);
+            for k in 0..segments.len() {
+                let Some(last_seq) = cuts.get(k).copied().unwrap_or(Some(total_seq)) else {
+                    continue;
+                };
+                let kind = match (start == k, segments[k].kind) {
+                    (true, SegmentKind::Straight) => RegionKind::Straight {
+                        segment: segments[k].index,
+                    },
+                    (true, SegmentKind::Corner) => RegionKind::Corner {
+                        segment: segments[k].index,
+                    },
+                    (false, _) => RegionKind::Unsegmented {
+                        first_segment: segments[start].index,
+                        last_segment: segments[k].index,
+                        reason: UnsegReason::LowConfidence,
+                    },
+                };
+                regions.push((
+                    Region {
+                        kind,
+                        first_seq,
+                        last_seq,
+                    },
+                    start,
+                    k,
+                ));
+                (start, first_seq) = (k + 1, last_seq + 1);
             }
-            (SegmentKind::Corner, SegmentKind::Straight) if straight(right) => {
-                left.last_seq += 1;
-                right.first_seq += 1;
-            }
-            _ => {}
         }
     }
-    regions.into_iter().map(|(region, _, _)| region).filter(|region| region.frame_count() > 0).collect()
+
+    // 逐帧标注：所属区域、过渡区覆盖的段下标范围（多个边界的过渡区重叠时取并），或跳过的段
+    #[derive(Clone, Copy, PartialEq)]
+    enum Label {
+        Core(usize),
+        Transition(usize, usize),
+        Skipped(usize),
+    }
+    let mut labels: Vec<Label> = Vec::with_capacity(total_seq as usize);
+    for (i, (region, _, _)) in regions.iter().enumerate() {
+        labels.extend((region.first_seq..=region.last_seq).map(|_| Label::Core(i)));
+    }
+    if guard > 0 {
+        for i in 1..regions.len() {
+            let (cut, left, right) = (regions[i - 1].0.last_seq, regions[i - 1].2, regions[i].1);
+            let from = cut.saturating_sub(u64::from(guard) - 1).max(1);
+            let to = (cut + u64::from(guard)).min(total_seq);
+            for label in &mut labels[from as usize - 1..to as usize] {
+                *label = match *label {
+                    Label::Transition(a, b) => Label::Transition(a.min(left), b.max(right)),
+                    _ => Label::Transition(left, right),
+                };
+            }
+        }
+    }
+    let last_segment = segments.len() - 1;
+    for (region, a, b) in &regions {
+        let (first, last) = (region.first_seq, region.last_seq);
+        let mut skip = |from: u64, to: u64, k: usize| {
+            for seq in from.max(first)..=to.min(last) {
+                labels[seq as usize - 1] = Label::Skipped(k);
+            }
+        };
+        let head = if a == b || *a == 0 {
+            u64::from(segments[*a].skip_head)
+        } else {
+            0
+        };
+        if head > 0 && (a == b || first == 1) {
+            skip(first, first + head - 1, *a);
+        }
+        let tail = if a == b || *b == last_segment {
+            u64::from(segments[*b].skip_tail)
+        } else {
+            0
+        };
+        if tail > 0 && (a == b || last == total_seq) {
+            skip((last + 1).saturating_sub(tail), last, *b);
+        }
+    }
+
+    let mut out: Vec<(Label, Region)> = Vec::new();
+    for (k, &label) in labels.iter().enumerate() {
+        let seq = k as u64 + 1;
+        match (out.last_mut(), label) {
+            (Some((Label::Core(a), region)), Label::Core(b))
+            | (Some((Label::Skipped(a), region)), Label::Skipped(b))
+                if *a == b =>
+            {
+                region.last_seq = seq
+            }
+            (Some((Label::Transition(a, b), region)), Label::Transition(c, d)) => {
+                (*a, *b) = ((*a).min(c), (*b).max(d));
+                region.last_seq = seq;
+            }
+            _ => {
+                let kind = match label {
+                    Label::Core(i) => regions[i].0.kind.clone(),
+                    Label::Skipped(k) => RegionKind::Skipped {
+                        segment: segments[k].index,
+                    },
+                    Label::Transition(..) => RegionKind::Unsegmented {
+                        first_segment: 0,
+                        last_segment: 0,
+                        reason: UnsegReason::Transition,
+                    },
+                };
+                out.push((
+                    label,
+                    Region {
+                        kind,
+                        first_seq: seq,
+                        last_seq: seq,
+                    },
+                ));
+            }
+        }
+    }
+    out.into_iter()
+        .map(|(label, mut region)| {
+            if let Label::Transition(a, b) = label {
+                region.kind = RegionKind::Unsegmented {
+                    first_segment: segments[a].index,
+                    last_segment: segments[b].index,
+                    reason: UnsegReason::Transition,
+                };
+            }
+            region
+        })
+        .collect()
 }
 
 /// 边界搜索窗口：(prev + n_exp) ± (tol + 1)，下限不低于 prev + 1。
@@ -310,6 +533,7 @@ pub mod synthetic {
                             widths: Vec::new(),
                             spacing_mm: 0.0,
                             gap_max_mm: 0.0,
+                            corridor: None,
                             present_ratio: present_ratio + rng.noise(0.02).min(0.0),
                             x_mm: Some(x + 0.2 * camera as f64 + rng.noise(0.05)),
                         }
@@ -325,6 +549,7 @@ pub mod synthetic {
                             widths: Vec::new(),
                             spacing_mm: 0.0,
                             gap_max_mm: 0.0,
+                            corridor: None,
                             present_ratio: 0.0,
                             x_mm: None,
                         }
@@ -409,8 +634,273 @@ mod tests {
         let outcome = Unsegmented.segment(&SegInput { groups: &[], features: &[], segments: &segments });
         assert_eq!(outcome, SegOutcome::Unsegmented);
         assert_eq!(
-            resolve_regions(&segments, &outcome, 23, 0.8),
+            resolve_regions(&segments, &outcome, 23, 0.8, 2),
             vec![region(RegionKind::Unsegmented { first_segment: 1, last_segment: 3, reason: UnsegReason::AlgorithmPending }, 1, 23)]
         );
+    }
+
+    fn calibrated(kinds: &[SegmentKind], n_exp: &[u32]) -> Vec<PathSegment> {
+        let mut segments = plan(kinds);
+        segments
+            .iter_mut()
+            .zip(n_exp)
+            .for_each(|(segment, &n)| segment.expected_frames = Some(n));
+        segments
+    }
+
+    fn proportional(segments: &[PathSegment], total: u64) -> SegOutcome {
+        let groups: Vec<FrameGroup> = (1..=total)
+            .map(|seq| FrameGroup {
+                seq,
+                present: vec![true; 3],
+                incomplete: false,
+            })
+            .collect();
+        Proportional.segment(&SegInput {
+            groups: &groups,
+            features: &[],
+            segments,
+        })
+    }
+
+    fn cuts(outcome: &SegOutcome) -> Vec<(u64, f32)> {
+        match outcome {
+            SegOutcome::Boundaries(boundaries) => boundaries
+                .iter()
+                .map(|b| (b.frame_seq, b.confidence))
+                .collect(),
+            SegOutcome::Unsegmented => panic!("应给出边界"),
+        }
+    }
+
+    /// D-SB-40：第 k 个边界 = round(本件帧组数 × 前 k 段 N_exp 之和 / ΣN_exp)。N_exp 10 / 4 / 10（ΣN 24 ± 3），
+    /// 本件帧数在容差内时边界可信；按原帧号会把 26 帧件的第二个边界放在 14，比例换算放在 15。
+    #[test]
+    fn proportional_boundaries_scale_calibrated_counts_to_actual_total() {
+        let segments = calibrated(&[S, C, S], &[10, 4, 10]);
+        for (total, expected) in [
+            (24, vec![(10, 1.0), (14, 1.0)]),
+            (26, vec![(11, 1.0), (15, 1.0)]),
+            (21, vec![(9, 1.0), (12, 1.0)]),
+        ] {
+            assert_eq!(
+                cuts(&proportional(&segments, total)),
+                expected,
+                "{total} 帧"
+            );
+        }
+    }
+
+    /// D-SB-40：本件帧组数超出 ΣN_exp ± Σtol 时比例边界不可信，整件合并为一个“分段不确定”区域，不回退计划边界。
+    #[test]
+    fn proportional_boundaries_outside_total_tolerance_merge_into_low_confidence_region() {
+        let segments = calibrated(&[S, C, S], &[10, 4, 10]);
+        for total in [20, 28] {
+            let outcome = proportional(&segments, total);
+            assert!(
+                cuts(&outcome)
+                    .iter()
+                    .all(|&(_, confidence)| confidence == 0.0),
+                "{total} 帧"
+            );
+            assert_eq!(
+                resolve_regions(&segments, &outcome, total, 0.5, 2),
+                vec![region(
+                    RegionKind::Unsegmented {
+                        first_segment: 1,
+                        last_segment: 3,
+                        reason: UnsegReason::LowConfidence
+                    },
+                    1,
+                    total
+                )],
+                "{total} 帧"
+            );
+        }
+    }
+
+    /// D-SB-40：有段 N_exp 未标定（没有比例）或单段配方（没有边界）时与没有分段算法相同，整条胶路未分段。
+    #[test]
+    fn proportional_stays_unsegmented_without_calibrated_counts_or_with_single_segment() {
+        let mut partly = calibrated(&[S, C, S], &[10, 4, 10]);
+        partly[1].expected_frames = None;
+        for (case, segments) in [
+            ("第 2 段待标定", partly),
+            ("单段配方", calibrated(&[S], &[24])),
+        ] {
+            assert_eq!(
+                proportional(&segments, 24),
+                SegOutcome::Unsegmented,
+                "{case}"
+            );
+        }
+    }
+
+    /// D-SB-40：可信边界两侧各 guard 帧划为过渡区（覆盖两侧的段，只判每帧指标）；中间的段被取空时两个过渡区合并；
+    /// guard = 0 时按边界原样切分。
+    #[test]
+    fn trusted_boundaries_get_guard_frames_as_transition_regions() {
+        let straight = |segment| RegionKind::Straight { segment };
+        let corner = |segment| RegionKind::Corner { segment };
+        let transition = |first_segment, last_segment| RegionKind::Unsegmented {
+            first_segment,
+            last_segment,
+            reason: UnsegReason::Transition,
+        };
+        let outcome = |a, b| {
+            SegOutcome::Boundaries(vec![
+                Boundary {
+                    after_segment: 1,
+                    frame_seq: a,
+                    confidence: 1.0,
+                },
+                Boundary {
+                    after_segment: 2,
+                    frame_seq: b,
+                    confidence: 1.0,
+                },
+            ])
+        };
+        let segments = plan(&[S, C, S]);
+        for (case, cut, guard, expected) in [
+            (
+                "弯道 6 帧、余量 2",
+                (10, 16),
+                2,
+                vec![
+                    region(straight(1), 1, 8),
+                    region(transition(1, 2), 9, 12),
+                    region(corner(2), 13, 14),
+                    region(transition(2, 3), 15, 18),
+                    region(straight(3), 19, 26),
+                ],
+            ),
+            (
+                "弯道 4 帧被两侧余量取空",
+                (10, 14),
+                2,
+                vec![
+                    region(straight(1), 1, 8),
+                    region(transition(1, 3), 9, 16),
+                    region(straight(3), 17, 26),
+                ],
+            ),
+            (
+                "余量 0",
+                (10, 16),
+                0,
+                vec![
+                    region(straight(1), 1, 10),
+                    region(corner(2), 11, 16),
+                    region(straight(3), 17, 26),
+                ],
+            ),
+        ] {
+            assert_eq!(
+                resolve_regions(&segments, &outcome(cut.0, cut.1), 26, 0.5, guard),
+                expected,
+                "{case}"
+            );
+        }
+    }
+
+    /// 段首尾跳过的帧划为 Skipped 区域且优先于过渡区：分段可信时按各段首尾定位；未分段时只有整件首尾能定位
+    /// （第 1 段的 skip_head、末段的 skip_tail），中间段的跳过不生效。
+    #[test]
+    fn skipped_frames_carve_regions_at_located_segment_ends() {
+        let mut segments = plan(&[S, C, S]);
+        segments[0].skip_head = 2;
+        segments[1].skip_tail = 1;
+        segments[2].skip_tail = 3;
+        let skipped = |segment| RegionKind::Skipped { segment };
+        let transition = |first_segment, last_segment| RegionKind::Unsegmented {
+            first_segment,
+            last_segment,
+            reason: UnsegReason::Transition,
+        };
+        let segmented = SegOutcome::Boundaries(vec![
+            Boundary {
+                after_segment: 1,
+                frame_seq: 10,
+                confidence: 1.0,
+            },
+            Boundary {
+                after_segment: 2,
+                frame_seq: 16,
+                confidence: 1.0,
+            },
+        ]);
+        let pending = RegionKind::Unsegmented {
+            first_segment: 1,
+            last_segment: 3,
+            reason: UnsegReason::AlgorithmPending,
+        };
+        for (case, outcome, expected) in [
+            (
+                "分段可信",
+                segmented,
+                vec![
+                    region(skipped(1), 1, 2),
+                    region(RegionKind::Straight { segment: 1 }, 3, 8),
+                    region(transition(1, 2), 9, 12),
+                    region(RegionKind::Corner { segment: 2 }, 13, 14),
+                    region(transition(2, 3), 15, 15),
+                    region(skipped(2), 16, 16),
+                    region(transition(2, 3), 17, 18),
+                    region(RegionKind::Straight { segment: 3 }, 19, 23),
+                    region(skipped(3), 24, 26),
+                ],
+            ),
+            (
+                "未分段",
+                SegOutcome::Unsegmented,
+                vec![
+                    region(skipped(1), 1, 2),
+                    region(pending, 3, 23),
+                    region(skipped(3), 24, 26),
+                ],
+            ),
+        ] {
+            assert_eq!(
+                resolve_regions(&segments, &outcome, 26, 0.5, 2),
+                expected,
+                "{case}"
+            );
+        }
+    }
+
+    /// D-SB-45：判定按区域选走廊。直线 5 帧（三台相机）+ 弯道 5 帧（只由第一台相机）、过渡帧 1。
+    #[test]
+    fn frame_corridors_follow_regions_and_fall_back_to_predicted_segment_when_unsegmented() {
+        // 防的回归：过渡区里只检测另一侧的相机没走廊可用（被当成不测、或用了它不检测的那一侧）；置信度不足时
+        // 退回全部相机（其余相机看不到胶条，只能量出检测不完整）或不按到达时的预测段选走廊
+        let cameras: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
+        let mut segments = calibrated(&[S, C], &[5, 5]);
+        segments[1].cameras = vec!["cam1".into()];
+        // (本件帧组数, seq, 三台相机该用的段)
+        let cases: [(&str, u64, u64, [Option<u32>; 3]); 5] = [
+            ("直线段内", 12, 3, [Some(1), Some(1), Some(1)]),
+            ("过渡区靠直线一侧", 12, 6, [Some(1), Some(1), Some(1)]),
+            (
+                "过渡区靠弯道一侧：只检测直线段的相机用直线段走廊",
+                12,
+                7,
+                [Some(2), Some(1), Some(1)],
+            ),
+            ("弯道段内", 12, 10, [Some(2), None, None]),
+            (
+                "帧数超出容差、置信度不足：按预测段（第 7 帧预测在弯道）",
+                20,
+                7,
+                [Some(2), None, None],
+            ),
+        ];
+        for (name, total, seq, expected) in cases {
+            let outcome = proportional(&segments, total);
+            let regions = resolve_regions(&segments, &outcome, total, 0.5, 1);
+            let choice = frame_corridors(&segments, &cameras, &regions, &outcome, total);
+            let got: Vec<Option<u32>> = choice.iter().map(|c| c[(seq - 1) as usize]).collect();
+            assert_eq!(got, expected, "{name}");
+        }
     }
 }

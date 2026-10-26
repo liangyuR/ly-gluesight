@@ -1,6 +1,10 @@
-use std::sync::Arc;
+use crate::{
+    frame::FrameImage,
+    recipe::Recipe,
+    vision::{self, CorridorSet, Engine, FrameMeasurement},
+};
 use serde::Serialize;
-use crate::{frame::FrameImage, recipe::Recipe, vision::{self, CorridorGraph, Engine, FrameMeasurement}};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -10,8 +14,8 @@ pub struct Candidate {
     pub info: DebugInfo,
     pub recipe: Arc<Recipe>,
     engine: Arc<Engine>,
-    /// 按计划相机下标的走廊测量图
-    corridors: Vec<CorridorGraph>,
+    /// 按（计划相机下标, 段号）的走廊测量图（D-SB-45）
+    corridors: CorridorSet,
 }
 
 impl Candidate {
@@ -26,12 +30,7 @@ impl Candidate {
         if sizes.len() != recipe.inspect.len() {
             return Err("候选示教帧尺寸与检测相机数量不一致".into());
         }
-        let corridors = recipe
-            .inspect
-            .iter()
-            .zip(sizes)
-            .map(|(inspect, &size)| vision::plan_corridor(inspect, &recipe, size))
-            .collect::<Result<Vec<_>, _>>()?;
+        let corridors = CorridorSet::build(&recipe, sizes)?;
         Ok(Self {
             info: DebugInfo {
                 recipe_id: recipe.id.clone(),
@@ -44,10 +43,26 @@ impl Candidate {
     }
 
     /// 段配方一台相机一帧的候选测量（每帧独立，结果只量不判）。
-    pub fn measure_frame(&self, job: &crate::measure::FrameJob, image: &FrameImage) -> Result<FrameMeasurement, String> {
-        if job.bundle_id.is_some() || !self.matches(&job.recipe) { return Err("候选调试测量与冻结修订不一致".into()); }
-        let corridor = self.corridors.get(job.camera_idx).filter(|c| c.camera == job.camera).ok_or("候选没有这台相机的走廊测量图")?;
-        vision::measure_frame(&self.engine, corridor, image, job.seq, &format!("debug-{}-c{}-{}", job.cycle_id, job.camera_idx, job.seq))
+    pub fn measure_frame(
+        &self,
+        job: &crate::measure::FrameJob,
+        image: &FrameImage,
+    ) -> Result<FrameMeasurement, String> {
+        if job.bundle_id.is_some() || !self.matches(&job.recipe) {
+            return Err("候选调试测量与冻结修订不一致".into());
+        }
+        let corridor = self
+            .corridors
+            .get(job.camera_idx, job.segment)
+            .filter(|c| c.camera == job.camera)
+            .ok_or("候选没有这台相机在这一段的走廊测量图")?;
+        vision::measure_frame(
+            &self.engine,
+            corridor,
+            image,
+            job.seq,
+            &format!("debug-{}-c{}-{}", job.cycle_id, job.camera_idx, job.seq),
+        )
     }
 
     pub fn matches(&self, recipe: &Recipe) -> bool {

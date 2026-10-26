@@ -108,7 +108,7 @@ it("采集页整理已屏蔽轮次并切换预览 → 保留原帧组总数，�
 });
 
 it.each([
- ["段配方：本轮已有相机用作示教帧",()=>{ ws.data!.plan!.cameraTeaching[0].frame!.source="capture:round-1"; },true],
+ ["段配方：本轮已有相机用作示教帧",()=>{ ws.data!.plan!.cameraTeaching[0].segments[0].frame.source="capture:round-1"; },true],
  ["段配方：本轮已加入多轮标定",()=>{ ws.data!.plan!.calibration!.rounds[0].roundId="round-1"; },true],
 ])("示教或标定用过的轮次不允许同时作为独立验证样本 · %s",async(_,setup,burst)=>{
  if(burst) useBurst(); setup();

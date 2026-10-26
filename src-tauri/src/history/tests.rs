@@ -43,10 +43,26 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_tolerance_only_change() {
     let cases: [(&str, Edit, Option<Verdict>); 6] = [
         ("弯道段改为直线段", |doc| doc.segments[1] = crate::plan::new_segment(2, SegmentKind::Straight, &doc.segment_defaults.clone()), None),
         ("相机顺序", |doc| doc.inspect.swap(0, 1), None),
-        ("整件重新标定为 7 个帧组", |doc| doc.part_calib.as_mut().unwrap().expected_total = 7, None),
-        ("相机 1 的走廊", |doc| doc.inspect[0].corridor[0][0] += 5.0, None),
-        ("弯道段帧数容差", |doc| doc.segments[1].tolerance = 3, Some(Verdict::NgWidth)),
-        ("弯道段胶宽上允差", |doc| doc.segments[1].checks.width.tol_upper = 3.0, Some(Verdict::Ok)),
+        (
+            "整件重新标定为 7 个帧组",
+            |doc| doc.part_calib.as_mut().unwrap().expected_total = 7,
+            None,
+        ),
+        (
+            "相机 1 第 1 段的走廊",
+            |doc| doc.inspect[0].segments[0].corridor[0][0] += 5.0,
+            None,
+        ),
+        (
+            "弯道段帧数容差",
+            |doc| doc.segments[1].tolerance = 3,
+            Some(Verdict::NgWidth),
+        ),
+        (
+            "弯道段胶宽上允差",
+            |doc| doc.segments[1].checks.width.tol_upper = 3.0,
+            Some(Verdict::Ok),
+        ),
     ];
     let original = Arc::new(burst_doc().build().unwrap());
     let request = RejudgeRequest { use_current_recipe: true, ..Default::default() };

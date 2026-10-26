@@ -9,16 +9,15 @@ export const stageStatusTone: Record<StageStatus, "info" | "ok" | "warn" | "neut
 export interface StageV2 { path: string; label: string; hint: string; ids: StepIdV2[]; optional: boolean; needsCapture: boolean }
 
 /**
- * 工作台步骤（段配方）：采集 → 段列表 → 走廊示教 → 多轮标定 → 验证与发布（StepIdV2）。
- * “默认参数”是段列表旁的可选页（按段类型的默认检测项），不对应后端步骤。
+ * 工作台步骤（段配方）：采集 → 段列表 → 走廊示教 → 多轮标定 → 发布（StepIdV2；验证可选，D-SB-46）。
+ * 原“默认参数”页已拆分：测量默认参数在走廊示教，标定轮数在多轮标定，边界过渡帧数在段列表，名称与型号在工件总览。
  */
 export const stagesV2: StageV2[] = [
   { path: "/recipe/capture", label: "整圈采集", hint: "三台相机同时采集整圈，按帧号配组，每轮记各相机帧数", ids: ["capture"], optional: false, needsCapture: false },
   { path: "/recipe/segments", label: "段列表", hint: "沿胶路划分直线段与弯道段，设各段检测项与帧数容差", ids: ["segments"], optional: false, needsCapture: false },
-  { path: "/recipe/geometry", label: "默认参数", hint: "按段类型的默认检测项与帧数容差，新建段时取用", ids: [], optional: true, needsCapture: false },
-  { path: "/recipe/teach", label: "走廊示教", hint: "每台相机示教一条检测走廊，所有帧共用", ids: ["corridor"], optional: false, needsCapture: true },
+  { path: "/recipe/teach", label: "走廊示教", hint: "每段的每台检测相机各示教一条走廊；相机只设像素当量与检测参数", ids: ["corridor"], optional: false, needsCapture: true },
   { path: "/recipe/calibration", label: "多轮标定", hint: "多轮采集取均值得出预期帧数，确认帧数容差", ids: ["calibration"], optional: false, needsCapture: true },
-  { path: "/recipe/validation", label: "验证与发布", hint: "独立样本验证通过后发布生效", ids: ["validation", "publish"], optional: false, needsCapture: true },
+  { path: "/recipe/validation", label: "发布", hint: "发布前检查满足即可发布，在工件边界生效；独立样本验证可选", ids: ["validation", "publish"], optional: false, needsCapture: true },
 ];
 
 export const stageOfV2 = (id: StepIdV2) => stagesV2.find(stage => stage.ids.includes(id));

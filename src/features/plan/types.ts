@@ -95,7 +95,13 @@ export interface PathSegment {
   calib: SegmentCalib | null;
   checks: SegmentChecks;
   offsetRef: OffsetRef | null;
+  /** 已停用的毫米检测区间（判定从未排除区间外的帧），只为读入旧配方保留；改用 skipHead / skipTail */
   inspectRange: InspectRange | null;
+  /** 检测相机（D-SB-41）：计划相机的子集；空 = 全部计划相机 */
+  cameras: string[];
+  /** 段首、段尾跳过的帧组数：这些帧不判定，结果里列为未检区域 */
+  skipHead: number;
+  skipTail: number;
 }
 
 /** 整件标定：多轮整件帧组数统计；本轮多段配方凭它得到 expectedTotal 并发布。 */
@@ -122,6 +128,8 @@ export interface ExportSegment {
   expectedFrames: number | null;
   tolerance: number;
   inspectRange: InspectRange | null;
+  skipHead?: number;
+  skipTail?: number;
 }
 
 /** 计划导出 JSON（recipe_plan_export）；协议 7 下 PLC 不再填计划与帧数。 */
@@ -168,12 +176,14 @@ export interface Boundary {
 
 export type SegOutcome = { kind: "unsegmented" } | { kind: "boundaries"; boundaries: Boundary[] };
 
-export type UnsegReason = "algorithmPending" | "lowConfidence";
+export type UnsegReason = "algorithmPending" | "lowConfidence" | "transition";
 
 export type RegionKind =
   | { type: "straight"; segment: number }
   | { type: "corner"; segment: number }
-  | { type: "unsegmented"; firstSegment: number; lastSegment: number; reason: UnsegReason };
+  | { type: "unsegmented"; firstSegment: number; lastSegment: number; reason: UnsegReason }
+  /** 段首尾跳过的帧：不判定 */
+  | { type: "skipped"; segment: number };
 
 /** 一段连续帧组；帧数 = lastSeq − firstSeq + 1。 */
 export interface Region {
@@ -184,8 +194,8 @@ export interface Region {
 
 // ───────────── burst_judge.rs ─────────────
 
-/** 除 measured 外都只记“检测不完整”，不影响 OK/NG。 */
-export type FrameState = "measured" | "missing" | "error" | "unmeasured" | "outOfCorridor";
+/** 除 measured、notInspected 外都只记“检测不完整”，不影响 OK/NG；notInspected = 这一帧所在段不由这台相机检测，按设计不测、不判定（D-SB-45）。 */
+export type FrameState = "measured" | "missing" | "error" | "unmeasured" | "outOfCorridor" | "notInspected";
 
 /** 一台相机一帧的独立指标；数值只在 state = measured 时有意义。 */
 export interface FrameMetrics {
@@ -202,8 +212,22 @@ export interface FrameMetrics {
   spacingMm: number;
   gapMaxMm: number;
   presentRatio: number;
+  /** 测量用的是第几段的走廊（PathSegment.index）；旧记录没有 */
+  corridor?: number | null;
   /** 帧内胶中心相对走廊的法向偏移均值（absoluteX） */
   xMm: number | null;
+}
+
+/** 标定轮次一帧按当前段走廊重测的结果（workspace_calibration_frame，多轮标定页逐帧查看）。 */
+export interface CalibrationFrameView {
+  /** 所用走廊的段；这台相机不检测这一帧所在段时为 null，不测 */
+  segment: number | null;
+  corridor: [number, number][];
+  /** 搜索半宽（px） */
+  searchHalfPx: number | null;
+  /** 逐站两侧胶边（px），无胶站为 null */
+  edges: ([[number, number], [number, number]] | null)[];
+  metrics: FrameMetrics;
 }
 
 export interface WidthStats {
@@ -246,11 +270,14 @@ export interface Flags {
   shortPart: boolean;
 }
 
+/** 未检区域：跳过的帧组 fromSeq–toSeq；2026-10-26 之前的记录按毫米检测区间写 fromMm / toMm。 */
 export interface Uninspected {
   segment: number;
-  fromMm: number;
+  fromSeq?: number | null;
+  toSeq?: number | null;
+  fromMm?: number | null;
   /** 段长未知时为 null */
-  toMm: number | null;
+  toMm?: number | null;
 }
 
 /** 本轮没有算法的检测项（“未检项”）。 */
@@ -281,13 +308,20 @@ export interface CalibOutcome {
 
 // ───────────── 配方新增字段（C1，RecipeDoc schema 8）─────────────
 
-/** 一台相机的检测设置：按直线段几何示教的一条走廊（图像像素）与当量。 */
+/** 一台相机的参数（D-SB-45）：像素当量、标定引用与检测参数；走廊只按“段 × 检测相机”示教，存在 segments。 */
 export interface CameraInspect {
   camera: string;
-  corridor: [number, number][];
   mmPerPx: number | null;
   calib: string | null;
   detect: DetectParams | null;
+  /** 这台相机在它检测的各段的走廊（图像像素） */
+  segments?: SegmentCorridor[];
+}
+
+export interface SegmentCorridor {
+  /** PathSegment.index */
+  segment: number;
+  corridor: [number, number][];
 }
 
 /** RecipeDoc 的段模型字段。 */
@@ -298,6 +332,8 @@ export interface RecipeDocSegmentFields {
   segmentDefaults: KindDefaults;
   /** 标定轮数，默认 10，范围 10..=100 */
   calibrationRounds: number;
+  /** 比例分段边界两侧各留的过渡帧数，默认 2，范围 0..=5（D-SB-40） */
+  boundaryGuard: number;
   partCalib: PartCalib | null;
 }
 
@@ -470,19 +506,31 @@ export interface CalibrationView {
 
 export interface CameraTeachingView {
   camera: string;
-  /** 走廊已保存 */
-  saved: boolean;
-  frame: FrozenImage | null;
   mmPerPx: number | null;
+  /** 有像素当量，且它检测的每一段都有已保存的段走廊 */
+  ready: boolean;
+  /** 已选示教帧的段（D-SB-45：走廊只按段示教） */
+  segments: SegmentTeachingView[];
 }
 
-/** 候选里一台计划相机的示教帧（Workspace.cameraTeaching，D2）：从完整的新采集轮次冻结的一帧，走廊在这一帧上示教。 */
+export interface SegmentTeachingView {
+  segment: number;
+  frame: FrozenImage;
+  round: string;
+  seq: number;
+  /** 段走廊已保存且落在示教帧内 */
+  saved: boolean;
+}
+
+/** 候选里一段一台检测相机的示教帧（Workspace.cameraTeaching，D2 / D-SB-45）：从完整的新采集轮次冻结的一帧，这一段的走廊在这一帧上示教。 */
 export interface CameraTeaching {
   camera: string;
   frame: FrozenImage;
   /** 来源采集轮次与帧组序号 */
   round: string;
   seq: number;
+  /** PathSegment.index */
+  segment?: number | null;
 }
 
 /** 加入多轮标定的一轮（Workspace.calibration.rounds，D2）；界面读 plan.calibration（CalibrationView），这里是候选里存的原始记录。 */
@@ -505,8 +553,7 @@ export interface CalibrationRound {
   xMeans: (number | null)[];
 }
 
-/** workspace_teach_camera 的 draft：在选中帧上定出的走廊（图像像素，按直线段几何）、当量与检测参数，
- * 后端写进 RecipeDoc.inspect 中这台相机的一项（与 CameraInspect 的可编辑部分一一对应）。 */
+/** 走廊示教页里一条段走廊的草稿：走廊（图像像素）按段，像素当量与检测参数随相机（只读，用于校验与换算）。 */
 export interface CameraTeachDraft {
   corridor: [number, number][];
   mmPerPx: number | null;
@@ -550,7 +597,7 @@ export type StepIdV2 = "capture" | "segments" | "corridor" | "calibration" | "va
 export type ProgressTargetV2 =
   | { page: "capture" }
   | { page: "segments" }
-  | { page: "corridor"; camera: string }
+  | { page: "corridor"; camera: string; segment?: number | null }
   | { page: "calibration" }
   | { page: "validation" }
   | { page: "camera" };

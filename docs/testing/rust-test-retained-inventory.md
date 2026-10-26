@@ -1,6 +1,6 @@
 # Rust 保留测试清单
 
-数量（2026-10-26 以 `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib -- --list` 核对）：**默认 169 项，没有手动忽略的用例**。其中 118 项在分组表中逐项列出源码、测试名称及保护规则，51 项列在末节“尚未逐项登记”。测试数量只在本清单维护，其他文档不写数字。
+数量（2026-10-26 以 `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib -- --list` 核对）：**默认 187 项，没有手动忽略的用例**。其中 136 项在分组表中逐项列出源码、测试名称及保护规则，51 项列在末节“尚未逐项登记”。测试数量只在本清单维护，其他文档不写数字。
 
 默认集合包含少量真实 S7 TCP 回环、SQLite、图片写盘与审计恢复集成测试，不能把 `cargo test --lib` 全部理解为纯单元测试。默认运行不需要现场相机、PLC、现场样本或 lyFlow DLL；S7 用例需要本机回环连接权限。不通过 `ignore` 隐藏删除项，也不把不同业务用例塞进一个大循环。运行方法与环境要求见[测试说明](TESTING.md)。
 
@@ -8,13 +8,13 @@
 
 | 分组 | 逐项登记 | 其中手动忽略 |
 | --- | ---: | ---: |
-| 采集、帧组、计划与判定 | 36 | 0 |
-| 生产周期、PLC与调度 | 32 | 0 |
+| 采集、帧组、计划与判定 | 44 | 0 |
+| 生产周期、PLC与调度 | 42 | 0 |
 | 工作区、发布与视觉 | 31 | 0 |
 | 系统配置与资料安全 | 11 | 0 |
 | 持久化、录制与离线 | 8 | 0 |
 | 尚未逐项登记 | 51 | 0 |
-| 合计 | 169 | 0 |
+| 合计 | 187 | 0 |
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
@@ -34,6 +34,10 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
 | 6 | [frame_group.rs](../../src-tauri/src/frame_group.rs) | `frame_counter_jump_beyond_seq_limit_is_out_of_range_and_creates_no_groups` | 异常巨大SDK帧号不得创建无界帧组或污染后续基线 |
 | 7 | [frame_group.rs](../../src-tauri/src/frame_group.rs) | `frame_count_at_tolerance_edge_is_normal_and_one_beyond_is_low_or_high` | 帧数容差含上下边界，超出一帧必须报偏高或偏低 |
 | 8 | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `unsegmented_returns_one_pending_region_covering_all_groups` | 真实分段算法未就绪时整件必须作为一个未分段区域覆盖全部帧组 |
+| 8a | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `proportional_boundaries_scale_calibrated_counts_to_actual_total` | 比例边界 = round(本件帧组数 × 前 k 段 N_exp 之和 / ΣN_exp)，不按原帧号（D-SB-40，2026-10-26 新增） |
+| 8b | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `proportional_boundaries_outside_total_tolerance_merge_into_low_confidence_region` | 帧组数超出 ΣN_exp ± Σtol 时比例边界不可信，整件合并为“分段不确定”，不回退计划边界（D-SB-40） |
+| 8c | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `proportional_stays_unsegmented_without_calibrated_counts_or_with_single_segment` | 有段待标定或单段配方时保持未分段，现有配方行为不变（D-SB-40） |
+| 8d | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `trusted_boundaries_get_guard_frames_as_transition_regions` | 可信边界两侧各 guard 帧为过渡区，段被取空时过渡区合并，guard 0 原样切分（D-SB-40） |
 | 9 | [calibration.rs](../../src-tauri/src/calibration.rs) | `n_exp_is_rounded_mean_with_min_max_recorded` | 多轮标定按均值四舍五入生成预期帧数并记录真实波动统计 |
 | 10 | [calibration.rs](../../src-tauri/src/calibration.rs) | `fewer_rounds_than_required_are_rejected_with_have_and_need` | 轮数不足不得产生可用标定，恰达要求可标定 |
 | 11 | [calibration.rs](../../src-tauri/src/calibration.rs) | `suggested_tolerance_covers_observed_spread_never_below_default` | 建议容差覆盖标定中最差实际波动且不低于默认容差 |
@@ -49,7 +53,11 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
 | 21 | [camera/delivery.rs](../../src-tauri/src/camera/delivery.rs) | `dropped_callback_frame_becomes_incomplete_group_not_err` | 回调队列或内存预算丢帧只标不完整组，不能把当前段配方整件判成设备错误 |
 | 22 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `unsegmented_region_judges_frames_with_wider_limits_and_flags_offset_unjudged` | 当前未分段区域逐帧按较宽限值判定，并明确胶偏未判状态 |
 | 23 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `missing_camera_frames_mark_incomplete_without_changing_verdict` | 缺帧和测量失败只标不完整，其余相机有效NG仍须保留 |
-| 24 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `region_frame_count_outside_tolerance_raises_anomaly_and_short_part_flags_only` | 帧数异常和疑似提前终止仅产生标志，不能覆盖胶路本身OK/NG |
+| 24 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `frame_count_anomaly_comes_from_part_total_not_from_segment_regions` | 帧数异常和疑似提前终止仅产生标志，不能覆盖胶路本身OK/NG；帧数只核对整件，直线 / 弯道区域的推算帧数不与本段 N_exp 比（D-SB-40，2026-10-26 由 `region_frame_count_outside_tolerance_raises_anomaly_and_short_part_flags_only` 改写） |
+| 24a | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `transition_region_judges_frames_with_wider_limits_without_offset_or_unsegmented_flag` | 过渡区按两侧较宽允差判每帧指标，不判也不标胶偏，不算“含未分段”（D-SB-40，2026-10-26 新增） |
+| 8e | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `skipped_frames_carve_regions_at_located_segment_ends` | 段首尾跳过帧划为跳过区域并优先于过渡区；未分段时只有整件首尾能定位（D-SB-22 修订，2026-10-26 新增） |
+| 24c | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `skipped_region_is_not_judged_and_listed_as_uninspected` | 跳过的帧不判 NG、不算检测不完整，按帧组号列为未检区域（D-SB-22 修订） |
+| 24b | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `segment_regions_judge_only_their_cameras_and_transitions_use_the_union` | 段区域只用本段检测相机判定与计检测不完整，过渡区用两侧并集（D-SB-41，2026-10-26 新增；plan.rs 计划身份与校验两个参数化测试各补段检测相机用例） |
 | 25 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `any_camera_frame_ng_makes_region_ng` | 任一相机任一帧NG必须使区域及整件NG，防止沿用旧多视图放行规则 |
 | 26 | [burst_judge.rs](../../src-tauri/src/burst_judge.rs) | `frame_exceeding_gap_presence_width_or_overflow_limit_is_ng_with_matching_reason` | 断胶、有胶比例、累计胶宽超差和溢胶必须按各自限值形成正确判定 |
 | 27 | [recipe_capture/burst/tests.rs](../../src-tauri/src/recipe_capture/burst/tests.rs) | `plc_estimate_of_zero_or_above_64_is_only_recorded_and_round_completes_on_actual_frames` | PLC开始估算帧数不限制实收帧数，结束预留deviceTriggers写0仍按实收完成 |
@@ -70,6 +78,16 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
 | 37 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `three_camera_frames_out_of_arrival_order_are_grouped_by_frame_counter_minus_baseline` | 三台相机按各自帧计数基线配组，乱序到达不得改变帧身份或整件合格判定。 |
 | 38 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `part_end_waits_full_drain_window_regardless_of_reserved_trigger_count` | partEnd后必须等完整排空窗口，deviceTriggers为0、缺省或任意值均不能缩短等待。 |
 | 39 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `frames_beyond_expected_total_are_all_measured_and_only_alarm` | 超出预期帧数的图像全部检测，超额帧中的断胶仍应判NG，帧数异常仅告警。 |
+| 39b | [workspace/capture_review/tests.rs](../../src-tauri/src/workspace/capture_review/tests.rs) | `template_round_save_confirms_template_and_invalidates_others_only_on_structure_change` | 工作台一次保存：模板轮确认并成为模板；段类型序列变化时其余已确认轮次需复核、标定清空，不变时不受影响（D-SB-44，2026-10-26 新增） |
+| 39c | [frame_align.rs](../../src-tauri/src/frame_align.rs) | `thumb_strip_keeps_group_order_and_marks_missing_frames` | 缩略图条带的字节契约：帧组顺序不变、缺帧占位且状态为 0、下采样取块均值（D-SB-44） |
+| 39d | [frame_align.rs](../../src-tauri/src/frame_align.rs) | `aligned_cuts_follow_scene_positions_under_stretch_drop_and_repeat` | 对齐复核按图像而不是按比例：时间伸缩、前慢后快、丢帧、重复帧下对齐边界与真值相差 ≤ 1 帧（D-SB-44 P2，2026-10-26 新增） |
+| 39e | [workspace/segment_corridor_tests.rs](../../src-tauri/src/workspace/segment_corridor_tests.rs) | `segment_teaching_frame_must_lie_in_that_segment_of_a_confirmed_round` | 段走廊示教帧须落在已确认分段轮次的本段内，相机须是本段检测相机，一台相机各段示教帧同尺寸（D-SB-42/45） |
+| 39f | [workspace/segment_corridor_tests.rs](../../src-tauri/src/workspace/segment_corridor_tests.rs) | `calibration_measures_each_frame_only_with_its_segment_detecting_cameras` | 标定按已确认边界归段，每帧只由本段检测相机测；多段配方不认草稿边界，单段配方不需确认（D-SB-45） |
+| 39g | [workspace/segment_corridor_tests.rs](../../src-tauri/src/workspace/segment_corridor_tests.rs) | `segment_structure_or_camera_change_drops_only_the_affected_corridors_and_frames` | 段类型序列变化清空全部走廊与示教帧；某段去掉检测相机只去掉它在这段的；只改参数不清；没有示教帧的走廊不能保存（D-SB-45） |
+| 39h | [workspace/segment_corridor_tests.rs](../../src-tauri/src/workspace/segment_corridor_tests.rs) | `camera_is_taught_only_when_every_segment_it_detects_has_a_corridor` | 相机检测的每一段都有走廊且有像素当量才算走廊示教完成，不再要求相机级走廊（D-SB-45） |
+| 39i | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_remeasured_after_drain` | 生产按预测段只由检测相机送测；比例边界移动后归属变了或过渡区需要另一侧走廊的帧用留下的原图补测、补测完才收尾；原图没留住记检测不完整（D-SB-45） |
+| 39j | [segmentation.rs](../../src-tauri/src/segmentation.rs) | `frame_corridors_follow_regions_and_fall_back_to_predicted_segment_when_unsegmented` | 判定所需走廊：段内本段相机、过渡区按边界侧（只检测另一侧的相机用另一侧）、置信度不足按预测段与它的检测相机（D-SB-45） |
+| 39a | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `calibrated_multi_segment_recipe_is_judged_by_proportional_regions` | 各段已标定的多段配方在生产节拍中按比例分段，得到直线 / 弯道 / 过渡区域而不是整条未分段（D-SB-40，2026-10-26 新增） |
 | 40 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `next_part_baseline_is_each_camera_highest_frame_counter_seen` | 下一件基线只取每台相机已见最高帧号，迟到帧隔离且漏触发相机下一件首帧不被误丢。 |
 | 41 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `camera_reconnect_during_part_is_err_98` | 生产期间相机重连，无论之后是否再收到帧，都应判设备故障ERR98。 |
 | 42 | [cycle/tests.rs](../../src-tauri/src/cycle/tests.rs) | `no_frame_from_any_camera_is_err_91` | 整件三相机没有任何帧时等到收尾截止并判ERR91，不能提前判合格。 |
@@ -115,13 +133,13 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
 | 77 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner` | 胶偏参考只从标准件指定相机的中间帧得出，弯道与未实现的 ToEdge 不能生成错误参考。 |
 | 78 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `editing_expected_frames_directly_is_rejected_and_kind_change_clears_calibration` | 拒绝客户端伪造标定值；段类型、段序列或胶偏参考相机改变时使相关标定失效。 |
 | 79 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `new_candidate_from_copied_burst_recipe_builds_without_its_calibration` | 复制段配方创建候选保留合法成像参数，但不继承另一配方的预期帧数、标定统计和胶偏基准。 |
-| 80 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `calibration_round_writes_per_frame_features_and_boundaries_files` | 特征文件按计划相机与帧序写入缺帧、失败帧及真实指标，边界文件保留未分段状态，避免后续算法读错样本。 |
-| 81 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `validation_without_expected_total_blocks_publish_and_names_each_segment` | 没有整件预期帧数不能发布；具备整件标定的多段配方不被尚未实现的逐段标定永久阻塞。 |
-| 82 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `publish_blocked_when_plan_cameras_not_three_or_corridor_missing` | 三台计划相机、示教帧、帧内走廊、像素当量及当前设备参数必须一致才能通过发布验证。 |
+| 80 | [workspace/burst_tests.rs](../../src-tauri/src/workspace/burst_tests.rs) | `calibration_round_writes_per_frame_features_and_boundaries_files` | 特征文件按计划相机与帧序写入缺帧、失败帧及真实指标，边界文件保留未分段状态，避免后续算法读错样本；读回时按当前计划相机重新编下标、丢弃不再是计划相机的行（多轮标定页逐帧查看，2026-10-26）。 |
+| 81 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `validation_without_expected_total_blocks_publish_and_names_each_segment` | 没有整件预期帧数不能发布；多段配方各段 N_exp 都已标定才能发布（D-SB-45 修订 D-SB-21），逐段列出待定原因。 |
+| 82 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `publish_blocked_when_plan_cameras_not_three_or_corridor_missing` | 三台计划相机、每段每台检测相机的示教帧与帧内走廊、像素当量及当前设备参数都满足才能通过发布前检查；都满足时不需要验证样本即可发布（D-SB-46）。 |
 | 83 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejected` | 示教/标定用轮次不得当独立验证样本；相机身份或设备参数不匹配时拒绝入验证库。 |
 | 84 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `burst_candidate_debug_run_gets_teaching_frame_sizes_in_plan_camera_order` | 候选调试按计划相机顺序交付各自示教帧尺寸，避免串用相机尺寸。 |
 | 85 | [workspace/burst_release_tests.rs](../../src-tauri/src/workspace/burst_release_tests.rs) | `changed_frame_rate_blocks_calibration_until_original_configuration_restored` | 当前帧率不同于标定采集帧率时阻止使用旧标定，恢复原配置后才放行。 |
-| 86 | [release.rs](../../src-tauri/src/release.rs) | `tampered_burst_bundle_is_rejected_on_load` | 当前段发布包加载时拒绝走廊篡改、相机换序、旧schema伪装、尺寸变化、清单外文件和缺标定。 |
+| 86 | [release.rs](../../src-tauri/src/release.rs) | `tampered_burst_bundle_is_rejected_on_load` | 段发布包（schema 5，按相机、段组织）加载时拒绝走廊篡改、相机换序、旧schema伪装、尺寸变化、清单外文件和缺标定。 |
 | 87 | [release.rs](../../src-tauri/src/release.rs) | `bundle_changed_on_disk_after_publish_is_rejected_by_per_part_verify` | 当前段发布包加载后每件验证仍能发现资源被替换、删改、变目录或清单丢失。 |
 | 88 | [vision/tests.rs](../../src-tauri/src/vision/tests.rs) | `calibration_page_view_on_single_view_camera_also_writes_the_key_burst_recipe_reads` | 标定页面按图1保存的单视角标定也能被段配方按设备读取，三目图N标定不能污染设备标定。 |
 | 89 | [vision/taught/tests.rs](../../src-tauri/src/vision/taught/tests.rs) | `engine_station_output_reduces_to_frame_width_gap_presence_and_x_mm` | 生产走廊输出换算正确的胶宽、最长连续缺胶、有胶比例、法向偏移和相机帧身份。 |
@@ -167,7 +185,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib
 
 ## 尚未逐项登记
 
-以下 49 项在上次逐项整理（2026-10-23）后随相机维护、生产通讯协议 7、示教采集握手、维护模式与项目管理加入，已在默认集合中执行，保护规则待逐项补入上表；补登时按准入规则核对，说不清保护规则的删除。
+以下 51 项在上次逐项整理（2026-10-23）后随相机维护、生产通讯协议 7、示教采集握手、维护模式与项目管理加入，已在默认集合中执行，保护规则待逐项补入上表；补登时按准入规则核对，说不清保护规则的删除。
 
 | 模块 | 测试名称 |
 | --- | --- |

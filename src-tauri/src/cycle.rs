@@ -152,6 +152,7 @@ pub enum FrameCellStatus {
     Error,
     Unmeasured,
     OutOfCorridor,
+    NotInspected,
 }
 
 impl From<FrameState> for FrameCellStatus {
@@ -162,6 +163,7 @@ impl From<FrameState> for FrameCellStatus {
             FrameState::Error => Self::Error,
             FrameState::Unmeasured => Self::Unmeasured,
             FrameState::OutOfCorridor => Self::OutOfCorridor,
+            FrameState::NotInspected => Self::NotInspected,
         }
     }
 }
@@ -871,6 +873,33 @@ struct Uninspected {
     recipe_id: Option<String>,
     judgement: Judgement,
     armed_at: Instant,
+}
+
+/// 段配方一帧的测量任务：用第 `segment` 段走廊量计划相机 `camera` 的第 `seq` 帧（到达送测与收尾补测共用）。
+fn frame_job(
+    part: &Part,
+    camera: usize,
+    camera_id: String,
+    seq: u64,
+    segment: u32,
+    image: Option<Arc<crate::frame::FrameImage>>,
+) -> FrameJob {
+    FrameJob {
+        cycle_id: part.cycle_id.clone(),
+        bundle_id: part.bundle_id.clone(),
+        production: part.production.clone(),
+        candidate: part.candidate.clone(),
+        camera_idx: camera,
+        camera: camera_id,
+        seq,
+        segment,
+        image,
+        image_measurement: part.image_measurement,
+        recipe: part.recipe.clone(),
+        scenario: part.scenario,
+        submitted_at: Instant::now(),
+        timeout: part.proc_timeout,
+    }
 }
 
 /// 维护模式不判定的件：记 ERR 以免混入合格统计，回写 PLC 的结果码 0。
@@ -1804,26 +1833,22 @@ impl Machine {
                 if let Some(rec) = part.recording.as_mut() { host(&app).recorders.burst_frame(rec, &f, camera, seq); }
                 let image = f.single_image().cloned();
                 crate::workspace::retain_live_frame(&app, &part.cycle_id, &part.recipe.revision_id, camera, seq, &image);
+                burst.retain_image(camera, seq, image.clone());
                 trace(&app, "帧到达", format!("cycle={cycle_id} · {camera_id} 第 {seq} 帧 · 帧计数 {}", f.frame_counter),
                     fields(&camera_id, Some(seq)).with_stage("frame")
                         .with_data(json!({"frameCounter": f.frame_counter, "triggerCounter": f.trigger_counter, "session": f.session})));
-                if part.mode != crate::store::PartMode::MaintenanceCollect {
-                    let job = FrameJob {
-                        cycle_id: part.cycle_id.clone(),
-                        bundle_id: part.bundle_id.clone(),
-                        production: part.production.clone(),
-                        candidate: part.candidate.clone(),
-                        camera_idx: camera,
-                        camera: camera_id.clone(),
+                if let Some(segment) = burst
+                    .arrival_corridor(camera, seq)
+                    .filter(|_| part.mode != crate::store::PartMode::MaintenanceCollect)
+                {
+                    self.frame_pool.submit(frame_job(
+                        part,
+                        camera,
+                        camera_id.clone(),
                         seq,
+                        segment,
                         image,
-                        image_measurement: part.image_measurement,
-                        recipe: part.recipe.clone(),
-                        scenario: part.scenario,
-                        submitted_at: Instant::now(),
-                        timeout: part.proc_timeout,
-                    };
-                    self.frame_pool.submit(job);
+                    ));
                 }
             }
             burst::Arrival::Duplicate { camera, seq } => {
@@ -1886,11 +1911,43 @@ impl Machine {
             .with_data(json!({"ms": ms, "queueMs": queue_ms, "engineMs": engine_ms, "state": metrics.state, "error": metrics.error}));
         let why = metrics.error.clone().unwrap_or_default();
         match metrics.state {
-            FrameState::Measured => trace(&self.app, "测量完成", format!("{camera} 第 {seq} 帧 · 最大胶宽 {} · {ms} ms",
-                metrics.width_max.map_or_else(|| "—".to_owned(), |w| format!("{w:.2} mm"))), fields),
-            FrameState::OutOfCorridor => trace(&self.app, "走出走廊", format!("{camera} 第 {seq} 帧胶条走出走廊，记检测不完整"), fields),
-            FrameState::Unmeasured => log_with(&self.app, "warn", "帧没测", format!("{camera} 第 {seq} 帧没测（{why}），记检测不完整"), fields),
-            FrameState::Error | FrameState::Missing => log_with(&self.app, "warn", "测量出错", format!("{camera} 第 {seq} 帧测量失败（{why}），记检测不完整"), fields),
+            FrameState::Measured => trace(
+                &self.app,
+                "测量完成",
+                format!(
+                    "{camera} 第 {seq} 帧 · 最大胶宽 {} · {ms} ms",
+                    metrics
+                        .width_max
+                        .map_or_else(|| "—".to_owned(), |w| format!("{w:.2} mm"))
+                ),
+                fields,
+            ),
+            FrameState::OutOfCorridor => trace(
+                &self.app,
+                "走出走廊",
+                format!("{camera} 第 {seq} 帧胶条走出走廊，记检测不完整"),
+                fields,
+            ),
+            FrameState::NotInspected => trace(
+                &self.app,
+                "本段不检测",
+                format!("{camera} 第 {seq} 帧所在段不由这台相机检测，不测"),
+                fields,
+            ),
+            FrameState::Unmeasured => log_with(
+                &self.app,
+                "warn",
+                "帧没测",
+                format!("{camera} 第 {seq} 帧没测（{why}），记检测不完整"),
+                fields,
+            ),
+            FrameState::Error | FrameState::Missing => log_with(
+                &self.app,
+                "warn",
+                "测量出错",
+                format!("{camera} 第 {seq} 帧测量失败（{why}），记检测不完整"),
+                fields,
+            ),
         }
     }
 
@@ -2191,6 +2248,28 @@ impl Machine {
                 }
             }
             Phase::Drain => {
+                if let Some(part) = self.part.as_mut() {
+                    for (camera, seq, segment, image) in part.start_post_measure(Instant::now()) {
+                        let camera_id = part.burst.camera_name(camera).to_owned();
+                        trace(
+                            &self.app,
+                            "收尾补测",
+                            format!(
+                                "cycle={} · {camera_id} 第 {seq} 帧用第 {segment} 段走廊补测",
+                                part.cycle_id
+                            ),
+                            Fields {
+                                cycle_id: Some(part.cycle_id.clone()),
+                                camera: Some(camera_id.clone()),
+                                seq: Some(seq),
+                                ..Fields::default()
+                            }
+                            .with_stage("post"),
+                        );
+                        self.frame_pool
+                            .submit(frame_job(part, camera, camera_id, seq, segment, image));
+                    }
+                }
                 if self.part.as_ref().is_some_and(Part::complete) {
                     self.judge_part().await;
                 }

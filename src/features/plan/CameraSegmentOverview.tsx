@@ -47,8 +47,8 @@ export function CameraSegmentOverview({ cameras, segments, regions }: CameraSegm
       {segments.map(s => <li key={s.index} className={`plan-seg ${s.kind}` + (s.expectedFrames == null ? " pending" : "")} aria-label={segmentAria(s)}>
         <strong>{s.index} · {segmentKindLabel[s.kind]}</strong>
         <span className="plan-seg-n plan-mono">{s.expectedFrames == null ? "待标定" : `${s.expectedFrames} ± ${s.tolerance} 帧`}</span>
-        {(s.lengthMm != null || s.inspectRange) && <small className="plan-mono">
-          {s.lengthMm != null && `${s.lengthMm} mm`}{s.lengthMm != null && s.inspectRange && " · "}{s.inspectRange && `检 ${s.inspectRange.aMm}–${s.inspectRange.bMm} mm`}
+        {(s.lengthMm != null || s.skipHead > 0 || s.skipTail > 0) && <small className="plan-mono">
+          {s.lengthMm != null && `${s.lengthMm} mm`}{s.lengthMm != null && (s.skipHead > 0 || s.skipTail > 0) && " · "}{(s.skipHead > 0 || s.skipTail > 0) && `跳过首 ${s.skipHead} / 尾 ${s.skipTail} 帧`}
         </small>}
       </li>)}
     </ol> : <p className="muted">尚无段。</p>}

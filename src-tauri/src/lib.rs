@@ -12,6 +12,7 @@ mod cycle_ids;
 mod diagnostics;
 mod disk_guard;
 mod frame;
+mod frame_align;
 mod frame_group;
 mod fsio;
 mod history;
@@ -56,17 +57,25 @@ use tauri::Manager;
 
 pub use packaging::check_packaged_runtime;
 
-/// 吞吐探针（examples/throughput_probe.rs）走生产加载路径所需的内部接口，只为 example 暴露；不是稳定 API，应用本身不用。
+/// 吞吐探针（examples/throughput_probe.rs）与分段离线评估（examples/segment_eval.rs）所需的内部接口，只为 example 暴露；
+/// 不是稳定 API，应用本身不用。
 #[doc(hidden)]
 pub mod probe_api {
     pub use crate::burst_judge::FrameState;
-    pub use crate::image_file::save_pgm;
+    pub use crate::calibration::calibrate_counts;
+    pub use crate::frame_align::{align_cuts, downsample, Sequence, ALIGN_FACTOR};
+    pub use crate::frame_group::FrameGroup;
+    pub use crate::image_file::{load as load_image, save_pgm};
+    pub use crate::plan::SegmentKind;
     pub use crate::production::{burst_graphs, Prepared, GRAPH_VERSION_BURST};
-    pub use crate::recipe::{burst_template, DetectParams, Polarity, Recipe, RecipeDoc};
-    pub use crate::release::{
-        load as load_release, publish_burst, BurstPublishInput, CameraInput, ResourceSource,
-        ValidationSite, Versions,
+    pub use crate::recipe::{
+        burst_template, DetectParams, Polarity, Recipe, RecipeDoc, SegmentCorridor,
     };
+    pub use crate::release::{
+        load as load_release, publish_burst, BurstPublishInput, CameraInput, CorridorInput,
+        ResourceSource, ValidationSite, Versions,
+    };
+    pub use crate::segmentation::{Proportional, SegInput, SegOutcome, Segmenter};
     pub use crate::vision::{Engine, FrameImage};
 
     /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。
@@ -251,6 +260,7 @@ pub fn run() {
             recipe_capture::recipe_capture_plc_status,
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_frame_image,
+            recipe_capture::recipe_capture_round_thumbs,
             workspace::workspace_debug_run,
             workspace::workspace_retry_publish,
             workspace::workspace_abandon_publish,
@@ -276,12 +286,19 @@ pub fn run() {
             workspace::workspace_station_import,
             workspace::workspace_station_image,
             workspace::workspace_update_segments,
-            workspace::workspace_teach_camera,
+            workspace::workspace_teach_segment_corridor,
+            workspace::workspace_clear_segment_corridor,
             workspace::workspace_extract_corridor,
             workspace::workspace_calibration_add_round,
             workspace::workspace_calibration_remove_round,
+            workspace::workspace_calibration_round_features,
+            workspace::workspace_calibration_frame,
+            workspace::workspace_publish_checks,
             workspace::workspace_calibration_apply,
             workspace::workspace_capture_review_save,
+            workspace::workspace_segment_template_save,
+            workspace::workspace_capture_review_suggest,
+            workspace::workspace_capture_review_confirm_cuts,
             workspace::workspace_capture_review_confirm,
             workspace::workspace_capture_review_set_template,
             workspace::workspace_capture_review_apply_template,

@@ -491,6 +491,39 @@ pub fn recipe_capture_frame_image(app: AppHandle, round_id: String, camera_id: S
     Ok(tauri::ipc::Response::new(preview_bytes(&image)))
 }
 
+/// 缩略图下采样倍数：1280×1024 → 160×128。
+const THUMB_FACTOR: u32 = 8;
+
+/// 新轮次一台相机全部帧组的缩略图条带（格式见 `frame_align::thumb_strip`），分段标定工作台的时间轴用。
+/// 进行中的轮次没有完整帧记录，按 `load_burst` 的核对报错；读不了的帧按缺帧给出。
+#[tauri::command]
+pub async fn recipe_capture_round_thumbs(
+    app: AppHandle,
+    round_id: String,
+    camera_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = app
+            .state::<CycleHost>()
+            .camera
+            .recipe_capture()
+            .burst_frame_paths(&round_id, &camera_id)?;
+        let frames: Vec<Option<FrameImage>> = paths
+            .iter()
+            .map(|path| {
+                path.as_ref()
+                    .and_then(|path| crate::image_file::load(path).ok())
+                    .map(|image| crate::frame_align::downsample(&image, THUMB_FACTOR))
+            })
+            .collect();
+        Ok(tauri::ipc::Response::new(crate::frame_align::thumb_strip(
+            &frames,
+        )))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 读图命令的原始字节：前 16 字节依次是预览宽、高、原图宽、高（u32 小端），其后是最近邻缩到 900×650 以内的 8 位灰度。
 fn preview_bytes(image: &FrameImage) -> Vec<u8> {
     let scale = (image.width as f32 / 900.0).max(image.height as f32 / 650.0).max(1.0);

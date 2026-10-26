@@ -18,3 +18,57 @@
 .seg-savebar .warn { color: var(--warn); }
 .seg-total { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; }
 .seg-total strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+
+/* 分段标定工作台（SegmentWorkbench） */
+.swb-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.swb-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; color: var(--on-surface-variant); }
+.swb-scroll { overflow-x: auto; padding-bottom: 4px; }
+.swb-grid { --swb-cell: 64px; display: grid; gap: 2px; width: max-content; align-items: stretch; }
+.swb-label { display: flex; align-items: center; font-size: 12px; color: var(--on-surface-variant); font-family: var(--font-mono); }
+.swb-seg { min-width: 0; padding: 4px 6px; overflow: hidden; border: 1px solid var(--outline-variant); border-radius: var(--r-sm); background: var(--surface-mid); color: inherit; font-size: 12px; text-align: left; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
+.swb-seg.corner { background: repeating-linear-gradient(135deg, var(--surface-low) 0 6px, var(--surface-mid) 6px 12px); border-color: var(--warn); }
+.swb-cell { position: relative; display: flex; align-items: center; justify-content: center; height: calc(var(--swb-cell) * 0.8); padding: 0; overflow: hidden; border: 1px solid transparent; border-radius: 3px; background: var(--surface-low); cursor: pointer; }
+.swb-cell canvas { width: 100%; height: 100%; display: block; }
+.swb-cell.selected { border-color: var(--primary); }
+.swb-cell.cut::after { content: ""; position: absolute; top: 0; right: -1px; bottom: 0; width: 3px; background: var(--ng); }
+.swb-missing { font-size: 11px; color: var(--on-surface-variant); }
+.swb-seam, .swb-seam-end { display: flex; align-items: center; justify-content: space-between; height: 24px; padding: 0 4px; border: 1px dashed var(--outline-variant); border-radius: 3px; background: none; color: var(--on-surface-variant); font-size: 11px; font-family: var(--font-mono); }
+.swb-seam-end { border-color: transparent; justify-content: flex-start; }
+.swb-seam > b { font-weight: 600; color: var(--primary); }
+.swb-seam.on > b { color: var(--ng); }
+.swb-seam { cursor: pointer; }
+.swb-seam:hover { border-style: solid; border-color: var(--primary); }
+.swb-seam.on { border-color: var(--ng); color: var(--ng); cursor: grab; }
+.swb-seam.target:hover { border-color: var(--primary); cursor: grabbing; }
+.swb-preview { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; }
+.swb-preview > * { height: 300px; }
+.swb-body { display: flex; flex-direction: column; gap: 12px; outline: none; }
+
+/* 其余轮次的对齐复核（AlignReview） */
+.alr-rounds { display: flex; flex-wrap: wrap; gap: 6px; }
+.alr-round { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--outline-variant); border-radius: var(--r-sm); background: var(--surface-low); color: inherit; font-size: 12px; cursor: pointer; }
+.alr-round.selected { border-color: var(--primary); }
+.alr-body { display: flex; flex-direction: column; gap: 10px; outline: none; }
+.alr-body:focus-visible { box-shadow: 0 0 0 2px var(--primary); border-radius: var(--r-md); }
+.alr-boundary { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--outline-variant); border-radius: var(--r-md); background: var(--surface-low); }
+.alr-boundary.active { border-color: var(--primary); }
+.alr-boundary > header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.alr-compare { display: flex; flex-wrap: wrap; gap: 16px; }
+.alr-side { display: flex; flex-direction: column; gap: 2px; margin: 0; }
+.alr-side > figcaption { font-size: 12px; color: var(--on-surface-variant); font-family: var(--font-mono); }
+.alr-row { display: grid; grid-template-columns: repeat(4, var(--alr-cell, 72px)); gap: 2px; }
+.alr-cell { position: relative; display: flex; align-items: center; justify-content: center; height: calc(var(--alr-cell, 72px) * 0.8); overflow: hidden; border-radius: 3px; background: var(--surface-mid); }
+.alr-cell canvas { width: 100%; height: 100%; display: block; }
+.alr-cell.edge::after { content: ""; position: absolute; top: 0; right: -2px; bottom: 0; width: 3px; background: var(--ng); }
+.swb-cams { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
+.swb-cam { padding: 1px 6px; border: 1px solid var(--outline-variant); border-radius: var(--r-sm); background: none; color: var(--on-surface-variant); font-size: 11px; font-family: var(--font-mono); cursor: pointer; }
+.swb-cam.on { border-color: var(--primary); background: var(--surface-mid); color: var(--primary); }
+.swb-cell.unused canvas { opacity: .28; }
+.seg-tabs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; }
+.seg-tabs > .plan-seg { color: inherit; text-align: left; cursor: pointer; }
+.seg-tabs > .plan-seg.selected { border-color: var(--primary); box-shadow: inset 0 -2px 0 var(--primary); }
+.swb-cell.skipped::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(135deg, transparent 0 5px, rgba(0, 0, 0, .55) 5px 9px); pointer-events: none; }
+.wp-doc-params { border: 1px solid var(--outline-variant); border-radius: var(--r-md); padding: 8px 10px; background: var(--surface-low); }
+.wp-doc-params > summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: 13px; }
+.wp-doc-params > fieldset { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.wp-doc-identity { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px 16px; }

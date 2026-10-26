@@ -1,7 +1,8 @@
 import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
-import type { CameraTeachDraft, CaptureRoundV2, PathSegment } from "../plan/types";
-import type { CapturePlcStatus, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, ImagingSaved, Sample, Workspace, WorkspaceView } from "./types";
+import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment } from "../plan/types";
+import { decodeThumbStrip } from "./workbenchDraft";
+import type { AlignSuggestion, CapturePlcStatus, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, ImagingSaved, Sample, Workspace, WorkspaceView } from "./types";
 
 function grayPreview(input: ArrayBuffer | number[]) {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -66,9 +67,21 @@ export const workspaceApi = {
   /** 采集轮次里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
   captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeGray),
   captureList: (recipeId: string) => desktopCall<CaptureSummary[]>("recipe_capture_list", { recipeId }),
+  /** 新轮次一台相机全部帧组的缩略图条带（分段标定工作台） */
+  captureRoundThumbs: (roundId: string, cameraId: string) => desktopCall<ArrayBuffer>("recipe_capture_round_thumbs", { roundId, cameraId }).then(decodeThumbStrip),
+  /** 把分段模板的边界按图像对齐到一轮（只读建议，D-SB-44 P2） */
+  captureReviewSuggest: (id: string, round: string) => desktopCall<AlignSuggestion>("workspace_capture_review_suggest", { id, round }),
+  /** 复核确认一轮的边界：保存并确认，原子写入 */
+  captureReviewConfirmCuts: (id: string, revision: number, round: string, cuts: number[]) =>
+    desktopCall<WorkspaceView>("workspace_capture_review_confirm_cuts", { id, revision, round, cuts }),
+  /** 工作台一次保存：段列表 + 模板轮边界（确认）+ 设为模板（D-SB-44） */
+  segmentTemplateSave: (id: string, revision: number, round: string, segments: PathSegment[], cuts: number[]) =>
+    desktopCall<WorkspaceView>("workspace_segment_template_save", { id, revision, round, segments, cuts }),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
   /** 采集版检查：计划相机、相机组、曝光与增益、PLC 型号、段、生产版本；不改候选 */
   collectChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_collect_checks", { id, revision }),
+  /** 发布生产配方前检查（设备、走廊示教、段标定、标定采集参数、x_ref、生产版本），当场核对，不改候选（D-SB-46） */
+  publishChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_publish_checks", { id, revision }),
   /** 发布采集版（只供维护模式采图，不判定），在工件边界生效 */
   publishCollect: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish_collect", { id, revision }),
   compare: (id: string, revision: number, historyId: number, raw: boolean) =>
@@ -80,15 +93,18 @@ export const workspaceApi = {
   stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeGray),
 
   // ───── 段配方（分段连拍飞拍）：命令与参数见 docs/decisions/segment-burst.md 5.4，结果都在 WorkspaceView.plan ─────
-  /** 在这台相机冻结的示教帧 imageId 上按选区提取走廊 */
+  /** 在这台相机某段冻结的示教帧 imageId 上按选区提取走廊 */
   extractCorridor: (id: string, revision: number, camera: string, imageId: string, roi: [number, number, number, number], guide?: import("./teachingPath").BrushGuide, pointSpacingPx = 20) =>
     desktopCall<{path: [number, number][]; message: string; failure?: { point: [number, number]; reason: string; message: string } | null}>("workspace_extract_corridor", { id, revision, camera, imageId, roi, guide, pointSpacingPx }),
   /** 整体替换候选的段列表。后端拒绝直接改 expectedFrames / calib；段序列或类型变化时清空全部 N_exp、标定与 xRef */
   updateSegments: (id: string, revision: number, segments: PathSegment[]) =>
     desktopCall<WorkspaceView>("workspace_update_segments", { id, revision, segments }),
-  /** 用采集轮次 round 里这台相机第 seq 帧示教走廊：冻结该帧，按 draft 写进候选配方的 inspect */
-  teachCamera: (id: string, revision: number, camera: string, round: string, seq: number, draft: CameraTeachDraft) =>
-    desktopCall<WorkspaceView>("workspace_teach_camera", { id, revision, camera, round, seq, draft }),
+  /** 段走廊的示教帧（D-SB-45）：轮次须已确认手动分段、帧组落在该段内；相机还没有像素当量时后端用设备标定的当量填上 */
+  teachSegmentCorridor: (id: string, revision: number, camera: string, segment: number, round: string, seq: number) =>
+    desktopCall<WorkspaceView>("workspace_teach_segment_corridor", { id, revision, camera, segment, round, seq }),
+  /** 去掉一台相机在某段的走廊与示教帧，这一段回到待示教 */
+  clearSegmentCorridor: (id: string, revision: number, camera: string, segment: number) =>
+    desktopCall<WorkspaceView>("workspace_clear_segment_corridor", { id, revision, camera, segment }),
   /** 把采集轮次加入多轮标定；standard = 标准件轮次（用于胶偏参考 xRef） */
   calibrationAddRound: (id: string, revision: number, round: string, standard: boolean) =>
     desktopCall<WorkspaceView>("workspace_calibration_add_round", { id, revision, round, standard }),
@@ -105,6 +121,10 @@ export const workspaceApi = {
   captureReviewExclude: (id: string, revision: number, round: string, start: number, end: number, excluded: boolean, reason: string) =>
     desktopCall<WorkspaceView>("workspace_capture_review_exclude", { id, revision, round, start, end, excluded, reason }),
   /** 按已加入的轮次算 N_exp / 整件 ΣN_exp 与建议容差，结果在 plan.calibration；建议容差要再经 confirmTolerance 才写入 */
+  /** 已加入标定的一轮的每帧特征（加入标定时测的），只读 */
+  calibrationRoundFeatures: (id: string, round: string) => desktopCall<FrameMetrics[]>("workspace_calibration_round_features", { id, round }),
+  /** 用当前段走廊重测标定轮次的一帧，只读 */
+  calibrationFrame: (id: string, round: string, camera: string, seq: number) => desktopCall<CalibrationFrameView>("workspace_calibration_frame", { id, round, camera, seq }),
   calibrationApply: (id: string, revision: number) =>
     desktopCall<WorkspaceView>("workspace_calibration_apply", { id, revision }),
   /** 操作员确认第 segment 段（PathSegment.index）的帧数容差 */

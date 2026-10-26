@@ -8,7 +8,7 @@ import { workspaceApi } from "../src/features/workspace/api";
 import type { CalibrationView } from "../src/features/plan/types";
 import { burstRecipe, burstWorkspaceView, calibrationView, pathSegment, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { captureList: vi.fn(), calibrationApply: vi.fn(), calibrationAddRound: vi.fn(), calibrationRemoveRound: vi.fn(), confirmTolerance: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { captureList: vi.fn(), calibrationApply: vi.fn(), calibrationAddRound: vi.fn(), calibrationRemoveRound: vi.fn(), confirmTolerance: vi.fn(), calibrationRoundFeatures: vi.fn().mockResolvedValue([]), calibrationFrame: vi.fn(), captureFrameImage: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter initialEntries={["/recipe/calibration"]}><CalibrationPage /></MemoryRouter>);

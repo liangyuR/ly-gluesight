@@ -103,7 +103,8 @@ pub struct SegmentCalib {
     pub mean: f64,
 }
 
-/// 检测区间 [a_mm, b_mm]（沿本段胶路），区间外记“未检区域”。
+/// 检测区间 [a_mm, b_mm]（沿本段胶路）。已停用（2026-10-26）：软件不把毫米换算成帧号，判定从未排除区间外的帧；
+/// 只为读入旧配方保留，改用 `PathSegment.skip_head` / `skip_tail`。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InspectRange {
@@ -133,6 +134,67 @@ pub struct PathSegment {
     pub offset_ref: Option<OffsetRef>,
     #[serde(default)]
     pub inspect_range: Option<InspectRange>,
+    /// 检测相机（D-SB-41）：计划相机的子集，按段判定时只用这几台；空 = 全部计划相机（旧数据与新建段的默认）
+    #[serde(default)]
+    pub cameras: Vec<String>,
+    /// 段首跳过的帧组数：这些帧不判定，结果里列为未检区域（分段可信时按本段首尾定位，未分段时只有整件首尾能定位）
+    #[serde(default)]
+    pub skip_head: u32,
+    /// 段尾跳过的帧组数，同 `skip_head`
+    #[serde(default)]
+    pub skip_tail: u32,
+}
+
+/// 一段实际参与判定的相机（按计划相机顺序）：段没指定时为全部计划相机。
+pub fn segment_cameras(segment: &PathSegment, plan_cameras: &[String]) -> Vec<String> {
+    plan_cameras
+        .iter()
+        .filter(|camera| segment.cameras.is_empty() || segment.cameras.contains(camera))
+        .cloned()
+        .collect()
+}
+
+/// 帧到达时预测它属于哪一段（D-SB-45），返回段在列表里的下标：按累计 N_exp，第 seq 帧属于满足 seq ≤ C_k 的第一段，
+/// 超过 ΣN_exp 的帧归最后一段；单段配方恒为第 1 段。多段配方有段 N_exp 未标定时无法预测，返回 None。
+pub fn predicted_segment(segments: &[PathSegment], seq: u64) -> Option<usize> {
+    if segments.len() == 1 {
+        return Some(0);
+    }
+    if segments.iter().any(|s| s.expected_frames.is_none()) {
+        return None;
+    }
+    let mut cumulative = 0u64;
+    for (k, segment) in segments.iter().enumerate() {
+        cumulative += u64::from(segment.expected_frames.unwrap_or_default());
+        if seq <= cumulative {
+            return Some(k);
+        }
+    }
+    segments.len().checked_sub(1)
+}
+
+/// 这台相机检测第 `index` 段（`PathSegment.index`）。
+pub fn detects(
+    segments: &[PathSegment],
+    index: u32,
+    camera: &str,
+    plan_cameras: &[String],
+) -> bool {
+    segments
+        .iter()
+        .find(|s| s.index == index)
+        .is_some_and(|s| segment_cameras(s, plan_cameras).iter().any(|c| c == camera))
+}
+
+/// 帧到达时这台相机该用哪一段的走廊测（D-SB-45）：预测段由它检测时为该段，否则不测（None）。
+pub fn arrival_corridor(
+    segments: &[PathSegment],
+    plan_cameras: &[String],
+    camera: usize,
+    seq: u64,
+) -> Option<u32> {
+    let index = segments.get(predicted_segment(segments, seq)?)?.index;
+    detects(segments, index, plan_cameras.get(camera)?, plan_cameras).then_some(index)
 }
 
 /// 整件标定：多轮采集统计整件帧组数（不依赖分段）。本轮各段 N_exp 可以为 None，
@@ -182,12 +244,12 @@ impl Default for KindDefaults {
 }
 
 /// 计划身份：相等即沿用 plan_version，不等则配方库分配新版本。
-/// 组成：产品代码 + 各段 (index, kind, expected_frames) + 有序相机 + expected_total。
+/// 组成：产品代码 + 各段 (index, kind, expected_frames, 检测相机) + 有序相机 + expected_total（段检测相机按 D-SB-41 进入身份）。
 /// 限值、容差、x_ref、inspect_range、length_mm 不参与（规格 §1）；N_exp / expected_total 参与（默认做法 6）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanIdentity {
     product_code: u16,
-    segments: Vec<(u32, SegmentKind, Option<u32>)>,
+    segments: Vec<(u32, SegmentKind, Option<u32>, Vec<String>)>,
     cameras: Vec<String>,
     expected_total: Option<u32>,
 }
@@ -203,6 +265,10 @@ pub struct ExportSegment {
     pub expected_frames: Option<u32>,
     pub tolerance: u32,
     pub inspect_range: Option<InspectRange>,
+    #[serde(default)]
+    pub skip_head: u32,
+    #[serde(default)]
+    pub skip_tail: u32,
 }
 
 /// 计划导出 JSON（规格 §1）：PLC 的 shotCount 与 deviceShots 都填 expected_total。
@@ -286,7 +352,7 @@ pub fn validate_defaults(defaults: &KindDefaults) -> Result<(), String> {
 }
 
 /// 段列表的模型约束（规格 §1/§5）：至少一段（空段列表是旧拍照点配方，不经过本函数）；index 从 1 连续；cameras 恰好 3 个且不重复；Corner 段不得带 offset / offset_ref；
-/// offset_ref.camera 属于 cameras；启用的检测项限值合法（见 `validate_checks`）；length_mm 有值时 > 0；
+/// 段检测相机是计划相机的子集且不重复（空为全部）；offset_ref.camera 属于该段的检测相机；启用的检测项限值合法（见 `validate_checks`）；length_mm 有值时 > 0；
 /// inspect_range 满足 0 ≤ a < b，有段长时 b ≤ length_mm；tolerance ≤ 1000；ΣN_exp ≤ 32767。
 pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result<(), String> {
     if cameras.len() != PLAN_CAMERAS {
@@ -307,11 +373,35 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
         if segment.kind == SegmentKind::Corner && segment.offset_ref.is_some() {
             return Err(format!("第 {index} 段是弯道段，不判胶偏，不能配置胶偏参考"));
         }
-        validate_kind_settings(segment.kind, segment.tolerance, &segment.checks, &format!("第 {index} 段"))?;
+        validate_kind_settings(
+            segment.kind,
+            segment.tolerance,
+            &segment.checks,
+            &format!("第 {index} 段"),
+        )?;
+        if segment
+            .cameras
+            .iter()
+            .enumerate()
+            .any(|(i, id)| !cameras.contains(id) || segment.cameras[..i].contains(id))
+        {
+            return Err(format!(
+                "第 {index} 段检测相机 {:?} 须是计划相机 {cameras:?} 中互不相同的几台",
+                segment.cameras
+            ));
+        }
         if let Some(offset_ref) = &segment.offset_ref {
-            if !cameras.contains(&offset_ref.camera) {
-                return Err(format!("第 {index} 段胶偏参考相机 {} 不在计划相机 {cameras:?} 中", offset_ref.camera));
+            if !segment_cameras(segment, cameras).contains(&offset_ref.camera) {
+                return Err(format!(
+                    "第 {index} 段胶偏参考相机 {} 不在该段检测相机中",
+                    offset_ref.camera
+                ));
             }
+        }
+        if segment.skip_head > MAX_TOLERANCE || segment.skip_tail > MAX_TOLERANCE {
+            return Err(format!(
+                "第 {index} 段跳过的帧组数需在 0–{MAX_TOLERANCE} 之间"
+            ));
         }
         if let Some(length) = segment.length_mm {
             if !positive(length) {
@@ -351,7 +441,17 @@ pub fn tolerance_total(segments: &[PathSegment]) -> u32 {
 pub fn plan_identity(product_code: u16, segments: &[PathSegment], cameras: &[String], expected_total: Option<u32>) -> PlanIdentity {
     PlanIdentity {
         product_code,
-        segments: segments.iter().map(|segment| (segment.index, segment.kind, segment.expected_frames)).collect(),
+        segments: segments
+            .iter()
+            .map(|segment| {
+                (
+                    segment.index,
+                    segment.kind,
+                    segment.expected_frames,
+                    segment_cameras(segment, cameras),
+                )
+            })
+            .collect(),
         cameras: cameras.to_vec(),
         expected_total,
     }
@@ -409,6 +509,9 @@ pub fn new_segment(index: u32, kind: SegmentKind, defaults: &KindDefaults) -> Pa
         checks: default.checks.clone(),
         offset_ref: None,
         inspect_range: None,
+        cameras: Vec::new(),
+        skip_head: 0,
+        skip_tail: 0,
     }
 }
 
@@ -436,6 +539,8 @@ pub fn export(
                 expected_frames: segment.expected_frames,
                 tolerance: segment.tolerance,
                 inspect_range: segment.inspect_range.clone(),
+                skip_head: segment.skip_head,
+                skip_tail: segment.skip_tail,
             })
             .collect(),
         expected_total: expected_total(segments, part),
@@ -488,7 +593,7 @@ mod tests {
     #[test]
     fn plan_identity_changes_only_with_sequence_kind_frames_cameras_or_product() {
         let base = identity(&plan());
-        let cases: [(&str, bool, Edit); 14] = [
+        let cases: [(&str, bool, Edit); 16] = [
             ("段类型", true, |p| p.segments[2].kind = Corner),
             ("段顺序", true, |p| {
                 p.segments.swap(0, 1);
@@ -504,6 +609,14 @@ mod tests {
                 p.segments[1].expected_frames = Some(3);
             }),
             ("产品代码", true, |p| p.product = 8),
+            ("段检测相机", true, |p| {
+                p.segments[1].cameras = vec!["camB".into()]
+            }),
+            (
+                "段检测相机列全三台（与不指定相同）",
+                false,
+                |p| p.segments[1].cameras = p.cameras.clone(),
+            ),
             ("容差", false, |p| p.segments[0].tolerance = 3),
             ("胶宽、断胶、溢胶、胶偏限值", false, |p| {
                 let checks = &mut p.segments[0].checks;
@@ -565,7 +678,7 @@ mod tests {
         for (case, edit) in accepted {
             assert_eq!(check(&edited(edit)), Ok(()), "{case}");
         }
-        let cases: [(&str, Edit); 29] = [
+        let cases: [(&str, Edit); 33] = [
             ("没有段", |p| p.segments.clear()),
             ("序号不从 1 起", |p| p.segments.iter_mut().for_each(|segment| segment.index += 1)),
             ("序号跳号", |p| p.segments[2].index = 4),
@@ -575,27 +688,98 @@ mod tests {
             ("相机 4 台", |p| p.cameras.push("camD".into())),
             ("相机重复", |p| p.cameras[2] = "camA".into()),
             ("相机 ID 为空", |p| p.cameras[1] = " ".into()),
-            ("弯道段带胶偏检测", |p| p.segments[1].checks.offset = p.segments[0].checks.offset.clone()),
-            ("弯道段带胶偏参考", |p| p.segments[1].offset_ref = p.segments[0].offset_ref.clone()),
-            ("胶偏参考相机不在计划内", |p| p.segments[0].offset_ref.as_mut().unwrap().camera = "camD".into()),
-            ("检测区间 a = b", |p| p.segments[0].inspect_range = Some(InspectRange { a_mm: 10.0, b_mm: 10.0 })),
-            ("检测区间 a < 0", |p| p.segments[0].inspect_range = Some(InspectRange { a_mm: -1.0, b_mm: 10.0 })),
-            ("检测区间不是有限值", |p| p.segments[0].inspect_range = Some(InspectRange { a_mm: 0.0, b_mm: f64::NAN })),
-            ("容差超过 1000", |p| p.segments[1].tolerance = MAX_TOLERANCE + 1),
-            ("ΣN_exp 超过 32767", |p| p.segments[0].expected_frames = Some(MAX_EXPECTED_TOTAL - 4 - 9 + 1)),
-            ("胶宽名义值为 0", |p| p.segments[1].checks.width.nominal_mm = 0.0),
-            ("胶宽上允差为负", |p| p.segments[1].checks.width.tol_upper = -0.1),
-            ("胶宽下允差为负", |p| p.segments[1].checks.width.tol_lower = -0.1),
-            ("胶宽允许超差长度为负", |p| p.segments[1].checks.width.max_excursion_mm = -1.0),
-            ("胶宽均匀性极差上限为负", |p| p.segments[0].checks.width.max_range_mm = Some(-0.1)),
-            ("胶宽限值不是有限值", |p| p.segments[0].checks.width.tol_upper = f64::INFINITY),
-            ("允许断胶长度为负", |p| p.segments[1].checks.gap.max_gap_mm = -1.0),
-            ("有胶比例大于 1", |p| p.segments[1].checks.gap.min_present = 1.2),
-            ("有胶比例小于 0", |p| p.segments[1].checks.gap.min_present = -0.1),
-            ("溢胶上限为 0", |p| p.segments[1].checks.overflow.max_width_mm = 0.0),
-            ("胶偏整段偏移限值为负", |p| p.segments[0].checks.offset.as_mut().unwrap().max_mean_shift_mm = -1.0),
-            ("胶偏局部跑偏限值为负", |p| p.segments[0].checks.offset.as_mut().unwrap().max_local_dev_mm = -1.0),
+            ("弯道段带胶偏检测", |p| {
+                p.segments[1].checks.offset = p.segments[0].checks.offset.clone()
+            }),
+            ("弯道段带胶偏参考", |p| {
+                p.segments[1].offset_ref = p.segments[0].offset_ref.clone()
+            }),
+            ("胶偏参考相机不在计划内", |p| {
+                p.segments[0].offset_ref.as_mut().unwrap().camera = "camD".into()
+            }),
+            ("胶偏参考相机不在该段检测相机中", |p| {
+                p.segments[0].cameras = vec!["camB".into()]
+            }),
+            ("段检测相机不在计划内", |p| {
+                p.segments[1].cameras = vec!["camD".into()]
+            }),
+            ("段检测相机重复", |p| {
+                p.segments[1].cameras = vec!["camB".into(), "camB".into()]
+            }),
+            ("检测区间 a = b", |p| {
+                p.segments[0].inspect_range = Some(InspectRange {
+                    a_mm: 10.0,
+                    b_mm: 10.0,
+                })
+            }),
+            ("检测区间 a < 0", |p| {
+                p.segments[0].inspect_range = Some(InspectRange {
+                    a_mm: -1.0,
+                    b_mm: 10.0,
+                })
+            }),
+            ("检测区间不是有限值", |p| {
+                p.segments[0].inspect_range = Some(InspectRange {
+                    a_mm: 0.0,
+                    b_mm: f64::NAN,
+                })
+            }),
+            ("容差超过 1000", |p| {
+                p.segments[1].tolerance = MAX_TOLERANCE + 1
+            }),
+            ("ΣN_exp 超过 32767", |p| {
+                p.segments[0].expected_frames = Some(MAX_EXPECTED_TOTAL - 4 - 9 + 1)
+            }),
+            ("胶宽名义值为 0", |p| {
+                p.segments[1].checks.width.nominal_mm = 0.0
+            }),
+            ("胶宽上允差为负", |p| {
+                p.segments[1].checks.width.tol_upper = -0.1
+            }),
+            ("胶宽下允差为负", |p| {
+                p.segments[1].checks.width.tol_lower = -0.1
+            }),
+            ("胶宽允许超差长度为负", |p| {
+                p.segments[1].checks.width.max_excursion_mm = -1.0
+            }),
+            ("胶宽均匀性极差上限为负", |p| {
+                p.segments[0].checks.width.max_range_mm = Some(-0.1)
+            }),
+            ("胶宽限值不是有限值", |p| {
+                p.segments[0].checks.width.tol_upper = f64::INFINITY
+            }),
+            ("允许断胶长度为负", |p| {
+                p.segments[1].checks.gap.max_gap_mm = -1.0
+            }),
+            ("有胶比例大于 1", |p| {
+                p.segments[1].checks.gap.min_present = 1.2
+            }),
+            ("有胶比例小于 0", |p| {
+                p.segments[1].checks.gap.min_present = -0.1
+            }),
+            ("溢胶上限为 0", |p| {
+                p.segments[1].checks.overflow.max_width_mm = 0.0
+            }),
+            ("胶偏整段偏移限值为负", |p| {
+                p.segments[0]
+                    .checks
+                    .offset
+                    .as_mut()
+                    .unwrap()
+                    .max_mean_shift_mm = -1.0
+            }),
+            ("胶偏局部跑偏限值为负", |p| {
+                p.segments[0]
+                    .checks
+                    .offset
+                    .as_mut()
+                    .unwrap()
+                    .max_local_dev_mm = -1.0
+            }),
             ("段长为 0", |p| p.segments[2].length_mm = Some(0.0)),
+            ("段首跳过帧超过上限", |p| {
+                p.segments[0].skip_head = MAX_TOLERANCE + 1
+            }),
             ("检测区间终点超出段长", |p| {
                 p.segments[2].length_mm = Some(100.0);
                 p.segments[2].inspect_range = Some(InspectRange { a_mm: 10.0, b_mm: 100.5 });

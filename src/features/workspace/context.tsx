@@ -9,7 +9,7 @@ import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import type { CameraTeachDraft } from "../plan/types";
 import type { Workspace, WorkspaceView } from "./types";
-import { corridorDraft, sameCorridor, withCorridor } from "./teach";
+import { draftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
 import { useSnackbar, type SnackbarMessage } from "qing-steel";
 import "./workspace.css";
 
@@ -19,11 +19,11 @@ interface WorkspaceContextValue {
   list: RecipeSummary[]; drafts: Workspace[]; cameras: CameraConfig[]; unavailable: UnavailableRecipe[];
   selectedId: string | null; data: WorkspaceView | null; doc: RecipeDoc | null; preview: Recipe | null;
   previewError: string; error: string; busy: boolean; dirty: boolean; frameDirty: boolean;
-  /** 走廊示教里尚未保存的草稿（走廊、像素当量、检测参数），按相机 id */
+  /** 走廊示教里尚未保存的段走廊草稿，按“相机#段号”；像素当量与检测参数随相机，只读 */
   corridorDrafts: Record<string, CameraTeachDraft>;
   select: (id: string) => Promise<WorkspaceView | null>; clearSelection:()=>void; reloadList: () => Promise<void>;
   setDoc: (doc: RecipeDoc) => void;
-  setCorridorDraft: (camera: string, draft: CameraTeachDraft) => void;
+  setCorridorDraft: (key: string, draft: CameraTeachDraft) => void;
   act: (request: () => Promise<WorkspaceView>, message?: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => Promise<WorkspaceView | null>;
   saveDoc: (doc?: RecipeDoc) => Promise<WorkspaceView | null>;
   saveState: "saved" | "saving" | "failed" | "pending"; retrySave: () => void;
@@ -61,18 +61,21 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const cameraSources=useRef<Record<string, string>>({});
   const dirty = !!doc && !!data && !equal(doc, data.workspace.doc);
   // 草稿与候选里已保存的走廊比较（按 f32），不同才算未保存
-  const savedCorridor = (camera: string) => corridorDraft(data?.workspace.doc.inspect?.find(item => item.camera === camera));
-  const frameDirty = Object.keys(corridorDrafts).some(camera => !sameCorridor(corridorDrafts[camera], savedCorridor(camera)));
+  const savedCorridor = (key: string) => savedDraft(data?.workspace.doc, key);
+  const frameDirty = Object.keys(corridorDrafts).some(key => !sameCorridor(corridorDrafts[key], savedCorridor(key)));
   dirtyRef.current = dirty || frameDirty;
 
   const accept = useCallback((next: WorkspaceView) => {
-    // 走廊草稿按相机 id 存，换了配方或相机组变化时清空，免得走廊落到别的相机上
+    // 段走廊草稿按“相机#段号”存，换了配方或相机组变化时清空，免得走廊落到别的相机上
     const inspect=next.workspace.doc.inspect??[];
     const cameraKey=JSON.stringify([next.workspace.doc.id,inspect.map(item=>item.camera)]);
     const camerasChanged=cameraKey!==cameraList.current;cameraList.current=cameraKey;
     const previousCameraSources=cameraSources.current;
-    // 这台相机换了示教帧或标定：旧草稿是在旧帧上画的，丢弃
-    const cameraSourceKeys=Object.fromEntries(inspect.map(item=>[item.camera,JSON.stringify([item.calib,next.plan.cameraTeaching.find(t=>t.camera===item.camera)?.frame?.id??null])]));
+    // 某段走廊换了示教帧或相机换了标定：旧草稿是在旧帧上画的，丢弃
+    const cameraSourceKeys=Object.fromEntries(inspect.flatMap(item=>{
+      const teaching=next.plan.cameraTeaching.find(t=>t.camera===item.camera);
+      return (teaching?.segments??[]).map(s=>[draftKey(item.camera,s.segment),JSON.stringify([item.calib,s.frame.id])]);
+    }));
     cameraSources.current=cameraSourceKeys;
     setData(next);
     setDoc(next.workspace.doc);
@@ -81,12 +84,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setCorridorDrafts(previous => {
       if (camerasChanged) return {};
       const kept: Record<string, CameraTeachDraft> = {};
-      for (const [camera, draft] of Object.entries(previous)) {
-        if(previousCameraSources[camera]!==cameraSourceKeys[camera])continue;
-        const saved = corridorDraft(inspect.find(item => item.camera === camera));
-        // 取样后后端补上了像素当量：草稿还没有时跟着用
-        const merged = !Number.isFinite(draft.mmPerPx) && Number.isFinite(saved.mmPerPx) ? { ...draft, mmPerPx: saved.mmPerPx } : draft;
-        if (!sameCorridor(merged, saved)) kept[camera] = merged;
+      for (const [key, draft] of Object.entries(previous)) {
+        if(previousCameraSources[key]!==cameraSourceKeys[key])continue;
+        const saved = savedDraft(next.workspace.doc, key);
+        // 像素当量与检测参数跟着相机（含选帧后后端补上的设备标定当量）
+        const merged = { ...draft, mmPerPx: saved.mmPerPx, detect: saved.detect };
+        if (!sameCorridor(merged, saved)) kept[key] = merged;
       }
       return kept;
     });
@@ -198,14 +201,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!data || !doc || busy || !desktopAvailable()) return;
-    const corridor = Object.entries(corridorDrafts).find(([camera, draft]) => !sameCorridor(draft, savedCorridor(camera)));
+    const corridor = Object.entries(corridorDrafts).find(([key, draft]) => !sameCorridor(draft, savedCorridor(key)));
     if (!dirty && !corridor) { setSaveState("saved"); return; }
     const signature = JSON.stringify([doc, corridor, saveRetry]);
     if (failedSave.current === signature) return;
     setSaveState("pending");
     const timer = setTimeout(async () => {
       setSaveState("saving");
-      // 走廊草稿并入候选配方的 inspect，整份经 workspace_save_doc 提交（没有单独的草稿命令）
+      // 段走廊草稿并入候选配方这台相机的 inspect.segments，整份经 workspace_save_doc 提交（没有单独的草稿命令）
       const result = dirty ? await act(() => workspaceApi.saveDoc(doc.id, data.workspace.revision, doc))
         : await act(() => workspaceApi.saveDoc(doc.id, data.workspace.revision, withCorridor(data.workspace.doc, corridor![0], corridor![1])));
       if (!result) { failedSave.current = signature; setSaveState("failed"); }
@@ -217,7 +220,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || preferenceError || recipeErrors, busy, dirty, frameDirty,
     clearSelection:()=>{pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setError("");clearSnack();},
     corridorDrafts, select, reloadList, setDoc,
-    setCorridorDraft:(camera, draft) => setCorridorDrafts(previous => ({ ...previous, [camera]:draft })),
+    setCorridorDraft:(key, draft) => setCorridorDrafts(previous => ({ ...previous, [key]:draft })),
     act, saveDoc, saveState, retrySave: () => setSaveRetry(v => v + 1), setError }}>{children}</Context.Provider>;
 }
 

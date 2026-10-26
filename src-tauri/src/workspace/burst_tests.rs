@@ -1,16 +1,26 @@
+use super::burst::{
+    add_calibration_round, apply_calibration, calibration_round, calibration_view, check_round,
+    confirm_tolerance, measure_round, read_features, segment_round, update_segments,
+    write_features, BOUNDARIES_FILE, FEATURES_FILE,
+};
 use super::*;
-use super::burst::{add_calibration_round, apply_calibration, calibration_round, calibration_view, check_round, confirm_tolerance,
-    measure_round, segment_round, update_segments, write_features, BOUNDARIES_FILE, FEATURES_FILE};
 use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::plan::{new_segment, OffsetMeasure, OffsetRef, PathSegment, SegmentCalib, SegmentKind::{self, Corner, Straight}};
 use crate::recipe_capture::CaptureRoundV2;
 
 pub(super) const DEVICE: &str = "device-a";
 
-/// 段配方候选：三台模拟相机 cam1–cam3、走廊已示教，段按 kinds 新建（N_exp 待标定）。
+/// 段配方候选：三台模拟相机 cam1–cam3（都检测每一段、有像素当量），段按 kinds 新建（N_exp 待标定），还没有走廊与示教帧。
 pub(super) fn burst_workspace(kinds: &[SegmentKind]) -> Workspace {
     let mut doc = crate::recipe::samples_burst();
-    doc.segments = kinds.iter().enumerate().map(|(i, &kind)| new_segment(i as u32 + 1, kind, &doc.segment_defaults)).collect();
+    doc.segments = kinds
+        .iter()
+        .enumerate()
+        .map(|(i, &kind)| new_segment(i as u32 + 1, kind, &doc.segment_defaults))
+        .collect();
+    doc.inspect
+        .iter_mut()
+        .for_each(|inspect| inspect.segments.clear());
     doc.build().unwrap();
     Workspace::new(doc, None)
 }
@@ -39,8 +49,21 @@ pub(super) fn configs(doc: &RecipeDoc, config: &str) -> BTreeMap<String, Value> 
 
 /// 测成的一帧，胶中心偏移 x（mm）；相机下标与 seq 由 measure_round 填。
 pub(super) fn measured(x: f64) -> FrameMetrics {
-    FrameMetrics { camera: 0, seq: 0, state: FrameState::Measured, error: None, width_min: Some(4.0), width_max: Some(4.0), width_mean: Some(4.0),
-        widths: vec![Some(4.0)], spacing_mm: 1.0, gap_max_mm: 0.0, present_ratio: 1.0, x_mm: Some(x) }
+    FrameMetrics {
+        camera: 0,
+        seq: 0,
+        state: FrameState::Measured,
+        error: None,
+        width_min: Some(4.0),
+        width_max: Some(4.0),
+        width_mean: Some(4.0),
+        widths: vec![Some(4.0)],
+        spacing_mm: 1.0,
+        gap_max_mm: 0.0,
+        present_ratio: 1.0,
+        x_mm: Some(x),
+        corridor: None,
+    }
 }
 
 /// 按加入标定的流程加一轮：核对、量每一帧（x 由 x_of(计划相机下标, seq) 给出）、记进候选。
@@ -278,7 +301,8 @@ fn new_candidate_from_copied_burst_recipe_builds_without_its_calibration() {
 
 #[test]
 fn calibration_round_writes_per_frame_features_and_boundaries_files() {
-    // 防的回归（规格 §6 保存每帧特征与边界帧号，供分段算法）：缺帧或测量失败的帧不写进特征文件、顺序乱、相机写成下标，或分段结果没落盘
+    // 防的回归（规格 §6 保存每帧特征与边界帧号，供分段算法与多轮标定页逐帧查看）：缺帧或测量失败的帧不写进特征文件、顺序乱、
+    // 相机写成下标，分段结果没落盘；或读回时相机下标对不上当前计划相机（逐帧查看把帧挂到别的相机上）
     let w = burst_workspace(&[Straight]);
     let cameras = w.doc.plan_cameras();
     // cam2 缺第 2 帧组；cam3 第 3 帧组测量失败
@@ -297,4 +321,18 @@ fn calibration_round_writes_per_frame_features_and_boundaries_files() {
     assert_eq!((at("cam3", 3)["state"].clone(), at("cam3", 3)["error"].clone()), (json!("error"), json!("lyFlow 运行失败")));
     let boundaries: Value = serde_json::from_str(&std::fs::read_to_string(dir.0.join(BOUNDARIES_FILE)).unwrap()).unwrap();
     assert_eq!(boundaries, json!({"kind": "unsegmented"}));
+    assert_eq!(
+        read_features(&dir.0, &cameras).unwrap(),
+        metrics,
+        "读回与写入一致"
+    );
+    let reordered = [cameras[2].clone(), cameras[0].clone()];
+    let back = read_features(&dir.0, &reordered).unwrap();
+    assert!(
+        back.iter().all(|m| metrics.iter().any(|w| w.seq == m.seq
+            && cameras[w.camera] == reordered[m.camera]
+            && w.state == m.state)),
+        "按当前计划相机重新编下标"
+    );
+    assert_eq!(back.len(), 6, "不再是计划相机的行丢弃");
 }

@@ -33,14 +33,15 @@ export function countStatusLabel(status: CountStatus | null | undefined): string
   return status ? countStatusText[status] : "未核对帧数";
 }
 
-export const unsegReasonText: Record<UnsegReason, string> = { algorithmPending: "分段算法未就绪", lowConfidence: "分段不确定" };
+export const unsegReasonText: Record<UnsegReason, string> = { algorithmPending: "分段算法未就绪", lowConfidence: "分段不确定", transition: "边界过渡区" };
 
-/** 区域名：“段 1 · 直线”“段 2 · 弯道”“段 1–3 · 未分段”。 */
+/** 区域名：“段 1 · 直线”“段 2 · 弯道”“段 1–3 · 未分段”“段 1–2 · 边界过渡”。 */
 export function regionKindLabel(kind: RegionKind): string {
   switch (kind.type) {
     case "straight": return `段 ${kind.segment} · 直线`;
     case "corner": return `段 ${kind.segment} · 弯道`;
-    case "unsegmented": return `${kind.firstSegment === kind.lastSegment ? `段 ${kind.firstSegment}` : `段 ${kind.firstSegment}–${kind.lastSegment}`} · 未分段`;
+    case "skipped": return `段 ${kind.segment} · 跳过`;
+    case "unsegmented": return `${kind.firstSegment === kind.lastSegment ? `段 ${kind.firstSegment}` : `段 ${kind.firstSegment}–${kind.lastSegment}`} · ${kind.reason === "transition" ? "边界过渡" : "未分段"}`;
   }
 }
 
@@ -59,8 +60,9 @@ export const offsetUnjudgedText: Record<OffsetUnjudged, string> = {
 
 export const uncheckedText: Record<UncheckedItem, string> = { bubble: "气泡", stringing: "拉丝" };
 
-/** 未检区域：“段 1 · 0–5 mm”；段长未知时“段 3 · 75 mm 之后”。 */
+/** 未检区域：“段 1 · 帧组 1–2（跳过）”；旧记录按毫米：“段 1 · 0–5 mm”，段长未知时“段 3 · 75 mm 之后”。 */
 export function uninspectedText(u: Uninspected): string {
+  if (u.fromSeq != null) return `段 ${u.segment} · 帧组 ${u.fromSeq === u.toSeq ? u.fromSeq : `${u.fromSeq}–${u.toSeq}`}（跳过）`;
   return `段 ${u.segment} · ${u.toMm == null ? `${u.fromMm} mm 之后` : `${u.fromMm}–${u.toMm} mm`}`;
 }
 
@@ -93,8 +95,9 @@ export function verdictPlanTone(verdict: Verdict): PlanTone {
   return verdict === "OK" ? "ok" : verdict === "OK_WITH_EXCURSION" ? "warn" : "ng";
 }
 
-/** 帧组格子（一台相机一帧）的显示状态：到达前 waiting，测量中 measuring，测完按该帧结论，其余为缺帧类状态（都只算检测不完整）。 */
-export type GroupCellState = "waiting" | "measuring" | "ok" | "excursion" | "ng" | "error" | "missing" | "unmeasured" | "outOfCorridor";
+/** 帧组格子（一台相机一帧）的显示状态：到达前 waiting，测量中 measuring，测完按该帧结论，其余为缺帧类状态（都只算检测不完整）；
+ * notInspected 是这一帧所在段不由这台相机检测，按设计不测，不算检测不完整。 */
+export type GroupCellState = "waiting" | "measuring" | "ok" | "excursion" | "ng" | "error" | "missing" | "unmeasured" | "outOfCorridor" | "notInspected";
 
 export function groupCellState(group: FrameGroupView, cam: number): GroupCellState {
   const cell = group.cells[cam];
@@ -111,13 +114,13 @@ export function groupCellState(group: FrameGroupView, cam: number): GroupCellSta
 
 export const groupCellText: Record<GroupCellState, string> = {
   waiting: "等待", measuring: "测量中", ok: "OK", excursion: "局部超差", ng: "NG", error: "测量失败",
-  missing: "缺帧", unmeasured: "未测", outOfCorridor: "出走廊",
+  missing: "缺帧", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测",
 };
 
-/** 格子颜色：缺帧、未测、出走廊为灰色（只算检测不完整，不是 NG）。 */
+/** 格子颜色：缺帧、未测、出走廊为灰色（只算检测不完整，不是 NG）；本段不检测为浅灰。 */
 export const groupCellColor: Record<GroupCellState, string> = {
   waiting: "var(--surface-high)", measuring: "var(--primary)", ok: "var(--ok)", excursion: "var(--warn)", ng: "var(--ng)", error: "var(--fault)",
-  missing: "var(--on-surface-disabled)", unmeasured: "var(--on-surface-disabled)", outOfCorridor: "var(--on-surface-disabled)",
+  missing: "var(--on-surface-disabled)", unmeasured: "var(--on-surface-disabled)", outOfCorridor: "var(--on-surface-disabled)", notInspected: "var(--outline-variant)",
 };
 
 /** 这一格算不算“检测不完整”（缺帧、测量失败、未测、出走廊）。 */

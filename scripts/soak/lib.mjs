@@ -73,7 +73,7 @@ export async function setupRecipe(call, sampleSetDir, log = console.log) {
   const built = await buildBurstRecipe(call, { sourceId: manifest.id, partId: SAMPLE_PART, doc: { ...template, id: RECIPE_ID, name: "长稳测试" }, patchSegments: checksOff, log });
   assert(built.validation.passed, `验证未通过：${JSON.stringify(built.validation.checks.filter(c => !c.passed))} ${JSON.stringify(built.validation.samples)}`);
   await until(async () => (await call("cycle_readiness")).recipes.find(r => r.id === built.id)?.runnable === true, Boolean, `配方 ${built.id} 预热后仍不可运行`, 90000, 500);
-  log(`配方 ${built.id} 已发布：ΣN_exp ${built.calibration.expectedTotal} ± ${built.calibration.toleranceTotal}，示教 ${built.taught.length} 台相机的走廊`);
+  log(`配方 ${built.id} 已发布：ΣN_exp ${built.calibration.expectedTotal} ± ${built.calibration.toleranceTotal}，示教 ${built.taught.length} 条段走廊`);
   return { model: "burst", recipeId: built.id, cameraIds, taught: built.taught, expectedTotal: built.calibration.expectedTotal,
     toleranceTotal: built.calibration.toleranceTotal, validation: built.validation.samples };
 }

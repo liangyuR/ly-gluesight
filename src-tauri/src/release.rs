@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::recipe::{CameraInspect, Recipe, RecipeDoc};
 
-/// 段配方的发布包，按计划相机组织（D-SB-30）：每台相机一张示教帧、一份标定与一条走廊。其他版本按版本不符拒绝。
-pub const RELEASE_SCHEMA_BURST: u32 = 4;
+/// 段配方的发布包，按计划相机组织（D-SB-30、D-SB-45）：每台相机一份标定，它检测的每一段一张示教帧与一条走廊。
+/// 其他版本按版本不符拒绝；按相机一条走廊的 4 已放弃，需要重新发布。
+pub const RELEASE_SCHEMA_BURST: u32 = 5;
 /// 旧拍照点配方的发布包版本，已停用：加载时给出明确提示。
 const LEGACY_RELEASE_SCHEMA: u32 = 3;
 
@@ -31,17 +32,23 @@ pub enum ResourceSource {
     Bytes(Vec<u8>),
 }
 
-/// 段配方一台检测相机的发布资源。
+/// 段配方一台检测相机的发布资源：标定按相机，示教帧按它检测的每一段。
 #[derive(Clone, Debug)]
 pub struct CameraInput {
     pub camera: String,
-    /// 示教走廊所在的冻结帧（预热在它上面量一次）
-    pub image: ResourceSource,
-    pub image_id: String,
     pub calibration: ResourceSource,
+    pub corridors: Vec<CorridorInput>,
 }
 
-/// 段配方的发布输入（schema 4）。`graph` 是 `production::burst_graphs` 的结果，生产加载时按配方重算比对。
+/// 一台相机在一段的示教帧（走廊在它上面示教，预热在它上面量一次）。
+#[derive(Clone, Debug)]
+pub struct CorridorInput {
+    pub segment: u32,
+    pub image: ResourceSource,
+    pub image_id: String,
+}
+
+/// 段配方的发布输入（schema 5）。`graph` 是 `production::burst_graphs` 的结果，生产加载时按配方重算比对。
 #[derive(Clone, Debug)]
 pub struct BurstPublishInput {
     pub recipe: RecipeDoc,
@@ -58,18 +65,26 @@ pub struct FileEntry {
     pub bytes: u64,
 }
 
-/// 段配方发布包里一台计划相机（schema 4）：资源都在 `cameras/{index:02}/` 下。
+/// 段配方发布包里一台计划相机（schema 5）：资源都在 `cameras/{index:02}/` 下，各段的在 `s{segment:02}/` 子目录。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CameraManifest {
     /// 计划相机下标（配方 inspect 的顺序）
     pub index: usize,
     pub camera: String,
-    /// 示教帧尺寸：生产每帧必须同尺寸
+    /// 示教帧尺寸：这台相机各段示教帧同尺寸，生产每帧必须同尺寸
     pub size: [u32; 2],
+    pub calibration: String,
+    /// 它检测的各段，按配方段顺序
+    pub corridors: Vec<CorridorManifest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CorridorManifest {
+    pub segment: u32,
     pub image: String,
     pub image_id: String,
-    pub calibration: String,
     pub corridor: String,
 }
 
@@ -92,12 +107,13 @@ pub struct ReleaseManifest {
     pub files: Vec<FileEntry>,
 }
 
-/// 段配方一台相机的走廊资源：冻结的走廊几何、当量与站距，加载时按配方重算比对。
+/// 段配方一台相机在一段的走廊资源：冻结的走廊几何、当量与站距，加载时按配方重算比对。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CorridorResource {
     pub schema_version: u32,
     pub camera: String,
+    pub segment: u32,
     pub size: [u32; 2],
     pub spacing: f32,
     pub mm_per_px: Option<f64>,
@@ -110,9 +126,16 @@ pub struct CameraResources {
     pub dir: PathBuf,
     pub camera: String,
     pub size: [u32; 2],
+    pub calibration: PathBuf,
+    pub corridors: Vec<CorridorResources>,
+}
+
+/// 一台相机在一段的示教帧（绝对路径）。
+#[derive(Clone, Debug)]
+pub struct CorridorResources {
+    pub segment: u32,
     pub image: PathBuf,
     pub image_id: String,
-    pub calibration: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -147,20 +170,30 @@ impl ReleaseBundle {
         Ok(())
     }
 
-    /// 段配方第 index 台计划相机的资源（schema 4）。
+    /// 段配方第 index 台计划相机的资源（schema 5）。
     pub fn camera(&self, index: usize) -> Result<CameraResources, String> {
         self.verify()?;
         let inspect = self.recipe.inspect.get(index).ok_or("发布包内没有该计划相机")?;
         let entry = self.manifest.cameras.get(index).filter(|c| c.index == index && c.camera == inspect.camera)
             .ok_or("发布清单内缺少该计划相机或与配方顺序不一致")?;
-        read_json::<CorridorResource>(&resource_path(&self.root, &entry.corridor)?)?;
+        let corridors = entry
+            .corridors
+            .iter()
+            .map(|c| {
+                read_json::<CorridorResource>(&resource_path(&self.root, &c.corridor)?)?;
+                Ok(CorridorResources {
+                    segment: c.segment,
+                    image: resource_path(&self.root, &c.image)?,
+                    image_id: c.image_id.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(CameraResources {
             dir: resource_path(&self.root, &camera_prefix(index))?,
             camera: entry.camera.clone(),
             size: entry.size,
-            image: resource_path(&self.root, &entry.image)?,
-            image_id: entry.image_id.clone(),
             calibration: resource_path(&self.root, &entry.calibration)?,
+            corridors,
         })
     }
 }
@@ -170,20 +203,63 @@ fn camera_prefix(index: usize) -> String {
     format!("cameras/{index:02}")
 }
 
-fn corridor_data(recipe: &Recipe, inspect: &CameraInspect, size: [u32; 2]) -> CorridorResource {
-    CorridorResource { schema_version: RELEASE_SCHEMA_BURST, camera: inspect.camera.clone(), size, spacing: recipe.spacing,
-        mm_per_px: inspect.mm_per_px, corridor: inspect.corridor.clone() }
+/// 段配方一台相机一段的资源目录（相对发布包根）。
+fn corridor_prefix(index: usize, segment: u32) -> String {
+    format!("{}/s{segment:02}", camera_prefix(index))
 }
 
-fn check_corridor(inspect: &CameraInspect, size: [u32; 2]) -> Result<(), String> {
-    if !crate::vision::corridor_inside(&inspect.corridor, size) {
-        return Err(format!("相机 {} 的检测走廊超出示教帧 {}×{}", inspect.camera, size[0], size[1]));
+/// 这台相机检测的各段（按配方段顺序）：发布包要为每一段冻结一张示教帧和一条走廊。
+fn detected_segments(recipe: &Recipe, camera: &str) -> Vec<u32> {
+    let cameras = recipe.plan_cameras();
+    recipe
+        .path_segments
+        .iter()
+        .filter(|s| {
+            crate::plan::segment_cameras(s, &cameras)
+                .iter()
+                .any(|c| c == camera)
+        })
+        .map(|s| s.index)
+        .collect()
+}
+
+fn corridor_data(
+    recipe: &Recipe,
+    inspect: &CameraInspect,
+    segment: u32,
+    size: [u32; 2],
+) -> CorridorResource {
+    CorridorResource {
+        schema_version: RELEASE_SCHEMA_BURST,
+        camera: inspect.camera.clone(),
+        segment,
+        size,
+        spacing: recipe.spacing,
+        mm_per_px: inspect.mm_per_px,
+        corridor: inspect
+            .segment_corridor(segment)
+            .map(|s| s.corridor.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn check_corridor(inspect: &CameraInspect, segment: u32, size: [u32; 2]) -> Result<(), String> {
+    let corridor = inspect
+        .segment_corridor(segment)
+        .map(|s| s.corridor.as_slice())
+        .unwrap_or_default();
+    if !crate::vision::corridor_inside(corridor, size) {
+        return Err(format!(
+            "相机 {} 第 {segment} 段的检测走廊超出示教帧 {}×{}",
+            inspect.camera, size[0], size[1]
+        ));
     }
     Ok(())
 }
 
-/// 段配方的发布（schema 4，D-SB-30）：按计划相机冻结示教帧、标定与走廊。前置 `Recipe::ready_burst`（三台相机都示教了
-/// 走廊和当量，整件预期帧组数已标定）；资源必须恰好覆盖每台计划相机一次；走廊必须落在这台相机的示教帧内。
+/// 段配方的发布（schema 5，D-SB-30、D-SB-45）：按计划相机冻结标定，按它检测的每一段冻结示教帧与走廊。前置
+/// `Recipe::ready_burst`（每段每台检测相机都示教了走廊、相机有当量、已标定）；资源必须恰好覆盖每台计划相机一次、
+/// 每台相机恰好覆盖它检测的各段；一台相机的各段示教帧同尺寸；走廊必须落在所在段的示教帧内。
 /// 测量图由调用方给（`production::burst_graphs`），生产加载时按配方重算比对。
 pub fn publish_burst(releases_root: &Path, input: BurstPublishInput) -> Result<ReleaseBundle, String> {
     let recipe = input.recipe.build()?;
@@ -212,22 +288,62 @@ pub fn publish_burst(releases_root: &Path, input: BurstPublishInput) -> Result<R
     for (index, inspect) in recipe.inspect.iter().enumerate() {
         let source = inputs.remove(&inspect.camera).ok_or("发布资源缺少检测相机")?;
         let label = format!("相机 {}", inspect.camera);
-        if !crate::recipe::valid_image_id(&source.image_id) {
-            return Err(format!("{label} 的发布示教帧缺少有效的示教图编号"));
+        let expected = detected_segments(&recipe, &inspect.camera);
+        let mut sources: BTreeMap<u32, CorridorInput> = BTreeMap::new();
+        for corridor in source.corridors {
+            let segment = corridor.segment;
+            if !expected.contains(&segment) || sources.insert(segment, corridor).is_some() {
+                return Err(format!(
+                    "{label} 第 {segment} 段的发布资源重复或该段不由这台相机检测"
+                ));
+            }
         }
         let prefix = camera_prefix(index);
-        let bytes = source_bytes(source.image)?;
-        let (size, extension) = image_details(&bytes, &label)?;
-        check_corridor(inspect, size)?;
-        let image = format!("{prefix}/image.{extension}");
-        add_file(&mut files, image.clone(), bytes)?;
+        let mut size = None;
+        let mut corridors = Vec::new();
+        for segment in expected {
+            let source = sources
+                .remove(&segment)
+                .ok_or_else(|| format!("{label} 缺少第 {segment} 段的示教帧"))?;
+            if !crate::recipe::valid_image_id(&source.image_id) {
+                return Err(format!(
+                    "{label} 第 {segment} 段的发布示教帧缺少有效的示教图编号"
+                ));
+            }
+            let bytes = source_bytes(source.image)?;
+            let (frame, extension) = image_details(&bytes, &label)?;
+            if *size.get_or_insert(frame) != frame {
+                return Err(format!("{label} 各段示教帧尺寸不同"));
+            }
+            check_corridor(inspect, segment, frame)?;
+            let dir = corridor_prefix(index, segment);
+            let image = format!("{dir}/image.{extension}");
+            add_file(&mut files, image.clone(), bytes)?;
+            let corridor = format!("{dir}/corridor.json");
+            add_file(
+                &mut files,
+                corridor.clone(),
+                json_bytes(&corridor_data(&recipe, inspect, segment, frame))?,
+            )?;
+            corridors.push(CorridorManifest {
+                segment,
+                image,
+                image_id: source.image_id,
+                corridor,
+            });
+        }
+        let size = size.ok_or_else(|| format!("{label} 不检测任何一段"))?;
         let calibration_bytes = source_bytes(source.calibration)?;
         json_object(&calibration_bytes, &format!("{label} 标定"))?;
         let calibration = format!("{prefix}/calibration.json");
         add_file(&mut files, calibration.clone(), calibration_bytes)?;
-        let corridor = format!("{prefix}/corridor.json");
-        add_file(&mut files, corridor.clone(), json_bytes(&corridor_data(&recipe, inspect, size))?)?;
-        cameras.push(CameraManifest { index, camera: inspect.camera.clone(), size, image, image_id: source.image_id, calibration, corridor });
+        cameras.push(CameraManifest {
+            index,
+            camera: inspect.camera.clone(),
+            size,
+            calibration,
+            corridors,
+        });
     }
     let bundle_id = new_bundle_id()?;
     let manifest = ReleaseManifest {
@@ -347,8 +463,9 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
     Ok(ReleaseBundle { id: bundle_id.into(), root: root.to_path_buf(), manifest, recipe })
 }
 
-/// 段配方（schema 4）的资源核对，返回引用到的资源：清单按配方 inspect 顺序列出每台计划相机，资源在 `cameras/{index:02}/`；
-/// 示教帧解码后的尺寸与清单一致、走廊落在帧内；标定是非空 JSON 对象；走廊资源按配方重算比对。
+/// 段配方（schema 5）的资源核对，返回引用到的资源：清单按配方 inspect 顺序列出每台计划相机，资源在 `cameras/{index:02}/`，
+/// 每台相机按配方段顺序列出它检测的各段（`s{segment:02}/`）；各段示教帧解码后的尺寸都与清单一致、走廊落在帧内；
+/// 标定是非空 JSON 对象；走廊资源按配方重算比对。
 fn camera_resources(manifest: &ReleaseManifest, files: &BTreeMap<&str, Vec<u8>>, recipe: &RecipeDoc, built: &Recipe) -> Result<BTreeSet<String>, String> {
     built.ready_burst().map_err(|reasons| reasons.join("；"))?;
     if recipe.id != manifest.recipe_id || built.revision_id != manifest.recipe_revision || built.version != manifest.recipe_version
@@ -363,27 +480,43 @@ fn camera_resources(manifest: &ReleaseManifest, files: &BTreeMap<&str, Vec<u8>>,
             return Err(format!("发布清单第 {} 台相机的身份与配方不一致", index + 1));
         }
         let prefix = camera_prefix(index);
-        if entry.calibration != format!("{prefix}/calibration.json") || entry.corridor != format!("{prefix}/corridor.json") {
-            return Err(format!("{label} 的标定或走廊资源引用无效"));
+        if entry.calibration != format!("{prefix}/calibration.json") {
+            return Err(format!("{label} 的标定资源引用无效"));
         }
-        if !crate::recipe::valid_image_id(&entry.image_id) {
-            return Err(format!("{label} 的示教图编号格式无效"));
+        validate_relative(&entry.calibration)?;
+        if !referenced.insert(entry.calibration.clone()) {
+            return Err(format!("相机资源被重复引用：{}", entry.calibration));
         }
-        for name in [&entry.image, &entry.calibration, &entry.corridor] {
-            validate_relative(name)?;
-            if !referenced.insert(name.clone()) {
-                return Err(format!("相机资源被重复引用：{name}"));
-            }
-        }
-        let (size, extension) = image_details(file_bytes(files, &entry.image)?, &label)?;
-        if entry.size != size || entry.image != format!("{prefix}/image.{extension}") {
-            return Err(format!("{label} 的示教帧尺寸或引用与清单不一致"));
-        }
-        check_corridor(inspect, size)?;
         json_object(file_bytes(files, &entry.calibration)?, &format!("{label} 标定"))?;
-        let corridor: CorridorResource = parse_resource(files, &entry.corridor)?;
-        if corridor != corridor_data(built, inspect, size) {
-            return Err(format!("{label} 的走廊与配方快照不一致"));
+        let segments: Vec<u32> = entry.corridors.iter().map(|c| c.segment).collect();
+        if segments != detected_segments(built, &inspect.camera) {
+            return Err(format!("{label} 的各段资源与配方的检测段不一致"));
+        }
+        for corridor in &entry.corridors {
+            let (segment, dir) = (corridor.segment, corridor_prefix(index, corridor.segment));
+            if corridor.corridor != format!("{dir}/corridor.json") {
+                return Err(format!("{label} 第 {segment} 段的走廊资源引用无效"));
+            }
+            if !crate::recipe::valid_image_id(&corridor.image_id) {
+                return Err(format!("{label} 第 {segment} 段的示教图编号格式无效"));
+            }
+            for name in [&corridor.image, &corridor.corridor] {
+                validate_relative(name)?;
+                if !referenced.insert(name.clone()) {
+                    return Err(format!("相机资源被重复引用：{name}"));
+                }
+            }
+            let (size, extension) = image_details(file_bytes(files, &corridor.image)?, &label)?;
+            if entry.size != size || corridor.image != format!("{dir}/image.{extension}") {
+                return Err(format!(
+                    "{label} 第 {segment} 段的示教帧尺寸或引用与清单不一致"
+                ));
+            }
+            check_corridor(inspect, segment, size)?;
+            let resource: CorridorResource = parse_resource(files, &corridor.corridor)?;
+            if resource != corridor_data(built, inspect, segment, size) {
+                return Err(format!("{label} 第 {segment} 段的走廊与配方快照不一致"));
+            }
         }
     }
     Ok(referenced)
@@ -635,17 +768,36 @@ mod tests {
         image
     }
 
-    /// 段配方样例（三台相机走廊 (980, 480)–(300, 460)，0.112 mm/px）按相机发布，三台都用 1000×700 的渐变图作示教帧。
+    /// 段配方样例（单个直线段，三台相机在第 1 段的走廊 (980, 480)–(300, 460)，0.112 mm/px）按相机发布，三台都用 1000×700 的渐变图作示教帧。
     fn publish_burst_bundle(root: &Path) -> ReleaseBundle {
         let recipe = crate::recipe::samples_burst();
-        let cameras = recipe.inspect.iter().map(|i| CameraInput { camera: i.camera.clone(), image: ResourceSource::Bytes(image_bytes()),
-            image_id: format!("capture-1-0-{}", i.camera), calibration: ResourceSource::Bytes(br#"{"mmPerPx":0.112}"#.to_vec()) }).collect();
-        publish_burst(root, BurstPublishInput {
-            recipe, validation_site: ValidationSite::Offline,
-            versions: Versions { engine: "1.1.0".into(), graph: "corridor-1".into() },
-            graph: ResourceSource::Bytes(br#"{"graph":1}"#.to_vec()),
-            cameras,
-        }).unwrap()
+        let cameras = recipe
+            .inspect
+            .iter()
+            .map(|i| CameraInput {
+                camera: i.camera.clone(),
+                calibration: ResourceSource::Bytes(br#"{"mmPerPx":0.112}"#.to_vec()),
+                corridors: vec![CorridorInput {
+                    segment: 1,
+                    image: ResourceSource::Bytes(image_bytes()),
+                    image_id: format!("capture-1-0-{}", i.camera),
+                }],
+            })
+            .collect();
+        publish_burst(
+            root,
+            BurstPublishInput {
+                recipe,
+                validation_site: ValidationSite::Offline,
+                versions: Versions {
+                    engine: "1.1.0".into(),
+                    graph: "corridor-2".into(),
+                },
+                graph: ResourceSource::Bytes(br#"{"graph":1}"#.to_vec()),
+                cameras,
+            },
+        )
+        .unwrap()
     }
 
     /// 改写包内一个资源，并把清单里它的大小同步改掉（只留下按配方重算才查得出的不一致）。
@@ -668,7 +820,7 @@ mod tests {
 
     #[test]
     fn tampered_burst_bundle_is_rejected_on_load() {
-        // 防的回归（发布包不可变契约，作用于按相机组织的 schema 4）：加载只核对文件大小与清单集合，走廊几何被改、
+        // 防的回归（发布包不可变契约，作用于按相机、段组织的 schema 5）：加载只核对文件大小与清单集合，走廊几何被改、
         // 相机顺序被换、示教帧换成别的尺寸、多出或少了文件，生产仍照着加载；格式版本改成已停用的 3 也要拒绝
         let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
         let bundle = publish_burst_bundle(&root.0);
@@ -676,7 +828,7 @@ mod tests {
         assert_eq!((0..3).map(|i| loaded.camera(i).unwrap().size).collect::<Vec<_>>(), [[1000, 700]; 3]);
         let tamperings: [(&str, fn(&Path)); 6] = [
             ("走廊几何改了（清单大小同步）", |dir| {
-                let name = "cameras/00/corridor.json";
+                let name = "cameras/00/s01/corridor.json";
                 let mut corridor: CorridorResource = serde_json::from_slice(&fs::read(dir.join(name)).unwrap()).unwrap();
                 corridor.corridor[0][0] -= 100.0;
                 rewrite(dir, name, serde_json::to_vec(&corridor).unwrap());
@@ -686,7 +838,7 @@ mod tests {
             ("示教帧换成 900×700（清单大小同步）", |dir| {
                 let mut image = b"P5\n900 700\n255\n".to_vec();
                 image.resize(image.len() + 900 * 700, 128);
-                rewrite(dir, "cameras/01/image.pgm", image);
+                rewrite(dir, "cameras/01/s01/image.pgm", image);
             }),
             ("多出清单以外的文件", |dir| fs::write(dir.join("cameras").join("extra.json"), b"{}").unwrap()),
             ("一台相机的标定没了", |dir| fs::remove_file(dir.join("cameras/02/calibration.json")).unwrap()),

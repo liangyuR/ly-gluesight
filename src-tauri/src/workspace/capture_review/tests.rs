@@ -76,6 +76,55 @@ fn template_requires_confirmation_and_application_preserves_exclusions_as_draft(
     assert!(w.capture_review.template.is_none());
 }
 
+/// D-SB-44：工作台一次保存——模板轮边界已确认并成为模板；段的类型序列变化时其余已确认轮次变“需复核”、
+/// 各段 N_exp 清空，序列不变只改边界时其余轮次与标定不受影响。
+#[test]
+fn template_round_save_confirms_template_and_invalidates_others_only_on_structure_change() {
+    for structure_changed in [false, true] {
+        let mut w = burst_workspace(&[Straight, Corner, Straight]);
+        let template = round(&w, "template", 12);
+        let other = round(&w, "other", 12);
+        apply_capture_review(&mut w, &other, CaptureReviewEdit::Save(vec![4, 8])).unwrap();
+        apply_capture_review(&mut w, &other, CaptureReviewEdit::Confirm).unwrap();
+        w.doc
+            .segments
+            .iter_mut()
+            .for_each(|s| s.expected_frames = Some(4));
+        let mut segments = w.doc.segments.clone();
+        let cuts = if structure_changed {
+            segments.push(crate::plan::new_segment(4, Corner, &w.doc.segment_defaults));
+            vec![3, 6, 9]
+        } else {
+            vec![5, 8]
+        };
+        let next = save_template_round(&w, &template, segments, cuts.clone()).unwrap();
+        let review = &next.capture_review.rounds["template"];
+        assert_eq!(
+            (&review.status, &review.cuts),
+            (&ReviewStatus::Confirmed, &cuts),
+            "{structure_changed}"
+        );
+        assert_eq!(
+            next.capture_review
+                .template
+                .as_ref()
+                .map(|t| t.round_id.as_str()),
+            Some("template")
+        );
+        let other_status = &next.capture_review.rounds["other"].status;
+        let expected = if structure_changed {
+            ReviewStatus::Stale
+        } else {
+            ReviewStatus::Confirmed
+        };
+        assert_eq!(other_status, &expected, "{structure_changed}");
+        assert_eq!(
+            next.doc.segments[0].expected_frames.is_none(),
+            structure_changed
+        );
+    }
+}
+
 #[test]
 fn plan_change_then_revert_keeps_review_stale_and_template_invalid() {
     for product_changed in [false, true] {
@@ -232,15 +281,10 @@ fn corridor_teaching_and_exclusion_cannot_reference_the_same_group() {
     let mut w = burst_workspace(&[Straight]);
     let source = round(&w, "source", 5);
     let camera = w.doc.plan_cameras()[0].clone();
-    let teaching: burst::CameraTeaching = serde_json::from_value(json!({"camera":camera,"round":"source","seq":3,
+    let teaching: burst::CameraTeaching = serde_json::from_value(json!({"camera":camera,"round":"source","seq":3,"segment":1,
         "frame":{"id":"image","view":1,"source":"capture:source#3","capturedAt":0,"size":[100,100],
             "camera":camera,"cameraTag":null,"calibTag":null,"geometryTag":null,"exposureUs":null,"gainDb":null,"historyId":null}})).unwrap();
-    let draft = || burst::CameraTeachDraft {
-        corridor: vec![[1.0, 1.0], [50.0, 1.0]],
-        mm_per_px: Some(0.1),
-        detect: None,
-    };
-    burst::apply_camera_teaching(&mut w, teaching.clone(), draft(), None).unwrap();
+    burst::apply_segment_teaching(&mut w, teaching.clone(), 5, None).unwrap();
     let exclude = || CaptureReviewEdit::Exclude {
         start: 3,
         end: 3,
@@ -250,5 +294,5 @@ fn corridor_teaching_and_exclusion_cannot_reference_the_same_group() {
     assert!(apply_capture_review(&mut w, &source, exclude()).is_err());
     w.camera_teaching.clear();
     apply_capture_review(&mut w, &source, exclude()).unwrap();
-    assert!(burst::apply_camera_teaching(&mut w, teaching, draft(), None).is_err());
+    assert!(burst::apply_segment_teaching(&mut w, teaching, 5, None).is_err());
 }

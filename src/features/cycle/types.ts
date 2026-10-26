@@ -79,11 +79,12 @@ export interface Recipe {
   inspect: CameraInspect[];
   segmentDefaults: KindDefaults;
   calibrationRounds: number;
+  boundaryGuard: number;
   partCalib: PartCalib | null;
 }
 
 /** 配方文件内容，配方页编辑它。
- * 段模型字段（segments、inspect、segmentDefaults、calibrationRounds、partCalib）后端总是输出；前端提交时可缺省（后端按默认值补齐）。 */
+ * 段模型字段（segments、inspect、segmentDefaults、calibrationRounds、boundaryGuard、partCalib）后端总是输出；前端提交时可缺省（后端按默认值补齐）。 */
 export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   id: string;
   name: string;

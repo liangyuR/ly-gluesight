@@ -18,7 +18,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }))
 const template = (): RecipeDoc => ({
   ...burstRecipe({
     id: "NEW", name: "新配方", version: 1, productCode: 1, planVersion: 0, segments: [pathSegment(1, "straight")], partCalib: null,
-    inspect: burstCameras.map(camera => ({ camera, corridor: [], mmPerPx: null, calib: null, detect: null })),
+    inspect: burstCameras.map(camera => ({ camera, mmPerPx: null, calib: null, detect: null })),
   }),
 });
 
@@ -27,7 +27,7 @@ function createdView(doc: RecipeDoc): WorkspaceView {
   const view = burstWorkspaceView(doc as ReturnType<typeof burstRecipe>);
   view.workspace.revision = 1;
   const plan = view.plan!;
-  plan.cameraTeaching = plan.cameras.map(camera => ({ camera, saved: false, frame: null, mmPerPx: null }));
+  plan.cameraTeaching = plan.cameras.map(camera => ({ camera, mmPerPx: null, ready: false, segments: [] }));
   plan.calibration = null;
   const waiting = { detail: "等待设备就绪后整圈采集并采用" };
   plan.progress = {
