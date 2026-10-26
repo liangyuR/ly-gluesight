@@ -461,6 +461,8 @@
 | `workspace_clear_segment_corridor` | `id, revision, camera, segment` | WorkspaceView（去掉这一段这台相机的走廊与示教帧） | D-SB-42/45 |
 | `workspace_calibration_add_round` | `id, revision, round, standard: bool` | WorkspaceView | D2 |
 | `workspace_calibration_remove_round` | `id, revision, round` | WorkspaceView | D2 |
+| `workspace_calibration_round_features` | `id, round` | `FrameMetrics[]`（加入标定时写下的每帧特征，按当前计划相机编下标，只读） | 逐帧查看 |
+| `workspace_calibration_frame` | `id, round, camera, seq` | `CalibrationFrameView`（`{segment, corridor, searchHalfPx, edges, metrics}`：按已确认分段用当前段走廊重测这一帧，只读；有在途件时拒绝） | 逐帧查看 |
 | `workspace_calibration_apply` | `id, revision` | WorkspaceView（结果在 `plan.calibration`） | D2 |
 | `workspace_confirm_tolerance` | `id, revision, segment, tolerance` | WorkspaceView | D2 |
 | `workspace_extract_corridor` | `id, revision, camera: String, imageId, roi: [u32; 4], guide: BrushGuide?, pointSpacingPx: f32?` | `Result<CenterlineResult, String>`（与 `workspace_extract_centerline` 相同：`path`、`message`、`failure`） | D2 |

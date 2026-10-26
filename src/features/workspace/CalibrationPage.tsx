@@ -11,6 +11,7 @@ import { useWorkspace } from "./context";
 import { Badge, Notice, NumberField, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { CaptureSummary } from "./types";
 import { CalibrationRoundsField } from "./DocParams";
+import { CalibrationFrames } from "./CalibrationFrames";
 import "./corridor.css";
 
 /**
@@ -116,5 +117,6 @@ export default function CalibrationPage() {
         <Table className="wp-calib-table" caption="逐段标定结果" columns={columns} rows={calibration.segments} rowKey={row => String(row.index)} />
       </> : <p className="wp-capture-empty">还没有标定结果。加入足够的轮次后点“应用标定”。</p>}
     </Panel>
+    {added.length > 0 && <CalibrationFrames data={data} plan={plan} />}
   </div>;
 }

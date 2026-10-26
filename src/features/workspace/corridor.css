@@ -29,3 +29,15 @@
 .wp-seg-corridor-note p { margin:0; font-size:12px; }
 .wp-camera-segments { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none; }
 .wp-camera-segments li { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; }
+.wp-calib-frames { display:flex; flex-direction:column; gap:12px; }
+.wp-calib-grid { display:grid; gap:2px; align-items:center; overflow-x:auto; padding:2px; outline:none; }
+.wp-calib-grid:focus-visible { box-shadow:0 0 0 2px var(--primary); border-radius:var(--r-sm); }
+.wp-calib-grid-row { display:contents; }
+.wp-calib-grid-corner, .wp-calib-grid-camera { font-size:12px; color:var(--on-surface-variant); }
+.wp-calib-grid-seg { height:16px; font-size:11px; line-height:16px; text-align:left; color:var(--on-surface-variant); background:var(--surface-mid); border-radius:2px; }
+.wp-calib-grid-seg.even { background:var(--surface-high); }
+.wp-calib-cell { height:22px; min-width:0; padding:0; border:1px solid transparent; border-radius:3px; cursor:pointer; }
+.wp-calib-cell.selected { border-color:var(--on-surface); box-shadow:0 0 0 1px var(--primary); }
+.wp-calib-frame { display:grid; grid-template-columns:minmax(0, 1fr) 280px; gap:12px; min-height:420px; }
+.wp-calib-frame-info { display:flex; flex-direction:column; gap:8px; font-size:13px; }
+@media (max-width:900px) { .wp-calib-frame { grid-template-columns:1fr; } }

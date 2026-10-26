@@ -221,6 +221,18 @@ export interface FrameMetrics {
   xMm: number | null;
 }
 
+/** 标定轮次一帧按当前段走廊重测的结果（workspace_calibration_frame，多轮标定页逐帧查看）。 */
+export interface CalibrationFrameView {
+  /** 所用走廊的段；这台相机不检测这一帧所在段时为 null，不测 */
+  segment: number | null;
+  corridor: [number, number][];
+  /** 搜索半宽（px） */
+  searchHalfPx: number | null;
+  /** 逐站两侧胶边（px），无胶站为 null */
+  edges: ([[number, number], [number, number]] | null)[];
+  metrics: FrameMetrics;
+}
+
 export interface WidthStats {
   min: number;
   max: number;

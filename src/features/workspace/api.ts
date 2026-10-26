@@ -1,6 +1,6 @@
 import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
-import type { CaptureRoundV2, PathSegment } from "../plan/types";
+import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
 import type { AlignSuggestion, CaptureRound, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, Workspace, WorkspaceView } from "./types";
 
@@ -127,6 +127,10 @@ export const workspaceApi = {
   captureReviewExclude: (id: string, revision: number, round: string, start: number, end: number, excluded: boolean, reason: string) =>
     desktopCall<WorkspaceView>("workspace_capture_review_exclude", { id, revision, round, start, end, excluded, reason }),
   /** 按已加入的轮次算 N_exp / 整件 ΣN_exp 与建议容差，结果在 plan.calibration；建议容差要再经 confirmTolerance 才写入 */
+  /** 已加入标定的一轮的每帧特征（加入标定时测的），只读 */
+  calibrationRoundFeatures: (id: string, round: string) => desktopCall<FrameMetrics[]>("workspace_calibration_round_features", { id, round }),
+  /** 用当前段走廊重测标定轮次的一帧，只读 */
+  calibrationFrame: (id: string, round: string, camera: string, seq: number) => desktopCall<CalibrationFrameView>("workspace_calibration_frame", { id, round, camera, seq }),
   calibrationApply: (id: string, revision: number) =>
     desktopCall<WorkspaceView>("workspace_calibration_apply", { id, revision }),
   /** 操作员确认第 segment 段（PathSegment.index）的帧数容差 */

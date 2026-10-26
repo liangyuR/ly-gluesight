@@ -888,6 +888,35 @@ pub(super) fn segment_round(
     })
 }
 
+/// features.jsonl 读回的一行。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredFeature {
+    camera: String,
+    seq: u64,
+    metrics: FrameMetrics,
+}
+
+/// 读一轮标定的每帧特征（`FEATURES_FILE`）：相机按当前计划相机重新编下标，不再是计划相机的行丢弃。
+pub(super) fn read_features(dir: &Path, cameras: &[String]) -> Result<Vec<FrameMetrics>, String> {
+    let text = std::fs::read_to_string(dir.join(FEATURES_FILE))
+        .map_err(|e| format!("读取标定特征失败：{e}"))?;
+    let mut metrics = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let stored: StoredFeature =
+            serde_json::from_str(line).map_err(|e| format!("标定特征格式无效：{e}"))?;
+        let Some(camera) = cameras.iter().position(|c| *c == stored.camera) else {
+            continue;
+        };
+        metrics.push(FrameMetrics {
+            camera,
+            seq: stored.seq,
+            ..stored.metrics
+        });
+    }
+    Ok(metrics)
+}
+
 /// 写每帧特征与分段结果（文件格式见 FEATURES_FILE / BOUNDARIES_FILE）。
 pub(super) fn write_features(dir: &Path, cameras: &[String], metrics: &[FrameMetrics], outcome: &SegOutcome) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建标定特征目录失败：{e}"))?;
@@ -1238,6 +1267,128 @@ pub fn workspace_calibration_remove_round(app: AppHandle, id: String, revision: 
     if round.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') { let _ = std::fs::remove_dir_all(host.dir(&id).join(CALIBRATION_DIR).join(&round)); }
     items.insert(id, w.clone());
     view(&app, w)
+}
+
+/// 已加入标定的一轮的每帧特征（加入标定时测量写下的），按计划相机、seq；只读，多轮标定页逐帧查看用。
+#[tauri::command]
+pub fn workspace_calibration_round_features(
+    app: AppHandle,
+    id: String,
+    round: String,
+) -> Result<Vec<FrameMetrics>, String> {
+    let host = app.state::<WorkspaceHost>();
+    let cameras = {
+        let items = host.items.lock().unwrap();
+        let w = items.get(&id).ok_or("候选配置不存在")?;
+        require_burst(&w.doc)?;
+        if !w.calibration.rounds.iter().any(|r| r.round_id == round) {
+            return Err(format!("采集轮次 {round} 不在多轮标定里"));
+        }
+        w.doc.plan_cameras()
+    };
+    read_features(&host.dir(&id).join(CALIBRATION_DIR).join(&round), &cameras)
+}
+
+/// 标定轮次一帧按当前规则重测的结果（多轮标定页逐帧查看）：所用段与走廊、测到的胶边（px，无胶站为 None）与帧指标。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalibrationFrameView {
+    /// 所用走廊的段；这台相机不检测这一帧所在段时为 None，不测
+    pub segment: Option<u32>,
+    pub corridor: Vec<[f32; 2]>,
+    /// 搜索半宽（px），叠图画搜索带用
+    pub search_half_px: Option<f64>,
+    pub edges: Vec<Option<[[f32; 2]; 2]>>,
+    pub metrics: FrameMetrics,
+}
+
+/// 用当前段走廊重测已加入标定的一轮里一台相机的一帧（只读，不改候选与标定）：按本轮已确认的手动分段选走廊，
+/// 与加入标定时同一规则（`calibration_corridors`）。有在途件或正在采集时拒绝，免得与生产争用测量。
+#[tauri::command]
+pub async fn workspace_calibration_frame(
+    app: AppHandle,
+    id: String,
+    round: String,
+    camera: String,
+    seq: u64,
+) -> Result<CalibrationFrameView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = {
+            let host = app.state::<WorkspaceHost>();
+            let items = host.items.lock().unwrap();
+            items.get(&id).ok_or("候选配置不存在")?.clone()
+        };
+        require_burst(&w.doc)?;
+        let entry = w
+            .calibration
+            .rounds
+            .iter()
+            .find(|r| r.round_id == round)
+            .ok_or_else(|| format!("采集轮次 {round} 不在多轮标定里"))?;
+        let cameras = w.doc.plan_cameras();
+        let index = cameras
+            .iter()
+            .position(|c| *c == camera)
+            .ok_or_else(|| format!("相机 {camera} 不是计划相机"))?;
+        if !(1..=entry.group_count).contains(&seq) {
+            return Err(format!(
+                "这一轮只有 {} 个帧组，没有第 {seq} 个",
+                entry.group_count
+            ));
+        }
+        let segment =
+            calibration_corridors(&w, &round, entry.group_count)?[index][(seq - 1) as usize];
+        let Some(segment) = segment else {
+            return Ok(CalibrationFrameView {
+                segment: None,
+                corridor: Vec::new(),
+                search_half_px: None,
+                edges: Vec::new(),
+                metrics: frame_without_metrics(index, seq, FrameState::NotInspected, None),
+            });
+        };
+        let recipe = w.doc.build()?;
+        let inspect = &recipe.inspect[index];
+        let corridor = inspect
+            .segment_corridor(segment)
+            .map(|s| s.corridor.clone())
+            .unwrap_or_default();
+        let search_half_px = inspect.mm_per_px.map(|scale| {
+            f64::from(inspect.detect.as_ref().unwrap_or(&recipe.detect).search_mm) / scale
+        });
+        let graphs = vision::CorridorSet::build(&recipe, &teaching_sizes(&w)?)?;
+        let graph = graphs
+            .get(index, segment)
+            .ok_or_else(|| format!("第 {segment} 段相机 {camera} 还没有示教走廊"))?;
+        let cycle = app.state::<CycleHost>();
+        crate::camera::check_idle(&cycle)?;
+        let capture = cycle.camera.recipe_capture();
+        let image = crate::image_file::load(&capture.burst_frame_path(&round, &camera, seq)?)?;
+        let engine = app
+            .state::<vision::VisionHost>()
+            .engine()
+            .ok_or("lyFlow 核心库未加载")?;
+        let measured = vision::measure_frame(
+            &engine,
+            graph,
+            &image,
+            seq,
+            &vision::unique_run_id(&format!("calibration-view-{id}-{round}-c{index}-{seq}")),
+        )?;
+        Ok(CalibrationFrameView {
+            segment: Some(segment),
+            corridor,
+            search_half_px,
+            edges: measured.edges,
+            metrics: FrameMetrics {
+                camera: index,
+                seq,
+                ..measured.metrics
+            },
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 pub fn remove_calibration_round(w: &mut Workspace, round: &str) -> Result<(), String> {
