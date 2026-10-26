@@ -387,3 +387,95 @@ fn collect_part_completes_at_drain_deadline_without_measuring() {
     assert!(part.complete(), "采集件不等测量结果");
     assert_eq!(part.burst.as_ref().unwrap().group_count(), 1);
 }
+
+/// 维护模式下采集版只核对相机，没示教走廊、没标定也能开工；正常模式不收采集版；正式版不论模式都要走廊与标定。
+/// 防就绪检查与空闲节拍把维护采集版按正式版要求挡在“尚无可开工配方”。
+#[test]
+fn run_kind_collect_runs_only_in_maintenance_and_formal_always_needs_corridors() {
+    use crate::recipe::RecipeStage::{Collect, Formal};
+    let cameras: Vec<String> = (0..3).map(crate::recipe::legacy_camera_id).collect();
+    let recipe = |stage, taught: bool| {
+        let mut doc = if taught {
+            crate::recipe::samples_burst()
+        } else {
+            crate::recipe::burst_template("NEW-1".into(), "新产线".into(), 21, &cameras)
+        };
+        doc.stage = stage;
+        doc.build().unwrap()
+    };
+    let cases = [
+        (
+            "维护 + 未示教采集版 → 只录图",
+            recipe(Collect, false),
+            true,
+            Some(RunKind::Collect),
+        ),
+        ("正常 + 采集版 → 拒收", recipe(Collect, false), false, None),
+        (
+            "维护 + 未示教正式版 → 仍要走廊",
+            recipe(Formal, false),
+            true,
+            None,
+        ),
+        (
+            "正常 + 已示教正式版 → 生产",
+            recipe(Formal, true),
+            false,
+            Some(RunKind::Production),
+        ),
+    ];
+    for (name, recipe, maintenance, expected) in cases {
+        assert_eq!(run_kind(&recipe, maintenance).ok(), expected, "{name}");
+    }
+}
+
+/// 维护模式没有可开工配方时配方项只提示、不阻塞：来件照常布防放行（MM-3），PC 不撤就绪；正常模式仍阻塞。
+#[test]
+fn no_runnable_recipe_blocks_only_outside_maintenance() {
+    use readiness::{Check, Facts, ItemKey, ItemState, Product, RecipeOption, Site};
+    for (maintenance, ready, state) in [
+        (false, false, ItemState::Blocked),
+        (true, true, ItemState::Waiting),
+    ] {
+        let report = readiness::evaluate(Facts {
+            candidate_debug: None,
+            site: Site::Real,
+            plc_connected: true,
+            session_behind: false,
+            session: Some(crate::plc_session::SessionPhase::Idle),
+            session_message: None,
+            phase: Phase::Idle,
+            fault: None,
+            cameras: Check::Ok,
+            engine: Some(Ok("1.1.5".into())),
+            workers: Ok(()),
+            audit: Check::Ok,
+            record: crate::settings::RecordMode::Off,
+            product: Product::Plc,
+            activation_uncertain: false,
+            maintenance,
+            recipes: vec![RecipeOption {
+                id: "NEW-1".into(),
+                name: "新产线".into(),
+                version: 1,
+                product_code: 21,
+                shot_count: 0,
+                published: true,
+                runnable: false,
+                reason: Some("相机 cam1 尚未示教检测走廊".into()),
+                target: None,
+                waiting: None,
+            }],
+        });
+        let recipe = report
+            .items
+            .iter()
+            .find(|i| i.key == ItemKey::Recipe)
+            .unwrap();
+        assert_eq!(
+            (report.ready, recipe.state),
+            (ready, state),
+            "维护模式 {maintenance}"
+        );
+    }
+}

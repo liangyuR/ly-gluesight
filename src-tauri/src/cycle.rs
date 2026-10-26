@@ -1058,6 +1058,23 @@ pub fn ready_to_run(recipe: &Recipe) -> Result<(), String> {
     recipe.ready_burst().map_err(|reasons| reasons.join("；"))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunKind {
+    /// 维护模式下的采集版：只录图，只核对相机，不要求走廊、标定、发布包与拍照计划
+    Collect,
+    Production,
+}
+
+/// 配方按哪种要求开工。正常模式不收采集版；正式版不论模式都要过 [`ready_to_run`]。
+pub fn run_kind(recipe: &Recipe, maintenance: bool) -> Result<RunKind, String> {
+    if recipe.is_collect() && maintenance {
+        return Ok(RunKind::Collect);
+    }
+    crate::production::stage_admits(recipe)?;
+    ready_to_run(recipe)?;
+    Ok(RunKind::Production)
+}
+
 const COLLECTION_REFRESH: Duration = Duration::from_secs(5);
 
 /// 维护模式下没建立检测就布防放行的件。
@@ -1105,12 +1122,9 @@ fn annotate_recording(
 
 /// 配方能开工时用到的相机。采集版只在维护模式下开工，只核对相机，不要求走廊、标定与发布包。
 pub fn runnable_cams(app: &AppHandle, recipe: &Recipe) -> Result<Vec<u8>, String> {
-    if recipe.is_collect() && host(app).settings().maintenance.is_some() {
-        return usable_cams(app, recipe);
+    if run_kind(recipe, host(app).settings().maintenance.is_some())? == RunKind::Production {
+        crate::production::ready(app, recipe)?;
     }
-    crate::production::stage_admits(recipe)?;
-    ready_to_run(recipe)?;
-    crate::production::ready(app, recipe)?;
     usable_cams(app, recipe)
 }
 
@@ -1482,13 +1496,16 @@ impl Machine {
             }
             self.camera_down = down;
         }
-        let none_usable = !req.warnings.is_empty() && req.watch.is_empty();
+        // 维护模式下配方问题不拦来件：照常布防放行（MM-3），只有在用配方的相机全掉线才撤就绪
+        let maintenance = host.settings().maintenance.is_some();
+        let none_usable = !maintenance && !req.warnings.is_empty() && req.watch.is_empty();
         if none_usable || (!req.watch.is_empty() && self.camera_down.len() == req.watch.len()) {
             let first = self.camera_warnings.first().or(req.warnings.first()).cloned().unwrap_or_default();
             return Err(format!("没有一个配方开得了工（{first}）"));
         }
         match &req.cams {
             Ok(cams) => host.camera.check_ready_at(cams),
+            Err(_) if maintenance => Ok(()),
             Err(e) => Err(e.clone()),
         }
     }
