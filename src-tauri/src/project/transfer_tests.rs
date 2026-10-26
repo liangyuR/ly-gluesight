@@ -226,3 +226,77 @@ fn damaged_or_tampered_package_is_refused_without_leaving_a_project_behind() {
         );
     }
 }
+
+fn snapshot_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = Vec::new();
+    walk(root, "", &mut files, &mut Vec::new()).unwrap();
+    files
+        .into_iter()
+        .map(|(_, path)| {
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect()
+}
+
+fn copy(data: &Path, include_records: bool) -> Result<ProjectImported, String> {
+    copy_from(
+        data,
+        "line-a",
+        include_records,
+        &New {
+            id: "line-a2",
+            name: "A 线副本",
+            description: "",
+        },
+        &data.join("state").join("plan-version"),
+        &data.join("cache"),
+    )
+}
+
+#[test]
+fn copied_project_gets_its_own_paths_and_plan_versions_and_leaves_the_source_untouched() {
+    let data = TempDir::new("copy");
+    let (source, recipe) = source_project(&data.0);
+    let before = snapshot_files(&source);
+    let copied = copy(&data.0, true).unwrap();
+    assert_eq!(copied.meta.copied_from.as_deref(), Some("line-a"));
+    let target = super::super::dir(&data.0, "line-a2");
+    let round = read_value(
+        &target
+            .join("recipe-capture")
+            .join("capture-1")
+            .join("round.json"),
+    )
+    .unwrap();
+    let original = round["frames"][0]["cameras"][0]["originalPath"]
+        .as_str()
+        .unwrap();
+    assert!(Path::new(original).starts_with(&target), "{original}");
+    let conn = rusqlite::Connection::open(target.join("inspection.db")).unwrap();
+    let directory: String = conn
+        .query_row("SELECT recording_directory FROM parts", [], |r| r.get(0))
+        .unwrap();
+    assert!(Path::new(&directory).starts_with(&target), "{directory}");
+    let plan_file = data.0.join("state").join("plan-version");
+    let loaded = RecipeStore::open_with_floors(target.join("recipes"), plan_file, &BTreeMap::new())
+        .unwrap()
+        .get(&recipe.id)
+        .unwrap();
+    assert!(loaded.plan_version > recipe.plan_version);
+    assert_eq!(loaded.revision_id, recipe.revision_id);
+    assert_eq!(snapshot_files(&source), before, "来源项目不应被改动");
+    assert_eq!(std::fs::read_dir(data.0.join("cache")).unwrap().count(), 0);
+}
+
+#[test]
+fn copy_without_records_leaves_out_inspection_db_and_recordings() {
+    let data = TempDir::new("copy-plain");
+    let (source, _) = source_project(&data.0);
+    copy(&data.0, false).unwrap();
+    let target = super::super::dir(&data.0, "line-a2");
+    assert!(target.join("recipe-capture").join("capture-1").is_dir());
+    assert!(!target.join("inspection.db").exists());
+    assert!(!target.join("records").exists());
+    assert!(source.join("inspection.db").is_file());
+}

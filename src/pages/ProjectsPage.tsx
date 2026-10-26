@@ -8,11 +8,11 @@ import { onProjectsChanged, useProjectUsage } from "../features/project/hooks";
 import { formatBytes, formatDate, formatDateTime, projectLabel, type UsageState } from "../features/project/rules";
 import { CreateProjectDialog, DeleteProjectDialog, RenameProjectDialog } from "../features/project/ProjectDialogs";
 import SwitchProjectDialog from "../features/project/SwitchProjectDialog";
-import { ExportProjectDialog, ImportProjectDialog } from "../features/project/TransferDialogs";
+import { CopyProjectDialog, ExportProjectDialog, ImportProjectDialog } from "../features/project/TransferDialogs";
 import "../features/project/project.css";
 
 type Open = { kind: "create" } | { kind: "rename"; project: ProjectMeta } | { kind: "delete"; entry: ProjectEntry } | { kind: "switch"; project: ProjectMeta }
-  | { kind: "export"; project: ProjectMeta } | { kind: "import"; preview: ProjectImportPreview };
+  | { kind: "export"; project: ProjectMeta } | { kind: "copy"; project: ProjectMeta } | { kind: "import"; preview: ProjectImportPreview };
 
 function UsageCell({ state, format }: { state: UsageState | undefined; format: (usage: ProjectUsage) => ReactNode }) {
   if (!state || state.status === "loading") return <span className="muted">计算中</span>;
@@ -86,6 +86,7 @@ export default function ProjectsPage() {
         {meta && !entry.current && <Button size="sm" variant="tonal" onClick={() => setOpen({ kind: "switch", project: meta })}>切换</Button>}
         {meta && <Button size="sm" variant="text" onClick={() => setOpen({ kind: "rename", project: meta })}>重命名</Button>}
         {meta && <Button size="sm" variant="text" onClick={() => setOpen({ kind: "export", project: meta })}>导出</Button>}
+        {meta && entries && <Button size="sm" variant="text" onClick={() => setOpen({ kind: "copy", project: meta })}>复制</Button>}
         {entry.current
           ? <span title="先切换到其他项目"><Button size="sm" variant="text" danger disabled aria-label="删除（先切换到其他项目）">删除</Button></span>
           : <Button size="sm" variant="text" danger onClick={() => setOpen({ kind: "delete", entry })}>删除</Button>}
@@ -111,6 +112,7 @@ export default function ProjectsPage() {
     {open?.kind === "delete" && <DeleteProjectDialog entry={open.entry} usage={usage[open.entry.id]} onClose={close} />}
     {open?.kind === "switch" && <SwitchProjectDialog target={open.project} onClose={close} />}
     {open?.kind === "export" && <ExportProjectDialog project={open.project} usage={usage[open.project.id]} onClose={close} />}
+    {open?.kind === "copy" && entries && <CopyProjectDialog project={open.project} usage={usage[open.project.id]} entries={entries} onClose={close} onSwitch={project => setOpen({ kind: "switch", project })} />}
     {open?.kind === "import" && entries && <ImportProjectDialog preview={open.preview} entries={entries} onClose={close} onSwitch={project => setOpen({ kind: "switch", project })} />}
   </Card>;
 }

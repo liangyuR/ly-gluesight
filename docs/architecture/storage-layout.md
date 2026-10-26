@@ -49,7 +49,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 ## 项目导出包
 
-项目管理页的“导出 / 导入项目”把整个项目打成 ZIP（`src-tauri/src/project/transfer.rs`，格式版本 1），规则见[项目设计](project.md#导出与导入)。导出默认保存在 `exports/`；导入暂存在 `cache/project-import-*`，校验通过、路径与计划版本改写完成后才原子移入 `projects/<新编号>/`。
+项目管理页的“导出 / 导入项目”把整个项目打成 ZIP（`src-tauri/src/project/transfer.rs`，格式版本 1），规则见[项目设计](project.md#导出与导入)。导出默认保存在 `exports/`；导入暂存在 `cache/project-import-*`，校验通过、路径与计划版本改写完成后才原子移入 `projects/<新编号>/`。“复制”不经 ZIP，把同样的内容拷进 `cache/project-copy-*` 后走相同的落地流程。
 
 ## 配方迁移包
 

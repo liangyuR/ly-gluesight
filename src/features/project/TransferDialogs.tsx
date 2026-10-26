@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Alert, Button, Checkbox, Dialog, Stack, Text, TextField } from "qing-steel";
+import { Alert, Button, Checkbox, Dialog, Stack, Text, TextArea, TextField } from "qing-steel";
 import { projectTransferApi, type ProjectEntry, type ProjectExported, type ProjectImported, type ProjectImportPreview, type ProjectMeta } from "../../lib/project";
 import { errorText } from "../../lib/errors";
 import { notifyProjectsChanged, useAlive } from "./hooks";
@@ -116,6 +116,61 @@ export function ImportProjectDialog({ preview, entries, onClose, onSwitch }: { p
       <Alert tone="warn" title="导入后不会自动切换">导入后请先核对相机组、PLC 配置与标定再切换到该项目；生产配方的计划号会按本机重新分配，候选回到草稿。</Alert>
       {error && <Alert tone="ng" title="导入未完成">{error}</Alert>}
       {working && <Alert tone="info" role="status">正在导入，包较大时需要几分钟，请勿关闭软件。</Alert>}
+    </Stack>
+  </Dialog>;
+}
+
+export function CopyProjectDialog({ project, usage, entries, onClose, onSwitch }: { project: ProjectMeta; usage: UsageState | undefined; entries: ProjectEntry[]; onClose: () => void; onSwitch: (project: ProjectMeta) => void }) {
+  const alive = useAlive();
+  const [form, setForm] = useState(() => ({ id: defaultProjectId(entries.map(entry => entry.id)), name: importedProjectName(project.name, entries, "副本"), description: project.description, includeRecords: false }));
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState<ProjectImported | null>(null);
+  const pending = useRef(false);
+  const idError = projectIdError(form.id, entries);
+  const nameError = projectNameError(form.name, entries);
+  const submit = async () => {
+    if (pending.current || idError || nameError) return;
+    pending.current = true;
+    setWorking(true);
+    setError("");
+    try {
+      const result = await projectTransferApi.copyProject({ sourceId: project.id, id: form.id, name: form.name.trim(), description: form.description.trim(), includeRecords: form.includeRecords });
+      notifyProjectsChanged();
+      if (alive.current) setCopied(result);
+    } catch (e) {
+      if (alive.current) setError(errorText(e));
+    } finally {
+      pending.current = false;
+      if (alive.current) setWorking(false);
+    }
+  };
+  if (copied) return <Dialog open title="已复制项目" onOpenChange={open => { if (!open) onClose(); }}
+    footer={<><Button onClick={onClose}>完成</Button><Button variant="tonal" onClick={() => onSwitch(copied.meta)}>切换到该项目</Button></>}>
+    <Stack direction="column" align="stretch" gap={12} wrap={false}>
+      <dl className="kv pj-transfer-list">
+        <dt>项目</dt><dd>{copied.meta.name}</dd>
+        <dt>编号</dt><dd className="mono">{copied.meta.id}</dd>
+        <dt>复制自</dt><dd>{project.name} <span className="mono">{project.id}</span></dd>
+      </dl>
+      <Notes notes={copied.notes} />
+    </Stack>
+  </Dialog>;
+  return <Dialog open title="复制项目" size="md" closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
+    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button variant="filled" disabled={working || !!idError || !!nameError} onClick={() => void submit()}>{working ? "正在复制…" : "复制为新项目"}</Button></>}>
+    <Stack direction="column" align="stretch" gap={14} wrap={false}>
+      <dl className="kv pj-transfer-list">
+        <dt>来源项目</dt><dd>{project.name} <span className="mono">{project.id}</span></dd>
+        <dt>占用空间</dt><dd>{usageText(usage, u => formatBytes(u.bytes))}</dd>
+      </dl>
+      <TextField label="新项目名称" required disabled={working} value={form.name} error={nameError || undefined} onChange={e => setForm({ ...form, name: e.target.value })} />
+      <TextField label="新项目编号" className="mono" disabled={working} maxLength={64} value={form.id} description="创建后不可修改，同时作为项目目录名" error={idError || undefined} onChange={e => setForm({ ...form, id: e.target.value })} />
+      <TextArea label="描述" disabled={working} rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+      <Checkbox label="包含检测记录与历史原图" disabled={working} checked={form.includeRecords} onCheckedChange={includeRecords => setForm({ ...form, includeRecords })} />
+      <Text muted>复制相机组与 PLC 配置、标定、生产配方与发布包、候选与采集轮次。生产配方的计划号按本机重新分配，候选回到草稿；复制后不会自动切换。</Text>
+      {form.includeRecords && <Alert tone="warn" title="复制可能占用大量磁盘">检测记录与历史原图会整份复制一遍，请确认磁盘空间充足。</Alert>}
+      {error && <Alert tone="ng" title="复制未完成">{error}</Alert>}
+      {working && <Alert tone="info" role="status">正在复制，项目较大时需要几分钟，请勿关闭软件。</Alert>}
     </Stack>
   </Dialog>;
 }

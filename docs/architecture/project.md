@@ -1,6 +1,6 @@
 # 项目（Project）设计
 
-> 现状：一期已实施（2026-10-25，分支 `feat/project`）；二期的整个项目导出导入已实施（分支 `feat/project-transfer`），复制整个项目未做。
+> 现状：一期已实施（2026-10-25，分支 `feat/project`）；二期已实施：整个项目导出导入（分支 `feat/project-transfer`）、复制整个项目（2026-10-26，分支 `feat/project-copy`）。
 
 ## 一、目标
 
@@ -117,7 +117,7 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 
 ## 六、项目管理页
 
-入口：侧栏项目卡片菜单的“管理项目…”与导航里的“项目”页（`/projects`）。页面列出本机全部项目，提供新建、重命名、切换、删除。
+入口：侧栏项目卡片菜单的“管理项目…”与导航里的“项目”页（`/projects`）。页面列出本机全部项目，提供新建、重命名、切换、复制、导出、导入、删除。
 
 ### 列表
 
@@ -152,6 +152,12 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 - **候选**：回到草稿，清掉待生效版本与验证结论；没带检测记录时去掉来自检测历史的验证样本。
 - 导入完成后提示核对相机组、PLC 配置与标定；切换到该项目仍按切换流程重启。
 
+### 复制
+
+- 入口：列表中任一可用项目一行的“复制”。填新项目名称（默认“<原名>（副本）”）、编号、描述，可选“包含检测记录与历史原图”（默认不含）。
+- 内容与导出相同（含记录时记录库同样用 `VACUUM INTO` 做快照，`audit-spool/` 不复制）；文件先拷进 `cache/project-copy-*` 暂存目录，再按导入的规则落成新项目：路径改写到新项目目录、计划版本按本机重新分配、候选回到草稿，最后原子移入 `projects/<新编号>/`。来源项目不改动；`copiedFrom` 记来源编号。
+- 复制当前项目前按导出的条件检查。复制后不自动切换，完成框里可直接进入切换流程。
+
 ## 七、旧资料不迁移
 
 项目尚未上线，旧资料全部抛弃（同 D-0）：新版本不读取根目录下的 `config/cameras.json`、`plc.json`、`cycle.json`、`feasibility.json`、`calib/`、`recipes/`、`workspaces/`、`vision/releases/`、`recipe-capture/`、`inspection.db`、`records/`、`records-offline/`、`audit-spool/`，首次启动新建空的默认项目。软件不自动删除这些旧文件，启动时检测到它们就写一条提示日志，由人工清理。旧 `recipes/.plan-version` 也不读取，`state/plan-version` 从头开始计数。
@@ -162,7 +168,7 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 | --- | --- |
 | `storage.rs` | 新增 `projects_root`、`project(app)`（当前项目根）、`project_config(app)`；`config(app)` 只留本机配置 |
 | 新增 `project.rs` | `ProjectMeta`、`ActiveProject` 托管状态、`current-project.json` 读写、列表、启动解析、`project_switch` |
-| 新增 `project/transfer.rs` | 项目导出包的打包、校验、导入（路径改写、计划版本重新分配、候选回到草稿） |
+| 新增 `project/transfer.rs` | 项目导出包的打包、校验、导入（路径改写、计划版本重新分配、候选回到草稿）；复制项目复用同一落地流程 |
 | 新增 `project/manage.rs` | 新建（空 / 复制硬件配置）、重命名、删除（`.trash` 改名与后台清理）、项目统计（只读打开其他项目的记录库、统计目录大小） |
 | `lib.rs` | `ActiveProject` 在记录库之前解析，`open_store` 改用项目路径；无效时只启动选择项目所需的命令 |
 | 路径调用方 | `camera.rs`（`cameras.json`、`recipe-capture`）、`plc.rs`（`plc.json`）、`cycle.rs`（`cycle.json`、`recipes`、`records`、`records-offline`、`audit-spool`）、`vision.rs`（`calib`）、`workspace.rs` 与 `workspace/transfer.rs`（`workspaces`、`vision/releases`、`recipe-capture`）、`diagnostics.rs`、`storage.rs` 的飞拍估算参数 |
@@ -174,7 +180,7 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 ## 九、分期
 
 1. **一期**：目录结构（含记录与历史归项目）、启动解析、重启式切换、项目管理页（新建、重命名、删除）、全局计划号。PLC 握手不改；旧资料不迁移。
-2. **二期**：整个项目导出导入（已实施）；复制整个项目（未做，可用导出再导入代替）。
+2. **二期**：整个项目导出导入、复制整个项目（均已实施）。
 3. ~~不重启的热切换~~：已放弃，设计与实测见[项目热切换设计](project-hot-switch.md)，仅作记录。
 
 ## 十、已确认（2026-10-24）
