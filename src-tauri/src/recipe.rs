@@ -3,7 +3,7 @@
 //! 每个拍照点自成一段，判定在段内做，段与段之间不连。`Recipe` 同时是检测记录里的配方快照。
 //!
 //! 分段连拍（schema 8，docs/decisions/segment-burst.md D-SB-1）：`segments` 非空的配方是段配方——沿胶路的段列表、
-//! 三台检测相机（`inspect`，共用一个触发）、整件标定；`segments` 为空仍是旧拍照点配方，走旧校验、旧节拍、旧发布，两套永久并存。
+//! 三台检测相机（`inspect`）、整件标定；`segments` 为空是旧拍照点配方，不能开工或发布，遗留类型不再维护。
 //! 注意 `Recipe.segments` 是旧模型 build 出的测量段，段配方的段列表在 `Recipe.path_segments`（JSON `pathSegments`）。
 
 use std::collections::{BTreeMap, HashSet};

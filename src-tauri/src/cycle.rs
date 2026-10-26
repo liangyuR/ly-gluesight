@@ -820,7 +820,7 @@ struct Part {
     /// 旧拍照点配方：接在 PLC 触发线上的相机（S7 计划）；收尾时按 PLC 报的触发数给它们推下一件基线。段配方为 None
     issued: Option<Vec<String>>,
     /// partEnd 时 PLC 报的设备触发数（协议 6 只作参考，可与计划数不同）；partEnd 前为空。
-    /// 段配方只用于丢帧告警和收尾等待，不参与下一件基线（D-SB-4、D-SB-7）；旧拍照点配方仍用它推下一件基线
+    /// 协议 7 不报触发数，段配方恒为空，不参与下一件基线（D-SB-7）；旧拍照点配方仍用它推下一件基线
     device_triggers: Option<u16>,
     routing_closed: bool,
     image_measurement: bool,

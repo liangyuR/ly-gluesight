@@ -37,7 +37,7 @@ impl Default for Timeouts {
     }
 }
 
-/// 布防预算范围：上限远小于 PLC 等待布防的 ArmTimeout（10 s），PC 必须先于 PLC 超时给出布防或拒收；默认值依据见 docs/decisions/r2-plc.md。
+/// 布防预算范围：上限远小于 PLC 等布防（协议 7 默认 10 s），PC 必须先于 PLC 超时给出布防或拒收；默认值依据见 docs/decisions/r2-plc.md R2P-1。
 const ARM_MS_RANGE: std::ops::RangeInclusive<u64> = 100..=5000;
 
 impl Timeouts {

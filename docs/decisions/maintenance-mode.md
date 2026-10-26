@@ -1,6 +1,6 @@
 # 维护模式与采集版配方（在线投运一期）
 
-依据：在线投运方案（[artifact](https://claude.ai/artifact/GDBSJwMTWWvXRPQkRfLxXm)，2026-10-25 定案）与[生产通讯协议 7](https://claude.ai/artifact/An1Zp8eKdikunc1ixxtWjX) 第七、八节。一期只做维护模式采集、采集版配方与录制元数据；历史件导入为采集轮次（二期）、试判统计（三期）另做。
+依据：[在线投运方案](../architecture/online-commissioning.md)（2026-10-25 定案）与[生产通讯协议 7](../integration/plc-communication-protocol.md) 第七、八节。一期只做维护模式采集、采集版配方与录制元数据；历史件导入为采集轮次（二期）、试判统计（三期）另做。
 
 ## 已定（用户确认）
 
