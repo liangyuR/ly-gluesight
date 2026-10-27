@@ -84,7 +84,11 @@ fn too_few_stations(n: usize, length_mm: f64, spacing_mm: f32) -> String {
     let spacing_mm = (f64::from(spacing_mm) * 1000.0).round() / 1000.0;
     let max = (length_mm / gaps * 10.0).floor() / 10.0;
     let need = (gaps * spacing_mm * 10.0 - 1e-9).ceil() / 10.0;
-    let shrink = if max >= 0.1 { format!("把站距改到不大于 {max} mm，或") } else { String::new() };
+    let shrink = if max >= 0.1 {
+        format!("把站距改到不大于 {max} mm，或")
+    } else {
+        String::new()
+    };
     format!("按站距 {spacing_mm} mm，检测走廊（{length_mm:.1} mm）只有 {n} 站，至少要 {MIN_STATIONS} 站：{shrink}把走廊画到不短于 {need} mm")
 }
 
@@ -334,7 +338,11 @@ pub fn plan_corridor(
     }
     let n = station_count(params.length, params.step);
     if n < MIN_STATIONS {
-        return Err(fail(&too_few_stations(n, params.length * scale, recipe.spacing)));
+        return Err(fail(&too_few_stations(
+            n,
+            params.length * scale,
+            recipe.spacing,
+        )));
     }
     if n > 200_000 {
         return Err(fail("检测走廊超过 20 万站，请调整走廊长度或站距"));

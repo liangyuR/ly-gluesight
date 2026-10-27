@@ -1656,7 +1656,12 @@ pub(super) fn teach_preview_frames(
             if frame_missing(round, camera, seq) {
                 frame_without_metrics(index, seq, FrameState::Missing, None)
             } else if capture_review::require_available(w, &round.round_id, seq).is_err() {
-                frame_without_metrics(index, seq, FrameState::Unmeasured, Some("帧组已屏蔽".into()))
+                frame_without_metrics(
+                    index,
+                    seq,
+                    FrameState::Unmeasured,
+                    Some("帧组已屏蔽".into()),
+                )
             } else {
                 match measure(seq) {
                     Ok(m) => FrameMetrics {

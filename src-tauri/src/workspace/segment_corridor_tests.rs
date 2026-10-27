@@ -3,9 +3,9 @@ use super::burst::{
     teach_preview_scope, update_segments, CameraTeaching,
 };
 use super::burst_tests::{burst_workspace, capture_round, measured, DEVICE};
-use crate::burst_judge::FrameState;
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::*;
+use crate::burst_judge::FrameState;
 use crate::plan::SegmentKind::{Corner, Straight};
 use crate::recipe::SegmentCorridor;
 

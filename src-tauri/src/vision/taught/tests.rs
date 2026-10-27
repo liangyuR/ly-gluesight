@@ -171,5 +171,10 @@ fn corridor_under_three_stations_is_refused_with_its_count_and_what_would_fit() 
     assert!(plan_corridor(&recipe.inspect[0], 1, &recipe, FRAME).is_ok());
     recipe.spacing = 20.5;
     let error = plan_corridor(&recipe.inspect[0], 1, &recipe, FRAME).unwrap_err();
-    assert!(error.contains("只有 2 站") && error.contains("不大于 20 mm") && error.contains("不短于 41 mm"), "{error}");
+    assert!(
+        error.contains("只有 2 站")
+            && error.contains("不大于 20 mm")
+            && error.contains("不短于 41 mm"),
+        "{error}"
+    );
 }
