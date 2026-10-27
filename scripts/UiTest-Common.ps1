@@ -20,7 +20,7 @@ function Get-UiTestLayout {
         Manifest = Join-Path $output 'instance.json'
         Overlay = [ordered]@{
             productName = $title; identifier = $identifier
-            build = [ordered]@{ beforeBuildCommand = 'node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build' }
+            build = [ordered]@{ beforeBuildCommand = 'node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build --config vite.config.ts' }
             app = [ordered]@{ windows = @([ordered]@{ label = 'main'; title = $title; visible = $false; width = 1440; height = 900; minWidth = 1100; minHeight = 700 }) }
             bundle = [ordered]@{ active = $false }
         }

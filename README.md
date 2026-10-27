@@ -46,8 +46,6 @@ pnpm dev
 
 跨系列升级使用 `pnpm deps:lyflow:update -Series <主.次>`，升级后需重新验收。缓存回退、版本校验和联合开发说明见 [lyFlow 运行库依赖](docs/architecture/lyflow-dependency.md)。
 
-若执行 `pnpm lyflow:fetch` 提示 `Command "lyflow:fetch" not found`，原因是项目未定义该脚本；下载运行库使用 `pnpm deps:lyflow:restore`，本地开发使用 `pnpm deps:lyflow:dev`。即使前面的依赖安装已成功，也仍会因找不到命令而失败。
-
 ## 测试
 
 ```powershell
@@ -58,7 +56,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml
 
 Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 Rust 默认库回归（`cargo test --locked --lib`）。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、样本转换、打包与长稳脚本检查及桌面 E2E 均不在普通 PR CI 中执行。
 
-测试数量与逐项保护规则见[前端保留测试清单](docs/testing/frontend-test-retained-inventory.md)和 [Rust 保留测试清单](docs/testing/rust-test-retained-inventory.md)。Rust 默认集合包含少量 S7 回环、SQLite 与原图落盘集成测试，不需要现场硬件或 lyFlow DLL；唯一的手动忽略项是算法评测。
+按 [测试说明](docs/testing/TESTING.md) 选择受影响文件或模块运行。Rust 默认集合包含少量 S7 回环、SQLite 与原图落盘集成测试，不需要现场硬件或 lyFlow DLL。算法评测通过独立 example 手动运行。
 
 桌面 E2E 保留手动入口，使用 Playwright Test 连接应用 WebView2，无需下载 Playwright 浏览器。合成图段配方生产验证需要 lyFlow，无需现场样本集：
 
@@ -68,7 +66,7 @@ pnpm test:ui:production -Suite burst -ResetData
 
 生产落盘入口保留原命令并支持 `-Grep` 筛选，默认构建一次，再由夹具管理实例和失败证据。单独准备构建使用 `pnpm test:desktop:build -Profile flow`；测试加 `-SkipBuild` 可复用该 profile 的产物，但不会检查源码是否更新。HTML、JUnit 和失败截图、trace 位于 `output/playwright/<profile>-regression/runner/`；原业务 JSON 位置保持不变。
 
-长稳与故障注入见[长稳报告](docs/testing/soak-report.md)。参数、隔离实例、现场验收与证据边界见[测试说明](docs/testing/TESTING.md)。
+长稳与故障注入见[长稳运行说明](docs/testing/soak-report.md)。参数、隔离实例、现场验收与证据边界见[测试说明](docs/testing/TESTING.md)。
 
 ## 打包
 

@@ -122,6 +122,3 @@ export const groupCellColor: Record<GroupCellState, string> = {
   waiting: "var(--surface-high)", measuring: "var(--primary)", ok: "var(--ok)", excursion: "var(--warn)", ng: "var(--ng)", error: "var(--fault)",
   missing: "var(--on-surface-disabled)", unmeasured: "var(--on-surface-disabled)", outOfCorridor: "var(--on-surface-disabled)", notInspected: "var(--outline-variant)",
 };
-
-/** 这一格算不算“检测不完整”（缺帧、测量失败、未测、出走廊）。 */
-export const cellIncomplete = (state: GroupCellState) => state === "missing" || state === "error" || state === "unmeasured" || state === "outOfCorridor";

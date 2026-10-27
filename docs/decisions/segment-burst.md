@@ -4,7 +4,7 @@
 
 依据：分段连拍飞拍方案第 18 版（2026-10-22，下称“规格”）与实现决策补充（2026-10-22，用户已确认，下称“决策补充”）；两者冲突时以决策补充为准。契约类型在 `src-tauri/src/{plan,frame_group,segmentation,burst_judge,calibration}.rs` 与 `src/features/plan/types.ts`（字段与 Rust serde 输出逐一对应）。
 
-## 2026-10-26 人定分段与按段相机、走廊（用户已确认；D-SB-43 之外已实现）
+## 人定分段与按段相机、走廊
 
 依据现场 NEW-14 的 16 轮整圈采集（第四节 D-SB-40 列出数据与边界偏差），分段改为“人定结构、软件定位边界”：
 
@@ -48,7 +48,7 @@
 - **默认做法 3**：**提前结束**（PLC 提前报运动结束）：PC 用已收到的帧照常判 OK/NG；帧组数 < ΣN_exp − Σtol 时加 `short_part`（疑似提前终止）标记，历史中单独显示（`PartSummary.flags`）。
 - **默认做法 4**：**每段、它的每台检测相机示教一条走廊**（D-SB-42、D-SB-45）；弯道用从出胶点起画的短走廊，帧走出走廊记“检测不完整”（`FrameState::OutOfCorridor`），不判 NG。弯道走廊没有经过真实弯道图像验证。
 - **默认做法 6**：**重新标定使 N_exp / expected_total 变化时分配新的 `plan_version`**（二者都进入计划身份，见 D-SB-19）；计划版本是 PC 侧发布包与记录的身份，不下发 PLC。
-- **默认做法 7**：三台相机**取最差**；帧序号取 SDK **`frame_counter`**；三台相机整件**全无帧判 ERR 91**；采集失败的异常码为 98 / 99（D-SB-33）；**容差默认 1**。
+- **默认做法 7**：按本段检测相机取最差，未分段区域按每帧预测段的检测相机取最差（D-SB-45）；帧序号取 SDK **`frame_counter`**；三台相机整件**全无帧判 ERR 91**；采集失败的异常码为 98 / 99（D-SB-33）；**容差默认 1**。
 
 ## 四、冲突与决策
 
@@ -63,7 +63,7 @@
 ### D-SB-2 帧数只告警，接件不核对数量
 
 - 问题：规格 §2 帧数在 N_exp ± tol 内正常，超出只告警。
-- 采用：接件只核对型号与计划能否编出（[core-flow.md](core-flow.md) D-CF-4），不核对拍照数量。运行时按区域比较帧组数与 N_exp ± tol（未分段时比较 `expected_total ± tolerance_total`），越界记“帧数异常”告警，不改结论。记录库按实际帧落库。
+- 采用：接件只核对型号与计划能否编出（[core-flow.md](core-flow.md) D-CF-4），不核对拍照数量。运行时只核对整件帧组数与 `expected_total ± tolerance_total`，越界记“帧数异常”告警，不改结论。记录库按实际帧落库。
 
 ### D-SB-3 区域帧数口径：帧数 = 帧组数
 
@@ -101,7 +101,7 @@
 ### D-SB-12 所有帧都测
 
 - 问题：原模型同 Pose 组只检所选的一张；规格 §0 所有帧都参与每帧独立检测，不裁帧。
-- 采用：每台相机的每一帧都测，没有组选图。
+- 采用：检测相机在它负责的段内每帧都测，没有组选图；其余相机标 `NotInspected`（D-SB-45）。
 
 ### D-SB-13 缺帧、多帧、未完成的结论
 
@@ -111,9 +111,7 @@
 ### D-SB-14 三台相机结论取最差
 
 - 问题：规格 §0 所有帧都参与独立检测。
-- 采用：任一相机任一帧 NG，所在区域即 NG，整件取最严重结论。
-- 修订（已实现）：D-SB-41 改为可信段区域只取本段检测相机的最差，未分段区域仍按本条。
-- 修订（已实现）：D-SB-45 改为未分段区域按每帧预测段的检测相机取最差，本条不再适用于段配方。
+- 采用：可信段区域只取本段检测相机的最差，未分段区域按每帧预测段的检测相机取最差（D-SB-45）；任一参与检测的帧 NG，所在区域即 NG，整件取最严重结论。
 
 ### D-SB-15 胶偏判定：段级 AbsoluteX，ToEdge 暂不实现
 
@@ -145,16 +143,11 @@
 ### D-SB-20 就绪与发布前置
 
 - 问题：规格 §1 新建时 expected_frames = null 标“待标定”，未标定不能发布，§0 N_exp 不能手填。
-- 采用：`Recipe::ready_burst`：3 台相机都示教了走廊和当量，且 `expected_total` 非空（第二节：各段 N_exp 可以为 null）。`update_doc` 直接修改 `expected_frames`、`calib`、`part_calib` 时拒绝；段的序列或 kind 改变时清空全部 N_exp、calib、`part_calib`、x_ref。
+- 采用：`Recipe::ready_burst` 要求每段每台检测相机有走廊、相机有当量、`expected_total` 非空，多段配方还须各段 N_exp 都已标定（D-SB-45）。`update_doc` 直接修改 `expected_frames`、`calib`、`part_calib` 时拒绝；段的序列或 kind 改变时清空全部 N_exp、calib、`part_calib`、x_ref。发布时当场核对发布前检查，独立正常样本验证可选（D-SB-46）。
 
-- 修订（已实现）：D-SB-46 发布不再要求独立正常样本验证，其余发布前置不变。
+### D-SB-21 多轮与逐段标定
 
-### D-SB-21 没有分段算法时的标定
-
-- 问题：规格 §3 算法验证前整条胶路按未分段，§2 每段 N_exp 由多轮采集得出，§1 未标定不能发布；`Unsegmented` 只能给出整件帧组数。
-- 采用（决策补充第二节）：每轮帧组数做 `calibrate_counts`，结果写 `part_calib`。单段计划同时写该段 `expected_frames` 和 `calib`；多段计划在每个标定轮次都确认了手动分段时按边界逐段标定（各段 N_exp 之和即 ΣN_exp），否则各段保持 null，界面标“待标定”，但凭 `expected_total` 可以发布。
-
-- 修订（已实现）：D-SB-45 要求多段配方各段 N_exp 都已标定才能发布，不再凭整件 ΣN_exp 发布多段配方；单段配方不变。
+- 采用：每轮帧组数做 `calibrate_counts`，结果写 `part_calib`。单段计划同时写该段 `expected_frames` 和 `calib`；多段计划在每个标定轮次都确认手动分段时按边界逐段标定，各段 N_exp 之和即 ΣN_exp；否则各段保持 null、界面标“待标定”。多段配方须各段 N_exp 都已标定才能发布（D-SB-45）。
 
 ### D-SB-22 检测范围与未检区域
 
@@ -253,7 +246,7 @@
   - 段长：直线段 N_exp < 2 × `boundary_guard` + 1 时核心区域为空，该段胶偏不判，发布前检查给出警告（不阻断）；弯道段不限。
   - 比例边界是推算值，不逐段核对帧数；帧数告警仍只核对整件（第二节）。
 - 理由：现场数据的边界偏差在默认余量 2 帧以内；判定在整件收尾后进行，比例映射所需的总帧组数在判定时已知；复用现有逐段标定与 `resolve_regions`，不需要图像算法即可上线按段判定。
-- 回退：现场偏差超过余量（例如速度随工况变化）时，在比例边界的 `search_window` 内用图像运动细化（D-SB-43）；`boundary_guard` 设为足够大、或段 N_exp 保持 null，即回到现行未分段处理。
+- 现场偏差超过余量时须重新评估段结构、速度与边界余量；图像运动细化属于待开发方向（D-SB-43），没有可用的自动回退实现。多段配方不能以段 N_exp 保持 null 的方式发布。
 - 实现（2026-10-26）：`segmentation::Proportional`；`resolve_regions` 增加 `guard` 参数，过渡区为 `Unsegmented { reason: Transition }`，覆盖边界两侧的段，取代“边界两侧各一帧归弯道”。生产节拍、标定轮次的 boundaries.json、独立样本验证、历史复测与重判都改用它。`RecipeDoc` / `Recipe` 新增 `boundaryGuard`（serde 默认 2，校验 0–5，不改配方 schema 8，旧文件读作 2），段列表页可编辑。`burst_judge`：过渡区不判也不标胶偏、不计入 `flags.unsegmented`；直线 / 弯道区域 `count_status` 恒为空（帧数只核对整件与未分段区域）。发布前检查：多段配方直线段 N_exp < 2 × guard + 1 时在“段标定”里提示，x_ref 检查区分“已逐段标定（运行时标胶偏未判）”与“未逐段标定”。单段配方仍未分段，行为不变。
 - 离线评估：`src-tauri/examples/segment_eval.rs` 对已确认手动分段做留一评估（见 [TESTING](../testing/TESTING.md)）；NEW-14 尚未标手动分段，评估结果待补。
 
@@ -287,9 +280,9 @@
 ### D-SB-43 图像运动细化边界（2026-10-26 列入后续，未排期）
 
 - 问题：比例边界依赖各轮速度曲线一致；工况变化（减速、暂停）会让偏差超出余量。
-- 采用（方向）：逐帧估计工件在画面中的平移与旋转（直线段以平移为主，弯道以绕出胶点的旋转为主），在比例边界的 `search_window` 内把边界对准运动转折点，置信度取转折强度。`SegInput` 需扩展运动特征（现只有 `FrameMetrics`）。以 NEW-14 16 轮已确认的手动分段为真值离线评估，验收：≥ 95% 的边界误差 ≤ 1 帧；另需实际涂胶轮次复核。
+- 采用（方向）：逐帧估计工件在画面中的平移与旋转（直线段以平移为主，弯道以绕出胶点的旋转为主），在比例边界附近把边界对准运动转折点，置信度取转折强度。实现时需增加运动特征输入与搜索范围，当前没有相应占位接口。以 NEW-14 16 轮已确认的手动分段为真值离线评估，验收：≥ 95% 的边界误差 ≤ 1 帧；另需实际涂胶轮次复核。
 - 理由：工件运动不依赖胶嘴是否对准胶条，空跑数据即可开发；边界之外的段结构、相机与走廊仍由人定，只替换比例分段器的边界定位。
-- 与 D-SB-45 的关系：细化只在收尾后移动边界，归属变了的帧走 D-SB-45 的收尾补测；图像保留范围要覆盖 `search_window`。
+- 与 D-SB-45 的关系：细化只在收尾后移动边界，归属变了的帧走 D-SB-45 的收尾补测；图像保留范围须覆盖新增的边界搜索范围。
 
 ### D-SB-44 分段标定工作台（2026-10-26 用户确认，P1、P2 已实现）
 
@@ -506,10 +499,10 @@
 - **`PartSummaryV2`** = `PartSummary` + `flags`。
 - **`CaptureRoundV2`**：`format: 2`、`roundId`、`recipeId`、`cameras: CaptureCamera[]`、`state`（同 `CaptureRound.state`）、`plcShotCount`、`plcPlanVersion`、`deviceTriggers`（这三项为保留字段，示教接口 V1 不传，为 null）、`groupCount`、`cameraFrames`、`incompleteGroups`、`missingFrames: {camera, seq}[]`、`lossAlarms`、`alarms: CaptureAlarm[]`（逐帧告警 `{kind: duplicate | queueFull | budgetDropped | corrupt, camera, seq}`，最多 1024 条）、`createdAt`、`endedAt`、`error`、`failure: CaptureFailureV2 | null`、`simulated`。`CaptureFailureV2`（`kind` 区分）：`camera{cameraId}`、`sessionChanged{cameraId}`（90+98）、`plc`、`startTimeout`、`writeTimeout{queued, written}`、`interrupted`（90+99）、`other`。
 - **`CalibrationView`**：`minRounds`、`rounds: CalibrationRoundView[]`、`part: CalibOutcome | null`、`segments: SegmentCalibView[]`、`expectedTotal`、`toleranceTotal`、`planVersionChange`。`CalibrationRoundView`：`roundId`、`standard`、`groupCount`、`cameraFrames`、`incompleteGroups`（个数）、`lossAlarms`（个数）、`createdAt`。`SegmentCalibView`：`index`、`kind`、`outcome: CalibOutcome | null`、`pending`（如“分段算法未就绪”）、`tolerance`（配方当前值）、`xRef: {xRef, spread} | null`、`xRefPending`（如“测量量未实现”）。
-- **`WorkspacePlanView`**：`segments`、`cameras`、`segmentDefaults`、`calibrationRounds`、`partCalib`、`expectedTotal`、`toleranceTotal`、`calibrated`（expectedTotal 非空）、`cameraTeaching: CameraTeachingView[]`（`camera`、`saved`、`frame: FrozenImage | null`、`mmPerPx`）、`calibration: CalibrationView | null`、`productionExport`、`candidateExport`、`candidateExportError`、`shotCountChanged`（ΣN_exp 相对生产版本变化）、`progress: ProgressV2`。
+- **`WorkspacePlanView`**：`segments`、`cameras`、`segmentDefaults`、`calibrationRounds`、`partCalib`、`expectedTotal`、`toleranceTotal`、`calibrated`（expectedTotal 非空）、`cameraTeaching: CameraTeachingView[]`（`camera`、`mmPerPx`、`ready`、`segments: {segment, frame: FrozenImage, round, seq, saved}[]`）、`calibration: CalibrationView | null`、`productionExport`、`candidateExport`、`candidateExportError`、`shotCountChanged`（ΣN_exp 相对生产版本变化）、`progress: ProgressV2`。
 - **`RecipeSummaryV2`** = `RecipeSummary` + `segmentCount`、`expectedTotal`、`toleranceTotal`、`calibrated`。
-- **`ProgressV2`**：`steps: ProgressStepV2[]`（与 `ProgressStep` 相同，`id` 为 `StepIdV2`，`blockers[].target` 为 `ProgressTargetV2`）、`next: {step, label, target} | null`。`ProgressTargetV2`：`capture`、`segments`、`corridor{camera}`、`calibration`、`validation`、`camera`。
-- 镜像的领域类型（`LossReason` 的 `triggers` 分支保留，现在只产生 `cameras`）：`PathSegment` 及其检测项、`PartCalib`、`KindDefaults`、`PlanExport`、`FrameGroup`、`LossAlarm`、`Region`、`SegOutcome`、`FrameMetrics`、`RegionResult`、`Flags`、`Uninspected`、`BurstJudgement`、`CalibOutcome`、`CameraInspect`。
+- **`ProgressV2`**：`steps: ProgressStepV2[]`（与 `ProgressStep` 相同，`id` 为 `StepIdV2`，`blockers[].target` 为 `ProgressTargetV2`）、`next: {step, label, target} | null`。`ProgressTargetV2`：`capture`、`segments`、`corridor{camera, segment: u32 | null}`、`calibration`、`validation`、`camera`。
+- 镜像的领域类型（`LossReason` 的 `triggers` 分支保留，现在只产生 `cameras`）：`PathSegment` 及其检测项、`PartCalib`、`KindDefaults`、`PlanExport`、`LossAlarm`、`Region`、`FrameMetrics`、`RegionResult`、`Flags`、`Uninspected`、`BurstJudgement`、`CalibOutcome`、`CameraInspect`。
 
 ### 5.3 新步骤与路由
 
@@ -680,10 +673,10 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 #### 14. 离线仿真
 
 - **入口**：`offline_run` 与候选试运行（`workspace_debug_run`）都走 `Line::run_burst`。候选试运行过 `ready_burst`，各计划相机的示教帧尺寸按计划相机顺序取自 `cameraTeaching`，示教帧采集后这台相机的设备标签须没变（与走廊示教验证项同一口径，开跑前 `recheck_debug_candidate` 再核对），交给 `Candidate::new_burst` 建走廊测量图，再由 `offline::run_candidate` 运行。
-- **出帧剖面**：`line::PulseProfile { hz, segments, head_tail_jitter, corner_jitter, seed }`，波动取法与 `segmentation::synthetic::frame_counts` 相同（同一剖面与种子在离线产线和回归序列里帧数、真值边界一致，`PulseProfile::spec` 给出回归入口的 `SequenceSpec`）。名义帧数 `line::nominal_frames`：各段 N_exp；有段待标定时按 段长 × 帧率 ÷ 50 mm/s 估算（没有段长：直线 12、弯道 4），已有整件标定时把待标定段缩放到 ΣN_exp。合成图取配方名义剖面，样本集取样本帧数最多的那台相机（一段）。离线节拍覆盖时帧率按 1000 ÷ 间隔换算（[soak.md](soak.md) S-3）。
+- **出帧剖面**：`line::PulseProfile { hz, segments, head_tail_jitter, corner_jitter, seed }`，波动由 `segmentation::synthetic::frame_counts` 按剖面与种子生成。名义帧数 `line::nominal_frames`：各段 N_exp；有段待标定时按 段长 × 帧率 ÷ 50 mm/s 估算（没有段长：直线 12、弯道 4），已有整件标定时把待标定段缩放到 ΣN_exp。合成图取配方名义剖面，样本集取样本帧数最多的那台相机（一段）。离线节拍覆盖时帧率按 1000 ÷ 间隔换算（[soak.md](soak.md) S-3）。
 - **使能与出帧**：布防后按 1 / hz 定频出帧（时钟不被轮询周期拉长），每次同时出三台相机的帧，出完置运动结束（plcState=20）。`PartOrder` 有 `profile`、`lost`（只丢指定相机的指定帧，相机照常计数）、`early_end_after`（提前结束前的帧数）。
 - **工况（与前端同名）**：`cameraLost` 第 2 台相机丢第 min(3, 总数) 帧；`pulseJitter` 首尾各 ±1；`cornerSlowdown` 每个弯道段 ±2；`notInspected` 机器人照常涂胶、PLC 不提交请求（`run_burst` 返回 `Ok(None)`，PC 无记录，离线运行记“本件未检”）；`earlyEnd` 出约一半、且少于 ΣN_exp − Σtol 帧后报运动结束；`lostFrame` 三台相机同一帧都丢；`countMismatch` 与正常相同（协议 7 不报触发计数）。只改出帧与握手的工况进样本集白名单（`Scenario::handshake`）。
-- **合成图**：模拟相机触发带 `camera::BurstRender`（计划相机下标、seq、所在段类型与段内进度、工况、种子），`simimage::render_burst` 按它出单视角图：直线段胶条沿这台相机的走廊（未示教时按相机上下错开的缺省位置），弯道段整条胶绕胶嘴转动 25°·sin(π·进度)，断胶 / 超差画在第 1 台相机第 2 帧（与模拟测量同一帧）。模拟测量 `measure::simulate_frame` 按名义剖面找到这一帧所在段，弯道帧胶宽略宽、x 拱形偏出（峰值 1.5 mm）；PC 判定仍按未分段。
+- **合成图**：模拟相机触发带 `camera::BurstRender`（计划相机下标、seq、所在段类型与段内进度、工况、种子），`simimage::render_burst` 按它出单视角图：直线段胶条沿这台相机的走廊（未示教时按相机上下错开的缺省位置），弯道段整条胶绕胶嘴转动 25°·sin(π·进度)，断胶 / 超差画在第 1 台相机第 2 帧（与模拟测量同一帧）。模拟测量 `measure::simulate_frame` 按名义剖面找到这一帧所在段，弯道帧胶宽略宽、x 拱形偏出（峰值 1.5 mm）；PC 按同一套比例分段与区域判定规则处理。
 - **合成图离线环境**：沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台（编号取没用过的 camN）。
 - **合成图示教采集**：合成图来源的 `offline_capture` 按候选配方（须能编译）的名义剖面出一圈，首尾 ±1、弯道 ±2，种子取该候选的轮序号，多轮标定看得到 min / max 差异。多轮标定加入轮次时的每帧测量仍用 lyFlow 走廊测量（需加载 lyFlow）。
 - **样本集**：`Manifest::camera_frames(camera)` 按清单顺序给出一台相机的帧序列；第 seq 帧取各相机的第 seq 帧，没有这一帧的相机按缺帧（照常计数、不出帧）。

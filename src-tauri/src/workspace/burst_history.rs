@@ -70,7 +70,6 @@ pub(super) fn judge_frames(
     let groups = frame_groups(metrics, cameras.len());
     let outcome = Proportional.segment(&SegInput {
         groups: &groups,
-        features: metrics,
         segments,
     });
     let regions = resolve_regions(
@@ -120,7 +119,6 @@ pub(super) fn remeasure_by_rule(
     let total = groups.len() as u64;
     let outcome = Proportional.segment(&SegInput {
         groups: &groups,
-        features: &[],
         segments,
     });
     let regions = resolve_regions(segments, &outcome, total, MIN_CONFIDENCE, boundary_guard);

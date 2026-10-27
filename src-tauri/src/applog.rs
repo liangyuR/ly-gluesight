@@ -97,13 +97,6 @@ impl Fields {
         self
     }
 
-    pub fn source(source: &str) -> Self {
-        Self {
-            source: Some(source.into()),
-            ..Self::default()
-        }
-    }
-
     pub fn with_stage(mut self, stage: &str) -> Self {
         self.stage = Some(stage.into());
         self

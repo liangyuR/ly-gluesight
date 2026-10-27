@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::camera::CameraSource;
 use crate::cycle::{CycleHost, Phase};
-use crate::frame::{CounterSource, Frame, FrameImage};
+use crate::frame::{Frame, FrameImage};
 use crate::recipe::CameraImaging;
 
 mod burst;
@@ -122,7 +122,6 @@ pub struct CaptureDevice {
     pub camera_config: serde_json::Value,
     pub imaging: CameraImaging,
     pub session: u64,
-    pub source: Option<CounterSource>,
     /// 这台相机本会话见到的最高 SDK 帧计数（没见过帧时取开流计数起点），seq = frame_counter − 它（D-SB-10）；
     /// 两者都没有时为空，本轮按这台相机收到的第一帧定基线
     pub frame_baseline: Option<u64>,
@@ -416,25 +415,41 @@ fn start_capture(app: AppHandle, recipe_id: String, camera_ids: Vec<String>, dra
         if config.source == CameraSource::Mvs && config.trigger_source != "Line0" { return Err(format!("相机 {}（{camera_id}）必须使用 PLC Line0 硬触发", config.name)); }
         slots.push((cam, slot, config));
     }
-    let simulated = slots.iter().any(|(_, _, config)| config.source != CameraSource::Mvs);
-    app.state::<crate::workspace::WorkspaceHost>().capture_for_candidate(&recipe_id, |workspace| {
-        if !workspace.doc.is_burst() { return Err("旧拍照点配方已停用，请创建段配方".into()); }
-        crate::camera::check_burst_cameras(&cycle.camera.configs(), &camera_ids)?;
-        let mut devices = Vec::with_capacity(slots.len());
-        for (cam, slot, config) in &slots {
-            let imaging = workspace.imaging(&config.id);
-            slot.set_imaging(&imaging)?;
-            let (arm, ledger) = slot.routing_state().map_err(|e| format!("相机 {}：{e}", config.id))?;
-            devices.push(CaptureDevice {
-                cam: *cam, camera_id: config.id.clone(), camera_config: serde_json::to_value(config).map_err(|e| e.to_string())?, imaging,
-                session: arm.session, source: ledger.as_ref().and_then(|l| l.source).or(arm.source),
-                frame_baseline: ledger.as_ref().and_then(|l| l.last_frame).or(arm.counter_after_open),
-            });
-        }
-        let drain = drain_timeout_ms.unwrap_or(1000);
-        let capture = cycle.camera.recipe_capture();
-        capture.start_burst(recipe_id.clone(), devices, drain, simulated).map(AnyRound::Burst).map_err(|e| e.to_string())
-    })
+    let simulated = slots
+        .iter()
+        .any(|(_, _, config)| config.source != CameraSource::Mvs);
+    app.state::<crate::workspace::WorkspaceHost>()
+        .capture_for_candidate(&recipe_id, |workspace| {
+            if !workspace.doc.is_burst() {
+                return Err("旧拍照点配方已停用，请创建段配方".into());
+            }
+            crate::camera::check_burst_cameras(&cycle.camera.configs(), &camera_ids)?;
+            let mut devices = Vec::with_capacity(slots.len());
+            for (cam, slot, config) in &slots {
+                let imaging = workspace.imaging(&config.id);
+                slot.set_imaging(&imaging)?;
+                let (arm, ledger) = slot
+                    .routing_state()
+                    .map_err(|e| format!("相机 {}：{e}", config.id))?;
+                devices.push(CaptureDevice {
+                    cam: *cam,
+                    camera_id: config.id.clone(),
+                    camera_config: serde_json::to_value(config).map_err(|e| e.to_string())?,
+                    imaging,
+                    session: arm.session,
+                    frame_baseline: ledger
+                        .as_ref()
+                        .and_then(|l| l.last_frame)
+                        .or(arm.counter_after_open),
+                });
+            }
+            let drain = drain_timeout_ms.unwrap_or(1000);
+            let capture = cycle.camera.recipe_capture();
+            capture
+                .start_burst(recipe_id.clone(), devices, drain, simulated)
+                .map(AnyRound::Burst)
+                .map_err(|e| e.to_string())
+        })
 }
 
 #[tauri::command]

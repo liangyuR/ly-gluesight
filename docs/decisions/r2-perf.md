@@ -7,7 +7,6 @@
 - 问题：用 Playwright `connectOverCDP` 附着界面后采样进程内存时，Playwright 会对页面启用 CDP `Network` 域，DevTools 随之在渲染进程里缓存每个响应体。Tauri 的 `invoke` 走自定义协议，实时帧原图（每张约 0.53 MB）和快照都算响应，缓存涨到上限（约 200 MB）后不再释放，直到调试会话断开。
 - 实测：同一实例、同一时刻，Playwright 附着时渲染进程 `partition_alloc/partitions/buffer` 为 219 MB，断开后用不启用 `Network` 的 CDP 连接再量为 6 MB。
 - 采用：内存结论以“原始 CDP”（只用 `Runtime`、`Performance`、`HeapProfiler`、`Tracing`，不启用 `Network`）为准；Playwright 附着的数据只作对照。
-- 影响：[长稳报告](../testing/soak-report.md)中“在线检测页 WebView2 私有内存 0.3 → 1 GB”里约 0.2 GB 来自测量本身。
 - 回退：无代码改动。
 
 ## P-2 实时帧改为在查看器的同一块 canvas 上直接绘制

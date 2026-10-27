@@ -174,11 +174,10 @@ impl BurstPart {
     }
 
     /// 本件的分段结果与区域（比例分段，D-SB-40）。
-    fn regions(&self, metrics: &[FrameMetrics]) -> (SegOutcome, Vec<Region>) {
+    fn regions(&self) -> (SegOutcome, Vec<Region>) {
         let groups = self.grouper.groups();
         let outcome = Proportional.segment(&SegInput {
             groups: &groups,
-            features: metrics,
             segments: &self.segments,
         });
         let regions = resolve_regions(
@@ -193,12 +192,7 @@ impl BurstPart {
 
     /// 判定需要、但还没用对应走廊送测过的（帧, 相机）与该用的段号（D-SB-45）。用对应走廊测过但没测成（超时、失败）的不重测。
     fn post_targets(&self) -> Vec<((usize, u64), u32)> {
-        let metrics: Vec<FrameMetrics> = self
-            .frames
-            .values()
-            .filter_map(|frame| frame.metrics.clone())
-            .collect();
-        let (outcome, regions) = self.regions(&metrics);
+        let (outcome, regions) = self.regions();
         let choice = frame_corridors(
             &self.segments,
             &self.cameras,
@@ -519,7 +513,7 @@ impl Part {
         }
         let metrics: Vec<FrameMetrics> = burst.frames.values().filter_map(|frame| frame.metrics.clone()).collect();
         let segments = &burst.segments;
-        let (_, regions) = burst.regions(&metrics);
+        let (_, regions) = burst.regions();
         burst_judge::judge(
             segments,
             self.recipe.expected_total(),

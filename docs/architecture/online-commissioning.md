@@ -147,7 +147,7 @@
 | 维护模式下正式版配方判出 NG → 回 PLC 的仍是结果码 0，记录结论为试判 NG | 维护期间向线体输出 NG |
 | 隔离实例：离线产线开启维护模式跑 30 件 → 导入为轮次 → 示教、标定、验证、发布 → 试判 → 退出维护模式后能判出 NG | 端到端链路 |
 
-前三条由 `workspace/history_import_tests.rs` 覆盖，另有采集页“从历史选用”的界面流程测试。第四条的 PLC 侧由 `plc_session` 的维护件测试覆盖（锁存 pcMode=1 的事务只接受结果码 0）。三期另有：试判统计只算真机试判件、按配方取最新版本、NG 按结论细分（`store` 测试）；试判面板的“复核”把历史页筛到该配方试判件的 NG 与 ERR（前端测试）。见 [Rust 保留测试清单](../testing/rust-test-retained-inventory.md)、[前端保留测试清单](../testing/frontend-test-retained-inventory.md)。隔离实例端到端未做。
+前三条由 `workspace/history_import_tests.rs` 覆盖，另有采集页“从历史选用”的界面流程测试。第四条的 PLC 侧由 `plc_session` 的维护件测试覆盖（锁存 pcMode=1 的事务只接受结果码 0）。三期另有：试判统计只算真机试判件、按配方取最新版本、NG 按结论细分（`store` 测试）；试判面板的“复核”把历史页筛到该配方试判件的 NG 与 ERR（前端测试）。运行方法见 [测试说明](../testing/TESTING.md)。隔离实例端到端未做。
 
 ## 十、已定事项（2026-10-25）
 

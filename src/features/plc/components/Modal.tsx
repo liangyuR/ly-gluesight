@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, type ReactNode } from "react";
-import { Dialog, Drawer } from "qing-steel";
+import { Dialog } from "qing-steel";
 
 interface ModalProps {
   title: string;
@@ -9,10 +9,9 @@ interface ModalProps {
   width?: number;
   children: ReactNode;
   className?: string;
-  side?: boolean;
 }
 
-export default function Modal({ title, onClose, closeDisabled = false, footer, width = 520, children, className = "", side = false }: ModalProps) {
+export default function Modal({ title, onClose, closeDisabled = false, footer, width = 520, children, className = "" }: ModalProps) {
   const body = useRef<HTMLDivElement | null>(null);
   const attach = useCallback((node: HTMLDivElement | null) => {
     body.current = node;
@@ -22,10 +21,9 @@ export default function Modal({ title, onClose, closeDisabled = false, footer, w
     const frame = requestAnimationFrame(() => body.current?.querySelector<HTMLElement>("input:not(:disabled)")?.focus());
     return () => cancelAnimationFrame(frame);
   }, []);
-  const Overlay = side ? Drawer : Dialog;
   return (
-    <Overlay open title={title} footer={footer} closeDisabled={closeDisabled} className={`gs-modal ${className}`} onOpenChange={open => { if (!open) onClose(); }}>
+    <Dialog open title={title} footer={footer} closeDisabled={closeDisabled} className={`gs-modal ${className}`} onOpenChange={open => { if (!open) onClose(); }}>
       <div ref={attach} className="modal-body">{children}</div>
-    </Overlay>
+    </Dialog>
   );
 }

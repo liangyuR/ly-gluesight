@@ -151,8 +151,7 @@ const DEFAULT_STRAIGHT_FRAMES: u32 = 12;
 const DEFAULT_CORNER_FRAMES: u32 = 4;
 
 /// 段配方一件的脉冲剖面（规格 §0/§6）：相机使能为高时 PLC 按 `hz` 定频发脉冲串，次数 = 各段名义帧数 +
-/// 种子化的首尾 ±`head_tail_jitter` 与弯道 ±`corner_jitter` 波动。波动的取法与分段回归入口
-/// [`synthetic::frame_counts`] 相同，同一剖面与种子在离线产线与回归序列里帧数、真值边界一致。
+/// 种子化的首尾 ±`head_tail_jitter` 与弯道 ±`corner_jitter` 波动。
 #[derive(Clone, Debug, PartialEq)]
 pub struct PulseProfile {
     pub hz: f64,
@@ -178,14 +177,17 @@ pub struct Pulse {
 }
 
 impl PulseProfile {
-    /// 同一剖面在分段回归入口里的描述；`missing` 为缺帧 (相机, seq)。
-    pub fn spec(&self, missing: Vec<(usize, u64)>) -> synthetic::SequenceSpec {
-        synthetic::SequenceSpec { segments: self.segments.clone(), head_tail_jitter: self.head_tail_jitter, corner_jitter: self.corner_jitter, missing }
+    fn spec(&self) -> synthetic::SequenceSpec {
+        synthetic::SequenceSpec {
+            segments: self.segments.clone(),
+            head_tail_jitter: self.head_tail_jitter,
+            corner_jitter: self.corner_jitter,
+        }
     }
 
     /// 各段实际脉冲数（含波动）。
     pub fn counts(&self) -> Vec<u64> {
-        synthetic::frame_counts(&self.spec(Vec::new()), self.seed)
+        synthetic::frame_counts(&self.spec(), self.seed)
     }
 
     /// 相邻两个脉冲的间隔（1 / hz）。

@@ -93,10 +93,7 @@ export async function ensureOffline(call, out) {
   if (site.mode !== "offline") {
     const setup = JSON.parse(await readFile(path.join(out, "setup.json"), "utf8"));
     const dir = site.last?.kind === "sampleSet" && site.last.sampleSetDir ? site.last.sampleSetDir : setup.sampleSetCopy;
-    try { await call("site_enter_offline", { source: { kind: "sampleSet", dir } }); } catch (error) {
-      if (!/在途事务/.test(error.message)) throw error;
-      throw new Error(`已知问题（见 docs/testing/soak-report.md 剩余风险 1）：重启前留下的离线未结事务阻止回到离线：${error.message}`);
-    }
+    await call("site_enter_offline", { source: { kind: "sampleSet", dir } });
   }
   await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
   await until(async () => (await call("cycle_readiness")).recipes.find(r => r.id === RECIPE_ID)?.runnable === true, Boolean, `配方 ${RECIPE_ID} 不可运行`, 90000, 500);

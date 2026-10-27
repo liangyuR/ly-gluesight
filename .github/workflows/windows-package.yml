@@ -23,7 +23,6 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      RUSTUP_TOOLCHAIN: 1.99.1
       CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target/cargo-release
       PACKAGE_TIMINGS: ${{ github.workspace }}/src-tauri/target/package-reports/stage-seconds.txt
     defaults:
@@ -53,7 +52,7 @@ jobs:
           package-manager-cache: false
       - name: Prepare package and Rust tools
         run: |
-          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+          rustup toolchain install ${{ steps.tools.outputs.rust }} --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
           git config --global url.https://github.com/.insteadOf ssh://git@github.com/
           git config --global --add url.https://github.com/.insteadOf git@github.com:
@@ -62,7 +61,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.use_cache
         with:
           workspaces: src-tauri -> target/cargo-release
-          shared-key: windows-release-1.99.1
+          shared-key: windows-release-${{ steps.tools.outputs.rust }}
           cache-workspace-crates: false
       - name: Resolve lyFlow release
         id: lyflow

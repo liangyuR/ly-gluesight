@@ -1,6 +1,8 @@
 {
   "compilerOptions": {
     "composite": true,
+    "outDir": "./output/.cache/typescript/config",
+    "tsBuildInfoFile": "./output/.cache/typescript/config.tsbuildinfo",
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
