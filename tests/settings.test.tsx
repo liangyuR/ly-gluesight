@@ -63,9 +63,11 @@ describe("离线原图保留设置", () => {
     const storage = within(screen.getByRole("region", { name: "资料存储" }));
     expect(await storage.findByText("C:/test/gs_logs/runtime/development/instance")).toBeVisible();
     expect(storage.getByText("C:/test/gs_logs/vision/development/instance/project")).toBeVisible();
-    await userEvent.click(storage.getByRole("button", { name: "打开运行日志" }));
+    await userEvent.click(storage.getByRole("button", { name: /^打开日志根目录：/ }));
+    expect(invoke).toHaveBeenCalledWith("storage_open_directory", { target: "logs" });
+    await userEvent.click(storage.getByRole("button", { name: /^打开运行日志：/ }));
     expect(invoke).toHaveBeenCalledWith("storage_open_directory", { target: "runtime" });
-    await userEvent.click(storage.getByRole("button", { name: "打开视觉原图" }));
+    await userEvent.click(storage.getByRole("button", { name: /^打开视觉原图：/ }));
     expect(invoke).toHaveBeenCalledWith("storage_open_directory", { target: "vision" });
   });
 

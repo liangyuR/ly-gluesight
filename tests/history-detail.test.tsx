@@ -48,9 +48,10 @@ describe("历史详情（段配方记录）", () => {
     expect(regions.getByText("段 1–3 · 未分段")).toBeVisible();
     expect(screen.getByText("检测不完整", { selector: "[data-flag]" })).toBeVisible();
     await waitFor(() => expect(burstImageApi.record).toHaveBeenLastCalledWith(detail.summary.id, 0, 1));
-    await userEvent.click(screen.getByRole("button", { name: "帧组 5 · 不完整" }));
+    await userEvent.click(screen.getByRole("button", { name: /^帧组 5 · CAM-1 ·/ }));
     await waitFor(() => expect(burstImageApi.record).toHaveBeenLastCalledWith(detail.summary.id, 0, 5));
-    await userEvent.selectOptions(screen.getByLabelText("历史相机选择", { selector: "select" }), "1");
+    await userEvent.click(screen.getByRole("button", { name: /^帧组 5 · CAM-2 ·/ }));
+    expect(screen.getByLabelText("历史相机选择", { selector: "select" })).toHaveValue("1");
     expect(await screen.findByText(/本帧组缺帧，没有原图/)).toBeVisible();
     expect(burstImageApi.record).toHaveBeenCalledTimes(2);
   });
