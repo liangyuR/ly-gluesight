@@ -52,7 +52,7 @@
 | 历史统计行 `hist-counts`、`reason-box`、`ng-item`、`history-segment` 业务色块（用 `data-tone`）、行级业务样式（NG 行底色、告警 / 故障色条、错误日志行底色，用 `tr:has([data-tone])` 与 `tr:has([data-level])`） | 件数与良率不是测量读数；`Table` 不支持行级属性 |
 | 共享 `Panel`（`features/workspace/components`） | 端到端脚本依赖 `.wp-panel` 加标题定位；内部已是 `Card`，标题槽位的字号靠 `styles.css` 里的 `.wp-panel > .qs-card-heading` 规则维持 |
 | 共享工具类 `wp-actions`、`spacer`、`mono`、`kv2`、`sn`、`muted`、`hint` | 各页面仍在使用 |
-| `plc/components/Modal.tsx` | 封装 `Dialog` / `Drawer`：用 ref 设置宽度、对话框打开后把焦点移到第一个输入框，补 qing-steel 缺的宽度与初始焦点参数 |
+| `plc/components/Modal.tsx` | 封装 `Dialog`：用 ref 设置宽度、对话框打开后把焦点移到第一个输入框，补 qing-steel 缺的宽度与初始焦点参数 |
 | `window.confirm`（移除相机） | 属于行为，未替换 |
 
 ## 三、qing-steel 缺口清单
@@ -105,6 +105,5 @@
 
 ## 四、遗留与后续
 
-- `Modal.tsx` 的 `side` 参数（抽屉形态）没有调用方，对应的样式已删；参数本身留在 TSX 里，下次动 `Modal` 时一并清理。
 - PLC 点位编辑、写值、地址表 JSON、S7 一期点表对话框和相机未保存提示仍走 `Modal.tsx`，没有直接换成 `Dialog`。
 - 缺口清单中影响最大的是：`Button` 渲染为链接、`Table` 行级属性、`StatusBadge` 中性色调、`Select` 的可测试性（combobox 带 value）、`VerdictCard` 的业务字段。向 qing-steel 提需求时建议优先这几项。

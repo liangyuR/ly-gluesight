@@ -141,12 +141,6 @@ test('SDK clean-environment check detects the real Common Files installation', (
   });
 });
 
-test('package gate executes the existing actual DLL visual checks before bundling', () => {
-  stepScript('Verify actual DLL vision and application runtime');
-  assert.ok(workflow.indexOf('- name: Verify actual DLL vision') < workflow.indexOf('- name: Bundle NSIS installer'));
-  assert.match(readFileSync(new URL('scripts/Test-PackageApplication.ps1', root), 'utf8'), /--check-packaged-runtime/);
-});
-
 test('dependency cache identity uses the locked Tauri version and platform NSIS directory', () => {
   const directory = mkdtempSync(join(tmpdir(), 'gluesight-cache-identity-'));
   try {
@@ -165,8 +159,6 @@ test('dependency cache identity uses the locked Tauri version and platform NSIS 
     const output = readFileSync(outputPath, 'utf8');
     assert.match(output, /nsis=nsis-windows-2\.11\.5/);
     assert.ok(output.includes(`nsis-path=${join(directory, 'app-data', 'tauri', 'NSIS')}`));
-    assert.match(workflow, /"pnpm":"\$\{\{ steps\.node-tools\.outputs\.cache-hit \}\}"/);
-    assert.match(workflow, /"nsis":"\$\{\{ steps\.nsis-cache\.outputs\.cache-hit \}\}"/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

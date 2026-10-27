@@ -36,6 +36,7 @@ Complete-Stage 'runtime'
 if ($PrepareOnly) { return }
 $configPath = Join-Path $stageRoot 'tauri.runtime.json'
 & (Join-Path $PSScriptRoot 'Prepare-PackageResources.ps1') -Version $version
+$savedIncremental = $env:CARGO_PROFILE_RELEASE_INCREMENTAL
 Push-Location -LiteralPath $projectRoot
 try {
     # 预发布开 release 增量编译：改动后重编从约 4 分钟降到 1 分钟内，优化略弱；正式版显式关闭，不受外部环境变量影响
@@ -64,8 +65,11 @@ try {
     [void][IO.Directory]::CreateDirectory($archiveRoot)
     Copy-Item -LiteralPath $installers[0].FullName -Destination $archiveRoot -Force
     $timingPath = Join-Path $reportRoot 'stage-seconds.txt'
-    $timings.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" } | Set-Content -LiteralPath $timingPath -Encoding utf8NoBOM
+    $timings.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value.ToString([Globalization.CultureInfo]::InvariantCulture))" } | Set-Content -LiteralPath $timingPath -Encoding utf8NoBOM
     & (Join-Path $PSScriptRoot 'Write-ReleaseManifest.ps1') -Status 'success' -TimingPath $timingPath -Version $version
     Write-Host "安装包：$(Join-Path $archiveRoot $installers[0].Name)"
     Write-Host "各阶段耗时（秒）：$(($timings.GetEnumerator() | ForEach-Object { "$($_.Key) $($_.Value)" }) -join '，')"
-} finally { Pop-Location }
+} finally {
+    $env:CARGO_PROFILE_RELEASE_INCREMENTAL = $savedIncremental
+    Pop-Location
+}

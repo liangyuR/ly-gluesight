@@ -145,7 +145,6 @@ fn main() -> Result<(), String> {
             .collect();
         let found: Vec<(u64, f32)> = match Proportional.segment(&SegInput {
             groups: &groups,
-            features: &[],
             segments: &calibrated,
         }) {
             SegOutcome::Boundaries(boundaries) => boundaries

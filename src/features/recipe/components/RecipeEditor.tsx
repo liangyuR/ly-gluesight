@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { FormField, NumberField, Select, TextField } from "qing-steel";
-import type { DetectParams, JudgeParams, Polarity, RecipeDoc } from "../../cycle/types";
+import type { DetectParams, Polarity, RecipeDoc } from "../../cycle/types";
 import { KindChecksEditor } from "../../plan/KindChecksEditor";
 import type { KindDefault, SegmentKind } from "../../plan/types";
 
@@ -11,10 +11,6 @@ interface Props {
   onDraftChange?: (doc: RecipeDoc) => void;
   disabled?: boolean;
 }
-
-/** 新启用位置、胶宽判定时的默认值（与 recipe.rs 的 default_limits 一致：名义胶宽 4 mm）。 */
-export const defaultPosition: JudgeParams = { nominal: 0, tolUpper: 2, tolLower: 2, absMin: -5, absMax: 5, maxExcursionLen: 5 };
-export const defaultWidth: JudgeParams = { nominal: 4, tolUpper: 1.5, tolLower: 1.5, absMin: 1, absMax: 8, maxExcursionLen: 5 };
 
 /** 后端 RecipeDoc.calibration_rounds 的默认值（可配范围 10..=100）。 */
 const DEFAULT_CALIBRATION_ROUNDS = 10;

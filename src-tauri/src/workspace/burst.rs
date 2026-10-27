@@ -884,7 +884,6 @@ pub(super) fn segment_round(
         .collect();
     Proportional.segment(&SegInput {
         groups: &groups,
-        features: metrics,
         segments,
     })
 }

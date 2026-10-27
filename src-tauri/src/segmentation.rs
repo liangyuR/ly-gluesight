@@ -1,29 +1,21 @@
 //! 分段（规格 §3）：段结构由人定，PC 在每件收尾后定位段间边界（D-SB-40）。
 //!
 //! - `Proportional`：按标定的各段 N_exp 比例与本件帧组数推算边界（生产、标定与历史重判都用它）；
-//! - `Unsegmented`：整条胶路一个未分段区域（各段 N_exp 未标定或单段配方时比例分段器也退回它）；
-//! - 图像运动细化边界（D-SB-43）未实现，合成序列回归入口留给它。
-
-// SegInput 的帧特征、搜索窗口与合成序列回归入口留给图像细化（D-SB-43）使用，现在只有测试读它们。
-#![allow(dead_code)]
-
-use std::ops::RangeInclusive;
+//! - 各段 N_exp 未标定或单段配方时，整条胶路作为一个未分段区域。
 
 use serde::{Deserialize, Serialize};
 
-use crate::burst_judge::FrameMetrics;
 use crate::frame_group::FrameGroup;
 use crate::plan::{PathSegment, SegmentKind};
 
-/// 分段输入：三路帧组、每帧特征和计划（段类型序列、N_exp、tol）。
+/// 分段输入：三路帧组和计划（段类型序列、N_exp、tol）。
 pub struct SegInput<'a> {
     pub groups: &'a [FrameGroup],
-    pub features: &'a [FrameMetrics],
     pub segments: &'a [PathSegment],
 }
 
 /// 第 `after_segment` 段与下一段之间的边界落在帧组 `frame_seq`：`frame_seq` 是第 `after_segment` 段的最后一帧，
-/// 下一段从 `frame_seq + 1` 起（与 [`search_window`] 的“上一边界 + N_exp”同一口径，路径起点视为边界 0）。
+/// 下一段从 `frame_seq + 1` 起，路径起点视为边界 0。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Boundary {
@@ -44,15 +36,6 @@ pub enum SegOutcome {
 
 pub trait Segmenter {
     fn segment(&self, input: &SegInput) -> SegOutcome;
-}
-
-/// 总是返回 `SegOutcome::Unsegmented`。
-pub struct Unsegmented;
-
-impl Segmenter for Unsegmented {
-    fn segment(&self, _input: &SegInput) -> SegOutcome {
-        SegOutcome::Unsegmented
-    }
 }
 
 /// 比例分段（D-SB-40）：本件帧组数 total 已知时，第 k 个边界 = round(total × 前 k 段 N_exp 之和 / ΣN_exp)，
@@ -386,22 +369,8 @@ pub fn resolve_regions(
         .collect()
 }
 
-/// 边界搜索窗口：(prev + n_exp) ± (tol + 1)，下限不低于 prev + 1。
-pub fn search_window(prev: u64, n_exp: u32, tol: u32) -> RangeInclusive<u64> {
-    let expected = prev + u64::from(n_exp);
-    let half = u64::from(tol) + 1;
-    expected.saturating_sub(half).max(prev + 1)..=expected + half
-}
-
-/// 合成序列回归入口（规格 §3/§6）：按种子生成带真值边界的帧组序列，评估任一 Segmenter 的边界误差。
 pub mod synthetic {
-    use super::{Boundary, SegInput, SegOutcome, Segmenter};
-    use crate::burst_judge::{FrameMetrics, FrameState};
-    use crate::frame_group::FrameGroup;
-    use crate::plan::{new_segment, KindDefaults, PathSegment, SegmentKind};
-
-    /// 合成序列固定三台相机（与段计划一致）。
-    pub const CAMERAS: usize = 3;
+    use crate::plan::SegmentKind;
 
     /// 合成序列的剖面。
     #[derive(Clone, Debug, PartialEq)]
@@ -412,57 +381,12 @@ pub mod synthetic {
         pub head_tail_jitter: i32,
         /// 弯道减速帧数波动 ±n
         pub corner_jitter: i32,
-        /// 缺帧：(相机下标, seq)
-        pub missing: Vec<(usize, u64)>,
-    }
-
-    #[derive(Clone, Debug)]
-    pub struct SyntheticSequence {
-        /// 由 spec 生成的计划（N_exp 取名义帧数），evaluate 用它组 SegInput
-        pub segments: Vec<PathSegment>,
-        pub groups: Vec<FrameGroup>,
-        pub features: Vec<FrameMetrics>,
-        /// 真值边界（confidence = 1）
-        pub truth: Vec<Boundary>,
-    }
-
-    /// 一个真值边界的评估结果。
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct BoundaryError {
-        pub after_segment: u32,
-        pub truth_seq: u64,
-        /// None = 算法没给出这个边界
-        pub found_seq: Option<u64>,
-        /// |found − truth|；未找到为 None
-        pub error: Option<u64>,
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct RegressionReport {
-        pub boundaries: Vec<BoundaryError>,
     }
 
     /// 各段实际帧数 = 名义帧数 + 波动（至少 1 帧）：首段加起头波动、末段加收尾波动（各 ±head_tail_jitter，
     /// 单段时两者都加），弯道段加减速波动（±corner_jitter）。同一 spec 与 seed 结果确定。
-    ///
-    /// 离线虚拟产线（`offline::line::PulseProfile`）按同一剖面与种子发脉冲串，所以离线跑出的帧序列与
-    /// [`generate`] 的真值边界一致，可以直接拿来做分段回归。
     pub fn frame_counts(spec: &SequenceSpec, seed: u64) -> Vec<u64> {
         realize(spec, &mut SplitMix64(seed))
-    }
-
-    /// 真值边界：各段最后一帧（[`Boundary`] 的口径），最后一段之后没有边界。
-    pub fn truth(counts: &[u64]) -> Vec<Boundary> {
-        let mut end = 0;
-        counts
-            .iter()
-            .enumerate()
-            .take(counts.len().saturating_sub(1))
-            .map(|(k, count)| {
-                end += count;
-                Boundary { after_segment: k as u32 + 1, frame_seq: end, confidence: 1.0 }
-            })
-            .collect()
     }
 
     fn realize(spec: &SequenceSpec, rng: &mut SplitMix64) -> Vec<u64> {
@@ -486,106 +410,6 @@ pub mod synthetic {
             .collect()
     }
 
-    /// 同一 spec 与 seed 生成确定的序列。
-    ///
-    /// 各段实际帧数见 [`frame_counts`]，真值边界见 [`truth`]。
-    /// 每帧特征：直线段胶中心 x 贴近走廊中线、有胶比例 1；弯道段 x 沿弯道走出走廊（正弦拱形，峰值 1.5 mm）、
-    /// 胶宽略宽、有胶比例下降。三台相机各有固定的 x 偏置。`missing` 中的 (相机, seq) 记 Missing，所在组标 incomplete。
-    /// features 按 seq、相机顺序排列，每个 (相机, seq) 一条。
-    pub fn generate(spec: &SequenceSpec, seed: u64) -> SyntheticSequence {
-        let mut rng = SplitMix64(seed);
-        let counts = realize(spec, &mut rng);
-
-        let defaults = KindDefaults::default();
-        let segments = spec
-            .segments
-            .iter()
-            .enumerate()
-            .map(|(k, &(kind, nominal))| PathSegment { expected_frames: Some(nominal), ..new_segment(k as u32 + 1, kind, &defaults) })
-            .collect();
-
-        let truth = truth(&counts);
-
-        let mut groups = Vec::new();
-        let mut features = Vec::new();
-        let mut seq = 0;
-        for (&(kind, _), &count) in spec.segments.iter().zip(&counts) {
-            for position in 0..count {
-                seq += 1;
-                let present: Vec<bool> = (0..CAMERAS).map(|camera| !spec.missing.contains(&(camera, seq))).collect();
-                // 段内位置 0–1，弯道 x 呈拱形
-                let along = (position as f64 + 0.5) / count as f64;
-                for (camera, &here) in present.iter().enumerate() {
-                    features.push(if here {
-                        let (x, width, present_ratio) = match kind {
-                            SegmentKind::Straight => (0.0, 4.0, 1.0),
-                            SegmentKind::Corner => (1.5 * (std::f64::consts::PI * along).sin(), 4.3, 0.85),
-                        };
-                        let width = width + rng.noise(0.1);
-                        FrameMetrics {
-                            camera,
-                            seq,
-                            state: FrameState::Measured,
-                            error: None,
-                            width_min: Some(width - 0.2),
-                            width_max: Some(width + 0.2),
-                            width_mean: Some(width),
-                            widths: Vec::new(),
-                            spacing_mm: 0.0,
-                            gap_max_mm: 0.0,
-                            corridor: None,
-                            present_ratio: present_ratio + rng.noise(0.02).min(0.0),
-                            x_mm: Some(x + 0.2 * camera as f64 + rng.noise(0.05)),
-                        }
-                    } else {
-                        FrameMetrics {
-                            camera,
-                            seq,
-                            state: FrameState::Missing,
-                            error: None,
-                            width_min: None,
-                            width_max: None,
-                            width_mean: None,
-                            widths: Vec::new(),
-                            spacing_mm: 0.0,
-                            gap_max_mm: 0.0,
-                            corridor: None,
-                            present_ratio: 0.0,
-                            x_mm: None,
-                        }
-                    });
-                }
-                let incomplete = present.contains(&false);
-                groups.push(FrameGroup { seq, present, incomplete });
-            }
-        }
-        SyntheticSequence { segments, groups, features, truth }
-    }
-
-    /// 对每个真值边界给出算法找到的帧号与 |找到 − 真值|；算法没给出（含整体返回 Unsegmented）的标为未找到。
-    /// 不按置信度过滤：置信度的取舍归 [`super::resolve_regions`]。
-    pub fn evaluate(segmenter: &dyn Segmenter, sequence: &SyntheticSequence) -> RegressionReport {
-        let input = SegInput { groups: &sequence.groups, features: &sequence.features, segments: &sequence.segments };
-        let found = match segmenter.segment(&input) {
-            SegOutcome::Unsegmented => Vec::new(),
-            SegOutcome::Boundaries(boundaries) => boundaries,
-        };
-        let boundaries = sequence
-            .truth
-            .iter()
-            .map(|truth| {
-                let found_seq = found.iter().find(|b| b.after_segment == truth.after_segment).map(|b| b.frame_seq);
-                BoundaryError {
-                    after_segment: truth.after_segment,
-                    truth_seq: truth.frame_seq,
-                    found_seq,
-                    error: found_seq.map(|seq| seq.abs_diff(truth.frame_seq)),
-                }
-            })
-            .collect();
-        RegressionReport { boundaries }
-    }
-
     /// 种子化伪随机数（SplitMix64）：不依赖外部 crate，同一种子跨平台、跨版本结果一致。
     struct SplitMix64(u64);
 
@@ -602,12 +426,6 @@ pub mod synthetic {
         fn jitter(&mut self, n: i32) -> i64 {
             let n = u64::from(n.unsigned_abs());
             (self.next() % (2 * n + 1)) as i64 - n as i64
-        }
-
-        /// 均匀取 [−amplitude, amplitude)
-        fn noise(&mut self, amplitude: f64) -> f64 {
-            let unit = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
-            (unit * 2.0 - 1.0) * amplitude
         }
     }
 }
@@ -631,8 +449,7 @@ mod tests {
     #[test]
     fn unsegmented_returns_one_pending_region_covering_all_groups() {
         let segments = plan(&[S, C, S]);
-        let outcome = Unsegmented.segment(&SegInput { groups: &[], features: &[], segments: &segments });
-        assert_eq!(outcome, SegOutcome::Unsegmented);
+        let outcome = SegOutcome::Unsegmented;
         assert_eq!(
             resolve_regions(&segments, &outcome, 23, 0.8, 2),
             vec![region(RegionKind::Unsegmented { first_segment: 1, last_segment: 3, reason: UnsegReason::AlgorithmPending }, 1, 23)]
@@ -658,7 +475,6 @@ mod tests {
             .collect();
         Proportional.segment(&SegInput {
             groups: &groups,
-            features: &[],
             segments,
         })
     }

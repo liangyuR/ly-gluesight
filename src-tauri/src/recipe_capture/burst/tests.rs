@@ -15,8 +15,12 @@ fn host() -> Arc<RecipeCaptureHost> {
 fn device(cam: u8) -> CaptureDevice {
     let baseline = Some(cam as u64 * 100);
     CaptureDevice {
-        cam, camera_id: format!("cam{}", cam + 1), camera_config: serde_json::json!({"viewCount": 1}), imaging: crate::recipe::DEFAULT_IMAGING,
-        session: 10 + cam as u64, source: Some(CounterSource::Synthetic), frame_baseline: baseline,
+        cam,
+        camera_id: format!("cam{}", cam + 1),
+        camera_config: serde_json::json!({"viewCount": 1}),
+        imaging: crate::recipe::DEFAULT_IMAGING,
+        session: 10 + cam as u64,
+        frame_baseline: baseline,
     }
 }
 

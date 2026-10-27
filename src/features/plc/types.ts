@@ -128,15 +128,6 @@ export interface HistorySample {
   value: string | null;
 }
 
-export interface EdgeEvent {
-  pointId: string;
-  pointName: string;
-  tags: string[];
-  rising: boolean;
-  value: PlcValue;
-  ts: number;
-}
-
 export interface TagPreset {
   value: string;
   label: string;

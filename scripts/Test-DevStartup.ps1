@@ -32,7 +32,7 @@ process.exit(17);
         if ($LASTEXITCODE -ne 17) { throw '启动器没有保留子进程退出码。' }
         $result = $output[-1] | ConvertFrom-Json
         if ($result.runtime -cne $expected) { throw "旧终端覆盖了保存的配置：$($result.runtime)" }
-        if (($result.args | ConvertTo-Json -Compress) -cne '["dev","--no-watch","--config","config with spaces.json"]') {
+        if (($result.args | ConvertTo-Json -Compress) -cne '["dev","--exit-on-panic","--no-watch","--config","config with spaces.json"]') {
             throw '启动参数未完整传递。'
         }
     }

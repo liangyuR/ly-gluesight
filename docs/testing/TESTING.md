@@ -1,6 +1,6 @@
 # 测试说明与复现
 
-本文说明各层测试的运行方法、环境要求、隔离实例约定与证据边界。测试数量、逐项保护规则只记录在两份清单中：[前端保留测试清单](frontend-test-retained-inventory.md)、[Rust 保留测试清单](rust-test-retained-inventory.md)。本文不写测试数量。
+本文说明各层测试的运行方法、环境要求、隔离实例约定与证据边界。用例及保护规则以测试源码为准，准入遵循 [AGENTS.md](../../AGENTS.md)：每个用例保护一条业务规则、对外契约、已修复缺陷或易错边界。修改时按影响范围筛选文件或模块，不以测试数量作为完成指标。
 
 ## 当前保留范围
 
@@ -13,7 +13,7 @@
 | 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本 |
 | 手动专项 | 长稳测试（需样本集与 lyFlow 运行库，不进 CI）；吞吐探针 `throughput_probe`（见“3 × 25 Hz 吞吐门槛”） |
 
-默认回归没有 `#[ignore]` 用例，也不加载 lyFlow DLL。保留的主流程可能经过发布和判定，但不据此声明已覆盖被删除测试组的全部规则。
+默认回归不加载 lyFlow DLL，不替代真实设备或现场节拍验收。
 
 ## 运行
 
@@ -34,10 +34,10 @@
 | `pwsh -NoProfile -File tests/packaging/Test-VendorDependency.ps1` | 厂商运行库的包隔离、结构、尺寸、CRT 版本、固定源恢复与缓存边界 |
 | `node --test tests/packaging/windows-workflow.test.mjs` | Windows 打包工作流门禁：版本与安装方式校验、发布标签须在 main 上、版本设置、SDK 干净环境检查、视觉检查先于打包、依赖缓存标识与发布清单 |
 | `pnpm test:soak:throughput`（即 `Test-Soak.ps1 -Stages throughput`） | 3 × 25 Hz 吞吐门槛，判定口径见下表后说明 |
-| `pnpm test:soak`（即 `pwsh -NoProfile -File scripts/Test-Soak.ps1`） | 长稳测试（隔离 soak 实例）。没有必填参数，但样本集与 lyFlow 运行库必须经 `-SampleSet` / `GLUESIGHT_SAMPLE_SET`、`-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` 提供（不自动恢复运行库，缺失时退出码 3），例如 `pnpm test:soak -SampleSet <样本集目录> -LyFlowRuntime <运行库目录> -Parts 1000`；阶段、参数与退出码见[长稳报告](soak-report.md) |
+| `pnpm test:soak`（即 `pwsh -NoProfile -File scripts/Test-Soak.ps1`） | 长稳测试（隔离 soak 实例）。没有必填参数，但样本集与 lyFlow 运行库必须经 `-SampleSet` / `GLUESIGHT_SAMPLE_SET`、`-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` 提供（不自动恢复运行库，缺失时退出码 3），例如 `pnpm test:soak -SampleSet <样本集目录> -LyFlowRuntime <运行库目录> -Parts 1000`；阶段、参数与退出码见[长稳运行说明](soak-report.md) |
 | `pwsh -NoProfile -File scripts/Test-DevStartup.ps1` | Windows 旧终端在设置/清除本地运行库后启动，子进程读取最新保存值，参数与退出码保持不变 |
 
-单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`。默认测试不生成覆盖率报告。统计前端实际执行数量（参数化用例展开）使用 `pnpm exec vitest list --no-static-parse --json`；默认静态 `vitest list` 不展开参数化用例。
+单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`；Rust 模块示例：`cargo test --manifest-path src-tauri/Cargo.toml --locked --lib segmentation::`。默认测试不生成覆盖率报告。
 
 `Test-DevStartup.ps1` 临时修改用户级 `GLUESIGHT_LYFLOW_RUNTIME`，在 `finally` 中恢复原值；验证期间不要并行修改该配置或启动 GlueSight。测试通过临时 CLI 进程观察启动环境，不启动实际 GUI，不修改配方。
 
@@ -69,7 +69,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_
 
 段模型的测试按 AGENTS.md 准入编写：每个用例对应一条业务规则、对外契约或易错边界，名称写成“条件 → 预期结果”。Line0 高电平门控，帧率由软件设置、默认 10 fps；记录中的 `deviceTriggers` 为预留字段，不参与采集计数、告警或排空判断。规则取舍见 [分段连拍决策记录](../decisions/segment-burst.md)。
 
-**分段：比例分段（D-SB-40）。** `segmentation` 有 `Proportional`（按各段 N_exp 比例与本件帧组数推算边界）与 `Unsegmented`，`resolve_regions` 在可信边界两侧切出 `boundaryGuard` 帧过渡区；图像运动细化（D-SB-43）未实现，合成序列回归入口（`segmentation::synthetic`）留给它。单元与生产节拍测试只验证比例公式、可信度、过渡区与判定规则，**不证明现场边界准确**；边界准确性用现场已确认手动分段做留一离线评估，它不是测试、不进 `cargo test`：
+**分段：比例分段（D-SB-40）。** `segmentation::Proportional` 按各段 N_exp 比例与本件帧组数推算边界，单段或缺少逐段标定时返回未分段结果；`resolve_regions` 在可信边界两侧切出 `boundaryGuard` 帧过渡区。图像运动细化（D-SB-43）未实现。单元与生产节拍测试只验证比例公式、可信度、过渡区与判定规则，**不证明现场边界准确**；边界准确性用现场已确认手动分段做留一离线评估，它不是测试、不进 `cargo test`：
 
 ```powershell
 cargo run --manifest-path src-tauri/Cargo.toml --example segment_eval -- <项目目录> <候选编号>
@@ -82,9 +82,9 @@ $env:LYFLOW_CORE_DLL = "<运行库目录>\lyflow_core.dll"
 cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval -- <项目目录> <候选编号> <输出目录>
 ```
 
-分段标定工作台（D-SB-44）的回归：`workspace::capture_review` 的组合保存（结构变 / 不变时其余轮次与标定的失效范围）、`frame_align` 的缩略图条带格式，前端 `tests/workbench-draft.test.ts`（边界插删与保存的段列表）与 `tests/segment-workbench.test.tsx`（结构改变时先列影响、确认后一次提交）；对齐复核（P2）：`frame_align::aligned_cuts_follow_scene_positions_under_stretch_drop_and_repeat`（合成序列在伸缩、前慢后快、丢帧、重复帧下边界误差 ≤ 1 帧；改成按比例换算会失败）与 `tests/align-review.test.tsx`（微调不越过相邻边界、全部确认后一次提交）。`segment_eval` 在有分段模板时另报“图像对齐（相对模板轮）”的误差；2026-10-26 在 NEW-14 原图上冒烟（15 轮 1.2 s），评估待已确认的手动分段。
+分段标定工作台（D-SB-44）的回归：`workspace::capture_review` 的组合保存（结构变 / 不变时其余轮次与标定的失效范围）、`frame_align` 的缩略图条带格式，前端 `tests/workbench-draft.test.ts`（边界插删与保存的段列表）与 `tests/segment-workbench.test.tsx`（结构改变时先列影响、确认后一次提交）；对齐复核（P2）：`frame_align::aligned_cuts_follow_scene_positions_under_stretch_drop_and_repeat`（合成序列在伸缩、前慢后快、丢帧、重复帧下边界误差 ≤ 1 帧；改成按比例换算会失败）与 `tests/align-review.test.tsx`（微调不越过相邻边界、全部确认后一次提交）。`segment_eval` 在有分段模板时另报“图像对齐（相对模板轮）”的误差。
 
-读该候选 `workspace.json` 的段列表、`boundaryGuard` 与采集页已确认的手动分段，逐轮用其余轮次按多轮标定规则得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；不读图像、不需要 lyFlow。至少要 2 段、2 个已确认轮次。2026-10-26 在人工构造的 8 轮、3 段工作区上冒烟通过；现场 NEW-14（`seg-new14` 项目，16 轮）尚未标手动分段，评估待做。
+读该候选 `workspace.json` 的段列表、`boundaryGuard` 与采集页已确认的手动分段，逐轮用其余轮次按多轮标定规则得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；比例评估不读图像，模板图像对齐评估读取采集原图，均不需要 lyFlow。至少要 2 段、2 个已确认轮次。评估结论需附对应数据版本与运行输出，本仓库不保存现场数据与临时验收证据。
 
 **离线工况。** 段配方在离线下按脉冲串运行：布防后以固定频率（默认 20 Hz）发脉冲，每个脉冲同时触发三台相机，脉冲发完报运动结束；名义帧数取各段 N_exp（待标定的段按段长 × 频率 ÷ 50 mm/s 估算，已有整件标定时缩放到 ΣN_exp）。下表工况在离线控制台与在线检测页的工况下拉里，样本集与合成图来源都能选，只改变脉冲与握手，不改图像内容。
 
@@ -202,7 +202,7 @@ Playwright Test 固定 `workers=1`、`fullyParallel=false`、`retries=0`，每�
 
 1. 确认 lyFlow 引擎就绪（运行库位于程序目录 `runtime/lyflow/`，开发时由 `pnpm deps:lyflow:dev` 复制），否则拒绝进入并提示原因。
 2. 离线控制台来源选“样本集”，点“选择样本集目录”，核对件数、帧数、缺图和标签分布，点“进入离线”。
-3. 无已发布配方时：新建段配方，整圈采集页点“开始接收”→“离线样本集送一圈”，再走相机走廊示教、多轮标定（每轮各送一圈）、独立样本验证与发布。样本集是停稳拍数据，一条走廊对不上其他点位，检测项开着时多半判 NG_GAP、验证过不了发布；只作流程冒烟时关闭各段检测项。
+3. 无已发布配方时：新建段配方，整圈采集页点“开始接收”→“离线样本集送一圈”，再走相机走廊示教、多轮标定（每轮各送一圈）、独立样本验证与发布。样本集是停稳拍数据，一条走廊对不上其他点位，检测项开着时多半判 NG_GAP；只作流程冒烟时关闭各段检测项。独立样本验证可选，不阻断发布。
 4. 选离线配方和样本件（不选则按顺序循环），点“运行一件”或“连续运行”，用“本件后停止”/“立即停止”结束。样本集来源只提供握手类工况：正常件、传输丢帧 / 缺帧、运动超时、PLC 回显核对不符，以及段配方的脉冲串工况（见上文“段模型专项”）。
 5. 核对“最近样本件”表的期望 / 实际。
 

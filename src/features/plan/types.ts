@@ -146,13 +146,6 @@ export interface PlanExport {
 
 // ───────────── frame_group.rs ─────────────
 
-export interface FrameGroup {
-  seq: number;
-  /** 按计划相机顺序 */
-  present: boolean[];
-  incomplete: boolean;
-}
-
 export type CountStatus = "normal" | "low" | "high";
 
 export type LossReason =
@@ -167,14 +160,6 @@ export interface LossAlarm {
 }
 
 // ───────────── segmentation.rs ─────────────
-
-export interface Boundary {
-  afterSegment: number;
-  frameSeq: number;
-  confidence: number;
-}
-
-export type SegOutcome = { kind: "unsegmented" } | { kind: "boundaries"; boundaries: Boundary[] };
 
 export type UnsegReason = "algorithmPending" | "lowConfidence" | "transition";
 

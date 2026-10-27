@@ -12,7 +12,7 @@
 
 Line0 使用高电平门控，相机按软件设置的帧率连续采集，默认 10 fps。Software 触发只用于单帧标定与调试，不能进入整轮采集或生产。设定、设备回读及实测帧率分别显示。
 
-Jinghang JHEM131GC-XS 要求设备提供 `FrameBurstActive` 或 `AcquisitionActive`，并接受 `LevelHigh` 与固定帧率设置；关键写入与回读失败则不就绪。Software 使用 `FrameStart`。不以未经确认的 `FrameBurstStart` 替代门控。
+Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131GC-XS 已现场确认支持 `FrameBurstStart + LevelHigh`，仅该型号允许此回退。设备须接受固定帧率设置，关键写入与回读失败则不就绪。Software 优先使用 `FrameStart`，仅有 `FrameBurstStart` 时限定每次一帧。
 
 ### 段配方的数据流
 
@@ -21,11 +21,11 @@ Jinghang JHEM131GC-XS 要求设备提供 `FrameBurstActive` 或 `AcquisitionActi
 3. **三台相机**：高电平期间按内部固定帧率曝光，帧序号取 SDK `frame_num`，不按到达顺序；图像内存按每相机字节预算封顶（`FramePool`，256 MiB），预算满或通道满的帧记缺帧。
 4. **帧配组**：seq = frame_counter − 该相机基线，同一 seq 的三帧为一个帧组；缺帧的组标 incomplete；单台相机帧数只用于丢帧告警（与另外每一台相机相差 > 1）。帧数 = 帧组数。每台相机下一件的基线 = 本件见到的最高帧号。
 5. **分段（比例分段，D-SB-40）**：段结构由人定，各段 N_exp 由已确认手动分段的标定轮次逐段得出；本件收尾后 `Proportional` 按各段 N_exp 比例与本件帧组数推算边界，帧组数在 ΣN_exp ± Σtol 内时边界可信，两侧各 `boundaryGuard`（默认 2）帧为过渡区（只判每帧指标、不判胶偏）。单段配方、有段待标定或帧组数越界时整条胶路（或越界时全部段）按未分段区域判：只跑每帧检测、不判胶偏。帧数只核对整件。
-6. **每帧测量**：每台相机的每一帧沿这台相机示教的走廊用 lyFlow（`glue.taught_path` + `glue.bead_width`）测胶宽、断胶与胶中心偏移 x，输出 `FrameMetrics`；测量队列满、超时记 Unmeasured，走出走廊记 OutOfCorridor，都只算检测不完整。
-7. **区域判定**（`burst_judge`）：每帧胶宽、断胶、溢胶（NG_WIDTH）三类区域都判；胶偏只在直线段，去首尾各一帧后用 x 均值与标准件 x_ref（只实现 AbsoluteX）判整段偏移、最大偏差判局部跑偏；三台相机取最差。`flags`（检测不完整、帧数异常、`short_part` 疑似提前终止）、未检区域、未检项（气泡、拉丝）与“胶偏未判”原因都不改 OK/NG；只有三台相机整件没有一帧测成才判 ERR 91。
+6. **每帧测量**：帧到达时按预测段选择检测相机与该段走廊，收尾后补测归属变化的帧，其余相机记 `NotInspected`；参与检测的帧用 lyFlow（`glue.taught_path` + `glue.bead_width`）测胶宽、断胶与胶中心偏移 x，输出 `FrameMetrics`；测量队列满、超时记 Unmeasured，走出走廊记 OutOfCorridor，都只算检测不完整。
+7. **区域判定**（`burst_judge`）：每帧胶宽、断胶、溢胶（NG_WIDTH）三类区域都判；胶偏只在直线段，去首尾各一帧后用 x 均值与标准件 x_ref（只实现 AbsoluteX）判整段偏移、最大偏差判局部跑偏；按本段检测相机取最差，未分段区域按每帧预测段的检测相机取最差。`flags`（检测不完整、帧数异常、`short_part` 疑似提前终止）、未检区域、未检项（气泡、拉丝）与“胶偏未判”原因都不改 OK/NG；只有三台相机整件没有一帧测成才判 ERR 91。
 8. **落库与历史**：记录库版本 9，`part_frames` 每台相机每帧一条（缺帧也有），`parts.burst_judgement` 存整份区域判定，`parts.mode` 区分正常件与维护件；原图按帧录制为 `{相机}_s{seq:06}.pgm`；审计 spool 格式 4；历史按 (计划相机, seq) 读图、复测与重判。
 
-配方的建立流程（候选工作区）：整圈采集 → 段列表 → 每台相机的走廊示教 → 多轮标定（默认 ≥ 10 轮，得 ΣN_exp、建议容差由操作员确认、标准件轮次得 x_ref）→ 发布（发布前检查当场核对，独立样本验证可选，D-SB-46）。采集完成后支持轮次手动分段、模板套用和边界复核，以及带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除标定图像取样。每个标定轮次都确认手动分段后，多轮标定按边界逐段标定（各段 N_exp 与建议容差，ΣN_exp 取各段之和），生产与独立样本判定再按这些 N_exp 的比例分段；手动边界本身不直接进生产。见 [配方创建流程](architecture/recipe-creation-workflow.md) 与其中的[轮次分段复核与帧组屏蔽](architecture/recipe-creation-workflow.md#轮次分段复核与帧组屏蔽)。
+配方的建立流程（候选工作区）：整圈采集 → 段列表 → 每段每台检测相机的走廊示教 → 多轮标定（默认 ≥ 10 轮，得 ΣN_exp、建议容差由操作员确认、标准件轮次得 x_ref）→ 发布（发布前检查当场核对，独立样本验证可选，D-SB-46）。采集完成后支持轮次手动分段、模板套用和边界复核，以及带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除标定图像取样。每个标定轮次都确认手动分段后，多轮标定按边界逐段标定（各段 N_exp 与建议容差，ΣN_exp 取各段之和），生产与独立样本判定再按这些 N_exp 的比例分段；手动边界本身不直接进生产。见 [配方创建流程](architecture/recipe-creation-workflow.md) 与其中的[轮次分段复核与帧组屏蔽](architecture/recipe-creation-workflow.md#轮次分段复核与帧组屏蔽)。
 
 ### 协议 7 要点
 
@@ -57,24 +57,11 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 离线仿真 | `offline/line.rs`、`offline/scenario.rs`、`offline/sample_set.rs`、`offline/s7_server.rs`、`simimage.rs` |
 | 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`CapturePage`、`PlanProgress`；`src/features/plan/` |
 
-## 二、不再采用的做法
+## 二、未完成事项
 
-以下做法已经放弃，不要重新引入：
-
-| 不采用 | 现行做法 |
-| --- | --- |
-| 拍照点配方（逐点停稳拍、按 Pose 选检测图、特征定位判胶偏） | 段配方：段列表 + 每段每台检测相机一条走廊，每帧都测，胶偏按段级 AbsoluteX |
-| 一台三目设备“一帧内三视角” | 三台独立单视角相机共用一个触发，各出 1 帧；三目拼接配置不能参与生产 |
-| PLC 下发计划号、拍照数量或参与分段 | PLC 只报型号、序号、SN；帧数与分段由 PC 负责 |
-| 分段置信度不足时回退到计划边界 | 该边界两侧两段合并为未分段区域，不判胶偏，标“胶偏未判” |
-| 预期帧数取多轮最小值、多出的帧裁掉 | 多轮帧组数均值四舍五入作 N_exp，所有帧都测，越界只告警 |
-| 项目热切换 | 切换项目时重启（开发机实测约 1.1 s） |
-
-## 三、未完成事项
-
-- **分段（2026-10-26 进度）**：“人定段结构、生产按比例定位边界、每段指定检测相机与走廊”已落地：比例分段与过渡区（D-SB-40）、每段检测相机（D-SB-41）、按段走廊示教（D-SB-42）、分段标定工作台的模板轮画段与其余轮次对齐复核（D-SB-44 P1、P2）、走廊只按段且生产按预测段测量并收尾补测（D-SB-45）、发布不再要求独立样本验证（D-SB-46），多轮标定页可逐帧查看所用走廊与测量结果。多段配方须各段 N_exp 都已逐段标定才能发布。开发项目 seg-new14 的候选 NEW-14 已用 R07–R16 完成逐段标定，尚未发布，也没在真实相机上运行。未完成：
+- **分段**：比例分段、按段相机与走廊、手动画段和轮次对齐复核已落地，多段配方须各段 N_exp 都已逐段标定才能发布。待完成：
   - 分段标定工作台 P3：运动曲线与按运动自动建议边界（D-SB-44）。
-  - 用 NEW-14 的 R01–R06 跑 `examples/segment_eval.rs`，评估比例分段与图像对齐建议相对手动边界的误差。
+  - 用现场已确认手动分段的轮次运行 `examples/segment_eval.rs`，评估比例分段与图像对齐建议相对手动边界的误差。
   - D-SB-43 图像运动细化边界；待确认的 D-SB-47 逐帧定向若采用，将以胶条方向序列取代它。
   - 待确认的 D-SB-48 以工件边为胶偏参考（实现 `ToEdge`），不依赖 D-SB-47，可先做；D-SB-47 待实际涂胶、画面里有胶嘴的轮次复测通过后再开工。
   - 每段每台相机的测成率统计与检测相机建议（D-SB-41）。
@@ -85,12 +72,12 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 - **已接受、待确认的取舍**：胶偏的 `ToEdge` 测量量未实现；气泡、拉丝不检；弯道的出胶点短走廊没有真实弯道图验证；提前结束只加 `short_part`、不判 ERR。汇总见 [决策索引](decisions/README.md)。
 - **真机验证**：PLC 协议 7、三台相机共用触发、带宽（三路 25 Hz 估算约 826 Mbps）、现场节拍与检测准确率都没有验证。仓库不保存 PLC 程序，PLC 侧按协议 7 规格由现场工程实现。
 
-## 四、目录
+## 三、目录
 
 | 目录 | 内容 |
 | --- | --- |
 | [integration/](integration) | [生产通讯协议 7](integration/plc-communication-protocol.md)、[示教采集接口 V1](integration/teaching-capture-sequence.md)、[离线样本集格式](integration/sample-set-format.md) |
 | [architecture/](architecture) | [配方创建流程](architecture/recipe-creation-workflow.md)、[在线投运方案](architecture/online-commissioning.md)、[项目设计](architecture/project.md)、[存储布局](architecture/storage-layout.md)、[lyFlow 依赖](architecture/lyflow-dependency.md)、[运行日志](architecture/agent-logging.md)与[事件编码表](architecture/agent-logging-codes.md) |
 | [decisions/](decisions/README.md) | 现行决策：取舍、回退方式与需要用户确认的事项 |
-| [testing/](testing/TESTING.md) | 测试运行与复现、保留测试清单、长稳报告 |
+| [testing/](testing/TESTING.md) | 测试运行与复现、长稳与故障注入运行说明 |
 | [deployment/](deployment/PACKAGING.md) | Windows 打包与运行库部署 |
