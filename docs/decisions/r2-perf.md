@@ -18,7 +18,7 @@
   - C 灰度像素直接 `putImageData` 到查看器里一块常驻 canvas（SVG `foreignObject` 内，沿用原来的缩放平移与叠加层）。
 - B 实测：省掉 PNG 编码，但每帧仍是新的图片资源，渲染进程解码缓存与 GPU 传输缓存照样填满，WebView2 合计与原状相当。
 - 采用 C：换帧只重画同一块 canvas，复用一份 RGBA 缓冲，不产生新的图片资源，GPU 传输缓存与渲染进程解码缓存不再增长。300 件对比：WebView2 子进程私有内存中位数 646 → 403 MiB，GPU 进程 427 → 220 MiB，每件主线程任务时长 1749 → 1124 ms；1000 件长稳中 DOM、JS 堆与事件监听都有界。`GrayImage` 增加可选的 `pixels`（降采样后的灰度像素），带 `pixels` 时查看器画 canvas，`url` 只作为这张图的标识（`live:N`，保证换帧时仍按原逻辑复位缩放）。
-- 范围：只用于在线检测页实时帧（`workspace_live_frame_image`）。示教、历史详情、整圈采集、标定样本仍走 PNG data URL：这些是用户逐张打开，不是持续的帧流。
+- 范围：只用于在线检测页实时帧（`workspace_live_frame_image`）。示教、历史详情、采集轮次、标定样本仍走 PNG data URL：这些是用户逐张打开，不是持续的帧流。
 - 回退：实时帧读取改回 `.then(decodeGray)`，查看器自动回到 `<image>`。
 
 ## P-3 实时帧读取节流

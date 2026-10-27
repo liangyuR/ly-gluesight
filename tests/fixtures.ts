@@ -100,7 +100,6 @@ export function burstRecipe(over: Partial<BurstRecipeDoc> = {}): BurstRecipeDoc 
   return {
     id: "S", name: "段配方 S", version: 1, planVersion: 3, productCode: 2, triggerMode: "fly", schemaVersion: 8,
     spacing: 1, filterWindow: 3, detect, limits: { position: null, width: null, maxGapLen: 6, minPresent: .8 },
-    cameras: Object.fromEntries(burstCameras.map(c => [c, { exposureUs: 60, gainDb: 6 }])),
     segments: [
       pathSegment(1, "straight", { lengthMm: 120, inspectRange: { aMm: 5, bMm: 115 }, offsetRef: { measure: "absoluteX", camera: "CAM-1", xRef: null, spread: null } }),
       pathSegment(2, "corner", { lengthMm: 30 }),
@@ -131,7 +130,7 @@ export function progressV2(): ProgressV2 {
   const step = (id: ProgressV2["steps"][number]["id"], label: string, status: ProgressV2["steps"][number]["status"], detail: string) => ({ id, label, optional: false, status, detail, blockers: [] });
   return {
     steps: [
-      step("capture", "整圈采集", "done", "已有完整采集轮次"),
+      step("capture", "采集轮次", "done", "已有完整采集轮次"),
       step("segments", "段列表", "done", "3 段"),
       step("corridor", "走廊示教", "inProgress", "3 / 9 条走廊已示教"),
       step("calibration", "多轮标定", "notStarted", "0 / 10 轮"),

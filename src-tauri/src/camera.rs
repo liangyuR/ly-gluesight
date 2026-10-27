@@ -20,7 +20,7 @@ use crate::frame::{BudgetExceeded, CounterSource, Frame, FrameImage, FramePool, 
 use crate::mvs::{self, DeviceSummary, FrameInfo};
 use crate::offline::sample_set::SampleSet;
 use crate::offline::Scenario;
-use crate::recipe::{legacy_camera_id, valid_camera_id, CameraImaging, Recipe};
+use crate::recipe::{legacy_camera_id, valid_camera_id, Recipe};
 use crate::simimage;
 
 mod delivery;
@@ -129,6 +129,31 @@ impl CameraSource {
     }
 }
 
+/// 一台相机的曝光与增益：在相机页设定、存 cameras.json，相机打开或重连时写入。只记录、不参与配方与轮次的一致性比较。
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CameraImaging {
+    pub exposure_us: f32,
+    pub gain_db: f32,
+}
+
+pub const DEFAULT_IMAGING: CameraImaging = CameraImaging {
+    exposure_us: 60.0,
+    gain_db: 6.0,
+};
+
+impl CameraImaging {
+    pub fn validate(&self, camera: &str) -> Result<(), String> {
+        if !(1.0..=1_000_000.0).contains(&self.exposure_us) {
+            return Err(format!("相机 {camera} 的曝光时间需在 1–1000000 µs 之间"));
+        }
+        if !(self.gain_db.is_finite() && self.gain_db >= 0.0) {
+            return Err(format!("相机 {camera} 的增益需为不小于 0 的有限数"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CameraConfig {
@@ -231,6 +256,8 @@ struct RigFile {
     cameras: Vec<CameraConfig>,
     /// 下一台新相机的编号 "cam{next_id}"：删掉的相机编号不再分给别的相机
     next_id: u32,
+    /// 按相机编号的曝光与增益；不放进 CameraConfig，相机配置的一致性比较不受它影响
+    imaging: BTreeMap<String, CameraImaging>,
 }
 
 fn load_rig_file(path: &Path) -> (RigFile, Vec<String>, bool) {
@@ -276,6 +303,8 @@ pub struct CameraStatus {
     /// 本次打开以来因图像内存预算满没拷图、被丢弃的帧（按缺帧处理）
     pub budget_dropped_frames: u64,
     pub warnings: Vec<String>,
+    /// 相机页保存的曝光与增益，打开或重连时写入相机
+    pub imaging: CameraImaging,
 }
 
 struct Preview {
@@ -392,6 +421,7 @@ struct RigShared {
     /// 需要整帧图像（图像测量或帧录制）；模拟测量时不必拷整帧
     capture: AtomicBool,
     recipe_capture: Arc<crate::recipe_capture::RecipeCaptureHost>,
+    imaging: Mutex<BTreeMap<String, CameraImaging>>,
 }
 
 /// 单台相机的交付通道，取图回调与模拟 / 样本集共用。
@@ -431,7 +461,7 @@ struct Shared {
 
 impl Shared {
     fn capture(&self) -> bool {
-        self.rig.capture.load(Ordering::Relaxed) || self.rig.recipe_capture.active()
+        self.rig.capture.load(Ordering::Relaxed)
     }
 
     /// 每帧都做缩略图：触发采集的帧少，示教裁模板用的就是显示的那帧。
@@ -486,11 +516,7 @@ impl Shared {
         }
     }
 
-    fn deliver(&self, frame: Frame) {
-        self.deliver_original(frame, None);
-    }
-
-    fn deliver_original(&self, mut frame: Frame, original: Option<Arc<FrameImage>>) {
+    fn deliver(&self, mut frame: Frame) {
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
         delivery::observe(&self.identity, &self.manual, &mut frame, current_session);
         if !frame.images.is_empty() && current_session {
@@ -501,17 +527,14 @@ impl Shared {
             self.full_seq.fetch_add(1, Ordering::SeqCst);
         }
         self.count_arrival(&frame);
-        if self.rig.recipe_capture.offer(&frame, original) { return; }
         let _ = delivery::offer(&self.rig.tx, &self.dropped, frame);
     }
 
     /// 图像内存预算满、没拷图的帧：台账照记、计入帧数，但不交付（节拍按缺帧处理），不中断回调。
-    /// 段配方的示教采集轮次按帧号把它记为缺帧并告警（D-SB-8）。
     fn discard_over_budget(&self, mut frame: Frame) {
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
         delivery::discard_over_budget(&self.identity, &self.manual, &self.budget_dropped, &mut frame, current_session);
         self.count_arrival(&frame);
-        self.rig.recipe_capture.offer_dropped(&frame);
     }
 
     /// 帧数、丢包、帧率与界面事件：交付与否都算相机出了这一帧。
@@ -671,7 +694,7 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             },
             _ => image.iter().cloned().collect(),
         };
-        shared.deliver_original(frame(images), image);
+        shared.deliver(frame(images));
     }));
 }
 
@@ -679,7 +702,6 @@ extern "system" fn on_exception(msg: c_uint, user: *mut c_void) {
     if msg == mvs::MV_EXCEPTION_DEV_DISCONNECT && !user.is_null() {
         let shared = unsafe { &*(user as *const Shared) };
         shared.disconnected.store(true, Ordering::SeqCst);
-        shared.rig.recipe_capture.disconnected(shared.cam);
     }
 }
 
@@ -701,7 +723,7 @@ pub struct CameraSlot {
     /// 已释放给海康 MVS 客户端（调焦、光圈）：关闭设备且不自动重连，直到重新连接
     released: AtomicBool,
     supervision: CameraSupervision,
-    /// 本次打开后已写进海康相机的曝光与增益；关闭、重开时清空，下次必写
+    /// 本次打开后已写进海康相机的曝光与增益；关闭、重开时清空
     imaging: Mutex<Option<CameraImaging>>,
 }
 
@@ -830,7 +852,29 @@ impl CameraSlot {
             dropped_frames: self.shared.dropped.load(Ordering::Relaxed),
             budget_dropped_frames: self.shared.budget_dropped.load(Ordering::Relaxed),
             warnings,
+            imaging: self.saved_imaging(),
         }
+    }
+
+    /// 相机页保存的曝光与增益；还没保存过的相机用默认值。
+    pub fn saved_imaging(&self) -> CameraImaging {
+        let id = self.config.lock().unwrap().id.clone();
+        self.shared
+            .rig
+            .imaging
+            .lock()
+            .unwrap()
+            .get(&id)
+            .copied()
+            .unwrap_or(DEFAULT_IMAGING)
+    }
+
+    /// 录制件记下的曝光与增益：海康相机取本次打开后实际写入的值，其余来源取保存的值。
+    pub fn recorded_imaging(&self) -> CameraImaging {
+        self.imaging
+            .lock()
+            .unwrap()
+            .unwrap_or_else(|| self.saved_imaging())
     }
 
     /// 估算链路带宽用的分辨率：海康相机最近一帧的原图尺寸；离线来源没有物理链路，没出过图时未知。
@@ -1061,22 +1105,22 @@ impl CameraSlot {
         self.shared.budget_dropped.store(0, Ordering::Relaxed);
     }
 
-    /// 把配方的曝光与增益写进已打开的海康相机，不重开、不换会话；与上次写入相同时不再写。模拟、样本集相机不用写。
-    pub fn set_imaging(&self, imaging: &CameraImaging) -> Result<(), String> {
+    /// 把曝光与增益写进已打开的海康相机，不重开、不换会话。未连接、已释放或不是海康相机时不写，下次打开时按保存的值写入。
+    fn write_imaging(&self, imaging: &CameraImaging) -> Result<(), String> {
         let config = self.config();
-        imaging.validate(&config.id)?;
-        if config.source != CameraSource::Mvs { return Ok(()); }
-        if self.released.load(Ordering::SeqCst) {
-            return Err(format!("{}已释放给海康 MVS 客户端，重新连接后才能下发曝光与增益", config.name));
+        if config.source != CameraSource::Mvs || self.released.load(Ordering::SeqCst) {
+            return Ok(());
         }
         let device = self.device.lock().unwrap();
-        let d = device.as_ref().filter(|_| !self.shared.disconnected.load(Ordering::SeqCst))
-            .ok_or_else(|| format!("{}未连接，不能下发曝光与增益", config.name))?;
+        let Some(d) = device
+            .as_ref()
+            .filter(|_| !self.shared.disconnected.load(Ordering::SeqCst))
+        else {
+            return Ok(());
+        };
         let mut applied = self.imaging.lock().unwrap();
-        if applied.as_ref() == Some(imaging) { return Ok(()); }
         *applied = None;
-        d.set_float("ExposureTime", imaging.exposure_us).map_err(|e| format!("{}写入曝光时间失败：{e}", config.name))?;
-        d.set_float("Gain", imaging.gain_db).map_err(|e| format!("{}写入增益失败：{e}", config.name))?;
+        write_imaging(d, imaging, &config.name)?;
         *applied = Some(*imaging);
         Ok(())
     }
@@ -1097,6 +1141,9 @@ impl CameraSlot {
         config.require_bound()?;
         let device = mvs::Device::open(&config.serial)?;
         let (warnings, max_fps, configured_frame_rate, format, chunks) = apply(&device, &config)?;
+        let imaging = self.saved_imaging();
+        write_imaging(&device, &imaging, &config.name)?;
+        *self.imaging.lock().unwrap() = Some(imaging);
         self.shared.chunk_trigger.store(chunks.trigger, Ordering::Relaxed);
         self.shared.chunk_frame.store(chunks.frame, Ordering::Relaxed);
         // 开流前换会话：之后来的帧都算这次打开的
@@ -1226,6 +1273,13 @@ fn configure_trigger(d: &mvs::Device, c: &CameraConfig) -> Result<Option<f32>, S
     Ok(rate)
 }
 
+fn write_imaging(d: &mvs::Device, imaging: &CameraImaging, name: &str) -> Result<(), String> {
+    d.set_float("ExposureTime", imaging.exposure_us)
+        .map_err(|e| format!("{name}写入曝光时间失败：{e}；在相机页修改曝光与增益后重新连接"))?;
+    d.set_float("Gain", imaging.gain_db)
+        .map_err(|e| format!("{name}写入增益失败：{e}；在相机页修改曝光与增益后重新连接"))
+}
+
 fn apply(d: &mvs::Device, c: &CameraConfig) -> Result<(Vec<String>, Option<f32>, Option<f32>, &'static str, Chunks), String> {
     let configured_frame_rate = configure_trigger(d, c)?;
     let format = set_pixel_format(d)?;
@@ -1350,6 +1404,7 @@ impl CameraRig {
             recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(
                 crate::storage::project(app).join("recipe-capture"),
             )?,
+            imaging: Mutex::new(std::mem::take(&mut file.imaging)),
         });
         let slots = file.cameras.into_iter().enumerate().map(|(i, c)| Arc::new(CameraSlot::new(&rig, i as u8, c))).collect();
         let mut this = Self { rig, slots: RwLock::new(slots), path, next_id: Mutex::new(file.next_id), save_lock: Mutex::new(()), generation: AtomicU64::new(0), notes };
@@ -1385,8 +1440,17 @@ impl CameraRig {
             return Err("离线期间相机组为临时配置，不写回 cameras.json".into());
         }
         let cameras = self.configs();
-        let file = RigFile { cameras, next_id: *self.next_id.lock().unwrap() };
-        crate::fsio::write_atomic(&self.path, &serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?)
+        let mut imaging = self.rig.imaging.lock().unwrap().clone();
+        imaging.retain(|id, _| cameras.iter().any(|c| &c.id == id));
+        let file = RigFile {
+            cameras,
+            next_id: *self.next_id.lock().unwrap(),
+            imaging,
+        };
+        crate::fsio::write_atomic(
+            &self.path,
+            &serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?,
+        )
     }
 
     fn new_id(&self) -> String {
@@ -1431,15 +1495,44 @@ impl CameraRig {
         Ok(())
     }
 
-    /// 把配方的曝光与增益下发到这些相机；有一台写不进去就返回原因。
-    pub fn apply_imaging(&self, cams: &[u8], recipe: &Recipe) -> Result<(), String> {
-        for &c in cams {
-            let slot = self.slot(c as usize).ok_or("相机组改过了")?;
-            let id = slot.config().id;
-            let imaging = recipe.imaging(&id).ok_or_else(|| format!("配方 {} 没有相机 {id} 的曝光与增益", recipe.id))?;
-            slot.set_imaging(&imaging)?;
+    /// 升级迁移：cameras.json 里还没有曝光增益的相机按 `imaging_from_recipes` 补上并写回，返回要记的日志。
+    pub fn migrate_imaging(&self, recipes_dir: &Path, in_use: Option<&str>) -> Option<String> {
+        let missing: Vec<String> = {
+            let saved = self.rig.imaging.lock().unwrap();
+            self.configs()
+                .into_iter()
+                .map(|c| c.id)
+                .filter(|id| !saved.contains_key(id))
+                .collect()
+        };
+        if missing.is_empty() {
+            return None;
         }
-        Ok(())
+        let picked = imaging_from_recipes(recipes_dir, in_use, &missing);
+        self.rig
+            .imaging
+            .lock()
+            .unwrap()
+            .extend(picked.iter().map(|(id, imaging, _)| (id.clone(), *imaging)));
+        let detail = picked
+            .iter()
+            .map(|(id, imaging, source)| {
+                let from = source
+                    .as_ref()
+                    .map_or("默认值".to_string(), |recipe| format!("配方 {recipe}"));
+                format!(
+                    "{id} {} µs / {} dB（{from}）",
+                    imaging.exposure_us, imaging.gain_db
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("；");
+        let saved = self.save().err().map_or(String::new(), |e| {
+            format!("；没能写回 cameras.json，下次启动重新迁移：{e}")
+        });
+        Some(format!(
+            "曝光与增益改由相机页管理，已按原配方补齐：{detail}{saved}"
+        ))
     }
 
     /// 取图回调是否拷贝整帧。
@@ -1694,6 +1787,71 @@ async fn camera_save_config_inner(
     Ok(warnings)
 }
 
+/// 每台相机的曝光增益迁移来源，返回（相机, 值, 来源配方）：先取在用配方，再取最近发布（配方文件最后写入）且有这台相机的配方，
+/// 都没有用默认值。配方已不再读入 `cameras`，这里按原始 JSON 取。
+fn imaging_from_recipes(
+    recipes_dir: &Path,
+    in_use: Option<&str>,
+    cameras: &[String],
+) -> Vec<(String, CameraImaging, Option<String>)> {
+    let mut recipes: Vec<(
+        std::time::SystemTime,
+        String,
+        BTreeMap<String, CameraImaging>,
+    )> = std::fs::read_dir(recipes_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".json") && !name.starts_with('.'))
+        })
+        .filter_map(|entry| {
+            let modified = entry
+                .metadata()
+                .ok()
+                .filter(|m| m.is_file())?
+                .modified()
+                .ok()?;
+            let value: serde_json::Value =
+                serde_json::from_str(&crate::fsio::read_text(&entry.path()).ok()?).ok()?;
+            let id = value.get("id")?.as_str()?.to_string();
+            let imaging = value
+                .get("cameras")?
+                .as_object()?
+                .iter()
+                .filter_map(|(camera, v)| {
+                    Some((
+                        camera.clone(),
+                        serde_json::from_value::<CameraImaging>(v.clone())
+                            .ok()
+                            .filter(|i| i.validate(camera).is_ok())?,
+                    ))
+                })
+                .collect();
+            Some((modified, id, imaging))
+        })
+        .collect();
+    recipes.sort_by(|a, b| b.0.cmp(&a.0));
+    if let Some(in_use) = in_use {
+        recipes.sort_by_key(|(_, id, _)| !id.eq_ignore_ascii_case(in_use));
+    }
+    cameras
+        .iter()
+        .map(|camera| {
+            match recipes
+                .iter()
+                .find_map(|(_, id, imaging)| imaging.get(camera).map(|i| (*i, id.clone())))
+            {
+                Some((imaging, recipe)) => (camera.clone(), imaging, Some(recipe)),
+                None => (camera.clone(), DEFAULT_IMAGING, None),
+            }
+        })
+        .collect()
+}
+
 fn check_camera_target(current_id: &str, requested_id: &str) -> Result<(), String> {
     if current_id != requested_id {
         return Err("相机组已变化，请刷新配置后重试保存".into());
@@ -1770,10 +1928,7 @@ pub enum CameraAccess {
 }
 
 impl CameraAccess {
-    pub fn check(self, in_flight: bool, capture_active: bool, pending: bool) -> Result<(), String> {
-        if capture_active {
-            return Err("示教整圈采集正在独占设备，请结束本轮采集后操作".into());
-        }
+    pub fn check(self, in_flight: bool, pending: bool) -> Result<(), String> {
         if in_flight {
             return Err("检测进行中，工件结束后再操作相机".into());
         }
@@ -1785,11 +1940,7 @@ impl CameraAccess {
 }
 
 fn check_access(cycle: &CycleHost, access: CameraAccess) -> Result<(), String> {
-    access.check(
-        cycle.in_flight(),
-        cycle.camera.recipe_capture().active(),
-        cycle.busy(),
-    )
+    access.check(cycle.in_flight(), cycle.busy())
 }
 
 #[cfg(test)]
@@ -1797,39 +1948,21 @@ mod access_tests {
     use super::CameraAccess;
 
     #[test]
-    fn unresolved_plc_without_active_capture_allows_maintenance_but_keeps_configuration_locked() {
-        for (case, in_flight, capture_active, pending, maintenance, configuration) in [
-            ("空闲", false, false, false, true, true),
-            (
-                "初始化故障且有历史未结事务",
-                false,
-                false,
-                true,
-                true,
-                false,
-            ),
-            (
-                "真实检测在途且界面快照尚未更新",
-                true,
-                false,
-                false,
-                false,
-                false,
-            ),
-            ("检测及握手在途", true, false, true, false, false),
-            ("示教采集独占", false, true, false, false, false),
-            ("示教采集及未结握手", false, true, true, false, false),
+    fn unresolved_plc_allows_maintenance_but_keeps_configuration_locked() {
+        for (case, in_flight, pending, maintenance, configuration) in [
+            ("空闲", false, false, true, true),
+            ("初始化故障且有历史未结事务", false, true, true, false),
+            ("真实检测在途且界面快照尚未更新", true, false, false, false),
+            ("检测及握手在途", true, true, false, false),
         ] {
             assert_eq!(
-                CameraAccess::Maintenance
-                    .check(in_flight, capture_active, pending)
-                    .is_ok(),
+                CameraAccess::Maintenance.check(in_flight, pending).is_ok(),
                 maintenance,
                 "{case}"
             );
             assert_eq!(
                 CameraAccess::Configuration
-                    .check(in_flight, capture_active, pending)
+                    .check(in_flight, pending)
                     .is_ok(),
                 configuration,
                 "{case}"
@@ -1863,6 +1996,13 @@ async fn camera_add_inner(app: AppHandle, mut config: CameraConfig) -> Result<us
     }
     check_serial(&configs, usize::MAX, &config)?;
     config.id = cycle.camera.new_id();
+    cycle
+        .camera
+        .rig
+        .imaging
+        .lock()
+        .unwrap()
+        .insert(config.id.clone(), DEFAULT_IMAGING);
     configs.push(config);
     let n = configs.len();
     cycle.camera.rebuild(&app, configs);
@@ -1961,7 +2101,7 @@ async fn camera_soft_trigger_inner(cycle: State<'_, CycleHost>, cam: usize) -> R
     slot.soft_trigger(None).map(|_| ())
 }
 
-/// 调试用：把曝光与增益临时写进相机，不写配方；示教采集和生产布防前仍按配方重新下发。
+/// 相机页保存曝光与增益：写回 cameras.json，并立即写入已连接的海康相机；未连接时在下次打开时写入。
 #[tauri::command]
 pub async fn camera_set_imaging(app: AppHandle, cam: usize, id: String, imaging: CameraImaging) -> Result<(), String> {
     let result = camera_set_imaging_inner(app.clone(), cam, id, imaging).await;
@@ -1986,7 +2126,26 @@ async fn camera_set_imaging_inner(
     check_idle(&cycle)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     check_camera_target(&slot.config().id, &id)?;
-    tauri::async_runtime::spawn_blocking(move || slot.set_imaging(&imaging)).await.map_err(|e| e.to_string())?
+    imaging.validate(&id)?;
+    let previous = rig(&app)
+        .rig
+        .imaging
+        .lock()
+        .unwrap()
+        .insert(id.clone(), imaging);
+    if let Err(e) = rig(&app).save() {
+        let mut saved = rig(&app).rig.imaging.lock().unwrap();
+        match previous {
+            Some(previous) => saved.insert(id, previous),
+            None => saved.remove(&id),
+        };
+        return Err(format!("没能写回 cameras.json：{e}"));
+    }
+    let _ = app.emit("camera://changed", ());
+    tauri::async_runtime::spawn_blocking(move || slot.write_imaging(&imaging))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("已保存，但写入相机失败：{e}"))
 }
 
 /// 把海康相机释放给 MVS 客户端（调焦、光圈）：关闭设备，后台不再自动重连，直到重新连接。
@@ -2059,6 +2218,70 @@ mod rig_file_tests {
             assert!(supervision.reconnect_due(false, lost, opened), "lost={lost} opened={opened}");
         }
         assert!(!supervision.reconnect_due(false, false, true));
+    }
+
+    /// 升级后现场曝光不能被悄悄重置：没有曝光增益的相机取在用配方的值，在用配方没有这台相机才取最近发布的配方，都没有才用默认值。
+    #[test]
+    fn camera_without_saved_imaging_then_migrates_from_in_use_recipe_before_newer_ones() {
+        let dir = std::env::temp_dir().join(format!(
+            "gluesight-imaging-migrate-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let recipe = |id: &str, cameras: serde_json::Value, age_s: u64| {
+            let path = dir.join(format!("{id}.json"));
+            std::fs::write(
+                &path,
+                serde_json::json!({"id": id, "cameras": cameras}).to_string(),
+            )
+            .unwrap();
+            let modified = std::time::SystemTime::now() - Duration::from_secs(age_s);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        };
+        recipe(
+            "IN-USE",
+            serde_json::json!({"cam1": {"exposureUs": 800.0, "gainDb": 2.0}}),
+            300,
+        );
+        recipe(
+            "NEWER",
+            serde_json::json!({"cam1": {"exposureUs": 90.0, "gainDb": 9.0}, "cam2": {"exposureUs": 450.0, "gainDb": 1.5}}),
+            10,
+        );
+        recipe(
+            "OLDER",
+            serde_json::json!({"cam2": {"exposureUs": 30.0, "gainDb": 0.0}}),
+            600,
+        );
+        let cameras: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
+        let picked = imaging_from_recipes(&dir, Some("in-use"), &cameras);
+        let _ = std::fs::remove_dir_all(&dir);
+        let imaging = |exposure_us, gain_db| CameraImaging {
+            exposure_us,
+            gain_db,
+        };
+        assert_eq!(
+            picked,
+            vec![
+                (
+                    "cam1".to_string(),
+                    imaging(800.0, 2.0),
+                    Some("IN-USE".to_string())
+                ),
+                (
+                    "cam2".to_string(),
+                    imaging(450.0, 1.5),
+                    Some("NEWER".to_string())
+                ),
+                ("cam3".to_string(), DEFAULT_IMAGING, None),
+            ]
+        );
     }
 }
 

@@ -25,14 +25,9 @@
 .wp-step-status.blocked { color:var(--warn); }
 .wp-step-status.inProgress { color:var(--primary); }
 .wp-step-status.waiting { color:var(--outline); }
-.wp-offline-feed { margin-top:12px; padding:10px; border:1px dashed var(--outline); border-radius:var(--r-md); }
 .wp-capture-cameras { display:flex; flex-direction:column; gap:8px; margin-bottom:8px; }
 .wp-capture-camera { display:flex; flex-direction:column; gap:6px; padding:8px 10px; border-radius:var(--r-md); background:var(--surface-mid); }
-.wp-capture-camera.off { opacity:.7; }
 .wp-capture-camera-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.wp-capture-prep-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 16px; }
-.wp-capture-prep-bar > strong { font-size:13px; font-weight:600; margin-right:4px; }
-.wp-capture-prep-bar > .wp-actions { margin-left:auto; }
 .wp-capture-anchor { scroll-margin-top:16px; }
 .wp-capture-summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; }
 .wp-capture-chip { display:inline-flex; align-items:baseline; gap:6px; min-width:0; border-radius:var(--r-sm); padding:4px 8px; font-size:12px; background:var(--surface-mid); }

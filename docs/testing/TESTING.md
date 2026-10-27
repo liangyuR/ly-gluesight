@@ -7,7 +7,7 @@
 | 测试层 | 保留验证 |
 | --- | --- |
 | 前端 | 默认 Vitest 回归：段配方创建与草稿防丢、采集准入和独立样本、多轮标定与走廊示教、验证发布门槛、周期/帧归属隔离、历史区域重判、PLC 操作锁、维护模式、项目管理、单视角标定更新与配置安全 |
-| Rust 默认 | `cargo test --lib`：当前段配方、帧组与采集、逐段标定、比例分段与区域判定、PLC 与示教握手、调度、发布与恢复、项目导出导入与复制；包含少量真实 S7 TCP 回环、SQLite 和原图录制集成测试，不能把全部库测试称为纯单元测试 |
+| Rust 默认 | `cargo test --lib`：当前段配方、帧组与采集、逐段标定、比例分段与区域判定、PLC 握手、调度、发布与恢复、项目导出导入与复制；包含少量真实 S7 TCP 回环、SQLite 和原图录制集成测试，不能把全部库测试称为纯单元测试 |
 | S7 专项 | `plc_session` 与 `offline` 的 S7 线协议用例（真实生产驱动 + 进程内 S7Server），已进默认 `cargo test` |
 | 桌面端到端 | 仅合成图段配方生产落盘：flow 实例内建站、标定、发布、生产、SQLite、原图与历史读回，需要 lyFlow |
 | 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本 |
@@ -57,7 +57,7 @@ Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 R
 
 ## S7 生产握手
 
-协议与点表见 [PLC 通讯协议](../integration/plc-communication-protocol.md)，示教采集握手见[示教采集接口](../integration/teaching-capture-sequence.md)。旧版本协议的 PLC 写入被拒绝。
+协议与点表见 [PLC 通讯协议](../integration/plc-communication-protocol.md)。旧版本协议的 PLC 写入被拒绝。
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_session offline::
@@ -97,7 +97,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval 
 | 提前运动结束（疑似提前终止） | 发约一半、且少于 ΣN_exp − Σtol 个脉冲后报运动结束 | 用已收到的帧照常判，加 `short_part` 与“帧数异常”，不改 OK/NG |
 | 传输丢帧 / 缺帧 | 三台相机的同一帧都丢 | 该帧组标检测不完整，不判 ERR；丢帧按 SDK 帧序号、相机间帧数及传输丢帧诊断 |
 
-**合成图采集与标定。** 合成图来源的 `offline_capture` 为段配方的新轮次送一圈：按候选配方（须能编译）的名义剖面发脉冲串，首尾 ±1、弯道 ±2，种子取该候选的轮序号，所以每一轮帧数不同，多轮标定能看到 min / max 差异；合成图离线环境因此能完成 10 轮标定、走廊示教、验证与发布（加入标定时每帧测量用 lyFlow 走廊测量，需要加载 lyFlow）。合成图相机沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台。样本集来源同样服务段配方轮次，不限 1–64、各相机帧数可以不等（帧数少的相机在后面的帧组缺帧），虚拟 PLC 按帧数最多的那台发脉冲（`offline::offline_capture`）。样本集按“每台相机的帧序列”解释（见[离线样本集格式 v1](../integration/sample-set-format.md)），现有的 2026-10-17 单圈样本集是停稳拍数据，没有弯道、帧数没有波动，只作冒烟，不作分段或标定的验收依据。
+**合成图采集与标定。** 合成图轮次由 `src-tauri/examples/capture_fixture.rs` 生成：按候选配方（型号、段、计划相机）用 `simimage::render_burst` 生成 N 轮完整轮次，写成配方迁移包，经“导入配方”导入（手动配置数据，`origin.kind = prepared`）。命令为 `cargo run --manifest-path src-tauri/Cargo.toml --offline --locked --example capture_fixture -- --doc <候选文档.json> --cameras <camera_rig_config.json> --out <包.zip> --rounds N [--seed S] [--label L] [--sample-set <目录> --part <件>]`：默认按名义剖面出合成图（首尾 ±1、弯道 ±2 帧，种子 seed+i）；给出样本集时每轮都取该件的样本集原图，供 soak 使用。合成图离线环境因此能完成多轮标定、走廊示教、验证与发布（加入标定时每帧测量用 lyFlow 走廊测量，需要加载 lyFlow）。合成图相机沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台。样本集按“每台相机的帧序列”解释（见[离线样本集格式 v1](../integration/sample-set-format.md)），现有的 2026-10-17 单圈样本集是停稳拍数据，没有弯道、帧数没有波动，只作冒烟，不作分段或标定的验收依据。
 
 ### 3 × 25 Hz 吞吐门槛
 
@@ -119,7 +119,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 ## 现场验收
 
-**JHEM131GC-XS 高电平门控（2026-10-24 现场验证）。** 用户确认已在现场验证 `FrameBurstStart + LevelHigh`：持续高电平期间按相机设定的 10 FPS 连续采集，拉低后停止新曝光。该型号按已支持设备处理，参数页和批量应用结果不再提示待验收；仍逐项写入并回读校验触发节点、帧率、BurstFrameCount 和触发缓存关闭，失败仍阻止相机就绪。只对 JHEM131GC-XS 放开 Line0 的 FrameBurstStart + LevelHigh，其他型号不增加 FrameBurstStart 门控回退。不将此结论推广至其他型号，也不替代 PLC 示教握手、机器人互锁或故障停止验收。
+**JHEM131GC-XS 高电平门控（2026-10-24 现场验证）。** 用户确认已在现场验证 `FrameBurstStart + LevelHigh`：持续高电平期间按相机设定的 10 FPS 连续采集，拉低后停止新曝光。该型号按已支持设备处理，参数页和批量应用结果不再提示待验收；仍逐项写入并回读校验触发节点、帧率、BurstFrameCount 和触发缓存关闭，失败仍阻止相机就绪。只对 JHEM131GC-XS 放开 Line0 的 FrameBurstStart + LevelHigh，其他型号不增加 FrameBurstStart 门控回退。不将此结论推广至其他型号，也不替代机器人互锁或故障停止验收。
 
 **待真机验收**（自动测试只覆盖配置分支与界面，不代表设备写入已实测）：
 
@@ -127,16 +127,16 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 - Chunk：设备没有 Chunk 节点时只显示一条不支持提示。
 - Software 单帧：仅有 FrameBurstStart 的设备切换到 Software 后，回读 BurstFrameCount=1，每次手动命令只得到一帧；具有 FrameStart 的设备继续选择 FrameStart。
 - TriggerDelay：Integer 节点写入整数微秒并回读一致，小数应明确失败；Float 节点继续接受浮点值。类型查询、写入或回读失败时相机不得就绪。
-- 曝光与增益：随配方保存（每个配方每台相机一组），写入海康相机的时机为采集页点“应用”、整圈采集开始前、生产布防的 `camera-imaging` 阶段（PLC 换型同样，写不进去拒绝布防）。合成图与样本集相机下发为空操作，实际写入 ExposureTime / Gain 须在台架用海康相机确认。
+- 曝光与增益：按相机保存在项目相机配置 `cameras.json`，写入海康相机的时机为相机页点“保存曝光与增益”（已连接时立即写入）和相机打开、重连后关闭自动曝光与自动增益之后；写入失败则打开失败。合成图与样本集相机下发为空操作，实际写入 ExposureTime / Gain 须在台架用海康相机确认。
 - 触发切换、重连与多相机行为。
 
 ## 隔离桌面与证据边界
 
 `pnpm test:ui:production` 由 Playwright Test 驱动，使用 `tests/native/production-flow-ui.mjs` 与 flow 实例配置（`Start-UiTestInstance.ps1 -Profile flow`），应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。全新实例不安装默认配方夹具。
 
-测试在“离线 · 合成图”下用真实 lyFlow 完成段配方走廊示教、多轮标定、独立样本验证与发布，经生产 S7 握手投产，核对 SQLite、逐帧原图和历史读回。使用 `-LyFlowRuntime <运行库目录>` 或 `GLUESIGHT_LYFLOW_RUNTIME` 提供运行库；未指定时恢复锁定版本，恢复或加载失败即失败，不以跳过代替验证。合成图来源补足三台单视角相机。结束时退出离线并关闭本次进程。
+测试在“离线 · 合成图”下导入 `capture_fixture` 生成的轮次包，用真实 lyFlow 完成段配方走廊示教、多轮标定、独立样本验证与发布，经生产 S7 握手投产，核对 SQLite、逐帧原图和历史读回。使用 `-LyFlowRuntime <运行库目录>` 或 `GLUESIGHT_LYFLOW_RUNTIME` 提供运行库；未指定时恢复锁定版本，恢复或加载失败即失败，不以跳过代替验证。合成图来源补足三台单视角相机。结束时退出离线并关闭本次进程。
 
-[`tests/native/`](../../tests/native/) 没有单独说明文件：生产落盘驱动脚本为 `production-flow-ui.mjs`；它与 `scripts/soak/` 共用的 IPC 客户端、实例连接、样本集副本、整圈采集、示教与投产函数在 `tests/native/lib.mjs`；`desktop-infrastructure.test.mjs`、`throughput-gate.test.mjs`、`soak-faults-assess.test.mjs` 是桌面基础设施与长稳判定函数的手动 `node --test` 用例；`guard.js`、`plc-ui.js`、`p0-plc-bootstrap-ui.js`、`p0-single-instance-acceptance.mjs` 是在隔离实例页面上执行的原生抽查脚本，协议 7 下未重新实跑，使用前须按当前点表核对断言。实例配置不放在该目录，由 `Start-UiTestInstance.ps1` 按 Profile 生成（长稳测试用 soak）。恢复专项应使用独立实例和新输出目录，避免使用生产配置。
+[`tests/native/`](../../tests/native/) 没有单独说明文件：生产落盘驱动脚本为 `production-flow-ui.mjs`；它与 `scripts/soak/` 共用的 IPC 客户端、实例连接、样本集副本、轮次导入（手动配置数据包）、示教与投产函数在 `tests/native/lib.mjs`；`desktop-infrastructure.test.mjs`、`throughput-gate.test.mjs`、`soak-faults-assess.test.mjs` 是桌面基础设施与长稳判定函数的手动 `node --test` 用例；`guard.js`、`plc-ui.js`、`p0-plc-bootstrap-ui.js`、`p0-single-instance-acceptance.mjs` 是在隔离实例页面上执行的原生抽查脚本，协议 7 下未重新实跑，使用前须按当前点表核对断言。实例配置不放在该目录，由 `Start-UiTestInstance.ps1` 按 Profile 生成（长稳测试用 soak）。恢复专项应使用独立实例和新输出目录，避免使用生产配置。
 
 jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明真实布局、像素解码或硬件通信。桌面模拟流程证明业务接线与落盘，不证明真实 PLC、SDK、引擎测量准确率、现场节拍或持续运行。
 
@@ -188,7 +188,7 @@ Playwright Test 固定 `workers=1`、`fullyParallel=false`、`retries=0`，每�
 
 软件启动总是真机模式：测量用 lyFlow，相机只接海康 MVS，PLC 只支持 S7。“总览”首页显示当前模式“真机”“离线 · 样本集 <名称>”或“离线 · 合成图”，点“查看站点模式”或侧栏“工艺 → 离线模式”进入离线控制台（`/offline`），控制台标题为“当前：真机”或“当前：离线 · <来源>”。
 
-进入离线时软件临时派生并应用：PLC 切到进程内 S7 服务（127.0.0.1 随机端口，点表按现行通讯协议）；相机组按样本集 `cameras[]` 生成样本集相机，或按真实相机组同编号、同视角数生成模拟相机（单视角相机不足 3 台时补足到 3 台，供段配方使用）；测量用 lyFlow（样本集）或模拟测量（合成图）；帧录制临时为“全部”。真实 PLC、相机组和系统设置不改写，退出离线后全部恢复；恢复真机 PLC 配置失败时 PLC 保持断开并停在安全配置，离线控制台与日志标为“故障·需人工修复”。进入离线失败回滚时按进入前状态重连真机 PLC。离线期间相机页、PLC 页只读；有在途事务或整圈采集进行中时不能切换模式。离线模式不持久化，重启回到真机，但会记住上次来源和样本集目录。
+进入离线时软件临时派生并应用：PLC 切到进程内 S7 服务（127.0.0.1 随机端口，点表按现行通讯协议）；相机组按样本集 `cameras[]` 生成样本集相机，或按真实相机组同编号、同视角数生成模拟相机（单视角相机不足 3 台时补足到 3 台，供段配方使用）；测量用 lyFlow（样本集）或模拟测量（合成图）；帧录制临时为“全部”。真实 PLC、相机组和系统设置不改写，退出离线后全部恢复；恢复真机 PLC 配置失败时 PLC 保持断开并停在安全配置，离线控制台与日志标为“故障·需人工修复”。进入离线失败回滚时按进入前状态重连真机 PLC。离线期间相机页、PLC 页只读；有在途事务时不能切换模式。离线模式不持久化，重启回到真机，但会记住上次来源和样本集目录。
 
 **离线 · 合成图跑一件**
 
@@ -202,7 +202,7 @@ Playwright Test 固定 `workers=1`、`fullyParallel=false`、`retries=0`，每�
 
 1. 确认 lyFlow 引擎就绪（运行库位于程序目录 `runtime/lyflow/`，开发时由 `pnpm deps:lyflow:dev` 复制），否则拒绝进入并提示原因。
 2. 离线控制台来源选“样本集”，点“选择样本集目录”，核对件数、帧数、缺图和标签分布，点“进入离线”。
-3. 无已发布配方时：新建段配方，整圈采集页点“开始接收”→“离线样本集送一圈”，再走相机走廊示教、多轮标定（每轮各送一圈）、独立样本验证与发布。样本集是停稳拍数据，一条走廊对不上其他点位，检测项开着时多半判 NG_GAP；只作流程冒烟时关闭各段检测项。独立样本验证可选，不阻断发布。
+3. 无已发布配方时：用“导入配方”导入带轮次的配方迁移包（手动配置数据，如 `capture_fixture` 生成的包），再走相机走廊示教、多轮标定、独立样本验证与发布。样本集是停稳拍数据，一条走廊对不上其他点位，检测项开着时多半判 NG_GAP；只作流程冒烟时关闭各段检测项。独立样本验证可选，不阻断发布。
 4. 选离线配方和样本件（不选则按顺序循环），点“运行一件”或“连续运行”，用“本件后停止”/“立即停止”结束。样本集来源只提供握手类工况：正常件、传输丢帧 / 缺帧、运动超时、PLC 回显核对不符，以及段配方的脉冲串工况（见上文“段模型专项”）。
 5. 核对“最近样本件”表的期望 / 实际。
 

@@ -265,7 +265,7 @@ pub fn open_target(data: &Path, id: &str) -> Result<ProjectMeta, String> {
     read_meta(&dir(data, id)).map_err(|error| format!("项目 {id} 不可用：{error}"))
 }
 
-/// 当前项目此刻能否安全离开（切换或导出）：没有在途件与未结事务、没有在采集、录制与追溯已写完。
+/// 当前项目此刻能否安全离开（切换或导出）：没有在途件与未结事务、录制与追溯已写完。
 pub fn switch_state(app: &AppHandle) -> Result<crate::site::ProjectSwitch, String> {
     use crate::cycle::{CycleHost, Phase};
     let cycle = app.state::<CycleHost>();
@@ -276,7 +276,6 @@ pub fn switch_state(app: &AppHandle) -> Result<crate::site::ProjectSwitch, Strin
     Ok(crate::site::ProjectSwitch {
         block: cycle.switch_block(),
         busy: !matches!(cycle.phase(), Phase::Idle | Phase::Fault),
-        capturing: cycle.camera.recipe_capture().active(),
         audit_pending,
     })
 }

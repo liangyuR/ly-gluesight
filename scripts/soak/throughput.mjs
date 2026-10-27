@@ -144,8 +144,6 @@ async function ensureSynthetic(call) {
   await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
   const id = "THRU-SYN";
   if (!(await call("cycle_recipes")).some(r => r.id === id)) {
-    // 建站（采集、标定、验证）用 5 Hz：合成图逐像素渲染赶不上更快的脉冲，帧会晚于 partEnd 才画完；压测频率在建站后再设
-    await call("offline_pace", { pace: { shotIntervalMs: 200, pauseMs: 200 } });
     const template = await call("recipe_template");
     const built = await buildBurstRecipe(call, { sourceId: "synthetic", doc: { ...template, id, name: "吞吐压测" }, log: message => process.stdout.write(`[throughput] ${message}\n`) });
     assert(built.validation.passed, `压测配方验证未通过：${JSON.stringify(built.validation.checks.filter(c => !c.passed))}`);

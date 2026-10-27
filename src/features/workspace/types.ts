@@ -1,4 +1,5 @@
-import type { CameraImaging, Judgement, Recipe, RecipeDoc, RecipeStage, Verdict } from "../cycle/types";
+import type { Judgement, Recipe, RecipeDoc, RecipeStage, Verdict } from "../cycle/types";
+import type { CameraImaging } from "../camera/types";
 import type { BurstJudgement, CalibrationRound, CameraTeaching, CaptureState, PathSegment, RoundOrigin, WorkspacePlanView } from "../plan/types";
 import type { PartMode } from "../history/types";
 
@@ -32,7 +33,6 @@ export interface Workspace {
   samples: Sample[]; validation: Validation | null; pending: Release | null;
   sampleBank: BankSample[];
   captureId?: string | null;
-  unboundImaging?: Record<string, CameraImaging>;
   publish: PublishState; updatedAt: number;
   /** 每台计划相机的走廊示教帧；界面读 plan.cameraTeaching */
   cameraTeaching: CameraTeaching[];
@@ -91,7 +91,6 @@ export interface Comparison {
 export interface GrayPixels { data: Uint8Array; width: number; height: number }
 /** width / height 为原图尺寸；带 pixels 时直接画到 canvas，url 只作为这张图的标识。 */
 export interface GrayImage { url: string; width: number; height: number; pixels?: GrayPixels }
-export interface ImagingSaved { view: WorkspaceView; applyErrors: Record<string, string> }
 
 export interface CaptureCamera { cameraId: string; deviceSession: number; receivedCount: number; imaging?: CameraImaging }
 export interface CaptureSummary { roundId: string; recipeId: string; cameraIds: string[]; plannedCount: number | null; receivedCount: number; state: CaptureState; createdAt: number; error: string | null; origin?: RoundOrigin | null }
@@ -109,29 +108,12 @@ export interface HistoryCandidate {
   /** 原图完整：无缺帧、无 rawDropped、每帧已落盘 */
   complete: boolean;
   reasons: string[];
+  /** 不阻断导入的提示 */
+  warnings: string[];
+  durationMs: number | null;
+  measuredFps: number | null;
+  setFps: number | null;
   importedRound: string | null;
 }
 
 export interface HistoryPick { recordId: number; standard: boolean }
-
-export interface TeachingRegisters {
-  version: number;
-  state: number;
-  roundId: number;
-  reason: number;
-  reserved: number;
-}
-
-export interface TeachingViolation {
-  field: keyof TeachingRegisters;
-  detail: string;
-}
-
-export interface CapturePlcStatus {
-  available: boolean;
-  busy: boolean;
-  roundId: number | null;
-  phase: "unavailable" | "resetRequired" | "idle" | "requested" | "accepted" | "draining" | "reporting" | "cancelling" | "releasing" | "fault";
-  message: string;
-  monitor?: { pc: TeachingRegisters | null; plc: TeachingRegisters | null; fresh: boolean; violation?: TeachingViolation | null };
-}

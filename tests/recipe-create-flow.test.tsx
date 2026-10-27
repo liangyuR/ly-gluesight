@@ -22,23 +22,23 @@ const template = (): RecipeDoc => ({
   }),
 });
 
-/** workspace_create 的结果：刚建的段配方候选，进度停在“等待整圈采集”。 */
+/** workspace_create 的结果：刚建的段配方候选，进度停在“等待导入轮次”。 */
 function createdView(doc: RecipeDoc): WorkspaceView {
   const view = burstWorkspaceView(doc as ReturnType<typeof burstRecipe>);
   view.workspace.revision = 1;
   const plan = view.plan!;
   plan.cameraTeaching = plan.cameras.map(camera => ({ camera, mmPerPx: null, ready: false, nozzle: null, segments: [] }));
   plan.calibration = null;
-  const waiting = { detail: "等待设备就绪后整圈采集并采用" };
+  const waiting = { detail: "等待导入采集轮次" };
   plan.progress = {
     steps: progressV2().steps.map(step => ({ ...step, status: "notStarted", ...(step.id === "capture" ? waiting : {}) })),
-    next: { step: "capture", label: "开始整圈采集", target: { page: "capture" } },
+    next: { step: "capture", label: "导入轮次", target: { page: "capture" } },
   };
   return view;
 }
 
 describe("创建配方流程", () => {
-  it("在配方库填写新候选，选中创建结果并继续进入该候选的整圈采集", async () => {
+  it("在配方库填写新候选，选中创建结果并继续进入该候选的采集轮次", async () => {
     let created: WorkspaceView | null = null;
     let preferences: Record<string, unknown> = { legacyImported: true };
     vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -60,6 +60,7 @@ describe("创建配方流程", () => {
         case "camera_rig_config":
         case "camera_rig_status":
         case "recipe_capture_list":
+        case "workspace_history_candidates":
         case "cycle_logs": return [];
         case "recipe_capture_get":
         case "cycle_snapshot": return null;
@@ -91,15 +92,15 @@ describe("创建配方流程", () => {
     });
     expect(invoke).toHaveBeenCalledWith("workspace_get", { id: "SHELL-2026" });
     expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveValue("SHELL-2026");
-    // 新建的段配方按段模型的步骤显示：整圈采集 → 段列表 → 走廊示教 → 多轮标定 → 验证与发布
-    expect(within(screen.getByRole("region", { name: "整圈采集进度" })).getByText("等待设备就绪后整圈采集并采用")).toBeVisible();
+    // 新建的段配方按段模型的步骤显示：采集轮次 → 段列表 → 走廊示教 → 多轮标定 → 验证与发布
+    expect(within(screen.getByRole("region", { name: "采集轮次进度" })).getByText("等待导入采集轮次")).toBeVisible();
     const steps = within(screen.getByRole("navigation", { name: "配方配置步骤" }));
     for (const name of [/段列表/, /走廊示教/, /多轮标定/]) expect(steps.getByRole("link", { name })).toBeVisible();
     expect(steps.queryByRole("link", { name: /单帧示教/ })).not.toBeInTheDocument();
     await waitFor(() => expect(preferences.lastWorkspace).toBe("SHELL-2026"));
 
-    await user.click(screen.getByRole("link", { name: "开始整圈采集" }));
-    expect(await screen.findByRole("heading", { name: "设备准备与整圈采集" })).toBeVisible();
+    await user.click(screen.getByRole("link", { name: "导入轮次" }));
+    expect(await screen.findByRole("heading", { name: "从历史选用" })).toBeVisible();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("recipe_capture_list", { recipeId: "SHELL-2026" }));
     expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveValue("SHELL-2026");
     expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveDisplayValue("SHELL-2026 · 新壳体配方");

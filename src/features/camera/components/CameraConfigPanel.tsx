@@ -1,8 +1,8 @@
 import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
 import { AlertTriangle, Copy, Lock, RefreshCw, SlidersHorizontal } from "lucide-react";
-import { Accordion, Alert, Button, Card, Checkbox, FormField, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Surface, TextField } from "qing-steel";
+import { Alert, Button, Card, Checkbox, FormField, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Surface, TextField } from "qing-steel";
 import { cameraApi } from "../api";
-import type { BandwidthEstimate, CameraConfig, CameraStatus, DeviceSummary } from "../types";
+import type { BandwidthEstimate, CameraConfig, CameraImaging, CameraStatus, DeviceSummary } from "../types";
 import { errorText } from "../../../lib/errors";
 import { clock, sourceText } from "./health";
 
@@ -61,9 +61,6 @@ function useBandwidth(hz: number) {
   }, [hz]);
   return estimate;
 }
-
-/** 调试下发过的曝光与增益：不写配方，离开页面或重连后也保留显示（用户要求不清理）。 */
-const sentImaging = new Map<string, { exposureUs: number; gainDb: number; at: number }>();
 
 export default function CameraConfigPanel({ ref, cam, initial, status, group, locked, saveBlocked, onSaved, onGroupSaved, onSavingChange, onDirtyChange, side, leading, footer }: Props) {
   const [baseline, setBaseline] = useState<CameraConfig>(initial);
@@ -179,22 +176,24 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
   const unestimated = bandwidth ? group.configs.filter((_, i) => bandwidth.perCamera[i] == null).map(c => c.name) : [];
 
   const device = devices.find(d => d.serial === config.serial) ?? (status?.device?.serial === config.serial ? status.device : null);
-  const sent = sentImaging.get(config.id);
-  const [exposure, setExposure] = useState(sent ? String(sent.exposureUs) : "");
-  const [gain, setGain] = useState(sent ? String(sent.gainDb) : "");
+  const [imagingSaved, setImagingSaved] = useState<CameraImaging & { at: number } | null>(null);
+  const savedImaging: CameraImaging | undefined = imagingSaved ?? status?.imaging;
+  const [imagingDraft, setImagingDraft] = useState<{ exposure: string; gain: string } | null>(null);
   const [imagingBusy, setImagingBusy] = useState(false);
   const [imagingError, setImagingError] = useState("");
-  const [, setSentAt] = useState(0);
+  useEffect(() => { if (imagingSaved && status?.imaging && status.imaging.exposureUs === imagingSaved.exposureUs && status.imaging.gainDb === imagingSaved.gainDb) setImagingSaved(null); }, [status?.imaging?.exposureUs, status?.imaging?.gainDb]);
+  const exposure = imagingDraft?.exposure ?? (savedImaging ? String(savedImaging.exposureUs) : "");
+  const gain = imagingDraft?.gain ?? (savedImaging ? String(savedImaging.gainDb) : "");
   const exposureUs = Number(exposure), gainDb = Number(gain);
   const imagingInvalid = exposure === "" || gain === "" ? "填写曝光与增益" : !(exposureUs >= 1 && exposureUs <= 1_000_000) ? "曝光需在 1–1000000 µs 之间" : !(Number.isFinite(gainDb) && gainDb >= 0) ? "增益需为不小于 0 的数" : "";
-  const imagingBlocked = status?.released ? "已释放给 MVS，重新连接后再下发" : !status?.ready ? status?.message || "相机未就绪" : "";
-  const sendImaging = async () => {
-    if (imagingBusy || imagingInvalid || imagingBlocked) return;
+  const imagingChanged = !!savedImaging && (exposureUs !== savedImaging.exposureUs || gainDb !== savedImaging.gainDb);
+  const editImaging = (key: "exposure" | "gain", value: string) => { setImagingError(""); setImagingDraft({ exposure, gain, [key]: value }); };
+  const saveImaging = async () => {
+    if (imagingBusy || imagingInvalid || !imagingChanged || locked) return;
     setImagingBusy(true); setImagingError("");
     try {
       await cameraApi.setImaging(cam, config.id, { exposureUs, gainDb });
-      sentImaging.set(config.id, { exposureUs, gainDb, at: Date.now() });
-      if (mounted.current) setSentAt(Date.now());
+      if (mounted.current) { setImagingSaved({ exposureUs, gainDb, at: Date.now() }); setImagingDraft(null); }
     } catch (e) { if (mounted.current) setImagingError(errorText(e)); }
     finally { if (mounted.current) setImagingBusy(false); }
   };
@@ -288,25 +287,22 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
             <Alert title="不适用：离线图像源按节拍自动出图">不接触发线，没有触发沿、滤波、延时、频闪和 Chunk 设置；触发计数即样本序号。</Alert>
           </Card>}
 
-          <Card>
-            <Accordion collapsible items={[{
-              value: "debug",
-              title: <>高级参数（调试）<StatusBadge tone="off">{mvs ? "曝光 / 增益 · 不写入配方" : "离线不适用"}</StatusBadge></>,
-              content: mvs ? <Stack direction="column" align="stretch" gap={12}>
-                <Alert>曝光和增益<b>归配方管</b>（每个配方、每台相机各一份，在配方工作台“整圈采集”里设置）。这里的值<b>只临时下发到设备用于调试，不写进配方</b>；开始采集或生产时会被配方的值覆盖。设备当前实际值读不回来，下方只显示本次调试下发过的值。</Alert>
-                <div className="cg-adv-grid">
-                  <NumberField label="曝光时间" aria-label="调试曝光（µs）" unit="µs" min={1} step={1} value={exposure===""?"":Number(exposure)} onValueChange={v => setExposure(v===""?"":String(v))} placeholder="例如 8000" />
-                  <NumberField label="增益" aria-label="调试增益（dB）" unit="dB" min={0} step={0.1} value={gain===""?"":Number(gain)} onValueChange={v => setGain(v===""?"":String(v))} placeholder="例如 6.0" />
-                </div>
-                <div className="cg-adv-sent">
-                  <Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => void sendImaging()} disabled={imagingBusy || !!imagingInvalid || !!imagingBlocked} title={imagingBlocked || imagingInvalid || undefined}>{imagingBusy ? "下发中…" : "临时下发到设备"}</Button>
-                  {sent ? <span>本次调试已下发：曝光 <b>{sent.exposureUs} µs</b> · 增益 <b>{sent.gainDb} dB</b>（{clock(sent.at).slice(0, 5)}）</span> : <span>{imagingBlocked || imagingInvalid}</span>}
-                </div>
-                {imagingError && <Alert tone="ng">{imagingError}</Alert>}
-                <span className="muted cg-small">固定写入：ExposureAuto / GainAuto = Off、PixelFormat = Mono8、TriggerMode = On；GigE 相机自动设置最佳包长。{status?.sdkVersion && ` SDK ${status.sdkVersion}。`}</span>
-              </Stack> : <Alert>样本集与合成图没有曝光和增益可下发。</Alert>,
-            }]} />
-          </Card>
+          {mvs ? <Card role="region" aria-label="曝光与增益" title={<Heading level={3}>曝光与增益</Heading>} actions={<span className="cg-note">保存即写入相机，打开或重连时自动写入</span>}>
+            <Stack direction="column" align="stretch" gap={12}>
+              <div className="cg-adv-grid">
+                <NumberField label="曝光时间" aria-label="曝光时间（µs）" unit="µs" min={1} step={1} value={exposure===""?"":Number(exposure)} onValueChange={v => editImaging("exposure", v===""?"":String(v))} />
+                <NumberField label="增益" aria-label="增益（dB）" unit="dB" min={0} step={0.1} value={gain===""?"":Number(gain)} onValueChange={v => editImaging("gain", v===""?"":String(v))} />
+              </div>
+              <div className="cg-adv-sent">
+                <Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => void saveImaging()} disabled={locked || imagingBusy || !!imagingInvalid || !imagingChanged} title={imagingInvalid || undefined}>{imagingBusy ? "保存中…" : "保存曝光与增益"}</Button>
+                {imagingInvalid ? <span>{imagingInvalid}</span> : imagingSaved ? <span>已保存：曝光 <b>{imagingSaved.exposureUs} µs</b> · 增益 <b>{imagingSaved.gainDb} dB</b>（{clock(imagingSaved.at).slice(0, 5)}）</span> : !status?.ready && <span>相机未连接：保存的值在下次连接时写入</span>}
+              </div>
+              {imagingError && <Alert tone="ng">{imagingError}</Alert>}
+              <span className="muted cg-small">曝光与增益只记录在采集件与轮次里，修改后不影响已有示教、标定与轮次复核。固定写入：ExposureAuto / GainAuto = Off、PixelFormat = Mono8、TriggerMode = On；GigE 相机自动设置最佳包长。{status?.sdkVersion && ` SDK ${status.sdkVersion}。`}</span>
+            </Stack>
+          </Card> : <Card role="region" aria-label="曝光与增益" title={<Heading level={3}>曝光与增益</Heading>}>
+            <Alert>样本集与合成图没有曝光和增益可写入。</Alert>
+          </Card>}
         </fieldset>
         {footer}
       </div>

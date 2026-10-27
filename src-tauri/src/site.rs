@@ -88,24 +88,20 @@ pub enum Derivation<'a> {
 pub struct Preconditions {
     /// 有在途事务或检测未回到空闲 / 故障
     pub busy: bool,
-    /// 示教整圈采集进行中
-    pub capturing: bool,
     /// lyFlow 是否已加载（只有样本集需要）
     pub lyflow: Result<(), String>,
 }
 
-pub fn check_switch(busy: bool, capturing: bool) -> Result<(), String> {
+pub fn check_switch(busy: bool) -> Result<(), String> {
     if busy { return Err("检测仍有在途事务，完成握手或复位故障后再切换站点模式".into()); }
-    if capturing { return Err("示教整圈采集正在进行，结束本轮采集后再切换站点模式".into()); }
     Ok(())
 }
 
 /// 切换项目前要满足的条件：比站点模式切换多一条，件记录与追溯必须已写进本项目。
 pub struct ProjectSwitch {
-    /// 在途工件、未结 S7 事务或示教握手给出的阻止原因
+    /// 在途工件或未结 S7 事务给出的阻止原因
     pub block: Option<String>,
     pub busy: bool,
-    pub capturing: bool,
     pub audit_pending: bool,
 }
 
@@ -115,9 +111,6 @@ pub fn check_project_switch(pre: &ProjectSwitch) -> Result<(), String> {
     }
     if pre.busy {
         return Err("检测仍有在途事务，完成握手或复位故障后再切换项目".into());
-    }
-    if pre.capturing {
-        return Err("示教整圈采集正在进行，结束本轮采集后再切换项目".into());
     }
     if pre.audit_pending {
         return Err("上一件的录制或追溯还没写完，稍后再切换项目".into());
@@ -134,7 +127,7 @@ pub struct OfflineSession {
 
 impl OfflineSession {
     pub fn enter(real: Environment, derivation: Derivation, port: u16, pre: Preconditions) -> Result<Self, String> {
-        check_switch(pre.busy, pre.capturing)?;
+        check_switch(pre.busy)?;
         let (kind, cameras) = match derivation {
             Derivation::SampleSet(manifest) => {
                 pre.lyflow.map_err(|reason| format!("离线·样本集要用 lyFlow 测量现场原图，但 lyFlow 未加载：{reason}"))?;

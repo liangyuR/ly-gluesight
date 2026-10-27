@@ -39,7 +39,7 @@ const README: &str = r#"# 诊断包说明
 | `project.json` | 当前项目的编号、名称与描述 |
 | `config/` | 当前项目的配置文件（PLC、相机、检测设置等） |
 | `machine/site-offline.json` | 本机的站点模式与离线选择（没有时不打包） |
-| `state/` | 运行状态文件（S7 握手事务、示教握手等）；`state/plc-handshake.audit.jsonl` 只含导出时间段内的握手审计行 |
+| `state/` | 运行状态文件（S7 握手事务等）；`state/plc-handshake.audit.jsonl` 只含导出时间段内的握手审计行 |
 | `state/plc-handshake-audit/` | 与导出时间段有交集的已滚动握手审计分段（整段，可能含时间段外的行） |
 | `records/parts.csv`、`records/parts.jsonl` | 检测记录摘要与完整明细 |
 | `recipes/<revisionId>.json` | 检测记录所用的配方快照 |
@@ -60,7 +60,7 @@ const README: &str = r#"# 诊断包说明
 
 1. 读 `manifest.json`：确认构建版本、时间段与 `notes`，按 `files` 校验文件完整性。
 2. 在运行日志中先找 `fault.enter` 与 `s7.fault_output`，确定故障时刻、来源与原因；没有这些编码时，找 `ev` 为“故障”的行。
-3. 按 `teachId`（示教握手）或 `cycleId`（工件）串起同一事务的事件，对照同一时间窗口内 `logs/plc.jsonl` 的信号变化与 `state/plc-handshake.audit.jsonl`。
+3. 按 `cycleId`（工件）串起同一事务的事件，对照同一时间窗口内 `logs/plc.jsonl` 的信号变化与 `state/plc-handshake.audit.jsonl`。
 4. 涉及检测结论时，按 `cycleId` 对照 `records/parts.jsonl`、配方快照与原图。
 "#;
 

@@ -1,8 +1,8 @@
 import { desktopCall } from "../../lib/desktop";
-import type { CameraImaging, RecipeDoc } from "../cycle/types";
+import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { AlignSuggestion, CapturePlcStatus, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, HistoryCandidate, HistoryPick, ImagingSaved, Sample, Workspace, WorkspaceView } from "./types";
+import type { AlignSuggestion, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, HistoryCandidate, HistoryPick, Sample, Workspace, WorkspaceView } from "./types";
 
 function grayPreview(input: ArrayBuffer | number[]) {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -42,11 +42,7 @@ export interface TransferImported { id: string; kind: TransferKind; rounds: numb
 
 export const workspaceApi = {
   debugRun: (id: string, revision: number, partId: string | null) => desktopCall<void>("workspace_debug_run", { id, revision, partId }),
-  captureStart: (recipeId: string, cameraIds: string[], drainTimeoutMs: number) => desktopCall<CaptureRoundV2>("recipe_capture_start", { recipeId, cameraIds, drainTimeoutMs }),
   captureGet: (roundId?: string) => desktopCall<CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
-  captureStop: () => desktopCall<CaptureRoundV2 | null>("recipe_capture_stop"),
-  capturePlcStatus: () => desktopCall<CapturePlcStatus>("recipe_capture_plc_status"),
-  captureSample: (id: string, revision: number, roundId: string, expected: import("../cycle/types").Verdict, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_capture_sample", { id, revision, roundId, expected, correspondenceConfirmed }),
   list: () => desktopCall<Workspace[]>("workspace_list"),
   get: (id: string) => desktopCall<WorkspaceView>("workspace_get", { id }),
   create: (doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_create", { doc }),
@@ -58,8 +54,6 @@ export const workspaceApi = {
   /** 校验整包后作为新候选导入；编号与型号由操作员确认 */
   transferImport: (path: string, id: string, name: string, productCode: number) => desktopCall<TransferImported>("workspace_transfer_import", { path, id, name, productCode }),
   saveDoc: (id: string, revision: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, doc }),
-  /** 按相机写进候选配方，并在设备空闲时分别下发；applyErrors 为各相机下发失败的原因（参数已保存）。 */
-  setCameraImaging: (id: string, revision: number, imaging: Record<string, CameraImaging>) => desktopCall<ImagingSaved>("workspace_set_camera_imaging", { id, revision, imaging }),
   image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeGray),
   validate: (id: string, revision: number, samples: Sample[], sourceConfirmed = false) => desktopCall<WorkspaceView>("workspace_validate", { id, revision, samples, sourceConfirmed }),
   retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),

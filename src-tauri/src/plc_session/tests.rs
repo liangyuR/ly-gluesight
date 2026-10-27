@@ -161,7 +161,11 @@ impl Rig {
     }
 
     async fn arm(&mut self) {
-        self.session.arm(&self.engine, &self.plan).await.unwrap();
+        self.session
+            .arm_outputs(&self.engine, Some(&self.plan))
+            .await
+            .unwrap();
+        self.session.commit_arm(&self.engine).await.unwrap();
         assert_eq!(self.session.phase(), SessionPhase::Acquiring);
         assert_eq!(
             (self.plc.pc(), self.plc.get(tag::SEQ_ECHO)),
@@ -376,22 +380,6 @@ async fn s7_wire_heartbeat_fault_stops_outputs_before_slow_io_finishes() {
     rig.live().await;
     assert_eq!(rig.session.phase(), SessionPhase::Fault);
     assert!(rig.session.pending());
-    rig.finish().await;
-}
-
-/// 示教采集计划只能用于已绑定采集轮次的事务：生产请求不能被示教计划布防。
-#[tokio::test]
-async fn s7_wire_teaching_plan_arms_only_in_a_capture_transaction() {
-    let mut rig = Rig::new("teaching-plan").await;
-    let cameras = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
-    let teaching = PlcPlan::teaching("recipe-a".into(), rig.plan.plan_version, cameras).unwrap();
-    rig.request(1, "SN-TEACH").await;
-    assert!(rig.session.validate_plan(&teaching).is_err());
-    rig.session.bind_capture_id("capture-round-1").unwrap();
-    rig.session.arm(&rig.engine, &teaching).await.unwrap();
-    rig.end().await;
-    rig.report().await;
-    rig.ack_release().await;
     rig.finish().await;
 }
 

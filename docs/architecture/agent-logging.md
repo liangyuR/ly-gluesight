@@ -9,9 +9,9 @@
 2026-10-24 京航联调的日志是这套设计的依据。一份 1.8 万行的日志里：
 
 - 13380 行是逐帧的“游离帧”，4857 行是每拍重复的同一条“故障”，有效事件不到 30 条；
-- 示教握手的 PLC 寄存器值完全不在日志里，PLC 停在“已接受、回显 0”还是一直空闲，只能靠故障文案差异和游离帧时间倒推，最后仍要现场截 TIA；
+- PLC 寄存器值完全不在日志里，PLC 停在哪个状态只能靠故障文案差异和游离帧时间倒推，最后仍要现场截 TIA；
 - 一次 PLC 侧可见的“视觉故障=1”没有任何原因记录；
-- 复位、开始 / 取消采集等操作员动作只能从 PLC 写入痕迹倒推；
+- 复位等操作员动作只能从 PLC 写入痕迹倒推；
 - 运行日志用毫秒时间戳、PLC 日志 CSV 用本地时间字符串，对照前要换算；看不出现场运行的是哪个构建。
 
 ## 2. 设计原则
@@ -27,7 +27,7 @@
 在现有 JSONL 上增量扩展，旧行照常可读。
 
 ```json
-{"ts":1792837092059,"level":"warn","t":"2026-10-24T18:18:12.059+08:00","code":"teach.timeout","ev":"示教超时","msg":"PLC 未确认取消，握手编号 8","teachId":8,"captureRound":"capture-1792837071896-0","data":{"stage":"confirm","pc":[1,40,8,2,0],"plc":[1,10,0,0,0],"waitedMs":10012}}
+{"ts":1792837102059,"level":"warn","t":"2026-10-24T18:18:22.059+08:00","code":"s7.fault_output","ev":"S7 故障输出","msg":"写出故障输出（reset_operator）","data":{"cause":"reset_operator","reason":null,"phase":"AwaitAck","ok":true,"error":null}}
 ```
 
 | 字段 | 说明 |
@@ -36,7 +36,7 @@
 | `t` | 新增。带 UTC 偏移的本地时间（RFC 3339，毫秒），与 PLC 日志、现场叙述直接对照 |
 | `code` | 新增。稳定事件编码，见第 4 节；旧行没有 |
 | `ev`、`msg` | 不变。中文事件名与说明，面向人，可随文案调整 |
-| 关联字段 | 现有 `cycleId / sn / requestSeq / recipeId / shotId / k / camera / view / seq / stage`，新增 `teachId`（示教握手编号）、`captureRound`（整圈采集轮次）、`source`（触发来源，见 5.4） |
+| 关联字段 | 现有 `cycleId / sn / requestSeq / recipeId / shotId / k / camera / view / seq / stage`，新增 `captureRound`（采集轮次）、`source`（触发来源，见 5.3）；旧日志里的 `teachId`（已停用的示教握手编号）照常读取 |
 | `data` | 结构化数值。每个 `code` 的键在编码表里固定 |
 
 兼容规则：
@@ -60,47 +60,27 @@
 | `op` | 操作员命令（界面或 IPC 调用） |
 | `plc` | PLC 链路：连接、断开、ly_plc 引擎告警 |
 | `s7` | S7 生产握手会话 |
-| `teach` | 示教握手（DB6 / DB12） |
 | `part` | 工件生命周期：开始、布防、结束、结论 |
 | `frame` | 帧到达与归属：游离、迟到、截止后、配组、丢帧 |
 | `measure` | 测量与判定 |
 | `camera` | 相机连接、配置下发、取图 |
 | `fault` | 节拍进入 / 维持 / 解除故障 |
-| `recipe`、`capture`、`calib` | 配方发布与迁移、整圈采集、标定 |
+| `recipe`、`capture`、`calib` | 配方发布与迁移、采集轮次、标定 |
 | `storage`、`audit` | 录制、清理、持久追溯 |
 
 ### 4.2 代码组织
 
-- 新增 `src-tauri/src/applog/codes.rs`：每个事件一条常量 `Event { code, ev, level }`，调用方写 `log_event(app, &codes::TEACH_PLC_CHANGED, msg, fields)`，不再手写 `ev` 字符串和级别。
+- 新增 `src-tauri/src/applog/codes.rs`：每个事件一条常量 `Event { code, ev, level }`，调用方写 `log_event(app, &codes::S7_FAULT_OUTPUT, msg, fields)`，不再手写 `ev` 字符串和级别。
 - `cycle::log / log_with / trace` 继续保留，写出的行 `code` 为空。不做全量迁移：只有编码表里的事件带 `code`，没有 `code` 的行按 `ev` 与 `msg` 理解。
 - `docs/architecture/agent-logging-codes.md` 为编码表（code、ev、级别、触发时机、`data` 键）。由测试保证与 `codes.rs` 一致（见第 9 节）。
 
 ### 4.3 拆分的同名事件
 
-只拆分了带编码的事件：`故障`（示教、S7、追溯、布防都记成同一事件）改为 `fault.enter`，用 `source` 区分（5.4）；`PLC {category}`（ev 动态拼接）改为 `plc.engine.warn` / `plc.engine.error`，`data.category`；相机断线重试改为 `camera.reconnect_failed`。其余同名事件（`相机`、`站点模式`、`布防阶段`、`校验失败` 等）没有 `code`，按 `ev` 与 `msg` 理解。
+只拆分了带编码的事件：`故障`（S7、追溯、布防都记成同一事件）改为 `fault.enter`，用 `source` 区分（5.3）；`PLC {category}`（ev 动态拼接）改为 `plc.engine.warn` / `plc.engine.error`，`data.category`；相机断线重试改为 `camera.reconnect_failed`。其余同名事件（`相机`、`站点模式`、`布防阶段`、`校验失败` 等）没有 `code`，按 `ev` 与 `msg` 理解。
 
 ## 5. 补齐关键证据
 
-### 5.1 示教握手
-
-| code | 触发 | data |
-|---|---|---|
-| `teach.request` | `prepare_request` 分配新编号 | `teachId`、`captureRound`、`highWater` |
-| `teach.pc_published` | 每次 `publish` 成功（含复位、取消、结果上报） | `pc: [版本, 状态, 编号, 原因, 保留]` |
-| `teach.plc_changed` | PLC 稳定快照（连续两次读数一致）与上一次采用的值不同 | `plc: [五值]`、`prev: [五值]` |
-| `teach.accepted` / `ended` / `rejected` / `released` | `observe_reply` 对应分支 | 拒绝时 `reason` |
-| `teach.cancel` / `teach.finish` | 本地取消、结果上报 | `reason`、`success` |
-| `teach.awaiting_echo` | PLC 已置 10 但回显为 0 | 首次出现记一次，带 `plc` 五值 |
-| `teach.timeout` | 等待接受、采集结束、结果确认或释放、复位空闲超时 | `stage`、`waitedMs`，当时的 `pc`、`plc` 五值 |
-| `teach.violation` | 寄存器不合规 | `field`、`plc` 五值 |
-| `teach.reset.begin` / `teach.reset.done` | 复位开始、`initialize_after_reset` 成功 | 复位前未结轮次、完成时 PLC 五值 |
-| `teach.fault` | 示教握手进入故障（含链路中断、点表校验失败）或故障原因变化 | 同一原因不重复记 |
-
-关联：`recipe_capture_start` 起示教轮次后，`applog` 维护“当前示教上下文”（与现有在途工件 `ACTIVE` 同法），后续行自动带 `teachId`、`captureRound`，轮次释放或复位时清除。
-
-`teach.plc_changed` 只在稳定值变化时写，正常一轮约 5～8 行，不会每拍刷屏；这正是这次现场缺失的那份证据。
-
-### 5.2 S7 握手与故障输出
+### 5.1 S7 握手与故障输出
 
 | code | 触发 | data |
 |---|---|---|
@@ -112,24 +92,21 @@
 
 规则：`s7.fault_output` 是 PLC 可见故障的唯一出口事件，所有撤下输出的路径都经过它，不依赖调用方是否另写 `fault.enter`。
 
-### 5.3 操作员命令
+### 5.2 操作员命令
 
-改变设备或握手状态的 IPC 命令写 `op.*`，记参数摘要与结果（`ok` / `err` + 错误原文），命令入口处统一包装：`op.reset`、`op.capture.start`、`op.capture.stop`、`op.capture.import`、`op.camera`、`op.plc`、`op.site`（按对象合并，用 `data.action` 区分动作）、`op.maintenance`、`op.recipe.delete`。手动写点只记点位与结果，不记写入值。
+改变设备或握手状态的 IPC 命令写 `op.*`，记参数摘要与结果（`ok` / `err` + 错误原文），命令入口处统一包装：`op.reset`、`op.capture.import`、`op.camera`、`op.plc`、`op.site`（按对象合并，用 `data.action` 区分动作）、`op.maintenance`、`op.recipe.delete`。手动写点只记点位与结果，不记写入值。
 
 被拒绝的操作也要记（例如复位被拒、闸门超时），这类信息现场最难口述。
 
-### 5.4 故障事件与来源
+### 5.3 故障事件与来源
 
-- `fault.enter`：节拍进入故障，或故障原因变化。`source` 取 `teach / s7 / audit / arm / device / storage / operator`，`data` 带 `reason`、`s7Phase`、`teachPhase`、在途 `cycleId`。
+- `fault.enter`：节拍进入故障，或故障原因变化。`source` 取 `s7 / audit / arm / device / storage / operator`，`data` 带 `reason`、`s7Phase`、在途 `cycleId`。
 - `fault.repeat`：同一来源、同一原因重复上报时不再逐条写，按聚合规则（第 6 节）定期输出 `{count, firstTs, lastTs}`。
 - `fault.cleared`：复位完成、故障解除，带持续时长。
 
-`enter_fault` 按 `(source, reason)` 去重。曾经的重复根源：
+`enter_fault` 按 `(source, reason)` 去重；不同来源各自保留原因，互不覆盖。
 
-1. `cycle/capture.rs` 的 `TeachEvent::Fault(reason) if was_busy` 分支无守卫：示教事务未结且 PLC 断线时，`teaching.poll` 每次都返回同一 `Fault`，每拍两次 `poll_teaching` 各写一行。
-2. 示教故障原因与 S7 故障原因互相覆盖，两边每拍交替判为“变化”。现在各自保留原因、各记一次。
-
-### 5.5 启动与配置摘要
+### 5.4 启动与配置摘要
 
 - `app.start`：`data` 带 `version`、`gitSha`、`buildTime`、`utcOffset`、`dataRoot`、`logSchema`、`lyflowSeries`。`gitSha` / `buildTime` 由 `build.rs` 输出 `cargo:rustc-env`，CI 打包（`windows-package.yml`）与本地构建都要能取到，取不到写 `unknown`。
 - `app.config`：PlcHost、CycleHost 初始化之后单独写一条（`applog::init` 早于它们，lib.rs 初始化顺序不变）：PLC 协议 / 地址 / 机架 / 插槽，相机 `[id, serial, triggerSource, triggerActivation, frameRate]`，检测设置摘要。配置保存（`op.*.save_config`）后再写一次。
@@ -150,7 +127,7 @@
 | 丢帧（通道满） | `cycle.rs` 丢帧累计 | — | 新增丢弃数 |
 | 相机断线重连失败 | `camera.rs` 监督线程（约 2 s 一次） | 相机 | 失败次数、最后错误 |
 | ly_plc 引擎告警 | `plc.rs` EventSink | category | 次数、最后一条 |
-| 故障重复 | `enter_fault` | source + reason | 见 5.4 |
+| 故障重复 | `enter_fault` | source + reason | 见 5.3 |
 | 报警 | `cycle.rs` `alarm` | 报警文案 | 去重不再随每件开工清空 |
 
 “游离帧 ≥ 3/分钟”报警保留，但改由聚合器的计数触发，不再与逐帧日志绑定。
@@ -169,11 +146,11 @@
 
 ## 8. 诊断包
 
-诊断包包含运行日志（按时间精确筛选）、`logs/plc.jsonl`、`config/`、`state/`（含示教握手状态）、握手审计、检测记录与原图。面向 Agent 的约定：
+诊断包包含运行日志（按时间精确筛选）、`logs/plc.jsonl`、`config/`、`state/`、握手审计、检测记录与原图。面向 Agent 的约定：
 
 1. `manifest.json` 带 `build {version, gitSha, buildTime}`、`utcOffset`、`logSchema`、`configSummary`（同 `app.config`）、`files[{path, bytes, sha256}]`。
 2. `logs/plc.jsonl` 按时间正序，每行带 `t`，与运行日志同口径。
-3. 包根目录写 `README.md`（固定模板）：包结构、时间口径、编码表版本与链接、推荐分析顺序（先看 `fault.enter` 与 `s7.fault_output`，再按 `teachId` / `cycleId` 串事件）。
+3. 包根目录写 `README.md`（固定模板）：包结构、时间口径、编码表版本与链接、推荐分析顺序（先看 `fault.enter` 与 `s7.fault_output`，再按 `cycleId` 串事件）。
 4. 握手审计当前文件按时间段筛选后写出，不整份拷贝。
 
 实现细节：
@@ -193,7 +170,6 @@
 | 旧格式行（无 `t` / `code`）可被查询、时间线和诊断包读出 | 新字段非 Option 时旧行被静默丢弃 |
 | 聚合：窗口内 N 次游离帧 → 1 条原事件 + 1 条摘要，`count = N - 1`、帧计数范围正确 | 降噪丢计数，或退回逐帧刷屏 |
 | 同一 `(source, reason)` 的故障连续上报 → 只有 1 条 `fault.enter`，摘要计数正确；原因变化时再记一条 | 复现 10-24 的每拍重复 |
-| 示教：PLC 稳定快照变化时恰好写一条 `teach.plc_changed`，`data.plc` 为该快照；不变不写 | 关键证据缺失或刷屏 |
 | S7：收到复位撤下输出时写出 `s7.fault_output` 且 `cause` 指明复位来源 | PLC 可见故障无记录（10-24 18:18:22） |
 
 为便于断言，`applog` 提供测试用的内存 sink（只在 `cfg(test)` 下替换文件 sink），测试断言 `code` 与 `data`，不断言 `msg` 文案。
@@ -202,6 +178,6 @@
 
 ## 10. 风险与待定
 
-- **日志体积**：`teach.pc_published`、`teach.plc_changed` 每轮几行，`app.config` 每次保存一行，增量可忽略；`t` 每行约 30 字节，降噪后总量仍远低于改造前。
+- **日志体积**：`app.config` 每次保存一行，增量可忽略；`t` 每行约 30 字节，降噪后总量仍远低于改造前。
 - **编码表维护成本**：新增事件必须先登记再使用，由一致性测试约束。
 - **待定**：聚合窗口默认 10 s 是否合适，等现场数据。

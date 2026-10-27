@@ -73,13 +73,13 @@ pub struct Fields {
     pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
-    /// 示教握手编号（DB6 teachRoundId）
+    /// 已停用的示教握手编号，只为读旧日志保留
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teach_id: Option<u16>,
-    /// 整圈采集轮次
+    /// 采集轮次；旧日志里是示教握手对应的整圈采集轮次
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_round: Option<String>,
-    /// 触发来源：teach / s7 / audit / arm / device / storage / operator
+    /// 触发来源：s7 / audit / arm / device / storage / operator
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,8 +273,6 @@ impl Sink {
 
 static SINK: OnceLock<Mutex<Sink>> = OnceLock::new();
 static ACTIVE: Mutex<Option<Fields>> = Mutex::new(None);
-/// 进行中的示教轮次：(握手编号, 整圈采集轮次)，期间的日志行自动带上
-static TEACH: Mutex<Option<(u16, String)>> = Mutex::new(None);
 
 pub fn dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(crate::storage::root(app).join("logs"))
@@ -340,14 +338,6 @@ pub fn begin_cycle(fields: Fields) {
     *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = Some(fields);
 }
 
-pub fn begin_teach(teach_id: u16, capture_round: &str) {
-    *TEACH.lock().unwrap_or_else(|p| p.into_inner()) = Some((teach_id, capture_round.into()));
-}
-
-pub fn end_teach() {
-    *TEACH.lock().unwrap_or_else(|p| p.into_inner()) = None;
-}
-
 pub fn end_cycle() {
     *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
@@ -366,16 +356,10 @@ pub fn emit_event(event: &Event, msg: &str, fields: Fields) -> Record {
 }
 
 fn emit_with(level: Level, code: Option<&str>, ev: &str, msg: &str, fields: Fields) -> Record {
-    let mut fields = correlate(
+    let fields = correlate(
         ACTIVE.lock().unwrap_or_else(|p| p.into_inner()).as_ref(),
         fields,
     );
-    if fields.teach_id.is_none() {
-        if let Some((id, round)) = TEACH.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-            fields.teach_id = Some(*id);
-            fields.capture_round.get_or_insert_with(|| round.clone());
-        }
-    }
     let record = record(ly_plc::now_ms(), level, code, ev, msg, fields);
     if let Some(sink) = SINK.get() {
         sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).write(&record);
@@ -551,7 +535,7 @@ pub fn query(dir: &Path, query: &Query) -> Page {
 pub struct CycleLog {
     pub records: Vec<Record>,
     pub truncated: bool,
-    /// 本件第一条记录之前，最近一次 S7 事务结束或复位的时间（上一件或示教采集的收尾）
+    /// 本件第一条记录之前，最近一次 S7 事务结束或复位的时间（上一件的收尾）
     pub previous_end: Option<i64>,
     /// 本件最后一条记录之后，下一件 partStart 的时间
     pub next_start: Option<i64>,

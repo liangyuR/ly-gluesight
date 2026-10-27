@@ -71,8 +71,6 @@ export interface Recipe {
   filterWindow: number;
   detect: DetectParams;
   limits: ShotLimits;
-  /** 各相机的曝光与增益 */
-  cameras: Record<string, CameraImaging>;
   /** 段列表（即 RecipeDoc.segments，编译后改名） */
   pathSegments: PathSegment[];
   /** 段配方的检测相机，顺序即计划相机顺序 */
@@ -104,16 +102,7 @@ export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   filterWindow: number;
   detect: DetectParams;
   limits: ShotLimits;
-  /** 各相机的曝光与增益：检测相机各一组 */
-  cameras: Record<string, CameraImaging>;
 }
-
-export interface CameraImaging {
-  exposureUs: number;
-  gainDb: number;
-}
-
-export const DEFAULT_IMAGING: CameraImaging = { exposureUs: 60, gainDb: 6 };
 
 /** 配方阶段：collect = 采集版（只供维护模式采图，不判定），formal = 正式版；后端缺省即正式版。 */
 export type RecipeStage = "formal" | "collect";
@@ -358,7 +347,7 @@ export interface SampleRun {
   partId: string;
   sampleSn: string;
   label: SampleLabel;
-  purpose: "production" | "capture" | "candidateDebug";
+  purpose: "production" | "candidateDebug";
   cycleId: string | null;
   resultCode: number | null;
   faultCode: number | null;

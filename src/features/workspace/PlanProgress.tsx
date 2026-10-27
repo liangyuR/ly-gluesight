@@ -56,7 +56,7 @@ export default function PlanProgressPage() {
         <span className={"wp-progress-number" + (stage.optional ? " optional" : "")} aria-hidden="true">{index + 1}</span>
         <div className="wp-progress-row-body">
           <h3>{stage.label}{stage.optional && <small>可选</small>}</h3>
-          <p>{waiting ? "整圈采集完成后可继续" : main?.detail ? main.detail : stage.hint}</p>
+          <p>{waiting ? "导入采集轮次后可继续" : main?.detail ? main.detail : stage.hint}</p>
           {!waiting && subs.map(step => <p key={step.id} className="wp-progress-sub"><span>{step.id === "publish" ? "发布" : step.label}</span><Badge tone={stepStatusTone[step.status]}>{stepStatusText[step.status]}</Badge>{step.detail}</p>)}
         </div>
         <div className="wp-progress-meter">

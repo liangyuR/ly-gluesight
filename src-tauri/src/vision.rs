@@ -488,7 +488,7 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
         crate::camera::check_idle(&cycle)?;
         let keys = camera_calib_keys(&app, cam.unwrap_or(0), view)?;
         let view = view.unwrap_or(1);
-        if app.state::<CycleHost>().busy() || app.state::<CycleHost>().camera.recipe_capture().active() { return Err("设备正在采集或检测，结束后再标定".into()); }
+        if app.state::<CycleHost>().busy() { return Err("设备正在检测，结束后再标定".into()); }
         if pattern.iter().any(|n|!n.is_finite()||*n<2.0||*n>100.0||n.fract()!=0.0)||!square.is_finite()||square<=0.0 { return Err("棋盘格内角点与格长无效".into()); }
         let engine = app.state::<VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
         let image = if let Some(id)=image_id.as_deref() {

@@ -24,15 +24,15 @@
 ### QS-3 NumberField 与“越界仍可输入并提示”的表单
 
 - 问题：qing-steel `NumberField` 给了 `min` / `max` 会在失焦时自动夹紧，值类型是 `number | ''`，`step` 只接受 number（原先的 `step="any"` 表达不了）。原先的行为是超范围时保持输入、显示校验错误并阻止保存。
-- 采用：共享封装 `NumberField`（`features/workspace/components.tsx`，整圈采集、示教设置在用）保留 `FormField + TextField type="number"`，沿用原行为；其余页面（相机、PLC、系统设置、批量重判、诊断包导出、配方库、配方编辑、示教页内联参数）直接用 qing-steel `NumberField`，接受失焦时夹回 `min` / `max` 范围。
-- 回退：把共享封装换成 qing-steel `NumberField`，同时要接受整圈采集与示教设置里“越界被夹回范围内”的行为变化。
+- 采用：共享封装 `NumberField`（`features/workspace/components.tsx`，采集轮次、示教设置在用）保留 `FormField + TextField type="number"`，沿用原行为；其余页面（相机、PLC、系统设置、批量重判、诊断包导出、配方库、配方编辑、示教页内联参数）直接用 qing-steel `NumberField`，接受失焦时夹回 `min` / `max` 范围。
+- 回退：把共享封装换成 qing-steel `NumberField`，同时要接受采集轮次与示教设置里“越界被夹回范围内”的行为变化。
 
 ## 二、保留本地实现的组件
 
 | 组件 / 位置 | 保留原因 |
 | --- | --- |
 | 侧栏 `Sidebar`（只把收起按钮换成 `IconButton`） | `NavigationDrawer` 不满足：只能用 `a[href]` 或 `button`，不能用路由 `Link`；收起态要显示小字标签；分组没有 `role="group"`，收起后没有分隔线；底部放不了带选中态的导航项（系统设置）；收起按钮名称固定 |
-| `src/components/SelectionTrack.tsx`（工作台步骤条 `Steps`） | 步骤条是带状态的 `NavLink`，不适合 `SegmentedControl`；qing-steel 内部的 `SelectionTrack` 未导出。历史、检测、整圈采集的分段切换已改用 `SegmentedControl`，这里是仅存的使用方 |
+| `src/components/SelectionTrack.tsx`（工作台步骤条 `Steps`） | 步骤条是带状态的 `NavLink`，不适合 `SegmentedControl`；qing-steel 内部的 `SelectionTrack` 未导出。历史、检测、采集轮次的分段切换已改用 `SegmentedControl`，这里是仅存的使用方 |
 | `WorkspaceBar` 的“当前配方”原生 `select` | Radix `Select` 的 combobox 是按钮、没有 value，`toHaveValue` 与 `selectOption` 用不了 |
 | 外观是按钮的 `Link`（“配方库”“打开配方库”用 `.btn`，离线页与总览页的跳转按钮用 `qs-btn`，步骤胶囊链接、相机 `cg-link` 文本链接） | `Button` 不能渲染为链接（没有 `asChild` / `href`）；单元测试按 `link` 角色和 `href` 断言 |
 | `KV` / `dl.kv` / `kv2` 键值网格 | 没有对应组件 |
@@ -44,9 +44,9 @@
 | 握手信号灯 `SignalLamps` 与顶栏阶段徽标（`.lamp` / `.qs-badge`） | `StatusBadge` 没有中性色调，无法表达灯未亮或空闲 |
 | 候选调试横幅（`.qs-banner` tertiary） | `Alert` 没有 tertiary 色调，也不接收 `className` |
 | `OfflineControls` 的行内状态与错误文字、开工清单的 `details` 折叠、诊断 kv 与事件日志布局 | 行内文字不是 `Alert`；`Accordion` 卸载折叠内容 |
-| 原生 `<details>` 折叠区（整圈采集步骤、相机曝光增益、标定、检测参数与判定限值卡、已通过检查、日志结构化字段） | `Accordion` 折叠时卸载内容，没有 `forceMount`；放在 `fieldset disabled` 内时触发按钮被禁用，锁定状态下“高级参数（调试）”无法展开 |
+| 原生 `<details>` 折叠区（标定、检测参数与判定限值卡、已通过检查、日志结构化字段） | `Accordion` 折叠时卸载内容，没有 `forceMount`；放在 `fieldset disabled` 内时触发按钮被禁用，锁定状态下无法展开 |
 | `RecipeEditor` 的判定限值表 | 需要 `colSpan`、行头和可编辑单元格，`Table` 都没有；只把输入换成 `NumberField`、开关换成 `Switch` |
-| 整圈采集结果的键值标签（`.wp-capture-chip`） | `Chip` 只放一段文字 |
+| 采集轮次结果的键值标签（`.wp-capture-chip`） | `Chip` 只放一段文字 |
 | 原生文件输入（总览背景导入、样本组逐点图片） | qing-steel 没有文件输入组件 |
 | 相机详情“切换相机”分组 `cg-switch` | 选项要带状态圆点和“名称 编号”的可访问名称，`SegmentedControl` 的 label 只能是字符串 |
 | 历史统计行 `hist-counts`、`reason-box`、`ng-item`、`history-segment` 业务色块（用 `data-tone`）、行级业务样式（NG 行底色、告警 / 故障色条、错误日志行底色，用 `tr:has([data-tone])` 与 `tr:has([data-level])`） | 件数与良率不是测量读数；`Table` 不支持行级属性 |

@@ -11,7 +11,7 @@ pub struct PlcPlan {
     pub protocol_version: u16,
     pub recipe_id: String,
     pub plan_version: u32,
-    /// ΣN_exp；示教采集计划为 0
+    /// ΣN_exp
     pub shot_count: u16,
     /// 接在 PLC 触发线上的相机；每次触发同时触发全部
     pub device_ids: Vec<String>,
@@ -20,43 +20,12 @@ pub struct PlcPlan {
     /// 整件帧数容差 Σtolerance
     #[serde(default)]
     pub tolerance_total: u32,
-    /// 段序列；为空即示教采集计划
+    /// 段序列
     #[serde(default)]
     pub segments: Vec<ExportSegment>,
 }
 
 impl PlcPlan {
-    /// 段计划：段序列非空。
-    pub fn is_burst(&self) -> bool {
-        !self.segments.is_empty()
-    }
-
-    /// 段配方的示教采集计划：没有段，计数为 0。只能用于已绑定采集轮次的 S7 事务，
-    /// 会话核对时不比较 shotCount / deviceShots（规格 §5：示教轮次不核对，PLC 可填估算值，见 PlcSession::validate_plan）。
-    pub fn is_teaching(&self) -> bool {
-        self.segments.is_empty()
-    }
-
-    /// 段配方的示教采集计划：本轮相机共用一个触发；PLC 写来的计数只由采集轮次记录（CaptureRoundV2.plcShotCount）。
-    pub fn teaching(recipe_id: String, version: u32, device_ids: Vec<String>) -> Result<Self, String> {
-        if version > i32::MAX as u32 {
-            return Err(format!("计划版本 {version} 超出 PLC DInt 上限 2147483647，PLC 无法核对"));
-        }
-        if device_ids.is_empty() || device_ids.iter().enumerate().any(|(i, id)| id.trim().is_empty() || device_ids[..i].contains(id)) {
-            return Err("示教采集必须指定不重复、非空的相机设备 ID".into());
-        }
-        Ok(Self {
-            protocol_version: crate::handshake::PROTOCOL_VERSION,
-            recipe_id,
-            plan_version: version,
-            shot_count: 0,
-            device_ids,
-            device_shots: 0,
-            tolerance_total: 0,
-            segments: Vec::new(),
-        })
-    }
-
     /// 段计划（规格 §5）：PLC 的 shotCount 与 deviceShots 都等于 ΣN_exp（1–32767）；三台不重复的相机共用一个触发；
     /// 整件容差取各段容差之和。
     pub fn compile_burst(recipe_id: String, version: u32, device_ids: Vec<String>, segments: Vec<ExportSegment>, expected_total: u32) -> Result<Self, String> {
@@ -87,17 +56,15 @@ impl PlcPlan {
         })
     }
 
-    /// 按计划自身的字段重编一次：内容与计数自洽时与原计划相等（段计划走 compile_burst，示教采集计划走 teaching）。
+    /// 按计划自身的字段重编一次：内容与计数自洽时与原计划相等。
     pub fn recompiled(&self) -> Result<Self, String> {
-        if self.is_burst() {
-            Self::compile_burst(self.recipe_id.clone(), self.plan_version, self.device_ids.clone(), self.segments.clone(), u32::from(self.shot_count))
-        } else {
-            Self::teaching(
-                self.recipe_id.clone(),
-                self.plan_version,
-                self.device_ids.clone(),
-            )
-        }
+        Self::compile_burst(
+            self.recipe_id.clone(),
+            self.plan_version,
+            self.device_ids.clone(),
+            self.segments.clone(),
+            u32::from(self.shot_count),
+        )
     }
 
     /// 编段计划（ΣN_exp 未标定时不能编）。

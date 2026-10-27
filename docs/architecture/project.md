@@ -26,11 +26,11 @@
 | 生产配方 | `recipes/` | 项目 | 计划版本计数不在这里，见第五节 |
 | 候选与示教资料 | `workspaces/` | 项目 | 含 `comparisons/` |
 | 发布包 | `vision/releases/` | 项目 | |
-| 整圈采集轮次 | `recipe-capture/` | 项目 | |
+| 采集轮次 | `recipe-capture/` | 项目 | |
 | 检测记录库 | `inspection.db` | 项目 | 每个项目一份，表结构不变（含 `recipe_snapshots`、`workspace_instances`） |
 | 历史原图 | `records/`、`records-offline/` | 项目 | |
 | 审计 spool | `audit-spool/` | 项目 | 待入库的件证据，随记录库走；切换前必须清空 |
-| PLC / 示教握手事务 | `state/` | 本机 | 绑定物理 PLC，与项目无关，见第四节 |
+| PLC 握手事务 | `state/` | 本机 | 绑定物理 PLC，与项目无关，见第四节 |
 | 握手审计、日志 | `state/plc-handshake*`、`logs/` | 本机 | 日志条目带项目编号 |
 | 站点模式、离线选择 | `config/site-offline.json` | 本机 | |
 | 受管样本 | `samples/` | 本机 | 按样本集 ID 引用，各项目共用 |
@@ -94,7 +94,6 @@
 1. 操作员在侧栏的项目菜单或项目管理页选目标项目，确认框显示目标项目名称、编号、配方数与检测记录数，并提示“将重启软件”；候选配置有未保存编辑或保存失败时不能切换。
 2. 后端 `project_switch(id)` 检查前置条件，任一不满足即拒绝并给出原因：
    - 检测未布防，没有在途工件，没有未结 PLC 事务（与站点模式切换共用 `site::check_switch`）；
-   - 没有进行中的整圈采集、示教采集或示教握手；
    - 录制队列与审计 spool 已写完；
    - 前端没有未保存的候选编辑（前端自查后才发请求）。
 3. 原子写 `current-project.json`，写一条 info 日志（旧项目 → 新项目），然后 `app.restart()`。

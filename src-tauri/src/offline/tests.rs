@@ -14,7 +14,6 @@ const HANG_GUARD: Duration = Duration::from_secs(120);
 
 const TIMING: Timing = Timing {
     poll: Duration::from_millis(5),
-    shot_interval: Duration::from_millis(20),
     end_delay: Duration::from_millis(20),
     ack_delay: Duration::from_millis(20),
     settle: Duration::from_millis(150),
@@ -67,7 +66,7 @@ impl Bench {
         };
         PartOrder {
             profile: Some(profile),
-            ..PartOrder::new(sn.into(), 3, self.plan.shot_count)
+            ..PartOrder::new(sn.into(), 3)
         }
     }
 
@@ -127,7 +126,10 @@ impl Bench {
             while !finished.load(Ordering::SeqCst) || !matches!(session.phase(), SessionPhase::Idle | SessionPhase::Fault) {
                 assert!(Instant::now() < until, "会话未收敛：{:?}", session.view());
                 match session.poll_gated(engine, false, true, true, intake.load(Ordering::SeqCst)).await {
-                    SessionEvent::Start(_) => session.arm(engine, plan).await.unwrap(),
+                    SessionEvent::Start(_) => {
+                        session.arm_outputs(engine, Some(plan)).await.unwrap();
+                        session.commit_arm(engine).await.unwrap();
+                    }
                     SessionEvent::End(_) => {
                         let judgement =
                             judge_burst_at_drain_deadline(delivered.lock().unwrap().clone(), None);

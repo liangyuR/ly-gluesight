@@ -47,7 +47,6 @@ mod store;
 mod storage;
 mod managed_samples;
 mod teach;
-mod teaching;
 mod timeline;
 mod vision;
 mod workspace;
@@ -65,9 +64,13 @@ pub use packaging::check_packaged_runtime;
 pub mod probe_api {
     pub use crate::burst_judge::FrameState;
     pub use crate::calibration::calibrate_counts;
+    pub use crate::camera::{BurstRender, CameraConfig};
     pub use crate::frame_align::{align_cuts, downsample, Sequence, ALIGN_FACTOR};
-    pub use crate::frame_group::FrameGroup;
+    pub use crate::frame_group::{loss_alarms, FrameGroup};
     pub use crate::image_file::{load as load_image, save_pgm};
+    pub use crate::offline::line::{nominal_frames, PulseProfile, SIM_HZ};
+    pub use crate::offline::sample_set::SampleSet;
+    pub use crate::offline::Scenario;
     pub use crate::plan::SegmentKind;
     pub use crate::production::{burst_graphs, graph_version, Prepared, GRAPH_VERSION_BURST};
     pub use crate::recipe::{
@@ -78,6 +81,7 @@ pub mod probe_api {
         ResourceSource, ValidationSite, Versions,
     };
     pub use crate::segmentation::{Proportional, SegInput, SegOutcome, Segmenter};
+    pub use crate::simimage::render_burst;
     pub use crate::vision::{Engine, FrameImage};
 
     /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。
@@ -250,16 +254,12 @@ pub fn run() {
             site::site_preview_sample_set,
             site::site_pick_dir,
             offline::offline_run,
-            offline::offline_capture,
             offline::offline_stop,
             offline::offline_inject,
             workspace::workspace_list,
             offline::offline_pace,
             offline::offline_fault_reset,
-            recipe_capture::recipe_capture_start,
             recipe_capture::recipe_capture_get,
-            recipe_capture::recipe_capture_stop,
-            recipe_capture::recipe_capture_plc_status,
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_frame_image,
             recipe_capture::recipe_capture_round_thumbs,
@@ -274,7 +274,6 @@ pub fn run() {
             workspace::workspace_transfer_pick,
             workspace::workspace_transfer_import,
             workspace::workspace_save_doc,
-            workspace::workspace_set_camera_imaging,
             workspace::workspace_image,
             workspace::workspace_validate,
             workspace::workspace_publish,

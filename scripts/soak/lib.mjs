@@ -58,7 +58,7 @@ export async function prepareSampleSet(source, outputDir) {
 }
 
 /**
- * 段配方长稳建站：进入离线·样本集，走廊示教 → 10 轮标定 → 独立样本验证 → 发布（检测项全关，见文件头）。
+ * 段配方长稳建站：进入离线·样本集，导入样本件 SAMPLE_PART 原图生成的手动配置数据 → 走廊示教 → 10 轮标定 → 独立样本验证 → 发布（检测项全关，见文件头）。
  * 样本集 id 取夹具（tests/native/lib.mjs 的 CAMERA_FIXTURES）；已发布时直接复用。
  */
 export async function setupRecipe(call, sampleSetDir, log = console.log) {
@@ -70,7 +70,7 @@ export async function setupRecipe(call, sampleSetDir, log = console.log) {
   if (existing) { log(`配方 ${RECIPE_ID} 已发布，跳过建配方`); return { model: "burst", recipeId: RECIPE_ID, cameraIds, reused: true }; }
   const manifest = JSON.parse((await readFile(path.join(sampleSetDir, "sample-set.json"), "utf8")).replace(/^\uFEFF/, "").trim());
   const template = await call("recipe_template");
-  const built = await buildBurstRecipe(call, { sourceId: manifest.id, partId: SAMPLE_PART, doc: { ...template, id: RECIPE_ID, name: "长稳测试" }, patchSegments: checksOff, log });
+  const built = await buildBurstRecipe(call, { sourceId: manifest.id, sampleSet: sampleSetDir, partId: SAMPLE_PART, doc: { ...template, id: RECIPE_ID, name: "长稳测试" }, patchSegments: checksOff, log });
   assert(built.validation.passed, `验证未通过：${JSON.stringify(built.validation.checks.filter(c => !c.passed))} ${JSON.stringify(built.validation.samples)}`);
   await until(async () => (await call("cycle_readiness")).recipes.find(r => r.id === built.id)?.runnable === true, Boolean, `配方 ${built.id} 预热后仍不可运行`, 90000, 500);
   log(`配方 ${built.id} 已发布：ΣN_exp ${built.calibration.expectedTotal} ± ${built.calibration.toleranceTotal}，示教 ${built.taught.length} 条段走廊`);

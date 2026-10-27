@@ -27,7 +27,7 @@ pub fn workspace_abandon_publish(app: AppHandle, id: String, revision: u64) -> R
     view(&app, w)
 }
 
-/// 有界等待配置门：布防、整圈采集开始或离线切换正在进行时排队等它释放，而不是立即拒绝。
+/// 有界等待配置门：布防或离线切换正在进行时排队等它释放，而不是立即拒绝。
 /// 只能在阻塞线程（spawn_blocking 或普通线程）里调用，不能在 async 任务里调用。
 pub(crate) fn lock_config_gate<'a>(
     gate: &'a tokio::sync::Mutex<()>,

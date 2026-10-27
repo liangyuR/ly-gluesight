@@ -224,7 +224,6 @@ mod tests {
         Pending {
             mode: 0,
             origin: Some(crate::plc_session::Origin::Real),
-            capture_id: None,
             request: Request {
                 protocol_version: crate::handshake::PROTOCOL_VERSION,
                 request_seq,

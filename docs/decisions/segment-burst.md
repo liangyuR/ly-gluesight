@@ -1,12 +1,12 @@
 # 分段连拍飞拍决策记录（segment-burst）
 
-段配方（分段连拍飞拍）是唯一的生产模型，本文是它的现行基准：规格与代码冲突时采用的做法（第四节 D-SB-n）、前后端 IPC 契约（第五节）、口径（第六节）、内存与队列（第七节）和实现要点（第九节）。PLC 握手与现场接线以 [生产通讯协议 7](../integration/plc-communication-protocol.md) 为准，整圈示教握手见 [示教采集接口 V1](../integration/teaching-capture-sequence.md)。
+段配方（分段连拍飞拍）是唯一的生产模型，本文是它的现行基准：规格与代码冲突时采用的做法（第四节 D-SB-n）、前后端 IPC 契约（第五节）、口径（第六节）、内存与队列（第七节）和实现要点（第九节）。PLC 握手与现场接线以 [生产通讯协议 7](../integration/plc-communication-protocol.md) 为准。
 
 依据：分段连拍飞拍方案第 18 版（2026-10-22，下称“规格”）与实现决策补充（2026-10-22，用户已确认，下称“决策补充”）；两者冲突时以决策补充为准。契约类型在 `src-tauri/src/{plan,frame_group,segmentation,burst_judge,calibration}.rs` 与 `src/features/plan/types.ts`（字段与 Rust serde 输出逐一对应）。
 
 ## 人定分段与按段相机、走廊
 
-依据现场 NEW-14 的 16 轮整圈采集（第四节 D-SB-40 列出数据与边界偏差），分段改为“人定结构、软件定位边界”：
+依据现场 NEW-14 的 16 轮采集（第四节 D-SB-40 列出数据与边界偏差），分段改为“人定结构、软件定位边界”：
 
 - D-SB-40：段结构、检测相机与走廊由人定；生产按标定的各段 N_exp 比例与本件总帧组数推算边界，边界两侧各留 `boundary_guard`（默认 2）帧过渡区。
 - D-SB-41：每段指定检测相机，修订 D-SB-14 的“三台相机每帧取最差”。
@@ -37,7 +37,7 @@
 
 - **发布门槛**：多轮标定得出整件 ΣN_exp（`expected_total`）；多段配方还须各段 N_exp 都已逐段标定（D-SB-45），单段配方的段 N_exp 即整件。
 - **`expected_total` 的来源**：标定轮次统计整件帧组数的均值（四舍五入），存为配方的 `part_calib: Option<PartCalib>`；各段均已标定时等于各段 N_exp 之和（`plan::expected_total(segments, part_calib)`）。
-- **逐段标定**：多段计划只有每个标定轮次都在整圈采集复核里确认了手动分段时，才按边界逐段写 N_exp；否则各段保持待标定（D-SB-21）。
+- **逐段标定**：多段计划只有每个标定轮次都在采集轮次复核里确认了手动分段时，才按边界逐段写 N_exp；否则各段保持待标定（D-SB-21）。
 - **运行时**：多段配方按 D-SB-40 比例分段判定；单段配方或帧组数越界时整条胶路按未分段区域判，只跑每帧独立检测、不判胶偏。整件帧组数核对 `expected_total ± tolerance_total`，越界只告警。
 - 协议 7 的 PLC 只报型号、序号与 SN，ΣN_exp 只用于 PC 侧的帧数核对，重新标定不用改 PLC。
 
@@ -77,15 +77,15 @@
 - 采用：每台相机下一件的帧计数下限 = max(该相机原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter` → `Ledgers::set_frame_floor`，记在 `Ledger.frame_floor`，布防时由 `shot_router::arm_frames` 与本会话最高帧计数取大）。故障复位（`Ledgers::clear_floors`）清掉下限，之后只按实际见到的计数布防。
 - 理由：相机偶发丢末帧（已计数、帧没送到）只会让下一件出现两个不完整帧组，且下一件后自动对齐。
 
-### D-SB-8 示教采集数量与内存
+### D-SB-8 采集轮次帧数与存储
 
-- 问题：原示教轮次 `MAX_TRIGGERS = 64` 同时是写盘队列容量，PLC 计划数限 1–64，收图超过计划即失败，写 png 且重复写；规格 §5 取消上限，示教轮次不核对计数。
-- 采用：示教轮次（`CaptureRoundV2`）不设上限、不核对计数。写盘队列条数上限 `MAX_FRAMES_PER_CAMERA = 8192`，图像内存由 FramePool 每相机字节预算封顶；预算满或队满时该帧记缺帧并告警，整轮不判失败。图像写无压缩 PGM，一帧一个文件；`round.json` 只在状态变化时重写，帧元数据追加写 `frames.jsonl`。
+- 问题：规格 §5 取消示教轮次的帧数上限，示教轮次不核对计数。
+- 采用：采集轮次（`CaptureRoundV2`）不设帧数上限、不核对计数；图像为无压缩 PGM，一帧一个文件，帧元数据在 `frames.jsonl`。
 
-### D-SB-9 示教采集完成判据
+### D-SB-9 采集轮次完成判据
 
 - 问题：规格 §5 不再用计数做结束校验，§3 缺帧只告警。
-- 采用：三条都满足即 Complete——收到 PLC 采集结束、收尾窗口到期、已入队的帧全部写完。各相机帧数、不完整组和丢帧告警写进轮次记录（`CaptureRoundV2`）。接收中不设超时，只有等待开始超时与写盘超时。
+- 采用：轮次只来自导入（D-SB-49），导入时状态直接为 Complete；各相机帧数、不完整组和丢帧告警写进轮次记录（`CaptureRoundV2`）。
 
 ### D-SB-10 帧序号来源：frame_counter
 
@@ -174,7 +174,7 @@
 ### D-SB-27 离线仿真
 
 - 问题：规格 §6 要求使能电平、按帧率出帧、首尾 ±1、弯道减速波动、三台相机之一缺帧。
-- 采用：离线产线按剖面定频出帧（每段帧数 + 种子化波动），丢帧按相机独立设置；有本件未检、提前结束等工况；`offline_capture` 支持合成图相机，合成图离线环境能完成多轮标定和发布。细节见第九节第 14 条。
+- 采用：离线产线按剖面定频出帧（每段帧数 + 种子化波动），丢帧按相机独立设置；有本件未检、提前结束等工况；合成图轮次由 `examples/capture_fixture.rs` 生成手动配置数据包导入（D-SB-49），合成图离线环境能完成多轮标定和发布。细节见第九节第 14 条。
 
 ### D-SB-28 样本集 v1
 
@@ -217,10 +217,10 @@
 - 采用（默认做法 3）：PLC 不提交请求时 PC 没有记录，由 PLC 记未检。提前结束由 PLC 提前报运动结束表达，PC 用已收到的帧照常判，帧组数 < ΣN_exp − Σtol 时加 `flags.short_part`（疑似提前终止），历史中单独显示，不改 OK/NG。在途 PLC 进入故障或复位时，本件按中断记 ERR 98（[core-flow.md](core-flow.md) D-CF-6）。
 - 残余风险：可能出现 PLC 记了未检、PC 记录却写 OK 的情况；需要时可改为 short_part 判 ERR。
 
-### D-SB-35 示教轮次的一致性校验
+### D-SB-35 采集轮次的一致性校验
 
 - 问题：原示教轮次要求 PLC 计划版本 > 0，样本和历史必须与示教轮次的计划版本一致；规格 §5 示教轮次不核对。
-- 采用：示教轮次不核对 PLC 计划版本与数量（示教接口 V1 不传这两项，`plcPlanVersion / plcShotCount` 为 null）；样本、标定轮次与示教的一致性比较配方计划身份和相机配置标签。
+- 采用：采集轮次不核对 PLC 计划版本与数量（轮次不带这两项，`plcPlanVersion / plcShotCount` 为 null）；样本、标定轮次与示教的一致性比较配方计划身份和相机配置标签。
 
 ### D-SB-36 多轮标定
 
@@ -454,6 +454,17 @@
   - 未实现：示教页当场预览找到的边；模板匹配初定位。
 - 回退：`offsetRef` 仍选 `AbsoluteX`。
 
+### D-SB-49 放弃整圈示教握手，轮次只来自导入（2026-10-27 用户确认，已实现）
+
+- 问题：整圈示教采集靠 PC 发起的 DB6 / DB12 示教握手。现场 PLC 的示教程序一直不合规：不回写握手编号、取消后不确认、停止后仍门控，现场始终跑不通。维护模式采集后从历史导入（HI-1～HI-8）已实现并试过，能提供建配方所需的轮次。
+- 采用：
+  - 删除示教握手：PC 不发起整圈采集，PLC 页没有示教页签，点表没有 DB6 / DB12 点位（`plc.json` 里带示教标签的点位加载时去掉），日志没有 `teach.*` 与 `op.capture.start / stop`，离线不再“送一圈”；协议 7 不再有生产与示教互斥。
+  - 轮次只有两个来源：维护模式按采集版采图后“从历史选用”导入；手动配置数据，即带轮次的配方迁移包，轮次 `origin` 为 `{kind: "prepared", label}`，规则与历史件相同（状态只能是完成，不带 PLC 字段），目前由 `examples/capture_fixture.rs` 用合成图生成，供端到端与长稳测试。
+  - 原“整圈采集”页改为“采集轮次”，进度步骤的下一步为“导入轮次”；独立验证只用历史样本。Line0 门控改用维护件的帧数、帧率与时长验收。
+  - 读兼容：已有轮次（格式 2 带 `teachingRoundId`，或格式 3）照常读取，可用于走廊示教和标定；`CaptureRoundV2` 的字段与 `CaptureState` / `CaptureFailureV2` 全部变体保留，否则旧轮次会被改名为 `round.broken-*`。
+- 理由：维护采集加导入已覆盖同样的数据需求，而且不用停线；为不合规的现场示教程序维护一套握手不值得。
+- 回退：从 Git 恢复示教握手（`teaching.rs`、`cycle/capture.rs`、示教接口文档与前端示教页签）；现场 PLC 须先实现握手编号回显、取消确认和停止后拉低门控。
+
 ## 五、IPC 契约
 
 完整字段以 `src/features/plan/types.ts` 为准（serde camelCase，Rust 的 `Option` 一律序列化为 null）。段配方的数据挂在现有 DTO 的可空字段上，下表列出段配方时旧字段的取值。
@@ -481,7 +492,7 @@
 - **`PartDetailBurst`**（历史详情）：`segments`（本件配方快照的段）、`cameras`、`expectedTotal`、`toleranceTotal`、`deviceTriggers`（同上）、`cameraFrames`、`judgement: BurstJudgement`、`frames: FrameRecord[]`（按 camera、seq 排序）。
 - **`FrameRecord`**：`camera`（计划相机下标）、`seq`、`status: FrameState`、`frameCounter`、`triggerCounter`、`region`（`judgement.regions` 下标，不在任何区域为 null）、`metrics: FrameMetrics | null`（missing 时为 null）、`rawFile`（录制根内相对路径，未录制或队满丢弃为 null）。1..=groupCount 内每个 (camera, seq) 都有一条，缺帧也有。
 - **`PartSummaryV2`** = `PartSummary` + `flags`。
-- **`CaptureRoundV2`**：`format: 2`、`roundId`、`recipeId`、`cameras: CaptureCamera[]`、`state`（同 `CaptureRound.state`）、`plcShotCount`、`plcPlanVersion`、`deviceTriggers`（这三项为保留字段，示教接口 V1 不传，为 null）、`groupCount`、`cameraFrames`、`incompleteGroups`、`missingFrames: {camera, seq}[]`、`lossAlarms`、`alarms: CaptureAlarm[]`（逐帧告警 `{kind: duplicate | queueFull | budgetDropped | corrupt, camera, seq}`，最多 1024 条）、`createdAt`、`endedAt`、`error`、`failure: CaptureFailureV2 | null`、`simulated`。`CaptureFailureV2`（`kind` 区分）：`camera{cameraId}`、`sessionChanged{cameraId}`（90+98）、`plc`、`startTimeout`、`writeTimeout{queued, written}`、`interrupted`（90+99）、`other`。
+- **`CaptureRoundV2`**：`format: 2`、`roundId`、`recipeId`、`cameras: CaptureCamera[]`、`state`（同 `CaptureRound.state`）、`plcShotCount`、`plcPlanVersion`、`deviceTriggers`（这三项为保留字段，现有轮次都为 null）、`groupCount`、`cameraFrames`、`incompleteGroups`、`missingFrames: {camera, seq}[]`、`lossAlarms`、`alarms: CaptureAlarm[]`（逐帧告警 `{kind: duplicate | queueFull | budgetDropped | corrupt, camera, seq}`，最多 1024 条）、`createdAt`、`endedAt`、`error`、`failure: CaptureFailureV2 | null`、`simulated`。`CaptureFailureV2`（`kind` 区分）：`camera{cameraId}`、`sessionChanged{cameraId}`（90+98）、`plc`、`startTimeout`、`writeTimeout{queued, written}`、`interrupted`（90+99）、`other`；失败状态只出现在旧的实拍轮次里。
 - **`CalibrationView`**：`minRounds`、`rounds: CalibrationRoundView[]`、`part: CalibOutcome | null`、`segments: SegmentCalibView[]`、`expectedTotal`、`toleranceTotal`、`planVersionChange`。`CalibrationRoundView`：`roundId`、`standard`、`groupCount`、`cameraFrames`、`incompleteGroups`（个数）、`lossAlarms`（个数）、`createdAt`。`SegmentCalibView`：`index`、`kind`、`outcome: CalibOutcome | null`、`pending`（如“分段算法未就绪”）、`tolerance`（配方当前值）、`xRef: {xRef, spread} | null`、`xRefPending`（如“测量量未实现：未配置找边参数”）、`hints`（逐帧定向的提示，D-SB-47）。
 - **`WorkspacePlanView`**：`segments`、`cameras`、`segmentDefaults`、`calibrationRounds`、`partCalib`、`expectedTotal`、`toleranceTotal`、`calibrated`（expectedTotal 非空）、`cameraTeaching: CameraTeachingView[]`（`camera`、`mmPerPx`、`ready`、`segments: {segment, frame: FrozenImage, round, seq, saved}[]`）、`calibration: CalibrationView | null`、`productionExport`、`candidateExport`、`candidateExportError`、`shotCountChanged`（ΣN_exp 相对生产版本变化）、`progress: ProgressV2`。
 - **`RecipeSummaryV2`** = `RecipeSummary` + `segmentCount`、`expectedTotal`、`toleranceTotal`、`calibrated`。
@@ -492,7 +503,7 @@
 
 | StepIdV2 | 页面 | 路由 |
 | --- | --- | --- |
-| `capture` | 整圈采集 | `/recipe/capture` |
+| `capture` | 采集轮次 | `/recipe/capture` |
 | `segments` | 段列表 | `/recipe/segments` |
 | `corridor` | 按段 × 检测相机示教走廊 | `/recipe/teach` |
 | `calibration` | 多轮标定 | `/recipe/calibration` |
@@ -618,11 +629,10 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 条目编号沿用原记录，代码注释按编号引用。
 
-#### 10. 示教采集轮次（`CaptureRoundV2`）
+#### 10. 采集轮次（`CaptureRoundV2`）
 
-- **配组基线**：`shot_router::Ledger` 的 `last_frame` 记本会话最高 SDK 帧计数（`FrameMeta.frame`），轮次每台相机的基线取它；没见过帧取 `counterAfterOpen`，仍未知时取本轮这台相机首帧计数 − 1（Line0 高电平门控下软件取不了帧，而 PLC 开始前到帧整轮判失败，首帧必属本轮）。
-- **seq 上限**：seq > 32767 按计数异常判整轮失败，防止异常帧号生成海量帧组。
-- **整轮失败的情形**：PLC 开始前收到帧、会话变化（98）、手动帧、实拍轮次收到模拟计数、计数来源变化、帧计数不大于基线或比本轮已见的小、写图失败、PLC 开始 / 结束顺序异常。重复帧号丢弃并记 `duplicate`；丢包或无图、写盘队列满、图像内存预算满记缺帧并告警。操作员中止记 `interrupted`（99）。
+- **来源**：只来自导入（D-SB-49）：历史件（`origin.kind = history`，HI-1～HI-8）与手动配置数据（`origin.kind = prepared`，`label` 不能为空，随配方迁移包导入）；状态只能是 Complete，不带 PLC 字段。
+- **旧轮次**：磁盘上已有的实拍轮次（格式 2 带 `teachingRoundId`，或格式 3）照常读取；`CaptureRoundV2` 带 `deny_unknown_fields`，其字段与 `CaptureState` / `CaptureFailureV2` 全部变体保留，读不了的 `round.json` 会被改名为 `round.broken-*`。启动时把盘上残留的活动轮次改为中断。
 - **读图**：`recipe_capture_frame_image(roundId, cameraId, seq)`；图像路径由相机与 seq 推出（`{相机}/{seq:06}.pgm`），记录里写的路径只用于核对。
 
 #### 11. 生产节拍
@@ -638,7 +648,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 #### 12. 候选工作区（`workspace/burst.rs`）
 
-- **`WorkspaceView.plan`**：productionPlc / candidatePlc / candidatePlcError / coverage 为 null、旧 progress 没有步骤。`plan.progress`（ProgressV2）按整圈采集 → 段列表 → 走廊示教 → 多轮标定 → 验证 → 发布给出：“整圈采集”以本配方有完整采集轮次为完成。
+- **`WorkspaceView.plan`**：productionPlc / candidatePlc / candidatePlcError / coverage 为 null、旧 progress 没有步骤。`plan.progress`（ProgressV2）按采集轮次 → 段列表 → 走廊示教 → 多轮标定 → 验证 → 发布给出：“采集轮次”以本配方有完整采集轮次为完成，未完成时下一步为“导入轮次”。
 - **Workspace 字段**：`cameraTeaching: [{camera, segment, frame: FrozenImage, round, seq}]`（每段每台检测相机一张示教帧，冻结为候选 images/ 下的 PGM）、`calibration: {rounds: [CalibrationRound]}`（每轮带 `standard`）。不另存标定结果：结果写进配方（N_exp、calib、partCalib、x_ref），`plan.calibration`（CalibrationView）每次由配方与轮次算出。建议容差 = max(该类段默认容差, N − min, max − N)，整件取各段默认容差之和。
 - **走廊示教**（D-SB-45 起按段）：`workspace_teach_segment_corridor` 只冻结所选帧，走廊随候选整份保存，提取用 `workspace_extract_corridor`（5.4）；相机还没有当量时取这台相机的设备标定 `device/{device}`（模拟相机取模拟当量）。示教帧须来自本候选完整的轮次、这台相机有这一帧、采集后设备配置没变；多段配方还要求轮次已确认手动分段、帧组落在该段内。`cameraTeaching[].segments[].saved` = 走廊至少两点、不短于 1 px 且完整落在示教帧内。
 - **加入标定**：轮次须属于本候选、已完整完成、相机集合等于计划相机，各相机采集时的设备配置与当前设备、与已加入的轮次都相同；每段每台检测相机都有走廊且能建测量图。每帧只由所在段的检测相机用该段走廊测（`calibration_corridors`，D-SB-45；缺帧记 missing、测量失败记 error），每帧特征与分段结果写在候选目录 `calibration/<轮次>/`：`features.jsonl` 一行 `{camera: 相机编号, seq, metrics: FrameMetrics}`，1..=帧组数内每台相机每个 seq 一行；`boundaries.json` 为 SegOutcome。不写进采集轮次目录（特征依赖候选的走廊）。
@@ -662,7 +672,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 - **工况（与前端同名）**：`cameraLost` 第 2 台相机丢第 min(3, 总数) 帧；`pulseJitter` 首尾各 ±1；`cornerSlowdown` 每个弯道段 ±2；`notInspected` 机器人照常涂胶、PLC 不提交请求（`run_burst` 返回 `Ok(None)`，PC 无记录，离线运行记“本件未检”）；`earlyEnd` 出约一半、且少于 ΣN_exp − Σtol 帧后报运动结束；`lostFrame` 三台相机同一帧都丢；`countMismatch` 与正常相同（协议 7 不报触发计数）。只改出帧与握手的工况进样本集白名单（`Scenario::handshake`）。
 - **合成图**：模拟相机触发带 `camera::BurstRender`（计划相机下标、seq、所在段类型与段内进度、工况、种子），`simimage::render_burst` 按它出单视角图：直线段胶条沿这台相机的走廊（未示教时按相机上下错开的缺省位置），弯道段整条胶绕胶嘴转动 25°·sin(π·进度)，断胶 / 超差画在第 1 台相机第 2 帧（与模拟测量同一帧）。模拟测量 `measure::simulate_frame` 按名义剖面找到这一帧所在段，弯道帧胶宽略宽、x 拱形偏出（峰值 1.5 mm）；PC 按同一套比例分段与区域判定规则处理。
 - **合成图离线环境**：沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台（编号取没用过的 camN）。
-- **合成图示教采集**：合成图来源的 `offline_capture` 按候选配方（须能编译）的名义剖面出一圈，首尾 ±1、弯道 ±2，种子取该候选的轮序号，多轮标定看得到 min / max 差异。多轮标定加入轮次时的每帧测量仍用 lyFlow 走廊测量（需加载 lyFlow）。
+- **合成图采集轮次**：`examples/capture_fixture.rs` 按候选配方（型号、段、计划相机）用 `simimage::render_burst` 生成 N 轮完整轮次，写成配方迁移包，经“导入配方”导入（D-SB-49）。多轮标定加入轮次时的每帧测量仍用 lyFlow 走廊测量（需加载 lyFlow）。
 - **样本集**：`Manifest::camera_frames(camera)` 按清单顺序给出一台相机的帧序列；第 seq 帧取各相机的第 seq 帧，没有这一帧的相机按缺帧（照常计数、不出帧）。
 - **节拍下限**：出帧间隔下限 15 ms（66 fps）。
 

@@ -3,11 +3,7 @@ use crate::plan::SegmentKind::{Corner, Straight};
 use crate::workspace::burst_tests::{burst_workspace, capture_round, measured, DEVICE};
 
 fn round(w: &Workspace, id: &str, count: u64) -> CaptureRoundV2 {
-    let mut round = capture_round(id, &w.doc, count, DEVICE, &[]);
-    for camera in &mut round.cameras {
-        camera.imaging = w.doc.cameras[&camera.camera_id];
-    }
-    round
+    capture_round(id, &w.doc, count, DEVICE, &[])
 }
 
 fn confirmed_template(w: &mut Workspace, round: &CaptureRoundV2, cuts: Vec<u64>) {
@@ -154,22 +150,64 @@ fn mismatched_capture_configuration_rejects_template_without_changing_target() {
     let mut w = burst_workspace(&[Straight, Corner]);
     let source = round(&w, "source", 10);
     confirmed_template(&mut w, &source, vec![4]);
-    for imaging in [false, true] {
-        let mut target = round(&w, "target", 10);
-        if imaging {
-            target.cameras[0].imaging.gain_db += 1.0;
-        } else {
-            target.cameras[0].camera_config = json!("another-device");
+    let mut target = round(&w, "target", 10);
+    target.cameras[0].camera_config = json!("another-device");
+    let before = state_value(&w);
+    assert!(apply_capture_review(
+        &mut w,
+        &target,
+        CaptureReviewEdit::ApplyTemplate(TemplateMode::Original)
+    )
+    .is_err());
+    assert_eq!(state_value(&w), before);
+}
+
+/// 曝光增益只记录、不比较：旧版复核签名里带的曝光增益读入时去掉，已确认轮次仍按确认的边界给出各段帧组数；
+/// 曝光增益与模板轮不同的轮次照样能设模板、套模板。
+#[test]
+fn only_exposure_or_gain_differs_then_review_stays_confirmed_and_template_applies() {
+    let mut w = burst_workspace(&[Straight, Corner]);
+    let source = round(&w, "source", 10);
+    confirmed_template(&mut w, &source, vec![4]);
+    let mut stored = serde_json::to_value(&w.capture_review).unwrap();
+    let imaging = json!({"exposureUs": 60.0, "gainDb": 6.0});
+    let cameras: serde_json::Map<String, Value> = w
+        .doc
+        .plan_cameras()
+        .into_iter()
+        .map(|c| (c, imaging.clone()))
+        .collect();
+    for path in ["/rounds/source", "/template"] {
+        let signature = stored.pointer_mut(path).unwrap();
+        signature["segmentSignature"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(cameras));
+        for camera in signature["captureSignature"].as_array_mut().unwrap() {
+            camera.as_array_mut().unwrap().push(imaging.clone());
         }
-        let before = state_value(&w);
-        assert!(apply_capture_review(
-            &mut w,
-            &target,
-            CaptureReviewEdit::ApplyTemplate(TemplateMode::Original)
-        )
-        .is_err());
-        assert_eq!(state_value(&w), before);
     }
+    w.capture_review = serde_json::from_value(stored).unwrap();
+    assert_eq!(
+        confirmed_segment_counts(&w.doc, &w.capture_review.rounds, "source", 10),
+        Some(vec![4, 6])
+    );
+    let mut target = round(&w, "target", 10);
+    target.cameras[0].imaging.exposure_us += 100.0;
+    target.cameras[1].imaging.gain_db += 1.0;
+    apply_capture_review(
+        &mut w,
+        &target,
+        CaptureReviewEdit::ApplyTemplate(TemplateMode::Original),
+    )
+    .unwrap();
+    assert_eq!(w.capture_review.rounds["target"].cuts, vec![4]);
+    apply_capture_review(&mut w, &target, CaptureReviewEdit::Confirm).unwrap();
+    apply_capture_review(&mut w, &target, CaptureReviewEdit::SetTemplate).unwrap();
+    assert_eq!(
+        w.capture_review.rounds["source"].status,
+        ReviewStatus::Confirmed
+    );
 }
 
 #[test]

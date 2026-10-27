@@ -79,8 +79,7 @@ fn recipe_delete_unavailable_inner(
 
 /// 按编辑中的内容生成配方但不保存，配方页画预览用。
 #[tauri::command]
-pub fn recipe_preview(mut doc: RecipeDoc) -> Result<Recipe, String> {
-    doc.sync_imaging();
+pub fn recipe_preview(doc: RecipeDoc) -> Result<Recipe, String> {
     doc.build()
 }
 

@@ -49,8 +49,6 @@ struct Pending {
     #[serde(default)]
     cycle_id: Option<String>,
     #[serde(default)]
-    capture_id: Option<String>,
-    #[serde(default)]
     acknowledged: bool,
     #[serde(default)]
     started_at: i64,
@@ -76,7 +74,6 @@ fn valid_cycle_id(id: &str) -> bool {
 
 fn validate_pending(pending: &Pending, last_request_seq: u32) -> Result<(), String> {
     pending.request.validate()?;
-    if pending.capture_id.is_some() && pending.cycle_id.is_some() { return Err("S7事务不能同时绑定生产与示教采集身份".into()); }
     if pending.cycle_id.as_deref().is_some_and(|id| !valid_cycle_id(id)) {
         return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into());
     }
@@ -373,24 +370,12 @@ impl PlcSession {
         if !valid_cycle_id(id) { return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into()); }
         if let Some(error) = &self.load_error { return Err(error.clone()); }
         let pending = self.journal.pending.as_mut().ok_or("缺少可关联的 S7 请求事务")?;
-        if pending.capture_id.is_some() { return Err("S7事务已绑定示教采集，不能用于生产".into()); }
         match pending.cycle_id.as_deref() {
             Some(bound) if bound != id => Err("S7 事务已绑定其他 cycleId，禁止更换工件身份".into()),
             Some(_) => Ok(()),
             None => { pending.cycle_id = Some(id.into()); pending.site = Some(site); Ok(()) }
         }
     }
-
-    pub fn bind_capture_id(&mut self, id: &str) -> Result<(), String> {
-        let pending = self.journal.pending.as_mut().ok_or("缺少采集 S7 请求事务")?;
-        if pending.cycle_id.is_some() || pending.capture_id.as_deref().is_some_and(|bound| bound != id) {
-            return Err("S7 事务已绑定其他生产或采集身份".into());
-        }
-        pending.capture_id = Some(id.to_owned());
-        Ok(())
-    }
-
-    pub fn capture_id(&self) -> Option<&str> { self.journal.pending.as_ref().and_then(|p| p.capture_id.as_deref()) }
 
     pub fn cycle_id(&self) -> Option<&str> { self.journal.pending.as_ref().and_then(|pending| pending.cycle_id.as_deref()) }
 
@@ -804,7 +789,6 @@ impl PlcSession {
                 }
                 self.journal.pending = Some(Pending {
                     origin: Some(self.origin),
-                    capture_id: None,
                     request: request.clone(),
                     result: None,
                     phase: SessionPhase::Validating,
@@ -1121,10 +1105,9 @@ impl PlcSession {
         Ok(())
     }
 
-    /// 布防前核对软件计划。示教采集计划（[`PlcPlan::is_teaching`]）只能用于已绑定采集轮次的事务；协议 7 的请求不带计划，不与 PLC 比对。
+    /// 布防前核对软件计划；协议 7 的请求不带计划，不与 PLC 比对。
     pub fn validate_plan(&self, plan: &PlcPlan) -> Result<(), String> {
         if self.phase != SessionPhase::Validating { return Err("当前 S7 事务不能布防".into()); }
-        if plan.is_teaching() && self.capture_id().is_none() { return Err("示教采集计划不能用于生产事务".into()); }
         let rebuilt = plan.recompiled()?;
         if &rebuilt != plan { return Err("软件拍照计划内容与计数不一致".into()); }
         Ok(())
@@ -1132,12 +1115,6 @@ impl PlcSession {
 
     /// 最近一次布防的耗时构成；失败时只含已完成的部分。
     pub fn arm_timing(&self) -> Option<ArmTiming> { self.arm_timing }
-
-    /// 布防并把事务推进到采集阶段：[`arm_outputs`](Self::arm_outputs) + [`commit_arm`](Self::commit_arm)。
-    pub async fn arm(&mut self, engine: &PlcEngine, plan: &PlcPlan) -> Result<(), String> {
-        self.arm_outputs(engine, Some(plan)).await?;
-        self.commit_arm(engine).await
-    }
 
     /// 写布防输出并读回确认（布防预算只计到这里）；之后必须 [`commit_arm`](Self::commit_arm) 落盘才进入采集阶段。
     /// 没有拍照计划只允许维护模式的生产事务：PLC 照常运动，PC 只采集或不采集，结果码 0。
@@ -1150,9 +1127,7 @@ impl PlcSession {
         self.outputs_armed = false;
         match plan {
             Some(plan) => self.validate_plan(plan)?,
-            None if self.phase == SessionPhase::Validating
-                && self.part_maintenance()
-                && self.capture_id().is_none() => {}
+            None if self.phase == SessionPhase::Validating && self.part_maintenance() => {}
             None => return Err("没有拍照计划只能在维护模式下布防".into()),
         }
         let mode = self

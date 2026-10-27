@@ -33,7 +33,7 @@ import {
 } from "../features/cycle";
 import SamplePartSelect from "../features/cycle/components/SamplePartSelect";
 
-const purposeText: Record<SampleRun["purpose"], string> = { production: "已发布配方离线回放", capture: "整圈采集", candidateDebug: "候选调试" };
+const purposeText: Record<SampleRun["purpose"], string> = { production: "已发布配方离线回放", candidateDebug: "候选调试" };
 const labels: SampleLabel[] = ["ok", "ng", "unknown"];
 
 const recentColumns: TableColumn<SampleRun>[] = [
@@ -232,7 +232,7 @@ function OfflineSession({ status }: { status: SiteStatus }) {
       </Card>
       <Card role="region" aria-label="当前离线运行" title={<Heading level={3}>当前离线运行</Heading>}>
         <Stack direction="column" align="stretch" gap={12}>
-          <p className="muted">停止当前离线任务，包括候选调试、整圈采集或已发布配方回放。</p>
+          <p className="muted">停止当前离线任务，包括候选调试或已发布配方回放。</p>
           <Stack gap={8}>
             <Button leadingIcon={<Square size={15} />} onClick={() => void perform(async () => {
               await cycleApi.offlineStop(false);

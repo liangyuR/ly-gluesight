@@ -106,7 +106,7 @@ describe("验证与发布页面", () => {
     vi.mocked(workspaceApi.publishCollect).mockResolvedValue(ws.data!);
     vi.mocked(workspaceApi.collectChecks).mockResolvedValueOnce([
       { name: "计划相机", passed: true, detail: "cam1、cam2、cam3 共用一个触发" },
-      { name: "曝光与增益", passed: false, detail: "相机 cam2 缺少曝光与增益" },
+      { name: "相机组", passed: false, detail: "相机组里没有 cam2" },
       { name: "生产版本", passed: false, detail: "已有正式版 v3" },
     ]);
     show();
@@ -114,7 +114,7 @@ describe("验证与发布页面", () => {
     let dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("采集版只在维护模式下运行，只采图不判定");
     expect(dialog).toHaveTextContent("2 项未满足");
-    expect(dialog).toHaveTextContent("相机 cam2 缺少曝光与增益");
+    expect(dialog).toHaveTextContent("相机组里没有 cam2");
     expect(dialog).toHaveTextContent("已有正式版 v3");
     expect(within(dialog).getByRole("button", { name: /确认发布采集版/ })).toBeDisabled();
     await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));

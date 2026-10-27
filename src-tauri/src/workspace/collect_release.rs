@@ -1,7 +1,7 @@
-//! 采集版发布（在线投运）：新产线还没有可用配方时，先把未完成的候选发布成采集版，维护模式按它的型号、三台计划相机与
-//! 曝光增益跟着生产采图；攒够历史件再示教、标定、验证，发布正式版（`workspace_publish`）。
+//! 采集版发布（在线投运）：新产线还没有可用配方时，先把未完成的候选发布成采集版，维护模式按它的型号与三台计划相机
+//! 跟着生产采图（曝光增益取相机页的设定）；攒够历史件再示教、标定、验证，发布正式版（`workspace_publish`）。
 //!
-//! 采集版只检查相机与成像、型号、段与生产版本，不要求走廊示教、ΣN_exp 标定与独立验证，也不生成发布包；版本号照常递增，
+//! 采集版只检查相机、型号、段与生产版本，不要求走廊示教、ΣN_exp 标定与独立验证，也不生成发布包；版本号照常递增，
 //! 同样在工件边界生效。已有正式版时不能发布采集版（正式版不降级，`RecipeStore::save_published` 同样拒绝）。
 
 use super::*;
@@ -56,35 +56,6 @@ pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Chec
             "计划相机都在当前相机组里，且是单视角独立相机".into()
         } else {
             rig.join("；")
-        },
-    });
-    let imaging: Vec<Result<String, String>> = cameras
-        .iter()
-        .map(|camera| {
-            let imaging = doc
-                .cameras
-                .get(camera)
-                .ok_or_else(|| format!("相机 {camera} 缺少曝光与增益"))?;
-            imaging.validate(camera)?;
-            Ok(format!(
-                "{camera} {} µs / {} dB",
-                imaging.exposure_us, imaging.gain_db
-            ))
-        })
-        .collect();
-    let missing: Vec<&String> = imaging.iter().filter_map(|r| r.as_ref().err()).collect();
-    checks.push(Check {
-        name: "曝光与增益".into(),
-        passed: !cameras.is_empty() && missing.is_empty(),
-        detail: if missing.is_empty() {
-            imaging
-                .iter()
-                .flatten()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("；")
-        } else {
-            missing.into_iter().cloned().collect::<Vec<_>>().join("；")
         },
     });
     checks.push(Check {

@@ -82,7 +82,7 @@ export default function CalibrationPage() {
         <Link className="wp-text-link" to="/recipe/segments">段列表</Link>
       </div>
     </Panel>
-    {multi && <Notice title="多段计划按手动分段逐段标定">每个标定轮次（不含标准件）都在整圈采集页确认分段后，应用标定按边界得出各段预期帧数与建议容差，ΣN_exp 取各段之和；有轮次未确认分段时各段保持“待标定”，ΣN_exp 取各轮整件帧组数的均值。生产仍按整件核对帧数、不分段判定。</Notice>}
+    {multi && <Notice title="多段计划按手动分段逐段标定">每个标定轮次（不含标准件）都在采集轮次页确认分段后，应用标定按边界得出各段预期帧数与建议容差，ΣN_exp 取各段之和；有轮次未确认分段时各段保持“待标定”，ΣN_exp 取各轮整件帧组数的均值。生产仍按整件核对帧数、不分段判定。</Notice>}
     <Panel title="标定轮次" detail={`同一工件程序连续采集，至少 ${minRounds} 轮；标准件轮次另用于胶偏参考，不计入轮数`}>
       <div className="wp-calib-need">
         <Badge tone={short > 0 ? "warn" : "ok"}>{short > 0 ? `已加入 ${normal.length} / ${minRounds} 轮，还差 ${short} 轮` : `已加入 ${normal.length} 轮，轮数足够`}</Badge>
@@ -100,7 +100,7 @@ export default function CalibrationPage() {
       {candidates.length ? <ul className="wp-calib-rounds" aria-label="可加入的采集轮次">{candidates.map(round => <li key={round.roundId} className="wp-calib-round">
         <span className="mono">{round.roundId}</span><span className="wp-calib-meta">{new Date(round.createdAt).toLocaleString("zh-CN")} · 已接收 {round.receivedCount} 帧组</span>
         <div className="wp-actions"><Button size="sm" aria-label={`加入标定 ${round.roundId}`} disabled={locked} onClick={() => add(round.roundId, false)}>加入标定</Button><Button size="sm" aria-label={`设为标准件 ${round.roundId}`} disabled={locked} onClick={() => add(round.roundId, true)}>设为标准件轮次</Button></div>
-      </li>)}</ul> : <p className="wp-capture-empty">没有可加入的完整采集轮次。到“整圈采集”连续采集多轮后回来。<Link className="wp-text-link" to="/recipe/capture">前往整圈采集<ArrowRight size={12} aria-hidden="true"/></Link></p>}
+      </li>)}</ul> : <p className="wp-capture-empty">没有可加入的完整采集轮次。到“采集轮次”导入多轮后回来。<Link className="wp-text-link" to="/recipe/capture">前往采集轮次<ArrowRight size={12} aria-hidden="true"/></Link></p>}
     </Panel>
     <Panel title="标定结果" detail="预期帧数写入后，容差仍是原值，需逐段确认">
       {calibration?.part ? <>

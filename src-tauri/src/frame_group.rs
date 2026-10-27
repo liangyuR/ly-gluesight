@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-/// 一件（或一轮示教采集）的配组器。相机下标与计划相机顺序一致。
+/// 一件的配组器。相机下标与计划相机顺序一致。
 #[derive(Clone, Debug)]
 pub struct Grouper {
     /// 每台相机的基线：frame_counter ≤ 基线的帧属于上一件
@@ -77,12 +77,7 @@ pub struct LossAlarm {
 }
 
 impl Grouper {
-    /// baselines 按计划相机顺序，取布防时各相机的 frame_counter 基线；seq 上限取 [`MAX_SEQ`]。
-    pub fn new(baselines: Vec<u64>) -> Self {
-        Self::with_limit(baselines, MAX_SEQ)
-    }
-
-    /// 同 [`new`](Self::new)，seq 超过 `max_seq` 的帧判 OutOfRange（上限不超过 [`MAX_SEQ`]）。
+    /// baselines 按计划相机顺序，取布防时各相机的 frame_counter 基线；seq 超过 `max_seq` 的帧判 OutOfRange（上限不超过 [`MAX_SEQ`]）。
     pub fn with_limit(baselines: Vec<u64>, max_seq: u64) -> Self {
         let cams = baselines.len();
         Self { max_counters: baselines.clone(), baselines, seqs: vec![BTreeSet::new(); cams], max_seq: max_seq.min(MAX_SEQ) }
@@ -182,7 +177,7 @@ mod tests {
     /// 规格 §3：帧序号取 SDK 帧号（减各自基线），不按到达顺序数。
     #[test]
     fn frames_are_grouped_by_frame_counter_not_arrival_order() {
-        let mut grouper = Grouper::new(vec![100, 200, 300]);
+        let mut grouper = Grouper::with_limit(vec![100, 200, 300], MAX_SEQ);
         for (cam, counter, seq) in [(0, 103, 3), (1, 201, 1), (0, 101, 1), (2, 302, 2), (1, 203, 3), (2, 301, 1), (0, 102, 2), (2, 303, 3), (1, 202, 2)] {
             assert_eq!(grouper.offer(cam, counter), Offer::Accepted { seq }, "相机 {cam} 帧号 {counter}");
         }
@@ -192,7 +187,7 @@ mod tests {
     /// 易错边界：重复帧不顶替先到的帧；帧号不大于基线是上一件的迟到帧，不计入本件，也不抬高下一件基线。
     #[test]
     fn duplicate_seq_keeps_first_and_counter_at_or_below_baseline_is_stale() {
-        let mut grouper = Grouper::new(vec![10, 20, 30]);
+        let mut grouper = Grouper::with_limit(vec![10, 20, 30], MAX_SEQ);
         assert_eq!(grouper.offer(0, 10), Offer::Stale, "等于基线");
         assert_eq!(grouper.offer(0, 9), Offer::Stale, "低于基线");
         assert_eq!(grouper.max_counter(0), 10, "迟到帧不改下一件基线");
@@ -200,7 +195,7 @@ mod tests {
         assert_eq!(grouper.offer(0, 12), Offer::Duplicate);
         assert_eq!(grouper.offer(0, 11), Offer::Accepted { seq: 1 });
         assert_eq!(grouper.camera_counts(), vec![2, 0, 0]);
-        let mut next = Grouper::new(vec![grouper.max_counter(0), 20, 30]);
+        let mut next = Grouper::with_limit(vec![grouper.max_counter(0), 20, 30], MAX_SEQ);
         assert_eq!(next.offer(0, 12), Offer::Stale, "上一件最后一帧迟到，不计入下一件");
     }
 
@@ -214,7 +209,10 @@ mod tests {
         assert_eq!(grouper.offer(2, 311), Offer::OutOfRange { seq: 11 }, "超出上限一帧");
         assert_eq!(grouper.groups().len(), 10);
         assert_eq!((grouper.max_counter(1), grouper.max_counter(2)), (200, 300));
-        assert_eq!(Grouper::new(vec![0]).offer(0, MAX_SEQ + 1), Offer::OutOfRange { seq: MAX_SEQ + 1 });
+        assert_eq!(
+            Grouper::with_limit(vec![0], MAX_SEQ).offer(0, MAX_SEQ + 1),
+            Offer::OutOfRange { seq: MAX_SEQ + 1 }
+        );
     }
 
     /// 规格 §2：帧数 ∈ [N_exp − tol, N_exp + tol] 为正常，越界一帧即 Low / High。

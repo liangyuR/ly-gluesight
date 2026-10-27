@@ -1,32 +1,21 @@
-//! 段配方的示教采集轮次（CaptureRoundV2，D1）：不设数量上限、不核对计数，按 SDK 帧号三路配组，增量持久化。
+//! 段配方的采集轮次（CaptureRoundV2，D1）：只读取与核对盘上的轮次，新轮次只由历史件导入或候选包导入产生。
 //!
-//! 规则（docs/decisions/segment-burst.md D-SB-8/9/10/33/35 与第六节口径）：
-//! - seq = frame_counter − 该相机基线（开始采集时这台相机本会话见到的最高帧计数），帧组数 = 各相机最大 seq 的最大值；
-//! - 同一相机重复的 seq 丢弃并告警；帧计数不大于基线或比本轮已见的小（计数回退）、会话变化、手动帧、计数来源变化，整轮失败；
-//! - 丢包或无图、写盘队列满、图像内存预算满的帧不写图，记缺帧并告警，整轮不判失败；
-//! - 收到 PLC 结束、drain 窗口到期、已入队的帧全部写完即完成；PLC 的 shotCount 与 deviceTriggers 只记录，
-//!   各相机帧数只用于丢帧告警（[`loss_alarms`]）；超时只有等待开始超时与写盘超时；
-//! - 持久化：`round.json` 只在状态变化时原子重写；每写完一帧向 `frames.jsonl` 追加一行；图像为无压缩 PGM，
-//!   一帧一个文件 `{相机}/{seq:06}.pgm`。重启时进行中的轮次按 `frames.jsonl` 恢复统计并判中断。
+//! - 目录结构：`round.json` 记统计，`frames.jsonl` 每行一帧，图像为无压缩 PGM，一帧一个文件 `{相机}/{seq:06}.pgm`；
+//! - 帧组数 = 各相机最大 seq 的最大值；缺帧只记在 missingFrames 并给丢帧告警（[`loss_alarms`]），整轮不判失败；
+//! - 以前示教握手实拍的轮次（format 2，带 `teachingRoundId`、PLC 字段）照常读取；启动时仍在进行中的轮次按 `frames.jsonl`
+//!   恢复统计并判中断；
 //! - 历史件导入（[`history`]）：维护模式或生产录制的完整件按同一目录结构物化成已完成的轮次，原图为硬链接，`origin` 记来源。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 
 use super::*;
-use crate::frame::CounterSource;
-use crate::frame_group::{loss_alarms, Grouper, LossAlarm, Offer};
-use crate::judge::fault;
+use crate::frame_group::{loss_alarms, LossAlarm};
 
-/// 新轮次记录的格式号。3 加 `origin`（历史件导入）；2 没有 `origin`，照常读取。
+/// 新轮次记录的格式号。3 加 `origin`（历史件导入、手动配置数据）；2 没有 `origin`，照常读取。
 pub const FORMAT: u8 = 3;
 const FORMAT_V2: u8 = 2;
-/// 每台相机写盘队列里最多排队的帧数；满时该帧记缺帧并告警，不判失败（D-SB-8）。图像内存由 FramePool 字节预算封顶。
-pub const MAX_FRAMES_PER_CAMERA: u32 = 8192;
-/// 一轮的帧组序号上限：ΣN_exp 不超过 PLC Int；帧号比基线跳得更远视为计数异常，防止异常帧号生成海量帧组。
+/// 一轮的帧组序号上限：ΣN_exp 不超过 PLC Int，防止异常记录生成海量帧组。
 pub const MAX_SEQ: u64 = crate::plan::MAX_EXPECTED_TOTAL as u64;
-/// 轮次记录里最多保留的逐帧告警；缺帧本身另记在 missingFrames，不受此限。
-const MAX_ALARMS: usize = 1024;
 const FRAMES_FILE: &str = "frames.jsonl";
 
 /// 某台相机（本轮相机下标）缺某个帧组的帧。
@@ -70,17 +59,7 @@ pub enum CaptureFailureV2 {
     Other,
 }
 
-impl CaptureFailureV2 {
-    /// 报给 PLC 的异常码（结果码 90，D-SB-33）：相机断连或会话变化是设备丢失 98，其余是处理异常 99。计数不符不再出现。
-    pub fn fault_code(&self) -> u16 {
-        match self {
-            Self::Camera { .. } | Self::SessionChanged { .. } => fault::DEVICE_LOST,
-            Self::Plc | Self::StartTimeout | Self::WriteTimeout { .. } | Self::Interrupted | Self::Other => fault::PROCESS_TIMEOUT,
-        }
-    }
-}
-
-/// 轮次的来源：示教握手实拍的轮次为空；历史件导入的轮次记下原记录，代替示教握手编号。
+/// 轮次的来源：以前示教握手实拍的轮次为空；历史件导入的轮次记下原记录；手动配置数据（候选包导入）记标签。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -96,21 +75,25 @@ pub enum RoundOrigin {
         #[serde(default)]
         standard: bool,
     },
+    /// 手动配置数据：不来自现场 PLC，不是标准件
+    Prepared { label: String },
 }
 
 impl RoundOrigin {
+    /// 历史件的 cycleId；手动配置数据没有，返回空串（不会与任何记录的 cycleId 相同）。
     pub fn cycle_id(&self) -> &str {
-        let Self::History { cycle_id, .. } = self;
-        cycle_id
+        match self {
+            Self::History { cycle_id, .. } => cycle_id,
+            Self::Prepared { .. } => "",
+        }
     }
 
     pub fn standard(&self) -> bool {
-        let Self::History { standard, .. } = self;
-        *standard
+        matches!(self, Self::History { standard: true, .. })
     }
 }
 
-/// 段配方的示教采集轮次。帧元数据在 `frames.jsonl`，这里只有统计（字段与 `src/features/plan/types.ts` 对应）。
+/// 段配方的采集轮次。帧元数据在 `frames.jsonl`，这里只有统计（字段与 `src/features/plan/types.ts` 对应）。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureRoundV2 {
@@ -224,102 +207,7 @@ fn apply(round: &mut CaptureRoundV2, summary: Summary) {
     round.loss_alarms = summary.loss_alarms;
 }
 
-/// 一台相机在本轮的收帧状态。
-struct BurstCam {
-    cam: u8,
-    /// 开始时本会话还没见过帧则为空，收到本轮第一帧时定为它的帧计数 − 1
-    baseline: Option<u64>,
-    /// 本轮第一帧的计数来源；之后变化判失败
-    source: Option<CounterSource>,
-    /// 本轮见到的最大帧计数
-    last: Option<u64>,
-    /// 本轮因这台相机的帧或设备出错而失败
-    faulted: bool,
-    /// 已交给写盘线程的帧数
-    queued: u32,
-    /// 写盘线程已写完（图像与 frames.jsonl）的帧数
-    written: u32,
-    /// 已写盘的 seq
-    saved: BTreeSet<u64>,
-}
-
-pub(super) struct BurstRun {
-    round: CaptureRoundV2,
-    cams: Vec<BurstCam>,
-    grouper: Grouper,
-    /// Grouper 接受过的最大 seq，即帧组数（与 `Grouper::groups().len()` 相同，不必每次重建帧组）
-    max_seq: u64,
-    /// 本进程开始的轮次：内存里的统计可信；启动时从磁盘恢复的轮次读取时仍要核对记录
-    verified: bool,
-    drain_timeout: Duration,
-    deadline: Instant,
-    write_deadline: Option<Instant>,
-}
-
-impl BurstRun {
-    fn restored(round: CaptureRoundV2) -> Self {
-        Self { round, cams: Vec::new(), grouper: Grouper::new(Vec::new()), max_seq: 0, verified: false, drain_timeout: Duration::ZERO, deadline: Instant::now(), write_deadline: None }
-    }
-
-    fn camera_of(&self, cam: u8) -> Option<usize> {
-        self.cams.iter().position(|c| c.cam == cam)
-    }
-
-    fn summary(&self) -> Summary {
-        let saved: Vec<&BTreeSet<u64>> = self.cams.iter().map(|c| &c.saved).collect();
-        summarize(self.max_seq, &saved)
-    }
-
-    /// 进行中的轮次带上实时统计；已结束的轮次统计在结束时已定。
-    fn snapshot(&self) -> CaptureRoundV2 {
-        let mut round = self.round.clone();
-        if round.state.active() && !self.cams.is_empty() { apply(&mut round, self.summary()); }
-        round
-    }
-
-    fn alarm(&mut self, alarm: CaptureAlarm) {
-        if self.round.alarms.len() < MAX_ALARMS { self.round.alarms.push(alarm); }
-    }
-}
-
-/// 写盘线程要写的一帧。
-pub(super) struct BurstItem {
-    round_id: String,
-    camera: usize,
-    seq: u64,
-    frame_counter: u64,
-    trigger_counter: Option<u64>,
-    ts: i64,
-    image: Arc<FrameImage>,
-}
-
-/// 当前轮次的 frames.jsonl 追加句柄。
-pub(super) struct Journal {
-    round_id: String,
-    file: std::fs::File,
-}
-
-/// 取图回调交来的帧是正常交付，还是图像内存预算满、没拷图的帧。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Arrival {
-    Delivered,
-    BudgetDropped,
-}
-
 impl RecipeCaptureHost {
-    pub(super) fn burst_active(&self) -> bool {
-        self.burst.lock().unwrap().as_ref().is_some_and(|r| r.round.state.active())
-    }
-
-    /// 最近一轮新轮次（进行中的带实时统计）。
-    pub fn current_burst(&self) -> Option<CaptureRoundV2> {
-        self.burst.lock().unwrap().as_ref().map(BurstRun::snapshot)
-    }
-
-    pub(super) fn burst_round_id(&self) -> Option<String> {
-        self.burst.lock().unwrap().as_ref().map(|r| r.round.round_id.clone())
-    }
-
     /// 新建一轮的目录 `capture-{创建时间}-{序号}`。
     fn new_round_dir(&self) -> Result<(String, i64), String> {
         let created_at = ly_plc::now_ms();
@@ -338,359 +226,25 @@ impl RecipeCaptureHost {
         crate::fsio::write_atomic(&self.root.join(&round.round_id).join("round.json"), &serde_json::to_string_pretty(round).map_err(|e| e.to_string())?)
     }
 
-    /// 段配方开始一轮示教采集：相机须为单视角（三台独立相机共用一个触发，D-SB-11），基线取开始时各相机本会话见到的最高帧计数，没见过帧时取本轮首帧计数 − 1。
-    pub fn start_burst(&self, recipe_id: String, devices: Vec<CaptureDevice>, drain_timeout_ms: u64, simulated: bool) -> Result<CaptureRoundV2, CaptureStartRejected> {
-        use CaptureStartRejected as Rejected;
-        if !(200..=30000).contains(&drain_timeout_ms) { return Err(Rejected::DrainTimeout); }
-        if devices.is_empty() || devices.len() > MAX_CAMERAS { return Err(Rejected::CameraCount); }
-        for (i, d) in devices.iter().enumerate() {
-            let id = &d.camera_id;
-            if !crate::recipe::valid_camera_id(id) { return Err(Rejected::InvalidCameraId(id.clone())); }
-            if devices[..i].iter().any(|o| o.camera_id == *id || o.cam == d.cam) { return Err(Rejected::Duplicate(id.clone())); }
-            if d.session == 0 { return Err(Rejected::SessionNotReady(id.clone())); }
-            if view_count(&d.camera_config) != 1 || d.camera_config.get("compositeLayout").is_some_and(|l| !l.is_null()) {
-                return Err(Rejected::MultiView(id.clone()));
-            }
-        }
-        let mut guard = self.burst.lock().unwrap();
-        if guard.as_ref().is_some_and(|r| r.round.state.active()) {
-            return Err(Rejected::Busy);
-        }
-        let (round_id, created_at) = self.new_round_dir().map_err(Rejected::Io)?;
-        let dir = self.root.join(&round_id);
-        for d in &devices {
-            std::fs::create_dir(dir.join(&d.camera_id)).map_err(|e| Rejected::Io(e.to_string()))?;
-        }
-        let file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .append(true)
-            .open(dir.join(FRAMES_FILE))
-            .map_err(|e| Rejected::Io(e.to_string()))?;
-        let baselines: Vec<u64> = devices
-            .iter()
-            .map(|d| d.frame_baseline.unwrap_or_default())
-            .collect();
-        let cams = devices
-            .iter()
-            .map(|d| BurstCam {
-                cam: d.cam,
-                baseline: d.frame_baseline,
-                source: None,
-                last: None,
-                faulted: false,
-                queued: 0,
-                written: 0,
-                saved: BTreeSet::new(),
-            })
-            .collect();
-        let n = devices.len();
-        let cameras = devices.into_iter().map(|d| CaptureCamera { camera_id: d.camera_id, camera_config: d.camera_config, imaging: d.imaging, device_session: d.session, received_count: 0 }).collect();
-        let round = CaptureRoundV2 {
-            format: FORMAT,
-            round_id: round_id.clone(),
-            recipe_id,
-            cameras,
-            state: CaptureState::WaitingStart,
-            plc_shot_count: None,
-            plc_plan_version: None,
-            teaching_round_id: None,
-            device_triggers: None,
-            group_count: 0,
-            camera_frames: vec![0; n],
-            incomplete_groups: Vec::new(),
-            missing_frames: Vec::new(),
-            loss_alarms: Vec::new(),
-            alarms: Vec::new(),
-            created_at,
-            ended_at: None,
-            error: None,
-            failure: None,
-            simulated,
-            origin: None,
-        };
-        self.save_burst(&round).map_err(Rejected::Io)?;
-        *self.journal.lock().unwrap() = Some(Journal { round_id, file });
-        *guard = Some(BurstRun {
-            round: round.clone(), cams, grouper: Grouper::new(baselines), max_seq: 0, verified: true,
-            drain_timeout: Duration::from_millis(drain_timeout_ms), deadline: Instant::now() + ROUND_TIMEOUT, write_deadline: None,
-        });
-        Ok(round)
-    }
-
-    /// 结束本轮（失败）。不封锁设备会话：重采的基线取开始时本会话见到的最高帧计数，PLC 开始前到的迟到帧让新一轮判失败。
-    fn fail_burst(&self, run: &mut BurstRun, failure: CaptureFailureV2, error: String) {
-        if !run.cams.is_empty() { let summary = run.summary(); apply(&mut run.round, summary); }
-        run.round.state = CaptureState::Failed;
-        run.round.error = Some(error);
-        run.round.failure = Some(failure);
-        self.journal.lock().unwrap().take();
-        if let Err(error) = self.save_burst(&run.round) {
-            run.round.error = Some(format!("{}；异常记录保存失败：{error}", run.round.error.as_deref().unwrap_or_default()));
-        }
-    }
-
-    /// 让进行中的新轮次失败（没有进行中的新轮次时什么也不做）。
-    pub(super) fn fail_burst_active(&self, failure: CaptureFailureV2, error: String) {
-        if let Some(run) = self.burst.lock().unwrap().as_mut().filter(|r| r.round.state.active()) { self.fail_burst(run, failure, error); }
-    }
-
-    pub(super) fn disconnected_burst(&self, cam: u8) {
-        let mut guard = self.burst.lock().unwrap();
-        let Some(run) = guard.as_mut().filter(|r| r.round.state.active()) else { return };
-        let Some(j) = run.camera_of(cam) else { return };
-        run.cams[j].faulted = true;
-        let camera_id = run.round.cameras[j].camera_id.clone();
-        let error = format!("相机 {camera_id} 断连，请整圈重采");
-        self.fail_burst(run, CaptureFailureV2::Camera { camera_id }, error);
-    }
-
-    pub fn burst_ready(&self, teaching_round_id: u16) -> Result<(), String> {
-        let mut guard = self.burst.lock().unwrap();
-        let run = guard
-            .as_mut()
-            .filter(|r| r.round.state.active())
-            .ok_or("没有等待开始的示教采集")?;
-        if run.round.state != CaptureState::WaitingStart
-            || !(1..=32767).contains(&teaching_round_id)
-        {
-            let error = "示教准备状态或轮次编号无效".to_string();
-            self.fail_burst(run, CaptureFailureV2::Plc, error.clone());
-            return Err(error);
-        }
-        run.round.teaching_round_id = Some(teaching_round_id);
-        run.round.state = CaptureState::Receiving;
-        run.deadline = Instant::now() + Duration::from_secs(130);
-        if let Err(e) = self.save_burst(&run.round) {
-            self.fail_burst(run, CaptureFailureV2::Other, e.clone());
-            return Err(e);
-        }
-        Ok(())
-    }
-
-    /// PLC 开始：shotCount 只记录（可为估算值，不限 1–64、不核对）；计划版本须为正数（协议 4.1）。
-    pub fn burst_plc_started(&self, shot_count: u16, plan_version: u32) -> Result<(), String> {
-        let mut guard = self.burst.lock().unwrap();
-        let run = guard.as_mut().filter(|r| r.round.state.active()).ok_or("没有等待开始的示教采集")?;
-        let error = if run.round.state != CaptureState::WaitingStart { Some("PLC 开始信号重复或顺序异常") }
-            else if plan_version == 0 { Some("PLC 计划版本须为正数") }
-            else { None };
-        if let Some(error) = error {
-            self.fail_burst(run, CaptureFailureV2::Plc, error.into());
-            return Err(error.into());
-        }
-        run.round.plc_shot_count = Some(shot_count);
-        run.round.plc_plan_version = Some(plan_version);
-        run.round.state = CaptureState::Receiving;
-        if let Err(e) = self.save_burst(&run.round) { self.fail_burst(run, CaptureFailureV2::Other, e.clone()); return Err(e); }
-        Ok(())
-    }
-
-    /// PLC 结束：deviceTriggers 为保留字段，不参与丢帧告警；之后等 drain 窗口到期、已入队的帧写完即完成。
-    pub fn burst_plc_ended(&self, device_triggers: Option<u16>) -> Result<(), String> {
-        let mut guard = self.burst.lock().unwrap();
-        let run = guard.as_mut().filter(|r| r.round.state.active()).ok_or("没有正在进行的示教采集")?;
-        if run.round.state != CaptureState::Receiving {
-            let error = "PLC 结束信号顺序异常".to_string();
-            self.fail_burst(run, CaptureFailureV2::Plc, error.clone());
-            return Err(error);
-        }
-        run.round.device_triggers = device_triggers;
-        run.round.state = CaptureState::Draining;
-        run.round.ended_at = Some(ly_plc::now_ms());
-        run.deadline = Instant::now() + run.drain_timeout;
-        run.write_deadline = Some(Instant::now() + ROUND_TIMEOUT);
-        if let Err(e) = self.save_burst(&run.round) { self.fail_burst(run, CaptureFailureV2::Other, e.clone()); return Err(e); }
-        Ok(())
-    }
-
-    /// 取图回调交来的帧：有进行中的新轮次时返回 true（本轮相机以外的帧也不交给检测节拍）。
-    pub(super) fn offer_burst(&self, frame: &Frame) -> bool {
-        self.arrive(frame, Arrival::Delivered)
-    }
-
-    /// 图像内存预算满、没拷图的帧（camera.rs）：照常配组，记缺帧并告警。
-    pub fn offer_dropped(&self, frame: &Frame) {
-        self.arrive(frame, Arrival::BudgetDropped);
-    }
-
-    fn arrive(&self, f: &Frame, arrival: Arrival) -> bool {
-        let mut guard = self.burst.lock().unwrap();
-        let Some(run) = guard.as_mut().filter(|r| r.round.state.active()) else { return false };
-        let Some(j) = run.camera_of(f.cam) else { return true };
-        let camera_id = run.round.cameras[j].camera_id.clone();
-        let cam = &run.cams[j];
-        let baseline = cam
-            .baseline
-            .unwrap_or_else(|| f.frame_counter.saturating_sub(1));
-        let rejected = if run.round.state == CaptureState::WaitingStart {
-            Some((false, "PLC 开始前收到帧，无法确定本轮归属".to_string()))
-        } else if f.session != run.round.cameras[j].device_session {
-            Some((true, "设备会话已变化，不能混用不同会话的图像".into()))
-        } else if f.manual {
-            Some((false, "本轮收到手动触发图像".into()))
-        } else if f.counter == CounterSource::Synthetic && !run.round.simulated {
-            Some((false, "设备实拍轮次收到模拟计数的帧".into()))
-        } else if cam.source.is_some_and(|source| source != f.counter) {
-            Some((false, "帧计数来源发生变化".into()))
-        } else {
-            match f.frame_counter.checked_sub(baseline).filter(|seq| *seq > 0) {
-                None => Some((
-                    false,
-                    format!(
-                        "帧计数 {} 不大于开始采集时的基线 {baseline}（计数回退或上一轮的迟到帧）",
-                        f.frame_counter
-                    ),
-                )),
-                Some(seq) if seq > MAX_SEQ => Some((
-                    false,
-                    format!("帧计数比基线大 {seq}，超过一轮上限 {MAX_SEQ}，计数异常"),
-                )),
-                Some(_) => None,
-            }
-        };
-        if let Some((session, error)) = rejected {
-            run.cams[j].faulted = true;
-            let failure = if session { CaptureFailureV2::SessionChanged { camera_id: camera_id.clone() } } else { CaptureFailureV2::Camera { camera_id: camera_id.clone() } };
-            self.fail_burst(run, failure, format!("相机 {camera_id}：{error}"));
-            return true;
-        }
-        if run.cams[j].baseline.is_none() {
-            run.cams[j].baseline = Some(baseline);
-            run.grouper.set_baseline(j, baseline);
-        }
-        let seq = match run.grouper.offer(j, f.frame_counter) {
-            Offer::Accepted { seq } => seq,
-            Offer::Duplicate => {
-                let seq = f.frame_counter - baseline;
-                run.alarm(CaptureAlarm::Duplicate { camera: j, seq });
-                return true;
-            }
-            // seq 已按 MAX_SEQ 先行核对（上面判整轮失败），默认上限与它相同，OutOfRange 在这里到不了
-            Offer::Stale | Offer::OutOfRange { .. } => return true,
-        };
-        if run.cams[j].last.is_some_and(|last| f.frame_counter < last) {
-            run.cams[j].faulted = true;
-            let error = format!("相机 {camera_id}：帧计数从 {} 回退到 {}，不能确定帧组归属", run.cams[j].last.unwrap_or_default(), f.frame_counter);
-            self.fail_burst(run, CaptureFailureV2::Camera { camera_id }, error);
-            return true;
-        }
-        let cam = &mut run.cams[j];
-        cam.last = Some(f.frame_counter);
-        cam.source = Some(f.counter);
-        run.max_seq = run.max_seq.max(seq);
-        if arrival == Arrival::BudgetDropped {
-            run.alarm(CaptureAlarm::BudgetDropped { camera: j, seq });
-            return true;
-        }
-        let image = f.images.first().filter(|i| f.images.len() == 1 && i.width != 0 && i.height != 0
-            && (i.width as usize).checked_mul(i.height as usize) == Some(i.pixels.len()));
-        let Some(image) = image.filter(|_| f.lost_packets == 0).cloned() else {
-            run.alarm(CaptureAlarm::Corrupt { camera: j, seq });
-            return true;
-        };
-        if run.cams[j].queued - run.cams[j].written >= MAX_FRAMES_PER_CAMERA {
-            run.alarm(CaptureAlarm::QueueFull { camera: j, seq });
-            return true;
-        }
-        let trigger_counter = matches!(f.counter, CounterSource::ChunkTrigger | CounterSource::Synthetic).then_some(f.trigger_counter);
-        let item = BurstItem { round_id: run.round.round_id.clone(), camera: j, seq, frame_counter: f.frame_counter, trigger_counter, ts: f.ts, image };
-        if self.burst_writers[j].send(item).is_err() {
-            run.cams[j].faulted = true;
-            self.fail_burst(run, CaptureFailureV2::Other, format!("相机 {camera_id}：示教采集写盘线程已关闭，请整圈重采"));
-        } else {
-            run.cams[j].queued += 1;
-        }
-        true
-    }
-
-    fn append_line(&self, round_id: &str, line: &FrameLine) -> Result<(), String> {
-        let mut text = serde_json::to_string(line).map_err(|e| e.to_string())?;
-        text.push('\n');
-        let mut journal = self.journal.lock().unwrap();
-        let journal = journal.as_mut().filter(|j| j.round_id == round_id).ok_or("采集记录已关闭")?;
-        journal.file.write_all(text.as_bytes()).map_err(|e| e.to_string())
-    }
-
-    /// 写盘线程：写 PGM，再向 frames.jsonl 追加一行，最后记为已写盘。两次取锁之间不持有任何锁，写盘停顿不挡取图回调。
-    pub(super) fn write_burst(&self, item: BurstItem) {
-        let BurstItem { round_id, camera, seq, frame_counter, trigger_counter, ts, image } = item;
-        let camera_id = {
-            let guard = self.burst.lock().unwrap();
-            let Some(run) = guard.as_ref().filter(|r| r.round.round_id == round_id && r.round.state.active()) else { return };
-            run.round.cameras[camera].camera_id.clone()
-        };
-        let path = self.root.join(&round_id).join(&camera_id).join(frame_file(seq));
-        let line = FrameLine { camera, seq, frame_counter, trigger_counter, path: frame_rel_path(&camera_id, seq), width: image.width, height: image.height, ts };
-        let saved = crate::image_file::save_pgm(&path, &image).and_then(|()| self.append_line(&round_id, &line));
-        drop(image);
-        let mut guard = self.burst.lock().unwrap();
-        let Some(run) = guard.as_mut().filter(|r| r.round.round_id == round_id && r.round.state.active()) else { return };
-        match saved {
-            Ok(()) => {
-                let cam = &mut run.cams[camera];
-                cam.written += 1;
-                cam.saved.insert(seq);
-            }
-            Err(e) => self.fail_burst(run, CaptureFailureV2::Other, format!("相机 {camera_id}：保存采集图像失败：{e}")),
-        }
-    }
-
-    pub(super) fn tick_burst(&self) {
-        let mut guard = self.burst.lock().unwrap();
-        let Some(run) = guard.as_mut().filter(|r| r.round.state.active() && Instant::now() >= r.deadline) else { return };
-        match run.round.state {
-            CaptureState::WaitingStart => self.fail_burst(run, CaptureFailureV2::StartTimeout, "采集超时：仍在等待 PLC 开始请求，请整圈重采".into()),
-            CaptureState::Draining => {
-                let queued: u32 = run.cams.iter().map(|c| c.queued).sum();
-                let written: u32 = run.cams.iter().map(|c| c.written).sum();
-                if run.cams.iter().all(|c| c.written == c.queued) {
-                    let summary = run.summary();
-                    apply(&mut run.round, summary);
-                    run.round.state = CaptureState::Complete;
-                    self.journal.lock().unwrap().take();
-                    if let Err(e) = self.save_burst(&run.round) { self.fail_burst(run, CaptureFailureV2::Other, e); }
-                } else if run.write_deadline.is_none_or(|d| Instant::now() >= d) {
-                    let error = format!("采集超时：PLC 已结束，但 {} s 内只写完 {written}/{queued} 帧；请检查磁盘后整圈重采", ROUND_TIMEOUT.as_secs());
-                    self.fail_burst(run, CaptureFailureV2::WriteTimeout { queued, written }, error);
-                }
-            }
-            // 接收中不设超时（D-SB-9）：等 PLC 结束，或操作员中止、PLC 断连
-            _ => {}
-        }
-    }
-
     /// 读一轮新轮次：本进程开始的轮次直接用内存里的统计；其余从磁盘读并核对 round.json 与 frames.jsonl。
     pub fn get_burst(&self, round_id: &str) -> Result<CaptureRoundV2, String> {
-        self.safe_round_path(round_id)?;
-        if let Some(round) = self.verified_burst(round_id) { return Ok(round); }
         self.load_burst(round_id, true).map(|(round, _)| round)
-    }
-
-    fn verified_burst(&self, round_id: &str) -> Option<CaptureRoundV2> {
-        self.burst.lock().unwrap().as_ref().filter(|r| r.verified && r.round.round_id == round_id).map(BurstRun::snapshot)
     }
 
     /// 历史列表用：只核对 round.json（不逐帧读 frames.jsonl）。
     pub(super) fn burst_summary(&self, round_id: &str) -> Result<CaptureRoundV2, String> {
-        self.safe_round_path(round_id)?;
-        if let Some(round) = self.verified_burst(round_id) { return Ok(round); }
         self.load_burst(round_id, false).map(|(round, _)| round)
     }
 
     /// 某台相机第 seq 帧（帧组序号，从 1 起）的原图路径；这台相机缺这一帧时报错。路径由相机与 seq 推出，不取记录里写的路径。
     pub fn burst_frame_path(&self, round_id: &str, camera_id: &str, seq: u64) -> Result<PathBuf, String> {
         let dir = self.safe_round_path(round_id)?;
-        let live = self.burst.lock().unwrap().as_ref().filter(|r| r.verified && r.round.round_id == round_id)
-            .map(|r| (r.round.camera_ids(), r.cams.iter().map(|c| c.saved.clone()).collect::<Vec<_>>()));
-        let (cameras, saved) = match live {
-            Some(live) => live,
-            None => {
-                let (round, lines) = self.load_burst(round_id, true)?;
-                let mut saved = vec![BTreeSet::new(); round.cameras.len()];
-                for line in lines.unwrap_or_default() { saved[line.camera].insert(line.seq); }
-                (round.camera_ids(), saved)
-            }
-        };
+        let (round, lines) = self.load_burst(round_id, true)?;
+        let mut saved = vec![BTreeSet::new(); round.cameras.len()];
+        for line in lines.unwrap_or_default() {
+            saved[line.camera].insert(line.seq);
+        }
+        let cameras = round.camera_ids();
         let camera = cameras.iter().position(|id| id == camera_id).ok_or_else(|| format!("采集轮次没有相机 {camera_id}"))?;
         if !saved[camera].contains(&seq) { return Err(format!("相机 {camera_id} 缺第 {seq} 帧组的图像")); }
         Ok(dir.join(camera_id).join(frame_file(seq)))
@@ -804,13 +358,14 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
         && (round.teaching_round_id.is_some()
             || round.plc_shot_count.is_some()
             || round.plc_plan_version.is_some()
+            || round.device_triggers.is_some()
             || round.state != CaptureState::Complete
-            || round
-                .origin
-                .as_ref()
-                .is_some_and(|o| !history::valid_cycle_id(o.cycle_id())))
+            || round.origin.as_ref().is_some_and(|o| match o {
+                RoundOrigin::History { cycle_id, .. } => !history::valid_cycle_id(cycle_id),
+                RoundOrigin::Prepared { label } => label.trim().is_empty(),
+            }))
     {
-        return Err("历史件导入的轮次来源或状态无效".into());
+        return Err("历史件导入或手动配置数据的轮次来源或状态无效".into());
     }
     let started = teaching
         || history
@@ -873,14 +428,10 @@ pub(super) fn restore(path: &Path, mut round: CaptureRoundV2) -> Result<CaptureR
     let summary = summarize(group_count, &saved);
     apply(&mut round, summary);
     round.state = CaptureState::Failed;
-    round.error = Some("应用退出导致本轮采集中断，请整圈重采".into());
+    round.error = Some("应用退出导致本轮采集中断".into());
     round.failure = Some(CaptureFailureV2::Interrupted);
     crate::fsio::write_atomic(path, &serde_json::to_string_pretty(&round).map_err(|e| e.to_string())?)?;
     Ok(round)
-}
-
-pub(super) fn restored_run(round: CaptureRoundV2) -> BurstRun {
-    BurstRun::restored(round)
 }
 
 mod history;
