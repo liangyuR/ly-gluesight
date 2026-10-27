@@ -1,8 +1,9 @@
 use super::burst::{
-    apply_segment_teaching, calibration_corridors, camera_teaching_views, update_segments,
-    CameraTeaching,
+    apply_segment_teaching, calibration_corridors, camera_teaching_views, teach_preview_frames,
+    teach_preview_scope, update_segments, CameraTeaching,
 };
-use super::burst_tests::{burst_workspace, capture_round, DEVICE};
+use super::burst_tests::{burst_workspace, capture_round, measured, DEVICE};
+use crate::burst_judge::FrameState;
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::*;
 use crate::plan::SegmentKind::{Corner, Straight};
@@ -146,6 +147,51 @@ fn calibration_measures_each_frame_only_with_its_segment_detecting_cameras() {
             .flatten()
             .all(|s| *s == Some(1)),
         "单段配方不需要确认分段"
+    );
+}
+
+#[test]
+fn segment_preview_over_a_round_marks_missing_excluded_and_failed_frames_and_measures_the_rest() {
+    // 防的回归：示教页试测整段时，这台相机缺帧、帧组已屏蔽或单帧测量失败让整批失败，或这些帧被当成测量结果去量；
+    // 别的相机缺帧也被算进来；没按本轮已确认的分段取这一段的帧组；相机下标或帧组号没按计划相机与 seq 填
+    let (mut w, cameras) = workspace();
+    with_corridor(&mut w, &cameras[1], 3, vec![[1.0, 1.0], [50.0, 1.0]]);
+    let round = capture_round("gappy", &w.doc, GROUPS, DEVICE, &[(1, 22), (0, 23)]);
+    apply_capture_review(&mut w, &round, CaptureReviewEdit::Save(vec![10, 20])).unwrap();
+    apply_capture_review(
+        &mut w,
+        &round,
+        CaptureReviewEdit::Exclude {
+            start: 24,
+            end: 24,
+            excluded: true,
+            reason: "反光".into(),
+        },
+    )
+    .unwrap();
+    apply_capture_review(&mut w, &round, CaptureReviewEdit::Confirm).unwrap();
+    let scope = teach_preview_scope(&w, &round, &cameras[1], 3).unwrap();
+    let frames = teach_preview_frames(&w, &round, &cameras[1], &scope, |seq| {
+        if seq == 25 {
+            Err("lyFlow 运行失败".into())
+        } else {
+            Ok(measured(1.0))
+        }
+    });
+    let expected = |seq: u64| match seq {
+        22 => FrameState::Missing,
+        24 => FrameState::Unmeasured,
+        25 => FrameState::Error,
+        _ => FrameState::Measured,
+    };
+    assert_eq!(
+        frames
+            .iter()
+            .map(|m| (m.camera, m.seq, m.state))
+            .collect::<Vec<_>>(),
+        (21..=GROUPS)
+            .map(|seq| (1, seq, expected(seq)))
+            .collect::<Vec<_>>()
     );
 }
 

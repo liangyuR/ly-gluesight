@@ -161,3 +161,15 @@ fn corridor_leaving_the_frame_or_camera_outside_the_plan_is_refused() {
     };
     assert!(plan_corridor(&stranger, 1, &recipe, FRAME).is_err());
 }
+
+#[test]
+fn corridor_under_three_stations_is_refused_with_its_count_and_what_would_fit() {
+    // 防的回归：放过不足三站的走廊（lyFlow 1.1 少于 3 站时不报错、把有胶的帧都测成无胶，判断胶）；
+    // 刚好两倍站距的走廊被误拦；报错没有实际站数、可用站距与需要的走廊长度
+    let mut recipe = burst_recipe();
+    recipe.spacing = 20.0;
+    assert!(plan_corridor(&recipe.inspect[0], 1, &recipe, FRAME).is_ok());
+    recipe.spacing = 20.5;
+    let error = plan_corridor(&recipe.inspect[0], 1, &recipe, FRAME).unwrap_err();
+    assert!(error.contains("只有 2 站") && error.contains("不大于 20 mm") && error.contains("不短于 41 mm"), "{error}");
+}

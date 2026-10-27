@@ -644,6 +644,38 @@ fn teaching_source<'a>(round: &'a CaptureRoundV2, recipe_id: &str, camera: &str,
     Ok(source)
 }
 
+/// 第 `segment` 段在采集轮次 `round` 里的帧组范围（含两端）：单段配方为整轮；多段配方按本轮已确认的手动分段，未确认时报错。
+pub(super) fn segment_range(
+    w: &Workspace,
+    round: &str,
+    group_count: u64,
+    segment: u32,
+) -> Result<(u64, u64), String> {
+    let segments = &w.doc.segments;
+    let position = segments
+        .iter()
+        .position(|s| s.index == segment)
+        .ok_or_else(|| format!("没有第 {segment} 段"))?;
+    if segments.len() == 1 {
+        return Ok((1, group_count));
+    }
+    let counts = capture_review::confirmed_segment_counts(
+        &w.doc,
+        &w.capture_review.rounds,
+        round,
+        group_count,
+    )
+    .ok_or_else(|| {
+        format!("采集轮次 {round} 还没有确认手动分段：先在分段标定里确认这一轮的边界")
+    })?;
+    let start = counts[..position]
+        .iter()
+        .map(|&n| u64::from(n))
+        .sum::<u64>()
+        + 1;
+    Ok((start, start + u64::from(counts[position]) - 1))
+}
+
 /// 段走廊的示教帧（D-SB-45）：这台相机是该段的检测相机；示教轮次已确认手动分段（单段配方不需要），帧组落在这一段内；
 /// 与这台相机已有的示教帧同尺寸。同一相机同一段只留一帧，已画的走廊原样保留。相机还没有像素当量时用 `default_scale`
 /// （设备标定的当量）。
@@ -658,12 +690,9 @@ pub(super) fn apply_segment_teaching(
         teaching.camera.clone(),
         teaching.segment.ok_or("段走廊的示教帧缺段号")?,
     );
-    let position = w
-        .doc
-        .segments
-        .iter()
-        .position(|s| s.index == segment)
-        .ok_or_else(|| format!("没有第 {segment} 段"))?;
+    if !w.doc.segments.iter().any(|s| s.index == segment) {
+        return Err(format!("没有第 {segment} 段"));
+    }
     if !crate::plan::detects(&w.doc.segments, segment, &camera, &w.doc.plan_cameras()) {
         return Err(format!("相机 {camera} 不是第 {segment} 段的检测相机"));
     }
@@ -679,24 +708,7 @@ pub(super) fn apply_segment_teaching(
     }
     capture_review::require_available(w, &teaching.round, teaching.seq)?;
     if w.doc.segments.len() > 1 {
-        let counts = capture_review::confirmed_segment_counts(
-            &w.doc,
-            &w.capture_review.rounds,
-            &teaching.round,
-            group_count,
-        )
-        .ok_or_else(|| {
-            format!(
-                "采集轮次 {} 还没有确认手动分段：先在分段标定里确认这一轮的边界",
-                teaching.round
-            )
-        })?;
-        let start = counts[..position]
-            .iter()
-            .map(|&n| u64::from(n))
-            .sum::<u64>()
-            + 1;
-        let end = start + u64::from(counts[position]) - 1;
+        let (start, end) = segment_range(w, &teaching.round, group_count, segment)?;
         if !(start..=end).contains(&teaching.seq) {
             return Err(format!(
                 "第 {} 帧组不在第 {segment} 段（这一轮为帧组 {start}–{end}）",
@@ -1507,47 +1519,269 @@ pub async fn workspace_calibration_frame(
             });
         };
         let recipe = w.doc.build()?;
-        let inspect = &recipe.inspect[index];
-        let corridor = inspect
-            .segment_corridor(segment)
-            .map(|s| s.corridor.clone())
-            .unwrap_or_default();
-        let search_half_px = inspect.mm_per_px.map(|scale| {
-            f64::from(inspect.detect.as_ref().unwrap_or(&recipe.detect).search_mm) / scale
-        });
         let graphs = vision::CorridorSet::build(&recipe, &teaching_sizes(&w)?)?;
-        let graph = graphs
-            .get(index, segment)
-            .ok_or_else(|| format!("第 {segment} 段相机 {camera} 还没有示教走廊"))?;
+        segment_frame_view(
+            &app,
+            &recipe,
+            &graphs,
+            (index, &camera),
+            segment,
+            (&round, seq),
+            &format!("calibration-view-{id}-{round}-c{index}-{seq}"),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 用第 `segment` 段的测量图（有逐帧定向时用定向图）量采集轮次 `round` 里计划相机 `index` 的第 `seq` 帧。
+/// 有在途件或正在采集时拒绝，免得与生产争用测量。
+fn segment_frame_view(
+    app: &AppHandle,
+    recipe: &crate::recipe::Recipe,
+    graphs: &vision::CorridorSet,
+    (index, camera): (usize, &str),
+    segment: u32,
+    (round, seq): (&str, u64),
+    run: &str,
+) -> Result<CalibrationFrameView, String> {
+    let inspect = &recipe.inspect[index];
+    let corridor = inspect
+        .segment_corridor(segment)
+        .map(|s| s.corridor.clone())
+        .unwrap_or_default();
+    let search_half_px = inspect.mm_per_px.map(|scale| {
+        f64::from(inspect.detect.as_ref().unwrap_or(&recipe.detect).search_mm) / scale
+    });
+    let graph = graphs
+        .get(index, segment)
+        .ok_or_else(|| format!("第 {segment} 段相机 {camera} 还没有示教走廊"))?;
+    let cycle = app.state::<CycleHost>();
+    crate::camera::check_idle(&cycle)?;
+    let capture = cycle.camera.recipe_capture();
+    let image = crate::image_file::load(&capture.burst_frame_path(round, camera, seq)?)?;
+    let engine = app
+        .state::<vision::VisionHost>()
+        .engine()
+        .ok_or("lyFlow 核心库未加载")?;
+    let measured = vision::measure_frame(&engine, graph, &image, seq, &vision::unique_run_id(run))?;
+    Ok(CalibrationFrameView {
+        segment: Some(segment),
+        corridor: if measured.line.is_empty() {
+            corridor
+        } else {
+            measured.line.clone()
+        },
+        search_half_px,
+        edges: measured.edges,
+        metrics: FrameMetrics {
+            camera: index,
+            seq,
+            ..measured.metrics
+        },
+    })
+}
+
+/// 示教页试测一段：试测所用计划相机下标与这一段在示教轮次里的帧组范围（含两端）。
+pub(super) struct TeachPreviewScope {
+    pub index: usize,
+    pub start: u64,
+    pub end: u64,
+}
+
+/// 示教页试测（只读）的前置：段配方、段存在、相机是计划相机且检测这一段、这一段已保存走廊，
+/// 轮次属于本候选且完整；范围同示教帧（`segment_range`）。
+pub(super) fn teach_preview_scope(
+    w: &Workspace,
+    round: &CaptureRoundV2,
+    camera: &str,
+    segment: u32,
+) -> Result<TeachPreviewScope, String> {
+    require_burst(&w.doc)?;
+    if !w.doc.segments.iter().any(|s| s.index == segment) {
+        return Err(format!("没有第 {segment} 段"));
+    }
+    let cameras = w.doc.plan_cameras();
+    let index = cameras
+        .iter()
+        .position(|c| c == camera)
+        .ok_or_else(|| format!("相机 {camera} 不是段配方的计划相机"))?;
+    if !crate::plan::detects(&w.doc.segments, segment, camera, &cameras) {
+        return Err(format!("相机 {camera} 不是第 {segment} 段的检测相机"));
+    }
+    let saved = w
+        .doc
+        .inspect
+        .iter()
+        .find(|i| i.camera == camera)
+        .is_some_and(|i| segment_corridor_saved(i, segment, &w.camera_teaching));
+    if !saved {
+        return Err(format!("第 {segment} 段相机 {camera} 还没有保存的走廊"));
+    }
+    if round.recipe_id != w.doc.id || round.state != CaptureState::Complete {
+        return Err(format!(
+            "采集轮次 {} 不属于当前候选或尚未完整完成，不能用于试测",
+            round.round_id
+        ));
+    }
+    let (start, end) = segment_range(w, &round.round_id, round.group_count, segment)?;
+    Ok(TeachPreviewScope { index, start, end })
+}
+
+fn frame_missing(round: &CaptureRoundV2, camera: &str, seq: u64) -> bool {
+    round
+        .cameras
+        .iter()
+        .position(|c| c.camera_id == camera)
+        .is_none_or(|j| {
+            round
+                .missing_frames
+                .iter()
+                .any(|m| m.camera == j && m.seq == seq)
+        })
+}
+
+/// 试测一段的每一帧（按 seq 升序覆盖整段）：缺帧记 Missing，帧组已屏蔽记 Unmeasured，`measure(seq)` 失败的帧记 Error，
+/// 单帧失败不影响其余帧。
+pub(super) fn teach_preview_frames(
+    w: &Workspace,
+    round: &CaptureRoundV2,
+    camera: &str,
+    scope: &TeachPreviewScope,
+    mut measure: impl FnMut(u64) -> Result<FrameMetrics, String>,
+) -> Vec<FrameMetrics> {
+    let index = scope.index;
+    (scope.start..=scope.end)
+        .map(|seq| {
+            if frame_missing(round, camera, seq) {
+                frame_without_metrics(index, seq, FrameState::Missing, None)
+            } else if capture_review::require_available(w, &round.round_id, seq).is_err() {
+                frame_without_metrics(index, seq, FrameState::Unmeasured, Some("帧组已屏蔽".into()))
+            } else {
+                match measure(seq) {
+                    Ok(m) => FrameMetrics {
+                        camera: index,
+                        seq,
+                        ..m
+                    },
+                    Err(error) => frame_without_metrics(index, seq, FrameState::Error, Some(error)),
+                }
+            }
+        })
+        .collect()
+}
+
+/// 建测量图用的各计划相机示教帧尺寸：还没有示教帧的相机也没有走廊，不建图，尺寸不会被用到。
+fn taught_sizes(w: &Workspace) -> Vec<[u32; 2]> {
+    w.doc
+        .plan_cameras()
+        .iter()
+        .map(|camera| camera_frame_size(&w.camera_teaching, camera).unwrap_or_default())
+        .collect()
+}
+
+fn workspace_clone(app: &AppHandle, id: &str) -> Result<Workspace, String> {
+    let host = app.state::<WorkspaceHost>();
+    let items = host.items.lock().unwrap();
+    Ok(items.get(id).ok_or("候选配置不存在")?.clone())
+}
+
+/// 示教页用已保存的段走廊试测示教轮次 `round` 里这一段的第 `seq` 帧（只读，不改候选、标定与文件）。
+#[tauri::command]
+pub async fn workspace_teach_preview_frame(
+    app: AppHandle,
+    id: String,
+    camera: String,
+    segment: u32,
+    round: String,
+    seq: u64,
+) -> Result<CalibrationFrameView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = workspace_clone(&app, &id)?;
+        require_burst(&w.doc)?;
+        let captured = app
+            .state::<CycleHost>()
+            .camera
+            .recipe_capture()
+            .get_burst(&round)?;
+        let scope = teach_preview_scope(&w, &captured, &camera, segment)?;
+        if !(scope.start..=scope.end).contains(&seq) {
+            return Err(format!(
+                "第 {seq} 帧组不在第 {segment} 段（这一轮为帧组 {}–{}）",
+                scope.start, scope.end
+            ));
+        }
+        if frame_missing(&captured, &camera, seq) {
+            return Err(format!("相机 {camera} 缺第 {seq} 帧组的图像"));
+        }
+        capture_review::require_available(&w, &round, seq)?;
+        let recipe = w.doc.build()?;
+        let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?;
+        segment_frame_view(
+            &app,
+            &recipe,
+            &graphs,
+            (scope.index, &camera),
+            segment,
+            (&round, seq),
+            &format!("teach-preview-{id}-{round}-c{}-{seq}", scope.index),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 示教页试测一段的结果：示教轮次、这一段的帧组范围（含两端）与每帧指标（按 seq 升序）。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeachPreviewSegment {
+    pub round: String,
+    pub start: u64,
+    pub end: u64,
+    pub frames: Vec<FrameMetrics>,
+}
+
+/// 示教页用已保存的段走廊试测示教轮次 `round` 里这一段的全部帧（只读）；测量图只建一次。
+#[tauri::command]
+pub async fn workspace_teach_preview_segment(
+    app: AppHandle,
+    id: String,
+    camera: String,
+    segment: u32,
+    round: String,
+) -> Result<TeachPreviewSegment, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = workspace_clone(&app, &id)?;
+        require_burst(&w.doc)?;
         let cycle = app.state::<CycleHost>();
+        let captured = cycle.camera.recipe_capture().get_burst(&round)?;
+        let scope = teach_preview_scope(&w, &captured, &camera, segment)?;
+        let recipe = w.doc.build()?;
+        let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?;
+        if graphs.get(scope.index, segment).is_none() {
+            return Err(format!("第 {segment} 段相机 {camera} 还没有示教走廊"));
+        }
         crate::camera::check_idle(&cycle)?;
-        let capture = cycle.camera.recipe_capture();
-        let image = crate::image_file::load(&capture.burst_frame_path(&round, &camera, seq)?)?;
-        let engine = app
-            .state::<vision::VisionHost>()
+        app.state::<vision::VisionHost>()
             .engine()
             .ok_or("lyFlow 核心库未加载")?;
-        let measured = vision::measure_frame(
-            &engine,
-            graph,
-            &image,
-            seq,
-            &vision::unique_run_id(&format!("calibration-view-{id}-{round}-c{index}-{seq}")),
-        )?;
-        Ok(CalibrationFrameView {
-            segment: Some(segment),
-            corridor: if measured.line.is_empty() {
-                corridor
-            } else {
-                measured.line.clone()
-            },
-            search_half_px,
-            edges: measured.edges,
-            metrics: FrameMetrics {
-                camera: index,
-                seq,
-                ..measured.metrics
-            },
+        let frames = teach_preview_frames(&w, &captured, &camera, &scope, |seq| {
+            segment_frame_view(
+                &app,
+                &recipe,
+                &graphs,
+                (scope.index, &camera),
+                segment,
+                (&round, seq),
+                &format!("teach-preview-{id}-{round}-c{}-{seq}", scope.index),
+            )
+            .map(|view| view.metrics)
+        });
+        Ok(TeachPreviewSegment {
+            round,
+            start: scope.start,
+            end: scope.end,
+            frames,
         })
     })
     .await

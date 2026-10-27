@@ -46,12 +46,14 @@ describe("工作台保存的段列表", () => {
     expect(next[1].tolerance).toBe(2);
   });
 
-  it("套用到同类段 → 其余同类型段的检测项与容差改成和本段一样，相机、跳过帧数、长度与标定不变", () => {
+  // 套用按钮在走廊示教页，那里看不到帧数容差：顺带改掉容差或逐帧定向，操作员察觉不到
+  it("检测项套用到同类段 → 其余同类型段只改检测项，帧数容差、逐帧定向、相机、长度与标定不变", () => {
     const segments = calibrated();
     segments[0].checks = { ...segments[0].checks, width: { ...segments[0].checks.width, nominalMm: 5 } };
+    segments[0].heading = { toleranceDeg: 8 };
     segments[2].cameras = ["CAM-3"];
     const next = applyToKind(segments, 0);
-    expect([next[2].checks.width.nominalMm, next[2].tolerance]).toEqual([5, 2]);
+    expect([next[2].checks.width.nominalMm, next[2].tolerance, next[2].heading]).toEqual([5, 1, undefined]);
     expect([next[2].cameras, next[2].lengthMm, next[2].expectedFrames]).toEqual([["CAM-3"], 80, 3]);
     expect(next[1]).toBe(segments[1]);
   });
