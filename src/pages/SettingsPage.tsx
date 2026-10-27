@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Grid, Heading, NumberField, Select, Stack, Text } from "qing-steel";
-import { getAppInfo, getEngineStatus, openLogDir, type AppInfo, type EngineStatus } from "../lib/api";
+import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
 import { errorText } from "../lib/errors";
@@ -323,11 +323,6 @@ function StoragePanel() {
 export default function SettingsPage() {
   const { data: info, error, loading, reload } = useResource<AppInfo>(getAppInfo);
   const savePart = useSavePart();
-  const [logError, setLogError] = useState<string | null>(null);
-  const openLogs = () => {
-    setLogError(null);
-    openLogDir().catch((e: unknown) => setLogError(errorText(e)));
-  };
 
   return (
     <Stack direction="column" align="stretch" gap={16} wrap={false}>
@@ -345,11 +340,7 @@ export default function SettingsPage() {
           <dd>{info?.version ?? "--"}</dd>
           <dt>构建</dt>
           <dd className="mono">{info?.gitSha ? `${info.gitSha}${info.buildTime ? ` · ${info.buildTime}` : ""}` : "--"}</dd>
-          <dt>日志目录</dt>
-          <dd className="mono">{displayPath(info?.logDir ?? "--")}</dd>
         </dl>
-        <div><Button onClick={openLogs}>打开日志目录</Button></div>
-        {logError && <Alert tone="ng">打开日志目录失败：{logError}</Alert>}
         </Stack>
       </Card>
     </Stack>

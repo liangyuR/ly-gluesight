@@ -54,7 +54,7 @@ describe("离线原图保留设置", () => {
     const storage = within(screen.getByRole("region", { name: "资料存储" }));
     expect(await storage.findByText(displayed)).toBeVisible();
     for (const suffix of ["data", "runtime", "vision\\project"]) expect(storage.getByText(`${displayed}\\${suffix}`)).toBeVisible();
-    expect(await within(screen.getByRole("region", { name: "关于" })).findByText(`${displayed}\\runtime`)).toBeVisible();
+    expect(screen.getAllByText(`${displayed}\\runtime`)).toHaveLength(1);
     expect(await within(screen.getByRole("region", { name: "lyFlow 与帧录制" })).findByText(`${displayed}\\lyflow`)).toBeVisible();
   });
 
