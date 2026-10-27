@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Download, History, RefreshCw, Scale } from "lucide-react";
 import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, SegmentedControl, Select, Stack, StatusBadge, Table, Text, TextField, type TableColumn } from "qing-steel";
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
 import { errorText } from "../lib/errors";
 import { flagBadges } from "../features/plan/vis";
-import { displayReason, formatTime, historyApi, partVerdict, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, type HistoryPage as Page, type HistoryQuery, type HistoryScope } from "../features/history";
+import { displayReason, formatTime, historyApi, partVerdict, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, type HistoryFilter, type HistoryPage as Page, type HistoryQuery, type HistoryScope, type PartMode } from "../features/history";
 
 type Item = Page["items"][number];
 
@@ -23,6 +23,12 @@ const ranges: [string, string, number | null][] = [
   ["all", "全部", null],
 ];
 const rangeOptions = ranges.map(([value, label]) => ({ value, label }));
+const modeOptions: { value: string; label: string; modes: PartMode[] }[] = [
+  { value: "all", label: "全部", modes: [] },
+  { value: "production", label: "正式检测", modes: ["production"] },
+  { value: "maintenanceShadow", label: "维护试判", modes: ["maintenanceShadow"] },
+  { value: "maintenanceCollect", label: "维护采集", modes: ["maintenanceCollect"] },
+];
 
 function rangeStart(days: number | null) {
   if (days === null) return null;
@@ -34,11 +40,14 @@ function rangeStart(days: number | null) {
 export default function HistoryPage() {
   const go = useNavigate();
   const recipes = useRecipes();
+  const location = useLocation();
+  const [initial] = useState(() => (location.state as { filter?: HistoryFilter } | null)?.filter ?? null);
   const [scope, setScope] = useState<HistoryScope>("real");
-  const [range, setRange] = useState("today");
-  const [groups, setGroups] = useState<string[]>([]);
+  const [range, setRange] = useState(initial ? "all" : "today");
+  const [groups, setGroups] = useState<string[]>(initial?.groups ?? []);
+  const [mode, setMode] = useState(modeOptions.find((m) => m.modes.join() === (initial?.modes ?? []).join())?.value ?? "all");
   const [sn, setSn] = useState("");
-  const [recipeId, setRecipeId] = useState("");
+  const [recipeId, setRecipeId] = useState(initial?.recipeId ?? "");
   const [offset, setOffset] = useState(0);
   const [result, setResult] = useState<{ page: Page; query: HistoryQuery; offset: number } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -60,8 +69,9 @@ export default function HistoryPage() {
       verdicts: verdictGroups.filter((g) => groups.includes(g.key)).flatMap((g) => g.verdicts),
       sn,
       recipeId: recipeId || null,
+      modes: modeOptions.find((m) => m.value === mode)!.modes,
     }),
-    [scope, range, groups, sn, recipeId],
+    [scope, range, groups, sn, recipeId, mode],
   );
   const currentQuery = useRef(query);
   currentQuery.current = query;
@@ -198,6 +208,7 @@ export default function HistoryPage() {
             <Stack gap={12}>
               <SegmentedControl label="记录来源" options={scopeOptions} value={scope} onValueChange={(value) => { setScope(value as HistoryScope); setOffset(0); }} />
               <SegmentedControl label="记录日期" options={rangeOptions} value={range} onValueChange={(value) => { setRange(value); setOffset(0); }} />
+              <SegmentedControl label="检测模式" options={modeOptions} value={mode} onValueChange={(value) => { setMode(value); setOffset(0); }} />
               <Stack gap={8}>
                 <Text variant="label" muted>结果</Text>
                 {verdictGroups.map((g) => (

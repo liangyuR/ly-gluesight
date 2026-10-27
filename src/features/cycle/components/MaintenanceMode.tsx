@@ -1,16 +1,40 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Wrench } from "lucide-react";
 import { Alert, Button, Card, Dialog, TextField } from "qing-steel";
 import { errorText } from "../../../lib/errors";
-import { formatTime } from "../../history/meta";
+import { formatTime, verdictLabel } from "../../history/meta";
+import type { HistoryFilter } from "../../history/types";
 import { cycleApi, recipeApi } from "../api";
-import type { CollectionProgress, Maintenance, RecipeSummary } from "../types";
+import type { CollectionProgress, Maintenance, RecipeSummary, TrialProgress } from "../types";
 
 export function MaintenanceBanner({ maintenance }: { maintenance: Maintenance | null | undefined }) {
   if (!maintenance) return null;
   return <div className="qs-banner warn maintenance-banner" role="status" aria-label="维护模式">
     <span><strong>维护模式：不向 PLC 输出 NG</strong> · 每件向 PLC 回结果码 0，按未检放行 · 开启于 {formatTime(maintenance.since)} · 原因：{maintenance.reason}</span>
   </div>;
+}
+
+export function TrialProgressPanel({ trial, recipes }: { trial: TrialProgress[] | undefined; recipes: RecipeSummary[] }) {
+  const go = useNavigate();
+  if (!trial?.length) return null;
+  return <Card className="maintenance-collection" role="region" aria-label="维护试判统计">
+    <div className="panel-head">
+      <h3 className="panel-title">维护试判</h3>
+      <span className="spacer" />
+      <span className="muted">结论不输出给 PLC；逐件复核 NG 与 ERR 后再退出维护模式</span>
+    </div>
+    <ul>{trial.map(item => {
+      const name = recipes.find(recipe => recipe.id === item.recipeId)?.name;
+      const { ok, excursion, ng, err } = item.counts;
+      const split = item.ng.map(n => `${verdictLabel[n.verdict].replace("NG · ", "")} ${n.count}`).join("、");
+      const filter: HistoryFilter = { recipeId: item.recipeId, modes: ["maintenanceShadow"], groups: ["ng", "err"] };
+      return <li key={item.recipeId}>
+        <b>{item.recipeId}</b> v{item.recipeVersion}{name && <span className="muted"> · {name}</span>}：试判 {ok + excursion + ng + err} 件 · OK {ok} · 局部超差 {excursion} · NG {ng}{split && `（${split}）`} · ERR {err}
+        {ng + err > 0 && <Button size="sm" variant="text" onClick={() => go("/history", { state: { filter } })}>复核</Button>}
+      </li>;
+    })}</ul>
+  </Card>;
 }
 
 export function CollectionProgressPanel({ collection, recipes }: { collection: CollectionProgress[] | undefined; recipes: RecipeSummary[] }) {

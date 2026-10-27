@@ -259,6 +259,8 @@ pub struct Snapshot {
     pub maintenance: Option<crate::settings::Maintenance>,
     /// 维护采集进度，按配方
     pub collection: Vec<crate::store::CollectionProgress>,
+    /// 维护试判统计，按配方（最新正式版本）
+    pub trial: Vec<crate::store::TrialProgress>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -979,8 +981,12 @@ struct Machine {
     ack_alarmed: bool,
     result: Option<ResultView>,
     stats: Stats,
-    /// 维护采集进度与上次从记录库读取的时刻（录制收尾是异步的，定时刷新）
-    collection: (Vec<crate::store::CollectionProgress>, Option<Instant>),
+    /// 维护采集进度、试判统计与上次从记录库读取的时刻（录制收尾是异步的，定时刷新）
+    collection: (
+        Vec<crate::store::CollectionProgress>,
+        Vec<crate::store::TrialProgress>,
+        Option<Instant>,
+    ),
     stats_day: i64,
     stats_scope: HistoryScope,
     stray: u64,
@@ -1054,7 +1060,7 @@ impl Machine {
             ack_alarmed: false,
             result: None,
             stats,
-            collection: (Vec::new(), None),
+            collection: (Vec::new(), Vec::new(), None),
             stats_day: history::local_day(),
             stats_scope: HistoryScope::Real,
             stray: 0,
@@ -1308,17 +1314,18 @@ impl Machine {
         self.published = Instant::now();
         let host = host(&self.app);
         if host.settings().maintenance.is_none() {
-            self.collection = (Vec::new(), None);
+            self.collection = (Vec::new(), Vec::new(), None);
         } else if self
             .collection
-            .1
+            .2
             .is_none_or(|at| at.elapsed() > COLLECTION_REFRESH)
         {
+            let store = self.app.state::<Store>();
             self.collection = (
-                self.app
-                    .state::<Store>()
+                store
                     .collection_progress(self.stats_scope)
                     .unwrap_or_default(),
+                store.trial_progress(self.stats_scope).unwrap_or_default(),
                 Some(Instant::now()),
             );
         }
@@ -1350,6 +1357,7 @@ impl Machine {
             recording_alarm: self.recording_alarm.clone(),
             maintenance: host.settings().maintenance,
             collection: self.collection.0.clone(),
+            trial: self.collection.1.clone(),
         };
         host.shared.lock().unwrap().snapshot = Some(snapshot.clone());
         let _ = self.app.emit("cycle://snapshot", snapshot);

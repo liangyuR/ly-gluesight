@@ -240,6 +240,8 @@ export interface Snapshot {
   maintenance?: Maintenance | null;
   /** 维护采集进度，按配方；只含采集版配方录下的件 */
   collection?: CollectionProgress[];
+  /** 维护试判统计，按配方；只看每个配方最新正式版本的试判件 */
+  trial?: TrialProgress[];
 }
 
 /** 维护模式（在线投运）：开启后每件都布防采图，向 PLC 回结果码 0（按未检放行），不输出 NG。 */
@@ -253,6 +255,14 @@ export interface CollectionProgress {
   recipeId: string;
   recorded: number;
   usable: number;
+}
+
+/** ng：NG 结论细分，多的在前 */
+export interface TrialProgress {
+  recipeId: string;
+  recipeVersion: number;
+  counts: { ok: number; excursion: number; ng: number; err: number };
+  ng: { verdict: Verdict; count: number }[];
 }
 
 export interface RecordingAlarm {

@@ -11,7 +11,7 @@ import { displayReason, triggerModeLabel, verdictLabel, verdictTone } from "../f
 import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
 import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/components/InspectionDiagnostics";
 import ContextHelp from "../features/cycle/components/ContextHelp";
-import { CollectionProgressPanel, MaintenanceBanner, MaintenanceToggle } from "../features/cycle/components/MaintenanceMode";
+import { CollectionProgressPanel, MaintenanceBanner, MaintenanceToggle, TrialProgressPanel } from "../features/cycle/components/MaintenanceMode";
 import { errorText } from "../lib/errors";
 import {
   cycleApi,
@@ -197,6 +197,7 @@ export default function InspectPage() {
         原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查资料盘空间与录制目录写权限，下一件完整保存后自动消除。
       </Alert>}
       <CollectionProgressPanel collection={snapshot?.collection} recipes={recipes} />
+      <TrialProgressPanel trial={snapshot?.trial} recipes={recipes} />
       <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="prod-body">

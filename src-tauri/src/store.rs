@@ -301,7 +301,24 @@ pub struct CollectionProgress {
     pub usable: u32,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+/// 维护试判的统计（在线投运三期）：每个配方最新正式版本的试判件按结论计数，NG 按结论细分（多的在前），
+/// 供操作员复核误判、决定何时退出维护模式。
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialProgress {
+    pub recipe_id: String,
+    pub recipe_version: u32,
+    pub counts: VerdictCounts,
+    pub ng: Vec<VerdictCount>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct VerdictCount {
+    pub verdict: Verdict,
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct VerdictCounts {
     pub ok: u64,
     pub excursion: u64,
@@ -1434,6 +1451,54 @@ impl Store {
             let last = progress.last_mut().unwrap();
             last.recorded += 1;
             last.usable += u32::from(usable);
+        }
+        Ok(progress)
+    }
+
+    pub fn trial_progress(&self, scope: HistoryScope) -> Result<Vec<TrialProgress>, String> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "SELECT recipe_id, recipe_version, verdict, COUNT(*) FROM parts WHERE {} AND mode = 'maintenanceShadow'             AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL GROUP BY recipe_id, recipe_version, verdict             ORDER BY recipe_id, recipe_version DESC",
+            scope.clause("")
+        );
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u32>(1)?,
+                    enum_column::<Verdict>(row, 2)?,
+                    row.get::<_, i64>(3)? as u64,
+                ))
+            })
+            .map_err(db_err)?;
+        let mut progress: Vec<TrialProgress> = Vec::new();
+        for row in rows {
+            let (recipe_id, recipe_version, verdict, count) = row.map_err(db_err)?;
+            match progress.last_mut() {
+                Some(last) if last.recipe_id == recipe_id => {
+                    if last.recipe_version != recipe_version {
+                        continue;
+                    }
+                }
+                _ => progress.push(TrialProgress {
+                    recipe_id,
+                    recipe_version,
+                    ..TrialProgress::default()
+                }),
+            }
+            let last = progress.last_mut().unwrap();
+            last.counts.add(verdict, count);
+            if !matches!(
+                verdict,
+                Verdict::Ok | Verdict::OkWithExcursion | Verdict::ErrInspect
+            ) {
+                last.ng.push(VerdictCount { verdict, count });
+            }
+        }
+        for item in &mut progress {
+            item.ng
+                .sort_by(|a, b| b.count.cmp(&a.count).then(a.verdict.cmp(&b.verdict)));
         }
         Ok(progress)
     }

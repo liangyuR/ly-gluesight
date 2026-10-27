@@ -192,6 +192,56 @@ fn database_without_mode_column_keeps_records_as_production_after_upgrade() {
     );
 }
 
+/// 在线投运三期：试判统计只算真机试判件，每个配方只看最新正式版本（重新发布后从零算起），NG 按结论细分、多的在前。
+#[test]
+fn trial_progress_counts_latest_version_shadow_parts_and_splits_ng_by_verdict() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let old = burst_fixture::recipe();
+    let mut doc = crate::recipe::samples_burst();
+    doc.version += 1;
+    let latest = doc.build().unwrap();
+    let (judgement, burst) =
+        burst_fixture::record(&old, burst_fixture::frames(4, &[(1, 2)]), None, Some(0));
+    use PartMode::{MaintenanceCollect as Collect, MaintenanceShadow as Shadow, Production};
+    use RecordSource::{OfflineSample, Real};
+    let parts = [
+        (&old, Shadow, Real, Verdict::NgWidth),
+        (&latest, Shadow, Real, Verdict::Ok),
+        (&latest, Shadow, Real, Verdict::NgGap),
+        (&latest, Shadow, Real, Verdict::NgWidth),
+        (&latest, Shadow, Real, Verdict::NgWidth),
+        (&latest, Shadow, Real, Verdict::ErrInspect),
+        (&latest, Shadow, OfflineSample, Verdict::NgGap),
+        (&latest, Production, Real, Verdict::NgGap),
+        (&latest, Collect, Real, Verdict::ErrInspect),
+    ];
+    for (i, (recipe, mode, source, verdict)) in parts.into_iter().enumerate() {
+        let judged = Judgement {
+            verdict,
+            ..judgement.clone()
+        };
+        let cycle = format!("trial-{i}");
+        let mut part = burst_part(recipe, &cycle, &judged, &burst);
+        (part.mode, part.source, part.burst, part.frames_expected) = (mode, source, None, 0);
+        store.insert(&part).unwrap();
+    }
+    let progress = store.trial_progress(HistoryScope::Real).unwrap();
+    assert_eq!(progress.len(), 1);
+    let trial = &progress[0];
+    assert_eq!(
+        (trial.recipe_id.as_str(), trial.recipe_version),
+        (latest.id.as_str(), latest.version)
+    );
+    let counts = &trial.counts;
+    assert_eq!(
+        (counts.ok, counts.excursion, counts.ng, counts.err),
+        (1, 0, 3, 1)
+    );
+    let ng: Vec<_> = trial.ng.iter().map(|n| (n.verdict, n.count)).collect();
+    assert_eq!(ng, [(Verdict::NgWidth, 2), (Verdict::NgGap, 1)]);
+}
+
 /// 当日统计只算正式检测件：维护采集与试判件不进产线合格率，历史查询照常列出。
 #[test]
 fn today_counts_exclude_maintenance_parts_but_history_lists_them() {

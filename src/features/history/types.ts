@@ -28,8 +28,17 @@ export interface HistoryQuery {
   verdicts?: Verdict[];
   sn?: string;
   recipeId?: string | null;
+  /** 为空不按模式筛选 */
+  modes?: PartMode[];
   offset?: number;
   limit?: number;
+}
+
+/** 从别的页面跳到历史页时带的初始筛选（如在线检测页“复核试判”） */
+export interface HistoryFilter {
+  recipeId?: string;
+  modes?: PartMode[];
+  groups?: string[];
 }
 
 export interface PartSummary {
