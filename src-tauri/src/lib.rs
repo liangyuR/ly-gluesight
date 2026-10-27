@@ -53,6 +53,8 @@ mod vision;
 mod workspace;
 mod ziparchive;
 
+mod heading;
+
 use tauri::Manager;
 
 pub use packaging::check_packaged_runtime;
@@ -67,9 +69,9 @@ pub mod probe_api {
     pub use crate::frame_group::FrameGroup;
     pub use crate::image_file::{load as load_image, save_pgm};
     pub use crate::plan::SegmentKind;
-    pub use crate::production::{burst_graphs, Prepared, GRAPH_VERSION_BURST};
+    pub use crate::production::{burst_graphs, graph_version, Prepared, GRAPH_VERSION_BURST};
     pub use crate::recipe::{
-        burst_template, DetectParams, Polarity, Recipe, RecipeDoc, SegmentCorridor,
+        burst_template, DetectParams, HeadingWindow, Polarity, Recipe, RecipeDoc, SegmentCorridor,
     };
     pub use crate::release::{
         load as load_release, publish_burst, BurstPublishInput, CameraInput, CorridorInput,

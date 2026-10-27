@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { Link } from "react-router-dom";
-import { Button, NumberField, Select } from "qing-steel";
+import { Button, NumberField, Select, Switch } from "qing-steel";
 import { KindChecksEditor } from "../plan/KindChecksEditor";
-import type { OffsetMeasure, PathSegment, SegmentChecks, WorkspacePlanView } from "../plan/types";
+import type { EdgeParams, EdgePolarity, OffsetMeasure, PathSegment, SegmentChecks, WorkspacePlanView } from "../plan/types";
 import type { WorkspaceView } from "./types";
 import { expectedText, PLAN_CAMERAS, segmentKindLabel } from "../plan/vis";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { errorText } from "../../lib/errors";
-import { applyToKind, patchSegment, segmentIssues } from "./segmentEdit";
-import { BoundaryGuardField } from "./DocParams";
+import { applyToKind, DEFAULT_EDGE, DEFAULT_HEADING, patchSegment, segmentIssues } from "./segmentEdit";
+import { BoundaryGuardField, BoundaryRefineField } from "./DocParams";
 import SegmentWorkbench from "./SegmentWorkbench";
 import { segmentCameras } from "./workbenchDraft";
 import AlignReview from "./AlignReview";
@@ -23,6 +23,10 @@ const saveText: Record<SaveState, string> = { saved: "段列表已保存", pendi
 const measureOptions: { value: OffsetMeasure; label: string }[] = [
   { value: "absoluteX", label: "图像横向坐标（绝对 x）" },
   { value: "toEdge", label: "胶条到边缘距离" },
+];
+const polarityOptions: { value: EdgePolarity; label: string }[] = [
+  { value: "brightToDark", label: "亮→暗" },
+  { value: "darkToBright", label: "暗→亮" },
 ];
 
 /**
@@ -102,12 +106,16 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
   const paramsPending = edits ? "段参数还没保存完，保存后再保存分段" : "";
   const cardsLocked = frozen || workbenchDirty;
   const pending = segments.filter(segment => segment.expectedFrames == null).map(segment => segment.index);
+  const docLocked = edits || workbenchDirty ? "段列表有未保存的改动，保存后再改" : "";
 
   return <div className="wp-page"><WorkspaceBar />
     <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
     <AlignReview plan={plan} locked={workbenchDirty ? "上方分段有未保存的改动，先保存或撤销后再确认其余轮次" : paramsPending} />
     <Panel title="段列表" detail="各段帧数容差、长度、跳过帧数与检测项；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数由多轮采集得出，这里只读"
-      actions={<BoundaryGuardField locked={edits || workbenchDirty ? "段列表有未保存的改动，保存后再改边界过渡帧数" : ""} />}>
+      actions={<>
+        <BoundaryGuardField locked={docLocked && `${docLocked}边界过渡帧数`} />
+        <BoundaryRefineField locked={docLocked && `${docLocked}边界细化`} available={segments.some(segment => !!segment.heading)} />
+      </>}>
       {/* 段多时逐段平铺太长：段条当选项卡，下方只显示所选段 */}
       <div className="seg-tabs" role="tablist" aria-label="段">
         {segments.map((segment, at) => <button key={at} type="button" role="tab" id={`seg-tab-${at}`} aria-selected={at === current} aria-controls="seg-panel"
@@ -159,8 +167,16 @@ function SegmentCard({ segment, cameras, disabled, onPatch, sameKind, onApplyToK
   const inspecting = segmentCameras(segment, cameras);
   const camera = offsetRef?.camera ?? inspecting[0];
   const setChecks = (checks: SegmentChecks) => onPatch({ checks });
-  // 改胶偏参考的测量量或相机：旧 x_ref 不再适用，清空等标准件标定重算
-  const setReference = (next: { measure?: OffsetMeasure; camera?: string }) => onPatch({ offsetRef: { measure, camera, ...next, xRef: null, spread: null } });
+  const edge = offsetRef?.edge ?? DEFAULT_EDGE;
+  const heading = segment.heading;
+  // 改胶偏参考的测量量或相机：旧 x_ref 不再适用，清空等标准件标定重算；找边参数只跟 toEdge
+  const setReference = (next: { measure?: OffsetMeasure; camera?: string }) => {
+    const target = next.measure ?? measure;
+    onPatch({ offsetRef: { measure: target, camera: next.camera ?? camera, xRef: null, spread: null, ...(target === "toEdge" ? { edge: { ...edge } } : {}) } });
+  };
+  // 找边参数改了测量结果，x_ref 一并清空；图纸胶边距只是参考值，不影响测量
+  const setEdge = (change: Partial<EdgeParams>) => offsetRef && onPatch({ offsetRef: { ...offsetRef, edge: { ...edge, ...change },
+    ...("nominalMm" in change ? {} : { xRef: null, spread: null }) } });
   return <section className="seg-card" aria-label={name}>
     <div className="seg-card-head">
       <strong>{name} · {segmentKindLabel[segment.kind]}</strong>
@@ -187,12 +203,31 @@ function SegmentCard({ segment, cameras, disabled, onPatch, sameKind, onApplyToK
       检 {range.aMm}–{range.bMm} mm 从未在判定中排除帧，现在不再使用，请改用上面的段首 / 段尾跳过帧数。
       <Button size="sm" disabled={disabled} onClick={() => onPatch({ inspectRange: null })}>清除</Button>
     </Notice>}
+    <div className="seg-offset" role="group" aria-label={`${name} 逐帧定向`}>
+      <Switch label="逐帧定向" aria-label={`${name} 逐帧定向`} checked={!!heading} disabled={disabled} onCheckedChange={on => onPatch({ heading: on ? { ...DEFAULT_HEADING } : null })} />
+      <NumberField label="方向容差" unit="°" aria-label={`${name} 方向容差`} step={1} min={0} max={45} disabled={disabled || !heading}
+        value={heading && Number.isFinite(heading.toleranceDeg) ? heading.toleranceDeg : ""} onValueChange={value => heading && onPatch({ heading: { toleranceDeg: value === "" ? NaN : value } })} />
+      <p className="muted">开启后每帧按图像找胶条方向，只测检测相机检测窗口内的一段，不再依赖按帧号选走廊；需在走廊示教页给本段的检测相机设检测窗口。方向范围为示教方向 ± 方向容差（0–45°）。</p>
+      {heading && straight && segment.checks.offset?.enabled && measure === "absoluteX" && <p className="c-warn">定向测量时胶路由图像拟合，绝对 x 恒为 0：本段胶偏请改用“胶条到边缘距离”。</p>}
+    </div>
     {straight && segment.checks.offset?.enabled && <div className="seg-offset" role="group" aria-label={`${name} 胶偏参考`}>
       <Select label="胶偏测量量" aria-label={`${name} 胶偏测量量`} value={measure} options={measureOptions} disabled={disabled} onValueChange={value => setReference({ measure: value as OffsetMeasure })} />
       <Select label="参考相机" aria-label={`${name} 参考相机`} value={camera} options={inspecting.map(id => ({ value: id, label: id }))} disabled={disabled} onValueChange={value => setReference({ camera: value })} />
-      <p className={offsetRef?.xRef == null ? "muted" : "plan-mono"}>{offsetRef?.xRef != null
-        ? `x_ref ${offsetRef.xRef} ± ${offsetRef.spread ?? "—"} mm（标准件多轮测量均值）`
-        : measure === "toEdge" ? "到边缘距离的测量量本轮未实现：该段胶偏不判" : "x_ref 待标定：由标准件多轮采集得出，不能手填"}</p>
+      {measure === "toEdge" && <>
+        <Select label="零件边极性" aria-label={`${name} 零件边极性`} value={edge.polarity} options={polarityOptions} disabled={disabled} onValueChange={value => setEdge({ polarity: value as EdgePolarity })} />
+        <NumberField label="搜索长度" unit="mm" aria-label={`${name} 找边搜索长度`} step={1} min={0} max={50} disabled={disabled}
+          value={Number.isFinite(edge.searchMm) ? edge.searchMm : ""} onValueChange={value => setEdge({ searchMm: value === "" ? NaN : value })} />
+        <NumberField label="对比度下限" aria-label={`${name} 找边对比度下限`} step={1} min={1} max={255} disabled={disabled}
+          value={Number.isFinite(edge.contrastMin) ? edge.contrastMin : ""} onValueChange={value => setEdge({ contrastMin: value === "" ? NaN : value })} />
+        <NumberField label="图纸胶边距" unit="mm" aria-label={`${name} 图纸胶边距`} step={0.1} min={0} disabled={disabled} placeholder="可空"
+          value={edge.nominalMm ?? ""} onValueChange={value => setEdge({ nominalMm: value === "" ? null : value })} />
+        <p className="muted">在参考相机画面里，沿测站法向从胶边往外找零件边：极性按画面里零件边的明暗跳变选，搜索长度 0–50 mm，对比度下限 1–255。图纸胶边距填了就以它为参考值，否则用标准件得出的 x_ref。</p>
+      </>}
+      <p className={offsetRef?.xRef == null ? "muted" : "plan-mono"}>{measure === "toEdge" && edge.nominalMm != null
+        ? `参考值取图纸胶边距 ${edge.nominalMm} mm`
+        : offsetRef?.xRef != null
+          ? `x_ref ${offsetRef.xRef} ± ${offsetRef.spread ?? "—"} mm（标准件多轮测量均值）`
+          : measure === "toEdge" ? "x_ref 待标定：由标准件多轮采集的胶边距得出；或填图纸胶边距" : "x_ref 待标定：由标准件多轮采集得出，不能手填"}</p>
     </div>}
     {sameKind > 0 && <div className="wp-actions">
       <Button size="sm" disabled={disabled} onClick={onApplyToKind}

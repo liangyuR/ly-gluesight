@@ -12,6 +12,7 @@
 //! ```
 //!
 //! 现场机上把 LYFLOW_CORE_DLL 指向安装目录里的 lyflow_core.dll 即可；没有设置时程序打印这段说明后退出。
+//! 设 `PROBE_HEADING=1` 时这一段开启逐帧定向（D-SB-47，出胶点在胶条起点、窗口 [1, 121] mm），只量测量耗时、不测写盘。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,9 +20,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gluesight_lib::probe_api::{
-    burst_graphs, burst_template, load_release, publish_burst, save_pgm, warm, BurstPublishInput,
-    CameraInput, CorridorInput, DetectParams, Engine, FrameImage, FrameState, Polarity, Prepared,
-    RecipeDoc, ResourceSource, SegmentCorridor, ValidationSite, Versions, GRAPH_VERSION_BURST,
+    burst_graphs, burst_template, graph_version, load_release, publish_burst, save_pgm, warm,
+    BurstPublishInput, CameraInput, CorridorInput, DetectParams, Engine, FrameImage, FrameState,
+    HeadingWindow, Polarity, Prepared, RecipeDoc, ResourceSource, SegmentCorridor, ValidationSite,
+    Versions,
 };
 use serde_json::json;
 
@@ -105,8 +107,21 @@ fn probe_document() -> RecipeDoc {
             polarity: Polarity::Dark,
             width_range: [0.8, 2.4],
         });
+        if heading() {
+            inspect.window = Some(HeadingWindow {
+                start_mm: 1.0,
+                length_mm: 120.0,
+            });
+        }
+    }
+    if heading() {
+        doc.segments[0].heading = Some(Default::default());
     }
     doc
+}
+
+fn heading() -> bool {
+    std::env::var("PROBE_HEADING").is_ok_and(|v| v == "1")
 }
 
 /// 探针写盘的临时目录，随它删除。
@@ -148,7 +163,7 @@ fn probe_production(engine: &Arc<Engine>, teach: &FrameImage) -> (Prepared, Temp
             validation_site: ValidationSite::Offline,
             versions: Versions {
                 engine: engine.identity.clone(),
-                graph: GRAPH_VERSION_BURST.into(),
+                graph: graph_version(&recipe).into(),
             },
             graph: ResourceSource::Bytes(graph),
             cameras: PROBE_CAMERAS
@@ -331,6 +346,9 @@ fn main() {
     }
     let needed = (75.0 * serial_p95_ms / 1000.0 / 0.7).ceil();
     println!("[probe] MEASURE_WORKERS = ceil(75 fps × 串行 p95 {serial_p95_ms:.2} ms / 0.7) = {needed}；上限 逻辑核 {cores} − 2 = {}", cores.saturating_sub(2));
+    if heading() {
+        return;
+    }
 
     // 二、PGM 写盘：生产录制的 save_pgm
     let bytes_per_file =

@@ -81,6 +81,9 @@ fn engine_station_output_reduces_to_frame_width_gap_presence_and_x_mm() {
             present_ratio: 34.0 / 41.0,
             corridor: Some(1),
             x_mm: Some((33.0 * 0.5 - 1.5) / 34.0),
+            heading_deg: None,
+            heading_fallback: false,
+            edge_mm: None,
         }
     );
     assert_eq!(m.edges[0], Some([[40.0, 74.0], [40.0, 90.0]]));

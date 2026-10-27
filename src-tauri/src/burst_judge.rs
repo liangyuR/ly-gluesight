@@ -58,6 +58,15 @@ pub struct FrameMetrics {
     /// 测量用的是第几段的走廊（`PathSegment.index`，D-SB-45）；没测或旧记录为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corridor: Option<u32>,
+    /// 逐帧定向测得的胶条方向（度，图像坐标，D-SB-47）；按示教走廊测的帧为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heading_deg: Option<f64>,
+    /// 逐帧定向没找到胶条、按预测段示教方向回退测量（D-SB-47）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub heading_fallback: bool,
+    /// 胶中心到零件边距离的均值（mm，D-SB-48 ToEdge 测量量）；没找边或没找到边为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_mm: Option<f64>,
 }
 
 /// 区域内 Measured 帧的胶宽统计（mm）。
@@ -87,7 +96,7 @@ pub enum OffsetUnjudged {
     Unsegmented,
     /// 分段不确定（边界置信度不足）
     LowConfidence,
-    /// 测量量未实现（ToEdge，默认做法 2）
+    /// 测量量未实现（ToEdge 没配找边参数，D-SB-48）
     MeasureNotImplemented,
     /// 启用了胶偏但标准件 x_ref 未标定
     NoReference,
@@ -535,8 +544,9 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
 }
 
 /// 直线区域的胶偏：只用 `offset_ref.camera` 那台相机的 Measured 帧，去掉区域首尾各一帧（按 seq）。
-/// 没启用胶偏不判也不标；ToEdge 标测量量未实现；没有参考值（或参考相机不在计划内）标未标定；
-/// 去掉首尾后没有可用的 x 时标没有可用帧（不静默放过）。
+/// AbsoluteX 用每帧的 x 与 x_ref 比；ToEdge 用每帧胶边距（D-SB-48），参考值取图纸胶边距，没填时取标准件得出的 x_ref。
+/// 没启用胶偏不判也不标；ToEdge 没配找边参数标测量量未实现；没有参考值（或参考相机不在计划内）标未标定；
+/// 去掉首尾后没有可用的测量量时标没有可用帧（不静默放过）。
 fn region_offset(
     segment: &PathSegment,
     checks: &SegmentChecks,
@@ -546,17 +556,29 @@ fn region_offset(
 ) -> (Option<OffsetStat>, Option<OffsetUnjudged>, BTreeSet<Finding>) {
     let Some(check) = checks.offset.as_ref().filter(|check| check.enabled) else { return (None, None, BTreeSet::new()) };
     let unjudged = |why| (None, Some(why), BTreeSet::new());
-    let Some(reference) = &segment.offset_ref else { return unjudged(OffsetUnjudged::NoReference) };
-    if reference.measure == OffsetMeasure::ToEdge {
-        return unjudged(OffsetUnjudged::MeasureNotImplemented);
-    }
-    let (Some(x_ref), Some(camera)) = (reference.x_ref, cameras.iter().position(|id| *id == reference.camera)) else {
+    let Some(reference) = &segment.offset_ref else {
+        return unjudged(OffsetUnjudged::NoReference);
+    };
+    let (target, value): (Option<f64>, fn(&FrameMetrics) -> Option<f64>) =
+        match (reference.measure, &reference.edge) {
+            (OffsetMeasure::ToEdge, None) => {
+                return unjudged(OffsetUnjudged::MeasureNotImplemented)
+            }
+            (OffsetMeasure::ToEdge, Some(edge)) => {
+                (edge.nominal_mm.or(reference.x_ref), |m| m.edge_mm)
+            }
+            (OffsetMeasure::AbsoluteX, _) => (reference.x_ref, |m| m.x_mm),
+        };
+    let (Some(x_ref), Some(camera)) = (
+        target,
+        cameras.iter().position(|id| *id == reference.camera),
+    ) else {
         return unjudged(OffsetUnjudged::NoReference);
     };
     let xs: Vec<f64> = measured
         .iter()
         .filter(|m| m.camera == camera && m.seq != region.first_seq && m.seq != region.last_seq)
-        .filter_map(|m| m.x_mm)
+        .filter_map(|m| value(m))
         .collect();
     if xs.is_empty() {
         return unjudged(OffsetUnjudged::NoFrames);
@@ -635,7 +657,13 @@ mod tests {
     }
 
     fn reference(x_ref: Option<f64>, measure: OffsetMeasure) -> Option<OffsetRef> {
-        Some(OffsetRef { measure, camera: "camA".into(), x_ref, spread: x_ref.map(|_| 0.1) })
+        Some(OffsetRef {
+            measure,
+            camera: "camA".into(),
+            x_ref,
+            spread: x_ref.map(|_| 0.1),
+            edge: None,
+        })
     }
 
     /// 合格帧：10 站胶宽都是 4.0（站距 1 mm），无断口，胶中心 x = 0。
@@ -654,6 +682,9 @@ mod tests {
             corridor: None,
             present_ratio: 1.0,
             x_mm: Some(0.0),
+            heading_deg: None,
+            heading_fallback: false,
+            edge_mm: None,
         }
     }
 
@@ -940,5 +971,65 @@ mod tests {
             assert_eq!(result.verdict, verdict, "{case}");
             assert_eq!(result.regions[0].reason.contains("溢胶"), k == 4, "{case}");
         }
+    }
+
+    #[test]
+    fn to_edge_offset_compares_edge_distance_with_the_drawing_value_first_and_frames_without_an_edge_are_unjudged(
+    ) {
+        // 防的回归（D-SB-48）：ToEdge 仍按 x（胶相对胶嘴）判、图纸胶边距被标准件 x_ref 盖掉、没配找边参数时当作已判，
+        // 或参考相机一帧都没找到边时静默判 OK
+        use crate::plan::{EdgeParams, EdgePolarity};
+        let region = Region {
+            kind: crate::segmentation::RegionKind::Straight { segment: 1 },
+            first_seq: 1,
+            last_seq: 6,
+        };
+        let edge = |nominal_mm| EdgeParams {
+            polarity: EdgePolarity::BrightToDark,
+            search_mm: 20.0,
+            contrast_min: 40.0,
+            nominal_mm,
+        };
+        let mut frames = frames(6);
+        for seq in 1..=6 {
+            at(&mut frames, 0, seq).edge_mm = Some(5.0);
+        }
+        let judge_with = |edge: Option<EdgeParams>, frames: &[FrameMetrics]| {
+            let mut segment = plan(&[Straight]).remove(0);
+            segment.offset_ref = Some(OffsetRef {
+                measure: OffsetMeasure::ToEdge,
+                camera: "camA".into(),
+                x_ref: Some(1.0),
+                spread: Some(0.1),
+                edge,
+            });
+            let measured: Vec<&FrameMetrics> = frames.iter().collect();
+            let (stat, unjudged, found) =
+                region_offset(&segment, &segment.checks, &region, &measured, &cameras());
+            (
+                stat.map(|s| s.mean_shift),
+                unjudged,
+                found.contains(&Finding::Shift),
+            )
+        };
+        assert_eq!(
+            judge_with(Some(edge(Some(5.0))), &frames),
+            (Some(0.0), None, false),
+            "按图纸 5 mm 比，不按 x 比"
+        );
+        assert_eq!(
+            judge_with(Some(edge(None)), &frames),
+            (Some(4.0), None, true),
+            "没填图纸值时用 x_ref"
+        );
+        assert_eq!(
+            judge_with(None, &frames).1,
+            Some(OffsetUnjudged::MeasureNotImplemented)
+        );
+        frames.iter_mut().for_each(|m| m.edge_mm = None);
+        assert_eq!(
+            judge_with(Some(edge(Some(5.0))), &frames).1,
+            Some(OffsetUnjudged::NoFrames)
+        );
     }
 }

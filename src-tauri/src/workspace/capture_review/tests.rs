@@ -201,6 +201,7 @@ fn removing_an_applied_calibration_source_clears_derived_values_before_exclusion
         camera: w.doc.plan_cameras()[0].clone(),
         x_ref: Some(1.0),
         spread: Some(0.1),
+        edge: None,
     });
     burst::remove_calibration_round(&mut w, "source").unwrap();
     apply_capture_review(

@@ -17,14 +17,14 @@
 
 实施顺序：D-SB-40 → D-SB-41 → D-SB-42 → D-SB-45 → D-SB-46 已实现；D-SB-43 未实现。
 
-## 2026-10-27 逐帧定向与工件边胶偏（待用户确认，未实现）
+## 2026-10-27 逐帧定向与工件边胶偏（已实现，按段开关、默认关闭）
 
-现行走廊按帧号选、方向固定，胶偏以胶嘴为参考。针对工件轻微扰动与帧前后偏移，提出两项可分别实施的修订：
+现行走廊按帧号选、方向固定，胶偏以胶嘴为参考。针对工件轻微扰动与帧前后偏移，有两项可分别开启的修订：
 
 - D-SB-47：每帧以出胶点为锚，用 lyFlow 的 `glue.bead_path` 找胶条方向并拟合胶路，只测距出胶点 s₀ 到 s₀ + L 的固定窗口（按相机设置，标定时核对是否覆盖每帧后移量）；方向序列同时用于细化分段边界。按段开关、默认关闭，沿用现有走廊示教。修订 D-SB-42、D-SB-45 的走廊选择，取代 D-SB-43 的运动估计。
 - D-SB-48：胶偏以工件边为参考，用 lyFlow 的 `glue.edge_distance` 量胶边距，实现 `ToEdge`；模板匹配只用于工件定位，不用于找胶条。修订 D-SB-15、D-SB-18 与默认做法 2。
 
-2026-10-27 在 NEW-14 上做了离线评估（见 D-SB-47、D-SB-48“离线评估”）：空跑数据的画面里没有胶嘴、胶条贯穿整个画面，D-SB-47 无法在这批数据上验证，需实际涂胶的轮次；D-SB-48 的找边在部分直线段可用，极性须按段设置。实施顺序：D-SB-48 可先做；D-SB-47 待实际涂胶的轮次复测通过后再开工。两者的实施拆分与测试计划见各自条目。
+两项都已实现（2026-10-27，用户要求不等实际涂胶数据先实现）：开关全部关闭时测量图、发布包与生产行为都不变。NEW-14 离线评估（见各条“离线评估”）：空跑数据的画面里没有胶嘴、胶条贯穿整个画面，D-SB-47 无法在这批数据上验证，生产开启前须用实际涂胶、画面里有胶嘴的轮次复测；D-SB-48 的找边在部分直线段可用，极性须按段设置。
 
 ## 一、采集模型
 
@@ -44,7 +44,7 @@
 ## 三、已接受的默认做法
 
 - **默认做法 1**：**溢胶**按“每帧最大胶宽超过溢胶上限（`overflow.max_width_mm`）”判，结论 NG，结果码沿用 NG_WIDTH（14），原因写“溢胶”。**气泡、拉丝不检**，结果中标注“未检项”（`BurstJudgement.unchecked`）。
-- **默认做法 2**：**胶偏只实现 `AbsoluteX`**；`ToEdge` 保留在模型里，选了它的段结果标“胶偏未判：测量量未实现”（`OffsetUnjudged::MeasureNotImplemented`），x_ref 也不计算。
+- **默认做法 2**（经 D-SB-48 修订）：胶偏默认按 `AbsoluteX` 判；选 `ToEdge` 并配了找边参数时按胶边距判（D-SB-48），没配找边参数的段结果标“胶偏未判：测量量未实现”（`OffsetUnjudged::MeasureNotImplemented`）。
 - **默认做法 3**：**提前结束**（PLC 提前报运动结束）：PC 用已收到的帧照常判 OK/NG；帧组数 < ΣN_exp − Σtol 时加 `short_part`（疑似提前终止）标记，历史中单独显示（`PartSummary.flags`）。
 - **默认做法 4**：**每段、它的每台检测相机示教一条走廊**（D-SB-42、D-SB-45）；弯道用从出胶点起画的短走廊，帧走出走廊记“检测不完整”（`FrameState::OutOfCorridor`），不判 NG。弯道走廊没有经过真实弯道图像验证。
 - **默认做法 6**：**重新标定使 N_exp / expected_total 变化时分配新的 `plan_version`**（二者都进入计划身份，见 D-SB-19）；计划版本是 PC 侧发布包与记录的身份，不下发 PLC。
@@ -113,11 +113,12 @@
 - 问题：规格 §0 所有帧都参与独立检测。
 - 采用：可信段区域只取本段检测相机的最差，未分段区域按每帧预测段的检测相机取最差（D-SB-45）；任一参与检测的帧 NG，所在区域即 NG，整件取最严重结论。
 
-### D-SB-15 胶偏判定：段级 AbsoluteX，ToEdge 暂不实现
+### D-SB-15 胶偏判定：段级 AbsoluteX 与 ToEdge
 
 - 问题：原模型逐站与示教中线比对，以及特征定位；规格 §4 直线段去首尾各一帧，用 x 均值 − x_ref 判整段偏移、最大偏差判局部跑偏，中线逐点比对停用；§0/§1 有稳定边缘用 ToEdge，否则 AbsoluteX。
 - 采用：每帧输出 `x_mm`（帧内胶中心相对走廊的法向偏移均值，即 AbsoluteX）。胶偏只在 Straight 区域按段判（`burst_judge`）。ToEdge 在模型中保留，结果标“胶偏未判：测量量未实现”（默认做法 2）。不做中线逐点比对与特征定位。
-- 回退：若要实现 ToEdge，需另定参考边缘的示教方式。
+- 修订（已实现）：D-SB-48 实现 ToEdge：找边参数配在 `offsetRef.edge`，每帧输出胶边距 `edge_mm`，判定口径同上，参考值取图纸胶边距或标准件得出的 x_ref。
+- 回退：`offsetRef` 选 `AbsoluteX`。
 
 ### D-SB-16 胶宽均匀性
 
@@ -359,13 +360,13 @@
 - 风险：发布前不再强制用独立样本跑一遍完整检测，走廊或允差设置有问题时只能在生产或可选验证里发现；离线发布的版本仍只能离线运行（D-SB-30 不变）。
 - 回退：`workspace_publish` 恢复要求当前修订的 `validation.passed` 并比对环境标签，进度把“验证”改回必经步骤。
 
-### D-SB-47 逐帧定向测量（修订 D-SB-42、D-SB-45 的走廊选择，取代 D-SB-43；2026-10-27 提出，待用户确认，未实现）
+### D-SB-47 逐帧定向测量（修订 D-SB-42、D-SB-45 的走廊选择，取代 D-SB-43；2026-10-27 已实现，按段开关、默认关闭）
 
 - 问题：
   - 现行走廊是示教中线两侧各 `searchMm` 的搜索带，中心偏移容差 = 搜索半宽 − 胶宽上限的一半。胶条横向小幅偏移在容差内能测到，但走廊方向固定。
   - 生产按帧号预测所属段、选该段走廊（D-SB-45）。比例边界与真实边界最多差 2 帧（D-SB-40，NEW-14）。直线段内帧前后偏移没有影响，胶条方向不变；到了段边界和弯道，胶条方向已变，所选走廊方向不对，帧走出走廊，记检测不完整。
   - 弯道靠贴近出胶点的短走廊减小旋转偏移（D-SB-42），可测长度因此很短，而且没有经过真实弯道图像验证（默认做法 4）。收尾补测与过渡区两侧走廊都是为弥补“按帧号选走廊”。
-- 方案（待确认）：
+- 采用：
   - 示教兼容：不另起一套示教流程，以现有的按段走廊示教为基础（D-SB-42、D-SB-45）。逐帧定向是按段的开关，默认关闭；关闭的段照旧用示教走廊、按预测段选取，行为与 D-SB-45 完全相同。
     - 出胶点：取这台相机各段走廊的起点，不新增示教步骤。D-SB-42 规定走廊从出胶点一侧起画。同一台相机各段起点相差超过阈值（暂定 1 mm）时提示人工确认。
     - 示教方向 θ₀：取该段走廊起点到终点的方向。
@@ -380,18 +381,18 @@
   - 定向与测量：用 lyFlow 已有的 `glue.bead_path`（定胶路）代替示教走廊的 `glue.taught_path`，测量图为 `io.load_image → glue.bead_path → glue.bead_width`，每台相机一张，各段共用。
     - 参数：`nozzle` = 出胶点；`zone` = [s₀, s₀ + L] 换算成像素；`polarity`、`widthMax` 沿用这台相机的检测参数。
     - 定向：`bead_path` 在扇区 `sector` 里做扇形搜索，取前三个相距 ≥ 15° 的峰各试一遍，留覆盖率最高、边缘最陡（像胶）的方向；再沿这个方向粗找胶点，拟合成一条光滑胶路，能跟随缓弯。输出 `info.heading`（θ，度，图像坐标 0° 朝右、−90° 朝上）、`coverage`、`sharpness`、`beadlike` 和每个候选方向的得分。定向与测量共用 `zone`：内半径 s₀ 本身就避开了胶嘴附近，方向也是在实际要测的那一段上求出的。
-    - 扇区：取帧所属预测段两侧相邻段方向范围的并集，经顶层图参数逐帧传入（lyFlow 的 `params` + `binds`，不逐帧重建图），比整圈搜索更不易被别的暗带带偏。
+    - 扇区：本段与相邻两段（这台相机检测且示教了走廊的）方向范围的并集，比整圈搜索更不易被别的暗带带偏。扇区与回退方向按段写进测量图：每（相机, 段）一张搜索图、一张回退图，不用运行时参数，测量图随发布包冻结。
     - 回退：`bead_path` 覆盖率低于 `minCoverage` 或不像胶时 `info.ok = false`。此时改用 `headingSource = param`、`heading` = 预测段的示教方向 θ₀、`headingTol` = 方向容差，再测一次。回退后仍找不到胶，按 lyFlow 的失败语义得出“全段无胶”，照常判断胶，不记检测不完整，所以整个窗口都断胶时不会漏判。
     - 测量结果：测站与胶边取自 `bead_width` 输出，不再按示教折线预先算测站；`AbsoluteX` 对拟合胶路恒为 0，不再有意义，定向测量的段胶偏只能按 D-SB-48 的 ToEdge 判。每帧另记 θ、覆盖率与是否回退。
-    - 依赖：`glue.bead_path` 要加入 `packaging/runtime.json` 的 `requiredOperators`；测量图随发布包冻结，开启定向时测量图版本升一档，全部关闭时测量图与发布包内容不变。
+    - 依赖：`glue.bead_path` 已加入 `packaging/runtime.json` 的 `requiredOperators`；开启定向或找边时测量图版本为 `corridor-3`（graph.json 多出 `headings`），全部关闭时仍是 `corridor-2`，测量图与发布包内容不变。
     - 搜索角度不依赖帧属于哪一段，所以到达即可测；扇区只用预测段收窄，预测错一两帧时相邻段的方向仍在扇区内。
   - 覆盖核对：标定时按段核对窗口能否接上相邻帧。
     - 胶条每帧在画面里后移 v / fps。用已有数据估算这一后移量：段长（`PathSegment.length_mm`）÷ 该段 N_exp。
-    - 这台相机所检测的各段中，只要有一段的后移量大于 L，相邻帧窗口之间就有一截胶测不到，断胶可能漏检。这种情况在标定页逐段提示，发布前检查列为不阻断项（是否阻断待确认）。
+    - 开启定向的段，它的检测相机窗口 L 小于后移量时，相邻帧窗口之间有一截胶测不到，断胶可能漏检。标定页逐段提示，发布前检查“段标定”里列为不阻断提示。
     - 段长没填的段不核对，提示补填。
     - L 超过后移量 3 倍时提示：同一处胶会被测多次，测量量无谓增加。
-  - 弯道跟随核对：`bead_path` 拟合的胶路能跟随缓弯，急弯跟不住。标定时统计弯道帧的覆盖率与回退比例，偏低时在标定页提示缩短 L 或减小 s₀。这一项取代 D-SB-42 弯道走廊固定的 8 mm 长度提示。
-  - 分段：每台检测相机的 θ 序列中，直线段平稳、弯道连续变化。在比例边界的 `search_window` 内，把边界对准方向开始变化和停止变化的帧，各检测相机的结果取中位数；置信度取变化的幅度。比例分段仍作兜底。这一条取代 D-SB-43 的平移、旋转估计。
+  - 跟随核对：`bead_path` 拟合的胶路能跟随缓弯，急弯跟不住。标定轮次按段统计定向测量的帧数与回退帧数，回退超过 20% 时在标定页提示缩短 L 或减小 s₀。开启定向的段不再看 D-SB-42 弯道走廊固定的 8 mm 长度提示。
+  - 分段（配方开关 `boundaryRefine`，默认关闭）：直线段的 θ 平稳、弯道连续变化。直线段开了定向的“直线—弯道”边界，在比例边界 ± (两段容差之和 + 1) 帧内对准直线段检测相机的 θ 开始偏离（或回到）该段方向的帧：每台相机的参考方向取它在直线段核心帧上的 θ 中位数，偏离阈值为方向容差，一帧多数相机偏离即算离开直线段；只用定向成功（未回退）的帧，窗口内没有方向数据时保留比例边界，置信度不变。这一条取代 D-SB-43 的平移、旋转估计。
   - 与 D-SB-45 的关系：采用后，打开定向的段选窗口不再依赖帧属于哪一段，到达即可按 θ 测。收尾补测只剩“判定需要的检测相机到达时没测”这一种情形。允差、检测项仍按区域在判定时取，不需要补测。
 - 理由：
   - 相机相对胶嘴固定。实际涂胶时，胶条从出胶点伸出，方向就是工件此刻相对胶嘴的运动方向。
@@ -410,44 +411,30 @@
   - 现行走廊本身在弯道和边界附近也只有 29% 与 15% 测到胶（按真实段选走廊也一样），D-SB-47 要解决的问题在数据上成立。
   - 每帧后移量：相邻两帧按图像位移估计（8× 下采样，精度约 0.9 mm），各段中位 6.4–17.8 mm、全部 p90 20.6 mm（20 fps）。各段段长没填，无法按段长 ÷ N_exp 核对。按这一估计，20 fps 下检测窗口 L 至少约 20 mm 才不漏检，或提高帧率。
   - 耗时：单次运行 p50 / p95，`bead_path` 15.9 / 30.7 ms（含回退重跑），示教走廊 10.5 / 17.9 ms。
-- 实施拆分（前置：在实际涂胶、画面里有胶嘴的轮次上用 `heading_eval` 复测，`bead_path` 测到胶的比例不低于示教走廊，且用方向序列细化的边界 ≥ 95% 误差 ≤ 1 帧；未达到前不开工。离线评估即第 0 步，NEW-14 上已做，见上）：
-  1. 模型与示教（开关全部关闭时行为不变）：
-     - `PathSegment` 加逐帧定向开关（serde 默认关闭）与可选的方向容差、方向范围覆盖值；`CameraInspect` 加检测窗口 `{startMm, lengthMm}`。照 `boundaryGuard` 的先例不升配方 schema。
-     - 出胶点取各段走廊起点并校验一致；方向范围：直线段 θ₀ ± 容差，弯道取前后两条直线段的 θ₀ 之间再加容差，不依赖标定。
-     - `validate_segments`；计划身份的“不影响身份”测试表加一行（建议不进计划身份，待确认）；`same_measurement_layout` 与标定轮次的走廊标签纳入开关与窗口。
-     - 进度：开启定向而这台相机没设窗口时，在走廊步骤阻断。
-     - 前端：示教页相机参数加 s₀、L；段卡片加开关；同步 TS 类型与示教草稿。
-  2. 测量链路：
-     - `vision` 新增定向测量图（`io.load_image → glue.bead_path → glue.bead_width`，每台相机一张），扇区、回退方向经运行时参数传入；解析以 `bead_width` 输出的测站为准；`packaging/runtime.json` 加 `glue.bead_path`。
-     - 统一选图规则，生产（`Prepared::measure_frame`）、候选试运行、历史复测（`remeasure_by_rule`）与标定（`calibration_corridors`）共用；选图放在测量线程里，不占节拍线程。
-     - `FrameMetrics` 加 θ 与定向是否成功（serde 默认），同步有限数校验与 TS 类型。
-     - 收尾补测：定向测过的帧不因段归属补测，只补判定需要、到达时没测的相机。
-     - 发布与生产加载：`burst_graphs`、`Prepared::load` 与预热纳入定向图；开关全部关闭时测量图与发布包不变，开启时测量图版本升一档。
-     - 多轮标定页的逐帧查看叠加窗口与 θ。
-  3. 标定提示与分段细化：
-     - `SegmentCalibView` 加提示列表：覆盖核对（后移量 > L、L 超过后移量 3 倍、段长未填）、弯道跟随（覆盖率与回退比例）；发布检查列为不阻断项。
-     - 弯道方向范围用标定得出的 θ 序列收窄。
-     - 新增分段器：在 `search_window` 内把比例边界对准 θ 开始变化与停止变化的帧，注入 `BurstPart::regions`、`judge_frames` 与 `remeasure_by_rule`、`segment_round`、`segment_eval` 四处（现在都写死 `Proportional`）；`remeasure_by_rule` 改为先测后分段。达不到 95% 的验收时只上线定向测量，不启用细化器。
-  4. 验证：`throughput_probe` 测定向图吞吐，与现场复测（第七节）一起评估；原生端到端补定向夹具；实际涂胶轮次现场复核。
-- 测试计划（按准入规则，只列要防的回归）：
-  - 开关关闭时选图、计划身份与测量布局都不变；同一相机各段走廊起点不一致时拒绝。
-  - 定向失败按 θ₀ 回退，整窗缺胶仍判断胶。
-  - 定向测过的帧不因段归属补测，缺测的相机仍补测；选图规则在生产、复测、标定三条路径上一致。
-  - 窗口覆盖不足时给出提示；细化器在合成方向序列上边界误差 ≤ 1 帧。
+- 实现（2026-10-27）：
+  - 模型：`PathSegment.heading`（`{toleranceDeg}`，None = 关闭，校验 0–45°）；`CameraInspect.window`（`{startMm, lengthMm}`，起点 ≥ 0、长度 > 0、终点 ≤ 500 mm）；`RecipeDoc.boundaryRefine`。都按 serde 默认读旧文件、不升配方 schema，都不进计划身份。`heading` 与 `window` 进测量布局（`same_measurement_layout`）与标定轮次的走廊标签，变了就不能用已存指标重判、标准件 x 不再可比。
+  - 几何（`heading.rs`）：出胶点 = 这台相机开启定向的各段走廊起点的平均，任一起点离平均超过 1 mm 报“出胶点不一致”；方向范围与扇区见上。`heading::issues` 汇总缺检测窗口、窗口换算后不足 8 px、出胶点不一致，进 `ready_burst`、走廊步骤的阻断项（跳到相机参数）与发布检查“走廊示教”。
+  - 测量（`vision/heading.rs`）：`CorridorSet` 对开启定向的（相机, 段）另建定向图，`get` 优先返回它；生产、候选试运行、多轮标定、逐帧查看、历史复测与原包重现都经同一入口。每帧指标增加 `headingDeg`、`headingFallback`，`xMm` 记为空；逐帧查看的叠线为拟合出的胶路。
+  - 收尾补测：到达时那段与判定需要的那段在这台相机上都开了定向、找边参数相同时不补测；判定需要、到达时没测的相机照常补测。
+  - 提示：`SegmentCalibView.hints`（窗口覆盖、跟随核对），发布检查“段标定”附不阻断提示。
+  - 分段：`segmentation::segment_part` 按 `boundaryRefine` 选比例分段或 `refine_by_heading`，生产节拍与历史重判、验证样本、原包重现共用；标定轮次写的 boundaries.json 仍按比例分段（只作追溯）。
+  - 前端：段卡片“逐帧定向”开关与方向容差；示教页相机参数“检测窗口”（这台相机检测的段开了定向时标“需设置”）；段列表参数“按胶条方向细化边界”（有段开了定向时可用）；标定页逐段列出提示；逐帧查看显示方向与回退。
+  - 吞吐（`throughput_probe`，`PROBE_HEADING=1`，合成 1280×1024 横向胶条、120 测点、dev 构建，同一台机器）：定向单帧 p50 / p95 8.9 / 15.6 ms，示教走廊 6.4 / 7.0 ms；4 并发吞吐 322 fps 对 369 fps。真引擎上定向图通过生产加载与预热。
+  - 未实现：弯道方向范围用标定得出的 θ 收窄（现在只由相邻直线段的示教方向推出）；原生端到端的定向夹具；`segment_eval` 不评估方向细化（用 `heading_eval`）；实际涂胶轮次的现场复测。
+  - 局限：方向细化只用直线段检测相机测到的 θ；这台相机不检测相邻弯道时，弯道一侧的帧它不测，窗口里只有一侧数据。
 - 回退：关闭各段的逐帧定向开关，即回到 D-SB-45 现行做法。
 
-### D-SB-48 胶偏以工件边为参考（实现 ToEdge，修订 D-SB-15、D-SB-18 与默认做法 2；2026-10-27 提出，待用户确认，未实现）
+### D-SB-48 胶偏以工件边为参考（实现 ToEdge，修订 D-SB-15、D-SB-18 与默认做法 2；2026-10-27 已实现）
 
-- 问题：相机相对胶嘴固定，`AbsoluteX` 是胶中心相对走廊、也就是相对胶嘴的偏移，主要反映出胶偏斜。工件位置轻微扰动时，胶相对工件偏了，但胶相对胶嘴不变，`AbsoluteX` 测不到。标准件得出的 x_ref 只能扣掉系统偏差。`ToEdge` 在模型里保留，测量量没有实现。
-- 方案（待确认）：
+- 问题：相机相对胶嘴固定，`AbsoluteX` 是胶中心相对走廊、也就是相对胶嘴的偏移，主要反映出胶偏斜。工件位置轻微扰动时，胶相对工件偏了，但胶相对胶嘴不变，`AbsoluteX` 测不到。标准件得出的 x_ref 只能扣掉系统偏差。
+- 采用：
   - 测量：用 lyFlow 已有的 `glue.edge_distance`（量边距），接在参考相机测量图的 `glue.bead_width` 之后，示教走廊与 D-SB-47 的定向测量都能接，不依赖 D-SB-47 是否采用。
     - 做法：沿每个有胶测站的法向，从胶边外 3 px 起往外找零件边：第一个满足极性、两侧灰度差 ≥ `contrastMin`、远侧持续 ≥ `farRun` px 都暗下去的跳变；零件边在哪一侧按多数测站自动判；逐站结果沿弧长做滑动中值剔野。
     - 工件边的检测区域就是这些测站法向上的搜索段：沿胶条方向的范围与胶宽测量相同（D-SB-47 采用后即 [s₀, s₀ + L]），法向范围 = `searchLength`。不另画多边形。
     - 胶偏 = 每帧各站胶中心（`reference = bead_center`）到零件边距离的均值，像素按相机当量换成 mm；与胶宽同帧、同测站。
     - 找不到边（各站 `status` 多为 none）时，该帧胶偏记未测，不判 NG。区域内可用帧不足时，标“胶偏未判”。
-  - 示教：启用胶偏的直线段，在胶偏参考相机（`offsetRef.camera`）的段示教帧上设 `searchLength`、边缘极性（`edgePolarity`）与 `contrastMin`，当场预览找到的边。
-    - 依赖：`glue.edge_distance` 要加入 `packaging/runtime.json` 的 `requiredOperators`。
-  - 判定：沿用 D-SB-15 的段级口径。直线核心区域去掉首尾各一帧，均值与参考值之差判整段偏移，最大偏差判局部跑偏。参考值有两种取法，待确认：标准件多轮实测的胶边距均值（D-SB-18 的 x_ref 改为 ToEdge 口径），或图纸设计的胶边距。
+  - 参数：段卡片胶偏参考选“到边缘距离”时设零件边极性、搜索长度（mm）、对比度下限与可选的图纸胶边距，作用于胶偏参考相机（`offsetRef.camera`）。`glue.edge_distance` 已加入 `packaging/runtime.json` 的 `requiredOperators`。
+  - 判定：沿用 D-SB-15 的段级口径。直线核心区域去掉首尾各一帧，均值与参考值之差判整段偏移，最大偏差判局部跑偏。参考值填了图纸胶边距就用它（多段配方也能判），否则用标准件轮次的胶边距均值（D-SB-18 的 x_ref 改为 ToEdge 口径，与 AbsoluteX 一样只在单段配方里算）。
   - 模板匹配：不用于找胶条。胶条没有纹理，沿路径方向定不准，所以横向位置以边缘检测为主。模板匹配（lyFlow 有 `glue.locate`）只考虑用于两件事：一是工件扰动超过 `searchLength` 时，借角、孔等特征给找边做初定位；二是判断当前帧落在胶路哪一段（与 D-SB-44 P2 的图像对齐同一思路），作为 D-SB-47 方向序列的补充。直线段的工件边同样没有纹理，只能给出法向偏移。找边稳定性有数据之前不做。
 - 理由：工件扰动造成的胶偏才是要拦下的质量问题，参考必须取工件本身；胶边距不受胶嘴与相机安装偏差的影响。
 - 前提与风险：
@@ -458,16 +445,12 @@
   - 亮 → 暗：找到边（≥ 半数测站）s1 36/57、s3 128/144、s5 85/126，胶边距轮内标准差中位 1.0 / 2.9 / 2.8 mm。
   - 暗 → 亮：s1 19/57、s3 128/144、s5 85/126，轮内标准差中位 0.0（样本少）/ 1.5 / 0.23 mm。
   - 结论：极性因段而异，必须按段（参考相机）设置；s5 暗 → 亮的噪声 0.23 mm 可用于判 ±2 mm 的胶偏，s3 的 1.5 mm 偏大、s1 找边率低，需按真实图像调整 `contrastMin`、`farRun` 或换参考相机。
-- 待确认：参考值取标准件实测还是图纸设计值。
-- 实施拆分（不依赖 D-SB-47，接在现有示教走廊之后即可，可先做；NEW-14 上部分直线段可用，见上）：
-  1. 模型与示教：`offsetRef` 选 `ToEdge` 时按段存找边参数（`edgePolarity`、`searchLength`、`contrastMin`，作用于胶偏参考相机）；示教页在该段示教帧上当场预览找到的边；`packaging/runtime.json` 加 `glue.edge_distance`。
-  2. 测量：参考相机该段的走廊测量图在 `glue.bead_width` 之后接 `glue.edge_distance`，只在有 `ToEdge` 段时改图、测量图版本升一档；`FrameMetrics` 加胶边距（serde 默认），同步有限数校验、存储与 TS 类型；找不到边记未测；`same_measurement_layout` 纳入找边参数。
-  3. 判定与标定：`burst_judge` 的胶偏判定 `ToEdge` 分支改用胶边距；参考值按待确认项二选一：标准件轮次的 x_ref 改为 `ToEdge` 口径，或用图纸设计值（这样多段配方也能判胶偏）；标定页与发布检查去掉“测量量未实现”。
-  4. 验证：在 NEW-14 上逐段调极性与参数，使胶边距的轮内噪声明显小于胶偏允差（s5 已满足，s3、s1 待调）；耗时计入吞吐；实际涂胶轮次复核。
-- 测试计划（按准入规则）：
-  - `ToEdge` 按胶边距判整段偏移与局部跑偏。
-  - 找不到边时标“胶偏未判”，不判 NG。
-  - 找边参数变化时不能用存储指标重判，必须走原图复测。
+- 实现（2026-10-27）：
+  - 模型：`OffsetRef.edge`（`{polarity: brightToDark | darkToBright, searchMm, contrastMin, nominalMm}`），只能配在 ToEdge 上，搜索长度 0–50 mm、对比度下限 1–255、图纸胶边距 ≥ 0；搜索长度换算后须不少于 22 px（`farRun` 12 px + 10）。极性、搜索长度、对比度变了 x_ref 清空（测量变了），只改图纸胶边距不清空。找边参数进测量布局，改了不能用已存指标重判。
+  - 测量：胶偏参考相机在该段的走廊测量图或定向测量图后接 `glue.edge_distance`（`reference = bead_center`），每帧指标增加 `edgeMm`；有胶测站里找到边的不到一半时为空，胶偏记未测。
+  - 标定：标定轮次记各相机的胶边距均值（`edgeMeans`），标准件轮次得出 ToEdge 口径的 x_ref；填了图纸胶边距时标定页写“按图纸胶边距判，不需要标准件”。发布检查“标准件 x_ref”：ToEdge 填了图纸值即通过，否则要标准件参考值；没配找边参数时列出原因、不阻断。
+  - 判定：`burst_judge` 的胶偏判定 ToEdge 用胶边距；没配找边参数时仍标“测量量未实现”。
+  - 未实现：示教页当场预览找到的边；模板匹配初定位。
 - 回退：`offsetRef` 仍选 `AbsoluteX`。
 
 ## 五、IPC 契约
@@ -498,7 +481,7 @@
 - **`FrameRecord`**：`camera`（计划相机下标）、`seq`、`status: FrameState`、`frameCounter`、`triggerCounter`、`region`（`judgement.regions` 下标，不在任何区域为 null）、`metrics: FrameMetrics | null`（missing 时为 null）、`rawFile`（录制根内相对路径，未录制或队满丢弃为 null）。1..=groupCount 内每个 (camera, seq) 都有一条，缺帧也有。
 - **`PartSummaryV2`** = `PartSummary` + `flags`。
 - **`CaptureRoundV2`**：`format: 2`、`roundId`、`recipeId`、`cameras: CaptureCamera[]`、`state`（同 `CaptureRound.state`）、`plcShotCount`、`plcPlanVersion`、`deviceTriggers`（这三项为保留字段，示教接口 V1 不传，为 null）、`groupCount`、`cameraFrames`、`incompleteGroups`、`missingFrames: {camera, seq}[]`、`lossAlarms`、`alarms: CaptureAlarm[]`（逐帧告警 `{kind: duplicate | queueFull | budgetDropped | corrupt, camera, seq}`，最多 1024 条）、`createdAt`、`endedAt`、`error`、`failure: CaptureFailureV2 | null`、`simulated`。`CaptureFailureV2`（`kind` 区分）：`camera{cameraId}`、`sessionChanged{cameraId}`（90+98）、`plc`、`startTimeout`、`writeTimeout{queued, written}`、`interrupted`（90+99）、`other`。
-- **`CalibrationView`**：`minRounds`、`rounds: CalibrationRoundView[]`、`part: CalibOutcome | null`、`segments: SegmentCalibView[]`、`expectedTotal`、`toleranceTotal`、`planVersionChange`。`CalibrationRoundView`：`roundId`、`standard`、`groupCount`、`cameraFrames`、`incompleteGroups`（个数）、`lossAlarms`（个数）、`createdAt`。`SegmentCalibView`：`index`、`kind`、`outcome: CalibOutcome | null`、`pending`（如“分段算法未就绪”）、`tolerance`（配方当前值）、`xRef: {xRef, spread} | null`、`xRefPending`（如“测量量未实现”）。
+- **`CalibrationView`**：`minRounds`、`rounds: CalibrationRoundView[]`、`part: CalibOutcome | null`、`segments: SegmentCalibView[]`、`expectedTotal`、`toleranceTotal`、`planVersionChange`。`CalibrationRoundView`：`roundId`、`standard`、`groupCount`、`cameraFrames`、`incompleteGroups`（个数）、`lossAlarms`（个数）、`createdAt`。`SegmentCalibView`：`index`、`kind`、`outcome: CalibOutcome | null`、`pending`（如“分段算法未就绪”）、`tolerance`（配方当前值）、`xRef: {xRef, spread} | null`、`xRefPending`（如“测量量未实现：未配置找边参数”）、`hints`（逐帧定向的提示，D-SB-47）。
 - **`WorkspacePlanView`**：`segments`、`cameras`、`segmentDefaults`、`calibrationRounds`、`partCalib`、`expectedTotal`、`toleranceTotal`、`calibrated`（expectedTotal 非空）、`cameraTeaching: CameraTeachingView[]`（`camera`、`mmPerPx`、`ready`、`segments: {segment, frame: FrozenImage, round, seq, saved}[]`）、`calibration: CalibrationView | null`、`productionExport`、`candidateExport`、`candidateExportError`、`shotCountChanged`（ΣN_exp 相对生产版本变化）、`progress: ProgressV2`。
 - **`RecipeSummaryV2`** = `RecipeSummary` + `segmentCount`、`expectedTotal`、`toleranceTotal`、`calibrated`。
 - **`ProgressV2`**：`steps: ProgressStepV2[]`（与 `ProgressStep` 相同，`id` 为 `StepIdV2`，`blockers[].target` 为 `ProgressTargetV2`）、`next: {step, label, target} | null`。`ProgressTargetV2`：`capture`、`segments`、`corridor{camera, segment: u32 | null}`、`calibration`、`validation`、`camera`。
@@ -659,12 +642,12 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 - **走廊示教**（D-SB-45 起按段）：`workspace_teach_segment_corridor` 只冻结所选帧，走廊随候选整份保存，提取用 `workspace_extract_corridor`（5.4）；相机还没有当量时取这台相机的设备标定 `device/{device}`（模拟相机取模拟当量）。示教帧须来自本候选完整的轮次、这台相机有这一帧、采集后设备配置没变；多段配方还要求轮次已确认手动分段、帧组落在该段内。`cameraTeaching[].segments[].saved` = 走廊至少两点、不短于 1 px 且完整落在示教帧内。
 - **加入标定**：轮次须属于本候选、已完整完成、相机集合等于计划相机，各相机采集时的设备配置与当前设备、与已加入的轮次都相同；每段每台检测相机都有走廊且能建测量图。每帧只由所在段的检测相机用该段走廊测（`calibration_corridors`，D-SB-45；缺帧记 missing、测量失败记 error），每帧特征与分段结果写在候选目录 `calibration/<轮次>/`：`features.jsonl` 一行 `{camera: 相机编号, seq, metrics: FrameMetrics}`，1..=帧组数内每台相机每个 seq 一行；`boundaries.json` 为 SegOutcome。不写进采集轮次目录（特征依赖候选的走廊）。
 - **应用标定**：标定轮次（不含标准件轮次）不少于 `calibrationRounds`，否则报错且配方不变；写 partCalib，单段计划同时写该段 N_exp 与 calib；多段计划按 D-SB-21。容差不写，由 `workspace_confirm_tolerance` 写入。
-- **x_ref**：只给单段计划的直线段；每轮标准件取参考相机去掉首尾各一帧（seq 1 与帧组数）后测成帧的 x 均值，再用 `calibration::x_ref` 取均值与极差，只用走廊与当前相同的标准件轮次。直线段启用了胶偏但没配 offsetRef 时按 AbsoluteX、计划第一台相机补上；ToEdge 不写（“测量量未实现”）；多段计划不写。每次应用按当前标准件轮次重算，没有可用轮次时 x_ref 为 null。
+- **x_ref**：只给单段计划的直线段；每轮标准件取参考相机去掉首尾各一帧（seq 1 与帧组数）后测成帧的 x 均值，再用 `calibration::x_ref` 取均值与极差，只用走廊与当前相同的标准件轮次。直线段启用了胶偏但没配 offsetRef 时按 AbsoluteX、计划第一台相机补上；ToEdge 取同口径的胶边距均值（标定轮次的 `edgeMeans`，D-SB-48），没配找边参数时不写；多段计划不写。每次应用按当前标准件轮次重算，没有可用轮次时 x_ref 为 null。
 - **编辑约束**（`workspace_save_doc` 与 `workspace_update_segments` 共用 `update_doc`）：段的类型序列不变时 N_exp、calib、partCalib 不能改，x_ref 只能原样带过或清空，胶偏参考的测量量或相机变了 x_ref 清空；类型序列（段数、顺序、类型）变了清空全部 N_exp、calib、partCalib 与 x_ref，已加入的标定轮次保留（整件帧组数与分段无关）。
 
 #### 13. 候选验证、发布、进度与历史
 
-- **发布前检查**（`burst_release::publish_checks`，发布时当场核对，D-SB-46）：相机配置（不要求在线）；走廊示教（恰好 3 台计划相机，每段每台检测相机都有示教帧、走廊完整落在帧内，每台相机有像素当量，且各示教帧采集后相机的设备标签没变）；段标定（单段有 expected_total 即通过，多段要各段 N_exp 都已标定）；标定采集参数；标准件 x_ref（只在有启用胶偏检查的直线段时列出：单段 AbsoluteX 要有标准件得出的 x_ref；多段计划与 ToEdge 列出原因、不阻断）；生产版本。不含独立正常样本。
+- **发布前检查**（`burst_release::publish_checks`，发布时当场核对，D-SB-46）：相机配置（不要求在线）；走廊示教（恰好 3 台计划相机，每段每台检测相机都有示教帧、走廊完整落在帧内，每台相机有像素当量，且各示教帧采集后相机的设备标签没变）；段标定（单段有 expected_total 即通过，多段要各段 N_exp 都已标定）；标定采集参数；标准件 x_ref（只在有启用胶偏检查的直线段时列出：单段 AbsoluteX 要有标准件得出的 x_ref；ToEdge 填了图纸胶边距即通过，否则同样要标准件参考值；多段计划与没配找边参数的 ToEdge 列出原因、不阻断）；生产版本。不含独立正常样本。
 - **验证样本**（可选，D-SB-46）：`workspace_capture_sample` 把采集轮次记进样本库（`BankSample.captureId` = 轮次编号，帧留在采集轮次目录，验证时按 (相机, seq) 读；`geometryTag` = 产品代码 + 有序计划相机 + 各段 (序号, 类型)，不含 N_exp，标定前采的样本标定后仍可用）。样本轮次不能是走廊示教或多轮标定用过的轮次，相机集合等于计划相机，各相机采集时的设备配置与当前相同。原图齐全的生产历史也可作样本：段结构身份与候选相同（历史没有记相机配置，不比较）。样本与生产同一规则选走廊重测（D-SB-45；缺帧不读图，读图或测量失败只算检测不完整），按 D-SB-40 分段判定；丢帧告警对采集轮次按计划相机顺序重算，对历史沿用记录。帧组数超出 ΣN_exp ± Σtol 与检测不完整只写进样本原因，不改是否符合。不接受按拍照点导入的样本图片。
 - **发布**：`workspace_publish` 调用 `burst_release::freeze_bundle` → `release::publish_burst`（schema 5）：每台计划相机一份标定 JSON（`mmPerPx` = 示教当量，`reference` = 标定引用或 `device/{device}`，`source` = 工位标定文件内容），它检测的每一段一张示教帧与走廊（D-SB-45）；测量图为 `production::burst_graphs`，`versions.graph` = `GRAPH_VERSION_BURST`。发布门槛 = 发布前检查当场通过 + `ready_burst`（D-SB-46）。计划版本由 `plan_version_for` 按 `same_plan` 分配，重新标定使 ΣN_exp 变化即换新号。验证环境标签（`environment`）含各检测相机的工位标定（缺省为设备标定 `device/{device}`）。
 - **进度**：验证步骤的阻塞跳转按检查项：走廊示教 → 第一个没示教好的（段, 相机），段标定 / 标准件 x_ref → 多轮标定，相机配置 → 相机。

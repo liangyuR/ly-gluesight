@@ -26,7 +26,7 @@
 
 `requiredOperators` 是必需算子的唯一来源：打包脚本按它生成 `runtime/manifest.json` 的算子清单并做上面的校验；`src-tauri/build.rs` 在编译时把它带进程序（`GLUESIGHT_REQUIRED_OPERATORS`），加载核心库时 `check_operators` 按同一份清单核对。测量图与标定图里出现的算子都必须在清单里。
 
-段配方的每帧走廊测量用 `glue.taught_path` 与 `glue.bead_width`，标定用 `io.load_image`、`image.board_calib` 与 `image.load_calib`。
+段配方的每帧走廊测量用 `glue.taught_path` 与 `glue.bead_width`；开启逐帧定向的段用 `glue.bead_path` 代替 `glue.taught_path`（D-SB-47），胶偏按 ToEdge 测的段在参考相机的测量图里接 `glue.edge_distance`（D-SB-48）。标定用 `io.load_image`、`image.board_calib` 与 `image.load_calib`。
 
 联合开发 lyFlow 未发布的改动时用本地构建：`GLUESIGHT_LYFLOW_RUNTIME` 指向本地 `build/core/bin`（只在调试构建生效，跳过 `lyflow-runtime.json` 系列核对）；真引擎测试用 `LYFLOW_CORE_DLL` 指向其中的 `lyflow_core.dll`。
 

@@ -55,17 +55,38 @@ export interface SegmentChecks {
   offset: OffsetCheck | null;
 }
 
-/** 本轮只实现 absoluteX；toEdge 的段结果标“胶偏未判：测量量未实现”。 */
+/** absoluteX = 胶中心相对走廊的横向偏移；toEdge = 胶中心到零件边的距离（D-SB-48）。 */
 export type OffsetMeasure = "toEdge" | "absoluteX";
+
+/** 零件边的明暗跳变方向（沿测站法向从胶边往外看）。 */
+export type EdgePolarity = "brightToDark" | "darkToBright";
+
+/** toEdge 找零件边的参数（D-SB-48），作用于胶偏参考相机。 */
+export interface EdgeParams {
+  polarity: EdgePolarity;
+  /** 沿法向从胶边往外搜索的长度（mm），0–50 */
+  searchMm: number;
+  /** 边两侧灰度差下限，1–255 */
+  contrastMin: number;
+  /** 图纸胶边距（mm）：给了就以它为参考值，否则用标准件得出的 x_ref */
+  nominalMm?: number | null;
+}
 
 /** 胶偏参考（只在直线段）：xRef / spread 由标准件多轮采集算出，不能手填。 */
 export interface OffsetRef {
   measure: OffsetMeasure;
   /** 用哪台相机的帧测；必须属于计划相机 */
   camera: string;
-  /** null = 未标定（toEdge 恒为 null） */
+  /** null = 未标定 */
   xRef: number | null;
   spread: number | null;
+  /** 只在 toEdge 时有；absoluteX 必须为空 */
+  edge?: EdgeParams | null;
+}
+
+/** 逐帧定向（D-SB-47）：直线段方向范围为示教方向 ± toleranceDeg（0–45°）。 */
+export interface HeadingSettings {
+  toleranceDeg: number;
 }
 
 /** 多轮采集的帧组数统计。 */
@@ -102,6 +123,8 @@ export interface PathSegment {
   /** 段首、段尾跳过的帧组数：这些帧不判定，结果里列为未检区域 */
   skipHead: number;
   skipTail: number;
+  /** 逐帧定向（D-SB-47）；null / 缺省 = 关闭，照旧用示教走廊 */
+  heading?: HeadingSettings | null;
 }
 
 /** 整件标定：多轮整件帧组数统计；本轮多段配方凭它得到 expectedTotal 并发布。 */
@@ -201,6 +224,12 @@ export interface FrameMetrics {
   corridor?: number | null;
   /** 帧内胶中心相对走廊的法向偏移均值（absoluteX） */
   xMm: number | null;
+  /** 逐帧定向测得的胶条方向（度，图像坐标）；按示教走廊测的帧没有 */
+  headingDeg?: number | null;
+  /** 逐帧定向没找到胶条，按预测段示教方向回退测量 */
+  headingFallback?: boolean;
+  /** 胶中心到零件边的距离（mm，toEdge）；找不到边为 null */
+  edgeMm?: number | null;
 }
 
 /** 标定轮次一帧按当前段走廊重测的结果（workspace_calibration_frame，多轮标定页逐帧查看）。 */
@@ -301,6 +330,14 @@ export interface CameraInspect {
   detect: DetectParams | null;
   /** 这台相机在它检测的各段的走廊（图像像素） */
   segments?: SegmentCorridor[];
+  /** 逐帧定向的检测窗口（D-SB-47）；null / 缺省 = 未设置 */
+  window?: InspectWindow | null;
+}
+
+/** 检测窗口：沿胶路距出胶点 [startMm, startMm + lengthMm]（mm）。 */
+export interface InspectWindow {
+  startMm: number;
+  lengthMm: number;
 }
 
 export interface SegmentCorridor {
@@ -319,6 +356,8 @@ export interface RecipeDocSegmentFields {
   calibrationRounds: number;
   /** 比例分段边界两侧各留的过渡帧数，默认 2，范围 0..=5（D-SB-40） */
   boundaryGuard: number;
+  /** 按逐帧定向的胶条方向序列细化比例边界（D-SB-47），默认 false；只作用于开启定向的段 */
+  boundaryRefine?: boolean;
   partCalib: PartCalib | null;
 }
 
@@ -477,6 +516,8 @@ export interface SegmentCalibView {
   xRef: { xRef: number; spread: number } | null;
   /** 如“测量量未实现”“标准件轮次不足” */
   xRefPending: string | null;
+  /** 本段的标定提示，如检测窗口覆盖不足、弯道定向回退比例高 */
+  hints: string[];
 }
 
 /** 多轮标定（workspace_calibration_apply 返回，D2）。 */
@@ -549,6 +590,8 @@ export interface CameraTeachDraft {
   mmPerPx: number | null;
   /** null = 用配方的检测参数 */
   detect: DetectParams | null;
+  /** 这台相机的检测窗口 */
+  window: InspectWindow | null;
 }
 
 /** 候选工作区：段配方的计划部分（WorkspaceView.plan）。 */

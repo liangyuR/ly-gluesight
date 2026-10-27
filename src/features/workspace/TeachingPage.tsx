@@ -261,7 +261,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const clearSegment = () => { if (unlocked && segment != null && !editing) void perform(() => workspaceApi.clearSegmentCorridor(doc.id, data.workspace.revision, camera, segment), `${targetLabel} 的走廊与示教帧已清除`); };
   const changeSegmentChecks = (segment: number, checks: SegmentChecks) => setDoc({ ...doc, segments: (doc.segments ?? []).map(item => item.index === segment ? { ...item, checks } : item) });
   const inspect = doc.inspect?.find(item => item.camera === camera);
-  const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null };
+  const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null, window: inspect?.window ?? null };
   const setParams = (next: CameraParams) => setDoc({ ...doc, inspect: (doc.inspect ?? []).map(item => item.camera === camera ? { ...item, ...next } : item) });
 
   if (!cameraItems.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="段配方还没有计划相机" description="先在“段列表”里确认计划相机，再回来示教走廊。" action={<Link className="qs-btn" to="/recipe/segments">前往段列表<ArrowRight size={15} aria-hidden="true" /></Link>} /></Surface></div>;
@@ -403,7 +403,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const lockedDefaults = editing || frameDirty ? "走廊有未保存的修改，先保存后再改默认参数。" : "";
   const checksDisabled = busy || working || !!data.workspace.pending;
   const rail = segment == null
-    ? <div className="wp-stack wp-teach-settings"><MeasureDefaults locked={lockedDefaults} /><CameraParamsSettings key={camera} params={params} defaults={defaults} disabled={paramsDisabled || frameDirty} onChange={setParams} />
+    ? <div className="wp-stack wp-teach-settings"><MeasureDefaults locked={lockedDefaults} /><CameraParamsSettings key={camera} params={params} defaults={defaults} disabled={paramsDisabled || frameDirty} onChange={setParams}
+        headingSegments={cameraTasks.filter(item => doc.segments?.find(s => s.index === item.segment)?.heading).map(item => item.segment)} />
       <SegmentChecksSettings key={`checks-${camera}`} segments={doc.segments ?? []} disabled={checksDisabled} onChange={changeSegmentChecks} /></div>
     : <div className="wp-stack wp-teach-settings"><MeasureDefaults locked={lockedDefaults} />
       <Surface role="region" className="wp-seg-corridor-note" aria-label="段走廊说明"><h3>第 {segment} 段 · {segmentItem?.kind === "corner" ? "弯道" : "直线"} · {camera}</h3>

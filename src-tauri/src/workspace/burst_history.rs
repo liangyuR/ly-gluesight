@@ -12,7 +12,7 @@ use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
 use crate::frame_group::{FrameGroup, LossAlarm};
 use crate::plan::PathSegment;
 use crate::segmentation::{
-    frame_corridors, resolve_regions, Proportional, Region, SegInput, Segmenter,
+    frame_corridors, resolve_regions, segment_part, Proportional, Region, SegInput, Segmenter,
 };
 use crate::store::{FrameRecord, PartDetail, PartDetailBurst, RecordSource};
 
@@ -62,16 +62,21 @@ pub(super) fn frame_groups(metrics: &[FrameMetrics], cameras: usize) -> Vec<Fram
 pub(super) fn judge_frames(
     segments: &[PathSegment],
     boundary_guard: u32,
+    boundary_refine: bool,
     expected_total: Option<u32>,
     cameras: &[String],
     metrics: &[FrameMetrics],
     loss: &[LossAlarm],
 ) -> BurstJudgement {
     let groups = frame_groups(metrics, cameras.len());
-    let outcome = Proportional.segment(&SegInput {
-        groups: &groups,
-        segments,
-    });
+    let outcome = segment_part(
+        &SegInput {
+            groups: &groups,
+            segments,
+        },
+        metrics,
+        boundary_refine,
+    );
     let regions = resolve_regions(
         segments,
         &outcome,
@@ -284,6 +289,7 @@ pub(super) fn compare(app: &AppHandle, w: &Workspace, recipe: &Recipe, detail: &
         judge_frames(
             &recipe.path_segments,
             recipe.boundary_guard,
+            recipe.boundary_refine,
             recipe.expected_total(),
             &cameras,
             &metrics,

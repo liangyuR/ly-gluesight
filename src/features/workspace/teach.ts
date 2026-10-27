@@ -1,5 +1,5 @@
 import type { RecipeDoc } from "../cycle/types";
-import type { CameraTeachDraft } from "../plan/types";
+import type { CameraTeachDraft, InspectWindow } from "../plan/types";
 import { pathLength } from "./teachingPath";
 
 const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical)
@@ -11,14 +11,27 @@ export function sameCorridor(a: CameraTeachDraft | undefined, b: CameraTeachDraf
   return JSON.stringify(canonical(a ?? null)) === JSON.stringify(canonical(b ?? null));
 }
 
-/** 相机参数是否可用：像素当量为正且不超过 10 mm/px，自定义检测参数要合法。返回错误说明，空串表示可以。 */
-export function cameraParamsError(t: Pick<CameraTeachDraft, "mmPerPx" | "detect">) {
+/** 检测窗口终点上限（mm），与后端校验一致。 */
+export const MAX_WINDOW_END_MM = 500;
+
+/** 检测窗口是否可用：起点 ≥ 0、长度 > 0、终点不超过 500 mm。返回错误说明，空串表示可以。 */
+export function windowError(window: InspectWindow) {
+  const { startMm, lengthMm } = window;
+  if (!(Number.isFinite(startMm) && startMm >= 0)) return "检测窗口起点需不小于 0 mm";
+  if (!(Number.isFinite(lengthMm) && lengthMm > 0)) return "检测窗口长度需大于 0 mm";
+  if (startMm + lengthMm > MAX_WINDOW_END_MM) return `检测窗口终点（起点 + 长度）不能超过 ${MAX_WINDOW_END_MM} mm`;
+  return "";
+}
+
+/** 相机参数是否可用：像素当量为正且不超过 10 mm/px，自定义检测参数要合法，设了检测窗口时窗口要合法。返回错误说明，空串表示可以。 */
+export function cameraParamsError(t: Pick<CameraTeachDraft, "mmPerPx" | "detect"> & { window?: InspectWindow | null }) {
   if (!(t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 && t.mmPerPx <= 10)) return "像素当量需在 0–10 mm/px 之间";
   if (t.detect) {
     const { searchMm, widthRange: [lo, hi] } = t.detect;
     if (!(Number.isFinite(searchMm) && searchMm > 0 && Number.isFinite(lo) && Number.isFinite(hi) && lo > 0 && lo < hi)) return "搜索半宽需为正，胶宽范围需满足 0 < 下限 < 上限";
     if (hi >= 2 * searchMm) return `胶宽上限要小于搜索宽度 ${(2 * searchMm).toFixed(1)} mm`;
   }
+  if (t.window) return windowError(t.window);
   return "";
 }
 
@@ -49,6 +62,7 @@ export function savedDraft(doc: RecipeDoc | undefined, key: string): CameraTeach
     corridor: corridor.map(([x, y]) => [x, y] as [number, number]),
     mmPerPx: inspect?.mmPerPx ?? null,
     detect: inspect?.detect ? structuredClone(inspect.detect) : null,
+    window: inspect?.window ? { ...inspect.window } : null,
   };
 }
 

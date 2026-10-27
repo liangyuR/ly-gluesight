@@ -15,16 +15,40 @@ use crate::vision::{self, Engine, FrameMeasurement, VisionHost};
 
 /// 段配方的测量图版本（每段每台检测相机一条走廊，D-SB-45）；发布包 schema 5 的 `versions.graph`。
 pub const GRAPH_VERSION_BURST: &str = "corridor-2";
+/// 用到逐帧定向（D-SB-47）或找零件边（D-SB-48）的配方的测量图版本：graph.json 多了定向图与找边节点。
+pub const GRAPH_VERSION_BURST_HEADING: &str = "corridor-3";
 
-/// 段配方的测量图（发布包 graph.json）：每段每台检测相机一张走廊测量图；sizes 是各相机示教帧尺寸。
+/// 配方对应的测量图版本：都不用逐帧定向与找边时保持 `corridor-2`，旧发布包照常加载。
+pub fn graph_version(recipe: &Recipe) -> &'static str {
+    let edge = recipe
+        .path_segments
+        .iter()
+        .any(|s| s.offset_ref.as_ref().is_some_and(|o| o.edge.is_some()));
+    if edge || recipe.path_segments.iter().any(|s| s.heading.is_some()) {
+        GRAPH_VERSION_BURST_HEADING
+    } else {
+        GRAPH_VERSION_BURST
+    }
+}
+
+/// 段配方的测量图（发布包 graph.json）：每段每台检测相机一张走廊测量图，开启定向的（段, 相机）另有搜索图与回退图；
+/// sizes 是各相机示教帧尺寸。
 pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String> {
     if sizes.len() != recipe.inspect.len() {
         return Err(format!("段配方有 {} 台检测相机，示教帧尺寸却有 {} 份", recipe.inspect.len(), sizes.len()));
     }
-    let graphs: Vec<Value> = vision::CorridorSet::build(recipe, sizes)?.iter()
+    let set = vision::CorridorSet::build(recipe, sizes)?;
+    let graphs: Vec<Value> = set.iter()
         .map(|c| json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "graph": c.graph}))
         .collect();
-    Ok(json!({"schemaVersion": 4, "version": GRAPH_VERSION_BURST, "graphs": graphs}))
+    let mut doc = json!({"schemaVersion": 4, "version": graph_version(recipe), "graphs": graphs});
+    let headings: Vec<Value> = set.headings()
+        .map(|h| json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "graph": h.graph, "fallback": h.fallback}))
+        .collect();
+    if !headings.is_empty() {
+        doc["headings"] = json!(headings);
+    }
+    Ok(doc)
 }
 
 /// 同一 主.次 系列的引擎兼容运行：发布时 1.1.0 的版本可以在 1.1.x 上生产。
@@ -75,7 +99,9 @@ impl Prepared {
             || recipe.path_segments != expected.path_segments || recipe.inspect != expected.inspect || recipe.part_calib != expected.part_calib {
             return Err("发布包配方与所选生产版本不一致，请重新发布".into());
         }
-        if bundle.manifest.versions.graph != GRAPH_VERSION_BURST || !engine_version_matches(&bundle.manifest.versions.engine, &engine.version) {
+        if bundle.manifest.versions.graph != graph_version(&recipe)
+            || !engine_version_matches(&bundle.manifest.versions.engine, &engine.version)
+        {
             return Err("发布包的算法图或引擎版本与当前引擎不一致，请重新验证并发布".into());
         }
         let mut sizes = Vec::with_capacity(recipe.inspect.len());

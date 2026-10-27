@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::burst_judge::FrameMetrics;
 use crate::frame_group::FrameGroup;
 use crate::plan::{PathSegment, SegmentKind};
 
@@ -85,6 +86,125 @@ impl Segmenter for Proportional {
             .collect();
         SegOutcome::Boundaries(boundaries)
     }
+}
+
+/// 本件的分段：配方开了 `boundary_refine` 时用 [`refine_by_heading`]（要每帧特征），否则用 [`Proportional`]。生产与历史重判共用。
+pub fn segment_part(input: &SegInput, features: &[FrameMetrics], refine: bool) -> SegOutcome {
+    if refine {
+        refine_by_heading(input, features)
+    } else {
+        Proportional.segment(input)
+    }
+}
+
+/// 方向细化（D-SB-47）：先按比例分段；直线段与弯道之间、直线段开了逐帧定向的边界，在比例边界 ± (两段容差之和 + 1)
+/// 帧内对准直线段检测相机的胶条方向开始偏离（或回到）该段方向的帧。直线段方向取每台相机在该段核心帧（离两端边界都超出窗口）
+/// 上测得方向的中位数，偏离阈值为该段的方向容差；某帧多数相机偏离即算离开直线段。窗口内没有方向数据时保留比例边界，
+/// 置信度不变。只用定向成功（未回退）的帧。`features` 是本件各相机的每帧指标。
+pub fn refine_by_heading(input: &SegInput, features: &[FrameMetrics]) -> SegOutcome {
+    let outcome = Proportional.segment(input);
+    let SegOutcome::Boundaries(mut boundaries) = outcome else {
+        return outcome;
+    };
+    let total = input.groups.iter().map(|g| g.seq).max().unwrap_or(0);
+    let cuts: Vec<u64> = boundaries.iter().map(|b| b.frame_seq).collect();
+    let last = cuts.len();
+    for k in 0..last {
+        let (a, c) = (&input.segments[k], &input.segments[k + 1]);
+        let (s, straight_first) = match (a.kind, c.kind) {
+            (SegmentKind::Straight, SegmentKind::Corner) => (k, true),
+            (SegmentKind::Corner, SegmentKind::Straight) => (k + 1, false),
+            _ => continue,
+        };
+        let straight = &input.segments[s];
+        let Some(settings) = &straight.heading else {
+            continue;
+        };
+        let window = u64::from(a.tolerance + c.tolerance) + 1;
+        let (begin, end) = (
+            if s == 0 { 1 } else { cuts[s - 1] + 1 },
+            if s == last { total } else { cuts[s] },
+        );
+        let core = (if s == 0 { begin } else { begin + window })..=(if s == last {
+            end
+        } else {
+            end.saturating_sub(window)
+        });
+        let lo = cuts[k].saturating_sub(window).max(if k == 0 {
+            1
+        } else {
+            boundaries[k - 1].frame_seq + 1
+        });
+        let hi = (cuts[k] + window).min(if k + 1 < last {
+            cuts[k + 1] - 1
+        } else {
+            total.saturating_sub(1)
+        });
+        if lo > hi {
+            continue;
+        }
+        let theta = |m: &&FrameMetrics| {
+            m.heading_deg.filter(|_| {
+                !m.heading_fallback && m.state == crate::burst_judge::FrameState::Measured
+            })
+        };
+        let cameras: std::collections::BTreeSet<usize> = features
+            .iter()
+            .filter(|m| m.corridor == Some(straight.index) && theta(m).is_some())
+            .map(|m| m.camera)
+            .collect();
+        let reference: Vec<(usize, f64)> = cameras
+            .iter()
+            .filter_map(|&camera| {
+                let mut core_theta: Vec<f64> = features
+                    .iter()
+                    .filter(|m| m.camera == camera && core.contains(&m.seq))
+                    .filter_map(|m| theta(&m))
+                    .collect();
+                let base = *core_theta.first()?;
+                core_theta
+                    .iter_mut()
+                    .for_each(|t| *t = base + crate::heading::wrap(*t - base));
+                core_theta.sort_by(f64::total_cmp);
+                Some((camera, core_theta[core_theta.len() / 2]))
+            })
+            .collect();
+        let in_straight = |seq: u64| -> Option<bool> {
+            let votes: Vec<bool> = reference
+                .iter()
+                .filter_map(|&(camera, r)| {
+                    let m = features
+                        .iter()
+                        .find(|m| m.camera == camera && m.seq == seq)?;
+                    theta(&m).map(|t| crate::heading::wrap(t - r).abs() <= settings.tolerance_deg)
+                })
+                .collect();
+            (!votes.is_empty()).then(|| votes.iter().filter(|&&v| v).count() * 2 > votes.len())
+        };
+        let observed: Vec<(u64, bool)> = (lo..=hi + 1)
+            .filter_map(|seq| in_straight(seq).map(|v| (seq, v)))
+            .collect();
+        if observed.is_empty() {
+            continue;
+        }
+        let score = |cut: u64| -> i64 {
+            observed
+                .iter()
+                .map(|&(seq, v)| {
+                    if v == ((seq <= cut) == straight_first) {
+                        1
+                    } else {
+                        -1
+                    }
+                })
+                .sum()
+        };
+        let best = (lo..=hi)
+            .max_by_key(|&cut| (score(cut), std::cmp::Reverse(cut.abs_diff(cuts[k]))))
+            .unwrap_or(cuts[k]);
+        boundaries[k].frame_seq = best;
+    }
+    SegOutcome::Boundaries(boundaries)
 }
 
 /// 未分段的原因。
@@ -487,6 +607,88 @@ mod tests {
                 .collect(),
             SegOutcome::Unsegmented => panic!("应给出边界"),
         }
+    }
+
+    #[test]
+    fn heading_refined_moves_a_straight_corner_boundary_to_where_the_bead_starts_turning_and_keeps_it_without_heading_data(
+    ) {
+        // 防的回归（D-SB-47 方向细化）：细化不看方向、仍停在比例边界；参考方向取错相机或把回退帧算进来；
+        // 窗口里没有方向数据时乱动边界
+        let mut segments = calibrated(&[S, C, S], &[5, 5, 5]);
+        segments
+            .iter_mut()
+            .for_each(|s| s.heading = Some(Default::default()));
+        let groups: Vec<FrameGroup> = (1..=15)
+            .map(|seq| FrameGroup {
+                seq,
+                present: vec![true; 3],
+                incomplete: false,
+            })
+            .collect();
+        // 真实边界在 7、12：直线 0°，弯道每帧转 10°，之后直线 60°；只有相机 0 有方向
+        let theta = |seq: u64| {
+            if seq <= 7 {
+                0.0
+            } else if seq <= 12 {
+                10.0 * (seq - 7) as f64
+            } else {
+                60.0
+            }
+        };
+        let corridor = |seq: u64| {
+            if seq <= 5 {
+                1
+            } else if seq <= 10 {
+                2
+            } else {
+                3
+            }
+        };
+        let features: Vec<FrameMetrics> = (1..=15)
+            .map(|seq| FrameMetrics {
+                heading_deg: Some(theta(seq)),
+                corridor: Some(corridor(seq)),
+                ..crate::store::burst_fixture::measured(0, seq, 4.0)
+            })
+            .collect();
+        let refined = |features: &[FrameMetrics]| {
+            cuts(&refine_by_heading(
+                &SegInput {
+                    groups: &groups,
+                    segments: &segments,
+                },
+                features,
+            ))
+        };
+        assert_eq!(
+            cuts(&proportional(&segments, 15)),
+            vec![(5, 1.0), (10, 1.0)]
+        );
+        assert_eq!(refined(&features), vec![(7, 1.0), (12, 1.0)]);
+        let fallback: Vec<FrameMetrics> = features
+            .iter()
+            .cloned()
+            .map(|m| FrameMetrics {
+                heading_fallback: true,
+                ..m
+            })
+            .collect();
+        assert_eq!(
+            refined(&fallback),
+            vec![(5, 1.0), (10, 1.0)],
+            "回退帧没有可信方向，保留比例边界"
+        );
+        assert_eq!(
+            segment_part(
+                &SegInput {
+                    groups: &groups,
+                    segments: &segments
+                },
+                &features,
+                false
+            ),
+            proportional(&segments, 15)
+        );
     }
 
     /// D-SB-40：第 k 个边界 = round(本件帧组数 × 前 k 段 N_exp 之和 / ΣN_exp)。N_exp 10 / 4 / 10（ΣN 24 ± 3），

@@ -91,6 +91,43 @@ pub struct OffsetRef {
     /// 标准件多轮 x 的 max − min（mm），与 x_ref 同时有值
     #[serde(default)]
     pub spread: Option<f64>,
+    /// ToEdge 的找边参数（D-SB-48）；AbsoluteX 必须为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<EdgeParams>,
+}
+
+/// 零件边相对胶条外侧的明暗关系（`glue.edge_distance` 的 `edgePolarity`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EdgePolarity {
+    BrightToDark,
+    DarkToBright,
+}
+
+/// ToEdge 找零件边的参数（D-SB-48）：沿测站法向从胶边外搜索 `search_mm`，两侧灰度差至少 `contrast_min`。
+/// `nominal_mm` 是图纸胶边距：给了就以它为参考值，否则用标准件得出的 x_ref。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EdgeParams {
+    pub polarity: EdgePolarity,
+    pub search_mm: f64,
+    pub contrast_min: f64,
+    #[serde(default)]
+    pub nominal_mm: Option<f64>,
+}
+
+/// 逐帧定向（D-SB-47）：开启的段用 `glue.bead_path` 在出胶点周围定向后测量，方向范围由示教走廊推出，
+/// 直线段为示教方向 ± `tolerance_deg`。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HeadingSettings {
+    pub tolerance_deg: f64,
+}
+
+impl Default for HeadingSettings {
+    fn default() -> Self {
+        Self { tolerance_deg: 5.0 }
+    }
 }
 
 /// 多轮采集的帧组数统计，供容差建议与追溯。
@@ -143,6 +180,9 @@ pub struct PathSegment {
     /// 段尾跳过的帧组数，同 `skip_head`
     #[serde(default)]
     pub skip_tail: u32,
+    /// 逐帧定向（D-SB-47）；None = 关闭，照旧用示教走廊
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heading: Option<HeadingSettings>,
 }
 
 /// 一段实际参与判定的相机（按计划相机顺序）：段没指定时为全部计划相机。
@@ -397,6 +437,42 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
                     offset_ref.camera
                 ));
             }
+            if let Some(edge) = &offset_ref.edge {
+                if offset_ref.measure != OffsetMeasure::ToEdge {
+                    return Err(format!(
+                        "第 {index} 段胶偏按 AbsoluteX 测，不能配置找边参数"
+                    ));
+                }
+                if !(edge.search_mm.is_finite() && edge.search_mm > 0.0 && edge.search_mm <= 50.0) {
+                    return Err(format!(
+                        "第 {index} 段找边搜索长度 {} mm 需在 0–50 mm 之间",
+                        edge.search_mm
+                    ));
+                }
+                if !(edge.contrast_min.is_finite() && (1.0..=255.0).contains(&edge.contrast_min)) {
+                    return Err(format!(
+                        "第 {index} 段找边对比度下限 {} 需在 1–255 之间",
+                        edge.contrast_min
+                    ));
+                }
+                if edge
+                    .nominal_mm
+                    .is_some_and(|v| !(v.is_finite() && v >= 0.0))
+                {
+                    return Err(format!("第 {index} 段图纸胶边距需为不小于 0 的有限数"));
+                }
+            }
+        }
+        if let Some(heading) = &segment.heading {
+            if !(heading.tolerance_deg.is_finite()
+                && heading.tolerance_deg > 0.0
+                && heading.tolerance_deg <= 45.0)
+            {
+                return Err(format!(
+                    "第 {index} 段逐帧定向的方向容差 {}° 需在 0–45° 之间",
+                    heading.tolerance_deg
+                ));
+            }
         }
         if segment.skip_head > MAX_TOLERANCE || segment.skip_tail > MAX_TOLERANCE {
             return Err(format!(
@@ -511,6 +587,7 @@ pub fn new_segment(index: u32, kind: SegmentKind, defaults: &KindDefaults) -> Pa
         cameras: Vec::new(),
         skip_head: 0,
         skip_tail: 0,
+        heading: None,
     }
 }
 
@@ -569,8 +646,19 @@ mod tests {
         for (segment, n) in segments.iter_mut().zip([12, 4, 9]) {
             segment.expected_frames = Some(n);
         }
-        segments[0].offset_ref = Some(OffsetRef { measure: OffsetMeasure::AbsoluteX, camera: "camA".into(), x_ref: Some(0.2), spread: Some(0.1) });
-        Plan { product: 7, segments, cameras: ["camA", "camB", "camC"].map(String::from).to_vec(), part: None }
+        segments[0].offset_ref = Some(OffsetRef {
+            measure: OffsetMeasure::AbsoluteX,
+            camera: "camA".into(),
+            x_ref: Some(0.2),
+            spread: Some(0.1),
+            edge: None,
+        });
+        Plan {
+            product: 7,
+            segments,
+            cameras: ["camA", "camB", "camC"].map(String::from).to_vec(),
+            part: None,
+        }
     }
 
     fn edited(edit: Edit) -> Plan {

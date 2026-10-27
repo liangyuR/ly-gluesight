@@ -93,6 +93,12 @@ pub struct CalibrationRound {
     pub corridors: Vec<Value>,
     /// 各相机去掉首尾各一帧后、测成的帧的胶中心 x 均值（mm）；没有可用帧为 None
     pub x_means: Vec<Option<f64>>,
+    /// 同口径的胶边距均值（mm，D-SB-48 ToEdge）；没找边的相机为 None
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_means: Vec<Option<f64>>,
+    /// 逐帧定向的帧数统计（D-SB-47）：段号 → [定向测量的帧数, 其中回退的帧数]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub heading: BTreeMap<u32, [u32; 2]>,
 }
 
 /// 候选的多轮标定：加入的轮次（含标准件轮次）。标定结果写进配方（N_exp、calib、partCalib、x_ref），视图由配方与轮次算出。
@@ -134,6 +140,62 @@ pub struct SegmentCalibView {
     pub tolerance: u32,
     pub x_ref: Option<XRefView>,
     pub x_ref_pending: Option<String>,
+    /// 逐帧定向的提示（D-SB-47）：检测窗口能否覆盖每帧后移量、定向回退比例
+    pub hints: Vec<String>,
+}
+
+/// 定向回退比例超过它就提示（窗口内胶路跟不住，多见于弯道）。
+const HEADING_FALLBACK_HINT: f64 = 0.2;
+
+/// 开启逐帧定向的段的标定提示（D-SB-47）：每帧后移量 ≈ 段长 ÷ N_exp，检测窗口短于它时相邻帧之间有胶测不到，
+/// 超过 3 倍时同一处胶被重复测；各轮定向回退的帧超过 20% 时提示缩短窗口或减小起点。不阻断发布。
+pub(super) fn heading_hints(
+    doc: &RecipeDoc,
+    segment: &PathSegment,
+    rounds: &[CalibrationRound],
+) -> Vec<String> {
+    if segment.heading.is_none() {
+        return Vec::new();
+    }
+    let mut hints = Vec::new();
+    let cameras = crate::plan::segment_cameras(segment, &doc.plan_cameras());
+    match (
+        segment.length_mm,
+        segment.expected_frames.filter(|&n| n > 0),
+    ) {
+        (None, _) => hints.push("段长未填，无法核对检测窗口能否覆盖每帧后移量".to_string()),
+        (Some(_), None) => {}
+        (Some(length), Some(n)) => {
+            let travel = length / f64::from(n);
+            for inspect in doc.inspect.iter().filter(|i| cameras.contains(&i.camera)) {
+                let Some(window) = &inspect.window else {
+                    continue;
+                };
+                if window.length_mm < travel {
+                    hints.push(format!(
+                        "相机 {} 检测窗口长 {:.1} mm，短于每帧后移量约 {travel:.1} mm：相邻帧之间有胶测不到，断胶可能漏检",
+                        inspect.camera, window.length_mm
+                    ));
+                } else if window.length_mm > 3.0 * travel {
+                    hints.push(format!(
+                        "相机 {} 检测窗口长 {:.1} mm，超过每帧后移量约 {travel:.1} mm 的 3 倍：同一处胶会被测多次",
+                        inspect.camera, window.length_mm
+                    ));
+                }
+            }
+        }
+    }
+    let [measured, fallback] = rounds
+        .iter()
+        .filter_map(|r| r.heading.get(&segment.index))
+        .fold([0u32; 2], |a, b| [a[0] + b[0], a[1] + b[1]]);
+    if measured > 0 && f64::from(fallback) > HEADING_FALLBACK_HINT * f64::from(measured) {
+        hints.push(format!(
+            "定向回退 {fallback}/{measured} 帧（{:.0}%）：窗口内胶路跟不住，建议缩短检测窗口或减小起点",
+            100.0 * f64::from(fallback) / f64::from(measured)
+        ));
+    }
+    hints
 }
 
 /// 多轮标定（TS `CalibrationView`）：由配方当前的标定结果与已加入的轮次算出。
@@ -272,7 +334,12 @@ pub(super) fn corridor_tag(doc: &RecipeDoc, camera: &str) -> Value {
                 i.mm_per_px,
                 i.detect.as_ref().unwrap_or(&doc.detect),
                 doc.spacing,
-                i.segments
+                i.segments,
+                i.window,
+                doc.segments
+                    .iter()
+                    .map(|s| (s.index, &s.heading))
+                    .collect::<Vec<_>>()
             ])
         })
 }
@@ -444,6 +511,9 @@ pub(super) fn frame_without_metrics(
         present_ratio: 0.0,
         x_mm: None,
         corridor: None,
+        heading_deg: None,
+        heading_fallback: false,
+        edge_mm: None,
     }
 }
 
@@ -485,8 +555,19 @@ pub(super) fn guard_calibration(old: &RecipeDoc, new: &mut RecipeDoc) -> Result<
         if after.expected_frames != before.expected_frames || after.calib != before.calib {
             return Err(format!("第 {} 段的预期帧数与标定统计只能由多轮标定写入，不能直接修改", after.index));
         }
-        let Some(reference) = after.offset_ref.as_mut() else { continue };
-        let previous = before.offset_ref.as_ref().filter(|old| old.measure == reference.measure && old.camera == reference.camera);
+        let Some(reference) = after.offset_ref.as_mut() else {
+            continue;
+        };
+        let edge = |r: &OffsetRef| {
+            r.edge
+                .as_ref()
+                .map(|e| (e.polarity, e.search_mm, e.contrast_min))
+        };
+        let previous = before.offset_ref.as_ref().filter(|old| {
+            old.measure == reference.measure
+                && old.camera == reference.camera
+                && edge(old) == edge(reference)
+        });
         match previous {
             None => { reference.x_ref = None; reference.spread = None; }
             Some(old) => {
@@ -930,11 +1011,23 @@ pub(super) fn write_features(dir: &Path, cameras: &[String], metrics: &[FrameMet
     crate::fsio::write_atomic(&dir.join(BOUNDARIES_FILE), &serde_json::to_string_pretty(outcome).map_err(|e| e.to_string())?)
 }
 
-/// 一台相机去掉首尾各一帧（seq 1 与帧组数）后、测成的帧的胶中心 x 均值。
-fn x_mean(metrics: &[FrameMetrics], camera: usize, group_count: u64) -> Option<f64> {
-    let xs: Vec<f64> = metrics.iter()
-        .filter(|m| m.camera == camera && m.seq > 1 && m.seq < group_count && m.state == FrameState::Measured)
-        .filter_map(|m| m.x_mm).collect();
+/// 一台相机去掉首尾各一帧（seq 1 与帧组数）后、测成的帧的测量量（胶中心 x 或胶边距）均值。
+fn round_mean(
+    metrics: &[FrameMetrics],
+    camera: usize,
+    group_count: u64,
+    value: fn(&FrameMetrics) -> Option<f64>,
+) -> Option<f64> {
+    let xs: Vec<f64> = metrics
+        .iter()
+        .filter(|m| {
+            m.camera == camera
+                && m.seq > 1
+                && m.seq < group_count
+                && m.state == FrameState::Measured
+        })
+        .filter_map(value)
+        .collect();
     (!xs.is_empty()).then(|| xs.iter().sum::<f64>() / xs.len() as f64)
 }
 
@@ -952,7 +1045,23 @@ pub(super) fn calibration_round(doc: &RecipeDoc, round: &CaptureRoundV2, standar
         incomplete_groups: u32::try_from(round.incomplete_groups.len()).unwrap_or(u32::MAX),
         loss_alarms: u32::try_from(round.loss_alarms.len()).unwrap_or(u32::MAX),
         corridors: cameras.iter().map(|c| corridor_tag(doc, c)).collect(),
-        x_means: (0..cameras.len()).map(|camera| x_mean(metrics, camera, round.group_count)).collect(),
+        x_means: (0..cameras.len())
+            .map(|camera| round_mean(metrics, camera, round.group_count, |m| m.x_mm))
+            .collect(),
+        edge_means: (0..cameras.len())
+            .map(|camera| round_mean(metrics, camera, round.group_count, |m| m.edge_mm))
+            .collect(),
+        heading: metrics
+            .iter()
+            .filter(|m| m.heading_deg.is_some() || m.heading_fallback)
+            .fold(BTreeMap::new(), |mut acc, m| {
+                if let Some(segment) = m.corridor {
+                    let entry: &mut [u32; 2] = acc.entry(segment).or_default();
+                    entry[0] += 1;
+                    entry[1] += u32::from(m.heading_fallback);
+                }
+                acc
+            }),
         cameras,
     }
 }
@@ -970,17 +1079,42 @@ pub(super) fn add_calibration_round(w: &mut Workspace, round: CalibrationRound) 
 
 /// 胶偏参考：直线段配了 offset_ref 用它；没配但启用了胶偏检测时，按 AbsoluteX、计划第一台相机（D-SB-18 默认）。
 pub(super) fn offset_reference(segment: &PathSegment, cameras: &[String]) -> Option<OffsetRef> {
-    if segment.kind != SegmentKind::Straight { return None; }
-    segment.offset_ref.clone().or_else(|| segment.checks.offset.as_ref().filter(|o| o.enabled).and(cameras.first())
-        .map(|camera| OffsetRef { measure: OffsetMeasure::AbsoluteX, camera: camera.clone(), x_ref: None, spread: None }))
+    if segment.kind != SegmentKind::Straight {
+        return None;
+    }
+    segment.offset_ref.clone().or_else(|| {
+        segment
+            .checks
+            .offset
+            .as_ref()
+            .filter(|o| o.enabled)
+            .and(cameras.first())
+            .map(|camera| OffsetRef {
+                measure: OffsetMeasure::AbsoluteX,
+                camera: camera.clone(),
+                x_ref: None,
+                spread: None,
+                edge: None,
+            })
+    })
 }
 
-/// 标准件轮次里这台相机可用的 x 均值：走廊与当前相同（走廊变了，x 不可比）。
-fn standard_x(rounds: &[CalibrationRound], camera: &str, tag: &Value) -> Vec<f64> {
-    rounds.iter().filter(|r| r.standard).filter_map(|r| {
-        let j = r.cameras.iter().position(|c| c == camera)?;
-        (r.corridors.get(j) == Some(tag)).then(|| r.x_means.get(j).copied().flatten()).flatten()
-    }).collect()
+/// 标准件轮次里这台相机可用的测量量均值（AbsoluteX 取 x，ToEdge 取胶边距）：走廊与当前相同（走廊变了，不可比）。
+fn standard_x(rounds: &[CalibrationRound], reference: &OffsetRef, tag: &Value) -> Vec<f64> {
+    rounds
+        .iter()
+        .filter(|r| r.standard)
+        .filter_map(|r| {
+            let j = r.cameras.iter().position(|c| *c == reference.camera)?;
+            let means = match reference.measure {
+                OffsetMeasure::AbsoluteX => &r.x_means,
+                OffsetMeasure::ToEdge => &r.edge_means,
+            };
+            (r.corridors.get(j) == Some(tag))
+                .then(|| means.get(j).copied().flatten())
+                .flatten()
+        })
+        .collect()
 }
 
 /// 多段计划逐段标定的输入：每个标定轮次（不含标准件）按已确认的手动分段得出各段帧组数，按段排列（外层段、内层轮次）；
@@ -1043,9 +1177,9 @@ pub(super) fn apply_calibration(
     }
     let reference = match doc.segments.as_slice() {
         [segment] => offset_reference(segment, &cameras).map(|mut reference| {
-            let values = match reference.measure {
-                OffsetMeasure::AbsoluteX => standard_x(rounds, &reference.camera, &corridor_tag(doc, &reference.camera)),
-                OffsetMeasure::ToEdge => Vec::new(),
+            let values = match (reference.measure, &reference.edge) {
+                (OffsetMeasure::ToEdge, None) => Vec::new(),
+                _ => standard_x(rounds, &reference, &corridor_tag(doc, &reference.camera)),
             };
             (reference.x_ref, reference.spread) = calibration::x_ref(&values).unzip();
             reference
@@ -1139,17 +1273,23 @@ pub(super) fn calibration_view(
                 (SegmentKind::Corner, ..) | (_, Some(_), _) => None,
                 (_, None, None) => Some("未启用胶偏检测".into()),
                 (_, None, Some(_)) if !single => Some("分段算法未就绪".into()),
-                (_, None, Some(reference)) if reference.measure == OffsetMeasure::ToEdge => {
-                    Some("测量量未实现".into())
+                (_, None, Some(reference))
+                    if reference.measure == OffsetMeasure::ToEdge && reference.edge.is_none() =>
+                {
+                    Some("测量量未实现：未配置找边参数".into())
+                }
+                (_, None, Some(reference))
+                    if reference
+                        .edge
+                        .as_ref()
+                        .is_some_and(|e| e.nominal_mm.is_some()) =>
+                {
+                    Some("按图纸胶边距判，不需要标准件".into())
                 }
                 (_, None, Some(reference)) => Some(if !rounds.iter().any(|r| r.standard) {
                     "还没有标准件轮次".into()
-                } else if standard_x(
-                    rounds,
-                    &reference.camera,
-                    &corridor_tag(doc, &reference.camera),
-                )
-                .is_empty()
+                } else if standard_x(rounds, &reference, &corridor_tag(doc, &reference.camera))
+                    .is_empty()
                 {
                     "标准件轮次的走廊已变化或没有测成的帧，请重新加入标准件轮次".into()
                 } else {
@@ -1164,6 +1304,7 @@ pub(super) fn calibration_view(
                 tolerance: segment.tolerance,
                 x_ref,
                 x_ref_pending,
+                hints: heading_hints(doc, segment, rounds),
             }
         })
         .collect();
@@ -1378,7 +1519,11 @@ pub async fn workspace_calibration_frame(
         )?;
         Ok(CalibrationFrameView {
             segment: Some(segment),
-            corridor,
+            corridor: if measured.line.is_empty() {
+                corridor
+            } else {
+                measured.line.clone()
+            },
             search_half_px,
             edges: measured.edges,
             metrics: FrameMetrics {
@@ -1547,6 +1692,17 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
                         target: TargetV2::Corridor {
                             camera: t.camera.clone(),
                             segment: None,
+                        },
+                    }),
+            )
+            .chain(
+                crate::heading::issues(&doc.segments, &doc.inspect)
+                    .into_iter()
+                    .map(|i| BlockerV2 {
+                        message: i.message,
+                        target: TargetV2::Corridor {
+                            camera: i.camera,
+                            segment: i.segment,
                         },
                     }),
             )

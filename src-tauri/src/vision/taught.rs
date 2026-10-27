@@ -4,18 +4,20 @@ use std::time::Instant;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use super::heading::{measure_heading_with, plan_heading, HeadingGraph};
 use super::{Engine, FrameImage, RunResult};
 use crate::burst_judge::{FrameMetrics, FrameState};
+use crate::plan::{EdgePolarity, OffsetMeasure};
 use crate::recipe::{CameraInspect, DetectParams, Polarity, Recipe};
 
 /// 走廊测量图的像素参数，按 lyFlow 契约约束（glue.taught_path + glue.bead_width）核对。
-struct GraphParams {
+pub(super) struct GraphParams {
     /// 站距（px）
     step: f64,
     /// 搜索半宽（px）
-    half: f64,
+    pub(super) half: f64,
     lo: f64,
-    hi: f64,
+    pub(super) hi: f64,
     /// 中心偏移容差（px）= 搜索半宽 − 胶宽上限的一半
     tolerance: f64,
     /// 中线总长（px）
@@ -30,7 +32,22 @@ fn graph_params(path: &[[f32; 2]], scale: f64, step: f64, detect: &DetectParams)
         (p[1][0] as f64 - p[0][0] as f64).hypot(p[1][1] as f64 - p[0][1] as f64)
     }).sum();
     if !length.is_finite() || length < 8.0 { return Err("lyFlow 示教中线至少需要 8 px"); }
-    if !step.is_finite() || step < 1.0 { return Err("lyFlow 站距至少需要 1 px，请检查站距和像素当量"); }
+    bead_params(scale, step, detect, length)
+}
+
+/// 量胶宽（`glue.bead_width`）的像素参数：示教走廊与逐帧定向共用；`length` 是胶路长度（px）。
+pub(super) fn bead_params(
+    scale: f64,
+    step: f64,
+    detect: &DetectParams,
+    length: f64,
+) -> Result<GraphParams, &'static str> {
+    if !scale.is_finite() || scale <= 0.0 || scale > 10.0 {
+        return Err("像素当量必须在 0–10 mm/px 之间");
+    }
+    if !step.is_finite() || step < 1.0 {
+        return Err("lyFlow 站距至少需要 1 px，请检查站距和像素当量");
+    }
     let half = detect.search_mm as f64 / scale;
     let lo = detect.width_range[0] as f64 / scale;
     let hi = detect.width_range[1] as f64 / scale;
@@ -59,31 +76,151 @@ fn station_count(length: f64, step: f64) -> usize {
 }
 
 /// 沿中线量胶的测量图：io.load_image → glue.taught_path（示教中线）→ glue.bead_width（逐站胶边与胶宽）。
-fn taught_graph(path: &[[f32; 2]], detect: &DetectParams, p: &GraphParams) -> Result<Value, String> {
-    Ok(json!({
-        "schemaVersion": 1, "id": "01GLUESIGHTTAUGHT00000000",
-        "nodes": [
-            {"id": "n_load", "op": "io.load_image", "params": {"source": "inputs"}},
-            {"id": "n_path", "op": "glue.taught_path", "params": {
-                "points": serde_json::to_string(path).map_err(|e| e.to_string())?,
-                "zone": [0.0, 0.0], "tolerance": p.tolerance, "widthMax": p.hi.ceil(),
-                "polarity": if detect.polarity == Polarity::Light { "bright" } else { "dark" }, "sharpMin": 0.4
-            }},
-            {"id": "n_width", "op": "glue.bead_width", "params": {
-                "form": "straight", "widthRange": [p.lo, p.hi], "stationStep": p.step, "searchHalf": p.half,
-                "window": 30.0, "mergeGap": 8.0, "contrastMin": 16.0,
-                "presentRatio": 0.5, "centerRatio": 0.3, "contrastRatio": 0.3
-            }}
-        ],
-        "edges": [
-            {"id": "e_image", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_width", "port": "image"}},
-            {"id": "e_path", "from": {"node": "n_path", "port": "path"}, "to": {"node": "n_width", "port": "path"}}
-        ],
-        "outputs": {
-            "stations": {"node": "n_width", "port": "bead.stations"},
-            "beadInfo": {"node": "n_width", "port": "bead.info"}
-        }
+fn taught_graph(
+    path: &[[f32; 2]],
+    detect: &DetectParams,
+    p: &GraphParams,
+    edge: Option<&EdgeGraph>,
+) -> Result<Value, String> {
+    let path = json!({"id": "n_path", "op": "glue.taught_path", "params": {
+        "points": serde_json::to_string(path).map_err(|e| e.to_string())?,
+        "zone": [0.0, 0.0], "tolerance": p.tolerance, "widthMax": p.hi.ceil(),
+        "polarity": polarity(detect), "sharpMin": 0.4
+    }});
+    Ok(bead_graph(
+        "01GLUESIGHTTAUGHT00000000",
+        path,
+        false,
+        p,
+        edge,
+        json!({}),
+    ))
+}
+
+pub(super) fn polarity(detect: &DetectParams) -> &'static str {
+    if detect.polarity == Polarity::Light {
+        "bright"
+    } else {
+        "dark"
+    }
+}
+
+/// 找零件边节点（`glue.edge_distance`，D-SB-48）的像素参数。
+#[derive(Clone, Debug)]
+pub(super) struct EdgeGraph {
+    polarity: &'static str,
+    search_px: f64,
+    contrast_min: f64,
+}
+
+/// 第 `segment` 段胶偏按 ToEdge 测、参考相机是 `camera` 时的找边参数；其余返回 None。搜索长度换算后要比 `farRun`（12 px）长 10 px。
+pub(super) fn edge_graph(
+    recipe: &Recipe,
+    segment: u32,
+    camera: &str,
+    scale: f64,
+) -> Result<Option<EdgeGraph>, String> {
+    let Some(offset) = recipe
+        .path_segments
+        .iter()
+        .find(|s| s.index == segment)
+        .and_then(|s| s.offset_ref.as_ref())
+    else {
+        return Ok(None);
+    };
+    let (OffsetMeasure::ToEdge, Some(edge)) = (offset.measure, offset.edge.as_ref()) else {
+        return Ok(None);
+    };
+    if offset.camera != camera {
+        return Ok(None);
+    }
+    let search_px = edge.search_mm / scale;
+    if search_px < EDGE_FAR_RUN_PX + 10.0 {
+        return Err(format!(
+            "第 {segment} 段相机 {camera}：找边搜索长度 {} mm 换算后不足 {} px",
+            edge.search_mm,
+            EDGE_FAR_RUN_PX + 10.0
+        ));
+    }
+    Ok(Some(EdgeGraph {
+        polarity: match edge.polarity {
+            EdgePolarity::BrightToDark => "bright_to_dark",
+            EdgePolarity::DarkToBright => "dark_to_bright",
+        },
+        search_px,
+        contrast_min: edge.contrast_min,
     }))
+}
+
+/// `glue.edge_distance` 的远侧持续长度（px，lyFlow 默认）。
+const EDGE_FAR_RUN_PX: f64 = 12.0;
+
+/// 量胶测量图：读图 → 定胶路节点（`path`，id 为 n_path）→ `glue.bead_width`，有找边参数时再接 `glue.edge_distance`。
+/// `path_reads_image`：定胶路节点要读图（`glue.bead_path`）。
+pub(super) fn bead_graph(
+    id: &str,
+    path: Value,
+    path_reads_image: bool,
+    p: &GraphParams,
+    edge: Option<&EdgeGraph>,
+    mut outputs: Value,
+) -> Value {
+    let mut nodes = vec![
+        json!({"id": "n_load", "op": "io.load_image", "params": {"source": "inputs"}}),
+        path,
+        json!({"id": "n_width", "op": "glue.bead_width", "params": {
+            "form": "straight", "widthRange": [p.lo, p.hi], "stationStep": p.step, "searchHalf": p.half,
+            "window": 30.0, "mergeGap": 8.0, "contrastMin": 16.0,
+            "presentRatio": 0.5, "centerRatio": 0.3, "contrastRatio": 0.3
+        }}),
+    ];
+    let mut edges = vec![
+        json!({"id": "e_image", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_width", "port": "image"}}),
+        json!({"id": "e_path", "from": {"node": "n_path", "port": "path"}, "to": {"node": "n_width", "port": "path"}}),
+    ];
+    if path_reads_image {
+        edges.push(json!({"id": "e_pimage", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_path", "port": "image"}}));
+    }
+    outputs["stations"] = json!({"node": "n_width", "port": "bead.stations"});
+    outputs["beadInfo"] = json!({"node": "n_width", "port": "bead.info"});
+    if let Some(e) = edge {
+        nodes.push(
+            json!({"id": "n_edge", "op": "glue.edge_distance", "params": {
+                "searchLength": e.search_px, "reference": "bead_center", "edgePolarity": e.polarity,
+                "contrastMin": e.contrast_min, "farRun": EDGE_FAR_RUN_PX
+            }}),
+        );
+        edges.push(json!({"id": "e_eimage", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_edge", "port": "image"}}));
+        edges.push(json!({"id": "e_bead", "from": {"node": "n_width", "port": "bead"}, "to": {"node": "n_edge", "port": "bead"}}));
+        outputs["edge"] = json!({"node": "n_edge", "port": "edge"});
+    }
+    json!({"schemaVersion": 1, "id": id, "nodes": nodes, "edges": edges, "outputs": outputs})
+}
+
+/// 找边结果 → 胶中心到零件边距离的均值（mm）。有胶测站里找到边的不到一半时为 None（这一帧胶偏记未测）。
+pub(super) fn edge_mm(result: &RunResult, scale: f64) -> Result<Option<f64>, String> {
+    let edge = result.record("edge").ok_or("算法缺少找边结果")?;
+    let status = edge["status"].as_array().ok_or("找边结果缺少逐站状态")?;
+    let distance = edge["distancePx"]
+        .as_array()
+        .ok_or("找边结果缺少逐站距离")?;
+    if status.len() != distance.len() {
+        return Err("找边结果逐站状态与距离数量不一致".into());
+    }
+    let searched = status
+        .iter()
+        .filter(|s| s.as_str() != Some("nobead"))
+        .count();
+    let found: Vec<f64> = status
+        .iter()
+        .zip(distance)
+        .filter(|(s, _)| s.as_str() == Some("ok"))
+        .filter_map(|(_, d)| d.as_f64().filter(|v| v.is_finite()))
+        .collect();
+    if searched == 0 || found.len() * 2 < searched {
+        return Ok(None);
+    }
+    Ok(Some(found.iter().sum::<f64>() / found.len() as f64 * scale))
 }
 
 // ───────────── 段配方：每台相机一条检测走廊，每帧独立测（D-SB-12、D-SB-17） ─────────────
@@ -107,6 +244,8 @@ pub struct CorridorGraph {
     graph_text: String,
     /// 各测站在图里的位置（px），沿走廊弧长 i × step
     stations: Vec<[f64; 2]>,
+    /// 图里接了找零件边（D-SB-48）
+    edge: bool,
     scale: f64,
     step: f64,
     half: f64,
@@ -114,12 +253,14 @@ pub struct CorridorGraph {
     spacing_mm: f64,
 }
 
-/// 一台相机一帧的测量：帧内指标与逐站胶边（px，无胶站为 None，叠图用）。
+/// 一台相机一帧的测量：帧内指标与逐站胶边（px，无胶站为 None，叠图用）；逐帧定向时 `line` 是拟合出的胶路（px）。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameMeasurement {
     pub metrics: FrameMetrics,
     pub edges: Vec<Option<[[f32; 2]; 2]>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub line: Vec<[f32; 2]>,
     pub ms: u32,
 }
 
@@ -185,7 +326,8 @@ pub fn plan_corridor(
     let stations = (0..n)
         .map(|i| polyline_at(corridor, i as f64 * params.step))
         .collect();
-    let graph = taught_graph(corridor, detect, &params)?;
+    let edge = edge_graph(recipe, segment, &inspect.camera, scale)?;
+    let graph = taught_graph(corridor, detect, &params, edge.as_ref())?;
     Ok(CorridorGraph {
         camera: inspect.camera.clone(),
         camera_idx,
@@ -194,6 +336,7 @@ pub fn plan_corridor(
         graph_text: graph.to_string(),
         graph,
         stations,
+        edge: edge.is_some(),
         scale,
         step: params.step,
         half: params.half,
@@ -207,12 +350,31 @@ pub fn plan_corridor(
 #[derive(Clone, Debug, Default)]
 pub struct CorridorSet {
     graphs: BTreeMap<(usize, u32), CorridorGraph>,
+    /// 开启逐帧定向的段（D-SB-47）：同一（相机, 段）优先用它
+    headings: BTreeMap<(usize, u32), HeadingGraph>,
+}
+
+/// 一（相机, 段）量帧用的测量图：示教走廊，或逐帧定向（D-SB-47）。
+#[derive(Clone, Copy, Debug)]
+pub enum FrameGraph<'a> {
+    Corridor(&'a CorridorGraph),
+    Heading(&'a HeadingGraph),
+}
+
+impl FrameGraph<'_> {
+    pub fn camera(&self) -> &str {
+        match self {
+            Self::Corridor(c) => &c.camera,
+            Self::Heading(h) => &h.camera,
+        }
+    }
 }
 
 impl CorridorSet {
     pub fn build(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Self, String> {
         let cameras = recipe.plan_cameras();
         let mut graphs = BTreeMap::new();
+        let mut headings = BTreeMap::new();
         for segment in &recipe.path_segments {
             for camera in crate::plan::segment_cameras(segment, &cameras) {
                 let Some((idx, inspect)) = recipe
@@ -233,24 +395,51 @@ impl CorridorSet {
                     (idx, segment.index),
                     plan_corridor(inspect, segment.index, recipe, size)?,
                 );
+                if segment.heading.is_some() {
+                    headings.insert(
+                        (idx, segment.index),
+                        plan_heading(inspect, segment.index, recipe, size)?,
+                    );
+                }
             }
         }
-        Ok(Self { graphs })
+        Ok(Self { graphs, headings })
     }
 
-    pub fn get(&self, camera: usize, segment: u32) -> Option<&CorridorGraph> {
-        self.graphs.get(&(camera, segment))
+    pub fn get(&self, camera: usize, segment: u32) -> Option<FrameGraph<'_>> {
+        self.headings
+            .get(&(camera, segment))
+            .map(FrameGraph::Heading)
+            .or_else(|| {
+                self.graphs
+                    .get(&(camera, segment))
+                    .map(FrameGraph::Corridor)
+            })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &CorridorGraph> {
         self.graphs.values()
     }
+
+    pub fn headings(&self) -> impl Iterator<Item = &HeadingGraph> {
+        self.headings.values()
+    }
 }
 
-/// 用 lyFlow 量一帧（段配方）：见 [`measure_frame_with`]。
-pub fn measure_frame(engine: &Engine, corridor: &CorridorGraph, image: &FrameImage, seq: u64, run_id: &str) -> Result<FrameMeasurement, String> {
+/// 用 lyFlow 量一帧（段配方）：示教走廊见 [`measure_frame_with`]，逐帧定向见 [`measure_heading_with`]。
+pub fn measure_frame(
+    engine: &Engine,
+    graph: FrameGraph<'_>,
+    image: &FrameImage,
+    seq: u64,
+    run_id: &str,
+) -> Result<FrameMeasurement, String> {
     let start = Instant::now();
-    let mut m = measure_frame_with(corridor, image, seq, |graph, image| engine.run(graph, run_id, "", image, &json!({})))?;
+    let run = |graph: &str, image: &FrameImage| engine.run(graph, run_id, "", image, &json!({}));
+    let mut m = match graph {
+        FrameGraph::Corridor(corridor) => measure_frame_with(corridor, image, seq, run)?,
+        FrameGraph::Heading(heading) => measure_heading_with(heading, image, seq, run)?,
+    };
     m.ms = start.elapsed().as_millis().min(u32::MAX as u128) as u32;
     Ok(m)
 }
@@ -331,24 +520,39 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
     if info["present"].as_u64() != Some(present as u64) || info["coverage"].as_f64().is_none_or(|x| !x.is_finite() || (x - coverage).abs() > 0.00015) {
         return Err("算法逐站汇总与有胶状态不一致".into());
     }
-    let mut metrics = frame_metrics(c, seq, &beads);
+    let mut metrics = bead_metrics(c.camera_idx, c.segment, seq, c.scale, c.spacing_mm, &beads);
+    if c.edge {
+        metrics.edge_mm = edge_mm(result, c.scale)?;
+    }
     if let Some(why) = corridor_exit(&beads, c.tolerance, c.scale) {
         metrics.state = FrameState::OutOfCorridor;
         metrics.error = Some(why);
     }
-    Ok(FrameMeasurement { metrics, edges, ms: 0 })
+    Ok(FrameMeasurement {
+        metrics,
+        edges,
+        line: Vec::new(),
+        ms: 0,
+    })
 }
 
 /// 帧内汇总（规格 §4）：逐站胶宽（mm）、胶宽极值与均值、最长连续缺胶（缺胶站数 × 站距）、
-/// 有胶站占比、胶中心相对走廊的法向偏移均值 x（AbsoluteX，直线段胶偏用）。一站胶都没有时胶宽与 x 为空，整条走廊算缺胶。
-fn frame_metrics(c: &CorridorGraph, seq: u64, beads: &[Option<(f64, f64)>]) -> FrameMetrics {
-    let widths: Vec<Option<f64>> = beads.iter().map(|b| b.map(|(w, _)| w * c.scale)).collect();
+/// 有胶站占比、胶中心相对胶路的法向偏移均值 x（AbsoluteX，直线段胶偏用）。一站胶都没有时胶宽与 x 为空，整条胶路算缺胶。
+pub(super) fn bead_metrics(
+    camera: usize,
+    segment: u32,
+    seq: u64,
+    scale: f64,
+    spacing_mm: f64,
+    beads: &[Option<(f64, f64)>],
+) -> FrameMetrics {
+    let widths: Vec<Option<f64>> = beads.iter().map(|b| b.map(|(w, _)| w * scale)).collect();
     let present: Vec<f64> = widths.iter().flatten().copied().collect();
-    let offsets: Vec<f64> = beads.iter().flatten().map(|&(_, x)| x * c.scale).collect();
+    let offsets: Vec<f64> = beads.iter().flatten().map(|&(_, x)| x * scale).collect();
     let mean = |v: &[f64]| (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64);
     let longest_gap = beads.split(Option::is_some).map(<[_]>::len).max().unwrap_or(0);
     FrameMetrics {
-        camera: c.camera_idx,
+        camera,
         seq,
         state: FrameState::Measured,
         error: None,
@@ -356,11 +560,14 @@ fn frame_metrics(c: &CorridorGraph, seq: u64, beads: &[Option<(f64, f64)>]) -> F
         width_max: present.iter().copied().reduce(f64::max),
         width_mean: mean(&present),
         widths: widths.iter().map(|w| w.map(|w| w as f32)).collect(),
-        spacing_mm: c.spacing_mm,
-        gap_max_mm: longest_gap as f64 * c.spacing_mm,
-        corridor: Some(c.segment),
+        spacing_mm,
+        gap_max_mm: longest_gap as f64 * spacing_mm,
+        corridor: Some(segment),
         present_ratio: present.len() as f64 / beads.len().max(1) as f64,
         x_mm: mean(&offsets),
+        heading_deg: None,
+        heading_fallback: false,
+        edge_mm: None,
     }
 }
 

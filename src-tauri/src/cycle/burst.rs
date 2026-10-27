@@ -18,7 +18,7 @@ use crate::measure::{FrameMeasured, MeasureError};
 use crate::plan::{wider_checks, PathSegment, SegmentChecks};
 use crate::recipe::Recipe;
 use crate::segmentation::{
-    frame_corridors, resolve_regions, Proportional, Region, SegInput, SegOutcome, Segmenter,
+    frame_corridors, resolve_regions, segment_part, Region, SegInput, SegOutcome,
 };
 use crate::shot_router::{ArmCam, Floor, FrameBaseline, Ledger, Ledgers};
 use crate::store::{BurstRecord, FrameRecord};
@@ -74,6 +74,7 @@ pub(super) struct BurstPart {
     pub(super) collect: bool,
     segments: Vec<PathSegment>,
     boundary_guard: u32,
+    boundary_refine: bool,
     /// 预测边界附近的帧组：这些帧（全部计划相机）的原图留到判定，供收尾补测
     bands: Vec<RangeInclusive<u64>>,
     /// 留着的原图；模拟测量没有原图，记 None 也算留着
@@ -153,6 +154,7 @@ impl BurstPart {
             bands: retention_bands(&recipe.path_segments, recipe.boundary_guard),
             segments: recipe.path_segments.clone(),
             boundary_guard: recipe.boundary_guard,
+            boundary_refine: recipe.boundary_refine,
             retained: BTreeMap::new(),
             post_started: false,
         }
@@ -173,13 +175,25 @@ impl BurstPart {
         }
     }
 
-    /// 本件的分段结果与区域（比例分段，D-SB-40）。
+    /// 本件的分段结果与区域（比例分段，D-SB-40；配方开了方向细化时按已测帧的胶条方向细化，D-SB-47）。
     fn regions(&self) -> (SegOutcome, Vec<Region>) {
         let groups = self.grouper.groups();
-        let outcome = Proportional.segment(&SegInput {
-            groups: &groups,
-            segments: &self.segments,
-        });
+        let metrics: Vec<FrameMetrics> = if self.boundary_refine {
+            self.frames
+                .values()
+                .filter_map(|frame| frame.metrics.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let outcome = segment_part(
+            &SegInput {
+                groups: &groups,
+                segments: &self.segments,
+            },
+            &metrics,
+            self.boundary_refine,
+        );
         let regions = resolve_regions(
             &self.segments,
             &outcome,
@@ -208,9 +222,28 @@ impl BurstPart {
                     .get((seq as usize).checked_sub(1)?)
                     .copied()
                     .flatten()?;
-                (frame.corridor != Some(segment)).then_some(((camera, seq), segment))
+                let measured = frame.corridor.is_some_and(|arrival| {
+                    arrival == segment || self.same_heading_graph(camera, arrival, segment)
+                });
+                (!measured).then_some(((camera, seq), segment))
             })
             .collect()
+    }
+
+    /// 两段在这台相机上都开了逐帧定向、找边参数也相同（D-SB-47）：测量不依赖帧归哪一段（扇区已含相邻段），
+    /// 用到达时那段的定向图测过就不必补测。
+    fn same_heading_graph(&self, camera: usize, a: u32, b: u32) -> bool {
+        let key = |index: u32| {
+            let segment = self.segments.iter().find(|s| s.index == index)?;
+            segment.heading.as_ref()?;
+            let edge = segment
+                .offset_ref
+                .as_ref()
+                .filter(|o| self.cameras.get(camera) == Some(&o.camera))
+                .and_then(|o| o.edge.clone());
+            Some(edge)
+        };
+        key(a).is_some() && key(a) == key(b)
     }
 
     /// 这台相机（相机组序号）在本件的帧计数基线；不是计划相机、或还在等本件首帧定基线时为空。
@@ -287,6 +320,9 @@ fn unmeasured(camera: usize, seq: u64, state: FrameState, error: String) -> Fram
         corridor: None,
         present_ratio: 0.0,
         x_mm: None,
+        heading_deg: None,
+        heading_fallback: false,
+        edge_mm: None,
     }
 }
 
@@ -294,8 +330,15 @@ fn unmeasured(camera: usize, seq: u64, state: FrameState, error: String) -> Fram
 fn checked(metrics: FrameMetrics, camera: usize, seq: u64) -> FrameMetrics {
     let finite = |value: Option<f64>| value.is_none_or(f64::is_finite);
     let valid = (metrics.camera, metrics.seq) == (camera, seq)
-        && finite(metrics.width_min) && finite(metrics.width_max) && finite(metrics.width_mean) && finite(metrics.x_mm)
-        && metrics.spacing_mm.is_finite() && metrics.gap_max_mm.is_finite() && metrics.present_ratio.is_finite()
+        && finite(metrics.width_min)
+        && finite(metrics.width_max)
+        && finite(metrics.width_mean)
+        && finite(metrics.x_mm)
+        && finite(metrics.heading_deg)
+        && finite(metrics.edge_mm)
+        && metrics.spacing_mm.is_finite()
+        && metrics.gap_max_mm.is_finite()
+        && metrics.present_ratio.is_finite()
         && metrics.widths.iter().flatten().all(|w| w.is_finite());
     if valid { metrics } else { unmeasured(camera, seq, FrameState::Error, "测量输出与送测帧不一致或含无效数值".into()) }
 }

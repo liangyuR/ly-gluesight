@@ -38,3 +38,4 @@
 .wp-calib-frame { display:grid; grid-template-columns:minmax(0, 1fr) 280px; gap:12px; min-height:420px; }
 .wp-calib-frame-info { display:flex; flex-direction:column; gap:8px; font-size:13px; }
 @media (max-width:900px) { .wp-calib-frame { grid-template-columns:1fr; } }
+.wp-calib-hints { margin:0; padding-left:18px; }

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RecipeDoc } from "../src/features/cycle/types";
 import type { CameraTeachDraft } from "../src/features/plan/types";
 import { confirmedSegmentRange, draftKey, sameCorridor, savedDraft, withCorridor } from "../src/features/workspace/teach";
-const draft = (over: Partial<CameraTeachDraft> = {}): CameraTeachDraft => ({ corridor: [[10, 30], [90, 30]], mmPerPx: 0.1, detect: null, ...over });
+const draft = (over: Partial<CameraTeachDraft> = {}): CameraTeachDraft => ({ corridor: [[10, 30], [90, 30]], mmPerPx: 0.1, detect: null, window: null, ...over });
 
 describe("走廊示教草稿", () => {
   // 防的回归：后端以 f32 存走廊与当量，取回的值与草稿的 f64 永远不等，草稿被判成一直有未保存的修改，自动保存反复触发、切不了段
@@ -21,12 +21,12 @@ describe("走廊示教草稿", () => {
     const detect = { searchMm: 4, polarity: "dark" as const, widthRange: [1, 6] as [number, number] };
     const doc = { inspect: [{ camera: "cam1", mmPerPx: 0.11, calib: null, detect, segments: [{ segment: 3, corridor: [[5, 5], [6, 6]] }] }] } as unknown as RecipeDoc;
     const key = draftKey("cam1", 2);
-    const next = withCorridor(doc, key, { corridor: [[2, 2], [8, 8]], mmPerPx: 0.5, detect: null });
+    const next = withCorridor(doc, key, { corridor: [[2, 2], [8, 8]], mmPerPx: 0.5, detect: null, window: null });
     const cam = next.inspect![0];
     expect([cam.mmPerPx, cam.detect]).toEqual([0.11, detect]);
     expect(cam.segments).toEqual([{ segment: 2, corridor: [[2, 2], [8, 8]] }, { segment: 3, corridor: [[5, 5], [6, 6]] }]);
-    expect(savedDraft(next, key)).toEqual({ corridor: [[2, 2], [8, 8]], mmPerPx: 0.11, detect });
-    expect(withCorridor(next, key, { corridor: [], mmPerPx: 0.11, detect }).inspect![0].segments).toEqual([{ segment: 3, corridor: [[5, 5], [6, 6]] }]);
+    expect(savedDraft(next, key)).toEqual({ corridor: [[2, 2], [8, 8]], mmPerPx: 0.11, detect, window: null });
+    expect(withCorridor(next, key, { corridor: [], mmPerPx: 0.11, detect, window: null }).inspect![0].segments).toEqual([{ segment: 3, corridor: [[5, 5], [6, 6]] }]);
   });
 
   // 防的回归（D-SB-42）：段示教帧的可选范围差一帧（边界帧组归到下一段），或在只存了边界草稿的轮次上按草稿划段

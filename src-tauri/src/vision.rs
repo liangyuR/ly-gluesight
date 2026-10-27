@@ -18,6 +18,7 @@ pub use crate::frame::FrameImage;
 use crate::measure::FrameJob;
 use crate::recipe::{CameraInspect, Recipe};
 
+mod heading;
 mod taught;
 #[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
 pub use taught::measure_frame_with;

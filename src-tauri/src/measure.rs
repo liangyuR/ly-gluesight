@@ -329,6 +329,9 @@ impl FrameMeasured {
                 corridor: Some(self.segment),
                 present_ratio: 0.0,
                 x_mm: None,
+                heading_deg: None,
+                heading_fallback: false,
+                edge_mm: None,
             },
         }
     }
@@ -480,6 +483,9 @@ pub(crate) fn simulate_frame(
         corridor: Some(corridor),
         present_ratio: present.len() as f64 / n as f64,
         x_mm: Some(0.3 * (seq as f64 / 5.0 + camera_idx as f64).sin() + drift),
+        heading_deg: None,
+        heading_fallback: false,
+        edge_mm: None,
     }
 }
 

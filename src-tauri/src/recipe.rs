@@ -228,6 +228,17 @@ pub struct CameraInspect {
     /// 这台相机在它检测的各段的走廊（D-SB-42/45）：落在该段的帧用它测量，没有相机级的默认走廊
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segments: Vec<SegmentCorridor>,
+    /// 逐帧定向的检测窗口（D-SB-47）：只测沿胶路距出胶点 [start, start + length] mm 的一段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<HeadingWindow>,
+}
+
+/// 逐帧定向的检测窗口（mm，沿胶路从出胶点量起）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HeadingWindow {
+    pub start_mm: f64,
+    pub length_mm: f64,
 }
 
 /// 一台相机在某一段（`PathSegment.index`）的走廊（图像像素，只决定 ROI 和测站）；少于 2 点为尚未示教。
@@ -281,6 +292,18 @@ impl CameraInspect {
         }
         if let Some(d) = &self.detect {
             d.validate(&format!("相机 {id} 检测参数"))?;
+        }
+        if let Some(w) = &self.window {
+            if !(w.start_mm.is_finite()
+                && w.length_mm.is_finite()
+                && w.start_mm >= 0.0
+                && w.length_mm > 0.0
+                && w.start_mm + w.length_mm <= 500.0)
+            {
+                return Err(format!(
+                    "相机 {id} 的检测窗口需满足 起点 ≥ 0、长度 > 0、起点 + 长度 ≤ 500 mm"
+                ));
+            }
         }
         Ok(())
     }
@@ -344,6 +367,7 @@ pub struct Recipe {
     pub segment_defaults: KindDefaults,
     pub calibration_rounds: u32,
     pub boundary_guard: u32,
+    pub boundary_refine: bool,
     pub part_calib: Option<PartCalib>,
 }
 
@@ -382,6 +406,11 @@ impl Recipe {
             reasons.push(format!("配方 {} 没有段，是旧拍照点配方", self.id));
         }
         reasons.extend(untaught_corridors(&self.path_segments, &self.inspect));
+        reasons.extend(
+            crate::heading::issues(&self.path_segments, &self.inspect)
+                .into_iter()
+                .map(|i| i.message),
+        );
         if self.expected_total().is_none() || self.path_segments.len() > 1 {
             reasons.extend(self.path_segments.iter().filter(|s| s.expected_frames.is_none()).map(|s| {
                 let kind = match s.kind { SegmentKind::Straight => "直线段", SegmentKind::Corner => "弯道段" };
@@ -468,6 +497,9 @@ pub struct RecipeDoc {
     /// 比例分段边界两侧的过渡帧数，0..=5（D-SB-40）；不进计划身份
     #[serde(default = "default_boundary_guard")]
     pub boundary_guard: u32,
+    /// 按逐帧定向的胶条方向序列细化比例边界（D-SB-47）；只作用于开启定向的段，不进计划身份
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub boundary_refine: bool,
     /// 整件帧组数标定：各段 N_exp 待分段算法时凭它得到 expected_total 并发布（决策补充第二节）；只由标定写入
     #[serde(default)]
     pub part_calib: Option<PartCalib>,
@@ -614,6 +646,7 @@ impl RecipeDoc {
             segment_defaults: self.segment_defaults.clone(),
             calibration_rounds: self.calibration_rounds,
             boundary_guard: self.boundary_guard,
+            boundary_refine: self.boundary_refine,
             part_calib: self.part_calib.clone(),
         };
         Ok(recipe)
@@ -698,11 +731,13 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
                 calib: None,
                 detect: None,
                 segments: Vec::new(),
+                window: None,
             })
             .collect(),
         segment_defaults,
         calibration_rounds: DEFAULT_CALIBRATION_ROUNDS,
         boundary_guard: DEFAULT_BOUNDARY_GUARD,
+        boundary_refine: false,
         part_calib: None,
     };
     doc.sync_imaging();

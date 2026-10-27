@@ -3,18 +3,19 @@ import { Link, useLocation } from "react-router-dom";
 import { ArrowUpRight, ChevronDown } from "lucide-react";
 import { Button, Checkbox, SegmentedControl, Select } from "qing-steel";
 import type { DetectParams } from "../cycle/types";
-import type { CameraInspect, PathSegment, SegmentChecks } from "../plan/types";
+import type { CameraInspect, InspectWindow, PathSegment, SegmentChecks } from "../plan/types";
 import { KindChecksEditor } from "../plan/KindChecksEditor";
 import { segmentKindLabel } from "../plan/vis";
 import { Badge, NumberField } from "./components";
 import { returnState } from "./returnNavigation";
+import { MAX_WINDOW_END_MM, windowError } from "./teach";
 
-export type CameraParams = Pick<CameraInspect, "mmPerPx" | "detect">;
+export type CameraParams = Pick<CameraInspect, "mmPerPx" | "detect" | "window">;
 
 const polarity = { dark: "暗胶", light: "亮胶" };
 
-/** 相机参数（D-SB-45）：像素当量与检测参数，这台相机检测的各段走廊都按它们测量。 */
-export function CameraParamsSettings({ params, defaults, disabled, onChange }: { params: CameraParams; defaults: DetectParams; disabled: boolean; onChange: (next: CameraParams) => void }) {
+/** 相机参数（D-SB-45）：像素当量与检测参数，这台相机检测的各段走廊都按它们测量；headingSegments 是这台相机检测、开启了逐帧定向的段。 */
+export function CameraParamsSettings({ params, defaults, disabled, headingSegments = [], onChange }: { params: CameraParams; defaults: DetectParams; disabled: boolean; headingSegments?: number[]; onChange: (next: CameraParams) => void }) {
   const location = useLocation();
   const detect = params.detect ?? defaults;
   const scaled = params.mmPerPx != null && Number.isFinite(params.mmPerPx) && params.mmPerPx > 0;
@@ -45,7 +46,36 @@ export function CameraParamsSettings({ params, defaults, disabled, onChange }: {
         {params.detect && <Button size="sm" disabled={disabled} onClick={() => setDetect(null)}>恢复配方默认检测参数</Button>}
       </div>
     </details>
+    <WindowSettings value={params.window ?? null} headingSegments={headingSegments} disabled={disabled} onChange={window => onChange({ ...params, window })} />
   </>;
+}
+
+/** 逐帧定向的检测窗口（D-SB-47）：起点、长度都空为未设置；不合法时只提示，不写入配方。 */
+function WindowSettings({ value, headingSegments, disabled, onChange }: { value: InspectWindow | null; headingSegments: number[]; disabled: boolean; onChange: (next: InspectWindow | null) => void }) {
+  const [start, setStart] = useState(value?.startMm ?? NaN);
+  const [length, setLength] = useState(value?.lengthMm ?? NaN);
+  const empty = Number.isNaN(start) && Number.isNaN(length);
+  const error = empty ? "" : windowError({ startMm: start, lengthMm: length });
+  const needed = headingSegments.length > 0;
+  const update = (nextStart: number, nextLength: number) => {
+    setStart(nextStart); setLength(nextLength);
+    if (Number.isNaN(nextStart) && Number.isNaN(nextLength)) { if (value) onChange(null); return; }
+    const next = { startMm: nextStart, lengthMm: nextLength };
+    if (!windowError(next)) onChange(next);
+  };
+  const [badge, tone]: [string, "ok" | "warn" | "neutral"] = value ? ["已设置", "ok"] : needed ? ["需设置", "warn"] : ["未设置", "neutral"];
+  return <details className="panel wp-settings-card" open={needed && !value}>
+    <summary><span className="wp-settings-heading"><span className="wp-settings-title">检测窗口</span><Badge tone={tone}>{badge}</Badge><ChevronDown size={16} aria-hidden="true"/></span>
+      <span className="wp-settings-summary">{value ? `距出胶点 ${value.startMm}–${value.startMm + value.lengthMm} mm` : needed ? `段 ${headingSegments.join("、")} 开启了逐帧定向` : "只用于开启逐帧定向的段"}</span>
+    </summary>
+    <div className="wp-settings-body">
+      <div className="wp-form-grid"><NumberField label="窗口起点" value={start} unit="mm" min={0} max={MAX_WINDOW_END_MM} step={.5} onChange={v => update(v, length)} disabled={disabled}/>
+        <NumberField label="窗口长度" value={length} unit="mm" min={0} max={MAX_WINDOW_END_MM} step={.5} onChange={v => update(start, v)} disabled={disabled}/>
+      </div>
+      {error && <p className="c-warn" role="alert">{error}，未保存</p>}
+      <p className="wp-settings-hint">逐帧定向的段每帧只测沿胶路距出胶点 起点 到 起点 + 长度 的一段：起点避开胶嘴遮挡与刚挤出的胶堆，长度建议不小于每帧胶条后移量（20 fps 下 NEW-14 估计约 20 mm），否则相邻帧之间有一截胶测不到。{needed ? "这台相机检测的开启逐帧定向的段需要设置。" : "没有开启逐帧定向的段时可不填。"}两项都清空即为未设置。</p>
+    </div>
+  </details>;
 }
 
 /** 按段的检测项与允差；只给一段时不显示段选择。 */
