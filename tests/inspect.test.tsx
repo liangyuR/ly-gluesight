@@ -109,7 +109,19 @@ describe("在线检测离线产线控件", () => {
     plcHandshake = { phase: "fault", requestSeq: null, resultSeq: null, message: "PLC 心跳失活", resetBlockedReason: "尚未观察到 PLC 心跳翻转，不能复位" };
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     expect(screen.getByRole("button", { name: "软件复位" })).toBeDisabled();
-    expect(screen.getByText("不能复位：尚未观察到 PLC 心跳翻转，不能复位")).toBeVisible();
+    const device = within(screen.getByRole("region", { name: "设备状态" }));
+    expect(device.getByRole("alert")).toHaveTextContent("PLC 心跳失活");
+    expect(device.getByRole("alert")).toHaveTextContent("尚未观察到 PLC 心跳翻转，不能复位");
+  });
+
+  it("故障与复位阻塞原因相同 → 设备状态只显示一次原因且复位保持禁用", () => {
+    state = { ...state, phase: "FAULT", fault: "PLC 未连接" };
+    plcHandshake = { phase: "fault", requestSeq: null, resultSeq: null, message: "PLC 未连接", resetBlockedReason: "PLC 未连接" };
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const alert = within(screen.getByRole("region", { name: "设备状态" })).getByRole("alert");
+    expect(alert.textContent?.match(/PLC 未连接/g)).toHaveLength(1);
+    expect(alert).toHaveTextContent("当前不能复位");
+    expect(screen.getByRole("button", { name: "软件复位" })).toBeDisabled();
   });
 
   it("有在途件时软件复位 → 确认框提示在途件记未检，确认后才请求后端复位", async () => {

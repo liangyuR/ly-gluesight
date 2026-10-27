@@ -1,7 +1,9 @@
 .hist-page { display: flex; flex-direction: column; gap: var(--space-12); height: 100%; min-height: 480px; }
 .hist-filters { flex-shrink: 0; }
-.hist-sn-input { width: 140px; }
-.hist-recipe { min-width: 160px; }
+.hist-filter-options { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+.hist-filter-options .hist-sn-input { width:220px; flex:0 1 220px; }
+.hist-filter-options .hist-recipe { min-width:160px; }
+.hist-toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
 .hist-dot { width: 8px; height: 8px; border-radius: var(--r-full); background: var(--outline); }
 .hist-chip.g-ok .hist-dot { background: var(--ok); }
 .hist-chip.g-excursion .hist-dot { background: var(--warn); }
@@ -13,7 +15,6 @@
 .hist-counts b.c-warn { color: var(--warn); }
 .hist-counts b.c-ng { color: var(--ng); }
 .hist-counts b.c-err { color: var(--fault); }
-.hist-loading { margin-left: auto; font-size: 12px; }
 .hist-counts.is-loading b { opacity: .6; }
 
 .qs-surface.hist-results { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0; overflow: hidden; }

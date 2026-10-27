@@ -7,11 +7,11 @@ import { errorText } from "../lib/errors";
 import { useSnackbar } from "qing-steel";
 
 const timeoutFields: [keyof Timeouts, string, string][] = [
-  ["armMs", "布防预算 T_arm（ms）", "读到 plcState=10 后到 pcState=20 读回确认，100–5000；回写前超出拒收本件（90/99），回写确认后超出进入视觉故障"],
-  ["motionMs", "运动超时 T_motion（ms）", "pcState=20 后等待 plcState=20"],
-  ["drainMs", "收尾等待 T_drain（ms）", "plcState=20 后等待剩余帧"],
-  ["procMs", "单帧处理 T_proc（ms）", "单帧入队到测量完成"],
-  ["ackMs", "结果确认 T_ack（ms）", "pcState=30 后等待 plcState=30"],
+  ["armMs", "布防预算（ms）", "布防及确认的时间预算，100–5000 ms"],
+  ["motionMs", "运动超时（ms）", "等待运动结束"],
+  ["drainMs", "收尾等待（ms）", "运动结束后等待剩余帧"],
+  ["procMs", "单帧处理（ms）", "单帧入队到测量完成"],
+  ["ackMs", "结果确认（ms）", "等待 PLC 确认结果"],
 ];
 const timeoutMinimums: Record<keyof Timeouts, number> = { armMs: 100, motionMs: 1000, drainMs: 200, procMs: 200, ackMs: 500 };
 
@@ -165,6 +165,10 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
       <Text as="p" variant="label" muted>
         PLC 下发：按型号匹配配方，匹配不到判 ERR 95。人工选择：操作员在实时检测页切换配方，仅空闲时可切换，不读取型号。
       </Text>
+      <details>
+        <summary>查看节拍协议说明</summary>
+        <Text as="p" variant="label" muted>布防预算从读到 plcState=10 起，到 pcState=20 读回确认为止；回写前超时拒收本件（90/99），回写确认后超时进入视觉故障。运动超时从 pcState=20 起等待 plcState=20；收尾等待从 plcState=20 起等待剩余帧；结果确认从 pcState=30 起等待 plcState=30。</Text>
+      </details>
       {invalid && <Alert tone="ng">{invalid}</Alert>}
       </>}
       {saveError && <Alert tone="ng">{saveError}</Alert>}
@@ -253,7 +257,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
           />
         </Grid>
       </fieldset>
-      <Text as="p" variant="label" muted>离线录制使用独立的件数与容量上限。候选样本集试运行引用样本原图，不额外复制录制；此处清理不管理已导入样本目录。超出任一上限时删除最旧的离线原图；保存后在后续录制清理时生效。退出离线模式后恢复真机帧录制设置。</Text>
+      <Text as="p" variant="label" muted>离线原图超出件数或容量上限时，后续清理会删除最旧的离线原图，不影响导入的样本集。退出离线后恢复真机帧录制设置。</Text>
       {invalid && <Alert tone="ng">{invalid}</Alert>}
       </>}
       <dl className="kv">
@@ -269,7 +273,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
       {import.meta.env.DEV && visibleEngine && !visibleEngine.ready && <Alert tone="info">{devLyflowHint}</Alert>}
       {engineError && <Alert tone="ng" action={<Button size="sm" onClick={refresh}>重试引擎状态</Button>}>引擎状态读取失败：{engineError}</Alert>}
       <Text as="p" variant="label" muted>
-        真机检测固定使用 lyFlow 流程，需要兼容的核心库和已验证发布的配方：段配方（分段连拍）对三台相机的每一帧沿各自的走廊量胶；离线 · 合成图使用模拟测量；离线 · 样本集使用 lyFlow，候选试运行无需发布。已发布版本运行前需完成发布资源预热。帧录制保存每台相机每个触发帧的原图，可用于历史复测。
+        真机和离线样本集使用 lyFlow，离线合成图使用模拟测量。帧录制的原图可用于历史复测。
       </Text>
       {saveError && <Alert tone="ng">{saveError}</Alert>}
       </Stack>
@@ -296,7 +300,7 @@ function StoragePanel() {
       </dl>
       {data.migrationMessage && <p role="status">{data.migrationMessage}</p>}
     </>}
-    <Text as="p" variant="label" muted>配方、示教、历史原图、样本、日志和缓存统一保存在此目录。正式版与本地开发版独立，同一环境的业务资料由本机账号共享。卸载默认保留资料。</Text>
+    <Text as="p" variant="label" muted>资料保存在此目录，卸载默认保留。正式版与开发版独立，同一环境的资料由本机账号共享。</Text>
     {openError && <Alert tone="ng">打开资料目录失败：{openError}</Alert>}
     </Stack>
   </Card>;

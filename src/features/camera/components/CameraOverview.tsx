@@ -77,6 +77,7 @@ function CameraCard({ index, config, status, frame, now, locked, canReconnect, o
   const age = frame ? now - frame.ts : null;
   const fault = health.tone === "fault";
   const device = status?.device;
+  const faultMessage = status?.message === `未找到序列号为 ${config.serial} 的相机` ? "未找到相机" : status?.message || "相机未就绪";
   return <Card role="article" className="cg-card clickable" style={cameraColor(index)} aria-label={`${config.name} ${config.id}`} onClick={openFromCard}>
     {head}
     <div className="cg-card-sub">{device ? <>{device.model} · <span className="mono">{device.serial}</span>{device.ip && <> · <span className="mono">{device.ip}</span></>} · {device.transport}</> : config.source === "mvs" ? <>序列号 <span className="mono">{config.serial}</span></> : sourceText[config.source]}</div>
@@ -86,7 +87,7 @@ function CameraCard({ index, config, status, frame, now, locked, canReconnect, o
       {img && !fault && age != null && <span className={"cg-tag " + (age < 3000 ? "fresh" : "stale")}>{age < 3000 ? <Activity size={11} /> : <Clock size={11} />}{ago(age)}</span>}
       {img && <span className="cg-tag size">{img.fullWidth}×{img.fullHeight}</span>}
       {img && config.viewCount === 3 && <span className="cg-tag views">三目 · 视角 1/3</span>}
-      {fault && <div className="cg-thumb-fault"><strong><Unplug size={14} />{status?.message || "相机未就绪"}</strong>{frame && <span>最后一帧 {clock(frame.ts)} · 后台每 2 秒自动重连</span>}</div>}
+      {fault && <div className="cg-thumb-fault"><strong><Unplug size={14} />{faultMessage}</strong>{frame && <span>最后一帧 {clock(frame.ts)} · 后台每 2 秒自动重连</span>}</div>}
     </div>
     <div className="cg-stats">
       <div className="cg-stat"><span>帧计数</span><b>{count(frame?.frameCounter)}</b></div>
@@ -95,7 +96,7 @@ function CameraCard({ index, config, status, frame, now, locked, canReconnect, o
       <div className={"cg-stat" + (fault ? " fault" : "")}><span>最近出图</span><b className="text">{age == null ? "—" : ago(age)}</b></div>
     </div>
     {fault ? <>
-      <Alert tone="fault" action={<>{canReconnect && <Button size="sm" leadingIcon={<RefreshCw size={13} />} onClick={() => void reconnect()} disabled={busy}>{busy ? "连接中…" : "立即重新连接"}</Button>}{detail}</>}>先查看故障详情：参数不支持时核对型号能力与触发配置；找不到设备时检查网络、供电与 IP，并在详情里重新枚举。</Alert>
+      <Alert tone="fault" action={<>{canReconnect && <Button size="sm" leadingIcon={<RefreshCw size={13} />} onClick={() => void reconnect()} disabled={busy}>{busy ? "连接中…" : "立即重新连接"}</Button>}{detail}</>}>检查供电、网络和触发配置，或打开详情排查。</Alert>
       {error && <Alert tone="ng">{error}</Alert>}
     </> : <div className="cg-card-foot"><span>{triggerSummary(config)}</span>{status?.ready && <><span>·</span><span className="mono">实际 {status.fps.toFixed(1)} fps</span></>}{detail}</div>}
   </Card>;
