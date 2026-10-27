@@ -332,6 +332,8 @@ export interface CameraInspect {
   segments?: SegmentCorridor[];
   /** 逐帧定向的检测窗口（D-SB-47）；null / 缺省 = 未设置 */
   window?: InspectWindow | null;
+  /** 标定的出胶点（图像像素，D-SB-47）；null / 缺省 = 由开启定向的各段走廊起点推出 */
+  nozzle?: [number, number] | null;
 }
 
 /** 检测窗口：沿胶路距出胶点 [startMm, startMm + lengthMm]（mm）。 */
@@ -542,6 +544,18 @@ export interface CameraTeachingView {
   ready: boolean;
   /** 已选示教帧的段（D-SB-45：走廊只按段示教） */
   segments: SegmentTeachingView[];
+  /** 定向用的出胶点：标定值，或由开启定向的各段走廊起点推出；推不出或不一致时为 null */
+  nozzle: { point: [number, number]; calibrated: boolean } | null;
+}
+
+/** 示教页叠加的定向几何（度，图像坐标 0° 朝右、90° 朝下，与测量图一致）。 */
+export interface HeadingOverlay {
+  /** 本段方向范围 [lo, hi] */
+  range: [number, number];
+  /** 扇形搜索范围：本段与相邻段方向范围的并集 */
+  sector: [number, number];
+  /** 回退方向（本段示教方向） */
+  fallback: number;
 }
 
 export interface SegmentTeachingView {
@@ -551,6 +565,8 @@ export interface SegmentTeachingView {
   seq: number;
   /** 段走廊已保存且落在示教帧内 */
   saved: boolean;
+  /** 本段开启逐帧定向且示教了走廊时的定向几何（按已保存的配方算） */
+  heading: HeadingOverlay | null;
 }
 
 /** 候选里一段一台检测相机的示教帧（Workspace.cameraTeaching，D2 / D-SB-45）：从完整的新采集轮次冻结的一帧，这一段的走廊在这一帧上示教。 */

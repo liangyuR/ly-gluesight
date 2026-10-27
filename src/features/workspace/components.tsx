@@ -10,6 +10,7 @@ import type { GrayImage, GrayPixels } from "./types";
 import { errorText } from "../../lib/errors";
 import { PlanSteps } from "./PlanSteps";
 import { searchBand } from "./searchBand";
+import { guideRadii, rayEnd, wedgePath, type HeadingGuide } from "./headingOverlay";
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
   if (tone === "neutral") return <span className="qs-badge"><span className="dot" aria-hidden="true" />{children}</span>;
@@ -79,6 +80,27 @@ export interface ImageOverlay {
   segments?: { from: [number, number]; to: [number, number]; color: string }[];
   /** 选中的中线点 */
   selected?: number | null;
+  /** 逐帧定向叠加（走廊示教页，开启定向的段） */
+  heading?: HeadingGuide | null;
+}
+
+function HeadingLayer({ guide, size, screenPx }: { guide: HeadingGuide; size: [number, number]; screenPx: (px: number) => number }) {
+  const c = guide.nozzle;
+  const radii = guideRadii(guide, size);
+  const [nx, ny] = c;
+  const arm = screenPx(12);
+  return <g aria-label="逐帧定向叠加" pointerEvents="none" fill="none" vectorEffect="non-scaling-stroke">
+    {guide.zone && <path aria-label="检测窗口环带" d={wedgePath(c, guide.zone, [0, 360])} fill="var(--primary)" fillOpacity={.06} fillRule="evenodd" stroke="var(--primary)" strokeOpacity={.6} strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />}
+    {guide.sector && <path aria-label="搜索扇区" d={wedgePath(c, radii, guide.sector)} fill="var(--primary)" fillOpacity={.1} stroke="var(--primary)" strokeWidth={1} strokeDasharray="3 4" vectorEffect="non-scaling-stroke" />}
+    {guide.range && <path aria-label="本段方向范围" d={wedgePath(c, radii, guide.range)} fill="var(--warn)" fillOpacity={.22} stroke="var(--warn)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+    {guide.fallback != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.fallback); return <line aria-label="回退方向" x1={nx} y1={ny} x2={x} y2={y} stroke="var(--ok)" strokeWidth={2} strokeDasharray="8 4" vectorEffect="non-scaling-stroke" />; })()}
+    <g aria-label={guide.calibrated ? "出胶点（已标定）" : "出胶点（走廊推算）"} stroke={guide.calibrated ? "var(--ok)" : "var(--warn)"} strokeWidth={2}>
+      <line x1={nx - arm} y1={ny} x2={nx + arm} y2={ny} vectorEffect="non-scaling-stroke" />
+      <line x1={nx} y1={ny - arm} x2={nx} y2={ny + arm} vectorEffect="non-scaling-stroke" />
+      <circle cx={nx} cy={ny} r={screenPx(6)} vectorEffect="non-scaling-stroke" />
+      <text x={nx} y={ny} dx={screenPx(14)} dy={screenPx(-10)} fontSize={screenPx(13)} fill={guide.calibrated ? "var(--ok)" : "var(--warn)"} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke">{guide.calibrated ? "出胶点" : "出胶点（推算）"}</text>
+    </g>
+  </g>;
 }
 /** 灰度像素直接画进同一块 canvas：换帧只重画，不产生新的图片资源。 */
 function GrayCanvas({ image, pixels }: { image: GrayImage; pixels: GrayPixels }) {
@@ -109,9 +131,9 @@ export interface PathEditing {
  * controlsAt="footer"（仅走廊示教页）：缩放与显示开关下沉到底部信息行，左侧放 summary，
  * 开关文案为“中线 / 搜索带 / 点柄”，操作提示由页面自己给；默认 "header" 的外观与行为不变。
  */
-export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, brush, onBrush, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
+export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, brush, onBrush, onPoint, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
   image: GrayImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
-  brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; extractionFailure?: { point: ImagePoint; message: string } | null; emptyTitle?: string; emptyHint?: string; controlsAt?: "header" | "footer"; summary?: ReactNode;
+  brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; onPoint?: (p: [number, number]) => void; extractionFailure?: { point: ImagePoint; message: string } | null; emptyTitle?: string; emptyHint?: string; controlsAt?: "header" | "footer"; summary?: ReactNode;
 }) {
   const [viewport, setViewport] = useState({ zoom: 1, x: 0, y: 0 });
   const { zoom, x, y } = viewport;
@@ -146,6 +168,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
   const regionStart = useRef<[number, number] | null>(null);
   const [shown, setShown] = useState(true);
   const [bandShown, setBandShown] = useState(true);
+  const [headingShown, setHeadingShown] = useState(true);
   const bandClip = useId();
   const [allHandles, setAllHandles] = useState(false);
   const group = useRef<SVGGElement>(null);
@@ -186,7 +209,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
   const band = searchBand(path, overlay?.searchHalfPx);
   const hint = error || emptyHint;
   const footer = controlsAt === "footer";
-  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
+  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
   return <div className={"wp-viewport" + (footer ? " wp-viewport-footer" : "")}>{footer ? tools && <div className="wp-image-tools">{tools}</div> : <div className="wp-image-tools">{tools ?? <span>{caption ?? label}</span>}{controls}</div>}{subtools}
     {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "暂无图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} style={{ aspectRatio: `${image.width} / ${image.height}` }} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
@@ -216,6 +239,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
           return;
         }
         if (onRegion) { const p = point(e); if (p) { regionStart.current = p; onRegion([p[0], p[1], 0, 0]); e.currentTarget.setPointerCapture?.(e.pointerId); } return; }
+        if (onPoint) { if (!editDisabled) { const p = point(e); if (p) onPoint(p); } return; }
         if (!editing || !onEdit) return;
         const inverse = group.current?.getScreenCTM()?.inverse();
         const p = inverse ? point(e, inverse) : null;
@@ -263,6 +287,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
             <circle r={screenPx(13)} fill="var(--surface-lowest)" fillOpacity={.8} stroke="var(--ng)" strokeWidth={3} vectorEffect="non-scaling-stroke" />
             <text textAnchor="middle" dy={screenPx(5.5)} fontSize={screenPx(16)} fontWeight="bold" fill="var(--ng)">!</text>
           </g>}
+          {overlay?.heading && headingShown && <HeadingLayer guide={overlay.heading} size={[image.width, image.height]} screenPx={screenPx} />}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay && shown && <g aria-label="中线叠加">
             {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}

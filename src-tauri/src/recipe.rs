@@ -231,6 +231,9 @@ pub struct CameraInspect {
     /// 逐帧定向的检测窗口（D-SB-47）：只测沿胶路距出胶点 [start, start + length] mm 的一段
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<HeadingWindow>,
+    /// 标定的出胶点（图像像素，D-SB-47）；为空时由开启定向的各段走廊起点推出
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nozzle: Option<[f64; 2]>,
 }
 
 /// 逐帧定向的检测窗口（mm，沿胶路从出胶点量起）。
@@ -304,6 +307,12 @@ impl CameraInspect {
                     "相机 {id} 的检测窗口需满足 起点 ≥ 0、长度 > 0、起点 + 长度 ≤ 500 mm"
                 ));
             }
+        }
+        if self.nozzle.is_some_and(|p| {
+            p.iter()
+                .any(|v| !(v.is_finite() && *v >= 0.0 && *v <= 100_000.0))
+        }) {
+            return Err(format!("相机 {id} 的出胶点坐标需为 0–100000 px 的有限数"));
         }
         Ok(())
     }
@@ -732,6 +741,7 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
                 detect: None,
                 segments: Vec::new(),
                 window: None,
+                nozzle: None,
             })
             .collect(),
         segment_defaults,

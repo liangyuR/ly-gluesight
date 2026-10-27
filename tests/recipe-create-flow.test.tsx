@@ -27,7 +27,7 @@ function createdView(doc: RecipeDoc): WorkspaceView {
   const view = burstWorkspaceView(doc as ReturnType<typeof burstRecipe>);
   view.workspace.revision = 1;
   const plan = view.plan!;
-  plan.cameraTeaching = plan.cameras.map(camera => ({ camera, mmPerPx: null, ready: false, segments: [] }));
+  plan.cameraTeaching = plan.cameras.map(camera => ({ camera, mmPerPx: null, ready: false, nozzle: null, segments: [] }));
   plan.calibration = null;
   const waiting = { detail: "等待设备就绪后整圈采集并采用" };
   plan.progress = {

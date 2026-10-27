@@ -9,7 +9,7 @@ use super::taught::{
     bead_graph, bead_metrics, bead_params, edge_graph, edge_mm, polarity, FrameMeasurement,
 };
 use super::{FrameImage, RunResult};
-use crate::heading::{corridor_heading, nozzle, sector};
+use crate::heading::{nozzle, sector, segment_heading};
 use crate::recipe::{CameraInspect, Recipe};
 
 /// 一（相机, 段）的逐帧定向测量图。
@@ -30,7 +30,7 @@ pub struct HeadingGraph {
     edge: bool,
 }
 
-/// 第 `segment` 段、一台检测相机的定向测量图：出胶点由开启定向的各段走廊起点推出且须一致，扇区见 `heading::sector`，
+/// 第 `segment` 段、一台检测相机的定向测量图：出胶点见 `heading::nozzle`（标定值或走廊起点推出），扇区见 `heading::sector`，
 /// 检测窗口按相机当量换成像素；出胶点须在示教帧内。
 pub fn plan_heading(
     inspect: &CameraInspect,
@@ -59,8 +59,9 @@ pub fn plan_heading(
         .window
         .as_ref()
         .ok_or_else(|| fail("缺少检测窗口"))?;
-    let anchor =
-        nozzle(segments, &cameras, inspect)?.ok_or_else(|| fail("尚未示教走廊，推不出出胶点"))?;
+    let anchor = nozzle(segments, &cameras, inspect)?
+        .ok_or_else(|| fail("尚未标定出胶点或示教走廊，推不出出胶点"))?
+        .point;
     if !(anchor[0] >= 0.0
         && anchor[1] >= 0.0
         && anchor[0] <= f64::from(size[0]) - 1.0
@@ -73,10 +74,8 @@ pub fn plan_heading(
     }
     let span = sector(segments, &cameras, inspect, k)
         .ok_or_else(|| fail("尚未示教走廊，推不出方向范围"))?;
-    let own = inspect
-        .segment_corridor(segment)
-        .and_then(|s| corridor_heading(&s.corridor))
-        .ok_or_else(|| fail("尚未示教走廊，推不出示教方向"))?;
+    let own =
+        segment_heading(inspect, segment).ok_or_else(|| fail("尚未示教走廊，推不出示教方向"))?;
     let zone = [
         window.start_mm / scale,
         (window.start_mm + window.length_mm) / scale,
