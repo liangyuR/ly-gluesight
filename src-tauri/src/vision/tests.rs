@@ -22,6 +22,7 @@ fn calibration_page_view_on_single_view_camera_also_writes_the_key_burst_recipe_
         detect: None,
         segments: Vec::new(),
         window: None,
+        nozzle: None,
     })
     .unwrap();
     let station = |key: &str| CalibKey::Station(key.into());

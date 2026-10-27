@@ -6,6 +6,7 @@ import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { useCycle } from "../src/features/cycle/api";
 import { burstRecipe, burstWorkspaceView, captureRoundV2, snapshot, workspaceState } from "./fixtures";
+import { stubSvgPointer } from "./svg-pointer";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureList: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn() } }));
@@ -67,6 +68,27 @@ describe("检测窗口", () => {
     fireEvent.change(screen.getByRole("spinbutton", { name: "窗口长度" }), { target: { value: "20" } });
     const doc = vi.mocked(ws.setDoc).mock.lastCall![0];
     expect(doc.inspect!.find(item => item.camera === "CAM-1")!.window).toEqual({ startMm: 2, lengthMm: 20 });
+  });
+});
+
+describe("出胶点标定", () => {
+
+  // 防的回归（D-SB-47）：标出胶点时点图仍按编辑点给走廊加点；出胶点写到段走廊而不是相机上，别的段用不到
+  it("段开启逐帧定向、选“标出胶点”后点图 → 写入这台相机的出胶点并显示叠加，走廊不加点", async () => {
+    ws.data!.workspace.doc.segments![0].heading = { toleranceDeg: 5 };
+    ws.data!.workspace.doc.inspect![1].window = { startMm: 2, lengthMm: 4 };
+    stubSvgPointer();
+    show("/recipe/teach?camera=CAM-2&segment=1");
+    const image = await screen.findByRole("img", { name: "CAM-2 · 段 1 · 示教帧" });
+    fireEvent.click(screen.getByLabelText("标出胶点"));
+    fireEvent.pointerDown(image, { button: 0, clientX: 40, clientY: 30, pointerId: 1 });
+    const doc = vi.mocked(ws.setDoc).mock.lastCall![0];
+    expect(doc.inspect!.find(item => item.camera === "CAM-2")!.nozzle).toEqual([40, 30]);
+    expect(ws.setCorridorDraft).not.toHaveBeenCalled();
+    ws.data!.workspace.doc.inspect![1].nozzle = [40, 30];
+    fireEvent.click(screen.getByLabelText("编辑点"));
+    expect(await screen.findByLabelText("出胶点（已标定）")).toBeInTheDocument();
+    expect(screen.getByLabelText("检测窗口环带")).toBeInTheDocument();
   });
 });
 

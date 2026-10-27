@@ -222,6 +222,20 @@ pub struct CameraTeachingView {
     pub ready: bool,
     /// 已选示教帧的段，按段号
     pub segments: Vec<SegmentTeachingView>,
+    /// 定向用的出胶点（D-SB-47）：标定值，或由开启定向的各段走廊起点推出；推不出或不一致时为空
+    pub nozzle: Option<crate::heading::Nozzle>,
+}
+
+/// 示教页叠加的定向几何（度，图像坐标，与测量图一致）。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadingOverlay {
+    /// 本段方向范围 [lo, hi]
+    pub range: [f64; 2],
+    /// 扇形搜索范围（本段与相邻段方向范围的并集）
+    pub sector: [f64; 2],
+    /// 回退方向（本段示教方向）
+    pub fallback: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -233,6 +247,8 @@ pub struct SegmentTeachingView {
     pub seq: u64,
     /// 走廊已保存且完整落在示教帧内
     pub saved: bool,
+    /// 本段开启逐帧定向且示教了走廊时的定向几何
+    pub heading: Option<HeadingOverlay>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -336,6 +352,7 @@ pub(super) fn corridor_tag(doc: &RecipeDoc, camera: &str) -> Value {
                 doc.spacing,
                 i.segments,
                 i.window,
+                i.nozzle,
                 doc.segments
                     .iter()
                     .map(|s| (s.index, &s.heading))
@@ -1604,6 +1621,19 @@ pub fn workspace_update_segments(app: AppHandle, id: String, revision: u64, segm
 
 pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
     let open = untaught_pairs(w);
+    let cameras = w.doc.plan_cameras();
+    let overlay = |inspect: &CameraInspect, segment: u32| {
+        let k = w
+            .doc
+            .segments
+            .iter()
+            .position(|s| s.index == segment && s.heading.is_some())?;
+        Some(HeadingOverlay {
+            range: crate::heading::direction_range(&w.doc.segments, &cameras, inspect, k)?,
+            sector: crate::heading::sector(&w.doc.segments, &cameras, inspect, k)?,
+            fallback: crate::heading::segment_heading(inspect, segment)?,
+        })
+    };
     w.doc
         .inspect
         .iter()
@@ -1620,6 +1650,7 @@ pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
                             round: t.round.clone(),
                             seq: t.seq,
                             saved: segment_corridor_saved(inspect, segment, &w.camera_teaching),
+                            heading: overlay(inspect, segment),
                         })
                 })
                 .collect();
@@ -1630,6 +1661,9 @@ pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
                 ready: inspect.mm_per_px.is_some()
                     && !open.iter().any(|(camera, _)| camera == &inspect.camera),
                 segments,
+                nozzle: crate::heading::nozzle(&w.doc.segments, &cameras, inspect)
+                    .ok()
+                    .flatten(),
             }
         })
         .collect()

@@ -10,12 +10,12 @@ import { Badge, NumberField } from "./components";
 import { returnState } from "./returnNavigation";
 import { MAX_WINDOW_END_MM, windowError } from "./teach";
 
-export type CameraParams = Pick<CameraInspect, "mmPerPx" | "detect" | "window">;
+export type CameraParams = Pick<CameraInspect, "mmPerPx" | "detect" | "window" | "nozzle">;
 
 const polarity = { dark: "暗胶", light: "亮胶" };
 
-/** 相机参数（D-SB-45）：像素当量与检测参数，这台相机检测的各段走廊都按它们测量；headingSegments 是这台相机检测、开启了逐帧定向的段。 */
-export function CameraParamsSettings({ params, defaults, disabled, headingSegments = [], onChange }: { params: CameraParams; defaults: DetectParams; disabled: boolean; headingSegments?: number[]; onChange: (next: CameraParams) => void }) {
+/** 相机参数（D-SB-45）：像素当量与检测参数，这台相机检测的各段走廊都按它们测量；headingSegments 是这台相机检测、开启了逐帧定向的段，derivedNozzle 是未标定时由走廊推出的出胶点。 */
+export function CameraParamsSettings({ params, defaults, disabled, headingSegments = [], derivedNozzle = null, onChange }: { params: CameraParams; defaults: DetectParams; disabled: boolean; headingSegments?: number[]; derivedNozzle?: [number, number] | null; onChange: (next: CameraParams) => void }) {
   const location = useLocation();
   const detect = params.detect ?? defaults;
   const scaled = params.mmPerPx != null && Number.isFinite(params.mmPerPx) && params.mmPerPx > 0;
@@ -47,7 +47,23 @@ export function CameraParamsSettings({ params, defaults, disabled, headingSegmen
       </div>
     </details>
     <WindowSettings value={params.window ?? null} headingSegments={headingSegments} disabled={disabled} onChange={window => onChange({ ...params, window })} />
+    <NozzleSettings value={params.nozzle ?? null} derived={derivedNozzle} headingSegments={headingSegments} disabled={disabled} onClear={() => onChange({ ...params, nozzle: null })} />
   </>;
+}
+
+/** 出胶点（D-SB-47）：在开启定向的段的示教帧上用“标出胶点”点选；这里只看状态和清除标定。 */
+function NozzleSettings({ value, derived, headingSegments, disabled, onClear }: { value: [number, number] | null; derived: [number, number] | null; headingSegments: number[]; disabled: boolean; onClear: () => void }) {
+  const [badge, tone]: [string, "ok" | "info" | "warn" | "neutral"] = value ? ["已标定", "ok"] : derived ? ["按走廊推算", "info"] : headingSegments.length ? ["未标定", "warn"] : ["未标定", "neutral"];
+  const point = value ?? derived;
+  return <details className="panel wp-settings-card">
+    <summary><span className="wp-settings-heading"><span className="wp-settings-title">出胶点</span><Badge tone={tone}>{badge}</Badge><ChevronDown size={16} aria-hidden="true"/></span>
+      <span className="wp-settings-summary">{point ? `(${Math.round(point[0])}, ${Math.round(point[1])}) px` : headingSegments.length ? "到开启定向的段的示教帧上标定" : "只用于开启逐帧定向的段"}</span>
+    </summary>
+    <div className="wp-settings-body">
+      {value && <Button size="sm" disabled={disabled} onClick={onClear}>清除标定，改按走廊起点推算</Button>}
+      <p className="wp-settings-hint">逐帧定向以出胶点为圆心找胶条方向、量检测窗口。在开启逐帧定向的段的示教帧上选“标出胶点”，点胶嘴出胶处；标定后各段走廊从哪头画起都可以，示教方向取背离出胶点的方向。未标定时取这台相机开启定向的各段走廊起点的平均，起点相差超过 1 mm 会报“出胶点不一致”。出胶点须在示教帧内。</p>
+    </div>
+  </details>;
 }
 
 /** 逐帧定向的检测窗口（D-SB-47）：起点、长度都空为未设置；不合法时只提示，不写入配方。 */

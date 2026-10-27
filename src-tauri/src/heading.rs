@@ -1,5 +1,7 @@
-//! 逐帧定向（D-SB-47）的几何：出胶点、各段方向范围与扇区。全部由示教走廊和段设置推出，不另外示教。
+//! 逐帧定向（D-SB-47）的几何：出胶点、各段方向范围与扇区。出胶点优先用相机上标定的值，其余由示教走廊和段设置推出。
 //! 角度为图像坐标的度数：0° 朝右、90° 朝下（与 `glue.bead_path` 一致）。
+
+use serde::Serialize;
 
 use crate::plan::{segment_cameras, HeadingSettings, PathSegment, SegmentKind};
 use crate::recipe::CameraInspect;
@@ -57,13 +59,27 @@ fn heading_segments<'a>(
     })
 }
 
-/// 出胶点（px）：这台相机开启定向的各段走廊起点的平均（D-SB-42 走廊从出胶点一侧起画）。没有开启定向的段时为 None；
-/// 各起点离平均点超过 `NOZZLE_TOLERANCE_MM` 时报错（还没有像素当量时不核对距离）。
+/// 出胶点（px）与来源：`calibrated` 为真是相机上标定的出胶点，否则由走廊起点推出。
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Nozzle {
+    pub point: [f64; 2],
+    pub calibrated: bool,
+}
+
+/// 出胶点：相机标定了就用标定值；否则取这台相机开启定向的各段走廊起点的平均（D-SB-42 走廊从出胶点一侧起画），
+/// 没有开启定向的段时为 None，各起点离平均点超过 `NOZZLE_TOLERANCE_MM` 时报错（还没有像素当量时不核对距离）。
 pub fn nozzle(
     segments: &[PathSegment],
     cameras: &[String],
     inspect: &CameraInspect,
-) -> Result<Option<[f64; 2]>, String> {
+) -> Result<Option<Nozzle>, String> {
+    if let Some(point) = inspect.nozzle {
+        return Ok(Some(Nozzle {
+            point,
+            calibrated: true,
+        }));
+    }
     let starts: Vec<(u32, [f64; 2])> = heading_segments(segments, cameras, inspect)
         .filter_map(|s| {
             taught(inspect, s.index).map(|c| (s.index, [f64::from(c[0][0]), f64::from(c[0][1])]))
@@ -83,12 +99,31 @@ pub fn nozzle(
             .find(|(_, p)| (p[0] - mean[0]).hypot(p[1] - mean[1]) * scale > NOZZLE_TOLERANCE_MM)
         {
             return Err(format!(
-                "相机 {}：开启逐帧定向的各段走廊起点（出胶点）不一致，第 {segment} 段起点 ({:.0}, {:.0}) 离其余各段超过 {NOZZLE_TOLERANCE_MM} mm，请从同一出胶点重画走廊",
+                "相机 {}：开启逐帧定向的各段走廊起点（出胶点）不一致，第 {segment} 段起点 ({:.0}, {:.0}) 离其余各段超过 {NOZZLE_TOLERANCE_MM} mm，请在示教帧上标定出胶点，或从同一出胶点重画走廊",
                 inspect.camera, p[0], p[1]
             ));
         }
     }
-    Ok(Some(mean))
+    Ok(Some(Nozzle {
+        point: mean,
+        calibrated: false,
+    }))
+}
+
+/// 第 `segment` 段的示教方向：走廊起点指向终点；标定了出胶点时取背离出胶点的方向（终点比起点离出胶点近就反过来），
+/// 所以走廊从哪头画起都一样。没有示教走廊时为 None。
+pub fn segment_heading(inspect: &CameraInspect, segment: u32) -> Option<f64> {
+    let corridor = taught(inspect, segment)?;
+    let h = corridor_heading(corridor)?;
+    let Some(n) = inspect.nozzle else {
+        return Some(h);
+    };
+    let dist = |p: &[f32; 2]| (f64::from(p[0]) - n[0]).hypot(f64::from(p[1]) - n[1]);
+    Some(if dist(corridor.last()?) < dist(&corridor[0]) {
+        wrap(h + 180.0)
+    } else {
+        h
+    })
 }
 
 fn tolerance(segment: &PathSegment) -> f64 {
@@ -109,7 +144,7 @@ pub fn direction_range(
     k: usize,
 ) -> Option<[f64; 2]> {
     let segment = segments.get(k)?;
-    let own = corridor_heading(taught(inspect, segment.index)?)?;
+    let own = segment_heading(inspect, segment.index)?;
     let tol = tolerance(segment);
     let mut rel = vec![0.0];
     if segment.kind == SegmentKind::Corner {
@@ -120,7 +155,7 @@ pub fn direction_range(
             else {
                 continue;
             };
-            if let Some(h) = taught(inspect, neighbour.index).and_then(corridor_heading) {
+            if let Some(h) = segment_heading(inspect, neighbour.index) {
                 rel.push(wrap(h - own));
             }
         }
@@ -243,6 +278,7 @@ mod tests {
                 start_mm: 2.0,
                 length_mm: 20.0,
             }),
+            nozzle: None,
         }
     }
 
@@ -273,18 +309,43 @@ mod tests {
     }
 
     #[test]
-    fn nozzle_is_the_mean_corridor_start_and_starts_further_apart_than_tolerance_are_reported() {
-        // 防的回归：各段走廊起点不在同一出胶点（NEW-14 那样相差几十毫米）仍当作一个出胶点定向
+    fn nozzle_is_the_mean_corridor_start_and_starts_further_apart_than_tolerance_are_reported_unless_calibrated(
+    ) {
+        // 防的回归：各段走廊起点不在同一出胶点（NEW-14 那样相差几十毫米）仍当作一个出胶点定向；
+        // 标定了出胶点后仍按走廊起点核对而报错，或走廊朝出胶点画时示教方向反了 180°
         let segs = segments(&[Straight, Corner]);
         let cameras = vec!["cam1".to_string()];
         let near = camera(&[(1, [500.0, 500.0], 0.0), (2, [504.0, 500.0], 30.0)]);
         assert_eq!(
             nozzle(&segs, &cameras, &near).unwrap(),
-            Some([502.0, 500.0])
+            Some(Nozzle {
+                point: [502.0, 500.0],
+                calibrated: false
+            })
         );
         let far = camera(&[(1, [500.0, 500.0], 0.0), (2, [530.0, 500.0], 30.0)]);
         assert!(nozzle(&segs, &cameras, &far).is_err());
-        assert_eq!(issues(&segs, &[far]).len(), 1);
+        assert_eq!(issues(&segs, &[far.clone()]).len(), 1);
+        let calibrated = CameraInspect {
+            nozzle: Some([700.0, 500.0]),
+            ..far
+        };
+        assert_eq!(
+            nozzle(&segs, &cameras, &calibrated)
+                .unwrap()
+                .map(|n| n.point),
+            Some([700.0, 500.0])
+        );
+        assert!(issues(&segs, &[calibrated.clone()]).is_empty());
+        assert!(
+            (segment_heading(&calibrated, 1).unwrap().abs() - 180.0).abs() < 1e-3,
+            "第 1 段走廊朝出胶点画，示教方向取背离出胶点"
+        );
+        let at_start = CameraInspect {
+            nozzle: Some([500.0, 500.0]),
+            ..near
+        };
+        assert!(segment_heading(&at_start, 1).unwrap().abs() < 1e-3);
         let mut off = segs.clone();
         off.iter_mut().for_each(|s| s.heading = None);
         assert_eq!(
