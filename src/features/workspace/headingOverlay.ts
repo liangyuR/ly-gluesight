@@ -8,6 +8,8 @@ export interface HeadingGuide {
   range?: [number, number] | null;
   sector?: [number, number] | null;
   fallback?: number | null;
+  /** 试测时这一帧测得的胶条方向 */
+  measured?: number | null;
 }
 
 const at = (c: [number, number], r: number, deg: number): [number, number] => {

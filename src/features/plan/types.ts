@@ -244,6 +244,14 @@ export interface CalibrationFrameView {
   metrics: FrameMetrics;
 }
 
+/** 示教页全段试测（workspace_teach_preview_segment）：示教轮次里本段帧组 start–end 按候选已保存的走廊逐帧测得的指标。 */
+export interface TeachPreviewSegment {
+  round: string;
+  start: number;
+  end: number;
+  frames: FrameMetrics[];
+}
+
 export interface WidthStats {
   min: number;
   max: number;

@@ -106,7 +106,7 @@ describe("候选工作台的主流程保护", () => {
 
   it("保存失败保留走廊草稿，重试成功后才显示已保存；草稿并入这台相机这一段的走廊整份提交",async()=>{
     const {result}=await openBurst();
-    const draft={corridor:[[10,10],[20,10]] as [number,number][],mmPerPx:.1,detect:null,window:null};
+    const draft={corridor:[[10,10],[40,10]] as [number,number][],mmPerPx:.1,detect:null,window:null};
     vi.mocked(workspaceApi.saveDoc).mockRejectedValueOnce(new Error("磁盘不可写"));
     vi.useFakeTimers();
     act(()=>result.current.setCorridorDraft("CAM-2#1",draft));

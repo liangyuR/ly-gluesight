@@ -94,6 +94,7 @@ function HeadingLayer({ guide, size, screenPx }: { guide: HeadingGuide; size: [n
     {guide.sector && <path aria-label="搜索扇区" d={wedgePath(c, radii, guide.sector)} fill="var(--primary)" fillOpacity={.1} stroke="var(--primary)" strokeWidth={1} strokeDasharray="3 4" vectorEffect="non-scaling-stroke" />}
     {guide.range && <path aria-label="本段方向范围" d={wedgePath(c, radii, guide.range)} fill="var(--warn)" fillOpacity={.22} stroke="var(--warn)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
     {guide.fallback != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.fallback); return <line aria-label="回退方向" x1={nx} y1={ny} x2={x} y2={y} stroke="var(--ok)" strokeWidth={2} strokeDasharray="8 4" vectorEffect="non-scaling-stroke" />; })()}
+    {guide.measured != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.measured); return <line aria-label="实测方向" x1={nx} y1={ny} x2={x} y2={y} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />; })()}
     <g aria-label={guide.calibrated ? "出胶点（已标定）" : "出胶点（走廊推算）"} stroke={guide.calibrated ? "var(--ok)" : "var(--warn)"} strokeWidth={2}>
       <line x1={nx - arm} y1={ny} x2={nx + arm} y2={ny} vectorEffect="non-scaling-stroke" />
       <line x1={nx} y1={ny - arm} x2={nx} y2={ny + arm} vectorEffect="non-scaling-stroke" />

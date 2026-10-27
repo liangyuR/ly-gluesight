@@ -75,6 +75,23 @@ fn station_count(length: f64, step: f64) -> usize {
     ((length * 1000.0).round() / 1000.0 / step + 1e-6 / step).floor() as usize + 1
 }
 
+/// 走廊至少的站数：lyFlow 1.1 的 glue.bead_width 少于 3 站时不报错，但每站都测成无胶（有胶的帧被判断胶）。
+const MIN_STATIONS: usize = 3;
+
+/// 站数不足的说明（与示教页 corridorStationError 同口径）：实际站数、能用的最大站距或需要的走廊长度（mm）。
+fn too_few_stations(n: usize, length_mm: f64, spacing_mm: f32) -> String {
+    let gaps = (MIN_STATIONS - 1) as f64;
+    let spacing_mm = (f64::from(spacing_mm) * 1000.0).round() / 1000.0;
+    let max = (length_mm / gaps * 10.0).floor() / 10.0;
+    let need = (gaps * spacing_mm * 10.0 - 1e-9).ceil() / 10.0;
+    let shrink = if max >= 0.1 {
+        format!("把站距改到不大于 {max} mm，或")
+    } else {
+        String::new()
+    };
+    format!("按站距 {spacing_mm} mm，检测走廊（{length_mm:.1} mm）只有 {n} 站，至少要 {MIN_STATIONS} 站：{shrink}把走廊画到不短于 {need} mm")
+}
+
 /// 沿中线量胶的测量图：io.load_image → glue.taught_path（示教中线）→ glue.bead_width（逐站胶边与胶宽）。
 fn taught_graph(
     path: &[[f32; 2]],
@@ -320,8 +337,15 @@ pub fn plan_corridor(
         )));
     }
     let n = station_count(params.length, params.step);
-    if !(3..=200_000).contains(&n) {
-        return Err(fail("检测走廊不足三站或超过 20 万站，请调整走廊长度或站距"));
+    if n < MIN_STATIONS {
+        return Err(fail(&too_few_stations(
+            n,
+            params.length * scale,
+            recipe.spacing,
+        )));
+    }
+    if n > 200_000 {
+        return Err(fail("检测走廊超过 20 万站，请调整走廊长度或站距"));
     }
     let stations = (0..n)
         .map(|i| polyline_at(corridor, i as f64 * params.step))

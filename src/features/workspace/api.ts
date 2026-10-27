@@ -1,6 +1,6 @@
 import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
-import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment } from "../plan/types";
+import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
 import type { AlignSuggestion, CapturePlcStatus, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, HistoryCandidate, HistoryPick, ImagingSaved, Sample, Workspace, WorkspaceView } from "./types";
 
@@ -129,6 +129,8 @@ export const workspaceApi = {
   calibrationRoundFeatures: (id: string, round: string) => desktopCall<FrameMetrics[]>("workspace_calibration_round_features", { id, round }),
   /** 用当前段走廊重测标定轮次的一帧，只读 */
   calibrationFrame: (id: string, round: string, camera: string, seq: number) => desktopCall<CalibrationFrameView>("workspace_calibration_frame", { id, round, camera, seq }),
+  teachPreviewFrame: (id: string, camera: string, segment: number, round: string, seq: number) => desktopCall<CalibrationFrameView>("workspace_teach_preview_frame", { id, camera, segment, round, seq }),
+  teachPreviewSegment: (id: string, camera: string, segment: number, round: string) => desktopCall<TeachPreviewSegment>("workspace_teach_preview_segment", { id, camera, segment, round }),
   calibrationApply: (id: string, revision: number) =>
     desktopCall<WorkspaceView>("workspace_calibration_apply", { id, revision }),
   /** 操作员确认第 segment 段（PathSegment.index）的帧数容差 */
