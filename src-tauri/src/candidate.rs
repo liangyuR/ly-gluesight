@@ -54,7 +54,7 @@ impl Candidate {
         let corridor = self
             .corridors
             .get(job.camera_idx, job.segment)
-            .filter(|c| c.camera == job.camera)
+            .filter(|c| c.camera() == job.camera)
             .ok_or("候选没有这台相机在这一段的走廊测量图")?;
         vision::measure_frame(
             &self.engine,

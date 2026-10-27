@@ -96,6 +96,11 @@ fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
             .filter(|i| i.mm_per_px.is_none())
             .map(|i| format!("相机 {}：缺像素当量", i.camera)),
     );
+    problems.extend(
+        crate::heading::issues(&doc.segments, &doc.inspect)
+            .into_iter()
+            .map(|i| i.message),
+    );
     for teaching in w.camera_teaching.iter().filter(|t| t.segment.is_some()) {
         if current.get(&teaching.camera) != Some(&teaching.frame.camera_tag) {
             problems.push(format!(
@@ -187,6 +192,11 @@ fn segment_check(w: &Workspace) -> Check {
                 (None, None) => format!("第 {} 段（{kind}）待标定", s.index),
             }
         })
+        .chain(doc.segments.iter().flat_map(|s| {
+            super::burst::heading_hints(doc, s, &w.calibration.rounds)
+                .into_iter()
+                .map(move |hint| format!("第 {} 段提示（不阻断）：{hint}", s.index))
+        }))
         .collect();
     Check {
         name: "段标定".into(),
@@ -197,8 +207,8 @@ fn segment_check(w: &Workspace) -> Check {
 }
 
 /// 标准件 x_ref（规格 §0/§1、D-SB-18）：只在有启用胶偏检查的直线段时列出。单段 AbsoluteX 要有标准件多轮得出的 x_ref；
-/// 多段计划（暂不计算 x_ref：各段已标定时运行时按比例分段、该段标胶偏未判，否则整条胶路未分段）与 ToEdge
-/// （测量量未实现，结果标胶偏未判）列出原因、不阻断。
+/// ToEdge（D-SB-48）填了图纸胶边距即可，否则同样要标准件得出的参考值，没配找边参数时列出原因、不阻断；
+/// 多段计划（暂不计算 x_ref：各段已标定时运行时按比例分段、该段标胶偏未判，否则整条胶路未分段）列出原因、不阻断。
 fn x_ref_check(doc: &RecipeDoc) -> Option<Check> {
     let cameras = doc.plan_cameras();
     let single = doc.segments.len() == 1;
@@ -207,10 +217,18 @@ fn x_ref_check(doc: &RecipeDoc) -> Option<Check> {
         .filter(|s| s.kind == SegmentKind::Straight && s.checks.offset.as_ref().is_some_and(|o| o.enabled))
         .filter_map(|s| offset_reference(s, &cameras).map(|reference| (s.index, reference)))
         .map(|(index, reference)| match (reference.x_ref.zip(reference.spread), reference.measure) {
+            (_, OffsetMeasure::ToEdge) if reference.edge.as_ref().is_some_and(|e| e.nominal_mm.is_some()) => (true, format!(
+                "第 {index} 段：按图纸胶边距 {:.2} mm 判（相机 {}）",
+                reference.edge.as_ref().and_then(|e| e.nominal_mm).unwrap_or_default(),
+                reference.camera
+            )),
             (Some((x_ref, spread)), _) => (true, format!("第 {index} 段 x_ref {x_ref:.3} ± {spread:.3} mm（相机 {}）", reference.camera)),
             (None, _) if !single && segmented => (true, format!("第 {index} 段：多段配方暂不计算 x_ref，运行时按比例分段，该段标胶偏未判（未标定参考值）")),
             (None, _) if !single => (true, format!("第 {index} 段：各段尚未逐段标定，运行时整条胶路按未分段处理、不判胶偏，暂不需要 x_ref")),
-            (None, OffsetMeasure::ToEdge) => (true, format!("第 {index} 段：测量量“到边缘距离”未实现，结果标胶偏未判")),
+            (None, OffsetMeasure::ToEdge) if reference.edge.is_none() => {
+                (true, format!("第 {index} 段：没有配置找边参数，“到边缘距离”测不了，结果标胶偏未判"))
+            }
+            (None, OffsetMeasure::ToEdge) => (false, format!("第 {index} 段：待标准件轮次得出胶边距参考值，或填图纸胶边距（相机 {}）", reference.camera)),
             (None, OffsetMeasure::AbsoluteX) => (false, format!("第 {index} 段：待标准件轮次得出 x_ref（相机 {}）", reference.camera)),
         })
         .collect();
@@ -261,6 +279,7 @@ pub(super) fn judge_round(doc: &RecipeDoc, round: &CaptureRoundV2, metrics: &[Fr
     judge_frames(
         &doc.segments,
         doc.boundary_guard,
+        doc.boundary_refine,
         doc.expected_total(),
         &cameras,
         metrics,
@@ -384,6 +403,7 @@ fn validate_sample(app: &AppHandle, w: &Workspace, recipe: &Recipe, measurer: Re
     let judgement = judge_frames(
         &recipe.path_segments,
         recipe.boundary_guard,
+        recipe.boundary_refine,
         recipe.expected_total(),
         &recipe.plan_cameras(),
         &metrics,
@@ -594,11 +614,24 @@ pub(super) fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeD
                 .collect::<Result<_, String>>()?,
         });
     }
-    crate::release::publish_burst(&releases_root(app)?, crate::release::BurstPublishInput {
-        recipe: doc.clone(),
-        versions: crate::release::Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION_BURST.into() },
-        validation_site: if crate::offline::enabled(app) { ValidationSite::Offline } else { ValidationSite::Real },
-        graph: crate::release::ResourceSource::Bytes(serde_json::to_vec(&crate::production::burst_graphs(&recipe, &sizes)?).map_err(|e| e.to_string())?),
-        cameras,
-    })
+    crate::release::publish_burst(
+        &releases_root(app)?,
+        crate::release::BurstPublishInput {
+            recipe: doc.clone(),
+            versions: crate::release::Versions {
+                engine: engine.identity.clone(),
+                graph: crate::production::graph_version(&recipe).into(),
+            },
+            validation_site: if crate::offline::enabled(app) {
+                ValidationSite::Offline
+            } else {
+                ValidationSite::Real
+            },
+            graph: crate::release::ResourceSource::Bytes(
+                serde_json::to_vec(&crate::production::burst_graphs(&recipe, &sizes)?)
+                    .map_err(|e| e.to_string())?,
+            ),
+            cameras,
+        },
+    )
 }

@@ -148,7 +148,7 @@ export function calibrationView(): CalibrationView {
     minRounds: 10,
     rounds: roundGroups.map((groupCount, i) => ({ roundId: `round-${i + 1}`, standard: false, groupCount, cameraFrames: burstCameras.map(() => groupCount), incompleteGroups: 0, lossAlarms: 0, createdAt: i + 1 })),
     part: { nExp: 12, calib: { ...partStats }, suggestedTolerance: 1 },
-    segments: burstRecipe().segments.map(s => ({ index: s.index, kind: s.kind, outcome: null, pending: "分段算法未就绪", tolerance: s.tolerance, xRef: null, xRefPending: s.kind === "straight" ? "分段算法未就绪" : null })),
+    segments: burstRecipe().segments.map(s => ({ index: s.index, kind: s.kind, outcome: null, pending: "分段算法未就绪", tolerance: s.tolerance, xRef: null, xRefPending: s.kind === "straight" ? "分段算法未就绪" : null, hints: [] })),
     expectedTotal: 12, toleranceTotal: 3, planVersionChange: false,
   };
 }

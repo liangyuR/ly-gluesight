@@ -72,6 +72,7 @@ export default function CalibrationPage() {
     } },
     { key: "xref", header: "胶偏参考 x_ref", render: row => row.kind === "corner" ? "不检胶偏" : row.xRef ? `${row.xRef.xRef.toFixed(3)} mm（离散 ${row.xRef.spread.toFixed(3)}）` : <span className="muted">{row.xRefPending ?? "—"}</span> },
   ];
+  const hinted = calibration?.segments.filter(segment => segment.hints?.length) ?? [];
   const roundMeta = (round: CalibrationRoundView) => `${round.groupCount} 个帧组 · 各相机 ${round.cameraFrames.join(" / ")} 帧 · 不完整帧组 ${round.incompleteGroups} · 丢帧告警 ${round.lossAlarms}`;
   return <div className="wp-page"><WorkspaceBar />
     <Panel title="多轮标定" detail="同一工件程序连续采集多轮，取帧组数均值作预期帧数；容差由操作员确认">
@@ -111,6 +112,9 @@ export default function CalibrationPage() {
         </div>
         {toleranceTotal < calibration.part.suggestedTolerance && <p className="muted hint">当前 Σ容差 ±{toleranceTotal} 小于整件建议容差 ±{calibration.part.suggestedTolerance}：运行时帧组数可能越界告警（只告警，不影响结论）。</p>}
         <Table className="wp-calib-table" caption="逐段标定结果" columns={columns} rows={calibration.segments} rowKey={row => String(row.index)} />
+        {hinted.length > 0 && <Notice title="标定提示" tone="warn">
+          <ul className="wp-calib-hints" aria-label="按段的标定提示">{hinted.flatMap(segment => segment.hints.map((hint, i) => <li key={`${segment.index}-${i}`}>段 {segment.index} · {segmentKindLabel[segment.kind]}：{hint}</li>))}</ul>
+        </Notice>}
       </> : <p className="wp-capture-empty">还没有标定结果。加入足够的轮次后点“应用标定”。</p>}
     </Panel>
     {added.length > 0 && <CalibrationFrames data={data} plan={plan} />}

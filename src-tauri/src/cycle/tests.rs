@@ -317,8 +317,13 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
     };
     use crate::recipe::SegmentCorridor;
     // 防的回归：不检测某段的相机也被送测（没有它在这段的走廊，只能量出检测不完整）；比例边界相对预测边界移动后，
-    // 移到另一段或进了过渡区的帧仍用到达时的走廊判定；不等补测完就判定；或原图没留住时把没测的帧当测成
-    for (case, keep_images) in [("原图留住", true), ("原图没留住", false)] {
+    // 移到另一段或进了过渡区的帧仍用到达时的走廊判定；不等补测完就判定；或原图没留住时把没测的帧当测成；
+    // 两段都开逐帧定向时（D-SB-47，测量不依赖段归属）仍把用相邻段定向图测过的帧拿去补测
+    for (case, keep_images, heading) in [
+        ("原图留住", true, false),
+        ("原图没留住", false, false),
+        ("两段都开逐帧定向", true, true),
+    ] {
         let mut doc = crate::recipe::samples_burst();
         doc.segments = vec![
             crate::plan::PathSegment {
@@ -337,6 +342,17 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             segment: 2,
             corridor,
         });
+        if heading {
+            doc.segments
+                .iter_mut()
+                .for_each(|s| s.heading = Some(Default::default()));
+            doc.inspect.iter_mut().for_each(|i| {
+                i.window = Some(crate::recipe::HeadingWindow {
+                    start_mm: 1.0,
+                    length_mm: 10.0,
+                })
+            });
+        }
         let mut p = armed_part_with(
             doc.build().unwrap(),
             "burst-post",
@@ -389,11 +405,12 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             .collect();
         jobs.sort();
         if keep_images {
-            assert_eq!(
-                jobs,
-                [(0, 6, 1), (1, 6, 1), (1, 7, 1), (2, 6, 1), (2, 7, 1)],
-                "{case}"
-            );
+            let expected: &[(usize, u64, u32)] = if heading {
+                &[(1, 6, 1), (1, 7, 1), (2, 6, 1), (2, 7, 1)]
+            } else {
+                &[(0, 6, 1), (1, 6, 1), (1, 7, 1), (2, 6, 1), (2, 7, 1)]
+            };
+            assert_eq!(jobs, expected, "{case}");
             assert!(!p.complete(), "{case}：补测完之前不收尾");
             for (camera, seq, segment) in jobs {
                 let result = FrameMeasured {

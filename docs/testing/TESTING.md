@@ -75,7 +75,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_
 cargo run --manifest-path src-tauri/Cargo.toml --example segment_eval -- <项目目录> <候选编号>
 ```
 
-逐帧定向与找边（D-SB-47、D-SB-48，待确认）的离线评估同样不进 `cargo test`，需真引擎；逐次结果写 `<输出目录>/runs.csv`，汇总打印到标准输出：
+逐帧定向与找边（D-SB-47、D-SB-48）的离线评估同样不进 `cargo test`，需真引擎；逐次结果写 `<输出目录>/runs.csv`，汇总打印到标准输出：
 
 ```powershell
 $env:LYFLOW_CORE_DLL = "<运行库目录>\lyflow_core.dll"

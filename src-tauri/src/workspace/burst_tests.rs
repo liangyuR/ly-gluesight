@@ -63,6 +63,9 @@ pub(super) fn measured(x: f64) -> FrameMetrics {
         present_ratio: 1.0,
         x_mm: Some(x),
         corridor: None,
+        heading_deg: None,
+        heading_fallback: false,
+        edge_mm: None,
     }
 }
 
@@ -200,11 +203,43 @@ fn standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner() {
     // 标准件两轮：cam2 中间帧 0.2 / 0.4、首尾帧 5.0；cam1、cam3 恒 1.0。标定轮次恒 9.0（不能被用上）
     // （名称，段类型，配置，期望的 (x_ref, spread)，是否列出 x_ref 待定原因）
     let cases: [(&str, SegmentKind, Setup, Option<(f64, f64)>, bool); 4] = [
-        ("直线段 AbsoluteX，参考相机 cam2", Straight,
-            |d| d.segments[0].offset_ref = Some(OffsetRef { measure: OffsetMeasure::AbsoluteX, camera: "cam2".into(), x_ref: None, spread: None }), Some((0.3, 0.2)), false),
-        ("直线段启用胶偏、未设参考 → 计划第一台相机", Straight, |_| {}, Some((1.0, 0.0)), false),
-        ("直线段 ToEdge", Straight,
-            |d| d.segments[0].offset_ref = Some(OffsetRef { measure: OffsetMeasure::ToEdge, camera: "cam2".into(), x_ref: None, spread: None }), None, true),
+        (
+            "直线段 AbsoluteX，参考相机 cam2",
+            Straight,
+            |d| {
+                d.segments[0].offset_ref = Some(OffsetRef {
+                    measure: OffsetMeasure::AbsoluteX,
+                    camera: "cam2".into(),
+                    x_ref: None,
+                    spread: None,
+                    edge: None,
+                })
+            },
+            Some((0.3, 0.2)),
+            false,
+        ),
+        (
+            "直线段启用胶偏、未设参考 → 计划第一台相机",
+            Straight,
+            |_| {},
+            Some((1.0, 0.0)),
+            false,
+        ),
+        (
+            "直线段 ToEdge",
+            Straight,
+            |d| {
+                d.segments[0].offset_ref = Some(OffsetRef {
+                    measure: OffsetMeasure::ToEdge,
+                    camera: "cam2".into(),
+                    x_ref: None,
+                    spread: None,
+                    edge: None,
+                })
+            },
+            None,
+            true,
+        ),
         ("弯道段", Corner, |_| {}, None, false),
     ];
     for (name, kind, setup, expected, pending) in cases {
@@ -290,7 +325,13 @@ fn new_candidate_from_copied_burst_recipe_builds_without_its_calibration() {
     let calib = SegmentCalib { rounds: 10, min: 4, max: 4, mean: 4.0 };
     doc.part_calib = Some(crate::plan::PartCalib { expected_total: 4, calib: calib.clone() });
     doc.segments[0].calib = Some(calib);
-    doc.segments[0].offset_ref = Some(OffsetRef { measure: OffsetMeasure::AbsoluteX, camera: "cam1".into(), x_ref: Some(0.2), spread: Some(0.1) });
+    doc.segments[0].offset_ref = Some(OffsetRef {
+        measure: OffsetMeasure::AbsoluteX,
+        camera: "cam1".into(),
+        x_ref: Some(0.2),
+        spread: Some(0.1),
+        edge: None,
+    });
     doc.build().unwrap();
     new_candidate_doc(&mut doc);
     doc.build().unwrap();
@@ -335,4 +376,58 @@ fn calibration_round_writes_per_frame_features_and_boundaries_files() {
         "按当前计划相机重新编下标"
     );
     assert_eq!(back.len(), 6, "不再是计划相机的行丢弃");
+}
+
+#[test]
+fn heading_hints_flag_a_window_shorter_than_per_frame_travel_a_missing_segment_length_and_frequent_fallbacks(
+) {
+    // 防的回归（D-SB-47 覆盖核对）：检测窗口短于每帧后移量（段长 ÷ N_exp）时不提示，断胶落在两帧窗口之间被漏检；
+    // 段长没填时静默跳过；回退比例高（窗口内胶路跟不住）时不提示；没开定向的段也给出提示
+    let mut w = burst_workspace(&[Straight]);
+    let segment = &mut w.doc.segments[0];
+    segment.expected_frames = Some(10);
+    segment.length_mm = Some(200.0);
+    segment.heading = Some(Default::default());
+    w.doc.inspect.iter_mut().for_each(|i| {
+        i.window = Some(crate::recipe::HeadingWindow {
+            start_mm: 2.0,
+            length_mm: 15.0,
+        })
+    });
+    let round = |measured, fallback| super::burst::CalibrationRound {
+        heading: [(1, [measured, fallback])].into_iter().collect(),
+        ..calibration_round(
+            &w.doc,
+            &capture_round("r", &w.doc, 10, DEVICE, &[]),
+            false,
+            &[],
+        )
+    };
+    let hints = |doc: &RecipeDoc, rounds: &[super::burst::CalibrationRound]| {
+        super::burst::heading_hints(doc, &doc.segments[0], rounds)
+    };
+    let short = hints(&w.doc, &[round(30, 3)]);
+    assert_eq!(
+        short.len(),
+        3,
+        "三台相机的窗口 15 mm 都短于 20 mm/帧：{short:?}"
+    );
+    assert!(short.iter().all(|h| h.contains("短于每帧后移量约 20.0 mm")));
+    let mut covered = w.doc.clone();
+    covered.inspect.iter_mut().for_each(|i| {
+        i.window = Some(crate::recipe::HeadingWindow {
+            start_mm: 2.0,
+            length_mm: 25.0,
+        })
+    });
+    assert!(hints(&covered, &[round(30, 3)]).is_empty());
+    let fallback = hints(&covered, &[round(30, 7)]);
+    assert!(
+        fallback.len() == 1 && fallback[0].contains("7/30"),
+        "{fallback:?}"
+    );
+    covered.segments[0].length_mm = None;
+    assert!(hints(&covered, &[]).iter().any(|h| h.contains("段长未填")));
+    covered.segments[0].heading = None;
+    assert!(hints(&covered, &[round(30, 30)]).is_empty());
 }

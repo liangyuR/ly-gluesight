@@ -27,7 +27,7 @@ function withRounds(normal: number, standard = 0): CalibrationView {
 function singleSegment(calibration: CalibrationView, id = "A") {
   const doc = burstRecipe({ id, segments: [pathSegment(1, "straight", { lengthMm: 120 })] });
   const view = burstWorkspaceView(doc);
-  calibration.segments = [{ index: 1, kind: "straight", outcome: { nExp: 12, calib: { rounds: 10, min: 11, max: 13, mean: 11.9 }, suggestedTolerance: 2 }, pending: null, tolerance: 1, xRef: null, xRefPending: "标准件轮次不足" }];
+  calibration.segments = [{ index: 1, kind: "straight", outcome: { nExp: 12, calib: { rounds: 10, min: 11, max: 13, mean: 11.9 }, suggestedTolerance: 2 }, pending: null, tolerance: 1, xRef: null, xRefPending: "标准件轮次不足", hints: [] }];
   view.plan!.calibration = calibration;
   return view;
 }

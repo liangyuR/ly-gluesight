@@ -143,7 +143,13 @@ fn validation_without_expected_total_blocks_publish_and_names_each_segment() {
         }
         // 单段直线段的 x_ref 已由标准件得出，不让它影响本用例
         if let [segment] = w.doc.segments.as_mut_slice() {
-            segment.offset_ref = Some(OffsetRef { measure: OffsetMeasure::AbsoluteX, camera: "cam1".into(), x_ref: Some(0.1), spread: Some(0.05) });
+            segment.offset_ref = Some(OffsetRef {
+                measure: OffsetMeasure::AbsoluteX,
+                camera: "cam1".into(),
+                x_ref: Some(0.1),
+                spread: Some(0.05),
+                edge: None,
+            });
         }
         let checks = checks(&w, &configs(&w.doc, DEVICE));
         let segment = check(&checks, "段标定");
@@ -207,12 +213,44 @@ fn sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejecte
     type Edit = fn(&mut Workspace, &mut CaptureRoundV2, &mut BTreeMap<String, Value>);
     let cases: [(&str, Edit, bool); 5] = [
         ("独立的新轮次", |_, _, _| {}, true),
-        ("已用于走廊示教", |w, _, _| w.camera_teaching[1].round = "capture-sample".into(), false),
-        ("已加入多轮标定", |w, round, _| w.calibration.rounds.push(CalibrationRound { round_id: round.round_id.clone(), standard: false, created_at: 1,
-            cameras: w.doc.plan_cameras(), camera_config: vec![json!(DEVICE); 3], group_count: round.group_count, camera_frames: vec![20; 3],
-            incomplete_groups: 0, loss_alarms: 0, corridors: vec![Value::Null; 3], x_means: vec![None; 3] }), false),
-        ("采集后设备配置改变", |_, _, current| { current.insert("cam2".into(), json!("device-b")); }, false),
-        ("缺一台计划相机、多一台别的相机", |_, round, _| round.cameras[2].camera_id = "cam9".into(), false),
+        (
+            "已用于走廊示教",
+            |w, _, _| w.camera_teaching[1].round = "capture-sample".into(),
+            false,
+        ),
+        (
+            "已加入多轮标定",
+            |w, round, _| {
+                w.calibration.rounds.push(CalibrationRound {
+                    round_id: round.round_id.clone(),
+                    standard: false,
+                    created_at: 1,
+                    cameras: w.doc.plan_cameras(),
+                    camera_config: vec![json!(DEVICE); 3],
+                    group_count: round.group_count,
+                    camera_frames: vec![20; 3],
+                    incomplete_groups: 0,
+                    loss_alarms: 0,
+                    corridors: vec![Value::Null; 3],
+                    x_means: vec![None; 3],
+                    edge_means: Vec::new(),
+                    heading: Default::default(),
+                })
+            },
+            false,
+        ),
+        (
+            "采集后设备配置改变",
+            |_, _, current| {
+                current.insert("cam2".into(), json!("device-b"));
+            },
+            false,
+        ),
+        (
+            "缺一台计划相机、多一台别的相机",
+            |_, round, _| round.cameras[2].camera_id = "cam9".into(),
+            false,
+        ),
     ];
     for (name, edit, accepted) in cases {
         let mut w = taught(&[Straight], DEVICE);

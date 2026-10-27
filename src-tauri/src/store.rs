@@ -481,11 +481,23 @@ fn delivery_row(row: &rusqlite::Row, first: usize) -> rusqlite::Result<PlcDelive
     Ok(PlcDelivery { state: enum_column(row, first)?, updated_at: row.get(first + 1)?, message: row.get(first + 2)? })
 }
 
-/// 各相机的走廊、当量、标定、检测参数决定每帧指标（计划身份另见 burst_plan_identity）；
-/// 限值、容差、x_ref、检测区间不在这里，改了可以直接用已存指标重判。
+/// 各相机的走廊、检测窗口、当量、标定、检测参数，以及各段的逐帧定向与找边参数决定每帧指标（计划身份另见 burst_plan_identity）；
+/// 限值、容差、x_ref、图纸胶边距、检测区间不在这里，改了可以直接用已存指标重判。
 fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
+    let measure: Vec<serde_json::Value> = recipe
+        .path_segments
+        .iter()
+        .map(|s| {
+            let edge = s.offset_ref.as_ref().and_then(|o| {
+                o.edge
+                    .as_ref()
+                    .map(|e| (o.camera.as_str(), e.polarity, e.search_mm, e.contrast_min))
+            });
+            serde_json::json!([s.index, s.heading, edge])
+        })
+        .collect();
     serde_json::json!({"unit":"mm", "schema":recipe.schema_version, "spacing":recipe.spacing, "detect":recipe.detect,
-        "inspect": serde_json::to_value(&recipe.inspect).unwrap_or_default()})
+        "inspect": serde_json::to_value(&recipe.inspect).unwrap_or_default(), "measure": measure})
 }
 
 /// 段配方的计划身份（规格 §1：段序列 / 类型 / N_exp、相机、ΣN_exp、产品代码）。
@@ -517,8 +529,15 @@ fn validate_raw_path(file: &str) -> Result<(), String> {
 
 fn finite_metrics(m: &FrameMetrics) -> bool {
     let finite = |value: Option<f64>| value.is_none_or(f64::is_finite);
-    finite(m.width_min) && finite(m.width_max) && finite(m.width_mean) && finite(m.x_mm)
-        && m.spacing_mm.is_finite() && m.gap_max_mm.is_finite() && m.present_ratio.is_finite()
+    finite(m.width_min)
+        && finite(m.width_max)
+        && finite(m.width_mean)
+        && finite(m.x_mm)
+        && finite(m.heading_deg)
+        && finite(m.edge_mm)
+        && m.spacing_mm.is_finite()
+        && m.gap_max_mm.is_finite()
+        && m.present_ratio.is_finite()
         && m.widths.iter().flatten().all(|w| w.is_finite())
 }
 

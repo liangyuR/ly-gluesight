@@ -1,4 +1,4 @@
-import { NumberField, TextField } from "qing-steel";
+import { NumberField, Switch, TextField } from "qing-steel";
 import { DetectEditor } from "../recipe";
 import type { RecipeDoc } from "../cycle/types";
 import { useWorkspace } from "./context";
@@ -59,5 +59,16 @@ export function BoundaryGuardField({ locked = "" }: { locked?: string }) {
   return <span title={locked || "按标定比例推算的段边界两侧各留几帧，只判每帧胶宽、断胶、溢胶，不判胶偏"}>
     <NumberField label="边界过渡帧数" unit="帧" aria-label="边界过渡帧数" step={1} min={0} max={5} value={doc.boundaryGuard ?? 2} disabled={disabled || !!locked}
       onValueChange={value => set("boundaryGuard", value === "" ? NaN : value)} />
+  </span>;
+}
+
+/** 按逐帧定向的胶条方向序列细化比例边界（D-SB-47）。只有开启逐帧定向的段时可用。段列表页。 */
+export function BoundaryRefineField({ locked = "", available }: { locked?: string; available: boolean }) {
+  const { doc, set, disabled } = useDocField();
+  if (!doc) return null;
+  const reason = locked || (available ? "" : "没有开启逐帧定向的段，按比例边界分段");
+  return <span title={reason || "在比例边界附近，按胶条方向开始变化与停止变化的帧细化段边界；比例分段仍作兜底"}>
+    <Switch label="按胶条方向细化边界" aria-label="按胶条方向细化边界" checked={!!doc.boundaryRefine} disabled={disabled || !!reason}
+      onCheckedChange={on => set("boundaryRefine", on)} />
   </span>;
 }

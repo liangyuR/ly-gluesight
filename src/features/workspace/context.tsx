@@ -87,8 +87,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       for (const [key, draft] of Object.entries(previous)) {
         if(previousCameraSources[key]!==cameraSourceKeys[key])continue;
         const saved = savedDraft(next.workspace.doc, key);
-        // 像素当量与检测参数跟着相机（含选帧后后端补上的设备标定当量）
-        const merged = { ...draft, mmPerPx: saved.mmPerPx, detect: saved.detect };
+        // 像素当量、检测参数与检测窗口跟着相机（含选帧后后端补上的设备标定当量）
+        const merged = { ...draft, mmPerPx: saved.mmPerPx, detect: saved.detect, window: saved.window };
         if (!sameCorridor(merged, saved)) kept[key] = merged;
       }
       return kept;

@@ -30,7 +30,7 @@ describe("走廊示教", () => {
 
   // 防的回归：段走廊画了一半就切到别的段或相机参数，草稿按“相机#段”存、切走后不再显示，操作员以为丢了
   it("段走廊有未保存的修改 → 其他段与相机参数不能切换并说明先保存，当前段可继续编辑", async () => {
-    ws.corridorDrafts = { "CAM-2#1": { corridor: [[10, 10], [30, 10]], mmPerPx: .1, detect: null } }; ws.frameDirty = true;
+    ws.corridorDrafts = { "CAM-2#1": { corridor: [[10, 10], [30, 10]], mmPerPx: .1, detect: null, window: null } }; ws.frameDirty = true;
     show();
     for (const name of ["选择 CAM-1 段 1 走廊", "选择相机 CAM-2"]) {
       const other = screen.getByRole("button", { name });
@@ -45,13 +45,28 @@ describe("走廊示教", () => {
   // 防的回归（D-SB-45）：像素当量随相机，段走廊草稿里没有自己的当量；相机缺当量时仍能保存段走廊，测量长度与搜索带无从换算
   it("相机缺像素当量 → 段走廊保存禁用并说明原因，不写配方", async () => {
     ws.data!.workspace.doc.inspect![1].mmPerPx = null; ws.data!.plan!.cameraTeaching[1].mmPerPx = null;
-    ws.corridorDrafts = { "CAM-2#1": { corridor: [[10, 10], [30, 10]], mmPerPx: null, detect: null } }; ws.frameDirty = true;
+    ws.corridorDrafts = { "CAM-2#1": { corridor: [[10, 10], [30, 10]], mmPerPx: null, detect: null, window: null } }; ws.frameDirty = true;
     show();
     const save = screen.getByRole("button", { name: "保存走廊" });
     expect(save).toBeDisabled();
     expect(save).toHaveAccessibleDescription(expect.stringContaining("像素当量"));
     await screen.findByRole("img", { name: "CAM-2 · 段 1 · 示教帧" });
     expect(workspaceApi.saveDoc).not.toHaveBeenCalled();
+  });
+});
+
+describe("检测窗口", () => {
+
+  // 防的回归（D-SB-47）：长度为 0 或负数的窗口写进候选配方，自动保存被后端校验拒绝、反复失败；合法窗口没写到这台相机
+  it.each(["0", "-5"])("窗口长度 %s mm → 提示长度需大于 0，不写配方；改成 20 mm → 写入这台相机的窗口", async length => {
+    show("/recipe/teach?camera=CAM-1");
+    fireEvent.change(await screen.findByRole("spinbutton", { name: "窗口起点" }), { target: { value: "2" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "窗口长度" }), { target: { value: length } });
+    expect(screen.getByRole("alert")).toHaveTextContent("检测窗口长度需大于 0 mm");
+    expect(ws.setDoc).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "窗口长度" }), { target: { value: "20" } });
+    const doc = vi.mocked(ws.setDoc).mock.lastCall![0];
+    expect(doc.inspect!.find(item => item.camera === "CAM-1")!.window).toEqual({ startMm: 2, lengthMm: 20 });
   });
 });
 
