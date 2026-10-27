@@ -21,6 +21,8 @@ mod handshake_audit;
 mod inspection;
 mod instance;
 mod judge;
+mod log_storage;
+mod managed_samples;
 mod measure;
 mod mvs;
 mod offline;
@@ -45,7 +47,6 @@ mod segmentation;
 mod simimage;
 mod store;
 mod storage;
-mod managed_samples;
 mod teach;
 mod timeline;
 mod vision;
@@ -335,6 +336,7 @@ fn start_services(
     app: &tauri::AppHandle,
     root: std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    log_storage::initialize(app)?;
     if let Err(error) = applog::init(app) {
         eprintln!("{error}");
     }
@@ -342,6 +344,7 @@ fn start_services(
         applog::write("warn", "项目删除未完成", &error);
     }
     open_project(app, &root)?;
+    applog::set_project(&project::current_id(app));
     let leftovers = project::legacy_leftovers(&root);
     if !leftovers.is_empty() {
         applog::write(

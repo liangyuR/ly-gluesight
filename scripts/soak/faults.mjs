@@ -5,7 +5,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { burstFacts } from "../../tests/native/lib.mjs";
-import { connect, ensureOffline, LogCollector, parseArgs, projectRoot, readSetup, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
+import { connect, ensureOffline, identifier, LogCollector, parseArgs, readSetup, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
+import { isolatedDirectory, isolatedStorage } from "../../tests/native/storage-paths.mjs";
 
 const OK_CLASS = new Set(["OK", "OK_WITH_EXCURSION"]);
 // 这些注入不损坏本件图像与计数，本件判合格是正确结果；其余注入下本件判合格即为“错误的 OK”。
@@ -212,7 +213,8 @@ const scenarios = {
     } finally { await rename(`${file}.orig`, file); }
   },
   async recordsDirReadOnly(c) {
-    const dir = path.join(projectRoot(c.manifest.dataRoot), "records-offline");
+    const { vision } = await isolatedStorage(c.call, c.manifest, identifier);
+    const dir = await isolatedDirectory(vision, "records-offline");
     const user = await whoami();
     await icacls(dir, "/deny", `${user}:(OI)(CI)(W)`);
     try {
@@ -227,7 +229,8 @@ const scenarios = {
 /** 追溯目录不可写会进入只能重启恢复的故障，单独运行，之后由外层脚本重启实例再验证恢复。 */
 const auditScenarios = {
   async auditSpoolReadOnly(c) {
-    const dir = path.join(c.manifest.dataRoot, "audit-spool");
+    const { project } = await isolatedStorage(c.call, c.manifest, identifier);
+    const dir = await isolatedDirectory(project, "audit-spool");
     const user = await whoami();
     await icacls(dir, "/deny", `${user}:(OI)(CI)(W)`);
     let result;

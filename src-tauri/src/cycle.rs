@@ -372,6 +372,8 @@ impl CycleHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
         let settings_path = crate::storage::project_config(app).join("cycle.json");
         let data = crate::storage::project(app);
+        let recording_root = crate::log_storage::recording_project(&data)?;
+        std::fs::create_dir_all(&recording_root).map_err(|e| e.to_string())?;
         let (tx, rx) = unbounded_channel();
         let (frame_tx, frame_rx) = channel(FRAME_QUEUE);
         let (settings, settings_note) = CycleSettings::load(&settings_path);
@@ -410,8 +412,11 @@ impl CycleHost {
             })), crate::recorder::Cleanup { protection, warning, release })
         };
         let recorders = Recorders::new(
-            recorder(data.join("records"), HistoryScope::Real),
-            recorder(data.join("records-offline"), HistoryScope::Offline),
+            recorder(recording_root.join("records"), HistoryScope::Real),
+            recorder(
+                recording_root.join("records-offline"),
+                HistoryScope::Offline,
+            ),
         );
         Ok(Self {
             camera,
@@ -426,7 +431,8 @@ impl CycleHost {
             recorders,
             cycle_ids: crate::cycle_ids::CycleIds::default(),
             audit,
-            disk: crate::disk_guard::DiskGuard::new(data.clone()),
+            disk: crate::disk_guard::DiskGuard::new(data.clone())
+                .with_recording_root(recording_root),
             recording_health,
             shared: Mutex::new(Shared {
                 snapshot: None,

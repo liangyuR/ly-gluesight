@@ -98,6 +98,8 @@ mod tests {
             code: None,
             ev: "事件".into(),
             msg: String::new(),
+            project_id: None,
+            session_id: None,
             fields: Fields {
                 cycle_id: Some(cycle.into()),
                 ..fields

@@ -79,7 +79,10 @@ export default function ProjectsPage() {
     { key: "createdAt", header: "创建时间", nowrap: true, render: entry => entry.meta ? <span className="mono">{formatDateTime(entry.meta.createdAt)}</span> : <span className="muted">--</span> },
     { key: "recipes", header: "配方", align: "right", nowrap: true, colSpan: entry => usage[entry.id]?.status === "error" ? 3 : 1, render: entry => <UsageCell state={usage[entry.id]} format={u => String(u.recipes)} /> },
     { key: "records", header: "检测记录", render: entry => <UsageCell state={usage[entry.id]} format={records} /> },
-    { key: "bytes", header: "占用空间", align: "right", nowrap: true, render: entry => <UsageCell state={usage[entry.id]} format={u => formatBytes(u.bytes)} /> },
+    { key: "bytes", header: "占用空间", align: "right", nowrap: true, render: entry => <UsageCell state={usage[entry.id]} format={u => <span className="pj-storage-usage">
+      <span>{formatBytes(u.bytes)}</span>
+      {u.projectBytes != null && u.visionBytes != null && <small className="muted">项目 {formatBytes(u.projectBytes)} · 视觉 {formatBytes(u.visionBytes)}</small>}
+    </span>} /> },
     { key: "actions", header: "操作", nowrap: true, render: entry => {
       const meta = entry.meta;
       return <div className="pj-actions">

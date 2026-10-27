@@ -28,6 +28,8 @@ pub struct ProjectUsage {
     pub first_record_at: Option<i64>,
     pub last_record_at: Option<i64>,
     pub bytes: u64,
+    pub project_bytes: u64,
+    pub vision_bytes: u64,
 }
 
 pub(super) fn check_name(data: &Path, name: &str, except: Option<&str>) -> Result<String, String> {
@@ -67,6 +69,13 @@ pub(super) fn check_new_id(data: &Path, id: &str) -> Result<(), String> {
     if occupied(super::trash_root(data), trash_id) {
         return Err(format!(
             "项目编号 {id} 的旧项目还在清理中，请换一个编号或重启后再试"
+        ));
+    }
+    let project = super::dir(data, id);
+    let recording = crate::log_storage::recording_project(&project)?;
+    if recording != project && recording.exists() {
+        return Err(format!(
+            "项目编号 {id} 的原图目录仍存在，请先处理残留资料或换一个编号"
         ));
     }
     Ok(())
@@ -150,6 +159,13 @@ pub fn move_to_trash(data: &Path, current: Option<&str>, id: &str) -> Result<Pat
     let trash = super::trash_root(data);
     std::fs::create_dir_all(&trash).map_err(|e| format!("创建 .trash 失败：{e}"))?;
     let target = trash.join(format!("{id}.{}", ly_plc::now_ms()));
+    let recording = crate::log_storage::recording_project(&dir)?;
+    if recording != dir {
+        crate::fsio::write_atomic(
+            &dir.join(EXTERNAL_CLEANUP),
+            &serde_json::json!({"projectId": id}).to_string(),
+        )?;
+    }
     std::fs::rename(&dir, &target)
         .map_err(|e| format!("删除项目 {id} 失败（文件可能被占用）：{e}"))?;
     Ok(target)
@@ -158,8 +174,9 @@ pub fn move_to_trash(data: &Path, current: Option<&str>, id: &str) -> Result<Pat
 pub fn delete(data: &Path, current: Option<&str>, id: &str) -> Result<(), String> {
     let trashed = move_to_trash(data, current, id)?;
     let id = id.to_string();
+    let data = data.to_path_buf();
     std::thread::spawn(move || {
-        if let Err(e) = std::fs::remove_dir_all(&trashed) {
+        if let Err(e) = purge_project(&data, &trashed) {
             crate::applog::write(
                 "warn",
                 "项目删除未完成",
@@ -173,7 +190,43 @@ pub fn delete(data: &Path, current: Option<&str>, id: &str) -> Result<(), String
     Ok(())
 }
 
+const EXTERNAL_CLEANUP: &str = ".external-recording-cleanup.json";
+
+fn purge_project(data: &Path, trashed: &Path) -> Result<(), String> {
+    crate::image_file::checked_source_path(trashed)?;
+    let marker = trashed.join(EXTERNAL_CLEANUP);
+    if marker.is_file() {
+        crate::image_file::checked_source_path(&marker)?;
+        let value: serde_json::Value =
+            serde_json::from_str(&crate::fsio::read_text(&marker).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let id = value["projectId"]
+            .as_str()
+            .filter(|id| super::valid_id(id))
+            .ok_or("删除项目的原图清理标记无效")?;
+        let name = trashed
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("删除项目的目录名无效")?;
+        if trash_id(name) != id {
+            return Err("删除项目的原图清理标记与项目编号不符".into());
+        }
+        let project = super::dir(data, id);
+        let recording = crate::log_storage::recording_project(&project)?;
+        if recording == project {
+            return Err("删除项目的外部原图配置缺失，保留待清理资料".into());
+        }
+        if recording.exists() {
+            crate::image_file::checked_source_path(&recording)?;
+            std::fs::remove_dir_all(&recording)
+                .map_err(|e| format!("清理项目 {id} 的原图失败：{e}"))?;
+        }
+    }
+    std::fs::remove_dir_all(trashed).map_err(|e| e.to_string())
+}
+
 pub fn purge_trash(data: &Path) -> Result<(), String> {
+    super::transfer::recover_pending_recordings(data)?;
     let trash = super::trash_root(data);
     let Ok(entries) = std::fs::read_dir(&trash) else {
         return Ok(());
@@ -183,9 +236,9 @@ pub fn purge_trash(data: &Path) -> Result<(), String> {
         .filter_map(|e| {
             let path = e.path();
             let removed = if path.is_dir() {
-                std::fs::remove_dir_all(&path)
+                purge_project(data, &path)
             } else {
-                std::fs::remove_file(&path)
+                std::fs::remove_file(&path).map_err(|e| e.to_string())
             };
             removed
                 .err()
@@ -276,6 +329,13 @@ pub fn usage(data: &Path, id: &str) -> Result<ProjectUsage, String> {
         return Err(format!("项目 {id} 不存在"));
     }
     let (records, first_record_at, last_record_at) = records(&root.join("inspection.db"))?;
+    let recording = crate::log_storage::recording_project(&root)?;
+    let project_bytes = dir_bytes(&root);
+    let vision_bytes = if recording == root {
+        0
+    } else {
+        dir_bytes(&recording)
+    };
     Ok(ProjectUsage {
         recipes: count_recipes(&root.join("recipes")),
         workspaces: count_dirs(&root.join("workspaces"), |p| {
@@ -287,7 +347,9 @@ pub fn usage(data: &Path, id: &str) -> Result<ProjectUsage, String> {
         records,
         first_record_at,
         last_record_at,
-        bytes: dir_bytes(&root),
+        bytes: project_bytes.saturating_add(vision_bytes),
+        project_bytes,
+        vision_bytes,
     })
 }
 

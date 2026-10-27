@@ -4,6 +4,7 @@ import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
+import { isolatedDirectory, isolatedStorage, samePath } from './storage-paths.mjs';
 
 process.env.PATH = [...(process.env.GLUESIGHT_NATIVE_PATH ?? '').split(';'), ...(process.env.PATH ?? '').split(';').filter(value => !/^D:/i.test(value))].filter(Boolean).join(';');
 const execute = promisify(execFile);
@@ -37,9 +38,9 @@ const databaseState = async () => {
   const code = `import sqlite3,json,pathlib,sys\np=pathlib.Path(sys.argv[1]);c=sqlite3.connect(p.as_uri()+'?mode=ro',uri=True);r={}\nfor (n,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):\n q='SELECT * FROM "'+n.replace('"','""')+'" ORDER BY rowid';rows=c.execute(q).fetchall();r[n]={'rows':len(rows),'values':rows}\nprint(json.dumps(r,default=lambda b:list(b)));c.close()`;
   return JSON.parse((await execute('python', ['-c', code, join(projectDir, 'inspection.db')], { windowsHide: true, encoding: 'utf8' })).stdout);
 };
-const rawState = async () => {
+const rawState = async vision => {
   const files = [];
-  const records = join(projectDir, 'records-offline');
+  const records = await isolatedDirectory(vision, 'records-offline');
   const canonicalRoot = cPath(await realpath(records));
   const walk = async directory => {
     assert.equal((await realpath(directory)).toLowerCase(), join(canonicalRoot, relative(records, directory)).toLowerCase());
@@ -60,8 +61,9 @@ try {
   for (const page of browser.contexts().flatMap(context => context.pages())) if (await page.evaluate(() => !!window.__TAURI_INTERNALS__).catch(() => false)) native.push(page);
   assert.equal(native.length, 1);
   const read = command => native[0].evaluate(command => window.__TAURI_INTERNALS__.invoke(command), command);
-  assert.equal(resolve((await read('records_list')).root).toLowerCase(), join(profile, 'records').toLowerCase());
-  report.before = { process: await processState(), cycle: await read('cycle_snapshot'), database: await databaseState(), originals: await rawState() };
+  const storage = await isolatedStorage(read, instance, instance.identifier);
+  assert(samePath((await read('records_list')).root, join(storage.vision, 'records')), '录制目录不属于隔离实例');
+  report.before = { process: await processState(), cycle: await read('cycle_snapshot'), database: await databaseState(), originals: await rawState(storage.vision) };
   assert.equal(resolve(report.before.process.path).toLowerCase(), executable.toLowerCase());
   assert.equal(new Date(report.before.process.start).getTime(), new Date(instance.startedAt).getTime());
   assert.equal(report.before.cycle.phase, 'IDLE');
@@ -78,7 +80,7 @@ try {
   report.duplicate = { pid: duplicate.pid, ...exited, timedOut, stdout, stderr };
   await writeFile(join(output, 'duplicate.stdout.log'), stdout);
   await writeFile(join(output, 'duplicate.stderr.log'), stderr);
-  report.after = { process: await processState(), cycle: await read('cycle_snapshot'), database: await databaseState(), originals: await rawState() };
+  report.after = { process: await processState(), cycle: await read('cycle_snapshot'), database: await databaseState(), originals: await rawState(storage.vision) };
   assert(!timedOut, 'Duplicate did not reject startup');
   assert(Number.isInteger(exited.code) && exited.code !== 0, 'Duplicate must exit nonzero');
   assert((stderr + stdout).includes('独占锁'), 'Expected exclusive AppData lock error');

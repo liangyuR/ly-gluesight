@@ -33,6 +33,8 @@
 .pj-usage-error { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; max-width: 320px; overflow: hidden; white-space: normal; text-align: left; color: var(--ng); }
 .pj-records { display: flex; flex-direction: column; white-space: nowrap; }
 .pj-records small { font-size: 11px; }
+.pj-storage-usage { display:flex; flex-direction:column; gap:2px; }
+.pj-storage-usage small { font-size:11px; }
 .pj-actions { display: flex; align-items: center; gap: 2px; }
 .pj-delete-list { margin-top: 6px; grid-template-columns: 72px 1fr; gap: 4px 12px; }
 .pj-transfer-list { grid-template-columns: 72px 1fr; gap: 4px 12px; }

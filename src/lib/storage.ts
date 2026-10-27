@@ -4,6 +4,9 @@ import { desktopAvailable } from "./desktop";
 export interface StorageStatus {
   environment: string;
   root: string;
+  logRoot: string | null;
+  runtimeLogDir: string | null;
+  visionLogDir: string | null;
   migrationStatus: string;
   migrationMessage?: string | null;
 }
@@ -41,7 +44,7 @@ async function readPreferences(): Promise<StoragePreferences> {
 }
 export const storageApi = {
   status: () => invoke<StorageStatus>("storage_status"),
-  openDirectory: () => invoke<void>("storage_open_directory"),
+  openDirectory: (target: "data" | "runtime" | "vision" = "data") => invoke<void>("storage_open_directory", { target }),
   preferences: () => serial(readPreferences),
   updatePreferences: (patch: StoragePreferences) => serial(async () => {
     if (!desktopAvailable()) throw new Error("浏览器预览不保存资料，请使用桌面软件");

@@ -284,24 +284,32 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
 function StoragePanel() {
   const { data, error, loading, reload } = useResource(storageApi.status);
   const [openError, setOpenError] = useState("");
+  const openDirectory = (target: "data" | "runtime" | "vision") => {
+    setOpenError(""); void storageApi.openDirectory(target).catch(e => setOpenError(errorText(e)));
+  };
   const environment: Record<string, string> = { development: "本地开发", production: "正式版", test: "自动化测试" };
   const migration: Record<string, string> = { fresh: "新资料目录", completed: "迁移完成", migrated: "迁移完成", none: "无需迁移", ready: "资料目录已启用", pending: "等待迁移", failed: "迁移失败" };
   return <Card role="region" aria-label="资料存储" title={<Heading level={3}>资料存储</Heading>}
-    actions={<Button disabled={!data || loading || !!error} onClick={() => {
-      setOpenError(""); void storageApi.openDirectory().catch(e => setOpenError(errorText(e)));
-    }}>打开资料目录</Button>}>
+    actions={<>
+      <Button disabled={!data || loading || !!error} onClick={() => openDirectory("data")}>打开资料目录</Button>
+      <Button disabled={!data?.runtimeLogDir || loading || !!error} onClick={() => openDirectory("runtime")}>打开运行日志</Button>
+      <Button disabled={!data?.visionLogDir || loading || !!error} onClick={() => openDirectory("vision")}>打开视觉原图</Button>
+    </>}>
     <Stack direction="column" align="stretch" gap={12} wrap={false}>
     {loading && <p role="status">正在读取资料目录…</p>}
     {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>资料目录读取失败：{error}</Alert>}
     {!loading && !error && data && <>
       <dl className="kv"><dt>当前环境</dt><dd>{environment[data.environment] ?? data.environment}</dd>
         <dt>资料目录</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.root}</dd>
+        <dt>日志根目录</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.logRoot ?? "—"}</dd>
+        <dt>运行日志</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.runtimeLogDir ?? "—"}</dd>
+        <dt>当前项目视觉原图</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.visionLogDir ?? "—"}</dd>
         <dt>迁移状态</dt><dd>{migration[data.migrationStatus] ?? data.migrationStatus}</dd>
       </dl>
       {data.migrationMessage && <p role="status">{data.migrationMessage}</p>}
     </>}
-    <Text as="p" variant="label" muted>资料保存在此目录，卸载默认保留。正式版与开发版独立，同一环境的资料由本机账号共享。</Text>
-    {openError && <Alert tone="ng">打开资料目录失败：{openError}</Alert>}
+    <Text as="p" variant="label" muted>项目资料与日志分别存放，卸载默认保留。示教和标定原图随项目保存。</Text>
+    {openError && <Alert tone="ng">打开目录失败：{openError}</Alert>}
     </Stack>
   </Card>;
 }

@@ -1,6 +1,8 @@
 //! 历史件导入为采集轮次（docs/architecture/online-commissioning.md 5.2）：维护模式或生产录制的完整件物化成一轮已完成的
-//! 采集，目录结构与示教实拍的轮次相同，原图是指向录制原图的硬链接（同一卷，不复制）；之后录制被清理，轮次原图仍可读。
+//! 采集，目录结构与示教实拍的轮次相同；同卷使用硬链接，跨卷复制并校验。之后录制被清理，轮次原图仍可读。
 
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use super::*;
@@ -49,9 +51,60 @@ fn check_source(path: &Path, width: u32, height: u32) -> Result<(), String> {
     Ok(())
 }
 
+fn materialize_image_with(
+    source: &Path,
+    target: &Path,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    match link(source, target) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+            let copy = || -> std::io::Result<()> {
+                let mut input = std::fs::File::open(source)?;
+                let mut output = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(target)?;
+                let mut source_hash = Sha256::new();
+                let mut buf = [0u8; 64 * 1024];
+                loop {
+                    let count = input.read(&mut buf)?;
+                    if count == 0 {
+                        break;
+                    }
+                    source_hash.update(&buf[..count]);
+                    output.write_all(&buf[..count])?;
+                }
+                output.sync_all()?;
+                drop(output);
+                let mut copied = std::fs::File::open(target)?;
+                let mut target_hash = Sha256::new();
+                loop {
+                    let count = copied.read(&mut buf)?;
+                    if count == 0 {
+                        break;
+                    }
+                    target_hash.update(&buf[..count]);
+                }
+                if source_hash.finalize() != target_hash.finalize() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "复制后的原图校验失败",
+                    ));
+                }
+                Ok(())
+            };
+            copy().map_err(|e| format!("复制历史原图 {} 失败：{e}", source.display()))
+        }
+        Err(error) => Err(format!(
+            "为历史原图 {} 建硬链接失败：{error}",
+            source.display()
+        )),
+    }
+}
+
 impl RecipeCaptureHost {
-    /// 历史件物化成一轮：逐帧建硬链接、写 frames.jsonl，round.json 最后写（没有它的目录不算轮次）；任一步失败删掉本轮目录，
-    /// 删的只是链接，录制原图不受影响。
+    /// 历史件物化成一轮：逐帧链接或复制、写 frames.jsonl，round.json 最后写；任一步失败删掉本轮目录。
     pub fn import_history(&self, input: HistoryRound) -> Result<CaptureRoundV2, String> {
         let (round_id, created_at) = self.new_round_dir()?;
         let dir = self.root.join(&round_id);
@@ -95,16 +148,11 @@ impl RecipeCaptureHost {
                 return Err("历史帧的帧组序号越界或重复".into());
             }
             check_source(&frame.source, frame.width, frame.height)?;
-            std::fs::hard_link(
+            materialize_image_with(
                 &frame.source,
-                dir.join(&camera.camera_id).join(frame_file(frame.seq)),
-            )
-            .map_err(|e| {
-                format!(
-                    "为历史原图 {} 建硬链接失败（录制目录须与采集目录在同一磁盘卷）：{e}",
-                    frame.source.display()
-                )
-            })?;
+                &dir.join(&camera.camera_id).join(frame_file(frame.seq)),
+                |source, target| std::fs::hard_link(source, target),
+            )?;
             lines.push(FrameLine {
                 camera: frame.camera,
                 seq: frame.seq,
@@ -153,5 +201,38 @@ impl RecipeCaptureHost {
         validate_record(&round.round_id, &round, Some(&lines))?;
         self.save_burst(&round)?;
         Ok(round)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cross_volume_link_failure_copies_image_but_other_errors_do_not() {
+        let root = std::env::temp_dir().join(format!(
+            "history-cross-volume-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.pgm");
+        let target = root.join("copy.pgm");
+        std::fs::write(&source, b"P5\n2 1\n255\n\x0a\x14").unwrap();
+        materialize_image_with(&source, &target, |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices))
+        })
+        .unwrap();
+        std::fs::remove_file(&source).unwrap();
+        assert_eq!(crate::image_file::load(&target).unwrap().pixels, [10, 20]);
+        let denied = root.join("denied.pgm");
+        assert!(
+            materialize_image_with(&target, &denied, |_, _| Err(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied
+            )))
+            .is_err()
+        );
+        assert!(!denied.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
