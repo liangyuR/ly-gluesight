@@ -32,6 +32,7 @@ const CONTENT: [&str; 7] = [
     "recipe-capture",
 ];
 const RECORDS: [&str; 3] = ["inspection.db", "records", "records-offline"];
+const PENDING_RECORDINGS: &str = ".project-install-pending.json";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -126,8 +127,10 @@ fn walk(
         if kind.is_symlink() {
             notes.push(format!("{child} 是链接，未导出"));
         } else if kind.is_dir() {
+            crate::image_file::checked_source_path(&path)?;
             walk(&path, &child, out, notes)?;
         } else if kind.is_file() && !name.ends_with(".tmp") {
+            crate::image_file::checked_source_path(&path)?;
             out.push((child, path));
         }
     }
@@ -142,13 +145,19 @@ fn collect(
     notes: &mut Vec<String>,
 ) -> Result<Vec<(String, PathBuf)>, String> {
     let mut out = Vec::new();
+    let recording_root = crate::log_storage::recording_project(root)?;
     for top in CONTENT
         .iter()
         .chain(if include_records { &RECORDS[1..] } else { &[] })
     {
-        let path = root.join(top);
+        let path = if RECORDS[1..].contains(top) {
+            recording_root.join(top)
+        } else {
+            root.join(top)
+        };
         let relative = format!("{PREFIX}{top}");
         if path.is_dir() {
+            crate::image_file::checked_source_path(&path)?;
             walk(&path, &relative, &mut out, notes)?;
         } else if path.is_file() {
             out.push((relative, path));
@@ -165,6 +174,10 @@ fn collect(
             .map_err(|e| e.to_string())?;
         conn.execute("VACUUM INTO ?1", [snapshot.to_string_lossy()])
             .map_err(|e| format!("检测记录库快照失败：{e}"))?;
+        drop(conn);
+        if recording_root != root {
+            crate::storage::relocate::database(&snapshot, &recording_root, root)?;
+        }
         out.push((format!("{PREFIX}inspection.db"), snapshot));
     }
     Ok(out)
@@ -587,8 +600,187 @@ fn finish(
         ));
     }
     std::fs::create_dir_all(super::projects_root(data)).map_err(|e| e.to_string())?;
-    std::fs::rename(root, &target).map_err(|e| format!("移入项目目录失败：{e}"))?;
+    let external = install_recordings(root, &target)?;
+    if let Err(error) = std::fs::rename(root, &target) {
+        if let Some(external) = external {
+            let _ = remove_owned_tree(&external);
+        }
+        return Err(format!("移入项目目录失败：{error}"));
+    }
+    if let Some(external) = external {
+        if let Err(error) = std::fs::remove_file(external.join(PENDING_RECORDINGS)) {
+            crate::applog::write(
+                "warn",
+                "项目原图提交标记待清理",
+                &format!("{}：{error}", external.display()),
+            );
+        }
+    }
     Ok(ProjectImported { meta, notes })
+}
+
+fn remove_owned_tree(path: &Path) -> Result<(), String> {
+    crate::image_file::checked_source_path(path)?;
+    std::fs::remove_dir_all(path).map_err(|e| format!("清理暂存原图 {} 失败：{e}", path.display()))
+}
+
+fn install_recordings(root: &Path, project: &Path) -> Result<Option<PathBuf>, String> {
+    let external = crate::log_storage::recording_project(project)?;
+    if external == project {
+        return Ok(None);
+    }
+    if external.exists() {
+        return Err(format!(
+            "项目原图目录已存在，拒绝覆盖：{}",
+            external.display()
+        ));
+    }
+    let db = root.join("inspection.db");
+    let has_recordings = RECORDS[1..].iter().any(|top| root.join(top).exists());
+    if !has_recordings {
+        if db.is_file() {
+            crate::storage::relocate::database(&db, project, &external)?;
+        }
+        return Ok(None);
+    }
+    let id = project
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|id| super::valid_id(id))
+        .ok_or("项目编号无效")?;
+    let parent = external.parent().ok_or("项目原图目录无效")?;
+    let staging = staging_dir(parent, &format!("recordings-{id}"))?;
+    crate::image_file::checked_source_path(&staging)?;
+    let result = (|| {
+        crate::fsio::write_atomic(
+            &staging.join(PENDING_RECORDINGS),
+            &serde_json::json!({"projectId": id}).to_string(),
+        )?;
+        for top in &RECORDS[1..] {
+            let source = root.join(top);
+            if !source.exists() {
+                continue;
+            }
+            crate::image_file::checked_source_path(&source)?;
+            let mut entries = Vec::new();
+            let mut notes = Vec::new();
+            walk(&source, top, &mut entries, &mut notes)?;
+            if !notes.is_empty() {
+                return Err("项目原图包含链接，拒绝导入".into());
+            }
+            std::fs::create_dir_all(staging.join(top)).map_err(|e| e.to_string())?;
+            for (relative, source) in entries {
+                crate::image_file::checked_source_path(&source)?;
+                let target = relative
+                    .split('/')
+                    .fold(staging.clone(), |p, part| p.join(part));
+                std::fs::create_dir_all(target.parent().ok_or("原图暂存路径无效")?)
+                    .map_err(|e| e.to_string())?;
+                let mut output =
+                    BufWriter::new(File::create_new(&target).map_err(|e| e.to_string())?);
+                let expected = copy_hashed(
+                    BufReader::new(File::open(&source).map_err(|e| e.to_string())?),
+                    &mut output,
+                )
+                .map_err(|e| e.to_string())?;
+                output.flush().map_err(|e| e.to_string())?;
+                drop(output);
+                let actual = copy_hashed(
+                    BufReader::new(File::open(&target).map_err(|e| e.to_string())?),
+                    &mut std::io::sink(),
+                )
+                .map_err(|e| e.to_string())?;
+                if actual != expected {
+                    return Err(format!("原图复制校验失败：{}", source.display()));
+                }
+            }
+        }
+        if db.is_file() {
+            crate::storage::relocate::database(&db, project, &external)?;
+        }
+        if external.exists() {
+            return Err(format!(
+                "项目原图目录已存在，拒绝覆盖：{}",
+                external.display()
+            ));
+        }
+        std::fs::rename(&staging, &external).map_err(|e| format!("移入项目原图目录失败：{e}"))?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        if staging.exists() {
+            let _ = remove_owned_tree(&staging);
+        }
+        return Err(error);
+    }
+    for top in &RECORDS[1..] {
+        let local = root.join(top);
+        if local.exists() {
+            if let Err(error) = remove_owned_tree(&local) {
+                let _ = remove_owned_tree(&external);
+                return Err(error);
+            }
+        }
+    }
+    Ok(Some(external))
+}
+
+pub(crate) fn recover_pending_recordings(data: &Path) -> Result<(), String> {
+    let Some(config) = crate::log_storage::read(data)? else {
+        return Ok(());
+    };
+    let namespace = config
+        .vision("_")
+        .parent()
+        .ok_or("视觉日志命名空间无效")?
+        .to_path_buf();
+    if !namespace.exists() {
+        return Ok(());
+    }
+    crate::image_file::checked_source_path(&namespace)?;
+    for entry in std::fs::read_dir(&namespace).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let marker = path.join(PENDING_RECORDINGS);
+        if !path.is_dir() || !marker.is_file() {
+            continue;
+        }
+        crate::image_file::checked_source_path(&marker)?;
+        let value: Value =
+            serde_json::from_str(&crate::fsio::read_text(&marker).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let id = value["projectId"]
+            .as_str()
+            .filter(|id| super::valid_id(id))
+            .ok_or("项目原图提交标记的项目编号无效")?;
+        let expected = config.vision(id);
+        if path == expected {
+            if super::dir(data, id).is_dir() {
+                std::fs::remove_file(&marker).map_err(|e| e.to_string())?;
+            } else {
+                remove_owned_tree(&path)?;
+            }
+        } else {
+            let prefix = format!("project-recordings-{id}-");
+            let suffix = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix(&prefix));
+            let owned_staging =
+                suffix
+                    .and_then(|s| s.split_once('-'))
+                    .is_some_and(|(stamp, index)| {
+                        !stamp.is_empty()
+                            && !index.is_empty()
+                            && stamp.bytes().all(|b| b.is_ascii_digit())
+                            && index.bytes().all(|b| b.is_ascii_digit())
+                    });
+            if !owned_staging {
+                return Err("项目原图提交标记与目录归属不符，保留待核对资料".into());
+            }
+            remove_owned_tree(&path)?;
+        }
+    }
+    Ok(())
 }
 
 /// 把本机项目 `source_id` 复制为新项目：按导出的取舍收集文件（记录库做一致性快照），拷进暂存目录后按导入规则落成新项目。

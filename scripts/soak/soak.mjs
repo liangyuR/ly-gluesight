@@ -16,7 +16,7 @@ async function uiHeap(page, cdp) {
 }
 
 async function metricsSample({ manifest, call, page }, cdp, startedAt, parts) {
-  const [proc, disk, snapshot, ui] = await Promise.all([processMetrics(manifest.pid), diskUsage(manifest.dataRoot), call("cycle_snapshot"), uiHeap(page, cdp)]);
+  const [proc, disk, snapshot, ui] = await Promise.all([processMetrics(manifest.pid), diskUsage(manifest, call), call("cycle_snapshot"), uiHeap(page, cdp)]);
   return { atMs: Date.now() - startedAt, parts, proc, ui, disk: Object.fromEntries(Object.entries(disk).map(([k, v]) => [k, v.bytes])),
     files: { recordsOffline: disk["records-offline"].files }, phase: snapshot?.phase ?? null };
 }

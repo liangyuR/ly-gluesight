@@ -15,6 +15,8 @@
 
 默认回归不加载 lyFlow DLL，不替代真实设备或现场节拍验收。
 
+显式设置 `GLUESIGHT_DATA_DIR` 的隔离实例将日志写入 `<隔离资料目录>/gs_logs/`，不使用当前账号的 `~/gs_logs`。桌面与长稳脚本通过 `storage_status` 和 `config/log-storage.json` 核对资料归属、环境及命名空间，再访问运行日志和视觉原图；不能从原图目录推断项目数据库位置。隔离路径检查可单独运行 `node --test tests/native/storage-paths.test.mjs`。
+
 ## 运行
 
 工具版本以 `package.json`、`rust-toolchain.toml` 和锁文件为准。首次安装执行 `pnpm install --frozen-lockfile`。

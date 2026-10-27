@@ -132,6 +132,7 @@ export function DeleteProjectDialog({ entry, usage, onClose }: { entry: ProjectE
     footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button danger variant="filled" disabled={working || !confirmed} onClick={() => void submit()}>{working ? "删除中…" : "删除"}</Button></>}>
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
       <Alert tone="ng" title="将永久删除以下内容，不可恢复">
+        <p>包括本项目在日志目录中的视觉原图。</p>
         <dl className="kv pj-delete-list">
           <dt>项目</dt><dd>{entry.meta ? <>{expected} <span className="mono">{entry.id}</span></> : <span className="mono">{entry.id}</span>}</dd>
           {usage?.status === "ok" ? <>

@@ -25,6 +25,8 @@ export interface ProjectUsage {
   firstRecordAt: number | null;
   lastRecordAt: number | null;
   bytes: number;
+  projectBytes?: number;
+  visionBytes?: number;
 }
 
 export interface CreateProject {

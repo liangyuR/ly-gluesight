@@ -32,3 +32,97 @@ fn calibration_page_view_on_single_view_camera_also_writes_the_key_burst_recipe_
         assert_eq!(calib_keys(config, Some(view)).unwrap(), keys, "{} 图 {view}", config.id);
     }
 }
+
+#[test]
+fn latest_frame_calibration_stores_project_relative_image() {
+    let root = std::env::temp_dir().join(format!(
+        "calibration-latest-{}-{}",
+        std::process::id(),
+        ly_plc::now_ms()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("calib/device/plane_calib_cam1.json");
+    let image = FrameImage::new(2, 1, vec![10, 20]);
+    save_calibration(
+        &root,
+        std::slice::from_ref(&path),
+        json!({"mmPerPx": 0.1}),
+        &image,
+        None,
+        "cam1",
+        1,
+    )
+    .unwrap();
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let relative = doc["samplePath"].as_str().unwrap();
+    assert_eq!(
+        relative,
+        format!("calib/images/{}.pgm", doc["sampleId"].as_str().unwrap())
+    );
+    assert_eq!(
+        crate::image_file::load(&root.join(relative))
+            .unwrap()
+            .pixels,
+        image.pixels
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn failed_calibration_image_write_keeps_previous_result() {
+    let root = std::env::temp_dir().join(format!(
+        "calibration-failed-{}-{}",
+        std::process::id(),
+        ly_plc::now_ms()
+    ));
+    std::fs::create_dir_all(root.join("calib/images")).unwrap();
+    let path = root.join("calib/plane_calib_cam1-v1.json");
+    std::fs::write(&path, "previous").unwrap();
+    std::fs::write(root.join("calib/images/sample.pgm"), b"different image").unwrap();
+    let image = FrameImage::new(2, 1, vec![10, 20]);
+    assert!(save_calibration(
+        &root,
+        std::slice::from_ref(&path),
+        json!({}),
+        &image,
+        Some("sample"),
+        "cam1",
+        1
+    )
+    .is_err());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "previous");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recalibration_with_same_frozen_image_updates_result_without_changing_image() {
+    let root = std::env::temp_dir().join(format!(
+        "calibration-repeat-{}-{}",
+        std::process::id(),
+        ly_plc::now_ms()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("calib/plane_calib_cam1-v1.json");
+    let image = FrameImage::new(2, 1, vec![10, 20]);
+    for mm_per_px in [0.1, 0.2] {
+        save_calibration(
+            &root,
+            std::slice::from_ref(&path),
+            json!({"mmPerPx": mm_per_px}),
+            &image,
+            Some("sample"),
+            "cam1",
+            1,
+        )
+        .unwrap();
+    }
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(doc["data"]["mmPerPx"], json!(0.2));
+    assert_eq!(
+        crate::image_file::load(&root.join(doc["samplePath"].as_str().unwrap()))
+            .unwrap()
+            .pixels,
+        image.pixels
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -21,6 +21,9 @@ pub struct StorageStatus {
     root: String,
     migration_status: String,
     migration_message: Option<String>,
+    log_root: Option<String>,
+    runtime_log_dir: Option<String>,
+    vision_log_dir: Option<String>,
 }
 
 #[cfg(windows)]
@@ -274,7 +277,7 @@ fn copy_tree(
     }
     Ok(())
 }
-fn directory_bytes(path: &Path) -> Result<u64, String> {
+pub(crate) fn directory_bytes(path: &Path) -> Result<u64, String> {
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     {
@@ -297,7 +300,7 @@ fn directory_bytes(path: &Path) -> Result<u64, String> {
     }
     Ok(bytes)
 }
-fn check_space(root: &Path, bytes: u64) -> Result<(), String> {
+pub(crate) fn check_space(root: &Path, bytes: u64) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
@@ -622,6 +625,9 @@ pub fn initialize(app: &AppHandle, target: PathBuf) -> Result<(), String> {
         }
         .into(),
         migration_message: message,
+        log_root: None,
+        runtime_log_dir: None,
+        vision_log_dir: None,
     };
     app.manage(StoragePaths {
         root: target,
@@ -637,13 +643,31 @@ pub fn migrated_this_launch(app: &AppHandle) -> bool {
 }
 #[tauri::command]
 pub fn storage_status(app: AppHandle) -> Result<StorageStatus, String> {
-    app.try_state::<StoragePaths>().map(|state| state.status.clone()).ok_or_else(|| "资料尚未准备完成".into())
+    let mut status = app
+        .try_state::<StoragePaths>()
+        .map(|state| state.status.clone())
+        .ok_or("资料尚未准备完成")?;
+    if let Some(layout) = app.try_state::<crate::log_storage::Layout>() {
+        status.log_root = Some(layout.config.root.display().to_string());
+        status.runtime_log_dir = Some(layout.runtime().display().to_string());
+        if let Some(project) = app.try_state::<crate::project::ActiveProject>() {
+            status.vision_log_dir = Some(layout.vision(&project.id).display().to_string());
+        }
+    }
+    Ok(status)
 }
 #[tauri::command]
-pub fn storage_open_directory(app: AppHandle) -> Result<(), String> {
+pub fn storage_open_directory(app: AppHandle, target: Option<String>) -> Result<(), String> {
+    let directory = match target.as_deref().unwrap_or("data") {
+        "data" => root(&app),
+        "runtime" => crate::log_storage::runtime_dir(&app)?,
+        "vision" => crate::log_storage::recording_project(&project(&app))?,
+        _ => return Err("未知目录类型".into()),
+    };
+    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     std::process::Command::new("explorer.exe")
-        .arg(root(&app))
+        .arg(directory)
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())

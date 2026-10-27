@@ -24,7 +24,9 @@ beforeEach(() => {
       case "cycle_save_settings": saved = structuredClone((args as { settings: CycleSettings }).settings); return;
       case "cycle_recipes": return [];
       case "engine_status": return { backend: "LyFlow", ready: false, message: "" };
-      case "storage_status": return { environment: "development", root: "C:/ProgramData/ly/GlueSight-dev", migrationStatus: "completed" };
+      case "storage_status": return { environment: "development", root: "C:/ProgramData/ly/GlueSight-dev", migrationStatus: "completed",
+        logRoot: "C:/test/gs_logs", runtimeLogDir: "C:/test/gs_logs/runtime/development/instance", visionLogDir: "C:/test/gs_logs/vision/development/instance/project" };
+      case "storage_open_directory": return;
       case "app_info": return { name: "GlueSight", version: "test" };
       default: throw new Error(`Unexpected command: ${command}`);
     }
@@ -36,6 +38,17 @@ function recordSaveButton() {
 }
 
 describe("离线原图保留设置", () => {
+  it("日志与项目分开存储 → 目录入口分别打开运行日志和当前项目原图", async () => {
+    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
+    const storage = within(screen.getByRole("region", { name: "资料存储" }));
+    expect(await storage.findByText("C:/test/gs_logs/runtime/development/instance")).toBeVisible();
+    expect(storage.getByText("C:/test/gs_logs/vision/development/instance/project")).toBeVisible();
+    await userEvent.click(storage.getByRole("button", { name: "打开运行日志" }));
+    expect(invoke).toHaveBeenCalledWith("storage_open_directory", { target: "runtime" });
+    await userEvent.click(storage.getByRole("button", { name: "打开视觉原图" }));
+    expect(invoke).toHaveBeenCalledWith("storage_open_directory", { target: "vision" });
+  });
+
   it("修改离线保留上限并保存 → 重新打开显示新值且保留其他分区设置", async () => {
     const page = render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
     const keep = await screen.findByRole("spinbutton", { name: "离线原图最多保留（件）" });

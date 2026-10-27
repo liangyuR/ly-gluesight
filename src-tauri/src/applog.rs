@@ -113,6 +113,10 @@ pub struct Record {
     pub code: Option<String>,
     pub ev: String,
     pub msg: String,
+    #[serde(default, rename = "projectId", skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     #[serde(flatten)]
     pub fields: Fields,
 }
@@ -275,11 +279,19 @@ static SINK: OnceLock<Mutex<Sink>> = OnceLock::new();
 static ACTIVE: Mutex<Option<Fields>> = Mutex::new(None);
 
 pub fn dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(crate::storage::root(app).join("logs"))
+    crate::log_storage::runtime_dir(app)
 }
 
-/// 结构化运行日志写到 logs/gluesight-YYYY-MM-DD[.N].jsonl：按本地日期与单文件大小滚动；只清理本前缀的文件，plc.db 等不受影响。
+static PROJECT: Mutex<Option<String>> = Mutex::new(None);
+static SESSION: OnceLock<String> = OnceLock::new();
+
+pub fn set_project(id: &str) {
+    *PROJECT.lock().unwrap_or_else(|p| p.into_inner()) = Some(id.into());
+}
+
+/// 结构化运行日志写到绑定的 runtime 目录：按本地日期与单文件大小滚动；只清理 gluesight- 前缀的文件，plc.db 等不受影响。
 pub fn init(app: &AppHandle) -> Result<(), String> {
+    SESSION.get_or_init(|| format!("{}-{}", std::process::id(), ly_plc::now_ms()));
     let dir = dir(app)?;
     fs::create_dir_all(&dir).map_err(|e| format!("创建日志目录失败（{}）：{e}", dir.display()))?;
     if SINK.set(Mutex::new(Sink::open(dir, Local::now().date_naive(), LIMITS))).is_err() {
@@ -393,6 +405,8 @@ fn record(
         code: code.map(str::to_owned),
         ev: ev.into(),
         msg: msg.into(),
+        project_id: PROJECT.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+        session_id: SESSION.get().cloned(),
         fields,
     }
 }

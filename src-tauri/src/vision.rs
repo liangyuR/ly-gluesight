@@ -477,6 +477,46 @@ pub fn vision_calib_info(app: AppHandle, cam: Option<u8>, view: Option<u8>) -> R
     Ok(calib_info(&calib_key_path(&app, &keys[0])?))
 }
 
+fn save_calibration(
+    project: &Path,
+    paths: &[PathBuf],
+    data: Value,
+    image: &FrameImage,
+    image_id: Option<&str>,
+    camera_id: &str,
+    view: u8,
+) -> Result<(), String> {
+    static NEXT_IMAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let generated = format!(
+        "station-latest-{}-{}-{}",
+        std::process::id(),
+        ly_plc::now_ms(),
+        NEXT_IMAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let sample_id = image_id.unwrap_or(&generated);
+    if sample_id.is_empty()
+        || !sample_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return Err("标定样本编号无效".into());
+    }
+    let relative = format!("calib/images/{sample_id}.pgm");
+    let image_path = project
+        .join("calib")
+        .join("images")
+        .join(format!("{sample_id}.pgm"));
+    std::fs::create_dir_all(image_path.parent().unwrap())
+        .map_err(|e| format!("创建标定图目录失败：{e}"))?;
+    crate::image_file::checked_source_path(image_path.parent().unwrap())?;
+    crate::image_file::save_pgm_new(&image_path, image)?;
+    let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId": sample_id, "samplePath": relative, "cameraId": camera_id, "view": view});
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    paths
+        .iter()
+        .try_for_each(|path| crate::fsio::write_atomic(path, &text))
+}
+
 /// 工位标定：用飞拍相机最近一帧整图跑 image.board_calib，结果存成工位标定文件。
 /// `view` 给了存旧配方的 `{device}-v{view}`，单视角相机的图 1 还同时存段配方的设备标定 `device/{device}`；没给只存设备标定
 /// （单视角相机，样本与最近一帧都是图 1）。键见 `calib_keys`。
@@ -527,9 +567,7 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
             if crate::workspace::station_image_view(&app, cam.unwrap_or(0), id)? != view { return Err("标定过程中样本视图已改变".into()); }
             crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)?;
         }
-        let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId":image_id,"cameraId":camera_id(&app,cam.unwrap_or(0))?,"view":view});
-        let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
-        let written = paths.iter().try_for_each(|path| crate::fsio::write_atomic(path, &text));
+        let written = save_calibration(&crate::storage::project(&app), &paths, data, &image, image_id.as_deref(), &camera_id(&app,cam.unwrap_or(0))?, view);
         let _ = app.emit("calibration://changed", ());
         written?;
         calib_info(&paths[0]).ok_or_else(|| "标定文件写入后读不回来".into())

@@ -300,3 +300,147 @@ fn copy_without_records_leaves_out_inspection_db_and_recordings() {
     assert!(!target.join("records").exists());
     assert!(source.join("inspection.db").is_file());
 }
+
+fn external_layout(data: &Path, instance: &str) {
+    std::fs::create_dir_all(data.join("config")).unwrap();
+    std::fs::write(
+        data.join("config/log-storage.json"),
+        serde_json::json!({
+            "schema": 1, "root": data.join("gs_logs"), "environment": "test", "instance": instance,
+            "ownerData": data.canonicalize().unwrap(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn external_recordings_export_import_and_copy_keep_images_owned_by_the_target_project() {
+    let (from, to) = (TempDir::new("external-from"), TempDir::new("external-to"));
+    let (source, _) = source_project(&from.0);
+    external_layout(&from.0, "1111111111111111");
+    external_layout(&to.0, "2222222222222222");
+    let source_recordings = crate::log_storage::recording_project(&source).unwrap();
+    std::fs::create_dir_all(&source_recordings).unwrap();
+    std::fs::rename(source.join("records"), source_recordings.join("records")).unwrap();
+    crate::storage::relocate::database(&source.join("inspection.db"), &source, &source_recordings)
+        .unwrap();
+    std::fs::create_dir_all(source.join("calib/images")).unwrap();
+    std::fs::write(source.join("calib/images/board.pgm"), b"board").unwrap();
+    let package = export(&from.0, &source);
+    assert!(inspect(&package)
+        .unwrap()
+        .files
+        .iter()
+        .any(|f| f.path == "project/records/c1/part.json"));
+    import_from(
+        &to.0,
+        &package,
+        "line-b",
+        "B 线",
+        &to.0.join("state/plan-version"),
+        &to.0.join("cache"),
+    )
+    .unwrap();
+    copy(&from.0, true).unwrap();
+    for target in [
+        super::super::dir(&to.0, "line-b"),
+        super::super::dir(&from.0, "line-a2"),
+    ] {
+        let recordings = crate::log_storage::recording_project(&target).unwrap();
+        assert!(!target.join("records").exists());
+        assert_eq!(
+            std::fs::read(recordings.join("records/c1/part.json")).unwrap(),
+            b"{}"
+        );
+        assert_eq!(
+            std::fs::read(target.join("calib/images/board.pgm")).unwrap(),
+            b"board"
+        );
+        assert_eq!(
+            std::fs::read(target.join("recipe-capture/capture-1/a.pgm")).unwrap(),
+            b"P5"
+        );
+        let conn = rusqlite::Connection::open(target.join("inspection.db")).unwrap();
+        let directory: String = conn
+            .query_row("SELECT recording_directory FROM parts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(Path::new(&directory), recordings.join("records/c1"));
+    }
+    assert!(source_recordings.join("records/c1/part.json").is_file());
+}
+
+#[test]
+fn external_recording_conflict_refuses_import_without_overwriting_existing_files() {
+    let (from, to) = (TempDir::new("conflict-from"), TempDir::new("conflict-to"));
+    let (source, _) = source_project(&from.0);
+    let package = export(&from.0, &source);
+    external_layout(&to.0, "4444444444444444");
+    let conflict = super::super::dir(&to.0, "blocked");
+    let conflict_recordings = crate::log_storage::recording_project(&conflict).unwrap();
+    std::fs::create_dir_all(&conflict_recordings).unwrap();
+    std::fs::write(conflict_recordings.join("preserve"), "existing").unwrap();
+    assert!(import_from(
+        &to.0,
+        &package,
+        "blocked",
+        "冲突",
+        &to.0.join("state/plan-version"),
+        &to.0.join("cache")
+    )
+    .is_err());
+    assert!(!conflict.exists());
+    assert_eq!(
+        std::fs::read_to_string(conflict_recordings.join("preserve")).unwrap(),
+        "existing"
+    );
+}
+
+#[test]
+fn interrupted_recording_install_is_removed_before_commit_and_preserved_after_project_commit() {
+    let data = TempDir::new("interrupted-install");
+    external_layout(&data.0, "5555555555555555");
+    let pending_project = super::super::dir(&data.0, "pending");
+    let pending = crate::log_storage::recording_project(&pending_project).unwrap();
+    std::fs::create_dir_all(pending.join("records")).unwrap();
+    std::fs::write(pending.join("records/frame.pgm"), b"pending").unwrap();
+    std::fs::write(
+        pending.join(PENDING_RECORDINGS),
+        r#"{"projectId":"pending"}"#,
+    )
+    .unwrap();
+    let committed_project = super::super::create_dir(
+        &data.0,
+        &ProjectMeta::new("committed", "已提交", "", None),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let committed = crate::log_storage::recording_project(&committed_project).unwrap();
+    std::fs::create_dir_all(committed.join("records")).unwrap();
+    std::fs::write(committed.join("records/frame.pgm"), b"committed").unwrap();
+    std::fs::write(
+        committed.join(PENDING_RECORDINGS),
+        r#"{"projectId":"committed"}"#,
+    )
+    .unwrap();
+    let unfinished_stage = pending
+        .parent()
+        .unwrap()
+        .join("project-recordings-pending-123-0");
+    std::fs::create_dir_all(&unfinished_stage).unwrap();
+    std::fs::write(
+        unfinished_stage.join(PENDING_RECORDINGS),
+        r#"{"projectId":"pending"}"#,
+    )
+    .unwrap();
+    manage::purge_trash(&data.0).unwrap();
+    assert!(!pending.exists());
+    assert!(!unfinished_stage.exists());
+    assert!(manage::check_new_id(&data.0, "pending").is_ok());
+    assert_eq!(
+        std::fs::read(committed.join("records/frame.pgm")).unwrap(),
+        b"committed"
+    );
+    assert!(committed_project.join("project.json").is_file());
+    assert!(!committed.join(PENDING_RECORDINGS).exists());
+}

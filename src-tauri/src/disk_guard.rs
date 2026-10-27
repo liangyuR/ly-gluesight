@@ -11,6 +11,7 @@ const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 pub struct DiskGuard {
     root: PathBuf,
+    recording_root: Option<PathBuf>,
     min_free: u64,
     last: Mutex<Option<(Instant, Result<(), String>)>>,
 }
@@ -18,26 +19,51 @@ pub struct DiskGuard {
 impl DiskGuard {
     /// 开发构建可用 GLUESIGHT_DISK_MIN_FREE_MB 调高下限，在不写满磁盘的情况下做故障注入。
     pub fn new(root: PathBuf) -> Self {
-        let min_free = std::env::var("GLUESIGHT_DISK_MIN_FREE_MB").ok().filter(|_| cfg!(debug_assertions))
-            .and_then(|mb| mb.parse::<u64>().ok()).map_or(MIN_FREE_BYTES, |mb| mb.saturating_mul(1024 * 1024));
-        Self { root, min_free, last: Mutex::new(None) }
+        let min_free = std::env::var("GLUESIGHT_DISK_MIN_FREE_MB")
+            .ok()
+            .filter(|_| cfg!(debug_assertions))
+            .and_then(|mb| mb.parse::<u64>().ok())
+            .map_or(MIN_FREE_BYTES, |mb| mb.saturating_mul(1024 * 1024));
+        Self {
+            root,
+            recording_root: None,
+            min_free,
+            last: Mutex::new(None),
+        }
+    }
+
+    pub fn with_recording_root(mut self, root: PathBuf) -> Self {
+        self.recording_root = Some(root);
+        self
     }
 
     /// 剩余空间低于下限时返回暂停原因；查询失败不拦生产。
     pub fn check(&self) -> Result<(), String> {
-        self.check_with(Instant::now(), || free_bytes(&self.root))
+        self.check_volumes(Instant::now(), free_bytes)
     }
 
+    #[cfg(test)]
     fn check_with(&self, now: Instant, free: impl FnOnce() -> std::io::Result<u64>) -> Result<(), String> {
+        let mut free = Some(free);
+        self.check_volumes(now, |_| free.take().unwrap()())
+    }
+
+    fn check_volumes(
+        &self,
+        now: Instant,
+        mut free: impl FnMut(&Path) -> std::io::Result<u64>,
+    ) -> Result<(), String> {
         let mut last = self.last.lock().unwrap();
         if let Some((_, result)) = last.as_ref().filter(|(at, _)| now.saturating_duration_since(*at) < RECHECK) {
             return result.clone();
         }
-        let result = match free() {
-            Ok(bytes) if bytes < self.min_free => Err(format!("资料盘剩余空间 {:.1} GB，低于 {:.1} GB 下限，已暂停接件；清理磁盘或调低原图保留上限后自动恢复",
-                bytes as f64 / GIB, self.min_free as f64 / GIB)),
-            _ => Ok(()),
-        };
+        let result = std::iter::once(&self.root).chain(self.recording_root.iter()).find_map(|root| {
+            match free(root) {
+                Ok(bytes) if bytes < self.min_free => Some(Err(format!("资料盘 {} 剩余空间 {:.1} GB，低于 {:.1} GB 下限，已暂停接件；清理磁盘或调低原图保留上限后自动恢复",
+                    root.display(), bytes as f64 / GIB, self.min_free as f64 / GIB))),
+                _ => None,
+            }
+        }).unwrap_or(Ok(()));
         *last = Some((now, result.clone()));
         result
     }
@@ -69,11 +95,30 @@ mod tests {
 
     #[test]
     fn low_free_space_pauses_and_recovers_after_recheck_without_restart() {
-        let guard = DiskGuard { root: PathBuf::from("."), min_free: MIN_FREE_BYTES, last: Mutex::new(None) };
+        let guard = DiskGuard {
+            root: PathBuf::from("."),
+            recording_root: None,
+            min_free: MIN_FREE_BYTES,
+            last: Mutex::new(None),
+        };
         let start = Instant::now();
         let low = guard.check_with(start, || Ok(MIN_FREE_BYTES - 1));
         assert!(low.as_ref().is_err_and(|e| e.contains("剩余空间")), "{low:?}");
         assert!(guard.check_with(start + RECHECK, || Ok(MIN_FREE_BYTES)).is_ok(), "空间恢复后到期复查应自动放行");
         assert!(guard.check_with(start + RECHECK * 2, || Err(std::io::Error::other("拒绝访问"))).is_ok(), "查询失败不能停产");
+    }
+
+    #[test]
+    fn external_recording_disk_low_space_blocks_even_when_project_disk_is_available() {
+        let guard =
+            DiskGuard::new(PathBuf::from("project")).with_recording_root(PathBuf::from("vision"));
+        let result = guard.check_volumes(Instant::now(), |root| {
+            Ok(if root == Path::new("vision") {
+                0
+            } else {
+                u64::MAX
+            })
+        });
+        assert!(result.is_err_and(|error| error.contains("vision")));
     }
 }

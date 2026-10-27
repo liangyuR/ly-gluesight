@@ -1,11 +1,12 @@
 import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { buildBurstRecipe, checksOff, client, copySampleSet, until } from "../../tests/native/lib.mjs";
+import { isolatedStorage, samePath } from "../../tests/native/storage-paths.mjs";
 
 export { until };
 export const identifier = "com.xyzrobotics.tujiaovision.soak-tests";
@@ -41,8 +42,9 @@ export async function connect(cdp, instancePath) {
   page.setDefaultTimeout(30000);
   await page.waitForFunction(() => !!window.__TAURI_INTERNALS__);
   const call = client(page);
+  const storage = await isolatedStorage(call, manifest, identifier);
   const records = await call("records_list");
-  assert(records.root.includes(identifier), `数据目录不属于长稳隔离实例：${records.root}`);
+  assert(samePath(records.root, path.join(storage.vision, "records")), "录制目录不属于长稳隔离实例");
   return { browser, page, call, manifest };
 }
 
@@ -131,21 +133,17 @@ async function treeSize(dir) {
   return { bytes, files };
 }
 
-/** 当前项目目录：资料目录下 projects/<config/current-project.json 记的编号>。 */
-export function projectRoot(dataRoot) {
-  const pointer = JSON.parse(readFileSync(path.join(dataRoot, "config", "current-project.json"), "utf8"));
-  return path.join(dataRoot, "projects", pointer.current);
-}
-
 /** 资料目录各部分占用：原图、记录库、日志、握手状态等。项目资料取当前项目。 */
-export async function diskUsage(dataRoot) {
+export async function diskUsage(manifest, call) {
   const result = {};
-  const project = projectRoot(dataRoot);
-  for (const name of ["records-offline", "records", "audit-spool", "recipe-capture", "workspaces", "vision"]) {
+  const { data, project, runtime, vision } = await isolatedStorage(call, manifest, identifier);
+  for (const name of ["audit-spool", "recipe-capture", "workspaces", "vision"]) {
     result[name] = await treeSize(path.join(project, name));
   }
-  for (const name of ["logs", "state", "samples", "cache"]) {
-    result[name] = await treeSize(path.join(dataRoot, name));
+  for (const name of ["records-offline", "records"]) result[name] = await treeSize(path.join(vision, name));
+  result.logs = await treeSize(runtime);
+  for (const name of ["state", "samples", "cache"]) {
+    result[name] = await treeSize(path.join(data, name));
   }
   let db = 0;
   for (const suffix of ["", "-wal", "-shm"]) {

@@ -112,7 +112,7 @@ fn fields(relative: &Path, value: &mut Value, apply: &mut impl FnMut(&mut Value)
     }
 }
 
-pub(super) fn json_file(
+pub(crate) fn json_file(
     path: &Path,
     relative: &Path,
     source: &Path,
@@ -129,16 +129,15 @@ pub(super) fn json_file(
     let original = value.clone();
     fields(relative, &mut value, &mut |v| remap(v, source, target));
     if value != original {
-        fs::write(
+        crate::fsio::write_atomic(
             path,
-            serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+            &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+        )?;
     }
     Ok(())
 }
 
-pub(super) fn database(path: &Path, source: &Path, target: &Path) -> Result<(), String> {
+pub(crate) fn database(path: &Path, source: &Path, target: &Path) -> Result<(), String> {
     let mut conn = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
     let integrity: String = conn
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))

@@ -4,6 +4,7 @@ import { readFile, mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildBurstRecipe, burstFacts, client, instanceCdp, uiPage } from "./lib.mjs";
+import { isolatedStorage, samePath } from "./storage-paths.mjs";
 
 const identifier = "com.xyzrobotics.tujiaovision.flow-tests";
 
@@ -38,10 +39,9 @@ async function runOfflinePart(page, invokeRead, navigation, option, id) {
   return summary;
 }
 
-async function verifyBurstDisk(root, detail, facts) {
+async function verifyBurstDisk(root, project, detail, facts) {
   const { DatabaseSync } = await import("node:sqlite");
-  const dataRoot = await realpath(path.dirname(root));
-  const database = await verifiedPath(dataRoot, path.join(dataRoot, "inspection.db"));
+  const database = await verifiedPath(project, path.join(project, "inspection.db"));
   const db = new DatabaseSync(database, { readOnly: true });
   const summary = detail.summary;
   const cameras = detail.burst.cameras.length;
@@ -144,7 +144,7 @@ async function runBurstStage(page, invokeRead, navigation, ctx) {
   assert.deepEqual(facts.missing, [], "5 Hz 下不应缺帧");
   assert.equal(facts.framesRecorded, facts.groupCount * 3);
   const root = path.join(path.dirname((await invokeRead("records_list")).root), "records-offline");
-  const disk = await verifyBurstDisk(root, detail, { ...facts, ...expected });
+  const disk = await verifyBurstDisk(root, ctx.storage.project, detail, { ...facts, ...expected });
   await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
   await page.getByText(`SN ${summary.sn}`).first().waitFor();
   await navigation.getByRole("link", { name: "历史记录", exact: true }).click();
@@ -184,10 +184,9 @@ export async function runProductionFlow(page, options = {}) {
     // 真机模式下报告 lyFlow 是否加载；进入离线·合成图后这个接口只说“模拟测量”
     engine: await invokeRead("engine_status").catch(() => null),
   };
+  const storage = await isolatedStorage(invokeRead, manifest, identifier);
   const root = path.join(await realpath(path.dirname(guard.records.root)), path.basename(guard.records.root));
-  const segments = root.split(path.sep);
-  assert(segments.includes(identifier) && segments.at(-3) === "projects", `录制目录不属于隔离实例的项目目录：${root}`);
-  assert.equal(path.basename(root), "records");
+  assert(samePath(root, path.join(storage.vision, "records")), "录制目录不属于隔离实例");
   assert(guard.cameras.length > 0 && guard.cameras.every(camera => camera.source === "mvs"), "真机模式相机组必须全部为海康来源");
   const initialSite = await invokeRead("site_status");
   assert.equal(initialSite.mode, "real", "软件启动必须处于真机模式");
@@ -230,7 +229,7 @@ export async function runProductionFlow(page, options = {}) {
       await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase !== "FAULT", "软件复位后检测仍处于故障", 5000).catch(() => {});
       await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
     }
-    const burst = await runBurstStage(page, invokeRead, navigation, { engine: guard.engine });
+    const burst = await runBurstStage(page, invokeRead, navigation, { engine: guard.engine, storage });
     await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
     await page.getByRole("button", { name: "退出离线", exact: true }).click();
     await until(page, () => invokeRead("site_status"), status => status.mode === "real", "UI 未退出离线模式");
