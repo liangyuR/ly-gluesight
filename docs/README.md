@@ -80,7 +80,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
   - 现场工控机吞吐复测（D-SB-45 按预测段测量与收尾补测后，见下条）。
   - 原生端到端脚本没有按段走廊重跑；多段配方的端到端夹具要按段准备示教帧。
 - **3 × 25 Hz 吞吐门槛**：没有达标，也没有被直接验证。门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput`（并重跑 `throughput_probe` 探针）后，再决定降帧率还是加测量并发（[segment-burst](decisions/segment-burst.md) 第七节）。
-- **在线投运三期**：试判统计未做（[在线投运方案](architecture/online-commissioning.md)）。二期“历史件导入为采集轮次”已实施，只有软件回归覆盖，隔离实例端到端与现场都没有跑过。
+- **在线投运**：一期至三期（维护模式采集、历史件导入为采集轮次、试判统计与复核）已实施，只有软件回归覆盖，隔离实例端到端与现场都没有跑过（[在线投运方案](architecture/online-commissioning.md)）。
 - **已接受、待确认的取舍**：胶偏的 `ToEdge` 测量量未实现；气泡、拉丝不检；弯道的出胶点短走廊没有真实弯道图验证；提前结束只加 `short_part`、不判 ERR。汇总见 [决策索引](decisions/README.md)。
 - **真机验证**：PLC 协议 7、三台相机共用触发、带宽（三路 25 Hz 估算约 826 Mbps）、现场节拍与检测准确率都没有验证。仓库不保存 PLC 程序，PLC 侧按协议 7 规格由现场工程实现。
 
