@@ -53,23 +53,45 @@
 .wp-capture-dot.warn { background:var(--warn); }
 .wp-capture-actions { display:flex; flex-direction:column; gap:10px; margin-top:4px; padding-top:12px; border-top:1px solid var(--outline-variant); }
 .wp-capture-actions > .qs-btn { width:100%; }
-.wp-teach { display:grid; grid-template-columns:172px minmax(0,1fr) 254px; gap:16px; align-items:start; }
+.wp-teach { display:grid; grid-template-columns:172px minmax(0,1fr) var(--wp-rail-w, 254px); gap:16px; align-items:start; }
 .wp-group-panel { padding:10px; }
 .wp-group-panel > h2 { display:flex; align-items:baseline; gap:6px; margin:2px 6px 8px; font-size:13px; }
 .wp-group-panel > h2 small { color:var(--on-surface-variant); font-size:12px; font-weight:400; }
 .wp-group-list { display:flex; flex-direction:column; gap:2px; }
 .wp-settings-card { min-width:0; padding:0; border-radius:var(--r-lg); }
 .wp-teach-settings { gap:12px; }
-.wp-settings-card > summary { padding:14px; list-style:none; cursor:pointer; border-radius:var(--r-lg); }
+.wp-settings-card > summary { padding:12px 14px; list-style:none; cursor:pointer; border-radius:var(--r-lg); }
+.wp-settings-card > summary:hover { background:var(--surface-mid); }
 .wp-settings-card > summary::-webkit-details-marker { display:none; }
 .wp-settings-card > summary:focus-visible, .wp-calibration-link:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
 .wp-settings-heading { display:flex; align-items:center; gap:8px; }
 .wp-settings-title { margin-right:auto; font-size:13px; font-weight:600; }
-.wp-settings-heading > svg { flex-shrink:0; color:var(--on-surface-variant); transition:transform var(--dur-short) var(--ease-standard); }
-.wp-settings-card[open] > summary .wp-settings-heading > svg { transform:rotate(180deg); }
+.wp-settings-chevron { flex-shrink:0; display:grid; place-items:center; width:24px; height:24px; border:1px solid var(--outline-variant); border-radius:50%; color:var(--on-surface-variant); transition:transform var(--dur-short) var(--ease-standard); }
+.wp-settings-card > summary:hover .wp-settings-chevron { border-color:var(--outline); color:var(--on-surface); }
+.wp-settings-card[open] > summary .wp-settings-chevron { transform:rotate(180deg); }
+.wp-settings-card[open] > summary .wp-settings-summary { display:none; }
 .wp-settings-summary { display:block; margin-top:6px; color:var(--on-surface-variant); font-size:12px; overflow-wrap:anywhere; }
 .wp-settings-body { display:flex; flex-direction:column; gap:14px; padding:0 14px 14px; }
 .wp-settings-hint { color:var(--on-surface-variant); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.wp-settings-group { display:flex; flex-direction:column; gap:10px; padding-top:12px; border-top:1px solid var(--outline-variant); }
+.wp-settings-group > p, .wp-settings-fields > p { margin:0; }
+.wp-settings-fields { display:flex; flex-direction:column; gap:12px; }
+.wp-settings-fields .qs-seg { display:flex; width:100%; overflow:hidden; }
+.wp-teach-settings .wp-settings-fields .qs-seg > button { flex:1 1 0; min-width:0; padding-inline:4px; white-space:nowrap; }
+.wp-settings-title { white-space:nowrap; }
+.wp-settings-heading > .qs-badge, .wp-settings-heading > [class*="status"] { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.wp-settings-label { display:flex; align-items:center; flex-wrap:wrap; gap:6px; font-size:12px; font-weight:600; }
+.wp-nozzle-point { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.wp-scope {display:inline-block; padding:0 6px; border:1px solid var(--outline-variant); border-radius:999px; color:var(--on-surface-variant); font-size:11px; font-weight:400; line-height:18px; white-space:nowrap; }
+.wp-seg-head { display:flex; align-items:center; flex-wrap:wrap; gap:6px 8px; }
+.wp-seg-head > h3 { margin-right:auto; }
+.wp-seg-corridor-note > .wp-tip-anchor, .wp-seg-corridor-note > .qs-btn { align-self:flex-end; }
+.wp-rail-note { margin:0; padding:0 4px; }
+.wp-rail-link { display:flex; align-items:center; flex-wrap:wrap; gap:4px 8px; width:100%; padding:10px 14px; border:1px solid var(--outline-variant); border-radius:var(--r-lg); background:none; color:var(--on-surface-variant); font:inherit; font-size:12px; text-align:left; cursor:pointer; }
+.wp-rail-link:hover:not(:disabled) { background:var(--surface-mid); }
+.wp-rail-link:disabled { cursor:not-allowed; opacity:.6; }
+.wp-rail-link > strong { color:var(--on-surface); font-size:13px; font-weight:600; }
+.wp-rail-link-go { display:inline-flex; align-items:center; gap:3px; margin-left:auto; color:var(--primary); white-space:nowrap; }
 .wp-scale-field { position:relative; }
 .wp-calibration-link { position:absolute; right:0; top:0; display:inline-flex; align-items:center; gap:3px; color:var(--primary); font-size:12px; text-decoration:none; }
 .wp-calibration-link:hover { text-decoration:underline; }
@@ -78,6 +100,17 @@
 .wp-teach .wp-field span { font-size:12px; }
 .wp-teach .wp-field input { font-size:12px; }
 .wp-teach input[type=number]::-webkit-inner-spin-button { appearance:none; margin:0; }
+/* 右栏表单按栏宽排布：窄栏一行一项，胶宽上下限始终成对 */
+.wp-teach-page .wp-teach-settings { container-type:inline-size; }
+.wp-teach-settings .qs-field { grid-template-columns:minmax(0,1fr); }
+.wp-teach-settings :is(.qs-input, .qs-select-trigger) { padding-inline:8px; gap:6px; }
+.wp-teach-settings .qs-select-trigger > span:first-child { white-space:normal; line-height:1.3; }
+.wp-teach-settings .rcp-grid { grid-template-columns:minmax(0,1fr); }
+.wp-teach-settings .rcp-field.wide { grid-column:1 / -1; }
+.wp-teach-settings .plan-check-fields { grid-template-columns:minmax(0,1fr); }
+@container (max-width:259px) { .wp-teach-settings .qs-input { padding-inline:6px; gap:4px; } }
+@container (min-width:240px) { .wp-teach-settings .plan-check-fields { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@container (min-width:440px) { .wp-teach-settings .rcp-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 .wp-viewport { border:1px solid var(--outline-variant); border-radius:var(--r-md); overflow:hidden; background:var(--surface-lowest); }
 .wp-image-tools { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:4px 8px; padding:5px 10px; min-height:34px; border-bottom:1px solid var(--outline-variant); font-size:12px; color:var(--on-surface-variant); }
 .wp-image-tools > span { min-width:0; overflow-wrap:anywhere; }
@@ -169,8 +202,15 @@
 .wp-teach-page .wp-viewport > .wp-gray-image { flex:1 1 auto; min-height:0; height:0; }
 .wp-teach-page .wp-viewport > .wp-image-empty { flex:1 1 auto; min-height:0; }
 .wp-teach-page .wp-teach-settings { min-height:0; overflow:auto; scrollbar-width:thin; }
+/* 右栏左缘的分隔条：拖动改右栏宽度，双击恢复默认 */
+.wp-rail-wrap { position:relative; display:flex; flex-direction:column; min-width:0; min-height:0; }
+.wp-rail-wrap > .wp-teach-settings { flex:1 1 auto; }
+.wp-rail-resizer { position:absolute; top:0; bottom:0; left:-13px; width:10px; cursor:col-resize; touch-action:none; z-index:1; border-radius:4px; }
+.wp-rail-resizer::after { content:""; position:absolute; top:50%; left:4px; width:2px; height:40px; margin-top:-20px; border-radius:1px; background:var(--outline-variant); }
+.wp-rail-resizer:hover::after, .wp-rail-resizer.dragging::after, .wp-rail-resizer:focus-visible::after { top:0; height:100%; margin-top:0; background:var(--primary); }
+.wp-rail-resizer:focus-visible { outline:none; }
+.wp-teach-page.wp-resizing { cursor:col-resize; user-select:none; }
 .wp-teach-page .wp-teach-settings > * { flex-shrink:0; }
-.wp-rail-empty { display:grid; place-items:center; padding:16px; border:1px dashed var(--outline-variant); border-radius:var(--r-lg); color:var(--outline); font-size:12px; line-height:1.8; text-align:center; }
 
 /* 步骤条第 3 步：n / m 组 + 细进度条 */
 .wp-steps a { position:relative; }
@@ -239,11 +279,12 @@
   .wp-teach-page .wp-mid > .wp-viewport { min-height:340px; }
   .wp-teach-dock .qs-btn { height:var(--ctl-h-sm); padding:0 14px; font-size:13px; }
 }
-@media(max-width:1250px) { .wp-teach { grid-template-columns:148px minmax(0,1fr) 220px; } }
+@media(max-width:1250px) { .wp-teach { grid-template-columns:148px minmax(0,1fr) var(--wp-rail-w, 220px); } }
 /* 窄屏撤销整条高度链：整页滚动、单列、画布回到固定高度 */
 @media(max-width:820px) {
   .wp-page.wp-teach-page { flex:none; }
   .wp-teach-page > .wp-teach { flex:none; min-height:0; grid-template-columns:minmax(0,1fr); grid-template-rows:none; }
+  .wp-rail-resizer { display:none; }
   .wp-teach-page .wp-group-panel, .wp-teach-page .wp-mid, .wp-teach-page .wp-teach-settings { overflow:visible; }
   .wp-teach-page .wp-mid > .wp-viewport { min-height:0; }
   .wp-teach-page .wp-viewport > .wp-gray-image { flex:none; height:clamp(250px,36vh,420px); }

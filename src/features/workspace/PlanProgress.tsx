@@ -25,10 +25,11 @@ export default function PlanProgressPage() {
   const tasks = corridorTasks(plan);
   const taught = tasks.filter(task => task.status === "done").length;
   const nextTeaching = nextTeachingHref(plan);
+  const calibrationRounds = plan.calibration?.rounds.filter(round => !round.standard).length ?? 0;
   const next = progress.next;
   const nextStep = next && stepOfV2(progress, next.step);
   const warning = nextStep?.status === "blocked";
-  const reasons = [...new Set(nextStep?.blockers.map(blocker => blocker.message) ?? [])].filter(message => message !== nextStep?.detail).slice(0, 3);
+  const reasons = [...new Set(nextStep?.blockers.map(blocker => blocker.message) ?? [])].filter(message => message !== nextStep?.detail);
   const back = returnState(location, "进度总览");
   return <div className="wp-page"><WorkspaceBar />
     <Panel title="配方信息" detail="名称与 PLC 下发的型号；改动自动保存为候选配置，发布后生效">
@@ -40,7 +41,7 @@ export default function PlanProgressPage() {
       <div className="wp-progress-next-body">
         <small>下一步{nextStep && " · " + (stageOfV2(nextStep.id)?.label ?? nextStep.label)}</small>
         <strong>{nextStep?.detail || "继续完成当前候选配置"}</strong>
-        {reasons.length > 0 && <ul>{reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
+        {reasons.length > 0 && <p>{reasons[0]}{reasons.length > 1 && `（另有 ${reasons.length - 1} 项）`}</p>}
       </div>
       <Link className="qs-btn" to={targetPathV2(next.target)} state={back}>{next.label}<ArrowRight size={15} aria-hidden="true" /></Link>
     </section>}
@@ -56,7 +57,7 @@ export default function PlanProgressPage() {
         <span className={"wp-progress-number" + (stage.optional ? " optional" : "")} aria-hidden="true">{index + 1}</span>
         <div className="wp-progress-row-body">
           <h3>{stage.label}{stage.optional && <small>可选</small>}</h3>
-          <p>{waiting ? "导入采集轮次后可继续" : main?.detail ? main.detail : stage.hint}</p>
+          <p>{waiting ? "导入采集轮次后可继续" : isCorridor ? "为各段检测相机示教走廊" : isCalibration ? "应用多轮采集结果并确认容差" : main?.detail || stage.hint}</p>
           {!waiting && subs.map(step => <p key={step.id} className="wp-progress-sub"><span>{step.id === "publish" ? "发布" : step.label}</span><Badge tone={stepStatusTone[step.status]}>{stepStatusText[step.status]}</Badge>{step.detail}</p>)}
         </div>
         <div className="wp-progress-meter">
@@ -64,11 +65,11 @@ export default function PlanProgressPage() {
             <Progress label="走廊示教进度" value={taught} max={Math.max(1, tasks.length)} />
             <output aria-label="已示教走廊数">{taught} / {tasks.length} 条已示教</output>
           </>}
-          {isCalibration && !waiting && plan.calibration && <output aria-label="标定轮数">{plan.calibration.rounds.length} / {plan.calibration.minRounds} 轮</output>}
+          {isCalibration && !waiting && plan.calibration && <output aria-label="标定轮数">{calibrationRounds} / {plan.calibration.minRounds} 轮（至少）</output>}
         </div>
         <output className="wp-progress-state" aria-label={stage.label + "状态"}>{waiting
           ? <Badge tone="neutral"><Lock size={12} aria-hidden="true" />{stageStatusText.waiting}</Badge>
-          : status && <Badge tone={stageStatusTone[status]}>{stageStatusText[status]}</Badge>}</output>
+          : status && <Badge tone={stageStatusTone[status]}>{isCalibration && status === "inProgress" && plan.calibration && calibrationRounds >= plan.calibration.minRounds ? "待完成标定" : stageStatusText[status]}</Badge>}</output>
         <Link className="wp-progress-link" to={link.href} state={back}>{link.label}<ArrowRight size={14} aria-hidden="true" /></Link>
       </section>;
     })}</div>

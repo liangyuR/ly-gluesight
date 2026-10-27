@@ -17,24 +17,25 @@
 .guide-camera-list:empty { display:none; }
 .guide-plc-message { overflow-wrap:anywhere; }
 .guide-section-heading { display:flex; align-items:baseline; gap:12px; margin-top:10px; flex-wrap:wrap; }
-.guide-journeys { display:flex; flex-direction:column; gap:12px; }
-.guide-journey { display:grid; grid-template-columns:minmax(230px, 1fr) minmax(0, 2fr) auto; align-items:center; gap:20px; }
+.guide-journeys { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; align-items:start; }
+.guide-journey { display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:center; gap:16px; }
 .guide-journey-title { display:flex; align-items:center; gap:12px; min-width:0; }
 .guide-journey-title .guide-icon { background:var(--secondary-container); color:var(--on-secondary-container); }
 .production .guide-icon { background:var(--primary-container); color:var(--primary); }
 .guide-journey-title h3 { font-size:14px; }
 .guide-journey-title p { color:var(--on-surface-variant); font-size:12px; margin-top:4px; }
 .guide-journey nav { min-width:0; }
+.guide-journey-steps summary { color:var(--primary); cursor:pointer; font-size:12px; white-space:nowrap; }
+.guide-journey-steps { grid-column:1 / -1; grid-row:2; min-width:0; }
+.guide-journey-steps nav { margin-top:8px; }
 .guide-journey ol { display:flex; flex-wrap:wrap; gap:8px; padding:0; margin:0; list-style:none; }
 .guide-journey li { display:flex; align-items:center; gap:8px; color:var(--on-surface-variant); }
 .guide-journey li a { display:inline-flex; align-items:center; gap:6px; padding:7px 11px; border-radius:var(--r-full); color:var(--on-secondary-container); background:var(--secondary-container); font-size:12px; text-decoration:none; }
 .guide-journey li a:hover { background:var(--surface-highest); }
 .guide-journey li a span { opacity:.7; font-size:11px; }
-.guide-primary-action { white-space:nowrap; }
-@media (max-width:1400px) {
-  .guide-journey { grid-template-columns:minmax(0,1fr) auto; gap:12px; }
-  .guide-journey nav { grid-row:2; grid-column:1 / -1; }
-  .guide-primary-action { grid-row:1; grid-column:2; }
+.guide-primary-action { white-space:nowrap; grid-row:1; grid-column:2; }
+@media (max-width:1100px) {
+  .guide-journeys { grid-template-columns:minmax(0,1fr); }
 }
 @media (max-width:850px) {
   .guide-status-grid { grid-template-columns:minmax(0,1fr); }

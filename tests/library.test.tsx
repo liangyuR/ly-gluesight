@@ -27,6 +27,13 @@ beforeEach(() => {
 });
 
 describe("配方库操作", () => {
+  it("配方库隐藏编辑导航 → 操作错误仍可见",()=>{
+    ws.error="加载失败";
+    show();
+    expect(screen.queryByLabelText("当前配方")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation",{name:"配方配置步骤"})).not.toBeInTheDocument();
+    expect(screen.getByText("加载失败")).toBeVisible();
+  });
   it("创建已成功但选用失败，重试仅打开已有候选，避免二次创建",async()=>{
     vi.mocked(ws.select).mockResolvedValueOnce(null);show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
     await userEvent.click(screen.getByRole("button",{name:"创建候选"}));expect(await screen.findByText(/候选已创建，选用未完成/)).toBeVisible();

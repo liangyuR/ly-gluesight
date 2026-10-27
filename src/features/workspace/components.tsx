@@ -36,14 +36,14 @@ export function WorkspaceEmpty() {
   const { error } = useWorkspace();
   return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库选择或新建配方，再开始规划段与示教走廊。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Link className="btn primary" to="/recipe">打开配方库</Link>} /></div></div>;
 }
-export function WorkspaceBar() {
+export function WorkspaceBar({ showNavigation = true }: { showNavigation?: boolean } = {}) {
   const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, busy, previewError, error, saveDoc, saveState, retrySave, setError } = useWorkspace();
   const { pathname } = useLocation();
   useEffect(() => () => setError(""), [pathname, setError]);
   const choices = [...list.map(r => ({ id:r.id, name:r.name })), ...drafts.filter(w => !list.some(r => r.id === w.doc.id)).map(w => ({ id:w.doc.id, name:w.doc.name }))];
   const publish = data?.workspace.publish;
-  return <><div className="wp-workbench-bar"><label className="wp-recipe-picker"><select className="input" aria-label="当前配方" title="当前配方" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <Badge tone={data.productionVersion ? "ok" : "warn"}>{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge>}{data && publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}<span className="wp-save-state" title={data ? `候选 v${doc?.version} · 修订 ${data.workspace.revision}` : undefined}><Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge></span>{saveState === "failed" && <Button size="sm" onClick={retrySave}>重试保存</Button>}<Link className="btn" to="/recipe">配方库</Link></div>
-    <Steps />
+  return <>{showNavigation && <><div className="wp-workbench-bar"><label className="wp-recipe-picker"><select className="input" aria-label="当前配方" title="当前配方" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <Badge tone={data.productionVersion ? "ok" : "warn"}>{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge>}{data && publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}<span className="wp-save-state" title={data ? `候选 v${doc?.version} · 修订 ${data.workspace.revision}` : undefined}><Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge></span>{saveState === "failed" && <Button size="sm" onClick={retrySave}>重试保存</Button>}<Link className="btn" to="/recipe">配方库</Link></div><Steps /></>}
+    {!showNavigation && saveState === "failed" && <Notice title="候选保存失败" tone="warn"><Button size="sm" onClick={retrySave}>重试保存</Button></Notice>}
     {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><Button size="sm" variant="outlined" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</Button></Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
@@ -94,6 +94,7 @@ function HeadingLayer({ guide, size, screenPx }: { guide: HeadingGuide; size: [n
     {guide.sector && <path aria-label="搜索扇区" d={wedgePath(c, radii, guide.sector)} fill="var(--primary)" fillOpacity={.1} stroke="var(--primary)" strokeWidth={1} strokeDasharray="3 4" vectorEffect="non-scaling-stroke" />}
     {guide.range && <path aria-label="本段方向范围" d={wedgePath(c, radii, guide.range)} fill="var(--warn)" fillOpacity={.22} stroke="var(--warn)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
     {guide.fallback != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.fallback); return <line aria-label="回退方向" x1={nx} y1={ny} x2={x} y2={y} stroke="var(--ok)" strokeWidth={2} strokeDasharray="8 4" vectorEffect="non-scaling-stroke" />; })()}
+    {guide.measured != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.measured); return <line aria-label="实测方向" x1={nx} y1={ny} x2={x} y2={y} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />; })()}
     <g aria-label={guide.calibrated ? "出胶点（已标定）" : "出胶点（走廊推算）"} stroke={guide.calibrated ? "var(--ok)" : "var(--warn)"} strokeWidth={2}>
       <line x1={nx - arm} y1={ny} x2={nx + arm} y2={ny} vectorEffect="non-scaling-stroke" />
       <line x1={nx} y1={ny - arm} x2={nx} y2={ny + arm} vectorEffect="non-scaling-stroke" />

@@ -151,14 +151,8 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
         </Alert>}
         <Text as="p" variant="label" muted>进入离线时会将外部样本复制到资料目录，保留源文件；之后使用已导入副本。</Text>
       </>}
-      <Alert title="进入离线会临时切换：">
-        <ul style={{ margin: "6px 0", paddingLeft: 20 }}>
-          <li>PLC → 进程内 S7 服务</li>
-          <li>相机组 → 按{sourceLabel[kind]}生成</li>
-          <li>测量 → {kind === "sampleSet" ? "lyFlow" : "模拟测量"}</li>
-          <li>帧录制 → 保留全部；候选调试引用样本原图，不重复录制</li>
-        </ul>
-        <span className="muted">退出离线后全部恢复为真机配置。离线期间 PLC 与相机组配置只读。</span>
+      <Alert title="离线模式">
+        使用{sourceLabel[kind]}和进程内 S7 服务，{kind === "sampleSet" ? "通过 lyFlow 测量" : "使用模拟测量"}。离线帧录制保留全部，候选调试引用样本原图。离线期间 PLC 与相机组配置只读，退出后恢复真机配置。
       </Alert>
       <div>
         <Button variant="filled" leadingIcon={<LogIn size={15} />} onClick={enter} disabled={busy || !ready}>进入离线</Button>

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Bug, Camera, Cable, ChevronRight, FlaskConical, GitBranch, Play, RefreshCw, ScanEye, Wrench, type LucideIcon } from "lucide-react";
-import { Alert, Card, Heading, IconButton, Stack, StatusBadge } from "qing-steel";
+import { Alert, Card, Chip, Heading, IconButton, Stack, StatusBadge } from "qing-steel";
 import { cameraApi } from "../features/camera";
 import { linkStateLabels, plcApi, subscribe } from "../features/plc";
 import { recipeApi, siteApi, siteModeText } from "../features/cycle";
@@ -49,9 +49,9 @@ function ReadError({ state }: { state: Resource<unknown> }) {
 
 const journeys: { title: string; detail: string; icon: LucideIcon; action: string; path: string; links: [string, string][]; production?: boolean }[] = [
   { title: "首次建站", detail: "接入设备，完成采集示教与验证发布", icon: Wrench, action: "配置采集设备", path: "/camera", links: [["相机接入", "/camera"], ["PLC 通讯", "/plc"], ["标定", "/camera/calibration"], ["建立配方", "/recipe"]] },
-  { title: "日常生产", detail: "开工条件与当前工件状态以在线检测为准", icon: ScanEye, action: "进入在线检测", path: "/inspect", production: true, links: [["核对开工条件", "/inspect"], ["监看检测", "/inspect"], ["查看历史", "/history"]] },
-  { title: "缺陷排查", detail: "先查历史的区域结果与各相机帧、原图，再选择候选复测", icon: Bug, action: "打开历史记录", path: "/history", links: [["定位工件与帧组", "/history"], ["选择候选", "/recipe"], ["调整示教", "/recipe/teach"]] },
-  { title: "配置变更", detail: "候选示教、标定后发布；在途工件保持原快照", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["采集 / 示教", "/recipe/capture"], ["验证与发布", "/recipe/validation"], ["核对 PLC 对接参数", "/recipe"]] },
+  { title: "日常生产", detail: "核对开工条件，监看工件检测结果", icon: ScanEye, action: "进入在线检测", path: "/inspect", production: true, links: [["核对开工条件", "/inspect"], ["监看检测", "/inspect"], ["查看历史", "/history"]] },
+  { title: "缺陷排查", detail: "查看异常工件原图，选择候选配方复测", icon: Bug, action: "打开历史记录", path: "/history", links: [["定位工件与帧组", "/history"], ["选择候选", "/recipe"], ["调整示教", "/recipe/teach"]] },
+  { title: "配置变更", detail: "调整候选配方，完成示教、标定与发布", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["采集 / 示教", "/recipe/capture"], ["验证与发布", "/recipe/validation"], ["核对 PLC 型号", "/recipe"]] },
 ];
 
 export default function OperationGuidePage() {
@@ -68,6 +68,7 @@ export default function OperationGuidePage() {
   const failed = drafts.data?.filter(draft => ["failed", "uncertain"].includes(draft.publish.state)).length;
   const offline = site.data?.mode === "offline";
   const sampleMode = offline && site.data?.source === "sampleSet";
+  const plcMessage = plc.data?.message?.trim();
   const workflows = offline ? [
     { title: "离线准备", detail: "使用临时相机组和本机 S7 服务，不代表真实设备验收", icon: Wrench, action: "查看离线来源", path: "/offline", links: [["选择样本集", "/offline"], ["选择候选", "/recipe"], ["采集 / 示教", "/recipe/capture"]] as [string, string][] },
     { title: sampleMode ? "候选离线试运行" : "合成流程演练", detail: sampleMode ? "无需发布，用已保存候选跑整圈；结果标记为调试，不计入生产统计" : "合成图用于协议与流程演练；候选图像调试需先切换离线样本集", icon: ScanEye, action: sampleMode ? "打开候选试运行" : "打开离线演练", path: sampleMode ? "/inspect" : "/offline", production: true, links: [[sampleMode ? "候选试运行" : "离线演练", sampleMode ? "/inspect" : "/offline"], ["查看整圈流程", "/inspect"], ["查看历史", "/history"]] as [string, string][] },
@@ -86,20 +87,19 @@ export default function OperationGuidePage() {
       <StatusCard title="PLC 通讯" icon={Cable} status={<StatusBadge tone={plc.data?.state === "connected" ? "ok" : "off"}>{plc.data ? linkStateLabels[plc.data.state] : unavailable(plc)}</StatusBadge>} links={[["PLC 通讯", "/plc"], ["通讯日志", "/plc-logs"]]}>
         <div className="guide-value"><span>通讯协议</span><strong>Siemens S7</strong></div>
         {offline && <p className="muted">当前连接本机离线 S7 服务，非真实 PLC。</p>}
-        <p className="guide-plc-message">{plc.data?.message || (plc.data ? "检查工件开始、布防、结果与确认点位" : unavailable(plc))}</p>
+        {plc.data && plcMessage && plcMessage !== linkStateLabels[plc.data.state] && <p className="guide-plc-message">{plcMessage}</p>}
         <ReadError state={plc} />
       </StatusCard>
-      <StatusCard title="配方版本" icon={FlaskConical} status={<StatusBadge tone="off">{recipes.data ? recipes.data.errors.length ? "部分读取失败" : `${recipes.data.recipes.length} 个已发布` : unavailable(recipes)}</StatusBadge>} links={[["打开配方库", "/recipe"]]}>
-        <div className="guide-value"><span>已加载候选</span><strong>{drafts.data ? `${drafts.data.length} 个` : unavailable(drafts)}</strong></div>
-        <p className="muted">版本数量为配方库总数，当前模式的运行条件需另行核对。</p>
-        {drafts.data && <div className="guide-value"><span>已加载发布</span><strong>{failed || pending ? `${pending} 个待生效 · ${failed} 个需处理` : "无待生效版本"}</strong></div>}
+      <StatusCard title="配方版本" icon={FlaskConical} status={<Chip>{recipes.data ? recipes.data.errors.length ? "部分读取失败" : `已发布 ${recipes.data.recipes.length} 个` : unavailable(recipes)}</Chip>} links={[["打开配方库", "/recipe"]]}>
+        <div className="guide-value"><span>候选配方</span><strong>{drafts.data ? `${drafts.data.length} 个` : unavailable(drafts)}</strong></div>
+        {drafts.data && <div className="guide-value"><span>发布队列</span><strong>{failed || pending ? `${pending} 个待生效 · ${failed} 个需处理` : "无待生效版本"}</strong></div>}
         <ReadError state={recipes} /><ReadError state={drafts} />{recipes.data?.errors.map((error, i) => <Alert tone="ng" key={i}>{error}</Alert>)}
       </StatusCard>
     </div>
     <div className="guide-section-heading"><h2>工作流</h2></div>
     <div className="guide-journeys">{workflows.map(({ title, detail, icon: Icon, action, path, links, production }) => <Card role="region" level={production ? "mid" : "low"} className={`guide-journey${production ? " production" : ""}`} aria-label={title} key={title}>
       <div className="guide-journey-title"><span className="guide-icon"><Icon size={22} /></span><div><h3>{title}</h3><p>{detail}</p></div></div>
-      <nav aria-label={`${title}步骤`}><ol>{links.map(([label, target], i) => <li key={label}><Link to={target}><span>{i + 1}</span>{label}</Link>{i < links.length - 1 && <ChevronRight size={13} aria-hidden="true" />}</li>)}</ol></nav>
+      <details className="guide-journey-steps"><summary>查看步骤</summary><nav aria-label={`${title}步骤`}><ol>{links.map(([label, target], i) => <li key={label}><Link to={target}><span>{i + 1}</span>{label}</Link>{i < links.length - 1 && <ChevronRight size={13} aria-hidden="true" />}</li>)}</ol></nav></details>
       <Link className={`qs-btn guide-primary-action${production ? "" : " tonal"}`} to={path}>{production && <Play size={15} />}{action}</Link>
     </Card>)}</div>
   </div>;

@@ -180,11 +180,10 @@ export default function InspectPage() {
         <OfflineControls readiness={readiness} refresh={refreshReadiness} publishedSection={offlineSample} candidateRunning={!!snapshot?.candidateDebug} />
         {showReset && (
           <>
-            <ContextHelp label="复位条件">{site?.mode === "offline" ? "离线：由离线产线自动复位" : "真机：软件复位由 PC 置复位请求，PLC 在 10 s 内回空闲即完成，未响应可重新发起；PLC 也可在现场发起复位。复位条件不满足时右侧显示原因"}</ContextHelp>
+            <ContextHelp label="复位条件">{site?.mode === "offline" ? "离线产线自动复位。" : "软件复位请求 PLC 在 10 秒内返回空闲；未响应可重新发起，也可在现场由 PLC 复位。"}</ContextHelp>
             <Button onClick={() => setConfirmReset(true)} disabled={action !== null || !!resetBlockedReason} title={resetBlockedReason || undefined} loading={action === "reset"} leadingIcon={<RotateCcw size={15} />}>
               {action === "reset" ? "复位中…" : "软件复位"}
             </Button>
-            {(resetBlockedReason || resetPendingCheck) && <span className="muted" role="note">{resetBlockedReason ? `不能复位：${resetBlockedReason}` : "复位条件核对中"}</span>}
           </>
         )}
       </div>
@@ -198,7 +197,7 @@ export default function InspectPage() {
       </Alert>}
       <CollectionProgressPanel collection={snapshot?.collection} recipes={recipes} />
       <TrialProgressPanel trial={snapshot?.trial} recipes={recipes} />
-      <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
+      <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} resetBlockedReason={showReset ? resetBlockedReason : ""} resetPendingCheck={showReset && resetPendingCheck} />
 
       <div className="prod-body">
         <div className="prod-main burst">
@@ -323,7 +322,7 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
         </> : <>
           <div className="big">—</div>
           <div className="t">暂无检测结果</div>
-          <div className="d">{phase === "FAULT" ? "设备故障，复位后继续接收工件" : "等待工件"}</div>
+          {phase !== "FAULT" && <div className="d">等待工件</div>}
         </>}
       </Fragment>
     </section>

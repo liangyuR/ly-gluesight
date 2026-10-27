@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { RecipeDoc } from "../src/features/cycle/types";
 import type { CameraTeachDraft } from "../src/features/plan/types";
-import { confirmedSegmentRange, draftKey, sameCorridor, savedDraft, withCorridor } from "../src/features/workspace/teach";
+import { confirmedSegmentRange, corridorStationError, draftKey, sameCorridor, savedDraft, stationCount, withCorridor } from "../src/features/workspace/teach";
+import { pathLength } from "../src/features/workspace/teachingPath";
 const draft = (over: Partial<CameraTeachDraft> = {}): CameraTeachDraft => ({ corridor: [[10, 30], [90, 30]], mmPerPx: 0.1, detect: null, window: null, ...over });
 
 describe("走廊示教草稿", () => {
@@ -38,5 +39,21 @@ describe("走廊示教草稿", () => {
   ])("段帧组范围：%s", (_, status, segment, expected) => {
     const segments = [{ index: 1 }, { index: 2 }, { index: 3 }];
     expect(confirmedSegmentRange({ status, cuts: [10, 20], groupCount: 30 }, segments, segment)).toEqual(expected);
+  });
+
+  // 防的回归：站数与后端 station_count 不一致（刚好两倍站距的走廊被拦下，或两站的走廊被放过，lyFlow 会把有胶测成无胶）；
+  // 给出的站距或走廊长度照做后仍不够三站（含 0.3 × 2 这类浮点误差）
+  it.each<[string, [number, number][], number, { n: number; max: number; need: number } | null]>([
+    ["走廊刚好两倍站距 → 三站，可保存", [[10, 30], [90, 30]], 4, null],
+    ["走廊略短于两倍站距 → 两站", [[10, 30], [90, 30]], 4.1, { n: 2, max: 4, need: 8.2 }],
+    ["站距 0.3 mm、极短走廊 → 两站", [[10, 30], [15, 30]], .3, { n: 2, max: .2, need: .6 }],
+  ])("站数校验：%s", (_, corridor, spacing, expected) => {
+    const message = corridorStationError(draft({ corridor }), spacing);
+    if (!expected) { expect(message).toBe(""); return; }
+    expect(message).toContain(`只有 ${expected.n} 站`);
+    expect(message).toContain(`不大于 ${expected.max} mm`);
+    expect(message).toContain(`不短于 ${expected.need} mm`);
+    expect(stationCount(pathLength(corridor), .1, expected.max)).toBeGreaterThanOrEqual(3);
+    expect(stationCount(expected.need / .1, .1, spacing)).toBeGreaterThanOrEqual(3);
   });
 });

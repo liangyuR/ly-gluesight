@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -42,4 +42,22 @@ it("维护件 → 采集件标“维护采集·未判定”不显示成 ERR，�
   expect(collect).toHaveTextContent("维护采集·未判定");
   expect(collect).not.toHaveTextContent("ERR · 未测成");
   expect((await row(2)).closest("tr")).toHaveTextContent("试判 NG · 断胶");
+});
+
+it("离线记录重置筛选 → 清空查询条件并保持离线来源", async () => {
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "history_query") return { total: 0, counts: { ok: 0, excursion: 0, ng: 0, err: 0 }, items: [] };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await userEvent.click(screen.getByRole("button", { name: "离线件" }));
+  await userEvent.type(screen.getByRole("textbox", { name: "历史 SN" }), "OFFLINE-1");
+  await userEvent.click(screen.getByRole("button", { name: /^NG$/ }));
+  await userEvent.click(screen.getByRole("button", { name: "重置筛选" }));
+  expect(screen.getByRole("textbox", { name: "历史 SN" })).toHaveValue("");
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "history_query").at(-1)?.[1]).toEqual({
+    query: expect.objectContaining({ scope: "offline", sn: "", recipeId: null, modes: [], verdicts: [], offset: 0 }),
+  }));
+  expect(screen.getByText(/离线共/)).toBeVisible();
 });

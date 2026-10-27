@@ -34,6 +34,14 @@ beforeEach(() => {
 });
 
 describe("历史详情（段配方记录）", () => {
+  it("维护采集记录 → 摘要显示未判定而不是 ERR", async () => {
+    detail.summary.mode = "maintenanceCollect";
+    detail.summary.verdict = "ERR_INSPECT";
+    show();
+    const summary = await screen.findByRole("region", { name: "历史记录摘要" });
+    expect(summary).toHaveTextContent("维护采集·未判定");
+    expect(summary).not.toHaveTextContent("ERR");
+  });
   it("按区域展示结果，原图按 (相机, seq) 读取；缺帧的相机没有原图可读", async () => {
     show();
     const regions = within(await screen.findByRole("list", { name: "区域" }));

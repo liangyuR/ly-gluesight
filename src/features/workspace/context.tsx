@@ -9,7 +9,7 @@ import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import type { CameraTeachDraft } from "../plan/types";
 import type { Workspace, WorkspaceView } from "./types";
-import { draftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
+import { corridorStationError, draftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
 import { useSnackbar, type SnackbarMessage } from "qing-steel";
 import "./workspace.css";
 
@@ -201,8 +201,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!data || !doc || busy || !desktopAvailable()) return;
-    const corridor = Object.entries(corridorDrafts).find(([key, draft]) => !sameCorridor(draft, savedCorridor(key)));
-    if (!dirty && !corridor) { setSaveState("saved"); return; }
+    // 按站距不足三站的走廊草稿不自动保存（lyFlow 会把有胶的帧测成无胶），原因在示教页显示
+    const corridor = Object.entries(corridorDrafts).find(([key, draft]) => !sameCorridor(draft, savedCorridor(key)) && !corridorStationError(draft, doc.spacing));
+    if (!dirty && !corridor) { setSaveState(frameDirty ? "pending" : "saved"); return; }
     const signature = JSON.stringify([doc, corridor, saveRetry]);
     if (failedSave.current === signature) return;
     setSaveState("pending");
@@ -215,7 +216,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       else { failedSave.current = ""; setSaveState("saved"); }
     }, 900);
     return () => clearTimeout(timer);
-  }, [doc, data, corridorDrafts, dirty, busy, saveRetry, act]);
+  }, [doc, data, corridorDrafts, dirty, frameDirty, busy, saveRetry, act]);
 
   return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || preferenceError || recipeErrors, busy, dirty, frameDirty,
     clearSelection:()=>{pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setError("");clearSnack();},

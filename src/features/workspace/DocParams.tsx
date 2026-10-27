@@ -1,9 +1,6 @@
 import { NumberField, Switch, TextField } from "qing-steel";
-import { DetectEditor } from "../recipe";
 import type { RecipeDoc } from "../cycle/types";
 import { useWorkspace } from "./context";
-
-const noChanges = new Set<string>();
 
 /**
  * 配方级参数的就地编辑（原“默认参数”页拆分到用到它们的页面，D-SB-44 后续）：改动交给工作台的候选自动保存（setDoc）。
@@ -14,22 +11,6 @@ function useDocField() {
   const frozen = !!data?.workspace.pending;
   const set = <K extends keyof RecipeDoc>(key: K, value: RecipeDoc[K]) => { if (doc) setDoc({ ...doc, [key]: value }); };
   return { doc, set, disabled: busy || frozen };
-}
-
-/** 走廊测量的默认参数：站距与检测参数（相机没单独设置检测参数时用）。走廊示教页。 */
-export function MeasureDefaults({ locked = "" }: { locked?: string }) {
-  const { doc, set, disabled } = useDocField();
-  if (!doc) return null;
-  const off = disabled || !!locked;
-  return <details className="wp-doc-params" aria-label="所有相机的默认测量参数">
-    <summary>所有相机的默认测量参数<small className="muted">站距 {doc.spacing} mm · 搜索半宽 {doc.detect.searchMm} mm</small></summary>
-    <fieldset disabled={off} className="wp-plain-fieldset">
-      <p className="muted">相机没单独设置检测参数时用这里的值；站距决定沿走廊每隔多少 mm 量一站。改动只影响此后的测量。{locked && ` ${locked}`}</p>
-      <NumberField label="站距" unit="mm" aria-label="站距" step={0.5} min={0.1} value={doc.spacing} disabled={off}
-        onValueChange={value => set("spacing", value === "" ? NaN : value)} />
-      <DetectEditor value={doc.detect} changed={noChanges} disabled={off} onChange={value => set("detect", value)} />
-    </fieldset>
-  </details>;
 }
 
 /** 配方名称与 PLC 型号。工件总览页。 */

@@ -115,20 +115,20 @@ it("手工落点并自动保存 → 保存期间保留缩放与走廊、不能�
   const image = await screen.findByRole("img", { name: CAM2 });
   await user.click(screen.getByRole("button", { name: "放大原图" }));
   const transform = image.querySelector("g")!.getAttribute("transform");
-  for (const [clientX, clientY] of [[10, 10], [20, 20]]) {
+  for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
     fireEvent.pointerDown(image, { clientX, clientY });
     fireEvent.pointerUp(image);
   }
   const editButton = screen.getByRole("button", { name: "点柄" });
   const point = screen.getByLabelText("中线点 2");
-  fireEvent.pointerDown(point, { clientX: 20, clientY: 20 });
+  fireEvent.pointerDown(point, { clientX: 40, clientY: 40 });
   act(() => { vi.advanceTimersByTime(900); }); // 自动保存防抖到期，保存请求挂起
   expect(screen.getByText("保存中")).toBeVisible();
   expect(screen.getByRole("button", { name: "点柄" })).toBe(editButton);
   expect(editButton).toBeDisabled();
   expect(screen.getByLabelText("中线点 2")).toBe(point);
   fireEvent.pointerMove(image, { clientX: 30, clientY: 30 });
-  expect(point).toHaveAttribute("cx", "20");
+  expect(point).toHaveAttribute("cx", "40");
   fireEvent.pointerUp(image);
   fireEvent.pointerDown(image, { clientX: 30, clientY: 30 });
   fireEvent.pointerUp(image);
@@ -138,10 +138,10 @@ it("手工落点并自动保存 → 保存期间保留缩放与走廊、不能�
   expect(editButton).toBeEnabled();
   expect(screen.getByRole("img", { name: CAM2 })).toBe(image);
   expect(image.querySelector("g")).toHaveAttribute("transform", transform);
-  expect(screen.getByLabelText("中线点 2")).toHaveAttribute("cx", "20");
+  expect(screen.getByLabelText("中线点 2")).toHaveAttribute("cx", "40");
   // 整份配方只改了这台相机这一段：相机参数与别的相机原样提交
   const [{ doc }] = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
-  expect(doc.inspect![1]).toEqual({ ...candidate.workspace.doc.inspect![1], segments: [{ segment: 1, corridor: [[10, 10], [20, 20]] }] });
+  expect(doc.inspect![1]).toEqual({ ...candidate.workspace.doc.inspect![1], segments: [{ segment: 1, corridor: [[10, 10], [40, 40]] }] });
   expect([doc.inspect![0], doc.inspect![2]]).toEqual([candidate.workspace.doc.inspect![0], candidate.workspace.doc.inspect![2]]);
 });
 

@@ -35,13 +35,64 @@ export function cameraParamsError(t: Pick<CameraTeachDraft, "mmPerPx" | "detect"
   return "";
 }
 
-/** 走廊草稿能否保存为“已示教”：相机参数可用，走廊至少两点、坐标为有限数、长度不为零。返回错误说明，空串表示可以。 */
-export function corridorError(t: CameraTeachDraft) {
+/** 走廊草稿能否保存为“已示教”：相机参数可用，走廊至少两点、坐标为有限数、长度不为零，按配方站距至少三站。返回错误说明，空串表示可以。 */
+export function corridorError(t: CameraTeachDraft, spacingMm: number) {
   const params = cameraParamsError(t);
   if (params) return params;
   if (t.corridor.some(p => !p.every(Number.isFinite))) return "走廊坐标必须是有限数";
   if (t.corridor.length < 2 || pathLength(t.corridor) < 1) return "走廊至少两个点、长度不能为零";
-  return "";
+  return corridorStationError(t, spacingMm);
+}
+
+/** 测量最少站数，与后端 plan_corridor 一致：lyFlow 少于 3 站时不报错，但把有胶的帧测成无胶。 */
+export const MIN_STATIONS = 3;
+const MIN_SPACING_MM = 0.1;
+
+/** 走廊按站距重采样的站数（含两端），与后端 station_count 一致（按像素算）。 */
+export function stationCount(lengthPx: number, mmPerPx: number, spacingMm: number) {
+  const step = spacingMm / mmPerPx;
+  return Math.floor(Math.round(lengthPx * 1000) / 1000 / step + 1e-6 / step) + 1;
+}
+
+/** 让这条走廊够三站的最大站距（mm，取 0.1 mm 的整数倍）；走廊太短、站距到下限也不够时为 null。 */
+function maxSpacing(lengthPx: number, mmPerPx: number) {
+  let spacing = Math.floor(lengthPx * mmPerPx / (MIN_STATIONS - 1) * 10) / 10;
+  if (spacing >= MIN_SPACING_MM && stationCount(lengthPx, mmPerPx, spacing) < MIN_STATIONS) spacing = Math.round((spacing - .1) * 10) / 10;
+  return spacing >= MIN_SPACING_MM ? spacing : null;
+}
+
+const fixed = (value: number) => Number(value.toFixed(1));
+
+/** 站数不足时的说明：实际站数、能用的最大站距或需要的走廊长度；站距或当量无效时不判（另有校验）。 */
+export function corridorStationError(t: Pick<CameraTeachDraft, "corridor" | "mmPerPx">, spacingMm: number) {
+  const scale = t.mmPerPx;
+  if (!(scale != null && scale > 0 && Number.isFinite(spacingMm) && spacingMm > 0) || t.corridor.length < 2) return "";
+  const lengthPx = pathLength(t.corridor);
+  const n = stationCount(lengthPx, scale, spacingMm);
+  if (n >= MIN_STATIONS) return "";
+  const max = maxSpacing(lengthPx, scale);
+  return `按站距 ${spacingMm} mm，这条走廊（${fixed(lengthPx * scale)} mm）只有 ${n} 站，至少要 ${MIN_STATIONS} 站：`
+    + `${max != null ? `把站距改到不大于 ${max} mm，或` : ""}把走廊画到不短于 ${fixed(Math.ceil((MIN_STATIONS - 1) * spacingMm * 10 - 1e-9) / 10)} mm`;
+}
+
+/** 改站距前检查候选里已保存的各条段走廊，返回站数不足的走廊里要求最严的一条的说明；都够返回空串。 */
+export function spacingError(doc: RecipeDoc, spacingMm: number) {
+  if (!(Number.isFinite(spacingMm) && spacingMm >= MIN_SPACING_MM && spacingMm <= 10)) return "站距需在 0.1–10 mm 之间";
+  const short = (doc.inspect ?? []).flatMap(inspect => {
+    const scale = inspect.mmPerPx;
+    if (!(scale != null && scale > 0)) return [];
+    return (inspect.segments ?? []).flatMap(item => {
+      if (item.corridor.length < 2) return [];
+      const lengthPx = pathLength(item.corridor);
+      const n = stationCount(lengthPx, scale, spacingMm);
+      return n < MIN_STATIONS ? [{ camera: inspect.camera, segment: item.segment, lengthMm: lengthPx * scale, n, max: maxSpacing(lengthPx, scale) }] : [];
+    });
+  });
+  if (!short.length) return "";
+  const worst = short.reduce((a, b) => (b.max ?? 0) < (a.max ?? 0) ? b : a);
+  return `站距 ${spacingMm} mm 时，${worst.camera} 第 ${worst.segment} 段走廊（${fixed(worst.lengthMm)} mm）只有 ${worst.n} 站，至少要 ${MIN_STATIONS} 站：`
+    + (worst.max != null ? `站距需不大于 ${worst.max} mm` : "这条走廊太短，需重新示教")
+    + (short.length > 1 ? `（共 ${short.length} 条走廊不足）` : "");
 }
 
 /** 走廊草稿的键（D-SB-45：走廊只按“段 × 检测相机”）：“相机#段号”。 */

@@ -14,7 +14,7 @@ it("PLC 断线且保留未结事务 → 不展示旧状态和旧数值，阶段�
     handshake={{ phase: "fault", requestSeq: 17, resultSeq: null, message: "S7 PLC 未连接；保留未结事务，重连后需复位" }} />);
 
   expect(screen.getByText("重连后需复位")).toBeVisible();
-  expect(screen.getByText("PLC 未连接，信号不显示")).toBeVisible();
+  expect(screen.getByText("连接后显示信号")).toBeVisible();
   expect(screen.queryByRole("group", { name: "PLC 生产寄存器" })).toBeNull();
   expect(screen.queryByText("17")).toBeNull();
   expect(screen.queryByText("A24-000123")).toBeNull();

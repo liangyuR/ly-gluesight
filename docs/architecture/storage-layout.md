@@ -2,6 +2,8 @@
 
 Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘符。正式版使用 `%ProgramData%\ly\GlueSight`，开发版使用 `%ProgramData%\ly\GlueSight-dev`。两套资料独立，不自动同步。程序、运行库和源码不属于资料目录。
 
+将运行日志和历史原图集中到 `~/gs_logs` 的调研、项目资产边界及迁移影响见[运行日志与视觉存储调研](log-storage-research.md)，该方案尚未实施。
+
 ## 初始化与日常运行
 
 正式安装包采用整机安装，一次性提权创建并授权资料目录；日常运行不需要管理员权限。升级、卸载保留资料。

@@ -97,7 +97,7 @@ export default function FeasibilityCalc({ sources: given = {}, imageSize }: { so
     ["相邻视野重叠", `${overlap.toFixed(0)} mm（需 ≥ 20 mm 同框余量）`, overlap >= 20],
     ["该配置允许的最高速度", `${vMax.toFixed(0)} mm/s（模糊限 ${vBlur.toFixed(0)} · 帧率限 ${vFps.toFixed(0)}）`, v.speed <= vMax],
   ];
-  const status = missing.length ? `还缺：${missing.join("、")}` : !valid ? "数值过大，请降低数量级后再核算" : rows.every(row => row[2]) ? "按当前数值满足飞拍条件" : "按当前数值存在未满足项";
+  const status = missing.length === fields.length ? "填写参数后核算飞拍条件" : missing.length ? `还缺：${missing.join("、")}` : !valid ? "数值过大，请降低数量级后再核算" : rows.every(row => row[2]) ? "按当前数值满足飞拍条件" : "按当前数值存在未满足项";
 
   return (
     <Card title={<div className="calc-title"><Heading level={3}>飞拍模拟</Heading><ContextHelp label="飞拍模拟说明">核算按这组速度、曝光和拍照点间距飞拍时，图像会不会拖影、相机来不来得及、相邻视野是否连续。</ContextHelp></div>}>
@@ -126,7 +126,7 @@ export default function FeasibilityCalc({ sources: given = {}, imageSize }: { so
             <div key={label} className={i === rows.length - 1 ? "big" : ""}>
               <span>{label}</span>
               <b className="mono">{valid ? value : "—"}</b>
-              <StatusBadge tone={!valid ? "off" : ok ? "ok" : "ng"}>{!valid ? "待核算" : ok ? "满足" : "不满足"}</StatusBadge>
+              {valid && <StatusBadge tone={ok ? "ok" : "ng"}>{ok ? "满足" : "不满足"}</StatusBadge>}
             </div>
           ))}
         </div>
