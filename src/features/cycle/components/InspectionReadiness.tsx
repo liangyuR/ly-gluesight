@@ -6,13 +6,15 @@ import ReadinessChecklist from "./ReadinessChecklist";
 
 const statusTone = { fault: "fault", busy: "info", waiting: "warn", unknown: "warn", blocked: "ng", ready: "ok" } as const;
 
-export default function InspectionReadiness({ snapshot, readiness, status: loadStatus, error, onDiagnostics, offlineSample = false }: {
+export default function InspectionReadiness({ snapshot, readiness, status: loadStatus, error, onDiagnostics, offlineSample = false, resetBlockedReason, resetPendingCheck }: {
   offlineSample?: boolean;
   snapshot: Snapshot | null;
   readiness: Readiness | null;
   status?: ReadinessLoadStatus;
   error?: string | null;
   onDiagnostics?: () => void;
+  resetBlockedReason?: string;
+  resetPendingCheck?: boolean;
 }) {
   if (offlineSample && readiness) {
     const items = readiness.items.filter(item => item.key !== "recipe");
@@ -47,7 +49,11 @@ export default function InspectionReadiness({ snapshot, readiness, status: loadS
       <StatusBadge tone={statusTone[status]}>{label}</StatusBadge>
     </div>
     {offlineSample && <p className="muted">候选示教与样本匹配在启动试运行时检查；生产发布条件不用于候选调试。</p>}
-    {faulted && <Alert tone="fault">{snapshot.fault || "设备故障，请检查设备并复位"}</Alert>}
+    {faulted && <Alert tone="fault">
+      {snapshot.fault || "设备故障，请检查设备并复位"}
+      {resetBlockedReason && (snapshot.fault?.includes(resetBlockedReason) ? <> · 当前不能复位</> : <> · 不能复位：{resetBlockedReason}</>)}
+      {resetPendingCheck && <> · 复位条件核对中</>}
+    </Alert>}
     {failed && <Alert tone="warn">
       {busy || faulted ? "开工条件更新失败；" : ""}{readiness ? "下列条件为上次报告，仅供参考" : "暂时无法确认开工条件"}
       {error && <details><summary>查看更新错误</summary><p>{error}</p></details>}

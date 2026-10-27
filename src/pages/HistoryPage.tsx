@@ -79,6 +79,10 @@ export default function HistoryPage() {
   const page = result && !(stale && error) ? result.page : null;
   const pending = stale && !!page;
   const shownScope = page ? result!.query.scope : scope;
+  const hasFilters = range !== "today" || groups.length > 0 || mode !== "all" || !!sn || !!recipeId;
+  const resetFilters = () => {
+    setRange("today"); setGroups([]); setMode("all"); setSn(""); setRecipeId(""); setOffset(0);
+  };
   const navigate = (to: string) => go(to, { state: { query: result?.query ?? query } });
 
   useEffect(() => {
@@ -199,16 +203,16 @@ export default function HistoryPage() {
     { key: "drain", header: "收尾", render: (p) => <span className="mono nowrap">{p.drainMs != null ? `${p.drainMs} ms` : "—"}</span> },
   ];
 
-  const c = page?.counts;
   return (
     <div className="hist-page">
       <Card className="hist-filters">
         <Stack direction="column" align="stretch" gap={10}>
-          <Stack justify="space-between" gap={12}>
-            <Stack gap={12}>
+          <Stack gap={12}>
               <SegmentedControl label="记录来源" options={scopeOptions} value={scope} onValueChange={(value) => { setScope(value as HistoryScope); setOffset(0); }} />
               <SegmentedControl label="记录日期" options={rangeOptions} value={range} onValueChange={(value) => { setRange(value); setOffset(0); }} />
               <SegmentedControl label="检测模式" options={modeOptions} value={mode} onValueChange={(value) => { setMode(value); setOffset(0); }} />
+          </Stack>
+          <div className="hist-filter-options">
               <Stack gap={8}>
                 <Text variant="label" muted>结果</Text>
                 {verdictGroups.map((g) => (
@@ -223,7 +227,7 @@ export default function HistoryPage() {
                   </Chip>
                 ))}
               </Stack>
-              <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} />
+              <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="筛选 SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} />
               <Select
                 id="history-recipe"
                 aria-label="历史配方"
@@ -232,7 +236,17 @@ export default function HistoryPage() {
                 options={[{ value: "", label: "全部配方" }, ...recipes.map((r) => ({ value: r.id, label: r.id }))]}
                 onValueChange={(value) => { setRecipeId(value); setOffset(0); }}
               />
-            </Stack>
+              {hasFilters && <Button variant="text" size="sm" onClick={resetFilters}>重置筛选</Button>}
+          </div>
+          <div className="hist-toolbar">
+            <div className={`hist-counts${pending ? " is-loading" : ""}`} aria-busy={pending}>
+              <span>{shownScope === "debug" ? "候选调试" : shownScope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
+              <span>OK <b className="c-ok">{page?.counts.ok ?? 0}</b></span>
+              <span>局部超差 <b className="c-warn">{page?.counts.excursion ?? 0}</b></span>
+              <span>NG <b className="c-ng">{page?.counts.ng ?? 0}</b></span>
+              <span>ERR <b className="c-err">{page?.counts.err ?? 0}</b></span>
+              {page && page.total > 0 && <span>良率 <b>{(((page.counts.ok + page.counts.excursion) / page.total) * 100).toFixed(1)}%</b></span>}
+            </div>
             <Stack gap={8}>
               <IconButton aria-label="刷新" title="刷新" onClick={load} disabled={loading}><RefreshCw size={16} /></IconButton>
               <Button leadingIcon={<Scale size={15} />} onClick={() => page && setRejudge({ query, total: page.total })} disabled={loading || stale || !page?.total}>批量重判</Button>
@@ -240,18 +254,10 @@ export default function HistoryPage() {
                 {exporting ? "导出中…" : "导出 CSV"}
               </Button>
             </Stack>
-          </Stack>
-          {scope === "debug" && <Alert>候选配方离线调试结果，未发布，不作为生产验收或生产统计。</Alert>}
-          {scope === "offline" && <Alert>离线件来自离线验证（合成图或样本集），与真机件分开统计，不计入真机产量与良率。</Alert>}
-          <div className={`hist-counts${pending ? " is-loading" : ""}`} aria-busy={pending}>
-            <span>{shownScope === "debug" ? "候选调试" : shownScope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
-            <span>OK <b className="c-ok">{c?.ok ?? 0}</b></span>
-            <span>局部超差 <b className="c-warn">{c?.excursion ?? 0}</b></span>
-            <span>NG <b className="c-ng">{c?.ng ?? 0}</b></span>
-            <span>ERR <b className="c-err">{c?.err ?? 0}</b></span>
-            {page && page.total > 0 && <span>良率 <b>{(((c!.ok + c!.excursion) / page.total) * 100).toFixed(1)}%</b></span>}
-            <span className="hist-loading muted" role="status">{loading && stale ? "正在加载历史记录…" : ""}</span>
           </div>
+          {scope === "debug" && <Text as="p" variant="label" muted>候选调试仅供离线测试，不作为生产验收或生产统计。</Text>}
+          {scope === "offline" && <Text as="p" variant="label" muted>离线记录独立统计，不计入真机产量与良率。</Text>}
+          {loading && stale && <Text variant="label" muted role="status">正在加载历史记录…</Text>}
           {exported && (
             <Alert tone="ok" action={<Button variant="text" size="sm" disabled={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</Button>}>
               已导出：<span className="mono">{exported}</span>
@@ -271,7 +277,7 @@ export default function HistoryPage() {
             columns={columns}
             rowKey={(p) => String(p.id)}
             loading={!page && loading}
-            emptyState={page ? <EmptyState icon={<History />} title="没有符合条件的记录" description="调整来源、日期范围、结果或配方筛选后再查。" /> : <></>}
+            emptyState={page ? <EmptyState icon={<History />} title="没有符合条件的记录" description={hasFilters ? "试试扩大日期范围，或重置筛选。" : "当前来源今天暂无记录，可扩大日期范围查看。"} /> : <></>}
           />
         </div>
         {page && page.total > PAGE && (

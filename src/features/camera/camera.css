@@ -8,7 +8,7 @@
 .cam-list > .qs-list { display: flex; flex: 1; gap: 8px; min-width: 0; overflow-x: auto; padding: 2px; scrollbar-width: thin; }
 .cam-list .qs-list-item { flex: 0 0 180px; min-width: 0; }
 .cam-list .qs-list-copy { min-width: 0; }
-.cam-list .qs-list-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cam-list .qs-list-copy small { overflow-wrap: anywhere; white-space: normal; }
 .cam-calib { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cam-calib.ok { color: var(--ok); }
 .cam-calib.warn { color: var(--warn); }

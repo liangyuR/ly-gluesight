@@ -32,7 +32,7 @@ function useNow(intervalMs: number) {
 }
 
 export function OfflineNote() {
-  return <Text as="p" variant="label" muted>PLC 未连接，信号不显示</Text>;
+  return <Text as="p" variant="label" muted>连接后显示信号</Text>;
 }
 
 function Lamp({ tag, label, tone, state, value, extra, details }: {

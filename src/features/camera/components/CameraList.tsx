@@ -54,7 +54,7 @@ export default function CameraList({ configs, statuses, selected, disabled, onSe
         return <ListItem key={config.id} selected={i===selected} disabled={disabled} onClick={()=>onSelect(i)}
           leading={<span className={"dot "+(calib?.tone??state.tone)}/>}
           title={<><strong>{config.name}</strong> <span className="mono muted">{config.id}</span></>}
-          description={calib?<span className={"cam-calib "+calib.tone} title={state.text}>{calib.text}</span>:state.text}/>;
+          description={calib?<span className={"cam-calib "+calib.tone} title={state.text}>{calib.text}</span>:<span title={state.text}>{state.text}</span>}/>;
       })}
     </List>
     {onRefresh&&<Button className="cam-list-refresh" variant="tonal" size="sm" leadingIcon={<RefreshCw size={14}/>} loading={refreshing} disabled={refreshing||disabled} onClick={onRefresh}>刷新</Button>}

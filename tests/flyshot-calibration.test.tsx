@@ -77,3 +77,18 @@ it("单视角相机完成标定 → 按冻结图像更新像素当量与飞拍�
  expect(capture).toHaveBeenCalledWith(0,1);
  expect(invoke).toHaveBeenCalledWith("vision_calibrate",expect.objectContaining({cam:0,view:1,imageId:"calibration-image"}));
 });
+
+it("相机未就绪 → 禁止拍照但可导入离线标定图",async()=>{
+ desktop.on=true;
+ vi.mocked(useRigStatus).mockReturnValue({statuses:[{...status(0),ready:false,message:"相机未连接"}],lastFrame:{}} as ReturnType<typeof useRigStatus>);
+ vi.spyOn(workspaceApi,"stationImport").mockResolvedValue({id:"imported-image",source:"import",capturedAt:1,size:[1280,1024],camera:"CAM-1",view:1} as FrozenImage);
+ vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
+ render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
+ await screen.findByRole("heading",{name:"标定板参数"});
+ expect(screen.getByRole("button",{name:"拍照"})).toBeDisabled();
+ expect(screen.getByRole("button",{name:"导入离线图"})).toBeEnabled();
+ const file=new File(["image"],"calibration.png",{type:"image/png"});
+ file.arrayBuffer=async()=>new TextEncoder().encode("image").buffer;
+ await userEvent.upload(screen.getByLabelText("导入离线图",{selector:"input"}),file);
+ expect(await screen.findByText(/CAM-1 · 离线原图/)).toBeVisible();
+});

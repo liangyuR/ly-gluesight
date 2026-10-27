@@ -14,7 +14,7 @@ import { useWorkspace } from "../../workspace/context";
 import type { Comparison, GrayImage } from "../../workspace/types";
 import { CycleTimeline } from "../../logs";
 import { errorText } from "../../../lib/errors";
-import { displayReason, formatTime, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel, verdictTone } from "../meta";
+import { displayReason, formatTime, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel } from "../meta";
 import { burstSideOf, regionDiffs } from "../replay";
 import type { PartDetail } from "../types";
 import { BurstPartTrace } from "./PartTrace";
@@ -70,6 +70,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
 }) {
   const ws = useWorkspace();
   const s = detail.summary, j = burst.judgement;
+  const verdict = partVerdict(s);
   const groups = useMemo(() => historyGroups(burst), [burst]);
   const lastSeq = groups.at(-1)?.seq ?? 1;
   const [selection, setSelection] = useState({ camera: 0, seq: groups[0]?.seq ?? 1 });
@@ -149,7 +150,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     : frame.status === "missing" ? "这台相机本帧组缺帧，没有原图（检测不完整，不影响 OK/NG）"
       : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;
   return <div className="stack hist-detail">
-    <Card className="detail-head">
+    <Card className="detail-head" role="region" aria-label="历史记录摘要">
       <Stack gap={12} justify="space-between">
         <Stack gap={12}>
           <IconButton onClick={onBack} aria-label="返回历史列表"><ArrowLeft size={18} /></IconButton>
@@ -162,12 +163,12 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
           <Text muted>{formatTime(s.ts)} · {s.recipeId ?? "无配方"} · {s.source === "offlineCandidate" ? "候选修订 " + (s.recipeRevision ?? "未记录") : "v" + (s.recipeVersion ?? "—") + " · #" + (s.recipeRevision?.slice(0, 6) ?? "—")} · {triggerModeLabel(s.triggerMode)} · 帧组 {j.groupCount} / 预期 {expectedText(burst.expectedTotal, burst.toleranceTotal)}</Text>
           {flags.map(flag => <StatusBadge key={flag.key} tone={flag.tone} data-flag={flag.key}>{flag.label}</StatusBadge>)}
         </Stack>
-        <StatusBadge tone={verdictTone(s.verdict)}>{verdictLabel[s.verdict]} · PLC {s.plcCode}{s.faultCode ? " / " + s.faultCode : ""}</StatusBadge>
+        <StatusBadge tone={verdict.tone}>{verdict.label} · PLC {s.plcCode}{s.faultCode ? " / " + s.faultCode : ""}</StatusBadge>
       </Stack>
     </Card>
     {s.source !== "real" && <Alert title={s.source === "offlineCandidate" ? "候选离线调试记录" : "离线回放记录"}>结果来自离线环境，不作为真机生产验收；切换当前站点模式不会改变此记录的来源。</Alert>}
     {error && <Alert tone="warn" title="操作未完成">{error}</Alert>}
-    <Panel title="复测与候选对照" detail="原包重现使用本件冻结资源；候选复测使用当前走廊示教；所有结果另存，原始判定保留">
+    <Panel title="复测与候选对照" detail="对照结果另存，原始判定保留">
       <div className="wp-actions">
         <Chip>{s.source === "offlineCandidate" ? "原始候选 " + (s.recipeRevision ?? "未记录") : "原始发布 v" + (s.recipeVersion ?? "—")}</Chip>
         <StatusBadge>候选 {ws.data && ws.data.workspace.doc.id === s.recipeId ? "v" + ws.data.workspace.doc.version + " · 修订 " + ws.data.workspace.revision : "尚未选择此配方"}</StatusBadge>
@@ -191,11 +192,11 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       {comparison.burst ? <RegionReplayDiff diffs={diffs} source={comparison.source} /> : <Text as="p" muted>这次对照没有区域明细，只能看整件结论。</Text>}
     </Panel>}
     <div className="detail-grid burst">
-      <Panel title="帧组与原图" detail="上方为整件的段布置与区域结论；选中帧组与相机后在下方查看原图" actions={<Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
+      <Panel title="帧组与原图" detail="选择帧组与相机查看原图" actions={<Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
         options={burst.cameras.map((name, c) => ({ value: String(c), label: name }))} />}>
         <CameraSegmentOverview cameras={burst.cameras} segments={burst.segments} regions={j.regions} />
         <FrameGroupStrip groups={groups} cameras={burst.cameras} selected={selection.seq} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} />
-        <p className="muted">格子颜色是该帧所在区域的结论（历史没有逐帧结论）；灰色为缺帧、未测或走出走廊，只算检测不完整；浅灰为该帧所在段不由这台相机检测，按设计不测。左右方向键切换帧组。</p>
+        <p className="muted">颜色表示区域结论，非逐帧判定；灰色为检测不完整，浅灰为本段不检测。左右方向键切换帧组。</p>
         <div className="wp-stack">
           <GrayViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={imageLabel} caption={<>原始 SN <span className="sn">{s.sn}</span> · {cameraName} · 帧组 {selection.seq}</>} />
           <div className="wp-runtime-strip">
