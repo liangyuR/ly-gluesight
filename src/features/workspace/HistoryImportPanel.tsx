@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button, Checkbox, Table, type TableColumn } from "qing-steel";
 import { errorText } from "../../lib/errors";
+import ContextHelp from "../cycle/components/ContextHelp";
 import type { PartMode } from "../history/types";
 import { workspaceApi } from "./api";
 import { Badge, Notice, Panel } from "./components";
@@ -63,10 +64,12 @@ export default function HistoryImportPanel({ recipeId, revision, disabled, nameO
     { key: "reason", header: "不可用原因", render: r => <>{r.reasons.length ? r.reasons.join("；") : <span className="muted">可导入</span>}{r.warnings.map(w => <span key={w}> <Badge tone="warn">{w}</Badge></span>)}</> },
     { key: "standard", header: "标准件", render: r => <Checkbox label={<span className="qs-sr-only">{"SN " + r.sn + " 是标准件"}</span>} checked={picked[r.recordId] === true} disabled={disabled || working || !(r.recordId in picked)} onCheckedChange={on => setPicked(p => ({ ...p, [r.recordId]: on }))}/> },
   ];
-  return <Panel title="从历史选用" detail="维护模式或生产录制的完整件导入为采集轮次，之后走廊示教、分段复核与多轮标定都按普通轮次处理" actions={rows && <Badge tone={usable ? "ok" : "warn"}>{`可导入 ${usable} / ${rows.length} 件`}</Badge>}>
+  return <Panel title="从历史选用" titleHelp={<ContextHelp label="从历史选用说明">
+    <p>维护模式或生产录制的完整件导入为采集轮次，之后走廊示教、分段复核与多轮标定都按普通轮次处理。</p>
+    <p>可导入：原图完整（无缺帧、无录制队满未录）、三台计划相机齐全且设备配置与当前一致、没有提前结束、型号属于本候选。多轮标定至少需要 10 轮，另留几件不导入，作独立验证。</p>
+    <p>生产件默认不当标准件：只有按 SN 等核对确认是标准件时才勾选“标准件”；不勾选时 x_ref 留空、胶偏未判，不阻断发布。</p>
+  </ContextHelp>} actions={rows && <Badge tone={usable ? "ok" : "warn"}>{`可导入 ${usable} / ${rows.length} 件`}</Badge>}>
     {loadError && <Notice title="读取历史件失败" tone="warn">{loadError}</Notice>}
-    <p className="muted hint">可导入：原图完整（无缺帧、无录制队满未录）、三台计划相机齐全且设备配置与当前一致、没有提前结束、型号属于本候选。多轮标定至少需要 10 轮，另留几件不导入，作独立验证。</p>
-    <p className="muted hint">生产件默认不当标准件：只有按 SN 等核对确认是标准件时才勾选“标准件”；不勾选时 x_ref 留空、胶偏未判，不阻断发布。</p>
     <Table caption="可导入的历史件" columns={columns} rows={rows ?? []} rowKey={r => String(r.recordId)} emptyState={<p className="muted center">{rows ? "本配方还没有录制件。开启维护模式跟着生产采图后，可在这里选用。" : "正在读取历史件…"}</p>}/>
     <div className="wp-actions"><Button variant="filled" disabled={disabled || working || !chosen} onClick={() => void importPicked()}>{chosen ? `导入选中的 ${chosen} 件` : "导入选中的历史件"}</Button></div>
   </Panel>;

@@ -88,7 +88,7 @@ export default function CaptureReviewPanel({ roundId, groupCount, currentSeq, cu
       if (next) setChecked(false);
     } finally { setPending(false); }
   };
-  return <Panel title="轮次整理" detail="按原始帧组序号标记边界，所有相机共享分段；生产仍按未分段处理。"
+  return <Panel title="轮次整理" help="按原始帧组序号标记边界，所有相机共享分段；生产仍按未分段处理。"
     actions={<Badge tone={!edited && review?.status === "confirmed" ? "ok" : "warn"}>{edited ? "边界未保存" : review ? statusLabels[review.status] : "未分段"}</Badge>}>
     <p className="wp-review-counts">原始 {groupCount} 组 · 屏蔽 {excluded.length} 组 · 未屏蔽 {groupCount - excluded.length} 组</p>
     {currentExcluded && <Notice title={`当前帧组 ${currentSeq} 已屏蔽`} tone="warn">{currentExcluded.reason}。原图仍可查看，原始序号和帧组总数不变。</Notice>}

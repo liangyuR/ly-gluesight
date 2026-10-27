@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Grid, Heading, NumberField, Select, Stack, Text } from "qing-steel";
-import { getAppInfo, getEngineStatus, openLogDir, type AppInfo, type EngineStatus } from "../lib/api";
+import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
 import { errorText } from "../lib/errors";
 import { useSnackbar } from "qing-steel";
+import ContextHelp from "../features/cycle/components/ContextHelp";
+import "./SettingsPage.css";
 
 const timeoutFields: [keyof Timeouts, string, string][] = [
   ["armMs", "布防预算（ms）", "布防及确认的时间预算，100–5000 ms"],
@@ -16,6 +18,12 @@ const timeoutFields: [keyof Timeouts, string, string][] = [
 const timeoutMinimums: Record<keyof Timeouts, number> = { armMs: 100, motionMs: 1000, drainMs: 200, procMs: 200, ackMs: 500 };
 
 type SavePart = (part: Partial<CycleSettings>) => Promise<boolean>;
+
+function displayPath(path: string): string {
+  if (/^\\\\\?\\UNC\\/i.test(path)) return `\\\\${path.slice(8)}`;
+  if (/^\\\\\?\\[a-z]:\\/i.test(path)) return path.slice(4);
+  return path;
+}
 
 function useMounted() {
   const mounted = useRef(false);
@@ -123,52 +131,50 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
       {settings && <>
       <fieldset disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <Grid minWidth={220} gap={14}>
+          <div className="settings-help-field">
+          <div className="settings-field-title"><label htmlFor="product-source">型号来源</label></div>
           <Select
             id="product-source"
-            label="型号来源"
             value={settings.productSource}
             onValueChange={(value) => update({ ...settings, productSource: value as CycleSettings["productSource"] })}
             options={[{ value: "plc", label: "PLC 下发型号" }, { value: "manual", label: "人工选择配方" }]}
           />
+          </div>
           {settings.productSource === "manual" && (
+            <div className="settings-help-field">
+            <div className="settings-field-title"><label htmlFor="manual-recipe-setting">当前配方</label></div>
             <Select
               id="manual-recipe-setting"
-              label="当前配方"
               value={settings.manualRecipeId ?? ""}
               onValueChange={(value) => update({ ...settings, manualRecipeId: value || null })}
               options={[{ value: "", label: "未选择" }, ...recipes.map((r) => ({ value: r.id, label: `${r.id} · ${r.name}` }))]}
             />
+            </div>
           )}
+          <div className="settings-help-field">
+          <div className="settings-field-title"><label htmlFor="history-days">记录保留（天）</label><ContextHelp label="记录保留说明">超过天数的检测记录每天自动删除</ContextHelp></div>
           <NumberField
             id="history-days"
-            label="记录保留（天）"
-            description="超过天数的检测记录每天自动删除"
             min={1}
             max={3650}
             value={numberInput(settings.historyDays)}
             onValueChange={(value) => update({ ...settings, historyDays: numberValue(value) })}
           />
+          </div>
           {timeoutFields.map(([key, label, hint]) => (
+            <div key={key} className="settings-help-field">
+            <div className="settings-field-title"><label htmlFor={`timeout-${key}`}>{label}</label><ContextHelp label={`${label}说明`}>{hint}</ContextHelp></div>
             <NumberField
-              key={key}
               id={`timeout-${key}`}
-              label={label}
-              description={hint}
               min={timeoutMinimums[key]}
               step={1}
               value={numberInput(settings.timeouts[key])}
               onValueChange={(value) => update({ ...settings, timeouts: { ...settings.timeouts, [key]: numberValue(value) } })}
             />
+            </div>
           ))}
         </Grid>
       </fieldset>
-      <Text as="p" variant="label" muted>
-        PLC 下发：按型号匹配配方，匹配不到判 ERR 95。人工选择：操作员在实时检测页切换配方，仅空闲时可切换，不读取型号。
-      </Text>
-      <details>
-        <summary>查看节拍协议说明</summary>
-        <Text as="p" variant="label" muted>布防预算从读到 plcState=10 起，到 pcState=20 读回确认为止；回写前超时拒收本件（90/99），回写确认后超时进入视觉故障。运动超时从 pcState=20 起等待 plcState=20；收尾等待从 plcState=20 起等待剩余帧；结果确认从 pcState=30 起等待 plcState=30。</Text>
-      </details>
       {invalid && <Alert tone="ng">{invalid}</Alert>}
       </>}
       {saveError && <Alert tone="ng">{saveError}</Alert>}
@@ -181,6 +187,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
   const { data: settings, setData: setSettings, error, loading, reload } = useResource(cycleApi.getSettings);
   const { data: engine, error: engineError, loading: engineLoading, reload: refresh } = useResource<EngineStatus>(getEngineStatus);
   const [saveError, setSaveError] = useState("");
+  const [openError, setOpenError] = useState("");
   const { show: snack } = useSnackbar();
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
@@ -257,7 +264,6 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
           />
         </Grid>
       </fieldset>
-      <Text as="p" variant="label" muted>离线原图超出件数或容量上限时，后续清理会删除最旧的离线原图，不影响导入的样本集。退出离线后恢复真机帧录制设置。</Text>
       {invalid && <Alert tone="ng">{invalid}</Alert>}
       </>}
       <dl className="kv">
@@ -268,13 +274,11 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
         <dt>说明</dt>
         <dd>{visibleEngine?.message ?? "--"}</dd>
         <dt>运行库目录</dt>
-        <dd className="mono">{visibleEngine?.path ?? "--"}</dd>
+        <dd className="mono">{visibleEngine?.path ? <button type="button" className="settings-path-link" aria-label={`打开运行库目录：${displayPath(visibleEngine.path)}`} onClick={() => { setOpenError(""); void storageApi.openDirectory("lyflow").catch(e => setOpenError(errorText(e))); }}>{displayPath(visibleEngine.path)}</button> : "--"}</dd>
       </dl>
       {import.meta.env.DEV && visibleEngine && !visibleEngine.ready && <Alert tone="info">{devLyflowHint}</Alert>}
       {engineError && <Alert tone="ng" action={<Button size="sm" onClick={refresh}>重试引擎状态</Button>}>引擎状态读取失败：{engineError}</Alert>}
-      <Text as="p" variant="label" muted>
-        真机和离线样本集使用 lyFlow，离线合成图使用模拟测量。帧录制的原图可用于历史复测。
-      </Text>
+      {openError && <Alert tone="ng">打开目录失败：{openError}</Alert>}
       {saveError && <Alert tone="ng">{saveError}</Alert>}
       </Stack>
     </Card>
@@ -284,31 +288,23 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
 function StoragePanel() {
   const { data, error, loading, reload } = useResource(storageApi.status);
   const [openError, setOpenError] = useState("");
-  const openDirectory = (target: "data" | "runtime" | "vision") => {
+  const openDirectory = (target: "data" | "logs" | "runtime" | "vision") => {
     setOpenError(""); void storageApi.openDirectory(target).catch(e => setOpenError(errorText(e)));
   };
   const environment: Record<string, string> = { development: "本地开发", production: "正式版", test: "自动化测试" };
-  const migration: Record<string, string> = { fresh: "新资料目录", completed: "迁移完成", migrated: "迁移完成", none: "无需迁移", ready: "资料目录已启用", pending: "等待迁移", failed: "迁移失败" };
-  return <Card role="region" aria-label="资料存储" title={<Heading level={3}>资料存储</Heading>}
-    actions={<>
-      <Button disabled={!data || loading || !!error} onClick={() => openDirectory("data")}>打开资料目录</Button>
-      <Button disabled={!data?.runtimeLogDir || loading || !!error} onClick={() => openDirectory("runtime")}>打开运行日志</Button>
-      <Button disabled={!data?.visionLogDir || loading || !!error} onClick={() => openDirectory("vision")}>打开视觉原图</Button>
-    </>}>
+  return <Card role="region" aria-label="资料存储" title={<Heading level={3}>资料存储</Heading>}>
     <Stack direction="column" align="stretch" gap={12} wrap={false}>
     {loading && <p role="status">正在读取资料目录…</p>}
     {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>资料目录读取失败：{error}</Alert>}
     {!loading && !error && data && <>
-      <dl className="kv"><dt>当前环境</dt><dd>{environment[data.environment] ?? data.environment}</dd>
-        <dt>资料目录</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.root}</dd>
-        <dt>日志根目录</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.logRoot ?? "—"}</dd>
-        <dt>运行日志</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.runtimeLogDir ?? "—"}</dd>
-        <dt>当前项目视觉原图</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.visionLogDir ?? "—"}</dd>
-        <dt>迁移状态</dt><dd>{migration[data.migrationStatus] ?? data.migrationStatus}</dd>
+      <dl className="kv settings-storage-list"><dt>当前环境</dt><dd>{environment[data.environment] ?? data.environment}</dd>
+        <dt>资料目录</dt><dd className="mono"><button type="button" className="settings-path-link" onClick={() => openDirectory("data")} aria-label={`打开资料目录：${displayPath(data.root)}`}>{displayPath(data.root)}</button></dd>
+        <dt>日志根目录</dt><dd className="mono">{data.logRoot ? <button type="button" className="settings-path-link" onClick={() => openDirectory("logs")} aria-label={`打开日志根目录：${displayPath(data.logRoot)}`}>{displayPath(data.logRoot)}</button> : "—"}</dd>
+        <dt>运行日志</dt><dd className="mono">{data.runtimeLogDir ? <button type="button" className="settings-path-link" onClick={() => openDirectory("runtime")} aria-label={`打开运行日志：${displayPath(data.runtimeLogDir)}`}>{displayPath(data.runtimeLogDir)}</button> : "—"}</dd>
+        <dt>当前项目视觉原图</dt><dd className="mono">{data.visionLogDir ? <button type="button" className="settings-path-link" onClick={() => openDirectory("vision")} aria-label={`打开视觉原图：${displayPath(data.visionLogDir)}`}>{displayPath(data.visionLogDir)}</button> : "—"}</dd>
       </dl>
       {data.migrationMessage && <p role="status">{data.migrationMessage}</p>}
     </>}
-    <Text as="p" variant="label" muted>项目资料与日志分别存放，卸载默认保留。示教和标定原图随项目保存。</Text>
     {openError && <Alert tone="ng">打开目录失败：{openError}</Alert>}
     </Stack>
   </Card>;
@@ -317,11 +313,6 @@ function StoragePanel() {
 export default function SettingsPage() {
   const { data: info, error, loading, reload } = useResource<AppInfo>(getAppInfo);
   const savePart = useSavePart();
-  const [logError, setLogError] = useState<string | null>(null);
-  const openLogs = () => {
-    setLogError(null);
-    openLogDir().catch((e: unknown) => setLogError(errorText(e)));
-  };
 
   return (
     <Stack direction="column" align="stretch" gap={16} wrap={false}>
@@ -339,11 +330,7 @@ export default function SettingsPage() {
           <dd>{info?.version ?? "--"}</dd>
           <dt>构建</dt>
           <dd className="mono">{info?.gitSha ? `${info.gitSha}${info.buildTime ? ` · ${info.buildTime}` : ""}` : "--"}</dd>
-          <dt>日志目录</dt>
-          <dd className="mono">{info?.logDir ?? "--"}</dd>
         </dl>
-        <div><Button onClick={openLogs}>打开日志目录</Button></div>
-        {logError && <Alert tone="ng">打开日志目录失败：{logError}</Alert>}
         </Stack>
       </Card>
     </Stack>

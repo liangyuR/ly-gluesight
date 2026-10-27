@@ -9,6 +9,7 @@ import { formatBytes, formatDate, formatDateTime, projectLabel, type UsageState 
 import { CreateProjectDialog, DeleteProjectDialog, RenameProjectDialog } from "../features/project/ProjectDialogs";
 import SwitchProjectDialog from "../features/project/SwitchProjectDialog";
 import { CopyProjectDialog, ExportProjectDialog, ImportProjectDialog } from "../features/project/TransferDialogs";
+import ContextHelp from "../features/cycle/components/ContextHelp";
 import "../features/project/project.css";
 
 type Open = { kind: "create" } | { kind: "rename"; project: ProjectMeta } | { kind: "delete"; entry: ProjectEntry } | { kind: "switch"; project: ProjectMeta }
@@ -97,8 +98,7 @@ export default function ProjectsPage() {
     } },
   ];
 
-  return <Card role="region" aria-label="项目" className="pj-page" title={<Heading level={3}>项目</Heading>}
-    description="一个项目是一套完整的检测方案：相机组、PLC、节拍、标定、配方以及它产生的检测记录。同一时刻只运行当前项目。"
+  return <Card role="region" aria-label="项目" className="pj-page" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>项目</Heading><ContextHelp label="项目说明">一个项目是一套完整的检测方案：相机组、PLC、节拍、标定、配方以及它产生的检测记录。同一时刻只运行当前项目。</ContextHelp></div>}
     actions={available && <><IconButton aria-label="刷新项目列表" title="刷新" disabled={loading} onClick={refresh}><RefreshCw size={16} /></IconButton><Button variant="outlined" leadingIcon={<Upload size={16} />} disabled={!entries || picking} onClick={() => void pickImport()}>{picking ? "正在读取…" : "导入项目"}</Button><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!entries} onClick={() => setOpen({ kind: "create" })}>新建项目</Button></>}>
     {!available
       ? <EmptyState icon={<FolderKanban size={30} aria-hidden="true" />} title="项目管理需要桌面后端" description="请在 GlueSight · 胶路智检 桌面软件中查看和管理项目。" />

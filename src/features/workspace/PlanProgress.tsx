@@ -32,7 +32,7 @@ export default function PlanProgressPage() {
   const reasons = [...new Set(nextStep?.blockers.map(blocker => blocker.message) ?? [])].filter(message => message !== nextStep?.detail);
   const back = returnState(location, "进度总览");
   return <div className="wp-page"><WorkspaceBar />
-    <Panel title="配方信息" detail="名称与 PLC 下发的型号；改动自动保存为候选配置，发布后生效">
+    <Panel title="配方信息">
       <RecipeIdentity />
     </Panel>
     <Panel title="配方进度" className="wp-progress-board">

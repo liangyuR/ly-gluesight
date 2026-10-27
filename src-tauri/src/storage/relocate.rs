@@ -188,11 +188,21 @@ pub(crate) fn database(path: &Path, source: &Path, target: &Path) -> Result<(), 
     transaction.commit().map_err(|e| e.to_string())
 }
 
+fn inspection_sidecar(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("inspection.db-wal" | "inspection.db-shm")
+    )
+}
+
 pub(crate) fn tree_references(root: &Path, source: &Path, target: &Path) -> Result<(), String> {
     fn visit(root: &Path, directory: &Path, source: &Path, target: &Path) -> Result<(), String> {
         crate::image_file::checked_source_path(directory)?;
         for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
             let path = entry.map_err(|e| e.to_string())?.path();
+            if inspection_sidecar(&path) {
+                continue;
+            }
             crate::image_file::checked_source_path(&path)?;
             if path.is_dir() {
                 visit(root, &path, source, target)?;
@@ -221,6 +231,9 @@ pub(crate) fn validate_references(
         crate::image_file::checked_source_path(dir)?;
         for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
             let path = entry.map_err(|e| e.to_string())?.path();
+            if inspection_sidecar(&path) {
+                continue;
+            }
             crate::image_file::checked_source_path(&path)?;
             if path.is_dir() {
                 collect(root, &path, references)?;

@@ -44,7 +44,7 @@ async function readPreferences(): Promise<StoragePreferences> {
 }
 export const storageApi = {
   status: () => invoke<StorageStatus>("storage_status"),
-  openDirectory: (target: "data" | "runtime" | "vision" = "data") => invoke<void>("storage_open_directory", { target }),
+  openDirectory: (target: "data" | "logs" | "runtime" | "vision" | "lyflow" = "data") => invoke<void>("storage_open_directory", { target }),
   preferences: () => serial(readPreferences),
   updatePreferences: (patch: StoragePreferences) => serial(async () => {
     if (!desktopAvailable()) throw new Error("浏览器预览不保存资料，请使用桌面软件");

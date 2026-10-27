@@ -102,7 +102,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
   return <div className="wp-page"><WorkspaceBar />
     <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
     <AlignReview plan={plan} locked={workbenchDirty ? "上方分段有未保存的改动，先保存或撤销后再确认其余轮次" : paramsPending} />
-    <Panel title="段列表" detail="各段帧数容差、长度与跳过帧数；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数由多轮采集得出，这里只读"
+    <Panel title="段列表" help="各段帧数容差、长度与跳过帧数；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数由多轮采集得出，这里只读"
       actions={<>
         <BoundaryGuardField locked={docLocked && `${docLocked}边界过渡帧数`} />
         <BoundaryRefineField locked={docLocked && `${docLocked}边界细化`} available={segments.some(segment => !!segment.heading)} />
@@ -127,7 +127,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
           onPatch={change => patch(current, change)} />
       </div>}
     </Panel>
-    <Panel title="整件预期帧数" detail="各段预期帧数之和；各段都待标定时取整件多轮采集的帧组数均值">
+    <Panel title="整件预期帧数" help="各段预期帧数之和；各段都待标定时取整件多轮采集的帧组数均值">
       <div className="seg-total">
         <strong aria-label="整件预期总帧数">{expectedText(plan.expectedTotal, plan.toleranceTotal)}</strong>
         <span className="muted">ΣN_exp ± Σtol{plan.cameras.length !== PLAN_CAMERAS && `（需要 ${PLAN_CAMERAS} 台相机，当前 ${plan.cameras.length} 台）`}</span>

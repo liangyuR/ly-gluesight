@@ -2,15 +2,20 @@
 
 /* 帧组条：每个 seq 一列，列里每台计划相机一格；灰色格 = 缺帧 / 未测 / 走出走廊 */
 .fg-strip { display: flex; gap: 8px; align-items: flex-start; min-width: 0; }
-.fg-cams { display: flex; flex-direction: column; gap: 3px; flex: none; padding-top: 21px; font-size: 12px; color: var(--on-surface-variant); }
+.fg-cams { display: flex; flex-direction: column; gap: 3px; flex: none; padding-top: 24px; font-size: 12px; color: var(--on-surface-variant); }
 .fg-cams span { height: 22px; max-width: 96px; line-height: 22px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fg-groups { display: flex; flex: 1; gap: 4px; min-width: 0; margin: 0; padding: 0 0 6px; list-style: none; overflow-x: auto; }
+.fg-groups { display: flex; flex: 1; gap: 4px; min-width: 0; margin: 0; padding: 3px 3px 6px; list-style: none; overflow-x: auto; }
 .fg-groups > li { flex: none; }
 .fg-group { display: flex; flex-direction: column; align-items: stretch; gap: 3px; width: 30px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .fg-seq { height: 18px; font: 500 11px/18px var(--font-mono); text-align: center; color: var(--on-surface-variant); }
 .fg-cell { display: block; height: 22px; border-radius: 3px; }
 .fg-group.selected { outline: 2px solid var(--primary); outline-offset: 1px; }
 .fg-group.incomplete .fg-seq { color: var(--warn); font-weight: 700; }
+.fg-individual { cursor: default; }
+.fg-seq-button, .fg-cell-button { width: 100%; padding: 0; border: 0; cursor: pointer; }
+.fg-seq-button { background: transparent; }
+.fg-cell-button[aria-pressed="true"] { outline: 2px solid var(--on-surface); outline-offset: -3px; }
+.fg-seq-button:focus-visible, .fg-cell-button:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 
 /* 选中帧组的三台相机原图 */
 .wp-burst-cams { display: grid; gap: 8px; flex: 1; min-height: 0; }

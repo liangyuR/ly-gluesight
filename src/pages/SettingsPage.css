@@ -1,0 +1,7 @@
+.settings-help-field { min-width: 0; }
+.settings-field-title { display: flex; align-items: center; height: 26px; margin-bottom: 6px; }
+.settings-field-title label { font-size: 12px; color: var(--on-surface-variant); }
+.settings-storage-list { grid-template-columns: max-content minmax(0, 1fr); }
+.settings-storage-list dt { white-space: nowrap; }
+.settings-path-link { padding: 0; border: 0; background: transparent; color: var(--primary); font: inherit; text-align: left; text-decoration: underline; overflow-wrap: anywhere; cursor: pointer; }
+.settings-path-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
