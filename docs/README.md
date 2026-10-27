@@ -47,7 +47,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 配方文档、校验、计划身份 | `recipe.rs`（`RecipeDoc` schema 8、`is_burst`、`same_plan`、阶段 `stage`）、`plan.rs`（`PathSegment`、`PartCalib`、`KindDefaults`、`plan_identity`、`PlanExport`）、`recipe_api.rs` |
 | 握手与接件 | `handshake.rs`（`PROTOCOL_VERSION = 7`）、`plc_session.rs`、`inspection.rs`（S7 点表模板）、`cycle/admission.rs` |
 | 生产节拍 | `cycle.rs` 布防分流与维护模式、`cycle/burst.rs`（在途件、收尾与判定）、`shot_router.rs` 的 `arm_frames` |
-| 帧配组、分段、判定、标定 | `frame_group.rs`、`segmentation.rs`（`Proportional`、`resolve_regions` 过渡区）、`burst_judge.rs`、`calibration.rs`；离线评估 `examples/segment_eval.rs` |
+| 帧配组、分段、判定、标定 | `frame_group.rs`、`segmentation.rs`（`Proportional`、`resolve_regions` 过渡区）、`burst_judge.rs`、`calibration.rs`；离线评估 `examples/segment_eval.rs`；逐帧定向与找边评估 `examples/heading_eval.rs` |
 | 相机与测量 | `camera.rs`、`frame.rs`、`measure.rs`（`FrameJob`）、`vision.rs` / `vision/taught.rs`（`measure_frame`）、`production.rs`（`burst_graphs`） |
 | 示教采集轮次 | `recipe_capture/burst.rs`（`CaptureRoundV2`） |
 | 候选工作区 | `workspace.rs`、`workspace/burst.rs`（走廊示教、多轮标定、x_ref）、`workspace/burst_release.rs`（验证与发布、采集版）、`workspace/burst_history.rs`（历史读图与复测） |
@@ -75,7 +75,8 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 - **分段（2026-10-26 进度）**：“人定段结构、生产按比例定位边界、每段指定检测相机与走廊”已落地：比例分段与过渡区（D-SB-40）、每段检测相机（D-SB-41）、按段走廊示教（D-SB-42）、分段标定工作台的模板轮画段与其余轮次对齐复核（D-SB-44 P1、P2）、走廊只按段且生产按预测段测量并收尾补测（D-SB-45）、发布不再要求独立样本验证（D-SB-46），多轮标定页可逐帧查看所用走廊与测量结果。多段配方须各段 N_exp 都已逐段标定才能发布。开发项目 seg-new14 的候选 NEW-14 已用 R07–R16 完成逐段标定，尚未发布，也没在真实相机上运行。未完成：
   - 分段标定工作台 P3：运动曲线与按运动自动建议边界（D-SB-44）。
   - 用 NEW-14 的 R01–R06 跑 `examples/segment_eval.rs`，评估比例分段与图像对齐建议相对手动边界的误差。
-  - D-SB-43 图像运动细化边界。
+  - D-SB-43 图像运动细化边界；待确认的 D-SB-47 逐帧定向若采用，将以胶条方向序列取代它。
+  - 待确认的 D-SB-48 以工件边为胶偏参考（实现 `ToEdge`），不依赖 D-SB-47，可先做；D-SB-47 待实际涂胶、画面里有胶嘴的轮次复测通过后再开工。
   - 每段每台相机的测成率统计与检测相机建议（D-SB-41）。
   - 现场工控机吞吐复测（D-SB-45 按预测段测量与收尾补测后，见下条）。
   - 原生端到端脚本没有按段走廊重跑；多段配方的端到端夹具要按段准备示教帧。
