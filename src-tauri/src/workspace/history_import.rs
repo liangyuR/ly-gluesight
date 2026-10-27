@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 
 use super::*;
+use crate::camera::CameraImaging;
 use crate::recipe_capture::{
     CaptureCamera, HistoryFrame, HistoryRound, RecipeCaptureHost, RoundOrigin,
 };
@@ -14,6 +15,9 @@ use crate::store::{PartMode, PartSummary, RecordSource, RecordingEvidence, Recor
 const LIST_LIMIT: u32 = 200;
 /// 一次最多导入的件数。
 const IMPORT_LIMIT: usize = 50;
+/// 帧组数低于本批可导入件中位数的这个倍数时提示疑似提前结束；可导入件少于 SHORT_MIN_PARTS 件不比较。
+const SHORT_RATIO: f64 = 0.9;
+const SHORT_MIN_PARTS: usize = 3;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +42,14 @@ pub struct HistoryCandidate {
     pub complete: bool,
     /// 不能导入的原因；为空即可导入
     pub reasons: Vec<String>,
+    /// 不阻断导入的提示
+    pub warnings: Vec<String>,
+    /// 采集时长：各相机首末帧时间差的最大值
+    pub duration_ms: Option<u64>,
+    /// 实测帧率：各相机（帧数 − 1）/ 首末帧时间差的中位数
+    pub measured_fps: Option<f64>,
+    /// 录制时相机设置的帧率（按计划相机顺序取第一个有记录的）
+    pub set_fps: Option<f64>,
     /// 已导入为本候选的轮次
     pub imported_round: Option<String>,
 }
@@ -116,6 +128,10 @@ pub(super) fn assess(
         cameras: Vec::new(),
         complete: false,
         reasons: Vec::new(),
+        warnings: Vec::new(),
+        duration_ms: None,
+        measured_fps: None,
+        set_fps: None,
         imported_round: summary
             .cycle_id
             .as_ref()
@@ -162,6 +178,7 @@ pub(super) fn assess(
     let mut saved = vec![BTreeSet::new(); cameras.len()];
     let mut history_frames = Vec::new();
     let mut baselines: Vec<Option<u64>> = vec![None; cameras.len()];
+    let mut stamps: Vec<Vec<i64>> = vec![Vec::new(); cameras.len()];
     let (mut unsaved, mut manual, mut misnamed, mut counter_gap) =
         (0usize, false, false, BTreeSet::new());
     for frame in &frames {
@@ -178,6 +195,9 @@ pub(super) fn assess(
             misnamed = true;
             continue;
         };
+        if let Some(ts) = frame["ts"].as_i64() {
+            stamps[camera].push(ts);
+        }
         if frame["available"].as_bool() != Some(true) {
             unsaved += 1;
             continue;
@@ -229,6 +249,20 @@ pub(super) fn assess(
             frames: frame_count(seqs.len()),
         })
         .collect();
+    let spans: Vec<(usize, i64)> = stamps
+        .iter()
+        .filter_map(|s| {
+            let span = s.iter().max()? - s.iter().min()?;
+            (span > 0).then_some((s.len(), span))
+        })
+        .collect();
+    view.duration_ms = spans.iter().map(|&(_, span)| span as u64).max();
+    view.measured_fps = median(
+        spans
+            .iter()
+            .map(|&(n, span)| (n - 1) as f64 * 1000.0 / span as f64)
+            .collect(),
+    );
     let missing = part["missingFrames"].as_array().map_or(0, Vec::len);
     let dropped = part["rawDropped"].as_array().map_or(0, Vec::len);
     let absent =
@@ -262,6 +296,12 @@ pub(super) fn assess(
         reasons.push(format!("相机 {camera} 的帧号与帧组序号对不上"));
     }
     let devices = part["devices"].as_array();
+    view.set_fps = cameras.iter().find_map(|id| {
+        devices?
+            .iter()
+            .find(|d| d["cameraId"].as_str() == Some(id))?["cameraConfig"]["frameRate"]
+            .as_f64()
+    });
     let plc = part["plc"].as_object();
     match (devices, plc) {
         (Some(_), Some(plc)) => {
@@ -331,6 +371,38 @@ pub(super) fn assess(
     Assessed { view, round }
 }
 
+fn median(mut values: Vec<f64>) -> Option<f64> {
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    match values.len() {
+        0 => None,
+        n if n % 2 == 0 => Some((values[mid - 1] + values[mid]) / 2.0),
+        _ => Some(values[mid]),
+    }
+}
+
+/// 一期采集版录制没有 ΣN_exp 和 PLC 提前结束标记，提前结束的件只能从帧组数看出来：本批可导入件不少于
+/// SHORT_MIN_PARTS 件时，帧组数低于其中位数 SHORT_RATIO 倍的件加不阻断的提示。
+fn flag_short_parts(parts: &mut [Assessed]) {
+    let clean: Vec<f64> = parts
+        .iter()
+        .filter(|a| a.view.reasons.len() == usize::from(a.view.imported_round.is_some()))
+        .map(|a| a.view.group_count as f64)
+        .collect();
+    if clean.len() < SHORT_MIN_PARTS {
+        return;
+    }
+    let Some(m) = median(clean) else { return };
+    for a in parts {
+        let n = a.view.group_count;
+        if (n as f64) < SHORT_RATIO * m {
+            a.view.warnings.push(format!(
+                "帧组数 {n}，明显少于本批中位数 {m}（疑似提前结束）"
+            ));
+        }
+    }
+}
+
 fn current_configs(cycle: &CycleHost) -> BTreeMap<String, Value> {
     cycle
         .camera
@@ -349,7 +421,7 @@ fn assess_all(app: &AppHandle, doc: &RecipeDoc) -> Result<Vec<Assessed>, String>
     let imported = imported_cycles(cycle.camera.recipe_capture(), &doc.id)?;
     let root = cycle.recorders.root(RecordSource::Real).to_path_buf();
     let parts = app.state::<Store>().recorded_parts(&doc.id, LIST_LIMIT)?;
-    Ok(parts
+    let mut assessed: Vec<Assessed> = parts
         .iter()
         .map(|(summary, recording)| {
             assess(
@@ -361,7 +433,9 @@ fn assess_all(app: &AppHandle, doc: &RecipeDoc) -> Result<Vec<Assessed>, String>
                 read_part(&root, recording),
             )
         })
-        .collect())
+        .collect();
+    flag_short_parts(&mut assessed);
+    Ok(assessed)
 }
 
 /// 候选采集页“从历史选用”：本配方最近的真机录制件与能否导入（只读）。
@@ -455,8 +529,9 @@ async fn history_import(
                     entry.view.reasons.join("；")
                 )
             })?;
-            let RoundOrigin::History { standard, .. } = &mut round.origin;
-            *standard = pick.standard;
+            if let RoundOrigin::History { standard, .. } = &mut round.origin {
+                *standard = pick.standard;
+            }
             rounds.push(round);
         }
         let cycle = task_app.state::<CycleHost>();

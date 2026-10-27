@@ -139,10 +139,10 @@ export default function ValidationPage() {
   };
   return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack"><Panel title="发布前检查" detail="设备、走廊示教与多轮标定满足即可发布；独立样本验证可选" actions={<Badge tone={failedChecks.length?"warn":"ok"}>{failedChecks.length?`${failedChecks.length} 项未满足`:`${checks.length} 项全部满足`}</Badge>}>
     <div className="wp-checklist">{failedChecks.map(checkRow)}{passedChecks.length>0&&<details className="wp-check-passed"><summary><CheckCircle2 size={16} aria-hidden="true"/><span>已满足 {passedChecks.length} 项：{passedChecks.map(c=>c.name).join("、")}</span><ChevronDown size={16} aria-hidden="true"/></summary><div className="wp-checklist">{passedChecks.map(checkRow)}</div></details>}</div>
-    </Panel><Panel title="独立样本验证（可选）" detail="不是发布前提：使用完整原图重新运行当前候选检测，看结论是否符合预期；正常样本必须独立于示教与标定采集" actions={<div className="wp-actions"><Link className="qs-btn tonal" to="/recipe/capture?purpose=validation">重新实拍样本</Link></div>}>
+    </Panel><Panel title="独立样本验证（可选）" detail="不是发布前提：使用完整原图重新运行当前候选检测，看结论是否符合预期；正常样本必须独立于示教与标定采集">
       <Select className="wp-sample-source" label="历史样本来源" value={historyScope} disabled={samplesLocked} options={[{value:"current",label:"当前配方"},{value:"all",label:"全部配方"}]} onValueChange={value=>setHistoryScope(value as "current"|"all")}/>
       <p className="muted hint">历史样本必须保留完整整圈原图，轨迹顺序与成像条件适用；验证时重新运行当前候选。</p>
-      <Table caption="代表性验证样本选用" columns={sampleColumns} rows={sampleRows} rowKey={row=>row.key} emptyState={<p className="muted center">尚无代表性样本；请重新实拍独立整圈，或选择完整历史原图。</p>}/>
+      <Table caption="代表性验证样本选用" columns={sampleColumns} rows={sampleRows} rowKey={row=>row.key} emptyState={<p className="muted center">尚无代表性样本；请选择完整历史原图。</p>}/>
       <p className="muted hint">建议覆盖良品、断胶、偏位、胶宽异常和无法测量等现场情况。期望“合格”时，候选结论 OK 或 OK · 局部超差都算符合。修改人工期望后，需要重新验证。</p>
       <div className="wp-validate-actions">
         <Checkbox label="已确认所选样本的拍摄条件、轨迹和触发顺序适用于当前候选" checked={sourceConfirmed} disabled={samplesLocked} onCheckedChange={setSourceConfirmed}/>

@@ -48,6 +48,14 @@ export interface CameraStatus {
   /** 本次打开以来因图像内存预算满没拷图、按缺帧处理的帧 */
   budgetDroppedFrames?: number;
   warnings: string[];
+  /** 相机页保存的曝光与增益，打开或重连时写入相机 */
+  imaging: CameraImaging;
+}
+
+/** 一台相机的曝光与增益：相机页设定，只记录、不参与配方与轮次的一致性比较 */
+export interface CameraImaging {
+  exposureUs: number;
+  gainDb: number;
 }
 
 /** 相机组链路带宽估算（camera_bandwidth）：各海康相机最近一帧的 宽 × 高 × 8 bit × 触发频率之和，计入 GigE 协议开销（按不开巨帧约 5%） */

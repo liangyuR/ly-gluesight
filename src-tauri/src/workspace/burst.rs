@@ -30,7 +30,7 @@ pub(super) const FEATURES_FILE: &str = "features.jsonl";
 /// 分段结果（`SegOutcome`）。
 pub(super) const BOUNDARIES_FILE: &str = "boundaries.json";
 
-/// 段配方一段、一台检测相机的示教帧（D-SB-45）：从完整的示教采集轮次冻结的一帧（原图存为候选 images/ 下的 PGM），
+/// 段配方一段、一台检测相机的示教帧（D-SB-45）：从完整的采集轮次冻结的一帧（原图存为候选 images/ 下的 PGM），
 /// 这一段的走廊在它上面示教。旧版的相机级示教帧（`segment` 为空）已放弃，读入时丢弃。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -546,12 +546,10 @@ pub(super) fn clear_calibration(doc: &mut RecipeDoc) {
     doc.part_calib = None;
 }
 
-/// 新建段配方候选（`workspace_create` 已清掉拍照点与相机参数）：计划相机补默认成像参数（不然过不了“检测相机要有曝光与增益”的校验），
-/// 复制来的 N_exp、标定统计、整件标定与 x_ref 清空——它们只能由本配方的多轮标定得出。旧拍照点配方不经过。
+/// 新建段配方候选：复制来的 N_exp、标定统计、整件标定与 x_ref 清空——它们只能由本配方的多轮标定得出。旧拍照点配方不经过。
 pub(super) fn prepare_new_doc(doc: &mut RecipeDoc) {
     if !doc.is_burst() { return; }
     clear_calibration(doc);
-    doc.sync_imaging();
 }
 
 /// 段配方的标定只能由多轮标定写入（D-SB-18/20）：段的类型序列不变时，N_exp、标定统计、整件标定不能改，
@@ -1931,15 +1929,46 @@ pub(super) fn untaught_pairs(w: &Workspace) -> Vec<(String, u32)> {
 pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], complete_rounds: usize, production_version: Option<u32>) -> ProgressV2 {
     let doc = &w.doc;
     let captured = complete_rounds > 0;
-    let need_capture = || vec![BlockerV2 { message: "先完成一轮整圈采集".into(), target: TargetV2::Capture }];
-    let capture = StepV2 { id: StepIdV2::Capture, label: "整圈采集", optional: false,
-        status: if captured { StepStatus::Done } else { StepStatus::NotStarted },
-        detail: if captured { format!("已有 {complete_rounds} 轮完整采集") } else { "三台相机同时采集整圈，按帧号配组".into() },
-        blockers: Vec::new() };
-    let straight = doc.segments.iter().filter(|s| s.kind == SegmentKind::Straight).count();
-    let segments = StepV2 { id: StepIdV2::Segments, label: "段列表", optional: false, status: StepStatus::Done,
-        detail: format!("{} 段（直线 {straight}、弯道 {}），帧数容差合计 ±{}", doc.segments.len(), doc.segments.len() - straight, crate::plan::tolerance_total(&doc.segments)),
-        blockers: Vec::new() };
+    let need_capture = || {
+        vec![BlockerV2 {
+            message: "先导入一轮采集轮次".into(),
+            target: TargetV2::Capture,
+        }]
+    };
+    let capture = StepV2 {
+        id: StepIdV2::Capture,
+        label: "采集轮次",
+        optional: false,
+        status: if captured {
+            StepStatus::Done
+        } else {
+            StepStatus::NotStarted
+        },
+        detail: if captured {
+            format!("已有 {complete_rounds} 轮完整采集")
+        } else {
+            "等待导入采集轮次".into()
+        },
+        blockers: Vec::new(),
+    };
+    let straight = doc
+        .segments
+        .iter()
+        .filter(|s| s.kind == SegmentKind::Straight)
+        .count();
+    let segments = StepV2 {
+        id: StepIdV2::Segments,
+        label: "段列表",
+        optional: false,
+        status: StepStatus::Done,
+        detail: format!(
+            "{} 段（直线 {straight}、弯道 {}），帧数容差合计 ±{}",
+            doc.segments.len(),
+            doc.segments.len() - straight,
+            crate::plan::tolerance_total(&doc.segments)
+        ),
+        blockers: Vec::new(),
+    };
     let corridor = {
         let open = untaught_pairs(w);
         let total = doc
@@ -2106,9 +2135,19 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
         StepV2 { id: StepIdV2::Publish, label: "发布与生效", optional: false, status, detail, blockers }
     };
     let next = if capture.status != StepStatus::Done {
-        Some(NextV2 { step: StepIdV2::Capture, label: "整圈采集".into(), target: TargetV2::Capture })
-    } else if let Some(open) = [&corridor, &calibration].into_iter().find(|s| s.status != StepStatus::Done) {
-        let target = open.blockers.first().map_or(TargetV2::Calibration, |b| b.target.clone());
+        Some(NextV2 {
+            step: StepIdV2::Capture,
+            label: "导入轮次".into(),
+            target: TargetV2::Capture,
+        })
+    } else if let Some(open) = [&corridor, &calibration]
+        .into_iter()
+        .find(|s| s.status != StepStatus::Done)
+    {
+        let target = open
+            .blockers
+            .first()
+            .map_or(TargetV2::Calibration, |b| b.target.clone());
         let label = match &target {
             TargetV2::Corridor {
                 camera,

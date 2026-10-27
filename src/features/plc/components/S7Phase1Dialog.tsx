@@ -104,9 +104,8 @@ export default function S7Phase1Dialog({ config, dirty, blockedReason, onApply, 
           aria-invalid={!!invalid} onValueChange={setDb("pc")} />
       </Grid>
     </fieldset>
-    <p className="muted hint">生产通讯协议 7：默认 PLC 写 DB4、PC 写 DB2，各 68 字节，双方以状态字握手；S7-1200 / 1500 采用机架 0 / 插槽 1。示教扩展协议 V1 使用 DB6（PC 写）与 DB12（PLC 写），每块 10 字节。请在 PLC 中启用 PUT/GET，并关闭所用 DB 的优化访问；按点表建立数据块，sn 与 snEcho 声明为 String[50]。</p>
-    {(plcDb === 6 || plcDb === 12 || pcDb === 6 || pcDb === 12) && <Alert tone="warn">生产 DB 占用了示教保留区，本次点表不包含示教点位。需要示教时，请为生产区选择其他 DB。</Alert>}
-    <p className="muted hint">将生产与示教点表、心跳及 S7 连接预设恢复为标准配置。保留 IP / 主机名、超时、轮询、重连、日志和自动连接设置；应用后需保存配置。</p>
+    <p className="muted hint">生产通讯协议 7：默认 PLC 写 DB4、PC 写 DB2，各 68 字节，双方以状态字握手；S7-1200 / 1500 采用机架 0 / 插槽 1。请在 PLC 中启用 PUT/GET，并关闭所用 DB 的优化访问；按点表建立数据块，sn 与 snEcho 声明为 String[50]。</p>
+    <p className="muted hint">将生产点表、心跳及 S7 连接预设恢复为标准配置。保留 IP / 主机名、超时、轮询、重连、日志和自动连接设置；应用后需保存配置。</p>
     {invalid && <Alert tone="ng">{invalid}</Alert>}
     {loading && <p role="status">正在生成点表预览…</p>}
     {error && <Alert tone="ng" action={<Button size="sm" onClick={() => setRetry(value => value + 1)}>重试</Button>}>{error}</Alert>}

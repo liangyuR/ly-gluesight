@@ -191,6 +191,99 @@ fn history_part_incomplete_different_or_foreign_is_not_importable() {
 }
 
 #[test]
+fn group_count_well_below_batch_median_of_importable_parts_warns_without_blocking_import() {
+    // 防的回归（维护采集补缺口）：采集版录制没有提前结束标记，帧组数明显偏少的件混进示教与标定没有任何提示；
+    // 不可导入的件或件数太少时的中位数误报；提示变成阻断，提前结束的判断错时整件无法导入
+    #[derive(Clone, Copy, PartialEq)]
+    enum Part {
+        Clean,
+        Blocked,
+        Imported,
+    }
+    use Part::*;
+    let doc = burst_workspace(&[Straight]).doc;
+    let cases: [(&str, &[(u64, Part)], &[usize]); 5] = [
+        (
+            "低于中位数 0.9 倍",
+            &[(10, Clean), (10, Clean), (10, Clean), (8, Clean)],
+            &[3],
+        ),
+        (
+            "恰为中位数 0.9 倍",
+            &[(10, Clean), (10, Clean), (10, Clean), (9, Clean)],
+            &[],
+        ),
+        (
+            "可导入件少于 3 件，不可导入件不计入",
+            &[(10, Clean), (5, Clean), (10, Blocked)],
+            &[],
+        ),
+        (
+            "中位数只按可导入件算",
+            &[
+                (10, Clean),
+                (10, Clean),
+                (10, Clean),
+                (2, Blocked),
+                (2, Blocked),
+                (2, Blocked),
+                (2, Blocked),
+            ],
+            &[3, 4, 5, 6],
+        ),
+        (
+            "已导入的件仍计入中位数",
+            &[(10, Imported), (10, Imported), (10, Clean), (8, Clean)],
+            &[3],
+        ),
+    ];
+    for (name, parts, expected) in cases {
+        let mut assessed: Vec<Assessed> = parts
+            .iter()
+            .map(|&(groups, state)| {
+                let mut a = assess_case(
+                    &doc,
+                    Case {
+                        part: part(&doc),
+                        summary: summary(CYCLE),
+                        recording: recording(None),
+                        current: configs(&doc, DEVICE),
+                        imported: BTreeMap::new(),
+                    },
+                );
+                a.view.group_count = groups;
+                match state {
+                    Clean => {}
+                    Blocked => {
+                        a.view.reasons.push("缺帧 1 帧".into());
+                        a.round = None;
+                    }
+                    Imported => {
+                        a.view.imported_round = Some("R01".into());
+                        a.view.reasons.push("已导入为轮次 R01".into());
+                        a.round = None;
+                    }
+                }
+                a
+            })
+            .collect();
+        flag_short_parts(&mut assessed);
+        let warned: Vec<usize> = (0..assessed.len())
+            .filter(|&i| !assessed[i].view.warnings.is_empty())
+            .collect();
+        assert_eq!(warned, expected, "{name}");
+        for (i, a) in assessed.iter().enumerate() {
+            if parts[i].1 == Clean {
+                assert!(
+                    a.round.is_some() && a.view.reasons.is_empty(),
+                    "{name}：第 {i} 件有提示也应能导入"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn imported_round_frames_stay_readable_after_history_recording_is_deleted() {
     // 防的回归（在线投运 5.2 物化方式）：轮次直接引用历史目录或复制出错，历史记录被保留策略清理后示教帧与标定原图失效；
     // 物化的轮次（round.json 3、origin）下游读不了；重启后认不出这件已导入

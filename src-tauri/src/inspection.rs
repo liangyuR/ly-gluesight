@@ -70,7 +70,7 @@ pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
         (tag::FAULT_CODE, "异常码", "DBW14", I16, output),
         (tag::SN_ECHO, "回显工件 SN", "DBB16.50", Text, output),
     ];
-    let mut points: Vec<_> = definitions
+    let points: Vec<_> = definitions
         .into_iter()
         .map(|(tag, name, address, data_type, access)| PlcPoint {
             id: format!("p_{tag}"),
@@ -87,9 +87,6 @@ pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
             ..PlcPoint::default()
         })
         .collect();
-    if ![plc_db, pc_db].iter().any(|db| matches!(db, 6 | 12)) {
-        points.extend(teaching_points());
-    }
     let config = PlcConfig {
         connection: ConnectionConfig {
             protocol: ProtocolKind::S7, host: DEFAULT_PLC_HOST.into(), port: 102, poll_interval_ms: 50,
@@ -105,85 +102,30 @@ pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
     Ok(config)
 }
 
-pub fn teaching_points() -> Vec<PlcPoint> {
-    let mut points: Vec<_> = [
-        (
-            6,
-            Access::ReadWrite,
-            [
-                "teachPcVersion",
-                "teachPcState",
-                "teachRoundId",
-                "teachPcReason",
-                "teachPcReserved",
-            ],
-        ),
-        (
-            12,
-            Access::Read,
-            [
-                "teachPlcVersion",
-                "teachPlcState",
-                "teachRoundIdEcho",
-                "teachPlcReason",
-                "teachPlcReserved",
-            ],
-        ),
-    ]
-    .into_iter()
-    .flat_map(|(db, access, tags)| {
-        tags.into_iter()
-            .enumerate()
-            .map(move |(offset, tag)| PlcPoint {
-                id: format!("p_{tag}"),
-                name: tag.into(),
-                address: format!("DB{db}.DBW{}", offset * 2),
-                data_type: DataType::I16,
-                access,
-                tags: vec![tag.into()],
-                poll: false,
-                ..PlcPoint::default()
-            })
-    })
-    .collect();
-    points.push(PlcPoint {
-        id: "p_teachPlcSnapshot".into(),
-        name: "teachPlcSnapshot".into(),
-        address: "DB12.DBB0.10".into(),
-        data_type: DataType::Bytes,
-        access: Access::Read,
-        tags: vec!["teachPlcSnapshot".into()],
-        poll: false,
-        ..PlcPoint::default()
-    });
-    points
-}
+/// 已删除的示教握手（DB6 / DB12）点位的标签。
+const RETIRED_TEACHING_TAGS: [&str; 11] = [
+    "teachPcVersion",
+    "teachPcState",
+    "teachRoundId",
+    "teachPcReason",
+    "teachPcReserved",
+    "teachPlcVersion",
+    "teachPlcState",
+    "teachRoundIdEcho",
+    "teachPlcReason",
+    "teachPlcReserved",
+    "teachPlcSnapshot",
+];
 
-pub fn add_teaching_points(config: &mut PlcConfig) {
-    if config.connection.protocol != ProtocolKind::S7 {
-        return;
-    }
-    let defaults = teaching_points();
-    for point in &mut config.points {
-        if let Some(expected) = defaults.iter().find(|p| {
-            p.address.starts_with("DB12.") && p.tags.iter().any(|t| point.tags.contains(t))
-        }) {
-            if point
-                .address
-                .eq_ignore_ascii_case(&expected.address.replacen("DB12.", "DB8.", 1))
-            {
-                point.address = expected.address.clone();
-            }
-        }
-    }
-    if config.points.iter().any(|p| {
-        p.tags.iter().any(|t| t.starts_with("teach"))
-            || p.address.to_ascii_uppercase().starts_with("DB6.")
-            || p.address.to_ascii_uppercase().starts_with("DB12.")
-    }) {
-        return;
-    }
-    config.points.extend(defaults);
+/// 去掉旧 plc.json 里示教握手的点位，返回去掉的个数；其余点位原样保留。
+pub fn drop_teaching_points(config: &mut PlcConfig) -> usize {
+    let before = config.points.len();
+    config.points.retain(|p| {
+        !p.tags
+            .iter()
+            .any(|t| RETIRED_TEACHING_TAGS.contains(&t.as_str()))
+    });
+    before - config.points.len()
 }
 
 pub fn reserved_s7_point(config: &PlcConfig, id: &str) -> bool {
@@ -199,43 +141,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn saved_teaching_db8_points_move_to_db12_without_relocating_other_fields() {
-        let mut config = default_plc_config();
-        for point in &mut config.points {
-            point.address = point.address.replacen("DB12.", "DB8.", 1);
-        }
-        let mut unrelated = config
-            .points
-            .iter()
-            .find(|p| p.tags.contains(&"teachPlcState".into()))
-            .unwrap()
-            .clone();
-        unrelated.id = "occupied_db8".into();
-        unrelated.tags = vec!["siteOther".into()];
-        config.points.push(unrelated.clone());
-        add_teaching_points(&mut config);
+    fn saved_teaching_points_are_dropped_and_production_points_stay_unchanged() {
+        let production = default_plc_config();
+        let mut config = production.clone();
+        let mut extra = |id: &str, address: &str, tag: &str| {
+            config.points.push(PlcPoint {
+                id: id.into(),
+                name: tag.into(),
+                address: address.into(),
+                data_type: DataType::I16,
+                access: Access::ReadWrite,
+                tags: vec![tag.into()],
+                ..PlcPoint::default()
+            })
+        };
+        extra("p_teachPcState", "DB6.DBW2", "teachPcState");
+        extra("p_teachRoundIdEcho", "DB12.DBW4", "teachRoundIdEcho");
+        extra("p_teachPlcSnapshot", "DB12.DBB0.10", "teachPlcSnapshot");
+        extra("site_db6", "DB6.DBW20", "siteOther");
+        assert_eq!(drop_teaching_points(&mut config), 3);
+        let ids: Vec<&str> = config.points.iter().map(|p| p.id.as_str()).collect();
+        let mut expected: Vec<&str> = production.points.iter().map(|p| p.id.as_str()).collect();
+        expected.push("site_db6");
+        assert_eq!(ids, expected);
         assert_eq!(
-            config
-                .points
-                .iter()
-                .find(|p| p.id == unrelated.id)
-                .unwrap()
-                .address,
-            "DB8.DBW2"
+            serde_json::to_value(&config.points[..production.points.len()]).unwrap(),
+            serde_json::to_value(&production.points).unwrap()
         );
-        for expected in teaching_points() {
-            assert_eq!(
-                config
-                    .points
-                    .iter()
-                    .find(|p| p.id == expected.id)
-                    .unwrap()
-                    .address,
-                expected.address
-            );
-        }
-        let once = serde_json::to_value(&config).unwrap();
-        add_teaching_points(&mut config);
-        assert_eq!(serde_json::to_value(&config).unwrap(), once);
     }
 }

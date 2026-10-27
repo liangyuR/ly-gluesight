@@ -1,8 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
-import type { CameraImaging } from "../cycle/types";
-import type { BandwidthEstimate, CameraConfig, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
+import type { BandwidthEstimate, CameraConfig, CameraImaging, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_release","camera_reconnect","camera_set_imaging"].includes(cmd))

@@ -14,7 +14,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 const device = (serial: string) => ({ serial, model: "MV-CA050", userName: "", transport: "GigE" as const, ip: "192.168.1.10" });
 const camera = (id: string, name: string, over: Partial<CameraConfig> = {}): CameraConfig => ({ ...defaultCameraConfig, id, name, serial: id + "-SN", ...over });
-const status = (cam: number, config: CameraConfig): CameraStatus => ({ cam, id: config.id, name: config.name, source: "mvs", ready: true, released: false, message: "", device: device(config.serial), sdkVersion: null, frames: 0, fps: 0, maxFps: null, configuredFrameRate: 10, lostPackets: 0, droppedFrames: 0, warnings: [] });
+const status = (cam: number, config: CameraConfig): CameraStatus => ({ cam, id: config.id, name: config.name, source: "mvs", ready: true, released: false, message: "", device: device(config.serial), sdkVersion: null, frames: 0, fps: 0, maxFps: null, configuredFrameRate: 10, lostPackets: 0, droppedFrames: 0, warnings: [], imaging: { exposureUs: 60, gainDb: 6 } });
 
 let configs: CameraConfig[];
 let released: string[];
@@ -151,16 +151,17 @@ describe("应用到全部相机", () => {
   });
 });
 
-describe("高级参数（调试）", () => {
-  it("临时下发曝光与增益 → 只写入当前相机设备，不写配方", async () => {
+describe("曝光与增益", () => {
+  it("改曝光后保存 → 按相机编号写入相机组配置，显示已保存的值", async () => {
     await openCamera("左相机 cam1");
-    await userEvent.click(await screen.findByText("高级参数（调试）"));
-    await userEvent.type(screen.getByRole("spinbutton", { name: "调试曝光（µs）" }), "8000");
-    await userEvent.type(screen.getByRole("spinbutton", { name: "调试增益（dB）" }), "6");
-    await userEvent.click(screen.getByRole("button", { name: "临时下发到设备" }));
-    expect(await screen.findByText(/本次调试已下发/)).toBeVisible();
+    const region = within(await screen.findByRole("region", { name: "曝光与增益" }));
+    const exposure = region.getByRole("spinbutton", { name: "曝光时间（µs）" });
+    await waitFor(() => expect(exposure).toHaveValue(60));
+    await userEvent.clear(exposure);
+    await userEvent.type(exposure, "8000");
+    await userEvent.click(region.getByRole("button", { name: "保存曝光与增益" }));
+    expect(await region.findByText(/已保存/)).toBeVisible();
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_set_imaging", { cam: 0, id: "cam1", imaging: { exposureUs: 8000, gainDb: 6 } });
-    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("workspace_set_camera_imaging", expect.anything());
   });
 });
 

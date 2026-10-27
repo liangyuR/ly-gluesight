@@ -183,32 +183,6 @@ impl RecipeStage {
     }
 }
 
-/// 一台相机在这个配方下的曝光与增益：示教采集和生产布防前下发到相机。
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CameraImaging {
-    pub exposure_us: f32,
-    pub gain_db: f32,
-}
-
-pub const DEFAULT_IMAGING: CameraImaging = CameraImaging { exposure_us: 60.0, gain_db: 6.0 };
-
-impl Default for CameraImaging {
-    fn default() -> Self { DEFAULT_IMAGING }
-}
-
-impl CameraImaging {
-    pub fn validate(&self, camera: &str) -> Result<(), String> {
-        if !(1.0..=1_000_000.0).contains(&self.exposure_us) {
-            return Err(format!("相机 {camera} 的曝光时间需在 1–1000000 µs 之间"));
-        }
-        if !(self.gain_db.is_finite() && self.gain_db >= 0.0) {
-            return Err(format!("相机 {camera} 的增益需为不小于 0 的有限数"));
-        }
-        Ok(())
-    }
-}
-
 /// 段配方里一台检测相机的参数（D-SB-45）：像素当量、标定引用、检测参数，以及它在各段的走廊。
 /// `RecipeDoc.inspect` 的顺序就是计划相机顺序（PLC 一个触发同时触发这三台）。
 /// 不拒绝未知字段：旧版的相机走廊 `corridor` 已放弃，读入时丢弃（D-SB-45 不迁移）。
@@ -367,8 +341,6 @@ pub struct Recipe {
     /// 拍照点没单独设时用的检测参数与限值
     pub detect: DetectParams,
     pub limits: ShotLimits,
-    #[serde(rename = "cameras")]
-    pub camera_imaging: BTreeMap<String, CameraImaging>,
     /// 段配方的段列表（RecipeDoc.segments）；为空即旧拍照点配方
     pub path_segments: Vec<PathSegment>,
     /// 段配方的检测相机，顺序即计划相机顺序
@@ -450,10 +422,6 @@ impl Recipe {
         }
         Ok(recipe)
     }
-    pub fn imaging(&self, camera: &str) -> Option<CameraImaging> {
-        self.camera_imaging.get(camera).copied()
-    }
-
     /// 本配方要用到的相机（编号），即计划相机。
     pub fn cameras(&self) -> Vec<String> {
         self.plan_cameras()
@@ -488,9 +456,6 @@ pub struct RecipeDoc {
     pub filter_window: usize,
     pub detect: DetectParams,
     pub limits: ShotLimits,
-    /// 各相机的曝光与增益：拍照点与检测相机用到的相机各一组，不多不少
-    #[serde(default)]
-    pub cameras: BTreeMap<String, CameraImaging>,
     /// 沿胶路的段列表（规格 §1）；为空即旧拍照点配方，下面几项段模型字段不允许设置
     #[serde(default)]
     pub segments: Vec<PathSegment>,
@@ -536,15 +501,6 @@ impl RecipeDoc {
         plan::plan_identity(self.product_code, &self.segments, &self.plan_cameras(), self.expected_total())
     }
 
-    /// 拍照点与检测相机新用到的相机补默认成像参数，不再用到的相机去掉，返回去掉的那些。
-    pub fn sync_imaging(&mut self) -> BTreeMap<String, CameraImaging> {
-        let used = self.plan_cameras();
-        let (kept, dropped): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.cameras).into_iter().partition(|(c, _)| used.contains(c));
-        self.cameras = kept;
-        for c in used { self.cameras.entry(c).or_default(); }
-        dropped
-    }
-
     /// 两份配方的段计划身份相同，就是同一份计划（D-SB-19）。
     pub fn same_plan(&self, other: &RecipeDoc) -> bool {
         self.plan_identity() == other.plan_identity()
@@ -571,22 +527,7 @@ impl RecipeDoc {
         if !self.is_burst() {
             return Err(LEGACY_RECIPE.into());
         }
-        self.validate_burst()?;
-        let used = self.plan_cameras();
-        if let Some(missing) = used.iter().find(|c| !self.cameras.contains_key(*c)) {
-            return Err(format!(
-                "相机 {missing} 被检测相机使用，但配方没有它的曝光与增益"
-            ));
-        }
-        for (camera, imaging) in &self.cameras {
-            if !used.contains(camera) {
-                return Err(format!(
-                    "配方给了相机 {camera} 的曝光与增益，但没有检测相机使用它"
-                ));
-            }
-            imaging.validate(camera)?;
-        }
-        Ok(())
+        self.validate_burst()
     }
 
     /// 段配方的模型约束（D-SB-1）：只支持飞拍；标定轮数 10..=100；检测相机各自合法；
@@ -649,7 +590,6 @@ impl RecipeDoc {
             filter_window: self.filter_window,
             detect: self.detect.clone(),
             limits: self.limits.clone(),
-            camera_imaging: self.cameras.clone(),
             path_segments: self.segments.clone(),
             inspect: self.inspect.clone(),
             segment_defaults: self.segment_defaults.clone(),
@@ -712,7 +652,7 @@ fn sample_path(k: usize) -> Vec<[f32; 2]> {
 /// 计划版本未分配。相机不足 3 台时照样返回，但过不了段配方校验。
 pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[String]) -> RecipeDoc {
     let segment_defaults = KindDefaults::default();
-    let mut doc = RecipeDoc {
+    RecipeDoc {
         id,
         name,
         version: 1,
@@ -726,7 +666,6 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
         filter_window: 5,
         detect: default_detect(),
         limits: default_limits(),
-        cameras: BTreeMap::new(),
         segments: vec![plan::new_segment(
             1,
             SegmentKind::Straight,
@@ -749,9 +688,7 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
         boundary_guard: DEFAULT_BOUNDARY_GUARD,
         boundary_refine: false,
         part_calib: None,
-    };
-    doc.sync_imaging();
-    doc
+    }
 }
 
 /// 一次预留 `count` 个计划版本号并返回第一个（项目导入用）；与配方库发号共用本机同一份记录。

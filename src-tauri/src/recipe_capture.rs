@@ -1,18 +1,16 @@
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::camera::CameraSource;
-use crate::cycle::{CycleHost, Phase};
-use crate::frame::{Frame, FrameImage};
-use crate::recipe::CameraImaging;
+use crate::camera::CameraImaging;
+use crate::cycle::CycleHost;
+use crate::frame::FrameImage;
 
 mod burst;
 
-pub use burst::{CaptureFailureV2, CaptureRoundV2, HistoryFrame, HistoryRound, RoundOrigin};
+pub use burst::{CaptureRoundV2, HistoryFrame, HistoryRound, RoundOrigin};
 
 /// 三目拼接图的拆分布局。旧拍照点模型：段配方只用单视角相机，不经过这里（D-SB-11）。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -71,10 +69,8 @@ impl CaptureState {
     fn active(&self) -> bool { matches!(self, Self::WaitingStart | Self::Receiving | Self::Draining) }
 }
 
-/// 一轮整圈采集最多同时使用的相机数。
+/// 一轮采集最多使用的相机数。
 const MAX_CAMERAS: usize = 8;
-/// 等 PLC 开始后整圈收图、以及 PLC 结束后已收到图像写盘完成的上限。
-const ROUND_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -86,96 +82,15 @@ pub struct CaptureCamera {
     pub received_count: u32,
 }
 
-/// 开始整圈采集被拒的原因；Display 是给操作员看的文案。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CaptureStartRejected {
-    DrainTimeout,
-    CameraCount,
-    InvalidCameraId(String),
-    Duplicate(String),
-    SessionNotReady(String),
-    Busy,
-    /// 采集相机不是单视角
-    MultiView(String),
-    Io(String),
-}
-
-impl std::fmt::Display for CaptureStartRejected {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DrainTimeout => write!(f, "等待在途帧时间须为 200–30000 ms"),
-            Self::CameraCount => write!(f, "整圈采集须选择 1–{MAX_CAMERAS} 台相机"),
-            Self::InvalidCameraId(id) => write!(f, "相机编号 {id:?} 无效"),
-            Self::Duplicate(id) => write!(f, "相机 {id} 被重复选择"),
-            Self::SessionNotReady(id) => write!(f, "相机 {id}：设备会话尚未就绪"),
-            Self::Busy => write!(f, "已有示教采集正在占用设备"),
-            Self::MultiView(id) => write!(f, "相机 {id}：段配方用三台独立的单视角相机共用一个触发，不能用三目拼接或多视角设备采集"),
-            Self::Io(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-/// 开始采集时一台相机的身份与计数起点。
-pub struct CaptureDevice {
-    pub cam: u8,
-    pub camera_id: String,
-    pub camera_config: serde_json::Value,
-    pub imaging: CameraImaging,
-    pub session: u64,
-    /// 这台相机本会话见到的最高 SDK 帧计数（没见过帧时取开流计数起点），seq = frame_counter − 它（D-SB-10）；
-    /// 两者都没有时为空，本轮按这台相机收到的第一帧定基线
-    pub frame_baseline: Option<u64>,
-}
-
 pub struct RecipeCaptureHost {
     root: PathBuf,
-    /// 最近一轮（burst 模块）
-    burst: Mutex<Option<burst::BurstRun>>,
-    /// frames.jsonl 追加句柄；写盘线程只单独持有它，不与 burst 锁嵌套
-    journal: Mutex<Option<burst::Journal>>,
-    /// 写盘线程，按本轮相机顺序；排队条数由 MAX_FRAMES_PER_CAMERA 限制
-    burst_writers: Vec<mpsc::Sender<burst::BurstItem>>,
 }
 
-/// 一轮示教采集（段配方的采集轮次，序列化为 CaptureRoundV2 的形状）。
+/// 一轮段配方采集轮次（序列化为 CaptureRoundV2 的形状）。
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
 pub enum AnyRound {
     Burst(CaptureRoundV2),
-}
-
-impl AnyRound {
-    pub fn round_id(&self) -> &str {
-        let Self::Burst(r) = self;
-        &r.round_id
-    }
-
-    pub fn camera_ids(&self) -> Vec<String> {
-        let Self::Burst(r) = self;
-        r.camera_ids()
-    }
-
-    pub fn state(&self) -> &CaptureState {
-        let Self::Burst(r) = self;
-        &r.state
-    }
-
-    /// 交给 PLC 的采集完成码：完成 1/0；失败 90 配异常码，按原因报 98（相机断连、会话变化）或 99（其余），
-    /// 计数不符不是失败（D-SB-33）。未结束为 None。
-    pub fn plc_report(&self) -> Option<(u16, u16)> {
-        let Self::Burst(r) = self;
-        match r.state {
-            CaptureState::Complete => Some((1, 0)),
-            CaptureState::Failed => Some((
-                90,
-                r.failure.as_ref().map_or(
-                    crate::judge::fault::PROCESS_TIMEOUT,
-                    CaptureFailureV2::fault_code,
-                ),
-            )),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -189,7 +104,7 @@ pub struct CaptureSummary {
     pub state: CaptureState,
     pub created_at: i64,
     pub error: Option<String>,
-    /// 历史件导入的轮次的来源；示教实拍为空
+    /// 历史件导入或手动配置数据的来源；以前示教实拍的轮次为空
     pub origin: Option<RoundOrigin>,
 }
 
@@ -204,9 +119,9 @@ impl RecipeCaptureHost {
         Ok(path)
     }
 
+    /// 打开采集目录：启动时仍在进行中的轮次判为中断，读不了的记录改名备份。
     pub fn open(root: PathBuf) -> Result<Arc<Self>, String> {
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        let mut latest_burst: Option<CaptureRoundV2> = None;
         let canonical_root = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
         let backup_broken = |path: &Path| -> Result<(), String> {
             let backup = path.with_file_name(format!("round.broken-{}.json", chrono::Local::now().format("%Y%m%d-%H%M%S")));
@@ -222,54 +137,18 @@ impl RecipeCaptureHost {
             }
             match serde_json::from_str::<CaptureRoundV2>(&text) {
                 Ok(round) => {
-                    let round = burst::restore(&path, round)?;
-                    if latest_burst
-                        .as_ref()
-                        .is_none_or(|last| round.created_at >= last.created_at)
-                    {
-                        latest_burst = Some(round);
-                    }
+                    burst::restore(&path, round)?;
                 }
                 Err(_) => backup_broken(&path)?,
             }
         }
-        let (burst_writers, burst_receivers): (Vec<_>, Vec<_>) = (0..MAX_CAMERAS).map(|_| mpsc::channel::<burst::BurstItem>()).unzip();
-        let host = Arc::new(Self {
-            root,
-            burst: Mutex::new(latest_burst.map(burst::restored_run)),
-            journal: Mutex::new(None),
-            burst_writers,
-        });
-        let weak = Arc::downgrade(&host);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(50));
-            let Some(host) = weak.upgrade() else { break };
-            host.tick_burst();
-        });
-        for rx in burst_receivers {
-            let weak = Arc::downgrade(&host);
-            std::thread::spawn(move || while let Ok(item) = rx.recv() {
-                let Some(host) = weak.upgrade() else { break };
-                host.write_burst(item);
-            });
-        }
-        Ok(host)
-    }
-
-    pub fn active(&self) -> bool { self.burst_active() }
-
-    /// 最近的一轮。
-    pub fn current_any(&self) -> Option<AnyRound> {
-        self.current_burst().map(AnyRound::Burst)
+        Ok(Arc::new(Self { root }))
     }
 
     /// 按轮次 ID 读一轮，经记录核对；旧拍照点配方的采集轮次已停用，按无效记录报错。
     pub fn get_any(&self, round_id: &str) -> Result<AnyRound, String> {
         let dir = self.safe_round_path(round_id)?;
-        if self.burst_round_id().as_deref() != Some(round_id)
-            && crate::fsio::read_text(&dir.join("round.json"))
-                .is_ok_and(|text| !burst::is_v2(&text))
-        {
+        if crate::fsio::read_text(&dir.join("round.json")).is_ok_and(|text| !burst::is_v2(&text)) {
             return Err(format!(
                 "采集轮次 {round_id} 是旧拍照点配方的采集记录，已停用"
             ));
@@ -277,35 +156,37 @@ impl RecipeCaptureHost {
         self.get_burst(round_id).map(AnyRound::Burst)
     }
 
-    pub fn fail(&self, error: impl Into<String>) {
-        self.fail_burst_active(CaptureFailureV2::Other, error.into());
+    /// 段配方轮次的 ID（round.json 为 format 2 或 3 的目录）。
+    fn round_ids(&self) -> Result<Vec<String>, String> {
+        let mut ids = Vec::new();
+        for entry in std::fs::read_dir(&self.root).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if crate::fsio::read_text(&entry.path().join("round.json"))
+                .is_ok_and(|text| burst::is_v2(&text))
+            {
+                ids.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        Ok(ids)
     }
 
-    pub fn interrupt(&self, error: impl Into<String>) {
-        self.fail_burst_active(CaptureFailureV2::Interrupted, error.into());
-    }
-
-    pub fn disconnected(&self, cam: u8) {
-        self.disconnected_burst(cam);
-    }
-
-    pub fn offer(&self, frame: &Frame, _original: Option<Arc<FrameImage>>) -> bool {
-        self.offer_burst(frame)
+    /// 最近创建的一轮；记录读不了的轮次跳过。
+    pub fn latest(&self) -> Result<Option<AnyRound>, String> {
+        let latest = self
+            .round_ids()?
+            .iter()
+            .filter_map(|id| self.burst_summary(id).ok())
+            .max_by(|a, b| {
+                a.created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| a.round_id.cmp(&b.round_id))
+            });
+        latest.map(|r| self.get_any(&r.round_id)).transpose()
     }
 
     pub fn list(&self, recipe_id: &str) -> Result<Vec<CaptureSummary>, String> {
         let mut rounds = Vec::new();
-        let live_burst = self.burst_round_id();
-        for entry in std::fs::read_dir(&self.root).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let id = entry.file_name().to_string_lossy().into_owned();
-            if !entry.path().join("round.json").is_file() { continue; }
-            let burst = live_burst.as_deref() == Some(id.as_str())
-                || crate::fsio::read_text(&entry.path().join("round.json"))
-                    .is_ok_and(|text| burst::is_v2(&text));
-            if !burst {
-                continue;
-            }
+        for id in self.round_ids()? {
             let r = self.burst_summary(&id)?;
             if r.recipe_id == recipe_id {
                 rounds.push(CaptureSummary {
@@ -326,174 +207,14 @@ impl RecipeCaptureHost {
     }
 }
 
-/// 采集设备每帧交付的视角数（1 或 3），取自本轮记下的设备配置。
-fn view_count(camera_config: &serde_json::Value) -> usize {
-    camera_config.get("viewCount").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 3)).unwrap_or(3) as usize
-}
-
-/// 开始一轮段配方整圈采集。
-#[tauri::command]
-pub async fn recipe_capture_start(
-    app: AppHandle,
-    recipe_id: String,
-    camera_ids: Vec<String>,
-    drain_timeout_ms: Option<u64>,
-) -> Result<AnyRound, String> {
-    let mut data = serde_json::json!({"recipeId": recipe_id, "cameraIds": camera_ids});
-    let result =
-        recipe_capture_start_inner(app.clone(), recipe_id, camera_ids, drain_timeout_ms).await;
-    data["roundId"] = serde_json::json!(result.as_ref().ok().map(|round| round.round_id()));
-    crate::cycle::log_op(&app, &crate::applog::codes::OP_CAPTURE_START, data, &result);
-    result
-}
-
-async fn recipe_capture_start_inner(
-    app: AppHandle,
-    recipe_id: String,
-    camera_ids: Vec<String>,
-    drain_timeout_ms: Option<u64>,
-) -> Result<AnyRound, String> {
-    let cycle = app.state::<CycleHost>();
-    let _link = cycle.link_gate.lock().await;
-    let _config = cycle.config_gate.lock().await;
-    if cycle.busy() {
-        return Err("在途事务尚未结束，请等待握手释放或复位".into());
-    }
-    if crate::cycle::production_start_pending(app.state::<crate::plc::PlcHost>().engine()).await? {
-        return Err("PLC 已发出生产请求，请等待生产完成".into());
-    }
-    let mut teaching = cycle.teaching.lock().await;
-    let status = teaching.view();
-    if !status.available || status.busy {
-        return Err(status.message);
-    }
-    let capture_app = app.clone();
-    let round = tauri::async_runtime::spawn_blocking(move || {
-        start_capture(capture_app, recipe_id, camera_ids, drain_timeout_ms)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    let result = async {
-        let id = teaching.prepare_request(round.round_id())?;
-        cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
-        cycle.camera.recipe_capture().burst_ready(id)?;
-        teaching
-            .commit_request(app.state::<crate::plc::PlcHost>().engine())
-            .await?;
-        Ok::<(), String>(())
-    }
-    .await;
-    cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
-    if let Err(error) = result {
-        cycle.camera.recipe_capture().fail(error.clone());
-        return Err(error);
-    }
-    cycle
-        .camera
-        .recipe_capture()
-        .current_any()
-        .ok_or("采集轮次不存在".into())
-}
-
-fn start_capture(app: AppHandle, recipe_id: String, camera_ids: Vec<String>, drain_timeout_ms: Option<u64>) -> Result<AnyRound, String> {
-    let cycle = app.state::<CycleHost>();
-    if recipe_id.trim().is_empty() {
-        return Err("请先创建配方草稿".into());
-    }
-    if camera_ids.is_empty() {
-        return Err("请至少选择一台采集相机".into());
-    }
-    if cycle.phase() != Phase::Idle {
-        return Err("节拍尚未回到空闲，请先复位".into());
-    }
-    let mut slots = Vec::with_capacity(camera_ids.len());
-    for camera_id in &camera_ids {
-        let cam = cycle.camera.require(camera_id)?;
-        let slot = cycle.camera.slot(cam as usize).ok_or_else(|| format!("相机 {camera_id} 不存在"))?;
-        let config = slot.config();
-        if !slot.is_ready() { return Err(format!("相机 {}（{camera_id}）未就绪", config.name)); }
-        if config.source == CameraSource::Mvs && config.trigger_source != "Line0" { return Err(format!("相机 {}（{camera_id}）必须使用 PLC Line0 硬触发", config.name)); }
-        slots.push((cam, slot, config));
-    }
-    let simulated = slots
-        .iter()
-        .any(|(_, _, config)| config.source != CameraSource::Mvs);
-    app.state::<crate::workspace::WorkspaceHost>()
-        .capture_for_candidate(&recipe_id, |workspace| {
-            if !workspace.doc.is_burst() {
-                return Err("旧拍照点配方已停用，请创建段配方".into());
-            }
-            crate::camera::check_burst_cameras(&cycle.camera.configs(), &camera_ids)?;
-            let mut devices = Vec::with_capacity(slots.len());
-            for (cam, slot, config) in &slots {
-                let imaging = workspace.imaging(&config.id);
-                slot.set_imaging(&imaging)?;
-                let (arm, ledger) = slot
-                    .routing_state()
-                    .map_err(|e| format!("相机 {}：{e}", config.id))?;
-                devices.push(CaptureDevice {
-                    cam: *cam,
-                    camera_id: config.id.clone(),
-                    camera_config: serde_json::to_value(config).map_err(|e| e.to_string())?,
-                    imaging,
-                    session: arm.session,
-                    frame_baseline: ledger
-                        .as_ref()
-                        .and_then(|l| l.last_frame)
-                        .or(arm.counter_after_open),
-                });
-            }
-            let drain = drain_timeout_ms.unwrap_or(1000);
-            let capture = cycle.camera.recipe_capture();
-            capture
-                .start_burst(recipe_id.clone(), devices, drain, simulated)
-                .map(AnyRound::Burst)
-                .map_err(|e| e.to_string())
-        })
-}
-
 #[tauri::command]
 pub fn recipe_capture_get(app: AppHandle, round_id: Option<String>) -> Result<Option<AnyRound>, String> {
     let cycle = app.state::<CycleHost>();
     let capture = cycle.camera.recipe_capture();
-    match round_id { Some(id) => capture.get_any(&id).map(Some), None => capture.current_any().map(|r| capture.get_any(r.round_id())).transpose() }
-}
-
-#[tauri::command]
-pub async fn recipe_capture_stop(app: AppHandle) -> Result<Option<AnyRound>, String> {
-    let result = recipe_capture_stop_inner(app.clone()).await;
-    crate::cycle::log_op(
-        &app,
-        &crate::applog::codes::OP_CAPTURE_STOP,
-        serde_json::json!({}),
-        &result,
-    );
-    result
-}
-
-async fn recipe_capture_stop_inner(app: AppHandle) -> Result<Option<AnyRound>, String> {
-    let cycle = app.state::<CycleHost>();
-    let _gate = cycle.link_gate.lock().await;
-    let mut teaching = cycle.teaching.lock().await;
-    let result = teaching
-        .cancel(app.state::<crate::plc::PlcHost>().engine(), 1)
-        .await;
-    cycle.store_teaching_busy(teaching.busy(), teaching.blocks_site_switch());
-    cycle
-        .camera
-        .recipe_capture()
-        .interrupt("操作员中止本轮采集，请整圈重采");
-    result?;
-    Ok(cycle.camera.recipe_capture().current_any())
-}
-
-#[tauri::command]
-pub async fn recipe_capture_plc_status(app: AppHandle) -> crate::teaching::TeachingView {
-    app.state::<CycleHost>()
-        .teaching
-        .lock()
-        .await
-        .monitor_view(app.state::<crate::plc::PlcHost>().engine())
+    match round_id {
+        Some(id) => capture.get_any(&id).map(Some),
+        None => capture.latest(),
+    }
 }
 
 #[tauri::command]

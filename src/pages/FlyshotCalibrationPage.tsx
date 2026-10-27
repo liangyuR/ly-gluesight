@@ -55,7 +55,7 @@ export default function FlyshotCalibrationPage() {
   const busy=productionBusy(snapshot);
   const sampleSet=offline&&site?.source==="sampleSet"?site.sampleSet:null;
   const feasibility:FeasibilitySources={
-    exposure:null,
+    exposure:status&&config?.source==="mvs"?{value:status.imaging.exposureUs,from:"来自相机页保存的曝光"}:null,
     fps:status?.configuredFrameRate?{value:status.configuredFrameRate,from:"来自相机设定帧率回读"}:null,
     mmPerPx:sampleSet?.mmPerPx?{value:sampleSet.mmPerPx,from:"来自样本集声明"}:calibMm?{value:calibMm,from:"来自工位标定"}:null,
   };

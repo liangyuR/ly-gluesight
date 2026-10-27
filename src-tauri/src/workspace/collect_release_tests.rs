@@ -17,7 +17,7 @@ fn rig() -> Vec<CameraConfig> {
         .collect()
 }
 
-/// 刚建的候选：三台计划相机与默认曝光增益、一个待标定的直线段，走廊没示教。
+/// 刚建的候选：三台计划相机、一个待标定的直线段，走廊没示教。
 fn untaught() -> RecipeDoc {
     burst_template("LINE-NEW".into(), "新产线".into(), 21, &cameras())
 }
@@ -61,17 +61,17 @@ fn untaught_uncalibrated_candidate_then_collect_checks_pass_and_store_saves_coll
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// 采集版至少要定下三台不同的计划相机（都在相机组、单视角）与它们的曝光增益，型号不冲突、有一段、没有正式版；
+/// 采集版至少要定下三台不同的计划相机（都在相机组、单视角），型号不冲突、有一段、没有正式版；
 /// 缺任何一项都拒绝并指出是哪一项。
 #[test]
-fn missing_camera_imaging_or_formal_exists_then_collect_check_fails() {
+fn missing_plan_camera_or_formal_exists_then_collect_check_fails() {
     let formal = crate::recipe::samples_burst().build().unwrap();
     type Case = (
         &'static str,
         fn(&mut RecipeDoc, &mut Vec<CameraConfig>),
         &'static str,
     );
-    let cases: [Case; 6] = [
+    let cases: [Case; 5] = [
         (
             "只有两台计划相机",
             |d, _| {
@@ -83,13 +83,6 @@ fn missing_camera_imaging_or_formal_exists_then_collect_check_fails() {
             "两台计划相机重复",
             |d, _| d.inspect[2].camera = d.inspect[0].camera.clone(),
             "计划相机",
-        ),
-        (
-            "一台相机缺曝光增益",
-            |d, _| {
-                d.cameras.remove(&legacy_camera_id(1));
-            },
-            "曝光与增益",
         ),
         (
             "计划相机不在相机组",

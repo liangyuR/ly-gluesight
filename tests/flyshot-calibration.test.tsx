@@ -16,7 +16,7 @@ const desktop=vi.hoisted(()=>({on:false}));
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:()=>desktop.on}));
 vi.mock("../src/features/camera/api",async original=>({...await original<object>(),cameraApi:{rigConfig:vi.fn(),calibInfo:vi.fn()},useRigStatus:vi.fn()}));
 vi.mock("../src/features/cycle/api",async original=>({...await original<object>(),useCycle:vi.fn(),useSiteStatus:vi.fn()}));
-const status=(frames:number):CameraStatus=>({cam:0,id:"CAM-1",name:"相机 1",source:"mvs",ready:true,released:false,message:"",device:null,sdkVersion:null,frames,fps:0,configuredFrameRate:10, maxFps:5.6,lostPackets:0,droppedFrames:0,warnings:[]});
+const status=(frames:number):CameraStatus=>({cam:0,id:"CAM-1",name:"相机 1",source:"mvs",ready:true,released:false,message:"",device:null,sdkVersion:null,frames,fps:0,configuredFrameRate:10, maxFps:5.6,lostPackets:0,droppedFrames:0,warnings:[],imaging:{exposureUs:60,gainDb:6}});
 beforeEach(()=>{
  localStorage.clear();
  desktop.on=false;
@@ -28,7 +28,7 @@ beforeEach(()=>{
 });
 
 it("速度和拍照点间距未填 → 不给出满足结论并列出缺项",()=>{
- render(<FeasibilityCalc sources={{exposure:{value:60,from:"来自配方"},fps:{value:5.6,from:"来自相机最高帧率"},mmPerPx:{value:0.04,from:"来自工位标定"}}} imageSize={{width:1280,height:1024}}/>);
+ render(<FeasibilityCalc sources={{exposure:{value:60,from:"来自相机页保存的曝光"},fps:{value:5.6,from:"来自相机最高帧率"},mmPerPx:{value:0.04,from:"来自工位标定"}}} imageSize={{width:1280,height:1024}}/>);
  expect(screen.getByRole("status")).toHaveTextContent("还缺：速度、最小拍照点间距");
  expect(screen.queryByText("满足")).toBeNull();
 });
@@ -41,13 +41,13 @@ it("有图像尺寸和当量 → 视野取所选运动方向的像素数乘当�
  expect(fov).toHaveValue(51.2);
 });
 
-it("手填像素当量后配方曝光更新 → 保留手填当量并重新核算",async()=>{
- const view=render(<FeasibilityCalc sources={{exposure:{value:60,from:"来自配方"},fps:{value:10,from:"来自相机"}}} imageSize={{width:1280,height:1024}}/>);
+it("手填像素当量后相机曝光更新 → 保留手填当量并重新核算",async()=>{
+ const view=render(<FeasibilityCalc sources={{exposure:{value:60,from:"来自相机页保存的曝光"},fps:{value:10,from:"来自相机"}}} imageSize={{width:1280,height:1024}}/>);
  await userEvent.type(screen.getByRole("spinbutton",{name:/速度/}),"100");
  await userEvent.type(screen.getByRole("spinbutton",{name:/最小拍照点间距/}),"30");
  const scale=screen.getByRole("spinbutton",{name:/^像素当量/});
  await userEvent.type(scale,"0.08");
- view.rerender(<FeasibilityCalc sources={{exposure:{value:80,from:"来自配方"},fps:{value:10,from:"来自相机"}}} imageSize={{width:1280,height:1024}}/>);
+ view.rerender(<FeasibilityCalc sources={{exposure:{value:80,from:"来自相机页保存的曝光"},fps:{value:10,from:"来自相机"}}} imageSize={{width:1280,height:1024}}/>);
  expect(scale).toHaveValue(0.08);
  expect(screen.getByRole("spinbutton",{name:/视野沿运动方向/})).toHaveValue(102.4);
  expect(screen.getByText(/0.008 mm = 0.10 px/)).toBeInTheDocument();

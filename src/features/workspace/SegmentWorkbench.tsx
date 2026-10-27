@@ -108,7 +108,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
 
   if (rounds && !rounds.length) {
     return <Panel title="分段标定" detail="在一轮完整采集的帧组时间轴上划分直线段与弯道段">
-      <Notice title="还没有完整的整圈采集" tone="warn">先在“整圈采集”完成至少一轮，再回到这里按图像划分段。</Notice>
+      <Notice title="还没有完整的采集轮次" tone="warn">先在“采集轮次”导入至少一轮，再回到这里按图像划分段。</Notice>
     </Panel>;
   }
 

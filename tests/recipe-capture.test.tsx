@@ -5,17 +5,12 @@ import { beforeEach, expect, it, vi } from "vitest";
 import CapturePage from "../src/features/workspace/CapturePage";
 import {workspaceApi} from "../src/features/workspace/api";
 import {useWorkspace} from "../src/features/workspace/context";
-import {cameraApi} from "../src/features/camera/api";
-import {plcApi} from "../src/features/plc/api";
-import {useCycle,useSiteStatus,cycleApi} from "../src/features/cycle/api";
+import {useCycle} from "../src/features/cycle/api";
 import type {CameraConfig} from "../src/features/camera/types";
 import {burstRecipe,burstWorkspaceView,captureRoundV2,snapshot,workspaceState} from "./fixtures";
 vi.mock("../src/features/workspace/context",()=>({useWorkspace:vi.fn()}));
-vi.mock("../src/features/workspace/api",()=>({workspaceApi:{setCameraImaging:vi.fn(),captureGet:vi.fn(),capturePlcStatus:vi.fn(),captureList:vi.fn(),captureStart:vi.fn(),captureStop:vi.fn(),captureSample:vi.fn(),captureFrameImage:vi.fn(),calibrationAddRound:vi.fn(),calibrationRemoveRound:vi.fn(),historyCandidates:vi.fn(),historyImport:vi.fn()}}));
-vi.mock("../src/features/camera/api",()=>({cameraApi:{rigStatus:vi.fn(),calibInfo:vi.fn(async()=>null)}}));
-vi.mock("../src/lib/storage",()=>({storageApi:{preferences:vi.fn(async()=>({}))}}));
-vi.mock("../src/features/plc/api",()=>({plcApi:{getStatus:vi.fn()}}));
-vi.mock("../src/features/cycle/api",()=>({useCycle:vi.fn(),useSiteStatus:vi.fn(),cycleApi:{offlineCapture:vi.fn()}}));
+vi.mock("../src/features/workspace/api",()=>({workspaceApi:{captureGet:vi.fn(),captureList:vi.fn(),captureFrameImage:vi.fn(),calibrationAddRound:vi.fn(),calibrationRemoveRound:vi.fn(),historyCandidates:vi.fn(),historyImport:vi.fn()}}));
+vi.mock("../src/features/cycle/api",()=>({useCycle:vi.fn()}));
 let ws:ReturnType<typeof workspaceState>;
 const picture={url:"data:image/png;base64,",width:1280,height:1024};
 
@@ -30,39 +25,13 @@ const freshRound=()=>captureRoundV2({recipeId:"A",roundId:"round-new"});
 function useBurst(){
  ws=workspaceState(burstWorkspaceView(burstRecipe({id:"A"})));ws.cameras=triple();
  vi.mocked(useWorkspace).mockImplementation(()=>ws);
- vi.mocked(cameraApi.rigStatus).mockResolvedValue(["CAM-1","CAM-2","CAM-3"].map(id=>({id,ready:true})) as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
 }
 beforeEach(()=>{
  useBurst();
- vi.mocked(useSiteStatus).mockReturnValue(null);
- vi.mocked(workspaceApi.capturePlcStatus).mockResolvedValue({available:true,busy:false,roundId:null,phase:"idle",message:"示教接口就绪"});
  vi.mocked(useWorkspace).mockImplementation(()=>ws);vi.mocked(useCycle).mockReturnValue({snapshot:snapshot(),logs:[]});
- vi.mocked(plcApi.getStatus).mockResolvedValue({state:"connected",message:"PLC已连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);
  vi.mocked(workspaceApi.captureGet).mockResolvedValue(null);vi.mocked(workspaceApi.captureList).mockResolvedValue([]);
- vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);
+ vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);vi.mocked(workspaceApi.historyCandidates).mockResolvedValue([]);
  vi.mocked(workspaceApi.calibrationAddRound).mockResolvedValue(ws.data!);vi.mocked(workspaceApi.calibrationRemoveRound).mockResolvedValue(ws.data!);
-});
-
-it("请求已发布且图片接收已准备 → 离线送圈可启动 PLC 接受与采集",async()=>{
- vi.mocked(useSiteStatus).mockReturnValue({mode:"offline",source:"synthetic",last:null,measurement:"simulated",port:null,running:false,continuous:false,parts:0,message:"",heartbeatStopped:false,sampleSet:null,nextPart:null,recent:[]});
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({recipeId:"A",state:"receiving"}));
- vi.mocked(workspaceApi.capturePlcStatus).mockResolvedValue({available:true,busy:true,roundId:1,phase:"requested",message:"等待 PLC 接受"});
- vi.mocked(cycleApi.offlineCapture).mockResolvedValue(undefined);
- show();
- const send=await screen.findByRole("button",{name:"离线产线送一圈"});
- await waitFor(()=>expect(send).toBeEnabled());
- await userEvent.click(send);
- expect(cycleApi.offlineCapture).toHaveBeenCalledWith(null);
-});
-
-it("三台相机中一台未就绪 → 仍默认勾选全部，开始整圈采集禁用并点名未就绪相机",async()=>{
- ws.cameras=triple();
- vi.mocked(cameraApi.rigStatus).mockResolvedValue([{id:"CAM-1",ready:true},{id:"CAM-2",ready:false},{id:"CAM-3",ready:true}] as Awaited<ReturnType<typeof cameraApi.rigStatus>>);show();
- expect(await screen.findByText("采集相机未就绪：相机2。")).toBeVisible();
- const group=screen.getByRole("group",{name:"采集相机"});
- for(const name of [/相机1/,/相机2/,/相机3/]) expect(within(group).getByRole("checkbox",{name})).toBeChecked();
- const start=screen.getByRole("button",{name:"开始整圈采集"});
- expect(start).toBeDisabled();
 });
 
 // 防的回归：采集页退回“按 PLC 计划数核对”——进度按 receivedCount/plannedCount 画、缺帧整轮判异常（规格 §5：示教轮次不核对；§3：缺帧只告警）
@@ -80,7 +49,7 @@ it("新轮次有缺帧和丢帧告警 → 显示帧组数、各相机帧数、�
 
  expect(within(screen.getByRole("group",{name:"不完整帧组"})).getByRole("button",{name:/^5/})).toHaveTextContent("缺 相机2");
  expect(screen.queryByText("数量核对")).toBeNull();expect(screen.queryByText(/ \/ 12 张/)).toBeNull();
- expect(screen.queryByText("本轮异常，需要重新采集")).toBeNull();
+ expect(screen.queryByText("本轮异常，不能用于示教或标定")).toBeNull();
 });
 it("异常轮保留原因，不能用于示教或标定",async()=>{
  useBurst();
@@ -107,17 +76,6 @@ it("采集页整理已屏蔽轮次并切换预览 → 保留原帧组总数，�
  expect(screen.getByRole("spinbutton",{name:"第 1 段结束帧组"})).toHaveValue(4);
 });
 
-it.each([
- ["段配方：本轮已有相机用作示教帧",()=>{ ws.data!.plan!.cameraTeaching[0].segments[0].frame.source="capture:round-1"; },true],
- ["段配方：本轮已加入多轮标定",()=>{ ws.data!.plan!.calibration!.rounds[0].roundId="round-1"; },true],
-])("示教或标定用过的轮次不允许同时作为独立验证样本 · %s",async(_,setup,burst)=>{
- if(burst) useBurst(); setup();
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({recipeId:"A"}));show("/recipe/capture?purpose=validation");
- const button=await screen.findByRole("button",{name:"保存为独立验证样本"});
- await userEvent.click(screen.getByRole("checkbox",{name:"已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致"}));
- expect(button).toBeDisabled();expect(screen.getByText("需要独立于示教的采集轮次")).toBeVisible();
-});
-
 it("本轮已作为独立验证样本入库 → 不能再用于走廊示教或标定",async()=>{
  useBurst();
  ws.data!.workspace.sampleBank=[{id:"round-new",name:"独立采集",geometryTag:null,expected:"OK",createdAt:1,captureId:"round-new"}];
@@ -126,51 +84,13 @@ it("本轮已作为独立验证样本入库 → 不能再用于走廊示教或�
  for(const name of ["用于走廊示教","加入标定","加入标定（标准件）"]) expect(screen.getByRole("button",{name})).toBeDisabled();
 });
 
-it("PLC 未连接 →开始整圈采集禁用并给出 PLC 通讯入口",async()=>{
- vi.mocked(plcApi.getStatus).mockResolvedValue({state:"disconnected",message:"PLC 未连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);show();
- expect(await screen.findByText(/PLC 未连接：整圈采集需要/)).toBeVisible();
- expect(screen.getByRole("button",{name:"开始整圈采集"})).toBeDisabled();
- expect(screen.getByRole("link",{name:"前往 PLC 通讯"})).toHaveAttribute("href","/plc");
-});
-
-it("Software 相机参与整圈采集 → 阻止启动并要求切换 Line0",async()=>{
- ws.cameras=[{...device("CAM-1","相机1"),source:"mvs",triggerSource:"Software"}];
- show();
- expect(await screen.findByText("请将采集相机切换为 Line0 高电平：相机1。")).toBeVisible();
- expect(screen.getByRole("button",{name:"开始整圈采集"})).toBeDisabled();
-});
-
-
-it.each([
- {phase:"unavailable" as const, busy:false, message:"示教 V1 点位尚未配置"},
- {phase:"releasing" as const, busy:true, message:"原图已保存，等待 PLC 释放本轮"},
-])("示教接口 $phase → 即使图片完成也不能启动下一轮", async ({phase,busy,message}) => {
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(freshRound());
- vi.mocked(workspaceApi.capturePlcStatus).mockResolvedValue({available:false,busy,roundId:12,phase,message});
- show();
- expect((await screen.findAllByText(new RegExp(message)))[0]).toBeVisible();
- expect(screen.getByRole("button",{name:"开始整圈采集"})).toBeDisabled();
- if(busy) expect(screen.getByRole("spinbutton",{name:"相机1 曝光时间（µs）"})).toBeDisabled();
-});
-
-it("取消采集后原图轮次已失败 → 等待 PLC 确认期间仍不能重新开始", async () => {
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({recipeId:"A",state:"receiving"}));
- vi.mocked(workspaceApi.capturePlcStatus).mockResolvedValue({available:false,busy:true,roundId:12,phase:"accepted",message:"PLC 已接受"});
- vi.mocked(workspaceApi.captureStop).mockResolvedValue(captureRoundV2({recipeId:"A",state:"failed",error:"操作员取消"}));
- show();
- await userEvent.click(await screen.findByRole("button",{name:"取消本轮"}));
- expect(await screen.findByRole("button",{name:"等待取消确认"})).toBeDisabled();
- expect(screen.getByRole("button",{name:"开始整圈采集"})).toBeDisabled();
-});
-
 // 防的回归（在线投运 5.2、第七节）：不可用的历史件也能勾选导入；标准件标记没随导入提交；导入后没选中新轮次，示教与标定找不到它
 it("从历史选用 → 不可用件不能勾选并列出原因，勾选可用件标为标准件后批量导入并选中新轮次",async()=>{
  const row=(recordId:number,sn:string,reasons:string[])=>({recordId,cycleId:"c-"+recordId,ts:1,sn,mode:"maintenanceCollect" as const,groupCount:12,
-  cameras:["CAM-1","CAM-2","CAM-3"].map(cameraId=>({cameraId,frames:reasons.length ? 11 : 12})),complete:!reasons.length,reasons,importedRound:null});
+  cameras:["CAM-1","CAM-2","CAM-3"].map(cameraId=>({cameraId,frames:reasons.length ? 11 : 12})),complete:!reasons.length,reasons,warnings:[],durationMs:null,measuredFps:null,setFps:null,importedRound:null});
  vi.mocked(workspaceApi.historyCandidates).mockResolvedValue([row(1,"SN-1",[]),row(2,"SN-2",["缺帧 1 帧"])]);
  vi.mocked(workspaceApi.historyImport).mockResolvedValue(["capture-9-0"]);
  show();
- await userEvent.click(await screen.findByText("从历史选用"));
  expect(await screen.findByText("缺帧 1 帧")).toBeVisible();
  expect(screen.getByRole("checkbox",{name:"选用 SN SN-2"})).toBeDisabled();
  expect(screen.getByRole("checkbox",{name:"SN SN-1 是标准件"})).toBeDisabled();

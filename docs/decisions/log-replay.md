@@ -38,7 +38,7 @@
 
 ## 6. 本件时间线的数据源与阶段耗时
 
-- 采用：运行日志按 cycleId 精确取（只读该件日期前后各一天的文件，最多 3000 条）；PLC 信号取 `logs/plc.db` 中本件首末记录前后 1 s 内的值变化，且不越过上一件（或示教采集）的 S7 事务结束、下一件的 partStart（PLC 日志本身没有 cycleId，只能按时间窗口展示；连续生产时相邻两件只隔几百毫秒，不设界会把上一件的结果回写显示到本件）；排除 `plcHeartbeat / pcHeartbeat` 心跳点，最多 400 条。
+- 采用：运行日志按 cycleId 精确取（只读该件日期前后各一天的文件，最多 3000 条）；PLC 信号取 `logs/plc.db` 中本件首末记录前后 1 s 内的值变化，且不越过上一件的 S7 事务结束、下一件的 partStart（PLC 日志本身没有 cycleId，只能按时间窗口展示；连续生产时相邻两件只隔几百毫秒，不设界会把上一件的结果回写显示到本件）；排除 `plcHeartbeat / pcHeartbeat` 心跳点，最多 400 条。
 - 阶段耗时只由关键事件计算，缺任一端点记为未知，不拿别的事件顶替：校验与布防（partStart→armed）、运动与采集（armed→partEnd）、收尾与判定（partEnd→检测结果，含持久化与回写）、等待 PLC 确认（检测结果→S7 事务结束）、整件（partStart→S7 事务结束）。partStart、armed、partEnd 是运行日志的事件名，分别对应协议 7 的 plcState=10、pcState=20、plcState=20。
 - 回退：时间线只读日志，不影响生产；删除面板即可。
 

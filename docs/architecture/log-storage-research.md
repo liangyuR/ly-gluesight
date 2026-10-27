@@ -22,7 +22,7 @@
 | 真机历史原图 | `projects/<project>/records/` | 当前项目的生产、维护采集及维护试判原图 |
 | 离线历史原图 | `projects/<project>/records-offline/` | 当前项目的离线录制原图，与真机分开清理 |
 | 检测历史数据库 | `projects/<project>/inspection.db` | 项目历史、逐帧指标及录制引用 |
-| 整圈采集原图 | `projects/<project>/recipe-capture/<轮次>/<相机>/<seq>.pgm` | 示教、多轮标定及独立验证使用的项目资产；轮次另有 `round.json`、`frames.jsonl` |
+| 采集轮次原图 | `projects/<project>/recipe-capture/<轮次>/<相机>/<seq>.pgm` | 示教、多轮标定及独立验证使用的项目资产；轮次另有 `round.json`、`frames.jsonl` |
 | 冻结示教图 | `projects/<project>/workspaces/<配方>/images/` | 候选引用的示教帧 |
 | 多轮标定特征 | `projects/<project>/workspaces/<配方>/calibration/<轮次>/` | 特征与分段结果；原图来自项目采集轮次 |
 | 工位标定结果 | `projects/<project>/calib/` | 棋盘格标定结果 JSON，含设备标定及显式标定引用 |

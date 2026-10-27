@@ -4,6 +4,8 @@ import { cloneElement, useEffect, useId, useRef, useState, type CSSProperties, t
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, Brush, Camera, ChevronLeft, ChevronRight, Crosshair, Eraser, Info, Lock, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
 import { Button, Divider, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Select, Slider, Surface, Tooltip } from "qing-steel";
+import { cameraApi } from "../camera/api";
+import type { CameraImaging } from "../camera/types";
 import { useCycle } from "../cycle/api";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
 import type { RecipeDoc } from "../cycle/types";
@@ -28,11 +30,10 @@ function WithReason({ reason, block = false, children }: { reason: string; block
   return <Tooltip content={reason}><span tabIndex={0} className={"wp-tip-anchor" + (block ? " block" : "")}>{cloneElement(children, { "aria-describedby": id })}<span id={id} className="qs-sr-only">{reason}</span></span></Tooltip>;
 }
 
-function imagingMismatch(image: FrozenImage | null | undefined, doc: RecipeDoc) {
-  const current = image && doc.cameras?.[image.camera];
+function imagingMismatch(image: FrozenImage | null | undefined, current: CameraImaging | undefined) {
   if (!image || !current || image.exposureUs == null || image.gainDb == null) return null;
   if (image.exposureUs === current.exposureUs && image.gainDb === current.gainDb) return null;
-  return `采集时曝光 ${image.exposureUs} µs / 增益 ${image.gainDb} dB，与配方当前值（${current.exposureUs} µs / ${current.gainDb} dB）不同`;
+  return `采集时曝光 ${image.exposureUs} µs / 增益 ${image.gainDb} dB，与相机当前值（${current.exposureUs} µs / ${current.gainDb} dB）不同`;
 }
 
 const DEFAULT_BRUSH_PX = 120;
@@ -147,6 +148,13 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const segmentItem = segment == null ? undefined : plan.segments.find(item => item.index === segment);
   const segmentTeaching = segment == null ? undefined : plan.cameraTeaching.find(item => item.camera === camera)?.segments.find(item => item.segment === segment);
   const frame = segmentTeaching?.frame;
+  const [cameraImaging, setCameraImaging] = useState<CameraImaging>();
+  useEffect(() => {
+    let alive = true;
+    setCameraImaging(undefined);
+    if (frame) void cameraApi.rigStatus().then(list => { if (alive) setCameraImaging(list.find(s => s.id === frame.camera)?.imaging); }).catch(() => {});
+    return () => { alive = false; };
+  }, [frame?.id, frame?.camera]);
   const targetLabel = segment == null ? camera : `${camera} · 段 ${segment}`;
   const [railWidth, setRailWidth] = useRailWidth();
   const [working, setWorking] = useState(false);
@@ -323,7 +331,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
 
   if (!cameraItems.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="段配方还没有计划相机" description="先在“段列表”里确认计划相机，再回来示教走廊。" action={<Link className="qs-btn" to="/recipe/segments">前往段列表<ArrowRight size={15} aria-hidden="true" /></Link>} /></Surface></div>;
 
-  const imagingHint = imagingMismatch(frame, data.workspace.doc);
+  const imagingHint = imagingMismatch(frame, cameraImaging);
   const order = cameraItems.flatMap(item => [item.camera, ...tasks.filter(t => t.camera === item.camera).map(taskKey)]);
   const nextTask = tasks.find(item => order.indexOf(taskKey(item)) > order.indexOf(key));
   const allDone = cameraItems.every(item => item.ready);
@@ -404,7 +412,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     <KV label="取样来源">{frame.source} · {new Date(frame.capturedAt).toLocaleString("zh-CN")}</KV>
     <KV label="曝光">{frame.exposureUs != null ? frame.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.gainDb != null ? frame.gainDb + " dB" : "未记录"}</KV>
     <KV label="示教帧更换">仅通过“重新选帧”</KV>
-    {imagingHint && <p className="c-warn" role="note">{imagingHint}；样本仍可用，需要时重新采集</p>}
+    {imagingHint && <p className="c-warn" role="note">{imagingHint}；只作提示，示教与标定仍然有效</p>}
     <p className="muted hint">走廊保存进候选配方，已发布版本不变。用于生产前仍需完成多轮标定与发布。</p>
   </Popover>;
   const pickOptions = rounds.map(item => ({ value: item.roundId, label: `${new Date(item.createdAt).toLocaleString("zh-CN")} · ${item.receivedCount} 帧组${reviews[item.roundId]?.status === "confirmed" ? " · 已确认分段" : ""}` }));
@@ -421,7 +429,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         <span className="muted">/ {pickGroups || "—"}</span>
       </div>
       {range && <span className="muted">第 {segment} 段在这一轮为帧组 {range.start}–{range.end}</span>}
-      {!rounds.length && <span className="muted">还没有完整的采集轮次，请先<Link className="wp-text-link" to="/recipe/capture">前往整圈采集</Link>。</span>}
+      {!rounds.length && <span className="muted">还没有完整的采集轮次，请先<Link className="wp-text-link" to="/recipe/capture">前往采集轮次</Link>。</span>}
     </div>
     <div className="wp-picker-side">
       <WithReason reason={pickReason}>

@@ -1,6 +1,6 @@
 # 决策索引
 
-本目录只记现行决策：规则取舍、理由与回退方式。过期条目直接删除，历史以 Git 记录为准。现行生产模型只有段配方（分段连拍飞拍），基准是 [segment-burst.md](segment-burst.md)；PLC 握手以 [生产通讯协议 7](../integration/plc-communication-protocol.md) 为准，整圈示教握手见 [示教采集接口 V1](../integration/teaching-capture-sequence.md)。
+本目录只记现行决策：规则取舍、理由与回退方式。过期条目直接删除，历史以 Git 记录为准。现行生产模型只有段配方（分段连拍飞拍），基准是 [segment-burst.md](segment-burst.md)；PLC 握手以 [生产通讯协议 7](../integration/plc-communication-protocol.md) 为准。
 
 | 文件 | 主题 | 仍有效的要点 |
 | --- | --- | --- |
@@ -31,7 +31,7 @@
 
    另外，PLC 等布防不得小于 PC 布防预算 + 2 s，建议保持 10 s（[r2-plc.md](r2-plc.md) R2P-1）。
 2. **真机验证**：以下都还没有验证，各项验证只基于进程内虚拟 S7、合成图三相机与样本集回放。
-   - 协议 7 与示教接口 V1 的现场 PLC 联调，Line0 门控与三台相机接线，现场节拍；
+   - 协议 7 的现场 PLC 联调，Line0 门控与三台相机接线，现场节拍；
    - 布防各阶段的实际耗时（布防预算默认 500 ms 需在专机上复测，[r2-plc.md](r2-plc.md) R2P-1）；
    - **3 × 25 Hz 吞吐门槛**：没有达标，也没有被直接验证。门槛口径不改，在现场工控机用真实相机来源跑 `pnpm test:soak:throughput` 并重跑 `throughput_probe` 探针后，再决定降帧率还是加测量并发（[segment-burst.md](segment-burst.md) 第七节、第九节第 17 条）；
    - **分段算法**：已实现按各段 N_exp 比例分段和边界过渡区；现场边界误差仍须用量产曝光与速度下、已确认手动分段的三相机序列评估，图像运动细化尚未实现（segment-burst D-SB-40、D-SB-43）；

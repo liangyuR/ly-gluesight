@@ -31,7 +31,9 @@ pub struct RoundReview {
     pub cuts: Vec<u64>,
     pub status: ReviewStatus,
     pub excluded_groups: Vec<ExcludedGroup>,
+    #[serde(deserialize_with = "segment_signature_without_imaging")]
     pub segment_signature: Value,
+    #[serde(deserialize_with = "capture_signature_without_imaging")]
     pub capture_signature: Value,
     pub template_version: Option<u64>,
 }
@@ -42,7 +44,9 @@ pub struct CaptureTemplate {
     pub round_id: String,
     pub group_count: u64,
     pub cuts: Vec<u64>,
+    #[serde(deserialize_with = "segment_signature_without_imaging")]
     pub segment_signature: Value,
+    #[serde(deserialize_with = "capture_signature_without_imaging")]
     pub capture_signature: Value,
     pub version: u64,
 }
@@ -74,8 +78,7 @@ fn segment_signature(doc: &RecipeDoc) -> Value {
             .iter()
             .map(|s| (s.index, s.kind))
             .collect::<Vec<_>>(),
-        doc.plan_cameras(),
-        doc.cameras
+        doc.plan_cameras()
     ])
 }
 
@@ -84,8 +87,32 @@ fn capture_signature(round: &CaptureRoundV2) -> Value {
     cameras.sort_by_key(|c| &c.camera_id);
     json!(cameras
         .iter()
-        .map(|c| (&c.camera_id, &c.camera_config, c.imaging))
+        .map(|c| (&c.camera_id, &c.camera_config))
         .collect::<Vec<_>>())
+}
+
+/// 曝光增益只记录、不比较：旧签名末尾带配方各相机的曝光增益，读入时去掉。
+fn segment_signature_without_imaging<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Value, D::Error> {
+    let mut value = Value::deserialize(d)?;
+    if let Some(items) = value.as_array_mut().filter(|items| items.len() == 4) {
+        items.truncate(3);
+    }
+    Ok(value)
+}
+
+/// 旧签名每台相机是（编号, 设备配置, 曝光增益），读入时去掉曝光增益。
+fn capture_signature_without_imaging<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Value, D::Error> {
+    let mut value = Value::deserialize(d)?;
+    for camera in value.as_array_mut().into_iter().flatten() {
+        if let Some(fields) = camera.as_array_mut().filter(|fields| fields.len() == 3) {
+            fields.truncate(2);
+        }
+    }
+    Ok(value)
 }
 
 pub(super) fn refresh(w: &mut Workspace) {
@@ -229,13 +256,6 @@ pub fn apply_capture_review(
                 return Err("只有已确认且与当前段列表一致的轮次可以设为模板".into());
             }
             validate_cuts(&review.cuts, round.group_count, w.doc.segments.len())?;
-            if round
-                .cameras
-                .iter()
-                .any(|c| w.doc.cameras.get(&c.camera_id) != Some(&c.imaging))
-            {
-                return Err("模板轮次的成像参数与当前配方不一致，请重新采集".into());
-            }
             w.capture_review.template = Some(CaptureTemplate {
                 round_id: round.round_id.clone(),
                 group_count: round.group_count,

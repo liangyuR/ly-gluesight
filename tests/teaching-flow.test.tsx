@@ -43,7 +43,7 @@ function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = 
     history_query: () => ({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } }),
     recipe_capture_list: () => [],
     recipe_capture_get: () => null,
-    recipe_capture_plc_status: () => ({ available: true, busy: false, roundId: null, phase: "idle", message: "示教接口就绪" }),
+    workspace_history_candidates: () => [],
     ...handlers,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -207,28 +207,6 @@ it("自动提取失败后按笔划生成 → 定位原因并保留原线，人�
   }
   expect(screen.queryByLabelText("中线点 4")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "保存走廊" })).toBeEnabled();
-});
-
-it("只指定相机、停留选帧页时采集由接收到收尾再完成 → 定位到该相机第一条未示教的段，未完成轮次不能选，完成后自动列出并预览", async () => {
-  const candidate = corridorCandidate();
-  confirmed(candidate, "round-new");
-  let state: "receiving" | "draining" | "complete" = "receiving";
-  mockSite(candidate, {
-    recipe_capture_list: () => [{ roundId: "round-new", recipeId: "A", cameraIds: ["CAM-1", "CAM-2", "CAM-3"], plannedCount: null, receivedCount: 12, state, createdAt: 2, error: null }],
-    recipe_capture_get: () => captureRoundV2({ recipeId: "A", roundId: "round-new", state }),
-  });
-  vi.spyOn(workspaceApi, "captureFrameImage").mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
-  renderWorkspace("/recipe/teach?camera=CAM-3");
-  await screen.findByText(/还没有完整的采集轮次/);
-  expect(screen.getByRole("combobox", { name: "采集轮次" })).toBeDisabled();
-  state = "draining";
-  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
-  expect(screen.getByRole("combobox", { name: "采集轮次" })).toBeDisabled();
-  state = "complete";
-  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
-  expect(await screen.findByRole("img", { name: "CAM-3 · 帧组 4 · 候选示教帧" })).toBeVisible();
-  expect(screen.getByRole("combobox", { name: "采集轮次" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: "用此帧示教 CAM-3 · 段 1" })).toBeEnabled();
 });
 
 it("段已有旧示教帧时点击用于走廊示教 → 直接在本轮这一段内选帧，确认后显示新帧并保持编辑", async () => {

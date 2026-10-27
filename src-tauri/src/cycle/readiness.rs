@@ -162,7 +162,7 @@ fn recipe_item(f: &Facts) -> ReadinessItem {
 
 fn production_recipe_item(f: &Facts) -> ReadinessItem {
     const TITLE: &str = "可开工配方";
-    const CREATE: &str = "去配方工作台新建并发布配方；整圈采集不受影响";
+    const CREATE: &str = "去配方工作台新建并发布配方";
     let blocked = |detail: String, hint: Option<String>, target| item(ItemKey::Recipe, TITLE, ItemState::Blocked, detail, hint, target);
     if f.activation_uncertain {
         return blocked("生产生效版本尚未确认".into(), Some("在配方工作台核实发布状态后再开工".into()), Some(Target::Workspace));

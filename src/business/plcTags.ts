@@ -20,21 +20,6 @@ export const inspectionTagPresets: TagPreset[] = [
 
 export const inspectionHandshakeTags = new Set(inspectionTagPresets.map(preset => preset.value));
 
-export const teachingTagPresets: TagPreset[] = [
-  { value: "teachPcVersion", label: "示教 PC 协议版本（PC→PLC）" },
-  { value: "teachPcState", label: "示教 PC 状态（PC→PLC）" },
-  { value: "teachRoundId", label: "示教握手编号（PC→PLC）" },
-  { value: "teachPcReason", label: "示教 PC 原因码（PC→PLC）" },
-  { value: "teachPcReserved", label: "示教 PC 保留字段（PC→PLC）" },
-  { value: "teachPlcVersion", label: "示教 PLC 协议版本（PLC→PC）" },
-  { value: "teachPlcState", label: "示教 PLC 状态（PLC→PC）" },
-  { value: "teachRoundIdEcho", label: "示教握手编号回显（PLC→PC）" },
-  { value: "teachPlcReason", label: "示教 PLC 原因码（PLC→PC）" },
-  { value: "teachPlcReserved", label: "示教 PLC 保留字段（PLC→PC）" },
-  { value: "teachPlcSnapshot", label: "示教 PLC 完整快照（PLC→PC）" },
-];
-
-export const teachingHandshakeTags = new Set(teachingTagPresets.map(preset => preset.value));
 export const commonPlcTags = new Set(["plcHeartbeat", "pcHeartbeat", "plcVersion", "pcVersion"]);
 
 export const plcTagHelp: Record<string, string> = {
@@ -53,15 +38,4 @@ export const plcTagHelp: Record<string, string> = {
   resultCode: "本件结论，PC 在置结果有效前写入：1 OK、2 OK_WITH_EXCURSION、11–14 各类 NG、90 检测异常；维护模式为 0。",
   faultCode: "结果码为 90 或 PC 故障时的原因，例如 91 整件无图、97 运动结束超时、101 PC 握手故障；其余情况为 0。",
   snEcho: "PC 写结果时回显本件工件 SN；PLC 核对与本件 SN 一致才锁存结果。",
-  teachPcVersion: "PC 实现的示教扩展协议版本，固定写 1。",
-  teachPcState: "PC 示教状态：0 空闲、10 请求、20 已完成、30 失败、40 取消。",
-  teachRoundId: "每轮示教采集的握手编号，PC 发起请求时写入；PLC 回显到示教握手编号回显。",
-  teachPcReason: "PC 置失败或取消时的原因，例如 1 操作员取消、4 保存失败；0 表示无。",
-  teachPcReserved: "保留字段，PC 写 0。",
-  teachPlcVersion: "PLC 实现的示教扩展协议版本，应为 1。",
-  teachPlcState: "PLC 示教状态：0 空闲、10 已接受、20 采集结束、30 已确认、40 已拒绝、50 故障。处于 10、20、30 时生产不开工。",
-  teachRoundIdEcho: "PLC 回显的本轮示教握手编号；与 PC 写入的编号一致才算对本轮的应答。",
-  teachPlcReason: "PLC 拒绝或故障时的原因，例如 1 示教未许可、2 机器人未就绪、3 生产或其他事务占用；0 表示无。",
-  teachPlcReserved: "保留字段，PLC 应写 0；非 0 按协议非法处理。",
-  teachPlcSnapshot: "PC 一次读出 DB12 前 10 字节，保证 PLC 侧示教字段取自同一时刻；不单独显示。",
 };

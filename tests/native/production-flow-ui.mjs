@@ -116,7 +116,7 @@ async function clearBurstRecipe(invokeRead, id) {
 }
 
 /**
- * 段配方一件的生产落盘（合成图三相机）：建站、10 轮标定、验证、发布用真实 lyFlow 测量合成图（走廊示教、标定、验证的每帧测量必须有引擎），
+ * 段配方一件的生产落盘（合成图三相机）：建站导入 capture_fixture 生成的合成图手动配置数据，走廊示教、10 轮标定、验证、发布用真实 lyFlow 测量（每帧测量必须有引擎），
  * 投产在离线·合成图下用模拟测量。没加载 lyFlow 时整段跳过并写明原因，不算通过也不算失败。
  */
 async function runBurstStage(page, invokeRead, navigation, ctx) {

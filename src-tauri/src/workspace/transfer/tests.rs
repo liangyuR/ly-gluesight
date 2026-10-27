@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
 use crate::plan::SegmentKind::Straight;
-use crate::workspace::burst::{calibration_round, CameraTeaching};
-use crate::workspace::burst_tests::{burst_workspace, capture_round, DEVICE};
+use crate::workspace::burst::{calibration_round, check_round, CameraTeaching};
+use crate::workspace::burst_tests::{burst_workspace, capture_round, configs, DEVICE};
 
 const ROUND: &str = "capture-100-0";
 
@@ -375,4 +375,86 @@ fn import_with_existing_recipe_id_or_product_code_is_rejected() {
         );
         assert_eq!(result.is_ok(), accepted, "{label}");
     }
+}
+
+#[test]
+fn prepared_round_after_package_import_and_rename_passes_calibration_check() {
+    // 防的回归：手动配置数据（origin prepared）的轮次经候选包导出、导入与改编号后读不出来或被拒，不能加入多轮标定
+    let root = temp();
+    let mut w = burst_workspace(&[Straight]);
+    let mut record = serde_json::to_value(capture_round(ROUND, &w.doc, 2, DEVICE, &[])).unwrap();
+    for (key, value) in [
+        ("format", json!(3)),
+        ("plcShotCount", Value::Null),
+        ("plcPlanVersion", Value::Null),
+        (
+            "origin",
+            json!({"kind": "prepared", "label": "E2E 手动数据"}),
+        ),
+    ] {
+        record[key] = value;
+    }
+    w.capture_review.rounds.insert(
+        ROUND.into(),
+        RoundReview {
+            group_count: 2,
+            cuts: Vec::new(),
+            status: ReviewStatus::Draft,
+            excluded_groups: Vec::new(),
+            segment_signature: Value::Null,
+            capture_signature: Value::Null,
+            template_version: None,
+        },
+    );
+    let dir = root.0.join("workspaces").join(&w.doc.id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = root.0.join("source-capture");
+    let round_dir = source.join(ROUND);
+    write(
+        &round_dir.join("round.json"),
+        &serde_json::to_vec_pretty(&record).unwrap(),
+    );
+    let mut lines = String::new();
+    for (index, camera) in w.doc.plan_cameras().iter().enumerate() {
+        for seq in 1..=2u64 {
+            let path = format!("{camera}/{seq:06}.pgm");
+            write(&round_dir.join(&path), b"P5 1 1 255\nx");
+            lines.push_str(
+                &json!({"camera": index, "seq": seq, "frameCounter": seq, "triggerCounter": null,
+                "path": path, "width": 1, "height": 1, "ts": seq})
+                .to_string(),
+            );
+            lines.push('\n');
+        }
+    }
+    write(&round_dir.join("frames.jsonl"), lines.as_bytes());
+    let path = package_file(&root.0, &w, &dir, &source);
+    let staging = root.0.join("staging");
+    std::fs::create_dir(&staging).unwrap();
+    let manifest = extract(&path, &staging).unwrap();
+    let (imported, renames, _) = prepare_import(
+        &staging,
+        &manifest,
+        &target("NEW-1", 77),
+        std::iter::empty(),
+        |id| id == ROUND,
+    )
+    .unwrap();
+    let renamed = &renames[ROUND];
+    assert_ne!(renamed, ROUND);
+    let captures = root.0.join("recipe-capture");
+    std::fs::create_dir_all(&captures).unwrap();
+    std::fs::rename(staging.join("rounds").join(ROUND), captures.join(renamed)).unwrap();
+    let round = crate::recipe_capture::RecipeCaptureHost::open(captures)
+        .unwrap()
+        .get_burst(renamed)
+        .unwrap();
+    assert_eq!(round.recipe_id, "NEW-1");
+    check_round(
+        &imported.doc,
+        &imported.calibration.rounds,
+        &round,
+        &configs(&imported.doc, DEVICE),
+    )
+    .unwrap();
 }

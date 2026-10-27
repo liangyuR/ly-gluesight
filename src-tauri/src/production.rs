@@ -92,11 +92,21 @@ impl Prepared {
             return Err(format!("段配方需要按段与相机组织的发布包（格式版本 {RELEASE_SCHEMA_BURST}），请重新示教、验证并发布"));
         }
         let recipe = Arc::new(bundle.recipe.build()?);
-        if recipe.revision_id != expected.revision_id || recipe.id != expected.id || recipe.version != expected.version
-            || recipe.product_code != expected.product_code || recipe.trigger_mode != expected.trigger_mode || recipe.schema_version != expected.schema_version
-            || recipe.spacing != expected.spacing || recipe.detect != expected.detect || recipe.filter_window != expected.filter_window
-            || recipe.teaching_id != expected.teaching_id || recipe.plan_version != expected.plan_version || recipe.camera_imaging != expected.camera_imaging
-            || recipe.path_segments != expected.path_segments || recipe.inspect != expected.inspect || recipe.part_calib != expected.part_calib {
+        if recipe.revision_id != expected.revision_id
+            || recipe.id != expected.id
+            || recipe.version != expected.version
+            || recipe.product_code != expected.product_code
+            || recipe.trigger_mode != expected.trigger_mode
+            || recipe.schema_version != expected.schema_version
+            || recipe.spacing != expected.spacing
+            || recipe.detect != expected.detect
+            || recipe.filter_window != expected.filter_window
+            || recipe.teaching_id != expected.teaching_id
+            || recipe.plan_version != expected.plan_version
+            || recipe.path_segments != expected.path_segments
+            || recipe.inspect != expected.inspect
+            || recipe.part_calib != expected.part_calib
+        {
             return Err("发布包配方与所选生产版本不一致，请重新发布".into());
         }
         if bundle.manifest.versions.graph != graph_version(&recipe)

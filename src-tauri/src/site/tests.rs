@@ -19,16 +19,18 @@ fn manifest(cameras: serde_json::Value) -> Manifest {
 }
 
 fn ready() -> Preconditions {
-    Preconditions { busy: false, capturing: false, lyflow: Ok(()) }
+    Preconditions {
+        busy: false,
+        lyflow: Ok(()),
+    }
 }
 
 #[test]
 fn entering_offline_is_refused_when_preconditions_fail() {
     let set = manifest(serde_json::json!([{"id": "cam7", "views": [1]}]));
     let partial = manifest(serde_json::json!([{"id": "cam7", "views": [1, 2]}]));
-    let cases: [(&str, Derivation, Preconditions, bool); 6] = [
+    let cases: [(&str, Derivation, Preconditions, bool); 5] = [
         ("在途事务", Derivation::Synthetic, Preconditions { busy: true, ..ready() }, false),
-        ("整圈采集中", Derivation::SampleSet(&set), Preconditions { capturing: true, ..ready() }, false),
         ("样本集缺 lyFlow", Derivation::SampleSet(&set), Preconditions { lyflow: Err("未找到核心库".into()), ..ready() }, false),
         ("样本集视角不完整", Derivation::SampleSet(&partial), ready(), false),
         ("合成图不需要 lyFlow", Derivation::Synthetic, Preconditions { lyflow: Err("未找到核心库".into()), ..ready() }, true),
@@ -44,7 +46,6 @@ fn work_in_progress_or_unwritten_records_then_project_switch_is_refused() {
     let idle = || ProjectSwitch {
         block: None,
         busy: false,
-        capturing: false,
         audit_pending: false,
     };
     let cases = [
@@ -56,23 +57,9 @@ fn work_in_progress_or_unwritten_records_then_project_switch_is_refused() {
             },
         ),
         (
-            "示教握手中",
-            ProjectSwitch {
-                block: Some("示教握手尚未结束，请等待 PLC 释放或显式复位".into()),
-                ..idle()
-            },
-        ),
-        (
             "节拍未回到空闲",
             ProjectSwitch {
                 busy: true,
-                ..idle()
-            },
-        ),
-        (
-            "整圈采集中",
-            ProjectSwitch {
-                capturing: true,
                 ..idle()
             },
         ),

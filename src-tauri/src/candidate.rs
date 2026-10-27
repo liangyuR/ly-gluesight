@@ -70,9 +70,13 @@ impl Candidate {
     }
 }
 
-pub fn check_start(offline: bool, samples: bool, busy: bool, capturing: bool, running: bool) -> Result<(), String> {
-    if !offline || !samples { return Err("候选试运行仅支持离线样本集模式".into()); }
-    if busy || capturing || running { return Err("当前有在途工件、采集或离线运行，请结束后再试运行".into()); }
+pub fn check_start(offline: bool, samples: bool, busy: bool, running: bool) -> Result<(), String> {
+    if !offline || !samples {
+        return Err("候选试运行仅支持离线样本集模式".into());
+    }
+    if busy || running {
+        return Err("当前有在途工件或离线运行，请结束后再试运行".into());
+    }
     Ok(())
 }
 
@@ -80,10 +84,14 @@ pub fn check_start(offline: bool, samples: bool, busy: bool, capturing: bool, ru
 mod tests {
     #[test]
     fn real_or_occupied_environment_rejects_candidate_debug() {
-        for args in [(false, true, false, false, false), (true, false, false, false, false),
-            (true, true, true, false, false), (true, true, false, true, false), (true, true, false, false, true)] {
-            assert!(super::check_start(args.0, args.1, args.2, args.3, args.4).is_err());
+        for args in [
+            (false, true, false, false),
+            (true, false, false, false),
+            (true, true, true, false),
+            (true, true, false, true),
+        ] {
+            assert!(super::check_start(args.0, args.1, args.2, args.3).is_err());
         }
-        assert!(super::check_start(true, true, false, false, false).is_ok());
+        assert!(super::check_start(true, true, false, false).is_ok());
     }
 }

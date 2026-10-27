@@ -10,7 +10,7 @@ use crate::camera::CameraSource;
 use crate::cycle::{self, CycleHost};
 use crate::frame::FrameImage;
 use crate::judge::{self, Verdict};
-use crate::recipe::{CameraImaging, Recipe, RecipeDoc, RecipeStage};
+use crate::recipe::{Recipe, RecipeDoc, RecipeStage};
 use crate::release::ValidationSite;
 use crate::store::{self, Store};
 use crate::vision;
@@ -190,9 +190,6 @@ pub struct Workspace {
     pub updated_at: i64,
     #[serde(default)]
     pub capture_id: Option<String>,
-    /// 还没有检测相机使用的相机在采集页调好的曝光与增益：配方只收检测相机，用上时并入配方
-    #[serde(default)]
-    pub unbound_imaging: BTreeMap<String, CameraImaging>,
     /// 段配方：每台计划相机的走廊示教帧
     #[serde(default)]
     pub camera_teaching: Vec<burst::CameraTeaching>,
@@ -207,38 +204,11 @@ pub struct Workspace {
     pub _overview: Discarded,
     #[serde(default, rename = "lastPosition", skip_serializing)]
     pub _last_position: Discarded,
-}
-
-/// 按拍照点用到的相机整理配方的成像参数：不再用到的挪到 unbound，新用到的优先取 unbound 里调好的，没有就用默认值。
-fn sync_doc_imaging(doc: &mut RecipeDoc, unbound: &mut BTreeMap<String, CameraImaging>) {
-    let before = doc.cameras.keys().cloned().collect::<Vec<_>>();
-    let dropped = doc.sync_imaging();
-    for (camera, imaging) in doc.cameras.iter_mut() {
-        if let Some(staged) = unbound.remove(camera) {
-            if !before.contains(camera) { *imaging = staged; }
-        }
-    }
-    unbound.extend(dropped);
-}
-
-/// 改一台相机的成像参数：拍照点用到的写进候选配方，还没用到的先记在 unbound。不动已采集的图像与示教。
-fn set_imaging(w: &mut Workspace, camera: &str, imaging: CameraImaging) -> Result<(), String> {
-    if !crate::recipe::valid_camera_id(camera) { return Err("相机编号无效".into()); }
-    imaging.validate(camera)?;
-    let target = if w.doc.cameras.contains_key(camera) { &mut w.doc.cameras } else { &mut w.unbound_imaging };
-    if target.get(camera) == Some(&imaging) { return Ok(()); }
-    target.insert(camera.to_string(), imaging);
-    w.doc.build()?;
-    w.changed();
-    Ok(())
+    #[serde(default, rename = "unboundImaging", skip_serializing)]
+    pub _unbound_imaging: Discarded,
 }
 
 impl Workspace {
-    /// 这台相机当前该用的成像参数：配方里的，或采集页先调好的，都没有时用默认值。
-    pub fn imaging(&self, camera: &str) -> CameraImaging {
-        self.doc.cameras.get(camera).or_else(|| self.unbound_imaging.get(camera)).copied().unwrap_or_default()
-    }
-
     fn new(mut doc: RecipeDoc, base_revision: Option<String>) -> Self {
         if base_revision.is_some() {
             doc.version = doc.version.saturating_add(1);
@@ -255,13 +225,13 @@ impl Workspace {
             publish: PublishState::Draft,
             updated_at: ly_plc::now_ms(),
             capture_id: None,
-            unbound_imaging: BTreeMap::new(),
             camera_teaching: Vec::new(),
             calibration: burst::Calibration::default(),
             capture_review: capture_review::CaptureReview::default(),
             _frames: Discarded,
             _overview: Discarded,
             _last_position: Discarded,
+            _unbound_imaging: Discarded,
         }
     }
 
@@ -401,13 +371,6 @@ impl<K: PartialEq + Default> LiveFrames<K> {
 }
 
 impl WorkspaceHost {
-    pub(crate) fn capture_for_candidate<T>(&self, id: &str, start: impl FnOnce(&Workspace) -> Result<T, String>) -> Result<T, String> {
-        let items = self.items.lock().unwrap();
-        let workspace = items.get(id).ok_or("请先创建或打开配方草稿")?;
-        workspace.expect(workspace.revision)?;
-        start(workspace)
-    }
-
     /// 候选与已提交的发布快照都保留相机引用，删除相机前核对。
     pub fn camera_users(&self, camera: &str) -> Vec<String> {
         let uses = |doc: &RecipeDoc| doc.plan_cameras().iter().any(|c| c == camera);
@@ -598,9 +561,8 @@ pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceV
     view(&app, w)
 }
 
-/// 新建候选的配方起点：不带相机参数，段配方的其余准备见 `burst::prepare_new_doc`。
+/// 新建候选的配方起点，见 `burst::prepare_new_doc`。
 fn new_candidate_doc(doc: &mut RecipeDoc) {
-    doc.cameras.clear();
     burst::prepare_new_doc(doc);
 }
 
@@ -652,54 +614,12 @@ pub fn workspace_save_doc(
     view(&app, w)
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImagingSaved {
-    pub view: WorkspaceView,
-    /// 已写进候选，但没能下发到相机的原因，按相机编号
-    pub apply_errors: BTreeMap<String, String>,
-}
-
-/// 采集页调曝光与增益：几台相机一起写进候选，再在设备空闲时分别下发到各台相机，方便边看预览边调。
-#[tauri::command]
-pub async fn workspace_set_camera_imaging(app: AppHandle, id: String, revision: u64, imaging: BTreeMap<String, CameraImaging>) -> Result<ImagingSaved, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        if imaging.is_empty() { return Err("没有要应用的相机参数".into()); }
-        let saved = {
-            let host = app.state::<WorkspaceHost>();
-            let mut items = host.items.lock().unwrap();
-            let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
-            w.expect(revision)?;
-            for (camera, imaging) in &imaging { set_imaging(&mut w, camera, *imaging)?; }
-            host.save(&w)?;
-            items.insert(id, w.clone());
-            w
-        };
-        let apply_errors = imaging.iter().filter_map(|(camera, imaging)| apply_live_imaging(&app, camera, imaging).err().map(|e| (camera.clone(), e))).collect();
-        Ok(ImagingSaved { view: view(&app, saved)?, apply_errors })
-    }).await.map_err(|e| e.to_string())?
-}
-
-fn apply_live_imaging(app: &AppHandle, camera: &str, imaging: &CameraImaging) -> Result<(), String> {
-    let cycle = app.state::<CycleHost>();
-    let _gate = cycle
-        .config_gate
-        .try_lock()
-        .map_err(|_| "正在布防或处理其他配置操作，稍后再点应用下发到相机")?;
-    crate::camera::check_idle(&cycle)?;
-    let cam = cycle.camera.require(camera)?;
-    cycle.camera.slot(cam as usize).ok_or("相机不存在")?.set_imaging(imaging)
-}
-
 fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
     // N_exp、标定统计、整件标定与 x_ref 只能由多轮标定写入，段序列或类型变化时清空
     burst::guard_calibration(&w.doc, &mut doc)?;
     let segments_changed = burst::guard_segment_corridors(&w.doc, &mut doc, &w.camera_teaching)?;
-    let mut unbound = w.unbound_imaging.clone();
-    sync_doc_imaging(&mut doc, &mut unbound);
     doc.build()?;
     if doc == w.doc { return Ok(()); }
-    w.unbound_imaging = unbound;
     w.doc = doc;
     // 不再是计划相机、段结构变了或这台相机不再检测所在段的示教帧不保留
     let cameras = w.doc.plan_cameras();

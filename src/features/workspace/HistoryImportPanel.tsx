@@ -8,6 +8,13 @@ import type { HistoryCandidate } from "./types";
 
 const modeLabels: Record<PartMode, string> = { production: "生产", maintenanceCollect: "维护采集", maintenanceShadow: "维护试判" };
 
+function timing(r: HistoryCandidate) {
+  if (r.durationMs == null && r.measuredFps == null) return "—";
+  const text = [r.durationMs != null && `${(r.durationMs / 1000).toFixed(1)} s`, r.measuredFps != null && `${r.measuredFps.toFixed(1)} fps`].filter(Boolean).join(" · ") + (r.setFps != null ? `（设定 ${r.setFps}）` : "");
+  const off = r.measuredFps != null && r.setFps != null && r.setFps > 0 && Math.abs(r.measuredFps - r.setFps) > 0.1 * r.setFps;
+  return off ? <Badge tone="warn">{text}</Badge> : text;
+}
+
 interface Props {
   recipeId: string;
   revision: number;
@@ -17,7 +24,7 @@ interface Props {
   onError: (message: string) => void;
 }
 
-/** 整圈采集页“从历史选用”：维护模式或生产录制的完整件导入为采集轮次（原图硬链接，不停线），可在导入时标记标准件。 */
+/** 采集轮次页“从历史选用”：维护模式或生产录制的完整件导入为采集轮次（原图硬链接，不停线），可在导入时标记标准件。 */
 export default function HistoryImportPanel({ recipeId, revision, disabled, nameOf, onImported, onError }: Props) {
   const [rows, setRows] = useState<HistoryCandidate[] | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -51,8 +58,9 @@ export default function HistoryImportPanel({ recipeId, revision, disabled, nameO
     { key: "mode", header: "模式", render: r => modeLabels[r.mode] },
     { key: "groups", header: "帧组", render: r => r.groupCount },
     { key: "frames", header: "各相机帧数", render: r => r.cameras.map(c => `${nameOf(c.cameraId)} ${c.frames}`).join(" · ") || "—" },
+    { key: "timing", header: "时长 / 实测帧率（设定）", render: timing },
     { key: "complete", header: "原图", render: r => <Badge tone={r.complete ? "ok" : "warn"}>{r.complete ? "完整" : "不完整"}</Badge> },
-    { key: "reason", header: "不可用原因", render: r => r.reasons.length ? r.reasons.join("；") : <span className="muted">可导入</span> },
+    { key: "reason", header: "不可用原因", render: r => <>{r.reasons.length ? r.reasons.join("；") : <span className="muted">可导入</span>}{r.warnings.map(w => <span key={w}> <Badge tone="warn">{w}</Badge></span>)}</> },
     { key: "standard", header: "标准件", render: r => <Checkbox label={<span className="qs-sr-only">{"SN " + r.sn + " 是标准件"}</span>} checked={picked[r.recordId] === true} disabled={disabled || working || !(r.recordId in picked)} onCheckedChange={on => setPicked(p => ({ ...p, [r.recordId]: on }))}/> },
   ];
   return <Panel title="从历史选用" detail="维护模式或生产录制的完整件导入为采集轮次，之后走廊示教、分段复核与多轮标定都按普通轮次处理" actions={rows && <Badge tone={usable ? "ok" : "warn"}>{`可导入 ${usable} / ${rows.length} 件`}</Badge>}>

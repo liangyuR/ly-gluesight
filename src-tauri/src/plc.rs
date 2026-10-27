@@ -32,7 +32,14 @@ impl PlcHost {
         let log_path = crate::storage::root(app).join("logs").join("plc.db");
         let mut config =
             PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);
-        inspection::add_teaching_points(&mut config);
+        let retired = inspection::drop_teaching_points(&mut config);
+        if retired > 0 {
+            crate::applog::write(
+                "info",
+                "PLC 配置",
+                &format!("已去掉 {retired} 个示教握手（DB6/DB12）点位，示教握手已停用"),
+            );
+        }
         let handle = app.clone();
         let last_link = std::sync::Mutex::new(None);
         let engine_log = Arc::new(Mutex::new(Throttle::new(throttle::WINDOW)));

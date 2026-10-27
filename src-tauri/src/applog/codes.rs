@@ -131,81 +131,6 @@ pub const PLC_ENGINE_ERROR_SUMMARY: Event = Event {
     level: Level::Error,
 };
 
-pub const TEACH_REQUEST: Event = Event {
-    code: "teach.request",
-    ev: "示教请求",
-    level: Level::Info,
-};
-pub const TEACH_PC_PUBLISHED: Event = Event {
-    code: "teach.pc_published",
-    ev: "示教 PC 发布",
-    level: Level::Info,
-};
-pub const TEACH_PLC_CHANGED: Event = Event {
-    code: "teach.plc_changed",
-    ev: "示教 PLC 变化",
-    level: Level::Info,
-};
-pub const TEACH_ACCEPTED: Event = Event {
-    code: "teach.accepted",
-    ev: "示教已接受",
-    level: Level::Info,
-};
-pub const TEACH_ENDED: Event = Event {
-    code: "teach.ended",
-    ev: "示教采集结束",
-    level: Level::Info,
-};
-pub const TEACH_REJECTED: Event = Event {
-    code: "teach.rejected",
-    ev: "示教被拒绝",
-    level: Level::Warn,
-};
-pub const TEACH_RELEASED: Event = Event {
-    code: "teach.released",
-    ev: "示教已释放",
-    level: Level::Info,
-};
-pub const TEACH_CANCEL: Event = Event {
-    code: "teach.cancel",
-    ev: "示教取消",
-    level: Level::Warn,
-};
-pub const TEACH_FINISH: Event = Event {
-    code: "teach.finish",
-    ev: "示教结果上报",
-    level: Level::Info,
-};
-pub const TEACH_AWAITING_ECHO: Event = Event {
-    code: "teach.awaiting_echo",
-    ev: "等待握手编号回显",
-    level: Level::Warn,
-};
-pub const TEACH_TIMEOUT: Event = Event {
-    code: "teach.timeout",
-    ev: "示教超时",
-    level: Level::Warn,
-};
-pub const TEACH_VIOLATION: Event = Event {
-    code: "teach.violation",
-    ev: "示教寄存器不合规",
-    level: Level::Error,
-};
-pub const TEACH_RESET_BEGIN: Event = Event {
-    code: "teach.reset.begin",
-    ev: "示教复位开始",
-    level: Level::Info,
-};
-pub const TEACH_RESET_DONE: Event = Event {
-    code: "teach.reset.done",
-    ev: "示教复位完成",
-    level: Level::Info,
-};
-pub const TEACH_FAULT: Event = Event {
-    code: "teach.fault",
-    ev: "示教故障",
-    level: Level::Error,
-};
 pub const S7_FAULT_OUTPUT: Event = Event {
     code: "s7.fault_output",
     ev: "S7 故障输出",
@@ -249,16 +174,6 @@ pub const FAULT_CLEARED: Event = Event {
 pub const OP_RESET: Event = Event {
     code: "op.reset",
     ev: "操作：复位",
-    level: Level::Info,
-};
-pub const OP_CAPTURE_START: Event = Event {
-    code: "op.capture.start",
-    ev: "操作：开始整圈采集",
-    level: Level::Info,
-};
-pub const OP_CAPTURE_STOP: Event = Event {
-    code: "op.capture.stop",
-    ev: "操作：取消整圈采集",
     level: Level::Info,
 };
 pub const OP_CAPTURE_IMPORT: Event = Event {
@@ -318,21 +233,6 @@ const ALL: &[&Event] = &[
     &PLC_ENGINE_WARN_SUMMARY,
     &PLC_ENGINE_ERROR,
     &PLC_ENGINE_ERROR_SUMMARY,
-    &TEACH_REQUEST,
-    &TEACH_PC_PUBLISHED,
-    &TEACH_PLC_CHANGED,
-    &TEACH_ACCEPTED,
-    &TEACH_ENDED,
-    &TEACH_REJECTED,
-    &TEACH_RELEASED,
-    &TEACH_CANCEL,
-    &TEACH_FINISH,
-    &TEACH_AWAITING_ECHO,
-    &TEACH_TIMEOUT,
-    &TEACH_VIOLATION,
-    &TEACH_RESET_BEGIN,
-    &TEACH_RESET_DONE,
-    &TEACH_FAULT,
     &S7_FAULT_OUTPUT,
     &S7_RESET_REQUEST,
     &S7_RESET_DONE,
@@ -342,8 +242,6 @@ const ALL: &[&Event] = &[
     &FAULT_REPEAT,
     &FAULT_CLEARED,
     &OP_RESET,
-    &OP_CAPTURE_START,
-    &OP_CAPTURE_STOP,
     &OP_CAPTURE_IMPORT,
     &OP_CAMERA,
     &OP_PLC,

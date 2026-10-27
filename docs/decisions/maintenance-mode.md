@@ -12,10 +12,10 @@
 
 - **MM-1 模式按件锁存**：开关写进 `cycle.json` 的 `maintenance`（开启时间与原因），会话在接件（plcState=10）时把 pcMode 锁存进握手日志，布防与回写结果都按它。切换从下一件生效，在途件按原模式完成；切换只等配置门（布防期间短暂占用），不要求空闲。保存检测设置时沿用当前的维护模式，设置页不会误关。回退：去掉锁存、要求空闲时切换。
 - **MM-2 结果码**：维护件回写 PLC 的结果码与异常码都是 0；会话只在锁存 pcMode=1 的事务上接受 0，正常事务拒绝 0（PLC 判非法）。记录的 `plc_code` 也写 0，试判结论留在 verdict 与 faultCode。
-- **MM-3 不拒收**：维护模式下原本会拒收的情况（找不到配方、配方或发布包问题、相机未就绪或曝光下发失败、布防预算超时）都改为照常布防、PLC 按未检放行，原因记进本件记录（verdict 记 ERR 以免混入合格统计，plc_code 0）。拒收（不布防直接回结果）会让 PLC 不运动，正是维护期间要避免的。
+- **MM-3 不拒收**：维护模式下原本会拒收的情况（找不到配方、配方或发布包问题、相机未就绪、布防预算超时）都改为照常布防、PLC 按未检放行，原因记进本件记录（verdict 记 ERR 以免混入合格统计，plc_code 0）。拒收（不布防直接回结果）会让 PLC 不运动，正是维护期间要避免的。
 - **MM-4 采集件只录图**：采集版件照常按相机帧号分组、录全部帧（不论录制设置），不送测量，收尾只等收尾窗口；不编拍照计划（会话允许维护件无计划布防）、不要求发布包与走廊。
 - **MM-5 记录库原地加列**：`inspection.db` 版本仍为 9，`parts` 原地加 `mode` 列（production / maintenanceCollect / maintenanceShadow，默认 production），不重建、不丢旧记录。当日统计只算 production。
-- **MM-6 录制元数据与保留**：`part.json` 新增 `partMode`、`devices`（每台计划相机的 `cameraId`、`cameraConfig`、实际下发的 `imaging`、`deviceSession`）、`plc`（`requestSeq`、`productCode`）；字段名避开已有的 `mode`（录制方式）与 `cameras`（计划相机编号）。维护采集件的录制目录放 `maintenance-collect` 标记文件，按件数与大小的自动清理跳过它们，也不占保留件数。
+- **MM-6 录制元数据与保留**：`part.json` 新增 `partMode`、`devices`（每台计划相机的 `cameraId`、`cameraConfig`、本次打开实际写入的 `imaging`（没有则取相机保存值）、`deviceSession`）、`plc`（`requestSeq`、`productCode`）；字段名避开已有的 `mode`（录制方式）与 `cameras`（计划相机编号）。维护采集件的录制目录放 `maintenance-collect` 标记文件，按件数与大小的自动清理跳过它们，也不占保留件数。
 - **MM-7 日志**：开关记 `op.maintenance`（`action`、`reason`、退出时仍只有采集版的配方 `collectOnly`）。
 
 ## 一期未做（已知限制）
@@ -32,16 +32,17 @@
 ## 二期实现取舍（历史件导入为采集轮次）
 
 - **HI-1 硬链接物化**：`RecipeCaptureHost::import_history` 在 `recipe-capture/<新轮次>/{相机}/{seq:06}.pgm` 为每帧建硬链接指向录制原图（先核对是普通文件、长度等于录制尺寸的 PGM），写 `frames.jsonl`，最后写 `round.json`；任一步失败删掉本轮目录（只删链接）。建不了硬链接（跨卷）报错，不退回复制：单件 1～2 GB，复制会悄悄占满资料盘。
-- **HI-2 轮次格式 3**：所有新轮次（含示教实拍）写 `format: 3`，`format: 2` 照常读取。历史件轮次的 `origin` 为 `{kind: "history", cycleId, recordId, standard}`，代替示教握手编号：状态只能是完成，不记 PLC 计划版本、shotCount 与 deviceTriggers；`frames.jsonl` 的帧号取录制帧号（同一相机“帧号 − 帧组序号”须一致才能导入），触发计数不记；`createdAt` 是导入时间。
+- **HI-2 轮次格式 3**：新轮次写 `format: 3`，`format: 2` 照常读取。历史件轮次的 `origin` 为 `{kind: "history", cycleId, recordId, standard}`，手动配置数据（配方迁移包导入）的轮次为 `{kind: "prepared", label}`：两者状态只能是完成，不记 PLC 计划版本、shotCount 与 deviceTriggers；历史件轮次`frames.jsonl` 的帧号取录制帧号（同一相机“帧号 − 帧组序号”须一致才能导入），触发计数不记；`createdAt` 是导入时间。
 - **HI-3 可用条件的取法**：只列本配方（记录的 `recipeId` 等于候选编号）最近 200 件有录制目录的真机记录，逐件读 `part.json`；型号按 `plc.productCode` 核对；相机按 `devices[].cameraConfig` 与当前设备配置（`state_value` 口径）逐台比较；另把“含手动触发帧”“帧号与帧组序号对不上”“录制目录不在真机录制根下”算作不可导入。
 - **HI-4 不要求空闲**：导入不占相机与 PLC，只等配置门（不要求节拍空闲，生产进行中也能导入）；在配置门内按候选修订号重新核对所选的每一件，任一件不可用就一件也不导；同一件对同一候选只导一次（按各轮 `origin.cycleId` 去重，重启后仍有效）。逐件物化中途失败时，已导入的轮次保留，错误里列出。
-- **HI-5 标准件**：导入时勾选写进 `origin.standard`；这一轮加入标定时按标准件轮次处理（不计轮数，用于 x_ref），不论点哪个按钮；采集页对这类轮次只给“加入标定（标准件）”。
+- **HI-5 标准件**：导入时勾选写进 `origin.standard`；这一轮加入标定时按标准件轮次处理（不计轮数，用于 x_ref），不论点哪个按钮；采集轮次页对这类轮次只给“加入标定（标准件）”。
 - **HI-6 验证样本去重**：运行验证时核对（D-SB-46 后验证可选）：历史样本的 cycleId 已导入为本候选的轮次、且该轮被走廊示教或多轮标定引用，这个样本记不符合并写明原因；只导入未用的件仍可验证。录制有 `devices` 时，计划相机的 `cameraConfig` 须与当前一致。
 - **HI-7 日志**：导入记 `op.capture.import`（`recipeId`、所选记录与是否标准件、新轮次）。
+- **HI-8 帧率列与提前结束提示**：列表的“时长 / 实测帧率（设定）”按 `part.json` 的 `frames[].ts` 计算：时长取各相机首末帧时间差的最大值，实测帧率取各相机（帧数 − 1）/ 时间差的中位数，设定帧率取 `devices[].cameraConfig.frameRate`；实测偏离设定超过 10% 时标黄。本批可比较的件（没有不可用原因，或只因已导入为本候选轮次）不少于 3 件时取其帧组数中位数 M，帧组数 N < 0.9·M 的件加提示“帧组数 N，明显少于本批中位数 M（疑似提前结束）”。提示不阻断导入。DTO `HistoryCandidate` 带 `warnings`、`durationMs`、`measuredFps`、`setFps`。
 
 ## 二期未做（已知限制）
 
-- 采集版件没有 ΣN_exp，`plc.earlyEnd` 仍未写，提前结束只能靠正式版或试判件的“疑似提前终止”标记识别；采集版件的提前结束要由操作员看帧组数自行排除。
+- 采集版件没有 ΣN_exp，`plc.earlyEnd` 仍未写，提前结束只能靠正式版或试判件的“疑似提前终止”标记识别；采集版件只有导入列表按帧组数给出的提示（HI-8），由操作员决定是否排除。
 - 硬链接要求录制目录与 `recipe-capture/` 在同一卷（同一项目目录下默认满足）。轮次原图与录制原图是同一份数据，软件不改写已录原图。
 - “从历史选用”只看最近 200 件；更早的件不列出。
 
