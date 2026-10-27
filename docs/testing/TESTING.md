@@ -75,6 +75,13 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_
 cargo run --manifest-path src-tauri/Cargo.toml --example segment_eval -- <项目目录> <候选编号>
 ```
 
+逐帧定向与找边（D-SB-47、D-SB-48，待确认）的离线评估同样不进 `cargo test`，需真引擎；逐次结果写 `<输出目录>/runs.csv`，汇总打印到标准输出：
+
+```powershell
+$env:LYFLOW_CORE_DLL = "<运行库目录>\lyflow_core.dll"
+cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval -- <项目目录> <候选编号> <输出目录>
+```
+
 分段标定工作台（D-SB-44）的回归：`workspace::capture_review` 的组合保存（结构变 / 不变时其余轮次与标定的失效范围）、`frame_align` 的缩略图条带格式，前端 `tests/workbench-draft.test.ts`（边界插删与保存的段列表）与 `tests/segment-workbench.test.tsx`（结构改变时先列影响、确认后一次提交）；对齐复核（P2）：`frame_align::aligned_cuts_follow_scene_positions_under_stretch_drop_and_repeat`（合成序列在伸缩、前慢后快、丢帧、重复帧下边界误差 ≤ 1 帧；改成按比例换算会失败）与 `tests/align-review.test.tsx`（微调不越过相邻边界、全部确认后一次提交）。`segment_eval` 在有分段模板时另报“图像对齐（相对模板轮）”的误差；2026-10-26 在 NEW-14 原图上冒烟（15 轮 1.2 s），评估待已确认的手动分段。
 
 读该候选 `workspace.json` 的段列表、`boundaryGuard` 与采集页已确认的手动分段，逐轮用其余轮次按多轮标定规则得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；不读图像、不需要 lyFlow。至少要 2 段、2 个已确认轮次。2026-10-26 在人工构造的 8 轮、3 段工作区上冒烟通过；现场 NEW-14（`seg-new14` 项目，16 轮）尚未标手动分段，评估待做。
