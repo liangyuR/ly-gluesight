@@ -88,6 +88,60 @@ fn legacy_logs_wal_and_recordings_migrate_with_references_and_preserve_project_a
 }
 
 #[test]
+fn project_database_with_leftover_wal_sidecars_migrates_recording_references_and_images() {
+    let fixture = Fixture::new();
+    let data = fixture.data("data");
+    let project = data.join("projects/A");
+    let old = project.join("records/20261027/part_cycle_c1");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join("cam1_s000001.pgm"), b"P5\n1 1\n255\n\x7f").unwrap();
+    let seed = fixture.0.join("seed");
+    fs::create_dir_all(&seed).unwrap();
+    let writer = rusqlite::Connection::open(seed.join("inspection.db")).unwrap();
+    writer.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE parts(recording_directory TEXT); CREATE TABLE part_frames(raw_file TEXT);").unwrap();
+    writer
+        .execute(
+            "INSERT INTO parts VALUES(?1)",
+            [old.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    let relative = "20261027/part_cycle_c1/cam1_s000001.pgm";
+    writer
+        .execute("INSERT INTO part_frames VALUES(?1)", [relative])
+        .unwrap();
+    for name in ["inspection.db", "inspection.db-wal", "inspection.db-shm"] {
+        fs::copy(seed.join(name), project.join(name)).unwrap();
+    }
+    drop(writer);
+    assert!(project.join("inspection.db-wal").is_file());
+    assert!(project.join("inspection.db-shm").is_file());
+    let layout = prepare(&data, &fixture.0.join("gs_logs"), "test").unwrap();
+    let recordings = layout.vision("A").join("records");
+    let db = rusqlite::Connection::open(project.join("inspection.db")).unwrap();
+    let directory: String = db
+        .query_row("SELECT recording_directory FROM parts", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let image: String = db
+        .query_row("SELECT raw_file FROM part_frames", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        Path::new(&directory),
+        recordings.join("20261027/part_cycle_c1")
+    );
+    assert_eq!(image, relative);
+    assert_eq!(
+        fs::read(recordings.join(&image)).unwrap(),
+        b"P5\n1 1\n255\n\x7f"
+    );
+    assert_eq!(
+        fs::read(old.join("cam1_s000001.pgm")).unwrap(),
+        b"P5\n1 1\n255\n\x7f"
+    );
+}
+
+#[test]
 fn completed_migration_never_reimports_retained_legacy_copies_or_rebinds_root() {
     let fixture = Fixture::new();
     let data = fixture.data("data");
