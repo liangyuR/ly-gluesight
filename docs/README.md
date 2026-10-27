@@ -38,6 +38,8 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 
 一套可上线的检测方案（相机组、PLC 配置、标定、配方、候选、记录）收拢成一个项目，存于 `projects/<id>/`；支持新建、重命名、删除、整个项目导出导入与复制，切换项目要重启。见 [项目设计](architecture/project.md) 与 [存储布局](architecture/storage-layout.md)。
 
+运行日志和历史原图集中到 `~/gs_logs` 的拟议布局、示教及标定资产边界、迁移影响见[日志与视觉存储调研](architecture/log-storage-research.md)；当前路径仍以存储布局为准。
+
 ### 关键模块与文件
 
 Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.ts` 与 Rust serde 输出逐字段对应。
