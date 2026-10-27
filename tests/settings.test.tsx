@@ -38,6 +38,26 @@ function recordSaveButton() {
 }
 
 describe("离线原图保留设置", () => {
+  it.each([
+    [String.raw`\\?\C:\test\gs_logs`, String.raw`C:\test\gs_logs`],
+    [String.raw`\\?\UNC\server\share\gs_logs`, String.raw`\\server\share\gs_logs`],
+  ])("Windows 规范化路径 %s → 设置页显示可读路径并保留网络共享根", async (raw, displayed) => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "storage_status") return { environment: "development", root: `${raw}\\data`, migrationStatus: "ready",
+        logRoot: raw, runtimeLogDir: `${raw}\\runtime`, visionLogDir: `${raw}\\vision\\project` };
+      if (command === "app_info") return { name: "GlueSight", version: "test", logDir: `${raw}\\runtime` };
+      if (command === "engine_status") return { backend: "LyFlow", ready: true, message: "", path: `${raw}\\lyflow` };
+      return original(command, args);
+    });
+    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
+    const storage = within(screen.getByRole("region", { name: "资料存储" }));
+    expect(await storage.findByText(displayed)).toBeVisible();
+    for (const suffix of ["data", "runtime", "vision\\project"]) expect(storage.getByText(`${displayed}\\${suffix}`)).toBeVisible();
+    expect(await within(screen.getByRole("region", { name: "关于" })).findByText(`${displayed}\\runtime`)).toBeVisible();
+    expect(await within(screen.getByRole("region", { name: "lyFlow 与帧录制" })).findByText(`${displayed}\\lyflow`)).toBeVisible();
+  });
+
   it("日志与项目分开存储 → 目录入口分别打开运行日志和当前项目原图", async () => {
     render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
     const storage = within(screen.getByRole("region", { name: "资料存储" }));

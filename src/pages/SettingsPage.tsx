@@ -17,6 +17,12 @@ const timeoutMinimums: Record<keyof Timeouts, number> = { armMs: 100, motionMs: 
 
 type SavePart = (part: Partial<CycleSettings>) => Promise<boolean>;
 
+function displayPath(path: string): string {
+  if (/^\\\\\?\\UNC\\/i.test(path)) return `\\\\${path.slice(8)}`;
+  if (/^\\\\\?\\[a-z]:\\/i.test(path)) return path.slice(4);
+  return path;
+}
+
 function useMounted() {
   const mounted = useRef(false);
   useEffect(() => {
@@ -268,7 +274,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
         <dt>说明</dt>
         <dd>{visibleEngine?.message ?? "--"}</dd>
         <dt>运行库目录</dt>
-        <dd className="mono">{visibleEngine?.path ?? "--"}</dd>
+        <dd className="mono">{displayPath(visibleEngine?.path ?? "--")}</dd>
       </dl>
       {import.meta.env.DEV && visibleEngine && !visibleEngine.ready && <Alert tone="info">{devLyflowHint}</Alert>}
       {engineError && <Alert tone="ng" action={<Button size="sm" onClick={refresh}>重试引擎状态</Button>}>引擎状态读取失败：{engineError}</Alert>}
@@ -300,10 +306,10 @@ function StoragePanel() {
     {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>资料目录读取失败：{error}</Alert>}
     {!loading && !error && data && <>
       <dl className="kv"><dt>当前环境</dt><dd>{environment[data.environment] ?? data.environment}</dd>
-        <dt>资料目录</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.root}</dd>
-        <dt>日志根目录</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.logRoot ?? "—"}</dd>
-        <dt>运行日志</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.runtimeLogDir ?? "—"}</dd>
-        <dt>当前项目视觉原图</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.visionLogDir ?? "—"}</dd>
+        <dt>资料目录</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{displayPath(data.root)}</dd>
+        <dt>日志根目录</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{displayPath(data.logRoot ?? "—")}</dd>
+        <dt>运行日志</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{displayPath(data.runtimeLogDir ?? "—")}</dd>
+        <dt>当前项目视觉原图</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{displayPath(data.visionLogDir ?? "—")}</dd>
         <dt>迁移状态</dt><dd>{migration[data.migrationStatus] ?? data.migrationStatus}</dd>
       </dl>
       {data.migrationMessage && <p role="status">{data.migrationMessage}</p>}
@@ -340,7 +346,7 @@ export default function SettingsPage() {
           <dt>构建</dt>
           <dd className="mono">{info?.gitSha ? `${info.gitSha}${info.buildTime ? ` · ${info.buildTime}` : ""}` : "--"}</dd>
           <dt>日志目录</dt>
-          <dd className="mono">{info?.logDir ?? "--"}</dd>
+          <dd className="mono">{displayPath(info?.logDir ?? "--")}</dd>
         </dl>
         <div><Button onClick={openLogs}>打开日志目录</Button></div>
         {logError && <Alert tone="ng">打开日志目录失败：{logError}</Alert>}
