@@ -660,8 +660,21 @@ pub fn storage_status(app: AppHandle) -> Result<StorageStatus, String> {
 pub fn storage_open_directory(app: AppHandle, target: Option<String>) -> Result<(), String> {
     let directory = match target.as_deref().unwrap_or("data") {
         "data" => root(&app),
+        "logs" => app
+            .try_state::<crate::log_storage::Layout>()
+            .ok_or("日志目录尚未准备完成")?
+            .config
+            .root
+            .clone(),
         "runtime" => crate::log_storage::runtime_dir(&app)?,
         "vision" => crate::log_storage::recording_project(&project(&app))?,
+        "lyflow" => {
+            let directory = crate::vision::runtime_directory()?;
+            if !directory.is_dir() {
+                return Err("lyFlow 运行库目录不存在".into());
+            }
+            directory
+        }
         _ => return Err("未知目录类型".into()),
     };
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;

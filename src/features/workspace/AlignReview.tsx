@@ -87,7 +87,7 @@ export default function AlignReview({ plan, locked }: { plan: WorkspacePlanView;
   const groupCount = stripGroups(roundThumbs.strips);
 
   if (!template) {
-    return <Panel title="其余轮次复核" detail="把分段模板的边界按图像对齐到其余采集轮次，逐个确认">
+    return <Panel title="其余轮次复核" help="把分段模板的边界按图像对齐到其余采集轮次，逐个确认">
       <p className="muted">先在上方分段标定里保存一轮分段并设为模板。</p>
     </Panel>;
   }
@@ -120,7 +120,7 @@ export default function AlignReview({ plan, locked }: { plan: WorkspacePlanView;
     else if (e.key === "Enter") { e.preventDefault(); confirmRow(row); }
   };
 
-  return <Panel title="其余轮次复核" detail="软件按图像把分段模板的边界对齐到所选轮次；逐个边界对照模板与本轮的帧，← → 微调、↑ ↓ 换行、Enter 确认，全部确认后保存本轮">
+  return <Panel title="其余轮次复核" help="软件按图像把分段模板的边界对齐到所选轮次；逐个边界对照模板与本轮的帧，← → 微调、↑ ↓ 换行、Enter 确认，全部确认后保存本轮">
     <div className="alr-rounds" role="group" aria-label="采集轮次">
       {others.map(round => {
         const state = status(round.roundId);

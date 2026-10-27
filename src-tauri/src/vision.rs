@@ -203,6 +203,10 @@ fn override_dir() -> Option<String> {
     if cfg!(debug_assertions) { std::env::var(RUNTIME_OVERRIDE).ok() } else { None }
 }
 
+pub(crate) fn runtime_directory() -> Result<PathBuf, String> {
+    Ok(runtime_dir(override_dir(), std::env::current_exe)?.dir)
+}
+
 /// 运行库只在程序同目录的 runtime/lyflow；开发构建可被联合开发覆盖。
 fn runtime_dir(override_dir: Option<String>, executable: impl FnOnce() -> std::io::Result<PathBuf>) -> Result<RuntimeDir, String> {
     if let Some(dir) = override_dir.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {

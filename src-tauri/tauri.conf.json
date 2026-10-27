@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "GlueSight · 胶路智检",
+        "title": "GlueSight",
         "width": 1440,
         "height": 900,
         "minWidth": 1100,

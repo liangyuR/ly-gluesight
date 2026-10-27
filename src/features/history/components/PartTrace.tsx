@@ -53,7 +53,7 @@ export function BurstPartTrace({ detail, burst, selected, onSelect }: {
         : <span className="muted">{frame.status === "missing" ? "缺帧" : "未保留"}</span>,
     },
   ];
-  return <Panel title="逐帧追溯" className="frames-panel burst-trace" detail="每台相机每个帧组一行；检测结论、PLC 交付和原图保留分别记录">
+  return <Panel title="逐帧追溯" className="frames-panel burst-trace" help="每台相机每个帧组一行；检测结论、PLC 交付和原图保留分别记录">
     <div className="kv2">
       <span>工件身份</span><b className="mono">{summary.cycleId ?? "未分配"}</b>
       <span>发布包</span><b className="mono">{summary.bundleId ?? "未使用图像发布包"}</b>

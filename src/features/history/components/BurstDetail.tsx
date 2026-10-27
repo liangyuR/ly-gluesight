@@ -168,7 +168,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     </Card>
     {s.source !== "real" && <Alert title={s.source === "offlineCandidate" ? "候选离线调试记录" : "离线回放记录"}>结果来自离线环境，不作为真机生产验收；切换当前站点模式不会改变此记录的来源。</Alert>}
     {error && <Alert tone="warn" title="操作未完成">{error}</Alert>}
-    <Panel title="复测与候选对照" detail="对照结果另存，原始判定保留">
+    <Panel title="复测与候选对照" help="对照结果另存，原始判定保留">
       <div className="wp-actions">
         <Chip>{s.source === "offlineCandidate" ? "原始候选 " + (s.recipeRevision ?? "未记录") : "原始发布 v" + (s.recipeVersion ?? "—")}</Chip>
         <StatusBadge>候选 {ws.data && ws.data.workspace.doc.id === s.recipeId ? "v" + ws.data.workspace.doc.version + " · 修订 " + ws.data.workspace.revision : "尚未选择此配方"}</StatusBadge>
@@ -192,11 +192,10 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       {comparison.burst ? <RegionReplayDiff diffs={diffs} source={comparison.source} /> : <Text as="p" muted>这次对照没有区域明细，只能看整件结论。</Text>}
     </Panel>}
     <div className="detail-grid burst">
-      <Panel title="帧组与原图" detail="选择帧组与相机查看原图" actions={<Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
+      <Panel title="帧组与原图" help="点击小方块选择相机与帧组查看原图，左右方向键切换帧组。颜色表示区域结论，非逐帧判定；灰色为检测不完整，浅灰为本段不检测。" actions={<Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
         options={burst.cameras.map((name, c) => ({ value: String(c), label: name }))} />}>
         <CameraSegmentOverview cameras={burst.cameras} segments={burst.segments} regions={j.regions} />
-        <FrameGroupStrip groups={groups} cameras={burst.cameras} selected={selection.seq} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} />
-        <p className="muted">颜色表示区域结论，非逐帧判定；灰色为检测不完整，浅灰为本段不检测。左右方向键切换帧组。</p>
+        <FrameGroupStrip groups={groups} cameras={burst.cameras} selected={selection.seq} selectedCamera={selection.camera} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} onSelectCell={(seq, camera) => setSelection({ seq, camera })} />
         <div className="wp-stack">
           <GrayViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={imageLabel} caption={<>原始 SN <span className="sn">{s.sn}</span> · {cameraName} · 帧组 {selection.seq}</>} />
           <div className="wp-runtime-strip">

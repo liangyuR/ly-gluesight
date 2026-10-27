@@ -5,6 +5,7 @@ import { cameraApi } from "../api";
 import type { BandwidthEstimate, CameraConfig, CameraImaging, CameraStatus, DeviceSummary } from "../types";
 import { errorText } from "../../../lib/errors";
 import { clock, sourceText } from "./health";
+import ContextHelp from "../../cycle/components/ContextHelp";
 
 export interface CameraConfigHandle {
   save: () => Promise<boolean>;
@@ -209,10 +210,10 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
     <div className="cg-detail">
       <div className="cg-col">
         <fieldset disabled={saving||locked} className="cg-fields">
-          <Card role="region" aria-label="基础信息" title={<Heading level={3}>基础信息</Heading>} actions={!mvs && <span className="cg-note"><Lock size={12} /> 由离线来源生成，只读</span>}>
+          <Card role="region" aria-label="基础信息" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>基础信息</Heading><ContextHelp label="基础信息说明">相机编号供配方引用，在创建相机时分配，不可修改。</ContextHelp></div>} actions={!mvs && <span className="cg-note"><Lock size={12} /> 由离线来源生成，只读</span>}>
             <Stack direction="column" align="stretch" gap={12}>
               <TextField id="cam-name" label="名称" value={config.name} onChange={(e) => set("name", e.target.value)} disabled={!mvs} />
-              <TextField label="相机编号" readOnly value={config.id} description="配方用它引用相机，建相机时分配，不可改" />
+              <TextField label="相机编号" readOnly value={config.id} />
               <TextField label="图像源" readOnly value={sourceText[config.source]} />
               <TextField label="设备视角" readOnly value="单视角" />
               {config.source === "sampleSet" && <span className="cg-small muted">图像来自离线模式所选样本集，相机与视角按样本集生成，不可在此更改。</span>}
@@ -220,9 +221,9 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
             </Stack>
           </Card>
 
-          {mvs ? <Card role="region" aria-label="绑定设备" title={<Heading level={3}>绑定设备</Heading>} actions={enumerated && <span className="cg-note">枚举到 {devices.length} 台 · {clock(enumerated)}</span>}>
+          {mvs ? <Card role="region" aria-label="绑定设备" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>绑定设备</Heading><ContextHelp label="绑定设备说明">只列出当前枚举到的设备，不自动推荐；换相机时在此改选，保存并应用后生效。</ContextHelp></div>} actions={enumerated && <span className="cg-note">枚举到 {devices.length} 台 · {clock(enumerated)}</span>}>
             <Stack direction="column" align="stretch" gap={12}>
-              <FormField id="cam-serial" label="相机设备" error={deviceError || undefined} description="只列出当前枚举到的设备，不自动推荐；换相机时在此改选，保存并应用后生效。">
+              <FormField id="cam-serial" label="相机设备" error={deviceError || undefined}>
                 <Stack wrap={false} className="cg-serial">
                   <Select id="cam-serial" aria-label="相机设备" value={config.serial} placeholder="请选择设备" onValueChange={v => set("serial", v)}
                     options={[
@@ -287,7 +288,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
             <Alert title="不适用：离线图像源按节拍自动出图">不接触发线，没有触发沿、滤波、延时、频闪和 Chunk 设置；触发计数即样本序号。</Alert>
           </Card>}
 
-          {mvs ? <Card role="region" aria-label="曝光与增益" title={<Heading level={3}>曝光与增益</Heading>} actions={<span className="cg-note">保存即写入相机，打开或重连时自动写入</span>}>
+          {mvs ? <Card role="region" aria-label="曝光与增益" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>曝光与增益</Heading><ContextHelp label="曝光与增益说明">曝光与增益只记录在采集件与轮次里，修改后不影响已有示教、标定与轮次复核。固定写入：ExposureAuto / GainAuto = Off、PixelFormat = Mono8、TriggerMode = On；GigE 相机自动设置最佳包长。{status?.sdkVersion && ` SDK ${status.sdkVersion}。`}</ContextHelp></div>} actions={<span className="cg-note">保存即写入相机，打开或重连时自动写入</span>}>
             <Stack direction="column" align="stretch" gap={12}>
               <div className="cg-adv-grid">
                 <NumberField label="曝光时间" aria-label="曝光时间（µs）" unit="µs" min={1} step={1} value={exposure===""?"":Number(exposure)} onValueChange={v => editImaging("exposure", v===""?"":String(v))} />
@@ -298,7 +299,6 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
                 {imagingInvalid ? <span>{imagingInvalid}</span> : imagingSaved ? <span>已保存：曝光 <b>{imagingSaved.exposureUs} µs</b> · 增益 <b>{imagingSaved.gainDb} dB</b>（{clock(imagingSaved.at).slice(0, 5)}）</span> : !status?.ready && <span>相机未连接：保存的值在下次连接时写入</span>}
               </div>
               {imagingError && <Alert tone="ng">{imagingError}</Alert>}
-              <span className="muted cg-small">曝光与增益只记录在采集件与轮次里，修改后不影响已有示教、标定与轮次复核。固定写入：ExposureAuto / GainAuto = Off、PixelFormat = Mono8、TriggerMode = On；GigE 相机自动设置最佳包长。{status?.sdkVersion && ` SDK ${status.sdkVersion}。`}</span>
             </Stack>
           </Card> : <Card role="region" aria-label="曝光与增益" title={<Heading level={3}>曝光与增益</Heading>}>
             <Alert>样本集与合成图没有曝光和增益可写入。</Alert>

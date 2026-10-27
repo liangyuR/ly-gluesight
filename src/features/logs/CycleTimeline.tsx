@@ -7,6 +7,7 @@ import { errorText } from "../../lib/errors";
 import { levelText, logsApi } from "./api";
 import DiagnosticsDialog from "./DiagnosticsDialog";
 import type { Timeline } from "./types";
+import ContextHelp from "../cycle/components/ContextHelp";
 
 const markedStages = new Set(["partStart", "armed", "partEnd", "result", "released", "fault", "reset"]);
 const levelTone = { error: "ng", warn: "warn", info: "info", debug: "off" } as const;
@@ -60,7 +61,7 @@ export default function CycleTimeline({ historyId, cycleId, ts, selected = -1, o
     { key: "msg", header: "内容", render: ([, e]) => <span className="log-msg" title={e.msg}>{e.msg}</span> },
   ];
   return <Card className="timeline-panel" role="region" aria-label="本件事件时间线"
-    title={<div><Heading level={3}>本件事件时间线</Heading><Text as="p" muted variant="label">按 cycleId 关联的运行日志与同时段 PLC 信号变化；{frame ? "点相机 / 帧组" : "点拍照点"}可在上方查看对应原图</Text></div>}
+    title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>本件事件时间线</Heading><ContextHelp label="本件事件时间线说明">按 cycleId 关联的运行日志与同时段 PLC 信号变化；{frame ? "点相机 / 帧组" : "点拍照点"}可在上方查看对应原图。</ContextHelp></div>}
     actions={<Stack gap={8}>
       {cycleId && <Button size="sm" onClick={() => navigate(`/logs?cycleId=${encodeURIComponent(cycleId)}`)}>在运行日志中查看</Button>}
       <Button size="sm" leadingIcon={<PackageOpen size={14} />} onClick={() => setExporting(true)}>导出本件诊断包</Button>

@@ -75,7 +75,7 @@ export default function CalibrationPage() {
   const hinted = calibration?.segments.filter(segment => segment.hints?.length) ?? [];
   const roundMeta = (round: CalibrationRoundView) => `${round.groupCount} 个帧组 · 各相机 ${round.cameraFrames.join(" / ")} 帧 · 不完整帧组 ${round.incompleteGroups} · 丢帧告警 ${round.lossAlarms}`;
   return <div className="wp-page"><WorkspaceBar />
-    <Panel title="多轮标定" detail="同一工件程序连续采集多轮，取帧组数均值作预期帧数；容差由操作员确认">
+    <Panel title="多轮标定" help="同一工件程序连续采集多轮，取帧组数均值作预期帧数；容差由操作员确认">
       <CameraSegmentOverview cameras={plan.cameras} segments={plan.segments} />
       <div className="wp-actions" style={{ marginTop: 12 }}>
         <Badge tone={expectedTotal != null ? "ok" : "warn"}>{expectedTotal != null ? `预期总数 ${expectedText(expectedTotal, toleranceTotal)}` : "预期总数待标定"}</Badge>
@@ -83,7 +83,7 @@ export default function CalibrationPage() {
       </div>
     </Panel>
     {multi && <Notice title="多段计划按手动分段逐段标定">每个标定轮次（不含标准件）都在采集轮次页确认分段后，应用标定按边界得出各段预期帧数与建议容差，ΣN_exp 取各段之和；有轮次未确认分段时各段保持“待标定”，ΣN_exp 取各轮整件帧组数的均值。生产仍按整件核对帧数、不分段判定。</Notice>}
-    <Panel title="标定轮次" detail={`同一工件程序连续采集，至少 ${minRounds} 轮；标准件轮次另用于胶偏参考，不计入轮数`}>
+    <Panel title="标定轮次" help={`同一工件程序连续采集，至少 ${minRounds} 轮；标准件轮次另用于胶偏参考，不计入轮数`}>
       <div className="wp-calib-need">
         <Badge tone={short > 0 ? "warn" : "ok"}>{short > 0 ? `已加入 ${normal.length} / ${minRounds} 轮，还差 ${short} 轮` : `已加入 ${normal.length} 轮，轮数足够`}</Badge>
         <span className="muted">标准件轮次 {standard.length} 轮</span>
@@ -102,7 +102,7 @@ export default function CalibrationPage() {
         <div className="wp-actions"><Button size="sm" aria-label={`加入标定 ${round.roundId}`} disabled={locked} onClick={() => add(round.roundId, false)}>加入标定</Button><Button size="sm" aria-label={`设为标准件 ${round.roundId}`} disabled={locked} onClick={() => add(round.roundId, true)}>设为标准件轮次</Button></div>
       </li>)}</ul> : <p className="wp-capture-empty">没有可加入的完整采集轮次。到“采集轮次”导入多轮后回来。<Link className="wp-text-link" to="/recipe/capture">前往采集轮次<ArrowRight size={12} aria-hidden="true"/></Link></p>}
     </Panel>
-    <Panel title="标定结果" detail="预期帧数写入后，容差仍是原值，需逐段确认">
+    <Panel title="标定结果" help="预期帧数写入后，容差仍是原值，需逐段确认">
       {calibration?.part ? <>
         <div className="wp-calib-part" role="group" aria-label="整件标定">
           <Badge tone="ok">整件预期 {calibration.part.nExp} 帧组</Badge>

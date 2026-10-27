@@ -77,7 +77,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
   const edges = (view?.edges ?? []).flatMap(edge => edge ? [{ from: edge[0], to: edge[1], color: "var(--primary)" }] : []);
   const metrics = view?.metrics;
 
-  return <Panel title="逐帧查看" detail="加入标定时测得的每帧状态；点一帧看原图，并用当前段走廊重测（只读，不改标定）。方向键切换帧组、相机">
+  return <Panel title="逐帧查看" help="加入标定时测得的每帧状态；点一帧看原图，并用当前段走廊重测（只读，不改标定）。方向键切换帧组、相机">
     <div className="wp-calib-frames">
       <Select label="标定轮次" value={round.roundId} options={rounds.map(item => ({ value: item.roundId, label: `${label(item.roundId)} · ${item.groupCount} 帧组${item.standard ? " · 标准件" : ""}` }))} onValueChange={setRoundId} />
       {features.error && loaded && <p className="c-warn" role="alert">{features.error}</p>}

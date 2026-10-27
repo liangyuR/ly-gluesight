@@ -5,6 +5,7 @@ import { Alert, Button, Card, Heading, Select, Stack, Table, Text, type TableCol
 import { usePlcStatus } from "../features/plc";
 import { formatTime, sampleLabelText, verdictLabel } from "../features/history/meta";
 import { errorText } from "../lib/errors";
+import ContextHelp from "../features/cycle/components/ContextHelp";
 import {
   cycleApi,
   faultOptions,
@@ -128,7 +129,7 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
   const ready = kind === "synthetic" || (!!preview && !preview.managedDir && !loading);
 
   return (
-    <Card title={<Heading level={3}>当前：真机</Heading>}>
+    <Card title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>当前：真机</Heading><ContextHelp label="离线样本说明">进入离线时会将外部样本复制到资料目录，保留源文件；之后使用已导入副本。</ContextHelp></div>}>
       <Stack direction="column" align="stretch" gap={12}>
       <Select label="离线来源" value={kind} onValueChange={(value) => setKind(value as SiteSourceKind)} disabled={busy}
         options={[{ value: "sampleSet", label: "样本集（现场原图）" }, { value: "synthetic", label: "合成图" }]} />
@@ -149,7 +150,6 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
           <p>此样本集 ID 已导入。请选择已有副本，或取消本次选择；不会覆盖已保存的样本。</p>
           <p className="mono">{preview.managedDir}</p>
         </Alert>}
-        <Text as="p" variant="label" muted>进入离线时会将外部样本复制到资料目录，保留源文件；之后使用已导入副本。</Text>
       </>}
       <Alert title="离线模式">
         使用{sourceLabel[kind]}和进程内 S7 服务，{kind === "sampleSet" ? "通过 lyFlow 测量" : "使用模拟测量"}。离线帧录制保留全部，候选调试引用样本原图。离线期间 PLC 与相机组配置只读，退出后恢复真机配置。
@@ -204,15 +204,13 @@ function OfflineSession({ status }: { status: SiteStatus }) {
         </dl>
         {sampleSet && <SampleSetView sampleSet={sampleSet} />}
       </Card>
-      {sampleSet && <Card role="region" aria-label="候选配方离线试运行" title={<Heading level={3}>候选配方离线试运行 · 无需发布</Heading>}>
+      {sampleSet && <Card role="region" aria-label="候选配方离线试运行" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>候选配方离线试运行 · 无需发布</Heading><ContextHelp label="候选配方离线试运行说明">在在线检测页面选择已保存候选和样本件，测试整圈流程。结果标记为调试，不替代标定、独立样本验证或生产发布。</ContextHelp></div>}>
         <Stack direction="column" align="start" gap={12}>
-          <p className="muted">在在线检测页面选择已保存候选和样本件，测试整圈流程。结果标记为调试，不替代标定、独立样本验证或生产发布。</p>
           <Link className="qs-btn tonal" to="/inspect">前往在线检测调试候选</Link>
         </Stack>
       </Card>}
-      <Card role="region" aria-label="已发布配方离线回放" title={<Heading level={3}>已发布配方离线回放</Heading>}>
+      <Card role="region" aria-label="已发布配方离线回放" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>已发布配方离线回放</Heading><ContextHelp label="已发布配方离线回放说明">下列检查与启动操作仅用于已发布版本的离线回放；候选调试不要求发布，启动时单独检查示教和样本匹配。</ContextHelp></div>}>
         <Stack direction="column" align="stretch" gap={12}>
-          <p className="muted">下列检查与启动操作仅用于已发布版本的离线回放；候选调试不要求发布，启动时单独检查示教和样本匹配。</p>
           {showChecklist(readiness, running) && <ReadinessChecklist readiness={readiness} embedded />}
           <Stack gap={8}>
             <RecipeRunSelect options={options} summaries={summaries} value={recipeId} onChange={setRecipeId} disabled={running || busy} />
@@ -224,9 +222,8 @@ function OfflineSession({ status }: { status: SiteStatus }) {
           </Stack>
         </Stack>
       </Card>
-      <Card role="region" aria-label="当前离线运行" title={<Heading level={3}>当前离线运行</Heading>}>
+      <Card role="region" aria-label="当前离线运行" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>当前离线运行</Heading><ContextHelp label="当前离线运行说明">停止当前离线任务，包括候选调试或已发布配方回放。</ContextHelp></div>}>
         <Stack direction="column" align="stretch" gap={12}>
-          <p className="muted">停止当前离线任务，包括候选调试或已发布配方回放。</p>
           <Stack gap={8}>
             <Button leadingIcon={<Square size={15} />} onClick={() => void perform(async () => {
               await cycleApi.offlineStop(false);

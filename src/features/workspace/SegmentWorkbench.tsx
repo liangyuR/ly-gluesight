@@ -107,7 +107,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   useEffect(() => { setSeq(1); }, [roundId]);
 
   if (rounds && !rounds.length) {
-    return <Panel title="分段标定" detail="在一轮完整采集的帧组时间轴上划分直线段与弯道段">
+    return <Panel title="分段标定" help="在一轮完整采集的帧组时间轴上划分直线段与弯道段">
       <Notice title="还没有完整的采集轮次" tone="warn">先在“采集轮次”导入至少一轮，再回到这里按图像划分段。</Notice>
     </Panel>;
   }
@@ -144,7 +144,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     label: `${round.roundId} · ${new Date(round.createdAt).toLocaleString("zh-CN")} · ${round.receivedCount} 帧组${round.roundId === template?.roundId ? " · 模板" : ""}`,
   }));
 
-  return <Panel title="分段标定" detail="在模板轮的帧组时间轴上划分直线段与弯道段：点缩略图选中帧组（下方并排显示三台相机原图），再点“在帧组 N 后插入边界”（或按 B，或点时间轴下方对应的 ＋）；点段名切换直线 / 弯道；点段下方的相机名选这段由哪几台相机检测（没选中的相机变暗，判定时不用）；← → 切换帧组"
+  return <Panel title="分段标定" help="在模板轮的帧组时间轴上划分直线段与弯道段：点缩略图选中帧组（下方并排显示三台相机原图），再点“在帧组 N 后插入边界”（或按 B，或点时间轴下方对应的 ＋）；点段名切换直线 / 弯道；点段下方的相机名选这段由哪几台相机检测（没选中的相机变暗，判定时不用）；← → 切换帧组"
     actions={<Select aria-label="模板轮" value={roundId} options={roundOptions} disabled={busy || dirty} onValueChange={value => { setEdit(null); setRoundId(value); }} />}>
     {(loadError || thumbs.error) && <Notice title="读取采集图像失败" tone="warn">{loadError || thumbs.error}</Notice>}
     {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改分段。</Notice>}
