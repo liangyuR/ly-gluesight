@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use serde::Serialize;
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 #[derive(Clone, Serialize)]
@@ -11,11 +11,20 @@ pub struct Status {
     kind: String,
 }
 
-pub struct Startup { pending: Mutex<Status> }
+pub struct Startup {
+    pending: Mutex<Status>,
+}
 
 impl Default for Startup {
     fn default() -> Self {
-        Self { pending: Mutex::new(Status { request_id: 0, title: "正在准备资料目录".into(), message: "检查目录与权限…".into(), kind: "working".into() }) }
+        Self {
+            pending: Mutex::new(Status {
+                request_id: 0,
+                title: "正在准备资料目录".into(),
+                message: "检查目录与权限…".into(),
+                kind: "working".into(),
+            }),
+        }
     }
 }
 
@@ -116,10 +125,18 @@ pub fn storage_startup_status(host: State<'_, Startup>) -> Result<Status, String
 
 /// 错误页的“关闭”：退出软件。
 #[tauri::command]
-pub fn storage_startup_answer(app: AppHandle, host: State<'_, Startup>, request_id: u64) -> Result<(), String> {
+pub fn storage_startup_answer(
+    app: AppHandle,
+    host: State<'_, Startup>,
+    request_id: u64,
+) -> Result<(), String> {
     let pending = host.pending.lock().map_err(|e| e.to_string())?;
-    if pending.request_id != request_id { return Err("提示已更新，请重新确认".into()); }
-    if pending.kind != "error" { return Err("此提示已处理".into()); }
+    if pending.request_id != request_id {
+        return Err("提示已更新，请重新确认".into());
+    }
+    if pending.kind != "error" {
+        return Err("此提示已处理".into());
+    }
     app.exit(1);
     Ok(())
 }

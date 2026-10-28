@@ -345,7 +345,10 @@ pub fn save_template_round(
     segments: Vec<PathSegment>,
     cuts: Vec<u64>,
 ) -> Result<Workspace, String> {
-    if w.teaching_piece.as_ref().is_none_or(|t| t.round_id != round.round_id) {
+    if w.teaching_piece
+        .as_ref()
+        .is_none_or(|t| t.round_id != round.round_id)
+    {
         return Err("分段只在示教件上确认".into());
     }
     let mut next = w.clone();
@@ -362,7 +365,11 @@ fn teaching_round(app: &AppHandle, id: &str, revision: u64) -> Result<String, St
     let items = host.items.lock().unwrap();
     let w = items.get(id).ok_or("候选配置不存在")?;
     w.expect(revision)?;
-    Ok(w.teaching_piece.as_ref().ok_or("还没有示教件：先选示教件")?.round_id.clone())
+    Ok(w.teaching_piece
+        .as_ref()
+        .ok_or("还没有示教件：先选示教件")?
+        .round_id
+        .clone())
 }
 
 /// 分段标定工作台保存：段列表 + 确认示教件边界 + 设为模板（模板即示教件）。
@@ -431,8 +438,14 @@ pub(super) struct AlignTemplate {
 }
 
 impl AlignTemplate {
-    pub(super) fn load(capture: &crate::recipe_capture::RecipeCaptureHost, w: &Workspace) -> Result<Self, String> {
-        let piece = w.teaching_piece.as_ref().ok_or("还没有示教件：先选示教件")?;
+    pub(super) fn load(
+        capture: &crate::recipe_capture::RecipeCaptureHost,
+        w: &Workspace,
+    ) -> Result<Self, String> {
+        let piece = w
+            .teaching_piece
+            .as_ref()
+            .ok_or("还没有示教件：先选示教件")?;
         let review = w
             .capture_review
             .rounds
@@ -455,7 +468,11 @@ impl AlignTemplate {
     }
 
     /// 把示教件边界按图像对齐到 `round`：两件的相机采集配置必须一致。
-    pub(super) fn align(&self, capture: &crate::recipe_capture::RecipeCaptureHost, round: &str) -> Result<Vec<crate::frame_align::AlignedCut>, String> {
+    pub(super) fn align(
+        &self,
+        capture: &crate::recipe_capture::RecipeCaptureHost,
+        round: &str,
+    ) -> Result<Vec<crate::frame_align::AlignedCut>, String> {
         if self.round_id == round {
             return Err("这一件就是示教件".into());
         }
@@ -468,7 +485,12 @@ impl AlignTemplate {
             .iter()
             .map(|camera| align_sequence(capture, round, camera))
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(crate::frame_align::align_cuts(&self.sequences, &sequences, &self.cuts, self.tolerance))
+        Ok(crate::frame_align::align_cuts(
+            &self.sequences,
+            &sequences,
+            &self.cuts,
+            self.tolerance,
+        ))
     }
 }
 
@@ -503,7 +525,10 @@ pub async fn workspace_capture_review_suggest(
 }
 
 /// 需重点复核的边界说明（第 k 个边界在段 k 与段 k + 1 之间）；全部可信时为 None。
-pub(super) fn review_issue(cuts: &[crate::frame_align::AlignedCut], tolerance: u64) -> Option<String> {
+pub(super) fn review_issue(
+    cuts: &[crate::frame_align::AlignedCut],
+    tolerance: u64,
+) -> Option<String> {
     use crate::frame_align::ReviewReason;
     let issues: Vec<String> = cuts
         .iter()
@@ -511,7 +536,10 @@ pub(super) fn review_issue(cuts: &[crate::frame_align::AlignedCut], tolerance: u
         .filter_map(|(k, c)| {
             let what = match c.reason? {
                 ReviewReason::Moved => "为保持递增被挪动".to_string(),
-                ReviewReason::Deviates => format!("与比例换算差 {} 帧（容许 {tolerance}）", c.cut.abs_diff(c.proportional)),
+                ReviewReason::Deviates => format!(
+                    "与比例换算差 {} 帧（容许 {tolerance}）",
+                    c.cut.abs_diff(c.proportional)
+                ),
                 ReviewReason::Unclear => format!("对齐不清晰（{:.2}）", c.sharpness),
             };
             Some(format!("段 {} → 段 {}：{what}", k + 1, k + 2))
@@ -521,7 +549,11 @@ pub(super) fn review_issue(cuts: &[crate::frame_align::AlignedCut], tolerance: u
 }
 
 /// 按可信的对齐结果保存并确认一件的边界（D-SB-51，记 `ConfirmedBy::Aligned`）。
-pub(super) fn confirm_aligned(w: &mut Workspace, round: &CaptureRoundV2, cuts: Vec<u64>) -> Result<(), String> {
+pub(super) fn confirm_aligned(
+    w: &mut Workspace,
+    round: &CaptureRoundV2,
+    cuts: Vec<u64>,
+) -> Result<(), String> {
     apply_capture_review(w, round, CaptureReviewEdit::Save(cuts))?;
     apply_capture_review(w, round, CaptureReviewEdit::Confirm)?;
     if let Some(review) = w.capture_review.rounds.get_mut(&round.round_id) {

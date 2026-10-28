@@ -478,10 +478,7 @@ pub async fn workspace_history_candidates(
             .get(&id)
             .ok_or("候选配置不存在")?
             .clone();
-        Ok(assess_all(&app, &w)?
-            .into_iter()
-            .map(|a| a.view)
-            .collect())
+        Ok(assess_all(&app, &w)?.into_iter().map(|a| a.view).collect())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -504,12 +501,7 @@ pub(super) fn import_records(
         .as_ref()
         .ok()
         .map(|rounds| rounds.iter().map(|(round, _)| round).collect::<Vec<_>>()));
-    crate::cycle::log_op(
-        app,
-        &crate::applog::codes::OP_CAPTURE_IMPORT,
-        data,
-        &result,
-    );
+    crate::cycle::log_op(app, &crate::applog::codes::OP_CAPTURE_IMPORT, data, &result);
     result
 }
 

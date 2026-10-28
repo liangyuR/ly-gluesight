@@ -6,9 +6,9 @@
 
 use crate::camera::BurstRender;
 use crate::frame::FrameImage;
+use crate::offline::Scenario;
 use crate::plan::SegmentKind;
 use crate::recipe::SIM_MM_PER_PX;
-use crate::offline::Scenario;
 use std::sync::Arc;
 
 /// 模拟画面尺寸，与现场相机（MV-CU013-80GC）一致。
@@ -50,14 +50,20 @@ pub fn background_views(view_count: u8, seed: u64) -> Result<Vec<Arc<FrameImage>
         return Err("视角数量只能是 1 或 3".into());
     }
     let [w, h] = SIM_SIZE;
-    Ok((0..view_count).map(|view| {
-        let pixels = (0..w * h).map(|i| {
-            let x = i % w;
-            let y = i / w;
-            (background(x, y, w, h) + 5.0 * noise(i as u64, seed.wrapping_add(view as u64)) as f32).clamp(0.0, 255.0) as u8
-        }).collect();
-        Arc::new(FrameImage::new(w, h, pixels))
-    }).collect())
+    Ok((0..view_count)
+        .map(|view| {
+            let pixels = (0..w * h)
+                .map(|i| {
+                    let x = i % w;
+                    let y = i / w;
+                    (background(x, y, w, h)
+                        + 5.0 * noise(i as u64, seed.wrapping_add(view as u64)) as f32)
+                        .clamp(0.0, 255.0) as u8
+                })
+                .collect();
+            Arc::new(FrameImage::new(w, h, pixels))
+        })
+        .collect())
 }
 
 /// 弯道帧胶条绕胶嘴转动的最大角度（度），在弯道段中点达到。
@@ -75,7 +81,9 @@ fn burst_default_path(camera_idx: usize) -> Vec<[f32; 2]> {
 pub fn corner_angle(kind: SegmentKind, progress: f32) -> f32 {
     match kind {
         SegmentKind::Straight => 0.0,
-        SegmentKind::Corner => CORNER_SWEEP_DEG * (std::f32::consts::PI * progress.clamp(0.0, 1.0)).sin(),
+        SegmentKind::Corner => {
+            CORNER_SWEEP_DEG * (std::f32::consts::PI * progress.clamp(0.0, 1.0)).sin()
+        }
     }
 }
 
@@ -112,36 +120,60 @@ pub fn render_burst_span(r: &BurstRender, span: [f32; 2]) -> FrameImage {
     // 弯道：整条胶绕胶嘴端（中线起点）转动
     let (sin, cos) = corner_angle(r.kind, r.progress).to_radians().sin_cos();
     let o = path[0];
-    let path: Vec<[f32; 2]> = path.iter().map(|p| {
-        let (x, y) = (p[0] - o[0], p[1] - o[1]);
-        [o[0] + x * cos - y * sin, o[1] + x * sin + y * cos]
-    }).collect();
-    let length: f32 = path.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+    let path: Vec<[f32; 2]> = path
+        .iter()
+        .map(|p| {
+            let (x, y) = (p[0] - o[0], p[1] - o[1]);
+            [o[0] + x * cos - y * sin, o[1] + x * sin + y * cos]
+        })
+        .collect();
+    let length: f32 = path
+        .windows(2)
+        .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+        .sum();
     let from = span[0].max(0.0) * length;
-    let to = if span[1] >= 1.0 { f32::INFINITY } else { span[1] * length };
+    let to = if span[1] >= 1.0 {
+        f32::INFINITY
+    } else {
+        span[1] * length
+    };
     let marked = r.camera_idx == 0 && r.seq == 2;
     let gap = match (r.scenario, checks) {
-        (Scenario::Gap, Some(c)) if marked => Some(((c.gap.max_gap_mm as f32 + 2.0) / mm).min(length)),
+        (Scenario::Gap, Some(c)) if marked => {
+            Some(((c.gap.max_gap_mm as f32 + 2.0) / mm).min(length))
+        }
         _ => None,
-    }.map(|g| ((length - g) / 2.0, (length + g) / 2.0));
+    }
+    .map(|g| ((length - g) / 2.0, (length + g) / 2.0));
     let excursion = match (r.scenario, checks) {
-        (Scenario::Excursion, Some(c)) if marked => Some((length / 3.0, (c.width.nominal_mm + c.width.tol_upper + 1.0) as f32)),
+        (Scenario::Excursion, Some(c)) if marked => Some((
+            length / 3.0,
+            (c.width.nominal_mm + c.width.tol_upper + 1.0) as f32,
+        )),
         _ => None,
     };
     let nozzle = {
         let (a, b) = (path[0], path[1]);
         let l = (b[0] - a[0]).hypot(b[1] - a[1]).max(1e-6);
-        [a[0] - (b[0] - a[0]) / l * 60.0, a[1] - (b[1] - a[1]) / l * 60.0]
+        [
+            a[0] - (b[0] - a[0]) / l * 60.0,
+            a[1] - (b[1] - a[1]) / l * 60.0,
+        ]
     };
     let [w, h] = SIM_SIZE;
-    let seed = r.seed.wrapping_mul(31).wrapping_add(r.camera_idx as u64 * 7 + r.seq);
+    let seed = r
+        .seed
+        .wrapping_mul(31)
+        .wrapping_add(r.camera_idx as u64 * 7 + r.seq);
     let mut pixels = Vec::with_capacity((w * h) as usize);
     for y in 0..h {
         for x in 0..w {
             let p = [x as f32, y as f32];
             let mut v = background(x, y, w, h);
             let (d, s, _) = nearest(&path, p);
-            let width = excursion.filter(|(c, _)| (s - c).abs() * mm < 1.5).map_or(nominal, |(_, wide)| wide);
+            let width = excursion
+                .filter(|(c, _)| (s - c).abs() * mm < 1.5)
+                .map_or(nominal, |(_, wide)| wide);
             let half = width / mm / 2.0;
             let missing = gap.is_some_and(|(a, b)| s >= a && s < b);
             if !missing && s > from && s <= to {
@@ -160,5 +192,8 @@ pub fn render_burst_span(r: &BurstRender, span: [f32; 2]) -> FrameImage {
 }
 
 fn background(x: u32, y: u32, w: u32, h: u32) -> f32 {
-    150.0 + 60.0 * (x as f32 / w as f32) + 25.0 * (y as f32 / h as f32) + 6.0 * (x as f32 * 0.05 + y as f32 * 0.31).sin()
+    150.0
+        + 60.0 * (x as f32 / w as f32)
+        + 25.0 * (y as f32 / h as f32)
+        + 6.0 * (x as f32 * 0.05 + y as f32 * 0.31).sin()
 }

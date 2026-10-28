@@ -40,7 +40,9 @@ impl TeachingPiece {
 }
 
 fn is_teaching(w: &Workspace, round: &str) -> bool {
-    w.teaching_piece.as_ref().is_some_and(|t| t.round_id == round)
+    w.teaching_piece
+        .as_ref()
+        .is_some_and(|t| t.round_id == round)
 }
 
 /// 走廊示教帧与示教页试测只能用示教件的帧（RB-1）。
@@ -71,9 +73,15 @@ fn corridor_ready(w: &Workspace) -> bool {
 
 /// 设定（更换）示教件（RB-2、RB-8）：由示教件图像得出的内容全部清空——全部轮次的边界复核与模板、走廊与示教帧、
 /// 标定件与标定派生结果（N_exp、标定统计、partCalib、x_ref）；段列表结构与配方级参数保留。轮次目录与标定特征由调用方删除。
-pub(super) fn replace_teaching_piece(w: &mut Workspace, piece: TeachingPiece) -> Result<(), String> {
+pub(super) fn replace_teaching_piece(
+    w: &mut Workspace,
+    piece: TeachingPiece,
+) -> Result<(), String> {
     burst::require_burst(&w.doc)?;
-    if w.teaching_piece.as_ref().is_some_and(|t| t.record_id == piece.record_id || t.cycle_id == piece.cycle_id) {
+    if w.teaching_piece
+        .as_ref()
+        .is_some_and(|t| t.record_id == piece.record_id || t.cycle_id == piece.cycle_id)
+    {
         return Err("这一件已是示教件".into());
     }
     w.camera_teaching.clear();
@@ -103,7 +111,10 @@ pub(super) fn discard_piece(w: &mut Workspace, round: &str) -> Result<(), String
 }
 
 /// 本候选的示教件与标定件：属于本配方、已完整的轮次，不含验证样本库用到的轮次；示教件在前，其余按创建时间。
-pub(super) fn piece_rounds(capture: &RecipeCaptureHost, w: &Workspace) -> Result<Vec<CaptureSummary>, String> {
+pub(super) fn piece_rounds(
+    capture: &RecipeCaptureHost,
+    w: &Workspace,
+) -> Result<Vec<CaptureSummary>, String> {
     let bank: BTreeSet<&str> = w
         .sample_bank
         .iter()
@@ -161,11 +172,16 @@ pub(super) fn piece_views(
     let mut views: Vec<PieceView> = rounds
         .iter()
         .map(|r| {
-            let teaching = w.teaching_piece.as_ref().filter(|t| t.round_id == r.round_id);
+            let teaching = w
+                .teaching_piece
+                .as_ref()
+                .filter(|t| t.round_id == r.round_id);
             let (record_id, cycle_id) = match &r.origin {
-                Some(crate::recipe_capture::RoundOrigin::History { cycle_id, record_id, .. }) => {
-                    (Some(*record_id), Some(cycle_id.clone()))
-                }
+                Some(crate::recipe_capture::RoundOrigin::History {
+                    cycle_id,
+                    record_id,
+                    ..
+                }) => (Some(*record_id), Some(cycle_id.clone())),
                 _ => (None, None),
             };
             let (sn, ts) = match teaching {
@@ -177,7 +193,14 @@ pub(super) fn piece_views(
             let state = match review {
                 None => PieceReview::None,
                 Some(v) if v.status == ReviewStatus::Confirmed => {
-                    if capture_review::confirmed_segment_counts(&w.doc, &w.capture_review.rounds, &r.round_id, v.group_count).is_some() {
+                    if capture_review::confirmed_segment_counts(
+                        &w.doc,
+                        &w.capture_review.rounds,
+                        &r.round_id,
+                        v.group_count,
+                    )
+                    .is_some()
+                    {
                         PieceReview::Confirmed
                     } else {
                         PieceReview::Stale
@@ -201,9 +224,17 @@ pub(super) fn piece_views(
                 ts,
                 group_count,
                 review: state,
-                confirmed_by: (state == PieceReview::Confirmed).then(|| review.map(|v| v.confirmed_by)).flatten(),
-                in_calibration: w.calibration.rounds.iter().any(|c| c.round_id == r.round_id),
-                excluded_groups: review.map_or(0, |v| u32::try_from(v.excluded_groups.len()).unwrap_or(u32::MAX)),
+                confirmed_by: (state == PieceReview::Confirmed)
+                    .then(|| review.map(|v| v.confirmed_by))
+                    .flatten(),
+                in_calibration: w
+                    .calibration
+                    .rounds
+                    .iter()
+                    .any(|c| c.round_id == r.round_id),
+                excluded_groups: review.map_or(0, |v| {
+                    u32::try_from(v.excluded_groups.len()).unwrap_or(u32::MAX)
+                }),
             }
         })
         .collect();
@@ -217,14 +248,20 @@ pub(super) fn plan_pieces(app: &AppHandle, w: &Workspace) -> Vec<PieceView> {
         return Vec::new();
     };
     let store = app.state::<Store>();
-    let recent: BTreeMap<i64, (String, i64)> = if rounds.iter().any(|r| !is_teaching(w, &r.round_id)) {
-        store
-            .recorded_parts(&w.doc.id, 500)
-            .map(|parts| parts.into_iter().map(|(s, _)| (s.id, (s.sn, s.ts))).collect())
-            .unwrap_or_default()
-    } else {
-        BTreeMap::new()
-    };
+    let recent: BTreeMap<i64, (String, i64)> =
+        if rounds.iter().any(|r| !is_teaching(w, &r.round_id)) {
+            store
+                .recorded_parts(&w.doc.id, 500)
+                .map(|parts| {
+                    parts
+                        .into_iter()
+                        .map(|(s, _)| (s.id, (s.sn, s.ts)))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
     piece_views(w, &rounds, |id| {
         recent
             .get(&id)
@@ -283,12 +320,19 @@ pub async fn workspace_set_teaching_piece(
     let cycle = app.state::<CycleHost>();
     let _config = cycle.config_gate.lock().await;
     let task = app.clone();
-    tauri::async_runtime::spawn_blocking(move || set_teaching_piece(&task, &id, revision, record_id))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        set_teaching_piece(&task, &id, revision, record_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-fn set_teaching_piece(app: &AppHandle, id: &str, revision: u64, record_id: i64) -> Result<WorkspaceView, String> {
+fn set_teaching_piece(
+    app: &AppHandle,
+    id: &str,
+    revision: u64,
+    record_id: i64,
+) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let w = {
         let items = host.items.lock().unwrap();
@@ -297,12 +341,18 @@ fn set_teaching_piece(app: &AppHandle, id: &str, revision: u64, record_id: i64) 
         w.clone()
     };
     burst::require_burst(&w.doc)?;
-    if w.teaching_piece.as_ref().is_some_and(|t| t.record_id == record_id) {
+    if w.teaching_piece
+        .as_ref()
+        .is_some_and(|t| t.record_id == record_id)
+    {
         return Err("这一件已是示教件".into());
     }
     let cycle = app.state::<CycleHost>();
     let capture = cycle.camera.recipe_capture();
-    let picks = [HistoryPick { record_id, standard: false }];
+    let picks = [HistoryPick {
+        record_id,
+        standard: false,
+    }];
     let (round_id, part) = history_import::import_records(app, &w, &picks)?
         .pop()
         .ok_or("示教件导入失败")?;
@@ -398,13 +448,21 @@ pub(super) fn sync_pieces(
             if !teaching_ready {
                 return Err("示教件边界未确认：先在分段步骤确认".into());
             }
-            let confirmed = capture_review::confirmed_segment_counts(&next.doc, &next.capture_review.rounds, id, round.group_count).is_some();
+            let confirmed = capture_review::confirmed_segment_counts(
+                &next.doc,
+                &next.capture_review.rounds,
+                id,
+                round.group_count,
+            )
+            .is_some();
             if !teaching && !confirmed {
                 let cuts: Vec<u64> = if next.doc.segments.len() == 1 {
                     Vec::new()
                 } else {
                     let aligned = align(round)?;
-                    if let Some(issue) = capture_review::review_issue(&aligned, u64::from(next.doc.boundary_guard)) {
+                    if let Some(issue) =
+                        capture_review::review_issue(&aligned, u64::from(next.doc.boundary_guard))
+                    {
                         return Err(format!("待复核：{issue}"));
                     }
                     aligned.iter().map(|c| c.cut).collect()
@@ -418,17 +476,31 @@ pub(super) fn sync_pieces(
             }
             burst::check_round(&next.doc, &next.calibration.rounds, round, current)?;
             let metrics = measure(&next, round)?;
-            let outcome = burst::segment_round(&next.doc.segments, next.doc.plan_cameras().len(), round.group_count, &metrics);
+            let outcome = burst::segment_round(
+                &next.doc.segments,
+                next.doc.plan_cameras().len(),
+                round.group_count,
+                &metrics,
+            );
             let standard = !teaching && round.origin.as_ref().is_some_and(|o| o.standard());
-            let entry: CalibrationRound = burst::calibration_round(&next.doc, round, standard, &metrics);
+            let entry: CalibrationRound =
+                burst::calibration_round(&next.doc, round, standard, &metrics);
             burst::add_calibration_round(&mut next, entry)?;
             features.push((id.clone(), metrics, outcome));
             Ok(())
         };
         let result = step();
-        pieces.push(SyncPiece { round_id: id.clone(), added: result.is_ok(), issue: result.err() });
+        pieces.push(SyncPiece {
+            round_id: id.clone(),
+            added: result.is_ok(),
+            issue: result.err(),
+        });
     }
-    SyncOutcome { next, pieces, features }
+    SyncOutcome {
+        next,
+        pieces,
+        features,
+    }
 }
 
 /// 把选中的历史件导入为标定件（`standard` 记为标准件），随后同步标定件。须先有示教件。
@@ -463,7 +535,11 @@ pub async fn workspace_calibration_pick(
 
 /// 同步标定件（见 [`sync_pieces`]）：人工复核边界后、走廊示教完成后再调用。
 #[tauri::command]
-pub async fn workspace_calibration_sync(app: AppHandle, id: String, revision: u64) -> Result<CalibrationSyncResult, String> {
+pub async fn workspace_calibration_sync(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+) -> Result<CalibrationSyncResult, String> {
     let cycle = app.state::<CycleHost>();
     let _config = cycle.config_gate.lock().await;
     let task = app.clone();
@@ -491,15 +567,28 @@ fn sync(app: &AppHandle, id: &str, revision: u64) -> Result<CalibrationSyncResul
     let mut unreadable = Vec::new();
     let mut rounds = Vec::new();
     for summary in piece_rounds(capture, &w)? {
-        if w.calibration.rounds.iter().any(|r| r.round_id == summary.round_id) {
+        if w.calibration
+            .rounds
+            .iter()
+            .any(|r| r.round_id == summary.round_id)
+        {
             continue;
         }
         match capture.get_burst(&summary.round_id) {
             Ok(round) => rounds.push(round),
-            Err(error) => unreadable.push(SyncPiece { round_id: summary.round_id, added: false, issue: Some(error) }),
+            Err(error) => unreadable.push(SyncPiece {
+                round_id: summary.round_id,
+                added: false,
+                issue: Some(error),
+            }),
         }
     }
-    let current: BTreeMap<String, Value> = cycle.camera.configs().iter().map(|c| (c.id.clone(), state_value(c))).collect();
+    let current: BTreeMap<String, Value> = cycle
+        .camera
+        .configs()
+        .iter()
+        .map(|c| (c.id.clone(), state_value(c)))
+        .collect();
     let mut template = None;
     let align = |round: &CaptureRoundV2| {
         if template.is_none() {
@@ -516,21 +605,40 @@ fn sync(app: &AppHandle, id: &str, revision: u64) -> Result<CalibrationSyncResul
     let measure = |w: &Workspace, round: &CaptureRoundV2| -> Result<Vec<FrameMetrics>, String> {
         let engine = engine.as_ref().ok_or("lyFlow 核心库未加载")?;
         if graphs.is_none() {
-            graphs = Some(w.doc.build().and_then(|recipe| vision::CorridorSet::build(&recipe, &burst::teaching_sizes(w)?)));
+            graphs = Some(w.doc.build().and_then(|recipe| {
+                vision::CorridorSet::build(&recipe, &burst::teaching_sizes(w)?)
+            }));
         }
         let graphs = graphs.as_ref().unwrap().as_ref().map_err(Clone::clone)?;
         let choice = burst::calibration_corridors(w, &round.round_id, round.group_count)?;
         let round_id = &round.round_id;
-        Ok(capture_review::measure_calibration_round(w, round, |camera, camera_id, seq| {
-            let Some(segment) = choice[camera][(seq - 1) as usize] else {
-                return Ok(burst::frame_without_metrics(camera, seq, FrameState::NotInspected, None));
-            };
-            let graph = graphs
-                .get(camera, segment)
-                .ok_or_else(|| format!("第 {segment} 段相机 {camera_id} 还没有示教走廊"))?;
-            let image = crate::image_file::load(&capture.burst_frame_path(round_id, camera_id, seq)?)?;
-            vision::measure_frame(engine, graph, &image, seq, &format!("{run}-{round_id}-c{camera}-{seq}")).map(|m| m.metrics)
-        }))
+        Ok(capture_review::measure_calibration_round(
+            w,
+            round,
+            |camera, camera_id, seq| {
+                let Some(segment) = choice[camera][(seq - 1) as usize] else {
+                    return Ok(burst::frame_without_metrics(
+                        camera,
+                        seq,
+                        FrameState::NotInspected,
+                        None,
+                    ));
+                };
+                let graph = graphs
+                    .get(camera, segment)
+                    .ok_or_else(|| format!("第 {segment} 段相机 {camera_id} 还没有示教走廊"))?;
+                let image =
+                    crate::image_file::load(&capture.burst_frame_path(round_id, camera_id, seq)?)?;
+                vision::measure_frame(
+                    engine,
+                    graph,
+                    &image,
+                    seq,
+                    &format!("{run}-{round_id}-c{camera}-{seq}"),
+                )
+                .map(|m| m.metrics)
+            },
+        ))
     };
     let outcome = sync_pieces(&w, &rounds, &current, align, measure);
     let mut pieces = outcome.pieces;
@@ -543,17 +651,30 @@ fn sync(app: &AppHandle, id: &str, revision: u64) -> Result<CalibrationSyncResul
     if outcome.next.revision != current.revision {
         let cameras = outcome.next.doc.plan_cameras();
         for (round, metrics, segmented) in &outcome.features {
-            burst::write_features(&host.dir(id).join(CALIBRATION_DIR).join(round), &cameras, metrics, segmented)?;
+            burst::write_features(
+                &host.dir(id).join(CALIBRATION_DIR).join(round),
+                &cameras,
+                metrics,
+                segmented,
+            )?;
         }
         host.save(&outcome.next)?;
         *current = outcome.next;
     }
-    Ok(CalibrationSyncResult { view: view(app, current.clone())?, pieces })
+    Ok(CalibrationSyncResult {
+        view: view(app, current.clone())?,
+        pieces,
+    })
 }
 
 /// 彻底弃用一件标定件（见 [`discard_piece`]）：移出标定、删除复核记录、标定特征与轮次目录。示教件报错。
 #[tauri::command]
-pub fn workspace_calibration_remove_round(app: AppHandle, id: String, revision: u64, round: String) -> Result<WorkspaceView, String> {
+pub fn workspace_calibration_remove_round(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    round: String,
+) -> Result<WorkspaceView, String> {
     let cycle = app.state::<CycleHost>();
     let _gate = cycle
         .config_gate
@@ -564,7 +685,11 @@ pub fn workspace_calibration_remove_round(app: AppHandle, id: String, revision: 
     let mut items = host.items.lock().unwrap();
     let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
     w.expect(revision)?;
-    if !piece_rounds(capture, &w)?.iter().any(|r| r.round_id == round) && !w.calibration.rounds.iter().any(|r| r.round_id == round) {
+    if !piece_rounds(capture, &w)?
+        .iter()
+        .any(|r| r.round_id == round)
+        && !w.calibration.rounds.iter().any(|r| r.round_id == round)
+    {
         return Err("这一件不是本候选的标定件".into());
     }
     discard_piece(&mut w, &round)?;

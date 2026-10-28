@@ -352,7 +352,11 @@ fn spread(values: &[f64]) -> String {
 }
 
 /// D-SB-51 自动确认统计：`trusted` 判定一个边界是否可信，返回（可信数，其中误差超过 guard 的数，全部边界可信的轮次数）。
-fn tally(checked: &[Vec<Checked>], guard: u64, trusted: impl Fn(&Checked) -> bool) -> (usize, usize, usize) {
+fn tally(
+    checked: &[Vec<Checked>],
+    guard: u64,
+    trusted: impl Fn(&Checked) -> bool,
+) -> (usize, usize, usize) {
     let all = checked.iter().flatten();
     let count = all.clone().filter(|c| trusted(c)).count();
     let wrong = all.filter(|c| trusted(c) && c.error > guard).count();

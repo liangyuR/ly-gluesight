@@ -5,7 +5,10 @@ use super::burst::{
 };
 use super::*;
 use crate::burst_judge::{FrameMetrics, FrameState};
-use crate::plan::{new_segment, OffsetMeasure, OffsetRef, PathSegment, SegmentCalib, SegmentKind::{self, Corner, Straight}};
+use crate::plan::{
+    new_segment, OffsetMeasure, OffsetRef, PathSegment, SegmentCalib,
+    SegmentKind::{self, Corner, Straight},
+};
 use crate::recipe_capture::CaptureRoundV2;
 
 pub(super) const DEVICE: &str = "device-a";
@@ -26,10 +29,18 @@ pub(super) fn burst_workspace(kinds: &[SegmentKind]) -> Workspace {
 }
 
 /// 一轮完整的段配方示教采集：计划相机都在，采集时设备配置为 config；missing 为 (本轮相机下标, seq) 的缺帧。
-pub(super) fn capture_round(id: &str, doc: &RecipeDoc, group_count: u64, config: &str, missing: &[(usize, u64)]) -> CaptureRoundV2 {
+pub(super) fn capture_round(
+    id: &str,
+    doc: &RecipeDoc,
+    group_count: u64,
+    config: &str,
+    missing: &[(usize, u64)],
+) -> CaptureRoundV2 {
     let mut missing = missing.to_vec();
     missing.sort_by_key(|&(camera, seq)| (seq, camera));
-    let frames: Vec<u64> = (0..3).map(|camera| group_count - missing.iter().filter(|m| m.0 == camera).count() as u64).collect();
+    let frames: Vec<u64> = (0..3)
+        .map(|camera| group_count - missing.iter().filter(|m| m.0 == camera).count() as u64)
+        .collect();
     let mut incomplete: Vec<u64> = missing.iter().map(|m| m.1).collect();
     incomplete.dedup();
     serde_json::from_value(json!({
@@ -44,7 +55,10 @@ pub(super) fn capture_round(id: &str, doc: &RecipeDoc, group_count: u64, config:
 }
 
 pub(super) fn configs(doc: &RecipeDoc, config: &str) -> BTreeMap<String, Value> {
-    doc.plan_cameras().into_iter().map(|camera| (camera, json!(config))).collect()
+    doc.plan_cameras()
+        .into_iter()
+        .map(|camera| (camera, json!(config)))
+        .collect()
 }
 
 /// 测成的一帧，胶中心偏移 x（mm）；相机下标与 seq 由 measure_round 填。
@@ -70,10 +84,24 @@ pub(super) fn measured(x: f64) -> FrameMetrics {
 }
 
 /// 按加入标定的流程加一轮：核对、量每一帧（x 由 x_of(计划相机下标, seq) 给出）、记进候选。
-fn add(w: &mut Workspace, id: &str, group_count: u64, standard: bool, x_of: impl Fn(usize, u64) -> f64) {
+fn add(
+    w: &mut Workspace,
+    id: &str,
+    group_count: u64,
+    standard: bool,
+    x_of: impl Fn(usize, u64) -> f64,
+) {
     let round = capture_round(id, &w.doc, group_count, DEVICE, &[]);
-    check_round(&w.doc, &w.calibration.rounds, &round, &configs(&w.doc, DEVICE)).unwrap();
-    let metrics = measure_round(&w.doc.plan_cameras(), &round, |camera, _, seq| Ok(measured(x_of(camera, seq))));
+    check_round(
+        &w.doc,
+        &w.calibration.rounds,
+        &round,
+        &configs(&w.doc, DEVICE),
+    )
+    .unwrap();
+    let metrics = measure_round(&w.doc.plan_cameras(), &round, |camera, _, seq| {
+        Ok(measured(x_of(camera, seq)))
+    });
     let entry = calibration_round(&w.doc, &round, standard, &metrics);
     add_calibration_round(w, entry).unwrap();
 }
@@ -82,12 +110,33 @@ fn add(w: &mut Workspace, id: &str, group_count: u64, standard: bool, x_of: impl
 fn calibration_apply_writes_expected_frames_and_calib_but_leaves_tolerance_until_confirmed() {
     // 防的回归（规格 §2）：标定不写 N_exp / min / max / mean，或把建议容差直接写进配方；确认容差后才写入
     let mut w = burst_workspace(&[Straight]);
-    for (i, n) in [20, 21, 20, 22, 20, 20, 21, 20, 20, 19].into_iter().enumerate() { add(&mut w, &format!("capture-{i}"), n, false, |_, _| 0.0); }
+    for (i, n) in [20, 21, 20, 22, 20, 20, 21, 20, 20, 19]
+        .into_iter()
+        .enumerate()
+    {
+        add(&mut w, &format!("capture-{i}"), n, false, |_, _| 0.0);
+    }
     let mut doc = w.doc.clone();
     apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds).unwrap();
-    let calib = SegmentCalib { rounds: 10, min: 19, max: 22, mean: 20.3 };
-    assert_eq!((doc.segments[0].expected_frames, doc.segments[0].calib.clone()), (Some(20), Some(calib.clone())));
-    assert_eq!(doc.part_calib.as_ref().map(|p| (p.expected_total, p.calib.clone())), Some((20, calib)));
+    let calib = SegmentCalib {
+        rounds: 10,
+        min: 19,
+        max: 22,
+        mean: 20.3,
+    };
+    assert_eq!(
+        (
+            doc.segments[0].expected_frames,
+            doc.segments[0].calib.clone()
+        ),
+        (Some(20), Some(calib.clone()))
+    );
+    assert_eq!(
+        doc.part_calib
+            .as_ref()
+            .map(|p| (p.expected_total, p.calib.clone())),
+        Some((20, calib))
+    );
     assert_eq!(doc.segments[0].tolerance, 1, "建议容差不直接写进配方");
     w.doc = doc;
     let view = calibration_view(
@@ -111,15 +160,26 @@ fn calibration_apply_writes_expected_frames_and_calib_but_leaves_tolerance_until
 #[test]
 fn calibration_with_fewer_rounds_than_recipe_setting_is_rejected() {
     // 防的回归（规格 §2）：轮数少于配方设的标定轮数（可配）也能标定，或把标准件轮次算进轮数；失败时不能写一半
-    for (name, normal, standard, accepted) in [("11 轮标定 + 3 轮标准件", 11, 3, false), ("12 轮标定", 12, 0, true)] {
+    for (name, normal, standard, accepted) in [
+        ("11 轮标定 + 3 轮标准件", 11, 3, false),
+        ("12 轮标定", 12, 0, true),
+    ] {
         let mut w = burst_workspace(&[Straight]);
         w.doc.calibration_rounds = 12;
-        for i in 0..normal { add(&mut w, &format!("capture-n{i}"), 20, false, |_, _| 0.0); }
-        for i in 0..standard { add(&mut w, &format!("capture-s{i}"), 20, true, |_, _| 0.0); }
+        for i in 0..normal {
+            add(&mut w, &format!("capture-n{i}"), 20, false, |_, _| 0.0);
+        }
+        for i in 0..standard {
+            add(&mut w, &format!("capture-s{i}"), 20, true, |_, _| 0.0);
+        }
         let mut doc = w.doc.clone();
         let result = apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds);
         assert_eq!(result.is_ok(), accepted, "{name}：{result:?}");
-        if accepted { assert_eq!(doc.expected_total(), Some(20), "{name}"); } else { assert_eq!(doc, w.doc, "{name}：配方不变"); }
+        if accepted {
+            assert_eq!(doc.expected_total(), Some(20), "{name}");
+        } else {
+            assert_eq!(doc, w.doc, "{name}：配方不变");
+        }
     }
 }
 
@@ -245,21 +305,49 @@ fn standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner() {
     for (name, kind, setup, expected, pending) in cases {
         let mut w = burst_workspace(&[kind]);
         setup(&mut w.doc);
-        for i in 0..10 { add(&mut w, &format!("capture-n{i}"), 20, false, |_, _| 9.0); }
+        for i in 0..10 {
+            add(&mut w, &format!("capture-n{i}"), 20, false, |_, _| 9.0);
+        }
         for (i, middle) in [0.2, 0.4].into_iter().enumerate() {
-            add(&mut w, &format!("capture-s{i}"), 20, true, move |camera, seq| match (camera, seq) { (1, 1 | 20) => 5.0, (1, _) => middle, _ => 1.0 });
+            add(
+                &mut w,
+                &format!("capture-s{i}"),
+                20,
+                true,
+                move |camera, seq| match (camera, seq) {
+                    (1, 1 | 20) => 5.0,
+                    (1, _) => middle,
+                    _ => 1.0,
+                },
+            );
         }
         let mut doc = w.doc.clone();
         apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds).unwrap();
-        let reference = doc.segments[0].offset_ref.as_ref().and_then(|r| r.x_ref.zip(r.spread));
+        let reference = doc.segments[0]
+            .offset_ref
+            .as_ref()
+            .and_then(|r| r.x_ref.zip(r.spread));
         match (reference, expected) {
-            (Some((x, spread)), Some((want_x, want_spread))) => assert!((x - want_x).abs() < 1e-9 && (spread - want_spread).abs() < 1e-9, "{name}：{x} ± {spread}"),
+            (Some((x, spread)), Some((want_x, want_spread))) => assert!(
+                (x - want_x).abs() < 1e-9 && (spread - want_spread).abs() < 1e-9,
+                "{name}：{x} ± {spread}"
+            ),
             (None, None) => {}
             other => panic!("{name}：{other:?}"),
         }
-        if kind == Corner { assert!(doc.segments[0].offset_ref.is_none(), "{name}：弯道段没有胶偏参考"); }
+        if kind == Corner {
+            assert!(
+                doc.segments[0].offset_ref.is_none(),
+                "{name}：弯道段没有胶偏参考"
+            );
+        }
         let view = calibration_view(&doc, &w.calibration.rounds, &w.capture_review.rounds, None);
-        assert_eq!(view.segments[0].x_ref_pending.is_some(), pending, "{name}：{:?}", view.segments[0].x_ref_pending);
+        assert_eq!(
+            view.segments[0].x_ref_pending.is_some(),
+            pending,
+            "{name}：{:?}",
+            view.segments[0].x_ref_pending
+        );
     }
 }
 
@@ -282,51 +370,116 @@ fn editing_expected_frames_directly_is_rejected_and_kind_change_clears_calibrati
     // 整件标定或 x_ref；段的类型序列变了旧标定还留着；只改容差也把标定清掉
     fn calibrated() -> Workspace {
         let mut w = burst_workspace(&[Straight]);
-        for i in 0..10 { add(&mut w, &format!("capture-n{i}"), 20, false, |_, _| 0.0); }
-        for i in 0..2 { add(&mut w, &format!("capture-s{i}"), 20, true, |_, _| 0.5); }
+        for i in 0..10 {
+            add(&mut w, &format!("capture-n{i}"), 20, false, |_, _| 0.0);
+        }
+        for i in 0..2 {
+            add(&mut w, &format!("capture-s{i}"), 20, true, |_, _| 0.5);
+        }
         let mut doc = w.doc.clone();
         apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds).unwrap();
         w.doc = doc;
         w
     }
     #[derive(Debug, PartialEq)]
-    enum After { Rejected, Cleared, Kept, XRefCleared }
+    enum After {
+        Rejected,
+        Cleared,
+        Kept,
+        XRefCleared,
+    }
     type Entry = fn(&mut Workspace, RecipeDoc) -> Result<(), String>;
     let segments: Entry = |w, doc| update_segments(w, doc.segments);
     let whole: Entry = |w, doc| update_doc(w, doc);
     type Edit = fn(&mut RecipeDoc);
     let cases: [(&str, Entry, Edit, After); 8] = [
-        ("段列表直接改 N_exp", segments, |d| d.segments[0].expected_frames = Some(25), After::Rejected),
-        ("段列表直接改标定统计", segments, |d| d.segments[0].calib.as_mut().unwrap().max += 1, After::Rejected),
-        ("段列表手填 x_ref", segments, |d| d.segments[0].offset_ref.as_mut().unwrap().x_ref = Some(1.5), After::Rejected),
-        ("整份保存改整件标定", whole, |d| d.part_calib.as_mut().unwrap().expected_total = 25, After::Rejected),
-        ("改成弯道段", segments, |d| {
-            let checks = d.segment_defaults.corner.checks.clone();
-            let segment = &mut d.segments[0];
-            (segment.kind, segment.checks, segment.offset_ref) = (Corner, checks, None);
-        }, After::Cleared),
-        ("增加一段弯道", whole, |d| { let segment = new_segment(2, Corner, &d.segment_defaults); d.segments.push(segment); }, After::Cleared),
-        ("只改帧数容差", segments, |d| d.segments[0].tolerance = 3, After::Kept),
-        ("换胶偏参考相机", segments, |d| d.segments[0].offset_ref.as_mut().unwrap().camera = "cam3".into(), After::XRefCleared),
+        (
+            "段列表直接改 N_exp",
+            segments,
+            |d| d.segments[0].expected_frames = Some(25),
+            After::Rejected,
+        ),
+        (
+            "段列表直接改标定统计",
+            segments,
+            |d| d.segments[0].calib.as_mut().unwrap().max += 1,
+            After::Rejected,
+        ),
+        (
+            "段列表手填 x_ref",
+            segments,
+            |d| d.segments[0].offset_ref.as_mut().unwrap().x_ref = Some(1.5),
+            After::Rejected,
+        ),
+        (
+            "整份保存改整件标定",
+            whole,
+            |d| d.part_calib.as_mut().unwrap().expected_total = 25,
+            After::Rejected,
+        ),
+        (
+            "改成弯道段",
+            segments,
+            |d| {
+                let checks = d.segment_defaults.corner.checks.clone();
+                let segment = &mut d.segments[0];
+                (segment.kind, segment.checks, segment.offset_ref) = (Corner, checks, None);
+            },
+            After::Cleared,
+        ),
+        (
+            "增加一段弯道",
+            whole,
+            |d| {
+                let segment = new_segment(2, Corner, &d.segment_defaults);
+                d.segments.push(segment);
+            },
+            After::Cleared,
+        ),
+        (
+            "只改帧数容差",
+            segments,
+            |d| d.segments[0].tolerance = 3,
+            After::Kept,
+        ),
+        (
+            "换胶偏参考相机",
+            segments,
+            |d| d.segments[0].offset_ref.as_mut().unwrap().camera = "cam3".into(),
+            After::XRefCleared,
+        ),
     ];
     for (name, entry, edit, after) in cases {
         let mut w = calibrated();
         let before = w.doc.clone();
-        assert_eq!(before.segments[0].offset_ref.as_ref().and_then(|r| r.x_ref), Some(0.5), "前提：已标定 x_ref");
+        assert_eq!(
+            before.segments[0].offset_ref.as_ref().and_then(|r| r.x_ref),
+            Some(0.5),
+            "前提：已标定 x_ref"
+        );
         let mut doc = w.doc.clone();
         edit(&mut doc);
         let result = entry(&mut w, doc);
         let segment: &PathSegment = &w.doc.segments[0];
         let x_ref = segment.offset_ref.as_ref().and_then(|r| r.x_ref);
-        let state = match (result.is_ok(), segment.expected_frames, w.doc.part_calib.is_some(), x_ref) {
+        let state = match (
+            result.is_ok(),
+            segment.expected_frames,
+            w.doc.part_calib.is_some(),
+            x_ref,
+        ) {
             (false, ..) => After::Rejected,
-            (true, None, false, None) if w.doc.segments.iter().all(|s| s.calib.is_none()) => After::Cleared,
+            (true, None, false, None) if w.doc.segments.iter().all(|s| s.calib.is_none()) => {
+                After::Cleared
+            }
             (true, Some(20), true, Some(_)) => After::Kept,
             (true, Some(20), true, None) => After::XRefCleared,
             other => panic!("{name}：{other:?}"),
         };
         assert_eq!(state, after, "{name}：{result:?}");
-        if after == After::Rejected { assert_eq!(w.doc, before, "{name}：拒绝时配方不变"); }
+        if after == After::Rejected {
+            assert_eq!(w.doc, before, "{name}：拒绝时配方不变");
+        }
     }
 }
 
@@ -335,8 +488,16 @@ fn new_candidate_from_copied_burst_recipe_builds_without_its_calibration() {
     // 防的回归：新建候选清掉相机参数后，段配方过不了“检测相机要有曝光与增益”的校验，建不出候选；
     // 或复制别的段配方时把它的 N_exp、标定统计、整件标定与 x_ref 带进新候选（规格 §0 N_exp 只能由本配方的采集得出）
     let mut doc = crate::recipe::samples_burst();
-    let calib = SegmentCalib { rounds: 10, min: 4, max: 4, mean: 4.0 };
-    doc.part_calib = Some(crate::plan::PartCalib { expected_total: 4, calib: calib.clone() });
+    let calib = SegmentCalib {
+        rounds: 10,
+        min: 4,
+        max: 4,
+        mean: 4.0,
+    };
+    doc.part_calib = Some(crate::plan::PartCalib {
+        expected_total: 4,
+        calib: calib.clone(),
+    });
     doc.segments[0].calib = Some(calib);
     doc.segments[0].offset_ref = Some(OffsetRef {
         measure: OffsetMeasure::AbsoluteX,
@@ -349,8 +510,18 @@ fn new_candidate_from_copied_burst_recipe_builds_without_its_calibration() {
     new_candidate_doc(&mut doc);
     doc.build().unwrap();
     let segment = &doc.segments[0];
-    assert_eq!((segment.expected_frames, segment.calib.clone(), doc.part_calib.clone()), (None, None, None));
-    assert_eq!(segment.offset_ref.as_ref().map(|r| (r.x_ref, r.spread)), Some((None, None)));
+    assert_eq!(
+        (
+            segment.expected_frames,
+            segment.calib.clone(),
+            doc.part_calib.clone()
+        ),
+        (None, None, None)
+    );
+    assert_eq!(
+        segment.offset_ref.as_ref().map(|r| (r.x_ref, r.spread)),
+        Some((None, None))
+    );
 }
 
 #[test]
@@ -361,19 +532,63 @@ fn calibration_round_writes_per_frame_features_and_boundaries_files() {
     let cameras = w.doc.plan_cameras();
     // cam2 缺第 2 帧组；cam3 第 3 帧组测量失败
     let round = capture_round("capture-features", &w.doc, 3, DEVICE, &[(1, 2)]);
-    let metrics = measure_round(&cameras, &round, |camera, _, seq| if (camera, seq) == (2, 3) { Err("lyFlow 运行失败".into()) } else { Ok(measured(seq as f64)) });
+    let metrics = measure_round(&cameras, &round, |camera, _, seq| {
+        if (camera, seq) == (2, 3) {
+            Err("lyFlow 运行失败".into())
+        } else {
+            Ok(measured(seq as f64))
+        }
+    });
     let outcome = segment_round(&w.doc.segments, cameras.len(), round.group_count, &metrics);
     let dir = super::tests::ImportTestDir::new();
     write_features(&dir.0, &cameras, &metrics, &outcome).unwrap();
-    let lines: Vec<Value> = std::fs::read_to_string(dir.0.join(FEATURES_FILE)).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-    let order: Vec<(String, u64)> = lines.iter().map(|l| (l["camera"].as_str().unwrap().to_string(), l["seq"].as_u64().unwrap())).collect();
-    let expected: Vec<(String, u64)> = cameras.iter().flat_map(|c| (1..=3).map(move |seq| (c.clone(), seq))).collect();
-    assert_eq!(order, expected, "每台相机每个帧组一行，按计划相机、帧组序号排列");
-    let at = |camera: &str, seq: u64| lines.iter().find(|l| l["camera"] == camera && l["seq"] == seq).unwrap()["metrics"].clone();
-    assert_eq!((at("cam1", 2)["state"].clone(), at("cam1", 2)["xMm"].clone()), (json!("measured"), json!(2.0)));
-    assert_eq!((at("cam2", 2)["state"].clone(), at("cam2", 2)["xMm"].clone()), (json!("missing"), Value::Null));
-    assert_eq!((at("cam3", 3)["state"].clone(), at("cam3", 3)["error"].clone()), (json!("error"), json!("lyFlow 运行失败")));
-    let boundaries: Value = serde_json::from_str(&std::fs::read_to_string(dir.0.join(BOUNDARIES_FILE)).unwrap()).unwrap();
+    let lines: Vec<Value> = std::fs::read_to_string(dir.0.join(FEATURES_FILE))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let order: Vec<(String, u64)> = lines
+        .iter()
+        .map(|l| {
+            (
+                l["camera"].as_str().unwrap().to_string(),
+                l["seq"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let expected: Vec<(String, u64)> = cameras
+        .iter()
+        .flat_map(|c| (1..=3).map(move |seq| (c.clone(), seq)))
+        .collect();
+    assert_eq!(
+        order, expected,
+        "每台相机每个帧组一行，按计划相机、帧组序号排列"
+    );
+    let at = |camera: &str, seq: u64| {
+        lines
+            .iter()
+            .find(|l| l["camera"] == camera && l["seq"] == seq)
+            .unwrap()["metrics"]
+            .clone()
+    };
+    assert_eq!(
+        (at("cam1", 2)["state"].clone(), at("cam1", 2)["xMm"].clone()),
+        (json!("measured"), json!(2.0))
+    );
+    assert_eq!(
+        (at("cam2", 2)["state"].clone(), at("cam2", 2)["xMm"].clone()),
+        (json!("missing"), Value::Null)
+    );
+    assert_eq!(
+        (
+            at("cam3", 3)["state"].clone(),
+            at("cam3", 3)["error"].clone()
+        ),
+        (json!("error"), json!("lyFlow 运行失败"))
+    );
+    let boundaries: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.0.join(BOUNDARIES_FILE)).unwrap())
+            .unwrap();
     assert_eq!(boundaries, json!({"kind": "unsegmented"}));
     assert_eq!(
         read_features(&dir.0, &cameras).unwrap(),
@@ -457,26 +672,68 @@ fn skip_suggestion_is_max_over_normal_rounds_and_withheld_when_too_few_participa
         let round = capture_round(id, &w.doc, 20, DEVICE, &[]);
         let metrics = measure_round(&cameras, &round, |_, _, seq| {
             let mut m = measured(0.0);
-            if seq <= head || seq > 20 - tail { m.present_ratio = 0.0; }
+            if seq <= head || seq > 20 - tail {
+                m.present_ratio = 0.0;
+            }
             Ok(m)
         });
         add_calibration_round(w, calibration_round(&w.doc, &round, standard, &metrics)).unwrap();
         features.insert(id.to_string(), metrics);
     };
-    for (i, (head, tail)) in [(2, 1), (3, 0), (4, 2), (2, 1), (3, 1), (2, 0), (3, 1), (2, 1), (3, 2), (2, 1)].into_iter().enumerate() {
+    for (i, (head, tail)) in [
+        (2, 1),
+        (3, 0),
+        (4, 2),
+        (2, 1),
+        (3, 1),
+        (2, 0),
+        (3, 1),
+        (2, 1),
+        (3, 2),
+        (2, 1),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         add_round(&mut w, &format!("capture-{i}"), head, tail, false);
     }
     add_round(&mut w, "standard", 9, 9, true);
     let suggest = |features: &BTreeMap<String, Vec<FrameMetrics>>| {
-        skip_suggestions(&w.doc, &w.calibration.rounds, &w.capture_review.rounds, |round| Ok(features[round].clone()))
-            .into_iter()
-            .map(|v| (v.end, v.suggested, v.min, v.rounds.len(), v.pending.is_some()))
-            .collect::<Vec<_>>()
+        skip_suggestions(
+            &w.doc,
+            &w.calibration.rounds,
+            &w.capture_review.rounds,
+            |round| Ok(features[round].clone()),
+        )
+        .into_iter()
+        .map(|v| {
+            (
+                v.end,
+                v.suggested,
+                v.min,
+                v.rounds.len(),
+                v.pending.is_some(),
+            )
+        })
+        .collect::<Vec<_>>()
     };
-    assert_eq!(suggest(&features), [(SkipEnd::Head, Some(4), Some(2), 10, false), (SkipEnd::Tail, Some(2), Some(0), 10, false)]);
+    assert_eq!(
+        suggest(&features),
+        [
+            (SkipEnd::Head, Some(4), Some(2), 10, false),
+            (SkipEnd::Tail, Some(2), Some(0), 10, false)
+        ]
+    );
     // capture-2 起涂 4 帧组：第 5 帧组 cam1 缺帧、其余相机已成形，说明不了是否成形；第 1 帧组再缺一帧不影响（其余相机明确无胶）
     features.get_mut("capture-2").unwrap()[0].state = FrameState::Missing;
-    assert_eq!(suggest(&features)[0], (SkipEnd::Head, Some(4), Some(2), 10, false));
+    assert_eq!(
+        suggest(&features)[0],
+        (SkipEnd::Head, Some(4), Some(2), 10, false)
+    );
     features.get_mut("capture-2").unwrap()[4].state = FrameState::Missing;
-    assert_eq!(suggest(&features)[0], (SkipEnd::Head, None, Some(2), 10, true), "成形前无法判断的一轮不参与，剩 9 轮少于 10 轮");
+    assert_eq!(
+        suggest(&features)[0],
+        (SkipEnd::Head, None, Some(2), 10, true),
+        "成形前无法判断的一轮不参与，剩 9 轮少于 10 轮"
+    );
 }

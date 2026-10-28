@@ -211,7 +211,12 @@ pub struct AlignedCut {
 /// 把模板轮的边界按图像对齐到目标轮：模板第 c 帧组之后的边界取 DTW 路径上模板帧 c、c + 1 所配目标帧（中位数）的中点，
 /// 再保持严格递增、每段至少一帧。各相机的序列按计划相机顺序给出，模板与目标相机顺序一致。
 /// `tolerance`：与比例换算相差不超过它才算可信（配方的 boundary_guard）。
-pub fn align_cuts(template: &[Sequence], target: &[Sequence], cuts: &[u64], tolerance: u64) -> Vec<AlignedCut> {
+pub fn align_cuts(
+    template: &[Sequence],
+    target: &[Sequence],
+    cuts: &[u64],
+    tolerance: u64,
+) -> Vec<AlignedCut> {
     let (n, m) = (
         template.first().map_or(0, Vec::len),
         target.first().map_or(0, Vec::len),
@@ -247,8 +252,15 @@ pub fn align_cuts(template: &[Sequence], target: &[Sequence], cuts: &[u64], tole
             previous = cut;
             let at = cut as i64 - 1;
             let aligned = cost(c as usize, at).unwrap_or(0.0).max(1e-6);
-            let shifted = [-3, -2, 2, 3].iter().filter_map(|&delta| cost(c as usize, at + delta)).fold(f64::INFINITY, f64::min);
-            let sharpness = if shifted.is_finite() { shifted / aligned } else { 0.0 };
+            let shifted = [-3, -2, 2, 3]
+                .iter()
+                .filter_map(|&delta| cost(c as usize, at + delta))
+                .fold(f64::INFINITY, f64::min);
+            let sharpness = if shifted.is_finite() {
+                shifted / aligned
+            } else {
+                0.0
+            };
             let reason = if cut != raw {
                 Some(ReviewReason::Moved)
             } else if cut.abs_diff(proportional) > tolerance {
@@ -258,7 +270,13 @@ pub fn align_cuts(template: &[Sequence], target: &[Sequence], cuts: &[u64], tole
             } else {
                 None
             };
-            AlignedCut { cut, proportional, sharpness, reason, review: reason.is_some() }
+            AlignedCut {
+                cut,
+                proportional,
+                sharpness,
+                reason,
+                review: reason.is_some(),
+            }
         })
         .collect()
 }
@@ -331,19 +349,36 @@ mod tests {
     /// 画面不随位置变化时 DTW 退化成对角线、碰巧与比例一致，也要判为不清晰，不能自动确认。
     #[test]
     fn only_distinct_alignment_close_to_proportional_is_trusted() {
-        let template: Vec<Sequence> = (0..3).map(|_| (0..30).map(|i| scene(i as f64)).collect()).collect();
-        let flat: Vec<Sequence> = (0..3).map(|_| (0..30).map(|_| scene(0.0)).collect()).collect();
+        let template: Vec<Sequence> = (0..3)
+            .map(|_| (0..30).map(|i| scene(i as f64)).collect())
+            .collect();
+        let flat: Vec<Sequence> = (0..3)
+            .map(|_| (0..30).map(|_| scene(0.0)).collect())
+            .collect();
         let cuts = [8, 15, 23];
         let uneven: Vec<Sequence> = (0..3)
-            .map(|_| (0..30).map(|j| scene(29.0 * (j as f64 / 29.0).powf(1.6))).collect())
+            .map(|_| {
+                (0..30)
+                    .map(|j| scene(29.0 * (j as f64 / 29.0).powf(1.6)))
+                    .collect()
+            })
             .collect();
         let reasons = |template: &[Sequence], target: &[Sequence]| -> Vec<Option<ReviewReason>> {
-            align_cuts(template, target, &cuts, 2).iter().map(|c| c.reason).collect()
+            align_cuts(template, target, &cuts, 2)
+                .iter()
+                .map(|c| c.reason)
+                .collect()
         };
         assert_eq!(reasons(&template, &template), [None; 3]);
         assert!(reasons(&template, &uneven).contains(&Some(ReviewReason::Deviates)));
         let flat_cuts = align_cuts(&flat, &flat, &cuts, 2);
-        assert!(flat_cuts.iter().all(|c| c.cut.abs_diff(c.proportional) <= 2 && c.reason == Some(ReviewReason::Unclear)), "{flat_cuts:?}");
+        assert!(
+            flat_cuts
+                .iter()
+                .all(|c| c.cut.abs_diff(c.proportional) <= 2
+                    && c.reason == Some(ReviewReason::Unclear)),
+            "{flat_cuts:?}"
+        );
     }
 
     #[test]

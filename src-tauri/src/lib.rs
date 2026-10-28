@@ -1,11 +1,10 @@
-mod storage_startup;
-mod candidate;
-mod calibration;
 mod applog;
 mod arming;
 mod audit;
 mod burst_judge;
+mod calibration;
 mod camera;
+mod candidate;
 mod commands;
 mod cycle;
 mod cycle_ids;
@@ -15,10 +14,11 @@ mod frame;
 mod frame_align;
 mod frame_group;
 mod fsio;
-mod history;
-mod history_fixture;
 mod handshake;
 mod handshake_audit;
+mod history;
+mod history_fixture;
+mod image_file;
 mod inspection;
 mod instance;
 mod judge;
@@ -35,19 +35,19 @@ mod plc_session;
 mod production;
 mod project;
 mod recipe;
-mod recipe_capture;
 mod recipe_api;
-mod release;
+mod recipe_capture;
 mod recorder;
 mod recording_health;
-mod image_file;
-mod settings;
-mod site;
-mod shot_router;
+mod release;
 mod segmentation;
+mod settings;
+mod shot_router;
 mod simimage;
-mod store;
+mod site;
 mod storage;
+mod storage_startup;
+mod store;
 mod teach;
 mod timeline;
 mod vision;
@@ -113,7 +113,9 @@ fn open_project(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), St
 
 pub fn run() {
     let mut context = tauri::generate_context!();
-    for window in &mut context.config_mut().app.windows { window.create = false; }
+    for window in &mut context.config_mut().app.windows {
+        window.create = false;
+    }
     tauri::Builder::default()
         .setup(|app| {
             app.manage(storage_startup::Startup::default());
@@ -123,8 +125,10 @@ pub fn run() {
             });
             if let Ok(root) = &prepared {
                 if storage::initialized(root) {
-                    let loaded = storage::initialize(app.handle(), root.clone())
-                        .and_then(|_| start_services(app.handle(), root.clone()).map_err(|error| error.to_string()));
+                    let loaded = storage::initialize(app.handle(), root.clone()).and_then(|_| {
+                        start_services(app.handle(), root.clone())
+                            .map_err(|error| error.to_string())
+                    });
                     match loaded {
                         Ok(()) => return Ok(()),
                         Err(error) => prepared = Err(error),
@@ -142,12 +146,21 @@ pub fn run() {
             }
             let profile = match &prepared {
                 Ok(root) => storage::webview(&storage::bootstrap_root(root))?,
-                Err(_) => std::env::temp_dir().join(format!("GlueSight-startup-error-{}", std::process::id())),
+                Err(_) => std::env::temp_dir()
+                    .join(format!("GlueSight-startup-error-{}", std::process::id())),
             };
-            tauri::WebviewWindowBuilder::new(app, "storage-startup", tauri::WebviewUrl::App("storage-startup.html".into()))
-                .title("GlueSight · 资料准备").inner_size(720.0, 480.0).center().resizable(false)
-                .visible(!headless(app.handle()))
-                .data_directory(profile).build()?;
+            tauri::WebviewWindowBuilder::new(
+                app,
+                "storage-startup",
+                tauri::WebviewUrl::App("storage-startup.html".into()),
+            )
+            .title("GlueSight · 资料准备")
+            .inner_size(720.0, 480.0)
+            .center()
+            .resizable(false)
+            .visible(!headless(app.handle()))
+            .data_directory(profile)
+            .build()?;
             if let Err(error) = prepared {
                 storage_startup::report(app.handle(), error);
                 return Ok(());
@@ -362,14 +375,20 @@ fn start_services(
     app.manage(offline::OfflineHost::default());
     let site_note = site::restore_choice(app);
     app.manage(cycle::CycleHost::init(app)?);
-    if let Some(note) = site_note { cycle::log(app, "warn", "站点模式", note); }
+    if let Some(note) = site_note {
+        cycle::log(app, "warn", "站点模式", note);
+    }
     app.manage(workspace::WorkspaceHost::init(app)?);
     app.manage(plc::PlcHost::init(app)?);
     commands::log_config(app);
     for config in &app.config().app.windows {
-        tauri::WebviewWindowBuilder::from_config(app, config)?.data_directory(storage::webview(&root)?).build()?;
+        tauri::WebviewWindowBuilder::from_config(app, config)?
+            .data_directory(storage::webview(&root)?)
+            .build()?;
     }
-    if let Some(window) = app.get_webview_window("storage-startup") { window.close()?; }
+    if let Some(window) = app.get_webview_window("storage-startup") {
+        window.close()?;
+    }
     plc::PlcHost::start_if_configured(app);
     cycle::CycleHost::start(app);
     camera::CameraRig::start(app);

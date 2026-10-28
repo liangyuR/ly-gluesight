@@ -18,9 +18,9 @@ use crate::vision;
 mod burst;
 mod burst_history;
 mod burst_release;
-mod burst_skip;
 #[cfg(test)]
 mod burst_release_tests;
+mod burst_skip;
 #[cfg(test)]
 mod burst_tests;
 mod capture_review;
@@ -61,7 +61,9 @@ fn engine_state(engine: &vision::Engine) -> Value {
 
 fn calibration_state(path: &Path) -> Result<Value, String> {
     let value = match crate::fsio::read_text(path) {
-        Ok(text) => serde_json::from_str::<Value>(&text).map_err(|e| format!("标定文件格式无效：{e}"))?,
+        Ok(text) => {
+            serde_json::from_str::<Value>(&text).map_err(|e| format!("标定文件格式无效：{e}"))?
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Null,
         Err(e) => return Err(format!("读取标定文件失败：{e}")),
     };
@@ -253,8 +255,13 @@ impl Workspace {
     }
 
     fn debug_revision(&self) -> Result<String, String> {
-        if self.instance_id == 0 { return Err("候选尚未分配持久实例 ID".into()); }
-        Ok(format!("candidate-{}-i{}-r{}", self.doc.id, self.instance_id, self.revision))
+        if self.instance_id == 0 {
+            return Err("候选尚未分配持久实例 ID".into());
+        }
+        Ok(format!(
+            "candidate-{}-i{}-r{}",
+            self.doc.id, self.instance_id, self.revision
+        ))
     }
 
     /// 旧流程候选（RB-5）：只能在配方库删除。
@@ -283,7 +290,13 @@ impl Workspace {
     }
 
     fn retry_publish(&mut self, revision: u64) -> Result<(), String> {
-        if self.revision != revision || self.pending.is_none() || !matches!(self.publish, PublishState::Failed { .. } | PublishState::Uncertain { .. }) {
+        if self.revision != revision
+            || self.pending.is_none()
+            || !matches!(
+                self.publish,
+                PublishState::Failed { .. } | PublishState::Uncertain { .. }
+            )
+        {
             return Err("没有可以重试的发布版本".into());
         }
         self.publish = PublishState::Waiting;
@@ -292,8 +305,13 @@ impl Workspace {
 
     /// 生效失败时放弃冻结的待生效版本，候选回到草稿；生产版本不受影响。状态不确定时须先核实，不能放弃。
     fn abandon_publish(&mut self, revision: u64) -> Result<(), String> {
-        if self.revision != revision || self.pending.is_none() || !matches!(self.publish, PublishState::Failed { .. }) {
-            return Err("只有生效失败的待生效版本可以放弃；生效状态不确定时请先核实发布状态".into());
+        if self.revision != revision
+            || self.pending.is_none()
+            || !matches!(self.publish, PublishState::Failed { .. })
+        {
+            return Err(
+                "只有生效失败的待生效版本可以放弃；生效状态不确定时请先核实发布状态".into(),
+            );
         }
         self.pending = None;
         self.publish = PublishState::Draft;
@@ -307,21 +325,36 @@ impl Workspace {
 
     fn retain_failed_activation(&mut self, before: Self, error: &str) {
         *self = before;
-        self.publish = PublishState::Uncertain { message: format!("生产生效状态未能保存：{error}，请检查数据目录") };
+        self.publish = PublishState::Uncertain {
+            message: format!("生产生效状态未能保存：{error}，请检查数据目录"),
+        };
     }
 }
 
 /// 候选的发布与生效状态。Waiting / Failed / Uncertain 时 pending 保存冻结的待生效版本。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "state",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PublishState {
     #[default]
     Draft,
     Waiting,
-    Failed { message: String },
-    Uncertain { message: String },
+    Failed {
+        message: String,
+    },
+    Uncertain {
+        message: String,
+    },
     /// 已生效；revision 是生效后候选的修订号，候选再改动后回到草稿。
-    Active { version: u32, revision: u64, warning: Option<String>, validation_site: ValidationSite },
+    Active {
+        version: u32,
+        revision: u64,
+        warning: Option<String>,
+        validation_site: ValidationSite,
+    },
 }
 
 #[derive(Serialize)]
@@ -394,9 +427,13 @@ impl WorkspaceHost {
     /// 候选与已提交的发布快照都保留相机引用，删除相机前核对。
     pub fn camera_users(&self, camera: &str) -> Vec<String> {
         let uses = |doc: &RecipeDoc| doc.plan_cameras().iter().any(|c| c == camera);
-        self.items.lock().unwrap().values()
+        self.items
+            .lock()
+            .unwrap()
+            .values()
             .filter(|w| uses(&w.doc) || w.pending.as_ref().is_some_and(|p| uses(&p.doc)))
-            .map(|w| w.doc.id.clone()).collect()
+            .map(|w| w.doc.id.clone())
+            .collect()
     }
 
     pub fn init(app: &AppHandle) -> Result<Self, String> {
@@ -409,18 +446,28 @@ impl WorkspaceHost {
             .flatten()
         {
             let file = entry.path().join("workspace.json");
-            if !file.is_file() { continue; }
-            let loaded = crate::fsio::read_text(&file).map_err(|e| e.to_string())
-                .and_then(|text| serde_json::from_str::<Workspace>(&text).map_err(|e| e.to_string()))
+            if !file.is_file() {
+                continue;
+            }
+            let loaded = crate::fsio::read_text(&file)
+                .map_err(|e| e.to_string())
+                .and_then(|text| {
+                    serde_json::from_str::<Workspace>(&text).map_err(|e| e.to_string())
+                })
                 .and_then(|mut w| {
                     safe_id(&w.doc.id)?;
-                    if w.doc.id != entry.file_name().to_string_lossy() { return Err("候选编号与目录不一致".into()); }
+                    if w.doc.id != entry.file_name().to_string_lossy() {
+                        return Err("候选编号与目录不一致".into());
+                    }
                     w.doc.build()?;
                     let legacy = w.instance_id == 0;
                     let dropped = burst::drop_camera_teaching(&mut w);
                     w.ensure_instance(&app.state::<Store>())?;
                     if legacy || dropped {
-                        crate::fsio::write_atomic(&file, &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?)?;
+                        crate::fsio::write_atomic(
+                            &file,
+                            &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?,
+                        )?;
                     }
                     Ok(w)
                 });
@@ -504,10 +551,15 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
     }
     // 各检测相机的工位标定（缺省为设备标定 device/{device}）
     for inspect in &recipe.inspect {
-        values.push(calibration_state(&vision::camera_calib_path(app, inspect)?)?);
+        values.push(calibration_state(&vision::camera_calib_path(
+            app, inspect,
+        )?)?);
     }
     values.push(json!([crate::site::image_measurement(app)]));
-    values.push(json!(app.state::<vision::VisionHost>().engine().map(|engine| engine_state(&engine))));
+    values.push(json!(app
+        .state::<vision::VisionHost>()
+        .engine()
+        .map(|engine| engine_state(&engine))));
     Ok(state_value(&values))
 }
 
@@ -537,7 +589,10 @@ fn ensure_workspace_can_be_created(path: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("无法确认旧候选是否存在，拒绝覆盖：{error}")),
-        Ok(_) => Err(format!("磁盘已有未加载的候选：{}", unloaded_hint(path.parent().unwrap_or(path)))),
+        Ok(_) => Err(format!(
+            "磁盘已有未加载的候选：{}",
+            unloaded_hint(path.parent().unwrap_or(path))
+        )),
     }
 }
 
@@ -552,7 +607,9 @@ pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String
         let mut doc = cycle.recipes.doc(&id).ok_or("配方不存在")?;
         let base = cycle.recipe(&id).map(|r| r.revision_id.clone());
         doc.version = cycle.recipes.next_version(&id)?;
-        if base.is_some() { doc.version -= 1; }
+        if base.is_some() {
+            doc.version -= 1;
+        }
         let mut w = Workspace::new(doc, base);
         w.ensure_instance(&app.state::<Store>())?;
         host.save(&w)?;
@@ -572,11 +629,22 @@ pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceV
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     let production = app.state::<CycleHost>().recipes.list();
-    check_new_identity(&doc, items.values().map(|w| (w.doc.id.as_str(), w.doc.product_code))
-        .chain(production.iter().map(|r| (r.id.as_str(), r.product_code))))?;
+    check_new_identity(
+        &doc,
+        items
+            .values()
+            .map(|w| (w.doc.id.as_str(), w.doc.product_code))
+            .chain(production.iter().map(|r| (r.id.as_str(), r.product_code))),
+    )?;
     // Windows 路径不区分大小写，未登记的旧目录也不能被新候选覆盖。
-    if host.dir(&doc.id).exists() { return Err("配方目录已经存在，请换一个编号".into()); }
-    doc.version = app.state::<CycleHost>().recipes.next_version(&doc.id)?.max(doc.version.max(1));
+    if host.dir(&doc.id).exists() {
+        return Err("配方目录已经存在，请换一个编号".into());
+    }
+    doc.version = app
+        .state::<CycleHost>()
+        .recipes
+        .next_version(&doc.id)?
+        .max(doc.version.max(1));
     let mut w = Workspace::new(doc, None);
     w.ensure_instance(&app.state::<Store>())?;
     host.save(&w)?;
@@ -590,24 +658,38 @@ fn new_candidate_doc(doc: &mut RecipeDoc) {
 }
 
 fn check_product_code(doc: &RecipeDoc) -> Result<(), String> {
-    if !(1..=i16::MAX as u16).contains(&doc.product_code) { return Err("产品代码需在 1–32767 之间".into()); }
+    if !(1..=i16::MAX as u16).contains(&doc.product_code) {
+        return Err("产品代码需在 1–32767 之间".into());
+    }
     Ok(())
 }
 
-fn check_new_identity<'a>(doc: &RecipeDoc, existing: impl Iterator<Item = (&'a str, u16)>) -> Result<(), String> {
+fn check_new_identity<'a>(
+    doc: &RecipeDoc,
+    existing: impl Iterator<Item = (&'a str, u16)>,
+) -> Result<(), String> {
     check_product_code(doc)?;
     for (id, code) in existing {
-        if id.eq_ignore_ascii_case(&doc.id) { return Err("配方编号已经存在（不区分大小写）".into()); }
-        if code == doc.product_code { return Err(format!("产品代码 {} 已被配方 {} 使用", code, id)); }
+        if id.eq_ignore_ascii_case(&doc.id) {
+            return Err("配方编号已经存在（不区分大小写）".into());
+        }
+        if code == doc.product_code {
+            return Err(format!("产品代码 {} 已被配方 {} 使用", code, id));
+        }
     }
     Ok(())
 }
 
 /// 项目整包导入时整理候选：回到草稿，不带待生效版本与验证结论；计划版本按本机新号改写；
 /// 没带检测记录时去掉来自来源机检测历史的验证样本。
-pub(crate) fn reset_for_project_import(path: &Path, plans: &BTreeMap<u32, u32>, keep_history: bool) -> Result<Vec<String>, String> {
+pub(crate) fn reset_for_project_import(
+    path: &Path,
+    plans: &BTreeMap<u32, u32>,
+    keep_history: bool,
+) -> Result<Vec<String>, String> {
     let text = crate::fsio::read_text(path).map_err(|e| e.to_string())?;
-    let mut w: Workspace = serde_json::from_str(&text).map_err(|e| format!("候选 {} 无法读取：{e}", path.display()))?;
+    let mut w: Workspace = serde_json::from_str(&text)
+        .map_err(|e| format!("候选 {} 无法读取：{e}", path.display()))?;
     let mut notes = Vec::new();
     if let Some(plan) = plans.get(&w.doc.plan_version) {
         w.doc.plan_version = *plan;
@@ -618,11 +700,18 @@ pub(crate) fn reset_for_project_import(path: &Path, plans: &BTreeMap<u32, u32>, 
         let before = w.samples.len();
         w.samples.retain(|s| s.history_id.is_none());
         if w.samples.len() < before {
-            notes.push(format!("候选 {} 的 {} 个来自检测历史的验证样本未导入", w.doc.id, before - w.samples.len()));
+            notes.push(format!(
+                "候选 {} 的 {} 个来自检测历史的验证样本未导入",
+                w.doc.id,
+                before - w.samples.len()
+            ));
         }
     }
     w.changed();
-    crate::fsio::write_atomic(path, &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?)?;
+    crate::fsio::write_atomic(
+        path,
+        &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?,
+    )?;
     Ok(notes)
 }
 
@@ -635,7 +724,10 @@ pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
         return Err("已有待生效版本，不能删除".into());
     }
     // 候选导入的轮次一并删除（RB-5）；先删轮次，失败时候选仍在，可重试
-    app.state::<CycleHost>().camera.recipe_capture().delete_recipe_rounds(&id)?;
+    app.state::<CycleHost>()
+        .camera
+        .recipe_capture()
+        .delete_recipe_rounds(&id)?;
     if items.get(&id).is_some_and(Workspace::legacy) {
         // 旧流程候选只删候选本身：生产配方与发布归档照常运行，之后可从生产配方新建新流程候选
         pieces::remove_legacy_dir(&host.dir(&id))?;
@@ -681,7 +773,9 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
     burst::guard_calibration(&w.doc, &mut doc)?;
     let segments_changed = burst::guard_segment_corridors(&w.doc, &mut doc, &w.camera_teaching)?;
     doc.build()?;
-    if doc == w.doc { return Ok(()); }
+    if doc == w.doc {
+        return Ok(());
+    }
     w.doc = doc;
     // 不再是计划相机、段结构变了或这台相机不再检测所在段的示教帧不保留
     let cameras = w.doc.plan_cameras();
@@ -709,15 +803,23 @@ fn decode_imported_image(bytes: Vec<u8>) -> Result<FrameImage, String> {
         return Err("原图不得为空，单图不得超过 15 MB".into());
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format().map_err(|e| format!("原图格式无法识别：{e}"))?;
+        .with_guessed_format()
+        .map_err(|e| format!("原图格式无法识别：{e}"))?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(128_000_000);
     reader.limits(limits);
-    let image = reader.decode().map_err(|e| format!("原图无法读取：{e}"))?.into_luma8();
+    let image = reader
+        .decode()
+        .map_err(|e| format!("原图无法读取：{e}"))?
+        .into_luma8();
     if image.width() as u64 * image.height() as u64 > 40_000_000 {
         return Err("单图像素数量超过 4000 万".into());
     }
-    Ok(FrameImage::new(image.width(), image.height(), image.into_raw()))
+    Ok(FrameImage::new(
+        image.width(),
+        image.height(),
+        image.into_raw(),
+    ))
 }
 
 fn preview_response(image: &FrameImage) -> tauri::ipc::Response {
@@ -756,9 +858,21 @@ impl SampleResult {
     pub fn judged(sample: &Sample, name: String, sn: String, judgement: judge::Judgement) -> Self {
         let qualified = |v| matches!(v, Verdict::Ok | Verdict::OkWithExcursion);
         let actual = judgement.verdict;
-        let passed = if qualified(sample.expected) { qualified(actual) } else { sample.expected == actual };
-        Self { history_id: sample.history_id, sample_id: sample.sample_id.clone(), name, sn, expected: sample.expected,
-            actual: Some(actual), passed, reason: judgement.reason }
+        let passed = if qualified(sample.expected) {
+            qualified(actual)
+        } else {
+            sample.expected == actual
+        };
+        Self {
+            history_id: sample.history_id,
+            sample_id: sample.sample_id.clone(),
+            name,
+            sn,
+            expected: sample.expected,
+            actual: Some(actual),
+            passed,
+            reason: judgement.reason,
+        }
     }
 }
 
@@ -774,7 +888,9 @@ pub async fn workspace_validate(
     samples: Vec<Sample>,
     source_confirmed: Option<bool>,
 ) -> Result<WorkspaceView, String> {
-    if source_confirmed != Some(true) { return Err("请确认验证样本与示教的轨迹、触发顺序及拍摄条件一致".into()); }
+    if source_confirmed != Some(true) {
+        return Err("请确认验证样本与示教的轨迹、触发顺序及拍摄条件一致".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<WorkspaceHost>();
         let mut w = {
@@ -827,7 +943,10 @@ pub fn workspace_publish(
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
     }
     let mut release_doc = formal_release_doc(w)?;
-    release_doc.plan_version = app.state::<CycleHost>().recipes.plan_version_for(&release_doc)?;
+    release_doc.plan_version = app
+        .state::<CycleHost>()
+        .recipes
+        .plan_version_for(&release_doc)?;
     let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?;
     let mut next = w.clone();
     next.doc = release_doc.clone();
@@ -853,8 +972,16 @@ pub fn workspace_publish(
 fn formal_release_doc(w: &Workspace) -> Result<RecipeDoc, String> {
     let mut doc = w.doc.clone();
     doc.stage = RecipeStage::Formal;
-    doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", doc.id, doc.version)));
-    doc.teaching_piece = Some(w.teaching_piece.as_ref().ok_or("还没有示教件，不能发布")?.recipe_ref());
+    doc.teaching_id = Some(vision::unique_run_id(&format!(
+        "teaching-{}-v{}",
+        doc.id, doc.version
+    )));
+    doc.teaching_piece = Some(
+        w.teaching_piece
+            .as_ref()
+            .ok_or("还没有示教件，不能发布")?
+            .recipe_ref(),
+    );
     Ok(doc)
 }
 
@@ -868,8 +995,13 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
             return Err("待生效配方与不可变发布包不一致".into());
         }
     }
-    if current.as_ref().is_some_and(|saved| saved.revision_id == recipe.revision_id) {
-        return cycle.recipes.save_published(release.doc.clone(), release.base_revision.as_deref());
+    if current
+        .as_ref()
+        .is_some_and(|saved| saved.revision_id == recipe.revision_id)
+    {
+        return cycle
+            .recipes
+            .save_published(release.doc.clone(), release.base_revision.as_deref());
     }
     if current.as_ref().map(|r| r.revision_id.clone()) != release.base_revision {
         return Err("待生效版本与当前生产配方冲突".into());
@@ -880,7 +1012,9 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
         &archive.join(format!("{}.json", recipe.revision_id)),
         &serde_json::to_string(release).map_err(|e| e.to_string())?,
     )?;
-    cycle.recipes.save_published(release.doc.clone(), release.base_revision.as_deref())
+    cycle
+        .recipes
+        .save_published(release.doc.clone(), release.base_revision.as_deref())
 }
 
 pub fn releases_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -890,10 +1024,17 @@ pub fn releases_root(app: &AppHandle) -> Result<PathBuf, String> {
 fn read_release(path: &Path) -> Result<Release, String> {
     let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     #[cfg(windows)]
-    { use std::os::windows::fs::MetadataExt;
-      if metadata.file_attributes() & 0x400 != 0 { return Err("发布归档不能是 reparse point".into()); } }
-    if !metadata.is_file() || metadata.file_type().is_symlink() { return Err("发布归档不是普通文件".into()); }
-    serde_json::from_str(&crate::fsio::read_text(path).map_err(|e| e.to_string())?).map_err(|e| format!("发布归档格式不兼容：{e}"))
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err("发布归档不能是 reparse point".into());
+        }
+    }
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("发布归档不是普通文件".into());
+    }
+    serde_json::from_str(&crate::fsio::read_text(path).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("发布归档格式不兼容：{e}"))
 }
 
 fn archived_release(dir: &Path, id: &str, version: u32) -> Result<Release, String> {
@@ -902,20 +1043,34 @@ fn archived_release(dir: &Path, id: &str, version: u32) -> Result<Release, Strin
     let path = dir.join(format!("{id}-v{version}.json"));
     match std::fs::symlink_metadata(&path) {
         Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("所选生产版本没有不可变发布包，请在工作台验证并发布".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err("所选生产版本没有不可变发布包，请在工作台验证并发布".into())
+        }
         Err(e) => return Err(e.to_string()),
     }
     let release = read_release(&path)?;
-    if release.doc.id != id || release.doc.version != version { return Err("发布归档的配方或版本不一致".into()); }
+    if release.doc.id != id || release.doc.version != version {
+        return Err("发布归档的配方或版本不一致".into());
+    }
     Ok(release)
 }
 
-fn load_bundle(app: &AppHandle, recipe_id: &str, bundle_id: &str) -> Result<crate::release::ReleaseBundle, String> {
+fn load_bundle(
+    app: &AppHandle,
+    recipe_id: &str,
+    bundle_id: &str,
+) -> Result<crate::release::ReleaseBundle, String> {
     crate::release::load(&releases_root(app)?, recipe_id, bundle_id)
 }
 
-pub fn published_bundle(app: &AppHandle, recipe: &Recipe) -> Result<crate::release::ReleaseBundle, String> {
-    let dir = app.state::<WorkspaceHost>().dir(&recipe.id).join("published");
+pub fn published_bundle(
+    app: &AppHandle,
+    recipe: &Recipe,
+) -> Result<crate::release::ReleaseBundle, String> {
+    let dir = app
+        .state::<WorkspaceHost>()
+        .dir(&recipe.id)
+        .join("published");
     let published = archived_release(&dir, &recipe.id, recipe.version)?;
     let bundle = load_bundle(app, &recipe.id, &published.bundle_id)?;
     if bundle.recipe != published.doc || bundle.manifest.recipe_revision != recipe.revision_id {
@@ -925,8 +1080,14 @@ pub fn published_bundle(app: &AppHandle, recipe: &Recipe) -> Result<crate::relea
 }
 
 /// 只核对生产版本对应发布包的清单与身份，不读取资源内容。
-pub fn published_manifest(app: &AppHandle, recipe: &Recipe) -> Result<crate::release::ReleaseManifest, String> {
-    let dir = app.state::<WorkspaceHost>().dir(&recipe.id).join("published");
+pub fn published_manifest(
+    app: &AppHandle,
+    recipe: &Recipe,
+) -> Result<crate::release::ReleaseManifest, String> {
+    let dir = app
+        .state::<WorkspaceHost>()
+        .dir(&recipe.id)
+        .join("published");
     let published = archived_release(&dir, &recipe.id, recipe.version)?;
     let manifest = crate::release::peek(&releases_root(app)?, &recipe.id, &published.bundle_id)?;
     if manifest.recipe_revision != recipe.revision_id || manifest.recipe_version != recipe.version {
@@ -943,7 +1104,9 @@ pub struct DraftSummary {
 }
 
 pub fn draft_summaries(app: &AppHandle) -> Vec<DraftSummary> {
-    let Some(host) = app.try_state::<WorkspaceHost>() else { return Vec::new() };
+    let Some(host) = app.try_state::<WorkspaceHost>() else {
+        return Vec::new();
+    };
     let items = host.items.lock().unwrap();
     items
         .values()
@@ -982,7 +1145,12 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);
                 w.validation = None;
                 w.revision += 1;
-                w.publish = PublishState::Active { version: saved.version, revision: w.revision, warning: next_version.err(), validation_site: release.validation_site };
+                w.publish = PublishState::Active {
+                    version: saved.version,
+                    revision: w.revision,
+                    warning: next_version.err(),
+                    validation_site: release.validation_site,
+                };
                 changed = true;
                 let message = if saved.is_collect() {
                     format!(
@@ -1016,8 +1184,13 @@ pub fn apply_pending(app: &AppHandle) -> bool {
 }
 
 pub fn activation_uncertain(app: &AppHandle) -> bool {
-    app.try_state::<WorkspaceHost>().is_some_and(|host| host.items.lock().unwrap().values()
-        .any(Workspace::activation_uncertain))
+    app.try_state::<WorkspaceHost>().is_some_and(|host| {
+        host.items
+            .lock()
+            .unwrap()
+            .values()
+            .any(Workspace::activation_uncertain)
+    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1097,32 +1270,59 @@ pub async fn workspace_compare(
 }
 
 fn comparison_id(app: &AppHandle, history_id: i64) -> String {
-    let seq = app.state::<WorkspaceHost>().capture_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let seq = app
+        .state::<WorkspaceHost>()
+        .capture_seq
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!("{history_id}-{}-{seq}", ly_plc::now_ms())
 }
 
 fn save_comparison(app: &AppHandle, comparison: &Comparison) -> Result<(), String> {
     let host = app.state::<WorkspaceHost>();
-    host.comparisons.save(&host.root, &app.state::<Store>(), comparison)
+    host.comparisons
+        .save(&host.root, &app.state::<Store>(), comparison)
 }
 
 pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<String>), String> {
     let host = app.state::<WorkspaceHost>();
-    host.comparisons.purge(&host.root, &app.state::<Store>(), before)
+    host.comparisons
+        .purge(&host.root, &app.state::<Store>(), before)
 }
 
 #[tauri::command]
-pub async fn workspace_compare_original(app: AppHandle, history_id: i64) -> Result<Comparison, String> {
+pub async fn workspace_compare_original(
+    app: AppHandle,
+    history_id: i64,
+) -> Result<Comparison, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
         let detail = store.detail(history_id)?;
-        if !detail.recording.available { return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into()); }
-        let cycle_id = detail.summary.cycle_id.clone().ok_or("历史记录缺少 cycleId")?;
-        let bundle_id = detail.summary.bundle_id.as_deref().ok_or("本件没有不可变发布包，不能按原版本重现")?;
-        let recipe_revision = detail.summary.recipe_revision.as_deref().ok_or("历史记录缺少配方快照身份")?;
-        let original = store.recipe_snapshot(recipe_revision)?.ok_or("原始配方快照缺失；不能使用当前配方替代")?;
+        if !detail.recording.available {
+            return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into());
+        }
+        let cycle_id = detail
+            .summary
+            .cycle_id
+            .clone()
+            .ok_or("历史记录缺少 cycleId")?;
+        let bundle_id = detail
+            .summary
+            .bundle_id
+            .as_deref()
+            .ok_or("本件没有不可变发布包，不能按原版本重现")?;
+        let recipe_revision = detail
+            .summary
+            .recipe_revision
+            .as_deref()
+            .ok_or("历史记录缺少配方快照身份")?;
+        let original = store
+            .recipe_snapshot(recipe_revision)?
+            .ok_or("原始配方快照缺失；不能使用当前配方替代")?;
         let bundle = load_bundle(&app, &original.id, bundle_id)?;
-        let engine = app.state::<vision::VisionHost>().engine().ok_or("原版本兼容引擎未加载")?;
+        let engine = app
+            .state::<vision::VisionHost>()
+            .engine()
+            .ok_or("原版本兼容引擎未加载")?;
         let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
         prepared.verify()?;
         let (judgement, burst) =
@@ -1144,7 +1344,9 @@ pub async fn workspace_compare_original(app: AppHandle, history_id: i64) -> Resu
         };
         save_comparison(&app, &comparison)?;
         Ok(comparison)
-    }).await.map_err(|error| error.to_string())?
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1165,9 +1367,19 @@ pub fn clear_live(app: &AppHandle) {
 }
 
 /// 段配方在途件一帧的原图（计划相机 camera 的第 seq 帧），供 `workspace_live_frame_image` 读。
-pub fn retain_live_frame(app: &AppHandle, cycle_id: &str, revision_id: &str, camera: usize, seq: u64, image: &Option<Arc<FrameImage>>) {
+pub fn retain_live_frame(
+    app: &AppHandle,
+    cycle_id: &str,
+    revision_id: &str,
+    camera: usize,
+    seq: u64,
+    image: &Option<Arc<FrameImage>>,
+) {
     if let (Some(host), Some(image)) = (app.try_state::<WorkspaceHost>(), image) {
-        host.live_burst.lock().unwrap().insert(cycle_id, revision_id, (camera, seq), image.clone());
+        host.live_burst
+            .lock()
+            .unwrap()
+            .insert(cycle_id, revision_id, (camera, seq), image.clone());
     }
 }
 
@@ -1182,7 +1394,11 @@ pub fn workspace_live_frame_image(
 ) -> Result<tauri::ipc::Response, String> {
     let image = {
         let live = host.live_burst.lock().unwrap();
-        if live.key.as_ref().is_none_or(|key| key.0 != cycle_id || key.1 != revision_id) {
+        if live
+            .key
+            .as_ref()
+            .is_none_or(|key| key.0 != cycle_id || key.1 != revision_id)
+        {
             return Err("本件尚未收到整帧图像".into());
         }
         live.frames
@@ -1223,7 +1439,11 @@ pub fn station_image_ref(
 pub fn station_image_view(app: &AppHandle, cam: u8, image_id: &str) -> Result<u8, String> {
     let host = app.state::<WorkspaceHost>();
     let samples = host.station.lock().unwrap();
-    samples.get(&cam).filter(|(meta, _)| meta.id == image_id).map(|(meta, _)| meta.view).ok_or_else(|| "标定样本已更新".into())
+    samples
+        .get(&cam)
+        .filter(|(meta, _)| meta.id == image_id)
+        .map(|(meta, _)| meta.view)
+        .ok_or_else(|| "标定样本已更新".into())
 }
 
 #[tauri::command]
@@ -1237,7 +1457,11 @@ pub fn workspace_station_image(
 }
 
 #[tauri::command]
-pub async fn workspace_station_capture(app: AppHandle, cam: u8, view: Option<u8>) -> Result<FrozenImage, String> {
+pub async fn workspace_station_capture(
+    app: AppHandle,
+    cam: u8,
+    view: Option<u8>,
+) -> Result<FrozenImage, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let cycle = app.state::<CycleHost>();
         if cycle.busy() {
@@ -1245,7 +1469,9 @@ pub async fn workspace_station_capture(app: AppHandle, cam: u8, view: Option<u8>
         }
         let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
         let config = slot.config();
-        if !(1..=config.view_count).contains(&view.unwrap_or(1)) { return Err("图编号超出设备范围".into()); }
+        if !(1..=config.view_count).contains(&view.unwrap_or(1)) {
+            return Err("图编号超出设备范围".into());
+        }
         let selected = view.unwrap_or(1);
         let image = cycle.camera.capture_view(cam, selected, None)?;
         if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
@@ -1280,29 +1506,52 @@ pub async fn workspace_station_capture(app: AppHandle, cam: u8, view: Option<u8>
 }
 
 #[tauri::command]
-pub async fn workspace_station_import(app: AppHandle, cam: u8, bytes: Vec<u8>, view: Option<u8>) -> Result<FrozenImage, String> {
+pub async fn workspace_station_import(
+    app: AppHandle,
+    cam: u8,
+    bytes: Vec<u8>,
+    view: Option<u8>,
+) -> Result<FrozenImage, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let cycle = app.state::<CycleHost>();
-        if cycle.busy() { return Err("工件正在检测，结束后再导入标定原图".into()); }
+        if cycle.busy() {
+            return Err("工件正在检测，结束后再导入标定原图".into());
+        }
         let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
         let config = slot.config();
-        if !(1..=config.view_count).contains(&view.unwrap_or(1)) { return Err("图编号超出设备范围".into()); }
+        if !(1..=config.view_count).contains(&view.unwrap_or(1)) {
+            return Err("图编号超出设备范围".into());
+        }
         let image = Arc::new(decode_imported_image(bytes)?);
         if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
             return Err("导入期间设备或节拍状态变化，原图已丢弃".into());
         }
         let host = app.state::<WorkspaceHost>();
-        let seq = host.capture_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let seq = host
+            .capture_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let meta = FrozenImage {
             view: view.unwrap_or(1),
             id: format!("station-import-{cam}-{}-{seq}", ly_plc::now_ms()),
-            source: "import".into(), captured_at: ly_plc::now_ms(), size: [image.width, image.height],
-            camera: config.id.clone(), camera_tag: state_value(&config), calib_tag: Value::Null, geometry_tag: Value::Null,
-            exposure_us: None, gain_db: None, history_id: None,
+            source: "import".into(),
+            captured_at: ly_plc::now_ms(),
+            size: [image.width, image.height],
+            camera: config.id.clone(),
+            camera_tag: state_value(&config),
+            calib_tag: Value::Null,
+            geometry_tag: Value::Null,
+            exposure_us: None,
+            gain_db: None,
+            history_id: None,
         };
-        host.station.lock().unwrap().insert(cam, (meta.clone(), image));
+        host.station
+            .lock()
+            .unwrap()
+            .insert(cam, (meta.clone(), image));
         Ok(meta)
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -1314,13 +1563,20 @@ mod tests {
         pub(super) fn new() -> Self {
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!("tujiao-sample-import-{}-{sequence}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "tujiao-sample-import-{}-{sequence}",
+                std::process::id()
+            ));
             let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir(&path).unwrap(); Self(path)
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
         }
     }
-    impl Drop for ImportTestDir { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
-
+    impl Drop for ImportTestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 }
 
 /// 候选试运行冻结的配方：过 `Recipe::ready_burst`（三台相机走廊与当量、整件 ΣN_exp）。修订号为候选调试修订，计划版本至少为 1。
@@ -1328,21 +1584,34 @@ fn debug_recipe(w: &Workspace) -> Result<Recipe, String> {
     let mut recipe = w.doc.build()?;
     recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
     recipe.revision_id = w.debug_revision()?;
-    if recipe.plan_version == 0 { recipe.plan_version = 1; }
+    if recipe.plan_version == 0 {
+        recipe.plan_version = 1;
+    }
     Ok(recipe)
 }
 
 #[tauri::command]
-pub async fn workspace_debug_run(app: AppHandle, id: String, revision: u64, part_id: Option<String>) -> Result<(), String> {
-    if !crate::offline::enabled(&app) || crate::offline::sample_set(&app).is_none() { return Err("候选试运行仅支持离线样本集模式".into()); }
+pub async fn workspace_debug_run(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    part_id: Option<String>,
+) -> Result<(), String> {
+    if !crate::offline::enabled(&app) || crate::offline::sample_set(&app).is_none() {
+        return Err("候选试运行仅支持离线样本集模式".into());
+    }
     let set = crate::offline::sample_set(&app).ok_or("离线样本集缺失")?;
     let current = burst_release::current_camera_tags(&app);
     let (recipe, sizes) = {
         let host = app.state::<WorkspaceHost>();
         let items = host.items.lock().unwrap();
         let w = items.get(&id).ok_or("候选配方不存在")?;
-        if w.revision != revision { return Err("候选已修改，请刷新后重试".into()); }
-        if w.pending.is_some() { return Err("候选正在等待发布，请先完成或取消发布".into()); }
+        if w.revision != revision {
+            return Err("候选已修改，请刷新后重试".into());
+        }
+        if w.pending.is_some() {
+            return Err("候选正在等待发布，请先完成或取消发布".into());
+        }
         let recipe = debug_recipe(w)?;
         // 每台计划相机按示教帧尺寸建走廊测量图，结果只量不判（D3 的候选调试记录按样本集读原图）
         let sizes = burst_release::debug_sizes(w, &current)?;
@@ -1356,12 +1625,20 @@ pub async fn workspace_debug_run(app: AppHandle, id: String, revision: u64, part
     crate::offline::run_candidate(app, Arc::new(candidate), set, part_id).await
 }
 
-pub(crate) fn recheck_debug_candidate(app: &AppHandle, candidate: &crate::candidate::Candidate) -> Result<(), String> {
+pub(crate) fn recheck_debug_candidate(
+    app: &AppHandle,
+    candidate: &crate::candidate::Candidate,
+) -> Result<(), String> {
     let current = burst_release::current_camera_tags(app);
     let host = app.state::<WorkspaceHost>();
     let items = host.items.lock().unwrap();
     let w = items.get(&candidate.info.recipe_id).ok_or("候选已删除")?;
-    if w.revision != candidate.info.revision || w.pending.is_some() || w.debug_revision()? != candidate.recipe.revision_id { return Err("候选已修改、重建或正在发布，请重新试运行".into()); }
+    if w.revision != candidate.info.revision
+        || w.pending.is_some()
+        || w.debug_revision()? != candidate.recipe.revision_id
+    {
+        return Err("候选已修改、重建或正在发布，请重新试运行".into());
+    }
     // 修订号不变即示教帧与走廊没变，只需再核对示教后设备标签没变
     burst_release::debug_sizes(w, &current)?;
     Ok(())

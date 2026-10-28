@@ -61,11 +61,22 @@ pub struct BandwidthEstimate {
 
 /// 各相机 宽 × 高 × 每像素字节 × 8 × hz × 链路开销（[`GIGE_OVERHEAD`]）求和，超过一个千兆口的 80% 即超预算。
 pub fn aggregate_bandwidth(sizes: &[Option<(u32, u32)>], hz: f64) -> BandwidthEstimate {
-    let per_camera: Vec<Option<f64>> = sizes.iter()
-        .map(|size| size.map(|(w, h)| w as f64 * h as f64 * LINK_BYTES_PER_PIXEL * 8.0 * hz * GIGE_OVERHEAD / 1e6))
+    let per_camera: Vec<Option<f64>> = sizes
+        .iter()
+        .map(|size| {
+            size.map(|(w, h)| {
+                w as f64 * h as f64 * LINK_BYTES_PER_PIXEL * 8.0 * hz * GIGE_OVERHEAD / 1e6
+            })
+        })
         .collect();
     let mbps_total = per_camera.iter().flatten().sum::<f64>();
-    BandwidthEstimate { hz, mbps_total, per_camera, budget_mbps: PORT_BUDGET_MBPS, over_budget: mbps_total > PORT_BUDGET_MBPS }
+    BandwidthEstimate {
+        hz,
+        mbps_total,
+        per_camera,
+        budget_mbps: PORT_BUDGET_MBPS,
+        over_budget: mbps_total > PORT_BUDGET_MBPS,
+    }
 }
 
 /// 下一个设备会话号：进程内只增不减，各相机共用，所以会话号不会重复（0 表示还没打开过）。
@@ -73,8 +84,12 @@ static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 fn manual_arm_ready(source: CameraSource, pending: u32) -> Result<(), String> {
     if source == CameraSource::Mvs && pending > 0 {
-        Err(format!("仍有 {pending} 次手动触发未确认，等待回调或重开相机后才能布防"))
-    } else { Ok(()) }
+        Err(format!(
+            "仍有 {pending} 次手动触发未确认，等待回调或重开相机后才能布防"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// 样本集相机取图的身份：哪个样本集的哪一件、清单里的哪一帧（shotId；相机编号与视角取自相机自身配置）。
@@ -87,7 +102,8 @@ pub struct SampleTarget {
 impl SampleTarget {
     /// 本身份在指定相机下的全部视角原图；缺任一幅即整帧不可用。
     pub fn images(&self, camera_id: &str, view_count: u8) -> Result<Vec<Arc<FrameImage>>, String> {
-        self.set.load_views(&self.part_id, &self.shot_id, camera_id, view_count)
+        self.set
+            .load_views(&self.part_id, &self.shot_id, camera_id, view_count)
     }
 }
 
@@ -200,7 +216,10 @@ impl CameraConfig {
         if !matches!(self.view_count, 1 | 3) {
             return Err("视角数量只能是 1 或 3".into());
         }
-        if self.source == CameraSource::Mvs && self.view_count == 3 && self.composite_layout.is_none() {
+        if self.source == CameraSource::Mvs
+            && self.view_count == 3
+            && self.composite_layout.is_none()
+        {
             return Err("三幅拼接图必须明确配置 SDK 交付布局，未确认布局不能启用".into());
         }
         if !["Line0", "Software"].contains(&self.trigger_source.as_str()) {
@@ -225,7 +244,10 @@ impl CameraConfig {
 
     pub(crate) fn require_single_view(&self) -> Result<(), String> {
         if self.view_count != 1 || self.composite_layout.is_some() {
-            return Err(format!("相机 {} 是三目拼接配置，分段连拍需要三台独立的单视角相机", self.id));
+            return Err(format!(
+                "相机 {} 是三目拼接配置，分段连拍需要三台独立的单视角相机",
+                self.id
+            ));
         }
         Ok(())
     }
@@ -236,11 +258,16 @@ impl CameraConfig {
 pub fn check_burst_cameras(rig: &[CameraConfig], cameras: &[String]) -> Result<(), String> {
     let mut frame_rate = None;
     for id in cameras {
-        let config = rig.iter().find(|c| &c.id == id).ok_or_else(|| format!("相机组里没有计划相机 {id}"))?;
+        let config = rig
+            .iter()
+            .find(|c| &c.id == id)
+            .ok_or_else(|| format!("相机组里没有计划相机 {id}"))?;
         config.validate()?;
         config.require_single_view()?;
         if config.trigger_source != "Line0" {
-            return Err(format!("相机 {id} 为 Software 触发，请切换为 Line0 高电平后再进行整轮采集或生产"));
+            return Err(format!(
+                "相机 {id} 为 Software 触发，请切换为 Line0 高电平后再进行整轮采集或生产"
+            ));
         }
         if frame_rate.is_some_and(|rate: f32| (rate - config.frame_rate).abs() > 0.001) {
             return Err("参与整轮采集的相机必须设置相同帧率".into());
@@ -266,17 +293,32 @@ fn load_rig_file(path: &Path) -> (RigFile, Vec<String>, bool) {
         Ok(file) => file.unwrap_or_default(),
         Err(note) => return (RigFile::default(), vec![note], false),
     };
-    let old = file.cameras.iter().any(|c| c.trigger_source == "Line0" && c.trigger_activation != "LevelHigh");
-    if !old { return (file, notes, false); }
-    let backup = path.with_file_name(format!("cameras.level-high-{}.json", chrono::Local::now().format("%Y%m%d-%H%M%S%.3f")));
+    let old = file
+        .cameras
+        .iter()
+        .any(|c| c.trigger_source == "Line0" && c.trigger_activation != "LevelHigh");
+    if !old {
+        return (file, notes, false);
+    }
+    let backup = path.with_file_name(format!(
+        "cameras.level-high-{}.json",
+        chrono::Local::now().format("%Y%m%d-%H%M%S%.3f")
+    ));
     if let Err(e) = std::fs::copy(path, &backup) {
-        notes.push(format!("高电平配置迁移备份失败（{e}），保留原配置且禁止连接，请修复后重启"));
+        notes.push(format!(
+            "高电平配置迁移备份失败（{e}），保留原配置且禁止连接，请修复后重启"
+        ));
         return (file, notes, false);
     }
     for c in &mut file.cameras {
-        if c.trigger_source == "Line0" { c.trigger_activation = "LevelHigh".into(); }
+        if c.trigger_source == "Line0" {
+            c.trigger_activation = "LevelHigh".into();
+        }
     }
-    notes.push(format!("Line0 已改为高电平采集；原配置备份为 {}", backup.display()));
+    notes.push(format!(
+        "Line0 已改为高电平采集；原配置备份为 {}",
+        backup.display()
+    ));
     (file, notes, true)
 }
 
@@ -324,7 +366,13 @@ fn make_preview(src: &[u8], w: usize, h: usize) -> Preview {
         let row = &src[y * step * w..];
         data.extend((0..pw).map(|x| row[x * step]));
     }
-    Preview { width: pw as u32, height: ph as u32, full_width: w as u32, full_height: h as u32, data }
+    Preview {
+        width: pw as u32,
+        height: ph as u32,
+        full_width: w as u32,
+        full_height: h as u32,
+        data,
+    }
 }
 
 /// 模拟帧并行合成、按帧计数顺序交付：节拍按帧计数的先后推 k，乱序会让后面的帧落错拍照点。
@@ -359,8 +407,17 @@ impl Reorder {
 /// 样本集相机按触发身份取图后按帧号交付；取不到图（缺图、未选样本集）时本帧按缺帧占位，后面的帧照常交付。
 /// 返回取图失败的原因。
 #[allow(clippy::too_many_arguments)]
-fn sample_set_arrival(order: &Mutex<Reorder>, target: Result<SampleTarget, String>, camera: &str, views: u8, cam: u8, session: u64, n: u64, manual: bool,
-    mut deliver: impl FnMut(Frame)) -> Option<String> {
+fn sample_set_arrival(
+    order: &Mutex<Reorder>,
+    target: Result<SampleTarget, String>,
+    camera: &str,
+    views: u8,
+    cam: u8,
+    session: u64,
+    n: u64,
+    manual: bool,
+    mut deliver: impl FnMut(Frame),
+) -> Option<String> {
     let loaded = target.and_then(|target| target.images(camera, views));
     let (frame, error) = match loaded {
         Ok(images) => (Some(synthetic_frame(cam, session, n, images, manual)), None),
@@ -387,14 +444,18 @@ enum CaptureRequest {
 
 impl CaptureRequest {
     fn session(self) -> u64 {
-        match self { Self::Exact(ticket) => ticket.session, Self::After { session, .. } => session }
+        match self {
+            Self::Exact(ticket) => ticket.session,
+            Self::After { session, .. } => session,
+        }
     }
 
     fn images(self, captured: &CapturedFrame) -> Option<Vec<Arc<FrameImage>>> {
         match self {
             Self::Exact(ticket) => captured.images_for(ticket),
             Self::After { session, frame } => (captured.ticket.session == session
-                && frame.is_none_or(|last| captured.ticket.frame_counter > last)).then(|| captured.images.clone()),
+                && frame.is_none_or(|last| captured.ticket.frame_counter > last))
+            .then(|| captured.images.clone()),
         }
     }
 }
@@ -406,7 +467,13 @@ struct CapturedFrame {
 
 impl CapturedFrame {
     fn from_frame(frame: &Frame) -> Self {
-        Self { ticket: CaptureTicket { session: frame.session, frame_counter: frame.frame_counter }, images: frame.images.clone() }
+        Self {
+            ticket: CaptureTicket {
+                session: frame.session,
+                frame_counter: frame.frame_counter,
+            },
+            images: frame.images.clone(),
+        }
     }
 
     fn images_for(&self, ticket: CaptureTicket) -> Option<Vec<Arc<FrameImage>>> {
@@ -469,12 +536,21 @@ impl Shared {
         if session != self.session.load(Ordering::SeqCst) {
             return;
         }
-        *self.preview.lock().unwrap() = images.iter().map(|img| make_preview(&img.pixels, img.width as usize, img.height as usize)).collect();
+        *self.preview.lock().unwrap() = images
+            .iter()
+            .map(|img| make_preview(&img.pixels, img.width as usize, img.height as usize))
+            .collect();
     }
 
     /// 海康相机的一帧（像素格式已认过）：缩略图与整帧用同一张灰度。要留整帧而图像内存预算已满时返回 Err，
     /// 这一帧按缺帧处理；不留整帧时预算满只是没有缩略图。
-    fn gray_image(&self, pixel_type: u32, w: u32, h: u32, data: &[u8]) -> Result<Option<Arc<FrameImage>>, BudgetExceeded> {
+    fn gray_image(
+        &self,
+        pixel_type: u32,
+        w: u32,
+        h: u32,
+        data: &[u8],
+    ) -> Result<Option<Arc<FrameImage>>, BudgetExceeded> {
         let keep = self.capture() | self.grab.swap(false, Ordering::SeqCst);
         let gray = match to_gray(&self.pool, pixel_type, w, h, data) {
             Ok(g) => g,
@@ -488,13 +564,19 @@ impl Shared {
         if !keep {
             return Ok(None);
         }
-        gray.into_image(&self.pool, w, h).map(|image| Some(Arc::new(image)))
+        gray.into_image(&self.pool, w, h)
+            .map(|image| Some(Arc::new(image)))
     }
 
     /// 图像内存预算满被丢弃的帧给状态栏的说明。
     fn budget_note(&self) -> Option<String> {
         let n = self.budget_dropped.load(Ordering::Relaxed);
-        (n > 0).then(|| format!("图像内存预算（{} MiB）已满：{n} 帧没拷图、按缺帧处理，检测处理不过来", IMAGE_BUDGET_PER_CAMERA >> 20))
+        (n > 0).then(|| {
+            format!(
+                "图像内存预算（{} MiB）已满：{n} 帧没拷图、按缺帧处理，检测处理不过来",
+                IMAGE_BUDGET_PER_CAMERA >> 20
+            )
+        })
     }
 
     /// 不支持的像素格式不静默丢弃：计数并记下原因，显示在相机状态里。
@@ -533,19 +615,29 @@ impl Shared {
     /// 图像内存预算满、没拷图的帧：台账照记、计入帧数，但不交付（节拍按缺帧处理），不中断回调。
     fn discard_over_budget(&self, mut frame: Frame) {
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
-        delivery::discard_over_budget(&self.identity, &self.manual, &self.budget_dropped, &mut frame, current_session);
+        delivery::discard_over_budget(
+            &self.identity,
+            &self.manual,
+            &self.budget_dropped,
+            &mut frame,
+            current_session,
+        );
         self.count_arrival(&frame);
     }
 
     /// 帧数、丢包、帧率与界面事件：交付与否都算相机出了这一帧。
     fn count_arrival(&self, frame: &Frame) {
         self.frames.fetch_add(1, Ordering::Relaxed);
-        self.lost_packets.fetch_add(frame.lost_packets as u64, Ordering::Relaxed);
+        self.lost_packets
+            .fetch_add(frame.lost_packets as u64, Ordering::Relaxed);
         let now = Instant::now();
         {
             let mut recent = self.recent.lock().unwrap();
             recent.push_back(now);
-            while recent.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(3)) {
+            while recent
+                .front()
+                .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(3))
+            {
                 recent.pop_front();
             }
         }
@@ -555,7 +647,10 @@ impl Shared {
     fn fps(&self) -> f32 {
         let recent = self.recent.lock().unwrap();
         match (recent.front(), recent.back()) {
-            (Some(a), Some(b)) if recent.len() > 1 && Instant::now().duration_since(*b) < Duration::from_secs(3) => {
+            (Some(a), Some(b))
+                if recent.len() > 1
+                    && Instant::now().duration_since(*b) < Duration::from_secs(3) =>
+            {
                 (recent.len() - 1) as f32 / b.duration_since(*a).as_secs_f32().max(0.001)
             }
             _ => 0.0,
@@ -573,8 +668,13 @@ enum PixelKind {
 fn pixel_kind(pixel_type: u32) -> Result<PixelKind, String> {
     match pixel_type {
         mvs::PIXEL_MONO8 => Ok(PixelKind::Mono8),
-        mvs::PIXEL_BAYER_GR8 | mvs::PIXEL_BAYER_RG8 | mvs::PIXEL_BAYER_GB8 | mvs::PIXEL_BAYER_BG8 => Ok(PixelKind::Bayer8),
-        t => Err(format!("像素格式 0x{t:08X} 不支持（需要 Mono8 或 8 位 Bayer）")),
+        mvs::PIXEL_BAYER_GR8
+        | mvs::PIXEL_BAYER_RG8
+        | mvs::PIXEL_BAYER_GB8
+        | mvs::PIXEL_BAYER_BG8 => Ok(PixelKind::Bayer8),
+        t => Err(format!(
+            "像素格式 0x{t:08X} 不支持（需要 Mono8 或 8 位 Bayer）"
+        )),
     }
 }
 
@@ -588,8 +688,11 @@ impl PixelKind {
 
 /// SDK 报的帧长够不够 宽 × 高 × 每像素字节数：不够就不能按宽高建切片（越界读）。返回要取的字节数。
 fn frame_bytes(kind: PixelKind, w: u32, h: u32, frame_len: u32) -> Result<usize, String> {
-    let need = (w as usize).checked_mul(h as usize).and_then(|n| n.checked_mul(kind.bytes_per_pixel()))
-        .filter(|&n| n > 0).ok_or_else(|| format!("SDK 帧尺寸 {w}×{h} 无效，丢弃图像"))?;
+    let need = (w as usize)
+        .checked_mul(h as usize)
+        .and_then(|n| n.checked_mul(kind.bytes_per_pixel()))
+        .filter(|&n| n > 0)
+        .ok_or_else(|| format!("SDK 帧尺寸 {w}×{h} 无效，丢弃图像"))?;
     if (frame_len as usize) < need {
         return Err(format!("SDK 帧长 {frame_len} 字节不足 {w}×{h} 需要的 {need} 字节（帧不完整或宽高与像素格式不符），丢弃图像"));
     }
@@ -619,7 +722,13 @@ impl Gray<'_> {
 }
 
 /// 取图回调收到的像素转成 8 位灰度。
-fn to_gray<'a>(pool: &FramePool, pixel_type: u32, w: u32, h: u32, data: &'a [u8]) -> Result<Gray<'a>, GrayError> {
+fn to_gray<'a>(
+    pool: &FramePool,
+    pixel_type: u32,
+    w: u32,
+    h: u32,
+    data: &'a [u8],
+) -> Result<Gray<'a>, GrayError> {
     match pixel_kind(pixel_type).map_err(GrayError::Invalid)? {
         PixelKind::Mono8 => Ok(Gray::Raw(data)),
         PixelKind::Bayer8 => pool.bayer8_to_gray(w, h, data).map(Gray::Pooled),
@@ -655,8 +764,24 @@ fn chunk_item(entry: &str) -> Option<ChunkItem> {
 }
 
 /// 模拟 / 样本集的一帧：帧计数与触发计数都是本会话的帧号。
-fn synthetic_frame(cam: u8, session: u64, n: u64, images: Vec<Arc<FrameImage>>, manual: bool) -> Frame {
-    Frame { cam, session, counter: CounterSource::Synthetic, frame_counter: n, trigger_counter: n, lost_packets: 0, ts: now_ms(), manual, images }
+fn synthetic_frame(
+    cam: u8,
+    session: u64,
+    n: u64,
+    images: Vec<Arc<FrameImage>>,
+    manual: bool,
+) -> Frame {
+    Frame {
+        cam,
+        session,
+        counter: CounterSource::Synthetic,
+        frame_counter: n,
+        trigger_counter: n,
+        lost_packets: 0,
+        ts: now_ms(),
+        manual,
+        images,
+    }
 }
 
 extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_void) {
@@ -670,17 +795,39 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
         let trigger_counter = frame_counter;
         let counter = CounterSource::SdkFrame;
         let session = shared.session.load(Ordering::SeqCst);
-        let w = if info.extend_width != 0 { info.extend_width } else { info.width as u32 };
-        let h = if info.extend_height != 0 { info.extend_height } else { info.height as u32 };
-        let frame = |images: Vec<Arc<FrameImage>>| Frame { cam: shared.cam, session, counter, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, images };
+        let w = if info.extend_width != 0 {
+            info.extend_width
+        } else {
+            info.width as u32
+        };
+        let h = if info.extend_height != 0 {
+            info.extend_height
+        } else {
+            info.height as u32
+        };
+        let frame = |images: Vec<Arc<FrameImage>>| Frame {
+            cam: shared.cam,
+            session,
+            counter,
+            frame_counter,
+            trigger_counter,
+            lost_packets: info.lost_packet,
+            ts: now_ms(),
+            manual: false,
+            images,
+        };
         // 先认像素格式、核对 SDK 帧长，再按宽 × 高取缓冲；图像不可用时帧照常交付（触发计数照记），只是不带图
-        let image = match pixel_kind(info.pixel_type).and_then(|kind| frame_bytes(kind, w, h, info.frame_len)) {
+        let image = match pixel_kind(info.pixel_type)
+            .and_then(|kind| frame_bytes(kind, w, h, info.frame_len))
+        {
             Err(e) => {
                 shared.unusable(e);
                 None
             }
             Ok(_) if data.is_null() => None,
-            Ok(len) => match shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, len) }) {
+            Ok(len) => match shared.gray_image(info.pixel_type, w, h, unsafe {
+                std::slice::from_raw_parts(data, len)
+            }) {
                 Ok(image) => image,
                 // 图像内存预算满（D-SB-32）：这一帧不拷图、不交付，台账照记
                 Err(_) => return shared.discard_over_budget(frame(Vec::new())),
@@ -690,7 +837,10 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
         let images = match (&image, shared.composite_layout.lock().unwrap().as_ref()) {
             (Some(image), Some(layout)) => match layout.split(image) {
                 Ok(images) => images,
-                Err(error) => { shared.unusable(error); Vec::new() }
+                Err(error) => {
+                    shared.unusable(error);
+                    Vec::new()
+                }
             },
             _ => image.iter().cloned().collect(),
         };
@@ -775,7 +925,11 @@ impl CameraSlot {
                 session: AtomicU64::new(0),
                 chunk_trigger: AtomicBool::new(false),
                 chunk_frame: AtomicBool::new(false),
-                composite_layout: Mutex::new(if config.view_count == 3 { config.composite_layout.clone() } else { None }),
+                composite_layout: Mutex::new(if config.view_count == 3 {
+                    config.composite_layout.clone()
+                } else {
+                    None
+                }),
             }),
             config: Mutex::new(config),
             state: Mutex::new(DeviceState::default()),
@@ -801,7 +955,11 @@ impl CameraSlot {
 
     fn set_config(&self, config: CameraConfig) {
         self.close();
-        *self.shared.composite_layout.lock().unwrap() = if config.view_count == 3 { config.composite_layout.clone() } else { None };
+        *self.shared.composite_layout.lock().unwrap() = if config.view_count == 3 {
+            config.composite_layout.clone()
+        } else {
+            None
+        };
         *self.config.lock().unwrap() = config;
         self.state.lock().unwrap().warnings.clear();
     }
@@ -811,22 +969,53 @@ impl CameraSlot {
         let ready = self.is_ready();
         let (state_message, warnings, max_fps, configured_frame_rate) = {
             let s = self.state.lock().unwrap();
-            (s.message.clone(), s.warnings.clone(), s.max_fps, s.configured_frame_rate)
+            (
+                s.message.clone(),
+                s.warnings.clone(),
+                s.max_fps,
+                s.configured_frame_rate,
+            )
         };
-        let device = self.device.lock().unwrap().as_ref().map(|d| d.summary.clone());
+        let device = self
+            .device
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|d| d.summary.clone());
         let released = self.released.load(Ordering::SeqCst);
-        let message = if let Err(e) = config.validate().and_then(|()| config.require_bound()) { e } else { match config.source {
-            CameraSource::Sim => format!("离线·合成图：每次触发交付一帧 · {} 个视角", config.view_count),
-            CameraSource::SampleSet => match crate::offline::sample_set(&self.shared.rig.app) {
-                Some(set) if set.has_camera(&config.id) => format!("离线·样本集 {}：{} 件 · {} 个拍照点 · {} 个视角",
-                    set.manifest().name, set.manifest().parts.len(), set.manifest().shots.len(), config.view_count),
-                Some(set) => format!("样本集 {} 没有相机 {}", set.manifest().id, config.id),
-                None => "样本集相机只在离线·样本集模式下可用".to_string(),
-            },
-            CameraSource::Mvs if released => "已释放给海康 MVS 客户端，调整完点重新连接".to_string(),
-            CameraSource::Mvs => [self.shared.unusable_note(), self.shared.budget_note(), Some(state_message)]
-                .into_iter().flatten().collect::<Vec<_>>().join(" · "),
-        }};
+        let message = if let Err(e) = config.validate().and_then(|()| config.require_bound()) {
+            e
+        } else {
+            match config.source {
+                CameraSource::Sim => format!(
+                    "离线·合成图：每次触发交付一帧 · {} 个视角",
+                    config.view_count
+                ),
+                CameraSource::SampleSet => match crate::offline::sample_set(&self.shared.rig.app) {
+                    Some(set) if set.has_camera(&config.id) => format!(
+                        "离线·样本集 {}：{} 件 · {} 个拍照点 · {} 个视角",
+                        set.manifest().name,
+                        set.manifest().parts.len(),
+                        set.manifest().shots.len(),
+                        config.view_count
+                    ),
+                    Some(set) => format!("样本集 {} 没有相机 {}", set.manifest().id, config.id),
+                    None => "样本集相机只在离线·样本集模式下可用".to_string(),
+                },
+                CameraSource::Mvs if released => {
+                    "已释放给海康 MVS 客户端，调整完点重新连接".to_string()
+                }
+                CameraSource::Mvs => [
+                    self.shared.unusable_note(),
+                    self.shared.budget_note(),
+                    Some(state_message),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · "),
+            }
+        };
         CameraStatus {
             cam: self.shared.cam,
             id: config.id,
@@ -875,32 +1064,73 @@ impl CameraSlot {
         if self.config.lock().unwrap().source != CameraSource::Mvs {
             return None;
         }
-        self.shared.preview.lock().unwrap().first().map(|p| (p.full_width, p.full_height))
+        self.shared
+            .preview
+            .lock()
+            .unwrap()
+            .first()
+            .map(|p| (p.full_width, p.full_height))
     }
 
     pub fn last_views(&self) -> Vec<Arc<FrameImage>> {
-        self.shared.last_full.lock().unwrap().as_ref().map(|frame| frame.images.clone()).unwrap_or_default()
+        self.shared
+            .last_full
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|frame| frame.images.clone())
+            .unwrap_or_default()
     }
 
-    pub fn routing_state(&self) -> Result<(crate::shot_router::ArmCam, Option<crate::shot_router::Ledger>), String> {
+    pub fn routing_state(
+        &self,
+    ) -> Result<
+        (
+            crate::shot_router::ArmCam,
+            Option<crate::shot_router::Ledger>,
+        ),
+        String,
+    > {
         let config = self.config();
         manual_arm_ready(config.source, self.shared.manual.load(Ordering::SeqCst))?;
         let session = self.shared.session.load(Ordering::SeqCst);
         let observed = if config.source == CameraSource::Mvs {
-            self.shared.identity.lock().unwrap().get(self.shared.cam).filter(|ledger| ledger.session == session).cloned()
+            self.shared
+                .identity
+                .lock()
+                .unwrap()
+                .get(self.shared.cam)
+                .filter(|ledger| ledger.session == session)
+                .cloned()
         } else {
-            Some(crate::shot_router::Ledger::snapshot(session, CounterSource::Synthetic, *self.seq.lock().unwrap()))
+            Some(crate::shot_router::Ledger::snapshot(
+                session,
+                CounterSource::Synthetic,
+                *self.seq.lock().unwrap(),
+            ))
         };
-        Ok((crate::shot_router::ArmCam {
-            cam: self.shared.cam, camera: config.id, session,
-            source: (config.source != CameraSource::Mvs).then_some(CounterSource::Synthetic),
-            counter_after_open: config.counter_after_open,
-        }, observed))
+        Ok((
+            crate::shot_router::ArmCam {
+                cam: self.shared.cam,
+                camera: config.id,
+                session,
+                source: (config.source != CameraSource::Mvs).then_some(CounterSource::Synthetic),
+                counter_after_open: config.counter_after_open,
+            },
+            observed,
+        ))
     }
 
     pub fn last_view(&self, view: u8) -> Option<Arc<FrameImage>> {
         let index = view.checked_sub(1)? as usize;
-        self.shared.last_full.lock().unwrap().as_ref()?.images.get(index).cloned()
+        self.shared
+            .last_full
+            .lock()
+            .unwrap()
+            .as_ref()?
+            .images
+            .get(index)
+            .cloned()
     }
 
     pub fn grab_views(&self, timeout: Duration) -> Option<Vec<Arc<FrameImage>>> {
@@ -911,10 +1141,17 @@ impl CameraSlot {
         result
     }
 
-    fn wait_views(&self, before: u64, session: u64, timeout: Duration) -> Option<Vec<Arc<FrameImage>>> {
+    fn wait_views(
+        &self,
+        before: u64,
+        session: u64,
+        timeout: Duration,
+    ) -> Option<Vec<Arc<FrameImage>>> {
         let until = Instant::now() + timeout;
         while Instant::now() < until {
-            if self.shared.session.load(Ordering::SeqCst) != session { return None; }
+            if self.shared.session.load(Ordering::SeqCst) != session {
+                return None;
+            }
             if self.shared.full_seq.load(Ordering::SeqCst) != before {
                 let images = self.last_views();
                 if !images.is_empty() {
@@ -926,13 +1163,24 @@ impl CameraSlot {
         None
     }
 
-    fn wait_capture(&self, request: CaptureRequest, timeout: Duration) -> Result<Option<Vec<Arc<FrameImage>>>, String> {
+    fn wait_capture(
+        &self,
+        request: CaptureRequest,
+        timeout: Duration,
+    ) -> Result<Option<Vec<Arc<FrameImage>>>, String> {
         let until = Instant::now() + timeout;
         while Instant::now() < until {
             if self.shared.session.load(Ordering::SeqCst) != request.session() {
                 return Err("取样期间相机会话已变化，本次取样已取消".into());
             }
-            if let Some(images) = self.shared.last_full.lock().unwrap().as_ref().and_then(|frame| request.images(frame)) {
+            if let Some(images) = self
+                .shared
+                .last_full
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|frame| request.images(frame))
+            {
                 return Ok(Some(images));
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -948,8 +1196,12 @@ impl CameraSlot {
         }
         match config.source {
             CameraSource::Sim => true,
-            CameraSource::Mvs => self.device.lock().unwrap().is_some() && !self.shared.disconnected.load(Ordering::SeqCst),
-            CameraSource::SampleSet => crate::offline::sample_set(&self.shared.rig.app).is_some_and(|set| set.has_camera(&config.id)),
+            CameraSource::Mvs => {
+                self.device.lock().unwrap().is_some()
+                    && !self.shared.disconnected.load(Ordering::SeqCst)
+            }
+            CameraSource::SampleSet => crate::offline::sample_set(&self.shared.rig.app)
+                .is_some_and(|set| set.has_camera(&config.id)),
         }
     }
 
@@ -959,7 +1211,10 @@ impl CameraSlot {
         let mut seq = self.seq.lock().unwrap();
         let session = NEXT_SESSION.fetch_add(1, Ordering::SeqCst);
         *seq = 0;
-        *self.shared.order.lock().unwrap() = Reorder { session, ..Reorder::default() };
+        *self.shared.order.lock().unwrap() = Reorder {
+            session,
+            ..Reorder::default()
+        };
         self.shared.session.store(session, Ordering::SeqCst);
         self.shared.manual.store(0, Ordering::SeqCst);
         self.shared.grab.store(false, Ordering::SeqCst);
@@ -981,7 +1236,12 @@ impl CameraSlot {
         self.trigger_frame(lose_in_transfer, payload, false).is_ok()
     }
 
-    fn trigger_frame(&self, lose_in_transfer: bool, payload: Option<TriggerPayload>, manual: bool) -> Result<Option<CaptureTicket>, String> {
+    fn trigger_frame(
+        &self,
+        lose_in_transfer: bool,
+        payload: Option<TriggerPayload>,
+        manual: bool,
+    ) -> Result<Option<CaptureTicket>, String> {
         let config = self.config();
         if let Err(e) = config.validate() {
             self.state.lock().unwrap().message = e.clone();
@@ -991,7 +1251,10 @@ impl CameraSlot {
         match config.source {
             CameraSource::Sim => {
                 let (session, n) = self.next_counters();
-                let ticket = CaptureTicket { session, frame_counter: n };
+                let ticket = CaptureTicket {
+                    session,
+                    frame_counter: n,
+                };
                 let shared = self.shared.clone();
                 if lose_in_transfer {
                     shared.deliver_in_order(session, n, None);
@@ -1001,18 +1264,32 @@ impl CameraSlot {
                     let started = Instant::now();
                     let images = tauri::async_runtime::spawn_blocking(move || match payload {
                         // 三台独立单视角相机各出一幅（D-SB-11）
-                        Some(TriggerPayload::Burst(r)) if config.view_count == 1 => Ok(vec![Arc::new(simimage::render_burst(&r))]),
-                        Some(TriggerPayload::Burst(_)) => Err(format!("段配方的相机必须是单视角，模拟相机 {} 配了 {} 个视角", config.id, config.view_count)),
-                        _ if config.view_count == 3 => simimage::background_views(config.view_count, n),
+                        Some(TriggerPayload::Burst(r)) if config.view_count == 1 => {
+                            Ok(vec![Arc::new(simimage::render_burst(&r))])
+                        }
+                        Some(TriggerPayload::Burst(_)) => Err(format!(
+                            "段配方的相机必须是单视角，模拟相机 {} 配了 {} 个视角",
+                            config.id, config.view_count
+                        )),
+                        _ if config.view_count == 3 => {
+                            simimage::background_views(config.view_count, n)
+                        }
                         _ => Ok(Vec::new()),
-                    }).await.map_err(|e| e.to_string()).and_then(|r| r);
+                    })
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| r);
                     let transfer = Duration::from_millis(180);
                     if started.elapsed() < transfer {
                         tokio::time::sleep(transfer - started.elapsed()).await;
                     }
                     match images {
                         Ok(images) => {
-                            shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, images, manual)));
+                            shared.deliver_in_order(
+                                session,
+                                n,
+                                Some(synthetic_frame(cam, session, n, images, manual)),
+                            );
                         }
                         Err(e) => {
                             cycle::log(&shared.rig.app, "err", "模拟取图", e);
@@ -1029,10 +1306,18 @@ impl CameraSlot {
                         Err("样本集相机收到合成图触发，没有样本件身份".to_string())
                     }
                     None => crate::offline::preview_target(&self.shared.rig.app, &config.id)
-                        .ok_or_else(|| format!("未选择离线样本集，或样本集里没有相机 {} 的拍照点", config.id)),
+                        .ok_or_else(|| {
+                            format!(
+                                "未选择离线样本集，或样本集里没有相机 {} 的拍照点",
+                                config.id
+                            )
+                        }),
                 };
                 let (session, n) = self.next_counters();
-                let ticket = CaptureTicket { session, frame_counter: n };
+                let ticket = CaptureTicket {
+                    session,
+                    frame_counter: n,
+                };
                 let shared = self.shared.clone();
                 if lose_in_transfer {
                     shared.deliver_in_order(session, n, None);
@@ -1043,13 +1328,30 @@ impl CameraSlot {
                 tauri::async_runtime::spawn(async move {
                     let worker = shared.clone();
                     let failed = tauri::async_runtime::spawn_blocking(move || {
-                        sample_set_arrival(&worker.order, target, &camera, views, cam, session, n, manual, |frame| worker.deliver(frame))
-                    }).await.unwrap_or_else(|e| {
+                        sample_set_arrival(
+                            &worker.order,
+                            target,
+                            &camera,
+                            views,
+                            cam,
+                            session,
+                            n,
+                            manual,
+                            |frame| worker.deliver(frame),
+                        )
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
                         shared.deliver_in_order(session, n, None);
                         Some(e.to_string())
                     });
                     if let Some(e) = failed {
-                        cycle::log(&shared.rig.app, "err", "样本集取图", format!("{e}；本帧按缺帧处理"));
+                        cycle::log(
+                            &shared.rig.app,
+                            "err",
+                            "样本集取图",
+                            format!("{e}；本帧按缺帧处理"),
+                        );
                     }
                 });
                 Ok(Some(ticket))
@@ -1058,7 +1360,12 @@ impl CameraSlot {
                 if config.trigger_source != "Software" {
                     return Err("触发源不是 Software，不能发送软触发".into());
                 }
-                self.device.lock().unwrap().as_ref().ok_or("相机未连接")?.command("TriggerSoftware")?;
+                self.device
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .ok_or("相机未连接")?
+                    .command("TriggerSoftware")?;
                 Ok(None)
             }
         }
@@ -1071,19 +1378,36 @@ impl CameraSlot {
             return Err("触发源为 Line0，软触发前先把触发源改为 Software".into());
         }
         if config.source == CameraSource::Mvs {
-            self.shared.manual.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            self.shared
+                .manual
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
                 .map_err(|_| "上一次软触发尚未返回图像，请等待；若已超时请重新连接相机")?;
         }
         let session = self.shared.session.load(Ordering::SeqCst);
-        let after = self.shared.identity.lock().unwrap().get(self.shared.cam)
-            .filter(|ledger| ledger.session == session).and_then(|ledger| ledger.last_frame);
-        self.shared.grab.store(config.source == CameraSource::Mvs, Ordering::SeqCst);
+        let after = self
+            .shared
+            .identity
+            .lock()
+            .unwrap()
+            .get(self.shared.cam)
+            .filter(|ledger| ledger.session == session)
+            .and_then(|ledger| ledger.last_frame);
+        self.shared
+            .grab
+            .store(config.source == CameraSource::Mvs, Ordering::SeqCst);
         match self.trigger_frame(false, payload, true) {
             Ok(Some(ticket)) => Ok(CaptureRequest::Exact(ticket)),
-            Ok(None) => Ok(CaptureRequest::After { session, frame: after }),
+            Ok(None) => Ok(CaptureRequest::After {
+                session,
+                frame: after,
+            }),
             Err(e) => {
                 self.shared.grab.store(false, Ordering::SeqCst);
-                Err(if config.source == CameraSource::Mvs { format!("{e}；软触发结果未确认，请重开相机后再布防") } else { e })
+                Err(if config.source == CameraSource::Mvs {
+                    format!("{e}；软触发结果未确认，请重开相机后再布防")
+                } else {
+                    e
+                })
             }
         }
     }
@@ -1136,13 +1460,28 @@ impl CameraSlot {
         let imaging = self.saved_imaging();
         write_imaging(&device, &imaging, &config.name)?;
         *self.imaging.lock().unwrap() = Some(imaging);
-        self.shared.chunk_trigger.store(chunks.trigger, Ordering::Relaxed);
-        self.shared.chunk_frame.store(chunks.frame, Ordering::Relaxed);
+        self.shared
+            .chunk_trigger
+            .store(chunks.trigger, Ordering::Relaxed);
+        self.shared
+            .chunk_frame
+            .store(chunks.frame, Ordering::Relaxed);
         // 开流前换会话：之后来的帧都算这次打开的
         self.new_session();
-        device.start(on_image, on_exception, Arc::as_ptr(&self.shared) as *mut c_void)?;
-        let format = if format == "Mono8" { format.to_string() } else { format!("{format} → 灰度") };
-        let msg = format!("已连接 {} · {} · {format}", device.summary.model, device.summary.serial);
+        device.start(
+            on_image,
+            on_exception,
+            Arc::as_ptr(&self.shared) as *mut c_void,
+        )?;
+        let format = if format == "Mono8" {
+            format.to_string()
+        } else {
+            format!("{format} → 灰度")
+        };
+        let msg = format!(
+            "已连接 {} · {} · {format}",
+            device.summary.model, device.summary.serial
+        );
         *self.device.lock().unwrap() = Some(device);
         let mut state = self.state.lock().unwrap();
         state.warnings = warnings;
@@ -1173,27 +1512,42 @@ const BAYER8: [&str; 4] = ["BayerBG8", "BayerRG8", "BayerGB8", "BayerGR8"];
 
 /// 相机可选项里的 8 位 Bayer，按 BAYER8 的顺序。
 fn bayer8_choices(entries: &[String]) -> Vec<&'static str> {
-    BAYER8.into_iter().filter(|f| entries.iter().any(|e| e == f)).collect()
+    BAYER8
+        .into_iter()
+        .filter(|f| entries.iter().any(|e| e == f))
+        .collect()
 }
 
 /// 先设 Mono8；彩色相机没有 Mono8 时取 8 位 Bayer，取图回调里转灰度（D-9）。都设不上时不能取流。
 fn set_pixel_format(d: &mvs::Device) -> Result<&'static str, String> {
-    let Err(mut last) = d.set_enum("PixelFormat", "Mono8") else { return Ok("Mono8") };
-    let entries = d.enum_entries("PixelFormat").map_err(|e| format!("像素格式设不了 Mono8（{last}），也读不出相机支持的格式：{e}"))?;
+    let Err(mut last) = d.set_enum("PixelFormat", "Mono8") else {
+        return Ok("Mono8");
+    };
+    let entries = d
+        .enum_entries("PixelFormat")
+        .map_err(|e| format!("像素格式设不了 Mono8（{last}），也读不出相机支持的格式：{e}"))?;
     for f in bayer8_choices(&entries) {
         match d.set_enum("PixelFormat", f) {
             Ok(()) => return Ok(f),
             Err(e) => last = e,
         }
     }
-    let list = if entries.is_empty() { "无".to_string() } else { entries.join("、") };
-    Err(format!("像素格式需要 Mono8 或 8 位 Bayer，相机可选：{list}（{last}）"))
+    let list = if entries.is_empty() {
+        "无".to_string()
+    } else {
+        entries.join("、")
+    };
+    Err(format!(
+        "像素格式需要 Mono8 或 8 位 Bayer，相机可选：{list}（{last}）"
+    ))
 }
 
 fn set_enum_verified(d: &mvs::Device, key: &str, value: &str) -> Result<(), String> {
     d.set_enum(key, value)?;
     let actual = d.get_enum(key)?;
-    if actual != value { return Err(format!("{key} 回读为 {actual}，期望 {value}")); }
+    if actual != value {
+        return Err(format!("{key} 回读为 {actual}，期望 {value}"));
+    }
     Ok(())
 }
 
@@ -1253,14 +1607,22 @@ fn configure_trigger(d: &mvs::Device, c: &CameraConfig) -> Result<Option<f32>, S
         }
         d.set_trigger_delay(c.trigger_delay_us)?;
         d.set_bool("AcquisitionFrameRateEnable", true)?;
-        if !d.get_bool("AcquisitionFrameRateEnable")? { return Err("相机未启用固定帧率".into()); }
+        if !d.get_bool("AcquisitionFrameRateEnable")? {
+            return Err("相机未启用固定帧率".into());
+        }
         d.set_float("AcquisitionFrameRate", c.frame_rate)?;
         let actual = d.get_float("AcquisitionFrameRate")?;
-        if !actual.is_finite() || (actual - c.frame_rate).abs() > (c.frame_rate * 0.001).max(0.001) {
-            return Err(format!("相机帧率回读 {actual} fps，与设定 {} fps 不一致", c.frame_rate));
+        if !actual.is_finite() || (actual - c.frame_rate).abs() > (c.frame_rate * 0.001).max(0.001)
+        {
+            return Err(format!(
+                "相机帧率回读 {actual} fps，与设定 {} fps 不一致",
+                c.frame_rate
+            ));
         }
         Some(actual)
-    } else { None };
+    } else {
+        None
+    };
     set_enum_verified(d, "TriggerMode", "On")?;
     Ok(rate)
 }
@@ -1272,13 +1634,19 @@ fn write_imaging(d: &mvs::Device, imaging: &CameraImaging, name: &str) -> Result
         .map_err(|e| format!("{name}写入增益失败：{e}；在相机页修改曝光与增益后重新连接"))
 }
 
-fn apply(d: &mvs::Device, c: &CameraConfig) -> Result<(Vec<String>, Option<f32>, Option<f32>, &'static str, Chunks), String> {
+fn apply(
+    d: &mvs::Device,
+    c: &CameraConfig,
+) -> Result<(Vec<String>, Option<f32>, Option<f32>, &'static str, Chunks), String> {
     let configured_frame_rate = configure_trigger(d, c)?;
     let format = set_pixel_format(d)?;
     let mut warnings = Vec::new();
     let mut must = |r: Result<(), String>| match r {
         Ok(()) => true,
-        Err(e) => { warnings.push(e); false }
+        Err(e) => {
+            warnings.push(e);
+            false
+        }
     };
     if c.trigger_source == "Line0" {
         must(d.set_enum("LineSelector", "Line0"));
@@ -1326,9 +1694,15 @@ fn apply(d: &mvs::Device, c: &CameraConfig) -> Result<(Vec<String>, Option<f32>,
         })();
         match entries {
             Ok(entries) => {
-                let wanted: Vec<_> = entries.iter().filter_map(|e| chunk_item(e).map(|item| (e, item))).collect();
+                let wanted: Vec<_> = entries
+                    .iter()
+                    .filter_map(|e| chunk_item(e).map(|item| (e, item)))
+                    .collect();
                 if wanted.is_empty() {
-                    must(Err(format!("相机不支持帧计数 / 触发计数 Chunk（可选项：{}）", entries.join("、"))));
+                    must(Err(format!(
+                        "相机不支持帧计数 / 触发计数 Chunk（可选项：{}）",
+                        entries.join("、")
+                    )));
                 }
                 for (e, item) in wanted {
                     let on = must(set_enum_verified(d, "ChunkSelector", e))
@@ -1370,7 +1744,9 @@ pub struct CameraRig {
 }
 
 impl CameraRig {
-    pub fn recipe_capture(&self) -> &Arc<crate::recipe_capture::RecipeCaptureHost> { &self.rig.recipe_capture }
+    pub fn recipe_capture(&self) -> &Arc<crate::recipe_capture::RecipeCaptureHost> {
+        &self.rig.recipe_capture
+    }
 
     pub fn new(app: &AppHandle, tx: Sender<Frame>) -> Result<Self, String> {
         let path = crate::storage::project_config(app).join("cameras.json");
@@ -1381,14 +1757,21 @@ impl CameraRig {
                 ..Default::default()
             });
         }
-        let offline_sources: Vec<String> = file.cameras.iter_mut().filter(|c| c.source != CameraSource::Mvs).map(|c| {
-            c.source = CameraSource::Mvs;
-            c.id.clone()
-        }).collect();
+        let offline_sources: Vec<String> = file
+            .cameras
+            .iter_mut()
+            .filter(|c| c.source != CameraSource::Mvs)
+            .map(|c| {
+                c.source = CameraSource::Mvs;
+                c.id.clone()
+            })
+            .collect();
         if !offline_sources.is_empty() {
             notes.push(format!("cameras.json 中的相机 {} 不是海康来源，已改为海康 MVS；合成图与样本集相机只由离线模式临时生成", offline_sources.join("、")));
         }
-        let assigned = assign_ids(&mut file.cameras, &mut file.next_id) || !offline_sources.is_empty() || retired;
+        let assigned = assign_ids(&mut file.cameras, &mut file.next_id)
+            || !offline_sources.is_empty()
+            || retired;
         let rig = Arc::new(RigShared {
             app: app.clone(),
             tx,
@@ -1398,23 +1781,41 @@ impl CameraRig {
             )?,
             imaging: Mutex::new(std::mem::take(&mut file.imaging)),
         });
-        let slots = file.cameras.into_iter().enumerate().map(|(i, c)| Arc::new(CameraSlot::new(&rig, i as u8, c))).collect();
-        let mut this = Self { rig, slots: RwLock::new(slots), path, next_id: Mutex::new(file.next_id), save_lock: Mutex::new(()), generation: AtomicU64::new(0), notes };
+        let slots = file
+            .cameras
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| Arc::new(CameraSlot::new(&rig, i as u8, c)))
+            .collect();
+        let mut this = Self {
+            rig,
+            slots: RwLock::new(slots),
+            path,
+            next_id: Mutex::new(file.next_id),
+            save_lock: Mutex::new(()),
+            generation: AtomicU64::new(0),
+            notes,
+        };
         if assigned {
             if let Err(e) = this.save() {
-                this.notes.push(format!("相机编号没能写回 cameras.json：{e}"));
+                this.notes
+                    .push(format!("相机编号没能写回 cameras.json：{e}"));
             }
         }
         Ok(this)
     }
 
     pub fn index_of(&self, id: &str) -> Option<u8> {
-        self.slots().iter().position(|s| s.config.lock().unwrap().id == id).map(|i| i as u8)
+        self.slots()
+            .iter()
+            .position(|s| s.config.lock().unwrap().id == id)
+            .map(|i| i as u8)
     }
 
     /// 编号 → 此刻的相机组序号；不在相机组里时返回给人看的原因。
     pub fn require(&self, id: &str) -> Result<u8, String> {
-        self.index_of(id).ok_or_else(|| format!("相机组里没有编号为 {id} 的相机"))
+        self.index_of(id)
+            .ok_or_else(|| format!("相机组里没有编号为 {id} 的相机"))
     }
 
     pub fn resolve(&self, ids: &[String]) -> Result<Vec<u8>, String> {
@@ -1423,7 +1824,10 @@ impl CameraRig {
 
     /// 各相机累计被丢弃的帧。
     pub fn dropped_total(&self) -> u64 {
-        self.slots().iter().map(|s| s.shared.dropped.load(Ordering::Relaxed)).sum()
+        self.slots()
+            .iter()
+            .map(|s| s.shared.dropped.load(Ordering::Relaxed))
+            .sum()
     }
 
     fn save(&self) -> Result<(), String> {
@@ -1471,14 +1875,18 @@ impl CameraRig {
     }
 
     pub fn all_ready(&self, cams: &[u8]) -> bool {
-        cams.iter().all(|&c| self.slot(c as usize).is_some_and(|s| s.is_ready()))
+        cams.iter()
+            .all(|&c| self.slot(c as usize).is_some_and(|s| s.is_ready()))
     }
 
     /// 这些相机都就绪；否则返回第一台的原因。
     pub fn check_ready_at(&self, cams: &[u8]) -> Result<(), String> {
         for &c in cams {
             let slot = self.slot(c as usize).ok_or("相机组改过了")?;
-            manual_arm_ready(slot.config().source, slot.shared.manual.load(Ordering::SeqCst))?;
+            manual_arm_ready(
+                slot.config().source,
+                slot.shared.manual.load(Ordering::SeqCst),
+            )?;
             if !slot.is_ready() {
                 let st = slot.status();
                 return Err(format!("{}未就绪：{}", st.name, st.message));
@@ -1492,15 +1900,25 @@ impl CameraRig {
         self.rig.capture.store(on, Ordering::Relaxed);
     }
 
-    pub fn trigger(&self, cam: u8, lose_in_transfer: bool, payload: Option<TriggerPayload>) -> bool {
-        self.slot(cam as usize).is_some_and(|s| s.trigger(lose_in_transfer, payload))
+    pub fn trigger(
+        &self,
+        cam: u8,
+        lose_in_transfer: bool,
+        payload: Option<TriggerPayload>,
+    ) -> bool {
+        self.slot(cam as usize)
+            .is_some_and(|s| s.trigger(lose_in_transfer, payload))
     }
 
     pub fn last_view(&self, cam: u8, view: u8) -> Option<Arc<FrameImage>> {
         self.slot(cam as usize).and_then(|s| s.last_view(view))
     }
 
-    pub fn capture_views(&self, cam: u8, payload: Option<TriggerPayload>) -> Result<Vec<Arc<FrameImage>>, String> {
+    pub fn capture_views(
+        &self,
+        cam: u8,
+        payload: Option<TriggerPayload>,
+    ) -> Result<Vec<Arc<FrameImage>>, String> {
         let cycle = self.rig.app.state::<CycleHost>();
         let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
         check_idle(&cycle)?;
@@ -1523,31 +1941,53 @@ impl CameraRig {
             let captured = slot.wait_capture(request, Duration::from_secs(2))?;
             captured.ok_or("2 秒内没有收到本次触发的完整图像；检查触发与相机连接")?
         } else {
-            slot.grab_views(Duration::from_secs(2)).ok_or("请在所选位置触发相机；2 秒内未收到完整图像")?
+            slot.grab_views(Duration::from_secs(2))
+                .ok_or("请在所选位置触发相机；2 秒内未收到完整图像")?
         };
         if images.len() != config.view_count as usize {
-            return Err(format!("相机需要 {} 个视角，这一帧只有 {} 幅图像", config.view_count, images.len()));
+            return Err(format!(
+                "相机需要 {} 个视角，这一帧只有 {} 幅图像",
+                config.view_count,
+                images.len()
+            ));
         }
         Ok(images)
     }
 
-    pub fn capture_view(&self, cam: u8, view: u8, payload: Option<TriggerPayload>) -> Result<Arc<FrameImage>, String> {
+    pub fn capture_view(
+        &self,
+        cam: u8,
+        view: u8,
+        payload: Option<TriggerPayload>,
+    ) -> Result<Arc<FrameImage>, String> {
         let slot = self.slot(cam as usize).ok_or("相机不存在")?;
         if view == 0 || view > slot.config().view_count {
             return Err(format!("相机没有视角 {view}"));
         }
-        self.capture_views(cam, payload)?.get(view as usize - 1).cloned().ok_or_else(|| format!("这一帧缺少视角 {view}"))
+        self.capture_views(cam, payload)?
+            .get(view as usize - 1)
+            .cloned()
+            .ok_or_else(|| format!("这一帧缺少视角 {view}"))
     }
 
     fn rebuild(&self, app: &AppHandle, configs: Vec<CameraConfig>) {
         // 增删别的相机不把已释放给 MVS 的相机抢回来
-        let released: Vec<String> = self.slots().iter().filter(|s| s.released.load(Ordering::SeqCst)).map(|s| s.config().id).collect();
-        let slots: Vec<Arc<CameraSlot>> = configs.into_iter().enumerate().map(|(i, c)| {
-            let keep = c.source == CameraSource::Mvs && released.contains(&c.id);
-            let slot = CameraSlot::new(&self.rig, i as u8, c);
-            slot.released.store(keep, Ordering::SeqCst);
-            Arc::new(slot)
-        }).collect();
+        let released: Vec<String> = self
+            .slots()
+            .iter()
+            .filter(|s| s.released.load(Ordering::SeqCst))
+            .map(|s| s.config().id)
+            .collect();
+        let slots: Vec<Arc<CameraSlot>> = configs
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let keep = c.source == CameraSource::Mvs && released.contains(&c.id);
+                let slot = CameraSlot::new(&self.rig, i as u8, c);
+                slot.released.store(keep, Ordering::SeqCst);
+                Arc::new(slot)
+            })
+            .collect();
         // 旧相机在锁外释放：关海康相机要一会儿，别让别的线程卡在读相机组上
         let old = std::mem::replace(&mut *self.slots.write().unwrap(), slots.clone());
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -1576,7 +2016,9 @@ const RECONNECT_LOG_WINDOW: Duration = Duration::from_secs(60);
 
 /// 每台相机一个后台循环：海康相机掉线或未打开时每 2 s 重连（已释放给 MVS 的不连）。相机被移出相机组后循环自己结束。
 fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
-    if !slot.supervision.start() { return; }
+    if !slot.supervision.start() {
+        return;
+    }
     let slot = Arc::downgrade(slot);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -1602,11 +2044,23 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
                             let config = s.config();
                             let lost = s.shared.disconnected.load(Ordering::SeqCst);
                             let opened = s.device.lock().unwrap().is_some();
-                            if config.source == CameraSource::Mvs && !config.serial.trim().is_empty()
-                                && s.supervision.reconnect_due(s.released.load(Ordering::SeqCst), lost, opened) {
+                            if config.source == CameraSource::Mvs
+                                && !config.serial.trim().is_empty()
+                                && s.supervision.reconnect_due(
+                                    s.released.load(Ordering::SeqCst),
+                                    lost,
+                                    opened,
+                                )
+                            {
                                 let s2 = s.clone();
-                                Some((config, lost, tauri::async_runtime::spawn_blocking(move || s2.open()).await))
-                            } else { None }
+                                Some((
+                                    config,
+                                    lost,
+                                    tauri::async_runtime::spawn_blocking(move || s2.open()).await,
+                                ))
+                            } else {
+                                None
+                            }
                         }
                         None => None,
                     };
@@ -1692,13 +2146,22 @@ pub fn camera_bandwidth(cycle: State<'_, CycleHost>, hz: f64) -> Result<Bandwidt
     if !(hz.is_finite() && hz > 0.0) {
         return Err(format!("触发频率需为正数（实际 {hz}）"));
     }
-    let sizes: Vec<_> = cycle.camera.slots().iter().map(|s| s.link_frame_size()).collect();
+    let sizes: Vec<_> = cycle
+        .camera
+        .slots()
+        .iter()
+        .map(|s| s.link_frame_size())
+        .collect();
     Ok(aggregate_bandwidth(&sizes, hz))
 }
 
 /// 保存并应用一台相机的配置。返回相机未接受的参数。
 #[tauri::command]
-pub async fn camera_save_config(app: AppHandle, cam: usize, config: CameraConfig) -> Result<Vec<String>, String> {
+pub async fn camera_save_config(
+    app: AppHandle,
+    cam: usize,
+    config: CameraConfig,
+) -> Result<Vec<String>, String> {
     let result = camera_save_config_inner(app.clone(), cam, config).await;
     crate::cycle::log_op(
         &app,
@@ -1734,7 +2197,9 @@ async fn camera_save_config_inner(
     crate::commands::log_config(&app);
     let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
     let _ = app.emit("camera://changed", ());
-    let warnings = tauri::async_runtime::spawn_blocking(move || slot.apply_config()).await.map_err(|e| e.to_string())??;
+    let warnings = tauri::async_runtime::spawn_blocking(move || slot.apply_config())
+        .await
+        .map_err(|e| e.to_string())??;
     saved.map_err(|e| format!("已生效，但没能写回 cameras.json：{e}"))?;
     Ok(warnings)
 }
@@ -1751,7 +2216,11 @@ fn check_serial(configs: &[CameraConfig], cam: usize, config: &CameraConfig) -> 
     if config.source != CameraSource::Mvs || config.serial.is_empty() {
         return Ok(());
     }
-    match configs.iter().enumerate().find(|(i, c)| *i != cam && c.source == CameraSource::Mvs && c.serial == config.serial) {
+    match configs
+        .iter()
+        .enumerate()
+        .find(|(i, c)| *i != cam && c.source == CameraSource::Mvs && c.serial == config.serial)
+    {
         Some((_, c)) => Err(format!("序列号 {} 已经给了{}", config.serial, c.name)),
         None => Ok(()),
     }
@@ -1762,7 +2231,11 @@ fn id_number(id: &str) -> Option<u32> {
 }
 
 fn take_id(configs: &[CameraConfig], next_id: &mut u32) -> String {
-    let top = configs.iter().filter_map(|c| id_number(&c.id)).max().unwrap_or(0);
+    let top = configs
+        .iter()
+        .filter_map(|c| id_number(&c.id))
+        .max()
+        .unwrap_or(0);
     *next_id = (*next_id).max(top + 1);
     let id = format!("cam{next_id}");
     *next_id += 1;
@@ -1785,7 +2258,11 @@ fn assign_ids(configs: &mut [CameraConfig], next_id: &mut u32) -> bool {
             configs[i].id = take_id(configs, next_id);
         }
     }
-    let top = configs.iter().filter_map(|c| id_number(&c.id)).max().unwrap_or(0);
+    let top = configs
+        .iter()
+        .filter_map(|c| id_number(&c.id))
+        .max()
+        .unwrap_or(0);
     *next_id = (*next_id).max(top + 1);
     changed
 }
@@ -1796,7 +2273,9 @@ fn check_user_editable(app: &AppHandle, config: Option<&CameraConfig>) -> Result
         return Err("离线模式由站点模式管理相机组，退出离线后再修改".into());
     }
     if config.is_some_and(|c| c.source != CameraSource::Mvs) {
-        return Err("真机模式下相机来源只能是海康 MVS；合成图与样本集请在离线控制台进入离线".into());
+        return Err(
+            "真机模式下相机来源只能是海康 MVS；合成图与样本集请在离线控制台进入离线".into(),
+        );
     }
     Ok(())
 }
@@ -1923,12 +2402,24 @@ async fn camera_remove_inner(app: AppHandle, cam: usize) -> Result<(), String> {
         return Err("相机组至少保留 1 台".into());
     }
     let id = &configs[cam].id;
-    let mut users: Vec<String> = cycle.recipes.list().iter()
-        .filter(|r| r.cameras().iter().any(|camera| camera == id)).map(|r| r.id.clone()).collect();
-    users.extend(app.state::<crate::workspace::WorkspaceHost>().camera_users(id));
-    users.sort(); users.dedup();
+    let mut users: Vec<String> = cycle
+        .recipes
+        .list()
+        .iter()
+        .filter(|r| r.cameras().iter().any(|camera| camera == id))
+        .map(|r| r.id.clone())
+        .collect();
+    users.extend(
+        app.state::<crate::workspace::WorkspaceHost>()
+            .camera_users(id),
+    );
+    users.sort();
+    users.dedup();
     if !users.is_empty() {
-        return Err(format!("相机 {id} 正被配方 {} 引用，请先调整配方的相机", users.join("、")));
+        return Err(format!(
+            "相机 {id} 正被配方 {} 引用，请先调整配方的相机",
+            users.join("、")
+        ));
     }
     configs.remove(cam);
     cycle.camera.rebuild(&app, configs);
@@ -1940,16 +2431,26 @@ async fn camera_remove_inner(app: AppHandle, cam: usize) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn camera_list_devices() -> Result<Vec<DeviceSummary>, String> {
-    tauri::async_runtime::spawn_blocking(mvs::enumerate).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(mvs::enumerate)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 最近一帧的缩略图：前 16 字节为缩略图宽、高与原图宽、高（u32 小端），其后为 8 位灰度像素。
 #[tauri::command]
-pub fn camera_preview(cycle: State<'_, CycleHost>, cam: usize, view: Option<u8>) -> tauri::ipc::Response {
+pub fn camera_preview(
+    cycle: State<'_, CycleHost>,
+    cam: usize,
+    view: Option<u8>,
+) -> tauri::ipc::Response {
     let mut out = Vec::new();
     if let Some(slot) = cycle.camera.slot(cam) {
         let previews = slot.shared.preview.lock().unwrap();
-        if let Some(p) = view.unwrap_or(1).checked_sub(1).and_then(|i| previews.get(i as usize)) {
+        if let Some(p) = view
+            .unwrap_or(1)
+            .checked_sub(1)
+            .and_then(|i| previews.get(i as usize))
+        {
             for v in [p.width, p.height, p.full_width, p.full_height] {
                 out.extend_from_slice(&v.to_le_bytes());
             }
@@ -1987,7 +2488,12 @@ async fn camera_soft_trigger_inner(cycle: State<'_, CycleHost>, cam: usize) -> R
 
 /// 相机页保存曝光与增益：写回 cameras.json，并立即写入已连接的海康相机；未连接时在下次打开时写入。
 #[tauri::command]
-pub async fn camera_set_imaging(app: AppHandle, cam: usize, id: String, imaging: CameraImaging) -> Result<(), String> {
+pub async fn camera_set_imaging(
+    app: AppHandle,
+    cam: usize,
+    id: String,
+    imaging: CameraImaging,
+) -> Result<(), String> {
     let result = camera_set_imaging_inner(app.clone(), cam, id, imaging).await;
     crate::cycle::log_op(
         &app,
@@ -2056,8 +2562,15 @@ async fn camera_release_inner(app: AppHandle, cam: usize) -> Result<(), String> 
         return Err("只有海康相机可以释放给 MVS 客户端".into());
     }
     slot.released.store(true, Ordering::SeqCst);
-    tauri::async_runtime::spawn_blocking(move || slot.close()).await.map_err(|e| e.to_string())?;
-    cycle::log(&app, "ok", "相机", format!("{}：已释放给海康 MVS 客户端", config.name));
+    tauri::async_runtime::spawn_blocking(move || slot.close())
+        .await
+        .map_err(|e| e.to_string())?;
+    cycle::log(
+        &app,
+        "ok",
+        "相机",
+        format!("{}：已释放给海康 MVS 客户端", config.name),
+    );
     let _ = cycle.tx.send(cycle::Input::Refresh);
     let _ = app.emit("camera://changed", ());
     Ok(())
@@ -2083,7 +2596,9 @@ async fn camera_reconnect_inner(app: AppHandle, cam: usize) -> Result<String, St
     check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     slot.released.store(false, Ordering::SeqCst);
-    let opened = tauri::async_runtime::spawn_blocking(move || slot.open()).await.map_err(|e| e.to_string())?;
+    let opened = tauri::async_runtime::spawn_blocking(move || slot.open())
+        .await
+        .map_err(|e| e.to_string())?;
     let _ = cycle.tx.send(cycle::Input::Refresh);
     let _ = app.emit("camera://changed", ());
     opened
@@ -2098,8 +2613,14 @@ mod rig_file_tests {
         let supervision = CameraSupervision::default();
         supervision.start();
         for (lost, opened) in [(false, false), (true, false), (true, true)] {
-            assert!(!supervision.reconnect_due(true, lost, opened), "lost={lost} opened={opened}");
-            assert!(supervision.reconnect_due(false, lost, opened), "lost={lost} opened={opened}");
+            assert!(
+                !supervision.reconnect_due(true, lost, opened),
+                "lost={lost} opened={opened}"
+            );
+            assert!(
+                supervision.reconnect_due(false, lost, opened),
+                "lost={lost} opened={opened}"
+            );
         }
         assert!(!supervision.reconnect_due(false, false, true));
     }
@@ -2119,15 +2640,55 @@ mod view_tests {
 
     #[test]
     fn burst_plan_camera_missing_or_not_single_view_is_rejected() {
-        let single = |id: &str| CameraConfig { id: id.into(), view_count: 1, ..CameraConfig::default() };
+        let single = |id: &str| CameraConfig {
+            id: id.into(),
+            view_count: 1,
+            ..CameraConfig::default()
+        };
         let plan: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
         let cases: [(&str, CameraConfig, bool); 7] = [
             ("单视角独立相机", single("cam3"), true),
-            ("Software 不参与整轮采集", CameraConfig { trigger_source: "Software".into(), ..single("cam3") }, false),
-            ("帧率不一致", CameraConfig { frame_rate: 20.0, ..single("cam3") }, false),
-            ("旧边沿不可进入生产", CameraConfig { trigger_activation: "RisingEdge".into(), ..single("cam3") }, false),
-            ("三视角样本集相机", CameraConfig { source: CameraSource::SampleSet, view_count: 3, ..single("cam3") }, false),
-            ("配了三目拼接布局", CameraConfig { composite_layout: Some(crate::recipe_capture::CompositeLayout::Horizontal), ..single("cam3") }, false),
+            (
+                "Software 不参与整轮采集",
+                CameraConfig {
+                    trigger_source: "Software".into(),
+                    ..single("cam3")
+                },
+                false,
+            ),
+            (
+                "帧率不一致",
+                CameraConfig {
+                    frame_rate: 20.0,
+                    ..single("cam3")
+                },
+                false,
+            ),
+            (
+                "旧边沿不可进入生产",
+                CameraConfig {
+                    trigger_activation: "RisingEdge".into(),
+                    ..single("cam3")
+                },
+                false,
+            ),
+            (
+                "三视角样本集相机",
+                CameraConfig {
+                    source: CameraSource::SampleSet,
+                    view_count: 3,
+                    ..single("cam3")
+                },
+                false,
+            ),
+            (
+                "配了三目拼接布局",
+                CameraConfig {
+                    composite_layout: Some(crate::recipe_capture::CompositeLayout::Horizontal),
+                    ..single("cam3")
+                },
+                false,
+            ),
             ("计划相机不在相机组", single("cam9"), false),
         ];
         for (name, third, accepted) in cases {
@@ -2138,9 +2699,19 @@ mod view_tests {
 
     #[test]
     fn software_capture_rejects_the_previous_callback_image_after_its_pending_flag_clears() {
-        let image = |session, counter, value| CapturedFrame::from_frame(&synthetic_frame(0, session, counter,
-            vec![Arc::new(FrameImage::new(1, 1, vec![value]))], true));
-        let requested = CaptureRequest::After { session: 12, frame: Some(7) };
+        let image = |session, counter, value| {
+            CapturedFrame::from_frame(&synthetic_frame(
+                0,
+                session,
+                counter,
+                vec![Arc::new(FrameImage::new(1, 1, vec![value]))],
+                true,
+            ))
+        };
+        let requested = CaptureRequest::After {
+            session: 12,
+            frame: Some(7),
+        };
         assert!(requested.images(&image(12, 7, 10)).is_none());
         assert!(requested.images(&image(11, 8, 20)).is_none());
         assert_eq!(requested.images(&image(12, 8, 30)).unwrap()[0].pixels, [30]);
@@ -2148,8 +2719,21 @@ mod view_tests {
 
     #[test]
     fn prior_trigger_completion_cannot_satisfy_the_current_capture() {
-        let frame = |session, counter, value: u8| synthetic_frame(0, session, counter, (1u8..=3).map(|view| Arc::new(FrameImage::new(1, 1, vec![value + view]))).collect(), true);
-        let requested = CaptureTicket { session: 12, frame_counter: 8 };
+        let frame = |session, counter, value: u8| {
+            synthetic_frame(
+                0,
+                session,
+                counter,
+                (1u8..=3)
+                    .map(|view| Arc::new(FrameImage::new(1, 1, vec![value + view])))
+                    .collect(),
+                true,
+            )
+        };
+        let requested = CaptureTicket {
+            session: 12,
+            frame_counter: 8,
+        };
         let mut cached = CapturedFrame::from_frame(&frame(12, 7, 10));
         assert!(cached.images_for(requested).is_none());
         cached = CapturedFrame::from_frame(&frame(11, 8, 20));
@@ -2157,7 +2741,13 @@ mod view_tests {
         cached = CapturedFrame::from_frame(&frame(12, 8, 30));
         let images = cached.images_for(requested).unwrap();
         assert_eq!(images.len(), 3);
-        assert_eq!(images.iter().map(|image| image.pixels[0]).collect::<Vec<_>>(), [31, 32, 33]);
+        assert_eq!(
+            images
+                .iter()
+                .map(|image| image.pixels[0])
+                .collect::<Vec<_>>(),
+            [31, 32, 33]
+        );
         cached = CapturedFrame::from_frame(&frame(12, 9, 40));
         assert!(cached.images_for(requested).is_none());
     }

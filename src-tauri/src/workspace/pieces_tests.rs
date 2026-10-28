@@ -5,7 +5,10 @@ use super::pieces::{discard_piece, replace_teaching_piece, sync_pieces, Teaching
 use super::progress::StepStatus;
 use super::*;
 use crate::frame_align::{AlignedCut, ReviewReason};
-use crate::plan::{OffsetMeasure, OffsetRef, PartCalib, SegmentCalib, SegmentKind::{Corner, Straight}};
+use crate::plan::{
+    OffsetMeasure, OffsetRef, PartCalib, SegmentCalib,
+    SegmentKind::{Corner, Straight},
+};
 use crate::recipe::SegmentCorridor;
 use crate::recipe_capture::{CaptureRoundV2, RecipeCaptureHost};
 
@@ -29,7 +32,9 @@ fn with_teaching(taught: bool) -> (Workspace, CaptureRoundV2) {
     apply_capture_review(&mut w, &teach, CaptureReviewEdit::Save(vec![15])).unwrap();
     apply_capture_review(&mut w, &teach, CaptureReviewEdit::Confirm).unwrap();
     if taught {
-        let corridor = crate::recipe::samples_burst().inspect[0].segments[0].corridor.clone();
+        let corridor = crate::recipe::samples_burst().inspect[0].segments[0]
+            .corridor
+            .clone();
         for camera in w.doc.plan_cameras() {
             for segment in [1u32, 2] {
                 w.camera_teaching.push(serde_json::from_value::<CameraTeaching>(json!({"camera": camera, "round": "teach",
@@ -40,7 +45,12 @@ fn with_teaching(taught: bool) -> (Workspace, CaptureRoundV2) {
             }
         }
         for inspect in &mut w.doc.inspect {
-            inspect.segments = [1, 2].map(|segment| SegmentCorridor { segment, corridor: corridor.clone() }).to_vec();
+            inspect.segments = [1, 2]
+                .map(|segment| SegmentCorridor {
+                    segment,
+                    corridor: corridor.clone(),
+                })
+                .to_vec();
         }
         w.doc.build().unwrap();
     }
@@ -48,7 +58,13 @@ fn with_teaching(taught: bool) -> (Workspace, CaptureRoundV2) {
 }
 
 fn aligned(cut: u64, reason: Option<ReviewReason>) -> AlignedCut {
-    AlignedCut { cut, proportional: cut, sharpness: 2.0, reason, review: reason.is_some() }
+    AlignedCut {
+        cut,
+        proportional: cut,
+        sharpness: 2.0,
+        reason,
+        review: reason.is_some(),
+    }
 }
 
 #[test]
@@ -61,11 +77,22 @@ fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_struc
     apply_capture_review(&mut w, &other, CaptureReviewEdit::Save(vec![14])).unwrap();
     apply_capture_review(&mut w, &other, CaptureReviewEdit::Confirm).unwrap();
     let metrics = measure_round(&w.doc.plan_cameras(), &other, |_, _, _| Ok(measured(0.0)));
-    w.calibration.rounds.push(calibration_round(&w.doc, &other, false, &metrics));
-    let calib = SegmentCalib { rounds: 10, min: 14, max: 16, mean: 15.0 };
-    w.doc.part_calib = Some(PartCalib { expected_total: 30, calib: calib.clone() });
+    w.calibration
+        .rounds
+        .push(calibration_round(&w.doc, &other, false, &metrics));
+    let calib = SegmentCalib {
+        rounds: 10,
+        min: 14,
+        max: 16,
+        mean: 15.0,
+    };
+    w.doc.part_calib = Some(PartCalib {
+        expected_total: 30,
+        calib: calib.clone(),
+    });
     for segment in &mut w.doc.segments {
-        (segment.expected_frames, segment.calib, segment.tolerance) = (Some(15), Some(calib.clone()), 3);
+        (segment.expected_frames, segment.calib, segment.tolerance) =
+            (Some(15), Some(calib.clone()), 3);
     }
     w.doc.segments[0].offset_ref = Some(OffsetRef {
         measure: OffsetMeasure::AbsoluteX,
@@ -77,26 +104,71 @@ fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_struc
     w.doc.calibration_rounds = 12;
 
     let before = w.clone();
-    assert!(replace_teaching_piece(&mut w, piece("teach-again", 1)).is_err(), "同一件");
-    assert_eq!(state_value(&w), state_value(&before), "同一件被拒时候选不变");
+    assert!(
+        replace_teaching_piece(&mut w, piece("teach-again", 1)).is_err(),
+        "同一件"
+    );
+    assert_eq!(
+        state_value(&w),
+        state_value(&before),
+        "同一件被拒时候选不变"
+    );
 
     replace_teaching_piece(&mut w, piece("new", 2)).unwrap();
     assert_eq!(w.teaching_piece, Some(piece("new", 2)));
-    assert!(w.camera_teaching.is_empty() && w.doc.inspect.iter().all(|i| i.segments.is_empty()), "走廊与示教帧");
-    assert!(w.capture_review.rounds.is_empty() && w.capture_review.template.is_none(), "全部边界复核与模板");
-    assert!(w.calibration.rounds.is_empty() && w.doc.part_calib.is_none(), "标定件与整件标定");
-    assert!(w.doc.segments.iter().all(|s| s.expected_frames.is_none() && s.calib.is_none()), "N_exp 与标定统计");
-    assert_eq!(w.doc.segments[0].offset_ref.as_ref().map(|r| (r.x_ref, r.spread)), Some((None, None)), "x_ref");
+    assert!(
+        w.camera_teaching.is_empty() && w.doc.inspect.iter().all(|i| i.segments.is_empty()),
+        "走廊与示教帧"
+    );
+    assert!(
+        w.capture_review.rounds.is_empty() && w.capture_review.template.is_none(),
+        "全部边界复核与模板"
+    );
+    assert!(
+        w.calibration.rounds.is_empty() && w.doc.part_calib.is_none(),
+        "标定件与整件标定"
+    );
+    assert!(
+        w.doc
+            .segments
+            .iter()
+            .all(|s| s.expected_frames.is_none() && s.calib.is_none()),
+        "N_exp 与标定统计"
+    );
+    assert_eq!(
+        w.doc.segments[0]
+            .offset_ref
+            .as_ref()
+            .map(|r| (r.x_ref, r.spread)),
+        Some((None, None)),
+        "x_ref"
+    );
     let structure = |doc: &RecipeDoc| {
-        doc.segments.iter().map(|s| (s.index, s.kind, s.tolerance, s.cameras.clone(), state_value(&s.checks))).collect::<Vec<_>>()
+        doc.segments
+            .iter()
+            .map(|s| {
+                (
+                    s.index,
+                    s.kind,
+                    s.tolerance,
+                    s.cameras.clone(),
+                    state_value(&s.checks),
+                )
+            })
+            .collect::<Vec<_>>()
     };
     assert_eq!(structure(&w.doc), structure(&before.doc), "段结构保留");
-    assert_eq!((w.doc.calibration_rounds, w.doc.plan_cameras()), (12, before.doc.plan_cameras()), "配方级参数保留");
+    assert_eq!(
+        (w.doc.calibration_rounds, w.doc.plan_cameras()),
+        (12, before.doc.plan_cameras()),
+        "配方级参数保留"
+    );
     assert!(w.revision > before.revision);
 }
 
 #[test]
-fn teaching_piece_cannot_leave_calibration_alone_but_a_calibration_piece_is_discarded_with_its_results() {
+fn teaching_piece_cannot_leave_calibration_alone_but_a_calibration_piece_is_discarded_with_its_results(
+) {
     // 防的回归（RB-3）：示教件被单独移出标定（之后标定件不含示教件，示教件与标定口径分家）；弃用标定件后它的复核记录还在、
     // 或已应用的标定结果仍按含这一件的轮次保留
     let (mut w, teach) = with_teaching(true);
@@ -105,14 +177,23 @@ fn teaching_piece_cannot_leave_calibration_alone_but_a_calibration_piece_is_disc
     apply_capture_review(&mut w, &other, CaptureReviewEdit::Confirm).unwrap();
     for round in [&teach, &other] {
         let metrics = measure_round(&w.doc.plan_cameras(), round, |_, _, _| Ok(measured(0.0)));
-        w.calibration.rounds.push(calibration_round(&w.doc, round, false, &metrics));
+        w.calibration
+            .rounds
+            .push(calibration_round(&w.doc, round, false, &metrics));
     }
     w.doc.segments[0].expected_frames = Some(15);
     let before = state_value(&w);
     assert!(discard_piece(&mut w, "teach").is_err());
     assert_eq!(state_value(&w), before, "拒绝时候选不变");
     discard_piece(&mut w, "other").unwrap();
-    assert_eq!(w.calibration.rounds.iter().map(|r| r.round_id.as_str()).collect::<Vec<_>>(), ["teach"]);
+    assert_eq!(
+        w.calibration
+            .rounds
+            .iter()
+            .map(|r| r.round_id.as_str())
+            .collect::<Vec<_>>(),
+        ["teach"]
+    );
     assert!(!w.capture_review.rounds.contains_key("other"));
     assert!(w.doc.segments[0].expected_frames.is_none());
 }
@@ -135,9 +216,17 @@ fn deleting_a_candidate_removes_only_its_rounds_and_legacy_delete_keeps_publishe
     let root = super::tests::ImportTestDir::new();
     let rounds = root.0.join("recipe-capture");
     let capture = RecipeCaptureHost::open(rounds.clone()).unwrap();
-    for (round, recipe) in [("capture-1-0", "A"), ("capture-2-0", "A"), ("capture-3-0", "B")] {
+    for (round, recipe) in [
+        ("capture-1-0", "A"),
+        ("capture-2-0", "A"),
+        ("capture-3-0", "B"),
+    ] {
         std::fs::create_dir_all(rounds.join(round)).unwrap();
-        std::fs::write(rounds.join(round).join("round.json"), json!({"format": 3, "recipeId": recipe}).to_string()).unwrap();
+        std::fs::write(
+            rounds.join(round).join("round.json"),
+            json!({"format": 3, "recipeId": recipe}).to_string(),
+        )
+        .unwrap();
     }
     let mut deleted = capture.delete_recipe_rounds("A").unwrap();
     deleted.sort();
@@ -161,29 +250,71 @@ fn sync_confirms_and_adds_trusted_pieces_and_leaves_untrusted_for_review() {
     for taught in [true, false] {
         let (w, teach) = with_teaching(taught);
         let mut trusted = capture_round("trusted", &w.doc, GROUPS, DEVICE, &[]);
-        trusted.origin = Some(crate::recipe_capture::RoundOrigin::History { cycle_id: "c-t".into(), record_id: 2, standard: true });
+        trusted.origin = Some(crate::recipe_capture::RoundOrigin::History {
+            cycle_id: "c-t".into(),
+            record_id: 2,
+            standard: true,
+        });
         let doubtful = capture_round("doubtful", &w.doc, GROUPS, DEVICE, &[]);
         let outcome = sync_pieces(
             &w,
             &[teach.clone(), trusted.clone(), doubtful.clone()],
             &configs(&w.doc, DEVICE),
-            |round| Ok(vec![aligned(16, (round.round_id == "doubtful").then_some(ReviewReason::Deviates))]),
-            |w, round| Ok(measure_round(&w.doc.plan_cameras(), round, |_, _, _| Ok(measured(0.0)))),
+            |round| {
+                Ok(vec![aligned(
+                    16,
+                    (round.round_id == "doubtful").then_some(ReviewReason::Deviates),
+                )])
+            },
+            |w, round| {
+                Ok(measure_round(&w.doc.plan_cameras(), round, |_, _, _| {
+                    Ok(measured(0.0))
+                }))
+            },
         );
-        let result: Vec<_> = outcome.pieces.iter().map(|p| (p.round_id.as_str(), p.added)).collect();
-        assert_eq!(result, [("teach", taught), ("trusted", taught), ("doubtful", false)], "{taught}");
+        let result: Vec<_> = outcome
+            .pieces
+            .iter()
+            .map(|p| (p.round_id.as_str(), p.added))
+            .collect();
+        assert_eq!(
+            result,
+            [("teach", taught), ("trusted", taught), ("doubtful", false)],
+            "{taught}"
+        );
         let next = &outcome.next;
         let review = &next.capture_review.rounds["trusted"];
-        assert_eq!((&review.status, review.confirmed_by, &review.cuts), (&ReviewStatus::Confirmed, ConfirmedBy::Aligned, &vec![16]), "{taught}");
-        assert!(!next.capture_review.rounds.contains_key("doubtful"), "{taught}：不可信的不动");
-        assert!(outcome.pieces[2].issue.as_deref().is_some_and(|i| i.contains("待复核")), "{taught}");
+        assert_eq!(
+            (&review.status, review.confirmed_by, &review.cuts),
+            (&ReviewStatus::Confirmed, ConfirmedBy::Aligned, &vec![16]),
+            "{taught}"
+        );
+        assert!(
+            !next.capture_review.rounds.contains_key("doubtful"),
+            "{taught}：不可信的不动"
+        );
+        assert!(
+            outcome.pieces[2]
+                .issue
+                .as_deref()
+                .is_some_and(|i| i.contains("待复核")),
+            "{taught}"
+        );
         if taught {
-            let standard: Vec<_> = next.calibration.rounds.iter().map(|r| (r.round_id.as_str(), r.standard)).collect();
+            let standard: Vec<_> = next
+                .calibration
+                .rounds
+                .iter()
+                .map(|r| (r.round_id.as_str(), r.standard))
+                .collect();
             assert_eq!(standard, [("teach", false), ("trusted", true)]);
             assert_eq!(outcome.features.len(), 2);
         } else {
             assert!(next.calibration.rounds.is_empty());
-            assert!(outcome.pieces[0].issue.as_deref().is_some_and(|i| i.contains("走廊示教未完成")));
+            assert!(outcome.pieces[0]
+                .issue
+                .as_deref()
+                .is_some_and(|i| i.contains("走廊示教未完成")));
         }
     }
 }
@@ -193,18 +324,50 @@ fn progress_requires_teaching_piece_then_its_confirmed_boundary_before_corridor(
     // 防的回归（RB 步骤）：没有示教件也算完成第一步；示教件边界没确认（或段结构改了已失效）也算分段完成，走廊示教提前开放
     let progress = |w: &Workspace| {
         let p = super::burst::progress_v2(w, &super::burst::camera_teaching_views(w), None);
-        (p.steps[0].status, p.steps[1].status, p.steps[2].status, p.next.map(|n| n.target))
+        (
+            p.steps[0].status,
+            p.steps[1].status,
+            p.steps[2].status,
+            p.next.map(|n| n.target),
+        )
     };
     let (mut w, teach) = with_teaching(false);
-    assert_eq!(progress(&w), (StepStatus::Done, StepStatus::Done, StepStatus::NotStarted, Some(super::burst::TargetV2::Corridor { camera: "cam1".into(), segment: Some(1) })));
+    assert_eq!(
+        progress(&w),
+        (
+            StepStatus::Done,
+            StepStatus::Done,
+            StepStatus::NotStarted,
+            Some(super::burst::TargetV2::Corridor {
+                camera: "cam1".into(),
+                segment: Some(1)
+            })
+        )
+    );
     let mut segments = w.doc.segments.clone();
     segments[1].kind = Straight;
     super::burst::update_segments(&mut w, segments).unwrap();
-    assert_eq!(progress(&w), (StepStatus::Done, StepStatus::NotStarted, StepStatus::NotStarted, Some(super::burst::TargetV2::Segments)));
+    assert_eq!(
+        progress(&w),
+        (
+            StepStatus::Done,
+            StepStatus::NotStarted,
+            StepStatus::NotStarted,
+            Some(super::burst::TargetV2::Segments)
+        )
+    );
     apply_capture_review(&mut w, &teach, CaptureReviewEdit::Save(vec![15])).unwrap();
     assert_eq!(progress(&w).1, StepStatus::NotStarted, "只保存未确认");
     w.teaching_piece = None;
-    assert_eq!(progress(&w), (StepStatus::NotStarted, StepStatus::NotStarted, StepStatus::NotStarted, Some(super::burst::TargetV2::Capture)));
+    assert_eq!(
+        progress(&w),
+        (
+            StepStatus::NotStarted,
+            StepStatus::NotStarted,
+            StepStatus::NotStarted,
+            Some(super::burst::TargetV2::Capture)
+        )
+    );
 }
 
 #[test]

@@ -70,15 +70,7 @@ fn segment_teaching_frame_must_lie_in_that_segment_of_a_confirmed_round() {
         ("段内帧组", 0, 2, "confirmed", 15, [100, 100], true),
         ("段首帧组", 0, 2, "confirmed", 11, [100, 100], true),
         ("帧组落在下一段", 0, 2, "confirmed", 21, [100, 100], false),
-        (
-            "示教帧不属于示教件",
-            0,
-            2,
-            "other",
-            15,
-            [100, 100],
-            false,
-        ),
+        ("示教帧不属于示教件", 0, 2, "other", 15, [100, 100], false),
         (
             "不是这一段的检测相机",
             1,
