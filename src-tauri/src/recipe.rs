@@ -4,7 +4,7 @@
 //!
 //! 分段连拍（schema 8，docs/decisions/segment-burst.md D-SB-1）：`segments` 非空的配方是段配方——沿胶路的段列表、
 //! 三台检测相机（`inspect`）、整件标定；`segments` 为空是旧拍照点配方，不能开工或发布，遗留类型不再维护。
-//! 注意 `Recipe.segments` 是旧模型 build 出的测量段，段配方的段列表在 `Recipe.path_segments`（JSON `pathSegments`）。
+//! 注意段列表在 `RecipeDoc.segments`，在 `Recipe` 里是 `path_segments`（JSON `pathSegments`）。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -129,11 +129,6 @@ impl DetectParams {
         }
         Ok(())
     }
-}
-
-/// 旧文件里相机写的是相机组序号 k，读进来当作编号 "cam{k+1}"（相机组迁移时就是按位置这样编的号）。
-pub fn legacy_camera_id(k: u8) -> String {
-    format!("cam{}", k as u32 + 1)
 }
 
 /// 相机、配方编号：字母、数字、- 和 _，最长 32 个字符。
@@ -317,8 +312,7 @@ pub fn untaught_corridors(segments: &[PathSegment], inspect: &[CameraInspect]) -
     reasons
 }
 
-/// JSON（快照、界面 layout）里的 `segments` / `points` 是 build 生成的旧模型测量段与测点；反序列化不读它们，
-/// 把 `pathSegments` 还原成 `RecipeDoc.segments` 后重新 build（见 `TryFrom<serde_json::Value>`）。
+/// 反序列化把 JSON（快照、界面 layout）里的 `pathSegments` 还原成 `RecipeDoc.segments` 后重新 build（见 `TryFrom<serde_json::Value>`）。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", try_from = "serde_json::Value")]
 pub struct Recipe {
@@ -402,13 +396,10 @@ impl Recipe {
     }
 
     pub(crate) fn candidate_revision(&self) -> Option<u64> {
-        let suffix = self.revision_id.strip_prefix(&format!("candidate-{}-", self.id))?;
-        let revision = if let Some(legacy) = suffix.strip_prefix('r') { legacy } else {
-            let (instance, revision) = suffix.strip_prefix('i')?.split_once("-r")?;
-            let parsed = instance.parse::<u64>().ok()?;
-            if parsed == 0 || instance != parsed.to_string() { return None; }
-            revision
-        };
+        let suffix = self.revision_id.strip_prefix(&format!("candidate-{}-i", self.id))?;
+        let (instance, revision) = suffix.split_once("-r")?;
+        let parsed = instance.parse::<u64>().ok()?;
+        if parsed == 0 || instance != parsed.to_string() { return None; }
         revision.parse::<u64>().ok().filter(|value| *value > 0 && revision == value.to_string())
     }
 
@@ -477,6 +468,19 @@ pub struct RecipeDoc {
     /// 整件帧组数标定：各段 N_exp 待分段算法时凭它得到 expected_total 并发布（决策补充第二节）；只由标定写入
     #[serde(default)]
     pub part_calib: Option<PartCalib>,
+    /// 示教件来源（RB-7）：正式发布时从候选写入；候选里恒为空，没有它的生产配方即旧流程发布。不进计划身份
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teaching_piece: Option<TeachingPieceRef>,
+}
+
+/// 配方文档记下的示教件来源：历史件的工件身份、记录、SN 与时间。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeachingPieceRef {
+    pub cycle_id: String,
+    pub record_id: i64,
+    pub sn: String,
+    pub ts: i64,
 }
 
 impl RecipeDoc {
@@ -609,11 +613,9 @@ impl TryFrom<RecipeDoc> for Recipe {
 
 impl TryFrom<serde_json::Value> for Recipe {
     type Error = String;
-    /// Recipe 的 JSON 还原成 RecipeDoc 再 build：`segments` / `points` 是 build 生成的旧模型测量段与测点（不读），
-    /// 段配方的段列表在 `pathSegments`（与 RecipeDoc 的 `segments` 同名不同义，不能直接按 RecipeDoc 解析）。
+    /// Recipe 的 JSON 还原成 RecipeDoc 再 build：段列表在 `pathSegments`，换回 RecipeDoc 的 `segments` 再解析。
     fn try_from(mut value: serde_json::Value) -> Result<Self, Self::Error> {
         let object = value.as_object_mut().ok_or("配方快照不是 JSON 对象")?;
-        object.remove("points");
         let path_segments = object.remove("pathSegments").unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
         object.insert("segments".into(), path_segments);
         serde_json::from_value::<RecipeDoc>(value).map_err(|e| e.to_string())?.build()
@@ -688,6 +690,7 @@ pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[St
         boundary_guard: DEFAULT_BOUNDARY_GUARD,
         boundary_refine: false,
         part_calib: None,
+        teaching_piece: None,
     }
 }
 
@@ -707,7 +710,7 @@ pub fn reserve_plan_versions(plan_file: &std::path::Path, count: u32) -> Result<
 /// 测试用的段配方：模拟相机 cam1–cam3 共用触发、走廊已示教、一个直线段 N_exp = 4（ΣN_exp = 4），计划版本已分配。
 #[cfg(test)]
 pub fn samples_burst() -> RecipeDoc {
-    let cameras: Vec<String> = (0..3).map(legacy_camera_id).collect();
+    let cameras: Vec<String> = (1..=3).map(|k| format!("cam{k}")).collect();
     let mut doc = burst_template("SEAM-BURST".into(), "分段连拍样例".into(), 14, &cameras);
     doc.plan_version = 14;
     for inspect in &mut doc.inspect {
@@ -1275,8 +1278,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// 契约：Recipe JSON 里 `segments` 是旧模型的测量段，段配方的段列表在 `pathSegments`；
-    /// 检测记录、历史按快照还原配方时不能把两者混淆。
+    /// 契约：Recipe JSON 里段列表在 `pathSegments`，RecipeDoc 里在 `segments`；
+    /// 检测记录、历史按快照还原配方时要换回段列表。
     #[test]
     fn burst_recipe_snapshot_restores_its_path_segments() {
         let doc = two_segment_burst(Some(3));

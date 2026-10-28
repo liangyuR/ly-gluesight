@@ -24,7 +24,7 @@ beforeEach(() => {
       case "cycle_save_settings": saved = structuredClone((args as { settings: CycleSettings }).settings); return;
       case "cycle_recipes": return [];
       case "engine_status": return { backend: "LyFlow", ready: false, message: "" };
-      case "storage_status": return { environment: "development", root: "C:/ProgramData/ly/GlueSight-dev", migrationStatus: "completed",
+      case "storage_status": return { environment: "development", root: "C:/ProgramData/ly/GlueSight-dev", 
         logRoot: "C:/test/gs_logs", runtimeLogDir: "C:/test/gs_logs/runtime/development/instance", visionLogDir: "C:/test/gs_logs/vision/development/instance/project" };
       case "storage_open_directory": return;
       case "app_info": return { name: "GlueSight", version: "test" };
@@ -44,7 +44,7 @@ describe("离线原图保留设置", () => {
   ])("Windows 规范化路径 %s → 设置页显示可读路径并保留网络共享根", async (raw, displayed) => {
     const original = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation(async (command, args) => {
-      if (command === "storage_status") return { environment: "development", root: `${raw}\\data`, migrationStatus: "ready",
+      if (command === "storage_status") return { environment: "development", root: `${raw}\\data`, 
         logRoot: raw, runtimeLogDir: `${raw}\\runtime`, visionLogDir: `${raw}\\vision\\project` };
       if (command === "app_info") return { name: "GlueSight", version: "test", logDir: `${raw}\\runtime` };
       if (command === "engine_status") return { backend: "LyFlow", ready: true, message: "", path: `${raw}\\lyflow` };

@@ -37,7 +37,7 @@
 
 - **发布门槛**：多轮标定得出整件 ΣN_exp（`expected_total`）；多段配方还须各段 N_exp 都已逐段标定（D-SB-45），单段配方的段 N_exp 即整件。
 - **`expected_total` 的来源**：标定轮次统计整件帧组数的均值（四舍五入），存为配方的 `part_calib: Option<PartCalib>`；各段均已标定时等于各段 N_exp 之和（`plan::expected_total(segments, part_calib)`）。
-- **逐段标定**：多段计划只有每个标定轮次都在采集轮次复核里确认了手动分段时，才按边界逐段写 N_exp；否则各段保持待标定（D-SB-21）。
+- **逐段标定**：多段计划只有每个标定件都确认了分段（示教件在分段标定，其余在多轮标定页复核）时，才按边界逐段写 N_exp；否则各段保持待标定（D-SB-21）。
 - **运行时**：多段配方按 D-SB-40 比例分段判定；单段配方或帧组数越界时整条胶路按未分段区域判，只跑每帧独立检测、不判胶偏。整件帧组数核对 `expected_total ± tolerance_total`，越界只告警。
 - 协议 7 的 PLC 只报型号、序号与 SN，ΣN_exp 只用于 PC 侧的帧数核对，重新标定不用改 PLC。
 
@@ -154,7 +154,7 @@
 
 - 问题：规格 §0/§1 每段写明 inspect_range [a_mm, b_mm]，结果页标“未检区域”。
 - 采用：`PathSegment.inspect_range` 显式配置；`burst_judge` 按配方算出 `[0, a)` 与 `(b, length_mm]` 放进 `BurstJudgement.uninspected`，段长未知时 `to_mm` 为 null，界面按 mm 展示。
-- 修订（2026-10-26，用户确认）：毫米区间从未在判定中排除帧（软件不把毫米换算成帧号），结果却写“未检区域”，会误导。改为按帧：`PathSegment.skip_head` / `skip_tail`（段首、段尾跳过的帧组数，0–1000，不进计划身份）。`resolve_regions` 把跳过的帧划为 `RegionKind::Skipped`，优先于过渡区；分段可信时按各段首尾定位，未分段或合并区域里只有贴着整件首尾的第 1 段段首、末段段尾能定位。`burst_judge` 对跳过区域不取任何相机：不判定、不计检测不完整；`BurstJudgement.uninspected` 按帧组号列出（`fromSeq` / `toSeq`），旧记录的 `fromMm` / `toMm` 照旧读取显示。`inspect_range` 保留读取但停用，段列表遇到旧区间提示清除；计划导出另带 `skipHead` / `skipTail`。
+- 修订（2026-10-26，用户确认）：毫米区间从未在判定中排除帧（软件不把毫米换算成帧号），结果却写“未检区域”，会误导。改为按帧：`PathSegment.skip_head` / `skip_tail`（段首、段尾跳过的帧组数，0–1000，不进计划身份）。`resolve_regions` 把跳过的帧划为 `RegionKind::Skipped`，优先于过渡区；分段可信时按各段首尾定位，未分段或合并区域里只有贴着整件首尾的第 1 段段首、末段段尾能定位。`burst_judge` 对跳过区域不取任何相机：不判定、不计检测不完整；`BurstJudgement.uninspected` 按帧组号列出（`fromSeq` / `toSeq`），旧记录的 `fromMm` / `toMm` 照旧读取显示。`inspect_range` 保留读取但停用，段列表遇到旧区间提示清除；计划导出另带 `skipHead` / `skipTail`。第 1 段段首、末段段尾的跳过帧数由多轮标定给建议（D-SB-50）。
 
 ### D-SB-23 触发方式固定为 Fly
 
@@ -174,7 +174,7 @@
 ### D-SB-27 离线仿真
 
 - 问题：规格 §6 要求使能电平、按帧率出帧、首尾 ±1、弯道减速波动、三台相机之一缺帧。
-- 采用：离线产线按剖面定频出帧（每段帧数 + 种子化波动），丢帧按相机独立设置；有本件未检、提前结束等工况；合成图轮次由 `examples/capture_fixture.rs` 生成手动配置数据包导入（D-SB-49），合成图离线环境能完成多轮标定和发布。细节见第九节第 14 条。
+- 采用：离线产线按剖面定频出帧（每段帧数 + 种子化波动），丢帧按相机独立设置；有本件未检、提前结束等工况；合成图由 `examples/capture_fixture.rs` 生成仿历史录制件（D-SB-49、[recipe-build-flow](recipe-build-flow.md)），合成图离线环境能选示教件、完成多轮标定和发布。细节见第九节第 14 条。
 
 ### D-SB-28 样本集 v1
 
@@ -289,9 +289,9 @@
 
 - 问题：段结构在段列表页填表定义、看不到图像；边界在采集页按帧号手填、一次只看一台相机；操作员无法判断怎么分段（NEW-14 调试时卡在这一步）。
 - 采用：段列表页顶部新增分段标定工作台。选一轮完整采集作模板轮，三台相机的缩略图按帧组排成时间轴：点帧间竖缝插入或删除边界（可拖动），点段名切换直线 / 弯道，点缩略图在下方并排预览三台相机原图（叠加已示教走廊）；← → 切换帧组，B 在当前帧组后插入或删除边界。保存时用组合命令在同一候选副本上依次替换段列表（受 `guard_calibration` 约束）、保存并确认模板轮边界、设为分段模板，任一步失败整体不写入。段的类型序列变化时其余已整理轮次按现有规则变“需复核”、标定清空，保存前弹窗列出影响；只改边界时不影响其余轮次。段的数量、顺序与类型只在工作台改，段列表页只编辑各段参数；两边都有未保存改动时互相锁定，避免修订冲突。缩略图由 `recipe_capture_round_thumbs` 按相机一次取整轮（8× 箱式平均下采样，前端 canvas 直接画灰度）。
-- P2 对齐复核（已实现）：工作台下方“其余轮次复核”。`workspace_capture_review_suggest` 把分段模板的边界按图像对齐到所选轮次（两轮全部帧 32× 箱式平均成 40×32 小图，逐相机平均绝对差除以该相机距离中位数后取平均，首尾固定、带宽 max(3, 0.15·M) 的 DTW；模板帧 c、c + 1 所配目标帧中位数的中点即边界，保持严格递增），与按比例换算相差超过 2 帧或被挪动过的边界标“需重点复核”；有在途件或采集时拒绝，模板与目标轮相机采集配置不一致时拒绝。每个边界一行并排显示模板与本轮边界两侧各两帧（三台相机），← → 微调（不越过相邻边界）、↑ ↓ 换行、Enter 确认；各行都确认后 `workspace_capture_review_confirm_cuts` 一次保存并确认本轮边界（原子写入），再转到下一个未确认的轮次。对齐结果只是草稿，未确认不进标定。
+- P2 对齐复核（已实现）：工作台下方“其余轮次复核”。`workspace_capture_review_suggest` 把分段模板的边界按图像对齐到所选轮次（两轮全部帧 32× 箱式平均成 40×32 小图，逐相机平均绝对差除以该相机距离中位数后取平均，首尾固定、带宽 max(3, 0.15·M) 的 DTW；模板帧 c、c + 1 所配目标帧中位数的中点即边界，保持严格递增），可信判据与“需重点复核”见 D-SB-51；有在途件或采集时拒绝，模板与目标轮相机采集配置不一致时拒绝。每个边界一行并排显示模板与本轮边界两侧各两帧（三台相机），← → 微调（不越过相邻边界）、↑ ↓ 换行、Enter 确认；可信边界默认已勾选（D-SB-51），各行都确认后 `workspace_capture_review_confirm_cuts` 一次保存并确认本轮边界（原子写入），再转到下一个未确认的轮次。对齐结果只是草稿，未确认不进标定。
 - 后续（同一决策，待实现）：P3 运动曲线与自动建议。P4 即 D-SB-41，已实现。
-- 回退：采集页“轮次整理”的数字边界、按比例 / 原帧号套用模板与屏蔽保留不变。
+- 修订（[recipe-build-flow](recipe-build-flow.md) RB-1、RB-4）：模板轮固定为示教件，工作台不再选轮次；“其余轮次复核”移到多轮标定页，按标定件复核；采集页“轮次整理”的数字边界与按比例 / 原帧号套用模板已删除，帧组屏蔽移到多轮标定页。
 
 ### D-SB-45 走廊只按段，相机只留参数（修订 D-SB-17、D-SB-21、D-SB-41、D-SB-42；2026-10-26 用户确认，已实现）
 
@@ -459,11 +459,52 @@
 - 问题：整圈示教采集靠 PC 发起的 DB6 / DB12 示教握手。现场 PLC 的示教程序一直不合规：不回写握手编号、取消后不确认、停止后仍门控，现场始终跑不通。维护模式采集后从历史导入（HI-1～HI-8）已实现并试过，能提供建配方所需的轮次。
 - 采用：
   - 删除示教握手：PC 不发起整圈采集，PLC 页没有示教页签，点表没有 DB6 / DB12 点位（`plc.json` 里带示教标签的点位加载时去掉），日志没有 `teach.*` 与 `op.capture.start / stop`，离线不再“送一圈”；协议 7 不再有生产与示教互斥。
-  - 轮次只有两个来源：维护模式按采集版采图后“从历史选用”导入；手动配置数据，即带轮次的配方迁移包，轮次 `origin` 为 `{kind: "prepared", label}`，规则与历史件相同（状态只能是完成，不带 PLC 字段），目前由 `examples/capture_fixture.rs` 用合成图生成，供端到端与长稳测试。
-  - 原“整圈采集”页改为“采集轮次”，进度步骤的下一步为“导入轮次”；独立验证只用历史样本。Line0 门控改用维护件的帧数、帧率与时长验收。
-  - 读兼容：已有轮次（格式 2 带 `teachingRoundId`，或格式 3）照常读取，可用于走廊示教和标定；`CaptureRoundV2` 的字段与 `CaptureState` / `CaptureFailureV2` 全部变体保留，否则旧轮次会被改名为 `round.broken-*`。
+  - 轮次只来自历史件：维护模式按采集版采图后，在示教件页、多轮标定页选用时导入（[recipe-build-flow](recipe-build-flow.md)）；开发与测试由 `examples/capture_fixture.rs` 生成仿历史录制件，走同一导入路径。
+  - 原“整圈采集”页现为“示教件”页；独立验证只用历史样本。Line0 门控改用维护件的帧数、帧率与时长验收。
+  - 读兼容：已有轮次（格式 2 带 `teachingRoundId`，或格式 3）照常读取；`CaptureRoundV2` 的字段与 `CaptureState` / `CaptureFailureV2` 全部变体保留，否则旧轮次会被改名为 `round.broken-*`。这些轮次只属于旧流程候选（RB-5），随候选删除。
 - 理由：维护采集加导入已覆盖同样的数据需求，而且不用停线；为不合规的现场示教程序维护一套握手不值得。
 - 回退：从 Git 恢复示教握手（`teaching.rs`、`cycle/capture.rs`、示教接口文档与前端示教页签）；现场 PLC 须先实现握手编号回显、取消确认和停止后拉低门控。
+
+### D-SB-50 起涂、收尾跳过帧由标定给建议（补充 D-SB-22、D-SB-21；2026-10-28 已实现，暂定常数待实际涂胶轮次校准）
+
+- 问题：Line0 门控打开后，出胶阀有延迟，胶条也要走过检测窗口（如 0–20 mm）的长度才能填满，所以整件开头几帧测不到完整胶条；收尾时阀门先关、运动未停，末尾几帧同理。`skip_head` / `skip_tail` 默认 0，操作员只能凭经验填；按 0 运行时，正常件的起涂帧也会判断胶（`Gap` / `Sparse`），弯道开了定向时回退后仍判“全段无胶”（D-SB-47）。离线评估（`heading_eval`）也按全部帧统计，第 1 段的测成率被拉低。现有轮次都是空跑（NEW-14），没有起涂过程，下面按模拟设计，暂定常数待实际涂胶轮次校准。
+- 采用：
+  - 只给第 1 段的 `skip_head` 和末段的 `skip_tail` 建议值，中间段的跳过与起涂、收尾无关，不给建议；单段配方两头都给。
+  - 成形帧组：这一段的每台检测相机这一帧都是 Measured，且按本段检测项独立判定（`frame_verdict`）没有 NG 级发现（允许范围内的胶宽超差不算）。有一台相机未成形即未成形；否则有一台相机缺帧、测量失败、未测或走出走廊，或帧组已屏蔽，即无法判断。不另设阈值，跳过的帧数正好是正常件在本配方阈值下会被误判的帧数。
+  - 每个标定轮次（不含标准件）的起涂帧数 hᵣ：从第 1 帧起，第一处连续 `ONSET_RUN`（暂定 2）个成形帧组之前的帧组数；连续要求防止偶发的暗带、槽被当成胶。收尾帧数 tᵣ 从最后一帧倒着按同一规则数。只在本段（按本轮已确认的手动分段）内找。
+  - 成形之前出现无法判断的帧组时，这一轮不参与建议，视图列出原因：说明不了胶是否成形，计入会无声地放大盲区。本段内找不到连续成形帧组、多段配方本轮分段未确认或已失效、读不到每帧特征时同样不参与。
+  - 建议值 = 参与轮次 hᵣ 的最大值，不另加余量，与容差建议同口径（取实测极值）。视图给出各轮 hᵣ / tᵣ、最小值、最大值与不参与的轮次；参与轮次少于 `calibration_rounds` 时只显示分布，不给建议。
+  - 数据来源：加入标定时已写下的每帧特征（`calibration/<轮次>/features.jsonl`），按当前段检测项、检测相机与已确认分段在查看时计算，不重新测量，也不存进配方或轮次记录。
+  - 写入：与建议容差一样由操作员确认，在多轮标定页“采用建议”后写本段 `skip_head` / `skip_tail`（`workspace_confirm_skip`）；它们不进计划身份，不换计划版本。当前值小于建议值时，标定页提示“正常件的起涂（收尾）帧会判断胶”。发布前检查只有通过与不通过两档，不加这一项。
+  - 单段配方的标准件 x 均值（`CalibrationRound.x_means` / `edge_means`）另去掉本轮自己的起涂、收尾帧（至少仍去掉首尾各一帧），不受配方里跳过设置何时修改的影响；多段配方不算 x_ref，仍只去首尾各一帧。
+  - 离线评估：`heading_eval` 按“走廊·真实段”测法判成形（本段检测相机都有胶站 ≥ 80%），用同一规则数出各轮起涂、收尾帧组，测成率等统计排除它们（图像位移与 runs.csv 保留全部帧），另列各轮帧数分布；哪一头数不出就不排除那一头并列出原因。
+  - 合成数据：`capture_fixture` 的 `--onset` / `--onset-jitter` / `--tail` / `--tail-jitter`（帧组数，默认 0 时输出不变）按件在 [基准, 基准 + 抖动] 内取起涂 h、收尾 t，前一半无胶、之后胶条从胶嘴逐帧变长，收尾对称；打印的每件 JSON 带实际的 h、t，供对照建议值。
+- 理由：建议值只由已有特征和本配方的阈值得出，操作员不用估阀门延迟、速度与窗口长度；取最大值而不加余量，盲区不超过实测，起胶比标定时更晚的件仍会在跳过区之后报断胶。
+- 实现：`calibration::unformed_lead`（`ONSET_RUN`）；`workspace/burst_skip.rs` 的 `skip_suggestions`、`workspace_calibration_skip_suggest`（只读）与 `workspace_confirm_skip`；多轮标定页“起涂与收尾跳过”（`SkipSuggest.tsx`）。
+- 待校准：`ONSET_RUN`；建议是否加余量；收尾在实际涂胶轮次里是否成立。
+
+### D-SB-51 其余轮次按异常复核（修订 D-SB-44 P2；2026-10-28 已实现，`ALIGN_SHARPNESS` 待校准）
+
+- 问题：多段配方的每个标定轮次都要确认分段（D-SB-21），一轮也要先确认分段才能加入标定（D-SB-45，按真实段选走廊测量）。现在“其余轮次复核”要求每轮每个边界逐个看图、按 Enter：5 段 4 个边界、10 轮就是 40 次；段的类型序列一改，全部轮次变“需复核”，再来一遍。人工精确边界的收益却很有限：
+  - N_exp 取各轮均值再取整，单轮差 1 帧，10 轮后只偏 0.1 帧；
+  - 边界差 1–2 帧，标定时只有边界旁几帧用错走廊，生产时这几帧本来就在过渡区（`boundary_guard`，默认 2），按较宽允差判；
+  - 真正有害的是错得多的离群轮次，它们会撑宽建议容差、污染逐帧特征。
+  
+  复核列表还列出全部完整轮次，不说明够标定需要几轮，操作员会以为每轮都得做。
+- 采用：“每个标定轮次都要有已确认分段”的规则不变，只改确认方式：对齐可信的边界由软件确认，人只看异常的边界。
+  - 可信边界，三条同时满足：
+    1. DTW 对齐结果与按比例换算相差不超过本配方的 `boundary_guard`（取代固定的 2 帧；默认值 2，与现行一致）。差在过渡区以内，生产判定对它不敏感。
+    2. 没有为了保持严格递增被挪动过。
+    3. 对齐清晰：把目标边界前后挪 2–3 帧后，边界两侧模板帧（c、c + 1）与所配目标帧的距离均值增大到原来的 `ALIGN_SHARPNESS`（暂定 1.5）倍以上。这一条防的是图像分不出前后帧时 DTW 退化成对角线、碰巧与比例换算一致却被放过。
+    
+    不满足的边界标“需重点复核”，并写明原因：偏离比例、被挪动或对齐不清晰。
+  - 自动确认：多轮标定页的“同步标定件”（`workspace_calibration_sync`，选标定件 `workspace_calibration_pick` 后自动执行，[recipe-build-flow](recipe-build-flow.md)）对示教件以外、还没确认（含需复核）的标定件逐件对齐（示教件原图只读一次），所有边界都可信的件按对齐结果保存并确认，随后测量加入标定，在同一候选副本上一次写入；有边界不可信或对齐失败的件不动，列为待人工复核。单段配方不需要边界，直接确认。走廊示教未完成时只确认边界、不加入标定。有在途件或采集时拒绝；计算期间候选被改过时整批不写入，提示重试。
+  - 来源可追溯：`RoundReview.confirmedBy`（`manual` / `aligned`，读旧数据为 `manual`）。自动确认的轮次在复核列表标“自动确认”，可随时打开改边界，改后记 `manual`。边界与原来相同的轮次照常留在标定里；边界有变化的，按现行规则移出标定（D-SB-44）。
+  - 人工复核只看异常：打开一轮时，可信的边界默认已勾选，并收起成一行摘要；需重点复核的边界展开、逐个确认，确认完照旧一次保存。
+  - 复核范围：多轮标定页顶部显示“标定需要 N 件（`calibration_rounds`，含示教件，不含标准件），已加入 M 件”；只复核已选的标定件，够数即可，不必为凑数复核更多件。
+- 理由：人力只花在会影响 N_exp、建议容差和逐帧特征的离群轮次上。可信判据的偏差上限与生产过渡区一致，再加一道清晰度检查，防止“两种方法碰巧一致”。手动确认的路径和所有失效规则都不变。
+- 实现：`frame_align::align_cuts` 的 `tolerance`、`AlignedCut.sharpness / reason`、`ALIGN_SHARPNESS`；`workspace/pieces.rs` 的 `sync_pieces`（示教件原图只读一次，计算与测量在锁外，写入前取配置锁、核对修订号）；`RoundReview.confirmedBy`；`AlignReview`（多轮标定页每件的逐边界复核，可信边界收起）。段结构改变后被移出标定的件，点“同步标定件”批量重新对齐、加入。
+- 验证（无真实涂胶数据也能做，NEW-14 空跑的图像是真实工件画面）：`segment_eval` 增加自动确认的统计，以已确认的手动边界为真值，报告可信边界的比例，以及可信边界中误差超过 `boundary_guard` 的个数。验收要求后者为 0，并据此校准 `ALIGN_SHARPNESS`。`segment_eval` 已输出这些统计（含两组清晰度分布与建议阈值）；NEW-14 目前只有模板轮已确认，其余 15 轮因段结构修改为“需复核”，正式校准要等其余轮次人工确认后重跑，在此之前保持暂定值 1.5。合成序列单测覆盖两条：画面不随位置变化时，即使与比例一致也判为不清晰；挪动过的边界不自动确认。前端测试覆盖：自动确认后只剩异常边界需要逐个确认。
 
 ## 五、IPC 契约
 
@@ -503,7 +544,7 @@
 
 | StepIdV2 | 页面 | 路由 |
 | --- | --- | --- |
-| `capture` | 采集轮次 | `/recipe/capture` |
+| `capture` | 示教件 | `/recipe/capture` |
 | `segments` | 段列表 | `/recipe/segments` |
 | `corridor` | 按段 × 检测相机示教走廊 | `/recipe/teach` |
 | `calibration` | 多轮标定 | `/recipe/calibration` |
@@ -519,18 +560,22 @@
 | `workspace_update_segments` | `id, revision, segments: PathSegment[]` | WorkspaceView |
 | `workspace_teach_segment_corridor` | `id, revision, camera, segment, round, seq` | WorkspaceView（冻结这一段这台相机的示教帧，D-SB-42/45） |
 | `workspace_clear_segment_corridor` | `id, revision, camera, segment` | WorkspaceView（去掉这一段这台相机的走廊与示教帧，D-SB-42/45） |
-| `workspace_calibration_add_round` | `id, revision, round, standard: bool` | WorkspaceView |
-| `workspace_calibration_remove_round` | `id, revision, round` | WorkspaceView |
+| `workspace_set_teaching_piece` | `id, revision, recordId` | WorkspaceView（导入并设为示教件，清空图像派生内容，[recipe-build-flow](recipe-build-flow.md) RB-2 / RB-8） |
+| `workspace_calibration_pick` | `id, revision, picks: {recordId, standard}[]` | `CalibrationSyncResult`（导入所选标定件后同步） |
+| `workspace_calibration_sync` | `id, revision` | `CalibrationSyncResult`（`{view, pieces: [{roundId, added, issue}]}`：未加入的件按示教件边界对齐、可信即确认，走廊示教完成时测量加入；D-SB-51） |
+| `workspace_calibration_remove_round` | `id, revision, round` | WorkspaceView（弃用这一件：移出标定，删除复核记录、特征与轮次；示教件报错） |
 | `workspace_publish_checks` | `id, revision` | `Check[]`（发布前检查，当场核对，只读，D-SB-46） |
 | `workspace_calibration_round_features` | `id, round` | `FrameMetrics[]`（加入标定时写下的每帧特征，按当前计划相机编下标，只读） |
 | `workspace_calibration_frame` | `id, round, camera, seq` | `CalibrationFrameView`（`{segment, corridor, searchHalfPx, edges, metrics}`：按已确认分段用当前段走廊重测这一帧，只读；有在途件时拒绝） |
 | `workspace_calibration_apply` | `id, revision` | WorkspaceView（结果在 `plan.calibration`） |
 | `workspace_confirm_tolerance` | `id, revision, segment, tolerance` | WorkspaceView |
+| `workspace_calibration_skip_suggest` | `id` | `SkipSuggestView[]`（第 1 段起涂、末段收尾的跳过帧建议与各轮分布，由标定轮次的每帧特征算出，只读，D-SB-50） |
+| `workspace_confirm_skip` | `id, revision, segment, end: "head" \| "tail", frames` | WorkspaceView（写该段 `skipHead` / `skipTail`，不换计划版本） |
 | `workspace_extract_corridor` | `id, revision, camera: String, imageId, roi: [u32; 4], guide: BrushGuide?, pointSpacingPx: f32?` | `Result<CenterlineResult, String>`（与 `workspace_extract_centerline` 相同：`path`、`message`、`failure`） |
 | `recipe_capture_round_thumbs` | `roundId, cameraId: String` | `Result<tauri::ipc::Response, String>`（头部 [帧组数, 宽, 高] u32 小端，之后每组 1 字节状态 + 宽 × 高 灰度，见 `frame_align::thumb_strip`；D-SB-44） |
-| `workspace_capture_review_suggest` | `id, round` | `Result<AlignSuggestion, String>`（`{round, templateRound, templateCuts, cuts: [{cut, proportional, review}]}`，只读，D-SB-44） |
-| `workspace_capture_review_confirm_cuts` | `id, revision, round, cuts: u64[]` | WorkspaceView（保存并确认，原子写入，D-SB-44） |
-| `workspace_segment_template_save` | `id, revision, round, segments: PathSegment[], cuts: u64[]` | WorkspaceView（段列表 + 模板轮边界确认 + 设为模板，原子写入，D-SB-44） |
+| `workspace_capture_review_suggest` | `id, round` | `Result<AlignSuggestion, String>`（`{round, templateRound, templateCuts, cuts: [{cut, proportional, sharpness, reason: "moved" \| "deviates" \| "unclear" \| null, review}]}`，只读，D-SB-44、D-SB-51） |
+| `workspace_capture_review_confirm_cuts` | `id, revision, round, cuts: u64[]` | WorkspaceView（标定件边界保存并确认，原子写入；示教件报错，D-SB-44） |
+| `workspace_segment_template_save` | `id, revision, segments: PathSegment[], cuts: u64[]` | WorkspaceView（段列表 + 示教件边界确认，原子写入，D-SB-44） |
 | `recipe_capture_frame_image` | `roundId, cameraId: String, seq`（帧组序号，从 1 起） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `recipe_capture_image`）；该相机缺这一帧时报错 |
 | `workspace_live_frame_image` | `cycleId, revisionId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_live_image`）；未到或缺帧时报错 |
 | `workspace_record_frame_image` | `historyId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_record_image`）；未录制、录制队满丢弃或缺帧时报错 |
@@ -631,7 +676,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 #### 10. 采集轮次（`CaptureRoundV2`）
 
-- **来源**：只来自导入（D-SB-49）：历史件（`origin.kind = history`，HI-1～HI-8）与手动配置数据（`origin.kind = prepared`，`label` 不能为空，随配方迁移包导入）；状态只能是 Complete，不带 PLC 字段。
+- **来源**：只来自历史件导入（D-SB-49、[recipe-build-flow](recipe-build-flow.md)；`origin.kind = history`，HI-1～HI-8），`capture_fixture` 生成的仿历史件同样经导入；已有的 `origin.kind = prepared`（`label` 不能为空）轮次照常读取。状态只能是 Complete，不带 PLC 字段。
 - **旧轮次**：磁盘上已有的实拍轮次（格式 2 带 `teachingRoundId`，或格式 3）照常读取；`CaptureRoundV2` 带 `deny_unknown_fields`，其字段与 `CaptureState` / `CaptureFailureV2` 全部变体保留，读不了的 `round.json` 会被改名为 `round.broken-*`。启动时把盘上残留的活动轮次改为中断。
 - **读图**：`recipe_capture_frame_image(roundId, cameraId, seq)`；图像路径由相机与 seq 推出（`{相机}/{seq:06}.pgm`），记录里写的路径只用于核对。
 
@@ -648,7 +693,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 #### 12. 候选工作区（`workspace/burst.rs`）
 
-- **`WorkspaceView.plan`**：productionPlc / candidatePlc / candidatePlcError / coverage 为 null、旧 progress 没有步骤。`plan.progress`（ProgressV2）按采集轮次 → 段列表 → 走廊示教 → 多轮标定 → 验证 → 发布给出：“采集轮次”以本配方有完整采集轮次为完成，未完成时下一步为“导入轮次”。
+- **`WorkspaceView.plan`**：productionPlc / candidatePlc / candidatePlcError / coverage 为 null、旧 progress 没有步骤。`plan.progress`（ProgressV2）按示教件 → 分段 → 走廊示教 → 多轮标定 → 验证 → 发布给出：“示教件”以候选已设示教件为完成，未完成时下一步为“选示教件”；“分段”以示教件边界已确认为完成；走廊示教与多轮标定依赖分段完成。`plan.pieces` 列出示教件与标定件（角色、复核状态、是否已加入、屏蔽数，[recipe-build-flow](recipe-build-flow.md)）。
 - **Workspace 字段**：`cameraTeaching: [{camera, segment, frame: FrozenImage, round, seq}]`（每段每台检测相机一张示教帧，冻结为候选 images/ 下的 PGM）、`calibration: {rounds: [CalibrationRound]}`（每轮带 `standard`）。不另存标定结果：结果写进配方（N_exp、calib、partCalib、x_ref），`plan.calibration`（CalibrationView）每次由配方与轮次算出。建议容差 = max(该类段默认容差, N − min, max − N)，整件取各段默认容差之和。
 - **走廊示教**（D-SB-45 起按段）：`workspace_teach_segment_corridor` 只冻结所选帧，走廊随候选整份保存，提取用 `workspace_extract_corridor`（5.4）；相机还没有当量时取这台相机的设备标定 `device/{device}`（模拟相机取模拟当量）。示教帧须来自本候选完整的轮次、这台相机有这一帧、采集后设备配置没变；多段配方还要求轮次已确认手动分段、帧组落在该段内。`cameraTeaching[].segments[].saved` = 走廊至少两点、不短于 1 px 且完整落在示教帧内。
 - **加入标定**：轮次须属于本候选、已完整完成、相机集合等于计划相机，各相机采集时的设备配置与当前设备、与已加入的轮次都相同；每段每台检测相机都有走廊且能建测量图。每帧只由所在段的检测相机用该段走廊测（`calibration_corridors`，D-SB-45；缺帧记 missing、测量失败记 error），每帧特征与分段结果写在候选目录 `calibration/<轮次>/`：`features.jsonl` 一行 `{camera: 相机编号, seq, metrics: FrameMetrics}`，1..=帧组数内每台相机每个 seq 一行；`boundaries.json` 为 SegOutcome。不写进采集轮次目录（特征依赖候选的走廊）。
@@ -672,7 +717,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 - **工况（与前端同名）**：`cameraLost` 第 2 台相机丢第 min(3, 总数) 帧；`pulseJitter` 首尾各 ±1；`cornerSlowdown` 每个弯道段 ±2；`notInspected` 机器人照常涂胶、PLC 不提交请求（`run_burst` 返回 `Ok(None)`，PC 无记录，离线运行记“本件未检”）；`earlyEnd` 出约一半、且少于 ΣN_exp − Σtol 帧后报运动结束；`lostFrame` 三台相机同一帧都丢；`countMismatch` 与正常相同（协议 7 不报触发计数）。只改出帧与握手的工况进样本集白名单（`Scenario::handshake`）。
 - **合成图**：模拟相机触发带 `camera::BurstRender`（计划相机下标、seq、所在段类型与段内进度、工况、种子），`simimage::render_burst` 按它出单视角图：直线段胶条沿这台相机的走廊（未示教时按相机上下错开的缺省位置），弯道段整条胶绕胶嘴转动 25°·sin(π·进度)，断胶 / 超差画在第 1 台相机第 2 帧（与模拟测量同一帧）。模拟测量 `measure::simulate_frame` 按名义剖面找到这一帧所在段，弯道帧胶宽略宽、x 拱形偏出（峰值 1.5 mm）；PC 按同一套比例分段与区域判定规则处理。
 - **合成图离线环境**：沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台（编号取没用过的 camN）。
-- **合成图采集轮次**：`examples/capture_fixture.rs` 按候选配方（型号、段、计划相机）用 `simimage::render_burst` 生成 N 轮完整轮次，写成配方迁移包，经“导入配方”导入（D-SB-49）。多轮标定加入轮次时的每帧测量仍用 lyFlow 走廊测量（需加载 lyFlow）。
+- **合成图仿历史件**：`examples/capture_fixture.rs` 按候选配方（型号、段、计划相机）用 `simimage::render_burst` 生成 N 件仿历史录制件（D-SB-49、[recipe-build-flow](recipe-build-flow.md)），经历史件选择器选作示教件与标定件。多轮标定加入时的每帧测量仍用 lyFlow 走廊测量（需加载 lyFlow）。
 - **样本集**：`Manifest::camera_frames(camera)` 按清单顺序给出一台相机的帧序列；第 seq 帧取各相机的第 seq 帧，没有这一帧的相机按缺帧（照常计数、不出帧）。
 - **节拍下限**：出帧间隔下限 15 ms（66 fps）。
 

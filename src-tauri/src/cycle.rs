@@ -302,6 +302,15 @@ pub struct RecipeSummary {
     pub tolerance_total: u32,
     /// 已标定（expected_total 非空）
     pub calibrated: bool,
+    /// 示教件来源（RB-7）：取自生产配方文档；旧流程发布的配方为空
+    pub teaching_piece: Option<crate::recipe::TeachingPieceRef>,
+}
+
+impl RecipeSummary {
+    /// 配方库里一份生产配方的摘要，带配方文档里的示教件来源。
+    pub fn listed(store: &RecipeStore, r: &Recipe) -> Self {
+        Self { teaching_piece: store.doc(&r.id).and_then(|d| d.teaching_piece), ..Self::from(r) }
+    }
 }
 
 impl From<&Recipe> for RecipeSummary {
@@ -327,6 +336,7 @@ impl From<&Recipe> for RecipeSummary {
             expected_total,
             tolerance_total: r.tolerance_total(),
             calibrated: expected_total.is_some(),
+            teaching_piece: None,
         }
     }
 }
@@ -363,8 +373,6 @@ pub struct CycleHost {
     /// 检测侧不允许切换站点模式的原因：有在途工件，或有只能在真机 PLC 上复位的未结事务
     switch_block: Mutex<Option<String>>,
     settings_note: Option<String>,
-    /// 启动时曝光增益从配方迁到相机组的记录，节拍启动后写进日志
-    imaging_note: Option<String>,
     interrupted_recordings: usize,
 }
 
@@ -380,11 +388,6 @@ impl CycleHost {
         let audit = Audit::new(app, data.join("audit-spool"))?;
         let interrupted_recordings = app.state::<Store>().finish_interrupted_recordings()?;
         let camera = CameraRig::new(app, frame_tx)?;
-        let in_use = settings
-            .manual_recipe_id
-            .as_deref()
-            .filter(|_| settings.product_source == ProductSource::Manual);
-        let imaging_note = camera.migrate_imaging(&data.join("recipes"), in_use);
         let recording_health = Arc::new(RecordingHealth::default());
         let recorder = |root: PathBuf, scope: HistoryScope| {
             let (guarded_root, guard_app, protection_audit, warning_app, record_audit) = (root.clone(), app.clone(), audit.clone(), app.clone(), audit.clone());
@@ -446,7 +449,6 @@ impl CycleHost {
             in_flight: AtomicBool::new(false),
             switch_block: Mutex::new(None),
             settings_note,
-            imaging_note,
             interrupted_recordings,
         })
     }
@@ -462,9 +464,6 @@ impl CycleHost {
         }
         for e in host.camera.notes.iter().chain(&host.settings_note) {
             log(app, "err", "配置", e.clone());
-        }
-        if let Some(note) = &host.imaging_note {
-            log(app, "info", "相机", note.clone());
         }
         for e in &app.state::<crate::workspace::WorkspaceHost>().notes {
             log(app, "err", "候选加载", e.clone());
@@ -2689,7 +2688,7 @@ pub fn cycle_logs(cycle: State<'_, CycleHost>) -> Vec<LogLine> {
 
 #[tauri::command]
 pub fn cycle_recipes(cycle: State<'_, CycleHost>) -> Vec<RecipeSummary> {
-    cycle.recipes.list().iter().map(|r| RecipeSummary::from(&**r)).collect()
+    cycle.recipes.list().iter().map(|r| RecipeSummary::listed(&cycle.recipes, r)).collect()
 }
 
 /// 配方的运行数据。给了 revision_id 时要的是那一版：工件用的配方刚改过，这一件仍按开工时的快照画。

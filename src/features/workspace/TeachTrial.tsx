@@ -83,7 +83,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
         <Button size="sm" variant={batch.result && !stale ? "tonal" : "filled"} data-variant={batch.result && !stale ? "tonal" : "filled"} leadingIcon={<Play size={13}/>}
           disabled={!!locked || batch.running} title={locked || undefined} onClick={() => void run()}>{batch.running ? "试测中…" : batch.result ? "重新试测" : "全段试测"}</Button>
         <Button size="sm" variant="tonal" disabled={!!locked || seq === teachSeq} title={locked || undefined} onClick={() => onSeq(teachSeq)}>试测当前帧</Button>
-        <span className="muted">示教轮次{span ? ` · 帧组 ${span.start}–${span.end}` : ""} · 用已保存的走廊与定向参数，只读</span>
+        <span className="muted">示教件{span ? ` · 帧组 ${span.start}–${span.end}` : ""} · 用已保存的走廊与定向参数，只读</span>
         {seq != null && <span className="wp-trial-actions"><Button size="sm" variant="text" onClick={() => onSeq(null)}>回到示教帧</Button></span>}
       </div>
       {locked && <p className="muted hint">{locked}</p>}

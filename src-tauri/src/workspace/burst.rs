@@ -24,7 +24,7 @@ use crate::segmentation::{Proportional, SegInput, SegOutcome, Segmenter};
 use progress::StepStatus;
 
 /// 每轮标定的每帧特征与分段结果放在候选目录 `calibration/<轮次>/` 下（供分段算法与重新标定使用）。
-const CALIBRATION_DIR: &str = "calibration";
+pub(super) const CALIBRATION_DIR: &str = "calibration";
 /// 一行一帧：`{camera, seq, metrics}`，按计划相机、帧组序号排列；1..=帧组数内每台相机每个 seq 都有一行（缺帧也有）。
 pub(super) const FEATURES_FILE: &str = "features.jsonl";
 /// 分段结果（`SegOutcome`）。
@@ -91,7 +91,7 @@ pub struct CalibrationRound {
     pub loss_alarms: u32,
     /// 测量每帧特征时各相机的走廊身份（走廊、当量、检测参数、站距）：走廊变了，这一轮的 x 不再可比
     pub corridors: Vec<Value>,
-    /// 各相机去掉首尾各一帧后、测成的帧的胶中心 x 均值（mm）；没有可用帧为 None
+    /// 各相机去掉首尾各一帧（单段配方再去掉本轮的起涂、收尾帧，D-SB-50）后、测成的帧的胶中心 x 均值（mm）；没有可用帧为 None
     pub x_means: Vec<Option<f64>>,
     /// 同口径的胶边距均值（mm，D-SB-48 ToEdge）；没找边的相机为 None
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -260,8 +260,7 @@ pub enum StepIdV2 { Capture, Segments, Corridor, Calibration, Validation, Publis
 #[serde(tag = "page", rename_all = "camelCase")]
 pub enum TargetV2 {
     Capture,
-    /// 契约里的段列表页；段列表能保存即合法，目前没有指向它的阻塞原因
-    #[allow(dead_code)]
+    /// 分段：在示教件上确认边界
     Segments,
     Corridor {
         camera: String,
@@ -318,6 +317,8 @@ pub struct WorkspacePlanView {
     /// 候选 expectedTotal 与生产不同：生效后 PLC 要同步 shotCount / deviceShots
     pub shot_count_changed: bool,
     pub progress: ProgressV2,
+    /// 示教件与标定件（示教件在前，其余按时间）
+    pub pieces: Vec<super::pieces::PieceView>,
 }
 
 /// features.jsonl 的一行。
@@ -329,7 +330,7 @@ struct FeatureLine<'a> {
     metrics: &'a FrameMetrics,
 }
 
-fn require_burst(doc: &RecipeDoc) -> Result<(), String> {
+pub(super) fn require_burst(doc: &RecipeDoc) -> Result<(), String> {
     if doc.is_burst() { Ok(()) } else { Err("旧拍照点配方没有段计划：请用单帧示教、整圈采集与原有标定步骤".into()) }
 }
 
@@ -623,7 +624,7 @@ pub(super) fn confirm_tolerance(w: &mut Workspace, segment: u32, tolerance: u32)
 
 // ───────────── 走廊示教 ─────────────
 
-/// 用来示教的一帧要来自本候选完整的段配方采集轮次，这台相机有这一帧，且采集后设备配置没变。返回这台相机的采集记录。
+/// 用来示教的一帧要来自本候选完整的段配方采集轮次（示教件，调用方先核对），这台相机有这一帧，且采集后设备配置没变。返回这台相机的采集记录。
 fn teaching_source<'a>(round: &'a CaptureRoundV2, recipe_id: &str, camera: &str, seq: u64, current_config: &Value) -> Result<&'a CaptureCamera, String> {
     if round.recipe_id != recipe_id || round.state != CaptureState::Complete {
         return Err(format!("采集轮次 {} 不属于当前候选或尚未完整完成，不能用于示教", round.round_id));
@@ -684,6 +685,7 @@ pub(super) fn apply_segment_teaching(
     default_scale: Option<f64>,
 ) -> Result<(), String> {
     require_burst(&w.doc)?;
+    super::pieces::require_teaching_round(w, &teaching.round)?;
     let (camera, segment) = (
         teaching.camera.clone(),
         teaching.segment.ok_or("段走廊的示教帧缺段号")?,
@@ -825,6 +827,7 @@ fn freeze_teaching_frame(
         let w = items.get(id).ok_or("候选配置不存在")?;
         w.expect(revision)?;
         require_burst(&w.doc)?;
+        super::pieces::require_teaching_round(w, round)?;
         w.doc.inspect.iter().find(|i| i.camera == camera).cloned().ok_or_else(|| format!("相机 {camera} 不是段配方的计划相机"))?
     };
     let cycle = app.state::<CycleHost>();
@@ -1038,19 +1041,20 @@ pub(super) fn write_features(dir: &Path, cameras: &[String], metrics: &[FrameMet
     crate::fsio::write_atomic(&dir.join(BOUNDARIES_FILE), &serde_json::to_string_pretty(outcome).map_err(|e| e.to_string())?)
 }
 
-/// 一台相机去掉首尾各一帧（seq 1 与帧组数）后、测成的帧的测量量（胶中心 x 或胶边距）均值。
+/// 一台相机去掉首尾 `trim`（各至少一帧）后、测成的帧的测量量（胶中心 x 或胶边距）均值。
 fn round_mean(
     metrics: &[FrameMetrics],
     camera: usize,
     group_count: u64,
+    trim: (u64, u64),
     value: fn(&FrameMetrics) -> Option<f64>,
 ) -> Option<f64> {
     let xs: Vec<f64> = metrics
         .iter()
         .filter(|m| {
             m.camera == camera
-                && m.seq > 1
-                && m.seq < group_count
+                && m.seq > trim.0
+                && m.seq + trim.1 <= group_count
                 && m.state == FrameState::Measured
         })
         .filter_map(value)
@@ -1062,6 +1066,12 @@ fn round_mean(
 pub(super) fn calibration_round(doc: &RecipeDoc, round: &CaptureRoundV2, standard: bool, metrics: &[FrameMetrics]) -> CalibrationRound {
     let cameras = doc.plan_cameras();
     let source: Vec<Option<usize>> = cameras.iter().map(|c| round.cameras.iter().position(|r| &r.camera_id == c)).collect();
+    // 单段配方的 x 均值另去掉本轮自己的起涂、收尾帧（D-SB-50）
+    let edge = |end| match doc.segments.len() {
+        1 => super::burst_skip::round_edge(doc, &round.round_id, round.group_count, &BTreeMap::new(), metrics, end).unwrap_or(0),
+        _ => 0,
+    };
+    let trim = (u64::from(edge(super::burst_skip::SkipEnd::Head)).max(1), u64::from(edge(super::burst_skip::SkipEnd::Tail)).max(1));
     CalibrationRound {
         round_id: round.round_id.clone(),
         standard,
@@ -1073,10 +1083,10 @@ pub(super) fn calibration_round(doc: &RecipeDoc, round: &CaptureRoundV2, standar
         loss_alarms: u32::try_from(round.loss_alarms.len()).unwrap_or(u32::MAX),
         corridors: cameras.iter().map(|c| corridor_tag(doc, c)).collect(),
         x_means: (0..cameras.len())
-            .map(|camera| round_mean(metrics, camera, round.group_count, |m| m.x_mm))
+            .map(|camera| round_mean(metrics, camera, round.group_count, trim, |m| m.x_mm))
             .collect(),
         edge_means: (0..cameras.len())
-            .map(|camera| round_mean(metrics, camera, round.group_count, |m| m.edge_mm))
+            .map(|camera| round_mean(metrics, camera, round.group_count, trim, |m| m.edge_mm))
             .collect(),
         heading: metrics
             .iter()
@@ -1176,7 +1186,7 @@ fn segment_counts(
 
 fn calib_error(error: CalibError) -> String {
     match error {
-        CalibError::TooFewRounds { have, need } => format!("标定轮次不足：已加入 {have} 轮（不含标准件轮次），至少 {need} 轮"),
+        CalibError::TooFewRounds { have, need } => format!("标定件不足：已加入 {have} 件（含示教件，不含标准件），至少 {need} 件"),
         CalibError::Empty => "没有可用于标定的轮次".into(),
     }
 }
@@ -1263,7 +1273,7 @@ pub(super) fn calibration_view(
     };
     let not_applied = || {
         if normal < doc.calibration_rounds {
-            format!("还差 {} 轮", doc.calibration_rounds - normal)
+            format!("还差 {} 件", doc.calibration_rounds - normal)
         } else {
             "尚未应用标定".into()
         }
@@ -1314,11 +1324,11 @@ pub(super) fn calibration_view(
                     Some("按图纸胶边距判，不需要标准件".into())
                 }
                 (_, None, Some(reference)) => Some(if !rounds.iter().any(|r| r.standard) {
-                    "还没有标准件轮次".into()
+                    "还没有标准件".into()
                 } else if standard_x(rounds, &reference, &corridor_tag(doc, &reference.camera))
                     .is_empty()
                 {
-                    "标准件轮次的走廊已变化或没有测成的帧，请重新加入标准件轮次".into()
+                    "标准件的走廊已变化或没有测成的帧，请重新选标准件".into()
                 } else {
                     not_applied()
                 }),
@@ -1350,92 +1360,6 @@ pub(super) fn calibration_view(
         tolerance_total: crate::plan::tolerance_total(&doc.segments),
         plan_version_change: expected_total.is_some() && production.is_none_or(|p| p.plan_version == 0 || !p.same_plan(doc)),
     }
-}
-
-#[tauri::command]
-pub async fn workspace_calibration_add_round(app: AppHandle, id: String, revision: u64, round: String, standard: bool) -> Result<WorkspaceView, String> {
-    tauri::async_runtime::spawn_blocking(move || add_round(app, id, revision, round, standard)).await.map_err(|e| e.to_string())?
-}
-
-/// 把一轮加入标定：用已示教的走廊量整轮每一帧（锁外），写每帧特征与分段结果，再记进候选。
-fn add_round(app: AppHandle, id: String, revision: u64, round_id: String, standard: bool) -> Result<WorkspaceView, String> {
-    let host = app.state::<WorkspaceHost>();
-    let w = {
-        let items = host.items.lock().unwrap();
-        let w = items.get(&id).ok_or("候选配置不存在")?;
-        w.expect(revision)?;
-        w.clone()
-    };
-    require_burst(&w.doc)?;
-    let cycle = app.state::<CycleHost>();
-    let _gate = cycle
-        .config_gate
-        .try_lock()
-        .map_err(|_| "正在处理采集或设备事务，请稍后加入标定")?;
-    crate::camera::check_idle(&cycle)?;
-    let capture = cycle.camera.recipe_capture();
-    let round = capture.get_burst(&round_id)?;
-    let current: BTreeMap<String, Value> = cycle.camera.configs().iter().map(|c| (c.id.clone(), state_value(c))).collect();
-    check_round(&w.doc, &w.calibration.rounds, &round, &current)?;
-    let recipe = w.doc.build()?;
-    let cameras = w.doc.plan_cameras();
-    let choice = calibration_corridors(&w, &round_id, round.group_count)?;
-    let graphs = vision::CorridorSet::build(&recipe, &teaching_sizes(&w)?)?;
-    let engine = app
-        .state::<vision::VisionHost>()
-        .engine()
-        .ok_or("lyFlow 核心库未加载")?;
-    let run = vision::unique_run_id(&format!("calibration-{id}-{round_id}"));
-    let metrics =
-        capture_review::measure_calibration_round(&w, &round, |camera, camera_id, seq| {
-            let Some(segment) = choice[camera][(seq - 1) as usize] else {
-                return Ok(frame_without_metrics(
-                    camera,
-                    seq,
-                    FrameState::NotInspected,
-                    None,
-                ));
-            };
-            let graph = graphs
-                .get(camera, segment)
-                .ok_or_else(|| format!("第 {segment} 段相机 {camera_id} 还没有示教走廊"))?;
-            let image =
-                crate::image_file::load(&capture.burst_frame_path(&round_id, camera_id, seq)?)?;
-            vision::measure_frame(
-                &engine,
-                graph,
-                &image,
-                seq,
-                &format!("{run}-c{camera}-{seq}"),
-            )
-            .map(|m| m.metrics)
-        });
-    let outcome = segment_round(&w.doc.segments, cameras.len(), round.group_count, &metrics);
-    let standard = standard || round.origin.as_ref().is_some_and(|o| o.standard());
-    let entry = calibration_round(&w.doc, &round, standard, &metrics);
-    let mut items = host.items.lock().unwrap();
-    let current = items.get_mut(&id).ok_or("候选配置不存在")?;
-    current.expect(revision)?;
-    let mut next = current.clone();
-    add_calibration_round(&mut next, entry)?;
-    write_features(&host.dir(&id).join(CALIBRATION_DIR).join(&round_id), &cameras, &metrics, &outcome)?;
-    host.save(&next)?;
-    *current = next;
-    view(&app, current.clone())
-}
-
-#[tauri::command]
-pub fn workspace_calibration_remove_round(app: AppHandle, id: String, revision: u64, round: String) -> Result<WorkspaceView, String> {
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
-    w.expect(revision)?;
-    remove_calibration_round(&mut w, &round)?;
-    host.save(&w)?;
-    // 只删本候选标定目录下这一轮的特征（轮次编号来自已加入的记录，只含字母、数字与短横线）
-    if round.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') { let _ = std::fs::remove_dir_all(host.dir(&id).join(CALIBRATION_DIR).join(&round)); }
-    items.insert(id, w.clone());
-    view(&app, w)
 }
 
 /// 已加入标定的一轮的每帧特征（加入标定时测量写下的），按计划相机、seq；只读，多轮标定页逐帧查看用。
@@ -1616,6 +1540,7 @@ pub(super) fn teach_preview_scope(
     if !saved {
         return Err(format!("第 {segment} 段相机 {camera} 还没有保存的走廊"));
     }
+    super::pieces::require_teaching_round(w, &round.round_id)?;
     if round.recipe_id != w.doc.id || round.state != CaptureState::Complete {
         return Err(format!(
             "采集轮次 {} 不属于当前候选或尚未完整完成，不能用于试测",
@@ -1791,18 +1716,6 @@ pub async fn workspace_teach_preview_segment(
     .map_err(|e| e.to_string())?
 }
 
-pub fn remove_calibration_round(w: &mut Workspace, round: &str) -> Result<(), String> {
-    require_burst(&w.doc)?;
-    let before = w.calibration.rounds.len();
-    w.calibration.rounds.retain(|r| r.round_id != round);
-    if w.calibration.rounds.len() == before {
-        return Err(format!("采集轮次 {round} 不在多轮标定里"));
-    }
-    clear_calibration(&mut w.doc);
-    w.changed();
-    Ok(())
-}
-
 /// 应用多轮标定（结果在 `plan.calibration`）。
 #[tauri::command]
 pub fn workspace_calibration_apply(app: AppHandle, id: String, revision: u64) -> Result<WorkspaceView, String> {
@@ -1925,32 +1838,30 @@ pub(super) fn untaught_pairs(w: &Workspace) -> Vec<(String, u32)> {
         .collect()
 }
 
-/// 段配方的进度：采集 → 段列表 → 走廊示教 → 多轮标定 → 验证（可选，D-SB-46）→ 发布。只读候选与已有完整采集轮数，不访问设备。
-pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], complete_rounds: usize, production_version: Option<u32>) -> ProgressV2 {
+/// 段配方的进度：示教件 → 分段 → 走廊示教 → 多轮标定 → 验证（可选，D-SB-46）→ 发布（RB）。只读候选，不访问设备。
+pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], production_version: Option<u32>) -> ProgressV2 {
     let doc = &w.doc;
-    let captured = complete_rounds > 0;
-    let need_capture = || {
-        vec![BlockerV2 {
-            message: "先导入一轮采集轮次".into(),
-            target: TargetV2::Capture,
-        }]
-    };
+    let piece = w.teaching_piece.as_ref();
     let capture = StepV2 {
         id: StepIdV2::Capture,
-        label: "采集轮次",
+        label: "示教件",
         optional: false,
-        status: if captured {
+        status: if piece.is_some() {
             StepStatus::Done
         } else {
             StepStatus::NotStarted
         },
-        detail: if captured {
-            format!("已有 {complete_rounds} 轮完整采集")
+        detail: piece.map_or_else(|| "等待选示教件".into(), |p| format!("示教件 SN {}", p.sn)),
+        blockers: if piece.is_some() {
+            Vec::new()
         } else {
-            "等待导入采集轮次".into()
+            vec![BlockerV2 {
+                message: "选示教件".into(),
+                target: TargetV2::Capture,
+            }]
         },
-        blockers: Vec::new(),
     };
+    let segmented = super::pieces::teaching_counts(w).is_some();
     let straight = doc
         .segments
         .iter()
@@ -1958,17 +1869,30 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
         .count();
     let segments = StepV2 {
         id: StepIdV2::Segments,
-        label: "段列表",
+        label: "分段",
         optional: false,
-        status: StepStatus::Done,
+        status: if segmented {
+            StepStatus::Done
+        } else {
+            StepStatus::NotStarted
+        },
         detail: format!(
             "{} 段（直线 {straight}、弯道 {}），帧数容差合计 ±{}",
             doc.segments.len(),
             doc.segments.len() - straight,
             crate::plan::tolerance_total(&doc.segments)
         ),
-        blockers: Vec::new(),
+        blockers: match (piece, segmented) {
+            (None, _) => capture.blockers.clone(),
+            (Some(_), false) => vec![BlockerV2 {
+                message: "在示教件上确认分段".into(),
+                target: TargetV2::Segments,
+            }],
+            (Some(_), true) => Vec::new(),
+        },
     };
+    // 走廊示教与多轮标定都在示教件分段确认之后
+    let need_segments = || segments.blockers.clone();
     let corridor = {
         let open = untaught_pairs(w);
         let total = doc
@@ -2009,7 +1933,7 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
                     }),
             )
             .collect();
-        let status = if !captured {
+        let status = if !segmented {
             StepStatus::NotStarted
         } else if blockers.is_empty() {
             StepStatus::Done
@@ -2024,7 +1948,7 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
             optional: false,
             status,
             detail: format!("{} / {total} 条段走廊已示教", total - open.len()),
-            blockers: if captured { blockers } else { need_capture() },
+            blockers: if segmented { blockers } else { need_segments() },
         }
     };
     let calibration = {
@@ -2034,8 +1958,8 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
         let status = if total.is_some() { StepStatus::Done } else if normal > 0 { StepStatus::InProgress } else { StepStatus::NotStarted };
         let blockers = match total {
             Some(_) => Vec::new(),
-            None if !captured => need_capture(),
-            None => vec![BlockerV2 { message: if normal < min { format!("还差 {} 轮：至少 {min} 轮（不含标准件轮次）", min - normal) } else { format!("已有 {normal} 轮，请应用标定") },
+            None if !segmented => need_segments(),
+            None => vec![BlockerV2 { message: if normal < min { format!("还差 {} 件：至少 {min} 件（含示教件，不含标准件）", min - normal) } else { format!("已有 {normal} 件，请应用标定") },
                 target: TargetV2::Calibration }],
         };
         let detail = match total {
@@ -2048,7 +1972,7 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
                     ""
                 }
             ),
-            None => format!("{normal} / {min} 轮"),
+            None => format!("{normal} / {min} 件"),
         };
         StepV2 { id: StepIdV2::Calibration, label: "多轮标定", optional: false, status, detail, blockers }
     };
@@ -2087,7 +2011,7 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
             .as_ref()
             .map(|p| p.doc.version)
             .unwrap_or(w.doc.version);
-        let open: Vec<BlockerV2> = [&capture, &corridor, &calibration]
+        let open: Vec<BlockerV2> = [&capture, &segments, &corridor, &calibration]
             .into_iter()
             .filter(|s| s.status != StepStatus::Done)
             .map(|s| BlockerV2 {
@@ -2137,10 +2061,10 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
     let next = if capture.status != StepStatus::Done {
         Some(NextV2 {
             step: StepIdV2::Capture,
-            label: "导入轮次".into(),
+            label: "选示教件".into(),
             target: TargetV2::Capture,
         })
-    } else if let Some(open) = [&corridor, &calibration]
+    } else if let Some(open) = [&segments, &corridor, &calibration]
         .into_iter()
         .find(|s| s.status != StepStatus::Done)
     {
@@ -2157,6 +2081,7 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
                 camera,
                 segment: None,
             } => format!("设置相机 {camera} 的像素当量"),
+            TargetV2::Segments => "在示教件上确认分段".into(),
             _ => open.label.to_string(),
         };
         Some(NextV2 {
@@ -2179,10 +2104,6 @@ pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], comple
 pub(super) fn plan_view(app: &AppHandle, w: &Workspace, layout: &Recipe, production: Option<&Recipe>, production_doc: Option<&RecipeDoc>, production_version: Option<u32>) -> WorkspacePlanView {
     let doc = &w.doc;
     let teaching = camera_teaching_views(w);
-    let used: BTreeSet<&str> = w.camera_teaching.iter().map(|t| t.round.as_str()).chain(w.calibration.rounds.iter().map(|r| r.round_id.as_str())).collect();
-    let complete_rounds = app.state::<CycleHost>().camera.recipe_capture().list(&doc.id)
-        .map(|rounds| rounds.iter().filter(|r| r.state == CaptureState::Complete).count())
-        .unwrap_or(used.len());
     let production_export = production.filter(|r| r.is_burst()).and_then(|r| PlanExport::from_recipe(r).ok());
     let (candidate_export, candidate_export_error) = match PlanExport::from_recipe(layout) {
         Ok(export) => (Some(export), None),
@@ -2209,7 +2130,8 @@ pub(super) fn plan_view(app: &AppHandle, w: &Workspace, layout: &Recipe, product
         production_export,
         candidate_export,
         candidate_export_error,
-        progress: progress_v2(w, &teaching, complete_rounds, production_version),
+        progress: progress_v2(w, &teaching, production_version),
         camera_teaching: teaching,
+        pieces: super::pieces::plan_pieces(app, w),
     }
 }

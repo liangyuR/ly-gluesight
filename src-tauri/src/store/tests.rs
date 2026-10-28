@@ -41,7 +41,7 @@ fn offline_parts_stay_out_of_real_history_statistics_and_rejudge_and_vice_versa(
     let synthetic = save_source(&recipe, "synthetic-part", RecordSource::OfflineSynthetic).unwrap();
     let sample = save_source(&recipe, "sample-part", RecordSource::OfflineSample).unwrap();
     let mut debug_recipe = recipe.clone();
-    debug_recipe.revision_id = format!("candidate-{}-r355", recipe.id);
+    debug_recipe.revision_id = format!("candidate-{}-i1-r355", recipe.id);
     let debug = save_source(&debug_recipe, "debug-part", RecordSource::OfflineCandidate).unwrap();
     for (scope, expected) in [(HistoryScope::Real, vec![real]), (HistoryScope::Offline, vec![sample, synthetic]), (HistoryScope::Debug, vec![debug])] {
         let query = HistoryQuery { scope, ..Default::default() };

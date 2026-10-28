@@ -83,6 +83,12 @@ pub fn corner_angle(kind: SegmentKind, progress: f32) -> f32 {
 /// 断胶 / 局部超差工况画在第 1 台相机第 2 帧上（与模拟测量 `measure::simulate_frame` 标的同一帧）：
 /// 胶条中部缺一段（比允许断口长 2 mm），或 1/3 处约 3 mm 长的一段加宽到超出胶宽上限 1 mm。
 pub fn render_burst(r: &BurstRender) -> FrameImage {
+    render_burst_span(r, [0.0, 1.0])
+}
+
+/// 同 [`render_burst`]，胶条只画沿走廊从出胶点量起、弧长占比在 `span` 内的一段，模拟起涂与收尾：
+/// 起涂为 [0, f]（胶条从胶嘴往外长），收尾为 [g, 1]（阀门关后胶尾离开胶嘴），空区间即无胶。
+pub fn render_burst_span(r: &BurstRender, span: [f32; 2]) -> FrameImage {
     let recipe = &r.recipe;
     let inspect = recipe.inspect.get(r.camera_idx);
     let path = inspect
@@ -111,6 +117,8 @@ pub fn render_burst(r: &BurstRender) -> FrameImage {
         [o[0] + x * cos - y * sin, o[1] + x * sin + y * cos]
     }).collect();
     let length: f32 = path.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+    let from = span[0].max(0.0) * length;
+    let to = if span[1] >= 1.0 { f32::INFINITY } else { span[1] * length };
     let marked = r.camera_idx == 0 && r.seq == 2;
     let gap = match (r.scenario, checks) {
         (Scenario::Gap, Some(c)) if marked => Some(((c.gap.max_gap_mm as f32 + 2.0) / mm).min(length)),
@@ -136,7 +144,7 @@ pub fn render_burst(r: &BurstRender) -> FrameImage {
             let width = excursion.filter(|(c, _)| (s - c).abs() * mm < 1.5).map_or(nominal, |(_, wide)| wide);
             let half = width / mm / 2.0;
             let missing = gap.is_some_and(|(a, b)| s >= a && s < b);
-            if !missing && s > 0.0 {
+            if !missing && s > from && s <= to {
                 let edge = ((half - d) / 2.0).clamp(0.0, 1.0);
                 v = v * (1.0 - edge) + 38.0 * edge;
             }

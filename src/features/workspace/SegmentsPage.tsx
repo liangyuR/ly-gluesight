@@ -12,7 +12,6 @@ import { patchSegment, segmentIssues } from "./segmentEdit";
 import { BoundaryGuardField, BoundaryRefineField } from "./DocParams";
 import SegmentWorkbench from "./SegmentWorkbench";
 import { segmentCameras } from "./workbenchDraft";
-import AlignReview from "./AlignReview";
 import "../plan/plan.css";
 import "./segments.css";
 
@@ -21,7 +20,7 @@ type SaveState = "saved" | "pending" | "saving" | "failed";
 const saveText: Record<SaveState, string> = { saved: "段列表已保存", pending: "等待保存…", saving: "保存中…", failed: "保存失败" };
 
 /**
- * 段列表（段配方，路由 /recipe/segments）：顶部分段标定工作台（SegmentWorkbench）按图像定段结构与模板轮边界；
+ * 段列表（段配方，路由 /recipe/segments）：顶部分段标定工作台（SegmentWorkbench）按示教件图像定段结构与边界；
  * 下方设各段长度、帧数容差与跳过帧数；逐帧定向、检测项与胶偏参考在走廊示教页。预期帧数 N_exp 与标定统计只读：只能由多轮采集得出（多轮标定页）。
  */
 export default function SegmentsPage() {
@@ -101,7 +100,6 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
 
   return <div className="wp-page"><WorkspaceBar />
     <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
-    <AlignReview plan={plan} locked={workbenchDirty ? "上方分段有未保存的改动，先保存或撤销后再确认其余轮次" : paramsPending} />
     <Panel title="段列表" help="各段帧数容差、长度与跳过帧数；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数由多轮采集得出，这里只读"
       actions={<>
         <BoundaryGuardField locked={docLocked && `${docLocked}边界过渡帧数`} />

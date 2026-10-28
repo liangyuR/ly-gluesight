@@ -16,6 +16,7 @@ mod frame_align;
 mod frame_group;
 mod fsio;
 mod history;
+mod history_fixture;
 mod handshake;
 mod handshake_audit;
 mod inspection;
@@ -63,11 +64,14 @@ pub use packaging::check_packaged_runtime;
 /// 不是稳定 API，应用本身不用。
 #[doc(hidden)]
 pub mod probe_api {
-    pub use crate::burst_judge::FrameState;
-    pub use crate::calibration::calibrate_counts;
+    pub use crate::burst_judge::{frame_verdict, FrameState};
+    pub use crate::calibration::{calibrate_counts, unformed_lead, GroupForm, ONSET_RUN};
     pub use crate::camera::{BurstRender, CameraConfig};
-    pub use crate::frame_align::{align_cuts, downsample, Sequence, ALIGN_FACTOR};
+    pub use crate::frame_align::{
+        align_cuts, downsample, ReviewReason, Sequence, ALIGN_FACTOR, ALIGN_SHARPNESS,
+    };
     pub use crate::frame_group::{loss_alarms, FrameGroup};
+    pub use crate::history_fixture::{FixtureFrames, FixturePart, FixtureSite, SN_PREFIX};
     pub use crate::image_file::{load as load_image, save_pgm};
     pub use crate::offline::line::{nominal_frames, PulseProfile, SIM_HZ};
     pub use crate::offline::sample_set::SampleSet;
@@ -82,7 +86,7 @@ pub mod probe_api {
         ResourceSource, ValidationSite, Versions,
     };
     pub use crate::segmentation::{Proportional, SegInput, SegOutcome, Segmenter};
-    pub use crate::simimage::render_burst;
+    pub use crate::simimage::{render_burst, render_burst_span};
     pub use crate::vision::{Engine, FrameImage};
 
     /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。
@@ -271,9 +275,6 @@ pub fn run() {
             workspace::workspace_get,
             workspace::workspace_create,
             workspace::workspace_delete,
-            workspace::workspace_transfer_export,
-            workspace::workspace_transfer_pick,
-            workspace::workspace_transfer_import,
             workspace::workspace_save_doc,
             workspace::workspace_image,
             workspace::workspace_validate,
@@ -291,7 +292,8 @@ pub fn run() {
             workspace::workspace_teach_segment_corridor,
             workspace::workspace_clear_segment_corridor,
             workspace::workspace_extract_corridor,
-            workspace::workspace_calibration_add_round,
+            workspace::workspace_calibration_pick,
+            workspace::workspace_calibration_sync,
             workspace::workspace_calibration_remove_round,
             workspace::workspace_calibration_round_features,
             workspace::workspace_calibration_frame,
@@ -299,17 +301,15 @@ pub fn run() {
             workspace::workspace_teach_preview_segment,
             workspace::workspace_publish_checks,
             workspace::workspace_calibration_apply,
-            workspace::workspace_capture_review_save,
             workspace::workspace_segment_template_save,
             workspace::workspace_capture_review_suggest,
             workspace::workspace_capture_review_confirm_cuts,
-            workspace::workspace_capture_review_confirm,
-            workspace::workspace_capture_review_set_template,
-            workspace::workspace_capture_review_apply_template,
             workspace::workspace_capture_review_exclude,
             workspace::workspace_history_candidates,
-            workspace::workspace_history_import,
+            workspace::workspace_set_teaching_piece,
             workspace::workspace_confirm_tolerance,
+            workspace::workspace_confirm_skip,
+            workspace::workspace_calibration_skip_suggest,
             workspace::workspace_record_frame_image,
         ])
         .run(context)
@@ -370,9 +370,9 @@ fn start_services(
         tauri::WebviewWindowBuilder::from_config(app, config)?.data_directory(storage::webview(&root)?).build()?;
     }
     if let Some(window) = app.get_webview_window("storage-startup") { window.close()?; }
-    if !storage::migrated_this_launch(app) { plc::PlcHost::start_if_configured(app); }
+    plc::PlcHost::start_if_configured(app);
     cycle::CycleHost::start(app);
-    camera::CameraRig::start(app, !storage::migrated_this_launch(app));
+    camera::CameraRig::start(app);
     measure::apply_settings(app);
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || cycle::purge_history(&handle));

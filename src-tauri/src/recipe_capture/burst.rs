@@ -1,4 +1,4 @@
-//! 段配方的采集轮次（CaptureRoundV2，D1）：只读取与核对盘上的轮次，新轮次只由历史件导入或候选包导入产生。
+//! 段配方的采集轮次（CaptureRoundV2，D1）：只读取与核对盘上的轮次，新轮次只由历史件导入或手动配置数据（合成轮次直接写入 recipe-capture/）产生。
 //!
 //! - 目录结构：`round.json` 记统计，`frames.jsonl` 每行一帧，图像为无压缩 PGM，一帧一个文件 `{相机}/{seq:06}.pgm`；
 //! - 帧组数 = 各相机最大 seq 的最大值；缺帧只记在 missingFrames 并给丢帧告警（[`loss_alarms`]），整轮不判失败；
@@ -59,7 +59,7 @@ pub enum CaptureFailureV2 {
     Other,
 }
 
-/// 轮次的来源：以前示教握手实拍的轮次为空；历史件导入的轮次记下原记录；手动配置数据（候选包导入）记标签。
+/// 轮次的来源：以前示教握手实拍的轮次为空；历史件导入的轮次记下原记录；手动配置数据（合成轮次）记标签。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",

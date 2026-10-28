@@ -20,7 +20,7 @@ use crate::frame::{BudgetExceeded, CounterSource, Frame, FrameImage, FramePool, 
 use crate::mvs::{self, DeviceSummary, FrameInfo};
 use crate::offline::sample_set::SampleSet;
 use crate::offline::Scenario;
-use crate::recipe::{legacy_camera_id, valid_camera_id, Recipe};
+use crate::recipe::{valid_camera_id, Recipe};
 use crate::simimage;
 
 mod delivery;
@@ -730,22 +730,15 @@ pub struct CameraSlot {
 #[derive(Default)]
 pub struct CameraSupervision {
     started: AtomicBool,
-    paused: AtomicBool,
 }
 
 impl CameraSupervision {
-    pub fn start(&self, auto_connect: bool) -> bool {
-        if self.started.swap(true, Ordering::SeqCst) { return false; }
-        self.paused.store(!auto_connect, Ordering::SeqCst);
-        true
-    }
-
-    pub fn resume(&self) {
-        self.paused.store(false, Ordering::SeqCst);
+    pub fn start(&self) -> bool {
+        !self.started.swap(true, Ordering::SeqCst)
     }
 
     pub fn reconnect_due(&self, released: bool, lost: bool, opened: bool) -> bool {
-        !self.paused.load(Ordering::SeqCst) && !released && (lost || !opened)
+        !released && (lost || !opened)
     }
 }
 
@@ -1126,7 +1119,6 @@ impl CameraSlot {
     }
 
     fn open(&self) -> Result<String, String> {
-        self.supervision.resume();
         self.close();
         let result = self.try_open();
         if let Err(e) = &result {
@@ -1495,46 +1487,6 @@ impl CameraRig {
         Ok(())
     }
 
-    /// 升级迁移：cameras.json 里还没有曝光增益的相机按 `imaging_from_recipes` 补上并写回，返回要记的日志。
-    pub fn migrate_imaging(&self, recipes_dir: &Path, in_use: Option<&str>) -> Option<String> {
-        let missing: Vec<String> = {
-            let saved = self.rig.imaging.lock().unwrap();
-            self.configs()
-                .into_iter()
-                .map(|c| c.id)
-                .filter(|id| !saved.contains_key(id))
-                .collect()
-        };
-        if missing.is_empty() {
-            return None;
-        }
-        let picked = imaging_from_recipes(recipes_dir, in_use, &missing);
-        self.rig
-            .imaging
-            .lock()
-            .unwrap()
-            .extend(picked.iter().map(|(id, imaging, _)| (id.clone(), *imaging)));
-        let detail = picked
-            .iter()
-            .map(|(id, imaging, source)| {
-                let from = source
-                    .as_ref()
-                    .map_or("默认值".to_string(), |recipe| format!("配方 {recipe}"));
-                format!(
-                    "{id} {} µs / {} dB（{from}）",
-                    imaging.exposure_us, imaging.gain_db
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("；");
-        let saved = self.save().err().map_or(String::new(), |e| {
-            format!("；没能写回 cameras.json，下次启动重新迁移：{e}")
-        });
-        Some(format!(
-            "曝光与增益改由相机页管理，已按原配方补齐：{detail}{saved}"
-        ))
-    }
-
     /// 取图回调是否拷贝整帧。
     pub fn set_capture(&self, on: bool) {
         self.rig.capture.store(on, Ordering::Relaxed);
@@ -1601,7 +1553,7 @@ impl CameraRig {
         self.generation.fetch_add(1, Ordering::SeqCst);
         drop(old);
         for s in &slots {
-            supervise(app, s, true);
+            supervise(app, s);
         }
     }
 
@@ -1612,9 +1564,9 @@ impl CameraRig {
         let _ = app.emit("camera://changed", ());
     }
 
-    pub fn start(app: &AppHandle, auto_connect: bool) {
+    pub fn start(app: &AppHandle) {
         for s in app.state::<CycleHost>().camera.slots() {
-            supervise(app, &s, auto_connect);
+            supervise(app, &s);
         }
     }
 }
@@ -1623,8 +1575,8 @@ impl CameraRig {
 const RECONNECT_LOG_WINDOW: Duration = Duration::from_secs(60);
 
 /// 每台相机一个后台循环：海康相机掉线或未打开时每 2 s 重连（已释放给 MVS 的不连）。相机被移出相机组后循环自己结束。
-fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>, auto_connect: bool) {
-    if !slot.supervision.start(auto_connect) { return; }
+fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
+    if !slot.supervision.start() { return; }
     let slot = Arc::downgrade(slot);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -1787,71 +1739,6 @@ async fn camera_save_config_inner(
     Ok(warnings)
 }
 
-/// 每台相机的曝光增益迁移来源，返回（相机, 值, 来源配方）：先取在用配方，再取最近发布（配方文件最后写入）且有这台相机的配方，
-/// 都没有用默认值。配方已不再读入 `cameras`，这里按原始 JSON 取。
-fn imaging_from_recipes(
-    recipes_dir: &Path,
-    in_use: Option<&str>,
-    cameras: &[String],
-) -> Vec<(String, CameraImaging, Option<String>)> {
-    let mut recipes: Vec<(
-        std::time::SystemTime,
-        String,
-        BTreeMap<String, CameraImaging>,
-    )> = std::fs::read_dir(recipes_dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.ends_with(".json") && !name.starts_with('.'))
-        })
-        .filter_map(|entry| {
-            let modified = entry
-                .metadata()
-                .ok()
-                .filter(|m| m.is_file())?
-                .modified()
-                .ok()?;
-            let value: serde_json::Value =
-                serde_json::from_str(&crate::fsio::read_text(&entry.path()).ok()?).ok()?;
-            let id = value.get("id")?.as_str()?.to_string();
-            let imaging = value
-                .get("cameras")?
-                .as_object()?
-                .iter()
-                .filter_map(|(camera, v)| {
-                    Some((
-                        camera.clone(),
-                        serde_json::from_value::<CameraImaging>(v.clone())
-                            .ok()
-                            .filter(|i| i.validate(camera).is_ok())?,
-                    ))
-                })
-                .collect();
-            Some((modified, id, imaging))
-        })
-        .collect();
-    recipes.sort_by(|a, b| b.0.cmp(&a.0));
-    if let Some(in_use) = in_use {
-        recipes.sort_by_key(|(_, id, _)| !id.eq_ignore_ascii_case(in_use));
-    }
-    cameras
-        .iter()
-        .map(|camera| {
-            match recipes
-                .iter()
-                .find_map(|(_, id, imaging)| imaging.get(camera).map(|i| (*i, id.clone())))
-            {
-                Some((imaging, recipe)) => (camera.clone(), imaging, Some(recipe)),
-                None => (camera.clone(), DEFAULT_IMAGING, None),
-            }
-        })
-        .collect()
-}
-
 fn check_camera_target(current_id: &str, requested_id: &str) -> Result<(), String> {
     if current_id != requested_id {
         return Err("相机组已变化，请刷新配置后重试保存".into());
@@ -1882,18 +1769,15 @@ fn take_id(configs: &[CameraConfig], next_id: &mut u32) -> String {
     id
 }
 
-/// 没有编号或编号重复的相机补编号。旧文件（还没有 next_id）按位置补 "cam{位置+1}"，旧配方里的相机序号 k 就对应它；
-/// 其余从 next_id 取。返回是否改过。
+/// 没有编号或编号重复的相机从 next_id 补编号。返回是否改过。
 fn assign_ids(configs: &mut [CameraConfig], next_id: &mut u32) -> bool {
-    let legacy = *next_id == 0;
     let mut changed = false;
     for i in 0..configs.len() {
         let id = configs[i].id.clone();
         if valid_camera_id(&id) && !configs[..i].iter().any(|c| c.id == id) {
             continue;
         }
-        let pos = legacy_camera_id(i as u8);
-        configs[i].id = if legacy && !configs.iter().any(|c| c.id == pos) { pos } else { String::new() };
+        configs[i].id = String::new();
         changed = true;
     }
     for i in 0..configs.len() {
@@ -2212,76 +2096,12 @@ mod rig_file_tests {
     #[test]
     fn released_camera_is_never_reopened_by_the_supervisor() {
         let supervision = CameraSupervision::default();
-        supervision.start(true);
+        supervision.start();
         for (lost, opened) in [(false, false), (true, false), (true, true)] {
             assert!(!supervision.reconnect_due(true, lost, opened), "lost={lost} opened={opened}");
             assert!(supervision.reconnect_due(false, lost, opened), "lost={lost} opened={opened}");
         }
         assert!(!supervision.reconnect_due(false, false, true));
-    }
-
-    /// 升级后现场曝光不能被悄悄重置：没有曝光增益的相机取在用配方的值，在用配方没有这台相机才取最近发布的配方，都没有才用默认值。
-    #[test]
-    fn camera_without_saved_imaging_then_migrates_from_in_use_recipe_before_newer_ones() {
-        let dir = std::env::temp_dir().join(format!(
-            "gluesight-imaging-migrate-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let recipe = |id: &str, cameras: serde_json::Value, age_s: u64| {
-            let path = dir.join(format!("{id}.json"));
-            std::fs::write(
-                &path,
-                serde_json::json!({"id": id, "cameras": cameras}).to_string(),
-            )
-            .unwrap();
-            let modified = std::time::SystemTime::now() - Duration::from_secs(age_s);
-            std::fs::File::options()
-                .write(true)
-                .open(&path)
-                .unwrap()
-                .set_modified(modified)
-                .unwrap();
-        };
-        recipe(
-            "IN-USE",
-            serde_json::json!({"cam1": {"exposureUs": 800.0, "gainDb": 2.0}}),
-            300,
-        );
-        recipe(
-            "NEWER",
-            serde_json::json!({"cam1": {"exposureUs": 90.0, "gainDb": 9.0}, "cam2": {"exposureUs": 450.0, "gainDb": 1.5}}),
-            10,
-        );
-        recipe(
-            "OLDER",
-            serde_json::json!({"cam2": {"exposureUs": 30.0, "gainDb": 0.0}}),
-            600,
-        );
-        let cameras: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
-        let picked = imaging_from_recipes(&dir, Some("in-use"), &cameras);
-        let _ = std::fs::remove_dir_all(&dir);
-        let imaging = |exposure_us, gain_db| CameraImaging {
-            exposure_us,
-            gain_db,
-        };
-        assert_eq!(
-            picked,
-            vec![
-                (
-                    "cam1".to_string(),
-                    imaging(800.0, 2.0),
-                    Some("IN-USE".to_string())
-                ),
-                (
-                    "cam2".to_string(),
-                    imaging(450.0, 1.5),
-                    Some("NEWER".to_string())
-                ),
-                ("cam3".to_string(), DEFAULT_IMAGING, None),
-            ]
-        );
     }
 }
 

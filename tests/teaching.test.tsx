@@ -9,7 +9,7 @@ import { burstRecipe, burstWorkspaceView, captureRoundV2, frameMetrics, snapshot
 import { stubSvgPointer } from "./svg-pointer";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureList: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), teachPreviewFrame: vi.fn(), teachPreviewSegment: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), teachPreviewFrame: vi.fn(), teachPreviewSegment: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
 const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
@@ -21,7 +21,6 @@ beforeEach(() => {
   vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot(), logs: [] });
   vi.mocked(workspaceApi.image).mockResolvedValue(picture);
   vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);
-  vi.mocked(workspaceApi.captureList).mockResolvedValue([{ roundId: "round-1", recipeId: "A", cameraIds: ["CAM-1", "CAM-2", "CAM-3"], plannedCount: 12, receivedCount: 12, state: "complete", createdAt: 1, error: null }]);
   vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({ recipeId: "A" }));
   vi.mocked(workspaceApi.saveDoc).mockResolvedValue(ws.data!);
   vi.mocked(workspaceApi.teachSegmentCorridor).mockResolvedValue(ws.data!);
@@ -200,9 +199,9 @@ describe("示教帧选择", () => {
 
   // 防的回归：选了缺帧的帧组仍能提交，后端冻结不到图（规格 §3：缺帧只告警，但这一帧没有图可示教）；进度链接带的段没定位到，选帧落到别的段
   it("链接指定相机与段、所选帧组这台相机缺帧 → 打开即选这一段的帧，不读图、用此帧示教禁用并说明缺帧", async () => {
-    ws.data!.workspace.captureReview = { rounds: { "round-1": { groupCount: 12, cuts: [4, 8], status: "confirmed", excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null } }, template: null };
+    ws.data!.workspace.captureReview = { rounds: { "round-1": { groupCount: 12, cuts: [4, 8], status: "confirmed", excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null } } };
     show("/recipe/teach?camera=CAM-2&segment=2");
-    await screen.findByText("第 2 段在这一轮为帧组 5–8");
+    await screen.findByText("第 2 段在示教件为帧组 5–8");
     fireEvent.change(await screen.findByRole("spinbutton", { name: "帧组序号" }), { target: { value: "5" } });
     const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2 · 段 2" });
     await vi.waitFor(() => expect(choose).toBeDisabled());

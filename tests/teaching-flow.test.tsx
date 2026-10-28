@@ -6,7 +6,6 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
-import CapturePage from "../src/features/workspace/CapturePage";
 import { WorkspaceProvider } from "../src/features/workspace/context";
 import { SnackbarProvider } from "qing-steel";
 import { workspaceApi } from "../src/features/workspace/api";
@@ -27,8 +26,8 @@ let backend: Record<string, Handler> = {};
 /** 本次渲染能用到的全部桌面命令；handlers 覆盖或补充写操作。返回值复制一份，与 IPC 序列化一致。 */
 function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = {}) {
   backend = {
-    storage_preferences_get: () => ({ legacyImported: true }),
-    storage_preferences_update: ({ patch }) => ({ legacyImported: true, ...(patch as object) }),
+    storage_preferences_get: () => ({}),
+    storage_preferences_update: ({ patch }) => ({ ...(patch as object) }),
     recipe_list: () => ({ recipes: [burstSummary(candidate.workspace.doc as BurstRecipeDoc)], errors: [], unavailable: [] }),
     workspace_list: () => [candidate.workspace],
     workspace_get: () => candidate,
@@ -41,9 +40,7 @@ function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = 
     cycle_snapshot: () => snapshot(),
     cycle_logs: () => [],
     history_query: () => ({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } }),
-    recipe_capture_list: () => [],
     recipe_capture_get: () => null,
-    workspace_history_candidates: () => [],
     ...handlers,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -71,7 +68,6 @@ function renderWorkspace(path: string, strict = false) {
   const workspace = <MemoryRouter initialEntries={[path]}><SnackbarProvider><WorkspaceProvider><Routes>
     <Route path="/recipe/teach" element={<TeachingPage />} />
     <Route path="/recipe/validation" element={<ValidationPage />} />
-    <Route path="/recipe/capture" element={<CapturePage />} />
   </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>;
   render(strict ? <StrictMode>{workspace}</StrictMode> : workspace);
   // jsdom 没有样式表，逐级检查 pointer-events 只是空耗
@@ -93,9 +89,9 @@ function corridorCandidate(edit: (inspect: Inspect, view: WorkspaceView) => void
 }
 /** CAM-2 段 1 已示教：一条有转折的走廊，相机 0.2 mm/px */
 const taught = (inspect: Inspect, view: WorkspaceView) => { inspect.segments = [{ segment: 1, corridor: structuredClone(bend) }]; inspect.mmPerPx = .2; Object.assign(view.plan!.cameraTeaching[1], { mmPerPx: .2 }); view.plan!.cameraTeaching[1].segments[0].saved = true; };
-/** 这些轮次已确认手动分段：12 个帧组，段 1 为帧组 1–6 */
+/** 这些件已确认分段边界：12 个帧组，段 1 为帧组 1–6 */
 const confirmed = (view: WorkspaceView, ...rounds: string[]) => {
-  view.workspace.captureReview = { rounds: Object.fromEntries(rounds.map(round => [round, { groupCount: 12, cuts: [6, 9], status: "confirmed" as const, excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null }])), template: null };
+  view.workspace.captureReview = { rounds: Object.fromEntries(rounds.map(round => [round, { groupCount: 12, cuts: [6, 9], status: "confirmed" as const, excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null }])) };
 };
 /** workspace_save_doc 的后端替身：整份配方写回并推进修订 */
 const savingDoc = (candidate: WorkspaceView, gate?: Promise<void>): Handler => async ({ revision, doc }) => {
@@ -209,34 +205,34 @@ it("自动提取失败后按笔划生成 → 定位原因并保留原线，人�
   expect(screen.getByRole("button", { name: "保存走廊" })).toBeEnabled();
 });
 
-it("段已有旧示教帧时点击用于走廊示教 → 直接在本轮这一段内选帧，确认后显示新帧并保持编辑", async () => {
+// 防的回归（RB-1）：示教帧可以从示教件以外的轮次选取；重新选帧确认后仍显示旧帧
+it("段已有示教帧时重新选帧 → 只在示教件这一段内选帧，确认后按示教件提交并显示新帧", async () => {
   const candidate = corridorCandidate();
-  confirmed(candidate, "round-other", "round-new");
+  confirmed(candidate, "round-1");
   const response = structuredClone(candidate);
   response.workspace.revision++;
-  const frame = { ...candidate.plan!.cameraTeaching[1].segments[0].frame, id: "S-CAM-2-new-frame", source: "capture:round-new" };
+  const frame = { ...candidate.plan!.cameraTeaching[1].segments[0].frame, id: "S-CAM-2-new-frame", source: "capture:round-1" };
   response.plan!.cameraTeaching[1].segments[0].frame = frame;
-  response.workspace.cameraTeaching = response.workspace.cameraTeaching.map(item => item.camera === "CAM-2" && item.segment === 1 ? { camera: "CAM-2", frame, round: "round-new", seq: 2, segment: 1 } : item);
+  response.workspace.cameraTeaching = response.workspace.cameraTeaching.map(item => item.camera === "CAM-2" && item.segment === 1 ? { camera: "CAM-2", frame, round: "round-1", seq: 2, segment: 1 } : item);
   const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
   mockSite(candidate, {
-    recipe_capture_list: () => ["round-other", "round-new"].map((roundId, index) => ({ roundId, recipeId: "A", cameraIds: ["CAM-1", "CAM-2", "CAM-3"], plannedCount: 12, receivedCount: 12, state: "complete", createdAt: 3 - index, error: null })),
-    recipe_capture_get: ({ roundId }) => captureRoundV2({ recipeId: "A", roundId: typeof roundId === "string" ? roundId : "round-new" }),
+    recipe_capture_get: ({ roundId }) => captureRoundV2({ recipeId: "A", roundId: roundId as string }),
     workspace_teach_segment_corridor: () => response,
   });
   const frameImage = vi.spyOn(workspaceApi, "captureFrameImage").mockResolvedValue(picture);
-  const user = renderWorkspace("/recipe/capture");
-  await user.click(await screen.findByRole("link", { name: "用于走廊示教" }));
+  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  await screen.findByRole("img", { name: CAM2 });
+  await user.click(screen.getByRole("button", { name: "重新选帧" }));
   await screen.findByRole("region", { name: "示教帧选择" });
-  expect(screen.queryByRole("img", { name: CAM2 })).not.toBeInTheDocument();
   expect(await screen.findByRole("img", { name: "CAM-2 · 帧组 4 · 候选示教帧" })).toBeVisible();
+  expect(calls("recipe_capture_get")).toEqual([{ roundId: "round-1" }]);
   fireEvent.change(await screen.findByRole("spinbutton", { name: "帧组序号" }), { target: { value: "2" } });
-  await waitFor(() => expect(frameImage).toHaveBeenLastCalledWith("round-new", "CAM-2", 2));
+  await waitFor(() => expect(frameImage).toHaveBeenLastCalledWith("round-1", "CAM-2", 2));
   const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2 · 段 1" });
   await waitFor(() => expect(choose).toBeEnabled());
   await user.click(choose);
-  expect(calls("workspace_teach_segment_corridor")).toEqual([{ id: "A", revision: 3, camera: "CAM-2", segment: 1, round: "round-new", seq: 2 }]);
+  expect(calls("workspace_teach_segment_corridor")).toEqual([{ id: "A", revision: 3, camera: "CAM-2", segment: 1, round: "round-1", seq: 2 }]);
   expect(await screen.findByRole("img", { name: CAM2 })).toBeVisible();
-  expect(screen.getByText("capture:round-new · S-CAM-2-new-frame")).toBeVisible();
-  await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+  expect(screen.getByText("capture:round-1 · S-CAM-2-new-frame")).toBeVisible();
   expect(screen.queryByRole("region", { name: "示教帧选择" })).not.toBeInTheDocument();
 });

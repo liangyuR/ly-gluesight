@@ -264,6 +264,19 @@ fn standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner() {
 }
 
 #[test]
+fn saving_candidate_with_product_code_out_of_range_is_rejected() {
+    // 防的回归：候选保存不校验型号，输入框中间值 0 落盘后历史件全报“型号不属于本候选”，PLC 也无法按型号选到配方
+    for code in [0, 32768] {
+        let mut w = burst_workspace(&[Straight]);
+        let before = w.doc.clone();
+        let mut doc = before.clone();
+        doc.product_code = code;
+        assert!(update_doc(&mut w, doc).is_err(), "型号 {code}");
+        assert_eq!(w.doc, before, "型号 {code}：拒绝时配方不变");
+    }
+}
+
+#[test]
 fn editing_expected_frames_directly_is_rejected_and_kind_change_clears_calibration() {
     // 防的回归（规格 §0 N_exp 不能手填、§1 段序列变化需重新标定、D-SB-18/20）：段列表或整份保存能手填 N_exp、标定统计、
     // 整件标定或 x_ref；段的类型序列变了旧标定还留着；只改容差也把标定清掉
@@ -430,4 +443,40 @@ fn heading_hints_flag_a_window_shorter_than_per_frame_travel_a_missing_segment_l
     assert!(hints(&covered, &[]).iter().any(|h| h.contains("段长未填")));
     covered.segments[0].heading = None;
     assert!(hints(&covered, &[round(30, 30)]).is_empty());
+}
+
+#[test]
+fn skip_suggestion_is_max_over_normal_rounds_and_withheld_when_too_few_participate() {
+    // 防的回归（D-SB-50）：建议值不取各轮最大值、把标准件轮次算进去、收尾不从末尾数，
+    // 或起涂区有缺帧的轮次被当成未成形照样参与，参与轮次不够时仍给建议
+    use super::burst_skip::{skip_suggestions, SkipEnd};
+    let mut w = burst_workspace(&[Straight]);
+    let cameras = w.doc.plan_cameras();
+    let mut features: BTreeMap<String, Vec<FrameMetrics>> = BTreeMap::new();
+    let mut add_round = |w: &mut Workspace, id: &str, head: u64, tail: u64, standard: bool| {
+        let round = capture_round(id, &w.doc, 20, DEVICE, &[]);
+        let metrics = measure_round(&cameras, &round, |_, _, seq| {
+            let mut m = measured(0.0);
+            if seq <= head || seq > 20 - tail { m.present_ratio = 0.0; }
+            Ok(m)
+        });
+        add_calibration_round(w, calibration_round(&w.doc, &round, standard, &metrics)).unwrap();
+        features.insert(id.to_string(), metrics);
+    };
+    for (i, (head, tail)) in [(2, 1), (3, 0), (4, 2), (2, 1), (3, 1), (2, 0), (3, 1), (2, 1), (3, 2), (2, 1)].into_iter().enumerate() {
+        add_round(&mut w, &format!("capture-{i}"), head, tail, false);
+    }
+    add_round(&mut w, "standard", 9, 9, true);
+    let suggest = |features: &BTreeMap<String, Vec<FrameMetrics>>| {
+        skip_suggestions(&w.doc, &w.calibration.rounds, &w.capture_review.rounds, |round| Ok(features[round].clone()))
+            .into_iter()
+            .map(|v| (v.end, v.suggested, v.min, v.rounds.len(), v.pending.is_some()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(suggest(&features), [(SkipEnd::Head, Some(4), Some(2), 10, false), (SkipEnd::Tail, Some(2), Some(0), 10, false)]);
+    // capture-2 起涂 4 帧组：第 5 帧组 cam1 缺帧、其余相机已成形，说明不了是否成形；第 1 帧组再缺一帧不影响（其余相机明确无胶）
+    features.get_mut("capture-2").unwrap()[0].state = FrameState::Missing;
+    assert_eq!(suggest(&features)[0], (SkipEnd::Head, Some(4), Some(2), 10, false));
+    features.get_mut("capture-2").unwrap()[4].state = FrameState::Missing;
+    assert_eq!(suggest(&features)[0], (SkipEnd::Head, None, Some(2), 10, true), "成形前无法判断的一轮不参与，剩 9 轮少于 10 轮");
 }

@@ -17,16 +17,21 @@ fn teaching(camera: &str, round: &str, seq: u64, segment: u32, size: [u32; 2]) -
             "camera": camera, "cameraTag": null, "calibTag": null, "geometryTag": null, "exposureUs": null, "gainDb": null, "historyId": null}})).unwrap()
 }
 
-/// 直线 / 弯道 / 直线三段，第 2 段只由第一台相机检测；还没有走廊与示教帧；“confirmed” 轮次边界 10/20 已确认，“draft” 只存了草稿。
+/// 直线 / 弯道 / 直线三段，第 2 段只由第一台相机检测；还没有走廊与示教帧；示教件 “confirmed” 与另一件 “other” 边界
+/// 10/20 已确认，“draft” 只存了草稿。
 fn workspace() -> (Workspace, Vec<String>) {
     let mut w = burst_workspace(&[Straight, Corner, Straight]);
     let cameras = w.doc.plan_cameras();
     let mut doc = w.doc.clone();
     doc.segments[1].cameras = vec![cameras[0].clone()];
     update_doc(&mut w, doc).unwrap();
+    w.teaching_piece = Some(super::pieces_tests::piece("confirmed", 1));
     let confirmed = capture_round("confirmed", &w.doc, GROUPS, DEVICE, &[]);
     apply_capture_review(&mut w, &confirmed, CaptureReviewEdit::Save(vec![10, 20])).unwrap();
     apply_capture_review(&mut w, &confirmed, CaptureReviewEdit::Confirm).unwrap();
+    let other = capture_round("other", &w.doc, GROUPS, DEVICE, &[]);
+    apply_capture_review(&mut w, &other, CaptureReviewEdit::Save(vec![10, 20])).unwrap();
+    apply_capture_review(&mut w, &other, CaptureReviewEdit::Confirm).unwrap();
     let draft = capture_round("draft", &w.doc, GROUPS, DEVICE, &[]);
     apply_capture_review(&mut w, &draft, CaptureReviewEdit::Save(vec![10, 20])).unwrap();
     (w, cameras)
@@ -59,17 +64,17 @@ fn with_corridor(w: &mut Workspace, camera: &str, segment: u32, corridor: Vec<[f
 
 #[test]
 fn segment_teaching_frame_must_lie_in_that_segment_of_a_confirmed_round() {
-    // 防的回归（D-SB-42/45）：段走廊在别的段、未确认分段的轮次或不检测该段的相机上示教；同一台相机各段示教帧尺寸不一
+    // 防的回归（D-SB-42/45、RB-1）：段走廊在别的段、示教件以外的件或不检测该段的相机上示教；同一台相机各段示教帧尺寸不一
     // （生产按相机一个尺寸建测量图）
     let cases: [(&str, usize, u32, &str, u64, [u32; 2], bool); 6] = [
         ("段内帧组", 0, 2, "confirmed", 15, [100, 100], true),
         ("段首帧组", 0, 2, "confirmed", 11, [100, 100], true),
         ("帧组落在下一段", 0, 2, "confirmed", 21, [100, 100], false),
         (
-            "示教轮次只存了边界草稿",
+            "示教帧不属于示教件",
             0,
             2,
-            "draft",
+            "other",
             15,
             [100, 100],
             false,
@@ -157,6 +162,7 @@ fn segment_preview_over_a_round_marks_missing_excluded_and_failed_frames_and_mea
     let (mut w, cameras) = workspace();
     with_corridor(&mut w, &cameras[1], 3, vec![[1.0, 1.0], [50.0, 1.0]]);
     let round = capture_round("gappy", &w.doc, GROUPS, DEVICE, &[(1, 22), (0, 23)]);
+    w.teaching_piece = Some(super::pieces_tests::piece("gappy", 2));
     apply_capture_review(&mut w, &round, CaptureReviewEdit::Save(vec![10, 20])).unwrap();
     apply_capture_review(
         &mut w,

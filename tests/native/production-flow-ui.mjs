@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { buildBurstRecipe, burstFacts, client, instanceCdp, uiPage } from "./lib.mjs";
+import { buildBurstRecipe, burstFacts, clearRecipe, client, instanceCdp, uiPage } from "./lib.mjs";
 import { isolatedStorage, samePath } from "./storage-paths.mjs";
 
 const identifier = "com.xyzrobotics.tujiaovision.flow-tests";
@@ -109,21 +109,16 @@ async function verifyBurstDisk(root, project, detail, facts) {
   return { database, independentReadOnlyConnection: true, frames: frames.length, directory, files };
 }
 
-/** 清掉上一次流程测试留下的配方与候选（flow 实例保留资料，重跑要能重建同名配方）。 */
-async function clearBurstRecipe(invokeRead, id) {
-  if ((await invokeRead("cycle_recipes")).some(r => r.id === id)) await invokeRead("recipe_delete", { id });
-  if ((await invokeRead("workspace_list")).some(w => w.doc.id === id)) await invokeRead("workspace_delete", { id });
-}
-
 /**
- * 段配方一件的生产落盘（合成图三相机）：建站导入 capture_fixture 生成的合成图手动配置数据，走廊示教、10 轮标定、验证、发布用真实 lyFlow 测量（每帧测量必须有引擎），
- * 投产在离线·合成图下用模拟测量。没加载 lyFlow 时整段跳过并写明原因，不算通过也不算失败。
+ * 段配方一件的生产落盘（合成图三相机）：建站时先发布采集版，由 capture_fixture 把合成图手动配置数据写成仿历史录制件，经历史件选择器选示教件、
+ * 标定件与验证件；走廊示教、标定、验证、发布用真实 lyFlow 测量（每帧测量必须有引擎），投产在离线·合成图下用模拟测量。
+ * flow 实例保留资料，开始前清掉上一次留下的同名候选与配方。
  */
 async function runBurstStage(page, invokeRead, navigation, ctx) {
   const burstId = "FLOW-BURST";
   assert(ctx.engine?.ready, `lyFlow 引擎未就绪：${JSON.stringify(ctx.engine)}`);
   const call = client(page);
-  await clearBurstRecipe(invokeRead, burstId);
+  await clearRecipe(call, burstId);
   const template = await invokeRead("recipe_template");
   const log = message => process.stderr.write(`· 段配方：${message}\n`);
   const built = await buildBurstRecipe(call, { sourceId: "synthetic", doc: { ...template, id: burstId, name: "流程测试 · 段配方" }, log });

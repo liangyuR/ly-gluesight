@@ -530,6 +530,23 @@ export interface SegmentCalibView {
   hints: string[];
 }
 
+export type SkipEnd = "head" | "tail";
+
+/** 一段一头的跳过帧建议（workspace_calibration_skip_suggest，D-SB-50）。 */
+export interface SkipSuggestView {
+  segment: number;
+  end: SkipEnd;
+  /** 配方里当前的 skipHead / skipTail */
+  current: number;
+  /** 参与轮次的最大值；参与轮次不足时为 null，原因见 pending */
+  suggested: number | null;
+  min: number | null;
+  max: number | null;
+  /** 各标定轮次（不含标准件）的起涂（收尾）帧组数；不参与时 frames 为 null，原因见 note */
+  rounds: { roundId: string; frames: number | null; note: string | null }[];
+  pending: string | null;
+}
+
 /** 多轮标定（workspace_calibration_apply 返回，D2）。 */
 export interface CalibrationView {
   /** 配方 calibrationRounds */
@@ -637,6 +654,24 @@ export interface WorkspacePlanView {
   /** 候选 expectedTotal 与生产不同 */
   shotCountChanged: boolean;
   progress: ProgressV2;
+  /** 候选导入的各件，示教件在前 */
+  pieces: PieceView[];
+}
+
+/** 候选导入的一件（RB-1、RB-3）：示教件、标定件或标准件；界面用 SN 与时间标识，不显示轮次编号（RB-4）。 */
+export interface PieceView {
+  roundId: string;
+  role: "teaching" | "calibration" | "standard";
+  recordId: number | null;
+  cycleId: string | null;
+  sn: string | null;
+  ts: number | null;
+  groupCount: number;
+  /** 边界复核：none = 还没对齐 */
+  review: "none" | "draft" | "confirmed" | "stale";
+  confirmedBy: "manual" | "aligned" | null;
+  inCalibration: boolean;
+  excludedGroups: number;
 }
 
 /** 配方库摘要的段模型字段。 */

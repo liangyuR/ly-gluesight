@@ -1,4 +1,4 @@
-use std::sync::{Condvar, Mutex};
+use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
@@ -11,26 +11,12 @@ pub struct Status {
     kind: String,
 }
 
-struct Pending { status: Status, answer: Option<bool> }
-pub struct Startup { pending: Mutex<Pending>, ready: Condvar }
+pub struct Startup { pending: Mutex<Status> }
 
 impl Default for Startup {
     fn default() -> Self {
-        Self { pending: Mutex::new(Pending { status: Status { request_id: 0, title: "正在准备资料目录".into(), message: "检查目录、权限和迁移状态…".into(), kind: "working".into() }, answer: None }), ready: Condvar::new() }
+        Self { pending: Mutex::new(Status { request_id: 0, title: "正在准备资料目录".into(), message: "检查目录与权限…".into(), kind: "working".into() }) }
     }
-}
-
-pub fn ask(app: &AppHandle, title: &str, message: &str, choose_source: bool) -> Result<bool, String> {
-    let host = app.state::<Startup>();
-    let mut pending = host.pending.lock().map_err(|e| e.to_string())?;
-    pending.status = Status { request_id: pending.status.request_id + 1, title: title.into(), message: message.into(), kind: if choose_source { "chooseSource" } else { "confirm" }.into() };
-    pending.answer = None;
-    while pending.answer.is_none() { pending = host.ready.wait(pending).map_err(|e| e.to_string())?; }
-    let answer = pending.answer.take().unwrap();
-    pending.status.kind = "working".into();
-    pending.status.title = "正在准备资料".into();
-    pending.status.message = "正在复制并检查资料，请勿关闭软件。原目录会保留。".into();
-    Ok(answer)
 }
 
 pub const CHOOSE_PROJECT: &str = "\u{1}choose-project:";
@@ -45,10 +31,10 @@ pub fn report(app: &AppHandle, error: String) {
 fn choose_project(app: &AppHandle, reason: &str) {
     if let Some(host) = app.try_state::<Startup>() {
         if let Ok(mut pending) = host.pending.lock() {
-            pending.status.request_id += 1;
-            pending.status.kind = "chooseProject".into();
-            pending.status.title = "选择要打开的项目".into();
-            pending.status.message =
+            pending.request_id += 1;
+            pending.kind = "chooseProject".into();
+            pending.title = "选择要打开的项目".into();
+            pending.message =
                 format!("{reason}。检测服务、相机与 PLC 尚未启动，选定项目后软件会重启。");
         }
     }
@@ -56,7 +42,7 @@ fn choose_project(app: &AppHandle, reason: &str) {
 
 fn expect_choosing(host: &Startup) -> Result<(), String> {
     let pending = host.pending.lock().map_err(|e| e.to_string())?;
-    if pending.status.kind != "chooseProject" {
+    if pending.kind != "chooseProject" {
         return Err("当前不在选择项目状态".into());
     }
     Ok(())
@@ -115,26 +101,25 @@ pub fn storage_startup_create_project(
 pub fn failed(app: &AppHandle, error: String) {
     if let Some(host) = app.try_state::<Startup>() {
         if let Ok(mut pending) = host.pending.lock() {
-            pending.status.request_id += 1;
-            pending.status.kind = "error".into();
-            pending.status.title = "资料目录未启用".into();
-            pending.status.message = error;
+            pending.request_id += 1;
+            pending.kind = "error".into();
+            pending.title = "资料目录未启用".into();
+            pending.message = error;
         }
     }
 }
 
 #[tauri::command]
 pub fn storage_startup_status(host: State<'_, Startup>) -> Result<Status, String> {
-    Ok(host.pending.lock().map_err(|e| e.to_string())?.status.clone())
+    Ok(host.pending.lock().map_err(|e| e.to_string())?.clone())
 }
 
+/// 错误页的“关闭”：退出软件。
 #[tauri::command]
-pub fn storage_startup_answer(app: AppHandle, host: State<'_, Startup>, request_id: u64, accepted: bool) -> Result<(), String> {
-    let mut pending = host.pending.lock().map_err(|e| e.to_string())?;
-    if pending.status.request_id != request_id { return Err("提示已更新，请重新确认".into()); }
-    if pending.status.kind == "error" { app.exit(1); return Ok(()); }
-    if !matches!(pending.status.kind.as_str(), "confirm" | "chooseSource") || pending.answer.is_some() { return Err("此提示已处理".into()); }
-    pending.answer = Some(accepted);
-    host.ready.notify_one();
+pub fn storage_startup_answer(app: AppHandle, host: State<'_, Startup>, request_id: u64) -> Result<(), String> {
+    let pending = host.pending.lock().map_err(|e| e.to_string())?;
+    if pending.request_id != request_id { return Err("提示已更新，请重新确认".into()); }
+    if pending.kind != "error" { return Err("此提示已处理".into()); }
+    app.exit(1);
     Ok(())
 }

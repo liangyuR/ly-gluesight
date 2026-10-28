@@ -25,7 +25,7 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 7. **区域判定**（`burst_judge`）：每帧胶宽、断胶、溢胶（NG_WIDTH）三类区域都判；胶偏只在直线段，去首尾各一帧后用 x 均值与标准件 x_ref（只实现 AbsoluteX）判整段偏移、最大偏差判局部跑偏；按本段检测相机取最差，未分段区域按每帧预测段的检测相机取最差。`flags`（检测不完整、帧数异常、`short_part` 疑似提前终止）、未检区域、未检项（气泡、拉丝）与“胶偏未判”原因都不改 OK/NG；只有三台相机整件没有一帧测成才判 ERR 91。
 8. **落库与历史**：记录库版本 9，`part_frames` 每台相机每帧一条（缺帧也有），`parts.burst_judgement` 存整份区域判定，`parts.mode` 区分正常件与维护件；原图按帧录制为 `{相机}_s{seq:06}.pgm`；审计 spool 格式 4；历史按 (计划相机, seq) 读图、复测与重判。
 
-配方的建立流程（候选工作区）：采集轮次（维护模式采集后从历史导入，或导入手动配置数据）→ 段列表 → 每段每台检测相机的走廊示教 → 多轮标定（默认 ≥ 10 轮，得 ΣN_exp、建议容差由操作员确认、标准件轮次得 x_ref）→ 发布（发布前检查当场核对，独立样本验证可选，D-SB-46）。采集完成后支持轮次手动分段、模板套用和边界复核，以及带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除标定图像取样。每个标定轮次都确认手动分段后，多轮标定按边界逐段标定（各段 N_exp 与建议容差，ΣN_exp 取各段之和），生产与独立样本判定再按这些 N_exp 的比例分段；手动边界本身不直接进生产。见 [配方创建流程](architecture/recipe-creation-workflow.md) 与其中的[轮次分段复核与帧组屏蔽](architecture/recipe-creation-workflow.md#轮次分段复核与帧组屏蔽)。
+配方的建立流程（候选工作区，[示教件与标定件决策](decisions/recipe-build-flow.md)）：示教件（从维护模式录制的历史件里选一件，导入前可预览原图；开发与测试用 `capture_fixture` 生成仿历史录制件）→ 分段（在示教件上按图像定段与边界）→ 每段每台检测相机的走廊示教（示教帧只取自示教件）→ 多轮标定（从历史件选标定件，默认 ≥ 10 件含示教件，按示教件边界自动对齐、可信即确认加入，其余人工复核；得 ΣN_exp、建议容差由操作员确认、标准件得 x_ref）→ 发布（发布前检查当场核对，独立样本验证可选，D-SB-46）。换示教件或从生产配方改版时清空边界、走廊与标定结果，保留段结构。标定件支持带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除标定图像取样。界面不显示采集轮次（只是存储格式）。旧流程建的候选已停用，只能删除。每个标定件都确认分段后，多轮标定按边界逐段标定（各段 N_exp 与建议容差，ΣN_exp 取各段之和），生产与独立样本判定再按这些 N_exp 的比例分段；手动边界本身不直接进生产。见 [配方创建流程](architecture/recipe-creation-workflow.md) 与其中的[标定件分段复核与帧组屏蔽](architecture/recipe-creation-workflow.md#标定件分段复核与帧组屏蔽)。
 
 ### 协议 7 要点
 
@@ -37,7 +37,7 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 
 一套可上线的检测方案（相机组、PLC 配置、标定、配方、候选、记录）收拢成一个项目，存于 `projects/<id>/`；支持新建、重命名、删除、整个项目导出导入与复制，切换项目要重启。见 [项目设计](architecture/project.md) 与 [存储布局](architecture/storage-layout.md)。
 
-运行日志和历史原图集中在 `~/gs_logs`，按环境、资料实例和项目隔离；示教、标定及发布资源随项目保存。根绑定、启动迁移及项目导出规则见[日志与视觉证据存储](architecture/log-storage-research.md)。
+运行日志和历史原图集中在 `~/gs_logs`，按环境、资料实例和项目隔离；示教、标定及发布资源随项目保存。根绑定及项目导出规则见[日志与视觉证据存储](architecture/log-storage-research.md)。
 
 ### 关键模块与文件
 
@@ -51,12 +51,12 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 帧配组、分段、判定、标定 | `frame_group.rs`、`segmentation.rs`（`Proportional`、`resolve_regions` 过渡区）、`burst_judge.rs`、`calibration.rs`；离线评估 `examples/segment_eval.rs`；逐帧定向与找边评估 `examples/heading_eval.rs` |
 | 相机与测量 | `camera.rs`、`frame.rs`、`measure.rs`（`FrameJob`）、`vision.rs` / `vision/taught.rs`（`measure_frame`）、`production.rs`（`burst_graphs`） |
 | 采集轮次 | `recipe_capture/burst.rs`（`CaptureRoundV2`） |
-| 候选工作区 | `workspace.rs`、`workspace/burst.rs`（走廊示教、多轮标定、x_ref）、`workspace/burst_release.rs`（验证与发布、采集版）、`workspace/burst_history.rs`（历史读图与复测） |
+| 候选工作区 | `workspace.rs`、`workspace/pieces.rs`（示教件、标定件同步与弃用、旧流程候选）、`workspace/burst.rs`（走廊示教、多轮标定、x_ref）、`workspace/burst_release.rs`（验证与发布、采集版）、`workspace/burst_history.rs`（历史读图与复测） |
 | 发布包 | `release.rs`（`publish_burst`，schema 5） |
 | 记录、录制、审计 | `store.rs`（`part_frames`，库版本 9）、`recorder.rs`、`audit/` |
 | 项目 | `project.rs`（`ActiveProject`、`resolve`、`project_switch`）、`project/manage.rs`、`project/transfer.rs`（导出导入、复制）、`storage_startup.rs`；前端 `src/pages/ProjectsPage.tsx`、`src/features/project/` |
 | 离线仿真 | `offline/line.rs`、`offline/scenario.rs`、`offline/sample_set.rs`、`offline/s7_server.rs`、`simimage.rs` |
-| 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`CapturePage`、`PlanProgress`；`src/features/plan/` |
+| 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`TeachingPiecePage`、`HistoryPicker`、`PlanProgress`；`src/features/plan/` |
 
 ## 二、未完成事项
 

@@ -63,6 +63,15 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
             .err()
             .unwrap_or_else(|| "三台计划相机已配置；是否在线就绪在布防时核对".into()),
     }];
+    // RB-8：没有示教件之前候选不能发布
+    checks.push(Check {
+        name: "示教件".into(),
+        passed: w.teaching_piece.is_some(),
+        detail: w
+            .teaching_piece
+            .as_ref()
+            .map_or_else(|| "还没有示教件：先选示教件".into(), |p| format!("示教件 SN {}", p.sn)),
+    });
     checks.push(corridor_check(w, inputs.cameras));
     checks.push(segment_check(w));
     let calibration_devices = super::burst::check_calibration_devices(&w.calibration.rounds, inputs.cameras);
@@ -169,7 +178,7 @@ fn segment_check(w: &Workspace) -> Check {
     let normal = w.calibration.rounds.iter().filter(|r| !r.standard).count() as u32;
     let head = match total {
         Some(total) => format!("整件预期 {total} ± {tolerance_total} 个帧组（PLC shotCount = {total}）"),
-        None if normal < doc.calibration_rounds => format!("整件预期帧组数待多轮标定：还差 {} 轮（至少 {} 轮，不含标准件轮次）", doc.calibration_rounds - normal, doc.calibration_rounds),
+        None if normal < doc.calibration_rounds => format!("整件预期帧组数待多轮标定：还差 {} 件（至少 {} 件，含示教件，不含标准件）", doc.calibration_rounds - normal, doc.calibration_rounds),
         None => format!("整件预期帧组数待多轮标定：已有 {normal} 轮，请应用标定"),
     };
     let core_min = 2 * doc.boundary_guard + 1;

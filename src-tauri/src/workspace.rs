@@ -18,6 +18,7 @@ use crate::vision;
 mod burst;
 mod burst_history;
 mod burst_release;
+mod burst_skip;
 #[cfg(test)]
 mod burst_release_tests;
 #[cfg(test)]
@@ -30,21 +31,23 @@ mod collect_release_tests;
 mod comparisons;
 mod history_import;
 mod history_samples;
+mod pieces;
+#[cfg(test)]
+mod pieces_tests;
 pub mod progress;
 mod recorded;
 mod reproduce;
 #[cfg(test)]
 mod segment_corridor_tests;
-mod transfer;
-pub(crate) use transfer::{copy_hashed, reset_for_project_import};
 mod workflow;
 pub use burst::*;
 pub use burst_history::*;
 pub use burst_release::*;
+pub use burst_skip::*;
 pub use capture_review::*;
 pub use collect_release::*;
 pub use history_import::*;
-pub use transfer::*;
+pub use pieces::*;
 pub use workflow::*;
 
 fn state_value(value: &impl Serialize) -> Value {
@@ -198,6 +201,12 @@ pub struct Workspace {
     pub calibration: burst::Calibration,
     #[serde(default)]
     pub capture_review: capture_review::CaptureReview,
+    /// 候选的建法（RB-7）：`pieces::FLOW` 为示教件流程，缺省为旧流程候选（RB-5 停用）
+    #[serde(default)]
+    pub flow: u32,
+    /// 示教件（RB-1）：分段边界与全部走廊示教帧的唯一来源
+    #[serde(default)]
+    pub teaching_piece: Option<pieces::TeachingPiece>,
     #[serde(default, rename = "frames", skip_serializing)]
     pub _frames: Discarded,
     #[serde(default, rename = "overview", skip_serializing)]
@@ -213,6 +222,7 @@ impl Workspace {
         if base_revision.is_some() {
             doc.version = doc.version.saturating_add(1);
         }
+        doc.teaching_piece = None;
         Self {
             doc,
             instance_id: 0,
@@ -228,6 +238,8 @@ impl Workspace {
             camera_teaching: Vec::new(),
             calibration: burst::Calibration::default(),
             capture_review: capture_review::CaptureReview::default(),
+            flow: pieces::FLOW,
+            teaching_piece: None,
             _frames: Discarded,
             _overview: Discarded,
             _last_position: Discarded,
@@ -245,7 +257,15 @@ impl Workspace {
         Ok(format!("candidate-{}-i{}-r{}", self.doc.id, self.instance_id, self.revision))
     }
 
+    /// 旧流程候选（RB-5）：只能在配方库删除。
+    pub fn legacy(&self) -> bool {
+        self.flow != pieces::FLOW
+    }
+
     fn expect(&self, revision: u64) -> Result<(), String> {
+        if self.legacy() {
+            return Err(pieces::LEGACY.into());
+        }
         if self.pending.is_some() {
             return Err("候选版本正在等待生效，完成或处理发布失败后再编辑".into());
         }
@@ -538,6 +558,9 @@ pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String
         host.save(&w)?;
         items.insert(id.clone(), w);
     }
+    if items[&id].legacy() {
+        return Err(pieces::LEGACY.into());
+    }
     view(&app, items[&id].clone())
 }
 
@@ -566,13 +589,41 @@ fn new_candidate_doc(doc: &mut RecipeDoc) {
     burst::prepare_new_doc(doc);
 }
 
-fn check_new_identity<'a>(doc: &RecipeDoc, existing: impl Iterator<Item = (&'a str, u16)>) -> Result<(), String> {
+fn check_product_code(doc: &RecipeDoc) -> Result<(), String> {
     if !(1..=i16::MAX as u16).contains(&doc.product_code) { return Err("产品代码需在 1–32767 之间".into()); }
+    Ok(())
+}
+
+fn check_new_identity<'a>(doc: &RecipeDoc, existing: impl Iterator<Item = (&'a str, u16)>) -> Result<(), String> {
+    check_product_code(doc)?;
     for (id, code) in existing {
         if id.eq_ignore_ascii_case(&doc.id) { return Err("配方编号已经存在（不区分大小写）".into()); }
         if code == doc.product_code { return Err(format!("产品代码 {} 已被配方 {} 使用", code, id)); }
     }
     Ok(())
+}
+
+/// 项目整包导入时整理候选：回到草稿，不带待生效版本与验证结论；计划版本按本机新号改写；
+/// 没带检测记录时去掉来自来源机检测历史的验证样本。
+pub(crate) fn reset_for_project_import(path: &Path, plans: &BTreeMap<u32, u32>, keep_history: bool) -> Result<Vec<String>, String> {
+    let text = crate::fsio::read_text(path).map_err(|e| e.to_string())?;
+    let mut w: Workspace = serde_json::from_str(&text).map_err(|e| format!("候选 {} 无法读取：{e}", path.display()))?;
+    let mut notes = Vec::new();
+    if let Some(plan) = plans.get(&w.doc.plan_version) {
+        w.doc.plan_version = *plan;
+    }
+    w.pending = None;
+    w.publish = PublishState::Draft;
+    if !keep_history {
+        let before = w.samples.len();
+        w.samples.retain(|s| s.history_id.is_none());
+        if w.samples.len() < before {
+            notes.push(format!("候选 {} 的 {} 个来自检测历史的验证样本未导入", w.doc.id, before - w.samples.len()));
+        }
+    }
+    w.changed();
+    crate::fsio::write_atomic(path, &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?)?;
+    Ok(notes)
 }
 
 #[tauri::command]
@@ -582,6 +633,14 @@ pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
     let mut items = host.items.lock().unwrap();
     if items.get(&id).is_some_and(|w| w.pending.is_some()) {
         return Err("已有待生效版本，不能删除".into());
+    }
+    // 候选导入的轮次一并删除（RB-5）；先删轮次，失败时候选仍在，可重试
+    app.state::<CycleHost>().camera.recipe_capture().delete_recipe_rounds(&id)?;
+    if items.get(&id).is_some_and(Workspace::legacy) {
+        // 旧流程候选只删候选本身：生产配方与发布归档照常运行，之后可从生产配方新建新流程候选
+        pieces::remove_legacy_dir(&host.dir(&id))?;
+        items.remove(&id);
+        return Ok(());
     }
     if app.state::<CycleHost>().recipe(&id).is_some() {
         crate::recipe_api::recipe_delete(app.clone(), app.state::<CycleHost>(), id.clone())?;
@@ -615,6 +674,9 @@ pub fn workspace_save_doc(
 }
 
 fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
+    check_product_code(&doc)?;
+    // 示教件来源只在发布时写入，候选里恒为空
+    doc.teaching_piece = None;
     // N_exp、标定统计、整件标定与 x_ref 只能由多轮标定写入，段序列或类型变化时清空
     burst::guard_calibration(&w.doc, &mut doc)?;
     let segments_changed = burst::guard_segment_corridors(&w.doc, &mut doc, &w.camera_teaching)?;
@@ -764,13 +826,12 @@ pub fn workspace_publish(
     if let Some(failed) = validated.checks.iter().find(|c| !c.passed) {
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
     }
-    let mut release_doc = w.doc.clone();
-    release_doc.stage = RecipeStage::Formal;
-    release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));
+    let mut release_doc = formal_release_doc(w)?;
     release_doc.plan_version = app.state::<CycleHost>().recipes.plan_version_for(&release_doc)?;
     let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?;
     let mut next = w.clone();
     next.doc = release_doc.clone();
+    next.doc.teaching_piece = None;
     next.pending = Some(Box::new(Release {
         doc: release_doc,
         bundle_id: bundle.id,
@@ -786,6 +847,15 @@ pub fn workspace_publish(
     *w = next;
     let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
     view(&app, w.clone())
+}
+
+/// 正式版的配方文档：带示教件来源（RB-7），计划版本由调用方按配方库分配。
+fn formal_release_doc(w: &Workspace) -> Result<RecipeDoc, String> {
+    let mut doc = w.doc.clone();
+    doc.stage = RecipeStage::Formal;
+    doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", doc.id, doc.version)));
+    doc.teaching_piece = Some(w.teaching_piece.as_ref().ok_or("还没有示教件，不能发布")?.recipe_ref());
+    Ok(doc)
 }
 
 fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Arc<Recipe>, String> {
@@ -906,6 +976,7 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 w.base_revision = Some(saved.revision_id.clone());
                 if w.revision == release.revision {
                     w.doc = app.state::<CycleHost>().recipes.doc(&id).unwrap();
+                    w.doc.teaching_piece = None;
                 }
                 let next_version = app.state::<CycleHost>().recipes.next_version(&saved.id);
                 w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);

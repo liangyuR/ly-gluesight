@@ -1,51 +1,100 @@
-//! 手动配置数据：按一份段配方候选文档生成若干轮完整的采集轮次，写成候选迁移包（`workspace_transfer_export` 的包格式），
-//! 再经 `workspace_transfer_import` 导入成新候选。端到端与长稳测试用它代替示教握手的整圈采集。
+//! 手动配置数据（docs/decisions/recipe-build-flow.md「手动配置数据」）：按配方生成若干件仿历史录制件，与真机维护采集件同格式——
+//! 在真机录制根下写录制目录（`part.json` 带 `partMode`、`devices`、`plc`，原图 `{相机}_s{seq:06}.pgm`），在项目记录库写
+//! `parts` 行、逐帧记录与录制证据，模式为维护采集（不进当日统计）。端到端与长稳测试用它代替现场采集，再经历史件选择器
+//! （`workspace_history_candidates`）选示教件与标定件，走与现场相同的导入路径。软件运行中写入也可以，选择器每次重新查库。
 //!
-//! 轮次记为 `origin: prepared`（不来自现场 PLC，不带 PLC 字段，状态为完成）。每台计划相机的设备配置取自本机
-//! `camera_rig_config` 的输出，经 `CameraConfig` 重新序列化，与本机加入标定时的比较口径一致。曝光、增益记默认值。
+//! `--doc` 是录制这些件时生效的生产配方（通常是先发布的采集版，`recipe_doc`）：记录引用它的修订号 `{编号}-v{版本}`，
+//! 必须是软件已分配过的版本，否则以后同修订号的真实记录会因快照不同被拒；记录库已有该修订号的另一份快照时拒绝写入。
+//! `--db` 须是软件已建好的记录库（`<资料根目录>/projects/<项目编号>/inspection.db`），`--records` 是真机录制根（`records_list`
+//! 的 root）。每台计划相机的设备配置取自本机 `camera_rig_config` 的输出，经 `CameraConfig` 重新序列化，与软件核对历史件时
+//! 的口径一致；曝光、增益记默认值。来源标记：`part.json` 带 `fixture: {label}`，SN 以 `FIXTURE-` 开头，记录原因注明手动配置数据。
 //!
-//! - 合成图（默认）：按配方名义剖面出脉冲（首尾 ±1、弯道 ±2，第 i 轮种子为 seed + i），每个脉冲用
-//!   `simimage::render_burst` 为每台计划相机合成一帧；
-//! - 样本集（`--sample-set <目录> --part <样本件>`）：第 seq 个帧组取每台相机帧序列的第 seq 帧，帧数少的相机在后面缺帧；
-//!   各轮相同。
+//! - 合成图（默认）：按配方名义剖面出脉冲（首尾 ±1、弯道 ±2，第 i 件种子为 seed + i），每个脉冲用
+//!   `simimage::render_burst_span` 为每台计划相机合成一帧；
+//!   - 起涂、收尾（D-SB-50）：`--onset` / `--tail` 给基准帧组数，`--onset-jitter` / `--tail-jitter` 给抖动，默认都为 0（不模拟）。
+//!     第 i 件按种子 seed + i 在 [基准, 基准 + 抖动] 内取起涂帧组数 h、收尾帧组数 t：前 h 个帧组的前一半（向上取整）无胶，
+//!     之后胶条从胶嘴沿走廊往外逐帧变长，只铺到走廊的一部分；末 t 个帧组对称，胶尾逐帧离开胶嘴，最后一半无胶。
+//!     h + t 须小于本件帧组数。h、t 是胶条没铺满走廊的帧组数，标定按检测项判成形，建议值可以小于它们。
+//! - 样本集（`--sample-set <目录> --part <样本件>`）：第 seq 个帧组取每台相机帧序列的第 seq 帧，帧数少的相机在后面缺帧
+//!   （有缺帧的件不能选作示教件或标定件）；各件相同，不能与起涂、收尾参数同用。
+//!
+//! 中途失败时已写完的件保留。
 //!
 //! ```powershell
 //! cargo run --manifest-path src-tauri/Cargo.toml --offline --locked --example capture_fixture -- `
 //!   --doc output/capture-fixture/doc.json --cameras output/capture-fixture/cameras.json `
-//!   --out output/capture-fixture/candidate.zip --rounds 14 [--seed 0] [--sample-set <目录> --part p01]
+//!   --db <资料根目录>/projects/<项目编号>/inspection.db --records <真机录制根> --parts 13 [--seed 0] [--label <标签>]
+//!   [--sample-set <目录> --part p01] [--onset 4 --onset-jitter 2 --tail 2 --tail-jitter 0]
 //! ```
 //!
-//! 完成后在标准输出打印一行 JSON：包路径、配方编号与各轮的编号、创建时间、帧组数和各相机帧数。
+//! 完成后在标准输出打印一行 JSON：配方编号、修订号、标签与各件的记录 ID（recordId）、cycleId、SN、时间、录制目录、帧组数和
+//! 各相机帧数；合成图另带各件的起涂帧组数 `onset` 与收尾帧组数 `tail`。
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gluesight_lib::probe_api::{
-    loss_alarms, nominal_frames, render_burst, BurstRender, CameraConfig, FrameImage, PulseProfile,
-    Recipe, RecipeDoc, SampleSet, Scenario, SIM_HZ,
+    nominal_frames, render_burst_span, BurstRender, CameraConfig, FixtureFrames, FixtureSite,
+    PulseProfile, Recipe, RecipeDoc, SampleSet, Scenario, SIM_HZ, SN_PREFIX,
 };
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
 
-const USAGE: &str = "用法：capture_fixture --doc <候选文档.json> --cameras <camera_rig_config.json> --out <迁移包.zip> --rounds <轮数> [--seed <种子>] [--label <标签>] [--sample-set <样本集目录> --part <样本件>]";
-const TRANSFER_FORMAT: u32 = 1;
-const MAX_ROUNDS: usize = 200;
+const USAGE: &str = "用法：capture_fixture --doc <录制时生效的生产配方.json> --cameras <camera_rig_config.json> --db <项目目录>/inspection.db --records <真机录制根> --parts <件数> [--seed <种子>] [--label <标签>] [--sample-set <样本集目录> --part <样本件>] [--onset <帧组数> --onset-jitter <帧组数> --tail <帧组数> --tail-jitter <帧组数>]";
+const MAX_PARTS: usize = 200;
 const SAMPLE_HZ: f64 = 10.0;
 
 struct Args {
     doc: PathBuf,
     cameras: PathBuf,
-    out: PathBuf,
-    rounds: usize,
+    db: PathBuf,
+    records: PathBuf,
+    parts: usize,
     seed: u64,
     label: String,
     sample: Option<(PathBuf, String)>,
+    onset: Ramp,
+    tail: Ramp,
+}
+
+/// 起涂或收尾的帧组数：每件在 [base, base + jitter] 内取。
+#[derive(Clone, Copy, Default)]
+struct Ramp {
+    base: u32,
+    jitter: u32,
+}
+
+impl Ramp {
+    /// 第 `stream` 路的取值（起涂、收尾各一路），`seed` 即该件种子 seed + i。
+    fn draw(self, seed: u64, stream: u64) -> u32 {
+        let mut z = seed.wrapping_add(stream.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        self.base + (z % (u64::from(self.jitter) + 1)) as u32
+    }
+}
+
+/// 第 k 个帧组（0 起，共 n 个）胶条沿走廊的覆盖区间（从出胶点量起的弧长占比）：起涂区前一半（向上取整）无胶，
+/// 之后从胶嘴往外逐帧变长；收尾区对称，胶尾逐帧离开胶嘴，最后一半无胶；其余帧组整条胶。
+fn bead_span(k: u32, n: u32, onset: u32, tail: u32) -> [f32; 2] {
+    let from_end = n - 1 - k;
+    if k < onset {
+        let dry = onset.div_ceil(2);
+        if k < dry {
+            return [0.0, 0.0];
+        }
+        [0.0, (k - dry + 1) as f32 / (onset - dry + 1) as f32]
+    } else if from_end < tail {
+        let dry = tail.div_ceil(2);
+        if from_end < dry {
+            return [0.0, 0.0];
+        }
+        [(tail - from_end) as f32 / (tail - dry + 1) as f32, 1.0]
+    } else {
+        [0.0, 1.0]
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -66,12 +115,13 @@ fn parse_args() -> Result<Args, String> {
     let required = |value: Option<String>, name: &str| value.ok_or(format!("缺少 --{name}"));
     let doc = PathBuf::from(required(take("doc"), "doc")?);
     let cameras = PathBuf::from(required(take("cameras"), "cameras")?);
-    let out = PathBuf::from(required(take("out"), "out")?);
-    let rounds: usize = required(take("rounds"), "rounds")?
+    let db = PathBuf::from(required(take("db"), "db")?);
+    let records = PathBuf::from(required(take("records"), "records")?);
+    let parts: usize = required(take("parts"), "parts")?
         .parse()
-        .map_err(|e| format!("--rounds 无效：{e}"))?;
-    if !(1..=MAX_ROUNDS).contains(&rounds) {
-        return Err(format!("--rounds 需在 1–{MAX_ROUNDS} 之间"));
+        .map_err(|e| format!("--parts 无效：{e}"))?;
+    if !(1..=MAX_PARTS).contains(&parts) {
+        return Err(format!("--parts 需在 1–{MAX_PARTS} 之间"));
     }
     let seed = take("seed")
         .map(|s| s.parse().map_err(|e| format!("--seed 无效：{e}")))
@@ -86,35 +136,70 @@ fn parse_args() -> Result<Args, String> {
         (None, None) => None,
         _ => return Err("--sample-set 与 --part 需同时给出".into()),
     };
+    let [onset, onset_jitter, tail, tail_jitter] = ["onset", "onset-jitter", "tail", "tail-jitter"]
+        .map(|name| {
+            take(name).map(|v| v.parse::<u32>().map_err(|e| format!("--{name} 无效：{e}")))
+        });
+    if sample.is_some()
+        && [&onset, &onset_jitter, &tail, &tail_jitter]
+            .iter()
+            .any(|v| v.is_some())
+    {
+        return Err("起涂、收尾参数只用于合成图，不能与 --sample-set 同用".into());
+    }
+    let value = |v: Option<Result<u32, String>>| v.transpose().map(Option::unwrap_or_default);
+    let onset = Ramp {
+        base: value(onset)?,
+        jitter: value(onset_jitter)?,
+    };
+    let tail = Ramp {
+        base: value(tail)?,
+        jitter: value(tail_jitter)?,
+    };
     if let Some(name) = named.keys().next() {
         return Err(format!("不认识的参数 --{name}"));
     }
     Ok(Args {
         doc,
         cameras,
-        out,
-        rounds,
+        db,
+        records,
+        parts,
         seed,
         label,
         sample,
+        onset,
+        tail,
     })
 }
 
 enum Source {
-    Synthetic { recipe: Arc<Recipe>, seed: u64 },
-    Samples { set: SampleSet, part: String },
-}
-
-/// 一轮的帧：`frames[seq - 1][计划相机下标]`，缺帧为 None；`hz` 为写帧时间戳用的出帧频率。
-struct RoundFrames {
-    frames: Vec<Vec<Option<FrameImage>>>,
-    hz: f64,
+    Synthetic {
+        recipe: Arc<Recipe>,
+        seed: u64,
+        onset: Ramp,
+        tail: Ramp,
+    },
+    Samples {
+        set: SampleSet,
+        part: String,
+    },
 }
 
 impl Source {
-    fn round(&self, cameras: &[String], index: u64) -> Result<RoundFrames, String> {
+    /// 第 index 件的帧与合成图的起涂、收尾帧组数。
+    fn part(
+        &self,
+        cameras: &[String],
+        index: u64,
+    ) -> Result<(FixtureFrames, Option<[u32; 2]>), String> {
         match self {
-            Self::Synthetic { recipe, seed } => {
+            Self::Synthetic {
+                recipe,
+                seed,
+                onset,
+                tail,
+            } => {
                 let profile = PulseProfile {
                     hz: SIM_HZ,
                     segments: nominal_frames(
@@ -126,10 +211,21 @@ impl Source {
                     corner_jitter: 2,
                     seed: seed + index,
                 };
-                let frames = profile
-                    .pulses(&[])
+                let pulses = profile.pulses(&[]);
+                let n = pulses.len() as u32;
+                let ends = [onset.draw(seed + index, 0), tail.draw(seed + index, 1)];
+                if ends[0] + ends[1] >= n {
+                    return Err(format!(
+                        "第 {} 件起涂 {} + 收尾 {} 帧组不少于本件帧组数 {n}",
+                        index + 1,
+                        ends[0],
+                        ends[1]
+                    ));
+                }
+                let frames = pulses
                     .iter()
                     .map(|pulse| {
+                        let span = bead_span(pulse.seq as u32 - 1, n, ends[0], ends[1]);
                         std::thread::scope(|scope| {
                             let workers: Vec<_> = (0..cameras.len())
                                 .map(|camera_idx| {
@@ -142,7 +238,7 @@ impl Source {
                                         scenario: Scenario::Normal,
                                         seed: seed + index,
                                     };
-                                    scope.spawn(move || render_burst(&render))
+                                    scope.spawn(move || render_burst_span(&render, span))
                                 })
                                 .collect();
                             workers
@@ -154,7 +250,7 @@ impl Source {
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(RoundFrames { frames, hz: SIM_HZ })
+                Ok((FixtureFrames { frames, hz: SIM_HZ }, Some(ends)))
             }
             Self::Samples { set, part } => {
                 let shots: Vec<Vec<String>> = cameras
@@ -182,43 +278,16 @@ impl Source {
                             .collect::<Result<Vec<_>, _>>()
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(RoundFrames {
-                    frames,
-                    hz: SAMPLE_HZ,
-                })
+                Ok((
+                    FixtureFrames {
+                        frames,
+                        hz: SAMPLE_HZ,
+                    },
+                    None,
+                ))
             }
         }
     }
-}
-
-struct Package {
-    zip: ZipWriter<BufWriter<File>>,
-    files: Vec<Value>,
-}
-
-impl Package {
-    fn add(&mut self, path: &str, bytes: &[u8]) -> Result<(), String> {
-        let level = if path.ends_with(".pgm") { 1 } else { 6 };
-        let options = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .compression_level(Some(level));
-        self.zip
-            .start_file(path, options)
-            .map_err(|e| e.to_string())?;
-        self.zip.write_all(bytes).map_err(|e| e.to_string())?;
-        self.files.push(json!({
-            "path": path,
-            "bytes": bytes.len(),
-            "sha256": format!("{:x}", Sha256::digest(bytes)),
-        }));
-        Ok(())
-    }
-}
-
-fn pgm(image: &FrameImage) -> Vec<u8> {
-    let mut bytes = format!("P5\n{} {}\n255\n", image.width, image.height).into_bytes();
-    bytes.extend_from_slice(&image.pixels);
-    bytes
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
@@ -234,110 +303,13 @@ fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-/// 写一轮：原图、frames.jsonl 与 round.json（统计按已写的帧算，满足轮次记录的自洽核对）。
-#[allow(clippy::too_many_arguments)]
-fn write_round(
-    package: &mut Package,
-    doc: &RecipeDoc,
-    cameras: &[String],
-    configs: &[Value],
-    label: &str,
-    round_id: &str,
-    created_at: i64,
-    round: RoundFrames,
-) -> Result<Value, String> {
-    let group_count = round.frames.len() as u64;
-    if group_count == 0 {
-        return Err("一轮没有帧组：配方剖面或样本集为空".into());
-    }
-    let period_ms = 1000.0 / round.hz;
-    let mut saved = vec![BTreeSet::new(); cameras.len()];
-    let mut lines = String::new();
-    for (k, images) in round.frames.into_iter().enumerate() {
-        let seq = k as u64 + 1;
-        for (camera, image) in images.into_iter().enumerate() {
-            let Some(image) = image else { continue };
-            let path = format!("{}/{seq:06}.pgm", cameras[camera]);
-            package.add(&format!("rounds/{round_id}/{path}"), &pgm(&image))?;
-            saved[camera].insert(seq);
-            lines.push_str(
-                &json!({
-                    "camera": camera,
-                    "seq": seq,
-                    "frameCounter": seq,
-                    "triggerCounter": null,
-                    "path": path,
-                    "width": image.width,
-                    "height": image.height,
-                    "ts": created_at + (k as f64 * period_ms).round() as i64,
-                })
-                .to_string(),
-            );
-            lines.push('\n');
-        }
-    }
-    let camera_frames: Vec<u32> = saved.iter().map(|s| s.len() as u32).collect();
-    let mut missing: Vec<(u64, usize)> = saved
-        .iter()
-        .enumerate()
-        .flat_map(|(camera, seqs)| {
-            (1..=group_count)
-                .filter(|seq| !seqs.contains(seq))
-                .map(move |seq| (seq, camera))
-        })
-        .collect();
-    missing.sort_unstable();
-    let mut incomplete: Vec<u64> = missing.iter().map(|&(seq, _)| seq).collect();
-    incomplete.dedup();
-    let record = json!({
-        "format": 3,
-        "roundId": round_id,
-        "recipeId": doc.id,
-        "cameras": cameras.iter().zip(configs).zip(&camera_frames).map(|((camera, config), frames)| json!({
-            "cameraId": camera,
-            "cameraConfig": config,
-            "imaging": {"exposureUs": 60.0, "gainDb": 6.0},
-            "deviceSession": 1,
-            "receivedCount": frames,
-        })).collect::<Vec<_>>(),
-        "state": "complete",
-        "plcShotCount": null,
-        "plcPlanVersion": null,
-        "teachingRoundId": null,
-        "deviceTriggers": null,
-        "groupCount": group_count,
-        "cameraFrames": camera_frames,
-        "incompleteGroups": incomplete,
-        "missingFrames": missing.iter().map(|&(seq, camera)| json!({"camera": camera, "seq": seq})).collect::<Vec<_>>(),
-        "lossAlarms": loss_alarms(&camera_frames),
-        "alarms": [],
-        "createdAt": created_at,
-        "endedAt": created_at + (group_count as f64 * period_ms).round() as i64,
-        "error": null,
-        "failure": null,
-        "simulated": true,
-        "origin": {"kind": "prepared", "label": label},
-    });
-    package.add(&format!("rounds/{round_id}/frames.jsonl"), lines.as_bytes())?;
-    package.add(
-        &format!("rounds/{round_id}/round.json"),
-        &serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?,
-    )?;
-    Ok(json!({
-        "roundId": round_id,
-        "createdAt": created_at,
-        "groupCount": group_count,
-        "cameraFrames": camera_frames,
-    }))
-}
-
 fn run(args: Args) -> Result<Value, String> {
     let doc: RecipeDoc = serde_json::from_value(read_json(&args.doc)?)
-        .map_err(|e| format!("候选文档格式无效：{e}"))?;
+        .map_err(|e| format!("配方文档格式无效：{e}"))?;
     if !doc.is_burst() {
-        return Err("候选文档不是段配方".into());
+        return Err("配方文档不是段配方".into());
     }
-    let recipe = Arc::new(doc.build().map_err(|e| format!("候选文档无法编译：{e}"))?);
+    let recipe = Arc::new(doc.build().map_err(|e| format!("配方文档无法编译：{e}"))?);
     let cameras = doc.plan_cameras();
     let rig: Vec<CameraConfig> = serde_json::from_value(read_json(&args.cameras)?)
         .map_err(|e| format!("相机配置格式无效：{e}"))?;
@@ -351,6 +323,13 @@ fn run(args: Args) -> Result<Value, String> {
             serde_json::to_value(config).map_err(|e| e.to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let site = FixtureSite::open(
+        &args.db,
+        &args.records,
+        (*recipe).clone(),
+        configs,
+        &args.label,
+    )?;
     let source = match args.sample {
         Some((dir, part)) => {
             let set = SampleSet::load(&dir)?;
@@ -363,104 +342,45 @@ fn run(args: Args) -> Result<Value, String> {
             Source::Samples { set, part }
         }
         None => Source::Synthetic {
-            recipe,
+            recipe: recipe.clone(),
             seed: args.seed,
+            onset: args.onset,
+            tail: args.tail,
         },
     };
-    if let Some(parent) = args.out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let mut temporary = args.out.clone().into_os_string();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
-    let file =
-        File::create(&temporary).map_err(|e| format!("创建 {} 失败：{e}", temporary.display()))?;
-    let mut package = Package {
-        zip: ZipWriter::new(BufWriter::new(file)),
-        files: Vec::new(),
-    };
     let base = now_ms();
-    let result = (|| {
-        let workspace = json!({
-            "doc": doc,
-            "baseRevision": null,
-            "revision": 1,
-            "samples": [],
-            "sampleBank": [],
-            "validation": null,
-            "pending": null,
-            "publish": {"state": "draft"},
-            "updatedAt": base,
-        });
-        package.add(
-            "workspace/workspace.json",
-            &serde_json::to_vec_pretty(&workspace).map_err(|e| e.to_string())?,
-        )?;
-        let mut rounds = Vec::with_capacity(args.rounds);
-        for index in 0..args.rounds {
-            let round_id = format!("capture-{base}-{index}");
-            let frames = source.round(&cameras, index as u64)?;
-            rounds.push(write_round(
-                &mut package,
-                &doc,
-                &cameras,
-                &configs,
-                &args.label,
-                &round_id,
-                base + index as i64,
-                frames,
-            )?);
+    let mut parts: Vec<Value> = Vec::with_capacity(args.parts);
+    for index in 0..args.parts {
+        let sn = format!("{SN_PREFIX}{base}-{:03}", index + 1);
+        let written = source
+            .part(&cameras, index as u64)
+            .and_then(|(frames, ends)| {
+                let mut part =
+                    serde_json::to_value(site.write(&sn, frames)?).map_err(|e| e.to_string())?;
+                if let Some([onset, tail]) = ends {
+                    part["onset"] = json!(onset);
+                    part["tail"] = json!(tail);
+                }
+                Ok(part)
+            });
+        match written {
+            Ok(part) => parts.push(part),
+            Err(error) if parts.is_empty() => return Err(error),
+            Err(error) => {
+                let kept: Vec<&str> = parts.iter().filter_map(|p| p["sn"].as_str()).collect();
+                return Err(format!(
+                    "{error}\n已写完的 {} 件保留：{}",
+                    kept.len(),
+                    kept.join("、")
+                ));
+            }
         }
-        let manifest = json!({
-            "format": TRANSFER_FORMAT,
-            "kind": "candidate",
-            "recipeId": doc.id,
-            "name": doc.name,
-            "productCode": doc.product_code,
-            "version": doc.version,
-            "exportedAt": base,
-            "appVersion": env!("CARGO_PKG_VERSION"),
-            "rounds": rounds.iter().map(|r| r["roundId"].clone()).collect::<Vec<_>>(),
-            "notes": [format!("手动配置数据（{}）：capture_fixture 生成 {} 轮", args.label, rounds.len())],
-            "files": std::mem::take(&mut package.files),
-        });
-        package
-            .zip
-            .start_file(
-                "manifest.json",
-                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
-            )
-            .map_err(|e| e.to_string())?;
-        package
-            .zip
-            .write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        package
-            .zip
-            .finish()
-            .map_err(|e| e.to_string())?
-            .into_inner()
-            .map_err(|e| e.to_string())?
-            .sync_all()
-            .map_err(|e| e.to_string())?;
-        Ok(rounds)
-    })();
-    let rounds = match result {
-        Ok(rounds) => rounds,
-        Err(error) => {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(error);
-        }
-    };
-    if args.out.exists() {
-        std::fs::remove_file(&args.out)
-            .map_err(|e| format!("覆盖 {} 失败：{e}", args.out.display()))?;
     }
-    std::fs::rename(&temporary, &args.out).map_err(|e| e.to_string())?;
     Ok(json!({
-        "path": args.out.display().to_string(),
         "recipeId": doc.id,
-        "rounds": rounds,
+        "revision": recipe.revision_id,
+        "label": args.label,
+        "parts": parts,
     }))
 }
 

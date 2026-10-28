@@ -1,5 +1,5 @@
 /**
- * 示教采集轮次（CaptureRoundV2，按帧号配组、不核对计数）整理成 RoundView，页面只看帧组数、各相机帧数、缺帧的帧组与丢帧告警。
+ * 示教件的轮次（CaptureRoundV2，按帧号配组、不核对计数）整理成 RoundView，页面只看帧组数、各相机帧数、缺帧的帧组与丢帧告警。
  * 帧组 = 同一触发序号的各相机帧；seq 从 1 起，页面上的“帧组序号”就是它。
  */
 import type { CaptureRoundV2, CaptureState, LossAlarm } from "../plan/types";
@@ -46,12 +46,4 @@ export function frameArrived(view: RoundView, cameraId: string, seq: number): bo
 /** 读取第 seq 帧原图（按帧号）。 */
 export function readRoundFrame(round: CaptureRoundV2, cameraId: string, seq: number): Promise<GrayImage> {
   return workspaceApi.captureFrameImage(round.roundId, cameraId, seq);
-}
-
-/** 丢帧告警的一句话：某台相机帧数与 PLC 累计触发或另一台相机相差超过 1（只告警，不影响采集和采用）。 */
-export function lossAlarmText(alarm: LossAlarm, cameraName: (index: number) => string): string {
-  const name = cameraName(alarm.camera);
-  return alarm.reason.type === "triggers"
-    ? `${name} 收到 ${alarm.count} 帧，与 PLC 累计触发 ${alarm.reason.deviceTriggers} 相差超过 1，疑似丢帧`
-    : `${name} 收到 ${alarm.count} 帧，与${cameraName(alarm.reason.other)}（${alarm.reason.otherCount} 帧）相差超过 1，疑似丢帧`;
 }

@@ -130,7 +130,7 @@ export function progressV2(): ProgressV2 {
   const step = (id: ProgressV2["steps"][number]["id"], label: string, status: ProgressV2["steps"][number]["status"], detail: string) => ({ id, label, optional: false, status, detail, blockers: [] });
   return {
     steps: [
-      step("capture", "采集轮次", "done", "已有完整采集轮次"),
+      step("capture", "示教件", "done", "已选示教件"),
       step("segments", "段列表", "done", "3 段"),
       step("corridor", "走廊示教", "inProgress", "3 / 9 条走廊已示教"),
       step("calibration", "多轮标定", "notStarted", "0 / 10 轮"),
@@ -181,6 +181,9 @@ export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
       { camera: "CAM-3", mmPerPx: .1, ready: false, nozzle: null, segments: [] },
     ],
     calibration: calibrationView(), productionExport: null, candidateExport: planExport(doc), candidateExportError: null, shotCountChanged: false, progress: progressV2(),
+    // 示教件 round-1 在前，其余 9 件标定件，都已加入标定
+    pieces: roundGroups.map((groupCount, i) => ({ roundId: `round-${i + 1}`, role: i ? "calibration" as const : "teaching" as const, recordId: i + 1, cycleId: `cycle-${i + 1}`,
+      sn: `SN-${i + 1}`, ts: i + 1, groupCount, review: "confirmed" as const, confirmedBy: "manual" as const, inCalibration: true, excludedGroups: 0 })),
   };
   const layout: Recipe = { ...structuredClone(doc), planVersion: doc.planVersion ?? 0, revisionId: `revisionId-${doc.id}`, pathSegments: structuredClone(doc.segments) };
   const cameraTeaching = plan.cameraTeaching.flatMap(({ camera, segments }) => segments.map(({ segment, frame, round, seq }) => ({ camera, frame, round, seq, segment })));
@@ -189,7 +192,8 @@ export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
   return {
     layout, productionVersion: null, productionPlanVersion: null, planChanged: false, plan,
     workspace: { doc, baseRevision: null, revision: 3, updatedAt: 1, publish: { state: "draft" }, pending: null,
-      samples: [], sampleBank: [], validation: null, cameraTeaching, calibration: { rounds } },
+      samples: [], sampleBank: [], validation: null, cameraTeaching, calibration: { rounds },
+      flow: 2, teachingPiece: { roundId: "round-1", recordId: 1, cycleId: "cycle-1", sn: "SN-1", ts: 1 } },
   };
 }
 
