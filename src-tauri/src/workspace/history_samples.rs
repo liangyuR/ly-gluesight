@@ -76,7 +76,7 @@ mod tests {
         let managed = crate::managed_samples::import(&root.0, &source.0).unwrap();
         let set = SampleSet::load(&managed).unwrap();
         let mut recipe = crate::recipe::samples_burst().build().unwrap();
-        recipe.revision_id = format!("candidate-{}-r17", recipe.id);
+        recipe.revision_id = format!("candidate-{}-i1-r17", recipe.id);
         let mut detail = history(&set, &recipe);
         detail.burst = Some(crate::store::PartDetailBurst { segments: recipe.path_segments.clone(), cameras: recipe.plan_cameras(),
             expected_total: recipe.expected_total(), tolerance_total: recipe.tolerance_total(), device_triggers: None, camera_frames: vec![2; 3],

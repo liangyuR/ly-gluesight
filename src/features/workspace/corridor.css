@@ -39,6 +39,10 @@
 .wp-calib-frame-info { display:flex; flex-direction:column; gap:8px; font-size:13px; }
 @media (max-width:900px) { .wp-calib-frame { grid-template-columns:1fr; } }
 .wp-calib-hints { margin:0; padding-left:18px; }
+.wp-skip-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:10px; }
+.wp-skip-item { display:flex; flex-direction:column; gap:4px; }
+.wp-skip-item .hint { margin:0; }
+.wp-skip-rounds { margin:4px 0 0; padding-left:18px; font-size:12px; }
 .wp-trial { display:flex; flex-direction:column; gap:8px; padding:10px 12px; }
 .wp-trial-head { display:flex; align-items:center; flex-wrap:wrap; gap:4px 10px; }
 .wp-trial-head > h3 { margin:0; font-size:13px; }

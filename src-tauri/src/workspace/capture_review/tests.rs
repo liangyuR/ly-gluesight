@@ -7,6 +7,7 @@ fn round(w: &Workspace, id: &str, count: u64) -> CaptureRoundV2 {
 }
 
 fn confirmed_template(w: &mut Workspace, round: &CaptureRoundV2, cuts: Vec<u64>) {
+    w.teaching_piece = Some(crate::workspace::pieces_tests::piece(&round.round_id, 1));
     apply_capture_review(w, round, CaptureReviewEdit::Save(cuts)).unwrap();
     apply_capture_review(w, round, CaptureReviewEdit::Confirm).unwrap();
     apply_capture_review(w, round, CaptureReviewEdit::SetTemplate).unwrap();
@@ -31,55 +32,16 @@ fn invalid_boundaries_leave_existing_review_unchanged() {
     }
 }
 
-#[test]
-fn template_requires_confirmation_and_application_preserves_exclusions_as_draft() {
-    let mut w = burst_workspace(&[Straight, Corner, Straight]);
-    let source = round(&w, "source", 10);
-    let target = round(&w, "target", 20);
-    apply_capture_review(&mut w, &source, CaptureReviewEdit::Save(vec![3, 7])).unwrap();
-    assert!(apply_capture_review(&mut w, &source, CaptureReviewEdit::SetTemplate).is_err());
-    confirmed_template(&mut w, &source, vec![3, 7]);
-    apply_capture_review(
-        &mut w,
-        &target,
-        CaptureReviewEdit::Exclude {
-            start: 5,
-            end: 6,
-            excluded: true,
-            reason: "反光".into(),
-        },
-    )
-    .unwrap();
-    for (mode, cuts) in [
-        (TemplateMode::Proportional, vec![6, 14]),
-        (TemplateMode::Original, vec![3, 7]),
-    ] {
-        apply_capture_review(&mut w, &target, CaptureReviewEdit::ApplyTemplate(mode)).unwrap();
-        let review = &w.capture_review.rounds["target"];
-        assert_eq!(review.status, ReviewStatus::Draft);
-        assert_eq!(review.cuts, cuts);
-        assert_eq!(
-            review
-                .excluded_groups
-                .iter()
-                .map(|g| g.seq)
-                .collect::<Vec<_>>(),
-            vec![5, 6]
-        );
-        assert_eq!(review.group_count, 20);
-    }
-    apply_capture_review(&mut w, &source, CaptureReviewEdit::Save(vec![4, 7])).unwrap();
-    assert!(w.capture_review.template.is_none());
-}
-
-/// D-SB-44：工作台一次保存——模板轮边界已确认并成为模板；段的类型序列变化时其余已确认轮次变“需复核”、
-/// 各段 N_exp 清空，序列不变只改边界时其余轮次与标定不受影响。
+/// D-SB-44、RB-1：工作台一次保存——示教件边界已确认并成为模板；段的类型序列变化时其余已确认的件变“需复核”、
+/// 各段 N_exp 清空，序列不变只改边界时其余件与标定不受影响；不是示教件的轮次不能保存为分段。
 #[test]
 fn template_round_save_confirms_template_and_invalidates_others_only_on_structure_change() {
     for structure_changed in [false, true] {
         let mut w = burst_workspace(&[Straight, Corner, Straight]);
         let template = round(&w, "template", 12);
         let other = round(&w, "other", 12);
+        w.teaching_piece = Some(crate::workspace::pieces_tests::piece("template", 1));
+        assert!(save_template_round(&w, &other, w.doc.segments.clone(), vec![4, 8]).is_err());
         apply_capture_review(&mut w, &other, CaptureReviewEdit::Save(vec![4, 8])).unwrap();
         apply_capture_review(&mut w, &other, CaptureReviewEdit::Confirm).unwrap();
         w.doc
@@ -145,27 +107,9 @@ fn plan_change_then_revert_keeps_review_stale_and_template_invalid() {
     }
 }
 
+/// 曝光增益只记录、不比较：旧版复核签名里带的曝光增益读入时去掉，已确认轮次仍按确认的边界给出各段帧组数。
 #[test]
-fn mismatched_capture_configuration_rejects_template_without_changing_target() {
-    let mut w = burst_workspace(&[Straight, Corner]);
-    let source = round(&w, "source", 10);
-    confirmed_template(&mut w, &source, vec![4]);
-    let mut target = round(&w, "target", 10);
-    target.cameras[0].camera_config = json!("another-device");
-    let before = state_value(&w);
-    assert!(apply_capture_review(
-        &mut w,
-        &target,
-        CaptureReviewEdit::ApplyTemplate(TemplateMode::Original)
-    )
-    .is_err());
-    assert_eq!(state_value(&w), before);
-}
-
-/// 曝光增益只记录、不比较：旧版复核签名里带的曝光增益读入时去掉，已确认轮次仍按确认的边界给出各段帧组数；
-/// 曝光增益与模板轮不同的轮次照样能设模板、套模板。
-#[test]
-fn only_exposure_or_gain_differs_then_review_stays_confirmed_and_template_applies() {
+fn old_review_signature_with_exposure_or_gain_still_counts_as_confirmed() {
     let mut w = burst_workspace(&[Straight, Corner]);
     let source = round(&w, "source", 10);
     confirmed_template(&mut w, &source, vec![4]);
@@ -192,74 +136,6 @@ fn only_exposure_or_gain_differs_then_review_stays_confirmed_and_template_applie
         confirmed_segment_counts(&w.doc, &w.capture_review.rounds, "source", 10),
         Some(vec![4, 6])
     );
-    let mut target = round(&w, "target", 10);
-    target.cameras[0].imaging.exposure_us += 100.0;
-    target.cameras[1].imaging.gain_db += 1.0;
-    apply_capture_review(
-        &mut w,
-        &target,
-        CaptureReviewEdit::ApplyTemplate(TemplateMode::Original),
-    )
-    .unwrap();
-    assert_eq!(w.capture_review.rounds["target"].cuts, vec![4]);
-    apply_capture_review(&mut w, &target, CaptureReviewEdit::Confirm).unwrap();
-    apply_capture_review(&mut w, &target, CaptureReviewEdit::SetTemplate).unwrap();
-    assert_eq!(
-        w.capture_review.rounds["source"].status,
-        ReviewStatus::Confirmed
-    );
-}
-
-#[test]
-fn reordered_capture_cameras_reuse_the_same_template() {
-    let mut w = burst_workspace(&[Straight, Corner]);
-    let source = round(&w, "source", 10);
-    confirmed_template(&mut w, &source, vec![4]);
-    let mut target = round(&w, "target", 10);
-    target.cameras.reverse();
-    apply_capture_review(
-        &mut w,
-        &target,
-        CaptureReviewEdit::ApplyTemplate(TemplateMode::Original),
-    )
-    .unwrap();
-    assert_eq!(w.capture_review.rounds["target"].cuts, vec![4]);
-}
-
-#[test]
-fn removing_an_applied_calibration_source_clears_derived_values_before_exclusion() {
-    let mut w = burst_workspace(&[Straight]);
-    let source = round(&w, "source", 5);
-    let metrics = measure_calibration_round(&w, &source, |_, _, _| Ok(measured(1.0)));
-    let entry = burst::calibration_round(&w.doc, &source, false, &metrics);
-    burst::add_calibration_round(&mut w, entry).unwrap();
-    w.doc.segments[0].expected_frames = Some(5);
-    w.doc.segments[0].offset_ref = Some(crate::plan::OffsetRef {
-        measure: crate::plan::OffsetMeasure::AbsoluteX,
-        camera: w.doc.plan_cameras()[0].clone(),
-        x_ref: Some(1.0),
-        spread: Some(0.1),
-        edge: None,
-    });
-    burst::remove_calibration_round(&mut w, "source").unwrap();
-    apply_capture_review(
-        &mut w,
-        &source,
-        CaptureReviewEdit::Exclude {
-            start: 3,
-            end: 3,
-            excluded: true,
-            reason: "反光".into(),
-        },
-    )
-    .unwrap();
-    assert!(w.doc.segments[0].expected_frames.is_none());
-    assert!(w.doc.segments[0]
-        .offset_ref
-        .as_ref()
-        .unwrap()
-        .x_ref
-        .is_none());
 }
 
 #[test]
@@ -320,6 +196,7 @@ fn corridor_teaching_and_exclusion_cannot_reference_the_same_group() {
     let mut w = burst_workspace(&[Straight]);
     let source = round(&w, "source", 5);
     let camera = w.doc.plan_cameras()[0].clone();
+    w.teaching_piece = Some(crate::workspace::pieces_tests::piece("source", 1));
     let teaching: burst::CameraTeaching = serde_json::from_value(json!({"camera":camera,"round":"source","seq":3,"segment":1,
         "frame":{"id":"image","view":1,"source":"capture:source#3","capturedAt":0,"size":[100,100],
             "camera":camera,"cameraTag":null,"calibTag":null,"geometryTag":null,"exposureUs":null,"gainDb":null,"historyId":null}})).unwrap();

@@ -4,27 +4,24 @@
 .wp-capture-more > summary::before { content:""; width:6px; height:6px; margin:0 4px 0 2px; border-right:1.5px solid var(--on-surface-variant); border-bottom:1.5px solid var(--on-surface-variant); transform:rotate(-45deg); transition:transform var(--dur-short) var(--ease-standard); }
 .wp-capture-more[open] > summary::before { transform:rotate(45deg); }
 .wp-capture-more > summary > small { color:var(--on-surface-variant); font-size:12px; font-weight:400; }
-.wp-capture-more > .wp-capture-cameras { margin-top:10px; }
-.wp-capture-aside { position:sticky; top:16px; display:flex; flex-direction:column; gap:12px; min-width:0; }
-.wp-capture-status { display:flex; flex-direction:column; gap:8px; }
-.wp-capture-status p { margin:0; overflow-wrap:anywhere; }
-.wp-capture-rules { display:flex; flex-direction:column; gap:12px; padding:16px; border:1px solid var(--outline-variant); border-radius:var(--r-lg); }
-.wp-capture-rules > h3 { margin:0; font-size:14px; font-weight:600; }
-.wp-capture-rules strong { font-size:13px; font-weight:500; }
-.wp-capture-rules p { margin:4px 0 0; color:var(--on-surface-variant); font-size:12px; line-height:1.7; }
 .wp-capture-empty { margin:0; padding:14px; border:1px dashed var(--outline-variant); border-radius:var(--r-md); color:var(--on-surface-variant); font-size:13px; text-align:center; }
-.wp-capture-done { display:flex; align-items:center; gap:6px; margin:0; color:var(--ok); font-size:13px; font-weight:500; }
-.wp-capture-done > svg { flex-shrink:0; }
 .wp-capture-groups { display:flex; align-items:end; gap:6px; }
 .wp-capture-groups > .wp-field { flex:1 1 auto; min-width:0; }
 .wp-capture-groups > button { flex:0 0 auto; margin-bottom:2px; }
-.wp-capture-actions > .wp-text-link { align-self:flex-start; }
 .wp-review-counts { margin:0 0 12px; font-variant-numeric:tabular-nums; }
-.wp-review-template { flex-wrap:wrap; align-items:end; }
-.wp-review-segments { display:flex; flex-direction:column; gap:8px; margin:14px 0; }
-.wp-review-segment { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; padding:12px; border:1px solid var(--outline-variant); border-radius:var(--r-md); }
-.wp-review-segment > strong { min-width:100px; font-size:13px; }
-.wp-review-segment > .wp-field { width:150px; }
 .wp-review-mask { flex-wrap:wrap; align-items:end; }
 .wp-review-mask > .wp-field { max-width:180px; }
 .wp-review-excluded { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+.wp-picker-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(300px,380px); gap:12px; align-items:start; }
+.wp-picker-layout > :first-child { min-width:0; overflow-x:auto; }
+.wp-picker-preview { position:sticky; top:16px; min-width:0; }
+.wp-frame-browser { display:flex; flex-direction:column; gap:8px; min-width:0; }
+.wp-frame-browser-bar { display:flex; flex-wrap:wrap; align-items:end; gap:8px 12px; }
+.wp-frame-browser .wp-gray-image { height:clamp(240px,40vh,460px); }
+.wp-frame-browser .wp-image-empty { min-height:clamp(240px,40vh,460px); }
+.wp-piece-list { display:flex; flex-direction:column; gap:8px; margin:0; padding:0; list-style:none; }
+.wp-piece { display:flex; flex-direction:column; gap:8px; padding:10px 12px; border-radius:var(--r-md); background:var(--surface-mid); font-size:13px; }
+.wp-piece.selected { outline:2px solid var(--primary); outline-offset:-2px; }
+.wp-piece-head { display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; }
+.wp-piece-head > .wp-actions { margin-left:auto; }
+@media(max-width:1250px) { .wp-picker-layout { grid-template-columns:minmax(0,1fr); } .wp-picker-preview { position:static; } }

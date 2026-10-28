@@ -27,7 +27,7 @@ it("参数延迟读回期间输入 → 保留新值并写入资料配置，失�
   render(<FeasibilityCalc />);
   const speed = screen.getByRole("spinbutton", { name: /速度/ });
   fireEvent.change(speed, { target: { value: "123" } });
-  saved = { flyshotSpeedMmS: 70, legacyImported: true };
+  saved = { flyshotSpeedMmS: 70 };
   await act(async () => read.resolve(saved));
   await waitFor(() => expect(saved.flyshotSpeedMmS).toBe(123));
   expect(speed).toHaveValue(123);

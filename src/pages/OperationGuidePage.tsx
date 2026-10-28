@@ -51,7 +51,7 @@ const journeys: { title: string; detail: string; icon: LucideIcon; action: strin
   { title: "首次建站", detail: "接入设备，完成采集示教与验证发布", icon: Wrench, action: "配置采集设备", path: "/camera", links: [["相机接入", "/camera"], ["PLC 通讯", "/plc"], ["标定", "/camera/calibration"], ["建立配方", "/recipe"]] },
   { title: "日常生产", detail: "核对开工条件，监看工件检测结果", icon: ScanEye, action: "进入在线检测", path: "/inspect", production: true, links: [["核对开工条件", "/inspect"], ["监看检测", "/inspect"], ["查看历史", "/history"]] },
   { title: "缺陷排查", detail: "查看异常工件原图，选择候选配方复测", icon: Bug, action: "打开历史记录", path: "/history", links: [["定位工件与帧组", "/history"], ["选择候选", "/recipe"], ["调整示教", "/recipe/teach"]] },
-  { title: "配置变更", detail: "调整候选配方，完成示教、标定与发布", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["采集 / 示教", "/recipe/capture"], ["验证与发布", "/recipe/validation"], ["核对 PLC 型号", "/recipe"]] },
+  { title: "配置变更", detail: "调整候选配方，完成示教、标定与发布", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["选示教件", "/recipe/capture"], ["验证与发布", "/recipe/validation"], ["核对 PLC 型号", "/recipe"]] },
 ];
 
 export default function OperationGuidePage() {
@@ -70,7 +70,7 @@ export default function OperationGuidePage() {
   const sampleMode = offline && site.data?.source === "sampleSet";
   const plcMessage = plc.data?.message?.trim();
   const workflows = offline ? [
-    { title: "离线准备", detail: "使用临时相机组和本机 S7 服务，不代表真实设备验收", icon: Wrench, action: "查看离线来源", path: "/offline", links: [["选择样本集", "/offline"], ["选择候选", "/recipe"], ["采集 / 示教", "/recipe/capture"]] as [string, string][] },
+    { title: "离线准备", detail: "使用临时相机组和本机 S7 服务，不代表真实设备验收", icon: Wrench, action: "查看离线来源", path: "/offline", links: [["选择样本集", "/offline"], ["选择候选", "/recipe"], ["选示教件", "/recipe/capture"]] as [string, string][] },
     { title: sampleMode ? "候选离线试运行" : "合成流程演练", detail: sampleMode ? "无需发布，用已保存候选跑整圈；结果标记为调试，不计入生产统计" : "合成图用于协议与流程演练；候选图像调试需先切换离线样本集", icon: ScanEye, action: sampleMode ? "打开候选试运行" : "打开离线演练", path: sampleMode ? "/inspect" : "/offline", production: true, links: [[sampleMode ? "候选试运行" : "离线演练", sampleMode ? "/inspect" : "/offline"], ["查看整圈流程", "/inspect"], ["查看历史", "/history"]] as [string, string][] },
     { ...journeys[2], detail: "核对离线 / 调试来源，再检查原图与候选测量结果" },
     { title: "离线配方调整", detail: "保存候选后可继续调试；离线验证与发布不等同真机验收", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["调整示教", "/recipe/teach"], ["试运行 / 验证", "/recipe/validation"]] as [string, string][] },

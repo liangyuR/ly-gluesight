@@ -1,6 +1,6 @@
 [package]
 name = "gluesight"
-version = "0.1.3"
+version = "1.1.4"
 description = "GlueSight · 胶路智检"
 edition = "2021"
 default-run = "GlueSight"
@@ -32,7 +32,7 @@ libloading = "0.8"
 # 诊断包 ZIP：与 png 解码共用已锁定的版本
 flate2 = "1"
 crc32fast = "1"
-# 配方迁移包：读写需 ZIP64（多轮原图可超过 4 GB）与 SHA-256 清单校验
+# 项目导出导入包：读写需 ZIP64（多轮原图可超过 4 GB）与 SHA-256 清单校验
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 sha2 = "0.10"
 rusqlite = { version = "0.40", features = ["bundled"] }

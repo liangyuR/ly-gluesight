@@ -1,21 +1,23 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { Button } from "qing-steel";
-import type { WorkspacePlanView } from "../plan/types";
+import type { PieceView, WorkspacePlanView } from "../plan/types";
 import { errorText } from "../../lib/errors";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import { Badge, Notice, Panel } from "./components";
+import { Badge, Notice } from "./components";
+import { pieceLabel } from "./pieces";
 import { ignoreKey, stripGroups, Thumb, useThumbs } from "./thumbs";
 import { moveCut, segmentCameras } from "./workbenchDraft";
-import type { AlignSuggestion, CaptureSummary } from "./types";
+import type { AlignReviewReason, AlignSuggestion, CalibrationSyncResult } from "./types";
 import type { ThumbStrip } from "./workbenchDraft";
+import "./segments.css";
 
-const statusText = { draft: "草稿", confirmed: "已确认", stale: "需复核" } as const;
+const reasonText: Record<AlignReviewReason, string> = { moved: "为保持递增被挪动", deviates: "偏离比例换算", unclear: "对齐不清晰" };
 
 /** 缩略图宽度按显示的相机数放大：一台 160 px（缩略图原尺寸），两台 112 px，三台 72 px。 */
 const cellWidth = (cameras: number) => (cameras <= 1 ? 160 : cameras === 2 ? 112 : 72);
 
-/** 一侧（模板或本轮）边界两侧各两帧：边界两侧段的检测相机各一行，竖线标在边界处。 */
+/** 一侧（示教件或本件）边界两侧各两帧：边界两侧段的检测相机各一行，竖线标在边界处。 */
 function BoundaryFrames({ label, strips, cameras, cut }: { label: string; strips: Record<string, ThumbStrip>; cameras: string[]; cut: number }) {
   const groups = [cut - 1, cut, cut + 1, cut + 2];
   const width = cellWidth(cameras.length);
@@ -35,37 +37,26 @@ function BoundaryFrames({ label, strips, cameras, cut }: { label: string; strips
 }
 
 /**
- * 其余轮次的对齐复核（D-SB-44 P2，段列表页、分段标定工作台下方）：软件把分段模板的边界按图像对齐到所选轮次，
- * 每个边界一行并排显示模板与本轮边界两侧的帧；← → 微调当前行（不越过相邻边界），↑ ↓ 换行，Enter 确认当前行。
- * 各行都确认后一次保存并确认本轮边界，然后转到下一个未确认的轮次。
+ * 一件标定件的边界复核（D-SB-51，多轮标定页）：软件把示教件的边界按图像对齐到这一件，每个边界一行并排显示示教件与本件边界两侧的帧；
+ * 可信边界默认已勾选并收起，只有需重点复核的边界逐个确认（← → 微调、不越过相邻边界，↑ ↓ 换行，Enter 确认当前行）。
+ * 各行都确认后一次保存并确认本件边界，再同步标定件把它加入标定。
  */
-export default function AlignReview({ plan, locked }: { plan: WorkspacePlanView; locked: string }) {
+export default function AlignReview({ plan, piece, locked, onSynced }: {
+  plan: WorkspacePlanView; piece: PieceView; locked: string; onSynced: (pieces: CalibrationSyncResult["pieces"]) => void;
+}) {
   const { data, doc, act, busy } = useWorkspace();
-  const [rounds, setRounds] = useState<CaptureSummary[]>([]);
-  const [roundId, setRoundId] = useState("");
+  const roundId = piece.roundId;
   const [suggestion, setSuggestion] = useState<{ round: string; value: AlignSuggestion | null; error: string } | null>(null);
   const [cuts, setCuts] = useState<number[]>([]);
   const [checked, setChecked] = useState<boolean[]>([]);
   const [row, setRow] = useState(0);
   const review = data?.workspace.captureReview;
-  const template = review?.template ?? null;
+  const teachingRound = data?.workspace.teachingPiece?.roundId ?? "";
   const docId = doc?.id ?? "";
   const frozen = !!data?.workspace.pending;
 
   useEffect(() => {
-    if (!docId) return;
-    let alive = true;
-    workspaceApi.captureList(docId)
-      .then(list => alive && setRounds(list.filter(round => round.state === "complete").sort((a, b) => a.createdAt - b.createdAt)))
-      .catch(() => alive && setRounds([]));
-    return () => { alive = false; };
-  }, [docId]);
-
-  const others = rounds.filter(round => round.roundId !== template?.roundId);
-  const status = (id: string) => review?.rounds[id]?.status ?? null;
-
-  useEffect(() => {
-    if (!roundId || !docId || !template) return;
+    if (!docId || !teachingRound) return;
     let alive = true;
     setSuggestion(null);
     workspaceApi.captureReviewSuggest(docId, roundId)
@@ -73,24 +64,20 @@ export default function AlignReview({ plan, locked }: { plan: WorkspacePlanView;
         if (!alive) return;
         setSuggestion({ round: roundId, value, error: "" });
         const saved = review?.rounds[roundId];
-        const start = saved?.status === "confirmed" && saved.cuts.length === value.cuts.length ? saved.cuts : value.cuts.map(item => item.cut);
-        setCuts(start);
-        setChecked(start.map(() => saved?.status === "confirmed"));
-        setRow(0);
+        const confirmed = saved?.status === "confirmed" && saved.cuts.length === value.cuts.length;
+        setCuts(confirmed ? saved.cuts : value.cuts.map(item => item.cut));
+        // 可信边界默认已勾选，只有需重点复核的边界要逐个确认
+        setChecked(value.cuts.map(item => confirmed || !item.review));
+        const first = value.cuts.findIndex(item => !confirmed && item.review);
+        setRow(Math.max(0, first));
       })
       .catch(e => alive && setSuggestion({ round: roundId, value: null, error: errorText(e) }));
     return () => { alive = false; };
-  }, [roundId, docId, template?.version]);
+  }, [roundId, docId, teachingRound]);
 
-  const templateThumbs = useThumbs(template?.roundId ?? "", plan.cameras);
+  const templateThumbs = useThumbs(teachingRound, plan.cameras);
   const roundThumbs = useThumbs(roundId, plan.cameras);
   const groupCount = stripGroups(roundThumbs.strips);
-
-  if (!template) {
-    return <Panel title="其余轮次复核" help="把分段模板的边界按图像对齐到其余采集轮次，逐个确认">
-      <p className="muted">先在上方分段标定里保存一轮分段并设为模板。</p>
-    </Panel>;
-  }
 
   const current = suggestion?.round === roundId ? suggestion : null;
   const value = current?.value ?? null;
@@ -100,18 +87,24 @@ export default function AlignReview({ plan, locked }: { plan: WorkspacePlanView;
     if (next.cuts !== cuts) { setCuts(next.cuts); setChecked(list => list.map((item, i) => (i === at ? false : item))); }
   };
   const confirmRow = (at: number) => {
-    setChecked(list => list.map((item, i) => (i === at ? true : item)));
-    setRow(Math.min(cuts.length - 1, at + 1));
+    const next = checked.map((item, i) => (i === at ? true : item));
+    setChecked(next);
+    const pending = next.findIndex(item => !item);
+    setRow(pending >= 0 ? pending : Math.min(cuts.length - 1, at + 1));
   };
   const allChecked = checked.every(Boolean);
   const blocked = !ready || !allChecked || busy || frozen || !!locked || !doc || !data;
   const save = async () => {
     if (!doc || !data) return;
-    const next = await act(() => workspaceApi.captureReviewConfirmCuts(doc.id, data.workspace.revision, roundId, cuts), "本轮边界已确认");
+    const next = await act(() => workspaceApi.captureReviewConfirmCuts(doc.id, data.workspace.revision, roundId, cuts), "本件边界已确认");
     if (!next) return;
-    const nextReview = next.workspace.captureReview;
-    const pending = others.find(round => round.roundId !== roundId && nextReview?.rounds[round.roundId]?.status !== "confirmed");
-    if (pending) setRoundId(pending.roundId);
+    let result: CalibrationSyncResult["pieces"] = [];
+    const synced = await act(async () => {
+      const response = await workspaceApi.calibrationSync(doc.id, next.workspace.revision);
+      result = response.pieces;
+      return response.view;
+    }, "已同步标定件");
+    if (synced) onSynced(result);
   };
   const onKey = (e: KeyboardEvent) => {
     if (!ready || ignoreKey(e)) return;
@@ -120,36 +113,37 @@ export default function AlignReview({ plan, locked }: { plan: WorkspacePlanView;
     else if (e.key === "Enter") { e.preventDefault(); confirmRow(row); }
   };
 
-  return <Panel title="其余轮次复核" help="软件按图像把分段模板的边界对齐到所选轮次；逐个边界对照模板与本轮的帧，← → 微调、↑ ↓ 换行、Enter 确认，全部确认后保存本轮">
-    <div className="alr-rounds" role="group" aria-label="采集轮次">
-      {others.map(round => {
-        const state = status(round.roundId);
-        return <button key={round.roundId} type="button" aria-pressed={round.roundId === roundId}
-          className={`alr-round${round.roundId === roundId ? " selected" : ""}`} onClick={() => setRoundId(round.roundId)}>
-          <span className="plan-mono">{round.roundId}</span>
-          <Badge tone={state === "confirmed" ? "ok" : state ? "warn" : "neutral"}>{state ? statusText[state] : "未整理"}</Badge>
-        </button>;
-      })}
-    </div>
-    {!roundId && <p className="muted">选一轮开始复核（模板轮 {template.roundId} 不在列表中）。</p>}
+  return <section className="alr" aria-label={`边界复核 · ${pieceLabel(piece)}`}>
+    <p className="muted hint">软件按图像把示教件的边界对齐到这一件；对齐可信的边界默认已勾选，只需逐个确认标“需重点复核”的边界（← → 微调、↑ ↓ 换行、Enter 确认），全部确认后保存本件并同步标定件。</p>
     {current?.error && <Notice title="无法给出对齐建议" tone="warn">{current.error}</Notice>}
-    {roundId && !current && <p className="muted">正在按图像对齐…</p>}
+    {!current && <p className="muted">正在按图像对齐…</p>}
     {ready && <div className="alr-body" tabIndex={0} onKeyDown={onKey} aria-label="边界复核">
       {value.cuts.map((item, at) => {
         const cut = cuts[at];
+        const label = `段 ${at + 1} → 段 ${at + 2} 的边界`;
+        // 可信且已勾选的边界收起成一行，点开或移到这一行时再展开
+        if (!item.review && checked[at] && at !== row) {
+          return <section key={at} className="alr-boundary collapsed" aria-label={label} onClick={() => setRow(at)}>
+            <header>
+              <strong>段 {at + 1} → 段 {at + 2}</strong>
+              <span className="muted">边界 {cut}（按比例 {item.proportional}）· 对齐可信</span>
+              <Badge tone="ok">已确认</Badge>
+            </header>
+          </section>;
+        }
         // 只看边界两侧段的检测相机（D-SB-41），相机少时缩略图更大
         const shown = plan.cameras.filter(camera => [plan.segments[at], plan.segments[at + 1]].some(segment => segment && segmentCameras(segment, plan.cameras).includes(camera)));
-        return <section key={at} className={`alr-boundary${at === row ? " active" : ""}`} aria-label={`段 ${at + 1} → 段 ${at + 2} 的边界`} onClick={() => setRow(at)}>
+        return <section key={at} className={`alr-boundary${at === row ? " active" : ""}`} aria-label={label} onClick={() => setRow(at)}>
           <header>
             <strong>段 {at + 1} → 段 {at + 2}</strong>
             <span className="plan-mono muted">{shown.join(" · ")}</span>
             <span className="muted">建议 {item.cut}（按比例 {item.proportional}）</span>
-            {item.review && <Badge tone="warn">需重点复核</Badge>}
+            {item.reason && <Badge tone="warn">需重点复核：{reasonText[item.reason]}</Badge>}
             {checked[at] && <Badge tone="ok">已确认</Badge>}
           </header>
           <div className="alr-compare">
-            <BoundaryFrames label="模板" strips={templateThumbs.strips!} cameras={shown} cut={value.templateCuts[at]} />
-            <BoundaryFrames label="本轮" strips={roundThumbs.strips!} cameras={shown} cut={cut} />
+            <BoundaryFrames label="示教件" strips={templateThumbs.strips!} cameras={shown} cut={value.templateCuts[at]} />
+            <BoundaryFrames label="本件" strips={roundThumbs.strips!} cameras={shown} cut={cut} />
           </div>
           <div className="wp-actions">
             <Button size="sm" aria-label={`段 ${at + 1} 边界前移`} onClick={() => nudge(at, -1)}>←</Button>
@@ -161,9 +155,9 @@ export default function AlignReview({ plan, locked }: { plan: WorkspacePlanView;
       })}
       {locked && <p className="muted">{locked}</p>}
       <div className="wp-actions">
-        <Button variant="filled" disabled={blocked} onClick={() => void save()}>确认本轮边界</Button>
+        <Button variant="filled" disabled={blocked} onClick={() => void save()}>确认本件边界</Button>
         <span className="muted">已确认 {checked.filter(Boolean).length} / {checked.length}</span>
       </div>
     </div>}
-  </Panel>;
+  </section>;
 }

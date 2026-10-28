@@ -10,7 +10,10 @@
 //!
 //! 另外：用直线段检测相机的方向序列在比例边界 ±4 帧内细化分段边界（留一标定 N_exp，对照手动边界）；
 //! 按相邻帧图像位移估计每帧后移量（mm），给出窗口长度 L 的下限；在直线段上试 `glue.edge_distance` 找零件边（D-SB-48）。
-//! 逐次运行写入 `<输出目录>/runs.csv`。
+//! 起涂、收尾（D-SB-50）：每轮第 1 段从第 1 帧正向、末段从最后一帧倒着，按测法 1 判帧组成形（这一段带走廊的检测相机
+//! 有胶测站都 ≥ 80%；有相机没有结果为无法判断），用 `unformed_lead` 数第一处连续 `ONSET_RUN` 个成形帧组之前的帧组数；
+//! 数不出时这一头不排除并列出原因。各轮的值与分布单列一节，其余统计（图像位移除外）排除这些帧组。
+//! 逐次运行写入 `<输出目录>/runs.csv`（含全部帧组）。
 //!
 //! ```powershell
 //! $env:LYFLOW_CORE_DLL = "<运行库>\lyflow_core.dll"
@@ -25,7 +28,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gluesight_lib::probe_api::{
-    calibrate_counts, downsample, load_image, Engine, FrameImage, RecipeDoc, SegmentKind,
+    calibrate_counts, downsample, load_image, unformed_lead, Engine, FrameImage, GroupForm,
+    RecipeDoc, SegmentKind, ONSET_RUN,
 };
 use serde_json::{json, Value};
 
@@ -786,7 +790,7 @@ fn main() -> Result<(), String> {
             .map(|z| format!("[{}, {}] mm", z.s0, z.s0 + z.len))
             .collect::<Vec<_>>()
     );
-    for c in &cams {
+    for c in cams.iter().filter(|c| !c.corridors.is_empty()) {
         let starts: Vec<String> = c
             .corridors
             .iter()
@@ -1013,6 +1017,104 @@ fn main() -> Result<(), String> {
     drop(csv);
     println!("逐次结果：{}", csv_path.display());
 
+    let taught_present: BTreeMap<(usize, usize, u64), Option<f64>> = results
+        .iter()
+        .flat_map(|m| {
+            m.outcomes
+                .iter()
+                .filter(|o| o.label == "走廊·真实段")
+                .map(move |o| {
+                    (
+                        (m.round, m.camera, m.seq),
+                        o.present.filter(|_| o.error.is_none()),
+                    )
+                })
+        })
+        .collect();
+    let detecting = |k: usize| -> Vec<usize> {
+        cams.iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                segs[k].cameras.contains(&c.id) && c.corridors.contains_key(&segs[k].index)
+            })
+            .map(|(ci, _)| ci)
+            .collect()
+    };
+    let ends: Vec<[Result<u32, String>; 2]> = truths
+        .iter()
+        .enumerate()
+        .map(|(r, truth)| {
+            let form = |seq: u64| {
+                let mut form = GroupForm::Formed;
+                for ci in detecting(truth.segment_at(seq)) {
+                    match taught_present.get(&(r, ci, seq)).copied().flatten() {
+                        None => return GroupForm::Unknown,
+                        Some(v) if v < PRESENT_OK => form = GroupForm::Unformed,
+                        Some(_) => {}
+                    }
+                }
+                form
+            };
+            let lead = |k: usize, seqs: &mut dyn Iterator<Item = u64>| {
+                if detecting(k).is_empty() {
+                    return Err(format!("s{} 没有带走廊的检测相机", segs[k].index));
+                }
+                unformed_lead(seqs.map(form)).map_err(|e| format!("{e:?}"))
+            };
+            let head_end = truth.cuts.first().copied().unwrap_or(truth.total);
+            let tail_start = truth.cuts.last().copied().unwrap_or(0) + 1;
+            [
+                lead(0, &mut (1..=head_end)),
+                lead(segs.len() - 1, &mut (tail_start..=truth.total).rev()),
+            ]
+        })
+        .collect();
+    let in_ramp = |m: &Measured| {
+        let [head, tail] = &ends[m.round];
+        head.as_ref().is_ok_and(|&h| m.seq <= u64::from(h))
+            || tail
+                .as_ref()
+                .is_ok_and(|&t| m.seq + u64::from(t) > truths[m.round].total)
+    };
+    let kept: Vec<&Measured> = results.iter().filter(|m| !in_ramp(m)).collect();
+    println!(
+        "\n〇、起涂、收尾帧组（D-SB-50：第 1 段正向、末段倒序，“走廊·真实段”各检测相机有胶测站都 ≥ {:.0}% 为成形，\
+         数第一处连续 {ONSET_RUN} 个成形帧组之前的帧组数；Unknown(n) = 成形前第 n 个帧组有相机没有结果，NotFound = 本段没有连续成形）",
+        PRESENT_OK * 100.0
+    );
+    let show = |v: &Result<u32, String>| match v {
+        Ok(n) => n.to_string(),
+        Err(e) => format!("不排除（{e}）"),
+    };
+    for (truth, [head, tail]) in truths.iter().zip(&ends) {
+        println!(
+            "  {:<26} 起涂 {}  收尾 {}",
+            truth.round,
+            show(head),
+            show(tail)
+        );
+    }
+    for (k, name) in ["起涂", "收尾"].into_iter().enumerate() {
+        let mut dist: BTreeMap<u32, usize> = BTreeMap::new();
+        for e in &ends {
+            if let Ok(v) = &e[k] {
+                *dist.entry(*v).or_default() += 1;
+            }
+        }
+        match (dist.keys().next(), dist.keys().next_back()) {
+            (Some(min), Some(max)) => println!(
+                "  {name}：{}/{} 轮有值，最小 {min}，最大 {max}；分布 {dist:?}",
+                dist.values().sum::<usize>(),
+                truths.len()
+            ),
+            _ => println!("  {name}：没有轮次有值"),
+        }
+    }
+    println!(
+        "  以下各节（五除外）排除其中 {} 个（轮次, 相机, 帧）",
+        results.len() - kept.len()
+    );
+
     let place = |m: &Measured| -> &'static str {
         let truth = &truths[m.round];
         let s = truth.segment_at(m.seq);
@@ -1032,7 +1134,7 @@ fn main() -> Result<(), String> {
     let mut times: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut fallback: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     let mut errors: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for m in &results {
+    for m in &kept {
         let where_ = place(m);
         let detect_labels: Vec<&str> = m
             .outcomes
@@ -1117,7 +1219,7 @@ fn main() -> Result<(), String> {
 
     println!("\n二、定向是否偏离示教方向（直线段核心帧，与该段走廊方向相差 > 10° 记为偏离，可能锁到别的暗带）");
     let mut dev: BTreeMap<String, (usize, usize, Vec<f64>)> = BTreeMap::new();
-    for m in &results {
+    for m in &kept {
         let truth = &truths[m.round];
         let s = truth.segment_at(m.seq);
         if !segs[s].straight || place(m) != "直线段" {
@@ -1160,7 +1262,7 @@ fn main() -> Result<(), String> {
 
     println!("\n四、方向序列细化边界（直线段检测相机，比例边界 ±{REFINE_WINDOW} 帧内找方向开始 / 停止偏离 θ₀ ± {REFINE_TOL}° 的帧；留一标定 N_exp）");
     let mut theta: BTreeMap<(usize, u32, u64), Vec<f64>> = BTreeMap::new();
-    for m in &results {
+    for m in &kept {
         for o in &m.outcomes {
             let seg_index = if let Some(s) = o.label.strip_prefix("细化·s") {
                 s.parse::<u32>().ok()
@@ -1309,7 +1411,7 @@ fn main() -> Result<(), String> {
     );
     let mut edges: BTreeMap<(String, u32), (usize, usize, Vec<f64>)> = BTreeMap::new();
     let mut per_round: BTreeMap<(String, u32, usize), Vec<f64>> = BTreeMap::new();
-    for m in &results {
+    for m in &kept {
         let s = truths[m.round].segment_at(m.seq);
         for o in m.outcomes.iter().filter(|o| o.label.starts_with("找边")) {
             let e = edges.entry((o.label.clone(), segs[s].index)).or_default();
@@ -1345,7 +1447,7 @@ fn main() -> Result<(), String> {
 
     println!("\n七、胶条相对示教线的横向偏离（示教走廊·真实段，有胶测站的胶中心到示教线的平均法向距离；胶条贴着示教线（即贴着出胶点）时应接近 0）");
     let mut offsets: BTreeMap<u32, Vec<f64>> = BTreeMap::new();
-    for m in &results {
+    for m in &kept {
         let s = truths[m.round].segment_at(m.seq);
         for o in m.outcomes.iter().filter(|o| o.label == "走廊·真实段") {
             if let (Some(v), true) = (o.offset_mm, o.present.is_some_and(|r| r >= PRESENT_OK)) {

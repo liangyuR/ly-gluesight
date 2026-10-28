@@ -695,7 +695,7 @@ fn collect_part_completes_at_drain_deadline_without_measuring() {
 #[test]
 fn run_kind_collect_runs_only_in_maintenance_and_formal_always_needs_corridors() {
     use crate::recipe::RecipeStage::{Collect, Formal};
-    let cameras: Vec<String> = (0..3).map(crate::recipe::legacy_camera_id).collect();
+    let cameras: Vec<String> = (1..=3).map(|k| format!("cam{k}")).collect();
     let recipe = |stage, taught: bool| {
         let mut doc = if taught {
             crate::recipe::samples_burst()

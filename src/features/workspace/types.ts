@@ -1,12 +1,12 @@
 import type { Judgement, Recipe, RecipeDoc, RecipeStage, Verdict } from "../cycle/types";
 import type { CameraImaging } from "../camera/types";
-import type { BurstJudgement, CalibrationRound, CameraTeaching, CaptureState, PathSegment, RoundOrigin, WorkspacePlanView } from "../plan/types";
+import type { BurstJudgement, CalibrationRound, CameraTeaching, PathSegment, WorkspacePlanView } from "../plan/types";
 import type { PartMode } from "../history/types";
 
 /** 段模型（分段连拍飞拍）的候选工作区类型，定义在 plan/types.ts；这里转出供工作台页面使用。 */
 export type {
   CalibOutcome, CalibrationRound, CalibrationRoundView, CalibrationView, CameraTeachDraft, CameraTeaching, CameraTeachingView, CaptureFailureV2, CaptureRoundV2, CaptureState, MissingFrame,
-  ProgressStepV2, ProgressTargetV2, ProgressV2, RoundOrigin, SegmentCalibView, StepIdV2, WorkspacePlanView,
+  PieceView, ProgressStepV2, ProgressTargetV2, ProgressV2, RoundOrigin, SegmentCalibView, StepIdV2, WorkspacePlanView,
 } from "../plan/types";
 
 export interface FrozenImage {
@@ -39,7 +39,14 @@ export interface Workspace {
   /** 多轮标定加入的轮次；界面读 plan.calibration */
   calibration: { rounds: CalibrationRound[] };
   captureReview?: CaptureReview;
+  /** 候选的建法：2 = 示教件流程（RB-7）；其他为旧流程候选，已停用，只能删除（RB-5） */
+  flow: number;
+  /** 示教件（RB-1）：导入的轮次与来源历史件 */
+  teachingPiece: TeachingPiece | null;
 }
+export interface TeachingPiece { roundId: string; recordId: number; cycleId: string; sn: string; ts: number }
+/** 新流程候选（RB-5）：flow 不是 2 的候选只能在配方库删除。 */
+export const isCurrentFlow = (workspace: Pick<Workspace, "flow">) => workspace.flow === 2;
 export interface CaptureRoundReview {
   groupCount: number;
   cuts: number[];
@@ -48,20 +55,25 @@ export interface CaptureRoundReview {
   segmentSignature: unknown;
   captureSignature: unknown;
   templateVersion: number | null;
+  /** 最近一次确认的来源（D-SB-51）：人工，或对齐可信时自动确认；缺省为人工 */
+  confirmedBy?: "manual" | "aligned";
 }
+/** 边界需重点复核的原因（D-SB-51）：被挪动、偏离比例换算超过 boundaryGuard、对齐不清晰；null 为可信边界 */
+export type AlignReviewReason = "moved" | "deviates" | "unclear";
 /** 分段模板边界对齐到一轮的建议（workspace_capture_review_suggest）：cut 为上一段最后一个帧组（从 1 起）。 */
 export interface AlignSuggestion {
   round: string;
   templateRound: string;
   templateCuts: number[];
-  cuts: { cut: number; proportional: number; review: boolean }[];
+  cuts: { cut: number; proportional: number; sharpness: number; reason: AlignReviewReason | null; review: boolean }[];
+}
+/** 选标定件、同步标定件的结果：每件是否已加入标定，没加入的带原因（待复核或不可用） */
+export interface CalibrationSyncResult {
+  view: WorkspaceView;
+  pieces: { roundId: string; added: boolean; issue: string | null }[];
 }
 export interface CaptureReview {
   rounds: Record<string, CaptureRoundReview>;
-  template: {
-    roundId: string; groupCount: number; cuts: number[];
-    segmentSignature: unknown; captureSignature: unknown; version: number;
-  } | null;
 }
 /** 发布与生效状态（后端显式枚举）。 */
 export type PublishState =
@@ -93,9 +105,8 @@ export interface GrayPixels { data: Uint8Array; width: number; height: number }
 export interface GrayImage { url: string; width: number; height: number; pixels?: GrayPixels }
 
 export interface CaptureCamera { cameraId: string; deviceSession: number; receivedCount: number; imaging?: CameraImaging }
-export interface CaptureSummary { roundId: string; recipeId: string; cameraIds: string[]; plannedCount: number | null; receivedCount: number; state: CaptureState; createdAt: number; error: string | null; origin?: RoundOrigin | null }
 
-/** “从历史选用”的一行：reasons 为空即可导入 */
+/** 历史件选择器的一行：reasons 为空、usage 为 null 即可选用 */
 export interface HistoryCandidate {
   recordId: number;
   cycleId: string | null;
@@ -114,6 +125,10 @@ export interface HistoryCandidate {
   measuredFps: number | null;
   setFps: number | null;
   importedRound: string | null;
+  /** 本候选已把它选为示教件或标定件：不能重复选 */
+  usage: "teaching" | "calibration" | null;
+  /** 手动配置数据（capture_fixture 写的仿历史件）的标签；真机件为 null */
+  fixture: string | null;
 }
 
 export interface HistoryPick { recordId: number; standard: boolean }

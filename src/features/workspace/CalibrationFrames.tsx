@@ -5,6 +5,7 @@ import type { CalibrationFrameView, FrameMetrics, FrameState, WorkspacePlanView 
 import { groupCellColor, groupCellText, segmentKindLabel, type GroupCellState } from "../plan/vis";
 import { workspaceApi } from "./api";
 import { Badge, GrayViewer, KV, Panel } from "./components";
+import { pieceLabel } from "./pieces";
 import type { GrayImage, WorkspaceView } from "./types";
 
 const cellState: Record<FrameState, GroupCellState> = {
@@ -13,14 +14,13 @@ const cellState: Record<FrameState, GroupCellState> = {
 const mm = (value: number | null | undefined, digits = 2) => value == null ? "—" : `${value.toFixed(digits)} mm`;
 
 /**
- * 多轮标定页的逐帧查看：选一轮已加入标定的采集，按帧组 × 计划相机列出加入标定时测得的每帧状态（帧组上方标出按已确认边界
+ * 多轮标定页的逐帧查看：选一件已加入标定的标定件，按帧组 × 计划相机列出加入标定时测得的每帧状态（帧组上方标出按已确认边界
  * 所属的段）；点一帧读原图，并用当前段走廊重测（只读），叠出走廊、搜索带与测到的两侧胶边，旁边列胶宽、x 等指标。
  */
 export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: WorkspacePlanView }) {
   const id = data.workspace.doc.id;
   const rounds = plan.calibration?.rounds ?? [];
   const reviews = data.workspace.captureReview?.rounds ?? {};
-  const order = Object.keys(reviews).sort();
   const [roundId, setRoundId] = useState(rounds[0]?.roundId ?? "");
   const round = rounds.find(item => item.roundId === roundId) ?? rounds[0];
   const [features, setFeatures] = useState<{ round: string; frames: FrameMetrics[]; error: string }>({ round: "", frames: [], error: "" });
@@ -58,8 +58,8 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
   const loaded = features.round === round.roundId;
   const stored = (cam: number, seq: number) => loaded ? features.frames.find(f => f.camera === cam && f.seq === seq) : undefined;
   const label = (roundIdValue: string) => {
-    const n = order.indexOf(roundIdValue) + 1;
-    return `${n > 0 ? `R${String(n).padStart(2, "0")} · ` : ""}${roundIdValue}`;
+    const piece = plan.pieces.find(item => item.roundId === roundIdValue);
+    return piece ? pieceLabel(piece) : "来源未记录";
   };
   const move = (event: KeyboardEvent) => {
     if (!selected) return;
@@ -79,9 +79,9 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
 
   return <Panel title="逐帧查看" help="加入标定时测得的每帧状态；点一帧看原图，并用当前段走廊重测（只读，不改标定）。方向键切换帧组、相机">
     <div className="wp-calib-frames">
-      <Select label="标定轮次" value={round.roundId} options={rounds.map(item => ({ value: item.roundId, label: `${label(item.roundId)} · ${item.groupCount} 帧组${item.standard ? " · 标准件" : ""}` }))} onValueChange={setRoundId} />
+      <Select label="标定件" value={round.roundId} options={rounds.map(item => ({ value: item.roundId, label: `${label(item.roundId)} · ${item.groupCount} 帧组${item.standard ? " · 标准件" : ""}` }))} onValueChange={setRoundId} />
       {features.error && loaded && <p className="c-warn" role="alert">{features.error}</p>}
-      {!cuts && plan.segments.length > 1 && <p className="muted hint">这一轮的手动边界已不是确认状态：帧组上方不标段。</p>}
+      {!cuts && plan.segments.length > 1 && <p className="muted hint">这一件的边界已不是确认状态：帧组上方不标段。</p>}
       <div className="wp-calib-grid" role="grid" aria-label="逐帧状态" tabIndex={0} onKeyDown={move} style={{ gridTemplateColumns: `56px repeat(${groups}, minmax(14px, 1fr))` }}>
         <span className="wp-calib-grid-corner">段</span>
         {Array.from({ length: groups }, (_, i) => {
@@ -118,7 +118,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
               <KV label="最长断胶">{mm(metrics.gapMaxMm, 1)}</KV>
               <KV label="有胶站">{`${Math.round(metrics.presentRatio * 100)}%（${metrics.widths.filter(w => w != null).length} / ${metrics.widths.length} 站，站距 ${metrics.spacingMm} mm）`}</KV>
               {metrics.error && <p className="muted hint">{metrics.error}</p>}
-              {before && before.state !== metrics.state && <p className="muted hint">与加入标定时的状态不同：走廊或参数在加入标定后改过；要更新标定特征，移出这一轮后重新加入。</p>}
+              {before && before.state !== metrics.state && <p className="muted hint">与加入标定时的状态不同：走廊或参数在加入标定后改过。</p>}
             </>}
           </>}
         </div>

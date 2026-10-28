@@ -17,7 +17,7 @@ import { burstRecipe, burstSummary, burstWorkspaceView, deferred } from "./fixtu
 // 断言的是工作区最终的状态，不是 act 被调了几次。页面内的编辑与提交内容见 segments-page.test.tsx。
 vi.mock("../src/lib/storage", () => ({ storageApi: { preferences: async () => ({}), updatePreferences: vi.fn(async () => ({})) } }));
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDoc: vi.fn(), updateSegments: vi.fn(), captureList: vi.fn(async () => []) } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDoc: vi.fn(), updateSegments: vi.fn(), captureRoundThumbs: vi.fn(() => new Promise(() => {})) } }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn(), preview: vi.fn() } }));
 vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigConfig: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ subscribe: vi.fn(() => () => {}) }));

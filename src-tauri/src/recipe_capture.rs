@@ -205,6 +205,28 @@ impl RecipeCaptureHost {
         rounds.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.round_id.cmp(&a.round_id)));
         Ok(rounds)
     }
+
+    /// 删除一轮的目录（原图是硬链接时只删链接，录制目录不受影响）。
+    pub fn delete_round(&self, round_id: &str) -> Result<(), String> {
+        let dir = self.safe_round_path(round_id)?;
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("删除采集轮次 {round_id} 失败：{e}"))
+    }
+
+    /// 删除某配方编号的全部轮次（含读不了统计的旧轮次），返回删掉的轮次 ID。
+    pub fn delete_recipe_rounds(&self, recipe_id: &str) -> Result<Vec<String>, String> {
+        let mut deleted = Vec::new();
+        for id in self.round_ids()? {
+            let owned = crate::fsio::read_text(&self.root.join(&id).join("round.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .is_some_and(|v| v["recipeId"].as_str() == Some(recipe_id));
+            if owned {
+                self.delete_round(&id)?;
+                deleted.push(id);
+            }
+        }
+        Ok(deleted)
+    }
 }
 
 #[tauri::command]

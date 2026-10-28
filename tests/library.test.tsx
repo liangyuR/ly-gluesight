@@ -41,4 +41,18 @@ describe("配方库操作", () => {
     await userEvent.click(screen.getByRole("button",{name:"打开已创建候选"}));expect(workspaceApi.create).toHaveBeenCalledTimes(1);
     await waitFor(()=>expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/progress"));
   });
+  // 防的回归（RB-5）：旧流程候选还能打开或复制继续编辑；删除时没说明连带删除它导入的轮次
+  it("旧流程候选 → 标已停用，不能继续配置或复制，只能删除",async()=>{
+    const stale=view("OLD");stale.workspace.flow=1;
+    ws.list=[];ws.drafts=[stale.workspace];
+    show();
+    expect(screen.getByText("旧流程候选，已停用")).toBeVisible();
+    expect(screen.queryByRole("button",{name:"继续配置"})).toBeNull();
+    expect(screen.queryByRole("button",{name:"复制配方 OLD"})).toBeNull();
+    await userEvent.click(screen.getByRole("button",{name:"删除配方 OLD"}));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("旧流程候选及其导入的采集轮次");
+    await userEvent.click(screen.getByRole("button",{name:"删除 OLD"}));
+    expect(workspaceApi.remove).toHaveBeenCalledWith("OLD");
+    expect(ws.select).not.toHaveBeenCalled();
+  });
 });

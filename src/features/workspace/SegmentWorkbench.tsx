@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { Button, Dialog, Select } from "qing-steel";
+import { Link } from "react-router-dom";
+import { ArrowRight } from "lucide-react";
+import { Button, Dialog } from "qing-steel";
 import type { PathSegment, WorkspacePlanView } from "../plan/types";
 import { segmentKindLabel } from "../plan/vis";
 import { errorText } from "../../lib/errors";
@@ -12,7 +14,7 @@ import {
   initialDraft, moveCut, segmentsForSave, spans, structureChanged, toggleCamera, toggleCut, toggleKind, valid,
   type WorkbenchDraft,
 } from "./workbenchDraft";
-import type { CaptureSummary, GrayImage } from "./types";
+import type { GrayImage } from "./types";
 
 const reviewLabel = { draft: "边界草稿待确认", confirmed: "边界已确认", stale: "边界需复核" } as const;
 
@@ -38,15 +40,13 @@ function FramePreview({ roundId, camera, seq, corridor, searchHalfPx }: { roundI
 }
 
 /**
- * 分段标定工作台（D-SB-44，段列表页顶部）：在一轮完整采集（模板轮）的帧组时间轴上定段结构与边界，一次保存为
- * 段列表 + 本轮已确认边界 + 分段模板。三台相机的缩略图按帧组排成三行；点帧间竖缝插入或删除边界，点段名切换直线 / 弯道，
+ * 分段标定工作台（D-SB-44、RB-1，段列表页顶部）：在示教件的帧组时间轴上定段结构与边界，一次保存为
+ * 段列表 + 示教件已确认边界。三台相机的缩略图按帧组排成三行；点帧间竖缝插入或删除边界，点段名切换直线 / 弯道，
  * 点缩略图在下方并排预览三台相机原图（叠加已示教走廊）。
  */
 export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: WorkspacePlanView; locked: string; onDirty: (dirty: boolean) => void }) {
   const { data, doc, act, busy } = useWorkspace();
-  const [rounds, setRounds] = useState<CaptureSummary[] | null>(null);
-  const [roundId, setRoundId] = useState("");
-  const [loadError, setLoadError] = useState("");
+  const roundId = data?.workspace.teachingPiece?.roundId ?? "";
   const [edit, setEdit] = useState<{ roundId: string; draft: WorkbenchDraft } | null>(null);
   const [seq, setSeq] = useState(1);
   const [confirming, setConfirming] = useState(false);
@@ -59,25 +59,8 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     return () => window.removeEventListener("pointerup", end);
   }, [dragging]);
   const review = data?.workspace.captureReview;
-  const template = review?.template ?? null;
-  const docId = doc?.id ?? "";
   const revision = data?.workspace.revision ?? 0;
   const frozen = !!data?.workspace.pending;
-
-  useEffect(() => {
-    if (!docId) return;
-    let alive = true;
-    workspaceApi.captureList(docId)
-      .then(list => {
-        if (!alive) return;
-        const complete = list.filter(round => round.state === "complete").sort((a, b) => a.createdAt - b.createdAt);
-        setRounds(complete);
-        setRoundId(current => current && complete.some(r => r.roundId === current) ? current
-          : complete.find(r => r.roundId === template?.roundId)?.roundId ?? complete[0]?.roundId ?? "");
-      })
-      .catch(e => alive && setLoadError(errorText(e)));
-    return () => { alive = false; };
-  }, [docId]);
 
   const thumbs = useThumbs(roundId, plan.cameras);
   const ready = thumbs.strips;
@@ -106,9 +89,9 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   };
   useEffect(() => { setSeq(1); }, [roundId]);
 
-  if (rounds && !rounds.length) {
-    return <Panel title="分段标定" help="在一轮完整采集的帧组时间轴上划分直线段与弯道段">
-      <Notice title="还没有完整的采集轮次" tone="warn">先在“采集轮次”导入至少一轮，再回到这里按图像划分段。</Notice>
+  if (!roundId) {
+    return <Panel title="分段标定" help="在示教件的帧组时间轴上划分直线段与弯道段">
+      <Notice title="还没有示教件" tone="warn">先选一件历史件设为示教件，再回到这里按它的图像划分段。<Link className="wp-text-link" to="/recipe/capture">前往示教件<ArrowRight size={12} aria-hidden="true" /></Link></Notice>
     </Panel>;
   }
 
@@ -116,12 +99,12 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   const restructured = !!draft && structureChanged(plan.segments, draft.kinds);
   const affected = Object.entries(review?.rounds ?? {}).filter(([id, r]) => id !== roundId && r.status !== "stale").map(([id]) => id);
   const calibrated = hasCalibration(plan.segments, plan.partCalib != null);
-  const isTemplate = template?.roundId === roundId && saved?.status === "confirmed";
+  const isConfirmed = saved?.status === "confirmed";
   const blocked = !draft || !valid(draft) || busy || frozen || !!locked || !doc;
   const save = async () => {
     if (!draft || !doc) return;
     const segments: PathSegment[] = segmentsForSave(plan.segments, draft, plan.segmentDefaults, plan.cameras);
-    const next = await act(() => workspaceApi.segmentTemplateSave(doc.id, revision, roundId, segments, draft.cuts), "分段已保存，本轮设为分段模板");
+    const next = await act(() => workspaceApi.segmentTemplateSave(doc.id, revision, segments, draft.cuts), "分段已保存，示教件边界已确认");
     setConfirming(false);
     if (next) setEdit(null);
   };
@@ -139,23 +122,17 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     return mmPerPx && mmPerPx > 0 && doc ? (item?.detect ?? doc.detect).searchMm / mmPerPx : undefined;
   };
   const columns = `56px repeat(${groupCount}, var(--swb-cell))`;
-  const roundOptions = (rounds ?? []).map(round => ({
-    value: round.roundId,
-    label: `${round.roundId} · ${new Date(round.createdAt).toLocaleString("zh-CN")} · ${round.receivedCount} 帧组${round.roundId === template?.roundId ? " · 模板" : ""}`,
-  }));
 
-  return <Panel title="分段标定" help="在模板轮的帧组时间轴上划分直线段与弯道段：点缩略图选中帧组（下方并排显示三台相机原图），再点“在帧组 N 后插入边界”（或按 B，或点时间轴下方对应的 ＋）；点段名切换直线 / 弯道；点段下方的相机名选这段由哪几台相机检测（没选中的相机变暗，判定时不用）；← → 切换帧组"
-    actions={<Select aria-label="模板轮" value={roundId} options={roundOptions} disabled={busy || dirty} onValueChange={value => { setEdit(null); setRoundId(value); }} />}>
-    {(loadError || thumbs.error) && <Notice title="读取采集图像失败" tone="warn">{loadError || thumbs.error}</Notice>}
+  return <Panel title="分段标定" help="在示教件的帧组时间轴上划分直线段与弯道段：点缩略图选中帧组（下方并排显示三台相机原图），再点“在帧组 N 后插入边界”（或按 B，或点时间轴下方对应的 ＋）；点段名切换直线 / 弯道；点段下方的相机名选这段由哪几台相机检测（没选中的相机变暗，判定时不用）；← → 切换帧组">
+    {thumbs.error && <Notice title="读取示教件图像失败" tone="warn">{thumbs.error}</Notice>}
     {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改分段。</Notice>}
-    {!ready && !loadError && !thumbs.error && <p className="muted">正在读取缩略图…</p>}
+    {!ready && !thumbs.error && <p className="muted">正在读取缩略图…</p>}
     {draft && ready && <div className="swb-body" onKeyDown={onKey}>
       {/* 操作放在时间轴上方：下方原图预览加载时会改变高度，按钮放在下面会被挤动而点错 */}
       <div className="swb-toolbar">
         <div className="swb-summary" role="status" aria-label="分段草稿">
           <span>{groupCount} 个帧组 · {segmentSpans.length} 段 · 边界 {draft.cuts.length ? draft.cuts.join(" / ") : "无"}</span>
           {saved && <Badge tone={saved.status === "confirmed" ? "ok" : "warn"}>{reviewLabel[saved.status]}</Badge>}
-          {isTemplate && !dirty && <Badge tone="ok">分段模板</Badge>}
           {restructured && <Badge tone="warn">段结构有改动</Badge>}
           {!restructured && dirty && JSON.stringify(draft.cameras) !== JSON.stringify(baseline?.cameras) && <Badge tone="warn">检测相机有改动</Badge>}
         </div>
@@ -165,7 +142,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
             {draft.cuts.includes(seq) ? `删除帧组 ${seq} 后的边界` : `在帧组 ${seq} 后插入边界`}
           </Button>}
           <Button disabled={!dirty || busy} onClick={() => setEdit(null)}>撤销改动</Button>
-          <Button variant="filled" disabled={blocked} onClick={requestSave}>{isTemplate && !dirty ? "重新保存分段" : "保存分段并设为模板"}</Button>
+          <Button variant="filled" disabled={blocked} onClick={requestSave}>{isConfirmed && !dirty ? "重新保存分段" : "保存分段"}</Button>
         </div>
       </div>
       <div className="swb-scroll">
@@ -227,13 +204,13 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
       </div>
     </div>}
     {confirming && <Dialog open title="段结构将改变" onOpenChange={open => { if (!open) setConfirming(false); }}
-      footer={<><Button disabled={busy} onClick={() => setConfirming(false)}>取消</Button><Button variant="filled" disabled={busy} onClick={() => void save()}>保存并设为模板</Button></>}>
+      footer={<><Button disabled={busy} onClick={() => setConfirming(false)}>取消</Button><Button variant="filled" disabled={busy} onClick={() => void save()}>保存分段</Button></>}>
       <div className="wp-stack">
         <p>段数、顺序或类型与现有段列表不同，保存后：</p>
         <ul>
-          {affected.length > 0 && <li>其余 {affected.length} 轮已整理的边界变为“需复核”，需按新结构重新套用模板并确认；</li>}
+          {affected.length > 0 && <li>其余 {affected.length} 件已整理的边界变为“需复核”，需在多轮标定重新复核；</li>}
           {calibrated && <li>各段预期帧数、整件预期总帧数与胶偏参考清空，需重新应用多轮标定；</li>}
-          <li>本轮边界确认并设为分段模板。</li>
+          <li>示教件边界按新结构确认。</li>
         </ul>
       </div>
     </Dialog>}

@@ -173,7 +173,7 @@ fn history_part_incomplete_different_or_foreign_is_not_importable() {
             }),
         ),
         (
-            "已导入为轮次",
+            "本候选已选用",
             Box::new(|c| {
                 c.imported.insert(CYCLE.into(), "capture-1-0".into());
             }),
@@ -260,7 +260,7 @@ fn group_count_well_below_batch_median_of_importable_parts_warns_without_blockin
                     }
                     Imported => {
                         a.view.imported_round = Some("R01".into());
-                        a.view.reasons.push("已导入为轮次 R01".into());
+                        a.view.reasons.push("本候选已选用这一件".into());
                         a.round = None;
                     }
                 }
@@ -394,6 +394,87 @@ fn imported_round_frames_stay_readable_after_history_recording_is_deleted() {
         Some(&round_id),
         "重启后仍认得已导入的件"
     );
+}
+
+#[test]
+fn fixture_part_is_importable_history_piece_with_source_label() {
+    // 防的回归（recipe-build-flow「手动配置数据」）：capture_fixture 写的仿历史件与导入契约脱节——part.json 缺 partMode、
+    // devices、plc，帧号或原图文件名不合规，记录行缺录制证据或不按本配方入库——端到端与长稳测试选不到示教件和标定件；
+    // 来源标记丢失时选择器认不出手动配置件；记录的原图引用与录制目录对不上时，仿历史件不能作独立验证样本
+    use crate::history_fixture::{FixtureFrames, FixtureSite};
+    use crate::store::Store;
+
+    let root = super::super::tests::ImportTestDir::new();
+    let records = root.0.join("records");
+    std::fs::create_dir(&records).unwrap();
+    let db = root.0.join("inspection.db");
+    drop(Store::open(&db).unwrap());
+    let doc = crate::recipe::samples_burst();
+    let cameras = doc.plan_cameras();
+    let site = FixtureSite::open(
+        &db,
+        &records,
+        doc.build().unwrap(),
+        cameras.iter().map(|_| json!(DEVICE)).collect(),
+        "unit",
+    )
+    .unwrap();
+    let frames = (1..=GROUPS)
+        .map(|seq| {
+            (0..cameras.len())
+                .map(|camera| {
+                    Some(crate::frame::FrameImage::new(
+                        2,
+                        1,
+                        vec![seq as u8, camera as u8],
+                    ))
+                })
+                .collect()
+        })
+        .collect();
+    let written = site
+        .write("FIXTURE-1", FixtureFrames { frames, hz: 10.0 })
+        .unwrap();
+    drop(site);
+
+    let store = Store::open(&db).unwrap();
+    let (summary, recording) = store
+        .recorded_parts(&doc.id, 10)
+        .unwrap()
+        .into_iter()
+        .find(|(s, _)| s.id == written.record_id)
+        .expect("仿历史件应按本配方的真机录制件入库");
+    let assessed = assess(
+        &doc,
+        &configs(&doc, DEVICE),
+        &BTreeMap::new(),
+        &summary,
+        &recording,
+        read_part(&records, &recording),
+    );
+    assert!(
+        assessed.view.reasons.is_empty(),
+        "仿历史件应能导入：{:?}",
+        assessed.view.reasons
+    );
+    assert!(assessed.view.complete);
+    assert_eq!(assessed.view.mode, PartMode::MaintenanceCollect);
+    assert_eq!(assessed.view.fixture.as_deref(), Some("unit"));
+    assert_eq!(
+        assessed.round.map(|r| r.frames.len()),
+        Some(cameras.len() * GROUPS as usize)
+    );
+    let detail = store.detail(written.record_id).unwrap();
+    for frame in &detail.burst.as_ref().unwrap().frames {
+        let image = super::super::recorded::load_frame_verified(
+            &records,
+            &written.cycle_id,
+            &cameras[frame.camera],
+            frame,
+        )
+        .unwrap();
+        assert_eq!(image.pixels, [frame.seq as u8, frame.camera as u8]);
+    }
 }
 
 #[test]
