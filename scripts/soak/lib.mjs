@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { buildBurstRecipe, checksOff, client, copySampleSet, until } from "../../tests/native/lib.mjs";
+import { buildBurstRecipe, checksOff, clearRecipe, client, copySampleSet, until } from "../../tests/native/lib.mjs";
 import { isolatedStorage, samePath } from "../../tests/native/storage-paths.mjs";
 
 export { until };
@@ -60,8 +60,9 @@ export async function prepareSampleSet(source, outputDir) {
 }
 
 /**
- * 段配方长稳建站：进入离线·样本集，导入样本件 SAMPLE_PART 原图生成的手动配置数据 → 走廊示教 → 10 轮标定 → 独立样本验证 → 发布（检测项全关，见文件头）。
- * 样本集 id 取夹具（tests/native/lib.mjs 的 CAMERA_FIXTURES）；已发布时直接复用。
+ * 段配方长稳建站：进入离线·样本集，发布采集版后用样本件 SAMPLE_PART 原图生成手动配置数据（仿历史录制件）→ 选示教件、走廊示教 →
+ * 选标定件（含示教件 10 件）→ 独立样本验证 → 发布正式版（检测项全关，见文件头）。
+ * 样本集 id 取夹具（tests/native/lib.mjs 的 CAMERA_FIXTURES）；正式版已发布时直接复用，只有采集版（上次建站中断）时清掉重建。
  */
 export async function setupRecipe(call, sampleSetDir, log = console.log) {
   const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: sampleSetDir } });
@@ -69,7 +70,8 @@ export async function setupRecipe(call, sampleSetDir, log = console.log) {
   await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
   const cameraIds = (await call("camera_rig_config")).map(c => c.id);
   const existing = (await call("cycle_recipes")).find(r => r.id === RECIPE_ID);
-  if (existing) { log(`配方 ${RECIPE_ID} 已发布，跳过建配方`); return { model: "burst", recipeId: RECIPE_ID, cameraIds, reused: true }; }
+  if (existing?.calibrated) { log(`配方 ${RECIPE_ID} 已发布，跳过建配方`); return { model: "burst", recipeId: RECIPE_ID, cameraIds, reused: true }; }
+  await clearRecipe(call, RECIPE_ID);
   const manifest = JSON.parse((await readFile(path.join(sampleSetDir, "sample-set.json"), "utf8")).replace(/^\uFEFF/, "").trim());
   const template = await call("recipe_template");
   const built = await buildBurstRecipe(call, { sourceId: manifest.id, sampleSet: sampleSetDir, partId: SAMPLE_PART, doc: { ...template, id: RECIPE_ID, name: "长稳测试" }, patchSegments: checksOff, log });

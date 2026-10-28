@@ -59,7 +59,7 @@ export default function FlyshotCalibrationPage() {
     fps:status?.configuredFrameRate?{value:status.configuredFrameRate,from:"来自相机设定帧率回读"}:null,
     mmPerPx:sampleSet?.mmPerPx?{value:sampleSet.mmPerPx,from:"来自样本集声明"}:calibMm?{value:calibMm,from:"来自工位标定"}:null,
   };
-  const notice=error?<Notice title="操作未完成" tone="warn">{error}</Notice>:busy?<Notice title="当前工件正在检测">取样与标定在工件结束后可操作。</Notice>:sampleSet?<Notice title="离线样本集可跳过工位标定">{sampleSet.mmPerPx?`样本集「${sampleSet.name}」的像素当量为 ${sampleSet.mmPerPx} mm/px，采集轮次采用此值。`:`样本集「${sampleSet.name}」未声明像素当量，示教时需用已知尺寸人工验证。`}</Notice>:null;
+  const notice=error?<Notice title="操作未完成" tone="warn">{error}</Notice>:busy?<Notice title="当前工件正在检测">取样与标定在工件结束后可操作。</Notice>:sampleSet?<Notice title="离线样本集可跳过工位标定">{sampleSet.mmPerPx?`样本集「${sampleSet.name}」的像素当量为 ${sampleSet.mmPerPx} mm/px，示教与标定采用此值。`:`样本集「${sampleSet.name}」未声明像素当量，示教时需用已知尺寸人工验证。`}</Notice>:null;
 
   return <div className="cam-page calib-page">
     <ReturnButton hint="标定完成后返回继续。"/>

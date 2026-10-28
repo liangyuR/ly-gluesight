@@ -21,7 +21,7 @@
 | `fault.repeat` | 故障重复 | warn | 同一来源同一原因的故障被再次上报，在原因变化或解除时汇总 | `count`、`firstTs`、`lastTs`、`reason` |
 | `fault.cleared` | 故障解除 | info | S7 复位完成，节拍离开故障 | `reason`：解除前的原因，`durationMs` |
 | `op.reset` | 操作：复位 | info | 操作员点击复位 | `ok`、`error`、`phase` |
-| `op.capture.import` | 操作：历史件导入为采集轮次 | info | 候选采集页“从历史选用”导入 | `recipeId`、`records`（记录 ID 与是否标准件）、`rounds`（新轮次）、`ok`、`error` |
+| `op.capture.import` | 操作：历史件导入为采集轮次 | info | 设示教件或选标定件时导入历史件 | `recipeId`、`records`（记录 ID 与是否标准件）、`rounds`（新轮次）、`ok`、`error` |
 | `op.camera` | 操作：相机 | info | 相机释放、重连、保存配置、增删、保存曝光与增益、软触发 | `action`：release / reconnect / save_config / add / remove / set_imaging / soft_trigger，`cam`、`ok`、`error` |
 | `op.plc` | 操作：PLC | info | PLC 连接、断开、保存配置、手动写点 | `action`：connect / disconnect / save_config / write_point，`point`（写点时，只记点位不记值），`ok`、`error` |
 | `op.site` | 操作：站点模式 | info | 进入或退出离线 | `action`：enter_offline / leave_offline，`ok`、`error` |

@@ -11,7 +11,7 @@ import OfflinePage from "../pages/OfflinePage";
 import ProjectsPage from "../pages/ProjectsPage";
 import LibraryPage from "../features/workspace/LibraryPage";
 import ProgressPage from "../features/workspace/ProgressPage";
-import CapturePage from "../features/workspace/CapturePage";
+import TeachingPiecePage from "../features/workspace/TeachingPiecePage";
 import TeachingPage from "../features/workspace/TeachingPage";
 import ValidationPage from "../features/workspace/ValidationPage";
 import SegmentsPage from "../features/workspace/SegmentsPage";
@@ -70,7 +70,7 @@ export const navItems: NavItem[] = navEntries.flatMap((entry) => (isNavGroup(ent
  * calibration 走 /recipe/calibration，validation / publish 走 /recipe/validation。 */
 const recipeSteps: PageRoute[] = [
   { path:"/recipe/progress",label:"进度总览",element:ProgressPage },
-  { path:"/recipe/capture",label:"采集轮次",element:CapturePage },
+  { path:"/recipe/capture",label:"示教件",element:TeachingPiecePage },
   { path:"/recipe/segments",label:"段列表",element:SegmentsPage },
   { path:"/recipe/teach",label:"走廊示教",element:TeachingPage },
   { path:"/recipe/calibration",label:"多轮标定",element:CalibrationPage },

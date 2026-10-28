@@ -1,5 +1,5 @@
-//! 历史件导入为采集轮次（docs/architecture/online-commissioning.md 5.2、5.3）：候选采集页“从历史选用”列出本配方的真机录制件
-//! 并逐件给出能否导入的原因；导入时按 `RecipeCaptureHost::import_history` 物化成普通采集轮次，下游示教、分段复核与标定不改。
+//! 历史件导入为采集轮次（docs/architecture/online-commissioning.md 5.2、5.3）：历史件选择器列出本配方的真机录制件
+//! 并逐件给出能否选用的原因；选为示教件或标定件时按 `RecipeCaptureHost::import_history` 物化成采集轮次（见 `pieces`）。
 //! 已导入并用于走廊示教或多轮标定的历史件不能再作独立验证样本（[`check_history_sample`]）。
 
 use std::collections::BTreeSet;
@@ -52,6 +52,17 @@ pub struct HistoryCandidate {
     pub set_fps: Option<f64>,
     /// 已导入为本候选的轮次
     pub imported_round: Option<String>,
+    /// 本候选已把这件用作示教件或标定件
+    pub usage: Option<PieceUsage>,
+    /// 手动配置数据（`capture_fixture` 写的仿历史件）的标签；真机件为 None
+    pub fixture: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PieceUsage {
+    Teaching,
+    Calibration,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -137,12 +148,14 @@ pub(super) fn assess(
             .as_ref()
             .and_then(|c| imported.get(c))
             .cloned(),
+        usage: None,
+        fixture: None,
     };
     if summary.source != RecordSource::Real {
         reasons.push(format!("{}记录不能导入", summary.source.label()));
     }
-    if let Some(round) = &view.imported_round {
-        reasons.push(format!("已导入为轮次 {round}"));
+    if view.imported_round.is_some() {
+        reasons.push("本候选已选用这一件".into());
     }
     if summary.flags.as_ref().is_some_and(|f| f.short_part) {
         reasons.push("PLC 提前结束运动（疑似提前终止）".into());
@@ -164,6 +177,7 @@ pub(super) fn assess(
         Ok(_) => return rejected(view, reasons, "录制元数据的 cycleId 与记录不一致".into()),
         Err(error) => return rejected(view, reasons, error),
     };
+    view.fixture = part["fixture"]["label"].as_str().map(str::to_string);
     let cameras: Vec<String> = part["cameras"]
         .as_array()
         .map(|a| {
@@ -412,7 +426,8 @@ fn current_configs(cycle: &CycleHost) -> BTreeMap<String, Value> {
         .collect()
 }
 
-fn assess_all(app: &AppHandle, doc: &RecipeDoc) -> Result<Vec<Assessed>, String> {
+fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
+    let doc = &w.doc;
     if !doc.is_burst() {
         return Err("旧拍照点配方已停用，请创建段配方".into());
     }
@@ -435,126 +450,112 @@ fn assess_all(app: &AppHandle, doc: &RecipeDoc) -> Result<Vec<Assessed>, String>
         })
         .collect();
     flag_short_parts(&mut assessed);
+    let teaching = w.teaching_piece.as_ref().map(|t| t.round_id.as_str());
+    for a in &mut assessed {
+        a.view.usage = a.view.imported_round.as_deref().map(|round| {
+            if Some(round) == teaching {
+                PieceUsage::Teaching
+            } else {
+                PieceUsage::Calibration
+            }
+        });
+    }
     Ok(assessed)
 }
 
-/// 候选采集页“从历史选用”：本配方最近的真机录制件与能否导入（只读）。
+/// 历史件选择器：本配方最近的真机录制件与能否选用（只读）。
 #[tauri::command]
 pub async fn workspace_history_candidates(
     app: AppHandle,
     id: String,
 ) -> Result<Vec<HistoryCandidate>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let doc = app
+        let w = app
             .state::<WorkspaceHost>()
             .items
             .lock()
             .unwrap()
             .get(&id)
             .ok_or("候选配置不存在")?
-            .doc
             .clone();
-        Ok(assess_all(&app, &doc)?
-            .into_iter()
-            .map(|a| a.view)
-            .collect())
+        Ok(assess_all(&app, &w)?.into_iter().map(|a| a.view).collect())
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// 把选中的历史件逐件导入为本候选的采集轮次，返回新轮次 ID（按选择顺序）。导入前在配置门内重新核对每一件，
-/// 任一件不能导入时一件也不导；导入只建硬链接与轮次记录，不占用设备，生产中也可操作。
-#[tauri::command]
-pub async fn workspace_history_import(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    picks: Vec<HistoryPick>,
-) -> Result<Vec<String>, String> {
+/// 把选中的历史件逐件导入为候选 `w` 的采集轮次，返回新轮次 ID 与这件的核对结果（按选择顺序），记 `op.capture.import`。
+/// 导入前重新核对每一件，任一件不能导入时一件也不导；导入只建硬链接与轮次记录，不占用设备。调用方持配置门。
+pub(super) fn import_records(
+    app: &AppHandle,
+    w: &Workspace,
+    picks: &[HistoryPick],
+) -> Result<Vec<(String, HistoryCandidate)>, String> {
     let data = json!({
-        "recipeId": id,
+        "recipeId": w.doc.id,
         "records": picks.iter().map(|p| json!({"recordId": p.record_id, "standard": p.standard})).collect::<Vec<_>>(),
     });
-    let result = history_import(app.clone(), id, revision, picks).await;
+    let result = import(app, w, picks);
     let mut data = data;
-    data["rounds"] = json!(result.as_ref().ok());
-    crate::cycle::log_op(
-        &app,
-        &crate::applog::codes::OP_CAPTURE_IMPORT,
-        data,
-        &result,
-    );
+    data["rounds"] = json!(result
+        .as_ref()
+        .ok()
+        .map(|rounds| rounds.iter().map(|(round, _)| round).collect::<Vec<_>>()));
+    crate::cycle::log_op(app, &crate::applog::codes::OP_CAPTURE_IMPORT, data, &result);
     result
 }
 
-async fn history_import(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    picks: Vec<HistoryPick>,
-) -> Result<Vec<String>, String> {
+fn import(
+    app: &AppHandle,
+    w: &Workspace,
+    picks: &[HistoryPick],
+) -> Result<Vec<(String, HistoryCandidate)>, String> {
     if picks.is_empty() || picks.len() > IMPORT_LIMIT {
-        return Err(format!("每次导入 1–{IMPORT_LIMIT} 件"));
+        return Err(format!("每次选用 1–{IMPORT_LIMIT} 件"));
     }
     let mut unique = BTreeSet::new();
     if picks.iter().any(|p| !unique.insert(p.record_id)) {
         return Err("不能重复选择同一件".into());
     }
+    let mut assessed: BTreeMap<i64, Assessed> = assess_all(app, w)?
+        .into_iter()
+        .map(|a| (a.view.record_id, a))
+        .collect();
+    let mut rounds = Vec::with_capacity(picks.len());
+    for pick in picks {
+        let entry = assessed
+            .remove(&pick.record_id)
+            .ok_or_else(|| format!("记录 {} 不在本配方最近的录制件里", pick.record_id))?;
+        let mut round = entry.round.ok_or_else(|| {
+            format!(
+                "记录 {}（SN {}）不能选用：{}",
+                pick.record_id,
+                entry.view.sn,
+                entry.view.reasons.join("；")
+            )
+        })?;
+        if let RoundOrigin::History { standard, .. } = &mut round.origin {
+            *standard = pick.standard;
+        }
+        rounds.push((round, entry.view));
+    }
     let cycle = app.state::<CycleHost>();
-    let _config = cycle.config_gate.lock().await;
-    let task_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let doc = {
-            let host = task_app.state::<WorkspaceHost>();
-            let items = host.items.lock().unwrap();
-            let w = items.get(&id).ok_or("候选配置不存在")?;
-            w.expect(revision)?;
-            w.doc.clone()
-        };
-        let mut assessed: BTreeMap<i64, Assessed> = assess_all(&task_app, &doc)?
-            .into_iter()
-            .map(|a| (a.view.record_id, a))
-            .collect();
-        let mut rounds = Vec::with_capacity(picks.len());
-        for pick in &picks {
-            let entry = assessed
-                .remove(&pick.record_id)
-                .ok_or_else(|| format!("记录 {} 不在本配方最近的录制件里", pick.record_id))?;
-            let mut round = entry.round.ok_or_else(|| {
-                format!(
-                    "记录 {}（SN {}）不能导入：{}",
-                    pick.record_id,
-                    entry.view.sn,
-                    entry.view.reasons.join("；")
-                )
-            })?;
-            if let RoundOrigin::History { standard, .. } = &mut round.origin {
-                *standard = pick.standard;
-            }
-            rounds.push(round);
-        }
-        let cycle = task_app.state::<CycleHost>();
-        let capture = cycle.camera.recipe_capture();
-        let mut imported = Vec::with_capacity(rounds.len());
-        for round in rounds {
-            let record = round.origin.cycle_id().to_string();
-            match capture.import_history(round) {
-                Ok(round) => imported.push(round.round_id),
-                Err(error) if imported.is_empty() => return Err(error),
-                Err(error) => {
-                    return Err(format!(
-                        "已导入 {} 件（{}），cycleId {record} 导入失败：{error}",
-                        imported.len(),
-                        imported.join("、")
-                    ))
-                }
+    let capture = cycle.camera.recipe_capture();
+    let mut imported: Vec<(String, HistoryCandidate)> = Vec::with_capacity(rounds.len());
+    for (round, view) in rounds {
+        let sn = view.sn.clone();
+        match capture.import_history(round) {
+            Ok(round) => imported.push((round.round_id, view)),
+            Err(error) if imported.is_empty() => return Err(error),
+            Err(error) => {
+                return Err(format!(
+                    "已导入 {} 件，SN {sn} 导入失败：{error}",
+                    imported.len()
+                ))
             }
         }
-        Ok(imported)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    }
+    Ok(imported)
 }
 
 /// 历史记录作独立验证样本前的核对（5.3）：这件已导入为本候选的轮次且该轮用于走廊示教或多轮标定时拒绝（`origins` 为本候选

@@ -2,7 +2,7 @@
 
 运行日志按本文实现，事件编码以 [编码表](agent-logging-codes.md) 为准。
 
-日志写入 `~/gs_logs/runtime/<环境>/<资料实例>/`，与项目资料分开；PLC 日志库位于同一目录。绑定、迁移及隔离规则见 [运行日志与视觉证据存储](log-storage-research.md)。
+日志写入 `~/gs_logs/runtime/<环境>/<资料实例>/`，与项目资料分开；PLC 日志库位于同一目录。绑定及隔离规则见 [运行日志与视觉证据存储](log-storage-research.md)。
 
 ## 1. 目标与依据
 

@@ -91,6 +91,8 @@ export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   /** PLC 拍照计划版本：配方库分配，只在计划身份（产品代码、各段序号 / 类型 / N_exp、相机顺序与 ΣN_exp）变化时换新号；0 或缺省为未分配 */
   planVersion?: number;
   teachingId?: string | null;
+  /** 示教件来源（RB-7）：发布时从候选写入；候选里恒为 null，旧流程发布的配方没有 */
+  teachingPiece?: TeachingPieceSource | null;
   productCode: number;
   /** 缺省为正式版；发布时由后端写入 */
   stage?: RecipeStage;
@@ -103,6 +105,9 @@ export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   detect: DetectParams;
   limits: ShotLimits;
 }
+
+/** 配方的示教件来源：历史件的 cycleId、记录号、SN 与时间。 */
+export interface TeachingPieceSource { cycleId: string; recordId: number; sn: string; ts: number }
 
 /** 配方阶段：collect = 采集版（只供维护模式采图，不判定），formal = 正式版；后端缺省即正式版。 */
 export type RecipeStage = "formal" | "collect";
@@ -128,6 +133,8 @@ export interface RecipeSummary {
   calibrated: boolean;
   /** 只有配方库列表（recipe_list）给出 */
   stage?: RecipeStage;
+  /** 生产配方的示教件来源（RB-7）；旧流程发布的配方没有 */
+  teachingPiece?: TeachingPieceSource | null;
 }
 
 export interface FrameView {

@@ -33,7 +33,7 @@ pub fn recipe_list(cycle: State<'_, CycleHost>) -> RecipeListing {
         .list()
         .iter()
         .map(|r| RecipeEntry {
-            summary: RecipeSummary::from(&**r),
+            summary: RecipeSummary::listed(&cycle.recipes, r),
             stage: r.stage,
         })
         .collect();

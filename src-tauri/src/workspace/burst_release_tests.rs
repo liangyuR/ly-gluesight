@@ -46,6 +46,7 @@ fn taught(kinds: &[SegmentKind], device: &str) -> Workspace {
             segment: Some(segment),
         });
     }
+    w.teaching_piece = Some(crate::workspace::pieces_tests::piece("capture-teach", 1));
     w
 }
 
@@ -101,7 +102,7 @@ fn validation_without_expected_total_blocks_publish_and_names_each_segment() {
             false,
             false,
             &[
-                "还差 10 轮",
+                "还差 10 件",
                 "第 1 段（直线）待标定",
                 "第 2 段（弯道）待标定",
                 "第 3 段（直线）待标定",

@@ -12,15 +12,12 @@ pub struct StoragePaths {
     root: PathBuf,
     status: StorageStatus,
     preferences: Mutex<()>,
-    migrated_this_launch: bool,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageStatus {
     environment: String,
     root: String,
-    migration_status: String,
-    migration_message: Option<String>,
     log_root: Option<String>,
     runtime_log_dir: Option<String>,
     vision_log_dir: Option<String>,
@@ -190,206 +187,6 @@ fn reject_link_ancestors(path: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn mapped_relative(path: &Path) -> PathBuf {
-    let name = path.to_string_lossy();
-    match name.as_ref() {
-        "cameras.json" | "cycle.json" | "plc.json" | "site-offline.json" => {
-            Path::new("config").join(path)
-        }
-        "plc-handshake.json" | "plc-handshake.audit.jsonl" => Path::new("state").join(path),
-        _ => path.to_path_buf(),
-    }
-}
-fn copy_tree(
-    source: &Path,
-    destination: &Path,
-    old_root: &Path,
-    new_root: &Path,
-    count: &mut u64,
-) -> Result<(), String> {
-    let profile = source
-        .components()
-        .any(|c| matches!(c.as_os_str().to_str(), Some("webview" | "EBWebView")));
-    let metadata = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes() & 0x400 != 0 {
-            return Err(format!("资料包含链接，迁移已停止：{}", source.display()));
-        }
-    }
-    if metadata.file_type().is_symlink() {
-        return Err(format!("资料包含链接：{}", source.display()));
-    }
-    if metadata.is_dir() {
-        fs::create_dir_all(destination).map_err(|e| e.to_string())?;
-        for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let name = entry.file_name();
-            let name_text = name.to_string_lossy();
-            if !profile
-                && (name_text == ".gluesight-instance.lock"
-                    || name_text.ends_with("-wal")
-                    || name_text.ends_with("-shm"))
-            {
-                continue;
-            }
-            copy_tree(
-                &entry.path(),
-                &destination.join(name),
-                old_root,
-                new_root,
-                count,
-            )?;
-        }
-    } else if metadata.is_file() {
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        if !profile && source.starts_with(old_root) && source.extension().is_some_and(|e| e == "db")
-        {
-            let conn = rusqlite::Connection::open_with_flags(
-                source,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .map_err(|e| e.to_string())?;
-            conn.execute("VACUUM INTO ?1", [destination.to_string_lossy().as_ref()])
-                .map_err(|e| e.to_string())?;
-            relocate::database(destination, old_root, new_root)?;
-        } else {
-            let copied = fs::copy(source, destination).map_err(|e| e.to_string())?;
-            if copied != metadata.len() {
-                return Err(format!("复制长度不一致：{}", source.display()));
-            }
-            if !profile
-                && source.starts_with(old_root)
-                && source.extension().is_some_and(|e| e == "json")
-            {
-                relocate::json_file(
-                    destination,
-                    source.strip_prefix(old_root).map_err(|e| e.to_string())?,
-                    old_root,
-                    new_root,
-                )?;
-            }
-        }
-        *count += 1;
-    }
-    Ok(())
-}
-pub(crate) fn directory_bytes(path: &Path) -> Result<u64, String> {
-    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes() & 0x400 != 0 {
-            return Err(format!("资料包含链接：{}", path.display()));
-        }
-    }
-    if metadata.file_type().is_symlink() {
-        return Err("不能迁移链接目录".into());
-    }
-    if metadata.is_file() {
-        return Ok(metadata.len());
-    }
-    let mut bytes = 0u64;
-    for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
-        bytes = bytes
-            .checked_add(directory_bytes(&entry.map_err(|e| e.to_string())?.path())?)
-            .ok_or("资料大小溢出")?;
-    }
-    Ok(bytes)
-}
-pub(crate) fn check_space(root: &Path, bytes: u64) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetDiskFreeSpaceExW(
-                path: *const u16,
-                available: *mut u64,
-                total: *mut u64,
-                free: *mut u64,
-            ) -> i32;
-        }
-        let path: Vec<u16> = root.as_os_str().encode_wide().chain(Some(0)).collect();
-        let mut available = 0;
-        if unsafe {
-            GetDiskFreeSpaceExW(
-                path.as_ptr(),
-                &mut available,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err("无法检查资料目录可用空间".into());
-        }
-        if available < bytes.saturating_add(64 * 1024 * 1024) {
-            return Err(format!(
-                "迁移空间不足：需要至少 {} 字节，可用 {available} 字节",
-                bytes.saturating_add(64 * 1024 * 1024)
-            ));
-        }
-    }
-    Ok(())
-}
-pub fn promote(root: &Path) -> Result<(), String> {
-    let journal = root.join("migration/commit.json");
-    let value: Value =
-        serde_json::from_str(&crate::fsio::read_text(&journal).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    for name in value["entries"].as_array().ok_or("迁移提交清单无效")? {
-        let name = name.as_str().ok_or("迁移条目无效")?;
-        if Path::new(name).components().count() != 1
-            || !matches!(
-                Path::new(name).components().next(),
-                Some(std::path::Component::Normal(_))
-            )
-        {
-            return Err("迁移条目越界".into());
-        }
-        let staged = root.join("migration/staging").join(name);
-        let final_path = root.join(name);
-        if staged.exists() {
-            if final_path.exists() {
-                return Err(format!("迁移目标冲突：{}", final_path.display()));
-            }
-            fs::rename(staged, final_path).map_err(|e| e.to_string())?;
-        } else if !final_path.exists() {
-            return Err(format!("迁移条目丢失：{name}"));
-        }
-    }
-    crate::fsio::write_atomic(&root.join("migration/report.json"),&json!({"success":true,"source":value["source"],"files":value["files"],"sourcePreserved":true,"warnings":value["warnings"]}).to_string())?;
-    Ok(())
-}
-
-pub fn copy_legacy_data(source: &Path, staging: &Path, target: &Path) -> Result<u64, String> {
-    let mut count = 0;
-    for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = entry.file_name();
-        let text = name.to_string_lossy();
-        if matches!(
-            text.as_ref(),
-            ".gluesight-instance.lock" | "storage-layout.json" | "migration"
-        ) || text.ends_with("-wal")
-            || text.ends_with("-shm")
-        {
-            continue;
-        }
-        copy_tree(
-            &entry.path(),
-            &staging.join(mapped_relative(Path::new(&name))),
-            source,
-            target,
-            &mut count,
-        )?;
-    }
-    Ok(count)
-}
-
 pub fn prepare(app: &AppHandle, target: &Path) -> Result<(), String> {
     if std::env::var_os("GLUESIGHT_DATA_DIR").is_some() {
         let identifier = &app.config().identifier;
@@ -420,169 +217,11 @@ pub fn prepare(app: &AppHandle, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 资料目录初始化：已有 `storage-layout.json` 时核对版本与环境；没有时目录里除实例锁和资料准备窗口的 WebView 配置
+/// （`migration/bootstrap`）外须为空，按空白资料初始化。不从任何旧目录复制资料。
 pub fn initialize(app: &AppHandle, target: PathBuf) -> Result<(), String> {
     let marker = target.join("storage-layout.json");
-    let mut message = None;
-    if !marker.exists() && target.join("migration/commit.json").is_file() {
-        promote(&target)?;
-        message =
-            Some("已恢复上次中断的迁移；本次启动不自动连接设备，请检查资料后手动连接。".into());
-        crate::fsio::write_atomic(
-            &marker,
-            &json!({"version":1,"environment":environment()}).to_string(),
-        )?;
-    }
-    if !marker.exists() {
-        let legacy = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        let source = std::env::var_os("GLUESIGHT_MIGRATE_FROM")
-            .map(PathBuf::from)
-            .or_else(|| {
-                (cfg!(debug_assertions)
-                    && std::env::var_os("GLUESIGHT_DATA_DIR").is_none()
-                    && legacy.exists())
-                .then_some(legacy.clone())
-            });
-        let source = if source.is_none() && !cfg!(debug_assertions) {
-            let choose = crate::storage_startup::ask(app, "GlueSight 首次启动", "是否选择现有资料目录复制迁移？空白开始会初始化新资料，开发资料不会自动同步。", true)?;
-            if choose {
-                let window = app.get_webview_window("storage-startup").ok_or("启动窗口已关闭")?;
-                Some(
-                    rfd::FileDialog::new().set_parent(&window)
-                        .set_title("选择现有 GlueSight 资料目录")
-                        .set_directory(&legacy)
-                        .pick_folder()
-                        .ok_or("未选择迁移来源，启动已取消")?,
-                )
-            } else {
-                None
-            }
-        } else {
-            source
-        };
-        let entries = fs::read_dir(&target)
-            .map_err(|e| e.to_string())?
-            .filter_map(Result::ok)
-            .filter(|e| e.file_name() != ".gluesight-instance.lock" && e.file_name() != "migration")
-            .count();
-        if entries != 0 {
-            return Err(format!(
-                "资料目录未完成初始化或已有冲突内容，请保留目录并检查迁移报告：{}",
-                target.display()
-            ));
-        }
-        if source.is_none() && target.join("migration/report.json").exists() {
-            return Err(
-                "存在未完成迁移，请重新选择原资料目录继续迁移；不能用空白初始化跳过失败资料".into(),
-            );
-        }
-        if let Some(source) = source {
-            if source.starts_with(&target) || target.starts_with(&source) || !source.is_dir() {
-                return Err("迁移来源必须是另一个有效资料目录".into());
-            }
-            reject_link_ancestors(&source)?;
-            let _source_lease = crate::instance::acquire(&source)?;
-            let required = directory_bytes(&source)?;
-            check_space(&target, required)?;
-            let approved = crate::storage_startup::ask(app, "迁移 GlueSight 资料", &format!("来源：{}\n目标：{}\n资料大小：{required} 字节\n将复制资料并保留旧目录。失败后可重启重试。", source.display(), target.display()), false)?;
-            if !approved {
-                return Err("资料迁移已取消；旧资料未修改".into());
-            }
-            let staging = target.join("migration").join("staging");
-            if staging.exists() {
-                fs::rename(
-                    &staging,
-                    target
-                        .join("migration")
-                        .join(format!("incomplete-{}", ly_plc::now_ms())),
-                )
-                .map_err(|e| e.to_string())?;
-            }
-            fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
-            let mut count = 0;
-            let mut warnings = Vec::new();
-            let result = (|| {
-                count = copy_legacy_data(&source, &staging, &target)?;
-                let legacy_webview = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-                if source == legacy
-                    && legacy_webview != source
-                    && legacy_webview.join("EBWebView").exists()
-                {
-                    let profile = webview(&staging)?;
-                    fs::create_dir_all(&profile).map_err(|e| e.to_string())?;
-                    check_space(&target, directory_bytes(&legacy_webview.join("EBWebView"))?)?;
-                    copy_tree(
-                        &legacy_webview.join("EBWebView"),
-                        &profile.join("EBWebView"),
-                        &source,
-                        &target,
-                        &mut count,
-                    )?;
-                }
-                let choice = staging.join("config/site-offline.json");
-                if choice.exists() {
-                    let mut value: Value = serde_json::from_str(
-                        &crate::fsio::read_text(&choice).map_err(|e| e.to_string())?,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    if let Some(dir) = value.get("sampleSetDir").and_then(Value::as_str) {
-                        let previous = PathBuf::from(dir);
-                        let source_dir = previous
-                            .strip_prefix(&target)
-                            .map(|p| staging.join(p))
-                            .unwrap_or_else(|_| previous.clone());
-                        if !source_dir.starts_with(&staging) {
-                            check_space(&target, directory_bytes(&source_dir)?)?;
-                        }
-                        let imported = crate::managed_samples::import(&staging, &source_dir)?;
-                        let final_sample = target.join(
-                            imported
-                                .strip_prefix(staging.canonicalize().map_err(|e| e.to_string())?)
-                                .map_err(|e| e.to_string())?,
-                        );
-                        relocate::tree_references(&staging, &previous, &final_sample)?;
-                        value["sampleSetDir"] = Value::String(
-                            target
-                                .join(
-                                    imported
-                                        .strip_prefix(
-                                            staging.canonicalize().map_err(|e| e.to_string())?,
-                                        )
-                                        .map_err(|e| e.to_string())?,
-                                )
-                                .to_string_lossy()
-                                .into_owned(),
-                        );
-                        fs::write(
-                            &choice,
-                            serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?,
-                        )
-                        .map_err(|e| e.to_string())?;
-                    }
-                }
-                warnings = relocate::validate_references(&staging, &source, &target)?;
-                let entries = fs::read_dir(&staging)
-                    .map_err(|e| e.to_string())?
-                    .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| e.to_string())?;
-                crate::fsio::write_atomic(
-                    &target.join("migration/commit.json"),
-                    &json!({"entries":entries,"source":source,"files":count,"warnings":warnings})
-                        .to_string(),
-                )?;
-                promote(&target)?;
-                Ok::<(), String>(())
-            })();
-            let report = json!({"source":source,"target":target,"files":count,"success":result.is_ok(),"error":result.as_ref().err(),"sourcePreserved":true,"warnings":warnings});
-            crate::fsio::write_atomic(&target.join("migration/report.json"), &report.to_string())?;
-            result?;
-            message=Some(format!("已复制 {count} 个文件，旧目录保留：{}；首次迁移启动未自动连接相机及 PLC，请检查资料后手动连接。",source.display()));
-        }
-        crate::fsio::write_atomic(
-            &marker,
-            &json!({"version":1,"environment":environment()}).to_string(),
-        )?;
-    } else {
+    if marker.exists() {
         let value: Value =
             serde_json::from_str(&crate::fsio::read_text(&marker).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
@@ -592,39 +231,29 @@ pub fn initialize(app: &AppHandle, target: PathBuf) -> Result<(), String> {
         if value["environment"] != environment() {
             return Err("资料目录环境与当前程序不一致，拒绝混用生产、开发和测试资料".into());
         }
+    } else {
+        let entries = fs::read_dir(&target)
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name() != ".gluesight-instance.lock" && e.file_name() != "migration")
+            .count();
+        if entries != 0 {
+            return Err(format!(
+                "资料目录没有初始化标记却已有其它内容，请保留目录并人工检查：{}",
+                target.display()
+            ));
+        }
+        crate::fsio::write_atomic(
+            &marker,
+            &json!({"version":1,"environment":environment()}).to_string(),
+        )?;
     }
     for dir in ["config", "state", "samples", "cache", "logs", "exports"] {
         fs::create_dir_all(target.join(dir)).map_err(|e| e.to_string())?;
     }
-    let migrated_this_launch = message.is_some();
-    if message.is_none() && target.join("migration/report.json").is_file() {
-        let report: Value = serde_json::from_str(
-            &crate::fsio::read_text(&target.join("migration/report.json"))
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
-        message = Some(if report["success"] == true {
-            format!(
-                "资料迁移已完成；旧来源保留：{}",
-                report["source"].as_str().unwrap_or("查看迁移报告")
-            )
-        } else {
-            "上次迁移失败，原资料保留；请查看 migration/report.json。".into()
-        });
-    }
-    let environment = environment().to_string();
     let status = StorageStatus {
-        environment,
+        environment: environment().to_string(),
         root: target.to_string_lossy().into_owned(),
-        migration_status: if target.join("migration/commit.json").exists() {
-            "migrated"
-        } else if target.join("migration/report.json").exists() {
-            "failed"
-        } else {
-            "ready"
-        }
-        .into(),
-        migration_message: message,
         log_root: None,
         runtime_log_dir: None,
         vision_log_dir: None,
@@ -633,13 +262,8 @@ pub fn initialize(app: &AppHandle, target: PathBuf) -> Result<(), String> {
         root: target,
         status,
         preferences: Mutex::new(()),
-        migrated_this_launch,
     });
-
     Ok(())
-}
-pub fn migrated_this_launch(app: &AppHandle) -> bool {
-    app.state::<StoragePaths>().migrated_this_launch
 }
 #[tauri::command]
 pub fn storage_status(app: AppHandle) -> Result<StorageStatus, String> {
@@ -765,12 +389,6 @@ pub fn storage_preferences_update(app: AppHandle, patch: Value) -> Result<Value,
                 }
                 continue;
             }
-            "legacyImported" => {
-                if !value.is_boolean() {
-                    return Err("迁移标记必须是布尔值".into());
-                }
-                &mut user
-            }
             _ => return Err(format!("未知偏好字段：{key}")),
         };
         if value.is_null() {
@@ -782,69 +400,4 @@ pub fn storage_preferences_update(app: AppHandle, patch: Value) -> Result<Value,
     crate::fsio::write_atomic(&shared_file, &shared.to_string())?;
     crate::fsio::write_atomic(&file, &user.to_string())?;
     preferences(&app)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    pub(super) struct Fixture(pub(super) PathBuf);
-    impl Fixture {
-        pub(super) fn new() -> Self {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let root = std::env::temp_dir().join(format!(
-                "gluesight-storage-{}-{}-{}",
-                std::process::id(),
-                ly_plc::now_ms(),
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ));
-            fs::create_dir_all(&root).unwrap();
-            Self(root)
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-    #[test]
-    fn wal_history_and_teaching_references_are_copied_without_changing_source() {
-        let test = Fixture::new();
-        let source = test.0.join("source");
-        let staging = test.0.join("staging");
-        let target = test.0.join("target");
-        fs::create_dir_all(source.join("workspaces/01")).unwrap();
-        let conn = rusqlite::Connection::open(source.join("inspection.db")).unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE parts(id INTEGER PRIMARY KEY,recording_directory TEXT,frames TEXT,sample TEXT);").unwrap();
-        conn.execute(
-            "INSERT INTO parts VALUES(1,?1,'[]',NULL)",
-            [source.join("records/c1").to_string_lossy().as_ref()],
-        )
-        .unwrap();
-        let teaching = json!({"frames":[{"image":{"calibTag":{"path":source.join("calib/cam2.json"),"value":{}}}}],"note":source.join("notes")});
-        let original = serde_json::to_vec(&teaching).unwrap();
-        fs::write(source.join("workspaces/01/workspace.json"), &original).unwrap();
-        copy_legacy_data(&source, &staging, &target).unwrap();
-        let copied = rusqlite::Connection::open(staging.join("inspection.db")).unwrap();
-        let dir: String = copied
-            .query_row(
-                "SELECT recording_directory FROM parts WHERE id=1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(Path::new(&dir), target.join("records/c1"));
-        let doc: Value = serde_json::from_slice(
-            &fs::read(staging.join("workspaces/01/workspace.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            doc["frames"][0]["image"]["calibTag"]["path"],
-            json!(target.join("calib/cam2.json"))
-        );
-        assert_eq!(doc["note"], teaching["note"]);
-        assert_eq!(
-            fs::read(source.join("workspaces/01/workspace.json")).unwrap(),
-            original
-        );
-    }
 }

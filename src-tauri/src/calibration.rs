@@ -1,5 +1,5 @@
 //! 多轮标定（规格 §2）：同一工件程序连续采集 ≥ min_rounds 轮，帧组数取均值四舍五入作 N_exp，
-//! 记录 min / max / mean，并按 min / max 给容差建议；标准件轮次给出胶偏参考 x_ref。
+//! 记录 min / max / mean，并按 min / max 给容差建议；标准件轮次给出胶偏参考 x_ref；按每帧是否成形数出起涂、收尾帧组数（D-SB-50）。
 //!
 //! 同一套统计既用于单段（写 `PathSegment.expected_frames` / `calib`），也用于整件
 //! （写 `plan::PartCalib`）；多段配方按已确认的手动分段逐段调用。调用方是候选工作区的多轮标定（workspace/burst.rs）。
@@ -57,6 +57,45 @@ pub fn x_ref(values: &[f64]) -> Option<(f64, f64)> {
     Some((mean, max - min))
 }
 
+/// 起涂、收尾判断里一个帧组的状态（D-SB-50）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupForm {
+    /// 本段每台检测相机都测成，且独立判定没有 NG 级发现
+    Formed,
+    Unformed,
+    /// 有相机缺帧、测量失败、未测、走出走廊，或帧组被屏蔽：说明不了胶是否成形
+    Unknown,
+}
+
+/// 连续这么多个成形帧组才算胶条已成形（D-SB-50，暂定，待实际涂胶轮次校准）。
+pub const ONSET_RUN: usize = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnsetError {
+    /// 成形之前第 n 个（从 1 数）帧组无法判断
+    Unknown(usize),
+    /// 没有连续 ONSET_RUN 个成形帧组
+    NotFound,
+}
+
+/// 起涂帧组数：第一处连续 ONSET_RUN 个成形帧组之前的帧组数；收尾帧组数把序列倒过来传入。
+pub fn unformed_lead(groups: impl IntoIterator<Item = GroupForm>) -> Result<u32, OnsetError> {
+    let mut run = 0;
+    for (i, form) in groups.into_iter().enumerate() {
+        match form {
+            GroupForm::Formed => {
+                run += 1;
+                if run == ONSET_RUN {
+                    return Ok(u32::try_from(i + 1 - ONSET_RUN).unwrap_or(u32::MAX));
+                }
+            }
+            GroupForm::Unformed => run = 0,
+            GroupForm::Unknown => return Err(OnsetError::Unknown(i + 1)),
+        }
+    }
+    Err(OnsetError::NotFound)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +127,23 @@ mod tests {
     fn suggested_tolerance_covers_observed_spread_never_below_default() {
         for (n, min, max, default, suggested) in [(10, 10, 10, 1, 1), (10, 8, 11, 1, 2), (10, 9, 13, 1, 3), (10, 9, 11, 2, 2)] {
             assert_eq!(suggest_tolerance(n, min, max, default), suggested, "N {n}，{min}..={max}，默认 {default}");
+        }
+    }
+
+    /// D-SB-50：起涂帧组数数到第一处连续成形为止——偶发的单个成形帧组（暗带、槽）不算起点，
+    /// 成形之前出现无法判断的帧组时这一轮不给值，而不是把它当成未成形。
+    #[test]
+    fn unformed_lead_counts_until_a_formed_run_and_aborts_on_unknown_before_it() {
+        use GroupForm::{Formed as F, Unformed as U, Unknown as K};
+        for (groups, expected) in [
+            (vec![U, U, U, F, F, F], Ok(3)),
+            (vec![F, F, U], Ok(0)),
+            (vec![U, F, U, U, F, F], Ok(4)),
+            (vec![U, K, F, F], Err(OnsetError::Unknown(2))),
+            (vec![U, F, F, K], Ok(1)),
+            (vec![U, F, U, F], Err(OnsetError::NotFound)),
+        ] {
+            assert_eq!(unformed_lead(groups.clone()), expected, "{groups:?}");
         }
     }
 }

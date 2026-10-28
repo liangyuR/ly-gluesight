@@ -84,9 +84,11 @@ $env:LYFLOW_CORE_DLL = "<运行库目录>\lyflow_core.dll"
 cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval -- <项目目录> <候选编号> <输出目录>
 ```
 
-分段标定工作台（D-SB-44）的回归：`workspace::capture_review` 的组合保存（结构变 / 不变时其余轮次与标定的失效范围）、`frame_align` 的缩略图条带格式，前端 `tests/workbench-draft.test.ts`（边界插删与保存的段列表）与 `tests/segment-workbench.test.tsx`（结构改变时先列影响、确认后一次提交）；对齐复核（P2）：`frame_align::aligned_cuts_follow_scene_positions_under_stretch_drop_and_repeat`（合成序列在伸缩、前慢后快、丢帧、重复帧下边界误差 ≤ 1 帧；改成按比例换算会失败）与 `tests/align-review.test.tsx`（微调不越过相邻边界、全部确认后一次提交）。`segment_eval` 在有分段模板时另报“图像对齐（相对模板轮）”的误差。
+分段标定工作台（D-SB-44）的回归：`workspace::capture_review` 的组合保存（结构变 / 不变时其余轮次与标定的失效范围）、`frame_align` 的缩略图条带格式，前端 `tests/workbench-draft.test.ts`（边界插删与保存的段列表）与 `tests/segment-workbench.test.tsx`（结构改变时先列影响、确认后一次提交）；对齐复核（P2）：`frame_align::aligned_cuts_follow_scene_positions_under_stretch_drop_and_repeat`（合成序列在伸缩、前慢后快、丢帧、重复帧下边界误差 ≤ 1 帧；改成按比例换算会失败）与 `tests/align-review.test.tsx`（微调不越过相邻边界、全部确认后一次提交）；按异常复核（D-SB-51）：`frame_align::only_distinct_alignment_close_to_proportional_is_trusted`（画面不随位置变化时即使与比例一致也不可信、偏离比例超过容许帧数需复核）与 `tests/align-review.test.tsx`（可信边界默认已确认，只确认需重点复核的即可保存；自动确认后列出待人工复核的轮次与原因）。`segment_eval` 在有分段模板时另报“图像对齐（相对模板轮）”的误差。
 
-读该候选 `workspace.json` 的段列表、`boundaryGuard` 与采集页已确认的手动分段，逐轮用其余轮次按多轮标定规则得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；比例评估不读图像，模板图像对齐评估读取采集原图，均不需要 lyFlow。至少要 2 段、2 个已确认轮次。评估结论需附对应数据版本与运行输出，本仓库不保存现场数据与临时验收证据。
+读该候选 `workspace.json` 的段列表、`boundaryGuard` 与示教件、标定件已确认的手动分段，逐轮用其余轮次按多轮标定规则得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；比例评估不读图像，模板图像对齐评估读取采集原图，均不需要 lyFlow。至少要 2 段、2 个已确认轮次。评估结论需附对应数据版本与运行输出，本仓库不保存现场数据与临时验收证据。
+
+起涂与收尾跳过建议（D-SB-50）的回归：`calibration::unformed_lead_counts_until_a_formed_run_and_aborts_on_unknown_before_it`（偶发单个成形帧组不算起点，成形前无法判断的轮次不给值）、`workspace::burst_tests::skip_suggestion_is_max_over_normal_rounds_and_withheld_when_too_few_participate`（取普通轮次最大值、收尾从末尾数、参与轮次不足不给建议）与 `tests/recipe-calibration.test.tsx`（少于建议时提示、采用建议按建议值提交到对应一头）。现有轮次都是空跑，没有起涂过程，建议值只用合成数据验证过。
 
 **离线工况。** 段配方在离线下按脉冲串运行：虚拟 PLC 写请求（plcState=10）后等固定的拍照前置时间 500 ms，再以固定频率（默认 20 Hz）发脉冲，每个脉冲同时触发三台相机，脉冲发完报工件结束（plcState=20）；名义帧数取各段 N_exp（待标定的段按段长 × 频率 ÷ 50 mm/s 估算，已有整件标定时缩放到 ΣN_exp）。下表工况在离线控制台与在线检测页的工况下拉里，样本集与合成图来源都能选，只改变脉冲与握手，不改图像内容。
 
@@ -99,7 +101,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval 
 | 工件提前结束（疑似提前终止） | 发约一半、且少于 ΣN_exp − Σtol 个脉冲后报工件结束 | 用已收到的帧照常判，加 `short_part` 与“帧数异常”，不改 OK/NG |
 | 传输丢帧 / 缺帧 | 三台相机的同一帧都丢 | 该帧组标检测不完整，不判 ERR；丢帧按 SDK 帧序号、相机间帧数及传输丢帧诊断 |
 
-**合成图采集与标定。** 合成图轮次由 `src-tauri/examples/capture_fixture.rs` 生成：按候选配方（型号、段、计划相机）用 `simimage::render_burst` 生成 N 轮完整轮次，写成配方迁移包，经“导入配方”导入（手动配置数据，`origin.kind = prepared`）。命令为 `cargo run --manifest-path src-tauri/Cargo.toml --offline --locked --example capture_fixture -- --doc <候选文档.json> --cameras <camera_rig_config.json> --out <包.zip> --rounds N [--seed S] [--label L] [--sample-set <目录> --part <件>]`：默认按名义剖面出合成图（首尾 ±1、弯道 ±2 帧，种子 seed+i）；给出样本集时每轮都取该件的样本集原图，供 soak 使用。合成图离线环境因此能完成多轮标定、走廊示教、验证与发布（加入标定时每帧测量用 lyFlow 走廊测量，需要加载 lyFlow）。合成图相机沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台。样本集按“每台相机的帧序列”解释（见[离线样本集格式 v1](../integration/sample-set-format.md)），现有的 2026-10-17 单圈样本集是停稳拍数据，没有弯道、帧数没有波动，只作冒烟，不作分段或标定的验收依据。
+**合成图采集与标定。** 合成图由 `src-tauri/examples/capture_fixture.rs` 生成仿历史录制件（[示教件与标定件决策](../decisions/recipe-build-flow.md)“手动配置数据”）：按录制时生效的生产配方（采集版：型号、段、计划相机）用 `simimage::render_burst` 生成 N 件，每件在真机录制根下写一个与真机同格式的录制目录（原图 `{相机}_s{seq:06}.pgm`、`part.json` 带 `partMode: maintenanceCollect`、`devices`、`plc` 与来源标记 `fixture: {label}`，以及维护采集保留标记），并在项目记录库写一行维护采集记录（SN 前缀 `FIXTURE-`，记录库版本仍为 9）。生成的件出现在历史件选择器里，标“手动配置”，与真机件走同一选件、导入路径。记录引用采集版的修订号：先建候选并发布采集版，再生成数据（候选的版本号留给之后的正式版，用它写快照会让正式版投产时同修订号的真实记录因快照不同被拒）。记录库须已存在且为版本 9；同修订号已有不同快照时写入前即拒绝。命令为 `cargo run --manifest-path src-tauri/Cargo.toml --offline --locked --example capture_fixture -- --doc <采集版文档.json> --cameras <camera_rig_config.json> --db <资料根目录>/projects/<项目编号>/inspection.db --records <真机录制根> --parts N [--seed S] [--label L] [--sample-set <目录> --part <件>] [--onset H --onset-jitter J --tail T --tail-jitter J]`，输出每件的 `recordId`、`cycleId`、SN 等 JSON：默认按名义剖面出合成图（首尾 ±1、弯道 ±2 帧，种子 seed+i）；给出样本集时每件都取该件的样本集原图，供 soak 使用。合成图离线环境因此能选示教件、完成走廊示教、多轮标定、验证与发布（加入标定时每帧测量用 lyFlow 走廊测量，需要加载 lyFlow）。合成图相机沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台。样本集按“每台相机的帧序列”解释（见[离线样本集格式 v1](../integration/sample-set-format.md)），现有的 2026-10-17 单圈样本集是停稳拍数据，没有弯道、帧数没有波动，只作冒烟，不作分段或标定的验收依据。
 
 ### 3 × 25 Hz 吞吐门槛
 
@@ -136,9 +138,9 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 `pnpm test:ui:production` 由 Playwright Test 驱动，使用 `tests/native/production-flow-ui.mjs` 与 flow 实例配置（`Start-UiTestInstance.ps1 -Profile flow`），应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。全新实例不安装默认配方夹具。
 
-测试在“离线 · 合成图”下导入 `capture_fixture` 生成的轮次包，用真实 lyFlow 完成段配方走廊示教、多轮标定、独立样本验证与发布，经生产 S7 握手投产，核对 SQLite、逐帧原图和历史读回。使用 `-LyFlowRuntime <运行库目录>` 或 `GLUESIGHT_LYFLOW_RUNTIME` 提供运行库；未指定时恢复锁定版本，恢复或加载失败即失败，不以跳过代替验证。合成图来源补足三台单视角相机。结束时退出离线并关闭本次进程。
+测试在“离线 · 合成图”下新建候选、发布采集版，用 `capture_fixture` 生成仿历史录制件，选示教件、确认分段后用真实 lyFlow 完成段配方走廊示教、选标定件多轮标定、独立样本验证与发布，经生产 S7 握手投产，核对 SQLite、逐帧原图和历史读回。使用 `-LyFlowRuntime <运行库目录>` 或 `GLUESIGHT_LYFLOW_RUNTIME` 提供运行库；未指定时恢复锁定版本，恢复或加载失败即失败，不以跳过代替验证。合成图来源补足三台单视角相机。结束时退出离线并关闭本次进程。
 
-[`tests/native/`](../../tests/native/) 没有单独说明文件：生产落盘驱动脚本为 `production-flow-ui.mjs`；它与 `scripts/soak/` 共用的 IPC 客户端、实例连接、样本集副本、轮次导入（手动配置数据包）、示教与投产函数在 `tests/native/lib.mjs`；`desktop-infrastructure.test.mjs`、`throughput-gate.test.mjs`、`soak-faults-assess.test.mjs` 是桌面基础设施与长稳判定函数的手动 `node --test` 用例；`guard.js`、`plc-ui.js`、`p0-plc-bootstrap-ui.js`、`p0-single-instance-acceptance.mjs` 是在隔离实例页面上执行的原生抽查脚本，协议 8 下未重新实跑，使用前须按当前点表核对断言。实例配置不放在该目录，由 `Start-UiTestInstance.ps1` 按 Profile 生成（长稳测试用 soak）。恢复专项应使用独立实例和新输出目录，避免使用生产配置。
+[`tests/native/`](../../tests/native/) 没有单独说明文件：生产落盘驱动脚本为 `production-flow-ui.mjs`；它与 `scripts/soak/` 共用的 IPC 客户端、实例连接、样本集副本、合成轮次写入（`createFixtureCandidate`）、示教与投产函数在 `tests/native/lib.mjs`；`desktop-infrastructure.test.mjs`、`throughput-gate.test.mjs`、`soak-faults-assess.test.mjs` 是桌面基础设施与长稳判定函数的手动 `node --test` 用例；`guard.js`、`plc-ui.js`、`p0-plc-bootstrap-ui.js`、`p0-single-instance-acceptance.mjs` 是在隔离实例页面上执行的原生抽查脚本，协议 8 下未重新实跑，使用前须按当前点表核对断言。实例配置不放在该目录，由 `Start-UiTestInstance.ps1` 按 Profile 生成（长稳测试用 soak）。恢复专项应使用独立实例和新输出目录，避免使用生产配置。
 
 jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明真实布局、像素解码或硬件通信。桌面模拟流程证明业务接线与落盘，不证明真实 PLC、SDK、引擎测量准确率、现场节拍或持续运行。
 
@@ -204,7 +206,7 @@ Playwright Test 固定 `workers=1`、`fullyParallel=false`、`retries=0`，每�
 
 1. 确认 lyFlow 引擎就绪（运行库位于程序目录 `runtime/lyflow/`，开发时由 `pnpm deps:lyflow:dev` 复制），否则拒绝进入并提示原因。
 2. 离线控制台来源选“样本集”，点“选择样本集目录”，核对件数、帧数、缺图和标签分布，点“进入离线”。
-3. 无已发布配方时：用“导入配方”导入带轮次的配方迁移包（手动配置数据，如 `capture_fixture` 生成的包），再走相机走廊示教、多轮标定、独立样本验证与发布。样本集是停稳拍数据，一条走廊对不上其他点位，检测项开着时多半判 NG_GAP；只作流程冒烟时关闭各段检测项。独立样本验证可选，不阻断发布。
+3. 无已标定的正式版时（只剩采集版视为上次建站中断，先删除再重建）：新建候选并发布采集版，用 `capture_fixture` 生成仿历史录制件，再选示教件、确认分段、走廊示教、选标定件多轮标定、独立样本验证与发布。样本集是停稳拍数据，一条走廊对不上其他点位，检测项开着时多半判 NG_GAP；只作流程冒烟时关闭各段检测项。独立样本验证可选，不阻断发布。
 4. 选离线配方和样本件（不选则按顺序循环），点“运行一件”或“连续运行”，用“本件后停止”/“立即停止”结束。样本集来源只提供握手类工况：正常件、传输丢帧 / 缺帧、工件结束超时、PLC 回显核对不符，以及段配方的脉冲串工况（见上文“段模型专项”）。
 5. 核对“最近样本件”表的期望 / 实际。
 

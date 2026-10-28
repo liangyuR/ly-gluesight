@@ -1,10 +1,10 @@
 use super::collect_release::{collect_checks, CollectInputs};
 use super::*;
 use crate::camera::CameraConfig;
-use crate::recipe::{burst_template, legacy_camera_id, RecipeStore};
+use crate::recipe::{burst_template, RecipeStore};
 
 fn cameras() -> Vec<String> {
-    (0..3).map(legacy_camera_id).collect()
+    (1..=3).map(|k| format!("cam{k}")).collect()
 }
 
 fn rig() -> Vec<CameraConfig> {

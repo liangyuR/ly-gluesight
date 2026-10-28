@@ -302,7 +302,6 @@ function StoragePanel() {
         <dt>运行日志</dt><dd className="mono">{data.runtimeLogDir ? <button type="button" className="settings-path-link" onClick={() => openDirectory("runtime")} aria-label={`打开运行日志：${displayPath(data.runtimeLogDir)}`}>{displayPath(data.runtimeLogDir)}</button> : "—"}</dd>
         <dt>当前项目视觉原图</dt><dd className="mono">{data.visionLogDir ? <button type="button" className="settings-path-link" onClick={() => openDirectory("vision")} aria-label={`打开视觉原图：${displayPath(data.visionLogDir)}`}>{displayPath(data.visionLogDir)}</button> : "—"}</dd>
       </dl>
-      {data.migrationMessage && <p role="status">{data.migrationMessage}</p>}
     </>}
     {openError && <Alert tone="ng">打开目录失败：{openError}</Alert>}
     </Stack>

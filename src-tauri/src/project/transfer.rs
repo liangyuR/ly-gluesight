@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
@@ -16,7 +17,6 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use super::{manage, ProjectMeta};
-use crate::workspace::copy_hashed;
 
 pub const FORMAT: u32 = 1;
 const MANIFEST: &str = "manifest.json";
@@ -85,6 +85,22 @@ pub struct ProjectImportPreview {
 pub struct ProjectImported {
     pub meta: ProjectMeta,
     pub notes: Vec<String>,
+}
+
+fn copy_hashed(mut from: impl Read, mut to: impl Write) -> std::io::Result<(u64, String)> {
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    let mut total = 0u64;
+    loop {
+        let n = from.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+        to.write_all(&buffer[..n])?;
+        total += n as u64;
+    }
+    Ok((total, format!("{:x}", hasher.finalize())))
 }
 
 fn allowed(path: &str, records: bool) -> bool {

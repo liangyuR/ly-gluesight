@@ -8,7 +8,7 @@ import { subscribe } from "../plc";
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import type { CameraTeachDraft } from "../plan/types";
-import type { Workspace, WorkspaceView } from "./types";
+import { isCurrentFlow, type Workspace, type WorkspaceView } from "./types";
 import { corridorStationError, draftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
 import { useSnackbar, type SnackbarMessage } from "qing-steel";
 import "./workspace.css";
@@ -131,7 +131,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       let preferred: string | null = null;
       try { preferred = (await storageApi.preferences()).lastWorkspace ?? null; }
       catch (e) { if (alive) setPreferenceError(`工作区偏好读取失败：${errorText(e)}`); }
-      const ids = [...records.recipes.map(r => r.id), ...drafts.map(w => w.doc.id)];
+      // 旧流程候选不能打开（RB-5），不自动选它
+      const stale = new Set(drafts.filter(w => !isCurrentFlow(w)).map(w => w.doc.id));
+      const ids = [...records.recipes.map(r => r.id), ...drafts.map(w => w.doc.id)].filter(id => !stale.has(id));
       if (alive && !selected.current && ids.length) await select(preferred && ids.includes(preferred) ? preferred : ids[0]);
     }).catch(e => setError(errorText(e)));
     const refresh = (id: string) => {

@@ -40,7 +40,7 @@
       <h1 id="title">正在初始化资料目录</h1>
       <p id="message">正在读取存储状态，请稍候。</p>
     </section>
-    <p id="progress" role="status">正在初始化或复制资料…</p>
+    <p id="progress" role="status">正在初始化资料…</p>
     <div id="failure" role="alert" hidden></div>
     <div id="chooser" hidden>
       <div id="projects" role="radiogroup" aria-label="本机项目"></div>
@@ -51,11 +51,10 @@
       </div>
     </div>
     <div class="actions">
-      <button id="accept" type="button" class="primary" hidden>确定</button>
-      <button id="cancel" type="button" hidden>取消</button>
+      <button id="close" type="button" hidden>关闭</button>
       <button id="retry" type="button" hidden>重试读取状态</button>
     </div>
-    <p class="hint">配方、示教及历史资料准备完成后，将进入软件。复制迁移会保留原资料目录。</p>
+    <p class="hint">资料目录准备完成后，将进入软件。</p>
   </main>
   <script>
     (() => {
@@ -63,8 +62,7 @@
       const message = document.getElementById("message");
       const progress = document.getElementById("progress");
       const failure = document.getElementById("failure");
-      const accept = document.getElementById("accept");
-      const cancel = document.getElementById("cancel");
+      const close = document.getElementById("close");
       const retry = document.getElementById("retry");
       let state = null;
       let polling = false;
@@ -95,17 +93,11 @@
         title.textContent = state ? state.title : "正在初始化资料目录";
         message.textContent = state ? state.message : "正在读取存储状态，请稍候。";
         progress.hidden = !!kind && kind !== "working" && !waiting;
-        progress.textContent = waiting ? "正在处理，请稍候…" : "正在初始化或复制资料…";
-        accept.hidden = kind !== "confirm" && kind !== "chooseSource";
-        cancel.hidden = !kind || kind === "working";
-        accept.textContent = kind === "chooseSource" ? "选择已有目录" : "确定";
-        cancel.textContent = kind === "chooseSource" ? "空白开始" : kind === "error" ? "关闭" : "取消";
-        accept.disabled = cancel.disabled = !!waiting || !connected;
+        progress.textContent = waiting ? "正在处理，请稍候…" : "正在初始化资料…";
+        close.hidden = kind !== "error";
+        close.disabled = !!waiting || !connected;
         chooser.hidden = kind !== "chooseProject";
-        if (kind === "chooseProject") {
-          cancel.hidden = true;
-          if (listed !== state.requestId) { listed = state.requestId; void loadProjects(); }
-        }
+        if (kind === "chooseProject" && listed !== state.requestId) { listed = state.requestId; void loadProjects(); }
         open.disabled = answering || !projects.querySelector("input:checked");
         create.disabled = answering || !newName.value.trim();
       }
@@ -152,7 +144,7 @@
         polling = true;
         try {
           const next = await invoke("storage_startup_status");
-          if (!next || !Number.isSafeInteger(next.requestId) || typeof next.title !== "string" || typeof next.message !== "string" || !["working", "confirm", "error", "chooseSource", "chooseProject"].includes(next.kind)) {
+          if (!next || !Number.isSafeInteger(next.requestId) || typeof next.title !== "string" || typeof next.message !== "string" || !["working", "error", "chooseProject"].includes(next.kind)) {
             throw new Error("启动状态格式无效，请重试或重新启动软件。");
           }
           state = next;
@@ -169,14 +161,14 @@
           render();
         } finally { polling = false; }
       }
-      async function answer(accepted) {
-        if (!state || !connected || answering || answeredId === state.requestId || state.kind === "working") return;
+      async function closeApp() {
+        if (!state || !connected || answering || answeredId === state.requestId || state.kind !== "error") return;
         const requestId = state.requestId;
         answering = true;
         failure.hidden = true;
         render();
         try {
-          await invoke("storage_startup_answer", { requestId, accepted });
+          await invoke("storage_startup_answer", { requestId });
           answeredId = requestId;
         } catch (error) {
           failure.textContent = "提交操作失败：" + errorText(error);
@@ -184,8 +176,7 @@
           failure.hidden = false;
         } finally { answering = false; render(); void poll(); }
       }
-      accept.addEventListener("click", () => void answer(true));
-      cancel.addEventListener("click", () => void answer(false));
+      close.addEventListener("click", () => void closeApp());
       retry.addEventListener("click", () => void poll());
       open.addEventListener("click", () => {
         const picked = projects.querySelector("input:checked");

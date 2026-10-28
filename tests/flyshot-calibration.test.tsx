@@ -20,6 +20,7 @@ const status=(frames:number):CameraStatus=>({cam:0,id:"CAM-1",name:"相机 1",so
 beforeEach(()=>{
  localStorage.clear();
  desktop.on=false;
+ vi.mocked(invoke).mockImplementation(async command=>command==="storage_preferences_get"?{}:null);
  vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"}]);
  vi.mocked(cameraApi.calibInfo).mockResolvedValue(null);
  vi.mocked(useRigStatus).mockReturnValue({statuses:[status(1)],lastFrame:{}} as ReturnType<typeof useRigStatus>);
@@ -58,7 +59,7 @@ it("单视角相机完成标定 → 按冻结图像更新像素当量与飞拍�
  desktop.on=true;
  vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"}]);
  let calibrated=false;
- vi.mocked(invoke).mockImplementation(async command=>{if(command!=="vision_calibrate")return null;calibrated=true;return {mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1};});
+ vi.mocked(invoke).mockImplementation(async command=>{if(command==="storage_preferences_get")return {};if(command!=="vision_calibrate")return null;calibrated=true;return {mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1};});
  vi.mocked(cameraApi.calibInfo).mockImplementation(async()=>calibrated?{mmPerPx:0.05}:null);
  const capture=vi.spyOn(workspaceApi,"stationCapture").mockResolvedValue({id:"calibration-image",source:"live",capturedAt:1,size:[1280,1024],camera:"CAM-1",view:1} as FrozenImage);
  vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});

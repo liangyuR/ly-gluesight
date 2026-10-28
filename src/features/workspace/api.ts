@@ -1,8 +1,8 @@
 import { desktopCall } from "../../lib/desktop";
 import type { RecipeDoc } from "../cycle/types";
-import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment, TeachPreviewSegment } from "../plan/types";
+import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { AlignSuggestion, CaptureSummary, Check, Comparison, FrozenImage, GrayImage, HistoryCandidate, HistoryPick, Sample, Workspace, WorkspaceView } from "./types";
+import type { AlignSuggestion, CalibrationSyncResult, Check, Comparison, FrozenImage, GrayImage, HistoryCandidate, HistoryPick, Sample, Workspace, WorkspaceView } from "./types";
 
 function grayPreview(input: ArrayBuffer | number[]) {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -34,12 +34,6 @@ export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayIma
   return { url: canvas.toDataURL("image/png"), width, height };
 }
 
-/** 配方迁移包：candidate = 完整候选（含引用的采集轮次原图），publishedDoc = 只有已发布版本时只含配方文档 */
-export type TransferKind = "candidate" | "publishedDoc";
-export interface TransferExported { path: string; bytes: number; kind: TransferKind; rounds: number; files: number; notes: string[] }
-export interface TransferPreview { path: string; kind: TransferKind; recipeId: string; name: string; productCode: number; version: number; exportedAt: number; appVersion: string; rounds: number; files: number; bytes: number; notes: string[] }
-export interface TransferImported { id: string; kind: TransferKind; rounds: number; renamedRounds: number; notes: string[] }
-
 export const workspaceApi = {
   debugRun: (id: string, revision: number, partId: string | null) => desktopCall<void>("workspace_debug_run", { id, revision, partId }),
   captureGet: (roundId?: string) => desktopCall<CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
@@ -47,34 +41,27 @@ export const workspaceApi = {
   get: (id: string) => desktopCall<WorkspaceView>("workspace_get", { id }),
   create: (doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_create", { doc }),
   remove: (id: string) => desktopCall<void>("workspace_delete", { id }),
-  /** 导出迁移包：后端弹出保存对话框，取消时为 null */
-  transferExport: (id: string) => desktopCall<TransferExported | null>("workspace_transfer_export", { id }),
-  /** 选择迁移包并读取清单（不解包），取消时为 null */
-  transferPick: () => desktopCall<TransferPreview | null>("workspace_transfer_pick"),
-  /** 校验整包后作为新候选导入；编号与型号由操作员确认 */
-  transferImport: (path: string, id: string, name: string, productCode: number) => desktopCall<TransferImported>("workspace_transfer_import", { path, id, name, productCode }),
   saveDoc: (id: string, revision: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, doc }),
   image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeGray),
   validate: (id: string, revision: number, samples: Sample[], sourceConfirmed = false) => desktopCall<WorkspaceView>("workspace_validate", { id, revision, samples, sourceConfirmed }),
   retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),
   abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
-  /** 采集轮次里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
+  /** 导入件（轮次）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
   captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeGray),
-  captureList: (recipeId: string) => desktopCall<CaptureSummary[]>("recipe_capture_list", { recipeId }),
-  /** “从历史选用”：本配方最近的真机录制件与能否导入为采集轮次（只读） */
+  /** 历史件选择器：本配方最近的真机录制件、能否选用与是否已被本候选使用（只读） */
   historyCandidates: (id: string) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id }),
-  /** 把选中的历史件导入为采集轮次（硬链接原图），返回新轮次 ID */
-  historyImport: (id: string, revision: number, picks: HistoryPick[]) => desktopCall<string[]>("workspace_history_import", { id, revision, picks }),
-  /** 新轮次一台相机全部帧组的缩略图条带（分段标定工作台） */
+  /** 导入这件并设为示教件；按 RB-2 / RB-8 清空图像派生内容，保留段列表结构 */
+  setTeachingPiece: (id: string, revision: number, recordId: number) => desktopCall<WorkspaceView>("workspace_set_teaching_piece", { id, revision, recordId }),
+  /** 导入件一台相机全部帧组的缩略图条带（分段标定工作台、边界复核） */
   captureRoundThumbs: (roundId: string, cameraId: string) => desktopCall<ArrayBuffer>("recipe_capture_round_thumbs", { roundId, cameraId }).then(decodeThumbStrip),
-  /** 把分段模板的边界按图像对齐到一轮（只读建议，D-SB-44 P2） */
+  /** 把示教件的边界按图像对齐到一件（只读建议，D-SB-51） */
   captureReviewSuggest: (id: string, round: string) => desktopCall<AlignSuggestion>("workspace_capture_review_suggest", { id, round }),
-  /** 复核确认一轮的边界：保存并确认，原子写入 */
+  /** 复核确认一件的边界：保存并确认，原子写入；确认后再同步标定件 */
   captureReviewConfirmCuts: (id: string, revision: number, round: string, cuts: number[]) =>
     desktopCall<WorkspaceView>("workspace_capture_review_confirm_cuts", { id, revision, round, cuts }),
-  /** 工作台一次保存：段列表 + 模板轮边界（确认）+ 设为模板（D-SB-44） */
-  segmentTemplateSave: (id: string, revision: number, round: string, segments: PathSegment[], cuts: number[]) =>
-    desktopCall<WorkspaceView>("workspace_segment_template_save", { id, revision, round, segments, cuts }),
+  /** 工作台一次保存：段列表 + 示教件边界（确认） */
+  segmentTemplateSave: (id: string, revision: number, segments: PathSegment[], cuts: number[]) =>
+    desktopCall<WorkspaceView>("workspace_segment_template_save", { id, revision, segments, cuts }),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
   /** 采集版检查：计划相机、相机组、曝光与增益、PLC 型号、段、生产版本；不改候选 */
   collectChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_collect_checks", { id, revision }),
@@ -97,25 +84,20 @@ export const workspaceApi = {
   /** 整体替换候选的段列表。后端拒绝直接改 expectedFrames / calib；段序列或类型变化时清空全部 N_exp、标定与 xRef */
   updateSegments: (id: string, revision: number, segments: PathSegment[]) =>
     desktopCall<WorkspaceView>("workspace_update_segments", { id, revision, segments }),
-  /** 段走廊的示教帧（D-SB-45）：轮次须已确认手动分段、帧组落在该段内；相机还没有像素当量时后端用设备标定的当量填上 */
+  /** 段走廊的示教帧（D-SB-45）：只取自示教件，帧组落在该段内；相机还没有像素当量时后端用设备标定的当量填上 */
   teachSegmentCorridor: (id: string, revision: number, camera: string, segment: number, round: string, seq: number) =>
     desktopCall<WorkspaceView>("workspace_teach_segment_corridor", { id, revision, camera, segment, round, seq }),
   /** 去掉一台相机在某段的走廊与示教帧，这一段回到待示教 */
   clearSegmentCorridor: (id: string, revision: number, camera: string, segment: number) =>
     desktopCall<WorkspaceView>("workspace_clear_segment_corridor", { id, revision, camera, segment }),
-  /** 把采集轮次加入多轮标定；standard = 标准件轮次（用于胶偏参考 xRef） */
-  calibrationAddRound: (id: string, revision: number, round: string, standard: boolean) =>
-    desktopCall<WorkspaceView>("workspace_calibration_add_round", { id, revision, round, standard }),
+  /** 选标定件：导入所选历史件（可标标准件），按示教件边界对齐，可信则自动确认并加入标定，否则待复核 */
+  calibrationPick: (id: string, revision: number, picks: HistoryPick[]) =>
+    desktopCall<CalibrationSyncResult>("workspace_calibration_pick", { id, revision, picks }),
+  /** 同步标定件：未确认边界的件对齐、可信则自动确认，已确认的测量并加入标定；示教件在走廊示教完成后加入 */
+  calibrationSync: (id: string, revision: number) => desktopCall<CalibrationSyncResult>("workspace_calibration_sync", { id, revision }),
+  /** 弃用一件（示教件不能弃用） */
   calibrationRemoveRound: (id: string, revision: number, round: string) =>
     desktopCall<WorkspaceView>("workspace_calibration_remove_round", { id, revision, round }),
-  captureReviewSave: (id: string, revision: number, round: string, cuts: number[]) =>
-    desktopCall<WorkspaceView>("workspace_capture_review_save", { id, revision, round, cuts }),
-  captureReviewConfirm: (id: string, revision: number, round: string) =>
-    desktopCall<WorkspaceView>("workspace_capture_review_confirm", { id, revision, round }),
-  captureReviewSetTemplate: (id: string, revision: number, round: string) =>
-    desktopCall<WorkspaceView>("workspace_capture_review_set_template", { id, revision, round }),
-  captureReviewApplyTemplate: (id: string, revision: number, round: string, mode: "proportional" | "original") =>
-    desktopCall<WorkspaceView>("workspace_capture_review_apply_template", { id, revision, round, mode }),
   captureReviewExclude: (id: string, revision: number, round: string, start: number, end: number, excluded: boolean, reason: string) =>
     desktopCall<WorkspaceView>("workspace_capture_review_exclude", { id, revision, round, start, end, excluded, reason }),
   /** 按已加入的轮次算 N_exp / 整件 ΣN_exp 与建议容差，结果在 plan.calibration；建议容差要再经 confirmTolerance 才写入 */
@@ -130,4 +112,9 @@ export const workspaceApi = {
   /** 操作员确认第 segment 段（PathSegment.index）的帧数容差 */
   confirmTolerance: (id: string, revision: number, segment: number, tolerance: number) =>
     desktopCall<WorkspaceView>("workspace_confirm_tolerance", { id, revision, segment, tolerance }),
+  /** 第 1 段起涂、末段收尾跳过帧的建议（D-SB-50），由标定轮次的每帧特征算出，只读 */
+  calibrationSkipSuggest: (id: string) => desktopCall<SkipSuggestView[]>("workspace_calibration_skip_suggest", { id }),
+  /** 操作员确认第 segment 段一头的跳过帧组数 */
+  confirmSkip: (id: string, revision: number, segment: number, end: SkipEnd, frames: number) =>
+    desktopCall<WorkspaceView>("workspace_confirm_skip", { id, revision, segment, end, frames }),
 };

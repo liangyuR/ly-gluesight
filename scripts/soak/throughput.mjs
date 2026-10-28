@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { buildBurstRecipe, burstFacts } from "../../tests/native/lib.mjs";
+import { buildBurstRecipe, burstFacts, clearRecipe } from "../../tests/native/lib.mjs";
 import { connect, ensureOffline, offlineHistory, parseArgs, percentiles, processMetrics, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
 
 // 3 × 25 Hz 吞吐门槛（规格 §0：不裁帧、所有帧都测；决策记录 7.1 与 TESTING.md“3 × 25 Hz 吞吐门槛”）：
@@ -136,14 +136,15 @@ async function cameraCounters(call) {
   return status.map(c => ({ frames: c.frames ?? 0, channelDropped: c.droppedFrames ?? 0, budgetDropped: c.budgetDroppedFrames ?? 0 }));
 }
 
-/** 合成图来源：进入离线·合成图并保证压测配方（THRU-SYN）已发布；段配方建站需要 lyFlow（走廊测量、标定、验证）。 */
+/** 合成图来源：进入离线·合成图并保证压测配方（THRU-SYN）的正式版已发布（只有采集版时清掉重建）；段配方建站需要 lyFlow（走廊测量、标定、验证）。 */
 async function ensureSynthetic(call) {
   const site = await call("site_status");
   if (site.mode === "offline" && site.source !== "synthetic") await call("site_leave_offline");
   if ((await call("site_status")).mode !== "offline") await call("site_enter_offline", { source: { kind: "synthetic" } });
   await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
   const id = "THRU-SYN";
-  if (!(await call("cycle_recipes")).some(r => r.id === id)) {
+  if (!(await call("cycle_recipes")).some(r => r.id === id && r.calibrated)) {
+    await clearRecipe(call, id);
     const template = await call("recipe_template");
     const built = await buildBurstRecipe(call, { sourceId: "synthetic", doc: { ...template, id, name: "吞吐压测" }, log: message => process.stdout.write(`[throughput] ${message}\n`) });
     assert(built.validation.passed, `压测配方验证未通过：${JSON.stringify(built.validation.checks.filter(c => !c.passed))}`);

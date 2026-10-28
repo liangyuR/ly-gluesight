@@ -2,8 +2,8 @@ import { pathLength, resampleTeachingPath, type ImagePoint } from "./teachingPat
 import { errorText } from "../../lib/errors";
 import { cloneElement, useEffect, useId, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRight, Brush, Camera, ChevronLeft, ChevronRight, Crosshair, Eraser, Info, Lock, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
-import { Button, Divider, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Select, Slider, Surface, Tooltip } from "qing-steel";
+import { ArrowRight, Brush, Camera, ChevronLeft, ChevronRight, Crosshair, Eraser, Info, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
+import { Button, Divider, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Slider, Surface, Tooltip } from "qing-steel";
 import { cameraApi } from "../camera/api";
 import type { CameraImaging } from "../camera/types";
 import { useCycle } from "../cycle/api";
@@ -14,11 +14,12 @@ import { segmentKindLabel } from "../plan/vis";
 import { workspaceApi } from "./api";
 import { useWorkspace, type SnackMessage } from "./context";
 import { Badge, GrayViewer, KV, Notice, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
-import type { CaptureRoundV2, CaptureSummary, FrozenImage, GrayImage, WorkspaceView } from "./types";
+import type { CaptureRoundV2, FrozenImage, GrayImage, WorkspaceView } from "./types";
 import { cameraParamsError, confirmedSegmentRange, CORNER_CORRIDOR_MM, corridorError, spacingError, draftKey, parseDraftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
 import { cameraParamsTasks, corridorTasks, type CameraParamsTask, type CorridorTask } from "./cameraTasks";
 import { frameArrived, readRoundFrame, roundView, type RoundView } from "./captureRound";
 import { SegmentTrial } from "./TeachTrial";
+import { pieceLabel } from "./pieces";
 import { CameraHeadingCard, MeasureCard, SegmentChecksCard, SegmentHeadingCard, type CameraParams } from "./CorridorSettings";
 import type { HeadingGuide } from "./headingOverlay";
 import "./corridor.css";
@@ -65,7 +66,7 @@ function requestedTarget(camera: string | null, segment: string | null, cameras:
   return open ? taskKey(open) : item.camera;
 }
 
-/** 采集轮次里某台相机某个帧组的原图（候选示教帧，还没有冻结进候选配方）。 */
+/** 示教件里某台相机某个帧组的原图（候选示教帧，还没有冻结进候选配方）。 */
 function useRoundFrame(round: CaptureRoundV2 | null, camera: string, seq: number, enabled: boolean) {
   const key = JSON.stringify([round?.roundId ?? null, camera, seq, enabled]);
   const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string; loading: boolean }>({ key, image: null, error: "", loading: false });
@@ -137,7 +138,6 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const tasks = corridorTasks(plan);
   const requestedCamera = search.get("camera");
   const requestedSegment = search.get("segment");
-  const requestedRound = search.get("round");
   const [selected, setSelected] = useState(() => requestedTarget(requestedCamera, requestedSegment, cameraItems, tasks) ?? firstOpen(cameraItems, tasks));
   useEffect(() => { const key = requestedTarget(requestedCamera, requestedSegment, cameraItems, tasks); if (key) setSelected(key); }, [doc.id, requestedCamera, requestedSegment]);
   const target = parseDraftKey(selected);
@@ -158,7 +158,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const targetLabel = segment == null ? camera : `${camera} · 段 ${segment}`;
   const [railWidth, setRailWidth] = useRailWidth();
   const [working, setWorking] = useState(false);
-  const [choosing, setChoosing] = useState(!!requestedRound);
+  const [choosing, setChoosing] = useState(false);
   const [operation, setOperation] = useState<"extract" | null>(null);
   const [extractionHint, setExtractionHint] = useState("");
   const [extractionFailure, setExtractionFailure] = useState<{ point: ImagePoint; reason: string; message: string } | null>(null);
@@ -190,49 +190,21 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   };
   const { image, error, loading } = useGrayImage(doc.id, frame?.id ?? null);
 
-  // 示教帧选择：从一轮已确认手动分段的完整采集里选这台相机落在本段内的一个帧组
-  const [rounds, setRounds] = useState<CaptureSummary[]>([]);
-  const [pickRoundId, setPickRoundId] = useState(requestedRound ?? "");
+  // 示教帧选择（RB-1）：只在示教件里选这台相机落在本段内的一个帧组
+  const teachingPiece = data.workspace.teachingPiece;
+  const teachingRoundId = teachingPiece?.roundId;
   const [picked, setPicked] = useState<{ round: CaptureRoundV2; view: RoundView } | null>(null);
   const [pickSeq, setPickSeq] = useState(1);
-  const [roundsError, setRoundsError] = useState("");
   const [pickError, setPickError] = useState("");
   const choosingNow = segment != null && (!frame || choosing);
-  useEffect(() => {
-    if (!requestedRound) return;
-    setPickRoundId(requestedRound); setPickSeq(1); setChoosing(true);
-  }, [doc.id, camera, requestedRound]);
-  useEffect(() => {
-    if (!choosingNow) return;
-    let alive = true, pending = false;
-    setRounds([]); setRoundsError("");
-    const refresh = async () => {
-      if (pending) return;
-      pending = true;
-      try {
-        const list = await workspaceApi.captureList(doc.id);
-        if (alive) { setRounds(list.filter(item => item.state === "complete")); setRoundsError(""); }
-      } catch (e) { if (alive) setRoundsError(errorText(e)); }
-      finally { pending = false; }
-    };
-    void refresh(); const timer = setInterval(() => void refresh(), 700);
-    return () => { alive = false; clearInterval(timer); };
-  }, [doc.id, choosingNow]);
   const reviews = data.workspace.captureReview?.rounds ?? {};
   useEffect(() => {
-    if (pickRoundId || !rounds.length) return;
-    const template = data.workspace.captureReview?.template?.roundId;
-    const preferred = rounds.find(item => item.roundId === template);
-    setPickRoundId(preferred ? preferred.roundId : [...rounds].sort((a, b) => b.createdAt - a.createdAt)[0].roundId);
-  }, [rounds, pickRoundId]);
-  const selectedRoundId = rounds.find(item => item.roundId === pickRoundId)?.roundId;
-  useEffect(() => {
     setPicked(null); setPickError("");
-    if (!choosingNow || !selectedRoundId) return;
+    if (!choosingNow || !teachingRoundId) return;
     let alive = true;
-    void workspaceApi.captureGet(selectedRoundId).then(round => { if (alive) setPicked(round?.recipeId === doc.id && round.state === "complete" ? { round, view: roundView(round) } : null); }).catch(e => { if (alive) setPickError(errorText(e)); });
+    void workspaceApi.captureGet(teachingRoundId).then(round => { if (alive) setPicked(round?.recipeId === doc.id && round.state === "complete" ? { round, view: roundView(round) } : null); }).catch(e => { if (alive) setPickError(errorText(e)); });
     return () => { alive = false; };
-  }, [selectedRoundId, choosingNow, doc.id]);
+  }, [teachingRoundId, choosingNow, doc.id]);
   const pickGroups = picked?.view.groupCount ?? 0;
   const pickSeqSafe = Math.min(Math.max(1, pickSeq), Math.max(1, pickGroups));
   // 单段配方所有帧都在第 1 段，不需要先确认手动分段（与后端 apply_segment_teaching 一致）
@@ -355,7 +327,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const saveReason = !editing ? (done ? "走廊已保存" : "先提取或绘制走廊") : invalid ? invalid : !unlocked ? (data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候") : "";
   const doneHint: ReactNode = nextLabel ? `已完成；下一条 ${nextLabel}` : allDone ? <>各段走廊都已示教，可到 <Link to="/recipe/calibration">多轮标定</Link></> : "已完成";
   const dockHint: ReactNode = segment == null ? (params.mmPerPx == null ? `${camera} 缺像素当量：在右侧填写或到相机标定，各段走廊都按它换算` : `像素当量与检测参数改动自动保存到候选配方；走廊在左侧按段逐条示教`)
-    : !frame ? `先在已确认分段的轮次里选第 ${segment} 段内的一帧`
+    : !frame ? `先在示教件第 ${segment} 段内选一帧`
     : data.workspace.pending ? "等待当前工件结束后切换，期间不能修改示教"
       : working ? "正在处理或保存，请稍候"
         : choosing ? "选定新帧后，这一段现有走廊原样保留"
@@ -404,9 +376,6 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     <span className="muted">走廊 <b>{t.corridor.length}</b> 点 · <b>{lengthValue}</b> {lengthUnit}</span>
     {cornerLong && <Badge tone="warn">弯道走廊偏长</Badge>}
   </span>;
-  const recaptureLink = productionBusy
-    ? <Link className="wp-text-link wp-locked" to="/recipe/capture" title="工件正在检测，重采需等待工件结束"><Lock size={12} aria-hidden="true"/>重新采集</Link>
-    : <Link className="wp-text-link" to="/recipe/capture">重新采集</Link>;
   const imageInfo = frame && <Popover side="bottom" align="end" label="图像采集信息" className="wp-image-info" title={`示教帧 · ${targetLabel}`} trigger={<IconButton size="sm" aria-label="图像采集信息"><Info size={15}/></IconButton>}>
     <KV label="图像">{`${frame.id} · ${frame.size[0]} × ${frame.size[1]} px`}</KV>
     <KV label="取样来源">{frame.source} · {new Date(frame.capturedAt).toLocaleString("zh-CN")}</KV>
@@ -415,21 +384,20 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     {imagingHint && <p className="c-warn" role="note">{imagingHint}；只作提示，示教与标定仍然有效</p>}
     <p className="muted hint">走廊保存进候选配方，已发布版本不变。用于生产前仍需完成多轮标定与发布。</p>
   </Popover>;
-  const pickOptions = rounds.map(item => ({ value: item.roundId, label: `${new Date(item.createdAt).toLocaleString("zh-CN")} · ${item.receivedCount} 帧组${reviews[item.roundId]?.status === "confirmed" ? " · 已确认分段" : ""}` }));
-  const pickReason = !picked ? "先选一轮完整的采集" : !range ? "这一轮还没有确认手动分段：先在分段标定里确认边界，或换一轮"
-    : !inSegment ? `第 ${segment} 段在这一轮为帧组 ${range.start}–${range.end}` : !arrived ? "该相机本帧组缺帧，请换一个帧组" : !unlocked ? "正在处理或保存，请稍候" : "";
+  const pickReason = !teachingPiece ? "还没有示教件：先选示教件" : !picked ? "正在读取示教件" : !range ? "示教件的分段边界还没确认：先在分段标定里保存分段"
+    : !inSegment ? `第 ${segment} 段在示教件为帧组 ${range.start}–${range.end}` : !arrived ? "该相机本帧组缺帧，请换一个帧组" : !unlocked ? "正在处理或保存，请稍候" : "";
   const pickPanel = <Surface role="region" className="wp-picker wp-corridor-picker" aria-label="示教帧选择">
     <h2>{targetLabel}<small>示教帧</small></h2>
     <div className="wp-corridor-pick">
-      <Select label="采集轮次" value={pickRoundId} disabled={!unlocked || !rounds.length} options={pickOptions.length ? pickOptions : [{ value: "", label: "没有完整的采集轮次" }]} onValueChange={value => { setPickRoundId(value); setPickSeq(1); }}/>
+      {teachingPiece ? <span className="muted">示教件 · {pieceLabel(teachingPiece)}</span>
+        : <span className="muted">还没有示教件，请先<Link className="wp-text-link" to="/recipe/capture">选示教件</Link>。</span>}
       <div className="wp-corridor-seq" role="group" aria-label="帧组选择">
         <IconButton size="sm" aria-label="上一帧组" disabled={!picked || pickSeqSafe <= 1} onClick={() => setPickSeq(pickSeqSafe - 1)}><ChevronLeft size={15}/></IconButton>
         <NumberField aria-label="帧组序号" min={1} max={Math.max(1, pickGroups)} step={1} value={pickGroups ? pickSeqSafe : ""} disabled={!picked} onValueChange={value => setPickSeq(value === "" ? 1 : Math.trunc(value))}/>
         <IconButton size="sm" aria-label="下一帧组" disabled={!picked || pickSeqSafe >= pickGroups} onClick={() => setPickSeq(pickSeqSafe + 1)}><ChevronRight size={15}/></IconButton>
         <span className="muted">/ {pickGroups || "—"}</span>
       </div>
-      {range && <span className="muted">第 {segment} 段在这一轮为帧组 {range.start}–{range.end}</span>}
-      {!rounds.length && <span className="muted">还没有完整的采集轮次，请先<Link className="wp-text-link" to="/recipe/capture">前往采集轮次</Link>。</span>}
+      {range && <span className="muted">第 {segment} 段在示教件为帧组 {range.start}–{range.end}</span>}
     </div>
     <div className="wp-picker-side">
       <WithReason reason={pickReason}>
@@ -455,17 +423,17 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     </Surface>
     : <>
       {choosingNow && pickPanel}
-      {(roundsError || pickError) && choosingNow && <p className="c-warn wp-picker-warn" role="alert">{roundsError || pickError}</p>}
+      {pickError && choosingNow && <p className="c-warn wp-picker-warn" role="alert">{pickError}</p>}
       {!choosingNow && frame && <Surface role="region" className="wp-picker wp-corridor-frame" aria-label="示教帧">
         <h2>{targetLabel}<small>示教帧</small></h2>
         <span className="muted wp-corridor-source">{frame.source} · {frame.id}</span>
-        <div className="wp-picker-side">{imageInfo}<Button variant="text" disabled={!unlocked || editing || frameDirty} onClick={() => { setTrialSeq(null); setChoosing(true); }}>重新选帧</Button>{recaptureLink}</div>
+        <div className="wp-picker-side">{imageInfo}<Button variant="text" disabled={!unlocked || editing || frameDirty} onClick={() => { setTrialSeq(null); setChoosing(true); }}>重新选帧</Button></div>
       </Surface>}
       {!choosingNow && frame && segmentTeaching && <SegmentTrial key={scope} id={doc.id} camera={camera} segment={segment!} round={segmentTeaching.round} teachSeq={segmentTeaching.seq}
         range={trialRange} revision={data.workspace.revision} locked={trialLocked} guide={headingGuide} seq={trialSeq} onSeq={setTrialSeq} />}
       {choosingNow
         ? <GrayViewer controlsAt="footer" image={candidate.image} loading={candidate.loading} error={candidate.error || (picked && !arrived ? "该相机本帧组缺帧，请换一个帧组" : "")} label={`${camera} · 帧组 ${pickSeqSafe} · 候选示教帧`}
-          emptyTitle="选择示教帧" emptyHint="先选一轮已确认手动分段的完整采集，再选这一段内这台相机的帧组；缺帧的帧组不能选。" summary={<span className="muted">{`选定后冻结为第 ${segment} 段的示教帧，这条走廊只用于这一段的帧。`}</span>}/>
+          emptyTitle="选择示教帧" emptyHint="在示教件这一段内选这台相机的帧组；缺帧的帧组不能选。" summary={<span className="muted">{`选定后冻结为第 ${segment} 段的示教帧，这条走廊只用于这一段的帧。`}</span>}/>
         : trialSeq != null ? null : <GrayViewer controlsAt="footer" summary={summary} image={image} loading={loading} error={error} label={frame ? `${targetLabel} · 示教帧` : "等待取样"} tools={tools} subtools={canvasParams} emptyTitle="示教帧尚未就绪" emptyHint="选定示教帧后，这里显示这一帧。"
           region={selectionTool === "box" ? region : null}
           onRegion={regionMode && selectionTool === "box" && canEdit ? setRegion : undefined}
