@@ -683,7 +683,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 #### 11. 生产节拍
 
-- **接件**：`shot_router::arm_frames` 在接件登记时按 SDK 帧计数定基线（D-SB-7），本会话没见过帧时取开流后计数起点，仍未知时不阻止接件，取本件这台相机首帧计数 − 1（本件没收到帧的相机不记下一件下限）；`Policy::burst_production` 认 ChunkTrigger / ChunkFrame / SdkFrame，`Policy::burst_offline` 另认 Synthetic。会话或计数来源不可信记 98，测量池全部超时未返回记 99：本件照常运动，PC 等 plcState=20 后回结果码 90 与该故障码（[core-flow.md](core-flow.md) D-CF-4）。
+- **接件**：`shot_router::arm_frames` 在接件登记时按 SDK 帧计数定基线（D-SB-7），本会话没见过帧时取开流后计数起点，仍未知时不阻止接件，取本件这台相机首帧计数 − 1（本件没收到帧的相机不记下一件下限）；`Policy::burst_production` 认 ChunkTrigger / ChunkFrame / SdkFrame，`Policy::burst_offline` 另认 Synthetic。会话或计数来源不可信记 98，测量池全部超时未返回、发布包核验或追溯健康检查超过 1 s 未完成（`INTAKE_CHECK_TIMEOUT`，存储卡住时不阻塞节拍）记 99：本件照常运动，PC 等 plcState=20 后回结果码 90 与该故障码（[core-flow.md](core-flow.md) D-CF-4）。
 - **帧**：Grouper 的 seq 上限 = ΣN_exp + Σtol + 64，超出判 `Offer::OutOfRange`（不计入本件、不抬基线），丢弃并告警。重复帧号丢弃，每台相机每件告警一次；上一件迟到帧记游离帧；接件后的手动帧丢弃并告警（不判 ERR，告警写明该相机此后帧组可能错开一格）；检测中会话变化或计数来源变为不可信判 ERR 98。回调通道满、图像内存预算满的帧不交给节拍，即缺帧。
 - **测量**：每帧经 `FramePool` 送测，结果经 `cycle::Input::FrameMeasured` 回节拍；QueueFull / Timeout 记 Unmeasured，Failed 记 Error；超过 T_proc 或到收尾截止仍没结果记 Unmeasured；测量输出的帧身份与送测帧不符或含非有限数改记 Error。都只记检测不完整，不判 99。
 - **收尾与判定**：工件结束（plcState=20）后等满收尾窗口、已接受的帧都测完，有收尾补测目标时再等补测完（D-SB-45）即判。故障（98、97）优先；否则 `Proportional`（D-SB-40）→ `resolve_regions` → `loss_alarms(各相机帧数)` → `burst_judge::judge`。丢帧、帧数异常、疑似提前终止写运行日志（warn），结论不变。

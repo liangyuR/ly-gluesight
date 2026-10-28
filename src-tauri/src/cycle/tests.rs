@@ -780,3 +780,21 @@ fn no_runnable_recipe_blocks_only_outside_maintenance() {
         );
     }
 }
+
+/// 存储卡住时接件的追溯健康检查按时限返回失败（本件按不能检测处理），不等探针跑完，节拍不被阻塞；一次超时也不记成追溯故障。
+#[tokio::test]
+async fn stalled_intake_health_probe_times_out_without_poisoning_audit() {
+    let started = std::time::Instant::now();
+    let mut poisoned = false;
+    let result = super::intake_health_check(
+        || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            Ok(())
+        },
+        |_| poisoned = true,
+    )
+    .await;
+    assert!(result.is_err());
+    assert!(!poisoned);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}

@@ -969,18 +969,43 @@ fn millis(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-/// 接件时的追溯健康检查。探针自身失败时 `Audit::health` 已标记追溯故障；探针线程异常无法确认结果，按追溯故障处理。
+/// 接件里每项阻塞的文件检查（发布包核验、追溯健康探针）的时限：存储卡住时本件按不能检测处理，节拍照常收帧、
+/// 处理工件结束与复位；远小于到达到拍照信号的间隔（协议 8 第十节，≥ 2 s）。
+const INTAKE_CHECK_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// 在阻塞线程上做接件检查：超时返回 `Err(None)`，检查线程留在后台跑完；线程异常返回 `Err(Some(原因))`。
+async fn bounded_check<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Option<String>> {
+    match tokio::time::timeout(
+        INTAKE_CHECK_TIMEOUT,
+        tauri::async_runtime::spawn_blocking(work),
+    )
+    .await
+    {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(Some(error.to_string())),
+        Err(_) => Err(None),
+    }
+}
+
+/// 接件时的追溯健康检查。探针自身失败时 `Audit::health` 已标记追溯故障；探针线程异常无法确认结果，按追溯故障处理；
+/// 只是超时则只影响本件，不把一次偶发的存储延迟变成需要重启才能恢复的追溯故障。
 async fn intake_health_check(
     probe: impl FnOnce() -> Result<(), String> + Send + 'static,
     poison: impl FnOnce(String),
 ) -> Result<(), String> {
-    match tauri::async_runtime::spawn_blocking(probe).await {
+    match bounded_check(probe).await {
         Ok(result) => result,
-        Err(error) => {
+        Err(Some(error)) => {
             let error = format!("追溯健康检查线程异常：{error}");
             poison(error.clone());
             Err(error)
         }
+        Err(None) => Err(format!(
+            "追溯健康检查超过 {} ms 未完成",
+            INTAKE_CHECK_TIMEOUT.as_millis()
+        )),
     }
 }
 
@@ -1798,7 +1823,7 @@ impl Machine {
             }
         };
         if let Some(prepared) = production.clone() {
-            match tauri::async_runtime::spawn_blocking(move || prepared.verify()).await {
+            match bounded_check(move || prepared.verify()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(reason)) => {
                     return self
@@ -1811,14 +1836,14 @@ impl Machine {
                         .await
                 }
                 Err(error) => {
-                    return self
-                        .refuse(
-                            sn,
-                            id,
-                            fault::PROCESS_TIMEOUT,
-                            format!("发布包核验线程异常：{error}"),
-                        )
-                        .await
+                    let reason = match error {
+                        Some(error) => format!("发布包核验线程异常：{error}"),
+                        None => format!(
+                            "发布包核验超过 {} ms 未完成",
+                            INTAKE_CHECK_TIMEOUT.as_millis()
+                        ),
+                    };
+                    return self.refuse(sn, id, fault::PROCESS_TIMEOUT, reason).await;
                 }
             }
         }
