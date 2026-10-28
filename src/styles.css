@@ -26,6 +26,7 @@ h1, h3, p { margin: 0; }
   isolation: isolate;
   width: var(--sidebar-w);
   margin: 12px 0 12px 12px;
+  padding-top: 12px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -34,23 +35,8 @@ h1, h3, p { margin: 0; }
 .sidebar-surface { position: absolute; top: 0; bottom: 0; left: 0; z-index: -1; width: var(--sidebar-w); border-radius: var(--r-xl); overflow: hidden; pointer-events: none; }
 .sidebar-surface > i { position: absolute; inset: 0; border-radius: var(--r-xl); background: var(--surface-low); transition: transform var(--dur-medium) var(--ease-standard); }
 .sidebar.collapsed .sidebar-surface > i { transform: translateX(calc(var(--sidebar-w-rail) - var(--sidebar-w))); }
-.sidebar :is(.brand-text, .nav-label, .nav-group-label, .status-text) { transition: opacity var(--dur-short) var(--ease-standard); }
-.sidebar.switching :is(.brand-text, .nav-label, .nav-group-label, .status-text, .nav-indicator) { opacity: 0; }
-
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 72px;
-  flex-shrink: 0;
-  padding: 0 20px;
-  overflow: hidden;
-}
-.sidebar.collapsed .sidebar-brand { justify-content: center; padding: 0; }
-.brand-logo { width: 32px; height: 32px; border-radius: var(--r-sm); flex-shrink: 0; }
-.brand-text { display: flex; flex-direction: column; line-height: 1.2; white-space: nowrap; }
-.brand-text span { font-size: 12px; color: var(--on-surface-variant); }
-.brand-text strong { font-size: 14px; }
+.sidebar :is(.nav-label, .nav-group-label, .status-text) { transition: opacity var(--dur-short) var(--ease-standard); }
+.sidebar.switching :is(.nav-label, .nav-group-label, .status-text, .nav-indicator) { opacity: 0; }
 
 .sidebar-nav { position: relative; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 4px; padding: 8px 12px 12px; scrollbar-width: thin; scrollbar-color: var(--outline-variant) transparent; }
 .nav-indicator {
@@ -197,8 +183,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .page-error .qs-empty small { overflow-wrap: anywhere; }
 .native-mode { margin-bottom: var(--space-12); }
 /* 全局提示放在主区顶部居中（r2-ui U-1）：qing-steel 0.8.0 的提示层固定在视口，这里按侧栏宽度把它限定在主区内 */
-.app-shell ~ .qs-snackbars { --snack-from: -12px; top: calc(12px + var(--space-16)); bottom: auto; left: calc(var(--sidebar-w) + 24px); right: 12px; }
-.app-shell:has(> .sidebar.collapsed) ~ .qs-snackbars { left: calc(var(--sidebar-w-rail) + 24px); }
+.app-frame ~ .qs-snackbars { --snack-from: -12px; top: calc(40px + 12px + var(--space-16)); bottom: auto; left: calc(var(--sidebar-w) + 24px); right: 12px; }
+.app-frame:has(.sidebar.collapsed) ~ .qs-snackbars { left: calc(var(--sidebar-w-rail) + 24px); }
 
 .qs-dialog > .ft .form-error { margin-right: auto; }
 .gs-modal.qs-modal-content { width: min(var(--modal-w, 520px), calc(100vw - 32px)); }

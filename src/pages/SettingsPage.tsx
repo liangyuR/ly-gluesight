@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Grid, Heading, NumberField, Select, Stack, Text } from "qing-steel";
+import { Alert, Button, Card, Grid, Heading, NumberField, Select, Stack } from "qing-steel";
 import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";

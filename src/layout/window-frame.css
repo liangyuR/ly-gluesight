@@ -1,0 +1,37 @@
+.app-frame {
+  --window-titlebar-height: 40px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--outline-variant));
+  border-radius: 10px;
+  background: var(--surface-lowest);
+}
+.app-frame.is-maximized { border: 0; border-radius: 0; }
+.app-frame.is-unfocused { border-color: var(--outline-variant); }
+.app-frame > .app-shell { flex: 1; min-height: 0; height: auto; }
+.window-titlebar {
+  display: flex;
+  align-items: stretch;
+  height: var(--window-titlebar-height);
+  flex-shrink: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--outline-variant) 55%, transparent);
+  color: var(--on-surface-variant);
+  user-select: none;
+}
+.window-drag-region { display: flex; align-items: center; flex: 1; min-width: 0; padding: 0 16px; }
+.window-brand { display: flex; align-items: center; gap: 9px; min-width: 0; white-space: nowrap; pointer-events: none; }
+.window-brand img { width: 22px; height: 22px; border-radius: 6px; }
+.window-brand strong { color: var(--on-surface); font-size: 12px; font-weight: 600; letter-spacing: 0.2px; }
+.window-controls { display: flex; align-items: stretch; flex-shrink: 0; }
+.window-control { display: grid; place-items: center; width: 46px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--on-surface-variant); cursor: default; transition: background-color var(--dur-short) var(--ease-standard), color var(--dur-short) var(--ease-standard); }
+.window-control svg { stroke-width: 1.5; pointer-events: none; }
+.window-control:hover { background: var(--surface-mid); color: var(--on-surface); }
+.window-control:active { background: var(--surface-high); }
+.window-control:focus-visible { outline: 2px solid var(--primary); outline-offset: -3px; }
+.window-close:hover { color: #fff; background: #c42b1c; }
+.window-close:active { color: #fff; background: #a92317; }
+.window-browser-label { display: flex; align-items: center; flex-shrink: 0; padding: 0 16px; font-size: 11px; color: var(--on-surface-variant); }
+.is-unfocused .window-brand { opacity: 0.55; }
