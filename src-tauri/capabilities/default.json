@@ -1,7 +1,22 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "默认窗口权限",
-  "windows": ["main", "storage-startup"],
-  "permissions": ["core:default"]
+  "capabilities": [
+    {
+      "identifier": "default",
+      "description": "默认窗口权限",
+      "windows": ["main", "storage-startup"],
+      "permissions": ["core:default"]
+    },
+    {
+      "identifier": "window-controls",
+      "description": "主窗口自定义标题栏控制权限",
+      "windows": ["main"],
+      "permissions": [
+        "core:window:allow-minimize",
+        "core:window:allow-toggle-maximize",
+        "core:window:allow-close",
+        "core:window:allow-start-dragging"
+      ]
+    }
+  ]
 }
