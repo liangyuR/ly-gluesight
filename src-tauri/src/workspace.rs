@@ -723,20 +723,24 @@ pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
     if items.get(&id).is_some_and(|w| w.pending.is_some()) {
         return Err("已有待生效版本，不能删除".into());
     }
-    // 候选导入的轮次一并删除（RB-5）；先删轮次，失败时候选仍在，可重试
-    app.state::<CycleHost>()
-        .camera
-        .recipe_capture()
-        .delete_recipe_rounds(&id)?;
+    let rounds = || {
+        app.state::<CycleHost>()
+            .camera
+            .recipe_capture()
+            .delete_recipe_rounds(&id)
+    };
     if items.get(&id).is_some_and(Workspace::legacy) {
-        // 旧流程候选只删候选本身：生产配方与发布归档照常运行，之后可从生产配方新建新流程候选
+        // 旧流程候选只删候选本身与它导入的轮次（RB-5）：生产配方与发布归档照常运行，之后可从生产配方新建新流程候选
+        rounds()?;
         pieces::remove_legacy_dir(&host.dir(&id))?;
         items.remove(&id);
         return Ok(());
     }
+    // 生产配方的删除检查（在用、在途事务、配置门）通过后才删轮次，被拒时示教与标定原图不受影响
     if app.state::<CycleHost>().recipe(&id).is_some() {
         crate::recipe_api::recipe_delete(app.clone(), app.state::<CycleHost>(), id.clone())?;
     }
+    rounds()?;
     let dir = host.dir(&id);
     if dir.exists() {
         std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;

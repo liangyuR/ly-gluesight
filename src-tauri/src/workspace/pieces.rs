@@ -423,7 +423,18 @@ pub(super) struct SyncOutcome {
     pub features: Vec<(String, Vec<FrameMetrics>, SegOutcome)>,
 }
 
-/// 同步标定件（RB-3、D-SB-51）：对还没加入标定的每一件——示教件要求边界已确认；其余件边界未确认或已失效时用示教件边界
+/// 已加入标定的一件是否按当前的计划相机与走廊身份（走廊、当量、检测参数、站距）测量；改过之后旧特征与 x 不再可比，同步时重测。
+pub(super) fn measured_with_current_corridors(doc: &RecipeDoc, entry: &CalibrationRound) -> bool {
+    let cameras = doc.plan_cameras();
+    entry.cameras == cameras
+        && entry.corridors
+            == cameras
+                .iter()
+                .map(|camera| burst::corridor_tag(doc, camera))
+                .collect::<Vec<_>>()
+}
+
+/// 同步标定件（RB-3、D-SB-51）：走廊示教完成时，先把测量输入已改过的标定件移出标定（清除派生标定结果）以便重测；然后对还没加入标定的每一件——示教件要求边界已确认；其余件边界未确认或已失效时用示教件边界
 /// 对齐（`align`），全部可信则确认（`ConfirmedBy::Aligned`），否则不动并给出待复核的边界。边界确认后、走廊示教完成时用已示教的
 /// 走廊测量（`measure`）并加入标定；示教件只在走廊示教完成后加入，且不按标准件。`rounds` 为各件轮次，示教件在前。
 pub(super) fn sync_pieces(
@@ -438,6 +449,17 @@ pub(super) fn sync_pieces(
     let mut features = Vec::new();
     let teaching_ready = teaching_counts(w).is_some();
     let ready = corridor_ready(w);
+    if ready {
+        let before = next.calibration.rounds.len();
+        let doc = next.doc.clone();
+        next.calibration
+            .rounds
+            .retain(|entry| measured_with_current_corridors(&doc, entry));
+        if next.calibration.rounds.len() != before {
+            burst::clear_calibration(&mut next.doc);
+            next.changed();
+        }
+    }
     for round in rounds {
         let id = &round.round_id;
         if next.calibration.rounds.iter().any(|r| &r.round_id == id) {
@@ -566,12 +588,11 @@ fn sync(app: &AppHandle, id: &str, revision: u64) -> Result<CalibrationSyncResul
     let capture = cycle.camera.recipe_capture();
     let mut unreadable = Vec::new();
     let mut rounds = Vec::new();
+    let ready = corridor_ready(&w);
     for summary in piece_rounds(capture, &w)? {
-        if w.calibration
-            .rounds
-            .iter()
-            .any(|r| r.round_id == summary.round_id)
-        {
+        if w.calibration.rounds.iter().any(|r| {
+            r.round_id == summary.round_id && (!ready || measured_with_current_corridors(&w.doc, r))
+        }) {
             continue;
         }
         match capture.get_burst(&summary.round_id) {

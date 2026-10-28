@@ -1,7 +1,10 @@
 use super::burst::{calibration_round, measure_round, CameraTeaching};
 use super::burst_tests::{burst_workspace, capture_round, configs, measured, DEVICE};
 use super::capture_review::{apply_capture_review, CaptureReviewEdit, ConfirmedBy, ReviewStatus};
-use super::pieces::{discard_piece, replace_teaching_piece, sync_pieces, TeachingPiece, LEGACY};
+use super::pieces::{
+    discard_piece, measured_with_current_corridors, replace_teaching_piece, sync_pieces,
+    TeachingPiece, LEGACY,
+};
 use super::progress::StepStatus;
 use super::*;
 use crate::frame_align::{AlignedCut, ReviewReason};
@@ -317,6 +320,48 @@ fn sync_confirms_and_adds_trusted_pieces_and_leaves_untrusted_for_review() {
                 .is_some_and(|i| i.contains("走廊示教未完成")));
         }
     }
+}
+
+#[test]
+fn sync_remeasures_pieces_whose_corridor_identity_changed_after_joining() {
+    // 防的回归（PR #205 评审）：加入标定后改了当量、走廊或检测参数，同步仍跳过已加入的件，特征、起涂建议与 x_ref 沿用旧测量；
+    // 弃用会删原图、示教件又不能弃用，已没有别的办法刷新
+    let (w, teach) = with_teaching(true);
+    let other = capture_round("other", &w.doc, GROUPS, DEVICE, &[]);
+    let rounds = [teach, other];
+    let sync = |w: &Workspace, x: f64| {
+        sync_pieces(
+            w,
+            &rounds,
+            &configs(&w.doc, DEVICE),
+            |_| Ok(vec![aligned(16, None)]),
+            |w, round| {
+                Ok(measure_round(&w.doc.plan_cameras(), round, |_, _, _| {
+                    Ok(measured(x))
+                }))
+            },
+        )
+    };
+    let joined = sync(&w, 0.0).next;
+    assert_eq!(joined.calibration.rounds.len(), 2, "前提：两件都已加入");
+    let unchanged = sync(&joined, 1.0);
+    assert!(unchanged.features.is_empty(), "测量输入没变时不重测");
+    let mut changed = joined.clone();
+    let scale = changed.doc.inspect[0].mm_per_px.unwrap_or(0.1);
+    changed.doc.inspect[0].mm_per_px = Some(scale * 2.0);
+    let outcome = sync(&changed, 1.0);
+    let remeasured: Vec<_> = outcome
+        .features
+        .iter()
+        .map(|(id, ..)| id.as_str())
+        .collect();
+    assert_eq!(remeasured, ["teach", "other"]);
+    assert!(outcome
+        .next
+        .calibration
+        .rounds
+        .iter()
+        .all(|r| measured_with_current_corridors(&outcome.next.doc, r)));
 }
 
 #[test]
