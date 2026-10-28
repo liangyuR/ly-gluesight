@@ -9,13 +9,12 @@ import ContextHelp from "../features/cycle/components/ContextHelp";
 import "./SettingsPage.css";
 
 const timeoutFields: [keyof Timeouts, string, string][] = [
-  ["armMs", "布防预算（ms）", "布防及确认的时间预算，100–5000 ms"],
-  ["motionMs", "运动超时（ms）", "等待运动结束"],
-  ["drainMs", "收尾等待（ms）", "运动结束后等待剩余帧"],
+  ["motionMs", "工件结束超时（ms）", "接件登记后等待 PLC 报工件结束"],
+  ["drainMs", "收尾等待（ms）", "工件结束后等待剩余帧"],
   ["procMs", "单帧处理（ms）", "单帧入队到测量完成"],
   ["ackMs", "结果确认（ms）", "等待 PLC 确认结果"],
 ];
-const timeoutMinimums: Record<keyof Timeouts, number> = { armMs: 100, motionMs: 1000, drainMs: 200, procMs: 200, ackMs: 500 };
+const timeoutMinimums: Record<keyof Timeouts, number> = { motionMs: 1000, drainMs: 200, procMs: 200, ackMs: 500 };
 
 type SavePart = (part: Partial<CycleSettings>) => Promise<boolean>;
 

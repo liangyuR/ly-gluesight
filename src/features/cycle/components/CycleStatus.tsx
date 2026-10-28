@@ -6,7 +6,7 @@ import type { Phase, Snapshot } from "../types";
 
 const steps: { id: Phase; label: string }[] = [
   { id: "IDLE", label: "空闲" },
-  { id: "VALIDATE", label: "校验" },
+  { id: "VALIDATE", label: "接件" },
   { id: "ACQUIRE", label: "采集" },
   { id: "DRAIN", label: "收尾" },
   { id: "JUDGE", label: "判定" },

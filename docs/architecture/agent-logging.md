@@ -63,7 +63,7 @@
 | `op` | 操作员命令（界面或 IPC 调用） |
 | `plc` | PLC 链路：连接、断开、ly_plc 引擎告警 |
 | `s7` | S7 生产握手会话 |
-| `part` | 工件生命周期：开始、布防、结束、结论 |
+| `part` | 工件生命周期：开始、接件登记、结束、结论 |
 | `frame` | 帧到达与归属：游离、迟到、截止后、配组、丢帧 |
 | `measure` | 测量与判定 |
 | `camera` | 相机连接、配置下发、取图 |
@@ -79,7 +79,7 @@
 
 ### 4.3 拆分的同名事件
 
-只拆分了带编码的事件：`故障`（S7、追溯、布防都记成同一事件）改为 `fault.enter`，用 `source` 区分（5.3）；`PLC {category}`（ev 动态拼接）改为 `plc.engine.warn` / `plc.engine.error`，`data.category`；相机断线重试改为 `camera.reconnect_failed`。其余同名事件（`相机`、`站点模式`、`布防阶段`、`校验失败` 等）没有 `code`，按 `ev` 与 `msg` 理解。
+只拆分了带编码的事件：`故障`（S7、追溯、接件都记成同一事件）改为 `fault.enter`，用 `source` 区分（5.3）；`PLC {category}`（ev 动态拼接）改为 `plc.engine.warn` / `plc.engine.error`，`data.category`；相机断线重试改为 `camera.reconnect_failed`。其余同名事件（`相机`、`站点模式`、`接件阶段`、`接件校验` 等）没有 `code`，按 `ev` 与 `msg` 理解；`接件阶段` 的 `msg` 是 JSON：`cycleId`、`sn`、`status`（`admitted` / `deferred` / `fault`）、`elapsedMs`。
 
 ## 5. 补齐关键证据
 
@@ -103,7 +103,7 @@
 
 ### 5.3 故障事件与来源
 
-- `fault.enter`：节拍进入故障，或故障原因变化。`source` 取 `s7 / audit / arm / device / storage / operator`，`data` 带 `reason`、`s7Phase`、在途 `cycleId`。
+- `fault.enter`：节拍进入故障，或故障原因变化。`source` 取 `s7 / audit / intake / motion / device / storage / operator`（`motion` 为等工件结束超时），`data` 带 `reason`、`s7Phase`、在途 `cycleId`。
 - `fault.repeat`：同一来源、同一原因重复上报时不再逐条写，按聚合规则（第 6 节）定期输出 `{count, firstTs, lastTs}`。
 - `fault.cleared`：复位完成、故障解除，带持续时长。
 

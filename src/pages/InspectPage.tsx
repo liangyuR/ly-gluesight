@@ -36,7 +36,7 @@ function verdictParts(v: Verdict) {
   return { code, detail: detail ?? "整件合格" };
 }
 
-const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "校验", ACQUIRE: "采集", DRAIN: "收尾", JUDGE: "判定", REPORT: "回写", RELEASE: "释放", FAULT: "故障" };
+const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "接件", ACQUIRE: "采集", DRAIN: "收尾", JUDGE: "判定", REPORT: "回写", RELEASE: "释放", FAULT: "故障" };
 
 const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label: "整件布置" }];
 
@@ -190,7 +190,7 @@ export default function InspectPage() {
       {resetError && <Alert tone="ng">{resetError}</Alert>}
       {!!snapshot?.measurementWorkers.timedOut && <Alert tone="ng">
         测量线程超时未返回：{snapshot.measurementWorkers.timedOut} / {snapshot.measurementWorkers.capacity}，当前可用容量 {snapshot.measurementWorkers.availableCapacity}。
-        {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，当前不可布防。"}
+        {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，新到的工件无法检测。"}
       </Alert>}
       {snapshot?.recordingAlarm && <Alert tone="warn">
         原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查资料盘空间与录制目录写权限，下一件完整保存后自动消除。

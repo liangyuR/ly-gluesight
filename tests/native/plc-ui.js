@@ -20,11 +20,11 @@ async (page) => {
   await page.getByRole("button", { name: "断开", exact: true }).waitFor();
   const config = await read("plc_get_config");
   const version = config.points.find(p => p.tags.includes("plcVersion"));
-  const protocolVersion = 7;
+  const protocolVersion = 8;
   await page.waitForFunction(async ({ id, expected }) => (await window.__TAURI_INTERNALS__.invoke("plc_get_values"))[id]?.value === expected, { id: version.id, expected: protocolVersion });
   const rows = ["上位机状态", "PLC 状态"].map(name => page.locator("tr").filter({ has: page.locator(".cell-title").getByText(name, { exact: true }) }));
   for (const row of rows) if (await row.getByRole("button", { name: "写入", exact: true }).isEnabled()) throw new Error("S7 handshake points must not be manually writable");
-  await read("plc_write_point", { id: config.points.find(p => p.tags.includes("pcState")).id, value: 20 }).then(() => { throw new Error("Backend accepted a manual handshake write"); }, error => { if (!String(error).includes("禁止手动写入")) throw error; });
+  await read("plc_write_point", { id: config.points.find(p => p.tags.includes("pcState")).id, value: 30 }).then(() => { throw new Error("Backend accepted a manual handshake write"); }, error => { if (!String(error).includes("禁止手动写入")) throw error; });
   const result = { operation: "离线 S7 下 PLC 草稿还原、拒绝保存临时配置、断开/连接、读回协议版本、握手点禁止手写", passed: true, port: offline.port, protocolVersion };
   await page.evaluate(result => window.__uiOperations.checks.push(result), result);
   await page.screenshot({ path: "output/playwright/ui-regression/plc-offline-s7.png", fullPage: true });

@@ -20,7 +20,7 @@ export function planCompareItems(production: PlanExport | null, candidate: PlanE
   ];
 }
 
-/** 段配方的发布确认内容：候选与生产的对比。协议 7 下 PLC 只报型号，计划与帧数由 PC 管理，发布后 PLC 不用改。 */
+/** 段配方的发布确认内容：候选与生产的对比。PLC 只报型号，计划与帧数由 PC 管理，发布后 PLC 不用改。 */
 export function PlanPublishBody({ plan }: { plan: WorkspacePlanView }) {
   const { productionExport: production, candidateExport: candidate } = plan;
   return <>

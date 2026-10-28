@@ -60,7 +60,7 @@
 - `label`：`ok` / `ng` / `unknown`；`shotLabels` 可选，值为原始标签小写（如 `ok`、`breaking`），缺省视为未标注。
 - 标签只用于展示"期望 / 实际"和测试断言，**不参与判定**。
 - 每个 part 应包含 shots × views 的全部文件；缺失文件合法（表示该件该点缺图），加载时报告缺失清单，运行时该帧按缺帧处理。
-- `sn` 为去除空白后非空的字符串（可能含字母）。PLC 的 SN 是 S7 STRING[50]（1–50 个 ASCII 可打印字符，原样保存与回显，见[生产通讯协议 7](plc-communication-protocol.md)）；离线产线为每件分配形如 `OFFLINE-0001234567`（`OFFLINE-` 加 10 位数字）的 SN，同一离线运行内唯一，按该 SN 字符串认领样本件，并记录 SN ↔ partId 的对应，样本集自身的 `sn` 仅作追溯显示。
+- `sn` 为去除空白后非空的字符串（可能含字母）。PLC 的 SN 是 S7 STRING[50]（1–50 个 ASCII 可打印字符，原样保存与回显，见[生产通讯协议 8](plc-communication-protocol.md)）；离线产线为每件分配形如 `OFFLINE-0001234567`（`OFFLINE-` 加 10 位数字）的 SN，同一离线运行内唯一，按该 SN 字符串认领样本件，并记录 SN ↔ partId 的对应，样本集自身的 `sn` 仅作追溯显示。
 
 ## 段配方对 v1 的解释
 

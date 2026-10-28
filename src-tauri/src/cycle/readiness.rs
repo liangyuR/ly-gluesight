@@ -90,7 +90,7 @@ pub struct Facts {
     pub record: RecordMode,
     pub product: Product,
     pub activation_uncertain: bool,
-    /// 维护模式：来件不论配方都照常布防放行，配方问题不阻塞开工
+    /// 维护模式：来件不论配方都照常采图放行，配方问题不阻塞开工
     pub maintenance: bool,
     pub recipes: Vec<RecipeOption>,
 }
@@ -150,7 +150,7 @@ fn recipe_item(f: &Facts) -> ReadinessItem {
 
     let checked = production_recipe_item(f);
     if f.maintenance && checked.state == ItemState::Blocked && !f.activation_uncertain {
-        let detail = format!("{}；维护模式下来件照常布防放行，本件未检", checked.detail);
+        let detail = format!("{}；维护模式下来件照常采图放行，本件未检", checked.detail);
         return ReadinessItem {
             state: ItemState::Waiting,
             detail,
@@ -418,7 +418,10 @@ pub fn gather(app: &AppHandle) -> Readiness {
         if status.loaded { Ok(status.version.unwrap_or_default()) } else { Err(status.message) }
     });
     let workers = match snapshot.as_ref().map(|s| &s.measurement_workers) {
-        Some(w) if w.capacity > 0 && w.timed_out >= w.capacity => Err(format!("测量工作线程全部超时未返回（{} / {}），拒绝布防", w.timed_out, w.capacity)),
+        Some(w) if w.capacity > 0 && w.timed_out >= w.capacity => Err(format!(
+            "测量工作线程全部超时未返回（{} / {}），来件不能检测",
+            w.timed_out, w.capacity
+        )),
         _ => Ok(()),
     };
     let audit = match host.audit.readiness() {

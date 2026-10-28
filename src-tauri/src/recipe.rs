@@ -438,7 +438,7 @@ pub struct RecipeDoc {
     pub version: u32,
     /// PLC 拍照计划版本：由配方库分配、全局唯一，只在计划身份变了时换新号（见 `same_plan`）：旧拍照点配方是产品代码或
     /// 拍照点的顺序、编号、Pose、相机；段配方是产品代码、各段序号 / 类型 / N_exp、相机顺序与 ΣN_exp。
-    /// 只改限值、检测参数、示教中线、容差、x_ref 或"不检"时不变，PLC 侧不用跟着改。0 表示还没分配（不能布防）。
+    /// 只改限值、检测参数、示教中线、容差、x_ref 或"不检"时不变，PLC 侧不用跟着改。0 表示还没分配（不能接件）。
     #[serde(default)]
     pub plan_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]

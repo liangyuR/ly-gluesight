@@ -2,7 +2,6 @@ mod storage_startup;
 mod candidate;
 mod calibration;
 mod applog;
-mod arming;
 mod audit;
 mod burst_judge;
 mod camera;

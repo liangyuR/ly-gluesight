@@ -17,7 +17,7 @@ const TIMING: Timing = Timing {
     end_delay: Duration::from_millis(20),
     ack_delay: Duration::from_millis(20),
     settle: Duration::from_millis(150),
-    arm_timeout: HANG_GUARD,
+    capture_lead: Duration::from_millis(50),
     result_timeout: HANG_GUARD,
     ready_timeout: HANG_GUARD,
     release_timeout: HANG_GUARD,
@@ -101,7 +101,7 @@ impl Bench {
         }
     }
 
-    /// 段配方：虚拟 PLC 按 `order` 的脉冲剖面跑一件，PC 侧按生产节拍驱动 S7 会话：开始 → 布防 → 运动结束后用实收帧
+    /// 段配方：虚拟 PLC 按 `order` 的脉冲剖面跑一件，PC 侧按生产节拍驱动 S7 会话：开始 → 接件登记 → 工件结束后用实收帧
     /// 走段配方节拍判定（[`judge_burst_at_drain_deadline`]）并回写，判定存进 `judged`。
     /// `fire(pulse)` 模拟相机侧：返回这一脉冲真正交付了帧的相机（计划相机下标），帧计数 = 脉冲序号。
     async fn run_burst_with(&mut self, order: PartOrder, scenario: Scenario, mut fire: impl FnMut(&Pulse) -> Vec<usize>) -> Result<Option<Outcome>, String> {
@@ -127,8 +127,8 @@ impl Bench {
                 assert!(Instant::now() < until, "会话未收敛：{:?}", session.view());
                 match session.poll_gated(engine, false, true, true, intake.load(Ordering::SeqCst)).await {
                     SessionEvent::Start(_) => {
-                        session.arm_outputs(engine, Some(plan)).await.unwrap();
-                        session.commit_arm(engine).await.unwrap();
+                        session.validate_plan(plan).unwrap();
+                        session.commit_intake(engine).await.unwrap();
                     }
                     SessionEvent::End(_) => {
                         let judgement =
@@ -162,7 +162,7 @@ impl Bench {
 
 // ───────────── 段配方：脉冲串（S7 闭环，计划 ΣN_exp 4、Σtol 1，三台相机共用触发） ─────────────
 
-/// 虚拟 PLC 与会话按协议 7 闭环：启动时 PC 未就绪，PLC 现场复位让 PC 就绪；一件走完 PLC 回 0、PC 回 10。
+/// 虚拟 PLC 与会话按协议 8 闭环：启动时 PC 未就绪，PLC 现场复位让 PC 就绪；一件走完 PLC 回 0、PC 回 10。
 #[tokio::test]
 async fn simulator_resets_pc_then_part_completes_back_to_idle() {
     let mut bench = Bench::new("normal").await;

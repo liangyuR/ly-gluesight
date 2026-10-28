@@ -73,8 +73,12 @@ static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 fn manual_arm_ready(source: CameraSource, pending: u32) -> Result<(), String> {
     if source == CameraSource::Mvs && pending > 0 {
-        Err(format!("仍有 {pending} 次手动触发未确认，等待回调或重开相机后才能布防"))
-    } else { Ok(()) }
+        Err(format!(
+            "仍有 {pending} 次手动触发未确认，等待回调或重开相机后才能接件"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// 样本集相机取图的身份：哪个样本集的哪一件、清单里的哪一帧（shotId；相机编号与视角取自相机自身配置）。
@@ -443,7 +447,7 @@ struct Shared {
     full_seq: AtomicU64,
     /// 下一帧不管要不要整帧都留一份（标定试测、软触发取图）
     grab: AtomicBool,
-    /// 未完成的手动触发在回调到达或重新开流前阻止布防。
+    /// 未完成的手动触发在回调到达或重新开流前阻止接件。
     manual: AtomicU32,
     disconnected: AtomicBool,
     order: Mutex<Reorder>,
@@ -1090,7 +1094,11 @@ impl CameraSlot {
             Ok(None) => Ok(CaptureRequest::After { session, frame: after }),
             Err(e) => {
                 self.shared.grab.store(false, Ordering::SeqCst);
-                Err(if config.source == CameraSource::Mvs { format!("{e}；软触发结果未确认，请重开相机后再布防") } else { e })
+                Err(if config.source == CameraSource::Mvs {
+                    format!("{e}；软触发结果未确认，请重开相机后再接件")
+                } else {
+                    e
+                })
             }
         }
     }
@@ -2075,11 +2083,11 @@ pub fn camera_preview(cycle: State<'_, CycleHost>, cam: usize, view: Option<u8>)
     tauri::ipc::Response::new(out)
 }
 
-/// 相机操作与布防、配置修改互斥：排队等配置门，3 秒内拿不到才放弃。
+/// 相机操作与接件、配置修改互斥：排队等配置门，3 秒内拿不到才放弃。
 async fn camera_gate(cycle: &CycleHost) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
     tokio::time::timeout(Duration::from_secs(3), cycle.config_gate.lock())
         .await
-        .map_err(|_| "布防或其他配置操作 3 秒内仍未结束，请稍后重试相机操作".into())
+        .map_err(|_| "接件或其他配置操作 3 秒内仍未结束，请稍后重试相机操作".into())
 }
 
 #[tauri::command]

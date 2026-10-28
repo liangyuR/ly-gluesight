@@ -12,7 +12,7 @@ fn burst_part(cycle_id: &str, ledgers: &Ledgers) -> Part {
     )
 }
 
-/// 同 [`burst_part`]，指定布防前已知的计数来源（海康为空）与布防策略。
+/// 同 [`burst_part`]，指定接件前已知的计数来源（海康为空）与接件策略。
 fn armed_part(
     cycle_id: &str,
     ledgers: &Ledgers,
@@ -64,7 +64,7 @@ fn armed_part_with(
         image_measurement: false,
         proc_timeout: Duration::from_secs(1),
         drain_timeout: Duration::from_secs(2),
-        armed_at: Instant::now(),
+        admitted_at: Instant::now(),
         end_at: None,
         fault: None,
         cams: vec![0, 1, 2],
@@ -478,7 +478,7 @@ fn next_part_baseline_is_each_camera_highest_frame_counter_seen() {
     }
 }
 
-/// 现场 bug：Line0 高电平门控时软件取不了帧，海康相机开流后本会话没见过帧、开流计数起点未知也要能布防；
+/// 现场 bug：Line0 高电平门控时软件取不了帧，海康相机开流后本会话没见过帧、开流计数起点未知也要能接件；
 /// 各相机以本件首帧定基线（首帧算第 1 帧），收尾后下一件的基线接着本件见到的最高帧计数。
 #[test]
 fn hik_camera_without_frames_this_session_arms_and_counts_from_its_first_frame() {
@@ -520,7 +520,7 @@ fn hik_camera_without_frames_this_session_arms_and_counts_from_its_first_frame()
     );
 }
 
-/// 会话变化仍是设备故障：布防后相机重连过，之后的帧号对不上本件，整件判 ERR 98——重连后又来帧，或重连后没再来帧（收尾时核对会话）。
+/// 会话变化仍是设备故障：接件后相机重连过，之后的帧号对不上本件，整件判 ERR 98——重连后又来帧，或重连后没再来帧（收尾时核对会话）。
 #[test]
 fn camera_reconnect_during_part_is_err_98() {
     for case in ["重连后又来一帧", "重连后没再来帧"] {
@@ -731,7 +731,7 @@ fn run_kind_collect_runs_only_in_maintenance_and_formal_always_needs_corridors()
     }
 }
 
-/// 维护模式没有可开工配方时配方项只提示、不阻塞：来件照常布防放行（MM-3），PC 不撤就绪；正常模式仍阻塞。
+/// 维护模式没有可开工配方时配方项只提示、不阻塞：来件照常采图放行（MM-3），PC 不撤就绪；正常模式仍阻塞。
 #[test]
 fn no_runnable_recipe_blocks_only_outside_maintenance() {
     use readiness::{Check, Facts, ItemKey, ItemState, Product, RecipeOption, Site};

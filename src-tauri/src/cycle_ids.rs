@@ -176,7 +176,7 @@ impl Pool {
                 format!("工件 ID 正在后台重试持久分配；上次失败：{}", failure.reason)
             }
             (Some(failure), None) => format!("工件 ID 持久分配失败，等待重试：{}", failure.reason),
-            _ => "工件 ID 正在后台持久分配，尚不可布防".into(),
+            _ => "工件 ID 正在后台持久分配，尚不可接件".into(),
         }
     }
 }

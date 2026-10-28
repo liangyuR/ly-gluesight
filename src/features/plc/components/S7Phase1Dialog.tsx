@@ -20,7 +20,7 @@ const previewColumns: TableColumn<PlcPoint>[] = [
   { key: "dataType", header: "类型", render: point => dataTypeLabels[point.dataType] },
   { key: "access", header: "权限", render: point => point.access === "read" ? "PLC→PC 只读" : "PC→PLC 读写" },
 ];
-/** 生产通讯协议 7：PLC 写 DB4，PC 写 DB2。 */
+/** 生产通讯协议 8：PLC 写 DB4，PC 写 DB2。 */
 const defaultDb = { plc: 4, pc: 2 };
 
 const dbOf = (config: PlcConfig, tag: string) => {
@@ -104,7 +104,7 @@ export default function S7Phase1Dialog({ config, dirty, blockedReason, onApply, 
           aria-invalid={!!invalid} onValueChange={setDb("pc")} />
       </Grid>
     </fieldset>
-    <p className="muted hint">生产通讯协议 7：默认 PLC 写 DB4、PC 写 DB2，各 68 字节，双方以状态字握手；S7-1200 / 1500 采用机架 0 / 插槽 1。请在 PLC 中启用 PUT/GET，并关闭所用 DB 的优化访问；按点表建立数据块，sn 与 snEcho 声明为 String[50]。</p>
+    <p className="muted hint">生产通讯协议 8：默认 PLC 写 DB4、PC 写 DB2，各 68 字节，双方以状态字握手；S7-1200 / 1500 采用机架 0 / 插槽 1。请在 PLC 中启用 PUT/GET，并关闭所用 DB 的优化访问；按点表建立数据块，sn 与 snEcho 声明为 String[50]。</p>
     <p className="muted hint">将生产点表、心跳及 S7 连接预设恢复为标准配置。保留 IP / 主机名、超时、轮询、重连、日志和自动连接设置；应用后需保存配置。</p>
     {invalid && <Alert tone="ng">{invalid}</Alert>}
     {loading && <p role="status">正在生成点表预览…</p>}

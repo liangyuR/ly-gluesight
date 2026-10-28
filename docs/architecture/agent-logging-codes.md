@@ -31,11 +31,11 @@
 | `alarm.raised.summary` | 报警汇总 | error | `alarm.raised` 的聚合摘要：10 分钟窗口到期且窗口内有计数 | `alarm`、`count`、`firstTs`、`lastTs` |
 | `frame.stray` | 游离帧 | warn | 节拍不在采集 / 收尾阶段时收到触发帧；按相机聚合，窗口内首次照写 | `frameCounter`、`phase`（当时节拍阶段）；相机在顶层 `camera` |
 | `frame.stray.summary` | 游离帧汇总 | warn | `frame.stray` 的聚合摘要：10 s 窗口到期，或下一件开工 | `count`、`firstTs`、`lastTs`、`frameCounterMin`、`frameCounterMax`、`phase`（最近一帧时） |
-| `frame.late` | 迟到帧 | warn | 段配方收到不属于本件的帧（上一件迟到或布防前那次打开）；按相机聚合 | `frameCounter` |
+| `frame.late` | 迟到帧 | warn | 段配方收到不属于本件的帧（上一件迟到，或本件接件登记前收到）；按相机聚合 | `frameCounter` |
 | `frame.late.summary` | 迟到帧汇总 | warn | `frame.late` 的聚合摘要：10 s 窗口到期 | `count`、`firstTs`、`lastTs`、`frameCounterMin`、`frameCounterMax` |
 | `frame.after_deadline` | 截止后帧 | warn | 本件已到收尾截止后仍收到帧，丢弃；按相机聚合 | `frameCounter` |
 | `frame.after_deadline.summary` | 截止后帧汇总 | warn | `frame.after_deadline` 的聚合摘要：10 s 窗口到期 | `count`、`firstTs`、`lastTs`、`frameCounterMin`、`frameCounterMax` |
-| `frame.unrouted` | 帧归属 | warn | 帧归不到本件（旧配方的布防前帧、不在本件计划里的相机），不判本件故障；按相机 + 原因聚合 | `reason`（`stale` / `unknown_camera`）、`frameCounter` |
+| `frame.unrouted` | 帧归属 | warn | 帧归不到本件（旧配方在接件前的帧、不在本件计划里的相机），不判本件故障；按相机 + 原因聚合 | `reason`（`stale` / `unknown_camera`）、`frameCounter` |
 | `frame.unrouted.summary` | 帧归属汇总 | warn | `frame.unrouted` 的聚合摘要：10 s 窗口到期 | `reason`、`count`、`firstTs`、`lastTs`、`frameCounterMin`、`frameCounterMax` |
 | `frame.route_fault` | 帧归属故障 | error | 帧归属让本件判 ERR（重复、超计划、相机重开、计数来源不可信）；按相机 + 原因聚合 | `reason`（`duplicate` / `extra` / `session_changed` / `untrusted_counter` / `fault`）、`frameCounter`、`faultCode`（旧配方） |
 | `frame.route_fault.summary` | 帧归属故障汇总 | error | `frame.route_fault` 的聚合摘要：10 s 窗口到期 | `reason`、`count`、`firstTs`、`lastTs`、`frameCounterMin`、`frameCounterMax` |

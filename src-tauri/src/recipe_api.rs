@@ -68,7 +68,7 @@ fn recipe_delete_unavailable_inner(
     let _gate = cycle
         .config_gate
         .try_lock()
-        .map_err(|_| "正在布防或处理其他配置操作，请稍后重试配方操作")?;
+        .map_err(|_| "正在接件或处理其他配置操作，请稍后重试配方操作")?;
     if cycle.busy() {
         return Err("检测结束或故障复位后才能删除不可用配方".into());
     }
@@ -127,7 +127,7 @@ fn recipe_delete_inner(
     let gate = cycle
         .config_gate
         .try_lock()
-        .map_err(|_| "正在布防或处理其他配置操作，请稍后重试生产配方操作")?;
+        .map_err(|_| "正在接件或处理其他配置操作，请稍后重试生产配方操作")?;
     if cycle.busy()
         && app
             .state::<crate::plc::PlcHost>()

@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 
 use crate::inspection::{state, tag};
 
-/// 生产通讯协议 7：双方各一个状态字握手，PC 回显序号与 SN；PLC 只报型号、序号与 SN，不回传计划。
-pub(crate) const PROTOCOL_VERSION: u16 = 7;
+/// 生产通讯协议 8：双方各一个状态字握手，PC 读到请求只登记不回写，在结果阶段回显序号与 SN；PLC 只报型号、序号与 SN。
+pub(crate) const PROTOCOL_VERSION: u16 = 8;
 pub(crate) const SN_MAX_LEN: usize = 50;
 const SN_HEADER_ERRORS: [&str; 2] = ["PLC 字符串声明长度", "PLC 字符串实际长度"];
 
@@ -489,11 +489,10 @@ pub(crate) fn plc_reason_text(code: u16) -> &'static str {
         4 => "现场互锁不满足",
         5 => "协议或状态非法",
         6 => "PC 心跳失活",
-        7 => "运动超时",
+        7 => "等工件结束超时",
         8 => "等待 PC 结果超时",
         9 => "现场执行故障",
         10 => "等待 PC 回就绪超时",
-        11 => "等待 PC 布防超时",
         12 => "序号耗尽",
         13 => "复位条件不满足，拒绝软件复位",
         14 => "在途中 PC 故障或未就绪",
@@ -585,18 +584,18 @@ pub(crate) fn matching_ack(snapshot: &Snapshot, result: &ResultEnvelope) -> Resu
     }
     match snapshot.plc_state()? {
         state::PLC_CONFIRMED => Ok(true),
-        state::PLC_REQUEST | state::PLC_MOTION_END => Ok(false),
+        state::PLC_MOTION_END => Ok(false),
         other => Err(format!("等待 PLC 确认结果时 plcState={other}")),
     }
 }
 
-/// 运动结束只核对 PLC 状态与请求身份，返回预留计数 0。
+/// 工件结束只核对 PLC 状态与请求身份，返回预留计数 0。
 pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<u16, String> {
     if snapshot.plc_state()? != state::PLC_MOTION_END {
-        return Err("运动结束要求 plcState=20".into());
+        return Err("工件结束要求 plcState=20".into());
     }
     if snapshot.request()? != *request {
-        return Err("运动结束时请求身份已改变".into());
+        return Err("工件结束时请求身份已改变".into());
     }
     Ok(0)
 }
@@ -644,17 +643,10 @@ impl WriteOp {
     }
 }
 
-/// 布防：先写回显与模式，最后单独写状态。
-pub(crate) fn arm_plan(request: &Request, mode: u16) -> Vec<WriteOp> {
+/// 结果：回显、结果码与本件接件时锁存的模式，最后置 30；PLC 锁存结果时读取 pcMode。
+pub(crate) fn report_plan(result: &ResultEnvelope, mode: u16) -> Vec<WriteOp> {
     vec![
-        WriteOp::new(tag::SEQ_ECHO, json!(request.request_seq)),
         WriteOp::new(tag::PC_MODE, json!(mode)),
-        WriteOp::new(tag::PC_STATE, json!(state::PC_ARMED)),
-    ]
-}
-
-pub(crate) fn report_plan(result: &ResultEnvelope) -> Vec<WriteOp> {
-    vec![
         WriteOp::new(tag::SEQ_ECHO, json!(result.request_seq)),
         WriteOp::new(tag::RESULT_CODE, json!(result.result_code)),
         WriteOp::new(tag::FAULT_CODE, json!(result.fault_code)),
@@ -968,7 +960,7 @@ mod tests {
         assert!(confirm_start(&first, &second).is_err());
     }
 
-    /// 只接受 PC 当前的协议版本：PLC 仍写上一版（协议 6）不能开始；参数表由 PROTOCOL_VERSION 派生，升版时随之移动。
+    /// 只接受 PC 当前的协议版本：PLC 仍写上一版不能开始；参数表由 PROTOCOL_VERSION 派生，升版时随之移动。
     #[test]
     fn plc_writing_previous_protocol_cannot_start() {
         let current = i64::from(PROTOCOL_VERSION);
@@ -983,7 +975,7 @@ mod tests {
     fn ack_requires_matching_result_identity_and_retained_result_state() {
         let result = result();
         let mut s = snapshot();
-        for op in report_plan(&result) {
+        for op in report_plan(&result, 0) {
             s.values.insert(op.tag, serde_json::from_value(op.value).unwrap());
         }
         s.values

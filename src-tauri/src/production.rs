@@ -187,7 +187,7 @@ impl Prepared {
                 )?;
                 if m.metrics.state != FrameState::Measured {
                     return Err(format!(
-                        "相机 {} 第 {} 段：发布包走廊在自己的示教帧上没有测成（{}），不能布防",
+                        "相机 {} 第 {} 段：发布包走廊在自己的示教帧上没有测成（{}），不能接件",
                         resource.camera,
                         corridor.segment,
                         m.metrics.error.as_deref().unwrap_or("状态异常")
@@ -302,8 +302,12 @@ impl ProductionHost {
         match entries.get(key) {
             Some(Entry::Ready(prepared)) => return Ok(Some(prepared.clone())),
             Some(Entry::Failed(error)) => return Err(error.clone()),
-            Some(Entry::Retryable { error, retry_at }) if now < *retry_at => return Err(error.clone()),
-            Some(Entry::Preparing) => return Err("发布资源与图像引擎正在预热，完成前不能布防".into()),
+            Some(Entry::Retryable { error, retry_at }) if now < *retry_at => {
+                return Err(error.clone())
+            }
+            Some(Entry::Preparing) => {
+                return Err("发布资源与图像引擎正在预热，完成前不能接件".into())
+            }
             _ => {}
         }
         entries.insert(key.to_owned(), Entry::Preparing);
@@ -342,7 +346,7 @@ impl ProductionHost {
             if let Some(retry_at) = retry_at { tokio::time::sleep_until(tokio::time::Instant::from_std(retry_at)).await; }
             let _ = app.state::<CycleHost>().tx.send(Input::Refresh);
         });
-        Err("发布资源与图像引擎正在预热，完成前不能布防".into())
+        Err("发布资源与图像引擎正在预热，完成前不能接件".into())
     }
 }
 

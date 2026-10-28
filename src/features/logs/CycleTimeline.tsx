@@ -9,7 +9,7 @@ import DiagnosticsDialog from "./DiagnosticsDialog";
 import type { Timeline } from "./types";
 import ContextHelp from "../cycle/components/ContextHelp";
 
-const markedStages = new Set(["partStart", "armed", "partEnd", "result", "released", "fault", "reset"]);
+const markedStages = new Set(["partStart", "admitted", "partEnd", "result", "released", "fault", "reset"]);
 const levelTone = { error: "ng", warn: "warn", info: "info", debug: "off" } as const;
 
 type Row = [number, Timeline["entries"][number]];

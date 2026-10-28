@@ -10,7 +10,7 @@ pub enum Scenario {
     Gap,
     /// 触发已发出并计数，帧在传输中丢失（三台相机同一帧都丢）
     LostFrame,
-    /// 机器人不报运动结束（PLC 不置 20）
+    /// 机械臂不报工件结束（PLC 不置 20）
     MotionTimeout,
     /// PLC 核对 seqEcho / snEcho 不符，置 90（plcReason=5）
     AckMismatch,
@@ -22,7 +22,7 @@ pub enum Scenario {
     CornerSlowdown,
     /// 机器人等不到触发许可，照常涂胶并置“本件未检”；PLC 不提交请求，PC 没有这一件
     NotInspected,
-    /// PLC 提前报运动结束（提前终止），只发出约一半脉冲
+    /// 机械臂提前报工件结束（提前终止），只发出约一半脉冲
     EarlyEnd,
     Random,
 }
