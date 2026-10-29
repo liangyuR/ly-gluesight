@@ -4,7 +4,7 @@
 
 ## 当前保留范围
 
-默认 Rust 库回归保留 86 条、前端 Vitest 保留 84 条用例（各约 80 条），以测试运行器展开后的实际用例数计数。保留集优先覆盖结果交付、数据归属、发布准入、草稿防丢和资料安全；同一业务规则的等价输入使用参数化，跨层重复验证优先保留能观察业务结果的一层。增删用例按保护规则评估，数量是维护规模参考。
+默认 Rust 库回归保留 91 条、前端 Vitest 保留 84 条用例（各约 80 条），以测试运行器展开后的实际用例数计数。保留集优先覆盖结果交付、数据归属、发布准入、草稿防丢和资料安全；同一业务规则的等价输入使用参数化，跨层重复验证优先保留能观察业务结果的一层。增删用例按保护规则评估，数量是维护规模参考。
 
 打包门禁、样本转换、桌面生产验收和现场长稳脚本独立维护，不计入默认两套回归。默认回归不覆盖所有日志展示与导出分页、兼容输入、起胶建议、视觉搜索重试与边缘统计、离线模拟产线完整路径；修改这些路径时需补充针对性的验证。
 
@@ -44,6 +44,8 @@
 | `pwsh -NoProfile -File scripts/Test-DevStartup.ps1` | Windows 旧终端在设置/清除本地运行库后启动，子进程读取最新保存值，参数与退出码保持不变 |
 
 单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`；Rust 模块示例：`cargo test --manifest-path src-tauri/Cargo.toml --locked --lib segmentation::`。默认测试不生成覆盖率报告。
+
+胶条算法定向回归：`cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- workspace::centerline:: burst_judge:: vision::taught:: vision::judge::`。其中合成胶条图通过提取入口验证汇合路径歧义；公开逐帧判定入口验证胶宽边界舍入与真实超差；找边判定验证左右找边平票不产生可信边距。它们保护具体回归，不代表现场检测准确率或吞吐验收。
 
 `Test-DevStartup.ps1` 临时修改用户级 `GLUESIGHT_LYFLOW_RUNTIME`，在 `finally` 中恢复原值；验证期间不要并行修改该配置或启动 GlueSight。测试通过临时 CLI 进程观察启动环境，不启动实际 GUI，不修改配方。
 

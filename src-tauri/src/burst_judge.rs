@@ -341,7 +341,7 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
             found.insert(Finding::Sparse);
         }
     }
-    let stations = || frame.widths.iter().flatten().map(|&w| f64::from(w));
+    let stations = || frame.widths.iter().flatten().copied();
     let width = &checks.width;
     if width.enabled {
         let (lower, upper) = (width.nominal_mm - width.tol_lower, width.nominal_mm + width.tol_upper);
@@ -350,7 +350,10 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
         let excursion = if !length_known {
             if frame.width_min.is_some_and(out) || frame.width_max.is_some_and(out) { f64::INFINITY } else { 0.0 }
         } else {
-            stations().filter(|&w| out(w)).count() as f64 * frame.spacing_mm
+            stations()
+                .filter(|&w| w < lower as f32 || w > upper as f32)
+                .count() as f64
+                * frame.spacing_mm
         };
         if excursion > width.max_excursion_mm {
             found.insert(Finding::Width);
@@ -359,8 +362,12 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
         }
     }
     let overflow = &checks.overflow;
-    let width_max = frame.width_max.or_else(|| stations().reduce(f64::max));
-    if overflow.enabled && width_max.is_some_and(|w| w > overflow.max_width_mm) {
+    if overflow.enabled
+        && frame.width_max.map_or_else(
+            || stations().any(|w| w > overflow.max_width_mm as f32),
+            |w| w > overflow.max_width_mm,
+        )
+    {
         found.insert(Finding::Overflow);
     }
     found
@@ -815,6 +822,69 @@ mod tests {
             let result = run(&segments, None, &[region(RegionKind::Corner { segment: 1 }, 1, 3)], &metrics);
             assert_eq!(result.verdict, verdict, "{case}");
             assert_eq!(result.regions[0].reason.contains("溢胶"), k == 4, "{case}");
+        }
+    }
+
+    #[test]
+    fn stored_width_at_a_limit_stays_ok_but_representable_excess_and_precise_extrema_stay_ng() {
+        let lower = 2.3_f64;
+        let upper = 5.3_f64;
+        for (name, value, stations, overflow, expected) in [
+            ("下限", lower, true, false, Verdict::Ok),
+            ("上限", upper, true, false, Verdict::Ok),
+            (
+                "下限外相邻可表示值",
+                f64::from((lower as f32).next_down()),
+                true,
+                false,
+                Verdict::NgWidth,
+            ),
+            (
+                "上限外相邻可表示值",
+                f64::from((upper as f32).next_up()),
+                true,
+                false,
+                Verdict::NgWidth,
+            ),
+            (
+                "高精度极值超宽",
+                upper.next_up(),
+                false,
+                false,
+                Verdict::NgWidth,
+            ),
+            ("逐站溢胶边界", upper, true, true, Verdict::Ok),
+            (
+                "逐站溢胶上限外相邻可表示值",
+                f64::from((upper as f32).next_up()),
+                true,
+                true,
+                Verdict::NgWidth,
+            ),
+            ("高精度溢胶边界", upper, false, true, Verdict::Ok),
+            (
+                "高精度极值溢胶",
+                upper.next_up(),
+                false,
+                true,
+                Verdict::NgWidth,
+            ),
+        ] {
+            let mut checks = plan(&[Corner]).remove(0).checks;
+            checks.width.nominal_mm = 4.0;
+            checks.width.tol_lower = 1.7;
+            checks.width.tol_upper = 1.3;
+            checks.width.enabled = !overflow;
+            checks.overflow.enabled = overflow;
+            checks.overflow.max_width_mm = upper;
+            let mut frame = ok(0, 1);
+            set_widths(&mut frame, &[value; 6]);
+            if overflow && stations {
+                frame.width_max = None;
+            } else if !overflow && !stations {
+                frame.widths.clear();
+            }
+            assert_eq!(frame_verdict(&frame, &checks), expected, "{name}");
         }
     }
 

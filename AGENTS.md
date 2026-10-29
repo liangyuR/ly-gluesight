@@ -2,6 +2,11 @@
 
 本项目为 Windows 上的 Tauri（Rust）+ React 应用，集成 lyFlow、海康相机与 S7 PLC。
 
+## GitHub 仓库与发布
+
+- `liangyuR/ly-gluesight` 与 `liangyuR/lyFlow` 均托管在 GitHub，使用 GitHub PR、Actions 和 Releases，不走 Bitbucket 流程，也不使用 `bitbucket-pr` 技能。
+- 两个仓库独立提交与发版；GlueSight 的业务算法改动不等于 lyFlow 引擎改动，发布前核对目标仓库、版本和源码修订。
+
 ## 项目入口
 
 - 开发环境、启动与打包入口见 `README.md`；工具版本以项目配置和锁文件为准，不在这里重复维护。

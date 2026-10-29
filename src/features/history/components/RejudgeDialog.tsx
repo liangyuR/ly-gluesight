@@ -11,7 +11,7 @@ const order: Verdict[] = verdictGroups.flatMap((g) => g.verdicts);
 const kindFields: [keyof KindOverride, string][] = [
   ["tolUpper", "上公差"],
   ["tolLower", "下公差"],
-  ["maxExcursionLen", "连续超差允许长度"],
+  ["maxExcursionLen", "帧内累计超差允许长度"],
 ];
 const recipeOptions = [
   { value: "recorded", label: "记录当时的配方版本" },

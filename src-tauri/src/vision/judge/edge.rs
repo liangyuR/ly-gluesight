@@ -100,12 +100,12 @@ fn median(mut v: Vec<f64>) -> f64 {
     }
 }
 
-/// 零件边一侧：找到边的站多的一侧；两侧都没找到为 None。平票取右侧（同 1.1），平票改判未测还没定，改只改这里。
+/// 零件边一侧：找到边的站多的一侧；平票（含两侧都没找到）为 None，这一帧胶偏记未测（D-SB-48）。
 fn pick_side(votes_right: usize, votes_left: usize) -> Option<EdgeSide> {
-    match (votes_right, votes_left) {
-        (0, 0) => None,
-        (r, l) if r >= l => Some(EdgeSide::Right),
-        _ => Some(EdgeSide::Left),
+    match votes_right.cmp(&votes_left) {
+        std::cmp::Ordering::Greater => Some(EdgeSide::Right),
+        std::cmp::Ordering::Less => Some(EdgeSide::Left),
+        std::cmp::Ordering::Equal => None,
     }
 }
 
@@ -244,6 +244,13 @@ mod tests {
         let j = judge_edges(&record(&stations), &[BEAD; 7], &WINDOW).unwrap();
         let outliers: Vec<usize> = (0..7).filter(|&i| j.stations[i].status == EdgeStatus::Outlier).collect();
         assert_eq!((outliers, j.mean_distance_px()), (vec![3], Some(18.5)));
+    }
+
+    #[test]
+    fn tied_edge_votes_pick_no_side_and_give_no_distance() {
+        // 防的回归（D-SB-48）：左右找边票数相同时任选一侧算胶边距，胶偏按不可信的距离判
+        let j = judge_edges(&record(&[(&[20.0], &[]), (&[], &[15.0])]), &[BEAD, BEAD], &WINDOW).unwrap();
+        assert_eq!((j.side, j.mean_distance_px()), (None, None));
     }
 
     #[test]
