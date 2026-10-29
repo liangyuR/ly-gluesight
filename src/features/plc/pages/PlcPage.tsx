@@ -316,7 +316,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
               </div>
             </div>
             <Table<PlcPoint> caption="通用点位" rows={commonPoints} columns={handshakeColumns} rowKey={(p) => p.id}
-              emptyState={<EmptyState title="尚未载入通用点位" description="点「重置 S7 通讯配置」生成生产协议 7 点位" action={loadTemplateButton} />} />
+              emptyState={<EmptyState title="尚未载入通用点位" description="点「重置 S7 通讯配置」生成生产协议 8 点位" action={loadTemplateButton} />} />
           </section>
           <div className="plc-group-actions">
             <Button leadingIcon={<Plus size={16} />} disabled={!!lockReason} title={lockReason || undefined}

@@ -403,7 +403,7 @@ fn timing(app: &AppHandle) -> Timing {
         end_delay: Duration::from_millis(300),
         ack_delay: Duration::from_millis(150),
         settle: Duration::from_millis(300),
-        arm_timeout: Duration::from_secs(5),
+        capture_lead: Duration::from_millis(500),
         result_timeout: timeouts.motion() + timeouts.drain() + timeouts.proc() + Duration::from_secs(5),
         ready_timeout: Duration::from_secs(10),
         release_timeout: Duration::from_secs(10),
@@ -555,7 +555,7 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
     crate::plc::recipe_plan(&cycle, &recipe)?;
     let samples = offline.sample_set();
     if samples.is_some() && !scenario.handshake() {
-        return Err("样本集图像是现场原图，只能选握手与脉冲串类工况（正常、传输丢帧、运动超时、ACK 不匹配、单相机缺帧、波动、未检、提前终止）".into());
+        return Err("样本集图像是现场原图，只能选握手与脉冲串类工况（正常、传输丢帧、工件结束超时、ACK 不匹配、单相机缺帧、波动、未检、提前终止）".into());
     }
     let warming = match crate::cycle::runnable_cams(&app, &recipe) {
         Ok(_) => false,

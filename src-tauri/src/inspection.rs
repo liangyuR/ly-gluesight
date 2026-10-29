@@ -18,7 +18,7 @@ pub mod tag {
     pub const SN_ECHO: &str = "snEcho";
 }
 
-/// 协议 7 双方状态字的取值。
+/// 协议 8 双方状态字的取值。
 pub mod state {
     pub const PLC_IDLE: u16 = 0;
     pub const PLC_REQUEST: u16 = 10;
@@ -28,13 +28,12 @@ pub mod state {
     pub const PLC_RESET: u16 = 99;
     pub const PC_NOT_READY: u16 = 0;
     pub const PC_READY: u16 = 10;
-    pub const PC_ARMED: u16 = 20;
     pub const PC_RESULT: u16 = 30;
     pub const PC_FAULT: u16 = 90;
     pub const PC_RESET: u16 = 99;
 }
 
-/// 生产通讯协议 7：S7-1200，PLC 写 DB4、PC 写 DB2，两个 DB 都从字节 0 起、各 68 字节。
+/// 生产通讯协议 8：S7-1200，PLC 写 DB4、PC 写 DB2，两个 DB 都从字节 0 起、各 68 字节。
 pub const DEFAULT_PLC_HOST: &str = "192.168.2.10";
 pub const DEFAULT_PLC_DB: u16 = 4;
 pub const DEFAULT_PC_DB: u16 = 2;

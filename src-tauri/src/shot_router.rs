@@ -2,8 +2,8 @@
 //!
 //! - 计数账（[`Ledgers`]）：每台相机本会话见到的最大触发计数与 SDK 帧计数。节拍对每一帧都记账，空闲时的游离帧、
 //!   手动取的帧也记，否则下一件的基线会落后；
-//! - 布防（[`arm_frames`]）：按 SDK 帧计数定每台计划相机的基线，帧归属由 `frame_group::Grouper` 按帧号配组；
-//!   本会话没见过帧、开流计数起点又未知时不拒绝布防，由本件首帧定基线；
+//! - 接件（[`arm_frames`]）：按 SDK 帧计数定每台计划相机的基线，帧归属由 `frame_group::Grouper` 按帧号配组；
+//!   本会话没见过帧、开流计数起点又未知时照常接件，由本件首帧定基线；
 //! - 收尾：下一件的帧计数下限记在 [`Ledger::frame_floor`]，= max(本件基线, 这台相机本件见到的最高帧计数)，
 //!   PLC 报的触发数与计划数都不参与（D-SB-7）。
 
@@ -44,7 +44,7 @@ pub struct Ledger {
     pub sources: Vec<CounterSource>,
     /// 本会话见到的最大触发计数
     pub last: Option<u64>,
-    /// 本会话见到的最大 SDK 帧计数：布防与示教采集的配组基线（D-SB-10）
+    /// 本会话见到的最大 SDK 帧计数：接件与示教采集的配组基线（D-SB-10）
     pub last_frame: Option<u64>,
     pub frames: u64,
     /// 上一件收尾推算的下一件帧计数基线下限（D-SB-7）
@@ -131,7 +131,7 @@ impl Ledgers {
         }
     }
 
-    /// 故障复位后不再用上一件推算的下限，只按见到的计数布防（复位时线上没有在途的触发）。
+    /// 故障复位后不再用上一件推算的下限，只按见到的计数接件（复位时线上没有在途的触发）。
     pub fn clear_floors(&mut self) {
         for l in self.cams.values_mut() {
             l.frame_floor = None;
@@ -163,7 +163,7 @@ impl Policy {
     }
 }
 
-/// 布防时一台相机的现状，由相机组给出：会话号不取自帧，重新打开后可能还没出过帧。
+/// 接件时一台相机的现状，由相机组给出：会话号不取自帧，重新打开后可能还没出过帧。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArmCam {
     /// 相机组序号（帧里的 cam）
@@ -177,7 +177,7 @@ pub struct ArmCam {
     pub counter_after_open: Option<u64>,
 }
 
-/// 拒绝布防的原因。
+/// 本件不能检测的原因。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// 计划里的相机没有给出现状
@@ -225,22 +225,22 @@ pub struct Floor {
     pub baseline: u64,
 }
 
-/// 布防时一台计划相机的帧计数基线：frame_counter ≤ baseline 的帧属于上一件。
+/// 接件时一台计划相机的帧计数基线：frame_counter ≤ baseline 的帧属于上一件。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameBaseline {
     /// 相机组序号（帧里的 cam）
     pub cam: u8,
     pub camera: String,
-    /// 布防时的会话号
+    /// 接件时的会话号
     pub session: u64,
     /// 本会话还没见过帧、开流计数起点又未知时为空：本件这台相机的第一帧定基线（首帧计数 − 1）
     pub baseline: Option<u64>,
 }
 
-/// 布防（D-SB-7、D-SB-10）：按计划相机顺序给出每台相机的帧计数基线 =
+/// 接件（D-SB-7、D-SB-10）：按计划相机顺序给出每台相机的帧计数基线 =
 /// max(本会话见到的最大 SDK 帧计数, 上一件收尾推算的帧计数下限)；本会话还没见过帧时
 /// 取开流后的计数起点（模拟 / 样本集为 0，海康按 `counter_after_open`），仍未知时留空，由本件首帧定基线：
-/// Line0 高电平门控下软件取不了帧，而本会话布防前没有帧，布防后这台相机的第一帧必属本件。
+/// Line0 高电平门控下软件取不了帧，而本会话接件前没有帧，接件后这台相机的第一帧必属本件。
 /// 本会话出现过 policy 不信任的计数来源时拒绝。
 pub fn arm_frames(cameras: &[String], ledgers: &Ledgers, policy: &Policy, cams: &[ArmCam]) -> Result<Vec<FrameBaseline>, Refusal> {
     let mut armed: Vec<FrameBaseline> = Vec::with_capacity(cameras.len());

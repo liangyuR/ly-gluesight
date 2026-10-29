@@ -13,7 +13,7 @@ function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallbac
 const defaultSettings: CycleSettings = {
   productSource: "plc",
   manualRecipeId: null,
-  timeouts: { armMs: 500, motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000 },
+  timeouts: { motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000 },
   historyDays: 180,
   record: "off",
   recordKeep: 100,

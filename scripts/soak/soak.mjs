@@ -21,7 +21,7 @@ async function metricsSample({ manifest, call, page }, cdp, startedAt, parts) {
     files: { recordsOffline: disk["records-offline"].files }, phase: snapshot?.phase ?? null };
 }
 
-/** 长稳判定：正常样本判 NG、cycleId 重复、判定与交付不一致是硬失败；布防预算等时序原因的 ERR 只拒绝本件，按比例阈值判定。 */
+/** 长稳判定：正常样本判 NG、cycleId 重复、判定与交付不一致是硬失败；时序等原因的 ERR 只影响本件（工件结束后回 ERR），按比例阈值判定。 */
 export function assessSoak({ parts, produced, items, maxErrRatio }) {
   const failures = [];
   const count = test => items.filter(test).length;
@@ -110,13 +110,11 @@ export async function soak(session, options) {
   const first = samples[1] ?? samples[0], last = samples.at(-1);
   const growth = key => last.proc.main && first.proc.main ? last.proc.main[key] - first.proc.main[key] : null;
   const handshakeTimeouts = logs.lines.filter(l => l.level === "err" && /超时|未等到|T_ack|心跳/.test(`${l.ev}${l.msg}`));
-  const arms = logs.lines.filter(l => l.ev === "布防阶段").map(l => { try { return JSON.parse(l.msg); } catch { return null; } }).filter(Boolean);
-  const stage = name => arms.map(a => a.trace?.stages?.find(s => s.stage === name)?.intervalMs).filter(Number.isFinite).map(Math.round);
-  const arming = {
-    statuses: arms.reduce((acc, a) => ({ ...acc, [a.status]: (acc[a.status] ?? 0) + 1 }), {}),
-    totalMs: percentiles(arms.filter(a => a.status === "armed").map(a => Math.round(a.trace.elapsedMs))),
-    auditHealthMs: percentiles(stage("audit-health")), plcArmMs: percentiles(stage("plc-arm-confirmed")),
-    overBudget: arms.filter(a => a.status !== "armed").map(a => ({ status: a.status, elapsedMs: Math.round(a.trace?.elapsedMs ?? 0), last: a.trace?.stages?.at(-1)?.stage })),
+  const intakes = logs.lines.filter(l => l.ev === "接件阶段").map(l => { try { return JSON.parse(l.msg); } catch { return null; } }).filter(Boolean);
+  const intake = {
+    statuses: intakes.reduce((acc, a) => ({ ...acc, [a.status]: (acc[a.status] ?? 0) + 1 }), {}),
+    admittedMs: percentiles(intakes.filter(a => a.status === "admitted" && Number.isFinite(a.elapsedMs)).map(a => Math.round(a.elapsedMs))),
+    notAdmitted: intakes.filter(a => a.status !== "admitted").slice(0, 50).map(a => ({ cycleId: a.cycleId, sn: a.sn, status: a.status })),
   };
   const check = assessSoak({ parts, produced, items, maxErrRatio });
   const result = {
@@ -130,7 +128,7 @@ export async function soak(session, options) {
       childrenPrivBytes: last.proc.children.priv - first.proc.children.priv, childrenHandles: last.proc.children.handles - first.proc.children.handles,
       uiJsHeapBytes: last.ui.jsHeapBytes - first.ui.jsHeapBytes, uiDomNodes: last.ui.domNodes - first.ui.domNodes,
       diskBytes: Object.fromEntries(Object.keys(last.disk).map(k => [k, last.disk[k] - samples[0].disk[k]])) },
-    incidents, restarts, arming,
+    incidents, restarts, intake,
     handshakeTimeouts: { count: handshakeTimeouts.length, lines: handshakeTimeouts.slice(0, 50) },
     logCounts: logs.counts(l => l.level === "err" || l.level === "warn"),
     recordings,

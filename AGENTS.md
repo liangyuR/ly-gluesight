@@ -12,8 +12,8 @@
 ## 当前采集协议
 
 - 旧拍照点配方从未部署，代码已删除；没有段的配方文件读入时报“已停用”。保留通用标定和 Software 单帧调试能力。
-- PLC 协议为生产通讯协议 7（`docs/integration/plc-communication-protocol.md`）：PLC 只报型号、序号与 SN，双方状态字握手，`pcMode` 表示维护模式。
-- Line0 使用高电平门控，相机按软件设定的固定帧率采集，默认 10 fps。
+- PLC 协议为生产通讯协议 8（`docs/integration/plc-communication-protocol.md`）：PLC 只报型号、序号与 SN，双方状态字握手，`pcMode` 表示维护模式；PLC 不等 PC，PC 读到请求只做接件登记、不回写，不能检测的件在工件结束后回检测错误。
+- Line0 使用高电平门控，由机械臂的拍照信号经 PLC 驱动，相机按软件设定的固定帧率采集，默认 10 fps。
 
 ## 多 agent 协作
 

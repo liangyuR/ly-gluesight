@@ -43,7 +43,7 @@ export default function HistoryDetailPage() {
   return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} onBack={() => navigate("/history")} />;
 }
 
-/** 没有帧记录的记录（如布防前被拒）：只有整件结论与追溯信息。 */
+/** 没有帧记录的记录（如工件身份分配失败）：只有整件结论与追溯信息。 */
 function PlainHistoryDetail({ detail, neighbors, onOpen, onBack }: { detail: PartDetail; neighbors: Neighbors; onOpen: (target: number | null) => void; onBack: () => void }) {
   const s = detail.summary;
   return <div className="stack hist-detail">

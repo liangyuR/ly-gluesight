@@ -27,7 +27,7 @@ pub fn workspace_abandon_publish(app: AppHandle, id: String, revision: u64) -> R
     view(&app, w)
 }
 
-/// 有界等待配置门：布防或离线切换正在进行时排队等它释放，而不是立即拒绝。
+/// 有界等待配置门：接件或离线切换正在进行时排队等它释放，而不是立即拒绝。
 /// 只能在阻塞线程（spawn_blocking 或普通线程）里调用，不能在 async 任务里调用。
 pub(crate) fn lock_config_gate<'a>(
     gate: &'a tokio::sync::Mutex<()>,
@@ -35,7 +35,7 @@ pub(crate) fn lock_config_gate<'a>(
     what: &str,
 ) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
     tauri::async_runtime::block_on(async { tokio::time::timeout(within, gate.lock()).await })
-        .map_err(|_| format!("布防或其他配置操作 3 秒内仍未结束，暂不能{what}；请确认在线检测或离线产线已停止后重试"))
+        .map_err(|_| format!("接件或其他配置操作 3 秒内仍未结束，暂不能{what}；请确认在线检测或离线产线已停止后重试"))
 }
 
 /// 等节拍释放上一次握手（busy 清除）后再取配置门；整段最多 3 秒。

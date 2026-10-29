@@ -102,16 +102,16 @@ export function MaintenanceToggle({ maintenance }: { maintenance: Maintenance | 
       </>}
     >
       {pending.enabled ? <>
-        <p>开启后每件照常布防采图，向 PLC 回结果码 0（按未检放行），不输出 NG；从下一件起生效，在途件按原模式完成。</p>
+        <p>开启后每件照常采图，向 PLC 回结果码 0（按未检放行），不输出 NG；从下一件起生效，在途件按原模式完成。</p>
         <p>采集版配方只采图不判定；正式版配方照常判定（试判），结论不输出给 PLC。</p>
         <TextField label="开启原因" required value={reason} onChange={e => { setReason(e.target.value); setError(""); }} placeholder="如：新产线投运，采集示教与标定图像" />
       </> : <>
         <p>退出后从下一件起恢复正常检测，按判定结论向 PLC 输出。</p>
         {pending.collectOnly === null ? <p className="muted">正在核对配方库…</p>
-          : pending.listError ? <Alert tone="warn">无法核对配方库：{pending.listError}。只有采集版的型号退出后会被拒收（90/95）。</Alert>
+          : pending.listError ? <Alert tone="warn">无法核对配方库：{pending.listError}。只有采集版的型号退出后会回检测错误（90/95）。</Alert>
             : pending.collectOnly.length > 0 && <Alert tone="warn" title="以下配方只有采集版、没有正式版" aria-label="只有采集版的配方">
               <ul>{pending.collectOnly.map(recipe => <li key={recipe.id}>{recipe.id} · {recipe.name}（PLC 型号 {recipe.productCode}）</li>)}</ul>
-              退出后这些型号会被拒收（90/95）。
+              退出后这些型号会回检测错误（90/95）。
             </Alert>}
       </>}
     </Dialog>}

@@ -55,7 +55,7 @@ pub enum CaptureFailureV2 {
     WriteTimeout { queued: u32, written: u32 },
     /// 操作员中止或应用退出
     Interrupted,
-    /// PLC 断连、握手故障、布防失败或记录保存失败
+    /// PLC 断连、握手故障、接件失败或记录保存失败
     Other,
 }
 

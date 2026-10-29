@@ -95,8 +95,8 @@ describe("在线检测离线产线控件", () => {
   });
 
   it("有在途件时软件复位 → 确认框提示在途件记未检，确认后才请求后端复位", async () => {
-    state = { ...state, phase: "FAULT", fault: "PLC 运动超时" };
-    plcHandshake = { phase: "fault", requestSeq: 17, resultSeq: null, message: "PLC 运动超时", resetBlockedReason: null };
+    state = { ...state, phase: "FAULT", fault: "PLC 等工件结束超时" };
+    plcHandshake = { phase: "fault", requestSeq: 17, resultSeq: null, message: "PLC 等工件结束超时", resetBlockedReason: null };
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     await userEvent.click(screen.getByRole("button", { name: "软件复位" }));
     const dialog = within(screen.getByRole("dialog"));

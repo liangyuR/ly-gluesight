@@ -55,8 +55,8 @@ pub struct Timeline {
 }
 
 const STAGES: [(&str, &str, &str, &str); 5] = [
-    ("arm", "校验与布防", "partStart", "armed"),
-    ("acquire", "运动与采集", "armed", "partEnd"),
+    ("intake", "接件登记", "partStart", "admitted"),
+    ("acquire", "运动与采集", "admitted", "partEnd"),
     ("drain", "收尾与判定", "partEnd", "result"),
     ("ack", "等待 PLC 确认", "result", "released"),
     ("total", "整件", "partStart", "released"),

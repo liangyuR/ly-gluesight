@@ -97,7 +97,7 @@ export interface PartDetail {
   /** 后端保留的旧字段，恒为 [] */
   shots: unknown[];
   recording: RecordingEvidence;
-  /** 段配方记录；没有帧记录的记录（如布防前被拒）为 null */
+  /** 段配方记录；没有帧记录的记录（如工件身份分配失败）为 null */
   burst: PartDetailBurst | null;
 }
 

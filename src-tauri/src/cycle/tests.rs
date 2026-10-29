@@ -12,7 +12,7 @@ fn burst_part(cycle_id: &str, ledgers: &Ledgers) -> Part {
     )
 }
 
-/// 同 [`burst_part`]，指定布防前已知的计数来源（海康为空）与布防策略。
+/// 同 [`burst_part`]，指定接件前已知的计数来源（海康为空）与接件策略。
 fn armed_part(
     cycle_id: &str,
     ledgers: &Ledgers,
@@ -64,7 +64,7 @@ fn armed_part_with(
         image_measurement: false,
         proc_timeout: Duration::from_secs(1),
         drain_timeout: Duration::from_secs(2),
-        armed_at: Instant::now(),
+        admitted_at: Instant::now(),
         end_at: None,
         fault: None,
         cams: vec![0, 1, 2],
@@ -320,7 +320,7 @@ fn next_part_baseline_is_each_camera_highest_frame_counter_seen() {
     }
 }
 
-/// 会话变化仍是设备故障：布防后相机重连过，之后的帧号对不上本件，整件判 ERR 98——重连后又来帧，或重连后没再来帧（收尾时核对会话）。
+/// 会话变化仍是设备故障：接件后相机重连过，之后的帧号对不上本件，整件判 ERR 98——重连后又来帧，或重连后没再来帧（收尾时核对会话）。
 #[test]
 fn camera_reconnect_during_part_is_err_98() {
     for case in ["重连后又来一帧", "重连后没再来帧"] {
@@ -460,4 +460,22 @@ fn run_kind_collect_runs_only_in_maintenance_and_formal_always_needs_corridors()
     for (name, recipe, maintenance, expected) in cases {
         assert_eq!(run_kind(&recipe, maintenance).ok(), expected, "{name}");
     }
+}
+
+/// 存储卡住时接件的追溯健康检查按时限返回失败（本件按不能检测处理），不等探针跑完，节拍不被阻塞；一次超时也不记成追溯故障。
+#[tokio::test]
+async fn stalled_intake_health_probe_times_out_without_poisoning_audit() {
+    let started = std::time::Instant::now();
+    let mut poisoned = false;
+    let result = super::intake_health_check(
+        || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            Ok(())
+        },
+        |_| poisoned = true,
+    )
+    .await;
+    assert!(result.is_err());
+    assert!(!poisoned);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }

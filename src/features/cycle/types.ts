@@ -206,7 +206,7 @@ export interface Judgement {
 }
 
 export interface ResultView extends Judgement {
-  /** 段配方的判定；没有配方（拒收）时为 null。有值时 verdict / plcCode / faultCode / reason 与它相同 */
+  /** 段配方的判定；没有配方时为 null。有值时 verdict / plcCode / faultCode / reason 与它相同 */
   burst: BurstJudgement | null;
   candidateDebug?: CandidateDebug | null;
   cycleId: string | null;
@@ -241,7 +241,7 @@ export interface Snapshot {
   trial?: TrialProgress[];
 }
 
-/** 维护模式（在线投运）：开启后每件都布防采图，向 PLC 回结果码 0（按未检放行），不输出 NG。 */
+/** 维护模式（在线投运）：开启后每件都照常采图，向 PLC 回结果码 0（按未检放行），不输出 NG。 */
 export interface Maintenance {
   since: number;
   reason: string;
@@ -279,7 +279,6 @@ export interface LogLine {
 }
 
 export interface Timeouts {
-  armMs: number;
   motionMs: number;
   drainMs: number;
   procMs: number;
