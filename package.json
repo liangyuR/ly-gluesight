@@ -1,7 +1,7 @@
 {
   "name": "gluesight",
   "private": true,
-  "version": "1.1.4",
+  "version": "0.1.5",
   "type": "module",
   "packageManager": "pnpm@12.15.0",
   "engines": {
