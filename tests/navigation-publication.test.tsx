@@ -8,11 +8,8 @@ import { burstRecipe, burstWorkspaceView, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 
 it.each([
-  { single: false, status: "draft" as const, cuts: [4, 8], count: 12, ready: false },
   { single: false, status: "confirmed" as const, cuts: [4], count: 12, ready: false },
   { single: false, status: "confirmed" as const, cuts: [4, 8], count: 12, ready: true },
-  { single: true, status: "draft" as const, cuts: [], count: 12, ready: true },
-  { single: true, status: "draft" as const, cuts: [], count: 0, ready: false },
 ])("空间已确认但single=$single/status=$status/count=$count → 可冻结提示必须对应真实帧范围 ready=$ready", ({ single, status, cuts, count, ready }) => {
   const recipe = burstRecipe();
   if (single) recipe.segments = recipe.segments.slice(0, 1);

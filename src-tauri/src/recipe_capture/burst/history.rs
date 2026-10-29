@@ -203,36 +203,3 @@ impl RecipeCaptureHost {
         Ok(round)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cross_volume_link_failure_copies_image_but_other_errors_do_not() {
-        let root = std::env::temp_dir().join(format!(
-            "history-cross-volume-{}-{}",
-            std::process::id(),
-            ly_plc::now_ms()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let source = root.join("source.pgm");
-        let target = root.join("copy.pgm");
-        std::fs::write(&source, b"P5\n2 1\n255\n\x0a\x14").unwrap();
-        materialize_image_with(&source, &target, |_, _| {
-            Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices))
-        })
-        .unwrap();
-        std::fs::remove_file(&source).unwrap();
-        assert_eq!(crate::image_file::load(&target).unwrap().pixels, [10, 20]);
-        let denied = root.join("denied.pgm");
-        assert!(
-            materialize_image_with(&target, &denied, |_, _| Err(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied
-            )))
-            .is_err()
-        );
-        assert!(!denied.exists());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}

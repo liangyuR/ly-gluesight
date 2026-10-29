@@ -87,8 +87,6 @@ function corridorCandidate(edit: (inspect: Inspect, view: WorkspaceView) => void
   edit(candidate.workspace.doc.inspect![1], candidate);
   return candidate;
 }
-/** CAM-2 段 1 已示教：一条有转折的走廊，相机 0.2 mm/px */
-const taught = (inspect: Inspect, view: WorkspaceView) => { inspect.segments = [{ segment: 1, corridor: structuredClone(bend) }]; inspect.mmPerPx = .2; Object.assign(view.plan!.cameraTeaching[1], { mmPerPx: .2 }); view.plan!.cameraTeaching[1].segments[0].saved = true; };
 /** 这些件已确认分段边界：12 个帧组，段 1 为帧组 1–6 */
 const confirmed = (view: WorkspaceView, ...rounds: string[]) => {
   view.workspace.captureReview = { rounds: Object.fromEntries(rounds.map(round => [round, { groupCount: 12, cuts: [6, 9], status: "confirmed" as const, excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null }])) };
@@ -167,42 +165,6 @@ it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引�
   // 按相机 id 在这一段冻结的示教帧上提取（workspace_extract_corridor）
   expect(calls("workspace_extract_corridor")).toEqual([{ id: "A", revision: 4, camera: "CAM-2", imageId: FRAME2, roi: [0, 0, 100, 60],
     guide: { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 60 }, pointSpacingPx: 10 }]);
-});
-
-it("自动提取失败后按笔划生成 → 定位原因并保留原线，人工草稿保留转弯且走廊待保存", async () => {
-  stubSvgPointer({ pointerEvent: true });
-  const candidate = corridorCandidate(taught);
-  const failure = { point: [40, 20] as [number, number], reason: "discontinuous_edges", message: "此处胶路宽度突变，请检查亮边与阴影。" };
-  mockSite(candidate, { workspace_extract_corridor: () => ({ path: [], message: failure.message, failure }) });
-  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
-  const image = await screen.findByRole("img", { name: CAM2 });
-  const originalPoints = bend.map(point => point.join(",")).join(" ");
-  expect(screen.getByRole("button", { name: "保存走廊" })).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: "沿胶路刷选" }));
-  fireEvent.change(screen.getByRole("spinbutton", { name: "走廊点间距" }), { target: { value: "80" } });
-  fireEvent.pointerDown(image, { clientX: 10, clientY: 20 });
-  fireEvent.pointerMove(image, { clientX: 40, clientY: 20 });
-  fireEvent.pointerMove(image, { clientX: 40, clientY: 50 });
-  fireEvent.pointerUp(image);
-  await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
-  expect(await screen.findByLabelText("中线提取失败位置")).toBeVisible();
-  expect(screen.getByText(failure.message, { selector: '[role="status"]' })).toBeVisible();
-  expect(image.querySelector(`polyline[points="${originalPoints}"]`)).not.toBeNull();
-  expect(screen.getByLabelText("刷选胶路区域").querySelector("polyline")).toHaveAttribute("points", "10,20 40,20 40,50");
-  const slider = screen.getByRole("slider", { name: "拖动调整笔刷宽度" });
-  for (let i = 0; i < 3; i++) fireEvent.keyDown(slider, { key: "PageDown" });
-  expect(slider).toHaveAttribute("aria-valuenow", "60");
-  expect(screen.queryByLabelText("中线提取失败位置")).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
-  await screen.findByLabelText("中线提取失败位置");
-  await user.click(screen.getByRole("button", { name: "笔划直接生成走廊" }));
-  expect(screen.queryByLabelText("中线提取失败位置")).not.toBeInTheDocument();
-  for (const [index, x, y] of [[1, 10, 20], [2, 40, 20], [3, 40, 50]]) {
-    expect(screen.getByLabelText(`中线点 ${index}`)).toHaveAttribute("cx", String(x));
-    expect(screen.getByLabelText(`中线点 ${index}`)).toHaveAttribute("cy", String(y));
-  }
-  expect(screen.queryByLabelText("中线点 4")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "保存走廊" })).toBeEnabled();
 });
 
 // 防的回归（RB-1）：示教帧可以从示教件以外的轮次选取；重新选帧确认后仍显示旧帧

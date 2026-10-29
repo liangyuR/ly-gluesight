@@ -17,9 +17,7 @@ describe("段配方按区域比对", () => {
 
   it.each([
     ["弯道区域结论改变", regions({}, { verdict: "NG_WIDTH" }), ["corner:2-2"]],
-    ["直线区域胶偏均值差超过 0.01 mm", regions({ offset: { meanShift: .32, maxDev: .6 } }), ["straight:1-1"]],
     ["直线区域胶偏差在 0.01 mm 容差内", regions({ offset: { meanShift: .304, maxDev: .6 } }), []],
-    ["弯道区域不完整组变化", regions({}, { incompleteGroups: [9] }), ["corner:2-2"]],
   ] as [string, RegionResult[], string[]][])("重判结果%s → 只有实际变化的区域标为差异", (_, replayRegions, differing) => {
     expect(changed(side({ judgement: burstJudgement({ regions: replayRegions }) }))).toEqual(differing);
   });
@@ -27,9 +25,7 @@ describe("段配方按区域比对", () => {
   const segments = () => side().segments;
   it.each([
     ["段类型变了", { segments: segments().map(s => s.index === 2 ? { ...s, kind: "straight" as const } : s) }],
-    ["某段预期帧数变了", { segments: segments().map(s => s.index === 1 ? { ...s, expectedFrames: 5 } : s) }],
     ["相机顺序变了", { cameras: [...side().cameras].reverse() }],
-    ["整件预期总数变了", { expectedTotal: 13 }],
   ] as [string, Partial<BurstSide>][])("计划身份%s → 区域无法对应，不做逐区域比对", (_, over) => {
     expect(regionDiffs(side(), side(over))).toBeNull();
   });

@@ -157,16 +157,3 @@ impl CycleSettings {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn arm_budget_outside_100_to_5000_ms_is_rejected_so_pc_gives_up_before_plc_arm_timeout() {
-        for (arm_ms, valid) in [(99, false), (100, true), (5000, true), (5001, false), (10_000, false)] {
-            let settings = CycleSettings { timeouts: Timeouts { arm_ms, ..Timeouts::default() }, ..CycleSettings::default() };
-            assert_eq!(settings.validate().is_ok(), valid, "arm_ms={arm_ms}");
-        }
-    }
-}

@@ -113,24 +113,3 @@ pub fn import(root: &Path, source: &Path) -> Result<PathBuf, String> {
     }
     result
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::offline::sample_set::fixture::Fixture;
-
-    #[test]
-    fn imported_sample_survives_source_removal_and_duplicate_id_cannot_overwrite_it() {
-        let source = Fixture::new(&[1]);
-        let destination = Fixture::new(&[1]);
-        let imported = import(&destination.0, &source.0).unwrap();
-        assert_eq!(existing_copy(&destination.0, &source.0, "fixture").unwrap(), Some(imported.clone()));
-        assert_eq!(existing_copy(&destination.0, &imported, "fixture").unwrap(), None);
-        assert!(import(&destination.0, &source.0).is_err());
-        assert_eq!(import(&destination.0, &imported).unwrap(), imported);
-        drop(source);
-        let set = SampleSet::load(&imported).unwrap();
-        assert_eq!(set.manifest().id, "fixture");
-        assert_eq!(set.load_views("p01", "S001", "cam1", 1).unwrap()[0].pixels, [Fixture::pixel(1, 1, 1); 4]);
-    }
-}

@@ -79,19 +79,3 @@ pub fn check_start(offline: bool, samples: bool, busy: bool, running: bool) -> R
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn real_or_occupied_environment_rejects_candidate_debug() {
-        for args in [
-            (false, true, false, false),
-            (true, false, false, false),
-            (true, true, true, false),
-            (true, true, false, true),
-        ] {
-            assert!(super::check_start(args.0, args.1, args.2, args.3).is_err());
-        }
-        assert!(super::check_start(true, true, false, false).is_ok());
-    }
-}

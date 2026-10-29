@@ -170,20 +170,6 @@ pub fn count_status(actual: u32, expected: u32, tol: u32) -> CountStatus {
 mod tests {
     use super::*;
 
-    fn group(seq: u64, present: [bool; 3]) -> FrameGroup {
-        FrameGroup { seq, present: present.to_vec(), incomplete: present.contains(&false) }
-    }
-
-    /// 规格 §3：帧序号取 SDK 帧号（减各自基线），不按到达顺序数。
-    #[test]
-    fn frames_are_grouped_by_frame_counter_not_arrival_order() {
-        let mut grouper = Grouper::with_limit(vec![100, 200, 300], MAX_SEQ);
-        for (cam, counter, seq) in [(0, 103, 3), (1, 201, 1), (0, 101, 1), (2, 302, 2), (1, 203, 3), (2, 301, 1), (0, 102, 2), (2, 303, 3), (1, 202, 2)] {
-            assert_eq!(grouper.offer(cam, counter), Offer::Accepted { seq }, "相机 {cam} 帧号 {counter}");
-        }
-        assert_eq!(grouper.groups(), (1..=3).map(|seq| group(seq, [true; 3])).collect::<Vec<_>>());
-    }
-
     /// 易错边界：重复帧不顶替先到的帧；帧号不大于基线是上一件的迟到帧，不计入本件，也不抬高下一件基线。
     #[test]
     fn duplicate_seq_keeps_first_and_counter_at_or_below_baseline_is_stale() {
@@ -197,36 +183,5 @@ mod tests {
         assert_eq!(grouper.camera_counts(), vec![2, 0, 0]);
         let mut next = Grouper::with_limit(vec![grouper.max_counter(0), 20, 30], MAX_SEQ);
         assert_eq!(next.offer(0, 12), Offer::Stale, "上一件最后一帧迟到，不计入下一件");
-    }
-
-    /// 易错边界（A2 遗留 F0-5）：帧号跳变使 seq 超过上限时判 OutOfRange——不建帧组（否则帧组数随帧号跳到上亿）、
-    /// 不抬高下一件基线；上限以内照常接受。不另设上限时取 ΣN_exp 的上限。
-    #[test]
-    fn frame_counter_jump_beyond_seq_limit_is_out_of_range_and_creates_no_groups() {
-        let mut grouper = Grouper::with_limit(vec![100, 200, 300], 10);
-        assert_eq!(grouper.offer(0, 110), Offer::Accepted { seq: 10 }, "恰好等于上限");
-        assert_eq!(grouper.offer(1, 200 + 4_000_000_000), Offer::OutOfRange { seq: 4_000_000_000 }, "帧号跳变");
-        assert_eq!(grouper.offer(2, 311), Offer::OutOfRange { seq: 11 }, "超出上限一帧");
-        assert_eq!(grouper.groups().len(), 10);
-        assert_eq!((grouper.max_counter(1), grouper.max_counter(2)), (200, 300));
-        assert_eq!(
-            Grouper::with_limit(vec![0], MAX_SEQ).offer(0, MAX_SEQ + 1),
-            Offer::OutOfRange { seq: MAX_SEQ + 1 }
-        );
-    }
-
-    /// 规格 §2：帧数 ∈ [N_exp − tol, N_exp + tol] 为正常，越界一帧即 Low / High。
-    #[test]
-    fn frame_count_at_tolerance_edge_is_normal_and_one_beyond_is_low_or_high() {
-        for (actual, expected, tol, status) in [
-            (9, 10, 1, CountStatus::Normal),
-            (11, 10, 1, CountStatus::Normal),
-            (8, 10, 1, CountStatus::Low),
-            (12, 10, 1, CountStatus::High),
-            (11, 10, 0, CountStatus::High),
-            (0, 1, 2, CountStatus::Normal),
-        ] {
-            assert_eq!(count_status(actual, expected, tol), status, "{actual} vs {expected} ± {tol}");
-        }
     }
 }

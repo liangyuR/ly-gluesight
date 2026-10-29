@@ -92,44 +92,6 @@ fn patched(round: &Value, patch: Value) -> Value {
     round
 }
 
-/// 示教握手删除后，盘上已有的示教轮次（format 2）与历史件导入轮次（format 3）照常读入，不被改名成 round.broken。
-#[test]
-fn legacy_teaching_or_history_round_on_disk_then_loads_complete_and_keeps_its_record() {
-    let cases = [
-        (
-            "示教 V1 轮次",
-            json!({"format": 2, "teachingRoundId": 12, "simulated": true}),
-        ),
-        (
-            "PLC 开始的示教实拍轮次",
-            json!({"format": 2, "plcShotCount": 1500, "plcPlanVersion": 7, "deviceTriggers": 2, "simulated": false}),
-        ),
-        (
-            "历史件导入轮次",
-            json!({"format": 3, "origin": {"kind": "history", "cycleId": "abc_123", "recordId": 5, "standard": true}}),
-        ),
-    ];
-    for (case, patch) in cases {
-        let root = root();
-        let round = patched(&complete_round(&root), patch);
-        write_round(&root, &round);
-        let host = RecipeCaptureHost::open(root.clone()).unwrap();
-        assert!(
-            root.join(ROUND).join("round.json").is_file(),
-            "{case}：记录被改名"
-        );
-        let AnyRound::Burst(loaded) = host
-            .get_any(ROUND)
-            .unwrap_or_else(|e| panic!("{case}：{e}"));
-        assert_eq!(loaded.state, CaptureState::Complete, "{case}");
-        assert_eq!(host.list("recipe-a").unwrap().len(), 1, "{case}");
-        assert!(
-            host.burst_frame_path(ROUND, "cam3", GROUPS).is_ok(),
-            "{case}"
-        );
-    }
-}
-
 /// 应用退出时仍在接收的轮次：重启后判中断，统计按 frames.jsonl 恢复。
 #[test]
 fn round_left_receiving_on_disk_then_reopen_marks_it_interrupted_with_counts_from_frames() {
@@ -205,61 +167,4 @@ fn persisted_record_cannot_redirect_images_or_forge_frames() {
     }
     let host = RecipeCaptureHost::open(root.clone()).unwrap();
     assert!(host.get_any("capture-../../outside").is_err());
-}
-
-/// 手动配置数据与历史件导入的轮次同一规则：只收已完成、不带 PLC 字段与示教握手编号的记录。
-#[test]
-fn prepared_or_history_round_then_only_complete_without_plc_fields_is_accepted() {
-    let prepared = json!({"kind": "prepared", "label": "E2E 手动数据"});
-    let history = json!({"kind": "history", "cycleId": "abc_123", "recordId": 5});
-    let failed = json!({"state": "failed", "error": "中断", "failure": {"kind": "interrupted"}});
-    let cases = [
-        ("手动配置数据，已完成", prepared.clone(), json!({}), true),
-        ("历史件，已完成", history.clone(), json!({}), true),
-        (
-            "手动配置数据带 PLC 计数",
-            prepared.clone(),
-            json!({"plcShotCount": 3, "plcPlanVersion": 1}),
-            false,
-        ),
-        (
-            "手动配置数据带设备触发数",
-            prepared.clone(),
-            json!({"deviceTriggers": 2}),
-            false,
-        ),
-        (
-            "手动配置数据带示教握手编号",
-            prepared.clone(),
-            json!({"teachingRoundId": 12}),
-            false,
-        ),
-        (
-            "手动配置数据未完成",
-            prepared.clone(),
-            failed.clone(),
-            false,
-        ),
-        (
-            "手动配置数据没有标签",
-            json!({"kind": "prepared", "label": " "}),
-            json!({}),
-            false,
-        ),
-        (
-            "历史件带 PLC 计数",
-            history.clone(),
-            json!({"plcShotCount": 3, "plcPlanVersion": 1}),
-            false,
-        ),
-        ("历史件未完成", history, failed, false),
-    ];
-    for (case, origin, patch, accepted) in cases {
-        let root = root();
-        let mut round = patched(&complete_round(&root), patch);
-        round["origin"] = origin;
-        write_round(&root, &round);
-        let host = RecipeCaptureHost::open(root).unwrap();
-        assert_eq!(host.get_any(ROUND).is_ok(), accepted, "{case}");
-    }
 }

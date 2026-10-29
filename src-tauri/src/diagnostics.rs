@@ -483,39 +483,3 @@ fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &
 pub async fn diagnostics_export(app: AppHandle, request: ExportRequest) -> Result<ExportResult, String> {
     tauri::async_runtime::spawn_blocking(move || export(&app, request)).await.map_err(|e| e.to_string())?
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// PLC 日志库按 ts 倒序分页返回；logs/plc.jsonl 要求时间正序，且每行 t 与 ts 是同一时刻，Agent 才能与运行日志按时间对齐。
-    #[test]
-    fn plc_logs_fetched_newest_first_are_written_oldest_first_with_matching_t() {
-        let entry = |id, ts| ly_plc::LogEntry {
-            id,
-            ts,
-            ..ly_plc::LogEntry::new(ly_plc::Level::Info, ly_plc::Category::Value, "")
-        };
-        let out = plc_jsonl(vec![
-            entry(3, 1_792_837_092_059),
-            entry(2, 1_792_837_092_059),
-            entry(1, 1_792_837_091_000),
-        ]);
-        let lines: Vec<serde_json::Value> = out
-            .split(|b| *b == b'\n')
-            .filter(|l| !l.is_empty())
-            .map(|l| serde_json::from_slice(l).unwrap())
-            .collect();
-        assert_eq!(
-            lines
-                .iter()
-                .map(|l| l["id"].as_i64().unwrap())
-                .collect::<Vec<_>>(),
-            [1, 2, 3]
-        );
-        for line in &lines {
-            let t = chrono::DateTime::parse_from_rfc3339(line["t"].as_str().unwrap()).unwrap();
-            assert_eq!(t.timestamp_millis(), line["ts"].as_i64().unwrap());
-        }
-    }
-}

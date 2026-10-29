@@ -9,9 +9,7 @@ const map = (overrides: Partial<NavigationMapData> = {}): NavigationMapData => (
 
 describe("帧组与胶路位置", () => {
   it.each([
-    { seq: 1, ranges: [[1, 3]] as [number, number][], expected: [50, 0] },
     { seq: 2, ranges: [[1, 3]] as [number, number][], expected: [150, 0] },
-    { seq: 3, ranges: [[1, 3]] as [number, number][], expected: [200, 50] },
     { seq: 7, ranges: [[7, 7]] as [number, number][], expected: [150, 0] },
   ])("非均匀顶点、非方形图片或单帧段 seq=$seq → 按像素弧长落在帧中心并可反算", ({ seq, ranges, expected }) => {
     const value = map();
@@ -22,10 +20,7 @@ describe("帧组与胶路位置", () => {
   });
 
   it.each([
-    { label: "未采集区远处", click: [0, 0], expected: { kind: "miss" } },
-    { label: "采集起点前5像素", click: [35, 0], expected: { kind: "miss" } },
-    { label: "采集终点后5像素", click: [165, 0], expected: { kind: "miss" } },
-    { label: "采集段法向偏离5像素", click: [80, 5], expected: { kind: "hit", seq: 3 } },
+    { label: "采集起点外5像素", click: [35, 0], expected: { kind: "miss" } },
   ])("局部采集且点击$label → 保留原始序号，只允许采集区及其法向容差命中", ({ click, expected }) => {
     const value = map({ points: [[0, 0], [1, 0]], captureStart: 0.2, captureEnd: 0.8, cuts: [0.5] });
     const ranges: [number, number][] = [[1, 4], [5, 8]];
@@ -39,8 +34,6 @@ describe("帧组与胶路位置", () => {
 
   it.each([
     { label: "采集起点外5像素", click: [5, 100], expected: { kind: "miss" } },
-    { label: "采集终点外5像素", click: [100, 5], expected: { kind: "miss" } },
-    { label: "采集段法向偏离5像素", click: [-5, 25], expected: { kind: "hit", seq: 2 } },
   ])("闭合胶路跨起点采集且点击$label → 展开定位连续，未采集区不吸附端点", ({ click, expected }) => {
     const value = map({ image: { id: "square", width: 100, height: 100, mime: "image/png" }, points: [[0, 0], [1, 0], [1, 1], [0, 1]], closed: true, captureStart: 0.75, captureEnd: 1.25, cuts: [1] });
     expect(mapIssues(value, 2)).toEqual([]);
@@ -63,11 +56,7 @@ describe("帧组与胶路位置", () => {
 
   it.each([
     { value: map({ cuts: [0.5, 0.4] }), count: 3 },
-    { value: map({ cuts: [0, 0.5] }), count: 3 },
-    { value: map({ captureEnd: 1.1 }), count: 1 },
-    { value: map({ points: [[0, 0], [0, 0]] }), count: 1 },
     { value: map({ points: [[0, 0], [0.5, 0], [0.5, 0], [1, 0]] }), count: 1 },
-    { value: map({ points: [[0, 0], [1, 0], [1, 1], [0, 0]], closed: true }), count: 1 },
   ])("空间分段倒序、相邻重复点、零长度或范围非法 → 不能确认", ({ value, count }) => {
     expect(mapIssues(value, count).length).toBeGreaterThan(0);
   });

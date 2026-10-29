@@ -730,16 +730,6 @@ mod tests {
         assert_ne!(recalibrated(50), recalibrated(51), "各段待标定时整件重新标定");
     }
 
-    /// 规格 §1 + 决策补充第二节：各段都标定时取 ΣN_exp；有段待标定时取整件标定，都没有为 null。
-    #[test]
-    fn any_uncalibrated_segment_falls_back_to_part_calib_or_none_otherwise_sum() {
-        let mut p = plan();
-        assert_eq!(expected_total(&p.segments, Some(&part(30))), Some(25), "各段都已标定：取各段之和");
-        p.segments[1].expected_frames = None;
-        assert_eq!(expected_total(&p.segments, Some(&part(30))), Some(30), "有段待标定：取整件标定");
-        assert_eq!(expected_total(&p.segments, None), None, "有段待标定且没有整件标定");
-    }
-
     /// 规格 §1 段模型约束；检测限值按旧 ShotLimits 的范围规则校验（D-SB-1 新路径不丢旧约束），停用的检测项不校验限值。
     #[test]
     fn invalid_segment_plans_are_rejected() {

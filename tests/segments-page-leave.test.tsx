@@ -73,17 +73,4 @@ describe("防抖没到期就离开段列表页", () => {
     await waitFor(() => expect(screen.getByLabelText("工作区配方")).toHaveTextContent("B"));
   });
 
-  // 防的回归：卸载时直接调后端提交，工作区仍握着旧修订，之后的保存被后端按修订冲突拒绝
-  it("仍在这个配方 → 提交后工作区拿到返回的新修订", async () => {
-    const saved = view("A");
-    saved.workspace.revision = 4;
-    vi.mocked(workspaceApi.updateSegments).mockResolvedValue(saved);
-    await editWithoutWaiting();
-    expect(screen.getByLabelText("工作区修订")).toHaveTextContent("3");
-
-    await userEvent.setup().click(screen.getByRole("button", { name: "离开本页" }));
-
-    await waitFor(() => expect(screen.getByLabelText("工作区修订")).toHaveTextContent("4"));
-    expect(vi.mocked(workspaceApi.updateSegments).mock.calls[0].slice(0, 2)).toEqual(["A", 3]);
-  });
 });

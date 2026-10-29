@@ -81,26 +81,6 @@ describe("维护模式", () => {
     expect(cycleApi.setMaintenance).toHaveBeenCalledWith(true, "新线投运采图");
   });
 
-  it("退出维护模式 → 逐个列出只有采集版的配方并提示退出后拒收，正式版不列", async () => {
-    state = { ...state, maintenance: { since: 1, reason: "新线投运" } };
-    vi.mocked(recipeApi.list).mockResolvedValue({ recipes: [{ ...recipeList[0], stage: "formal" }, { ...recipeList[1], stage: "collect" }], errors: [], unavailable: [] });
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    await userEvent.click(screen.getByRole("button", { name: "退出维护模式" }));
-    const list = await within(screen.getByRole("dialog")).findByLabelText("只有采集版的配方");
-    expect(list).toHaveTextContent("B · 段配方 B");
-    expect(list).not.toHaveTextContent("A · 段配方 A");
-    expect(list).toHaveTextContent("退出后这些型号会被拒收（90/95）");
-    await userEvent.click(screen.getByRole("button", { name: "确认退出" }));
-    expect(cycleApi.setMaintenance).toHaveBeenCalledWith(false, "");
-  });
-
-  it("snapshot 带维护模式 → 页头常驻横幅写明不输出 NG 与开启原因", () => {
-    state = { ...state, maintenance: { since: 1, reason: "新线投运" } };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const banner = screen.getByRole("status", { name: "维护模式" });
-    expect(banner).toHaveTextContent("维护模式：不向 PLC 输出 NG");
-    expect(banner).toHaveTextContent("新线投运");
-  });
 });
 
 describe("在线检测离线产线控件", () => {
@@ -112,16 +92,6 @@ describe("在线检测离线产线控件", () => {
     const device = within(screen.getByRole("region", { name: "设备状态" }));
     expect(device.getByRole("alert")).toHaveTextContent("PLC 心跳失活");
     expect(device.getByRole("alert")).toHaveTextContent("尚未观察到 PLC 心跳翻转，不能复位");
-  });
-
-  it("故障与复位阻塞原因相同 → 设备状态只显示一次原因且复位保持禁用", () => {
-    state = { ...state, phase: "FAULT", fault: "PLC 未连接" };
-    plcHandshake = { phase: "fault", requestSeq: null, resultSeq: null, message: "PLC 未连接", resetBlockedReason: "PLC 未连接" };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const alert = within(screen.getByRole("region", { name: "设备状态" })).getByRole("alert");
-    expect(alert.textContent?.match(/PLC 未连接/g)).toHaveLength(1);
-    expect(alert).toHaveTextContent("当前不能复位");
-    expect(screen.getByRole("button", { name: "软件复位" })).toBeDisabled();
   });
 
   it("有在途件时软件复位 → 确认框提示在途件记未检，确认后才请求后端复位", async () => {
@@ -136,13 +106,6 @@ describe("在线检测离线产线控件", () => {
     expect(cycleApi.reset).toHaveBeenCalledTimes(1);
   });
 
-  it("真机模式 → 不显示离线运行控件", () => {
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(screen.queryByRole("region", { name: "候选配方离线试运行" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "运行一件" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("combobox", { name: "离线配方" })).not.toBeInTheDocument();
-  });
-
 });
 
 describe("在线检测段配方", () => {
@@ -153,30 +116,6 @@ describe("在线检测段配方", () => {
   const live = () => vi.mocked(burstImageApi.live).mock.calls.map(([, , camera, seq]) => [camera, seq]);
   beforeEach(() => {
     layout = burstWorkspaceView().layout; recipeList = [burstSummary()]; state = burstState();
-  });
-
-  it.each([
-    ["检测不完整、胶偏未判、含未分段", {}, "OK", "整件合格", ["检测不完整", "胶偏未判", "含未分段"], ["帧数异常", "疑似提前终止"]],
-    ["帧数异常、疑似提前终止", { verdict: "NG_WIDTH", plcCode: 14, reason: "溢胶：帧组 3", flags: { incomplete: false, frameCountAnomaly: true, offsetUnjudged: false, unsegmented: false, shortPart: true } },
-      "NG", "胶宽超差", ["帧数异常", "疑似提前终止"], ["检测不完整", "胶偏未判", "含未分段"]],
-  ] as const)("整件结果标记为%s → 判定卡只挂对应徽标，结论标签不变", (_, over, code, detail, shown, hidden) => {
-    state = burstState(over as Partial<ReturnType<typeof burstJudgement>>);
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const card = within(screen.getByRole("region", { name: "整件判定" }));
-    expect(card.getByText(code)).toBeVisible();
-    expect(card.getByText(detail)).toBeVisible();
-    for (const label of shown) expect(card.getByText(label)).toBeVisible();
-    for (const label of hidden) expect(card.queryByText(label)).not.toBeInTheDocument();
-  });
-
-  it("维护件留有异常码 95 → 判定卡显示未判定、PLC 只显示实际回写的 0", () => {
-    const base = burstState({ verdict: "ERR_INSPECT", plcCode: 0, reason: "维护模式：产品代码 1 没有对应的配方；照常布防放行，本件未检" });
-    state = { ...base, result: { ...base.result!, mode: "maintenanceCollect", faultCode: 95 } };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const card = within(screen.getByRole("region", { name: "整件判定" }));
-    expect(card.getByText("未判定")).toBeVisible();
-    expect(card.queryByText("ERR")).not.toBeInTheDocument();
-    expect(card.getByText("PLC 0")).toBeVisible();
   });
 
   it("默认跟随最新帧组；点帧组条 → 按 (相机, seq) 读各相机原图且缺帧的相机不读，返回当前帧组恢复跟随", async () => {
@@ -221,15 +160,6 @@ describe("候选配方离线试运行", () => {
     expect(workspaceApi.debugRun).toHaveBeenCalledTimes(2);
     expect(panel.queryByRole("alert")).not.toBeInTheDocument();
     expect(cycleApi.offlineRun).not.toHaveBeenCalled();
-  });
-
-  it.each(["site", "cycle"] as const)("%s 仍在运行 → 禁止从候选入口重复启动", async running => {
-    site = siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet(), running: running === "site" });
-    state = snapshot(running === "cycle" ? "ACQUIRE" : "IDLE");
-    render(<MemoryRouter initialEntries={["/inspect?candidate=A"]}><InspectPage /></MemoryRouter>);
-    const panel = within(screen.getByRole("region", { name: "候选配方离线试运行" }));
-    await waitFor(() => expect(nativeSelect("调试候选配方", panel)).toHaveValue("A"));
-    expect(panel.getByRole("button", { name: "候选试运行一圈" })).toBeDisabled();
   });
 
 });

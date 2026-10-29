@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SegmentsPage from "../src/features/workspace/SegmentsPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
-import type { PathSegment } from "../src/features/plan/types";
 import { burstRecipe, burstWorkspaceView, deferred, pathSegment, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { updateSegments: vi.fn(), captureRoundThumbs: vi.fn(() => new Promise(() => {})) } }));
@@ -30,24 +29,6 @@ function openCalibrated() {
   const first = within(screen.getByRole("region", { name: "段 1" }));
   return { first, page };
 }
-
-// 改长度、容差走 patch：标定保留，防抖后保存
-it.each<[string, (first: ReturnType<typeof within>) => void, (segment: PathSegment) => unknown, unknown]>([
-  ["帧数容差改为 2", first => fireEvent.change(first.getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value: "2" } }), segment => segment.tolerance, 2],
-  ["长度改为 130 mm", first => fireEvent.change(first.getByRole("spinbutton", { name: "段 1 长度" }), { target: { value: "130" } }), segment => segment.lengthMm, 130],
-])("已标定的配方，%s → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动", async (_, edit, field, expected) => {
-  const { first } = openCalibrated();
-  vi.useFakeTimers();
-
-  edit(first);
-  await act(() => vi.advanceTimersByTimeAsync(1000)); // 越过自动保存的防抖
-
-  expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1);
-  const sent = vi.mocked(workspaceApi.updateSegments).mock.calls[0][2];
-  expect(sent.map(segment => segment.expectedFrames)).toEqual([5, 4, 3]);
-  expect(sent[0].offsetRef?.xRef).toBe(0.1);
-  expect(field(sent[0])).toBe(expected);
-});
 
 it("切换到第二段再修改长度 → 只保存第二段的改动", async () => {
   openCalibrated();

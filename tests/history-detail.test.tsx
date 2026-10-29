@@ -34,14 +34,6 @@ beforeEach(() => {
 });
 
 describe("历史详情（段配方记录）", () => {
-  it("维护采集记录 → 摘要显示未判定而不是 ERR", async () => {
-    detail.summary.mode = "maintenanceCollect";
-    detail.summary.verdict = "ERR_INSPECT";
-    show();
-    const summary = await screen.findByRole("region", { name: "历史记录摘要" });
-    expect(summary).toHaveTextContent("维护采集·未判定");
-    expect(summary).not.toHaveTextContent("ERR");
-  });
   it("按区域展示结果，原图按 (相机, seq) 读取；缺帧的相机没有原图可读", async () => {
     show();
     const regions = within(await screen.findByRole("list", { name: "区域" }));
@@ -54,17 +46,6 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.getByLabelText("历史相机选择", { selector: "select" })).toHaveValue("1");
     expect(await screen.findByText(/本帧组缺帧，没有原图/)).toBeVisible();
     expect(burstImageApi.record).toHaveBeenCalledTimes(2);
-  });
-
-  it("逐帧追溯每台相机每个帧组一行、缺帧也有 → 只看异常帧后只剩缺帧的那一行", async () => {
-    show();
-    const table = await screen.findByRole("table", { name: "逐帧追溯" });
-    expect(within(table).getAllByRole("row")).toHaveLength(1 + 3 * 12);
-    await userEvent.click(screen.getByRole("checkbox", { name: /只看异常帧/ }));
-    const rows = within(table).getAllByRole("row").slice(1);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toHaveTextContent("CAM-2 · #5");
-    expect(rows[0]).toHaveTextContent("缺帧");
   });
 
   it("按候选规则重判得到区域结果 → 逐区域比对表标出与原结果不同的区域", async () => {

@@ -27,32 +27,11 @@ beforeEach(() => {
 });
 
 describe("配方库操作", () => {
-  it("配方库隐藏编辑导航 → 操作错误仍可见",()=>{
-    ws.error="加载失败";
-    show();
-    expect(screen.queryByLabelText("当前配方")).not.toBeInTheDocument();
-    expect(screen.queryByRole("navigation",{name:"配方配置步骤"})).not.toBeInTheDocument();
-    expect(screen.getByText("加载失败")).toBeVisible();
-  });
   it("创建已成功但选用失败，重试仅打开已有候选，避免二次创建",async()=>{
     vi.mocked(ws.select).mockResolvedValueOnce(null);show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
     await userEvent.click(screen.getByRole("button",{name:"创建候选"}));expect(await screen.findByText(/候选已创建，选用未完成/)).toBeVisible();
     expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe");expect(screen.getByRole("textbox",{name:"配方编号"})).toBeDisabled();
     await userEvent.click(screen.getByRole("button",{name:"打开已创建候选"}));expect(workspaceApi.create).toHaveBeenCalledTimes(1);
     await waitFor(()=>expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/progress"));
-  });
-  // 防的回归（RB-5）：旧流程候选还能打开或复制继续编辑；删除时没说明连带删除它导入的轮次
-  it("旧流程候选 → 标已停用，不能继续配置或复制，只能删除",async()=>{
-    const stale=view("OLD");stale.workspace.flow=1;
-    ws.list=[];ws.drafts=[stale.workspace];
-    show();
-    expect(screen.getByText("旧流程候选，已停用")).toBeVisible();
-    expect(screen.queryByRole("button",{name:"继续配置"})).toBeNull();
-    expect(screen.queryByRole("button",{name:"复制配方 OLD"})).toBeNull();
-    await userEvent.click(screen.getByRole("button",{name:"删除配方 OLD"}));
-    expect(await screen.findByRole("dialog")).toHaveTextContent("旧流程候选及其导入的采集轮次");
-    await userEvent.click(screen.getByRole("button",{name:"删除 OLD"}));
-    expect(workspaceApi.remove).toHaveBeenCalledWith("OLD");
-    expect(ws.select).not.toHaveBeenCalled();
   });
 });

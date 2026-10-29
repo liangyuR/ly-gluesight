@@ -79,7 +79,7 @@
 - 后端：`workspace/pieces.rs`（`TeachingPiece`、`PieceView`、`replace_teaching_piece`、`discard_piece`、`sync_pieces`、旧流程候选），`workspace_set_teaching_piece`、`workspace_calibration_pick`、`workspace_calibration_sync`、`workspace_calibration_remove_round`；进度 `progress_v2` 按示教件 → 分段 → 走廊示教 → 多轮标定。
 - 测试数据：`history_fixture.rs` 与 `examples/capture_fixture.rs`；`tests/native/lib.mjs`（`createFixtureCandidate`、`setTeachingPiece`、`calibrate`、`clearRecipe`）与 `scripts/soak/` 按新流程建站。
 - 前端：`HistoryPicker`、`FrameBrowser`、`TeachingPiecePage`、`PieceMask`；分段工作台与走廊示教固定用示教件；多轮标定页逐件复核、屏蔽、弃用；配方库旧流程候选只能删除。
-- 测试：Rust `workspace/pieces_tests.rs`（RB-2 / RB-8 清空与保留、示教件不能单独移出、旧流程候选拒绝修改与删除范围、同步的加入与待复核分流、进度依赖、配方示教件来源与旧配方加载）及 `segment_corridor_tests`（示教帧须来自示教件）、`history_import_tests`（仿历史件可导入、带来源标签、原图可读）；前端 `teaching-piece.test.tsx`（换件前确认、不可用件不能勾选、预览参数）、`recipe-calibration.test.tsx`（选件分流、按件计数）、`library.test.tsx`（旧流程候选只能删除）。
+- 默认测试：Rust `workspace/pieces_tests.rs` 覆盖换示教件后的清空范围与走廊身份改变后重测；`segment_corridor_tests` 覆盖示教帧归属及逐段检测相机选择；`history_import_tests` 覆盖导入原图不依赖历史保留目录。前端 `teaching-piece.test.tsx` 覆盖不可用件禁选与原图参数，`recipe-calibration.test.tsx` 覆盖选件分流及容差须明确确认。其他兼容路径与统计展示按改动范围专项验证。
 - 未验证：依赖设备与 lyFlow 的命令路径（导入、对齐读图、测量）只在编译与纯函数测试层面覆盖；原生端到端（`tests/native`）未跑。
 
 ## RB-9 工件胶路导航图
@@ -199,7 +199,7 @@ seq = a + min(N - 1, floor(t * N))
 | 发布后继续编辑候选，并复制或导出导入项目 | 冻结快照被覆盖、资源丢失或关联到错误发布版本 |
 | 无地图及辅助快照缺失、损坏的配方加载与检测 | 辅助资料意外成为生产依赖；不能只测辅助读取函数的 mock 返回值 |
 
-自动化证据：`tests/navigation.test.ts`、`tests/navigation-map.test.tsx` 保护映射及编辑；`tests/workspace-navigation.test.tsx` 用真实页面与 Provider 验证跨段浏览不写示教、草稿跨页恢复和发布互锁；Rust `workspace::navigation_tests` 验证修订锁、非法空间对应、透明度与检测身份保留、结构失效、换件保留、冻结及损坏降级；`project::transfer::tests` 覆盖资料复制与导出导入。浏览器使用合成工件图验证绘制、缩放拖点、平移、闭合跨起点、点击跳帧及窄屏布局；不把合成图导航当作真实胶路精度证据。
+自动化证据：`tests/navigation.test.ts`、`tests/navigation-map.test.tsx` 保护映射及编辑；`tests/workspace-navigation.test.tsx` 用真实页面与 Provider 验证跨段浏览不写示教、草稿跨页恢复和发布互锁；Rust `workspace::navigation_tests` 验证透明度与检测身份保留、验证有效性不被复活、结构失效、冻结及损坏降级；`project::transfer::tests` 覆盖资料复制与导出导入。浏览器使用合成工件图验证绘制、缩放拖点、平移、闭合跨起点、点击跳帧及窄屏布局；不把合成图导航当作真实胶路精度证据。
 
 未验证：真实相机、PLC 生产链路及现场导航误差。辅助资料损坏的后端回归直接证明配方库可加载，生产隔离同时依据调用路径审查，未据此声称真机检测已通过。现场验收需选覆盖直线、弯道和首尾的可辨识位置，与示教件实际帧对照，记录导航误差及是否足以辅助选帧；不能用公式测试代替现场精度验证。
 

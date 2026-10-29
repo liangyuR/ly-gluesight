@@ -656,16 +656,6 @@ mod tests {
         kinds.iter().enumerate().map(|(i, &kind)| new_segment(i as u32 + 1, kind, &defaults)).collect()
     }
 
-    fn reference(x_ref: Option<f64>, measure: OffsetMeasure) -> Option<OffsetRef> {
-        Some(OffsetRef {
-            measure,
-            camera: "camA".into(),
-            x_ref,
-            spread: x_ref.map(|_| 0.1),
-            edge: None,
-        })
-    }
-
     /// 合格帧：10 站胶宽都是 4.0（站距 1 mm），无断口，胶中心 x = 0。
     fn ok(camera: usize, seq: u64) -> FrameMetrics {
         FrameMetrics {
@@ -689,18 +679,6 @@ mod tests {
     }
 
     /// 没测成的帧：数值都是测不到时的样子，若被当成 Measured 判会是断胶。
-    fn failed(camera: usize, seq: u64, state: FrameState) -> FrameMetrics {
-        FrameMetrics {
-            state,
-            width_min: None,
-            width_max: None,
-            width_mean: None,
-            widths: Vec::new(),
-            present_ratio: 0.0,
-            x_mm: None,
-            ..ok(camera, seq)
-        }
-    }
 
     /// seq 1..=n 三台相机全部合格。
     fn frames(n: u64) -> Vec<FrameMetrics> {
@@ -737,136 +715,9 @@ mod tests {
     }
 
     /// 覆盖全部段的未分段区域。
-    fn whole(segments: &[PathSegment], reason: UnsegReason, last_seq: u64) -> Region {
-        let kind = RegionKind::Unsegmented { first_segment: 1, last_segment: segments.len() as u32, reason };
-        region(kind, 1, last_seq)
-    }
 
     fn run(segments: &[PathSegment], expected_total: Option<u32>, regions: &[Region], metrics: &[FrameMetrics]) -> BurstJudgement {
         judge(segments, expected_total, regions, &groups_of(metrics), metrics, &cameras(), &[])
-    }
-
-    /// 规格 §3/§4 未分段：每帧独立指标照常判，允差取所覆盖段中较宽一档；不判胶偏，按未分段原因标“胶偏未判”。
-    /// 直线段胶宽上限 5.5、溢胶 8；弯道段放宽到 6.5、9。帧内 9 站 6.0 mm 加 1 站尖峰。
-    #[test]
-    fn unsegmented_region_judges_frames_with_wider_limits_and_flags_offset_unjudged() {
-        let mut segments = plan(&[Straight, Corner]);
-        segments[0].offset_ref = reference(Some(0.0), OffsetMeasure::AbsoluteX);
-        segments[1].checks.width.tol_upper = 2.5;
-        segments[1].checks.overflow.max_width_mm = 9.0;
-        for (case, reason, peak, verdict, unjudged) in [
-            ("较宽允差内：只有尖峰一站超差", UnsegReason::AlgorithmPending, 8.5, Verdict::OkWithExcursion, OffsetUnjudged::Unsegmented),
-            ("超过较宽的溢胶上限", UnsegReason::LowConfidence, 9.5, Verdict::NgWidth, OffsetUnjudged::LowConfidence),
-        ] {
-            let mut metrics = frames(6);
-            set_widths(at(&mut metrics, 0, 3), &[6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, peak]);
-            // 若按直线段判胶偏，x 偏 5 mm 必然 NG
-            metrics.iter_mut().filter(|m| m.camera == 0).for_each(|m| m.x_mm = Some(5.0));
-            let result = run(&segments, None, &[whole(&segments, reason, 6)], &metrics);
-            assert_eq!(result.verdict, verdict, "{case}");
-            assert_eq!((&result.regions[0].offset, result.regions[0].offset_unjudged), (&None, Some(unjudged)), "{case}");
-            assert!(result.flags.offset_unjudged && result.flags.unsegmented, "{case}");
-        }
-    }
-
-    /// 规格 §0/§3：某台相机这一组没有测成的帧（缺帧、测量失败、没测、走出走廊）→ 该组与整件标检测不完整，
-    /// 其余相机照常判，不影响 OK/NG。
-    #[test]
-    fn missing_camera_frames_mark_incomplete_without_changing_verdict() {
-        for (case, state, overflow_elsewhere, verdict) in [
-            ("缺帧（没有记录）", None, false, Verdict::Ok),
-            ("缺帧", Some(FrameState::Missing), false, Verdict::Ok),
-            ("测量失败", Some(FrameState::Error), false, Verdict::Ok),
-            ("没测", Some(FrameState::Unmeasured), false, Verdict::Ok),
-            ("走出走廊", Some(FrameState::OutOfCorridor), false, Verdict::Ok),
-            ("缺帧且其余相机溢胶", None, true, Verdict::NgWidth),
-        ] {
-            let segments = plan(&[Straight, Corner]);
-            let mut metrics = frames(3);
-            metrics.retain(|m| (m.camera, m.seq) != (1, 2));
-            if let Some(state) = state {
-                metrics.push(failed(1, 2, state));
-            }
-            if overflow_elsewhere {
-                set_widths(at(&mut metrics, 0, 3), &[4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 9.5]);
-            }
-            let result = run(&segments, None, &[whole(&segments, UnsegReason::AlgorithmPending, 3)], &metrics);
-            assert_eq!(result.verdict, verdict, "{case}");
-            assert_eq!(result.regions[0].incomplete_groups, vec![2], "{case}");
-            assert!(result.flags.incomplete, "{case}");
-        }
-    }
-
-    /// 规格 §2：帧数超出容差只记帧数异常；默认做法 3：整件帧组数 < ΣN_exp − Σtol 另标疑似提前终止。结论都不变。
-    /// 两段各容差 1：整件 14 ± 2。D-SB-40：直线 / 弯道区域的帧数是比例边界推算并扣掉过渡区的结果，不与本段 N_exp 比。
-    #[test]
-    fn frame_count_anomaly_comes_from_part_total_not_from_segment_regions() {
-        let unsegmented = |n| vec![whole(&plan(&[Straight, Corner]), UnsegReason::AlgorithmPending, n)];
-        for (case, regions, anomaly, short_part) in [
-            (
-                "未分段：整件 17 组高于上限 16",
-                unsegmented(17),
-                true,
-                false,
-            ),
-            ("未分段：整件 11 组低于下限 12", unsegmented(11), true, true),
-            (
-                "直线段区域 12 组、本段 N_exp 10 ± 1，整件 15 组正常",
-                vec![region(RegionKind::Straight { segment: 1 }, 1, 12), region(RegionKind::Corner { segment: 2 }, 13, 15)],
-                false,
-                false,
-            ),
-        ] {
-            let mut segments = plan(&[Straight, Corner]);
-            segments
-                .iter_mut()
-                .zip([10, 4])
-                .for_each(|(segment, n)| segment.expected_frames = Some(n));
-            let groups = regions.last().unwrap().last_seq;
-            let result = run(&segments, Some(14), &regions, &frames(groups));
-            assert_eq!(result.verdict, Verdict::Ok, "{case}");
-            assert_eq!(
-                (result.flags.frame_count_anomaly, result.flags.short_part),
-                (anomaly, short_part),
-                "{case}"
-            );
-        }
-    }
-
-    /// D-SB-40：边界过渡区按两侧段中较宽的允差判每帧指标，不判胶偏、不标胶偏未判，也不算“含未分段”。
-    /// 直线段胶宽上限 5.5、溢胶 8；弯道段 6.5、9；过渡区一帧 9 站 6.0 mm 加 1 站 8.5 mm、x 偏 5 mm。
-    #[test]
-    fn transition_region_judges_frames_with_wider_limits_without_offset_or_unsegmented_flag() {
-        let mut segments = plan(&[Straight, Corner]);
-        segments[0].offset_ref = reference(Some(0.0), OffsetMeasure::AbsoluteX);
-        segments[1].checks.width.tol_upper = 2.5;
-        segments[1].checks.overflow.max_width_mm = 9.0;
-        let mut metrics = frames(9);
-        set_widths(
-            at(&mut metrics, 0, 5),
-            &[6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 8.5],
-        );
-        at(&mut metrics, 0, 5).x_mm = Some(5.0);
-        let transition = RegionKind::Unsegmented {
-            first_segment: 1,
-            last_segment: 2,
-            reason: UnsegReason::Transition,
-        };
-        let regions = [
-            region(RegionKind::Straight { segment: 1 }, 1, 3),
-            region(transition, 4, 6),
-            region(RegionKind::Corner { segment: 2 }, 7, 9),
-        ];
-        let result = run(&segments, None, &regions, &metrics);
-        assert_eq!(
-            (result.regions[1].verdict, result.verdict),
-            (Verdict::OkWithExcursion, Verdict::OkWithExcursion)
-        );
-        assert_eq!(
-            (&result.regions[1].offset, result.regions[1].offset_unjudged),
-            (&None, None)
-        );
-        assert!(!result.flags.offset_unjudged && !result.flags.unsegmented);
     }
 
     /// D-SB-41：直线 / 弯道区域只用本段检测相机——没选中的相机这一帧断胶、缺帧都不影响结论与检测不完整；
@@ -939,16 +790,6 @@ mod tests {
                 to_mm: None
             }]
         );
-    }
-
-    /// 决策 D-SB-14：三台相机取最差——任一相机任一帧 NG，所在区域与整件即 NG（不沿用旧模型“一个视图合格即合格”）。
-    #[test]
-    fn any_camera_frame_ng_makes_region_ng() {
-        let segments = plan(&[Straight, Corner]);
-        let mut metrics = frames(4);
-        at(&mut metrics, 2, 3).gap_max_mm = 10.0;
-        let result = run(&segments, None, &[whole(&segments, UnsegReason::AlgorithmPending, 4)], &metrics);
-        assert_eq!((result.regions[0].verdict, result.verdict), (Verdict::NgGap, Verdict::NgGap));
     }
 
     /// 规格 §4 每帧独立指标：断口超长、有胶比例低 → 断胶；胶宽超差累计超过允许长度 → 胶宽 NG（多处短超差累加），

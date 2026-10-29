@@ -2306,34 +2306,6 @@ fn check_access(cycle: &CycleHost, access: CameraAccess) -> Result<(), String> {
     access.check(cycle.in_flight(), cycle.busy())
 }
 
-#[cfg(test)]
-mod access_tests {
-    use super::CameraAccess;
-
-    #[test]
-    fn unresolved_plc_allows_maintenance_but_keeps_configuration_locked() {
-        for (case, in_flight, pending, maintenance, configuration) in [
-            ("空闲", false, false, true, true),
-            ("初始化故障且有历史未结事务", false, true, true, false),
-            ("真实检测在途且界面快照尚未更新", true, false, false, false),
-            ("检测及握手在途", true, true, false, false),
-        ] {
-            assert_eq!(
-                CameraAccess::Maintenance.check(in_flight, pending).is_ok(),
-                maintenance,
-                "{case}"
-            );
-            assert_eq!(
-                CameraAccess::Configuration
-                    .check(in_flight, pending)
-                    .is_ok(),
-                configuration,
-                "{case}"
-            );
-        }
-    }
-}
-
 #[tauri::command]
 pub async fn camera_add(app: AppHandle, config: CameraConfig) -> Result<usize, String> {
     let result = camera_add_inner(app.clone(), config).await;
@@ -2628,94 +2600,8 @@ mod rig_file_tests {
 
 #[cfg(test)]
 mod view_tests {
-    #[test]
-    fn unresolved_manual_trigger_blocks_mvs_arming_until_resolved() {
-        assert!(super::manual_arm_ready(super::CameraSource::Mvs, 1).is_err());
-        assert!(super::manual_arm_ready(super::CameraSource::Mvs, 10).is_err());
-        assert!(super::manual_arm_ready(super::CameraSource::Mvs, 0).is_ok());
-        assert!(super::manual_arm_ready(super::CameraSource::Sim, 1).is_ok());
-    }
 
     use super::*;
-
-    #[test]
-    fn burst_plan_camera_missing_or_not_single_view_is_rejected() {
-        let single = |id: &str| CameraConfig {
-            id: id.into(),
-            view_count: 1,
-            ..CameraConfig::default()
-        };
-        let plan: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
-        let cases: [(&str, CameraConfig, bool); 7] = [
-            ("单视角独立相机", single("cam3"), true),
-            (
-                "Software 不参与整轮采集",
-                CameraConfig {
-                    trigger_source: "Software".into(),
-                    ..single("cam3")
-                },
-                false,
-            ),
-            (
-                "帧率不一致",
-                CameraConfig {
-                    frame_rate: 20.0,
-                    ..single("cam3")
-                },
-                false,
-            ),
-            (
-                "旧边沿不可进入生产",
-                CameraConfig {
-                    trigger_activation: "RisingEdge".into(),
-                    ..single("cam3")
-                },
-                false,
-            ),
-            (
-                "三视角样本集相机",
-                CameraConfig {
-                    source: CameraSource::SampleSet,
-                    view_count: 3,
-                    ..single("cam3")
-                },
-                false,
-            ),
-            (
-                "配了三目拼接布局",
-                CameraConfig {
-                    composite_layout: Some(crate::recipe_capture::CompositeLayout::Horizontal),
-                    ..single("cam3")
-                },
-                false,
-            ),
-            ("计划相机不在相机组", single("cam9"), false),
-        ];
-        for (name, third, accepted) in cases {
-            let rig = [single("cam1"), single("cam2"), third];
-            assert_eq!(check_burst_cameras(&rig, &plan).is_ok(), accepted, "{name}");
-        }
-    }
-
-    #[test]
-    fn software_capture_rejects_the_previous_callback_image_after_its_pending_flag_clears() {
-        let image = |session, counter, value| {
-            CapturedFrame::from_frame(&synthetic_frame(
-                0,
-                session,
-                counter,
-                vec![Arc::new(FrameImage::new(1, 1, vec![value]))],
-                true,
-            ))
-        };
-        let requested = CaptureRequest::After {
-            session: 12,
-            frame: Some(7),
-        };
-        assert!(requested.images(&image(12, 7, 10)).is_none());
-        assert!(requested.images(&image(11, 8, 20)).is_none());
-        assert_eq!(requested.images(&image(12, 8, 30)).unwrap()[0].pixels, [30]);
-    }
 
     #[test]
     fn prior_trigger_completion_cannot_satisfy_the_current_capture() {

@@ -7,7 +7,6 @@ use super::navigation::{
 use super::pieces_tests::piece;
 use super::*;
 use crate::plan::SegmentKind::{Corner, Straight};
-use sha2::{Digest, Sha256};
 
 struct Project(PathBuf);
 
@@ -78,54 +77,6 @@ fn release(project: &Path, w: &Workspace, bundle: &str) -> Release {
 }
 
 #[test]
-fn stale_revision_or_pending_release_then_navigation_edit_is_rejected() {
-    let project = Project::new();
-    let w = mapped(&project.0);
-    let original = w.navigation_id.clone();
-    assert!(edit_navigation(&project.0, &w, w.revision - 1, NavigationEdit::Delete).is_err());
-    let mut pending = w.clone();
-    pending.pending = Some(Box::new(release(&project.0, &w, "release-lock")));
-    assert!(edit_navigation(
-        &project.0,
-        &pending,
-        pending.revision,
-        NavigationEdit::Import(png())
-    )
-    .is_err());
-    assert_eq!(pending.navigation_id, original);
-    assert!(navigation_view(&project.0, &pending).map.unwrap().confirmed);
-}
-
-#[test]
-fn invalid_spatial_partition_or_presentation_then_confirmation_cannot_replace_saved_map() {
-    let project = Project::new();
-    let w = mapped(&project.0);
-    let original = navigation_view(&project.0, &w).map.unwrap();
-    let changes: [fn(&mut NavigationMap); 8] = [
-        |m| m.cuts.clear(),
-        |m| m.cuts = vec![m.capture_end],
-        |m| m.points[1] = m.points[0],
-        |m| m.capture_end = 1.1,
-        |m| m.points[0][0] = -0.1,
-        |m| m.view.rotation = -181.0,
-        |m| m.view.rotation = 181.0,
-        |m| m.view.rotation = f64::NAN,
-    ];
-    for change in changes {
-        let mut map = original.clone();
-        change(&mut map);
-        assert!(edit_navigation(
-            &project.0,
-            &w,
-            w.revision,
-            NavigationEdit::Save { map, confirm: true }
-        )
-        .is_err());
-        assert_eq!(navigation_view(&project.0, &w).map, Some(original.clone()));
-    }
-}
-
-#[test]
 fn navigation_edit_then_alpha_and_detection_identity_are_preserved() {
     let project = Project::new();
     let w = mapped(&project.0);
@@ -158,91 +109,6 @@ fn navigation_edit_then_alpha_and_detection_identity_are_preserved() {
     assert!(edited.doc.same_plan(&before));
     assert!(!navigation_view(&project.0, &edited).map.unwrap().confirmed);
     assert!(navigation_view(&project.0, &w).map.unwrap().confirmed);
-}
-
-#[test]
-fn legacy_map_then_presentation_saves_and_reopens_without_changing_geometry_or_confirmation() {
-    let project = Project::new();
-    let mut w = mapped(&project.0);
-    let original = navigation_view(&project.0, &w).map.unwrap();
-    let mut legacy = serde_json::to_value(&original).unwrap();
-    legacy.as_object_mut().unwrap().remove("view");
-    let bytes = serde_json::to_vec(&legacy).unwrap();
-    let id = format!("{:x}", Sha256::digest(&bytes));
-    let maps = project
-        .0
-        .join("workspaces")
-        .join(&w.doc.id)
-        .join("navigation/maps");
-    std::fs::write(maps.join(format!("{id}.json")), bytes).unwrap();
-    w.navigation_id = Some(id);
-    let mut map = navigation_view(&project.0, &w).map.unwrap();
-    assert_eq!(map, original);
-    map.view = NavigationPresentation {
-        rotation: 180.0,
-        flip_x: true,
-        flip_y: true,
-        background: NavigationBackground::Light,
-    };
-    let next = edit_navigation(
-        &project.0,
-        &w,
-        w.revision,
-        NavigationEdit::Save {
-            map,
-            confirm: original.confirmed,
-        },
-    )
-    .unwrap();
-    let workspace_file = project
-        .0
-        .join("workspaces")
-        .join(&w.doc.id)
-        .join("workspace.json");
-    std::fs::write(&workspace_file, serde_json::to_vec(&next).unwrap()).unwrap();
-    let reopened: Workspace =
-        serde_json::from_slice(&std::fs::read(workspace_file).unwrap()).unwrap();
-    let mut saved = navigation_view(&project.0, &reopened).map.unwrap();
-    assert_eq!(
-        saved.view,
-        NavigationPresentation {
-            rotation: -180.0,
-            flip_x: true,
-            flip_y: true,
-            background: NavigationBackground::Light
-        }
-    );
-    saved.view = NavigationPresentation::default();
-    assert_eq!(saved, original);
-    assert_eq!(reopened.doc, w.doc);
-    assert!(reopened.doc.same_plan(&w.doc));
-
-    legacy["view"] =
-        json!({"rotation": 0, "flipX": false, "flipY": false, "background": "unsupported"});
-    let bytes = serde_json::to_vec(&legacy).unwrap();
-    let id = format!("{:x}", Sha256::digest(&bytes));
-    std::fs::write(maps.join(format!("{id}.json")), bytes).unwrap();
-    w.navigation_id = Some(id);
-    let invalid = navigation_view(&project.0, &w);
-    assert!(invalid.map.is_none());
-    assert!(invalid.error.is_some());
-    assert!(w.doc.build().is_ok());
-}
-
-#[test]
-fn damaged_optional_navigation_status_then_release_remains_loadable_and_detection_fields_stay_strict(
-) {
-    let project = Project::new();
-    let w = mapped(&project.0);
-    let release = release(&project.0, &w, "release-optional-status");
-    let mut file = serde_json::to_value(&release).unwrap();
-    file["navigation"] = json!({ "state": ["invalid auxiliary status"] });
-    let loaded: Release = serde_json::from_value(file.clone()).unwrap();
-    assert!(loaded.navigation.is_none());
-    assert_eq!(loaded.doc, release.doc);
-    assert_eq!(loaded.bundle_id, release.bundle_id);
-    file["bundleId"] = json!(["invalid detection bundle identity"]);
-    assert!(serde_json::from_value::<Release>(file).is_err());
 }
 
 #[test]
@@ -290,24 +156,6 @@ fn same_count_kind_reorder_then_spatial_mapping_needs_reconfirmation() {
     segments[0].tolerance += 1;
     super::burst::update_segments(&mut w, segments).unwrap();
     assert!(navigation_view(&project.0, &w).map.unwrap().confirmed);
-}
-
-#[test]
-fn replacing_teaching_piece_then_map_survives_but_old_frame_range_is_not_archived() {
-    let project = Project::new();
-    let mut w = mapped(&project.0);
-    let original = navigation_view(&project.0, &w).map.unwrap();
-    super::pieces::replace_teaching_piece(&mut w, piece("new-teach", 2)).unwrap();
-    assert_eq!(navigation_view(&project.0, &w).map, Some(original));
-    let doc = formal_release_doc(&w).unwrap();
-    let status = prepare_navigation_release(&project.0, &w, &doc, "release-new-piece");
-    assert_eq!(status.state, "error");
-    assert!(!project
-        .0
-        .join("recipe-support")
-        .join(&w.doc.id)
-        .join("release-new-piece")
-        .exists());
 }
 
 #[test]

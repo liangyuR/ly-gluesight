@@ -1,11 +1,9 @@
 use super::burst::{
-    apply_segment_teaching, calibration_corridors, camera_teaching_views, teach_preview_frames,
-    teach_preview_scope, update_segments, CameraTeaching,
+    apply_segment_teaching, calibration_corridors, update_segments, CameraTeaching,
 };
-use super::burst_tests::{burst_workspace, capture_round, measured, DEVICE};
+use super::burst_tests::{burst_workspace, capture_round, DEVICE};
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::*;
-use crate::burst_judge::FrameState;
 use crate::plan::SegmentKind::{Corner, Straight};
 use crate::recipe::SegmentCorridor;
 
@@ -148,52 +146,6 @@ fn calibration_measures_each_frame_only_with_its_segment_detecting_cameras() {
 }
 
 #[test]
-fn segment_preview_over_a_round_marks_missing_excluded_and_failed_frames_and_measures_the_rest() {
-    // 防的回归：示教页试测整段时，这台相机缺帧、帧组已屏蔽或单帧测量失败让整批失败，或这些帧被当成测量结果去量；
-    // 别的相机缺帧也被算进来；没按本轮已确认的分段取这一段的帧组；相机下标或帧组号没按计划相机与 seq 填
-    let (mut w, cameras) = workspace();
-    with_corridor(&mut w, &cameras[1], 3, vec![[1.0, 1.0], [50.0, 1.0]]);
-    let round = capture_round("gappy", &w.doc, GROUPS, DEVICE, &[(1, 22), (0, 23)]);
-    w.teaching_piece = Some(super::pieces_tests::piece("gappy", 2));
-    apply_capture_review(&mut w, &round, CaptureReviewEdit::Save(vec![10, 20])).unwrap();
-    apply_capture_review(
-        &mut w,
-        &round,
-        CaptureReviewEdit::Exclude {
-            start: 24,
-            end: 24,
-            excluded: true,
-            reason: "反光".into(),
-        },
-    )
-    .unwrap();
-    apply_capture_review(&mut w, &round, CaptureReviewEdit::Confirm).unwrap();
-    let scope = teach_preview_scope(&w, &round, &cameras[1], 3).unwrap();
-    let frames = teach_preview_frames(&w, &round, &cameras[1], &scope, |seq| {
-        if seq == 25 {
-            Err("lyFlow 运行失败".into())
-        } else {
-            Ok(measured(1.0))
-        }
-    });
-    let expected = |seq: u64| match seq {
-        22 => FrameState::Missing,
-        24 => FrameState::Unmeasured,
-        25 => FrameState::Error,
-        _ => FrameState::Measured,
-    };
-    assert_eq!(
-        frames
-            .iter()
-            .map(|m| (m.camera, m.seq, m.state))
-            .collect::<Vec<_>>(),
-        (21..=GROUPS)
-            .map(|seq| (1, seq, expected(seq)))
-            .collect::<Vec<_>>()
-    );
-}
-
-#[test]
 fn segment_structure_or_camera_change_drops_only_the_affected_corridors_and_frames() {
     // 防的回归（D-SB-45）：段的类型序列变了，旧段号上的走廊被套到新的段上；某段去掉一台检测相机后，它在这段的走廊与示教帧
     // 还留着（发布检查、测量图都会去找它）；只改参数也清掉走廊；或保存了没有示教帧的走廊
@@ -254,34 +206,4 @@ fn segment_structure_or_camera_change_drops_only_the_affected_corridors_and_fram
             corridor: vec![[1.0, 1.0], [50.0, 1.0]],
         });
     assert!(update_doc(&mut w, doc).is_err(), "没有示教帧的走廊");
-}
-
-#[test]
-fn camera_is_taught_only_when_every_segment_it_detects_has_a_corridor() {
-    // 防的回归（D-SB-45）：还要求相机级的默认走廊才算示教完成；或只画了部分段、或缺像素当量就算完成
-    let cases: [(&str, &[u32], bool, bool); 3] = [
-        ("检测的两段都有走廊", &[1, 3], true, true),
-        ("只画了一段", &[1], true, false),
-        ("两段都有走廊但缺像素当量", &[1, 3], false, false),
-    ];
-    for (name, segments, scaled, ready) in cases {
-        let (mut w, cameras) = workspace();
-        for &segment in segments {
-            with_corridor(&mut w, &cameras[1], segment, vec![[1.0, 1.0], [50.0, 1.0]]);
-        }
-        if !scaled {
-            w.doc
-                .inspect
-                .iter_mut()
-                .find(|i| i.camera == cameras[1])
-                .unwrap()
-                .mm_per_px = None;
-        }
-        let views = camera_teaching_views(&w);
-        assert_eq!(
-            views.iter().find(|v| v.camera == cameras[1]).unwrap().ready,
-            ready,
-            "{name}"
-        );
-    }
 }

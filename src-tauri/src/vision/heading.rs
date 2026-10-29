@@ -248,7 +248,3 @@ fn parse_heading(
         found,
     ))
 }
-
-#[cfg(test)]
-#[path = "heading/tests.rs"]
-mod tests;

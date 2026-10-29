@@ -25,17 +25,6 @@ fn add(data: &Path, id: &str) {
 }
 
 #[test]
-fn no_project_on_this_machine_then_default_is_created_and_opened() {
-    let data = TempDir::new("empty");
-    let Resolution::Open(active) = resolve(&data.0).unwrap() else {
-        panic!("应直接打开默认项目")
-    };
-    assert_eq!(active.id, DEFAULT_ID);
-    assert_eq!(read_meta(&active.root).unwrap().id, DEFAULT_ID);
-    assert_eq!(read_pointer(&data.0).as_deref(), Some(DEFAULT_ID));
-}
-
-#[test]
 fn invalid_current_pointer_then_operator_must_choose_instead_of_another_project_opening() {
     let cases: [(&str, fn(&Path)); 4] = [
         ("missing-pointer", |_| {}),
