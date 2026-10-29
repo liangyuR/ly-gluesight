@@ -214,7 +214,7 @@ pub(super) fn bead_graph(
     json!({"schemaVersion": 1, "id": id, "nodes": nodes, "edges": edges, "outputs": outputs})
 }
 
-/// 找边结果 → 胶中心到零件边距离的均值（mm）。有胶测站里找到边的不到一半时为 None（这一帧胶偏记未测）。
+/// 找边结果 → 胶中心到零件边距离的均值（mm）。左右平票或有胶测站里找到边的不到一半时为 None。
 pub(super) fn edge_mm(result: &RunResult, scale: f64) -> Result<Option<f64>, String> {
     let edge = result.record("edge").ok_or("算法缺少找边结果")?;
     let status = edge["status"].as_array().ok_or("找边结果缺少逐站状态")?;
@@ -228,6 +228,15 @@ pub(super) fn edge_mm(result: &RunResult, scale: f64) -> Result<Option<f64>, Str
         .iter()
         .filter(|s| s.as_str() != Some("nobead"))
         .count();
+    let votes = |side: &str| {
+        edge["votes"][side]
+            .as_u64()
+            .filter(|&v| v <= searched as u64)
+            .ok_or_else(|| format!("找边结果 {side} 票数不是有效的有胶测站数"))
+    };
+    if votes("right")? == votes("left")? {
+        return Ok(None);
+    }
     let found: Vec<f64> = status
         .iter()
         .zip(distance)

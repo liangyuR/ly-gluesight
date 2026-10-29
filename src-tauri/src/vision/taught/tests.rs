@@ -98,3 +98,57 @@ fn bead_leaving_through_a_corridor_end_is_out_of_corridor_but_breaks_and_centred
         assert!(m.gap_max_mm > 0.0, "{name}：缺胶照常计入");
     }
 }
+
+#[test]
+fn tied_or_invalid_edge_votes_do_not_produce_a_trusted_distance() {
+    use crate::plan::{EdgeParams, EdgePolarity, OffsetRef};
+
+    let mut recipe = burst_recipe();
+    recipe.path_segments[0].offset_ref = Some(OffsetRef {
+        measure: OffsetMeasure::ToEdge,
+        camera: recipe.inspect[0].camera.clone(),
+        x_ref: None,
+        spread: None,
+        edge: Some(EdgeParams {
+            polarity: EdgePolarity::BrightToDark,
+            search_mm: 20.0,
+            contrast_min: 40.0,
+            nominal_mm: Some(5.0),
+        }),
+    });
+    let c = plan_corridor(&recipe.inspect[0], 1, &recipe, FRAME).unwrap();
+    let output = |votes: Value, side: &str, distance: f64| {
+        let mut output = corridor_output(&beads(&[], &[]));
+        output.outputs["edge"] = json!({"value": {"data": {
+            "votes": votes, "side": side,
+            "status": vec!["ok"; 41], "distancePx": vec![distance; 41]
+        }}});
+        output
+    };
+    for distance in [20.0, 36.0] {
+        let m = measure(
+            &c,
+            FRAME,
+            output(json!({"right": 41, "left": 41}), "right", distance),
+        )
+        .unwrap();
+        assert_eq!(m.metrics.state, FrameState::Measured);
+        assert_eq!(m.metrics.edge_mm, None, "平票不能任意选边用于胶偏");
+    }
+    for (votes, side, distance) in [
+        (json!({"right": 41, "left": 40}), "right", 20.0),
+        (json!({"right": 40, "left": 41}), "left", 36.0),
+    ] {
+        let m = measure(&c, FRAME, output(votes, side, distance)).unwrap();
+        assert_eq!(m.metrics.edge_mm, Some(distance * 0.25));
+    }
+    for votes in [
+        json!({"right": -1, "left": 41}),
+        json!({"right": 41, "left": 1.5}),
+        json!({"right": 41}),
+        json!(null),
+        json!({"right": 42, "left": 40}),
+    ] {
+        assert!(measure(&c, FRAME, output(votes, "right", 20.0)).is_err());
+    }
+}

@@ -124,7 +124,7 @@
 ### D-SB-16 胶宽均匀性
 
 - 问题：规格 §4 直线段胶宽 / 均匀性按段级 min/max/mean 检，弯道用弯道允差，未分段用较宽允差。
-- 采用：`WidthCheck` 有 `max_range_mm: Option<f64>`（区域内各帧 `width_mean` 的极差上限，默认 None 即不检），只在 Straight 区域判，超限 NG_WIDTH，原因“胶宽不均”。Corner 和 Unsegmented 不判极差，只判每帧胶宽。每帧胶宽按 `widths × spacing_mm` 算帧内超差长度，不超过 `max_excursion_mm` 为 OK_WITH_EXCURSION。默认胶宽 4 ± 1.5 mm、帧内允许超差 5 mm（`plan::KindDefaults`，依据见 [r2-algorithm.md](r2-algorithm.md) RA-5）。
+- 采用：`WidthCheck` 有 `max_range_mm: Option<f64>`（区域内各帧 `width_mean` 的极差上限，默认 None 即不检），只在 Straight 区域判，超限 NG_WIDTH，原因“胶宽不均”。Corner 和 Unsegmented 不判极差，只判每帧胶宽。每帧胶宽按 `widths × spacing_mm` 算帧内累计超差长度，不超过 `max_excursion_mm` 为 OK_WITH_EXCURSION。逐站宽度以 `f32` 保存，逐站比较时上下限也转换到同一精度，避免恰好合格的边界值因存储舍入被计入超差；溢胶缺少原始最大宽度、从逐站值回退时同样处理。原始 `f64` 极值仍按原精度判定。默认胶宽 4 ± 1.5 mm、帧内允许超差 5 mm（`plan::KindDefaults`）。
 
 ### D-SB-17 检测走廊
 
@@ -449,7 +449,7 @@
   - 结论：极性因段而异，必须按段（参考相机）设置；s5 暗 → 亮的噪声 0.23 mm 可用于判 ±2 mm 的胶偏，s3 的 1.5 mm 偏大、s1 找边率低，需按真实图像调整 `contrastMin`、`farRun` 或换参考相机。
 - 实现（2026-10-27）：
   - 模型：`OffsetRef.edge`（`{polarity: brightToDark | darkToBright, searchMm, contrastMin, nominalMm}`），只能配在 ToEdge 上，搜索长度 0–50 mm、对比度下限 1–255、图纸胶边距 ≥ 0；搜索长度换算后须不少于 22 px（`farRun` 12 px + 10）。极性、搜索长度、对比度变了 x_ref 清空（测量变了），只改图纸胶边距不清空。找边参数进测量布局，改了不能用已存指标重判。
-  - 测量：胶偏参考相机在该段的走廊测量图或定向测量图后接 `glue.edge_distance`（`reference = bead_center`），每帧指标增加 `edgeMm`；有胶测站里找到边的不到一半时为空，胶偏记未测。
+  - 测量：胶偏参考相机在该段的走廊测量图或定向测量图后接 `glue.edge_distance`（`reference = bead_center`），每帧指标增加 `edgeMm`；左右找边票数必须有唯一多数，平票或有胶测站里找到边的不到一半时为空，胶偏记未测。平票不影响本帧胶宽、断胶和溢胶判定；票数缺失或不合法属于算法输出错误。
   - 标定：标定轮次记各相机的胶边距均值（`edgeMeans`），标准件轮次得出 ToEdge 口径的 x_ref；填了图纸胶边距时标定页写“按图纸胶边距判，不需要标准件”。发布检查“标准件 x_ref”：ToEdge 填了图纸值即通过，否则要标准件参考值；没配找边参数时列出原因、不阻断。
   - 判定：`burst_judge` 的胶偏判定 ToEdge 用胶边距；没配找边参数时仍标“测量量未实现”。
   - 未实现：示教页当场预览找到的边；模板匹配初定位。

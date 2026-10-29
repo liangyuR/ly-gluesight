@@ -14,6 +14,8 @@ pub struct ExtractionFailure {
     pub point: [f32; 2],
     pub reason: &'static str,
     pub message: String,
+    #[serde(skip)]
+    abrupt_widening: bool,
 }
 
 #[derive(Debug)]
@@ -31,7 +33,12 @@ impl From<String> for ExtractionError {
 }
 
 fn failure(point: [f32; 2], reason: &'static str, message: &str) -> ExtractionError {
-    ExtractionError::Failed(ExtractionFailure { point, reason, message: message.into() })
+    ExtractionError::Failed(ExtractionFailure {
+        point,
+        reason,
+        message: message.into(),
+        abrupt_widening: false,
+    })
 }
 
 #[derive(Debug)]
@@ -479,25 +486,67 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
     // 并集只在逐站连不上时重试：先只并相邻两段；仍连不上，再并隔着一段（高光里的小暗点）的两段
     let solve = |keep: std::ops::Range<usize>| {
         let (samples, all) = (&samples[keep.clone()], &all[keep.clone()]);
-        let result = trace(all, samples, guide.radius_px, spacing);
+        let mut result = trace(all, samples, guide.radius_px, spacing);
         for retry in [&relaxed[keep.clone()], &widest[keep.clone()]] {
-            let Err(ExtractionError::Failed(f)) = &result else { break };
-            if f.reason != "discontinuity" || retry.iter().zip(all).all(|(r, s)| r.len() == s.len()) { break; }
+            let Err(ExtractionError::Failed(f)) = &result else {
+                break;
+            };
+            if f.reason != "discontinuity" || retry.iter().zip(all).all(|(r, s)| r.len() == s.len())
+            {
+                break;
+            }
             match trace(retry, samples, guide.radius_px, spacing) {
                 Ok(path) => return Ok(path),
-                Err(ExtractionError::Failed(g)) if g.reason == "discontinuity" => continue,
+                Err(ExtractionError::Failed(g)) if g.reason == "discontinuity" => {
+                    if g.abrupt_widening {
+                        result = Err(ExtractionError::Failed(g));
+                    }
+                }
                 Err(_) => break,
             }
         }
         result
     };
-    // 连不上的地方落在笔划头尾四分之一以内（笔划拐出胶路）：截掉那一头再连一次
+    // 普通断点只裁一次；重算新发现的急折变宽可再裁一次，两次共用原笔划每端四分之一的预算。
     let (path, kept) = match solve(longest.clone()) {
         Err(ExtractionError::Failed(f)) if f.reason == "discontinuity" => {
-            let at = (longest.clone()).find(|&i| samples[i] == f.point).unwrap_or(longest.start);
-            let rest = if at + trim >= samples.len() { longest.start..at } else if at <= trim { at..longest.end } else { 0..0 };
-            if rest.len() < 3 { return Err(ExtractionError::Failed(f)); }
-            (solve(rest.clone()).map_err(|_| ExtractionError::Failed(f))?, rest)
+            let at = (longest.clone())
+                .find(|&i| samples[i] == f.point)
+                .unwrap_or(longest.start);
+            let rest = if at + trim >= samples.len() {
+                longest.start..at
+            } else if at <= trim {
+                at..longest.end
+            } else {
+                0..0
+            };
+            if rest.len() < 3 {
+                return Err(ExtractionError::Failed(f));
+            }
+            match solve(rest.clone()) {
+                Ok(path) => (path, rest),
+                Err(ExtractionError::Failed(next)) if next.abrupt_widening => {
+                    let Some(at) = rest.clone().find(|&i| samples[i] == next.point) else {
+                        return Err(ExtractionError::Failed(next));
+                    };
+                    let refined = if at + trim >= samples.len() {
+                        rest.start..at
+                    } else if at <= trim {
+                        at..rest.end
+                    } else {
+                        0..0
+                    };
+                    if refined.len() < 3
+                        || refined.len() >= rest.len()
+                        || refined.start > trim
+                        || samples.len() - refined.end > trim
+                    {
+                        return Err(ExtractionError::Failed(next));
+                    }
+                    (solve(refined.clone())?, refined)
+                }
+                Err(_) => return Err(ExtractionError::Failed(f)),
+            }
         }
         result => (result?, longest),
     };
@@ -507,38 +556,150 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
 
 type Candidate = (f32, f32, [f32; 2]);
 
-fn trace(all: &[Vec<Candidate>], samples: &[[f32; 2]], radius: f32, spacing: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
-    let mut costs: Vec<f32> = all[0].iter().map(|c| 8.0*(c.0/radius).powi(2)).collect();
+#[cfg(test)]
+#[path = "centerline_tests.rs"]
+mod tests;
+
+fn trace(
+    all: &[Vec<Candidate>],
+    samples: &[[f32; 2]],
+    radius: f32,
+    spacing: f32,
+) -> Result<Vec<[f32; 2]>, ExtractionError> {
+    let transition = |previous: &Candidate, c: &Candidate| {
+        if distance(c.2, previous.2) > 9.0
+            || (c.1 - previous.1).abs() > previous.1.min(c.1).max(8.0) * 0.6
+        {
+            return f32::INFINITY;
+        }
+        8.0 * (c.0 / radius).powi(2)
+            + ((c.0 - previous.0) / 3.0).powi(2)
+            + ((c.1 - previous.1) / previous.1.max(3.0)).powi(2)
+    };
+    let mut costs: Vec<f32> = all[0]
+        .iter()
+        .map(|c| 8.0 * (c.0 / radius).powi(2))
+        .collect();
+    let mut prefixes = vec![costs.clone()];
     let mut parents = vec![vec![0; all[0].len()]];
     for i in 1..all.len() {
         let mut next = vec![f32::INFINITY; all[i].len()];
         let mut parent = vec![0; all[i].len()];
         for (j, c) in all[i].iter().enumerate() {
-            for (k, previous) in all[i-1].iter().enumerate() {
-                let move_px = distance(c.2,previous.2);
-                if move_px > 9.0 || (c.1-previous.1).abs() > previous.1.min(c.1).max(8.0)*0.6 { continue; }
-                let cost = costs[k] + 8.0*(c.0/radius).powi(2) + ((c.0-previous.0)/3.0).powi(2) + ((c.1-previous.1)/previous.1.max(3.0)).powi(2);
-                if cost < next[j] { next[j]=cost; parent[j]=k; }
+            for (k, previous) in all[i - 1].iter().enumerate() {
+                let cost = costs[k] + transition(previous, c);
+                if cost < next[j] {
+                    next[j] = cost;
+                    parent[j] = k;
+                }
             }
         }
-        if next.iter().all(|v| !v.is_finite()) { return Err(failure(samples[i], "discontinuity", "标记处候选边缘无法连续连接，局部中心位置或宽度变化过大。请检查弯折、亮边或阴影，并调整局部笔划，或用笔划生成中线后手工修正。")); }
-        costs=next; parents.push(parent);
-    }
-    let mut selected = costs.iter().enumerate().min_by(|a,b| a.1.total_cmp(b.1)).unwrap().0;
-    if let Some((mut alternate, _)) = costs.iter().enumerate().find(|(i, cost)| *i != selected && (all.last().unwrap()[*i].0-all.last().unwrap()[selected].0).abs() > 3.0 && (**cost-costs[selected])/(samples.len() as f32) < 0.08) {
-        let mut primary = selected;
-        let mut largest = 0.0;
-        let mut point = *samples.last().unwrap();
-        for i in (0..all.len()).rev() {
-            let separation = distance(all[i][primary].2, all[i][alternate].2);
-            if separation > largest { largest = separation; point = samples[i]; }
-            primary = parents[i][primary];
-            alternate = parents[i][alternate];
+        if next.iter().all(|v| !v.is_finite()) {
+            return Err(failure(samples[i], "discontinuity", "标记处候选边缘无法连续连接，局部中心位置或宽度变化过大。请检查弯折、亮边或阴影，并调整局部笔划，或用笔划生成中线后手工修正。"));
         }
+        costs = next;
+        prefixes.push(costs.clone());
+        parents.push(parent);
+    }
+    let mut selected = costs
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.total_cmp(b.1))
+        .unwrap()
+        .0;
+    let best = costs[selected];
+    let mut result = Vec::with_capacity(all.len());
+    let mut widths = Vec::with_capacity(all.len());
+    for i in (0..all.len()).rev() {
+        result.push(all[i][selected].2);
+        widths.push(all[i][selected].1);
+        selected = parents[i][selected];
+    }
+    result.reverse();
+    widths.reverse();
+    let mut separated: Vec<Vec<usize>> = Vec::with_capacity(all.len());
+    for (i, candidates) in all.iter().enumerate() {
+        separated.push(
+            candidates
+                .iter()
+                .enumerate()
+                .map(|(j, c)| {
+                    usize::from(distance(c.2, result[i]) > 3.0)
+                        + if i > 0 {
+                            separated[i - 1][parents[i][j]]
+                        } else {
+                            0
+                        }
+                })
+                .collect(),
+        );
+    }
+    let mut suffixes = vec![(0.0, 0usize); all.last().unwrap().len()];
+    let mut ambiguous = None;
+    let mut largest = 3.0;
+    for i in (0..all.len()).rev() {
+        for (j, c) in all[i].iter().enumerate() {
+            let separation = distance(c.2, result[i]);
+            let stations = separated[i][j] + suffixes[j].1;
+            if separation > largest
+                && (prefixes[i][j] + suffixes[j].0 - best) / (stations as f32) < 0.08
+            {
+                largest = separation;
+                ambiguous = Some(samples[i]);
+            }
+        }
+        if i > 0 {
+            suffixes = all[i - 1]
+                .iter()
+                .map(|previous| {
+                    all[i]
+                        .iter()
+                        .enumerate()
+                        .map(|(j, c)| {
+                            (
+                                transition(previous, c) + suffixes[j].0,
+                                suffixes[j].1 + usize::from(distance(c.2, result[i]) > 3.0),
+                            )
+                        })
+                        .min_by(|a, b| a.0.total_cmp(&b.0))
+                        .unwrap()
+                })
+                .collect();
+        }
+    }
+    if let Some(point) = ambiguous {
         return Err(failure(point, "ambiguous", "标记处有多条同样可信的胶路候选。请把笔划移近目标胶路并排除邻近阴影，或用笔划生成中线后手工修正。"));
     }
-    let mut result = Vec::with_capacity(all.len());
-    for i in (0..all.len()).rev() { result.push(all[i][selected].2); selected=parents[i][selected]; }
-    result.reverse();
+    let mut unreliable = None;
+    for i in 1..result.len() - 1 {
+        let before = [
+            result[i][0] - result[i - 1][0],
+            result[i][1] - result[i - 1][1],
+        ];
+        let after = [
+            result[i + 1][0] - result[i][0],
+            result[i + 1][1] - result[i][1],
+        ];
+        let lengths = before[0].hypot(before[1]) * after[0].hypot(after[1]);
+        if lengths < 0.25 || before[0] * after[0] + before[1] * after[1] >= 0.5 * lengths {
+            continue;
+        }
+        for next in [i, i + 1] {
+            let ratio = widths[next].max(widths[next - 1]) / widths[next].min(widths[next - 1]);
+            if ratio >= 1.2 && unreliable.is_none_or(|(largest, _)| ratio > largest) {
+                unreliable = Some((ratio, next));
+            }
+        }
+    }
+    if let Some((_, at)) = unreliable {
+        return Err(ExtractionError::Failed(ExtractionFailure {
+            point: samples[at],
+            reason: "discontinuity",
+            message:
+                "标记处胶边突然变宽且中线急折，无法可靠连接。请缩小范围避开遮挡，或手工修正中线。"
+                    .into(),
+            abrupt_widening: true,
+        }));
+    }
     Ok(resample_output(&result, spacing))
 }
