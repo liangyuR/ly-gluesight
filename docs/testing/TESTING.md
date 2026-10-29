@@ -107,6 +107,14 @@ cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval 
 
 **合成图采集与标定。** 合成图由 `src-tauri/examples/capture_fixture.rs` 生成仿历史录制件（[示教件与标定件决策](../decisions/recipe-build-flow.md)“手动配置数据”）：按录制时生效的生产配方（采集版：型号、段、计划相机）用 `simimage::render_burst` 生成 N 件，每件在真机录制根下写一个与真机同格式的录制目录（原图 `{相机}_s{seq:06}.pgm`、`part.json` 带 `partMode: maintenanceCollect`、`devices`、`plc` 与来源标记 `fixture: {label}`，以及维护采集保留标记），并在项目记录库写一行维护采集记录（SN 前缀 `FIXTURE-`，记录库版本仍为 9）。生成的件出现在历史件选择器里，标“手动配置”，与真机件走同一选件、导入路径。记录引用采集版的修订号：先建候选并发布采集版，再生成数据（候选的版本号留给之后的正式版，用它写快照会让正式版投产时同修订号的真实记录因快照不同被拒）。记录库须已存在且为版本 9；同修订号已有不同快照时写入前即拒绝。命令为 `cargo run --manifest-path src-tauri/Cargo.toml --offline --locked --example capture_fixture -- --doc <采集版文档.json> --cameras <camera_rig_config.json> --db <资料根目录>/projects/<项目编号>/inspection.db --records <真机录制根> --parts N [--seed S] [--label L] [--sample-set <目录> --part <件>] [--onset H --onset-jitter J --tail T --tail-jitter J]`，输出每件的 `recordId`、`cycleId`、SN 等 JSON：默认按名义剖面出合成图（首尾 ±1、弯道 ±2 帧，种子 seed+i）；给出样本集时每件都取该件的样本集原图，供 soak 使用。合成图离线环境因此能选示教件、完成走廊示教、多轮标定、验证与发布（加入标定时每帧测量用 lyFlow 走廊测量，需要加载 lyFlow）。合成图相机沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台。样本集按“每台相机的帧序列”解释（见[离线样本集格式 v1](../integration/sample-set-format.md)），现有的 2026-10-17 单圈样本集是停稳拍数据，没有弯道、帧数没有波动，只作冒烟，不作分段或标定的验收依据。
 
+**导入现场录制件。** 现场导出的一件录制（真机录制根下的 `*_cycle_<cycleId>` 目录，或把它整个打成的 zip）可用 `scripts/history-import/import_part.py` 导入开发项目的历史记录，在示教件页、标定页的历史件选择器里选用调试：
+
+```powershell
+python scripts/history-import/import_part.py <录制目录或 zip> --project <项目编号> [--recipe <配方编号>] [--version N] [--label L] [--dry-run]
+```
+
+脚本把原图按“每台相机 seq 1..groupCount”转成单件样本集（缺的帧按缺帧处理，不错位），连同配方文档与项目当前相机配置写到 `output/history-import/<录制目录名>/`，再调用 `capture_fixture` 的样本集模式写一件仿历史录制件。导入的是原图，不是现场记录本身：SN、cycleId、时间戳与帧号重新生成（SN 前缀 `FIXTURE-`，选择器标“手动配置”），设备配置记为项目当前值（选择器要求与当前一致，与现场不同时脚本逐项打印），型号取配方。记录归属 `--recipe`（缺省取现场 `part.json` 的配方编号），配方文档优先用项目已发布的同编号配方；没有已发布配方时用同编号候选的文档，版本、阶段取现场配方（如 `NEW-1-v2` 采集版）。之后改了候选再导入、或候选发布到同一版本时，同修订号快照不同会被拒，用 `--version` 换一个不会发布到的版本。项目须用软件打开过（已建记录库与录制根）；软件运行中也可以导入，选择器每次重新查库。
+
 ### 3 × 25 Hz 吞吐门槛
 
 三台相机各 25 Hz 同时出帧是 75 帧/s，1280 × 1024 单字节灰度每帧 1.31 MB，约 98 MB/s。P1 探针量测量耗时与 PGM 写盘速率；它是 `src-tauri/examples/throughput_probe.rs`，不是测试，不在 `cargo test` 里，写约 4 GB 临时文件、结束后自动删除，约 1 分钟，需要已发布的 lyFlow 运行库：
