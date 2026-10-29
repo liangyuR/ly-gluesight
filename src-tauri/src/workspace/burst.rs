@@ -552,6 +552,7 @@ pub(super) fn frame_without_metrics(
         corridor: None,
         heading_deg: None,
         heading_fallback: false,
+        fallback_reason: None,
         edge_mm: None,
     }
 }

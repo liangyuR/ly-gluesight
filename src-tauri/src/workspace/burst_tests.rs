@@ -78,6 +78,7 @@ pub(super) fn measured(x: f64) -> FrameMetrics {
         corridor: None,
         heading_deg: None,
         heading_fallback: false,
+        fallback_reason: None,
         edge_mm: None,
     }
 }

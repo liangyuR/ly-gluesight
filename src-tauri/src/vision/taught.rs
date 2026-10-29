@@ -591,6 +591,7 @@ pub(super) fn bead_metrics(
         x_mm: mean(&offsets),
         heading_deg: None,
         heading_fallback: false,
+        fallback_reason: None,
         edge_mm: None,
     }
 }

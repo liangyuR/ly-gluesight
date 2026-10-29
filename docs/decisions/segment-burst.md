@@ -385,7 +385,7 @@
     - 定向：`bead_path` 在扇区 `sector` 里做扇形搜索，取前三个相距 ≥ 15° 的峰各试一遍，留覆盖率最高、边缘最陡（像胶）的方向；再沿这个方向粗找胶点，拟合成一条光滑胶路，能跟随缓弯。输出 `info.heading`（θ，度，图像坐标 0° 朝右、−90° 朝上）、`coverage`、`sharpness`、`beadlike` 和每个候选方向的得分。定向与测量共用 `zone`：内半径 s₀ 本身就避开了胶嘴附近，方向也是在实际要测的那一段上求出的。
     - 扇区：本段与相邻两段（这台相机检测且示教了走廊的）方向范围的并集，比整圈搜索更不易被别的暗带带偏。扇区与回退方向按段写进测量图：每（相机, 段）一张搜索图、一张回退图，不用运行时参数，测量图随发布包冻结。
     - 回退：`bead_path` 覆盖率低于 `minCoverage` 或不像胶时 `info.ok = false`。此时改用 `headingSource = param`、`heading` = 预测段的示教方向 θ₀、`headingTol` = 方向容差，再测一次。回退后仍找不到胶，按 lyFlow 的失败语义得出“全段无胶”，照常判断胶，不记检测不完整，所以整个窗口都断胶时不会漏判。
-    - 测量结果：测站与胶边取自 `bead_width` 输出，不再按示教折线预先算测站；`AbsoluteX` 对拟合胶路恒为 0，不再有意义，定向测量的段胶偏只能按 D-SB-48 的 ToEdge 判。每帧另记 θ、覆盖率与是否回退。
+    - 测量结果：测站与胶边取自 `bead_width` 输出，不再按示教折线预先算测站；`AbsoluteX` 对拟合胶路恒为 0，不再有意义，定向测量的段胶偏只能按 D-SB-48 的 ToEdge 判。每帧另记 θ 与是否回退；回退时记下 `bead_path` 给出的原因（覆盖率不足或边缘太缓不像胶），试测与多轮标定的逐帧查看里显示。
     - 依赖：`glue.bead_path` 已加入 `packaging/runtime.json` 的 `requiredOperators`；开启定向或找边时测量图版本为 `corridor-3`（graph.json 多出 `headings`），全部关闭时仍是 `corridor-2`，测量图与发布包内容不变。
     - 搜索角度不依赖帧属于哪一段，所以到达即可测；扇区只用预测段收窄，预测错一两帧时相邻段的方向仍在扇区内。
   - 覆盖核对：标定时按段核对窗口能否接上相邻帧。
@@ -416,7 +416,7 @@
 - 实现（2026-10-27）：
   - 模型：`PathSegment.heading`（`{toleranceDeg}`，None = 关闭，校验 0–45°）；`CameraInspect.window`（`{startMm, lengthMm}`，起点 ≥ 0、长度 > 0、终点 ≤ 500 mm）；`CameraInspect.nozzle`（`[x, y]` 图像像素，0–100000 的有限数）；`RecipeDoc.boundaryRefine`。都按 serde 默认读旧文件、不升配方 schema，都不进计划身份。`heading`、`window` 与 `nozzle` 进测量布局（`same_measurement_layout`）与标定轮次的走廊标签，变了就不能用已存指标重判、标准件 x 不再可比。
   - 几何（`heading.rs`）：出胶点优先取标定值；没有时取这台相机开启定向的各段走廊起点的平均，任一起点离平均超过 1 mm 报“出胶点不一致”（标定了就不再核对）；`segment_heading` 按标定的出胶点给示教方向定向；方向范围与扇区见上。`heading::issues` 汇总缺检测窗口、窗口换算后不足 8 px、出胶点不一致，进 `ready_burst`、走廊步骤的阻断项（跳到相机参数）与发布检查“走廊示教”。
-  - 测量（`vision/heading.rs`）：`CorridorSet` 对开启定向的（相机, 段）另建定向图，`get` 优先返回它；生产、候选试运行、多轮标定、逐帧查看、历史复测与原包重现都经同一入口。每帧指标增加 `headingDeg`、`headingFallback`，`xMm` 记为空；逐帧查看的叠线为拟合出的胶路。
+  - 测量（`vision/heading.rs`）：`CorridorSet` 对开启定向的（相机, 段）另建定向图，`get` 优先返回它；生产、候选试运行、多轮标定、逐帧查看、历史复测与原包重现都经同一入口。每帧指标增加 `headingDeg`、`headingFallback`、`fallbackReason`，`xMm` 记为空；逐帧查看的叠线为拟合出的胶路。
   - 收尾补测：到达时那段与判定需要的那段在这台相机上都开了定向、找边参数相同时不补测；判定需要、到达时没测的相机照常补测。
   - 提示：`SegmentCalibView.hints`（窗口覆盖、跟随核对），发布检查“段标定”附不阻断提示。
   - 分段：`segmentation::segment_part` 按 `boundaryRefine` 选比例分段或 `refine_by_heading`，生产节拍与历史重判、验证样本、原包重现共用；标定轮次写的 boundaries.json 仍按比例分段（只作追溯）。

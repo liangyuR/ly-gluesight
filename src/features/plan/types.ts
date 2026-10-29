@@ -228,6 +228,8 @@ export interface FrameMetrics {
   headingDeg?: number | null;
   /** 逐帧定向没找到胶条，按预测段示教方向回退测量 */
   headingFallback?: boolean;
+  /** 定向回退的原因（lyFlow 定胶路给出，如覆盖率不足、边缘太缓不像胶） */
+  fallbackReason?: string | null;
   /** 胶中心到零件边的距离（mm，toEdge）；找不到边为 null */
   edgeMm?: number | null;
 }

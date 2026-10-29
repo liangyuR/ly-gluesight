@@ -130,7 +130,8 @@ pub fn plan_heading(
     })
 }
 
-/// 量一帧：先用搜索图，没找到胶（`info.ok` 为假）再用回退图。图像尺寸与示教帧不同、算法失败或输出不合契约时返回 Err。
+/// 量一帧：先用搜索图，没找到胶（`info.ok` 为假）再用回退图，并记下搜索图给出的回退原因。
+/// 图像尺寸与示教帧不同、算法失败或输出不合契约时返回 Err。
 pub fn measure_heading_with(
     g: &HeadingGraph,
     image: &FrameImage,
@@ -146,11 +147,18 @@ pub fn measure_heading_with(
     if image.pixels.len() != image.width as usize * image.height as usize {
         return Err("图像像素缓冲与尺寸不一致".into());
     }
-    let (measured, found) = parse_heading(g, &run(&g.graph_text, image)?, seq, false)?;
+    let searched = run(&g.graph_text, image)?;
+    let (measured, found) = parse_heading(g, &searched, seq, false)?;
     if found {
         return Ok(measured);
     }
-    Ok(parse_heading(g, &run(&g.fallback_text, image)?, seq, true)?.0)
+    let mut fallback = parse_heading(g, &run(&g.fallback_text, image)?, seq, true)?.0;
+    fallback.metrics.fallback_reason = searched
+        .record("pathInfo")
+        .and_then(|info| info["reason"].as_str())
+        .filter(|reason| !reason.is_empty())
+        .map(String::from);
+    Ok(fallback)
 }
 
 /// 定向测量图的输出 → 帧内指标；第二个值是 `bead_path` 是否找到了胶。测站与胶边取 `bead_width` 的输出，

@@ -44,7 +44,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
   const stale = !!batch.result && batch.revision !== revision;
   const cells = span ? Array.from({ length: span.end - span.start + 1 }, (_, i) => {
     const frame = batch.result?.frames.find(item => item.seq === span.start + i);
-    return { seq: span.start + i, state: frame ? trialState(frame) : null, error: frame?.error ?? null };
+    return { seq: span.start + i, state: frame ? trialState(frame) : null, note: frame?.error ?? frame?.fallbackReason ?? null };
   }) : [];
 
   const key = seq == null ? "" : JSON.stringify([id, camera, segment, round, seq, revision]);
@@ -92,7 +92,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
         ? <div className={"wp-trial-strip" + (stale ? " stale" : "")} role="group" aria-label="逐帧试测状态" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(6px, 1fr))` }}>
           {cells.map(cell => {
             const text = `帧组 ${cell.seq}：${cell.state ? trialText[cell.state] : "未试测"}${cell.seq === teachSeq ? "（示教帧）" : ""}`;
-            return <Button variant="text" size="sm" key={cell.seq} type="button" aria-pressed={cell.seq === seq} aria-label={text} title={cell.error ? `${text}：${cell.error}` : text} disabled={!!locked}
+            return <Button variant="text" size="sm" key={cell.seq} type="button" aria-pressed={cell.seq === seq} aria-label={text} title={cell.note ? `${text}：${cell.note}` : text} disabled={!!locked}
               className={"wp-trial-cell" + (cell.seq === seq ? " selected" : "") + (cell.seq === teachSeq ? " teach" : "")}
               style={{ background: cell.state ? trialColor[cell.state] : "var(--surface-high)" }} onClick={() => onSeq(cell.seq)} />;
           })}
@@ -116,6 +116,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
         <Badge tone={trialTone[state]}>{trialText[state]}</Badge>
         <span className="muted">胶宽 <b>{mm(metrics.widthMean)}</b>（{mm(metrics.widthMin)}–{mm(metrics.widthMax)}）· 有胶 <b>{Math.round(metrics.presentRatio * 100)}%</b> · 最长断胶 {mm(metrics.gapMaxMm, 1)}
           {metrics.headingDeg != null && <> · 方向 <b>{metrics.headingDeg.toFixed(1)}°</b></>}{metrics.edgeMm != null && <> · 胶边距 {mm(metrics.edgeMm)}</>}</span>
+        {metrics.fallbackReason && <span className="c-warn">回退原因：{metrics.fallbackReason}</span>}
         {metrics.error && <span className="c-warn">{metrics.error}</span>}
       </span> : undefined}
       emptyTitle="读取中" emptyHint="正在读这一帧的原图并试测。" />}
