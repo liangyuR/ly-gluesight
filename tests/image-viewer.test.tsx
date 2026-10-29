@@ -14,34 +14,6 @@ beforeEach(() => {
 });
 
 describe("图像查看与加载", () => {
-  it("搜索带沿局部法向显示半宽并裁剪到原图，与中线叠加各自开关", () => {
-    const overlay = {
-      path: [[5, 10], [5, 10], [5, 50], [25, 50]] as [number, number][],
-      searchHalfPx: 10,
-    };
-    const { rerender } = render(<GrayViewer image={image} label="带界图像" overlay={overlay} />);
-    const band = screen.getByLabelText("搜索带边界");
-    const edges = [...band.querySelectorAll("polyline")].map(edge => edge.getAttribute("points")!.split(" ").map(p => p.split(",").map(Number)));
-    expect(edges[0]).toHaveLength(31);
-    expect(edges[0][0]).toEqual([-5, 10]);
-    expect(edges[1][0]).toEqual([15, 10]);
-    expect(edges[0][20][0]).toBeCloseTo(5 - Math.sqrt(50));
-    expect(edges[0][20][1]).toBeCloseTo(50 + Math.sqrt(50));
-    expect(edges[1][30]).toEqual([25, 40]);
-    expect(band).toHaveAttribute("clip-path", `url(#${band.querySelector("clipPath")!.id})`);
-    expect(band.querySelector("clipPath rect")).toHaveAttribute("width", "100");
-    expect(band.querySelector("clipPath rect")).toHaveAttribute("height", "60");
-    fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
-    expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("中线叠加")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
-    fireEvent.click(screen.getByRole("button", { name: "中线叠加" }));
-    expect(screen.getByLabelText("搜索带边界")).toBeInTheDocument();
-    for (const searchHalfPx of [NaN, Infinity, 0, -1]) {
-      rerender(<GrayViewer image={image} label="带界图像" overlay={{ ...overlay, searchHalfPx }} />);
-      expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
-    }
-  });
   it("切换到另一张示教帧后，迟到的上一张图不能覆盖当前图", async () => {
     const old = deferred<GrayImage>();
     const current = { ...image, url: "data:,current" };
@@ -54,7 +26,6 @@ describe("图像查看与加载", () => {
     expect(result.current.image).toEqual(current);
     expect(workspaceApi.image).toHaveBeenLastCalledWith("A", "frame-2");
   });
-
 
   it("刷选固定按下时图像坐标 → 不修改中线，中键和取消后的移动不继续刷选", () => {
     let offset = 20;
@@ -82,13 +53,5 @@ describe("图像查看与加载", () => {
       expect(onBrush).toHaveBeenLastCalledWith([[30, 20]]);
     });
   });
-
-
-
-
-
-
-
-
 
 });

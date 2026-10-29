@@ -92,7 +92,7 @@ describe("创建配方流程", () => {
       doc: { ...template(), id: "SHELL-2026", name: "新壳体配方", productCode: 27, teachingId: null },
     });
     expect(invoke).toHaveBeenCalledWith("workspace_get", { id: "SHELL-2026" });
-    expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveValue("SHELL-2026");
+    expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveTextContent("SHELL-2026");
     // 新建的段配方按段模型的步骤显示：示教件 → 段列表 → 走廊示教 → 多轮标定 → 验证与发布
     expect(within(screen.getByRole("region", { name: "示教件进度" })).getByText("还没有示教件")).toBeVisible();
     const steps = within(screen.getByRole("navigation", { name: "配方配置步骤" }));
@@ -103,7 +103,7 @@ describe("创建配方流程", () => {
     await user.click(screen.getByRole("link", { name: "选示教件" }));
     expect(await screen.findByRole("heading", { name: "选示教件" })).toBeVisible();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("workspace_history_candidates", { id: "SHELL-2026" }));
-    expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveValue("SHELL-2026");
-    expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveDisplayValue("SHELL-2026 · 新壳体配方");
+    expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveTextContent("SHELL-2026");
+    expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveTextContent("SHELL-2026 · 新壳体配方");
   }, 20_000);
 });

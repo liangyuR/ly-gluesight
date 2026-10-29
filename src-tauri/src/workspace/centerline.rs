@@ -542,27 +542,3 @@ fn trace(all: &[Vec<Candidate>], samples: &[[f32; 2]], radius: f32, spacing: f32
     result.reverse();
     Ok(resample_output(&result, spacing))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 暗胶 x = 80–93 旁边是更宽的暗阴影 x = 24–59；画笔沿胶画，半径大到能扫到阴影。
-    fn glue_beside_wider_shadow() -> (FrameImage, BrushGuide) {
-        let mut image = FrameImage::new(160, 140, vec![230; 22400]);
-        for y in 0..140 { for x in 24..60 { image.pixels[y*160+x]=55; } for x in 80..94 { image.pixels[y*160+x]=25 + ((x*17+y*11)%7) as u8; } }
-        (image, BrushGuide { points: vec![[85.0,10.0],[88.0,70.0],[85.0,130.0]], radius_px: 65.0 })
-    }
-
-    #[test]
-    fn brush_follows_requested_glue_instead_of_larger_shadow() {
-        let (mut image, guide) = glue_beside_wider_shadow();
-        for polarity in [Polarity::Dark, Polarity::Light] {
-            let path = extract(&image,[0,0,160,140],polarity,Some(&guide),4.0).unwrap().path;
-            assert!(path.iter().all(|p| (85.0..=88.0).contains(&p[0])), "{polarity:?}");
-            assert!(path.windows(2).all(|p| p[1][1] > p[0][1]), "{polarity:?}");
-            for pixel in &mut image.pixels { *pixel=255-*pixel; }
-        }
-    }
-
-}

@@ -38,7 +38,6 @@ select.input { padding-right: 6px; }
   pointer-events: none;
   white-space: nowrap;
 }
-.chart-empty { height: 120px; display: grid; place-items: center; border: 1px dashed var(--outline-variant); border-radius: var(--r-md); font-size: 13px; }
 
 .addr-check { font-size: 12px; line-height: 1.4; }
 .addr-check.ok { color: var(--ok); }
@@ -52,15 +51,7 @@ select.input { padding-right: 6px; }
 .plc-search { flex: 1; min-width: 240px; max-width: 420px; }
 
 .plc-connection-form { display: grid; gap: 14px; align-content: start; }
-.plc-config-card {
-  container-type: inline-size;
-  min-width: 0;
-  padding: 16px;
-  border: 1px solid var(--outline-variant);
-  border-radius: var(--r-md);
-  background: var(--surface);
-}
-.plc-config-card h4 { margin: 0 0 14px; font-size: 14px; font-weight: 600; }
+.plc-config-card { container-type: inline-size; min-width: 0; }
 .plc-config-fields {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -76,7 +67,7 @@ select.input { padding-right: 6px; }
 }
 .plc .stats-inline { flex-wrap: wrap; gap: 8px 18px; }
 
-.plc-actionbar {
+.plc-actionbar.qs-card {
   position: sticky;
   top: 0;
   z-index: 8;
@@ -84,10 +75,6 @@ select.input { padding-right: 6px; }
   flex-direction: column;
   gap: 10px;
   padding: 12px;
-  border: 1px solid var(--outline-variant);
-  border-radius: var(--r-lg);
-  background: var(--surface-high);
-  box-shadow: var(--shadow-2);
   overflow-wrap: anywhere;
 }
 .plc-actionbar-row, .plc-actionbar-group {
@@ -103,12 +90,6 @@ select.input { padding-right: 6px; }
 .plc-actionbar-actions { justify-content: flex-end; }
 .plc-actionbar-actions .qs-divider { align-self: stretch; }
 .plc-notices { display: grid; gap: 8px; }
-.plc-notices-more > summary {
-  display: inline-flex; align-items: center; gap: 4px; cursor: pointer; list-style: none;
-  font: var(--text-label); color: var(--on-surface-variant);
-}
-.plc-notices-more > summary::-webkit-details-marker { display: none; }
-.plc-notices-more[open] > summary svg { transform: rotate(180deg); }
 .plc-notices-list { display: grid; gap: 8px; margin-top: 8px; }
 
 /* B 握手监视 */

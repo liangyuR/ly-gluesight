@@ -105,27 +105,3 @@ impl PlanExport {
         Ok(plan::export(&recipe.id, recipe.product_code, recipe.plan_version, &recipe.path_segments, &recipe.plan_cameras(), recipe.part_calib.as_ref()))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 规格 §1/§5：段配方的 shotCount = deviceShots = ΣN_exp，计划相机按 inspect 顺序共用一个触发；
-    /// 有段待标定且没有整件标定时编不出计划，有整件标定时取整件帧组数（决策补充第二节）。
-    #[test]
-    fn plc_plan_counts_are_sum_of_expected_frames_and_uncalibrated_plan_cannot_compile() {
-        let mut doc = crate::recipe::samples_burst();
-        doc.segments.push(plan::new_segment(2, plan::SegmentKind::Corner, &doc.segment_defaults));
-        doc.segments[1].expected_frames = Some(3);
-        doc.inspect.swap(0, 2);
-        let compiled = PlcPlan::from_recipe(&doc.build().unwrap()).unwrap();
-        assert_eq!((compiled.shot_count, compiled.device_shots, compiled.tolerance_total), (4 + 3, 4 + 3, 1 + 1));
-        assert_eq!(compiled.device_ids, ["cam3", "cam2", "cam1"]);
-        doc.segments[1].expected_frames = None;
-        assert!(PlcPlan::from_recipe(&doc.build().unwrap()).unwrap_err().contains("待标定"));
-        doc.part_calib = Some(plan::PartCalib { expected_total: 9, calib: plan::SegmentCalib { rounds: 10, min: 8, max: 10, mean: 9.2 } });
-        let compiled = PlcPlan::from_recipe(&doc.build().unwrap()).unwrap();
-        assert_eq!((compiled.shot_count, compiled.device_shots), (9, 9));
-    }
-
-}

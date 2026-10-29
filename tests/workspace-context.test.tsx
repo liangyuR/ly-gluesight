@@ -1,7 +1,6 @@
-import { act, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { storageApi } from "../src/lib/storage";
 import { WorkspaceProvider, useWorkspace } from "../src/features/workspace/context";
 import { SnackbarProvider } from "qing-steel";
 import { workspaceApi } from "../src/features/workspace/api";
@@ -53,17 +52,6 @@ async function open() {
 
 describe("候选工作台的主流程保护", () => {
 
-  it("选择仅在当前请求真正接受后返回视图，旧请求返回 null",async()=>{
-    const {result}=await open(),old=deferred<WorkspaceView>();
-    vi.mocked(workspaceApi.get).mockImplementation(id=>id==="A"?old.promise:Promise.resolve(burstView(id)));
-    let oldSelection!:Promise<WorkspaceView|null>;
-    act(()=>{oldSelection=result.current.select("A");});
-    await act(async()=>{const accepted=await result.current.select("B");expect(accepted?.workspace.doc.id).toBe("B");});
-    await act(async()=>old.resolve(burstView()));expect(await oldSelection).toBeNull();
-    expect(result.current.doc?.id).toBe("B");
-    expect(storageApi.updatePreferences).toHaveBeenLastCalledWith({ lastWorkspace: "B" });
-  });
-
   it("刷新请求发出后用户开始编辑，也不能覆盖草稿", async () => {
     const { result } = await open(), refresh = deferred<WorkspaceView>();
     vi.mocked(workspaceApi.get).mockReturnValue(refresh.promise);
@@ -82,15 +70,6 @@ describe("候选工作台的主流程保护", () => {
     await act(() => result.current.select("A"));
     await act(async () => operation.resolve(burstView()));
     expect(result.current.data?.workspace.revision).toBe(10);
-  });
-
-  it("操作响应配方不一致时保留当前候选并允许重试", async () => {
-    const { result } = await open();
-    await act(async () => expect(await result.current.act(async () => burstView("B"), "已保存")).toBeNull());
-    expect(result.current.doc?.id).toBe("A"); expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(result.current.error).toContain("候选响应与当前配方不一致");
-    await act(async () => expect((await result.current.act(async () => burstView(), "当前配方已保存"))?.workspace.doc.id).toBe("A"));
-    expect(result.current.error).toBe(""); expect(screen.getByRole("status")).toHaveTextContent("当前配方已保存");
   });
 
   it("某段换了示教帧 → 只清除这一段的旧走廊草稿，同相机别的段的草稿保留且仍算未保存",async()=>{

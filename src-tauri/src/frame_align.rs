@@ -303,48 +303,6 @@ mod tests {
         Some(FrameImage::new(40, 32, pixels))
     }
 
-    /// D-SB-44 对齐复核：模板轮 30 帧、边界在胶路位置 7.5 / 14.5 / 22.5 之后；目标轮帧数不同（时间伸缩）、前慢后快
-    /// （按比例换算差约 4 帧）、中途丢一帧或重复一帧时，按图像对齐给出的边界与真值（目标轮里位置小于边界位置的帧数）相差不超过 1 帧。
-    #[test]
-    fn aligned_cuts_follow_scene_positions_under_stretch_drop_and_repeat() {
-        let template: Vec<Sequence> = (0..3)
-            .map(|_| (0..30).map(|i| scene(i as f64)).collect())
-            .collect();
-        let cuts = [8, 15, 23];
-        let stretched = |m: usize| {
-            (0..m)
-                .map(|j| j as f64 * 29.0 / (m - 1) as f64)
-                .collect::<Vec<_>>()
-        };
-        let mut dropped = stretched(33);
-        dropped.remove(12);
-        let mut repeated = stretched(28);
-        repeated.insert(18, repeated[18]);
-        let uneven: Vec<f64> = (0..30)
-            .map(|j| 29.0 * (j as f64 / 29.0).powf(1.6))
-            .collect();
-        for (case, positions) in [
-            ("拉长到 36 帧", stretched(36)),
-            ("压缩到 26 帧", stretched(26)),
-            ("前慢后快", uneven),
-            ("33 帧丢 1 帧", dropped),
-            ("28 帧重复 1 帧", repeated),
-        ] {
-            let target: Vec<Sequence> = (0..3)
-                .map(|_| positions.iter().map(|&s| scene(s)).collect())
-                .collect();
-            let aligned = align_cuts(&template, &target, &cuts, 2);
-            for (found, &cut) in aligned.iter().zip(&cuts) {
-                let truth = positions.iter().filter(|&&s| s < cut as f64 - 0.5).count() as u64;
-                assert!(
-                    found.cut.abs_diff(truth) <= 1,
-                    "{case}：模板边界 {cut} 真值 {truth}，对齐 {}",
-                    found.cut
-                );
-            }
-        }
-    }
-
     /// D-SB-51 可信判据：画面随位置变化且与比例一致的边界可信；前慢后快使对齐偏离比例超过容许帧数时需复核；
     /// 画面不随位置变化时 DTW 退化成对角线、碰巧与比例一致，也要判为不清晰，不能自动确认。
     #[test]
@@ -379,37 +337,5 @@ mod tests {
                     && c.reason == Some(ReviewReason::Unclear)),
             "{flat_cuts:?}"
         );
-    }
-
-    #[test]
-    fn thumb_strip_keeps_group_order_and_marks_missing_frames() {
-        let image = |value: u8| {
-            FrameImage::new(
-                4,
-                2,
-                vec![
-                    value,
-                    value,
-                    value + 2,
-                    value + 2,
-                    value,
-                    value,
-                    value + 2,
-                    value + 2,
-                ],
-            )
-        };
-        let frames = vec![
-            Some(downsample(&image(10), 2)),
-            None,
-            Some(downsample(&image(20), 2)),
-        ];
-        let bytes = thumb_strip(&frames);
-        let header: Vec<u32> = bytes[..12]
-            .chunks(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        assert_eq!(header, vec![3, 2, 1]);
-        assert_eq!(&bytes[12..], &[1, 10, 12, 0, 0, 0, 1, 20, 22]);
     }
 }

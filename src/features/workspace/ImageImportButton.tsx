@@ -1,7 +1,6 @@
 import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
-import { Upload } from "lucide-react";
-import { Button } from "qing-steel";
+import { FileInput } from "qing-steel";
 
 export function validateImageFile(file: File): void {
   if (!/\.(png|jpe?g|pgm|bmp|tiff?)$/i.test(file.name)) throw new Error("请选择 PNG、JPEG、PGM、BMP 或 TIFF 原图");
@@ -16,7 +15,6 @@ export async function readImageFile(file: File): Promise<number[]> {
 export default function ImageImportButton({ scope, disabled, onImport, onError, onReadingChange, label = "导入离线原图" }: {
   scope: string; disabled?: boolean; onImport: (bytes: number[]) => Promise<unknown>; onError: (error: string) => void; onReadingChange?: (reading:boolean)=>void; label?: string;
 }) {
-  const input = useRef<HTMLInputElement>(null);
   const pending = useRef(false);
   const serial=useRef(0),reported=useRef(false);
   const current = useRef({ scope, alive: true, onReadingChange });
@@ -34,9 +32,7 @@ export default function ImageImportButton({ scope, disabled, onImport, onError, 
     catch (e) { if (valid()) onError(errorText(e)); }
     finally { if(request===serial.current){pending.current = false;report(false);if (current.current.alive) setReading(false);} }
   };
-  return <>
-    <Button leadingIcon={<Upload size={15}/>} disabled={disabled || reading} onClick={() => input.current?.click()}>{reading ? "正在导入…" : label}</Button>
-    <input ref={input} aria-label={label} type="file" hidden accept=".png,.jpg,.jpeg,.pgm,.bmp,.tif,.tiff" disabled={disabled || reading}
-      onChange={e => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void importFile(file); }}/>
-  </>;
+  return <FileInput aria-label={label} buttonLabel={reading ? "正在导入…" : label} files={[]}
+    accept=".png,.jpg,.jpeg,.pgm,.bmp,.tif,.tiff" disabled={disabled || reading}
+    onFilesChange={files => { if (files[0]) void importFile(files[0]); }} />;
 }

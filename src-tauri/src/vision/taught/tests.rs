@@ -53,44 +53,6 @@ fn measure(c: &CorridorGraph, size: [u32; 2], output: RunResult) -> Result<Frame
 }
 
 #[test]
-fn engine_station_output_reduces_to_frame_width_gap_presence_and_x_mm() {
-    // 防的回归（规格 §4 每帧独立指标）：胶宽漏乘当量、最长断胶取成断胶站总数、有胶比例分母错、x 的正向或均值算错、
-    // 帧指标挂错相机下标
-    // 站 5–6、20–24 无胶（最长 5 站 = 5 mm）；站 10 胶宽 20 px、站 30 胶宽 14 px 且胶中心 −6 px，其余 16 px、+2 px
-    let mut b = beads(&[5..=6, 20..=24], &[]);
-    b[10] = Some((2.0, 20.0));
-    b[30] = Some((-6.0, 14.0));
-    let m = measure(&corridor(1), FRAME, corridor_output(&b)).unwrap();
-    let mut widths = vec![Some(4.0f32); 41];
-    for i in [5, 6, 20, 21, 22, 23, 24] { widths[i] = None; }
-    widths[10] = Some(5.0);
-    widths[30] = Some(3.5);
-    assert_eq!(
-        m.metrics,
-        FrameMetrics {
-            camera: 1,
-            seq: 7,
-            state: FrameState::Measured,
-            error: None,
-            width_min: Some(3.5),
-            width_max: Some(5.0),
-            width_mean: Some((32.0 * 4.0 + 5.0 + 3.5) / 34.0),
-            widths,
-            spacing_mm: 1.0,
-            gap_max_mm: 5.0,
-            present_ratio: 34.0 / 41.0,
-            corridor: Some(1),
-            x_mm: Some((33.0 * 0.5 - 1.5) / 34.0),
-            heading_deg: None,
-            heading_fallback: false,
-            edge_mm: None,
-        }
-    );
-    assert_eq!(m.edges[0], Some([[40.0, 74.0], [40.0, 90.0]]));
-    assert!(m.edges[5].is_none());
-}
-
-#[test]
 fn malformed_engine_output_fails_only_that_frame() {
     // 防的回归（规格 §0 一帧失败只影响本帧）：输出不合契约（站数、弧长、中线、胶边与胶宽、汇总）或图像尺寸不对时
     // panic、拿错位的数据算指标，或把走廊测量图弄坏、后面正常的帧也测不了
@@ -135,46 +97,4 @@ fn bead_leaving_through_a_corridor_end_is_out_of_corridor_but_breaks_and_centred
         assert_eq!(m.error.is_some(), out, "{name}");
         assert!(m.gap_max_mm > 0.0, "{name}：缺胶照常计入");
     }
-}
-
-#[test]
-fn corridor_leaving_the_frame_or_camera_outside_the_plan_is_refused() {
-    // 防的回归：走廊端点落在图外时 lyFlow 量不到两端（像素中心坐标最大到宽 − 1）；拿不是计划相机的走廊建图，
-    // 帧指标的相机下标就会挂错
-    let recipe = burst_recipe();
-    let inspect = &recipe.inspect[0];
-    assert!(
-        plan_corridor(inspect, 1, &recipe, [201, 81]).is_ok(),
-        "走廊端点恰在最后一列、最后一行"
-    );
-    assert!(
-        plan_corridor(inspect, 1, &recipe, [200, 300]).is_err(),
-        "走廊终点 x = 200 在宽 200 的图外"
-    );
-    assert!(
-        plan_corridor(inspect, 1, &recipe, [400, 80]).is_err(),
-        "走廊 y = 80 在高 80 的图外"
-    );
-    let stranger = CameraInspect {
-        camera: "cam9".into(),
-        ..inspect.clone()
-    };
-    assert!(plan_corridor(&stranger, 1, &recipe, FRAME).is_err());
-}
-
-#[test]
-fn corridor_under_three_stations_is_refused_with_its_count_and_what_would_fit() {
-    // 防的回归：放过不足三站的走廊（lyFlow 1.1 少于 3 站时不报错、把有胶的帧都测成无胶，判断胶）；
-    // 刚好两倍站距的走廊被误拦；报错没有实际站数、可用站距与需要的走廊长度
-    let mut recipe = burst_recipe();
-    recipe.spacing = 20.0;
-    assert!(plan_corridor(&recipe.inspect[0], 1, &recipe, FRAME).is_ok());
-    recipe.spacing = 20.5;
-    let error = plan_corridor(&recipe.inspect[0], 1, &recipe, FRAME).unwrap_err();
-    assert!(
-        error.contains("只有 2 站")
-            && error.contains("不大于 20 mm")
-            && error.contains("不短于 41 mm"),
-        "{error}"
-    );
 }

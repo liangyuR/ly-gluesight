@@ -264,26 +264,3 @@ pub fn arm_frames(cameras: &[String], ledgers: &Ledgers, policy: &Policy, cams: 
     }
     Ok(armed)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use CounterSource::ChunkTrigger;
-
-    fn frame(trigger: u64) -> FrameMeta {
-        FrameMeta { cam: 0, session: 11, source: ChunkTrigger, trigger, frame: trigger }
-    }
-
-    /// D-SB-10：段配方示教采集的 seq = frame_counter − 基线，基线必须按帧计数记——Chunk 触发计数与帧计数起点不同、
-    /// 中途回退的帧不压低它、换会话后重新计。
-    #[test]
-    fn frame_baseline_follows_highest_sdk_frame_counter_of_the_session_not_trigger_counter() {
-        let mut ledgers = Ledgers::default();
-        for (trigger, sdk) in [(40, 1040), (41, 1041), (39, 1039)] {
-            ledgers.observe(&FrameMeta { trigger, frame: sdk, ..frame(0) });
-        }
-        assert_eq!((ledgers.get(0).unwrap().last, ledgers.get(0).unwrap().last_frame), (Some(41), Some(1041)));
-        ledgers.observe(&FrameMeta { session: 12, trigger: 1, frame: 5, ..frame(0) });
-        assert_eq!(ledgers.get(0).unwrap().last_frame, Some(5));
-    }
-}

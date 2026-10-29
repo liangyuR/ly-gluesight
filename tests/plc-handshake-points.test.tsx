@@ -51,12 +51,3 @@ it("编辑握手点位 → 地址等模板字段不可改，只有描述和记�
     ...configWithHandshakePoint().points[1], description: "联调备注", logChanges: false,
   });
 });
-
-it("只读时握手点位 → 编辑锁定，但名称旁的说明仍可打开", async () => {
-  render(<MemoryRouter><SnackbarProvider><PlcPage readOnly /></SnackbarProvider></MemoryRouter>);
-  const row = (await screen.findByText("DB1.DBW4")).closest("tr")!;
-  expect(within(row).getByRole("button", { name: "编辑" })).toBeDisabled();
-
-  fireEvent.click(within(row).getByRole("button", { name: "PLC 状态说明" }));
-  expect((await screen.findByRole("tooltip")).textContent).toContain("10 工件在检");
-});

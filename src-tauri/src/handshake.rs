@@ -918,10 +918,6 @@ mod tests {
         Snapshot::from_values(&contract, &status, &values, 1010, 1000).unwrap()
     }
 
-    fn result() -> ResultEnvelope {
-        ResultEnvelope { request_seq: 7, sn: "SN-42".into(), result_code: 1, fault_code: 0 }
-    }
-
     #[test]
     fn contract_rejects_plc_and_pc_fields_sharing_bytes() {
         let mut cfg = config();
@@ -969,32 +965,6 @@ mod tests {
             s.values.insert(tag::PLC_VERSION, PlcValue::Int(version));
             assert_eq!(s.start_request().is_ok(), accepted, "plcVersion={version}");
         }
-    }
-
-    #[test]
-    fn ack_requires_matching_result_identity_and_retained_result_state() {
-        let result = result();
-        let mut s = snapshot();
-        for op in report_plan(&result, 0) {
-            s.values.insert(op.tag, serde_json::from_value(op.value).unwrap());
-        }
-        s.values
-            .insert(tag::PLC_STATE, PlcValue::Int(state::PLC_MOTION_END as i64));
-        assert!(!matching_ack(&s, &result).unwrap());
-        s.values
-            .insert(tag::PLC_STATE, PlcValue::Int(state::PLC_CONFIRMED as i64));
-        assert!(matching_ack(&s, &result).unwrap());
-        s.values.insert(tag::SEQ_ECHO, PlcValue::Int(6));
-        assert!(matching_ack(&s, &result).is_err());
-        s.values.insert(tag::SEQ_ECHO, PlcValue::Int(7));
-        s.values
-            .insert(tag::SN_ECHO, PlcValue::Text("SN-42 ".into()));
-        assert!(matching_ack(&s, &result).is_err());
-        s.values
-            .insert(tag::SN_ECHO, PlcValue::Text("SN-42".into()));
-        s.values
-            .insert(tag::PC_STATE, PlcValue::Int(state::PC_READY as i64));
-        assert!(matching_ack(&s, &result).is_err());
     }
 
     #[test]

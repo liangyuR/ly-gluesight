@@ -92,7 +92,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
         ? <div className={"wp-trial-strip" + (stale ? " stale" : "")} role="group" aria-label="逐帧试测状态" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(6px, 1fr))` }}>
           {cells.map(cell => {
             const text = `帧组 ${cell.seq}：${cell.state ? trialText[cell.state] : "未试测"}${cell.seq === teachSeq ? "（示教帧）" : ""}`;
-            return <button key={cell.seq} type="button" aria-pressed={cell.seq === seq} aria-label={text} title={cell.error ? `${text}：${cell.error}` : text} disabled={!!locked}
+            return <Button variant="text" size="sm" key={cell.seq} type="button" aria-pressed={cell.seq === seq} aria-label={text} title={cell.error ? `${text}：${cell.error}` : text} disabled={!!locked}
               className={"wp-trial-cell" + (cell.seq === seq ? " selected" : "") + (cell.seq === teachSeq ? " teach" : "")}
               style={{ background: cell.state ? trialColor[cell.state] : "var(--surface-high)" }} onClick={() => onSeq(cell.seq)} />;
           })}

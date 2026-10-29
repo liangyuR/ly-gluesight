@@ -60,7 +60,7 @@ export default function WriteDialog({ point, current, blockedReason = "", onWrit
       footer={
         <>
           <Button disabled={busy} onClick={onClose}>取消</Button>
-          {!isBool && <Button variant="filled" disabled={busy || !!blockedReason} onClick={submitValue}>写入</Button>}
+          {!isBool && <Button variant="filled" loading={busy} disabled={!!blockedReason} onClick={submitValue}>写入</Button>}
         </>
       }
     >
@@ -82,7 +82,6 @@ export default function WriteDialog({ point, current, blockedReason = "", onWrit
         ) : (
           <TextField
             aria-label="写入值"
-            autoFocus
             disabled={busy || !!blockedReason}
             value={text}
             onChange={(e) => setText(e.target.value)}

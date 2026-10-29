@@ -39,7 +39,7 @@ function Lamp({ tag, label, tone, state, value, extra, details }: {
   tag: string; label: string; tone: LampTone; state: string; value: PointValue | null | undefined; extra?: string; details?: ReactNode;
 }) {
   const raw = value && !value.error && value.value !== null ? typeof value.value === "boolean" ? Number(value.value) : String(value.value) : "—";
-  const cls = tone === "off" ? "lamp" : tone === "ok" ? "lamp on" : tone === "pc" ? "lamp pc on" : `lamp ${tone}`;
+  const badgeTone: StatusBadgeTone = tone === "pc" ? "info" : tone === "unbound" ? "neutral" : tone;
   return <Tooltip content={<div className="plc-signal-details">
     <span className="mono">{tag}</span>
     <span>状态：{state}</span>
@@ -49,9 +49,9 @@ function Lamp({ tag, label, tone, state, value, extra, details }: {
     {value === undefined && <span>已保存点表未配置此信号</span>}
     {details}
   </div>}>
-    <span className={cls} role="img" aria-label={`${label}：${state}`} tabIndex={0}>
-      {label}{extra && <span className="lamp-extra">{extra}</span>}
-    </span>
+    <StatusBadge tone={badgeTone} className="plc-monitor-meta" role="img" aria-label={`${label}：${state}`} tabIndex={0}>
+      {label} · {state}{extra && <Text mono> {extra}</Text>}
+    </StatusBadge>
   </Tooltip>;
 }
 

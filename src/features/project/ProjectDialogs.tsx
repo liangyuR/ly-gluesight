@@ -47,8 +47,8 @@ export function CreateProjectDialog({ entries, onClose }: { entries: ProjectEntr
     }
   };
   const label = switching.restarting ? "正在重启…" : working ? "创建中…" : created ? "重试切换" : form.switchAfter ? "创建并切换" : "创建";
-  return <Dialog open title="新建项目" size="md" closeDisabled={busy} onOpenChange={open => { if (!open && !busy) onClose(); }}
-    footer={<><Button disabled={busy} onClick={onClose}>{created ? "关闭" : "取消"}</Button><Button variant="filled" disabled={busy || !!idError || !!nameError || !!blockedBySwitch} onClick={() => void submit()}>{label}</Button></>}>
+  return <Dialog open title="新建项目" initialFocus="first-field" size="md" closeDisabled={busy} onOpenChange={open => { if (!open && !busy) onClose(); }}
+    footer={<><Button disabled={busy} onClick={onClose}>{created ? "关闭" : "取消"}</Button><Button variant="filled" loading={busy} disabled={busy || !!idError || !!nameError || !!blockedBySwitch} onClick={() => void submit()}>{label}</Button></>}>
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
       <TextField label="名称" required disabled={locked} value={form.name} error={nameTouched ? nameError : undefined} onBlur={() => setNameTouched(true)} onChange={e => { setNameTouched(true); setForm({ ...form, name: e.target.value }); }} />
       <TextField label="编号" className="mono" disabled={locked} maxLength={64} value={form.id} description="创建后不可修改，同时作为项目目录名" error={idError || undefined} onChange={e => setForm({ ...form, id: e.target.value })} />
@@ -91,8 +91,8 @@ export function RenameProjectDialog({ project, entries, onClose }: { project: Pr
       if (alive.current) setWorking(false);
     }
   };
-  return <Dialog open title="重命名项目" description={`编号 ${project.id} 不变`} closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
-    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button variant="filled" disabled={working || !!nameError} onClick={() => void submit()}>{working ? "保存中…" : "保存"}</Button></>}>
+  return <Dialog open title="重命名项目" initialFocus="first-field" description={`编号 ${project.id} 不变`} closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
+    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button variant="filled" loading={working} disabled={working || !!nameError} onClick={() => void submit()}>{working ? "保存中…" : "保存"}</Button></>}>
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
       <TextField label="名称" required disabled={working} value={name} error={nameError || undefined} onChange={e => setName(e.target.value)} />
       <TextArea label="描述" disabled={working} rows={2} value={description} onChange={e => setDescription(e.target.value)} />
@@ -128,8 +128,8 @@ export function DeleteProjectDialog({ entry, usage, onClose }: { entry: ProjectE
       if (alive.current) setWorking(false);
     }
   };
-  return <Dialog open title="删除项目" closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
-    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button danger variant="filled" disabled={working || !confirmed} onClick={() => void submit()}>{working ? "删除中…" : "删除"}</Button></>}>
+  return <Dialog open title="删除项目" initialFocus="first-field" closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
+    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button danger variant="filled" loading={working} disabled={working || !confirmed} onClick={() => void submit()}>{working ? "删除中…" : "删除"}</Button></>}>
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
       <Alert tone="ng" title="将永久删除以下内容，不可恢复">
         <p>包括本项目在日志目录中的视觉原图。</p>

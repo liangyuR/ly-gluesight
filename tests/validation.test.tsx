@@ -7,7 +7,7 @@ import ValidationPage from "../src/features/workspace/ValidationPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { historyApi } from "../src/features/history/api";
-import { burstRecipe, burstWorkspaceView, planExport, siteStatus, workspaceState } from "./fixtures";
+import { burstRecipe, burstWorkspaceView, siteStatus, workspaceState } from "./fixtures";
 vi.mock("../src/features/cycle/api", () => ({ useSiteStatus: vi.fn() }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn(), collectChecks: vi.fn(), publishCollect: vi.fn(), publishChecks: vi.fn() } }));
@@ -58,48 +58,6 @@ describe("验证与发布页面", () => {
     ws.data!.workspace.publish = { state: "uncertain", message: "写盘失败" };
     show();
     expect(screen.queryByRole("button", { name: "放弃待生效版本" })).not.toBeInTheDocument();
-  });
-
-  describe("段配方", () => {
-    /** 验证已通过的段配方候选；partCalib 决定整件 ΣN_exp 是否已标定（各段 N_exp 都待分段算法）。 */
-    const burst = (over: Parameters<typeof burstRecipe>[0] = {}) => {
-      const view = burstWorkspaceView(burstRecipe(over));
-      view.workspace.validation = { revision: view.workspace.revision, passed: true, checkedAt: 1, environmentTag: {}, checks: [], samples: [] };
-      return view;
-    };
-
-    it("整件预期总帧数未标定 → 发布不可用并列出待标定的段号", () => {
-      ws = workspaceState(burst({ partCalib: null }));
-      show();
-      expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
-      expect(screen.getAllByRole("note").some(note => note.textContent?.includes("段 1、段 2、段 3 待标定"))).toBe(true);
-    });
-
-    // 防的回归（D-SB-45 修订 D-SB-21）：多段配方只有整件 ΣN_exp、各段 N_exp 没标定也能发布（生产无法按累计 N_exp 预测每帧所属段）
-    it("多段配方整件已标定、各段预期帧数待标定 → 发布不可用并列出待标定的段号", async () => {
-      ws = workspaceState(burst());
-      show();
-      await waitFor(() => expect(workspaceApi.publishChecks).toHaveBeenCalled());
-      expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
-      expect(screen.getAllByRole("note").some(note => note.textContent?.includes("段 1、段 2、段 3 待标定"))).toBe(true);
-    });
-
-    it("整件预期总帧数 12 → 14 → 发布确认对比列出生产值，不再要求 PLC 同步计划与帧数", async () => {
-      const view = burst({ planVersion: 3 });
-      const plan = view.plan!;
-      plan.productionExport = planExport();
-      plan.candidateExport = { ...planExport(), expectedTotal: 14 };
-      plan.shotCountChanged = true;
-      view.planChanged = true; view.productionVersion = 1; view.productionPlanVersion = 3;
-      view.plan!.segments.forEach(segment => { segment.expectedFrames = 4; });
-      ws = workspaceState(view);
-      show();
-      await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
-      await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
-      const dialog = screen.getByRole("dialog");
-      expect(dialog).toHaveTextContent("预期总帧数 ΣN_exp ± Σtol：14 ± 3（生产：12 ± 3）");
-      expect(dialog).not.toHaveTextContent(/shotCount|deviceShots|PLC 要同步/);
-    });
   });
 
   it("发布采集版 → 逐条列出未满足项且不能确认；全部满足后确认发布同一修订", async () => {

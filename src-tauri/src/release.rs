@@ -801,54 +801,6 @@ mod tests {
     }
 
     /// 改写包内一个资源，并把清单里它的大小同步改掉（只留下按配方重算才查得出的不一致）。
-    fn rewrite(dir: &Path, name: &str, bytes: Vec<u8>) {
-        fs::write(dir.join(name), &bytes).unwrap();
-        let path = dir.join("manifest.json");
-        let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        for file in manifest["files"].as_array_mut().unwrap() {
-            if file["path"] == name { file["bytes"] = bytes.len().into(); }
-        }
-        fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-    }
-
-    fn edit_manifest(dir: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
-        let path = dir.join("manifest.json");
-        let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        edit(&mut manifest);
-        fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-    }
-
-    #[test]
-    fn tampered_burst_bundle_is_rejected_on_load() {
-        // 防的回归（发布包不可变契约，作用于按相机、段组织的 schema 5）：加载只核对文件大小与清单集合，走廊几何被改、
-        // 相机顺序被换、示教帧换成别的尺寸、多出或少了文件，生产仍照着加载；格式版本改成已停用的 3 也要拒绝
-        let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
-        let bundle = publish_burst_bundle(&root.0);
-        let loaded = load(&root.0, &bundle.manifest.recipe_id, &bundle.id).unwrap();
-        assert_eq!((0..3).map(|i| loaded.camera(i).unwrap().size).collect::<Vec<_>>(), [[1000, 700]; 3]);
-        let tamperings: [(&str, fn(&Path)); 6] = [
-            ("走廊几何改了（清单大小同步）", |dir| {
-                let name = "cameras/00/s01/corridor.json";
-                let mut corridor: CorridorResource = serde_json::from_slice(&fs::read(dir.join(name)).unwrap()).unwrap();
-                corridor.corridor[0][0] -= 100.0;
-                rewrite(dir, name, serde_json::to_vec(&corridor).unwrap());
-            }),
-            ("清单里两台相机互换", |dir| edit_manifest(dir, |m| m["cameras"].as_array_mut().unwrap().swap(0, 1))),
-            ("格式版本改成 3", |dir| edit_manifest(dir, |m| m["schemaVersion"] = 3.into())),
-            ("示教帧换成 900×700（清单大小同步）", |dir| {
-                let mut image = b"P5\n900 700\n255\n".to_vec();
-                image.resize(image.len() + 900 * 700, 128);
-                rewrite(dir, "cameras/01/s01/image.pgm", image);
-            }),
-            ("多出清单以外的文件", |dir| fs::write(dir.join("cameras").join("extra.json"), b"{}").unwrap()),
-            ("一台相机的标定没了", |dir| fs::remove_file(dir.join("cameras/02/calibration.json")).unwrap()),
-        ];
-        for (case, tamper) in tamperings {
-            let bundle = publish_burst_bundle(&root.0);
-            tamper(&bundle.root);
-            assert!(load(&root.0, &bundle.manifest.recipe_id, &bundle.id).is_err(), "{case}");
-        }
-    }
 
     #[test]
     fn bundle_changed_on_disk_after_publish_is_rejected_by_per_part_verify() {

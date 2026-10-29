@@ -1,6 +1,6 @@
 import { Link, useLocation } from "react-router-dom";
 import { AlertTriangle, ArrowRight, Lock } from "lucide-react";
-import { Progress } from "qing-steel";
+import { Button, Progress } from "qing-steel";
 import { corridorTasks, nextTeachingHref } from "./cameraTasks";
 import { useWorkspace } from "./context";
 import { RecipeIdentity } from "./DocParams";
@@ -46,7 +46,7 @@ export default function PlanProgressPage() {
         <strong>{nextStep?.detail || "继续完成当前候选配置"}</strong>
         {reasons.length > 0 && <p>{reasons[0]}{reasons.length > 1 && `（另有 ${reasons.length - 1} 项）`}</p>}
       </div>
-      <Link className="qs-btn" to={targetPathV2(next.target)} state={back}>{next.label}<ArrowRight size={15} aria-hidden="true" /></Link>
+      <Button asChild><Link to={targetPathV2(next.target)} state={back}>{next.label}<ArrowRight size={15} aria-hidden="true" /></Link></Button>
     </section>}
     <div className="wp-progress-list">{stagesV2.map((stage, index) => {
       const status = stageStatusV2(data, stage);

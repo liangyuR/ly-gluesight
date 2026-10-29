@@ -4,11 +4,15 @@
 
 ## 当前保留范围
 
+默认 Rust 库回归保留 86 条、前端 Vitest 保留 84 条用例（各约 80 条），以测试运行器展开后的实际用例数计数。保留集优先覆盖结果交付、数据归属、发布准入、草稿防丢和资料安全；同一业务规则的等价输入使用参数化，跨层重复验证优先保留能观察业务结果的一层。增删用例按保护规则评估，数量是维护规模参考。
+
+打包门禁、样本转换、桌面生产验收和现场长稳脚本独立维护，不计入默认两套回归。默认回归不覆盖所有日志展示与导出分页、兼容输入、起胶建议、视觉搜索重试与边缘统计、离线模拟产线完整路径；修改这些路径时需补充针对性的验证。
+
 | 测试层 | 保留验证 |
 | --- | --- |
 | 前端 | 默认 Vitest 回归：段配方创建与草稿防丢、采集准入和独立样本、多轮标定与走廊示教、验证发布门槛、周期/帧归属隔离、历史区域重判、PLC 操作锁、维护模式、项目管理、单视角标定更新与配置安全 |
 | Rust 默认 | `cargo test --lib`：当前段配方、帧组与采集、逐段标定、比例分段与区域判定、PLC 握手、调度、发布与恢复、项目导出导入与复制；包含少量真实 S7 TCP 回环、SQLite 和原图录制集成测试，不能把全部库测试称为纯单元测试 |
-| S7 专项 | `plc_session` 与 `offline` 的 S7 线协议用例（真实生产驱动 + 进程内 S7Server），已进默认 `cargo test` |
+| S7 专项 | `plc_session` 的交付、复位、心跳及维护隔离用例（真实生产驱动 + 进程内 S7Server）已进默认 `cargo test`；离线模拟产线完整运行需专项验收 |
 | 桌面端到端 | 仅合成图段配方生产落盘：flow 实例内建站、标定、发布、生产、SQLite、原图与历史读回，需要 lyFlow |
 | 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本 |
 | 手动专项 | 长稳测试（需样本集与 lyFlow 运行库，不进 CI）；吞吐探针 `throughput_probe`（见“3 × 25 Hz 吞吐门槛”） |
@@ -19,7 +23,7 @@
 
 ## 运行
 
-工具版本以 `package.json`、`rust-toolchain.toml` 和锁文件为准。首次安装执行 `pnpm install --frozen-lockfile`。
+工具版本以 `package.json`、`rust-toolchain.toml` 和锁文件为准。首次安装执行 `pnpm install --frozen-lockfile`。应用 Vite 预构建仅扫描根目录 `index.html`，避免 `output/` 中的验收夹具或组件库示例引入其他 React 副本。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -62,10 +66,10 @@ Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 R
 协议与点表见 [PLC 通讯协议](../integration/plc-communication-protocol.md)。旧版本协议的 PLC 写入被拒绝。
 
 ```powershell
-cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_session offline::
+cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_session
 ```
 
-`plc_session` 与 `offline` 的用例由进程内 S7Server（`src-tauri/src/offline/s7_server.rs`，只监听 127.0.0.1 的随机端口，含仅测试编译的定点故障注入）驱动真实的生产会话，已是默认测试。用例需要本机 TCP 回环权限：Windows 沙箱拒绝 localhost 连接（WinError 10013）时，在获准主机环境运行，不能跳过 TCP 后记为通过。各案例的状态、事务与 DB 快照写在测试临时目录（`s7-session-tests`），通过后自动清理，本机产物不提交。
+`plc_session` 的默认用例由进程内 S7Server（`src-tauri/src/offline/s7_server.rs`，只监听 127.0.0.1 的随机端口，含仅测试编译的定点故障注入）驱动真实的生产会话，已是默认测试。用例需要本机 TCP 回环权限：Windows 沙箱拒绝 localhost 连接（WinError 10013）时，在获准主机环境运行，不能跳过 TCP 后记为通过。各案例的状态、事务与 DB 快照写在测试临时目录（`s7-session-tests`），通过后自动清理，本机产物不提交。
 
 ## 段模型（分段连拍飞拍）专项
 
@@ -84,11 +88,11 @@ $env:LYFLOW_CORE_DLL = "<运行库目录>\lyflow_core.dll"
 cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval -- <项目目录> <候选编号> <输出目录>
 ```
 
-分段标定工作台（D-SB-44）的回归：`workspace::capture_review` 的组合保存（结构变 / 不变时其余轮次与标定的失效范围）、`frame_align` 的缩略图条带格式，前端 `tests/workbench-draft.test.ts`（边界插删与保存的段列表）与 `tests/segment-workbench.test.tsx`（结构改变时先列影响、确认后一次提交）；对齐复核（P2）：`frame_align::aligned_cuts_follow_scene_positions_under_stretch_drop_and_repeat`（合成序列在伸缩、前慢后快、丢帧、重复帧下边界误差 ≤ 1 帧；改成按比例换算会失败）与 `tests/align-review.test.tsx`（微调不越过相邻边界、全部确认后一次提交）；按异常复核（D-SB-51）：`frame_align::only_distinct_alignment_close_to_proportional_is_trusted`（画面不随位置变化时即使与比例一致也不可信、偏离比例超过容许帧数需复核）与 `tests/align-review.test.tsx`（可信边界默认已确认，只确认需重点复核的即可保存；自动确认后列出待人工复核的轮次与原因）。`segment_eval` 在有分段模板时另报“图像对齐（相对模板轮）”的误差。
+分段标定工作台（D-SB-44）的默认回归保留 `workspace::capture_review` 的计划修改后复核失效、屏蔽不压缩序号及与示教帧互斥；前端 `tests/workbench-draft.test.ts` 和 `tests/segment-workbench.test.tsx` 验证边界编辑与结构改变确认后一次提交。对齐复核保留 `frame_align::only_distinct_alignment_close_to_proportional_is_trusted`，验证无区分度画面和超出比例容差的结果不能自动确认；`tests/align-review.test.tsx` 验证只确认需复核边界、微调不越界及整件保存。伸缩、丢帧、重复帧下的现场对齐精度需通过下述离线评估验证。
 
 读该候选 `workspace.json` 的段列表、`boundaryGuard` 与示教件、标定件已确认的手动分段，逐轮用其余轮次按多轮标定规则得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；比例评估不读图像，模板图像对齐评估读取采集原图，均不需要 lyFlow。至少要 2 段、2 个已确认轮次。评估结论需附对应数据版本与运行输出，本仓库不保存现场数据与临时验收证据。
 
-起涂与收尾跳过建议（D-SB-50）的回归：`calibration::unformed_lead_counts_until_a_formed_run_and_aborts_on_unknown_before_it`（偶发单个成形帧组不算起点，成形前无法判断的轮次不给值）、`workspace::burst_tests::skip_suggestion_is_max_over_normal_rounds_and_withheld_when_too_few_participate`（取普通轮次最大值、收尾从末尾数、参与轮次不足不给建议）与 `tests/recipe-calibration.test.tsx`（少于建议时提示、采用建议按建议值提交到对应一头）。现有轮次都是空跑，没有起涂过程，建议值只用合成数据验证过。
+起涂与收尾跳过建议（D-SB-50）属于专项验证范围：改动时应核对连续成形识别、多轮最大值聚合、参与轮次不足不给建议，以及界面采用建议只更新对应一头。现有轮次都是空跑，建议值只用合成数据验证过。
 
 **离线工况。** 段配方在离线下按脉冲串运行：虚拟 PLC 写请求（plcState=10）后等固定的拍照前置时间 500 ms，再以固定频率（默认 20 Hz）发脉冲，每个脉冲同时触发三台相机，脉冲发完报工件结束（plcState=20）；名义帧数取各段 N_exp（待标定的段按段长 × 频率 ÷ 50 mm/s 估算，已有整件标定时缩放到 ΣN_exp）。下表工况在离线控制台与在线检测页的工况下拉里，样本集与合成图来源都能选，只改变脉冲与握手，不改图像内容。
 

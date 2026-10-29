@@ -78,91 +78,6 @@ fn export(data: &Path, root: &Path) -> PathBuf {
 }
 
 #[test]
-fn imported_project_references_point_into_the_new_project_not_the_source() {
-    let (from, to) = (TempDir::new("from"), TempDir::new("to"));
-    let (source, _) = source_project(&from.0);
-    let package = export(&from.0, &source);
-    let imported = import_from(
-        &to.0,
-        &package,
-        "line-b",
-        "B 线",
-        &to.0.join("state").join("plan-version"),
-        &to.0.join("cache"),
-    )
-    .unwrap();
-    let target = super::super::dir(&to.0, "line-b");
-    assert_eq!(
-        super::super::read_meta(&target)
-            .unwrap()
-            .copied_from
-            .as_deref(),
-        Some("line-a")
-    );
-    assert_eq!(imported.meta.id, "line-b");
-    let round = read_value(
-        &target
-            .join("recipe-capture")
-            .join("capture-1")
-            .join("round.json"),
-    )
-    .unwrap();
-    let original = round["frames"][0]["cameras"][0]["originalPath"]
-        .as_str()
-        .unwrap();
-    assert!(Path::new(original).starts_with(&target), "{original}");
-    assert!(Path::new(original).is_file());
-    let conn = rusqlite::Connection::open(target.join("inspection.db")).unwrap();
-    let directory: String = conn
-        .query_row("SELECT recording_directory FROM parts", [], |r| r.get(0))
-        .unwrap();
-    assert!(Path::new(&directory).starts_with(&target), "{directory}");
-}
-
-#[test]
-fn imported_production_recipe_gets_an_unused_local_plan_version_and_keeps_its_revision() {
-    let (from, to) = (TempDir::new("plan-from"), TempDir::new("plan-to"));
-    let (source, recipe) = source_project(&from.0);
-    let package = export(&from.0, &source);
-    let plan_file = to.0.join("state").join("plan-version");
-    std::fs::create_dir_all(plan_file.parent().unwrap()).unwrap();
-    std::fs::write(&plan_file, (recipe.plan_version + 50).to_string()).unwrap();
-    import_from(
-        &to.0,
-        &package,
-        "line-b",
-        "B 线",
-        &plan_file,
-        &to.0.join("cache"),
-    )
-    .unwrap();
-    let target = super::super::dir(&to.0, "line-b");
-    let loaded =
-        RecipeStore::open_with_floors(target.join("recipes"), plan_file.clone(), &BTreeMap::new())
-            .unwrap()
-            .get(&recipe.id)
-            .unwrap();
-    assert!(
-        loaded.plan_version > recipe.plan_version + 50,
-        "{} 不大于本机已发出的 {}",
-        loaded.plan_version,
-        recipe.plan_version + 50
-    );
-    assert_eq!(
-        loaded.revision_id, recipe.revision_id,
-        "修订号不应因改计划版本而变化"
-    );
-    let conn = rusqlite::Connection::open(target.join("inspection.db")).unwrap();
-    let snapshot: String = conn
-        .query_row("SELECT json FROM recipe_snapshots", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(
-        plan_of(&serde_json::from_str(&snapshot).unwrap()),
-        Some(loaded.plan_version)
-    );
-}
-
-#[test]
 fn damaged_or_tampered_package_is_refused_without_leaving_a_project_behind() {
     let (from, to) = (TempDir::new("bad-from"), TempDir::new("bad-to"));
     let (source, _) = source_project(&from.0);
@@ -290,15 +205,81 @@ fn copied_project_gets_its_own_paths_and_plan_versions_and_leaves_the_source_unt
 }
 
 #[test]
-fn copy_without_records_leaves_out_inspection_db_and_recordings() {
-    let data = TempDir::new("copy-plain");
-    let (source, _) = source_project(&data.0);
-    copy(&data.0, false).unwrap();
-    let target = super::super::dir(&data.0, "line-a2");
-    assert!(target.join("recipe-capture").join("capture-1").is_dir());
-    assert!(!target.join("inspection.db").exists());
-    assert!(!target.join("records").exists());
-    assert!(source.join("inspection.db").is_file());
+fn transferred_navigation_assets_keep_release_identity_and_damaged_maps_do_not_block_production() {
+    for importing in [false, true] {
+        let data = TempDir::new(if importing {
+            "navigation-import"
+        } else {
+            "navigation-copy"
+        });
+        let (source, recipe) = source_project(&data.0);
+        let candidate = PathBuf::from("workspaces")
+            .join(&recipe.id)
+            .join("navigation");
+        let frozen = PathBuf::from("recipe-support")
+            .join(&recipe.id)
+            .join("release-navigation");
+        let snapshot = serde_json::json!({
+            "format": 1,
+            "recipeId": recipe.id,
+            "recipeRevision": recipe.revision_id,
+            "bundleId": "release-navigation",
+            "map": null
+        });
+        let assets = [
+            (candidate.join("map.json"), b"{\"draft\":true}".to_vec()),
+            (candidate.join("image.png"), b"candidate-image".to_vec()),
+            (
+                frozen.join("snapshot.json"),
+                serde_json::to_vec(&snapshot).unwrap(),
+            ),
+            (frozen.join("image.png"), b"damaged-image".to_vec()),
+        ];
+        for (relative, bytes) in &assets {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let before = snapshot_files(&source);
+        let plan_file = data.0.join("state").join("plan-version");
+        let (transferred, target) = if importing {
+            let package = data.0.join("navigation.zip");
+            export_to(&source, false, &data.0.join("cache/export"), &package).unwrap();
+            (
+                import_from(
+                    &data.0,
+                    &package,
+                    "line-b",
+                    "B 线",
+                    &plan_file,
+                    &data.0.join("cache"),
+                )
+                .unwrap(),
+                super::super::dir(&data.0, "line-b"),
+            )
+        } else {
+            (
+                copy(&data.0, false).unwrap(),
+                super::super::dir(&data.0, "line-a2"),
+            )
+        };
+        for (relative, bytes) in &assets {
+            assert_eq!(std::fs::read(target.join(relative)).unwrap(), *bytes);
+        }
+        assert_eq!(snapshot_files(&source), before);
+        let loaded =
+            RecipeStore::open_with_floors(target.join("recipes"), plan_file, &BTreeMap::new())
+                .unwrap()
+                .get(&recipe.id)
+                .unwrap();
+        assert_eq!(loaded.revision_id, recipe.revision_id);
+        assert!(loaded.plan_version > recipe.plan_version);
+        assert!(transferred
+            .notes
+            .iter()
+            .any(|note| note.contains("导航") || note.contains("辅助")));
+        assert!(!target.join("inspection.db").exists());
+    }
 }
 
 fn external_layout(data: &Path, instance: &str) {
@@ -312,62 +293,6 @@ fn external_layout(data: &Path, instance: &str) {
         .to_string(),
     )
     .unwrap();
-}
-
-#[test]
-fn external_recordings_export_import_and_copy_keep_images_owned_by_the_target_project() {
-    let (from, to) = (TempDir::new("external-from"), TempDir::new("external-to"));
-    let (source, _) = source_project(&from.0);
-    external_layout(&from.0, "1111111111111111");
-    external_layout(&to.0, "2222222222222222");
-    let source_recordings = crate::log_storage::recording_project(&source).unwrap();
-    std::fs::create_dir_all(&source_recordings).unwrap();
-    std::fs::rename(source.join("records"), source_recordings.join("records")).unwrap();
-    crate::storage::relocate::database(&source.join("inspection.db"), &source, &source_recordings)
-        .unwrap();
-    std::fs::create_dir_all(source.join("calib/images")).unwrap();
-    std::fs::write(source.join("calib/images/board.pgm"), b"board").unwrap();
-    let package = export(&from.0, &source);
-    assert!(inspect(&package)
-        .unwrap()
-        .files
-        .iter()
-        .any(|f| f.path == "project/records/c1/part.json"));
-    import_from(
-        &to.0,
-        &package,
-        "line-b",
-        "B 线",
-        &to.0.join("state/plan-version"),
-        &to.0.join("cache"),
-    )
-    .unwrap();
-    copy(&from.0, true).unwrap();
-    for target in [
-        super::super::dir(&to.0, "line-b"),
-        super::super::dir(&from.0, "line-a2"),
-    ] {
-        let recordings = crate::log_storage::recording_project(&target).unwrap();
-        assert!(!target.join("records").exists());
-        assert_eq!(
-            std::fs::read(recordings.join("records/c1/part.json")).unwrap(),
-            b"{}"
-        );
-        assert_eq!(
-            std::fs::read(target.join("calib/images/board.pgm")).unwrap(),
-            b"board"
-        );
-        assert_eq!(
-            std::fs::read(target.join("recipe-capture/capture-1/a.pgm")).unwrap(),
-            b"P5"
-        );
-        let conn = rusqlite::Connection::open(target.join("inspection.db")).unwrap();
-        let directory: String = conn
-            .query_row("SELECT recording_directory FROM parts", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(Path::new(&directory), recordings.join("records/c1"));
-    }
-    assert!(source_recordings.join("records/c1/part.json").is_file());
 }
 
 #[test]

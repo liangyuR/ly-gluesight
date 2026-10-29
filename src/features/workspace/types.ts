@@ -2,6 +2,20 @@ import type { Judgement, Recipe, RecipeDoc, RecipeStage, Verdict } from "../cycl
 import type { CameraImaging } from "../camera/types";
 import type { BurstJudgement, CalibrationRound, CameraTeaching, PathSegment, WorkspacePlanView } from "../plan/types";
 import type { PartMode } from "../history/types";
+import type { NavigationMapData } from "./navigation/types";
+
+export interface NavigationArchiveStatus {
+  state: "none" | "ready" | "unconfirmed" | "frozen" | "error";
+  bundleId: string | null;
+  detail: string;
+}
+export interface NavigationView {
+  map: NavigationMapData | null;
+  error: string | null;
+  imageAvailable: boolean;
+  structureRevision: number;
+  published: NavigationArchiveStatus | null;
+}
 
 /** 段模型（分段连拍飞拍）的候选工作区类型，定义在 plan/types.ts；这里转出供工作台页面使用。 */
 export type {
@@ -27,6 +41,7 @@ export type ValidationSite = "real" | "offline";
 export interface Release {
   doc: RecipeDoc; bundleId: string; baseRevision: string | null; revision: number; validation: Validation;
   validationSite: ValidationSite;
+  navigation?: NavigationArchiveStatus | null;
 }
 export interface Workspace {
   doc: RecipeDoc; baseRevision: string | null; revision: number;
@@ -43,6 +58,8 @@ export interface Workspace {
   flow: number;
   /** 示教件（RB-1）：导入的轮次与来源历史件 */
   teachingPiece: TeachingPiece | null;
+  navigationId?: string | null;
+  navigationStructureRevision?: number;
 }
 export interface TeachingPiece { roundId: string; recordId: number; cycleId: string; sn: string; ts: number }
 /** 新流程候选（RB-5）：flow 不是 2 的候选只能在配方库删除。 */
@@ -82,6 +99,7 @@ export type PublishState =
   | { state: "active"; version: number; revision: number; warning: string | null; validationSite: ValidationSite };
 export type StepStatus = "notStarted" | "inProgress" | "done" | "blocked";
 export interface WorkspaceView {
+  navigation?: NavigationView;
   workspace: Workspace; layout: Recipe; productionVersion: number | null;
   /** 生产配方是采集版还是正式版；未发布为 null */
   productionStage?: RecipeStage | null;

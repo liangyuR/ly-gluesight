@@ -5,7 +5,6 @@ import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts 
 import { storageApi } from "../lib/storage";
 import { errorText } from "../lib/errors";
 import { useSnackbar } from "qing-steel";
-import ContextHelp from "../features/cycle/components/ContextHelp";
 import "./SettingsPage.css";
 
 const timeoutFields: [keyof Timeouts, string, string][] = [
@@ -123,54 +122,49 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
 
   return (
     <Card role="region" aria-label="检测节拍" title={<Heading level={3}>检测节拍</Heading>}
-      actions={<Button variant="filled" disabled={!settings || saving || !!invalid} aria-busy={saving} onClick={save}>{saving ? "保存中…" : "保存"}</Button>}>
+      actions={<Button variant="tonal" disabled={!settings || saving || !!invalid} loading={saving} onClick={save}>{saving ? "保存中…" : "保存"}</Button>}>
       <Stack direction="column" align="stretch" gap={12} wrap={false}>
       {loading && !settings && <p role="status">正在读取检测节拍设置…</p>}
       {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>{error}</Alert>}
       {settings && <>
       <fieldset disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <Grid minWidth={220} gap={14}>
-          <div className="settings-help-field">
-          <div className="settings-field-title"><label htmlFor="product-source">型号来源</label></div>
           <Select
+            label="型号来源"
             id="product-source"
             value={settings.productSource}
             onValueChange={(value) => update({ ...settings, productSource: value as CycleSettings["productSource"] })}
             options={[{ value: "plc", label: "PLC 下发型号" }, { value: "manual", label: "人工选择配方" }]}
           />
-          </div>
           {settings.productSource === "manual" && (
-            <div className="settings-help-field">
-            <div className="settings-field-title"><label htmlFor="manual-recipe-setting">当前配方</label></div>
             <Select
+              label="当前配方"
               id="manual-recipe-setting"
               value={settings.manualRecipeId ?? ""}
               onValueChange={(value) => update({ ...settings, manualRecipeId: value || null })}
               options={[{ value: "", label: "未选择" }, ...recipes.map((r) => ({ value: r.id, label: `${r.id} · ${r.name}` }))]}
             />
-            </div>
           )}
-          <div className="settings-help-field">
-          <div className="settings-field-title"><label htmlFor="history-days">记录保留（天）</label><ContextHelp label="记录保留说明">超过天数的检测记录每天自动删除</ContextHelp></div>
           <NumberField
+            label="记录保留（天）"
+            description="超过天数的检测记录每天自动删除"
             id="history-days"
             min={1}
             max={3650}
             value={numberInput(settings.historyDays)}
             onValueChange={(value) => update({ ...settings, historyDays: numberValue(value) })}
           />
-          </div>
           {timeoutFields.map(([key, label, hint]) => (
-            <div key={key} className="settings-help-field">
-            <div className="settings-field-title"><label htmlFor={`timeout-${key}`}>{label}</label><ContextHelp label={`${label}说明`}>{hint}</ContextHelp></div>
             <NumberField
+              key={key}
+              label={label}
+              description={hint}
               id={`timeout-${key}`}
               min={timeoutMinimums[key]}
               step={1}
               value={numberInput(settings.timeouts[key])}
               onValueChange={(value) => update({ ...settings, timeouts: { ...settings.timeouts, [key]: numberValue(value) } })}
             />
-            </div>
           ))}
         </Grid>
       </fieldset>
@@ -217,7 +211,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
 
   return (
     <Card role="region" aria-label="lyFlow 与帧录制" title={<Heading level={3}>lyFlow 与帧录制</Heading>}
-      actions={<Button variant="filled" disabled={!settings || saving || !!invalid} aria-busy={saving} onClick={save}>{saving ? "保存中…" : "保存"}</Button>}>
+      actions={<Button variant="tonal" disabled={!settings || saving || !!invalid} loading={saving} onClick={save}>{saving ? "保存中…" : "保存"}</Button>}>
       <Stack direction="column" align="stretch" gap={12} wrap={false}>
       {loading && !settings && <p role="status">正在读取 lyFlow 与帧录制设置…</p>}
       {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>{error}</Alert>}
@@ -273,7 +267,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
         <dt>说明</dt>
         <dd>{visibleEngine?.message ?? "--"}</dd>
         <dt>运行库目录</dt>
-        <dd className="mono">{visibleEngine?.path ? <button type="button" className="settings-path-link" aria-label={`打开运行库目录：${displayPath(visibleEngine.path)}`} onClick={() => { setOpenError(""); void storageApi.openDirectory("lyflow").catch(e => setOpenError(errorText(e))); }}>{displayPath(visibleEngine.path)}</button> : "--"}</dd>
+        <dd className="mono">{visibleEngine?.path ? <Button variant="text" size="sm" className="settings-path-link" aria-label={`打开运行库目录：${displayPath(visibleEngine.path)}`} onClick={() => { setOpenError(""); void storageApi.openDirectory("lyflow").catch(e => setOpenError(errorText(e))); }}>{displayPath(visibleEngine.path)}</Button> : "--"}</dd>
       </dl>
       {import.meta.env.DEV && visibleEngine && !visibleEngine.ready && <Alert tone="info">{devLyflowHint}</Alert>}
       {engineError && <Alert tone="ng" action={<Button size="sm" onClick={refresh}>重试引擎状态</Button>}>引擎状态读取失败：{engineError}</Alert>}
@@ -297,10 +291,10 @@ function StoragePanel() {
     {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>资料目录读取失败：{error}</Alert>}
     {!loading && !error && data && <>
       <dl className="kv settings-storage-list"><dt>当前环境</dt><dd>{environment[data.environment] ?? data.environment}</dd>
-        <dt>资料目录</dt><dd className="mono"><button type="button" className="settings-path-link" onClick={() => openDirectory("data")} aria-label={`打开资料目录：${displayPath(data.root)}`}>{displayPath(data.root)}</button></dd>
-        <dt>日志根目录</dt><dd className="mono">{data.logRoot ? <button type="button" className="settings-path-link" onClick={() => openDirectory("logs")} aria-label={`打开日志根目录：${displayPath(data.logRoot)}`}>{displayPath(data.logRoot)}</button> : "—"}</dd>
-        <dt>运行日志</dt><dd className="mono">{data.runtimeLogDir ? <button type="button" className="settings-path-link" onClick={() => openDirectory("runtime")} aria-label={`打开运行日志：${displayPath(data.runtimeLogDir)}`}>{displayPath(data.runtimeLogDir)}</button> : "—"}</dd>
-        <dt>当前项目视觉原图</dt><dd className="mono">{data.visionLogDir ? <button type="button" className="settings-path-link" onClick={() => openDirectory("vision")} aria-label={`打开视觉原图：${displayPath(data.visionLogDir)}`}>{displayPath(data.visionLogDir)}</button> : "—"}</dd>
+        <dt>资料目录</dt><dd className="mono"><Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("data")} aria-label={`打开资料目录：${displayPath(data.root)}`}>{displayPath(data.root)}</Button></dd>
+        <dt>日志根目录</dt><dd className="mono">{data.logRoot ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("logs")} aria-label={`打开日志根目录：${displayPath(data.logRoot)}`}>{displayPath(data.logRoot)}</Button> : "—"}</dd>
+        <dt>运行日志</dt><dd className="mono">{data.runtimeLogDir ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("runtime")} aria-label={`打开运行日志：${displayPath(data.runtimeLogDir)}`}>{displayPath(data.runtimeLogDir)}</Button> : "—"}</dd>
+        <dt>当前项目视觉原图</dt><dd className="mono">{data.visionLogDir ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("vision")} aria-label={`打开视觉原图：${displayPath(data.visionLogDir)}`}>{displayPath(data.visionLogDir)}</Button> : "—"}</dd>
       </dl>
     </>}
     {openError && <Alert tone="ng">打开目录失败：{openError}</Alert>}

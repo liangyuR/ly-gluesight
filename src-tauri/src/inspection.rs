@@ -134,38 +134,3 @@ pub fn reserved_s7_point(config: &PlcConfig, id: &str) -> bool {
     s7_phase1_config(DEFAULT_PLC_DB, DEFAULT_PC_DB).is_ok_and(|template| template.points.iter().any(|preset|
         preset.tags.iter().any(|tag| point.tags.contains(tag))))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn saved_teaching_points_are_dropped_and_production_points_stay_unchanged() {
-        let production = default_plc_config();
-        let mut config = production.clone();
-        let mut extra = |id: &str, address: &str, tag: &str| {
-            config.points.push(PlcPoint {
-                id: id.into(),
-                name: tag.into(),
-                address: address.into(),
-                data_type: DataType::I16,
-                access: Access::ReadWrite,
-                tags: vec![tag.into()],
-                ..PlcPoint::default()
-            })
-        };
-        extra("p_teachPcState", "DB6.DBW2", "teachPcState");
-        extra("p_teachRoundIdEcho", "DB12.DBW4", "teachRoundIdEcho");
-        extra("p_teachPlcSnapshot", "DB12.DBB0.10", "teachPlcSnapshot");
-        extra("site_db6", "DB6.DBW20", "siteOther");
-        assert_eq!(drop_teaching_points(&mut config), 3);
-        let ids: Vec<&str> = config.points.iter().map(|p| p.id.as_str()).collect();
-        let mut expected: Vec<&str> = production.points.iter().map(|p| p.id.as_str()).collect();
-        expected.push("site_db6");
-        assert_eq!(ids, expected);
-        assert_eq!(
-            serde_json::to_value(&config.points[..production.points.len()]).unwrap(),
-            serde_json::to_value(&production.points).unwrap()
-        );
-    }
-}

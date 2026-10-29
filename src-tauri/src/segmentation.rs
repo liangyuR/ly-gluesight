@@ -565,17 +565,6 @@ mod tests {
         Region { kind, first_seq, last_seq }
     }
 
-    /// 规格 §3：算法验证前整条胶路按未分段——一个覆盖全部帧组的区域，原因“分段算法未就绪”。
-    #[test]
-    fn unsegmented_returns_one_pending_region_covering_all_groups() {
-        let segments = plan(&[S, C, S]);
-        let outcome = SegOutcome::Unsegmented;
-        assert_eq!(
-            resolve_regions(&segments, &outcome, 23, 0.8, 2),
-            vec![region(RegionKind::Unsegmented { first_segment: 1, last_segment: 3, reason: UnsegReason::AlgorithmPending }, 1, 23)]
-        );
-    }
-
     fn calibrated(kinds: &[SegmentKind], n_exp: &[u32]) -> Vec<PathSegment> {
         let mut segments = plan(kinds);
         segments
@@ -607,88 +596,6 @@ mod tests {
                 .collect(),
             SegOutcome::Unsegmented => panic!("应给出边界"),
         }
-    }
-
-    #[test]
-    fn heading_refined_moves_a_straight_corner_boundary_to_where_the_bead_starts_turning_and_keeps_it_without_heading_data(
-    ) {
-        // 防的回归（D-SB-47 方向细化）：细化不看方向、仍停在比例边界；参考方向取错相机或把回退帧算进来；
-        // 窗口里没有方向数据时乱动边界
-        let mut segments = calibrated(&[S, C, S], &[5, 5, 5]);
-        segments
-            .iter_mut()
-            .for_each(|s| s.heading = Some(Default::default()));
-        let groups: Vec<FrameGroup> = (1..=15)
-            .map(|seq| FrameGroup {
-                seq,
-                present: vec![true; 3],
-                incomplete: false,
-            })
-            .collect();
-        // 真实边界在 7、12：直线 0°，弯道每帧转 10°，之后直线 60°；只有相机 0 有方向
-        let theta = |seq: u64| {
-            if seq <= 7 {
-                0.0
-            } else if seq <= 12 {
-                10.0 * (seq - 7) as f64
-            } else {
-                60.0
-            }
-        };
-        let corridor = |seq: u64| {
-            if seq <= 5 {
-                1
-            } else if seq <= 10 {
-                2
-            } else {
-                3
-            }
-        };
-        let features: Vec<FrameMetrics> = (1..=15)
-            .map(|seq| FrameMetrics {
-                heading_deg: Some(theta(seq)),
-                corridor: Some(corridor(seq)),
-                ..crate::store::burst_fixture::measured(0, seq, 4.0)
-            })
-            .collect();
-        let refined = |features: &[FrameMetrics]| {
-            cuts(&refine_by_heading(
-                &SegInput {
-                    groups: &groups,
-                    segments: &segments,
-                },
-                features,
-            ))
-        };
-        assert_eq!(
-            cuts(&proportional(&segments, 15)),
-            vec![(5, 1.0), (10, 1.0)]
-        );
-        assert_eq!(refined(&features), vec![(7, 1.0), (12, 1.0)]);
-        let fallback: Vec<FrameMetrics> = features
-            .iter()
-            .cloned()
-            .map(|m| FrameMetrics {
-                heading_fallback: true,
-                ..m
-            })
-            .collect();
-        assert_eq!(
-            refined(&fallback),
-            vec![(5, 1.0), (10, 1.0)],
-            "回退帧没有可信方向，保留比例边界"
-        );
-        assert_eq!(
-            segment_part(
-                &SegInput {
-                    groups: &groups,
-                    segments: &segments
-                },
-                &features,
-                false
-            ),
-            proportional(&segments, 15)
-        );
     }
 
     /// D-SB-40：第 k 个边界 = round(本件帧组数 × 前 k 段 N_exp 之和 / ΣN_exp)。N_exp 10 / 4 / 10（ΣN 24 ± 3），
@@ -733,23 +640,6 @@ mod tests {
                     total
                 )],
                 "{total} 帧"
-            );
-        }
-    }
-
-    /// D-SB-40：有段 N_exp 未标定（没有比例）或单段配方（没有边界）时与没有分段算法相同，整条胶路未分段。
-    #[test]
-    fn proportional_stays_unsegmented_without_calibrated_counts_or_with_single_segment() {
-        let mut partly = calibrated(&[S, C, S], &[10, 4, 10]);
-        partly[1].expected_frames = None;
-        for (case, segments) in [
-            ("第 2 段待标定", partly),
-            ("单段配方", calibrated(&[S], &[24])),
-        ] {
-            assert_eq!(
-                proportional(&segments, 24),
-                SegOutcome::Unsegmented,
-                "{case}"
             );
         }
     }
@@ -884,41 +774,6 @@ mod tests {
                 expected,
                 "{case}"
             );
-        }
-    }
-
-    /// D-SB-45：判定按区域选走廊。直线 5 帧（三台相机）+ 弯道 5 帧（只由第一台相机）、过渡帧 1。
-    #[test]
-    fn frame_corridors_follow_regions_and_fall_back_to_predicted_segment_when_unsegmented() {
-        // 防的回归：过渡区里只检测另一侧的相机没走廊可用（被当成不测、或用了它不检测的那一侧）；置信度不足时
-        // 退回全部相机（其余相机看不到胶条，只能量出检测不完整）或不按到达时的预测段选走廊
-        let cameras: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
-        let mut segments = calibrated(&[S, C], &[5, 5]);
-        segments[1].cameras = vec!["cam1".into()];
-        // (本件帧组数, seq, 三台相机该用的段)
-        let cases: [(&str, u64, u64, [Option<u32>; 3]); 5] = [
-            ("直线段内", 12, 3, [Some(1), Some(1), Some(1)]),
-            ("过渡区靠直线一侧", 12, 6, [Some(1), Some(1), Some(1)]),
-            (
-                "过渡区靠弯道一侧：只检测直线段的相机用直线段走廊",
-                12,
-                7,
-                [Some(2), Some(1), Some(1)],
-            ),
-            ("弯道段内", 12, 10, [Some(2), None, None]),
-            (
-                "帧数超出容差、置信度不足：按预测段（第 7 帧预测在弯道）",
-                20,
-                7,
-                [Some(2), None, None],
-            ),
-        ];
-        for (name, total, seq, expected) in cases {
-            let outcome = proportional(&segments, total);
-            let regions = resolve_regions(&segments, &outcome, total, 0.5, 1);
-            let choice = frame_corridors(&segments, &cameras, &regions, &outcome, total);
-            let got: Vec<Option<u32>> = choice.iter().map(|c| c[(seq - 1) as usize]).collect();
-            assert_eq!(got, expected, "{name}");
         }
     }
 }

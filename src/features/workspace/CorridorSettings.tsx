@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { ArrowUpRight, ChevronDown } from "lucide-react";
-import { Button, SegmentedControl, Select, Switch } from "qing-steel";
+import { ArrowUpRight } from "lucide-react";
+import { Accordion, Button, SegmentedControl, Select, Switch } from "qing-steel";
 import { DetectEditor } from "../recipe";
 import type { DetectParams } from "../cycle/types";
 import type { CameraInspect, EdgeParams, EdgePolarity, InspectWindow, OffsetMeasure, PathSegment } from "../plan/types";
@@ -22,12 +22,11 @@ const scaleOf = (mmPerPx: number | null | undefined) => mmPerPx != null && Numbe
 
 /** 右栏卡片：标题行带状态徽标与展开箭头，折叠时多一行摘要，看得出能点开。 */
 function SettingsCard({ title, badge, tone = "neutral", summary, open, children }: { title: string; badge?: ReactNode; tone?: Tone; summary?: ReactNode; open?: boolean; children: ReactNode }) {
-  return <details className="panel wp-settings-card" open={open} aria-label={title}>
-    <summary><span className="wp-settings-heading"><span className="wp-settings-title">{title}</span>{badge != null && <Badge tone={tone}>{badge}</Badge>}<span className="wp-settings-chevron" aria-hidden="true"><ChevronDown size={14}/></span></span>
-      {summary != null && <span className="wp-settings-summary">{summary}</span>}
-    </summary>
-    <div className="wp-settings-body">{children}</div>
-  </details>;
+  return <Accordion className="wp-settings-card" collapsible forceMount ignoreFieldsetDisabled defaultValue={open ? "settings" : undefined} items={[{
+    value: "settings",
+    title: <span><span className="wp-settings-heading"><span className="wp-settings-title">{title}</span>{badge != null && <Badge tone={tone}>{badge}</Badge>}</span>{summary != null && <span className="wp-settings-summary">{summary}</span>}</span>,
+    content: <div className="wp-settings-body">{children}</div>,
+  }]} />;
 }
 
 const Scope = ({ children }: { children: ReactNode }) => <span className="wp-scope">{children}</span>;

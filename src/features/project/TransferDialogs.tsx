@@ -45,7 +45,7 @@ export function ExportProjectDialog({ project, usage, onClose }: { project: Proj
     </Stack>
   </Dialog>;
   return <Dialog open title="导出项目" closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
-    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button variant="filled" disabled={working} onClick={() => void submit()}>{working ? "正在导出…" : "选择位置并导出"}</Button></>}>
+    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button variant="filled" loading={working} disabled={working} onClick={() => void submit()}>{working ? "正在导出…" : "选择位置并导出"}</Button></>}>
     <Stack direction="column" align="stretch" gap={12} wrap={false}>
       <dl className="kv pj-transfer-list">
         <dt>项目</dt><dd>{project.name}</dd>
@@ -98,8 +98,8 @@ export function ImportProjectDialog({ preview, entries, onClose, onSwitch }: { p
       <Notes notes={imported.notes} />
     </Stack>
   </Dialog>;
-  return <Dialog open title="导入项目" size="md" closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
-    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button variant="filled" disabled={working || !!idError || !!nameError} onClick={() => void submit()}>{working ? "正在导入…" : "导入为新项目"}</Button></>}>
+  return <Dialog open title="导入项目" initialFocus="first-field" size="md" closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
+    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button variant="filled" loading={working} disabled={working || !!idError || !!nameError} onClick={() => void submit()}>{working ? "正在导入…" : "导入为新项目"}</Button></>}>
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
       <dl className="kv pj-transfer-list">
         <dt>来源项目</dt><dd>{preview.name}</dd>
@@ -156,8 +156,8 @@ export function CopyProjectDialog({ project, usage, entries, onClose, onSwitch }
       <Notes notes={copied.notes} />
     </Stack>
   </Dialog>;
-  return <Dialog open title="复制项目" size="md" closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
-    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button variant="filled" disabled={working || !!idError || !!nameError} onClick={() => void submit()}>{working ? "正在复制…" : "复制为新项目"}</Button></>}>
+  return <Dialog open title="复制项目" initialFocus="first-field" size="md" closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
+    footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button variant="filled" loading={working} disabled={working || !!idError || !!nameError} onClick={() => void submit()}>{working ? "正在复制…" : "复制为新项目"}</Button></>}>
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
       <dl className="kv pj-transfer-list">
         <dt>来源项目</dt><dd>{project.name} <span className="mono">{project.id}</span></dd>

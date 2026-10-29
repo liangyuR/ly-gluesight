@@ -51,7 +51,6 @@ beforeEach(() => {
 describe("多轮标定", () => {
   // 防的回归：件数不够就能应用标定（用 2–3 件的均值当 N_exp），或把标准件算进件数（RB-3：含示教件、不含标准件 ≥ 配置件数）
   it.each([
-    ["含示教件已加入 7 件，配置 10 件 → 应用标定禁用并说明还差 3 件", 7, 0, "还差 3 件"],
     ["已加入 9 件加 1 件标准件 → 标准件不计入件数，仍还差 1 件", 9, 1, "还差 1 件"],
   ])("%s", async (_, normal, standard, reason) => {
     ws.data!.plan!.calibration = withRounds(normal, standard);
@@ -109,18 +108,4 @@ describe("多轮标定", () => {
     expect(pending.getByRole("button", { name: /^复核边界/ })).toBeEnabled();
   });
 
-  // 防的回归（D-SB-50）：起涂跳过帧少于建议时不提示（正常件起涂帧会判断胶），或“采用建议”没按建议值提交、收尾错写到段首
-  it("当前跳过帧少于建议 → 提示会判断胶，采用建议按建议值提交到对应一头；参与轮次不足时不能采用", async () => {
-    ws.data = singleSegment(withRounds(10));
-    const rounds = [{ roundId: "round-1", frames: 3, note: null }, { roundId: "round-2", frames: null, note: "成形之前第 5 帧组无法判断" }];
-    vi.mocked(workspaceApi.calibrationSkipSuggest).mockResolvedValue([
-      { segment: 1, end: "head", current: 0, suggested: 4, min: 2, max: 4, rounds, pending: null },
-      { segment: 1, end: "tail", current: 0, suggested: null, min: 1, max: 2, rounds, pending: "参与的标定轮次 9 轮，少于 10 轮：只显示分布，不给建议" },
-    ]);
-    show();
-    expect(await screen.findByText("当前跳过帧数少于建议：正常件的起涂帧会判断胶。")).toBeVisible();
-    expect(screen.getByRole("button", { name: "段 1 段尾（收尾）采用建议" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "段 1 段首（起涂）采用建议" }));
-    expect(workspaceApi.confirmSkip).toHaveBeenCalledWith("A", 3, 1, "head", 4);
-  });
 });

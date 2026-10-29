@@ -244,7 +244,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   if (blockedReason) notices.push({ key: "blocked", tone: "warn", text: blockedReason });
   if (connected && (handshake?.phase === "fault" || handshake?.phase === "resetRequired")) notices.push({
     key: "reset", tone: "warn", text: `握手待复位${handshake.message ? `：${handshake.message}` : ""}。复位在在线检测页进行`,
-    action: <Link className="qs-btn tonal sm" to="/inspect">前往在线检测</Link>,
+    action: <Button asChild size="sm"><Link to="/inspect">前往在线检测</Link></Button>,
   });
   if (dirty && invalid) notices.push({ key: "invalid", tone: "warn", text: invalid });
   if (readOnly) notices.push({ key: "readOnly", tone: "info", text: "离线期间 PLC 由站点模式管理，本页只读", secondary: true });
@@ -257,7 +257,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
 
   return (
     <div className="stack plc">
-      <section className="plc-actionbar" aria-label="PLC 状态条">
+      <Card as="section" className="plc-actionbar" aria-label="PLC 状态条">
         <div className="plc-actionbar-row">
           <div className="plc-actionbar-status">
             <PlcStatusBadge state={status?.state} />
@@ -285,7 +285,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
           </fieldset>
         </div>
         <PlcNotices notices={notices} />
-      </section>
+      </Card>
 
       <CommonMonitor connected={connected} tagValue={tagValue} />
 
@@ -318,6 +318,10 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
             <Table<PlcPoint> caption="通用点位" rows={commonPoints} columns={handshakeColumns} rowKey={(p) => p.id}
               emptyState={<EmptyState title="尚未载入通用点位" description="点「重置 S7 通讯配置」生成生产协议 8 点位" action={loadTemplateButton} />} />
           </section>
+          <div className="plc-group-actions">
+            <Button leadingIcon={<Plus size={16} />} disabled={!!lockReason} title={lockReason || undefined}
+              onClick={() => setEditing({ point: newPoint(), isNew: true })}>新增点位</Button>
+          </div>
           <Accordion collapsible className="plc-custom-group" value={customOpen} onValueChange={setCustomOpen} items={[{
             value: "custom",
             title: <span className="plc-group-head">
@@ -326,11 +330,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
                 <span className="muted">{customPoints.length} 个</span>
                 {customPending && <StatusBadge tone="warn">未保存</StatusBadge>}
               </span>
-              <span className="plc-group-actions">
-                <Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!!lockReason} title={lockReason || undefined}
-                  onClick={(e) => { e.stopPropagation(); setEditing({ point: newPoint(), isNew: true }); }}
-                  onKeyDown={(e) => e.stopPropagation()}>新增点位</Button>
-              </span>
+
             </span>,
             content: <Table<PlcPoint> caption="自定义点位" rows={customPoints} columns={customColumns} rowKey={(p) => p.id}
               emptyState={<EmptyState title="没有自定义点位" description="联调需要监视或手动写入的额外地址在这里添加；握手点位不在此列" />} />,

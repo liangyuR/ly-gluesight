@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { FolderKanban, Plus, RefreshCw, Upload } from "lucide-react";
-import { Alert, Button, Card, EmptyState, Heading, IconButton, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
+import { Alert, Button, Card, EmptyState, Heading, IconButton, StatusBadge, Table, Text, Tooltip, type TableColumn } from "qing-steel";
 import { projectApi, projectTransferApi, type ProjectEntry, type ProjectImportPreview, type ProjectMeta, type ProjectUsage } from "../lib/project";
 import { desktopAvailable } from "../lib/desktop";
 import { errorText } from "../lib/errors";
@@ -17,7 +17,7 @@ type Open = { kind: "create" } | { kind: "rename"; project: ProjectMeta } | { ki
 
 function UsageCell({ state, format }: { state: UsageState | undefined; format: (usage: ProjectUsage) => ReactNode }) {
   if (!state || state.status === "loading") return <span className="muted">计算中</span>;
-  if (state.status === "error") return <span className="pj-usage-error" title={state.error}>统计失败：{state.error}</span>;
+  if (state.status === "error") return <Tooltip pinnable content={`统计失败：${state.error}`}><Button variant="text" tone="danger" size="sm" className="pj-usage-error">统计失败：{state.error}</Button></Tooltip>;
   return <span className="mono">{format(state.usage)}</span>;
 }
 
@@ -92,14 +92,14 @@ export default function ProjectsPage() {
         {meta && <Button size="sm" variant="text" onClick={() => setOpen({ kind: "export", project: meta })}>导出</Button>}
         {meta && entries && <Button size="sm" variant="text" onClick={() => setOpen({ kind: "copy", project: meta })}>复制</Button>}
         {entry.current
-          ? <span title="先切换到其他项目"><Button size="sm" variant="text" danger disabled aria-label="删除（先切换到其他项目）">删除</Button></span>
+          ? <Tooltip content="先切换到其他项目后才能删除"><span tabIndex={0} className="pj-disabled-action" aria-label="删除不可用：先切换到其他项目"><Button size="sm" variant="text" danger disabled aria-label="删除（先切换到其他项目）">删除</Button></span></Tooltip>
           : <Button size="sm" variant="text" danger onClick={() => setOpen({ kind: "delete", entry })}>删除</Button>}
       </div>;
     } },
   ];
 
   return <Card role="region" aria-label="项目" className="pj-page" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>项目</Heading><ContextHelp label="项目说明">一个项目是一套完整的检测方案：相机组、PLC、节拍、标定、配方以及它产生的检测记录。同一时刻只运行当前项目。</ContextHelp></div>}
-    actions={available && <><IconButton aria-label="刷新项目列表" title="刷新" disabled={loading} onClick={refresh}><RefreshCw size={16} /></IconButton><Button variant="outlined" leadingIcon={<Upload size={16} />} disabled={!entries || picking} onClick={() => void pickImport()}>{picking ? "正在读取…" : "导入项目"}</Button><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!entries} onClick={() => setOpen({ kind: "create" })}>新建项目</Button></>}>
+    actions={available && <><IconButton aria-label="刷新项目列表" title="刷新" loading={loading} onClick={refresh}><RefreshCw size={16} /></IconButton><Button variant="outlined" leadingIcon={<Upload size={16} />} loading={picking} disabled={!entries} onClick={() => void pickImport()}>{picking ? "正在读取…" : "导入项目"}</Button><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!entries} onClick={() => setOpen({ kind: "create" })}>新建项目</Button></>}>
     {!available
       ? <EmptyState icon={<FolderKanban size={30} aria-hidden="true" />} title="项目管理需要桌面后端" description="请在 GlueSight · 胶路智检 桌面软件中查看和管理项目。" />
       : <>

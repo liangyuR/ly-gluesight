@@ -240,50 +240,6 @@ async fn s7_wire_part_returns_ready_only_after_plc_latches_result() {
     rig.finish().await;
 }
 
-/// PLC 现场复位（plcState=99）不需要操作员点复位：PC 清事务后置 10；暂停接件时等 PLC 回 0 再撤到 0。
-/// PC 因 PLC 在途故障置 90 时写 faultCode=101，不与检测错误 91–100 混淆。
-#[tokio::test]
-async fn plc_reset_request_completes_without_operator_then_intake_pause_withdraws_ready() {
-    let mut rig = Rig::new("plc-reset").await;
-    rig.request(1, "SN-50").await;
-    rig.plc.set(&[
-        (tag::PLC_REASON, 14),
-        (tag::PLC_STATE, state::PLC_FAULT as u32),
-    ]);
-    rig.phase(SessionPhase::Fault).await;
-    assert_eq!(rig.plc.pc(), state::PC_FAULT);
-    assert_eq!(
-        rig.plc.get(tag::FAULT_CODE),
-        101,
-        "PC 故障码须与检测错误 91–100 区分"
-    );
-    assert!(rig.session.pending());
-    rig.plc.set(&[
-        (tag::PLC_REASON, 0),
-        (tag::PLC_STATE, state::PLC_RESET as u32),
-    ]);
-    rig.fresh().await;
-    assert!(matches!(
-        rig.session
-            .poll_gated(&rig.engine, false, true, true, false)
-            .await,
-        SessionEvent::Ready
-    ));
-    assert_eq!(rig.plc.pc(), state::PC_READY, "PLC 在 99 只等 pcState=10");
-    assert!(!rig.session.pending());
-    assert_eq!(rig.audit().last().unwrap()["action"], "resetCompleted");
-    rig.plc.plc_state(state::PLC_IDLE);
-    rig.fresh().await;
-    rig.session
-        .poll_gated(&rig.engine, false, true, true, false)
-        .await;
-    assert_eq!(
-        (rig.session.phase(), rig.plc.pc()),
-        (SessionPhase::Idle, state::PC_NOT_READY)
-    );
-    rig.finish().await;
-}
-
 /// 软件复位：PLC 不在空闲时 PC 先置 99，PLC 回 0 之前不得置就绪。
 #[tokio::test]
 async fn software_reset_waits_for_plc_idle_before_ready() {

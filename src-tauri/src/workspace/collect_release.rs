@@ -154,6 +154,7 @@ pub fn workspace_publish_collect(
     next.pending = Some(Box::new(Release {
         doc,
         bundle_id: String::new(),
+        navigation: None,
         base_revision: w.base_revision.clone(),
         revision,
         _frames: Discarded,

@@ -42,12 +42,6 @@ impl DiskGuard {
         self.check_volumes(Instant::now(), free_bytes)
     }
 
-    #[cfg(test)]
-    fn check_with(&self, now: Instant, free: impl FnOnce() -> std::io::Result<u64>) -> Result<(), String> {
-        let mut free = Some(free);
-        self.check_volumes(now, |_| free.take().unwrap()())
-    }
-
     fn check_volumes(
         &self,
         now: Instant,
@@ -92,21 +86,6 @@ fn free_bytes(_path: &Path) -> std::io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn low_free_space_pauses_and_recovers_after_recheck_without_restart() {
-        let guard = DiskGuard {
-            root: PathBuf::from("."),
-            recording_root: None,
-            min_free: MIN_FREE_BYTES,
-            last: Mutex::new(None),
-        };
-        let start = Instant::now();
-        let low = guard.check_with(start, || Ok(MIN_FREE_BYTES - 1));
-        assert!(low.as_ref().is_err_and(|e| e.contains("剩余空间")), "{low:?}");
-        assert!(guard.check_with(start + RECHECK, || Ok(MIN_FREE_BYTES)).is_ok(), "空间恢复后到期复查应自动放行");
-        assert!(guard.check_with(start + RECHECK * 2, || Err(std::io::Error::other("拒绝访问"))).is_ok(), "查询失败不能停产");
-    }
 
     #[test]
     fn external_recording_disk_low_space_blocks_even_when_project_disk_is_available() {

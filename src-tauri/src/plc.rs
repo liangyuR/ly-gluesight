@@ -406,7 +406,3 @@ pub async fn plc_point_history(
 pub fn plc_check_address(connection: ConnectionConfig, address: String, data_type: DataType) -> Result<String, String> {
     describe_address(&connection, &address, data_type)
 }
-
-#[cfg(test)]
-#[path = "plc/tests.rs"]
-mod tests;

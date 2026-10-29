@@ -95,7 +95,7 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
       footer={
         <>
           <Button disabled={saving} onClick={onClose}>取消</Button>
-          <Button variant="filled" disabled={saving || !!blockedReason} onClick={() => void submit()}>确定</Button>
+          <Button variant="filled" loading={saving} disabled={!!blockedReason} onClick={() => void submit()}>确定</Button>
         </>
       }
     >
@@ -105,7 +105,7 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
         <Grid minWidth={260} gap={14}>
           <fieldset disabled={templateLocked} title={templateLocked ? templateLockedHint : undefined} className="plc-wide plc-editor-locked">
           <Grid minWidth={260} gap={14}>
-          <TextField label="名称" value={p.name} autoFocus={!templateLocked} onChange={(e) => update({ name: e.target.value })} />
+          <TextField label="名称" value={p.name} onChange={(e) => update({ name: e.target.value })} />
           <TextField label="ID" value={p.id} onChange={(e) => update({ id: e.target.value })} />
           <div className="plc-wide">
             <TextField
@@ -162,7 +162,7 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
           </Grid>
           </fieldset>
           <div className="plc-wide">
-            <TextField label="描述" autoFocus={templateLocked} value={p.description} onChange={(e) => update({ description: e.target.value })} />
+            <TextField label="描述" value={p.description} onChange={(e) => update({ description: e.target.value })} />
           </div>
           <div className="plc-wide">
             <Checkbox label="记录值变化到 PLC 日志（高频变化的点位建议关闭）" checked={p.logChanges} onCheckedChange={(checked) => update({ logChanges: checked })} />

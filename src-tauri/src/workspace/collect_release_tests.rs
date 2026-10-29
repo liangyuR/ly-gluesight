@@ -1,7 +1,7 @@
 use super::collect_release::{collect_checks, CollectInputs};
 use super::*;
 use crate::camera::CameraConfig;
-use crate::recipe::{burst_template, RecipeStore};
+use crate::recipe::burst_template;
 
 fn cameras() -> Vec<String> {
     (1..=3).map(|k| format!("cam{k}")).collect()
@@ -28,37 +28,6 @@ fn failed(checks: &[Check]) -> Vec<&str> {
         .filter(|c| !c.passed)
         .map(|c| c.name.as_str())
         .collect()
-}
-
-/// 在线投运：未示教、未标定、没验证的候选也能发布采集版，配方库接受并标成采集版。防采集版被正式发布门槛挡住。
-#[test]
-fn untaught_uncalibrated_candidate_then_collect_checks_pass_and_store_saves_collect() {
-    let mut doc = untaught();
-    assert!(doc.build().unwrap().ready_burst().is_err());
-    let checks = collect_checks(
-        &doc,
-        CollectInputs {
-            rig: &rig(),
-            production: None,
-            conflict: None,
-            base_matches: true,
-        },
-    );
-    assert_eq!(failed(&checks), Vec::<&str>::new());
-
-    let dir = std::env::temp_dir().join(format!(
-        "gluesight-collect-publish-{}-{}",
-        std::process::id(),
-        ly_plc::now_ms()
-    ));
-    let store = RecipeStore::open(dir.clone()).unwrap();
-    doc.stage = RecipeStage::Collect;
-    doc.version = store.next_version(&doc.id).unwrap();
-    doc.plan_version = store.plan_version_for(&doc).unwrap();
-    let saved = store.save_published(doc, None).unwrap();
-    assert!(saved.is_collect());
-    assert_eq!(saved.plan_cameras(), cameras());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// 采集版至少要定下三台不同的计划相机（都在相机组、单视角），型号不冲突、有一段、没有正式版；

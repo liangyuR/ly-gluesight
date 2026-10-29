@@ -23,6 +23,7 @@ import { pieceLabel } from "./pieces";
 import { CameraHeadingCard, MeasureCard, SegmentChecksCard, SegmentHeadingCard, type CameraParams } from "./CorridorSettings";
 import type { HeadingGuide } from "./headingOverlay";
 import "./corridor.css";
+import WorkspaceNavigation from "./WorkspaceNavigation";
 
 /** 禁用控件不发指针事件：Tooltip 挂在外包的可聚焦 span 上，原因同时作为控件的无障碍描述。 */
 function WithReason({ reason, block = false, children }: { reason: string; block?: boolean; children: ReactElement<{ "aria-describedby"?: string }> }) {
@@ -131,7 +132,7 @@ export default function TeachingPage() {
 }
 
 function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: RecipeDoc; plan: WorkspacePlanView }) {
-  const { dirty, busy, frameDirty, corridorDrafts, setCorridorDraft, setDoc, act, setError } = useWorkspace();
+  const { dirty, busy, frameDirty, navigationDirty, corridorDrafts, setCorridorDraft, setDoc, act, setError } = useWorkspace();
   const { snapshot } = useCycle();
   const [search] = useSearchParams();
   const cameraItems = cameraParamsTasks(plan);
@@ -172,12 +173,13 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const [brushFailures, setBrushFailures] = useState(0);
   const [pointSpacing, setPointSpacing] = useState(20);
   const [trialSeq, setTrialSeq] = useState<number | null>(null);
+  const mapTarget = useRef<{ key: string; seq: number } | null>(null);
   const pending = useRef(false), serial = useRef(0);
   const scope = JSON.stringify([doc.id, key, frame?.id ?? null]);
   useEffect(() => setBrushFailures(0), [scope]);
   const current = useRef({ scope, alive: true, revision: data.workspace.revision }); current.current.scope = scope; current.current.revision = data.workspace.revision;
   useEffect(() => { current.current.alive = true; return () => { current.current.alive = false; serial.current++; }; }, []);
-  useEffect(() => { serial.current++; pending.current = false; setWorking(false); setChoosing(false); setVertex(null); setRegion(null); setBrushPoints([]); setRegionMode(false); setNozzleMode(false); setOperation(null); setExtractionHint(""); setExtractionFailure(null); setTrialSeq(null); }, [scope]);
+  useEffect(() => { serial.current++; pending.current = false; setWorking(false); setChoosing(mapTarget.current?.key === key); setVertex(null); setRegion(null); setBrushPoints([]); setRegionMode(false); setNozzleMode(false); setOperation(null); setExtractionHint(""); setExtractionFailure(null); setTrialSeq(null); }, [scope]);
   const perform = async (request: () => Promise<WorkspaceView>, message: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => {
     if (pending.current || busy || dirty) return null;
     pending.current = true; setWorking(true);
@@ -200,16 +202,21 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const reviews = data.workspace.captureReview?.rounds ?? {};
   useEffect(() => {
     setPicked(null); setPickError("");
-    if (!choosingNow || !teachingRoundId) return;
+    if (!teachingRoundId) return;
     let alive = true;
     void workspaceApi.captureGet(teachingRoundId).then(round => { if (alive) setPicked(round?.recipeId === doc.id && round.state === "complete" ? { round, view: roundView(round) } : null); }).catch(e => { if (alive) setPickError(errorText(e)); });
     return () => { alive = false; };
-  }, [teachingRoundId, choosingNow, doc.id]);
+  }, [teachingRoundId, doc.id]);
   const pickGroups = picked?.view.groupCount ?? 0;
   const pickSeqSafe = Math.min(Math.max(1, pickSeq), Math.max(1, pickGroups));
   // 单段配方所有帧都在第 1 段，不需要先确认手动分段（与后端 apply_segment_teaching 一致）
   const range = segment == null || !picked ? null : plan.segments.length === 1 ? { start: 1, end: picked.view.groupCount } : confirmedSegmentRange(reviews[picked.view.roundId], plan.segments, segment);
-  useEffect(() => { if (range) setPickSeq(Math.round((range.start + range.end) / 2)); }, [range?.start, range?.end]);
+  useEffect(() => {
+    if (!range) return;
+    const target = mapTarget.current;
+    setPickSeq(target?.key === key ? target.seq : Math.round((range.start + range.end) / 2));
+    if (target?.key === key) mapTarget.current = null;
+  }, [key, range?.start, range?.end, choosingNow]);
   const inSegment = !!range && pickSeqSafe >= range.start && pickSeqSafe <= range.end;
   const arrived = !!picked && frameArrived(picked.view, camera, pickSeqSafe);
   const candidate = useRoundFrame(picked?.round ?? null, camera, pickSeqSafe, choosingNow && arrived);
@@ -218,7 +225,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const t = segment == null ? saved : corridorDrafts[key] ?? saved;
   const editing = segment != null && !sameCorridor(t, saved);
   const invalid = corridorError(t, doc.spacing);
-  const unlocked = !busy && !dirty && !working && !data.workspace.pending;
+  const unlocked = !busy && !dirty && !working && !data.workspace.pending && !navigationDirty;
   const productionBusy = isProductionBusy(snapshot);
   const update = (next: typeof t) => { if (unlocked && segment != null) setCorridorDraft(key, next); };
   const setPath = (corridor: [number, number][]) => update({ ...t, corridor });
@@ -301,7 +308,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     ...(segmentTeaching?.heading && !editing ? { range: segmentTeaching.heading.range, sector: segmentTeaching.heading.sector, fallback: segmentTeaching.heading.fallback } : {}),
   } : null;
 
-  if (!cameraItems.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="段配方还没有计划相机" description="先在“段列表”里确认计划相机，再回来示教走廊。" action={<Link className="qs-btn" to="/recipe/segments">前往段列表<ArrowRight size={15} aria-hidden="true" /></Link>} /></Surface></div>;
+  if (!cameraItems.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="段配方还没有计划相机" description="先在“段列表”里确认计划相机，再回来示教走廊。" action={<Button asChild><Link to="/recipe/segments">前往段列表<ArrowRight size={15} aria-hidden="true" /></Link></Button>} /></Surface></div>;
 
   const imagingHint = imagingMismatch(frame, cameraImaging);
   const order = cameraItems.flatMap(item => [item.camera, ...tasks.filter(t => t.camera === item.camera).map(taskKey)]);
@@ -316,7 +323,18 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const cornerLong = segmentItem?.kind === "corner" && scaled && lengthPx * t.mmPerPx! > CORNER_CORRIDOR_MM;
   const done = !!segmentTeaching?.saved;
   const groupsLocked = !unlocked || editing || frameDirty;
-  const groupLockReason = editing || frameDirty ? "走廊有未保存的修改，先保存或清空后再切换" : dirty ? "候选配置正在保存，请稍候" : data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候";
+  const groupLockReason = navigationDirty ? "请先保存或撤销导航图修改" : editing || frameDirty ? "走廊有未保存的修改，先保存或清空后再切换" : dirty ? "候选配置正在保存，请稍候" : data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候";
+  const mapReview = teachingRoundId ? reviews[teachingRoundId] : undefined;
+  const mapRanges = plan.segments.map(item => plan.segments.length === 1 && pickGroups > 0 ? { start: 1, end: pickGroups } : confirmedSegmentRange(mapReview, plan.segments, item.index));
+  const navigationRanges: [number, number][] | null = mapRanges.length && mapRanges.every(item => item != null) ? mapRanges.map(item => [item!.start, item!.end]) : null;
+  const navigateMap = (nextSegment: number, nextSeq: number) => {
+    if (groupsLocked) return;
+    const next = tasks.find(item => item.segment === nextSegment && item.camera === camera) ?? tasks.find(item => item.segment === nextSegment);
+    if (!next) return;
+    const nextKey = taskKey(next);
+    mapTarget.current = nextKey === key && choosingNow ? null : { key: nextKey, seq: nextSeq };
+    setSelected(nextKey); setChoosing(true); setPickSeq(nextSeq); setTrialSeq(null);
+  };
   const nextLabel = nextTask && `${nextTask.camera} · 段 ${nextTask.segment}`;
   const [stateText, stateTone]: [string, "ok" | "warn" | "info" | "neutral"] = segment == null ? (cameraItems.find(item => item.camera === camera)?.mmPerPx == null ? ["缺像素当量", "warn"] : ["像素当量已设", "ok"])
     : !frame ? ["待选帧", "neutral"] : data.workspace.pending ? ["候选待生效", "warn"]
@@ -412,7 +430,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const trialLocked = productionBusy ? "工件正在检测，结束后再试测" : editing ? "走廊有未保存的修改：保存后再试测" : dirty ? "参数正在保存，保存后再试测"
     : !unlocked ? "正在处理或保存，请稍候" : !hasPath ? "这一段还没有保存的走廊" : "";
   const paramsError = cameraParamsError(params);
-  const paramsDisabled = busy || working || !!data.workspace.pending;
+  const paramsDisabled = busy || working || !!data.workspace.pending || navigationDirty;
   const middle = segment == null
     ? <Surface role="region" className="wp-seg-corridor-note" aria-label="相机参数">
       <h3>{camera} · 相机参数</h3>
@@ -444,17 +462,22 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
           onPoint={picking && frame ? p => setParams({ ...params, nozzle: p }) : undefined}
           onEdit={frame && !regionMode && !picking ? { add: p => setPath([...t.corridor, p]), move: (i, p) => setPath(t.corridor.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />}
     </>;
-  const checksDisabled = busy || working || !!data.workspace.pending;
+  const checksDisabled = busy || working || !!data.workspace.pending || navigationDirty;
   const sharing = plan.cameras.filter(item => item !== camera && !doc.inspect?.find(i => i.camera === item)?.detect);
   const cameraScaleText = cameraScale != null ? `${Number(cameraScale.toPrecision(6))} mm/px` : "缺像素当量";
+  const navigation = <WorkspaceNavigation segments={plan.segments} ranges={navigationRanges} seq={choosingNow ? pickSeqSafe : trialSeq ?? segmentTeaching?.seq ?? 1}
+    currentSegment={segment ?? undefined} frameStatus={navigationRanges ? "confirmed" : "unavailable"}
+    locked={busy || dirty || working || editing || frameDirty || data.workspace.pending ? groupLockReason : ""} onNavigate={navigateMap} />;
   const rail = segment == null
     ? <div className="wp-stack wp-teach-settings">
+      {navigation}
       <MeasureCard key={camera} camera={camera} params={params} defaults={doc.detect} spacing={doc.spacing} sharing={sharing} disabled={paramsDisabled || frameDirty} spacingError={value => spacingError(doc, value)}
         onParams={setParams} onDefaults={detect => setDoc({ ...doc, detect })} onSpacing={spacing => setDoc({ ...doc, spacing })} />
       <CameraHeadingCard key={`heading-${camera}`} camera={camera} params={params} derivedNozzle={derivedNozzle} disabled={paramsDisabled || frameDirty} onChange={setParams}
         headingSegments={cameraTasks.filter(item => doc.segments?.find(s => s.index === item.segment)?.heading).map(item => item.segment)} />
       <p className="wp-settings-hint wp-rail-note">段的逐帧定向与检测项：在左侧选段后设置。</p></div>
     : <div className="wp-stack wp-teach-settings">
+      {navigation}
       <Surface role="region" className="wp-seg-corridor-note" aria-label="段走廊说明">
         <div className="wp-seg-head"><h3>第 {segment} 段 · {segmentItem?.kind === "corner" ? "弯道" : "直线"}</h3><Badge tone={stateTone}>{stateText}</Badge><span className="muted">{camera}</span></div>
         <p className="muted">{segmentItem?.kind === "corner" ? `弯道：从出胶点起画一小段（不超过 ${CORNER_CORRIDOR_MM} mm），只判胶宽、断胶、溢胶` : "直线：从出胶点一侧起，沿胶条画整段"}</p>
@@ -463,21 +486,21 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       {segmentItem && <SegmentHeadingCard key={`heading-${segment}`} segments={doc.segments ?? []} index={segment} camera={camera} params={params} derivedNozzle={derivedNozzle}
         disabled={checksDisabled} sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改检测窗口与出胶点。" : ""} onSegments={changeSegments} onParams={setParams} />}
       {segmentItem && <SegmentChecksCard key={`checks-${segment}`} segments={doc.segments ?? []} index={segment} cameras={plan.cameras} disabled={checksDisabled} onChange={changeSegments} />}
-      <WithReason block reason={groupsLocked ? groupLockReason : ""}><button type="button" className="wp-rail-link" disabled={groupsLocked} onClick={() => setSelected(camera)}>
+      <WithReason block reason={groupsLocked ? groupLockReason : ""}><Button variant="outlined" className="wp-rail-link" disabled={groupsLocked} onClick={() => setSelected(camera)}>
         <strong>测量</strong><span>{cameraScaleText} · {params.detect ? "本相机自定义" : "配方默认"}</span><span className="wp-rail-link-go">去 {camera} 改<ArrowRight size={13} aria-hidden="true" /></span>
-      </button></WithReason></div>;
+      </Button></WithReason></div>;
   return <div className="wp-page wp-teach-page"><WorkspaceBar />
     <div className="wp-teach" style={railWidth != null ? { "--wp-rail-w": railWidth + "px" } as CSSProperties : undefined}>
       <Surface role="region" className="wp-group-panel" aria-label="走廊示教目标"><h2>段走廊 <small>{doneCount} / {tasks.length}</small></h2><nav className="wp-group-list" aria-label="相机与段选择">{cameraItems.flatMap(item => {
         const slot = (itemKey: string, button: ReactElement<{ "aria-describedby"?: string }>) => groupsLocked && itemKey !== key ? <WithReason key={itemKey} block reason={groupLockReason}>{button}</WithReason> : <span key={itemKey} className="wp-group-slot">{button}</span>;
-        const cameraButton = <button className={"wp-group-item" + (item.camera === key ? " selected" : "")} aria-label={"选择相机 " + item.camera} aria-pressed={item.camera === key} disabled={groupsLocked && item.camera !== key} title={item.mmPerPx != null ? `${item.camera} · ${Number(item.mmPerPx.toPrecision(6))} mm/px` : "缺像素当量"} onClick={() => setSelected(item.camera)}>
+        const cameraButton = <Button variant={item.camera === key ? "tonal" : "text"} size="sm" className={"wp-group-item" + (item.camera === key ? " selected" : "")} aria-label={"选择相机 " + item.camera} aria-pressed={item.camera === key} disabled={groupsLocked && item.camera !== key} title={item.mmPerPx != null ? `${item.camera} · ${Number(item.mmPerPx.toPrecision(6))} mm/px` : "缺像素当量"} onClick={() => setSelected(item.camera)}>
           <i className={"dot " + (item.mmPerPx != null ? "ok" : "warn")} aria-hidden="true"/><strong>{item.camera}</strong><span>{item.label}</span>
-        </button>;
+        </Button>;
         const segmentButtons = tasks.filter(s => s.camera === item.camera).map(s => {
           const itemKey = taskKey(s);
-          return slot(itemKey, <button className={"wp-group-item wp-group-sub" + (itemKey === key ? " selected" : "")} aria-label={`选择 ${item.camera} 段 ${s.segment} 走廊`} aria-pressed={itemKey === key} disabled={groupsLocked && itemKey !== key} onClick={() => setSelected(itemKey)}>
+          return slot(itemKey, <Button variant={itemKey === key ? "tonal" : "text"} size="sm" className={"wp-group-item wp-group-sub" + (itemKey === key ? " selected" : "")} aria-label={`选择 ${item.camera} 段 ${s.segment} 走廊`} aria-pressed={itemKey === key} disabled={groupsLocked && itemKey !== key} onClick={() => setSelected(itemKey)}>
             <i className={"dot " + (s.status === "done" ? "ok" : s.frame ? "warn" : "off")} aria-hidden="true"/><strong>段 {s.segment}</strong>{s.kind === "corner" ? "弯道" : "直线"}<span>{s.label}</span>
-          </button>);
+          </Button>);
         });
         return [slot(item.camera, cameraButton), ...segmentButtons];
       })}</nav></Surface>
@@ -494,7 +517,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         {segment != null && <WithReason reason={saveReason}><Button variant={primary === "save" ? "filled" : "text"} data-variant={primary === "save" ? "filled" : "text"} leadingIcon={<Save size={15}/>} disabled={!!saveReason} onClick={saveCorridor}>保存走廊</Button></WithReason>}
         {nextTask
           ? <Button aria-label="下一条走廊" variant={primary === "next" ? "filled" : "tonal"} data-variant={primary === "next" ? "filled" : "tonal"} trailingIcon={<ArrowRight size={15}/>} disabled={groupsLocked} onClick={() => setSelected(taskKey(nextTask))}>下一条 {nextLabel}</Button>
-          : <Link className={"qs-btn" + (allDone && !editing ? "" : " tonal")} data-variant={allDone && !editing ? "filled" : "tonal"} to="/recipe/calibration">前往多轮标定<ArrowRight size={15} aria-hidden="true"/></Link>}
+          : <Button asChild variant={allDone && !editing ? "filled" : "tonal"}><Link to="/recipe/calibration">前往多轮标定<ArrowRight size={15} aria-hidden="true"/></Link></Button>}
       </span>
     </div>
   </div>;

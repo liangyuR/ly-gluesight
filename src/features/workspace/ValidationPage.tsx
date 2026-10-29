@@ -1,8 +1,8 @@
 import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, ChevronDown } from "lucide-react";
-import { Button, Checkbox, Dialog, Select, Table, type TableColumn } from "qing-steel";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Accordion, Button, Checkbox, Dialog, Select, Table, type TableColumn } from "qing-steel";
 import { scrollBehavior } from "./motion";
 import "./validation.css";
 import { displayReason, historyApi, verdictLabel } from "../history";
@@ -17,6 +17,7 @@ import { useWorkspace } from "./context";
 import { Badge, KV, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { PlanPublishBody } from "./PlcParams";
 import type { Check, Sample } from "./types";
+import { NavigationPublication } from "./WorkspaceNavigation";
 
 const expectedOptions=expectedChoices.map(([value,label])=>({value,label}));
 interface SampleRow { key:string; sample:Sample; name:ReactNode; source:string; checkLabel:string; expectedLabel:string; selected:boolean; expected:Verdict }
@@ -29,7 +30,7 @@ const resultColumns:TableColumn<ResultRow>[]=[
 ];
 
 export default function ValidationPage() {
-  const {data,doc,dirty,frameDirty,busy,act,setError} = useWorkspace();
+  const {data,doc,dirty,frameDirty,navigationDirty,busy,act,setError} = useWorkspace();
   const [records,setRecords] = useState<PartSummary[]>([]);
   const [historyScope,setHistoryScope] = useState<"current"|"all">("current");
   const candidate = data ? JSON.stringify([data.workspace.doc.id,data.workspace.doc.version,data.workspace.baseRevision]) : null;
@@ -81,7 +82,7 @@ export default function ValidationPage() {
   const selectionDirty=JSON.stringify(samples)!==JSON.stringify(data.workspace.samples);
   const locked=busy||operating;
   const samplesLocked=locked||!!data.workspace.pending;
-  const ready=!dirty&&!frameDirty&&!locked;
+  const ready=!dirty&&!frameDirty&&!navigationDirty&&!locked;
   const validationCurrent=!!validation?.passed&&validation.revision===data.workspace.revision&&!selectionDirty;
   // 整件 ΣN_exp（多段时各段 N_exp）未标定时不能发布
   const planBlocked=planPublishBlocker(plan);
@@ -98,8 +99,8 @@ export default function ValidationPage() {
   const checks=[...stepChecks,...liveRows,...planCheck];
   const failedChecks=checks.filter(c=>!c.passed),passedChecks=checks.filter(c=>c.passed);
   const checkRow=(c:typeof checks[number])=><div key={c.name} className={"wp-check-row "+(c.passed?"passed":"")}>{c.passed?<CheckCircle2 size={20}/>:<AlertTriangle size={20}/>}<div><strong>{c.name}</strong><p>{c.detail}</p></div></div>;
-  const runBlocked=data.workspace.pending?"候选版本正在等待生效，生效或放弃后再验证":locked?"正在处理，请稍候":!samples.length?"先选用至少一组代表性样本":!sourceConfirmed?"勾选上方确认后才能运行":dirty||frameDirty?"候选配置有未保存修改，保存后再验证":"";
-  const publishBlocked=data.workspace.pending?"":planBlocked?planBlocked:liveChecks.error?liveChecks.error:!liveChecks.checks?"正在核对发布前检查":failedLive?`${failedLive.name}：${failedLive.detail}`:dirty||frameDirty?"候选配置有未保存修改，保存后再发布":"";
+  const runBlocked=data.workspace.pending?"候选版本正在等待生效，生效或放弃后再验证":locked?"正在处理，请稍候":!samples.length?"先选用至少一组代表性样本":!sourceConfirmed?"勾选上方确认后才能运行":dirty||frameDirty||navigationDirty?"候选配置有未保存修改，保存后再验证":"";
+  const publishBlocked=data.workspace.pending?"":planBlocked?planBlocked:liveChecks.error?liveChecks.error:!liveChecks.checks?"正在核对发布前检查":failedLive?`${failedLive.name}：${failedLive.detail}`:dirty||frameDirty||navigationDirty?"候选配置有未保存修改，保存后再发布":"";
   const sampleRows:SampleRow[]=[
     ...data.workspace.sampleBank.map(b=>{
       const selected=samples.find(s=>s.sampleId===b.id);
@@ -138,7 +139,7 @@ export default function ValidationPage() {
     finally{if(valid()){pending.current=null;setOperating(false);}}
   };
   return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack"><Panel title="发布前检查" help="设备、走廊示教与多轮标定满足即可发布；独立样本验证可选" actions={<Badge tone={failedChecks.length?"warn":"ok"}>{failedChecks.length?`${failedChecks.length} 项未满足`:`${checks.length} 项全部满足`}</Badge>}>
-    <div className="wp-checklist">{failedChecks.map(checkRow)}{passedChecks.length>0&&<details className="wp-check-passed"><summary><CheckCircle2 size={16} aria-hidden="true"/><span>已满足 {passedChecks.length} 项：{passedChecks.map(c=>c.name).join("、")}</span><ChevronDown size={16} aria-hidden="true"/></summary><div className="wp-checklist">{passedChecks.map(checkRow)}</div></details>}</div>
+    <div className="wp-checklist">{failedChecks.map(checkRow)}{passedChecks.length>0&&<Accordion collapsible items={[{ value: "passed", title: <span>已满足 {passedChecks.length} 项：{passedChecks.map(c=>c.name).join("、")}</span>, content: <div className="wp-checklist">{passedChecks.map(checkRow)}</div> }]} />}</div>
     </Panel><Panel title="独立样本验证（可选）" help={<><p>不是发布前提：使用完整原图重新运行当前候选检测，看结论是否符合预期；正常样本必须独立于示教与标定采集。</p><p>历史样本必须保留完整整圈原图，轨迹顺序与成像条件适用；验证时重新运行当前候选。</p><p>建议覆盖良品、断胶、偏位、胶宽异常和无法测量等现场情况。期望“合格”时，候选结论 OK 或 OK · 局部超差都算符合。修改人工期望后，需要重新验证。</p></>}>
       <Select className="wp-sample-source" label="历史样本来源" value={historyScope} disabled={samplesLocked} options={[{value:"current",label:"当前配方"},{value:"all",label:"全部配方"}]} onValueChange={value=>setHistoryScope(value as "current"|"all")}/>
       <Table caption="代表性验证样本选用" columns={sampleColumns} rows={sampleRows} rowKey={row=>row.key} emptyState={<p className="muted center">尚无代表性样本；请选择完整历史原图。</p>}/>
@@ -149,7 +150,7 @@ export default function ValidationPage() {
         <Button variant="filled" disabled={!ready||!!data.workspace.pending||!samples.length||!sourceConfirmed} onClick={()=>void action(()=>workspaceApi.validate(doc.id,data.workspace.revision,samples,sourceConfirmed),"当前候选的验证已完成").then(r=>{if(r)resultRef.current?.scrollIntoView?.({block:"start",behavior:scrollBehavior()});})}>{operating||busy?"验证中…":"运行整套图像验证"}</Button>
       </div>
     </Panel>{validation&&<div ref={resultRef} className="wp-validate-anchor"><Panel title="验证结果" actions={<Badge tone={validationCurrent?"ok":"warn"}>{validationCurrent?"通过":"未通过或待重验"}</Badge>}><Table caption="逐样本验证结果" columns={resultColumns} rows={validation.samples.map((s,i)=>({...s,key:String(i)}))} rowKey={row=>row.key}/>{selectionDirty&&<Notice title="样本选用或期望已改变" tone="warn">请重新运行验证；现有结果不用于发布。</Notice>}</Panel></div>}</div>
-    <div className="wp-stack"><Panel title="已发布版本"><KV label="当前发布">{data.productionVersion?"v"+data.productionVersion+productionStage:"未发布"}</KV><KV label="待发布候选">v{doc.version}</KV><KV label="候选修订">{data.workspace.revision}</KV><KV label="计划版本">{data.workspace.pending?.doc.planVersion?data.workspace.pending.doc.planVersion+"（待生效）":!data.planChanged&&data.productionPlanVersion?data.productionPlanVersion+"（不变）":"发布时分配新号"}</KV><KV label="预期总帧数 ΣN_exp">{expectedText(plan.expectedTotal,plan.toleranceTotal)}</KV><KV label="发布状态">{publishStep?.detail??""}</KV>{site?.mode==="offline"&&<Notice title="当前为离线模式" tone="warn">离线验证发布的版本只能在离线运行，真机需重新验证发布。</Notice>}<Button variant="filled" className="wp-publish-button" disabled={!canPublish} onClick={()=>setConfirm(true)}>{publishLabel}</Button>{!canPublish&&publishBlocked&&<p className="wp-validate-reason" role="note">{publishBlocked}</p>}<Button className="wp-publish-button" disabled={!ready||!!data.workspace.pending} onClick={()=>void openCollect()}>发布采集版</Button><p className="muted">新产线还没有可用配方时，先发布采集版供维护模式跟着生产采图。</p></Panel><Notice title="在工件边界生效">已开始检测的工件继续使用原配方快照。候选发布后，等待当前工件完成，再供新工件使用。</Notice>{(publish.state==="failed"||publish.state==="uncertain") && <Button disabled={!ready} onClick={() => void action(() => workspaceApi.retryPublish(doc.id,data.workspace.revision), "已重试发布 / 切换")}>重试发布 / 切换</Button>}{publish.state==="failed" && <Button disabled={!ready} onClick={()=>setAbandoning(true)}>放弃待生效版本</Button>}<Link className="qs-btn tonal" to="/inspect">查看在线检测</Link>{site?.mode === "offline" && site.source === "sampleSet" && <Notice title="候选配方离线试运行"><p>使用已保存候选跑一圈，结果标记为调试；不要求发布。</p><Link className="qs-btn tonal" to={`/inspect?candidate=${encodeURIComponent(doc.id)}`}>前往在线检测调试候选</Link></Notice>}</div>
+    <div className="wp-stack"><NavigationPublication /><Panel title="已发布版本"><KV label="当前发布">{data.productionVersion?"v"+data.productionVersion+productionStage:"未发布"}</KV><KV label="待发布候选">v{doc.version}</KV><KV label="候选修订">{data.workspace.revision}</KV><KV label="计划版本">{data.workspace.pending?.doc.planVersion?data.workspace.pending.doc.planVersion+"（待生效）":!data.planChanged&&data.productionPlanVersion?data.productionPlanVersion+"（不变）":"发布时分配新号"}</KV><KV label="预期总帧数 ΣN_exp">{expectedText(plan.expectedTotal,plan.toleranceTotal)}</KV><KV label="发布状态">{publishStep?.detail??""}</KV>{site?.mode==="offline"&&<Notice title="当前为离线模式" tone="warn">离线验证发布的版本只能在离线运行，真机需重新验证发布。</Notice>}<Button variant="filled" className="wp-publish-button" disabled={!canPublish} onClick={()=>setConfirm(true)}>{publishLabel}</Button>{!canPublish&&publishBlocked&&<p className="wp-validate-reason" role="note">{publishBlocked}</p>}<Button className="wp-publish-button" disabled={!ready||!!data.workspace.pending} onClick={()=>void openCollect()}>发布采集版</Button><p className="muted">新产线还没有可用配方时，先发布采集版供维护模式跟着生产采图。</p></Panel><Notice title="在工件边界生效">已开始检测的工件继续使用原配方快照。候选发布后，等待当前工件完成，再供新工件使用。</Notice>{(publish.state==="failed"||publish.state==="uncertain") && <Button disabled={!ready} onClick={() => void action(() => workspaceApi.retryPublish(doc.id,data.workspace.revision), "已重试发布 / 切换")}>重试发布 / 切换</Button>}{publish.state==="failed" && <Button disabled={!ready} onClick={()=>setAbandoning(true)}>放弃待生效版本</Button>}<Button asChild><Link to="/inspect">查看在线检测</Link></Button>{site?.mode === "offline" && site.source === "sampleSet" && <Notice title="候选配方离线试运行"><p>使用已保存候选跑一圈，结果标记为调试；不要求发布。</p><Button asChild><Link to={`/inspect?candidate=${encodeURIComponent(doc.id)}`}>前往在线检测调试候选</Link></Button></Notice>}</div>
   </div>
   {confirm&&<Dialog open title={publishLabel} closeDisabled={locked} onOpenChange={open=>{if(!open)setConfirm(false);}} footer={<><Button disabled={locked} onClick={()=>setConfirm(false)}>取消</Button><Button variant="filled" disabled={!canPublish} onClick={async()=>{const r=await action(()=>workspaceApi.publish(doc.id,data.workspace.revision),"已提交发布，将在工件边界生效");if(r&&current.current.alive&&current.current.scope===scope)setConfirm(false);}}>确认发布 v{doc.version}</Button></>}><p>将发布 <b>{doc.id} · v{doc.version}</b>，替换当前发布版本。{site?.mode==="offline"&&"该版本仅用于离线回放，不能用于真机生产。"}</p><PlanPublishBody plan={plan}/></Dialog>}
   {collect&&<Dialog open title="发布采集版" closeDisabled={locked} onOpenChange={open=>{if(!open)setCollect(null);}} footer={<><Button disabled={locked} onClick={()=>setCollect(null)}>取消</Button><Button variant="filled" disabled={!ready||!!data.workspace.pending||collectFailed.length>0} onClick={async()=>{const r=await action(()=>workspaceApi.publishCollect(doc.id,data.workspace.revision),"已提交采集版，将在工件边界生效");if(r&&current.current.alive&&current.current.scope===scope)setCollect(null);}}>确认发布采集版 v{doc.version}</Button></>}><div className="wp-stack"><Notice title="采集版只在维护模式下运行，只采图不判定" tone="warn">正常生产遇到这个型号会回检测错误。继续示教、标定后发布正式版；正式版生效后不能再发布采集版。</Notice><p>将发布 <b>{doc.id} · v{doc.version}</b>（采集版），PLC 型号 <b>{doc.productCode}</b>。不要求走廊示教、多轮标定和独立验证，不生成发布包。</p><Badge tone={collectFailed.length?"warn":"ok"}>{collectFailed.length?`${collectFailed.length} 项未满足`:`${collect.length} 项全部满足`}</Badge>{[...collectFailed,...collect.filter(c=>c.passed)].map(checkRow)}</div></Dialog>}
