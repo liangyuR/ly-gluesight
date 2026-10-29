@@ -71,7 +71,7 @@ it("地图跨段点击 → 浏览点击对应的原始帧组，未确认选帧�
   vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ width: 400, height: 400, x: 0, y: 0, left: 0, top: 0, right: 400, bottom: 400, toJSON() {} });
   await user.click(within(screen.getByRole("group", { name: "地图段选择" })).getByRole("button", { name: "段 2 · 弯道" }));
   fireEvent.pointerDown(canvas, { clientX: 164, clientY: 200, button: 0 });
-  await waitFor(() => expect(screen.getByRole("spinbutton", { name: "帧组序号" })).toHaveValue(5));
+  await waitFor(() => expect(screen.getByRole("button", { name: "帧组 5 · CAM-1" })).toHaveAttribute("aria-pressed", "true"));
   expect(screen.getByRole("button", { name: /用此帧示教 CAM-1 · 段 2/ })).toBeVisible();
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "workspace_teach_segment_corridor" || command === "workspace_save_doc")).toBe(false);
 });

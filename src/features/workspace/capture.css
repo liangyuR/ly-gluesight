@@ -5,18 +5,20 @@
 .wp-capture-more[open] > summary::before { transform:rotate(45deg); }
 .wp-capture-more > summary > small { color:var(--on-surface-variant); font-size:12px; font-weight:400; }
 .wp-capture-empty { margin:0; padding:14px; border:1px dashed var(--outline-variant); border-radius:var(--r-md); color:var(--on-surface-variant); font-size:13px; text-align:center; }
-.wp-capture-groups { display:flex; align-items:end; gap:6px; }
-.wp-capture-groups > .wp-field { flex:1 1 auto; min-width:0; }
-.wp-capture-groups > button { flex:0 0 auto; margin-bottom:2px; }
 .wp-review-counts { margin:0 0 12px; font-variant-numeric:tabular-nums; }
 .wp-review-mask { flex-wrap:wrap; align-items:end; }
 .wp-review-mask > .wp-field { max-width:180px; }
 .wp-review-excluded { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
-.wp-picker-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(300px,380px); gap:12px; align-items:start; }
-.wp-picker-layout > :first-child { min-width:0; overflow-x:auto; }
-.wp-picker-preview { position:sticky; top:16px; min-width:0; }
+.wp-picker-table { max-height:300px; min-width:0; overflow:auto; }
+.wp-picker-preview { min-width:0; }
 .wp-frame-browser { display:flex; flex-direction:column; gap:8px; min-width:0; }
-.wp-frame-browser-bar { display:flex; flex-wrap:wrap; align-items:end; gap:8px 12px; }
+.wp-frame-grid .fg-cell-button { background:var(--on-surface-disabled); }
+.wp-frame-grid .fg-cell-button[data-state="missing"] { background:transparent; box-shadow:inset 0 0 0 1px var(--warn); }
+.wp-frame-grid .fg-cell-button:hover:not(:disabled) { background:var(--on-surface-variant); }
+.wp-frame-grid .fg-cell-button[data-state="missing"]:hover:not(:disabled) { background:color-mix(in srgb, var(--warn) 20%, transparent); }
+.wp-frame-grid .fg-group.outside { opacity:.3; }
+.wp-frame-grid .fg-group.outside button { cursor:not-allowed; }
+.wp-frame-grid .fg-group.outside.selected { outline:none; }
 .wp-frame-browser .wp-gray-image { height:clamp(240px,40vh,460px); }
 .wp-frame-browser .wp-image-empty { min-height:clamp(240px,40vh,460px); }
 .wp-piece-list { display:flex; flex-direction:column; gap:8px; margin:0; padding:0; list-style:none; }
@@ -24,4 +26,3 @@
 .wp-piece.selected { outline:2px solid var(--primary); outline-offset:-2px; }
 .wp-piece-head { display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; }
 .wp-piece-head > .wp-actions { margin-left:auto; }
-@media(max-width:1250px) { .wp-picker-layout { grid-template-columns:minmax(0,1fr); } .wp-picker-preview { position:static; } }

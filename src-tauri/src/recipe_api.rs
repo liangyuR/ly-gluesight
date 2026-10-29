@@ -77,8 +77,8 @@ fn recipe_delete_unavailable_inner(
     Ok(())
 }
 
-/// 按编辑中的内容生成配方但不保存，配方页画预览用。
-#[tauri::command]
+/// 按编辑中的内容生成配方但不保存，配方页画预览用；每次编辑都会调用，不占窗口主线程。
+#[tauri::command(async)]
 pub fn recipe_preview(doc: RecipeDoc) -> Result<Recipe, String> {
     doc.build()
 }

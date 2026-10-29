@@ -85,7 +85,7 @@ describe("示教帧选择", () => {
     ws.data!.workspace.captureReview = { rounds: { "round-1": { groupCount: 12, cuts: [4, 8], status: "confirmed", excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null } } };
     show("/recipe/teach?camera=CAM-2&segment=2");
     await screen.findByText("第 2 段在示教件为帧组 5–8");
-    fireEvent.change(await screen.findByRole("spinbutton", { name: "帧组序号" }), { target: { value: "5" } });
+    fireEvent.click(await screen.findByRole("button", { name: "帧组 5 · CAM-2 · 缺帧" }));
     const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2 · 段 2" });
     await vi.waitFor(() => expect(choose).toBeDisabled());
     expect(choose).toHaveAccessibleDescription(expect.stringContaining("缺帧"));

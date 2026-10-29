@@ -3,6 +3,7 @@
 .wp-corridor-picker { flex-wrap:wrap; }
 .wp-corridor-pick { display:flex; flex:1 1 auto; align-items:end; flex-wrap:wrap; gap:8px 12px; min-width:0; }
 .wp-corridor-pick > * { min-width:0; }
+.wp-corridor-picker > .wp-frame-grid { flex:1 0 100%; order:1; }
 .wp-corridor-seq { display:flex; align-items:center; gap:6px; }
 .wp-corridor-seq .qs-input { width:76px; }
 .wp-corridor-frame { gap:12px; }
