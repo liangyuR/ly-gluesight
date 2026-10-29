@@ -18,6 +18,7 @@
 | [r2-ui.md](r2-ui.md) | 全局提示、SN 与笔刷 | 提示在主区顶部居中、同时一条；50 字符 SN 显示；默认笔刷 120 px 与失败提示 |
 | [r2-perf.md](r2-perf.md) | 前端性能与内存 | 实时帧画同一块 canvas；读图节流；列表新查询返回前保留旧结果 |
 | [qing-steel-080.md](qing-steel-080.md) | qing-steel 组件迁移 | 覆写组件样式提高权重；测试定位 Radix 组件的方法；保留本地实现的组件与 qing-steel 缺口 |
+| [lyflow-operators.md](lyflow-operators.md) | lyFlow 与 GlueSight 分工 | 实施中：lyFlow 只提供确定性算子并开放全部门限，流程编排、有无胶与回退判定、参数分层归 GlueSight；测量图改为 GraphDoc 模板加顶层图参数；候选工作区嵌入 lyFlow 编辑器做流程调试页（锁拓扑、只调参数）；分 P1–P3 |
 | [algorithm.md](algorithm.md) | 检测算法 | 误报修在 lyFlow；高光并集候选；默认检测参数不变；lyFlow ≥ 1.1.4 |
 | [r2-algorithm.md](r2-algorithm.md) | 中线提取与胶宽限值 | 框选“顶帽找胶 → 笔刷对中”；笔刷提取容错；胶宽 4 ± 1.5 mm、允许超差 5 mm 不放宽 |
 
@@ -46,6 +47,7 @@
 | 吞吐门槛复测后的取舍 | 现场工控机真实相机复测后，在 ① 降相机帧率（各段 N_exp 随之变，须重新标定）与 ② 加测量并发（开发机 4 物理核，4 → 6 线程增益有限，需改代码重测）之间选。离线实测：突发排空约 49 帧/s，按降级公式可持续约 11 Hz | segment-burst 第七节、第九节第 17 条 |
 | 逐帧定向与工件边胶偏 | 已实现、默认关闭：每帧以出胶点为锚找胶条方向，只测距出胶点 s₀ 到 s₀ + L 的固定窗口，方向序列可细化分段边界；按段开关，沿用现有走廊示教（D-SB-47）。胶偏以工件边为参考、实现 `ToEdge`，参考值取图纸胶边距或标准件（D-SB-48）。生产开启 D-SB-47 前须用实际涂胶、画面里有胶嘴的轮次复测 | segment-burst D-SB-47、D-SB-48 |
 | 段配方的待确认取舍 | 提前结束只加 `short_part` 标记、不判 ERR，可能出现 PLC 记未检而 PC 记 OK；气泡、拉丝不检 | segment-burst 第三节、D-SB-15、D-SB-34、D-SB-37 |
+| lyFlow 与 GlueSight 分工 | 草案：算子只测量、判定归 GlueSight、参数分业务 / 专家两层。P1 不改 lyFlow，先把写死的门限开放为专家参数并显示诊断输出；P2 改为图模板；P3 配合 lyFlow 1.2 拆算子。方向已确认、实施中，不迁移旧配方，流程调试页嵌入 lyFlow 编辑器（锁拓扑、只调参数）；待定专家参数覆盖粒度 | lyflow-operators |
 | 运行日志容量 | 1 GB 上限在每天数千件时只能保留几天。建议提高到 4–8 GB，或超限时先删旧分段的 debug 行；`plc.db` 没有容量上限 | r2-records R-6 |
 | 胶宽上限与允许连续超差 | 保持默认（上限 5.5 mm、允许 5 mm）。实拍正常件在起点、胶堆、拐角处常有 5.3–6 mm 的段落，余量小，需现场按产品复核；直线 / 弯道可分别调 | r2-algorithm RA-5、segment-burst D-SB-16 |
 | 维护模式一期未做事项 | 找不到配方的件不录图；`plc.earlyEnd` 未写；采集占用空间未统计 | maintenance-mode “一期未做” |

@@ -76,7 +76,7 @@ pub mod probe_api {
     pub use crate::offline::sample_set::SampleSet;
     pub use crate::offline::Scenario;
     pub use crate::plan::SegmentKind;
-    pub use crate::production::{burst_graphs, graph_version, Prepared, GRAPH_VERSION_BURST};
+    pub use crate::production::{burst_graphs, Prepared, GRAPH_VERSION_BURST};
     pub use crate::recipe::{
         burst_template, DetectParams, HeadingWindow, Polarity, Recipe, RecipeDoc, SegmentCorridor,
     };
@@ -253,6 +253,7 @@ pub fn run() {
             recipe_api::recipe_doc,
             recipe_api::recipe_preview,
             recipe_api::recipe_template,
+            recipe_api::recipe_expert_specs,
             recipe_api::recipe_delete,
             recipe_api::recipe_delete_unavailable,
             recipe_api::recipe_plan_export,

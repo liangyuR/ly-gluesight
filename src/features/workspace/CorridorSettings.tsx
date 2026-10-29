@@ -1,10 +1,11 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
 import { Accordion, Button, SegmentedControl, Select, Switch } from "qing-steel";
 import { DetectEditor } from "../recipe";
+import { recipeApi } from "../cycle/api";
 import type { DetectParams } from "../cycle/types";
-import type { CameraInspect, EdgeParams, EdgePolarity, InspectWindow, OffsetMeasure, PathSegment } from "../plan/types";
+import type { CameraInspect, EdgeParams, EdgePolarity, ExpertParams, ExpertSpec, InspectWindow, OffsetMeasure, PathSegment } from "../plan/types";
 import { KindChecksEditor } from "../plan/KindChecksEditor";
 import { segmentKindLabel } from "../plan/vis";
 import { Badge, NumberField } from "./components";
@@ -13,7 +14,7 @@ import { applyToKind, DEFAULT_EDGE, DEFAULT_HEADING, segmentIssues } from "./seg
 import { MAX_WINDOW_END_MM, windowError } from "./teach";
 import { segmentCameras } from "./workbenchDraft";
 
-export type CameraParams = Pick<CameraInspect, "mmPerPx" | "detect" | "window" | "nozzle">;
+export type CameraParams = Pick<CameraInspect, "mmPerPx" | "detect" | "window" | "nozzle" | "expert">;
 type Tone = "ok" | "info" | "warn" | "neutral";
 
 const polarity = { dark: "暗胶", light: "亮胶" };
@@ -64,6 +65,62 @@ export function MeasureCard({ camera, params, defaults, spacing, sharing, disabl
       <NumberField label="站距" unit="mm" value={spacingDraft} min={.1} max={10} step={.5} onChange={changeSpacing} disabled={disabled}/>
       {spacingIssue && <p className="c-warn" role="alert">{spacingIssue}{spacingDraft === spacing ? "" : "，未保存"}</p>}
       <p className="wp-settings-hint"><Scope>配方共用</Scope> 沿走廊每隔多少 mm 量一站；当量换算走廊长度与搜索带宽度。改动只影响此后的测量。</p>
+    </fieldset>
+  </SettingsCard>;
+}
+
+let expertSpecs: Promise<Record<string, ExpertSpec>> | null = null;
+function useExpertSpecs() {
+  const [specs, setSpecs] = useState<Record<string, ExpertSpec>>({});
+  useEffect(() => {
+    let alive = true;
+    void (expertSpecs ??= recipeApi.expertSpecs()).then(value => alive && setSpecs(value), () => { expertSpecs = null; });
+    return () => { alive = false; };
+  }, []);
+  return specs;
+}
+
+const without = (params: ExpertParams, name: string) => Object.fromEntries(Object.entries(params).filter(([key]) => key !== name));
+
+/**
+ * 相机视图“专家参数”（LF-5）：测量图模板里开放的算子门限，按 lyFlow 原始单位填。改“本相机”只作用于这台相机，
+ * 改“配方默认”作用于所有没有覆盖这一项的相机；越界或空值只提示，不写候选配方。
+ */
+export function ExpertCard({ camera, own, defaults, disabled, onCamera, onDefaults }: {
+  camera: string; own: ExpertParams; defaults: ExpertParams; disabled: boolean;
+  onCamera: (next: ExpertParams) => void; onDefaults: (next: ExpertParams) => void;
+}) {
+  const specs = useExpertSpecs();
+  const [scope, setScope] = useState<"camera" | "recipe">("camera");
+  const [error, setError] = useState("");
+  const target = scope === "camera" ? own : defaults;
+  const write = scope === "camera" ? onCamera : onDefaults;
+  const changed = Object.keys({ ...defaults, ...own }).length;
+  const groups = Object.entries(specs).reduce<Record<string, [string, ExpertSpec][]>>((out, entry) => ({ ...out, [entry[1].group]: [...(out[entry[1].group] ?? []), entry] }), {});
+  const set = (name: string, spec: ExpertSpec, value: number) => {
+    if (!Number.isFinite(value) || value < spec.min || value > spec.max) { setError(`${spec.label}需在 ${spec.min}–${spec.max} 之间，未保存`); return; }
+    setError("");
+    write({ ...target, [name]: value });
+  };
+  return <SettingsCard title="专家参数" badge={changed ? `${changed} 项已改` : "默认"} tone={changed ? "info" : "neutral"}
+    summary={changed ? `本相机 ${Object.keys(own).length} 项 · 配方默认 ${Object.keys(defaults).length} 项` : "算子门限均为模板默认值"}>
+    <fieldset className="wp-plain-fieldset wp-settings-fields" disabled={disabled}>
+      <SegmentedControl size="sm" label="修改范围" value={scope} disabled={disabled}
+        options={[{ value: "camera", label: `仅 ${camera}` }, { value: "recipe", label: "配方默认" }]} onValueChange={value => setScope(value as "camera" | "recipe")}/>
+      {Object.entries(groups).map(([group, items]) => <div key={group} className="wp-settings-group" role="group" aria-label={group}>
+        <span className="wp-settings-label">{group}</span>
+        {items.map(([name, spec]) => {
+          const value = own[name] ?? defaults[name] ?? spec.default;
+          const source = name in own ? camera : name in defaults ? "配方默认" : "";
+          return <div key={name} className="wp-expert-row" title={spec.doc}>
+            <NumberField label={spec.label} unit={spec.unit} value={target[name] ?? value} min={spec.min} max={spec.max} step={spec.step} disabled={disabled} onChange={v => set(name, spec, v)}/>
+            {source && <Scope>{source}</Scope>}
+            {name in target && <Button variant="text" size="sm" disabled={disabled} onClick={() => write(without(target, name))}>恢复</Button>}
+          </div>;
+        })}
+      </div>)}
+      {error && <p className="c-warn" role="alert">{error}</p>}
+      <p className="wp-settings-hint">直接作用于 lyFlow 算子（px 等原始单位）；悬停看说明。改动后请重新试测，发布前跑样本验证。</p>
     </fieldset>
   </SettingsCard>;
 }

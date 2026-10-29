@@ -343,7 +343,7 @@
   - 模型：`CameraInspect` 去掉 `corridor`、不再拒绝未知字段（旧文件里的相机走廊读入即丢）；`CameraInspect::segment_taught`、`recipe::untaught_corridors` 判每段每台检测相机的走廊。`CameraTeaching.segment` 为空的旧相机示教帧在候选读入时丢弃并回写。`Recipe::ready_burst` 要求每段每台检测相机都有走廊、相机有当量，多段配方各段 N_exp 都已标定。
   - 选走廊：`plan::predicted_segment` / `plan::arrival_corridor`（到达时）与 `segmentation::frame_corridors`（按解析后的区域）是唯一规则；生产、候选试运行、验证样本、历史复测与原包重现都用它们。复测走 `burst_history::remeasure_by_rule`：先按帧组数比例分段，再逐帧选走廊，用不到的帧记 `NotInspected`、不读图。
   - 生产：`FrameJob.segment`；`BurstPart` 按预测段送测，不检测预测段的相机这一帧直接记 `NotInspected`；预测边界附近（`retention_bands`）的原图留在 `retained`，`start_post_measure` 在收尾窗口到期、到达送测都测完后排一次补测，`burst_complete` 有补测目标时等补测完。`FrameMetrics.corridor` 记所用段号。`burst_judge` 不把 `NotInspected` 算检测不完整。
-  - 测量图与发布包：`vision::CorridorSet` 按（相机, 段）建图；算法图 `corridor-2`（schema 4，`graphs` 按段列出）；发布包 schema 5：每台相机一份标定，`cameras/{i}/s{segment}/` 下各段一张示教帧与走廊；schema 4 旧包不再加载。
+  - 测量图与发布包：`vision::CorridorSet` 按（相机, 段）合成测量图模板的有效参数；算法图 `flow-1`（graph.json schema 5：`templates` 存用到的模板原文，`graphs` 按段列出走廊参数，开启定向的另有 `headings` 的搜索与回退参数，见 [lyflow-operators.md](lyflow-operators.md) LF-4）；发布包 schema 5：每台相机一份标定，`cameras/{i}/s{segment}/` 下各段一张示教帧与走廊；此前的 `corridor-2` / `corridor-3` 发布包不再加载，要重新发布。
   - 工作台：去掉 `workspace_teach_camera`；`workspace_teach_segment_corridor` 不再要求相机示教帧，单段配方不要求确认分段，相机还没有当量时用设备标定当量补上，一台相机各段示教帧须同尺寸；段相机变化时去掉不再检测的走廊与示教帧。`cameraTeaching[]` 改为 `{camera, mmPerPx, ready, segments}`；进度、发布检查、跳转目标按（段, 相机）列出（`TargetV2::Corridor` 带 `segment`）。标定按已确认分段只测检测相机（`calibration_corridors`）。
   - 示教页：相机行只设像素当量与检测参数，段行是唯一的走廊示教目标（选帧、提取、编辑、保存、清除本段走廊）；帧状态新增“本段不检测”。
   - 未实现：检测相机测成率提示（标定页）；现场吞吐复测（第 5 步）；`boundary_guard` 变化后用存储指标重判时过渡帧的走廊口径未单独校验（计划身份不含 `boundary_guard`）。
@@ -386,7 +386,7 @@
     - 扇区：本段与相邻两段（这台相机检测且示教了走廊的）方向范围的并集，比整圈搜索更不易被别的暗带带偏。扇区与回退方向按段写进测量图：每（相机, 段）一张搜索图、一张回退图，不用运行时参数，测量图随发布包冻结。
     - 回退：`bead_path` 覆盖率低于 `minCoverage` 或不像胶时 `info.ok = false`。此时改用 `headingSource = param`、`heading` = 预测段的示教方向 θ₀、`headingTol` = 方向容差，再测一次。回退后仍找不到胶，按 lyFlow 的失败语义得出“全段无胶”，照常判断胶，不记检测不完整，所以整个窗口都断胶时不会漏判。
     - 测量结果：测站与胶边取自 `bead_width` 输出，不再按示教折线预先算测站；`AbsoluteX` 对拟合胶路恒为 0，不再有意义，定向测量的段胶偏只能按 D-SB-48 的 ToEdge 判。每帧另记 θ 与是否回退；回退时记下 `bead_path` 给出的原因（覆盖率不足或边缘太缓不像胶），试测与多轮标定的逐帧查看里显示。
-    - 依赖：`glue.bead_path` 已加入 `packaging/runtime.json` 的 `requiredOperators`；开启定向或找边时测量图版本为 `corridor-3`（graph.json 多出 `headings`），全部关闭时仍是 `corridor-2`，测量图与发布包内容不变。
+    - 依赖：`glue.bead_path` 已加入 `packaging/runtime.json` 的 `requiredOperators`；定向测量图是模板 `graphs/heading.lyflow.json`，搜索与回退按 `headingSource` 用同一模板、两组参数。
     - 搜索角度不依赖帧属于哪一段，所以到达即可测；扇区只用预测段收窄，预测错一两帧时相邻段的方向仍在扇区内。
   - 覆盖核对：标定时按段核对窗口能否接上相邻帧。
     - 胶条每帧在画面里后移 v / fps。用已有数据估算这一后移量：段长（`PathSegment.length_mm`）÷ 该段 N_exp。

@@ -791,7 +791,7 @@ mod tests {
                 validation_site: ValidationSite::Offline,
                 versions: Versions {
                     engine: "1.1.0".into(),
-                    graph: "corridor-2".into(),
+                    graph: crate::production::GRAPH_VERSION_BURST.into(),
                 },
                 graph: ResourceSource::Bytes(br#"{"graph":1}"#.to_vec()),
                 cameras,

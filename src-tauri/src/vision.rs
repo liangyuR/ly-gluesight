@@ -20,6 +20,7 @@ use crate::recipe::{CameraInspect, Recipe};
 
 mod heading;
 mod taught;
+pub mod template;
 #[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
 pub use taught::measure_frame_with;
 pub use taught::{corridor_inside, measure_frame, CorridorSet, FrameMeasurement};
@@ -73,10 +74,19 @@ impl Engine {
 
     /// 跑一次图，返回 run summary 与图级命名输出（都已解析成 JSON）。
     pub fn run(&self, graph: &str, run_id: &str, base_dir: &str, image: &FrameImage, params: &Value) -> Result<RunResult, String> {
+        self.run_spec(graph, run_id, base_dir, image, params, &[])
+    }
+
+    /// 按顶层图参数跑测量图模板，只跑到 `targets` 这几个节点（空为整张图）。
+    pub fn run_targets(&self, graph: &str, run_id: &str, image: &FrameImage, params: &Value, targets: &[String]) -> Result<RunResult, String> {
+        self.run_spec(graph, run_id, "", image, params, targets)
+    }
+
+    fn run_spec(&self, graph: &str, run_id: &str, base_dir: &str, image: &FrameImage, params: &Value, targets: &[String]) -> Result<RunResult, String> {
         let images = [image_input(image)?];
         let params_json = params.to_string();
         let run_id = unique_run_id(run_id);
-        let mut spec = RunSpec::new(graph, &run_id, base_dir, &[]).with_params_json(&params_json);
+        let mut spec = RunSpec::new(graph, &run_id, base_dir, targets).with_params_json(&params_json);
         // 正式测量只注入原始全分辨率像素。core 在 start 内拷贝，images 活到 start 返回。
         spec.image_inputs = &images;
         let handle = unsafe { RunHandle::start(self.core.clone(), spec, ignore_event, Box::new(())) }.map_err(|e| e.to_string())?;

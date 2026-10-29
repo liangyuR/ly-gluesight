@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "01GLUESIGHTCORRIDOR000000",
+  "nodes": [
+    {"id": "n_load", "op": "io.load_image", "params": {"source": "inputs"}},
+    {"id": "n_path", "op": "glue.taught_path", "params": {"zone": [0.0, 0.0]}},
+    {"id": "n_width", "op": "glue.bead_width", "params": {"form": "straight"}},
+    {"id": "n_edge", "op": "glue.edge_distance", "params": {"reference": "bead_center"}}
+  ],
+  "edges": [
+    {"id": "e_image", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_width", "port": "image"}},
+    {"id": "e_path", "from": {"node": "n_path", "port": "path"}, "to": {"node": "n_width", "port": "path"}},
+    {"id": "e_eimage", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_edge", "port": "image"}},
+    {"id": "e_bead", "from": {"node": "n_width", "port": "bead"}, "to": {"node": "n_edge", "port": "bead"}}
+  ],
+  "outputs": {
+    "stations": {"node": "n_width", "port": "bead.stations"},
+    "beadInfo": {"node": "n_width", "port": "bead.info"},
+    "edge": {"node": "n_edge", "port": "edge"}
+  },
+  "params": {
+    "points": {"default": "[[0,0],[100,0]]", "binds": ["n_path.points"], "doc": "示教走廊（JSON 点列，px）"},
+    "tolerance": {"default": 20.0, "binds": ["n_path.tolerance"], "doc": "中心偏移容差（px）= 搜索半宽 − 胶宽上限的一半"},
+    "pathWidthMax": {"default": 24.0, "binds": ["n_path.widthMax"], "doc": "胶宽上限取整（px）"},
+    "polarity": {"default": "dark", "binds": ["n_path.polarity"]},
+    "widthRange": {"default": [8.0, 24.0], "binds": ["n_width.widthRange"], "doc": "胶宽范围（px）"},
+    "stationStep": {"default": 4.0, "binds": ["n_width.stationStep"], "doc": "站距（px）"},
+    "searchHalf": {"default": 32.0, "binds": ["n_width.searchHalf"], "doc": "搜索半宽（px）"},
+    "edgeSearch": {"default": 200.0, "binds": ["n_edge.searchLength"], "doc": "找边搜索长度（px）"},
+    "edgePolarity": {"default": "bright_to_dark", "binds": ["n_edge.edgePolarity"]},
+    "edgeContrastMin": {"default": 40.0, "binds": ["n_edge.contrastMin"], "doc": "找边对比度下限"},
+    "edgeFarRun": {"default": 12.0, "binds": ["n_edge.farRun"], "doc": "找边远侧持续长度（px）"},
+    "trackSharpMin": {"type": "float", "label": "示教线陡度下限", "min": 0.0, "max": 5.0, "step": 0.05, "default": 0.4, "advanced": true, "group": "定胶路", "binds": ["n_path.sharpMin"], "doc": "示教线上暗带边缘陡度 P25 低于它，整条判没有胶（像压痕或阴影）"},
+    "window": {"type": "float", "label": "外包络窗口", "unit": "px", "min": 0.0, "max": 400.0, "step": 1.0, "default": 30.0, "advanced": true, "group": "量胶宽", "binds": ["n_width.window"], "doc": "螺旋胶外包络取 ±window/2 内的暗段"},
+    "mergeGap": {"type": "float", "label": "合并缝", "unit": "px", "min": 0.0, "max": 100.0, "step": 1.0, "default": 8.0, "advanced": true, "group": "量胶宽", "binds": ["n_width.mergeGap"], "doc": "暗段之间的缝不超过它、合并后不宽于胶宽上限就合并"},
+    "contrastMin": {"type": "float", "label": "响应下限", "min": 1.0, "max": 255.0, "step": 1.0, "default": 16.0, "advanced": true, "group": "量胶宽", "binds": ["n_width.contrastMin"], "doc": "峰值至少这么高才算暗段；分段门限是它的一半"},
+    "presentRatio": {"type": "float", "label": "有胶宽度比", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.5, "advanced": true, "group": "量胶宽", "binds": ["n_width.presentRatio"], "doc": "宽度不小于参考宽的这一比例才算有胶"},
+    "centerRatio": {"type": "float", "label": "中心偏离比", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.3, "advanced": true, "group": "量胶宽", "binds": ["n_width.centerRatio"], "doc": "中心偏离胶路不超过 max(6, 它 × 参考宽)"},
+    "contrastRatio": {"type": "float", "label": "对比度比", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.3, "advanced": true, "group": "量胶宽", "binds": ["n_width.contrastRatio"], "doc": "峰值不低于参考峰值的这一比例才算有胶"}
+  }
+}

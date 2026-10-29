@@ -792,7 +792,7 @@ pub(super) fn freeze_bundle(
             recipe: doc.clone(),
             versions: crate::release::Versions {
                 engine: engine.identity.clone(),
-                graph: crate::production::graph_version(&recipe).into(),
+                graph: crate::production::GRAPH_VERSION_BURST.into(),
             },
             validation_site: if crate::offline::enabled(app) {
                 ValidationSite::Offline

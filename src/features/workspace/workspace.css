@@ -63,6 +63,8 @@
 .wp-settings-hint { color:var(--on-surface-variant); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
 .wp-settings-group { display:flex; flex-direction:column; gap:10px; padding-top:12px; border-top:1px solid var(--outline-variant); }
 .wp-settings-group > p, .wp-settings-fields > p { margin:0; }
+.wp-expert-row { display:flex; align-items:flex-end; gap:8px; }
+.wp-expert-row > :first-child { flex:1; min-width:0; }
 .wp-settings-fields { display:flex; flex-direction:column; gap:12px; }
 .wp-settings-fields .qs-seg { display:flex; width:100%; overflow:hidden; }
 .wp-teach-settings .wp-settings-fields .qs-seg > button { flex:1 1 0; min-width:0; padding-inline:4px; white-space:nowrap; }

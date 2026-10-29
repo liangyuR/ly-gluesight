@@ -83,6 +83,12 @@ pub fn recipe_preview(doc: RecipeDoc) -> Result<Recipe, String> {
     doc.build()
 }
 
+/// 测量图模板的专家参数规格（LF-5，参数名 → 标签、单位、范围、默认值、说明），供配方按相机覆盖。
+#[tauri::command]
+pub fn recipe_expert_specs() -> std::collections::BTreeMap<String, serde_json::Value> {
+    crate::vision::template::expert_specs()
+}
+
 /// 新建配方的起点：段配方（D-SB-24），相机取相机组前三台，一个待标定的直线段。
 #[tauri::command]
 pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {

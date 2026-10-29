@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::heading::{measure_heading_with, plan_heading, HeadingGraph};
+use super::template::{self, Template};
 use super::{Engine, FrameImage, RunResult};
 use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::plan::{EdgePolarity, OffsetMeasure};
@@ -92,26 +93,40 @@ fn too_few_stations(n: usize, length_mm: f64, spacing_mm: f32) -> String {
     format!("按站距 {spacing_mm} mm，检测走廊（{length_mm:.1} mm）只有 {n} 站，至少要 {MIN_STATIONS} 站：{shrink}把走廊画到不短于 {need} mm")
 }
 
-/// 沿中线量胶的测量图：io.load_image → glue.taught_path（示教中线）→ glue.bead_width（逐站胶边与胶宽）。
-fn taught_graph(
+/// 示教走廊测量图（`template::corridor`）的业务参数：示教中线、中心偏移容差与量胶宽参数，有找边时再加找边参数。
+fn corridor_params(
     path: &[[f32; 2]],
     detect: &DetectParams,
     p: &GraphParams,
     edge: Option<&EdgeGraph>,
 ) -> Result<Value, String> {
-    let path = json!({"id": "n_path", "op": "glue.taught_path", "params": {
+    let mut params = json!({
         "points": serde_json::to_string(path).map_err(|e| e.to_string())?,
-        "zone": [0.0, 0.0], "tolerance": p.tolerance, "widthMax": p.hi.ceil(),
-        "polarity": polarity(detect), "sharpMin": 0.4
-    }});
-    Ok(bead_graph(
-        "01GLUESIGHTTAUGHT00000000",
-        path,
-        false,
-        p,
-        edge,
-        json!({}),
-    ))
+        "tolerance": p.tolerance, "pathWidthMax": p.hi.ceil(), "polarity": polarity(detect),
+    });
+    bead_params_into(&mut params, p, edge);
+    Ok(params)
+}
+
+/// 量胶宽与找边的业务参数（示教走廊与逐帧定向共用）。
+pub(super) fn bead_params_into(params: &mut Value, p: &GraphParams, edge: Option<&EdgeGraph>) {
+    params["widthRange"] = json!([p.lo, p.hi]);
+    params["stationStep"] = json!(p.step);
+    params["searchHalf"] = json!(p.half);
+    if let Some(e) = edge {
+        params["edgeSearch"] = json!(e.search_px);
+        params["edgePolarity"] = json!(e.polarity);
+        params["edgeContrastMin"] = json!(e.contrast_min);
+    }
+}
+
+/// 只跑到量胶宽为止，接了找边时连找边一起跑（模板里的找边节点不用时不执行）。
+pub(super) fn run_targets(edge: bool) -> Vec<String> {
+    if edge {
+        Vec::new()
+    } else {
+        vec!["n_width".into()]
+    }
 }
 
 pub(super) fn polarity(detect: &DetectParams) -> &'static str {
@@ -169,50 +184,8 @@ pub(super) fn edge_graph(
     }))
 }
 
-/// `glue.edge_distance` 的远侧持续长度（px，lyFlow 默认）。
+/// `glue.edge_distance` 的远侧持续长度（px，模板 `edgeFarRun` 的默认值）。
 const EDGE_FAR_RUN_PX: f64 = 12.0;
-
-/// 量胶测量图：读图 → 定胶路节点（`path`，id 为 n_path）→ `glue.bead_width`，有找边参数时再接 `glue.edge_distance`。
-/// `path_reads_image`：定胶路节点要读图（`glue.bead_path`）。
-pub(super) fn bead_graph(
-    id: &str,
-    path: Value,
-    path_reads_image: bool,
-    p: &GraphParams,
-    edge: Option<&EdgeGraph>,
-    mut outputs: Value,
-) -> Value {
-    let mut nodes = vec![
-        json!({"id": "n_load", "op": "io.load_image", "params": {"source": "inputs"}}),
-        path,
-        json!({"id": "n_width", "op": "glue.bead_width", "params": {
-            "form": "straight", "widthRange": [p.lo, p.hi], "stationStep": p.step, "searchHalf": p.half,
-            "window": 30.0, "mergeGap": 8.0, "contrastMin": 16.0,
-            "presentRatio": 0.5, "centerRatio": 0.3, "contrastRatio": 0.3
-        }}),
-    ];
-    let mut edges = vec![
-        json!({"id": "e_image", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_width", "port": "image"}}),
-        json!({"id": "e_path", "from": {"node": "n_path", "port": "path"}, "to": {"node": "n_width", "port": "path"}}),
-    ];
-    if path_reads_image {
-        edges.push(json!({"id": "e_pimage", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_path", "port": "image"}}));
-    }
-    outputs["stations"] = json!({"node": "n_width", "port": "bead.stations"});
-    outputs["beadInfo"] = json!({"node": "n_width", "port": "bead.info"});
-    if let Some(e) = edge {
-        nodes.push(
-            json!({"id": "n_edge", "op": "glue.edge_distance", "params": {
-                "searchLength": e.search_px, "reference": "bead_center", "edgePolarity": e.polarity,
-                "contrastMin": e.contrast_min, "farRun": EDGE_FAR_RUN_PX
-            }}),
-        );
-        edges.push(json!({"id": "e_eimage", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_edge", "port": "image"}}));
-        edges.push(json!({"id": "e_bead", "from": {"node": "n_width", "port": "bead"}, "to": {"node": "n_edge", "port": "bead"}}));
-        outputs["edge"] = json!({"node": "n_edge", "port": "edge"});
-    }
-    json!({"schemaVersion": 1, "id": id, "nodes": nodes, "edges": edges, "outputs": outputs})
-}
 
 /// 找边结果 → 胶中心到零件边距离的均值（mm）。有胶测站里找到边的不到一半时为 None（这一帧胶偏记未测）。
 pub(super) fn edge_mm(result: &RunResult, scale: f64) -> Result<Option<f64>, String> {
@@ -257,8 +230,9 @@ pub struct CorridorGraph {
     pub segment: u32,
     /// 示教帧尺寸；每帧必须与它相同
     pub size: [u32; 2],
-    pub graph: Value,
-    graph_text: String,
+    /// `template::corridor` 的全部有效参数（发布包冻结它）
+    pub params: Value,
+    targets: Vec<String>,
     /// 各测站在图里的位置（px），沿走廊弧长 i × step
     stations: Vec<[f64; 2]>,
     /// 图里接了找零件边（D-SB-48）
@@ -351,14 +325,14 @@ pub fn plan_corridor(
         .map(|i| polyline_at(corridor, i as f64 * params.step))
         .collect();
     let edge = edge_graph(recipe, segment, &inspect.camera, scale)?;
-    let graph = taught_graph(corridor, detect, &params, edge.as_ref())?;
+    let business = corridor_params(corridor, detect, &params, edge.as_ref())?;
     Ok(CorridorGraph {
         camera: inspect.camera.clone(),
         camera_idx,
         segment,
         size,
-        graph_text: graph.to_string(),
-        graph,
+        params: template::corridor().params(business, &recipe.expert_layers(inspect)).map_err(|e| fail(&e))?,
+        targets: run_targets(edge.is_some()),
         stations,
         edge: edge.is_some(),
         scale,
@@ -459,7 +433,7 @@ pub fn measure_frame(
     run_id: &str,
 ) -> Result<FrameMeasurement, String> {
     let start = Instant::now();
-    let run = |graph: &str, image: &FrameImage| engine.run(graph, run_id, "", image, &json!({}));
+    let run = |g: GraphRun<'_>, image: &FrameImage| engine.run_targets(g.template.text, run_id, image, g.params, g.targets);
     let mut m = match graph {
         FrameGraph::Corridor(corridor) => measure_frame_with(corridor, image, seq, run)?,
         FrameGraph::Heading(heading) => measure_heading_with(heading, image, seq, run)?,
@@ -468,11 +442,19 @@ pub fn measure_frame(
     Ok(m)
 }
 
-/// 量一帧：`run` 用走廊测量图（JSON 文本）跑这张图。图像尺寸与示教帧不同、算法失败或输出不合契约时返回 Err，
+/// 一次测量图运行：模板、全部有效参数与运行目标（空为整张图）。
+#[derive(Clone, Copy)]
+pub struct GraphRun<'a> {
+    pub template: &'static Template,
+    pub params: &'a Value,
+    pub targets: &'a [String],
+}
+
+/// 量一帧：`run` 按模板与参数跑这张图。图像尺寸与示教帧不同、算法失败或输出不合契约时返回 Err，
 /// 只影响这一帧（调用方记为 Error 帧，规格 §0）；胶条从走廊一侧走出时这一帧为 OutOfCorridor（默认做法 4），都不 panic。
 pub fn measure_frame_with(
     corridor: &CorridorGraph, image: &FrameImage, seq: u64,
-    run: impl FnOnce(&str, &FrameImage) -> Result<RunResult, String>,
+    run: impl FnOnce(GraphRun<'_>, &FrameImage) -> Result<RunResult, String>,
 ) -> Result<FrameMeasurement, String> {
     if [image.width, image.height] != corridor.size {
         return Err(format!("相机 {} 这一帧图像 {}×{} 与示教帧 {}×{} 尺寸不一致", corridor.camera, image.width, image.height, corridor.size[0], corridor.size[1]));
@@ -480,7 +462,7 @@ pub fn measure_frame_with(
     if image.pixels.len() != image.width as usize * image.height as usize {
         return Err("图像像素缓冲与尺寸不一致".into());
     }
-    let result = run(&corridor.graph_text, image)?;
+    let result = run(GraphRun { template: template::corridor(), params: &corridor.params, targets: &corridor.targets }, image)?;
     parse_corridor(corridor, &result, seq)
 }
 

@@ -21,7 +21,7 @@ import { frameArrived, readRoundFrame, roundView, type RoundView } from "./captu
 import { SegmentTrial } from "./TeachTrial";
 import { FrameGrid } from "./FrameGrid";
 import { pieceLabel } from "./pieces";
-import { CameraHeadingCard, MeasureCard, SegmentChecksCard, SegmentHeadingCard, type CameraParams } from "./CorridorSettings";
+import { CameraHeadingCard, ExpertCard, MeasureCard, SegmentChecksCard, SegmentHeadingCard, type CameraParams } from "./CorridorSettings";
 import type { HeadingGuide } from "./headingOverlay";
 import "./corridor.css";
 import WorkspaceNavigation from "./WorkspaceNavigation";
@@ -297,7 +297,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const clearSegment = () => { if (unlocked && segment != null && !editing) void perform(() => workspaceApi.clearSegmentCorridor(doc.id, data.workspace.revision, camera, segment), `${targetLabel} 的走廊与示教帧已清除`); };
   const changeSegments = (segments: PathSegment[]) => setDoc({ ...doc, segments });
   const inspect = doc.inspect?.find(item => item.camera === camera);
-  const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null, window: inspect?.window ?? null, nozzle: inspect?.nozzle ?? null };
+  const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null, window: inspect?.window ?? null, nozzle: inspect?.nozzle ?? null, expert: inspect?.expert ?? {} };
   const setParams = (next: CameraParams) => setDoc({ ...doc, inspect: (doc.inspect ?? []).map(item => item.camera === camera ? { ...item, ...next } : item) });
   // 出胶点与检测窗口跟着候选配方即时显示；方向范围、扇区与回退方向由后端按已保存的走廊算
   const savedNozzle = plan.cameraTeaching.find(item => item.camera === camera)?.nozzle ?? null;
@@ -474,6 +474,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         onParams={setParams} onDefaults={detect => setDoc({ ...doc, detect })} onSpacing={spacing => setDoc({ ...doc, spacing })} />
       <CameraHeadingCard key={`heading-${camera}`} camera={camera} params={params} derivedNozzle={derivedNozzle} disabled={paramsDisabled || frameDirty} onChange={setParams}
         headingSegments={cameraTasks.filter(item => doc.segments?.find(s => s.index === item.segment)?.heading).map(item => item.segment)} />
+      <ExpertCard key={`expert-${camera}`} camera={camera} own={params.expert ?? {}} defaults={doc.expert ?? {}} disabled={paramsDisabled || frameDirty}
+        onCamera={expert => setParams({ ...params, expert })} onDefaults={expert => setDoc({ ...doc, expert })} />
       <p className="wp-settings-hint wp-rail-note">段的逐帧定向与检测项：在左侧选段后设置。</p></div>
     : <div className="wp-stack wp-teach-settings">
       {navigation}

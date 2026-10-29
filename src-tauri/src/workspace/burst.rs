@@ -362,7 +362,7 @@ fn kind_default(doc: &RecipeDoc, kind: SegmentKind) -> u32 {
     }
 }
 
-/// 一台相机的走廊身份：测每帧特征用到的当量、检测参数、站距与各段走廊；不是计划相机为 null。
+/// 一台相机的走廊身份：测每帧特征用到的当量、检测参数、站距、各段走廊与专家参数；不是计划相机为 null。
 pub(super) fn corridor_tag(doc: &RecipeDoc, camera: &str) -> Value {
     doc.inspect
         .iter()
@@ -378,7 +378,8 @@ pub(super) fn corridor_tag(doc: &RecipeDoc, camera: &str) -> Value {
                 doc.segments
                     .iter()
                     .map(|s| (s.index, &s.heading))
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>(),
+                [&doc.expert, &i.expert]
             ])
         })
 }

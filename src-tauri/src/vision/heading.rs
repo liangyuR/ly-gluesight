@@ -1,13 +1,15 @@
 //! 逐帧定向测量（D-SB-47）：开启定向的（段, 检测相机）用 `glue.bead_path` 在出胶点周围的扇区里定向、拟合胶路，
-//! 只量距出胶点 [s₀, s₀ + L] 的一段。扇区与回退方向按段写进测量图：每（相机, 段）一张搜索图、一张回退图
-//! （`headingSource = param`，方向取本段示教方向）。搜索图没找到胶（`info.ok` 为假）时用回退图再量一次，
+//! 只量距出胶点 [s₀, s₀ + L] 的一段。测量图是 `template::heading`，每（相机, 段）两组参数：扇形搜索，与回退
+//! （`headingSource = param`，方向取本段示教方向）。搜索没找到胶（`info.ok` 为假）时按回退参数再量一次，
 //! 回退后仍没有胶就照常按缺胶判，不记检测不完整。
 
 use serde_json::{json, Value};
 
 use super::taught::{
-    bead_graph, bead_metrics, bead_params, edge_graph, edge_mm, polarity, FrameMeasurement,
+    bead_metrics, bead_params, bead_params_into, edge_graph, edge_mm, polarity, run_targets,
+    FrameMeasurement, GraphRun,
 };
+use super::template;
 use super::{FrameImage, RunResult};
 use crate::heading::{nozzle, sector, segment_heading};
 use crate::recipe::{CameraInspect, Recipe};
@@ -19,11 +21,10 @@ pub struct HeadingGraph {
     pub camera_idx: usize,
     pub segment: u32,
     pub size: [u32; 2],
-    /// 扇形搜索图与回退图（发布包 graph.json 里两张都存）
-    pub graph: Value,
+    /// `template::heading` 扇形搜索与回退的全部有效参数（发布包 graph.json 里两组都存）
+    pub search: Value,
     pub fallback: Value,
-    graph_text: String,
-    fallback_text: String,
+    targets: Vec<String>,
     scale: f64,
     half: f64,
     spacing_mm: f64,
@@ -89,40 +90,24 @@ pub fn plan_heading(
     )
     .map_err(fail)?;
     let edge = edge_graph(recipe, segment, &inspect.camera, scale)?;
-    let base = json!({"nozzle": anchor, "zone": zone, "widthMax": params.hi.ceil(), "polarity": polarity(detect)});
-    let outputs = || json!({"pathInfo": {"node": "n_path", "port": "path.info"}, "pathLine": {"node": "n_path", "port": "path.line"}});
+    let mut base = json!({"nozzle": anchor, "zone": zone, "pathWidthMax": params.hi.ceil(), "polarity": polarity(detect)});
+    bead_params_into(&mut base, &params, edge.as_ref());
     let mut search = base.clone();
     search["sector"] = json!(span);
     let mut fallback = base;
     fallback["headingSource"] = json!("param");
     fallback["heading"] = json!(own);
     fallback["headingTol"] = json!(settings.tolerance_deg.max(1.0));
-    let node = |p: Value| json!({"id": "n_path", "op": "glue.bead_path", "params": p});
-    let graph = bead_graph(
-        "01GLUESIGHTHEADING0000000",
-        node(search),
-        true,
-        &params,
-        edge.as_ref(),
-        outputs(),
-    );
-    let fallback = bead_graph(
-        "01GLUESIGHTHEADINGFALLBK0",
-        node(fallback),
-        true,
-        &params,
-        edge.as_ref(),
-        outputs(),
-    );
+    let expert = recipe.expert_layers(inspect);
+    let effective = |p: Value| template::heading().params(p, &expert).map_err(|e| fail(&e));
     Ok(HeadingGraph {
         camera: inspect.camera.clone(),
         camera_idx,
         segment,
         size,
-        graph_text: graph.to_string(),
-        fallback_text: fallback.to_string(),
-        graph,
-        fallback,
+        search: effective(search)?,
+        fallback: effective(fallback)?,
+        targets: run_targets(edge.is_some()),
         scale,
         half: params.half,
         spacing_mm: f64::from(recipe.spacing),
@@ -130,13 +115,13 @@ pub fn plan_heading(
     })
 }
 
-/// 量一帧：先用搜索图，没找到胶（`info.ok` 为假）再用回退图，并记下搜索图给出的回退原因。
+/// 量一帧：先按搜索参数跑，没找到胶（`info.ok` 为假）再按回退参数跑，并记下搜索给出的回退原因。
 /// 图像尺寸与示教帧不同、算法失败或输出不合契约时返回 Err。
 pub fn measure_heading_with(
     g: &HeadingGraph,
     image: &FrameImage,
     seq: u64,
-    run: impl Fn(&str, &FrameImage) -> Result<RunResult, String>,
+    run: impl Fn(GraphRun<'_>, &FrameImage) -> Result<RunResult, String>,
 ) -> Result<FrameMeasurement, String> {
     if [image.width, image.height] != g.size {
         return Err(format!(
@@ -147,12 +132,13 @@ pub fn measure_heading_with(
     if image.pixels.len() != image.width as usize * image.height as usize {
         return Err("图像像素缓冲与尺寸不一致".into());
     }
-    let searched = run(&g.graph_text, image)?;
+    let graph = |params| GraphRun { template: template::heading(), params, targets: &g.targets };
+    let searched = run(graph(&g.search), image)?;
     let (measured, found) = parse_heading(g, &searched, seq, false)?;
     if found {
         return Ok(measured);
     }
-    let mut fallback = parse_heading(g, &run(&g.fallback_text, image)?, seq, true)?.0;
+    let mut fallback = parse_heading(g, &run(graph(&g.fallback), image)?, seq, true)?.0;
     fallback.metrics.fallback_reason = searched
         .record("pathInfo")
         .and_then(|info| info["reason"].as_str())
