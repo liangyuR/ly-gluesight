@@ -103,7 +103,7 @@ export function ExpertCard({ camera, own, defaults, disabled, onCamera, onDefaul
     write({ ...target, [name]: value });
   };
   return <SettingsCard title="专家参数" badge={changed ? `${changed} 项已改` : "默认"} tone={changed ? "info" : "neutral"}
-    summary={changed ? `本相机 ${Object.keys(own).length} 项 · 配方默认 ${Object.keys(defaults).length} 项` : "算子门限均为模板默认值"}>
+    summary={changed ? `本相机 ${Object.keys(own).length} 项 · 配方默认 ${Object.keys(defaults).length} 项` : "门限均为模板默认值"}>
     <fieldset className="wp-plain-fieldset wp-settings-fields" disabled={disabled}>
       <SegmentedControl size="sm" label="修改范围" value={scope} disabled={disabled}
         options={[{ value: "camera", label: `仅 ${camera}` }, { value: "recipe", label: "配方默认" }]} onValueChange={value => setScope(value as "camera" | "recipe")}/>
@@ -120,7 +120,7 @@ export function ExpertCard({ camera, own, defaults, disabled, onCamera, onDefaul
         })}
       </div>)}
       {error && <p className="c-warn" role="alert">{error}</p>}
-      <p className="wp-settings-hint">直接作用于 lyFlow 算子（px 等原始单位）；悬停看说明。改动后请重新试测，发布前跑样本验证。</p>
+      <p className="wp-settings-hint">作用于 lyFlow 算子或 GlueSight 判定（px 等原始单位）；悬停看说明。改动后请重新试测，发布前跑样本验证。</p>
     </fieldset>
   </SettingsCard>;
 }

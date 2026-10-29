@@ -52,3 +52,6 @@ __pycache__/
 /docs/design/implementation-state.json
 /docs/design/local-workflow-verification.json
 /docs/design/theme-verification.json
+
+# 未发版的 lyFlow 前端包（本机 pnpm pack 产物），发版后改用 Release 地址
+/vendor/lyflow/

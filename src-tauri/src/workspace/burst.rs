@@ -1883,37 +1883,69 @@ pub async fn workspace_teach_preview_frame(
 ) -> Result<CalibrationFrameView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let w = workspace_clone(&app, &id)?;
-        require_burst(&w.doc)?;
-        let captured = app
-            .state::<CycleHost>()
-            .camera
-            .recipe_capture()
-            .get_burst(&round)?;
-        let scope = teach_preview_scope(&w, &captured, &camera, segment)?;
-        if !(scope.start..=scope.end).contains(&seq) {
-            return Err(format!(
-                "第 {seq} 帧组不在第 {segment} 段（这一轮为帧组 {}–{}）",
-                scope.start, scope.end
-            ));
-        }
-        if frame_missing(&captured, &camera, seq) {
-            return Err(format!("相机 {camera} 缺第 {seq} 帧组的图像"));
-        }
-        capture_review::require_available(&w, &round, seq)?;
+        let index = teach_frame_index(&app, &w, &camera, segment, &round, seq)?;
         let recipe = w.doc.build()?;
         let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?;
         segment_frame_view(
             &app,
             &recipe,
             &graphs,
-            (scope.index, &camera),
+            (index, &camera),
             segment,
             (&round, seq),
-            &format!("teach-preview-{id}-{round}-c{}-{seq}", scope.index),
+            &format!("teach-preview-{id}-{round}-c{index}-{seq}"),
         )
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 试测或调试示教件里第 `segment` 段的一帧：前置同 `teach_preview_scope`，帧组还要落在这一段内、不缺帧、没被屏蔽。返回计划相机下标。
+fn teach_frame_index(
+    app: &AppHandle,
+    w: &Workspace,
+    camera: &str,
+    segment: u32,
+    round: &str,
+    seq: u64,
+) -> Result<usize, String> {
+    require_burst(&w.doc)?;
+    let captured = app
+        .state::<CycleHost>()
+        .camera
+        .recipe_capture()
+        .get_burst(round)?;
+    let scope = teach_preview_scope(w, &captured, camera, segment)?;
+    if !(scope.start..=scope.end).contains(&seq) {
+        return Err(format!(
+            "第 {seq} 帧组不在第 {segment} 段（这一轮为帧组 {}–{}）",
+            scope.start, scope.end
+        ));
+    }
+    if frame_missing(&captured, camera, seq) {
+        return Err(format!("相机 {camera} 缺第 {seq} 帧组的图像"));
+    }
+    capture_review::require_available(w, round, seq)?;
+    Ok(scope.index)
+}
+
+/// 流程调试页（LF-6）的一帧：候选的测量图、计划相机下标与这一帧原图。有在途件或正在采集时拒绝，免得与生产争用测量。
+pub(crate) fn flow_debug_frame(
+    app: &AppHandle,
+    id: &str,
+    camera: &str,
+    segment: u32,
+    round: &str,
+    seq: u64,
+) -> Result<(vision::CorridorSet, usize, FrameImage), String> {
+    let w = workspace_clone(app, id)?;
+    let index = teach_frame_index(app, &w, camera, segment, round, seq)?;
+    let recipe = w.doc.build()?;
+    let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?;
+    let cycle = app.state::<CycleHost>();
+    crate::camera::check_idle(&cycle)?;
+    let image = crate::image_file::load(&cycle.camera.recipe_capture().burst_frame_path(round, camera, seq)?)?;
+    Ok((graphs, index, image))
 }
 
 /// 示教页试测一段的结果：示教轮次、这一段的帧组范围（含两端）与每帧指标（按 seq 升序）。

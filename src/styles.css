@@ -116,7 +116,7 @@ h1, h3, p { margin: 0; }
 .main { flex: 1; min-width: 0; min-height: 0; margin: 12px; border-radius: var(--r-xl); overflow: hidden; display: flex; flex-direction: column; background: var(--surface); }
 .main-body { flex: 1; min-height: 0; overflow: auto; padding: 20px; }
 /* 单帧示教页：内容区改为 flex 列，页面吃满剩余高度，三栏各自滚动、底栏留在内容区底部 */
-.main-body:has(.wp-teach-page) { display: flex; flex-direction: column; }
+.main-body:has(.wp-teach-page), .main-body:has(.wp-flow-page) { display: flex; flex-direction: column; }
 @media (max-width: 820px) { .main-body:has(.wp-teach-page) { display: block; } }
 
 .panel {

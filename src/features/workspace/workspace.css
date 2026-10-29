@@ -276,3 +276,11 @@
 .wp-settings-card .qs-accordion-trigger[data-state="open"] .wp-settings-summary { display:none; }
 
 .wp-calibration-link:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+
+.wp-page.wp-flow-page { flex:1 1 auto; min-height:0; gap:12px; }
+.wp-flow-bar { display:flex; flex-wrap:wrap; align-items:flex-end; gap:12px; padding:12px 16px; }
+.wp-flow-bar .qs-select { min-width:140px; }
+.wp-flow-actions { display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap; }
+.wp-flow-hint { margin:0; }
+.wp-flow-host { flex:1 1 0; min-height:520px; display:flex; flex-direction:column; border-radius:var(--r-lg); overflow:hidden; }
+.wp-flow-host > .wp-flow-editor { flex:1 1 auto; min-height:0; }

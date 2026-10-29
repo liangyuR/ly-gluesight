@@ -14,10 +14,10 @@ use crate::release::{ReleaseBundle, ValidationSite, RELEASE_SCHEMA_BURST};
 use crate::vision::{self, Engine, FrameMeasurement, VisionHost};
 
 /// 段配方的测量图版本（LF-4）：测量图模板加每（相机, 段）的全部有效参数；发布包 schema 5 的 `versions.graph`。
-/// 不兼容此前的 `corridor-2` / `corridor-3` 发布包，它们加载时要求重新发布。
-pub const GRAPH_VERSION_BURST: &str = "flow-1";
+/// `flow-2` 起测量图用 lyFlow 1.2 的测量算子、判定归 GlueSight；不兼容此前的发布包，它们加载时要求重新发布。
+pub const GRAPH_VERSION_BURST: &str = "flow-2";
 
-/// 段配方的测量图（发布包 graph.json）：用到的模板原文，加每段每台检测相机的走廊参数，开启定向的（段, 相机）另有搜索与回退参数；
+/// 段配方的测量图（发布包 graph.json）：用到的模板原文，加每段每台检测相机的走廊参数与判定门限，开启定向的（段, 相机）另有定向图的；
 /// sizes 是各相机示教帧尺寸。
 pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String> {
     if sizes.len() != recipe.inspect.len() {
@@ -25,12 +25,12 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
     }
     let set = vision::CorridorSet::build(recipe, sizes)?;
     let graphs: Vec<Value> = set.iter()
-        .map(|c| json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "params": c.params}))
+        .map(|c| json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "params": c.params, "judge": c.judge}))
         .collect();
     let mut templates = json!({ vision::template::corridor().id: vision::template::corridor().doc });
     let mut doc = json!({"schemaVersion": 5, "version": GRAPH_VERSION_BURST, "graphs": graphs});
     let headings: Vec<Value> = set.headings()
-        .map(|h| json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "search": h.search, "fallback": h.fallback}))
+        .map(|h| json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "params": h.params, "judge": h.judge}))
         .collect();
     if !headings.is_empty() {
         templates[vision::template::heading().id] = vision::template::heading().doc.clone();

@@ -19,6 +19,7 @@ use crate::measure::FrameJob;
 use crate::recipe::{CameraInspect, Recipe};
 
 mod heading;
+mod judge;
 mod taught;
 pub mod template;
 #[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
@@ -72,6 +73,11 @@ impl Engine {
         })
     }
 
+    /// 流程调试页直接驱动运行库（编计划、按节点取输出）用。
+    pub(crate) fn core(&self) -> Arc<Core> {
+        self.core.clone()
+    }
+
     /// 跑一次图，返回 run summary 与图级命名输出（都已解析成 JSON）。
     pub fn run(&self, graph: &str, run_id: &str, base_dir: &str, image: &FrameImage, params: &Value) -> Result<RunResult, String> {
         self.run_spec(graph, run_id, base_dir, image, params, &[])
@@ -113,7 +119,7 @@ fn check_operators(manifest: &Value) -> Result<(), String> {
     if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少必需算子：{}。请使用本版本锁定系列的 lyFlow 运行库。", missing.join("、"))) }
 }
 
-fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
+pub(crate) fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
     let count = (image.width as usize).checked_mul(image.height as usize).filter(|&n| n > 0)
         .ok_or("图像尺寸无效")?;
     if image.pixels.len() != count { return Err("图像像素缓冲与尺寸不一致".into()); }

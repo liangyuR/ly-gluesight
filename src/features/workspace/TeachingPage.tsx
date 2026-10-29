@@ -1,8 +1,8 @@
 import { pathLength, resampleTeachingPath, type ImagePoint } from "./teachingPath";
 import { errorText } from "../../lib/errors";
 import { cloneElement, useEffect, useId, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRight, Brush, Camera, Crosshair, Eraser, Info, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { ArrowRight, Brush, Camera, Crosshair, Eraser, Info, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles, Workflow } from "lucide-react";
 import { Button, Divider, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Slider, Surface, Tooltip } from "qing-steel";
 import { cameraApi } from "../camera/api";
 import type { CameraImaging } from "../camera/types";
@@ -135,6 +135,7 @@ export default function TeachingPage() {
 function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: RecipeDoc; plan: WorkspacePlanView }) {
   const { dirty, busy, saving, frameDirty, navigationDirty, corridorDrafts, setCorridorDraft, setDoc, act, setError } = useWorkspace();
   const { snapshot } = useCycle();
+  const navigate = useNavigate();
   const [search] = useSearchParams();
   const cameraItems = cameraParamsTasks(plan);
   const tasks = corridorTasks(plan);
@@ -437,6 +438,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       {paramsError && <p className="c-warn" role="alert">{paramsError}</p>}
       {cameraTasks.length ? <ul className="wp-camera-segments" aria-label={`${camera} 检测的段`}>{cameraTasks.map(item => <li key={item.segment}><span>段 {item.segment} · {segmentKindLabel[item.kind]}</span><Badge tone={item.status === "done" ? "ok" : item.frame ? "warn" : "neutral"}>{item.label}</Badge></li>)}</ul>
         : <p className="muted">没有段把 {camera} 选为检测相机。</p>}
+      <WithReason reason={cameraTasks.some(item => item.status === "done") ? "" : `${camera} 还没有保存的段走廊`}><Button variant="text" size="sm" leadingIcon={<Workflow size={14}/>} disabled={!cameraTasks.some(item => item.status === "done")}
+        onClick={() => navigate(`/recipe/flow?camera=${encodeURIComponent(camera)}`)}>流程调试</Button></WithReason>
     </Surface>
     : <>
       {choosingNow && pickPanel}
@@ -483,6 +486,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         <div className="wp-seg-head"><h3>第 {segment} 段 · {segmentItem?.kind === "corner" ? "弯道" : "直线"}</h3><Badge tone={stateTone}>{stateText}</Badge><span className="muted">{camera}</span></div>
         <p className="muted">{segmentItem?.kind === "corner" ? `弯道：从出胶点起画一小段（不超过 ${CORNER_CORRIDOR_MM} mm），只判胶宽、断胶、溢胶` : "直线：从出胶点一侧起，沿胶条画整段"}</p>
         <WithReason reason={editing ? "走廊有未保存的修改" : !unlocked ? "正在处理或保存，请稍候" : !frame && !hasPath ? "这一段还没有示教帧和走廊" : ""}><Button variant="text" size="sm" disabled={editing || !unlocked || (!frame && !hasPath)} onClick={clearSegment}>清除本段走廊</Button></WithReason>
+        <WithReason reason={editing ? "走廊有未保存的修改：保存后再调试" : !done ? "这一段还没有保存的走廊" : ""}><Button variant="text" size="sm" leadingIcon={<Workflow size={14}/>} disabled={editing || !done}
+          onClick={() => navigate(`/recipe/flow?camera=${encodeURIComponent(camera)}&segment=${segment}&seq=${trialSeq ?? segmentTeaching?.seq ?? ""}`)}>流程调试</Button></WithReason>
       </Surface>
       {segmentItem && <SegmentHeadingCard key={`heading-${segment}`} segments={doc.segments ?? []} index={segment} camera={camera} params={params} derivedNozzle={derivedNozzle}
         disabled={checksDisabled} sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改检测窗口与出胶点。" : ""} onSegments={changeSegments} onParams={setParams} />}

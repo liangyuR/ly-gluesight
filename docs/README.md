@@ -21,7 +21,7 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 3. **三台相机**：高电平期间按内部固定帧率曝光，帧序号取 SDK `frame_num`，不按到达顺序；图像内存按每相机字节预算封顶（`FramePool`，256 MiB），预算满或通道满的帧记缺帧。
 4. **帧配组**：seq = frame_counter − 该相机基线，同一 seq 的三帧为一个帧组；缺帧的组标 incomplete；单台相机帧数只用于丢帧告警（与另外每一台相机相差 > 1）。帧数 = 帧组数。每台相机下一件的基线 = 本件见到的最高帧号。
 5. **分段（比例分段，D-SB-40）**：段结构由人定，各段 N_exp 由已确认手动分段的标定轮次逐段得出；本件收尾后 `Proportional` 按各段 N_exp 比例与本件帧组数推算边界，帧组数在 ΣN_exp ± Σtol 内时边界可信，两侧各 `boundaryGuard`（默认 2）帧为过渡区（只判每帧指标、不判胶偏）。单段配方、有段待标定或帧组数越界时整条胶路（或越界时全部段）按未分段区域判：只跑每帧检测、不判胶偏。帧数只核对整件。
-6. **每帧测量**：帧到达时按预测段选择检测相机与该段走廊，收尾后补测归属变化的帧，其余相机记 `NotInspected`；参与检测的帧用 lyFlow（`glue.taught_path` + `glue.bead_width`）测胶宽、断胶与胶中心偏移 x，输出 `FrameMetrics`；测量队列满、超时记 Unmeasured，走出走廊记 OutOfCorridor，都只算检测不完整。
+6. **每帧测量**：帧到达时按预测段选择检测相机与该段走廊，收尾后补测归属变化的帧，其余相机记 `NotInspected`；参与检测的帧用 lyFlow 的测量算子量出每站暗段、GlueSight 判每站有无胶（[LF-3](decisions/lyflow-operators.md)），得出胶宽、断胶与胶中心偏移 x，输出 `FrameMetrics`；测量队列满、超时记 Unmeasured，走出走廊记 OutOfCorridor，都只算检测不完整。
 7. **区域判定**（`burst_judge`）：每帧胶宽、断胶、溢胶（NG_WIDTH）三类区域都判；胶偏只在直线段，去首尾各一帧后用 x 均值与标准件 x_ref（只实现 AbsoluteX）判整段偏移、最大偏差判局部跑偏；按本段检测相机取最差，未分段区域按每帧预测段的检测相机取最差。`flags`（检测不完整、帧数异常、`short_part` 疑似提前终止）、未检区域、未检项（气泡、拉丝）与“胶偏未判”原因都不改 OK/NG；只有三台相机整件没有一帧测成才判 ERR 91。
 8. **落库与历史**：记录库版本 9，`part_frames` 每台相机每帧一条（缺帧也有），`parts.burst_judgement` 存整份区域判定，`parts.mode` 区分正常件与维护件；原图按帧录制为 `{相机}_s{seq:06}.pgm`；审计 spool 格式 4；历史按 (计划相机, seq) 读图、复测与重判。
 
