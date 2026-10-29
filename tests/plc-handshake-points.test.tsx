@@ -58,5 +58,5 @@ it("只读时握手点位 → 编辑锁定，但名称旁的说明仍可打开",
   expect(within(row).getByRole("button", { name: "编辑" })).toBeDisabled();
 
   fireEvent.click(within(row).getByRole("button", { name: "PLC 状态说明" }));
-  expect((await screen.findByRole("tooltip")).textContent).toContain("10 请求检测");
+  expect((await screen.findByRole("tooltip")).textContent).toContain("10 工件在检");
 });

@@ -20,13 +20,13 @@ it("PLC 断线且保留未结事务 → 不展示旧状态和旧数值，阶段�
   expect(screen.queryByText("A24-000123")).toBeNull();
 });
 
-it("PLC 故障 90 原因 11、PC 已布防 → 双方状态与原因按协议 7 码表显示中文", () => {
+it("PLC 故障 90 原因 7、PC 就绪 → 双方状态与原因按协议 8 码表显示中文", () => {
   render(<HandshakeMonitor connected handshake={session}
-    tagValue={tags({ plcState: 90, plcReason: 11, pcState: 20, pcMode: 0, requestSeq: 17, seqEcho: 17 })} />);
+    tagValue={tags({ plcState: 90, plcReason: 7, pcState: 10, pcMode: 0, requestSeq: 17 })} />);
 
   expect(field("PLC", "状态")).toHaveTextContent("故障");
-  expect(field("PLC", "原因")).toHaveTextContent("等待 PC 布防超时");
-  expect(field("PC", "状态")).toHaveTextContent("已布防");
+  expect(field("PLC", "原因")).toHaveTextContent("等工件结束超时");
+  expect(field("PC", "状态")).toHaveTextContent(/^就绪$/);
   expect(field("PC", "模式")).toHaveTextContent("正常");
 });
 

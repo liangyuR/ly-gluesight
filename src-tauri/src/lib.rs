@@ -1,5 +1,4 @@
 mod applog;
-mod arming;
 mod audit;
 mod burst_judge;
 mod calibration;

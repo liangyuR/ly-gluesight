@@ -162,15 +162,21 @@ impl AuditReadiness {
     fn require_ready(self) -> Result<(), String> {
         match self {
             Self::Ready => Ok(()),
-            Self::WaitingRecording => Err("原图录制尚未完成耐久接受，禁止下一件布防或历史清理".into()),
-            Self::WaitingStore => Err("持久追溯仍有待入库事件，禁止下一件布防或历史清理".into()),
+            Self::WaitingRecording => {
+                Err("原图录制尚未完成耐久接受，禁止下一件接件或历史清理".into())
+            }
+            Self::WaitingStore => Err("持久追溯仍有待入库事件，禁止下一件接件或历史清理".into()),
         }
     }
 }
 
 fn check_health(failure: &Mutex<Option<String>>, running: &AtomicBool) -> Result<(), String> {
-    if !running.load(Ordering::SeqCst) { return Err("持久追溯线程已停止，禁止布防".into()); }
-    if let Some(error) = failure.lock().map_err(|_| "追溯状态锁损坏")?.as_ref() { return Err(error.clone()); }
+    if !running.load(Ordering::SeqCst) {
+        return Err("持久追溯线程已停止，禁止接件".into());
+    }
+    if let Some(error) = failure.lock().map_err(|_| "追溯状态锁损坏")?.as_ref() {
+        return Err(error.clone());
+    }
     Ok(())
 }
 

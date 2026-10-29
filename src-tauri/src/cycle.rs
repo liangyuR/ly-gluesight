@@ -17,7 +17,6 @@ use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, UnboundedReceiver,
 use crate::applog::codes::{self, Event};
 use crate::applog::throttle::{self, Tally, Throttle};
 use crate::applog::{self, Fields};
-use crate::arming::ArmBudget;
 use crate::audit::{Audit, RecordedPart};
 use crate::burst_judge::{BurstJudgement, FrameState};
 use crate::camera::{CameraRig, FRAME_QUEUE};
@@ -370,7 +369,7 @@ pub struct CycleHost {
     /// PLC 链路门：S7 握手、PLC 配置/连接/手动写点互斥。节拍每个周期都持有。
     /// 两把门都要时先取 link_gate 再取 config_gate；只持 config_gate 时不能再取 link_gate。
     pub link_gate: tokio::sync::Mutex<()>,
-    /// 布防与配置门：布防、切换生产配方与相机重配置、配方/设置/标定修改互斥。节拍只在布防到登记在途、切换待生效配方时持有。
+    /// 接件与配置门：接件登记、切换生产配方与相机重配置、配方/设置/标定修改互斥。节拍只在接件到登记在途、切换待生效配方时持有。
     pub config_gate: tokio::sync::Mutex<()>,
     pub camera: CameraRig,
     pub recipes: RecipeStore,
@@ -627,7 +626,7 @@ impl CycleHost {
         let gate = self
             .config_gate
             .try_lock()
-            .map_err(|_| "正在布防或处理其他配置操作，请稍后重试")?;
+            .map_err(|_| "正在接件或处理其他配置操作，请稍后重试")?;
         self.save_settings_locked(settings, &gate)
     }
 
@@ -897,13 +896,13 @@ struct Part {
     /// 帧组与每帧测量（`cycle::burst`）
     burst: Box<burst::BurstPart>,
     /// partEnd 时 PLC 报的设备触发数（协议 6 只作参考，可与计划数不同）；partEnd 前为空。
-    /// 协议 7 不报触发数，恒为空，不参与下一件基线（D-SB-7）
+    /// 协议 8 不报触发数，恒为空，不参与下一件基线（D-SB-7）
     device_triggers: Option<u16>,
     routing_closed: bool,
     image_measurement: bool,
     proc_timeout: Duration,
     drain_timeout: Duration,
-    armed_at: Instant,
+    admitted_at: Instant,
     end_at: Option<Instant>,
     fault: Option<(u16, String)>,
     /// 本件用到的相机（相机组序号）与对应的相机编号
@@ -966,37 +965,55 @@ impl Part {
     }
 }
 
-/// 布防阶段的追溯健康检查。探针自身失败时 `Audit::health` 已标记追溯故障；只是布防总预算用完时只拒绝本件，
-/// 不能把一次偶发超时变成需要重启才能恢复的追溯故障。探针线程异常无法确认结果，按追溯故障处理。
-pub(crate) async fn arm_health_check(
-    budget: &mut ArmBudget,
+fn millis(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
+/// 接件里每项阻塞的文件检查（发布包核验、追溯健康探针）的时限：存储卡住时本件按不能检测处理，节拍照常收帧、
+/// 处理工件结束与复位；远小于到达到拍照信号的间隔（协议 8 第十节，≥ 2 s）。
+const INTAKE_CHECK_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// 在阻塞线程上做接件检查：超时返回 `Err(None)`，检查线程留在后台跑完；线程异常返回 `Err(Some(原因))`。
+async fn bounded_check<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Option<String>> {
+    match tokio::time::timeout(
+        INTAKE_CHECK_TIMEOUT,
+        tauri::async_runtime::spawn_blocking(work),
+    )
+    .await
+    {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(Some(error.to_string())),
+        Err(_) => Err(None),
+    }
+}
+
+/// 接件时的追溯健康检查。探针自身失败时 `Audit::health` 已标记追溯故障；探针线程异常无法确认结果，按追溯故障处理；
+/// 只是超时则只影响本件，不把一次偶发的存储延迟变成需要重启才能恢复的追溯故障。
+async fn intake_health_check(
     probe: impl FnOnce() -> Result<(), String> + Send + 'static,
     poison: impl FnOnce(String),
 ) -> Result<(), String> {
-    let mut panicked = None;
-    let result = budget
-        .run("audit-health", async {
-            match tauri::async_runtime::spawn_blocking(probe).await {
-                Ok(result) => result,
-                Err(error) => {
-                    let error = format!("追溯健康检查线程异常：{error}");
-                    panicked = Some(error.clone());
-                    Err(error)
-                }
-            }
-        })
-        .await;
-    if let Some(error) = panicked {
-        poison(error);
+    match bounded_check(probe).await {
+        Ok(result) => result,
+        Err(Some(error)) => {
+            let error = format!("追溯健康检查线程异常：{error}");
+            poison(error.clone());
+            Err(error)
+        }
+        Err(None) => Err(format!(
+            "追溯健康检查超过 {} ms 未完成",
+            INTAKE_CHECK_TIMEOUT.as_millis()
+        )),
     }
-    result
 }
 
 fn missing_recipe(id: &str) -> String {
     format!("选中的配方 {id} 不存在或没能加载（见配方页）")
 }
 
-/// 离线产线没有实物，按离线计数策略布防。
+/// 离线产线没有实物，按离线计数策略接件。
 pub fn real_parts(app: &AppHandle) -> bool {
     !crate::offline::enabled(app)
 }
@@ -1035,12 +1052,12 @@ pub fn run_kind(recipe: &Recipe, maintenance: bool) -> Result<RunKind, String> {
 
 const COLLECTION_REFRESH: Duration = Duration::from_secs(5);
 
-/// 维护模式下没建立检测就布防放行的件。
+/// 没能建立检测的件：照常采图，工件结束后回 ERR（维护模式回 0）。
 struct Uninspected {
     sn: String,
     recipe_id: Option<String>,
     judgement: Judgement,
-    armed_at: Instant,
+    admitted_at: Instant,
 }
 
 /// 段配方一帧的测量任务：用第 `segment` 段走廊量计划相机 `camera` 的第 `seq` 帧（到达送测与收尾补测共用）。
@@ -1135,7 +1152,7 @@ struct Machine {
     phase: Phase,
     since: i64,
     part: Option<Part>,
-    /// 维护模式下没能建立检测的件（找不到配方、设备或发布包有问题）：照常布防放行，运动结束后回结果码 0
+    /// 维护模式下没能建立检测的件（找不到配方、设备或发布包有问题）：照常采图，工件结束后回结果码 0
     uninspected: Option<Uninspected>,
     active_recipe: Option<Arc<Recipe>>,
     fault: Option<String>,
@@ -1543,7 +1560,7 @@ impl Machine {
             }
             self.camera_down = down;
         }
-        // 维护模式下配方问题不拦来件：照常布防放行（MM-3），只有在用配方的相机全掉线才撤就绪
+        // 维护模式下配方问题不拦来件：照常采图放行（MM-3），只有在用配方的相机全掉线才撤就绪
         let maintenance = host.settings().maintenance.is_some();
         let none_usable = !maintenance && !req.warnings.is_empty() && req.watch.is_empty();
         if none_usable || (!req.watch.is_empty() && self.camera_down.len() == req.watch.len()) {
@@ -1657,9 +1674,8 @@ impl Machine {
     async fn start_part(&mut self, request: Request) {
         let started = Instant::now();
         let settings = host(&self.app).settings();
-        let mut budget = ArmBudget::with_start(started, settings.timeouts.arm());
         if let Err(error) = host(&self.app).audit.ready() {
-            self.enter_fault("audit", format!("审计尚未就绪，拒绝布防：{error}"));
+            self.enter_fault("audit", format!("审计尚未就绪，不能接件：{error}"));
             return;
         }
         if crate::offline::candidate(&self.app).is_none()
@@ -1668,7 +1684,7 @@ impl Machine {
             self.required = None;
         }
         if crate::workspace::activation_uncertain(&self.app) {
-            self.enter_fault("arm", "生产生效版本尚未确认，禁止启动下一件".into());
+            self.enter_fault("intake", "生产生效版本尚未确认，禁止启动下一件".into());
             return;
         }
         self.set_phase(Phase::Validate);
@@ -1686,7 +1702,6 @@ impl Machine {
         for summary in self.noise.end_all(&codes::FRAME_STRAY_SUMMARY) {
             log_event(&self.app, summary.event, summary.msg, summary.fields);
         }
-        budget.mark("entry-readiness-workspace");
         let app = self.app.clone();
         let engine = plc(&app);
         let (sn, code) = (request.sn.clone(), request.product_code as u32);
@@ -1776,23 +1791,10 @@ impl Machine {
         // 从这一刻起这个配方算在检测中（不能删、不能改编号）
         host.shared.lock().unwrap().part_recipe = Some(recipe.clone());
         let id = Some(recipe.id.clone());
-        macro_rules! arm_remaining {
-            ($stage:expr) => {
-                match budget.remaining($stage) {
-                    Ok(remaining) => remaining,
-                    Err(reason) => {
-                        log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
-                        return self.refuse(sn, id.clone(), fault::PROCESS_TIMEOUT, reason).await;
-                    }
-                }
-            };
-        }
         // 日志里的计划帧数 ΣN_exp
         let planned = recipe.expected_total().map_or(0, |n| n as usize);
         // 采集版只录图：不编拍照计划、不测量、没有发布包
-        let plan = if collect {
-            None
-        } else {
+        if !collect {
             let plan =
                 match admission::admit(&request, &recipe, crate::plc::recipe_plan(host, &recipe)) {
                     Ok(plan) => plan,
@@ -1801,15 +1803,14 @@ impl Machine {
             if let Err(reason) = self.s7.validate_plan(&plan) {
                 return self.refuse(sn, id, fault::PLAN_MISMATCH, reason).await;
             }
-            Some(plan)
-        };
+        }
         if !collect && !self.frame_pool.health().can_arm() {
             return self
                 .refuse(
                     sn,
                     id,
                     fault::PROCESS_TIMEOUT,
-                    "测量线程全部超时且尚未返回，拒绝布防".into(),
+                    "测量线程全部超时且尚未返回，本件不能检测".into(),
                 )
                 .await;
         }
@@ -1821,17 +1822,8 @@ impl Machine {
                 Err(reason) => return self.refuse(sn, id, fault::NO_RECIPE, reason).await,
             }
         };
-        budget.mark("identity-recipe-plan");
-        arm_remaining!("before-verify");
         if let Some(prepared) = production.clone() {
-            let checked = budget
-                .run("prepared-verify", async {
-                    tauri::async_runtime::spawn_blocking(move || prepared.verify())
-                        .await
-                        .map_err(|error| error.to_string())
-                })
-                .await;
-            match checked {
+            match bounded_check(move || prepared.verify()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(reason)) => {
                     return self
@@ -1843,8 +1835,14 @@ impl Machine {
                         )
                         .await
                 }
-                Err(reason) => {
-                    log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
+                Err(error) => {
+                    let reason = match error {
+                        Some(error) => format!("发布包核验线程异常：{error}"),
+                        None => format!(
+                            "发布包核验超过 {} ms 未完成",
+                            INTAKE_CHECK_TIMEOUT.as_millis()
+                        ),
+                    };
                     return self.refuse(sn, id, fault::PROCESS_TIMEOUT, reason).await;
                 }
             }
@@ -1875,7 +1873,7 @@ impl Machine {
             identities.push(identity);
         }
         let burst = {
-            // 按 SDK 帧计数定每台相机的基线（D-SB-10），会话或计数来源不可信时拒绝布防（98）
+            // 按 SDK 帧计数定每台相机的基线（D-SB-10），会话或计数来源不可信时本件不能检测（98）
             let policy = if real_parts(&app) {
                 Policy::burst_production(None)
             } else {
@@ -1905,8 +1903,6 @@ impl Machine {
         let bundle_id = production
             .as_ref()
             .map(|prepared| prepared.bundle.id.clone());
-        budget.mark("camera-router");
-        arm_remaining!("before-recording");
         if let Err(reason) = host.audit.begin_recording(&cycle_id) {
             return self
                 .refuse(
@@ -1949,7 +1945,7 @@ impl Machine {
             image_measurement: crate::site::image_measurement(&app),
             proc_timeout: settings.timeouts.proc(),
             drain_timeout: settings.timeouts.drain(),
-            armed_at: Instant::now(),
+            admitted_at: Instant::now(),
             end_at: None,
             fault: None,
             cams,
@@ -1959,127 +1955,85 @@ impl Machine {
             recording,
             recipe: recipe.clone(),
         });
-        budget.mark("recording-begin");
-        arm_remaining!("before-audit-health");
         let audit = host.audit.clone();
-        let health = arm_health_check(
-            &mut budget,
-            move || audit.health(),
-            |error| host.audit.fail(error),
-        )
-        .await;
-        if let Err(reason) = health {
-            log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
+        if let Err(reason) =
+            intake_health_check(move || audit.health(), |error| host.audit.fail(error)).await
+        {
             return self
                 .refuse(
                     sn,
                     id,
                     fault::PROCESS_TIMEOUT,
-                    format!("录制开始后追溯健康检查失败，未启动相机：{reason}"),
+                    format!("录制开始后追溯健康检查失败：{reason}"),
                 )
                 .await;
         }
-        arm_remaining!("before-plc-arm");
-        let r = budget
-            .run_serial(
-                "plc-arm-confirmed",
-                self.s7.arm_outputs(engine, plan.as_ref()),
-            )
-            .await;
-        let elapsed = budget.elapsed();
-        let committed = match r {
-            Ok(()) => {
-                let committed = self
-                    .s7
-                    .commit_arm(engine)
-                    .await
-                    .map_err(|e| format!("布防后握手日志落盘失败：{e}"));
-                budget.mark("plc-arm-journal");
-                committed
-            }
-            Err(e) => Err(format!("布防写入失败或总预算超时：{e}")),
-        };
-        let mut trace = budget.trace();
-        trace["elapsedMs"] = json!(elapsed.as_secs_f64() * 1000.0);
-        trace["plcArm"] = json!(self.s7.arm_timing());
-        if let Err(reason) = committed {
-            log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "trace": trace}).to_string());
-            self.s7.fault(engine, reason.clone()).await;
-            return self.enter_fault("arm", reason);
+        if let Err(reason) = self.s7.commit_intake(engine).await {
+            log(&app, "err", "接件阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "elapsedMs": millis(started)}).to_string());
+            return self.enter_fault("intake", format!("接件登记失败：{reason}"));
         }
-        self.part.as_mut().unwrap().armed_at = Instant::now();
+        self.part.as_mut().unwrap().admitted_at = Instant::now();
         self.set_phase(Phase::Acquire);
         log_with(
             &app,
             "info",
-            "armed↑ busy↑",
+            "接件登记",
             format!(
-                "{} · N={planned} · 布防耗时 {} ms",
+                "{} · N={planned} · 登记耗时 {} ms",
                 recipe.id,
-                elapsed.as_millis()
+                started.elapsed().as_millis()
             ),
-            Fields::stage("armed")
-                .with_data(json!({"armMs": elapsed.as_secs_f64() * 1000.0, "shots": planned})),
+            Fields::stage("admitted")
+                .with_data(json!({"intakeMs": millis(started), "shots": planned})),
         );
-        log_with(
-            &app,
-            "info",
-            "布防阶段",
-            json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "armed", "trace": trace})
-                .to_string(),
-            Fields::default().with_data(trace),
-        );
+        log(&app, "info", "接件阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "admitted", "elapsedMs": millis(started)}).to_string());
     }
 
-    /// 校验没过，不布防，直接回写 ERR。维护模式下不拒收：照常布防，PLC 按未检放行，原因记进本件记录。
+    /// 本件不能检测：PLC 不等 PC，工件照常运动采图；登记为未检件，PLC 报工件结束后回 ERR（维护模式回 0），原因记进本件记录。
     async fn refuse(&mut self, sn: String, recipe_id: Option<String>, code: u16, reason: String) {
-        if self.s7.part_maintenance() {
-            return self.arm_uninspected(sn, recipe_id, code, reason).await;
-        }
-        log(&self.app, "err", "校验失败", format!("{reason}，不布防"));
-        self.report(sn, recipe_id, Judgement::error(code, reason))
-            .await
-    }
-
-    async fn arm_uninspected(
-        &mut self,
-        sn: String,
-        recipe_id: Option<String>,
-        code: u16,
-        reason: String,
-    ) {
         let app = self.app.clone();
-        let reason = format!("维护模式：{reason}；照常布防放行，本件未检");
-        log(&app, "warn", "维护模式", reason.clone());
+        let maintenance = self.s7.part_maintenance();
+        let reason = if maintenance {
+            format!("维护模式：{reason}；本件未检")
+        } else {
+            reason
+        };
+        log(
+            &app,
+            if maintenance { "warn" } else { "err" },
+            "接件校验",
+            format!("{reason}；工件结束后回结果"),
+        );
+        log(
+            &app,
+            "warn",
+            "接件阶段",
+            json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "deferred"}).to_string(),
+        );
         match self.part.as_mut() {
             Some(part) => {
                 part.fault.get_or_insert((code, reason));
             }
             None => {
+                let judgement = if maintenance {
+                    uninspected_judgement(code, reason)
+                } else {
+                    Judgement::error(code, reason)
+                };
                 self.uninspected = Some(Uninspected {
                     sn,
                     recipe_id,
-                    judgement: uninspected_judgement(code, reason),
-                    armed_at: Instant::now(),
-                })
+                    judgement,
+                    admitted_at: Instant::now(),
+                });
             }
         }
-        let engine = plc(&app);
-        let armed = match self.s7.arm_outputs(engine, None).await {
-            Ok(()) => self
-                .s7
-                .commit_arm(engine)
-                .await
-                .map_err(|e| format!("布防后握手日志落盘失败：{e}")),
-            Err(e) => Err(format!("维护模式布防失败：{e}")),
-        };
-        if let Err(reason) = armed {
+        if let Err(reason) = self.s7.commit_intake(plc(&app)).await {
             self.uninspected = None;
-            self.s7.fault(engine, reason.clone()).await;
-            return self.enter_fault("arm", reason);
+            return self.enter_fault("intake", format!("接件登记失败：{reason}"));
         }
         if let Some(part) = self.part.as_mut() {
-            part.armed_at = Instant::now();
+            part.admitted_at = Instant::now();
         }
         self.set_phase(Phase::Acquire);
     }
@@ -2097,14 +2051,14 @@ impl Machine {
                             .is_ok_and(|state| state.0.session == f.session)
                     });
                     let burst = &mut part.burst;
-                    // 布防后的手动帧丢弃并告警，不判 ERR（它占了这台相机一个帧号，此后的帧组可能错开一格）
+                    // 接件后的手动帧丢弃并告警，不判 ERR（它占了这台相机一个帧号，此后的帧组可能错开一格）
                     if let Some(camera) = burst
                         .baseline(f.cam)
                         .filter(|base| current && f.frame_counter > *base)
                         .and_then(|_| part.cams.iter().position(|&c| c == f.cam))
                         .filter(|&camera| burst.first_warning(camera, burst::Warning::Manual))
                     {
-                        let message = format!("生产布防后收到相机 {} 的手动触发帧（帧计数 {}），已丢弃；该相机此后的帧组可能错开一格", burst.camera_name(camera), f.frame_counter);
+                        let message = format!("生产接件后收到相机 {} 的手动触发帧（帧计数 {}），已丢弃；该相机此后的帧组可能错开一格", burst.camera_name(camera), f.frame_counter);
                         log_with(
                             &self.app,
                             "warn",
@@ -2119,6 +2073,10 @@ impl Machine {
                     }
                 }
             }
+            return;
+        }
+        // 没能建立检测的件照常出帧：只记入设备计数账，不算游离帧
+        if accepting && self.uninspected.is_some() {
             return;
         }
         if !accepting || self.part.is_none() {
@@ -2238,7 +2196,7 @@ impl Machine {
             burst::Arrival::Stale { camera } => {
                 let camera_id = burst.camera_name(camera).to_owned();
                 self.stray += 1;
-                let msg = format!("相机 {camera_id} 的帧（帧计数 {}）不属于本件：上一件的迟到帧或布防前那次打开的帧，记为游离帧", f.frame_counter);
+                let msg = format!("相机 {camera_id} 的帧（帧计数 {}）不属于本件：上一件的迟到帧或接件前那次打开的帧，记为游离帧", f.frame_counter);
                 let fields =
                     fields(&camera_id, None).with_data(json!({"frameCounter": f.frame_counter}));
                 self.noisy(
@@ -2429,7 +2387,7 @@ impl Machine {
                 .s7
                 .poll_with_devices(plc(&app), reset, &devices, audit_ready, intake_ready)
                 .await;
-            // 布防持有配置门直到下面 store_busy 登记在途，相机与配置操作要么在布防前完成，要么看到在途后拒绝
+            // 接件持有配置门直到下面 store_busy 登记在途，相机与配置操作要么在接件前完成，要么看到在途后拒绝
             let mut _config = None;
             if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7) {
                 let result = match self.current_cycle_id.as_deref() {
@@ -2573,14 +2531,8 @@ impl Machine {
         }
         if let Some(bare) = self.uninspected.as_ref() {
             match self.phase {
-                Phase::Acquire if bare.armed_at.elapsed() > timeouts.motion() => {
-                    log(
-                        &self.app,
-                        "err",
-                        "运动超时",
-                        format!("T_motion {} ms", timeouts.motion_ms),
-                    );
-                    self.set_phase(Phase::Drain);
+                Phase::Acquire if bare.admitted_at.elapsed() > timeouts.motion() => {
+                    self.part_end_timeout(timeouts.motion_ms).await;
                 }
                 Phase::Drain => {
                     let bare = self.uninspected.take().unwrap();
@@ -2592,25 +2544,12 @@ impl Machine {
         }
         match self.phase {
             Phase::Acquire => {
-                let Some(part) = self.part.as_mut() else {
-                    return;
-                };
-                if part.armed_at.elapsed() > timeouts.motion() {
-                    part.fault = Some((
-                        fault::MOTION_TIMEOUT,
-                        format!(
-                            "布防后 {} s 内未收到运动结束（plcState=20）",
-                            timeouts.motion_ms / 1000
-                        ),
-                    ));
-                    part.end_at = Some(Instant::now());
-                    log(
-                        &self.app,
-                        "err",
-                        "运动超时",
-                        format!("T_motion {} ms", timeouts.motion_ms),
-                    );
-                    self.set_phase(Phase::Drain);
+                if self
+                    .part
+                    .as_ref()
+                    .is_some_and(|part| part.admitted_at.elapsed() > timeouts.motion())
+                {
+                    self.part_end_timeout(timeouts.motion_ms).await;
                 }
             }
             Phase::Drain => {
@@ -2654,6 +2593,22 @@ impl Machine {
             }
             _ => {}
         }
+    }
+
+    /// PLC 在 10 不接受结果：等不到工件结束就中断本件（ERR 97、交付失败），置故障让 PLC 按未检处理。
+    async fn part_end_timeout(&mut self, motion_ms: u64) {
+        let reason = format!(
+            "接件后 {} s 内未收到工件结束（plcState=20）",
+            motion_ms / 1000
+        );
+        log(
+            &self.app,
+            "err",
+            "等工件结束超时",
+            format!("T_motion {motion_ms} ms"),
+        );
+        self.s7.fault(plc(&self.app), reason.clone()).await;
+        self.enter_fault("motion", reason);
     }
 
     async fn judge_part(&mut self) {
@@ -2961,7 +2916,7 @@ impl Machine {
         })
     }
 
-    /// 帧与区域记录：在途件按它的帧组与判定给出；没有在途件（拒绝布防）时按配方给出没有帧的记录；没有配方为 None。
+    /// 帧与区域记录：在途件按它的帧组与判定给出；没有在途件（接件时就不能检测）时按配方给出没有帧的记录；没有配方为 None。
     fn burst_outcome(
         &self,
         sn: &str,
@@ -2994,7 +2949,7 @@ impl Machine {
                     errors: if off {
                         Vec::new()
                     } else {
-                        vec![format!("布防校验未通过，未开始录制：{}", judgement.reason)]
+                        vec![format!("接件校验未通过，未开始录制：{}", judgement.reason)]
                     },
                 })?;
         }
@@ -3149,7 +3104,12 @@ impl Machine {
                 .map(|p| p.sn.clone())
                 .or_else(|| self.s7.request().map(|r| r.sn.clone()))
                 .unwrap_or_default();
-            let judgement = Judgement::error(fault::DEVICE_LOST, format!("{reason}，结果未回写"));
+            let code = if source == "motion" {
+                fault::MOTION_TIMEOUT
+            } else {
+                fault::DEVICE_LOST
+            };
+            let judgement = Judgement::error(code, format!("{reason}，结果未回写"));
             self.count(judgement.verdict);
             if let Err(error) = self.record(
                 &sn,
@@ -3401,7 +3361,7 @@ fn set_maintenance(cycle: &CycleHost, enabled: bool, reason: &str) -> Result<(),
     let _gate = cycle
         .config_gate
         .try_lock()
-        .map_err(|_| "正在布防或处理其他配置操作，请稍后重试")?;
+        .map_err(|_| "正在接件或处理其他配置操作，请稍后重试")?;
     let mut settings = cycle.settings();
     settings.maintenance = enabled.then(|| crate::settings::Maintenance {
         since: now_ms(),
@@ -3419,7 +3379,7 @@ pub fn cycle_select_recipe(cycle: State<'_, CycleHost>, recipe_id: String) -> Re
     let _gate = cycle
         .config_gate
         .try_lock()
-        .map_err(|_| "正在布防或处理其他配置操作，请稍后重试")?;
+        .map_err(|_| "正在接件或处理其他配置操作，请稍后重试")?;
     cycle.recipe(&recipe_id).ok_or("配方不存在")?;
     let mut shared = cycle.shared.lock().unwrap();
     let phase = shared.snapshot.as_ref().map_or(Phase::Idle, |s| s.phase);

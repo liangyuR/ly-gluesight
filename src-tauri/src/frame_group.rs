@@ -77,13 +77,13 @@ pub struct LossAlarm {
 }
 
 impl Grouper {
-    /// baselines 按计划相机顺序，取布防时各相机的 frame_counter 基线；seq 超过 `max_seq` 的帧判 OutOfRange（上限不超过 [`MAX_SEQ`]）。
+    /// baselines 按计划相机顺序，取接件时各相机的 frame_counter 基线；seq 超过 `max_seq` 的帧判 OutOfRange（上限不超过 [`MAX_SEQ`]）。
     pub fn with_limit(baselines: Vec<u64>, max_seq: u64) -> Self {
         let cams = baselines.len();
         Self { max_counters: baselines.clone(), baselines, seqs: vec![BTreeSet::new(); cams], max_seq: max_seq.min(MAX_SEQ) }
     }
 
-    /// 布防时基线未知的相机，收到第一帧前补上基线。
+    /// 接件时基线未知的相机，收到第一帧前补上基线。
     pub fn set_baseline(&mut self, cam: usize, baseline: u64) {
         self.baselines[cam] = baseline;
         self.max_counters[cam] = baseline;

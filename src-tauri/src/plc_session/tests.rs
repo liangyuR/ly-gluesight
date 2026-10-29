@@ -160,16 +160,13 @@ impl Rig {
         assert_eq!(self.session.request().unwrap().request_seq, seq);
     }
 
-    async fn arm(&mut self) {
-        self.session
-            .arm_outputs(&self.engine, Some(&self.plan))
-            .await
-            .unwrap();
-        self.session.commit_arm(&self.engine).await.unwrap();
-        assert_eq!(self.session.phase(), SessionPhase::Acquiring);
+    /// 接件登记：核对计划后进入采集，不写 PLC，pcState 保持 10。
+    async fn intake(&mut self) {
+        self.session.validate_plan(&self.plan).unwrap();
+        self.session.commit_intake(&self.engine).await.unwrap();
         assert_eq!(
-            (self.plc.pc(), self.plc.get(tag::SEQ_ECHO)),
-            (state::PC_ARMED, self.plc.get(tag::REQUEST_SEQ))
+            (self.session.phase(), self.plc.pc()),
+            (SessionPhase::Acquiring, state::PC_READY)
         );
     }
 
@@ -179,7 +176,7 @@ impl Rig {
         let event = self.session.poll(&self.engine, false, true).await;
         assert!(
             matches!(event, SessionEvent::End(_)),
-            "expected motion end, got {event:?}"
+            "expected part end, got {event:?}"
         );
         assert_eq!(self.session.phase(), SessionPhase::Draining);
     }
@@ -218,13 +215,13 @@ impl Rig {
     }
 }
 
-/// 协议 7 正常一件：PLC 锁存结果（30）前 PC 保持 30，锁存后才回就绪并清事务；序号连续递增。
+/// 协议 8 正常一件：PLC 锁存结果（30）前 PC 保持 30，锁存后才回就绪并清事务；序号连续递增。
 #[tokio::test]
 async fn s7_wire_part_returns_ready_only_after_plc_latches_result() {
     let mut rig = Rig::new("normal-part").await;
     for seq in [1, 2] {
         rig.request(seq, "SN-50").await;
-        rig.arm().await;
+        rig.intake().await;
         rig.end().await;
         rig.report().await;
         rig.fresh().await;
@@ -250,7 +247,7 @@ async fn plc_reset_request_completes_without_operator_then_intake_pause_withdraw
     let mut rig = Rig::new("plc-reset").await;
     rig.request(1, "SN-50").await;
     rig.plc.set(&[
-        (tag::PLC_REASON, 11),
+        (tag::PLC_REASON, 14),
         (tag::PLC_STATE, state::PLC_FAULT as u32),
     ]);
     rig.phase(SessionPhase::Fault).await;
@@ -332,7 +329,7 @@ async fn software_reset_waits_for_plc_idle_before_ready() {
 async fn s7_wire_disconnect_after_result_applied_never_commits_success() {
     let mut rig = Rig::new("disconnect-after-apply").await;
     rig.request(1, "SN-50").await;
-    rig.arm().await;
+    rig.intake().await;
     rig.end().await;
     rig.plc.fault(Fault::DisconnectAfterWriteTo(PC_STATE_WORD));
     assert!(rig.session.report(&rig.engine, 1, 0).await.is_err());
@@ -358,7 +355,7 @@ async fn s7_wire_disconnect_after_result_applied_never_commits_success() {
 async fn s7_wire_heartbeat_fault_stops_outputs_before_slow_io_finishes() {
     let mut rig = Rig::new("heartbeat-during-io").await;
     rig.request(1, "SN-50").await;
-    rig.arm().await;
+    rig.intake().await;
     rig.plc.fault(Fault::HeartbeatStop);
     let (release, wait) = mpsc::channel();
     let operation = rig.session.blocking_io(&rig.engine, move || {
@@ -383,10 +380,9 @@ async fn s7_wire_heartbeat_fault_stops_outputs_before_slow_io_finishes() {
     rig.finish().await;
 }
 
-/// 协议 7 第八节：维护件按 pcMode=1 布防，没有拍照计划也能布防，结果码只能是 0；切换模式不算外部改写，
-/// 在途件按接件时锁存的模式完成。
+/// 协议 8 第九节：维护件按 pcMode=1 回写，结果码只能是 0；切换模式不算外部改写，在途件按接件时锁存的模式完成。
 #[tokio::test]
-async fn maintenance_part_arms_with_pc_mode_1_and_accepts_only_result_code_0() {
+async fn maintenance_part_reports_with_pc_mode_1_and_accepts_only_result_code_0() {
     let mut rig = Rig::new("maintenance").await;
     rig.session.set_maintenance(true);
     rig.fresh().await;
@@ -399,18 +395,17 @@ async fn maintenance_part_arms_with_pc_mode_1_and_accepts_only_result_code_0() {
     rig.request(1, "SN-M1").await;
     rig.session.set_maintenance(false);
     assert!(rig.session.part_maintenance());
-    rig.session.arm_outputs(&rig.engine, None).await.unwrap();
-    rig.session.commit_arm(&rig.engine).await.unwrap();
-    assert_eq!(
-        (rig.plc.pc(), rig.plc.get(tag::PC_MODE)),
-        (state::PC_ARMED, 1)
-    );
+    rig.session.commit_intake(&rig.engine).await.unwrap();
     rig.end().await;
     assert!(rig.session.report(&rig.engine, 1, 0).await.is_err());
     rig.session.report(&rig.engine, 0, 0).await.unwrap();
     assert_eq!(
-        (rig.plc.pc(), rig.plc.get(tag::RESULT_CODE)),
-        (state::PC_RESULT, 0)
+        (
+            rig.plc.pc(),
+            rig.plc.get(tag::RESULT_CODE),
+            rig.plc.get(tag::PC_MODE)
+        ),
+        (state::PC_RESULT, 0, 1)
     );
     rig.ack_release().await;
     assert_eq!(
@@ -421,16 +416,34 @@ async fn maintenance_part_arms_with_pc_mode_1_and_accepts_only_result_code_0() {
     rig.finish().await;
 }
 
-/// 正常件不能没有拍照计划就布防，也不能回结果码 0（0 只属于维护模式，PLC 判非法）。
+/// 协议 8 第六节：PLC 在 10 不接受结果，PLC 报工件结束（20）前不能发布任何结果（含检测错误 90）；
+/// 正常件也不能回结果码 0（0 只属于维护模式，PLC 判非法）。
 #[tokio::test]
-async fn normal_part_cannot_arm_without_plan_or_report_code_0() {
+async fn normal_part_reports_only_after_part_end_and_never_code_0() {
     let mut rig = Rig::new("normal-no-zero").await;
     rig.request(1, "SN-N1").await;
-    assert!(rig.session.arm_outputs(&rig.engine, None).await.is_err());
-    assert_eq!(rig.session.phase(), SessionPhase::Validating);
-    rig.arm().await;
+    rig.intake().await;
+    assert!(rig.session.report(&rig.engine, 90, 95).await.is_err());
+    assert_eq!(
+        (rig.session.phase(), rig.plc.pc()),
+        (SessionPhase::Acquiring, state::PC_READY)
+    );
     rig.end().await;
     assert!(rig.session.report(&rig.engine, 0, 0).await.is_err());
+    rig.report().await;
+    rig.ack_release().await;
+    rig.finish().await;
+}
+
+/// PLC 来件后不等 PC：接件登记还没完成工件就已结束（plcState=20），登记照常完成，下一次轮询即报工件结束。
+#[tokio::test]
+async fn part_end_before_intake_commit_is_reported_after_commit() {
+    let mut rig = Rig::new("end-during-intake").await;
+    rig.request(1, "SN-E1").await;
+    rig.plc.plc_state(state::PLC_MOTION_END);
+    rig.fresh().await;
+    rig.intake().await;
+    rig.end().await;
     rig.report().await;
     rig.ack_release().await;
     rig.finish().await;

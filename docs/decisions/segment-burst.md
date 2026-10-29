@@ -1,6 +1,6 @@
 # 分段连拍飞拍决策记录（segment-burst）
 
-段配方（分段连拍飞拍）是唯一的生产模型，本文是它的现行基准：规格与代码冲突时采用的做法（第四节 D-SB-n）、前后端 IPC 契约（第五节）、口径（第六节）、内存与队列（第七节）和实现要点（第九节）。PLC 握手与现场接线以 [生产通讯协议 7](../integration/plc-communication-protocol.md) 为准。
+段配方（分段连拍飞拍）是唯一的生产模型，本文是它的现行基准：规格与代码冲突时采用的做法（第四节 D-SB-n）、前后端 IPC 契约（第五节）、口径（第六节）、内存与队列（第七节）和实现要点（第九节）。PLC 握手与现场接线以 [生产通讯协议 8](../integration/plc-communication-protocol.md) 为准。
 
 依据：分段连拍飞拍方案第 18 版（2026-10-22，下称“规格”）与实现决策补充（2026-10-22，用户已确认，下称“决策补充”）；两者冲突时以决策补充为准。契约类型在 `src-tauri/src/{plan,frame_group,segmentation,burst_judge,calibration}.rs` 与 `src/features/plan/types.ts`（字段与 Rust serde 输出逐一对应）。
 
@@ -28,9 +28,10 @@
 
 ## 一、采集模型
 
-- 三台独立单视角相机（D-SB-11），Line0 高电平期间按软件设定的固定帧率连续采集，默认 10 fps；PLC 只门控采集使能，不产生逐帧脉冲。Software 触发只用于单帧标定与调试。
+- 三台独立单视角相机（D-SB-11），Line0 高电平期间按软件设定的固定帧率连续采集，默认 10 fps；PLC 按机械臂拍照信号 `CaptureActive` 门控采集使能（一件内可多次开关，段间空走不出帧，各段的帧都计入本件），不产生逐帧脉冲。Software 触发只用于单帧标定与调试。
 - 帧按各相机 SDK 帧号（`frame_counter`）配组（D-SB-10、第六节）；帧数告警只比较相机之间，不代表曝光同步。
-- PLC 报运动结束（plcState=20）后，PC 等满收尾窗口（`drain_ms`，默认 1000 ms）、已接受的帧都测完（含 D-SB-45 的收尾补测），再判定并回写结果；下一件须等当前件释放。
+- PC 读到 plcState=10 即接件登记（核对配方、发布包与相机，定帧计数基线，开始录制），不回写 PLC；登记前收到的帧不计入本件，按缺帧判定。
+- PLC 报工件结束（plcState=20）后，PC 等满收尾窗口（`drain_ms`，默认 1000 ms）、已接受的帧都测完（含 D-SB-45 的收尾补测），再判定并回写结果；任何结果都只在 plcState=20 之后回写。下一件须等当前件释放。
 - 分段按 D-SB-40：段结构由人定，本件收尾后 `Proportional` 按标定的各段 N_exp 比例与本件帧组数推算边界，边界两侧各留 `boundary_guard` 帧过渡区；单段配方、有段待标定或帧组数越界时整条胶路按“未分段”处理，只跑每帧独立检测、不判胶偏。
 
 ## 二、多段配方的发布与运行
@@ -39,13 +40,13 @@
 - **`expected_total` 的来源**：标定轮次统计整件帧组数的均值（四舍五入），存为配方的 `part_calib: Option<PartCalib>`；各段均已标定时等于各段 N_exp 之和（`plan::expected_total(segments, part_calib)`）。
 - **逐段标定**：多段计划只有每个标定件都确认了分段（示教件在分段标定，其余在多轮标定页复核）时，才按边界逐段写 N_exp；否则各段保持待标定（D-SB-21）。
 - **运行时**：多段配方按 D-SB-40 比例分段判定；单段配方或帧组数越界时整条胶路按未分段区域判，只跑每帧独立检测、不判胶偏。整件帧组数核对 `expected_total ± tolerance_total`，越界只告警。
-- 协议 7 的 PLC 只报型号、序号与 SN，ΣN_exp 只用于 PC 侧的帧数核对，重新标定不用改 PLC。
+- 协议 8 的 PLC 只报型号、序号与 SN，ΣN_exp 只用于 PC 侧的帧数核对，重新标定不用改 PLC。
 
 ## 三、已接受的默认做法
 
 - **默认做法 1**：**溢胶**按“每帧最大胶宽超过溢胶上限（`overflow.max_width_mm`）”判，结论 NG，结果码沿用 NG_WIDTH（14），原因写“溢胶”。**气泡、拉丝不检**，结果中标注“未检项”（`BurstJudgement.unchecked`）。
 - **默认做法 2**（经 D-SB-48 修订）：胶偏默认按 `AbsoluteX` 判；选 `ToEdge` 并配了找边参数时按胶边距判（D-SB-48），没配找边参数的段结果标“胶偏未判：测量量未实现”（`OffsetUnjudged::MeasureNotImplemented`）。
-- **默认做法 3**：**提前结束**（PLC 提前报运动结束）：PC 用已收到的帧照常判 OK/NG；帧组数 < ΣN_exp − Σtol 时加 `short_part`（疑似提前终止）标记，历史中单独显示（`PartSummary.flags`）。
+- **默认做法 3**：**提前结束**（PLC 提前报工件结束）：PC 用已收到的帧照常判 OK/NG；帧组数 < ΣN_exp − Σtol 时加 `short_part`（疑似提前终止）标记，历史中单独显示（`PartSummary.flags`）。
 - **默认做法 4**：**每段、它的每台检测相机示教一条走廊**（D-SB-42、D-SB-45）；弯道用从出胶点起画的短走廊，帧走出走廊记“检测不完整”（`FrameState::OutOfCorridor`），不判 NG。弯道走廊没有经过真实弯道图像验证。
 - **默认做法 6**：**重新标定使 N_exp / expected_total 变化时分配新的 `plan_version`**（二者都进入计划身份，见 D-SB-19）；计划版本是 PC 侧发布包与记录的身份，不下发 PLC。
 - **默认做法 7**：按本段检测相机取最差，未分段区域按每帧预测段的检测相机取最差（D-SB-45）；帧序号取 SDK **`frame_counter`**；三台相机整件**全无帧判 ERR 91**；采集失败的异常码为 98 / 99（D-SB-33）；**容差默认 1**。
@@ -74,7 +75,7 @@
 ### D-SB-7 下一件基线：每台相机各取自己见到的最高 frame_counter
 
 - 问题：规格 §3 帧序号取 SDK 帧号；PLC 不报触发计数。
-- 采用：每台相机下一件的帧计数下限 = max(该相机原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter` → `Ledgers::set_frame_floor`，记在 `Ledger.frame_floor`，布防时由 `shot_router::arm_frames` 与本会话最高帧计数取大）。故障复位（`Ledgers::clear_floors`）清掉下限，之后只按实际见到的计数布防。
+- 采用：每台相机下一件的帧计数下限 = max(该相机原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter` → `Ledgers::set_frame_floor`，记在 `Ledger.frame_floor`，接件时由 `shot_router::arm_frames` 与本会话最高帧计数取大）。故障复位（`Ledgers::clear_floors`）清掉下限，之后只按实际见到的计数定基线。
 - 理由：相机偶发丢末帧（已计数、帧没送到）只会让下一件出现两个不完整帧组，且下一件后自动对齐。
 
 ### D-SB-8 采集轮次帧数与存储
@@ -95,7 +96,7 @@
 ### D-SB-11 设备模型：三台独立单视角相机
 
 - 问题：原相机配置 `view_count ∈ {1,3}`，三视角靠 `composite_layout` 拆拼接图；规格 §0 一次采集 = 三台独立相机各出 1 帧，§1 Plan.cameras = 3 台设备 id。
-- 采用：段配方的计划相机必须是 3 个互不相同、单视角（`view_count = 1`、无 `composite_layout`）的设备；不满足时段配方校验或布防报错。相机配置本身仍允许三目拼接，标定页对单视角相机不选视角。
+- 采用：段配方的计划相机必须是 3 个互不相同、单视角（`view_count = 1`、无 `composite_layout`）的设备；不满足时段配方校验报错，接件时本件记检测错误。相机配置本身仍允许三目拼接，标定页对单视角相机不选视角。
 - 回退：若决定彻底停用三目拼接，在相机配置加载处拒绝。
 
 ### D-SB-12 所有帧都测
@@ -169,7 +170,7 @@
 ### D-SB-25 计划导出
 
 - 问题：规格 §1 要有给 PLC / 机器人工程师的计划 JSON：段序列、各段 N_exp、容差、ΣN_exp。
-- 采用：`plan::PlanExport` 与命令 `recipe_plan_export`；工作区视图带 `WorkspaceView.plan.productionExport / candidateExport`，旧字段 `productionPlc / candidatePlc` 为 null。配方总览不设“PLC 对接参数”面板：协议 7 的 PLC 只需型号，已发布配方的型号与 ΣN_exp 看配方库卡片摘要。
+- 采用：`plan::PlanExport` 与命令 `recipe_plan_export`；工作区视图带 `WorkspaceView.plan.productionExport / candidateExport`，旧字段 `productionPlc / candidatePlc` 为 null。配方总览不设“PLC 对接参数”面板：协议 8 的 PLC 只需型号，已发布配方的型号与 ΣN_exp 看配方库卡片摘要。
 
 ### D-SB-27 离线仿真
 
@@ -214,7 +215,7 @@
 ### D-SB-34 本件未检与提前结束
 
 - 问题：规格 §0 PLC 不提交请求（或提前终止）时整件按未检处置。
-- 采用（默认做法 3）：PLC 不提交请求时 PC 没有记录，由 PLC 记未检。提前结束由 PLC 提前报运动结束表达，PC 用已收到的帧照常判，帧组数 < ΣN_exp − Σtol 时加 `flags.short_part`（疑似提前终止），历史中单独显示，不改 OK/NG。在途 PLC 进入故障或复位时，本件按中断记 ERR 98（[core-flow.md](core-flow.md) D-CF-6）。
+- 采用（默认做法 3）：PLC 不提交请求时 PC 没有记录，由 PLC 记未检。提前结束由 PLC 提前报工件结束表达，PC 用已收到的帧照常判，帧组数 < ΣN_exp − Σtol 时加 `flags.short_part`（疑似提前终止），历史中单独显示，不改 OK/NG。在途 PLC 进入故障或复位时，本件按中断记 ERR 98（[core-flow.md](core-flow.md) D-CF-6）。
 - 残余风险：可能出现 PLC 记了未检、PC 记录却写 OK 的情况；需要时可改为 short_part 判 ERR。
 
 ### D-SB-35 采集轮次的一致性校验
@@ -355,7 +356,7 @@
   - 新增只读命令 `workspace_publish_checks`，验证与发布页按候选修订当场展示；发布按钮只看这些检查与计划本身（整件 / 逐段标定、三台相机）。
   - 独立样本验证保留为可选工具（`workspace_validate`，页面“独立样本验证（可选）”），结果照旧展示，不影响发布；进度里“验证”步骤标为可选，“发布”步骤只要求采集、走廊示教、多轮标定完成。
   - 步骤条与菜单里“验证与发布”改名“发布”。
-  - 不要求相机在线（用户要求，2026-10-26）：原“设备与采集”改为“相机配置”，只核对计划相机在相机组里有配置、来源一致、三台互不相同的单视角相机；相机是否连上、就绪不在发布时核对，布防开工时照旧检查。发布包记录的采集配置取相机组配置，不读在线设备。
+  - 不要求相机在线（用户要求，2026-10-26）：原“设备与采集”改为“相机配置”，只核对计划相机在相机组里有配置、来源一致、三台互不相同的单视角相机；相机是否连上、就绪不在发布时核对，接件时照旧检查。发布包记录的采集配置取相机组配置，不读在线设备。
 - 理由：发布前检查已覆盖设备、示教、标定与生产版本这些硬条件；样本验证的结论由操作员按需在发布前或上线后核对。
 - 风险：发布前不再强制用独立样本跑一遍完整检测，走廊或允差设置有问题时只能在生产或可选验证里发现；离线发布的版本仍只能离线运行（D-SB-30 不变）。
 - 回退：`workspace_publish` 恢复要求当前修订的 `validation.passed` 并比对环境标签，进度把“验证”改回必经步骤。
@@ -458,7 +459,7 @@
 
 - 问题：整圈示教采集靠 PC 发起的 DB6 / DB12 示教握手。现场 PLC 的示教程序一直不合规：不回写握手编号、取消后不确认、停止后仍门控，现场始终跑不通。维护模式采集后从历史导入（HI-1～HI-8）已实现并试过，能提供建配方所需的轮次。
 - 采用：
-  - 删除示教握手：PC 不发起整圈采集，PLC 页没有示教页签，点表没有 DB6 / DB12 点位（`plc.json` 里带示教标签的点位加载时去掉），日志没有 `teach.*` 与 `op.capture.start / stop`，离线不再“送一圈”；协议 7 不再有生产与示教互斥。
+  - 删除示教握手：PC 不发起整圈采集，PLC 页没有示教页签，点表没有 DB6 / DB12 点位（`plc.json` 里带示教标签的点位加载时去掉），日志没有 `teach.*` 与 `op.capture.start / stop`，离线不送“一圈”；协议 8 没有生产与示教互斥。
   - 轮次只来自历史件：维护模式按采集版采图后，在示教件页、多轮标定页选用时导入（[recipe-build-flow](recipe-build-flow.md)）；开发与测试由 `examples/capture_fixture.rs` 生成仿历史录制件，走同一导入路径。
   - 原“整圈采集”页现为“示教件”页；独立验证只用历史样本。Line0 门控改用维护件的帧数、帧率与时长验收。
   - 读兼容：已有轮次（格式 2 带 `teachingRoundId`，或格式 3）照常读取；`CaptureRoundV2` 的字段与 `CaptureState` / `CaptureFailureV2` 全部变体保留，否则旧轮次会被改名为 `round.broken-*`。这些轮次只属于旧流程候选（RB-5），随候选删除。
@@ -528,7 +529,7 @@
 
 ### 5.2 新 DTO
 
-- **`PartViewBurst`**（在线在途件）：`cameras`、`expectedTotal`、`toleranceTotal`、`deviceTriggers`（保留字段，协议 7 不报，为 null）、`groupCount`、`cameraFrames`、`measuredFrames`、`pendingMeasure`、`groups: FrameGroupView[]`。
+- **`PartViewBurst`**（在线在途件）：`cameras`、`expectedTotal`、`toleranceTotal`、`deviceTriggers`（保留字段，协议 8 不报，为 null）、`groupCount`、`cameraFrames`、`measuredFrames`、`pendingMeasure`、`groups: FrameGroupView[]`。
 - **`FrameGroupView`**：`seq`、`incomplete`、`cells: FrameCellView[]`（按计划相机顺序）。`FrameCellView`：`status`（`waiting | measuring | FrameState`）、`verdict`（该帧单独的结论，未测完为 null）、`frameCounter`。
 - **`PartDetailBurst`**（历史详情）：`segments`（本件配方快照的段）、`cameras`、`expectedTotal`、`toleranceTotal`、`deviceTriggers`（同上）、`cameraFrames`、`judgement: BurstJudgement`、`frames: FrameRecord[]`（按 camera、seq 排序）。
 - **`FrameRecord`**：`camera`（计划相机下标）、`seq`、`status: FrameState`、`frameCounter`、`triggerCounter`、`region`（`judgement.regions` 下标，不在任何区域为 null）、`metrics: FrameMetrics | null`（missing 时为 null）、`rawFile`（录制根内相对路径，未录制或队满丢弃为 null）。1..=groupCount 内每个 (camera, seq) 都有一条，缺帧也有。
@@ -591,7 +592,7 @@
 
 - **seq**：`frame_counter − 该相机基线`，从 1 起；frame_counter ≤ 基线为 Stale（上一件迟到帧，不计入本件）；同一相机重复的 seq 为 Duplicate，保留先到的那帧。
 - **帧数 = 帧组数**：区域帧数 = `last_seq − first_seq + 1`；整件或整轮帧组数 = 各相机最大 seq 的最大值。标定与运行同一口径。单台相机的帧数只用于丢帧告警：与另外每一台相机都相差 > 1（`frame_group::loss_alarms`；[10, 10, 8] 只有第 3 台告警，前两台彼此一致，不因第 3 台少帧被连带告警），每台相机至多一条。
-- **每相机基线**：布防时取各相机本会话见到的最高 frame_counter 与上一件推算的下限中较大者；下一件基线 = max(原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter`，D-SB-7）。
+- **每相机基线**：接件时取各相机本会话见到的最高 frame_counter 与上一件推算的下限中较大者；下一件基线 = max(原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter`，D-SB-7）。
 - **帧数越界只告警**：区域帧组数 ∉ [N_exp − tol, N_exp + tol] 记 `frame_count_anomaly`，该区域照常检测，不改 OK/NG。运行时只有覆盖全部段的未分段区域，与 `expected_total ± tolerance_total` 比较。
 - **short_part**：整件帧组数 < `expected_total − tolerance_total`（`expected_total` 为 null 时不判）。
 - **expected_total**：各段 N_exp 都非空时为其和，否则取 `part_calib.expected_total`，都没有为 null。**tolerance_total** = Σ 各段 tolerance。
@@ -682,11 +683,11 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 #### 11. 生产节拍
 
-- **布防**：`shot_router::arm_frames` 按 SDK 帧计数定基线（D-SB-7），本会话没见过帧时取开流后计数起点，仍未知时不拒绝布防，取本件这台相机首帧计数 − 1（本件没收到帧的相机不记下一件下限）；`Policy::burst_production` 认 ChunkTrigger / ChunkFrame / SdkFrame，`Policy::burst_offline` 另认 Synthetic。会话或计数来源不可信拒绝布防报 98；测量池全部超时未返回也拒绝布防。
-- **帧**：Grouper 的 seq 上限 = ΣN_exp + Σtol + 64，超出判 `Offer::OutOfRange`（不计入本件、不抬基线），丢弃并告警。重复帧号丢弃，每台相机每件告警一次；上一件迟到帧记游离帧；布防后的手动帧丢弃并告警（不判 ERR，告警写明该相机此后帧组可能错开一格）；检测中会话变化或计数来源变为不可信判 ERR 98。回调通道满、图像内存预算满的帧不交给节拍，即缺帧。
+- **接件**：`shot_router::arm_frames` 在接件登记时按 SDK 帧计数定基线（D-SB-7），本会话没见过帧时取开流后计数起点，仍未知时不阻止接件，取本件这台相机首帧计数 − 1（本件没收到帧的相机不记下一件下限）；`Policy::burst_production` 认 ChunkTrigger / ChunkFrame / SdkFrame，`Policy::burst_offline` 另认 Synthetic。会话或计数来源不可信记 98，测量池全部超时未返回、发布包核验或追溯健康检查超过 1 s 未完成（`INTAKE_CHECK_TIMEOUT`，存储卡住时不阻塞节拍）记 99：本件照常运动，PC 等 plcState=20 后回结果码 90 与该故障码（[core-flow.md](core-flow.md) D-CF-4）。
+- **帧**：Grouper 的 seq 上限 = ΣN_exp + Σtol + 64，超出判 `Offer::OutOfRange`（不计入本件、不抬基线），丢弃并告警。重复帧号丢弃，每台相机每件告警一次；上一件迟到帧记游离帧；接件后的手动帧丢弃并告警（不判 ERR，告警写明该相机此后帧组可能错开一格）；检测中会话变化或计数来源变为不可信判 ERR 98。回调通道满、图像内存预算满的帧不交给节拍，即缺帧。
 - **测量**：每帧经 `FramePool` 送测，结果经 `cycle::Input::FrameMeasured` 回节拍；QueueFull / Timeout 记 Unmeasured，Failed 记 Error；超过 T_proc 或到收尾截止仍没结果记 Unmeasured；测量输出的帧身份与送测帧不符或含非有限数改记 Error。都只记检测不完整，不判 99。
-- **收尾与判定**：运动结束后等满收尾窗口、已接受的帧都测完，有收尾补测目标时再等补测完（D-SB-45）即判。故障（98、97）优先；否则 `Proportional`（D-SB-40）→ `resolve_regions` → `loss_alarms(各相机帧数)` → `burst_judge::judge`。丢帧、帧数异常、疑似提前终止写运行日志（warn），结论不变。
-- **结果与记录**：`ResultView.burst` 带区域判定，`PartView.burst` 按 5.2 输出（帧格的 verdict 只看这一帧的独立指标，允差取覆盖全部段的较宽一档）。`BurstRecord.frames` 在 1..=帧组数内每台相机每帧一条、缺帧也有，`rawFile` 入库时为空（录制结果事后补）；`frames_expected` = ΣN_exp，`frames_received` = 帧组数。拒绝布防、在途中断、进程中断补记录的件也带 `BurstRecord`。诊断包按帧记录的 `rawFile` 打包原图。
+- **收尾与判定**：工件结束（plcState=20）后等满收尾窗口、已接受的帧都测完，有收尾补测目标时再等补测完（D-SB-45）即判。故障（98、97）优先；否则 `Proportional`（D-SB-40）→ `resolve_regions` → `loss_alarms(各相机帧数)` → `burst_judge::judge`。丢帧、帧数异常、疑似提前终止写运行日志（warn），结论不变。
+- **结果与记录**：`ResultView.burst` 带区域判定，`PartView.burst` 按 5.2 输出（帧格的 verdict 只看这一帧的独立指标，允差取覆盖全部段的较宽一档）。`BurstRecord.frames` 在 1..=帧组数内每台相机每帧一条、缺帧也有，`rawFile` 入库时为空（录制结果事后补）；`frames_expected` = ΣN_exp，`frames_received` = 帧组数。接件时不能检测、在途中断、进程中断补记录的件也带 `BurstRecord`。诊断包按帧记录的 `rawFile` 打包原图。
 - **在线读图**：`workspace_live_frame_image`（预览缓存 128 MB）。
 - **胶偏未判**：直线区域去掉首尾各一帧后参考相机没有可用 x 时标 `OffsetUnjudged::NoFrames`（“胶偏未判：参考相机没有可用帧”）。
 - **带宽估算**：`camera::aggregate_bandwidth` 计入 GigE 协议开销（不开巨帧约 1.05 倍），三台 130 万像素 25 Hz 约 826 Mbps，超过单口 80% 预算。
@@ -713,8 +714,8 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 - **入口**：`offline_run` 与候选试运行（`workspace_debug_run`）都走 `Line::run_burst`。候选试运行过 `ready_burst`，各计划相机的示教帧尺寸按计划相机顺序取自 `cameraTeaching`，示教帧采集后这台相机的设备标签须没变（与走廊示教验证项同一口径，开跑前 `recheck_debug_candidate` 再核对），交给 `Candidate::new_burst` 建走廊测量图，再由 `offline::run_candidate` 运行。
 - **出帧剖面**：`line::PulseProfile { hz, segments, head_tail_jitter, corner_jitter, seed }`，波动由 `segmentation::synthetic::frame_counts` 按剖面与种子生成。名义帧数 `line::nominal_frames`：各段 N_exp；有段待标定时按 段长 × 帧率 ÷ 50 mm/s 估算（没有段长：直线 12、弯道 4），已有整件标定时把待标定段缩放到 ΣN_exp。合成图取配方名义剖面，样本集取样本帧数最多的那台相机（一段）。离线节拍覆盖时帧率按 1000 ÷ 间隔换算（[soak.md](soak.md) S-3）。
-- **使能与出帧**：布防后按 1 / hz 定频出帧（时钟不被轮询周期拉长），每次同时出三台相机的帧，出完置运动结束（plcState=20）。`PartOrder` 有 `profile`、`lost`（只丢指定相机的指定帧，相机照常计数）、`early_end_after`（提前结束前的帧数）。
-- **工况（与前端同名）**：`cameraLost` 第 2 台相机丢第 min(3, 总数) 帧；`pulseJitter` 首尾各 ±1；`cornerSlowdown` 每个弯道段 ±2；`notInspected` 机器人照常涂胶、PLC 不提交请求（`run_burst` 返回 `Ok(None)`，PC 无记录，离线运行记“本件未检”）；`earlyEnd` 出约一半、且少于 ΣN_exp − Σtol 帧后报运动结束；`lostFrame` 三台相机同一帧都丢；`countMismatch` 与正常相同（协议 7 不报触发计数）。只改出帧与握手的工况进样本集白名单（`Scenario::handshake`）。
+- **使能与出帧**：虚拟 PLC 写请求（plcState=10）后等固定的拍照前置时间 500 ms，再按 1 / hz 定频出帧（时钟不被轮询周期拉长），每次同时出三台相机的帧，出完置工件结束（plcState=20）。`PartOrder` 有 `profile`、`lost`（只丢指定相机的指定帧，相机照常计数）、`early_end_after`（提前结束前的帧数）。
+- **工况（与前端同名）**：`cameraLost` 第 2 台相机丢第 min(3, 总数) 帧；`pulseJitter` 首尾各 ±1；`cornerSlowdown` 每个弯道段 ±2；`notInspected` 机械臂照常涂胶、PLC 不提交请求（`run_burst` 返回 `Ok(None)`，PC 无记录，离线运行记“本件未检”）；`earlyEnd` 出约一半、且少于 ΣN_exp − Σtol 帧后报工件结束；`lostFrame` 三台相机同一帧都丢；`countMismatch` 与正常相同（协议 8 不报触发计数）。只改出帧与握手的工况进样本集白名单（`Scenario::handshake`）。
 - **合成图**：模拟相机触发带 `camera::BurstRender`（计划相机下标、seq、所在段类型与段内进度、工况、种子），`simimage::render_burst` 按它出单视角图：直线段胶条沿这台相机的走廊（未示教时按相机上下错开的缺省位置），弯道段整条胶绕胶嘴转动 25°·sin(π·进度)，断胶 / 超差画在第 1 台相机第 2 帧（与模拟测量同一帧）。模拟测量 `measure::simulate_frame` 按名义剖面找到这一帧所在段，弯道帧胶宽略宽、x 拱形偏出（峰值 1.5 mm）；PC 按同一套比例分段与区域判定规则处理。
 - **合成图离线环境**：沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台（编号取没用过的 camN）。
 - **合成图仿历史件**：`examples/capture_fixture.rs` 按候选配方（型号、段、计划相机）用 `simimage::render_burst` 生成 N 件仿历史录制件（D-SB-49、[recipe-build-flow](recipe-build-flow.md)），经历史件选择器选作示教件与标定件。多轮标定加入时的每帧测量仍用 lyFlow 走廊测量（需加载 lyFlow）。
@@ -731,6 +732,6 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
   - **图像内存预算**：“预算丢帧 = 0”在离线下恒成立（`IMAGE_BUDGET_PER_CAMERA` 只作用于海康回调来源），只能在真机相机来源上核对（相机状态 `budgetDroppedFrames`）。
   - **与 7.1 对照**：应用里测到的突发排空速率 49 帧/s 只有 7.1 的 4 线程吞吐的一半，原因没有查（应用里还有读图、录制写盘、SQLite、界面同时在跑，且是调试构建）；按 7.1 的降级公式，可持续帧率 ≈ 0.7 × 49 ≈ 34 帧/s，即约 11 Hz。
   - **复测后的取舍**：① 按 7.1 降相机帧率到约 11 Hz，各段 N_exp 随之变化，须重新标定；② 加测量并发——本机只有 4 个物理核，4 → 6 线程增益有限，需要改代码并重测。
-- **合成图渲染能力限制功能验收的帧率**：每帧逐像素渲染，开发笔记本上三台相机合计只能出约 20 帧/s，所以生产落盘等功能验收固定 5 Hz；更快时帧晚于运动结束才画完，末帧记缺帧、整件标检测不完整。
+- **合成图渲染能力限制功能验收的帧率**：每帧逐像素渲染，开发笔记本上三台相机合计只能出约 20 帧/s，所以生产落盘等功能验收固定 5 Hz；更快时帧晚于工件结束才画完，末帧记缺帧、整件标检测不完整。
 - **样本集冒烟**：停稳拍数据对不上一条直线走廊，所以样本集上的建站（长稳、吞吐）统一把各段检测项全关（`checksOff`），只验证流程、原包重现一致性、稳定性与吞吐，不验证判胶质量。
 - **历史原图缺一张**：录制证据状态不随事后删文件刷新（仍是 complete），原包重跑读不到那一帧时记“测量失败”、该帧组标检测不完整，OK/NG 不变，不当作原图完整。

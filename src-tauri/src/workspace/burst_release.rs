@@ -5,7 +5,7 @@
 //! 与 workflow.rs，行为不变。
 //!
 //! 验证项（决策记录第九节第 13 条）：
-//! - 相机配置：计划相机解析、三台单视角独立设备（`check_burst_cameras`）；相机是否在线就绪不在发布时核对，布防时再查（D-SB-46）；
+//! - 相机配置：计划相机解析、三台单视角独立设备（`check_burst_cameras`）；相机是否在线就绪不在发布时核对，接件时再查（D-SB-46）；
 //! - 走廊示教：恰好 3 台计划相机，每台都选了示教帧、走廊完整落在帧内、有像素当量，且示教帧采集后设备配置没变；
 //! - 段标定：整件 ΣN_exp（expected_total）已由多轮标定得出即通过（决策补充“多段配方的发布与运行”），逐段列出 N_exp 或待定原因；
 //! - 标准件 x_ref：只在有启用胶偏检查的直线段时列出；单段 AbsoluteX 要有标准件得出的 x_ref，多段（分段算法未就绪）
@@ -71,7 +71,7 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
         detail: inputs
             .device
             .err()
-            .unwrap_or_else(|| "三台计划相机已配置；是否在线就绪在布防时核对".into()),
+            .unwrap_or_else(|| "三台计划相机已配置；是否在线就绪在接件时核对".into()),
     }];
     // RB-8：没有示教件之前候选不能发布
     checks.push(Check {

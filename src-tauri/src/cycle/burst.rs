@@ -116,7 +116,7 @@ pub(super) enum Arrival {
     Accepted { camera: usize, seq: u64 },
     /// 同一相机同一 seq 又来一帧：保留先到的，丢弃这一帧
     Duplicate { camera: usize, seq: u64 },
-    /// 上一件的迟到帧，或布防前那次打开的帧：不计入本件
+    /// 上一件的迟到帧，或接件前那次打开的帧：不计入本件
     Stale { camera: usize },
     /// 帧号比基线大得离谱（计数跳变）：不计入本件
     OutOfRange { camera: usize, seq: u64 },
@@ -131,7 +131,7 @@ impl BurstPart {
         self.grouper.group_count()
     }
 
-    /// 布防：cams 是 `shot_router::arm_frames` 按计划相机顺序给出的帧计数基线。seq 上限 = ΣN_exp + Σtol + 余量。
+    /// 接件：cams 是 `shot_router::arm_frames` 按计划相机顺序给出的帧计数基线。seq 上限 = ΣN_exp + Σtol + 余量。
     pub(super) fn arm(recipe: &Recipe, cams: Vec<FrameBaseline>, trusted: Vec<CounterSource>) -> Self {
         let limit = recipe.expected_total().map_or(MAX_SEQ, |n| u64::from(n) + u64::from(recipe.tolerance_total()) + SEQ_MARGIN);
         let checks = wider_checks(&recipe.path_segments.iter().map(|s| &s.checks).collect::<Vec<_>>());
@@ -279,7 +279,7 @@ impl BurstPart {
         }
     }
 
-    /// 布防后相机重连过（会话变化）时返回原因。
+    /// 接件后相机重连过（会话变化）时返回原因。
     pub(super) fn check_sessions(&self, cameras: &[ArmCam]) -> Result<(), String> {
         for armed in &self.cams {
             let now = cameras.iter().find(|camera| camera.cam == armed.cam && camera.camera == armed.camera)
@@ -355,7 +355,7 @@ pub(super) fn summary(judgement: &BurstJudgement) -> Judgement {
     }
 }
 
-/// 没有区域判定时（拒绝布防、在途中断）按结论摘要给出段配方的判定，结论字段与摘要逐一相同。
+/// 没有区域判定时（接件时就不能检测、在途中断）按结论摘要给出段配方的判定，结论字段与摘要逐一相同。
 fn from_summary(judgement: &Judgement) -> BurstJudgement {
     BurstJudgement {
         verdict: judgement.verdict,
@@ -370,7 +370,7 @@ fn same_conclusion(burst: &BurstJudgement, judgement: &Judgement) -> bool {
     (burst.verdict, burst.plc_code, burst.fault_code, burst.reason.as_str()) == (judgement.verdict, judgement.plc_code, judgement.fault_code, judgement.reason.as_str())
 }
 
-/// 没有帧的记录（拒绝布防、进程中断补记录）：预期帧组数与容差取配方，各相机帧数为 0，判定与摘要相同。
+/// 没有帧的记录（接件时就不能检测、进程中断补记录）：预期帧组数与容差取配方，各相机帧数为 0，判定与摘要相同。
 pub(super) fn empty_record(recipe: &Recipe, judgement: &Judgement) -> BurstRecord {
     BurstRecord {
         expected_total: recipe.expected_total(),
@@ -540,7 +540,7 @@ impl Part {
         jobs
     }
 
-    /// 段配方判定：会话变化、运动超时等故障优先（ERR）；否则比例分段 → 区域（含过渡区）→ 丢帧告警（各相机帧数彼此比较）
+    /// 段配方判定：会话变化、等工件结束超时等故障优先（ERR）；否则比例分段 → 区域（含过渡区）→ 丢帧告警（各相机帧数彼此比较）
     /// → burst_judge。三台相机整件没有一帧测成时 burst_judge 判 ERR 91。
     pub(super) fn burst_judgement(&self) -> BurstJudgement {
         let burst = &self.burst;

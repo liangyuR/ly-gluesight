@@ -5,13 +5,13 @@ export const scenarioOptions: [Scenario, string][] = [
   ["excursion", "局部超差（允许）"],
   ["gap", "断胶（超过允许长度）"],
   ["lostFrame", "传输丢帧 / 缺帧"],
-  ["motionTimeout", "运动超时（PLC 不报运动结束）"],
+  ["motionTimeout", "工件结束超时（PLC 不报工件结束）"],
   ["ackMismatch", "PLC 回显核对不符（置 90）"],
   ["cameraLost", "单台相机缺帧（该组检测不完整）"],
   ["pulseJitter", "脉冲数波动（首尾 ±1 帧）"],
   ["cornerSlowdown", "弯道减速（弯道帧数波动）"],
-  ["notInspected", "本件未检（机器人未得到触发许可）"],
-  ["earlyEnd", "提前运动结束（疑似提前终止）"],
+  ["notInspected", "本件未检（PLC 未提交请求）"],
+  ["earlyEnd", "工件提前结束（疑似提前终止）"],
   ["random", "随机（连续运行用）"],
 ];
 

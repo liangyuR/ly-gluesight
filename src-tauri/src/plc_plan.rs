@@ -70,7 +70,10 @@ impl PlcPlan {
     /// 编段计划（ΣN_exp 未标定时不能编）。
     pub fn from_recipe(recipe: &Recipe) -> Result<Self, String> {
         if recipe.plan_version == 0 {
-            return Err(format!("配方 {} 还没有分配 PLC 计划版本：请保存或发布一次后再布防", recipe.id));
+            return Err(format!(
+                "配方 {} 还没有分配 PLC 计划版本：请保存或发布一次后再接件",
+                recipe.id
+            ));
         }
         let export = PlanExport::from_recipe(recipe)?;
         let Some(total) = export.expected_total else {

@@ -9,7 +9,7 @@ import { connect, ensureOffline, offlineHistory, parseArgs, percentiles, process
 // 达不到时本脚本退出码 1 并把实测值写进报告，由用户决定降 PLC 脉冲频率（决策记录 7.1 的降级方案）还是加测量并发；PC 不自行降频。
 // “连续 60 s 满负载”本身也是判定条件：产线中途停了（stoppedEarly）不算达标；持续负载只统计相机使能为高的时间窗内的帧率
 // （Σ窗口内帧数 ÷ Σ使能时长，见 enableWindows），要求 ≥ 需求 3 × hz 的 90%，并且至少连续 10 件（--min-parts）逐件达到这个帧率，
-// 否则空转或只有零星几件的运行会把队列峰值判成“余量充足”。件间握手（使能为低：partEnd → 结果 → ACK → 下一件布防）衡量的是
+// 否则空转或只有零星几件的运行会把队列峰值判成“余量充足”。件间握手（使能为低：partEnd → 结果 → ACK → 下一件接件登记）衡量的是
 // PLC 握手开销而不是 PC 的测量能力（离线虚拟 PLC 每件约 0.9 s，按含握手的平均帧率算任何来源都达不到），单独报告为
 // achieved.handshakeGapSeconds，不参与判定。持续负载未验证时默认判不达标；只想看分项时显式传 `--burst true`
 // （Test-Soak.ps1 的 -AllowBurstOnly）放行，此时报告里 sustainedVerified 仍为 false、burstOnlyAccepted 为 true，
@@ -37,7 +37,7 @@ const median = values => values.length ? [...values].sort((a, b) => a - b)[Math.
 /**
  * 每件的相机使能窗口，取自运行日志里每帧一条“帧到达”（cycleId、seq、ts，毫秒）。PC 看不到使能信号本身，窗口取本件第一帧到达到
  * 最后一帧到达：窗口里经过的脉冲周期数 = 帧组数 − 1，所以首个帧组（最小 seq）的帧不计入窗口帧数（栅栏计数），否则每件 12 组时帧率偏高 12/11。
- * 不用布防 → partEnd：PLC 置 partEnd 前还要等一段（离线 300 ms），且布防日志早于 PLC 拉高使能，比到帧窗口更不准。
+ * 不用接件登记 → partEnd：PLC 置 partEnd 前还要等一段（离线 300 ms），且接件登记早于 PLC 拉高 Line0，比到帧窗口更不准。
  * 相邻两件之间（上一件最后一帧到达 → 下一件第一帧到达）是件间握手间隙，单独返回，不计入使能时长。
  */
 export function enableWindows(arrivals) {
@@ -167,8 +167,7 @@ export async function throughput(session, out, options) {
   const minSustainedParts = Number(options["min-parts"] ?? MIN_SUSTAINED_PARTS);
   assert(Number.isInteger(minSustainedParts) && minSustainedParts >= 1, "--min-parts 需为正整数");
   const settings = await call("cycle_get_settings");
-  // 调试构建下布防实测约 250 ms，超过默认 200 ms 预算会判 ERR 98，整件不测；压测放宽到 1 s（与离线回放验证相同）
-  await call("cycle_save_settings", { settings: { ...settings, productSource: "plc", timeouts: { ...settings.timeouts, armMs: 1000 } } });
+  await call("cycle_save_settings", { settings: { ...settings, productSource: "plc" } });
   const recipeId = source === "synthetic" ? await ensureSynthetic(call) : (await ensureOffline(call, out), RECIPE_ID);
   const site = await call("site_status");
   const intervalMs = Math.round(1000 / hz);

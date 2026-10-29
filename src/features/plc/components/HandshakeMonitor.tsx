@@ -17,8 +17,8 @@ type LampTone = "off" | "ok" | "pc" | "fault" | "unbound";
 
 const phaseTones: Partial<Record<PlcHandshakeState["phase"], StatusBadgeTone>> = { fault: "fault", resetRequired: "warn", idle: "neutral" };
 const waitingSummary: Record<PlcHandshakeState["phase"], string> = {
-  resetRequired: "完成软件复位", idle: "等待 PLC 请求检测", validating: "PC 校验并布防",
-  acquiring: "等待 PLC 运动结束", draining: "PC 收尾并写结果", awaitAck: "等待 PLC 确认结果",
+  resetRequired: "完成软件复位", idle: "等待工件到达", validating: "PC 接件登记",
+  acquiring: "机械臂采集中，等待工件结束", draining: "PC 收尾并写结果", awaitAck: "等待 PLC 确认结果",
   releasing: "等待 PLC 回空闲", fault: "处置现场后复位",
 };
 
@@ -124,7 +124,7 @@ export default function HandshakeMonitor({ handshake, connected, tagValue }: Han
   const seqEcho = r("seqEcho");
   const sn = r("sn");
   const snEcho = r("snEcho");
-  const echoing = pcState === 20 || pcState === 30;
+  const echoing = pcState === 30;
   const resultText = pcState === 90 ? `PC 故障 ${show(faultCode)}`
     : pcState !== 30 ? "—"
     : resultCode === 0 && pcMode === 1 ? "无结论（维护）"

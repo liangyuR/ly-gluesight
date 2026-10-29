@@ -132,7 +132,8 @@ pub struct Timing {
     pub end_delay: Duration,
     pub ack_delay: Duration,
     pub settle: Duration,
-    pub arm_timeout: Duration,
+    /// 工件到达（置 10）到拍照信号置 1 的间隔：协议 8 不等 PC，留给 PC 读到请求并完成接件登记
+    pub capture_lead: Duration,
     pub result_timeout: Duration,
     pub ready_timeout: Duration,
     pub release_timeout: Duration,
@@ -289,7 +290,7 @@ enum Wait {
     Timeout,
 }
 
-/// 虚拟产线：扮演 PLC 程序与机器人，直接读写进程内 S7 服务的 DB，按生产通讯协议 7 推进一件。
+/// 虚拟产线：扮演 PLC 程序与机器人，直接读写进程内 S7 服务的 DB，按生产通讯协议 8 推进一件。
 pub struct Line {
     memory: SharedMemory,
     layout: Layout,
@@ -434,12 +435,12 @@ impl Line {
         }
     }
 
-    /// 一件（规格 §0/§6）：写请求（plcState=10）→ 布防后相机使能拉高，PLC 按剖面定频发脉冲串，每个脉冲同时触发三台相机
-    /// → 使能拉低后置 plcState=20 → 等结果、核对回显后置 30。
+    /// 一件（协议 8、规格 §0/§6）：工件到达写请求（plcState=10），不等 PC；过 `capture_lead` 后拍照信号拉高，PLC 按剖面定频发脉冲串，
+    /// 每个脉冲同时触发三台相机 → 拍照信号拉低、工件结束后置 plcState=20 → 等结果、核对回显后置 30。
     /// - `order.lost` 只丢指定相机的指定帧（相机已计数、帧没送到）；
     /// - `order.early_end_after`：PLC 发到这么多脉冲就提前置 20（提前终止）；
-    /// - countMismatch：协议 7 不报触发计数，段配方与正常相同；motionTimeout：不置 20；ackMismatch：PLC 核对回显不符，置 90（plcReason=5）；
-    /// - notInspected：机器人等不到触发许可照常涂胶、置“本件未检”，PLC 不提交请求，返回 `Ok(None)`，PC 没有这一件。
+    /// - countMismatch：协议 8 不报触发计数，段配方与正常相同；motionTimeout：不置 20；ackMismatch：PLC 核对回显不符，置 90（plcReason=5）；
+    /// - notInspected：工件到达时视觉未就绪，PLC 不提交请求，机械臂照常涂胶、本件记未检，返回 `Ok(None)`，PC 没有这一件。
     pub async fn run_burst(&self, timing: &Timing, order: &PartOrder, scenario: Scenario,
         fire: impl FnMut(&Pulse), abort: &AtomicBool) -> Result<Option<Outcome>, String> {
         let profile = order.profile.as_ref().ok_or("段配方的一件缺少脉冲剖面")?;
@@ -473,24 +474,7 @@ impl Line {
         self.read(tag::PC_STATE) == state::PC_RESULT as u32 && self.read(tag::SEQ_ECHO) == seq
     }
 
-    /// 等布防或拒绝结果；视觉已布防（没有直接发布拒绝结果）时返回 true。
-    async fn armed(&self, timing: &Timing, seq: u32, abort: &AtomicBool) -> Result<bool, String> {
-        self.until(
-            timing,
-            timing.arm_timeout,
-            abort,
-            "布防或拒绝结果",
-            |line| {
-                (line.read(tag::PC_STATE) == state::PC_ARMED as u32
-                    && line.read(tag::SEQ_ECHO) == seq)
-                    || line.published(seq)
-            },
-        )
-        .await?;
-        Ok(!self.published(seq))
-    }
-
-    /// 运动结束：运动超时工况不置 plcState=20。
+    /// 工件结束：等工件结束超时工况不置 plcState=20。
     async fn end_motion(&self, timing: &Timing, scenario: Scenario, abort: &AtomicBool) -> Result<(), String> {
         if scenario != Scenario::MotionTimeout {
             self.hold(timing, timing.end_delay, abort).await?;
@@ -548,16 +532,24 @@ impl Line {
     async fn drive_burst(&self, timing: &Timing, order: &PartOrder, profile: &PulseProfile, scenario: Scenario,
         mut fire: impl FnMut(&Pulse), abort: &AtomicBool) -> Result<Outcome, String> {
         let seq = self.request(order);
-        if self.armed(timing, seq, abort).await? {
-            let stop = order.early_end_after.unwrap_or(u64::MAX);
-            let period = profile.period();
-            let start = Instant::now();
-            for pulse in profile.pulses(&order.lost).iter().take_while(|pulse| pulse.seq <= stop) {
-                self.hold_until(timing, start + period * u32::try_from(pulse.seq).unwrap_or(u32::MAX), abort).await?;
-                fire(pulse);
-            }
-            self.end_motion(timing, scenario, abort).await?;
+        self.hold(timing, timing.capture_lead, abort).await?;
+        let stop = order.early_end_after.unwrap_or(u64::MAX);
+        let period = profile.period();
+        let start = Instant::now();
+        for pulse in profile
+            .pulses(&order.lost)
+            .iter()
+            .take_while(|pulse| pulse.seq <= stop)
+        {
+            self.hold_until(
+                timing,
+                start + period * u32::try_from(pulse.seq).unwrap_or(u32::MAX),
+                abort,
+            )
+            .await?;
+            fire(pulse);
         }
+        self.end_motion(timing, scenario, abort).await?;
         self.conclude(timing, scenario, seq, abort).await
     }
 }

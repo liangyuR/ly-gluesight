@@ -119,7 +119,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const candidateTaught = teaching.length > 0 && teaching.every(c => c.ready);
   const disabled = working || ws.busy || !candidateReady;
   const blockers = s.source === "offlineCandidate" ? [] : [
-    !s.bundleId && "本件没有不可变发布包（布防前被拒或非生产记录），无法按原版本重跑",
+    !s.bundleId && "本件没有不可变发布包（未匹配到可用配方或非生产记录），无法按原版本重跑",
     !rawComplete && recordingReason[detail.recording.state],
   ].filter((v): v is string => !!v);
 

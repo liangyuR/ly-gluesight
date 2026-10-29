@@ -81,7 +81,7 @@ describe("维护模式", () => {
     expect(cycleApi.setMaintenance).toHaveBeenCalledWith(true, "新线投运采图");
   });
 
-  it("退出维护模式 → 逐个列出只有采集版的配方并提示退出后拒收，正式版不列", async () => {
+  it("退出维护模式 → 逐个列出只有采集版的配方并提示退出后回检测错误，正式版不列", async () => {
     state = { ...state, maintenance: { since: 1, reason: "新线投运" } };
     vi.mocked(recipeApi.list).mockResolvedValue({ recipes: [{ ...recipeList[0], stage: "formal" }, { ...recipeList[1], stage: "collect" }], errors: [], unavailable: [] });
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
@@ -89,7 +89,7 @@ describe("维护模式", () => {
     const list = await within(screen.getByRole("dialog")).findByLabelText("只有采集版的配方");
     expect(list).toHaveTextContent("B · 段配方 B");
     expect(list).not.toHaveTextContent("A · 段配方 A");
-    expect(list).toHaveTextContent("退出后这些型号会被拒收（90/95）");
+    expect(list).toHaveTextContent("退出后这些型号会回检测错误（90/95）");
     await userEvent.click(screen.getByRole("button", { name: "确认退出" }));
     expect(cycleApi.setMaintenance).toHaveBeenCalledWith(false, "");
   });
@@ -125,8 +125,8 @@ describe("在线检测离线产线控件", () => {
   });
 
   it("有在途件时软件复位 → 确认框提示在途件记未检，确认后才请求后端复位", async () => {
-    state = { ...state, phase: "FAULT", fault: "PLC 运动超时" };
-    plcHandshake = { phase: "fault", requestSeq: 17, resultSeq: null, message: "PLC 运动超时", resetBlockedReason: null };
+    state = { ...state, phase: "FAULT", fault: "PLC 等工件结束超时" };
+    plcHandshake = { phase: "fault", requestSeq: 17, resultSeq: null, message: "PLC 等工件结束超时", resetBlockedReason: null };
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     await userEvent.click(screen.getByRole("button", { name: "软件复位" }));
     const dialog = within(screen.getByRole("dialog"));
@@ -170,7 +170,7 @@ describe("在线检测段配方", () => {
   });
 
   it("维护件留有异常码 95 → 判定卡显示未判定、PLC 只显示实际回写的 0", () => {
-    const base = burstState({ verdict: "ERR_INSPECT", plcCode: 0, reason: "维护模式：产品代码 1 没有对应的配方；照常布防放行，本件未检" });
+    const base = burstState({ verdict: "ERR_INSPECT", plcCode: 0, reason: "维护模式：产品代码 1 没有对应的配方；照常采图放行，本件未检" });
     state = { ...base, result: { ...base.result!, mode: "maintenanceCollect", faultCode: 95 } };
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     const card = within(screen.getByRole("region", { name: "整件判定" }));

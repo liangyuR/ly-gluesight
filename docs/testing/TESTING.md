@@ -90,15 +90,15 @@ cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval 
 
 起涂与收尾跳过建议（D-SB-50）的回归：`calibration::unformed_lead_counts_until_a_formed_run_and_aborts_on_unknown_before_it`（偶发单个成形帧组不算起点，成形前无法判断的轮次不给值）、`workspace::burst_tests::skip_suggestion_is_max_over_normal_rounds_and_withheld_when_too_few_participate`（取普通轮次最大值、收尾从末尾数、参与轮次不足不给建议）与 `tests/recipe-calibration.test.tsx`（少于建议时提示、采用建议按建议值提交到对应一头）。现有轮次都是空跑，没有起涂过程，建议值只用合成数据验证过。
 
-**离线工况。** 段配方在离线下按脉冲串运行：布防后以固定频率（默认 20 Hz）发脉冲，每个脉冲同时触发三台相机，脉冲发完报运动结束；名义帧数取各段 N_exp（待标定的段按段长 × 频率 ÷ 50 mm/s 估算，已有整件标定时缩放到 ΣN_exp）。下表工况在离线控制台与在线检测页的工况下拉里，样本集与合成图来源都能选，只改变脉冲与握手，不改图像内容。
+**离线工况。** 段配方在离线下按脉冲串运行：虚拟 PLC 写请求（plcState=10）后等固定的拍照前置时间 500 ms，再以固定频率（默认 20 Hz）发脉冲，每个脉冲同时触发三台相机，脉冲发完报工件结束（plcState=20）；名义帧数取各段 N_exp（待标定的段按段长 × 频率 ÷ 50 mm/s 估算，已有整件标定时缩放到 ΣN_exp）。下表工况在离线控制台与在线检测页的工况下拉里，样本集与合成图来源都能选，只改变脉冲与握手，不改图像内容。
 
 | 工况（界面文字） | 做什么 | 预期 |
 | --- | --- | --- |
 | 单台相机缺帧（该组检测不完整） | 第 2 台相机丢第 min(3, 总数) 帧，相机照常计数 | 该帧组标“检测不完整”，丢帧告警，OK/NG 不变，不判 ERR |
 | 脉冲数波动（首尾 ±1 帧） | 首尾各多发或少发 1 个脉冲 | 帧组数偏离名义最多 2 个；在 ΣN_exp ± Σtol 内不告警，越界只告警（帧数异常，低于下限还标疑似提前终止），OK/NG 不变 |
 | 弯道减速（弯道帧数波动） | 每个弯道段帧数 ±2 | 同上 |
-| 本件未检（机器人未得到触发许可） | 机器人照常涂胶，PLC 不提交请求 | PC 没有该件记录，离线运行记“本件未检” |
-| 提前运动结束（疑似提前终止） | 发约一半、且少于 ΣN_exp − Σtol 个脉冲后报运动结束 | 用已收到的帧照常判，加 `short_part` 与“帧数异常”，不改 OK/NG |
+| 本件未检（PLC 未提交请求） | 机械臂照常涂胶，PLC 不提交请求 | PC 没有该件记录，离线运行记“本件未检” |
+| 工件提前结束（疑似提前终止） | 发约一半、且少于 ΣN_exp − Σtol 个脉冲后报工件结束 | 用已收到的帧照常判，加 `short_part` 与“帧数异常”，不改 OK/NG |
 | 传输丢帧 / 缺帧 | 三台相机的同一帧都丢 | 该帧组标检测不完整，不判 ERR；丢帧按 SDK 帧序号、相机间帧数及传输丢帧诊断 |
 
 **合成图采集与标定。** 合成图由 `src-tauri/examples/capture_fixture.rs` 生成仿历史录制件（[示教件与标定件决策](../decisions/recipe-build-flow.md)“手动配置数据”）：按录制时生效的生产配方（采集版：型号、段、计划相机）用 `simimage::render_burst` 生成 N 件，每件在真机录制根下写一个与真机同格式的录制目录（原图 `{相机}_s{seq:06}.pgm`、`part.json` 带 `partMode: maintenanceCollect`、`devices`、`plc` 与来源标记 `fixture: {label}`，以及维护采集保留标记），并在项目记录库写一行维护采集记录（SN 前缀 `FIXTURE-`，记录库版本仍为 9）。生成的件出现在历史件选择器里，标“手动配置”，与真机件走同一选件、导入路径。记录引用采集版的修订号：先建候选并发布采集版，再生成数据（候选的版本号留给之后的正式版，用它写快照会让正式版投产时同修订号的真实记录因快照不同被拒）。记录库须已存在且为版本 9；同修订号已有不同快照时写入前即拒绝。命令为 `cargo run --manifest-path src-tauri/Cargo.toml --offline --locked --example capture_fixture -- --doc <采集版文档.json> --cameras <camera_rig_config.json> --db <资料根目录>/projects/<项目编号>/inspection.db --records <真机录制根> --parts N [--seed S] [--label L] [--sample-set <目录> --part <件>] [--onset H --onset-jitter J --tail T --tail-jitter J]`，输出每件的 `recordId`、`cycleId`、SN 等 JSON：默认按名义剖面出合成图（首尾 ±1、弯道 ±2 帧，种子 seed+i）；给出样本集时每件都取该件的样本集原图，供 soak 使用。合成图离线环境因此能选示教件、完成走廊示教、多轮标定、验证与发布（加入标定时每帧测量用 lyFlow 走廊测量，需要加载 lyFlow）。合成图相机沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台。样本集按“每台相机的帧序列”解释（见[离线样本集格式 v1](../integration/sample-set-format.md)），现有的 2026-10-17 单圈样本集是停稳拍数据，没有弯道、帧数没有波动，只作冒烟，不作分段或标定的验收依据。
@@ -140,7 +140,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 测试在“离线 · 合成图”下新建候选、发布采集版，用 `capture_fixture` 生成仿历史录制件，选示教件、确认分段后用真实 lyFlow 完成段配方走廊示教、选标定件多轮标定、独立样本验证与发布，经生产 S7 握手投产，核对 SQLite、逐帧原图和历史读回。使用 `-LyFlowRuntime <运行库目录>` 或 `GLUESIGHT_LYFLOW_RUNTIME` 提供运行库；未指定时恢复锁定版本，恢复或加载失败即失败，不以跳过代替验证。合成图来源补足三台单视角相机。结束时退出离线并关闭本次进程。
 
-[`tests/native/`](../../tests/native/) 没有单独说明文件：生产落盘驱动脚本为 `production-flow-ui.mjs`；它与 `scripts/soak/` 共用的 IPC 客户端、实例连接、样本集副本、合成轮次写入（`createFixtureCandidate`）、示教与投产函数在 `tests/native/lib.mjs`；`desktop-infrastructure.test.mjs`、`throughput-gate.test.mjs`、`soak-faults-assess.test.mjs` 是桌面基础设施与长稳判定函数的手动 `node --test` 用例；`guard.js`、`plc-ui.js`、`p0-plc-bootstrap-ui.js`、`p0-single-instance-acceptance.mjs` 是在隔离实例页面上执行的原生抽查脚本，协议 7 下未重新实跑，使用前须按当前点表核对断言。实例配置不放在该目录，由 `Start-UiTestInstance.ps1` 按 Profile 生成（长稳测试用 soak）。恢复专项应使用独立实例和新输出目录，避免使用生产配置。
+[`tests/native/`](../../tests/native/) 没有单独说明文件：生产落盘驱动脚本为 `production-flow-ui.mjs`；它与 `scripts/soak/` 共用的 IPC 客户端、实例连接、样本集副本、合成轮次写入（`createFixtureCandidate`）、示教与投产函数在 `tests/native/lib.mjs`；`desktop-infrastructure.test.mjs`、`throughput-gate.test.mjs`、`soak-faults-assess.test.mjs` 是桌面基础设施与长稳判定函数的手动 `node --test` 用例；`guard.js`、`plc-ui.js`、`p0-plc-bootstrap-ui.js`、`p0-single-instance-acceptance.mjs` 是在隔离实例页面上执行的原生抽查脚本，协议 8 下未重新实跑，使用前须按当前点表核对断言。实例配置不放在该目录，由 `Start-UiTestInstance.ps1` 按 Profile 生成（长稳测试用 soak）。恢复专项应使用独立实例和新输出目录，避免使用生产配置。
 
 jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明真实布局、像素解码或硬件通信。桌面模拟流程证明业务接线与落盘，不证明真实 PLC、SDK、引擎测量准确率、现场节拍或持续运行。
 
@@ -185,7 +185,7 @@ Playwright Test 固定 `workers=1`、`fullyParallel=false`、`retries=0`，每�
 - 资料目录长度：程序启动时校验主窗口的 WebView2 资料目录 `<资料目录>\webview\<SID>` 不超过 229 个字符；资料目录尚未初始化（没有 `storage-layout.json`、需要先建资料准备窗口）时，还校验准备窗口的 `<资料目录>\migration\bootstrap\webview\<SID>` 不超过 237 个字符。超限直接报错退出（隐藏窗口的测试实例写 `stderr.log` 并以退出码 1 结束）。SID 一般 46 个字符时，全新资料目录应不超过 162 个字符，已初始化的不超过 174 个字符。主检出默认约 107 个字符；`.claude/worktrees/<名称>/` 工作树约 143 个字符，仍可用，但更深的路径需要用 `-DataRoot`（例如 `C:\gs-tmp\<名称>`）。
 - 全新资料目录启动时先有资料准备窗口，它与主窗口是两个 WebView2 浏览器进程：先启动的占 `127.0.0.1:<端口>`，主窗口回落到 `[::1]:<端口>`；已初始化目录重启时主窗口在 `127.0.0.1`。不要自己拼 `localhost:<端口>` 连接，使用清单里的 `cdp`。
 - 生产落盘入口从构建前到最终清理持有同 profile 互斥锁，冲突直接失败，防止覆盖资料和产物；不同工作线并行时仍须使用不同端口与 `-DataRoot`。
-- 机器满载时，调试构建、虚拟 PLC 心跳与布防可能超时。框架不自动重跑整条测试，也不修改产品节拍门槛。
+- 机器满载时，调试构建、虚拟 PLC 心跳与 PC 输出读回确认可能超时。框架不自动重跑整条测试，也不修改产品节拍门槛。
 - 端到端都是隐藏窗口，截图来自 WebView2 页面；结论只覆盖业务接线、落盘与界面驱动。
 
 ## 站点模式（真机 / 离线）
@@ -207,7 +207,7 @@ Playwright Test 固定 `workers=1`、`fullyParallel=false`、`retries=0`，每�
 1. 确认 lyFlow 引擎就绪（运行库位于程序目录 `runtime/lyflow/`，开发时由 `pnpm deps:lyflow:dev` 复制），否则拒绝进入并提示原因。
 2. 离线控制台来源选“样本集”，点“选择样本集目录”，核对件数、帧数、缺图和标签分布，点“进入离线”。
 3. 无已标定的正式版时（只剩采集版视为上次建站中断，先删除再重建）：新建候选并发布采集版，用 `capture_fixture` 生成仿历史录制件，再选示教件、确认分段、走廊示教、选标定件多轮标定、独立样本验证与发布。样本集是停稳拍数据，一条走廊对不上其他点位，检测项开着时多半判 NG_GAP；只作流程冒烟时关闭各段检测项。独立样本验证可选，不阻断发布。
-4. 选离线配方和样本件（不选则按顺序循环），点“运行一件”或“连续运行”，用“本件后停止”/“立即停止”结束。样本集来源只提供握手类工况：正常件、传输丢帧 / 缺帧、运动超时、PLC 回显核对不符，以及段配方的脉冲串工况（见上文“段模型专项”）。
+4. 选离线配方和样本件（不选则按顺序循环），点“运行一件”或“连续运行”，用“本件后停止”/“立即停止”结束。样本集来源只提供握手类工况：正常件、传输丢帧 / 缺帧、工件结束超时、PLC 回显核对不符，以及段配方的脉冲串工况（见上文“段模型专项”）。
 5. 核对“最近样本件”表的期望 / 实际。
 
 **生产记录隔离**

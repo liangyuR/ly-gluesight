@@ -528,7 +528,7 @@ fn save_calibration(
 pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, cam: Option<u8>, view: Option<u8>, image_id: Option<String>) -> Result<CalibInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let cycle = app.state::<CycleHost>();
-        let _gate = cycle.config_gate.try_lock().map_err(|_| "正在采集、标定或布防，请稍后重试")?;
+        let _gate = cycle.config_gate.try_lock().map_err(|_| "正在采集、标定或接件，请稍后重试")?;
         crate::camera::check_idle(&cycle)?;
         let keys = camera_calib_keys(&app, cam.unwrap_or(0), view)?;
         let view = view.unwrap_or(1);

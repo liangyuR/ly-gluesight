@@ -155,7 +155,7 @@ export interface ExportSegment {
   skipTail?: number;
 }
 
-/** 计划导出 JSON（recipe_plan_export）；协议 7 下 PLC 不再填计划与帧数。 */
+/** 计划导出 JSON（recipe_plan_export）；PLC 不填计划与帧数。 */
 export interface PlanExport {
   protocolVersion: number;
   recipeId: string;
