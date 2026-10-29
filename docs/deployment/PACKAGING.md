@@ -46,6 +46,8 @@ pnpm package:deps:publish -Archive 'C:\release\gluesight-vendor-runtime-win-x64-
 
 厂商包保留 MVS DLL、CTI、配置、ThirdParty 和许可证；CRT 目录仅容纳可分发 CRT DLL 与许可文件。安装资源保持 `runtime/lyflow`、`runtime/mvs`，另有 `runtime/crt`；应用所需 `vcruntime140.dll` 和 `vcruntime140_1.dll` 同时部署到 EXE 根目录。WebView2 和设备驱动仍由目标机预装。
 
+目标机显示按 1920×1080 原生分辨率、100% 缩放设置；15.6–17 英寸 1080p 面板机字小难点时允许 125%，生产页进入紧凑布局。应用启动即最大化，不需要也不应修改系统分辨率。
+
 ## CI 与发布门禁
 
 普通 PR 和 main 仅执行 Rust 格式检查、前端单元测试与 Rust 库单元测试，具体命令见 [测试说明与复现](../testing/TESTING.md#windows-ci-与手动验收)。Windows 发包工作流仅由手动运行或 `v*` tag 触发，PR 不自动执行完整发包门禁。只有 tag 成功后创建草稿 Release；负责人复核后正式发布。
