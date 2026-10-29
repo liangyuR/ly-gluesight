@@ -19,7 +19,7 @@
 
 ## 运行
 
-工具版本以 `package.json`、`rust-toolchain.toml` 和锁文件为准。首次安装执行 `pnpm install --frozen-lockfile`。
+工具版本以 `package.json`、`rust-toolchain.toml` 和锁文件为准。首次安装执行 `pnpm install --frozen-lockfile`。应用 Vite 预构建仅扫描根目录 `index.html`，避免 `output/` 中的验收夹具或组件库示例引入其他 React 副本。
 
 | 命令 | 用途 |
 | --- | --- |

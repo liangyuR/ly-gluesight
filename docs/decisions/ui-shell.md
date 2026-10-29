@@ -9,12 +9,6 @@
 - 采用：(c)。只动 transform 与 opacity，布局只发生一次；仍保持 qing-steel 的时序（文字淡出 → 宽度 → 文字淡入）和时长令牌，`prefers-reduced-motion` 下直接切换。实测收起 82 → 5 次布局，布局耗时 39 → 3.2 ms。代价：切换那一帧主区一次性重排（约 1 帧 30 ms，发生在文字已淡出时）；展开时主区右缘在 240 ms 内露出最多 148 px 的页面底色（与主区背景同为深色，肉眼几乎不可见）；当前项胶囊在切换期间淡出、到位后淡入，不再伸缩。
 - 回退：还原 `src/layout/Sidebar.tsx`、`src/layout/AppLayout.tsx` 与 `src/styles.css` 侧栏段。
 
-## 3. 分段选中指示器改为 translate + scale
-
-- 问题：`SelectionTrack` 用 WAAPI 动画 `width` / `height`，每帧布局。
-- 采用：指示器在动画开始时一次落到目标尺寸，动画只插值 `translate(...) scale(...)`（`transform-origin: 0 0`）。`.segmented` 内指示器改为直角，两端由容器圆角裁切（与 `qs-seg` 相同）；`.wp-steps` 的圆角指示器在 240 ms 内有轻微圆角形变，可接受。
-- 回退：还原 `src/components/SelectionTrack.tsx` 与 `styles.css` 中 `selection-track-indicator` 两行。
-
 ## 4. 局部超差（OK_WITH_EXCURSION）统一用警告色
 
 - 问题：生产页判定卡把局部超差显示为 OK 绿，历史列表、检测段都用警告黄。

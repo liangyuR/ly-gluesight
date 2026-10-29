@@ -41,6 +41,7 @@ describe("删除项目确认", () => {
     render(<SnackbarProvider><DeleteProjectDialog entry={entry} usage={{ status: "loading" }} onClose={onClose} /></SnackbarProvider>);
     const input = screen.getByRole("textbox", { name: /输入项目名称/ });
     const remove = screen.getByRole("button", { name: "删除" });
+    expect(input).toHaveFocus();
     for (const typed of ["京航 A", "京航 A 线 ", "京航 a 线"]) {
       await userEvent.clear(input);
       await userEvent.type(input, typed);

@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
-import { FormField, NumberField, Select, TextField } from "qing-steel";
+import { Accordion, FormField, NumberField, Select, TextField } from "qing-steel";
 import type { DetectParams, Polarity, RecipeDoc } from "../../cycle/types";
 import { KindChecksEditor } from "../../plan/KindChecksEditor";
 import type { KindDefault, SegmentKind } from "../../plan/types";
@@ -78,14 +78,13 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
 
   return (
     <div className="rcp-editor">
-      <details className="rcp-section rcp-identity" open={identityChanged || undefined}>
-        <summary><h4 className="sub-title">配方信息{identityChanged && <i className="rcp-changed" title="与生产配方不同" />}</h4><span className="muted">{doc.id} · {doc.name} · 型号 {doc.productCode}</span></summary>
+      <Accordion collapsible forceMount ignoreFieldsetDisabled defaultValue={identityChanged ? "identity" : undefined} items={[{ value: "identity", title: <span>配方信息{identityChanged && <i className="rcp-changed" title="与生产配方不同" />} · {doc.id} · {doc.name} · 型号 {doc.productCode}</span>, content:
         <div className="rcp-grid">
           <Field label="配方编号"><TextField className="mono" aria-label="配方编号" value={doc.id} readOnly disabled /></Field>
           <Field label="名称" changed={changed.has("name")}><TextField aria-label="名称" value={doc.name} onChange={(e) => set("name", e.target.value)} /></Field>
           <Field label="型号（PLC 下发）" changed={changed.has("productCode")}><Num aria="型号（PLC 下发）" step={1} value={doc.productCode} onChange={(v) => set("productCode", v)} /></Field>
         </div>
-      </details>
+      }]} />
 
       <Section title="采样">
         <div className="rcp-grid">

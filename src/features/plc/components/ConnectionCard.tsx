@@ -77,8 +77,7 @@ export default function ConnectionCard({ draft, saved, onChange, cpuPreset, open
         <fieldset disabled={!!blockedReason} style={fieldsetStyle}>
           <Stack direction="column" align="stretch" gap={14} wrap={false}>
             <ConnectionForm key={cpuPreset.revision} initialCpuPreset={cpuPreset.key} value={draft.connection} onChange={(connection) => onChange({ ...draft, connection })} />
-            <section className="plc-config-card" aria-labelledby="plc-monitor-title">
-              <h4 id="plc-monitor-title">心跳与日志</h4>
+            <Card as="section" className="plc-config-card" aria-label="心跳与日志" title="心跳与日志" headingLevel={4}>
               <div className="plc-config-fields">
                 <Select label="心跳点位" value={draft.heartbeat.pointId ?? ""}
                   onValueChange={(v) => onChange({ ...draft, heartbeat: { ...draft.heartbeat, pointId: v || null } })}
@@ -90,7 +89,7 @@ export default function ConnectionCard({ draft, saved, onChange, cpuPreset, open
                   value={Number.isFinite(draft.logRetentionDays) ? draft.logRetentionDays : ""}
                   onValueChange={(v) => onChange({ ...draft, logRetentionDays: v === "" ? NaN : v })} />
               </div>
-            </section>
+            </Card>
             <Checkbox label="启动时自动连接" checked={draft.autoConnect} onCheckedChange={(checked) => onChange({ ...draft, autoConnect: checked })} />
           </Stack>
         </fieldset>

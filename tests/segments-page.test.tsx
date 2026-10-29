@@ -49,6 +49,18 @@ it.each<[string, (first: ReturnType<typeof within>) => void, (segment: PathSegme
   expect(field(sent[0])).toBe(expected);
 });
 
+it("切换到第二段再修改长度 → 只保存第二段的改动", async () => {
+  openCalibrated();
+  const original = structuredClone(ws.data!.plan.segments);
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "段 2 · 弯道" }), { button: 0, ctrlKey: false });
+  expect(screen.queryByRole("region", { name: "段 1" })).not.toBeInTheDocument();
+  vi.useFakeTimers();
+  fireEvent.change(screen.getByRole("spinbutton", { name: "段 2 长度" }), { target: { value: "130" } });
+  await act(() => vi.advanceTimersByTimeAsync(1000));
+  const sent = vi.mocked(workspaceApi.updateSegments).mock.calls[0][2];
+  expect(sent).toEqual(original.map((segment, at) => at === 1 ? { ...segment, lengthMm: 130 } : segment));
+});
+
 // 防抖（700 ms）还没到期就离开页面：编辑不能随卸载丢掉。换了配方再离开、离开后工作区拿到新修订，
 // 这两条要经真实的 WorkspaceProvider 才观察得到（act 在这里是 mock），见 segments-page-leave.test.tsx
 describe("离开段列表页", () => {

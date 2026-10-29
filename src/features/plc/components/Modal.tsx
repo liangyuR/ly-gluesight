@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Dialog } from "qing-steel";
 
 interface ModalProps {
@@ -12,18 +12,9 @@ interface ModalProps {
 }
 
 export default function Modal({ title, onClose, closeDisabled = false, footer, width = 520, children, className = "" }: ModalProps) {
-  const body = useRef<HTMLDivElement | null>(null);
-  const attach = useCallback((node: HTMLDivElement | null) => {
-    body.current = node;
-    node?.closest<HTMLElement>(".qs-modal-content")?.style.setProperty("--modal-w", `${width}px`);
-  }, [width]);
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => body.current?.querySelector<HTMLElement>("input:not(:disabled)")?.focus());
-    return () => cancelAnimationFrame(frame);
-  }, []);
   return (
-    <Dialog open title={title} footer={footer} closeDisabled={closeDisabled} className={`gs-modal ${className}`} onOpenChange={open => { if (!open) onClose(); }}>
-      <div ref={attach} className="modal-body">{children}</div>
+    <Dialog open title={title} footer={footer} closeDisabled={closeDisabled} width={width} initialFocus="first-field" className={className} onOpenChange={open => { if (!open) onClose(); }}>
+      {children}
     </Dialog>
   );
 }

@@ -22,7 +22,7 @@ pub const FORMAT: u32 = 1;
 const MANIFEST: &str = "manifest.json";
 const MANIFEST_MAX_BYTES: u64 = 64 << 20;
 const PREFIX: &str = "project/";
-const CONTENT: [&str; 7] = [
+const CONTENT: [&str; 8] = [
     "project.json",
     "config",
     "calib",
@@ -30,6 +30,7 @@ const CONTENT: [&str; 7] = [
     "workspaces",
     "vision",
     "recipe-capture",
+    "recipe-support",
 ];
 const RECORDS: [&str; 3] = ["inspection.db", "records", "records-offline"];
 const PENDING_RECORDINGS: &str = ".project-install-pending.json";
@@ -143,6 +144,13 @@ fn walk(
         if kind.is_symlink() {
             notes.push(format!("{child} 是链接，未导出"));
         } else if kind.is_dir() {
+            let support_recipe = relative
+                .strip_prefix("project/recipe-support/")
+                .is_some_and(|id| !id.contains('/'));
+            if support_recipe && (name.starts_with(".pending-") || name.starts_with(".tmp-")) {
+                notes.push(format!("{child} 是未生效的导航辅助快照，未导出"));
+                continue;
+            }
             crate::image_file::checked_source_path(&path)?;
             walk(&path, &child, out, notes)?;
         } else if kind.is_file() && !name.ends_with(".tmp") {
@@ -609,6 +617,7 @@ fn finish(
             )?);
         }
     }
+    notes.extend(crate::workspace::navigation_import_notes(root));
     if !plans.is_empty() {
         notes.push(format!(
             "{} 个计划版本已按本机重新分配，生产配方的拍照计划不变",

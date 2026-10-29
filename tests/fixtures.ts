@@ -19,7 +19,7 @@ export function workspaceState(view = burstWorkspaceView()): ReturnType<typeof u
   return {
     list: [burstSummary(view.workspace.doc as BurstRecipeDoc)], drafts: [view.workspace], cameras: [], unavailable: [], selectedId: view.workspace.doc.id,
     data: view, doc: view.workspace.doc, preview: view.layout, previewError: "", error: "",
-    saveState: "saved", retrySave: vi.fn(), busy: false, dirty: false, frameDirty: false, corridorDrafts: {},
+    saveState: "saved", retrySave: vi.fn(), busy: false, dirty: false, frameDirty: false, corridorDrafts: {}, navigationDraft: null, navigationDirty: false, setNavigationDraft: vi.fn(),
     select: vi.fn(async () => view), clearSelection: vi.fn(), reloadList: vi.fn(async () => {}),
     setDoc: vi.fn(), setCorridorDraft: vi.fn(), setError: vi.fn(),
     saveDoc: vi.fn(async () => view), act: vi.fn(async request => request()),

@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronDown } from "lucide-react";
-import { Alert, type AlertTone } from "qing-steel";
+import { Accordion, Alert, type AlertTone } from "qing-steel";
 
 export interface PlcNotice {
   key: string;
@@ -18,11 +17,12 @@ export default function PlcNotices({ notices }: { notices: PlcNotice[] }) {
   if (!first && rest.length === 0) return null;
   return <div className="plc-notices">
     {first && <Alert tone={first.tone} action={first.action}>{first.text}</Alert>}
-    {rest.length > 0 && <details className="plc-notices-more">
-      <summary><span>{first ? `还有 ${rest.length} 条提示` : `${rest.length} 条提示`}</span><ChevronDown size={16} aria-hidden="true" /></summary>
-      <div className="plc-notices-list">
+    {rest.length > 0 && <Accordion collapsible items={[{
+      value: "notices",
+      title: first ? `还有 ${rest.length} 条提示` : `${rest.length} 条提示`,
+      content: <div className="plc-notices-list">
         {rest.map(n => <Alert key={n.key} tone={n.tone} action={n.action}>{n.text}</Alert>)}
-      </div>
-    </details>}
+      </div>,
+    }]} />}
   </div>;
 }

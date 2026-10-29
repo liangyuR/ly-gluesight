@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button } from "qing-steel";
+import { Accordion, Button } from "qing-steel";
 import { errorText } from "../../lib/errors";
 import type { SkipSuggestView } from "../plan/types";
 import { workspaceApi } from "./api";
@@ -48,12 +48,11 @@ export function SkipSuggest({ locked }: { locked: boolean }) {
           <Button size="sm" aria-label={`段 ${view.segment} ${endLabel[view.end]}采用建议`} disabled={locked || view.suggested == null || view.suggested === view.current} onClick={() => adopt(view)}>采用建议</Button>
         </div>
         {short && <p className="muted hint">当前跳过帧数少于建议：正常件的{view.end === "head" ? "起涂" : "收尾"}帧会判断胶。</p>}
-        <details>
-          <summary className="muted">各件明细</summary>
+        <Accordion collapsible items={[{ value: "rounds", title: "各件明细", content:
           <ul className="wp-skip-rounds">{view.rounds.map(round => <li key={round.roundId}>
             <span>{label(round.roundId)}</span>：{round.frames != null ? `${round.frames} 帧组` : <span className="c-warn">不参与（{round.note}）</span>}
           </li>)}</ul>
-        </details>
+        }]} />
       </li>;
     })}</ul>}
   </Panel>;

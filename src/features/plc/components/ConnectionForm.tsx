@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, NumberField, Select, TextField } from "qing-steel";
+import { Alert, Card, NumberField, Select, TextField } from "qing-steel";
 import { matchesCpu, s7CpuPresets, s7Protocol } from "../meta";
 import type { ConnectionConfig, S7ConnectionType, S7Options } from "../types";
 
@@ -67,16 +67,14 @@ export default function ConnectionForm({ value: c, initialCpuPreset, onChange }:
   const error = connectionError(c);
   return (
     <div className="plc-connection-form">
-      <section className="plc-config-card" aria-labelledby="plc-network-title">
-        <h4 id="plc-network-title">网络连接</h4>
+      <Card as="section" className="plc-config-card" aria-label="网络连接" title="网络连接" headingLevel={4}>
         <div className="plc-config-fields">
           <TextField label="协议" readOnly value={s7Protocol.label} />
           <TextField label="IP / 主机名" value={c.host} onChange={(e) => set({ host: e.target.value })} />
           <NumberField label="端口" min={1} max={65535} step={1} value={numberValue(c.port)} aria-invalid={!integerIn(c.port, 1, 65535)} onValueChange={(v) => set({ port: num(v) })} />
         </div>
-      </section>
-      <section className="plc-config-card" aria-labelledby="plc-s7-title">
-        <h4 id="plc-s7-title">S7 参数</h4>
+      </Card>
+      <Card as="section" className="plc-config-card" aria-label="S7 参数" title="S7 参数" headingLevel={4}>
         <div className="plc-config-fields">
           <Select label="CPU 型号" value={cpu?.key ?? "custom"}
             options={[...s7CpuPresets.map((p) => ({ value: p.key, label: p.label })), { value: "custom", label: "自定义", disabled: true }]}
@@ -93,15 +91,14 @@ export default function ConnectionForm({ value: c, initialCpuPreset, onChange }:
           <HexInput label="本地 TSAP（留空自动）" value={c.s7.localTsap} optional placeholder="0x0100" onChange={localTsap => setS7({ localTsap })} />
           <HexInput label="远端 TSAP（留空按机架/插槽）" value={c.s7.remoteTsap} optional placeholder="自动" onChange={remoteTsap => setS7({ remoteTsap })} />
         </div>
-      </section>
-      <section className="plc-config-card" aria-labelledby="plc-timing-title">
-        <h4 id="plc-timing-title">通讯时序</h4>
+      </Card>
+      <Card as="section" className="plc-config-card" aria-label="通讯时序" title="通讯时序" headingLevel={4}>
         <div className="plc-config-fields">
           <NumberField label="通讯超时 (ms)" min={100} value={numberValue(c.timeoutMs)} onValueChange={(v) => set({ timeoutMs: num(v) })} />
           <NumberField label="轮询周期 (ms)" min={20} value={numberValue(c.pollIntervalMs)} onValueChange={(v) => set({ pollIntervalMs: num(v) })} />
           <NumberField label="重连间隔 (ms)" min={0} value={numberValue(c.reconnectIntervalMs)} onValueChange={(v) => set({ reconnectIntervalMs: num(v) })} />
         </div>
-      </section>
+      </Card>
       {error && <Alert tone="ng">{error}</Alert>}
     </div>
   );

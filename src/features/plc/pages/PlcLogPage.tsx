@@ -200,7 +200,8 @@ export default function PlcLogPage() {
           )}
           <div className="spacer" />
           <Button
-            variant={following ? "filled" : "tonal"}
+            variant="tonal"
+            aria-pressed={following}
             leadingIcon={<Radio size={16} />}
             disabled={rangeKey === "custom"}
             title={rangeKey === "custom" ? "自定义时间段不支持实时跟随" : ""}
@@ -211,8 +212,8 @@ export default function PlcLogPage() {
           >
             {following ? "实时跟随中" : "实时跟随"}
           </Button>
-          <Button leadingIcon={<RefreshCw size={16} className={loading ? "spin" : ""} />} onClick={run}>刷新</Button>
-          <Button leadingIcon={<Download size={16} />} disabled={exporting} onClick={() => void exportCsv()}>{exporting ? "导出中…" : "导出 CSV"}</Button>
+          <Button loading={loading} leadingIcon={<RefreshCw size={16} />} onClick={run}>刷新</Button>
+          <Button leadingIcon={<Download size={16} />} loading={exporting} onClick={() => void exportCsv()}>{exporting ? "导出中…" : "导出 CSV"}</Button>
           <Button onClick={() => {
             const now = Date.now();
             setRangeKey("1h"); setCustomStart(toLocalInput(now - 3_600_000)); setCustomEnd(toLocalInput(now));
@@ -277,7 +278,7 @@ export default function PlcLogPage() {
 
       {configError && <Alert tone="ng" action={<Button size="sm" onClick={loadPoints}>重新加载点位</Button>}>点位配置：{configError}</Alert>}
       {exported && (
-        <Alert tone="ok" action={<Button variant="text" size="sm" disabled={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</Button>}>
+        <Alert tone="ok" action={<Button variant="text" size="sm" loading={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</Button>}>
           已导出：<span className="mono">{exported}</span>
         </Alert>
       )}
@@ -295,8 +296,8 @@ export default function PlcLogPage() {
         </Stack>} actions={<Pagination label="日志分页" total={currentData.total} page={page + 1} pageSize={PAGE_SIZE} pageSizeOptions={[PAGE_SIZE]} disabled={loading} onPageChange={(value) => setPage(value - 1)} />}>
         <Stack direction="column" align="stretch" gap={12}>
           {error && <Alert tone="ng">{error}</Alert>}
-          <Table<LogEntry> caption="PLC 日志" rows={currentData.items} columns={logColumns} rowKey={(e) => String(e.id)}
-            emptyState={<EmptyState title={loading ? "加载中…" : "所选条件下暂无日志"} />} />
+          <Table<LogEntry> caption="PLC 日志" rows={currentData.items} columns={logColumns} rowKey={(e) => String(e.id)} loading={loading} keepRowsWhileLoading
+            emptyState={<EmptyState title="所选条件下暂无日志" />} />
         </Stack>
       </Card>
     </div>

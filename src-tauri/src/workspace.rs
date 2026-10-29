@@ -31,6 +31,9 @@ mod collect_release_tests;
 mod comparisons;
 mod history_import;
 mod history_samples;
+mod navigation;
+#[cfg(test)]
+mod navigation_tests;
 mod pieces;
 #[cfg(test)]
 mod pieces_tests;
@@ -47,6 +50,7 @@ pub use burst_skip::*;
 pub use capture_review::*;
 pub use collect_release::*;
 pub use history_import::*;
+pub use navigation::*;
 pub use pieces::*;
 pub use workflow::*;
 
@@ -173,6 +177,12 @@ pub struct Release {
     pub revision: u64,
     pub validation: Validation,
     pub validation_site: ValidationSite,
+    #[serde(
+        default,
+        deserialize_with = "navigation::deserialize_archive_status",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub navigation: Option<NavigationArchiveStatus>,
     #[serde(default, rename = "frames", skip_serializing)]
     pub _frames: Discarded,
     #[serde(default, rename = "overview", skip_serializing)]
@@ -209,6 +219,10 @@ pub struct Workspace {
     /// 示教件（RB-1）：分段边界与全部走廊示教帧的唯一来源
     #[serde(default)]
     pub teaching_piece: Option<pieces::TeachingPiece>,
+    #[serde(default)]
+    pub navigation_id: Option<String>,
+    #[serde(default)]
+    pub navigation_structure_revision: u64,
     #[serde(default, rename = "frames", skip_serializing)]
     pub _frames: Discarded,
     #[serde(default, rename = "overview", skip_serializing)]
@@ -242,6 +256,8 @@ impl Workspace {
             capture_review: capture_review::CaptureReview::default(),
             flow: pieces::FLOW,
             teaching_piece: None,
+            navigation_id: None,
+            navigation_structure_revision: 0,
             _frames: Discarded,
             _overview: Discarded,
             _last_position: Discarded,
@@ -371,6 +387,7 @@ pub struct WorkspaceView {
     pub plan_changed: bool,
     /// 段配方的计划部分（决策记录 5.1）
     pub plan: burst::WorkspacePlanView,
+    pub navigation: NavigationView,
 }
 
 pub struct WorkspaceHost {
@@ -527,6 +544,7 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         production_version,
     );
     Ok(WorkspaceView {
+        navigation: navigation::navigation_view(&crate::storage::project(app), &w),
         workspace: w,
         layout,
         production_version,
@@ -612,6 +630,11 @@ pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String
         }
         let mut w = Workspace::new(doc, base);
         w.ensure_instance(&app.state::<Store>())?;
+        if let Some(message) =
+            navigation::inherit_navigation(&crate::storage::project(&app), &mut w)
+        {
+            cycle::log(&app, "warn", "导航资料", message);
+        }
         host.save(&w)?;
         items.insert(id.clone(), w);
     }
@@ -745,6 +768,7 @@ pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
     if dir.exists() {
         std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
     }
+    navigation::remove_navigation_archives(&crate::storage::project(&app), &id)?;
     items.remove(&id);
     Ok(())
 }
@@ -779,6 +803,9 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
     doc.build()?;
     if doc == w.doc {
         return Ok(());
+    }
+    if navigation::structure_changed(&w.doc, &doc) {
+        w.navigation_structure_revision += 1;
     }
     w.doc = doc;
     // 不再是计划相机、段结构变了或这台相机不再检测所在段的示教帧不保留
@@ -952,6 +979,12 @@ pub fn workspace_publish(
         .recipes
         .plan_version_for(&release_doc)?;
     let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?;
+    let navigation = navigation::prepare_navigation_release(
+        &crate::storage::project(&app),
+        w,
+        &release_doc,
+        &bundle.id,
+    );
     let mut next = w.clone();
     next.doc = release_doc.clone();
     next.doc.teaching_piece = None;
@@ -962,6 +995,7 @@ pub fn workspace_publish(
         revision,
         validation: validated.clone(),
         validation_site: bundle.manifest.validation_site,
+        navigation: Some(navigation),
         _frames: Discarded,
         _overview: Discarded,
     }));
@@ -1140,6 +1174,11 @@ pub fn apply_pending(app: &AppHandle) -> bool {
         let release = *w.pending.take().unwrap();
         match commit(app, &host, &release) {
             Ok(saved) => {
+                let navigation_warning = navigation::activate_navigation_release(
+                    &crate::storage::project(app),
+                    &release,
+                )
+                .err();
                 w.base_revision = Some(saved.revision_id.clone());
                 if w.revision == release.revision {
                     w.doc = app.state::<CycleHost>().recipes.doc(&id).unwrap();
@@ -1152,7 +1191,10 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 w.publish = PublishState::Active {
                     version: saved.version,
                     revision: w.revision,
-                    warning: next_version.err(),
+                    warning: match (next_version.err(), navigation_warning) {
+                        (Some(a), Some(b)) => Some(format!("{a}；{b}")),
+                        (a, b) => a.or(b),
+                    },
                     validation_site: release.validation_site,
                 };
                 changed = true;

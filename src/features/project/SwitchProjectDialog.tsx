@@ -8,7 +8,7 @@ export default function SwitchProjectDialog({ target, onClose }: { target: Proje
   const unsaved = useUnsavedCandidate();
   const { restarting, error, run } = useProjectSwitch();
   return <Dialog open title="切换项目" closeDisabled={restarting} onOpenChange={open => { if (!open && !restarting) onClose(); }}
-    footer={<><Button disabled={restarting} onClick={onClose}>取消</Button><Button variant="filled" tone="warn" disabled={restarting || !!unsaved} onClick={() => void run(target.id)}>{restarting ? "正在重启…" : "切换并重启"}</Button></>}>
+    footer={<><Button disabled={restarting} onClick={onClose}>取消</Button><Button variant="filled" tone="warn" loading={restarting} disabled={restarting || !!unsaved} onClick={() => void run(target.id)}>{restarting ? "正在重启…" : "切换并重启"}</Button></>}>
     <Stack direction="column" align="stretch" gap={12} wrap={false}>
       <dl className="kv">
         <dt>项目</dt><dd>{target.name}</dd>

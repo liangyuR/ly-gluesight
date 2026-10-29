@@ -1,5 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { Select } from "qing-steel";
+import { Button, Select } from "qing-steel";
 import { errorText } from "../../lib/errors";
 import type { CalibrationFrameView, FrameMetrics, FrameState, WorkspacePlanView } from "../plan/types";
 import { groupCellColor, groupCellText, segmentKindLabel, type GroupCellState } from "../plan/vis";
@@ -93,7 +93,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
           {Array.from({ length: groups }, (_, i) => {
             const seq = i + 1, m = stored(cam, seq), state = m ? cellState[m.state] : "waiting";
             const active = selected?.camera === cam && selected.seq === seq;
-            return <button key={seq} role="gridcell" aria-selected={active} className={"wp-calib-cell" + (active ? " selected" : "")}
+            return <Button variant="text" key={seq} role="gridcell" aria-selected={active} className={"wp-calib-cell" + (active ? " selected" : "")}
               style={{ background: m ? groupCellColor[state] : "var(--surface-high)" }} aria-label={`${cameraId} 帧组 ${seq}：${m ? groupCellText[state] : "无记录"}`}
               title={`${cameraId} · 帧组 ${seq} · ${m ? groupCellText[state] : "无记录"}${m?.error ? `：${m.error}` : ""}`} onClick={() => setSelected({ camera: cam, seq })} />;
           })}

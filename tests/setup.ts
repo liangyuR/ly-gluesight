@@ -9,6 +9,7 @@ vi.stubGlobal("ResizeObserver", class {
   disconnect() {}
 });
 Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: () => {} });
+Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: () => {} });
 Object.defineProperty(window, "matchMedia", { configurable: true, value: (media: string) => ({ media, matches: false, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => false }) });
 Object.defineProperties(HTMLDialogElement.prototype, {
   showModal: { configurable: true, value(this: HTMLDialogElement) { this.open = true; } },

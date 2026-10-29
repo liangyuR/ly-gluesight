@@ -63,7 +63,8 @@ describe("防抖没到期就离开段列表页", () => {
     vi.mocked(workspaceApi.get).mockImplementation(id => id === "B" ? loadingB.promise : Promise.resolve(view(id)));
     await editWithoutWaiting();
 
-    await userEvent.setup().selectOptions(screen.getByLabelText("当前配方"), "B");
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "当前配方" }), { key: "ArrowDown" });
+    await userEvent.setup().click(screen.getByRole("option", { name: /^B ·/ }));
     await act(async () => loadingB.resolve(view("B")));
 
     expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1);

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { Link } from "react-router-dom";
-import { Button, NumberField } from "qing-steel";
+import { Button, NumberField, Tabs } from "qing-steel";
 import type { PathSegment, WorkspacePlanView } from "../plan/types";
 import type { WorkspaceView } from "./types";
 import { expectedText, PLAN_CAMERAS, segmentKindLabel } from "../plan/vis";
@@ -33,7 +33,7 @@ export default function SegmentsPage() {
 }
 
 function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected: MutableRefObject<string | null> }) {
-  const { data, doc, act, busy, setError } = useWorkspace();
+  const { data, doc, act, busy, setError, navigationDirty } = useWorkspace();
   // 未保存的本地编辑；null 时显示后端给的 plan.segments
   const [edits, setEdits] = useState<PathSegment[] | null>(null);
   const [state, setState] = useState<SaveState>("saved");
@@ -94,9 +94,9 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
   const current = Math.min(tab, Math.max(0, segments.length - 1));
   // 工作台与参数表都会写段列表：一边有未保存的改动时另一边不能提交，避免修订号冲突
   const paramsPending = edits ? "段参数还没保存完，保存后再保存分段" : "";
-  const cardsLocked = frozen || workbenchDirty;
+  const cardsLocked = frozen || workbenchDirty || navigationDirty;
   const pending = segments.filter(segment => segment.expectedFrames == null).map(segment => segment.index);
-  const docLocked = edits || workbenchDirty ? "段列表有未保存的改动，保存后再改" : "";
+  const docLocked = edits || workbenchDirty || navigationDirty ? "段列表有未保存的改动，保存后再改" : "";
 
   return <div className="wp-page"><WorkspaceBar />
     <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
@@ -105,25 +105,21 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
         <BoundaryGuardField locked={docLocked && `${docLocked}边界过渡帧数`} />
         <BoundaryRefineField locked={docLocked && `${docLocked}边界细化`} available={segments.some(segment => !!segment.heading)} />
       </>}>
-      {/* 段多时逐段平铺太长：段条当选项卡，下方只显示所选段 */}
-      <div className="seg-tabs" role="tablist" aria-label="段">
-        {segments.map((segment, at) => <button key={at} type="button" role="tab" id={`seg-tab-${at}`} aria-selected={at === current} aria-controls="seg-panel"
-          className={`plan-seg ${segment.kind}${segment.expectedFrames == null ? " pending" : ""}${at === current ? " selected" : ""}`} onClick={() => setTab(at)}>
-          <strong>{segment.index} · {segmentKindLabel[segment.kind]}</strong>
-          <small className="plan-seg-n">{segment.expectedFrames == null ? "待标定" : `预期 ${segment.expectedFrames} ± ${segment.tolerance} 帧`}</small>
-          <small className="plan-mono">{segmentCameras(segment, plan.cameras).join(" · ")}</small>
-        </button>)}
-      </div>
       {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改段列表。</Notice>}
       {workbenchDirty && <Notice title="分段有未保存的改动">先保存或撤销上方的分段改动，再编辑段参数。</Notice>}
       <div className="seg-savebar" role="status" aria-label="段列表保存状态">
         {blocked ? <span className="warn">{issues.join("；")}（修正后自动保存）</span> : <span className={shown === "failed" ? "warn" : undefined}>{saveText[shown]}</span>}
         {shown === "failed" && !blocked && <Button size="sm" onClick={() => { failed.current = ""; setRetry(n => n + 1); }}>重试保存</Button>}
       </div>
-      {segments[current] && <div id="seg-panel" role="tabpanel" aria-labelledby={`seg-tab-${current}`}>
-        <SegmentCard key={current} segment={segments[current]} cameras={plan.cameras} disabled={cardsLocked}
-          onPatch={change => patch(current, change)} />
-      </div>}
+      <div className="seg-tabs">
+        <Tabs label="段" value={String(current)} onValueChange={value => setTab(Number(value))}
+          items={segments.map((segment, at) => ({
+            value: String(at),
+            label: `段 ${segment.index} · ${segmentKindLabel[segment.kind]}`,
+            content: <SegmentCard segment={segment} cameras={plan.cameras} disabled={cardsLocked}
+              onPatch={change => patch(at, change)} />,
+          }))} />
+      </div>
     </Panel>
     <Panel title="整件预期帧数" help="各段预期帧数之和；各段都待标定时取整件多轮采集的帧组数均值">
       <div className="seg-total">

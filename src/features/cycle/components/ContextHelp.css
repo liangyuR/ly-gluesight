@@ -1,5 +1,0 @@
-.context-help-trigger { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:26px; height:26px; padding:0; border:0; border-radius:var(--r-full); background:transparent; color:var(--on-surface-variant); vertical-align:middle; cursor:pointer; }
-.context-help-trigger:hover, .context-help-trigger[aria-expanded="true"] { color: var(--on-primary-container); background:var(--primary-container); }
-.context-help-trigger:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
-.context-help-bubble { position:fixed; z-index:2000; box-sizing:border-box; width:max-content; max-width:min(360px, calc(100vw - 16px)); max-height:calc(100vh - 16px); overflow:auto; padding:12px 14px; border-radius:var(--r-md); background:var(--surface-high); color:var(--on-surface); box-shadow:var(--shadow-2); font-size:12px; font-weight:400; line-height:1.7; overflow-wrap:anywhere; text-align:left; }
-.context-help-bubble p { margin:0; }

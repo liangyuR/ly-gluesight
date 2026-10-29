@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { EmptyState } from "qing-steel";
 import type { HistorySample } from "../types";
 import { formatClock, formatTs } from "../time";
 
@@ -84,9 +85,7 @@ export default function StepChart({ samples, start, end }: StepChartProps) {
 
   if (!chart) {
     return (
-      <div ref={ref} className="chart-empty muted">
-        所选时间段内无该点位的值变化记录
-      </div>
+      <div ref={ref}><EmptyState title="所选时间段内无该点位的值变化记录" /></div>
     );
   }
 

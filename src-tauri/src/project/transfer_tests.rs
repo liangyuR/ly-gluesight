@@ -301,6 +301,124 @@ fn copy_without_records_leaves_out_inspection_db_and_recordings() {
     assert!(source.join("inspection.db").is_file());
 }
 
+#[test]
+fn transferred_navigation_assets_keep_release_identity_and_damaged_maps_do_not_block_production() {
+    for importing in [false, true] {
+        let data = TempDir::new(if importing {
+            "navigation-import"
+        } else {
+            "navigation-copy"
+        });
+        let (source, recipe) = source_project(&data.0);
+        let candidate = PathBuf::from("workspaces")
+            .join(&recipe.id)
+            .join("navigation");
+        let frozen = PathBuf::from("recipe-support")
+            .join(&recipe.id)
+            .join("release-navigation");
+        let snapshot = serde_json::json!({
+            "format": 1,
+            "recipeId": recipe.id,
+            "recipeRevision": recipe.revision_id,
+            "bundleId": "release-navigation",
+            "map": null
+        });
+        let assets = [
+            (candidate.join("map.json"), b"{\"draft\":true}".to_vec()),
+            (candidate.join("image.png"), b"candidate-image".to_vec()),
+            (
+                frozen.join("snapshot.json"),
+                serde_json::to_vec(&snapshot).unwrap(),
+            ),
+            (frozen.join("image.png"), b"damaged-image".to_vec()),
+        ];
+        for (relative, bytes) in &assets {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let before = snapshot_files(&source);
+        let plan_file = data.0.join("state").join("plan-version");
+        let (transferred, target) = if importing {
+            let package = data.0.join("navigation.zip");
+            export_to(&source, false, &data.0.join("cache/export"), &package).unwrap();
+            (
+                import_from(
+                    &data.0,
+                    &package,
+                    "line-b",
+                    "B 线",
+                    &plan_file,
+                    &data.0.join("cache"),
+                )
+                .unwrap(),
+                super::super::dir(&data.0, "line-b"),
+            )
+        } else {
+            (
+                copy(&data.0, false).unwrap(),
+                super::super::dir(&data.0, "line-a2"),
+            )
+        };
+        for (relative, bytes) in &assets {
+            assert_eq!(std::fs::read(target.join(relative)).unwrap(), *bytes);
+        }
+        assert_eq!(snapshot_files(&source), before);
+        let loaded =
+            RecipeStore::open_with_floors(target.join("recipes"), plan_file, &BTreeMap::new())
+                .unwrap()
+                .get(&recipe.id)
+                .unwrap();
+        assert_eq!(loaded.revision_id, recipe.revision_id);
+        assert!(loaded.plan_version > recipe.plan_version);
+        assert!(transferred
+            .notes
+            .iter()
+            .any(|note| note.contains("导航") || note.contains("辅助")));
+        assert!(!target.join("inspection.db").exists());
+    }
+}
+
+#[test]
+fn pending_navigation_snapshots_are_excluded_from_exports_and_project_copies() {
+    let data = TempDir::new("navigation-pending");
+    let (source, recipe) = source_project(&data.0);
+    let support = PathBuf::from("recipe-support").join(&recipe.id);
+    for folder in [".pending-release-1", ".tmp-navigation-1"] {
+        let dir = source.join(&support).join(folder);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("snapshot.json"), b"{}").unwrap();
+    }
+    let candidate = PathBuf::from("workspaces")
+        .join(&recipe.id)
+        .join("navigation/image.png");
+    std::fs::create_dir_all(source.join(&candidate).parent().unwrap()).unwrap();
+    std::fs::write(source.join(&candidate), b"editable-map-image").unwrap();
+    let package = data.0.join("navigation-pending.zip");
+    export_to(&source, false, &data.0.join("cache/export"), &package).unwrap();
+    let exported = inspect(&package).unwrap();
+    assert!(exported
+        .files
+        .iter()
+        .all(|f| !f.path.starts_with("project/recipe-support/")));
+    assert!(exported
+        .files
+        .iter()
+        .any(|f| f.path.ends_with("/navigation/image.png")));
+    copy(&data.0, false).unwrap();
+    let target = super::super::dir(&data.0, "line-a2");
+    assert!(!target.join(&support).join(".pending-release-1").exists());
+    assert!(!target.join(&support).join(".tmp-navigation-1").exists());
+    assert_eq!(
+        std::fs::read(target.join(candidate)).unwrap(),
+        b"editable-map-image"
+    );
+    assert!(source
+        .join(&support)
+        .join(".pending-release-1/snapshot.json")
+        .is_file());
+}
+
 fn external_layout(data: &Path, instance: &str) {
     std::fs::create_dir_all(data.join("config")).unwrap();
     std::fs::write(

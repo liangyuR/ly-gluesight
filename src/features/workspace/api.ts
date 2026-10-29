@@ -1,4 +1,5 @@
 import { desktopCall } from "../../lib/desktop";
+import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
@@ -35,6 +36,10 @@ export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayIma
 }
 
 export const workspaceApi = {
+  navigationImport: (id: string, revision: number, bytes: number[]) => desktopCall<WorkspaceView>("workspace_navigation_import", { id, revision, bytes }),
+  navigationSave: (id: string, revision: number, map: NavigationMapData, confirm: boolean) => desktopCall<WorkspaceView>("workspace_navigation_save", { id, revision, map, confirm }),
+  navigationDelete: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_navigation_delete", { id, revision }),
+  navigationImage: (id: string, imageId: string) => desktopCall<ArrayBuffer | number[]>("workspace_navigation_image", { id, imageId }),
   debugRun: (id: string, revision: number, partId: string | null) => desktopCall<void>("workspace_debug_run", { id, revision, partId }),
   captureGet: (roundId?: string) => desktopCall<CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
   list: () => desktopCall<Workspace[]>("workspace_list"),

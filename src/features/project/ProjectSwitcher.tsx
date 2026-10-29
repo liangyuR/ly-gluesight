@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronsUpDown, FolderKanban } from "lucide-react";
-import { Menu, type MenuEntry } from "qing-steel";
+import { Button, Menu, type MenuEntry } from "qing-steel";
 import { projectApi, type ProjectEntry, type ProjectMeta } from "../../lib/project";
 import { desktopAvailable } from "../../lib/desktop";
 import { errorText } from "../../lib/errors";
@@ -40,11 +40,11 @@ export default function ProjectSwitcher({ collapsed }: { collapsed: boolean }) {
   ];
   const name = current?.name ?? (currentError ? "项目未知" : "读取中…");
   const hint = current ? `当前项目：${current.name}（${current.id}）` : currentError ? `当前项目读取失败：${currentError}` : "正在读取当前项目";
-  const trigger = <button type="button" className="project-card" aria-label={hint + "，打开项目菜单"} title={hint} onPointerDown={load} onKeyDown={e => { if (["Enter", " ", "ArrowDown"].includes(e.key)) load(); }}>
+  const trigger = <Button variant="tonal" className="project-card" aria-label={hint + "，打开项目菜单"} title={hint} onPointerDown={load} onKeyDown={e => { if (["Enter", " ", "ArrowDown"].includes(e.key)) load(); }}>
     <FolderKanban size={18} aria-hidden="true" />
     {!collapsed && <span className="project-card-text"><strong>{name}</strong><span className="mono">{current?.id ?? (currentError || " ")}</span></span>}
     {!collapsed && <ChevronsUpDown size={16} aria-hidden="true" className="project-card-chevron" />}
-  </button>;
+  </Button>;
   return <>
     <div className="project-switcher"><Menu trigger={trigger} items={items} align="start" label="项目菜单" /></div>
     {target && <SwitchProjectDialog target={target} onClose={() => setTarget(null)} />}

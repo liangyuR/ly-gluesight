@@ -76,7 +76,7 @@ export default function PointsJsonDialog({ points, blockedReason = "", onApply, 
       width={720}
       footer={
         <>
-          <Button disabled={copying} onClick={copy}>{copied ? "已复制" : "复制"}</Button>
+          <Button loading={copying} onClick={copy}>{copied ? "已复制" : "复制"}</Button>
           <Button onClick={onClose}>取消</Button>
           <Button variant="filled" disabled={!!blockedReason} onClick={apply}>应用到地址表</Button>
         </>

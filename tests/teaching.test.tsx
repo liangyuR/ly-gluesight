@@ -95,6 +95,7 @@ describe("检测窗口", () => {
   // 防的回归（D-SB-47）：长度为 0 或负数的窗口写进候选配方，自动保存被后端校验拒绝、反复失败；合法窗口没写到这台相机
   it.each(["0", "-5"])("窗口长度 %s mm → 提示长度需大于 0，不写配方；改成 20 mm → 写入这台相机的窗口", async length => {
     show("/recipe/teach?camera=CAM-1");
+    fireEvent.click(await screen.findByRole("button", { name: /^逐帧定向/ }));
     fireEvent.change(await screen.findByRole("spinbutton", { name: "窗口起点" }), { target: { value: "2" } });
     fireEvent.change(screen.getByRole("spinbutton", { name: "窗口长度" }), { target: { value: length } });
     expect(screen.getByRole("alert")).toHaveTextContent("检测窗口长度需大于 0 mm");
@@ -160,6 +161,7 @@ describe("段的逐帧定向与胶偏参考", () => {
   ])("胶偏测量量 %s", async (_, initial, target, expected) => {
     ws.data!.workspace.doc.segments![0].offsetRef = initial;
     show("/recipe/teach?camera=CAM-2&segment=1");
+    fireEvent.click(await screen.findByRole("button", { name: /^检测项/ }));
     const measure = (await screen.findByRole("combobox", { name: "段 1 胶偏测量量" })).closest(".qs-select")!.querySelector("select")!;
     fireEvent.change(measure, { target: { value: target } });
     expect(lastSegment().offsetRef).toStrictEqual(expected);
