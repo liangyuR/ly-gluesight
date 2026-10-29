@@ -23,7 +23,7 @@
 }
 .window-drag-region { display: flex; align-items: center; flex: 1; min-width: 0; padding: 0 16px; }
 .window-brand { display: flex; align-items: center; gap: 9px; min-width: 0; white-space: nowrap; pointer-events: none; }
-.window-brand img { width: 22px; height: 22px; border-radius: 6px; }
+.window-brand img { width: 22px; height: 22px; }
 .window-brand strong { color: var(--on-surface); font-size: 12px; font-weight: 600; letter-spacing: 0.2px; }
 .window-version { pointer-events: auto; font-family: var(--font-mono); font-size: 11px; color: var(--on-surface-variant); opacity: 0.75; }
 .window-badges { display: flex; align-items: center; gap: 6px; min-width: 0; margin-left: 16px; }
