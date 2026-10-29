@@ -4,7 +4,7 @@ import { Bug, Camera, Cable, ChevronRight, FlaskConical, GitBranch, Play, Refres
 import { Alert, Card, Chip, Heading, IconButton, Stack, StatusBadge } from "qing-steel";
 import { cameraApi } from "../features/camera";
 import { linkStateLabels, plcApi, subscribe } from "../features/plc";
-import { recipeApi, siteApi, siteModeText } from "../features/cycle";
+import { recipeApi, siteApi } from "../features/cycle";
 import { workspaceApi } from "../features/workspace/api";
 import { desktopAvailable } from "../lib/desktop";
 import { errorText } from "../lib/errors";
@@ -76,7 +76,7 @@ export default function OperationGuidePage() {
     { title: "离线配方调整", detail: "保存候选后可继续调试；离线验证与发布不等同真机验收", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["调整示教", "/recipe/teach"], ["试运行 / 验证", "/recipe/validation"]] as [string, string][] },
   ] : site.data ? journeys : journeys.filter(journey => !journey.production).concat({ title: "检测运行", detail: "站点模式尚未确认，请先核对运行范围和开工条件", icon: ScanEye, action: "查看检测状态", path: "/inspect", links: [["核对站点模式", "/offline"], ["查看检测状态", "/inspect"]] });
   return <div className="guide-page">
-    <div className="guide-toolbar"><div><Link className="guide-text-link" to="/offline">{site.data ? siteModeText(site.data) : unavailable(site)} · 查看站点模式</Link><IconButton variant="text" aria-label="刷新总览状态" disabled={!desktopAvailable()} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={17} /></IconButton></div></div>
+    <div className="guide-toolbar"><div><IconButton variant="text" aria-label="刷新总览状态" disabled={!desktopAvailable()} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={17} /></IconButton></div></div>
     <ReadError state={site} />
     <div className="guide-status-grid">
       <StatusCard title="采集设备" icon={Camera} status={<StatusBadge tone={cameras.data?.length && ready === cameras.data.length ? "ok" : "off"}>{cameraLabel}</StatusBadge>} links={[["相机", "/camera"], ["查看标定", "/camera/calibration"]]}>

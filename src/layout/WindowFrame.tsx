@@ -4,6 +4,7 @@ import { Copy, Minus, Square, X } from "lucide-react";
 import { useSnackbar } from "qing-steel";
 import { desktopAvailable } from "../lib/desktop";
 import { errorText } from "../lib/errors";
+import { WindowConnections, WindowModeBadges, WindowVersion } from "./WindowStatus";
 import "./window-frame.css";
 
 export default function WindowFrame({ children }: { children: ReactNode }) {
@@ -55,14 +56,17 @@ export default function WindowFrame({ children }: { children: ReactNode }) {
       <header className="window-titlebar" aria-label="应用标题栏">
         <div className="window-drag-region"
           onMouseDown={event => {
-            if (!nativeWindow || event.button !== 0) return;
+            if (!nativeWindow || event.button !== 0 || (event.target as Element).closest("a, button")) return;
             if (event.detail === 2) run(() => nativeWindow.toggleMaximize());
             else run(() => nativeWindow.startDragging());
           }}>
           <div className="window-brand">
             <img src="/app-icon.png" alt="" draggable={false} />
             <strong>GlueSight</strong>
+            <WindowVersion />
           </div>
+          <WindowModeBadges />
+          <WindowConnections />
         </div>
         {nativeWindow ? <div className="window-controls" role="group" aria-label="窗口控制">
           <button type="button" className="window-control" title="最小化窗口" aria-label="最小化窗口" onClick={() => run(() => nativeWindow.minimize())}><Minus aria-hidden="true" size={15} /></button>
