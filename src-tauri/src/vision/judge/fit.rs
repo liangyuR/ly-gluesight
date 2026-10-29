@@ -61,11 +61,25 @@ pub fn choose_path(scan: &Value, tracks: &[Value], gate: PathGate) -> Result<Pat
     let peak_score = |k: u64| peaks.get(k as usize).and_then(|p| p["score"].as_f64());
     let strongest = peak_score(0).unwrap_or(0.0);
     let scores = scan["scores"].as_array().ok_or("扇形扫描结果没有 scores")?;
-    let score_at = |i: usize| scores.get(i).and_then(Value::as_f64).unwrap_or(f64::NEG_INFINITY);
+    let score_at = |i: usize| {
+        scores
+            .get(i)
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::NEG_INFINITY)
+    };
     // 不在扇区两端、且不低于左右相邻方向
     let local_peak = |k: u64| {
-        let Some(i) = peaks.get(k as usize).and_then(|p| p["index"].as_u64()).map(|i| i as usize) else { return false };
-        i > 0 && i + 1 < scores.len() && score_at(i) >= score_at(i - 1) && score_at(i) >= score_at(i + 1)
+        let Some(i) = peaks
+            .get(k as usize)
+            .and_then(|p| p["index"].as_u64())
+            .map(|i| i as usize)
+        else {
+            return false;
+        };
+        i > 0
+            && i + 1 < scores.len()
+            && score_at(i) >= score_at(i - 1)
+            && score_at(i) >= score_at(i + 1)
     };
     let mut candidates: Vec<(usize, Candidate, bool)> = Vec::new();
     for (i, track) in tracks.iter().enumerate() {
@@ -91,7 +105,9 @@ pub fn choose_path(scan: &Value, tracks: &[Value], gate: PathGate) -> Result<Pat
         if strongest > 0.0 && ray.is_some_and(|r| r < WEAK_RAY_RATIO * strongest) {
             score *= WEAK_RAY_FACTOR;
         }
-        let local = track["peakIndex"].as_u64().is_none_or(|k| k == 0 || local_peak(k));
+        let local = track["peakIndex"]
+            .as_u64()
+            .is_none_or(|k| k == 0 || local_peak(k));
         let c = Candidate {
             heading: track["heading"].as_f64().ok_or_else(|| what("heading"))?,
             found,
@@ -382,11 +398,15 @@ mod tests {
             (vec![10.0, 40.0, 20.0, 25.0, 30.0], 4, 6, 0), // 第二个峰在扇区末端
             (vec![10.0, 40.0, 20.0, 30.0, 35.0, 5.0], 3, 6, 0), // 第二个峰低于右邻
             (vec![10.0, 40.0, 20.0, 30.0, 25.0, 5.0], 3, 6, 1), // 第二个峰是局部峰，照 1.1 按覆盖率选
-            (vec![10.0, 40.0, 20.0, 25.0, 30.0], 4, 2, 1), // 最强峰找不到胶，退到末端那个
+            (vec![10.0, 40.0, 20.0, 25.0, 30.0], 4, 2, 1),      // 最强峰找不到胶，退到末端那个
         ] {
             let s = json!({"sector": [-120.0, -60.0], "scores": scores,
                 "peaks": [{"index": 1, "angle": -90.0, "score": 40.0}, {"index": peak1, "angle": -70.0, "score": scores[peak1]}]});
-            assert_eq!(choose_path(&s, &found(top_found), GATE).unwrap().chosen, Some(chosen), "第二个峰在 {peak1}，最强峰找到 {top_found}");
+            assert_eq!(
+                choose_path(&s, &found(top_found), GATE).unwrap().chosen,
+                Some(chosen),
+                "第二个峰在 {peak1}，最强峰找到 {top_found}"
+            );
         }
     }
 

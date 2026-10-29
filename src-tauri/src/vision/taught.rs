@@ -108,7 +108,12 @@ fn corridor_params(
     let half = p.half.max(p.tolerance + 0.5 * p.hi);
     let [x0, y0, x1, y1] = taught_bbox(&parsed).ok_or("示教中线无效")?;
     let pad = half + 4.0;
-    let roi = [(x0 - pad).floor(), (y0 - pad).floor(), (x1 - x0 + 2.0 * pad).ceil() + 1.0, (y1 - y0 + 2.0 * pad).ceil() + 1.0];
+    let roi = [
+        (x0 - pad).floor(),
+        (y0 - pad).floor(),
+        (x1 - x0 + 2.0 * pad).ceil() + 1.0,
+        (y1 - y0 + 2.0 * pad).ceil() + 1.0,
+    ];
     let mut params = json!({"points": points});
     response_params_into(&mut params, detect, p, roi);
     bead_params_into(&mut params, p, half, edge)?;
@@ -121,7 +126,9 @@ fn taught_bbox(points: &[[f64; 2]]) -> Option<[f64; 4]> {
     let mut q: Vec<[f64; 2]> = Vec::new();
     let mut arc: Vec<f64> = Vec::new();
     for p in points {
-        let step = q.last().map(|b: &[f64; 2]| (p[0] - b[0]).hypot(p[1] - b[1]));
+        let step = q
+            .last()
+            .map(|b: &[f64; 2]| (p[0] - b[0]).hypot(p[1] - b[1]));
         if step.is_some_and(|l| l < 1e-9) {
             continue;
         }
@@ -140,23 +147,45 @@ fn taught_bbox(points: &[[f64; 2]]) -> Option<[f64; 4]> {
     }
     targets.push(total);
     let round3 = |v: f64| (v * 1000.0).round() / 1000.0;
-    let mut bbox = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut bbox = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
     let mut seg = 0;
     for t in targets {
         while seg + 2 < q.len() && arc[seg + 1] < t {
             seg += 1;
         }
         let span = arc[seg + 1] - arc[seg];
-        let f = if span > 1e-12 { ((t - arc[seg]) / span).clamp(0.0, 1.0) } else { 0.0 };
+        let f = if span > 1e-12 {
+            ((t - arc[seg]) / span).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let (a, b) = (q[seg], q[seg + 1]);
-        let (x, y) = (round3(a[0] + (b[0] - a[0]) * f), round3(a[1] + (b[1] - a[1]) * f));
-        bbox = [bbox[0].min(x), bbox[1].min(y), bbox[2].max(x), bbox[3].max(y)];
+        let (x, y) = (
+            round3(a[0] + (b[0] - a[0]) * f),
+            round3(a[1] + (b[1] - a[1]) * f),
+        );
+        bbox = [
+            bbox[0].min(x),
+            bbox[1].min(y),
+            bbox[2].max(x),
+            bbox[3].max(y),
+        ];
     }
     Some(bbox)
 }
 
 /// 响应图（`glue.response`）的业务参数：极性、结构元直径 = 胶宽上限取整 + 1（同 1.1），只算 roi 那一块。
-pub(super) fn response_params_into(params: &mut Value, detect: &DetectParams, p: &GraphParams, roi: [f64; 4]) {
+pub(super) fn response_params_into(
+    params: &mut Value,
+    detect: &DetectParams,
+    p: &GraphParams,
+    roi: [f64; 4],
+) {
     params["polarity"] = json!(polarity(detect));
     params["diameter"] = json!(p.hi.ceil() as i64 + 1);
     params["roi"] = json!(roi.map(|v| v as i64));
@@ -164,7 +193,12 @@ pub(super) fn response_params_into(params: &mut Value, detect: &DetectParams, p:
 
 /// 量胶宽与找边的业务参数（示教走廊与逐帧定向共用）：站距、卡尺半长 `half`、合并后宽度上限，
 /// 有找边时找边剖面要盖住胶边在卡尺端点时 1.1 的整个找边窗口。
-pub(super) fn bead_params_into(params: &mut Value, p: &GraphParams, half: f64, edge: Option<&EdgeGraph>) -> Result<(), String> {
+pub(super) fn bead_params_into(
+    params: &mut Value,
+    p: &GraphParams,
+    half: f64,
+    edge: Option<&EdgeGraph>,
+) -> Result<(), String> {
     params["stationStep"] = json!(p.step);
     params["searchHalf"] = json!(half);
     params["widthMax"] = json!(p.hi);
@@ -201,7 +235,10 @@ pub(super) struct EdgeGraph {
 
 impl EdgeGraph {
     pub(super) fn window(&self, far_run_px: f64) -> EdgeWindow {
-        EdgeWindow { search_px: self.search_px, far_run_px }
+        EdgeWindow {
+            search_px: self.search_px,
+            far_run_px,
+        }
     }
 }
 
@@ -249,24 +286,47 @@ const EDGE_FAR_RUN_PX: f64 = 12.0;
 
 /// 找边记录（`glue.part_edges`）按 1.1 口径判 → 胶中心到零件边距离的均值（mm）。`beads` 是逐站选中的胶边 (lo, hi)（px）；
 /// 有胶测站里找到边的不到一半时为 None（这一帧胶偏记未测）。
-pub(super) fn edge_mm(edges: Option<&Value>, beads: &[Option<(f64, f64)>], window: &EdgeWindow, scale: f64) -> Result<Option<f64>, String> {
+pub(super) fn edge_mm(
+    edges: Option<&Value>,
+    beads: &[Option<(f64, f64)>],
+    window: &EdgeWindow,
+    scale: f64,
+) -> Result<Option<f64>, String> {
     let edges = edges.ok_or("算法缺少找边结果")?;
-    Ok(judge_edges(edges, beads, window)?.mean_distance_px().map(|d| d * scale))
+    Ok(judge_edges(edges, beads, window)?
+        .mean_distance_px()
+        .map(|d| d * scale))
 }
 
 /// 一站卡尺的位置：站点与单位法向（px）。
 pub(super) fn station_pose(station: &Value, i: usize) -> Result<([f64; 2], [f64; 2]), String> {
     let xy = |key: &str| -> Result<[f64; 2], String> {
-        let a = station[key].as_array().filter(|a| a.len() == 2).ok_or_else(|| format!("算法第 {} 站的 {key} 不是二维坐标", i + 1))?;
-        let v = |k: usize| a[k].as_f64().filter(|v| v.is_finite()).ok_or("算法坐标不是有限数");
+        let a = station[key]
+            .as_array()
+            .filter(|a| a.len() == 2)
+            .ok_or_else(|| format!("算法第 {} 站的 {key} 不是二维坐标", i + 1))?;
+        let v = |k: usize| {
+            a[k].as_f64()
+                .filter(|v| v.is_finite())
+                .ok_or("算法坐标不是有限数")
+        };
         Ok([v(0)?, v(1)?])
     };
     Ok((xy("center")?, xy("normal")?))
 }
 
 /// 胶两边沿法向的偏移 → 图上的两个点（叠图用）。
-pub(super) fn edge_points(center: [f64; 2], normal: [f64; 2], (lo, hi): (f64, f64)) -> [[f32; 2]; 2] {
-    let at = |t: f64| [(center[0] + normal[0] * t) as f32, (center[1] + normal[1] * t) as f32];
+pub(super) fn edge_points(
+    center: [f64; 2],
+    normal: [f64; 2],
+    (lo, hi): (f64, f64),
+) -> [[f32; 2]; 2] {
+    let at = |t: f64| {
+        [
+            (center[0] + normal[0] * t) as f32,
+            (center[1] + normal[1] * t) as f32,
+        ]
+    };
     [at(lo), at(hi)]
 }
 
@@ -323,7 +383,10 @@ pub fn corridor_inside(corridor: &[[f32; 2]], size: [u32; 2]) -> bool {
 fn polyline_at(path: &[[f32; 2]], t: f64) -> [f64; 2] {
     let mut left = t.max(0.0);
     for w in path.windows(2) {
-        let (a, b) = ([w[0][0] as f64, w[0][1] as f64], [w[1][0] as f64, w[1][1] as f64]);
+        let (a, b) = (
+            [w[0][0] as f64, w[0][1] as f64],
+            [w[1][0] as f64, w[1][1] as f64],
+        );
         let l = (b[0] - a[0]).hypot(b[1] - a[1]);
         if left <= l && l > 0.0 {
             let f = left / l;
@@ -331,7 +394,8 @@ fn polyline_at(path: &[[f32; 2]], t: f64) -> [f64; 2] {
         }
         left -= l;
     }
-    path.last().map_or([0.0, 0.0], |p| [p[0] as f64, p[1] as f64])
+    path.last()
+        .map_or([0.0, 0.0], |p| [p[0] as f64, p[1] as f64])
 }
 
 /// 段配方第 `segment` 段、一台检测相机的走廊测量图：示教帧尺寸为 size。走廊必须完整落在图内（不然 lyFlow 量不到走廊两端）；
@@ -382,9 +446,12 @@ pub fn plan_corridor(
         .map(|i| polyline_at(corridor, i as f64 * params.step))
         .collect();
     let edge = edge_graph(recipe, segment, &inspect.camera, scale)?;
-    let (business, _) = corridor_params(corridor, detect, &params, edge.as_ref()).map_err(|e| fail(&e))?;
+    let (business, _) =
+        corridor_params(corridor, detect, &params, edge.as_ref()).map_err(|e| fail(&e))?;
     let expert = recipe.expert_layers(inspect);
-    let effective = template::corridor().params(business, &expert).map_err(|e| fail(&e))?;
+    let effective = template::corridor()
+        .params(business, &expert)
+        .map_err(|e| fail(&e))?;
     let judge = template::corridor().judge(&expert);
     let gate = |name: &str| number(&judge, name).map_err(|e| fail(&e));
     let taught = TaughtParams {
@@ -510,7 +577,9 @@ pub fn measure_frame(
     run_id: &str,
 ) -> Result<FrameMeasurement, String> {
     let start = Instant::now();
-    let run = |g: GraphRun<'_>, image: &FrameImage| engine.run_targets(g.template.text, run_id, image, g.params, g.targets);
+    let run = |g: GraphRun<'_>, image: &FrameImage| {
+        engine.run_targets(g.template.text, run_id, image, g.params, g.targets)
+    };
     let mut m = match graph {
         FrameGraph::Corridor(corridor) => measure_frame_with(corridor, image, seq, run)?,
         FrameGraph::Heading(heading) => measure_heading_with(heading, image, seq, run)?,
@@ -539,7 +608,14 @@ pub fn measure_frame_with(
     if image.pixels.len() != image.width as usize * image.height as usize {
         return Err("图像像素缓冲与尺寸不一致".into());
     }
-    let result = run(GraphRun { template: template::corridor(), params: &corridor.params, targets: &corridor.targets }, image)?;
+    let result = run(
+        GraphRun {
+            template: template::corridor(),
+            params: &corridor.params,
+            targets: &corridor.targets,
+        },
+        image,
+    )?;
     parse_corridor(corridor, &result, seq)
 }
 
@@ -548,7 +624,12 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
     if result.status() != "ok" { return Err(result.failure()); }
     let raw = result.record("runs").ok_or("算法缺少横向卡尺结果")?;
     let runs = lateral_runs(raw, "横向卡尺")?;
-    let split = lateral_runs(result.record("split").ok_or("算法缺少合并前的横向卡尺结果")?, "合并前的横向卡尺")?;
+    let split = lateral_runs(
+        result
+            .record("split")
+            .ok_or("算法缺少合并前的横向卡尺结果")?,
+        "合并前的横向卡尺",
+    )?;
     let n = c.stations.len();
     if runs.stations.len() != n || split.stations.len() != n {
         return Err("算法逐站结果数量与走廊测站数不一致".into());
@@ -561,15 +642,26 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
         }
         let (center, normal) = station_pose(&raw["stations"][i], i)?;
         let at = c.stations[i];
-        if (normal[0].hypot(normal[1]) - 1.0).abs() > 0.002 || (center[0] - at[0]).hypot(center[1] - at[1]) > 2.01 {
+        if (normal[0].hypot(normal[1]) - 1.0).abs() > 0.002
+            || (center[0] - at[0]).hypot(center[1] - at[1]) > 2.01
+        {
             return Err(format!("算法第 {} 站的中线或法向与走廊不一致", i + 1));
         }
         poses.push((center, normal));
     }
     let judged = judge_taught(&runs, Some(&split), &c.taught)?;
     // 有胶站的胶宽（px）与胶中心相对走廊的法向偏移（px，沿算法法向为正）
-    let beads: Vec<Option<(f64, f64)>> = judged.beads.iter().map(|b| b.map(|(lo, hi)| (hi - lo, 0.5 * (lo + hi)))).collect();
-    let edges = judged.beads.iter().zip(&poses).map(|(b, &(center, normal))| b.map(|b| edge_points(center, normal, b))).collect();
+    let beads: Vec<Option<(f64, f64)>> = judged
+        .beads
+        .iter()
+        .map(|b| b.map(|(lo, hi)| (hi - lo, 0.5 * (lo + hi))))
+        .collect();
+    let edges = judged
+        .beads
+        .iter()
+        .zip(&poses)
+        .map(|(b, &(center, normal))| b.map(|b| edge_points(center, normal, b)))
+        .collect();
     let mut metrics = bead_metrics(c.camera_idx, c.segment, seq, c.scale, c.spacing_mm, &beads);
     if let Some(window) = &c.edge {
         metrics.edge_mm = edge_mm(result.record("edges"), &judged.beads, window, c.scale)?;

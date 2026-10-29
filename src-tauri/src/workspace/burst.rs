@@ -1944,7 +1944,12 @@ pub(crate) fn flow_debug_frame(
     let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?;
     let cycle = app.state::<CycleHost>();
     crate::camera::check_idle(&cycle)?;
-    let image = crate::image_file::load(&cycle.camera.recipe_capture().burst_frame_path(round, camera, seq)?)?;
+    let image = crate::image_file::load(
+        &cycle
+            .camera
+            .recipe_capture()
+            .burst_frame_path(round, camera, seq)?,
+    )?;
     Ok((graphs, index, image))
 }
 

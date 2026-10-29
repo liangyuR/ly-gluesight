@@ -27,7 +27,8 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
     let graphs: Vec<Value> = set.iter()
         .map(|c| json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "params": c.params, "judge": c.judge}))
         .collect();
-    let mut templates = json!({ vision::template::corridor().id: vision::template::corridor().doc });
+    let mut templates =
+        json!({ vision::template::corridor().id: vision::template::corridor().doc });
     let mut doc = json!({"schemaVersion": 5, "version": GRAPH_VERSION_BURST, "graphs": graphs});
     let headings: Vec<Value> = set.headings()
         .map(|h| json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "params": h.params, "judge": h.judge}))

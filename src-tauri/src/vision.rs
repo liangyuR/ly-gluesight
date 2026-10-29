@@ -84,15 +84,31 @@ impl Engine {
     }
 
     /// 按顶层图参数跑测量图模板，只跑到 `targets` 这几个节点（空为整张图）。
-    pub fn run_targets(&self, graph: &str, run_id: &str, image: &FrameImage, params: &Value, targets: &[String]) -> Result<RunResult, String> {
+    pub fn run_targets(
+        &self,
+        graph: &str,
+        run_id: &str,
+        image: &FrameImage,
+        params: &Value,
+        targets: &[String],
+    ) -> Result<RunResult, String> {
         self.run_spec(graph, run_id, "", image, params, targets)
     }
 
-    fn run_spec(&self, graph: &str, run_id: &str, base_dir: &str, image: &FrameImage, params: &Value, targets: &[String]) -> Result<RunResult, String> {
+    fn run_spec(
+        &self,
+        graph: &str,
+        run_id: &str,
+        base_dir: &str,
+        image: &FrameImage,
+        params: &Value,
+        targets: &[String],
+    ) -> Result<RunResult, String> {
         let images = [image_input(image)?];
         let params_json = params.to_string();
         let run_id = unique_run_id(run_id);
-        let mut spec = RunSpec::new(graph, &run_id, base_dir, targets).with_params_json(&params_json);
+        let mut spec =
+            RunSpec::new(graph, &run_id, base_dir, targets).with_params_json(&params_json);
         // 正式测量只注入原始全分辨率像素。core 在 start 内拷贝，images 活到 start 返回。
         spec.image_inputs = &images;
         let handle = unsafe { RunHandle::start(self.core.clone(), spec, ignore_event, Box::new(())) }.map_err(|e| e.to_string())?;
@@ -102,9 +118,11 @@ impl Engine {
             .run_summary(&run_id)
             .map_err(|e| e.to_string())?
             .ok_or("算法没有返回运行摘要")?;
-        let summary: Value = serde_json::from_str(&summary_json).map_err(|e| format!("算法运行摘要无效：{e}"))?;
-        let outputs: Value = serde_json::from_str(&self.core.run_outputs(&run_id).map_err(|e| e.to_string())?)
-            .map_err(|e| format!("算法输出无效：{e}"))?;
+        let summary: Value =
+            serde_json::from_str(&summary_json).map_err(|e| format!("算法运行摘要无效：{e}"))?;
+        let outputs: Value =
+            serde_json::from_str(&self.core.run_outputs(&run_id).map_err(|e| e.to_string())?)
+                .map_err(|e| format!("算法输出无效：{e}"))?;
         drop(handle);
         Ok(RunResult { summary, outputs })
     }

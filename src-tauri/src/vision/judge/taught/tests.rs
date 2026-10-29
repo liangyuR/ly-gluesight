@@ -33,8 +33,10 @@ fn record(step: f64, stations: Vec<Vec<Value>>) -> LateralRuns {
         .enumerate()
         .map(|(i, runs)| json!({"s": i as f64 * step, "center": [0.0, 0.0], "normal": [0.0, 1.0], "validFraction": 1.0, "runs": runs}))
         .collect();
-    serde_json::from_value(json!({"count": n, "stationStep": step, "sRange": [0.0, (n - 1) as f64 * step],
-        "searchHalf": 60.0, "split": "half_max", "stations": stations}))
+    serde_json::from_value(
+        json!({"count": n, "stationStep": step, "sRange": [0.0, (n - 1) as f64 * step],
+        "searchHalf": 60.0, "split": "half_max", "stations": stations}),
+    )
     .unwrap()
 }
 
@@ -51,19 +53,32 @@ fn no_bead_along_taught_line_rejects_whole_segment() {
     // 防的回归（T4、D15）：容差内没有暗段、落在轨迹上的站不到 3 站、轨迹陡度 P25 < sharpMin（压痕、阴影）时
     // 仍逐站判出零星有胶，或陡度够的满胶段被整段判无胶
     let cases: [(&str, Vec<Vec<Value>>, Option<&str>); 4] = [
-        ("暗段都在容差外", vec![vec![run(45.0, 10.0)]; 20], Some("no_candidate")),
+        (
+            "暗段都在容差外",
+            vec![vec![run(45.0, 10.0)]; 20],
+            Some("no_candidate"),
+        ),
         (
             "只有两站",
-            (0..20).map(|i| if i < 2 { vec![run(0.0, 10.0)] } else { vec![] }).collect(),
+            (0..20)
+                .map(|i| if i < 2 { vec![run(0.0, 10.0)] } else { vec![] })
+                .collect(),
             Some("too_few"),
         ),
-        ("边缘太缓", vec![vec![run_with(-5.0, 5.0, 60.0, 120.0, 0.2)]; 20], Some("blunt")),
+        (
+            "边缘太缓",
+            vec![vec![run_with(-5.0, 5.0, 60.0, 120.0, 0.2)]; 20],
+            Some("blunt"),
+        ),
         ("陡度够", vec![vec![run(0.0, 10.0)]; 20], None),
     ];
     for (name, stations, expected) in cases {
         let j = judge_taught(&record(10.0, stations), None, &params()).unwrap();
         assert_eq!(kind(&j), expected, "{name}");
-        assert!(j.beads.iter().all(|b| b.is_some() == expected.is_none()), "{name}");
+        assert!(
+            j.beads.iter().all(|b| b.is_some() == expected.is_none()),
+            "{name}"
+        );
     }
 }
 
@@ -79,7 +94,10 @@ fn gap_longer_than_window_interpolates_expected_center() {
         })
         .collect();
     let j = judge_taught(&record(20.0, stations), None, &params()).unwrap();
-    assert_eq!(j.expect, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0]);
+    assert_eq!(
+        j.expect,
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0]
+    );
     assert!(j.beads[4..=10].iter().all(Option::is_none));
     assert_eq!(j.beads[11], Some((-1.0, 9.0)));
 }
@@ -97,7 +115,11 @@ fn same_width_sub_run_off_track_is_recovered_from_split_record() {
     for (split, expected) in [(Some(&sub), Some((-5.0, 5.0))), (None, None)] {
         let j = judge_taught(&merged, split, &params()).unwrap();
         assert_eq!(j.beads[5], expected);
-        assert!(j.beads.iter().enumerate().all(|(i, b)| i == 5 || b.is_some()));
+        assert!(j
+            .beads
+            .iter()
+            .enumerate()
+            .all(|(i, b)| i == 5 || b.is_some()));
     }
 }
 
@@ -116,9 +138,15 @@ fn shifted_section_is_followed_only_when_ramps_link_it() {
             .collect();
         let j = judge_taught(&record(10.0, stations), None, &params()).unwrap();
         let shifted = if ramp { Some((15.0, 25.0)) } else { None };
-        assert!(j.beads[13..=19].iter().all(|b| *b == shifted), "ramp = {ramp}");
+        assert!(
+            j.beads[13..=19].iter().all(|b| *b == shifted),
+            "ramp = {ramp}"
+        );
         assert!(j.beads[12].is_none() && j.beads[20].is_none());
-        assert!(j.beads[..12].iter().chain(&j.beads[21..]).all(Option::is_some));
+        assert!(j.beads[..12]
+            .iter()
+            .chain(&j.beads[21..])
+            .all(Option::is_some));
     }
 }
 

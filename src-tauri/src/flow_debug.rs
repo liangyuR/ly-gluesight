@@ -57,7 +57,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl FlowDebugHost {
     fn session(&self) -> Result<Arc<Session>, String> {
-        lock(&self.session).clone().ok_or_else(|| "流程调试页还没有打开测量图".into())
+        lock(&self.session)
+            .clone()
+            .ok_or_else(|| "流程调试页还没有打开测量图".into())
     }
 
     /// 换图时停掉并放掉之前的运行，它们的结果属于别的帧。
@@ -95,7 +97,11 @@ impl FlowDebugHost {
     }
 
     fn cancel(&self, run_id: &str) {
-        if let Some(run) = lock(&self.runs).active.as_ref().filter(|r| r.run_id() == run_id) {
+        if let Some(run) = lock(&self.runs)
+            .active
+            .as_ref()
+            .filter(|r| r.run_id() == run_id)
+        {
             run.cancel();
         }
     }
@@ -113,7 +119,9 @@ unsafe extern "C" fn forward(event_json: *const c_char, user: *mut c_void) {
             return;
         }
         let ctx = &*(user as *const EmitCtx);
-        let Ok(text) = CStr::from_ptr(event_json).to_str() else { return };
+        let Ok(text) = CStr::from_ptr(event_json).to_str() else {
+            return;
+        };
         match serde_json::from_str::<Value>(text) {
             Ok(value) => {
                 if let Err(e) = ctx.app.emit(EVENT_NAME, value) {
@@ -125,16 +133,25 @@ unsafe extern "C" fn forward(event_json: *const c_char, user: *mut c_void) {
     });
 }
 
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn core(app: &AppHandle) -> Result<Arc<Core>, String> {
-    Ok(app.state::<VisionHost>().engine().ok_or("lyFlow 核心库未加载")?.core())
+    Ok(app
+        .state::<VisionHost>()
+        .engine()
+        .ok_or("lyFlow 核心库未加载")?
+        .core())
 }
 
 fn parse(raw: Result<String, lyflow_client::CoreError>, what: &str) -> Result<Value, String> {
-    serde_json::from_str(&raw.map_err(|e| e.to_string())?).map_err(|e| format!("lyFlow 返回的{what}不是合法 JSON：{e}"))
+    serde_json::from_str(&raw.map_err(|e| e.to_string())?)
+        .map_err(|e| format!("lyFlow 返回的{what}不是合法 JSON：{e}"))
 }
 
 /// 模板换上这一次的有效参数作为图参数默认值，编辑器打开就是生产会跑的那一组。
@@ -154,29 +171,56 @@ fn with_defaults(doc: &Value, params: &Value, name: String) -> Value {
 /// 节点（id 与算子）与连线必须与模板一致：流程调试只调参数，不改拓扑。节点位置、参数取值不比较。
 fn same_topology(template: &Value, doc: &Value) -> Result<(), String> {
     let nodes = |d: &Value| {
-        let mut v: Vec<(String, String)> = d["nodes"].as_array().into_iter().flatten()
-            .map(|n| (n["id"].as_str().unwrap_or_default().to_string(), n["op"].as_str().unwrap_or_default().to_string()))
+        let mut v: Vec<(String, String)> = d["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|n| {
+                (
+                    n["id"].as_str().unwrap_or_default().to_string(),
+                    n["op"].as_str().unwrap_or_default().to_string(),
+                )
+            })
             .collect();
         v.sort();
         v
     };
     let edges = |d: &Value| {
-        let mut v: Vec<String> = d["edges"].as_array().into_iter().flatten()
-            .map(|e| format!("{}.{}>{}.{}", e["from"]["node"], e["from"]["port"], e["to"]["node"], e["to"]["port"]))
+        let mut v: Vec<String> = d["edges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| {
+                format!(
+                    "{}.{}>{}.{}",
+                    e["from"]["node"], e["from"]["port"], e["to"]["node"], e["to"]["port"]
+                )
+            })
             .collect();
         v.sort();
         v
     };
-    if nodes(template) != nodes(doc) || edges(template) != edges(doc) || doc.get("subgraphs").is_some_and(|s| s.as_object().is_some_and(|s| !s.is_empty())) {
+    if nodes(template) != nodes(doc)
+        || edges(template) != edges(doc)
+        || doc
+            .get("subgraphs")
+            .is_some_and(|s| s.as_object().is_some_and(|s| !s.is_empty()))
+    {
         return Err("流程调试只能调参数：图的节点或连线与测量图模板不一致".into());
     }
     Ok(())
 }
 
 /// 运行要的图文本与参数：拓扑核对过的图，参数缺省时用打开时的有效参数。
-fn prepared(session: &Session, doc: &Value, params: Option<Map<String, Value>>) -> Result<(String, String), String> {
+fn prepared(
+    session: &Session,
+    doc: &Value,
+    params: Option<Map<String, Value>>,
+) -> Result<(String, String), String> {
     same_topology(&session.template.doc, doc)?;
-    let params = params.map(Value::Object).unwrap_or_else(|| session.params.clone());
+    let params = params
+        .map(Value::Object)
+        .unwrap_or_else(|| session.params.clone());
     Ok((doc.to_string(), params.to_string()))
 }
 
@@ -191,22 +235,35 @@ pub async fn flow_open(
     variant: Variant,
 ) -> Result<Value, String> {
     blocking(move || {
-        let (graphs, index, image) = crate::workspace::flow_debug_frame(&app, &id, &camera, segment, &round, seq)?;
+        let (graphs, index, image) =
+            crate::workspace::flow_debug_frame(&app, &id, &camera, segment, &round, seq)?;
         let (template, params, label) = match variant {
             Variant::Corridor => {
-                let graph = graphs.iter().find(|g| g.camera_idx == index && g.segment == segment)
+                let graph = graphs
+                    .iter()
+                    .find(|g| g.camera_idx == index && g.segment == segment)
                     .ok_or_else(|| format!("第 {segment} 段相机 {camera} 还没有示教走廊"))?;
                 (template::corridor(), graph.params.clone(), "示教走廊")
             }
             Variant::Heading => {
-                let graph = graphs.headings().find(|g| g.camera_idx == index && g.segment == segment)
+                let graph = graphs
+                    .headings()
+                    .find(|g| g.camera_idx == index && g.segment == segment)
                     .ok_or_else(|| format!("第 {segment} 段没有开启逐帧定向"))?;
                 (template::heading(), graph.params.clone(), "逐帧定向")
             }
         };
         core(&app)?;
-        let doc = with_defaults(&template.doc, &params, format!("{camera} · 段 {segment} · 帧组 {seq} · {label}"));
-        app.state::<FlowDebugHost>().reset(Session { template, image: vision::image_input(&image)?, params });
+        let doc = with_defaults(
+            &template.doc,
+            &params,
+            format!("{camera} · 段 {segment} · 帧组 {seq} · {label}"),
+        );
+        app.state::<FlowDebugHost>().reset(Session {
+            template,
+            image: vision::image_input(&image)?,
+            params,
+        });
         Ok(json!({ "doc": doc, "migrations": [] }))
     })
     .await
@@ -229,22 +286,44 @@ pub async fn flow_core_info(app: AppHandle) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub async fn flow_validate(app: AppHandle, doc: Value, params: Option<Map<String, Value>>) -> Result<Value, String> {
+pub async fn flow_validate(
+    app: AppHandle,
+    doc: Value,
+    params: Option<Map<String, Value>>,
+) -> Result<Value, String> {
     blocking(move || {
         let session = app.state::<FlowDebugHost>().session()?;
         let (graph, params) = prepared(&session, &doc, params)?;
-        parse(core(&app)?.validate_with_params(&graph, "", Some(&params)), "诊断")
+        parse(
+            core(&app)?.validate_with_params(&graph, "", Some(&params)),
+            "诊断",
+        )
     })
     .await
 }
 
 #[tauri::command]
-pub async fn flow_plan(app: AppHandle, doc: Value, targets: Option<Vec<String>>, params: Option<Map<String, Value>>) -> Result<Value, String> {
+pub async fn flow_plan(
+    app: AppHandle,
+    doc: Value,
+    targets: Option<Vec<String>>,
+    params: Option<Map<String, Value>>,
+) -> Result<Value, String> {
     blocking(move || {
         let session = app.state::<FlowDebugHost>().session()?;
         let (graph, params) = prepared(&session, &doc, params)?;
         let images = [session.image.clone()];
-        parse(core(&app)?.plan_with_inputs(&graph, "", &targets.unwrap_or_default(), Some(&params), &[], &images), "计划")
+        parse(
+            core(&app)?.plan_with_inputs(
+                &graph,
+                "",
+                &targets.unwrap_or_default(),
+                Some(&params),
+                &[],
+                &images,
+            ),
+            "计划",
+        )
     })
     .await
 }
@@ -267,7 +346,11 @@ pub async fn flow_run(
         let session = host.session()?;
         let (graph, params) = prepared(&session, &doc, params)?;
         let core = core(&app)?;
-        let (targets, isolate, force) = (targets.unwrap_or_default(), isolate.unwrap_or_default(), force.unwrap_or_default());
+        let (targets, isolate, force) = (
+            targets.unwrap_or_default(),
+            isolate.unwrap_or_default(),
+            force.unwrap_or_default(),
+        );
         let images = [session.image.clone()];
         host.start(|| {
             let run_id = vision::unique_run_id("flow");
@@ -279,7 +362,10 @@ pub async fn flow_run(
                 spec.mode = 1;
                 spec.preview_max_points = preview_max_points.unwrap_or(0);
             }
-            let ctx = Box::new(EmitCtx { app: app.clone(), run_id: run_id.clone() });
+            let ctx = Box::new(EmitCtx {
+                app: app.clone(),
+                run_id: run_id.clone(),
+            });
             unsafe { RunHandle::start(core, spec, forward, ctx) }.map_err(|e| e.to_string())
         })
     })
@@ -292,7 +378,11 @@ pub fn flow_cancel(app: AppHandle, run_id: String) {
 }
 
 #[tauri::command]
-pub async fn flow_output_info(app: AppHandle, run_id: String, node_id: String) -> Result<Value, String> {
+pub async fn flow_output_info(
+    app: AppHandle,
+    run_id: String,
+    node_id: String,
+) -> Result<Value, String> {
     blocking(move || parse(core(&app)?.output_info(&run_id, &node_id), "输出信息")).await
 }
 
@@ -315,13 +405,16 @@ pub async fn flow_output_image(
     blocking(move || {
         let core = core(&app)?;
         let (level, row) = (level.unwrap_or(0), row.unwrap_or(0));
-        let view = core.output_image(&run_id, &node_id, &port, level, row, rows.unwrap_or(0)).map_err(|e| e.to_string())?;
+        let view = core
+            .output_image(&run_id, &node_id, &port, level, row, rows.unwrap_or(0))
+            .map_err(|e| e.to_string())?;
         let fit = (IMAGE_BYTES_LIMIT / (view.row_bytes().max(1) as usize)).max(1) as u32;
         let view = if view.row_count() <= fit {
             view
         } else {
             drop(view);
-            core.output_image(&run_id, &node_id, &port, level, row, fit).map_err(|e| e.to_string())?
+            core.output_image(&run_id, &node_id, &port, level, row, fit)
+                .map_err(|e| e.to_string())?
         };
         Ok(tauri::ipc::Response::new(encode_image(&view)))
     })
@@ -365,11 +458,22 @@ pub async fn flow_evict_cache(
         let session = app.state::<FlowDebugHost>().session()?;
         let (graph, params) = prepared(&session, &doc, params)?;
         let images = [session.image.clone()];
-        let raw = core(&app)?.cache_evict_with_inputs(&graph, "", &node_ids, downstream.unwrap_or(false), Some(&params), &[], &images);
+        let raw = core(&app)?.cache_evict_with_inputs(
+            &graph,
+            "",
+            &node_ids,
+            downstream.unwrap_or(false),
+            Some(&params),
+            &[],
+            &images,
+        );
         let value = parse(raw, "清缓存结果")?;
         // 图编不过时 core 回的是诊断数组
         if let Some(diags) = value.as_array() {
-            let first = diags.first().and_then(|d| d["message"].as_str()).unwrap_or("图校验不过");
+            let first = diags
+                .first()
+                .and_then(|d| d["message"].as_str())
+                .unwrap_or("图校验不过");
             return Err(format!("图有错，清不了缓存：{first}"));
         }
         Ok(value)
@@ -404,7 +508,10 @@ mod tests {
         tuned["params"]["segmentMin"]["default"] = json!(30.0);
         assert!(same_topology(&base, &tuned).is_ok());
         let mut added = base.clone();
-        added["nodes"].as_array_mut().unwrap().push(json!({"id": "n_extra", "op": "io.load_image", "params": {}}));
+        added["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id": "n_extra", "op": "io.load_image", "params": {}}));
         let mut rewired = base.clone();
         rewired["edges"][0]["to"]["port"] = json!("other");
         let mut swapped = base.clone();

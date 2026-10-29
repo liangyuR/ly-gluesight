@@ -20,10 +20,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gluesight_lib::probe_api::{
-    burst_graphs, burst_template, load_release, publish_burst, save_pgm, warm, GRAPH_VERSION_BURST,
-    BurstPublishInput, CameraInput, CorridorInput, DetectParams, Engine, FrameImage, FrameState,
-    HeadingWindow, Polarity, Prepared, RecipeDoc, ResourceSource, SegmentCorridor, ValidationSite,
-    Versions,
+    burst_graphs, burst_template, load_release, publish_burst, save_pgm, warm, BurstPublishInput,
+    CameraInput, CorridorInput, DetectParams, Engine, FrameImage, FrameState, HeadingWindow,
+    Polarity, Prepared, RecipeDoc, ResourceSource, SegmentCorridor, ValidationSite, Versions,
+    GRAPH_VERSION_BURST,
 };
 use serde_json::json;
 

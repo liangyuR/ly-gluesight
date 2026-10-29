@@ -154,7 +154,12 @@ pub fn judge_taught(
         .iter()
         .map(|x| Station {
             s: x.s,
-            runs: x.runs.iter().filter(|r| r.width >= w_min && r.width <= w_max).cloned().collect(),
+            runs: x
+                .runs
+                .iter()
+                .filter(|r| r.width >= w_min && r.width <= w_max)
+                .cloned()
+                .collect(),
         })
         .collect();
     let n = st.len();
@@ -168,19 +173,22 @@ pub fn judge_taught(
         let mut recovered = Vec::new();
         for i in (0..n).filter(|&i| tr.on_track[i].is_none()) {
             let e = tr.expect[i];
-            let best = nearest(split.stations[i].runs.iter().filter(|r| {
-                r.lo_complete
-                    && r.hi_complete
-                    && r.lo > -half
-                    && r.hi < half
-                    && r.hi > r.lo
-                    && r.width >= w_min
-                    && r.width <= w_max
-                    && (r.width - reference).abs() <= gate
-                    && (r.mid - e).abs() <= gate
-                    && r.mid.abs() <= tol
-                    && !st[i].runs.iter().any(|x| x.lo == r.lo && x.hi == r.hi)
-            }), e);
+            let best = nearest(
+                split.stations[i].runs.iter().filter(|r| {
+                    r.lo_complete
+                        && r.hi_complete
+                        && r.lo > -half
+                        && r.hi < half
+                        && r.hi > r.lo
+                        && r.width >= w_min
+                        && r.width <= w_max
+                        && (r.width - reference).abs() <= gate
+                        && (r.mid - e).abs() <= gate
+                        && r.mid.abs() <= tol
+                        && !st[i].runs.iter().any(|x| x.lo == r.lo && x.hi == r.hi)
+                }),
+                e,
+            );
             if let Some(r) = best {
                 recovered.push((i, r.clone()));
             }
@@ -194,20 +202,32 @@ pub fn judge_taught(
     }
 
     // D15 用在整条轨迹上（T5）：压痕、阴影也是暗带，边缘却是缓的；逐站不卡
-    let sharp: Vec<f64> = tr.on_track_runs(&st).filter_map(|r| r.sharpness).filter(|v| v.is_finite()).collect();
+    let sharp: Vec<f64> = tr
+        .on_track_runs(&st)
+        .filter_map(|r| r.sharpness)
+        .filter(|v| v.is_finite())
+        .collect();
     if tr.reason.is_none() && sharp.len() >= 3 {
         let sharpness = percentile(sharp, 25.0);
         if sharpness < p.sharp_min {
-            tr.reason = Some(NoBead::Blunt { sharpness, sharp_min: p.sharp_min });
+            tr.reason = Some(NoBead::Blunt {
+                sharpness,
+                sharp_min: p.sharp_min,
+            });
         }
     }
     if let Some(reason) = tr.reason {
-        return Ok(TaughtJudgement { beads: vec![None; n], expect: tr.expect, no_bead: Some(reason) });
+        return Ok(TaughtJudgement {
+            beads: vec![None; n],
+            expect: tr.expect,
+            no_bead: Some(reason),
+        });
     }
 
     // D16：参考宽、参考对比度只取落在轨迹上的站（断口里、轨迹外的暗段不进参考）
     let w_ref = median(tr.on_track_runs(&st).map(|r| r.width).collect());
-    let min_contrast = p.contrast_ratio * median(tr.on_track_runs(&st).map(LateralRun::contrast).collect());
+    let min_contrast =
+        p.contrast_ratio * median(tr.on_track_runs(&st).map(LateralRun::contrast).collect());
     let min_width = p.present_ratio * w_ref;
     let max_offset = GATE_MIN.max(p.center_ratio * w_ref);
     let beads = st
@@ -215,11 +235,19 @@ pub fn judge_taught(
         .zip(&tr.expect)
         .map(|(x, &e)| {
             nearest(x.runs.iter(), e)
-                .filter(|r| r.width >= min_width && (r.mid - e).abs() <= max_offset && r.contrast() >= min_contrast)
+                .filter(|r| {
+                    r.width >= min_width
+                        && (r.mid - e).abs() <= max_offset
+                        && r.contrast() >= min_contrast
+                })
                 .map(|r| (r.lo, r.hi))
         })
         .collect();
-    Ok(TaughtJudgement { beads, expect: tr.expect, no_bead: None })
+    Ok(TaughtJudgement {
+        beads,
+        expect: tr.expect,
+        no_bead: None,
+    })
 }
 
 struct Station {
@@ -237,7 +265,10 @@ struct Track {
 
 impl Track {
     fn on_track_runs<'a>(&'a self, st: &'a [Station]) -> impl Iterator<Item = &'a LateralRun> + 'a {
-        self.on_track.iter().zip(st).filter_map(|(k, x)| k.map(|k| &x.runs[k]))
+        self.on_track
+            .iter()
+            .zip(st)
+            .filter_map(|(k, x)| k.map(|k| &x.runs[k]))
     }
 }
 
@@ -253,7 +284,12 @@ fn nearest<'a>(runs: impl Iterator<Item = &'a LateralRun>, e: f64) -> Option<&'a
 }
 
 /// 离 e 最近、且不超过 gate 的那一段的下标。
-fn nearest_index(x: &Station, e: f64, gate: f64, keep: impl Fn(&LateralRun) -> bool) -> Option<usize> {
+fn nearest_index(
+    x: &Station,
+    e: f64,
+    gate: f64,
+    keep: impl Fn(&LateralRun) -> bool,
+) -> Option<usize> {
     let mut best: Option<usize> = None;
     for (k, r) in x.runs.iter().enumerate() {
         if keep(r) && best.is_none_or(|b| (r.mid - e).abs() < (x.runs[b].mid - e).abs()) {
@@ -270,8 +306,16 @@ fn nearest_index(x: &Station, e: f64, gate: f64, keep: impl Fn(&LateralRun) -> b
 /// 3. 夹在 ±容差里，再跟一遍整段横移。
 fn track_offsets(st: &[Station], tol: f64, center_ratio: f64) -> Track {
     let n = st.len();
-    let mut tr = Track { expect: vec![0.0; n], on_track: vec![None; n], reason: None };
-    let cands = || st.iter().flat_map(|x| &x.runs).filter(|r| r.mid.abs() <= tol);
+    let mut tr = Track {
+        expect: vec![0.0; n],
+        on_track: vec![None; n],
+        reason: None,
+    };
+    let cands = || {
+        st.iter()
+            .flat_map(|x| &x.runs)
+            .filter(|r| r.mid.abs() <= tol)
+    };
     if cands().next().is_none() {
         tr.reason = Some(NoBead::NoCandidate { tolerance: tol });
         return tr;
@@ -280,7 +324,10 @@ fn track_offsets(st: &[Station], tol: f64, center_ratio: f64) -> Track {
     let near = |x: &Station, e: f64| nearest_index(x, e, gate, |r| r.mid.abs() <= tol);
 
     let hypotheses: Vec<f64> = std::iter::once(0.0).chain(cands().map(|r| r.mid)).collect();
-    let votes: Vec<usize> = hypotheses.iter().map(|&h| st.iter().filter(|x| near(x, h).is_some()).count()).collect();
+    let votes: Vec<usize> = hypotheses
+        .iter()
+        .map(|&h| st.iter().filter(|x| near(x, h).is_some()).count())
+        .collect();
     let best_votes = votes.iter().copied().max().unwrap_or(0);
     let mut h = 0.0_f64;
     let mut h_votes: Option<usize> = None;
@@ -304,7 +351,10 @@ fn track_offsets(st: &[Station], tol: f64, center_ratio: f64) -> Track {
             .map(|(x, &e)| near(x, e).map_or(f64::NAN, |k| x.runs[k].mid))
             .collect();
         let same = |a: &f64, b: &f64| if a.is_nan() { b.is_nan() } else { a == b };
-        if last.as_ref().is_some_and(|l| l.iter().zip(&mids).all(|(a, b)| same(a, b))) {
+        if last
+            .as_ref()
+            .is_some_and(|l| l.iter().zip(&mids).all(|(a, b)| same(a, b)))
+        {
             break;
         }
         let mut e: Vec<f64> = (0..n)
@@ -313,7 +363,11 @@ fn track_offsets(st: &[Station], tol: f64, center_ratio: f64) -> Track {
                     .filter(|&j| mids[j].is_finite() && (st[j].s - st[i].s).abs() <= TRACK_WINDOW)
                     .map(|j| mids[j])
                     .collect();
-                if w.is_empty() { f64::NAN } else { median(w) }
+                if w.is_empty() {
+                    f64::NAN
+                } else {
+                    median(w)
+                }
             })
             .collect();
         // 断口：两侧都有就线性插值，只有一侧取那一侧，都没有就是投票的常数
@@ -329,7 +383,11 @@ fn track_offsets(st: &[Station], tol: f64, center_ratio: f64) -> Track {
                     (Some(p), false) => e[p],
                     (Some(p), true) => {
                         let (a, b) = (st[p].s, st[i].s);
-                        let f = if b - a > 1e-9 { (st[k].s - a) / (b - a) } else { 0.0 };
+                        let f = if b - a > 1e-9 {
+                            (st[k].s - a) / (b - a)
+                        } else {
+                            0.0
+                        };
                         e[p] + (e[i] - e[p]) * f
                     }
                 };
@@ -342,7 +400,11 @@ fn track_offsets(st: &[Station], tol: f64, center_ratio: f64) -> Track {
         tr.expect = e;
         last = Some(mids);
     }
-    tr.on_track = st.iter().zip(&tr.expect).map(|(x, &e)| near(x, e)).collect();
+    tr.on_track = st
+        .iter()
+        .zip(&tr.expect)
+        .map(|(x, &e)| near(x, e))
+        .collect();
     follow_shifts(st, tol, gate, &mut tr);
     let count = tr.on_track.iter().flatten().count();
     let support = if n > 0 { count as f64 / n as f64 } else { 0.0 };
@@ -364,7 +426,9 @@ fn follow_shifts(st: &[Station], tol: f64, gate: f64, tr: &mut Track) {
     let w_ref = median(widths);
     let w_tol = gate.max(0.3 * w_ref);
     let near = |x: &Station, e: f64| {
-        nearest_index(x, e, gate, |r| r.mid.abs() <= tol && (r.width - w_ref).abs() <= w_tol)
+        nearest_index(x, e, gate, |r| {
+            r.mid.abs() <= tol && (r.width - w_ref).abs() <= w_tol
+        })
     };
     let mut i = 0;
     while i < n {
@@ -390,7 +454,9 @@ fn follow_shifts(st: &[Station], tol: f64, gate: f64, tr: &mut Track) {
                 if d.abs() <= gate || near(&st[k], r.mid).is_none() {
                     continue;
                 }
-                let v = (a..b).filter(|&j| near(&st[j], expect[j] + d).is_some()).count();
+                let v = (a..b)
+                    .filter(|&j| near(&st[j], expect[j] + d).is_some())
+                    .count();
                 if v > votes {
                     votes = v;
                     delta = d;
@@ -404,8 +470,13 @@ fn follow_shifts(st: &[Station], tol: f64, gate: f64, tr: &mut Track) {
             .chain(b..n.min(b + len))
             .filter(|&k| tr.on_track[k].is_some())
             .collect();
-        let parallel = flank.iter().filter(|&&k| near(&st[k], expect[k] + delta).is_some()).count();
-        if flank.len() < SHIFT_MIN_STATIONS || parallel as f64 > SHIFT_FLANK_SHARE * flank.len() as f64 {
+        let parallel = flank
+            .iter()
+            .filter(|&&k| near(&st[k], expect[k] + delta).is_some())
+            .count();
+        if flank.len() < SHIFT_MIN_STATIONS
+            || parallel as f64 > SHIFT_FLANK_SHARE * flank.len() as f64
+        {
             continue;
         }
         let moved: Vec<Option<usize>> = (a..b).map(|k| near(&st[k], expect[k] + delta)).collect();
@@ -415,9 +486,16 @@ fn follow_shifts(st: &[Station], tol: f64, gate: f64, tr: &mut Track) {
         // 半个 gate，不比两头并起来还宽；没有中间站时，这两站至少一站的胶已经斜过去
         let linked = |on: usize, shifted: usize| {
             let ahead: Vec<f64> = if shifted > on {
-                (shifted..b).filter_map(|k| moved[k - a].map(|r| st[k].runs[r].mid)).take(SHIFT_MIN_STATIONS).collect()
+                (shifted..b)
+                    .filter_map(|k| moved[k - a].map(|r| st[k].runs[r].mid))
+                    .take(SHIFT_MIN_STATIONS)
+                    .collect()
             } else {
-                (a..=shifted).rev().filter_map(|k| moved[k - a].map(|r| st[k].runs[r].mid)).take(SHIFT_MIN_STATIONS).collect()
+                (a..=shifted)
+                    .rev()
+                    .filter_map(|k| moved[k - a].map(|r| st[k].runs[r].mid))
+                    .take(SHIFT_MIN_STATIONS)
+                    .collect()
             };
             let (from, to) = (expect[on], median(ahead));
             let jump = (to - from).abs();
@@ -462,7 +540,11 @@ fn median(mut v: Vec<f64>) -> f64 {
     }
     v.sort_by(f64::total_cmp);
     let m = v.len() / 2;
-    if v.len() % 2 == 1 { v[m] } else { 0.5 * (v[m - 1] + v[m]) }
+    if v.len() % 2 == 1 {
+        v[m]
+    } else {
+        0.5 * (v[m - 1] + v[m])
+    }
 }
 
 /// 线性插值的百分位（q ∈ [0, 100]）；空为 NaN。

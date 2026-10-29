@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 use super::judge::edge::EdgeWindow;
 use super::judge::fit::{choose_path, judge_stations, PathChoice, PathGate, StationGate};
 use super::taught::{
-    bead_metrics, bead_params, bead_params_into, edge_graph, edge_mm, edge_points, response_params_into,
-    FrameMeasurement, GraphRun,
+    bead_metrics, bead_params, bead_params_into, edge_graph, edge_mm, edge_points,
+    response_params_into, FrameMeasurement, GraphRun,
 };
 use super::template::{self, number};
 use super::{FrameImage, RunResult};
@@ -69,7 +69,11 @@ fn run_targets(edge: bool) -> Vec<String> {
     let kinds: &[&str] = if edge { &["t", "r", "e"] } else { &["t", "r"] };
     [Branch::Search, Branch::Fallback]
         .iter()
-        .flat_map(|b| kinds.iter().flat_map(move |kind| (0..3).map(move |k| format!("n_{kind}{}{k}", b.tag()))))
+        .flat_map(|b| {
+            kinds
+                .iter()
+                .flat_map(move |kind| (0..3).map(move |k| format!("n_{kind}{}{k}", b.tag())))
+        })
         .collect()
 }
 
@@ -146,7 +150,9 @@ pub fn plan_heading(
     response_params_into(&mut business, detect, &params, roi);
     bead_params_into(&mut business, &params, params.half, edge.as_ref()).map_err(|e| fail(&e))?;
     let expert = recipe.expert_layers(inspect);
-    let effective = template::heading().params(business, &expert).map_err(|e| fail(&e))?;
+    let effective = template::heading()
+        .params(business, &expert)
+        .map_err(|e| fail(&e))?;
     let judge = template::heading().judge(&expert);
     let gate = |values: &Value, name: &str| number(values, name).map_err(|e| fail(&e));
     Ok(HeadingGraph {
@@ -196,7 +202,14 @@ pub fn measure_heading_with(
     if image.pixels.len() != image.width as usize * image.height as usize {
         return Err("图像像素缓冲与尺寸不一致".into());
     }
-    let result = run(GraphRun { template: template::heading(), params: &g.params, targets: &g.targets }, image)?;
+    let result = run(
+        GraphRun {
+            template: template::heading(),
+            params: &g.params,
+            targets: &g.targets,
+        },
+        image,
+    )?;
     if result.status() != "ok" {
         return Err(result.failure());
     }
@@ -218,9 +231,16 @@ pub fn measure_heading_with(
 /// 一支的扇形扫描与 3 个粗跟踪 → 选方向。
 fn choose(g: &HeadingGraph, result: &RunResult, branch: Branch) -> Result<PathChoice, String> {
     let tag = branch.tag();
-    let scan = result.record(&format!("scan{tag}")).ok_or("算法缺少扇形扫描结果")?;
+    let scan = result
+        .record(&format!("scan{tag}"))
+        .ok_or("算法缺少扇形扫描结果")?;
     let tracks = (0..3)
-        .map(|k| result.record(&format!("track{tag}{k}")).cloned().ok_or("算法缺少粗跟踪结果"))
+        .map(|k| {
+            result
+                .record(&format!("track{tag}{k}"))
+                .cloned()
+                .ok_or("算法缺少粗跟踪结果")
+        })
         .collect::<Result<Vec<_>, _>>()?;
     choose_path(scan, &tracks, g.path_gate)
 }
@@ -234,17 +254,27 @@ fn measure_chosen(
     seq: u64,
 ) -> Result<FrameMeasurement, String> {
     let (tag, k) = (branch.tag(), choice.chosen.ok_or("选中的方向没有候选")?);
-    let runs = result.record(&format!("runs{tag}{k}")).ok_or("算法缺少横向卡尺结果")?;
+    let runs = result
+        .record(&format!("runs{tag}{k}"))
+        .ok_or("算法缺少横向卡尺结果")?;
     let calls = judge_stations(runs, g.station_gate, true)?;
     if calls.is_empty() {
         return Err("定向测量没有测站".into());
     }
     let lohi: Vec<Option<(f64, f64)>> = calls.iter().map(|c| c.bead).collect();
-    let beads: Vec<Option<(f64, f64)>> = lohi.iter().map(|b| b.map(|(lo, hi)| (hi - lo, 0.5 * (lo + hi)))).collect();
+    let beads: Vec<Option<(f64, f64)>> = lohi
+        .iter()
+        .map(|b| b.map(|(lo, hi)| (hi - lo, 0.5 * (lo + hi))))
+        .collect();
     let mut metrics = bead_metrics(g.camera_idx, g.segment, seq, g.scale, g.spacing_mm, &beads);
     metrics.x_mm = None;
     if let Some(window) = &g.edge {
-        metrics.edge_mm = edge_mm(result.record(&format!("edges{tag}{k}")), &lohi, window, g.scale)?;
+        metrics.edge_mm = edge_mm(
+            result.record(&format!("edges{tag}{k}")),
+            &lohi,
+            window,
+            g.scale,
+        )?;
     }
     let line: Vec<[f32; 2]> = result
         .record(&format!("line{tag}{k}"))
@@ -256,7 +286,10 @@ fn measure_chosen(
     metrics.heading_deg = chord_heading(&line).or(choice.heading);
     Ok(FrameMeasurement {
         metrics,
-        edges: calls.iter().map(|c| c.bead.map(|b| edge_points(c.center, c.normal, b))).collect(),
+        edges: calls
+            .iter()
+            .map(|c| c.bead.map(|b| edge_points(c.center, c.normal, b)))
+            .collect(),
         line,
         ms: 0,
     })
@@ -278,13 +311,23 @@ fn no_bead(g: &HeadingGraph, choice: &PathChoice, seq: u64) -> FrameMeasurement 
         n += 1;
         s += g.step;
     }
-    let mut metrics = bead_metrics(g.camera_idx, g.segment, seq, g.scale, g.spacing_mm, &vec![None; n]);
+    let mut metrics = bead_metrics(
+        g.camera_idx,
+        g.segment,
+        seq,
+        g.scale,
+        g.spacing_mm,
+        &vec![None; n],
+    );
     metrics.x_mm = None;
     metrics.heading_deg = choice.heading;
     FrameMeasurement {
         metrics,
         edges: vec![None; n],
-        line: choice.heading.map(|h| straight_line(g.nozzle, h, g.zone)).unwrap_or_default(),
+        line: choice
+            .heading
+            .map(|h| straight_line(g.nozzle, h, g.zone))
+            .unwrap_or_default(),
         ms: 0,
     }
 }
@@ -301,5 +344,7 @@ fn straight_line(anchor: [f64; 2], heading_deg: f64, zone: [f64; 2]) -> Vec<[f32
     }
     s.push(zone[1]);
     let round3 = |v: f64| ((v * 1000.0).round() / 1000.0) as f32;
-    s.into_iter().map(|v| [round3(anchor[0] + d[0] * v), round3(anchor[1] + d[1] * v)]).collect()
+    s.into_iter()
+        .map(|v| [round3(anchor[0] + d[0] * v), round3(anchor[1] + d[1] * v)])
+        .collect()
 }
