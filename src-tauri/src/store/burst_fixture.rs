@@ -30,6 +30,7 @@ pub(crate) fn measured(camera: usize, seq: u64, width: f64) -> FrameMetrics {
         x_mm: Some(0.0),
         heading_deg: None,
         heading_fallback: false,
+        fallback_reason: None,
         edge_mm: None,
     }
 }

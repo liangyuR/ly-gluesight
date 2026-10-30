@@ -89,18 +89,18 @@ export default function HistoryPicker({ recipeId, mode, title, help, disabled, c
   const preview = rows?.find(r => r.recordId === previewId) ?? null;
   return <Panel title={title} titleHelp={help} actions={rows && <Badge tone={usable ? "ok" : "warn"}>{`可选用 ${usable} / ${rows.length} 件`}</Badge>}>
     {loadError && <Notice title="读取历史件失败" tone="warn">{loadError}</Notice>}
-    <div className="wp-picker-layout">
+    <div className="wp-picker-table">
       <Table caption="历史件" columns={columns} rows={rows ?? []} rowKey={r => String(r.recordId)}
         getRowProps={r => r.recordId === previewId ? { tone: "info" } : undefined}
         emptyState={<p className="muted center">{rows ? "本配方还没有录制件。开启维护模式跟着生产采图后，可在这里选用。" : "正在读取历史件…"}</p>}/>
-      <aside className="wp-picker-preview" aria-label="历史件原图预览">
-        {preview
-          ? <FrameBrowser key={preview.recordId} source={String(preview.recordId)} label={`SN ${preview.sn}`} groupCount={preview.groupCount}
-            cameras={preview.cameras.map(c => ({ id: c.cameraId, name: nameOf(c.cameraId) }))}
-            read={(camera, seq) => burstImageApi.record(preview.recordId, camera, seq)} />
-          : <p className="wp-capture-empty">勾选一件或点“看图”，在这里按相机、帧组查看录制原图。</p>}
-      </aside>
     </div>
     <div className="wp-actions"><Button variant="filled" disabled={disabled || working || !chosen} onClick={() => void confirm()}>{confirmLabel(chosen)}</Button></div>
+    <aside className="wp-picker-preview" aria-label="历史件原图预览">
+      {preview
+        ? <FrameBrowser key={preview.recordId} source={String(preview.recordId)} label={`SN ${preview.sn}`} groupCount={preview.groupCount}
+          cameras={preview.cameras.map(c => ({ id: c.cameraId, name: nameOf(c.cameraId) }))}
+          read={(camera, seq) => burstImageApi.record(preview.recordId, camera, seq)} />
+        : <p className="wp-capture-empty">勾选一件或点“看图”，在这里按相机、帧组查看录制原图。</p>}
+    </aside>
   </Panel>;
 }

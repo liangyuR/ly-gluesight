@@ -19,7 +19,9 @@ use crate::measure::FrameJob;
 use crate::recipe::{CameraInspect, Recipe};
 
 mod heading;
+mod judge;
 mod taught;
+pub mod template;
 #[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
 pub use taught::measure_frame_with;
 pub use taught::{corridor_inside, measure_frame, CorridorSet, FrameMeasurement};
@@ -71,12 +73,42 @@ impl Engine {
         })
     }
 
+    /// 流程调试页直接驱动运行库（编计划、按节点取输出）用。
+    pub(crate) fn core(&self) -> Arc<Core> {
+        self.core.clone()
+    }
+
     /// 跑一次图，返回 run summary 与图级命名输出（都已解析成 JSON）。
     pub fn run(&self, graph: &str, run_id: &str, base_dir: &str, image: &FrameImage, params: &Value) -> Result<RunResult, String> {
+        self.run_spec(graph, run_id, base_dir, image, params, &[])
+    }
+
+    /// 按顶层图参数跑测量图模板，只跑到 `targets` 这几个节点（空为整张图）。
+    pub fn run_targets(
+        &self,
+        graph: &str,
+        run_id: &str,
+        image: &FrameImage,
+        params: &Value,
+        targets: &[String],
+    ) -> Result<RunResult, String> {
+        self.run_spec(graph, run_id, "", image, params, targets)
+    }
+
+    fn run_spec(
+        &self,
+        graph: &str,
+        run_id: &str,
+        base_dir: &str,
+        image: &FrameImage,
+        params: &Value,
+        targets: &[String],
+    ) -> Result<RunResult, String> {
         let images = [image_input(image)?];
         let params_json = params.to_string();
         let run_id = unique_run_id(run_id);
-        let mut spec = RunSpec::new(graph, &run_id, base_dir, &[]).with_params_json(&params_json);
+        let mut spec =
+            RunSpec::new(graph, &run_id, base_dir, targets).with_params_json(&params_json);
         // 正式测量只注入原始全分辨率像素。core 在 start 内拷贝，images 活到 start 返回。
         spec.image_inputs = &images;
         let handle = unsafe { RunHandle::start(self.core.clone(), spec, ignore_event, Box::new(())) }.map_err(|e| e.to_string())?;
@@ -86,9 +118,11 @@ impl Engine {
             .run_summary(&run_id)
             .map_err(|e| e.to_string())?
             .ok_or("算法没有返回运行摘要")?;
-        let summary: Value = serde_json::from_str(&summary_json).map_err(|e| format!("算法运行摘要无效：{e}"))?;
-        let outputs: Value = serde_json::from_str(&self.core.run_outputs(&run_id).map_err(|e| e.to_string())?)
-            .map_err(|e| format!("算法输出无效：{e}"))?;
+        let summary: Value =
+            serde_json::from_str(&summary_json).map_err(|e| format!("算法运行摘要无效：{e}"))?;
+        let outputs: Value =
+            serde_json::from_str(&self.core.run_outputs(&run_id).map_err(|e| e.to_string())?)
+                .map_err(|e| format!("算法输出无效：{e}"))?;
         drop(handle);
         Ok(RunResult { summary, outputs })
     }
@@ -103,7 +137,7 @@ fn check_operators(manifest: &Value) -> Result<(), String> {
     if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少必需算子：{}。请使用本版本锁定系列的 lyFlow 运行库。", missing.join("、"))) }
 }
 
-fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
+pub(crate) fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
     let count = (image.width as usize).checked_mul(image.height as usize).filter(|&n| n > 0)
         .ok_or("图像尺寸无效")?;
     if image.pixels.len() != count { return Err("图像像素缓冲与尺寸不一致".into()); }

@@ -13,6 +13,7 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::plan::{self, KindDefaults, PartCalib, PathSegment, SegmentKind};
+use crate::vision::template::{validate_expert, ExpertParams};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -237,6 +238,9 @@ pub struct CameraInspect {
     /// 标定的出胶点（图像像素，D-SB-47）；为空时由开启定向的各段走廊起点推出
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nozzle: Option<[f64; 2]>,
+    /// 这台相机覆盖的专家参数（LF-5，测量图模板参数名 → 值），叠在配方默认之上
+    #[serde(default, skip_serializing_if = "ExpertParams::is_empty")]
+    pub expert: ExpertParams,
 }
 
 /// 逐帧定向的检测窗口（mm，沿胶路从出胶点量起）。
@@ -322,7 +326,7 @@ impl CameraInspect {
         }) {
             return Err(format!("相机 {id} 的出胶点坐标需为 0–100000 px 的有限数"));
         }
-        Ok(())
+        validate_expert(&self.expert, &format!("相机 {id}"))
     }
 }
 
@@ -382,6 +386,7 @@ pub struct Recipe {
     pub boundary_guard: u32,
     pub boundary_refine: bool,
     pub part_calib: Option<PartCalib>,
+    pub expert: ExpertParams,
 }
 
 impl Recipe {
@@ -481,6 +486,11 @@ impl Recipe {
     pub fn cameras(&self) -> Vec<String> {
         self.plan_cameras()
     }
+
+    /// 一台相机的专家参数层，按叠加顺序：配方默认、相机覆盖。
+    pub fn expert_layers<'a>(&'a self, inspect: &'a CameraInspect) -> [&'a ExpertParams; 2] {
+        [&self.expert, &inspect.expert]
+    }
 }
 
 /// 配方文件的内容，也是配方页编辑的对象。
@@ -535,6 +545,9 @@ pub struct RecipeDoc {
     /// 示教件来源（RB-7）：正式发布时从候选写入；候选里恒为空，没有它的生产配方即旧流程发布。不进计划身份
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_piece: Option<TeachingPieceRef>,
+    /// 专家参数的配方默认（LF-5，测量图模板参数名 → 值）；没写的用模板默认值
+    #[serde(default, skip_serializing_if = "ExpertParams::is_empty")]
+    pub expert: ExpertParams,
 }
 
 /// 配方文档记下的示教件来源：历史件的工件身份、记录、SN 与时间。
@@ -599,6 +612,7 @@ impl RecipeDoc {
         }
         self.detect.validate("检测参数")?;
         self.limits.validate("限值")?;
+        validate_expert(&self.expert, "配方")?;
         if !self.is_burst() {
             return Err(LEGACY_RECIPE.into());
         }
@@ -681,6 +695,7 @@ impl RecipeDoc {
             boundary_guard: self.boundary_guard,
             boundary_refine: self.boundary_refine,
             part_calib: self.part_calib.clone(),
+            expert: self.expert.clone(),
         };
         Ok(recipe)
     }
@@ -792,6 +807,7 @@ pub fn burst_template(
                 segments: Vec::new(),
                 window: None,
                 nozzle: None,
+                expert: ExpertParams::new(),
             })
             .collect(),
         segment_defaults,
@@ -800,6 +816,7 @@ pub fn burst_template(
         boundary_refine: false,
         part_calib: None,
         teaching_piece: None,
+        expert: ExpertParams::new(),
     }
 }
 

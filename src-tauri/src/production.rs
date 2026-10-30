@@ -13,25 +13,11 @@ use crate::recipe::Recipe;
 use crate::release::{ReleaseBundle, ValidationSite, RELEASE_SCHEMA_BURST};
 use crate::vision::{self, Engine, FrameMeasurement, VisionHost};
 
-/// 段配方的测量图版本（每段每台检测相机一条走廊，D-SB-45）；发布包 schema 5 的 `versions.graph`。
-pub const GRAPH_VERSION_BURST: &str = "corridor-2";
-/// 用到逐帧定向（D-SB-47）或找零件边（D-SB-48）的配方的测量图版本：graph.json 多了定向图与找边节点。
-pub const GRAPH_VERSION_BURST_HEADING: &str = "corridor-3";
+/// 段配方的测量图版本（LF-4）：测量图模板加每（相机, 段）的全部有效参数；发布包 schema 5 的 `versions.graph`。
+/// `flow-2` 起测量图用 lyFlow 1.2 的测量算子、判定归 GlueSight；不兼容此前的发布包，它们加载时要求重新发布。
+pub const GRAPH_VERSION_BURST: &str = "flow-2";
 
-/// 配方对应的测量图版本：都不用逐帧定向与找边时保持 `corridor-2`，旧发布包照常加载。
-pub fn graph_version(recipe: &Recipe) -> &'static str {
-    let edge = recipe
-        .path_segments
-        .iter()
-        .any(|s| s.offset_ref.as_ref().is_some_and(|o| o.edge.is_some()));
-    if edge || recipe.path_segments.iter().any(|s| s.heading.is_some()) {
-        GRAPH_VERSION_BURST_HEADING
-    } else {
-        GRAPH_VERSION_BURST
-    }
-}
-
-/// 段配方的测量图（发布包 graph.json）：每段每台检测相机一张走廊测量图，开启定向的（段, 相机）另有搜索图与回退图；
+/// 段配方的测量图（发布包 graph.json）：用到的模板原文，加每段每台检测相机的走廊参数与判定门限，开启定向的（段, 相机）另有定向图的；
 /// sizes 是各相机示教帧尺寸。
 pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String> {
     if sizes.len() != recipe.inspect.len() {
@@ -39,15 +25,19 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
     }
     let set = vision::CorridorSet::build(recipe, sizes)?;
     let graphs: Vec<Value> = set.iter()
-        .map(|c| json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "graph": c.graph}))
+        .map(|c| json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "params": c.params, "judge": c.judge}))
         .collect();
-    let mut doc = json!({"schemaVersion": 4, "version": graph_version(recipe), "graphs": graphs});
+    let mut templates =
+        json!({ vision::template::corridor().id: vision::template::corridor().doc });
+    let mut doc = json!({"schemaVersion": 5, "version": GRAPH_VERSION_BURST, "graphs": graphs});
     let headings: Vec<Value> = set.headings()
-        .map(|h| json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "graph": h.graph, "fallback": h.fallback}))
+        .map(|h| json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "params": h.params, "judge": h.judge}))
         .collect();
     if !headings.is_empty() {
+        templates[vision::template::heading().id] = vision::template::heading().doc.clone();
         doc["headings"] = json!(headings);
     }
+    doc["templates"] = templates;
     Ok(doc)
 }
 
@@ -106,10 +96,11 @@ impl Prepared {
             || recipe.path_segments != expected.path_segments
             || recipe.inspect != expected.inspect
             || recipe.part_calib != expected.part_calib
+            || recipe.expert != expected.expert
         {
             return Err("发布包配方与所选生产版本不一致，请重新发布".into());
         }
-        if bundle.manifest.versions.graph != graph_version(&recipe)
+        if bundle.manifest.versions.graph != GRAPH_VERSION_BURST
             || !engine_version_matches(&bundle.manifest.versions.engine, &engine.version)
         {
             return Err("发布包的算法图或引擎版本与当前引擎不一致，请重新验证并发布".into());

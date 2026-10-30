@@ -4,7 +4,7 @@
 
 应用版本由 `package.json` 管理，Tauri、Cargo 和 Cargo.lock 根包必须一致。`pnpm version:set 0.1.1` 显式升版，`pnpm version:check` 只做检查。正式 tag 为 `vX.Y.Z`，必须与应用版本一致并位于 main 历史中。历史 Release 和同版本资产禁止覆盖。
 
-lyFlow 运行库来自公开仓库 `liangyuR/lyFlow` 的 GitHub Release 资产 `lyflow-runtime-win-x64-v<版本>.zip`，下载无需凭证。`packaging/runtime.json` 的 `lyflow` 段只锁系列（`{ "repository": "liangyuR/lyFlow", "series": "1.1" }`），开发与发包都取该系列最新正式 Release；普通 PR CI 不恢复运行库。`src-tauri/Cargo.toml` 的 `lyflow-client` 用同系列 tag 锁定。来源、校验项、缓存与升级见 [lyFlow 运行库依赖](../architecture/lyflow-dependency.md)。
+lyFlow 运行库来自公开仓库 `liangyuR/lyFlow` 的 GitHub Release 资产 `lyflow-runtime-win-x64-v<版本>.zip`，下载无需凭证。`packaging/runtime.json` 的 `lyflow` 段只锁系列（`{ "repository": "liangyuR/lyFlow", "series": "1.2" }`），开发与发包都取该系列最新正式 Release；普通 PR CI 不恢复运行库。`src-tauri/Cargo.toml` 的 `lyflow-client` 用同系列 tag 锁定。来源、校验项、缓存与升级见 [lyFlow 运行库依赖](../architecture/lyflow-dependency.md)。
 
 ```powershell
 pnpm deps:lyflow:restore
@@ -45,6 +45,8 @@ pnpm package:deps:publish -Archive 'C:\release\gluesight-vendor-runtime-win-x64-
 ```
 
 厂商包保留 MVS DLL、CTI、配置、ThirdParty 和许可证；CRT 目录仅容纳可分发 CRT DLL 与许可文件。安装资源保持 `runtime/lyflow`、`runtime/mvs`，另有 `runtime/crt`；应用所需 `vcruntime140.dll` 和 `vcruntime140_1.dll` 同时部署到 EXE 根目录。WebView2 和设备驱动仍由目标机预装。
+
+目标机显示按 1920×1080 原生分辨率、100% 缩放设置；15.6–17 英寸 1080p 面板机字小难点时允许 125%，生产页进入紧凑布局。应用启动即最大化，不需要也不应修改系统分辨率。
 
 ## CI 与发布门禁
 

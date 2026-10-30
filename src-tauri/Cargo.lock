@@ -681,7 +681,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 3.0.6",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -856,7 +856,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.7.4",
 ]
 
 [[package]]
@@ -2178,8 +2178,8 @@ dependencies = [
 
 [[package]]
 name = "lyflow-client"
-version = "1.1.5"
-source = "git+https://github.com/liangyuR/lyFlow.git?tag=v1.1.5#148f336d7699f1d2aa4db91805ff63b0150cb36f"
+version = "1.2.0"
+source = "git+https://github.com/liangyuR/lyFlow.git?tag=v1.2.0#a69fe7570fc0fc52468257a80f8a4532738cb08d"
 dependencies = [
  "libloading 0.8.9",
  "serde_json",

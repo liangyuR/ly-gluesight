@@ -614,8 +614,15 @@ fn ensure_workspace_can_be_created(path: &Path) -> Result<(), String> {
     }
 }
 
+/// 读盘与校验导航图放在阻塞线程，不占窗口主线程。
 #[tauri::command]
-pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String> {
+pub async fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String> {
+    tauri::async_runtime::spawn_blocking(move || get(app, id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn get(app: AppHandle, id: String) -> Result<WorkspaceView, String> {
     safe_id(&id)?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
@@ -773,8 +780,20 @@ pub fn workspace_delete(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 自动保存高频调用：写盘与生成视图放在阻塞线程，不占窗口主线程。
 #[tauri::command]
-pub fn workspace_save_doc(
+pub async fn workspace_save_doc(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    doc: RecipeDoc,
+) -> Result<WorkspaceView, String> {
+    tauri::async_runtime::spawn_blocking(move || save_doc(app, id, revision, doc))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn save_doc(
     app: AppHandle,
     id: String,
     revision: u64,

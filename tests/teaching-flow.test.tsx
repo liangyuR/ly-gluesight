@@ -100,7 +100,7 @@ const savingDoc = (candidate: WorkspaceView, gate?: Promise<void>): Handler => a
   return response;
 };
 
-it("手工落点并自动保存 → 保存期间保留缩放与走廊、不能再改点，保存后草稿并入配方且清空", async () => {
+it("保存期间继续加点 → 不锁编辑、缩放与走廊不重置，保存回来后新点保留并按新修订再保存一次", async () => {
   stubSvgPointer({ pointerEvent: true });
   const candidate = corridorCandidate();
   const saving = deferred<void>();
@@ -113,30 +113,74 @@ it("手工落点并自动保存 → 保存期间保留缩放与走廊、不能�
     fireEvent.pointerDown(image, { clientX, clientY });
     fireEvent.pointerUp(image);
   }
-  const editButton = screen.getByRole("button", { name: "点柄" });
-  const point = screen.getByLabelText("中线点 2");
-  fireEvent.pointerDown(point, { clientX: 40, clientY: 40 });
   act(() => { vi.advanceTimersByTime(900); }); // 自动保存防抖到期，保存请求挂起
   expect(screen.getByText("保存中")).toBeVisible();
-  expect(screen.getByRole("button", { name: "点柄" })).toBe(editButton);
-  expect(editButton).toBeDisabled();
-  expect(screen.getByLabelText("中线点 2")).toBe(point);
-  fireEvent.pointerMove(image, { clientX: 30, clientY: 30 });
-  expect(point).toHaveAttribute("cx", "40");
-  fireEvent.pointerUp(image);
+  expect(screen.getByRole("button", { name: "点柄" })).toBeEnabled();
   fireEvent.pointerDown(image, { clientX: 30, clientY: 30 });
   fireEvent.pointerUp(image);
-  expect(screen.queryByLabelText("中线点 3")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("中线点 3")).toBeInTheDocument();
   await act(async () => saving.resolve(undefined));
+  expect(screen.getByLabelText("中线点 3")).toBeInTheDocument();
+  act(() => { vi.advanceTimersByTime(900); });
   expect(await screen.findByText("草稿已保存")).toBeVisible();
-  expect(editButton).toBeEnabled();
   expect(screen.getByRole("img", { name: CAM2 })).toBe(image);
   expect(image.querySelector("g")).toHaveAttribute("transform", transform);
-  expect(screen.getByLabelText("中线点 2")).toHaveAttribute("cx", "40");
+  const saves = calls("workspace_save_doc") as { revision: number; doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(s => s.doc.inspect![1].segments)).toEqual([
+    [{ segment: 1, corridor: [[10, 10], [40, 40]] }],
+    [{ segment: 1, corridor: [[10, 10], [40, 40], [30, 30]] }],
+  ]);
+  expect(saves[1].revision).toBe(saves[0].revision + 1);
   // 整份配方只改了这台相机这一段：相机参数与别的相机原样提交
-  const [{ doc }] = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
-  expect(doc.inspect![1]).toEqual({ ...candidate.workspace.doc.inspect![1], segments: [{ segment: 1, corridor: [[10, 10], [40, 40]] }] });
-  expect([doc.inspect![0], doc.inspect![2]]).toEqual([candidate.workspace.doc.inspect![0], candidate.workspace.doc.inspect![2]]);
+  expect({ ...saves[0].doc.inspect![1], segments: [] }).toEqual({ ...candidate.workspace.doc.inspect![1], segments: [] });
+  expect([saves[0].doc.inspect![0], saves[0].doc.inspect![2]]).toEqual([candidate.workspace.doc.inspect![0], candidate.workspace.doc.inspect![2]]);
+});
+
+it("保存期间改相机参数 → 保存结果回来不覆盖新值，按新修订再保存一次", async () => {
+  const candidate = corridorCandidate();
+  const saving = deferred<void>();
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate, saving.promise) });
+  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  await user.click(await screen.findByRole("button", { name: "选择相机 CAM-2" }));
+  const scale = await screen.findByRole("spinbutton", { name: /^像素当量/ });
+  fireEvent.change(scale, { target: { value: "0.2" } });
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(screen.getByText("保存中")).toBeVisible();
+  fireEvent.change(screen.getByRole("spinbutton", { name: /^像素当量/ }), { target: { value: "0.3" } });
+  await act(async () => saving.resolve(undefined));
+  expect(screen.getByRole("spinbutton", { name: /^像素当量/ })).toHaveValue(0.3);
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  const saves = calls("workspace_save_doc") as { revision: number; doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(s => s.doc.inspect![1].mmPerPx)).toEqual([0.2, 0.3]);
+  expect(saves[1].revision).toBe(saves[0].revision + 1);
+});
+
+// 防的回归：只存走廊的自动保存起跑时配方没改（dirty 为假），保存期间改的段参数被保存结果覆盖、悄悄丢掉
+it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保持，走廊也在，按新修订再保存一次", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate();
+  const saving = deferred<void>();
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate, saving.promise) });
+  renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
+    fireEvent.pointerDown(image, { clientX, clientY });
+    fireEvent.pointerUp(image);
+  }
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(screen.getByText("保存中")).toBeVisible();
+  fireEvent.click(screen.getByRole("switch", { name: "段 1 逐帧定向" }));
+  await act(async () => saving.resolve(undefined));
+  expect(screen.getByRole("switch", { name: "段 1 逐帧定向" })).toBeChecked();
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  const saves = calls("workspace_save_doc") as { revision: number; doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(s => [!!s.doc.segments![0].heading, s.doc.inspect![1].segments])).toEqual([
+    [false, [{ segment: 1, corridor: [[10, 10], [40, 40]] }]],
+    [true, [{ segment: 1, corridor: [[10, 10], [40, 40]] }]],
+  ]);
+  expect(saves[1].revision).toBe(saves[0].revision + 1);
 });
 
 it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在这一段的示教帧上提取一次", async () => {
@@ -188,7 +232,7 @@ it("段已有示教帧时重新选帧 → 只在示教件这一段内选帧，�
   await screen.findByRole("region", { name: "示教帧选择" });
   expect(await screen.findByRole("img", { name: "CAM-2 · 帧组 4 · 候选示教帧" })).toBeVisible();
   expect(calls("recipe_capture_get")).toEqual([{ roundId: "round-1" }]);
-  fireEvent.change(await screen.findByRole("spinbutton", { name: "帧组序号" }), { target: { value: "2" } });
+  await user.click(await screen.findByRole("button", { name: "帧组 2 · CAM-2" }));
   await waitFor(() => expect(frameImage).toHaveBeenLastCalledWith("round-1", "CAM-2", 2));
   const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2 · 段 1" });
   await waitFor(() => expect(choose).toBeEnabled());

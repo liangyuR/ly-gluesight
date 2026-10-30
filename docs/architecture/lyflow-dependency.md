@@ -7,7 +7,7 @@
 
 ## 系列锁定
 
-- `packaging/runtime.json` 的 `lyflow` 段只写仓库与系列：`{ "repository": "liangyuR/lyFlow", "series": "1.1" }`。带其他字段（如旧的 NuGet 源、包 ID、最低版本）的配置直接拒绝。
+- `packaging/runtime.json` 的 `lyflow` 段只写仓库与系列：`{ "repository": "liangyuR/lyFlow", "series": "1.2" }`。带其他字段（如旧的 NuGet 源、包 ID、最低版本）的配置直接拒绝。
 - 恢复时取该系列最新的正式 Release：排除 draft 与 prerelease，tag 必须是 `v主.次.补丁` 且属于该系列，必须带上述资产，补丁号按数值取最大。
 - `src-tauri/Cargo.toml` 的 `lyflow-client` 必须是唯一一条 `{ git = "https://github.com/liangyuR/lyFlow.git", tag = "vX.Y.Z" }`，tag 属于同一系列，不允许 `rev` 或 `branch`。Cargo.lock 里的提交记录由 Cargo 维护，不另作校验。
 - 不锁定内容哈希，也不把 Git 提交写进本仓库的锁定或校验。
@@ -26,7 +26,7 @@
 
 `requiredOperators` 是必需算子的唯一来源：打包脚本按它生成 `runtime/manifest.json` 的算子清单并做上面的校验；`src-tauri/build.rs` 在编译时把它带进程序（`GLUESIGHT_REQUIRED_OPERATORS`），加载核心库时 `check_operators` 按同一份清单核对。测量图与标定图里出现的算子都必须在清单里。
 
-段配方的每帧走廊测量用 `glue.taught_path` 与 `glue.bead_width`；开启逐帧定向的段用 `glue.bead_path` 代替 `glue.taught_path`（D-SB-47），胶偏按 ToEdge 测的段在参考相机的测量图里接 `glue.edge_distance`（D-SB-48）。标定用 `io.load_image`、`image.board_calib` 与 `image.load_calib`。
+段配方的每帧测量先用 `glue.response` 算一次响应图。示教走廊用 `glue.polyline` 把示教折线变成胶路，再用 `glue.lateral_runs` 量每站的全部暗段；开启逐帧定向的段（D-SB-47）用 `glue.fan_scan` 与 `glue.track_path` 定向并拟合胶路，再量选中的那条；胶偏按 ToEdge 测的段在参考相机的测量图里接 `glue.part_edges`（D-SB-48）。有无胶、选方向、回退与找边选侧都由 GlueSight 判（[lyflow-operators.md](../decisions/lyflow-operators.md) LF-3）。这些算子属于 lyFlow 1.2 系列，`lyflow.series` 锁 1.2，`lyflow-client` 锁 tag v1.2.0。流程调试页嵌入的 `@lyflow/editor` 取同一 Release 的 `lyflow-editor-v1.2.0.tgz`（`package.json` 写 Release 下载地址），版本随运行库一起升。标定用 `io.load_image`、`image.board_calib` 与 `image.load_calib`。
 
 联合开发 lyFlow 未发布的改动时用本地构建：`GLUESIGHT_LYFLOW_RUNTIME` 指向本地 `build/core/bin`（只在调试构建生效，跳过 `lyflow-runtime.json` 系列核对）；真引擎测试用 `LYFLOW_CORE_DLL` 指向其中的 `lyflow_core.dll`。
 

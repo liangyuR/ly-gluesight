@@ -64,6 +64,9 @@ pub struct FrameMetrics {
     /// 逐帧定向没找到胶条、按预测段示教方向回退测量（D-SB-47）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub heading_fallback: bool,
+    /// 定向回退的原因（搜索支选方向时没找到胶的原因，如覆盖率不足、边缘太缓不像胶）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
     /// 胶中心到零件边距离的均值（mm，D-SB-48 ToEdge 测量量）；没找边或没找到边为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_mm: Option<f64>,
@@ -681,6 +684,7 @@ mod tests {
             x_mm: Some(0.0),
             heading_deg: None,
             heading_fallback: false,
+            fallback_reason: None,
             edge_mm: None,
         }
     }

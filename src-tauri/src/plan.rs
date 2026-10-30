@@ -96,7 +96,7 @@ pub struct OffsetRef {
     pub edge: Option<EdgeParams>,
 }
 
-/// 零件边相对胶条外侧的明暗关系（`glue.edge_distance` 的 `edgePolarity`）。
+/// 零件边相对胶条外侧的明暗关系（`glue.part_edges` 的 `polarity`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EdgePolarity {
@@ -116,7 +116,7 @@ pub struct EdgeParams {
     pub nominal_mm: Option<f64>,
 }
 
-/// 逐帧定向（D-SB-47）：开启的段用 `glue.bead_path` 在出胶点周围定向后测量，方向范围由示教走廊推出，
+/// 逐帧定向（D-SB-47）：开启的段在出胶点周围扇形搜索定向、拟合胶路后测量，方向范围由示教走廊推出，
 /// 直线段为示教方向 ± `tolerance_deg`。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

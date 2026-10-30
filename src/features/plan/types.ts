@@ -228,6 +228,8 @@ export interface FrameMetrics {
   headingDeg?: number | null;
   /** 逐帧定向没找到胶条，按预测段示教方向回退测量 */
   headingFallback?: boolean;
+  /** 定向回退的原因（lyFlow 定胶路给出，如覆盖率不足、边缘太缓不像胶） */
+  fallbackReason?: string | null;
   /** 胶中心到零件边的距离（mm，toEdge）；找不到边为 null */
   edgeMm?: number | null;
 }
@@ -342,6 +344,25 @@ export interface CameraInspect {
   window?: InspectWindow | null;
   /** 标定的出胶点（图像像素，D-SB-47）；null / 缺省 = 由开启定向的各段走廊起点推出 */
   nozzle?: [number, number] | null;
+  /** 这台相机覆盖的专家参数（LF-5，测量图模板参数名 → 值），叠在配方默认之上 */
+  expert?: ExpertParams;
+}
+
+/** 专家参数：测量图模板参数名 → 值（LF-5）。 */
+export type ExpertParams = Record<string, number>;
+
+/** 专家参数规格，取自测量图模板的顶层图参数。 */
+export interface ExpertSpec {
+  type: "float";
+  label: string;
+  unit?: string;
+  min: number;
+  max: number;
+  step: number;
+  default: number;
+  group: string;
+  doc: string;
+  advanced: true;
 }
 
 /** 检测窗口：沿胶路距出胶点 [startMm, startMm + lengthMm]（mm）。 */
@@ -369,6 +390,8 @@ export interface RecipeDocSegmentFields {
   /** 按逐帧定向的胶条方向序列细化比例边界（D-SB-47），默认 false；只作用于开启定向的段 */
   boundaryRefine?: boolean;
   partCalib: PartCalib | null;
+  /** 专家参数的配方默认（LF-5）；没写的用模板默认值 */
+  expert?: ExpertParams;
 }
 
 // ───────────── IPC DTO ─────────────

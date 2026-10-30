@@ -20,10 +20,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gluesight_lib::probe_api::{
-    burst_graphs, burst_template, graph_version, load_release, publish_burst, save_pgm, warm,
-    BurstPublishInput, CameraInput, CorridorInput, DetectParams, Engine, FrameImage, FrameState,
-    HeadingWindow, Polarity, Prepared, RecipeDoc, ResourceSource, SegmentCorridor, ValidationSite,
-    Versions,
+    burst_graphs, burst_template, load_release, publish_burst, save_pgm, warm, BurstPublishInput,
+    CameraInput, CorridorInput, DetectParams, Engine, FrameImage, FrameState, HeadingWindow,
+    Polarity, Prepared, RecipeDoc, ResourceSource, SegmentCorridor, ValidationSite, Versions,
+    GRAPH_VERSION_BURST,
 };
 use serde_json::json;
 
@@ -163,7 +163,7 @@ fn probe_production(engine: &Arc<Engine>, teach: &FrameImage) -> (Prepared, Temp
             validation_site: ValidationSite::Offline,
             versions: Versions {
                 engine: engine.identity.clone(),
-                graph: graph_version(&recipe).into(),
+                graph: GRAPH_VERSION_BURST.into(),
             },
             graph: ResourceSource::Bytes(graph),
             cameras: PROBE_CAMERAS

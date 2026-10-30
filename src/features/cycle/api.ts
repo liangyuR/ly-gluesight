@@ -1,7 +1,8 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
-import type { CycleSettings, LogLine, OfflineFault, OfflineSource, Readiness, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
+import type { CycleSettings, LogLine, Maintenance, OfflineFault, OfflineSource, Readiness, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
+import type { ExpertSpec } from "../plan/types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["cycle_save_settings","cycle_set_maintenance","cycle_select_recipe","cycle_reset","site_enter_offline","site_leave_offline","site_preview_sample_set","site_pick_dir","offline_run","offline_stop","offline_inject"].includes(cmd))
@@ -70,6 +71,7 @@ export const recipeApi = {
   doc: (id: string) => call<RecipeDoc>("recipe_doc", { id }, () => Promise.reject("非桌面环境") as never),
   preview: (doc: RecipeDoc) => call<Recipe>("recipe_preview", { doc }, () => Promise.reject("非桌面环境") as never),
   template: () => call<RecipeDoc>("recipe_template", undefined, () => Promise.reject("非桌面环境") as never),
+  expertSpecs: () => call<Record<string, ExpertSpec>>("recipe_expert_specs", undefined, () => ({})),
 };
 
 const layoutCache = new Map<string, Promise<Recipe | null>>();
@@ -174,6 +176,20 @@ export function useSiteStatus() {
     return () => { alive = false; siteListeners.delete(update); off(); };
   }, []);
   return status;
+}
+
+export function useMaintenance() {
+  const [maintenance, setMaintenance] = useState<Maintenance | null>(null);
+  useEffect(() => {
+    let alive = true, received = false;
+    const update = (next: Maintenance | null) => {
+      if (alive) setMaintenance(prev => prev?.since === next?.since && prev?.reason === next?.reason ? prev : next);
+    };
+    const off = subscribe<Snapshot>("cycle://snapshot", snapshot => { received = true; update(snapshot.maintenance ?? null); });
+    void cycleApi.snapshot().then(snapshot => { if (!received) update(snapshot?.maintenance ?? null); }).catch(() => {});
+    return () => { alive = false; off(); };
+  }, []);
+  return maintenance;
 }
 
 /** 开工就绪报告：定时刷新，站点模式、配方库变化或 refreshKey 变化时立即重查。 */

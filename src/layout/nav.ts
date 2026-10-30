@@ -13,6 +13,7 @@ import LibraryPage from "../features/workspace/LibraryPage";
 import ProgressPage from "../features/workspace/ProgressPage";
 import TeachingPiecePage from "../features/workspace/TeachingPiecePage";
 import TeachingPage from "../features/workspace/TeachingPage";
+import FlowDebugPage from "../features/workspace/FlowDebugPage";
 import ValidationPage from "../features/workspace/ValidationPage";
 import SegmentsPage from "../features/workspace/SegmentsPage";
 import CalibrationPage from "../features/workspace/CalibrationPage";
@@ -73,6 +74,7 @@ const recipeSteps: PageRoute[] = [
   { path:"/recipe/capture",label:"示教件",element:TeachingPiecePage },
   { path:"/recipe/segments",label:"段列表",element:SegmentsPage },
   { path:"/recipe/teach",label:"走廊示教",element:TeachingPage },
+  { path:"/recipe/flow",label:"流程调试",element:FlowDebugPage },
   { path:"/recipe/calibration",label:"多轮标定",element:CalibrationPage },
   { path:"/recipe/validation",label:"发布",element:ValidationPage },
 ].map(step => ({ ...step, label:`${recipe.label} · ${step.label}` }));

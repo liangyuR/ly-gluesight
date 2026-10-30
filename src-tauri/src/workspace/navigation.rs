@@ -352,6 +352,32 @@ fn verify_image(path: &Path, expected: &NavigationImage) -> Result<Vec<u8>, Stri
     Ok(bytes)
 }
 
+/// 只要结论的校验（候选视图）：按路径记下通过校验时的内容摘要、尺寸、文件大小与修改时间，未变就不再读整张图算摘要；
+/// 文件被替换或改写后重新校验。要用图片字节的地方仍直接调 verify_image。
+fn image_checked(path: &Path, expected: &NavigationImage) -> Result<(), String> {
+    type Stamp = (String, u32, u32, u64, std::time::SystemTime);
+    static CHECKED: std::sync::OnceLock<std::sync::Mutex<BTreeMap<PathBuf, Stamp>>> =
+        std::sync::OnceLock::new();
+    let checked = CHECKED.get_or_init(Default::default);
+    let stamp = std::fs::metadata(path).ok().and_then(|m| {
+        Some((
+            expected.id.clone(),
+            expected.width,
+            expected.height,
+            m.len(),
+            m.modified().ok()?,
+        ))
+    });
+    if stamp.is_some() && checked.lock().unwrap().get(path) == stamp.as_ref() {
+        return Ok(());
+    }
+    verify_image(path, expected)?;
+    if let Some(stamp) = stamp {
+        checked.lock().unwrap().insert(path.to_path_buf(), stamp);
+    }
+    Ok(())
+}
+
 fn save_map(dir: &Path, map: &NavigationMap) -> Result<String, String> {
     validate_map(map, None)?;
     let bytes = serde_json::to_vec(map).map_err(|e| e.to_string())?;
@@ -577,7 +603,7 @@ fn verified_snapshot(
     if manifest.image_sha256 != snapshot.map.image.id {
         return Err("导航清单的图片摘要不一致".into());
     }
-    verify_image(&dir.join("image.png"), &snapshot.map.image)?;
+    image_checked(&dir.join("image.png"), &snapshot.map.image)?;
     let mut names = std::fs::read_dir(dir)
         .map_err(|e| e.to_string())?
         .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
@@ -807,7 +833,7 @@ pub(super) fn navigation_view(project: &Path, w: &Workspace) -> NavigationView {
         Ok(Some(map)) => {
             let image = candidate_dir(project, &w.doc.id)
                 .and_then(|dir| image_path(&dir, &map.image.id))
-                .and_then(|path| verify_image(&path, &map.image));
+                .and_then(|path| image_checked(&path, &map.image));
             result.image_available = image.is_ok();
             result.error = image.err();
             result.map = Some(map);

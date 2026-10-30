@@ -23,8 +23,20 @@
 }
 .window-drag-region { display: flex; align-items: center; flex: 1; min-width: 0; padding: 0 16px; }
 .window-brand { display: flex; align-items: center; gap: 9px; min-width: 0; white-space: nowrap; pointer-events: none; }
-.window-brand img { width: 22px; height: 22px; border-radius: 6px; }
+.window-brand img { width: 22px; height: 22px; }
 .window-brand strong { color: var(--on-surface); font-size: 12px; font-weight: 600; letter-spacing: 0.2px; }
+.window-version { pointer-events: auto; font-family: var(--font-mono); font-size: 11px; color: var(--on-surface-variant); opacity: 0.75; }
+.window-badges { display: flex; align-items: center; gap: 6px; min-width: 0; margin-left: 16px; }
+.window-badge { display: inline-flex; align-items: center; gap: 4px; height: 22px; min-width: 0; padding: 0 10px; overflow: hidden; border: 1px solid var(--outline-variant); border-radius: var(--r-full); color: var(--on-surface-variant); font-size: 11px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; text-decoration: none; }
+.window-badge:hover { color: var(--on-surface); }
+.window-badge.offline { border-color: transparent; background: var(--tertiary-container); color: var(--on-tertiary-container); }
+.window-badge.maintenance { flex-shrink: 0; border-color: transparent; background: var(--warn); color: var(--surface-lowest); }
+.window-badge:is(.offline, .maintenance):hover { filter: brightness(1.12); }
+.window-connections { display: flex; align-items: center; gap: 16px; flex-shrink: 0; margin-left: auto; padding-left: 16px; }
+.window-connection { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--on-surface-variant); white-space: nowrap; text-decoration: none; }
+.window-connection:hover { color: var(--on-surface); }
+.window-badge:focus-visible, .window-connection:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+@media (max-width: 1100px) { .window-connection-text { display: none; } .window-connections { gap: 10px; } }
 .window-controls { display: flex; align-items: stretch; flex-shrink: 0; }
 .window-control { display: grid; place-items: center; width: 46px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--on-surface-variant); cursor: default; transition: background-color var(--dur-short) var(--ease-standard), color var(--dur-short) var(--ease-standard); }
 .window-control svg { stroke-width: 1.5; pointer-events: none; }
@@ -34,4 +46,4 @@
 .window-close:hover { color: #fff; background: #c42b1c; }
 .window-close:active { color: #fff; background: #a92317; }
 .window-browser-label { display: flex; align-items: center; flex-shrink: 0; padding: 0 16px; font-size: 11px; color: var(--on-surface-variant); }
-.is-unfocused .window-brand { opacity: 0.55; }
+.is-unfocused :is(.window-brand, .window-connections) { opacity: 0.55; }

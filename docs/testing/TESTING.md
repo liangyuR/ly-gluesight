@@ -45,7 +45,7 @@
 
 单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`；Rust 模块示例：`cargo test --manifest-path src-tauri/Cargo.toml --locked --lib segmentation::`。默认测试不生成覆盖率报告。
 
-胶条算法定向回归：`cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- workspace::centerline:: burst_judge:: vision::taught::`。其中合成胶条图通过提取入口验证汇合路径歧义；公开逐帧判定入口验证胶宽边界舍入与真实超差；测量入口验证左右找边平票不产生可信边距。它们保护具体回归，不代表现场检测准确率或吞吐验收。
+胶条算法定向回归：`cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- workspace::centerline:: burst_judge:: vision::taught:: vision::judge::`。其中合成胶条图通过提取入口验证汇合路径歧义；公开逐帧判定入口验证胶宽边界舍入与真实超差；找边判定验证左右找边平票不产生可信边距。它们保护具体回归，不代表现场检测准确率或吞吐验收。
 
 `Test-DevStartup.ps1` 临时修改用户级 `GLUESIGHT_LYFLOW_RUNTIME`，在 `finally` 中恢复原值；验证期间不要并行修改该配置或启动 GlueSight。测试通过临时 CLI 进程观察启动环境，不启动实际 GUI，不修改配方。
 
@@ -108,6 +108,14 @@ cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval 
 | 传输丢帧 / 缺帧 | 三台相机的同一帧都丢 | 该帧组标检测不完整，不判 ERR；丢帧按 SDK 帧序号、相机间帧数及传输丢帧诊断 |
 
 **合成图采集与标定。** 合成图由 `src-tauri/examples/capture_fixture.rs` 生成仿历史录制件（[示教件与标定件决策](../decisions/recipe-build-flow.md)“手动配置数据”）：按录制时生效的生产配方（采集版：型号、段、计划相机）用 `simimage::render_burst` 生成 N 件，每件在真机录制根下写一个与真机同格式的录制目录（原图 `{相机}_s{seq:06}.pgm`、`part.json` 带 `partMode: maintenanceCollect`、`devices`、`plc` 与来源标记 `fixture: {label}`，以及维护采集保留标记），并在项目记录库写一行维护采集记录（SN 前缀 `FIXTURE-`，记录库版本仍为 9）。生成的件出现在历史件选择器里，标“手动配置”，与真机件走同一选件、导入路径。记录引用采集版的修订号：先建候选并发布采集版，再生成数据（候选的版本号留给之后的正式版，用它写快照会让正式版投产时同修订号的真实记录因快照不同被拒）。记录库须已存在且为版本 9；同修订号已有不同快照时写入前即拒绝。命令为 `cargo run --manifest-path src-tauri/Cargo.toml --offline --locked --example capture_fixture -- --doc <采集版文档.json> --cameras <camera_rig_config.json> --db <资料根目录>/projects/<项目编号>/inspection.db --records <真机录制根> --parts N [--seed S] [--label L] [--sample-set <目录> --part <件>] [--onset H --onset-jitter J --tail T --tail-jitter J]`，输出每件的 `recordId`、`cycleId`、SN 等 JSON：默认按名义剖面出合成图（首尾 ±1、弯道 ±2 帧，种子 seed+i）；给出样本集时每件都取该件的样本集原图，供 soak 使用。合成图离线环境因此能选示教件、完成走廊示教、多轮标定、验证与发布（加入标定时每帧测量用 lyFlow 走廊测量，需要加载 lyFlow）。合成图相机沿用真实相机组的编号与视角数，单视角相机不足 3 台时补足到 3 台。样本集按“每台相机的帧序列”解释（见[离线样本集格式 v1](../integration/sample-set-format.md)），现有的 2026-10-17 单圈样本集是停稳拍数据，没有弯道、帧数没有波动，只作冒烟，不作分段或标定的验收依据。
+
+**导入现场录制件。** 现场导出的一件录制（真机录制根下的 `*_cycle_<cycleId>` 目录，或把它整个打成的 zip）可用 `scripts/history-import/import_part.py` 导入开发项目的历史记录，在示教件页、标定页的历史件选择器里选用调试：
+
+```powershell
+python scripts/history-import/import_part.py <录制目录或 zip> --project <项目编号> [--recipe <配方编号>] [--version N] [--label L] [--dry-run]
+```
+
+脚本把原图按“每台相机 seq 1..groupCount”转成单件样本集（缺的帧按缺帧处理，不错位），连同配方文档与项目当前相机配置写到 `output/history-import/<录制目录名>/`，再调用 `capture_fixture` 的样本集模式写一件仿历史录制件。导入的是原图，不是现场记录本身：SN、cycleId、时间戳与帧号重新生成（SN 前缀 `FIXTURE-`，选择器标“手动配置”），设备配置记为项目当前值（选择器要求与当前一致，与现场不同时脚本逐项打印），型号取配方。记录归属 `--recipe`（缺省取现场 `part.json` 的配方编号），配方文档优先用项目已发布的同编号配方；没有已发布配方时用同编号候选的文档，版本、阶段取现场配方（如 `NEW-1-v2` 采集版）。之后改了候选再导入、或候选发布到同一版本时，同修订号快照不同会被拒，用 `--version` 换一个不会发布到的版本。项目须用软件打开过（已建记录库与录制根）；软件运行中也可以导入，选择器每次重新查库。
 
 ### 3 × 25 Hz 吞吐门槛
 
@@ -196,7 +204,7 @@ Playwright Test 固定 `workers=1`、`fullyParallel=false`、`retries=0`，每�
 
 ## 站点模式（真机 / 离线）
 
-软件启动总是真机模式：测量用 lyFlow，相机只接海康 MVS，PLC 只支持 S7。“总览”首页显示当前模式“真机”“离线 · 样本集 <名称>”或“离线 · 合成图”，点“查看站点模式”或侧栏“工艺 → 离线模式”进入离线控制台（`/offline`），控制台标题为“当前：真机”或“当前：离线 · <来源>”。
+软件启动总是真机模式：测量用 lyFlow，相机只接海康 MVS，PLC 只支持 S7。标题栏徽标显示当前模式“真机”“离线 · 样本集 <名称>”或“离线 · 合成图”（离线用醒目色），点徽标或侧栏“工艺 → 离线模式”进入离线控制台（`/offline`），控制台标题为“当前：真机”或“当前：离线 · <来源>”。
 
 进入离线时软件临时派生并应用：PLC 切到进程内 S7 服务（127.0.0.1 随机端口，点表按现行通讯协议）；相机组按样本集 `cameras[]` 生成样本集相机，或按真实相机组同编号、同视角数生成模拟相机（单视角相机不足 3 台时补足到 3 台，供段配方使用）；测量用 lyFlow（样本集）或模拟测量（合成图）；帧录制临时为“全部”。真实 PLC、相机组和系统设置不改写，退出离线后全部恢复；恢复真机 PLC 配置失败时 PLC 保持断开并停在安全配置，离线控制台与日志标为“故障·需人工修复”。进入离线失败回滚时按进入前状态重连真机 PLC。离线期间相机页、PLC 页只读；有在途事务时不能切换模式。离线模式不持久化，重启回到真机，但会记住上次来源和样本集目录。
 

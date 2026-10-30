@@ -38,14 +38,13 @@ export function WorkspaceEmpty() {
   return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库选择或新建配方，再开始规划段与示教走廊。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Button asChild><Link to="/recipe">打开配方库</Link></Button>} /></div></div>;
 }
 export function WorkspaceBar({ showNavigation = true }: { showNavigation?: boolean } = {}) {
-  const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, navigationDirty, busy, previewError, error, saveDoc, saveState, retrySave, setError } = useWorkspace();
+  const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, navigationDirty, busy, previewError, error, saveState, retrySave, setError } = useWorkspace();
   const { pathname } = useLocation();
   useEffect(() => () => setError(""), [pathname, setError]);
   const choices = [...list.map(r => ({ id:r.id, name:r.name })), ...drafts.filter(w => !list.some(r => r.id === w.doc.id)).map(w => ({ id:w.doc.id, name:w.doc.name }))];
   const publish = data?.workspace.publish;
   return <>{showNavigation && <><div className="wp-workbench-bar"><div className="wp-recipe-picker"><Select aria-label="当前配方" title="当前配方" value={selectedId ?? ""} disabled={busy || dirty || frameDirty || navigationDirty} onValueChange={value => void select(value)} placeholder="选择配方" options={choices.map(r => ({ value: r.id, label: `${r.id} · ${r.name}` }))} /></div>{data && <Badge tone={data.productionVersion ? "ok" : "warn"}>{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge>}{data && publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}<span className="wp-save-state" title={data ? `候选 v${doc?.version} · 修订 ${data.workspace.revision}` : undefined}><Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge></span>{saveState === "failed" && <Button size="sm" onClick={retrySave}>重试保存</Button>}<Button asChild variant="outlined"><Link to="/recipe">配方库</Link></Button></div><Steps /></>}
     {!showNavigation && saveState === "failed" && <Notice title="候选保存失败" tone="warn"><Button size="sm" onClick={retrySave}>重试保存</Button></Notice>}
-    {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><Button size="sm" variant="outlined" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</Button></Notice>}
     {navigationDirty && <Notice title="工件导航图尚未保存" tone="warn">修改已保留，请在地图中保存或撤销；标注可到<Link to="/recipe/segments">分段页</Link>继续编辑。保存后再发布或切换配方。</Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}

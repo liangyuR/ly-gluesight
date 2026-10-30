@@ -322,6 +322,7 @@ fn unmeasured(camera: usize, seq: u64, state: FrameState, error: String) -> Fram
         x_mm: None,
         heading_deg: None,
         heading_fallback: false,
+        fallback_reason: None,
         edge_mm: None,
     }
 }

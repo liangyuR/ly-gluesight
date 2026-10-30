@@ -1,5 +1,5 @@
 //! 逐帧定向（D-SB-47）的几何：出胶点、各段方向范围与扇区。出胶点优先用相机上标定的值，其余由示教走廊和段设置推出。
-//! 角度为图像坐标的度数：0° 朝右、90° 朝下（与 `glue.bead_path` 一致）。
+//! 角度为图像坐标的度数：0° 朝右、90° 朝下（与 lyFlow 的 `glue.fan_scan`、`glue.track_path` 一致）。
 
 use serde::Serialize;
 
@@ -9,7 +9,7 @@ use crate::recipe::CameraInspect;
 /// 同一台相机开启定向的各段走廊起点（即出胶点）之间允许的最大距离（mm）。
 pub const NOZZLE_TOLERANCE_MM: f64 = 1.0;
 
-/// `glue.bead_path` 要求检测窗口至少 8 px 长。
+/// `glue.track_path` 要求检测窗口至少 8 px 长。
 const MIN_WINDOW_PX: f64 = 8.0;
 
 /// 定向配置上的问题：`segment` 为 None 是相机级（检测窗口、出胶点）。

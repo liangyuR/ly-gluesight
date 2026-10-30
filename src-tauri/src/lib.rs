@@ -9,6 +9,7 @@ mod cycle;
 mod cycle_ids;
 mod diagnostics;
 mod disk_guard;
+mod flow_debug;
 mod frame;
 mod frame_align;
 mod frame_group;
@@ -76,7 +77,7 @@ pub mod probe_api {
     pub use crate::offline::sample_set::SampleSet;
     pub use crate::offline::Scenario;
     pub use crate::plan::SegmentKind;
-    pub use crate::production::{burst_graphs, graph_version, Prepared, GRAPH_VERSION_BURST};
+    pub use crate::production::{burst_graphs, Prepared, GRAPH_VERSION_BURST};
     pub use crate::recipe::{
         burst_template, DetectParams, HeadingWindow, Polarity, Recipe, RecipeDoc, SegmentCorridor,
     };
@@ -253,6 +254,7 @@ pub fn run() {
             recipe_api::recipe_doc,
             recipe_api::recipe_preview,
             recipe_api::recipe_template,
+            recipe_api::recipe_expert_specs,
             recipe_api::recipe_delete,
             recipe_api::recipe_delete_unavailable,
             recipe_api::recipe_plan_export,
@@ -327,6 +329,19 @@ pub fn run() {
             workspace::workspace_confirm_skip,
             workspace::workspace_calibration_skip_suggest,
             workspace::workspace_record_frame_image,
+            flow_debug::flow_open,
+            flow_debug::flow_manifest,
+            flow_debug::flow_core_info,
+            flow_debug::flow_validate,
+            flow_debug::flow_plan,
+            flow_debug::flow_run,
+            flow_debug::flow_cancel,
+            flow_debug::flow_output_info,
+            flow_debug::flow_run_outputs,
+            flow_debug::flow_output_image,
+            flow_debug::flow_evict_cache,
+            flow_debug::flow_clear_cache,
+            flow_debug::flow_cache_stats,
         ])
         .run(context)
         .expect("error while running tauri application");
@@ -374,6 +389,7 @@ fn start_services(
     }
     app.manage(open_store(app)?);
     app.manage(vision::VisionHost::default());
+    app.manage(flow_debug::FlowDebugHost::default());
     app.manage(production::ProductionHost::default());
     app.manage(offline::OfflineHost::default());
     let site_note = site::restore_choice(app);

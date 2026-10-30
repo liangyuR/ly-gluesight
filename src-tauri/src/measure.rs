@@ -331,6 +331,7 @@ impl FrameMeasured {
                 x_mm: None,
                 heading_deg: None,
                 heading_fallback: false,
+                fallback_reason: None,
                 edge_mm: None,
             },
         }
@@ -485,6 +486,7 @@ pub(crate) fn simulate_frame(
         x_mm: Some(0.3 * (seq as f64 / 5.0 + camera_idx as f64).sin() + drift),
         heading_deg: None,
         heading_fallback: false,
+        fallback_reason: None,
         edge_mm: None,
     }
 }

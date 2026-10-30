@@ -77,10 +77,16 @@ fn recipe_delete_unavailable_inner(
     Ok(())
 }
 
-/// 按编辑中的内容生成配方但不保存，配方页画预览用。
-#[tauri::command]
+/// 按编辑中的内容生成配方但不保存，配方页画预览用；每次编辑都会调用，不占窗口主线程。
+#[tauri::command(async)]
 pub fn recipe_preview(doc: RecipeDoc) -> Result<Recipe, String> {
     doc.build()
+}
+
+/// 测量图模板的专家参数规格（LF-5，参数名 → 标签、单位、范围、默认值、说明），供配方按相机覆盖。
+#[tauri::command]
+pub fn recipe_expert_specs() -> std::collections::BTreeMap<String, serde_json::Value> {
+    crate::vision::template::expert_specs()
 }
 
 /// 新建配方的起点：段配方（D-SB-24），相机取相机组前三台，一个待标定的直线段。

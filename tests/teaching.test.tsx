@@ -8,7 +8,7 @@ import { useCycle } from "../src/features/cycle/api";
 import { burstRecipe, burstWorkspaceView, captureRoundV2, snapshot, workspaceState } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
+vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn(), recipeApi: { expertSpecs: vi.fn(async () => ({})) } }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), teachPreviewFrame: vi.fn(), teachPreviewSegment: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
@@ -85,7 +85,7 @@ describe("示教帧选择", () => {
     ws.data!.workspace.captureReview = { rounds: { "round-1": { groupCount: 12, cuts: [4, 8], status: "confirmed", excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null } } };
     show("/recipe/teach?camera=CAM-2&segment=2");
     await screen.findByText("第 2 段在示教件为帧组 5–8");
-    fireEvent.change(await screen.findByRole("spinbutton", { name: "帧组序号" }), { target: { value: "5" } });
+    fireEvent.click(await screen.findByRole("button", { name: "帧组 5 · CAM-2 · 缺帧" }));
     const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2 · 段 2" });
     await vi.waitFor(() => expect(choose).toBeDisabled());
     expect(choose).toHaveAccessibleDescription(expect.stringContaining("缺帧"));

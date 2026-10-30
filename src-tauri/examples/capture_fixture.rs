@@ -15,8 +15,8 @@
 //!     第 i 件按种子 seed + i 在 [基准, 基准 + 抖动] 内取起涂帧组数 h、收尾帧组数 t：前 h 个帧组的前一半（向上取整）无胶，
 //!     之后胶条从胶嘴沿走廊往外逐帧变长，只铺到走廊的一部分；末 t 个帧组对称，胶尾逐帧离开胶嘴，最后一半无胶。
 //!     h + t 须小于本件帧组数。h、t 是胶条没铺满走廊的帧组数，标定按检测项判成形，建议值可以小于它们。
-//! - 样本集（`--sample-set <目录> --part <样本件>`）：第 seq 个帧组取每台相机帧序列的第 seq 帧，帧数少的相机在后面缺帧
-//!   （有缺帧的件不能选作示教件或标定件）；各件相同，不能与起涂、收尾参数同用。
+//! - 样本集（`--sample-set <目录> --part <样本件>`）：第 seq 个帧组取每台相机帧序列的第 seq 帧，帧数少的相机在后面缺帧，
+//!   清单里有这一帧但没有图的就地缺帧、不前移后面的帧（有缺帧的件不能选作示教件或标定件）；各件相同，不能与起涂、收尾参数同用。
 //!
 //! 中途失败时已写完的件保留。
 //!
@@ -269,11 +269,11 @@ impl Source {
                         cameras
                             .iter()
                             .zip(&shots)
-                            .map(|(camera, shots)| {
-                                shots
-                                    .get(k)
-                                    .map(|shot| set.load_view(part, shot, camera, 1))
-                                    .transpose()
+                            .map(|(camera, shots)| match shots.get(k) {
+                                Some(shot) if set.image_path(part, shot, camera, 1).is_ok() => {
+                                    set.load_view(part, shot, camera, 1).map(Some)
+                                }
+                                _ => Ok(None),
                             })
                             .collect::<Result<Vec<_>, _>>()
                     })
