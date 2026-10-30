@@ -301,7 +301,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const inspect = doc.inspect?.find(item => item.camera === camera);
   const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null, window: inspect?.window ?? null, nozzle: inspect?.nozzle ?? null, expert: inspect?.expert ?? {} };
   const setParams = (next: CameraParams) => setDoc({ ...doc, inspect: (doc.inspect ?? []).map(item => item.camera === camera ? { ...item, ...next } : item) });
-  // 出胶点与测量区间跟着候选配方即时显示；方向范围、扇区与回退方向由后端按已保存的走廊算
+  // 出胶点与测量区间跟着候选配方即时显示；搜索扇区由后端按已保存的出胶点算
   const savedNozzle = plan.cameraTeaching.find(item => item.camera === camera)?.nozzle ?? null;
   const derivedNozzle = savedNozzle && !savedNozzle.calibrated ? savedNozzle.point : null;
   const headingOn = segment != null && !!doc.segments?.find(item => item.index === segment)?.heading;
@@ -310,7 +310,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const headingGuide: HeadingGuide | null = headingOn && nozzlePoint ? {
     nozzle: nozzlePoint, calibrated: !!params.nozzle, focus: headingFocus,
     zone: params.window && cameraScale ? [params.window.startMm / cameraScale, (params.window.startMm + params.window.lengthMm) / cameraScale] : null,
-    ...(segmentTeaching?.heading && !editing ? { range: segmentTeaching.heading.range, sector: segmentTeaching.heading.sector, fallback: segmentTeaching.heading.fallback } : {}),
+    ...(segmentTeaching?.heading && !editing ? { sector: segmentTeaching.heading.sector } : {}),
   } : null;
 
   if (!cameraItems.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="段配方还没有计划相机" description="先在“段列表”里确认计划相机，再回来示教走廊。" action={<Button asChild><Link to="/recipe/segments">前往段列表<ArrowRight size={15} aria-hidden="true" /></Link></Button>} /></Surface></div>;
@@ -349,7 +349,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const primary = segment == null ? "next" : strokeAdvised ? "stroke" : !hasPath ? "extract" : editing ? "save" : "next";
   const saveReason = !editing ? (done ? "走廊已保存" : "先提取或绘制走廊") : invalid ? invalid : !unlocked ? (data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候") : "";
   const doneHint: ReactNode = nextLabel ? `已完成；下一条 ${nextLabel}` : allDone ? <>各段走廊都已示教，可到 <Link to="/recipe/calibration">多轮标定</Link></> : "已完成";
-  const dockHint: ReactNode = segment == null ? (params.mmPerPx == null ? `${camera} 缺像素当量：在右侧填写或到相机标定，各段走廊都按它换算` : `像素当量与检测参数改动自动保存到候选配方；走廊在左侧按段逐条示教`)
+  const dockHint: ReactNode = segment == null ? (params.mmPerPx == null ? `${camera} 缺像素当量：在右侧填写或采用设备标定当量，各段走廊都按它换算` : `像素当量与检测参数改动自动保存到候选配方；走廊在左侧按段逐条示教`)
     : !frame ? `先在示教件第 ${segment} 段内选一帧`
     : data.workspace.pending ? "等待当前工件结束后切换，期间不能修改示教"
       : working ? "正在处理或保存，请稍候"
@@ -474,7 +474,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const rail = segment == null
     ? <div className="wp-stack wp-teach-settings">
       {navigation}
-      <MeasureCard key={camera} camera={camera} params={params} defaults={doc.detect} spacing={doc.spacing} sharing={sharing} disabled={paramsDisabled || frameDirty} spacingError={value => spacingError(doc, value)}
+      <MeasureCard key={camera} camera={camera} params={params} calibMmPerPx={plan.cameraTeaching.find(item => item.camera === camera)?.calibMmPerPx ?? null} defaults={doc.detect} spacing={doc.spacing} sharing={sharing} disabled={paramsDisabled || frameDirty} spacingError={value => spacingError(doc, value)}
         onParams={setParams} onDefaults={detect => setDoc({ ...doc, detect })} onSpacing={spacing => setDoc({ ...doc, spacing })} />
       <HeadingCard key={`heading-${camera}`} camera={camera} params={params} derivedNozzle={derivedNozzle} segments={doc.segments ?? []} index={null} geometry={null}
         headingSegments={(doc.segments ?? []).filter(item => item.heading && cameraTasks.some(task => task.segment === item.index))}

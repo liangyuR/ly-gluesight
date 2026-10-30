@@ -62,7 +62,7 @@ pub fn corridor() -> &'static Template {
     &templates()[0]
 }
 
-/// 逐帧定向测量图：响应图只算一次，扇形搜索与回退（扇区 = 示教方向 ± 容差）各一支，每支 3 个候选方向
+/// 逐帧定向测量图：响应图之后扇形搜索（扇区 = 出胶点背离最近画面边的半圈），3 个候选方向
 /// 各有 `glue.track_path` → `glue.lateral_runs` 与 `glue.part_edges`。
 pub fn heading() -> &'static Template {
     &templates()[1]

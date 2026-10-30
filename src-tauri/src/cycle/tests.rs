@@ -184,10 +184,10 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             segment: 2,
             corridor,
         });
+        doc.segments
+            .iter_mut()
+            .for_each(|s| s.heading = heading.then(Default::default));
         if heading {
-            doc.segments
-                .iter_mut()
-                .for_each(|s| s.heading = Some(Default::default()));
             doc.inspect.iter_mut().for_each(|i| {
                 i.window = Some(crate::recipe::HeadingWindow {
                     start_mm: 1.0,

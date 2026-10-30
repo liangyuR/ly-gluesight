@@ -100,7 +100,7 @@ pub fn segment_part(input: &SegInput, features: &[FrameMetrics], refine: bool) -
 /// 方向细化（D-SB-47）：先按比例分段；直线段与弯道之间、直线段开了逐帧定向的边界，在比例边界 ± (两段容差之和 + 1)
 /// 帧内对准直线段检测相机的胶条方向开始偏离（或回到）该段方向的帧。直线段方向取每台相机在该段核心帧（离两端边界都超出窗口）
 /// 上测得方向的中位数，偏离阈值为该段的方向容差；某帧多数相机偏离即算离开直线段。窗口内没有方向数据时保留比例边界，
-/// 置信度不变。只用定向成功（未回退）的帧。`features` 是本件各相机的每帧指标。
+/// 置信度不变。只用找到了胶条的帧。`features` 是本件各相机的每帧指标。
 pub fn refine_by_heading(input: &SegInput, features: &[FrameMetrics]) -> SegOutcome {
     let outcome = Proportional.segment(input);
     let SegOutcome::Boundaries(mut boundaries) = outcome else {

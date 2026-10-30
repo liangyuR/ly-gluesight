@@ -39,8 +39,8 @@ const Scope = ({ children }: { children: ReactNode }) => <span className="wp-sco
  * 同时作用于 `sharing` 里的其他相机；切到本相机自定义时从配方默认复制一份。
  * 站距先经 `spacingError` 检查（已保存的走廊要够三站），不通过时只提示、不写配方。
  */
-export function MeasureCard({ camera, params, defaults, spacing, sharing, disabled, spacingError, onParams, onDefaults, onSpacing }: {
-  camera: string; params: CameraParams; defaults: DetectParams; spacing: number; sharing: string[]; disabled: boolean;
+export function MeasureCard({ camera, params, calibMmPerPx, defaults, spacing, sharing, disabled, spacingError, onParams, onDefaults, onSpacing }: {
+  camera: string; params: CameraParams; calibMmPerPx: number | null; defaults: DetectParams; spacing: number; sharing: string[]; disabled: boolean;
   spacingError: (value: number) => string; onParams: (next: CameraParams) => void; onDefaults: (next: DetectParams) => void; onSpacing: (value: number) => void;
 }) {
   const location = useLocation();
@@ -53,12 +53,16 @@ export function MeasureCard({ camera, params, defaults, spacing, sharing, disabl
   const custom = params.detect != null;
   const detect = params.detect ?? defaults;
   const scale = scaleOf(params.mmPerPx);
-  return <SettingsCard title="测量" badge={scale ? "当量已设" : "缺当量"} tone={scale ? "ok" : "warn"} open
+  const calib = scaleOf(calibMmPerPx);
+  const stale = calib != null && calib !== scale;
+  return <SettingsCard title="测量" badge={!scale ? "缺当量" : stale ? "与标定不同" : "当量已设"} tone={scale && !stale ? "ok" : "warn"} open
     summary={`${scale ? `${scale} mm/px` : "缺像素当量"} · ${custom ? "本相机自定义" : "配方默认"} · ${polarity[detect.polarity]} ${detect.widthRange[0]}–${detect.widthRange[1]} mm`}>
     <fieldset className="wp-plain-fieldset wp-settings-fields" disabled={disabled}>
       <div className="wp-scale-field"><NumberField label="像素当量" value={params.mmPerPx} unit="mm/px" min={.0001} max={10} step={.0005} onChange={v => onParams({ ...params, mmPerPx: Number.isFinite(v) ? v : null })} disabled={disabled}/>
         <Link className="wp-calibration-link" to="/camera/calibration" state={returnState(location, "走廊示教")}>标定<ArrowUpRight size={13} aria-hidden="true"/></Link>
       </div>
+      {stale && <p className="wp-settings-hint">{scale ? `与设备标定 ${calib} mm/px 不同` : `设备标定为 ${calib} mm/px`}
+        <Button variant="text" size="sm" disabled={disabled} onClick={() => onParams({ ...params, mmPerPx: calibMmPerPx })}>采用标定当量</Button></p>}
       <SegmentedControl size="sm" label="检测参数来源" value={custom ? "camera" : "recipe"} disabled={disabled}
         options={[{ value: "recipe", label: "配方默认" }, { value: "camera", label: "本相机自定义" }]}
         onValueChange={value => onParams({ ...params, detect: value === "camera" ? structuredClone(defaults) : null })}/>
@@ -173,7 +177,7 @@ function PartRow({ part, title, hint, onFocus, children }: { part: HeadingPart; 
 /**
  * “逐帧定向”面板（D-SB-47）：出胶点、测量区间、方向与“什么算找到胶”的门限都在这里，配一张编号示意图；
  * 每行编号与示意图、示教帧上的叠加一致。相机视图（`index` 为 null）设这台相机各段共用的部分并列出开启的段；
- * 段视图另设本段开关与允许偏离，只读显示示教方向、搜索扇区与回退方向（`geometry`，按已保存的走廊算）。
+ * 段视图另设本段开关（直线段另有细化分段边界用的方向容差），只读显示搜索扇区（`geometry`，按已保存的出胶点算）。
  * `sharedLocked` 非空时共用参数只读并说明原因。
  */
 export function HeadingCard({ camera, params, derivedNozzle, segments, index, headingSegments, geometry, expertDefaults, disabled, sharedLocked, onFocus, onSegments, onParams, onExpertDefaults }: {
@@ -192,7 +196,7 @@ export function HeadingCard({ camera, params, derivedNozzle, segments, index, he
   const scale = scaleOf(params.mmPerPx);
   const zonePx = params.window && scale ? params.window.lengthMm / scale : null;
   const fanPx = zonePx != null ? Math.min(FAN_LENGTH_PX, zonePx) : FAN_LENGTH_PX;
-  const [badge, tone]: [string, Tone] = index != null ? [saved!.heading ? `开 ±${saved!.heading.toleranceDeg}°` : "关", saved!.heading ? "info" : "neutral"]
+  const [badge, tone]: [string, Tone] = index != null ? [saved!.heading ? "开" : "关", saved!.heading ? "info" : "neutral"]
     : missing ? ["测量区间需设置", "warn"] : needed ? [`段 ${headingSegments.map(item => item.index).join("、")} 开启`, "neutral"] : ["未使用", "neutral"];
   const absoluteX = current?.checks.offset?.enabled && (current.offsetRef?.measure ?? "absoluteX") === "absoluteX";
   return <SettingsCard title="逐帧定向" badge={badge} tone={tone} open={index != null || missing}
@@ -210,31 +214,28 @@ export function HeadingCard({ camera, params, derivedNozzle, segments, index, he
       </div>
       {index != null && heading ? <div className="wp-settings-group" role="group" aria-label={`段 ${index} 方向`}>
         <span className="wp-settings-label">方向<Scope>段 {index}</Scope></span>
-        <PartRow part="range" title="允许偏离示教方向" onFocus={point}
-          hint={geometry ? `示教方向 ${deg(geometry.fallback)}，方向范围 ${deg(geometry.range[0])} … ${deg(geometry.range[1])}（图上黄色实线扇形），范围内的方向优先。` : "保存走廊后按示教方向显示方向范围（图上黄色实线扇形），范围内的方向优先。"}>
-          <NumberField label="允许偏离" unit="°" value={heading.toleranceDeg} min={0} max={45} step={1} disabled={disabled} onChange={v => patch({ heading: { toleranceDeg: v } })}/>
-        </PartRow>
-        {issues.length > 0 && <p className="c-warn" role="alert">{issues.join("；")}，未保存</p>}
         <PartRow part="sector" title="搜索扇区" onFocus={point}
-          hint={`由本段与相邻段的方向范围推出，不能直接改。只在测量区间里离出胶点最近的 ${Math.round(fanPx)} px${scale ? `（约 ${(fanPx * scale).toFixed(1)} mm）` : ""} 内找胶条往哪个方向出去（图上虚线扇形）。`}>
-          <span className="plan-mono">{geometry ? `${deg(geometry.sector[0])} … ${deg(geometry.sector[1])}` : "保存走廊后显示"}</span>
-        </PartRow>
-        <PartRow part="fallback" title="找不到胶时" onFocus={point} hint="选中方向上找到胶的比例、暗带边缘陡度或胶点数不达标时回退（门限在下方“什么算找到胶”），试测结果里写明原因。">
-          <span>按示教方向{geometry ? ` ${deg(geometry.fallback)}` : ""} 测（图上绿色虚线）</span>
+          hint={`出胶点背离最近画面边的半圈（胶嘴在画面边上，胶条往画面里走），按出胶点自动得出，各段相同，弯道转多少度都在里面。只在测量区间里离出胶点最近的 ${Math.round(fanPx)} px${scale ? `（约 ${(fanPx * scale).toFixed(1)} mm）` : ""} 内找胶条往哪个方向出去（图上黄色扇形），取最像胶的方向；找不到时这一帧按无胶判，试测结果里写明原因（门限在下方“什么算找到胶”）。`}>
+          <span className="plan-mono">{geometry ? `${deg(geometry.sector[0])} … ${deg(geometry.sector[1])}` : "有出胶点后显示"}</span>
         </PartRow>
         <PartRow part="reading" title="方向读数" onFocus={point} hint="取拟合出的胶路首尾连线的方向，不取起跑方向；试测时图上蓝色实线。用于细化分段边界。">
           <span className="muted">每帧试测得出</span>
         </PartRow>
+        {current!.kind === "straight" && <>
+          <NumberField label="方向容差" unit="°" value={heading.toleranceDeg} min={0} max={45} step={1} disabled={disabled} onChange={v => patch({ heading: { toleranceDeg: v } })}/>
+          <p className="wp-settings-hint">只用于细化分段边界：这一段胶条方向偏离它在段中间各帧的方向超过它，算离开了直线段。</p>
+        </>}
+        {issues.length > 0 && <p className="c-warn" role="alert">{issues.join("；")}，未保存</p>}
         {absoluteX && <p className="c-warn">定向测量时胶路由图像拟合，绝对 x 恒为 0：本段胶偏请在“检测项”里改用“胶条到边缘距离”。</p>}
       </div> : <div className="wp-settings-group" role="group" aria-label="各段方向">
         <span className="wp-settings-label">方向<Scope>按段设置</Scope></span>
-        <p className="wp-settings-hint">{needed ? `已开启：${headingSegments.map(item => `段 ${item.index} ±${item.heading?.toleranceDeg ?? 0}°`).join("、")}。` : "没有段开启逐帧定向，上面的参数可不填。"}开关与允许偏离示教方向的角度在左侧选段后设置。</p>
+        <p className="wp-settings-hint">{needed ? `已开启：${headingSegments.map(item => `段 ${item.index}`).join("、")}。` : "没有段开启逐帧定向，上面的参数可不填。"}开关在左侧选段后设置；搜索扇区按出胶点自动得出，选段后在示教帧上显示。</p>
       </div>}
       <div className="wp-settings-group" role="group" aria-label="什么算找到胶">
         <span className="wp-settings-label">什么算找到胶<Scope>高级</Scope></span>
         <ExpertFields camera={camera} own={params.expert ?? {}} defaults={expertDefaults} disabled={sharedDisabled} groups={group => HEADING_EXPERT_GROUPS.includes(group)}
           onCamera={expert => onParams({ ...params, expert })} onDefaults={onExpertDefaults}
-          hint={`选中方向不满足这些门限就转 ${HEADING_MARK.fallback} 回退；悬停看说明。改动后请重新试测。`}/>
+          hint="选中方向不满足这些门限就算没找到胶条，这一帧按无胶判；悬停看说明。改动后请重新试测。"/>
       </div>
     </>}
   </SettingsCard>;

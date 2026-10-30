@@ -165,6 +165,6 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: { segment: PathSeg
       检 {range.aMm}–{range.bMm} mm 从未在判定中排除帧，现在不再使用，请改用上面的段首 / 段尾跳过帧数。
       <Button size="sm" disabled={disabled} onClick={() => onPatch({ inspectRange: null })}>清除</Button>
     </Notice>}
-    <p className="muted">逐帧定向（{segment.heading ? `开，允许偏离 ±${segment.heading.toleranceDeg}°` : "关"}）、检测项与胶偏参考在<Link to={`/recipe/teach?camera=${encodeURIComponent(inspecting[0])}&segment=${segment.index}`}>走廊示教</Link>页按段设置，可对照示教帧上的方向范围调整。</p>
+    <p className="muted">逐帧定向（{segment.heading ? "开" : "关"}）、检测项与胶偏参考在<Link to={`/recipe/teach?camera=${encodeURIComponent(inspecting[0])}&segment=${segment.index}`}>走廊示教</Link>页按段设置。</p>
   </section>;
 }

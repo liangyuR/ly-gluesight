@@ -24,7 +24,7 @@ const IMAGE_BYTES_LIMIT: usize = 16 * 1024 * 1024;
 const IMAGE_MAGIC: u32 = 0x4D49_594C;
 const IMAGE_HEADER_BYTES: usize = 48;
 
-/// 打开哪一张图：示教走廊，或逐帧定向（搜索与回退两支在同一张图里）。
+/// 打开哪一张图：示教走廊，或逐帧定向。
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Variant {

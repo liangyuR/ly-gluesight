@@ -7,17 +7,17 @@ import type { EdgeParams, HeadingSettings, KindDefaults, PathSegment, SegmentKin
 /** 与后端 plan::MAX_TOLERANCE 一致。 */
 export const MAX_TOLERANCE = 1000;
 
-/** 打开逐帧定向时的默认方向容差（与后端 HeadingSettings::default 一致）。 */
+/** 逐帧定向的默认方向容差（与后端 HeadingSettings::default 一致）。 */
 export const DEFAULT_HEADING: HeadingSettings = { toleranceDeg: 5 };
 /** 胶偏改为 toEdge 时的默认找边参数（D-SB-48）。 */
 export const DEFAULT_EDGE: EdgeParams = { polarity: "brightToDark", searchMm: 20, contrastMin: 40, nominalMm: null };
 
-/** 新建一段：容差与检测项取该类型的默认值（后端 new_segment），N_exp、标定、胶偏参考为空。 */
+/** 新建一段：容差与检测项取该类型的默认值，逐帧定向默认开启（后端 new_segment），N_exp、标定、胶偏参考为空。 */
 export function newSegment(index: number, kind: SegmentKind, defaults: KindDefaults): PathSegment {
   const base = defaults[kind];
   return {
     index, kind, lengthMm: null, expectedFrames: null, tolerance: base.tolerance, calib: null,
-    checks: structuredClone(base.checks), offsetRef: null, inspectRange: null, cameras: [], skipHead: 0, skipTail: 0, heading: null,
+    checks: structuredClone(base.checks), offsetRef: null, inspectRange: null, cameras: [], skipHead: 0, skipTail: 0, heading: { ...DEFAULT_HEADING },
   };
 }
 

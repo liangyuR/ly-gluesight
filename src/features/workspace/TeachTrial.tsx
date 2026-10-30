@@ -10,7 +10,7 @@ import type { GrayImage } from "./types";
 
 type TrialState = "ok" | "fallback" | "empty" | "out" | "error" | "missing";
 const trialOrder: TrialState[] = ["ok", "fallback", "empty", "out", "error", "missing"];
-const trialText: Record<TrialState, string> = { ok: "测到", fallback: "定向回退", empty: "无胶", out: "出走廊", error: "测量失败", missing: "缺帧或未测" };
+const trialText: Record<TrialState, string> = { ok: "测到", fallback: "没找到胶条", empty: "无胶", out: "出走廊", error: "测量失败", missing: "缺帧或未测" };
 const trialColor: Record<TrialState, string> = {
   ok: "var(--ok)", fallback: "var(--warn)", empty: "var(--ng)", out: "var(--on-surface-disabled)", error: "var(--fault)", missing: "var(--outline-variant)",
 };
@@ -116,7 +116,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
         <Badge tone={trialTone[state]}>{trialText[state]}</Badge>
         <span className="muted">胶宽 <b>{mm(metrics.widthMean)}</b>（{mm(metrics.widthMin)}–{mm(metrics.widthMax)}）· 有胶 <b>{Math.round(metrics.presentRatio * 100)}%</b> · 最长断胶 {mm(metrics.gapMaxMm, 1)}
           {metrics.headingDeg != null && <> · 方向 <b>{metrics.headingDeg.toFixed(1)}°</b></>}{metrics.edgeMm != null && <> · 胶边距 {mm(metrics.edgeMm)}</>}</span>
-        {metrics.fallbackReason && <span className="c-warn">回退原因：{metrics.fallbackReason}</span>}
+        {metrics.fallbackReason && <span className="c-warn">没找到胶条：{metrics.fallbackReason}</span>}
         {metrics.error && <span className="c-warn">{metrics.error}</span>}
       </span> : undefined}
       emptyTitle="读取中" emptyHint="正在读这一帧的原图并试测。" />}

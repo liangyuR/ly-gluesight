@@ -1,7 +1,6 @@
 //! 逐帧定向测量（D-SB-47）：开启定向的（段, 检测相机）在出胶点周围的扇区里定向、拟合胶路，只量距出胶点 [s₀, s₀ + L] 的一段。
-//! 测量图是 `template::heading`：一张响应图，扇形搜索与回退（扇区 = 本段示教方向 ± 方向容差）各一支，每支 3 个候选方向。
-//! 两支一次跑完，再按 `judge::fit` 先判搜索支，没找到胶才用回退支；回退后仍没有胶就照常按缺胶判，不记检测不完整。
-//! 不分阶段跑（先只跑搜索支的粗跟踪、按需再跑）：每次运行都要重新注入整帧、统计三张响应图，实测比一次跑完慢。
+//! 测量图是 `template::heading`：一张响应图，在扇区（出胶点背离最近画面边的半圈，见 `heading::search_sector`）里扇形扫描，
+//! 取 3 个候选方向各粗跟踪、量卡尺，按 `judge::fit` 选方向；没找到胶条就照常按缺胶判，不记检测不完整。
 
 use serde_json::{json, Value};
 
@@ -13,7 +12,7 @@ use super::taught::{
 };
 use super::template::{self, number};
 use super::{FrameImage, RunResult};
-use crate::heading::{nozzle, sector, segment_heading};
+use crate::heading::{nozzle, search_sector};
 use crate::recipe::{CameraInspect, Recipe};
 
 /// 扇形扫描在检测区前段最多看这么远（px，同 1.1）。
@@ -48,36 +47,16 @@ pub struct HeadingGraph {
     spacing_mm: f64,
 }
 
-/// 模板里的两支：节点与图级输出名带的后缀。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Branch {
-    Search,
-    Fallback,
-}
-
-impl Branch {
-    fn tag(self) -> &'static str {
-        match self {
-            Self::Search => "",
-            Self::Fallback => "B",
-        }
-    }
-}
-
-/// 运行目标：两支各 3 个候选的粗跟踪与卡尺，`edge` 时加找边。
+/// 运行目标：3 个候选的粗跟踪与卡尺，`edge` 时加找边。
 fn run_targets(edge: bool) -> Vec<String> {
     let kinds: &[&str] = if edge { &["t", "r", "e"] } else { &["t", "r"] };
-    [Branch::Search, Branch::Fallback]
+    kinds
         .iter()
-        .flat_map(|b| {
-            kinds
-                .iter()
-                .flat_map(move |kind| (0..3).map(move |k| format!("n_{kind}{}{k}", b.tag())))
-        })
+        .flat_map(|kind| (0..3).map(move |k| format!("n_{kind}{k}")))
         .collect()
 }
 
-/// 第 `segment` 段、一台检测相机的定向测量图：出胶点见 `heading::nozzle`（标定值或走廊起点推出），扇区见 `heading::sector`，
+/// 第 `segment` 段、一台检测相机的定向测量图：出胶点见 `heading::nozzle`（标定值或走廊起点推出），扇区见 `heading::search_sector`，
 /// 检测窗口按相机当量换成像素；出胶点须在示教帧内。响应图只算出胶点 ± 检测区外沿 + max(胶宽上限 + 8, 卡尺半长 + 5) 的一块，
 /// 盖住粗跟踪与卡尺够得着的地方。
 pub fn plan_heading(
@@ -98,10 +77,9 @@ pub fn plan_heading(
         .iter()
         .position(|s| s.index == segment)
         .ok_or_else(|| fail("段不存在"))?;
-    let settings = segments[k]
-        .heading
-        .as_ref()
-        .ok_or_else(|| fail("本段没有开启逐帧定向"))?;
+    if segments[k].heading.is_none() {
+        return Err(fail("本段没有开启逐帧定向"));
+    }
     let scale = inspect.mm_per_px.ok_or_else(|| fail("缺少像素当量"))?;
     let window = inspect
         .window
@@ -120,11 +98,6 @@ pub fn plan_heading(
             anchor[0], anchor[1], size[0], size[1]
         )));
     }
-    let span = sector(segments, &cameras, inspect, k)
-        .ok_or_else(|| fail("尚未示教走廊，推不出方向范围"))?;
-    let own =
-        segment_heading(inspect, segment).ok_or_else(|| fail("尚未示教走廊，推不出示教方向"))?;
-    let tolerance = settings.tolerance_deg.max(1.0);
     let zone = [
         window.start_mm / scale,
         (window.start_mm + window.length_mm) / scale,
@@ -145,7 +118,7 @@ pub fn plan_heading(
     let roi = [(ax - reach).floor(), (ay - reach).floor(), side, side];
     let mut business = json!({
         "nozzle": anchor, "zone": zone, "radial": [z0, z0 + FAN_LENGTH_PX.min(z1 - z0)],
-        "sector": span, "fallbackSector": [own - tolerance, own + tolerance], "pathWidthMax": path_width_max,
+        "sector": search_sector(anchor, size), "pathWidthMax": path_width_max,
     });
     response_params_into(&mut business, detect, &params, roi);
     bead_params_into(&mut business, &params, params.half, edge.as_ref()).map_err(|e| fail(&e))?;
@@ -185,7 +158,7 @@ pub fn plan_heading(
     })
 }
 
-/// 量一帧：搜索支选出的方向找到了胶就量它；没找到用回退支，并记下搜索没找到胶的原因。
+/// 量一帧：选出的方向找到了胶条就量它；没找到时全段无胶，并记下没找到的原因。
 /// 图像尺寸与示教帧不同、算法失败或输出不合契约时返回 Err。
 pub fn measure_heading_with(
     g: &HeadingGraph,
@@ -213,31 +186,23 @@ pub fn measure_heading_with(
     if result.status() != "ok" {
         return Err(result.failure());
     }
-    let searched = choose(g, &result, Branch::Search)?;
-    if searched.ok {
-        return measure_chosen(g, &result, Branch::Search, &searched, seq);
+    let choice = choose(g, &result)?;
+    if choice.ok {
+        return measure_chosen(g, &result, &choice, seq);
     }
-    let fallback = choose(g, &result, Branch::Fallback)?;
-    let mut measured = if fallback.ok {
-        measure_chosen(g, &result, Branch::Fallback, &fallback, seq)?
-    } else {
-        no_bead(g, &fallback, seq)
-    };
+    let mut measured = no_bead(g, &choice, seq);
     measured.metrics.heading_fallback = true;
-    measured.metrics.fallback_reason = Some(searched.reason).filter(|reason| !reason.is_empty());
+    measured.metrics.fallback_reason = Some(choice.reason).filter(|reason| !reason.is_empty());
     Ok(measured)
 }
 
-/// 一支的扇形扫描与 3 个粗跟踪 → 选方向。
-fn choose(g: &HeadingGraph, result: &RunResult, branch: Branch) -> Result<PathChoice, String> {
-    let tag = branch.tag();
-    let scan = result
-        .record(&format!("scan{tag}"))
-        .ok_or("算法缺少扇形扫描结果")?;
+/// 扇形扫描与 3 个粗跟踪 → 选方向。
+fn choose(g: &HeadingGraph, result: &RunResult) -> Result<PathChoice, String> {
+    let scan = result.record("scan").ok_or("算法缺少扇形扫描结果")?;
     let tracks = (0..3)
         .map(|k| {
             result
-                .record(&format!("track{tag}{k}"))
+                .record(&format!("track{k}"))
                 .cloned()
                 .ok_or("算法缺少粗跟踪结果")
         })
@@ -249,13 +214,12 @@ fn choose(g: &HeadingGraph, result: &RunResult, branch: Branch) -> Result<PathCh
 fn measure_chosen(
     g: &HeadingGraph,
     result: &RunResult,
-    branch: Branch,
     choice: &PathChoice,
     seq: u64,
 ) -> Result<FrameMeasurement, String> {
-    let (tag, k) = (branch.tag(), choice.chosen.ok_or("选中的方向没有候选")?);
+    let k = choice.chosen.ok_or("选中的方向没有候选")?;
     let runs = result
-        .record(&format!("runs{tag}{k}"))
+        .record(&format!("runs{k}"))
         .ok_or("算法缺少横向卡尺结果")?;
     let calls = judge_stations(runs, g.station_gate, true)?;
     if calls.is_empty() {
@@ -269,15 +233,10 @@ fn measure_chosen(
     let mut metrics = bead_metrics(g.camera_idx, g.segment, seq, g.scale, g.spacing_mm, &beads);
     metrics.x_mm = None;
     if let Some(window) = &g.edge {
-        metrics.edge_mm = edge_mm(
-            result.record(&format!("edges{tag}{k}")),
-            &lohi,
-            window,
-            g.scale,
-        )?;
+        metrics.edge_mm = edge_mm(result.record(&format!("edges{k}")), &lohi, window, g.scale)?;
     }
     let line: Vec<[f32; 2]> = result
-        .record(&format!("line{tag}{k}"))
+        .record(&format!("line{k}"))
         .and_then(|l| l["points"].as_array())
         .into_iter()
         .flatten()
@@ -303,7 +262,7 @@ fn chord_heading(line: &[[f32; 2]]) -> Option<f64> {
     (dx.hypot(dy) > 0.0).then(|| dy.atan2(dx).to_degrees())
 }
 
-/// 回退后仍没找到胶：检测区的站全部无胶（站数与站距同 1.1），胶路画成从出胶点沿选中方向的直线。
+/// 没找到胶条：检测区的站全部无胶（站数与站距同 1.1），胶路画成从出胶点沿选中方向的直线。
 fn no_bead(g: &HeadingGraph, choice: &PathChoice, seq: u64) -> FrameMeasurement {
     let mut n = 0;
     let mut s = g.zone[0];

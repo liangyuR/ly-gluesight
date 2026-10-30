@@ -833,7 +833,7 @@ pub fn reserve_plan_versions(plan_file: &std::path::Path, count: u32) -> Result<
     Ok(issued + 1)
 }
 
-/// 测试用的段配方：模拟相机 cam1–cam3 共用触发、走廊已示教、一个直线段 N_exp = 4（ΣN_exp = 4），计划版本已分配。
+/// 测试用的段配方：模拟相机 cam1–cam3 共用触发、走廊已示教、一个直线段 N_exp = 4（ΣN_exp = 4）、不开逐帧定向，计划版本已分配。
 #[cfg(test)]
 pub fn samples_burst() -> RecipeDoc {
     let cameras: Vec<String> = (1..=3).map(|k| format!("cam{k}")).collect();
@@ -847,6 +847,7 @@ pub fn samples_burst() -> RecipeDoc {
         inspect.mm_per_px = Some(f64::from(SIM_MM_PER_PX));
     }
     doc.segments[0].expected_frames = Some(4);
+    doc.segments[0].heading = None;
     doc
 }
 

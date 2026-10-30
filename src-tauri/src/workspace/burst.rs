@@ -96,7 +96,7 @@ pub struct CalibrationRound {
     /// 同口径的胶边距均值（mm，D-SB-48 ToEdge）；没找边的相机为 None
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edge_means: Vec<Option<f64>>,
-    /// 逐帧定向的帧数统计（D-SB-47）：段号 → [定向测量的帧数, 其中回退的帧数]
+    /// 逐帧定向的帧数统计（D-SB-47）：段号 → [定向测量的帧数, 其中没找到胶条的帧数]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub heading: BTreeMap<u32, [u32; 2]>,
 }
@@ -140,15 +140,15 @@ pub struct SegmentCalibView {
     pub tolerance: u32,
     pub x_ref: Option<XRefView>,
     pub x_ref_pending: Option<String>,
-    /// 逐帧定向的提示（D-SB-47）：检测窗口能否覆盖每帧后移量、定向回退比例
+    /// 逐帧定向的提示（D-SB-47）：检测窗口能否覆盖每帧后移量、没找到胶条的比例
     pub hints: Vec<String>,
 }
 
-/// 定向回退比例超过它就提示（窗口内胶路跟不住，多见于弯道）。
+/// 没找到胶条的帧占比超过它就提示（窗口内胶路跟不住，多见于弯道）。
 const HEADING_FALLBACK_HINT: f64 = 0.2;
 
 /// 开启逐帧定向的段的标定提示（D-SB-47）：每帧后移量 ≈ 段长 ÷ N_exp，检测窗口短于它时相邻帧之间有胶测不到，
-/// 超过 3 倍时同一处胶被重复测；各轮定向回退的帧超过 20% 时提示缩短窗口或减小起点。不阻断发布。
+/// 超过 3 倍时同一处胶被重复测；各轮定向没找到胶条的帧超过 20% 时提示缩短窗口或减小起点。不阻断发布。
 pub(super) fn heading_hints(
     doc: &RecipeDoc,
     segment: &PathSegment,
@@ -191,7 +191,7 @@ pub(super) fn heading_hints(
         .fold([0u32; 2], |a, b| [a[0] + b[0], a[1] + b[1]]);
     if measured > 0 && f64::from(fallback) > HEADING_FALLBACK_HINT * f64::from(measured) {
         hints.push(format!(
-            "定向回退 {fallback}/{measured} 帧（{:.0}%）：窗口内胶路跟不住，建议缩短测量区间或减小跳过距离",
+            "定向没找到胶条 {fallback}/{measured} 帧（{:.0}%）：窗口内胶路跟不住，建议缩短测量区间或减小跳过距离",
             100.0 * f64::from(fallback) / f64::from(measured)
         ));
     }
@@ -218,6 +218,8 @@ pub struct CalibrationView {
 pub struct CameraTeachingView {
     pub camera: String,
     pub mm_per_px: Option<f64>,
+    /// 这台相机工位标定当前的像素当量（标定引用，缺省为设备标定；模拟相机为固定当量）；没有标定为空。与 `mm_per_px` 不同时示教页提示采用
+    pub calib_mm_per_px: Option<f64>,
     /// 走廊示教完成：有像素当量，且它检测的每一段都有已保存的走廊（D-SB-45）
     pub ready: bool,
     /// 已选示教帧的段，按段号
@@ -230,12 +232,8 @@ pub struct CameraTeachingView {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeadingOverlay {
-    /// 本段方向范围 [lo, hi]
-    pub range: [f64; 2],
-    /// 扇形搜索范围（本段与相邻段方向范围的并集）
+    /// 扇形搜索范围：出胶点背离最近画面边的半圈
     pub sector: [f64; 2],
-    /// 回退方向（本段示教方向）
-    pub fallback: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -921,11 +919,7 @@ fn freeze_teaching_frame(
     let imaging = teaching_source(&captured, id, camera, seq, &state_value(&config))?.imaging;
     let image = crate::image_file::load(&capture.burst_frame_path(round, camera, seq)?)?;
     let calib = vision::camera_calib_path(app, &inspect)?;
-    let default_scale = if config.source == CameraSource::Sim {
-        Some(f64::from(crate::recipe::SIM_MM_PER_PX))
-    } else {
-        vision::calib_info(&calib).and_then(|c| c.mm_per_px)
-    };
+    let default_scale = calib_scale(app, &inspect, config.source)?;
     let sample_set = crate::offline::sample_set(app).map(|set| set.manifest().id.clone());
     let image_id = format!(
         "corridor-{}-{revision}-{seq}-{}",
@@ -950,6 +944,18 @@ fn freeze_teaching_frame(
         history_id: None,
     };
     Ok((frame, default_scale, captured.group_count))
+}
+
+/// 相机工位标定的像素当量：模拟相机取固定当量，其余读它的标定引用（缺省为设备标定）的标定文件。
+fn calib_scale(
+    app: &AppHandle,
+    inspect: &CameraInspect,
+    source: CameraSource,
+) -> Result<Option<f64>, String> {
+    if source == CameraSource::Sim {
+        return Ok(Some(f64::from(crate::recipe::SIM_MM_PER_PX)));
+    }
+    Ok(vision::calib_info(&vision::camera_calib_path(app, inspect)?).and_then(|c| c.mm_per_px))
 }
 
 /// 段配方的走廊提取（决策记录 5.4）：在相机 `camera` 冻结的示教帧 `image_id` 上按选区提取，复用旧中线提取的边缘算法；
@@ -2087,22 +2093,24 @@ pub fn workspace_update_segments(
 pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
     let open = untaught_pairs(w);
     let cameras = w.doc.plan_cameras();
-    let overlay = |inspect: &CameraInspect, segment: u32| {
-        let k = w
-            .doc
+    let overlay = |nozzle: Option<crate::heading::Nozzle>, segment: u32, size: [u32; 2]| {
+        w.doc
             .segments
             .iter()
-            .position(|s| s.index == segment && s.heading.is_some())?;
+            .find(|s| s.index == segment)?
+            .heading
+            .as_ref()?;
         Some(HeadingOverlay {
-            range: crate::heading::direction_range(&w.doc.segments, &cameras, inspect, k)?,
-            sector: crate::heading::sector(&w.doc.segments, &cameras, inspect, k)?,
-            fallback: crate::heading::segment_heading(inspect, segment)?,
+            sector: crate::heading::search_sector(nozzle?.point, size),
         })
     };
     w.doc
         .inspect
         .iter()
         .map(|inspect| {
+            let nozzle = crate::heading::nozzle(&w.doc.segments, &cameras, inspect)
+                .ok()
+                .flatten();
             let mut segments: Vec<SegmentTeachingView> = w
                 .camera_teaching
                 .iter()
@@ -2115,7 +2123,7 @@ pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
                             round: t.round.clone(),
                             seq: t.seq,
                             saved: segment_corridor_saved(inspect, segment, &w.camera_teaching),
-                            heading: overlay(inspect, segment),
+                            heading: overlay(nozzle, segment, t.frame.size),
                         })
                 })
                 .collect();
@@ -2123,12 +2131,11 @@ pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
             CameraTeachingView {
                 camera: inspect.camera.clone(),
                 mm_per_px: inspect.mm_per_px,
+                calib_mm_per_px: None,
                 ready: inspect.mm_per_px.is_some()
                     && !open.iter().any(|(camera, _)| camera == &inspect.camera),
                 segments,
-                nozzle: crate::heading::nozzle(&w.doc.segments, &cameras, inspect)
-                    .ok()
-                    .flatten(),
+                nozzle,
             }
         })
         .collect()
@@ -2485,7 +2492,14 @@ pub(super) fn plan_view(
     production_version: Option<u32>,
 ) -> WorkspacePlanView {
     let doc = &w.doc;
-    let teaching = camera_teaching_views(w);
+    let mut teaching = camera_teaching_views(w);
+    let configs = app.state::<CycleHost>().camera.configs();
+    for (item, inspect) in teaching.iter_mut().zip(&doc.inspect) {
+        item.calib_mm_per_px = configs
+            .iter()
+            .find(|c| c.id == inspect.camera)
+            .and_then(|config| calib_scale(app, inspect, config.source).ok().flatten());
+    }
     let production_export = production
         .filter(|r| r.is_burst())
         .and_then(|r| PlanExport::from_recipe(r).ok());

@@ -116,8 +116,8 @@ pub struct EdgeParams {
     pub nominal_mm: Option<f64>,
 }
 
-/// 逐帧定向（D-SB-47）：开启的段在出胶点周围扇形搜索定向、拟合胶路后测量，方向范围由示教走廊推出，
-/// 直线段为示教方向 ± `tolerance_deg`。
+/// 逐帧定向（D-SB-47）：开启的段在出胶点周围扇形搜索定向、拟合胶路后测量，扇区按相机（出胶点背离最近画面边的半圈）。
+/// `tolerance_deg` 只用于细化分段边界：直线段的方向偏离它在核心帧上的方向超过它，算离开直线段。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HeadingSettings {
@@ -568,7 +568,7 @@ pub fn wider_checks(checks: &[&SegmentChecks]) -> SegmentChecks {
     }
 }
 
-/// 新建一段：tolerance 与 checks 取对应 kind 的默认值，expected_frames / calib / offset_ref 为 None。
+/// 新建一段：tolerance 与 checks 取对应 kind 的默认值，逐帧定向默认开启，expected_frames / calib / offset_ref 为 None。
 pub fn new_segment(index: u32, kind: SegmentKind, defaults: &KindDefaults) -> PathSegment {
     let default = match kind {
         SegmentKind::Straight => &defaults.straight,
@@ -587,7 +587,7 @@ pub fn new_segment(index: u32, kind: SegmentKind, defaults: &KindDefaults) -> Pa
         cameras: Vec::new(),
         skip_head: 0,
         skip_tail: 0,
-        heading: None,
+        heading: Some(HeadingSettings::default()),
     }
 }
 
