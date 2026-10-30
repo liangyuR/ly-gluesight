@@ -156,6 +156,33 @@ it("保存期间改相机参数 → 保存结果回来不覆盖新值，按新�
   expect(saves[1].revision).toBe(saves[0].revision + 1);
 });
 
+// 防的回归：只存走廊的自动保存起跑时配方没改（dirty 为假），保存期间改的段参数被保存结果覆盖、悄悄丢掉
+it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保持，走廊也在，按新修订再保存一次", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate();
+  const saving = deferred<void>();
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate, saving.promise) });
+  renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
+    fireEvent.pointerDown(image, { clientX, clientY });
+    fireEvent.pointerUp(image);
+  }
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(screen.getByText("保存中")).toBeVisible();
+  fireEvent.click(screen.getByRole("switch", { name: "段 1 逐帧定向" }));
+  await act(async () => saving.resolve(undefined));
+  expect(screen.getByRole("switch", { name: "段 1 逐帧定向" })).toBeChecked();
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  const saves = calls("workspace_save_doc") as { revision: number; doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(s => [!!s.doc.segments![0].heading, s.doc.inspect![1].segments])).toEqual([
+    [false, [{ segment: 1, corridor: [[10, 10], [40, 40]] }]],
+    [true, [{ segment: 1, corridor: [[10, 10], [40, 40]] }]],
+  ]);
+  expect(saves[1].revision).toBe(saves[0].revision + 1);
+});
+
 it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在这一段的示教帧上提取一次", async () => {
   stubSvgPointer({ pointerEvent: true });
   const candidate = corridorCandidate();

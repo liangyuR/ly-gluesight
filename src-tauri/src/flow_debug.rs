@@ -499,14 +499,25 @@ pub async fn flow_cache_stats(app: AppHandle) -> Result<Value, String> {
 mod tests {
     use super::*;
 
+    /// 防的回归（LF-6）：流程调试页改了拓扑的图照样被校验、编计划或运行；或调参、挪节点也被拒。
+    /// 经 `prepared` 测：flow_validate、flow_plan、flow_run 都先经它拿运行用的图与参数。
     #[test]
     fn topology_change_is_rejected_but_params_and_layout_are_not() {
-        let base = template::corridor().doc.clone();
+        let session = Session {
+            template: template::corridor(),
+            image: vision::image_input(&crate::frame::FrameImage::new(4, 4, vec![0; 16])).unwrap(),
+            params: json!({"segmentMin": 8.0}),
+        };
+        let base = session.template.doc.clone();
         let mut tuned = base.clone();
         tuned["nodes"][3]["params"]["segmentMin"] = json!(30.0);
         tuned["nodes"][3]["position"] = json!({"x": 10, "y": 20});
         tuned["params"]["segmentMin"]["default"] = json!(30.0);
-        assert!(same_topology(&base, &tuned).is_ok());
+        let edited = Map::from_iter([("segmentMin".to_string(), json!(30.0))]);
+        let (_, params) = prepared(&session, &tuned, Some(edited)).unwrap();
+        assert_eq!(params, json!({"segmentMin": 30.0}).to_string());
+        let (_, params) = prepared(&session, &tuned, None).unwrap();
+        assert_eq!(params, session.params.to_string());
         let mut added = base.clone();
         added["nodes"]
             .as_array_mut()
@@ -517,7 +528,7 @@ mod tests {
         let mut swapped = base.clone();
         swapped["nodes"][1]["op"] = json!("glue.bead_path");
         for doc in [added, rewired, swapped] {
-            assert!(same_topology(&base, &doc).is_err());
+            assert!(prepared(&session, &doc, None).is_err());
         }
     }
 }

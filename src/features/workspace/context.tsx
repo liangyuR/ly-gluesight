@@ -243,7 +243,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         if (!current()) return;
         if (next.workspace.doc.id !== id) throw new Error("候选响应与当前配方不一致，请重试保存");
         failedSave.current = "";
-        accept(next, dirty && !equal(latestDoc.current, sent));
+        // 保存期间又改了配方：留住本地改动；只存走廊时本地配方还没有这条走廊，补进去，下一轮一起保存
+        const edited = !equal(latestDoc.current, doc);
+        accept(next, edited);
+        if (edited && !dirty) setDoc(previous => previous && withCorridor(previous, corridor![0], corridor![1]));
         setError("");
       } catch (e) {
         if (current()) { failedSave.current = signature; setSaveState("failed"); setError(errorText(e)); }
