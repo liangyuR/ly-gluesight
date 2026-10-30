@@ -12,13 +12,16 @@ use crate::recipe_capture::CaptureRoundV2;
 
 pub(super) const DEVICE: &str = "device-a";
 
-/// 段配方候选：三台模拟相机 cam1–cam3（都检测每一段、有像素当量），段按 kinds 新建（N_exp 待标定），还没有走廊与示教帧。
+/// 段配方候选：三台模拟相机 cam1–cam3（都检测每一段、有像素当量），段按 kinds 新建（N_exp 待标定、不开逐帧定向），还没有走廊与示教帧。
 pub(super) fn burst_workspace(kinds: &[SegmentKind]) -> Workspace {
     let mut doc = crate::recipe::samples_burst();
     doc.segments = kinds
         .iter()
         .enumerate()
-        .map(|(i, &kind)| new_segment(i as u32 + 1, kind, &doc.segment_defaults))
+        .map(|(i, &kind)| PathSegment {
+            heading: None,
+            ..new_segment(i as u32 + 1, kind, &doc.segment_defaults)
+        })
         .collect();
     doc.inspect
         .iter_mut()

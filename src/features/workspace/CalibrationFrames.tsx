@@ -113,7 +113,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
               <KV label="胶宽 最小 / 均值 / 最大">{`${mm(metrics.widthMin)} / ${mm(metrics.widthMean)} / ${mm(metrics.widthMax)}`}</KV>
               <KV label="胶中心偏移 x">{mm(metrics.xMm)}</KV>
               {metrics.headingDeg != null && <KV label="胶条方向">{`${metrics.headingDeg.toFixed(1)}°`}</KV>}
-              {metrics.headingFallback && <KV label="定向"><Badge tone="warn">定向回退</Badge>{metrics.fallbackReason && <span className="muted"> {metrics.fallbackReason}</span>}</KV>}
+              {metrics.headingFallback && <KV label="定向"><Badge tone="warn">没找到胶条</Badge>{metrics.fallbackReason && <span className="muted"> {metrics.fallbackReason}</span>}</KV>}
               {metrics.edgeMm != null && <KV label="胶边距">{mm(metrics.edgeMm)}</KV>}
               <KV label="最长断胶">{mm(metrics.gapMaxMm, 1)}</KV>
               <KV label="有胶站">{`${Math.round(metrics.presentRatio * 100)}%（${metrics.widths.filter(w => w != null).length} / ${metrics.widths.length} 站，站距 ${metrics.spacingMm} mm）`}</KV>

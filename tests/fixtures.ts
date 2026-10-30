@@ -176,9 +176,9 @@ export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
     segments: doc.segments, cameras: doc.inspect.map(i => i.camera), segmentDefaults: doc.segmentDefaults, calibrationRounds: doc.calibrationRounds, partCalib: doc.partCalib,
     ...totals, calibrated: totals.expectedTotal != null,
     cameraTeaching: [
-      { camera: "CAM-1", mmPerPx: .1, ready: true, nozzle: null, segments: [1, 2, 3].map(segment => ({ segment, frame: burstFrozen("CAM-1", segment), round: "round-1", seq: segment * 4 - 2, saved: true, heading: null })) },
-      { camera: "CAM-2", mmPerPx: .1, ready: false, nozzle: null, segments: [{ segment: 1, frame: burstFrozen("CAM-2"), round: "round-1", seq: 2, saved: false, heading: null }] },
-      { camera: "CAM-3", mmPerPx: .1, ready: false, nozzle: null, segments: [] },
+      { camera: "CAM-1", mmPerPx: .1, calibMmPerPx: null, ready: true, nozzle: null, segments: [1, 2, 3].map(segment => ({ segment, frame: burstFrozen("CAM-1", segment), round: "round-1", seq: segment * 4 - 2, saved: true, heading: null })) },
+      { camera: "CAM-2", mmPerPx: .1, calibMmPerPx: null, ready: false, nozzle: null, segments: [{ segment: 1, frame: burstFrozen("CAM-2"), round: "round-1", seq: 2, saved: false, heading: null }] },
+      { camera: "CAM-3", mmPerPx: .1, calibMmPerPx: null, ready: false, nozzle: null, segments: [] },
     ],
     calibration: calibrationView(), productionExport: null, candidateExport: planExport(doc), candidateExportError: null, shotCountChanged: false, progress: progressV2(),
     // 示教件 round-1 在前，其余 9 件标定件，都已加入标定

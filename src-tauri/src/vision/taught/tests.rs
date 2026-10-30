@@ -244,40 +244,34 @@ fn heading_graph() -> HeadingGraph {
     plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap()
 }
 
-/// 假的定向图运行：两支都只有第 0 个峰，搜索支粗找到 `search_found` 个胶点（10 步）、量到 16 px 宽的胶，回退支 8 个、12 px。
+/// 假的定向图运行：只有第 0 个峰，粗找到 `found` 个胶点（10 步），卡尺量到 16 px 宽的胶。
 fn fake_heading_run(
-    search_found: u64,
+    found: u64,
 ) -> impl FnOnce(GraphRun<'_>, &FrameImage) -> Result<RunResult, String> {
     move |g, _| {
         let mut outputs = serde_json::Map::new();
         for target in g.targets {
-            let (kind, rest) = target.split_at(3);
-            let (tag, k) = rest.split_at(rest.len() - 1);
-            let (found, width) = if tag.is_empty() {
-                (search_found, 16.0)
-            } else {
-                (8, 12.0)
-            };
+            let (kind, k) = target.split_at(3);
             match kind {
                 "n_t" => {
                     let mut scores = vec![0.0; 21];
                     scores[10] = 40.0;
-                    outputs.insert(format!("scan{tag}"), record(json!({"sector": [-100.0, -80.0], "scores": scores, "peaks": [{"index": 10, "angle": -90.0, "score": 40.0}]})));
+                    outputs.insert("scan".to_string(), record(json!({"sector": [-100.0, -80.0], "scores": scores, "peaks": [{"index": 10, "angle": -90.0, "score": 40.0}]})));
                     let track = if k == "0" {
                         json!({"valid": true, "peakIndex": 0, "heading": -80.0, "steps": 10, "found": found, "sharpness": 0.9})
                     } else {
                         json!({"valid": false, "peakIndex": k.parse::<u64>().unwrap(), "heading": null, "steps": null, "found": null, "sharpness": null})
                     };
-                    outputs.insert(format!("track{tag}{k}"), record(track));
+                    outputs.insert(format!("track{k}"), record(track));
                     outputs.insert(
-                        format!("line{tag}{k}"),
+                        format!("line{k}"),
                         record(json!({"points": [[40.0, 76.0], [40.0, 36.0]]})),
                     );
                 }
                 "n_r" => {
                     outputs.insert(
-                        format!("runs{tag}{k}"),
-                        record(lateral(&[Some((0.0, width)); 11])),
+                        format!("runs{k}"),
+                        record(lateral(&[Some((0.0, 16.0)); 11])),
                     );
                 }
                 _ => {}
@@ -291,23 +285,23 @@ fn fake_heading_run(
 }
 
 #[test]
-fn heading_uses_search_branch_when_it_finds_bead_otherwise_fallback_branch_with_reason() {
-    // 防的回归（D-SB-47）：搜索找到胶仍用回退支的结果（或标成回退），搜索没找到胶却不用回退支、不记原因
+fn heading_without_bead_found_marks_whole_window_absent_with_reason() {
+    // 防的回归（D-SB-47）：选中的方向没找到胶条时仍按它的卡尺量出“有胶”（阴影、纹理被当成胶），或不标、不记原因
     let g = heading_graph();
     let image = FrameImage::new(FRAME[0], FRAME[1], vec![0; (FRAME[0] * FRAME[1]) as usize]);
-    for (search_found, fell_back, width_mm) in [(8, false, 4.0), (2, true, 3.0)] {
-        let m = measure_heading_with(&g, &image, 7, fake_heading_run(search_found))
+    for (found, missed, width_mm, present) in [(8, false, Some(4.0), 1.0), (2, true, None, 0.0)] {
+        let m = measure_heading_with(&g, &image, 7, fake_heading_run(found))
             .unwrap()
             .metrics;
         assert_eq!(
             (m.heading_fallback, m.width_mean, m.present_ratio),
-            (fell_back, Some(width_mm), 1.0),
-            "找到 {search_found} 个胶点"
+            (missed, width_mm, present),
+            "找到 {found} 个胶点"
         );
         assert_eq!(
             m.fallback_reason.is_some_and(|r| r.contains("minCoverage")),
-            fell_back,
-            "找到 {search_found} 个胶点"
+            missed,
+            "找到 {found} 个胶点"
         );
     }
 }

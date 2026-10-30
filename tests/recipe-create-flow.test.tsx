@@ -27,7 +27,7 @@ function createdView(doc: RecipeDoc): WorkspaceView {
   const view = burstWorkspaceView(doc as ReturnType<typeof burstRecipe>);
   view.workspace.revision = 1;
   const plan = view.plan!;
-  plan.cameraTeaching = plan.cameras.map(camera => ({ camera, mmPerPx: null, ready: false, nozzle: null, segments: [] }));
+  plan.cameraTeaching = plan.cameras.map(camera => ({ camera, mmPerPx: null, calibMmPerPx: null, ready: false, nozzle: null, segments: [] }));
   plan.calibration = null;
   plan.pieces = [];
   view.workspace.teachingPiece = null;

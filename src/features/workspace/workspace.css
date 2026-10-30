@@ -290,9 +290,7 @@
 .wp-heading-diagram .bead { fill:none; stroke:var(--on-surface-variant); stroke-opacity:.3; stroke-width:9; stroke-linecap:round; }
 .wp-heading-diagram .zone { fill:var(--primary); fill-opacity:.06; stroke:var(--primary); stroke-opacity:.6; stroke-dasharray:6 4; }
 .wp-heading-diagram .skip { fill:var(--on-surface-variant); fill-opacity:.18; stroke:var(--on-surface-variant); stroke-opacity:.5; }
-.wp-heading-diagram .sector { fill:var(--primary); fill-opacity:.1; stroke:var(--primary); stroke-dasharray:3 4; }
-.wp-heading-diagram .range { fill:var(--warn); fill-opacity:.22; stroke:var(--warn); stroke-width:1.5; }
-.wp-heading-diagram .fallback { stroke:var(--ok); stroke-width:2; stroke-dasharray:8 4; }
+.wp-heading-diagram .sector { fill:var(--warn); fill-opacity:.16; stroke:var(--warn); stroke-width:1.5; }
 .wp-heading-diagram .reading { stroke:var(--primary); stroke-width:2; }
 .wp-heading-diagram .nozzle { fill:var(--ok); }
 .wp-heading-diagram .mark circle { fill:var(--surface-lowest); stroke:var(--on-surface); }

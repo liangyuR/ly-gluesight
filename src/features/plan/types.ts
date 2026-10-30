@@ -84,7 +84,7 @@ export interface OffsetRef {
   edge?: EdgeParams | null;
 }
 
-/** 逐帧定向（D-SB-47）：直线段方向范围为示教方向 ± toleranceDeg（0–45°）。 */
+/** 逐帧定向（D-SB-47）：toleranceDeg（0–45°）只用于细化分段边界，直线段方向偏离超过它算离开直线段。 */
 export interface HeadingSettings {
   toleranceDeg: number;
 }
@@ -226,9 +226,9 @@ export interface FrameMetrics {
   xMm: number | null;
   /** 逐帧定向测得的胶条方向（度，图像坐标）；按示教走廊测的帧没有 */
   headingDeg?: number | null;
-  /** 逐帧定向没找到胶条，按预测段示教方向回退测量 */
+  /** 逐帧定向没找到胶条，全段按无胶判（字段名沿用记录里的旧名） */
   headingFallback?: boolean;
-  /** 定向回退的原因（lyFlow 定胶路给出，如覆盖率不足、边缘太缓不像胶） */
+  /** 没找到胶条的原因（如覆盖率不足、边缘太缓不像胶） */
   fallbackReason?: string | null;
   /** 胶中心到零件边的距离（mm，toEdge）；找不到边为 null */
   edgeMm?: number | null;
@@ -549,7 +549,7 @@ export interface SegmentCalibView {
   xRef: { xRef: number; spread: number } | null;
   /** 如“测量量未实现”“标准件轮次不足” */
   xRefPending: string | null;
-  /** 本段的标定提示，如检测窗口覆盖不足、弯道定向回退比例高 */
+  /** 本段的标定提示，如检测窗口覆盖不足、定向没找到胶条的帧多 */
   hints: string[];
 }
 
@@ -588,6 +588,8 @@ export interface CalibrationView {
 export interface CameraTeachingView {
   camera: string;
   mmPerPx: number | null;
+  /** 这台相机工位标定当前的像素当量（模拟相机为固定当量）；没有标定为 null */
+  calibMmPerPx: number | null;
   /** 有像素当量，且它检测的每一段都有已保存的段走廊 */
   ready: boolean;
   /** 已选示教帧的段（D-SB-45：走廊只按段示教） */
@@ -598,12 +600,8 @@ export interface CameraTeachingView {
 
 /** 示教页叠加的定向几何（度，图像坐标 0° 朝右、90° 朝下，与测量图一致）。 */
 export interface HeadingOverlay {
-  /** 本段方向范围 [lo, hi] */
-  range: [number, number];
-  /** 扇形搜索范围：本段与相邻段方向范围的并集 */
+  /** 扇形搜索范围：出胶点背离最近画面边的半圈 */
   sector: [number, number];
-  /** 回退方向（本段示教方向） */
-  fallback: number;
 }
 
 export interface SegmentTeachingView {

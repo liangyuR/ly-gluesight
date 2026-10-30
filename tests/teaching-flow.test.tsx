@@ -156,6 +156,20 @@ it("保存期间改相机参数 → 保存结果回来不覆盖新值，按新�
   expect(saves[1].revision).toBe(saves[0].revision + 1);
 });
 
+// 防的回归：相机标定后候选里的当量仍为空或是旧值，示教页没有入口把标定当量写进配方，走廊示教一直缺当量或按旧当量换算
+it.each([[null], [0.2]])("候选当量为 %s、设备标定为 0.115 mm/px → 点“采用标定当量”把标定值存进候选配方", async mmPerPx => {
+  const candidate = corridorCandidate((inspect, view) => { inspect.mmPerPx = mmPerPx; view.plan!.cameraTeaching[1].calibMmPerPx = .115; });
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate) });
+  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  await user.click(await screen.findByRole("button", { name: "选择相机 CAM-2" }));
+  await user.click(await screen.findByRole("button", { name: "采用标定当量" }));
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  const saves = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(s => s.doc.inspect![1].mmPerPx)).toEqual([.115]);
+  expect(screen.queryByRole("button", { name: "采用标定当量" })).toBeNull();
+});
+
 // 防的回归：只存走廊的自动保存起跑时配方没改（dirty 为假），保存期间改的段参数被保存结果覆盖、悄悄丢掉
 it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保持，走廊也在，按新修订再保存一次", async () => {
   stubSvgPointer({ pointerEvent: true });
