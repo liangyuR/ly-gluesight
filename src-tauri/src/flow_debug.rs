@@ -1,8 +1,10 @@
 //! 流程调试页（LF-6）：在 lyFlow 编辑器里逐节点查看一（相机, 段）的测量图，拓扑锁定、只调参数。
 //! 编辑器的 Transport 对到这里的 `flow_*` 命令；运行、编计划与清缓存都注入同一份调试帧（`n_load.image`），缓存键才对得上。
 //! 同一时刻只有一个运行：新运行先取消并等旧的退出。留着在算的与上一次的，编辑器按 runId 取节点输出。
+//! 每次打开按发起顺序编号：晚到的旧打开不顶替新的，校验、编计划、运行与清缓存带着打开编号，编号对不上就拒绝。
 
 use std::ffi::{c_char, c_void, CStr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lyflow_client::{Core, RunHandle, RunImageInput, RunSpec};
@@ -30,8 +32,9 @@ pub enum Variant {
     Heading,
 }
 
-/// 打开的调试图：模板、这一帧原图与打开时的有效参数。
+/// 打开的调试图：打开编号、模板、这一帧原图与打开时的有效参数。
 struct Session {
+    id: u64,
     template: &'static template::Template,
     image: RunImageInput,
     params: Value,
@@ -46,6 +49,8 @@ struct Runs {
 #[derive(Default)]
 pub struct FlowDebugHost {
     session: Mutex<Option<Arc<Session>>>,
+    /// 最近一次发起的打开编号
+    opened: AtomicU64,
     runs: Mutex<Runs>,
     /// 起运行串行：取消并等旧的退出、再起新的，这一段不能交错
     starting: Mutex<()>,
@@ -56,21 +61,35 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl FlowDebugHost {
-    fn session(&self) -> Result<Arc<Session>, String> {
-        lock(&self.session)
-            .clone()
-            .ok_or_else(|| "流程调试页还没有打开测量图".into())
+    /// 发起一次打开，取它的编号；之后的打开编号更大。
+    fn begin_open(&self) -> u64 {
+        self.opened.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// 换图时停掉并放掉之前的运行，它们的结果属于别的帧。
-    fn reset(&self, session: Session) {
+    /// 编号为 `id` 的打开所建的调试图；已被后来的打开取代或还没打开时拒绝。
+    fn session(&self, id: u64) -> Result<Arc<Session>, String> {
+        let session = lock(&self.session)
+            .clone()
+            .ok_or("流程调试页还没有打开测量图")?;
+        if session.id != id {
+            return Err("流程调试页已切换到别的测量图，这次请求作废".into());
+        }
+        Ok(session)
+    }
+
+    /// 打开完成：只有最近一次发起的打开能换图，晚到的旧打开拒绝。换图时停掉并放掉之前的运行，它们的结果属于别的帧。
+    fn reset(&self, session: Session) -> Result<(), String> {
         let _serial = lock(&self.starting);
+        if session.id != self.opened.load(Ordering::SeqCst) {
+            return Err("已切换到别的测量图，这次打开作废".into());
+        }
         let old = std::mem::take(&mut *lock(&self.runs));
         if let Some(run) = &old.active {
             run.cancel();
         }
         drop(old);
         *lock(&self.session) = Some(Arc::new(session));
+        Ok(())
     }
 
     fn start(&self, launch: impl FnOnce() -> Result<RunHandle, String>) -> Result<String, String> {
@@ -234,6 +253,7 @@ pub async fn flow_open(
     seq: u64,
     variant: Variant,
 ) -> Result<Value, String> {
+    let ticket = app.state::<FlowDebugHost>().begin_open();
     blocking(move || {
         let (graphs, index, image) =
             crate::workspace::flow_debug_frame(&app, &id, &camera, segment, &round, seq)?;
@@ -260,11 +280,12 @@ pub async fn flow_open(
             format!("{camera} · 段 {segment} · 帧组 {seq} · {label}"),
         );
         app.state::<FlowDebugHost>().reset(Session {
+            id: ticket,
             template,
             image: vision::image_input(&image)?,
             params,
-        });
-        Ok(json!({ "doc": doc, "migrations": [] }))
+        })?;
+        Ok(json!({ "doc": doc, "migrations": [], "session": ticket }))
     })
     .await
 }
@@ -288,11 +309,12 @@ pub async fn flow_core_info(app: AppHandle) -> Result<Value, String> {
 #[tauri::command]
 pub async fn flow_validate(
     app: AppHandle,
+    session: u64,
     doc: Value,
     params: Option<Map<String, Value>>,
 ) -> Result<Value, String> {
     blocking(move || {
-        let session = app.state::<FlowDebugHost>().session()?;
+        let session = app.state::<FlowDebugHost>().session(session)?;
         let (graph, params) = prepared(&session, &doc, params)?;
         parse(
             core(&app)?.validate_with_params(&graph, "", Some(&params)),
@@ -305,12 +327,13 @@ pub async fn flow_validate(
 #[tauri::command]
 pub async fn flow_plan(
     app: AppHandle,
+    session: u64,
     doc: Value,
     targets: Option<Vec<String>>,
     params: Option<Map<String, Value>>,
 ) -> Result<Value, String> {
     blocking(move || {
-        let session = app.state::<FlowDebugHost>().session()?;
+        let session = app.state::<FlowDebugHost>().session(session)?;
         let (graph, params) = prepared(&session, &doc, params)?;
         let images = [session.image.clone()];
         parse(
@@ -332,6 +355,7 @@ pub async fn flow_plan(
 #[allow(clippy::too_many_arguments)]
 pub async fn flow_run(
     app: AppHandle,
+    session: u64,
     doc: Value,
     targets: Option<Vec<String>>,
     isolate: Option<Vec<String>>,
@@ -343,7 +367,7 @@ pub async fn flow_run(
     blocking(move || {
         crate::camera::check_idle(&app.state::<CycleHost>())?;
         let host = app.state::<FlowDebugHost>();
-        let session = host.session()?;
+        let session = host.session(session)?;
         let (graph, params) = prepared(&session, &doc, params)?;
         let core = core(&app)?;
         let (targets, isolate, force) = (
@@ -449,13 +473,14 @@ fn encode_image(view: &lyflow_client::ImageView) -> Vec<u8> {
 #[tauri::command]
 pub async fn flow_evict_cache(
     app: AppHandle,
+    session: u64,
     doc: Value,
     node_ids: Vec<String>,
     downstream: Option<bool>,
     params: Option<Map<String, Value>>,
 ) -> Result<Value, String> {
     blocking(move || {
-        let session = app.state::<FlowDebugHost>().session()?;
+        let session = app.state::<FlowDebugHost>().session(session)?;
         let (graph, params) = prepared(&session, &doc, params)?;
         let images = [session.image.clone()];
         let raw = core(&app)?.cache_evict_with_inputs(
@@ -501,9 +526,27 @@ mod tests {
 
     /// 防的回归（LF-6）：流程调试页改了拓扑的图照样被校验、编计划或运行；或调参、挪节点也被拒。
     /// 经 `prepared` 测：flow_validate、flow_plan、flow_run 都先经它拿运行用的图与参数。
+    /// 防的回归：先发起的打开晚到时顶替了后打开的调试图，编辑器跑的是上一帧或上一张图；旧编辑器的请求打到新图上。
+    #[test]
+    fn late_stale_open_does_not_replace_newer_session_and_stale_requests_are_rejected() {
+        let host = FlowDebugHost::default();
+        let session = |id| Session {
+            id,
+            template: template::corridor(),
+            image: vision::image_input(&crate::frame::FrameImage::new(4, 4, vec![0; 16])).unwrap(),
+            params: json!({}),
+        };
+        let (older, newer) = (host.begin_open(), host.begin_open());
+        host.reset(session(newer)).unwrap();
+        assert!(host.reset(session(older)).is_err());
+        assert!(host.session(newer).is_ok());
+        assert!(host.session(older).is_err());
+    }
+
     #[test]
     fn topology_change_is_rejected_but_params_and_layout_are_not() {
         let session = Session {
+            id: 1,
             template: template::corridor(),
             image: vision::image_input(&crate::frame::FrameImage::new(4, 4, vec![0; 16])).unwrap(),
             params: json!({"segmentMin": 8.0}),

@@ -15,8 +15,11 @@ export interface FlowTarget { id: string; camera: string; segment: number; round
 /** 编辑器的 graphPath：只用来区分打开的是哪一张，后端不读它。 */
 export const flowGraphPath = (t: FlowTarget) => `gluesight-flow/${encodeURIComponent(t.id)}/${t.camera}/${t.segment}/${t.variant}/${t.round}/${t.seq}.lyflow.json`;
 
+/** 打开的测量图与后端给的打开编号：之后的校验、编计划、运行与清缓存都带着它，切换后旧请求被拒。 */
+export type OpenedFlow = LoadedGraph & { session: number };
+
 /** 打开测量图：后端按候选配方合成这一（相机, 段）的有效参数，并记下这一帧原图供运行注入。 */
-export const openFlow = (t: FlowTarget) => desktopCall<LoadedGraph>("flow_open", { ...t });
+export const openFlow = (t: FlowTarget) => desktopCall<OpenedFlow>("flow_open", { ...t });
 
 const bytes = async (command: string, args: Record<string, unknown>) => {
   const raw = await desktopCall<ArrayBuffer | Uint8Array>(command, args);
@@ -31,7 +34,7 @@ const noop = async () => {};
  */
 export class FlowTransport implements Transport {
   readonly kind = "tauri" as const;
-  constructor(private readonly path: string, private readonly loaded: LoadedGraph) {}
+  constructor(private readonly path: string, private readonly loaded: OpenedFlow) {}
 
   getManifest() { return desktopCall<OperatorManifestBundle>("flow_manifest"); }
   getCoreInfo() { return desktopCall<CoreInfo>("flow_core_info"); }
@@ -41,21 +44,21 @@ export class FlowTransport implements Transport {
   }
   saveGraph() { return unsupported("保存图：专家参数请用“保存为本相机专家参数”写进候选"); }
   validateGraph(doc: GraphDoc, _graphPath: string | null, params?: Record<string, unknown>) {
-    return desktopCall<GraphDiagnostic[]>("flow_validate", { doc, params: params ?? null });
+    return desktopCall<GraphDiagnostic[]>("flow_validate", { session: this.loaded.session, doc, params: params ?? null });
   }
   async planGraph(doc: GraphDoc, _graphPath: string | null, targets?: string[], params?: Record<string, unknown>): Promise<PlanNode[]> {
-    const out = await desktopCall<{ cacheKey?: unknown }[]>("flow_plan", { doc, targets: targets ?? null, params: params ?? null });
+    const out = await desktopCall<{ cacheKey?: unknown }[]>("flow_plan", { session: this.loaded.session, doc, targets: targets ?? null, params: params ?? null });
     // 校验没过时回的是诊断数组，靠有没有 cacheKey 区分
     return out.some(node => typeof node.cacheKey !== "string") ? [] : out as PlanNode[];
   }
   clearCache() { return desktopCall<void>("flow_clear_cache"); }
   evictCache(doc: GraphDoc, _graphPath: string | null, nodeIds: string[], downstream: boolean, params?: Record<string, unknown>) {
-    return desktopCall<EvictResult>("flow_evict_cache", { doc, nodeIds, downstream, params: params ?? null });
+    return desktopCall<EvictResult>("flow_evict_cache", { session: this.loaded.session, doc, nodeIds, downstream, params: params ?? null });
   }
   cacheStats() { return desktopCall<CacheStats>("flow_cache_stats"); }
   runGraph(doc: GraphDoc, _graphPath: string | null, options?: RunOptions) {
     return desktopCall<string>("flow_run", {
-      doc, targets: options?.targets ?? null, isolate: options?.isolate ?? null, force: options?.force ?? null,
+      session: this.loaded.session, doc, targets: options?.targets ?? null, isolate: options?.isolate ?? null, force: options?.force ?? null,
       mode: options?.mode ?? "full", previewMaxPoints: options?.previewMaxPoints ?? null, params: options?.params ?? null,
     });
   }
