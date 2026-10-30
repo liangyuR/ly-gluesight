@@ -21,8 +21,8 @@ import { frameArrived, readRoundFrame, roundView, type RoundView } from "./captu
 import { SegmentTrial } from "./TeachTrial";
 import { FrameGrid } from "./FrameGrid";
 import { pieceLabel } from "./pieces";
-import { CameraHeadingCard, ExpertCard, MeasureCard, SegmentChecksCard, SegmentHeadingCard, type CameraParams } from "./CorridorSettings";
-import type { HeadingGuide } from "./headingOverlay";
+import { ExpertCard, HeadingCard, MeasureCard, SegmentChecksCard, type CameraParams } from "./CorridorSettings";
+import type { HeadingGuide, HeadingPart } from "./headingOverlay";
 import "./corridor.css";
 import WorkspaceNavigation from "./WorkspaceNavigation";
 
@@ -169,6 +169,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const [region, setRegion] = useState<[number, number, number, number] | null>(null);
   const [regionMode, setRegionMode] = useState(false);
   const [nozzleMode, setNozzleMode] = useState(false);
+  const [headingFocus, setHeadingFocus] = useState<HeadingPart | null>(null);
   const [selectionTool, setSelectionTool] = useState<"brush" | "box">("brush");
   const [brushPoints, setBrushPoints] = useState<ImagePoint[]>([]);
   const [brushWidth, setBrushWidth] = useState(DEFAULT_BRUSH_PX);
@@ -300,14 +301,14 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const inspect = doc.inspect?.find(item => item.camera === camera);
   const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null, window: inspect?.window ?? null, nozzle: inspect?.nozzle ?? null, expert: inspect?.expert ?? {} };
   const setParams = (next: CameraParams) => setDoc({ ...doc, inspect: (doc.inspect ?? []).map(item => item.camera === camera ? { ...item, ...next } : item) });
-  // 出胶点与检测窗口跟着候选配方即时显示；方向范围、扇区与回退方向由后端按已保存的走廊算
+  // 出胶点与测量区间跟着候选配方即时显示；方向范围、扇区与回退方向由后端按已保存的走廊算
   const savedNozzle = plan.cameraTeaching.find(item => item.camera === camera)?.nozzle ?? null;
   const derivedNozzle = savedNozzle && !savedNozzle.calibrated ? savedNozzle.point : null;
   const headingOn = segment != null && !!doc.segments?.find(item => item.index === segment)?.heading;
   const cameraScale = params.mmPerPx != null && Number.isFinite(params.mmPerPx) && params.mmPerPx > 0 ? params.mmPerPx : null;
   const nozzlePoint = params.nozzle ?? derivedNozzle;
   const headingGuide: HeadingGuide | null = headingOn && nozzlePoint ? {
-    nozzle: nozzlePoint, calibrated: !!params.nozzle,
+    nozzle: nozzlePoint, calibrated: !!params.nozzle, focus: headingFocus,
     zone: params.window && cameraScale ? [params.window.startMm / cameraScale, (params.window.startMm + params.window.lengthMm) / cameraScale] : null,
     ...(segmentTeaching?.heading && !editing ? { range: segmentTeaching.heading.range, sector: segmentTeaching.heading.sector, fallback: segmentTeaching.heading.fallback } : {}),
   } : null;
@@ -360,7 +361,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
                   : segmentItem?.kind === "corner" ? `弯道：从出胶点起沿胶条画一小段（不超过 ${CORNER_CORRIDOR_MM} mm）`
                     : "直线段：从出胶点一侧起，沿胶条方向画整段走廊";
   const picking = nozzleMode && headingOn;
-  const editHint = picking ? `点击胶嘴出胶处标定 ${camera} 的出胶点（${camera} 各段共用，自动保存到候选配方）；叠加图中环带为检测窗口，实线扇形为本段方向范围，虚线扇形为搜索扇区，绿色虚线为回退方向。`
+  const editHint = picking ? `点击胶嘴出胶处标定 ${camera} 的出胶点（${camera} 各段共用，自动保存到候选配方）；叠加图上的编号与右侧“逐帧定向”面板各行对应，指着面板某一行时图上只突出它。`
     : "点击图像加点（绿圈为起点），拖动点可调整；密集走廊打开“点柄”显示全部点，Ctrl＋滚轮缩放。";
   const regionHint = extractionHint || (selectionTool === "brush" ? "按住左键沿胶路从起点刷到终点，每笔重画选区；笔刷覆盖胶路和两侧少量背景，尽量避开阴影。" : "按住左键框选一段连续胶路，再自动提取走廊；框选包含阴影时建议改用刷选。");
   const changeMode = (value: string) => {
@@ -475,8 +476,10 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       {navigation}
       <MeasureCard key={camera} camera={camera} params={params} defaults={doc.detect} spacing={doc.spacing} sharing={sharing} disabled={paramsDisabled || frameDirty} spacingError={value => spacingError(doc, value)}
         onParams={setParams} onDefaults={detect => setDoc({ ...doc, detect })} onSpacing={spacing => setDoc({ ...doc, spacing })} />
-      <CameraHeadingCard key={`heading-${camera}`} camera={camera} params={params} derivedNozzle={derivedNozzle} disabled={paramsDisabled || frameDirty} onChange={setParams}
-        headingSegments={cameraTasks.filter(item => doc.segments?.find(s => s.index === item.segment)?.heading).map(item => item.segment)} />
+      <HeadingCard key={`heading-${camera}`} camera={camera} params={params} derivedNozzle={derivedNozzle} segments={doc.segments ?? []} index={null} geometry={null}
+        headingSegments={(doc.segments ?? []).filter(item => item.heading && cameraTasks.some(task => task.segment === item.index))}
+        expertDefaults={doc.expert ?? {}} disabled={paramsDisabled || frameDirty} sharedLocked="" onFocus={setHeadingFocus}
+        onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />
       <ExpertCard key={`expert-${camera}`} camera={camera} own={params.expert ?? {}} defaults={doc.expert ?? {}} disabled={paramsDisabled || frameDirty}
         onCamera={expert => setParams({ ...params, expert })} onDefaults={expert => setDoc({ ...doc, expert })} />
       <p className="wp-settings-hint wp-rail-note">段的逐帧定向与检测项：在左侧选段后设置。</p></div>
@@ -489,8 +492,10 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         <WithReason reason={editing ? "走廊有未保存的修改：保存后再调试" : !done ? "这一段还没有保存的走廊" : ""}><Button variant="text" size="sm" leadingIcon={<Workflow size={14}/>} disabled={editing || !done}
           onClick={() => navigate(`/recipe/flow?camera=${encodeURIComponent(camera)}&segment=${segment}&seq=${trialSeq ?? segmentTeaching?.seq ?? ""}`)}>流程调试</Button></WithReason>
       </Surface>
-      {segmentItem && <SegmentHeadingCard key={`heading-${segment}`} segments={doc.segments ?? []} index={segment} camera={camera} params={params} derivedNozzle={derivedNozzle}
-        disabled={checksDisabled} sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改检测窗口与出胶点。" : ""} onSegments={changeSegments} onParams={setParams} />}
+      {segmentItem && <HeadingCard key={`heading-${camera}-${segment}`} camera={camera} params={params} derivedNozzle={derivedNozzle} segments={doc.segments ?? []} index={segment} headingSegments={[]}
+        geometry={editing ? null : segmentTeaching?.heading ?? null} expertDefaults={doc.expert ?? {}} disabled={checksDisabled}
+        sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改出胶点与测量区间。" : ""} onFocus={setHeadingFocus}
+        onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />}
       {segmentItem && <SegmentChecksCard key={`checks-${segment}`} segments={doc.segments ?? []} index={segment} cameras={plan.cameras} disabled={checksDisabled} onChange={changeSegments} />}
       <WithReason block reason={groupsLocked ? groupLockReason : ""}><Button variant="outlined" className="wp-rail-link" disabled={groupsLocked} onClick={() => setSelected(camera)}>
         <strong>测量</strong><span>{cameraScaleText} · {params.detect ? "本相机自定义" : "配方默认"}</span><span className="wp-rail-link-go">去 {camera} 改<ArrowRight size={13} aria-hidden="true" /></span>

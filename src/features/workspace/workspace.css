@@ -284,3 +284,22 @@
 .wp-flow-hint { margin:0; }
 .wp-flow-host { flex:1 1 0; min-height:520px; display:flex; flex-direction:column; border-radius:var(--r-lg); overflow:hidden; }
 .wp-flow-host > .wp-flow-editor { flex:1 1 auto; min-height:0; }
+/* 逐帧定向面板：编号行与示意图（D-SB-47） */
+.wp-heading-diagram { display:block; width:100%; max-width:320px; height:auto; margin:0 auto; overflow:hidden; }
+.wp-heading-diagram > * { transition:opacity .15s; }
+.wp-heading-diagram .bead { fill:none; stroke:var(--on-surface-variant); stroke-opacity:.3; stroke-width:9; stroke-linecap:round; }
+.wp-heading-diagram .zone { fill:var(--primary); fill-opacity:.06; stroke:var(--primary); stroke-opacity:.6; stroke-dasharray:6 4; }
+.wp-heading-diagram .skip { fill:var(--on-surface-variant); fill-opacity:.18; stroke:var(--on-surface-variant); stroke-opacity:.5; }
+.wp-heading-diagram .sector { fill:var(--primary); fill-opacity:.1; stroke:var(--primary); stroke-dasharray:3 4; }
+.wp-heading-diagram .range { fill:var(--warn); fill-opacity:.22; stroke:var(--warn); stroke-width:1.5; }
+.wp-heading-diagram .fallback { stroke:var(--ok); stroke-width:2; stroke-dasharray:8 4; }
+.wp-heading-diagram .reading { stroke:var(--primary); stroke-width:2; }
+.wp-heading-diagram .nozzle { fill:var(--ok); }
+.wp-heading-diagram .mark circle { fill:var(--surface-lowest); stroke:var(--on-surface); }
+.wp-heading-diagram .mark text { fill:var(--on-surface); font-size:11px; }
+.wp-part-row { display:grid; grid-template-columns:20px minmax(0,1fr); gap:8px; margin:0 -6px; padding:6px; border-radius:var(--r-md); }
+.wp-part-row:hover, .wp-part-row:focus-within { background:var(--surface-low); }
+.wp-part-mark { display:flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--on-surface); border-radius:50%; font-size:11px; }
+.wp-part-body { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.wp-part-title { font-size:12px; font-weight:600; }
+.wp-part-body > p { margin:0; }

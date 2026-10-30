@@ -163,7 +163,7 @@ pub(super) fn heading_hints(
         segment.length_mm,
         segment.expected_frames.filter(|&n| n > 0),
     ) {
-        (None, _) => hints.push("段长未填，无法核对检测窗口能否覆盖每帧后移量".to_string()),
+        (None, _) => hints.push("段长未填，无法核对测量区间能否覆盖每帧后移量".to_string()),
         (Some(_), None) => {}
         (Some(length), Some(n)) => {
             let travel = length / f64::from(n);
@@ -173,12 +173,12 @@ pub(super) fn heading_hints(
                 };
                 if window.length_mm < travel {
                     hints.push(format!(
-                        "相机 {} 检测窗口长 {:.1} mm，短于每帧后移量约 {travel:.1} mm：相邻帧之间有胶测不到，断胶可能漏检",
+                        "相机 {} 测量区间长 {:.1} mm，短于每帧后移量约 {travel:.1} mm：相邻帧之间有胶测不到，断胶可能漏检",
                         inspect.camera, window.length_mm
                     ));
                 } else if window.length_mm > 3.0 * travel {
                     hints.push(format!(
-                        "相机 {} 检测窗口长 {:.1} mm，超过每帧后移量约 {travel:.1} mm 的 3 倍：同一处胶会被测多次",
+                        "相机 {} 测量区间长 {:.1} mm，超过每帧后移量约 {travel:.1} mm 的 3 倍：同一处胶会被测多次",
                         inspect.camera, window.length_mm
                     ));
                 }
@@ -191,7 +191,7 @@ pub(super) fn heading_hints(
         .fold([0u32; 2], |a, b| [a[0] + b[0], a[1] + b[1]]);
     if measured > 0 && f64::from(fallback) > HEADING_FALLBACK_HINT * f64::from(measured) {
         hints.push(format!(
-            "定向回退 {fallback}/{measured} 帧（{:.0}%）：窗口内胶路跟不住，建议缩短检测窗口或减小起点",
+            "定向回退 {fallback}/{measured} 帧（{:.0}%）：窗口内胶路跟不住，建议缩短测量区间或减小跳过距离",
             100.0 * f64::from(fallback) / f64::from(measured)
         ));
     }

@@ -74,7 +74,24 @@ describe("出胶点标定", () => {
     ws.data!.workspace.doc.inspect![1].nozzle = [40, 30];
     fireEvent.click(screen.getByLabelText("编辑点"));
     expect(await screen.findByLabelText("出胶点（已标定）")).toBeInTheDocument();
-    expect(screen.getByLabelText("检测窗口环带")).toBeInTheDocument();
+    expect(screen.getByLabelText("测量区间环带")).toBeInTheDocument();
+  });
+});
+
+describe("测量区间", () => {
+
+  // 防的回归（D-SB-47）：面板按“跳过前 / 测到”填，配方仍存起点与长度；把“测到”当长度写进配方，实测区间整体后移
+  it("跳过前 5 mm、测到 25 mm → 配方存起点 5、长度 20；测到不大于跳过 → 提示且不写配方", async () => {
+    ws.data!.workspace.doc.segments![0].heading = { toleranceDeg: 5 };
+    show("/recipe/teach?camera=CAM-2&segment=1");
+    const zone = await screen.findByRole("group", { name: "出胶点与测量区间" });
+    fireEvent.change(within(zone).getByRole("spinbutton", { name: "跳过前" }), { target: { value: "5" } });
+    fireEvent.change(within(zone).getByRole("spinbutton", { name: "测到距出胶点" }), { target: { value: "25" } });
+    expect(vi.mocked(ws.setDoc).mock.lastCall![0].inspect!.find(item => item.camera === "CAM-2")!.window).toEqual({ startMm: 5, lengthMm: 20 });
+    const calls = vi.mocked(ws.setDoc).mock.calls.length;
+    fireEvent.change(within(zone).getByRole("spinbutton", { name: "测到距出胶点" }), { target: { value: "5" } });
+    expect(within(zone).getByRole("alert")).toHaveTextContent("测量到的距离需大于跳过的距离");
+    expect(ws.setDoc).toHaveBeenCalledTimes(calls);
   });
 });
 

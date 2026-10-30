@@ -316,7 +316,7 @@ impl CameraInspect {
                 && w.start_mm + w.length_mm <= 500.0)
             {
                 return Err(format!(
-                    "相机 {id} 的检测窗口需满足 起点 ≥ 0、长度 > 0、起点 + 长度 ≤ 500 mm"
+                    "相机 {id} 的测量区间需满足 跳过距离 ≥ 0、测量到的距离大于跳过距离且不超过 500 mm"
                 ));
             }
         }

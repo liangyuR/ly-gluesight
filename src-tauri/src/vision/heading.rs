@@ -106,7 +106,7 @@ pub fn plan_heading(
     let window = inspect
         .window
         .as_ref()
-        .ok_or_else(|| fail("缺少检测窗口"))?;
+        .ok_or_else(|| fail("缺少测量区间"))?;
     let anchor = nozzle(segments, &cameras, inspect)?
         .ok_or_else(|| fail("尚未标定出胶点或示教走廊，推不出出胶点"))?
         .point;

@@ -32,7 +32,7 @@ export function SkipSuggest({ locked }: { locked: boolean }) {
     if (view.suggested == null) return;
     void act(() => workspaceApi.confirmSkip(doc.id, data.workspace.revision, view.segment, view.end, view.suggested!), `段 ${view.segment} ${endLabel[view.end]}已改为跳过 ${view.suggested} 帧`);
   };
-  return <Panel title="起涂与收尾跳过" help="整件开头出胶有延迟、胶条要走满检测窗口，末尾同理：这些帧组按本段检测项会判断胶。按各标定件的每帧特征，连续两个帧组都测成且无 NG 才算胶条成形，之前的帧组数取各件最大值作建议">
+  return <Panel title="起涂与收尾跳过" help="整件开头出胶有延迟、胶条要走满测量区间，末尾同理：这些帧组按本段检测项会判断胶。按各标定件的每帧特征，连续两个帧组都测成且无 NG 才算胶条成形，之前的帧组数取各件最大值作建议">
     {error && <Notice title="无法给出跳过建议" tone="warn">{error}</Notice>}
     {views?.length === 0 && <p className="muted">还没有标定件。</p>}
     {views && views.length > 0 && <ul className="wp-skip-list" aria-label="跳过帧建议">{views.map(view => {
