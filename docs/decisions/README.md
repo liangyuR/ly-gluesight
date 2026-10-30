@@ -83,6 +83,6 @@
 
 | 依赖 | 版本 |
 | --- | --- |
-| lyFlow 运行库与 `lyflow-client` | v1.1.5（1.1 系列，见 [lyFlow 依赖](../architecture/lyflow-dependency.md)） |
+| lyFlow 运行库与 `lyflow-client` | v1.2.0（1.2 系列，见 [lyFlow 依赖](../architecture/lyflow-dependency.md)） |
 | ly-plc | v0.4.0（fe6c210） |
 | qing-steel | v0.9.0 |

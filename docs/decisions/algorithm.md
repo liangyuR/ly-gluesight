@@ -26,5 +26,5 @@
 ## A-9 lyFlow 运行库须为 1.1.4 及以上
 
 - 问题：lyFlow 1.1.3 及更早的 1.1.x 的 glue 代码与 1.1.0 相同，实拍 36 张正常图有 16 张误判 NG；加上 #26–#29 才降到 0。
-- 采用：运行库至少 1.1.4。现依赖 `lyflow-client` v1.1.5，打包与开发取 1.1 系列最新正式版；系列锁、升级与本地运行库见 [lyFlow 依赖](../architecture/lyflow-dependency.md)。
+- 采用：运行库至少 1.1.4。现依赖 `lyflow-client` v1.2.0，打包与开发取 1.2 系列最新正式版；系列锁、升级与本地运行库见 [lyFlow 依赖](../architecture/lyflow-dependency.md)。
 - 回退：不涉及。
