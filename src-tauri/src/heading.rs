@@ -216,12 +216,12 @@ pub fn issues(segments: &[PathSegment], inspect: &[CameraInspect]) -> Vec<Issue>
         };
         match (&i.window, i.mm_per_px) {
             (None, _) => out.push(camera_issue(format!(
-                "相机 {}：第 {used:?} 段开启了逐帧定向，需要设置检测窗口",
+                "相机 {}：第 {used:?} 段开启了逐帧定向，需要设置测量区间（跳过胶嘴附近与测量到的距离）",
                 i.camera
             ))),
             (Some(w), Some(scale)) if w.length_mm / scale < MIN_WINDOW_PX => {
                 out.push(camera_issue(format!(
-                    "相机 {}：检测窗口长 {} mm 换算后不足 {MIN_WINDOW_PX} px",
+                    "相机 {}：测量区间长 {} mm 换算后不足 {MIN_WINDOW_PX} px",
                     i.camera, w.length_mm
                 )))
             }

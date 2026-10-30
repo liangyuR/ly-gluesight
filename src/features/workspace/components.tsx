@@ -10,7 +10,7 @@ import type { GrayImage, GrayPixels } from "./types";
 import { errorText } from "../../lib/errors";
 import { PlanSteps } from "./PlanSteps";
 import { searchBand } from "./searchBand";
-import { guideRadii, rayEnd, wedgePath, type HeadingGuide } from "./headingOverlay";
+import { fanRadii, guideRadii, HEADING_MARK, rayEnd, wedgePath, type HeadingGuide, type HeadingPart } from "./headingOverlay";
 import ContextHelp from "../cycle/components/ContextHelp";
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
@@ -88,19 +88,36 @@ export interface ImageOverlay {
 function HeadingLayer({ guide, size, screenPx }: { guide: HeadingGuide; size: [number, number]; screenPx: (px: number) => number }) {
   const c = guide.nozzle;
   const radii = guideRadii(guide, size);
+  const fan = fanRadii(guide, size);
   const [nx, ny] = c;
   const arm = screenPx(12);
+  const base = guide.fallback ?? (guide.range ? (guide.range[0] + guide.range[1]) / 2 : 0);
+  const dim = (part: HeadingPart) => guide.focus && guide.focus !== part ? .15 : 1;
+  const mark = (part: HeadingPart, r: number, deg: number) => {
+    const [x, y] = rayEnd(c, r, deg);
+    return <g aria-hidden="true" opacity={dim(part)}>
+      <circle cx={x} cy={y} r={screenPx(8)} fill="var(--surface-lowest)" stroke="var(--on-surface)" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+      <text x={x} y={y} textAnchor="middle" dominantBaseline="central" fontSize={screenPx(11)} fill="var(--on-surface)">{HEADING_MARK[part]}</text>
+    </g>;
+  };
   return <g aria-label="逐帧定向叠加" pointerEvents="none" fill="none" vectorEffect="non-scaling-stroke">
-    {guide.zone && <path aria-label="检测窗口环带" d={wedgePath(c, guide.zone, [0, 360])} fill="var(--primary)" fillOpacity={.06} fillRule="evenodd" stroke="var(--primary)" strokeOpacity={.6} strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />}
-    {guide.sector && <path aria-label="搜索扇区" d={wedgePath(c, radii, guide.sector)} fill="var(--primary)" fillOpacity={.1} stroke="var(--primary)" strokeWidth={1} strokeDasharray="3 4" vectorEffect="non-scaling-stroke" />}
-    {guide.range && <path aria-label="本段方向范围" d={wedgePath(c, radii, guide.range)} fill="var(--warn)" fillOpacity={.22} stroke="var(--warn)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
-    {guide.fallback != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.fallback); return <line aria-label="回退方向" x1={nx} y1={ny} x2={x} y2={y} stroke="var(--ok)" strokeWidth={2} strokeDasharray="8 4" vectorEffect="non-scaling-stroke" />; })()}
-    {guide.measured != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.measured); return <line aria-label="实测方向" x1={nx} y1={ny} x2={x} y2={y} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />; })()}
+    {guide.zone && guide.zone[0] > 0 && <path aria-label="跳过段" opacity={dim("skip")} d={wedgePath(c, [0, guide.zone[0]], [0, 360])} fill="var(--on-surface-variant)" fillOpacity={.18} stroke="var(--on-surface-variant)" strokeOpacity={.5} strokeWidth={1} vectorEffect="non-scaling-stroke" />}
+    {guide.zone && <path aria-label="测量区间环带" opacity={dim("zone")} d={wedgePath(c, guide.zone, [0, 360])} fill="var(--primary)" fillOpacity={.06} fillRule="evenodd" stroke="var(--primary)" strokeOpacity={.6} strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />}
+    {guide.sector && <path aria-label="搜索扇区" opacity={dim("sector")} d={wedgePath(c, fan, guide.sector)} fill="var(--primary)" fillOpacity={.1} stroke="var(--primary)" strokeWidth={1} strokeDasharray="3 4" vectorEffect="non-scaling-stroke" />}
+    {guide.range && <path aria-label="本段方向范围" opacity={dim("range")} d={wedgePath(c, fan, guide.range)} fill="var(--warn)" fillOpacity={.22} stroke="var(--warn)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+    {guide.fallback != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.fallback); return <line aria-label="回退方向" opacity={dim("fallback")} x1={nx} y1={ny} x2={x} y2={y} stroke="var(--ok)" strokeWidth={2} strokeDasharray="8 4" vectorEffect="non-scaling-stroke" />; })()}
+    {guide.measured != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.measured); return <line aria-label="实测方向" opacity={dim("reading")} x1={nx} y1={ny} x2={x} y2={y} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />; })()}
+    {guide.zone && guide.zone[0] > 0 && mark("skip", guide.zone[0] / 2, base + 180)}
+    {guide.zone && mark("zone", (guide.zone[0] + guide.zone[1]) / 2, base + 180)}
+    {guide.sector && mark("sector", fan[1], guide.sector[0])}
+    {guide.range && mark("range", fan[1], guide.range[1])}
+    {guide.fallback != null && mark("fallback", radii[1], guide.fallback)}
+    {guide.measured != null && mark("reading", radii[1] * .8, guide.measured)}
     <g aria-label={guide.calibrated ? "出胶点（已标定）" : "出胶点（走廊推算）"} stroke={guide.calibrated ? "var(--ok)" : "var(--warn)"} strokeWidth={2}>
       <line x1={nx - arm} y1={ny} x2={nx + arm} y2={ny} vectorEffect="non-scaling-stroke" />
       <line x1={nx} y1={ny - arm} x2={nx} y2={ny + arm} vectorEffect="non-scaling-stroke" />
       <circle cx={nx} cy={ny} r={screenPx(6)} vectorEffect="non-scaling-stroke" />
-      <text x={nx} y={ny} dx={screenPx(14)} dy={screenPx(-10)} fontSize={screenPx(13)} fill={guide.calibrated ? "var(--ok)" : "var(--warn)"} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke">{guide.calibrated ? "出胶点" : "出胶点（推算）"}</text>
+      <text x={nx} y={ny} dx={screenPx(14)} dy={screenPx(-10)} fontSize={screenPx(13)} fill={guide.calibrated ? "var(--ok)" : "var(--warn)"} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke">{HEADING_MARK.nozzle} {guide.calibrated ? "出胶点" : "出胶点（推算）"}</text>
     </g>
   </g>;
 }

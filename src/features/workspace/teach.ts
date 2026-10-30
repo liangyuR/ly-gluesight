@@ -11,19 +11,19 @@ export function sameCorridor(a: CameraTeachDraft | undefined, b: CameraTeachDraf
   return JSON.stringify(canonical(a ?? null)) === JSON.stringify(canonical(b ?? null));
 }
 
-/** 检测窗口终点上限（mm），与后端校验一致。 */
+/** 测量区间终点（距出胶点）上限（mm），与后端校验一致。 */
 export const MAX_WINDOW_END_MM = 500;
 
-/** 检测窗口是否可用：起点 ≥ 0、长度 > 0、终点不超过 500 mm。返回错误说明，空串表示可以。 */
+/** 测量区间是否可用（配方存起点与长度）：跳过段 ≥ 0、测量到的距离大于跳过段且不超过 500 mm。返回错误说明，空串表示可以。 */
 export function windowError(window: InspectWindow) {
   const { startMm, lengthMm } = window;
-  if (!(Number.isFinite(startMm) && startMm >= 0)) return "检测窗口起点需不小于 0 mm";
-  if (!(Number.isFinite(lengthMm) && lengthMm > 0)) return "检测窗口长度需大于 0 mm";
-  if (startMm + lengthMm > MAX_WINDOW_END_MM) return `检测窗口终点（起点 + 长度）不能超过 ${MAX_WINDOW_END_MM} mm`;
+  if (!(Number.isFinite(startMm) && startMm >= 0)) return "跳过胶嘴附近的距离需不小于 0 mm";
+  if (!(Number.isFinite(lengthMm) && lengthMm > 0)) return "测量到的距离需大于跳过的距离";
+  if (startMm + lengthMm > MAX_WINDOW_END_MM) return `测量到的距离不能超过 ${MAX_WINDOW_END_MM} mm`;
   return "";
 }
 
-/** 相机参数是否可用：像素当量为正且不超过 10 mm/px，自定义检测参数要合法，设了检测窗口时窗口要合法。返回错误说明，空串表示可以。 */
+/** 相机参数是否可用：像素当量为正且不超过 10 mm/px，自定义检测参数要合法，设了测量区间时区间要合法。返回错误说明，空串表示可以。 */
 export function cameraParamsError(t: Pick<CameraTeachDraft, "mmPerPx" | "detect"> & { window?: InspectWindow | null }) {
   if (!(t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 && t.mmPerPx <= 10)) return "像素当量需在 0–10 mm/px 之间";
   if (t.detect) {
