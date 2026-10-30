@@ -231,8 +231,9 @@ fn xy(v: &Value) -> Option<[f64; 2]> {
     Some([v.get(0)?.as_f64()?, v.get(1)?.as_f64()?])
 }
 
-/// 按 1.1 拟合胶路分支（D16）逐站判有无胶。`runs` 是选中候选的 `glue.lateral_runs.runs`，须按 1.1 的等价设置跑
-/// （`split = connected`、`mergePeakRatio = 0`、`segmentMin = contrastMin / 2`、`peakMin = contrastMin`、`mergeWidthMax = 胶宽上限`）。
+/// 按 1.1 拟合胶路分支（D16）逐站判有无胶。`runs` 是选中候选的 `glue.lateral_runs.runs`，按 `split = half_max`、
+/// `mergePeakRatio = 0`、`segmentMin = contrastMin / 2`、`peakMin = contrastMin`、`mergeWidthMax = 胶宽上限` 跑；
+/// 1.1 按连通段拆分，胶条旁有平行暗带时两者连成一段超宽、整站被丢，这里有意不同。
 /// 每站只看宽度在胶宽范围内的暗段，取离胶路最近的一段；参考宽、参考峰值是各站这一段宽度、峰值的中位数。
 /// 有胶 = 宽度 ≥ presentRatio × 参考宽、|中心| ≤ max(6, centerRatio × 参考宽)、峰值 ≥ contrastRatio × 参考峰值。
 /// 不要求两边完整（1.1 只在诊断用的候选胶边上要求）。`path_ok` 为假（没找到胶）时全部无胶。记录缺字段时返回 Err。
