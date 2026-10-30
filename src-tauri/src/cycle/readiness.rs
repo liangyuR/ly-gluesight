@@ -103,7 +103,7 @@ fn reset_hint(offline: bool) -> String {
     if offline {
         "离线模式由离线产线自动复位：进入离线和每次运行前都会由虚拟 PLC 置复位请求（plcState=99）；仍未复位时在离线控制台查看原因".into()
     } else {
-        "复位前提：PLC 已连接且心跳在变化、相机与追溯就绪、无在途工件。真机可在 PLC 现场复位（plcState=99），也可点“软件复位”（PC 置 99，等 PLC 回空闲）".into()
+        "复位前提：PLC 已连接且心跳在变化、相机就绪。真机可在 PLC 现场复位（plcState=99），也可在任何阶段点“软件复位”（在途件按中断记录，追溯落盘后 PC 置 99，等 PLC 回空闲）".into()
     }
 }
 

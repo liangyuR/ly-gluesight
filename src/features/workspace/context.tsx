@@ -27,6 +27,8 @@ interface WorkspaceContextValue {
   /** 走廊示教里尚未保存的段走廊草稿，按“相机#段号”；像素当量与检测参数随相机，只读 */
   corridorDrafts: Record<string, CameraTeachDraft>;
   select: (id: string) => Promise<WorkspaceView | null>; clearSelection:()=>void; reloadList: () => Promise<void>;
+  /** 放弃当前配方未保存的配置、走廊草稿与导航图草稿，回到候选已保存的内容；操作或保存进行中时不放弃 */
+  discardDrafts: () => boolean;
   setDoc: (doc: RecipeDoc) => void;
   setCorridorDraft: (key: string, draft: CameraTeachDraft) => void;
   act: (request: () => Promise<WorkspaceView>, message?: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => Promise<WorkspaceView | null>;
@@ -257,6 +259,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || preferenceError || recipeErrors, busy: busy || saving, saving, dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft,
     clearSelection:()=>{if(dirtyRef.current){setError("当前草稿尚未保存，请先保存或撤销修改");return;}pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setNavigationDraft(null);setError("");clearSnack();},
+    discardDrafts:()=>{if(acting.current||savingRef.current)return false;dirtyRef.current=false;navigationDirtyRef.current=false;failedSave.current="";setDoc(data?.workspace.doc??null);setPreview(data?.layout??null);setPreviewError("");setCorridorDrafts({});setNavigationDraft(null);setError("");return true;},
     corridorDrafts, select, reloadList, setDoc,
     setCorridorDraft:(key, draft) => setCorridorDrafts(previous => ({ ...previous, [key]:draft })),
     act, saveDoc, saveState, retrySave: () => setSaveRetry(v => v + 1), setError }}>{children}</Context.Provider>;

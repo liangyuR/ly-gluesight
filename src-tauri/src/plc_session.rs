@@ -224,6 +224,8 @@ pub struct PlcSession {
     fault_cause: &'static str,
     message: Option<String>,
     reset_blocked_reason: Option<String>,
+    /// 操作员已请求软件复位、尚未发出 pcState=99 或完成：在途件先按故障中断，追溯落盘后接着复位，不必再点一次
+    reset_carry: bool,
     /// 设备未就绪或暂停接件时本侧把 pcState 置 0（不是外部改写）
     withdrawn: bool,
     /// 空闲时外部改写视觉输出后自动重写的时刻
@@ -297,6 +299,7 @@ impl PlcSession {
             fault_cause: "startup",
             message: Some(message),
             reset_blocked_reason: Some("正在核对复位条件".into()),
+            reset_carry: false,
             withdrawn: false,
             restores: Vec::new(),
             mode: 0,
@@ -583,7 +586,7 @@ impl PlcSession {
                 if changed { SessionEvent::Fault(error) } else { SessionEvent::None }
             }
         };
-        self.reset_blocked_reason = self.check_reset_ready(engine, devices, audit_ready).err();
+        self.reset_blocked_reason = self.check_reset_ready(engine, devices).err();
         event
     }
 
@@ -592,14 +595,7 @@ impl PlcSession {
         &self,
         engine: &PlcEngine,
         devices: &Result<(), String>,
-        audit_ready: bool,
     ) -> Result<(), String> {
-        if !matches!(
-            self.phase,
-            SessionPhase::ResetRequired | SessionPhase::Fault | SessionPhase::Idle
-        ) {
-            return Err("在途工件不能直接复位，请先处理当前工件".into());
-        }
         if self.reset_exchange.is_some() {
             return Err("已发起软件复位，等待 PLC 回空闲".into());
         }
@@ -614,17 +610,18 @@ impl PlcSession {
         }
         let contract = self.contract.as_ref().ok_or("S7 握手点表尚未校验")?;
         let snapshot = Snapshot::capture_for_reset(engine, contract, Self::max_age(engine))?;
-        if self.phase == SessionPhase::Idle && snapshot.plc_state()? != state::PLC_FAULT {
-            return Err("会话空闲，无需复位".into());
-        }
-        if self.phase != SessionPhase::Idle && !self.fault_written {
+        if matches!(
+            self.phase,
+            SessionPhase::ResetRequired | SessionPhase::Fault
+        ) && !self.fault_written
+        {
             return Err(self
                 .message
                 .clone()
                 .unwrap_or_else(|| "等待故障输出写入并读回确认".into()));
         }
+        // 追溯未落盘不拦复位请求：请求保留，落盘后接着复位（见 reset_step）
         self.reset_devices_ready(devices)?;
-        if !audit_ready { return Err("审计与录制尚未完成持久化，请等待追溯就绪".into()); }
         self.reset_allowed(&snapshot)
     }
 
@@ -694,6 +691,7 @@ impl PlcSession {
             self.fault_written = false;
             self.fault_attempted = None;
             self.fault_cause = "new_connection";
+            self.reset_carry = false;
             self.message = Some("S7 连接会话已更新，需复位握手；未结事务保留".into());
         }
         if status.poll_count == 0 || status.last_poll.is_none_or(|polled| polled < status.since) {
@@ -733,18 +731,24 @@ impl PlcSession {
                 }
                 SessionPhase::ResetRequired | SessionPhase::Fault => {}
                 _ => {
-                    return Err(
-                        "在途工件不能直接复位；保留事务进入故障，处理该件后再次明确复位".into(),
-                    )
+                    self.reset_carry = true;
+                    return Err("操作员软件复位：在途工件中断，记录后继续复位".into());
                 }
             }
+            self.reset_carry = true;
         }
         if matches!(
             self.phase,
             SessionPhase::ResetRequired | SessionPhase::Fault
         ) {
             return self
-                .reset_step(engine, &snapshot, reset_requested, devices, audit_ready)
+                .reset_step(
+                    engine,
+                    &snapshot,
+                    reset_requested || self.reset_carry,
+                    devices,
+                    audit_ready,
+                )
                 .await;
         }
         if !self.heartbeat.lock().unwrap().is_live(now) { return Err("PLC 心跳活性尚未确认".into()); }
@@ -892,15 +896,22 @@ impl PlcSession {
         }
         if let Err(error) = self.reset_devices_ready(devices) {
             if reset_requested || self.reset_exchange.is_some() {
+                self.reset_carry = false;
                 return Err(error);
             }
             self.message = Some(format!("PLC 请求复位，{error}"));
             return Ok(SessionEvent::None);
         }
         if !audit_ready {
+            if self.reset_carry {
+                self.message = Some("已收到软件复位，等待审计与录制完成持久化后继续".into());
+            }
             return Ok(SessionEvent::None);
         }
-        self.reset_allowed(snapshot)?;
+        if let Err(error) = self.reset_allowed(snapshot) {
+            self.reset_carry = false;
+            return Err(error);
+        }
         if let Some(started) = self.reset_exchange {
             if plc != state::PLC_IDLE {
                 if started.elapsed() <= RESET_RESPONSE {
@@ -921,6 +932,7 @@ impl PlcSession {
         } else if !matches!(plc, state::PLC_IDLE | state::PLC_RESET) {
             self.write(engine, handshake::reset_request_plan()).await?;
             self.reset_exchange = Some(Instant::now());
+            self.reset_carry = false;
             self.message =
                 Some("已发起软件复位（pcState=99），等待 PLC 清除未结事务并回空闲".into());
             return Ok(SessionEvent::None);
@@ -990,6 +1002,7 @@ impl PlcSession {
         self.fault_attempted = None;
         self.withdrawn = false;
         self.restores.clear();
+        self.reset_carry = false;
         Ok(SessionEvent::Ready)
     }
 
