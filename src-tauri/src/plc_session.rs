@@ -610,7 +610,11 @@ impl PlcSession {
         }
         let contract = self.contract.as_ref().ok_or("S7 握手点表尚未校验")?;
         let snapshot = Snapshot::capture_for_reset(engine, contract, Self::max_age(engine))?;
-        if matches!(self.phase, SessionPhase::ResetRequired | SessionPhase::Fault) && !self.fault_written {
+        if matches!(
+            self.phase,
+            SessionPhase::ResetRequired | SessionPhase::Fault
+        ) && !self.fault_written
+        {
             return Err(self
                 .message
                 .clone()
@@ -738,7 +742,13 @@ impl PlcSession {
             SessionPhase::ResetRequired | SessionPhase::Fault
         ) {
             return self
-                .reset_step(engine, &snapshot, reset_requested || self.reset_carry, devices, audit_ready)
+                .reset_step(
+                    engine,
+                    &snapshot,
+                    reset_requested || self.reset_carry,
+                    devices,
+                    audit_ready,
+                )
                 .await;
         }
         if !self.heartbeat.lock().unwrap().is_live(now) { return Err("PLC 心跳活性尚未确认".into()); }

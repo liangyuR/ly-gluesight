@@ -289,19 +289,37 @@ async fn software_reset_while_part_in_flight_interrupts_part_then_resets() {
     rig.request(1, "SN-R").await;
     rig.intake().await;
     rig.fresh().await;
-    rig.session.poll_gated(&rig.engine, false, true, false, true).await;
-    assert_eq!(rig.session.view().reset_blocked_reason, None, "{:?}", rig.session.view());
+    rig.session
+        .poll_gated(&rig.engine, false, true, false, true)
+        .await;
+    assert_eq!(
+        rig.session.view().reset_blocked_reason,
+        None,
+        "{:?}",
+        rig.session.view()
+    );
     let event = rig.session.poll(&rig.engine, true, true).await;
     assert!(matches!(event, SessionEvent::Fault(_)), "{event:?}");
     let until = Instant::now() + Duration::from_secs(3);
     while rig.plc.pc() != state::PC_RESET {
         rig.session.poll(&rig.engine, false, true).await;
-        assert!(Instant::now() < until, "未接着发起软件复位：{:?}", rig.session.view());
+        assert!(
+            Instant::now() < until,
+            "未接着发起软件复位：{:?}",
+            rig.session.view()
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     rig.plc.plc_state(state::PLC_IDLE);
     rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
+    assert!(
+        matches!(
+            rig.session.poll(&rig.engine, false, true).await,
+            SessionEvent::Ready
+        ),
+        "{:?}",
+        rig.session.view()
+    );
     assert_eq!(rig.plc.pc(), state::PC_READY);
     assert!(!rig.session.pending());
     rig.finish().await;
