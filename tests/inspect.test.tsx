@@ -81,6 +81,17 @@ describe("维护模式", () => {
     expect(cycleApi.setMaintenance).toHaveBeenCalledWith(true, "新线投运采图");
   });
 
+  it("维护模式下工件采集中 → 软件复位仍可用，确认后请求后端复位", async () => {
+    state = { ...state, phase: "ACQUIRE", maintenance: { since: 1, reason: "新线投运采图" } };
+    plcHandshake = { phase: "acquiring", requestSeq: 21, resultSeq: null, message: null, resetBlockedReason: null };
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    await userEvent.click(screen.getByRole("button", { name: "软件复位" }));
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText("在途件将记为未检后复位。")).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "确认复位" }));
+    expect(cycleApi.reset).toHaveBeenCalledTimes(1);
+  });
+
 });
 
 describe("在线检测离线产线控件", () => {

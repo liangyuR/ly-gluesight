@@ -184,7 +184,7 @@ seq = a + min(N - 1, floor(t * N))
 - 后端：`workspace/navigation.rs` 实现地图编辑、几何校验、独立读图、发布冻结、生效及改版继承；`project/transfer.rs` 携带辅助资料并报告校验异常。
 - IPC：`workspace_navigation_import(id, revision, bytes)`、`workspace_navigation_save(id, revision, map, confirm)`、`workspace_navigation_delete(id, revision)` 返回 `WorkspaceView`；`workspace_navigation_image(id, imageId)` 返回 PNG。视图的 `navigation` 独立返回地图、图片可用性、错误、结构修订及发布辅助状态，地图损坏不使候选读取失败。
 - 图片导入支持 PNG、JPEG、BMP、TIFF，源文件与转换后 PNG 均不超过 32 MiB，最多 3200 万像素、单边 16384；统一保存 RGBA PNG，保留透明度。错误在导入处报告，不更改已有图片引用。
-- 前端：`navigation/` 实现编辑和弧长映射；`WorkspaceNavigation` 适配候选接口与图片；`SegmentWorkbench`、`TeachingPage` 负责帧联动，发布页显示独立辅助资料状态。地图草稿在工作区内跨页保留，保存仍携带开始编辑时的候选修订；冲突拒绝覆盖。未保存地图时阻止换配方、发布及切换项目；保存或撤销后恢复。浏览器关闭页面使用 `beforeunload` 提示，原生窗口关闭未作端到端验证。
+- 前端：`navigation/` 实现编辑和弧长映射；`WorkspaceNavigation` 适配候选接口与图片；`SegmentWorkbench`、`TeachingPage` 负责帧联动，发布页显示独立辅助资料状态。地图草稿在工作区内跨页保留，保存仍携带开始编辑时的候选修订；冲突拒绝覆盖。未保存地图时阻止发布及切换项目，工作台顶栏不能换配方；配方库打开其他配方前提示，可回分段页保存或撤销，也可放弃草稿后打开。浏览器关闭页面使用 `beforeunload` 提示，原生窗口关闭未作端到端验证。
 - 地图保存只推进候选修订，不改变检测身份、标定结果；仅与修改前候选修订一致的验证结果随修订保持有效，过期验证不能因保存地图重新生效。图片、地图及归档读取失败只降级对应导航；检测发布记录中的可选导航状态格式损坏时按无导航状态读取，检测字段及检测包仍严格校验。配方结构版本 8、检测发布包版本 5、候选流程版本 2 均保持不变，缺省没有地图。
 
 定向验证保护下列规则：

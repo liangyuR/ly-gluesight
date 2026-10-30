@@ -45,13 +45,12 @@ export default function InspectPage() {
   const recipes = useRecipes();
   const site = useSiteStatus();
   const { handshake } = usePlcOperationState();
-  // 真机握手待复位时沿用后端的复位前置检查：string 为阻塞原因，null 为可复位，undefined 为尚未核对。
-  const s7Reset = site?.mode !== "offline" && (handshake?.phase === "fault" || handshake?.phase === "resetRequired") ? handshake : null;
-  const resetBlockedReason = s7Reset?.resetBlockedReason || "";
+  // 真机任何阶段都可软件复位（协议 8：PC 在任何状态都可置 99），沿用后端的复位前置检查：string 为阻塞原因，null 为可复位，undefined 为尚未核对。
+  const realReset = !!site && site.mode !== "offline";
+  const s7Reset = realReset ? handshake : null;
+  const resetBlockedReason = realReset && !handshake ? "正在核对 PLC 会话状态" : s7Reset?.resetBlockedReason || "";
   const resetPendingCheck = !!s7Reset && s7Reset.resetBlockedReason === undefined;
   const resetInFlight = handshake?.requestSeq != null;
-  // 会话空闲而 PLC 处于故障（plcState=90）时，后端判定可复位，同样提供软件复位
-  const plcFaultReset = site?.mode !== "offline" && handshake?.phase === "idle" && handshake.resetBlockedReason === null;
   const [confirmReset, setConfirmReset] = useState(false);
   const [view, setView] = useState<"image" | "part">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
@@ -69,7 +68,7 @@ export default function InspectPage() {
   const summary = recipes.find((r) => r.id === layoutId);
   const layout = useLayout(layoutId, part ? part.recipeRevision : summary?.revisionId);
   const phase = snapshot?.phase ?? "IDLE";
-  const showReset = phase === "FAULT" || plcFaultReset;
+  const showReset = phase === "FAULT" || realReset;
   const settled = phase === "REPORT" || phase === "RELEASE" || phase === "IDLE" || phase === "FAULT";
   const candidateResult = settled ? (snapshot?.result ?? null) : null;
   const result = candidateResult && (!part || (candidateResult.cycleId === part.cycleId && candidateResult.recipeId === part.recipeId)) ? candidateResult : null;
@@ -135,7 +134,7 @@ export default function InspectPage() {
     activeAction.current = "reset"; setAction("reset"); setResetError("");
     try { await cycleApi.reset(); }
     catch (error) {
-      if (mounted.current && currentOperation.current.phase === "FAULT" && currentOperation.current.scope === scope) setResetError(errorText(error));
+      if (mounted.current && currentOperation.current.scope === scope) setResetError(errorText(error));
     } finally {
       activeAction.current = null;
       if (mounted.current) setAction(null);
