@@ -42,12 +42,12 @@ pub const WINDOW: &str = "storage-startup";
 
 /// 启动画面上的阶段，依次对应启动时耗时的几步。
 pub const STAGES: [&str; 6] = [
-    "准备资料目录",
-    "打开项目",
-    "初始化相机与检测",
-    "加载配方工作台",
-    "初始化 PLC",
-    "加载界面",
+    "Preparing storage",
+    "Opening project",
+    "Initializing cameras and inspection",
+    "Loading recipe workspace",
+    "Initializing PLC",
+    "Loading interface",
 ];
 
 pub fn stage(app: &AppHandle, step: usize) {
