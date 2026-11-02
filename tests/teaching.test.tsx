@@ -101,19 +101,24 @@ describe("画布模式", () => {
 
 describe("搜索扇区", () => {
 
-  // 防的回归（D-SB-47）：示教帧上拖动扇区把手只转了画面，方向没写进这台相机的配方，测量仍按原来的半圈找胶条；
-  // 或者拖动中每动一下就写配方，触发自动保存、界面跟着闪
-  it("拖动扇区把手到出胶点正下方再松手 → 拖动中不写配方，松手后这台相机的扇区方向存为 90°", async () => {
-    ws.data!.workspace.doc.segments![0].heading = { toleranceDeg: 5 };
-    Object.assign(ws.data!.workspace.doc.inspect![1], { nozzle: [40, 30], window: { startMm: 2, lengthMm: 4 }, sectorDeg: 0 });
+  // 防的回归（D-SB-47）：示教帧上拖动扇区把手只转了画面，方向没写进本段的配方，测量仍按原来的半圈找胶条；
+  // 扇区按相机存，拖一段的扇区同一相机其他段跟着转；或者拖动中每动一下就写配方，触发自动保存、界面跟着闪
+  it("拖动段 1 的扇区把手到出胶点正下方再松手 → 拖动中不写配方，松手后段 1 的扇区方向存为 90°，同一相机段 2 不变", async () => {
+    const doc = ws.data!.workspace.doc;
+    for (const item of doc.segments!.slice(0, 2)) item.heading = { toleranceDeg: 5 };
+    const cam1 = doc.inspect![0];
+    Object.assign(cam1, { nozzle: [40, 30], window: { startMm: 2, lengthMm: 4 } });
+    cam1.segments![0].sectorDeg = 0;
+    cam1.segments![1].sectorDeg = 0;
     stubSvgPointer();
-    show("/recipe/teach?camera=CAM-2&segment=1");
-    const image = await screen.findByRole("img", { name: "CAM-2 · 段 1 · 示教帧" });
+    show("/recipe/teach?camera=CAM-1&segment=1");
+    const image = await screen.findByRole("img", { name: "CAM-1 · 段 1 · 示教帧" });
     fireEvent.pointerDown(await screen.findByRole("button", { name: "搜索扇区把手" }), { button: 0, clientX: 80, clientY: 30, pointerId: 1 });
     fireEvent.pointerMove(image, { clientX: 40, clientY: 50, pointerId: 1 });
     expect(ws.setDoc).not.toHaveBeenCalled();
     fireEvent.pointerUp(image, { pointerId: 1 });
-    expect(vi.mocked(ws.setDoc).mock.lastCall![0].inspect!.find(item => item.camera === "CAM-2")!.sectorDeg).toBe(90);
+    const saved = vi.mocked(ws.setDoc).mock.lastCall![0].inspect!.find(item => item.camera === "CAM-1")!.segments!;
+    expect(saved.map(item => [item.segment, item.sectorDeg, item.corridor.length])).toEqual([[1, 90, 2], [2, 0, 2], [3, undefined, 2]]);
   });
 });
 

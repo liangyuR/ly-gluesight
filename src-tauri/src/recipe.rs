@@ -206,7 +206,8 @@ impl RecipeStage {
 
 /// 段配方里一台检测相机的参数（D-SB-45）：像素当量、标定引用、检测参数，以及它在各段的走廊。
 /// `RecipeDoc.inspect` 的顺序就是计划相机顺序（PLC 一个触发同时触发这三台）。
-/// 不拒绝未知字段：旧版的相机走廊 `corridor` 已放弃，读入时丢弃（D-SB-45 不迁移）。
+/// 不拒绝未知字段：旧版的相机走廊 `corridor` 已放弃，读入时丢弃（D-SB-45 不迁移）；相机级的扇区方向 `sectorDeg` 改为按段存在
+/// `SegmentCorridor` 上，读入时同样丢弃。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CameraInspect {
@@ -229,9 +230,6 @@ pub struct CameraInspect {
     /// 标定的出胶点（图像像素，D-SB-47）；为空时由开启定向的各段走廊起点推出
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nozzle: Option<[f64; 2]>,
-    /// 逐帧定向搜索扇区的中线方向（度，图像坐标，D-SB-47），在示教帧上拖动扇区得出；为空时取背离离出胶点最近的画面边
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sector_deg: Option<f64>,
     /// 这台相机覆盖的专家参数（LF-5，测量图模板参数名 → 值），叠在配方默认之上
     #[serde(default, skip_serializing_if = "ExpertParams::is_empty")]
     pub expert: ExpertParams,
@@ -252,6 +250,10 @@ pub struct SegmentCorridor {
     pub segment: u32,
     #[serde(default)]
     pub corridor: Vec<[f32; 2]>,
+    /// 这台相机在这一段的逐帧定向搜索扇区中线方向（度，图像坐标，D-SB-47），在这一段的示教帧上拖动扇区得出；
+    /// 为空时取背离离出胶点最近的画面边
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sector_deg: Option<f64>,
 }
 
 impl CameraInspect {
@@ -289,6 +291,14 @@ impl CameraInspect {
             if self.segments[..i].iter().any(|o| o.segment == s.segment) {
                 return Err(format!("相机 {id} 第 {} 段的走廊重复", s.segment));
             }
+            if s.sector_deg
+                .is_some_and(|d| !(d.is_finite() && d.abs() <= 360.0))
+            {
+                return Err(format!(
+                    "相机 {id} 第 {} 段的搜索扇区方向需为 −360°–360° 的有限数",
+                    s.segment
+                ));
+            }
         }
         if let Some(m) = self
             .mm_per_px
@@ -319,12 +329,6 @@ impl CameraInspect {
                 .any(|v| !(v.is_finite() && *v >= 0.0 && *v <= 100_000.0))
         }) {
             return Err(format!("相机 {id} 的出胶点坐标需为 0–100000 px 的有限数"));
-        }
-        if self
-            .sector_deg
-            .is_some_and(|d| !(d.is_finite() && d.abs() <= 360.0))
-        {
-            return Err(format!("相机 {id} 的搜索扇区方向需为 −360°–360° 的有限数"));
         }
         validate_expert(&self.expert, &format!("相机 {id}"))
     }
@@ -794,7 +798,6 @@ pub fn burst_template(
                 segments: Vec::new(),
                 window: None,
                 nozzle: None,
-                sector_deg: None,
                 expert: ExpertParams::new(),
             })
             .collect(),
@@ -830,6 +833,7 @@ pub fn samples_burst() -> RecipeDoc {
         inspect.segments = vec![SegmentCorridor {
             segment: 1,
             corridor: sample_path(0),
+            sector_deg: None,
         }];
         inspect.mm_per_px = Some(f64::from(SIM_MM_PER_PX));
     }

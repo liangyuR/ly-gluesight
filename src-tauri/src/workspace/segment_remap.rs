@@ -139,7 +139,7 @@ pub(super) fn remap(
                     .find(|c| c.segment == old[j].index)
                     .map(|c| SegmentCorridor {
                         segment: segments[i].index,
-                        corridor: c.corridor.clone(),
+                        ..c.clone()
                     })
             })
             .collect();

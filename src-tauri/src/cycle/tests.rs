@@ -183,6 +183,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
         doc.inspect[0].segments.push(SegmentCorridor {
             segment: 2,
             corridor,
+            sector_deg: None,
         });
         doc.segments
             .iter_mut()

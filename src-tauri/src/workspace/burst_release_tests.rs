@@ -19,6 +19,7 @@ fn taught(kinds: &[SegmentKind], device: &str) -> Workspace {
             .map(|segment| crate::recipe::SegmentCorridor {
                 segment,
                 corridor: corridor.clone(),
+                sector_deg: None,
             })
             .collect();
     }
