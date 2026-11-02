@@ -1454,6 +1454,16 @@ impl CameraSlot {
         }
     }
 
+    /// 这台相机的触发延时（ns）：只有按 Line0 触发的海康相机设了延时，其余为 0。
+    pub fn trigger_delay_ns(&self) -> u64 {
+        let config = self.config();
+        if config.source == CameraSource::Mvs && config.trigger_source == "Line0" {
+            (f64::from(config.trigger_delay_us.max(0.0)) * 1_000.0) as u64
+        } else {
+            0
+        }
+    }
+
     /// 这台相机的帧周期（ns）：海康取打开时确认的帧率，模拟 / 样本集为合成帧周期。
     pub fn frame_period_ns(&self) -> f64 {
         match self.config().source {

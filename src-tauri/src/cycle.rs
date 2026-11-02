@@ -1928,6 +1928,7 @@ impl Machine {
                             c.cam == armed.cam
                                 && c.source == Some(crate::frame::CounterSource::Synthetic)
                         }),
+                        delay_ns: slot.as_ref().map_or(0, |s| s.trigger_delay_ns()),
                     }
                 })
                 .collect();

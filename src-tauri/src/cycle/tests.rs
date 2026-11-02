@@ -57,6 +57,7 @@ fn armed_part_with(
             period_ns: crate::frame_clock::SYNTH_PERIOD_NS as f64,
             floor: b.baseline.unwrap_or(0) * crate::frame_clock::SYNTH_PERIOD_NS,
             anchored: true,
+            delay_ns: 0,
         })
         .collect();
     Part {

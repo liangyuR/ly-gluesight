@@ -38,6 +38,7 @@ struct Track {
     floor: u64,
     /// 下限就是上一帧的时间戳（合成时钟）：第一帧不靠边沿也能算出序号
     anchored: bool,
+    delay: u64,
     last: Option<Last>,
     broken: bool,
     /// 轮询中断漏记的门控开始边沿数：按边沿数得出的门控号要加上它
@@ -72,6 +73,8 @@ pub struct ClockStart {
     pub floor: u64,
     /// 合成时钟：下限是“上一帧”的时间戳
     pub anchored: bool,
+    /// 触发延时（ns）：门控开始后过这么久才曝光第一帧，门控起点取边沿加上它
+    pub delay_ns: u64,
 }
 
 impl FrameClock {
@@ -83,6 +86,7 @@ impl FrameClock {
                     period: s.period_ns.max(1.0),
                     floor: s.floor,
                     anchored: s.anchored,
+                    delay: s.delay_ns,
                     last: None,
                     broken: false,
                     edge_offset: 0,
@@ -120,7 +124,7 @@ impl FrameClock {
         let by_edges = opens.and_then(|opens| {
             let seen: Vec<u64> = opens
                 .iter()
-                .copied()
+                .map(|&o| o + track.delay)
                 .filter(|&o| o > track.floor && o <= ts + EDGE_SLACK_NS)
                 .collect();
             let origin = *seen.last()?;
@@ -137,6 +141,12 @@ impl FrameClock {
             }
         };
         let (gate, origin) = match (by_edges, track.last) {
+            // 边沿晚于上一帧：上一帧之后开了新门控。轮询中断时按帧间隔推断过的门控也算在前面，门控号至少加一
+            (Some((raw, origin)), Some(last)) if origin > last.ts + EDGE_SLACK_NS => {
+                let gate = (raw + track.edge_offset).max(last.gate + 1);
+                track.edge_offset = gate - raw;
+                (gate, origin)
+            }
             (Some((raw, _)), Some(last)) if raw + track.edge_offset < last.gate => {
                 // 边沿记录比已推断的门控少：轮询中断时漏记了边沿，以帧间隔为准，之后的边沿按差额对齐
                 let found = infer(last);
@@ -194,6 +204,7 @@ mod tests {
                 period_ns: T as f64,
                 floor: 1_000 * T,
                 anchored,
+                delay_ns: 0,
             };
             cams
         ])
@@ -344,6 +355,43 @@ mod tests {
             Stamp::Seq(5),
             "下一次边沿按差额对齐成第 3 个门控"
         );
+    }
+
+    /// 防的回归（PR #215 评审）：轮询中断时漏了一个只到一帧的短门控，之后看到的边沿数恰好等于已推断的门控号，
+    /// 被当成同一门控、沿用旧起点，编号凭空跳出一串空帧组；边沿晚于上一帧就是新门控。
+    #[test]
+    fn an_edge_after_the_last_frame_opens_a_gate_even_after_a_missed_one() {
+        let mut c = clock(1, false);
+        let g1 = 1_020 * T + 1_500_000;
+        assert_eq!(c.stamp(0, at(g1, 0), Some(&[g1])), Stamp::Seq(1));
+        assert_eq!(
+            c.stamp(0, 1_022 * T + 30_000_000, None),
+            Stamp::Seq(2),
+            "轮询卡住：按间隔开新门控"
+        );
+        let g3 = 1_030 * T + 1_500_000;
+        assert_eq!(
+            c.stamp(0, at(g3, 0), Some(&[g1, g3])),
+            Stamp::Seq(3),
+            "边沿晚于上一帧：新门控"
+        );
+        assert_eq!(c.stamp(0, at(g3, 1), Some(&[g1, g3])), Stamp::Seq(4));
+    }
+
+    /// 防的回归（PR #215 评审）：相机设了触发延时时，门控起点按边沿算，第一帧离边沿超过半个帧周期，
+    /// 每个门控都多出一个空的首帧组，不同延时的相机配错帧。
+    #[test]
+    fn trigger_delay_shifts_the_gate_origin() {
+        let mut c = FrameClock::new(&[ClockStart {
+            period_ns: T as f64,
+            floor: 1_000 * T,
+            anchored: false,
+            delay_ns: 58_500_000,
+        }]);
+        let edge = 1_020 * T + 1_500_000;
+        let first = 1_020 * T + 60_000_000;
+        assert_eq!(c.stamp(0, first, Some(&[edge])), Stamp::Seq(1));
+        assert_eq!(c.stamp(0, first + T, Some(&[edge])), Stamp::Seq(2));
     }
 
     /// 防的回归：模拟、样本集的合成时钟没有门控边沿，第一帧要按下限（上一帧）算序号，与原来的帧号配组一致。
