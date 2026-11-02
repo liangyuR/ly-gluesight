@@ -1,5 +1,5 @@
 import type { RecipeDoc } from "../cycle/types";
-import type { CameraTeachDraft, InspectWindow } from "../plan/types";
+import type { CameraTeachDraft, InspectWindow, SegmentCorridor } from "../plan/types";
 import { pathLength } from "./teachingPath";
 
 const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical)
@@ -117,18 +117,30 @@ export function savedDraft(doc: RecipeDoc | undefined, key: string): CameraTeach
   };
 }
 
-/** 把一条段走廊草稿写进配方副本（整份配方经 workspace_save_doc 提交）；配方里没有这台相机的项时原样返回。
- *  只写这一段的走廊，不动相机的像素当量、检测参数与其他段；清空的段走廊从配方里去掉（示教帧仍在，这一段回到待画走廊）。 */
-export function withCorridor(doc: RecipeDoc, key: string, draft: CameraTeachDraft): RecipeDoc {
-  const target = parseDraftKey(key);
+/** 改配方副本里一台相机在一段的走廊项；配方里没有这台相机的项时原样返回。不动相机的像素当量、检测参数与其他段；
+ *  走廊为空且没拖过扇区的项从配方里去掉（示教帧仍在，这一段回到待画走廊）。 */
+function withSegmentCorridor(doc: RecipeDoc, camera: string, segment: number, patch: Partial<SegmentCorridor>): RecipeDoc {
   const inspect = doc.inspect ?? [];
-  if (!target || !inspect.some(item => item.camera === target.camera)) return doc;
+  if (!inspect.some(item => item.camera === camera)) return doc;
   return { ...doc, inspect: inspect.map(item => {
-    if (item.camera !== target.camera) return item;
-    const others = (item.segments ?? []).filter(s => s.segment !== target.segment);
-    const segments = draft.corridor.length ? [...others, { segment: target.segment, corridor: draft.corridor }].sort((a, b) => a.segment - b.segment) : others;
+    if (item.camera !== camera) return item;
+    const others = (item.segments ?? []).filter(s => s.segment !== segment);
+    const { sectorDeg, ...rest }: SegmentCorridor = { segment, corridor: [], ...item.segments?.find(s => s.segment === segment), ...patch };
+    const next = sectorDeg != null ? { ...rest, sectorDeg } : rest;
+    const segments = next.corridor.length || sectorDeg != null ? [...others, next].sort((a, b) => a.segment - b.segment) : others;
     return { ...item, segments };
   }) };
+}
+
+/** 把一条段走廊草稿写进配方副本（整份配方经 workspace_save_doc 提交）：只写这一段的走廊，保留这一段拖过的扇区方向。 */
+export function withCorridor(doc: RecipeDoc, key: string, draft: CameraTeachDraft): RecipeDoc {
+  const target = parseDraftKey(key);
+  return target ? withSegmentCorridor(doc, target.camera, target.segment, { corridor: draft.corridor }) : doc;
+}
+
+/** 把一台相机在一段的搜索扇区方向（D-SB-47）写进配方副本；null 为恢复自动。 */
+export function withSectorDeg(doc: RecipeDoc, camera: string, segment: number, sectorDeg: number | null): RecipeDoc {
+  return withSegmentCorridor(doc, camera, segment, { sectorDeg });
 }
 
 /** 弯道段走廊的建议长度上限（D-SB-42）：从出胶点起画的短走廊，超过只提示。 */

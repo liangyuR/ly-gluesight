@@ -15,7 +15,7 @@ import { workspaceApi } from "./api";
 import { useWorkspace, type SnackMessage } from "./context";
 import { Badge, GrayViewer, KV, Notice, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { CaptureRoundV2, FrozenImage, GrayImage, WorkspaceView } from "./types";
-import { cameraParamsError, confirmedSegmentRange, CORNER_CORRIDOR_MM, corridorError, spacingError, draftKey, parseDraftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
+import { cameraParamsError, confirmedSegmentRange, CORNER_CORRIDOR_MM, corridorError, spacingError, draftKey, parseDraftKey, sameCorridor, savedDraft, withCorridor, withSectorDeg } from "./teach";
 import { cameraParamsTasks, corridorTasks, type CameraParamsTask, type CorridorTask } from "./cameraTasks";
 import { frameArrived, readRoundFrame, roundView, type RoundView } from "./captureRound";
 import { SegmentTrial } from "./TeachTrial";
@@ -314,8 +314,11 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const clearSegment = () => { if (unlocked && segment != null && !editing) void perform(() => workspaceApi.clearSegmentCorridor(doc.id, data.workspace.revision, camera, segment), `${targetLabel} 的走廊与示教帧已清除`); };
   const changeSegments = (segments: PathSegment[]) => setDoc({ ...doc, segments });
   const inspect = doc.inspect?.find(item => item.camera === camera);
-  const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null, window: inspect?.window ?? null, nozzle: inspect?.nozzle ?? null, sectorDeg: inspect?.sectorDeg ?? null, expert: inspect?.expert ?? {} };
+  const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null, window: inspect?.window ?? null, nozzle: inspect?.nozzle ?? null, expert: inspect?.expert ?? {} };
   const setParams = (next: CameraParams) => setDoc({ ...doc, inspect: (doc.inspect ?? []).map(item => item.camera === camera ? { ...item, ...next } : item) });
+  // 搜索扇区方向按（相机, 段）存在这一段的走廊项上，拖动只改本段
+  const sectorDeg = segment == null ? null : inspect?.segments?.find(item => item.segment === segment)?.sectorDeg ?? null;
+  const setSectorDeg = (deg: number | null) => { if (segment != null && deg !== sectorDeg) setDoc(withSectorDeg(doc, camera, segment, deg)); };
   // 出胶点、测量区间与搜索扇区都按候选配方即时算，保存前后显示不换来源
   const savedNozzle = plan.cameraTeaching.find(item => item.camera === camera)?.nozzle ?? null;
   const derivedNozzle = savedNozzle && !savedNozzle.calibrated ? savedNozzle.point : null;
@@ -323,9 +326,9 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const cameraScale = params.mmPerPx != null && Number.isFinite(params.mmPerPx) && params.mmPerPx > 0 ? params.mmPerPx : null;
   const nozzlePoint = params.nozzle ?? derivedNozzle;
   const headingGuide: HeadingGuide | null = headingOn && nozzlePoint ? {
-    nozzle: nozzlePoint, calibrated: !!params.nozzle, focus: headingFocus, turned: params.sectorDeg != null,
+    nozzle: nozzlePoint, calibrated: !!params.nozzle, focus: headingFocus, turned: sectorDeg != null,
     zone: params.window && cameraScale ? [params.window.startMm / cameraScale, (params.window.startMm + params.window.lengthMm) / cameraScale] : null,
-    sector: frame ? searchSector(nozzlePoint, frame.size, params.sectorDeg) : null,
+    sector: frame ? searchSector(nozzlePoint, frame.size, sectorDeg) : null,
   } : null;
 
   if (!cameraItems.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="段配方还没有计划相机" description="先在“段列表”里确认计划相机，再回来示教走廊。" action={<Button asChild><Link to="/recipe/segments">前往段列表<ArrowRight size={15} aria-hidden="true" /></Link></Button>} /></Surface></div>;
@@ -479,7 +482,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
           overlay={{ path: t.corridor, searchHalfPx, selected: vertex, heading: headingGuide }}
           editDisabled={!canEdit}
           onPoint={picking && frame ? p => setParams({ ...params, nozzle: p }) : undefined}
-          onSectorTurn={frame && !regionMode && !picking ? deg => { if (deg !== params.sectorDeg) setParams({ ...params, sectorDeg: deg }); } : undefined}
+          onSectorTurn={frame && !regionMode && !picking ? setSectorDeg : undefined}
           onEdit={frame && !regionMode && pointing ? { add: p => setPath([...t.corridor, p]), move: (i, p) => setPath(t.corridor.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />}
     </>;
   const checksDisabled = !editable;
@@ -510,7 +513,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
           onClick={() => navigate(`/recipe/flow?camera=${encodeURIComponent(camera)}&segment=${segment}&seq=${trialSeq ?? segmentTeaching?.seq ?? ""}`)}>流程调试</Button></WithReason>
       </Surface>
       {segmentItem && <HeadingCard key={`heading-${camera}-${segment}`} camera={camera} params={params} derivedNozzle={derivedNozzle} segments={doc.segments ?? []} index={segment} headingSegments={[]}
-        sector={headingGuide?.sector ?? null} expertDefaults={doc.expert ?? {}} disabled={checksDisabled}
+        sector={{ range: headingGuide?.sector ?? null, turned: sectorDeg != null, onReset: () => setSectorDeg(null) }} expertDefaults={doc.expert ?? {}} disabled={checksDisabled}
         sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改出胶点与测量区间。" : ""} onFocus={setHeadingFocus}
         onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />}
       {segmentItem && <SegmentChecksCard key={`checks-${segment}`} segments={doc.segments ?? []} index={segment} cameras={plan.cameras} disabled={checksDisabled} onChange={changeSegments} />}

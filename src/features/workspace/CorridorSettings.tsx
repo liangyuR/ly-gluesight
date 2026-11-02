@@ -16,7 +16,7 @@ import { applyToKind, DEFAULT_EDGE, DEFAULT_HEADING, segmentIssues } from "./seg
 import { MAX_WINDOW_END_MM, windowError } from "./teach";
 import { segmentCameras } from "./workbenchDraft";
 
-export type CameraParams = Pick<CameraInspect, "mmPerPx" | "detect" | "window" | "nozzle" | "sectorDeg" | "expert">;
+export type CameraParams = Pick<CameraInspect, "mmPerPx" | "detect" | "window" | "nozzle" | "expert">;
 type Tone = "ok" | "info" | "warn" | "neutral";
 
 const polarity = { dark: "暗胶", light: "亮胶" };
@@ -177,12 +177,12 @@ function PartRow({ part, title, hint, onFocus, children }: { part: HeadingPart; 
 /**
  * “逐帧定向”面板（D-SB-47）：出胶点、测量区间、方向与“什么算找到胶”的门限都在这里，配一张编号示意图；
  * 每行编号与示意图、示教帧上的叠加一致。相机视图（`index` 为 null）设这台相机各段共用的部分并列出开启的段；
- * 段视图另设本段开关（直线段另有细化分段边界用的方向容差），显示搜索扇区（`sector`，示教页按出胶点与拖过的方向算）。
- * `sharedLocked` 非空时共用参数只读并说明原因。
+ * 段视图另设本段开关（直线段另有细化分段边界用的方向容差），显示本段的搜索扇区（`sector`：示教页按出胶点与本段拖过的方向算的范围，
+ * `turned` 为本段拖过，`onReset` 恢复自动）。`sharedLocked` 非空时共用参数只读并说明原因。
  */
 export function HeadingCard({ camera, params, derivedNozzle, segments, index, headingSegments, sector, expertDefaults, disabled, sharedLocked, onFocus, onSegments, onParams, onExpertDefaults }: {
   camera: string; params: CameraParams; derivedNozzle: [number, number] | null; segments: PathSegment[]; index: number | null; headingSegments: PathSegment[];
-  sector: [number, number] | null; expertDefaults: ExpertParams; disabled: boolean; sharedLocked: string;
+  sector: { range: [number, number] | null; turned: boolean; onReset: () => void } | null; expertDefaults: ExpertParams; disabled: boolean; sharedLocked: string;
   onFocus: (part: HeadingPart | null) => void; onSegments: (segments: PathSegment[]) => void; onParams: (next: CameraParams) => void; onExpertDefaults: (next: ExpertParams) => void;
 }) {
   const { saved, current, issues, patch } = useSegmentDraft(segments, index ?? -1, onSegments);
@@ -215,9 +215,9 @@ export function HeadingCard({ camera, params, derivedNozzle, segments, index, he
       {index != null && heading ? <div className="wp-settings-group" role="group" aria-label={`段 ${index} 方向`}>
         <span className="wp-settings-label">方向<Scope>段 {index}</Scope></span>
         <PartRow part="sector" title="搜索扇区" onFocus={point}
-          hint={`以出胶点为圆心的半圈，这台相机各段相同，弯道转多少度都在里面；默认背离离出胶点最近的画面边（胶嘴在画面边上，胶条往画面里走），在示教帧上拖动 ${HEADING_MARK.sector} 号把手可以转动。只在测量区间里离出胶点最近的 ${Math.round(fanPx)} px${scale ? `（约 ${(fanPx * scale).toFixed(1)} mm）` : ""} 内找胶条往哪个方向出去（图上黄色扇形），取最像胶的方向；找不到时这一帧按无胶判，试测结果里写明原因（门限在下方“什么算找到胶”）。`}>
-          <span className="plan-mono">{sector ? `${deg(sector[0])} … ${deg(sector[1])}（${params.sectorDeg != null ? "已拖动" : "自动"}）` : "有出胶点后显示"}</span>
-          {params.sectorDeg != null && <Button variant="text" size="sm" disabled={sharedDisabled} onClick={() => onParams({ ...params, sectorDeg: null })}>恢复自动</Button>}
+          hint={`以出胶点为圆心的半圈，弯道转多少度都在里面；默认背离离出胶点最近的画面边（胶嘴在画面边上，胶条往画面里走），在本段示教帧上拖动 ${HEADING_MARK.sector} 号把手可以转动，只改本段，这台相机其他段不变。只在测量区间里离出胶点最近的 ${Math.round(fanPx)} px${scale ? `（约 ${(fanPx * scale).toFixed(1)} mm）` : ""} 内找胶条往哪个方向出去（图上黄色扇形），取最像胶的方向；找不到时这一帧按无胶判，试测结果里写明原因（门限在下方“什么算找到胶”）。`}>
+          <span className="plan-mono">{sector?.range ? `${deg(sector.range[0])} … ${deg(sector.range[1])}（${sector.turned ? "已拖动" : "自动"}）` : "有出胶点后显示"}</span>
+          {sector?.turned && <Button variant="text" size="sm" disabled={disabled} onClick={sector.onReset}>恢复自动</Button>}
         </PartRow>
         <PartRow part="reading" title="方向读数" onFocus={point} hint="取拟合出的胶路首尾连线的方向，不取起跑方向；试测时图上蓝色实线。用于细化分段边界。">
           <span className="muted">每帧试测得出</span>
@@ -226,7 +226,7 @@ export function HeadingCard({ camera, params, derivedNozzle, segments, index, he
         {absoluteX && <p className="c-warn">定向测量时胶路由图像拟合，绝对 x 恒为 0：本段胶偏请在“检测项”里改用“胶条到边缘距离”。</p>}
       </div> : <div className="wp-settings-group" role="group" aria-label="各段方向">
         <span className="wp-settings-label">方向<Scope>按段设置</Scope></span>
-        <p className="wp-settings-hint">{needed ? `已开启：${headingSegments.map(item => `段 ${item.index}`).join("、")}。` : "没有段开启逐帧定向，上面的参数可不填。"}开关在左侧选段后设置；搜索扇区选段后在示教帧上显示，可拖动转动。</p>
+        <p className="wp-settings-hint">{needed ? `已开启：${headingSegments.map(item => `段 ${item.index}`).join("、")}。` : "没有段开启逐帧定向，上面的参数可不填。"}开关在左侧选段后设置；搜索扇区选段后在示教帧上显示，可拖动转动，每段各自设置。</p>
       </div>}
       <div className="wp-settings-group" role="group" aria-label="什么算找到胶">
         <span className="wp-settings-label">什么算找到胶<Scope>高级</Scope></span>

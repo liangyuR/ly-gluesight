@@ -328,14 +328,14 @@ pub(super) fn require_burst(doc: &RecipeDoc) -> Result<(), String> {
     }
 }
 
-/// 一台相机的走廊身份：测每帧特征用到的当量、检测参数、站距、各段走廊与专家参数；不是计划相机为 null。
-/// 拖过的扇区方向只在设置了时追加，没拖过的相机身份与加这一项之前相同，已有的示教件测量不因此过期。
+/// 一台相机的走廊身份：测每帧特征用到的当量、检测参数、站距、各段走廊（含拖过的扇区方向）与专家参数；不是计划相机为 null。
+/// 段上没拖过扇区时不写这一项，身份与加这一项之前相同，已有的示教件测量不因此过期。
 pub(super) fn corridor_tag(doc: &RecipeDoc, camera: &str) -> Value {
     doc.inspect
         .iter()
         .find(|i| i.camera == camera)
         .map_or(Value::Null, |i| {
-            let mut tag = json!([
+            json!([
                 i.mm_per_px,
                 i.detect.as_ref().unwrap_or(&doc.detect),
                 doc.spacing,
@@ -347,11 +347,7 @@ pub(super) fn corridor_tag(doc: &RecipeDoc, camera: &str) -> Value {
                     .map(|s| (s.index, &s.heading))
                     .collect::<Vec<_>>(),
                 [&doc.expert, &i.expert]
-            ]);
-            if let (Some(deg), Some(items)) = (i.sector_deg, tag.as_array_mut()) {
-                items.push(json!(deg));
-            }
-            tag
+            ])
         })
 }
 

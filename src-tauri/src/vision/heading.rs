@@ -116,9 +116,10 @@ pub fn plan_heading(
     let reach = z1 + (path_width_max + 8.0).max(params.half + 5.0);
     let side = (2.0 * reach).ceil() + 1.0;
     let roi = [(ax - reach).floor(), (ay - reach).floor(), side, side];
+    let turned = inspect.segment_corridor(segment).and_then(|s| s.sector_deg);
     let mut business = json!({
         "nozzle": anchor, "zone": zone, "radial": [z0, z0 + FAN_LENGTH_PX.min(z1 - z0)],
-        "sector": search_sector(anchor, size, inspect.sector_deg), "pathWidthMax": path_width_max,
+        "sector": search_sector(anchor, size, turned), "pathWidthMax": path_width_max,
     });
     response_params_into(&mut business, detect, &params, roi);
     bead_params_into(&mut business, &params, params.half, edge.as_ref()).map_err(|e| fail(&e))?;

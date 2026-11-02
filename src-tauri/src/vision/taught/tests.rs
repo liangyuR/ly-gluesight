@@ -13,6 +13,7 @@ fn burst_doc() -> RecipeDoc {
         inspect.segments = vec![crate::recipe::SegmentCorridor {
             segment: 1,
             corridor: vec![[40.0, 80.0], [200.0, 80.0]],
+            sector_deg: None,
         }];
         inspect.mm_per_px = Some(0.25);
     }
@@ -242,6 +243,46 @@ fn heading_graph() -> HeadingGraph {
     }
     let recipe = doc.build().unwrap();
     plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap()
+}
+
+#[test]
+fn sector_turned_on_one_segment_leaves_other_segments_of_the_camera_automatic() {
+    // 防的回归（D-SB-47）：扇区按相机存，在一段的示教帧上拖扇区，同一相机其他段的测量图跟着转
+    let mut doc = burst_doc();
+    let first = doc.segments[0].clone();
+    doc.segments = (1..=2)
+        .map(|index| crate::plan::PathSegment {
+            index,
+            heading: Some(Default::default()),
+            ..first.clone()
+        })
+        .collect();
+    for inspect in &mut doc.inspect {
+        inspect.window = Some(HeadingWindow {
+            start_mm: 1.0,
+            length_mm: 10.0,
+        });
+        let corridor = inspect.segments[0].clone();
+        inspect.segments = vec![
+            corridor.clone(),
+            crate::recipe::SegmentCorridor {
+                segment: 2,
+                sector_deg: Some(90.0),
+                ..corridor
+            },
+        ];
+    }
+    let recipe = doc.build().unwrap();
+    let sector = |segment| {
+        plan_heading(&recipe.inspect[0], segment, &recipe, FRAME)
+            .unwrap()
+            .params["sector"]
+            .clone()
+    };
+    assert_eq!(
+        (sector(1), sector(2)),
+        (json!([-90.0, 90.0]), json!([0.0, 180.0]))
+    );
 }
 
 /// 假的定向图运行：只有第 0 个峰，粗找到 `found` 个胶点（10 步），卡尺量到 16 px 宽的胶。

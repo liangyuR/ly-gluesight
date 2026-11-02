@@ -337,8 +337,6 @@ export interface CameraInspect {
   window?: InspectWindow | null;
   /** 标定的出胶点（图像像素，D-SB-47）；null / 缺省 = 由开启定向的各段走廊起点推出 */
   nozzle?: [number, number] | null;
-  /** 逐帧定向搜索扇区的中线方向（度，D-SB-47），在示教帧上拖动扇区得出；null / 缺省 = 背离离出胶点最近的画面边 */
-  sectorDeg?: number | null;
   /** 这台相机覆盖的专家参数（LF-5，测量图模板参数名 → 值），叠在配方默认之上 */
   expert?: ExpertParams;
 }
@@ -370,6 +368,8 @@ export interface SegmentCorridor {
   /** PathSegment.index */
   segment: number;
   corridor: [number, number][];
+  /** 这台相机在这一段的逐帧定向搜索扇区中线方向（度，D-SB-47），在这一段的示教帧上拖动扇区得出；null / 缺省 = 背离离出胶点最近的画面边 */
+  sectorDeg?: number | null;
 }
 
 /** RecipeDoc 的段模型字段。 */

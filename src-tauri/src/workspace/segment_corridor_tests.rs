@@ -56,7 +56,11 @@ fn with_corridor(w: &mut Workspace, camera: &str, segment: u32, corridor: Vec<[f
         .find(|i| i.camera == camera)
         .unwrap()
         .segments
-        .push(SegmentCorridor { segment, corridor });
+        .push(SegmentCorridor {
+            segment,
+            corridor,
+            sector_deg: None,
+        });
     update_doc(w, doc).unwrap();
 }
 
@@ -204,6 +208,7 @@ fn segment_structure_or_camera_change_drops_only_the_affected_corridors_and_fram
         .push(SegmentCorridor {
             segment: 3,
             corridor: vec![[1.0, 1.0], [50.0, 1.0]],
+            sector_deg: None,
         });
     assert!(update_doc(&mut w, doc).is_err(), "没有示教帧的走廊");
 }
