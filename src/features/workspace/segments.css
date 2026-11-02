@@ -21,7 +21,7 @@
 .swb-scroll { overflow-x: auto; padding-bottom: 4px; }
 .swb-grid { --swb-cell: 64px; display: grid; gap: 2px; width: max-content; align-items: stretch; }
 .swb-label { display: flex; align-items: center; font-size: 12px; color: var(--on-surface-variant); font-family: var(--font-mono); }
-.swb-seg.qs-btn { height: auto; justify-content: flex-start; min-width: 0; padding: 4px 6px; overflow: hidden; border: 1px solid var(--outline-variant); border-radius: var(--r-sm); background: var(--surface-mid); color: inherit; font-size: 12px; text-align: left; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
+.swb-seg.qs-btn { height: auto; justify-content: flex-start; min-width: 0; padding: 4px 6px; border: 1px solid var(--outline-variant); border-radius: var(--r-sm); background: var(--surface-mid); color: inherit; font-size: 12px; text-align: left; white-space: normal; cursor: pointer; }
 .swb-seg.corner { background: repeating-linear-gradient(135deg, var(--surface-low) 0 6px, var(--surface-mid) 6px 12px); border-color: var(--warn); }
 /* 不检测的段（D-SB-53）：交叉斜纹、虚线框、文字变淡 */
 .swb-seg.skip { background: repeating-linear-gradient(45deg, var(--surface-low) 0 4px, transparent 4px 8px), repeating-linear-gradient(135deg, var(--surface-low) 0 4px, transparent 4px 8px); border-style: dashed; color: var(--on-surface-variant); }
@@ -48,7 +48,8 @@
 .swb-preview .wp-image-empty { flex: 1; min-height: 240px; }
 .swb-preview .wp-image-footer { margin-top: auto; }
 .swb-body { display: flex; flex-direction: column; gap: 12px; outline: none; }
-.swb-cams { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
+/* 只有一两组的窄段：段名与检测相机换行，不裁掉 */
+.swb-cams { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 4px; min-width: 0; }
 .swb-cam.qs-btn { height: auto; padding: 1px 6px; border: 1px solid var(--outline-variant); border-radius: var(--r-sm); background: none; color: var(--on-surface-variant); font-size: 11px; font-family: var(--font-mono); cursor: pointer; }
 .swb-cam.on { border-color: var(--primary); background: var(--surface-mid); color: var(--primary); }
 .swb-cell.unused canvas { opacity: .28; }
