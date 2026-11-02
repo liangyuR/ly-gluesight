@@ -397,6 +397,8 @@ export interface FrameCellView {
   /** 这一帧单独判的结论；未测完为 null */
   verdict: Verdict | null;
   frameCounter: number | null;
+  /** 测量所用走廊的段；收尾补测换了走廊时随之变 */
+  segment?: number | null;
 }
 
 /** 一个帧组：cells 按计划相机顺序。 */

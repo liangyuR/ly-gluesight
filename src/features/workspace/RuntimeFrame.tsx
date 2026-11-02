@@ -50,10 +50,10 @@ interface BurstLiveRequest extends LiveJob { cycleId:string; revisionId:string; 
 const loadBurstFrame=(job:BurstLiveRequest)=>burstImageApi.live(job.cycleId,job.revisionId,job.camera,job.seq);
 const burstStateTone:Partial<Record<GroupCellState,string>>={ ok:"ok", ng:"ng", error:"fault" };
 
-/** 一帧测到的叠图：测完（含走出走廊）才读，同一帧收尾补测后结论变了重读；还没测完或没测成时不画。 */
+/** 一帧测到的叠图：测完（含走出走廊）才读，同一帧收尾补测换了走廊或结论变了重读；还没测完或没测成时不画。 */
 function useLiveView(part:PartView,camera:number,seq:number,cell:FrameGroupView["cells"][number]|undefined) {
   const measured=cell?.status==="measured"||cell?.status==="outOfCorridor";
-  const key=JSON.stringify([part.cycleId,part.recipeRevision,camera,seq,cell?.status,cell?.verdict]);
+  const key=JSON.stringify([part.cycleId,part.recipeRevision,camera,seq,cell?.status,cell?.verdict,cell?.segment]);
   const [state,setState]=useState<{key:string;view:CalibrationFrameView|null}>({key:"",view:null});
   useEffect(()=>{
     if(!measured)return;
