@@ -145,4 +145,3 @@ export interface HistoryCandidate {
   /** 手动配置数据（capture_fixture 写的仿历史件）的标签；真机件为 null */
   fixture: string | null;
 }
-
