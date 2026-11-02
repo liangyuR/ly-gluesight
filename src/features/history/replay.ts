@@ -21,8 +21,10 @@ export const burstSideOf = (burst: PartDetailBurst): BurstSide => ({ segments: b
 export function comparisonBurst(burst: PartDetailBurst, side: BurstSide & { frames: FrameMetrics[] }): PartDetailBurst | null {
   if (!side.frames.length) return null;
   const regionOf = (seq: number) => { const i = side.judgement.regions.findIndex(r => r.region.firstSeq <= seq && seq <= r.region.lastSeq); return i < 0 ? null : i; };
+  // 先按 (相机, seq) 建索引：长件可达数万帧，逐帧在整个数组里找会卡住界面
+  const byFrame = new Map(side.frames.map(m => [`${m.camera}:${m.seq}`, m]));
   const frames = burst.frames.map(frame => {
-    const metrics = side.frames.find(m => m.camera === frame.camera && m.seq === frame.seq) ?? null;
+    const metrics = byFrame.get(`${frame.camera}:${frame.seq}`) ?? null;
     return { ...frame, status: metrics?.state ?? frame.status, metrics, region: regionOf(frame.seq) };
   });
   return { ...burst, segments: side.segments, cameras: side.cameras, expectedTotal: side.expectedTotal,
