@@ -2114,6 +2114,8 @@ fn watch_gate(slot: std::sync::Weak<CameraSlot>) {
             let Some(s) = slot.upgrade() else { break };
             let (gate, cam) = (s.shared.rig.gate.clone(), s.shared.cam);
             let config = s.config();
+            // 拿设备锁之前取帧周期：它要锁配置，`is_ready` 是先锁配置再锁设备，反过来会死锁
+            let period = Duration::from_nanos(s.frame_period_ns() as u64);
             let usable = config.source == CameraSource::Mvs
                 && config.trigger_source == "Line0"
                 && !s.released.load(Ordering::SeqCst)
@@ -2130,7 +2132,7 @@ fn watch_gate(slot: std::sync::Weak<CameraSlot>) {
                         bits & 1 == 1,
                         s.shared.frames.load(Ordering::Relaxed),
                         now,
-                        Duration::from_nanos(s.frame_period_ns() as u64),
+                        period,
                     )
                 });
                 // 边沿时趁还拿着设备锁存相机时钟，离边沿越近越好
