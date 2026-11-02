@@ -136,7 +136,14 @@ impl FrameClock {
                 track.edge_offset = found.0 - raw;
                 found
             }
-            (Some((raw, origin)), _) => (raw + track.edge_offset, origin),
+            // 同一门控沿用已定的起点：补齐漏记边沿后，边沿表里最近的一个可能早于按帧间隔推断出的门控起点
+            (Some((raw, origin)), last) => {
+                let gate = raw + track.edge_offset;
+                match last {
+                    Some(last) if last.gate == gate => (gate, last.origin),
+                    _ => (gate, origin),
+                }
+            }
             (None, None) if track.anchored => (0, track.floor + track.period as u64),
             (None, None) => (0, ts),
             (None, Some(last)) => infer(last),
@@ -291,10 +298,15 @@ mod tests {
             Stamp::Seq(3),
             "边沿表漏了一次开始：以帧间隔为准"
         );
+        assert_eq!(
+            c.stamp(0, reopened + 2 * T, Some(&[g1])),
+            Stamp::Seq(4),
+            "同一门控沿用推断的起点，不按旧边沿重算序号"
+        );
         let g3 = reopened + 10 * T;
         assert_eq!(
             c.stamp(0, at(g3, 0), Some(&[g1, g3])),
-            Stamp::Seq(4),
+            Stamp::Seq(5),
             "下一次边沿按差额对齐成第 3 个门控"
         );
     }
