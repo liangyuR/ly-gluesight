@@ -1524,6 +1524,25 @@ fn segment_frame_view(
     )
 }
 
+/// 计划相机 `index` 第 `segment` 段叠图用的示教走廊与搜索半宽（px）；相机下标越界时为空。
+pub(super) fn corridor_overlay(
+    recipe: &crate::recipe::Recipe,
+    index: usize,
+    segment: u32,
+) -> (Vec<[f32; 2]>, Option<f64>) {
+    let Some(inspect) = recipe.inspect.get(index) else {
+        return (Vec::new(), None);
+    };
+    let corridor = inspect
+        .segment_corridor(segment)
+        .map(|s| s.corridor.clone())
+        .unwrap_or_default();
+    let search_half_px = inspect.mm_per_px.map(|scale| {
+        f64::from(inspect.detect.as_ref().unwrap_or(&recipe.detect).search_mm) / scale
+    });
+    (corridor, search_half_px)
+}
+
 /// 用第 `segment` 段的测量图（有逐帧定向时用定向图）量计划相机 `index` 的一帧图像，给出叠图用的走廊、搜索带与胶边。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn frame_view(
@@ -1536,14 +1555,7 @@ pub(super) fn frame_view(
     image: &FrameImage,
     run: &str,
 ) -> Result<CalibrationFrameView, String> {
-    let inspect = &recipe.inspect[index];
-    let corridor = inspect
-        .segment_corridor(segment)
-        .map(|s| s.corridor.clone())
-        .unwrap_or_default();
-    let search_half_px = inspect.mm_per_px.map(|scale| {
-        f64::from(inspect.detect.as_ref().unwrap_or(&recipe.detect).search_mm) / scale
-    });
+    let (corridor, search_half_px) = corridor_overlay(recipe, index, segment);
     let graph = graphs
         .get(index, segment)
         .ok_or_else(|| format!("第 {segment} 段相机 {camera} 还没有示教走廊"))?;

@@ -98,6 +98,7 @@ fn frame_result(
         ms: 5,
         queue_ms: None,
         engine_ms: None,
+        trace: None,
     }
 }
 

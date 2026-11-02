@@ -295,6 +295,15 @@ pub struct FrameMeasured {
     pub ms: u32,
     pub queue_ms: Option<u32>,
     pub engine_ms: Option<u32>,
+    /// 测到的叠图几何；模拟测量与没测成时为 None
+    pub trace: Option<FrameTrace>,
+}
+
+/// 一帧测到的叠图几何（px）：逐站两侧胶边（无胶站为 None）与逐帧定向拟合出的胶路（示教走廊为空），在线检测视图叠图用。
+#[derive(Clone, Debug, Default)]
+pub struct FrameTrace {
+    pub edges: Vec<Option<[[f32; 2]; 2]>>,
+    pub line: Vec<[f32; 2]>,
 }
 
 impl FrameMeasured {
@@ -308,6 +317,7 @@ impl FrameMeasured {
             ms: 0,
             queue_ms: None,
             engine_ms: None,
+            trace: None,
         }
     }
 
@@ -384,23 +394,43 @@ fn frame_workers(logical: usize) -> usize {
 pub fn spawn_frame_worker(sink: FrameSink) -> FramePool {
     let (tx, rx) = channel::<FrameJob>(FRAME_MEASURE_QUEUE);
     let health = Arc::new(WorkerHealth::new(frame_workers(std::thread::available_parallelism().map_or(1, |n| n.get()))));
-    let runner: Runner<FrameJob> = Arc::new(|job| FrameMeasured::new(job, run_frame(job)));
+    let runner: Runner<FrameJob> = Arc::new(|job| match run_frame(job) {
+        Ok((metrics, trace)) => FrameMeasured {
+            trace,
+            ..FrameMeasured::new(job, Ok(metrics))
+        },
+        Err(error) => FrameMeasured::new(job, Err(error)),
+    });
     tauri::async_runtime::spawn(dispatch_tasks(rx, health.clone(), runner, sink.clone()));
     FramePool { tx, sink, health }
 }
 
-fn run_frame(job: &FrameJob) -> Result<FrameMetrics, MeasureError> {
+fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), MeasureError> {
     match (job.image.as_deref(), job.image_measurement) {
-        (Some(image), true) => vision::LyFlowMeasurer.measure_frame(job, image).map(|m| m.metrics).map_err(MeasureError::Failed),
+        (Some(image), true) => vision::LyFlowMeasurer
+            .measure_frame(job, image)
+            .map(|m| {
+                (
+                    m.metrics,
+                    Some(FrameTrace {
+                        edges: m.edges,
+                        line: m.line,
+                    }),
+                )
+            })
+            .map_err(MeasureError::Failed),
         (None, true) => Err(MeasureError::Failed("这一帧没有图像：相机未拷贝整帧".into())),
         (_, false) => {
             std::thread::sleep(Duration::from_millis(5 + job.seq % 5));
-            Ok(simulate_frame(
-                job.scenario,
-                job.camera_idx,
-                job.seq,
-                job.segment,
-                &job.recipe,
+            Ok((
+                simulate_frame(
+                    job.scenario,
+                    job.camera_idx,
+                    job.seq,
+                    job.segment,
+                    &job.recipe,
+                ),
+                None,
             ))
         }
     }

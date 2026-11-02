@@ -306,6 +306,7 @@ pub fn run() {
             workspace::workspace_compare_original,
             workspace::workspace_comparisons,
             workspace::workspace_live_frame_image,
+            workspace::workspace_live_frame_view,
             workspace::workspace_station_capture,
             workspace::workspace_station_import,
             workspace::workspace_station_image,

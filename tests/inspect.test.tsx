@@ -19,7 +19,7 @@ vi.mock("../src/features/cycle/api", () => ({
   recipeApi: { doc: vi.fn(), list: vi.fn() },
 }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), debugRun: vi.fn() } }));
-vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), record: vi.fn() } }));
+vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), liveView: vi.fn(), record: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
   usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {},
   usePlcOperationState: () => ({ blockedReason: "", handshake: plcHandshake }) }));
@@ -48,6 +48,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.list).mockReset().mockResolvedValue([candidate().workspace, candidate("B").workspace]);
   vi.mocked(workspaceApi.debugRun).mockReset().mockResolvedValue(undefined);
   vi.mocked(burstImageApi.live).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
+  vi.mocked(burstImageApi.liveView).mockReset().mockResolvedValue(null);
   vi.mocked(recipeApi.doc).mockReset().mockImplementation(async id => recipe(id));
   vi.mocked(plcApi.getConfig).mockReset().mockResolvedValue(plcConfig());
 });
