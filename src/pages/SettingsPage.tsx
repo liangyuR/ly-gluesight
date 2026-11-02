@@ -10,10 +10,11 @@ import "./SettingsPage.css";
 const timeoutFields: [keyof Timeouts, string, string][] = [
   ["motionMs", "工件结束超时（ms）", "接件登记后等待 PLC 报工件结束"],
   ["drainMs", "收尾等待（ms）", "工件结束后等待剩余帧"],
+  ["gateGuardMs", "门控关闭后收尾（ms）", "相机看到拍照信号关闭后再等多久就收尾，不必等满收尾等待；0 = 不提前"],
   ["procMs", "单帧处理（ms）", "单帧入队到测量完成"],
   ["ackMs", "结果确认（ms）", "等待 PLC 确认结果"],
 ];
-const timeoutMinimums: Record<keyof Timeouts, number> = { motionMs: 1000, drainMs: 200, procMs: 200, ackMs: 500 };
+const timeoutMinimums: Record<keyof Timeouts, number> = { motionMs: 1000, drainMs: 200, gateGuardMs: 0, procMs: 200, ackMs: 500 };
 
 type SavePart = (part: Partial<CycleSettings>) => Promise<boolean>;
 
@@ -76,6 +77,8 @@ function timingError(settings: CycleSettings) {
   for (const [key, label] of timeoutFields) {
     if (!integerIn(settings.timeouts[key], timeoutMinimums[key])) return `${label}需为不小于 ${timeoutMinimums[key]} 的整数`;
   }
+  const { gateGuardMs, drainMs } = settings.timeouts;
+  if (gateGuardMs !== 0 && !integerIn(gateGuardMs, 40, drainMs)) return "门控关闭后收尾需为 0（不提前）或 40 ms 到收尾等待之间";
   return null;
 }
 

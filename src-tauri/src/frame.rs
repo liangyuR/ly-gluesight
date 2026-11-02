@@ -197,6 +197,9 @@ pub struct Frame {
     pub trigger_counter: u64,
     pub lost_packets: u32,
     pub ts: i64,
+    /// 相机时间戳（ns，D-SB-55）：海康取自 `nDevTimeStamp` 按 `GevTimestampTickFrequency` 换算，重开相机后仍连续；
+    /// 模拟、样本集为合成时钟（帧计数 × `frame_clock::SYNTH_PERIOD_NS`）。读不到时为 None
+    pub dev_ts: Option<u64>,
     /// 软触发（示教取图、样本集"下一张"）出来的帧
     #[serde(skip)]
     pub manual: bool,

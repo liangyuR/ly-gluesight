@@ -36,6 +36,7 @@ fn frame(seed: u8) -> Frame {
         counter: CounterSource::Synthetic,
         frame_counter: u64::MAX - 1,
         trigger_counter: u64::MAX - 2,
+        dev_ts: None,
         lost_packets: 7,
         ts: 777,
         manual: false,
