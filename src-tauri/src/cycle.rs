@@ -1901,6 +1901,7 @@ impl Machine {
                 }
             }
             // 帧编号起点（D-SB-55）：接件时锁存各计划相机的时钟作下限，时间戳不大于它的帧属于上一件
+            let first_gate = host.camera.gate().open_count();
             let starts: Vec<crate::frame_clock::ClockStart> = baselines
                 .iter()
                 .map(|armed| {
@@ -1929,6 +1930,7 @@ impl Machine {
                                 && c.source == Some(crate::frame::CounterSource::Synthetic)
                         }),
                         delay_ns: slot.as_ref().map_or(0, |s| s.trigger_delay_ns()),
+                        first_gate,
                     }
                 })
                 .collect();

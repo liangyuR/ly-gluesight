@@ -27,11 +27,21 @@ pub const EDGE_FRESH: Duration = Duration::from_millis(30);
 /// 每台相机留的门控开始边沿数。
 const KEEP_OPENS: usize = 4096;
 
-/// 边沿时锁存的相机时钟（ns）。
+/// 不同相机看到门控开始的时刻相差在这么久内算同一次门控（现场同一边沿各相机相差 1–2 ms，门控开得比一帧还短的不会出帧）。
+const SAME_OPEN: Duration = Duration::from_millis(100);
+
+/// 边沿时锁存的相机时钟（ns）；门控开始还记下它在相机组里的门控序号。
 #[derive(Debug, Default)]
 struct Clocks {
-    opens: std::collections::VecDeque<u64>,
+    opens: std::collections::VecDeque<(u64, u64)>,
     close: Option<u64>,
+}
+
+/// 相机组看到的门控开始：累计次数与最近一次看到的时刻。
+#[derive(Debug, Default)]
+struct Opens {
+    count: u64,
+    last: Option<Instant>,
 }
 
 /// 各相机最近一次读到的门控状态（相机组序号为键），以及边沿时锁存的相机时钟。
@@ -39,25 +49,43 @@ struct Clocks {
 pub struct Gate {
     cams: Mutex<HashMap<u8, Seen>>,
     clocks: Mutex<HashMap<u8, Clocks>>,
+    opens: Mutex<Opens>,
 }
 
 impl Gate {
-    /// 相机 `cam` 看到门控开始（`opening`）或关闭，锁存的相机时钟为 `clock`（ns）。
-    pub fn edge(&self, cam: u8, opening: bool, clock: u64) {
+    /// 相机 `cam` 在 `at` 看到门控开始（`opening`）或关闭，锁存的相机时钟为 `clock`（ns）。门控开始按相机组共同的序号记：
+    /// 与别的相机看到的开始相差在 `SAME_OPEN` 内算同一次，一台相机轮询中断漏了一次，其余相机的序号照样对得上。
+    pub fn edge(&self, cam: u8, opening: bool, clock: u64, at: Instant) {
+        let index = opening.then(|| {
+            let mut opens = self.opens.lock().unwrap();
+            if opens
+                .last
+                .is_none_or(|last| at.saturating_duration_since(last) >= SAME_OPEN)
+            {
+                opens.count += 1;
+            }
+            opens.last = Some(at);
+            opens.count - 1
+        });
         let mut clocks = self.clocks.lock().unwrap();
         let entry = clocks.entry(cam).or_default();
-        if opening {
+        if let Some(index) = index {
             if entry.opens.len() == KEEP_OPENS {
                 entry.opens.pop_front();
             }
-            entry.opens.push_back(clock);
+            entry.opens.push_back((clock, index));
         } else {
             entry.close = Some(clock);
         }
     }
 
-    /// 相机 `cam` 看到的门控开始时刻（相机时钟，升序）；它最近一次读数不在 `EDGE_FRESH` 内（可能还没看到最新的边沿）时为 None。
-    pub fn opens(&self, cam: u8, now: Instant) -> Option<Vec<u64>> {
+    /// 相机组到目前为止看到的门控开始次数：接件时记下，本件的门控序号从它起。
+    pub fn open_count(&self) -> u64 {
+        self.opens.lock().unwrap().count
+    }
+
+    /// 相机 `cam` 看到的门控开始（相机时钟，相机组门控序号），升序；它最近一次读数不在 `EDGE_FRESH` 内（可能还没看到最新的边沿）时为 None。
+    pub fn opens(&self, cam: u8, now: Instant) -> Option<Vec<(u64, u64)>> {
         let fresh = self
             .cams
             .lock()
@@ -80,7 +108,7 @@ impl Gate {
             .lock()
             .unwrap()
             .get(&cam)
-            .and_then(|c| c.opens.back().copied())
+            .and_then(|c| c.opens.back().map(|&(clock, _)| clock))
     }
 
     /// 相机 `cam` 最近一次看到门控关闭时锁存的相机时钟（ns）。
@@ -127,7 +155,7 @@ impl Gate {
     }
 }
 
-/// 一台相机的空闲电平：`QUIET` 内没收到帧时读到的电平即空闲电平，其余电平即门控开着。
+/// 一台相机的空闲电平：`QUIET`（且不短于三个帧周期）内没收到帧时读到的电平即空闲电平，其余电平即门控开着。
 #[derive(Debug)]
 pub struct LineWatch {
     idle: Option<bool>,
@@ -144,13 +172,20 @@ impl LineWatch {
         }
     }
 
-    /// 读到 Line0 电平 `level` 时这台相机累计收到 `frames` 帧：返回门控是否开着；空闲电平还不知道时为 None。
-    pub fn read(&mut self, level: bool, frames: u64, now: Instant) -> Option<bool> {
+    /// 读到 Line0 电平 `level` 时这台相机累计收到 `frames` 帧、帧周期为 `period`：返回门控是否开着；空闲电平还不知道时为 None。
+    /// 帧率低时门控开着的帧间空档也可能超过 1 s，安静时长放宽到三个帧周期，免得把拍照电平学成空闲电平。
+    pub fn read(
+        &mut self,
+        level: bool,
+        frames: u64,
+        now: Instant,
+        period: Duration,
+    ) -> Option<bool> {
         if frames != self.frames {
             self.frames = frames;
             self.last_frame = now;
         }
-        if now.saturating_duration_since(self.last_frame) >= QUIET {
+        if now.saturating_duration_since(self.last_frame) >= QUIET.max(period * 3) {
             self.idle = Some(level);
         }
         self.idle.map(|idle| level != idle)
@@ -199,24 +234,76 @@ mod tests {
         );
     }
 
+    const P: Duration = Duration::from_millis(100);
+
+    /// 防的回归（PR #215 评审）：帧率低到帧间隔超过 1 s 时，门控开着的帧间空档被当成空闲，把拍照电平学成空闲电平、极性反了。
+    #[test]
+    fn a_frame_gap_within_three_periods_keeps_the_learned_idle_level() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let period = Duration::from_secs(2);
+        let mut watch = LineWatch::new(t0);
+        assert_eq!(
+            watch.read(true, 0, ms(1500), period),
+            None,
+            "低帧率下安静 1.5 s 还不算空闲"
+        );
+        assert_eq!(
+            watch.read(true, 0, ms(6000), period),
+            Some(false),
+            "安静满三个帧周期：空闲读 1"
+        );
+        assert_eq!(watch.read(false, 1, ms(6100), period), Some(true));
+        assert_eq!(
+            watch.read(false, 1, ms(7600), period),
+            Some(true),
+            "帧间空档 1.5 s：门控仍开着"
+        );
+    }
+
+    /// 防的回归（PR #215 评审）：一台相机轮询中断漏看一次门控开始，按它自己数的边沿算门控号，与其余相机错开一个门控、配错帧组。
+    #[test]
+    fn opens_seen_by_any_camera_share_one_index_across_the_group() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let gate = Gate::default();
+        gate.observe(0, true, ms(3000));
+        gate.observe(1, true, ms(3000));
+        gate.edge(0, true, 10, ms(0));
+        gate.edge(1, true, 20, ms(2));
+        gate.edge(0, true, 11, ms(230));
+        gate.edge(0, true, 12, ms(1000));
+        gate.edge(1, true, 22, ms(1001));
+        assert_eq!(
+            gate.opens(0, ms(3000)),
+            Some(vec![(10, 0), (11, 1), (12, 2)])
+        );
+        assert_eq!(
+            gate.opens(1, ms(3000)),
+            Some(vec![(20, 0), (22, 2)]),
+            "相机 1 漏了第 2 次，第 3 次仍记序号 2"
+        );
+        assert_eq!(gate.open_count(), 3);
+    }
+
     /// 防的回归：按触发方式（高电平有效）推断空闲电平——现场状态寄存器空闲读 1、拍照时读 0，推反了会把整段拍照当成关闭。
     #[test]
     fn idle_level_is_learned_from_a_quiet_second_without_frames() {
         let t0 = Instant::now();
         let ms = |n: u64| t0 + Duration::from_millis(n);
         let mut watch = LineWatch::new(t0);
-        assert_eq!(watch.read(true, 0, ms(500)), None, "还没安静满 1 s");
-        assert_eq!(watch.read(true, 0, ms(1000)), Some(false), "空闲读 1");
+        assert_eq!(watch.read(true, 0, ms(500), P), None, "还没安静满 1 s");
+        assert_eq!(watch.read(true, 0, ms(1000), P), Some(false), "空闲读 1");
         assert_eq!(
-            watch.read(false, 1, ms(1100)),
+            watch.read(false, 1, ms(1100), P),
             Some(true),
             "读 0 且来帧：开着"
         );
         assert_eq!(
-            watch.read(false, 15, ms(2500)),
+            watch.read(false, 15, ms(2500), P),
             Some(true),
             "一直来帧时不改空闲电平"
         );
-        assert_eq!(watch.read(true, 22, ms(3200)), Some(false));
+        assert_eq!(watch.read(true, 22, ms(3200), P), Some(false));
     }
 }

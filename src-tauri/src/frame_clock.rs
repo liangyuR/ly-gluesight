@@ -39,6 +39,7 @@ struct Track {
     /// 下限就是上一帧的时间戳（合成时钟）：第一帧不靠边沿也能算出序号
     anchored: bool,
     delay: u64,
+    first_gate: u64,
     last: Option<Last>,
     broken: bool,
     /// 轮询中断漏记的门控开始边沿数：按边沿数得出的门控号要加上它
@@ -75,6 +76,8 @@ pub struct ClockStart {
     pub anchored: bool,
     /// 触发延时（ns）：门控开始后过这么久才曝光第一帧，门控起点取边沿加上它
     pub delay_ns: u64,
+    /// 接件时相机组已看到的门控开始次数：序号小于它的门控开始属于上一件（读不出相机时钟、下限为 0 时也不误用）
+    pub first_gate: u64,
 }
 
 impl FrameClock {
@@ -87,6 +90,7 @@ impl FrameClock {
                     floor: s.floor,
                     anchored: s.anchored,
                     delay: s.delay_ns,
+                    first_gate: s.first_gate,
                     last: None,
                     broken: false,
                     edge_offset: 0,
@@ -97,9 +101,9 @@ impl FrameClock {
         }
     }
 
-    /// 计划相机 `cam` 时间戳 `ts`（ns）的一帧。`opens` 是这台相机本件看到的门控开始时刻（锁存的相机时钟，升序）；
+    /// 计划相机 `cam` 时间戳 `ts`（ns）的一帧。`opens` 是这台相机看到的门控开始（锁存的相机时钟，相机组门控序号），升序；
     /// 轮询读数不新鲜、不能确定有没有漏看边沿时为 None。
-    pub fn stamp(&mut self, cam: usize, ts: u64, opens: Option<&[u64]>) -> Stamp {
+    pub fn stamp(&mut self, cam: usize, ts: u64, opens: Option<&[(u64, u64)]>) -> Stamp {
         let Some(track) = self.tracks.get_mut(cam) else {
             return Stamp::Stale;
         };
@@ -121,14 +125,16 @@ impl FrameClock {
         }
         let index =
             |origin: u64| ((ts.saturating_sub(origin)) as f64 / track.period).round() as u64;
+        // 门控号取相机组共同的门控开始序号（一台相机漏看一次也与其余相机对齐），从接件时的序号起算
         let by_edges = opens.and_then(|opens| {
-            let seen: Vec<u64> = opens
+            opens
                 .iter()
-                .map(|&o| o + track.delay)
-                .filter(|&o| o > track.floor && o <= ts + EDGE_SLACK_NS)
-                .collect();
-            let origin = *seen.last()?;
-            Some((seen.len() - 1, origin))
+                .map(|&(o, index)| (o + track.delay, index))
+                .filter(|&(o, index)| {
+                    index >= track.first_gate && o > track.floor && o <= ts + EDGE_SLACK_NS
+                })
+                .last()
+                .map(|(origin, index)| ((index - track.first_gate) as usize, origin))
         });
         // 按相邻帧间隔推断：间隔是帧周期整数倍为同一门控，否则开新门控
         let infer = |last: Last| {
@@ -205,9 +211,15 @@ mod tests {
                 floor: 1_000 * T,
                 anchored,
                 delay_ns: 0,
+                first_gate: 0,
             };
             cams
         ])
+    }
+
+    /// 一台相机看到的门控开始，按看到的先后编相机组序号（各相机都看到了全部门控开始时）。
+    fn e(opens: &[u64]) -> Vec<(u64, u64)> {
+        opens.iter().zip(0..).map(|(&o, i)| (o, i)).collect()
     }
 
     /// 门控从相机时钟 `open` 开始，第 i 帧的时间戳（曝光比锁存早 1.5 ms）。
@@ -222,7 +234,7 @@ mod tests {
         let mut c = clock(2, false);
         let (g1, g2) = (1_010 * T, 1_050 * T + 37_000_000);
         let opens = [g1, g2];
-        let stamp = |c: &mut FrameClock, cam, ts| c.stamp(cam, ts, Some(&opens));
+        let stamp = |c: &mut FrameClock, cam, ts| c.stamp(cam, ts, Some(&e(&opens)));
         assert_eq!(stamp(&mut c, 0, at(g1, 0)), Stamp::Seq(1));
         assert_eq!(stamp(&mut c, 1, at(g1, 0)), Stamp::Seq(1));
         assert_eq!(stamp(&mut c, 0, at(g1, 1)), Stamp::Seq(2));
@@ -313,14 +325,14 @@ mod tests {
             2_130 * T / 100 + 1_000 * T + 1_500_000,
         );
         let opens = [g1, g2];
-        assert_eq!(c.stamp(0, at(g1, 0), Some(&opens)), Stamp::Seq(1));
+        assert_eq!(c.stamp(0, at(g1, 0), Some(&e(&opens))), Stamp::Seq(1));
         assert_eq!(
-            c.stamp(0, at(g1, 1), Some(&opens)),
+            c.stamp(0, at(g1, 1), Some(&e(&opens))),
             Stamp::Seq(2),
             "末帧曝光早于新边沿 30 ms：仍属旧门控"
         );
         assert_eq!(
-            c.stamp(0, at(g2, 0), Some(&opens)),
+            c.stamp(0, at(g2, 0), Some(&e(&opens))),
             Stamp::Seq(3),
             "新门控首帧"
         );
@@ -332,7 +344,7 @@ mod tests {
     fn missed_edges_during_a_polling_gap_do_not_pull_frames_back_to_an_old_gate() {
         let mut c = clock(1, false);
         let g1 = 1_020 * T;
-        assert_eq!(c.stamp(0, at(g1, 0), Some(&[g1])), Stamp::Seq(1));
+        assert_eq!(c.stamp(0, at(g1, 0), Some(&e(&[g1]))), Stamp::Seq(1));
         let reopened = g1 + 2_330_000_000;
         assert_eq!(
             c.stamp(0, reopened, None),
@@ -340,18 +352,18 @@ mod tests {
             "轮询卡住：按间隔开新门控"
         );
         assert_eq!(
-            c.stamp(0, reopened + T, Some(&[g1])),
+            c.stamp(0, reopened + T, Some(&e(&[g1]))),
             Stamp::Seq(3),
             "边沿表漏了一次开始：以帧间隔为准"
         );
         assert_eq!(
-            c.stamp(0, reopened + 2 * T, Some(&[g1])),
+            c.stamp(0, reopened + 2 * T, Some(&e(&[g1]))),
             Stamp::Seq(4),
             "同一门控沿用推断的起点，不按旧边沿重算序号"
         );
         let g3 = reopened + 10 * T;
         assert_eq!(
-            c.stamp(0, at(g3, 0), Some(&[g1, g3])),
+            c.stamp(0, at(g3, 0), Some(&e(&[g1, g3]))),
             Stamp::Seq(5),
             "下一次边沿按差额对齐成第 3 个门控"
         );
@@ -363,7 +375,7 @@ mod tests {
     fn an_edge_after_the_last_frame_opens_a_gate_even_after_a_missed_one() {
         let mut c = clock(1, false);
         let g1 = 1_020 * T + 1_500_000;
-        assert_eq!(c.stamp(0, at(g1, 0), Some(&[g1])), Stamp::Seq(1));
+        assert_eq!(c.stamp(0, at(g1, 0), Some(&e(&[g1]))), Stamp::Seq(1));
         assert_eq!(
             c.stamp(0, 1_022 * T + 30_000_000, None),
             Stamp::Seq(2),
@@ -371,11 +383,11 @@ mod tests {
         );
         let g3 = 1_030 * T + 1_500_000;
         assert_eq!(
-            c.stamp(0, at(g3, 0), Some(&[g1, g3])),
+            c.stamp(0, at(g3, 0), Some(&e(&[g1, g3]))),
             Stamp::Seq(3),
             "边沿晚于上一帧：新门控"
         );
-        assert_eq!(c.stamp(0, at(g3, 1), Some(&[g1, g3])), Stamp::Seq(4));
+        assert_eq!(c.stamp(0, at(g3, 1), Some(&e(&[g1, g3]))), Stamp::Seq(4));
     }
 
     /// 防的回归（PR #215 评审）：相机设了触发延时时，门控起点按边沿算，第一帧离边沿超过半个帧周期，
@@ -387,11 +399,59 @@ mod tests {
             floor: 1_000 * T,
             anchored: false,
             delay_ns: 58_500_000,
+            first_gate: 0,
         }]);
         let edge = 1_020 * T + 1_500_000;
         let first = 1_020 * T + 60_000_000;
-        assert_eq!(c.stamp(0, first, Some(&[edge])), Stamp::Seq(1));
-        assert_eq!(c.stamp(0, first + T, Some(&[edge])), Stamp::Seq(2));
+        assert_eq!(c.stamp(0, first, Some(&e(&[edge]))), Stamp::Seq(1));
+        assert_eq!(c.stamp(0, first + T, Some(&e(&[edge]))), Stamp::Seq(2));
+    }
+
+    /// 防的回归（PR #215 评审）：一台相机漏看了整个门控（边沿与帧都没有），按自己数的边沿编号比其余相机少一个门控，
+    /// 两台的同一门控配成不同帧组；门控号要取相机组共同的序号。
+    #[test]
+    fn a_camera_that_missed_a_whole_gate_stays_aligned_with_the_group() {
+        let mut c = clock(2, false);
+        let (g1, g2, g3) = (
+            1_020 * T + 1_500_000,
+            1_022 * T + 31_500_000,
+            1_030 * T + 1_500_000,
+        );
+        let both = [(g1, 0), (g2, 1), (g3, 2)];
+        let missed = [(g1, 0), (g3, 2)];
+        assert_eq!(c.stamp(0, at(g1, 0), Some(&both)), Stamp::Seq(1));
+        assert_eq!(c.stamp(1, at(g1, 0), Some(&missed)), Stamp::Seq(1));
+        assert_eq!(c.stamp(0, at(g2, 0), Some(&both)), Stamp::Seq(2));
+        assert_eq!(c.stamp(0, at(g3, 0), Some(&both)), Stamp::Seq(3));
+        assert_eq!(
+            c.stamp(1, at(g3, 0), Some(&missed)),
+            Stamp::Seq(3),
+            "同一门控同一帧组"
+        );
+    }
+
+    /// 防的回归（PR #215 评审）：接件时读不出一台相机的时钟（下限为 0），上一件的门控开始都算进本件，这台相机门控号偏大、
+    /// 冻结了前面的门控，其余相机本件的帧都成了越界帧；序号小于接件时序号的门控开始不算。
+    #[test]
+    fn opens_before_the_part_are_ignored_even_without_a_clock_floor() {
+        let start = |floor: u64| ClockStart {
+            period_ns: T as f64,
+            floor,
+            anchored: false,
+            delay_ns: 0,
+            first_gate: 2,
+        };
+        let mut c = FrameClock::new(&[start(0), start(1_000 * T)]);
+        let (old1, old2, now) = (900 * T, 950 * T, 1_020 * T + 1_500_000);
+        assert_eq!(
+            c.stamp(0, at(now, 0), Some(&[(old1, 0), (old2, 1), (now, 2)])),
+            Stamp::Seq(1)
+        );
+        assert_eq!(
+            c.stamp(1, at(now, 0), Some(&[(now, 2)])),
+            Stamp::Seq(1),
+            "另一台相机不成越界帧"
+        );
     }
 
     /// 防的回归：模拟、样本集的合成时钟没有门控边沿，第一帧要按下限（上一帧）算序号，与原来的帧号配组一致。

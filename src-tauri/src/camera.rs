@@ -2126,7 +2126,12 @@ fn watch_gate(slot: std::sync::Weak<CameraSlot>) {
                     .and_then(|d| d.get_int("LineStatusAll").ok());
                 let now = Instant::now();
                 let active = level.and_then(|bits| {
-                    watch.read(bits & 1 == 1, s.shared.frames.load(Ordering::Relaxed), now)
+                    watch.read(
+                        bits & 1 == 1,
+                        s.shared.frames.load(Ordering::Relaxed),
+                        now,
+                        Duration::from_nanos(s.frame_period_ns() as u64),
+                    )
                 });
                 // 边沿时趁还拿着设备锁存相机时钟，离边沿越近越好
                 if let (Some(now_active), Some(before), Some(d)) = (active, was, device.as_ref()) {
@@ -2134,7 +2139,7 @@ fn watch_gate(slot: std::sync::Weak<CameraSlot>) {
                         if let Some(clock) =
                             latch_clock(d, s.shared.tick_hz.load(Ordering::Relaxed))
                         {
-                            gate.edge(cam, now_active, clock);
+                            gate.edge(cam, now_active, clock, now);
                         }
                     }
                 }

@@ -58,6 +58,7 @@ fn armed_part_with(
             floor: b.baseline.unwrap_or(0) * crate::frame_clock::SYNTH_PERIOD_NS,
             anchored: true,
             delay_ns: 0,
+            first_gate: 0,
         })
         .collect();
     Part {
@@ -509,7 +510,7 @@ fn drain_ends_at_gate_close_once_every_camera_has_its_last_frame() {
     end(&mut p, Some(0), false);
     let now = Instant::now();
     for cam in 0..3 {
-        gate.edge(cam, false, 4 * t + t / 2);
+        gate.edge(cam, false, 4 * t + t / 2, now);
         gate.observe(cam, true, now);
         gate.observe(cam, false, now);
     }
@@ -518,8 +519,8 @@ fn drain_ends_at_gate_close_once_every_camera_has_its_last_frame() {
     assert!(p.complete(), "三台都到了关闭前的最后一帧：不等余量");
     // PR #215 评审：又开了一次很短的门控（4.6T 开、4.8T 关），新门控的帧还在路上，前一门控的末帧不能当最后一帧
     for cam in 0..3 {
-        gate.edge(cam, true, 4 * t + 6 * t / 10);
-        gate.edge(cam, false, 4 * t + 8 * t / 10);
+        gate.edge(cam, true, 4 * t + 6 * t / 10, now);
+        gate.edge(cam, false, 4 * t + 8 * t / 10, now);
     }
     assert!(!p.complete(), "最近一次门控的帧还没到：等");
 }
