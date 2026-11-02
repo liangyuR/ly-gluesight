@@ -69,7 +69,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   const saved = review?.rounds[roundId] ?? null;
   const baseline = useMemo(
     () => groupCount ? initialDraft(groupCount, plan.segments, plan.cameras, saved) : null,
-    [groupCount, JSON.stringify(plan.segments.map(s => [s.kind, s.cameras])), plan.cameras.join("|"), JSON.stringify(saved?.cuts), saved?.status],
+    [groupCount, JSON.stringify(plan.segments.map(s => [s.kind, s.cameras, !!s.skip])), plan.cameras.join("|"), JSON.stringify(saved?.cuts), saved?.status],
   );
   const draft = edit?.roundId === roundId ? edit.draft : baseline;
   const dirty = !!draft && !!baseline && JSON.stringify(draft) !== JSON.stringify(baseline);

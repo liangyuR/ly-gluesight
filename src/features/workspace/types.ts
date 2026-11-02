@@ -103,7 +103,9 @@ export interface Comparison {
    * 之前保存的旧对照为 null；有值时 judgement 的 verdict / plcCode / faultCode / reason 与 burst.judgement 相同 */
   burst: { segments: PathSegment[]; cameras: string[]; expectedTotal: number | null; judgement: BurstJudgement;
     /** 这次对照用的每帧指标；之前保存的对照为空 */
-    frames: FrameMetrics[] } | null;
+    frames: FrameMetrics[];
+    /** 建测量图用的各计划相机示教帧尺寸 [宽, 高]，叠图按它重建；原包重现与之前保存的对照为空 */
+    sizes?: [number, number][] } | null;
 }
 /** 分段保存的影响（后端 capture_review::SegmentSaveImpact，保存前确认用）。 */
 export interface SegmentSaveImpact {

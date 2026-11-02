@@ -30,16 +30,26 @@ pub struct ComparisonBurst {
     /// 这次对照用的每帧指标（复测为重测结果，按规则重判为记录里存的指标）；之前保存的对照没有这一项
     #[serde(default)]
     pub frames: Vec<FrameMetrics>,
+    /// 这次对照建走廊测量图用的各计划相机示教帧尺寸（候选对照取当时的走廊示教）：叠图按它重建，不依赖候选现在的示教；
+    /// 按原发布包重现的对照与之前保存的对照为空
+    #[serde(default)]
+    pub sizes: Vec<[u32; 2]>,
 }
 
 impl ComparisonBurst {
-    fn of(recipe: &Recipe, judgement: BurstJudgement, frames: Vec<FrameMetrics>) -> Self {
+    fn of(
+        recipe: &Recipe,
+        judgement: BurstJudgement,
+        frames: Vec<FrameMetrics>,
+        sizes: Vec<[u32; 2]>,
+    ) -> Self {
         Self {
             segments: recipe.path_segments.clone(),
             cameras: recipe.plan_cameras(),
             expected_total: recipe.expected_total(),
             judgement,
             frames,
+            sizes,
         }
     }
 }
@@ -230,8 +240,8 @@ pub fn workspace_record_frame_image(app: AppHandle, history_id: i64, camera: usi
 }
 
 /// 历史件一帧按对照重测的叠图（历史详情，只读）：用对照保存的候选配方与这一帧在对照里所用的走廊段，从录制原图重测，
-/// 给出走廊、搜索带与测到的胶边。示教帧尺寸取该候选的走廊示教。这一帧在对照里没测（缺帧、本段不检测）时只给指标、不画线；
-/// 按原发布包重现的对照不支持。
+/// 给出走廊、搜索带与测到的胶边。示教帧尺寸取对照保存时记下的（`ComparisonBurst.sizes`），不依赖候选现在的示教，
+/// 候选换了示教件或已删除也能看。这一帧在对照里没测（缺帧、本段不检测）时只给指标、不画线；按原发布包重现的对照不支持。
 #[tauri::command]
 pub async fn workspace_record_frame_view(
     app: AppHandle,
@@ -278,11 +288,10 @@ pub async fn workspace_record_frame_view(
                 metrics: metrics.clone(),
             });
         };
-        let sizes = {
-            let items = host.items.lock().unwrap();
-            let w = items.get(&found.candidate_id).ok_or("候选配置不存在")?;
-            burst::teaching_sizes(w)?
-        };
+        if burst.sizes.is_empty() {
+            return Err("这次对照没有保存示教帧尺寸（之前保存的对照或候选当时未示教完）：重新触发测试后再看叠图".into());
+        }
+        let sizes = burst.sizes.clone();
         let recipe = &found.candidate_recipe;
         let camera_id = recipe
             .plan_cameras()
@@ -402,9 +411,11 @@ pub(super) fn compare(app: &AppHandle, w: &Workspace, recipe: &Recipe, detail: &
         );
         (judgement, metrics)
     };
+    // 按规则重判不建测量图，候选还没示教完时没有尺寸，这次对照就不能叠图
+    let sizes = super::burst::teaching_sizes(w).unwrap_or_default();
     Ok((
         summary(&judgement),
-        ComparisonBurst::of(recipe, judgement, metrics),
+        ComparisonBurst::of(recipe, judgement, metrics, sizes),
     ))
 }
 
@@ -431,6 +442,6 @@ pub(super) fn reproduce_original(
     )?;
     Ok((
         summary(&judgement),
-        ComparisonBurst::of(&prepared.recipe, judgement, metrics),
+        ComparisonBurst::of(&prepared.recipe, judgement, metrics, Vec::new()),
     ))
 }

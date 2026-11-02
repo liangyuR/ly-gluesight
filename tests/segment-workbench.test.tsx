@@ -46,4 +46,18 @@ describe("分段标定工作台改变段结构", () => {
     expect(cuts).toEqual([3]);
     expect(segments.map(s => [s.index, s.kind, s.expectedFrames])).toEqual([[1, "straight", null], [2, "corner", null]]);
   });
+
+  // 防的回归（PR #214 评审）：只把一段改成不检测、边界没动时，保存后的段列表里 skip 变了，工作台却还显示原来的检测状态，
+  // 再次保存会悄悄把这一段改回检测
+  it("保存后段列表里某段变为不检测 → 工作台按新的段列表显示“不检测”", async () => {
+    const segments = [pathSegment(1, "straight", { expectedFrames: 3 }), pathSegment(2, "corner", { expectedFrames: 3 }), pathSegment(3, "straight", { expectedFrames: 3 })];
+    const view = burstWorkspaceView(burstRecipe({ segments }));
+    view.workspace.teachingPiece = { ...view.workspace.teachingPiece!, roundId: ROUND };
+    vi.mocked(useWorkspace).mockImplementation(() => workspaceState(view));
+    const page = (plan: typeof view.plan) => <MemoryRouter><SegmentWorkbench plan={plan!} locked="" onDirty={() => {}} /></MemoryRouter>;
+    const { rerender } = render(page(view.plan));
+    expect(await screen.findByRole("button", { name: /^段 2（弯道/ })).toBeVisible();
+    rerender(page({ ...view.plan!, segments: segments.map(s => s.index === 2 ? { ...s, skip: true } : s) }));
+    expect(await screen.findByRole("button", { name: /^段 2（不检测/ })).toBeVisible();
+  });
 });
