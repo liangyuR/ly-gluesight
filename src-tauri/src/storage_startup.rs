@@ -9,6 +9,10 @@ pub struct Status {
     title: String,
     message: String,
     kind: String,
+    stage: &'static str,
+    step: usize,
+    steps: usize,
+    version: String,
 }
 
 pub struct Startup {
@@ -23,6 +27,10 @@ impl Default for Startup {
                 title: "正在准备资料目录".into(),
                 message: "检查目录与权限…".into(),
                 kind: "working".into(),
+                stage: STAGES[0],
+                step: 0,
+                steps: STAGES.len(),
+                version: String::new(),
             }),
         }
     }
@@ -30,11 +38,64 @@ impl Default for Startup {
 
 pub const CHOOSE_PROJECT: &str = "\u{1}choose-project:";
 
+pub const WINDOW: &str = "storage-startup";
+
+/// 启动画面上的阶段，依次对应启动时耗时的几步。
+pub const STAGES: [&str; 6] = [
+    "准备资料目录",
+    "打开项目",
+    "初始化相机与检测",
+    "加载配方工作台",
+    "初始化 PLC",
+    "加载界面",
+];
+
+pub fn stage(app: &AppHandle, step: usize) {
+    if let Some(host) = app.try_state::<Startup>() {
+        if let Ok(mut pending) = host.pending.lock() {
+            if pending.kind == "working" {
+                pending.step = step;
+                pending.stage = STAGES[step];
+            }
+        }
+    }
+}
+
 pub fn report(app: &AppHandle, error: String) {
     match error.strip_prefix(CHOOSE_PROJECT) {
         Some(reason) => choose_project(app, reason),
         None => failed(app, error),
     }
+    if let Some(window) = app.get_webview_window(WINDOW) {
+        // 启动画面是无边框小窗；出错或要选项目时放大并恢复系统标题栏，便于阅读、移动和关闭
+        let _ = window.set_decorations(true);
+        let _ = window.set_size(tauri::LogicalSize::new(720.0, 480.0));
+        let _ = window.center();
+    }
+}
+
+/// 主窗口首屏渲染完成（或等待超时）：显示主窗口并关闭启动画面；配置为隐藏的窗口（测试实例）保持隐藏。
+pub fn ready(app: &AppHandle) {
+    for config in &app.config().app.windows {
+        let Some(window) = app.get_webview_window(&config.label) else {
+            continue;
+        };
+        if config.visible && !window.is_visible().unwrap_or(true) {
+            let _ = window.show();
+            if config.maximized {
+                let _ = window.maximize();
+            }
+            let _ = window.set_focus();
+        }
+    }
+    if let Some(window) = app.get_webview_window(WINDOW) {
+        let _ = window.close();
+    }
+}
+
+#[tauri::command]
+pub fn startup_ready(app: AppHandle) {
+    ready(&app);
 }
 
 fn choose_project(app: &AppHandle, reason: &str) {
@@ -119,8 +180,10 @@ pub fn failed(app: &AppHandle, error: String) {
 }
 
 #[tauri::command]
-pub fn storage_startup_status(host: State<'_, Startup>) -> Result<Status, String> {
-    Ok(host.pending.lock().map_err(|e| e.to_string())?.clone())
+pub fn storage_startup_status(app: AppHandle, host: State<'_, Startup>) -> Result<Status, String> {
+    let mut status = host.pending.lock().map_err(|e| e.to_string())?.clone();
+    status.version = app.package_info().version.to_string();
+    Ok(status)
 }
 
 /// 错误页的“关闭”：退出软件。

@@ -56,7 +56,7 @@
 
 ### U-8 资料初始化窗口暂不改用令牌
 
-- 问题：`public/storage-startup.html` 写死 9 处十六进制颜色。
+- 问题：`public/storage-startup.html`（资料准备窗口兼启动画面）写死十六进制颜色。
 - 可选项：改成 Vite 多页入口并引入 qing-steel `tokens.css`；把令牌值复制成本页 CSS 变量；保持。
 - 采用：保持。该页在主界面、WebView 数据目录准备好之前显示，是 `public/` 原样复制的独立静态页，不经 Vite 处理，无法引用依赖包里的令牌；改为多页入口要改 `vite.config.ts` 与打包流程，复制令牌值仍是硬编码。其余前端样式（`src/**/*.css|ts|tsx`）已无 rgba / rgb / hsl / 十六进制字面色。
 - 后续：如要统一，改为 Vite 多页入口（`build.rollupOptions.input`）并在打包测试中核对。
