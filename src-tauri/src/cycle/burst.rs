@@ -79,6 +79,8 @@ pub(super) struct BurstPart {
     /// 维护采集：只录图不送测，收尾只等收尾窗口
     pub(super) collect: bool,
     segments: Vec<PathSegment>,
+    /// 各（计划相机下标, 段）拖过的搜索扇区方向（度）；没拖过的段用自动方向，不在表里
+    sectors: BTreeMap<(usize, u32), f64>,
     boundary_guard: u32,
     boundary_refine: bool,
     /// 预测边界附近的帧组：这些帧（全部计划相机）的原图留到判定，供收尾补测
@@ -153,6 +155,17 @@ impl BurstPart {
     ) -> Self {
         let limit = recipe.expected_total().map_or(MAX_SEQ, |n| u64::from(n) + u64::from(recipe.tolerance_total()) + SEQ_MARGIN);
         let checks = wider_checks(&recipe.path_segments.iter().map(|s| &s.checks).collect::<Vec<_>>());
+        let sectors = recipe
+            .inspect
+            .iter()
+            .enumerate()
+            .flat_map(|(camera, inspect)| {
+                inspect
+                    .segments
+                    .iter()
+                    .filter_map(move |s| s.sector_deg.map(|deg| ((camera, s.segment), deg)))
+            })
+            .collect();
         Self {
             grouper: Grouper::with_limit(vec![0; cams.len()], limit),
             clock: FrameClock::new(starts),
@@ -167,6 +180,7 @@ impl BurstPart {
             collect: false,
             bands: retention_bands(&recipe.path_segments, recipe.boundary_guard),
             segments: recipe.path_segments.clone(),
+            sectors,
             boundary_guard: recipe.boundary_guard,
             boundary_refine: recipe.boundary_refine,
             retained: BTreeMap::new(),
@@ -244,8 +258,8 @@ impl BurstPart {
             .collect()
     }
 
-    /// 两段在这台相机上都开了逐帧定向、找边参数也相同（D-SB-47）：测量不依赖帧归哪一段（扇区已含相邻段），
-    /// 用到达时那段的定向图测过就不必补测。
+    /// 两段在这台相机上都开了逐帧定向、找边参数与搜索扇区方向也相同（D-SB-47）：测量不依赖帧归哪一段（扇区已含相邻段），
+    /// 用到达时那段的定向图测过就不必补测。扇区方向按段存，两段拖成不同方向时测量图不同，照常补测。
     fn same_heading_graph(&self, camera: usize, a: u32, b: u32) -> bool {
         let key = |index: u32| {
             let segment = self.segments.iter().find(|s| s.index == index)?;
@@ -255,7 +269,7 @@ impl BurstPart {
                 .as_ref()
                 .filter(|o| self.cameras.get(camera) == Some(&o.camera))
                 .and_then(|o| o.edge.clone());
-            Some(edge)
+            Some((edge, self.sectors.get(&(camera, index)).copied()))
         };
         key(a).is_some() && key(a) == key(b)
     }
