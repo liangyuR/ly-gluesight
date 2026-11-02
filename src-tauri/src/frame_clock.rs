@@ -49,6 +49,8 @@ struct Last {
     ts: u64,
     gate: usize,
     origin: u64,
+    /// 这一帧的编号结果
+    stamp: Stamp,
 }
 
 /// 一件内各计划相机的帧编号器。相机下标与计划相机顺序一致。
@@ -108,6 +110,11 @@ impl FrameClock {
         if ts <= track.floor {
             return Stamp::Stale;
         }
+        // 时间戳不晚于上一帧是重复送达（或乱序）：给同一编号交给配组判重复，不开新门控。
+        // 不按半个帧周期放宽：新门控首帧可能紧跟前一门控末帧
+        if let Some(last) = track.last.filter(|last| ts <= last.ts) {
+            return last.stamp;
+        }
         let index =
             |origin: u64| ((ts.saturating_sub(origin)) as f64 / track.period).round() as u64;
         let by_edges = opens.and_then(|opens| {
@@ -149,16 +156,23 @@ impl FrameClock {
             (None, Some(last)) => infer(last),
         };
         let i = index(origin);
-        track.last = Some(Last { ts, gate, origin });
         self.frozen = self.frozen.max(gate);
         if self.slots.len() <= gate {
             self.slots.resize(gate + 1, 0);
         }
-        if gate < self.frozen && i + 1 > self.slots[gate] {
-            return Stamp::Late;
-        }
-        self.slots[gate] = self.slots[gate].max(i + 1);
-        Stamp::Seq(self.slots[..gate].iter().sum::<u64>() + i + 1)
+        let stamp = if gate < self.frozen && i + 1 > self.slots[gate] {
+            Stamp::Late
+        } else {
+            self.slots[gate] = self.slots[gate].max(i + 1);
+            Stamp::Seq(self.slots[..gate].iter().sum::<u64>() + i + 1)
+        };
+        track.last = Some(Last {
+            ts,
+            gate,
+            origin,
+            stamp,
+        });
+        stamp
     }
 
     /// 这台相机本件收到的最后一帧时间戳与帧周期（ns）。
@@ -224,6 +238,27 @@ mod tests {
         );
         assert_eq!(stamp(&mut c, 0, at(g2, 2)), Stamp::ClockBack, "之后都不收");
         assert_eq!(stamp(&mut c, 1, at(g2, 1)), Stamp::Seq(6), "另一台不受影响");
+    }
+
+    /// 防的回归（PR #215 评审）：没有边沿时同一帧重复送达（间隔为 0）被当成新门控首帧，绕过配组的判重复，
+    /// 这台相机之后的编号整体后移，别的相机的正常帧成了冻结门控的越界帧。
+    #[test]
+    fn a_repeated_timestamp_keeps_its_seq_instead_of_opening_a_gate() {
+        let mut c = clock(2, false);
+        let ts = 1_020 * T;
+        assert_eq!(c.stamp(0, ts, None), Stamp::Seq(1));
+        assert_eq!(c.stamp(1, ts, None), Stamp::Seq(1));
+        assert_eq!(
+            c.stamp(0, ts, None),
+            Stamp::Seq(1),
+            "重复帧给同一编号，由配组判重复"
+        );
+        assert_eq!(c.stamp(0, ts + T, None), Stamp::Seq(2));
+        assert_eq!(
+            c.stamp(1, ts + T, None),
+            Stamp::Seq(2),
+            "另一台相机不受影响"
+        );
     }
 
     /// 防的回归：没有新鲜的门控边沿时，按相邻帧间隔判——间隔是帧周期整数倍算同一门控（k ≥ 2 是丢帧），
