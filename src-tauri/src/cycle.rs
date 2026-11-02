@@ -905,6 +905,10 @@ struct Part {
     image_measurement: bool,
     proc_timeout: Duration,
     drain_timeout: Duration,
+    /// Line0 门控（D-SB-54、D-SB-55）：门控开始边沿给帧编号定门控号，关闭边沿判定收尾；模拟测试里为空
+    gate: Option<Arc<crate::gate::Gate>>,
+    /// 看到门控关闭后最多再等的余量；为空时不按门控提前，固定等满 drain_timeout
+    gate_guard: Option<Duration>,
     admitted_at: Instant,
     end_at: Option<Instant>,
     fault: Option<(u16, String)>,
@@ -1899,7 +1903,41 @@ impl Machine {
                     });
                 }
             }
-            let mut burst = burst::BurstPart::arm(&recipe, baselines, policy.trusted);
+            // 帧编号起点（D-SB-55）：接件时锁存各计划相机的时钟作下限，时间戳不大于它的帧属于上一件
+            let first_gate = host.camera.gate().open_count();
+            let starts: Vec<crate::frame_clock::ClockStart> = baselines
+                .iter()
+                .map(|armed| {
+                    let slot = host.camera.slot(armed.cam as usize);
+                    let floor = slot.as_ref().and_then(|s| s.clock_now());
+                    if floor.is_none() {
+                        log(
+                            &app,
+                            "warn",
+                            "相机时钟",
+                            format!(
+                                "接件时读不出相机 {} 的时钟，本件这台相机不判上一件的迟到帧",
+                                armed.camera
+                            ),
+                        );
+                    }
+                    crate::frame_clock::ClockStart {
+                        period_ns: slot
+                            .as_ref()
+                            .map_or(crate::frame_clock::SYNTH_PERIOD_NS as f64, |s| {
+                                s.frame_period_ns()
+                            }),
+                        floor: floor.unwrap_or(0),
+                        anchored: identities.iter().any(|c| {
+                            c.cam == armed.cam
+                                && c.source == Some(crate::frame::CounterSource::Synthetic)
+                        }),
+                        delay_ns: slot.as_ref().map_or(0, |s| s.trigger_delay_ns()),
+                        first_gate,
+                    }
+                })
+                .collect();
+            let mut burst = burst::BurstPart::arm(&recipe, baselines, policy.trusted, &starts);
             burst.collect = collect;
             Box::new(burst)
         };
@@ -1948,6 +1986,8 @@ impl Machine {
             image_measurement: crate::site::image_measurement(&app),
             proc_timeout: settings.timeouts.proc(),
             drain_timeout: settings.timeouts.drain(),
+            gate: Some(host.camera.gate()),
+            gate_guard: settings.timeouts.gate_guard(),
             admitted_at: Instant::now(),
             end_at: None,
             fault: None,
@@ -2116,7 +2156,7 @@ impl Machine {
         self.on_burst_frame(f);
     }
 
-    /// 一帧（D-SB-10）：按帧号配组；接受的帧录制、留预览并送测（所有帧都测，不裁帧）。上一件的迟到帧只记游离帧；
+    /// 一帧（D-SB-55）：按相机时间戳编号后配组；接受的帧录制、留预览并送测（所有帧都测，不裁帧）。上一件的迟到帧只记游离帧；
     /// 重复帧号、帧号越界丢弃并告警；会话变化或计数来源不可信判 ERR 98（`receive_burst` 已记进故障）。
     fn on_burst_frame(&mut self, f: Frame) {
         let app = self.app.clone();
@@ -2210,6 +2250,24 @@ impl Machine {
                     msg,
                     fields,
                 );
+            }
+            burst::Arrival::Late { camera } => {
+                if burst.first_warning(camera, burst::Warning::Late) {
+                    let camera_id = burst.camera_name(camera).to_owned();
+                    log_with(&app, "warn", "迟到帧", format!("相机 {camera_id} 有帧属于已经结束的前一个门控、又超出它的帧组数，已丢弃（本件同类情况不再逐条记录）"), fields(&camera_id, None));
+                }
+            }
+            burst::Arrival::ClockBack { camera } => {
+                if burst.first_warning(camera, burst::Warning::ClockBack) {
+                    let camera_id = burst.camera_name(camera).to_owned();
+                    self.alarm(format!("相机 {camera_id} 的时间戳回退（断电重启或时钟被复位），本件这台相机之后的帧不收，缺的帧组标检测不完整"));
+                }
+            }
+            burst::Arrival::NoClock { camera } => {
+                if burst.first_warning(camera, burst::Warning::NoClock) {
+                    let camera_id = burst.camera_name(camera).to_owned();
+                    self.alarm(format!("相机 {camera_id} 的帧没有相机时间戳，编不了帧号，已丢弃；检查相机的时间戳频率"));
+                }
             }
             burst::Arrival::Fault(reason) => {
                 let data = json!({"reason": "fault", "frameCounter": f.frame_counter});

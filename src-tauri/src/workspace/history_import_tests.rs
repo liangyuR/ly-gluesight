@@ -78,6 +78,7 @@ fn imported_round_frames_stay_readable_after_history_recording_is_deleted() {
                 counter: CounterSource::Synthetic,
                 frame_counter: 100 + seq,
                 trigger_counter: seq,
+                dev_ts: None,
                 lost_packets: 0,
                 ts: 1,
                 manual: false,

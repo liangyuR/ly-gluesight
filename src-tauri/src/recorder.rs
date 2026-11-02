@@ -86,6 +86,9 @@ struct BurstFrameMeta {
     counter: CounterSource,
     frame_counter: u64,
     trigger_counter: u64,
+    /// 相机时间戳（ns，D-SB-55：帧按它编号），离线复核用
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_ts: Option<u64>,
     lost_packets: u32,
     manual: bool,
     width: u32,
@@ -353,6 +356,7 @@ impl Recorder {
             counter: frame.counter,
             frame_counter: frame.frame_counter,
             trigger_counter: frame.trigger_counter,
+            device_ts: frame.dev_ts,
             lost_packets: frame.lost_packets,
             manual: frame.manual,
             width: image.width,

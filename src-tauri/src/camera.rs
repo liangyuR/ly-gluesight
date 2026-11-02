@@ -489,6 +489,8 @@ struct RigShared {
     capture: AtomicBool,
     recipe_capture: Arc<crate::recipe_capture::RecipeCaptureHost>,
     imaging: Mutex<BTreeMap<String, CameraImaging>>,
+    /// 各相机轮询到的 Line0 门控状态（`watch_gate`），收尾用
+    gate: Arc<crate::gate::Gate>,
 }
 
 /// 单台相机的交付通道，取图回调与模拟 / 样本集共用。
@@ -522,6 +524,8 @@ struct Shared {
     /// 海康相机本次打开开上了的 Chunk：触发计数、帧计数
     chunk_trigger: AtomicBool,
     chunk_frame: AtomicBool,
+    /// 相机时间戳频率（Hz，`GevTimestampTickFrequency`），打开时读；0 = 读不到，帧不带相机时间戳
+    tick_hz: AtomicU64,
     /// 旧拍照点模型：三目拼接的拆分布局，段配方不经过（D-SB-11）
     composite_layout: Mutex<Option<crate::recipe_capture::CompositeLayout>>,
 }
@@ -763,6 +767,17 @@ fn chunk_item(entry: &str) -> Option<ChunkItem> {
     }
 }
 
+/// 锁存并读出相机此刻的时钟（ns）；读不了为 None。
+fn latch_clock(d: &mvs::Device, hz: u64) -> Option<u64> {
+    d.command("GevTimestampControlLatch").ok()?;
+    device_ns(d.get_int("GevTimestampValue").ok()?.max(0) as u64, hz)
+}
+
+/// 相机时钟计数换算成纳秒；频率未知（0）或计数为 0 时为 None。
+fn device_ns(ticks: u64, hz: u64) -> Option<u64> {
+    (hz > 0 && ticks > 0).then(|| (u128::from(ticks) * 1_000_000_000 / u128::from(hz)) as u64)
+}
+
 /// 模拟 / 样本集的一帧：帧计数与触发计数都是本会话的帧号。
 fn synthetic_frame(
     cam: u8,
@@ -779,6 +794,7 @@ fn synthetic_frame(
         trigger_counter: n,
         lost_packets: 0,
         ts: now_ms(),
+        dev_ts: Some(n.saturating_mul(crate::frame_clock::SYNTH_PERIOD_NS)),
         manual,
         images,
     }
@@ -795,6 +811,10 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
         let trigger_counter = frame_counter;
         let counter = CounterSource::SdkFrame;
         let session = shared.session.load(Ordering::SeqCst);
+        let dev_ts = device_ns(
+            (u64::from(info.dev_ts_high) << 32) | u64::from(info.dev_ts_low),
+            shared.tick_hz.load(Ordering::Relaxed),
+        );
         let w = if info.extend_width != 0 {
             info.extend_width
         } else {
@@ -813,6 +833,7 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             trigger_counter,
             lost_packets: info.lost_packet,
             ts: now_ms(),
+            dev_ts,
             manual: false,
             images,
         };
@@ -925,6 +946,7 @@ impl CameraSlot {
                 session: AtomicU64::new(0),
                 chunk_trigger: AtomicBool::new(false),
                 chunk_frame: AtomicBool::new(false),
+                tick_hz: AtomicU64::new(0),
                 composite_layout: Mutex::new(if config.view_count == 3 {
                     config.composite_layout.clone()
                 } else {
@@ -1412,6 +1434,54 @@ impl CameraSlot {
         }
     }
 
+    /// 此刻的相机时钟（ns，D-SB-55 接件时的帧下限）：海康锁存读出；模拟 / 样本集为本会话已出帧数 × 合成帧周期
+    /// （与合成时间戳同一口径）。读不到时为 None。
+    pub fn clock_now(&self) -> Option<u64> {
+        match self.config().source {
+            CameraSource::Mvs => {
+                let device = self.device.lock().unwrap();
+                latch_clock(
+                    device.as_ref()?,
+                    self.shared.tick_hz.load(Ordering::Relaxed),
+                )
+            }
+            CameraSource::Sim | CameraSource::SampleSet => Some(
+                self.seq
+                    .lock()
+                    .unwrap()
+                    .saturating_mul(crate::frame_clock::SYNTH_PERIOD_NS),
+            ),
+        }
+    }
+
+    /// 这台相机的触发延时（ns）：只有按 Line0 触发的海康相机设了延时，其余为 0。
+    pub fn trigger_delay_ns(&self) -> u64 {
+        let config = self.config();
+        if config.source == CameraSource::Mvs && config.trigger_source == "Line0" {
+            (f64::from(config.trigger_delay_us.max(0.0)) * 1_000.0) as u64
+        } else {
+            0
+        }
+    }
+
+    /// 这台相机的帧周期（ns）：海康取打开时确认的帧率，模拟 / 样本集为合成帧周期。
+    pub fn frame_period_ns(&self) -> f64 {
+        match self.config().source {
+            CameraSource::Mvs => {
+                let rate = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .configured_frame_rate
+                    .unwrap_or(self.config().frame_rate);
+                1e9 / f64::from(rate.max(0.1))
+            }
+            CameraSource::Sim | CameraSource::SampleSet => {
+                crate::frame_clock::SYNTH_PERIOD_NS as f64
+            }
+        }
+    }
+
     fn close(&self) {
         self.device.lock().unwrap().take();
         self.new_session();
@@ -1466,6 +1536,12 @@ impl CameraSlot {
         self.shared
             .chunk_frame
             .store(chunks.frame, Ordering::Relaxed);
+        self.shared.tick_hz.store(
+            device
+                .get_int("GevTimestampTickFrequency")
+                .map_or(0, |hz| hz.max(0) as u64),
+            Ordering::Relaxed,
+        );
         // 开流前换会话：之后来的帧都算这次打开的
         self.new_session();
         device.start(
@@ -1786,6 +1862,7 @@ impl CameraRig {
                 crate::storage::project(app).join("recipe-capture"),
             )?,
             imaging: Mutex::new(std::mem::take(&mut file.imaging)),
+            gate: Arc::default(),
         });
         let slots = file
             .cameras
@@ -1866,6 +1943,11 @@ impl CameraRig {
 
     pub fn slots(&self) -> Vec<Arc<CameraSlot>> {
         self.slots.read().unwrap().clone()
+    }
+
+    /// Line0 门控状态（D-SB-54），收尾按它提前结束。
+    pub fn gate(&self) -> Arc<crate::gate::Gate> {
+        self.rig.gate.clone()
     }
 
     pub fn slot(&self, cam: usize) -> Option<Arc<CameraSlot>> {
@@ -2020,11 +2102,76 @@ impl CameraRig {
 /// 重连约每 2 s 一次，失败日志按相机聚合的窗口。
 const RECONNECT_LOG_WINDOW: Duration = Duration::from_secs(60);
 
+/// 每台相机一个线程轮询 Line0 门控（D-SB-54）：已打开、按 Line0 触发的海康相机每 `gate::POLL` 读一次 `LineStatusAll`
+/// 的第 0 位，空闲电平按“1 s 没来帧时的电平”学（`gate::LineWatch`），结果交给相机组共用的 `Gate`。没打开、已释放给
+/// MVS、读失败或空闲电平还不知道时去掉这台相机的状态（收尾照旧等满收尾窗口）。门控开始、关闭时锁存这台相机的时钟交给
+/// `Gate`（D-SB-55：帧编号的门控起点、收尾时判定最后一帧）。相机被移出相机组后线程自己结束。
+fn watch_gate(slot: std::sync::Weak<CameraSlot>) {
+    std::thread::spawn(move || {
+        let mut watch = crate::gate::LineWatch::new(Instant::now());
+        let mut was: Option<bool> = None;
+        loop {
+            let Some(s) = slot.upgrade() else { break };
+            let (gate, cam) = (s.shared.rig.gate.clone(), s.shared.cam);
+            let config = s.config();
+            // 拿设备锁之前取帧周期：它要锁配置，`is_ready` 是先锁配置再锁设备，反过来会死锁
+            let period = Duration::from_nanos(s.frame_period_ns() as u64);
+            let usable = config.source == CameraSource::Mvs
+                && config.trigger_source == "Line0"
+                && !s.released.load(Ordering::SeqCst)
+                && !s.shared.disconnected.load(Ordering::SeqCst);
+            let (level, active) = {
+                let device = s.device.lock().unwrap();
+                let level = device
+                    .as_ref()
+                    .filter(|_| usable)
+                    .and_then(|d| d.get_int("LineStatusAll").ok());
+                let now = Instant::now();
+                let active = level.and_then(|bits| {
+                    watch.read(
+                        bits & 1 == 1,
+                        s.shared.frames.load(Ordering::Relaxed),
+                        now,
+                        period,
+                    )
+                });
+                // 边沿时趁还拿着设备锁存相机时钟，离边沿越近越好
+                if let (Some(now_active), Some(before), Some(d)) = (active, was, device.as_ref()) {
+                    if now_active != before {
+                        if let Some(clock) =
+                            latch_clock(d, s.shared.tick_hz.load(Ordering::Relaxed))
+                        {
+                            gate.edge(cam, now_active, clock, now);
+                        }
+                    }
+                }
+                match active {
+                    Some(active) => gate.observe(cam, active, now),
+                    None => gate.forget(cam),
+                }
+                (level, active)
+            };
+            was = active;
+            let idle = level.is_none();
+            drop(s);
+            if idle {
+                watch = crate::gate::LineWatch::new(Instant::now());
+            }
+            std::thread::sleep(if idle {
+                Duration::from_millis(200)
+            } else {
+                crate::gate::POLL
+            });
+        }
+    });
+}
+
 /// 每台相机一个后台循环：海康相机掉线或未打开时每 2 s 重连（已释放给 MVS 的不连）。相机被移出相机组后循环自己结束。
 fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
     if !slot.supervision.start() {
         return;
     }
+    watch_gate(Arc::downgrade(slot));
     let slot = Arc::downgrade(slot);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {

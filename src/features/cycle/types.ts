@@ -282,6 +282,8 @@ export interface Timeouts {
   drainMs: number;
   procMs: number;
   ackMs: number;
+  /** 看到 Line0 门控关闭后再等多久收尾（D-SB-54）；0 = 不提前，固定等满 drainMs */
+  gateGuardMs: number;
 }
 
 export interface CycleSettings {

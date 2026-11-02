@@ -15,7 +15,7 @@
 | S7 专项 | `plc_session` 的交付、复位、心跳及维护隔离用例（真实生产驱动 + 进程内 S7Server）已进默认 `cargo test`；离线模拟产线完整运行需专项验收 |
 | 桌面端到端 | 仅合成图段配方生产落盘：flow 实例内建站、示教、发布、生产、SQLite、原图与历史读回，需要 lyFlow |
 | 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本 |
-| 手动专项 | 长稳测试（需样本集与 lyFlow 运行库，不进 CI）；吞吐探针 `throughput_probe`（见“3 × 25 Hz 吞吐门槛”）；相机事件探测 `camera_event_probe`（现场真机：列出 Line0 高电平门控下相机支持的 GenICam 事件，打印事件与帧的时间线并统计门控结束事件相对最后一帧的延迟，为用事件判定收尾取代固定收尾窗口定方案；运行说明见文件头） |
+| 手动专项 | 长稳测试（需样本集与 lyFlow 运行库，不进 CI）；吞吐探针 `throughput_probe`（见“3 × 25 Hz 吞吐门槛”）；相机事件探测 `camera_event_probe`（现场真机：列出 Line0 高电平门控下相机支持的 GenICam 事件，并轮询 Line0 电平记下每次上升 / 下降沿（锁存相机时钟、读 Line0 跳变计数器），打印边沿、事件与帧的时间线，统计首帧、末帧相对边沿的延迟，为判定收尾取代固定收尾窗口定方案；现场 JHEM131GC-XS 没有事件，靠轮询；运行说明见文件头）。按门控提前收尾（D-SB-54）由 `gate::tests`（门控只在新鲜读数都看到关闭时算关、空闲电平按没来帧时学）与 `cycle::tests::closed_gate_ends_the_drain_after_the_guard_but_an_open_gate_waits_for_the_window` 覆盖 |
 
 默认回归不加载 lyFlow DLL，不替代真实设备或现场节拍验收。
 
@@ -90,7 +90,7 @@ $env:LYFLOW_CORE_DLL = "<运行库目录>\lyflow_core.dll"
 cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval -- <项目目录> <候选编号> <输出目录>
 ```
 
-分段标定工作台（D-SB-44）的默认回归保留 `workspace::capture_review` 的计划修改后复核失效、屏蔽不压缩序号及与示教帧互斥；分段保存按帧范围逐段对应（D-SB-52）由 `segment_corridor_tests::saving_the_segmentation_keeps_corridors_and_params_of_segments_that_did_not_change` 覆盖（加边界、改类型、挪边界时哪些走廊与段参数保留，以及预演列出的清除项）。段不检测（D-SB-53）由 `segmentation::skipped_segment_and_its_guard_frames_are_not_measured_by_any_camera`（整段连同两侧过渡帧划为跳过、任何相机都不量）、`plan` 的计划身份与段约束用例（设为不检测换计划版本；全部不检测、单段不检测报错）和上面的分段保存用例（设为不检测清掉它的走廊、不列为待示教）覆盖。前端 `tests/workbench-draft.test.ts` 和 `tests/segment-workbench.test.tsx` 验证边界编辑、点段名的三态循环、按预演列出影响并确认后一次提交。图像对齐的可信判据（D-SB-51，只用于离线评估）保留 `frame_align::only_distinct_alignment_close_to_proportional_is_trusted`，验证无区分度画面和超出比例容差的结果不判可信。伸缩、丢帧、重复帧下的现场对齐精度需通过下述离线评估验证。
+分段标定工作台（D-SB-44）的默认回归保留 `workspace::capture_review` 的计划修改后复核失效、屏蔽不压缩序号及与示教帧互斥；分段保存按帧范围逐段对应（D-SB-52）由 `segment_corridor_tests::saving_the_segmentation_keeps_corridors_and_params_of_segments_that_did_not_change` 覆盖（加边界、改类型、挪边界时哪些走廊与段参数保留，以及预演列出的清除项）。段不检测（D-SB-53）由 `segmentation::skipped_segment_and_its_guard_frames_are_not_measured_by_any_camera`（整段连同两侧过渡帧划为跳过、任何相机都不量）、`plan` 的计划身份与段约束用例（设为不检测换计划版本；全部不检测、单段不检测报错）和上面的分段保存用例（设为不检测清掉它的走廊、不列为待示教）覆盖。按相机时间戳编号（D-SB-55）由 `frame_clock::tests`（跨门控连续编号、丢帧跳号、时钟回退、没有边沿时按帧间隔判、合成时钟与帧号一致）、`cycle::tests::camera_reopen_during_part_keeps_numbering_by_timestamp` 与 `cycle::tests::drain_ends_at_gate_close_once_every_camera_has_its_last_frame` 覆盖。前端 `tests/workbench-draft.test.ts` 和 `tests/segment-workbench.test.tsx` 验证边界编辑、点段名的三态循环、按预演列出影响并确认后一次提交。图像对齐的可信判据（D-SB-51，只用于离线评估）保留 `frame_align::only_distinct_alignment_close_to_proportional_is_trusted`，验证无区分度画面和超出比例容差的结果不判可信。伸缩、丢帧、重复帧下的现场对齐精度需通过下述离线评估验证。
 
 读该候选 `workspace.json` 的段列表、`boundaryGuard` 与各轮已确认的手动分段（需要有多轮已确认分段的项目数据，如旧流程候选或手工整理的评估项目），逐轮用其余轮次的帧组数均值（`calibrate_counts`）得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；比例评估不读图像，模板图像对齐评估读取采集原图，均不需要 lyFlow。至少要 2 段、2 个已确认轮次。评估结论需附对应数据版本与运行输出，本仓库不保存现场数据与临时验收证据。
 

@@ -28,6 +28,8 @@ pub struct Timeouts {
     pub drain_ms: u64,
     pub proc_ms: u64,
     pub ack_ms: u64,
+    /// 看到 Line0 门控关闭后再等多久就收尾（D-SB-54，帧从曝光到 PC 收到约 39 ms）；0 = 不按门控提前，固定等满 drain_ms
+    pub gate_guard_ms: u64,
 }
 
 impl Default for Timeouts {
@@ -37,6 +39,7 @@ impl Default for Timeouts {
             drain_ms: 1000,
             proc_ms: 3000,
             ack_ms: 5000,
+            gate_guard_ms: 80,
         }
     }
 }
@@ -53,6 +56,10 @@ impl Timeouts {
     }
     pub fn ack(&self) -> Duration {
         Duration::from_millis(self.ack_ms)
+    }
+    /// 按门控提前收尾的余量；关掉时为 None。
+    pub fn gate_guard(&self) -> Option<Duration> {
+        (self.gate_guard_ms > 0).then(|| Duration::from_millis(self.gate_guard_ms))
     }
 }
 
@@ -130,6 +137,9 @@ impl CycleSettings {
         let t = &self.timeouts;
         if t.drain_ms < 200 {
             return Err("收尾等待不能小于 200 ms".into());
+        }
+        if t.gate_guard_ms != 0 && !(40..=t.drain_ms).contains(&t.gate_guard_ms) {
+            return Err("门控关闭后的收尾余量需为 0（不用）或 40 ms 到收尾等待之间".into());
         }
         if !(1..=3650).contains(&self.history_days) {
             return Err("记录保留天数需在 1–3650 之间".into());
