@@ -124,22 +124,10 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(storage_startup::Startup::default());
-            let mut prepared = storage::selected_root().and_then(|root| {
+            let prepared = storage::selected_root().and_then(|root| {
                 storage::prepare(app.handle(), &root)?;
                 Ok(root)
             });
-            if let Ok(root) = &prepared {
-                if storage::initialized(root) {
-                    let loaded = storage::initialize(app.handle(), root.clone()).and_then(|_| {
-                        start_services(app.handle(), root.clone())
-                            .map_err(|error| error.to_string())
-                    });
-                    match loaded {
-                        Ok(()) => return Ok(()),
-                        Err(error) => prepared = Err(error),
-                    }
-                }
-            }
             if let Err(error) = &prepared {
                 eprintln!(
                     "{}",
@@ -149,45 +137,41 @@ pub fn run() {
                     std::process::exit(1);
                 }
             }
+            // 已初始化的资料目录与主窗口共用 WebView 配置，只起一个浏览器进程
             let profile = match &prepared {
+                Ok(root) if storage::initialized(root) => storage::webview(root)?,
                 Ok(root) => storage::webview(&storage::bootstrap_root(root))?,
                 Err(_) => std::env::temp_dir()
                     .join(format!("GlueSight-startup-error-{}", std::process::id())),
             };
             tauri::WebviewWindowBuilder::new(
                 app,
-                "storage-startup",
+                storage_startup::WINDOW,
                 tauri::WebviewUrl::App("storage-startup.html".into()),
             )
-            .title("GlueSight · 资料准备")
-            .inner_size(720.0, 480.0)
+            .title("GlueSight")
+            .inner_size(560.0, 340.0)
             .center()
             .resizable(false)
+            .decorations(false)
+            .background_color(tauri::window::Color(14, 20, 22, 255))
             .visible(!headless(app.handle()))
             .data_directory(profile)
             .build()?;
-            if let Err(error) = prepared {
-                storage_startup::report(app.handle(), error);
-                return Ok(());
-            }
+            let root = match prepared {
+                Ok(root) => root,
+                Err(error) => {
+                    storage_startup::report(app.handle(), error);
+                    return Ok(());
+                }
+            };
+            // 初始化放到后台线程，主线程照常处理启动画面的进度查询
             let app = app.handle().clone();
             std::thread::spawn(move || {
-                let initialized = storage::selected_root().and_then(|root| {
-                    storage::initialize(&app, root.clone())?;
-                    Ok(root)
-                });
-                match initialized {
-                    Ok(root) => {
-                        let ready_app = app.clone();
-                        if let Err(error) = app.run_on_main_thread(move || {
-                            if let Err(error) = start_services(&ready_app, root) {
-                                startup_failed(ready_app, error.to_string());
-                            }
-                        }) {
-                            startup_failed(app, error.to_string());
-                        }
-                    }
-                    Err(error) => startup_failed(app, error),
+                let started = storage::initialize(&app, root.clone())
+                    .and_then(|_| start_services(&app, root).map_err(|error| error.to_string()));
+                if let Err(error) = started {
+                    startup_failed(app, error);
                 }
             });
             Ok(())
@@ -195,6 +179,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             storage_startup::storage_startup_status,
             storage_startup::storage_startup_answer,
+            storage_startup::startup_ready,
             storage_startup::storage_startup_projects,
             storage_startup::storage_startup_open_project,
             storage_startup::storage_startup_create_project,
@@ -370,6 +355,7 @@ fn start_services(
     app: &tauri::AppHandle,
     root: std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    storage_startup::stage(app, 1);
     log_storage::initialize(app)?;
     if let Err(error) = applog::init(app) {
         eprintln!("{error}");
@@ -396,20 +382,32 @@ fn start_services(
     app.manage(production::ProductionHost::default());
     app.manage(offline::OfflineHost::default());
     let site_note = site::restore_choice(app);
+    storage_startup::stage(app, 2);
     app.manage(cycle::CycleHost::init(app)?);
     if let Some(note) = site_note {
         cycle::log(app, "warn", "站点模式", note);
     }
+    storage_startup::stage(app, 3);
     app.manage(workspace::WorkspaceHost::init(app)?);
+    storage_startup::stage(app, 4);
     app.manage(plc::PlcHost::init(app)?);
     commands::log_config(app);
+    storage_startup::stage(app, 5);
+    // 主窗口先隐藏，前端首屏渲染完调 startup_ready 再显示，免得先露出空白窗口
     for config in &app.config().app.windows {
         tauri::WebviewWindowBuilder::from_config(app, config)?
             .data_directory(storage::webview(&root)?)
+            .visible(false)
             .build()?;
     }
-    if let Some(window) = app.get_webview_window("storage-startup") {
-        window.close()?;
+    if headless(app) {
+        storage_startup::ready(app);
+    } else {
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(15));
+            storage_startup::ready(&handle);
+        });
     }
     plc::PlcHost::start_if_configured(app);
     cycle::CycleHost::start(app);
