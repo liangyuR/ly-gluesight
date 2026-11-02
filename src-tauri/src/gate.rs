@@ -74,6 +74,15 @@ impl Gate {
         })
     }
 
+    /// 相机 `cam` 最近一次看到门控开始时锁存的相机时钟（ns）。
+    pub fn last_open(&self, cam: u8) -> Option<u64> {
+        self.clocks
+            .lock()
+            .unwrap()
+            .get(&cam)
+            .and_then(|c| c.opens.back().copied())
+    }
+
     /// 相机 `cam` 最近一次看到门控关闭时锁存的相机时钟（ns）。
     pub fn close_clock(&self, cam: u8) -> Option<u64> {
         self.clocks.lock().unwrap().get(&cam).and_then(|c| c.close)

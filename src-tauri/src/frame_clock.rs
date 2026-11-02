@@ -3,6 +3,7 @@
 //! 一台相机只用自己的时钟：帧身份 = (门控号 g, 门控内序号 i)。门控号与门控起点优先取 Line0 轮询锁存的“门控开始”
 //! 相机时钟（`gate::Gate`）：本件开始后第 n 个开始边沿即第 n − 1 个门控，i = round((时间戳 − 起点) / 帧周期)。
 //! 轮询读数不新鲜时退回按相邻帧间隔判：间隔约为帧周期的整数倍 k 即同一门控、i 加 k（k ≥ 2 是丢了帧），否则开新门控。
+//! 轮询中断时可能漏记边沿：按边沿数得出的门控号比已推断的小时，以帧间隔为准，并记下差额对齐之后的边沿。
 //! seq 在一件内跨门控连续：seq = 前面各门控的槽数之和 + i + 1，门控槽数 = 各相机在该门控见到的最大 i + 1；
 //! 某台相机进入后一个门控时，前面的门控就冻结，不再加槽（迟到的越界帧丢弃）。
 //! 件的边界：时间戳不大于接件时的相机时钟（下限）即上一件的帧。时间戳明显回退说明相机断电或时钟被复位，这台相机本件
@@ -13,6 +14,10 @@ pub const SYNTH_PERIOD_NS: u64 = 100_000_000;
 
 /// 间隔与帧周期整数倍相差在这个比例内算同一门控。
 const PHASE_TOLERANCE: f64 = 0.1;
+
+/// 门控开始边沿锁存的时钟最多比该门控首帧的时间戳晚这么多（轮询 5 ms 加锁存读数；现场实测晚 1.5 ms）。只放宽到这里，
+/// 不放宽到半个帧周期：否则前一门控末帧在途时新门控已开，末帧会被算进新门控（ns）。
+pub const EDGE_SLACK_NS: u64 = 15_000_000;
 
 /// 一帧编号的结果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +40,8 @@ struct Track {
     anchored: bool,
     last: Option<Last>,
     broken: bool,
+    /// 轮询中断漏记的门控开始边沿数：按边沿数得出的门控号要加上它
+    edge_offset: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -76,6 +83,7 @@ impl FrameClock {
                     anchored: s.anchored,
                     last: None,
                     broken: false,
+                    edge_offset: 0,
                 })
                 .collect(),
             slots: Vec::new(),
@@ -106,24 +114,32 @@ impl FrameClock {
             let seen: Vec<u64> = opens
                 .iter()
                 .copied()
-                .filter(|&o| o > track.floor && o <= ts + half)
+                .filter(|&o| o > track.floor && o <= ts + EDGE_SLACK_NS)
                 .collect();
             let origin = *seen.last()?;
             Some((seen.len() - 1, origin))
         });
+        // 按相邻帧间隔推断：间隔是帧周期整数倍为同一门控，否则开新门控
+        let infer = |last: Last| {
+            let ratio = (ts.saturating_sub(last.ts)) as f64 / track.period;
+            let k = ratio.round();
+            if k >= 1.0 && (ratio - k).abs() < PHASE_TOLERANCE {
+                (last.gate, last.origin)
+            } else {
+                (last.gate + 1, ts)
+            }
+        };
         let (gate, origin) = match (by_edges, track.last) {
-            (Some(found), _) => found,
+            (Some((raw, _)), Some(last)) if raw + track.edge_offset < last.gate => {
+                // 边沿记录比已推断的门控少：轮询中断时漏记了边沿，以帧间隔为准，之后的边沿按差额对齐
+                let found = infer(last);
+                track.edge_offset = found.0 - raw;
+                found
+            }
+            (Some((raw, origin)), _) => (raw + track.edge_offset, origin),
             (None, None) if track.anchored => (0, track.floor + track.period as u64),
             (None, None) => (0, ts),
-            (None, Some(last)) => {
-                let ratio = (ts.saturating_sub(last.ts)) as f64 / track.period;
-                let k = ratio.round();
-                if k >= 1.0 && (ratio - k).abs() < PHASE_TOLERANCE {
-                    (last.gate, last.origin)
-                } else {
-                    (last.gate + 1, ts)
-                }
-            }
+            (None, Some(last)) => infer(last),
         };
         let i = index(origin);
         track.last = Some(Last { ts, gate, origin });
@@ -231,6 +247,55 @@ mod tests {
             c.stamp(1, base + 9 * T, None),
             Stamp::Late,
             "前一个门控已冻结：相机 1 的越界帧不收"
+        );
+    }
+
+    /// 防的回归（PR #215 评审）：前一门控末帧在途时新门控已开、边沿已锁存，末帧被按半个帧周期的余地算进新门控，
+    /// 新门控首帧随之成了重复帧被丢；边沿只能比首帧晚轮询与锁存的误差。
+    #[test]
+    fn an_edge_latched_after_an_old_frame_does_not_pull_it_into_the_new_gate() {
+        let mut c = clock(1, false);
+        let (g1, g2) = (
+            2_000 * T / 100 + 1_000 * T,
+            2_130 * T / 100 + 1_000 * T + 1_500_000,
+        );
+        let opens = [g1, g2];
+        assert_eq!(c.stamp(0, at(g1, 0), Some(&opens)), Stamp::Seq(1));
+        assert_eq!(
+            c.stamp(0, at(g1, 1), Some(&opens)),
+            Stamp::Seq(2),
+            "末帧曝光早于新边沿 30 ms：仍属旧门控"
+        );
+        assert_eq!(
+            c.stamp(0, at(g2, 0), Some(&opens)),
+            Stamp::Seq(3),
+            "新门控首帧"
+        );
+    }
+
+    /// 防的回归（PR #215 评审）：轮询卡住期间门控关了又开、边沿没记上，恢复后旧的边沿表把已按帧间隔推断出的新门控拉回旧门控，
+    /// 之后的帧都成了冻结门控的越界帧；之后再记到的边沿要按漏记的差额对齐。
+    #[test]
+    fn missed_edges_during_a_polling_gap_do_not_pull_frames_back_to_an_old_gate() {
+        let mut c = clock(1, false);
+        let g1 = 1_020 * T;
+        assert_eq!(c.stamp(0, at(g1, 0), Some(&[g1])), Stamp::Seq(1));
+        let reopened = g1 + 2_330_000_000;
+        assert_eq!(
+            c.stamp(0, reopened, None),
+            Stamp::Seq(2),
+            "轮询卡住：按间隔开新门控"
+        );
+        assert_eq!(
+            c.stamp(0, reopened + T, Some(&[g1])),
+            Stamp::Seq(3),
+            "边沿表漏了一次开始：以帧间隔为准"
+        );
+        let g3 = reopened + 10 * T;
+        assert_eq!(
+            c.stamp(0, at(g3, 0), Some(&[g1, g3])),
+            Stamp::Seq(4),
+            "下一次边沿按差额对齐成第 3 个门控"
         );
     }
 

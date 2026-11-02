@@ -515,6 +515,12 @@ fn drain_ends_at_gate_close_once_every_camera_has_its_last_frame() {
     assert!(!p.complete(), "相机 2 的第 4 帧（关闭前曝光）还没到：等");
     deliver(&mut p, 2, 4);
     assert!(p.complete(), "三台都到了关闭前的最后一帧：不等余量");
+    // PR #215 评审：又开了一次很短的门控（4.6T 开、4.8T 关），新门控的帧还在路上，前一门控的末帧不能当最后一帧
+    for cam in 0..3 {
+        gate.edge(cam, true, 4 * t + 6 * t / 10);
+        gate.edge(cam, false, 4 * t + 8 * t / 10);
+    }
+    assert!(!p.complete(), "最近一次门控的帧还没到：等");
 }
 
 #[test]

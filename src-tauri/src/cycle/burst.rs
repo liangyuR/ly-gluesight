@@ -425,10 +425,15 @@ impl Part {
         let Some(closed) = gate.closed_since(&self.cams, now) else {
             return false;
         };
+        // 最后一帧还要属于最近一次门控：门控挨得近时，前一门控的末帧也满足“下一次曝光晚于关闭”，而新门控的帧还在路上
         let all_in = self.burst.cams.iter().enumerate().all(|(camera, armed)| {
             match (self.burst.clock.last(camera), gate.close_clock(armed.cam)) {
                 (Some((last, period)), Some(close)) => {
-                    last <= close && last as f64 + period > close as f64
+                    last <= close
+                        && last as f64 + period > close as f64
+                        && gate
+                            .last_open(armed.cam)
+                            .is_none_or(|open| last + crate::frame_clock::EDGE_SLACK_NS >= open)
                 }
                 _ => false,
             }

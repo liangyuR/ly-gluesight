@@ -572,9 +572,9 @@
 - 迁移：用户要求不经并行比对，直接切换。生产配组只用时间戳编号；帧号只留作诊断、手动帧判断与下一件台账（不再决定 seq）；示教采集轮次仍按帧号。
 - 实现：
   - `frame_clock::FrameClock`（编号器，纯逻辑）；`Frame.dev_ts`（海康按 `GevTimestampTickFrequency` 换算成 ns，模拟 / 样本集为帧计数 × 100 ms 的合成时钟）；`CameraSlot::clock_now`（接件时锁存相机时钟作下限）、`frame_period_ns`（打开时确认的帧率）。
-  - `camera::watch_gate` 在门控边沿时锁存相机时钟交给 `gate::Gate`（`opens` 只在这台相机 30 ms 内读过电平时给出，否则编号退回按帧间隔判）。
+  - `camera::watch_gate` 在门控边沿时锁存相机时钟交给 `gate::Gate`（`opens` 只在这台相机 30 ms 内读过电平时给出，否则编号退回按帧间隔判）。帧只归入锁存时钟不晚于其时间戳 15 ms（`EDGE_SLACK_NS`，轮询与锁存误差）的门控开始边沿，前一门控在途的末帧不会被算进刚开的门控；轮询中断漏记边沿、按边沿数得出的门控号小于已按帧间隔推断的门控号时，以帧间隔为准，并记下差额对齐之后的边沿。
   - `Part::receive_burst` 按 `FrameClock::stamp` 编号后交给 `Grouper`（基线恒为 0）；新增到达类型迟到帧（`Late`）、时钟回退（`ClockBack`）、没有时间戳（`NoClock`），都只丢帧并每件每台告警一次。`check_sessions` / `check_observed` 不再因会话变化报故障。
-  - 收尾（`Part::burst_deadline`）：门控关闭、各计划相机最后一帧时间戳 L 都满足 L + 帧周期 > 关闭时锁存的时钟 C 时立即截止；否则按 D-SB-54 等余量。
+  - 收尾（`Part::burst_deadline`）：门控关闭、各计划相机最后一帧时间戳 L 都满足 L + 帧周期 > 关闭时锁存的时钟 C、且 L 属于这台相机最近一次门控（不早于最近一次开始边沿超过 `EDGE_SLACK_NS`）时立即截止；否则按 D-SB-54 等余量。
   - 帧录制 `part.json` 每帧带 `deviceTs`。
 - 待核：现场多件、段间开关门控时的门控对齐与收尾耗时；只测过一次门控。
 - 计划的测试（每条对应一条规则）：
