@@ -189,11 +189,13 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
     use crate::recipe::SegmentCorridor;
     // 防的回归：不检测某段的相机也被送测（没有它在这段的走廊，只能量出检测不完整）；比例边界相对预测边界移动后，
     // 移到另一段或进了过渡区的帧仍用到达时的走廊判定；不等补测完就判定；或原图没留住时把没测的帧当测成；
-    // 两段都开逐帧定向时（D-SB-47，测量不依赖段归属）仍把用相邻段定向图测过的帧拿去补测
-    for (case, keep_images, heading) in [
-        ("原图留住", true, false),
-        ("原图没留住", false, false),
-        ("两段都开逐帧定向", true, true),
+    // 两段都开逐帧定向时（D-SB-47，测量不依赖段归属）仍把用相邻段定向图测过的帧拿去补测；
+    // 两段的搜索扇区拖成不同方向时（测量图不同）却当成同一测量图不补测（PR #218 评审）
+    for (case, keep_images, heading, turned) in [
+        ("原图留住", true, false, false),
+        ("原图没留住", false, false, false),
+        ("两段都开逐帧定向", true, true, false),
+        ("两段都开逐帧定向、扇区方向不同", true, true, true),
     ] {
         let mut doc = crate::recipe::samples_burst();
         doc.segments = vec![
@@ -212,7 +214,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
         doc.inspect[0].segments.push(SegmentCorridor {
             segment: 2,
             corridor,
-            sector_deg: None,
+            sector_deg: turned.then_some(90.0),
         });
         doc.segments
             .iter_mut()
@@ -277,7 +279,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             .collect();
         jobs.sort();
         if keep_images {
-            let expected: &[(usize, u64, u32)] = if heading {
+            let expected: &[(usize, u64, u32)] = if heading && !turned {
                 &[(1, 6, 1), (1, 7, 1), (2, 6, 1), (2, 7, 1)]
             } else {
                 &[(0, 6, 1), (1, 6, 1), (1, 7, 1), (2, 6, 1), (2, 7, 1)]
