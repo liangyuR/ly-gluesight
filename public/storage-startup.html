@@ -33,62 +33,32 @@
     @media (max-width: 600px) { body { padding: 16px; } main { padding: 20px; } }
 
     body.splash-mode { padding: 0; overflow: hidden; user-select: none; cursor: default; }
-    #splash { position: fixed; inset: 0; background: radial-gradient(120% 90% at 30% 35%, rgba(56, 189, 248, .08), transparent 60%), #0e1416; }
-    #splash .art { position: absolute; left: 6%; top: 10%; width: 46%; }
-    #splash svg { width: 100%; display: block; overflow: visible; }
-    .corridor, .corridor-cut, .bead { fill: none; }
-    .corridor { stroke: #80d0df; stroke-width: 178; opacity: .55; }
-    .corridor-cut { stroke: #0e1416; stroke-width: 166; }
-    .bead { stroke: #38bdf8; stroke-width: 70; stroke-linecap: round; }
-    .draw { stroke-dasharray: 1000; stroke-dashoffset: 1000; animation: draw 1.1s cubic-bezier(.55, .1, .35, 1) forwards; }
-    .edges .draw { animation-delay: .25s; }
-    @keyframes draw { to { stroke-dashoffset: 0; } }
-    .nozzle { offset-path: path("M180 700 C250 530 300 500 380 500 C470 500 540 548 630 548 C730 548 790 450 840 280"); offset-rotate: 0deg; animation: travel 1.1s cubic-bezier(.55, .1, .35, 1) forwards; }
-    .nozzle circle { fill: #22c55e; }
-    @keyframes travel { from { offset-distance: 0%; } to { offset-distance: 100%; } }
-    .scan rect { animation: sweep 1.8s cubic-bezier(.45, 0, .55, 1) .25s infinite; transform: translateX(-160px); }
-    @keyframes sweep { from { transform: translateX(-160px); } to { transform: translateX(860px); } }
-    #splash .info { position: absolute; left: 56%; right: 7%; top: 0; bottom: 0; display: flex; flex-direction: column; justify-content: center; gap: 6px; }
-    #splash .name { font-size: 30px; font-weight: 650; letter-spacing: .01em; margin: 0 0 18px; }
-    #stage { font-size: 14px; min-height: 1.4em; margin: 0; }
-    #steps { display: flex; gap: 6px; margin-top: 8px; }
-    #steps i { flex: 1; height: 3px; border-radius: 2px; background: #22323a; position: relative; overflow: hidden; }
-    #steps i::after { content: ""; position: absolute; inset: 0; background: #38bdf8; transform: scaleX(0); transform-origin: left; transition: transform .35s ease; }
-    #steps i.done::after { transform: scaleX(1); }
-    #steps i.now::after { transform: scaleX(.45); animation: pulse 1.1s ease-in-out infinite alternate; }
-    @keyframes pulse { from { opacity: .45; } to { opacity: 1; } }
-    #version { position: absolute; left: 6%; bottom: 14px; color: #8fa5af; font-size: 12px; }
-    @media (prefers-reduced-motion: reduce) { .draw, .nozzle { animation-duration: .01s; animation-delay: 0s; } .scan rect { animation: none; } }
+    #splash { position: fixed; inset: 0; display: flex; flex-direction: column; background: #0f1417; color: #dee3e7; }
+    #splash picture { display: block; flex: 1; min-height: 0; }
+    #splash img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .splash-status { padding: 12px 26px 0; height: 72px; flex: none; }
+    .splash-row { display: flex; align-items: baseline; gap: 12px; }
+    #stage { flex: 1; font-size: 14px; font-weight: 500; }
+    #version, #counter { color: #b3bfc6; font: 12px/1.5 Consolas, monospace; }
+    #steps { display: flex; gap: 5px; margin-top: 9px; }
+    #steps i { flex: 1; height: 3px; border-radius: 2px; background: #344a52; }
+    #steps .active { background: #7fd4f0; }
   </style>
 </head>
 <body class="splash-mode">
-  <div id="splash" role="status" aria-live="polite">
-    <div class="art" aria-hidden="true">
-      <svg viewBox="120 220 790 540">
-        <defs>
-          <path id="bead" d="M180 700 C250 530 300 500 380 500 C470 500 540 548 630 548 C730 548 790 450 840 280" pathLength="1000"/>
-          <linearGradient id="sheen" x1="0" x2="1">
-            <stop offset="0" stop-color="#80d0df" stop-opacity="0"/>
-            <stop offset=".5" stop-color="#e2faff" stop-opacity=".8"/>
-            <stop offset="1" stop-color="#80d0df" stop-opacity="0"/>
-          </linearGradient>
-          <mask id="band"><rect width="1024" height="1024" fill="#000"/><use href="#bead" stroke="#fff" stroke-width="178" fill="none"/></mask>
-        </defs>
-        <g class="edges">
-          <use href="#bead" class="corridor draw"/>
-          <use href="#bead" class="corridor-cut draw"/>
-        </g>
-        <use href="#bead" class="bead draw"/>
-        <g class="scan" mask="url(#band)"><rect y="200" width="150" height="600" fill="url(#sheen)"/></g>
-        <g class="nozzle"><circle r="78"/></g>
-      </svg>
+  <div id="splash" lang="en">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="startup-iris-still.webp">
+      <img src="startup-iris.webp" width="560" height="268" alt="GlueSight — Glue path inspection">
+    </picture>
+    <div class="splash-status">
+      <div class="splash-row">
+        <span id="stage" role="status">Starting…</span>
+        <span id="version"></span>
+        <span id="counter"></span>
+      </div>
+      <div id="steps" aria-hidden="true"></div>
     </div>
-    <div class="info">
-      <p class="name">GlueSight</p>
-      <p id="stage">正在启动…</p>
-      <div id="steps"></div>
-    </div>
-    <span id="version"></span>
   </div>
   <main aria-labelledby="title" hidden>
     <p class="brand">GlueSight · 胶路智检</p>
@@ -136,6 +106,7 @@
       const stage = document.getElementById("stage");
       const steps = document.getElementById("steps");
       const version = document.getElementById("version");
+      const counter = document.getElementById("counter");
 
       function invoke(command, args) {
         if (!window.__TAURI_INTERNALS__ || typeof window.__TAURI_INTERNALS__.invoke !== "function") {
@@ -157,9 +128,10 @@
         main.hidden = splashMode;
         if (state) {
           stage.textContent = state.stage + "…";
+          counter.textContent = String(state.step + 1).padStart(2, "0") + " / " + String(state.steps).padStart(2, "0");
           version.textContent = state.version ? "v" + state.version : "";
           if (steps.children.length !== state.steps) steps.replaceChildren(...Array.from({ length: state.steps }, () => document.createElement("i")));
-          [...steps.children].forEach((bar, i) => { bar.className = i < state.step ? "done" : i === state.step ? "now" : ""; });
+          [...steps.children].forEach((bar, i) => bar.classList.toggle("active", i <= state.step));
         }
         title.textContent = state ? state.title : "正在初始化资料目录";
         message.textContent = state ? state.message : "正在读取存储状态，请稍候。";

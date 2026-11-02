@@ -154,7 +154,7 @@ pub fn run() {
             .center()
             .resizable(false)
             .decorations(false)
-            .background_color(tauri::window::Color(14, 20, 22, 255))
+            .background_color(tauri::window::Color(15, 20, 23, 255))
             .visible(!headless(app.handle()))
             .data_directory(profile)
             .build()?;
