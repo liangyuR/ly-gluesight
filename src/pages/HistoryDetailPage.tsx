@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import { Alert, Card, IconButton, Stack, StatusBadge, Text } from "qing-steel";
-import { displayReason, formatTime, historyApi, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, type HistoryQuery, type PartDetail } from "../features/history";
+import { displayReason, formatTime, historyApi, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, type HistoryDetailState, type PartDetail } from "../features/history";
 import BurstHistoryDetail from "../features/history/components/BurstDetail";
 import { subscribe } from "../features/plc";
 import { Panel } from "../features/workspace/components";
@@ -13,7 +13,9 @@ type Neighbors = { older: number | null; newer: number | null };
 
 export default function HistoryDetailPage() {
   const { id } = useParams(), navigate = useNavigate(), location = useLocation();
-  const listQuery = (location.state as { query?: HistoryQuery } | null)?.query ?? null;
+  const state = location.state as HistoryDetailState | null;
+  const listQuery = state?.query ?? null;
+  const back = { onBack: () => navigate(state?.returnTo?.path ?? "/history"), backLabel: state?.returnTo?.label ?? "返回历史列表" };
   const [neighbors, setNeighbors] = useState<Neighbors>({ older: null, newer: null });
   const [detail, setDetail] = useState<PartDetail | null>(null);
   const [error, setError] = useState("");
@@ -39,18 +41,18 @@ export default function HistoryDetailPage() {
 
   const openPart = (target: number | null) => { if (target != null) navigate("/history/" + target, { state: location.state }); };
   if (!detail) return error ? <Alert tone="ng">{error}</Alert> : <Text muted>加载中…</Text>;
-  if (detail.burst) return <BurstHistoryDetail detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} onBack={() => navigate("/history")} />;
-  return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} onBack={() => navigate("/history")} />;
+  if (detail.burst) return <BurstHistoryDetail detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} {...back} />;
+  return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} {...back} />;
 }
 
 /** 没有帧记录的记录（如工件身份分配失败）：只有整件结论与追溯信息。 */
-function PlainHistoryDetail({ detail, neighbors, onOpen, onBack }: { detail: PartDetail; neighbors: Neighbors; onOpen: (target: number | null) => void; onBack: () => void }) {
+function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel }: { detail: PartDetail; neighbors: Neighbors; onOpen: (target: number | null) => void; onBack: () => void; backLabel: string }) {
   const s = detail.summary;
   return <div className="stack hist-detail">
     <Card className="detail-head">
       <Stack gap={12} justify="space-between">
         <Stack gap={12}>
-          <IconButton onClick={onBack} aria-label="返回历史列表"><ArrowLeft size={18} /></IconButton>
+          <IconButton onClick={onBack} aria-label={backLabel} title={backLabel}><ArrowLeft size={18} /></IconButton>
           <span className="detail-step">
             <IconButton aria-label="前一件" title="前一件" disabled={neighbors.older == null} onClick={() => onOpen(neighbors.older)}><ChevronLeft size={18} /></IconButton>
             <IconButton aria-label="后一件" title="后一件" disabled={neighbors.newer == null} onClick={() => onOpen(neighbors.newer)}><ChevronRight size={18} /></IconButton>

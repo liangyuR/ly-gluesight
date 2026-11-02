@@ -107,6 +107,7 @@ it("保存期间继续加点 → 不锁编辑、缩放与走廊不重置，保�
   mockSite(candidate, { workspace_save_doc: savingDoc(candidate, saving.promise) });
   const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
   const image = await screen.findByRole("img", { name: CAM2 });
+  fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
   await user.click(screen.getByRole("button", { name: "放大原图" }));
   const transform = image.querySelector("g")!.getAttribute("transform");
   for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
@@ -178,6 +179,7 @@ it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保�
   mockSite(candidate, { workspace_save_doc: savingDoc(candidate, saving.promise) });
   renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
   const image = await screen.findByRole("img", { name: CAM2 });
+  fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
   for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
     fireEvent.pointerDown(image, { clientX, clientY });
     fireEvent.pointerUp(image);
@@ -197,6 +199,29 @@ it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保�
   expect(saves[1].revision).toBe(saves[0].revision + 1);
 });
 
+// 防的回归：走廊还等着自动保存时点“全段试测”，按钮要么跟着保存变灰（每改一下界面闪一次），要么拿保存前的旧走廊去试测
+it("刚改了走廊、还没自动保存就点全段试测 → 立即保存，存好后按保存后的走廊试测一次", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate();
+  mockSite(candidate, {
+    workspace_save_doc: savingDoc(candidate),
+    workspace_teach_preview_segment: () => ({ start: 1, end: 6, frames: [] }),
+  });
+  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
+  for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
+    fireEvent.pointerDown(image, { clientX, clientY });
+    fireEvent.pointerUp(image);
+  }
+  const trial = screen.getByRole("button", { name: "全段试测" });
+  expect(trial).toBeEnabled();
+  await user.click(trial);
+  await waitFor(() => expect(calls("workspace_teach_preview_segment")).toHaveLength(1));
+  const order = vi.mocked(invoke).mock.calls.map(([name]) => name).filter(name => name === "workspace_save_doc" || name === "workspace_teach_preview_segment");
+  expect(order).toEqual(["workspace_save_doc", "workspace_teach_preview_segment"]);
+});
+
 it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在这一段的示教帧上提取一次", async () => {
   stubSvgPointer({ pointerEvent: true });
   const candidate = corridorCandidate();
@@ -206,6 +231,7 @@ it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引�
   });
   const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
   const image = await screen.findByRole("img", { name: CAM2 });
+  fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
   fireEvent.pointerDown(image, { clientX: 10, clientY: 10 });
   fireEvent.pointerUp(image);
   await user.click(screen.getByRole("button", { name: "自动提取走廊" }));

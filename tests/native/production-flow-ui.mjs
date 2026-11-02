@@ -110,8 +110,8 @@ async function verifyBurstDisk(root, project, detail, facts) {
 }
 
 /**
- * 段配方一件的生产落盘（合成图三相机）：建站时先发布采集版，由 capture_fixture 把合成图手动配置数据写成仿历史录制件，经历史件选择器选示教件、
- * 标定件与验证件；走廊示教、标定、验证、发布用真实 lyFlow 测量（每帧测量必须有引擎），投产在离线·合成图下用模拟测量。
+ * 段配方一件的生产落盘（合成图三相机）：建站时先发布采集版，由 capture_fixture 把合成图手动配置数据写成仿历史录制件，经历史件选择器选示教件
+ * 与验证件；走廊示教、测量示教件、验证、发布用真实 lyFlow 测量（每帧测量必须有引擎），投产在离线·合成图下用模拟测量。
  * flow 实例保留资料，开始前清掉上一次留下的同名候选与配方。
  */
 async function runBurstStage(page, invokeRead, navigation, ctx) {
@@ -160,7 +160,7 @@ async function runBurstStage(page, invokeRead, navigation, ctx) {
     assert.equal(image.bytes, 16 + image.width * image.height);
     assert(image.sourceWidth > 0 && image.sourceHeight > 0);
   }
-  return { recipeId: burstId, expected, calibration: { rounds: built.calibration.rounds.length, groupCounts: built.calibration.rounds.filter(r => !r.standard).map(r => r.groupCount) }, summary, facts, disk };
+  return { recipeId: burstId, expected, teaching: { sn: built.calibration.piece.sn, groupCount: built.calibration.piece.groupCount }, summary, facts, disk };
 }
 
 export async function runProductionFlow(page, options = {}) {

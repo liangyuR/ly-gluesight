@@ -13,6 +13,7 @@ mod windows;
 pub type Handle = *mut c_void;
 pub type ImageCallback = extern "system" fn(*mut u8, *mut FrameInfo, *mut c_void);
 pub type ExceptionCallback = extern "system" fn(c_uint, *mut c_void);
+pub type EventCallback = extern "system" fn(*mut EventInfo, *mut c_void);
 
 pub const MV_GIGE_DEVICE: c_uint = 0x1;
 pub const MV_USB_DEVICE: c_uint = 0x4;
@@ -108,6 +109,37 @@ pub struct FrameInfo {
     pub extend_height: u32,
 }
 
+/// MV_EVENT_OUT_INFO：GenICam 事件通知（相机经 GigE 消息通道发来）。帧块号与时间戳是相机侧的值。
+#[repr(C)]
+pub struct EventInfo {
+    pub name: [c_char; 128],
+    pub event_id: u16,
+    pub stream_channel: u16,
+    pub block_id_high: u32,
+    pub block_id_low: u32,
+    pub ts_high: u32,
+    pub ts_low: u32,
+    pub data: *mut c_void,
+    pub data_size: u32,
+    reserved: [u32; 16],
+}
+
+impl EventInfo {
+    pub fn event_name(&self) -> String {
+        unsafe { CStr::from_ptr(self.name.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    pub fn block_id(&self) -> u64 {
+        (u64::from(self.block_id_high) << 32) | u64::from(self.block_id_low)
+    }
+
+    pub fn timestamp(&self) -> u64 {
+        (u64::from(self.ts_high) << 32) | u64::from(self.ts_low)
+    }
+}
+
 #[repr(C)]
 struct FloatValue {
     cur: f32,
@@ -160,6 +192,9 @@ type FnCommand = unsafe extern "system" fn(Handle, *const c_char) -> i32;
 type FnGetEnum = unsafe extern "system" fn(Handle, *const c_char, *mut EnumValue) -> i32;
 type FnGetEnumEntry = unsafe extern "system" fn(Handle, *const c_char, *mut EnumEntry) -> i32;
 type FnVersion = unsafe extern "system" fn() -> c_uint;
+type FnEventOn = unsafe extern "system" fn(Handle, *const c_char) -> i32;
+type FnRegEvent =
+    unsafe extern "system" fn(Handle, *const c_char, EventCallback, *mut c_void) -> i32;
 
 pub struct Api {
     _lib: Library,
@@ -188,6 +223,9 @@ pub struct Api {
     command: FnCommand,
     get_enum: FnGetEnum,
     get_enum_entry: FnGetEnumEntry,
+    /// 事件通知（目前只有探测程序用）：旧版 SDK 没有时为 None，不影响取图
+    event_on: Option<FnEventOn>,
+    register_event: Option<FnRegEvent>,
     pub version: String,
     pub library_path: PathBuf,
 }
@@ -269,6 +307,14 @@ impl Api {
             command: sym!("MV_CC_SetCommandValue"),
             get_enum: sym!("MV_CC_GetEnumValue"),
             get_enum_entry: sym!("MV_CC_GetEnumEntrySymbolic"),
+            event_on: lib
+                .get::<FnEventOn>(b"MV_CC_EventNotificationOn\0")
+                .ok()
+                .map(|s| *s),
+            register_event: lib
+                .get::<FnRegEvent>(b"MV_CC_RegisterEventCallBackEx\0")
+                .ok()
+                .map(|s| *s),
             version: String::new(),
             library_path,
             finalize,
@@ -530,6 +576,27 @@ impl Device {
     pub fn optimal_packet_size(&self) -> Option<i64> {
         let size = unsafe { (self.api.optimal_packet_size)(self.handle) };
         (size > 0).then_some(size as i64)
+    }
+
+    /// 打开一个 GenICam 事件的通知并注册回调（须在开始取流前）。`user` 必须在相机关闭前保持有效。
+    pub fn on_event(
+        &self,
+        name: &str,
+        callback: EventCallback,
+        user: *mut c_void,
+    ) -> Result<(), String> {
+        let (Some(on), Some(register)) = (self.api.event_on, self.api.register_event) else {
+            return Err(format!("MVS {} 没有事件通知接口", self.api.version));
+        };
+        let k = Self::key(name);
+        check(
+            unsafe { on(self.handle, k.as_ptr()) },
+            &format!("打开事件 {name} 的通知"),
+        )?;
+        check(
+            unsafe { register(self.handle, k.as_ptr(), callback, user) },
+            &format!("注册事件 {name} 的回调"),
+        )
     }
 
     /// `user` 必须在相机关闭前保持有效。

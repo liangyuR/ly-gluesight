@@ -78,17 +78,17 @@ pub enum OffsetMeasure {
     AbsoluteX,
 }
 
-/// 胶偏参考（只在 Straight 段）。x_ref / spread 由标准件多轮采集算出，不能手填。
+/// 胶偏参考（只在 Straight 段）。x_ref / spread 由测量示教件算出（示教件兼作标准件），不能手填。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OffsetRef {
     pub measure: OffsetMeasure,
     /// 用哪台相机的帧测（三台相机几何不同，不能共用 x_ref）；必须属于计划相机，默认第一台
     pub camera: String,
-    /// 标准件多轮 x 均值（mm）；None = 未标定（ToEdge 恒为 None）
+    /// 示教件 x 均值（mm）；None = 还没测量示教件
     #[serde(default)]
     pub x_ref: Option<f64>,
-    /// 标准件多轮 x 的 max − min（mm），与 x_ref 同时有值
+    /// 参与件 x 的 max − min（mm，只有示教件一件时为 0），与 x_ref 同时有值
     #[serde(default)]
     pub spread: Option<f64>,
     /// ToEdge 的找边参数（D-SB-48）；AbsoluteX 必须为 None
@@ -130,7 +130,7 @@ impl Default for HeadingSettings {
     }
 }
 
-/// 多轮采集的帧组数统计，供容差建议与追溯。
+/// 帧组数统计（取自示教件，一件），供追溯。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SegmentCalib {
@@ -159,7 +159,7 @@ pub struct PathSegment {
     /// 机器人工程师提供的段长（mm），只用于估算和未检区域
     #[serde(default)]
     pub length_mm: Option<f64>,
-    /// N_exp：只能由多轮采集写入，None = 待标定（待分段算法）
+    /// N_exp：取示教件已确认分段的帧组数，None = 示教件分段未确认
     #[serde(default)]
     pub expected_frames: Option<u32>,
     /// 帧数容差，默认 1
@@ -183,10 +183,17 @@ pub struct PathSegment {
     /// 逐帧定向（D-SB-47）；None = 关闭，照旧用示教走廊
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heading: Option<HeadingSettings>,
+    /// 不检测（D-SB-53）：照常计入帧数与分段，没有检测相机、不测不判，结果列为未检区域；类型、检测相机与检测项保留，
+    /// 取消后恢复
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip: bool,
 }
 
-/// 一段实际参与判定的相机（按计划相机顺序）：段没指定时为全部计划相机。
+/// 一段实际参与判定的相机（按计划相机顺序）：段没指定时为全部计划相机；不检测的段没有。
 pub fn segment_cameras(segment: &PathSegment, plan_cameras: &[String]) -> Vec<String> {
+    if segment.skip {
+        return Vec::new();
+    }
     plan_cameras
         .iter()
         .filter(|camera| segment.cameras.is_empty() || segment.cameras.contains(camera))
@@ -237,8 +244,8 @@ pub fn arrival_corridor(
     detects(segments, index, plan_cameras.get(camera)?, plan_cameras).then_some(index)
 }
 
-/// 整件标定：多轮采集统计整件帧组数（不依赖分段）。本轮各段 N_exp 可以为 None，
-/// 多段配方凭它得到 expected_total 并发布（决策补充“多段配方的发布与运行”）。
+/// 整件标定：整件帧组数统计（不依赖分段）。候选不再写入（N_exp 逐段取自示教件）；已发布的旧配方里可能有，
+/// 各段 N_exp 不全时凭它得到 expected_total。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PartCalib {
@@ -275,16 +282,20 @@ impl Default for KindDefaults {
         };
         Self {
             straight: KindDefault {
-                tolerance: 1,
+                tolerance: 2,
                 checks: checks(Some(OffsetCheck { enabled: true, max_mean_shift_mm: 2.0, max_local_dev_mm: 2.0 })),
             },
-            corner: KindDefault { tolerance: 1, checks: checks(None) },
+            corner: KindDefault {
+                tolerance: 2,
+                checks: checks(None),
+            },
         }
     }
 }
 
 /// 计划身份：相等即沿用 plan_version，不等则配方库分配新版本。
-/// 组成：产品代码 + 各段 (index, kind, expected_frames, 检测相机) + 有序相机 + expected_total（段检测相机按 D-SB-41 进入身份）。
+/// 组成：产品代码 + 各段 (index, kind, expected_frames, 检测相机) + 有序相机 + expected_total（段检测相机按 D-SB-41 进入身份；
+/// 不检测的段没有检测相机，设为不检测或取消即换计划版本，D-SB-53）。
 /// 限值、容差、x_ref、inspect_range、length_mm 不参与（规格 §1）；N_exp / expected_total 参与（默认做法 6）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanIdentity {
@@ -392,7 +403,7 @@ pub fn validate_defaults(defaults: &KindDefaults) -> Result<(), String> {
 }
 
 /// 段列表的模型约束（规格 §1/§5）：至少一段（空段列表是旧拍照点配方，不经过本函数）；index 从 1 连续；cameras 恰好 3 个且不重复；Corner 段不得带 offset / offset_ref；
-/// 段检测相机是计划相机的子集且不重复（空为全部）；offset_ref.camera 属于该段的检测相机；启用的检测项限值合法（见 `validate_checks`）；length_mm 有值时 > 0；
+/// 段检测相机是计划相机的子集且不重复（空为全部）；offset_ref.camera 属于该段的检测相机（不检测的段不查）；至少一段检测；启用的检测项限值合法（见 `validate_checks`）；length_mm 有值时 > 0；
 /// inspect_range 满足 0 ≤ a < b，有段长时 b ≤ length_mm；tolerance ≤ 1000；ΣN_exp ≤ 32767。
 pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result<(), String> {
     if cameras.len() != PLAN_CAMERAS {
@@ -431,7 +442,7 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
             ));
         }
         if let Some(offset_ref) = &segment.offset_ref {
-            if !segment_cameras(segment, cameras).contains(&offset_ref.camera) {
+            if !segment.skip && !segment_cameras(segment, cameras).contains(&offset_ref.camera) {
                 return Err(format!(
                     "第 {index} 段胶偏参考相机 {} 不在该段检测相机中",
                     offset_ref.camera
@@ -496,6 +507,13 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
     }
     if frames > MAX_EXPECTED_TOTAL as u64 {
         return Err(format!("各段预期帧数之和 {frames} 超过 PLC shotCount 上限 {MAX_EXPECTED_TOTAL}"));
+    }
+    if segments.iter().all(|s| s.skip) {
+        return Err(if segments.len() == 1 {
+            "单段配方不能设为不检测".into()
+        } else {
+            "至少要有一段检测，不能全部设为不检测".into()
+        });
     }
     Ok(())
 }
@@ -588,6 +606,7 @@ pub fn new_segment(index: u32, kind: SegmentKind, defaults: &KindDefaults) -> Pa
         skip_head: 0,
         skip_tail: 0,
         heading: Some(HeadingSettings::default()),
+        skip: false,
     }
 }
 
@@ -680,7 +699,7 @@ mod tests {
     #[test]
     fn plan_identity_changes_only_with_sequence_kind_frames_cameras_or_product() {
         let base = identity(&plan());
-        let cases: [(&str, bool, Edit); 16] = [
+        let cases: [(&str, bool, Edit); 17] = [
             ("段类型", true, |p| p.segments[2].kind = Corner),
             ("段顺序", true, |p| {
                 p.segments.swap(0, 1);
@@ -699,6 +718,8 @@ mod tests {
             ("段检测相机", true, |p| {
                 p.segments[1].cameras = vec!["camB".into()]
             }),
+            // D-SB-53：不检测的段没有检测相机，生产按它选走廊与取相机，要换计划版本
+            ("段设为不检测", true, |p| p.segments[1].skip = true),
             (
                 "段检测相机列全三台（与不指定相同）",
                 false,
@@ -735,7 +756,15 @@ mod tests {
     fn invalid_segment_plans_are_rejected() {
         let check = |p: &Plan| validate_segments(&p.segments, &p.cameras);
         assert_eq!(check(&plan()), Ok(()));
-        let accepted: [(&str, Edit); 3] = [
+        let accepted: [(&str, Edit); 4] = [
+            // D-SB-53：不检测的段保留原来的检测相机与胶偏参考，取消后恢复；它不判胶偏，不核对参考相机
+            (
+                "不检测的段胶偏参考相机不在保留的检测相机里",
+                |p| {
+                    p.segments[0].skip = true;
+                    p.segments[0].cameras = vec!["camB".into()];
+                },
+            ),
             ("容差 1000、ΣN_exp 32767 恰在上限", |p| {
                 p.segments[0].tolerance = MAX_TOLERANCE;
                 p.segments[0].expected_frames = Some(MAX_EXPECTED_TOTAL - 4 - 9);
@@ -755,8 +784,15 @@ mod tests {
         for (case, edit) in accepted {
             assert_eq!(check(&edited(edit)), Ok(()), "{case}");
         }
-        let cases: [(&str, Edit); 33] = [
+        let cases: [(&str, Edit); 35] = [
             ("没有段", |p| p.segments.clear()),
+            ("全部段不检测", |p| {
+                p.segments.iter_mut().for_each(|s| s.skip = true)
+            }),
+            ("单段配方设为不检测", |p| {
+                p.segments.truncate(1);
+                p.segments[0].skip = true;
+            }),
             ("序号不从 1 起", |p| p.segments.iter_mut().for_each(|segment| segment.index += 1)),
             ("序号跳号", |p| p.segments[2].index = 4),
             ("相机只有 2 台", |p| {

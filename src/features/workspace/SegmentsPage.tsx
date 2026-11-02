@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Button, NumberField, Tabs } from "qing-steel";
 import type { PathSegment, WorkspacePlanView } from "../plan/types";
 import type { WorkspaceView } from "./types";
-import { expectedText, PLAN_CAMERAS, segmentKindLabel } from "../plan/vis";
+import { expectedText, PLAN_CAMERAS, segmentLabel } from "../plan/vis";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
@@ -21,7 +21,7 @@ const saveText: Record<SaveState, string> = { saved: "段列表已保存", pendi
 
 /**
  * 段列表（段配方，路由 /recipe/segments）：顶部分段标定工作台（SegmentWorkbench）按示教件图像定段结构与边界；
- * 下方设各段长度、帧数容差与跳过帧数；逐帧定向、检测项与胶偏参考在走廊示教页。预期帧数 N_exp 与标定统计只读：只能由多轮采集得出（多轮标定页）。
+ * 下方设各段长度、帧数容差与跳过帧数；逐帧定向、检测项与胶偏参考在走廊示教页。预期帧数 N_exp 只读：取自示教件已确认分段的帧组数。
  */
 export default function SegmentsPage() {
   const { data, doc, selectedId } = useWorkspace();
@@ -100,7 +100,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
 
   return <div className="wp-page"><WorkspaceBar />
     <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
-    <Panel title="段列表" help="各段帧数容差、长度与跳过帧数；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数由多轮采集得出，这里只读"
+    <Panel title="段列表" help="各段帧数容差、长度与跳过帧数；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数取自示教件分段，这里只读"
       actions={<>
         <BoundaryGuardField locked={docLocked && `${docLocked}边界过渡帧数`} />
         <BoundaryRefineField locked={docLocked && `${docLocked}边界细化`} available={segments.some(segment => !!segment.heading)} />
@@ -115,20 +115,18 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
         <Tabs label="段" value={String(current)} onValueChange={value => setTab(Number(value))}
           items={segments.map((segment, at) => ({
             value: String(at),
-            label: `段 ${segment.index} · ${segmentKindLabel[segment.kind]}`,
+            label: `段 ${segment.index} · ${segmentLabel(segment)}`,
             content: <SegmentCard segment={segment} cameras={plan.cameras} disabled={cardsLocked}
               onPatch={change => patch(at, change)} />,
           }))} />
       </div>
     </Panel>
-    <Panel title="整件预期帧数" help="各段预期帧数之和；各段都待标定时取整件多轮采集的帧组数均值">
+    <Panel title="整件预期帧数" help="各段预期帧数之和，取自示教件已确认分段的帧组数">
       <div className="seg-total">
         <strong aria-label="整件预期总帧数">{expectedText(plan.expectedTotal, plan.toleranceTotal)}</strong>
         <span className="muted">ΣN_exp ± Σtol{plan.cameras.length !== PLAN_CAMERAS && `（需要 ${PLAN_CAMERAS} 台相机，当前 ${plan.cameras.length} 台）`}</span>
-        {plan.expectedTotal == null
-          ? <Badge tone="warn">待标定{pending.length > 0 && "：" + pending.map(index => `段 ${index}`).join("、")}</Badge>
-          : pending.length > 0 && <Badge tone="neutral">{pending.map(index => `段 ${index}`).join("、")} 待逐段标定，运行时按整件核对帧数</Badge>}
-        <Link className="wp-progress-link" to="/recipe/calibration">前往多轮标定</Link>
+        {plan.expectedTotal == null && <Badge tone="warn">待示教件分段{pending.length > 0 && "：" + pending.map(index => `段 ${index}`).join("、")}</Badge>}
+        <Link className="wp-progress-link" to="/recipe/calibration">前往试测</Link>
       </div>
       <p className="muted">新建段时，检测项与帧数容差沿用同类型已有段的设置；检测项可在走廊示教页用“检测项套用到其余同类段”一次改齐。</p>
     </Panel>
@@ -141,7 +139,7 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: { segment: PathSeg
   const inspecting = segmentCameras(segment, cameras);
   return <section className="seg-card" aria-label={name}>
     <div className="seg-card-head">
-      <strong>{name} · {segmentKindLabel[segment.kind]}</strong>
+      <strong>{name} · {segmentLabel(segment)}</strong>
       <Badge tone={segment.expectedFrames == null ? "warn" : "ok"}>{segment.expectedFrames == null ? "待标定" : `预期 ${segment.expectedFrames} ± ${segment.tolerance} 帧`}</Badge>
       <span className="muted plan-mono" aria-label={`${name} 检测相机`}>检测相机 {inspecting.join(" · ")}</span>
     </div>

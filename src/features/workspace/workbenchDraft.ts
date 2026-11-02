@@ -9,12 +9,18 @@ export interface WorkbenchDraft {
   groupCount: number;
   cuts: number[];
   kinds: SegmentKind[];
-  /** 各段检测相机（D-SB-41），按计划相机顺序列出实际参与判定的几台，不为空 */
+  /** 各段检测相机（D-SB-41），按计划相机顺序列出选中的几台，不为空；段不检测时保留，取消后恢复 */
   cameras: string[][];
+  /** 各段是否不检测（D-SB-53） */
+  skips: boolean[];
 }
 
-/** 一段实际参与判定的相机：段没指定（空）时为全部计划相机（后端 plan::segment_cameras）。 */
-export const segmentCameras = (segment: Pick<PathSegment, "cameras">, planCameras: string[]) =>
+/** 一段实际参与判定的相机：段没指定（空）时为全部计划相机，不检测的段没有（后端 plan::segment_cameras）。 */
+export const segmentCameras = (segment: Pick<PathSegment, "cameras" | "skip">, planCameras: string[]) =>
+  segment.skip ? [] : planCameras.filter(camera => !segment.cameras?.length || segment.cameras.includes(camera));
+
+/** 段选中的检测相机（不管是否不检测）：工作台显示与恢复用。 */
+const chosenCameras = (segment: Pick<PathSegment, "cameras">, planCameras: string[]) =>
   planCameras.filter(camera => !segment.cameras?.length || segment.cameras.includes(camera));
 
 /** 各段的帧组范围 [first, last]（含两端）。 */
@@ -26,22 +32,24 @@ export function spans(draft: WorkbenchDraft): [number, number][] {
 /** 起始草稿：本轮已有且与段数相符、未失效的边界原样带入；否则按段数等分。段类型与检测相机取现有段列表。 */
 export function initialDraft(groupCount: number, segments: PathSegment[], planCameras: string[], saved?: { cuts: number[]; status: string } | null): WorkbenchDraft {
   const kinds = segments.map(s => s.kind);
-  const cameras = segments.map(s => segmentCameras(s, planCameras));
-  if (saved && saved.status !== "stale" && saved.cuts.length === kinds.length - 1 && valid({ groupCount, cuts: saved.cuts, kinds, cameras })) {
-    return { groupCount, cuts: [...saved.cuts], kinds, cameras };
+  const cameras = segments.map(s => chosenCameras(s, planCameras));
+  const skips = segments.map(s => !!s.skip);
+  if (saved && saved.status !== "stale" && saved.cuts.length === kinds.length - 1 && valid({ groupCount, cuts: saved.cuts, kinds, cameras, skips })) {
+    return { groupCount, cuts: [...saved.cuts], kinds, cameras, skips };
   }
   const count = Math.max(1, Math.min(kinds.length, groupCount));
   const cuts = Array.from({ length: count - 1 }, (_, i) => Math.round(groupCount * (i + 1) / count));
-  return { groupCount, cuts, kinds: kinds.slice(0, count), cameras: cameras.slice(0, count) };
+  const draft = { groupCount, cuts, kinds: kinds.slice(0, count), cameras: cameras.slice(0, count), skips: skips.slice(0, count) };
+  return valid(draft) ? draft : { ...draft, skips: draft.skips.map(() => false) };
 }
 
-/** 在帧组 after 之后插入边界（所在段一分为二，类型与检测相机相同）；已有边界则删除它（与后一段合并，保留前一段的类型与相机）。 */
+/** 在帧组 after 之后插入边界（所在段一分为二，类型、检测相机与是否检测相同）；已有边界则删除它（与后一段合并，保留前一段的）。 */
 export function toggleCut(draft: WorkbenchDraft, after: number): WorkbenchDraft {
   if (!Number.isInteger(after) || after <= 0 || after >= draft.groupCount) return draft;
   const at = draft.cuts.indexOf(after);
   if (at >= 0) {
     const keep = (_: unknown, i: number) => i !== at + 1;
-    return { ...draft, cuts: draft.cuts.filter((_, i) => i !== at), kinds: draft.kinds.filter(keep), cameras: draft.cameras.filter(keep) };
+    return { ...draft, cuts: draft.cuts.filter((_, i) => i !== at), kinds: draft.kinds.filter(keep), cameras: draft.cameras.filter(keep), skips: draft.skips.filter(keep) };
   }
   const segment = spans(draft).findIndex(([first, last]) => after >= first && after < last);
   if (segment < 0) return draft;
@@ -49,7 +57,9 @@ export function toggleCut(draft: WorkbenchDraft, after: number): WorkbenchDraft 
   kinds.splice(segment + 1, 0, kinds[segment]);
   const cameras = [...draft.cameras];
   cameras.splice(segment + 1, 0, [...cameras[segment]]);
-  return { ...draft, cuts: [...draft.cuts, after].sort((a, b) => a - b), kinds, cameras };
+  const skips = [...draft.skips];
+  skips.splice(segment + 1, 0, skips[segment]);
+  return { ...draft, cuts: [...draft.cuts, after].sort((a, b) => a - b), kinds, cameras, skips };
 }
 
 /** 把第 at 个边界挪到 after 之后：不越过相邻边界，不产生空段。 */
@@ -60,20 +70,26 @@ export function moveCut(draft: WorkbenchDraft, at: number, after: number): Workb
   return { ...draft, cuts: draft.cuts.map((cut, i) => (i === at ? after : cut)) };
 }
 
+/** 点段名循环切换：直线 → 弯道 → 不检测 → 直线（D-SB-53）。不检测时类型停在弯道、检测相机保留，取消后恢复相机。 */
 export function toggleKind(draft: WorkbenchDraft, segment: number): WorkbenchDraft {
-  return { ...draft, kinds: draft.kinds.map((kind, i) => (i === segment ? (kind === "straight" ? "corner" : "straight") : kind)) };
+  const [kind, skip]: [SegmentKind, boolean] = draft.skips[segment] ? ["straight", false]
+    : draft.kinds[segment] === "straight" ? ["corner", false] : ["corner", true];
+  return { ...draft, kinds: draft.kinds.map((k, i) => (i === segment ? kind : k)), skips: draft.skips.map((s, i) => (i === segment ? skip : s)) };
 }
 
-/** 选中 / 取消第 segment 段的一台检测相机（按计划相机顺序）；每段至少保留一台。 */
+/** 选中 / 取消第 segment 段的一台检测相机（按计划相机顺序）；每段至少保留一台；不检测的段不能改。 */
 export function toggleCamera(draft: WorkbenchDraft, segment: number, camera: string, planCameras: string[]): WorkbenchDraft {
+  if (draft.skips[segment]) return draft;
   const current = draft.cameras[segment] ?? [];
   const next = current.includes(camera) ? current.filter(id => id !== camera) : planCameras.filter(id => id === camera || current.includes(id));
   if (!next.length) return draft;
   return { ...draft, cameras: draft.cameras.map((list, i) => (i === segment ? next : list)) };
 }
 
+/** 边界、类型、相机对得上，且至少一段检测（单段配方不能不检测，后端 validate_segments 同一约束）。 */
 export function valid(draft: WorkbenchDraft): boolean {
   return draft.kinds.length === draft.cuts.length + 1 && draft.cameras.length === draft.kinds.length && draft.cameras.every(list => list.length > 0)
+    && draft.skips.length === draft.kinds.length && draft.skips.some(skip => !skip)
     && draft.cuts.every((cut, i) => Number.isInteger(cut) && cut > (draft.cuts[i - 1] ?? 0) && cut < draft.groupCount);
 }
 
@@ -82,16 +98,16 @@ export const structureChanged = (current: PathSegment[], kinds: SegmentKind[]) =
   current.length !== kinds.length || current.some((segment, i) => segment.kind !== kinds[i]);
 
 /**
- * 要保存的段列表：类型序列不变时沿用现有段（参数、N_exp、标定都保留），只按草稿改检测相机；变了则按新序列重建，
- * 同位置同类型的段沿用长度、容差、检测区间、检测项与胶偏参考，其余沿用同类型已有段的检测项与容差（没有时取该类型默认值），N_exp、标定与 x_ref 一律清空。
- * 检测相机选全了存为空（= 全部计划相机）；胶偏参考相机不在本段检测相机里时改为本段第一台并清空 x_ref。都没变时原样返回。
+ * 要保存的段列表：类型序列不变时沿用现有段（参数、N_exp、标定都保留），只按草稿改检测相机；变了则按新序列给出类型与检测相机，
+ * 参数先取同类型已有段的检测项与容差（没有时取该类型默认值），N_exp、标定与 x_ref 清空。保存时后端再按示教件上的帧范围
+ * 把对应旧段的参数、走廊与示教帧迁过来（segment_remap，D-SB-52），这里不按位置对应。
+ * 检测相机选全了存为空（= 全部计划相机）；胶偏参考相机不在本段检测相机里时改为本段第一台并清空 x_ref（不检测的段不改）。
+ * 不检测按草稿写 `skip`（D-SB-53），检测相机照存，取消后恢复。都没变时原样返回。
  */
-export function segmentsForSave(current: PathSegment[], draft: Pick<WorkbenchDraft, "kinds" | "cameras">, defaults: KindDefaults, planCameras: string[]): PathSegment[] {
+export function segmentsForSave(current: PathSegment[], draft: Pick<WorkbenchDraft, "kinds" | "cameras"> & { skips?: boolean[] }, defaults: KindDefaults, planCameras: string[]): PathSegment[] {
   const restructured = structureChanged(current, draft.kinds);
   const base = restructured
     ? clearCalibration(draft.kinds.map((kind, i) => {
-      const old = current[i];
-      if (old && old.kind === kind) return { ...old, index: i + 1 };
       // 新段沿用同类型已有段的检测项与容差（操作员通常已在段列表里设好），没有同类段时取配方的按类型默认值
       const like = current.find(segment => segment.kind === kind);
       const fresh = newSegment(i + 1, kind, defaults);
@@ -103,14 +119,16 @@ export function segmentsForSave(current: PathSegment[], draft: Pick<WorkbenchDra
     return chosen.length === planCameras.length || !chosen.length ? [] : chosen;
   };
   const same = (a: string[] | undefined, b: string[]) => JSON.stringify(a ?? []) === JSON.stringify(b);
-  if (!restructured && base.every((segment, i) => same(segment.cameras, stored(i)))) return current;
+  const skipOf = (i: number) => !!draft.skips?.[i];
+  if (!restructured && base.every((segment, i) => same(segment.cameras, stored(i)) && !!segment.skip === skipOf(i))) return current;
   return base.map((segment, i) => {
-    const cameras = stored(i);
+    const cameras = stored(i), skip = skipOf(i);
     const effective = segmentCameras({ cameras }, planCameras);
-    const offsetRef = segment.offsetRef && !effective.includes(segment.offsetRef.camera)
+    const offsetRef = !skip && segment.offsetRef && !effective.includes(segment.offsetRef.camera)
       ? { ...segment.offsetRef, camera: effective[0], xRef: null, spread: null }
       : segment.offsetRef;
-    return { ...segment, cameras, offsetRef };
+    const { skip: _, ...rest } = segment;
+    return skip ? { ...rest, cameras, offsetRef, skip: true } : { ...rest, cameras, offsetRef };
   });
 }
 

@@ -8,7 +8,7 @@ import { workspaceApi } from "../src/features/workspace/api";
 import { burstRecipe, burstWorkspaceView, deferred, pathSegment, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({
-  workspaceApi: { captureRoundThumbs: vi.fn(), captureFrameImage: vi.fn(), segmentTemplateSave: vi.fn() },
+  workspaceApi: { captureRoundThumbs: vi.fn(), captureFrameImage: vi.fn(), segmentTemplateSave: vi.fn(), segmentTemplatePreview: vi.fn() },
 }));
 
 const ROUND = "capture-1-0";
@@ -19,27 +19,25 @@ beforeEach(() => {
 });
 
 describe("分段标定工作台改变段结构", () => {
-  // 防的回归：改段结构不提示其余件边界与标定结果失效；保存没有按示教件的帧组时间轴提交边界
-  it("已标定且另有一件已确认边界 → 保存前列出失效范围，确认后一次提交两段的段列表与示教件的边界", async () => {
+  // 防的回归：改段结构不提示会清掉哪些走廊、示教件测量失效；保存没有按示教件的帧组时间轴提交边界
+  it("改段结构 → 保存前按预演列出要清掉的走廊与测量失效，确认后一次提交两段的段列表与示教件的边界", async () => {
     const view = burstWorkspaceView(burstRecipe({
       segments: [pathSegment(1, "straight", { expectedFrames: 3 }), pathSegment(2, "corner", { expectedFrames: 3 }), pathSegment(3, "straight", { expectedFrames: 3 })],
     }));
     view.workspace.teachingPiece = { ...view.workspace.teachingPiece!, roundId: ROUND };
-    view.workspace.captureReview = {
-      rounds: { "capture-2-0": { groupCount: 9, cuts: [3, 6], status: "confirmed", excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null } },
-    };
     const ws = workspaceState(view);
     vi.mocked(useWorkspace).mockImplementation(() => ws);
     vi.mocked(workspaceApi.segmentTemplateSave).mockResolvedValue(view);
+    vi.mocked(workspaceApi.segmentTemplatePreview).mockResolvedValue({ restructured: true, dropped: ["原第 3 段（直线）· CAM-1"], untaught: [], measurementCleared: true });
     const user = userEvent.setup();
     render(<MemoryRouter><SegmentWorkbench plan={view.plan!} locked="" onDirty={() => {}} /></MemoryRouter>);
 
     await user.click(await screen.findByRole("button", { name: "删除帧组 6 之后的边界" }));
     expect(workspaceApi.captureRoundThumbs).toHaveBeenCalledWith(ROUND, expect.any(String));
     await user.click(screen.getByRole("button", { name: "保存分段" }));
-    const dialog = screen.getByRole("dialog");
-    expect(dialog).toHaveTextContent("其余 1 件");
-    expect(dialog).toHaveTextContent("各段预期帧数");
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("原第 3 段（直线）· CAM-1");
+    expect(dialog).toHaveTextContent("重新测量示教件");
     expect(workspaceApi.segmentTemplateSave).not.toHaveBeenCalled();
 
     await user.click(within(dialog).getByRole("button", { name: "保存分段" }));
@@ -47,5 +45,19 @@ describe("分段标定工作台改变段结构", () => {
     const [, , segments, cuts] = vi.mocked(workspaceApi.segmentTemplateSave).mock.calls[0];
     expect(cuts).toEqual([3]);
     expect(segments.map(s => [s.index, s.kind, s.expectedFrames])).toEqual([[1, "straight", null], [2, "corner", null]]);
+  });
+
+  // 防的回归（PR #214 评审）：只把一段改成不检测、边界没动时，保存后的段列表里 skip 变了，工作台却还显示原来的检测状态，
+  // 再次保存会悄悄把这一段改回检测
+  it("保存后段列表里某段变为不检测 → 工作台按新的段列表显示“不检测”", async () => {
+    const segments = [pathSegment(1, "straight", { expectedFrames: 3 }), pathSegment(2, "corner", { expectedFrames: 3 }), pathSegment(3, "straight", { expectedFrames: 3 })];
+    const view = burstWorkspaceView(burstRecipe({ segments }));
+    view.workspace.teachingPiece = { ...view.workspace.teachingPiece!, roundId: ROUND };
+    vi.mocked(useWorkspace).mockImplementation(() => workspaceState(view));
+    const page = (plan: typeof view.plan) => <MemoryRouter><SegmentWorkbench plan={plan!} locked="" onDirty={() => {}} /></MemoryRouter>;
+    const { rerender } = render(page(view.plan));
+    expect(await screen.findByRole("button", { name: /^段 2（弯道/ })).toBeVisible();
+    rerender(page({ ...view.plan!, segments: segments.map(s => s.index === 2 ? { ...s, skip: true } : s) }));
+    expect(await screen.findByRole("button", { name: /^段 2（不检测/ })).toBeVisible();
   });
 });

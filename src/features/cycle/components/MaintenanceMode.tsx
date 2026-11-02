@@ -43,7 +43,7 @@ export function CollectionProgressPanel({ collection, recipes }: { collection: C
     <div className="panel-head">
       <h3 className="panel-title">维护采集进度</h3>
       <span className="spacer" />
-      <span className="muted">标定至少需要 10 件，验证另需若干</span>
+      <span className="muted">示教需要 1 件，试测与验证另需若干</span>
     </div>
     <ul>{collection.map(item => {
       const name = recipes.find(recipe => recipe.id === item.recipeId)?.name;

@@ -3,7 +3,7 @@ import { LayoutDashboard, Lock } from "lucide-react";
 import { Steps, type StepItem } from "qing-steel";
 import { corridorTasks } from "./cameraTasks";
 import { useWorkspace } from "./context";
-import { stagesV2, stageStatusText, stageStatusTone, stageStatusV2 } from "./stages";
+import { stageOptionalV2, stagesV2, stageStatusText, stageStatusTone, stageStatusV2 } from "./stages";
 
 export function PlanSteps() {
   const { data } = useWorkspace();
@@ -19,7 +19,7 @@ export function PlanSteps() {
         href: stage.path,
         label: stage.label,
         number: i + 1,
-        optional: stage.optional,
+        optional: stageOptionalV2(data, stage),
         tone: status ? stageStatusTone[status] : "neutral",
         status: status === "waiting"
           ? <><Lock size={11} aria-hidden="true" />{stageStatusText.waiting}</>

@@ -25,14 +25,6 @@ export function RecipeIdentity() {
   </div>;
 }
 
-/** 标定轮数（10–100）。多轮标定页。 */
-export function CalibrationRoundsField() {
-  const { doc, set, disabled } = useDocField();
-  if (!doc) return null;
-  return <NumberField label="标定轮数" unit="轮" aria-label="标定轮数" step={1} min={10} max={100} value={doc.calibrationRounds ?? 10} disabled={disabled}
-    onValueChange={value => set("calibrationRounds", value === "" ? NaN : value)} />;
-}
-
 /** 比例分段边界两侧的过渡帧数（0–5，D-SB-40）。段列表页。 */
 export function BoundaryGuardField({ locked = "" }: { locked?: string }) {
   const { doc, set, disabled } = useDocField();

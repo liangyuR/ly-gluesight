@@ -21,6 +21,9 @@ export interface RecordingEvidence {
 export type RecordSource = "real" | "offlineSynthetic" | "offlineSample" | "offlineCandidate";
 export type HistoryScope = "real" | "offline" | "debug";
 
+/** 进入历史详情时的路由 state：历史列表带筛选（前后件按它导航）；其他页面（如试测）带返回目标，返回按钮回到那里。 */
+export type HistoryDetailState = { query?: HistoryQuery; returnTo?: { path: string; label: string } };
+
 export interface HistoryQuery {
   scope?: HistoryScope;
   from?: number | null;

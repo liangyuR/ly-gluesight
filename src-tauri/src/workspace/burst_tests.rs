@@ -1,11 +1,8 @@
-use super::burst::{
-    add_calibration_round, apply_calibration, calibration_round, calibration_view, check_round,
-    measure_round, update_segments,
-};
+use super::burst::update_segments;
 use super::*;
 use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::plan::{
-    new_segment, PathSegment,
+    new_segment, PartCalib, PathSegment, SegmentCalib,
     SegmentKind::{self, Corner, Straight},
 };
 use crate::recipe_capture::CaptureRoundV2;
@@ -86,122 +83,40 @@ pub(super) fn measured(x: f64) -> FrameMetrics {
     }
 }
 
-/// 按加入标定的流程加一轮：核对、量每一帧（x 由 x_of(计划相机下标, seq) 给出）、记进候选。
-fn add(
-    w: &mut Workspace,
-    id: &str,
-    group_count: u64,
-    standard: bool,
-    x_of: impl Fn(usize, u64) -> f64,
-) {
-    let round = capture_round(id, &w.doc, group_count, DEVICE, &[]);
-    check_round(
-        &w.doc,
-        &w.calibration.rounds,
-        &round,
-        &configs(&w.doc, DEVICE),
-    )
-    .unwrap();
-    let metrics = measure_round(&w.doc.plan_cameras(), &round, |camera, _, seq| {
-        Ok(measured(x_of(camera, seq)))
-    });
-    let entry = calibration_round(&w.doc, &round, standard, &metrics);
-    add_calibration_round(w, entry).unwrap();
+#[test]
+fn teaching_cuts_set_each_segment_n_exp_and_an_unconfirmed_draft_clears_them() {
+    // 防的回归（RB-3）：各段 N_exp 不取示教件已确认分段的帧组数（或还要凑标定件才有）；ΣN_exp 不等于各段之和；
+    // 示教件边界改成草稿后旧 N_exp 还留着，生产按过期的边界比例分段
+    let mut w = burst_workspace(&[Straight, Corner, Straight]);
+    let teach = capture_round("teach", &w.doc, 30, DEVICE, &[]);
+    w.teaching_piece = Some(super::pieces_tests::piece("teach", 1));
+    apply_capture_review(&mut w, &teach, CaptureReviewEdit::Save(vec![10, 22])).unwrap();
+    apply_capture_review(&mut w, &teach, CaptureReviewEdit::Confirm).unwrap();
+    let frames: Vec<_> = w.doc.segments.iter().map(|s| s.expected_frames).collect();
+    assert_eq!(frames, [Some(10), Some(12), Some(8)]);
+    assert_eq!(w.doc.expected_total(), Some(30));
+    apply_capture_review(&mut w, &teach, CaptureReviewEdit::Save(vec![11, 22])).unwrap();
+    assert!(
+        w.doc
+            .segments
+            .iter()
+            .all(|s| s.expected_frames.is_none() && s.calib.is_none()),
+        "{:?}",
+        w.doc.segments
+    );
+    assert_eq!(w.doc.expected_total(), None);
 }
 
 #[test]
-fn multi_segment_calibration_uses_confirmed_manual_cuts_of_every_round_or_leaves_segments_pending()
-{
-    // 防的回归（决策补充第二节、D-SB-21，轮次分段复核）：多段计划不看手动分段就把整件帧组数摊到各段；有标定轮次没确认分段（只是草稿）
-    // 也逐段标定；逐段标定后 ΣN_exp 不等于各段之和；或多段计划拿不到整件 ΣN_exp 而无法发布
-    let totals = [30, 31, 30, 30, 29, 30, 30, 31, 30, 30];
-    for (name, confirm_all) in [
-        ("全部轮次已确认分段", true),
-        ("最后一轮只保存了边界草稿", false),
-    ] {
-        let mut w = burst_workspace(&[Straight, Corner, Straight]);
-        for (i, n) in totals.into_iter().enumerate() {
-            let id = format!("capture-{i}");
-            let round = capture_round(&id, &w.doc, n, DEVICE, &[]);
-            apply_capture_review(&mut w, &round, CaptureReviewEdit::Save(vec![10, n - 8])).unwrap();
-            if confirm_all || i + 1 < totals.len() {
-                apply_capture_review(&mut w, &round, CaptureReviewEdit::Confirm).unwrap();
-            }
-            add(&mut w, &id, n, false, |_, _| 0.0);
-        }
-        let mut doc = w.doc.clone();
-        apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds).unwrap();
-        assert_eq!(
-            doc.part_calib.as_ref().map(|p| p.expected_total),
-            Some(30),
-            "{name}"
-        );
-        let view = calibration_view(&doc, &w.calibration.rounds, &w.capture_review.rounds, None);
-        if confirm_all {
-            let frames: Vec<_> = doc
-                .segments
-                .iter()
-                .map(|s| (s.expected_frames, s.calib.as_ref().map(|c| (c.min, c.max))))
-                .collect();
-            assert_eq!(
-                frames,
-                [
-                    (Some(10), Some((10, 10))),
-                    (Some(12), Some((11, 13))),
-                    (Some(8), Some((8, 8)))
-                ],
-                "{name}"
-            );
-            assert_eq!(doc.expected_total(), Some(30), "{name}：ΣN_exp = 各段之和");
-            assert_eq!(
-                view.segments[1]
-                    .outcome
-                    .as_ref()
-                    .map(|o| o.suggested_tolerance),
-                Some(1),
-                "{name}：max(弯道默认, 12 − 11, 13 − 12)"
-            );
-        } else {
-            assert!(
-                doc.segments
-                    .iter()
-                    .all(|s| s.expected_frames.is_none() && s.calib.is_none()),
-                "{name}：{:?}",
-                doc.segments
-            );
-            assert_eq!(doc.expected_total(), Some(30), "{name}：凭整件均值仍可发布");
-            assert!(
-                view.segments.iter().all(|s| s.outcome.is_none()
-                    && s.pending
-                        .as_deref()
-                        .is_some_and(|p| p.contains("capture-9"))),
-                "{name}：{:?}",
-                view.segments
-            );
-        }
-    }
-}
-
-#[test]
-fn editing_expected_frames_directly_is_rejected_and_kind_change_clears_calibration() {
-    // 防的回归（规格 §0 N_exp 不能手填、§1 段序列变化需重新标定、D-SB-18/20）：段列表或整份保存能手填 N_exp、标定统计、
-    // 整件标定或 x_ref；段的类型序列变了旧标定还留着；只改容差也把标定清掉
+fn saving_expected_frames_or_x_ref_is_ignored_and_kind_change_clears_them() {
+    // 防的回归（规格 §0 N_exp 不能手填、§1 段序列变化需重新分段、D-SB-18/20、RB-3）：段列表或整份保存能手填 N_exp、标定统计、
+    // 整件标定或 x_ref；界面拿着旧值保存被拒；段的类型序列变了旧 N_exp 还留着；只改容差也把 N_exp 或 x_ref 清掉
     fn calibrated() -> Workspace {
-        let mut w = burst_workspace(&[Straight]);
-        for i in 0..10 {
-            add(&mut w, &format!("capture-n{i}"), 20, false, |_, _| 0.0);
-        }
-        for i in 0..2 {
-            add(&mut w, &format!("capture-s{i}"), 20, true, |_, _| 0.5);
-        }
-        let mut doc = w.doc.clone();
-        apply_calibration(&mut doc, &w.calibration.rounds, &w.capture_review.rounds).unwrap();
-        w.doc = doc;
-        w
+        super::pieces_tests::measured_teaching(&[Straight], 0.5)
     }
     #[derive(Debug, PartialEq)]
     enum After {
-        Rejected,
+        Ignored,
         Cleared,
         Kept,
         XRefCleared,
@@ -215,25 +130,36 @@ fn editing_expected_frames_directly_is_rejected_and_kind_change_clears_calibrati
             "段列表直接改 N_exp",
             segments,
             |d| d.segments[0].expected_frames = Some(25),
-            After::Rejected,
+            After::Ignored,
         ),
         (
             "段列表直接改标定统计",
             segments,
             |d| d.segments[0].calib.as_mut().unwrap().max += 1,
-            After::Rejected,
+            After::Ignored,
         ),
         (
             "段列表手填 x_ref",
             segments,
             |d| d.segments[0].offset_ref.as_mut().unwrap().x_ref = Some(1.5),
-            After::Rejected,
+            After::Ignored,
         ),
         (
-            "整份保存改整件标定",
+            "整份保存写整件标定",
             whole,
-            |d| d.part_calib.as_mut().unwrap().expected_total = 25,
-            After::Rejected,
+            |d| {
+                let calib = SegmentCalib {
+                    rounds: 1,
+                    min: 25,
+                    max: 25,
+                    mean: 25.0,
+                };
+                d.part_calib = Some(PartCalib {
+                    expected_total: 25,
+                    calib,
+                });
+            },
+            After::Ignored,
         ),
         (
             "改成弯道段",
@@ -273,30 +199,21 @@ fn editing_expected_frames_directly_is_rejected_and_kind_change_clears_calibrati
         assert_eq!(
             before.segments[0].offset_ref.as_ref().and_then(|r| r.x_ref),
             Some(0.5),
-            "前提：已标定 x_ref"
+            "前提：示教件已测出 x_ref"
         );
         let mut doc = w.doc.clone();
         edit(&mut doc);
         let result = entry(&mut w, doc);
         let segment: &PathSegment = &w.doc.segments[0];
         let x_ref = segment.offset_ref.as_ref().and_then(|r| r.x_ref);
-        let state = match (
-            result.is_ok(),
-            segment.expected_frames,
-            w.doc.part_calib.is_some(),
-            x_ref,
-        ) {
-            (false, ..) => After::Rejected,
-            (true, None, false, None) if w.doc.segments.iter().all(|s| s.calib.is_none()) => {
-                After::Cleared
-            }
-            (true, Some(20), true, Some(_)) => After::Kept,
-            (true, Some(20), true, None) => After::XRefCleared,
+        assert!(result.is_ok(), "{name}：{result:?}");
+        let state = match (segment.expected_frames, x_ref) {
+            _ if w.doc == before => After::Ignored,
+            (None, None) if w.doc.segments.iter().all(|s| s.calib.is_none()) => After::Cleared,
+            (Some(15), Some(0.5)) => After::Kept,
+            (Some(15), None) => After::XRefCleared,
             other => panic!("{name}：{other:?}"),
         };
-        assert_eq!(state, after, "{name}：{result:?}");
-        if after == After::Rejected {
-            assert_eq!(w.doc, before, "{name}：拒绝时配方不变");
-        }
+        assert_eq!(state, after, "{name}");
     }
 }

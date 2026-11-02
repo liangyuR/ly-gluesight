@@ -1,8 +1,7 @@
-//! 起涂、收尾跳过帧的标定建议（D-SB-50）：第 1 段 `skip_head`、末段 `skip_tail`，由标定轮次（不含标准件）加入时写下的
-//! 每帧特征按当前段检测项、检测相机与已确认分段算出，只读；操作员确认（`workspace_confirm_skip`）后才写进配方。
+//! 起涂、收尾跳过帧的建议（D-SB-50）：第 1 段 `skip_head`、末段 `skip_tail`，由示教件测量时写下的每帧特征按当前段检测项、
+//! 检测相机与已确认分段算出，只读；操作员确认（`workspace_confirm_skip`）后才写进配方。
 //!
-//! 成形帧组 = 本段每台检测相机都测成且独立判定没有 NG 级发现；每轮的起涂帧组数见 `calibration::unformed_lead`。
-//! 建议值取参与轮次的最大值，参与轮次少于 `calibration_rounds` 时只给分布。
+//! 成形帧组 = 本段每台检测相机都测成且独立判定没有 NG 级发现；起涂帧组数见 `calibration::unformed_lead`。
 
 use std::collections::BTreeSet;
 
@@ -89,6 +88,9 @@ pub(super) fn round_edge(
             &doc.segments[doc.segments.len() - 1],
         ),
     };
+    if segment.skip {
+        return Err(format!("第 {} 段不检测，不需要跳过帧数建议", segment.index));
+    }
     let (first, last) = if doc.segments.len() == 1 {
         (1, group_count)
     } else {
@@ -139,7 +141,7 @@ pub(super) fn skip_suggestions(
     let (Some(head), Some(tail)) = (doc.segments.first(), doc.segments.last()) else {
         return Vec::new();
     };
-    let normal: Vec<&CalibrationRound> = rounds.iter().filter(|r| !r.standard).collect();
+    let normal: Vec<&CalibrationRound> = rounds.iter().collect();
     let loaded: Vec<Result<Vec<FrameMetrics>, String>> =
         normal.iter().map(|r| features(&r.round_id)).collect();
     [(head, SkipEnd::Head), (tail, SkipEnd::Tail)]
@@ -168,13 +170,9 @@ pub(super) fn skip_suggestions(
                 .collect();
             let values: Vec<u32> = rounds.iter().filter_map(|r| r.frames).collect();
             let (min, max) = (values.iter().min().copied(), values.iter().max().copied());
-            let need = doc.calibration_rounds as usize;
-            let pending = (values.len() < need).then(|| {
-                format!(
-                    "参与的标定轮次 {} 轮，少于 {need} 轮：只显示分布，不给建议",
-                    values.len()
-                )
-            });
+            let pending = values
+                .is_empty()
+                .then(|| "示教件还没有可用的测量：测量示教件后给出建议".to_string());
             SkipSuggestView {
                 segment: segment.index,
                 end,

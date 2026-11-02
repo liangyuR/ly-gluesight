@@ -42,6 +42,7 @@ mod recorded;
 mod reproduce;
 #[cfg(test)]
 mod segment_corridor_tests;
+mod segment_remap;
 mod workflow;
 pub use burst::*;
 pub use burst_history::*;
@@ -208,7 +209,7 @@ pub struct Workspace {
     /// 段配方：每台计划相机的走廊示教帧
     #[serde(default)]
     pub camera_teaching: Vec<burst::CameraTeaching>,
-    /// 段配方：多轮标定加入的轮次
+    /// 段配方：示教件的测量
     #[serde(default)]
     pub calibration: burst::Calibration,
     #[serde(default)]
@@ -300,6 +301,7 @@ impl Workspace {
 
     fn changed(&mut self) {
         capture_review::refresh(self);
+        burst::calibrate_from_teaching(self);
         self.revision += 1;
         self.validation = None;
         self.updated_at = ly_plc::now_ms();
@@ -812,21 +814,36 @@ fn save_doc(
     view(&app, w)
 }
 
-fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
+fn update_doc(w: &mut Workspace, doc: RecipeDoc) -> Result<(), String> {
+    replace_doc(w, doc, None)
+}
+
+/// 保存候选配置。`remapped` 为分段保存时已按示教件帧范围迁好的段示教帧（走廊也已在 `doc` 里迁到新段号，见 `segment_remap`）：
+/// 这时不按段的类型序列整体清空走廊。
+fn replace_doc(
+    w: &mut Workspace,
+    mut doc: RecipeDoc,
+    remapped: Option<Vec<burst::CameraTeaching>>,
+) -> Result<(), String> {
     check_product_code(&doc)?;
     // 示教件来源只在发布时写入，候选里恒为空
     doc.teaching_piece = None;
-    // N_exp、标定统计、整件标定与 x_ref 只能由多轮标定写入，段序列或类型变化时清空
-    burst::guard_calibration(&w.doc, &mut doc)?;
-    let segments_changed = burst::guard_segment_corridors(&w.doc, &mut doc, &w.camera_teaching)?;
+    // N_exp、标定统计、整件标定与 x_ref 只能由示教件得出，段序列或类型变化时清空
+    burst::guard_calibration(&w.doc, &mut doc);
+    let teaching = remapped.as_deref().unwrap_or(&w.camera_teaching);
+    let segments_changed =
+        burst::guard_segment_corridors(&w.doc, &mut doc, teaching, remapped.is_some())?;
     doc.build()?;
-    if doc == w.doc {
+    if doc == w.doc && remapped.is_none() {
         return Ok(());
     }
     if navigation::structure_changed(&w.doc, &doc) {
         w.navigation_structure_revision += 1;
     }
     w.doc = doc;
+    if let Some(teaching) = remapped {
+        w.camera_teaching = teaching;
+    }
     // 不再是计划相机、段结构变了或这台相机不再检测所在段的示教帧不保留
     let cameras = w.doc.plan_cameras();
     let doc = &w.doc;
@@ -992,11 +1009,9 @@ pub fn workspace_publish(
     if let Some(failed) = validated.checks.iter().find(|c| !c.passed) {
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
     }
-    let mut release_doc = formal_release_doc(w)?;
-    release_doc.plan_version = app
-        .state::<CycleHost>()
-        .recipes
-        .plan_version_for(&release_doc)?;
+    let recipes = &app.state::<CycleHost>().recipes;
+    let mut release_doc = formal_release_doc(w, recipes.release_version(&w.doc)?)?;
+    release_doc.plan_version = recipes.plan_version_for(&release_doc)?;
     let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?;
     let navigation = navigation::prepare_navigation_release(
         &crate::storage::project(&app),
@@ -1025,9 +1040,10 @@ pub fn workspace_publish(
     view(&app, w.clone())
 }
 
-/// 正式版的配方文档：带示教件来源（RB-7），计划版本由调用方按配方库分配。
-fn formal_release_doc(w: &Workspace) -> Result<RecipeDoc, String> {
+/// 正式版的配方文档：带示教件来源（RB-7），版本取调用方按配方库分配的 `version`，计划版本也由调用方分配。
+fn formal_release_doc(w: &Workspace, version: u32) -> Result<RecipeDoc, String> {
     let mut doc = w.doc.clone();
+    doc.version = version;
     doc.stage = RecipeStage::Formal;
     doc.teaching_id = Some(vision::unique_run_id(&format!(
         "teaching-{}-v{}",

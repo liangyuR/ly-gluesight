@@ -28,17 +28,22 @@ beforeEach(() => {
 
 describe("走廊示教", () => {
 
-  // 防的回归：段走廊画了一半就切到别的段或相机参数，草稿按“相机#段”存、切走后不再显示，操作员以为丢了
-  it("段走廊有未保存的修改 → 其他段与相机参数不能切换并说明先保存，当前段可继续编辑", async () => {
-    ws.corridorDrafts = { "CAM-2#1": { corridor: [[10, 10], [30, 10]], mmPerPx: .1, detect: null, window: null } }; ws.frameDirty = true;
+  // 防的回归：走廊草稿按站距不足三站、不会自动保存时还能切到别的段，草稿按“相机#段”存、切走后不再显示，操作员以为丢了；
+  // 或者能自动保存的草稿在等保存时也把切换按钮变灰，每改一下界面就闪一次
+  it.each([
+    ["按站距不足三站、不会自动保存 → 其他段与相机参数不能切换并说明原因", { unsavable: true, pendingSave: false }, true],
+    ["等着自动保存 → 其他段与相机参数照常可切换，不随保存变灰", { unsavable: false, pendingSave: true }, false],
+  ])("段走廊草稿%s", async (_, state, locked) => {
+    Object.assign(ws, state, { corridorDrafts: { "CAM-2#1": { corridor: [[10, 10], [30, 10]], mmPerPx: .1, detect: null, window: null } }, frameDirty: true });
     show();
     for (const name of ["选择 CAM-1 段 1 走廊", "选择相机 CAM-2"]) {
       const other = screen.getByRole("button", { name });
-      expect(other).toBeDisabled();
-      expect(other).toHaveAccessibleDescription(expect.stringContaining("先保存"));
+      if (locked) {
+        expect(other).toBeDisabled();
+        expect(other).toHaveAccessibleDescription(expect.stringContaining("不会自动保存"));
+      } else expect(other).toBeEnabled();
     }
     expect(screen.getByRole("button", { name: "选择 CAM-2 段 1 走廊" })).toBeEnabled();
-    expect(within(screen.getByRole("group", { name: "走廊示教操作" })).getByText(/未保存的修改/)).toBeVisible();
     await screen.findByRole("img", { name: "CAM-2 · 段 1 · 示教帧" });
   });
 
@@ -75,6 +80,40 @@ describe("出胶点标定", () => {
     fireEvent.click(screen.getByLabelText("编辑点"));
     expect(await screen.findByLabelText("出胶点（已标定）")).toBeInTheDocument();
     expect(screen.getByLabelText("测量区间环带")).toBeInTheDocument();
+  });
+});
+
+describe("画布模式", () => {
+
+  // 防的回归：打开示教帧默认就是“编辑点”，看图时随手一点就给走廊加了点
+  it("打开示教帧默认只看 → 点图不加走廊点；选“编辑点”后点图才加点", async () => {
+    stubSvgPointer();
+    show("/recipe/teach?camera=CAM-2&segment=1");
+    const image = await screen.findByRole("img", { name: "CAM-2 · 段 1 · 示教帧" });
+    expect(screen.getByRole("button", { name: "只看" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.pointerDown(image, { button: 0, clientX: 40, clientY: 30, pointerId: 1 });
+    expect(ws.setCorridorDraft).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
+    fireEvent.pointerDown(image, { button: 0, clientX: 40, clientY: 30, pointerId: 1 });
+    expect(ws.setCorridorDraft).toHaveBeenCalled();
+  });
+});
+
+describe("搜索扇区", () => {
+
+  // 防的回归（D-SB-47）：示教帧上拖动扇区把手只转了画面，方向没写进这台相机的配方，测量仍按原来的半圈找胶条；
+  // 或者拖动中每动一下就写配方，触发自动保存、界面跟着闪
+  it("拖动扇区把手到出胶点正下方再松手 → 拖动中不写配方，松手后这台相机的扇区方向存为 90°", async () => {
+    ws.data!.workspace.doc.segments![0].heading = { toleranceDeg: 5 };
+    Object.assign(ws.data!.workspace.doc.inspect![1], { nozzle: [40, 30], window: { startMm: 2, lengthMm: 4 }, sectorDeg: 0 });
+    stubSvgPointer();
+    show("/recipe/teach?camera=CAM-2&segment=1");
+    const image = await screen.findByRole("img", { name: "CAM-2 · 段 1 · 示教帧" });
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "搜索扇区把手" }), { button: 0, clientX: 80, clientY: 30, pointerId: 1 });
+    fireEvent.pointerMove(image, { clientX: 40, clientY: 50, pointerId: 1 });
+    expect(ws.setDoc).not.toHaveBeenCalled();
+    fireEvent.pointerUp(image, { pointerId: 1 });
+    expect(vi.mocked(ws.setDoc).mock.lastCall![0].inspect!.find(item => item.camera === "CAM-2")!.sectorDeg).toBe(90);
   });
 });
 

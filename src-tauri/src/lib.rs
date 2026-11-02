@@ -66,13 +66,16 @@ pub use packaging::check_packaged_runtime;
 pub mod probe_api {
     pub use crate::burst_judge::{frame_verdict, FrameState};
     pub use crate::calibration::{calibrate_counts, unformed_lead, GroupForm, ONSET_RUN};
-    pub use crate::camera::{BurstRender, CameraConfig};
+    pub use crate::camera::{configure_for_probe, BurstRender, CameraConfig};
     pub use crate::frame_align::{
         align_cuts, downsample, ReviewReason, Sequence, ALIGN_FACTOR, ALIGN_SHARPNESS,
     };
     pub use crate::frame_group::{loss_alarms, FrameGroup};
     pub use crate::history_fixture::{FixtureFrames, FixturePart, FixtureSite, SN_PREFIX};
     pub use crate::image_file::{load as load_image, save_pgm};
+    pub use crate::mvs::{
+        Device as MvsDevice, EventInfo as MvsEventInfo, FrameInfo as MvsFrameInfo,
+    };
     pub use crate::offline::line::{nominal_frames, PulseProfile, SIM_HZ};
     pub use crate::offline::sample_set::SampleSet;
     pub use crate::offline::Scenario;
@@ -310,18 +313,14 @@ pub fn run() {
             workspace::workspace_teach_segment_corridor,
             workspace::workspace_clear_segment_corridor,
             workspace::workspace_extract_corridor,
-            workspace::workspace_calibration_pick,
-            workspace::workspace_calibration_sync,
-            workspace::workspace_calibration_remove_round,
+            workspace::workspace_measure_teaching,
             workspace::workspace_calibration_round_features,
             workspace::workspace_calibration_frame,
             workspace::workspace_teach_preview_frame,
             workspace::workspace_teach_preview_segment,
             workspace::workspace_publish_checks,
-            workspace::workspace_calibration_apply,
             workspace::workspace_segment_template_save,
-            workspace::workspace_capture_review_suggest,
-            workspace::workspace_capture_review_confirm_cuts,
+            workspace::workspace_segment_template_preview,
             workspace::workspace_capture_review_exclude,
             workspace::workspace_history_candidates,
             workspace::workspace_set_teaching_piece,
@@ -329,6 +328,7 @@ pub fn run() {
             workspace::workspace_confirm_skip,
             workspace::workspace_calibration_skip_suggest,
             workspace::workspace_record_frame_image,
+            workspace::workspace_record_frame_view,
             flow_debug::flow_open,
             flow_debug::flow_manifest,
             flow_debug::flow_core_info,

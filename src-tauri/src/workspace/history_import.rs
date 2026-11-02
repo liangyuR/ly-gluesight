@@ -1,6 +1,6 @@
 //! 历史件导入为采集轮次（docs/architecture/online-commissioning.md 5.2、5.3）：历史件选择器列出本配方的真机录制件
-//! 并逐件给出能否选用的原因；选为示教件或标定件时按 `RecipeCaptureHost::import_history` 物化成采集轮次（见 `pieces`）。
-//! 已导入并用于走廊示教或多轮标定的历史件不能再作独立验证样本（[`check_history_sample`]）。
+//! 并逐件给出能否选用的原因；选为示教件时按 `RecipeCaptureHost::import_history` 物化成采集轮次（见 `pieces`）。
+//! 已导入并用作示教件的历史件不能再作独立验证样本（[`check_history_sample`]）。
 
 use std::collections::BTreeSet;
 
@@ -69,13 +69,11 @@ pub enum PieceUsage {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryPick {
     pub record_id: i64,
-    #[serde(default)]
-    pub standard: bool,
 }
 
 pub(super) struct Assessed {
     pub view: HistoryCandidate,
-    /// 能导入时要物化的轮次（标准件标记为 false，由导入时按操作员勾选改）
+    /// 能导入时要物化的轮次
     pub round: Option<HistoryRound>,
 }
 
@@ -493,7 +491,7 @@ pub(super) fn import_records(
 ) -> Result<Vec<(String, HistoryCandidate)>, String> {
     let data = json!({
         "recipeId": w.doc.id,
-        "records": picks.iter().map(|p| json!({"recordId": p.record_id, "standard": p.standard})).collect::<Vec<_>>(),
+        "records": picks.iter().map(|p| json!({"recordId": p.record_id})).collect::<Vec<_>>(),
     });
     let result = import(app, w, picks);
     let mut data = data;
@@ -526,7 +524,7 @@ fn import(
         let entry = assessed
             .remove(&pick.record_id)
             .ok_or_else(|| format!("记录 {} 不在本配方最近的录制件里", pick.record_id))?;
-        let mut round = entry.round.ok_or_else(|| {
+        let round = entry.round.ok_or_else(|| {
             format!(
                 "记录 {}（SN {}）不能选用：{}",
                 pick.record_id,
@@ -534,9 +532,6 @@ fn import(
                 entry.view.reasons.join("；")
             )
         })?;
-        if let RoundOrigin::History { standard, .. } = &mut round.origin {
-            *standard = pick.standard;
-        }
         rounds.push((round, entry.view));
     }
     let cycle = app.state::<CycleHost>();
@@ -558,7 +553,7 @@ fn import(
     Ok(imported)
 }
 
-/// 历史记录作独立验证样本前的核对（5.3）：这件已导入为本候选的轮次且该轮用于走廊示教或多轮标定时拒绝（`origins` 为本候选
+/// 历史记录作独立验证样本前的核对（5.3）：这件已导入为本候选的轮次且该轮用于走廊示教或示教件测量时拒绝（`origins` 为本候选
 /// 各轮次的来源）；录制有相机设备记录时，各计划相机的设备配置须与当前一致（`current` 按相机编号，`state_value` 口径）。
 pub(super) fn check_history_sample(
     w: &Workspace,
@@ -575,7 +570,7 @@ pub(super) fn check_history_sample(
         });
         if let Some((round, _)) = trained {
             return Err(format!(
-                "这件已导入为轮次 {round} 并用于走廊示教或多轮标定：训练数据不能再作独立验证样本"
+                "这件已导入为轮次 {round} 并用作示教件：训练数据不能再作独立验证样本"
             ));
         }
     }

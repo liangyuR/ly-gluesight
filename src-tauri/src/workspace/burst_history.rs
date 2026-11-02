@@ -27,11 +27,30 @@ pub struct ComparisonBurst {
     pub cameras: Vec<String>,
     pub expected_total: Option<u32>,
     pub judgement: BurstJudgement,
+    /// 这次对照用的每帧指标（复测为重测结果，按规则重判为记录里存的指标）；之前保存的对照没有这一项
+    #[serde(default)]
+    pub frames: Vec<FrameMetrics>,
+    /// 这次对照建走廊测量图用的各计划相机示教帧尺寸（候选对照取当时的走廊示教）：叠图按它重建，不依赖候选现在的示教；
+    /// 按原发布包重现的对照与之前保存的对照为空
+    #[serde(default)]
+    pub sizes: Vec<[u32; 2]>,
 }
 
 impl ComparisonBurst {
-    fn of(recipe: &Recipe, judgement: BurstJudgement) -> Self {
-        Self { segments: recipe.path_segments.clone(), cameras: recipe.plan_cameras(), expected_total: recipe.expected_total(), judgement }
+    fn of(
+        recipe: &Recipe,
+        judgement: BurstJudgement,
+        frames: Vec<FrameMetrics>,
+        sizes: Vec<[u32; 2]>,
+    ) -> Self {
+        Self {
+            segments: recipe.path_segments.clone(),
+            cameras: recipe.plan_cameras(),
+            expected_total: recipe.expected_total(),
+            judgement,
+            frames,
+            sizes,
+        }
     }
 }
 
@@ -220,6 +239,82 @@ pub fn workspace_record_frame_image(app: AppHandle, history_id: i64, camera: usi
     Ok(preview_response(&frame_image(&app, &detail, camera, seq)?))
 }
 
+/// 历史件一帧按对照重测的叠图（历史详情，只读）：用对照保存的候选配方与这一帧在对照里所用的走廊段，从录制原图重测，
+/// 给出走廊、搜索带与测到的胶边。示教帧尺寸取对照保存时记下的（`ComparisonBurst.sizes`），不依赖候选现在的示教，
+/// 候选换了示教件或已删除也能看。这一帧在对照里没测（缺帧、本段不检测）时只给指标、不画线；按原发布包重现的对照不支持。
+#[tauri::command]
+pub async fn workspace_record_frame_view(
+    app: AppHandle,
+    history_id: i64,
+    comparison: String,
+    camera: usize,
+    seq: u64,
+) -> Result<burst::CalibrationFrameView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        let detail = store.detail(history_id)?;
+        let recipe_id = detail
+            .summary
+            .recipe_id
+            .as_deref()
+            .ok_or("历史记录没有配方")?;
+        let host = app.state::<WorkspaceHost>();
+        let found = host
+            .comparisons
+            .list(&host.root, &store, recipe_id, history_id)?
+            .into_iter()
+            .find(|c| c.id == comparison)
+            .ok_or("找不到这次对照结果")?;
+        if found.source == "original" {
+            return Err("按原发布包重现的对照不支持叠图".into());
+        }
+        let burst = found.burst.as_ref().ok_or("这次对照没有逐帧结果")?;
+        let metrics = burst
+            .frames
+            .iter()
+            .find(|m| m.camera == camera && m.seq == seq)
+            .ok_or("这次对照没有这一帧的指标：重新触发测试后再看")?;
+        let Some(segment) = metrics.corridor.filter(|_| {
+            !matches!(
+                metrics.state,
+                FrameState::Missing | FrameState::NotInspected
+            )
+        }) else {
+            return Ok(burst::CalibrationFrameView {
+                segment: None,
+                corridor: Vec::new(),
+                search_half_px: None,
+                edges: Vec::new(),
+                metrics: metrics.clone(),
+            });
+        };
+        if burst.sizes.is_empty() {
+            return Err("这次对照没有保存示教帧尺寸（之前保存的对照或候选当时未示教完）：重新触发测试后再看叠图".into());
+        }
+        let sizes = burst.sizes.clone();
+        let recipe = &found.candidate_recipe;
+        let camera_id = recipe
+            .plan_cameras()
+            .get(camera)
+            .cloned()
+            .ok_or("相机下标超出候选计划相机")?;
+        let graphs = vision::CorridorSet::build(recipe, &sizes)?;
+        let image = frame_image(&app, &detail, camera, seq)?;
+        burst::frame_view(
+            &app,
+            recipe,
+            &graphs,
+            (camera, &camera_id),
+            segment,
+            seq,
+            &image,
+            &format!("record-view-{history_id}-c{camera}-{seq}"),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 用候选当前的走廊量帧：每段每台检测相机一张走廊测量图，按各相机冻结的示教帧尺寸建（与加入标定同一做法）。
 pub(super) struct CandidateMeasurer {
     engine: Arc<vision::Engine>,
@@ -272,7 +367,7 @@ pub(super) fn compare(app: &AppHandle, w: &Workspace, recipe: &Recipe, detail: &
         return Err("段配方记录只能与段配方候选对照".into());
     }
     let cameras = recipe.plan_cameras();
-    let judgement = if raw {
+    let (judgement, metrics) = if raw {
         if original.plan_cameras() != cameras { return Err("历史原图的计划相机与候选不同；请重新采集样本".into()); }
         if detail.summary.source != RecordSource::OfflineCandidate && !raw_complete(detail, burst) {
             return Err("原图未完整保留，无法完成整件复测".into());
@@ -286,7 +381,7 @@ pub(super) fn compare(app: &AppHandle, w: &Workspace, recipe: &Recipe, detail: &
                 &frame_image(app, detail, frame.camera, frame.seq)?,
             )
         });
-        judge_frames(
+        let judgement = judge_frames(
             &recipe.path_segments,
             recipe.boundary_guard,
             recipe.boundary_refine,
@@ -294,7 +389,8 @@ pub(super) fn compare(app: &AppHandle, w: &Workspace, recipe: &Recipe, detail: &
             &cameras,
             &metrics,
             &burst.judgement.alarms,
-        )
+        );
+        (judgement, metrics)
     } else {
         if !crate::store::same_measurement_layout(original, recipe) {
             return Err("保存的每帧指标与候选的走廊、当量、检测参数或计划身份不同，不能复用；请从原图复测".into());
@@ -304,16 +400,48 @@ pub(super) fn compare(app: &AppHandle, w: &Workspace, recipe: &Recipe, detail: &
         }
         let regions: Vec<Region> = burst.judgement.regions.iter().map(|r| r.region.clone()).collect();
         let metrics = stored_metrics(&burst.frames);
-        burst_judge::judge(&recipe.path_segments, recipe.expected_total(), &regions, &frame_groups(&metrics, cameras.len()), &metrics, &cameras, &burst.judgement.alarms)
+        let judgement = burst_judge::judge(
+            &recipe.path_segments,
+            recipe.expected_total(),
+            &regions,
+            &frame_groups(&metrics, cameras.len()),
+            &metrics,
+            &cameras,
+            &burst.judgement.alarms,
+        );
+        (judgement, metrics)
     };
-    Ok((summary(&judgement), ComparisonBurst::of(recipe, judgement)))
+    // 按规则重判不建测量图，候选还没示教完时没有尺寸，这次对照就不能叠图
+    let sizes = super::burst::teaching_sizes(w).unwrap_or_default();
+    Ok((
+        summary(&judgement),
+        ComparisonBurst::of(recipe, judgement, metrics, sizes),
+    ))
 }
 
 /// `workspace_compare_original` 的段配方分支：按原发布包逐帧重现（见 `reproduce::measure_burst`）。
-pub(super) fn reproduce_original(app: &AppHandle, detail: &PartDetail, prepared: &crate::production::Prepared, cycle_id: &str) -> Result<(judge::Judgement, ComparisonBurst), String> {
-    let burst = detail.burst.as_ref().ok_or("这条历史是旧拍照点记录，不能按相机帧重现")?;
-    if !raw_complete(detail, burst) { return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into()); }
-    let judgement = reproduce::measure_burst(prepared, &burst.frames, &burst.judgement.alarms, cycle_id,
-        |frame| frame_image(app, detail, frame.camera, frame.seq))?;
-    Ok((summary(&judgement), ComparisonBurst::of(&prepared.recipe, judgement)))
+pub(super) fn reproduce_original(
+    app: &AppHandle,
+    detail: &PartDetail,
+    prepared: &crate::production::Prepared,
+    cycle_id: &str,
+) -> Result<(judge::Judgement, ComparisonBurst), String> {
+    let burst = detail
+        .burst
+        .as_ref()
+        .ok_or("这条历史是旧拍照点记录，不能按相机帧重现")?;
+    if !raw_complete(detail, burst) {
+        return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into());
+    }
+    let (judgement, metrics) = reproduce::measure_burst(
+        prepared,
+        &burst.frames,
+        &burst.judgement.alarms,
+        cycle_id,
+        |frame| frame_image(app, detail, frame.camera, frame.seq),
+    )?;
+    Ok((
+        summary(&judgement),
+        ComparisonBurst::of(&prepared.recipe, judgement, metrics, Vec::new()),
+    ))
 }

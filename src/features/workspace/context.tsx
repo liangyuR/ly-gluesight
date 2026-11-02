@@ -20,8 +20,12 @@ export interface NavigationDraft { map: NavigationMapData; revision: number }
 interface WorkspaceContextValue {
   list: RecipeSummary[]; drafts: Workspace[]; cameras: CameraConfig[]; unavailable: UnavailableRecipe[];
   selectedId: string | null; data: WorkspaceView | null; doc: RecipeDoc | null; preview: Recipe | null;
-  /** busy：显式操作或自动保存进行中；saving：其中的自动保存（期间可以继续编辑，改动并入下一次保存） */
-  previewError: string; error: string; busy: boolean; saving: boolean; dirty: boolean; frameDirty: boolean;
+  /** busy：显式操作或自动保存进行中；saving：其中的自动保存（期间可以继续编辑，改动并入下一次保存）；acting：只算显式操作 */
+  previewError: string; error: string; busy: boolean; saving: boolean; acting: boolean; dirty: boolean; frameDirty: boolean;
+  /** 有改动等着自动保存（含正在保存）；unsavable：有走廊草稿按站距不足三站，不会自动保存 */
+  pendingSave: boolean; unsavable: boolean;
+  /** 跳过防抖，马上保存待存的改动 */
+  saveNow: () => void;
   navigationDraft: NavigationDraft | null; navigationDirty: boolean;
   setNavigationDraft: (draft: NavigationDraft | null) => void;
   /** 走廊示教里尚未保存的段走廊草稿，按“相机#段号”；像素当量与检测参数随相机，只读 */
@@ -59,6 +63,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const savingRef = useRef(false);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "failed" | "pending">("saved");
   const [saveRetry, setSaveRetry] = useState(0);
+  const [urgent, setUrgent] = useState(false);
   const failedSave = useRef("");
   const requestSerial = useRef(0);
   const acting = useRef(false);
@@ -76,6 +81,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const savedCorridor = (key: string) => savedDraft(data?.workspace.doc, key);
   const frameDirty = Object.keys(corridorDrafts).some(key => !sameCorridor(corridorDrafts[key], savedCorridor(key)));
   const navigationDirty = !!navigationDraft && !equal(navigationDraft.map, data?.navigation?.map);
+  // 按站距不足三站的走廊草稿不自动保存（lyFlow 会把有胶的帧测成无胶），原因在示教页显示
+  const changedDrafts = Object.entries(corridorDrafts).filter(([key, draft]) => !sameCorridor(draft, savedCorridor(key)));
+  const pendingCorridor = doc ? changedDrafts.find(([, draft]) => !corridorStationError(draft, doc.spacing)) : undefined;
+  const unsavable = !!doc && changedDrafts.some(([, draft]) => !!corridorStationError(draft, doc.spacing));
+  const pendingSave = dirty || saving || !!pendingCorridor;
   navigationDirtyRef.current = navigationDirty;
   dirtyRef.current = dirty || frameDirty || navigationDirty;
   useEffect(() => {
@@ -227,14 +237,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   // 自动保存不经 act：不锁编辑、不重读配方列表；保存期间的新改动在结果回来后保留，再保存一次
   useEffect(() => {
     if (!data || !doc || busy || saving || !desktopAvailable()) return;
-    // 按站距不足三站的走廊草稿不自动保存（lyFlow 会把有胶的帧测成无胶），原因在示教页显示
-    const corridor = Object.entries(corridorDrafts).find(([key, draft]) => !sameCorridor(draft, savedCorridor(key)) && !corridorStationError(draft, doc.spacing));
-    if (!dirty && !corridor) { setSaveState(frameDirty ? "pending" : "saved"); return; }
+    const corridor = pendingCorridor;
+    if (!dirty && !corridor) { setUrgent(false); setSaveState(frameDirty ? "pending" : "saved"); return; }
     const signature = JSON.stringify([doc, corridor, saveRetry]);
     if (failedSave.current === signature) return;
     setSaveState("pending");
     const timer = setTimeout(async () => {
       if (acting.current) return;
+      setUrgent(false);
       // 段走廊草稿并入候选配方这台相机的 inspect.segments，整份经 workspace_save_doc 提交（没有单独的草稿命令）
       const sent = dirty ? doc : withCorridor(data.workspace.doc, corridor![0], corridor![1]);
       const id = doc.id, serial = requestSerial.current;
@@ -253,11 +263,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         if (current()) { failedSave.current = signature; setSaveState("failed"); setError(errorText(e)); }
       } finally { savingRef.current = false; setSaving(false); }
-    }, 900);
+    }, urgent ? 0 : 900);
     return () => clearTimeout(timer);
-  }, [doc, data, corridorDrafts, dirty, frameDirty, busy, saving, saveRetry, accept]);
+  }, [doc, data, corridorDrafts, dirty, frameDirty, busy, saving, saveRetry, urgent, accept]);
 
-  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || preferenceError || recipeErrors, busy: busy || saving, saving, dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft,
+  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || preferenceError || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft,
     clearSelection:()=>{if(dirtyRef.current){setError("当前草稿尚未保存，请先保存或撤销修改");return;}pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setNavigationDraft(null);setError("");clearSnack();},
     discardDrafts:()=>{if(acting.current||savingRef.current)return false;dirtyRef.current=false;navigationDirtyRef.current=false;failedSave.current="";setDoc(data?.workspace.doc??null);setPreview(data?.layout??null);setPreviewError("");setCorridorDrafts({});setNavigationDraft(null);setError("");return true;},
     corridorDrafts, select, reloadList, setDoc,

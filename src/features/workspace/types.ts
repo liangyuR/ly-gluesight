@@ -1,6 +1,6 @@
 import type { Judgement, Recipe, RecipeDoc, RecipeStage, Verdict } from "../cycle/types";
 import type { CameraImaging } from "../camera/types";
-import type { BurstJudgement, CalibrationRound, CameraTeaching, PathSegment, WorkspacePlanView } from "../plan/types";
+import type { BurstJudgement, CalibrationRound, CameraTeaching, FrameMetrics, PathSegment, WorkspacePlanView } from "../plan/types";
 import type { PartMode } from "../history/types";
 import type { NavigationMapData } from "./navigation/types";
 
@@ -19,7 +19,7 @@ export interface NavigationView {
 
 /** 段模型（分段连拍飞拍）的候选工作区类型，定义在 plan/types.ts；这里转出供工作台页面使用。 */
 export type {
-  CalibOutcome, CalibrationRound, CalibrationRoundView, CalibrationView, CameraTeachDraft, CameraTeaching, CameraTeachingView, CaptureFailureV2, CaptureRoundV2, CaptureState, MissingFrame,
+  CalibrationRound, CalibrationView, CameraTeachDraft, CameraTeaching, CameraTeachingView, CaptureFailureV2, CaptureRoundV2, CaptureState, MissingFrame,
   PieceView, ProgressStepV2, ProgressTargetV2, ProgressV2, RoundOrigin, SegmentCalibView, StepIdV2, WorkspacePlanView,
 } from "../plan/types";
 
@@ -51,7 +51,7 @@ export interface Workspace {
   publish: PublishState; updatedAt: number;
   /** 每台计划相机的走廊示教帧；界面读 plan.cameraTeaching */
   cameraTeaching: CameraTeaching[];
-  /** 多轮标定加入的轮次；界面读 plan.calibration */
+  /** 示教件的测量；界面读 plan.calibration */
   calibration: { rounds: CalibrationRound[] };
   captureReview?: CaptureReview;
   /** 候选的建法：2 = 示教件流程（RB-7）；其他为旧流程候选，已停用，只能删除（RB-5） */
@@ -74,20 +74,6 @@ export interface CaptureRoundReview {
   templateVersion: number | null;
   /** 最近一次确认的来源（D-SB-51）：人工，或对齐可信时自动确认；缺省为人工 */
   confirmedBy?: "manual" | "aligned";
-}
-/** 边界需重点复核的原因（D-SB-51）：被挪动、偏离比例换算超过 boundaryGuard、对齐不清晰；null 为可信边界 */
-export type AlignReviewReason = "moved" | "deviates" | "unclear";
-/** 分段模板边界对齐到一轮的建议（workspace_capture_review_suggest）：cut 为上一段最后一个帧组（从 1 起）。 */
-export interface AlignSuggestion {
-  round: string;
-  templateRound: string;
-  templateCuts: number[];
-  cuts: { cut: number; proportional: number; sharpness: number; reason: AlignReviewReason | null; review: boolean }[];
-}
-/** 选标定件、同步标定件的结果：每件是否已加入标定，没加入的带原因（待复核或不可用） */
-export interface CalibrationSyncResult {
-  view: WorkspaceView;
-  pieces: { roundId: string; added: boolean; issue: string | null }[];
 }
 export interface CaptureReview {
   rounds: Record<string, CaptureRoundReview>;
@@ -115,7 +101,20 @@ export interface Comparison {
   originalVerdict: Verdict; judgement: Judgement; measurements: unknown[]; createdAt: number;
   /** 复测结果（后端 workspace::burst_history::ComparisonBurst）：重判所用的候选段、相机、预期总数与区域判定。
    * 之前保存的旧对照为 null；有值时 judgement 的 verdict / plcCode / faultCode / reason 与 burst.judgement 相同 */
-  burst: { segments: PathSegment[]; cameras: string[]; expectedTotal: number | null; judgement: BurstJudgement } | null;
+  burst: { segments: PathSegment[]; cameras: string[]; expectedTotal: number | null; judgement: BurstJudgement;
+    /** 这次对照用的每帧指标；之前保存的对照为空 */
+    frames: FrameMetrics[];
+    /** 建测量图用的各计划相机示教帧尺寸 [宽, 高]，叠图按它重建；原包重现与之前保存的对照为空 */
+    sizes?: [number, number][] } | null;
+}
+/** 分段保存的影响（后端 capture_review::SegmentSaveImpact，保存前确认用）。 */
+export interface SegmentSaveImpact {
+  restructured: boolean;
+  /** 会清掉的走廊：“原第 j 段（类型）· 相机” */
+  dropped: string[];
+  /** 保存后还没有走廊的（段, 检测相机） */
+  untaught: string[];
+  measurementCleared: boolean;
 }
 /** 预览像素（8 位灰度，可能是降采样后的尺寸）。 */
 export interface GrayPixels { data: Uint8Array; width: number; height: number }
@@ -148,5 +147,3 @@ export interface HistoryCandidate {
   /** 手动配置数据（capture_fixture 写的仿历史件）的标签；真机件为 null */
   fixture: string | null;
 }
-
-export interface HistoryPick { recordId: number; standard: boolean }

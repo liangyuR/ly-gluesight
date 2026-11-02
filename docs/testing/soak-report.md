@@ -13,7 +13,7 @@ pwsh -NoProfile -File scripts/Test-Soak.ps1 -SkipBuild -Stages faults           
 node scripts/soak/soak.mjs run --parts 300 --page /inspect                           # 在线检测页打开时的界面内存
 ```
 
-隔离实例为 `soak`（标识 `com.xyzrobotics.tujiaovision.soak-tests`）。建站（`setup`）只支持段配方：样本集上走廊示教 → 10 轮标定 → 独立样本验证 → 发布，配方 `SOAK-1`。样本集是停稳拍数据、一条走廊对不上其他点位，检测项开着样本全判 NG_GAP，所以建站时各段检测项全关：长稳验证稳定性、资源与故障恢复，不验证判胶质量。模拟标定当量 0.112 mm/px 只写入输出目录的样本集副本（S-1）。
+隔离实例为 `soak`（标识 `com.xyzrobotics.tujiaovision.soak-tests`）。建站（`setup`）只支持段配方：样本集上选示教件 → 分段 → 走廊示教 → 测量示教件 → 独立样本验证 → 发布，配方 `SOAK-1`。样本集是停稳拍数据、一条走廊对不上其他点位，检测项开着样本全判 NG_GAP，所以建站时各段检测项全关：长稳验证稳定性、资源与故障恢复，不验证判胶质量。模拟标定当量 0.112 mm/px 只写入输出目录的样本集副本（S-1）。
 
 阶段：`soak` 连续生产；`faults` PLC / 相机 / lyFlow / 目录 / 复位类注入（含 `pulseJitter` 脉冲首尾 ±1）；`engine` lyFlow 运行库缺失；`disk` 资料盘不足（用 `GLUESIGHT_DISK_MIN_FREE_MB` 调高下限模拟，仅开发构建生效）；`audit` 追溯目录不可写后重启；`restart` 事务中强制结束进程；`throughput` 3 × 25 Hz 吞吐门槛（`pnpm test:soak:throughput`）。恢复失败时脚本保留原始错误与结果文件，不把恢复失败视为通过。
 

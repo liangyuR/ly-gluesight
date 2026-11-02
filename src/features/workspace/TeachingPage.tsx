@@ -2,7 +2,7 @@ import { pathLength, resampleTeachingPath, type ImagePoint } from "./teachingPat
 import { errorText } from "../../lib/errors";
 import { cloneElement, useEffect, useId, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowRight, Brush, Camera, Crosshair, Eraser, Info, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles, Workflow } from "lucide-react";
+import { ArrowRight, Brush, Camera, Crosshair, Eraser, Hand, Info, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles, Workflow } from "lucide-react";
 import { Button, Divider, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Slider, Surface, Tooltip } from "qing-steel";
 import { cameraApi } from "../camera/api";
 import type { CameraImaging } from "../camera/types";
@@ -22,7 +22,7 @@ import { SegmentTrial } from "./TeachTrial";
 import { FrameGrid } from "./FrameGrid";
 import { pieceLabel } from "./pieces";
 import { ExpertCard, HeadingCard, MeasureCard, SegmentChecksCard, type CameraParams } from "./CorridorSettings";
-import type { HeadingGuide, HeadingPart } from "./headingOverlay";
+import { searchSector, type HeadingGuide, type HeadingPart } from "./headingOverlay";
 import "./corridor.css";
 import WorkspaceNavigation from "./WorkspaceNavigation";
 
@@ -133,7 +133,7 @@ export default function TeachingPage() {
 }
 
 function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: RecipeDoc; plan: WorkspacePlanView }) {
-  const { dirty, busy, saving, frameDirty, navigationDirty, corridorDrafts, setCorridorDraft, setDoc, act, setError } = useWorkspace();
+  const { dirty, busy, saving, acting, pendingSave, unsavable, saveNow, saveState, frameDirty, navigationDirty, corridorDrafts, setCorridorDraft, setDoc, act, setError } = useWorkspace();
   const { snapshot } = useCycle();
   const navigate = useNavigate();
   const [search] = useSearchParams();
@@ -168,7 +168,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const [vertex, setVertex] = useState<number | null>(null);
   const [region, setRegion] = useState<[number, number, number, number] | null>(null);
   const [regionMode, setRegionMode] = useState(false);
-  const [nozzleMode, setNozzleMode] = useState(false);
+  /** 画布不在刷选、框选时点图做什么：默认只看（不加点，防误触），选“编辑点”才加点、拖点，“标出胶点”点出胶点 */
+  const [pointMode, setPointMode] = useState<"view" | "edit" | "nozzle">("view");
   const [headingFocus, setHeadingFocus] = useState<HeadingPart | null>(null);
   const [selectionTool, setSelectionTool] = useState<"brush" | "box">("brush");
   const [brushPoints, setBrushPoints] = useState<ImagePoint[]>([]);
@@ -182,7 +183,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   useEffect(() => setBrushFailures(0), [scope]);
   const current = useRef({ scope, alive: true, revision: data.workspace.revision }); current.current.scope = scope; current.current.revision = data.workspace.revision;
   useEffect(() => { current.current.alive = true; return () => { current.current.alive = false; serial.current++; }; }, []);
-  useEffect(() => { serial.current++; pending.current = false; setWorking(false); setChoosing(mapTarget.current?.key === key); setVertex(null); setRegion(null); setBrushPoints([]); setRegionMode(false); setNozzleMode(false); setOperation(null); setExtractionHint(""); setExtractionFailure(null); setTrialSeq(null); }, [scope]);
+  useEffect(() => { serial.current++; pending.current = false; setWorking(false); setChoosing(mapTarget.current?.key === key); setVertex(null); setRegion(null); setBrushPoints([]); setRegionMode(false); setPointMode("view"); setOperation(null); setExtractionHint(""); setExtractionFailure(null); setTrialSeq(null); }, [scope]);
   const perform = async (request: () => Promise<WorkspaceView>, message: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => {
     if (pending.current || busy || dirty) return null;
     pending.current = true; setWorking(true);
@@ -228,8 +229,10 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const t = segment == null ? saved : corridorDrafts[key] ?? saved;
   const editing = segment != null && !sameCorridor(t, saved);
   const invalid = corridorError(t, doc.spacing);
-  const unlocked = !busy && !dirty && !working && !data.workspace.pending && !navigationDirty;
-  // 画走廊、标出胶点、调参数在等待保存与自动保存期间都可继续，改动并入下一次保存；提交后端的操作仍要 unlocked
+  // ready：没有显式操作在进行，按钮据此可点；自动保存不算，期间界面不变灰。
+  // 提交后端的操作要等改动都存好（unlocked）：点下去时有待存的改动就先立即保存，存好再执行（deferAction）
+  const ready = !acting && !working && !data.workspace.pending && !navigationDirty;
+  const unlocked = ready && !busy && !dirty;
   const editable = (!busy || saving) && !working && !data.workspace.pending && !navigationDirty;
   const productionBusy = isProductionBusy(snapshot);
   const update = (next: typeof t) => { if (editable && segment != null) setCorridorDraft(key, next); };
@@ -252,8 +255,9 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   /** 把这一段的走廊草稿并入候选配方并整份保存（段走廊没有单独的草稿命令）。 */
   const commit = (message: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => perform(() => workspaceApi.saveDoc(doc.id, data.workspace.revision, withCorridor(data.workspace.doc, key, t)), message);
   const extract = async () => {
-    if (!canEdit || !unlocked || !frame || pending.current) return;
+    if (!canEdit || !frame || pending.current) return;
     if (!roiValid || !roi || !spacingValid) { setRegionMode(true); setExtractionHint("请沿胶路刷过至少 8 px，并设置有效的笔刷宽度和走廊点间距。"); return; }
+    if (!unlocked) return;
     const capturedScope = scope;
     setOperation("extract"); setExtractionHint(""); setExtractionFailure(null);
     try {
@@ -296,21 +300,32 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     if (result) setChoosing(false);
   };
   const saveCorridor = () => { if (unlocked && editing && !invalid) void commit(`${targetLabel} 的走廊已保存到候选配方`); };
+  /** 要提交后端的操作：有待存的改动时先立即保存，存好再执行（执行时取那时最新的修订与配置）；保存失败就不执行 */
+  const [deferred, setDeferred] = useState<"extract" | "choose" | "clear" | null>(null);
+  const runAction = (action: "extract" | "choose" | "clear") => action === "extract" ? void extract() : action === "choose" ? void chooseFrame() : clearSegment();
+  // 还没刷选就点提取：直接进刷选模式说明怎么做，不用等保存
+  const startExtract = () => { if (!roiValid || !roi || !spacingValid) void extract(); else deferAction("extract"); };
+  const deferAction = (action: "extract" | "choose" | "clear") => { if (pendingSave) { setDeferred(action); saveNow(); } else runAction(action); };
+  useEffect(() => {
+    if (!deferred) return;
+    if (saveState === "failed") { setDeferred(null); return; }
+    if (!pendingSave && !acting) { setDeferred(null); runAction(deferred); }
+  }, [deferred, pendingSave, acting, saveState]);
   const clearSegment = () => { if (unlocked && segment != null && !editing) void perform(() => workspaceApi.clearSegmentCorridor(doc.id, data.workspace.revision, camera, segment), `${targetLabel} 的走廊与示教帧已清除`); };
   const changeSegments = (segments: PathSegment[]) => setDoc({ ...doc, segments });
   const inspect = doc.inspect?.find(item => item.camera === camera);
-  const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null, window: inspect?.window ?? null, nozzle: inspect?.nozzle ?? null, expert: inspect?.expert ?? {} };
+  const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null, window: inspect?.window ?? null, nozzle: inspect?.nozzle ?? null, sectorDeg: inspect?.sectorDeg ?? null, expert: inspect?.expert ?? {} };
   const setParams = (next: CameraParams) => setDoc({ ...doc, inspect: (doc.inspect ?? []).map(item => item.camera === camera ? { ...item, ...next } : item) });
-  // 出胶点与测量区间跟着候选配方即时显示；搜索扇区由后端按已保存的出胶点算
+  // 出胶点、测量区间与搜索扇区都按候选配方即时算，保存前后显示不换来源
   const savedNozzle = plan.cameraTeaching.find(item => item.camera === camera)?.nozzle ?? null;
   const derivedNozzle = savedNozzle && !savedNozzle.calibrated ? savedNozzle.point : null;
   const headingOn = segment != null && !!doc.segments?.find(item => item.index === segment)?.heading;
   const cameraScale = params.mmPerPx != null && Number.isFinite(params.mmPerPx) && params.mmPerPx > 0 ? params.mmPerPx : null;
   const nozzlePoint = params.nozzle ?? derivedNozzle;
   const headingGuide: HeadingGuide | null = headingOn && nozzlePoint ? {
-    nozzle: nozzlePoint, calibrated: !!params.nozzle, focus: headingFocus,
+    nozzle: nozzlePoint, calibrated: !!params.nozzle, focus: headingFocus, turned: params.sectorDeg != null,
     zone: params.window && cameraScale ? [params.window.startMm / cameraScale, (params.window.startMm + params.window.lengthMm) / cameraScale] : null,
-    ...(segmentTeaching?.heading && !editing ? { sector: segmentTeaching.heading.sector } : {}),
+    sector: frame ? searchSector(nozzlePoint, frame.size, params.sectorDeg) : null,
   } : null;
 
   if (!cameraItems.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="段配方还没有计划相机" description="先在“段列表”里确认计划相机，再回来示教走廊。" action={<Button asChild><Link to="/recipe/segments">前往段列表<ArrowRight size={15} aria-hidden="true" /></Link></Button>} /></Surface></div>;
@@ -327,8 +342,9 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const [lengthValue, lengthUnit] = scaled ? [(lengthPx * t.mmPerPx!).toFixed(1), "mm"] : [lengthPx.toFixed(0), "px"];
   const cornerLong = segmentItem?.kind === "corner" && scaled && lengthPx * t.mmPerPx! > CORNER_CORRIDOR_MM;
   const done = !!segmentTeaching?.saved;
-  const groupsLocked = !unlocked || editing || frameDirty;
-  const groupLockReason = navigationDirty ? "请先保存或撤销导航图修改" : editing || frameDirty ? "走廊有未保存的修改，先保存或清空后再切换" : dirty ? "候选配置正在保存，请稍候" : data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候";
+  // 能自动保存的草稿切走后照常保存，不拦；按站距不足三站的草稿存不了，切走会以为丢了，先拦住
+  const groupsLocked = !ready || unsavable;
+  const groupLockReason = navigationDirty ? "请先保存或撤销导航图修改" : unsavable ? "走廊有未保存的修改（按站距不足三站，不会自动保存），先改好或清空后再切换" : data.workspace.pending ? "候选版本正在等待生效" : "正在处理，请稍候";
   const mapReview = teachingRoundId ? reviews[teachingRoundId] : undefined;
   const mapRanges = plan.segments.map(item => plan.segments.length === 1 && pickGroups > 0 ? { start: 1, end: pickGroups } : confirmedSegmentRange(mapReview, plan.segments, item.index));
   const navigationRanges: [number, number][] | null = mapRanges.length && mapRanges.every(item => item != null) ? mapRanges.map(item => [item!.start, item!.end]) : null;
@@ -343,43 +359,44 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const nextLabel = nextTask && `${nextTask.camera} · 段 ${nextTask.segment}`;
   const [stateText, stateTone]: [string, "ok" | "warn" | "info" | "neutral"] = segment == null ? (cameraItems.find(item => item.camera === camera)?.mmPerPx == null ? ["缺像素当量", "warn"] : ["像素当量已设", "ok"])
     : !frame ? ["待选帧", "neutral"] : data.workspace.pending ? ["候选待生效", "warn"]
-    : choosing ? ["重新选帧中", "info"] : editing ? [invalid ? "走廊已修改 · 未完成" : "走廊已修改 · 待保存", "warn"] : done ? ["已示教", "ok"] : hasPath ? ["已保存 · 待检查", "info"] : ["待画走廊", "neutral"];
+    : choosing ? ["重新选帧中", "info"] : editing && invalid ? ["走廊已修改 · 未完成", "warn"] : done ? ["已示教", "ok"] : hasPath ? ["已保存 · 待检查", "info"] : ["待画走廊", "neutral"];
   // 刷选连续两次找不到连续边缘后，笔划直接生成走廊是唯一的主操作
   const strokeAdvised = selectionTool === "brush" && brushFailures >= 2 && !!extractionFailure;
-  const primary = segment == null ? "next" : strokeAdvised ? "stroke" : !hasPath ? "extract" : editing ? "save" : "next";
-  const saveReason = !editing ? (done ? "走廊已保存" : "先提取或绘制走廊") : invalid ? invalid : !unlocked ? (data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候") : "";
-  const doneHint: ReactNode = nextLabel ? `已完成；下一条 ${nextLabel}` : allDone ? <>各段走廊都已示教，可到 <Link to="/recipe/calibration">多轮标定</Link></> : "已完成";
+  const primary = segment == null ? "next" : strokeAdvised ? "stroke" : !hasPath ? "extract" : "next";
+  const saveReason = !editing ? (done ? "走廊已保存" : "先提取或绘制走廊") : invalid ? invalid : !ready ? (data.workspace.pending ? "候选版本正在等待生效" : "正在处理，请稍候") : "";
+  const doneHint: ReactNode = nextLabel ? `已完成；下一条 ${nextLabel}` : allDone ? <>各段走廊都已示教，可到 <Link to="/recipe/calibration">试测</Link></> : "已完成";
   const dockHint: ReactNode = segment == null ? (params.mmPerPx == null ? `${camera} 缺像素当量：在右侧填写或采用设备标定当量，各段走廊都按它换算` : `像素当量与检测参数改动自动保存到候选配方；走廊在左侧按段逐条示教`)
     : !frame ? `先在示教件第 ${segment} 段内选一帧`
     : data.workspace.pending ? "等待当前工件结束后切换，期间不能修改示教"
       : working ? "正在处理或保存，请稍候"
         : choosing ? "选定新帧后，这一段现有走廊原样保留"
-          : editing ? (invalid ? invalid : "有未保存的修改：保存后写入候选配方，已发布版本不变；也会在停顿后自动保存")
+          : editing && invalid ? invalid
             : cornerLong ? `弯道走廊超过 ${CORNER_CORRIDOR_MM} mm：胶条绕出胶点转动，建议只从出胶点起画一小段`
               : !scaled ? `${camera} 缺像素当量：先在相机参数里设置，再保存走廊`
                 : done ? doneHint
                   : segmentItem?.kind === "corner" ? `弯道：从出胶点起沿胶条画一小段（不超过 ${CORNER_CORRIDOR_MM} mm）`
                     : "直线段：从出胶点一侧起，沿胶条方向画整段走廊";
-  const picking = nozzleMode && headingOn;
-  const editHint = picking ? `点击胶嘴出胶处标定 ${camera} 的出胶点（${camera} 各段共用，自动保存到候选配方）；叠加图上的编号与右侧“逐帧定向”面板各行对应，指着面板某一行时图上只突出它。`
+  const picking = pointMode === "nozzle" && headingOn;
+  const pointing = pointMode === "edit";
+  const editHint = !picking && !pointing ? "只看：点图不改走廊，可缩放、平移、拖动扇区把手；要加点或拖点请选“编辑点”。" : picking ? `点击胶嘴出胶处标定 ${camera} 的出胶点（${camera} 各段共用，自动保存到候选配方）；叠加图上的编号与右侧“逐帧定向”面板各行对应，指着面板某一行时图上只突出它。`
     : "点击图像加点（绿圈为起点），拖动点可调整；密集走廊打开“点柄”显示全部点，Ctrl＋滚轮缩放。";
   const regionHint = extractionHint || (selectionTool === "brush" ? "按住左键沿胶路从起点刷到终点，每笔重画选区；笔刷覆盖胶路和两侧少量背景，尽量避开阴影。" : "按住左键框选一段连续胶路，再自动提取走廊；框选包含阴影时建议改用刷选。");
   const changeMode = (value: string) => {
-    setNozzleMode(value === "nozzle");
-    if (value === "edit" || value === "nozzle") { setRegionMode(false); return; }
+    if (value === "view" || value === "edit" || value === "nozzle") { setPointMode(value); setRegionMode(false); return; }
     const tool = value as "brush" | "box";
     if (tool !== selectionTool) { setSelectionTool(tool); setExtractionFailure(null); setExtractionHint(""); setBrushFailures(0); }
     setRegionMode(true);
   };
   const modeLabel = (icon: ReactNode, long: string, short: string) => <><span className="wp-seg-icon">{icon}</span><span className="wp-seg-long">{long}</span><span className="wp-seg-short">{short}</span></>;
   const tools = <div className="wp-canvas-tools" role="group" aria-label="示教工具">
-    <SegmentedControl size="sm" label="画布模式" value={regionMode ? selectionTool : nozzleMode && headingOn ? "nozzle" : "edit"} disabled={!canEdit || (!frame && !regionMode)} options={[
+    <SegmentedControl size="sm" label="画布模式" value={regionMode ? selectionTool : picking ? "nozzle" : pointMode === "edit" ? "edit" : "view"} disabled={!canEdit || (!frame && !regionMode)} options={[
+      { value: "view", label: modeLabel(<Hand size={14} aria-hidden="true"/>, "只看", "只看"), "aria-label": "只看" },
       { value: "edit", label: modeLabel(<MousePointer2 size={14} aria-hidden="true"/>, "编辑点", "编辑"), "aria-label": "编辑点" },
       { value: "brush", label: modeLabel(<Brush size={14} aria-hidden="true"/>, "沿胶路刷选", "刷选"), "aria-label": "沿胶路刷选" },
       { value: "box", label: modeLabel(<SquareDashed size={14} aria-hidden="true"/>, "矩形框选", "框选"), "aria-label": "矩形框选" },
       ...(headingOn ? [{ value: "nozzle", label: modeLabel(<Crosshair size={14} aria-hidden="true"/>, "标出胶点", "出胶点"), "aria-label": "标出胶点" }] : []),
     ]} onValueChange={changeMode}/>
-    <Button size="sm" variant={primary === "extract" ? "filled" : "tonal"} data-variant={primary === "extract" ? "filled" : "tonal"} leadingIcon={<WandSparkles size={14}/>} disabled={!canEdit || !unlocked || loading || !!error} onClick={() => void extract()}>{operation === "extract" ? "提取中…" : "自动提取走廊"}</Button>
+    <Button size="sm" variant={primary === "extract" ? "filled" : "tonal"} data-variant={primary === "extract" ? "filled" : "tonal"} leadingIcon={<WandSparkles size={14}/>} disabled={!canEdit || !ready || loading || !!error} onClick={startExtract}>{operation === "extract" ? "提取中…" : "自动提取走廊"}</Button>
     <Button size="sm" variant={primary === "stroke" ? "filled" : "tonal"} data-variant={primary === "stroke" ? "filled" : "tonal"} title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成走廊草稿"} disabled={!canEdit || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成走廊</Button>
     <Divider vertical/>
     <IconButton size="sm" aria-label="删除末点" title="删除末点" disabled={!canEdit || !t.corridor.length} onClick={() => { setVertex(null); setPath(t.corridor.slice(0, -1)); }}><Undo2 size={15}/></IconButton>
@@ -405,10 +422,10 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     <KV label="曝光">{frame.exposureUs != null ? frame.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.gainDb != null ? frame.gainDb + " dB" : "未记录"}</KV>
     <KV label="示教帧更换">仅通过“重新选帧”</KV>
     {imagingHint && <p className="c-warn" role="note">{imagingHint}；只作提示，示教与标定仍然有效</p>}
-    <p className="muted hint">走廊保存进候选配方，已发布版本不变。用于生产前仍需完成多轮标定与发布。</p>
+    <p className="muted hint">走廊保存进候选配方，已发布版本不变。用于生产前仍需试测与发布。</p>
   </Popover>;
   const pickReason = !teachingPiece ? "还没有示教件：先选示教件" : !picked ? "正在读取示教件" : !range ? "示教件的分段边界还没确认：先在分段标定里保存分段"
-    : !inSegment ? `第 ${segment} 段在示教件为帧组 ${range.start}–${range.end}` : !arrived ? "该相机本帧组缺帧，请换一个帧组" : !unlocked ? "正在处理或保存，请稍候" : "";
+    : !inSegment ? `第 ${segment} 段在示教件为帧组 ${range.start}–${range.end}` : !arrived ? "该相机本帧组缺帧，请换一个帧组" : !ready ? "正在处理，请稍候" : "";
   const pickPanel = <Surface role="region" className="wp-picker wp-corridor-picker" aria-label="示教帧选择">
     <h2>{targetLabel}<small>示教帧</small></h2>
     <div className="wp-corridor-pick">
@@ -420,7 +437,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       missing={(_, s) => !frameArrived(picked.view, camera, s)} onSelect={(_, s) => setPickSeq(s)} />}
     <div className="wp-picker-side">
       <WithReason reason={pickReason}>
-        <Button variant="filled" data-variant="filled" disabled={!!pickReason} onClick={() => void chooseFrame()}>用此帧示教 {targetLabel}</Button>
+        <Button variant="filled" data-variant="filled" disabled={!!pickReason} onClick={() => deferAction("choose")}>用此帧示教 {targetLabel}</Button>
       </WithReason>
       {frame && <Button variant="text" onClick={() => setChoosing(false)}>取消</Button>}
     </div>
@@ -428,8 +445,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const cameraTasks = tasks.filter(item => item.camera === camera);
   const trialReview = segmentTeaching ? reviews[segmentTeaching.round] : undefined;
   const trialRange = segment == null ? null : plan.segments.length === 1 ? (trialReview ? { start: 1, end: trialReview.groupCount } : null) : confirmedSegmentRange(trialReview, plan.segments, segment);
-  const trialLocked = productionBusy ? "工件正在检测，结束后再试测" : editing ? "走廊有未保存的修改：保存后再试测" : dirty ? "参数正在保存，保存后再试测"
-    : !unlocked ? "正在处理或保存，请稍候" : !hasPath ? "这一段还没有保存的走廊" : "";
+  const trialLocked = productionBusy ? "工件正在检测，结束后再试测" : editing && invalid ? `走廊未完成：${invalid}` : !ready ? "正在处理，请稍候" : !hasPath ? "这一段还没有走廊" : "";
   const paramsError = cameraParamsError(params);
   const paramsDisabled = !editable;
   const middle = segment == null
@@ -448,10 +464,10 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       {!choosingNow && frame && <Surface role="region" className="wp-picker wp-corridor-frame" aria-label="示教帧">
         <h2>{targetLabel}<small>示教帧</small></h2>
         <span className="muted wp-corridor-source">{frame.source} · {frame.id}</span>
-        <div className="wp-picker-side">{imageInfo}<Button variant="text" disabled={!unlocked || editing || frameDirty} onClick={() => { setTrialSeq(null); setChoosing(true); }}>重新选帧</Button></div>
+        <div className="wp-picker-side">{imageInfo}<Button variant="text" disabled={groupsLocked} onClick={() => { setTrialSeq(null); setChoosing(true); }}>重新选帧</Button></div>
       </Surface>}
       {!choosingNow && frame && segmentTeaching && <SegmentTrial key={scope} id={doc.id} camera={camera} segment={segment!} round={segmentTeaching.round} teachSeq={segmentTeaching.seq}
-        range={trialRange} revision={data.workspace.revision} locked={trialLocked} guide={headingGuide} seq={trialSeq} onSeq={setTrialSeq} />}
+        range={trialRange} revision={data.workspace.revision} locked={trialLocked} waiting={pendingSave} onFlush={saveNow} guide={headingGuide} seq={trialSeq} onSeq={setTrialSeq} />}
       {choosingNow
         ? <GrayViewer controlsAt="footer" image={candidate.image} loading={candidate.loading} error={candidate.error || (picked && !arrived ? "该相机本帧组缺帧，请换一个帧组" : "")} label={`${camera} · 帧组 ${pickSeqSafe} · 候选示教帧`}
           emptyTitle="选择示教帧" emptyHint="在示教件这一段内选这台相机的帧组；缺帧的帧组不能选。" summary={<span className="muted">{`选定后冻结为第 ${segment} 段的示教帧，这条走廊只用于这一段的帧。`}</span>}/>
@@ -463,20 +479,21 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
           overlay={{ path: t.corridor, searchHalfPx, selected: vertex, heading: headingGuide }}
           editDisabled={!canEdit}
           onPoint={picking && frame ? p => setParams({ ...params, nozzle: p }) : undefined}
-          onEdit={frame && !regionMode && !picking ? { add: p => setPath([...t.corridor, p]), move: (i, p) => setPath(t.corridor.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />}
+          onSectorTurn={frame && !regionMode && !picking ? deg => { if (deg !== params.sectorDeg) setParams({ ...params, sectorDeg: deg }); } : undefined}
+          onEdit={frame && !regionMode && pointing ? { add: p => setPath([...t.corridor, p]), move: (i, p) => setPath(t.corridor.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />}
     </>;
   const checksDisabled = !editable;
   const sharing = plan.cameras.filter(item => item !== camera && !doc.inspect?.find(i => i.camera === item)?.detect);
   const cameraScaleText = cameraScale != null ? `${Number(cameraScale.toPrecision(6))} mm/px` : "缺像素当量";
   const navigation = <WorkspaceNavigation segments={plan.segments} ranges={navigationRanges} seq={choosingNow ? pickSeqSafe : trialSeq ?? segmentTeaching?.seq ?? 1}
     currentSegment={segment ?? undefined} frameStatus={navigationRanges ? "confirmed" : "unavailable"}
-    locked={busy || dirty || working || editing || frameDirty || data.workspace.pending ? groupLockReason : ""} onNavigate={navigateMap} />;
+    locked={acting || working || data.workspace.pending || unsavable ? groupLockReason : ""} onNavigate={navigateMap} />;
   const rail = segment == null
     ? <div className="wp-stack wp-teach-settings">
       {navigation}
       <MeasureCard key={camera} camera={camera} params={params} calibMmPerPx={plan.cameraTeaching.find(item => item.camera === camera)?.calibMmPerPx ?? null} defaults={doc.detect} spacing={doc.spacing} sharing={sharing} disabled={paramsDisabled || frameDirty} spacingError={value => spacingError(doc, value)}
         onParams={setParams} onDefaults={detect => setDoc({ ...doc, detect })} onSpacing={spacing => setDoc({ ...doc, spacing })} />
-      <HeadingCard key={`heading-${camera}`} camera={camera} params={params} derivedNozzle={derivedNozzle} segments={doc.segments ?? []} index={null} geometry={null}
+      <HeadingCard key={`heading-${camera}`} camera={camera} params={params} derivedNozzle={derivedNozzle} segments={doc.segments ?? []} index={null} sector={null}
         headingSegments={(doc.segments ?? []).filter(item => item.heading && cameraTasks.some(task => task.segment === item.index))}
         expertDefaults={doc.expert ?? {}} disabled={paramsDisabled || frameDirty} sharedLocked="" onFocus={setHeadingFocus}
         onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />
@@ -488,12 +505,12 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       <Surface role="region" className="wp-seg-corridor-note" aria-label="段走廊说明">
         <div className="wp-seg-head"><h3>第 {segment} 段 · {segmentItem?.kind === "corner" ? "弯道" : "直线"}</h3><Badge tone={stateTone}>{stateText}</Badge><span className="muted">{camera}</span></div>
         <p className="muted">{segmentItem?.kind === "corner" ? `弯道：从出胶点起画一小段（不超过 ${CORNER_CORRIDOR_MM} mm），只判胶宽、断胶、溢胶` : "直线：从出胶点一侧起，沿胶条画整段"}</p>
-        <WithReason reason={editing ? "走廊有未保存的修改" : !unlocked ? "正在处理或保存，请稍候" : !frame && !hasPath ? "这一段还没有示教帧和走廊" : ""}><Button variant="text" size="sm" disabled={editing || !unlocked || (!frame && !hasPath)} onClick={clearSegment}>清除本段走廊</Button></WithReason>
+        <WithReason reason={editing && invalid ? "走廊有未完成的修改" : !ready ? "正在处理，请稍候" : !frame && !hasPath ? "这一段还没有示教帧和走廊" : ""}><Button variant="text" size="sm" disabled={(editing && !!invalid) || !ready || (!frame && !hasPath)} onClick={() => deferAction("clear")}>清除本段走廊</Button></WithReason>
         <WithReason reason={editing ? "走廊有未保存的修改：保存后再调试" : !done ? "这一段还没有保存的走廊" : ""}><Button variant="text" size="sm" leadingIcon={<Workflow size={14}/>} disabled={editing || !done}
           onClick={() => navigate(`/recipe/flow?camera=${encodeURIComponent(camera)}&segment=${segment}&seq=${trialSeq ?? segmentTeaching?.seq ?? ""}`)}>流程调试</Button></WithReason>
       </Surface>
       {segmentItem && <HeadingCard key={`heading-${camera}-${segment}`} camera={camera} params={params} derivedNozzle={derivedNozzle} segments={doc.segments ?? []} index={segment} headingSegments={[]}
-        geometry={editing ? null : segmentTeaching?.heading ?? null} expertDefaults={doc.expert ?? {}} disabled={checksDisabled}
+        sector={headingGuide?.sector ?? null} expertDefaults={doc.expert ?? {}} disabled={checksDisabled}
         sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改出胶点与测量区间。" : ""} onFocus={setHeadingFocus}
         onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />}
       {segmentItem && <SegmentChecksCard key={`checks-${segment}`} segments={doc.segments ?? []} index={segment} cameras={plan.cameras} disabled={checksDisabled} onChange={changeSegments} />}
@@ -525,10 +542,10 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     <div className="wp-teach-dock" role="group" aria-label="走廊示教操作">
       <span className="wp-dock-mid"><Badge tone={stateTone}>{stateText}</Badge><span className="wp-dock-hint">{dockHint}</span></span>
       <span className="wp-dock-actions">
-        {segment != null && <WithReason reason={saveReason}><Button variant={primary === "save" ? "filled" : "text"} data-variant={primary === "save" ? "filled" : "text"} leadingIcon={<Save size={15}/>} disabled={!!saveReason} onClick={saveCorridor}>保存走廊</Button></WithReason>}
+        {segment != null && <WithReason reason={saveReason}><Button variant="text" data-variant="text" leadingIcon={<Save size={15}/>} disabled={!!saveReason} onClick={saveCorridor}>保存走廊</Button></WithReason>}
         {nextTask
           ? <Button aria-label="下一条走廊" variant={primary === "next" ? "filled" : "tonal"} data-variant={primary === "next" ? "filled" : "tonal"} trailingIcon={<ArrowRight size={15}/>} disabled={groupsLocked} onClick={() => setSelected(taskKey(nextTask))}>下一条 {nextLabel}</Button>
-          : <Button asChild variant={allDone && !editing ? "filled" : "tonal"}><Link to="/recipe/calibration">前往多轮标定<ArrowRight size={15} aria-hidden="true"/></Link></Button>}
+          : <Button asChild variant={allDone && !editing ? "filled" : "tonal"}><Link to="/recipe/calibration">前往试测<ArrowRight size={15} aria-hidden="true"/></Link></Button>}
       </span>
     </div>
   </div>;

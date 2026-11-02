@@ -304,11 +304,8 @@ pub fn apply_capture_review(
                     }));
             }
             review.excluded_groups.sort_by_key(|g| g.seq);
+            // 屏蔽不改原始帧组序号，已确认的边界仍有效，只是测量要重做
             invalidate_calibration = before != review.excluded_groups;
-            invalidate_template = invalidate_calibration;
-            if invalidate_calibration && review.status == ReviewStatus::Confirmed {
-                review.status = ReviewStatus::Draft;
-            }
         }
     }
     if invalidate_template
@@ -328,7 +325,6 @@ pub fn apply_capture_review(
         w.calibration
             .rounds
             .retain(|r| r.round_id != round.round_id);
-        burst::clear_calibration(&mut w.doc);
     }
     w.capture_review
         .rounds
@@ -338,7 +334,8 @@ pub fn apply_capture_review(
 }
 
 /// 分段标定工作台的一次保存（D-SB-44）：在候选副本上依次替换段列表（受 `guard_calibration` 约束）、保存并确认
-/// 示教件边界、设为模板，全部成功才返回新候选。段的类型序列变化时其余件按 `refresh` 变“需复核”、标定清空。
+/// 示教件边界、设为模板，全部成功才返回新候选。段列表按示教件上的新旧帧范围逐段对应（`segment_remap`，D-SB-52）：
+/// 没动的段连同走廊与示教帧原样保留；示教件还没有可比的旧边界时，段的类型序列变化即清空全部走廊。
 pub fn save_template_round(
     w: &Workspace,
     round: &CaptureRoundV2,
@@ -351,8 +348,14 @@ pub fn save_template_round(
     {
         return Err("分段只在示教件上确认".into());
     }
+    if segments.is_empty() {
+        return Err("段配方至少需要一段，不能改成拍照点配方".into());
+    }
     let mut next = w.clone();
-    burst::update_segments(&mut next, segments)?;
+    match super::segment_remap::remap(w, &round.round_id, &segments, &cuts) {
+        Some(remapped) => replace_doc(&mut next, remapped.doc, Some(remapped.teaching))?,
+        None => burst::update_segments(&mut next, segments)?,
+    }
     apply_capture_review(&mut next, round, CaptureReviewEdit::Save(cuts))?;
     apply_capture_review(&mut next, round, CaptureReviewEdit::Confirm)?;
     apply_capture_review(&mut next, round, CaptureReviewEdit::SetTemplate)?;
@@ -399,185 +402,103 @@ pub fn workspace_segment_template_save(
     view(&app, current.clone())
 }
 
-/// 对齐复核的建议（只读，不写候选）：示教件、目标件与各边界的对齐结果。
-#[derive(Clone, Debug, Serialize)]
+/// 分段保存的影响（保存前确认用）：段结构是否改变、哪些走廊会清掉、保存后哪些段还缺走廊、示教件测量是否失效。
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AlignSuggestion {
-    pub round: String,
-    pub template_round: String,
-    pub template_cuts: Vec<u64>,
-    pub cuts: Vec<crate::frame_align::AlignedCut>,
+pub struct SegmentSaveImpact {
+    pub restructured: bool,
+    /// 会清掉的走廊：“原第 j 段（类型）· 相机”
+    pub dropped: Vec<String>,
+    /// 保存后还没有走廊的（新段, 检测相机）：“第 i 段（类型）· 相机”
+    pub untaught: Vec<String>,
+    /// 示教件已按当前走廊测量、保存后失效（胶偏参考与起涂收尾建议要重新测量）
+    pub measurement_cleared: bool,
 }
 
-fn align_sequence(
-    capture: &crate::recipe_capture::RecipeCaptureHost,
-    round: &str,
-    camera: &str,
-) -> Result<crate::frame_align::Sequence, String> {
-    Ok(capture
-        .burst_frame_paths(round, camera)?
-        .iter()
-        .map(|path| {
-            path.as_ref()
-                .and_then(|path| crate::image_file::load(path).ok())
-                .map(|image| {
-                    crate::frame_align::downsample(&image, crate::frame_align::ALIGN_FACTOR)
-                })
-        })
-        .collect())
-}
-
-/// 对齐用的示教件：已确认的边界、相机采集签名、各计划相机的小图序列（批量对齐时只读一次）与可信容许帧数（配方的 boundary_guard）。
-pub(super) struct AlignTemplate {
-    round_id: String,
-    cuts: Vec<u64>,
-    capture_signature: Value,
-    cameras: Vec<String>,
-    sequences: Vec<crate::frame_align::Sequence>,
-    tolerance: u64,
-}
-
-impl AlignTemplate {
-    pub(super) fn load(
-        capture: &crate::recipe_capture::RecipeCaptureHost,
-        w: &Workspace,
-    ) -> Result<Self, String> {
-        let piece = w
-            .teaching_piece
-            .as_ref()
-            .ok_or("还没有示教件：先选示教件")?;
-        let review = w
-            .capture_review
-            .rounds
-            .get(&piece.round_id)
-            .filter(|_| super::pieces::teaching_counts(w).is_some())
-            .ok_or("示教件边界未确认：先在分段步骤确认")?;
-        let cameras = w.doc.plan_cameras();
-        let sequences = cameras
+pub(super) fn save_impact(before: &Workspace, after: &Workspace) -> SegmentSaveImpact {
+    let kind = |k: crate::plan::SegmentKind| match k {
+        crate::plan::SegmentKind::Straight => "直线",
+        crate::plan::SegmentKind::Corner => "弯道",
+    };
+    let carried = |t: &burst::CameraTeaching| {
+        after
+            .camera_teaching
             .iter()
-            .map(|camera| align_sequence(capture, &piece.round_id, camera))
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(Self {
-            round_id: piece.round_id.clone(),
-            cuts: review.cuts.clone(),
-            capture_signature: review.capture_signature.clone(),
-            cameras,
-            sequences,
-            tolerance: u64::from(w.doc.boundary_guard),
-        })
-    }
-
-    /// 把示教件边界按图像对齐到 `round`：两件的相机采集配置必须一致。
-    pub(super) fn align(
-        &self,
-        capture: &crate::recipe_capture::RecipeCaptureHost,
-        round: &str,
-    ) -> Result<Vec<crate::frame_align::AlignedCut>, String> {
-        if self.round_id == round {
-            return Err("这一件就是示教件".into());
-        }
-        let target = capture.get_burst(round)?;
-        if capture_signature(&target) != self.capture_signature {
-            return Err("示教件与这一件的相机采集配置不一致，不能对齐".into());
-        }
-        let sequences = self
-            .cameras
-            .iter()
-            .map(|camera| align_sequence(capture, round, camera))
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(crate::frame_align::align_cuts(
-            &self.sequences,
-            &sequences,
-            &self.cuts,
-            self.tolerance,
-        ))
-    }
-}
-
-/// 把示教件边界按图像对齐到 `round`（D-SB-44 P2，可信判据见 D-SB-51）。
-/// 读两件全部原图并计算，有在途件或采集时拒绝；结果只作复核草稿，确认走 `workspace_capture_review_confirm_cuts`。
-#[tauri::command]
-pub async fn workspace_capture_review_suggest(
-    app: AppHandle,
-    id: String,
-    round: String,
-) -> Result<AlignSuggestion, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let cycle = app.state::<CycleHost>();
-        crate::camera::check_idle(&cycle)?;
-        let w = {
-            let host = app.state::<WorkspaceHost>();
-            let items = host.items.lock().unwrap();
-            items.get(&id).ok_or("候选配置不存在")?.clone()
-        };
-        let capture = cycle.camera.recipe_capture();
-        let template = AlignTemplate::load(capture, &w)?;
-        let cuts = template.align(capture, &round)?;
-        Ok(AlignSuggestion {
-            round,
-            template_round: template.round_id,
-            template_cuts: template.cuts,
-            cuts,
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// 需重点复核的边界说明（第 k 个边界在段 k 与段 k + 1 之间）；全部可信时为 None。
-pub(super) fn review_issue(
-    cuts: &[crate::frame_align::AlignedCut],
-    tolerance: u64,
-) -> Option<String> {
-    use crate::frame_align::ReviewReason;
-    let issues: Vec<String> = cuts
+            .any(|a| a.camera == t.camera && a.round == t.round && a.seq == t.seq)
+    };
+    let dropped = before
+        .camera_teaching
         .iter()
-        .enumerate()
-        .filter_map(|(k, c)| {
-            let what = match c.reason? {
-                ReviewReason::Moved => "为保持递增被挪动".to_string(),
-                ReviewReason::Deviates => format!(
-                    "与比例换算差 {} 帧（容许 {tolerance}）",
-                    c.cut.abs_diff(c.proportional)
-                ),
-                ReviewReason::Unclear => format!("对齐不清晰（{:.2}）", c.sharpness),
-            };
-            Some(format!("段 {} → 段 {}：{what}", k + 1, k + 2))
+        .filter(|t| !carried(t))
+        .filter_map(|t| {
+            let segment = before
+                .doc
+                .segments
+                .iter()
+                .find(|s| Some(s.index) == t.segment)?;
+            before
+                .doc
+                .inspect
+                .iter()
+                .find(|i| i.camera == t.camera)?
+                .segment_corridor(segment.index)?;
+            Some(format!(
+                "原第 {} 段（{}）· {}",
+                segment.index,
+                kind(segment.kind),
+                t.camera
+            ))
         })
         .collect();
-    (!issues.is_empty()).then(|| issues.join("；"))
-}
-
-/// 按可信的对齐结果保存并确认一件的边界（D-SB-51，记 `ConfirmedBy::Aligned`）。
-pub(super) fn confirm_aligned(
-    w: &mut Workspace,
-    round: &CaptureRoundV2,
-    cuts: Vec<u64>,
-) -> Result<(), String> {
-    apply_capture_review(w, round, CaptureReviewEdit::Save(cuts))?;
-    apply_capture_review(w, round, CaptureReviewEdit::Confirm)?;
-    if let Some(review) = w.capture_review.rounds.get_mut(&round.round_id) {
-        review.confirmed_by = ConfirmedBy::Aligned;
+    let cameras = after.doc.plan_cameras();
+    let untaught = after
+        .doc
+        .segments
+        .iter()
+        .flat_map(|s| {
+            crate::plan::segment_cameras(s, &cameras)
+                .into_iter()
+                .filter(|c| {
+                    after
+                        .doc
+                        .inspect
+                        .iter()
+                        .find(|i| i.camera == *c)
+                        .is_none_or(|i| i.segment_corridor(s.index).is_none())
+                })
+                .map(move |c| format!("第 {} 段（{}）· {c}", s.index, kind(s.kind)))
+        })
+        .collect();
+    SegmentSaveImpact {
+        restructured: navigation::structure_changed(&before.doc, &after.doc),
+        dropped,
+        untaught,
+        measurement_cleared: super::pieces::teaching_measured(before)
+            && !super::pieces::teaching_measured(after),
     }
-    Ok(())
 }
 
-/// 人工复核确认一件标定件的边界：同一候选副本上保存并确认，任一步失败不写入。示教件的边界在分段步骤确认。
+/// 分段标定工作台保存前的预演（只读）：按 `save_template_round` 在副本上保存，返回影响。
 #[tauri::command]
-pub fn workspace_capture_review_confirm_cuts(
+pub fn workspace_segment_template_preview(
     app: AppHandle,
     id: String,
     revision: u64,
-    round: String,
+    segments: Vec<PathSegment>,
     cuts: Vec<u64>,
-) -> Result<WorkspaceView, String> {
-    if teaching_round(&app, &id, revision).is_ok_and(|teaching| teaching == round) {
-        return Err("示教件的边界在分段步骤确认".into());
-    }
-    edit_round(app, id, revision, round, |next, captured| {
-        apply_capture_review(next, captured, CaptureReviewEdit::Save(cuts))?;
-        apply_capture_review(next, captured, CaptureReviewEdit::Confirm)
-    })
+) -> Result<SegmentSaveImpact, String> {
+    let round = teaching_round(&app, &id, revision)?;
+    let captured = app
+        .state::<CycleHost>()
+        .camera
+        .recipe_capture()
+        .get_burst(&round)?;
+    let host = app.state::<WorkspaceHost>();
+    let items = host.items.lock().unwrap();
+    let current = items.get(&id).ok_or("候选配置不存在")?;
+    current.expect(revision)?;
+    let next = save_template_round(current, &captured, segments, cuts)?;
+    Ok(save_impact(current, &next))
 }
 
 /// 在同一候选副本上整理一件，任一步失败不写入。
@@ -606,7 +527,7 @@ fn edit_round(
     view(&app, current.clone())
 }
 
-/// 屏蔽或恢复一件的帧组（标定页）。
+/// 屏蔽或恢复示教件的帧组（试测页）：屏蔽的帧组不参与示教件测量。
 #[tauri::command]
 pub fn workspace_capture_review_exclude(
     app: AppHandle,

@@ -26,13 +26,19 @@ const mm = (value: number | null | undefined, digits = 2) => value == null ? "�
  * 示教页同段试测（只读）：用候选已保存的走廊与定向参数，测示教轮次里本段的帧。“全段试测”给出逐帧状态条；
  * 选中一帧（`seq`）时显示这一帧的原图与测量叠加，代替示教画布。候选修订号变了，全段结果标为过期，选中的帧自动重测。
  */
-export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revision, locked, guide, seq, onSeq }: {
+/**
+ * 本段试测：用候选已保存的走廊与定向参数只读地测示教件里本段的帧。`locked` 是真正不能试测的原因（显示出来）；
+ * `waiting` 是还有改动等着自动保存：按钮照常可点，点下去先 `onFlush` 立即保存，存好再测，期间不换掉正在看的这一帧。
+ */
+export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revision, locked, waiting = false, onFlush, guide, seq, onSeq }: {
   id: string; camera: string; segment: number; round: string; teachSeq: number; range: { start: number; end: number } | null; revision: number;
-  locked: string; guide: HeadingGuide | null; seq: number | null; onSeq: (seq: number | null) => void;
+  locked: string; waiting?: boolean; onFlush?: () => void; guide: HeadingGuide | null; seq: number | null; onSeq: (seq: number | null) => void;
 }) {
   const [batch, setBatch] = useState<{ result: TeachPreviewSegment | null; revision: number; error: string; running: boolean }>({ result: null, revision, error: "", running: false });
+  const [queued, setQueued] = useState(false);
   const run = async () => {
     if (locked || batch.running) return;
+    if (waiting) { setQueued(true); onFlush?.(); return; }
     const at = revision;
     setBatch(previous => ({ ...previous, running: true, error: "" }));
     try {
@@ -40,6 +46,11 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
       setBatch({ result, revision: at, error: "", running: false });
     } catch (e) { setBatch(previous => ({ ...previous, running: false, error: errorText(e) })); }
   };
+  useEffect(() => {
+    if (!queued || waiting) return;
+    setQueued(false);
+    if (!locked) void run();
+  }, [queued, waiting, locked]);
   const span = batch.result ? { start: batch.result.start, end: batch.result.end } : range;
   const stale = !!batch.result && batch.revision !== revision;
   const cells = span ? Array.from({ length: span.end - span.start + 1 }, (_, i) => {
@@ -47,19 +58,21 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
     return { seq: span.start + i, state: frame ? trialState(frame) : null, note: frame?.error ?? frame?.fallbackReason ?? null };
   }) : [];
 
-  const key = seq == null ? "" : JSON.stringify([id, camera, segment, round, seq, revision]);
-  const [detail, setDetail] = useState<{ key: string; image: GrayImage | null; view: CalibrationFrameView | null; error: string }>({ key: "", image: null, view: null, error: "" });
+  const frameKey = seq == null ? "" : JSON.stringify([id, camera, segment, round, seq]);
+  const key = seq == null ? "" : JSON.stringify([frameKey, revision]);
+  const [detail, setDetail] = useState<{ key: string; frameKey: string; image: GrayImage | null; view: CalibrationFrameView | null; error: string }>({ key: "", frameKey: "", image: null, view: null, error: "" });
   useEffect(() => {
-    if (seq == null || locked) return;
+    if (seq == null || locked || waiting) return;
     let alive = true;
     void Promise.allSettled([workspaceApi.captureFrameImage(round, camera, seq), workspaceApi.teachPreviewFrame(id, camera, segment, round, seq)])
-      .then(([image, view]) => alive && setDetail({ key,
+      .then(([image, view]) => alive && setDetail({ key, frameKey,
         image: image.status === "fulfilled" ? image.value : null,
         view: view.status === "fulfilled" ? view.value : null,
         error: [image, view].flatMap(r => r.status === "rejected" ? [errorText(r.reason)] : []).join("；") }));
     return () => { alive = false; };
-  }, [key, !!locked]);
-  const shown = detail.key === key ? detail : null;
+  }, [key, !!locked, waiting]);
+  // 同一帧在参数保存后重测：结果回来前继续显示上一次的，画面不闪
+  const shown = detail.key === key || (frameKey && detail.frameKey === frameKey) ? detail : null;
   const view = shown?.view ?? null;
   const metrics = view?.metrics;
   const state = metrics ? trialState(metrics) : null;
@@ -81,7 +94,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
       <div className="wp-trial-head">
         <h3>本段试测</h3>
         <Button size="sm" variant={batch.result && !stale ? "tonal" : "filled"} data-variant={batch.result && !stale ? "tonal" : "filled"} leadingIcon={<Play size={13}/>}
-          disabled={!!locked || batch.running} title={locked || undefined} onClick={() => void run()}>{batch.running ? "试测中…" : batch.result ? "重新试测" : "全段试测"}</Button>
+          disabled={!!locked || batch.running} title={locked || undefined} onClick={() => void run()}>{batch.running || queued ? "试测中…" : batch.result ? "重新试测" : "全段试测"}</Button>
         <Button size="sm" variant="tonal" disabled={!!locked || seq === teachSeq} title={locked || undefined} onClick={() => onSeq(teachSeq)}>试测当前帧</Button>
         <span className="muted">示教件{span ? ` · 帧组 ${span.start}–${span.end}` : ""} · 用已保存的走廊与定向参数，只读</span>
         {seq != null && <span className="wp-trial-actions"><Button size="sm" variant="text" onClick={() => onSeq(null)}>回到示教帧</Button></span>}

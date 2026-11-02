@@ -54,7 +54,7 @@ fn mapped(project: &Path) -> Workspace {
 }
 
 fn release(project: &Path, w: &Workspace, bundle: &str) -> Release {
-    let doc = formal_release_doc(w).unwrap();
+    let doc = formal_release_doc(w, w.doc.version).unwrap();
     let navigation = prepare_navigation_release(project, w, &doc, bundle);
     Release {
         doc,

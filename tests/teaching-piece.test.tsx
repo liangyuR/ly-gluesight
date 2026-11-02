@@ -36,8 +36,8 @@ beforeEach(() => {
 
 // 防的回归（RB-2、RB-8）：换示教件或改版候选首次设示教件时不提示就清空走廊、边界与标定；取消后仍提交
 it.each<[string, (view: WorkspaceView) => void, string[], string[]]>([
-  ["已有示教件，换一件", () => {}, ["示教件的分段边界", "全部走廊与示教帧", "全部标定件与标准件（9 件）", "标定结果"], []],
-  ["改版候选还没有示教件，继承了走廊与标定结果", view => { view.workspace.teachingPiece = null; view.plan.pieces = []; }, ["全部走廊与示教帧", "标定结果"], ["示教件的分段边界", "标定件与标准件"]],
+  ["已有示教件，换一件", () => {}, ["示教件的分段边界", "全部走廊与示教帧", "示教件得出的结果"], []],
+  ["改版候选还没有示教件，继承了走廊与示教件得出的结果", view => { view.workspace.teachingPiece = null; view.plan.pieces = []; }, ["全部走廊与示教帧", "示教件得出的结果"], ["示教件的分段边界"]],
 ])("%s → 先列出将清空的内容，取消不提交，确认后才按所选记录设为示教件", async (_, edit, listed, absent) => {
   show(edit);
   const user = userEvent.setup();

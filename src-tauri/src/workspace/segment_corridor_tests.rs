@@ -207,3 +207,130 @@ fn segment_structure_or_camera_change_drops_only_the_affected_corridors_and_fram
         });
     assert!(update_doc(&mut w, doc).is_err(), "没有示教帧的走廊");
 }
+
+#[test]
+fn saving_the_segmentation_keeps_corridors_and_params_of_segments_that_did_not_change() {
+    // 防的回归（D-SB-52）：工作台保存分段时只要段的类型序列变了，没动的段的走廊与示教帧也全部清空；段参数按位置对应，
+    // 插入或删除边界后错位到相邻段；只挪边界时示教帧已不在本段，走廊却还留着；
+    // D-SB-53：段设为不检测后它的走廊还留着、保存后还提示它待示教
+    let (base, cameras) = workspace();
+    let corner_cameras = vec![cameras[0].clone()];
+    type Case<'a> = (
+        &'a str,
+        &'a [crate::plan::SegmentKind],
+        &'a [u64],
+        &'a [u32],
+        &'a [(usize, u32)],
+        [Option<f64>; 4],
+        &'a [&'a str],
+    );
+    let cases: [Case; 5] = [
+        (
+            "第 2 段设为不检测",
+            &[Straight, Corner, Straight],
+            &[10, 20],
+            &[2],
+            &[(0, 1), (1, 3)],
+            [Some(100.0), Some(40.0), Some(80.0), None],
+            &["原第 2 段（弯道）· "],
+        ),
+        (
+            "第 3 段中间加边界",
+            &[Straight, Corner, Straight, Straight],
+            &[10, 20, 25],
+            &[],
+            &[(0, 1), (0, 2), (1, 3)],
+            [Some(100.0), Some(40.0), None, None],
+            &[],
+        ),
+        (
+            "第 1 段中间加边界",
+            &[Straight, Straight, Corner, Straight],
+            &[5, 10, 20],
+            &[],
+            &[(0, 1), (0, 3), (1, 4)],
+            [None, None, Some(40.0), Some(80.0)],
+            &[],
+        ),
+        (
+            "第 2 段改成直线",
+            &[Straight, Straight, Straight],
+            &[10, 20],
+            &[],
+            &[(0, 1), (1, 3)],
+            [Some(100.0), None, Some(80.0), None],
+            &["原第 2 段（弯道）· "],
+        ),
+        (
+            "边界 20 挪到 14，第 2 段的示教帧落进第 3 段",
+            &[Straight, Corner, Straight],
+            &[10, 14],
+            &[],
+            &[(0, 1), (1, 3)],
+            [Some(100.0), None, None, None],
+            &["原第 2 段（弯道）· "],
+        ),
+    ];
+    for (name, kinds, cuts, skipped, corridors, lengths, dropped) in cases {
+        let mut w = base.clone();
+        with_corridor(&mut w, &cameras[0], 1, vec![[1.0, 1.0], [50.0, 1.0]]);
+        with_corridor(&mut w, &cameras[0], 2, vec![[1.0, 1.0], [8.0, 1.0]]);
+        with_corridor(&mut w, &cameras[1], 3, vec![[1.0, 1.0], [50.0, 1.0]]);
+        let mut doc = w.doc.clone();
+        for (segment, length) in doc.segments.iter_mut().zip([100.0, 40.0, 80.0]) {
+            segment.length_mm = Some(length);
+        }
+        update_doc(&mut w, doc).unwrap();
+        let round = capture_round("confirmed", &w.doc, GROUPS, DEVICE, &[]);
+        let incoming = kinds
+            .iter()
+            .enumerate()
+            .map(|(i, &kind)| crate::plan::PathSegment {
+                cameras: if kind == Corner {
+                    corner_cameras.clone()
+                } else {
+                    Vec::new()
+                },
+                skip: skipped.contains(&(i as u32 + 1)),
+                ..crate::plan::new_segment(i as u32 + 1, kind, &w.doc.segment_defaults)
+            })
+            .collect();
+        let next = super::capture_review::save_template_round(&w, &round, incoming, cuts.to_vec())
+            .unwrap();
+        let mut kept: Vec<(usize, u32)> = Vec::new();
+        for (c, camera) in cameras.iter().enumerate() {
+            for segment in &next.doc.segments {
+                let corridor =
+                    next.doc.inspect.iter().any(|i| {
+                        i.camera == *camera && i.segment_corridor(segment.index).is_some()
+                    });
+                let frame = next
+                    .camera_teaching
+                    .iter()
+                    .any(|t| t.camera == *camera && t.segment == Some(segment.index));
+                assert_eq!(corridor, frame, "{name}：走廊与示教帧要一起留或一起去掉");
+                if corridor {
+                    kept.push((c, segment.index));
+                }
+            }
+        }
+        assert_eq!(kept, corridors.to_vec(), "{name}：留下的走廊");
+        let got: Vec<Option<f64>> = (0..4)
+            .map(|i| next.doc.segments.get(i).and_then(|s| s.length_mm))
+            .collect();
+        assert_eq!(got, lengths.to_vec(), "{name}：段长");
+        let impact = super::capture_review::save_impact(&w, &next);
+        let expected: Vec<String> = dropped
+            .iter()
+            .map(|d| format!("{d}{}", cameras[0]))
+            .collect();
+        assert_eq!(impact.dropped, expected, "{name}：确认弹窗列出的清除项");
+        for index in skipped {
+            let prefix = format!("第 {index} 段");
+            assert!(
+                !impact.untaught.iter().any(|u| u.starts_with(&prefix)),
+                "{name}：不检测的段不该待示教"
+            );
+        }
+    }
+}

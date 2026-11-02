@@ -1,4 +1,4 @@
-import type { BurstJudgement, PathSegment, RegionResult } from "../plan/types";
+import type { BurstJudgement, FrameMetrics, PathSegment, RegionResult } from "../plan/types";
 import { regionKindLabel, regionSegments } from "../plan/vis";
 import type { PartDetailBurst } from "./types";
 
@@ -13,6 +13,23 @@ const sameList = <T>(a: T[], b: T[]) => a.length === b.length && a.every((v, i) 
 export interface BurstSide { segments: PathSegment[]; cameras: string[]; expectedTotal: number | null; judgement: BurstJudgement }
 
 export const burstSideOf = (burst: PartDetailBurst): BurstSide => ({ segments: burst.segments, cameras: burst.cameras, expectedTotal: burst.expectedTotal, judgement: burst.judgement });
+
+/**
+ * 把一次对照的结果套到原记录上，供帧组条、段布置与区域结论按对照显示：段、相机、预期与判定取对照，
+ * 每帧状态与指标取对照的逐帧指标，帧号、触发计数与原图引用沿用原记录；没有逐帧指标的旧对照返回 null。
+ */
+export function comparisonBurst(burst: PartDetailBurst, side: BurstSide & { frames: FrameMetrics[] }): PartDetailBurst | null {
+  if (!side.frames.length) return null;
+  const regionOf = (seq: number) => { const i = side.judgement.regions.findIndex(r => r.region.firstSeq <= seq && seq <= r.region.lastSeq); return i < 0 ? null : i; };
+  // 先按 (相机, seq) 建索引：长件可达数万帧，逐帧在整个数组里找会卡住界面
+  const byFrame = new Map(side.frames.map(m => [`${m.camera}:${m.seq}`, m]));
+  const frames = burst.frames.map(frame => {
+    const metrics = byFrame.get(`${frame.camera}:${frame.seq}`) ?? null;
+    return { ...frame, status: metrics?.state ?? frame.status, metrics, region: regionOf(frame.seq) };
+  });
+  return { ...burst, segments: side.segments, cameras: side.cameras, expectedTotal: side.expectedTotal,
+    toleranceTotal: side.segments.reduce((sum, s) => sum + s.tolerance, 0), judgement: side.judgement, frames };
+}
 
 /**
  * 两侧的计划身份是否相同（与后端 plan_identity 同口径）：各段的序号、类型、N_exp，有序相机，整件预期总数。

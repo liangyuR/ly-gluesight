@@ -21,6 +21,9 @@ export const PLAN_CAMERAS = 3;
 
 export const segmentKindLabel: Record<SegmentKind, string> = { straight: "直线", corner: "弯道" };
 
+/** 段的类型名：不检测的段（D-SB-53）显示“不检测”。 */
+export const segmentLabel = (segment: { kind: SegmentKind; skip?: boolean }) => segment.skip ? "不检测" : segmentKindLabel[segment.kind];
+
 /** 预期帧数与容差：“20 ± 1”；N_exp 为 null 时“待标定”。整件用 expectedTotal / toleranceTotal。 */
 export function expectedText(expected: number | null | undefined, tolerance: number): string {
   return expected == null ? "待标定" : `${expected} ± ${tolerance}`;
