@@ -1,8 +1,8 @@
-//! 段配方的在途件（规格 §0/§2/§3，D-SB-7、D-SB-10、D-SB-13、D-SB-45）：三台计划相机按 SDK 帧号配组（`Grouper`），
+//! 段配方的在途件（规格 §0/§2/§3，D-SB-13、D-SB-45、D-SB-55）：三台计划相机的帧按相机时间戳编号（`FrameClock`）后配组（`Grouper`），
 //! 每帧到达时按累计 N_exp 预测所属段，只由预测段的检测相机用该段走廊送测，其余相机这一帧记“本段不检测”；
 //! 预测边界附近的原图留到判定。partEnd 后按收尾规则（已接受的帧都测完，且完整收尾窗口到期）按比例分段得出区域，
 //! 对判定需要、但到达时没用对应走廊测过的帧补测一次，补测完再用 `burst_judge` 判定。缺帧、帧数越界、丢帧只告警
-//! 不改 OK/NG；三台相机整件没有一帧测成判 ERR 91；会话变化判 ERR 98。纯逻辑，不碰 AppHandle：送测、录制与落库由
+//! 不改 OK/NG；三台相机整件没有一帧测成判 ERR 91；检测中相机重开不判 ERR，时间戳回退的相机之后的帧不收。纯逻辑，不碰 AppHandle：送测、录制与落库由
 //! `Machine` 负责。
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
 use crate::frame::{CounterSource, Frame, FrameImage};
+use crate::frame_clock::{ClockStart, FrameClock, Stamp};
 use crate::frame_group::{loss_alarms, Grouper, Offer, MAX_SEQ};
 use crate::judge::{fault, Judgement};
 use crate::measure::{FrameMeasured, MeasureError};
@@ -37,6 +38,9 @@ pub(super) enum Warning {
     Duplicate,
     OutOfRange,
     Manual,
+    Late,
+    ClockBack,
+    NoClock,
 }
 
 /// 一台相机一帧（已被 Grouper 接受）。
@@ -60,6 +64,8 @@ pub(super) type PostJob = (usize, u64, u32, Option<Arc<FrameImage>>);
 pub(super) struct BurstPart {
     cams: Vec<FrameBaseline>,
     cameras: Vec<String>,
+    /// 按相机时间戳给帧编号（D-SB-55）；Grouper 的基线恒为 0，喂进去的“帧计数”就是 seq
+    clock: FrameClock,
     grouper: Grouper,
     frames: BTreeMap<(usize, u64), BurstFrame>,
     /// 已送测、还没有结果的帧数
@@ -118,9 +124,15 @@ pub(super) enum Arrival {
     Duplicate { camera: usize, seq: u64 },
     /// 上一件的迟到帧，或接件前那次打开的帧：不计入本件
     Stale { camera: usize },
-    /// 帧号比基线大得离谱（计数跳变）：不计入本件
+    /// seq 超出本件帧组上限：不计入本件
     OutOfRange { camera: usize, seq: u64 },
-    /// 会话变化或计数来源不可信：整件判 ERR 98（原因已记进 `Part::fault`）
+    /// 属于已冻结的前一个门控、又超出它的槽数（D-SB-55）：不计入本件
+    Late { camera: usize },
+    /// 相机时间戳回退（断电或时钟被复位，D-SB-55）：这台相机本件之后的帧都不收，缺的帧组标检测不完整
+    ClockBack { camera: usize },
+    /// 帧没有相机时间戳：编不了号，不计入本件
+    NoClock { camera: usize },
+    /// 计数来源不可信（如生产里出现模拟相机的帧）：整件判 ERR 98（原因已记进 `Part::fault`）
     Fault(String),
     /// 不是本件的计划相机
     Unknown,
@@ -131,17 +143,19 @@ impl BurstPart {
         self.grouper.group_count()
     }
 
-    /// 接件：cams 是 `shot_router::arm_frames` 按计划相机顺序给出的帧计数基线。seq 上限 = ΣN_exp + Σtol + 余量。
-    pub(super) fn arm(recipe: &Recipe, cams: Vec<FrameBaseline>, trusted: Vec<CounterSource>) -> Self {
+    /// 接件：cams 是 `shot_router::arm_frames` 按计划相机顺序给出的相机身份（帧计数基线只留作手动帧判断与下一件下限），
+    /// starts 是各计划相机的帧编号起点（接件时的相机时钟与帧周期，D-SB-55）。seq 上限 = ΣN_exp + Σtol + 余量。
+    pub(super) fn arm(
+        recipe: &Recipe,
+        cams: Vec<FrameBaseline>,
+        trusted: Vec<CounterSource>,
+        starts: &[ClockStart],
+    ) -> Self {
         let limit = recipe.expected_total().map_or(MAX_SEQ, |n| u64::from(n) + u64::from(recipe.tolerance_total()) + SEQ_MARGIN);
         let checks = wider_checks(&recipe.path_segments.iter().map(|s| &s.checks).collect::<Vec<_>>());
         Self {
-            grouper: Grouper::with_limit(
-                cams.iter()
-                    .map(|c| c.baseline.unwrap_or_default())
-                    .collect(),
-                limit,
-            ),
+            grouper: Grouper::with_limit(vec![0; cams.len()], limit),
+            clock: FrameClock::new(starts),
             cameras: recipe.plan_cameras(),
             cams,
             frames: BTreeMap::new(),
@@ -279,26 +293,37 @@ impl BurstPart {
         }
     }
 
-    /// 接件后相机重连过（会话变化）时返回原因。
+    /// 计划相机都还在相机组里时为 Ok。检测中相机重开（会话变了）不再判 ERR：帧按相机时间戳编号，重开后时钟连续（D-SB-55）。
     pub(super) fn check_sessions(&self, cameras: &[ArmCam]) -> Result<(), String> {
         for armed in &self.cams {
-            let now = cameras.iter().find(|camera| camera.cam == armed.cam && camera.camera == armed.camera)
+            cameras
+                .iter()
+                .find(|camera| camera.cam == armed.cam && camera.camera == armed.camera)
                 .ok_or_else(|| format!("相机 {} 已不在本件相机组中", armed.camera))?;
-            if now.session != armed.session {
-                return Err(format!("相机 {} 检测中已重连（会话 {} → {}）", armed.camera, armed.session, now.session));
-            }
         }
         Ok(())
     }
 
-    /// 回调侧计数账：会话一致、计数来源都可信（帧可能被帧通道满丢掉，节拍看不到）。
+    /// 回调侧计数账：计数来源都可信（帧可能被帧通道满丢掉，节拍看不到）。会话变了不算故障（D-SB-55）。
     pub(super) fn check_observed(&self, cam: u8, observed: &Ledger) -> Result<(), (u16, String)> {
-        let Some(armed) = self.cams.iter().find(|armed| armed.cam == cam) else { return Ok(()) };
-        if observed.session != armed.session {
-            return Err((fault::DEVICE_LOST, format!("相机 {} 检测中会话不一致（{} → {}）", armed.camera, armed.session, observed.session)));
-        }
-        if let Some(source) = observed.sources.iter().copied().chain(observed.source).find(|source| !self.trusted.contains(source)) {
-            return Err((fault::DEVICE_LOST, format!("相机 {} 本会话曾出现不可信的{}，需要重新打开相机", armed.camera, source.label())));
+        let Some(armed) = self.cams.iter().find(|armed| armed.cam == cam) else {
+            return Ok(());
+        };
+        if let Some(source) = observed
+            .sources
+            .iter()
+            .copied()
+            .chain(observed.source)
+            .find(|source| !self.trusted.contains(source))
+        {
+            return Err((
+                fault::DEVICE_LOST,
+                format!(
+                    "相机 {} 本会话曾出现不可信的{}，需要重新打开相机",
+                    armed.camera,
+                    source.label()
+                ),
+            ));
         }
         Ok(())
     }
@@ -386,79 +411,100 @@ pub(super) fn empty_record(recipe: &Recipe, judgement: &Judgement) -> BurstRecor
 impl Part {
     /// 收尾截止：partEnd 后等满 drain_timeout；或本件相机都看到 Line0 门控已关闭、又过了余量（D-SB-54：门控关了不会再曝光，
     /// 余量盖住最后一帧从曝光到收到的约 39 ms），提前截止。
+    ///
+    /// 门控关了时还先看最后一帧（D-SB-55）：每台相机都已收到时间戳 L 满足 L + 帧周期 > 门控关闭时锁存的时钟 C 的帧——下一次
+    /// 曝光本该在 L + 帧周期，已晚于关闭——就不会再有帧，立即截止；有相机还差最后一帧（在途或丢了）才等余量。
     fn burst_deadline(&self, now: Instant) -> bool {
         let Some(end) = self.end_at else { return false };
-        now.saturating_duration_since(end) >= self.drain_timeout
-            || self.gate.as_ref().is_some_and(|(gate, guard)| {
-                gate.closed_since(&self.cams, now)
-                    .is_some_and(|closed| now.saturating_duration_since(closed) >= *guard)
-            })
+        if now.saturating_duration_since(end) >= self.drain_timeout {
+            return true;
+        }
+        let (Some(gate), Some(guard)) = (&self.gate, self.gate_guard) else {
+            return false;
+        };
+        let Some(closed) = gate.closed_since(&self.cams, now) else {
+            return false;
+        };
+        let all_in = self.burst.cams.iter().enumerate().all(|(camera, armed)| {
+            match (self.burst.clock.last(camera), gate.close_clock(armed.cam)) {
+                (Some((last, period)), Some(close)) => {
+                    last <= close && last as f64 + period > close as f64
+                }
+                _ => false,
+            }
+        });
+        all_in || now.saturating_duration_since(closed) >= guard
     }
 
-    /// 段配方收一帧（帧号配组，D-SB-10）。收尾截止后到的帧返回 None。
+    /// 段配方收一帧：按相机时间戳编号（D-SB-55），按 seq 配组。收尾截止后到的帧返回 None。
     pub(super) fn receive_burst(&mut self, frame: &Frame) -> Option<Arrival> {
         let now = Instant::now();
         self.expire_burst(now, self.proc_timeout);
-        if self.burst_deadline(now) { return None; }
+        if self.burst_deadline(now) {
+            return None;
+        }
+        let opens = self
+            .gate
+            .as_ref()
+            .and_then(|gate| gate.opens(frame.cam, now));
         let burst = &mut self.burst;
         let Some(camera) = burst.cams.iter().position(|c| c.cam == frame.cam) else { return Some(Arrival::Unknown) };
-        let armed = &burst.cams[camera];
-        let reason = if frame.session < armed.session {
-            return Some(Arrival::Stale { camera });
-        } else if frame.session > armed.session {
-            format!("相机 {} 检测中重新打开过（会话 {} → {}），之后的帧号对不上本件", armed.camera, armed.session, frame.session)
-        } else if !burst.trusted.contains(&frame.counter) {
-            format!("相机 {} 的帧计数来源变为{}，本件帧号不可信", armed.camera, frame.counter.label())
-        } else {
-            let baseline = match armed.baseline {
-                Some(baseline) => baseline,
-                None => {
-                    let baseline = frame.frame_counter.saturating_sub(1);
-                    burst.cams[camera].baseline = Some(baseline);
-                    burst.grouper.set_baseline(camera, baseline);
-                    baseline
-                }
-            };
-            return Some(match burst.grouper.offer(camera, frame.frame_counter) {
-                Offer::Accepted { seq } => {
-                    let trigger_counter = matches!(
-                        frame.counter,
-                        CounterSource::ChunkTrigger | CounterSource::Synthetic
-                    )
-                    .then_some(frame.trigger_counter);
-                    let corridor =
-                        crate::plan::arrival_corridor(&burst.segments, &burst.cameras, camera, seq);
-                    let measuring = !burst.collect && corridor.is_some();
-                    let metrics = (!burst.collect && corridor.is_none()).then(|| {
-                        unmeasured(
-                            camera,
-                            seq,
-                            FrameState::NotInspected,
-                            "这一帧的预测段不由这台相机检测".into(),
-                        )
-                    });
-                    burst.frames.insert(
-                        (camera, seq),
-                        BurstFrame {
-                            frame_counter: frame.frame_counter,
-                            trigger_counter,
-                            measuring_since: measuring.then_some(now),
-                            metrics,
-                            corridor,
-                        },
-                    );
-                    if measuring {
-                        burst.pending += 1;
-                    }
-                    Arrival::Accepted { camera, seq }
-                }
-                Offer::Duplicate => Arrival::Duplicate { camera, seq: frame.frame_counter - baseline },
-                Offer::Stale => Arrival::Stale { camera },
-                Offer::OutOfRange { seq } => Arrival::OutOfRange { camera, seq },
-            });
+        if !burst.trusted.contains(&frame.counter) {
+            let reason = format!(
+                "相机 {} 的帧计数来源变为{}，本件帧号不可信",
+                burst.cams[camera].camera,
+                frame.counter.label()
+            );
+            self.fault
+                .get_or_insert((fault::DEVICE_LOST, reason.clone()));
+            return Some(Arrival::Fault(reason));
+        }
+        let Some(ts) = frame.dev_ts else {
+            return Some(Arrival::NoClock { camera });
         };
-        self.fault.get_or_insert((fault::DEVICE_LOST, reason.clone()));
-        Some(Arrival::Fault(reason))
+        let seq = match burst.clock.stamp(camera, ts, opens.as_deref()) {
+            Stamp::Seq(seq) => seq,
+            Stamp::Stale => return Some(Arrival::Stale { camera }),
+            Stamp::Late => return Some(Arrival::Late { camera }),
+            Stamp::ClockBack => return Some(Arrival::ClockBack { camera }),
+        };
+        Some(match burst.grouper.offer(camera, seq) {
+            Offer::Accepted { seq } => {
+                let trigger_counter = matches!(
+                    frame.counter,
+                    CounterSource::ChunkTrigger | CounterSource::Synthetic
+                )
+                .then_some(frame.trigger_counter);
+                let corridor =
+                    crate::plan::arrival_corridor(&burst.segments, &burst.cameras, camera, seq);
+                let measuring = !burst.collect && corridor.is_some();
+                let metrics = (!burst.collect && corridor.is_none()).then(|| {
+                    unmeasured(
+                        camera,
+                        seq,
+                        FrameState::NotInspected,
+                        "这一帧的预测段不由这台相机检测".into(),
+                    )
+                });
+                burst.frames.insert(
+                    (camera, seq),
+                    BurstFrame {
+                        frame_counter: frame.frame_counter,
+                        trigger_counter,
+                        measuring_since: measuring.then_some(now),
+                        metrics,
+                        corridor,
+                    },
+                );
+                if measuring {
+                    burst.pending += 1;
+                }
+                Arrival::Accepted { camera, seq }
+            }
+            Offer::Duplicate => Arrival::Duplicate { camera, seq },
+            Offer::Stale => Arrival::Stale { camera },
+            Offer::OutOfRange { seq } => Arrival::OutOfRange { camera, seq },
+        })
     }
 
     /// 段配方的一帧测量结果。不属于本件（上一件迟到的结果）、或这一帧已不在测量中（超时后才到）时丢弃，返回 None。

@@ -113,13 +113,45 @@ mod tests {
         let cycle_id = "burst_cycle_history-frames";
         // 帧 (camera, seq) 的像素为 [10 × seq + camera, 1]，帧号 100 + 10 × camera + seq；相机 2 第 2 帧组缺帧
         let delivered = [(0, 1), (1, 1), (2, 1), (0, 2), (2, 2)];
-        let frame = |camera: usize, seq: u64| Frame { cam: camera as u8, session: 7, counter: CounterSource::Synthetic,
-            frame_counter: 100 + 10 * camera as u64 + seq, trigger_counter: 50 + seq, lost_packets: 0, ts: 777, manual: false,
-            images: vec![Arc::new(FrameImage::new(2, 1, vec![10 * seq as u8 + camera as u8, 1]))] };
-        let mut recording = recorder.begin(RecordMode::All, "SN-B7", recipe.clone(), cycle_id, Some("bundle")).unwrap();
-        for &(camera, seq) in &delivered { recorder.burst_frame(&mut recording, &frame(camera, seq), camera, seq); }
-        recorder.finish(recording, Verdict::NgWidth, "原始判定", 10, u64::MAX, Vec::new());
-        let outcome = rx.recv_timeout(Duration::from_secs(10)).expect("真实 Recorder 必须完成收尾");
+        let frame = |camera: usize, seq: u64| Frame {
+            cam: camera as u8,
+            session: 7,
+            counter: CounterSource::Synthetic,
+            frame_counter: 100 + 10 * camera as u64 + seq,
+            trigger_counter: 50 + seq,
+            lost_packets: 0,
+            ts: 777,
+            dev_ts: None,
+            manual: false,
+            images: vec![Arc::new(FrameImage::new(
+                2,
+                1,
+                vec![10 * seq as u8 + camera as u8, 1],
+            ))],
+        };
+        let mut recording = recorder
+            .begin(
+                RecordMode::All,
+                "SN-B7",
+                recipe.clone(),
+                cycle_id,
+                Some("bundle"),
+            )
+            .unwrap();
+        for &(camera, seq) in &delivered {
+            recorder.burst_frame(&mut recording, &frame(camera, seq), camera, seq);
+        }
+        recorder.finish(
+            recording,
+            Verdict::NgWidth,
+            "原始判定",
+            10,
+            u64::MAX,
+            Vec::new(),
+        );
+        let outcome = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("真实 Recorder 必须完成收尾");
         let record = |camera: usize, seq: u64| {
             let delivered = delivered.contains(&(camera, seq));
             let raw_file = outcome

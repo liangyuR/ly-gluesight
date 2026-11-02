@@ -12,6 +12,7 @@ mod disk_guard;
 mod flow_debug;
 mod frame;
 mod frame_align;
+mod frame_clock;
 mod frame_group;
 mod fsio;
 mod gate;

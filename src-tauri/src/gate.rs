@@ -1,6 +1,7 @@
 //! Line0 拍照信号（门控）的轮询状态（D-SB-54）。现场相机没有 GenICam 事件，每台海康相机一个线程每 5 ms 读一次
 //! `LineStatusAll` 的 Line0 位（`camera::watch_gate`）；收尾时看到门控已关闭、再等一小段（帧从曝光到 PC 收到约 39 ms），
 //! 就不用固定等满收尾窗口。读数不新鲜、有相机看到门控开着或空闲电平还不知道时不提前，照旧等收尾窗口。
+//! 看到边沿时同时锁存这台相机的时钟：门控开始的时刻给帧编号定门控号与起点（D-SB-55），门控关闭的时刻判定最后一帧是否已到。
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -20,13 +21,64 @@ struct Seen {
     read_at: Instant,
 }
 
-/// 各相机最近一次读到的门控状态（相机组序号为键）。
+/// 帧到达时，最近一次读数在这么久内才认为门控开始边沿都已看到：帧从曝光到收到约 39 ms，边沿比曝光还早，
+/// 这段时间里读过电平就不会漏掉它（D-SB-55）。
+pub const EDGE_FRESH: Duration = Duration::from_millis(30);
+/// 每台相机留的门控开始边沿数。
+const KEEP_OPENS: usize = 4096;
+
+/// 边沿时锁存的相机时钟（ns）。
+#[derive(Debug, Default)]
+struct Clocks {
+    opens: std::collections::VecDeque<u64>,
+    close: Option<u64>,
+}
+
+/// 各相机最近一次读到的门控状态（相机组序号为键），以及边沿时锁存的相机时钟。
 #[derive(Debug, Default)]
 pub struct Gate {
     cams: Mutex<HashMap<u8, Seen>>,
+    clocks: Mutex<HashMap<u8, Clocks>>,
 }
 
 impl Gate {
+    /// 相机 `cam` 看到门控开始（`opening`）或关闭，锁存的相机时钟为 `clock`（ns）。
+    pub fn edge(&self, cam: u8, opening: bool, clock: u64) {
+        let mut clocks = self.clocks.lock().unwrap();
+        let entry = clocks.entry(cam).or_default();
+        if opening {
+            if entry.opens.len() == KEEP_OPENS {
+                entry.opens.pop_front();
+            }
+            entry.opens.push_back(clock);
+        } else {
+            entry.close = Some(clock);
+        }
+    }
+
+    /// 相机 `cam` 看到的门控开始时刻（相机时钟，升序）；它最近一次读数不在 `EDGE_FRESH` 内（可能还没看到最新的边沿）时为 None。
+    pub fn opens(&self, cam: u8, now: Instant) -> Option<Vec<u64>> {
+        let fresh = self
+            .cams
+            .lock()
+            .unwrap()
+            .get(&cam)
+            .is_some_and(|seen| now.saturating_duration_since(seen.read_at) <= EDGE_FRESH);
+        fresh.then(|| {
+            self.clocks
+                .lock()
+                .unwrap()
+                .get(&cam)
+                .map(|c| c.opens.iter().copied().collect())
+                .unwrap_or_default()
+        })
+    }
+
+    /// 相机 `cam` 最近一次看到门控关闭时锁存的相机时钟（ns）。
+    pub fn close_clock(&self, cam: u8) -> Option<u64> {
+        self.clocks.lock().unwrap().get(&cam).and_then(|c| c.close)
+    }
+
     /// 相机 `cam` 在 `at` 读到门控开着（`active`）或关着；状态变了记下变化的时刻，第一次读到时也记为此刻。
     pub fn observe(&self, cam: u8, active: bool, at: Instant) {
         let mut cams = self.cams.lock().unwrap();
