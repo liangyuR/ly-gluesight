@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Chip } from "qing-steel";
 import { verdictLabel } from "../history/meta";
 import type { PartView } from "../cycle/types";
-import type { FrameGroupView } from "../plan/types";
+import type { CalibrationFrameView, FrameGroupView } from "../plan/types";
 import { groupCellState, groupCellText, type GroupCellState } from "../plan/vis";
 import { burstImageApi } from "./burstImages";
 import { GrayViewer, KV } from "./components";
@@ -50,6 +50,20 @@ interface BurstLiveRequest extends LiveJob { cycleId:string; revisionId:string; 
 const loadBurstFrame=(job:BurstLiveRequest)=>burstImageApi.live(job.cycleId,job.revisionId,job.camera,job.seq);
 const burstStateTone:Partial<Record<GroupCellState,string>>={ ok:"ok", ng:"ng", error:"fault" };
 
+/** 一帧测到的叠图：测完（含走出走廊）才读，同一帧收尾补测换了走廊或结论变了重读；还没测完或没测成时不画。 */
+function useLiveView(part:PartView,camera:number,seq:number,cell:FrameGroupView["cells"][number]|undefined) {
+  const measured=cell?.status==="measured"||cell?.status==="outOfCorridor";
+  const key=JSON.stringify([part.cycleId,part.recipeRevision,camera,seq,cell?.status,cell?.verdict,cell?.segment]);
+  const [state,setState]=useState<{key:string;view:CalibrationFrameView|null}>({key:"",view:null});
+  useEffect(()=>{
+    if(!measured)return;
+    let alive=true;
+    burstImageApi.liveView(part.cycleId,part.recipeRevision,camera,seq).then(view=>{if(alive)setState({key,view});},()=>{});
+    return()=>{alive=false;};
+  },[key]);
+  return state.key===key?state.view:null;
+}
+
 /** 一台相机在选中帧组里的那一帧：到达（含测量中、出错）才读图，缺帧的相机不读图，只写明本组按其余相机判。 */
 function BurstCameraFrame({part,camera,name,seq,group}:{part:PartView;camera:number;name:string;seq:number;group:FrameGroupView|null}) {
   const cell=group?.cells[camera];
@@ -61,8 +75,12 @@ function BurstCameraFrame({part,camera,name,seq,group}:{part:PartView;camera:num
   const state:GroupCellState=group?groupCellState(group,camera):"waiting";
   const shownSeq=image?.job.seq??seq;
   const missing=state==="missing";
+  const view=useLiveView(part,camera,seq,cell);
+  // 新帧组的图还没到、显示的是上一张时不叠这一帧的线
+  const edges=(view?.edges??[]).flatMap(edge=>edge?[{from:edge[0],to:edge[1],color:"var(--primary)"}]:[]);
+  const overlay=view&&view.corridor.length>=2&&shownSeq===seq?{path:view.corridor,searchHalfPx:view.searchHalfPx??undefined,segments:edges}:undefined;
   return <section className="wp-burst-cam" aria-label={`${name} 帧组 ${seq}`}>
-    <GrayViewer image={arrived?image?.image??null:null} loading={arrived&&live.loading} error={live.current?.error??""} label={`${name} · 帧组 ${shownSeq}`}
+    <GrayViewer image={arrived?image?.image??null:null} loading={arrived&&live.loading} error={live.current?.error??""} label={`${name} · 帧组 ${shownSeq}`} overlay={overlay}
       emptyTitle={missing?"缺帧":"等待本帧组图像"} emptyHint={missing?"这台相机没有出本帧组的图，本组按其余相机判（检测不完整，不影响 OK/NG）。":""}/>
     <div className="wp-runtime-strip">
       <KV label="帧状态"><Chip className={"frame-state "+(burstStateTone[state]??"")}>{groupCellText[state]}</Chip></KV>

@@ -176,6 +176,9 @@ pub struct FrameCellView {
     /// 这一帧单独判的结论；没测成或未测完为 None
     pub verdict: Option<Verdict>,
     pub frame_counter: Option<u64>,
+    /// 测量所用走廊的段；收尾补测换了走廊时随之变，检测视图据此重读叠图
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment: Option<u32>,
 }
 
 /// 一个帧组：cells 按计划相机顺序。
@@ -2287,7 +2290,7 @@ impl Machine {
     }
 
     /// 一帧的测量结果：写进本件；没测成（队满、超时、失败）只记检测不完整，不判 ERR（D-SB-13）。
-    fn on_frame_measured(&mut self, m: FrameMeasured) {
+    fn on_frame_measured(&mut self, mut m: FrameMeasured) {
         if !matches!(self.phase, Phase::Acquire | Phase::Drain) {
             return;
         }
@@ -2295,9 +2298,20 @@ impl Machine {
             return;
         };
         let (ms, queue_ms, engine_ms) = (m.ms, m.queue_ms, m.engine_ms);
+        let (segment, overlay) = (m.segment, m.trace.take());
         let Some(metrics) = part.apply_burst(m) else {
             return;
         };
+        if let Some(overlay) = overlay {
+            crate::workspace::retain_live_view(
+                &self.app,
+                &part.cycle_id,
+                &part.recipe,
+                segment,
+                overlay,
+                &metrics,
+            );
+        }
         self.dirty = true;
         let camera = part.burst.camera_name(metrics.camera).to_owned();
         let seq = metrics.seq;

@@ -611,7 +611,7 @@
 ### 5.2 新 DTO
 
 - **`PartViewBurst`**（在线在途件）：`cameras`、`expectedTotal`、`toleranceTotal`、`deviceTriggers`（保留字段，协议 8 不报，为 null）、`groupCount`、`cameraFrames`、`measuredFrames`、`pendingMeasure`、`groups: FrameGroupView[]`。
-- **`FrameGroupView`**：`seq`、`incomplete`、`cells: FrameCellView[]`（按计划相机顺序）。`FrameCellView`：`status`（`waiting | measuring | FrameState`）、`verdict`（该帧单独的结论，未测完为 null）、`frameCounter`。
+- **`FrameGroupView`**：`seq`、`incomplete`、`cells: FrameCellView[]`（按计划相机顺序）。`FrameCellView`：`status`（`waiting | measuring | FrameState`）、`verdict`（该帧单独的结论，未测完为 null）、`frameCounter`、`segment`（测量所用走廊的段，未测完时省略；收尾补测换了走廊时随之变，检测视图据此重读叠图）。
 - **`PartDetailBurst`**（历史详情）：`segments`（本件配方快照的段）、`cameras`、`expectedTotal`、`toleranceTotal`、`deviceTriggers`（同上）、`cameraFrames`、`judgement: BurstJudgement`、`frames: FrameRecord[]`（按 camera、seq 排序）。
 - **`FrameRecord`**：`camera`（计划相机下标）、`seq`、`status: FrameState`、`frameCounter`、`triggerCounter`、`region`（`judgement.regions` 下标，不在任何区域为 null）、`metrics: FrameMetrics | null`（missing 时为 null）、`rawFile`（录制根内相对路径，未录制或队满丢弃为 null）。1..=groupCount 内每个 (camera, seq) 都有一条，缺帧也有。
 - **`PartSummaryV2`** = `PartSummary` + `flags`。
@@ -656,6 +656,7 @@
 | `workspace_segment_template_save` | `id, revision, segments: PathSegment[], cuts: u64[]` | WorkspaceView（段列表 + 示教件边界确认，原子写入，D-SB-44） |
 | `recipe_capture_frame_image` | `roundId, cameraId: String, seq`（帧组序号，从 1 起） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `recipe_capture_image`）；该相机缺这一帧时报错 |
 | `workspace_live_frame_image` | `cycleId, revisionId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_live_image`）；未到或缺帧时报错 |
+| `workspace_live_frame_view` | `cycleId, revisionId, camera: usize, seq`（camera 为计划相机下标） | `CalibrationFrameView \| null`（这一帧测量时所用段的走廊或逐帧定向拟合的胶路、搜索半宽、逐站胶边与帧指标）；还没测完、没测成或不是本件时为 null |
 | `workspace_record_frame_image` | `historyId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_record_image`）；未录制、录制队满丢弃或缺帧时报错 |
 
 - **`recipe_plan_export` 前端不调用**：计划导出随 `WorkspaceView.plan.productionExport / candidateExport` 到达，发布确认框（`PlanPublishBody`）用它们列出候选与生产的对比。命令保留给脚本与工程师工具。
@@ -765,7 +766,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 - **测量**：每帧经 `FramePool` 送测，结果经 `cycle::Input::FrameMeasured` 回节拍；QueueFull / Timeout 记 Unmeasured，Failed 记 Error；超过 T_proc 或到收尾截止仍没结果记 Unmeasured；测量输出的帧身份与送测帧不符或含非有限数改记 Error。都只记检测不完整，不判 99。
 - **收尾与判定**：工件结束（plcState=20）后到收尾截止（等满收尾窗口，或按 D-SB-54 看到门控关闭满余量提前）、已接受的帧都测完，有收尾补测目标时再等补测完（D-SB-45）即判。故障（98、97）优先；否则 `Proportional`（D-SB-40）→ `resolve_regions` → `loss_alarms(各相机帧数)` → `burst_judge::judge`。丢帧、帧数异常、疑似提前终止写运行日志（warn），结论不变。
 - **结果与记录**：`ResultView.burst` 带区域判定，`PartView.burst` 按 5.2 输出（帧格的 verdict 只看这一帧的独立指标，允差取覆盖全部段的较宽一档）。`BurstRecord.frames` 在 1..=帧组数内每台相机每帧一条、缺帧也有，`rawFile` 入库时为空（录制结果事后补）；`frames_expected` = ΣN_exp，`frames_received` = 帧组数。接件时不能检测、在途中断、进程中断补记录的件也带 `BurstRecord`。诊断包按帧记录的 `rawFile` 打包原图。
-- **在线读图**：`workspace_live_frame_image`（预览缓存 128 MB）。
+- **在线读图**：`workspace_live_frame_image`（预览缓存 128 MB）；叠图读 `workspace_live_frame_view`，取生产测量时测到的胶边与胶路（不重测，同一帧收尾补测后以后测的为准），换件即清空。检测视图按历史详情的画法叠走廊、搜索带与逐站胶边。
 - **胶偏未判**：直线区域去掉首尾各一帧后参考相机没有可用 x 时标 `OffsetUnjudged::NoFrames`（“胶偏未判：参考相机没有可用帧”）。
 - **带宽估算**：`camera::aggregate_bandwidth` 计入 GigE 协议开销（不开巨帧约 1.05 倍），三台 130 万像素 25 Hz 约 826 Mbps，超过单口 80% 预算。
 

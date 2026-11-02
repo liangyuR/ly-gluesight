@@ -398,6 +398,8 @@ pub struct WorkspaceHost {
     pub notes: Vec<String>,
     /// 段配方在途件的实时原图，按 (计划相机下标, seq)
     live_burst: Mutex<LiveFrames<(usize, u64)>>,
+    /// 段配方在途件各帧测到的叠图，按 (计划相机下标, seq)
+    live_views: Mutex<LiveViews>,
     station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
     capture_seq: std::sync::atomic::AtomicU64,
     comparisons: comparisons::Comparisons,
@@ -410,6 +412,13 @@ struct LiveFrames<K> {
     key: Option<(String, String)>,
     frames: VecDeque<(K, Arc<FrameImage>)>,
     bytes: usize,
+}
+
+/// 在途件各帧测到的叠图：按工件与配方修订成组，换件即清空；同一帧重测（收尾补测）时以后测的为准。
+#[derive(Default)]
+struct LiveViews {
+    key: Option<(String, String)>,
+    views: HashMap<(usize, u64), CalibrationFrameView>,
 }
 
 impl<K: PartialEq + Default> LiveFrames<K> {
@@ -506,6 +515,7 @@ impl WorkspaceHost {
             items: Mutex::new(items),
             notes,
             live_burst: Mutex::new(LiveFrames::default()),
+            live_views: Mutex::new(LiveViews::default()),
             station: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
             comparisons: comparisons::Comparisons::default(),
@@ -1444,7 +1454,59 @@ pub fn workspace_comparisons(
 pub fn clear_live(app: &AppHandle) {
     if let Some(host) = app.try_state::<WorkspaceHost>() {
         *host.live_burst.lock().unwrap() = LiveFrames::default();
+        *host.live_views.lock().unwrap() = LiveViews::default();
     }
+}
+
+/// 段配方在途件一帧测到的叠图（第 `segment` 段走廊、搜索带与胶边），供 `workspace_live_frame_view` 读。
+pub fn retain_live_view(
+    app: &AppHandle,
+    cycle_id: &str,
+    recipe: &Recipe,
+    segment: u32,
+    trace: crate::measure::FrameTrace,
+    metrics: &crate::burst_judge::FrameMetrics,
+) {
+    let Some(host) = app.try_state::<WorkspaceHost>() else {
+        return;
+    };
+    let (corridor, search_half_px) = burst::corridor_overlay(recipe, metrics.camera, segment);
+    let view = CalibrationFrameView {
+        segment: Some(segment),
+        corridor: if trace.line.is_empty() {
+            corridor
+        } else {
+            trace.line
+        },
+        search_half_px,
+        edges: trace.edges,
+        metrics: metrics.clone(),
+    };
+    let mut live = host.live_views.lock().unwrap();
+    let key = (cycle_id.to_owned(), recipe.revision_id.clone());
+    if live.key.as_ref() != Some(&key) {
+        *live = LiveViews {
+            key: Some(key),
+            ..LiveViews::default()
+        };
+    }
+    live.views.insert((metrics.camera, metrics.seq), view);
+}
+
+/// 段配方在途件某台相机第 seq 帧测到的叠图（camera 为计划相机下标）；还没测完、没测成或不是本件时为 None。
+#[tauri::command]
+pub fn workspace_live_frame_view(
+    host: State<'_, WorkspaceHost>,
+    cycle_id: String,
+    revision_id: String,
+    camera: usize,
+    seq: u64,
+) -> Option<CalibrationFrameView> {
+    let live = host.live_views.lock().unwrap();
+    live.key
+        .as_ref()
+        .filter(|key| key.0 == cycle_id && key.1 == revision_id)
+        .and_then(|_| live.views.get(&(camera, seq)).cloned())
 }
 
 /// 段配方在途件一帧的原图（计划相机 camera 的第 seq 帧），供 `workspace_live_frame_image` 读。

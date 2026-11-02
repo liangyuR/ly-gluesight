@@ -663,20 +663,57 @@ impl Part {
     pub(super) fn burst_view(&self) -> PartViewBurst {
         let burst = &self.burst;
         let settled = burst.judgement.is_some() || self.burst_deadline(Instant::now());
-        let groups = burst.grouper.groups().into_iter().map(|group| {
-            let cells: Vec<FrameCellView> = (0..burst.cams.len()).map(|camera| match burst.frames.get(&(camera, group.seq)) {
-                Some(frame) => {
-                    let (status, verdict) = match &frame.metrics {
-                        Some(m) => (FrameCellStatus::from(m.state), (m.state == FrameState::Measured).then(|| burst_judge::frame_verdict(m, &burst.checks))),
-                        None => (FrameCellStatus::Measuring, None),
-                    };
-                    FrameCellView { status, verdict, frame_counter: Some(frame.frame_counter) }
+        let groups = burst
+            .grouper
+            .groups()
+            .into_iter()
+            .map(|group| {
+                let cells: Vec<FrameCellView> = (0..burst.cams.len())
+                    .map(|camera| match burst.frames.get(&(camera, group.seq)) {
+                        Some(frame) => {
+                            let (status, verdict) = match &frame.metrics {
+                                Some(m) => (
+                                    FrameCellStatus::from(m.state),
+                                    (m.state == FrameState::Measured)
+                                        .then(|| burst_judge::frame_verdict(m, &burst.checks)),
+                                ),
+                                None => (FrameCellStatus::Measuring, None),
+                            };
+                            FrameCellView {
+                                status,
+                                verdict,
+                                frame_counter: Some(frame.frame_counter),
+                                segment: frame.metrics.as_ref().and_then(|m| m.corridor),
+                            }
+                        }
+                        None => FrameCellView {
+                            status: if settled {
+                                FrameCellStatus::Missing
+                            } else {
+                                FrameCellStatus::Waiting
+                            },
+                            verdict: None,
+                            frame_counter: None,
+                            segment: None,
+                        },
+                    })
+                    .collect();
+                let incomplete = group.incomplete
+                    || cells.iter().any(|cell| {
+                        !matches!(
+                            cell.status,
+                            FrameCellStatus::Measured
+                                | FrameCellStatus::Measuring
+                                | FrameCellStatus::Waiting
+                        )
+                    });
+                FrameGroupView {
+                    seq: group.seq,
+                    incomplete,
+                    cells,
                 }
-                None => FrameCellView { status: if settled { FrameCellStatus::Missing } else { FrameCellStatus::Waiting }, verdict: None, frame_counter: None },
-            }).collect();
-            let incomplete = group.incomplete || cells.iter().any(|cell| !matches!(cell.status, FrameCellStatus::Measured | FrameCellStatus::Measuring | FrameCellStatus::Waiting));
-            FrameGroupView { seq: group.seq, incomplete, cells }
-        }).collect();
+            })
+            .collect();
         PartViewBurst {
             cameras: burst.cameras.clone(),
             expected_total: self.recipe.expected_total(),
