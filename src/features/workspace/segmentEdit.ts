@@ -1,6 +1,6 @@
 /**
  * 段列表的编辑规则（纯函数，SegmentsPage 与分段标定工作台用）：与后端 plan::new_segment / validate_segments 与 D-SB-20 对应。
- * N_exp、标定、x_ref 只能由多轮采集得出：段序列或类型变化时一律清空（见 workbenchDraft.segmentsForSave），不在这里手填。
+ * N_exp 取自示教件分段、x_ref 由测量示教件得出：段序列或类型变化时清空（见 workbenchDraft.segmentsForSave），不在这里手填。
  */
 import type { EdgeParams, HeadingSettings, KindDefaults, PathSegment, SegmentKind } from "../plan/types";
 
@@ -26,10 +26,6 @@ export const clearCalibration = (segments: PathSegment[]): PathSegment[] => segm
   ...segment, expectedFrames: null, calib: null,
   offsetRef: segment.offsetRef && { ...segment.offsetRef, xRef: null, spread: null },
 }));
-
-/** 有没有会被“清空标定”丢掉的东西（有 N_exp、标定统计、x_ref，或整件已标定）。 */
-export const hasCalibration = (segments: PathSegment[], partCalibrated: boolean) =>
-  partCalibrated || segments.some(segment => segment.expectedFrames != null || segment.calib != null || segment.offsetRef?.xRef != null);
 
 /** 把第 at 段的检测项套用到其余同类型段（不改帧数容差、相机、跳过帧数、长度、逐帧定向与胶偏参考）：段序列与类型不变，标定保留。 */
 export const applyToKind = (segments: PathSegment[], at: number): PathSegment[] => {

@@ -61,7 +61,7 @@ export async function prepareSampleSet(source, outputDir) {
 
 /**
  * 段配方长稳建站：进入离线·样本集，发布采集版后用样本件 SAMPLE_PART 原图生成手动配置数据（仿历史录制件）→ 选示教件、走廊示教 →
- * 选标定件（含示教件 10 件）→ 独立样本验证 → 发布正式版（检测项全关，见文件头）。
+ * 测量示教件 → 独立样本验证 → 发布正式版（检测项全关，见文件头）。
  * 样本集 id 取夹具（tests/native/lib.mjs 的 CAMERA_FIXTURES）；正式版已发布时直接复用，只有采集版（上次建站中断）时清掉重建。
  */
 export async function setupRecipe(call, sampleSetDir, log = console.log) {

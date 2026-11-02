@@ -71,7 +71,7 @@ pub enum RoundOrigin {
     History {
         cycle_id: String,
         record_id: i64,
-        /// 操作员导入时确认这一件是标准件：加入标定时按标准件轮次
+        /// 旧流程导入时的标准件标记，只为读入兼容
         #[serde(default)]
         standard: bool,
     },
@@ -86,10 +86,6 @@ impl RoundOrigin {
             Self::History { cycle_id, .. } => cycle_id,
             Self::Prepared { .. } => "",
         }
-    }
-
-    pub fn standard(&self) -> bool {
-        matches!(self, Self::History { standard: true, .. })
     }
 }
 

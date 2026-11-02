@@ -5,6 +5,16 @@ export const HEADING_MARK: Record<HeadingPart, string> = { nozzle: "1", skip: "2
 /** 找方向的扇形扫描只看测量区间里离出胶点最近的这一段（px），与后端 `vision/heading.rs` 的 FAN_LENGTH_PX 一致。 */
 export const FAN_LENGTH_PX = 150;
 
+/**
+ * 搜索扇区（度）：以出胶点为圆心的半圈，中线取拖过的方向 `turned`，没拖过时背离离出胶点最近的画面边。
+ * 与后端 `heading::search_sector`（测量图用它）同一规则；示教页自己算，保存前后显示不换来源。
+ */
+export function searchSector(nozzle: [number, number], size: [number, number], turned: number | null | undefined): [number, number] {
+  const mid = turned ?? [[nozzle[0], 0], [size[0] - 1 - nozzle[0], 180], [nozzle[1], 90], [size[1] - 1 - nozzle[1], -90]]
+    .reduce((best, edge) => edge[0] < best[0] ? edge : best)[1];
+  return [mid - 90, mid + 90];
+}
+
 /** 逐帧定向叠加（D-SB-47）：出胶点、测量区间环带与搜索扇区，均为这张图的像素坐标与度数（0° 朝右、90° 朝下）。 */
 export interface HeadingGuide {
   nozzle: [number, number];
@@ -12,8 +22,10 @@ export interface HeadingGuide {
   calibrated: boolean;
   /** 测量区间 [内半径, 外半径]（px）；未设置时为 null */
   zone: [number, number] | null;
-  /** 搜索扇区：出胶点背离最近画面边的半圈 */
+  /** 搜索扇区（`searchSector`） */
   sector?: [number, number] | null;
+  /** 扇区方向已拖动过（存在配方里）：把手不再脉冲提示 */
+  turned?: boolean;
   /** 试测时这一帧测得的胶条方向 */
   measured?: number | null;
   /** 面板上正指着的部件：只突出它和出胶点 */

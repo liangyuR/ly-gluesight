@@ -118,7 +118,7 @@ pub fn plan_heading(
     let roi = [(ax - reach).floor(), (ay - reach).floor(), side, side];
     let mut business = json!({
         "nozzle": anchor, "zone": zone, "radial": [z0, z0 + FAN_LENGTH_PX.min(z1 - z0)],
-        "sector": search_sector(anchor, size), "pathWidthMax": path_width_max,
+        "sector": search_sector(anchor, size, inspect.sector_deg), "pathWidthMax": path_width_max,
     });
     response_params_into(&mut business, detect, &params, roi);
     bead_params_into(&mut business, &params, params.half, edge.as_ref()).map_err(|e| fail(&e))?;

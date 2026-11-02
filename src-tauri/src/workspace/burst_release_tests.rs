@@ -160,7 +160,7 @@ fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
 
 #[test]
 fn sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejected() {
-    // 防的回归（规格 §0 独立验证、D-SB-35）：用作走廊示教或多轮标定的同一轮又当独立验证样本（自己验自己），
+    // 防的回归（规格 §0 独立验证、D-SB-35）：用作走廊示教或示教件测量的同一轮又当独立验证样本（自己验自己），
     // 或换了相机 / 设备配置的轮次混进验证样本
     type Edit = fn(&mut Workspace, &mut CaptureRoundV2, &mut BTreeMap<String, Value>);
     let cases: [(&str, Edit, bool); 5] = [
@@ -171,7 +171,7 @@ fn sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejecte
             false,
         ),
         (
-            "已加入多轮标定",
+            "已作为示教件测量",
             |w, round, _| {
                 w.calibration.rounds.push(CalibrationRound {
                     round_id: round.round_id.clone(),
@@ -221,25 +221,25 @@ fn sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejecte
 }
 
 #[test]
-fn changed_frame_rate_blocks_calibration_until_original_configuration_restored() {
+fn changed_frame_rate_blocks_publish_until_teaching_measurement_configuration_restored() {
     let mut w = taught(&[Straight, Corner], DEVICE);
     calibrate(&mut w, 20);
-    let mut round = capture_round("rate-calibration", &w.doc, 20, DEVICE, &[]);
+    let mut round = capture_round("rate-teaching", &w.doc, 20, DEVICE, &[]);
     for camera in &mut round.cameras {
         camera.camera_config =
             json!({"triggerSource": "Line0", "triggerActivation": "LevelHigh", "frameRate": 10.0});
     }
     w.calibration
         .rounds
-        .push(super::burst::calibration_round(&w.doc, &round, false, &[]));
+        .push(super::burst::calibration_round(&w.doc, &round, &[]));
     let mut current: BTreeMap<String, Value> = round
         .cameras
         .iter()
         .map(|c| (c.camera_id.clone(), c.camera_config.clone()))
         .collect();
-    assert!(check(&checks(&w, &current), "标定采集参数").passed);
+    assert!(check(&checks(&w, &current), "示教件采集参数").passed);
     current.get_mut("cam1").unwrap()["frameRate"] = json!(20.0);
-    assert!(!check(&checks(&w, &current), "标定采集参数").passed);
+    assert!(!check(&checks(&w, &current), "示教件采集参数").passed);
     current.get_mut("cam1").unwrap()["frameRate"] = json!(10.0);
-    assert!(check(&checks(&w, &current), "标定采集参数").passed);
+    assert!(check(&checks(&w, &current), "示教件采集参数").passed);
 }

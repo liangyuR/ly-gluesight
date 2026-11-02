@@ -5,13 +5,13 @@ import { useWorkspace } from "./context";
 import { NumberField } from "./components";
 import "./capture.css";
 
-const reasons = ["图像模糊或反光", "遮挡或污染", "图像不可用于标定"];
+const reasons = ["图像模糊或反光", "遮挡或污染", "图像不可用于测量"];
 
 /**
- * 一件的异常帧组屏蔽与恢复（多轮标定页）：屏蔽整组所有相机图像，只排除图像标定测量；原始序号、时间位置和帧数统计保留。
- * 已加入标定的件改了屏蔽范围后要重新同步标定件。
+ * 示教件的异常帧组屏蔽与恢复（试测页）：屏蔽整组所有相机图像，只排除图像测量；原始序号、时间位置和帧数保留，分段不变。
+ * 改了屏蔽范围后示教件已有的测量失效，要重新测量。
  */
-export function PieceMask({ roundId, groupCount, disabled, inCalibration }: { roundId: string; groupCount: number; disabled: boolean; inCalibration: boolean }) {
+export function PieceMask({ roundId, groupCount, disabled, measured }: { roundId: string; groupCount: number; disabled: boolean; measured: boolean }) {
   const { data, act } = useWorkspace();
   const [start, setStart] = useState(1), [end, setEnd] = useState(1);
   const [reason, setReason] = useState(reasons[0]);
@@ -23,7 +23,7 @@ export function PieceMask({ roundId, groupCount, disabled, inCalibration }: { ro
     on ? "所选帧组已屏蔽，原始序号和帧数保留" : "所选帧组已恢复");
   return <div className="wp-stack">
     <p className="wp-review-counts">原始 {groupCount} 组 · 屏蔽 {excluded.length} 组 · 未屏蔽 {groupCount - excluded.length} 组</p>
-    <p className="muted hint">屏蔽整组所有相机图像，只排除图像标定测量；原始序号、时间位置和帧数统计保留。轨迹异常、中途停止的件应整体弃用。{inCalibration && "改了屏蔽范围后点“同步标定件”重新加入标定。"}</p>
+    <p className="muted hint">屏蔽整组所有相机图像，只排除图像测量；原始序号、时间位置、帧数与分段保留。轨迹异常、中途停止的件应换一件示教件。{measured && "改了屏蔽范围后示教件的测量失效，需重新点“测量示教件”。"}</p>
     <div className="wp-actions wp-review-mask">
       <NumberField label="屏蔽范围起始帧组" value={start} min={1} max={groupCount} disabled={disabled} onChange={setStart}/>
       <NumberField label="屏蔽范围结束帧组" value={end} min={1} max={groupCount} disabled={disabled} onChange={setEnd}/>

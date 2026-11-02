@@ -77,15 +77,18 @@ export interface ImageOverlay {
   /** 走廊中线（草稿或已保存的） */
   path: [number, number][];
   searchHalfPx?: number;
-  /** 测量横线（多轮标定逐帧查看：各站两侧边缘） */
-  segments?: { from: [number, number]; to: [number, number]; color: string }[];
+  /** 测量横线（试测页逐帧查看：各站两侧边缘）；`station` 为测站号（0 起，供悬停联动），`width` 为屏幕线宽（默认 2） */
+  segments?: { from: [number, number]; to: [number, number]; color: string; width?: number; station?: number }[];
+  /** 鼠标移到某条带测站号的测量横线上（移开为 null） */
+  onSegmentHover?: (station: number | null) => void;
   /** 选中的中线点 */
   selected?: number | null;
   /** 逐帧定向叠加（走廊示教页，开启定向的段） */
   heading?: HeadingGuide | null;
 }
 
-function HeadingLayer({ guide, size, screenPx }: { guide: HeadingGuide; size: [number, number]; screenPx: (px: number) => number }) {
+/** 定向叠加；`turnable` 时扇区中线上是可拖动的把手（没拖过时脉冲提示，拖动中显示方向角度）。 */
+function HeadingLayer({ guide, size, screenPx, turnable, turning, hinted }: { guide: HeadingGuide; size: [number, number]; screenPx: (px: number) => number; turnable: boolean; turning: boolean; hinted: boolean }) {
   const c = guide.nozzle;
   const radii = guideRadii(guide, size);
   const fan = fanRadii(guide, size);
@@ -103,11 +106,31 @@ function HeadingLayer({ guide, size, screenPx }: { guide: HeadingGuide; size: [n
   return <g aria-label="逐帧定向叠加" pointerEvents="none" fill="none" vectorEffect="non-scaling-stroke">
     {guide.zone && guide.zone[0] > 0 && <path aria-label="跳过段" opacity={dim("skip")} d={wedgePath(c, [0, guide.zone[0]], [0, 360])} fill="var(--on-surface-variant)" fillOpacity={.18} stroke="var(--on-surface-variant)" strokeOpacity={.5} strokeWidth={1} vectorEffect="non-scaling-stroke" />}
     {guide.zone && <path aria-label="测量区间环带" opacity={dim("zone")} d={wedgePath(c, guide.zone, [0, 360])} fill="var(--primary)" fillOpacity={.06} fillRule="evenodd" stroke="var(--primary)" strokeOpacity={.6} strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />}
-    {guide.sector && <path aria-label="搜索扇区" opacity={dim("sector")} d={wedgePath(c, fan, guide.sector)} fill="var(--warn)" fillOpacity={.16} stroke="var(--warn)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+    {guide.sector && <path aria-label="搜索扇区" opacity={dim("sector")} d={wedgePath(c, fan, guide.sector)} fill="var(--warn)" fillOpacity={turning ? .3 : .16} stroke="var(--warn)" strokeWidth={turning ? 2.5 : 1.5} vectorEffect="non-scaling-stroke" />}
     {guide.measured != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.measured); return <line aria-label="实测方向" opacity={dim("reading")} x1={nx} y1={ny} x2={x} y2={y} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />; })()}
     {guide.zone && guide.zone[0] > 0 && mark("skip", guide.zone[0] / 2, base)}
     {guide.zone && mark("zone", (guide.zone[0] + guide.zone[1]) / 2, base + 60)}
-    {guide.sector && mark("sector", fan[1], guide.sector[0])}
+    {guide.sector && (turnable ? (() => {
+      const [hx, hy] = rayEnd(c, fan[1], base);
+      const r = screenPx(11);
+      // 把手两侧沿扇区外弧各一个小箭头，提示可以绕出胶点转
+      const arrow = (sign: 1 | -1) => {
+        const at = base + sign * screenPx(28) / fan[1] * 180 / Math.PI;
+        const [ax, ay] = rayEnd(c, fan[1], at);
+        const t = (at + sign * 90) * Math.PI / 180, s = screenPx(7);
+        const [ux, uy, vx, vy] = [Math.cos(t), Math.sin(t), -Math.sin(t), Math.cos(t)];
+        return `M${ax + ux * s} ${ay + uy * s}L${ax - ux * s * .6 + vx * s * .8} ${ay - uy * s * .6 + vy * s * .8}L${ax - ux * s * .6 - vx * s * .8} ${ay - uy * s * .6 - vy * s * .8}Z`;
+      };
+      return <g data-sector-handle="" className={"wp-sector-handle" + (hinted ? " hint" : "") + (turning ? " turning" : "")} role="button" aria-label="搜索扇区把手" pointerEvents="all" opacity={dim("sector")}>
+        <title>拖动转动搜索扇区</title>
+        <circle className="wp-sector-pulse" cx={hx} cy={hy} r={r} />
+        <circle cx={hx} cy={hy} r={r * 2.4} fill="transparent" />
+        <path className="wp-sector-arrows" d={arrow(1) + arrow(-1)} />
+        <circle className="wp-sector-knob" cx={hx} cy={hy} r={r} />
+        <text x={hx} y={hy} textAnchor="middle" dominantBaseline="central" fontSize={screenPx(12)} fontWeight="bold" fill="var(--surface-lowest)">{HEADING_MARK.sector}</text>
+        {turning && <text x={hx} y={hy} dy={-r * 2} textAnchor="middle" fontSize={screenPx(13)} fill="var(--warn)" stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke">{Math.round(((base % 360) + 540) % 360 - 180)}°</text>}
+      </g>;
+    })() : mark("sector", fan[1], base))}
     {guide.measured != null && mark("reading", radii[1] * .8, guide.measured)}
     <g aria-label={guide.calibrated ? "出胶点（已标定）" : "出胶点（走廊推算）"} stroke={guide.calibrated ? "var(--ok)" : "var(--warn)"} strokeWidth={2}>
       <line x1={nx - arm} y1={ny} x2={nx + arm} y2={ny} vectorEffect="non-scaling-stroke" />
@@ -146,9 +169,11 @@ export interface PathEditing {
  * controlsAt="footer"（仅走廊示教页）：缩放与显示开关下沉到底部信息行，左侧放 summary，
  * 开关文案为“中线 / 搜索带 / 点柄”，操作提示由页面自己给；默认 "header" 的外观与行为不变。
  */
-export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, brush, onBrush, onPoint, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
+export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, brush, onBrush, onPoint, onSectorTurn, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
   image: GrayImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
-  brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; onPoint?: (p: [number, number]) => void; extractionFailure?: { point: ImagePoint; message: string } | null; emptyTitle?: string; emptyHint?: string; controlsAt?: "header" | "footer"; summary?: ReactNode;
+  brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; onPoint?: (p: [number, number]) => void;
+  /** 拖动定向叠加上的扇区把手：给出出胶点指向指针的方向（度，取整） */
+  onSectorTurn?: (deg: number) => void; extractionFailure?: { point: ImagePoint; message: string } | null; emptyTitle?: string; emptyHint?: string; controlsAt?: "header" | "footer"; summary?: ReactNode;
 }) {
   const [viewport, setViewport] = useState({ zoom: 1, x: 0, y: 0 });
   const { zoom, x, y } = viewport;
@@ -188,7 +213,12 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
   const [allHandles, setAllHandles] = useState(false);
   const group = useRef<SVGGElement>(null);
   const drag = useRef<{ index: number; inverse: DOMMatrix } | null>(null);
-  const stopGesture = () => { drag.current = null; regionStart.current = null; brushStroke.current = null; pan.current = null; setPanning(false); };
+  const turning = useRef<DOMMatrix | null>(null);
+  const [turningNow, setTurningNow] = useState(false);
+  // 拖动中只在画面上转，松手才交给 onSectorTurn 写进配方，拖的过程不触发保存
+  const [turnDeg, setTurnDeg] = useState<number | null>(null);
+  const [turnedHere, setTurnedHere] = useState(false);
+  const stopGesture = () => { drag.current = null; turning.current = null; setTurningNow(false); setTurnDeg(null); regionStart.current = null; brushStroke.current = null; pan.current = null; setPanning(false); };
   useEffect(() => { reset(); stopGesture(); setAllHandles(false); }, [image?.url, image?.width, image?.height]);
   useEffect(() => {
     const element = svg.current;
@@ -220,6 +250,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
   const screenPx = (px: number) => px / (fit * zoom);
   const handle = screenPx(7);
   const editing = !!onEdit && shown && !editDisabled;
+  const turnable = !!onSectorTurn && !editDisabled && headingShown && !!overlay?.heading?.sector;
   const path = overlay?.path ?? [];
   const band = searchBand(path, overlay?.searchHalfPx);
   const hint = error || emptyHint;
@@ -234,7 +265,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
           if (e.key === "0") reset(); else zoomBy(e.key === "-" ? 1/1.25 : 1.25);
         }
       }} onAuxClick={e => { if (e.button === 1) e.preventDefault(); }} onPointerDown={e => {
-        if (pan.current || drag.current || regionStart.current || brushStroke.current) return;
+        if (pan.current || drag.current || turning.current || regionStart.current || brushStroke.current) return;
         if (e.button === 1) {
           const inverse = e.currentTarget.getScreenCTM()?.inverse();
           if (!inverse) return;
@@ -254,6 +285,11 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
           return;
         }
         if (onRegion) { const p = point(e); if (p) { regionStart.current = p; onRegion([p[0], p[1], 0, 0]); e.currentTarget.setPointerCapture?.(e.pointerId); } return; }
+        if (turnable && (e.target as Element).closest?.("[data-sector-handle]")) {
+          turning.current = group.current?.getScreenCTM()?.inverse() ?? null;
+          if (turning.current) { setTurningNow(true); e.currentTarget.setPointerCapture?.(e.pointerId); }
+          return;
+        }
         if (onPoint) { if (!editDisabled) { const p = point(e); if (p) onPoint(p); } return; }
         if (!editing || !onEdit) return;
         const inverse = group.current?.getScreenCTM()?.inverse();
@@ -280,12 +316,17 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
           if (p && stroke.points.length < 4096 && Math.hypot(p[0] - last[0], p[1] - last[1]) >= 2) { stroke.points.push(p); onBrush([...stroke.points]); }
           return;
         }
+        if (turning.current && onSectorTurn && overlay?.heading) {
+          const p = point(e, turning.current), [nx, ny] = overlay.heading.nozzle;
+          if (p && Math.hypot(p[0] - nx, p[1] - ny) > 1) { setTurnedHere(true); setTurnDeg(Math.round(Math.atan2(p[1] - ny, p[0] - nx) * 180 / Math.PI)); }
+          return;
+        }
         if (onRegion && regionStart.current) { const p = point(e), a = regionStart.current; if (p) onRegion([Math.min(a[0],p[0]), Math.min(a[1],p[1]), Math.abs(p[0]-a[0]), Math.abs(p[1]-a[1])]); return; }
         const current = drag.current;
         if (!current || !onEdit || editDisabled) return;
         const p = point(e, current.inverse);
         if (p) onEdit.move(current.index, p);
-      }} onPointerUp={stopGesture} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
+      }} onPointerUp={() => { if (turning.current && turnDeg != null) onSectorTurn?.(turnDeg); stopGesture(); }} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
         <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <GrayCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}
           {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--primary)" opacity={.45}>
             <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
@@ -302,13 +343,17 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
             <circle r={screenPx(13)} fill="var(--surface-lowest)" fillOpacity={.8} stroke="var(--ng)" strokeWidth={3} vectorEffect="non-scaling-stroke" />
             <text textAnchor="middle" dy={screenPx(5.5)} fontSize={screenPx(16)} fontWeight="bold" fill="var(--ng)">!</text>
           </g>}
-          {overlay?.heading && headingShown && <HeadingLayer guide={overlay.heading} size={[image.width, image.height]} screenPx={screenPx} />}
+          {overlay?.heading && headingShown && <HeadingLayer guide={turnDeg != null ? { ...overlay.heading, sector: [turnDeg - 90, turnDeg + 90] } : overlay.heading} size={[image.width, image.height]} screenPx={screenPx} turnable={turnable} turning={turningNow} hinted={!turnedHere && !overlay.heading.turned} />}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay && shown && <g aria-label="中线叠加">
             {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
             {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
             {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
-              {overlay.segments.map((segment, i) => <line key={i} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+              {overlay.segments.map((segment, i) => <line key={i} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={segment.width ?? 2} vectorEffect="non-scaling-stroke" />)}
+            </g>}
+            {overlay.segments && overlay.onSegmentHover && <g aria-label="测站悬停区" onPointerLeave={() => overlay.onSegmentHover?.(null)}>
+              {overlay.segments.map((segment, i) => segment.station != null && <line key={i} data-station={segment.station} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke="transparent" strokeWidth={10} vectorEffect="non-scaling-stroke" pointerEvents="stroke"
+                onPointerEnter={() => overlay.onSegmentHover?.(segment.station ?? null)} />)}
             </g>}
           </g>}
         </g></svg>}

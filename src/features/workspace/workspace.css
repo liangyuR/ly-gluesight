@@ -15,7 +15,7 @@
 .wp-recipe-picker { display:flex; align-items:center; gap:8px; color:var(--on-surface-variant); }
 .wp-recipe-picker .qs-select-trigger { width:200px; max-width:100%; }
 .wp-empty { display:flex; flex-direction:column; min-height:380px; justify-content:center; align-items:center; gap:14px; text-align:center; background:var(--surface-low); border-radius:var(--r-lg); padding:30px; }
-.wp-save-state { margin-left:auto; }
+.wp-save-state { margin-left:auto; min-width:6em; display:inline-flex; justify-content:flex-end; }
 .wp-capture-cameras { display:flex; flex-direction:column; gap:8px; margin-bottom:8px; }
 .wp-capture-camera { display:flex; flex-direction:column; gap:6px; padding:8px 10px; border-radius:var(--r-md); background:var(--surface-mid); }
 .wp-capture-camera-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -301,3 +301,12 @@
 .wp-part-body { display:flex; flex-direction:column; gap:6px; min-width:0; }
 .wp-part-title { font-size:12px; font-weight:600; }
 .wp-part-body > p { margin:0; }
+.wp-sector-handle { cursor:grab; }
+.wp-sector-handle.turning { cursor:grabbing; }
+.wp-sector-handle .wp-sector-knob { fill:var(--warn); stroke:var(--surface-lowest); stroke-width:2; vector-effect:non-scaling-stroke; transform-box:fill-box; transform-origin:center; transition:transform .15s; }
+.wp-sector-handle:hover .wp-sector-knob, .wp-sector-handle.turning .wp-sector-knob { transform:scale(1.3); }
+.wp-sector-handle .wp-sector-arrows { fill:var(--warn); stroke:var(--surface-lowest); stroke-width:1; vector-effect:non-scaling-stroke; }
+.wp-sector-handle .wp-sector-pulse { fill:none; stroke:var(--warn); stroke-width:2; vector-effect:non-scaling-stroke; opacity:0; transform-box:fill-box; transform-origin:center; }
+.wp-sector-handle.hint .wp-sector-pulse { animation:wp-sector-pulse 1.6s ease-out infinite; }
+.wp-sector-handle:hover .wp-sector-pulse, .wp-sector-handle.turning .wp-sector-pulse { animation:none; }
+@keyframes wp-sector-pulse { from { transform:scale(1); opacity:.9; } to { transform:scale(2.6); opacity:0; } }

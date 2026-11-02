@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight, Scale, ScanEye } from "lucide-react";
 import { Alert, Button, Card, Chip, IconButton, Select, Stack, StatusBadge, Text } from "qing-steel";
 import FrameGroupStrip from "../../cycle/components/FrameGroupStrip";
 import RegionResultPanel from "../../cycle/components/RegionResultPanel";
 import { CameraSegmentOverview } from "../../plan/CameraSegmentOverview";
-import type { FrameGroupView, FrameRecord, PartDetailBurst } from "../../plan/types";
+// 图表库按需加载：只有打开带逐站数据的历史详情时才进来
+const WidthProfile = lazy(() => import("../../plan/WidthProfile").then(m => ({ default: m.WidthProfile })));
+import type { CalibrationFrameView, FrameGroupView, FrameRecord, PartDetailBurst } from "../../plan/types";
 import { expectedText, flagBadges, regionKindLabel } from "../../plan/vis";
 import { burstImageApi } from "../../workspace/burstImages";
 import { workspaceApi } from "../../workspace/api";
@@ -15,7 +17,7 @@ import type { Comparison, GrayImage } from "../../workspace/types";
 import { CycleTimeline } from "../../logs";
 import { errorText } from "../../../lib/errors";
 import { displayReason, formatTime, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel } from "../meta";
-import { burstSideOf, regionDiffs } from "../replay";
+import { burstSideOf, comparisonBurst, regionDiffs } from "../replay";
 import type { PartDetail } from "../types";
 import { BurstPartTrace } from "./PartTrace";
 import { RegionReplayDiff } from "./ReplayDiff";
@@ -57,24 +59,74 @@ function useFrameImage(historyId: number, camera: number, seq: number, enabled: 
   return state.key === key ? state : { key, image: null, error: "", loading: enabled };
 }
 
+/** 对照里一帧的叠图：按对照保存的候选配方从原图重测这一帧，给出走廊、搜索带与胶边；不显示对照或按原包重现时不读。 */
+function useComparisonOverlay(historyId: number, comparison: Comparison | null, camera: number, seq: number, enabled: boolean) {
+  const key = JSON.stringify([historyId, comparison?.id ?? null, camera, seq, enabled]);
+  const [state, setState] = useState<{ key: string; view: CalibrationFrameView | null; error: string }>({ key, view: null, error: "" });
+  useEffect(() => {
+    let alive = true;
+    setState({ key, view: null, error: "" });
+    if (!enabled || !comparison) return;
+    workspaceApi.recordFrameView(historyId, comparison.id, camera, seq)
+      .then(view => alive && setState({ key, view, error: "" }))
+      .catch(e => alive && setState({ key, view: null, error: errorText(e) }));
+    return () => { alive = false; };
+  }, [key]);
+  return state.key === key ? state : { key, view: null, error: "" };
+}
+
+/** 一台相机一帧的原图格：显示对照时叠出复测所用的走廊、搜索带与胶边；点格子选中这台相机。 */
+function FrameTile({ detail, comparison, traceable, camera, cameraName, seq, frame, selected, onSelect, station, onStation }: {
+  detail: PartDetail; comparison: Comparison | null; traceable: boolean; camera: number; cameraName: string; seq: number; frame: FrameRecord | null; selected: boolean; onSelect: () => void;
+  /** 选中相机这一帧与胶宽折线联动的测站（0 起） */
+  station: number | null; onStation: (station: number | null) => void;
+}) {
+  const s = detail.summary;
+  const image = useFrameImage(s.id, camera, seq, !!frame?.rawFile);
+  const traced = useComparisonOverlay(s.id, comparison, camera, seq, traceable && !!frame?.rawFile && frame.status !== "notInspected" && frame.status !== "missing");
+  const lit = selected ? station : null;
+  // 联动的测站画在最后、加粗换色，免得被相邻测站盖住
+  const lines = (traced.view?.edges ?? []).flatMap((edge, i) => edge ? [{ from: edge[0], to: edge[1], station: i,
+    color: i === lit ? "var(--warn)" : "var(--primary)", width: i === lit ? 4 : 2 }] : []).sort((a, b) => Number(a.station === lit) - Number(b.station === lit));
+  const overlay = traced.view && traced.view.corridor.length >= 2 ? { path: traced.view.corridor, searchHalfPx: traced.view.searchHalfPx ?? undefined,
+    segments: lines, onSegmentHover: selected ? onStation : undefined } : undefined;
+  const unavailable = !frame ? "没有这一帧的记录"
+    : frame.status === "missing" ? "这台相机本帧组缺帧，没有原图（检测不完整，不影响 OK/NG）"
+      : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;
+  return <div className={"hist-frame-tile" + (selected ? " selected" : "")} onClickCapture={onSelect}>
+    <GrayViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={`原始 SN ${s.sn} · ${cameraName} · 帧组 ${seq}`} overlay={overlay}
+      caption={<>{cameraName} · 帧组 {seq}{frame ? ` · ${frameStateName[frame.status]}` : ""}</>} />
+    {traced.error && <p className="muted hint">叠图：{traced.error}</p>}
+  </div>;
+}
+
 /**
  * 历史详情：按区域展示——整件的段布置与区域结论、帧组条、按 (相机, seq) 选的原图、每相机帧表与时间线。
  * 只处理 PartDetail.burst 非空的记录。
  */
-export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, onBack }: {
+export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, onBack, backLabel = "返回历史列表" }: {
   detail: PartDetail;
   burst: PartDetailBurst;
   neighbors: { older: number | null; newer: number | null };
   onOpen: (target: number | null) => void;
   onBack: () => void;
+  /** 返回按钮的说明：从历史列表进来为“返回历史列表”，从试测进来为“返回试测” */
+  backLabel?: string;
 }) {
   const ws = useWorkspace();
-  const s = detail.summary, j = burst.judgement;
+  const [search] = useSearchParams();
+  const wanted = search.get("comparison");
+  const s = detail.summary;
   const verdict = partVerdict(s);
-  const groups = useMemo(() => historyGroups(burst), [burst]);
+  const [comparison, setComparison] = useState<Comparison | null>(null);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const compared = useMemo(() => comparison?.burst ? comparisonBurst(burst, comparison.burst) : null, [burst, comparison]);
+  const shown = compared && !showOriginal ? compared : burst, j = shown.judgement;
+  const groups = useMemo(() => historyGroups(shown), [shown]);
   const lastSeq = groups.at(-1)?.seq ?? 1;
   const [selection, setSelection] = useState({ camera: 0, seq: groups[0]?.seq ?? 1 });
-  const [comparison, setComparison] = useState<Comparison | null>(null);
+  const [station, setStation] = useState<number | null>(null);
+  useEffect(() => { setStation(null); }, [selection.camera, selection.seq, comparison?.id, showOriginal]);
   const [saved, setSaved] = useState<Comparison[]>([]);
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
@@ -83,11 +135,9 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const current = useRef({ scope, historyId: s.id });
   current.current = { scope, historyId: s.id };
   useEffect(() => { alive.current = true; return () => { alive.current = false; serial.current++; }; }, []);
-  useEffect(() => { setSelection({ camera: 0, seq: groups[0]?.seq ?? 1 }); setComparison(null); setError(""); }, [s.id]);
+  useEffect(() => { setSelection({ camera: 0, seq: groups[0]?.seq ?? 1 }); setComparison(null); setShowOriginal(false); setError(""); }, [s.id]);
 
-  const frame = burst.frames.find(f => f.camera === selection.camera && f.seq === selection.seq) ?? null;
-  const cameraName = burst.cameras[selection.camera] ?? `相机 ${selection.camera + 1}`;
-  const image = useFrameImage(s.id, selection.camera, selection.seq, !!frame?.rawFile);
+  const frame = shown.frames.find(f => f.camera === selection.camera && f.seq === selection.seq) ?? null;
   const step = (delta: number) => setSelection(prev => ({ ...prev, seq: Math.min(lastSeq, Math.max(groups[0]?.seq ?? 1, prev.seq + delta)) }));
   const stepRef = useRef(step);
   stepRef.current = step;
@@ -108,9 +158,14 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     let live = true;
     const mine = ++serial.current;
     setSaved([]);
-    if (s.recipeId) void workspaceApi.comparisons(s.recipeId, s.id).then(v => live && mine === serial.current && setSaved(v)).catch(e => live && mine === serial.current && setError(errorText(e)));
+    if (s.recipeId) void workspaceApi.comparisons(s.recipeId, s.id).then(v => {
+      if (!live || mine !== serial.current) return;
+      setSaved(v);
+      const target = wanted && v.find(c => c.id === wanted);
+      if (target) setComparison(previous => previous ?? target);
+    }).catch(e => live && mine === serial.current && setError(errorText(e)));
     return () => { live = false; };
-  }, [s.id, s.recipeId, ws.data?.workspace.revision]);
+  }, [s.id, s.recipeId, ws.data?.workspace.revision, wanted]);
 
   // 原图完整：除缺帧外每帧都有录制原图；候选的走廊示教完成（各段检测相机都有走廊、相机有像素当量），才能从原图复测
   const rawComplete = detail.recording.available && burst.frames.every(f => f.status === "missing" || !!f.rawFile);
@@ -126,7 +181,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const compare = async (run: () => Promise<Comparison>, guard: () => boolean) => {
     if (pending.current) return;
     pending.current = true; serial.current++; setWorking(true); setError("");
-    try { const result = await run(); if (guard()) { setComparison(result); setSaved(v => [result, ...v.filter(c => c.id !== result.id)]); } }
+    try { const result = await run(); if (guard()) { setComparison(result); setShowOriginal(false); setSaved(v => [result, ...v.filter(c => c.id !== result.id)]); } }
     catch (e) { if (guard()) setError(errorText(e)); }
     finally { pending.current = false; if (alive.current) setWorking(false); }
   };
@@ -140,27 +195,26 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     void compare(() => workspaceApi.compareOriginal(s.id), () => alive.current && current.current.historyId === s.id);
   };
 
-  const flags = flagBadges(j.flags);
+  const flags = flagBadges(burst.judgement.flags);
   const diffs = comparison?.burst ? regionDiffs(burstSideOf(burst), comparison.burst) : null;
   const region = frame?.region != null ? j.regions[frame.region] : null;
   const metrics = frame?.metrics;
   const mm = (v: number | null | undefined) => v == null ? "—" : v.toFixed(2);
-  const imageLabel = `原始 SN ${s.sn} · ${cameraName} · 帧组 ${selection.seq}`;
-  const unavailable = !frame ? "没有这一帧的记录"
-    : frame.status === "missing" ? "这台相机本帧组缺帧，没有原图（检测不完整，不影响 OK/NG）"
-      : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;
+  const viewing = shown === compared && comparison ? comparisonLabel[comparison.source] : null;
+  const traceable = !!viewing && comparison?.source !== "original";
+  const cameraName = shown.cameras[selection.camera] ?? `相机 ${selection.camera + 1}`;
   return <div className="stack hist-detail">
     <Card className="detail-head" role="region" aria-label="历史记录摘要">
       <Stack gap={12} justify="space-between">
         <Stack gap={12}>
-          <IconButton onClick={onBack} aria-label="返回历史列表"><ArrowLeft size={18} /></IconButton>
+          <IconButton onClick={onBack} aria-label={backLabel} title={backLabel}><ArrowLeft size={18} /></IconButton>
           <span className="detail-step">
             <IconButton aria-label="前一件" title="前一件（[ 键）" disabled={neighbors.older == null} onClick={() => onOpen(neighbors.older)}><ChevronLeft size={18} /></IconButton>
             <IconButton aria-label="后一件" title="后一件（] 键）" disabled={neighbors.newer == null} onClick={() => onOpen(neighbors.newer)}><ChevronRight size={18} /></IconButton>
           </span>
           <b className="sn" title={s.sn || undefined}>SN {s.sn || "—"}</b>
           {s.source !== "real" && <StatusBadge tone="off">{sourceLabel[s.source]}</StatusBadge>}
-          <Text muted>{formatTime(s.ts)} · {s.recipeId ?? "无配方"} · {s.source === "offlineCandidate" ? "候选修订 " + (s.recipeRevision ?? "未记录") : "v" + (s.recipeVersion ?? "—") + " · #" + (s.recipeRevision?.slice(0, 6) ?? "—")} · {triggerModeLabel(s.triggerMode)} · 帧组 {j.groupCount} / 预期 {expectedText(burst.expectedTotal, burst.toleranceTotal)}</Text>
+          <Text muted>{formatTime(s.ts)} · {s.recipeId ?? "无配方"} · {s.source === "offlineCandidate" ? "候选修订 " + (s.recipeRevision ?? "未记录") : "v" + (s.recipeVersion ?? "—") + " · #" + (s.recipeRevision?.slice(0, 6) ?? "—")} · {triggerModeLabel(s.triggerMode)} · 帧组 {burst.judgement.groupCount} / 预期 {expectedText(burst.expectedTotal, burst.toleranceTotal)}</Text>
           {flags.map(flag => <StatusBadge key={flag.key} tone={flag.tone} data-flag={flag.key}>{flag.label}</StatusBadge>)}
         </Stack>
         <StatusBadge tone={verdict.tone}>{verdict.label} · PLC {s.plcCode}{s.faultCode ? " / " + s.faultCode : ""}</StatusBadge>
@@ -179,8 +233,9 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       </div>
       {ws.dirty || ws.frameDirty ? <Alert tone="warn">先保存候选配置和走廊示教，再执行对照。</Alert> : !candidateReady && <Text as="p" muted>在配方工作台选择此配方的候选后，可以调整规则并对照原始结论。</Text>}
       {ws.error && <Alert tone="warn">{ws.error}</Alert>}
-      {blockers.length > 0 && <Alert tone="warn" title="不能按原发布包重跑">{blockers.join("；")}</Alert>}
-      {!!saved.length && <Select label="已保存的对照结果" aria-label="已保存对照结果" disabled={working} value={comparison?.id ?? ""} onValueChange={id => setComparison(saved.find(c => c.id === id) ?? null)}
+      {s.source !== "offlineCandidate" && !s.bundleId && <Text as="p" muted>本件没有发布包（维护采集件或未匹配到可用配方），不能按原发布包重现；从原图复测不受影响。</Text>}
+      {s.source !== "offlineCandidate" && s.bundleId && !rawComplete && <Alert tone="warn" title="不能按原发布包重跑">{recordingReason[detail.recording.state]}</Alert>}
+      {!!saved.length && <Select label="已保存的对照结果" aria-label="已保存对照结果" disabled={working} value={comparison?.id ?? ""} onValueChange={id => { setComparison(saved.find(c => c.id === id) ?? null); setShowOriginal(false); }}
         options={[{ value: "", label: "选择记录" }, ...saved.map(c => ({ value: c.id, label: formatTime(c.createdAt) + " · " + comparisonLabel[c.source] + " · 修订 " + c.candidateRevision + " · " + verdictLabel[c.judgement.verdict] }))]} />}
     </Panel>
     {comparison && <Panel title={comparisonLabel[comparison.source] + "结果"} detail={(comparison.source === "original" ? "原发布 v" + comparison.candidateRecipe.version + " · 包 " + comparison.bundleId : "候选 v" + comparison.candidateRecipe.version + " · 修订 " + comparison.candidateRevision) + " · " + formatTime(comparison.createdAt)}>
@@ -189,28 +244,50 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         <StatusBadge tone={comparison.judgement.verdict.startsWith("OK") ? "ok" : comparison.judgement.verdict === "ERR_INSPECT" ? "warn" : "ng"}>{comparison.source === "original" ? "重现" : "候选"} {verdictLabel[comparison.judgement.verdict]}</StatusBadge>
         <b>{displayReason(comparison.judgement.reason)}</b>
       </div>
-      {comparison.burst ? <RegionReplayDiff diffs={diffs} source={comparison.source} /> : <Text as="p" muted>这次对照没有区域明细，只能看整件结论。</Text>}
+      {!comparison.burst ? <Text as="p" muted>这次对照没有区域明细，只能看整件结论。</Text>
+        : !burst.judgement.regions.length ? <Text as="p" muted>原记录没有区域判定（如维护采集件只录图不判定），不做逐区域对比；{comparisonLabel[comparison.source]}的逐段结果见下方帧组与原图和右侧整件判定。</Text>
+          : <RegionReplayDiff diffs={diffs} source={comparison.source} />}
     </Panel>}
     <div className="detail-grid burst">
-      <Panel title="帧组与原图" help="点击小方块选择相机与帧组查看原图，左右方向键切换帧组。颜色表示区域结论，非逐帧判定；灰色为检测不完整，浅灰为本段不检测。" actions={<Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
-        options={burst.cameras.map((name, c) => ({ value: String(c), label: name }))} />}>
-        <CameraSegmentOverview cameras={burst.cameras} segments={burst.segments} regions={j.regions} />
-        <FrameGroupStrip groups={groups} cameras={burst.cameras} selected={selection.seq} selectedCamera={selection.camera} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} onSelectCell={(seq, camera) => setSelection({ seq, camera })} />
+      <Panel title="帧组与原图" detail={viewing ? `显示${viewing}结果` : compared ? "显示原始记录" : undefined} help="点击小方块选择相机与帧组查看原图，左右方向键切换帧组。颜色表示区域结论，非逐帧判定；灰色为检测不完整，浅灰为本段不检测。选了带逐帧指标的对照时，可切换显示对照结果或原始记录。" actions={<>
+        {compared && <Select aria-label="显示结果" value={showOriginal ? "original" : "comparison"} onValueChange={value => setShowOriginal(value === "original")}
+          options={[{ value: "comparison", label: "对照结果" }, { value: "original", label: "原始记录" }]} />}
+        <Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
+          options={shown.cameras.map((name, c) => ({ value: String(c), label: name }))} />
+      </>}>
+        <CameraSegmentOverview cameras={shown.cameras} segments={shown.segments} regions={j.regions} />
+        <FrameGroupStrip groups={groups} cameras={shown.cameras} selected={selection.seq} selectedCamera={selection.camera} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} onSelectCell={(seq, camera) => setSelection({ seq, camera })} />
         <div className="wp-stack">
-          <GrayViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={imageLabel} caption={<>原始 SN <span className="sn">{s.sn}</span> · {cameraName} · 帧组 {selection.seq}</>} />
+          <div className="hist-frame-tiles" aria-label={`帧组 ${selection.seq} 各相机原图`}>
+            {shown.cameras.map((name, c) => <FrameTile key={c} detail={detail} comparison={comparison} traceable={traceable} camera={c} cameraName={name} seq={selection.seq}
+              frame={shown.frames.find(f => f.camera === c && f.seq === selection.seq) ?? null} selected={c === selection.camera} onSelect={() => setSelection(prev => ({ ...prev, camera: c }))}
+              station={station} onStation={setStation} />)}
+          </div>
           <div className="wp-runtime-strip">
+            <KV label="相机">{cameraName}</KV>
             <KV label="帧状态">{frame ? frameStateName[frame.status] : "—"}</KV>
             <KV label="帧号 / 触发计数">{frame?.frameCounter ?? "—"} / {frame?.triggerCounter ?? "—"}</KV>
             <KV label="所在区域">{region ? regionKindLabel(region.region.kind) : "—"}</KV>
             <KV label="所用走廊">{metrics?.corridor != null ? `段 ${metrics.corridor}` : "—"}</KV>
             <KV label="胶宽 min / max / mean">{metrics && frame?.status === "measured" ? `${mm(metrics.widthMin)} / ${mm(metrics.widthMax)} / ${mm(metrics.widthMean)} mm` : "—"}</KV>
             <KV label="胶中心 x">{metrics && frame?.status === "measured" ? `${mm(metrics.xMm)} mm` : "—"}</KV>
+            <KV label="最长断胶">{metrics && frame?.status === "measured" ? `${mm(metrics.gapMaxMm)} mm` : "—"}</KV>
+            {metrics?.headingFallback && <KV label="定向">没找到胶条{metrics.fallbackReason ? `：${metrics.fallbackReason}` : ""}</KV>}
+            {metrics?.error && <KV label="说明">{metrics.error}</KV>}
           </div>
+          {metrics && frame?.status === "measured" && metrics.widths.length > 0
+            ? <div className="hist-width-profile">
+              <Text as="p" muted>{cameraName} · 帧组 {selection.seq} 逐站胶宽{station != null ? ` · 第 ${station + 1} 站` : ""}（悬停折线或{traceable ? "原图上的测量线" : "折线"}联动）</Text>
+              <Suspense fallback={<Text as="p" muted>正在加载图表…</Text>}>
+                <WidthProfile metrics={metrics} checks={shown.segments.find(sg => sg.index === metrics.corridor)?.checks} station={station} onStation={setStation} />
+              </Suspense>
+            </div>
+            : <Text as="p" muted>这一帧没有逐站胶宽数据（未测、缺帧或本段不检测）。</Text>}
         </div>
       </Panel>
-      <Panel title="原始整件判定" className="side">
+      <Panel title={viewing ? `${viewing}整件判定` : "原始整件判定"} className="side">
         <p className="reason-box">{displayReason(j.reason)}</p>
-        <RegionResultPanel judgement={j} segments={burst.segments} cameras={burst.cameras} expectedTotal={burst.expectedTotal} toleranceTotal={burst.toleranceTotal}
+        <RegionResultPanel judgement={j} segments={shown.segments} cameras={shown.cameras} expectedTotal={shown.expectedTotal} toleranceTotal={shown.toleranceTotal}
           onSelectGroup={seq => setSelection(prev => ({ ...prev, seq }))} />
         <div className="kv2">
           <span>记录号</span><b>#{s.id}</b>

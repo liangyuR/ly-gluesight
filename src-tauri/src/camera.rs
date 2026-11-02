@@ -1634,6 +1634,12 @@ fn write_imaging(d: &mvs::Device, imaging: &CameraImaging, name: &str) -> Result
         .map_err(|e| format!("{name}写入增益失败：{e}；在相机页修改曝光与增益后重新连接"))
 }
 
+/// 按生产同一套规则配置一台已打开的相机（触发门控、帧率、像素格式、频闪、Chunk），不写曝光增益、不开流；
+/// 返回相机未接受的参数。只供相机事件探测程序（examples/camera_event_probe.rs）用。
+pub fn configure_for_probe(d: &mvs::Device, c: &CameraConfig) -> Result<Vec<String>, String> {
+    apply(d, c).map(|(warnings, ..)| warnings)
+}
+
 fn apply(
     d: &mvs::Device,
     c: &CameraConfig,

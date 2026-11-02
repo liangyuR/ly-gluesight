@@ -250,8 +250,8 @@ impl Region {
 }
 
 /// 判定需要的走廊（D-SB-45）：按计划相机、seq（1..=total）给出该用第几段（`PathSegment.index`）的走廊测量，None 为不测。
-/// 可信的直线 / 弯道区域：本段检测相机用本段走廊。过渡区：帧按比例边界落在哪一侧，该侧检测相机用该侧走廊，只检测另一侧的
-/// 相机用另一侧走廊。跳过区域不测。其余未分段区域（置信度不足、算法待定）：用到达时的预测段与它的检测相机（`plan::arrival_corridor`）。
+/// 可信的直线 / 弯道区域：本段检测相机用本段走廊。过渡区：帧按比例边界落在哪一段，该段检测相机用该段走廊，只检测最近边界
+/// 另一侧那一段的相机用那一段的走廊；多个过渡区合并（中间的段被取空）时同样按帧所在段与最近的边界取，不跨到更远的段。跳过区域不测。其余未分段区域（置信度不足、算法待定）：用到达时的预测段与它的检测相机（`plan::arrival_corridor`）。
 pub fn frame_corridors(
     segments: &[PathSegment],
     cameras: &[String],
@@ -281,13 +281,35 @@ pub fn frame_corridors(
                         last_segment,
                         reason: UnsegReason::Transition,
                     } => {
-                        let near_last = boundary(first_segment).is_some_and(|b| seq > b);
-                        let (near, far) = if near_last {
-                            (last_segment, first_segment)
-                        } else {
-                            (first_segment, last_segment)
+                        let covered: Vec<u32> = segments
+                            .iter()
+                            .map(|s| s.index)
+                            .filter(|i| (first_segment..=last_segment).contains(i))
+                            .collect();
+                        let Some(k) = covered
+                            .iter()
+                            .position(|&i| boundary(i).is_none_or(|b| seq <= b))
+                            .or(covered.len().checked_sub(1))
+                        else {
+                            continue;
                         };
-                        [near, far].into_iter().find(|&s| detects(s))
+                        let after_start = (k > 0)
+                            .then(|| boundary(covered[k - 1]))
+                            .flatten()
+                            .map(|b| seq - b);
+                        let before_end = (k + 1 < covered.len())
+                            .then(|| boundary(covered[k]))
+                            .flatten()
+                            .map(|b| b + 1 - seq);
+                        let neighbor = match (after_start, before_end) {
+                            (Some(a), Some(e)) if e < a => Some(k + 1),
+                            (Some(_), _) => Some(k - 1),
+                            (None, Some(_)) => Some(k + 1),
+                            (None, None) => None,
+                        };
+                        std::iter::once(covered[k])
+                            .chain(neighbor.map(|n| covered[n]))
+                            .find(|&s| detects(s))
                     }
                     RegionKind::Unsegmented { .. } => {
                         crate::plan::arrival_corridor(segments, cameras, c, seq)
@@ -435,6 +457,19 @@ pub fn resolve_regions(
         };
         if tail > 0 && (a == b || last == total_seq) {
             skip((last + 1).saturating_sub(tail), last, *b);
+        }
+    }
+
+    // 不检测的段（D-SB-53）：分段可信时整段划为跳过，并向两侧各延伸 guard 帧——边界有 ±guard 帧的不确定，邻段贴着边界的帧
+    // 可能其实属于这一段，照常测会误报。分段不可信时定位不到这一段，只是没有相机量它的帧（`segment_cameras` 为空）
+    for (region, a, b) in &regions {
+        if a != b || !segments[*a].skip {
+            continue;
+        }
+        let from = region.first_seq.saturating_sub(u64::from(guard)).max(1);
+        let to = (region.last_seq + u64::from(guard)).min(total_seq);
+        for label in &mut labels[from as usize - 1..to as usize] {
+            *label = Label::Skipped(*a);
         }
     }
 
@@ -620,7 +655,7 @@ mod tests {
     #[test]
     fn proportional_boundaries_outside_total_tolerance_merge_into_low_confidence_region() {
         let segments = calibrated(&[S, C, S], &[10, 4, 10]);
-        for total in [20, 28] {
+        for total in [17, 31] {
             let outcome = proportional(&segments, total);
             assert!(
                 cuts(&outcome)
@@ -710,6 +745,72 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    /// 短段使相邻过渡区合并成一个（第 1–4 段边界过渡）时，每帧仍按所在段与最近边界另一侧的段选走廊：
+    /// 中间段的检测相机用中间段的走廊，不会都拿首尾两段的走廊去量（合并区原先只看首尾段，中间段的帧全量成断胶）。
+    #[test]
+    fn merged_transition_measures_each_frame_with_its_own_and_nearest_neighbor_segment() {
+        let cameras: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
+        let mut segments = calibrated(&[S, S, S, S], &[4, 2, 2, 4]);
+        for (segment, camera) in segments.iter_mut().zip([0, 1, 2, 0]) {
+            segment.cameras = vec![cameras[camera].clone()];
+        }
+        let outcome = proportional(&segments, 12);
+        let regions = resolve_regions(&segments, &outcome, 12, 0.5, 2);
+        assert!(regions.contains(&region(
+            RegionKind::Unsegmented {
+                first_segment: 1,
+                last_segment: 4,
+                reason: UnsegReason::Transition
+            },
+            3,
+            10
+        )));
+        let choice = frame_corridors(&segments, &cameras, &regions, &outcome, 12);
+        let transition: Vec<[Option<u32>; 3]> = (3..=10)
+            .map(|seq| [0, 1, 2].map(|c| choice[c][seq - 1]))
+            .collect();
+        assert_eq!(
+            transition,
+            vec![
+                [Some(1), Some(2), None],
+                [Some(1), Some(2), None],
+                [Some(1), Some(2), None],
+                [None, Some(2), Some(3)],
+                [None, Some(2), Some(3)],
+                [Some(4), None, Some(3)],
+                [Some(4), None, Some(3)],
+                [Some(4), None, Some(3)],
+            ]
+        );
+    }
+
+    /// D-SB-53：不检测的段整段划为跳过并向两侧各延伸 guard 帧（邻段贴着边界的帧可能其实属于这一段，照常量会误报），
+    /// 这些帧任何相机都不量；邻段其余的帧照常由本段相机量。
+    #[test]
+    fn skipped_segment_and_its_guard_frames_are_not_measured_by_any_camera() {
+        let cameras: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
+        let mut segments = calibrated(&[S, C, S], &[10, 4, 10]);
+        for (segment, camera) in segments.iter_mut().zip([0, 1, 2]) {
+            segment.cameras = vec![cameras[camera].clone()];
+        }
+        segments[1].skip = true;
+        let outcome = proportional(&segments, 24);
+        let regions = resolve_regions(&segments, &outcome, 24, 0.5, 2);
+        assert_eq!(
+            regions,
+            vec![
+                region(RegionKind::Straight { segment: 1 }, 1, 8),
+                region(RegionKind::Skipped { segment: 2 }, 9, 16),
+                region(RegionKind::Straight { segment: 3 }, 17, 24),
+            ]
+        );
+        let choice = frame_corridors(&segments, &cameras, &regions, &outcome, 24);
+        let column = |seq: usize| [0, 1, 2].map(|c| choice[c][seq - 1]);
+        assert!((9..=16).all(|seq| column(seq) == [None; 3]));
+        assert_eq!(column(8), [Some(1), None, None]);
+        assert_eq!(column(17), [None, None, Some(3)]);
     }
 
     /// 段首尾跳过的帧划为 Skipped 区域且优先于过渡区：分段可信时按各段首尾定位；未分段时只有整件首尾能定位

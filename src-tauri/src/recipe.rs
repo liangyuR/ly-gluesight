@@ -169,19 +169,10 @@ pub fn valid_camera_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// 配方文件格式版本。不一致的文件列为加载错误，不迁移。8：增加段模型字段（segments、inspect、segmentDefaults、calibrationRounds、partCalib）。
+/// 配方文件格式版本。不一致的文件列为加载错误，不迁移。8：增加段模型字段（segments、inspect、segmentDefaults、partCalib）。
 pub const RECIPE_SCHEMA: u32 = 8;
 /// 没有段的配方文件是已停用的旧拍照点配方。
 pub const LEGACY_RECIPE: &str = "旧拍照点配方已停用，请新建段配方";
-
-/// 段配方连续采集几轮取均值作预期帧数（规格 §2：≥ 10 轮，轮数可配）。
-pub const DEFAULT_CALIBRATION_ROUNDS: u32 = 10;
-/// 标定轮数的可配范围（D-SB-36）。
-pub const CALIBRATION_ROUNDS: std::ops::RangeInclusive<u32> = 10..=100;
-
-fn default_calibration_rounds() -> u32 {
-    DEFAULT_CALIBRATION_ROUNDS
-}
 
 /// 比例分段边界两侧各留的过渡帧数（D-SB-40）：现场同一程序各轮边界偏差最差约 2 帧。
 pub const DEFAULT_BOUNDARY_GUARD: u32 = 2;
@@ -238,6 +229,9 @@ pub struct CameraInspect {
     /// 标定的出胶点（图像像素，D-SB-47）；为空时由开启定向的各段走廊起点推出
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nozzle: Option<[f64; 2]>,
+    /// 逐帧定向搜索扇区的中线方向（度，图像坐标，D-SB-47），在示教帧上拖动扇区得出；为空时取背离离出胶点最近的画面边
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sector_deg: Option<f64>,
     /// 这台相机覆盖的专家参数（LF-5，测量图模板参数名 → 值），叠在配方默认之上
     #[serde(default, skip_serializing_if = "ExpertParams::is_empty")]
     pub expert: ExpertParams,
@@ -326,6 +320,12 @@ impl CameraInspect {
         }) {
             return Err(format!("相机 {id} 的出胶点坐标需为 0–100000 px 的有限数"));
         }
+        if self
+            .sector_deg
+            .is_some_and(|d| !(d.is_finite() && d.abs() <= 360.0))
+        {
+            return Err(format!("相机 {id} 的搜索扇区方向需为 −360°–360° 的有限数"));
+        }
         validate_expert(&self.expert, &format!("相机 {id}"))
     }
 }
@@ -382,7 +382,6 @@ pub struct Recipe {
     /// 段配方的检测相机，顺序即计划相机顺序
     pub inspect: Vec<CameraInspect>,
     pub segment_defaults: KindDefaults,
-    pub calibration_rounds: u32,
     pub boundary_guard: u32,
     pub boundary_refine: bool,
     pub part_calib: Option<PartCalib>,
@@ -440,7 +439,7 @@ impl Recipe {
                             SegmentKind::Corner => "弯道段",
                         };
                         format!(
-                            "第 {} 段（{kind}）待标定：预期帧数要由多轮采集得出",
+                            "第 {} 段（{kind}）没有预期帧数：先在分段步骤确认示教件边界",
                             s.index
                         )
                     }),
@@ -530,9 +529,6 @@ pub struct RecipeDoc {
     /// 新建段时取用的直线 / 弯道默认容差与检测项
     #[serde(default)]
     pub segment_defaults: KindDefaults,
-    /// 标定轮数，10..=100
-    #[serde(default = "default_calibration_rounds")]
-    pub calibration_rounds: u32,
     /// 比例分段边界两侧的过渡帧数，0..=5（D-SB-40）；不进计划身份
     #[serde(default = "default_boundary_guard")]
     pub boundary_guard: u32,
@@ -619,20 +615,12 @@ impl RecipeDoc {
         self.validate_burst()
     }
 
-    /// 段配方的模型约束（D-SB-1）：只支持飞拍；标定轮数 10..=100；检测相机各自合法；
+    /// 段配方的模型约束（D-SB-1）：只支持飞拍；检测相机各自合法；
     /// 段列表与三台计划相机满足 `plan::validate_segments`；直线 / 弯道默认参数满足 `plan::validate_defaults`（新建段取用它）；
     /// 整件标定的帧组数不超过上限。
     fn validate_burst(&self) -> Result<(), String> {
         if self.trigger_mode != TriggerMode::Fly {
             return Err("段配方只支持飞拍（triggerMode 必须为 fly）".into());
-        }
-        if !CALIBRATION_ROUNDS.contains(&self.calibration_rounds) {
-            return Err(format!(
-                "标定轮数 {} 需在 {}–{} 之间",
-                self.calibration_rounds,
-                CALIBRATION_ROUNDS.start(),
-                CALIBRATION_ROUNDS.end()
-            ));
         }
         if !BOUNDARY_GUARD.contains(&self.boundary_guard) {
             return Err(format!(
@@ -691,7 +679,6 @@ impl RecipeDoc {
             path_segments: self.segments.clone(),
             inspect: self.inspect.clone(),
             segment_defaults: self.segment_defaults.clone(),
-            calibration_rounds: self.calibration_rounds,
             boundary_guard: self.boundary_guard,
             boundary_refine: self.boundary_refine,
             part_calib: self.part_calib.clone(),
@@ -807,11 +794,11 @@ pub fn burst_template(
                 segments: Vec::new(),
                 window: None,
                 nozzle: None,
+                sector_deg: None,
                 expert: ExpertParams::new(),
             })
             .collect(),
         segment_defaults,
-        calibration_rounds: DEFAULT_CALIBRATION_ROUNDS,
         boundary_guard: DEFAULT_BOUNDARY_GUARD,
         boundary_refine: false,
         part_calib: None,
@@ -1508,6 +1495,26 @@ impl RecipeStore {
         Ok(recipe)
     }
 
+    /// 发布这一配方应分配的版本（`save_published` 按它核对）：已有生产版本时为下一版本；还没有时取下一版本与文档版本的较大者。
+    /// 候选里记的版本可能已过时（候选建好后，启动时按历史记录抬高了版本下限），发布时按它重新分配。
+    pub fn release_version(&self, doc: &RecipeDoc) -> Result<u32, String> {
+        let inner = self.inner.read().unwrap();
+        let current = inner
+            .iter()
+            .find(|(previous, _)| previous.id == doc.id)
+            .map(|(previous, _)| previous.version);
+        self.expected_version(doc, current)
+    }
+
+    fn expected_version(&self, doc: &RecipeDoc, current: Option<u32>) -> Result<u32, String> {
+        let floor = self.version_after(&doc.id, current)?;
+        Ok(if current.is_some() {
+            floor
+        } else {
+            floor.max(doc.version.max(1))
+        })
+    }
+
     pub fn save_published(
         &self,
         mut doc: RecipeDoc,
@@ -1533,12 +1540,8 @@ impl RecipeStore {
         {
             return Err(COLLECT_AFTER_FORMAL.into());
         }
-        let floor = self.version_after(&doc.id, current.map(|(previous, _)| previous.version))?;
-        let expected_version = if current.is_some() {
-            floor
-        } else {
-            floor.max(doc.version.max(1))
-        };
+        let expected_version =
+            self.expected_version(&doc, current.map(|(previous, _)| previous.version))?;
         if doc.version != expected_version {
             return Err("发布版本必须是明确分配的下一版本".into());
         }
@@ -1629,6 +1632,32 @@ mod tests {
             .is_err());
         assert_eq!(store.get(&doc.id).unwrap().version, 8);
         assert_eq!(store.save(doc, None).unwrap().version, 9);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 候选建好后历史记录抬高了版本下限（启动时按历史件版本补下限）：发布按 `release_version` 重新分配就能生效，
+    /// 沿用候选里过时的版本号生效时被拒（现场报“发布版本必须是明确分配的下一版本”）。
+    #[test]
+    fn release_version_follows_history_floor_raised_after_the_candidate_was_created() {
+        let dir = std::env::temp_dir().join(format!(
+            "gluesight-release-floor-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
+        let mut doc = samples_burst();
+        doc.version = 1;
+        let floors = BTreeMap::from([(doc.id.clone(), 3)]);
+        let store = RecipeStore::open_with_floors(
+            dir.join("recipes"),
+            dir.join("state").join("plan-version"),
+            &floors,
+        )
+        .unwrap();
+        doc.plan_version = store.plan_version_for(&doc).unwrap();
+        assert!(store.save_published(doc.clone(), None).is_err());
+        doc.version = store.release_version(&doc).unwrap();
+        assert_eq!(doc.version, 4);
+        assert_eq!(store.save_published(doc, None).unwrap().version, 4);
         let _ = std::fs::remove_dir_all(dir);
     }
 

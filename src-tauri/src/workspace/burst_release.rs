@@ -7,10 +7,10 @@
 //! 验证项（决策记录第九节第 13 条）：
 //! - 相机配置：计划相机解析、三台单视角独立设备（`check_burst_cameras`）；相机是否在线就绪不在发布时核对，接件时再查（D-SB-46）；
 //! - 走廊示教：恰好 3 台计划相机，每台都选了示教帧、走廊完整落在帧内、有像素当量，且示教帧采集后设备配置没变；
-//! - 段标定：整件 ΣN_exp（expected_total）已由多轮标定得出即通过（决策补充“多段配方的发布与运行”），逐段列出 N_exp 或待定原因；
-//! - 标准件 x_ref：只在有启用胶偏检查的直线段时列出；单段 AbsoluteX 要有标准件得出的 x_ref，多段（分段算法未就绪）
-//!   与 ToEdge（测量量未实现）运行时不判胶偏，列出原因、不阻断；
-//! - 独立正常样本：样本轮次与走廊示教、多轮标定轮次不同，相机配置与段结构一致；用当前候选的走廊逐帧重测、
+//! - 段帧数：各段 N_exp 取自示教件已确认的分段（RB-3），逐段列出 N_exp 或待定原因；
+//! - 胶偏参考 x_ref：只在有启用胶偏检查的直线段时列出参考值或不判的原因，不阻断（运行时只有按比例分段可信的多段配方
+//!   判胶偏，单段配方整条胶路按未分段处理）；
+//! - 独立正常样本：样本轮次与示教件不同，相机配置与段结构一致；用当前候选的走廊逐帧重测、
 //!   burst_judge 得出结论，帧组数超出 ΣN_exp ± Σtol 只告警；
 //! - 生产版本：候选基于当前生产版本。
 
@@ -87,11 +87,11 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
     let calibration_devices =
         super::burst::check_calibration_devices(&w.calibration.rounds, inputs.cameras);
     checks.push(Check {
-        name: "标定采集参数".into(),
+        name: "示教件采集参数".into(),
         passed: calibration_devices.is_ok(),
         detail: calibration_devices
             .err()
-            .unwrap_or_else(|| "标定轮次与当前相机采集参数一致".into()),
+            .unwrap_or_else(|| "示教件测量时的相机采集参数与当前一致".into()),
     });
     checks.extend(x_ref_check(&w.doc));
     checks.push(Check {
@@ -197,23 +197,17 @@ pub(super) fn debug_sizes(
     super::burst::teaching_sizes(w)
 }
 
-/// 段标定（规格 §1 未标定不能发布）：单段配方整件 ΣN_exp 已由多轮标定得出即通过；多段配方要各段 N_exp 都已标定
-/// （D-SB-45：生产按累计 N_exp 预测每帧所属段来选走廊，修订 D-SB-21）。逐段列出 N_exp 或待定原因。
+/// 段帧数（规格 §1 没有 N_exp 不能发布）：各段 N_exp 取示教件已确认分段的帧组数（RB-3；D-SB-45：生产按累计 N_exp 预测
+/// 每帧所属段来选走廊）。逐段列出 N_exp 或待定原因。
 fn segment_check(w: &Workspace) -> Check {
     let doc = &w.doc;
     let total = doc.expected_total();
     let tolerance_total = crate::plan::tolerance_total(&doc.segments);
-    let normal = w.calibration.rounds.iter().filter(|r| !r.standard).count() as u32;
     let head = match total {
         Some(total) => {
             format!("整件预期 {total} ± {tolerance_total} 个帧组（PLC shotCount = {total}）")
         }
-        None if normal < doc.calibration_rounds => format!(
-            "整件预期帧组数待多轮标定：还差 {} 件（至少 {} 件，含示教件，不含标准件）",
-            doc.calibration_rounds - normal,
-            doc.calibration_rounds
-        ),
-        None => format!("整件预期帧组数待多轮标定：已有 {normal} 轮，请应用标定"),
+        None => "整件预期帧组数待示教件分段：先在分段步骤确认示教件边界".into(),
     };
     let core_min = 2 * doc.boundary_guard + 1;
     let multi = doc.segments.len() > 1;
@@ -221,18 +215,14 @@ fn segment_check(w: &Workspace) -> Check {
         .segments
         .iter()
         .map(|s| {
-            let kind = kind_label(s.kind);
+            let kind = if s.skip { "不检测" } else { kind_label(s.kind) };
             match (s.expected_frames, total) {
-                (Some(n), _) if multi && s.kind == SegmentKind::Straight && n < core_min => format!(
+                (Some(n), _) if multi && !s.skip && s.kind == SegmentKind::Straight && n < core_min => format!(
                     "第 {} 段（{kind}）N_exp {n} ± {}：短于 {core_min} 帧，两侧过渡区取空后不判胶偏，建议并入相邻弯道段",
                     s.index, s.tolerance
                 ),
                 (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n} ± {}", s.index, s.tolerance),
-                (None, Some(_)) => format!(
-                    "第 {} 段（{kind}）待逐段标定，容差 ±{}",
-                    s.index, s.tolerance
-                ),
-                (None, None) => format!("第 {} 段（{kind}）待标定", s.index),
+                (None, _) => format!("第 {} 段（{kind}）待示教件分段", s.index),
             }
         })
         .chain(doc.segments.iter().flat_map(|s| {
@@ -242,51 +232,45 @@ fn segment_check(w: &Workspace) -> Check {
         }))
         .collect();
     Check {
-        name: "段标定".into(),
+        name: "段帧数".into(),
         passed: total.is_some()
             && (!multi || doc.segments.iter().all(|s| s.expected_frames.is_some())),
         detail: format!("{head}；{}", segments.join("；")),
     }
 }
 
-/// 标准件 x_ref（规格 §0/§1、D-SB-18）：只在有启用胶偏检查的直线段时列出。单段 AbsoluteX 要有标准件多轮得出的 x_ref；
-/// ToEdge（D-SB-48）填了图纸胶边距即可，否则同样要标准件得出的参考值，没配找边参数时列出原因、不阻断；
-/// 多段计划（暂不计算 x_ref：各段已标定时运行时按比例分段、该段标胶偏未判，否则整条胶路未分段）列出原因、不阻断。
+/// 胶偏参考 x_ref（规格 §0/§1、D-SB-18；示教件兼作标准件，RB-3）：只在有启用胶偏检查的直线段时列出，只作说明、不阻断发布——
+/// 运行时单段配方整条胶路按未分段处理、不判胶偏，多段配方暂不计算 x_ref（该段标胶偏未判），ToEdge 填了图纸胶边距即按它判。
 fn x_ref_check(doc: &RecipeDoc) -> Option<Check> {
     let cameras = doc.plan_cameras();
     let single = doc.segments.len() == 1;
     let segmented = doc.segments.iter().all(|s| s.expected_frames.is_some());
-    let items: Vec<(bool, String)> = doc.segments.iter()
-        .filter(|s| s.kind == SegmentKind::Straight && s.checks.offset.as_ref().is_some_and(|o| o.enabled))
+    let items: Vec<String> = doc.segments.iter()
+        .filter(|s| !s.skip && s.kind == SegmentKind::Straight && s.checks.offset.as_ref().is_some_and(|o| o.enabled))
         .filter_map(|s| offset_reference(s, &cameras).map(|reference| (s.index, reference)))
         .map(|(index, reference)| match (reference.x_ref.zip(reference.spread), reference.measure) {
-            (_, OffsetMeasure::ToEdge) if reference.edge.as_ref().is_some_and(|e| e.nominal_mm.is_some()) => (true, format!(
+            (_, OffsetMeasure::ToEdge) if reference.edge.as_ref().is_some_and(|e| e.nominal_mm.is_some()) => format!(
                 "第 {index} 段：按图纸胶边距 {:.2} mm 判（相机 {}）",
                 reference.edge.as_ref().and_then(|e| e.nominal_mm).unwrap_or_default(),
                 reference.camera
-            )),
-            (Some((x_ref, spread)), _) => (true, format!("第 {index} 段 x_ref {x_ref:.3} ± {spread:.3} mm（相机 {}）", reference.camera)),
-            (None, _) if !single && segmented => (true, format!("第 {index} 段：多段配方暂不计算 x_ref，运行时按比例分段，该段标胶偏未判（未标定参考值）")),
-            (None, _) if !single => (true, format!("第 {index} 段：各段尚未逐段标定，运行时整条胶路按未分段处理、不判胶偏，暂不需要 x_ref")),
+            ),
+            (Some((x_ref, spread)), _) => format!("第 {index} 段 x_ref {x_ref:.3} ± {spread:.3} mm（相机 {}）", reference.camera),
             (None, OffsetMeasure::ToEdge) if reference.edge.is_none() => {
-                (true, format!("第 {index} 段：没有配置找边参数，“到边缘距离”测不了，结果标胶偏未判"))
+                format!("第 {index} 段：没有配置找边参数，“到边缘距离”测不了，结果标胶偏未判")
             }
-            (None, OffsetMeasure::ToEdge) => (false, format!("第 {index} 段：待标准件轮次得出胶边距参考值，或填图纸胶边距（相机 {}）", reference.camera)),
-            (None, OffsetMeasure::AbsoluteX) => (false, format!("第 {index} 段：待标准件轮次得出 x_ref（相机 {}）", reference.camera)),
+            (None, _) if single => format!("第 {index} 段：单段配方运行时整条胶路按未分段处理、不判胶偏，不需要 x_ref"),
+            (None, _) if segmented => format!("第 {index} 段：多段配方暂不计算 x_ref，运行时按比例分段，该段标胶偏未判（没有参考值）"),
+            (None, _) => format!("第 {index} 段：示教件分段未确认，运行时整条胶路按未分段处理、不判胶偏，暂不需要 x_ref"),
         })
         .collect();
     (!items.is_empty()).then(|| Check {
-        name: "标准件 x_ref".into(),
-        passed: items.iter().all(|(passed, _)| *passed),
-        detail: items
-            .into_iter()
-            .map(|(_, text)| text)
-            .collect::<Vec<_>>()
-            .join("；"),
+        name: "胶偏参考 x_ref".into(),
+        passed: true,
+        detail: items.join("；"),
     })
 }
 
-/// 段配方验证样本的采集轮次（规格 §0 独立验证、D-SB-35）：属于本候选、已完整完成；没用于走廊示教、没加入多轮标定；
+/// 段配方验证样本的采集轮次（规格 §0 独立验证、D-SB-35）：属于本候选、已完整完成；不是示教件、没用于走廊示教；
 /// 相机集合等于计划相机，各相机采集时的设备配置与当前设备相同（`current` 按相机编号，`state_value` 口径）。
 pub(super) fn check_sample_round(
     w: &Workspace,
@@ -309,7 +293,7 @@ pub(super) fn check_sample_round(
     }
     if w.calibration.rounds.iter().any(|r| &r.round_id == id) {
         return Err(format!(
-            "采集轮次 {id} 已加入多轮标定：标定与验证样本必须来自不同的采集轮次，请重新采集"
+            "采集轮次 {id} 是示教件：示教件与验证样本必须来自不同的采集轮次，请重新采集"
         ));
     }
     let cameras = w.doc.plan_cameras();
@@ -541,7 +525,7 @@ fn sample_check(samples: &[SampleResult]) -> Check {
     Check {
         name: "独立正常样本".into(),
         passed: !normals.is_empty() && normals.iter().all(|r| r.passed),
-        detail: "至少一套独立正常整圈样本（采集轮次独立于走廊示教与多轮标定），所选正常样本均须符合预期；帧组数超出预期只告警；缺陷样本验证结果单独保留".into(),
+        detail: "至少一套独立正常整圈样本（采集轮次独立于示教件），所选正常样本均须符合预期；帧组数超出预期只告警；缺陷样本验证结果单独保留".into(),
     }
 }
 

@@ -68,11 +68,11 @@ export interface EdgeParams {
   searchMm: number;
   /** 边两侧灰度差下限，1–255 */
   contrastMin: number;
-  /** 图纸胶边距（mm）：给了就以它为参考值，否则用标准件得出的 x_ref */
+  /** 图纸胶边距（mm）：给了就以它为参考值，否则用测量示教件得出的 x_ref */
   nominalMm?: number | null;
 }
 
-/** 胶偏参考（只在直线段）：xRef / spread 由标准件多轮采集算出，不能手填。 */
+/** 胶偏参考（只在直线段）：xRef / spread 由测量示教件算出（示教件兼作标准件），不能手填。 */
 export interface OffsetRef {
   measure: OffsetMeasure;
   /** 用哪台相机的帧测；必须属于计划相机 */
@@ -89,7 +89,7 @@ export interface HeadingSettings {
   toleranceDeg: number;
 }
 
-/** 多轮采集的帧组数统计。 */
+/** 帧组数统计（旧配方的多件统计，只读）。 */
 export interface SegmentCalib {
   rounds: number;
   min: number;
@@ -109,9 +109,9 @@ export interface PathSegment {
   index: number;
   kind: SegmentKind;
   lengthMm: number | null;
-  /** N_exp：只能由多轮采集写入；null = 待标定 */
+  /** N_exp：取示教件已确认分段的帧组数，由后端写入；null = 待标定 */
   expectedFrames: number | null;
-  /** 帧数容差，默认 1 */
+  /** 帧数容差，默认 2 */
   tolerance: number;
   calib: SegmentCalib | null;
   checks: SegmentChecks;
@@ -125,9 +125,11 @@ export interface PathSegment {
   skipTail: number;
   /** 逐帧定向（D-SB-47）；null / 缺省 = 关闭，照旧用示教走廊 */
   heading?: HeadingSettings | null;
+  /** 不检测（D-SB-53）：照常计入帧数与分段，没有检测相机、不测不判；类型、检测相机与检测项保留，取消后恢复。缺省 = 检测 */
+  skip?: boolean;
 }
 
-/** 整件标定：多轮整件帧组数统计；本轮多段配方凭它得到 expectedTotal 并发布。 */
+/** 整件标定：旧配方的整件帧组数统计，只为读入保留；新配方恒为 null。 */
 export interface PartCalib {
   expectedTotal: number;
   calib: SegmentCalib;
@@ -234,7 +236,7 @@ export interface FrameMetrics {
   edgeMm?: number | null;
 }
 
-/** 标定轮次一帧按当前段走廊重测的结果（workspace_calibration_frame，多轮标定页逐帧查看）。 */
+/** 标定轮次一帧按当前段走廊重测的结果（workspace_calibration_frame，试测页逐帧查看）。 */
 export interface CalibrationFrameView {
   /** 所用走廊的段；这台相机不检测这一帧所在段时为 null，不测 */
   segment: number | null;
@@ -321,15 +323,6 @@ export interface BurstJudgement {
   unchecked: UncheckedItem[];
 }
 
-// ───────────── calibration.rs ─────────────
-
-export interface CalibOutcome {
-  nExp: number;
-  calib: SegmentCalib;
-  /** 建议容差；操作员确认（workspace_confirm_tolerance）后才写进配方 */
-  suggestedTolerance: number;
-}
-
 // ───────────── 配方新增字段（C1，RecipeDoc schema 8）─────────────
 
 /** 一台相机的参数（D-SB-45）：像素当量、标定引用与检测参数；走廊只按“段 × 检测相机”示教，存在 segments。 */
@@ -344,6 +337,8 @@ export interface CameraInspect {
   window?: InspectWindow | null;
   /** 标定的出胶点（图像像素，D-SB-47）；null / 缺省 = 由开启定向的各段走廊起点推出 */
   nozzle?: [number, number] | null;
+  /** 逐帧定向搜索扇区的中线方向（度，D-SB-47），在示教帧上拖动扇区得出；null / 缺省 = 背离离出胶点最近的画面边 */
+  sectorDeg?: number | null;
   /** 这台相机覆盖的专家参数（LF-5，测量图模板参数名 → 值），叠在配方默认之上 */
   expert?: ExpertParams;
 }
@@ -383,8 +378,6 @@ export interface RecipeDocSegmentFields {
   /** 有序，计划相机顺序取它 */
   inspect: CameraInspect[];
   segmentDefaults: KindDefaults;
-  /** 标定轮数，默认 10，范围 10..=100 */
-  calibrationRounds: number;
   /** 比例分段边界两侧各留的过渡帧数，默认 2，范围 0..=5（D-SB-40） */
   boundaryGuard: number;
   /** 按逐帧定向的胶条方向序列细化比例边界（D-SB-47），默认 false；只作用于开启定向的段 */
@@ -494,7 +487,7 @@ export interface CaptureAlarm {
   seq: number;
 }
 
-/** 历史件导入的轮次的来源（round.json 3，代替示教握手编号）；standard = 导入时操作员确认是标准件，加入标定按标准件轮次 */
+/** 历史件导入的轮次的来源（round.json 3，代替示教握手编号）；standard 只为读入旧流程导入的轮次，界面不用 */
 export interface RoundOrigin { kind: "history"; cycleId: string; recordId: number; standard: boolean }
 
 /** 段配方采集轮次（D1）：按帧号配组，不核对计数；帧元数据在 frames.jsonl，这里只给统计。format 3 加 origin。 */
@@ -526,30 +519,17 @@ export interface CaptureRoundV2 {
   origin?: RoundOrigin | null;
 }
 
-export interface CalibrationRoundView {
-  roundId: string;
-  /** 标准件轮次：用于 xRef */
-  standard: boolean;
-  groupCount: number;
-  cameraFrames: number[];
-  incompleteGroups: number;
-  lossAlarms: number;
-  createdAt: number;
-}
-
 export interface SegmentCalibView {
   index: number;
   kind: SegmentKind;
-  /** null = 本段未能标定，原因见 pending */
-  outcome: CalibOutcome | null;
-  /** 如“分段算法未就绪” */
-  pending: string | null;
+  /** 示教件这一段的帧组数；示教件分段未确认时为 null */
+  nExp: number | null;
   /** 配方里当前的容差 */
   tolerance: number;
   xRef: { xRef: number; spread: number } | null;
-  /** 如“测量量未实现”“标准件轮次不足” */
+  /** x_ref 待定的原因，如“还没测量示教件”“多段配方暂不计算” */
   xRefPending: string | null;
-  /** 本段的标定提示，如检测窗口覆盖不足、定向没找到胶条的帧多 */
+  /** 逐帧定向的提示，如检测窗口覆盖不足、定向没找到胶条的帧多 */
   hints: string[];
 }
 
@@ -561,27 +541,26 @@ export interface SkipSuggestView {
   end: SkipEnd;
   /** 配方里当前的 skipHead / skipTail */
   current: number;
-  /** 参与轮次的最大值；参与轮次不足时为 null，原因见 pending */
+  /** 示教件测量得出的建议；没有可用测量时为 null，原因见 pending */
   suggested: number | null;
   min: number | null;
   max: number | null;
-  /** 各标定轮次（不含标准件）的起涂（收尾）帧组数；不参与时 frames 为 null，原因见 note */
+  /** 参与的轮次（示教件）的起涂（收尾）帧组数；不参与时 frames 为 null，原因见 note */
   rounds: { roundId: string; frames: number | null; note: string | null }[];
   pending: string | null;
 }
 
-/** 多轮标定（workspace_calibration_apply 返回，D2）。 */
+/** 示教件基准（试测页）：各段 N_exp 取示教件已确认分段的帧组数，x_ref 由测量示教件得出。 */
 export interface CalibrationView {
-  /** 配方 calibrationRounds */
-  minRounds: number;
-  rounds: CalibrationRoundView[];
-  /** 整件帧组数统计 → PartCalib */
-  part: CalibOutcome | null;
+  /** 示教件的测量轮次；还没测过为 null */
+  roundId: string | null;
+  /** 示教件已按当前走廊测量；测过但走廊、当量或检测参数改了为 false */
+  measured: boolean;
   segments: SegmentCalibView[];
-  /** 应用后的 ΣN_exp */
+  /** ΣN_exp */
   expectedTotal: number | null;
   toleranceTotal: number;
-  /** N_exp / expectedTotal 有变化：发布时分配新计划版本 */
+  /** 已有 N_exp 且计划身份与生产不同：发布时分配新计划版本 */
   planVersionChange: boolean;
 }
 
@@ -598,12 +577,6 @@ export interface CameraTeachingView {
   nozzle: { point: [number, number]; calibrated: boolean } | null;
 }
 
-/** 示教页叠加的定向几何（度，图像坐标 0° 朝右、90° 朝下，与测量图一致）。 */
-export interface HeadingOverlay {
-  /** 扇形搜索范围：出胶点背离最近画面边的半圈 */
-  sector: [number, number];
-}
-
 export interface SegmentTeachingView {
   segment: number;
   frame: FrozenImage;
@@ -611,8 +584,6 @@ export interface SegmentTeachingView {
   seq: number;
   /** 段走廊已保存且落在示教帧内 */
   saved: boolean;
-  /** 本段开启逐帧定向且示教了走廊时的定向几何（按已保存的配方算） */
-  heading: HeadingOverlay | null;
 }
 
 /** 候选里一段一台检测相机的示教帧（Workspace.cameraTeaching，D2 / D-SB-45）：从完整的新采集轮次冻结的一帧，这一段的走廊在这一帧上示教。 */
@@ -626,11 +597,9 @@ export interface CameraTeaching {
   segment?: number | null;
 }
 
-/** 加入多轮标定的一轮（Workspace.calibration.rounds，D2）；界面读 plan.calibration（CalibrationView），这里是候选里存的原始记录。 */
+/** 示教件的测量（Workspace.calibration.rounds，至多一轮）；界面读 plan.calibration（CalibrationView），这里是候选里存的原始记录。 */
 export interface CalibrationRound {
   roundId: string;
-  /** 标准件轮次：只用于 xRef，不计入 N_exp 的轮数 */
-  standard: boolean;
   createdAt: number;
   /** 加入时的计划相机顺序；下面几项按它排列 */
   cameras: string[];
@@ -661,7 +630,6 @@ export interface WorkspacePlanView {
   segments: PathSegment[];
   cameras: string[];
   segmentDefaults: KindDefaults;
-  calibrationRounds: number;
   partCalib: PartCalib | null;
   expectedTotal: number | null;
   toleranceTotal: number;
@@ -675,23 +643,23 @@ export interface WorkspacePlanView {
   /** 候选 expectedTotal 与生产不同 */
   shotCountChanged: boolean;
   progress: ProgressV2;
-  /** 候选导入的各件，示教件在前 */
+  /** 示教件（至多一项；还没选为空） */
   pieces: PieceView[];
 }
 
-/** 候选导入的一件（RB-1、RB-3）：示教件、标定件或标准件；界面用 SN 与时间标识，不显示轮次编号（RB-4）。 */
+/** 示教件（RB-1、RB-3）：唯一的基准件，兼作标准件；界面用 SN 与时间标识，不显示轮次编号（RB-4）。 */
 export interface PieceView {
   roundId: string;
-  role: "teaching" | "calibration" | "standard";
-  recordId: number | null;
-  cycleId: string | null;
-  sn: string | null;
-  ts: number | null;
+  recordId: number;
+  cycleId: string;
+  sn: string;
+  ts: number;
   groupCount: number;
-  /** 边界复核：none = 还没对齐 */
+  /** 分段边界：none = 还没分段 */
   review: "none" | "draft" | "confirmed" | "stale";
   confirmedBy: "manual" | "aligned" | null;
-  inCalibration: boolean;
+  /** 已按当前走廊测量 */
+  measured: boolean;
   excludedGroups: number;
 }
 

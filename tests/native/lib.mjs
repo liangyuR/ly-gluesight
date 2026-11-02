@@ -165,15 +165,10 @@ function strokeRoi(points, [width, height], margin = 40) {
 
 // ───────────── 段配方（分段连拍，RecipeDoc.segments 非空）─────────────
 // 流程（docs/decisions/recipe-build-flow.md 的步骤，与 docs/decisions/segment-burst.md 一致）：
-//   建候选、发布采集版并写入手动配置数据（recipe_template 即段配方：三台相机、一个直线段，待标定；仿历史录制件，连同示教、标定与验证件）→
-//   选示教件并确认分段 → 示教件上每台相机一条走廊 → 选标定件（含示教件 ≥ 10 件，另加标准件给 x_ref）→ 应用并确认建议容差 →
+//   建候选、发布采集版并写入手动配置数据（recipe_template 即段配方：三台相机、一个直线段，待标定；仿历史录制件，示教件与验证件）→
+//   选示教件并确认分段（各段 N_exp 取示教件分段的帧组数）→ 示教件上每台相机一条走廊 → 测量示教件（兼作标准件，得出 x_ref）→
 //   独立样本验证（另一件历史件）→ 发布 → 投产。
 // 运行时整条胶路按“未分段”处理（分段算法未做）：只跑每帧独立检测，核对整件帧组数 ∈ ΣN_exp ± Σtol。
-
-/** 多轮标定的件数下限：配方 calibrationRounds 默认 10，含示教件、不含标准件（RB-3）。 */
-export const CALIBRATION_ROUNDS = 10;
-/** 标准件：只用于胶偏参考 x_ref（均值与极差），不计入 N_exp 的件数；至少 1 件，取 2 件才有极差。 */
-export const STANDARD_ROUNDS = 2;
 
 const FRAME_NARROW = { searchMm: 3, polarity: "dark", widthRange: [1, 5] };
 
@@ -271,38 +266,23 @@ export async function teachCorridors(ws, teaching, fixture) {
 }
 
 /**
- * 多轮标定：选历史件 pieces 为标定件（workspace_calibration_pick：导入、按示教件边界对齐、可信即确认并加入），末尾 standard 件按标准件
- *（只给 x_ref）；走廊示教已完成，示教件 teaching 同时计入标定（RB-3）。合成图各件帧数有首尾 ±1、弯道 ±2 的波动，所以能看到 min / max 差异。
- * 每件都须加入标定（有待复核或测量失败即报错）。应用标定并确认建议容差，返回各件帧组数（示教件在前）、整件标定结果与确认的容差。
- * 标定是整件帧组数的均值四舍五入；N_exp 与 ΣN_exp 不能手填，容差建议由 min / max 给出、操作员确认后才写入。
+ * 测量示教件（RB-3）：示教件是唯一的基准件，兼作标准件。各段 N_exp 已在示教件分段确认时写入（ΣN_exp 为各段之和）；
+ * 走廊示教完成后按当前走廊测量示教件（workspace_measure_teaching），单段配方的直线段由这次测量得出胶偏参考 x_ref。
+ * 容差沿用段类型默认值，不另确认。返回示教件帧组数、ΣN_exp ± Σtol 与各段基准。
  */
-export async function calibrate(ws, teaching, pieces, { standard = STANDARD_ROUNDS, log = () => {} } = {}) {
-  assert(pieces.length >= standard, `标定件 ${pieces.length} 少于标准件 ${standard}`);
-  const picks = pieces.map((piece, i) => ({ recordId: piece.recordId, standard: i >= pieces.length - standard }));
-  const { view, pieces: synced } = await ws.edit("workspace_calibration_pick", { picks });
-  const missed = synced.filter(p => !p.added);
-  assert.equal(missed.length, 0, `有件未加入标定：${JSON.stringify(missed)}`);
-  assert.equal(view.workspace.calibration.rounds.length, pieces.length + 1, `标定件数应为示教件 + ${pieces.length} 件`);
-  const added = [{ piece: teaching, standard: false }, ...pieces.map((piece, i) => ({ piece, standard: picks[i].standard }))]
-    .map(({ piece, standard }) => ({ recordId: piece.recordId, sn: piece.sn, standard, groupCount: piece.groupCount, cameraFrames: piece.cameras.map(c => c.frames) }));
-  added.forEach((p, i) => log(`标定件 ${i + 1}/${added.length}${i === 0 ? "（示教件）" : p.standard ? "（标准件）" : ""}：${p.sn}，${p.groupCount} 个帧组，各相机 ${p.cameraFrames.join("/")} 帧`));
-  const applied = planOf(await ws.edit("workspace_calibration_apply", {}));
-  assert(applied.calibrated && applied.expectedTotal > 0, `应用标定后没有 ΣN_exp：${JSON.stringify(applied.calibration)}`);
-  const confirmed = [];
-  for (const segment of applied.calibration.segments) {
-    if (!segment.outcome) continue;
-    const suggested = segment.outcome.suggestedTolerance;
-    await ws.edit("workspace_confirm_tolerance", { segment: segment.index, tolerance: suggested });
-    confirmed.push({ segment: segment.index, nExp: segment.outcome.nExp, calib: segment.outcome.calib, suggestedTolerance: suggested, xRef: segment.xRef });
-  }
-  const final = planOf(await ws.get());
+export async function measureTeaching(ws, teaching, { log = () => {} } = {}) {
+  const plan = planOf(await ws.edit("workspace_measure_teaching", {}));
+  assert(plan.calibration?.measured, `测量示教件后应为已测量：${JSON.stringify(plan.calibration)}`);
+  assert(plan.calibrated && plan.expectedTotal > 0, `示教件分段后应有 ΣN_exp：${JSON.stringify(plan.calibration)}`);
+  const piece = { recordId: teaching.recordId, sn: teaching.sn, groupCount: teaching.groupCount, cameraFrames: teaching.cameras.map(c => c.frames) };
+  log(`示教件已测量：${piece.sn}，${piece.groupCount} 个帧组；${plan.calibration.segments.map(s => `段 ${s.index} N_exp ${s.nExp} ± ${s.tolerance}${s.xRef ? `，x_ref ${s.xRef.xRef.toFixed(3)}` : ""}`).join("；")}`);
   return {
-    rounds: added, expectedTotal: final.expectedTotal, toleranceTotal: final.toleranceTotal, partCalib: final.partCalib,
-    segments: confirmed, planVersionChange: final.calibration.planVersionChange, calibration: final.calibration,
+    piece, expectedTotal: plan.expectedTotal, toleranceTotal: plan.toleranceTotal,
+    segments: plan.calibration.segments, planVersionChange: plan.calibration.planVersionChange, calibration: plan.calibration,
   };
 }
 
-/** 独立正常样本验证：手动配置数据的另一件历史件（不能是示教件或标定件），用候选走廊逐帧重测录制原图后按未分段判定。 */
+/** 独立正常样本验证：手动配置数据的另一件历史件（不能是示教件），用候选走廊逐帧重测录制原图后按未分段判定。 */
 export async function validateCandidate(ws, piece) {
   const validation = (await ws.edit("workspace_validate", { samples: [{ historyId: piece.recordId, sampleId: null, expected: "OK" }], sourceConfirmed: true })).workspace.validation;
   return { piece, validation };
@@ -316,37 +296,35 @@ export async function publishCandidate(call, ws, id) {
 }
 
 /**
- * 新建段配方并走到发布：建候选、发布采集版并写入手动配置数据（示教件 1 件、其余标定件 rounds − 1 件、标准件 standard 件、验证 1 件）→
- * 设示教件并确认分段 → 各段 × 检测相机的走廊 →（patchSegments：可选，改各段检测项）→ 选标定件（含示教件共 rounds 件）+ 标准件 →
- * 验证 → 发布正式版；件用计划相机（模板取相机组前三台）。
+ * 新建段配方并走到发布：建候选、发布采集版并写入手动配置数据（示教件 1 件、验证 1 件）→ 设示教件并确认分段 →
+ * 各段 × 检测相机的走廊 →（patchSegments：可选，改各段检测项）→ 测量示教件 → 验证 → 发布正式版；件用计划相机（模板取相机组前三台）。
  * 样本集来源（sampleSet、partId）取样本件原图，各件相同；合成图来源每件帧数有波动。
- * 返回 { id, ws, teachingPiece, taught, calibration, samplePiece, validation, active }；验证没通过时 active 为 null 且不发布（调用方决定是否算失败）。
+ * 返回 { id, ws, teachingPiece, taught, calibration, samplePiece, validation, active }（calibration 为 measureTeaching 的结果）；
+ * 验证没通过时 active 为 null 且不发布（调用方决定是否算失败）。
  */
-export async function buildBurstRecipe(call, { sourceId, sampleSet = null, partId = null, rounds = CALIBRATION_ROUNDS, standard = STANDARD_ROUNDS, doc = null, patchSegments = null, log = () => {} }) {
+export async function buildBurstRecipe(call, { sourceId, sampleSet = null, partId = null, doc = null, patchSegments = null, log = () => {} }) {
   const fixture = CAMERA_FIXTURES[sourceId];
   assert(fixture, `没有段配方夹具 ${sourceId}，已有：${Object.keys(CAMERA_FIXTURES).join("、")}`);
   const template = doc ?? await call("recipe_template");
   assert(template.segments?.length > 0, "recipe_template 应给段配方");
-  assert(rounds >= 1, "标定件数含示教件，至少 1 件");
-  const imported = await createFixtureCandidate(call, template, { count: rounds + standard + 1, sampleSet, partId, log });
+  const imported = await createFixtureCandidate(call, template, { count: 2, sampleSet, partId, log });
   const id = imported.id;
   const created = await call("workspace_get", { id });
   assert(created.plan, "新建的候选应带 plan（段配方）");
   const cameraIds = created.plan.cameras;
   assert.equal(cameraIds.length, 3, `段配方需要三台计划相机：${cameraIds}`);
   const ws = workspaceCalls(call, id);
-  const [teachPiece, ...rest] = imported.pieces;
-  const samplePiece = rest.pop();
+  const [teachPiece, samplePiece] = imported.pieces;
   const teachingPiece = await setTeachingPiece(ws, teachPiece);
   log(`示教件 ${teachingPiece.sn}：${teachPiece.groupCount} 个帧组，各相机 ${teachPiece.cameras.map(c => c.frames).join("/")} 帧`);
   const taught = await teachCorridors(ws, teachingPiece, fixture);
   log(`走廊示教完成：${taught.map(t => `${t.camera} 段 ${t.segment}:${t.points}点`).join("、")}`);
   if (patchSegments) {
-    // 改检测项限值不影响已有标定（类型序列不变）；用于冒烟与压测，把对不上走廊的数据放行
+    // 改检测项限值不改段类型序列，N_exp 保留；用于冒烟与压测，把对不上走廊的数据放行
     await ws.edit("workspace_update_segments", { segments: patchSegments(planOf(await ws.get()).segments) });
   }
-  const calibration = await calibrate(ws, teachPiece, rest, { standard, log });
-  log(`标定完成：ΣN_exp=${calibration.expectedTotal} ± ${calibration.toleranceTotal}`);
+  const calibration = await measureTeaching(ws, teachPiece, { log });
+  log(`示教件基准：ΣN_exp=${calibration.expectedTotal} ± ${calibration.toleranceTotal}`);
   const { validation } = await validateCandidate(ws, samplePiece);
   log(`验证${validation.passed ? "通过" : "未通过"}：${validation.checks.map(c => `${c.name}${c.passed ? "√" : "×"}`).join(" ")}`);
   const active = validation.passed ? await publishCandidate(call, ws, id) : null;

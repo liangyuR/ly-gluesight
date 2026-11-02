@@ -103,9 +103,13 @@ pub fn nozzle(
     }))
 }
 
-/// 扇形搜索范围（度，lo < hi，跨 180°）：以出胶点为圆心、背离离它最近的画面边的半圈。胶嘴装在画面边上，刚挤出的胶条
-/// 从出胶点往画面里延伸，胶嘴本体在画面边那一侧；方向不按段示教，弯道转多少度都在里面（D-SB-47）。
-pub fn search_sector(nozzle: [f64; 2], size: [u32; 2]) -> [f64; 2] {
+/// 扇形搜索范围（度，lo < hi，跨 180°）：以出胶点为圆心的半圈，中线取相机上拖出的方向 `turned`；没拖过时背离离出胶点
+/// 最近的画面边。胶嘴装在画面边上，刚挤出的胶条从出胶点往画面里延伸，胶嘴本体在画面边那一侧；方向不按段示教，
+/// 弯道转多少度都在里面（D-SB-47）。
+pub fn search_sector(nozzle: [f64; 2], size: [u32; 2], turned: Option<f64>) -> [f64; 2] {
+    if let Some(mid) = turned {
+        return [mid - 90.0, mid + 90.0];
+    }
     let (w, h) = (f64::from(size[0]) - 1.0, f64::from(size[1]) - 1.0);
     let edges = [
         (nozzle[0], 0.0),
@@ -174,9 +178,18 @@ mod tests {
             ([618.0, 34.0], 90.0, -90.0),
             ([20.0, 512.0], 0.0, 180.0),
         ] {
-            let s = search_sector(nozzle, [1280, 1024]);
+            let s = search_sector(nozzle, [1280, 1024], None);
             assert!((s[1] - s[0] - 180.0).abs() < 1e-9, "{nozzle:?}");
             assert!(inside(s, toward) && !inside(s, away), "{nozzle:?} → {s:?}");
         }
+    }
+
+    #[test]
+    fn turned_sector_overrides_the_automatic_half() {
+        // 防的回归（D-SB-47）：示教帧上拖过的扇区方向没写进测量图，测量仍按自动的半圈找胶条
+        assert_eq!(
+            search_sector([629.0, 890.0], [1280, 1024], Some(-150.0)),
+            [-240.0, -60.0]
+        );
     }
 }

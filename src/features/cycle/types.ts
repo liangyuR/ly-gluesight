@@ -76,14 +76,13 @@ export interface Recipe {
   /** 段配方的检测相机，顺序即计划相机顺序 */
   inspect: CameraInspect[];
   segmentDefaults: KindDefaults;
-  calibrationRounds: number;
   boundaryGuard: number;
   boundaryRefine?: boolean;
   partCalib: PartCalib | null;
 }
 
 /** 配方文件内容，配方页编辑它。
- * 段模型字段（segments、inspect、segmentDefaults、calibrationRounds、boundaryGuard、boundaryRefine、partCalib）后端总是输出；前端提交时可缺省（后端按默认值补齐）。 */
+ * 段模型字段（segments、inspect、segmentDefaults、boundaryGuard、boundaryRefine、partCalib）后端总是输出；前端提交时可缺省（后端按默认值补齐）。 */
 export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   id: string;
   name: string;

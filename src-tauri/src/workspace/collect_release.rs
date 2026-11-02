@@ -144,10 +144,12 @@ pub fn workspace_publish_collect(
             failed.name, failed.detail
         ));
     }
+    let recipes = &app.state::<CycleHost>().recipes;
     let mut doc = w.doc.clone();
+    doc.version = recipes.release_version(&w.doc)?;
     doc.stage = RecipeStage::Collect;
     doc.teaching_id = None;
-    doc.plan_version = app.state::<CycleHost>().recipes.plan_version_for(&doc)?;
+    doc.plan_version = recipes.plan_version_for(&doc)?;
     doc.build()?;
     let mut next = w.clone();
     next.doc = doc.clone();

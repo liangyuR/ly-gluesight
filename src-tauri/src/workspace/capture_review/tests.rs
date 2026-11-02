@@ -39,14 +39,22 @@ fn plan_change_then_revert_keeps_review_stale_and_template_invalid() {
 
 #[test]
 fn exclusion_changes_image_statistics_without_compressing_counts_and_restore_remeasures() {
+    // 防的回归：屏蔽压缩了帧组序号或帧组数；屏蔽后旧测量（x_ref 来源）还留着；屏蔽把示教件已确认的分段打回草稿、N_exp 跟着没了
     let mut w = burst_workspace(&[Straight]);
     let source = round(&w, "source", 5);
+    w.teaching_piece = Some(crate::workspace::pieces_tests::piece("source", 1));
+    apply_capture_review(&mut w, &source, CaptureReviewEdit::Save(Vec::new())).unwrap();
+    apply_capture_review(&mut w, &source, CaptureReviewEdit::Confirm).unwrap();
     let measure = |_: usize, _: &str, seq: u64| Ok(measured(if seq == 3 { 100.0 } else { 1.0 }));
     let metrics = measure_calibration_round(&w, &source, measure);
-    let entry = burst::calibration_round(&w.doc, &source, true, &metrics);
+    let entry = burst::calibration_round(&w.doc, &source, &metrics);
     assert_eq!(entry.x_means[0], Some(34.0));
-    burst::add_calibration_round(&mut w, entry).unwrap();
-    w.doc.segments[0].expected_frames = Some(5);
+    w.calibration.rounds.push(entry);
+    assert_eq!(
+        w.doc.segments[0].expected_frames,
+        Some(5),
+        "前提：N_exp 取自示教件分段"
+    );
     apply_capture_review(
         &mut w,
         &source,
@@ -59,9 +67,9 @@ fn exclusion_changes_image_statistics_without_compressing_counts_and_restore_rem
     )
     .unwrap();
     assert!(w.calibration.rounds.is_empty());
-    assert!(w.doc.segments[0].expected_frames.is_none());
+    assert_eq!(w.doc.segments[0].expected_frames, Some(5));
     let metrics = measure_calibration_round(&w, &source, measure);
-    let entry = burst::calibration_round(&w.doc, &source, true, &metrics);
+    let entry = burst::calibration_round(&w.doc, &source, &metrics);
     assert_eq!(entry.x_means[0], Some(1.0));
     assert_eq!(entry.group_count, 5);
     assert_eq!(
@@ -85,7 +93,7 @@ fn exclusion_changes_image_statistics_without_compressing_counts_and_restore_rem
     .unwrap();
     let metrics = measure_calibration_round(&w, &source, measure);
     assert_eq!(
-        burst::calibration_round(&w.doc, &source, true, &metrics).x_means[0],
+        burst::calibration_round(&w.doc, &source, &metrics).x_means[0],
         Some(34.0)
     );
 }

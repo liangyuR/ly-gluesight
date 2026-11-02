@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { verdictLabel } from "../history/meta";
 import type { PathSegment, RegionResult } from "./types";
-import { countStatusLabel, PLAN_CAMERAS, regionKindLabel, regionSegments, segmentKindLabel, verdictPlanTone } from "./vis";
+import { countStatusLabel, PLAN_CAMERAS, regionKindLabel, regionSegments, segmentLabel, verdictPlanTone } from "./vis";
 import "./plan.css";
 
 export interface CameraSegmentOverviewProps {
@@ -24,7 +24,7 @@ function segmentWeights(segments: PathSegment[]): number[] {
 }
 
 function segmentAria(s: PathSegment) {
-  return `段 ${s.index} · ${segmentKindLabel[s.kind]} · ${s.expectedFrames == null ? "待标定" : `预期 ${s.expectedFrames} ± ${s.tolerance} 帧`}`;
+  return `段 ${s.index} · ${segmentLabel(s)} · ${s.expectedFrames == null ? "待标定" : `预期 ${s.expectedFrames} ± ${s.tolerance} 帧`}`;
 }
 
 /**
@@ -45,7 +45,7 @@ export function CameraSegmentOverview({ cameras, segments, regions }: CameraSegm
     </div>
     {segments.length ? <ol className="plan-segbar" style={columns} aria-label="段序列">
       {segments.map(s => <li key={s.index} className={`plan-seg ${s.kind}` + (s.expectedFrames == null ? " pending" : "")} aria-label={segmentAria(s)}>
-        <strong>{s.index} · {segmentKindLabel[s.kind]}</strong>
+        <strong>{s.index} · {segmentLabel(s)}</strong>
         <span className="plan-seg-n plan-mono">{s.expectedFrames == null ? "待标定" : `${s.expectedFrames} ± ${s.tolerance} 帧`}</span>
         {(s.lengthMm != null || s.skipHead > 0 || s.skipTail > 0) && <small className="plan-mono">
           {s.lengthMm != null && `${s.lengthMm} mm`}{s.lengthMm != null && (s.skipHead > 0 || s.skipTail > 0) && " · "}{(s.skipHead > 0 || s.skipTail > 0) && `跳过首 ${s.skipHead} / 尾 ${s.skipTail} 帧`}

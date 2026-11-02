@@ -1,8 +1,5 @@
-//! 多轮标定（规格 §2）：同一工件程序连续采集 ≥ min_rounds 轮，帧组数取均值四舍五入作 N_exp，
-//! 记录 min / max / mean，并按 min / max 给容差建议；标准件轮次给出胶偏参考 x_ref；按每帧是否成形数出起涂、收尾帧组数（D-SB-50）。
-//!
-//! 同一套统计既用于单段（写 `PathSegment.expected_frames` / `calib`），也用于整件
-//! （写 `plan::PartCalib`）；多段配方按已确认的手动分段逐段调用。调用方是候选工作区的多轮标定（workspace/burst.rs）。
+//! 帧数与参考值统计：多件帧组数取均值四舍五入作 N_exp、按 min / max 给容差建议（离线评估 examples 用；配方的 N_exp 取示教件
+//! 已确认分段的帧组数，见 workspace/burst.rs）；示教件测量值给出胶偏参考 x_ref；按每帧是否成形数出起涂、收尾帧组数（D-SB-50）。
 
 use serde::{Deserialize, Serialize};
 

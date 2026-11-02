@@ -12,8 +12,6 @@ interface Props {
   disabled?: boolean;
 }
 
-/** 后端 RecipeDoc.calibration_rounds 的默认值（可配范围 10..=100）。 */
-const DEFAULT_CALIBRATION_ROUNDS = 10;
 const DEFAULT_BOUNDARY_GUARD = 2;
 const segmentKinds: [SegmentKind, string][] = [["straight", "直线"], ["corner", "弯道"]];
 const polarityLabel: Record<Polarity, string> = { dark: "暗胶条（比背景暗）", light: "亮胶条（比背景亮）" };
@@ -24,7 +22,7 @@ const compared: [string, (d: RecipeDoc) => unknown][] = [
   ["name", d => d.name], ["productCode", d => d.productCode], ["triggerMode", d => d.triggerMode], ["spacing", d => d.spacing], ["filterWindow", d => d.filterWindow],
   ["searchMm", d => d.detect.searchMm], ["polarity", d => d.detect.polarity], ["widthRange", d => d.detect.widthRange],
   ["position", d => d.limits.position], ["width", d => d.limits.width], ["maxGapLen", d => d.limits.maxGapLen], ["minPresent", d => d.limits.minPresent],
-  ["segmentDefaults", d => d.segmentDefaults], ["calibrationRounds", d => d.calibrationRounds], ["boundaryGuard", d => d.boundaryGuard],
+  ["segmentDefaults", d => d.segmentDefaults], ["boundaryGuard", d => d.boundaryGuard],
 ];
 export function changedFields(doc: RecipeDoc, production: RecipeDoc | null | undefined) {
   if (!production) return new Set<string>();
@@ -97,17 +95,14 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
         <DetectEditor value={doc.detect} changed={changed} disabled={disabled} onChange={(v) => set("detect", v)} />
       </Section>
 
-      <Section title="标定" extra="同一工件程序连续采集多轮，取各轮帧数均值作预期帧数">
+      <Section title="分段" extra="各段预期帧数取示教件已确认分段的帧组数">
         <div className="rcp-grid">
-          <Field label="标定轮数" changed={changed.has("calibrationRounds")} hint="至少 10 轮，最多 100 轮">
-            <Num aria="标定轮数" unit="轮" step={1} value={doc.calibrationRounds ?? DEFAULT_CALIBRATION_ROUNDS} onChange={(v) => set("calibrationRounds", v)} />
-          </Field>
           <Field label="边界过渡帧数" changed={changed.has("boundaryGuard")} hint="按标定比例推算的段边界两侧各留几帧，只判每帧胶宽、断胶、溢胶，不判胶偏；0–5 帧">
             <Num aria="边界过渡帧数" unit="帧" step={1} value={doc.boundaryGuard ?? DEFAULT_BOUNDARY_GUARD} onChange={(v) => set("boundaryGuard", v)} />
           </Field>
         </div>
       </Section>
-      {doc.segmentDefaults && <Section title="按段类型的默认检测项" extra="新建段时取用；每帧独立检测，弯道段不判胶偏，帧数容差默认 1">
+      {doc.segmentDefaults && <Section title="按段类型的默认检测项" extra="新建段时取用；每帧独立检测，弯道段不判胶偏，帧数容差默认 2">
         {segmentKinds.map(([kind, label]) => <section key={kind} className="rcp-kind" aria-label={`${label}段默认检测项`}>
           <h5 className="sub-title">{label}段{changed.has("segmentDefaults") && !same(doc.segmentDefaults?.[kind], production?.segmentDefaults?.[kind]) && <i className="rcp-changed" title="与生产配方不同" />}</h5>
           <KindChecksEditor value={doc.segmentDefaults![kind]} kind={kind} disabled={disabled} onChange={(next: KindDefault) => set("segmentDefaults", { ...doc.segmentDefaults!, [kind]: next })} />

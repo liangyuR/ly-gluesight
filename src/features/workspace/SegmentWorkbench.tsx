@@ -3,18 +3,17 @@ import { Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import { Button, Dialog } from "qing-steel";
 import type { PathSegment, WorkspacePlanView } from "../plan/types";
-import { segmentKindLabel } from "../plan/vis";
+import { segmentLabel } from "../plan/vis";
 import { errorText } from "../../lib/errors";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, GrayViewer, Notice, Panel } from "./components";
-import { hasCalibration } from "./segmentEdit";
 import { ignoreKey, stripGroups, Thumb, useThumbs } from "./thumbs";
 import {
   initialDraft, moveCut, segmentsForSave, spans, structureChanged, toggleCamera, toggleCut, toggleKind, valid,
   type WorkbenchDraft,
 } from "./workbenchDraft";
-import type { GrayImage } from "./types";
+import type { GrayImage, SegmentSaveImpact } from "./types";
 import WorkspaceNavigation from "./WorkspaceNavigation";
 
 const reviewLabel = { draft: "边界草稿待确认", confirmed: "边界已确认", stale: "边界需复核" } as const;
@@ -46,11 +45,12 @@ function FramePreview({ roundId, camera, seq, corridor, searchHalfPx }: { roundI
  * 点缩略图在下方并排预览三台相机原图（叠加已示教走廊）。
  */
 export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: WorkspacePlanView; locked: string; onDirty: (dirty: boolean) => void }) {
-  const { data, doc, act, busy, navigationDirty } = useWorkspace();
+  const { data, doc, act, busy, navigationDirty, setError } = useWorkspace();
   const roundId = data?.workspace.teachingPiece?.roundId ?? "";
   const [edit, setEdit] = useState<{ roundId: string; draft: WorkbenchDraft } | null>(null);
   const [seq, setSeq] = useState(1);
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState<SegmentSaveImpact | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   // 按住一个已有边界拖到另一条竖缝上松开即移动它（指针事件，不用 HTML5 拖放：WebView2 里不可靠）
   const [dragging, setDragging] = useState<number | null>(null);
   useEffect(() => {
@@ -99,19 +99,25 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
 
   const segmentSpans = draft ? spans(draft) : [];
   const restructured = !!draft && structureChanged(plan.segments, draft.kinds);
-  const affected = Object.entries(review?.rounds ?? {}).filter(([id, r]) => id !== roundId && r.status !== "stale").map(([id]) => id);
-  const calibrated = hasCalibration(plan.segments, plan.partCalib != null);
   const isConfirmed = saved?.status === "confirmed";
-  const blocked = !draft || !valid(draft) || busy || frozen || !!locked || !doc;
+  const blocked = !draft || !valid(draft) || busy || previewing || frozen || !!locked || !doc;
   const save = async () => {
     if (!draft || !doc) return;
     const segments: PathSegment[] = segmentsForSave(plan.segments, draft, plan.segmentDefaults, plan.cameras);
     const next = await act(() => workspaceApi.segmentTemplateSave(doc.id, revision, segments, draft.cuts), "分段已保存，示教件边界已确认");
-    setConfirming(false);
+    setConfirming(null);
     if (next) setEdit(null);
   };
-  const requestSave = () => {
-    if (restructured && (affected.length > 0 || calibrated)) setConfirming(true);
+  // 先预演：会清掉走廊、段结构改变或示教件测量失效时列出影响再保存
+  const requestSave = async () => {
+    if (!draft || !doc) return;
+    const segments: PathSegment[] = segmentsForSave(plan.segments, draft, plan.segmentDefaults, plan.cameras);
+    setPreviewing(true); setError("");
+    let impact: SegmentSaveImpact;
+    try { impact = await workspaceApi.segmentTemplatePreview(doc.id, revision, segments, draft.cuts); }
+    catch (e) { setError(errorText(e)); return; }
+    finally { setPreviewing(false); }
+    if (impact.restructured || impact.dropped.length || impact.measurementCleared) setConfirming(impact);
     else void save();
   };
   const inspect = (camera: string) => doc?.inspect?.find(item => item.camera === camera);
@@ -129,7 +135,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     editable locked={locked || (dirty ? "先保存或撤销分段草稿，再编辑地图" : "")}
     onNavigate={(_, nextSeq) => setSeq(nextSeq)} />;
 
-  return <Panel title="分段标定" help="在示教件的帧组时间轴上划分直线段与弯道段：点缩略图选中帧组（下方并排显示三台相机原图），再点“在帧组 N 后插入边界”（或按 B，或点时间轴下方对应的 ＋）；点段名切换直线 / 弯道；点段下方的相机名选这段由哪几台相机检测（没选中的相机变暗，判定时不用）；← → 切换帧组">
+  return <Panel title="分段标定" help="在示教件的帧组时间轴上划分直线段与弯道段：点缩略图选中帧组（下方并排显示三台相机原图），再点“在帧组 N 后插入边界”（或按 B，或点时间轴下方对应的 ＋）；点段名按 直线 → 弯道 → 不检测 循环切换（不检测的段照常计帧，不测不判，结果列为未检区域）；点段下方的相机名选这段由哪几台相机检测（没选中的相机变暗，判定时不用）；← → 切换帧组">
     {thumbs.error && <Notice title="读取示教件图像失败" tone="warn">{thumbs.error}</Notice>}
     {!!data?.workspace.pending && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改分段。</Notice>}
     {!ready && !thumbs.error && <p className="muted">正在读取缩略图…</p>}
@@ -140,7 +146,8 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
           <span>{groupCount} 个帧组 · {segmentSpans.length} 段 · 边界 {draft.cuts.length ? draft.cuts.join(" / ") : "无"}</span>
           {saved && <Badge tone={saved.status === "confirmed" ? "ok" : "warn"}>{reviewLabel[saved.status]}</Badge>}
           {restructured && <Badge tone="warn">段结构有改动</Badge>}
-          {!restructured && dirty && JSON.stringify(draft.cameras) !== JSON.stringify(baseline?.cameras) && <Badge tone="warn">检测相机有改动</Badge>}
+          {!restructured && dirty && JSON.stringify([draft.cameras, draft.skips]) !== JSON.stringify([baseline?.cameras, baseline?.skips]) && <Badge tone="warn">检测相机有改动</Badge>}
+          {!valid(draft) && draft.skips.every(Boolean) && <Badge tone="warn">至少要有一段检测</Badge>}
         </div>
         <div className="wp-actions">
           {locked && <span className="muted">{locked}</span>}
@@ -148,26 +155,27 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
             {draft.cuts.includes(seq) ? `删除帧组 ${seq} 后的边界` : `在帧组 ${seq} 后插入边界`}
           </Button>}
           <Button disabled={!dirty || busy} onClick={() => setEdit(null)}>撤销改动</Button>
-          <Button variant="filled" disabled={blocked} onClick={requestSave}>{isConfirmed && !dirty ? "重新保存分段" : "保存分段"}</Button>
+          <Button variant="filled" disabled={blocked} onClick={() => void requestSave()}>{isConfirmed && !dirty ? "重新保存分段" : "保存分段"}</Button>
         </div>
       </div>
       <div className="swb-scroll">
         <div className="swb-grid" style={{ gridTemplateColumns: columns }}>
           <span className="swb-label">段</span>
           {segmentSpans.map(([first, last], i) => {
-            const kind = draft.kinds[i];
-            return <Button variant="text" size="sm" key={`${first}-${kind}`} type="button" className={`swb-seg ${kind}`} style={{ gridColumn: `${first + 1} / ${last + 2}` }}
-              aria-label={`段 ${i + 1}（${segmentKindLabel[kind]}，帧组 ${first}–${last}），点击切换类型`} disabled={frozen} onClick={() => change(toggleKind(draft, i))}>
-              段 {i + 1} · {segmentKindLabel[kind]} · {last - first + 1} 组
+            const kind = draft.kinds[i], skip = draft.skips[i];
+            const label = segmentLabel({ kind, skip });
+            return <Button variant="text" size="sm" key={`${first}-${kind}-${skip}`} type="button" className={`swb-seg ${skip ? "skip" : kind}`} style={{ gridColumn: `${first + 1} / ${last + 2}` }}
+              aria-label={`段 ${i + 1}（${label}，帧组 ${first}–${last}），点击切换类型`} disabled={frozen} onClick={() => change(toggleKind(draft, i))}>
+              段 {i + 1} · {label} · {last - first + 1} 组
             </Button>;
           })}
-          <span className="swb-label" title="点相机名决定该段由哪几台相机检测（至少一台）">检测相机</span>
+          <span className="swb-label" title="点相机名决定该段由哪几台相机检测（至少一台）；不检测的段不用相机">检测相机</span>
           {segmentSpans.map(([first, last], i) => <div key={`cams-${first}`} className="swb-cams" style={{ gridColumn: `${first + 1} / ${last + 2}` }}
             role="group" aria-label={`段 ${i + 1} 检测相机`}>
             {plan.cameras.map(camera => {
-              const on = draft.cameras[i]?.includes(camera) ?? false;
-              return <Button variant="text" size="sm" key={camera} type="button" className={`swb-cam${on ? " on" : ""}`} aria-pressed={on} disabled={frozen}
-                title={on ? `段 ${i + 1} 由 ${camera} 检测，点击取消` : `点击让 ${camera} 检测段 ${i + 1}`}
+              const on = !draft.skips[i] && (draft.cameras[i]?.includes(camera) ?? false);
+              return <Button variant="text" size="sm" key={camera} type="button" className={`swb-cam${on ? " on" : ""}`} aria-pressed={on} disabled={frozen || draft.skips[i]}
+                title={draft.skips[i] ? `段 ${i + 1} 不检测：点段名切回直线后可选相机` : on ? `段 ${i + 1} 由 ${camera} 检测，点击取消` : `点击让 ${camera} 检测段 ${i + 1}`}
                 onClick={() => change(toggleCamera(draft, i, camera, plan.cameras))}>{camera}</Button>;
             })}
           </div>)}
@@ -179,7 +187,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
                 const pixels = strip?.frames[k] ?? null;
                 const cut = draft.cuts.includes(group);
                 const segment = segmentSpans.findIndex(([first, last]) => group >= first && group <= last);
-                const used = draft.cameras[segment]?.includes(camera) ?? true;
+                const used = !draft.skips[segment] && (draft.cameras[segment]?.includes(camera) ?? true);
                 // 段首尾跳过的帧（段参数里设置；段结构有改动时还没对应到新段，先不标）
                 const params = restructured ? null : plan.segments[segment];
                 const [first, last] = segmentSpans[segment] ?? [0, 0];
@@ -210,14 +218,15 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
       {draft && ready && plan.cameras.map(camera => <FramePreview key={camera} roundId={roundId} camera={camera} seq={seq}
         corridor={corridorOf(camera)} searchHalfPx={halfPx(camera)} />)}
     </div>
-    {confirming && <Dialog open title="段结构将改变" onOpenChange={open => { if (!open) setConfirming(false); }}
-      footer={<><Button disabled={busy} onClick={() => setConfirming(false)}>取消</Button><Button variant="filled" disabled={busy} onClick={() => void save()}>保存分段</Button></>}>
+    {confirming && <Dialog open title={confirming.restructured ? "段结构将改变" : "保存分段的影响"} onOpenChange={open => { if (!open) setConfirming(null); }}
+      footer={<><Button disabled={busy} onClick={() => setConfirming(null)}>取消</Button><Button variant="filled" disabled={busy} onClick={() => void save()}>保存分段</Button></>}>
       <div className="wp-stack">
-        <p>段数、顺序或类型与现有段列表不同，保存后：</p>
+        <p>没动的段连同走廊原样保留（按示教件上的帧范围对应）。保存后：</p>
         <ul>
-          {affected.length > 0 && <li>其余 {affected.length} 件已整理的边界变为“需复核”，需在多轮标定重新复核；</li>}
-          {calibrated && <li>各段预期帧数、整件预期总帧数与胶偏参考清空，需重新应用多轮标定；</li>}
-          <li>示教件边界按新结构确认。</li>
+          <li>各段预期帧数按新的示教件分段重新得出；</li>
+          {confirming.measurementCleared && <li>示教件的测量失效，需在试测页重新测量示教件；</li>}
+          {confirming.dropped.length > 0 && <li>这些走廊会清掉（示教帧已不在原段，或段类型变了）：{confirming.dropped.join("、")}；</li>}
+          {confirming.untaught.length > 0 && <li>保存后还要示教走廊：{confirming.untaught.join("、")}。</li>}
         </ul>
       </div>
     </Dialog>}
