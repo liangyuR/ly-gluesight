@@ -1,4 +1,5 @@
-//! 三台相机按 SDK 帧号配组（规格 §3）：同一触发序号的三帧配成一组，缺帧标 incomplete，丢帧只告警。
+//! 三台相机按帧序号配组（规格 §3）：同一序号的三帧配成一组，缺帧标 incomplete，丢帧只告警。生产的序号由相机时间戳编出
+//! （`frame_clock`，D-SB-55，基线恒为 0）；示教采集轮次仍按 SDK 帧号减基线。
 //!
 //! 口径（docs/decisions/segment-burst.md）：seq = frame_counter − 该相机基线（从 1 起）；帧组数 = 各相机最大 seq 的最大值；
 //! 单台相机的帧数只用于丢帧告警，不参与容差比较；下一件每台相机的基线 = max(原基线, 本件见到的最高 frame_counter)。
@@ -81,12 +82,6 @@ impl Grouper {
     pub fn with_limit(baselines: Vec<u64>, max_seq: u64) -> Self {
         let cams = baselines.len();
         Self { max_counters: baselines.clone(), baselines, seqs: vec![BTreeSet::new(); cams], max_seq: max_seq.min(MAX_SEQ) }
-    }
-
-    /// 接件时基线未知的相机，收到第一帧前补上基线。
-    pub fn set_baseline(&mut self, cam: usize, baseline: u64) {
-        self.baselines[cam] = baseline;
-        self.max_counters[cam] = baseline;
     }
 
     /// seq = frame_counter − 该相机基线。不大于基线为 Stale；超过上限为 OutOfRange（两者都不改 max_counter）；

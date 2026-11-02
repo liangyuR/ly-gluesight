@@ -313,6 +313,7 @@ impl FixtureSite {
                     trigger_counter: seq,
                     lost_packets: 0,
                     ts: ts + (k as f64 * period_ms).round() as i64,
+                    dev_ts: Some((COUNTER_BASE + seq) * crate::frame_clock::SYNTH_PERIOD_NS),
                     manual: false,
                     images: vec![Arc::new(image)],
                 };

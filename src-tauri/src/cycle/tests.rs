@@ -50,6 +50,17 @@ fn armed_part_with(
         })
         .collect();
     let baselines = arm_frames(&cameras, ledgers, &policy, &identities).unwrap();
+    // 合成时钟：第 n 帧的时间戳 = n × 合成帧周期，下限 = 帧计数基线对应的时刻（与原来的帧号配组同一口径）
+    let starts: Vec<crate::frame_clock::ClockStart> = baselines
+        .iter()
+        .map(|b| crate::frame_clock::ClockStart {
+            period_ns: crate::frame_clock::SYNTH_PERIOD_NS as f64,
+            floor: b.baseline.unwrap_or(0) * crate::frame_clock::SYNTH_PERIOD_NS,
+            anchored: true,
+            delay_ns: 0,
+            first_gate: 0,
+        })
+        .collect();
     Part {
         mode: crate::store::PartMode::Production,
         cycle_id: cycle_id.into(),
@@ -58,12 +69,19 @@ fn armed_part_with(
         candidate: None,
         sn: "SN-88".into(),
         scenario: Scenario::Normal,
-        burst: Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted)),
+        burst: Box::new(burst::BurstPart::arm(
+            &recipe,
+            baselines,
+            policy.trusted,
+            &starts,
+        )),
         device_triggers: None,
         routing_closed: false,
         image_measurement: false,
         proc_timeout: Duration::from_secs(1),
         drain_timeout: Duration::from_secs(2),
+        gate: None,
+        gate_guard: None,
         admitted_at: Instant::now(),
         end_at: None,
         fault: None,
@@ -78,8 +96,18 @@ fn armed_part_with(
 
 /// 相机组序号 cam（会话 11 + cam）帧计数为 counter 的一帧。
 pub(crate) fn burst_frame(cam: u8, counter: u64) -> Frame {
-    Frame { cam, session: cam as u64 + 11, counter: CounterSource::Synthetic, frame_counter: counter, trigger_counter: counter,
-        lost_packets: 0, ts: 1, manual: false, images: Vec::new() }
+    Frame {
+        cam,
+        session: cam as u64 + 11,
+        counter: CounterSource::Synthetic,
+        frame_counter: counter,
+        trigger_counter: counter,
+        lost_packets: 0,
+        ts: 1,
+        dev_ts: Some(counter * crate::frame_clock::SYNTH_PERIOD_NS),
+        manual: false,
+        images: Vec::new(),
+    }
 }
 
 /// 测量池交回的一帧结果。
@@ -320,26 +348,74 @@ fn next_part_baseline_is_each_camera_highest_frame_counter_seen() {
     }
 }
 
-/// 会话变化仍是设备故障：接件后相机重连过，之后的帧号对不上本件，整件判 ERR 98——重连后又来帧，或重连后没再来帧（收尾时核对会话）。
+/// D-SB-55：帧按相机时间戳编号。检测中相机重开（会话变了、帧号从 1 重数，时间戳连续）照常收帧、不判 ERR，收尾核对会话也不报错；
+/// 时间戳回退（断电或时钟被复位）的相机之后的帧不收，缺的帧组只算检测不完整，整件不判 ERR。
 #[test]
-fn camera_reconnect_during_part_is_err_98() {
-    for case in ["重连后又来一帧", "重连后没再来帧"] {
-        let mut p = burst_part(case, &Ledgers::default());
-        for counter in 1..=4 {
-            for cam in 0..3 { deliver(&mut p, cam, counter); }
+fn camera_reopen_during_part_keeps_numbering_by_timestamp() {
+    let mut p = burst_part("reopen", &Ledgers::default());
+    for counter in 1..=4 {
+        for cam in 0..3 {
+            deliver(&mut p, cam, counter);
         }
-        if case == "重连后又来一帧" {
-            assert!(matches!(p.receive_burst(&Frame { session: 99, ..burst_frame(1, 5) }), Some(burst::Arrival::Fault(_))));
-        } else {
-            let cameras: Vec<ArmCam> = (0..3u8).map(|cam| ArmCam { cam, camera: p.camera_ids[cam as usize].clone(),
-                session: if cam == 1 { 99 } else { cam as u64 + 11 }, source: Some(CounterSource::Synthetic), counter_after_open: None }).collect();
-            let reason = p.burst.check_sessions(&cameras).unwrap_err();
-            p.fault = Some((fault::DEVICE_LOST, reason));
-        }
-        end(&mut p, Some(4), false);
-        let judgement = judge_burst(&mut p);
-        assert_eq!((judgement.verdict, judgement.fault_code), (Verdict::ErrInspect, fault::DEVICE_LOST), "{case}");
     }
+    let reopened = Frame {
+        session: 99,
+        frame_counter: 1,
+        ..burst_frame(1, 5)
+    };
+    assert_eq!(
+        p.receive_burst(&reopened),
+        Some(burst::Arrival::Accepted { camera: 1, seq: 5 }),
+        "重开后时间戳连续：第 5 帧"
+    );
+    let cameras: Vec<ArmCam> = (0..3u8)
+        .map(|cam| ArmCam {
+            cam,
+            camera: p.camera_ids[cam as usize].clone(),
+            session: if cam == 1 { 99 } else { cam as u64 + 11 },
+            source: Some(CounterSource::Synthetic),
+            counter_after_open: None,
+        })
+        .collect();
+    assert!(
+        p.burst.check_sessions(&cameras).is_ok(),
+        "会话变了不再是故障"
+    );
+    let reset = Frame {
+        dev_ts: Some(crate::frame_clock::SYNTH_PERIOD_NS),
+        ..burst_frame(2, 5)
+    };
+    assert_eq!(
+        p.receive_burst(&reset),
+        Some(burst::Arrival::ClockBack { camera: 2 })
+    );
+    assert_eq!(
+        p.receive_burst(&burst_frame(2, 5)),
+        Some(burst::Arrival::ClockBack { camera: 2 }),
+        "回退后这台相机都不收"
+    );
+    deliver(&mut p, 0, 5);
+    let result = frame_result(
+        &p,
+        1,
+        5,
+        Ok(measure::simulate_frame(
+            Scenario::Normal,
+            1,
+            5,
+            1,
+            &p.recipe,
+        )),
+    );
+    p.apply_burst(result).unwrap();
+    end(&mut p, Some(5), false);
+    let judgement = judge_burst(&mut p);
+    assert_ne!(
+        judgement.verdict,
+        Verdict::ErrInspect,
+        "缺第 5 帧组的相机只算检测不完整"
+    );
+    assert!(p.fault.is_none());
 }
 
 /// 决策（默认做法 7）：三台相机整件一帧都没有时判 ERR 91；PLC 照常报了触发数时等到收尾截止再判。
@@ -381,6 +457,72 @@ fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result(
     let judgement = judge_burst(&mut p);
     let record = p.burst_record(&burst::summary(&judgement));
     assert_eq!(record.frames.iter().find(|frame| frame.camera == 0 && frame.seq == 5).unwrap().status, FrameState::Measured);
+}
+
+/// 防的回归（D-SB-54）：PLC 报结束后不管门控已关闭都固定等满收尾窗口；或门控还开着（还有帧要来）就提前收尾、丢掉后面的帧。
+#[test]
+fn closed_gate_ends_the_drain_after_the_guard_but_an_open_gate_waits_for_the_window() {
+    let gate = Arc::new(crate::gate::Gate::default());
+    let mut p = burst_part("gate-drain", &Ledgers::default());
+    p.gate = Some(gate.clone());
+    p.gate_guard = Some(Duration::from_millis(80));
+    deliver_groups(&mut p, 4);
+    end(&mut p, Some(0), false);
+    let now = Instant::now();
+    for cam in 0..3 {
+        gate.observe(cam, true, now);
+    }
+    assert!(!p.complete(), "门控还开着：等收尾窗口");
+    for cam in 0..3 {
+        gate.observe(cam, false, now);
+    }
+    assert!(!p.complete(), "刚看到关闭：最后一帧可能还在路上，等满余量");
+    let closed = Instant::now() - Duration::from_millis(100);
+    for cam in 0..3 {
+        gate.observe(cam, true, closed - Duration::from_millis(1));
+        gate.observe(cam, false, closed);
+        gate.observe(cam, false, Instant::now());
+    }
+    assert!(p.complete(), "关闭已满余量：不再等收尾窗口");
+    assert!(
+        p.receive_burst(&burst_frame(0, 5)).is_none(),
+        "截止后到的帧不收"
+    );
+}
+
+/// 防的回归（D-SB-55）：门控关闭时各相机最后一帧都已到（下一次曝光本该在关闭之后），还要白等余量；
+/// 或有相机还差最后一帧（在途）时就截止。
+#[test]
+fn drain_ends_at_gate_close_once_every_camera_has_its_last_frame() {
+    let t = crate::frame_clock::SYNTH_PERIOD_NS;
+    let gate = Arc::new(crate::gate::Gate::default());
+    let mut p = burst_part("last-frame", &Ledgers::default());
+    p.gate = Some(gate.clone());
+    p.gate_guard = Some(Duration::from_secs(1));
+    for counter in 1..=4 {
+        for cam in 0..2 {
+            deliver(&mut p, cam, counter);
+        }
+    }
+    deliver(&mut p, 2, 1);
+    deliver(&mut p, 2, 2);
+    deliver(&mut p, 2, 3);
+    end(&mut p, Some(0), false);
+    let now = Instant::now();
+    for cam in 0..3 {
+        gate.edge(cam, false, 4 * t + t / 2, now);
+        gate.observe(cam, true, now);
+        gate.observe(cam, false, now);
+    }
+    assert!(!p.complete(), "相机 2 的第 4 帧（关闭前曝光）还没到：等");
+    deliver(&mut p, 2, 4);
+    assert!(p.complete(), "三台都到了关闭前的最后一帧：不等余量");
+    // PR #215 评审：又开了一次很短的门控（4.6T 开、4.8T 关），新门控的帧还在路上，前一门控的末帧不能当最后一帧
+    for cam in 0..3 {
+        gate.edge(cam, true, 4 * t + 6 * t / 10, now);
+        gate.edge(cam, false, 4 * t + 8 * t / 10, now);
+    }
+    assert!(!p.complete(), "最近一次门控的帧还没到：等");
 }
 
 #[test]
