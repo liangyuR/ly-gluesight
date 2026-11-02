@@ -147,9 +147,10 @@ impl FrameClock {
             }
         };
         let (gate, origin) = match (by_edges, track.last) {
-            // 边沿晚于上一帧：上一帧之后开了新门控。轮询中断时按帧间隔推断过的门控也算在前面，门控号至少加一
+            // 边沿晚于上一帧：上一帧之后开了新门控。门控号以相机组共同序号为准（别的相机记到了这台漏看的边沿时序号已含它），
+            // 相机组都漏记、序号落后于按帧间隔推断的门控时至少加一，差额留着对齐之后的边沿
             (Some((raw, origin)), Some(last)) if origin > last.ts + EDGE_SLACK_NS => {
-                let gate = (raw + track.edge_offset).max(last.gate + 1);
+                let gate = raw.max(last.gate + 1);
                 track.edge_offset = gate - raw;
                 (gate, origin)
             }
@@ -405,6 +406,46 @@ mod tests {
         let first = 1_020 * T + 60_000_000;
         assert_eq!(c.stamp(0, first, Some(&e(&[edge]))), Stamp::Seq(1));
         assert_eq!(c.stamp(0, first + T, Some(&e(&[edge]))), Stamp::Seq(2));
+    }
+
+    /// 防的回归（PR #215 评审）：一台相机轮询中断漏看了门控开始、按帧间隔推断出新门控并记下差额，而别的相机记到了这次开始，
+    /// 共同序号已含它；下一次开始时再加差额就多算一个门控，这台相机的帧组比其余相机多一，还冻结了其余相机的门控。
+    #[test]
+    fn a_missed_edge_recorded_by_another_camera_is_not_counted_twice() {
+        let mut c = clock(2, false);
+        let (g1, g2, g3) = (
+            1_020 * T + 1_500_000,
+            1_022 * T + 31_500_000,
+            1_030 * T + 1_500_000,
+        );
+        let all = [(g1, 0), (g2, 1), (g3, 2)];
+        assert_eq!(c.stamp(0, at(g1, 0), Some(&all)), Stamp::Seq(1));
+        assert_eq!(c.stamp(1, at(g1, 0), Some(&[(g1, 0)])), Stamp::Seq(1));
+        assert_eq!(c.stamp(0, at(g2, 0), Some(&all)), Stamp::Seq(2));
+        assert_eq!(
+            c.stamp(1, at(g2, 0), None),
+            Stamp::Seq(2),
+            "轮询卡住：按间隔开新门控"
+        );
+        assert_eq!(
+            c.stamp(1, at(g2, 1), Some(&[(g1, 0)])),
+            Stamp::Seq(3),
+            "漏看了第 2 次开始：以帧间隔为准"
+        );
+        assert_eq!(c.stamp(0, at(g2, 1), Some(&all)), Stamp::Seq(3));
+        let missed = [(g1, 0), (g3, 2)];
+        assert_eq!(
+            c.stamp(1, at(g3, 0), Some(&missed)),
+            Stamp::Seq(4),
+            "共同序号已含漏看的那次"
+        );
+        assert_eq!(c.stamp(0, at(g3, 0), Some(&all)), Stamp::Seq(4));
+        assert_eq!(
+            c.stamp(0, at(g3, 1), Some(&all)),
+            Stamp::Seq(5),
+            "其余相机不成越界帧"
+        );
+        assert_eq!(c.stamp(1, at(g3, 1), Some(&missed)), Stamp::Seq(5));
     }
 
     /// 防的回归（PR #215 评审）：一台相机漏看了整个门控（边沿与帧都没有），按自己数的边沿编号比其余相机少一个门控，
