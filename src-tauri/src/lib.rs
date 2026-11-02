@@ -14,6 +14,7 @@ mod frame;
 mod frame_align;
 mod frame_group;
 mod fsio;
+mod gate;
 mod handshake;
 mod handshake_audit;
 mod history;

@@ -489,6 +489,8 @@ struct RigShared {
     capture: AtomicBool,
     recipe_capture: Arc<crate::recipe_capture::RecipeCaptureHost>,
     imaging: Mutex<BTreeMap<String, CameraImaging>>,
+    /// 各相机轮询到的 Line0 门控状态（`watch_gate`），收尾用
+    gate: Arc<crate::gate::Gate>,
 }
 
 /// 单台相机的交付通道，取图回调与模拟 / 样本集共用。
@@ -1786,6 +1788,7 @@ impl CameraRig {
                 crate::storage::project(app).join("recipe-capture"),
             )?,
             imaging: Mutex::new(std::mem::take(&mut file.imaging)),
+            gate: Arc::default(),
         });
         let slots = file
             .cameras
@@ -1866,6 +1869,11 @@ impl CameraRig {
 
     pub fn slots(&self) -> Vec<Arc<CameraSlot>> {
         self.slots.read().unwrap().clone()
+    }
+
+    /// Line0 门控状态（D-SB-54），收尾按它提前结束。
+    pub fn gate(&self) -> Arc<crate::gate::Gate> {
+        self.rig.gate.clone()
     }
 
     pub fn slot(&self, cam: usize) -> Option<Arc<CameraSlot>> {
@@ -2020,11 +2028,55 @@ impl CameraRig {
 /// 重连约每 2 s 一次，失败日志按相机聚合的窗口。
 const RECONNECT_LOG_WINDOW: Duration = Duration::from_secs(60);
 
+/// 每台相机一个线程轮询 Line0 门控（D-SB-54）：已打开、按 Line0 触发的海康相机每 `gate::POLL` 读一次 `LineStatusAll`
+/// 的第 0 位，空闲电平按“1 s 没来帧时的电平”学（`gate::LineWatch`），结果交给相机组共用的 `Gate`。没打开、已释放给
+/// MVS、读失败或空闲电平还不知道时去掉这台相机的状态（收尾照旧等满收尾窗口）。相机被移出相机组后线程自己结束。
+fn watch_gate(slot: std::sync::Weak<CameraSlot>) {
+    std::thread::spawn(move || {
+        let mut watch = crate::gate::LineWatch::new(Instant::now());
+        loop {
+            let Some(s) = slot.upgrade() else { break };
+            let (gate, cam) = (s.shared.rig.gate.clone(), s.shared.cam);
+            let config = s.config();
+            let level = (config.source == CameraSource::Mvs
+                && config.trigger_source == "Line0"
+                && !s.released.load(Ordering::SeqCst)
+                && !s.shared.disconnected.load(Ordering::SeqCst))
+            .then(|| {
+                s.device
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|d| d.get_int("LineStatusAll").ok())
+            })
+            .flatten();
+            let now = Instant::now();
+            match level.and_then(|bits| {
+                watch.read(bits & 1 == 1, s.shared.frames.load(Ordering::Relaxed), now)
+            }) {
+                Some(active) => gate.observe(cam, active, now),
+                None => gate.forget(cam),
+            }
+            let idle = level.is_none();
+            drop(s);
+            if idle {
+                watch = crate::gate::LineWatch::new(Instant::now());
+            }
+            std::thread::sleep(if idle {
+                Duration::from_millis(200)
+            } else {
+                crate::gate::POLL
+            });
+        }
+    });
+}
+
 /// 每台相机一个后台循环：海康相机掉线或未打开时每 2 s 重连（已释放给 MVS 的不连）。相机被移出相机组后循环自己结束。
 fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
     if !slot.supervision.start() {
         return;
     }
+    watch_gate(Arc::downgrade(slot));
     let slot = Arc::downgrade(slot);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {

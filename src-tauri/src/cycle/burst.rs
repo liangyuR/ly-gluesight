@@ -384,8 +384,15 @@ pub(super) fn empty_record(recipe: &Recipe, judgement: &Judgement) -> BurstRecor
 }
 
 impl Part {
+    /// 收尾截止：partEnd 后等满 drain_timeout；或本件相机都看到 Line0 门控已关闭、又过了余量（D-SB-54：门控关了不会再曝光，
+    /// 余量盖住最后一帧从曝光到收到的约 39 ms），提前截止。
     fn burst_deadline(&self, now: Instant) -> bool {
-        self.end_at.is_some_and(|end| now.saturating_duration_since(end) >= self.drain_timeout)
+        let Some(end) = self.end_at else { return false };
+        now.saturating_duration_since(end) >= self.drain_timeout
+            || self.gate.as_ref().is_some_and(|(gate, guard)| {
+                gate.closed_since(&self.cams, now)
+                    .is_some_and(|closed| now.saturating_duration_since(closed) >= *guard)
+            })
     }
 
     /// 段配方收一帧（帧号配组，D-SB-10）。收尾截止后到的帧返回 None。

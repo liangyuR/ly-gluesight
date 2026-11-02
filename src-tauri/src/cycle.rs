@@ -902,6 +902,8 @@ struct Part {
     image_measurement: bool,
     proc_timeout: Duration,
     drain_timeout: Duration,
+    /// Line0 门控（D-SB-54）与看到它关闭后再等的余量：都有时收尾可提前结束，否则固定等满 drain_timeout
+    gate: Option<(Arc<crate::gate::Gate>, Duration)>,
     admitted_at: Instant,
     end_at: Option<Instant>,
     fault: Option<(u16, String)>,
@@ -1945,6 +1947,10 @@ impl Machine {
             image_measurement: crate::site::image_measurement(&app),
             proc_timeout: settings.timeouts.proc(),
             drain_timeout: settings.timeouts.drain(),
+            gate: settings
+                .timeouts
+                .gate_guard()
+                .map(|guard| (host.camera.gate(), guard)),
             admitted_at: Instant::now(),
             end_at: None,
             fault: None,

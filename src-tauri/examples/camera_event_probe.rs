@@ -8,7 +8,7 @@
 //!    相机时钟（`GevTimestampControlLatch`）并读 Line0 跳变计数器（`Counter0`，计数来源设为 Line0，用来发现轮询漏掉的短脉冲）；
 //! 4. 开流后按时间顺序打印每个边沿、事件与每一帧：PC 收到 / 看到的时刻、相机时间戳、帧号；
 //! 5. 结束（到时或按回车）后写 CSV，并按上升沿—下降沿配对出每次门控，统计首帧比上升沿晚多少、最后一帧比看到下降沿晚多少、
-//!    下降沿之后又来了几帧、按相机时钟门控里应有几帧；另统计轮询一次的耗时。
+//!    门控结束之后又来了几帧、按相机时钟门控里应有几帧（门控开始取第一个边沿的方向）；另统计轮询一次的耗时。
 //!
 //! 输出两个文件：`camera-events-<时间>.log`（屏幕上打印的全部内容，含出错信息）与 `camera-events-<时间>.csv`（每条事件与帧），
 //! 默认放在桌面（没有桌面时放当前目录），`--dir` 可另指目录。
@@ -731,11 +731,15 @@ fn main() {
                 edges.len()
             );
         }
-        // 上升沿配下一个下降沿为一次门控；门控的帧 = 这次上升沿到下一次上升沿之间到达的帧
-        let rises: Vec<usize> = (0..edges.len()).filter(|&i| edges[i].1).collect();
+        // 门控开始 = 第一个边沿的方向（程序启动时门控关着；现场状态寄存器空闲读 1，拍照时读 0，开始是下降沿），配下一个反向边沿为门控结束；
+        // 门控的帧 = 这次开始到下一次开始之间到达的帧
+        let opening = edges.first().map(|e| e.1);
+        let rises: Vec<usize> = (0..edges.len())
+            .filter(|&i| Some(edges[i].1) == opening)
+            .collect();
         let (mut first_lags, mut last_lags, mut after_max) = (Vec::new(), Vec::new(), 0usize);
         for (k, &r) in rises.iter().enumerate() {
-            let Some(f) = (r + 1..edges.len()).find(|&i| !edges[i].1) else {
+            let Some(f) = (r + 1..edges.len()).find(|&i| Some(edges[i].1) != opening) else {
                 continue;
             };
             let (rise, fall) = (&edges[r], &edges[f]);
@@ -758,7 +762,7 @@ fn main() {
             last_lags.push(last.0 - fall.0);
             let clock = match (dev_ms(rise.2), dev_ms(fall.2), dev_ms(first.1), dev_ms(last.1)) {
                 (Some(r), Some(f), Some(a), Some(b)) if rise.2 > 0 && fall.2 > 0 => format!(
-                    "；相机时钟：门控 {:.1} ms ≈ {:.2} 个帧周期，首帧 − 上升沿 {:.1} ms，下降沿 − 末帧 {:.1} ms",
+                    "；相机时钟：门控 {:.1} ms ≈ {:.2} 个帧周期，首帧 − 门控开始 {:.1} ms，门控结束 − 末帧 {:.1} ms",
                     f - r,
                     (f - r) / period_ms,
                     a - r,
@@ -767,7 +771,7 @@ fn main() {
                 _ => String::new(),
             };
             say!(
-                "  门控 {:.3}s ~ {:.3}s：{} 帧；首帧到达 − 看到上升沿 {:.1} ms，末帧到达 − 看到下降沿 {:.1} ms，下降沿之后又来 {after} 帧{clock}",
+                "  门控 {:.3}s ~ {:.3}s：{} 帧；首帧到达 − 看到门控开始 {:.1} ms，末帧到达 − 看到门控结束 {:.1} ms，门控结束之后又来 {after} 帧{clock}",
                 rise.0 / 1000.0,
                 fall.0 / 1000.0,
                 inside.len(),
@@ -787,7 +791,7 @@ fn main() {
                 )
             };
             say!(
-                "  合计 {} 次门控：首帧到达 − 上升沿 {}；末帧到达 − 下降沿 {}（负数 = 末帧在看到下降沿之前就到了）；下降沿之后最多又来 {after_max} 帧",
+                "  合计 {} 次门控：首帧到达 − 门控开始 {}；末帧到达 − 门控结束 {}（负数 = 末帧在看到门控结束之前就到了）；门控结束之后最多又来 {after_max} 帧",
                 last_lags.len(),
                 span(&mut first_lags),
                 span(&mut last_lags)

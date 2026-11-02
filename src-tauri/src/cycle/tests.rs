@@ -64,6 +64,7 @@ fn armed_part_with(
         image_measurement: false,
         proc_timeout: Duration::from_secs(1),
         drain_timeout: Duration::from_secs(2),
+        gate: None,
         admitted_at: Instant::now(),
         end_at: None,
         fault: None,
@@ -381,6 +382,36 @@ fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result(
     let judgement = judge_burst(&mut p);
     let record = p.burst_record(&burst::summary(&judgement));
     assert_eq!(record.frames.iter().find(|frame| frame.camera == 0 && frame.seq == 5).unwrap().status, FrameState::Measured);
+}
+
+/// 防的回归（D-SB-54）：PLC 报结束后不管门控已关闭都固定等满收尾窗口；或门控还开着（还有帧要来）就提前收尾、丢掉后面的帧。
+#[test]
+fn closed_gate_ends_the_drain_after_the_guard_but_an_open_gate_waits_for_the_window() {
+    let gate = Arc::new(crate::gate::Gate::default());
+    let mut p = burst_part("gate-drain", &Ledgers::default());
+    p.gate = Some((gate.clone(), Duration::from_millis(80)));
+    deliver_groups(&mut p, 4);
+    end(&mut p, Some(0), false);
+    let now = Instant::now();
+    for cam in 0..3 {
+        gate.observe(cam, true, now);
+    }
+    assert!(!p.complete(), "门控还开着：等收尾窗口");
+    for cam in 0..3 {
+        gate.observe(cam, false, now);
+    }
+    assert!(!p.complete(), "刚看到关闭：最后一帧可能还在路上，等满余量");
+    let closed = Instant::now() - Duration::from_millis(100);
+    for cam in 0..3 {
+        gate.observe(cam, true, closed - Duration::from_millis(1));
+        gate.observe(cam, false, closed);
+        gate.observe(cam, false, Instant::now());
+    }
+    assert!(p.complete(), "关闭已满余量：不再等收尾窗口");
+    assert!(
+        p.receive_burst(&burst_frame(0, 5)).is_none(),
+        "截止后到的帧不收"
+    );
 }
 
 #[test]
