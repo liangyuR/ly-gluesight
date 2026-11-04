@@ -71,6 +71,15 @@ impl TestPlc {
     }
 
     fn fault(&self, fault: Fault) { self.server.inject(fault); }
+
+    /// PLC 复位信号，模板默认地址 DB4.DBX14.0
+    fn reset_signal(&self, level: bool) {
+        self.memory
+            .lock()
+            .unwrap()
+            .set_bit(4, 14, 0, level)
+            .unwrap();
+    }
 }
 
 struct Rig {
@@ -278,6 +287,64 @@ async fn software_reset_waits_for_plc_idle_before_ready() {
         SessionEvent::Ready
     ));
     assert_eq!(rig.plc.pc(), state::PC_READY);
+    rig.finish().await;
+}
+
+/// PLC 复位信号由 0 变 1 等同操作员软件复位：PC 置 99，PLC 回空闲后就绪；信号保持为 1 不再触发。
+#[tokio::test]
+async fn reset_signal_rising_edge_runs_software_reset() {
+    let mut rig = Rig::new("reset-signal").await;
+    rig.plc.set(&[
+        (tag::PLC_REASON, 9),
+        (tag::PLC_STATE, state::PLC_FAULT as u32),
+    ]);
+    rig.fresh().await;
+    rig.session.poll(&rig.engine, false, true).await;
+    assert!(!rig.session.reset_signal(&rig.engine));
+    rig.plc.reset_signal(true);
+    rig.fresh().await;
+    let reset = rig.session.reset_signal(&rig.engine);
+    assert!(reset, "{:?}", rig.session.view());
+    rig.session.poll(&rig.engine, reset, true).await;
+    assert_eq!(rig.plc.pc(), state::PC_RESET);
+    rig.plc.set(&[
+        (tag::PLC_REASON, 0),
+        (tag::PLC_STATE, state::PLC_IDLE as u32),
+    ]);
+    rig.fresh().await;
+    assert!(!rig.session.reset_signal(&rig.engine));
+    assert!(matches!(
+        rig.session.poll(&rig.engine, false, true).await,
+        SessionEvent::Ready
+    ));
+    assert_eq!(rig.plc.pc(), state::PC_READY);
+    rig.finish().await;
+}
+
+/// 复位信号卡在 1：第一次读到就是 1、之后一直为 1 都不算上升沿，PC 不替现场清故障。
+#[tokio::test]
+async fn reset_signal_already_high_never_triggers_reset() {
+    let mut rig = Rig::new("reset-signal-held").await;
+    rig.plc.set(&[
+        (tag::PLC_REASON, 9),
+        (tag::PLC_STATE, state::PLC_FAULT as u32),
+    ]);
+    rig.plc.reset_signal(true);
+    for _ in 0..5 {
+        rig.fresh().await;
+        assert!(
+            !rig.session.reset_signal(&rig.engine),
+            "{:?}",
+            rig.session.view()
+        );
+        rig.session.poll(&rig.engine, false, true).await;
+    }
+    assert_eq!(
+        rig.session.view().reset_blocked_reason,
+        None,
+        "复位条件满足时仍不触发，才说明是按边沿判断"
+    );
+    assert_ne!(rig.plc.pc(), state::PC_RESET);
     rig.finish().await;
 }
 

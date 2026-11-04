@@ -40,6 +40,13 @@ impl PlcHost {
                 &format!("已去掉 {retired} 个示教握手（DB6/DB12）点位，示教握手已停用"),
             );
         }
+        if let Some(address) = inspection::add_reset_signal(&mut config) {
+            crate::applog::write(
+                "info",
+                "PLC 配置",
+                &format!("已加入 PLC 复位信号点位 {address}，保存 PLC 配置后写入 plc.json"),
+            );
+        }
         let handle = app.clone();
         let last_link = std::sync::Mutex::new(None);
         let engine_log = Arc::new(Mutex::new(Throttle::new(throttle::WINDOW)));

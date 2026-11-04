@@ -347,6 +347,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
           tagPresets={tagPresets}
           blockedReason={blockedReason}
           templateLocked={!editing.isNew && isHandshakePoint(editing.point)}
+          addressEditable={editing.point.tags.includes("resetSignal")}
           onSave={upsertPoint}
           onClose={() => setEditing(null)}
         />
