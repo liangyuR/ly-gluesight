@@ -87,8 +87,8 @@
 
 | code | 触发 | data |
 |---|---|---|
-| `s7.fault_output` | PC 撤下输出（故障时置 pcState=90、faultCode=101，待复位时置 pcState=0），或因无法确认而断开通讯 | `cause`（触发路径，含 `reset_operator`、`reset_timeout`）、`reason`、`phase` |
-| `s7.reset.request` | 收到复位：操作员软件复位，或 PLC 置复位请求（plcState=99） | `source: operator / plc`、收到时的 `phase` |
+| `s7.fault_output` | PC 撤下输出（故障时置 pcState=90、faultCode=101，待复位时置 pcState=0），或因无法确认而断开通讯 | `cause`（触发路径，含 `reset_operator`、`reset_signal`、`reset_timeout`）、`reason`、`phase` |
+| `s7.reset.request` | 收到复位：操作员软件复位、PLC 复位信号上升沿，或 PLC 置复位请求（plcState=99）；PLC 复位信号被拒也记 | `source: operator / plc_signal / plc`、收到时的 `phase`；被拒时 `ok: false`、`error` |
 | `s7.reset.done` | 复位完成、视觉就绪 | 无 |
 | `s7.ack` | 收到结果确认 | `requestSeq`、`resultCode`、`faultCode` |
 | `s7.reconnect.forced` | 无法确认撤下 pcState，主动断开重连 | `error` |

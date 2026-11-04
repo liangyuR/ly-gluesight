@@ -226,6 +226,10 @@ pub struct PlcSession {
     reset_blocked_reason: Option<String>,
     /// 操作员已请求软件复位、尚未发出 pcState=99 或完成：在途件先按故障中断，追溯落盘后接着复位，不必再点一次
     reset_carry: bool,
+    /// PLC 复位信号最近一次读到的电平及所在连接：同一连接里先 0 后 1 才算上升沿
+    reset_signal: Option<(i64, bool)>,
+    /// 本拍复位请求的来源：operator（在线检测页）或 plc_signal（PLC 复位信号）
+    reset_source: &'static str,
     /// 设备未就绪或暂停接件时本侧把 pcState 置 0（不是外部改写）
     withdrawn: bool,
     /// 空闲时外部改写视觉输出后自动重写的时刻
@@ -300,6 +304,8 @@ impl PlcSession {
             message: Some(message),
             reset_blocked_reason: Some("正在核对复位条件".into()),
             reset_carry: false,
+            reset_signal: None,
+            reset_source: "operator",
             withdrawn: false,
             restores: Vec::new(),
             mode: 0,
@@ -576,6 +582,32 @@ impl PlcSession {
         self.poll_with_devices(engine, reset_requested, &devices, audit_ready, intake_ready).await
     }
 
+    /// PLC 复位信号的上升沿等同操作员软件复位，返回 true 时由节拍按软件复位发起；连接时已为 1 或保持高电平都不触发，复位前置检查不满足时拒绝并记日志。
+    pub fn reset_signal(&mut self, engine: &PlcEngine) -> bool {
+        let since = engine.status().since;
+        let level = self
+            .contract
+            .as_ref()
+            .and_then(|contract| contract.reset_signal(engine));
+        let previous = std::mem::replace(&mut self.reset_signal, level.map(|level| (since, level)));
+        if level != Some(true) || previous != Some((since, false)) {
+            return false;
+        }
+        let mut data = json!({"source": "plc_signal", "phase": format!("{:?}", self.phase)});
+        if let Some(reason) = &self.reset_blocked_reason {
+            data["ok"] = json!(false);
+            data["error"] = json!(reason);
+            applog::emit_event(
+                &codes::S7_RESET_REQUEST,
+                &format!("PLC 复位信号被拒：{reason}"),
+                Fields::default().with_data(data),
+            );
+            return false;
+        }
+        self.reset_source = "plc_signal";
+        true
+    }
+
     /// 设备未就绪时带上具体原因：复位被拒时提示操作员缺什么。
     pub async fn poll_with_devices(&mut self, engine: &PlcEngine, reset_requested: bool, devices: &Result<(), String>, audit_ready: bool, intake_ready: bool) -> SessionEvent {
         let event = match self.poll_inner(engine, reset_requested, devices, audit_ready, intake_ready).await {
@@ -587,6 +619,7 @@ impl PlcSession {
             }
         };
         self.reset_blocked_reason = self.check_reset_ready(engine, devices).err();
+        self.reset_source = "operator";
         event
     }
 
@@ -716,10 +749,11 @@ impl PlcSession {
             return Err(error.clone());
         }
         if reset_requested {
-            let data = json!({"source": "operator", "phase": format!("{:?}", self.phase)});
+            let signal = self.reset_source == "plc_signal";
+            let data = json!({"source": self.reset_source, "phase": format!("{:?}", self.phase)});
             applog::emit_event(
                 &codes::S7_RESET_REQUEST,
-                "收到复位（operator）",
+                &format!("收到复位（{}）", self.reset_source),
                 Fields::default().with_data(data),
             );
             match self.phase {
@@ -727,12 +761,21 @@ impl PlcSession {
                     self.phase = SessionPhase::ResetRequired;
                     self.fault_written = false;
                     self.fault_attempted = None;
-                    self.fault_cause = "reset_operator";
+                    self.fault_cause = if signal {
+                        "reset_signal"
+                    } else {
+                        "reset_operator"
+                    };
                 }
                 SessionPhase::ResetRequired | SessionPhase::Fault => {}
                 _ => {
                     self.reset_carry = true;
-                    return Err("操作员软件复位：在途工件中断，记录后继续复位".into());
+                    let source = if signal {
+                        "PLC 复位信号"
+                    } else {
+                        "操作员软件复位"
+                    };
+                    return Err(format!("{source}：在途工件中断，记录后继续复位"));
                 }
             }
             self.reset_carry = true;

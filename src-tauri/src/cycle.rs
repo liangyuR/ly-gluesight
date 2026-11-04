@@ -2438,6 +2438,9 @@ impl Machine {
                     return;
                 }
             };
+            if self.s7.reset_signal(plc(&app)) {
+                self.s7_reset_requested = true;
+            }
             let resetting = matches!(
                 self.s7.phase(),
                 SessionPhase::ResetRequired | SessionPhase::Fault

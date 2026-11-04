@@ -47,6 +47,9 @@ const FIELDS: &[Field] = &[
     output(tag::SN_ECHO, DataType::String),
 ];
 
+/// 可不配的 PLC 输入：没有点位时对应功能关闭，配了就按握手字段同样校验。
+const OPTIONAL_FIELDS: &[Field] = &[input(tag::RESET_SIGNAL, DataType::Bool)];
+
 const PROTOCOL_6: &str = "协议 6 的握手标签已停用";
 
 /// 已停用的握手标签（D-0 不兼容旧配置）：旧点表直接拒绝，并说清原因。
@@ -135,10 +138,17 @@ impl Contract {
         }
         let mut ids = HashMap::new();
         let mut locations = Vec::new();
-        for field in FIELDS {
+        let fields = FIELDS
+            .iter()
+            .map(|f| (f, false))
+            .chain(OPTIONAL_FIELDS.iter().map(|f| (f, true)));
+        for (field, optional) in fields {
             let matches: Vec<_> = config.points.iter().filter(|p| p.tags.iter().any(|t| t == field.tag)).collect();
-            let [point] = matches.as_slice() else {
-                return Err(format!("握手标签 {} 必须且只能配置一个点位", field.tag));
+            let point = match matches.as_slice() {
+                [point] => *point,
+                [] if optional => continue,
+                _ if optional => return Err(format!("标签 {} 最多只能配置一个点位", field.tag)),
+                _ => return Err(format!("握手标签 {} 必须且只能配置一个点位", field.tag)),
             };
             // 报错用地址表里看得到的名称和地址定位点位，标签放括号里备查
             let label = format!("{}（{} · {}）", point.name, field.tag, point.address);
@@ -237,8 +247,15 @@ impl Contract {
             };
             return Err(format!("{tag} 读取失败：{error}{hint}"));
         }
-        let value = point.value.as_ref().ok_or_else(|| format!("{tag} 没有有效值"))?;
-        let field = FIELDS.iter().find(|f| f.tag == tag).ok_or_else(|| format!("未知握手标签：{tag}"))?;
+        let value = point
+            .value
+            .as_ref()
+            .ok_or_else(|| format!("{tag} 没有有效值"))?;
+        let field = FIELDS
+            .iter()
+            .chain(OPTIONAL_FIELDS)
+            .find(|f| f.tag == tag)
+            .ok_or_else(|| format!("未知握手标签：{tag}"))?;
         let valid = match (field.data_type, value) {
             (DataType::Bool, PlcValue::Bool(_)) => true,
             (DataType::I16, PlcValue::Int(_)) if tag == tag::PLC_HEARTBEAT => true,
@@ -252,6 +269,19 @@ impl Contract {
             return Err(format!("{tag} 的值与 {:?} 类型不符", field.data_type));
         }
         Ok(value)
+    }
+
+    /// PLC 复位信号当前电平：没配点位、配置已变、未连接、没读到或读取出错时为 None，不影响握手。
+    pub(crate) fn reset_signal(&self, engine: &PlcEngine) -> Option<bool> {
+        self.ids.get(tag::RESET_SIGNAL)?;
+        if engine.status().state != LinkState::Connected || engine.config() != self.config {
+            return None;
+        }
+        let values = engine.values();
+        match self.value(&values, tag::RESET_SIGNAL) {
+            Ok(PlcValue::Bool(level)) => Some(*level),
+            _ => None,
+        }
     }
 
     fn sn_header_broken(&self, values: &HashMap<String, PointValue>, tag: &str) -> bool {

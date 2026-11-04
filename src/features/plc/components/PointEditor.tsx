@@ -14,13 +14,15 @@ interface PointEditorProps {
   blockedReason?: string;
   /** 握手点位由模板定义：只允许改描述和记录变化。 */
   templateLocked?: boolean;
+  /** 模板点位中地址可由现场修改的（PLC 复位信号）。 */
+  addressEditable?: boolean;
   onSave: (point: PlcPoint) => void;
   onClose: () => void;
 }
 
 export const templateLockedHint = "握手点位由模板定义，调整地址请使用「重置 S7 通讯配置」";
 
-export default function PointEditor({ initial, isNew, existingIds, connection, tagPresets, blockedReason = "", templateLocked = false, onSave, onClose }: PointEditorProps) {
+export default function PointEditor({ initial, isNew, existingIds, connection, tagPresets, blockedReason = "", templateLocked = false, addressEditable = false, onSave, onClose }: PointEditorProps) {
   const [p, setP] = useState<PlcPoint>(initial);
   const [error, setError] = useState("");
   const [check, setCheck] = useState<{ ok: boolean; text: string } | null>(null);
@@ -66,23 +68,36 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
   const submit = async () => {
     if (pending.current) return;
     if (blocked.current) return setError(blocked.current);
-    if (templateLocked) return onSave({ ...initial, description: p.description, logChanges: p.logChanges });
+    if (templateLocked && !addressEditable) return onSave({ ...initial, description: p.description, logChanges: p.logChanges });
+    if (!p.address.trim()) return setError("地址不能为空");
     const id = p.id.trim();
     if (!id) return setError("ID 不能为空");
     if (!p.name.trim()) return setError("名称不能为空");
-    if (!p.address.trim()) return setError("地址不能为空");
     if (existingIds.includes(id) && (isNew || id !== initial.id)) return setError("ID 已存在");
     pending.current = true; setSaving(true); setError("");
     try {
       await plcApi.checkAddress(connection, p.address.trim(), p.dataType);
       if (mounted.current) {
         if (blocked.current) setError(blocked.current);
+        else if (templateLocked) onSave({ ...initial, address: p.address.trim(), description: p.description, logChanges: p.logChanges });
         else onSave({ ...p, id, name: p.name.trim(), address: p.address.trim() });
       }
     } catch (e) { if (mounted.current) setError(String(e)); }
     finally { pending.current = false; if (mounted.current) setSaving(false); }
   };
 
+  const addressUnlocked = templateLocked && addressEditable;
+  const addressField = <div className="plc-wide">
+    <TextField
+      label={`地址（${meta.label}）`}
+      placeholder={meta.examples.slice(0, 4).join("  ")}
+      value={p.address}
+      onChange={(e) => update({ address: e.target.value })}
+      error={check && !check.ok ? check.text : undefined}
+      description={check?.ok ? <span className="addr-check ok">{check.text}</span>
+        : <>{meta.hint}<br />示例：<span className="mono">{meta.examples.join("  ")}</span></>}
+    />
+  </div>;
   const presetValues = new Set(tagPresets.map((t) => t.value));
   const customTags = p.tags.filter((t) => !presetValues.has(t));
 
@@ -100,24 +115,14 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
       }
     >
       {blockedReason && <Alert tone="warn">{blockedReason}</Alert>}
-      {templateLocked && <Alert tone="info">{templateLockedHint}；这里只能改描述和是否记录变化。</Alert>}
+      {templateLocked && <Alert tone="info">{addressUnlocked ? "该点位由模板定义；这里只能改地址、描述和是否记录变化。" : `${templateLockedHint}；这里只能改描述和是否记录变化。`}</Alert>}
       <fieldset disabled={saving || !!blockedReason} style={{ border: 0, padding: 0, margin: 0 }}>
         <Grid minWidth={260} gap={14}>
           <fieldset disabled={templateLocked} title={templateLocked ? templateLockedHint : undefined} className="plc-wide plc-editor-locked">
           <Grid minWidth={260} gap={14}>
           <TextField label="名称" value={p.name} onChange={(e) => update({ name: e.target.value })} />
           <TextField label="ID" value={p.id} onChange={(e) => update({ id: e.target.value })} />
-          <div className="plc-wide">
-            <TextField
-              label={`地址（${meta.label}）`}
-              placeholder={meta.examples.slice(0, 4).join("  ")}
-              value={p.address}
-              onChange={(e) => update({ address: e.target.value })}
-              error={check && !check.ok ? check.text : undefined}
-              description={check?.ok ? <span className="addr-check ok">{check.text}</span>
-                : <>{meta.hint}<br />示例：<span className="mono">{meta.examples.join("  ")}</span></>}
-            />
-          </div>
+          {!addressUnlocked && addressField}
           <Select label="数据类型" value={p.dataType} onValueChange={(v) => update({ dataType: v as DataType, wordOrder: v === "bool" || isText(v as DataType) ? null : p.wordOrder })}
             options={Object.entries(dataTypeLabels).map(([k, v]) => ({ value: k, label: v }))} />
           <Select label="字节序" value={p.wordOrder ?? ""} disabled={!isMultiWord(p.dataType) && p.dataType !== "u16" && p.dataType !== "i16"}
@@ -161,6 +166,7 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
           </div>
           </Grid>
           </fieldset>
+          {addressUnlocked && addressField}
           <div className="plc-wide">
             <TextField label="描述" value={p.description} onChange={(e) => update({ description: e.target.value })} />
           </div>
