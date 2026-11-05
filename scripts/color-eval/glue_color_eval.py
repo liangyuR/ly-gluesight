@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -172,9 +173,10 @@ def run(spec_path: Path, out: Path) -> int:
     if not (isinstance(width_max, (int, float)) and width_max > 0):
         raise EvalError("标注文件需要正的 widthMaxPx（检测胶宽上限，px）")
     diameter = int(np.ceil(width_max)) + 1
-    base = Path(spec.get("imageDir") or spec_path.parent)
-    if not base.is_absolute():
-        base = spec_path.parent / base
+    base = spec_path.parent
+    if spec.get("imageDir"):
+        image_dir = Path(spec["imageDir"])
+        base = image_dir if image_dir.is_absolute() else spec_path.parent / image_dir
     images = spec.get("images") or []
     if not any(p.get("kind") == "glue" for im in images for p in im.get("probes", [])):
         raise EvalError("标注文件里没有胶探针（kind: glue）")
@@ -248,11 +250,14 @@ def summarize(rows: list, resp_rows: list, bright: dict) -> list:
         distractors = [r for r in resp_rows if r["channel"] == name and r["kind"] == "distractor"]
         worst = max(distractors, key=lambda r: r["peak"], default=None)
         worst_ratio = worst["peak"] / glue_all if worst and glue_all > 0 else None
-        consistent = len(signs) == 1
+        split = sum(not r["sidesAgree"] for r in mine)
+        consistent = len(signs) == 1 and not split
         dmin = min(abs(r["dprime"]) for r in mine)
         problems = []
-        if not consistent:
+        if len(signs) > 1:
             problems.append("胶的明暗方向随探针变化，单一极性测不全")
+        if split:
+            problems.append(f"{split} 个探针上胶比一侧背景亮、比另一侧暗，单一极性测不全")
         if dmin < MIN_DPRIME:
             problems.append(f"最弱处对比度只有背景噪声的 {dmin:.1f} 倍（< {MIN_DPRIME:g}）")
         if len(per_mat) > 1 and ratio < MIN_MATERIAL_RATIO:
@@ -323,6 +328,15 @@ def print_summary(summary: list, diameter: int, out: Path) -> None:
     print(f"\n明细：{out / 'report.json'}、{out / 'probes.csv'}；各图通道与响应：{out}\\*_channels.png")
 
 
+def image_dir_for(spec_path: Path, image_dir: Path) -> str:
+    """标注文件里的 imageDir 按标注文件所在目录解析（与 run 一致）；跨盘符时写绝对路径。"""
+    target = image_dir.resolve()
+    try:
+        return Path(os.path.relpath(target, spec_path.resolve().parent)).as_posix()
+    except ValueError:
+        return str(target)
+
+
 def init_spec(image_dir: Path, spec_path: Path) -> int:
     files = sorted(p.name for p in image_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
     if not files:
@@ -336,7 +350,7 @@ def init_spec(image_dir: Path, spec_path: Path) -> int:
             {"kind": "glue", "material": "镀锌", "p0": [600, 300], "p1": [660, 300], "halfWidthPx": 12},
             {"kind": "distractor", "label": "焊缝", "p0": [500, 520], "p1": [560, 520]},
         ],
-        "imageDir": str(image_dir),
+        "imageDir": image_dir_for(spec_path, image_dir),
         "widthMaxPx": 40,
         "bayer": ({"pattern": "BG", "width": 1280, "height": 1024}
                   if any(f.lower().endswith(".raw") for f in files) else None),
