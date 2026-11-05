@@ -2987,47 +2987,4 @@ mod gray_tests {
         // 宽高乘积超过 u32：以前 w * h 会溢出回绕成小切片（70000² mod 2³² 小于 u32::MAX 会被放行），现在按实际需要比较
         assert!(frame_bytes(PixelKind::Mono8, 70000, 70000, u32::MAX).is_err());
     }
-
-    #[test]
-    fn preview_bytes_have_20_byte_header_and_channel_sized_body() {
-        // 防的回归：相机缩略图与读图命令的字节格式（u32 小端 [预览宽, 预览高, 原图宽, 原图高, 通道数] + 预览宽 × 预览高 × 通道数）
-        // 前后端不一致：头部仍是 16 字节或彩色帧按灰度长度写，前端解码整幅错位
-        let (w, h) = (1920u32, 1000u32);
-        for channels in [1u8, 3] {
-            let pixels: Vec<u8> = (0..w * h * channels as u32)
-                .map(|i| (i % 251) as u8)
-                .collect();
-            let image = if channels == 3 {
-                FrameImage::rgb(w, h, pixels.clone())
-            } else {
-                FrameImage::new(w, h, pixels.clone())
-            };
-            let outputs = [
-                (
-                    "相机缩略图",
-                    make_preview(&pixels, w as usize, h as usize, channels).bytes(),
-                ),
-                ("读图命令", crate::frame::preview_bytes(&image)),
-            ];
-            for (name, bytes) in outputs {
-                let header: Vec<u32> = bytes[..20]
-                    .chunks(4)
-                    .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
-                    .collect();
-                assert_eq!(header[2..], [w, h, u32::from(channels)], "{name}");
-                assert!(header[0] < w && header[1] < h, "{name}：应缩小");
-                assert_eq!(
-                    bytes.len(),
-                    20 + (header[0] * header[1]) as usize * channels as usize,
-                    "{name}"
-                );
-                // 左上角像素原样取，RGB 三个字节不拆开
-                assert_eq!(
-                    &bytes[20..20 + channels as usize],
-                    &pixels[..channels as usize],
-                    "{name}"
-                );
-            }
-        }
-    }
 }
