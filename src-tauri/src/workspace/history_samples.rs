@@ -16,7 +16,10 @@ fn managed_part(root: &Path, detail: &PartDetail, recipe: &Recipe) -> Result<(Sa
     }
     let reference = detail.summary.sample.as_ref().ok_or("候选调试历史没有样本件引用，不能确定离线样本原图")?;
     let set = crate::managed_samples::load_by_id(root, &reference.set_id)?;
-    if set.reference(&reference.part_id).as_ref() != Some(reference) {
+    if !set
+        .reference(&reference.part_id)
+        .is_some_and(|r| r.same_part(reference))
+    {
         return Err("受管样本件的 ID、SN 或标签与历史引用不一致，拒绝关联原图".into());
     }
     Ok((set, reference.clone()))
@@ -27,6 +30,8 @@ fn managed_part(root: &Path, detail: &PartDetail, recipe: &Recipe) -> Result<(Sa
 pub(super) struct BurstSamples {
     set: SampleSet,
     part_id: String,
+    /// 取图时按彩色读的相机（见 `SampleRef::color_cameras`）
+    color_cameras: Vec<String>,
     /// 按计划相机顺序：(相机编号, 这台相机按清单顺序的拍照点编号)
     frames: Vec<(String, Vec<String>)>,
 }
@@ -38,17 +43,71 @@ impl BurstSamples {
             return Err("历史记录的计划相机与冻结配方快照不一致，不能确定样本原图".into());
         }
         let (set, reference) = managed_part(root, detail, recipe)?;
-        let frames = burst.cameras.iter().map(|camera| {
-            (camera.clone(), set.manifest().shots.iter().filter(|shot| &shot.camera_id == camera).map(|shot| shot.shot_id.clone()).collect())
-        }).collect();
-        Ok(Self { set, part_id: reference.part_id, frames })
+        let frames = burst
+            .cameras
+            .iter()
+            .map(|camera| {
+                (
+                    camera.clone(),
+                    set.manifest()
+                        .shots
+                        .iter()
+                        .filter(|shot| &shot.camera_id == camera)
+                        .map(|shot| shot.shot_id.clone())
+                        .collect(),
+                )
+            })
+            .collect();
+        Ok(Self {
+            set,
+            part_id: reference.part_id,
+            color_cameras: reference.color_cameras,
+            frames,
+        })
     }
 
-    /// 第 camera 台计划相机第 seq 帧组（从 1 起）的样本原图；`color` 为这台相机是彩色模式（按 RGB 读）。
-    pub(super) fn load(&self, camera: usize, seq: u64, color: bool) -> Result<FrameImage, String> {
+    /// 第 camera 台计划相机第 seq 帧组（从 1 起）的样本原图，按取图时这台相机的图像模式读（彩色读 RGB）。
+    pub(super) fn load(&self, camera: usize, seq: u64) -> Result<FrameImage, String> {
         let (camera_id, shots) = self.frames.get(camera).ok_or("相机下标超出本件计划相机")?;
         let shot = usize::try_from(seq).ok().and_then(|seq| seq.checked_sub(1)).and_then(|index| shots.get(index))
             .ok_or_else(|| format!("样本集里相机 {camera_id} 只有 {} 帧，没有第 {seq} 帧组", shots.len()))?;
+        let color = self.color_cameras.contains(camera_id);
         self.set.load_view(&self.part_id, shot, camera_id, 1, color)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_sample_decodes_by_camera_mode_recorded_at_acquisition() {
+        // 防的回归：读候选离线调试记录的样本原图时按现在的相机图像模式决定彩色 / 灰度，改了相机设置，
+        // 历史原图、复测输入与对照叠图跟着变，甚至通道与示教不一致而报错
+        let dir = crate::offline::test_dir::TestDir::new("history-samples", "mode");
+        let images = dir.join("parts/p01");
+        std::fs::create_dir_all(&images).unwrap();
+        image::RgbImage::from_pixel(4, 4, image::Rgb([230, 120, 130]))
+            .save(images.join("S001_cam1_v1.png"))
+            .unwrap();
+        std::fs::write(
+            dir.join("sample-set.json"),
+            serde_json::json!({
+                "schemaVersion": 1, "id": "s", "name": "s", "source": "s", "imageSize": [4, 4], "mmPerPx": null,
+                "cameras": [{"id": "cam1", "views": [1]}],
+                "shots": [{"shotId": "S001", "cameraId": "cam1", "views": [1]}],
+                "parts": [{"partId": "p01", "sn": "SN", "label": "unknown"}],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let samples = |color_cameras: Vec<String>| BurstSamples {
+            set: SampleSet::load(&dir).unwrap(),
+            part_id: "p01".into(),
+            color_cameras,
+            frames: vec![("cam1".into(), vec!["S001".into()])],
+        };
+        assert_eq!(samples(vec!["cam1".into()]).load(0, 1).unwrap().channels, 3);
+        assert_eq!(samples(Vec::new()).load(0, 1).unwrap().channels, 1);
     }
 }

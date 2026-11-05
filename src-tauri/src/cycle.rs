@@ -2967,7 +2967,20 @@ impl Machine {
             RecordSource::OfflineSample | RecordSource::OfflineCandidate
         ))
         .then(|| crate::offline::claim_sample(&self.app, sn, &cycle_id))
-        .flatten();
+        .flatten()
+        .map(|mut sample| {
+            // 记下取图时按彩色读样本的相机：之后改相机图像模式，历史读到的原图不变
+            sample.color_cameras = self
+                .app
+                .state::<CycleHost>()
+                .camera
+                .configs()
+                .into_iter()
+                .filter(|c| c.image_mode.color())
+                .map(|c| c.id)
+                .collect();
+            sample
+        });
         Ok(RecordedPart {
             ts: now_ms(),
             sn: sn.to_owned(),

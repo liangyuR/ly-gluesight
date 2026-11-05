@@ -243,13 +243,7 @@ pub(super) fn frame_image(
         .get(camera)
         .ok_or("相机下标超出本件计划相机")?;
     if detail.summary.source == RecordSource::OfflineCandidate {
-        let color = app
-            .state::<CycleHost>()
-            .camera
-            .configs()
-            .iter()
-            .any(|c| &c.id == camera_id && c.image_mode.color());
-        return burst_samples(app, detail)?.load(camera, seq, color);
+        return burst_samples(app, detail)?.load(camera, seq);
     }
     let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId，不能确定对应原图")?;
     recorded::load_frame_verified(app.state::<CycleHost>().recorders.root(detail.summary.source), cycle_id, camera_id, frame)
