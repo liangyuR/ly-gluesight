@@ -87,6 +87,26 @@ fn measure(
 }
 
 #[test]
+fn frame_whose_color_mode_differs_from_the_taught_frame_fails_before_measuring() {
+    // 防的回归：相机图像模式改了（灰度示教、彩色生产或反过来），lyFlow 照样能把 RGB 转灰度量，结果却与示教口径不可比，
+    // 却不报错地给出判定
+    let doc = burst_doc();
+    let recipe = doc.build().unwrap();
+    let gray_taught = CorridorSet::build(&recipe, &[FRAME; 3]).unwrap().with_channels(&[1, 1, 1]);
+    let FrameGraph::Corridor(c) = gray_taught.get(0, 1).unwrap() else { panic!("应是示教走廊") };
+    let n = (FRAME[0] * FRAME[1]) as usize;
+    let color = FrameImage::rgb(FRAME[0], FRAME[1], vec![0; n * 3]);
+    let ran = std::cell::Cell::new(false);
+    let result = measure_frame_with(c, &color, 7, |_, _| {
+        ran.set(true);
+        Ok(corridor_output(&beads(&[], &[])))
+    });
+    assert!(result.is_err() && !ran.get(), "彩色帧量了灰度示教的走廊");
+    let gray = FrameImage::new(FRAME[0], FRAME[1], vec![0; n]);
+    assert!(measure_frame_with(c, &gray, 7, |_, _| Ok(corridor_output(&beads(&[], &[])))).is_ok());
+}
+
+#[test]
 fn malformed_engine_output_fails_only_that_frame() {
     // 防的回归（规格 §0 一帧失败只影响本帧）：输出不合契约（缺记录、站数、弧长、中线、暗段字段）或图像尺寸不对时
     // panic、拿错位的数据算指标，或把走廊测量图弄坏、后面正常的帧也测不了

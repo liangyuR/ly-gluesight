@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { errorText } from "../../lib/errors";
-import { GrayViewer } from "./components";
+import { FrameViewer } from "./components";
 import { FrameGrid } from "./FrameGrid";
-import type { GrayImage } from "./types";
+import type { FrameImage } from "./types";
 import "./capture.css";
 
 /**
@@ -11,13 +11,13 @@ import "./capture.css";
  */
 export function FrameBrowser({ source, label, cameras, groupCount, read }: {
   source: string; label: string; cameras: { id: string; name: string }[]; groupCount: number;
-  read: (camera: number, seq: number) => Promise<GrayImage>;
+  read: (camera: number, seq: number) => Promise<FrameImage>;
 }) {
   const [camera, setCamera] = useState(0);
   const [seq, setSeq] = useState(1);
   const reader = useRef(read); reader.current = read;
   const key = JSON.stringify([source, camera, seq]);
-  const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string }>({ key: "", image: null, error: "" });
+  const [state, setState] = useState<{ key: string; image: FrameImage | null; error: string }>({ key: "", image: null, error: "" });
   useEffect(() => {
     if (!groupCount || !cameras.length) return;
     let alive = true;
@@ -31,7 +31,7 @@ export function FrameBrowser({ source, label, cameras, groupCount, read }: {
   return <div className="wp-frame-browser">
     {groupCount > 0 && <FrameGrid label="相机与帧组" cameras={cameras} groupCount={groupCount} camera={camera} seq={seq}
       onSelect={(c, s) => { setCamera(c); setSeq(s); }} />}
-    <GrayViewer image={shown?.image ?? null} loading={!!groupCount && !shown} error={shown?.error ?? ""}
+    <FrameViewer image={shown?.image ?? null} loading={!!groupCount && !shown} error={shown?.error ?? ""}
       label={`${label} · ${name} · 帧组 ${seq}`} emptyTitle="没有图像" emptyHint="这一件没有可读的帧组。" />
   </div>;
 }

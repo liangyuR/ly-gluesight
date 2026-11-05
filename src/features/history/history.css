@@ -46,7 +46,7 @@
 /* 段配方：没有曲线面板，判定栏只占第一行 */
 .detail-grid.burst { grid-template-rows: auto auto; }
 .detail-grid.burst .side { grid-row: 1; }
-/* 三台相机同一帧组的原图并排；画布高度跟格子宽度走（GrayViewer 已按图像宽高设 aspect-ratio），选中的相机描边 */
+/* 三台相机同一帧组的原图并排；画布高度跟格子宽度走（FrameViewer 已按图像宽高设 aspect-ratio），选中的相机描边 */
 .hist-frame-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 8px; align-items: start; }
 .hist-frame-tile { display: flex; flex-direction: column; gap: 4px; min-width: 0; border: 1px solid transparent; border-radius: var(--r-sm); }
 .hist-frame-tile.selected { border-color: var(--primary); }

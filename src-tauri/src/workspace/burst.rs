@@ -71,6 +71,28 @@ pub(super) fn teaching_sizes(w: &Workspace) -> Result<Vec<[u32; 2]>, String> {
         .collect()
 }
 
+/// 各计划相机示教帧的通道数（计划相机顺序）：示教帧冻结时的相机标签是彩色模式为 3，否则为 1。
+pub(super) fn teaching_channels(w: &Workspace) -> Vec<u8> {
+    w.doc
+        .plan_cameras()
+        .iter()
+        .map(|camera| {
+            let color = w
+                .camera_teaching
+                .iter()
+                .find(|t| &t.camera == camera && t.segment.is_some())
+                .is_some_and(|t| {
+                    t.frame.camera_tag.get("imageMode").and_then(Value::as_str) == Some("color")
+                });
+            if color {
+                3
+            } else {
+                1
+            }
+        })
+        .collect()
+}
+
 /// 示教件的一次测量（RB-3）：用已示教的走廊按示教件分段量每一帧，得出胶偏参考 x_ref（示教件兼作标准件）、起涂收尾建议与定向统计。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -894,7 +916,12 @@ fn freeze_teaching_frame(
         .find(|c| c.id == camera)
         .ok_or_else(|| format!("相机 {camera} 已不在设备配置里"))?;
     let imaging = teaching_source(&captured, id, camera, seq, &state_value(&config))?.imaging;
-    let image = crate::image_file::load(&capture.burst_frame_path(round, camera, seq)?)?;
+    let source = capture.burst_frame_path(round, camera, seq)?;
+    crate::image_file::checked_source_path(&source)?;
+    let bytes =
+        std::fs::read(&source).map_err(|e| format!("读取 {} 失败：{e}", source.display()))?;
+    let image = crate::image_file::decode(&bytes)
+        .map_err(|e| format!("解码 {} 失败：{e}", source.display()))?;
     let calib = vision::camera_calib_path(app, &inspect)?;
     let default_scale = calib_scale(app, &inspect, config.source)?;
     let sample_set = crate::offline::sample_set(app).map(|set| set.manifest().id.clone());
@@ -905,7 +932,12 @@ fn freeze_teaching_frame(
     );
     let path = image_file(&host, id, &image_id)?;
     std::fs::create_dir_all(path.parent().ok_or("示教图像目录无效")?).map_err(|e| e.to_string())?;
-    crate::image_file::save_pgm_new(&path, &image)?;
+    // 彩色帧原样冻结录制的原始马赛克（读回即同一幅 RGB），灰度帧照旧重写成 P5
+    if image.is_color() {
+        crate::image_file::save_bytes_new(&path, &bytes)?;
+    } else {
+        crate::image_file::save_pgm_new(&path, &image)?;
+    }
     let frame = FrozenImage {
         id: image_id,
         view: 1,
@@ -1478,7 +1510,8 @@ pub async fn workspace_calibration_frame(
             });
         };
         let recipe = w.doc.build()?;
-        let graphs = vision::CorridorSet::build(&recipe, &teaching_sizes(&w)?)?;
+        let graphs = vision::CorridorSet::build(&recipe, &teaching_sizes(&w)?)?
+            .with_channels(&teaching_channels(&w));
         segment_frame_view(
             &app,
             &recipe,
@@ -1701,7 +1734,8 @@ pub async fn workspace_teach_preview_frame(
         let w = workspace_clone(&app, &id)?;
         let index = teach_frame_index(&app, &w, &camera, segment, &round, seq)?;
         let recipe = w.doc.build()?;
-        let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?;
+        let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
+            .with_channels(&teaching_channels(&w));
         segment_frame_view(
             &app,
             &recipe,
@@ -1757,7 +1791,8 @@ pub(crate) fn flow_debug_frame(
     let w = workspace_clone(app, id)?;
     let index = teach_frame_index(app, &w, camera, segment, round, seq)?;
     let recipe = w.doc.build()?;
-    let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?;
+    let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
+        .with_channels(&teaching_channels(&w));
     let cycle = app.state::<CycleHost>();
     crate::camera::check_idle(&cycle)?;
     let image = crate::image_file::load(
@@ -1795,7 +1830,8 @@ pub async fn workspace_teach_preview_segment(
         let captured = cycle.camera.recipe_capture().get_burst(&round)?;
         let scope = teach_preview_scope(&w, &captured, &camera, segment)?;
         let recipe = w.doc.build()?;
-        let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?;
+        let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
+            .with_channels(&teaching_channels(&w));
         if graphs.get(scope.index, segment).is_none() {
             return Err(format!("第 {segment} 段相机 {camera} 还没有示教走廊"));
         }

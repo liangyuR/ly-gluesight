@@ -60,6 +60,10 @@ pub(crate) fn extract(image: &FrameImage, roi: [u32; 4], polarity: Polarity, gui
     if !point_spacing_px.is_finite() || !(4.0..=80.0).contains(&point_spacing_px) {
         return Err("中线点间距需为 4–80 像素".into());
     }
+    // 提取按灰度做：彩色示教帧按亮度换算
+    if image.is_color() && image.consistent() {
+        return extract(&image.to_luma(), roi, polarity, guide, point_spacing_px);
+    }
     let [x, y, width, height] = roi;
     if width < 5 || height < 5 || x.checked_add(width).is_none_or(|v| v > image.width) || y.checked_add(height).is_none_or(|v| v > image.height)
         || u64::from(width) * u64::from(height) > 4_000_000 || image.pixels.len() as u64 != u64::from(image.width) * u64::from(image.height) {

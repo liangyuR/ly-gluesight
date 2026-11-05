@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn color_frame_enters_lyflow_as_three_channels_with_full_buffer() {
+    // 防的回归：注入 lyFlow 时通道数写死 1 或长度按 宽 × 高 校验，彩色帧被拒或只送前三分之一的字节，
+    // lyFlow 把 RGB 交错当灰度量出错位的胶边
+    let rgb: Vec<u8> = (0..2 * 2 * 3).collect();
+    let input = image_input(&FrameImage::rgb(2, 2, rgb.clone())).unwrap();
+    assert_eq!((input.channels, input.pixels), (3, rgb.clone()));
+    assert_eq!(
+        image_input(&FrameImage::new(2, 2, vec![1; 4]))
+            .unwrap()
+            .channels,
+        1
+    );
+    assert!(
+        image_input(&FrameImage::rgb(2, 2, rgb[..4].to_vec())).is_err(),
+        "RGB 缓冲按 宽 × 高 截断"
+    );
+}
+
+#[test]
 fn failed_calibration_image_write_keeps_previous_result() {
     let root = std::env::temp_dir().join(format!(
         "calibration-failed-{}-{}",

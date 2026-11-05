@@ -1,38 +1,25 @@
 import { desktopCall } from "../../lib/desktop";
+import { decodeFrame, frameImageData } from "../../lib/frame";
 import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { Check, Comparison, FrozenImage, GrayImage, HistoryCandidate, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
-
-function grayPreview(input: ArrayBuffer | number[]) {
-  const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
-  if (buf.byteLength < 16) throw new Error("原图预览数据为空");
-  const view = new DataView(buf);
-  const [w, h, width, height] = [0, 4, 8, 12].map(o => view.getUint32(o, true));
-  if (!w || !h || w * h > 40_000_000 || buf.byteLength < 16 + w * h) throw new Error("原图预览数据不完整");
-  return { w, h, width, height, bytes: new Uint8Array(buf, 16, w * h) };
-}
+import type { Check, Comparison, FrozenImage, FrameImage, HistoryCandidate, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
 
 let liveSeq = 0;
 
-/** 实时帧：保留灰度像素直接画到 canvas，不生成图片地址，避免浏览器把每一帧当作图片资源缓存与解码。 */
-export function liveGray(input: ArrayBuffer | number[]): GrayImage {
-  const { w, h, width, height, bytes } = grayPreview(input);
-  return { url: `live:${++liveSeq}`, width, height, pixels: { data: bytes, width: w, height: h } };
+/** 实时帧：保留像素直接画到 canvas，不生成图片地址，避免浏览器把每一帧当作图片资源缓存与解码。 */
+export function liveFrame(input: ArrayBuffer | number[]): FrameImage {
+  const { fullWidth, fullHeight, pixels } = decodeFrame(input);
+  return { url: `live:${++liveSeq}`, width: fullWidth, height: fullHeight, channels: pixels.channels, pixels };
 }
 
-export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayImage> {
-  const { w, h, width, height, bytes } = grayPreview(input);
-  const data = new ImageData(w, h);
-  for (let j = 0; j < w * h; j++) {
-    data.data[j * 4] = data.data[j * 4 + 1] = data.data[j * 4 + 2] = bytes[j];
-    data.data[j * 4 + 3] = 255;
-  }
+export async function decodeFrameImage(input: ArrayBuffer | number[]): Promise<FrameImage> {
+  const { fullWidth, fullHeight, pixels } = decodeFrame(input);
   const canvas = document.createElement("canvas");
-  canvas.width = w; canvas.height = h;
-  canvas.getContext("2d")!.putImageData(data, 0, 0);
-  return { url: canvas.toDataURL("image/png"), width, height };
+  canvas.width = pixels.width; canvas.height = pixels.height;
+  canvas.getContext("2d")!.putImageData(frameImageData(pixels), 0, 0);
+  return { url: canvas.toDataURL("image/png"), width: fullWidth, height: fullHeight, channels: pixels.channels };
 }
 
 export const workspaceApi = {
@@ -47,12 +34,12 @@ export const workspaceApi = {
   create: (doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_create", { doc }),
   remove: (id: string) => desktopCall<void>("workspace_delete", { id }),
   saveDoc: (id: string, revision: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, doc }),
-  image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeGray),
+  image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeFrameImage),
   validate: (id: string, revision: number, samples: Sample[], sourceConfirmed = false) => desktopCall<WorkspaceView>("workspace_validate", { id, revision, samples, sourceConfirmed }),
   retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),
   abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
   /** 导入件（轮次）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
-  captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeGray),
+  captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeFrameImage),
   /** 历史件选择器：本配方最近的真机录制件、能否选用与是否已被本候选使用（只读） */
   historyCandidates: (id: string) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id }),
   /** 导入这件并设为示教件；按 RB-2 / RB-8 清空图像派生内容，保留段列表结构 */
@@ -81,7 +68,7 @@ export const workspaceApi = {
   stationImport: (cam:number,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes,view}),
   /** 当前标定所用原图载入为冻结样本；没有可载入的原图为 null */
   stationRestore: (cam:number,view=1)=>desktopCall<FrozenImage|null>("workspace_station_restore",{cam,view}),
-  stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeGray),
+  stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeFrameImage),
 
   // ───── 段配方（分段连拍飞拍）：命令与参数见 docs/decisions/segment-burst.md 5.4，结果都在 WorkspaceView.plan ─────
   /** 在这台相机某段冻结的示教帧 imageId 上按选区提取走廊 */

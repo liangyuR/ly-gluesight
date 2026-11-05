@@ -875,9 +875,18 @@ fn image_file(host: &WorkspaceHost, id: &str, image_id: &str) -> Result<PathBuf,
     Ok(host.dir(id).join("images").join(format!("{image_id}.pgm")))
 }
 
-fn decode_imported_image(bytes: Vec<u8>) -> Result<FrameImage, String> {
+/// 导入的标定原图：PNM 按 `image_file::decode` 的规则读（带 Bayer 注释的读成 RGB）；其他格式彩色相机保留颜色读成 RGB，
+/// 灰度相机读成灰度。
+fn decode_imported_image(bytes: Vec<u8>, color: bool) -> Result<FrameImage, String> {
     if bytes.is_empty() || bytes.len() > 15_000_000 {
         return Err("原图不得为空，单图不得超过 15 MB".into());
+    }
+    let too_many = |w: u32, h: u32| u64::from(w) * u64::from(h) > 40_000_000;
+    if let Some(info) = crate::image_file::pnm_info(&bytes) {
+        if too_many(info.width, info.height) {
+            return Err("单图像素数量超过 4000 万".into());
+        }
+        return crate::image_file::decode(&bytes).map_err(|e| format!("原图无法读取：{e}"));
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -885,38 +894,21 @@ fn decode_imported_image(bytes: Vec<u8>) -> Result<FrameImage, String> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(128_000_000);
     reader.limits(limits);
-    let image = reader
-        .decode()
-        .map_err(|e| format!("原图无法读取：{e}"))?
-        .into_luma8();
-    if image.width() as u64 * image.height() as u64 > 40_000_000 {
+    let image = reader.decode().map_err(|e| format!("原图无法读取：{e}"))?;
+    if too_many(image.width(), image.height()) {
         return Err("单图像素数量超过 4000 万".into());
     }
-    Ok(FrameImage::new(
-        image.width(),
-        image.height(),
-        image.into_raw(),
-    ))
+    let (width, height) = (image.width(), image.height());
+    Ok(if color {
+        FrameImage::rgb(width, height, image.into_rgb8().into_raw())
+    } else {
+        FrameImage::new(width, height, image.into_luma8().into_raw())
+    })
 }
 
+/// 读图命令的响应，字节格式见 `frame::preview_bytes`（20 字节头 + 灰度或 RGB）。
 fn preview_response(image: &FrameImage) -> tauri::ipc::Response {
-    let scale = (image.width as f32 / 900.0)
-        .max(image.height as f32 / 650.0)
-        .max(1.0);
-    let w = (image.width as f32 / scale).max(1.0) as u32;
-    let h = (image.height as f32 / scale).max(1.0) as u32;
-    let mut bytes = Vec::with_capacity(16 + (w * h) as usize);
-    for n in [w, h, image.width, image.height] {
-        bytes.extend(n.to_le_bytes());
-    }
-    for y in 0..h {
-        for x in 0..w {
-            let iy = ((y as f32 * scale) as u32).min(image.height - 1);
-            let ix = ((x as f32 * scale) as u32).min(image.width - 1);
-            bytes.push(image.pixels[(iy * image.width + ix) as usize]);
-        }
-    }
-    tauri::ipc::Response::new(bytes)
+    tauri::ipc::Response::new(crate::frame::preview_bytes(image))
 }
 
 #[tauri::command]
@@ -1665,7 +1657,7 @@ pub async fn workspace_station_import(
         if !(1..=config.view_count).contains(&view.unwrap_or(1)) {
             return Err("图编号超出设备范围".into());
         }
-        let image = Arc::new(decode_imported_image(bytes)?);
+        let image = Arc::new(decode_imported_image(bytes, config.image_mode.color())?);
         if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
             return Err("导入期间设备或节拍状态变化，原图已丢弃".into());
         }

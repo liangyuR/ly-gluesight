@@ -44,11 +44,11 @@ impl BurstSamples {
         Ok(Self { set, part_id: reference.part_id, frames })
     }
 
-    /// 第 camera 台计划相机第 seq 帧组（从 1 起）的样本原图。
-    pub(super) fn load(&self, camera: usize, seq: u64) -> Result<FrameImage, String> {
+    /// 第 camera 台计划相机第 seq 帧组（从 1 起）的样本原图；`color` 为这台相机是彩色模式（按 RGB 读）。
+    pub(super) fn load(&self, camera: usize, seq: u64, color: bool) -> Result<FrameImage, String> {
         let (camera_id, shots) = self.frames.get(camera).ok_or("相机下标超出本件计划相机")?;
         let shot = usize::try_from(seq).ok().and_then(|seq| seq.checked_sub(1)).and_then(|index| shots.get(index))
             .ok_or_else(|| format!("样本集里相机 {camera_id} 只有 {} 帧，没有第 {seq} 帧组", shots.len()))?;
-        self.set.load_view(&self.part_id, shot, camera_id, 1)
+        self.set.load_view(&self.part_id, shot, camera_id, 1, color)
     }
 }

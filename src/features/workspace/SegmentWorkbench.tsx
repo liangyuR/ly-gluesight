@@ -7,13 +7,13 @@ import { segmentLabel } from "../plan/vis";
 import { errorText } from "../../lib/errors";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import { Badge, GrayViewer, Notice, Panel } from "./components";
+import { Badge, FrameViewer, Notice, Panel } from "./components";
 import { ignoreKey, stripGroups, Thumb, useThumbs } from "./thumbs";
 import {
   initialDraft, moveCut, segmentsForSave, spans, structureChanged, toggleCamera, toggleCut, toggleKind, valid,
   type WorkbenchDraft,
 } from "./workbenchDraft";
-import type { GrayImage, SegmentSaveImpact } from "./types";
+import type { FrameImage, SegmentSaveImpact } from "./types";
 import WorkspaceNavigation from "./WorkspaceNavigation";
 
 const reviewLabel = { draft: "边界草稿待确认", confirmed: "边界已确认", stale: "边界需复核" } as const;
@@ -21,7 +21,7 @@ const reviewLabel = { draft: "边界草稿待确认", confirmed: "边界已确�
 /** 某台相机某个帧组的原图（预览用）。 */
 function useFrame(roundId: string, camera: string, seq: number) {
   const key = `${roundId}|${camera}|${seq}`;
-  const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string }>({ key: "", image: null, error: "" });
+  const [state, setState] = useState<{ key: string; image: FrameImage | null; error: string }>({ key: "", image: null, error: "" });
   useEffect(() => {
     if (!roundId || seq < 1) return;
     let alive = true;
@@ -35,7 +35,7 @@ function useFrame(roundId: string, camera: string, seq: number) {
 
 function FramePreview({ roundId, camera, seq, corridor, searchHalfPx }: { roundId: string; camera: string; seq: number; corridor: [number, number][]; searchHalfPx?: number }) {
   const { image, error, loading } = useFrame(roundId, camera, seq);
-  return <GrayViewer image={image} loading={loading} error={error} label={`${camera} · 帧组 ${seq}`}
+  return <FrameViewer image={image} loading={loading} error={error} label={`${camera} · 帧组 ${seq}`}
     overlay={corridor.length >= 2 ? { path: corridor, searchHalfPx } : undefined} />;
 }
 
@@ -195,7 +195,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
                 return <Button variant="text" size="sm" key={`${camera}-${group}`} type="button" aria-label={`${camera} 帧组 ${group}`} aria-pressed={group === seq}
                   className={`swb-cell${group === seq ? " selected" : ""}${cut ? " cut" : ""}${used ? "" : " unused"}${skipped ? " skipped" : ""}`} onClick={() => setSeq(group)}
                   title={skipped ? `帧组 ${group} 在段 ${segment + 1} 的跳过范围内，不判定` : undefined}>
-                  <Thumb pixels={pixels} width={strip?.width ?? 0} height={strip?.height ?? 0} />
+                  <Thumb pixels={pixels} width={strip?.width ?? 0} height={strip?.height ?? 0} channels={strip?.channels ?? 1} />
                 </Button>;
               })];
           })}

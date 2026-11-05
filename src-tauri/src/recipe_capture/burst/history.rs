@@ -35,14 +35,16 @@ pub(super) fn valid_cycle_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
-/// 录制原图是普通文件（不是链接或 reparse point），长度等于这一尺寸的 PGM。
+/// 录制原图是普通文件（不是链接或 reparse point），PNM 头（可含 Bayer 注释）的尺寸是这一尺寸、长度等于头 + 像素。
 fn check_source(path: &Path, width: u32, height: u32) -> Result<(), String> {
     crate::image_file::checked_source_path(path)?;
     let meta = std::fs::symlink_metadata(path)
         .map_err(|e| format!("历史原图 {} 不可用：{e}", path.display()))?;
-    let expected =
-        format!("P5\n{width} {height}\n255\n").len() as u64 + u64::from(width) * u64::from(height);
-    if !meta.is_file() || meta.len() != expected {
+    let matches = meta.is_file()
+        && crate::image_file::read_pnm_info(path)?.is_some_and(|info| {
+            (info.width, info.height) == (width, height) && info.file_len() == meta.len()
+        });
+    if !matches {
         return Err(format!(
             "历史原图 {} 不是普通文件或长度与录制尺寸不符",
             path.display()

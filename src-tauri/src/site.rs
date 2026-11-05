@@ -131,7 +131,7 @@ impl OfflineSession {
         let (kind, cameras) = match derivation {
             Derivation::SampleSet(manifest) => {
                 pre.lyflow.map_err(|reason| format!("离线·样本集要用 lyFlow 测量现场原图，但 lyFlow 未加载：{reason}"))?;
-                (SourceKind::SampleSet, sample_set_cameras(manifest)?)
+                (SourceKind::SampleSet, sample_set_cameras(manifest, &real.cameras)?)
             }
             Derivation::Synthetic => (SourceKind::Synthetic, synthetic_cameras(&real.cameras)),
         };
@@ -155,7 +155,8 @@ fn offline_plc(port: u16) -> Result<PlcConfig, String> {
     Ok(config)
 }
 
-fn sample_set_cameras(manifest: &Manifest) -> Result<Vec<CameraConfig>, String> {
+/// 样本集相机按清单生成；单视角相机沿用真实相机组同编号相机的图像模式（彩色相机的样本集按 RGB 读图）。
+fn sample_set_cameras(manifest: &Manifest, real: &[CameraConfig]) -> Result<Vec<CameraConfig>, String> {
     manifest.cameras.iter().map(|camera| {
         let mut views = camera.views.clone();
         views.sort_unstable();
@@ -164,9 +165,11 @@ fn sample_set_cameras(manifest: &Manifest) -> Result<Vec<CameraConfig>, String> 
             [1, 2, 3] => 3,
             _ => return Err(format!("样本集相机 {} 的视角 {:?} 无法生成离线相机：只支持单视角 [1] 或三视角 [1, 2, 3]", camera.id, camera.views)),
         };
+        let image_mode = real.iter().find(|c| c.id == camera.id && view_count == 1)
+            .map_or_else(Default::default, |c| c.image_mode);
         Ok(CameraConfig {
             id: camera.id.clone(), name: format!("样本集 {}", camera.id), source: CameraSource::SampleSet, view_count,
-            trigger_source: "Line0".into(), ..CameraConfig::default()
+            trigger_source: "Line0".into(), image_mode, ..CameraConfig::default()
         })
     }).collect()
 }

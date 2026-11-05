@@ -117,14 +117,14 @@ python scripts/history-import/import_part.py <录制目录或 zip> --project <�
 
 脚本把原图按“每台相机 seq 1..groupCount”转成单件样本集（缺的帧按缺帧处理，不错位），连同配方文档与项目当前相机配置写到 `output/history-import/<录制目录名>/`，再调用 `capture_fixture` 的样本集模式写一件仿历史录制件。导入的是原图，不是现场记录本身：SN、cycleId、时间戳与帧号重新生成（SN 前缀 `FIXTURE-`，选择器标“手动配置”），设备配置记为项目当前值（选择器要求与当前一致，与现场不同时脚本逐项打印），型号取配方。记录归属 `--recipe`（缺省取现场 `part.json` 的配方编号），配方文档优先用项目已发布的同编号配方；没有已发布配方时用同编号候选的文档，版本、阶段取现场配方（如 `NEW-1-v2` 采集版）。之后改了候选再导入、或候选发布到同一版本时，同修订号快照不同会被拒，用 `--version` 换一个不会发布到的版本。项目须用软件打开过（已建记录库与录制根）；软件运行中也可以导入，选择器每次重新查库。
 
-**胶条颜色通道评估。** 取图把 8 位 Bayer 按 (R + 2G + B) / 4 转灰度，录图也是灰度。有色胶（例如粉色）涂在两种材质拼焊的板上时，胶在两侧的明暗方向可能相反，D16 的单一极性测不全。`scripts/color-eval/glue_color_eval.py` 读彩色样图或相机原始 Bayer（`.raw`），比较现行灰度、G、R−G、Lab a*、饱和度五种单通道。指标都在人工标注的探针上量：胶对比度 d'（|胶 − 背景| / 背景噪声）、极性是否一致、材质间顶帽响应比（低于 D16 的 0.3 时，一帧跨两种材质，弱的一侧会被判无胶），以及焊缝、高光等干扰物响应与胶响应之比。只需要 Python、numpy、OpenCV、matplotlib，不读项目数据，不需要 lyFlow。
+**胶条颜色通道评估。** 相机在灰度模式下，取图把 8 位 Bayer 按 (R + 2G + B) / 4 转灰度，录图也是灰度（彩色模式见 [color](../decisions/color.md) CL-1）。有色胶（例如粉色）涂在两种材质拼焊的板上时，胶在两侧的明暗方向可能相反，D16 的单一极性测不全。`scripts/color-eval/glue_color_eval.py` 读彩色样图或相机原始 Bayer（`.raw`），比较现行灰度、G、R−G、Lab a*、饱和度五种单通道。指标都在人工标注的探针上量：胶对比度 d'（|胶 − 背景| / 背景噪声）、极性是否一致、材质间顶帽响应比（低于 D16 的 0.3 时，一帧跨两种材质，弱的一侧会被判无胶），以及焊缝、高光等干扰物响应与胶响应之比。只需要 Python、numpy、OpenCV、matplotlib，不读项目数据，不需要 lyFlow。
 
 ```powershell
 python scripts/color-eval/glue_color_eval.py <标注.json> --init <图像目录>   # 生成标注模板
 python scripts/color-eval/glue_color_eval.py <标注.json> [--out <输出目录>]
 ```
 
-样图要在现场光源下用彩色相机采集，并包含两种材质、焊缝与高光。最直接的做法是打开检测设置里的“同时保存原始 Bayer”，再用维护模式采集（[r2-records](../decisions/r2-records.md) R-8）。这样录制目录里的 `*_bayer.pgm` 就是与灰度帧一一对应的原始 Bayer；`--init <录制目录>` 只收这些文件，并从 `part.json` 读取相位。软件录的灰度 `.pgm` 已经没有颜色。也可以用 MVS 客户端存彩色图或原始 Bayer（`.raw`）。每张图标若干探针，坐标为原图像素：
+样图要在现场光源下用彩色相机采集，并包含两种材质、焊缝与高光。最直接的做法是打开检测设置里的“同时保存原始 Bayer”，再用维护模式采集（[r2-records](../decisions/r2-records.md) R-8）；相机切到彩色模式后录制的原图本身就是原始 Bayer（PGM 头带 `# bayer` 注释，`--init` 与读图都按注释取相位）。这样录制目录里的 `*_bayer.pgm` 就是与灰度帧一一对应的原始 Bayer；`--init <录制目录>` 只收这些文件，并从 `part.json` 读取相位。软件录的灰度 `.pgm` 已经没有颜色。也可以用 MVS 客户端存彩色图或原始 Bayer（`.raw`）。每张图标若干探针，坐标为原图像素：
 
 - 胶探针（`kind: glue`）：垂直横穿胶条、中点落在胶中心，填 `material` 与 `halfWidthPx`，两侧各留至少 18 px 背景。
 - 干扰物探针（`kind: distractor`）：横穿焊缝、高光等不该被当成胶的窄结构，填 `label`。

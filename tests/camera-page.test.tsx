@@ -124,3 +124,12 @@ it("旧 Software 边沿配置切回 Line0 → 保存为高电平", async()=>{
  await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
  await waitFor(()=>expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config",{cam:0,config:expect.objectContaining({triggerSource:"Line0",triggerActivation:"LevelHigh"})}));
 });
+
+it("三目拼接相机 → 图像模式的彩色选项不可选", async()=>{
+ Object.defineProperty(HTMLElement.prototype,"scrollIntoView",{value:()=>{},configurable:true});
+ configs=[camera("cam1","左相机",{viewCount:3})];
+ await openCamera("左相机 cam1");
+ screen.getByRole("combobox",{name:"图像模式"}).focus();
+ await userEvent.keyboard("{ArrowDown}");
+ expect(await screen.findByRole("option",{name:"彩色"})).toHaveAttribute("aria-disabled","true");
+});

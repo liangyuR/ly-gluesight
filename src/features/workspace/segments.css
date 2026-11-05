@@ -42,7 +42,7 @@
 .swb-preview > .workspace-navigation:has(.navigation-map-editor) { grid-column: 1 / -1; }
 .swb-preview .navigation-map-canvas { height: 220px; }
 .swb-preview > .workspace-navigation:has(.navigation-map-editor) .navigation-map-canvas { height: clamp(260px, 38vh, 430px); }
-/* 画布高度跟着格子宽度走：GrayViewer 已按图像宽高设了 aspect-ratio，这里去掉默认的 36vh 高度，图像等比铺满格子；max-height 封顶，超出时在画布内留边 */
+/* 画布高度跟着格子宽度走：FrameViewer 已按图像宽高设了 aspect-ratio，这里去掉默认的 36vh 高度，图像等比铺满格子；max-height 封顶，超出时在画布内留边 */
 .swb-preview > .wp-viewport { display: flex; flex-direction: column; }
 .swb-preview .wp-gray-image { flex: none; height: auto; max-height: 520px; }
 .swb-preview .wp-image-empty { flex: 1; min-height: 240px; }

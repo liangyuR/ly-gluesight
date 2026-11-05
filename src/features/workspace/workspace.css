@@ -105,6 +105,8 @@
 .wp-image-tools > div { display:flex; align-items:center; flex-wrap:wrap; gap:3px; }
 .wp-image-tools > div:last-child { margin-left:auto; }
 .wp-gray-image { display:block; width:100%; height:clamp(250px,36vh,420px); background:var(--surface-lowest); }
+/* 叠加线画在相机原图上，与界面主题无关：底图可能是粉色/粉橙色胶、发黑铸件或中性灰金属，取青/亮绿/黄并配暗色描边，避开红粉橙 */
+.wp-gray-image { --ov-line:#00E5FF; --ov-ok:#5CFF5C; --ov-warn:#FFE500; --ov-ng:#FF3B3B; --ov-halo:rgba(0,0,0,.72); --ov-muted:#F2F2F2; --ov-ink:#111111; }
 .wp-gray-image.editable { cursor:crosshair; touch-action:none; }
 .wp-gray-image.panning { cursor:grabbing; }
 .wp-gray-image:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
@@ -184,7 +186,7 @@
 .wp-teach-page .wp-mid > * { flex-shrink:0; }
 .wp-teach-page .wp-mid > .wp-viewport { flex:1 1 auto; min-height:400px; display:flex; flex-direction:column; border-radius:var(--r-lg); }
 .wp-teach-page .wp-viewport > * { flex-shrink:0; }
-/* 照 cycle.css 的 .wp-runtime-frame 写法：画布吃掉剩余高度，GrayViewer 按 clientWidth/clientHeight letterbox；aspectRatio 保留 */
+/* 照 cycle.css 的 .wp-runtime-frame 写法：画布吃掉剩余高度，FrameViewer 按 clientWidth/clientHeight letterbox；aspectRatio 保留 */
 .wp-teach-page .wp-viewport > .wp-gray-image { flex:1 1 auto; min-height:0; height:0; }
 .wp-teach-page .wp-viewport > .wp-image-empty { flex:1 1 auto; min-height:0; }
 .wp-teach-page .wp-teach-settings { min-height:0; overflow:auto; scrollbar-width:thin; }
@@ -303,10 +305,10 @@
 .wp-part-body > p { margin:0; }
 .wp-sector-handle { cursor:grab; }
 .wp-sector-handle.turning { cursor:grabbing; }
-.wp-sector-handle .wp-sector-knob { fill:var(--warn); stroke:var(--surface-lowest); stroke-width:2; vector-effect:non-scaling-stroke; transform-box:fill-box; transform-origin:center; transition:transform .15s; }
+.wp-sector-handle .wp-sector-knob { fill:var(--ov-warn); stroke:var(--ov-halo); stroke-width:2; vector-effect:non-scaling-stroke; transform-box:fill-box; transform-origin:center; transition:transform .15s; }
 .wp-sector-handle:hover .wp-sector-knob, .wp-sector-handle.turning .wp-sector-knob { transform:scale(1.3); }
-.wp-sector-handle .wp-sector-arrows { fill:var(--warn); stroke:var(--surface-lowest); stroke-width:1; vector-effect:non-scaling-stroke; }
-.wp-sector-handle .wp-sector-pulse { fill:none; stroke:var(--warn); stroke-width:2; vector-effect:non-scaling-stroke; opacity:0; transform-box:fill-box; transform-origin:center; }
+.wp-sector-handle .wp-sector-arrows { fill:var(--ov-warn); stroke:var(--ov-halo); stroke-width:1; vector-effect:non-scaling-stroke; }
+.wp-sector-handle .wp-sector-pulse { fill:none; stroke:var(--ov-warn); stroke-width:2; vector-effect:non-scaling-stroke; opacity:0; transform-box:fill-box; transform-origin:center; }
 .wp-sector-handle.hint .wp-sector-pulse { animation:wp-sector-pulse 1.6s ease-out infinite; }
 .wp-sector-handle:hover .wp-sector-pulse, .wp-sector-handle.turning .wp-sector-pulse { animation:none; }
 @keyframes wp-sector-pulse { from { transform:scale(1); opacity:.9; } to { transform:scale(2.6); opacity:0; } }

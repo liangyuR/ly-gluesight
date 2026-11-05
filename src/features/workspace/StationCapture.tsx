@@ -3,12 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import { Camera } from "lucide-react";
 import { Button, Card } from "qing-steel";
 import { workspaceApi } from "./api";
-import { GrayViewer, Notice } from "./components";
-import type { FrozenImage, GrayImage } from "./types";
+import { FrameViewer, Notice } from "./components";
+import type { FrozenImage, FrameImage } from "./types";
 import ImageImportButton from "./ImageImportButton";
 import { desktopAvailable } from "../../lib/desktop";
 
-export interface StationView {metadata:FrozenImage;image:GrayImage}
+export interface StationView {metadata:FrozenImage;image:FrameImage}
 /** 三目拼接相机（旧配方）才标出视角（multiView）；单视角相机与段配方不带“图 N”。挂载时没有样本则载入当前标定所用原图。 */
 export default function StationCapture({cam,view=1,multiView=false,sample,onSample,cameraReady,marks}:{cam:number;view?:number;multiView?:boolean;sample:StationView|null;onSample:(sample:StationView|null)=>void;cameraReady:boolean;marks?:{at:[number,number];color:string}[]|null}) {
   const [busy,setBusy]=useState(false),[error,setError]=useState(""),[reading,setReading]=useState(false),[restoring,setRestoring]=useState(false);
@@ -48,7 +48,7 @@ export default function StationCapture({cam,view=1,multiView=false,sample,onSamp
     finally{if(valid()){pending.current=false;setBusy(false);}}
   };
   return <Card level="low" className="panel wp-panel wp-station-capture" title={multiView?`图 ${view}`:undefined} actions={<div className="wp-actions wp-station-actions"><ImageImportButton label="导入离线图" scope={"station:"+cam+":"+view} disabled={busy||restoring} onImport={importImage} onError={setError} onReadingChange={value=>{readingRef.current=value;setReading(value);}}/><Button variant={sample||!cameraReady?"tonal":"filled"} leadingIcon={<Camera size={15}/>} disabled={busy||reading||restoring||!cameraReady} title={!cameraReady?"相机未就绪，无法拍照":undefined} onClick={()=>void capture()}>{busy?"拍照中…":"拍照"}</Button></div>}>
-    <GrayViewer image={sample?.image??null} marks={marks} loading={busy||reading||restoring} error={error} label={sample?.metadata.id??""} emptyTitle="尚无标定样本" emptyHint={cameraReady?"将标定板放在胶路测量平面后拍照，或导入本工位的离线图。":"相机未就绪，可连接相机后拍照，或导入本工位的离线图。"}/>
+    <FrameViewer image={sample?.image??null} marks={marks} loading={busy||reading||restoring} error={error} label={sample?.metadata.id??""} emptyTitle="尚无标定样本" emptyHint={cameraReady?"将标定板放在胶路测量平面后拍照，或导入本工位的离线图。":"相机未就绪，可连接相机后拍照，或导入本工位的离线图。"}/>
     {sample&&<p className="muted mono">{sample.metadata.camera} · {sample.metadata.source==="import"?"离线原图":(sample.metadata.source==="calib"?"标定原图 · ":"")+new Date(sample.metadata.capturedAt).toLocaleString("zh-CN")}{sample.metadata.exposureUs!=null&&" · 曝光 "+sample.metadata.exposureUs+" μs"}</p>}
     {error&&sample&&<Notice title="未能取样" tone="warn">{error}</Notice>}
   </Card>;

@@ -271,7 +271,7 @@ impl Source {
                             .zip(&shots)
                             .map(|(camera, shots)| match shots.get(k) {
                                 Some(shot) if set.image_path(part, shot, camera, 1).is_ok() => {
-                                    set.load_view(part, shot, camera, 1).map(Some)
+                                    set.load_view(part, shot, camera, 1, false).map(Some)
                                 }
                                 _ => Ok(None),
                             })
