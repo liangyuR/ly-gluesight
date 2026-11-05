@@ -128,6 +128,7 @@ mod tests {
                 1,
                 vec![10 * seq as u8 + camera as u8, 1],
             ))],
+            bayer: None,
         };
         let mut recording = recorder
             .begin(

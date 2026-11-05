@@ -96,6 +96,20 @@ struct BurstFrameMeta {
     queued: bool,
     available: bool,
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bayer: Option<BayerFileMeta>,
+}
+
+/// 一帧另存的原始 Bayer（检测设置“同时保存原始 Bayer”）：只供离线做颜色算法，写不成不影响录制是否可用。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BayerFileMeta {
+    file: String,
+    /// GenICam 相位，如 BG
+    pattern: &'static str,
+    available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 struct BurstFrameJob {
@@ -103,6 +117,7 @@ struct BurstFrameJob {
     pending: PathBuf,
     meta: BurstFrameMeta,
     image: Arc<FrameImage>,
+    bayer: Option<Arc<FrameImage>>,
 }
 
 /// 段配方录制的帧状态：按 (计划相机下标, seq) 记，缺帧在收尾时按“1..=最大 seq 内没到的帧”列出。
@@ -342,6 +357,7 @@ impl Recorder {
             rec.errors.push(format!("相机 {camera_id} 第 {seq} 帧原图不完整：实际 {} 幅图像", frame.images.len()));
             return;
         };
+        let bayer_file = format!("{camera_id}_s{seq:06}_bayer.pgm");
         let mut meta = BurstFrameMeta {
             cycle_id: rec.cycle_id.clone(),
             bundle_id: rec.bundle_id.clone(),
@@ -364,11 +380,23 @@ impl Recorder {
             queued: true,
             available: false,
             error: None,
+            bayer: frame.bayer.as_ref().map(|bayer| BayerFileMeta {
+                file: bayer_file,
+                pattern: bayer.pattern.name(),
+                available: false,
+                error: None,
+            }),
         };
         let queue_error = if self.queued.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < BURST_QUEUE).then_some(n + 1)).is_err() {
             Some(format!("录制队列已满（{BURST_QUEUE} 帧）"))
         } else {
-            let job = BurstFrameJob { cycle_id: rec.cycle_id.clone(), pending: rec.dir.clone(), meta: meta.clone(), image: image.clone() };
+            let job = BurstFrameJob {
+                cycle_id: rec.cycle_id.clone(),
+                pending: rec.dir.clone(),
+                meta: meta.clone(),
+                image: image.clone(),
+                bayer: frame.bayer.as_ref().map(|bayer| bayer.image.clone()),
+            };
             if self.tx.send(Msg::BurstFrame(job)).is_err() {
                 self.queued.fetch_sub(1, Ordering::AcqRel);
                 Some("录制写入线程已停止".to_string())
@@ -379,6 +407,9 @@ impl Recorder {
         if let Some(error) = queue_error {
             meta.queued = false;
             meta.error = Some(format!("{error}，本帧原图未录"));
+            if let Some(bayer) = &mut meta.bayer {
+                bayer.error = meta.error.clone();
+            }
             burst.drop_reason.get_or_insert(error);
             burst.dropped.push(key);
         }
@@ -436,6 +467,8 @@ fn notify(callback: &Option<RecordingCallback>, outcome: RecordingOutcome) {
 struct WriteState {
     /// 逐帧写盘结果；失败原因只在这里，收尾时汇总，不逐帧进 errors
     frame_results: HashMap<FrameKey, Result<(), String>>,
+    /// 逐帧原始 Bayer 的写盘结果
+    bayer_results: HashMap<FrameKey, Result<(), String>>,
     errors: Vec<String>,
     retention_errors: Vec<String>,
     retention_blocked: bool,
@@ -465,8 +498,17 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
         match msg {
             Msg::BurstFrame(job) => {
                 let state = cycles.entry(job.cycle_id).or_default();
+                let key = FrameKey {
+                    camera: job.meta.camera,
+                    seq: job.meta.seq,
+                };
                 let result = save_raw(&job.pending.join(&job.meta.file), &job.image);
-                state.frame_results.insert(FrameKey { camera: job.meta.camera, seq: job.meta.seq }, result);
+                state.frame_results.insert(key, result);
+                if let (Some(image), Some(meta)) = (&job.bayer, &job.meta.bayer) {
+                    state
+                        .bayer_results
+                        .insert(key, save_raw(&job.pending.join(&meta.file), image));
+                }
                 queued.fetch_sub(1, Ordering::AcqRel);
             }
             Msg::Finish(mut job) => {
@@ -599,6 +641,51 @@ fn burst_files(root: &Path, actual_dir: &Path, burst: &mut BurstFrames, results:
     }
 }
 
+/// 逐帧核对原始 Bayer 的写盘结果，返回写成的帧数与错误（前 BURST_FRAME_ERRORS 条加汇总）。
+/// Bayer 只供离线做颜色算法，错误单独记进 part.json 的 bayerErrors，不进录制错误、不改录制是否可用。
+fn bayer_files(
+    actual_dir: &Path,
+    burst: &mut BurstFrames,
+    results: &mut HashMap<FrameKey, Result<(), String>>,
+) -> (usize, Vec<String>) {
+    let (mut written, mut failures, mut errors) = (0usize, 0usize, Vec::new());
+    for frame in burst.frames.iter_mut().filter(|frame| frame.queued) {
+        let key = FrameKey {
+            camera: frame.camera,
+            seq: frame.seq,
+        };
+        let (width, height) = (frame.width, frame.height);
+        let Some(bayer) = frame.bayer.as_mut() else {
+            continue;
+        };
+        let result = match results.remove(&key) {
+            Some(Ok(())) => verify_raw(&actual_dir.join(&bayer.file), width, height),
+            Some(Err(error)) => Err(error),
+            None => Err("原始 Bayer 未取得写入成功确认".into()),
+        };
+        match result {
+            Ok(()) => {
+                bayer.available = true;
+                written += 1;
+            }
+            Err(error) => {
+                failures += 1;
+                if failures <= BURST_FRAME_ERRORS {
+                    errors.push(format!("{}：{error}", bayer.file));
+                }
+                bayer.error = Some(error);
+            }
+        }
+    }
+    if failures > BURST_FRAME_ERRORS {
+        errors.push(format!(
+            "另有 {} 帧原始 Bayer 未确认写入，见 part.json 的 frames",
+            failures - BURST_FRAME_ERRORS
+        ));
+    }
+    (written, errors)
+}
+
 fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release: Option<&RecordingRelease>) -> RecordingOutcome {
     let FinishJob { recording: mut rec, target, verdict, reason, keep, max_bytes, in_use } = job;
     rec.errors.append(&mut state.errors);
@@ -665,12 +752,31 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
     if files.is_empty() {
         rec.errors.push("本件没有已确认写入的原图".into());
     }
+    let (bayer_frames, bayer_errors) =
+        bayer_files(&actual_dir, &mut burst, &mut state.bayer_results);
+    if !bayer_errors.is_empty() {
+        let fields = crate::applog::Fields {
+            cycle_id: Some(rec.cycle_id.clone()),
+            stage: Some("recording".into()),
+            ..Default::default()
+        };
+        crate::applog::emit(
+            crate::applog::Level::Warn,
+            "录制",
+            &format!("原始 Bayer 未全部保存：{}", bayer_errors.join("；")),
+            fields,
+        );
+    }
     let mut protected = in_use;
     protected.push(actual_dir.clone());
     let mut retention_errors = state.retention_errors;
     if !state.retention_blocked { retention_errors.extend(prune(root, keep as usize, max_bytes, &protected, release)); }
     let mut available = promoted && directory.is_some() && !files.is_empty() && rec.errors.is_empty();
     meta["frames"] = serde_json::to_value(&burst.frames).unwrap();
+    if burst.frames.iter().any(|frame| frame.bayer.is_some()) {
+        meta["bayerFrames"] = json!(bayer_frames);
+        meta["bayerErrors"] = json!(bayer_errors);
+    }
     meta["available"] = json!(available);
     meta["errors"] = json!(rec.errors);
     meta["retentionErrors"] = json!(retention_errors);

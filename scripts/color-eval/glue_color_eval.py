@@ -26,6 +26,8 @@ plt.rcParams["axes.unicode_minus"] = False
 
 REPO = Path(__file__).resolve().parents[2]
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".raw"}
+# 软件录制件里另存的原始 Bayer（检测设置“同时保存原始 Bayer”）；同目录的灰度 .pgm 没有颜色，不收
+BAYER_PGM = "_bayer.pgm"
 
 # GenICam 的 Bayer 命名比 OpenCV 错一格：BayerBG8 要用 COLOR_BayerRG2RGB。
 BAYER_TO_CV = {
@@ -82,17 +84,23 @@ CHANNELS = {
 
 def load_image(path: Path, bayer: dict | None) -> tuple[np.ndarray, np.ndarray | None]:
     """返回 (RGB float32, 原始 Bayer 或 None)。"""
-    if path.suffix.lower() == ".raw":
+    is_raw, is_bayer_pgm = path.suffix.lower() == ".raw", path.name.lower().endswith(BAYER_PGM)
+    if is_raw or is_bayer_pgm:
         if not bayer:
-            raise EvalError(f"{path.name} 是原始 Bayer，标注文件需要 bayer: {{pattern, width, height}}")
+            raise EvalError(f"{path.name} 是原始 Bayer，标注文件需要 bayer: {{pattern}}（.raw 还要 width、height）")
         pattern = str(bayer.get("pattern", "")).upper()
         if pattern not in BAYER_TO_CV:
             raise EvalError(f"bayer.pattern 只能是 {'/'.join(BAYER_TO_CV)}，实际 {pattern!r}")
-        w, h = int(bayer["width"]), int(bayer["height"])
-        data = np.fromfile(path, dtype=np.uint8)
-        if data.size < w * h:
-            raise EvalError(f"{path.name} 只有 {data.size} 字节，{w}×{h} 需要 {w * h}")
-        raw = data[: w * h].reshape(h, w)
+        if is_bayer_pgm:
+            raw = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+            if raw is None or raw.ndim != 2 or raw.dtype != np.uint8:
+                raise EvalError(f"读不出 8 位单通道的原始 Bayer {path}")
+        else:
+            w, h = int(bayer["width"]), int(bayer["height"])
+            data = np.fromfile(path, dtype=np.uint8)
+            if data.size < w * h:
+                raise EvalError(f"{path.name} 只有 {data.size} 字节，{w}×{h} 需要 {w * h}")
+            raw = data[: w * h].reshape(h, w)
         return cv2.cvtColor(raw, BAYER_TO_CV[pattern]).astype(np.float32), raw
     img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
     if img is None:
@@ -337,12 +345,32 @@ def image_dir_for(spec_path: Path, image_dir: Path) -> str:
         return str(target)
 
 
+def recorded_pattern(image_dir: Path) -> str | None:
+    """软件录制件的 part.json 里各帧原始 Bayer 的相位；不是录制目录或没存 Bayer 时为 None。"""
+    part = image_dir / "part.json"
+    if not part.is_file():
+        return None
+    frames = json.loads(part.read_text(encoding="utf-8-sig")).get("frames") or []
+    patterns = {f["bayer"]["pattern"] for f in frames if f.get("bayer")}
+    if len(patterns) > 1:
+        raise EvalError(f"{part} 里各帧 Bayer 相位不一致：{sorted(patterns)}，请按相机分开标注")
+    return next(iter(patterns), None)
+
+
 def init_spec(image_dir: Path, spec_path: Path) -> int:
-    files = sorted(p.name for p in image_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+    files = sorted(p.name for p in image_dir.iterdir()
+                   if p.suffix.lower() in IMAGE_SUFFIXES or p.name.lower().endswith(BAYER_PGM))
     if not files:
-        raise EvalError(f"{image_dir} 里没有图像（{', '.join(sorted(IMAGE_SUFFIXES))}）")
+        raise EvalError(f"{image_dir} 里没有图像（{', '.join(sorted(IMAGE_SUFFIXES))} 或录制件的 *{BAYER_PGM}）")
     if spec_path.exists():
         raise EvalError(f"{spec_path} 已存在，不覆盖")
+    pattern = recorded_pattern(image_dir)
+    if any(f.lower().endswith(BAYER_PGM) for f in files):
+        bayer = {"pattern": pattern or "BG"}
+    elif any(f.lower().endswith(".raw") for f in files):
+        bayer = {"pattern": "BG", "width": 1280, "height": 1024}
+    else:
+        bayer = None
     spec = {
         "_说明": "每张图标若干探针：胶探针垂直横穿胶条、中点落在胶中心，两侧各留 ≥ 18 px 背景；"
                  "干扰物探针横穿焊缝、高光等不该被当成胶的窄结构。坐标为原图像素 [x, y]。",
@@ -352,8 +380,7 @@ def init_spec(image_dir: Path, spec_path: Path) -> int:
         ],
         "imageDir": image_dir_for(spec_path, image_dir),
         "widthMaxPx": 40,
-        "bayer": ({"pattern": "BG", "width": 1280, "height": 1024}
-                  if any(f.lower().endswith(".raw") for f in files) else None),
+        "bayer": bayer,
         "images": [{"file": f, "probes": []} for f in files],
     }
     spec_path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")

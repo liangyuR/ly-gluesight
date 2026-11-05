@@ -41,6 +41,7 @@ fn frame(seed: u8) -> Frame {
         ts: 777,
         manual: false,
         images: vec![Arc::new(FrameImage::new(1, 1, vec![seed]))],
+        bayer: None,
     }
 }
 
@@ -81,6 +82,67 @@ fn offline_retention_prunes_only_offline_recordings_and_never_real_raw_images() 
     assert!(wait(&offline_outcomes).directory.unwrap().starts_with(&offline_root));
     assert_eq!(offline.iter().map(|d| d.is_dir()).collect::<Vec<_>>(), [false, false, true], "离线按离线保留数 2 清理");
     assert!(real.iter().all(|d| d.is_dir()), "离线录制超过保留数后真机原图被清理");
+}
+
+/// 防的回归：原始 Bayer 是给离线做颜色算法的附带数据。它与灰度原图并排写成，part.json 记清文件名与相位，
+/// 历史读图仍只拿灰度；它写不成时只记进 bayerErrors，录制照样可用。
+#[test]
+fn bayer_saved_beside_gray_and_its_write_failure_keeps_recording_available() {
+    use crate::frame::{BayerMosaic, BayerPattern};
+    let dir = TestDir::new();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(dir.root(), Some(callback));
+    let mut rec = recorder
+        .begin(RecordMode::All, "SN-BAYER", recipe(), "bayer", None)
+        .unwrap();
+    let with_bayer = |seed: u8, pixels: Vec<u8>| Frame {
+        bayer: Some(BayerMosaic {
+            pattern: BayerPattern::Bg,
+            image: Arc::new(FrameImage::new(1, 1, pixels)),
+        }),
+        ..frame(seed)
+    };
+    recorder.burst_frame(&mut rec, &with_bayer(10, vec![200]), 0, 1);
+    // 像素数与尺寸不符，这一帧的 Bayer 写盘失败
+    recorder.burst_frame(&mut rec, &with_bayer(11, Vec::new()), 0, 2);
+    recorder.finish(rec, Verdict::Ok, "带 Bayer", 100, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert_eq!(
+        (outcome.state, outcome.available),
+        (RecordingState::Complete, true),
+        "{:?}",
+        outcome.errors
+    );
+    assert_eq!(outcome.files.len(), 2);
+    assert!(
+        outcome
+            .files
+            .iter()
+            .all(|f| !f.file.ends_with("_bayer.pgm")),
+        "历史读图只用灰度：{:?}",
+        outcome.files
+    );
+    let meta = metadata(&outcome);
+    let frames = meta["frames"].as_array().unwrap();
+    let bayer = &frames[0]["bayer"];
+    assert_eq!(
+        (bayer["pattern"].as_str(), bayer["available"].as_bool()),
+        (Some("BG"), Some(true))
+    );
+    let file = bayer["file"].as_str().unwrap();
+    assert!(file.ends_with("_s000001_bayer.pgm"), "{file}");
+    assert_eq!(
+        std::fs::read(outcome.directory.as_ref().unwrap().join(file)).unwrap(),
+        b"P5\n1 1\n255\n\xc8"
+    );
+    assert_eq!(frames[1]["bayer"]["available"], false);
+    assert_eq!(
+        (
+            meta["bayerFrames"].as_u64(),
+            meta["bayerErrors"].as_array().map(Vec::len)
+        ),
+        (Some(1), Some(1))
+    );
 }
 
 /// 段配方录制：录制队列已有 `queued` 帧时依次录 `frames`（(计划相机下标, seq)），写盘后收尾。

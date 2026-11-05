@@ -83,6 +83,7 @@ fn imported_round_frames_stay_readable_after_history_recording_is_deleted() {
                 ts: 1,
                 manual: false,
                 images: vec![Arc::new(FrameImage::new(2, 1, vec![pixel(camera, seq), 1]))],
+                bayer: None,
             };
             recorder.burst_frame(&mut rec, &frame, camera, seq);
         }

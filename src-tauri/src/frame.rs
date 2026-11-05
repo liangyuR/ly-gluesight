@@ -155,6 +155,33 @@ pub fn bayer8_gray_into(w: usize, h: usize, src: &[u8], out: &mut Vec<u8>) -> Re
     Ok(())
 }
 
+/// 8 位 Bayer 马赛克的相位，按 GenICam 命名（第 0 行前两个像素、第 1 行前两个像素）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BayerPattern {
+    Bg,
+    Rg,
+    Gb,
+    Gr,
+}
+
+impl BayerPattern {
+    pub fn name(self) -> &'static str {
+        match self {
+            BayerPattern::Bg => "BG",
+            BayerPattern::Rg => "RG",
+            BayerPattern::Gb => "GB",
+            BayerPattern::Gr => "GR",
+        }
+    }
+}
+
+/// 相机原样输出的 8 位 Bayer 马赛克：检测设置“同时保存原始 Bayer”打开时随帧带上，只录制、不参与测量。
+#[derive(Clone, Debug)]
+pub struct BayerMosaic {
+    pub pattern: BayerPattern,
+    pub image: Arc<FrameImage>,
+}
+
 /// 帧的触发计数从哪来。只有触发计数能把帧认到拍照点上：帧计数、SDK 帧号只数相机发出或主机收到的帧，
 /// 丢帧、过触发时与 PLC 发的触发对不上。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -206,6 +233,9 @@ pub struct Frame {
     /// 按视角 1–3 排列的整帧灰度图；三目必须整组交付。单视角模拟测量可只交元数据。
     #[serde(skip)]
     pub images: Vec<Arc<FrameImage>>,
+    /// 单视角彩色相机的原始马赛克，只在保存原始 Bayer 时带上
+    #[serde(skip)]
+    pub bayer: Option<BayerMosaic>,
 }
 
 impl Frame {

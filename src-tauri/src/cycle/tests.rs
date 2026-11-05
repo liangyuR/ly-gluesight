@@ -107,6 +107,7 @@ pub(crate) fn burst_frame(cam: u8, counter: u64) -> Frame {
         dev_ts: Some(counter * crate::frame_clock::SYNTH_PERIOD_NS),
         manual: false,
         images: Vec::new(),
+        bayer: None,
     }
 }
 
