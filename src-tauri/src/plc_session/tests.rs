@@ -338,6 +338,23 @@ async fn request_seq_restarting_after_reset_is_accepted() {
     rig.finish().await;
 }
 
+/// 只在 PLC 端复位、PC 未经复位：PC 空闲时读到序号回退即清零下限并记审计，下一件照常接件。
+#[tokio::test]
+async fn request_seq_rewinding_while_idle_is_accepted_and_audited() {
+    let mut rig = Rig::new("seq-rewind-idle").await;
+    rig.request(5, "SN-50").await;
+    rig.intake().await;
+    rig.end().await;
+    rig.report().await;
+    rig.ack_release().await;
+    rig.plc.set(&[(tag::REQUEST_SEQ, 0)]);
+    rig.fresh().await;
+    rig.session.poll(&rig.engine, false, true).await;
+    assert!(rig.audit().iter().any(|r| r["action"] == "plcSeqRestarted"));
+    rig.request(1, "SN-50").await;
+    rig.finish().await;
+}
+
 /// PLC 复位信号由 0 变 1 等同操作员软件复位：PC 置 99，PLC 回空闲后就绪；信号保持为 1 不再触发。
 #[tokio::test]
 async fn reset_signal_rising_edge_runs_software_reset() {

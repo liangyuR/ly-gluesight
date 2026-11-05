@@ -1101,6 +1101,19 @@ impl PlcSession {
             self.message = Some(format!("{NOTICE}{text}"));
             return Ok(SessionEvent::None);
         }
+        // PLC 单独复位时 99 可能一闪而过，PC 看不到；空闲时序号回退即视为 PLC 已复位
+        let seq = snapshot.read_u32(tag::REQUEST_SEQ)?;
+        if seq < self.journal.last_request_seq {
+            let reason = format!(
+                "PC 空闲时 PLC 请求序号从 {} 回退到 {seq}，视为 PLC 已复位，序号下限清零",
+                self.journal.last_request_seq
+            );
+            self.audit(engine, "plcSeqRestarted", &reason).await?;
+            let mut next = self.journal.clone();
+            next.last_request_seq = 0;
+            self.persist_journal(engine, &next).await?;
+            self.journal = next;
+        }
         let held = self.notice().is_some()
             && self
                 .plc_waiting_at
