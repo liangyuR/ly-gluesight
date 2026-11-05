@@ -106,3 +106,17 @@ it("模拟相机载入真实标定原图 → 按已存标定的像素当量计�
  await vi.waitFor(()=>expect(screen.getByRole("spinbutton",{name:/^像素当量/})).toHaveValue(0.05));
  expect(screen.getByRole("button",{name:"标定"})).toBeEnabled();
 });
+
+it("标定原图载入未完成 → 拍照与导入不可用，载入结束后恢复",async()=>{
+ desktop.on=true;
+ let finish:(value:null)=>void=()=>{};
+ vi.mocked(invoke).mockImplementation(async command=>command==="storage_preferences_get"?{}:command==="workspace_station_restore"?new Promise(resolve=>{finish=resolve;}):null);
+ render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
+ await screen.findByRole("heading",{name:"标定板参数"});
+ await vi.waitFor(()=>expect(invoke).toHaveBeenCalledWith("workspace_station_restore",expect.anything()));
+ expect(screen.getByRole("button",{name:"拍照"})).toBeDisabled();
+ expect(screen.getByLabelText("导入离线图",{selector:"input"})).toBeDisabled();
+ finish(null);
+ await vi.waitFor(()=>expect(screen.getByRole("button",{name:"拍照"})).toBeEnabled());
+ expect(screen.getByLabelText("导入离线图",{selector:"input"})).toBeEnabled();
+});
