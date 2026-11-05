@@ -190,17 +190,20 @@ def run(spec_path: Path, out: Path) -> int:
         raise EvalError("标注文件里没有胶探针（kind: glue）")
     out.mkdir(parents=True, exist_ok=True)
 
-    loaded = []
-    for i, im in enumerate(images, 1):
-        path = base / im["file"]
-        rgb, raw = load_image(path, spec.get("bayer"))
-        for j, probe in enumerate(im.get("probes", []), 1):
+    # 录制目录可能有几百帧：只读标了探针的图，且一次只留一张图的通道。第一遍量胶对比度定各通道极性，
+    # 第二遍重读图算响应，两遍之间只留探针上的指标。
+    annotated = [(i, im) for i, im in enumerate(images, 1) if im.get("probes")]
+
+    def channels(i: int, im: dict) -> dict:
+        rgb, raw = load_image(base / im["file"], spec.get("bayer"))
+        for j, probe in enumerate(im["probes"], 1):
             check_probe(probe, rgb.shape[:2], f"第 {i} 张图 {im['file']} 第 {j} 个探针")
-        loaded.append((im, rgb, {name: fn(rgb, raw).astype(np.float32) for name, fn in CHANNELS.items()}))
+        return {name: fn(rgb, raw).astype(np.float32) for name, fn in CHANNELS.items()}
 
     rows = []
-    for im, rgb, chans in loaded:
-        for j, probe in enumerate(im.get("probes", []), 1):
+    for i, im in annotated:
+        chans = channels(i, im)
+        for j, probe in enumerate(im["probes"], 1):
             if probe["kind"] != "glue":
                 continue
             for name, ch in chans.items():
@@ -214,7 +217,8 @@ def run(spec_path: Path, out: Path) -> int:
         bright[name] = sum(d > 0 for d in deltas) >= len(deltas) / 2
 
     resp_rows = []
-    for im, rgb, chans in loaded:
+    for i, im in annotated:
+        chans = channels(i, im)
         responses = {name: response(ch, bright[name], diameter) for name, ch in chans.items()}
         for j, probe in enumerate(im.get("probes", []), 1):
             for name, r in responses.items():
