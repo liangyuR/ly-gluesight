@@ -249,6 +249,32 @@ async fn s7_wire_part_returns_ready_only_after_plc_latches_result() {
     rig.finish().await;
 }
 
+/// 空闲时 plcState 在 20 与 0 间来回跳：等待提示保持，不随每次跳变出现、消失；PLC 稳定回空闲后才清除。
+#[tokio::test]
+async fn idle_notice_holds_while_plc_state_flaps() {
+    let mut rig = Rig::new("idle-flap").await;
+    for plc in [
+        state::PLC_MOTION_END,
+        state::PLC_IDLE,
+        state::PLC_MOTION_END,
+        state::PLC_IDLE,
+    ] {
+        rig.plc.plc_state(plc);
+        rig.fresh().await;
+        rig.session.poll(&rig.engine, false, true).await;
+        assert!(
+            rig.session.notice().is_some(),
+            "plcState={plc}：{:?}",
+            rig.session.view()
+        );
+    }
+    tokio::time::sleep(NOTICE_HOLD).await;
+    rig.fresh().await;
+    rig.session.poll(&rig.engine, false, true).await;
+    assert_eq!(rig.session.notice(), None);
+    rig.finish().await;
+}
+
 /// 软件复位：PLC 不在空闲时 PC 先置 99，PLC 回 0 之前不得置就绪。
 #[tokio::test]
 async fn software_reset_waits_for_plc_idle_before_ready() {

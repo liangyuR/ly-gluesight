@@ -47,7 +47,7 @@ export function SignalLamps() {
         const value = id === undefined ? null : values[id]?.value;
         const state = typeof value === "number" ? codeName(names, value) : "—";
         const lit = typeof value === "number" && value !== 0;
-        return <span key={tag} className={`lamp${pc ? " pc" : ""}${value === 90 ? " fault" : lit ? " on" : ""}${id ? "" : " unbound"}`} title={id ? `点位 ${id} · ${tag}` : "地址表中未绑定该标签"}>
+        return <span key={tag} className={`lamp lamp-state${pc ? " pc" : ""}${value === 90 ? " fault" : lit ? " on" : ""}${id ? "" : " unbound"}`} title={id ? `点位 ${id} · ${tag}` : "地址表中未绑定该标签"}>
           {side}：{state}
         </span>;
       })}
