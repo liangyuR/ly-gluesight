@@ -74,6 +74,17 @@ pub struct SampleRef {
     pub part_id: String,
     pub sn: String,
     pub label: SampleLabel,
+    /// 取图时按彩色读这件样本的相机（当时图像模式为彩色）；历史读样本原图按它，不看现在的相机配置。旧记录没有，按灰度读
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub color_cameras: Vec<String>,
+}
+
+impl SampleRef {
+    /// 样本件身份（不含取图时的图像模式）相同。
+    pub fn same_part(&self, other: &SampleRef) -> bool {
+        (&self.set_id, &self.part_id, &self.sn, self.label)
+            == (&other.set_id, &other.part_id, &other.sn, other.label)
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -263,7 +274,13 @@ impl SampleSet {
     }
 
     pub fn reference(&self, part_id: &str) -> Option<SampleRef> {
-        self.part(part_id).map(|p| SampleRef { set_id: self.manifest.id.clone(), part_id: p.part_id.clone(), sn: p.sn.clone(), label: p.label })
+        self.part(part_id).map(|p| SampleRef {
+            set_id: self.manifest.id.clone(),
+            part_id: p.part_id.clone(),
+            sn: p.sn.clone(),
+            label: p.label,
+            color_cameras: Vec::new(),
+        })
     }
 
     pub fn has_camera(&self, camera_id: &str) -> bool {
