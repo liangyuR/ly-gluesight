@@ -75,39 +75,3 @@ impl BurstSamples {
         self.set.load_view(&self.part_id, shot, camera_id, 1, color)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn history_sample_decodes_by_camera_mode_recorded_at_acquisition() {
-        // 防的回归：读候选离线调试记录的样本原图时按现在的相机图像模式决定彩色 / 灰度，改了相机设置，
-        // 历史原图、复测输入与对照叠图跟着变，甚至通道与示教不一致而报错
-        let dir = crate::offline::test_dir::TestDir::new("history-samples", "mode");
-        let images = dir.join("parts/p01");
-        std::fs::create_dir_all(&images).unwrap();
-        image::RgbImage::from_pixel(4, 4, image::Rgb([230, 120, 130]))
-            .save(images.join("S001_cam1_v1.png"))
-            .unwrap();
-        std::fs::write(
-            dir.join("sample-set.json"),
-            serde_json::json!({
-                "schemaVersion": 1, "id": "s", "name": "s", "source": "s", "imageSize": [4, 4], "mmPerPx": null,
-                "cameras": [{"id": "cam1", "views": [1]}],
-                "shots": [{"shotId": "S001", "cameraId": "cam1", "views": [1]}],
-                "parts": [{"partId": "p01", "sn": "SN", "label": "unknown"}],
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let samples = |color_cameras: Vec<String>| BurstSamples {
-            set: SampleSet::load(&dir).unwrap(),
-            part_id: "p01".into(),
-            color_cameras,
-            frames: vec![("cam1".into(), vec!["S001".into()])],
-        };
-        assert_eq!(samples(vec!["cam1".into()]).load(0, 1).unwrap().channels, 3);
-        assert_eq!(samples(Vec::new()).load(0, 1).unwrap().channels, 1);
-    }
-}

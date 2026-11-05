@@ -499,6 +499,34 @@ mod tests {
     }
 
     #[test]
+    fn preview_bytes_have_20_byte_header_and_channel_sized_body() {
+        // 防的回归：读图命令的字节格式（u32 小端 [预览宽, 预览高, 原图宽, 原图高, 通道数] + 预览宽 × 预览高 × 通道数）
+        // 与前端不一致：头部仍是 16 字节或彩色帧按灰度长度写，前端解码整幅错位
+        let (w, h) = (1920u32, 1000u32);
+        for channels in [1u8, 3] {
+            let pixels: Vec<u8> = (0..w * h * channels as u32)
+                .map(|i| (i % 251) as u8)
+                .collect();
+            let image = if channels == 3 {
+                FrameImage::rgb(w, h, pixels)
+            } else {
+                FrameImage::new(w, h, pixels)
+            };
+            let bytes = preview_bytes(&image);
+            let header: Vec<u32> = bytes[..20]
+                .chunks(4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+            assert_eq!(header[2..], [w, h, u32::from(channels)]);
+            assert!(header[0] < w && header[1] < h, "应缩小");
+            assert_eq!(
+                bytes.len(),
+                20 + (header[0] * header[1]) as usize * channels as usize
+            );
+        }
+    }
+
+    #[test]
     fn demosaic_of_each_genicam_phase_keeps_red_and_blue_in_place() {
         // 防的回归：GenICam 相位（BayerBG = 第 0 行 B G、第 1 行 G R）与 OpenCV 命名差一格，按错的相位去马赛克红蓝互换，
         // 粉色胶条变成紫色
