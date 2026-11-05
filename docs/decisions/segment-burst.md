@@ -253,11 +253,11 @@
   - 段结构（序列、类型）、每段检测相机（D-SB-41）与走廊（D-SB-42）由人定。各段 N_exp 取示教件已确认手动分段的各段帧组数（D-SB-21）；手动边界只作 N_exp 的来源与分段算法评估的真值，不直接进生产。
   - 生产新增比例分段器：判定在本件收尾后进行，总帧组数 `total` 已知；第 k 个边界 = round(total × C_k / ΣN_exp)，C_k 为前 k 段 N_exp 之和。`total` ∈ ΣN_exp ± Σtol 时各边界置信度 1，否则 0（全部合并为 `Unsegmented(LowConfidence)`）。有任一段 N_exp 为 null 时仍返回 `Unsegmented(AlgorithmPending)`，即现行行为。
   - 边界余量：配方新增 `boundary_guard`（帧，默认 2，可配 0–5，不进计划身份）。每个可信边界两侧各 `boundary_guard` 帧划为过渡区域（`UnsegReason` 新增 `Transition`）：只判每帧胶宽、断胶、溢胶，允差取两侧较宽一档，不判胶偏与胶宽均匀性。取代 `resolve_regions` 现行的“边界两侧各一帧归弯道”。直线段核心区域仍按 D-SB-15 去首尾各一帧判胶偏。
-  - 段长：直线段 N_exp < 2 × `boundary_guard` + 1 时核心区域为空，该段胶偏不判，发布前检查给出警告（不阻断）；弯道段不限。
+  - 段长：直线段每一头先去掉过渡区与本段跳过帧（D-SB-50）中较多的一截（两者从同一端数起、互相重叠；第 1 段开头、末段结尾没有过渡区），胶偏判定再去掉区域首尾各一帧（D-SB-15）。N_exp 少于“两头去掉的帧数 + 3”时没有帧判胶偏，该段标胶偏未判，发布前检查给出警告（不阻断）；默认过渡 2 帧、不跳过时，中间直线段至少 7 帧，第 1 段与末段至少 5 帧。弯道段不限。警告按 N_exp 核对，本件帧组数少于 ΣN_exp 时各段按比例变短，贴着门槛的段仍可能取不到帧。
   - 比例边界是推算值，不逐段核对帧数；帧数告警仍只核对整件（第二节）。
 - 理由：现场数据的边界偏差在默认余量 2 帧以内；判定在整件收尾后进行，比例映射所需的总帧组数在判定时已知；复用示教件已确认的分段与 `resolve_regions`，不需要图像算法即可上线按段判定。
 - 现场偏差超过余量时须重新评估段结构、速度与边界余量；图像运动细化属于待开发方向（D-SB-43），没有可用的自动回退实现。多段配方不能以段 N_exp 保持 null 的方式发布。
-- 实现（2026-10-26）：`segmentation::Proportional`；`resolve_regions` 增加 `guard` 参数，过渡区为 `Unsegmented { reason: Transition }`，覆盖边界两侧的段，取代“边界两侧各一帧归弯道”。生产节拍、示教件测量的 boundaries.json、独立样本验证、历史复测与重判都改用它。`RecipeDoc` / `Recipe` 新增 `boundaryGuard`（serde 默认 2，校验 0–5，不改配方 schema 8，旧文件读作 2），段列表页可编辑。`burst_judge`：过渡区不判也不标胶偏、不计入 `flags.unsegmented`；直线 / 弯道区域 `count_status` 恒为空（帧数只核对整件与未分段区域）。发布前检查：多段配方直线段 N_exp < 2 × guard + 1 时在“段帧数”里提示，x_ref 检查区分“已有各段 N_exp（多段配方暂不计算 x_ref，运行时标胶偏未判）”与“示教件分段未确认”。单段配方仍未分段，行为不变。
+- 实现（2026-10-26）：`segmentation::Proportional`；`resolve_regions` 增加 `guard` 参数，过渡区为 `Unsegmented { reason: Transition }`，覆盖边界两侧的段，取代“边界两侧各一帧归弯道”。生产节拍、示教件测量的 boundaries.json、独立样本验证、历史复测与重判都改用它。`RecipeDoc` / `Recipe` 新增 `boundaryGuard`（serde 默认 2，校验 0–5，不改配方 schema 8，旧文件读作 2），段列表页可编辑。`burst_judge`：过渡区不判也不标胶偏、不计入 `flags.unsegmented`；直线 / 弯道区域 `count_status` 恒为空（帧数只核对整件与未分段区域）。发布前检查：多段配方直线段 N_exp 不够去掉过渡区、跳过帧与首尾各一帧后留 1 帧时在“段帧数”里提示，x_ref 检查区分“已有各段 N_exp（多段配方暂不计算 x_ref，运行时标胶偏未判）”与“示教件分段未确认”。单段配方仍未分段，行为不变。
 - 离线评估：`src-tauri/examples/segment_eval.rs` 对已确认手动分段做留一评估（见 [TESTING](../testing/TESTING.md)）；NEW-14 尚未标手动分段，评估结果待补。
 
 ### D-SB-41 每段指定检测相机（修订 D-SB-14，2026-10-26 用户确认，已实现，测成率建议待实现）
