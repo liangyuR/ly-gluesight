@@ -220,13 +220,34 @@ fn burst_samples(app: &AppHandle, detail: &PartDetail) -> Result<history_samples
 }
 
 /// 段配方历史件第 camera 台计划相机第 seq 帧组的原图：生产记录读录制目录，候选离线调试记录读受管样本集。
-pub(super) fn frame_image(app: &AppHandle, detail: &PartDetail, camera: usize, seq: u64) -> Result<FrameImage, String> {
-    let burst = detail.burst.as_ref().ok_or("这条历史是旧拍照点记录，请按拍照点读原图")?;
-    let frame = burst.frames.iter().find(|f| f.camera == camera && f.seq == seq).ok_or("没有这一帧的记录")?;
-    if frame.status == FrameState::Missing { return Err("这台相机本帧组缺帧，没有原图".into()); }
-    let camera_id = burst.cameras.get(camera).ok_or("相机下标超出本件计划相机")?;
+pub(super) fn frame_image(
+    app: &AppHandle,
+    detail: &PartDetail,
+    camera: usize,
+    seq: u64,
+) -> Result<FrameImage, String> {
+    let burst = detail
+        .burst
+        .as_ref()
+        .ok_or("这条历史是旧拍照点记录，请按拍照点读原图")?;
+    let frame = burst
+        .frames
+        .iter()
+        .find(|f| f.camera == camera && f.seq == seq)
+        .ok_or("没有这一帧的记录")?;
+    if frame.status == FrameState::Missing {
+        return Err("这台相机本帧组缺帧，没有原图".into());
+    }
+    let camera_id = burst
+        .cameras
+        .get(camera)
+        .ok_or("相机下标超出本件计划相机")?;
     if detail.summary.source == RecordSource::OfflineCandidate {
-        let color = app.state::<CycleHost>().camera.configs().iter()
+        let color = app
+            .state::<CycleHost>()
+            .camera
+            .configs()
+            .iter()
             .any(|c| &c.id == camera_id && c.image_mode.color());
         return burst_samples(app, detail)?.load(camera, seq, color);
     }
@@ -327,7 +348,8 @@ pub(super) struct CandidateMeasurer {
 impl CandidateMeasurer {
     pub(super) fn new(app: &AppHandle, w: &Workspace, recipe: &Recipe) -> Result<Self, String> {
         recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
-        let graphs = vision::CorridorSet::build(recipe, &super::burst::teaching_sizes(w)?)?.with_channels(&super::burst::teaching_channels(w));
+        let graphs = vision::CorridorSet::build(recipe, &super::burst::teaching_sizes(w)?)?
+            .with_channels(&super::burst::teaching_channels(w));
         let engine = app
             .state::<vision::VisionHost>()
             .engine()

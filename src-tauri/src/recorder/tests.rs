@@ -136,7 +136,10 @@ fn bayer_saved_beside_gray_and_its_write_failure_keeps_recording_available() {
         b"P5\n1 1\n255\n\xc8"
     );
     assert_eq!(frames[1]["bayer"]["available"], false);
-    assert!(frames[0].get("imageMode").is_none(), "灰度帧的 part.json 不变");
+    assert!(
+        frames[0].get("imageMode").is_none(),
+        "灰度帧的 part.json 不变"
+    );
     assert_eq!(
         (
             meta["bayerFrames"].as_u64(),
@@ -154,18 +157,28 @@ fn color_frame_records_bayer_mosaic_as_main_file_and_reads_back_rgb() {
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
     let recorder = Recorder::new(dir.root(), Some(callback));
-    let mut rec = recorder.begin(RecordMode::All, "SN-COLOR", recipe(), "color", None).unwrap();
+    let mut rec = recorder
+        .begin(RecordMode::All, "SN-COLOR", recipe(), "color", None)
+        .unwrap();
     // BG 相位纯色马赛克：R=200 G=100 B=50
     let mosaic = vec![50, 100, 100, 200];
     let frame = Frame {
         images: vec![Arc::new(FrameImage::rgb(2, 2, [200, 100, 50].repeat(4)))],
-        bayer: Some(BayerMosaic { pattern: BayerPattern::Bg, image: Arc::new(FrameImage::new(2, 2, mosaic.clone())) }),
+        bayer: Some(BayerMosaic {
+            pattern: BayerPattern::Bg,
+            image: Arc::new(FrameImage::new(2, 2, mosaic.clone())),
+        }),
         ..frame(0)
     };
     recorder.burst_frame(&mut rec, &frame, 0, 1);
     recorder.finish(rec, Verdict::Ok, "彩色", 100, u64::MAX, Vec::new());
     let outcome = wait(&outcomes);
-    assert_eq!((outcome.state, outcome.available), (RecordingState::Complete, true), "{:?}", outcome.errors);
+    assert_eq!(
+        (outcome.state, outcome.available),
+        (RecordingState::Complete, true),
+        "{:?}",
+        outcome.errors
+    );
     let directory = outcome.directory.clone().unwrap();
     let main = directory.join(outcome.files[0].file.rsplit('/').next().unwrap());
     let mut expected = b"P5\n# bayer BG\n2 2\n255\n".to_vec();
@@ -175,9 +188,16 @@ fn color_frame_records_bayer_mosaic_as_main_file_and_reads_back_rgb() {
     let entry = &meta["frames"][0];
     assert_eq!(entry["imageMode"], "color");
     assert!(entry.get("bayer").is_none());
-    assert!(!std::fs::read_dir(&directory).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().ends_with("_bayer.pgm")));
+    assert!(!std::fs::read_dir(&directory).unwrap().any(|e| e
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with("_bayer.pgm")));
     let image = crate::image_file::load(&main).unwrap();
-    assert_eq!((image.channels, image.pixels.clone()), (3, [200, 100, 50].repeat(4)));
+    assert_eq!(
+        (image.channels, image.pixels.clone()),
+        (3, [200, 100, 50].repeat(4))
+    );
 }
 
 /// 段配方录制：录制队列已有 `queued` 帧时依次录 `frames`（(计划相机下标, seq)），写盘后收尾。

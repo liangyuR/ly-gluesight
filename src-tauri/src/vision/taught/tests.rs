@@ -92,8 +92,12 @@ fn frame_whose_color_mode_differs_from_the_taught_frame_fails_before_measuring()
     // 却不报错地给出判定
     let doc = burst_doc();
     let recipe = doc.build().unwrap();
-    let gray_taught = CorridorSet::build(&recipe, &[FRAME; 3]).unwrap().with_channels(&[1, 1, 1]);
-    let FrameGraph::Corridor(c) = gray_taught.get(0, 1).unwrap() else { panic!("应是示教走廊") };
+    let gray_taught = CorridorSet::build(&recipe, &[FRAME; 3])
+        .unwrap()
+        .with_channels(&[1, 1, 1]);
+    let FrameGraph::Corridor(c) = gray_taught.get(0, 1).unwrap() else {
+        panic!("应是示教走廊")
+    };
     let n = (FRAME[0] * FRAME[1]) as usize;
     let color = FrameImage::rgb(FRAME[0], FRAME[1], vec![0; n * 3]);
     let ran = std::cell::Cell::new(false);

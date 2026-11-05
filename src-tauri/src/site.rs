@@ -130,8 +130,13 @@ impl OfflineSession {
         check_switch(pre.busy)?;
         let (kind, cameras) = match derivation {
             Derivation::SampleSet(manifest) => {
-                pre.lyflow.map_err(|reason| format!("离线·样本集要用 lyFlow 测量现场原图，但 lyFlow 未加载：{reason}"))?;
-                (SourceKind::SampleSet, sample_set_cameras(manifest, &real.cameras)?)
+                pre.lyflow.map_err(|reason| {
+                    format!("离线·样本集要用 lyFlow 测量现场原图，但 lyFlow 未加载：{reason}")
+                })?;
+                (
+                    SourceKind::SampleSet,
+                    sample_set_cameras(manifest, &real.cameras)?,
+                )
             }
             Derivation::Synthetic => (SourceKind::Synthetic, synthetic_cameras(&real.cameras)),
         };
@@ -156,7 +161,10 @@ fn offline_plc(port: u16) -> Result<PlcConfig, String> {
 }
 
 /// 样本集相机按清单生成；单视角相机沿用真实相机组同编号相机的图像模式（彩色相机的样本集按 RGB 读图）。
-fn sample_set_cameras(manifest: &Manifest, real: &[CameraConfig]) -> Result<Vec<CameraConfig>, String> {
+fn sample_set_cameras(
+    manifest: &Manifest,
+    real: &[CameraConfig],
+) -> Result<Vec<CameraConfig>, String> {
     manifest.cameras.iter().map(|camera| {
         let mut views = camera.views.clone();
         views.sort_unstable();

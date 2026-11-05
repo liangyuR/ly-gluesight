@@ -612,9 +612,17 @@ pub struct GraphRun<'a> {
 
 /// 一帧与示教帧的尺寸、像素缓冲核对；示教帧通道数已知时，彩色 / 灰度不一致也报错（lyFlow 能把 RGB 转灰度量，
 /// 但示教与生产的成像口径不同，结果不可比）。
-pub(super) fn check_frame(camera: &str, size: [u32; 2], channels: Option<u8>, image: &FrameImage) -> Result<(), String> {
+pub(super) fn check_frame(
+    camera: &str,
+    size: [u32; 2],
+    channels: Option<u8>,
+    image: &FrameImage,
+) -> Result<(), String> {
     if [image.width, image.height] != size {
-        return Err(format!("相机 {camera} 这一帧图像 {}×{} 与示教帧 {}×{} 尺寸不一致", image.width, image.height, size[0], size[1]));
+        return Err(format!(
+            "相机 {camera} 这一帧图像 {}×{} 与示教帧 {}×{} 尺寸不一致",
+            image.width, image.height, size[0], size[1]
+        ));
     }
     if !image.consistent() {
         return Err("图像像素缓冲与尺寸不一致".into());

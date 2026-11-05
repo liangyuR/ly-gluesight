@@ -140,9 +140,18 @@ fn check_operators(manifest: &Value) -> Result<(), String> {
 /// 整帧注入 lyFlow：灰度 1 通道，彩色 3 通道 RGB 交错（glue 算子入口按 BT.601 转灰，彩色帧在灰度模板下也能测）。
 pub(crate) fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
     image.expected_len().ok_or("图像尺寸无效")?;
-    if !image.consistent() { return Err("图像像素缓冲与尺寸不一致".into()); }
-    Ok(RunImageInput { node_id: "n_load".into(), port: "image".into(), width: image.width, height: image.height,
-        channels: u32::from(image.channels), depth: 1, pixels: image.pixels.clone() })
+    if !image.consistent() {
+        return Err("图像像素缓冲与尺寸不一致".into());
+    }
+    Ok(RunImageInput {
+        node_id: "n_load".into(),
+        port: "image".into(),
+        width: image.width,
+        height: image.height,
+        channels: u32::from(image.channels),
+        depth: 1,
+        pixels: image.pixels.clone(),
+    })
 }
 
 pub struct RunResult {

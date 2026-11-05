@@ -252,7 +252,9 @@ pub fn recipe_capture_list(app: AppHandle, recipe_id: String) -> Result<Vec<Capt
 pub fn recipe_capture_frame_image(app: AppHandle, round_id: String, camera_id: String, seq: u64) -> Result<tauri::ipc::Response, String> {
     let path = app.state::<CycleHost>().camera.recipe_capture().burst_frame_path(&round_id, &camera_id, seq)?;
     let image = crate::image_file::load(&path)?;
-    Ok(tauri::ipc::Response::new(crate::frame::preview_bytes(&image)))
+    Ok(tauri::ipc::Response::new(crate::frame::preview_bytes(
+        &image,
+    )))
 }
 
 /// 缩略图下采样倍数：1280×1024 → 160×128。

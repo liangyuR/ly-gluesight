@@ -276,7 +276,14 @@ impl SampleSet {
     }
 
     /// `color`：彩色模式的相机按 RGB 读（见 `image_file::load_as`）。
-    pub fn load_view(&self, part_id: &str, shot_id: &str, camera_id: &str, view: u8, color: bool) -> Result<FrameImage, String> {
+    pub fn load_view(
+        &self,
+        part_id: &str,
+        shot_id: &str,
+        camera_id: &str,
+        view: u8,
+        color: bool,
+    ) -> Result<FrameImage, String> {
         let path = self.image_path(part_id, shot_id, camera_id, view)?;
         let image = crate::image_file::load_as(path, color)?;
         if let Some(size) = self.manifest.image_size.filter(|size| *size != [image.width, image.height]) {
@@ -286,10 +293,20 @@ impl SampleSet {
     }
 
     /// 某件某点某相机的 1..=view_count 视角；任何一幅缺失、解码失败或尺寸不符都按本帧缺失处理，不拿别的图顶替。
-    pub fn load_views(&self, part_id: &str, shot_id: &str, camera_id: &str, view_count: u8, color: bool) -> Result<Vec<Arc<FrameImage>>, String> {
-        (1..=view_count).map(|view| {
-            self.load_view(part_id, shot_id, camera_id, view, color).map(Arc::new)
-        }).collect()
+    pub fn load_views(
+        &self,
+        part_id: &str,
+        shot_id: &str,
+        camera_id: &str,
+        view_count: u8,
+        color: bool,
+    ) -> Result<Vec<Arc<FrameImage>>, String> {
+        (1..=view_count)
+            .map(|view| {
+                self.load_view(part_id, shot_id, camera_id, view, color)
+                    .map(Arc::new)
+            })
+            .collect()
     }
 
     pub fn summary(&self) -> SampleSetSummary {

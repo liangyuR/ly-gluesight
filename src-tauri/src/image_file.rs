@@ -42,12 +42,17 @@ pub struct PnmInfo {
 impl PnmInfo {
     /// 文件应有的总长度。
     pub fn file_len(&self) -> u64 {
-        self.data_offset as u64 + u64::from(self.width) * u64::from(self.height) * u64::from(self.file_channels)
+        self.data_offset as u64
+            + u64::from(self.width) * u64::from(self.height) * u64::from(self.file_channels)
     }
 
     /// 读回后的通道数：Bayer 马赛克去马赛克成 RGB。
     pub fn channels(&self) -> u8 {
-        if self.bayer.is_some() { 3 } else { self.file_channels }
+        if self.bayer.is_some() {
+            3
+        } else {
+            self.file_channels
+        }
     }
 }
 
@@ -65,7 +70,10 @@ pub fn pnm_info(bytes: &[u8]) -> Option<PnmInfo> {
         loop {
             match *bytes.get(at)? {
                 b'#' => {
-                    let end = bytes[at..].iter().position(|&b| b == b'\n').map_or(bytes.len(), |n| at + n);
+                    let end = bytes[at..]
+                        .iter()
+                        .position(|&b| b == b'\n')
+                        .map_or(bytes.len(), |n| at + n);
                     let comment = std::str::from_utf8(&bytes[at + 1..end]).ok()?.trim();
                     if let Some(name) = comment.strip_prefix("bayer") {
                         bayer = Some(BayerPattern::from_name(name.trim())?);
@@ -76,11 +84,17 @@ pub fn pnm_info(bytes: &[u8]) -> Option<PnmInfo> {
                 _ => break,
             }
         }
-        let digits = bytes[at..].iter().take_while(|b| b.is_ascii_digit()).count();
+        let digits = bytes[at..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
         if digits == 0 || digits > 9 {
             return None;
         }
-        *field = std::str::from_utf8(&bytes[at..at + digits]).ok()?.parse().ok()?;
+        *field = std::str::from_utf8(&bytes[at..at + digits])
+            .ok()?
+            .parse()
+            .ok()?;
         at += digits;
     }
     let [width, height, max] = fields;
@@ -90,7 +104,13 @@ pub fn pnm_info(bytes: &[u8]) -> Option<PnmInfo> {
     if file_channels == 3 && bayer.is_some() {
         return None;
     }
-    Some(PnmInfo { width, height, file_channels, bayer, data_offset: at + 1 })
+    Some(PnmInfo {
+        width,
+        height,
+        file_channels,
+        bayer,
+        data_offset: at + 1,
+    })
 }
 
 /// 读文件开头解析 PNM 头（见 [`pnm_info`]）。
@@ -122,11 +142,22 @@ fn decode_pnm(bytes: &[u8], info: PnmInfo) -> Result<FrameImage, String> {
     let need = info.file_len() as usize - info.data_offset;
     let data = bytes
         .get(info.data_offset..info.data_offset + need)
-        .ok_or_else(|| format!("PNM 像素数据不足：{}×{} 需要 {need} 字节", info.width, info.height))?;
+        .ok_or_else(|| {
+            format!(
+                "PNM 像素数据不足：{}×{} 需要 {need} 字节",
+                info.width, info.height
+            )
+        })?;
     Ok(match (info.bayer, info.file_channels) {
         (Some(pattern), _) => {
             let mut rgb = Vec::new();
-            crate::frame::bayer8_rgb_into(pattern, info.width as usize, info.height as usize, data, &mut rgb)?;
+            crate::frame::bayer8_rgb_into(
+                pattern,
+                info.width as usize,
+                info.height as usize,
+                data,
+                &mut rgb,
+            )?;
             FrameImage::rgb(info.width, info.height, rgb)
         }
         (None, 3) => FrameImage::rgb(info.width, info.height, data.to_vec()),
@@ -154,7 +185,11 @@ pub fn load_color(path: &Path) -> Result<FrameImage, String> {
 
 /// 按模式读：彩色模式见 [`load_color`]，灰度模式见 [`load`]。
 pub fn load_as(path: &Path, color: bool) -> Result<FrameImage, String> {
-    if color { load_color(path) } else { load(path) }
+    if color {
+        load_color(path)
+    } else {
+        load(path)
+    }
 }
 
 /// 按内容识别格式解码，规则同 [`load`]。
@@ -172,7 +207,9 @@ pub fn decode_color(bytes: &[u8]) -> Result<FrameImage, String> {
     if let Some(info) = pnm_info(bytes) {
         return decode_pnm(bytes, info);
     }
-    let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?.into_rgb8();
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| e.to_string())?
+        .into_rgb8();
     let (width, height) = img.dimensions();
     Ok(FrameImage::rgb(width, height, img.into_raw()))
 }
@@ -181,7 +218,8 @@ pub fn decode_color(bytes: &[u8]) -> Result<FrameImage, String> {
 pub fn save_pgm(path: &Path, img: &FrameImage) -> Result<(), String> {
     use std::io::Write;
     let mut f = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
-    f.write_all(pnm_header(img.width, img.height, img.channels, None).as_bytes()).map_err(|e| e.to_string())?;
+    f.write_all(pnm_header(img.width, img.height, img.channels, None).as_bytes())
+        .map_err(|e| e.to_string())?;
     f.write_all(&img.pixels).map_err(|e| e.to_string())?;
     f.flush().map_err(|e| e.to_string())
 }
@@ -254,7 +292,11 @@ mod tests {
         assert!(bayer.starts_with(b"P5\n# bayer BG\n4 2\n255\n"));
         let color = decode(&bayer).unwrap();
         assert_eq!((color.width, color.height, color.channels), (w, h, 3));
-        assert!(color.pixels.chunks_exact(3).all(|p| p == [200, 100, 50]), "{:?}", color.pixels);
+        assert!(
+            color.pixels.chunks_exact(3).all(|p| p == [200, 100, 50]),
+            "{:?}",
+            color.pixels
+        );
 
         let mut plain = pnm_header(w, h, 1, None).into_bytes();
         plain.extend_from_slice(&mosaic);

@@ -585,11 +585,14 @@ fn verify_raw(path: &Path, width: u32, height: u32) -> Result<(), String> {
             { use std::os::windows::fs::MetadataExt;
               if meta.file_attributes() & 0x400 != 0 { return Err("原图路径不能是 reparse point".into()); } }
             let info = if meta.is_file() && !meta.file_type().is_symlink() {
-                crate::image_file::read_pnm_info(path).map_err(|e| format!("已写入原图不可用：{e}"))?
+                crate::image_file::read_pnm_info(path)
+                    .map_err(|e| format!("已写入原图不可用：{e}"))?
             } else {
                 None
             };
-            if !info.is_some_and(|info| (info.width, info.height) == (width, height) && info.file_len() == meta.len()) {
+            if !info.is_some_and(|info| {
+                (info.width, info.height) == (width, height) && info.file_len() == meta.len()
+            }) {
                 Err("原图路径不是普通文件或文件长度与录制尺寸不符".into())
             } else {
                 let image = image::open(path).map_err(|error| format!("原图解码失败：{error}"))?;

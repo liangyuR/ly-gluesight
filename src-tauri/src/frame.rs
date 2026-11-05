@@ -22,11 +22,25 @@ pub struct FrameImage {
 
 impl FrameImage {
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
-        Self { width, height, channels: 1, pixels, pool: None, charged: 0 }
+        Self {
+            width,
+            height,
+            channels: 1,
+            pixels,
+            pool: None,
+            charged: 0,
+        }
     }
 
     pub fn rgb(width: u32, height: u32, pixels: Vec<u8>) -> Self {
-        Self { width, height, channels: 3, pixels, pool: None, charged: 0 }
+        Self {
+            width,
+            height,
+            channels: 3,
+            pixels,
+            pool: None,
+            charged: 0,
+        }
     }
 
     pub fn is_color(&self) -> bool {
@@ -54,7 +68,9 @@ impl FrameImage {
         Cow::Owned(
             self.pixels
                 .chunks_exact(3)
-                .map(|p| ((77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32 + 128) >> 8) as u8)
+                .map(|p| {
+                    ((77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32 + 128) >> 8) as u8
+                })
                 .collect(),
         )
     }
@@ -67,7 +83,11 @@ impl FrameImage {
 
 impl std::fmt::Debug for FrameImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FrameImage({}×{}×{})", self.width, self.height, self.channels)
+        write!(
+            f,
+            "FrameImage({}×{}×{})",
+            self.width, self.height, self.channels
+        )
     }
 }
 
@@ -75,7 +95,9 @@ impl std::fmt::Debug for FrameImage {
 /// 其后是最近邻缩到 900×650 以内的 预览宽 × 预览高 × 通道数 字节（RGB 交错）。
 pub fn preview_bytes(image: &FrameImage) -> Vec<u8> {
     let channels = image.channels.max(1) as usize;
-    let scale = (image.width as f32 / 900.0).max(image.height as f32 / 650.0).max(1.0);
+    let scale = (image.width as f32 / 900.0)
+        .max(image.height as f32 / 650.0)
+        .max(1.0);
     let w = (image.width as f32 / scale).max(1.0) as u32;
     let h = (image.height as f32 / scale).max(1.0) as u32;
     let mut bytes = Vec::with_capacity(20 + (w * h) as usize * channels);
@@ -172,7 +194,14 @@ impl FramePool {
     fn take(&self, width: u32, height: u32, bytes: usize) -> Result<FrameImage, BudgetExceeded> {
         self.0.reserve(bytes)?;
         let pixels = self.0.free.lock().unwrap().pop().unwrap_or_default();
-        Ok(FrameImage { width, height, channels: 1, pixels, pool: Some(Arc::downgrade(&self.0)), charged: bytes })
+        Ok(FrameImage {
+            width,
+            height,
+            channels: 1,
+            pixels,
+            pool: Some(Arc::downgrade(&self.0)),
+            charged: bytes,
+        })
     }
 
     /// 拷一份像素到池里的缓冲。
@@ -192,24 +221,50 @@ impl FramePool {
     }
 
     /// 8 位 Bayer 去马赛克成 RGB 写进池里的缓冲（见 [`bayer8_rgb_into`]），按 宽 × 高 × 3 记预算。
-    pub fn bayer8_to_rgb(&self, pattern: BayerPattern, width: u32, height: u32, src: &[u8]) -> Result<FrameImage, GrayError> {
-        let bytes = (width as usize).saturating_mul(height as usize).saturating_mul(3);
-        let mut image = self.take(width, height, bytes).map_err(GrayError::BudgetExceeded)?;
+    pub fn bayer8_to_rgb(
+        &self,
+        pattern: BayerPattern,
+        width: u32,
+        height: u32,
+        src: &[u8],
+    ) -> Result<FrameImage, GrayError> {
+        let bytes = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(3);
+        let mut image = self
+            .take(width, height, bytes)
+            .map_err(GrayError::BudgetExceeded)?;
         image.channels = 3;
-        bayer8_rgb_into(pattern, width as usize, height as usize, src, &mut image.pixels).map_err(GrayError::Invalid)?;
+        bayer8_rgb_into(
+            pattern,
+            width as usize,
+            height as usize,
+            src,
+            &mut image.pixels,
+        )
+        .map_err(GrayError::Invalid)?;
         Ok(image)
     }
 }
 
 /// 8 位 Bayer 马赛克双线性去马赛克成 RGB（交错、行紧排）：本像素的颜色取原值，缺的两色取 3×3 邻域里同色像素的均值
 /// （四舍五入）——内部即标准双线性（G 取上下左右、R/B 取对角或同行同列的两个），边界只用图内的邻居。
-pub fn bayer8_rgb_into(pattern: BayerPattern, w: usize, h: usize, src: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
+pub fn bayer8_rgb_into(
+    pattern: BayerPattern,
+    w: usize,
+    h: usize,
+    src: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
     if w < 2 || h < 2 {
         return Err(format!("Bayer 图像至少 2×2（实际 {w}×{h}）"));
     }
     let n = w * h;
     if src.len() < n {
-        return Err(format!("Bayer 像素数据不足：{w}×{h} 需要 {n} 字节，实际 {}", src.len()));
+        return Err(format!(
+            "Bayer 像素数据不足：{w}×{h} 需要 {n} 字节，实际 {}",
+            src.len()
+        ));
     }
     let sites = pattern.sites();
     out.clear();
@@ -230,7 +285,11 @@ pub fn bayer8_rgb_into(pattern: BayerPattern, w: usize, h: usize, src: &[u8], ou
         let own = sites[(y & 1) * 2 + (x & 1)] as usize;
         let o = (y * w + x) * 3;
         for c in 0..3 {
-            out[o + c] = if c == own { src[y * w + x] } else { ((sum[c] + count[c] / 2) / count[c]) as u8 };
+            out[o + c] = if c == own {
+                src[y * w + x]
+            } else {
+                ((sum[c] + count[c] / 2) / count[c]) as u8
+            };
         }
     };
     for y in 0..h {
@@ -241,7 +300,11 @@ pub fn bayer8_rgb_into(pattern: BayerPattern, w: usize, h: usize, src: &[u8], ou
         border(out, 0, y);
         border(out, w - 1, y);
         // 内部像素的 3×3 邻域是完整的：G 位取左右、上下各两个异色的均值，R/B 位取十字四个 G 与对角四个另一色的均值
-        let (up, row, down) = (&src[(y - 1) * w..y * w], &src[y * w..(y + 1) * w], &src[(y + 1) * w..(y + 2) * w]);
+        let (up, row, down) = (
+            &src[(y - 1) * w..y * w],
+            &src[y * w..(y + 1) * w],
+            &src[(y + 1) * w..(y + 2) * w],
+        );
         let phase = (y & 1) * 2;
         for x in 1..w - 1 {
             let own = sites[phase + (x & 1)] as usize;
@@ -255,7 +318,8 @@ pub fn bayer8_rgb_into(pattern: BayerPattern, w: usize, h: usize, src: &[u8], ou
                 px[vert] = ((up[x] as u32 + down[x] as u32 + 1) / 2) as u8;
             } else {
                 let cross = up[x] as u32 + down[x] as u32 + row[x - 1] as u32 + row[x + 1] as u32;
-                let diag = up[x - 1] as u32 + up[x + 1] as u32 + down[x - 1] as u32 + down[x + 1] as u32;
+                let diag =
+                    up[x - 1] as u32 + up[x + 1] as u32 + down[x - 1] as u32 + down[x + 1] as u32;
                 px[1] = ((cross + 2) / 4) as u8;
                 px[2 - own] = ((diag + 2) / 4) as u8;
             }
@@ -311,9 +375,14 @@ impl BayerPattern {
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
-        [BayerPattern::Bg, BayerPattern::Rg, BayerPattern::Gb, BayerPattern::Gr]
-            .into_iter()
-            .find(|p| p.name().eq_ignore_ascii_case(name))
+        [
+            BayerPattern::Bg,
+            BayerPattern::Rg,
+            BayerPattern::Gb,
+            BayerPattern::Gr,
+        ]
+        .into_iter()
+        .find(|p| p.name().eq_ignore_ascii_case(name))
     }
 
     /// 2×2 相位里各格的颜色（0 = R、1 = G、2 = B），按 (行 & 1) × 2 + (列 & 1) 取。
@@ -435,12 +504,23 @@ mod tests {
         // 粉色胶条变成紫色
         let pink = [230u8, 120, 130];
         let (w, h) = (6usize, 5usize);
-        for pattern in [BayerPattern::Bg, BayerPattern::Rg, BayerPattern::Gb, BayerPattern::Gr] {
+        for pattern in [
+            BayerPattern::Bg,
+            BayerPattern::Rg,
+            BayerPattern::Gb,
+            BayerPattern::Gr,
+        ] {
             let row0: Vec<char> = pattern.name().chars().collect();
             let row1: Vec<char> = row0
                 .iter()
                 .map(|&c| match c {
-                    'G' => if row0.contains(&'R') { 'B' } else { 'R' },
+                    'G' => {
+                        if row0.contains(&'R') {
+                            'B'
+                        } else {
+                            'R'
+                        }
+                    }
                     _ => 'G',
                 })
                 .collect();
@@ -456,7 +536,11 @@ mod tests {
             assert_eq!(rgb.len(), w * h * 3);
             for (i, px) in rgb.chunks_exact(3).enumerate() {
                 for c in 0..3 {
-                    assert!(px[c].abs_diff(pink[c]) <= 2, "{} 第 {i} 像素 {px:?}", pattern.name());
+                    assert!(
+                        px[c].abs_diff(pink[c]) <= 2,
+                        "{} 第 {i} 像素 {px:?}",
+                        pattern.name()
+                    );
                 }
             }
         }
