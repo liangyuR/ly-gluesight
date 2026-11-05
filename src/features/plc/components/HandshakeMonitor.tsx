@@ -168,7 +168,7 @@ export default function HandshakeMonitor({ handshake, connected, tagValue }: Han
     {connected ? <div className="plc-handshake">
       <Registers side="PLC" fields={plcFields} />
       <Registers side="PC" fields={pcFields} />
-      {handshake.message && <Text as="p" variant="label" muted className="plc-handshake-message">{handshake.message}</Text>}
+      <Text as="p" variant="label" muted className="plc-handshake-message" title={handshake.message || undefined}>{handshake.message || " "}</Text>
     </div> : <OfflineNote />}
   </Card>;
 }
