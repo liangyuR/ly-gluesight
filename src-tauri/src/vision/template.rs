@@ -17,6 +17,12 @@ pub struct Template {
     judge: Map<String, Value>,
 }
 
+impl std::fmt::Debug for Template {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Template({})", self.id)
+    }
+}
+
 /// 配方里的专家参数（模板参数名 → 值）。
 pub type ExpertParams = BTreeMap<String, Value>;
 
@@ -44,8 +50,8 @@ fn load(id: &'static str, text: &'static str) -> Template {
     }
 }
 
-fn templates() -> &'static [Template; 2] {
-    static ALL: OnceLock<[Template; 2]> = OnceLock::new();
+fn templates() -> &'static [Template; 5] {
+    static ALL: OnceLock<[Template; 5]> = OnceLock::new();
     ALL.get_or_init(|| {
         [
             load(
@@ -53,6 +59,18 @@ fn templates() -> &'static [Template; 2] {
                 include_str!("../../graphs/corridor.lyflow.json"),
             ),
             load("heading", include_str!("../../graphs/heading.lyflow.json")),
+            load(
+                "corridor_color",
+                include_str!("../../graphs/corridor_color.lyflow.json"),
+            ),
+            load(
+                "heading_color",
+                include_str!("../../graphs/heading_color.lyflow.json"),
+            ),
+            load(
+                "color_teach",
+                include_str!("../../graphs/color_teach.lyflow.json"),
+            ),
         ]
     })
 }
@@ -66,6 +84,22 @@ pub fn corridor() -> &'static Template {
 /// 各有 `glue.track_path` → `glue.lateral_runs` 与 `glue.part_edges`。
 pub fn heading() -> &'static Template {
     &templates()[1]
+}
+
+/// 胶色测量的示教走廊图：`glue.color_map`（颜色模型）+ `glue.polyline` → 两份 `glue.color_runs`，可接 `glue.part_edges`。
+pub fn corridor_color() -> &'static Template {
+    &templates()[2]
+}
+
+/// 胶色测量的逐帧定向图：`glue.color_map` 之后 `glue.color_fan`，3 个候选方向各有 `glue.color_track` →
+/// `glue.color_runs` 与 `glue.part_edges`。
+pub fn heading_color() -> &'static Template {
+    &templates()[3]
+}
+
+/// 示教取色图：示教走廊（`glue.polyline`）→ `glue.color_model`，输出颜色模型。
+pub fn color_teach() -> &'static Template {
+    &templates()[4]
 }
 
 pub fn all() -> impl Iterator<Item = &'static Template> {

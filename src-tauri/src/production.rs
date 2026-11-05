@@ -24,17 +24,29 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
         return Err(format!("段配方有 {} 台检测相机，示教帧尺寸却有 {} 份", recipe.inspect.len(), sizes.len()));
     }
     let set = vision::CorridorSet::build(recipe, sizes)?;
-    let graphs: Vec<Value> = set.iter()
-        .map(|c| json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "params": c.params, "judge": c.judge}))
-        .collect();
+    // 灰度图沿用原来的形状（不记模板 id），胶色图记下用的是哪张模板
+    let entry = |template: &vision::template::Template, mut v: Value| {
+        if template.id.ends_with("_color") {
+            v["template"] = json!(template.id);
+        }
+        v
+    };
     let mut templates =
         json!({ vision::template::corridor().id: vision::template::corridor().doc });
+    let graphs: Vec<Value> = set.iter()
+        .map(|c| {
+            templates[c.template.id] = c.template.doc.clone();
+            entry(c.template, json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "params": c.params, "judge": c.judge}))
+        })
+        .collect();
     let mut doc = json!({"schemaVersion": 5, "version": GRAPH_VERSION_BURST, "graphs": graphs});
     let headings: Vec<Value> = set.headings()
-        .map(|h| json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "params": h.params, "judge": h.judge}))
+        .map(|h| {
+            templates[h.template.id] = h.template.doc.clone();
+            entry(h.template, json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "params": h.params, "judge": h.judge}))
+        })
         .collect();
     if !headings.is_empty() {
-        templates[vision::template::heading().id] = vision::template::heading().doc.clone();
         doc["headings"] = json!(headings);
     }
     doc["templates"] = templates;

@@ -83,6 +83,9 @@ export const workspaceApi = {
   /** 去掉一台相机在某段的走廊与示教帧，这一段回到待示教 */
   clearSegmentCorridor: (id: string, revision: number, camera: string, segment: number) =>
     desktopCall<WorkspaceView>("workspace_clear_segment_corridor", { id, revision, camera, segment }),
+  /** 在这一段冻结的彩色示教帧上沿已保存的走廊取色，写进这一段的 colorModel（这一段改按胶色测量）；示教帧是灰度图、缺走廊或像素当量时后端报错 */
+  fitColorModel: (id: string, revision: number, camera: string, segment: number) =>
+    desktopCall<WorkspaceView>("workspace_fit_color_model", { id, revision, camera, segment }),
   /** 测量示教件：按当前走廊测每帧特征，得出胶偏参考 x_ref（单段配方）与跳过帧建议的依据 */
   measureTeaching: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_measure_teaching", { id, revision }),
   /** 屏蔽或恢复示教件的帧组：只排除图像测量，示教件已有的测量随之失效 */

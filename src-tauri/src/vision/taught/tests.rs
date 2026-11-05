@@ -14,6 +14,7 @@ fn burst_doc() -> RecipeDoc {
             segment: 1,
             corridor: vec![[40.0, 80.0], [200.0, 80.0]],
             sector_deg: None,
+            color_model: None,
         }];
         inspect.mm_per_px = Some(0.25);
     }
@@ -108,6 +109,54 @@ fn frame_whose_color_mode_differs_from_the_taught_frame_fails_before_measuring()
     assert!(result.is_err() && !ran.get(), "彩色帧量了灰度示教的走廊");
     let gray = FrameImage::new(FRAME[0], FRAME[1], vec![0; n]);
     assert!(measure_frame_with(c, &gray, 7, |_, _| Ok(corridor_output(&beads(&[], &[])))).is_ok());
+}
+
+#[test]
+fn segment_with_color_model_measures_score_runs_with_color_graph_and_rejects_gray_frames() {
+    // 防的回归：取了色的段仍按灰度响应图量（粉胶在铸件和铝面上明暗相反，灰度测不全）；胶色卡尺的段
+    // （没有陡度，对比度按得分、局部亮度恒为 1）被灰度门限判成无胶；或灰度帧被当成胶色量
+    let mut doc = burst_doc();
+    doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+    let recipe = doc.build().unwrap();
+    let set = CorridorSet::build(&recipe, &[FRAME; 3]).unwrap();
+    let (FrameGraph::Corridor(c), FrameGraph::Corridor(gray_graph)) =
+        (set.get(0, 1).unwrap(), set.get(1, 1).unwrap())
+    else {
+        panic!("应是示教走廊")
+    };
+    assert_eq!(
+        (c.template.id, gray_graph.template.id),
+        ("corridor_color", "corridor")
+    );
+    assert_eq!(c.params["colorModel"], json!(r#"{"version":1}"#));
+    let score_runs: Vec<Value> = (0..41)
+        .map(|i| json!({"s": i as f64 * 4.0, "center": [40.0 + 4.0 * i as f64, 80.0], "normal": [0.0, 1.0],
+            "validFraction": 1.0, "infoFraction": 1.0, "unknownSpans": [],
+            "runs": [{"lo": -6.0, "hi": 10.0, "width": 16.0, "mid": 2.0, "peak": 0.95, "parts": 1, "loComplete": true,
+                "hiComplete": true, "loCause": "edge", "hiCause": "edge", "meanScore": 0.9, "unknownWidth": 0.0,
+                "edgeLo": null, "edgeHi": null, "depth": null, "sharpness": null, "level": 1.0}]}))
+        .collect();
+    let runs = json!({"count": 41, "stationStep": 4.0, "searchHalf": 32.0, "split": "half_max", "source": "color", "stations": score_runs});
+    let output = || RunResult {
+        summary: json!({"status": "ok"}),
+        outputs: json!({"runs": record(runs.clone()), "split": record(runs.clone())}),
+    };
+    let n = (FRAME[0] * FRAME[1]) as usize;
+    let color = FrameImage::rgb(FRAME[0], FRAME[1], vec![0; n * 3]);
+    let m = measure_frame_with(c, &color, 7, |run, _| {
+        assert_eq!(run.template.id, "corridor_color");
+        Ok(output())
+    })
+    .unwrap()
+    .metrics;
+    assert_eq!(
+        (m.present_ratio, m.gap_max_mm),
+        (1.0, 0.0),
+        "胶色卡尺每站都有胶"
+    );
+    assert!((m.width_mean.unwrap() - 4.0).abs() < 1e-6);
+    let gray = FrameImage::new(FRAME[0], FRAME[1], vec![0; n]);
+    assert!(measure_frame_with(c, &gray, 7, |_, _| Ok(output())).is_err());
 }
 
 #[test]
@@ -292,6 +341,7 @@ fn sector_turned_on_one_segment_leaves_other_segments_of_the_camera_automatic() 
             crate::recipe::SegmentCorridor {
                 segment: 2,
                 sector_deg: Some(90.0),
+                color_model: None,
                 ..corridor
             },
         ];

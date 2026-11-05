@@ -15,13 +15,15 @@ const WEAK_RAY_RATIO: f64 = 0.25;
 const WEAK_RAY_FACTOR: f64 = 0.5;
 /// 中心偏离门限的下限（px）。
 const CENTER_GATE_MIN_PX: f64 = 6.0;
+/// 没量到胶的一站，该有胶的区间被无信息区间与胶色段盖住至少这一比例才算无信息（不算缺胶）。
+const UNKNOWN_COVER: f64 = 0.8;
 
 /// 选方向的门限（1.1 `glue.bead_path` 的 minCoverage、sharpMin）。
 #[derive(Clone, Copy, Debug)]
 pub struct PathGate {
     pub min_coverage: f64,
-    /// 候选的陡度 P25 不低于它才算像胶
-    pub sharp_min: f64,
+    /// 候选的陡度 P25 不低于它才算像胶；None = 不看陡度（胶色跟踪：得分本身就是像不像胶）
+    pub sharp_min: Option<f64>,
 }
 
 /// 选方向的结果。
@@ -89,12 +91,13 @@ pub fn choose_path(scan: &Value, tracks: &[Value], gate: PathGate) -> Result<Pat
         let steps = track["steps"].as_u64().ok_or_else(|| what("steps"))?;
         let found = track["found"].as_u64().ok_or_else(|| what("found"))?;
         let sharpness = track["sharpness"].as_f64();
-        let coverage = if steps > 0 {
-            found as f64 / steps as f64
-        } else {
-            0.0
+        // 胶色跟踪另给去掉无信息步（高光、暗区）后的覆盖率，有就用它
+        let coverage = match track["coverageInformative"].as_f64() {
+            Some(c) if c.is_finite() => c,
+            _ if steps > 0 => found as f64 / steps as f64,
+            _ => 0.0,
         };
-        let beadlike = sharpness.unwrap_or(-1.0) >= gate.sharp_min;
+        let beadlike = beadlike(sharpness, gate);
         let mut score = if beadlike {
             coverage
         } else {
@@ -152,6 +155,11 @@ pub fn choose_path(scan: &Value, tracks: &[Value], gate: PathGate) -> Result<Pat
     })
 }
 
+fn beadlike(sharpness: Option<f64>, gate: PathGate) -> bool {
+    gate.sharp_min
+        .is_none_or(|min| sharpness.unwrap_or(-1.0) >= min)
+}
+
 /// 依次查覆盖率 ≥ minCoverage、像胶、胶点 ≥ 3，返回第一条不满足的原因（与 1.1 `info.reason` 同一句）；都满足为空。
 fn verdict(c: &Candidate, gate: PathGate) -> String {
     let sharp = c.sharpness.unwrap_or(-1.0);
@@ -160,10 +168,9 @@ fn verdict(c: &Candidate, gate: PathGate) -> String {
             "覆盖率 {:.2} 低于 minCoverage {:.2}",
             c.coverage, gate.min_coverage
         )
-    } else if sharp < gate.sharp_min {
+    } else if let Some(min) = gate.sharp_min.filter(|_| !beadlike(c.sharpness, gate)) {
         format!(
-            "找到的暗带边缘太缓（陡度 P25 = {sharp:.2} < sharpMin {:.2}），像压痕或阴影，不像胶",
-            gate.sharp_min
+            "找到的暗带边缘太缓（陡度 P25 = {sharp:.2} < sharpMin {min:.2}），像压痕或阴影，不像胶"
         )
     } else if c.found < MIN_COARSE_POINTS {
         "粗找到的胶点不到 3 个".into()
@@ -194,6 +201,8 @@ pub struct StationCall {
     pub normal: [f64; 2],
     /// 有胶时胶两边沿法向的偏移 (lo, hi)（px），无胶为 None
     pub bead: Option<(f64, f64)>,
+    /// 无信息（胶色卡尺）：没量到胶，但该有胶的地方被高光、暗区盖住，不算缺胶也不算有胶
+    pub unknown: bool,
 }
 
 struct Run {
@@ -254,6 +263,7 @@ pub fn judge_stations(
             center: xy(&st["center"]).ok_or_else(|| what("center"))?,
             normal: xy(&st["normal"]).ok_or_else(|| what("normal"))?,
             bead: None,
+            unknown: false,
         });
         let mut kept = Vec::new();
         for r in st["runs"].as_array().ok_or_else(|| what("runs"))? {
@@ -284,14 +294,52 @@ pub fn judge_stations(
     let min_width = gate.present_ratio * w_ref;
     let max_offset = CENTER_GATE_MIN_PX.max(gate.center_ratio * w_ref);
     let min_peak = gate.contrast_ratio * peak_ref;
-    for (call, kept) in calls.iter_mut().zip(&picked) {
+    for ((call, kept), st) in calls.iter_mut().zip(&picked).zip(stations) {
         if let Some(r) = nearest(kept) {
             if r.width >= min_width && r.mid.abs() <= max_offset && r.peak >= min_peak {
                 call.bead = Some((r.lo, r.hi));
             }
         }
+        if call.bead.is_none() {
+            call.unknown = hidden_by_unknown(st, w_ref);
+        }
     }
     Ok(calls)
+}
+
+/// 胶色卡尺一站没量到胶时，该有胶的区间（胶路 ± 参考宽的一半）被无信息区间（高光、暗区）与已量到的胶色段一起盖住
+/// 至少 `UNKNOWN_COVER`、且其中有无信息的部分：胶被反光遮住，不能说缺胶。灰度卡尺没有 unknownSpans，恒为假。
+fn hidden_by_unknown(station: &Value, w_ref: f64) -> bool {
+    let spans = |key: &str| -> Vec<(f64, f64)> {
+        station[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| Some((v["lo"].as_f64()?, v["hi"].as_f64()?)))
+            .collect()
+    };
+    let unknown = spans("unknownSpans");
+    if unknown.is_empty() {
+        return false;
+    }
+    let (a, b) = (-0.5 * w_ref, 0.5 * w_ref);
+    let covered = |set: &[(f64, f64)]| {
+        let mut parts: Vec<(f64, f64)> = set
+            .iter()
+            .map(|&(lo, hi)| (lo.max(a), hi.min(b)))
+            .filter(|(lo, hi)| hi > lo)
+            .collect();
+        parts.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let (mut total, mut end) = (0.0, a);
+        for (lo, hi) in parts {
+            total += (hi - lo.max(end)).max(0.0);
+            end = end.max(hi);
+        }
+        total
+    };
+    let unknown_part = covered(&unknown);
+    let all: Vec<(f64, f64)> = unknown.into_iter().chain(spans("runs")).collect();
+    unknown_part > 0.0 && covered(&all) >= UNKNOWN_COVER * (b - a)
 }
 
 #[cfg(test)]
@@ -302,7 +350,7 @@ mod tests {
 
     const GATE: PathGate = PathGate {
         min_coverage: 0.3,
-        sharp_min: 0.4,
+        sharp_min: Some(0.4),
     };
 
     /// 每个峰都是扫描里的局部峰：峰 k 在第 2k+1 个方向，两旁的方向得分为 0。
@@ -350,6 +398,34 @@ mod tests {
                 c.reason.contains(reason) && c.reason.is_empty() == ok,
                 "{} 应含 {reason}",
                 c.reason
+            );
+        }
+    }
+
+    #[test]
+    fn color_track_without_sharpness_counts_coverage_over_informative_steps() {
+        // 防的回归：胶色跟踪没有陡度，按灰度门限一律判"不像胶"而回退；或高光、暗区这些无信息的步算进覆盖率，
+        // 湿胶反光多的帧被判覆盖率不足
+        let gate = PathGate {
+            min_coverage: 0.3,
+            sharp_min: None,
+        };
+        let color = |steps: u64, found: u64, informative: Value| {
+            json!({"valid": true, "peakIndex": 0, "heading": -90.0, "steps": steps, "found": found,
+                   "sharpness": null, "coverageInformative": informative})
+        };
+        let cases = [
+            (color(20, 4, json!(0.8)), true, 0.8),
+            (color(20, 4, Value::Null), false, 0.2),
+            (color(20, 16, json!(0.1)), false, 0.1),
+        ];
+        for (track, ok, coverage) in cases {
+            let choice = choose_path(&scan(&[1.0]), &[track], gate).unwrap();
+            assert_eq!(
+                (choice.ok, choice.coverage),
+                (ok, coverage),
+                "{}",
+                choice.reason
             );
         }
     }
@@ -436,6 +512,30 @@ mod tests {
         let mut st = vec![vec![run(-10.0, 10.0, 50.0)]; 4];
         st.push(last);
         judge_stations(&lateral(st), STATIONS, path_ok).unwrap()
+    }
+
+    #[test]
+    fn color_station_whose_bead_is_under_highlight_is_unknown_not_missing() {
+        // 防的回归：湿胶表面的反光把一站的胶整段盖成无信息，这一站被当成缺胶，连成断口误报断胶；
+        // 也防反过来，没有无信息区间的空站（真缺胶）被放过
+        let mut st = lateral(vec![vec![run(-10.0, 10.0, 50.0)]; 6]);
+        let stations = st["stations"].as_array_mut().unwrap();
+        // 第 5 站：胶中间 12 px 是高光，两侧残段太窄、不算胶，但区间被高光与残段一起盖满
+        stations[4]["runs"] = json!([run(-10.0, -6.0, 50.0), run(6.0, 10.0, 50.0)]);
+        stations[4]["unknownSpans"] = json!([{"lo": -6.0, "hi": 6.0, "cause": "highlight"}]);
+        // 第 6 站：什么都没有，也没有无信息区间
+        stations[5]["runs"] = json!([]);
+        stations[5]["unknownSpans"] = json!([]);
+        let calls = judge_stations(&st, STATIONS, true).unwrap();
+        assert_eq!(
+            (
+                calls[4].bead,
+                calls[4].unknown,
+                calls[5].bead,
+                calls[5].unknown
+            ),
+            (None, true, None, false)
+        );
     }
 
     #[test]

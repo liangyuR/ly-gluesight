@@ -312,3 +312,9 @@
 .wp-sector-handle.hint .wp-sector-pulse { animation:wp-sector-pulse 1.6s ease-out infinite; }
 .wp-sector-handle:hover .wp-sector-pulse, .wp-sector-handle.turning .wp-sector-pulse { animation:none; }
 @keyframes wp-sector-pulse { from { transform:scale(1); opacity:.9; } to { transform:scale(2.6); opacity:0; } }
+.wp-color-row { display:grid; grid-template-columns:40px minmax(0,1fr); align-items:center; gap:8px; }
+.wp-color-swatch { width:48px; height:20px; border-radius:var(--r-sm, 4px); border:1px solid var(--outline-variant); }
+.wp-color-bar { display:flex; height:20px; overflow:hidden; border-radius:var(--r-sm, 4px); border:1px solid var(--outline-variant); }
+.wp-color-stats { display:grid; grid-template-columns:auto minmax(0,1fr); gap:4px 12px; margin:0; font-size:12px; }
+.wp-color-stats dt { color:var(--on-surface-variant); }
+.wp-color-stats dd { margin:0; font-variant-numeric:tabular-nums; }

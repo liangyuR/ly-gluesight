@@ -95,13 +95,14 @@ fn too_few_stations(n: usize, length_mm: f64, spacing_mm: f32) -> String {
     format!("按站距 {spacing_mm} mm，检测走廊（{length_mm:.1} mm）只有 {n} 站，至少要 {MIN_STATIONS} 站：{shrink}把走廊画到不短于 {need} mm")
 }
 
-/// 示教走廊测量图（`template::corridor`）的业务参数：示教中线、响应图、量胶宽，有找边时再加找边参数。
-/// 卡尺半长取 max(搜索半宽, 容差 + 胶宽上限 / 2)，与 1.1 示教胶路同一条式子。
+/// 示教走廊测量图（`template::corridor`，有颜色模型时 `template::corridor_color`）的业务参数：示教中线、响应图（或胶色得分图）、
+/// 量胶宽，有找边时再加找边参数。卡尺半长取 max(搜索半宽, 容差 + 胶宽上限 / 2)，与 1.1 示教胶路同一条式子。
 fn corridor_params(
     path: &[[f32; 2]],
     detect: &DetectParams,
     p: &GraphParams,
     edge: Option<&EdgeGraph>,
+    color_model: Option<&str>,
 ) -> Result<(Value, f64), String> {
     let points = serde_json::to_string(path).map_err(|e| e.to_string())?;
     let parsed: Vec<[f64; 2]> = serde_json::from_str(&points).map_err(|e| e.to_string())?;
@@ -115,9 +116,18 @@ fn corridor_params(
         (y1 - y0 + 2.0 * pad).ceil() + 1.0,
     ];
     let mut params = json!({"points": points});
-    response_params_into(&mut params, detect, p, roi);
+    match color_model {
+        Some(model) => color_params_into(&mut params, model, roi),
+        None => response_params_into(&mut params, detect, p, roi),
+    }
     bead_params_into(&mut params, p, half, edge)?;
     Ok((params, half))
+}
+
+/// 胶色得分图（`glue.color_map`）的业务参数：颜色模型原文，只算 roi 那一块。
+pub(super) fn color_params_into(params: &mut Value, model: &str, roi: [f64; 4]) {
+    params["colorModel"] = json!(model);
+    params["roi"] = json!(roi.map(|v| v as i64));
 }
 
 /// 1.1 示教胶路（`glue.polyline` 同一套重采样）的点：从起点每 2 px 一点、末端一点，坐标舍入到 3 位小数；返回包围盒。
@@ -349,7 +359,9 @@ pub struct CorridorGraph {
     pub size: [u32; 2],
     /// 示教帧通道数（1 灰度、3 彩色）；未知时不核对（见 `CorridorSet::with_channels`）
     pub channels: Option<u8>,
-    /// `template::corridor` 的全部有效参数与判定门限（发布包冻结它们）
+    /// 测量图模板：灰度 `template::corridor`，这一段有颜色模型时 `template::corridor_color`
+    pub template: &'static Template,
+    /// 模板的全部有效参数与判定门限（发布包冻结它们）
     pub params: Value,
     pub judge: Value,
     targets: Vec<String>,
@@ -448,13 +460,19 @@ pub fn plan_corridor(
         .map(|i| polyline_at(corridor, i as f64 * params.step))
         .collect();
     let edge = edge_graph(recipe, segment, &inspect.camera, scale)?;
-    let (business, _) =
-        corridor_params(corridor, detect, &params, edge.as_ref()).map_err(|e| fail(&e))?;
-    let expert = recipe.expert_layers(inspect);
-    let effective = template::corridor()
-        .params(business, &expert)
+    let color_model = inspect
+        .segment_corridor(segment)
+        .and_then(|s| s.color_model.as_deref());
+    let template = if color_model.is_some() {
+        template::corridor_color()
+    } else {
+        template::corridor()
+    };
+    let (business, _) = corridor_params(corridor, detect, &params, edge.as_ref(), color_model)
         .map_err(|e| fail(&e))?;
-    let judge = template::corridor().judge(&expert);
+    let expert = recipe.expert_layers(inspect);
+    let effective = template.params(business, &expert).map_err(|e| fail(&e))?;
+    let judge = template.judge(&expert);
     let gate = |name: &str| number(&judge, name).map_err(|e| fail(&e));
     let taught = TaughtParams {
         tolerance: params.tolerance,
@@ -478,6 +496,7 @@ pub fn plan_corridor(
         segment,
         size,
         channels: None,
+        template,
         params: effective,
         judge,
         targets,
@@ -638,6 +657,22 @@ pub(super) fn check_frame(
     Ok(())
 }
 
+/// 胶色测量图只量彩色帧：灰度帧没有颜色可比（示教帧通道未知时也在这里拦下）。
+pub(super) fn check_color(
+    camera: &str,
+    template: &Template,
+    image: &FrameImage,
+) -> Result<(), String> {
+    let color = std::ptr::eq(template, template::corridor_color())
+        || std::ptr::eq(template, template::heading_color());
+    if color && !image.is_color() {
+        return Err(format!(
+            "相机 {camera} 这一段按胶色测量（示教时取了色），当前帧却是灰度：请把相机图像模式改回彩色"
+        ));
+    }
+    Ok(())
+}
+
 /// 量一帧：`run` 按模板与参数跑这张图。图像尺寸与示教帧不同、算法失败或输出不合契约时返回 Err，
 /// 只影响这一帧（调用方记为 Error 帧，规格 §0）；胶条从走廊一侧走出时这一帧为 OutOfCorridor（默认做法 4），都不 panic。
 pub fn measure_frame_with(
@@ -645,9 +680,10 @@ pub fn measure_frame_with(
     run: impl FnOnce(GraphRun<'_>, &FrameImage) -> Result<RunResult, String>,
 ) -> Result<FrameMeasurement, String> {
     check_frame(&corridor.camera, corridor.size, corridor.channels, image)?;
+    check_color(&corridor.camera, corridor.template, image)?;
     let result = run(
         GraphRun {
-            template: template::corridor(),
+            template: corridor.template,
             params: &corridor.params,
             targets: &corridor.targets,
         },
@@ -699,7 +735,15 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
         .zip(&poses)
         .map(|(b, &(center, normal))| b.map(|b| edge_points(center, normal, b)))
         .collect();
-    let mut metrics = bead_metrics(c.camera_idx, c.segment, seq, c.scale, c.spacing_mm, &beads);
+    let mut metrics = bead_metrics(
+        c.camera_idx,
+        c.segment,
+        seq,
+        c.scale,
+        c.spacing_mm,
+        &beads,
+        &[],
+    );
     if let Some(window) = &c.edge {
         metrics.edge_mm = edge_mm(result.record("edges"), &judged.beads, window, c.scale)?;
     }
@@ -729,12 +773,21 @@ pub(super) fn bead_metrics(
     scale: f64,
     spacing_mm: f64,
     beads: &[Option<(f64, f64)>],
+    unknown: &[bool],
 ) -> FrameMetrics {
     let widths: Vec<Option<f64>> = beads.iter().map(|b| b.map(|(w, _)| w * scale)).collect();
     let present: Vec<f64> = widths.iter().flatten().copied().collect();
     let offsets: Vec<f64> = beads.iter().flatten().map(|&(_, x)| x * scale).collect();
     let mean = |v: &[f64]| (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64);
-    let longest_gap = beads.split(Option::is_some).map(<[_]>::len).max().unwrap_or(0);
+    // 无信息的站（高光、暗区盖住了胶）既不算有胶也不算缺胶：不进有胶比例的分母，也不连成断口
+    let hidden = |i: usize| unknown.get(i).copied().unwrap_or(false);
+    let missing: Vec<bool> = beads
+        .iter()
+        .enumerate()
+        .map(|(i, b)| b.is_none() && !hidden(i))
+        .collect();
+    let longest_gap = missing.split(|m| !m).map(<[_]>::len).max().unwrap_or(0);
+    let informative = beads.len() - (0..beads.len()).filter(|&i| hidden(i)).count();
     FrameMetrics {
         camera,
         seq,
@@ -747,7 +800,7 @@ pub(super) fn bead_metrics(
         spacing_mm,
         gap_max_mm: longest_gap as f64 * spacing_mm,
         corridor: Some(segment),
-        present_ratio: present.len() as f64 / beads.len().max(1) as f64,
+        present_ratio: present.len() as f64 / informative.max(1) as f64,
         x_mm: mean(&offsets),
         heading_deg: None,
         heading_fallback: false,

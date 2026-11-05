@@ -125,17 +125,21 @@ function withSegmentCorridor(doc: RecipeDoc, camera: string, segment: number, pa
   return { ...doc, inspect: inspect.map(item => {
     if (item.camera !== camera) return item;
     const others = (item.segments ?? []).filter(s => s.segment !== segment);
-    const { sectorDeg, ...rest }: SegmentCorridor = { segment, corridor: [], ...item.segments?.find(s => s.segment === segment), ...patch };
-    const next = sectorDeg != null ? { ...rest, sectorDeg } : rest;
+    const { sectorDeg, colorModel, ...rest }: SegmentCorridor = { segment, corridor: [], ...item.segments?.find(s => s.segment === segment), ...patch };
+    const next: SegmentCorridor = { ...rest, ...(sectorDeg != null ? { sectorDeg } : {}), ...(colorModel != null ? { colorModel } : {}) };
     const segments = next.corridor.length || sectorDeg != null ? [...others, next].sort((a, b) => a.segment - b.segment) : others;
     return { ...item, segments };
   }) };
 }
 
-/** 把一条段走廊草稿写进配方副本（整份配方经 workspace_save_doc 提交）：只写这一段的走廊，保留这一段拖过的扇区方向。 */
+/** 把一条段走廊草稿写进配方副本（整份配方经 workspace_save_doc 提交）：只写这一段的走廊，保留这一段拖过的扇区方向；
+ *  走廊点（按 f32）变了时去掉胶色模型——它按旧走廊取样，已失效，需重新取色。 */
 export function withCorridor(doc: RecipeDoc, key: string, draft: CameraTeachDraft): RecipeDoc {
   const target = parseDraftKey(key);
-  return target ? withSegmentCorridor(doc, target.camera, target.segment, { corridor: draft.corridor }) : doc;
+  if (!target) return doc;
+  const before = doc.inspect?.find(item => item.camera === target.camera)?.segments?.find(item => item.segment === target.segment);
+  const moved = JSON.stringify(canonical(before?.corridor ?? [])) !== JSON.stringify(canonical(draft.corridor));
+  return withSegmentCorridor(doc, target.camera, target.segment, { corridor: draft.corridor, ...(moved ? { colorModel: undefined } : {}) });
 }
 
 /** 把一台相机在一段的搜索扇区方向（D-SB-47）写进配方副本；null 为恢复自动。 */

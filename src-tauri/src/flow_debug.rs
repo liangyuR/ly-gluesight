@@ -263,14 +263,14 @@ pub async fn flow_open(
                     .iter()
                     .find(|g| g.camera_idx == index && g.segment == segment)
                     .ok_or_else(|| format!("第 {segment} 段相机 {camera} 还没有示教走廊"))?;
-                (template::corridor(), graph.params.clone(), "示教走廊")
+                (graph.template, graph.params.clone(), "示教走廊")
             }
             Variant::Heading => {
                 let graph = graphs
                     .headings()
                     .find(|g| g.camera_idx == index && g.segment == segment)
                     .ok_or_else(|| format!("第 {segment} 段没有开启逐帧定向"))?;
-                (template::heading(), graph.params.clone(), "逐帧定向")
+                (graph.template, graph.params.clone(), "逐帧定向")
             }
         };
         core(&app)?;

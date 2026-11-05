@@ -52,6 +52,7 @@ fn with_teaching(kinds: &[SegmentKind], taught: bool) -> (Workspace, CaptureRoun
                     segment,
                     corridor: corridor.clone(),
                     sector_deg: None,
+                    color_model: None,
                 })
                 .collect();
         }
