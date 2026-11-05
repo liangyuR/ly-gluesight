@@ -216,6 +216,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
   color: var(--on-surface-variant);
 }
 .lamp.mono { font-family: var(--font-mono); }
+/* 按最长状态名留宽：状态字跳变时相邻信号灯不左右移动 */
+.lamp-state { min-width: 10em; }
 .lamp::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--outline); transition: background-color var(--dur-short) var(--ease-standard); }
 .lamp.on { color: var(--on-surface); }
 .lamp.on::before { background: var(--ok); }

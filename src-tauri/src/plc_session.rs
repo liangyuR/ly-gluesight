@@ -167,6 +167,8 @@ pub const NOTICE: &str = "S7 空闲：";
 /// 空闲时视觉输出被外部改写，60 s 内自动重写超过 2 次就判故障（有写入方在持续覆盖 PC 区）。
 const RESTORE_WINDOW: Duration = Duration::from_secs(60);
 const RESTORE_LIMIT: usize = 2;
+/// PLC 回空闲后等待提示再保留的时长：状态字来回跳变时提示不反复出现、消失。
+const NOTICE_HOLD: Duration = Duration::from_secs(2);
 /// pcMode：维护模式下 PLC 按未检放行。
 const MAINTENANCE: u16 = 1;
 /// 软件发起复位（pcState=99）后等待 PLC 回空闲的时限，超时 PC 回未就绪。
@@ -234,6 +236,8 @@ pub struct PlcSession {
     withdrawn: bool,
     /// 空闲时外部改写视觉输出后自动重写的时刻
     restores: Vec<Instant>,
+    /// 空闲时最近一次读到 PLC 不在空闲的时刻
+    plc_waiting_at: Option<Instant>,
     /// 当前 pcMode，下一件接件时锁存进事务
     mode: u16,
     /// 最近一次写出空闲输出时的 pcMode：切换维护模式后的重写不算外部改写
@@ -308,6 +312,7 @@ impl PlcSession {
             reset_source: "operator",
             withdrawn: false,
             restores: Vec::new(),
+            plc_waiting_at: None,
             mode: 0,
             mode_written: 0,
             reconnect: Mutex::default(),
@@ -827,6 +832,7 @@ impl PlcSession {
                 });
                 self.journal.last_request_seq = request.request_seq;
                 self.persist(engine).await?;
+                if self.notice().is_some() { self.message = None; }
                 self.phase = SessionPhase::Validating;
                 return Ok(SessionEvent::Start(request));
             }
@@ -1083,26 +1089,30 @@ impl PlcSession {
             )),
             other => return Err(format!("PLC 状态 plcState={other} 未定义")),
         };
+        let now = Instant::now();
         if let Some(text) = waiting {
+            self.plc_waiting_at = Some(now);
             self.message = Some(format!("{NOTICE}{text}"));
             return Ok(SessionEvent::None);
         }
+        let held = self.notice().is_some()
+            && self.plc_waiting_at.is_some_and(|at| now.saturating_duration_since(at) < NOTICE_HOLD);
         if !accepting {
             if !self.withdrawn || snapshot.pc_state()? != state::PC_NOT_READY {
                 self.write(engine, handshake::not_ready_plan()).await?;
                 self.withdrawn = true;
             }
-            self.message = if devices_ready {
-                None
-            } else {
-                Some(Self::withdrawn_notice())
-            };
+            if !devices_ready {
+                self.message = Some(Self::withdrawn_notice());
+            } else if !held {
+                self.message = None;
+            }
             return Ok(SessionEvent::None);
         }
         let drifted = snapshot.idle_drift(self.mode)?;
         if drifted.is_empty() {
             self.withdrawn = false;
-            if self.notice().is_some() { self.message = None; }
+            if self.notice().is_some() && !held { self.message = None; }
             return Ok(SessionEvent::None);
         }
         let mode_changed = self.mode != self.mode_written;
@@ -1112,7 +1122,6 @@ impl PlcSession {
         let reason = if own {
             String::new()
         } else {
-            let now = Instant::now();
             self.restores.retain(|at| now.saturating_duration_since(*at) < RESTORE_WINDOW);
             if self.restores.len() >= RESTORE_LIMIT {
                 return Err(format!("空闲时视觉输出 {} s 内第 {} 次被改写（{}），疑似 PLC 程序或其他写入方覆盖 PC 区，排查后明确复位",
@@ -1126,7 +1135,7 @@ impl PlcSession {
         };
         self.write_idle(engine).await?;
         self.withdrawn = false;
-        if self.notice().is_some() { self.message = None; }
+        if self.notice().is_some() && !held { self.message = None; }
         Ok(if own { SessionEvent::None } else { SessionEvent::Restored(reason) })
     }
 
