@@ -817,7 +817,8 @@ impl PlcSession {
                 )
                 .await?;
                 if request.request_seq <= self.journal.last_request_seq {
-                    return Err("请求事务序号必须递增；PLC 清零或回绕需先执行复位".into());
+                    return Err(format!("请求事务序号必须递增（上一件 {}，本次 {}）；PLC 清零或回绕需先执行复位",
+                        self.journal.last_request_seq, request.request_seq));
                 }
                 self.journal.pending = Some(Pending {
                     origin: Some(self.origin),
@@ -1039,7 +1040,8 @@ impl PlcSession {
         )
         .await?;
         let mut next = self.journal.clone();
-        next.last_request_seq = after.read_u32(tag::REQUEST_SEQ)?;
+        // 复位已清掉未结事务，PLC 可能稍后才把序号清零或归 1；复位后第一件只要求非零，之后照常递增
+        next.last_request_seq = 0;
         next.last_resolution = Some("明确复位结束；原请求和结果已保存至审计日志".into());
         next.pending = None;
         self.persist_journal(engine, &next).await?;

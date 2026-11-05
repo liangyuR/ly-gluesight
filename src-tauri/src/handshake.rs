@@ -630,10 +630,10 @@ pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<
     Ok(0)
 }
 
+/// 复位期间只要求同一 PLC 连接、PLC 保持空闲或复位请求；PLC 可在复位时清零序号，不比对 requestSeq。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ResetBaseline {
     pub(crate) connection_since: i64,
-    pub(crate) request_seq: u32,
 }
 
 impl ResetBaseline {
@@ -649,13 +649,12 @@ impl ResetBaseline {
         }
         Ok(Self {
             connection_since: snapshot.connection_since,
-            request_seq: snapshot.read_u32(tag::REQUEST_SEQ)?,
         })
     }
 
     pub(crate) fn verify(&self, snapshot: &Snapshot) -> Result<(), String> {
         if Self::capture(snapshot)? != *self {
-            return Err("复位期间 PLC 会话或请求序号变化，不能置就绪".into());
+            return Err("复位期间 PLC 已重新连接，不能置就绪".into());
         }
         Ok(())
     }

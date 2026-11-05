@@ -316,6 +316,21 @@ async fn software_reset_waits_for_plc_idle_before_ready() {
     rig.finish().await;
 }
 
+/// 现场复位时 PLC 把序号归 1，且晚于 PC 完成复位：复位后的第一件照常接件。
+#[tokio::test]
+async fn request_seq_restarting_after_reset_is_accepted() {
+    let mut rig = Rig::new("seq-restart").await;
+    rig.request(5, "SN-50").await;
+    rig.intake().await;
+    rig.end().await;
+    rig.report().await;
+    rig.ack_release().await;
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
+    rig.request(1, "SN-50").await;
+    rig.finish().await;
+}
+
 /// PLC 复位信号由 0 变 1 等同操作员软件复位：PC 置 99，PLC 回空闲后就绪；信号保持为 1 不再触发。
 #[tokio::test]
 async fn reset_signal_rising_edge_runs_software_reset() {
