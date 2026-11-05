@@ -832,7 +832,9 @@ impl PlcSession {
                 });
                 self.journal.last_request_seq = request.request_seq;
                 self.persist(engine).await?;
-                if self.notice().is_some() { self.message = None; }
+                if self.notice().is_some() {
+                    self.message = None;
+                }
                 self.phase = SessionPhase::Validating;
                 return Ok(SessionEvent::Start(request));
             }
@@ -1096,7 +1098,9 @@ impl PlcSession {
             return Ok(SessionEvent::None);
         }
         let held = self.notice().is_some()
-            && self.plc_waiting_at.is_some_and(|at| now.saturating_duration_since(at) < NOTICE_HOLD);
+            && self
+                .plc_waiting_at
+                .is_some_and(|at| now.saturating_duration_since(at) < NOTICE_HOLD);
         if !accepting {
             if !self.withdrawn || snapshot.pc_state()? != state::PC_NOT_READY {
                 self.write(engine, handshake::not_ready_plan()).await?;
@@ -1112,7 +1116,9 @@ impl PlcSession {
         let drifted = snapshot.idle_drift(self.mode)?;
         if drifted.is_empty() {
             self.withdrawn = false;
-            if self.notice().is_some() && !held { self.message = None; }
+            if self.notice().is_some() && !held {
+                self.message = None;
+            }
             return Ok(SessionEvent::None);
         }
         let mode_changed = self.mode != self.mode_written;
@@ -1135,8 +1141,14 @@ impl PlcSession {
         };
         self.write_idle(engine).await?;
         self.withdrawn = false;
-        if self.notice().is_some() && !held { self.message = None; }
-        Ok(if own { SessionEvent::None } else { SessionEvent::Restored(reason) })
+        if self.notice().is_some() && !held {
+            self.message = None;
+        }
+        Ok(if own {
+            SessionEvent::None
+        } else {
+            SessionEvent::Restored(reason)
+        })
     }
 
     async fn write_idle(&mut self, engine: &PlcEngine) -> Result<(), String> {

@@ -253,11 +253,20 @@ async fn s7_wire_part_returns_ready_only_after_plc_latches_result() {
 #[tokio::test]
 async fn idle_notice_holds_while_plc_state_flaps() {
     let mut rig = Rig::new("idle-flap").await;
-    for plc in [state::PLC_MOTION_END, state::PLC_IDLE, state::PLC_MOTION_END, state::PLC_IDLE] {
+    for plc in [
+        state::PLC_MOTION_END,
+        state::PLC_IDLE,
+        state::PLC_MOTION_END,
+        state::PLC_IDLE,
+    ] {
         rig.plc.plc_state(plc);
         rig.fresh().await;
         rig.session.poll(&rig.engine, false, true).await;
-        assert!(rig.session.notice().is_some(), "plcState={plc}：{:?}", rig.session.view());
+        assert!(
+            rig.session.notice().is_some(),
+            "plcState={plc}：{:?}",
+            rig.session.view()
+        );
     }
     tokio::time::sleep(NOTICE_HOLD).await;
     rig.fresh().await;
