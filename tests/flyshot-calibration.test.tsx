@@ -79,3 +79,30 @@ it("进入标定页且已有标定原图 → 自动显示原图并叠画角点�
  await screen.findByText(/^CAM-1 · (?!标定原图)/);
  expect(screen.queryByLabelText("标定角点")).toBeNull();
 });
+
+it("已显示一台相机的样本时切换相机 → 载入新相机的标定原图",async()=>{
+ desktop.on=true;
+ vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"},{...defaultCameraConfig,id:"CAM-2",name:"相机 2",serial:"SN2"}]);
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==="storage_preferences_get")return {};
+  if(command!=="workspace_station_restore")return null;
+  const cam=(args as {cam:number}).cam;
+  return {id:"calib-"+cam,source:"calib",capturedAt:1,size:[1280,1024],camera:"CAM-"+(cam+1),view:1};
+ });
+ vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
+ render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
+ expect(await screen.findByText(/CAM-1 · 标定原图/)).toBeVisible();
+ await userEvent.click(screen.getByText("相机 2"));
+ expect(await screen.findByText(/CAM-2 · 标定原图/)).toBeVisible();
+});
+
+it("模拟相机载入真实标定原图 → 按已存标定的像素当量计算且可重新标定",async()=>{
+ desktop.on=true;
+ vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1",source:"sim"}]);
+ vi.mocked(invoke).mockImplementation(async command=>command==="storage_preferences_get"?{}:command==="vision_calib_info"?{mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1,sampleId:"calib-sample"}:command==="workspace_station_restore"?{id:"calib-sample",source:"calib",capturedAt:1,size:[1280,1024],camera:"CAM-1",view:1}:null);
+ vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
+ render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
+ expect(await screen.findByText(/CAM-1 · 标定原图/)).toBeVisible();
+ await vi.waitFor(()=>expect(screen.getByRole("spinbutton",{name:/^像素当量/})).toHaveValue(0.05));
+ expect(screen.getByRole("button",{name:"标定"})).toBeEnabled();
+});
