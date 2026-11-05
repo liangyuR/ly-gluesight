@@ -1697,6 +1697,58 @@ pub async fn workspace_station_import(
     .map_err(|e| e.to_string())?
 }
 
+/// 标定页进入时载入当前标定所用的原图作冻结样本（编号沿用标定记的样本编号，重新标定复用同一原图）；没有可载入的原图为 None。
+#[tauri::command]
+pub async fn workspace_station_restore(
+    app: AppHandle,
+    cam: u8,
+    view: Option<u8>,
+) -> Result<Option<FrozenImage>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cycle = app.state::<CycleHost>();
+        if cycle.busy() {
+            return Err("工件正在检测，结束后再读取标定原图".into());
+        }
+        let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
+        let config = slot.config();
+        let selected = view.unwrap_or(1);
+        if !(1..=config.view_count).contains(&selected) {
+            return Err("图编号超出设备范围".into());
+        }
+        let keys = vision::camera_calib_keys(&app, cam, Some(selected))?;
+        let calib = vision::calib_key_path(&app, &keys[0])?;
+        let Some((id, image, ts)) = vision::calib_sample(&crate::storage::project(&app), &calib)?
+        else {
+            return Ok(None);
+        };
+        if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
+            return Err("读取期间设备或节拍状态变化，原图已丢弃".into());
+        }
+        let meta = FrozenImage {
+            view: selected,
+            id,
+            source: "calib".into(),
+            captured_at: ts.unwrap_or(0),
+            size: [image.width, image.height],
+            camera: config.id.clone(),
+            camera_tag: state_value(&config),
+            calib_tag: Value::Null,
+            geometry_tag: Value::Null,
+            exposure_us: None,
+            gain_db: None,
+            history_id: None,
+        };
+        app.state::<WorkspaceHost>()
+            .station
+            .lock()
+            .unwrap()
+            .insert(cam, (meta.clone(), Arc::new(image)));
+        Ok(Some(meta))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

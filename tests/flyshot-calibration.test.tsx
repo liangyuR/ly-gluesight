@@ -65,3 +65,58 @@ it("相机未就绪 → 禁止拍照但可导入离线标定图",async()=>{
  await userEvent.upload(screen.getByLabelText("导入离线图",{selector:"input"}),file);
  expect(await screen.findByText(/CAM-1 · 离线原图/)).toBeVisible();
 });
+
+it("进入标定页且已有标定原图 → 自动显示原图并叠画角点；重新拍照后角点消失",async()=>{
+ desktop.on=true;
+ const calibrated={mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1,sampleId:"calib-sample",corners:[[10,10],[20,10],[30,10]]};
+ vi.mocked(invoke).mockImplementation(async command=>command==="storage_preferences_get"?{}:command==="vision_calib_info"?calibrated:command==="workspace_station_restore"?{id:"calib-sample",source:"calib",capturedAt:1,size:[1280,1024],camera:"CAM-1",view:1}:null);
+ vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
+ vi.spyOn(workspaceApi,"stationCapture").mockResolvedValue({id:"new-image",source:"live",capturedAt:2,size:[1280,1024],camera:"CAM-1",view:1} as FrozenImage);
+ render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
+ expect(await screen.findByText(/CAM-1 · 标定原图/)).toBeVisible();
+ await vi.waitFor(()=>expect(screen.getByLabelText("标定角点").querySelectorAll("circle")).toHaveLength(3));
+ await userEvent.click(screen.getByRole("button",{name:"拍照"}));
+ await screen.findByText(/^CAM-1 · (?!标定原图)/);
+ expect(screen.queryByLabelText("标定角点")).toBeNull();
+});
+
+it("已显示一台相机的样本时切换相机 → 载入新相机的标定原图",async()=>{
+ desktop.on=true;
+ vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"},{...defaultCameraConfig,id:"CAM-2",name:"相机 2",serial:"SN2"}]);
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==="storage_preferences_get")return {};
+  if(command!=="workspace_station_restore")return null;
+  const cam=(args as {cam:number}).cam;
+  return {id:"calib-"+cam,source:"calib",capturedAt:1,size:[1280,1024],camera:"CAM-"+(cam+1),view:1};
+ });
+ vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
+ render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
+ expect(await screen.findByText(/CAM-1 · 标定原图/)).toBeVisible();
+ await userEvent.click(screen.getByText("相机 2"));
+ expect(await screen.findByText(/CAM-2 · 标定原图/)).toBeVisible();
+});
+
+it("模拟相机载入真实标定原图 → 按已存标定的像素当量计算且可重新标定",async()=>{
+ desktop.on=true;
+ vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1",source:"sim"}]);
+ vi.mocked(invoke).mockImplementation(async command=>command==="storage_preferences_get"?{}:command==="vision_calib_info"?{mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1,sampleId:"calib-sample"}:command==="workspace_station_restore"?{id:"calib-sample",source:"calib",capturedAt:1,size:[1280,1024],camera:"CAM-1",view:1}:null);
+ vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
+ render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
+ expect(await screen.findByText(/CAM-1 · 标定原图/)).toBeVisible();
+ await vi.waitFor(()=>expect(screen.getByRole("spinbutton",{name:/^像素当量/})).toHaveValue(0.05));
+ expect(screen.getByRole("button",{name:"标定"})).toBeEnabled();
+});
+
+it("标定原图载入未完成 → 拍照与导入不可用，载入结束后恢复",async()=>{
+ desktop.on=true;
+ let finish:(value:null)=>void=()=>{};
+ vi.mocked(invoke).mockImplementation(async command=>command==="storage_preferences_get"?{}:command==="workspace_station_restore"?new Promise(resolve=>{finish=resolve;}):null);
+ render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
+ await screen.findByRole("heading",{name:"标定板参数"});
+ await vi.waitFor(()=>expect(invoke).toHaveBeenCalledWith("workspace_station_restore",expect.anything()));
+ expect(screen.getByRole("button",{name:"拍照"})).toBeDisabled();
+ expect(screen.getByLabelText("导入离线图",{selector:"input"})).toBeDisabled();
+ finish(null);
+ await vi.waitFor(()=>expect(screen.getByRole("button",{name:"拍照"})).toBeEnabled());
+ expect(screen.getByLabelText("导入离线图",{selector:"input"})).toBeEnabled();
+});
