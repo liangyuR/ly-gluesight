@@ -477,8 +477,19 @@ fn calib_keys(config: &crate::camera::CameraConfig, view: Option<u8>) -> Result<
     }
 }
 
-pub(crate) fn camera_calib_keys(app: &AppHandle, cam: u8, view: Option<u8>) -> Result<Vec<CalibKey>, String> {
-    calib_keys(&app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config(), view)
+pub(crate) fn camera_calib_keys(
+    app: &AppHandle,
+    cam: u8,
+    view: Option<u8>,
+) -> Result<Vec<CalibKey>, String> {
+    calib_keys(
+        &app.state::<CycleHost>()
+            .camera
+            .slot(cam as usize)
+            .ok_or("相机不存在")?
+            .config(),
+        view,
+    )
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -519,7 +530,10 @@ pub fn calib_info(path: &Path) -> Option<CalibInfo> {
 }
 
 fn valid_sample_id(id: &str) -> bool {
-    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
 /// 标定文件记的原图：`calib/images/<sampleId>.pgm`（路径按编号拼，不信任文件里的 samplePath）。
