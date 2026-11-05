@@ -16,7 +16,10 @@ use tokio::sync::mpsc::Sender;
 use crate::applog::throttle::{Tally, Throttle};
 use crate::applog::{codes, Fields};
 use crate::cycle::{self, CycleHost};
-use crate::frame::{BudgetExceeded, CounterSource, Frame, FrameImage, FramePool, GrayError};
+use crate::frame::{
+    BayerMosaic, BayerPattern, BudgetExceeded, CounterSource, Frame, FrameImage, FramePool,
+    GrayError,
+};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
 use crate::offline::sample_set::SampleSet;
 use crate::offline::Scenario;
@@ -487,6 +490,8 @@ struct RigShared {
     tx: Sender<Frame>,
     /// 需要整帧图像（图像测量或帧录制）；模拟测量时不必拷整帧
     capture: AtomicBool,
+    /// 留整帧时另拷一份原始 Bayer 供录制（检测设置“同时保存原始 Bayer”）
+    keep_bayer: AtomicBool,
     recipe_capture: Arc<crate::recipe_capture::RecipeCaptureHost>,
     imaging: Mutex<BTreeMap<String, CameraImaging>>,
     /// 各相机轮询到的 Line0 门控状态（`watch_gate`），收尾用
@@ -504,6 +509,12 @@ struct Shared {
     dropped: AtomicU64,
     /// 图像内存预算满被丢弃的帧（重新打开时清零）
     budget_dropped: AtomicU64,
+    /// 原始 Bayer 的缓冲，与测量用的灰度分开封顶：录制写盘慢时只少存 Bayer，不挤掉测量的帧
+    bayer_pool: FramePool,
+    /// 要存原始 Bayer 而缓冲已满、只留了灰度的帧（重新打开时清零）
+    bayer_dropped: AtomicU64,
+    /// 最近一帧是 Mono8：相机没给颜色，存不了原始 Bayer
+    mono: AtomicBool,
     recent: Mutex<VecDeque<Instant>>,
     preview: Mutex<Vec<Preview>>,
     last_full: Mutex<Option<CapturedFrame>>,
@@ -581,6 +592,39 @@ impl Shared {
                 IMAGE_BUDGET_PER_CAMERA >> 20
             )
         })
+    }
+
+    /// 留了整帧的 Bayer 帧另拷一份原始马赛克；没开保存、不是 Bayer 或缓冲已满时没有。
+    fn bayer_mosaic(&self, kind: PixelKind, w: u32, h: u32, data: &[u8]) -> Option<BayerMosaic> {
+        self.mono.store(kind == PixelKind::Mono8, Ordering::Relaxed);
+        let PixelKind::Bayer8(pattern) = kind else {
+            return None;
+        };
+        if !self.rig.keep_bayer.load(Ordering::Relaxed) {
+            return None;
+        }
+        match self.bayer_pool.copy(w, h, data) {
+            Ok(image) => Some(BayerMosaic {
+                pattern,
+                image: Arc::new(image),
+            }),
+            Err(_) => {
+                self.bayer_dropped.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+    }
+
+    /// 打开了保存原始 Bayer 却存不下时给状态栏的说明。
+    fn bayer_note(&self) -> Option<String> {
+        if !self.rig.keep_bayer.load(Ordering::Relaxed) {
+            return None;
+        }
+        if self.mono.load(Ordering::Relaxed) {
+            return Some("相机以 Mono8 出图，没有原始 Bayer 可存".into());
+        }
+        let n = self.bayer_dropped.load(Ordering::Relaxed);
+        (n > 0).then(|| format!("原始 Bayer 缓冲已满：{n} 帧只录了灰度"))
     }
 
     /// 不支持的像素格式不静默丢弃：计数并记下原因，显示在相机状态里。
@@ -665,17 +709,17 @@ impl Shared {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PixelKind {
     Mono8,
-    Bayer8,
+    Bayer8(BayerPattern),
 }
 
 /// SDK 报的像素格式：Mono8 原样用，8 位 Bayer 转灰度（D-9），其他不支持。
 fn pixel_kind(pixel_type: u32) -> Result<PixelKind, String> {
     match pixel_type {
         mvs::PIXEL_MONO8 => Ok(PixelKind::Mono8),
-        mvs::PIXEL_BAYER_GR8
-        | mvs::PIXEL_BAYER_RG8
-        | mvs::PIXEL_BAYER_GB8
-        | mvs::PIXEL_BAYER_BG8 => Ok(PixelKind::Bayer8),
+        mvs::PIXEL_BAYER_GR8 => Ok(PixelKind::Bayer8(BayerPattern::Gr)),
+        mvs::PIXEL_BAYER_RG8 => Ok(PixelKind::Bayer8(BayerPattern::Rg)),
+        mvs::PIXEL_BAYER_GB8 => Ok(PixelKind::Bayer8(BayerPattern::Gb)),
+        mvs::PIXEL_BAYER_BG8 => Ok(PixelKind::Bayer8(BayerPattern::Bg)),
         t => Err(format!(
             "像素格式 0x{t:08X} 不支持（需要 Mono8 或 8 位 Bayer）"
         )),
@@ -685,7 +729,7 @@ fn pixel_kind(pixel_type: u32) -> Result<PixelKind, String> {
 impl PixelKind {
     fn bytes_per_pixel(self) -> usize {
         match self {
-            PixelKind::Mono8 | PixelKind::Bayer8 => 1,
+            PixelKind::Mono8 | PixelKind::Bayer8(_) => 1,
         }
     }
 }
@@ -735,7 +779,7 @@ fn to_gray<'a>(
 ) -> Result<Gray<'a>, GrayError> {
     match pixel_kind(pixel_type).map_err(GrayError::Invalid)? {
         PixelKind::Mono8 => Ok(Gray::Raw(data)),
-        PixelKind::Bayer8 => pool.bayer8_to_gray(w, h, data).map(Gray::Pooled),
+        PixelKind::Bayer8(_) => pool.bayer8_to_gray(w, h, data).map(Gray::Pooled),
     }
 }
 
@@ -797,6 +841,7 @@ fn synthetic_frame(
         dev_ts: Some(n.saturating_mul(crate::frame_clock::SYNTH_PERIOD_NS)),
         manual,
         images,
+        bayer: None,
     }
 }
 
@@ -825,7 +870,7 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
         } else {
             info.height as u32
         };
-        let frame = |images: Vec<Arc<FrameImage>>| Frame {
+        let frame = |images: Vec<Arc<FrameImage>>, bayer: Option<BayerMosaic>| Frame {
             cam: shared.cam,
             session,
             counter,
@@ -836,36 +881,43 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             dev_ts,
             manual: false,
             images,
+            bayer,
         };
         // 先认像素格式、核对 SDK 帧长，再按宽 × 高取缓冲；图像不可用时帧照常交付（触发计数照记），只是不带图
-        let image = match pixel_kind(info.pixel_type)
-            .and_then(|kind| frame_bytes(kind, w, h, info.frame_len))
+        let (image, bayer) = match pixel_kind(info.pixel_type)
+            .and_then(|kind| frame_bytes(kind, w, h, info.frame_len).map(|len| (kind, len)))
         {
             Err(e) => {
                 shared.unusable(e);
-                None
+                (None, None)
             }
-            Ok(_) if data.is_null() => None,
-            Ok(len) => match shared.gray_image(info.pixel_type, w, h, unsafe {
-                std::slice::from_raw_parts(data, len)
-            }) {
-                Ok(image) => image,
-                // 图像内存预算满（D-SB-32）：这一帧不拷图、不交付，台账照记
-                Err(_) => return shared.discard_over_budget(frame(Vec::new())),
-            },
+            Ok(_) if data.is_null() => (None, None),
+            Ok((kind, len)) => {
+                let data = unsafe { std::slice::from_raw_parts(data, len) };
+                match shared.gray_image(info.pixel_type, w, h, data) {
+                    Ok(image) => {
+                        let bayer = image
+                            .as_ref()
+                            .and_then(|_| shared.bayer_mosaic(kind, w, h, data));
+                        (image, bayer)
+                    }
+                    // 图像内存预算满（D-SB-32）：这一帧不拷图、不交付，台账照记
+                    Err(_) => return shared.discard_over_budget(frame(Vec::new(), None)),
+                }
+            }
         };
         // 旧拍照点模型：三目拼接拆成视角 1–3，段配方不经过（D-SB-11）
-        let images = match (&image, shared.composite_layout.lock().unwrap().as_ref()) {
+        let (images, bayer) = match (&image, shared.composite_layout.lock().unwrap().as_ref()) {
             (Some(image), Some(layout)) => match layout.split(image) {
-                Ok(images) => images,
+                Ok(images) => (images, None),
                 Err(error) => {
                     shared.unusable(error);
-                    Vec::new()
+                    (Vec::new(), None)
                 }
             },
-            _ => image.iter().cloned().collect(),
+            _ => (image.iter().cloned().collect(), bayer),
         };
-        shared.deliver(frame(images));
+        shared.deliver(frame(images, bayer));
     }));
 }
 
@@ -932,6 +984,9 @@ impl CameraSlot {
                 lost_packets: AtomicU64::new(0),
                 dropped: AtomicU64::new(0),
                 budget_dropped: AtomicU64::new(0),
+                bayer_pool: FramePool::with_budget(POOL_KEEP_PER_CAMERA, IMAGE_BUDGET_PER_CAMERA),
+                bayer_dropped: AtomicU64::new(0),
+                mono: AtomicBool::new(false),
                 recent: Mutex::new(VecDeque::new()),
                 preview: Mutex::new(Vec::new()),
                 last_full: Mutex::new(None),
@@ -1030,6 +1085,7 @@ impl CameraSlot {
                 CameraSource::Mvs => [
                     self.shared.unusable_note(),
                     self.shared.budget_note(),
+                    self.shared.bayer_note(),
                     Some(state_message),
                 ]
                 .into_iter()
@@ -1490,6 +1546,8 @@ impl CameraSlot {
         self.shared.disconnected.store(false, Ordering::SeqCst);
         self.shared.unusable.store(0, Ordering::Relaxed);
         self.shared.budget_dropped.store(0, Ordering::Relaxed);
+        self.shared.bayer_dropped.store(0, Ordering::Relaxed);
+        self.shared.mono.store(false, Ordering::Relaxed);
     }
 
     /// 把曝光与增益写进已打开的海康相机，不重开、不换会话。未连接、已释放或不是海康相机时不写，下次打开时按保存的值写入。
@@ -1858,6 +1916,7 @@ impl CameraRig {
             app: app.clone(),
             tx,
             capture: AtomicBool::new(false),
+            keep_bayer: AtomicBool::new(false),
             recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(
                 crate::storage::project(app).join("recipe-capture"),
             )?,
@@ -1986,6 +2045,11 @@ impl CameraRig {
     /// 取图回调是否拷贝整帧。
     pub fn set_capture(&self, on: bool) {
         self.rig.capture.store(on, Ordering::Relaxed);
+    }
+
+    /// 留整帧时是否另拷原始 Bayer 供录制。
+    pub fn set_keep_bayer(&self, on: bool) {
+        self.rig.keep_bayer.store(on, Ordering::Relaxed);
     }
 
     pub fn trigger(
@@ -2798,7 +2862,7 @@ mod gray_tests {
 
     #[test]
     fn sdk_frame_length_must_cover_width_height_and_pixel_size() {
-        for kind in [PixelKind::Mono8, PixelKind::Bayer8] {
+        for kind in [PixelKind::Mono8, PixelKind::Bayer8(BayerPattern::Bg)] {
             assert_eq!(frame_bytes(kind, 2448, 2048, 2448 * 2048), Ok(2448 * 2048));
             // SDK 缓冲比宽高需要的长（行尾填充、附带 Chunk）：只取宽 × 高
             assert_eq!(frame_bytes(kind, 4, 3, 64), Ok(12));

@@ -316,6 +316,7 @@ impl FixtureSite {
                     dev_ts: Some((COUNTER_BASE + seq) * crate::frame_clock::SYNTH_PERIOD_NS),
                     manual: false,
                     images: vec![Arc::new(image)],
+                    bayer: None,
                 };
                 self.recorder.burst_frame(&mut rec, &frame, camera, seq);
             }

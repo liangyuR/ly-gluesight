@@ -124,12 +124,12 @@ python scripts/color-eval/glue_color_eval.py <标注.json> --init <图像目录>
 python scripts/color-eval/glue_color_eval.py <标注.json> [--out <输出目录>]
 ```
 
-样图需在现场光源下用彩色相机保存彩色图或原始 Bayer（软件录的 `.pgm` 已没有颜色），要包含两种材质、焊缝与高光。每张图标若干探针，坐标为原图像素：
+样图要在现场光源下用彩色相机采集，并包含两种材质、焊缝与高光。最直接的做法是打开检测设置里的“同时保存原始 Bayer”，再用维护模式采集（[r2-records](../decisions/r2-records.md) R-8）。这样录制目录里的 `*_bayer.pgm` 就是与灰度帧一一对应的原始 Bayer；`--init <录制目录>` 只收这些文件，并从 `part.json` 读取相位。软件录的灰度 `.pgm` 已经没有颜色。也可以用 MVS 客户端存彩色图或原始 Bayer（`.raw`）。每张图标若干探针，坐标为原图像素：
 
 - 胶探针（`kind: glue`）：垂直横穿胶条、中点落在胶中心，填 `material` 与 `halfWidthPx`，两侧各留至少 18 px 背景。
 - 干扰物探针（`kind: distractor`）：横穿焊缝、高光等不该被当成胶的窄结构，填 `label`。
 
-原始 Bayer 在标注文件里填 `bayer: {pattern, width, height}`，`pattern` 按 GenICam 命名（现场相机为 `BG`）。`widthMaxPx` 是检测胶宽上限，顶帽结构元直径取它加 1。
+原始 Bayer 在标注文件里填 `bayer: {pattern}`，`.raw` 还要填 `width`、`height`；`pattern` 按 GenICam 命名（现场相机为 `BG`）。`widthMaxPx` 是检测胶宽上限，顶帽结构元直径取它加 1。
 
 终端打印各通道的汇总表与不可用原因；输出目录（默认 `output/color-eval/`）里有 `report.json`、逐探针的 `probes.csv`，以及每张图的通道与响应对照图 `<图名>_channels.png`。可用门槛：d' ≥ 3、极性一致、材质间响应比 ≥ 0.3、干扰物 / 胶 ≤ 0.5。其中 0.3 取自 D16 的对比度比，其余是经验值，结论用于选择通道公式，不代替带实际胶路的试测。
 
