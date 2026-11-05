@@ -79,6 +79,8 @@ export const workspaceApi = {
   recordFrameView: (historyId: number, comparison: string, camera: number, seq: number) => desktopCall<CalibrationFrameView>("workspace_record_frame_view", { historyId, comparison, camera, seq }),
   stationCapture: (cam:number,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,view}),
   stationImport: (cam:number,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes,view}),
+  /** 当前标定所用原图载入为冻结样本；没有可载入的原图为 null */
+  stationRestore: (cam:number,view=1)=>desktopCall<FrozenImage|null>("workspace_station_restore",{cam,view}),
   stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeGray),
 
   // ───── 段配方（分段连拍飞拍）：命令与参数见 docs/decisions/segment-burst.md 5.4，结果都在 WorkspaceView.plan ─────

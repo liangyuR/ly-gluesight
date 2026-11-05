@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { CalibPanel, cameraApi, FeasibilityCalc, useRigStatus, type CameraConfig, type FeasibilitySources } from "../features/camera";
 import CameraList, { type CalibrationSummary } from "../features/camera/components/CameraList";
+import type { CalibInfo } from "../features/camera/components/CalibPanel";
 import { useRigConfig } from "../features/camera/useRigConfig";
 import { useCycle, useSiteStatus } from "../features/cycle";
 import { desktopAvailable } from "../lib/desktop";
@@ -37,6 +38,7 @@ export default function FlyshotCalibrationPage() {
   const [calibView,setCalibView]=useState(1);
   const [sample,setSample]=useState<StationView|null>(null);
   const [calibMm,setCalibMm]=useState<number|null>(null);
+  const [calibInfo,setCalibInfo]=useState<CalibInfo|null>(null);
   const [calibration,setCalibration]=useState<Record<string,CalibrationSummary>>();
   const [calibReload,setCalibReload]=useState(0),[calibLoading,setCalibLoading]=useState(false);
   useEffect(()=>setSample(null),[cam,configs[cam],calibView]);
@@ -51,6 +53,8 @@ export default function FlyshotCalibrationPage() {
     return()=>{alive=false;};
   },[configs,calibMm,calibReload]);
   const config=configs[cam]??null;
+  const corners=calibInfo?.sampleId!=null&&calibInfo.sampleId===sample?.metadata.id?calibInfo.corners:null;
+  const marks=useMemo(()=>corners?.map((at,i)=>({at,color:i===0?"var(--ok)":"var(--primary)"})),[corners]);
   const status=statuses.find(s=>s.cam===cam)??null;
   const busy=productionBusy(snapshot);
   const sampleSet=offline&&site?.source==="sampleSet"?site.sampleSet:null;
@@ -68,11 +72,11 @@ export default function FlyshotCalibrationPage() {
     {config?<main className="cam-main">
       <div className="cam-body">
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area cam-image-area">
-          <StationCapture key={config.id+":"+calibView} cam={cam} view={calibView} multiView={config.viewCount===3} sample={sample} onSample={setSample} cameraReady={status?.ready ?? false}/>
+          <StationCapture key={config.id+":"+calibView} cam={cam} view={calibView} multiView={config.viewCount===3} sample={sample} onSample={setSample} cameraReady={status?.ready ?? false} marks={marks}/>
         </fieldset>
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area">
           {config.viewCount===3&&<label className="field"><span>标定图像</span><select className="input" aria-label="标定图像" value={calibView} onChange={e=>{setSample(null);setCalibView(Number(e.target.value));}}>{[1,2,3].map(v=><option key={v} value={v}>图 {v}</option>)}</select></label>}
-          <CalibPanel key={config.id+":"+calibView} cam={cam} view={calibView} multiView={config.viewCount===3} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id} onMmPerPx={setCalibMm}/>
+          <CalibPanel key={config.id+":"+calibView} cam={cam} view={calibView} multiView={config.viewCount===3} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id} onMmPerPx={setCalibMm} onCalibration={setCalibInfo}/>
           <FeasibilityCalc key={"feasibility:"+config.id} sources={feasibility} imageSize={sample?.image}/>
         </fieldset>
       </div>

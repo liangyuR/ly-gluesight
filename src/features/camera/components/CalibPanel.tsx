@@ -4,7 +4,7 @@ import { Crosshair } from "lucide-react";
 import { Alert, Button, Card, Grid, Heading, NumberField, Stack, useSnackbar } from "qing-steel";
 import ContextHelp from "../../cycle/components/ContextHelp";
 
-interface CalibInfo {
+export interface CalibInfo {
   path: string;
   rms: number | null;
   mmPerPx: number | null;
@@ -12,10 +12,13 @@ interface CalibInfo {
   pattern: number[] | null;
   square: number | null;
   ts: number | null;
+  /** 标定所用原图的样本编号与内角点（图像像素，首点为原点） */
+  sampleId?: string | null;
+  corners?: [number, number][] | null;
 }
 
 /** 工位标定：标定板放在内边所在高度，软触发一帧，用 lyFlow 的 image.board_calib 求单应，存为工位标定文件。 */
-export default function CalibPanel({ cam, view=1, multiView=false, isSim, imageId, onMmPerPx }: { cam: number; view?:number; /** 三目拼接相机（旧配方）才标出视角；单视角相机不带“图 N”。 */ multiView?:boolean; isSim: boolean; imageId?:string; onMmPerPx?: (mmPerPx: number | null) => void }) {
+export default function CalibPanel({ cam, view=1, multiView=false, isSim, imageId, onMmPerPx, onCalibration }: { cam: number; view?:number; /** 三目拼接相机（旧配方）才标出视角；单视角相机不带“图 N”。 */ multiView?:boolean; isSim: boolean; imageId?:string; onMmPerPx?: (mmPerPx: number | null) => void; onCalibration?: (info: CalibInfo | null) => void }) {
   const [info, setInfo] = useState<CalibInfo | null>(null);
   const [cols, setCols] = useState(11);
   const [rows, setRows] = useState(8);
@@ -49,6 +52,7 @@ export default function CalibPanel({ cam, view=1, multiView=false, isSim, imageI
   useEffect(()=>{runSerial.current++;pending.current=false;setBusy(false);setRunError("");},[scope]);
   const mmPerPx = isSim ? 0.08 : info?.mmPerPx ?? null;
   useEffect(()=>{onMmPerPx?.(mmPerPx);},[mmPerPx,onMmPerPx]);
+  useEffect(()=>{onCalibration?.(info);},[info,onCalibration]);
   const valid=Number.isInteger(cols)&&cols>=2&&cols<=100&&Number.isInteger(rows)&&rows>=2&&rows<=100&&Number.isFinite(square)&&square>0;
   const invalid="内角点行列需为 2–100 的整数，格长必须大于 0。";
   const format=(value:number|null)=>value!=null&&Number.isFinite(value)?value.toFixed(4):"—";

@@ -65,3 +65,17 @@ it("相机未就绪 → 禁止拍照但可导入离线标定图",async()=>{
  await userEvent.upload(screen.getByLabelText("导入离线图",{selector:"input"}),file);
  expect(await screen.findByText(/CAM-1 · 离线原图/)).toBeVisible();
 });
+
+it("进入标定页且已有标定原图 → 自动显示原图并叠画角点；重新拍照后角点消失",async()=>{
+ desktop.on=true;
+ const calibrated={mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1,sampleId:"calib-sample",corners:[[10,10],[20,10],[30,10]]};
+ vi.mocked(invoke).mockImplementation(async command=>command==="storage_preferences_get"?{}:command==="vision_calib_info"?calibrated:command==="workspace_station_restore"?{id:"calib-sample",source:"calib",capturedAt:1,size:[1280,1024],camera:"CAM-1",view:1}:null);
+ vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
+ vi.spyOn(workspaceApi,"stationCapture").mockResolvedValue({id:"new-image",source:"live",capturedAt:2,size:[1280,1024],camera:"CAM-1",view:1} as FrozenImage);
+ render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
+ expect(await screen.findByText(/CAM-1 · 标定原图/)).toBeVisible();
+ await vi.waitFor(()=>expect(screen.getByLabelText("标定角点").querySelectorAll("circle")).toHaveLength(3));
+ await userEvent.click(screen.getByRole("button",{name:"拍照"}));
+ await screen.findByText(/^CAM-1 · (?!标定原图)/);
+ expect(screen.queryByLabelText("标定角点")).toBeNull();
+});

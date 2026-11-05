@@ -477,7 +477,7 @@ fn calib_keys(config: &crate::camera::CameraConfig, view: Option<u8>) -> Result<
     }
 }
 
-fn camera_calib_keys(app: &AppHandle, cam: u8, view: Option<u8>) -> Result<Vec<CalibKey>, String> {
+pub(crate) fn camera_calib_keys(app: &AppHandle, cam: u8, view: Option<u8>) -> Result<Vec<CalibKey>, String> {
     calib_keys(&app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config(), view)
 }
 
@@ -491,6 +491,9 @@ pub struct CalibInfo {
     pub pattern: Option<Vec<f64>>,
     pub square: Option<f64>,
     pub ts: Option<i64>,
+    /// 标定所用原图的样本编号与找到的内角点（图像像素，按行排，首点为原点）
+    pub sample_id: Option<String>,
+    pub corners: Option<Vec<[f64; 2]>>,
 }
 
 pub fn calib_info(path: &Path) -> Option<CalibInfo> {
@@ -505,7 +508,58 @@ pub fn calib_info(path: &Path) -> Option<CalibInfo> {
         pattern: d.get("pattern").and_then(|v| serde_json::from_value(v.clone()).ok()),
         square: f("square"),
         ts: doc.get("ts").and_then(|v| v.as_i64()),
+        sample_id: doc
+            .get("sampleId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        corners: doc
+            .get("corners")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
     })
+}
+
+fn valid_sample_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+/// 标定文件记的原图：`calib/images/<sampleId>.pgm`（路径按编号拼，不信任文件里的 samplePath）。
+/// 没有标定文件、没记样本或原图已不在时为 None。
+pub fn calib_sample(
+    project: &Path,
+    calib_path: &Path,
+) -> Result<Option<(String, FrameImage, Option<i64>)>, String> {
+    let Some(info) = calib_info(calib_path) else {
+        return Ok(None);
+    };
+    let Some(id) = info.sample_id else {
+        return Ok(None);
+    };
+    if !valid_sample_id(&id) {
+        return Err("标定样本编号无效".into());
+    }
+    let path = project
+        .join("calib")
+        .join("images")
+        .join(format!("{id}.pgm"));
+    if !path.is_file() {
+        return Ok(None);
+    }
+    Ok(Some((id, crate::image_file::load(&path)?, info.ts)))
+}
+
+/// board_calib 的叠画里 role 为 part 的点即全部内角点。
+fn overlay_corners(overlay: Option<&Value>) -> Vec<[f64; 2]> {
+    overlay
+        .and_then(|o| o.get("items"))
+        .and_then(|items| items.as_array())
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("kind").and_then(|k| k.as_str()) == Some("points")
+                    && item.get("role").and_then(|r| r.as_str()) == Some("part")
+            })
+        })
+        .and_then(|item| serde_json::from_value(item.get("points")?.clone()).ok())
+        .unwrap_or_default()
 }
 
 /// `view` 给了读旧配方的 `{device}-v{view}`，没给读段配方的设备标定 `device/{device}`（见 `calib_keys`，单视角相机的图 1 两份同时写）。
@@ -519,6 +573,7 @@ fn save_calibration(
     project: &Path,
     paths: &[PathBuf],
     data: Value,
+    corners: &[[f64; 2]],
     image: &FrameImage,
     image_id: Option<&str>,
     camera_id: &str,
@@ -532,11 +587,7 @@ fn save_calibration(
         NEXT_IMAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
     let sample_id = image_id.unwrap_or(&generated);
-    if sample_id.is_empty()
-        || !sample_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-    {
+    if !valid_sample_id(sample_id) {
         return Err("标定样本编号无效".into());
     }
     let relative = format!("calib/images/{sample_id}.pgm");
@@ -548,7 +599,7 @@ fn save_calibration(
         .map_err(|e| format!("创建标定图目录失败：{e}"))?;
     crate::image_file::checked_source_path(image_path.parent().unwrap())?;
     crate::image_file::save_pgm_new(&image_path, image)?;
-    let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId": sample_id, "samplePath": relative, "cameraId": camera_id, "view": view});
+    let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId": sample_id, "samplePath": relative, "cameraId": camera_id, "view": view, "corners": corners});
     let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     paths
         .iter()
@@ -584,7 +635,7 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
                 {"id": "n_calib", "op": "image.board_calib", "params": {"pattern": pattern, "square": square}}
             ],
             "edges": [{"id": "e0", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_calib", "port": "image"}}],
-            "outputs": {"calib": {"node": "n_calib", "port": "calib"}}
+            "outputs": {"calib": {"node": "n_calib", "port": "calib"}, "overlay": {"node": "n_calib", "port": "overlay"}}
         });
         let run_id = format!("calib-{}", ly_plc::now_ms());
         let r = engine.run(&graph.to_string(), &run_id, "", &image, &json!({}))?;
@@ -597,6 +648,7 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
             });
         }
         let data = r.record("calib").cloned().ok_or("标定没有输出")?;
+        let corners = overlay_corners(r.record("overlay"));
         let paths = keys.iter().map(|key| calib_key_path(&app, key)).collect::<Result<Vec<_>, _>>()?;
         for dir in paths.iter().filter_map(|path| path.parent()) {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -605,7 +657,7 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
             if crate::workspace::station_image_view(&app, cam.unwrap_or(0), id)? != view { return Err("标定过程中样本视图已改变".into()); }
             crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)?;
         }
-        let written = save_calibration(&crate::storage::project(&app), &paths, data, &image, image_id.as_deref(), &camera_id(&app,cam.unwrap_or(0))?, view);
+        let written = save_calibration(&crate::storage::project(&app), &paths, data, &corners, &image, image_id.as_deref(), &camera_id(&app,cam.unwrap_or(0))?, view);
         let _ = app.emit("calibration://changed", ());
         written?;
         calib_info(&paths[0]).ok_or_else(|| "标定文件写入后读不回来".into())

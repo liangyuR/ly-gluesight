@@ -169,8 +169,10 @@ export interface PathEditing {
  * controlsAt="footer"（仅走廊示教页）：缩放与显示开关下沉到底部信息行，左侧放 summary，
  * 开关文案为“中线 / 搜索带 / 点柄”，操作提示由页面自己给；默认 "header" 的外观与行为不变。
  */
-export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, brush, onBrush, onPoint, onSectorTurn, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
-  image: GrayImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
+export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, marks, onEdit, editDisabled = false, region, onRegion, brush, onBrush, onPoint, onSectorTurn, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
+  image: GrayImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay;
+  /** 图像上的点标记（标定页：棋盘内角点），带“角点”开关 */
+  marks?: { at: [number, number]; color: string }[] | null; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
   brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; onPoint?: (p: [number, number]) => void;
   /** 拖动定向叠加上的扇区把手：给出出胶点指向指针的方向（度，取整） */
   onSectorTurn?: (deg: number) => void; extractionFailure?: { point: ImagePoint; message: string } | null; emptyTitle?: string; emptyHint?: string; controlsAt?: "header" | "footer"; summary?: ReactNode;
@@ -207,6 +209,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
   const brushStroke = useRef<{ points: ImagePoint[]; inverse: DOMMatrix; pointerId: number } | null>(null);
   const regionStart = useRef<[number, number] | null>(null);
   const [shown, setShown] = useState(true);
+  const [marksShown, setMarksShown] = useState(true);
   const [bandShown, setBandShown] = useState(true);
   const [headingShown, setHeadingShown] = useState(true);
   const bandClip = useId();
@@ -255,7 +258,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
   const band = searchBand(path, overlay?.searchHalfPx);
   const hint = error || emptyHint;
   const footer = controlsAt === "footer";
-  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
+  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{!!marks?.length && <Chip selected={marksShown} onClick={() => setMarksShown(v => !v)}>角点</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
   return <div className={"wp-viewport" + (footer ? " wp-viewport-footer" : "")}>{footer ? tools && <div className="wp-image-tools">{tools}</div> : <div className="wp-image-tools">{tools ?? <span>{caption ?? label}</span>}{controls}</div>}{subtools}
     {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "暂无图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} style={{ aspectRatio: `${image.width} / ${image.height}` }} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
@@ -345,6 +348,9 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
           </g>}
           {overlay?.heading && headingShown && <HeadingLayer guide={turnDeg != null ? { ...overlay.heading, sector: [turnDeg - 90, turnDeg + 90] } : overlay.heading} size={[image.width, image.height]} screenPx={screenPx} turnable={turnable} turning={turningNow} hinted={!turnedHere && !overlay.heading.turned} />}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
+          {!!marks?.length && marksShown && <g aria-label="标定角点" pointerEvents="none">
+            {marks.map((mark, i) => <circle key={i} cx={mark.at[0]} cy={mark.at[1]} r={screenPx(3)} fill={mark.color} stroke="var(--surface-lowest)" strokeWidth={1} vectorEffect="non-scaling-stroke" />)}
+          </g>}
           {overlay && shown && <g aria-label="中线叠加">
             {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
             {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
