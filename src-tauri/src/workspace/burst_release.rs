@@ -209,16 +209,18 @@ fn segment_check(w: &Workspace) -> Check {
         }
         None => "整件预期帧组数待示教件分段：先在分段步骤确认示教件边界".into(),
     };
-    let core_min = 2 * doc.boundary_guard + 1;
     let multi = doc.segments.len() > 1;
+    let last = doc.segments.len().saturating_sub(1);
     let segments: Vec<String> = doc
         .segments
         .iter()
-        .map(|s| {
+        .enumerate()
+        .map(|(k, s)| {
             let kind = if s.skip { "不检测" } else { kind_label(s.kind) };
+            let offset_min = offset_frames_min(s, k > 0, k < last, doc.boundary_guard);
             match (s.expected_frames, total) {
-                (Some(n), _) if multi && !s.skip && s.kind == SegmentKind::Straight && n < core_min => format!(
-                    "第 {} 段（{kind}）N_exp {n} ± {}：短于 {core_min} 帧，两侧过渡区取空后不判胶偏，建议并入相邻弯道段",
+                (Some(n), _) if multi && !s.skip && s.kind == SegmentKind::Straight && n < offset_min => format!(
+                    "第 {} 段（{kind}）N_exp {n} ± {}：短于 {offset_min} 帧，去掉过渡区、跳过帧与首尾各一帧后没有帧判胶偏，建议并入相邻弯道段",
                     s.index, s.tolerance
                 ),
                 (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n} ± {}", s.index, s.tolerance),
@@ -237,6 +239,14 @@ fn segment_check(w: &Workspace) -> Check {
             && (!multi || doc.segments.iter().all(|s| s.expected_frames.is_some())),
         detail: format!("{head}；{}", segments.join("；")),
     }
+}
+
+/// 直线段至少要多少帧，运行时才剩帧判胶偏（D-SB-40）：每一头去掉过渡区与本段跳过帧中较多的那一截（两者从同一端数起、
+/// 互相重叠，`resolve_regions`），胶偏判定再去掉区域首尾各一帧（`burst_judge::region_offset`），至少留 1 帧。
+fn offset_frames_min(s: &PathSegment, before: bool, after: bool, guard: u32) -> u32 {
+    let head = s.skip_head.max(if before { guard } else { 0 });
+    let tail = s.skip_tail.max(if after { guard } else { 0 });
+    head + tail + 3
 }
 
 /// 胶偏参考 x_ref（规格 §0/§1、D-SB-18；示教件兼作标准件，RB-3）：只在有启用胶偏检查的直线段时列出，只作说明、不阻断发布——

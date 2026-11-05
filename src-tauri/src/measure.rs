@@ -30,7 +30,10 @@ pub const MEASURE_TIMEOUT: &str = "单帧测量超时";
 pub fn apply_settings(app: &AppHandle) {
     app.state::<crate::production::ProductionHost>().clear();
     let record = crate::site::record_mode(app) != RecordMode::Off;
-    app.state::<CycleHost>().camera.set_capture(crate::site::image_measurement(app) || record);
+    let host = app.state::<CycleHost>();
+    host.camera
+        .set_capture(crate::site::image_measurement(app) || record);
+    host.camera.set_keep_bayer(host.settings().record_bayer);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

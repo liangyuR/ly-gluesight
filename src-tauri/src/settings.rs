@@ -84,6 +84,8 @@ pub struct CycleSettings {
     pub record_max_gb: f32,
     pub offline_record_keep: u32,
     pub offline_record_max_gb: f32,
+    /// 录制件另存相机原始 8 位 Bayer（`{相机}_s{seq:06}_bayer.pgm`），供离线做颜色算法；只录制、不改测量
+    pub record_bayer: bool,
     /// 只由维护模式命令改写，保存检测设置时沿用当前值
     pub maintenance: Option<Maintenance>,
 }
@@ -100,6 +102,7 @@ impl Default for CycleSettings {
             record_max_gb: 20.0,
             offline_record_keep: 300,
             offline_record_max_gb: 10.0,
+            record_bayer: false,
             maintenance: None,
         }
     }

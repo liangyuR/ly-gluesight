@@ -160,6 +160,71 @@ fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
 }
 
 #[test]
+fn short_straight_warning_matches_runtime_offset_frames() {
+    // 防的回归（D-SB-40）：发布检查只按 2 × 过渡帧 + 1 提示，没算胶偏判定再去掉的区域首尾各一帧和段跳过帧，
+    // 中间直线段 N_exp 为 5、6 帧时运行时胶偏取不到帧（标胶偏未判），发布前却不提示
+    use crate::segmentation::{resolve_regions, Boundary, RegionKind, SegOutcome};
+    // (段类型, 直线段下标, 直线段的 skip_head, skip_tail)
+    let layouts: [(&[SegmentKind], usize, u32, u32); 4] = [
+        (&[Corner, Straight, Corner], 1, 0, 0),
+        (&[Corner, Straight, Corner], 1, 3, 0),
+        (&[Straight, Corner], 0, 0, 0),
+        (&[Straight, Corner], 0, 4, 0),
+    ];
+    for (kinds, k, skip_head, skip_tail) in layouts {
+        for n in 3..=10 {
+            let mut w = taught(kinds, DEVICE);
+            calibrate(&mut w, 30);
+            let segment = &mut w.doc.segments[k];
+            (
+                segment.expected_frames,
+                segment.skip_head,
+                segment.skip_tail,
+            ) = (Some(n), skip_head, skip_tail);
+            let segments = &w.doc.segments;
+            let mut cut = 0;
+            let boundaries = segments[..segments.len() - 1]
+                .iter()
+                .map(|s| {
+                    cut += u64::from(s.expected_frames.unwrap());
+                    Boundary {
+                        after_segment: s.index,
+                        frame_seq: cut,
+                        confidence: 1.0,
+                    }
+                })
+                .collect();
+            let total = segments
+                .iter()
+                .map(|s| u64::from(s.expected_frames.unwrap()))
+                .sum();
+            let index = segments[k].index;
+            let core: u64 = resolve_regions(
+                segments,
+                &SegOutcome::Boundaries(boundaries),
+                total,
+                0.5,
+                w.doc.boundary_guard,
+            )
+            .iter()
+            .filter(|r| r.kind == RegionKind::Straight { segment: index })
+            .map(|r| r.last_seq - r.first_seq + 1)
+            .sum();
+            let checks = checks(&w, &configs(&w.doc, DEVICE));
+            let warned = check(&checks, "段帧数")
+                .detail
+                .split('；')
+                .any(|item| item.starts_with(&format!("第 {index} 段")) && item.contains("胶偏"));
+            assert_eq!(
+                warned,
+                core < 3,
+                "{kinds:?} 第 {index} 段 N_exp {n}、跳过 {skip_head}/{skip_tail}：核心区域 {core} 帧"
+            );
+        }
+    }
+}
+
+#[test]
 fn sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejected() {
     // 防的回归（规格 §0 独立验证、D-SB-35）：用作走廊示教或示教件测量的同一轮又当独立验证样本（自己验自己），
     // 或换了相机 / 设备配置的轮次混进验证样本

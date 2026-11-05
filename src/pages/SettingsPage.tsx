@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Grid, Heading, NumberField, Select, Stack } from "qing-steel";
+import { Alert, Button, Card, Checkbox, Grid, Heading, NumberField, Select, Stack } from "qing-steel";
 import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
@@ -198,8 +198,8 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
     setSaving(true);
     setSaveError("");
     try {
-      const { record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb } = settings;
-      const saved = await savePart({ record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb });
+      const { record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb, recordBayer } = settings;
+      const saved = await savePart({ record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb, recordBayer });
       if (saved && mounted.current) {
         snack("lyFlow 与帧录制设置已保存");
         refresh();
@@ -259,6 +259,12 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
             onValueChange={(value) => update({ ...settings, offlineRecordMaxGb: numberValue(value) })}
           />
         </Grid>
+        <Checkbox
+          label="同时保存原始 Bayer（彩色相机，供离线做颜色算法）"
+          checked={settings.recordBayer}
+          onCheckedChange={(recordBayer) => update({ ...settings, recordBayer })}
+        />
+        {settings.recordBayer && <p className="muted">录制件每帧多存一份同样大小的原始马赛克，录制占用约翻倍，按上面的总大小上限会少留一半的件；只录制，不改测量。相机以 Mono8 出图时没有颜色可存，相机状态里会提示。</p>}
       </fieldset>
       {invalid && <Alert tone="ng">{invalid}</Alert>}
       </>}
