@@ -817,8 +817,10 @@ impl PlcSession {
                 )
                 .await?;
                 if request.request_seq <= self.journal.last_request_seq {
-                    return Err(format!("请求事务序号必须递增（上一件 {}，本次 {}）；PLC 清零或回绕需先执行复位",
-                        self.journal.last_request_seq, request.request_seq));
+                    return Err(format!(
+                        "请求事务序号必须递增（上一件 {}，本次 {}）；PLC 清零或回绕需先执行复位",
+                        self.journal.last_request_seq, request.request_seq
+                    ));
                 }
                 self.journal.pending = Some(Pending {
                     origin: Some(self.origin),

@@ -326,7 +326,14 @@ async fn request_seq_restarting_after_reset_is_accepted() {
     rig.report().await;
     rig.ack_release().await;
     rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
+    assert!(
+        matches!(
+            rig.session.poll(&rig.engine, true, true).await,
+            SessionEvent::Ready
+        ),
+        "{:?}",
+        rig.session.view()
+    );
     rig.request(1, "SN-50").await;
     rig.finish().await;
 }
