@@ -5,7 +5,8 @@
 //!    轨迹外一段整体横移且过渡处有斜胶时跟过去；
 //! 3. 轨迹外与轨迹胶同宽的子段（被淡肩并宽的胶）补回后重算轨迹；
 //! 4. 轨迹上的站不到 3 站或 10%、或轨迹陡度 P25 < sharpMin（D15）时整段判无胶（T4）；
-//! 5. D16：参考宽、参考对比度只取轨迹上的站，每站取离期望中心最近的暗段，够宽、够近、够浓才算有胶。
+//! 5. D16：参考宽、参考对比度只取轨迹上的站，每站取离期望中心最近的暗段，够宽、够近、够浓才算有胶；
+//! 6. 胶色卡尺没量到胶的站，期望中心 ± 参考宽的一半被高光、暗区盖住时记无信息，不算缺胶。
 
 use std::fmt;
 
@@ -39,11 +40,22 @@ pub struct LateralRuns {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunStation {
     /// 沿胶路的弧长（px）
     pub s: f64,
     /// 按 lo 升序的全部暗段
     pub runs: Vec<LateralRun>,
+    /// 胶色卡尺上没有颜色信息的区间（高光、暗区）；灰度卡尺没有
+    #[serde(default)]
+    pub unknown_spans: Vec<Span>,
+}
+
+/// 卡尺上的一个区间（沿法向，px）。
+#[derive(Clone, Debug, Deserialize)]
+pub struct Span {
+    pub lo: f64,
+    pub hi: f64,
 }
 
 /// 一站卡尺上的一个暗段；偏移沿法向（px，右正左负）。
@@ -121,6 +133,8 @@ impl fmt::Display for NoBead {
 pub struct TaughtJudgement {
     /// 每站的胶边 (lo, hi)（px，沿法向）；无胶为 None
     pub beads: Vec<Option<(f64, f64)>>,
+    /// 每站是否无信息：没量到胶，但该有胶的地方被高光、暗区盖住
+    pub unknown: Vec<bool>,
     /// 每站期望的胶中心（偏移轨迹，px）
     pub expect: Vec<f64>,
     /// 整段判无胶时的原因（这时 beads 全为 None）
@@ -219,6 +233,7 @@ pub fn judge_taught(
     if let Some(reason) = tr.reason {
         return Ok(TaughtJudgement {
             beads: vec![None; n],
+            unknown: vec![false; n],
             expect: tr.expect,
             no_bead: Some(reason),
         });
@@ -230,7 +245,7 @@ pub fn judge_taught(
         p.contrast_ratio * median(tr.on_track_runs(&st).map(LateralRun::contrast).collect());
     let min_width = p.present_ratio * w_ref;
     let max_offset = GATE_MIN.max(p.center_ratio * w_ref);
-    let beads = st
+    let beads: Vec<Option<(f64, f64)>> = st
         .iter()
         .zip(&tr.expect)
         .map(|(x, &e)| {
@@ -243,8 +258,20 @@ pub fn judge_taught(
                 .map(|r| (r.lo, r.hi))
         })
         .collect();
+    let unknown = beads
+        .iter()
+        .zip(&runs.stations)
+        .zip(&tr.expect)
+        .map(|((b, x), &e)| {
+            let hidden: Vec<(f64, f64)> = x.unknown_spans.iter().map(|u| (u.lo, u.hi)).collect();
+            let found: Vec<(f64, f64)> = x.runs.iter().map(|r| (r.lo, r.hi)).collect();
+            b.is_none()
+                && super::hidden_by_unknown(&hidden, &found, (e - 0.5 * w_ref, e + 0.5 * w_ref))
+        })
+        .collect();
     Ok(TaughtJudgement {
         beads,
+        unknown,
         expect: tr.expect,
         no_bead: None,
     })

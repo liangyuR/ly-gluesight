@@ -111,6 +111,49 @@ fn frame_whose_color_mode_differs_from_the_taught_frame_fails_before_measuring()
     assert!(measure_frame_with(c, &gray, 7, |_, _| Ok(corridor_output(&beads(&[], &[])))).is_ok());
 }
 
+/// 胶色卡尺一站的内容：胶（法向 −6..10 px）、被高光盖住、或什么都没有。
+#[derive(Clone, Copy)]
+enum ColorStation {
+    Bead,
+    Highlight,
+    Bare,
+}
+
+/// 41 站、站距 4 px 的胶色卡尺输出（合并前后同一份）。
+fn color_output(at: impl Fn(usize) -> ColorStation) -> RunResult {
+    let bead = json!({"lo": -6.0, "hi": 10.0, "width": 16.0, "mid": 2.0, "peak": 0.95, "parts": 1, "loComplete": true,
+        "hiComplete": true, "loCause": "edge", "hiCause": "edge", "meanScore": 0.9, "unknownWidth": 0.0,
+        "edgeLo": null, "edgeHi": null, "depth": null, "sharpness": null, "level": 1.0});
+    let stations: Vec<Value> = (0..41)
+        .map(|i| {
+            let (runs, unknown, info) = match at(i) {
+                ColorStation::Bead => (json!([bead]), json!([]), 1.0),
+                ColorStation::Highlight => (json!([]), json!([{"lo": -9.0, "hi": 13.0, "cause": "highlight"}]), 0.3),
+                ColorStation::Bare => (json!([]), json!([]), 1.0),
+            };
+            json!({"s": i as f64 * 4.0, "center": [40.0 + 4.0 * i as f64, 80.0], "normal": [0.0, 1.0],
+                "validFraction": 1.0, "infoFraction": info, "unknownSpans": unknown, "runs": runs})
+        })
+        .collect();
+    let runs = json!({"count": 41, "stationStep": 4.0, "searchHalf": 32.0, "split": "half_max", "source": "color", "stations": stations});
+    RunResult {
+        summary: json!({"status": "ok"}),
+        outputs: json!({"runs": record(runs.clone()), "split": record(runs)}),
+    }
+}
+
+/// burst_doc 第 1 段 cam1 取了色之后的示教走廊。
+fn color_corridor() -> CorridorGraph {
+    let mut doc = burst_doc();
+    doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+    let recipe = doc.build().unwrap();
+    let set = CorridorSet::build(&recipe, &[FRAME; 3]).unwrap();
+    let Some(FrameGraph::Corridor(c)) = set.get(0, 1) else {
+        panic!("应是示教走廊")
+    };
+    c.clone()
+}
+
 #[test]
 fn segment_with_color_model_measures_score_runs_with_color_graph_and_rejects_gray_frames() {
     // 防的回归：取了色的段仍按灰度响应图量（粉胶在铸件和铝面上明暗相反，灰度测不全）；胶色卡尺的段
@@ -129,18 +172,7 @@ fn segment_with_color_model_measures_score_runs_with_color_graph_and_rejects_gra
         ("corridor_color", "corridor")
     );
     assert_eq!(c.params["colorModel"], json!(r#"{"version":1}"#));
-    let score_runs: Vec<Value> = (0..41)
-        .map(|i| json!({"s": i as f64 * 4.0, "center": [40.0 + 4.0 * i as f64, 80.0], "normal": [0.0, 1.0],
-            "validFraction": 1.0, "infoFraction": 1.0, "unknownSpans": [],
-            "runs": [{"lo": -6.0, "hi": 10.0, "width": 16.0, "mid": 2.0, "peak": 0.95, "parts": 1, "loComplete": true,
-                "hiComplete": true, "loCause": "edge", "hiCause": "edge", "meanScore": 0.9, "unknownWidth": 0.0,
-                "edgeLo": null, "edgeHi": null, "depth": null, "sharpness": null, "level": 1.0}]}))
-        .collect();
-    let runs = json!({"count": 41, "stationStep": 4.0, "searchHalf": 32.0, "split": "half_max", "source": "color", "stations": score_runs});
-    let output = || RunResult {
-        summary: json!({"status": "ok"}),
-        outputs: json!({"runs": record(runs.clone()), "split": record(runs.clone())}),
-    };
+    let output = || color_output(|_| ColorStation::Bead);
     let n = (FRAME[0] * FRAME[1]) as usize;
     let color = FrameImage::rgb(FRAME[0], FRAME[1], vec![0; n * 3]);
     let m = measure_frame_with(c, &color, 7, |run, _| {
@@ -157,6 +189,33 @@ fn segment_with_color_model_measures_score_runs_with_color_graph_and_rejects_gra
     assert!((m.width_mean.unwrap() - 4.0).abs() < 1e-6);
     let gray = FrameImage::new(FRAME[0], FRAME[1], vec![0; n]);
     assert!(measure_frame_with(c, &gray, 7, |_, _| Ok(output())).is_err());
+}
+
+#[test]
+fn color_corridor_station_under_highlight_is_unknown_but_a_bare_hole_stays_a_gap() {
+    // 防的回归：示教走廊段里被高光盖住的站当成缺胶，连成断口误报断胶、拉低有胶比例；
+    // 或反过来把没有高光的真断口也当无信息放过
+    let c = color_corridor();
+    let n = (FRAME[0] * FRAME[1]) as usize;
+    let color = FrameImage::rgb(FRAME[0], FRAME[1], vec![0; n * 3]);
+    let at = |i| match i {
+        10..=14 => ColorStation::Highlight,
+        30..=32 => ColorStation::Bare,
+        _ => ColorStation::Bead,
+    };
+    let m = measure_frame_with(&c, &color, 7, |_, _| Ok(color_output(at)))
+        .unwrap()
+        .metrics;
+    assert!(
+        (m.gap_max_mm - 3.0 * m.spacing_mm).abs() < 1e-9,
+        "断口应只有真空的 3 站：{}",
+        m.gap_max_mm
+    );
+    assert!(
+        (m.present_ratio - 33.0 / 36.0).abs() < 1e-9,
+        "有胶比例的分母应去掉 5 个高光站：{}",
+        m.present_ratio
+    );
 }
 
 #[test]

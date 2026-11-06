@@ -742,7 +742,7 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
         c.scale,
         c.spacing_mm,
         &beads,
-        &[],
+        &judged.unknown,
     );
     if let Some(window) = &c.edge {
         metrics.edge_mm = edge_mm(result.record("edges"), &judged.beads, window, c.scale)?;

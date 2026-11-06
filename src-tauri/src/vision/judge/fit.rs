@@ -15,8 +15,6 @@ const WEAK_RAY_RATIO: f64 = 0.25;
 const WEAK_RAY_FACTOR: f64 = 0.5;
 /// 中心偏离门限的下限（px）。
 const CENTER_GATE_MIN_PX: f64 = 6.0;
-/// 没量到胶的一站，该有胶的区间被无信息区间与胶色段盖住至少这一比例才算无信息（不算缺胶）。
-const UNKNOWN_COVER: f64 = 0.8;
 
 /// 选方向的门限（1.1 `glue.bead_path` 的 minCoverage、sharpMin）。
 #[derive(Clone, Copy, Debug)]
@@ -307,8 +305,7 @@ pub fn judge_stations(
     Ok(calls)
 }
 
-/// 胶色卡尺一站没量到胶时，该有胶的区间（胶路 ± 参考宽的一半）被无信息区间（高光、暗区）与已量到的胶色段一起盖住
-/// 至少 `UNKNOWN_COVER`、且其中有无信息的部分：胶被反光遮住，不能说缺胶。灰度卡尺没有 unknownSpans，恒为假。
+/// 胶色卡尺一站没量到胶时，该有胶的区间是胶路 ± 参考宽的一半（规则见 `super::hidden_by_unknown`）。
 fn hidden_by_unknown(station: &Value, w_ref: f64) -> bool {
     let spans = |key: &str| -> Vec<(f64, f64)> {
         station[key]
@@ -318,28 +315,11 @@ fn hidden_by_unknown(station: &Value, w_ref: f64) -> bool {
             .filter_map(|v| Some((v["lo"].as_f64()?, v["hi"].as_f64()?)))
             .collect()
     };
-    let unknown = spans("unknownSpans");
-    if unknown.is_empty() {
-        return false;
-    }
-    let (a, b) = (-0.5 * w_ref, 0.5 * w_ref);
-    let covered = |set: &[(f64, f64)]| {
-        let mut parts: Vec<(f64, f64)> = set
-            .iter()
-            .map(|&(lo, hi)| (lo.max(a), hi.min(b)))
-            .filter(|(lo, hi)| hi > lo)
-            .collect();
-        parts.sort_by(|x, y| x.0.total_cmp(&y.0));
-        let (mut total, mut end) = (0.0, a);
-        for (lo, hi) in parts {
-            total += (hi - lo.max(end)).max(0.0);
-            end = end.max(hi);
-        }
-        total
-    };
-    let unknown_part = covered(&unknown);
-    let all: Vec<(f64, f64)> = unknown.into_iter().chain(spans("runs")).collect();
-    unknown_part > 0.0 && covered(&all) >= UNKNOWN_COVER * (b - a)
+    super::hidden_by_unknown(
+        &spans("unknownSpans"),
+        &spans("runs"),
+        (-0.5 * w_ref, 0.5 * w_ref),
+    )
 }
 
 #[cfg(test)]
