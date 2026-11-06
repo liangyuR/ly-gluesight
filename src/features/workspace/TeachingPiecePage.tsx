@@ -40,10 +40,12 @@ export default function TeachingPiecePage() {
   if (!doc || !data) return <WorkspaceEmpty />;
   const { workspace, plan } = data;
   const piece = workspace.teachingPiece;
-  const groupCount = plan.pieces.find(item => item.roundId === piece?.roundId)?.groupCount ?? 0;
+  const pieceView = plan.pieces.find(item => item.roundId === piece?.roundId);
+  const groupCount = pieceView?.groupCount ?? 0;
   const locked = busy || dirty || frameDirty || !!workspace.pending;
   const nameOf = (id: string) => cameras.find(camera => camera.id === id)?.name ?? id;
   const cleared = clearedByTeachingPiece(data);
+  const refill = () => act(() => workspaceApi.refillTeachingImages(doc.id, workspace.revision), "已补回示教件原图");
   const apply = async (recordId: number) => !!await act(() => workspaceApi.setTeachingPiece(doc.id, workspace.revision, recordId), "已设为示教件，请到分段确认边界");
   const choose = async (recordId: number) => {
     if (!cleared.length) return apply(recordId);
@@ -63,9 +65,12 @@ export default function TeachingPiecePage() {
           <span className="wp-capture-chip"><small>帧组</small><strong>{groupCount} 个</strong></span>
           <Link className="wp-text-link" to="/recipe/segments">前往分段<ArrowRight size={12} aria-hidden="true" /></Link>
         </div>
-        <FrameBrowser key={piece.roundId} source={piece.roundId} label="示教件" groupCount={groupCount}
-          cameras={plan.cameras.map(id => ({ id, name: nameOf(id) }))}
-          read={(camera, seq) => workspaceApi.captureFrameImage(piece.roundId, plan.cameras[camera], seq)} />
+        {pieceView?.imagesMissing
+          ? <Notice tone="warn" title="示教件原图不在本项目">导出或复制项目时没带示教件原图。分段、走廊与测量结果都还在；要看图、示教走廊、测量示教件或试测，先从这一件的历史记录补回原图（需要它的检测记录与历史原图仍在本项目）。
+            <div className="wp-actions"><Button variant="filled" disabled={locked} onClick={() => void refill()}>补回原图</Button></div></Notice>
+          : <FrameBrowser key={piece.roundId} source={piece.roundId} label="示教件" groupCount={groupCount}
+            cameras={plan.cameras.map(id => ({ id, name: nameOf(id) }))}
+            read={(camera, seq) => workspaceApi.captureFrameImage(piece.roundId, plan.cameras[camera], seq)} />}
       </> : <Notice title="还没有示教件">从下方历史件里选一件完整的录制件设为示教件：分段与走廊示教都在它的图像上进行。没有示教件的候选不能发布。</Notice>}
     </Panel>
     <HistoryPicker recipeId={doc.id} title="选示教件" disabled={locked} nameOf={nameOf} onError={setError}

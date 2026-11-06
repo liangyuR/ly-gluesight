@@ -33,7 +33,7 @@ function sizeText(state: SizeState, captureImages: boolean, includeRecords: bool
   return `约 ${formatBytes(content + (captureImages ? images : 0) + (includeRecords ? records : 0))}（压缩前）`;
 }
 
-const CAPTURE_IMAGES_HINT = "不带示教件原图时，已发布的配方照常检测；要看候选的示教图、示教走廊、测量示教件或试测，需在示教件页重新选用示教件。";
+const CAPTURE_IMAGES_HINT = "不带示教件原图时，已发布的配方照常检测；要看候选的示教图、示教走廊、测量示教件或试测，需在示教件页从历史记录补回原图（要同时带上检测记录与历史原图），否则只能重新选用示教件。";
 
 export function ExportProjectDialog({ project, onClose }: { project: ProjectMeta; onClose: () => void }) {
   const alive = useAlive();

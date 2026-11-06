@@ -244,8 +244,52 @@ impl RecipeCaptureHost {
         let camera = cameras.iter().position(|id| id == camera_id).ok_or_else(|| format!("采集轮次没有相机 {camera_id}"))?;
         if !saved[camera].contains(&seq) { return Err(format!("相机 {camera_id} 缺第 {seq} 帧组的图像")); }
         let path = dir.join(camera_id).join(frame_file(seq));
-        if !path.is_file() { return Err("示教件原图不在本项目（导出或复制项目时未包含示教件原图），请在示教件页重新选用示教件".into()); }
+        if !path.is_file() {
+            return Err(
+                "示教件原图不在本项目（导出或复制项目时未包含示教件原图），请在示教件页补回原图"
+                    .into(),
+            );
+        }
         Ok(path)
+    }
+
+    /// 帧记录里有原图不在盘上（导出或复制项目时没带示教件原图）。
+    pub fn images_missing(&self, round_id: &str) -> Result<bool, String> {
+        let dir = self.safe_round_path(round_id)?;
+        let (_, lines) = self.load_burst(round_id, true)?;
+        Ok(lines
+            .unwrap_or_default()
+            .iter()
+            .any(|line| !dir.join(&line.path).is_file()))
+    }
+
+    /// 用同一件历史记录新物化的轮次 `source` 补回 `target` 缺的原图：两轮相机与帧记录须逐行相同，只移入缺的文件；
+    /// 无论成败都删除 `source`。
+    pub fn refill_images(&self, target: &str, source: &str) -> Result<(), String> {
+        let result = (|| {
+            let target_dir = self.safe_round_path(target)?;
+            let source_dir = self.safe_round_path(source)?;
+            let (target_round, target_lines) = self.load_burst(target, true)?;
+            let (source_round, source_lines) = self.load_burst(source, true)?;
+            if target_round.camera_ids() != source_round.camera_ids()
+                || target_lines != source_lines
+            {
+                return Err("历史记录的帧与示教件轮次对不上，不能补回原图".into());
+            }
+            for line in target_lines.unwrap_or_default() {
+                let to = target_dir.join(&line.path);
+                if to.is_file() {
+                    continue;
+                }
+                std::fs::create_dir_all(to.parent().ok_or("原图路径无效")?)
+                    .map_err(|e| e.to_string())?;
+                std::fs::rename(source_dir.join(&line.path), &to)
+                    .map_err(|e| format!("补回原图 {} 失败：{e}", line.path))?;
+            }
+            Ok(())
+        })();
+        let _ = self.delete_round(source);
+        result
     }
 
     /// 某台相机一轮全部帧组（1..=帧组数）的原图路径，缺帧为 None；轮次与帧记录只读一次（缩略图条带用）。
