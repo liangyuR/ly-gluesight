@@ -102,49 +102,70 @@ async fn handle(
     token: String,
     request: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    Ok(respond(&token, request, |method, params| async move {
+        dispatch(&app, &method, &params).await
+    })
+    .await)
+}
+
+/// 一次 HTTP 请求：先准入，再解析 JSON-RPC，把方法交给 `dispatch`
+async fn respond<B, F, Fut>(token: &str, request: Request<B>, dispatch: F) -> Response<Full<Bytes>>
+where
+    B: hyper::body::Body,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    F: FnOnce(String, Value) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, (i64, String)>>,
+{
     if let Err(status) = admit(
         request.uri().path(),
         request.method(),
         request.headers(),
-        &token,
+        token,
     ) {
-        return Ok(reply(status, None));
+        return reply(status, None);
     }
     let body = match Limited::new(request.into_body(), MAX_BODY).collect().await {
         Ok(body) => body.to_bytes(),
-        Err(_) => return Ok(reply(StatusCode::PAYLOAD_TOO_LARGE, None)),
+        Err(_) => return reply(StatusCode::PAYLOAD_TOO_LARGE, None),
     };
     let message: Value = match serde_json::from_slice(&body) {
         Ok(message) => message,
         Err(e) => {
-            return Ok(reply(
+            return reply(
                 StatusCode::BAD_REQUEST,
                 Some(rpc_error(
                     Value::Null,
                     -32700,
                     &format!("JSON 解析失败：{e}"),
                 )),
-            ))
+            )
         }
     };
     let Some(id) = message.get("id").cloned() else {
         // 通知与客户端回的响应都不需要回复
-        return Ok(reply(StatusCode::ACCEPTED, None));
+        return reply(StatusCode::ACCEPTED, None);
     };
-    let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+    let method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
-    let result = match method {
-        "initialize" => Ok(initialize(&params)),
-        "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": crate::workspace::agent::tools() })),
-        "tools/call" => call(&app, &params).await,
-        _ => Err((-32601, format!("不支持的方法：{method}"))),
-    };
-    let body = match result {
+    let body = match dispatch(method, params).await {
         Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
         Err((code, message)) => rpc_error(id, code, &message),
     };
-    Ok(reply(StatusCode::OK, Some(body)))
+    reply(StatusCode::OK, Some(body))
+}
+
+async fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value, (i64, String)> {
+    match method {
+        "initialize" => Ok(initialize(params)),
+        "ping" => Ok(json!({})),
+        "tools/list" => Ok(json!({ "tools": crate::workspace::agent::tools() })),
+        "tools/call" => call(app, params).await,
+        _ => Err((-32601, format!("不支持的方法：{method}"))),
+    }
 }
 
 /// 准入：路径、浏览器来源、令牌、方法依次检查
@@ -228,44 +249,54 @@ async fn call(app: &AppHandle, params: &Value) -> Result<Value, (i64, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn requests_without_the_token_or_from_a_browser_are_refused() {
+    fn requests_without_the_token_or_from_a_browser_never_reach_the_tools() {
         let token = "0123456789abcdef";
-        let headers = |pairs: &[(&'static str, &str)]| {
-            let mut map = hyper::HeaderMap::new();
-            for (k, v) in pairs {
-                map.insert(*k, v.parse().unwrap());
-            }
-            map
-        };
         let bearer = format!("Bearer {token}");
-        let cases = [
-            (Method::POST, headers(&[("authorization", &bearer)]), Ok(())),
-            (Method::POST, headers(&[]), Err(StatusCode::UNAUTHORIZED)),
+        let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let cases: [(Method, Vec<(&str, &str)>, StatusCode); 5] = [
             (
                 Method::POST,
-                headers(&[("authorization", "Bearer 0123456789abcdeX")]),
-                Err(StatusCode::UNAUTHORIZED),
+                vec![("authorization", &bearer)],
+                StatusCode::OK,
+            ),
+            (Method::POST, vec![], StatusCode::UNAUTHORIZED),
+            (
+                Method::POST,
+                vec![("authorization", "Bearer 0123456789abcdeX")],
+                StatusCode::UNAUTHORIZED,
             ),
             (
                 Method::POST,
-                headers(&[
+                vec![
                     ("authorization", &bearer),
                     ("origin", "http://evil.example"),
-                ]),
-                Err(StatusCode::FORBIDDEN),
+                ],
+                StatusCode::FORBIDDEN,
             ),
             (
                 Method::GET,
-                headers(&[("authorization", &bearer)]),
-                Err(StatusCode::METHOD_NOT_ALLOWED),
+                vec![("authorization", &bearer)],
+                StatusCode::METHOD_NOT_ALLOWED,
             ),
         ];
         for (method, headers, expected) in cases {
+            let mut request = Request::builder().method(method.clone()).uri("/mcp");
+            for (name, value) in &headers {
+                request = request.header(*name, *value);
+            }
+            let request = request.body(Full::new(Bytes::from(ping))).unwrap();
+            let reached = AtomicUsize::new(0);
+            let response = tauri::async_runtime::block_on(respond(token, request, |_, _| {
+                reached.fetch_add(1, Ordering::SeqCst);
+                async { Ok(json!({})) }
+            }));
+            assert_eq!(response.status(), expected, "{method} {headers:?}");
             assert_eq!(
-                admit("/mcp", &method, &headers, token),
-                expected,
+                reached.load(Ordering::SeqCst),
+                usize::from(expected == StatusCode::OK),
                 "{method} {headers:?}"
             );
         }
