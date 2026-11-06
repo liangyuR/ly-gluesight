@@ -2370,8 +2370,9 @@ impl Machine {
         } else {
             Origin::Real
         });
-        self.s7
-            .set_maintenance(host(&app).settings().maintenance.is_some());
+        let settings = host(&app).settings();
+        self.s7.set_maintenance(settings.maintenance.is_some());
+        self.s7.set_auto_reset(settings.auto_reset);
         if !host(&app).busy()
             && matches!(self.phase, Phase::Idle | Phase::Fault)
             && crate::offline::candidate(&self.app).is_none()
@@ -2438,7 +2439,7 @@ impl Machine {
                     return;
                 }
             };
-            if self.s7.reset_signal(plc(&app)) {
+            if self.s7.reset_signal(plc(&app)) || self.s7.auto_reset() {
                 self.s7_reset_requested = true;
             }
             let resetting = matches!(

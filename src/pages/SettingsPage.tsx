@@ -112,8 +112,8 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
     setSaving(true);
     setSaveError("");
     try {
-      const { productSource, manualRecipeId, historyDays, timeouts } = settings;
-      const saved = await savePart({ productSource, manualRecipeId, historyDays, timeouts });
+      const { productSource, manualRecipeId, historyDays, timeouts, autoReset } = settings;
+      const saved = await savePart({ productSource, manualRecipeId, historyDays, timeouts, autoReset });
       if (saved && mounted.current) snack("检测节拍已保存，从下一个工件开始生效");
     } catch (e) {
       if (mounted.current) setSaveError(errorText(e));
@@ -170,6 +170,12 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
             />
           ))}
         </Grid>
+        <Checkbox
+          label="启动或重连 PLC 后自动复位"
+          checked={settings.autoReset}
+          onCheckedChange={(autoReset) => update({ ...settings, autoReset })}
+        />
+        <p className="muted">没有未结事务、复位条件满足时自动完成软件复位，每次连接最多一次；有未结事务、复位失败或连接后先出故障时，仍需在线检测页“软件复位”或 PLC 复位信号。PLC 复位信号不受此项影响。</p>
       </fieldset>
       {invalid && <Alert tone="ng">{invalid}</Alert>}
       </>}
