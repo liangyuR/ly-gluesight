@@ -84,6 +84,13 @@ fn offline_retention_prunes_only_offline_recordings_and_never_real_raw_images() 
     assert!(real.iter().all(|d| d.is_dir()), "离线录制超过保留数后真机原图被清理");
 }
 
+/// 防的回归：现场机从没跑过离线回放时离线录制目录不存在，保存设置触发两个根目录的滚动清理，不能因此报“录制清理失败”。
+#[test]
+fn retention_on_missing_root_reports_no_error() {
+    let dir = TestDir::new();
+    assert_eq!(prune(&dir.0.join("records-offline"), 1, 0, &[], None), Vec::<String>::new());
+}
+
 /// 防的回归：原始 Bayer 是给离线做颜色算法的附带数据。它与灰度原图并排写成，part.json 记清文件名与相位，
 /// 历史读图仍只拿灰度；它写不成时只记进 bayerErrors，录制照样可用。
 #[test]
