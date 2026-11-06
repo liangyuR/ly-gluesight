@@ -413,6 +413,75 @@ async fn reset_signal_already_high_never_triggers_reset() {
     rig.finish().await;
 }
 
+impl Rig {
+    async fn reconnect(&mut self) {
+        self.engine.disconnect().await;
+        self.session.poll(&self.engine, false, true).await;
+        self.engine.connect().await;
+        self.connected().await;
+        self.live().await;
+        assert_eq!(
+            self.session.phase(),
+            SessionPhase::ResetRequired,
+            "{:?}",
+            self.session.view()
+        );
+    }
+
+    /// 按节拍的顺序：先问自动复位，再带着结果轮询；返回是否到了就绪。
+    async fn auto_poll(&mut self, rounds: usize) -> bool {
+        for _ in 0..rounds {
+            self.fresh().await;
+            let reset = self.session.auto_reset();
+            if matches!(
+                self.session.poll(&self.engine, reset, true).await,
+                SessionEvent::Ready
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// 自动复位只在开关打开时生效：关着时重连后一直待复位；打开后没有未结事务就自动复位到就绪。
+#[tokio::test]
+async fn auto_reset_after_reconnect_reaches_ready_only_when_enabled() {
+    let mut rig = Rig::new("auto-reset").await;
+    rig.reconnect().await;
+    assert!(!rig.auto_poll(10).await);
+    assert_eq!(
+        rig.session.view().reset_blocked_reason,
+        None,
+        "复位条件满足仍不复位，才说明是开关在拦"
+    );
+    assert_ne!(rig.plc.pc(), state::PC_READY);
+    rig.session.set_auto_reset(true);
+    assert!(rig.auto_poll(10).await, "{:?}", rig.session.view());
+    assert_eq!(rig.plc.pc(), state::PC_READY);
+    rig.finish().await;
+}
+
+/// 有未结事务时不自动复位：在途件的处置留给人工、PLC 复位信号或 PLC 置 99。
+#[tokio::test]
+async fn auto_reset_never_clears_pending_transaction() {
+    let mut rig = Rig::new("auto-reset-pending").await;
+    rig.session.set_auto_reset(true);
+    rig.request(1, "SN-50").await;
+    rig.intake().await;
+    rig.reconnect().await;
+    rig.plc.plc_state(state::PLC_IDLE);
+    assert!(!rig.auto_poll(10).await);
+    assert_eq!(
+        rig.session.view().reset_blocked_reason,
+        None,
+        "复位条件满足仍不复位，才说明是未结事务在拦"
+    );
+    assert!(rig.session.pending());
+    assert_ne!(rig.plc.pc(), state::PC_READY);
+    rig.finish().await;
+}
+
 /// 协议 8 PC 在任何状态都可置 99：在途时软件复位，可复位预检不拦（录制未落盘也不拦）；
 /// 本件按故障中断后不必再点一次，PC 接着置 99，PLC 回空闲即就绪。
 #[tokio::test]

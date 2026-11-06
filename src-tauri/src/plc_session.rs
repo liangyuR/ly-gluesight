@@ -230,8 +230,10 @@ pub struct PlcSession {
     reset_carry: bool,
     /// PLC 复位信号最近一次读到的电平及所在连接：同一连接里先 0 后 1 才算上升沿
     reset_signal: Option<(i64, bool)>,
-    /// 本拍复位请求的来源：operator（在线检测页）或 plc_signal（PLC 复位信号）
+    /// 本拍复位请求的来源：operator（在线检测页）、plc_signal（PLC 复位信号）或 auto（自动复位）
     reset_source: &'static str,
+    /// 自动复位开关，由节拍按检测设置每拍同步
+    auto_reset: bool,
     /// 设备未就绪或暂停接件时本侧把 pcState 置 0（不是外部改写）
     withdrawn: bool,
     /// 空闲时外部改写视觉输出后自动重写的时刻
@@ -310,6 +312,7 @@ impl PlcSession {
             reset_carry: false,
             reset_signal: None,
             reset_source: "operator",
+            auto_reset: false,
             withdrawn: false,
             restores: Vec::new(),
             plc_waiting_at: None,
@@ -325,6 +328,28 @@ impl PlcSession {
     /// 维护模式开关：从下一件起按 pcMode=1 回写结果码 0；空闲时随即重写 pcMode。
     pub fn set_maintenance(&mut self, on: bool) {
         self.mode = if on { MAINTENANCE } else { 0 };
+    }
+
+    pub fn set_auto_reset(&mut self, on: bool) {
+        self.auto_reset = on;
+    }
+
+    /// 自动复位：开关打开时，PC 启动或 PLC 连接会话更新后的待复位，在没有未结事务、复位前置检查通过后返回 true，由节拍按软件复位发起。
+    /// 发起后原因类别不再是 startup / new_connection，复位失败、超时或连接后先进了故障都不再自动重试，回到人工、PLC 复位信号或 PLC 置 99。
+    pub fn auto_reset(&mut self) -> bool {
+        if !self.auto_reset
+            || self.phase != SessionPhase::ResetRequired
+            || !matches!(self.fault_cause, "startup" | "new_connection")
+            || self.reset_carry
+            || self.reset_exchange.is_some()
+            || self.reset_blocked_reason.is_some()
+            || self.pending()
+        {
+            return false;
+        }
+        self.fault_cause = "reset_auto";
+        self.reset_source = "auto";
+        true
     }
 
     /// 在途事务是否按维护模式接件（结果码须为 0）。

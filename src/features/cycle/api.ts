@@ -22,6 +22,7 @@ const defaultSettings: CycleSettings = {
   offlineRecordKeep: 300,
   offlineRecordMaxGb: 10,
   recordBayer: false,
+  autoReset: false,
 };
 
 export const cycleApi = {

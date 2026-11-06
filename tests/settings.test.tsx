@@ -16,7 +16,7 @@ beforeEach(() => {
     productSource: "plc", manualRecipeId: null, historyDays: 180,
     timeouts: { motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
     record: "failed", recordKeep: 100, recordMaxGb: 20,
-    offlineRecordKeep: 300, offlineRecordMaxGb: 10, recordBayer: false,
+    offlineRecordKeep: 300, offlineRecordMaxGb: 10, recordBayer: false, autoReset: false,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
@@ -65,6 +65,16 @@ describe("离线原图保留设置", () => {
     page.unmount();
     render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
     expect(await screen.findByRole("checkbox", { name: /同时保存原始 Bayer/ })).toBeChecked();
+  });
+
+  it("检测节拍里勾选自动复位并保存 → 后端设置打开且重新打开仍勾选", async () => {
+    const page = render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
+    await userEvent.click(await screen.findByRole("checkbox", { name: /启动或重连 PLC 后自动复位/ }));
+    await userEvent.click(within(screen.getByRole("region", { name: "检测节拍" })).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(saved.autoReset).toBe(true));
+    page.unmount();
+    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
+    expect(await screen.findByRole("checkbox", { name: /启动或重连 PLC 后自动复位/ })).toBeChecked();
   });
 
 });

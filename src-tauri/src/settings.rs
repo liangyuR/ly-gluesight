@@ -88,6 +88,8 @@ pub struct CycleSettings {
     pub record_bayer: bool,
     /// 只由维护模式命令改写，保存检测设置时沿用当前值
     pub maintenance: Option<Maintenance>,
+    /// PC 启动或 PLC 重连后、没有未结事务时自动复位握手；关闭时须在线检测页“软件复位”、PLC 复位信号或 PLC 置 99
+    pub auto_reset: bool,
 }
 
 impl Default for CycleSettings {
@@ -104,6 +106,7 @@ impl Default for CycleSettings {
             offline_record_max_gb: 10.0,
             record_bayer: false,
             maintenance: None,
+            auto_reset: false,
         }
     }
 }
