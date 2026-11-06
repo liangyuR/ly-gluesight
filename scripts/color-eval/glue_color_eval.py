@@ -26,7 +26,7 @@ plt.rcParams["axes.unicode_minus"] = False
 
 REPO = Path(__file__).resolve().parents[2]
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".raw"}
-# 软件录制件里另存的原始 Bayer（检测设置“同时保存原始 Bayer”）；同目录的灰度 .pgm 没有颜色，不收
+# 早期录制件在灰度原图旁另存的原始 Bayer；同目录的灰度 .pgm 没有颜色，不收
 BAYER_PGM = "_bayer.pgm"
 
 # GenICam 的 Bayer 命名比 OpenCV 错一格：BayerBG8 要用 COLOR_BayerRG2RGB。

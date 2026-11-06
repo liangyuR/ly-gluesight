@@ -678,11 +678,14 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         }
         mode => mode,
     };
-    let inside = |p: &[f32; 2]| {
-        (0.0..=frame.size[0] as f32).contains(&p[0]) && (0.0..=frame.size[1] as f32).contains(&p[1])
-    };
-    if !args.stroke.iter().all(inside) {
-        return Err("笔划有点不在示教帧内".into());
+    // 与测量、保存时同一口径：点要落在像素中心范围 [0, 宽 − 1] × [0, 高 − 1] 内
+    if !crate::vision::corridor_inside(&args.stroke, frame.size) {
+        return Err(format!(
+            "笔划有点不在示教帧内（x 0–{}，y 0–{}）",
+            frame.size[0].saturating_sub(1),
+            frame.size[1].saturating_sub(1)
+        )
+        .into());
     }
     let stroke: Vec<[f64; 2]> = args
         .stroke
@@ -965,6 +968,13 @@ async fn trial(app: &AppHandle, args: TrialArgs) -> Result<Vec<Content>, ToolErr
         args.from.unwrap_or(result.start).max(result.start),
         args.to.unwrap_or(result.end).min(result.end),
     );
+    if window.0 > window.1 {
+        return Err(format!(
+            "统计范围与这一段的帧组 {}–{} 没有交集",
+            result.start, result.end
+        )
+        .into());
+    }
     let mut summary = summarize(&result.frames, window);
     summary["range"] = json!([result.start, result.end]);
     let checks = w

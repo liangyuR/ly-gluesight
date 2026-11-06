@@ -277,11 +277,11 @@ mod tests {
         let mut canvas = Canvas::new(&image, Some([100, 50, 200, 100]), 400).unwrap();
         assert_eq!(canvas.crop(), [100, 50, 200, 100]);
         canvas.polyline(&[[150.0, 80.0]], YELLOW, 1.0);
-        let at = |x: usize, y: usize| {
-            let i = (y * canvas.width as usize + x) * 3;
-            [canvas.pixels[i], canvas.pixels[i + 1], canvas.pixels[i + 2]]
-        };
-        assert_eq!(at(100, 60), YELLOW);
-        assert_eq!(at(130, 60), [0, 0, 0]);
+        let png = image::load_from_memory(&canvas.png().unwrap())
+            .unwrap()
+            .to_rgb8();
+        assert_eq!(png.dimensions(), (400, 200));
+        assert_eq!(png.get_pixel(100, 60).0, YELLOW);
+        assert_eq!(png.get_pixel(130, 60).0, [0, 0, 0]);
     }
 }

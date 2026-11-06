@@ -84,8 +84,6 @@ pub struct CycleSettings {
     pub record_max_gb: f32,
     pub offline_record_keep: u32,
     pub offline_record_max_gb: f32,
-    /// 录制件另存相机原始 8 位 Bayer（`{相机}_s{seq:06}_bayer.pgm`），供离线做颜色算法；只录制、不改测量
-    pub record_bayer: bool,
     /// 只由维护模式命令改写，保存检测设置时沿用当前值
     pub maintenance: Option<Maintenance>,
     /// PC 启动或 PLC 重连后、没有未结事务时自动复位握手；关闭时须在线检测页“软件复位”、PLC 复位信号或 PLC 置 99
@@ -104,7 +102,6 @@ impl Default for CycleSettings {
             record_max_gb: 20.0,
             offline_record_keep: 300,
             offline_record_max_gb: 10.0,
-            record_bayer: false,
             maintenance: None,
             auto_reset: false,
         }
@@ -166,5 +163,29 @@ impl CycleSettings {
             return Err("离线原图总大小需在 0.5–10000 GB 之间".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offline::test_dir::TestDir;
+
+    /// 防的回归：现场旧版本的检测设置里还有已删除的 `recordBayer`；读入时报错会把整份设置备份后按默认值重建，
+    /// 录制策略、保留上限等现场值全部丢失。
+    #[test]
+    fn old_settings_with_record_bayer_load_without_rebuild() {
+        let dir = TestDir::new("settings-tests", "record-bayer");
+        let path = dir.join("cycle-settings.json");
+        std::fs::write(
+            &path,
+            r#"{"record":"all","recordKeep":42,"recordBayer":true}"#,
+        )
+        .unwrap();
+        let (settings, note) = CycleSettings::load(&path);
+        assert_eq!(
+            (settings.record, settings.record_keep, note),
+            (RecordMode::All, 42, None)
+        );
     }
 }

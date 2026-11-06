@@ -155,7 +155,8 @@ impl CameraSource {
 }
 
 /// 相机出图模式：灰度（Mono8 优先，彩色相机 Bayer 转灰）或彩色（只取 8 位 Bayer，去马赛克成 RGB，录制存原始马赛克）。
-/// 灰度时不写进序列化结果：相机配置标签与改版前完全相同，已有示教、轮次与历史的相机配置比对不受影响。
+/// 灰度时不写进序列化结果：相机配置标签与改版前完全相同，已有示教、轮次与历史的相机配置比对不受影响；
+/// 所以缺这一项读作灰度。新建相机缺省用彩色（见 `CameraRig::new` 与前端 `defaultCameraConfig`）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ImageMode {
@@ -547,8 +548,6 @@ struct RigShared {
     tx: Sender<Frame>,
     /// 需要整帧图像（图像测量或帧录制）；模拟测量时不必拷整帧
     capture: AtomicBool,
-    /// 留整帧时另拷一份原始 Bayer 供录制（检测设置“同时保存原始 Bayer”）
-    keep_bayer: AtomicBool,
     recipe_capture: Arc<crate::recipe_capture::RecipeCaptureHost>,
     imaging: Mutex<BTreeMap<String, CameraImaging>>,
     /// 各相机轮询到的 Line0 门控状态（`watch_gate`），收尾用
@@ -566,12 +565,8 @@ struct Shared {
     dropped: AtomicU64,
     /// 图像内存预算满被丢弃的帧（重新打开时清零）
     budget_dropped: AtomicU64,
-    /// 原始 Bayer 的缓冲，与测量用的灰度分开封顶：录制写盘慢时只少存 Bayer，不挤掉测量的帧
+    /// 彩色模式录制用的原始马赛克缓冲，与测量用的 RGB 分开封顶
     bayer_pool: FramePool,
-    /// 要存原始 Bayer 而缓冲已满、只留了灰度的帧（重新打开时清零）
-    bayer_dropped: AtomicU64,
-    /// 最近一帧是 Mono8：相机没给颜色，存不了原始 Bayer
-    mono: AtomicBool,
     /// 彩色模式（配置的 image_mode）：Bayer 去马赛克成 RGB，每帧附原始马赛克
     color: AtomicBool,
     recent: Mutex<VecDeque<Instant>>,
@@ -626,7 +621,7 @@ impl Shared {
 
     /// 海康相机的一帧（像素格式已认过）：缩略图与整帧用同一张图（灰度模式为灰度，彩色模式为去马赛克的 RGB）。
     /// 要留整帧而图像内存预算已满时返回 Err，这一帧按缺帧处理；不留整帧时预算满只是没有缩略图。
-    /// 留了整帧时一并给出原始马赛克：彩色模式必带（Bayer 缓冲满也按预算满处理），灰度模式见 [`bayer_mosaic`](Self::bayer_mosaic)。
+    /// 留了整帧时一并给出原始马赛克：彩色模式必带（Bayer 缓冲满也按预算满处理），灰度模式没有。
     fn frame_image(
         &self,
         kind: PixelKind,
@@ -636,7 +631,6 @@ impl Shared {
     ) -> Result<(Option<Arc<FrameImage>>, Option<BayerMosaic>), BudgetExceeded> {
         let keep = self.capture() | self.grab.swap(false, Ordering::SeqCst);
         let color = self.color.load(Ordering::Relaxed);
-        self.mono.store(kind == PixelKind::Mono8, Ordering::Relaxed);
         let converted = match (color, kind) {
             (true, PixelKind::Bayer8(pattern)) => self
                 .pool
@@ -673,7 +667,7 @@ impl Shared {
                 pattern,
                 image: Arc::new(self.bayer_pool.copy(w, h, data)?),
             }),
-            _ => self.bayer_mosaic(kind, w, h, data),
+            _ => None,
         };
         Ok((Some(image), bayer))
     }
@@ -687,39 +681,6 @@ impl Shared {
                 IMAGE_BUDGET_PER_CAMERA >> 20
             )
         })
-    }
-
-    /// 灰度模式下留了整帧的 Bayer 帧另拷一份原始马赛克；没开保存、不是 Bayer 或缓冲已满时没有。
-    fn bayer_mosaic(&self, kind: PixelKind, w: u32, h: u32, data: &[u8]) -> Option<BayerMosaic> {
-        let PixelKind::Bayer8(pattern) = kind else {
-            return None;
-        };
-        if !self.rig.keep_bayer.load(Ordering::Relaxed) {
-            return None;
-        }
-        match self.bayer_pool.copy(w, h, data) {
-            Ok(image) => Some(BayerMosaic {
-                pattern,
-                image: Arc::new(image),
-            }),
-            Err(_) => {
-                self.bayer_dropped.fetch_add(1, Ordering::Relaxed);
-                None
-            }
-        }
-    }
-
-    /// 打开了保存原始 Bayer 却存不下时给状态栏的说明。
-    fn bayer_note(&self) -> Option<String> {
-        // 彩色模式每帧必带原始马赛克，存不下按预算满丢帧（见 budget_note）
-        if self.color.load(Ordering::Relaxed) || !self.rig.keep_bayer.load(Ordering::Relaxed) {
-            return None;
-        }
-        if self.mono.load(Ordering::Relaxed) {
-            return Some("相机以 Mono8 出图，没有原始 Bayer 可存".into());
-        }
-        let n = self.bayer_dropped.load(Ordering::Relaxed);
-        (n > 0).then(|| format!("原始 Bayer 缓冲已满：{n} 帧只录了灰度"))
     }
 
     /// 不支持的像素格式不静默丢弃：计数并记下原因，显示在相机状态里。
@@ -1075,8 +1036,6 @@ impl CameraSlot {
                 dropped: AtomicU64::new(0),
                 budget_dropped: AtomicU64::new(0),
                 bayer_pool: FramePool::with_budget(POOL_KEEP_PER_CAMERA, IMAGE_BUDGET_PER_CAMERA),
-                bayer_dropped: AtomicU64::new(0),
-                mono: AtomicBool::new(false),
                 color: AtomicBool::new(config.image_mode.color()),
                 recent: Mutex::new(VecDeque::new()),
                 preview: Mutex::new(Vec::new()),
@@ -1179,7 +1138,6 @@ impl CameraSlot {
                 CameraSource::Mvs => [
                     self.shared.unusable_note(),
                     self.shared.budget_note(),
-                    self.shared.bayer_note(),
                     Some(state_message),
                 ]
                 .into_iter()
@@ -1642,8 +1600,6 @@ impl CameraSlot {
         self.shared.disconnected.store(false, Ordering::SeqCst);
         self.shared.unusable.store(0, Ordering::Relaxed);
         self.shared.budget_dropped.store(0, Ordering::Relaxed);
-        self.shared.bayer_dropped.store(0, Ordering::Relaxed);
-        self.shared.mono.store(false, Ordering::Relaxed);
     }
 
     /// 把曝光与增益写进已打开的海康相机，不重开、不换会话。未连接、已释放或不是海康相机时不写，下次打开时按保存的值写入。
@@ -2009,6 +1965,7 @@ impl CameraRig {
         if file.cameras.is_empty() {
             file.cameras.push(CameraConfig {
                 name: "相机 1".into(),
+                image_mode: ImageMode::Color,
                 ..Default::default()
             });
         }
@@ -2031,7 +1988,6 @@ impl CameraRig {
             app: app.clone(),
             tx,
             capture: AtomicBool::new(false),
-            keep_bayer: AtomicBool::new(false),
             recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(
                 crate::storage::project(app).join("recipe-capture"),
             )?,
@@ -2160,11 +2116,6 @@ impl CameraRig {
     /// 取图回调是否拷贝整帧。
     pub fn set_capture(&self, on: bool) {
         self.rig.capture.store(on, Ordering::Relaxed);
-    }
-
-    /// 留整帧时是否另拷原始 Bayer 供录制。
-    pub fn set_keep_bayer(&self, on: bool) {
-        self.rig.keep_bayer.store(on, Ordering::Relaxed);
     }
 
     pub fn trigger(

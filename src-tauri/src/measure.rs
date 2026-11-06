@@ -33,7 +33,6 @@ pub fn apply_settings(app: &AppHandle) {
     let host = app.state::<CycleHost>();
     host.camera
         .set_capture(crate::site::image_measurement(app) || record);
-    host.camera.set_keep_bayer(host.settings().record_bayer);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

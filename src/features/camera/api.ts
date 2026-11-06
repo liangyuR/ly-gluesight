@@ -25,7 +25,7 @@ export const defaultCameraConfig: CameraConfig = {
   strobe: true,
   chunk: true,
   counterAfterOpen: null,
-  imageMode: "gray",
+  imageMode: "color",
 };
 
 /** 解析 camera_preview 的二进制（格式见 decodeFrame）；浏览器查看模式下为空数据，返回 null。 */
