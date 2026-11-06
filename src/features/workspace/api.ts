@@ -4,7 +4,7 @@ import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { Check, Comparison, FrozenImage, FrameImage, HistoryCandidate, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
+import type { Check, Comparison, FrozenImage, FrameImage, HistoryCandidate, PackageExported, PackageImported, PackagePreview, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
 
 let liveSeq = 0;
 
@@ -46,6 +46,9 @@ export const workspaceApi = {
   setTeachingPiece: (id: string, revision: number, recordId: number) => desktopCall<WorkspaceView>("workspace_set_teaching_piece", { id, revision, recordId }),
   /** 从示教件那一件历史记录补回导出或复制时没带的原图；候选内容不变 */
   refillTeachingImages: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_refill_teaching_images", { id, revision }),
+  packageExport: (id: string) => desktopCall<PackageExported | null>("workspace_package_export", { id }),
+  packagePick: () => desktopCall<PackagePreview | null>("workspace_package_pick"),
+  packageImport: (path: string) => desktopCall<PackageImported>("workspace_package_import", { path }),
   /** 导入件一台相机全部帧组的缩略图条带（分段标定工作台） */
   captureRoundThumbs: (roundId: string, cameraId: string) => desktopCall<ArrayBuffer>("recipe_capture_round_thumbs", { roundId, cameraId }).then(decodeThumbStrip),
   /** 工作台一次保存：段列表 + 示教件边界（确认） */

@@ -35,6 +35,7 @@ mod history_samples;
 mod navigation;
 #[cfg(test)]
 mod navigation_tests;
+pub(crate) mod package;
 mod pieces;
 #[cfg(test)]
 mod pieces_tests;
@@ -712,11 +713,19 @@ fn check_new_identity<'a>(
     existing: impl Iterator<Item = (&'a str, u16)>,
 ) -> Result<(), String> {
     check_product_code(doc)?;
+    check_identity(&doc.id, doc.product_code, existing)
+}
+
+fn check_identity<'a>(
+    recipe_id: &str,
+    product_code: u16,
+    existing: impl Iterator<Item = (&'a str, u16)>,
+) -> Result<(), String> {
     for (id, code) in existing {
-        if id.eq_ignore_ascii_case(&doc.id) {
+        if id.eq_ignore_ascii_case(recipe_id) {
             return Err("配方编号已经存在（不区分大小写）".into());
         }
-        if code == doc.product_code {
+        if code == product_code {
             return Err(format!("产品代码 {} 已被配方 {} 使用", code, id));
         }
     }
