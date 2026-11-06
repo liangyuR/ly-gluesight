@@ -278,6 +278,7 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                 "frames": frames.iter().find(|(i, _)| *i == s.index).map(|(_, f)| f.clone()),
                 "checks": value["checks"],
                 "offsetRef": value["offsetRef"],
+                "heading": value["heading"],
             })
         })
         .collect();
@@ -311,6 +312,7 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                 "mmPerPx": t.mm_per_px,
                 "calibMmPerPx": t.calib_mm_per_px,
                 "ready": t.ready,
+                "nozzle": t.nozzle.as_ref().map(|n| json!({ "point": n.point, "calibrated": n.calibrated })),
                 "segments": segments,
             })
         })
@@ -522,6 +524,31 @@ fn smooth(points: &[[f32; 2]], half: usize) -> Vec<[f32; 2]> {
         .collect()
 }
 
+/// 吸附只校正横向位置：两端沿切线补到笔划起点、终点在切线上的投影，走廊沿胶路的起止仍由笔划决定
+/// （开启定向的段由走廊起点推出出胶点，起点缩进会挪动检测窗口）
+fn extend_ends(mut path: Vec<[f32; 2]>, ends: ([f32; 2], [f32; 2])) -> Vec<[f32; 2]> {
+    let reach = |a: [f32; 2], b: [f32; 2], target: [f32; 2]| -> Option<[f32; 2]> {
+        let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
+        let length = dx.hypot(dy);
+        if length < 1e-3 {
+            return None;
+        }
+        let (ux, uy) = (dx / length, dy / length);
+        let ahead = (target[0] - a[0]) * ux + (target[1] - a[1]) * uy;
+        (ahead > 1.0).then(|| [a[0] + ux * ahead, a[1] + uy * ahead])
+    };
+    if path.len() >= 2 {
+        if let Some(head) = reach(path[0], path[1], ends.0) {
+            path.insert(0, head);
+        }
+        let n = path.len();
+        if let Some(tail) = reach(path[n - 1], path[n - 2], ends.1) {
+            path.push(tail);
+        }
+    }
+    path
+}
+
 /// 每隔 `every` 个点留一个，末点总留
 fn thin(points: &[[f32; 2]], every: usize) -> Vec<[f32; 2]> {
     let mut out: Vec<_> = points.iter().copied().step_by(every.max(1)).collect();
@@ -543,6 +570,7 @@ async fn snap_color(
     stroke: &[[f32; 2]],
     shift: f32,
 ) -> Result<(Vec<[f32; 2]>, Option<f64>), String> {
+    let ends = (stroke[0], stroke[stroke.len() - 1]);
     let (app, recipe, camera, image_id, stroke) = (
         app.clone(),
         recipe.to_string(),
@@ -602,7 +630,7 @@ async fn snap_color(
         // 第一遍按笔划半径吸附；没找到胶的站保留原偏移会留下台阶，平滑后以小偏移上限再居中一遍
         let (first, moved) = recenter(&stroke, shift)?;
         let (second, _) = recenter(&first, shift.min(SNAP_REFINE))?;
-        Ok((thin(&second, 5), moved))
+        Ok((extend_ends(thin(&second, 5), ends), moved))
     })
     .await
 }
@@ -1171,5 +1199,17 @@ mod tests {
             json!({ "polarity": "brightToDark", "searchMm": 18.0, "contrastMin": 40.0, "nominalMm": 10.0 })
         );
         assert_eq!(offset["camera"], "cam1");
+    }
+
+    #[test]
+    fn snapped_corridor_starts_and_ends_where_the_stroke_does_along_the_bead() {
+        let snapped: Vec<[f32; 2]> = (2..=9).map(|i| [i as f32 * 10.0, 10.0]).collect();
+        let path = extend_ends(snapped.clone(), ([0.0, 14.0], [120.0, 6.0]));
+        assert_eq!(path.first(), Some(&[0.0, 10.0]));
+        assert_eq!(path.last(), Some(&[120.0, 10.0]));
+        assert_eq!(
+            extend_ends(snapped.clone(), ([40.0, 10.0], [60.0, 10.0])),
+            snapped
+        );
     }
 }
