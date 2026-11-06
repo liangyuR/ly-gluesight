@@ -953,6 +953,7 @@ fn prune(root: &Path, keep: usize, max_bytes: u64, in_use: &[PathBuf], release: 
     }
     let days = match std::fs::read_dir(root) {
         Ok(days) => days,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(error) => return vec![format!("扫描录制目录失败：{error}")],
     };
     let mut parts = Vec::new();
