@@ -15,7 +15,7 @@ it.each([
   if (single) recipe.segments = recipe.segments.slice(0, 1);
   const view = burstWorkspaceView(recipe);
   const roundId = view.workspace.teachingPiece!.roundId;
-  view.plan.pieces = [{ roundId, recordId: 1, cycleId: "cycle", sn: "fixture", ts: 0, groupCount: count, review: status, confirmedBy: null, measured: false, excludedGroups: 0 }];
+  view.plan.pieces = [{ roundId, recordId: 1, cycleId: "cycle", sn: "fixture", ts: 0, groupCount: count, review: status, confirmedBy: null, measured: false, excludedGroups: 0, imagesMissing: false }];
   view.workspace.captureReview = { rounds: { [roundId]: { groupCount: count, cuts, status, excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null } } };
   view.navigation = { map: { format: 1, image: { id: "image", width: 100, height: 100, mime: "image/png" }, points: [[0, 0], [1, 0]], closed: false, captureStart: 0, captureEnd: 1, cuts: [], confirmed: true, structureRevision: 1 }, imageAvailable: true, error: null, structureRevision: 1, published: null };
   vi.mocked(useWorkspace).mockReturnValue(workspaceState(view));

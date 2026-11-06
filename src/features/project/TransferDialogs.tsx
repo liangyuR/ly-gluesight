@@ -1,18 +1,45 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Checkbox, Dialog, Stack, Text, TextArea, TextField } from "qing-steel";
-import { projectTransferApi, type ProjectEntry, type ProjectExported, type ProjectImported, type ProjectImportPreview, type ProjectMeta } from "../../lib/project";
+import { projectTransferApi, type ProjectEntry, type ProjectExported, type ProjectImported, type ProjectImportPreview, type ProjectMeta, type TransferSize } from "../../lib/project";
 import { errorText } from "../../lib/errors";
 import { notifyProjectsChanged, useAlive } from "./hooks";
-import { defaultProjectId, formatBytes, formatDateTime, importedProjectName, projectIdError, projectNameError, usageText, type UsageState } from "./rules";
+import { defaultProjectId, formatBytes, formatDateTime, importedProjectName, projectIdError, projectNameError } from "./rules";
 
 function Notes({ notes }: { notes: string[] }) {
   if (!notes.length) return null;
   return <ul className="pj-notes">{notes.map(note => <li key={note}>{note}</li>)}</ul>;
 }
 
-export function ExportProjectDialog({ project, usage, onClose }: { project: ProjectMeta; usage: UsageState | undefined; onClose: () => void }) {
+type SizeState = { status: "loading" } | { status: "ok"; size: TransferSize } | { status: "error"; error: string };
+
+function useTransferSize(id: string): SizeState {
+  const [state, setState] = useState<SizeState>({ status: "loading" });
+  useEffect(() => {
+    let live = true;
+    setState({ status: "loading" });
+    projectTransferApi.transferSize(id).then(
+      size => { if (live) setState({ status: "ok", size }); },
+      e => { if (live) setState({ status: "error", error: errorText(e) }); },
+    );
+    return () => { live = false; };
+  }, [id]);
+  return state;
+}
+
+function sizeText(state: SizeState, captureImages: boolean, includeRecords: boolean): string {
+  if (state.status === "loading") return "计算中";
+  if (state.status === "error") return `统计失败：${state.error}`;
+  const { content, captureImages: images, records } = state.size;
+  return `约 ${formatBytes(content + (captureImages ? images : 0) + (includeRecords ? records : 0))}（压缩前）`;
+}
+
+const CAPTURE_IMAGES_HINT = "不带示教件原图时，已发布的配方照常检测；要看候选的示教图、示教走廊、测量示教件或试测，需在示教件页从历史记录补回原图（要同时带上检测记录与历史原图），否则只能重新选用示教件。";
+
+export function ExportProjectDialog({ project, onClose }: { project: ProjectMeta; onClose: () => void }) {
   const alive = useAlive();
+  const size = useTransferSize(project.id);
   const [includeRecords, setIncludeRecords] = useState(false);
+  const [captureImages, setCaptureImages] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [exported, setExported] = useState<ProjectExported | null>(null);
@@ -23,7 +50,7 @@ export function ExportProjectDialog({ project, usage, onClose }: { project: Proj
     setWorking(true);
     setError("");
     try {
-      const result = await projectTransferApi.exportProject(project.id, includeRecords);
+      const result = await projectTransferApi.exportProject(project.id, includeRecords, captureImages);
       if (alive.current && result) setExported(result);
     } catch (e) {
       if (alive.current) setError(errorText(e));
@@ -40,6 +67,7 @@ export function ExportProjectDialog({ project, usage, onClose }: { project: Proj
         <dt>保存位置</dt><dd className="mono pj-path">{exported.path}</dd>
         <dt>大小</dt><dd>{formatBytes(exported.bytes)} · {exported.files} 个文件</dd>
         <dt>检测记录</dt><dd>{exported.includesRecords ? "已包含检测记录与历史原图" : "未包含"}</dd>
+        <dt>示教件原图</dt><dd>{captureImages ? "已包含" : "未包含"}</dd>
       </dl>
       <Notes notes={exported.notes} />
     </Stack>
@@ -50,12 +78,12 @@ export function ExportProjectDialog({ project, usage, onClose }: { project: Proj
       <dl className="kv pj-transfer-list">
         <dt>项目</dt><dd>{project.name}</dd>
         <dt>编号</dt><dd className="mono">{project.id}</dd>
-        <dt>占用空间</dt><dd>{usageText(usage, u => formatBytes(u.bytes))}</dd>
+        <dt>导出大小</dt><dd>{sizeText(size, captureImages, includeRecords)}</dd>
       </dl>
+      <Checkbox label="包含示教件原图" disabled={working} checked={captureImages} onCheckedChange={setCaptureImages} />
       <Checkbox label="包含检测记录与历史原图" disabled={working} checked={includeRecords} onCheckedChange={setIncludeRecords} />
-      {includeRecords
-        ? <Alert tone="warn" title="导出包可能很大">检测记录与历史原图可能有几十 GB，导出需要较长时间，请确认目标磁盘空间充足。</Alert>
-        : <Text muted>导出项目的相机组与 PLC 配置、标定、生产配方与发布包、候选与采集轮次；默认不含检测记录与历史原图。</Text>}
+      <Text muted>导出项目的相机组与 PLC 配置、标定、生产配方与发布包、候选；默认不含示教件原图、检测记录与历史原图。{!captureImages && CAPTURE_IMAGES_HINT}</Text>
+      {includeRecords && <Alert tone="warn" title="导出包可能很大">检测记录与历史原图可能有几十 GB，导出需要较长时间，请确认目标磁盘空间充足。</Alert>}
       {error && <Alert tone="ng" title="导出未完成">{error}</Alert>}
       {working && <Alert tone="info" role="status">正在导出，请勿关闭软件。</Alert>}
     </Stack>
@@ -120,9 +148,10 @@ export function ImportProjectDialog({ preview, entries, onClose, onSwitch }: { p
   </Dialog>;
 }
 
-export function CopyProjectDialog({ project, usage, entries, onClose, onSwitch }: { project: ProjectMeta; usage: UsageState | undefined; entries: ProjectEntry[]; onClose: () => void; onSwitch: (project: ProjectMeta) => void }) {
+export function CopyProjectDialog({ project, entries, onClose, onSwitch }: { project: ProjectMeta; entries: ProjectEntry[]; onClose: () => void; onSwitch: (project: ProjectMeta) => void }) {
   const alive = useAlive();
-  const [form, setForm] = useState(() => ({ id: defaultProjectId(entries.map(entry => entry.id)), name: importedProjectName(project.name, entries, "副本"), description: project.description, includeRecords: false }));
+  const size = useTransferSize(project.id);
+  const [form, setForm] = useState(() => ({ id: defaultProjectId(entries.map(entry => entry.id)), name: importedProjectName(project.name, entries, "副本"), description: project.description, includeRecords: false, captureImages: false }));
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState<ProjectImported | null>(null);
@@ -135,7 +164,7 @@ export function CopyProjectDialog({ project, usage, entries, onClose, onSwitch }
     setWorking(true);
     setError("");
     try {
-      const result = await projectTransferApi.copyProject({ sourceId: project.id, id: form.id, name: form.name.trim(), description: form.description.trim(), includeRecords: form.includeRecords });
+      const result = await projectTransferApi.copyProject({ sourceId: project.id, id: form.id, name: form.name.trim(), description: form.description.trim(), includeRecords: form.includeRecords, captureImages: form.captureImages });
       notifyProjectsChanged();
       if (alive.current) setCopied(result);
     } catch (e) {
@@ -161,13 +190,14 @@ export function CopyProjectDialog({ project, usage, entries, onClose, onSwitch }
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
       <dl className="kv pj-transfer-list">
         <dt>来源项目</dt><dd>{project.name} <span className="mono">{project.id}</span></dd>
-        <dt>占用空间</dt><dd>{usageText(usage, u => formatBytes(u.bytes))}</dd>
+        <dt>复制大小</dt><dd>{sizeText(size, form.captureImages, form.includeRecords)}</dd>
       </dl>
       <TextField label="新项目名称" required disabled={working} value={form.name} error={nameError || undefined} onChange={e => setForm({ ...form, name: e.target.value })} />
       <TextField label="新项目编号" className="mono" disabled={working} maxLength={64} value={form.id} description="创建后不可修改，同时作为项目目录名" error={idError || undefined} onChange={e => setForm({ ...form, id: e.target.value })} />
       <TextArea label="描述" disabled={working} rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+      <Checkbox label="包含示教件原图" disabled={working} checked={form.captureImages} onCheckedChange={captureImages => setForm({ ...form, captureImages })} />
       <Checkbox label="包含检测记录与历史原图" disabled={working} checked={form.includeRecords} onCheckedChange={includeRecords => setForm({ ...form, includeRecords })} />
-      <Text muted>复制相机组与 PLC 配置、标定、生产配方与发布包、候选与采集轮次。生产配方的计划号按本机重新分配，候选回到草稿；复制后不会自动切换。</Text>
+      <Text muted>复制相机组与 PLC 配置、标定、生产配方与发布包、候选。生产配方的计划号按本机重新分配，候选回到草稿；复制后不会自动切换。{!form.captureImages && CAPTURE_IMAGES_HINT}</Text>
       {form.includeRecords && <Alert tone="warn" title="复制可能占用大量磁盘">检测记录与历史原图会整份复制一遍，请确认磁盘空间充足。</Alert>}
       {error && <Alert tone="ng" title="复制未完成">{error}</Alert>}
       {working && <Alert tone="info" role="status">正在复制，项目较大时需要几分钟，请勿关闭软件。</Alert>}

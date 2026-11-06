@@ -668,6 +668,8 @@ export interface PieceView {
   /** 已按当前走廊测量 */
   measured: boolean;
   excludedGroups: number;
+  /** 原图不在本项目（导出或复制项目时没带），可从同一件历史记录补回 */
+  imagesMissing: boolean;
 }
 
 /** 配方库摘要的段模型字段。 */

@@ -168,3 +168,48 @@ fn persisted_record_cannot_redirect_images_or_forge_frames() {
     let host = RecipeCaptureHost::open(root.clone()).unwrap();
     assert!(host.get_any("capture-../../outside").is_err());
 }
+
+/// 导出时没带示教件原图的轮次：只用帧记录逐行相同的轮次补回，补回后原图可读、来源轮次删除；帧记录不同时拒绝，不移入任何原图。
+#[test]
+fn round_without_images_is_refilled_only_from_a_round_with_identical_frames() {
+    let root = root();
+    let round = patched(
+        &complete_round(&root),
+        json!({"origin": {"kind": "prepared", "label": "手动数据"}}),
+    );
+    write_round(&root, &round);
+    let cameras = ["cam1", "cam2", "cam3"];
+    let copy_round = |id: &str, ts: i64| {
+        let dir = root.join(id);
+        for camera in cameras {
+            std::fs::create_dir_all(dir.join(camera)).unwrap();
+            for seq in 1..=GROUPS {
+                let path = frame_rel_path(camera, seq);
+                std::fs::copy(root.join(ROUND).join(&path), dir.join(&path)).unwrap();
+            }
+        }
+        let lines = std::fs::read_to_string(root.join(ROUND).join(FRAMES_FILE))
+            .unwrap()
+            .replace("\"ts\":0", &format!("\"ts\":{ts}"));
+        std::fs::write(dir.join(FRAMES_FILE), lines).unwrap();
+        std::fs::write(
+            dir.join("round.json"),
+            patched(&round, json!({"roundId": id})).to_string(),
+        )
+        .unwrap();
+    };
+    copy_round("capture-2-0", 0);
+    copy_round("capture-3-0", 5);
+    for camera in cameras {
+        std::fs::remove_dir_all(root.join(ROUND).join(camera)).unwrap();
+    }
+    let host = RecipeCaptureHost::open(root.clone()).unwrap();
+    assert!(host.images_missing(ROUND).unwrap());
+    assert!(host.refill_images(ROUND, "capture-3-0").is_err());
+    assert!(host.images_missing(ROUND).unwrap(), "帧记录不同不应补入");
+    host.refill_images(ROUND, "capture-2-0").unwrap();
+    assert!(!host.images_missing(ROUND).unwrap());
+    let image = crate::image_file::load(&host.burst_frame_path(ROUND, "cam2", 2).unwrap()).unwrap();
+    assert_eq!(image.pixels, vec![2u8; 4]);
+    assert!(!root.join("capture-2-0").exists() && !root.join("capture-3-0").exists());
+}
