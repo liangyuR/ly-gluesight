@@ -44,6 +44,8 @@ export const workspaceApi = {
   historyCandidates: (id: string) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id }),
   /** 导入这件并设为示教件；按 RB-2 / RB-8 清空图像派生内容，保留段列表结构 */
   setTeachingPiece: (id: string, revision: number, recordId: number) => desktopCall<WorkspaceView>("workspace_set_teaching_piece", { id, revision, recordId }),
+  /** 从示教件那一件历史记录补回导出或复制时没带的原图；候选内容不变 */
+  refillTeachingImages: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_refill_teaching_images", { id, revision }),
   /** 导入件一台相机全部帧组的缩略图条带（分段标定工作台） */
   captureRoundThumbs: (roundId: string, cameraId: string) => desktopCall<ArrayBuffer>("recipe_capture_round_thumbs", { roundId, cameraId }).then(decodeThumbStrip),
   /** 工作台一次保存：段列表 + 示教件边界（确认） */

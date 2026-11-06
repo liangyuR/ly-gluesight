@@ -146,6 +146,8 @@ pub struct PieceView {
     /// 已按当前走廊测量
     pub measured: bool,
     pub excluded_groups: u32,
+    /// 原图不在本项目（导出或复制项目时没带），可从同一件历史记录补回
+    pub images_missing: bool,
 }
 
 /// 示教件的视图；还没选示教件，或它的轮次已不在本配方完整的轮次里时为空。
@@ -185,14 +187,21 @@ pub(super) fn piece_views(w: &Workspace, rounds: &[CaptureSummary]) -> Vec<Piece
         excluded_groups: review.map_or(0, |v| {
             u32::try_from(v.excluded_groups.len()).unwrap_or(u32::MAX)
         }),
+        images_missing: false,
     }]
 }
 
 /// 候选视图里的示教件。
 pub(super) fn plan_pieces(app: &AppHandle, w: &Workspace) -> Vec<PieceView> {
-    piece_rounds(app.state::<CycleHost>().camera.recipe_capture(), w)
+    let cycle = app.state::<CycleHost>();
+    let capture = cycle.camera.recipe_capture();
+    let mut pieces = piece_rounds(capture, w)
         .map(|rounds| piece_views(w, &rounds))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for piece in &mut pieces {
+        piece.images_missing = capture.images_missing(&piece.round_id).unwrap_or(false);
+    }
+    pieces
 }
 
 /// 删除旧流程候选的目录内容（RB-5）：保留 `published/` 发布归档，生产配方照常运行；目录空了一并删除。
@@ -309,6 +318,31 @@ fn set_teaching_piece(
         }
     }
     view(app, next)
+}
+
+/// 补回示教件原图（导出或复制项目时没带）：从同一件历史记录重新物化，候选内容与修订不变。
+#[tauri::command]
+pub async fn workspace_refill_teaching_images(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+) -> Result<WorkspaceView, String> {
+    let cycle = app.state::<CycleHost>();
+    let _config = cycle.config_gate.lock().await;
+    let task = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = {
+            let host = task.state::<WorkspaceHost>();
+            let items = host.items.lock().unwrap();
+            let w = items.get(&id).ok_or("候选配置不存在")?;
+            w.expect(revision)?;
+            w.clone()
+        };
+        history_import::refill_teaching_images(&task, &w)?;
+        view(&task, w)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ───────────── 示教件测量 ─────────────

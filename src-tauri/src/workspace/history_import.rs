@@ -18,6 +18,7 @@ const IMPORT_LIMIT: usize = 50;
 /// 帧组数低于本批可导入件中位数的这个倍数时提示疑似提前结束；可导入件少于 SHORT_MIN_PARTS 件不比较。
 const SHORT_RATIO: f64 = 0.9;
 const SHORT_MIN_PARTS: usize = 3;
+const ALREADY_IMPORTED: &str = "本候选已选用这一件";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,7 +74,7 @@ pub struct HistoryPick {
 
 pub(super) struct Assessed {
     pub view: HistoryCandidate,
-    /// 能导入时要物化的轮次
+    /// 要物化的轮次：除“本候选已选用这一件”外没有不可用原因时才有（已选用的件只用于补回示教件原图）
     pub round: Option<HistoryRound>,
 }
 
@@ -153,7 +154,7 @@ pub(super) fn assess(
         reasons.push(format!("{}记录不能导入", summary.source.label()));
     }
     if view.imported_round.is_some() {
-        reasons.push("本候选已选用这一件".into());
+        reasons.push(ALREADY_IMPORTED.into());
     }
     if summary.flags.as_ref().is_some_and(|f| f.short_part) {
         reasons.push("PLC 提前结束运动（疑似提前终止）".into());
@@ -368,7 +369,8 @@ pub(super) fn assess(
             _ => reasons.push(format!("相机 {camera_id} 缺曝光增益或设备会话记录")),
         }
     }
-    let round = reasons.is_empty().then(|| HistoryRound {
+    let blocked = reasons.len() > usize::from(view.imported_round.is_some());
+    let round = (!blocked).then(|| HistoryRound {
         recipe_id: doc.id.clone(),
         origin: RoundOrigin::History {
             cycle_id: cycle_id.to_string(),
@@ -524,14 +526,17 @@ fn import(
         let entry = assessed
             .remove(&pick.record_id)
             .ok_or_else(|| format!("记录 {} 不在本配方最近的录制件里", pick.record_id))?;
-        let round = entry.round.ok_or_else(|| {
-            format!(
-                "记录 {}（SN {}）不能选用：{}",
-                pick.record_id,
-                entry.view.sn,
-                entry.view.reasons.join("；")
-            )
-        })?;
+        let round = entry
+            .round
+            .filter(|_| entry.view.reasons.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "记录 {}（SN {}）不能选用：{}",
+                    pick.record_id,
+                    entry.view.sn,
+                    entry.view.reasons.join("；")
+                )
+            })?;
         rounds.push((round, entry.view));
     }
     let cycle = app.state::<CycleHost>();
@@ -551,6 +556,42 @@ fn import(
         }
     }
     Ok(imported)
+}
+
+/// 补回示教件原图（导出或复制项目时没带）：按示教件那一件历史记录重新物化一轮，把缺的原图移进示教件的轮次；
+/// 候选的分段、走廊与测量结果不变。
+pub(super) fn refill_teaching_images(app: &AppHandle, w: &Workspace) -> Result<(), String> {
+    let piece = w.teaching_piece.as_ref().ok_or("还没有示教件")?;
+    let cycle = app.state::<CycleHost>();
+    let capture = cycle.camera.recipe_capture();
+    if !capture.images_missing(&piece.round_id)? {
+        return Err("示教件原图齐全，不需要补回".into());
+    }
+    let result = (|| {
+        let entry = assess_all(app, w)?
+            .into_iter()
+            .find(|a| a.view.imported_round.as_deref() == Some(piece.round_id.as_str()))
+            .ok_or("示教件那一件不在本配方最近的录制件里，不能补回原图；请重新选用示教件")?;
+        let round = entry.round.ok_or_else(|| {
+            let reasons: Vec<&str> = entry
+                .view
+                .reasons
+                .iter()
+                .map(String::as_str)
+                .filter(|r| *r != ALREADY_IMPORTED)
+                .collect();
+            format!("示教件那一件不能用来补回原图：{}", reasons.join("；"))
+        })?;
+        let source = capture.import_history(round)?;
+        capture.refill_images(&piece.round_id, &source.round_id)
+    })();
+    crate::cycle::log_op(
+        app,
+        &crate::applog::codes::OP_CAPTURE_IMPORT,
+        json!({"recipeId": w.doc.id, "records": [{"recordId": piece.record_id}], "rounds": [piece.round_id], "refill": true}),
+        &result,
+    );
+    result
 }
 
 /// 历史记录作独立验证样本前的核对（5.3）：这件已导入为本候选的轮次且该轮用于走廊示教或示教件测量时拒绝（`origins` 为本候选

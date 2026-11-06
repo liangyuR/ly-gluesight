@@ -315,6 +315,7 @@ pub fn run() {
             workspace::workspace_capture_review_exclude,
             workspace::workspace_history_candidates,
             workspace::workspace_set_teaching_piece,
+            workspace::workspace_refill_teaching_images,
             workspace::workspace_confirm_tolerance,
             workspace::workspace_confirm_skip,
             workspace::workspace_calibration_skip_suggest,
