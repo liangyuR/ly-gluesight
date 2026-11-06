@@ -332,7 +332,8 @@ pub fn publish_burst(releases_root: &Path, input: BurstPublishInput) -> Result<R
                 corridor,
             });
         }
-        let size = size.ok_or_else(|| format!("{label} 不检测任何一段"))?;
+        // 不检测任何一段的相机没有示教帧，尺寸记 [0, 0]
+        let size = size.unwrap_or([0, 0]);
         let calibration_bytes = source_bytes(source.calibration)?;
         json_object(&calibration_bytes, &format!("{label} 标定"))?;
         let calibration = format!("{prefix}/calibration.json");
@@ -770,18 +771,26 @@ mod tests {
 
     /// 段配方样例（单个直线段，三台相机在第 1 段的走廊 (980, 480)–(300, 460)，0.112 mm/px）按相机发布，三台都用 1000×700 的渐变图作示教帧。
     fn publish_burst_bundle(root: &Path) -> ReleaseBundle {
-        let recipe = crate::recipe::samples_burst();
+        publish_recipe(root, crate::recipe::samples_burst()).unwrap()
+    }
+
+    /// 按配方发布：每台相机给它检测的各段一张 1000×700 的渐变示教帧。
+    fn publish_recipe(root: &Path, recipe: RecipeDoc) -> Result<ReleaseBundle, String> {
+        let built = recipe.build()?;
         let cameras = recipe
             .inspect
             .iter()
             .map(|i| CameraInput {
                 camera: i.camera.clone(),
                 calibration: ResourceSource::Bytes(br#"{"mmPerPx":0.112}"#.to_vec()),
-                corridors: vec![CorridorInput {
-                    segment: 1,
-                    image: ResourceSource::Bytes(image_bytes()),
-                    image_id: format!("capture-1-0-{}", i.camera),
-                }],
+                corridors: detected_segments(&built, &i.camera)
+                    .into_iter()
+                    .map(|segment| CorridorInput {
+                        segment,
+                        image: ResourceSource::Bytes(image_bytes()),
+                        image_id: format!("capture-1-0-{}", i.camera),
+                    })
+                    .collect(),
             })
             .collect();
         publish_burst(
@@ -797,10 +806,28 @@ mod tests {
                 cameras,
             },
         )
-        .unwrap()
     }
 
     /// 改写包内一个资源，并把清单里它的大小同步改掉（只留下按配方重算才查得出的不一致）。
+
+    #[test]
+    fn plan_camera_inspecting_no_segment_publishes_without_teaching_frame_and_loads() {
+        // 防的回归：计划相机只挂在跳过的段上、或不在任何段的检测相机里时，发布要求它有示教帧（“不检测任何一段”）而发不出包；
+        // 或发出的包重读时这台相机缺资源、生产建不出测量图
+        let root =
+            TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
+        let mut recipe = crate::recipe::samples_burst();
+        recipe.segments[0].cameras = vec!["cam1".into(), "cam2".into()];
+        recipe.inspect[2].segments.clear();
+        let bundle = publish_recipe(&root.0, recipe).unwrap();
+        bundle.verify().unwrap();
+        let resources: Vec<CameraResources> = (0..3).map(|i| bundle.camera(i).unwrap()).collect();
+        assert!(resources[2].corridors.is_empty() && resources[0].corridors.len() == 1);
+        let sizes: Vec<[u32; 2]> = resources.iter().map(|r| r.size).collect();
+        let set =
+            crate::vision::CorridorSet::build(&bundle.recipe.build().unwrap(), &sizes).unwrap();
+        assert!(set.get(0, 1).is_some() && set.get(2, 1).is_none());
+    }
 
     #[test]
     fn bundle_changed_on_disk_after_publish_is_rejected_by_per_part_verify() {

@@ -59,14 +59,23 @@ fn camera_frame_size(teaching: &[CameraTeaching], camera: &str) -> Option<[u32; 
         .map(|t| t.frame.size)
 }
 
-/// 各计划相机的示教帧尺寸（计划相机顺序），建走廊测量图用；有相机还没有示教帧时报错。
+/// 各计划相机的示教帧尺寸（计划相机顺序），建走廊测量图用；检测某段的相机还没有示教帧时报错。
+/// 不检测任何一段的相机没有走廊、不建图，尺寸记 [0, 0]。
 pub(super) fn teaching_sizes(w: &Workspace) -> Result<Vec<[u32; 2]>, String> {
-    w.doc
-        .plan_cameras()
+    let cameras = w.doc.plan_cameras();
+    cameras
         .iter()
         .map(|camera| {
-            camera_frame_size(&w.camera_teaching, camera)
-                .ok_or_else(|| format!("相机 {camera} 还没有示教帧：先完成走廊示教"))
+            let inspects = w
+                .doc
+                .segments
+                .iter()
+                .any(|s| crate::plan::segment_cameras(s, &cameras).contains(camera));
+            match camera_frame_size(&w.camera_teaching, camera) {
+                Some(size) => Ok(size),
+                None if !inspects => Ok([0, 0]),
+                None => Err(format!("相机 {camera} 还没有示教帧：先完成走廊示教")),
+            }
         })
         .collect()
 }

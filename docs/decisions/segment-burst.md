@@ -350,7 +350,7 @@
   - 模型：`CameraInspect` 去掉 `corridor`、不再拒绝未知字段（旧文件里的相机走廊读入即丢）；`CameraInspect::segment_taught`、`recipe::untaught_corridors` 判每段每台检测相机的走廊。`CameraTeaching.segment` 为空的旧相机示教帧在候选读入时丢弃并回写。`Recipe::ready_burst` 要求每段每台检测相机都有走廊、相机有当量，各段都有 N_exp。
   - 选走廊：`plan::predicted_segment` / `plan::arrival_corridor`（到达时）与 `segmentation::frame_corridors`（按解析后的区域）是唯一规则；生产、候选试运行、验证样本、历史复测与原包重现都用它们。复测走 `burst_history::remeasure_by_rule`：先按帧组数比例分段，再逐帧选走廊，用不到的帧记 `NotInspected`、不读图。
   - 生产：`FrameJob.segment`；`BurstPart` 按预测段送测，不检测预测段的相机这一帧直接记 `NotInspected`；预测边界附近（`retention_bands`）的原图留在 `retained`，`start_post_measure` 在收尾窗口到期、到达送测都测完后排一次补测，`burst_complete` 有补测目标时等补测完。`FrameMetrics.corridor` 记所用段号。`burst_judge` 不把 `NotInspected` 算检测不完整。
-  - 测量图与发布包：`vision::CorridorSet` 按（相机, 段）合成测量图模板的有效参数；算法图 `flow-2`（graph.json schema 5：`templates` 存用到的模板原文，`graphs` 按段列出走廊图的有效参数与判定门限，开启定向的另有 `headings` 的定向图参数与判定门限，见 [lyflow-operators.md](lyflow-operators.md) LF-4）；发布包 schema 5：每台相机一份标定，`cameras/{i}/s{segment}/` 下各段一张示教帧与走廊；此前的 `corridor-2` / `corridor-3` 发布包不再加载，要重新发布。
+  - 测量图与发布包：`vision::CorridorSet` 按（相机, 段）合成测量图模板的有效参数；算法图 `flow-2`（graph.json schema 5：`templates` 存用到的模板原文，`graphs` 按段列出走廊图的有效参数与判定门限，开启定向的另有 `headings` 的定向图参数与判定门限，见 [lyflow-operators.md](lyflow-operators.md) LF-4）；发布包 schema 5：每台相机一份标定，`cameras/{i}/s{segment}/` 下各段一张示教帧与走廊；不检测任何一段的计划相机（只在跳过的段上，或不在任何段的检测相机里）没有示教帧与走廊，清单里示教帧尺寸记 `[0, 0]`，复测、试运行与发布都不要求它示教；此前的 `corridor-2` / `corridor-3` 发布包不再加载，要重新发布。
   - 工作台：去掉 `workspace_teach_camera`；`workspace_teach_segment_corridor` 不再要求相机示教帧，单段配方不要求确认分段，相机还没有当量时用设备标定当量补上，一台相机各段示教帧须同尺寸；段相机变化时去掉不再检测的走廊与示教帧。`cameraTeaching[]` 改为 `{camera, mmPerPx, calibMmPerPx, ready, segments}`；进度、发布检查、跳转目标按（段, 相机）列出（`TargetV2::Corridor` 带 `segment`）。示教件测量按已确认分段只测检测相机（`calibration_corridors`）。
   - 示教页：相机行只设像素当量与检测参数，段行是唯一的走廊示教目标（选帧、提取、编辑、保存、清除本段走廊）；帧状态新增“本段不检测”。
   - 未实现：检测相机测成率提示（试测页）；现场吞吐复测（第 5 步）；`boundary_guard` 变化后用存储指标重判时过渡帧的走廊口径未单独校验（计划身份不含 `boundary_guard`）。
@@ -794,7 +794,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 #### 14. 离线仿真
 
-- **入口**：`offline_run` 与候选试运行（`workspace_debug_run`）都走 `Line::run_burst`。候选试运行过 `ready_burst`，各计划相机的示教帧尺寸按计划相机顺序取自 `cameraTeaching`，示教帧采集后这台相机的设备标签须没变（与走廊示教验证项同一口径，开跑前 `recheck_debug_candidate` 再核对），交给 `Candidate::new_burst` 建走廊测量图，再由 `offline::run_candidate` 运行。
+- **入口**：`offline_run` 与候选试运行（`workspace_debug_run`）都走 `Line::run_burst`。候选试运行过 `ready_burst`，各计划相机的示教帧尺寸按计划相机顺序取自 `cameraTeaching`（不检测任何一段的相机记 `[0, 0]`），示教帧采集后这台相机的设备标签须没变（与走廊示教验证项同一口径，开跑前 `recheck_debug_candidate` 再核对），交给 `Candidate::new_burst` 建走廊测量图，再由 `offline::run_candidate` 运行。
 - **出帧剖面**：`line::PulseProfile { hz, segments, head_tail_jitter, corner_jitter, seed }`，波动由 `segmentation::synthetic::frame_counts` 按剖面与种子生成。名义帧数 `line::nominal_frames`：各段 N_exp；有段没有 N_exp 时按 段长 × 帧率 ÷ 50 mm/s 估算（没有段长：直线 12、弯道 4），旧配方带整件 `partCalib` 时把缺 N_exp 的段缩放到它的 ΣN_exp。合成图取配方名义剖面，样本集取样本帧数最多的那台相机（一段）。离线节拍覆盖时帧率按 1000 ÷ 间隔换算（[soak.md](soak.md) S-3）。
 - **使能与出帧**：虚拟 PLC 写请求（plcState=10）后等固定的拍照前置时间 500 ms，再按 1 / hz 定频出帧（时钟不被轮询周期拉长），每次同时出三台相机的帧，出完置工件结束（plcState=20）。`PartOrder` 有 `profile`、`lost`（只丢指定相机的指定帧，相机照常计数）、`early_end_after`（提前结束前的帧数）。
 - **工况（与前端同名）**：`cameraLost` 第 2 台相机丢第 min(3, 总数) 帧；`pulseJitter` 首尾各 ±1；`cornerSlowdown` 每个弯道段 ±2；`notInspected` 机械臂照常涂胶、PLC 不提交请求（`run_burst` 返回 `Ok(None)`，PC 无记录，离线运行记“本件未检”）；`earlyEnd` 出约一半、且少于 ΣN_exp − Σtol 帧后报工件结束；`lostFrame` 三台相机同一帧都丢；`countMismatch` 与正常相同（协议 8 不报触发计数）。只改出帧与握手的工况进样本集白名单（`Scenario::handshake`）。
