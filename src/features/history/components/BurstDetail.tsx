@@ -89,7 +89,7 @@ function FrameTile({ detail, comparison, traceable, camera, cameraName, seq, fra
   const lines = (traced.view?.edges ?? []).flatMap((edge, i) => edge ? [{ from: edge[0], to: edge[1], station: i,
     color: i === lit ? "var(--ov-warn)" : "var(--ov-line)", width: i === lit ? 4 : 2 }] : []).sort((a, b) => Number(a.station === lit) - Number(b.station === lit));
   const overlay = traced.view && traced.view.corridor.length >= 2 ? { path: traced.view.corridor, searchHalfPx: traced.view.searchHalfPx ?? undefined,
-    segments: lines, onSegmentHover: selected ? onStation : undefined } : undefined;
+    segments: lines, partEdges: traced.view.partEdges, onSegmentHover: selected ? onStation : undefined } : undefined;
   const unavailable = !frame ? "没有这一帧的记录"
     : frame.status === "missing" ? "这台相机本帧组缺帧，没有原图（检测不完整，不影响 OK/NG）"
       : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;

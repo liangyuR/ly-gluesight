@@ -254,6 +254,9 @@ pub struct SegmentCorridor {
     /// 为空时取背离离出胶点最近的画面边
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sector_deg: Option<f64>,
+    /// 这台相机在这一段的颜色模型（`glue.ColorModel` 的 JSON 原文）：彩色图像示教时沿走廊取色得出；有它这一段按胶色测量
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_model: Option<String>,
 }
 
 impl CameraInspect {
@@ -834,6 +837,7 @@ pub fn samples_burst() -> RecipeDoc {
             segment: 1,
             corridor: sample_path(0),
             sector_deg: None,
+            color_model: None,
         }];
         inspect.mm_per_px = Some(f64::from(SIM_MM_PER_PX));
     }

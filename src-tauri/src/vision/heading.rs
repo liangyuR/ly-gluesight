@@ -7,10 +7,10 @@ use serde_json::{json, Value};
 use super::judge::edge::EdgeWindow;
 use super::judge::fit::{choose_path, judge_stations, PathChoice, PathGate, StationGate};
 use super::taught::{
-    bead_metrics, bead_params, bead_params_into, edge_graph, edge_mm, edge_points,
-    response_params_into, FrameMeasurement, GraphRun,
+    bead_metrics, bead_params, bead_params_into, check_color, color_params_into, edge_graph,
+    edge_measure, edge_points, response_params_into, FrameMeasurement, GraphRun,
 };
-use super::template::{self, number};
+use super::template::{self, number, Template};
 use super::{FrameImage, RunResult};
 use crate::heading::{nozzle, search_sector};
 use crate::recipe::{CameraInspect, Recipe};
@@ -32,7 +32,9 @@ pub struct HeadingGraph {
     pub size: [u32; 2],
     /// 示教帧通道数（1 灰度、3 彩色）；未知时不核对（见 `CorridorSet::with_channels`）
     pub channels: Option<u8>,
-    /// `template::heading` 的全部有效参数与判定门限（发布包 graph.json 冻结它们）
+    /// 测量图模板：灰度 `template::heading`，这一段有颜色模型时 `template::heading_color`
+    pub template: &'static Template,
+    /// 模板的全部有效参数与判定门限（发布包 graph.json 冻结它们）
     pub params: Value,
     pub judge: Value,
     path_gate: PathGate,
@@ -123,13 +125,23 @@ pub fn plan_heading(
         "nozzle": anchor, "zone": zone, "radial": [z0, z0 + FAN_LENGTH_PX.min(z1 - z0)],
         "sector": search_sector(anchor, size, turned), "pathWidthMax": path_width_max,
     });
-    response_params_into(&mut business, detect, &params, roi);
+    let color_model = inspect
+        .segment_corridor(segment)
+        .and_then(|s| s.color_model.as_deref());
+    let template = match color_model {
+        Some(model) => {
+            color_params_into(&mut business, model, roi);
+            template::heading_color()
+        }
+        None => {
+            response_params_into(&mut business, detect, &params, roi);
+            template::heading()
+        }
+    };
     bead_params_into(&mut business, &params, params.half, edge.as_ref()).map_err(|e| fail(&e))?;
     let expert = recipe.expert_layers(inspect);
-    let effective = template::heading()
-        .params(business, &expert)
-        .map_err(|e| fail(&e))?;
-    let judge = template::heading().judge(&expert);
+    let effective = template.params(business, &expert).map_err(|e| fail(&e))?;
+    let judge = template.judge(&expert);
     let gate = |values: &Value, name: &str| number(values, name).map_err(|e| fail(&e));
     Ok(HeadingGraph {
         camera: inspect.camera.clone(),
@@ -137,9 +149,14 @@ pub fn plan_heading(
         segment,
         size,
         channels: None,
+        template,
         path_gate: PathGate {
             min_coverage: gate(&judge, "minCoverage")?,
-            sharp_min: gate(&effective, "pathSharpMin")?,
+            // 胶色跟踪没有边缘陡度：像不像胶由得分本身决定
+            sharp_min: match color_model {
+                Some(_) => None,
+                None => Some(gate(&effective, "pathSharpMin")?),
+            },
         },
         station_gate: StationGate {
             width_range: [params.lo, params.hi],
@@ -171,9 +188,10 @@ pub fn measure_heading_with(
     run: impl FnOnce(GraphRun<'_>, &FrameImage) -> Result<RunResult, String>,
 ) -> Result<FrameMeasurement, String> {
     super::taught::check_frame(&g.camera, g.size, g.channels, image)?;
+    check_color(&g.camera, g.template, image)?;
     let result = run(
         GraphRun {
-            template: template::heading(),
+            template: g.template,
             params: &g.params,
             targets: &g.targets,
         },
@@ -226,10 +244,29 @@ fn measure_chosen(
         .iter()
         .map(|b| b.map(|(lo, hi)| (hi - lo, 0.5 * (lo + hi))))
         .collect();
-    let mut metrics = bead_metrics(g.camera_idx, g.segment, seq, g.scale, g.spacing_mm, &beads);
+    let unknown: Vec<bool> = calls.iter().map(|c| c.unknown).collect();
+    let mut metrics = bead_metrics(
+        g.camera_idx,
+        g.segment,
+        seq,
+        g.scale,
+        g.spacing_mm,
+        &beads,
+        &unknown,
+    );
     metrics.x_mm = None;
+    let mut part_edges = Vec::new();
     if let Some(window) = &g.edge {
-        metrics.edge_mm = edge_mm(result.record(&format!("edges{k}")), &lohi, window, g.scale)?;
+        let poses: Vec<([f64; 2], [f64; 2])> = calls.iter().map(|c| (c.center, c.normal)).collect();
+        let edge = edge_measure(
+            result.record(&format!("edges{k}")),
+            &lohi,
+            &poses,
+            window,
+            g.scale,
+        )?;
+        metrics.edge_mm = edge.mm;
+        part_edges = edge.lines;
     }
     let line: Vec<[f32; 2]> = result
         .record(&format!("line{k}"))
@@ -245,6 +282,7 @@ fn measure_chosen(
             .iter()
             .map(|c| c.bead.map(|b| edge_points(c.center, c.normal, b)))
             .collect(),
+        part_edges,
         line,
         ms: 0,
     })
@@ -273,12 +311,14 @@ fn no_bead(g: &HeadingGraph, choice: &PathChoice, seq: u64) -> FrameMeasurement 
         g.scale,
         g.spacing_mm,
         &vec![None; n],
+        &[],
     );
     metrics.x_mm = None;
     metrics.heading_deg = choice.heading;
     FrameMeasurement {
         metrics,
         edges: vec![None; n],
+        part_edges: Vec::new(),
         line: choice
             .heading
             .map(|h| straight_line(g.nozzle, h, g.zone))

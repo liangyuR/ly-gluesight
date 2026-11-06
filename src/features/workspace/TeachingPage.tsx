@@ -21,7 +21,7 @@ import { frameArrived, readRoundFrame, roundView, type RoundView } from "./captu
 import { SegmentTrial } from "./TeachTrial";
 import { FrameGrid } from "./FrameGrid";
 import { pieceLabel } from "./pieces";
-import { ExpertCard, HeadingCard, MeasureCard, SegmentChecksCard, type CameraParams } from "./CorridorSettings";
+import { ColorCard, ExpertCard, HeadingCard, MeasureCard, SegmentChecksCard, type CameraParams } from "./CorridorSettings";
 import { searchSector, type HeadingGuide, type HeadingPart } from "./headingOverlay";
 import "./corridor.css";
 import WorkspaceNavigation from "./WorkspaceNavigation";
@@ -47,6 +47,8 @@ function extractionAdvice(reason: string, failures: number, brushWidth: number) 
   if (!WIDEN_BRUSH_REASONS.has(reason)) return "";
   return failures >= 2 ? "加大笔刷后仍无法连续提取（常见于胶堆、断胶等局部异常）：请点「笔划直接生成走廊」，再手工修正。" : `可加大笔刷宽度（当前 ${brushWidth} px，约为胶宽的 3 倍较稳）后沿胶路重刷，再自动提取。`;
 }
+
+type DeferredAction = "extract" | "choose" | "clear" | "color";
 
 const taskKey = (task: Pick<CorridorTask, "camera" | "segment">) => draftKey(task.camera, task.segment);
 
@@ -162,7 +164,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const [railWidth, setRailWidth] = useRailWidth();
   const [working, setWorking] = useState(false);
   const [choosing, setChoosing] = useState(false);
-  const [operation, setOperation] = useState<"extract" | null>(null);
+  const [operation, setOperation] = useState<"extract" | "color" | null>(null);
   const [extractionHint, setExtractionHint] = useState("");
   const [extractionFailure, setExtractionFailure] = useState<{ point: ImagePoint; reason: string; message: string } | null>(null);
   const [vertex, setVertex] = useState<number | null>(null);
@@ -301,16 +303,23 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   };
   const saveCorridor = () => { if (unlocked && editing && !invalid) void commit(`${targetLabel} 的走廊已保存到候选配方`); };
   /** 要提交后端的操作：有待存的改动时先立即保存，存好再执行（执行时取那时最新的修订与配置）；保存失败就不执行 */
-  const [deferred, setDeferred] = useState<"extract" | "choose" | "clear" | null>(null);
-  const runAction = (action: "extract" | "choose" | "clear") => action === "extract" ? void extract() : action === "choose" ? void chooseFrame() : clearSegment();
+  const [deferred, setDeferred] = useState<DeferredAction | null>(null);
+  const runAction = (action: DeferredAction) => action === "extract" ? void extract() : action === "choose" ? void chooseFrame() : action === "color" ? void fitColor() : clearSegment();
   // 还没刷选就点提取：直接进刷选模式说明怎么做，不用等保存
   const startExtract = () => { if (!roiValid || !roi || !spacingValid) void extract(); else deferAction("extract"); };
-  const deferAction = (action: "extract" | "choose" | "clear") => { if (pendingSave) { setDeferred(action); saveNow(); } else runAction(action); };
+  const deferAction = (action: DeferredAction) => { if (pendingSave) { setDeferred(action); saveNow(); } else runAction(action); };
   useEffect(() => {
     if (!deferred) return;
     if (saveState === "failed") { setDeferred(null); return; }
     if (!pendingSave && !acting) { setDeferred(null); runAction(deferred); }
   }, [deferred, pendingSave, acting, saveState]);
+  const fitColor = async () => {
+    if (!unlocked || segment == null || editing || pending.current) return;
+    const capturedScope = scope;
+    setOperation("color");
+    try { await perform(() => workspaceApi.fitColorModel(doc.id, data.workspace.revision, camera, segment), `${targetLabel} 已取色，这一段按胶色测量`); }
+    finally { if (current.current.scope === capturedScope) setOperation(null); }
+  };
   const clearSegment = () => { if (unlocked && segment != null && !editing) void perform(() => workspaceApi.clearSegmentCorridor(doc.id, data.workspace.revision, camera, segment), `${targetLabel} 的走廊与示教帧已清除`); };
   const changeSegments = (segments: PathSegment[]) => setDoc({ ...doc, segments });
   const inspect = doc.inspect?.find(item => item.camera === camera);
@@ -318,6 +327,11 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const setParams = (next: CameraParams) => setDoc({ ...doc, inspect: (doc.inspect ?? []).map(item => item.camera === camera ? { ...item, ...next } : item) });
   // 搜索扇区方向按（相机, 段）存在这一段的走廊项上，拖动只改本段
   const sectorDeg = segment == null ? null : inspect?.segments?.find(item => item.segment === segment)?.sectorDeg ?? null;
+  const colorModel = segment == null ? undefined : inspect?.segments?.find(item => item.segment === segment)?.colorModel;
+  const colorBlocked = saved.corridor.length < 2 ? "这一段还没有保存的走廊：先画好走廊并保存，再取色"
+    : editing ? "走廊有未保存的修改：保存后再取色"
+      : !(saved.mmPerPx != null && saved.mmPerPx > 0) ? `${camera} 缺像素当量：先在相机参数里设置`
+        : data.workspace.pending ? "候选版本正在等待生效" : !ready ? "正在处理，请稍候" : "";
   const setSectorDeg = (deg: number | null) => { if (segment != null && deg !== sectorDeg) setDoc(withSectorDeg(doc, camera, segment, deg)); };
   // 出胶点、测量区间与搜索扇区都按候选配方即时算，保存前后显示不换来源
   const savedNozzle = plan.cameraTeaching.find(item => item.camera === camera)?.nozzle ?? null;
@@ -516,6 +530,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         sector={{ range: headingGuide?.sector ?? null, turned: sectorDeg != null, onReset: () => setSectorDeg(null) }} expertDefaults={doc.expert ?? {}} disabled={checksDisabled}
         sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改出胶点与测量区间。" : ""} onFocus={setHeadingFocus}
         onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />}
+      {segmentItem && frame && <ColorCard key={`color-${camera}-${segment}-${image?.channels ?? "-"}`} camera={camera} segment={segment} colorModel={colorModel} color={image ? image.channels === 3 : null}
+        blocked={colorBlocked} edited={editing} working={operation === "color"} onFit={() => deferAction("color")} />}
       {segmentItem && <SegmentChecksCard key={`checks-${segment}`} segments={doc.segments ?? []} index={segment} cameras={plan.cameras} disabled={checksDisabled} onChange={changeSegments} />}
       <WithReason block reason={groupsLocked ? groupLockReason : ""}><Button variant="outlined" className="wp-rail-link" disabled={groupsLocked} onClick={() => setSelected(camera)}>
         <strong>测量</strong><span>{cameraScaleText} · {params.detect ? "本相机自定义" : "配方默认"}</span><span className="wp-rail-link-go">去 {camera} 改<ArrowRight size={13} aria-hidden="true" /></span>

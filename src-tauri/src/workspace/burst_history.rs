@@ -302,6 +302,7 @@ pub async fn workspace_record_frame_view(
                 corridor: Vec::new(),
                 search_half_px: None,
                 edges: Vec::new(),
+                part_edges: Vec::new(),
                 metrics: metrics.clone(),
             });
         };

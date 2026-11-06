@@ -753,12 +753,8 @@ pub(super) fn freeze_bundle(
         };
         let reference = vision::camera_calib_key(inspect)?.reference();
         let calibration = json!({"schemaVersion": 1, "camera": inspect.camera, "reference": reference, "mmPerPx": inspect.mm_per_px, "source": source, "acquisition": crate::production::acquisition_tag(&app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == inspect.camera).ok_or("发布相机不存在")?)});
-        sizes.push(
-            taught
-                .first()
-                .map(|t| t.frame.size)
-                .ok_or_else(|| format!("相机 {} 不检测任何一段", inspect.camera))?,
-        );
+        // 不检测任何一段的相机没有示教帧，尺寸记 [0, 0]
+        sizes.push(taught.first().map_or([0, 0], |t| t.frame.size));
         cameras.push(crate::release::CameraInput {
             camera: inspect.camera.clone(),
             calibration: crate::release::ResourceSource::Bytes(

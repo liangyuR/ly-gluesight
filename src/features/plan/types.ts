@@ -245,6 +245,8 @@ export interface CalibrationFrameView {
   searchHalfPx: number | null;
   /** 逐站两侧胶边（px），无胶站为 null */
   edges: ([[number, number], [number, number]] | null)[];
+  /** 胶边距线（ToEdge）：找到零件边的站，胶中心 → 零件边（px）；不找边时为空 */
+  partEdges: [[number, number], [number, number]][];
   metrics: FrameMetrics;
 }
 
@@ -370,6 +372,9 @@ export interface SegmentCorridor {
   corridor: [number, number][];
   /** 这台相机在这一段的逐帧定向搜索扇区中线方向（度，D-SB-47），在这一段的示教帧上拖动扇区得出；null / 缺省 = 背离离出胶点最近的画面边 */
   sectorDeg?: number | null;
+  /** 胶色模型（lyFlow `glue.ColorModel` 的 JSON 原文），由 workspace_fit_color_model 在这一段的彩色示教帧上沿已保存的走廊取色得出；
+   *  有它时这一段这台相机按胶色测量，缺省为灰度测量。走廊点改动后旧模型失效，随之去掉。 */
+  colorModel?: string;
 }
 
 /** RecipeDoc 的段模型字段。 */

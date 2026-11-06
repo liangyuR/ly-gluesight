@@ -1,0 +1,703 @@
+{
+  "schemaVersion": 1,
+  "id": "01GLUESIGHTHEADINGCOLOR00",
+  "nodes": [
+    {
+      "id": "n_load",
+      "op": "io.load_image",
+      "params": {
+        "source": "inputs"
+      }
+    },
+    {
+      "id": "n_map",
+      "op": "glue.color_map",
+      "params": {}
+    },
+    {
+      "id": "n_fan",
+      "op": "glue.color_fan",
+      "params": {
+        "includeInvalid": true
+      }
+    },
+    {
+      "id": "n_t0",
+      "op": "glue.color_track",
+      "params": {
+        "peakIndex": 0,
+        "minPoints": 3,
+        "split": "half_max"
+      }
+    },
+    {
+      "id": "n_r0",
+      "op": "glue.color_runs",
+      "params": {
+        "split": "half_max"
+      }
+    },
+    {
+      "id": "n_e0",
+      "op": "glue.part_edges",
+      "params": {
+        "sides": "both",
+        "start": 0.0
+      }
+    },
+    {
+      "id": "n_t1",
+      "op": "glue.color_track",
+      "params": {
+        "peakIndex": 1,
+        "minPoints": 3,
+        "split": "half_max"
+      }
+    },
+    {
+      "id": "n_r1",
+      "op": "glue.color_runs",
+      "params": {
+        "split": "half_max"
+      }
+    },
+    {
+      "id": "n_e1",
+      "op": "glue.part_edges",
+      "params": {
+        "sides": "both",
+        "start": 0.0
+      }
+    },
+    {
+      "id": "n_t2",
+      "op": "glue.color_track",
+      "params": {
+        "peakIndex": 2,
+        "minPoints": 3,
+        "split": "half_max"
+      }
+    },
+    {
+      "id": "n_r2",
+      "op": "glue.color_runs",
+      "params": {
+        "split": "half_max"
+      }
+    },
+    {
+      "id": "n_e2",
+      "op": "glue.part_edges",
+      "params": {
+        "sides": "both",
+        "start": 0.0
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "from": {
+        "node": "n_load",
+        "port": "image"
+      },
+      "to": {
+        "node": "n_map",
+        "port": "image"
+      }
+    },
+    {
+      "id": "e1",
+      "from": {
+        "node": "n_map",
+        "port": "maps"
+      },
+      "to": {
+        "node": "n_fan",
+        "port": "maps"
+      }
+    },
+    {
+      "id": "e2",
+      "from": {
+        "node": "n_map",
+        "port": "maps"
+      },
+      "to": {
+        "node": "n_t0",
+        "port": "maps"
+      }
+    },
+    {
+      "id": "e4",
+      "from": {
+        "node": "n_fan",
+        "port": "scan"
+      },
+      "to": {
+        "node": "n_t0",
+        "port": "fan"
+      }
+    },
+    {
+      "id": "e5",
+      "from": {
+        "node": "n_map",
+        "port": "maps"
+      },
+      "to": {
+        "node": "n_r0",
+        "port": "maps"
+      }
+    },
+    {
+      "id": "e7",
+      "from": {
+        "node": "n_t0",
+        "port": "line"
+      },
+      "to": {
+        "node": "n_r0",
+        "port": "line"
+      }
+    },
+    {
+      "id": "e8",
+      "from": {
+        "node": "n_load",
+        "port": "image"
+      },
+      "to": {
+        "node": "n_e0",
+        "port": "image"
+      }
+    },
+    {
+      "id": "e9",
+      "from": {
+        "node": "n_t0",
+        "port": "line"
+      },
+      "to": {
+        "node": "n_e0",
+        "port": "line"
+      }
+    },
+    {
+      "id": "e10",
+      "from": {
+        "node": "n_map",
+        "port": "maps"
+      },
+      "to": {
+        "node": "n_t1",
+        "port": "maps"
+      }
+    },
+    {
+      "id": "e12",
+      "from": {
+        "node": "n_fan",
+        "port": "scan"
+      },
+      "to": {
+        "node": "n_t1",
+        "port": "fan"
+      }
+    },
+    {
+      "id": "e13",
+      "from": {
+        "node": "n_map",
+        "port": "maps"
+      },
+      "to": {
+        "node": "n_r1",
+        "port": "maps"
+      }
+    },
+    {
+      "id": "e15",
+      "from": {
+        "node": "n_t1",
+        "port": "line"
+      },
+      "to": {
+        "node": "n_r1",
+        "port": "line"
+      }
+    },
+    {
+      "id": "e16",
+      "from": {
+        "node": "n_load",
+        "port": "image"
+      },
+      "to": {
+        "node": "n_e1",
+        "port": "image"
+      }
+    },
+    {
+      "id": "e17",
+      "from": {
+        "node": "n_t1",
+        "port": "line"
+      },
+      "to": {
+        "node": "n_e1",
+        "port": "line"
+      }
+    },
+    {
+      "id": "e18",
+      "from": {
+        "node": "n_map",
+        "port": "maps"
+      },
+      "to": {
+        "node": "n_t2",
+        "port": "maps"
+      }
+    },
+    {
+      "id": "e20",
+      "from": {
+        "node": "n_fan",
+        "port": "scan"
+      },
+      "to": {
+        "node": "n_t2",
+        "port": "fan"
+      }
+    },
+    {
+      "id": "e21",
+      "from": {
+        "node": "n_map",
+        "port": "maps"
+      },
+      "to": {
+        "node": "n_r2",
+        "port": "maps"
+      }
+    },
+    {
+      "id": "e23",
+      "from": {
+        "node": "n_t2",
+        "port": "line"
+      },
+      "to": {
+        "node": "n_r2",
+        "port": "line"
+      }
+    },
+    {
+      "id": "e24",
+      "from": {
+        "node": "n_load",
+        "port": "image"
+      },
+      "to": {
+        "node": "n_e2",
+        "port": "image"
+      }
+    },
+    {
+      "id": "e25",
+      "from": {
+        "node": "n_t2",
+        "port": "line"
+      },
+      "to": {
+        "node": "n_e2",
+        "port": "line"
+      }
+    }
+  ],
+  "outputs": {
+    "scan": {
+      "node": "n_fan",
+      "port": "scan"
+    },
+    "track0": {
+      "node": "n_t0",
+      "port": "track"
+    },
+    "line0": {
+      "node": "n_t0",
+      "port": "line"
+    },
+    "runs0": {
+      "node": "n_r0",
+      "port": "runs"
+    },
+    "edges0": {
+      "node": "n_e0",
+      "port": "edges"
+    },
+    "track1": {
+      "node": "n_t1",
+      "port": "track"
+    },
+    "line1": {
+      "node": "n_t1",
+      "port": "line"
+    },
+    "runs1": {
+      "node": "n_r1",
+      "port": "runs"
+    },
+    "edges1": {
+      "node": "n_e1",
+      "port": "edges"
+    },
+    "track2": {
+      "node": "n_t2",
+      "port": "track"
+    },
+    "line2": {
+      "node": "n_t2",
+      "port": "line"
+    },
+    "runs2": {
+      "node": "n_r2",
+      "port": "runs"
+    },
+    "edges2": {
+      "node": "n_e2",
+      "port": "edges"
+    }
+  },
+  "params": {
+    "nozzle": {
+      "default": [
+        0.0,
+        0.0
+      ],
+      "binds": [
+        "n_fan.anchor",
+        "n_t0.anchor",
+        "n_t1.anchor",
+        "n_t2.anchor"
+      ],
+      "doc": "出胶点（px）"
+    },
+    "zone": {
+      "default": [
+        0.0,
+        100.0
+      ],
+      "binds": [
+        "n_t0.zone",
+        "n_t1.zone",
+        "n_t2.zone"
+      ],
+      "doc": "检测区：距出胶点的弧长区间（px）"
+    },
+    "radial": {
+      "default": [
+        0.0,
+        100.0
+      ],
+      "binds": [
+        "n_fan.radial"
+      ],
+      "doc": "扇形扫描的径向区间（px）：检测区前段，最长 150 px"
+    },
+    "sector": {
+      "default": [
+        -180.0,
+        180.0
+      ],
+      "binds": [
+        "n_fan.sector",
+        "n_t0.bearingRange",
+        "n_t1.bearingRange",
+        "n_t2.bearingRange"
+      ],
+      "doc": "扇形搜索的方向范围（度）"
+    },
+    "roi": {
+      "default": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "binds": [
+        "n_map.roi"
+      ],
+      "doc": "响应图只算的块 [x, y, w, h]（px）：出胶点 ± 检测区外沿 + max(胶宽上限 + 8, 卡尺半长 + 5)"
+    },
+    "pathWidthMax": {
+      "default": 24.0,
+      "binds": [
+        "n_t0.widthMax",
+        "n_t1.widthMax",
+        "n_t2.widthMax",
+        "n_t0.searchHalf",
+        "n_t1.searchHalf",
+        "n_t2.searchHalf",
+        "n_t0.mergeWidthMax",
+        "n_t1.mergeWidthMax",
+        "n_t2.mergeWidthMax"
+      ],
+      "doc": "粗跟踪的胶宽上限取整（px），也是粗跟踪的卡尺半长"
+    },
+    "stationStep": {
+      "default": 4.0,
+      "binds": [
+        "n_r0.stationStep",
+        "n_r1.stationStep",
+        "n_r2.stationStep",
+        "n_e0.stationStep",
+        "n_e1.stationStep",
+        "n_e2.stationStep"
+      ],
+      "doc": "站距（px）"
+    },
+    "searchHalf": {
+      "default": 32.0,
+      "binds": [
+        "n_r0.searchHalf",
+        "n_r1.searchHalf",
+        "n_r2.searchHalf"
+      ],
+      "doc": "卡尺半长（px）"
+    },
+    "widthMax": {
+      "default": 24.0,
+      "binds": [
+        "n_r0.mergeWidthMax",
+        "n_r1.mergeWidthMax",
+        "n_r2.mergeWidthMax"
+      ],
+      "doc": "胶宽上限（px）：合并后不宽于它"
+    },
+    "edgeLength": {
+      "default": 200.0,
+      "binds": [
+        "n_e0.searchLength",
+        "n_e1.searchLength",
+        "n_e2.searchLength"
+      ],
+      "doc": "找边剖面长度（px，从胶路起）：盖住卡尺半长外的整个找边窗口"
+    },
+    "edgePolarity": {
+      "default": "bright_to_dark",
+      "binds": [
+        "n_e0.polarity",
+        "n_e1.polarity",
+        "n_e2.polarity"
+      ]
+    },
+    "edgeContrastMin": {
+      "default": 40.0,
+      "binds": [
+        "n_e0.contrastMin",
+        "n_e1.contrastMin",
+        "n_e2.contrastMin"
+      ],
+      "doc": "找边对比度下限"
+    },
+    "edgeFarRun": {
+      "default": 12.0,
+      "binds": [
+        "n_e0.farRun",
+        "n_e1.farRun",
+        "n_e2.farRun"
+      ],
+      "doc": "找边远侧持续长度（px）"
+    },
+    "colorModel": {
+      "default": "",
+      "doc": "颜色模型（glue.ColorModel 的 JSON 原文）：示教时沿走廊取色得出，存进配方",
+      "binds": [
+        "n_map.model"
+      ]
+    },
+    "colorSegmentMin": {
+      "type": "float",
+      "label": "胶色分段门限",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "default": 0.3,
+      "advanced": true,
+      "group": "量胶宽",
+      "doc": "卡尺上胶色得分高于它的相邻采样连成一段",
+      "binds": [
+        "n_r0.segmentMin",
+        "n_r1.segmentMin",
+        "n_r2.segmentMin"
+      ]
+    },
+    "colorPeakMin": {
+      "type": "float",
+      "label": "胶色峰值下限",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "default": 0.6,
+      "advanced": true,
+      "group": "量胶宽",
+      "doc": "一段的胶色得分峰值至少这么高才算胶",
+      "binds": [
+        "n_r0.peakMin",
+        "n_r1.peakMin",
+        "n_r2.peakMin"
+      ]
+    },
+    "colorMergeGap": {
+      "type": "float",
+      "label": "胶色合并缝",
+      "unit": "px",
+      "min": 0.0,
+      "max": 100.0,
+      "step": 1.0,
+      "default": 8.0,
+      "advanced": true,
+      "group": "量胶宽",
+      "doc": "胶色段之间的缝不超过它、合并后不宽于胶宽上限就合并（湿胶面未饱和的反光）",
+      "binds": [
+        "n_r0.mergeGap",
+        "n_r1.mergeGap",
+        "n_r2.mergeGap"
+      ]
+    },
+    "colorMergeUnknownGap": {
+      "type": "float",
+      "label": "高光合并缝",
+      "unit": "px",
+      "min": 0.0,
+      "max": 200.0,
+      "step": 1.0,
+      "default": 16.0,
+      "advanced": true,
+      "group": "量胶宽",
+      "doc": "两段之间全是高光或暗区、缝不超过它就合并（湿胶被高光劈开）",
+      "binds": [
+        "n_r0.mergeUnknownGap",
+        "n_r1.mergeUnknownGap",
+        "n_r2.mergeUnknownGap"
+      ]
+    },
+    "colorPathSegmentMin": {
+      "type": "float",
+      "label": "定向胶色分段门限",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "default": 0.3,
+      "advanced": true,
+      "group": "定胶路",
+      "doc": "粗跟踪时卡尺上胶色得分高于它的相邻采样连成一段",
+      "binds": [
+        "n_t0.segmentMin",
+        "n_t1.segmentMin",
+        "n_t2.segmentMin"
+      ]
+    },
+    "colorPathPeakMin": {
+      "type": "float",
+      "label": "定向胶色峰值下限",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "default": 0.6,
+      "advanced": true,
+      "group": "定胶路",
+      "doc": "粗跟踪时一段的胶色得分峰值至少这么高才算胶",
+      "binds": [
+        "n_t0.peakMin",
+        "n_t1.peakMin",
+        "n_t2.peakMin"
+      ]
+    },
+    "colorPathMaxGap": {
+      "type": "float",
+      "label": "定向最大断口",
+      "unit": "px",
+      "min": 0.0,
+      "max": 1000.0,
+      "step": 1.0,
+      "default": 120.0,
+      "advanced": true,
+      "group": "定胶路",
+      "doc": "粗跟踪时连续这么长没找到胶（高光、暗区等无信息的步不算）就不再接着往下跟",
+      "binds": [
+        "n_t0.maxGap",
+        "n_t1.maxGap",
+        "n_t2.maxGap"
+      ]
+    },
+    "colorInfoMin": {
+      "type": "float",
+      "label": "定向有信息下限",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "default": 0.5,
+      "advanced": true,
+      "group": "定胶路",
+      "doc": "粗跟踪一步的接受窗里有效采样不到它、又没找到胶，这一步算无信息，不计入断口",
+      "binds": [
+        "n_t0.infoMin",
+        "n_t1.infoMin",
+        "n_t2.infoMin"
+      ]
+    }
+  },
+  "x": {
+    "gluesight": {
+      "judge": {
+        "minCoverage": {
+          "type": "float",
+          "label": "定向覆盖率下限",
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "default": 0.3,
+          "advanced": true,
+          "group": "定胶路",
+          "doc": "选中方向粗找到胶的步数占比低于它就算没找到胶条"
+        },
+        "presentRatio": {
+          "type": "float",
+          "label": "有胶宽度比",
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "default": 0.5,
+          "advanced": true,
+          "group": "量胶宽",
+          "doc": "宽度不小于参考宽的这一比例才算有胶"
+        },
+        "centerRatio": {
+          "type": "float",
+          "label": "中心偏离比",
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "default": 0.3,
+          "advanced": true,
+          "group": "量胶宽",
+          "doc": "中心偏离胶路不超过 max(6, 它 × 参考宽)"
+        },
+        "contrastRatio": {
+          "type": "float",
+          "label": "对比度比",
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "default": 0.3,
+          "advanced": true,
+          "group": "量胶宽",
+          "doc": "峰值（示教走廊用峰值 / 局部亮度）不低于参考值的这一比例才算有胶"
+        }
+      }
+    }
+  }
+}

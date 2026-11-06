@@ -350,7 +350,7 @@
   - 模型：`CameraInspect` 去掉 `corridor`、不再拒绝未知字段（旧文件里的相机走廊读入即丢）；`CameraInspect::segment_taught`、`recipe::untaught_corridors` 判每段每台检测相机的走廊。`CameraTeaching.segment` 为空的旧相机示教帧在候选读入时丢弃并回写。`Recipe::ready_burst` 要求每段每台检测相机都有走廊、相机有当量，各段都有 N_exp。
   - 选走廊：`plan::predicted_segment` / `plan::arrival_corridor`（到达时）与 `segmentation::frame_corridors`（按解析后的区域）是唯一规则；生产、候选试运行、验证样本、历史复测与原包重现都用它们。复测走 `burst_history::remeasure_by_rule`：先按帧组数比例分段，再逐帧选走廊，用不到的帧记 `NotInspected`、不读图。
   - 生产：`FrameJob.segment`；`BurstPart` 按预测段送测，不检测预测段的相机这一帧直接记 `NotInspected`；预测边界附近（`retention_bands`）的原图留在 `retained`，`start_post_measure` 在收尾窗口到期、到达送测都测完后排一次补测，`burst_complete` 有补测目标时等补测完。`FrameMetrics.corridor` 记所用段号。`burst_judge` 不把 `NotInspected` 算检测不完整。
-  - 测量图与发布包：`vision::CorridorSet` 按（相机, 段）合成测量图模板的有效参数；算法图 `flow-2`（graph.json schema 5：`templates` 存用到的模板原文，`graphs` 按段列出走廊图的有效参数与判定门限，开启定向的另有 `headings` 的定向图参数与判定门限，见 [lyflow-operators.md](lyflow-operators.md) LF-4）；发布包 schema 5：每台相机一份标定，`cameras/{i}/s{segment}/` 下各段一张示教帧与走廊；此前的 `corridor-2` / `corridor-3` 发布包不再加载，要重新发布。
+  - 测量图与发布包：`vision::CorridorSet` 按（相机, 段）合成测量图模板的有效参数；算法图 `flow-2`（graph.json schema 5：`templates` 存用到的模板原文，`graphs` 按段列出走廊图的有效参数与判定门限，开启定向的另有 `headings` 的定向图参数与判定门限，见 [lyflow-operators.md](lyflow-operators.md) LF-4）；发布包 schema 5：每台相机一份标定，`cameras/{i}/s{segment}/` 下各段一张示教帧与走廊；不检测任何一段的计划相机（只在跳过的段上，或不在任何段的检测相机里）没有示教帧与走廊，清单里示教帧尺寸记 `[0, 0]`，复测、试运行与发布都不要求它示教；此前的 `corridor-2` / `corridor-3` 发布包不再加载，要重新发布。
   - 工作台：去掉 `workspace_teach_camera`；`workspace_teach_segment_corridor` 不再要求相机示教帧，单段配方不要求确认分段，相机还没有当量时用设备标定当量补上，一台相机各段示教帧须同尺寸；段相机变化时去掉不再检测的走廊与示教帧。`cameraTeaching[]` 改为 `{camera, mmPerPx, calibMmPerPx, ready, segments}`；进度、发布检查、跳转目标按（段, 相机）列出（`TargetV2::Corridor` 带 `segment`）。示教件测量按已确认分段只测检测相机（`calibration_corridors`）。
   - 示教页：相机行只设像素当量与检测参数，段行是唯一的走廊示教目标（选帧、提取、编辑、保存、清除本段走廊）；帧状态新增“本段不检测”。
   - 未实现：检测相机测成率提示（试测页）；现场吞吐复测（第 5 步）；`boundary_guard` 变化后用存储指标重判时过渡帧的走廊口径未单独校验（计划身份不含 `boundary_guard`）。
@@ -457,12 +457,17 @@
   - 亮 → 暗：找到边（≥ 半数测站）s1 36/57、s3 128/144、s5 85/126，胶边距轮内标准差中位 1.0 / 2.9 / 2.8 mm。
   - 暗 → 亮：s1 19/57、s3 128/144、s5 85/126，轮内标准差中位 0.0（样本少）/ 1.5 / 0.23 mm。
   - 结论：极性因段而异，必须按段（参考相机）设置；s5 暗 → 亮的噪声 0.23 mm 可用于判 ±2 mm 的胶偏，s3 的 1.5 mm 偏大、s1 找边率低，需按真实图像调整 `contrastMin`、`farRun` 或换参考相机。
+- 离线评估（2026-11-06，现场件 f2d30b6d 胶色段，NEW-1 第 2 段以 cam1 为参考相机，钣金边在胶的一侧、胶与边之间是拉丝金属面，亮 → 暗，搜索长度 18 mm）：
+  - `contrastMin` 40 时拉丝纹理的暗谷（十几 px 宽、落差 100 以上）抢在钣金边前面：稳态 26 帧只有 12 帧有胶边距，值 6.3–8.5 mm 且跳动。
+  - `contrastMin` 70 时 26/26 帧有值，中位 9.98 mm、逐帧标准差 0.29 mm；与独立参考（每站胶边外剖面上 30 px 窗口落差最大处）之差中位 −0.15 mm、最大 0.33 mm。
+  - 结论：纹理强的金属面要把对比度下限提到纹理落差以上；`farRun` 不必改（离线复现 `farRun` 12–60 在对比度 70 时结果相同）。
 - 实现（2026-10-27）：
   - 模型：`OffsetRef.edge`（`{polarity: brightToDark | darkToBright, searchMm, contrastMin, nominalMm}`），只能配在 ToEdge 上，搜索长度 0–50 mm、对比度下限 1–255、图纸胶边距 ≥ 0；搜索长度换算后须不少于 22 px（`farRun` 12 px + 10）。极性、搜索长度、对比度变了 x_ref 清空（测量变了），只改图纸胶边距不清空。找边参数进测量布局，改了不能用已存指标重判。
   - 测量：胶偏参考相机在该段的走廊测量图或定向测量图里运行找边节点（不找边时不运行），按胶中心算胶边距，每帧指标增加 `edgeMm`；左右找边票数必须有唯一多数，平票或有胶测站里找到边的不到一半时为空，胶偏记未测。平票不影响本帧胶宽、断胶和溢胶判定。
   - 参考值：示教件测量记各相机的胶边距均值（`edgeMeans`），单段配方由它得出 ToEdge 口径的 x_ref；填了图纸胶边距时试测页写“按图纸胶边距判，不需要参考值”。发布检查“胶偏参考 x_ref”只列参考值或不判的原因，不阻断。
   - 判定：`burst_judge` 的胶偏判定 ToEdge 用胶边距；没配找边参数时仍标“测量量未实现”。
-  - 未实现：示教页当场预览找到的边；模板匹配初定位。
+  - 叠图：每帧测量结果带胶边距线（找边判为 ok 的站，胶中心 → 零件边，`partEdges`）。试测页逐帧查看、标定帧、在线检测与历史叠图画成绿色虚线，各站零件边点连成实线，底栏“胶边距”开关控制显示。
+  - 未实现：模板匹配初定位。
 - 回退：`offsetRef` 仍选 `AbsoluteX`。
 
 ### D-SB-49 放弃整圈示教握手，轮次只来自导入（2026-10-27 用户确认，已实现）
@@ -786,11 +791,11 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 - **验证样本**（可选，D-SB-46）：`workspace_capture_sample` 把采集轮次记进样本库（`BankSample.captureId` = 轮次编号，帧留在采集轮次目录，验证时按 (相机, seq) 读；`geometryTag` = 产品代码 + 有序计划相机 + 各段 (序号, 类型)，不含 N_exp，示教件分段确认前采的样本之后仍可用）。样本轮次不能是示教件，相机集合等于计划相机，各相机采集时的设备配置与当前相同。原图齐全的生产历史也可作样本：段结构身份与候选相同（历史没有记相机配置，不比较）。样本与生产同一规则选走廊重测（D-SB-45；缺帧不读图，读图或测量失败只算检测不完整），按 D-SB-40 分段判定；丢帧告警对采集轮次按计划相机顺序重算，对历史沿用记录。帧组数超出 ΣN_exp ± Σtol 与检测不完整只写进样本原因，不改是否符合。不接受按拍照点导入的样本图片。
 - **发布**：`workspace_publish` 调用 `burst_release::freeze_bundle` → `release::publish_burst`（schema 5）：每台计划相机一份标定 JSON（`mmPerPx` = 示教当量，`reference` = 标定引用或 `device/{device}`，`source` = 工位标定文件内容），它检测的每一段一张示教帧与走廊（D-SB-45）；测量图为 `production::burst_graphs`，`versions.graph` = `GRAPH_VERSION_BURST`。发布门槛 = 发布前检查当场通过 + `ready_burst`（D-SB-46）。计划版本由 `plan_version_for` 按 `same_plan` 分配，换示教件或改分段使 N_exp 变化即换新号。配方版本也在发布时由配方库当场分配（`RecipeStore::release_version`，与生效时 `save_published` 的核对同一口径），不沿用候选里记的版本：候选建好后，启动时会按历史记录里出现过的版本抬高版本下限，候选里的版本可能已过时。验证环境标签（`environment`）含各检测相机的工位标定（缺省为设备标定 `device/{device}`）。
 - **进度**：发布步骤的阻塞项取未完成的必经步骤（示教件、分段、走廊示教；试测可选、不阻断），各自跳到该步骤的第一个阻塞目标：选示教件、在示教件上确认分段、第一个没示教好的（段, 相机）。设备与生产版本在发布时当场核对。
-- **历史**：`workspace_record_frame_image(historyId, camera, seq)`（5.4）读历史一帧原图。生产记录读录制目录：路径在 `*_cycle_{cycleId}` 内、文件名为 `{相机}_s{seq:06}.pgm`，part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号一致且已落盘，解码尺寸等于录制尺寸。候选离线调试记录读受管样本集（D-SB-28 口径）。`workspace_compare` 从原图用候选走廊逐帧复测（要求计划相机相同、原图齐全），或按已存每帧指标与记录里的区域用候选规则重判（要求 `store::same_measurement_layout`，ERR 记录不重判）；`workspace_compare_original` 按原发布包（schema 5）的走廊逐帧重现。结果写进 `Comparison.burst`（5.1）。`workspace_record_frame_view(historyId, comparison, camera, seq)` 给历史详情叠图（只读）：用对照保存的候选配方、示教帧尺寸（`Comparison.burst.sizes`）与这一帧在对照里所用的走廊段从录制原图重测，返回走廊、搜索带与胶边（与试测页逐帧查看同一形状），不依赖候选现在的示教，候选换了示教件或已删除也能看；按原发布包重现的对照与没有保存尺寸的旧对照不支持。
+- **历史**：`workspace_record_frame_image(historyId, camera, seq)`（5.4）读历史一帧原图。生产记录读录制目录：路径在 `*_cycle_{cycleId}` 内、文件名为 `{相机}_s{seq:06}.pgm`，part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号一致且已落盘，解码尺寸等于录制尺寸。候选离线调试记录读受管样本集（D-SB-28 口径）。`workspace_compare` 从原图用候选走廊逐帧复测（要求计划相机相同、原图齐全），或按已存每帧指标与记录里的区域用候选规则重判（要求 `store::same_measurement_layout`，ERR 记录不重判）；`workspace_compare_original` 按原发布包（schema 5）的走廊逐帧重现。结果写进 `Comparison.burst`（5.1）。`workspace_record_frame_view(historyId, comparison, camera, seq)` 给历史详情叠图（只读）：用对照保存的候选配方、示教帧尺寸（`Comparison.burst.sizes`）与这一帧在对照里所用的走廊段从录制原图重测，返回走廊、搜索带、胶边与胶边距线（与试测页逐帧查看同一形状），不依赖候选现在的示教，候选换了示教件或已删除也能看；按原发布包重现的对照与没有保存尺寸的旧对照不支持。
 
 #### 14. 离线仿真
 
-- **入口**：`offline_run` 与候选试运行（`workspace_debug_run`）都走 `Line::run_burst`。候选试运行过 `ready_burst`，各计划相机的示教帧尺寸按计划相机顺序取自 `cameraTeaching`，示教帧采集后这台相机的设备标签须没变（与走廊示教验证项同一口径，开跑前 `recheck_debug_candidate` 再核对），交给 `Candidate::new_burst` 建走廊测量图，再由 `offline::run_candidate` 运行。
+- **入口**：`offline_run` 与候选试运行（`workspace_debug_run`）都走 `Line::run_burst`。候选试运行过 `ready_burst`，各计划相机的示教帧尺寸按计划相机顺序取自 `cameraTeaching`（不检测任何一段的相机记 `[0, 0]`），示教帧采集后这台相机的设备标签须没变（与走廊示教验证项同一口径，开跑前 `recheck_debug_candidate` 再核对），交给 `Candidate::new_burst` 建走廊测量图，再由 `offline::run_candidate` 运行。
 - **出帧剖面**：`line::PulseProfile { hz, segments, head_tail_jitter, corner_jitter, seed }`，波动由 `segmentation::synthetic::frame_counts` 按剖面与种子生成。名义帧数 `line::nominal_frames`：各段 N_exp；有段没有 N_exp 时按 段长 × 帧率 ÷ 50 mm/s 估算（没有段长：直线 12、弯道 4），旧配方带整件 `partCalib` 时把缺 N_exp 的段缩放到它的 ΣN_exp。合成图取配方名义剖面，样本集取样本帧数最多的那台相机（一段）。离线节拍覆盖时帧率按 1000 ÷ 间隔换算（[soak.md](soak.md) S-3）。
 - **使能与出帧**：虚拟 PLC 写请求（plcState=10）后等固定的拍照前置时间 500 ms，再按 1 / hz 定频出帧（时钟不被轮询周期拉长），每次同时出三台相机的帧，出完置工件结束（plcState=20）。`PartOrder` 有 `profile`、`lost`（只丢指定相机的指定帧，相机照常计数）、`early_end_after`（提前结束前的帧数）。
 - **工况（与前端同名）**：`cameraLost` 第 2 台相机丢第 min(3, 总数) 帧；`pulseJitter` 首尾各 ±1；`cornerSlowdown` 每个弯道段 ±2；`notInspected` 机械臂照常涂胶、PLC 不提交请求（`run_burst` 返回 `Ok(None)`，PC 无记录，离线运行记“本件未检”）；`earlyEnd` 出约一半、且少于 ΣN_exp − Σtol 帧后报工件结束；`lostFrame` 三台相机同一帧都丢；`countMismatch` 与正常相同（协议 8 不报触发计数）。只改出帧与握手的工况进样本集白名单（`Scenario::handshake`）。

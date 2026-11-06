@@ -302,6 +302,7 @@ pub fn run() {
             workspace::workspace_teach_segment_corridor,
             workspace::workspace_clear_segment_corridor,
             workspace::workspace_extract_corridor,
+            workspace::workspace_fit_color_model,
             workspace::workspace_measure_teaching,
             workspace::workspace_calibration_round_features,
             workspace::workspace_calibration_frame,

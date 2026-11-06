@@ -1472,6 +1472,7 @@ pub fn retain_live_view(
         },
         search_half_px,
         edges: trace.edges,
+        part_edges: trace.part_edges,
         metrics: metrics.clone(),
     };
     let mut live = host.live_views.lock().unwrap();

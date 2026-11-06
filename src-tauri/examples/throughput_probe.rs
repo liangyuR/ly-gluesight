@@ -101,6 +101,7 @@ fn probe_document() -> RecipeDoc {
             segment: 1,
             corridor: PROBE_PATH.to_vec(),
             sector_deg: None,
+            color_model: None,
         }];
         inspect.mm_per_px = Some(f64::from(PROBE_MM_PER_PX));
         inspect.detect = Some(DetectParams {

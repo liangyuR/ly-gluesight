@@ -60,6 +60,7 @@ fn with_corridor(w: &mut Workspace, camera: &str, segment: u32, corridor: Vec<[f
             segment,
             corridor,
             sector_deg: None,
+            color_model: None,
         });
     update_doc(w, doc).unwrap();
 }
@@ -209,6 +210,7 @@ fn segment_structure_or_camera_change_drops_only_the_affected_corridors_and_fram
             segment: 3,
             corridor: vec![[1.0, 1.0], [50.0, 1.0]],
             sector_deg: None,
+            color_model: None,
         });
     assert!(update_doc(&mut w, doc).is_err(), "没有示教帧的走廊");
 }

@@ -216,6 +216,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             segment: 2,
             corridor,
             sector_deg: turned.then_some(90.0),
+            color_model: None,
         });
         doc.segments
             .iter_mut()

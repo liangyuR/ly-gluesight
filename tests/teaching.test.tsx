@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
@@ -9,7 +9,7 @@ import { burstRecipe, burstWorkspaceView, captureRoundV2, snapshot, workspaceSta
 import { stubSvgPointer } from "./svg-pointer";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn(), recipeApi: { expertSpecs: vi.fn(async () => ({})) } }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), teachPreviewFrame: vi.fn(), teachPreviewSegment: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), teachPreviewFrame: vi.fn(), teachPreviewSegment: vi.fn(), fitColorModel: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
 const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
@@ -152,5 +152,29 @@ describe("示教帧选择", () => {
     expect(choose).toHaveAccessibleDescription(expect.stringContaining("缺帧"));
     expect(workspaceApi.captureFrameImage).not.toHaveBeenCalledWith("round-1", "CAM-2", 5);
     expect(workspaceApi.teachSegmentCorridor).not.toHaveBeenCalled();
+  });
+});
+
+describe("胶色取色", () => {
+
+  // 防的回归：彩色示教帧上找不到取色入口，或取色发错相机、段、修订，这一段一直按灰度测；取色后看不到分离度，无法判断模型能不能用
+  it("彩色示教帧、这一段已保存走廊 → 点“取色”按相机与段调用取色命令，显示分离度", async () => {
+    vi.mocked(workspaceApi.image).mockResolvedValue({ ...picture, channels: 3 });
+    const model = { glue: { mean: [0.37, -0.08], intensity: 391.7 }, background: [{ weight: 1, mean: [-0.08, 0], intensity: 394.9 }],
+      quality: { separation: 4.8, glueCount: 2652, bgCount: 9552, saturatedFraction: 0.156, usable: true } };
+    vi.mocked(workspaceApi.fitColorModel).mockImplementation(async () => {
+      const next = structuredClone(ws.data!);
+      next.workspace.doc.inspect![0].segments![0].colorModel = JSON.stringify(model);
+      ws.data = next; ws.doc = next.workspace.doc;
+      return next;
+    });
+    const path = "/recipe/teach?camera=CAM-1&segment=1";
+    const { rerender } = show(path);
+    fireEvent.click(await screen.findByRole("button", { name: "取色" }));
+    await waitFor(() => expect(workspaceApi.fitColorModel).toHaveBeenCalledWith("A", 3, "CAM-1", 1));
+    rerender(<MemoryRouter initialEntries={[path]}><TeachingPage /></MemoryRouter>);
+    const stats = await screen.findByRole("group", { name: "胶色模型" });
+    expect(within(stats).getByText("分离度").nextElementSibling).toHaveTextContent("4.8");
+    expect(screen.getByRole("button", { name: "重新取色" })).toBeEnabled();
   });
 });

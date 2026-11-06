@@ -59,14 +59,23 @@ fn camera_frame_size(teaching: &[CameraTeaching], camera: &str) -> Option<[u32; 
         .map(|t| t.frame.size)
 }
 
-/// 各计划相机的示教帧尺寸（计划相机顺序），建走廊测量图用；有相机还没有示教帧时报错。
+/// 各计划相机的示教帧尺寸（计划相机顺序），建走廊测量图用；检测某段的相机还没有示教帧时报错。
+/// 不检测任何一段的相机没有走廊、不建图，尺寸记 [0, 0]。
 pub(super) fn teaching_sizes(w: &Workspace) -> Result<Vec<[u32; 2]>, String> {
-    w.doc
-        .plan_cameras()
+    let cameras = w.doc.plan_cameras();
+    cameras
         .iter()
         .map(|camera| {
-            camera_frame_size(&w.camera_teaching, camera)
-                .ok_or_else(|| format!("相机 {camera} 还没有示教帧：先完成走廊示教"))
+            let inspects = w
+                .doc
+                .segments
+                .iter()
+                .any(|s| crate::plan::segment_cameras(s, &cameras).contains(camera));
+            match camera_frame_size(&w.camera_teaching, camera) {
+                Some(size) => Ok(size),
+                None if !inspects => Ok([0, 0]),
+                None => Err(format!("相机 {camera} 还没有示教帧：先完成走廊示教")),
+            }
         })
         .collect()
 }
@@ -967,6 +976,112 @@ fn calib_scale(
     Ok(vision::calib_info(&vision::camera_calib_path(app, inspect)?).and_then(|c| c.mm_per_px))
 }
 
+/// 示教取色：在相机 `camera` 第 `segment` 段冻结的示教帧上，沿已保存的走廊取胶色与两侧背景色，拟合颜色模型
+/// （`glue.color_model`），写进这一段走廊的 `colorModel`；这一段之后按胶色测量。示教帧须是彩色。
+/// 胶样本取走廊 ± 胶宽下限的一半，背景带从胶宽上限的一半外 4 px 起、宽 30 px。
+#[tauri::command]
+pub async fn workspace_fit_color_model(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    camera: String,
+    segment: u32,
+) -> Result<WorkspaceView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<WorkspaceHost>();
+        let (path, frame_id, corridor, scale, detect) = {
+            let items = host.items.lock().unwrap();
+            let w = items.get(&id).ok_or("候选不存在")?;
+            w.expect(revision)?;
+            require_burst(&w.doc)?;
+            let frame = w
+                .camera_teaching
+                .iter()
+                .find(|t| t.camera == camera && t.segment == Some(segment))
+                .map(|t| t.frame.id.clone())
+                .ok_or_else(|| format!("相机 {camera} 第 {segment} 段还没有示教帧"))?;
+            let inspect = w
+                .doc
+                .inspect
+                .iter()
+                .find(|i| i.camera == camera)
+                .ok_or_else(|| format!("相机 {camera} 不是段配方的计划相机"))?;
+            let corridor = inspect
+                .segment_corridor(segment)
+                .map(|s| s.corridor.clone())
+                .filter(|c| c.len() >= 2)
+                .ok_or_else(|| {
+                    format!("相机 {camera} 第 {segment} 段还没有保存走廊，先示教走廊再取色")
+                })?;
+            let scale = inspect.mm_per_px.ok_or("先填像素当量再取色")?;
+            (
+                image_file(&host, &id, &frame)?,
+                frame,
+                corridor,
+                scale,
+                inspect
+                    .detect
+                    .clone()
+                    .unwrap_or_else(|| w.doc.detect.clone()),
+            )
+        };
+        let image = crate::image_file::load(&path)?;
+        if !image.is_color() {
+            return Err(
+                "示教帧是灰度图，不能取色：把相机图像模式改为彩色后重新选这一段的示教帧".into(),
+            );
+        }
+        let [lo, hi] = detect.width_range.map(|w| f64::from(w) / scale);
+        let inner = 0.5 * hi + 4.0;
+        let params = serde_json::json!({
+            "points": serde_json::to_string(&corridor).map_err(|e| e.to_string())?,
+            "glueHalf": (0.5 * lo).clamp(1.0, 40.0),
+            "bgBand": [inner, inner + 30.0],
+        });
+        let engine = app
+            .state::<vision::VisionHost>()
+            .engine()
+            .ok_or("lyFlow 核心库未加载")?;
+        let result = engine.run_targets(
+            vision::template::color_teach().text,
+            &vision::unique_run_id(&format!("color-teach-{id}-{camera}-{segment}")),
+            &image,
+            &params,
+            &["n_model".to_string()],
+        )?;
+        if result.status() != "ok" {
+            return Err(format!("取色失败：{}", result.failure()));
+        }
+        let model = result.record("model").ok_or("取色没有输出颜色模型")?;
+        let text = serde_json::to_string(model).map_err(|e| e.to_string())?;
+        let mut items = host.items.lock().unwrap();
+        let mut w = items.get(&id).ok_or("候选不存在")?.clone();
+        w.expect(revision)?;
+        if !w
+            .camera_teaching
+            .iter()
+            .any(|t| t.camera == camera && t.segment == Some(segment) && t.frame.id == frame_id)
+        {
+            return Err("取色期间示教帧已变化，请重新取色".into());
+        }
+        let mut doc = w.doc.clone();
+        let target = doc
+            .inspect
+            .iter_mut()
+            .find(|i| i.camera == camera)
+            .and_then(|i| i.segments.iter_mut().find(|s| s.segment == segment))
+            .filter(|s| s.corridor == corridor)
+            .ok_or("取色期间走廊已变化，请重新取色")?;
+        target.color_model = Some(text);
+        update_doc(&mut w, doc)?;
+        host.save(&w)?;
+        items.insert(id, w.clone());
+        view(&app, w)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 段配方的走廊提取（决策记录 5.4）：在相机 `camera` 冻结的示教帧 `image_id` 上按选区提取，复用旧中线提取的边缘算法；
 /// 检测极性取这台相机的检测参数，没有时取配方默认。旧配方仍用 `workspace_extract_centerline`。
 #[tauri::command]
@@ -1461,6 +1576,8 @@ pub struct CalibrationFrameView {
     /// 搜索半宽（px），叠图画搜索带用
     pub search_half_px: Option<f64>,
     pub edges: Vec<Option<[[f32; 2]; 2]>>,
+    /// 胶边距线（ToEdge，找到零件边的站：胶中心 → 零件边）；不找边时为空
+    pub part_edges: Vec<[[f32; 2]; 2]>,
     pub metrics: FrameMetrics,
 }
 
@@ -1506,6 +1623,7 @@ pub async fn workspace_calibration_frame(
                 corridor: Vec::new(),
                 search_half_px: None,
                 edges: Vec::new(),
+                part_edges: Vec::new(),
                 metrics: frame_without_metrics(index, seq, FrameState::NotInspected, None),
             });
         };
@@ -1602,6 +1720,7 @@ pub(super) fn frame_view(
         },
         search_half_px,
         edges: measured.edges,
+        part_edges: measured.part_edges,
         metrics: FrameMetrics {
             camera: index,
             seq,

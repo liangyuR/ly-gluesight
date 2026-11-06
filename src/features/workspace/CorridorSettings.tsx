@@ -341,3 +341,65 @@ function OffsetReference({ segment, cameras, disabled, onPatch }: { segment: Pat
         : measure === "toEdge" ? "x_ref 待测量：在试测页测量示教件得出胶边距；或填图纸胶边距" : "x_ref 待测量：在试测页测量示教件得出，不能手填"}</p>
   </div>;
 }
+
+interface ColorPart { mean: [number, number]; intensity: number; weight?: number }
+interface ColorView { glue: ColorPart; background: ColorPart[]; quality: { separation?: number; glueCount?: number; bgCount?: number; saturatedFraction?: number; usable?: boolean } }
+
+/** 胶色模型 JSON 原文里用于显示的部分；解析不了为 null。 */
+function readColorModel(json: string): ColorView | null {
+  try {
+    const value = JSON.parse(json) as Partial<ColorView>;
+    return value.glue?.mean ? { glue: value.glue, background: value.background ?? [], quality: value.quality ?? {} } : null;
+  } catch { return null; }
+}
+
+/** 对数色度 [ln R/G, ln B/G] 与 R+G+B 近似还原成 RGB 色块。 */
+function colorOf({ mean: [c1, c2], intensity }: ColorPart) {
+  const g = intensity / (1 + Math.exp(c1) + Math.exp(c2));
+  const channel = (v: number) => Math.round(Math.min(255, Math.max(0, v)));
+  return `rgb(${channel(g * Math.exp(c1))}, ${channel(g)}, ${channel(g * Math.exp(c2))})`;
+}
+
+const percent = (value: number | undefined) => value != null && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+
+/** 分离度低于它时胶与背景颜色接近，按胶色测量可能不稳。 */
+const LOW_SEPARATION = 3;
+
+/**
+ * 段视图“胶色”：示教帧是彩色时可沿已保存的走廊取色，这一段这台相机改按胶色测量；`color` 为 null 表示示教帧还在读取。
+ * `blocked` 非空时取色按钮禁用并说明原因；`edited` 为走廊有未保存的修改（保存后旧模型作废）。
+ */
+export function ColorCard({ camera, segment, colorModel, color, blocked, edited, working, onFit }: {
+  camera: string; segment: number; colorModel: string | undefined; color: boolean | null; blocked: string; edited: boolean; working: boolean; onFit: () => void;
+}) {
+  const model = colorModel ? readColorModel(colorModel) : null;
+  const separation = model?.quality.separation;
+  const low = separation != null && separation < LOW_SEPARATION;
+  const [badge, tone]: [string, Tone] = color === false ? ["灰度图", "neutral"] : !colorModel ? ["灰度测量", "neutral"]
+    : !model || model.quality.usable === false ? ["不可用", "warn"] : low ? ["分离度低", "warn"] : ["按胶色测量", "ok"];
+  const summary = color === false ? "示教帧是灰度图，按灰度测量" : !colorModel ? "未取色：按灰度测量"
+    : model ? `分离度 ${separation != null ? separation.toFixed(1) : "—"} · 高光 ${percent(model.quality.saturatedFraction)}` : "胶色模型无法读取";
+  return <SettingsCard title="胶色" badge={badge} tone={tone} summary={summary} open={color === true || !!colorModel}>
+    {color === false ? <p className="wp-settings-hint">示教帧是灰度图：相机图像模式改为彩色后重新选示教帧，才能按胶色测量</p> : <>
+      {colorModel && (model ? <div className="wp-settings-group wp-color-model" role="group" aria-label="胶色模型">
+        <p className="wp-settings-hint">这一段按胶色测量：{camera} 在段 {segment} 按示教帧取得的胶色与背景色区分胶条。</p>
+        <div className="wp-color-row"><span className="wp-settings-label">胶</span><span className="wp-color-swatch" style={{ background: colorOf(model.glue) }} title={colorOf(model.glue)}/></div>
+        {model.background.length > 0 && <div className="wp-color-row"><span className="wp-settings-label">背景</span>
+          <span className="wp-color-bar">{model.background.map((part, i) => <span key={i} style={{ background: colorOf(part), flexGrow: Math.max(part.weight ?? 0, 0.01) }} title={`${colorOf(part)} · 占 ${percent(part.weight)}`}/>)}</span></div>}
+        <dl className="wp-color-stats">
+          <dt>分离度</dt><dd className={low ? "c-warn" : undefined}>{separation != null ? separation.toFixed(1) : "—"}</dd>
+          <dt>高光占比</dt><dd>{percent(model.quality.saturatedFraction)}</dd>
+          <dt>样本</dt><dd>胶 {model.quality.glueCount ?? "—"} · 背景 {model.quality.bgCount ?? "—"} px</dd>
+        </dl>
+        {low && <p className="c-warn" role="note">胶与背景颜色接近，测量可能不稳</p>}
+        {model.quality.usable === false && <p className="c-warn" role="note">取色结果不可用：换一帧示教帧或调整走廊后重新取色</p>}
+      </div> : <p className="c-warn">胶色模型无法读取，请重新取色</p>)}
+      {color == null ? <p className="wp-settings-hint">正在读取示教帧…</p> : <>
+        <Button size="sm" variant={colorModel ? "tonal" : "filled"} disabled={!!blocked || working} onClick={onFit}>{working ? "取色中…" : colorModel ? "重新取色" : "取色"}</Button>
+        {blocked && <p className="wp-settings-hint">{blocked}</p>}
+      </>}
+      {colorModel && edited && <p className="wp-settings-hint">走廊改动保存后，这里的胶色模型作废，需要重新取色。</p>}
+      {!colorModel && <p className="wp-settings-hint">示教帧是彩色图：沿已保存的走廊取胶色与背景色后，这一段改按胶色测量；不取色则按灰度测量。</p>}
+    </>}
+  </SettingsCard>;
+}

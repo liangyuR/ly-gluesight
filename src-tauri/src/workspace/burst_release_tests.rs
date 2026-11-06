@@ -20,6 +20,7 @@ fn taught(kinds: &[SegmentKind], device: &str) -> Workspace {
                 segment,
                 corridor: corridor.clone(),
                 sector_deg: None,
+                color_model: None,
             })
             .collect();
     }
