@@ -1,6 +1,6 @@
 # lyFlow 只提供算子，流程与判定归 GlueSight（草案）
 
-状态：P1–P3 的 GlueSight 侧已实施；P3 依赖的 lyFlow 1.2 还没发版，`packaging/runtime.json` 的系列与 `Cargo.toml` 的 `lyflow-client` 仍锁 1.1，只能联合开发本地构建运行（见“分期”）。不迁移旧配方。采纳后修订 [algorithm.md](algorithm.md) A-6（“误报修在 lyFlow，不在 gluesight 调参数”），并把 [segment-burst.md](segment-burst.md) D-SB-47 里的定向判定、回退改由 GlueSight 实现。
+状态：P1–P3 已实施，依赖的 lyFlow 系列与版本见 [lyFlow 依赖](../architecture/lyflow-dependency.md)。不迁移旧配方。采纳后修订 [algorithm.md](algorithm.md) A-6（“误报修在 lyFlow，不在 gluesight 调参数”），并把 [segment-burst.md](segment-burst.md) D-SB-47 里的定向判定、回退改由 GlueSight 实现。
 
 ## 问题
 
@@ -78,7 +78,7 @@ lyFlow 本身的设计是节点图平台：GraphDoc 是统一的图文档，支�
 
 1. **P1，不改 lyFlow**（已实施）：原先写死的算子门限改为专家参数，配方默认加相机覆盖（`RecipeDoc.expert`、`CameraInspect.expert`），默认值与原来相同；相机视图有“专家参数”卡片。`bead_path`、`bead_width` 其余的诊断输出（覆盖率、陡度、候选方向与每站暗段）还没带到试测界面。眼前的假断胶可以先调“响应下限”缓解：seg-new14 cam2 段 2 帧 4 从 16 调到 32，有胶站从 21/31 到 31/31。
 2. **P2**（已实施）：测量图改为 `src-tauri/graphs/` 下的 GraphDoc 模板（`corridor`、`heading`）加顶层图参数，GlueSight 按次通过 params_json 传入全部有效参数；不需要找边时不运行找边节点。
-3. **流程调试页**（LF-6，已实施，依赖 `@lyflow/editor` 1.2.0，取 lyFlow Release 的 tarball）：选帧、逐节点运行与查看、保存专家参数；判定结果叠加还没做。
+3. **流程调试页**（LF-6，已实施，依赖 `@lyflow/editor`，取与运行库同一 lyFlow Release 的 tarball）：选帧、逐节点运行与查看、保存专家参数；判定结果叠加还没做。
 4. **P3，配合 lyFlow 1.2 系列**（已实施，依赖 lyFlow v1.2.0）：两张模板换成 LF-2 的算子，判定迁到 `vision/judge/`（示教走廊 `taught.rs`、拟合胶路 `fit.rs`、找边 `edge.rs`），规则与 1.1 相同，只有拟合胶路选方向、θ 的口径与粗跟踪、卡尺的暗段拆分方式（半高拆分，1.1 为连通段）有意不同（见 segment-burst D-SB-47）；逐帧定向一张图一支扇形搜索（扇区为出胶点背离最近画面边的半圈）；1.1 的专家参数名不迁移；`requiredOperators` 换成实际用到的算子；发布包测量图版本 `flow-2`。
    - 对照（2026-10-29，seg-new14 的 NEW-1、NEW-14 候选在采集轮次 `capture-1793260666636-0` 上的 48 次测量，以同一 1.2 引擎跑 1.1 旧图为基准）：状态、最长断胶、有胶比例、逐站有无胶、是否回退与回退原因全部相同；胶宽与 x 只差 1.1 输出的舍入（≤ 6 × 10⁻⁵ mm），胶边 ≤ 0.001 px；拟合胶路逐点相同，回退后仍没找到胶的 5 帧直线各有 1–2 点差 0.001 px（回退扇区在 1.2 是 f32 参数，起跑方向差约 10⁻⁵°）。找边（三段直线临时设 ToEdge，两种极性，各 22 帧）胶边距有无全部相同，都有值的 73 帧差中位 0.0005 mm、最大 0.28 mm（1.2 剖面采样相位不同，贴着门限的跳变与剔野结果会变）。
    - 耗时（同一批帧，release，冷缓存，p50 / p95）：示教走廊 1.1 图 6.3 / 7.3 ms，新图 6.7 / 8.5 ms；逐帧定向 1.1 图（含回退重跑）10.2 / 14.2 ms，新图搜索与回退两支一次跑完 11.6–12.1 / 17.0–17.4 ms（分阶段只跑需要的分支更慢，没采用）。新图每帧都算两支，1.1 只在搜索失败时重跑回退。lyFlow 的 `glue.response` 设了 roi 时只输出块内，三张图与块位置打包为一个 `maps` 输出，下游只接它；执行器的图像统计也已提速。
