@@ -6,6 +6,7 @@ use crate::agent_mcp::canvas::{self, Canvas, CYAN, GREEN, MAGENTA, YELLOW};
 use crate::agent_mcp::Content;
 use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::cycle::CycleHost;
+use crate::plan::PathSegment;
 use crate::recipe::SegmentCorridor;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -560,8 +561,24 @@ fn thin(points: &[[f32; 2]], every: usize) -> Vec<[f32; 2]> {
     out
 }
 
-/// 按胶色把粗笔划吸附到胶中心：`glue.color_model` 以笔划为示教线，每站在 ± `shift` px 内找胶色段重新居中，
-/// 取它输出的胶中心线（站距 4 px）平滑后再居中一遍，按 20 px 抽稀作走廊。返回走廊与第一遍的平均移动距离（px）。
+/// 吸附流程：笔划插点作示教线，`recenter(线, 偏移上限)` 给出重新居中后的胶中心线（站距 4 px）与平均移动距离；
+/// 没找到胶的站保留原偏移会留下台阶，所以平滑后以小偏移上限再居中一遍、再平滑，按 20 px 抽稀，两端补回笔划首尾。
+/// 返回走廊与第一遍的平均移动距离（px）。
+fn snap_path(
+    stroke: &[[f32; 2]],
+    shift: f32,
+    mut recenter: impl FnMut(&[[f32; 2]], f32) -> Result<(Vec<[f32; 2]>, Option<f64>), String>,
+) -> Result<(Vec<[f32; 2]>, Option<f64>), String> {
+    let (first, moved) = recenter(&densify(stroke, 8.0), shift)?;
+    let (second, _) = recenter(&smooth(&first, SNAP_SMOOTH), shift.min(SNAP_REFINE))?;
+    let path = thin(&smooth(&second, SNAP_SMOOTH), 5);
+    Ok((
+        extend_ends(path, (stroke[0], stroke[stroke.len() - 1])),
+        moved,
+    ))
+}
+
+/// 按胶色把粗笔划吸附到胶中心（[`snap_path`]）：重新居中用 `glue.color_model`，以线为示教线，每站在偏移上限内找胶色段。
 async fn snap_color(
     app: &AppHandle,
     recipe: &str,
@@ -570,13 +587,12 @@ async fn snap_color(
     stroke: &[[f32; 2]],
     shift: f32,
 ) -> Result<(Vec<[f32; 2]>, Option<f64>), String> {
-    let ends = (stroke[0], stroke[stroke.len() - 1]);
     let (app, recipe, camera, image_id, stroke) = (
         app.clone(),
         recipe.to_string(),
         camera.to_string(),
         image_id.to_string(),
-        densify(stroke, 8.0),
+        stroke.to_vec(),
     );
     blocking(move || {
         let host = app.state::<WorkspaceHost>();
@@ -625,12 +641,9 @@ async fn snap_color(
                 let moved = result
                     .record("model")
                     .and_then(|m| m["quality"]["centerShift"].as_f64());
-                Ok((smooth(&centers, SNAP_SMOOTH), moved))
+                Ok((centers, moved))
             };
-        // 第一遍按笔划半径吸附；没找到胶的站保留原偏移会留下台阶，平滑后以小偏移上限再居中一遍
-        let (first, moved) = recenter(&stroke, shift)?;
-        let (second, _) = recenter(&first, shift.min(SNAP_REFINE))?;
-        Ok((extend_ends(thin(&second, 5), ends), moved))
+        snap_path(&stroke, shift, recenter)
     })
     .await
 }
@@ -1071,6 +1084,24 @@ fn merge(target: &mut Value, patch: &Value) {
     }
 }
 
+/// 段配置补丁（`teach_segment` 的参数）应用到一段：`checks` 深合并；`offsetRef` 为 null 关掉胶偏参考，否则深合并。
+/// 结果按段配置的格式校验。
+fn patch_segment(
+    segment: &PathSegment,
+    patch: &serde_json::Map<String, Value>,
+) -> Result<PathSegment, String> {
+    let mut value = serde_json::to_value(segment).map_err(|e| e.to_string())?;
+    if let Some(checks) = patch.get("checks") {
+        merge(&mut value["checks"], checks);
+    }
+    match patch.get("offsetRef") {
+        Some(Value::Null) => value["offsetRef"] = Value::Null,
+        Some(offset) => merge(&mut value["offsetRef"], offset),
+        None => {}
+    }
+    serde_json::from_value(value).map_err(|e| format!("段配置不对：{e}"))
+}
+
 async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content>, ToolError> {
     let map = arguments.as_object().ok_or("参数要是对象")?;
     if let Some(key) = map
@@ -1079,7 +1110,11 @@ async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content
     {
         return Err(format!("参数不对：不认识 {key}").into());
     }
-    let recipe = map["recipe"].as_str().ok_or("缺少 recipe")?.to_string();
+    let recipe = map
+        .get("recipe")
+        .and_then(Value::as_str)
+        .ok_or("缺少 recipe")?
+        .to_string();
     let index = map
         .get("segment")
         .and_then(Value::as_u64)
@@ -1090,16 +1125,7 @@ async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content
         .iter_mut()
         .find(|s| s.index == index)
         .ok_or_else(|| format!("没有第 {index} 段"))?;
-    let mut value = serde_json::to_value(&*target).map_err(|e| e.to_string())?;
-    if let Some(checks) = map.get("checks") {
-        merge(&mut value["checks"], checks);
-    }
-    match map.get("offsetRef") {
-        Some(Value::Null) => value["offsetRef"] = Value::Null,
-        Some(patch) => merge(&mut value["offsetRef"], patch),
-        None => {}
-    }
-    *target = serde_json::from_value(value).map_err(|e| format!("段配置不对：{e}"))?;
+    *target = patch_segment(target, map)?;
     let view = {
         let (app, recipe, revision) = (app.clone(), recipe.clone(), w.revision);
         blocking(move || burst::workspace_update_segments(app, recipe, revision, segments)).await?
@@ -1198,28 +1224,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn patching_one_edge_field_keeps_the_other_toedge_settings() {
-        let mut offset = json!({
-            "measure": "toEdge", "camera": "cam1", "xRef": null, "spread": null,
-            "edge": { "polarity": "brightToDark", "searchMm": 18.0, "contrastMin": 70.0, "nominalMm": 10.0 },
-        });
-        merge(&mut offset, &json!({ "edge": { "contrastMin": 40.0 } }));
-        assert_eq!(
-            offset["edge"],
-            json!({ "polarity": "brightToDark", "searchMm": 18.0, "contrastMin": 40.0, "nominalMm": 10.0 })
+    fn segment_patch_changes_only_the_given_fields_and_null_turns_offset_off() {
+        let mut segment = crate::plan::new_segment(
+            2,
+            crate::plan::SegmentKind::Straight,
+            &crate::plan::KindDefaults::default(),
         );
-        assert_eq!(offset["camera"], "cam1");
+        segment.offset_ref = Some(
+            serde_json::from_value(json!({
+                "measure": "toEdge", "camera": "cam1",
+                "edge": { "polarity": "brightToDark", "searchMm": 18.0, "contrastMin": 70.0, "nominalMm": 10.0 },
+            }))
+            .unwrap(),
+        );
+        let patch = json!({
+            "recipe": "NEW-1", "segment": 2,
+            "checks": { "break": { "maxGapMm": 4.0 } },
+            "offsetRef": { "edge": { "contrastMin": 40.0 } },
+        });
+        let patched = patch_segment(&segment, patch.as_object().unwrap()).unwrap();
+        let edge = patched.offset_ref.as_ref().unwrap().edge.as_ref().unwrap();
+        assert_eq!(
+            (edge.search_mm, edge.contrast_min, edge.nominal_mm),
+            (18.0, 40.0, Some(10.0))
+        );
+        assert_eq!(patched.checks.gap.max_gap_mm, 4.0);
+        assert_eq!(
+            patched.checks.gap.min_present,
+            segment.checks.gap.min_present
+        );
+        assert_eq!(patched.checks.width, segment.checks.width);
+        let off =
+            patch_segment(&segment, json!({ "offsetRef": null }).as_object().unwrap()).unwrap();
+        assert!(off.offset_ref.is_none());
     }
 
     #[test]
-    fn snapped_corridor_starts_and_ends_where_the_stroke_does_along_the_bead() {
-        let snapped: Vec<[f32; 2]> = (2..=9).map(|i| [i as f32 * 10.0, 10.0]).collect();
-        let path = extend_ends(snapped.clone(), ([0.0, 14.0], [120.0, 6.0]));
-        assert_eq!(path.first(), Some(&[0.0, 10.0]));
-        assert_eq!(path.last(), Some(&[120.0, 10.0]));
-        assert_eq!(
-            extend_ends(snapped.clone(), ([40.0, 10.0], [60.0, 10.0])),
-            snapped
+    fn snapped_corridor_spans_the_stroke_even_when_recentering_drops_end_stations() {
+        let stroke = [[0.0, 100.0], [400.0, 100.0]];
+        // 重新居中把胶中心移到 y = 110，并像 color_model 一样两端各少几站
+        let (path, moved) = snap_path(&stroke, 30.0, |line, _| {
+            let n = line.len();
+            Ok((
+                line[6..n - 6].iter().map(|p| [p[0], 110.0]).collect(),
+                Some(10.0),
+            ))
+        })
+        .unwrap();
+        assert_eq!(moved, Some(10.0));
+        let (first, last) = (path[0], path[path.len() - 1]);
+        assert!(
+            (first[0] - 0.0).abs() < 0.5 && (first[1] - 110.0).abs() < 0.5,
+            "{first:?}"
+        );
+        assert!(
+            (last[0] - 400.0).abs() < 0.5 && (last[1] - 110.0).abs() < 0.5,
+            "{last:?}"
         );
     }
 }
