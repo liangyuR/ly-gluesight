@@ -15,6 +15,7 @@ use crate::release::ValidationSite;
 use crate::store::{self, Store};
 use crate::vision;
 
+pub(crate) mod agent;
 mod burst;
 mod burst_history;
 mod burst_release;

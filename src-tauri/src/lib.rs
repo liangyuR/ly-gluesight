@@ -1,3 +1,4 @@
+mod agent_mcp;
 mod applog;
 mod audit;
 mod burst_judge;
@@ -416,6 +417,7 @@ fn start_services(
     plc::PlcHost::start_if_configured(app);
     cycle::CycleHost::start(app);
     camera::CameraRig::start(app);
+    agent_mcp::start(app);
     measure::apply_settings(app);
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || cycle::purge_history(&handle));
