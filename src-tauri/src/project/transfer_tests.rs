@@ -73,7 +73,14 @@ fn source_project(data: &Path) -> (PathBuf, Arc<Recipe>) {
 fn export(data: &Path, root: &Path) -> PathBuf {
     let package = data.join("exports").join("line-a.zip");
     std::fs::create_dir_all(package.parent().unwrap()).unwrap();
-    export_to(root, true, &data.join("cache").join("export"), &package).unwrap();
+    export_to(
+        root,
+        true,
+        true,
+        &data.join("cache").join("export"),
+        &package,
+    )
+    .unwrap();
     package
 }
 
@@ -158,6 +165,7 @@ fn copy(data: &Path, include_records: bool) -> Result<ProjectImported, String> {
     copy_from(
         data,
         "line-a",
+        include_records,
         include_records,
         &New {
             id: "line-a2",
@@ -244,7 +252,14 @@ fn transferred_navigation_assets_keep_release_identity_and_damaged_maps_do_not_b
         let plan_file = data.0.join("state").join("plan-version");
         let (transferred, target) = if importing {
             let package = data.0.join("navigation.zip");
-            export_to(&source, false, &data.0.join("cache/export"), &package).unwrap();
+            export_to(
+                &source,
+                false,
+                false,
+                &data.0.join("cache/export"),
+                &package,
+            )
+            .unwrap();
             (
                 import_from(
                     &data.0,
@@ -279,6 +294,64 @@ fn transferred_navigation_assets_keep_release_identity_and_damaged_maps_do_not_b
             .iter()
             .any(|note| note.contains("导航") || note.contains("辅助")));
         assert!(!target.join("inspection.db").exists());
+    }
+}
+
+/// 示教件原图可选：不带时包里与副本里只留轮次记录、不留 PGM，记了原图路径的轮次也不因此判成引用丢失；带时原样带上。
+#[test]
+fn capture_images_option_decides_whether_teaching_frames_travel_with_the_project() {
+    for capture_images in [false, true] {
+        let data = TempDir::new(if capture_images {
+            "capture-on"
+        } else {
+            "capture-off"
+        });
+        let (source, _) = source_project(&data.0);
+        let package = data.0.join("capture.zip");
+        export_to(
+            &source,
+            false,
+            capture_images,
+            &data.0.join("cache/export"),
+            &package,
+        )
+        .unwrap();
+        let packaged = inspect(&package)
+            .unwrap()
+            .files
+            .iter()
+            .any(|f| f.path == "project/recipe-capture/capture-1/a.pgm");
+        assert_eq!(packaged, capture_images);
+        let plan_file = data.0.join("state/plan-version");
+        import_from(
+            &data.0,
+            &package,
+            "line-b",
+            "B 线",
+            &plan_file,
+            &data.0.join("cache"),
+        )
+        .unwrap();
+        copy_from(
+            &data.0,
+            "line-a",
+            false,
+            capture_images,
+            &New {
+                id: "line-a2",
+                name: "A 线副本",
+                description: "",
+            },
+            &plan_file,
+            &data.0.join("cache"),
+        )
+        .unwrap();
+        for id in ["line-b", "line-a2"] {
+            let round = super::super::dir(&data.0, id).join("recipe-capture/capture-1");
+            assert!(round.join("round.json").is_file(), "{id}");
+            assert_eq!(round.join("a.pgm").is_file(), capture_images, "{id}");
+        }
+        assert!(source.join("recipe-capture/capture-1/a.pgm").is_file());
     }
 }
 
