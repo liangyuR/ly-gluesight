@@ -244,7 +244,12 @@ impl RecipeCaptureHost {
         let camera = cameras.iter().position(|id| id == camera_id).ok_or_else(|| format!("采集轮次没有相机 {camera_id}"))?;
         if !saved[camera].contains(&seq) { return Err(format!("相机 {camera_id} 缺第 {seq} 帧组的图像")); }
         let path = dir.join(camera_id).join(frame_file(seq));
-        if !path.is_file() { return Err("示教件原图不在本项目（导出或复制项目时未包含示教件原图），请在示教件页重新选用示教件".into()); }
+        if !path.is_file() {
+            return Err(
+                "示教件原图不在本项目（导出或复制项目时未包含示教件原图），请在示教件页重新选用示教件"
+                    .into(),
+            );
+        }
         Ok(path)
     }
 
