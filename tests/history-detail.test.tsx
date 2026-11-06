@@ -33,7 +33,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.comparisons).mockResolvedValue([]);
   vi.mocked(workspaceApi.compare).mockResolvedValue(comparison());
   vi.mocked(workspaceApi.compareOriginal).mockResolvedValue({...comparison(),source:"original"});
-  vi.mocked(workspaceApi.recordFrameView).mockReset().mockResolvedValue({ segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5, edges: [], metrics: frameMetrics(0, 1) });
+  vi.mocked(workspaceApi.recordFrameView).mockReset().mockResolvedValue({ segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5, edges: [], partEdges: [], metrics: frameMetrics(0, 1) });
   vi.mocked(burstImageApi.record).mockReset().mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
 });
 
@@ -78,7 +78,7 @@ describe("历史详情（段配方记录）", () => {
   it("从试测“看详情”带对照进入 → 帧组与整件判定按对照的逐帧指标显示，原图上的测站与胶宽折线联动，可切回原始记录", async () => {
     const burst = detail.burst!;
     const edge = (y: number): [[number, number], [number, number]] => [[10, y], [20, y]];
-    vi.mocked(workspaceApi.recordFrameView).mockResolvedValue({ segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5, edges: [edge(10), edge(20), edge(30)], metrics: frameMetrics(0, 1) });
+    vi.mocked(workspaceApi.recordFrameView).mockResolvedValue({ segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5, edges: [edge(10), edge(20), edge(30)], partEdges: [], metrics: frameMetrics(0, 1) });
     const replay = burstJudgement({ verdict: "NG_GAP", plcCode: 13, reason: "断胶" });
     vi.mocked(workspaceApi.comparisons).mockResolvedValue([{ ...comparison(), source: "raw", judgement: { ...detail.judgement, verdict: "NG_GAP", reason: "断胶" },
       burst: { segments: burst.segments, cameras: burst.cameras, expectedTotal: burst.expectedTotal, judgement: replay,

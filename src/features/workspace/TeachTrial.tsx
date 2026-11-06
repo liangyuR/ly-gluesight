@@ -119,7 +119,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
       </div>}
     </Surface>
     {seq != null && <FrameViewer controlsAt="footer" image={shown?.image ?? null} loading={!shown} error={shown?.error ?? ""} label={`${camera} · 段 ${segment} · 帧组 ${seq} · 试测`}
-      overlay={{ path: view?.corridor ?? [], searchHalfPx: view?.searchHalfPx ?? undefined, segments: edges, heading: guide && { ...guide, measured: metrics?.headingDeg ?? null } }}
+      overlay={{ path: view?.corridor ?? [], searchHalfPx: view?.searchHalfPx ?? undefined, segments: edges, partEdges: view?.partEdges, heading: guide && { ...guide, measured: metrics?.headingDeg ?? null } }}
       tools={<div className="wp-corridor-seq" role="group" aria-label="试测帧组">
         <IconButton size="sm" aria-label="试测上一帧组" disabled={!span || seq <= span.start} onClick={() => step(-1)}><ChevronLeft size={15}/></IconButton>
         <span>帧组 {seq}{seq === teachSeq ? "（示教帧）" : ""}</span>

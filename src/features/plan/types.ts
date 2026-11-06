@@ -245,6 +245,8 @@ export interface CalibrationFrameView {
   searchHalfPx: number | null;
   /** 逐站两侧胶边（px），无胶站为 null */
   edges: ([[number, number], [number, number]] | null)[];
+  /** 胶边距线（ToEdge）：找到零件边的站，胶中心 → 零件边（px）；不找边时为空 */
+  partEdges: [[number, number], [number, number]][];
   metrics: FrameMetrics;
 }
 

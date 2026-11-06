@@ -78,7 +78,7 @@ function BurstCameraFrame({part,camera,name,seq,group}:{part:PartView;camera:num
   const view=useLiveView(part,camera,seq,cell);
   // 新帧组的图还没到、显示的是上一张时不叠这一帧的线
   const edges=(view?.edges??[]).flatMap(edge=>edge?[{from:edge[0],to:edge[1],color:"var(--ov-line)"}]:[]);
-  const overlay=view&&view.corridor.length>=2&&shownSeq===seq?{path:view.corridor,searchHalfPx:view.searchHalfPx??undefined,segments:edges}:undefined;
+  const overlay=view&&view.corridor.length>=2&&shownSeq===seq?{path:view.corridor,searchHalfPx:view.searchHalfPx??undefined,segments:edges,partEdges:view.partEdges}:undefined;
   return <section className="wp-burst-cam" aria-label={`${name} 帧组 ${seq}`}>
     <FrameViewer image={arrived?image?.image??null:null} loading={arrived&&live.loading} error={live.current?.error??""} label={`${name} · 帧组 ${shownSeq}`} overlay={overlay}
       emptyTitle={missing?"缺帧":"等待本帧组图像"} emptyHint={missing?"这台相机没有出本帧组的图，本组按其余相机判（检测不完整，不影响 OK/NG）。":""}/>

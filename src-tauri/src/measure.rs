@@ -302,10 +302,12 @@ pub struct FrameMeasured {
     pub trace: Option<FrameTrace>,
 }
 
-/// 一帧测到的叠图几何（px）：逐站两侧胶边（无胶站为 None）与逐帧定向拟合出的胶路（示教走廊为空），在线检测视图叠图用。
+/// 一帧测到的叠图几何（px）：逐站两侧胶边（无胶站为 None）、胶边距线（ToEdge，胶中心 → 零件边）与逐帧定向拟合出的胶路
+/// （示教走廊为空），在线检测视图叠图用。
 #[derive(Clone, Debug, Default)]
 pub struct FrameTrace {
     pub edges: Vec<Option<[[f32; 2]; 2]>>,
+    pub part_edges: Vec<[[f32; 2]; 2]>,
     pub line: Vec<[f32; 2]>,
 }
 
@@ -417,6 +419,7 @@ fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), Measu
                     m.metrics,
                     Some(FrameTrace {
                         edges: m.edges,
+                        part_edges: m.part_edges,
                         line: m.line,
                     }),
                 )

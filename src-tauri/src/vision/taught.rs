@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::heading::{measure_heading_with, plan_heading, HeadingGraph};
-use super::judge::edge::{judge_edges, EdgeWindow};
+use super::judge::edge::{judge_edges, EdgeSide, EdgeStatus, EdgeWindow};
 use super::judge::taught::{judge_taught, LateralRuns, TaughtParams};
 use super::template::{self, number, Template};
 use super::{Engine, FrameImage, RunResult};
@@ -294,18 +294,51 @@ pub(super) fn edge_graph(
 /// 找边的远侧持续长度（px，模板 `edgeFarRun` 的默认值）。
 const EDGE_FAR_RUN_PX: f64 = 12.0;
 
-/// 找边记录（`glue.part_edges`）按 1.1 口径判 → 胶中心到零件边距离的均值（mm）。`beads` 是逐站选中的胶边 (lo, hi)（px）；
-/// 有胶测站里找到边的不到一半时为 None（这一帧胶偏记未测）。
-pub(super) fn edge_mm(
+/// 一帧找边的结果：胶中心到零件边距离的均值（mm，有胶测站里找到边的不到一半时为 None，这一帧胶偏记未测），
+/// 与叠图用的胶边距线（找边判为 ok 的站，胶中心 → 零件边）。
+pub(super) struct EdgeMeasure {
+    pub mm: Option<f64>,
+    pub lines: Vec<[[f32; 2]; 2]>,
+}
+
+/// 找边记录（`glue.part_edges`）按 1.1 口径判。`beads` 是逐站选中的胶边 (lo, hi)（px），`poses` 是逐站站点与单位法向。
+pub(super) fn edge_measure(
     edges: Option<&Value>,
     beads: &[Option<(f64, f64)>],
+    poses: &[([f64; 2], [f64; 2])],
     window: &EdgeWindow,
     scale: f64,
-) -> Result<Option<f64>, String> {
+) -> Result<EdgeMeasure, String> {
     let edges = edges.ok_or("算法缺少找边结果")?;
-    Ok(judge_edges(edges, beads, window)?
-        .mean_distance_px()
-        .map(|d| d * scale))
+    let judged = judge_edges(edges, beads, window)?;
+    // 距离从胶中心沿零件边一侧量：右侧沿 +n，左侧沿 −n
+    let sign = match judged.side {
+        Some(EdgeSide::Right) => 1.0,
+        Some(EdgeSide::Left) => -1.0,
+        None => 0.0,
+    };
+    let lines = judged
+        .stations
+        .iter()
+        .zip(beads)
+        .zip(poses)
+        .filter(|((station, _), _)| station.status == EdgeStatus::Ok)
+        .filter_map(|((station, bead), &(center, normal))| {
+            let (lo, hi) = (*bead)?;
+            let mid = 0.5 * (lo + hi);
+            let at = |t: f64| {
+                [
+                    (center[0] + normal[0] * t) as f32,
+                    (center[1] + normal[1] * t) as f32,
+                ]
+            };
+            Some([at(mid), at(mid + sign * station.distance_px?)])
+        })
+        .collect();
+    Ok(EdgeMeasure {
+        mm: judged.mean_distance_px().map(|d| d * scale),
+        lines,
+    })
 }
 
 /// 一站卡尺的位置：站点与单位法向（px）。
@@ -381,6 +414,9 @@ pub struct CorridorGraph {
 pub struct FrameMeasurement {
     pub metrics: FrameMetrics,
     pub edges: Vec<Option<[[f32; 2]; 2]>>,
+    /// 胶边距线（ToEdge）：找到零件边的站，胶中心 → 零件边；不找边时为空
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub part_edges: Vec<[[f32; 2]; 2]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub line: Vec<[f32; 2]>,
     pub ms: u32,
@@ -744,8 +780,17 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
         &beads,
         &judged.unknown,
     );
+    let mut part_edges = Vec::new();
     if let Some(window) = &c.edge {
-        metrics.edge_mm = edge_mm(result.record("edges"), &judged.beads, window, c.scale)?;
+        let edge = edge_measure(
+            result.record("edges"),
+            &judged.beads,
+            &poses,
+            window,
+            c.scale,
+        )?;
+        metrics.edge_mm = edge.mm;
+        part_edges = edge.lines;
     }
     if let Some(why) = corridor_exit(&beads, c.taught.tolerance, c.scale) {
         metrics.state = FrameState::OutOfCorridor;
@@ -754,6 +799,7 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
     Ok(FrameMeasurement {
         metrics,
         edges,
+        part_edges,
         line: Vec::new(),
         ms: 0,
     })

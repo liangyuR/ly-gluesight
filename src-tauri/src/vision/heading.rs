@@ -8,7 +8,7 @@ use super::judge::edge::EdgeWindow;
 use super::judge::fit::{choose_path, judge_stations, PathChoice, PathGate, StationGate};
 use super::taught::{
     bead_metrics, bead_params, bead_params_into, check_color, color_params_into, edge_graph,
-    edge_mm, edge_points, response_params_into, FrameMeasurement, GraphRun,
+    edge_measure, edge_points, response_params_into, FrameMeasurement, GraphRun,
 };
 use super::template::{self, number, Template};
 use super::{FrameImage, RunResult};
@@ -255,8 +255,18 @@ fn measure_chosen(
         &unknown,
     );
     metrics.x_mm = None;
+    let mut part_edges = Vec::new();
     if let Some(window) = &g.edge {
-        metrics.edge_mm = edge_mm(result.record(&format!("edges{k}")), &lohi, window, g.scale)?;
+        let poses: Vec<([f64; 2], [f64; 2])> = calls.iter().map(|c| (c.center, c.normal)).collect();
+        let edge = edge_measure(
+            result.record(&format!("edges{k}")),
+            &lohi,
+            &poses,
+            window,
+            g.scale,
+        )?;
+        metrics.edge_mm = edge.mm;
+        part_edges = edge.lines;
     }
     let line: Vec<[f32; 2]> = result
         .record(&format!("line{k}"))
@@ -272,6 +282,7 @@ fn measure_chosen(
             .iter()
             .map(|c| c.bead.map(|b| edge_points(c.center, c.normal, b)))
             .collect(),
+        part_edges,
         line,
         ms: 0,
     })
@@ -307,6 +318,7 @@ fn no_bead(g: &HeadingGraph, choice: &PathChoice, seq: u64) -> FrameMeasurement 
     FrameMeasurement {
         metrics,
         edges: vec![None; n],
+        part_edges: Vec::new(),
         line: choice
             .heading
             .map(|h| straight_line(g.nozzle, h, g.zone))

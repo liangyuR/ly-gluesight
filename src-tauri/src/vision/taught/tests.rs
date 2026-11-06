@@ -219,6 +219,39 @@ fn color_corridor_station_under_highlight_is_unknown_but_a_bare_hole_stays_a_gap
 }
 
 #[test]
+fn part_edge_lines_run_from_bead_center_to_the_edge_on_the_voted_side() {
+    // 防的回归：胶边距线画到另一侧、或终点不在测得的胶边距上（叠图与 edgeMm 对不上，现场按图调极性、对比度会被误导）
+    let mut doc = burst_doc();
+    doc.segments[0].offset_ref = Some(crate::plan::OffsetRef {
+        measure: OffsetMeasure::ToEdge,
+        camera: "cam1".into(),
+        x_ref: None,
+        spread: None,
+        edge: Some(crate::plan::EdgeParams {
+            polarity: EdgePolarity::BrightToDark,
+            search_mm: 8.0,
+            contrast_min: 40.0,
+            nominal_mm: None,
+        }),
+    });
+    let c = corridor_of(doc, 0);
+    // 胶两边 (−6, 10)、胶中心 +2：右侧 t = 24 与左侧 t = 20 离胶中心都是 22 px（5.5 mm）
+    for (right, left, end_y) in [(Some(24.0), None, 104.0), (None, Some(20.0), 60.0)] {
+        let side = |t: Option<f64>| json!({"length": 100, "edges": t.map(|t| vec![json!({"t": t})]).unwrap_or_default()});
+        let mut output = corridor_output(&beads(&[], &[]));
+        output.outputs["edges"] = record(json!({"start": 0.0, "searchLength": 100.0,
+            "stations": (0..41).map(|_| json!({"right": side(right), "left": side(left)})).collect::<Vec<_>>()}));
+        let m = measure(&c, FRAME, output).unwrap();
+        assert!((m.metrics.edge_mm.unwrap() - 5.5).abs() < 1e-6);
+        assert_eq!(m.part_edges.len(), 41);
+        for (i, line) in m.part_edges.iter().enumerate() {
+            let x = 40.0 + 4.0 * i as f32;
+            assert_eq!(*line, [[x, 82.0], [x, end_y]], "第 {} 站", i + 1);
+        }
+    }
+}
+
+#[test]
 fn malformed_engine_output_fails_only_that_frame() {
     // 防的回归（规格 §0 一帧失败只影响本帧）：输出不合契约（缺记录、站数、弧长、中线、暗段字段）或图像尺寸不对时
     // panic、拿错位的数据算指标，或把走廊测量图弄坏、后面正常的帧也测不了

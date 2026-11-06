@@ -97,7 +97,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
       </div>
       {selected && camera && <div className="wp-calib-frame">
         <FrameViewer image={shown.image} loading={shown.loading} error={shown.error} label={`${camera} · 帧组 ${selected.seq}`}
-          overlay={view && view.corridor.length >= 2 ? { path: view.corridor, searchHalfPx: view.searchHalfPx ?? undefined, segments: edges } : undefined}
+          overlay={view && view.corridor.length >= 2 ? { path: view.corridor, searchHalfPx: view.searchHalfPx ?? undefined, segments: edges, partEdges: view.partEdges } : undefined}
           emptyTitle="读取中" emptyHint="正在读这一帧的原图并重测。" />
         <div className="wp-calib-frame-info" aria-label="这一帧的指标">
           <KV label="所在段">{segment ? `第 ${segment.index} 段 · ${segmentLabel(segment)}` : "—"}</KV>
