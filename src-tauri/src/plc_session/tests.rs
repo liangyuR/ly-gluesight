@@ -420,7 +420,12 @@ impl Rig {
         self.engine.connect().await;
         self.connected().await;
         self.live().await;
-        assert_eq!(self.session.phase(), SessionPhase::ResetRequired, "{:?}", self.session.view());
+        assert_eq!(
+            self.session.phase(),
+            SessionPhase::ResetRequired,
+            "{:?}",
+            self.session.view()
+        );
     }
 
     /// 按节拍的顺序：先问自动复位，再带着结果轮询；返回是否到了就绪。
@@ -428,7 +433,10 @@ impl Rig {
         for _ in 0..rounds {
             self.fresh().await;
             let reset = self.session.auto_reset();
-            if matches!(self.session.poll(&self.engine, reset, true).await, SessionEvent::Ready) {
+            if matches!(
+                self.session.poll(&self.engine, reset, true).await,
+                SessionEvent::Ready
+            ) {
                 return true;
             }
         }
@@ -442,7 +450,11 @@ async fn auto_reset_after_reconnect_reaches_ready_only_when_enabled() {
     let mut rig = Rig::new("auto-reset").await;
     rig.reconnect().await;
     assert!(!rig.auto_poll(10).await);
-    assert_eq!(rig.session.view().reset_blocked_reason, None, "复位条件满足仍不复位，才说明是开关在拦");
+    assert_eq!(
+        rig.session.view().reset_blocked_reason,
+        None,
+        "复位条件满足仍不复位，才说明是开关在拦"
+    );
     assert_ne!(rig.plc.pc(), state::PC_READY);
     rig.session.set_auto_reset(true);
     assert!(rig.auto_poll(10).await, "{:?}", rig.session.view());
@@ -460,7 +472,11 @@ async fn auto_reset_never_clears_pending_transaction() {
     rig.reconnect().await;
     rig.plc.plc_state(state::PLC_IDLE);
     assert!(!rig.auto_poll(10).await);
-    assert_eq!(rig.session.view().reset_blocked_reason, None, "复位条件满足仍不复位，才说明是未结事务在拦");
+    assert_eq!(
+        rig.session.view().reset_blocked_reason,
+        None,
+        "复位条件满足仍不复位，才说明是未结事务在拦"
+    );
     assert!(rig.session.pending());
     assert_ne!(rig.plc.pc(), state::PC_READY);
     rig.finish().await;
