@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Checkbox, Grid, Heading, NumberField, Select, Stack } from "qing-steel";
-import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
+import { getAgentMcpStatus, getAppInfo, getEngineStatus, type AgentMcpStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
 import { errorText } from "../lib/errors";
@@ -311,8 +311,16 @@ function StoragePanel() {
   </Card>;
 }
 
+function mcpText(status: AgentMcpStatus | null) {
+  if (!status) return "--";
+  if (status.state === "listening") return status.url ?? "已启用";
+  if (status.state === "failed") return `启动失败：${status.message ?? "原因不明"}`;
+  return "未启用（启动前设置环境变量 GLUESIGHT_MCP_TOKEN）";
+}
+
 export default function SettingsPage() {
   const { data: info, error, loading, reload } = useResource<AppInfo>(getAppInfo);
+  const { data: mcp } = useResource<AgentMcpStatus>(getAgentMcpStatus);
   const savePart = useSavePart();
 
   return (
@@ -331,6 +339,8 @@ export default function SettingsPage() {
           <dd>{info?.version ?? "--"}</dd>
           <dt>构建</dt>
           <dd className="mono">{info?.gitSha ? `${info.gitSha}${info.buildTime ? ` · ${info.buildTime}` : ""}` : "--"}</dd>
+          <dt>示教 MCP</dt>
+          <dd className={mcp?.state === "listening" ? "mono" : undefined}>{mcpText(mcp)}</dd>
         </dl>
         </Stack>
       </Card>

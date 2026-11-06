@@ -201,6 +201,7 @@ pub fn run() {
             storage::storage_preferences_get,
             storage::storage_preferences_update,
             commands::app_info,
+            agent_mcp::agent_mcp_status,
             commands::app_open_log_dir,
             applog::applog_query,
             applog::applog_usage,
