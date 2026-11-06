@@ -1179,6 +1179,8 @@ async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolE
             .collect();
         return Ok(vec![text(json!({ "total": page.total, "recent": items }))]);
     };
+    // 复测逐帧占用测量引擎：与示教试测同一规则，有在途件或正在采集时拒绝
+    crate::camera::check_idle(&app.state::<CycleHost>())?;
     let mut results = Vec::new();
     for record in records {
         let w = open(app, &args.recipe).await?.workspace;
@@ -1196,7 +1198,7 @@ async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolE
                     .iter()
                     .map(|r| {
                         json!({
-                            "segment": r["region"]["kind"]["segment"],
+                            "kind": r["region"]["kind"],
                             "frames": [r["region"]["firstSeq"], r["region"]["lastSeq"]],
                             "verdict": r["verdict"],
                             "reason": r["reason"],

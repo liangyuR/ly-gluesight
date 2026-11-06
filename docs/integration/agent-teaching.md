@@ -7,7 +7,7 @@ GlueSight 内嵌一个 MCP 服务，让 Agent（Claude Code 等）直接完成�
 - 只改**候选**（草稿工作区）：走廊、颜色模型、各段的检测项与零件边参考。发布、生效、切换生产配方、PLC、相机参数、项目切换都不提供工具，仍由人在界面上操作。
 - 示教件、分段确认、像素当量在界面上由人确认，工具只读出现状。检测项开关、公差与 ToEdge 的图纸标称值可以经 `teach_segment` 写入，但取值要由人给出，Agent 不自行决定。
 - 工具与界面共用候选的修订号。每次写入后发 `workspace://changed`，界面里打开着同一候选且没有未保存改动时随即重新载入；界面里有未保存改动时，它的下一次保存会因修订号过期失败。示教期间不要在界面编辑同一候选。
-- 测量类工具（试测、带测量叠图的看图）与界面试测同一规则：有在途件或正在采集时拒绝。
+- 测量类工具（试测、带测量叠图的看图、带 `records` 的整件复测）与界面试测同一规则：有在途件或正在采集时拒绝。
 
 ## 启用与连接
 
@@ -92,7 +92,7 @@ MCP Streamable HTTP 的无状态子集：
 参数：`recipe`；可选 `records`（历史记录编号）。
 
 - 不给 `records`：返回最近 30 件历史记录（`id`、`ts`、`sn`、`recipeId`、`verdict`、`reason`、`mode`）。
-- 给了：逐件用候选现在的配置从原图复测并整件判定（同界面“对照”的复测，对照记录照常保存），返回每件的 `originalVerdict`、`verdict`、`reason` 与各区域（`segment`、帧组范围、`verdict`、`reason`、`width`、`offset`）。单件失败只记在这一件的 `error`。
+- 给了：逐件用候选现在的配置从原图复测并整件判定（同界面“对照”的复测，对照记录照常保存），返回每件的 `originalVerdict`、`verdict`、`reason` 与各区域（`kind` 区域类型原样：段内为 `{type: "straight" | "corner", segment}`，段首尾跳过的帧为 `{type: "skipped", segment}`，未分段区域为 `{type: "unsegmented", firstSegment, lastSegment, reason}`；帧组范围、`verdict`、`reason`、`width`、`offset`）。单件失败只记在这一件的 `error`。
 
 ## 实现
 
