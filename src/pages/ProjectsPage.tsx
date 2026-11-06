@@ -114,8 +114,8 @@ export default function ProjectsPage() {
     {open?.kind === "rename" && entries && <RenameProjectDialog project={open.project} entries={entries} onClose={close} />}
     {open?.kind === "delete" && <DeleteProjectDialog entry={open.entry} usage={usage[open.entry.id]} onClose={close} />}
     {open?.kind === "switch" && <SwitchProjectDialog target={open.project} onClose={close} />}
-    {open?.kind === "export" && <ExportProjectDialog project={open.project} usage={usage[open.project.id]} onClose={close} />}
-    {open?.kind === "copy" && entries && <CopyProjectDialog project={open.project} usage={usage[open.project.id]} entries={entries} onClose={close} onSwitch={project => setOpen({ kind: "switch", project })} />}
+    {open?.kind === "export" && <ExportProjectDialog project={open.project} onClose={close} />}
+    {open?.kind === "copy" && entries && <CopyProjectDialog project={open.project} entries={entries} onClose={close} onSwitch={project => setOpen({ kind: "switch", project })} />}
     {open?.kind === "import" && entries && <ImportProjectDialog preview={open.preview} entries={entries} onClose={close} onSwitch={project => setOpen({ kind: "switch", project })} />}
   </Card>;
 }

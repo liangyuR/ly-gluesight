@@ -80,10 +80,18 @@ export interface CopyProject {
   name: string;
   description: string;
   includeRecords: boolean;
+  captureImages: boolean;
+}
+
+export interface TransferSize {
+  content: number;
+  captureImages: number;
+  records: number;
 }
 
 export const projectTransferApi = {
-  exportProject: (id: string, includeRecords: boolean) => invoke<ProjectExported | null>("project_export", { id, includeRecords }),
+  exportProject: (id: string, includeRecords: boolean, captureImages: boolean) => invoke<ProjectExported | null>("project_export", { id, includeRecords, captureImages }),
+  transferSize: (id: string) => invoke<TransferSize>("project_transfer_size", { id }),
   pickImport: () => invoke<ProjectImportPreview | null>("project_import_pick"),
   importProject: (path: string, id: string, name: string) => invoke<ProjectImported>("project_import", { path, id, name }),
   copyProject: (request: CopyProject) => invoke<ProjectImported>("project_copy", { request }),

@@ -222,10 +222,12 @@ pub(crate) fn tree_references(root: &Path, source: &Path, target: &Path) -> Resu
     visit(root, root, source, target)
 }
 
+/// `capture_images` 为 false 时示教件原图是有意不带的，指向它们的引用不算丢失。
 pub(crate) fn validate_references(
     staging: &Path,
     source: &Path,
     target: &Path,
+    capture_images: bool,
 ) -> Result<Vec<String>, String> {
     fn collect(root: &Path, dir: &Path, references: &mut Vec<String>) -> Result<(), String> {
         crate::image_file::checked_source_path(dir)?;
@@ -291,8 +293,13 @@ pub(crate) fn validate_references(
                 return Err(format!("资料引用越界：{text}"));
             }
             let copied = staging.join(relative);
+            let omitted = !capture_images
+                && relative.starts_with("recipe-capture")
+                && relative.extension().is_some_and(|e| e == "pgm");
             if copied.exists() {
                 crate::image_file::checked_source_path(&copied)?;
+            } else if omitted {
+                continue;
             } else if source.join(relative).exists() {
                 return Err(format!("迁移后资料引用丢失：{text}"));
             } else {

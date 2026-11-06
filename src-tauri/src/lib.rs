@@ -196,6 +196,7 @@ pub fn run() {
             project::transfer::project_import_pick,
             project::transfer::project_import,
             project::transfer::project_copy,
+            project::transfer::project_transfer_size,
             storage::storage_preferences_get,
             storage::storage_preferences_update,
             commands::app_info,

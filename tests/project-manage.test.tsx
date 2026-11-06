@@ -36,13 +36,13 @@ describe("复制项目", () => {
     const copy = { ...source, id: "p-20261026-01", name: "京航 A 线（副本）", copiedFrom: "line-a" };
     vi.mocked(invoke).mockResolvedValue({ meta: copy, notes: ["1 个计划版本已按本机重新分配"] });
     const onSwitch = vi.fn();
-    render(<CopyProjectDialog project={source} usage={{ status: "loading" }} entries={[{ id: "line-a", current: true, error: null, meta: source }]} onClose={vi.fn()} onSwitch={onSwitch} />);
+    render(<CopyProjectDialog project={source} entries={[{ id: "line-a", current: true, error: null, meta: source }]} onClose={vi.fn()} onSwitch={onSwitch} />);
     const id = screen.getByRole("textbox", { name: /新项目编号/ });
     await userEvent.clear(id);
     await userEvent.type(id, "p-20261026-01");
     await userEvent.click(screen.getByRole("checkbox", { name: "包含检测记录与历史原图" }));
     await userEvent.click(screen.getByRole("button", { name: "复制为新项目" }));
-    expect(invoke).toHaveBeenCalledWith("project_copy", { request: { sourceId: "line-a", id: "p-20261026-01", name: "京航 A 线（副本）", description: "三相机", includeRecords: true } });
+    expect(invoke).toHaveBeenCalledWith("project_copy", { request: { sourceId: "line-a", id: "p-20261026-01", name: "京航 A 线（副本）", description: "三相机", includeRecords: true, captureImages: false } });
     await userEvent.click(await screen.findByRole("button", { name: "切换到该项目" }));
     expect(onSwitch).toHaveBeenCalledWith(copy);
   });
