@@ -206,3 +206,8 @@ pub const OP_RECIPE_DELETE: Event = Event {
     ev: "操作：删除配方",
     level: Level::Info,
 };
+pub const OP_RECIPE_PACKAGE: Event = Event {
+    code: "op.recipe.package",
+    ev: "操作：配方回传包",
+    level: Level::Info,
+};

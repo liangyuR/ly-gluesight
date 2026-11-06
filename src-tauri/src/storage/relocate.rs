@@ -20,6 +20,20 @@ fn remap(value: &mut Value, source: &Path, target: &Path) {
     *value = Value::String(target.join(relative).to_string_lossy().into_owned());
 }
 
+/// 把 JSON 里所有指向 `source` 目录下的字符串路径改写到 `target` 下（配方回传包用：候选文件里的项目内绝对路径）。
+pub(crate) fn all_strings(value: &mut Value, source: &Path, target: &Path) {
+    match value {
+        Value::String(_) => remap(value, source, target),
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|v| all_strings(v, source, target)),
+        Value::Object(map) => map
+            .values_mut()
+            .for_each(|v| all_strings(v, source, target)),
+        _ => {}
+    }
+}
+
 fn at(value: &mut Value, pointer: &str, apply: &mut impl FnMut(&mut Value)) {
     if let Some(value) = value.pointer_mut(pointer) {
         apply(value);

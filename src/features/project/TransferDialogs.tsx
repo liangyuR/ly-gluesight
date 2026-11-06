@@ -82,7 +82,7 @@ export function ExportProjectDialog({ project, onClose }: { project: ProjectMeta
       </dl>
       <Checkbox label="包含示教件原图" disabled={working} checked={captureImages} onCheckedChange={setCaptureImages} />
       <Checkbox label="包含检测记录与历史原图" disabled={working} checked={includeRecords} onCheckedChange={setIncludeRecords} />
-      <Text muted>导出项目的相机组与 PLC 配置、标定、生产配方与发布包、候选；默认不含示教件原图、检测记录与历史原图。{!captureImages && CAPTURE_IMAGES_HINT}</Text>
+      <Text muted>导出项目的相机组与 PLC 配置、标定、生产配方与发布包、候选；默认不含示教件原图、检测记录与历史原图。{!captureImages && CAPTURE_IMAGES_HINT}只把示教好的配方送回原项目时，在配方库导出回传包，不用导出整个项目。</Text>
       {includeRecords && <Alert tone="warn" title="导出包可能很大">检测记录与历史原图可能有几十 GB，导出需要较长时间，请确认目标磁盘空间充足。</Alert>}
       {error && <Alert tone="ng" title="导出未完成">{error}</Alert>}
       {working && <Alert tone="info" role="status">正在导出，请勿关闭软件。</Alert>}

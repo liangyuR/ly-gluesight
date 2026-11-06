@@ -88,7 +88,10 @@ pub struct ProjectImported {
     pub notes: Vec<String>,
 }
 
-fn copy_hashed(mut from: impl Read, mut to: impl Write) -> std::io::Result<(u64, String)> {
+pub(crate) fn copy_hashed(
+    mut from: impl Read,
+    mut to: impl Write,
+) -> std::io::Result<(u64, String)> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1 << 20];
     let mut total = 0u64;
@@ -127,7 +130,7 @@ fn capture_image(path: &str) -> bool {
     path.starts_with("project/recipe-capture/") && path.ends_with(".pgm")
 }
 
-fn walk(
+pub(crate) fn walk(
     dir: &Path,
     relative: &str,
     out: &mut Vec<(String, PathBuf)>,
@@ -259,46 +262,70 @@ pub fn transfer_size(root: &Path) -> Result<TransferSize, String> {
     Ok(size)
 }
 
-fn write_package<W: Write + Seek>(
-    out: W,
-    mut manifest: Manifest,
+/// 把 `entries`（包内路径，磁盘路径）写成 ZIP：先写 `target.tmp` 再改名；写完文件后由 `manifest` 按各文件的字节数与校验和生成清单，写在包尾。
+pub(crate) fn write_zip<M: Serialize>(
+    target: &Path,
     entries: Vec<(String, PathBuf)>,
-) -> Result<(W, Manifest), String> {
-    let mut zip = ZipWriter::new(out);
-    for (name, path) in entries {
-        if !allowed(&name, manifest.includes_records) {
-            return Err(format!("导出路径无效：{name}"));
-        }
-        let file = File::open(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-        let length = file.metadata().map_err(|e| e.to_string())?.len();
-        let level = if name.ends_with(".pgm") || name.ends_with(".png") {
-            1
-        } else {
-            6
-        };
-        let options = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .compression_level(Some(level))
-            .large_file(length >= u32::MAX as u64);
-        zip.start_file(name.as_str(), options)
+    manifest: impl FnOnce(Vec<PackageFile>) -> M,
+) -> Result<M, String> {
+    let mut temporary = target.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = PathBuf::from(temporary);
+    let written = File::create(&temporary)
+        .map_err(|e| format!("创建导出文件失败：{e}"))
+        .and_then(|file| {
+            let mut zip = ZipWriter::new(BufWriter::new(file));
+            let mut files = Vec::with_capacity(entries.len());
+            for (name, path) in entries {
+                let file =
+                    File::open(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+                let length = file.metadata().map_err(|e| e.to_string())?.len();
+                let level = if name.ends_with(".pgm") || name.ends_with(".png") {
+                    1
+                } else {
+                    6
+                };
+                let options = SimpleFileOptions::default()
+                    .compression_method(CompressionMethod::Deflated)
+                    .compression_level(Some(level))
+                    .large_file(length >= u32::MAX as u64);
+                zip.start_file(name.as_str(), options)
+                    .map_err(|e| e.to_string())?;
+                let (bytes, sha256) = copy_hashed(BufReader::new(file), &mut zip)
+                    .map_err(|e| format!("写入 {name} 失败：{e}"))?;
+                files.push(PackageFile {
+                    path: name,
+                    bytes,
+                    sha256,
+                });
+            }
+            let manifest = manifest(files);
+            zip.start_file(
+                MANIFEST,
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
             .map_err(|e| e.to_string())?;
-        let (bytes, sha256) = copy_hashed(BufReader::new(file), &mut zip)
-            .map_err(|e| format!("写入 {name} 失败：{e}"))?;
-        manifest.files.push(PackageFile {
-            path: name,
-            bytes,
-            sha256,
+            zip.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            zip.finish()
+                .map_err(|e| e.to_string())?
+                .into_inner()
+                .map_err(|e| e.to_string())?
+                .sync_all()
+                .map_err(|e| e.to_string())?;
+            Ok(manifest)
         });
+    let manifest = written.and_then(|manifest| {
+        if target.exists() {
+            std::fs::remove_file(target).map_err(|e| format!("覆盖导出文件失败：{e}"))?;
+        }
+        std::fs::rename(&temporary, target).map_err(|e| e.to_string())?;
+        Ok(manifest)
+    });
+    if manifest.is_err() {
+        let _ = std::fs::remove_file(&temporary);
     }
-    zip.start_file(
-        MANIFEST,
-        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
-    )
-    .map_err(|e| e.to_string())?;
-    zip.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    let out = zip.finish().map_err(|e| e.to_string())?;
-    Ok((out, manifest))
+    manifest
 }
 
 /// 把项目目录 `root` 导出到 `target`（先写 `.tmp` 再改名）。
@@ -322,47 +349,58 @@ pub fn export_to(
         notes,
         files: Vec::new(),
     };
-    let mut temporary = target.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
-    let written = File::create(&temporary)
-        .map_err(|e| format!("创建导出文件失败：{e}"))
-        .and_then(|file| {
-            let (out, manifest) = write_package(BufWriter::new(file), manifest, entries)?;
-            out.into_inner()
-                .map_err(|e| e.to_string())?
-                .sync_all()
-                .map_err(|e| e.to_string())?;
-            Ok(manifest)
-        });
-    let manifest = written.and_then(|manifest| {
-        if target.exists() {
-            std::fs::remove_file(target).map_err(|e| format!("覆盖导出文件失败：{e}"))?;
-        }
-        std::fs::rename(&temporary, target).map_err(|e| e.to_string())?;
-        Ok(manifest)
-    });
-    if manifest.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+    if let Some((name, _)) = entries
+        .iter()
+        .find(|(name, _)| !allowed(name, include_records))
+    {
+        return Err(format!("导出路径无效：{name}"));
     }
-    manifest
+    write_zip(target, entries, |files| Manifest { files, ..manifest })
 }
 
-fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest, String> {
+/// 读包内 `manifest.json` 为 JSON；`label` 是报错里的包名（如“项目导出包”）。
+pub(crate) fn manifest_value<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    label: &str,
+) -> Result<Value, String> {
     let mut entry = zip
         .by_name(MANIFEST)
-        .map_err(|_| "不是项目导出包：缺少 manifest.json".to_string())?;
+        .map_err(|_| format!("不是{label}：缺少 manifest.json"))?;
     if entry.size() > MANIFEST_MAX_BYTES {
-        return Err("项目导出包清单过大".into());
+        return Err(format!("{label}清单过大"));
     }
     let mut text = String::new();
     entry
         .by_ref()
         .take(MANIFEST_MAX_BYTES + 1)
         .read_to_string(&mut text)
-        .map_err(|e| format!("项目导出包清单无法读取：{e}"))?;
-    let value: Value =
-        serde_json::from_str(&text).map_err(|e| format!("项目导出包清单格式无效：{e}"))?;
+        .map_err(|e| format!("{label}清单无法读取：{e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("{label}清单格式无效：{e}"))
+}
+
+/// 清单里的文件条目：不重复（不区分大小写）、校验和格式有效、路径都通过 `allowed`。
+pub(crate) fn check_listed(
+    files: &[PackageFile],
+    allowed: impl Fn(&str) -> bool,
+    label: &str,
+) -> Result<HashSet<String>, String> {
+    let mut seen = HashSet::new();
+    for file in files {
+        if !allowed(&file.path) {
+            return Err(format!("{label}含不允许的路径：{}", file.path));
+        }
+        if !seen.insert(file.path.to_ascii_lowercase()) {
+            return Err(format!("{label}清单重复列出 {}", file.path));
+        }
+        if file.sha256.len() != 64 || !file.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("{label}清单的校验和无效：{}", file.path));
+        }
+    }
+    Ok(seen)
+}
+
+fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest, String> {
+    let value = manifest_value(zip, "项目导出包")?;
     let format = value.get("format").and_then(Value::as_u64);
     if format != Some(FORMAT as u64) {
         return Err(format!(
@@ -375,27 +413,24 @@ fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest, St
     if !super::valid_id(&manifest.project.id) {
         return Err("项目导出包的来源项目编号无效".into());
     }
-    let mut seen = HashSet::new();
-    for file in &manifest.files {
-        if !allowed(&file.path, manifest.includes_records) {
-            return Err(format!("项目导出包含不允许的路径：{}", file.path));
-        }
-        if !seen.insert(file.path.to_ascii_lowercase()) {
-            return Err(format!("项目导出包清单重复列出 {}", file.path));
-        }
-        if file.sha256.len() != 64 || !file.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(format!("项目导出包清单的校验和无效：{}", file.path));
-        }
-    }
+    let seen = check_listed(
+        &manifest.files,
+        |path| allowed(path, manifest.includes_records),
+        "项目导出包",
+    )?;
     if !seen.contains("project/project.json") {
         return Err("项目导出包缺少 project.json".into());
     }
     Ok(manifest)
 }
 
+pub(crate) fn open_zip(path: &Path, label: &str) -> Result<ZipArchive<BufReader<File>>, String> {
+    let file = File::open(path).map_err(|e| format!("打开{label}失败：{e}"))?;
+    ZipArchive::new(BufReader::new(file)).map_err(|e| format!("{label}不是有效的 ZIP 文件：{e}"))
+}
+
 fn open_archive(path: &Path) -> Result<ZipArchive<BufReader<File>>, String> {
-    let file = File::open(path).map_err(|e| format!("打开项目导出包失败：{e}"))?;
-    ZipArchive::new(BufReader::new(file)).map_err(|e| format!("项目导出包不是有效的 ZIP 文件：{e}"))
+    open_zip(path, "项目导出包")
 }
 
 pub fn inspect(path: &Path) -> Result<Manifest, String> {
@@ -406,34 +441,47 @@ pub fn inspect(path: &Path) -> Result<Manifest, String> {
 fn extract(path: &Path, staging: &Path) -> Result<Manifest, String> {
     let mut zip = open_archive(path)?;
     let manifest = read_manifest(&mut zip)?;
-    let listed: BTreeMap<&str, &PackageFile> = manifest
-        .files
-        .iter()
-        .map(|f| (f.path.as_str(), f))
-        .collect();
+    extract_listed(
+        &mut zip,
+        &manifest.files,
+        staging,
+        |name| allowed(name, manifest.includes_records),
+        "项目导出包",
+    )?;
+    Ok(manifest)
+}
+
+/// 把包内除清单外的条目解到 `staging`：每个条目都须在清单 `files` 里、通过 `allowed`、是普通文件，
+/// 字节数与 SHA-256 与清单一致；清单之外、重复或缺少的条目都整包拒绝。
+pub(crate) fn extract_listed<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    files: &[PackageFile],
+    staging: &Path,
+    allowed: impl Fn(&str) -> bool,
+    label: &str,
+) -> Result<(), String> {
+    let listed: BTreeMap<&str, &PackageFile> = files.iter().map(|f| (f.path.as_str(), f)).collect();
     let mut seen = HashSet::new();
     for index in 0..zip.len() {
         let entry = zip
             .by_index(index)
-            .map_err(|e| format!("项目导出包条目无法读取：{e}"))?;
+            .map_err(|e| format!("{label}条目无法读取：{e}"))?;
         let name = entry
             .name()
-            .map_err(|e| format!("项目导出包条目名称无效：{e}"))?
+            .map_err(|e| format!("{label}条目名称无效：{e}"))?
             .into_owned();
         if !seen.insert(name.to_ascii_lowercase()) {
-            return Err(format!("项目导出包含重复条目：{name}"));
+            return Err(format!("{label}含重复条目：{name}"));
         }
         if name == MANIFEST {
             continue;
         }
         let expected = listed
             .get(name.as_str())
-            .filter(|_| allowed(&name, manifest.includes_records))
-            .ok_or_else(|| format!("项目导出包含清单之外或不允许的条目：{name}"))?;
+            .filter(|_| allowed(&name))
+            .ok_or_else(|| format!("{label}含清单之外或不允许的条目：{name}"))?;
         if !entry.is_file() || entry.encrypted() || entry.size() != expected.bytes {
-            return Err(format!(
-                "项目导出包条目 {name} 不是普通文件或大小与清单不符"
-            ));
+            return Err(format!("{label}条目 {name} 不是普通文件或大小与清单不符"));
         }
         let target = name
             .split('/')
@@ -447,15 +495,13 @@ fn extract(path: &Path, staging: &Path) -> Result<Manifest, String> {
             .map_err(|e| format!("解出 {name} 失败：{e}"))?;
         out.flush().map_err(|e| e.to_string())?;
         if bytes != expected.bytes || sha256 != expected.sha256.to_ascii_lowercase() {
-            return Err(format!(
-                "项目导出包文件 {name} 校验和不符，文件已损坏或被改动"
-            ));
+            return Err(format!("{label}文件 {name} 校验和不符，文件已损坏或被改动"));
         }
     }
-    if seen.len() != manifest.files.len() + 1 {
-        return Err("项目导出包缺少清单列出的文件".into());
+    if seen.len() != files.len() + 1 {
+        return Err(format!("{label}缺少清单列出的文件"));
     }
-    Ok(manifest)
+    Ok(())
 }
 
 fn plan_of(value: &Value) -> Option<u32> {
@@ -563,7 +609,7 @@ fn remap_plans(root: &Path, plan_file: &Path) -> Result<BTreeMap<u32, u32>, Stri
     Ok(plans)
 }
 
-fn staging_dir(parent: &Path, kind: &str) -> Result<PathBuf, String> {
+pub(crate) fn staging_dir(parent: &Path, kind: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let stamp = ly_plc::now_ms();
     for suffix in 0..1000 {

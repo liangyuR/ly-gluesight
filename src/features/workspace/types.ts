@@ -63,6 +63,15 @@ export interface Workspace {
   navigationStructureRevision?: number;
 }
 export interface TeachingPiece { roundId: string; recordId: number; cycleId: string; sn: string; ts: number }
+
+/** 配方回传包（候选与示教件轮次记录，不带原图）的导出结果、导入预览与导入结果 */
+export interface PackageExported { path: string; bytes: number; files: number }
+export interface PackagePreview {
+  path: string; bytes: number; recipeId: string; name: string; productCode: number; sourceProjectName: string;
+  exportedAt: number; appVersion: string; teachingPiece: TeachingPiece | null;
+  productionVersion: number | null; candidate: { revision: number; updatedAt: number; pending: boolean } | null; blocker: string | null;
+}
+export interface PackageImported { id: string; notes: string[] }
 /** 新流程候选（RB-5）：flow 不是 2 的候选只能在配方库删除。 */
 export const isCurrentFlow = (workspace: Pick<Workspace, "flow">) => workspace.flow === 2;
 export interface CaptureRoundReview {
