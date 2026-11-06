@@ -920,7 +920,11 @@ impl Store {
         directory: &Path,
         finalize: impl FnOnce() -> Result<(), String>,
     ) -> Result<i64, String> {
-        if directory.as_os_str().is_empty() || !r.burst.is_some_and(|b| b.frames.iter().any(|f| f.raw_file.is_some())) {
+        if directory.as_os_str().is_empty()
+            || !r
+                .burst
+                .is_some_and(|b| b.frames.iter().any(|f| f.raw_file.is_some()))
+        {
             return Err("完整录制须有实际目录与原图引用".into());
         }
         self.insert_with_recording(r, Some(directory), finalize)
