@@ -911,6 +911,27 @@ impl Store {
     }
 
     pub fn insert(&self, r: &PartRecord) -> Result<i64, String> {
+        self.insert_with_recording(r, None, || Ok(()))
+    }
+
+    pub(crate) fn insert_recording(
+        &self,
+        r: &PartRecord,
+        directory: &Path,
+        finalize: impl FnOnce() -> Result<(), String>,
+    ) -> Result<i64, String> {
+        if directory.as_os_str().is_empty() || !r.burst.is_some_and(|b| b.frames.iter().any(|f| f.raw_file.is_some())) {
+            return Err("完整录制须有实际目录与原图引用".into());
+        }
+        self.insert_with_recording(r, Some(directory), finalize)
+    }
+
+    fn insert_with_recording(
+        &self,
+        r: &PartRecord,
+        directory: Option<&Path>,
+        finalize: impl FnOnce() -> Result<(), String>,
+    ) -> Result<i64, String> {
         if r.cycle_id.is_some_and(|s| s.is_empty()) || r.bundle_id.is_some_and(|s| s.is_empty()) {
             return Err("检测记录的 cycleId 或发布包 ID 为空".into());
         }
@@ -1040,6 +1061,13 @@ impl Store {
                 ]).map_err(db_err)?;
             }
         }
+        if let Some(directory) = directory {
+            tx.execute(
+                "UPDATE parts SET recording_state='complete',recording_available=1,recording_directory=?2 WHERE id=?1",
+                params![id, directory.to_string_lossy()],
+            ).map_err(db_err)?;
+        }
+        finalize()?;
         tx.commit().map_err(db_err)?;
         Ok(id)
     }

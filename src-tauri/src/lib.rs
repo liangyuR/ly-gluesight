@@ -74,7 +74,9 @@ pub mod probe_api {
         align_cuts, downsample, ReviewReason, Sequence, ALIGN_FACTOR, ALIGN_SHARPNESS,
     };
     pub use crate::frame_group::{loss_alarms, FrameGroup};
-    pub use crate::history_fixture::{FixtureFrames, FixturePart, FixtureSite, SN_PREFIX};
+    pub use crate::history_fixture::{
+        import_recording, FixtureFrames, FixturePart, FixtureSite, SN_PREFIX,
+    };
     pub use crate::image_file::{load as load_image, save_pgm};
     pub use crate::mvs::{
         Device as MvsDevice, EventInfo as MvsEventInfo, FrameInfo as MvsFrameInfo,
@@ -94,6 +96,7 @@ pub mod probe_api {
     pub use crate::segmentation::{Proportional, SegInput, SegOutcome, Segmenter};
     pub use crate::simimage::{render_burst, render_burst_span};
     pub use crate::vision::{Engine, FrameImage};
+    pub use crate::workspace::package::export_saved_candidate as export_recipe_package;
 
     /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。
     pub fn warm(prepared: &Prepared) -> Result<(), String> {

@@ -1,6 +1,7 @@
 """把现场导出的一件录制（`*_cycle_<cycleId>` 目录或其 zip）导入开发项目的历史记录，供在历史件选择器里选示教件、标定件调试。
 
-原图转成单件样本集后交给 `capture_fixture` 按样本集模式写仿历史录制件：记录归到 `--recipe` 配方，设备配置取项目当前
+`--verbatim` 交给 `import_recording` 原样导入，用于示教后回传现场。不带此参数时，原图转成单件样本集后交给
+`capture_fixture` 按样本集模式写仿历史录制件：记录归到 `--recipe` 配方，设备配置取项目当前
 `config/cameras.json`（选择器要求与当前一致），SN 前缀 `FIXTURE-`，选择器标“手动配置”。命令与注意事项见
 docs/testing/TESTING.md“导入现场录制件”。
 """
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,7 +19,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_ROOT = Path("C:/ProgramData/ly/GlueSight-dev")
-VISION_ROOT = Path.home() / "gs_logs" / "vision"
 
 
 class ImportFailure(Exception):
@@ -99,14 +100,25 @@ def recipe_doc(project: Path, recipe_id: str, part: dict, version: int | None) -
     return doc, f"{source}，记为 {recipe_id}-v{doc['version']}"
 
 
-def records_root(project_id: str, given: str | None) -> Path:
+def records_root(data_root: Path, project_id: str, given: str | None) -> Path:
     if given:
-        return Path(given)
-    found = sorted(VISION_ROOT.glob(f"*/*/{project_id}/records"))
-    if len(found) != 1:
-        listing = "、".join(str(p) for p in found) or "无"
-        raise ImportFailure(f"找到 {len(found)} 个真机录制根（{listing}）：先用软件打开一次该项目，或用 --records 指定")
-    return found[0]
+        records = Path(given)
+    else:
+        config_path = data_root / "config" / "log-storage.json"
+        config = read_json(config_path)
+        if not all(isinstance(config.get(k), str) and config[k] for k in ("root", "environment", "instance")):
+            raise ImportFailure(f"{config_path} 缺少 root、environment 或 instance：用 --records 指定")
+        records = Path(config["root"]) / "vision" / config["environment"] / config["instance"] / project_id / "records"
+    if not records.is_dir():
+        raise ImportFailure(f"真机录制根不存在：先创建 {records} 再导入")
+    return records
+
+
+def example_binary(name: str) -> Path:
+    target = Path(os.environ.get("CARGO_TARGET_DIR", REPO / "src-tauri" / "target"))
+    if not target.is_absolute():
+        target = REPO / target
+    return target / "debug" / "examples" / (name + (".exe" if os.name == "nt" else ""))
 
 
 def config_notes(part: dict, cameras: list[dict]) -> list[str]:
@@ -131,12 +143,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--recipe", help="记录归属的配方编号，缺省取 part.json 的配方")
     ap.add_argument("--version", type=int, help="记录用的配方版本；同修订号已有不同快照被拒时换一个")
     ap.add_argument("--label", help="来源标签，缺省为录制目录名")
+    ap.add_argument("--verbatim", action="store_true", help="保留现场身份与录制字节，用于示教后回传现场；不能改配方、版本或标签")
     ap.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
-    ap.add_argument("--records", help="真机录制根，缺省在 ~/gs_logs/vision 下按项目编号查找")
+    ap.add_argument("--records", help="真机录制根，缺省按资料根 config/log-storage.json 推导")
     ap.add_argument("--work", type=Path, help="中间文件目录，缺省 output/history-import/<录制目录名>")
     ap.add_argument("--dry-run", action="store_true", help="只准备输入并打印命令")
     args = ap.parse_args(argv)
     try:
+        if args.verbatim and any(value is not None for value in (args.recipe, args.version, args.label)):
+            raise ImportFailure("--verbatim 不能同时使用 --recipe、--version 或 --label")
         project = args.data_root / "projects" / args.project
         db = project / "inspection.db"
         if not db.is_file():
@@ -145,6 +160,12 @@ def main(argv: list[str] | None = None) -> int:
         work.mkdir(parents=True, exist_ok=True)
         part_dir = unpack(args.source.resolve(), work)
         part = read_json(part_dir / "part.json")
+        records = records_root(args.data_root, args.project, args.records)
+        if args.verbatim:
+            binary = example_binary("import_recording")
+            command = [str(binary), "--db", str(db), "--records", str(records), "--part", str(part_dir)]
+            print(f"原样导入 {part_dir.name}：cycleId {part.get('cycleId')}，SN {part.get('sn')}，{part.get('groupCount')} 个帧组")
+            return run_import(command, binary, args.dry_run)
         recipe_id = args.recipe or (part.get("recipe") or {}).get("id")
         if not recipe_id:
             raise ImportFailure("part.json 没有配方编号：用 --recipe 指定")
@@ -158,28 +179,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"配方：{doc_source}，型号 {doc.get('productCode')}" + (f"（现场型号 {field_code}）" if field_code != doc.get("productCode") else ""))
         for note in config_notes(part, cameras):
             print(f"设备配置按项目当前值记录，与现场不同：{note}")
+        binary = example_binary("capture_fixture")
         command = [
-            "cargo", "run", "--manifest-path", str(REPO / "src-tauri" / "Cargo.toml"), "--offline", "--locked",
-            "--example", "capture_fixture", "--",
+            str(binary),
             "--doc", str(work / "doc.json"), "--cameras", str(work / "cameras.json"),
-            "--db", str(db), "--records", str(records_root(args.project, args.records)),
+            "--db", str(db), "--records", str(records),
             "--parts", "1", "--label", args.label or part_dir.name,
             "--sample-set", str(work / "sample-set"), "--part", "p01",
         ]
-        if args.dry_run:
-            print(subprocess.list2cmdline(command))
-            return 0
-        result = subprocess.run(command, cwd=REPO, capture_output=True, text=True, encoding="utf-8")
-        if result.returncode != 0:
-            lines = result.stderr.strip().splitlines()
-            start = next((i + 1 for i, line in enumerate(lines) if "Running `" in line), 0)
-            detail = [line for line in lines[start:] if not line.startswith("用法：")]
-            raise ImportFailure("\n".join(detail) or "capture_fixture 失败")
-        print(result.stdout.strip())
-        return 0
-    except ImportFailure as error:
+        return run_import(command, binary, args.dry_run)
+    except (ImportFailure, OSError, ValueError) as error:
         print(f"导入失败：{error}", file=sys.stderr)
         return 1
+
+
+def run_import(command: list[str], binary: Path, dry_run: bool) -> int:
+    if dry_run:
+        print(subprocess.list2cmdline(command))
+        return 0
+    if not binary.is_file():
+        raise ImportFailure(f"{binary} 不存在：先停止开发服务，再 cargo build --manifest-path src-tauri/Cargo.toml --offline --locked --example {binary.stem}")
+    result = subprocess.run(command, cwd=REPO, capture_output=True, text=True, encoding="utf-8")
+    if result.returncode != 0:
+        raise ImportFailure(result.stderr.strip() or f"{binary.stem} 失败")
+    print(result.stdout.strip())
+    return 0
 
 
 if __name__ == "__main__":
