@@ -76,7 +76,7 @@ MCP Streamable HTTP 的无状态子集：
 
 参数：`recipe`、`camera`、`segment`；可选 `from`、`to`（统计用的帧组范围，缺省整段，用来排除起胶 / 收胶的过渡帧）。
 
-返回 JSON 文本：`range`、`states`（各状态帧数）、`width`（mm：中位、P5、P95、最小、最大）、`edgeMm`、`xMm`、`gapFrames`（帧内有断口的帧与最长断口 mm）、`fallbackFrames`（逐帧定向没找到胶条的帧与原因）、`errors`、`worst`（按断口长度、有胶站占比排序的前 5 帧），以及 `limits`：按这一段启用的检测项逐帧比对的结果（`gapOverLimit` 帧内断口不短于 `maxGapMm`、`presentBelow` 有胶站占比低于 `minPresent`、`widthOutside` 平均胶宽出了公差带 `widthBand`）。整件判定还看跨帧的连续长度，`limits` 只是逐帧线索。
+返回 JSON 文本：`range`、`states`（各状态帧数）、`width`（mm：中位、P5、P95、最小、最大）、`edgeMm`、`xMm`、`gapFrames`（帧内有断口的帧与最长断口 mm）、`fallbackFrames`（逐帧定向没找到胶条的帧与原因）、`errors`、`worst`（按断口长度、有胶站占比排序的前 5 帧），以及 `limits`：按这一段启用的检测项逐帧比对的结果（`gapOverLimit` 帧内断口长于 `maxGapMm`（与生产判定同口径）、`presentBelow` 有胶站占比低于 `minPresent`、`widthOutside` 平均胶宽出了公差带 `widthBand`）。整件判定还看跨帧的连续长度，`limits` 只是逐帧线索。
 
 ## 实现
 

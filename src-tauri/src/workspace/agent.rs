@@ -655,7 +655,7 @@ struct TrialArgs {
     to: Option<u64>,
 }
 
-/// 稳态范围内按这一段的检测项（`checks`）超限的帧：帧内断口不短于断胶长度、有胶站占比低于下限、平均胶宽出了公差带。
+/// 稳态范围内按这一段的检测项（`checks`）超限的帧（与生产判定 `judge_frame` 同口径）：帧内断口长于断胶长度、有胶站占比低于下限、平均胶宽出了公差带。
 /// 整件判定还看跨帧的连续长度，这里只给逐帧的线索。
 fn against_checks(frames: &[FrameMetrics], window: (u64, u64), checks: &Value) -> Value {
     let measured: Vec<&FrameMetrics> = frames
@@ -674,7 +674,7 @@ fn against_checks(frames: &[FrameMetrics], window: (u64, u64), checks: &Value) -
             "gapOverLimit".into(),
             json!(measured
                 .iter()
-                .filter(|f| f.gap_max_mm >= max_gap)
+                .filter(|f| f.gap_max_mm > max_gap)
                 .map(|f| f.seq)
                 .collect::<Vec<_>>()),
         );
