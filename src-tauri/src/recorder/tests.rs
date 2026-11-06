@@ -86,9 +86,29 @@ fn offline_retention_prunes_only_offline_recordings_and_never_real_raw_images() 
 
 /// 防的回归：现场机从没跑过离线回放时离线录制目录不存在，保存设置触发两个根目录的滚动清理，不能因此报“录制清理失败”。
 #[test]
-fn retention_on_missing_root_reports_no_error() {
+fn retention_on_missing_offline_root_warns_nothing() {
     let dir = TestDir::new();
-    assert_eq!(prune(&dir.0.join("records-offline"), 1, 0, &[], None), Vec::<String>::new());
+    let (swept, sweeps) = channel();
+    let (warned, warnings) = channel();
+    let cleanup = Cleanup {
+        protection: Arc::new(move || {
+            let _ = swept.send(());
+            Ok(Vec::new())
+        }),
+        warning: Arc::new(move |errors: &[String]| {
+            let _ = warned.send(errors.to_vec());
+        }),
+        release: Arc::new(|_: &[PathBuf]| Ok(())),
+    };
+    let offline = Recorder::guarded(dir.0.join("records-offline"), None, cleanup);
+    let recorders = Recorders::new(Recorder::new(dir.root(), None), offline);
+    // 录制线程按序处理：第二次清理开始时第一次已结束，它的告警若有已经发出
+    recorders.apply_retention(&CycleSettings::default());
+    recorders.apply_retention(&CycleSettings::default());
+    for _ in 0..2 {
+        sweeps.recv_timeout(WRITER_HANG).unwrap();
+    }
+    assert_eq!(warnings.try_recv().ok(), None);
 }
 
 /// 防的回归：原始 Bayer 是给离线做颜色算法的附带数据。它与灰度原图并排写成，part.json 记清文件名与相位，
