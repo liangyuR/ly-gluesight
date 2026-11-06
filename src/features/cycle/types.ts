@@ -296,8 +296,6 @@ export interface CycleSettings {
   recordMaxGb: number;
   offlineRecordKeep: number;
   offlineRecordMaxGb: number;
-  /** 录制件另存相机原始 8 位 Bayer（`{相机}_s{seq:06}_bayer.pgm`），供离线做颜色算法 */
-  recordBayer: boolean;
   /** PC 启动或 PLC 重连后、没有未结事务时自动复位握手 */
   autoReset: boolean;
   /** 只由 cycle_set_maintenance 改写；保存设置时后端沿用当前值 */

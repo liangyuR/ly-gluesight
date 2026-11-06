@@ -124,7 +124,7 @@ python scripts/color-eval/glue_color_eval.py <标注.json> --init <图像目录>
 python scripts/color-eval/glue_color_eval.py <标注.json> [--out <输出目录>]
 ```
 
-样图要在现场光源下用彩色相机采集，并包含两种材质、焊缝与高光。最直接的做法是打开检测设置里的“同时保存原始 Bayer”，再用维护模式采集（[r2-records](../decisions/r2-records.md) R-8）；相机切到彩色模式后录制的原图本身就是原始 Bayer（PGM 头带 `# bayer` 注释，`--init` 与读图都按注释取相位）。这样录制目录里的 `*_bayer.pgm` 就是与灰度帧一一对应的原始 Bayer；`--init <录制目录>` 只收这些文件，并从 `part.json` 读取相位。软件录的灰度 `.pgm` 已经没有颜色。也可以用 MVS 客户端存彩色图或原始 Bayer（`.raw`）。每张图标若干探针，坐标为原图像素：
+样图要在现场光源下用彩色相机采集，并包含两种材质、焊缝与高光。最直接的做法是相机用彩色模式，再用维护模式采集（[r2-records](../decisions/r2-records.md) R-8）：录制的原图本身就是原始 Bayer（PGM 头带 `# bayer` 注释，`--init` 与读图都按注释取相位）。已有录制里另存的 `*_bayer.pgm` 也能用：`--init <录制目录>` 只收这些文件，并从 `part.json` 读取相位；同目录的灰度 `.pgm` 没有颜色。也可以用 MVS 客户端存彩色图或原始 Bayer（`.raw`）。每张图标若干探针，坐标为原图像素：
 
 - 胶探针（`kind: glue`）：垂直横穿胶条、中点落在胶中心，填 `material` 与 `halfWidthPx`，两侧各留至少 18 px 背景。
 - 干扰物探针（`kind: distractor`）：横穿焊缝、高光等不该被当成胶的窄结构，填 `label`。
