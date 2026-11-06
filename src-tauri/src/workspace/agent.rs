@@ -1,4 +1,4 @@
-//! 示教 MCP 的工具（docs/integration/agent-teaching.md）：调用示教页命令的同一组函数，只改候选的走廊与颜色模型。
+//! 示教 MCP 的工具（docs/integration/agent-teaching.md）：调用示教页命令的同一组函数，只改候选。
 
 use super::burst;
 use super::{Workspace, WorkspaceHost, WorkspaceView};
@@ -10,7 +10,7 @@ use crate::recipe::SegmentCorridor;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub enum ToolError {
     Unknown,
@@ -38,6 +38,10 @@ const MIN_STATIONS: usize = 3;
 const WORST: usize = 5;
 /// 笔划直接作走廊时的点间距（px），同示教页缺省
 const STROKE_SPACING: f32 = 20.0;
+/// 胶色吸附后的平滑半窗（胶中心线站距 4 px，5 点即 ±20 px）
+const SNAP_SMOOTH: usize = 5;
+/// 胶色吸附第二遍的偏移上限（px）
+const SNAP_REFINE: f32 = 10.0;
 
 pub fn tools() -> Value {
     let recipe = json!({ "type": "string", "description": "候选的配方编号，如 NEW-1" });
@@ -71,14 +75,14 @@ pub fn tools() -> Value {
         },
         {
             "name": "teach_corridor",
-            "description": "示教一台相机一段的走廊：在第 seq 帧上冻结示教帧，沿 stroke（胶条中心的原图像素点列，从起胶端画向收胶端）提取走廊（或 extract: false 直接用笔划）并保存；走廊变了即清空这一段的颜色模型。返回走廊长度、站数与叠图（品红=笔划，青=提取的走廊）。",
+            "description": "示教一台相机一段的走廊：在第 seq 帧上冻结示教帧，沿 stroke（沿胶条的原图像素点列，从起胶端画向收胶端；彩色帧粗略即可）得出走廊并保存；彩色帧随即沿新走廊重新取色。返回走廊长度、站数、取色结果与叠图（品红=笔划，青=走廊）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "recipe": recipe, "camera": camera, "segment": segment, "seq": seq,
                     "stroke": { "type": "array", "minItems": 2, "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } },
-                    "radiusPx": { "type": "number", "exclusiveMinimum": 0, "description": "笔划半径（px），缺省 30；胶条比它宽时调大" },
-                    "extract": { "type": "boolean", "description": "缺省 true：沿笔划找胶两侧边提取中线；false：笔划按 20 px 插点直接作走廊（提取失败、笔划已贴着胶条中心时用）" },
+                    "radiusPx": { "type": "number", "exclusiveMinimum": 0, "description": "笔划半径（px），缺省 30：按胶色吸附时是笔划到胶中心的最大偏差，边缘提取时是找边范围" },
+                    "extract": { "type": "string", "enum": ["auto", "color", "edges", "none"], "description": "缺省 auto：彩色帧按胶色把笔划吸附到胶中心（笔划偏几十 px 也行，radiusPx 内找胶），灰度帧按胶两侧边提取；none：笔划按 20 px 插点直接作走廊" },
                 },
                 "required": ["recipe", "camera", "segment", "seq", "stroke"],
                 "additionalProperties": false,
@@ -109,6 +113,34 @@ pub fn tools() -> Value {
             },
             "annotations": { "readOnlyHint": true },
         },
+        {
+            "name": "teach_segment",
+            "description": "改一段的检测项（checks）与零件边参考（offsetRef），按补丁深合并：只给要改的字段。offsetRef 给 null 即关掉胶偏参考。检测项开关、公差与图纸标称值（offsetRef.edge.nominalMm）须用人给的值。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "recipe": recipe, "segment": segment,
+                    "checks": { "type": "object", "description": "如 {\"width\": {\"nominalMm\": 4, \"tolUpper\": 1.5}, \"break\": {\"maxGapMm\": 6}}" },
+                    "offsetRef": { "type": ["object", "null"], "description": "如 {\"measure\": \"toEdge\", \"camera\": \"cam1\", \"edge\": {\"polarity\": \"brightToDark\", \"searchMm\": 18, \"contrastMin\": 70, \"nominalMm\": 10}}" },
+                },
+                "required": ["recipe", "segment"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "teach_replay",
+            "description": "用候选现在的配置复测历史件并整件判定（从原图重测，只读，不改候选）。不给 records 时列出最近 30 件历史记录。返回每件的原判定、复测判定、原因与各区域结果。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "recipe": recipe,
+                    "records": { "type": "array", "items": { "type": "integer" }, "description": "历史记录编号" },
+                },
+                "required": ["recipe"],
+                "additionalProperties": false,
+            },
+            "annotations": { "readOnlyHint": true },
+        },
     ])
 }
 
@@ -123,6 +155,8 @@ pub async fn call(
         "teach_corridor" => corridor(app, parse(arguments)?).await,
         "teach_fit_color" => fit_color(app, parse(arguments)?).await,
         "teach_trial" => trial(app, parse(arguments)?).await,
+        "teach_segment" => segment_config(app, arguments).await,
+        "teach_replay" => replay(app, parse(arguments)?).await,
         _ => Err(ToolError::Unknown),
     }
 }
@@ -406,6 +440,17 @@ async fn view_frame(app: &AppHandle, args: ViewArgs) -> Result<Vec<Content>, Too
 
 // ───────────── teach_corridor ─────────────
 
+/// 走廊怎样从笔划得出
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Extract {
+    /// 彩色示教帧按胶色吸附，灰度帧按边缘提取
+    Auto,
+    Color,
+    Edges,
+    None,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CorridorArgs {
@@ -415,7 +460,7 @@ struct CorridorArgs {
     seq: u64,
     stroke: Vec<[f32; 2]>,
     radius_px: Option<f32>,
-    extract: Option<bool>,
+    extract: Option<Extract>,
 }
 
 /// 笔划直接作走廊：各段按不超过 `spacing` px 等分插点（同示教页“笔划直接生成走廊”的点间距）
@@ -445,6 +490,123 @@ fn station_count(length_px: f64, mm_per_px: f64, spacing_mm: f64) -> usize {
     ((length_px * 1000.0).round() / 1000.0 / step + 1e-6 / step).floor() as usize + 1
 }
 
+/// 告诉界面候选被改了：没有未保存改动时重新载入
+fn changed(app: &AppHandle, recipe: &str) {
+    let _ = app.emit("workspace://changed", recipe);
+}
+
+/// 叠图 overlay 里第一条 `role` 折线的点
+fn overlay_polyline(overlay: &Value, role: &str) -> Option<Vec<[f32; 2]>> {
+    overlay["items"]
+        .as_array()?
+        .iter()
+        .find(|item| item["kind"] == "polyline" && item["role"] == role)?["points"]
+        .as_array()?
+        .iter()
+        .map(|p| Some([p[0].as_f64()? as f32, p[1].as_f64()? as f32]))
+        .collect()
+}
+
+/// 滑动平均（窗口 2·`half`+1 点，两端收窄），压掉逐站居中留下的台阶
+fn smooth(points: &[[f32; 2]], half: usize) -> Vec<[f32; 2]> {
+    (0..points.len())
+        .map(|i| {
+            let (a, b) = (i.saturating_sub(half), (i + half + 1).min(points.len()));
+            let window = &points[a..b];
+            let n = window.len() as f32;
+            [
+                window.iter().map(|p| p[0]).sum::<f32>() / n,
+                window.iter().map(|p| p[1]).sum::<f32>() / n,
+            ]
+        })
+        .collect()
+}
+
+/// 每隔 `every` 个点留一个，末点总留
+fn thin(points: &[[f32; 2]], every: usize) -> Vec<[f32; 2]> {
+    let mut out: Vec<_> = points.iter().copied().step_by(every.max(1)).collect();
+    if let (Some(&last), Some(&kept)) = (points.last(), out.last()) {
+        if last != kept {
+            out.push(last);
+        }
+    }
+    out
+}
+
+/// 按胶色把粗笔划吸附到胶中心：`glue.color_model` 以笔划为示教线，每站在 ± `shift` px 内找胶色段重新居中，
+/// 取它输出的胶中心线（站距 4 px）平滑后再居中一遍，按 20 px 抽稀作走廊。返回走廊与第一遍的平均移动距离（px）。
+async fn snap_color(
+    app: &AppHandle,
+    recipe: &str,
+    camera: &str,
+    image_id: &str,
+    stroke: &[[f32; 2]],
+    shift: f32,
+) -> Result<(Vec<[f32; 2]>, Option<f64>), String> {
+    let (app, recipe, camera, image_id, stroke) = (
+        app.clone(),
+        recipe.to_string(),
+        camera.to_string(),
+        image_id.to_string(),
+        densify(stroke, 8.0),
+    );
+    blocking(move || {
+        let host = app.state::<WorkspaceHost>();
+        let (path, detect, scale) = {
+            let items = host.items.lock().unwrap();
+            let w = items.get(&recipe).ok_or("候选不存在")?;
+            let inspect = w
+                .doc
+                .inspect
+                .iter()
+                .find(|i| i.camera == camera)
+                .ok_or_else(|| format!("相机 {camera} 不是段配方的计划相机"))?;
+            (
+                super::image_file(&host, &recipe, &image_id)?,
+                inspect
+                    .detect
+                    .clone()
+                    .unwrap_or_else(|| w.doc.detect.clone()),
+                inspect.mm_per_px.ok_or("先填像素当量再按胶色吸附")?,
+            )
+        };
+        let image = crate::image_file::load(&path)?;
+        let engine = app
+            .state::<crate::vision::VisionHost>()
+            .engine()
+            .ok_or("lyFlow 核心库未加载")?;
+        let recenter =
+            |line: &[[f32; 2]], shift: f32| -> Result<(Vec<[f32; 2]>, Option<f64>), String> {
+                let mut params = burst::color_teach_params(line, &detect, scale)?;
+                params["shiftMax"] = json!(shift);
+                let result = engine.run_targets(
+                    crate::vision::template::color_teach().text,
+                    &crate::vision::unique_run_id(&format!("agent-snap-{recipe}-{camera}")),
+                    &image,
+                    &params,
+                    &["n_model".to_string()],
+                )?;
+                if result.status() != "ok" {
+                    return Err(format!("按胶色吸附失败：{}", result.failure()));
+                }
+                let centers = result
+                    .record("overlay")
+                    .and_then(|o| overlay_polyline(o, "center"))
+                    .filter(|c| c.len() >= 2)
+                    .ok_or("按胶色没有找到胶中心：笔划可能没压在胶条上")?;
+                let moved = result
+                    .record("model")
+                    .and_then(|m| m["quality"]["centerShift"].as_f64());
+                Ok((smooth(&centers, SNAP_SMOOTH), moved))
+            };
+        // 第一遍按笔划半径吸附；没找到胶的站保留原偏移会留下台阶，平滑后以小偏移上限再居中一遍
+        let (first, moved) = recenter(&stroke, shift)?;
+        let (second, _) = recenter(&first, shift.min(SNAP_REFINE))?;
+        Ok((thin(&second, 5), moved))
+    })
+    .await
+}
+
 async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, ToolError> {
     if args.stroke.len() < 2 {
         return Err("笔划至少要 2 个点".into());
@@ -462,6 +624,7 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         args.seq,
     )
     .await?;
+    changed(app, &args.recipe);
     let frame = frozen
         .plan
         .camera_teaching
@@ -470,58 +633,89 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         .and_then(|t| t.segments.iter().find(|s| s.segment == args.segment))
         .map(|s| s.frame.clone())
         .ok_or("示教帧没有冻结上")?;
+    let image = {
+        let (app, id, image_id) = (app.clone(), args.recipe.clone(), frame.id.clone());
+        blocking(move || {
+            let host = app.state::<WorkspaceHost>();
+            crate::image_file::load(&super::image_file(&host, &id, &image_id)?)
+        })
+        .await?
+    };
+    let color = image.is_color();
+    let mode = match args.extract.unwrap_or(Extract::Auto) {
+        Extract::Auto if color => Extract::Color,
+        Extract::Auto => Extract::Edges,
+        Extract::Color if !color => {
+            return Err("示教帧是灰度图，不能按胶色吸附：用 extract: \"edges\" 或 \"none\"".into())
+        }
+        mode => mode,
+    };
+    let inside = |p: &[f32; 2]| {
+        (0.0..=frame.size[0] as f32).contains(&p[0]) && (0.0..=frame.size[1] as f32).contains(&p[1])
+    };
+    if !args.stroke.iter().all(inside) {
+        return Err("笔划有点不在示教帧内".into());
+    }
     let stroke: Vec<[f64; 2]> = args
         .stroke
         .iter()
         .map(|p| [f64::from(p[0]), f64::from(p[1])])
         .collect();
-    let (corridor, message) = if args.extract.unwrap_or(true) {
-        let roi = canvas::bounds(&stroke, f64::from(radius) + EXTRACT_MARGIN, frame.size)
-            .ok_or("笔划不在示教帧内")?;
-        let extracted = burst::workspace_extract_corridor(
-            app.clone(),
-            args.recipe.clone(),
-            frozen.workspace.revision,
-            args.camera.clone(),
-            frame.id.clone(),
-            roi,
-            Some(super::centerline::BrushGuide {
-                points: args.stroke.clone(),
-                radius_px: radius,
-            }),
-            None,
-        )
-        .await?;
-        if extracted.path.len() < 2 {
-            let at = extracted
-                .failure
-                .as_ref()
-                .map(|f| {
-                    format!(
-                        "（在 [{:.0}, {:.0}]：{}）",
-                        f.point[0], f.point[1], f.reason
-                    )
-                })
-                .unwrap_or_default();
-            return Err(format!(
-                "没有提取出走廊：{}{at}。笔划已贴着胶条中心时，可传 extract: false 直接用笔划作走廊",
-                extracted.message
+    let (corridor, message) = match mode {
+        Extract::Color => {
+            let (path, shift) = snap_color(
+                app,
+                &args.recipe,
+                &args.camera,
+                &frame.id,
+                &args.stroke,
+                radius,
             )
-            .into());
+            .await?;
+            let note = shift.map_or_else(String::new, |s| format!("，平均移动 {s:.1} px"));
+            (path, format!("按胶色吸附到胶中心{note}"))
         }
-        (extracted.path, extracted.message)
-    } else {
-        let inside = |p: &[f32; 2]| {
-            (0.0..=frame.size[0] as f32).contains(&p[0])
-                && (0.0..=frame.size[1] as f32).contains(&p[1])
-        };
-        if !args.stroke.iter().all(inside) {
-            return Err("笔划有点不在示教帧内".into());
+        Extract::Edges => {
+            let roi = canvas::bounds(&stroke, f64::from(radius) + EXTRACT_MARGIN, frame.size)
+                .ok_or("笔划不在示教帧内")?;
+            let extracted = burst::workspace_extract_corridor(
+                app.clone(),
+                args.recipe.clone(),
+                frozen.workspace.revision,
+                args.camera.clone(),
+                frame.id.clone(),
+                roi,
+                Some(super::centerline::BrushGuide {
+                    points: args.stroke.clone(),
+                    radius_px: radius,
+                }),
+                None,
+            )
+            .await?;
+            if extracted.path.len() < 2 {
+                let at = extracted
+                    .failure
+                    .as_ref()
+                    .map(|f| {
+                        format!(
+                            "（在 [{:.0}, {:.0}]：{}）",
+                            f.point[0], f.point[1], f.reason
+                        )
+                    })
+                    .unwrap_or_default();
+                let hint = if color {
+                    "彩色帧改用 extract: \"color\""
+                } else {
+                    "笔划已贴着胶条中心时可用 extract: \"none\""
+                };
+                return Err(format!("没有提取出走廊：{}{at}。{hint}", extracted.message).into());
+            }
+            (extracted.path, extracted.message)
         }
-        (
+        _ => (
             densify(&args.stroke, STROKE_SPACING),
             "笔划直接作走廊".to_string(),
-        )
+        ),
     };
     let mut doc = frozen.workspace.doc.clone();
     let inspect = doc
@@ -550,21 +744,35 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         color_model: None,
     });
     inspect.segments.sort_by_key(|s| s.segment);
-    let saved = super::workspace_save_doc(
+    let mut saved = super::workspace_save_doc(
         app.clone(),
         args.recipe.clone(),
         frozen.workspace.revision,
         doc,
     )
     .await?;
-    let image = {
-        let (app, id, image_id) = (app.clone(), args.recipe.clone(), frame.id.clone());
-        blocking(move || {
-            let host = app.state::<WorkspaceHost>();
-            crate::image_file::load(&super::image_file(&host, &id, &image_id)?)
-        })
-        .await?
+    // 彩色帧走廊一变就沿新走廊重新取色，免得这一段没有颜色模型
+    let color_model = if color {
+        match burst::workspace_fit_color_model(
+            app.clone(),
+            args.recipe.clone(),
+            saved.workspace.revision,
+            args.camera.clone(),
+            args.segment,
+        )
+        .await
+        {
+            Ok(view) => {
+                let summary = color_summary(&view, &args.camera, args.segment);
+                saved = view;
+                summary
+            }
+            Err(e) => json!({ "error": e }),
+        }
+    } else {
+        Value::Null
     };
+    changed(app, &args.recipe);
     let path: Vec<[f64; 2]> = corridor
         .iter()
         .map(|p| [f64::from(p[0]), f64::from(p[1])])
@@ -584,12 +792,13 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         text(json!({
             "revision": saved.workspace.revision,
             "frame": frame.id,
+            "extract": format!("{mode:?}").to_lowercase(),
             "points": corridor.len(),
             "lengthPx": (length_px * 10.0).round() / 10.0,
             "lengthMm": scale.map(|s| (length_px * s * 100.0).round() / 100.0),
             "stations": stations,
             "message": message,
-            "colorModelCleared": previous.is_some_and(|p| p.color_model.is_some()),
+            "colorModel": color_model,
         })),
     ])
 }
@@ -604,6 +813,36 @@ struct SegmentArgs {
     segment: u32,
 }
 
+/// 这一段颜色模型的摘要：胶色、背景色、分离度等质量指标
+fn color_summary(view: &WorkspaceView, camera: &str, segment: u32) -> Value {
+    let Some(model) = view
+        .workspace
+        .doc
+        .inspect
+        .iter()
+        .find(|i| i.camera == camera)
+        .and_then(|i| i.segment_corridor(segment))
+        .and_then(|s| s.color_model.as_deref())
+        .and_then(|m| serde_json::from_str::<Value>(m).ok())
+    else {
+        return json!({ "error": "取色后没有颜色模型" });
+    };
+    let background: Vec<Value> = model["background"]
+        .as_array()
+        .map(|b| {
+            b.iter()
+                .map(|c| json!({ "weight": c["weight"], "mean": c["mean"] }))
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({
+        "glue": { "mean": model["glue"]["mean"], "n": model["glue"]["n"], "luma": model["glue"]["luma"] },
+        "background": background,
+        "quality": model["quality"],
+        "space": model["space"],
+    })
+}
+
 async fn fit_color(app: &AppHandle, args: SegmentArgs) -> Result<Vec<Content>, ToolError> {
     let w = open(app, &args.recipe).await?.workspace;
     let view = burst::workspace_fit_color_model(
@@ -614,31 +853,10 @@ async fn fit_color(app: &AppHandle, args: SegmentArgs) -> Result<Vec<Content>, T
         args.segment,
     )
     .await?;
-    let model: Value = view
-        .workspace
-        .doc
-        .inspect
-        .iter()
-        .find(|i| i.camera == args.camera)
-        .and_then(|i| i.segment_corridor(args.segment))
-        .and_then(|s| s.color_model.as_deref())
-        .and_then(|m| serde_json::from_str(m).ok())
-        .ok_or("取色后没有颜色模型")?;
-    let background: Vec<Value> = model["background"]
-        .as_array()
-        .map(|b| {
-            b.iter()
-                .map(|c| json!({ "weight": c["weight"], "mean": c["mean"] }))
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(vec![text(json!({
-        "revision": view.workspace.revision,
-        "glue": { "mean": model["glue"]["mean"], "n": model["glue"]["n"], "luma": model["glue"]["luma"] },
-        "background": background,
-        "quality": model["quality"],
-        "space": model["space"],
-    }))])
+    changed(app, &args.recipe);
+    let mut summary = color_summary(&view, &args.camera, args.segment);
+    summary["revision"] = json!(view.workspace.revision);
+    Ok(vec![text(summary)])
 }
 
 // ───────────── teach_trial ─────────────
@@ -653,7 +871,7 @@ struct TrialArgs {
     to: Option<u64>,
 }
 
-/// 稳态范围内按这一段的检测项（`checks`）超限的帧：帧内断口不短于断胶长度、有胶站占比低于下限、平均胶宽出了公差带。
+/// 稳态范围内按这一段的检测项（`checks`）超限的帧（与生产判定 `judge_frame` 同口径）：帧内断口长于断胶长度、有胶站占比低于下限、平均胶宽出了公差带。
 /// 整件判定还看跨帧的连续长度，这里只给逐帧的线索。
 fn against_checks(frames: &[FrameMetrics], window: (u64, u64), checks: &Value) -> Value {
     let measured: Vec<&FrameMetrics> = frames
@@ -672,7 +890,7 @@ fn against_checks(frames: &[FrameMetrics], window: (u64, u64), checks: &Value) -
             "gapOverLimit".into(),
             json!(measured
                 .iter()
-                .filter(|f| f.gap_max_mm >= max_gap)
+                .filter(|f| f.gap_max_mm > max_gap)
                 .map(|f| f.seq)
                 .collect::<Vec<_>>()),
         );
@@ -799,4 +1017,159 @@ fn summarize(frames: &[FrameMetrics], window: (u64, u64)) -> Value {
             "widthMean": f.width_mean.map(|v| (v * 1000.0).round() / 1000.0),
         })).collect::<Vec<_>>(),
     })
+}
+
+// ───────────── teach_segment ─────────────
+
+/// 把补丁 `patch` 深合并进 `target`：对象逐键合并，其余（含 null）直接替换
+fn merge(target: &mut Value, patch: &Value) {
+    match (target, patch) {
+        (Value::Object(target), Value::Object(patch)) => {
+            for (key, value) in patch {
+                merge(target.entry(key.clone()).or_insert(Value::Null), value);
+            }
+        }
+        (target, patch) => *target = patch.clone(),
+    }
+}
+
+async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content>, ToolError> {
+    let map = arguments.as_object().ok_or("参数要是对象")?;
+    if let Some(key) = map
+        .keys()
+        .find(|k| !["recipe", "segment", "checks", "offsetRef"].contains(&k.as_str()))
+    {
+        return Err(format!("参数不对：不认识 {key}").into());
+    }
+    let recipe = map["recipe"].as_str().ok_or("缺少 recipe")?.to_string();
+    let index = map
+        .get("segment")
+        .and_then(Value::as_u64)
+        .ok_or("缺少 segment")? as u32;
+    let w = open(app, &recipe).await?.workspace;
+    let mut segments = w.doc.segments.clone();
+    let target = segments
+        .iter_mut()
+        .find(|s| s.index == index)
+        .ok_or_else(|| format!("没有第 {index} 段"))?;
+    let mut value = serde_json::to_value(&*target).map_err(|e| e.to_string())?;
+    if let Some(checks) = map.get("checks") {
+        merge(&mut value["checks"], checks);
+    }
+    match map.get("offsetRef") {
+        Some(Value::Null) => value["offsetRef"] = Value::Null,
+        Some(patch) => merge(&mut value["offsetRef"], patch),
+        None => {}
+    }
+    *target = serde_json::from_value(value).map_err(|e| format!("段配置不对：{e}"))?;
+    let view = {
+        let (app, recipe, revision) = (app.clone(), recipe.clone(), w.revision);
+        blocking(move || burst::workspace_update_segments(app, recipe, revision, segments)).await?
+    };
+    changed(app, &recipe);
+    let saved = view
+        .workspace
+        .doc
+        .segments
+        .iter()
+        .find(|s| s.index == index)
+        .and_then(|s| serde_json::to_value(s).ok())
+        .unwrap_or_default();
+    Ok(vec![text(json!({
+        "revision": view.workspace.revision,
+        "segment": index,
+        "checks": saved["checks"],
+        "offsetRef": saved["offsetRef"],
+    }))])
+}
+
+// ───────────── teach_replay ─────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplayArgs {
+    recipe: String,
+    records: Option<Vec<i64>>,
+}
+
+async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolError> {
+    let Some(records) = args.records else {
+        let page = crate::history::history_query(
+            app.clone(),
+            crate::store::HistoryQuery {
+                limit: 30,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let items: Vec<Value> = page
+            .items
+            .iter()
+            .filter_map(|p| serde_json::to_value(p).ok())
+            .map(|p| {
+                json!({
+                    "id": p["id"], "ts": p["ts"], "sn": p["sn"], "recipeId": p["recipeId"],
+                    "verdict": p["verdict"], "reason": p["reason"], "mode": p["mode"],
+                })
+            })
+            .collect();
+        return Ok(vec![text(json!({ "total": page.total, "recent": items }))]);
+    };
+    let mut results = Vec::new();
+    for record in records {
+        let w = open(app, &args.recipe).await?.workspace;
+        let outcome =
+            super::workspace_compare(app.clone(), args.recipe.clone(), w.revision, record, true)
+                .await;
+        results.push(match outcome {
+            Ok(c) => {
+                let regions: Vec<Value> = c
+                    .burst
+                    .as_ref()
+                    .and_then(|b| serde_json::to_value(&b.judgement).ok())
+                    .and_then(|j| j["regions"].as_array().cloned())
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|r| {
+                        json!({
+                            "segment": r["region"]["kind"]["segment"],
+                            "frames": [r["region"]["firstSeq"], r["region"]["lastSeq"]],
+                            "verdict": r["verdict"],
+                            "reason": r["reason"],
+                            "width": r["width"],
+                            "offset": r["offset"],
+                        })
+                    })
+                    .collect();
+                json!({
+                    "record": record,
+                    "originalVerdict": c.original_verdict,
+                    "verdict": c.judgement.verdict,
+                    "reason": c.judgement.reason,
+                    "regions": regions,
+                })
+            }
+            Err(e) => json!({ "record": record, "error": e }),
+        });
+    }
+    Ok(vec![text(json!({ "results": results }))])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patching_one_edge_field_keeps_the_other_toedge_settings() {
+        let mut offset = json!({
+            "measure": "toEdge", "camera": "cam1", "xRef": null, "spread": null,
+            "edge": { "polarity": "brightToDark", "searchMm": 18.0, "contrastMin": 70.0, "nominalMm": 10.0 },
+        });
+        merge(&mut offset, &json!({ "edge": { "contrastMin": 40.0 } }));
+        assert_eq!(
+            offset["edge"],
+            json!({ "polarity": "brightToDark", "searchMm": 18.0, "contrastMin": 40.0, "nominalMm": 10.0 })
+        );
+        assert_eq!(offset["camera"], "cam1");
+    }
 }

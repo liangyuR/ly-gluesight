@@ -53,6 +53,10 @@
     "model": {
       "node": "n_model",
       "port": "model"
+    },
+    "overlay": {
+      "node": "n_model",
+      "port": "overlay"
     }
   },
   "params": {
@@ -79,6 +83,13 @@
         "n_model.bgBand"
       ],
       "doc": "背景样本：离中心 [内, 外]（px），从胶宽上限的一半外起"
+    },
+    "shiftMax": {
+      "default": 20.0,
+      "binds": [
+        "n_model.shiftMax"
+      ],
+      "doc": "重新居中的偏移上限（px）；按粗笔划吸附走廊时取笔划半径"
     }
   }
 }

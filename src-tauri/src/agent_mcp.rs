@@ -23,30 +23,54 @@ pub enum Content {
     Png(Vec<u8>),
 }
 
+/// 服务状态（设置页“关于”只读展示）。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpStatus {
+    /// off：没设令牌，未启用；listening：在监听；failed：启动失败
+    pub state: &'static str,
+    pub url: Option<String>,
+    pub message: Option<String>,
+}
+
+static STATUS: std::sync::Mutex<McpStatus> = std::sync::Mutex::new(McpStatus {
+    state: "off",
+    url: None,
+    message: None,
+});
+
+fn set_status(state: &'static str, url: Option<String>, message: Option<String>) {
+    *STATUS.lock().unwrap() = McpStatus {
+        state,
+        url,
+        message,
+    };
+}
+
+fn fail(message: String) {
+    crate::applog::write("warn", "示教 MCP", &message);
+    set_status("failed", None, Some(message));
+}
+
+#[tauri::command]
+pub fn agent_mcp_status() -> McpStatus {
+    STATUS.lock().unwrap().clone()
+}
+
 /// 按环境变量启动服务；没设令牌时不启动。
 pub fn start(app: &AppHandle) {
     let Ok(token) = std::env::var("GLUESIGHT_MCP_TOKEN") else {
         return;
     };
     if token.chars().count() < MIN_TOKEN {
-        crate::applog::write(
-            "warn",
-            "示教 MCP",
-            &format!("GLUESIGHT_MCP_TOKEN 少于 {MIN_TOKEN} 个字符，服务未启动"),
-        );
-        return;
+        return fail(format!(
+            "GLUESIGHT_MCP_TOKEN 少于 {MIN_TOKEN} 个字符，服务未启动"
+        ));
     }
     let port = match std::env::var("GLUESIGHT_MCP_PORT") {
         Ok(text) => match text.parse::<u16>() {
             Ok(port) => port,
-            Err(_) => {
-                crate::applog::write(
-                    "warn",
-                    "示教 MCP",
-                    &format!("GLUESIGHT_MCP_PORT={text} 不是端口号，服务未启动"),
-                );
-                return;
-            }
+            Err(_) => return fail(format!("GLUESIGHT_MCP_PORT={text} 不是端口号，服务未启动")),
         },
         Err(_) => DEFAULT_PORT,
     };
@@ -54,20 +78,11 @@ pub fn start(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
             Ok(listener) => listener,
-            Err(e) => {
-                crate::applog::write(
-                    "error",
-                    "示教 MCP",
-                    &format!("监听 127.0.0.1:{port} 失败：{e}"),
-                );
-                return;
-            }
+            Err(e) => return fail(format!("监听 127.0.0.1:{port} 失败：{e}")),
         };
-        crate::applog::write(
-            "info",
-            "示教 MCP",
-            &format!("已在 http://127.0.0.1:{port}/mcp 提供示教工具"),
-        );
+        let url = format!("http://127.0.0.1:{port}/mcp");
+        crate::applog::write("info", "示教 MCP", &format!("已在 {url} 提供示教工具"));
+        set_status("listening", Some(url), None);
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 continue;

@@ -1031,13 +1031,7 @@ pub async fn workspace_fit_color_model(
                 "示教帧是灰度图，不能取色：把相机图像模式改为彩色后重新选这一段的示教帧".into(),
             );
         }
-        let [lo, hi] = detect.width_range.map(|w| f64::from(w) / scale);
-        let inner = 0.5 * hi + 4.0;
-        let params = serde_json::json!({
-            "points": serde_json::to_string(&corridor).map_err(|e| e.to_string())?,
-            "glueHalf": (0.5 * lo).clamp(1.0, 40.0),
-            "bgBand": [inner, inner + 30.0],
-        });
+        let params = color_teach_params(&corridor, &detect, scale)?;
         let engine = app
             .state::<vision::VisionHost>()
             .engine()
@@ -1080,6 +1074,21 @@ pub async fn workspace_fit_color_model(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 取色图（`color_teach`）的参数：胶样本取走廊 ± 胶宽下限的一半，背景带从胶宽上限的一半外 4 px 起、宽 30 px。
+pub(super) fn color_teach_params(
+    points: &[[f32; 2]],
+    detect: &crate::recipe::DetectParams,
+    scale: f64,
+) -> Result<Value, String> {
+    let [lo, hi] = detect.width_range.map(|w| f64::from(w) / scale);
+    let inner = 0.5 * hi + 4.0;
+    Ok(serde_json::json!({
+        "points": serde_json::to_string(points).map_err(|e| e.to_string())?,
+        "glueHalf": (0.5 * lo).clamp(1.0, 40.0),
+        "bgBand": [inner, inner + 30.0],
+    }))
 }
 
 /// 段配方的走廊提取（决策记录 5.4）：在相机 `camera` 冻结的示教帧 `image_id` 上按选区提取，复用旧中线提取的边缘算法；
