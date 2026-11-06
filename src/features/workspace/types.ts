@@ -3,6 +3,7 @@ import type { CameraImaging } from "../camera/types";
 import type { BurstJudgement, CalibrationRound, CameraTeaching, FrameMetrics, PathSegment, WorkspacePlanView } from "../plan/types";
 import type { PartMode } from "../history/types";
 import type { NavigationMapData } from "./navigation/types";
+import type { FramePixels } from "../../lib/frame";
 
 export interface NavigationArchiveStatus {
   state: "none" | "ready" | "unconfirmed" | "frozen" | "error";
@@ -116,10 +117,9 @@ export interface SegmentSaveImpact {
   untaught: string[];
   measurementCleared: boolean;
 }
-/** 预览像素（8 位灰度，可能是降采样后的尺寸）。 */
-export interface GrayPixels { data: Uint8Array; width: number; height: number }
-/** width / height 为原图尺寸；带 pixels 时直接画到 canvas，url 只作为这张图的标识。 */
-export interface GrayImage { url: string; width: number; height: number; pixels?: GrayPixels }
+export type { FramePixels };
+/** width / height 为原图尺寸；channels 为 1（灰度）或 3（RGB）；带 pixels 时直接画到 canvas，url 只作为这张图的标识。 */
+export interface FrameImage { url: string; width: number; height: number; channels?: 1 | 3; pixels?: FramePixels }
 
 export interface CaptureCamera { cameraId: string; deviceSession: number; receivedCount: number; imaging?: CameraImaging }
 

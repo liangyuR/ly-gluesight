@@ -56,7 +56,7 @@ export default function FlyshotCalibrationPage() {
   // 切换相机、视图时新的取样区会先于清空样本挂载：只认属于当前相机与视图的样本，取样区才会去载入标定原图
   const current=sample&&sample.metadata.camera===config?.id&&sample.metadata.view===calibView?sample:null;
   const corners=calibInfo?.sampleId!=null&&calibInfo.sampleId===current?.metadata.id?calibInfo.corners:null;
-  const marks=useMemo(()=>corners?.map((at,i)=>({at,color:i===0?"var(--ok)":"var(--primary)"})),[corners]);
+  const marks=useMemo(()=>corners?.map((at,i)=>({at,color:i===0?"var(--ov-ok)":"var(--ov-line)"})),[corners]);
   const status=statuses.find(s=>s.cam===cam)??null;
   const busy=productionBusy(snapshot);
   const sampleSet=offline&&site?.source==="sampleSet"?site.sampleSet:null;

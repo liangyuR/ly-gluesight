@@ -2,7 +2,7 @@ import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type 
 import { AlertTriangle, Copy, Lock, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { Alert, Button, Card, Checkbox, FormField, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Surface, TextField } from "qing-steel";
 import { cameraApi } from "../api";
-import type { BandwidthEstimate, CameraConfig, CameraImaging, CameraStatus, DeviceSummary } from "../types";
+import type { BandwidthEstimate, CameraConfig, CameraImaging, CameraStatus, DeviceSummary, ImageMode } from "../types";
 import { errorText } from "../../../lib/errors";
 import { clock, sourceText } from "./health";
 import ContextHelp from "../../cycle/components/ContextHelp";
@@ -112,9 +112,11 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
   );
   const mvs = config.source === "mvs";
   const line0 = config.triggerSource === "Line0";
+  const stitched = config.viewCount === 3;
   const invalid=!Number.isFinite(config.frameRate)||config.frameRate<=0?"帧率必须为正数":
     !config.name.trim()?"相机名称不能为空":
     ![1,3].includes(config.viewCount)?"设备视角数只能为 1 或 3":
+    stitched&&config.imageMode==="color"?"三目拼接相机只能使用灰度模式":
     mvs&&!config.serial?"请选择要绑定的相机设备":
     mvs&&config.counterAfterOpen!=null&&(!Number.isSafeInteger(config.counterAfterOpen)||config.counterAfterOpen<0)?"开流前触发计数需为非负安全整数，未知时请留空":
     ![config.triggerDelayUs,config.debouncerUs].every(v=>Number.isFinite(v)&&v>=0)?"触发延时与输入滤波需为非负有限数":"";
@@ -216,6 +218,9 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
               <TextField label="相机编号" readOnly value={config.id} />
               <TextField label="图像源" readOnly value={sourceText[config.source]} />
               <TextField label="设备视角" readOnly value="单视角" />
+              <Select id="cam-image-mode" label="图像模式" aria-label="图像模式" value={config.imageMode} disabled={!mvs} onValueChange={v => set("imageMode", v as ImageMode)}
+                options={[{ value: "gray", label: "灰度" }, { value: "color", label: "彩色", disabled: stitched }]}
+                description={stitched ? "三目拼接相机只支持灰度，彩色不可选。" : config.imageMode === "color" ? "彩色模式按 8 位 Bayer 取图，由电脑去马赛克为 RGB；录制保存原始 Bayer。切换图像模式后，已有示教需重新示教。" : "切换图像模式后，已有示教需重新示教。"} />
               {config.source === "sampleSet" && <span className="cg-small muted">图像来自离线模式所选样本集，相机与视角按样本集生成，不可在此更改。</span>}
               {config.source === "sim" && <span className="cg-small muted">合成图相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。</span>}
             </Stack>
@@ -288,7 +293,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
             <Alert title="不适用：离线图像源按节拍自动出图">不接触发线，没有触发沿、滤波、延时、频闪和 Chunk 设置；触发计数即样本序号。</Alert>
           </Card>}
 
-          {mvs ? <Card role="region" aria-label="曝光与增益" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>曝光与增益</Heading><ContextHelp label="曝光与增益说明">曝光与增益只记录在采集件与轮次里，修改后不影响已有示教、标定与轮次复核。固定写入：ExposureAuto / GainAuto = Off、PixelFormat = Mono8、TriggerMode = On；GigE 相机自动设置最佳包长。{status?.sdkVersion && ` SDK ${status.sdkVersion}。`}</ContextHelp></div>} actions={<span className="cg-note">保存即写入相机，打开或重连时自动写入</span>}>
+          {mvs ? <Card role="region" aria-label="曝光与增益" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>曝光与增益</Heading><ContextHelp label="曝光与增益说明">曝光与增益只记录在采集件与轮次里，修改后不影响已有示教、标定与轮次复核。固定写入：ExposureAuto / GainAuto = Off、TriggerMode = On；GigE 相机自动设置最佳包长。像素格式按图像模式：灰度模式优先 Mono8，相机没有 Mono8 时取 8 位 Bayer 转灰度；彩色模式使用 8 位 Bayer，由电脑去马赛克为 RGB，录制保存原始 Bayer。{status?.sdkVersion && ` SDK ${status.sdkVersion}。`}</ContextHelp></div>} actions={<span className="cg-note">保存即写入相机，打开或重连时自动写入</span>}>
             <Stack direction="column" align="stretch" gap={12}>
               <div className="cg-adv-grid">
                 <NumberField label="曝光时间" aria-label="曝光时间（µs）" unit="µs" min={1} step={1} value={exposure===""?"":Number(exposure)} onValueChange={v => editImaging("exposure", v===""?"":String(v))} />

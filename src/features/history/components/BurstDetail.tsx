@@ -11,9 +11,9 @@ import type { CalibrationFrameView, FrameGroupView, FrameRecord, PartDetailBurst
 import { expectedText, flagBadges, regionKindLabel } from "../../plan/vis";
 import { burstImageApi } from "../../workspace/burstImages";
 import { workspaceApi } from "../../workspace/api";
-import { GrayViewer, KV, Panel } from "../../workspace/components";
+import { FrameViewer, KV, Panel } from "../../workspace/components";
 import { useWorkspace } from "../../workspace/context";
-import type { Comparison, GrayImage } from "../../workspace/types";
+import type { Comparison, FrameImage } from "../../workspace/types";
 import { CycleTimeline } from "../../logs";
 import { errorText } from "../../../lib/errors";
 import { displayReason, formatTime, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel } from "../meta";
@@ -46,7 +46,7 @@ export function historyGroups(burst: PartDetailBurst): FrameGroupView[] {
 /** 一帧录制原图：没有原图（缺帧、未录制、录制队满丢弃）时不读，按钮与说明由页面给。 */
 function useFrameImage(historyId: number, camera: number, seq: number, enabled: boolean) {
   const key = JSON.stringify([historyId, camera, seq, enabled]);
-  const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string; loading: boolean }>({ key, image: null, error: "", loading: false });
+  const [state, setState] = useState<{ key: string; image: FrameImage | null; error: string; loading: boolean }>({ key, image: null, error: "", loading: false });
   useEffect(() => {
     let alive = true;
     setState({ key, image: null, error: "", loading: enabled });
@@ -87,14 +87,14 @@ function FrameTile({ detail, comparison, traceable, camera, cameraName, seq, fra
   const lit = selected ? station : null;
   // 联动的测站画在最后、加粗换色，免得被相邻测站盖住
   const lines = (traced.view?.edges ?? []).flatMap((edge, i) => edge ? [{ from: edge[0], to: edge[1], station: i,
-    color: i === lit ? "var(--warn)" : "var(--primary)", width: i === lit ? 4 : 2 }] : []).sort((a, b) => Number(a.station === lit) - Number(b.station === lit));
+    color: i === lit ? "var(--ov-warn)" : "var(--ov-line)", width: i === lit ? 4 : 2 }] : []).sort((a, b) => Number(a.station === lit) - Number(b.station === lit));
   const overlay = traced.view && traced.view.corridor.length >= 2 ? { path: traced.view.corridor, searchHalfPx: traced.view.searchHalfPx ?? undefined,
     segments: lines, onSegmentHover: selected ? onStation : undefined } : undefined;
   const unavailable = !frame ? "没有这一帧的记录"
     : frame.status === "missing" ? "这台相机本帧组缺帧，没有原图（检测不完整，不影响 OK/NG）"
       : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;
   return <div className={"hist-frame-tile" + (selected ? " selected" : "")} onClickCapture={onSelect}>
-    <GrayViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={`原始 SN ${s.sn} · ${cameraName} · 帧组 ${seq}`} overlay={overlay}
+    <FrameViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={`原始 SN ${s.sn} · ${cameraName} · 帧组 ${seq}`} overlay={overlay}
       caption={<>{cameraName} · 帧组 {seq}{frame ? ` · ${frameStateName[frame.status]}` : ""}</>} />
     {traced.error && <p className="muted hint">叠图：{traced.error}</p>}
   </div>;

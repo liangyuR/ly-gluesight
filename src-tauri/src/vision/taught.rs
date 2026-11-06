@@ -347,6 +347,8 @@ pub struct CorridorGraph {
     pub segment: u32,
     /// 示教帧尺寸；每帧必须与它相同
     pub size: [u32; 2],
+    /// 示教帧通道数（1 灰度、3 彩色）；未知时不核对（见 `CorridorSet::with_channels`）
+    pub channels: Option<u8>,
     /// `template::corridor` 的全部有效参数与判定门限（发布包冻结它们）
     pub params: Value,
     pub judge: Value,
@@ -475,6 +477,7 @@ pub fn plan_corridor(
         camera_idx,
         segment,
         size,
+        channels: None,
         params: effective,
         judge,
         targets,
@@ -548,6 +551,17 @@ impl CorridorSet {
         Ok(Self { graphs, headings })
     }
 
+    /// 记下各计划相机示教帧的通道数（计划相机顺序），量帧时彩色 / 灰度与示教帧不一致即报错。
+    pub fn with_channels(mut self, channels: &[u8]) -> Self {
+        for g in self.graphs.values_mut() {
+            g.channels = channels.get(g.camera_idx).copied();
+        }
+        for h in self.headings.values_mut() {
+            h.channels = channels.get(h.camera_idx).copied();
+        }
+        self
+    }
+
     pub fn get(&self, camera: usize, segment: u32) -> Option<FrameGraph<'_>> {
         self.headings
             .get(&(camera, segment))
@@ -596,18 +610,41 @@ pub struct GraphRun<'a> {
     pub targets: &'a [String],
 }
 
+/// 一帧与示教帧的尺寸、像素缓冲核对；示教帧通道数已知时，彩色 / 灰度不一致也报错（lyFlow 能把 RGB 转灰度量，
+/// 但示教与生产的成像口径不同，结果不可比）。
+pub(super) fn check_frame(
+    camera: &str,
+    size: [u32; 2],
+    channels: Option<u8>,
+    image: &FrameImage,
+) -> Result<(), String> {
+    if [image.width, image.height] != size {
+        return Err(format!(
+            "相机 {camera} 这一帧图像 {}×{} 与示教帧 {}×{} 尺寸不一致",
+            image.width, image.height, size[0], size[1]
+        ));
+    }
+    if !image.consistent() {
+        return Err("图像像素缓冲与尺寸不一致".into());
+    }
+    if let Some(taught) = channels.filter(|&c| c != image.channels) {
+        let label = |c: u8| if c == 3 { "彩色" } else { "灰度" };
+        return Err(format!(
+            "相机 {camera} 示教帧为{}，当前帧为{}：相机图像模式与示教时不一致，请恢复图像模式或重新示教",
+            label(taught),
+            label(image.channels)
+        ));
+    }
+    Ok(())
+}
+
 /// 量一帧：`run` 按模板与参数跑这张图。图像尺寸与示教帧不同、算法失败或输出不合契约时返回 Err，
 /// 只影响这一帧（调用方记为 Error 帧，规格 §0）；胶条从走廊一侧走出时这一帧为 OutOfCorridor（默认做法 4），都不 panic。
 pub fn measure_frame_with(
     corridor: &CorridorGraph, image: &FrameImage, seq: u64,
     run: impl FnOnce(GraphRun<'_>, &FrameImage) -> Result<RunResult, String>,
 ) -> Result<FrameMeasurement, String> {
-    if [image.width, image.height] != corridor.size {
-        return Err(format!("相机 {} 这一帧图像 {}×{} 与示教帧 {}×{} 尺寸不一致", corridor.camera, image.width, image.height, corridor.size[0], corridor.size[1]));
-    }
-    if image.pixels.len() != image.width as usize * image.height as usize {
-        return Err("图像像素缓冲与尺寸不一致".into());
-    }
+    check_frame(&corridor.camera, corridor.size, corridor.channels, image)?;
     let result = run(
         GraphRun {
             template: template::corridor(),

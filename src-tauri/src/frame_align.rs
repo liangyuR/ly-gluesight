@@ -3,39 +3,52 @@
 
 use crate::frame::FrameImage;
 
-/// 箱式平均下采样：每 factor × factor 个像素取均值，尾部不足一格的行列舍去；factor 为 0 或 1 时原样复制。
+/// 箱式平均下采样：每 factor × factor 个像素逐通道取均值，尾部不足一格的行列舍去；factor 为 0 或 1 时原样复制。
+/// 通道数同原图。
 pub fn downsample(image: &FrameImage, factor: u32) -> FrameImage {
     let factor = factor.max(1);
+    let c = image.channels.max(1) as usize;
     let (width, height) = (image.width / factor, image.height / factor);
     let area = factor * factor;
-    let mut pixels = Vec::with_capacity((width * height) as usize);
+    let mut pixels = Vec::with_capacity((width * height) as usize * c);
     for y in 0..height {
         for x in 0..width {
-            let mut sum = 0u32;
+            let mut sum = [0u32; 3];
             for dy in 0..factor {
-                let row = ((y * factor + dy) * image.width + x * factor) as usize;
-                sum += image.pixels[row..row + factor as usize]
+                let row = ((y * factor + dy) * image.width + x * factor) as usize * c;
+                for (i, &p) in image.pixels[row..row + factor as usize * c]
                     .iter()
-                    .map(|&p| u32::from(p))
-                    .sum::<u32>();
+                    .enumerate()
+                {
+                    sum[i % c] += u32::from(p);
+                }
             }
-            pixels.push(((sum + area / 2) / area) as u8);
+            pixels.extend(sum[..c].iter().map(|s| ((s + area / 2) / area) as u8));
         }
     }
-    FrameImage::new(width, height, pixels)
+    let mut out = FrameImage::new(width, height, pixels);
+    out.channels = c as u8;
+    out
 }
 
-/// 一台相机一轮的缩略图条带：头部 [帧组数, 宽, 高]（u32 小端），之后按帧组 1..=N 每组 1 字节状态（1 有图、0 缺帧）
-/// 加 宽 × 高 字节灰度（缺帧全 0）。尺寸取第一张有图的帧；尺寸不同的帧按缺帧处理，全部缺帧时宽高为 0。
+/// 一台相机一轮的缩略图条带：头部 [帧组数, 宽, 高, 通道数]（u32 小端），之后按帧组 1..=N 每组 1 字节状态（1 有图、0 缺帧）
+/// 加 宽 × 高 × 通道数 字节（缺帧全 0）。尺寸取第一张有图的帧；尺寸不同的帧按缺帧处理，全部缺帧时宽高为 0。
+/// 全是 RGB 时通道数为 3（交错），否则（全灰度或混合）统一转成灰度，通道数为 1。
 pub fn thumb_strip(frames: &[Option<FrameImage>]) -> Vec<u8> {
     let (width, height) = frames
         .iter()
         .flatten()
         .next()
         .map_or((0, 0), |f| (f.width, f.height));
-    let size = (width * height) as usize;
-    let mut bytes = Vec::with_capacity(12 + frames.len() * (1 + size));
-    for n in [frames.len() as u32, width, height] {
+    let present = || frames.iter().flatten();
+    let channels: u8 = if present().next().is_some() && present().all(FrameImage::is_color) {
+        3
+    } else {
+        1
+    };
+    let size = (width * height) as usize * channels as usize;
+    let mut bytes = Vec::with_capacity(16 + frames.len() * (1 + size));
+    for n in [frames.len() as u32, width, height, u32::from(channels)] {
         bytes.extend(n.to_le_bytes());
     }
     for frame in frames {
@@ -45,7 +58,11 @@ pub fn thumb_strip(frames: &[Option<FrameImage>]) -> Vec<u8> {
         {
             Some(frame) => {
                 bytes.push(1);
-                bytes.extend_from_slice(&frame.pixels);
+                if channels == 3 {
+                    bytes.extend_from_slice(&frame.pixels);
+                } else {
+                    bytes.extend_from_slice(&frame.luma());
+                }
             }
             None => {
                 bytes.push(0);
@@ -62,17 +79,18 @@ pub type Sequence = Vec<Option<FrameImage>>;
 /// 对齐用小图的下采样倍数：1280×1024 → 40×32。
 pub const ALIGN_FACTOR: u32 = 32;
 
+/// 两帧灰度（RGB 按亮度换算）的平均绝对差。
 fn mean_abs_diff(a: &FrameImage, b: &FrameImage) -> Option<f64> {
     if (a.width, a.height) != (b.width, b.height) || a.pixels.is_empty() {
         return None;
     }
-    let sum: u64 = a
-        .pixels
+    let (la, lb) = (a.luma(), b.luma());
+    let sum: u64 = la
         .iter()
-        .zip(&b.pixels)
+        .zip(lb.iter())
         .map(|(&x, &y)| u64::from(x.abs_diff(y)))
         .sum();
-    Some(sum as f64 / a.pixels.len() as f64)
+    Some(sum as f64 / la.len() as f64)
 }
 
 /// 模板 N 帧 × 目标 M 帧的距离：每台相机两帧的平均绝对差除以该相机全部有效距离的中位数（抵消各相机曝光与纹理差异），
@@ -285,8 +303,26 @@ pub fn align_cuts(
 mod tests {
     use super::*;
 
-    /// 前端按头部 [帧组数, 宽, 高] + 每组 1 字节状态 + 灰度逐组解码：缺帧占位且状态为 0，帧组顺序不变，
-    /// 下采样按块取均值（四舍五入）。
+    #[test]
+    fn thumb_strip_header_carries_channels_and_mixed_frames_fall_back_to_gray() {
+        // 防的回归：前端按头部 [帧组数, 宽, 高, 通道数] 逐组解码，头部少了通道数或彩色帧仍按 宽 × 高 写，后面各组全部错位；
+        // 一轮里混有灰度帧时彩色帧没转灰度，组长不一致
+        let rgb = || Some(FrameImage::rgb(2, 1, vec![200, 100, 50, 0, 0, 0]));
+        let gray = || Some(FrameImage::new(2, 1, vec![9, 9]));
+        for (frames, channels) in [(vec![rgb(), None, rgb()], 3u32), (vec![rgb(), gray()], 1)] {
+            let bytes = thumb_strip(&frames);
+            let header: Vec<u32> = bytes[..16]
+                .chunks(4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+            assert_eq!(header, [frames.len() as u32, 2, 1, channels]);
+            assert_eq!(bytes.len(), 16 + frames.len() * (1 + 2 * channels as usize));
+        }
+        let mixed = thumb_strip(&[rgb(), gray()]);
+        // (77·200 + 150·100 + 29·50 + 128) >> 8 = 124
+        assert_eq!(&mixed[16..19], [1, 124, 0]);
+    }
+
     /// 合成序列：胶路位置 s 处的画面是两个沿相反方向移动的亮斑（每个 s 画面唯一）。
     fn scene(s: f64) -> Option<FrameImage> {
         let blob =

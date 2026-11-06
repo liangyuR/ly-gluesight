@@ -33,6 +33,9 @@ pub struct ViewRect {
 impl CompositeLayout {
     pub fn split(&self, image: &FrameImage) -> Result<Vec<Arc<FrameImage>>, String> {
         let (w, h) = (image.width, image.height);
+        if image.is_color() {
+            return Err("三目拼接只支持灰度图，彩色帧不能拆分".into());
+        }
         if w == 0 || h == 0 || (w as usize).checked_mul(h as usize) != Some(image.pixels.len()) {
             return Err("拼接原图的尺寸或像素长度无效".into());
         }
@@ -244,12 +247,14 @@ pub fn recipe_capture_list(app: AppHandle, recipe_id: String) -> Result<Vec<Capt
     app.state::<CycleHost>().camera.recipe_capture().list(&recipe_id)
 }
 
-/// 某台相机第 seq 帧（帧组序号，从 1 起）的原图，格式见 `preview_bytes`；这台相机缺这一帧时报错。
+/// 某台相机第 seq 帧（帧组序号，从 1 起）的原图，格式见 `frame::preview_bytes`；这台相机缺这一帧时报错。
 #[tauri::command]
 pub fn recipe_capture_frame_image(app: AppHandle, round_id: String, camera_id: String, seq: u64) -> Result<tauri::ipc::Response, String> {
     let path = app.state::<CycleHost>().camera.recipe_capture().burst_frame_path(&round_id, &camera_id, seq)?;
     let image = crate::image_file::load(&path)?;
-    Ok(tauri::ipc::Response::new(preview_bytes(&image)))
+    Ok(tauri::ipc::Response::new(crate::frame::preview_bytes(
+        &image,
+    )))
 }
 
 /// 缩略图下采样倍数：1280×1024 → 160×128。
@@ -283,19 +288,4 @@ pub async fn recipe_capture_round_thumbs(
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-/// 读图命令的原始字节：前 16 字节依次是预览宽、高、原图宽、高（u32 小端），其后是最近邻缩到 900×650 以内的 8 位灰度。
-fn preview_bytes(image: &FrameImage) -> Vec<u8> {
-    let scale = (image.width as f32 / 900.0).max(image.height as f32 / 650.0).max(1.0);
-    let w = (image.width as f32 / scale).max(1.0) as u32;
-    let h = (image.height as f32 / scale).max(1.0) as u32;
-    let mut bytes = Vec::with_capacity(16 + (w * h) as usize);
-    for n in [w, h, image.width, image.height] { bytes.extend(n.to_le_bytes()); }
-    for y in 0..h { for x in 0..w {
-        let iy = ((y as f32 * scale) as u32).min(image.height - 1);
-        let ix = ((x as f32 * scale) as u32).min(image.width - 1);
-        bytes.push(image.pixels[(iy * image.width + ix) as usize]);
-    } }
-    bytes
 }

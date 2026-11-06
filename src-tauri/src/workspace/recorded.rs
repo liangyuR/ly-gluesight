@@ -64,9 +64,7 @@ pub(super) fn load_frame_verified(root: &Path, cycle_id: &str, camera_id: &str, 
     let size = [dimension("width").ok_or("录制原图宽度无效")?, dimension("height").ok_or("录制原图高度无效")?];
     let bytes = original_bytes(&root, relative)?;
     checked_dimensions(&bytes, Some(size), file)?;
-    let image = image::load_from_memory(&bytes).map_err(|error| format!("原图 {file} 解码失败：{error}"))?.into_luma8();
-    let (width, height) = image.dimensions();
-    Ok(FrameImage::new(width, height, image.into_raw()))
+    crate::image_file::decode(&bytes).map_err(|error| format!("原图 {file} 解码失败：{error}"))
 }
 
 fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {

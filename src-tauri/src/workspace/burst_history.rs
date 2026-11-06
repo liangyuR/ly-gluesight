@@ -220,14 +220,31 @@ fn burst_samples(app: &AppHandle, detail: &PartDetail) -> Result<history_samples
 }
 
 /// 段配方历史件第 camera 台计划相机第 seq 帧组的原图：生产记录读录制目录，候选离线调试记录读受管样本集。
-pub(super) fn frame_image(app: &AppHandle, detail: &PartDetail, camera: usize, seq: u64) -> Result<FrameImage, String> {
-    let burst = detail.burst.as_ref().ok_or("这条历史是旧拍照点记录，请按拍照点读原图")?;
-    let frame = burst.frames.iter().find(|f| f.camera == camera && f.seq == seq).ok_or("没有这一帧的记录")?;
-    if frame.status == FrameState::Missing { return Err("这台相机本帧组缺帧，没有原图".into()); }
+pub(super) fn frame_image(
+    app: &AppHandle,
+    detail: &PartDetail,
+    camera: usize,
+    seq: u64,
+) -> Result<FrameImage, String> {
+    let burst = detail
+        .burst
+        .as_ref()
+        .ok_or("这条历史是旧拍照点记录，请按拍照点读原图")?;
+    let frame = burst
+        .frames
+        .iter()
+        .find(|f| f.camera == camera && f.seq == seq)
+        .ok_or("没有这一帧的记录")?;
+    if frame.status == FrameState::Missing {
+        return Err("这台相机本帧组缺帧，没有原图".into());
+    }
+    let camera_id = burst
+        .cameras
+        .get(camera)
+        .ok_or("相机下标超出本件计划相机")?;
     if detail.summary.source == RecordSource::OfflineCandidate {
         return burst_samples(app, detail)?.load(camera, seq);
     }
-    let camera_id = burst.cameras.get(camera).ok_or("相机下标超出本件计划相机")?;
     let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId，不能确定对应原图")?;
     recorded::load_frame_verified(app.state::<CycleHost>().recorders.root(detail.summary.source), cycle_id, camera_id, frame)
 }
@@ -325,7 +342,8 @@ pub(super) struct CandidateMeasurer {
 impl CandidateMeasurer {
     pub(super) fn new(app: &AppHandle, w: &Workspace, recipe: &Recipe) -> Result<Self, String> {
         recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
-        let graphs = vision::CorridorSet::build(recipe, &super::burst::teaching_sizes(w)?)?;
+        let graphs = vision::CorridorSet::build(recipe, &super::burst::teaching_sizes(w)?)?
+            .with_channels(&super::burst::teaching_channels(w));
         let engine = app
             .state::<vision::VisionHost>()
             .engine()

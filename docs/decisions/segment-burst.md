@@ -297,7 +297,7 @@
 ### D-SB-44 分段标定工作台（2026-10-26 用户确认，P1 已实现）
 
 - 问题：段结构在段列表页填表定义、看不到图像；边界在采集页按帧号手填、一次只看一台相机；操作员无法判断怎么分段（NEW-14 调试时卡在这一步）。
-- 采用：段列表页顶部是分段标定工作台，模板固定为示教件（[recipe-build-flow](recipe-build-flow.md) RB-1），不选轮次。三台相机的缩略图按帧组排成时间轴：点帧间竖缝插入或删除边界（可拖动），点段名按 直线 → 弯道 → 不检测 循环切换（D-SB-53），点缩略图在下方并排预览三台相机原图（叠加已示教走廊）；← → 切换帧组，B 在当前帧组后插入或删除边界。保存时用组合命令（`workspace_segment_template_save`）在同一候选副本上依次替换段列表（受 `guard_calibration` 约束）、保存并确认示教件边界，任一步失败整体不写入；确认后软件按示教件各段帧组数写 N_exp（D-SB-21）。段参数、走廊与示教帧按示教件帧范围逐段对应（D-SB-52），没动的段原样保留；保存前预演，有走廊清除、段结构改变或示教件测量失效时弹窗逐条列出。段的数量、顺序与类型只在工作台改，段列表页只编辑各段参数；两边都有未保存改动时互相锁定，避免修订冲突。缩略图由 `recipe_capture_round_thumbs` 按相机一次取整轮（8× 箱式平均下采样，前端 canvas 直接画灰度）。
+- 采用：段列表页顶部是分段标定工作台，模板固定为示教件（[recipe-build-flow](recipe-build-flow.md) RB-1），不选轮次。三台相机的缩略图按帧组排成时间轴：点帧间竖缝插入或删除边界（可拖动），点段名按 直线 → 弯道 → 不检测 循环切换（D-SB-53），点缩略图在下方并排预览三台相机原图（叠加已示教走廊）；← → 切换帧组，B 在当前帧组后插入或删除边界。保存时用组合命令（`workspace_segment_template_save`）在同一候选副本上依次替换段列表（受 `guard_calibration` 约束）、保存并确认示教件边界，任一步失败整体不写入；确认后软件按示教件各段帧组数写 N_exp（D-SB-21）。段参数、走廊与示教帧按示教件帧范围逐段对应（D-SB-52），没动的段原样保留；保存前预演，有走廊清除、段结构改变或示教件测量失效时弹窗逐条列出。段的数量、顺序与类型只在工作台改，段列表页只编辑各段参数；两边都有未保存改动时互相锁定，避免修订冲突。缩略图由 `recipe_capture_round_thumbs` 按相机一次取整轮（8× 箱式平均下采样，前端 canvas 按通道数直接画灰度或彩色）。
 - 图像对齐：`frame_align::align_cuts` 把一件的边界按图像对齐到另一件（两件全部帧 32× 箱式平均成 40×32 小图，逐相机平均绝对差除以该相机距离中位数后取平均，首尾固定、带宽 max(3, 0.15·M) 的 DTW；模板帧 c、c + 1 所配目标帧中位数的中点即边界，保持严格递增），可信判据见 D-SB-51。只示教件一件定分段，应用里没有其余件的边界复核，对齐算法只用于离线评估 `segment_eval`。
 - 后续（同一决策，待实现）：P3 运动曲线与自动建议。P4 即 D-SB-41，已实现。
 
@@ -652,7 +652,7 @@
 | `workspace_calibration_skip_suggest` | `id` | `SkipSuggestView[]`（第 1 段起涂、末段收尾的跳过帧建议，由示教件测量的每帧特征算出，只读，D-SB-50） |
 | `workspace_confirm_skip` | `id, revision, segment, end: "head" \| "tail", frames` | WorkspaceView（写该段 `skipHead` / `skipTail`，不换计划版本） |
 | `workspace_extract_corridor` | `id, revision, camera: String, imageId, roi: [u32; 4], guide: BrushGuide?, pointSpacingPx: f32?` | `Result<CenterlineResult, String>`（与 `workspace_extract_centerline` 相同：`path`、`message`、`failure`） |
-| `recipe_capture_round_thumbs` | `roundId, cameraId: String` | `Result<tauri::ipc::Response, String>`（头部 [帧组数, 宽, 高] u32 小端，之后每组 1 字节状态 + 宽 × 高 灰度，见 `frame_align::thumb_strip`；D-SB-44） |
+| `recipe_capture_round_thumbs` | `roundId, cameraId: String` | `Result<tauri::ipc::Response, String>`（头部 [帧组数, 宽, 高, 通道数] u32 小端，之后每组 1 字节状态 + 宽 × 高 × 通道数字节，通道数 1 为灰度、3 为 RGB，见 `frame_align::thumb_strip`；D-SB-44、[color](color.md) CL-1） |
 | `workspace_segment_template_save` | `id, revision, segments: PathSegment[], cuts: u64[]` | WorkspaceView（段列表 + 示教件边界确认，原子写入，D-SB-44） |
 | `recipe_capture_frame_image` | `roundId, cameraId: String, seq`（帧组序号，从 1 起） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `recipe_capture_image`）；该相机缺这一帧时报错 |
 | `workspace_live_frame_image` | `cycleId, revisionId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_live_image`）；未到或缺帧时报错 |
@@ -680,7 +680,7 @@
 
 | 项 | 初值 | 说明 |
 | --- | --- | --- |
-| `IMAGE_BUDGET_PER_CAMERA` | 256 MiB | FramePool 每台相机在途图像字节上限；1280×1024 单字节灰度每帧 1,310,720 B，即 204 帧、25 Hz 下 8.2 s 积压；只作用于 MVS 回调来源。预算满时回调丢弃该帧并记缺帧（不中断回调）。 |
+| `IMAGE_BUDGET_PER_CAMERA` | 256 MiB | FramePool 每台相机在途图像字节上限；1280×1024 单字节灰度每帧 1,310,720 B，即 204 帧、25 Hz 下 8.2 s 积压；彩色模式 RGB 每帧 3,932,160 B，约 68 帧（原始 Bayer 另有同额的独立池）；只作用于 MVS 回调来源。预算满时回调丢弃该帧并记缺帧（不中断回调）。 |
 | `FRAME_QUEUE` | 1024 条 | 内存已由预算封顶 |
 | `MEASURE_QUEUE`（代码 `FRAME_MEASURE_QUEUE`） | 1024 条 | 满时该帧记 Unmeasured |
 | 录制队列 | 1024 条 | 按帧计（`BURST_QUEUE`）；满时该帧原图不录，part.json 记 rawDropped，证据状态 Incomplete |

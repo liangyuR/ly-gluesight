@@ -155,9 +155,10 @@ async function runBurstStage(page, invokeRead, navigation, ctx) {
       const response = await window.__TAURI_INTERNALS__.invoke("workspace_record_frame_image", { historyId: id, camera, seq });
       const bytes = response instanceof ArrayBuffer ? new Uint8Array(response) : new Uint8Array(response);
       const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      return { bytes: bytes.length, width: header.getUint32(0, true), height: header.getUint32(4, true), sourceWidth: header.getUint32(8, true), sourceHeight: header.getUint32(12, true) };
+      return { bytes: bytes.length, width: header.getUint32(0, true), height: header.getUint32(4, true), sourceWidth: header.getUint32(8, true), sourceHeight: header.getUint32(12, true), channels: header.getUint32(16, true) };
     }, { id: summary.id, camera, seq });
-    assert.equal(image.bytes, 16 + image.width * image.height);
+    assert([1, 3].includes(image.channels));
+    assert.equal(image.bytes, 20 + image.width * image.height * image.channels);
     assert(image.sourceWidth > 0 && image.sourceHeight > 0);
   }
   return { recipeId: burstId, expected, teaching: { sn: built.calibration.piece.sn, groupCount: built.calibration.piece.groupCount }, summary, facts, disk };

@@ -9,7 +9,7 @@ use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::frame::{CounterSource, Frame, FrameImage};
+use crate::frame::{BayerPattern, CounterSource, Frame, FrameImage};
 use crate::judge::Verdict;
 use crate::recipe::{valid_camera_id, Recipe};
 use crate::settings::{CycleSettings, RecordMode};
@@ -98,6 +98,9 @@ struct BurstFrameMeta {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bayer: Option<BayerFileMeta>,
+    /// 彩色帧为 "color"：主文件是带 `# bayer XX` 注释的原始马赛克（没有马赛克的 RGB 帧写 P6），读回去马赛克成 RGB；灰度帧不写
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_mode: Option<&'static str>,
 }
 
 /// 一帧另存的原始 Bayer（检测设置“同时保存原始 Bayer”）：只供离线做颜色算法，写不成不影响录制是否可用。
@@ -116,7 +119,9 @@ struct BurstFrameJob {
     cycle_id: String,
     pending: PathBuf,
     meta: BurstFrameMeta,
+    /// 主文件的图：灰度帧、彩色帧的原始马赛克（`pattern` 为其相位），或没有马赛克的 RGB 帧
     image: Arc<FrameImage>,
+    pattern: Option<BayerPattern>,
     bayer: Option<Arc<FrameImage>>,
 }
 
@@ -358,6 +363,13 @@ impl Recorder {
             return;
         };
         let bayer_file = format!("{camera_id}_s{seq:06}_bayer.pgm");
+        // 彩色帧的主文件写原始马赛克（不另写 _bayer.pgm）；灰度帧照旧，开了保存原始 Bayer 时另写一份
+        let color = image.is_color();
+        let (main, pattern, extra_bayer) = match (&frame.bayer, color) {
+            (Some(bayer), true) => (bayer.image.clone(), Some(bayer.pattern), None),
+            (None, true) => (image.clone(), None, None),
+            (bayer, false) => (image.clone(), None, bayer.as_ref()),
+        };
         let mut meta = BurstFrameMeta {
             cycle_id: rec.cycle_id.clone(),
             bundle_id: rec.bundle_id.clone(),
@@ -380,12 +392,13 @@ impl Recorder {
             queued: true,
             available: false,
             error: None,
-            bayer: frame.bayer.as_ref().map(|bayer| BayerFileMeta {
+            bayer: extra_bayer.map(|bayer| BayerFileMeta {
                 file: bayer_file,
                 pattern: bayer.pattern.name(),
                 available: false,
                 error: None,
             }),
+            image_mode: color.then_some("color"),
         };
         let queue_error = if self.queued.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < BURST_QUEUE).then_some(n + 1)).is_err() {
             Some(format!("录制队列已满（{BURST_QUEUE} 帧）"))
@@ -394,8 +407,9 @@ impl Recorder {
                 cycle_id: rec.cycle_id.clone(),
                 pending: rec.dir.clone(),
                 meta: meta.clone(),
-                image: image.clone(),
-                bayer: frame.bayer.as_ref().map(|bayer| bayer.image.clone()),
+                image: main,
+                pattern,
+                bayer: extra_bayer.map(|bayer| bayer.image.clone()),
             };
             if self.tx.send(Msg::BurstFrame(job)).is_err() {
                 self.queued.fetch_sub(1, Ordering::AcqRel);
@@ -502,12 +516,12 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
                     camera: job.meta.camera,
                     seq: job.meta.seq,
                 };
-                let result = save_raw(&job.pending.join(&job.meta.file), &job.image);
+                let result = save_raw(&job.pending.join(&job.meta.file), &job.image, job.pattern);
                 state.frame_results.insert(key, result);
                 if let (Some(image), Some(meta)) = (&job.bayer, &job.meta.bayer) {
                     state
                         .bayer_results
-                        .insert(key, save_raw(&job.pending.join(&meta.file), image));
+                        .insert(key, save_raw(&job.pending.join(&meta.file), image, None));
                 }
                 queued.fetch_sub(1, Ordering::AcqRel);
             }
@@ -538,16 +552,17 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
     }
 }
 
-fn save_raw(path: &Path, image: &FrameImage) -> Result<(), String> {
-    let expected = (image.width as usize).checked_mul(image.height as usize).filter(|n| *n > 0).ok_or("图像尺寸无效")?;
-    if image.pixels.len() != expected {
+/// 写一张原图：灰度 P5、RGB P6；`pattern` 给了是原始马赛克，写成带 `# bayer XX` 注释的 P5。
+fn save_raw(path: &Path, image: &FrameImage, pattern: Option<BayerPattern>) -> Result<(), String> {
+    let expected = image.expected_len().ok_or("图像尺寸无效")?;
+    if image.pixels.len() != expected || (pattern.is_some() && image.channels != 1) {
         return Err("原图像素缓冲长度与尺寸不一致".into());
     }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("创建录制目录失败：{e}"))?;
     }
     let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| format!("创建原图失败：{e}"))?;
-    let header = format!("P5\n{} {}\n255\n", image.width, image.height);
+    let header = crate::image_file::pnm_header(image.width, image.height, image.channels, pattern);
     file.write_all(header.as_bytes()).and_then(|_| file.write_all(&image.pixels)).and_then(|_| file.sync_all()).map_err(|e| format!("写入原图失败：{e}"))?;
     Ok(())
 }
@@ -561,16 +576,23 @@ fn write_metadata(path: &Path, meta: &serde_json::Value) -> Result<(), String> {
     std::fs::rename(temp, path).map_err(|e| format!("提交 part.json 失败：{e}"))
 }
 
-/// 写盘后核对一张原图：是普通文件（不是 reparse point）、长度与录制尺寸相符、能解码且解码尺寸一致。
+/// 写盘后核对一张原图：是普通文件（不是 reparse point）、PNM 头（可含注释）的尺寸与录制尺寸相符、文件长度等于头 + 像素、
+/// 能解码且解码尺寸一致。
 fn verify_raw(path: &Path, width: u32, height: u32) -> Result<(), String> {
     std::fs::symlink_metadata(path).map_err(|e| format!("已写入原图不可用：{e}"))
         .and_then(|meta| {
             #[cfg(windows)]
             { use std::os::windows::fs::MetadataExt;
               if meta.file_attributes() & 0x400 != 0 { return Err("原图路径不能是 reparse point".into()); } }
-            let header = format!("P5\n{width} {height}\n255\n");
-            let expected = header.len() as u64 + u64::from(width) * u64::from(height);
-            if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != expected {
+            let info = if meta.is_file() && !meta.file_type().is_symlink() {
+                crate::image_file::read_pnm_info(path)
+                    .map_err(|e| format!("已写入原图不可用：{e}"))?
+            } else {
+                None
+            };
+            if !info.is_some_and(|info| {
+                (info.width, info.height) == (width, height) && info.file_len() == meta.len()
+            }) {
                 Err("原图路径不是普通文件或文件长度与录制尺寸不符".into())
             } else {
                 let image = image::open(path).map_err(|error| format!("原图解码失败：{error}"))?;

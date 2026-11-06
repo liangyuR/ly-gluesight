@@ -30,6 +30,8 @@ pub struct HeadingGraph {
     pub camera_idx: usize,
     pub segment: u32,
     pub size: [u32; 2],
+    /// 示教帧通道数（1 灰度、3 彩色）；未知时不核对（见 `CorridorSet::with_channels`）
+    pub channels: Option<u8>,
     /// `template::heading` 的全部有效参数与判定门限（发布包 graph.json 冻结它们）
     pub params: Value,
     pub judge: Value,
@@ -134,6 +136,7 @@ pub fn plan_heading(
         camera_idx,
         segment,
         size,
+        channels: None,
         path_gate: PathGate {
             min_coverage: gate(&judge, "minCoverage")?,
             sharp_min: gate(&effective, "pathSharpMin")?,
@@ -167,15 +170,7 @@ pub fn measure_heading_with(
     seq: u64,
     run: impl FnOnce(GraphRun<'_>, &FrameImage) -> Result<RunResult, String>,
 ) -> Result<FrameMeasurement, String> {
-    if [image.width, image.height] != g.size {
-        return Err(format!(
-            "相机 {} 这一帧图像 {}×{} 与示教帧 {}×{} 尺寸不一致",
-            g.camera, image.width, image.height, g.size[0], g.size[1]
-        ));
-    }
-    if image.pixels.len() != image.width as usize * image.height as usize {
-        return Err("图像像素缓冲与尺寸不一致".into());
-    }
+    super::taught::check_frame(&g.camera, g.size, g.channels, image)?;
     let result = run(
         GraphRun {
             template: template::heading(),

@@ -1,21 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { errorText } from "../../lib/errors";
+import { fillRgba } from "../../lib/frame";
 import { workspaceApi } from "./api";
 import type { ThumbStrip } from "./workbenchDraft";
 
-/** 一张灰度缩略图：直接把像素画进 canvas（不生成图片地址）。 */
-export function Thumb({ pixels, width, height }: { pixels: Uint8Array | null; width: number; height: number }) {
+/** 一张缩略图：直接把像素画进 canvas（不生成图片地址）。 */
+export function Thumb({ pixels, width, height, channels }: { pixels: Uint8Array | null; width: number; height: number; channels: 1 | 3 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const context = canvas.current?.getContext("2d");
     if (!context || !pixels || !width || !height) return;
     const image = context.createImageData(width, height);
-    for (let i = 0; i < pixels.length; i++) {
-      image.data[i * 4] = image.data[i * 4 + 1] = image.data[i * 4 + 2] = pixels[i];
-      image.data[i * 4 + 3] = 255;
-    }
+    fillRgba({ data: pixels, width, height, channels }, image.data);
     context.putImageData(image, 0, 0);
-  }, [pixels, width, height]);
+  }, [pixels, width, height, channels]);
   return pixels ? <canvas ref={canvas} width={width} height={height} /> : <span className="swb-missing">缺帧</span>;
 }
 

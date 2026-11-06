@@ -136,12 +136,67 @@ fn bayer_saved_beside_gray_and_its_write_failure_keeps_recording_available() {
         b"P5\n1 1\n255\n\xc8"
     );
     assert_eq!(frames[1]["bayer"]["available"], false);
+    assert!(
+        frames[0].get("imageMode").is_none(),
+        "灰度帧的 part.json 不变"
+    );
     assert_eq!(
         (
             meta["bayerFrames"].as_u64(),
             meta["bayerErrors"].as_array().map(Vec::len)
         ),
         (Some(1), Some(1))
+    );
+}
+
+/// 防的回归：彩色帧的主文件是带 `# bayer BG` 注释的原始马赛克，写盘核对按固定的 `P5\n宽 高\n255\n` 头算长度时
+/// 每帧都判写入失败、整件录制不可用；主文件写成 RGB 或另写 `_bayer.pgm` 时与读者约定不符，读回不是同一幅彩色图。
+#[test]
+fn color_frame_records_bayer_mosaic_as_main_file_and_reads_back_rgb() {
+    use crate::frame::{BayerMosaic, BayerPattern};
+    let dir = TestDir::new();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(dir.root(), Some(callback));
+    let mut rec = recorder
+        .begin(RecordMode::All, "SN-COLOR", recipe(), "color", None)
+        .unwrap();
+    // BG 相位纯色马赛克：R=200 G=100 B=50
+    let mosaic = vec![50, 100, 100, 200];
+    let frame = Frame {
+        images: vec![Arc::new(FrameImage::rgb(2, 2, [200, 100, 50].repeat(4)))],
+        bayer: Some(BayerMosaic {
+            pattern: BayerPattern::Bg,
+            image: Arc::new(FrameImage::new(2, 2, mosaic.clone())),
+        }),
+        ..frame(0)
+    };
+    recorder.burst_frame(&mut rec, &frame, 0, 1);
+    recorder.finish(rec, Verdict::Ok, "彩色", 100, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert_eq!(
+        (outcome.state, outcome.available),
+        (RecordingState::Complete, true),
+        "{:?}",
+        outcome.errors
+    );
+    let directory = outcome.directory.clone().unwrap();
+    let main = directory.join(outcome.files[0].file.rsplit('/').next().unwrap());
+    let mut expected = b"P5\n# bayer BG\n2 2\n255\n".to_vec();
+    expected.extend_from_slice(&mosaic);
+    assert_eq!(std::fs::read(&main).unwrap(), expected);
+    let meta = metadata(&outcome);
+    let entry = &meta["frames"][0];
+    assert_eq!(entry["imageMode"], "color");
+    assert!(entry.get("bayer").is_none());
+    assert!(!std::fs::read_dir(&directory).unwrap().any(|e| e
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with("_bayer.pgm")));
+    let image = crate::image_file::load(&main).unwrap();
+    assert_eq!(
+        (image.channels, image.pixels.clone()),
+        (3, [200, 100, 50].repeat(4))
     );
 }
 

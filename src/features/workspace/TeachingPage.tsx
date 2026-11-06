@@ -13,8 +13,8 @@ import type { PathSegment, WorkspacePlanView } from "../plan/types";
 import { segmentKindLabel } from "../plan/vis";
 import { workspaceApi } from "./api";
 import { useWorkspace, type SnackMessage } from "./context";
-import { Badge, GrayViewer, KV, Notice, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
-import type { CaptureRoundV2, FrozenImage, GrayImage, WorkspaceView } from "./types";
+import { Badge, FrameViewer, KV, Notice, useFrameImage, WorkspaceBar, WorkspaceEmpty } from "./components";
+import type { CaptureRoundV2, FrozenImage, FrameImage, WorkspaceView } from "./types";
 import { cameraParamsError, confirmedSegmentRange, CORNER_CORRIDOR_MM, corridorError, spacingError, draftKey, parseDraftKey, sameCorridor, savedDraft, withCorridor, withSectorDeg } from "./teach";
 import { cameraParamsTasks, corridorTasks, type CameraParamsTask, type CorridorTask } from "./cameraTasks";
 import { frameArrived, readRoundFrame, roundView, type RoundView } from "./captureRound";
@@ -71,7 +71,7 @@ function requestedTarget(camera: string | null, segment: string | null, cameras:
 /** 示教件里某台相机某个帧组的原图（候选示教帧，还没有冻结进候选配方）。 */
 function useRoundFrame(round: CaptureRoundV2 | null, camera: string, seq: number, enabled: boolean) {
   const key = JSON.stringify([round?.roundId ?? null, camera, seq, enabled]);
-  const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string; loading: boolean }>({ key, image: null, error: "", loading: false });
+  const [state, setState] = useState<{ key: string; image: FrameImage | null; error: string; loading: boolean }>({ key, image: null, error: "", loading: false });
   useEffect(() => {
     if (!enabled || !round) { setState({ key, image: null, error: "", loading: false }); return; }
     let alive = true;
@@ -194,7 +194,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     catch (e) { if (valid() && current.current.revision === revision) setError(errorText(e)); return null; }
     finally { if (valid()) { pending.current = false; setWorking(false); } }
   };
-  const { image, error, loading } = useGrayImage(doc.id, frame?.id ?? null);
+  const { image, error, loading } = useFrameImage(doc.id, frame?.id ?? null);
 
   // 示教帧选择（RB-1）：只在示教件里选这台相机落在本段内的一个帧组
   const teachingPiece = data.workspace.teachingPiece;
@@ -472,9 +472,9 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       {!choosingNow && frame && segmentTeaching && <SegmentTrial key={scope} id={doc.id} camera={camera} segment={segment!} round={segmentTeaching.round} teachSeq={segmentTeaching.seq}
         range={trialRange} revision={data.workspace.revision} locked={trialLocked} waiting={pendingSave} onFlush={saveNow} guide={headingGuide} seq={trialSeq} onSeq={setTrialSeq} />}
       {choosingNow
-        ? <GrayViewer controlsAt="footer" image={candidate.image} loading={candidate.loading} error={candidate.error || (picked && !arrived ? "该相机本帧组缺帧，请换一个帧组" : "")} label={`${camera} · 帧组 ${pickSeqSafe} · 候选示教帧`}
+        ? <FrameViewer controlsAt="footer" image={candidate.image} loading={candidate.loading} error={candidate.error || (picked && !arrived ? "该相机本帧组缺帧，请换一个帧组" : "")} label={`${camera} · 帧组 ${pickSeqSafe} · 候选示教帧`}
           emptyTitle="选择示教帧" emptyHint="在示教件这一段内选这台相机的帧组；缺帧的帧组不能选。" summary={<span className="muted">{`选定后冻结为第 ${segment} 段的示教帧，这条走廊只用于这一段的帧。`}</span>}/>
-        : trialSeq != null ? null : <GrayViewer controlsAt="footer" summary={summary} image={image} loading={loading} error={error} label={frame ? `${targetLabel} · 示教帧` : "等待取样"} tools={tools} subtools={canvasParams} emptyTitle="示教帧尚未就绪" emptyHint="选定示教帧后，这里显示这一帧。"
+        : trialSeq != null ? null : <FrameViewer controlsAt="footer" summary={summary} image={image} loading={loading} error={error} label={frame ? `${targetLabel} · 示教帧` : "等待取样"} tools={tools} subtools={canvasParams} emptyTitle="示教帧尚未就绪" emptyHint="选定示教帧后，这里显示这一帧。"
           region={selectionTool === "box" ? region : null}
           onRegion={regionMode && selectionTool === "box" && canEdit ? setRegion : undefined}
           brush={regionMode && selectionTool === "brush" && Number.isFinite(brushWidth) ? { points: brushPoints, radiusPx: brushWidth / 2 } : null} onBrush={regionMode && selectionTool === "brush" && canEdit ? points => { setBrushPoints(points); setExtractionFailure(null); setExtractionHint(""); } : undefined}

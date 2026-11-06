@@ -2,15 +2,18 @@
 //! 取图回调拷出来的缓冲用完（最后一个 Arc 释放）就回到池里给下一帧用。
 //! 带预算的池（[`FramePool::with_budget`]）按字节封顶在途图像：检测积压时不随队列条数无限占内存（D-SB-32）。
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use serde::Serialize;
 
-/// 一帧 8 位灰度图，行主序、无行填充。
+/// 一帧 8 位图，行主序、无行填充：灰度每像素 1 字节，彩色每像素 3 字节（R、G、B 交错）。
 pub struct FrameImage {
     pub width: u32,
     pub height: u32,
+    /// 1 = 灰度，3 = RGB
+    pub channels: u8,
     pub pixels: Vec<u8>,
     pool: Option<Weak<PoolInner>>,
     /// 记在池在途字节上的数目，释放时归还
@@ -19,14 +22,97 @@ pub struct FrameImage {
 
 impl FrameImage {
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
-        Self { width, height, pixels, pool: None, charged: 0 }
+        Self {
+            width,
+            height,
+            channels: 1,
+            pixels,
+            pool: None,
+            charged: 0,
+        }
+    }
+
+    pub fn rgb(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            channels: 3,
+            pixels,
+            pool: None,
+            charged: 0,
+        }
+    }
+
+    pub fn is_color(&self) -> bool {
+        self.channels == 3
+    }
+
+    /// 宽 × 高 × 通道数；尺寸为 0 或溢出时为 None。
+    pub fn expected_len(&self) -> Option<usize> {
+        (self.width as usize)
+            .checked_mul(self.height as usize)
+            .and_then(|n| n.checked_mul(self.channels as usize))
+            .filter(|&n| n > 0)
+    }
+
+    /// 像素缓冲长度与宽、高、通道数相符。
+    pub fn consistent(&self) -> bool {
+        matches!(self.channels, 1 | 3) && self.expected_len() == Some(self.pixels.len())
+    }
+
+    /// 灰度像素：灰度图借用原像素，RGB 按 BT.601 整数近似 (77R + 150G + 29B + 128) >> 8 换算。
+    pub fn luma(&self) -> Cow<'_, [u8]> {
+        if self.channels != 3 {
+            return Cow::Borrowed(&self.pixels);
+        }
+        Cow::Owned(
+            self.pixels
+                .chunks_exact(3)
+                .map(|p| {
+                    ((77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32 + 128) >> 8) as u8
+                })
+                .collect(),
+        )
+    }
+
+    /// 灰度副本（见 [`luma`](Self::luma)）。
+    pub fn to_luma(&self) -> FrameImage {
+        FrameImage::new(self.width, self.height, self.luma().into_owned())
     }
 }
 
 impl std::fmt::Debug for FrameImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FrameImage({}×{})", self.width, self.height)
+        write!(
+            f,
+            "FrameImage({}×{}×{})",
+            self.width, self.height, self.channels
+        )
     }
+}
+
+/// 读图命令的原始字节（与前端约定）：前 20 字节依次是预览宽、高、原图宽、高、通道数（u32 小端），
+/// 其后是最近邻缩到 900×650 以内的 预览宽 × 预览高 × 通道数 字节（RGB 交错）。
+pub fn preview_bytes(image: &FrameImage) -> Vec<u8> {
+    let channels = image.channels.max(1) as usize;
+    let scale = (image.width as f32 / 900.0)
+        .max(image.height as f32 / 650.0)
+        .max(1.0);
+    let w = (image.width as f32 / scale).max(1.0) as u32;
+    let h = (image.height as f32 / scale).max(1.0) as u32;
+    let mut bytes = Vec::with_capacity(20 + (w * h) as usize * channels);
+    for n in [w, h, image.width, image.height, channels as u32] {
+        bytes.extend(n.to_le_bytes());
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let iy = ((y as f32 * scale) as u32).min(image.height - 1);
+            let ix = ((x as f32 * scale) as u32).min(image.width - 1);
+            let at = (iy * image.width + ix) as usize * channels;
+            bytes.extend_from_slice(&image.pixels[at..at + channels]);
+        }
+    }
+    bytes
 }
 
 impl Drop for FrameImage {
@@ -108,7 +194,14 @@ impl FramePool {
     fn take(&self, width: u32, height: u32, bytes: usize) -> Result<FrameImage, BudgetExceeded> {
         self.0.reserve(bytes)?;
         let pixels = self.0.free.lock().unwrap().pop().unwrap_or_default();
-        Ok(FrameImage { width, height, pixels, pool: Some(Arc::downgrade(&self.0)), charged: bytes })
+        Ok(FrameImage {
+            width,
+            height,
+            channels: 1,
+            pixels,
+            pool: Some(Arc::downgrade(&self.0)),
+            charged: bytes,
+        })
     }
 
     /// 拷一份像素到池里的缓冲。
@@ -126,6 +219,113 @@ impl FramePool {
         bayer8_gray_into(width as usize, height as usize, src, &mut image.pixels).map_err(GrayError::Invalid)?;
         Ok(image)
     }
+
+    /// 8 位 Bayer 去马赛克成 RGB 写进池里的缓冲（见 [`bayer8_rgb_into`]），按 宽 × 高 × 3 记预算。
+    pub fn bayer8_to_rgb(
+        &self,
+        pattern: BayerPattern,
+        width: u32,
+        height: u32,
+        src: &[u8],
+    ) -> Result<FrameImage, GrayError> {
+        let bytes = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(3);
+        let mut image = self
+            .take(width, height, bytes)
+            .map_err(GrayError::BudgetExceeded)?;
+        image.channels = 3;
+        bayer8_rgb_into(
+            pattern,
+            width as usize,
+            height as usize,
+            src,
+            &mut image.pixels,
+        )
+        .map_err(GrayError::Invalid)?;
+        Ok(image)
+    }
+}
+
+/// 8 位 Bayer 马赛克双线性去马赛克成 RGB（交错、行紧排）：本像素的颜色取原值，缺的两色取 3×3 邻域里同色像素的均值
+/// （四舍五入）——内部即标准双线性（G 取上下左右、R/B 取对角或同行同列的两个），边界只用图内的邻居。
+pub fn bayer8_rgb_into(
+    pattern: BayerPattern,
+    w: usize,
+    h: usize,
+    src: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    if w < 2 || h < 2 {
+        return Err(format!("Bayer 图像至少 2×2（实际 {w}×{h}）"));
+    }
+    let n = w * h;
+    if src.len() < n {
+        return Err(format!(
+            "Bayer 像素数据不足：{w}×{h} 需要 {n} 字节，实际 {}",
+            src.len()
+        ));
+    }
+    let sites = pattern.sites();
+    out.clear();
+    out.resize(n * 3, 0);
+    let border = |out: &mut [u8], x: usize, y: usize| {
+        let (y0, y1) = (y.saturating_sub(1), (y + 1).min(h - 1));
+        let (x0, x1) = (x.saturating_sub(1), (x + 1).min(w - 1));
+        let (mut sum, mut count) = ([0u32; 3], [0u32; 3]);
+        for ny in y0..=y1 {
+            let row = &src[ny * w..(ny + 1) * w];
+            let phase = (ny & 1) * 2;
+            for (nx, &v) in row.iter().enumerate().take(x1 + 1).skip(x0) {
+                let c = sites[phase + (nx & 1)] as usize;
+                sum[c] += v as u32;
+                count[c] += 1;
+            }
+        }
+        let own = sites[(y & 1) * 2 + (x & 1)] as usize;
+        let o = (y * w + x) * 3;
+        for c in 0..3 {
+            out[o + c] = if c == own {
+                src[y * w + x]
+            } else {
+                ((sum[c] + count[c] / 2) / count[c]) as u8
+            };
+        }
+    };
+    for y in 0..h {
+        if y == 0 || y == h - 1 {
+            (0..w).for_each(|x| border(out, x, y));
+            continue;
+        }
+        border(out, 0, y);
+        border(out, w - 1, y);
+        // 内部像素的 3×3 邻域是完整的：G 位取左右、上下各两个异色的均值，R/B 位取十字四个 G 与对角四个另一色的均值
+        let (up, row, down) = (
+            &src[(y - 1) * w..y * w],
+            &src[y * w..(y + 1) * w],
+            &src[(y + 1) * w..(y + 2) * w],
+        );
+        let phase = (y & 1) * 2;
+        for x in 1..w - 1 {
+            let own = sites[phase + (x & 1)] as usize;
+            let o = (y * w + x) * 3;
+            let px = &mut out[o..o + 3];
+            px[own] = row[x];
+            if own == 1 {
+                let side = sites[phase + ((x + 1) & 1)] as usize;
+                let vert = sites[((y + 1) & 1) * 2 + (x & 1)] as usize;
+                px[side] = ((row[x - 1] as u32 + row[x + 1] as u32 + 1) / 2) as u8;
+                px[vert] = ((up[x] as u32 + down[x] as u32 + 1) / 2) as u8;
+            } else {
+                let cross = up[x] as u32 + down[x] as u32 + row[x - 1] as u32 + row[x + 1] as u32;
+                let diag =
+                    up[x - 1] as u32 + up[x + 1] as u32 + down[x - 1] as u32 + down[x + 1] as u32;
+                px[1] = ((cross + 2) / 4) as u8;
+                px[2 - own] = ((diag + 2) / 4) as u8;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 8 位 Bayer 马赛克（任一相位）转全分辨率灰度（D-9）：像素 (x, y) 取左上角为
@@ -173,9 +373,30 @@ impl BayerPattern {
             BayerPattern::Gr => "GR",
         }
     }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            BayerPattern::Bg,
+            BayerPattern::Rg,
+            BayerPattern::Gb,
+            BayerPattern::Gr,
+        ]
+        .into_iter()
+        .find(|p| p.name().eq_ignore_ascii_case(name))
+    }
+
+    /// 2×2 相位里各格的颜色（0 = R、1 = G、2 = B），按 (行 & 1) × 2 + (列 & 1) 取。
+    fn sites(self) -> [u8; 4] {
+        match self {
+            BayerPattern::Bg => [2, 1, 1, 0],
+            BayerPattern::Rg => [0, 1, 1, 2],
+            BayerPattern::Gb => [1, 2, 0, 1],
+            BayerPattern::Gr => [1, 0, 2, 1],
+        }
+    }
 }
 
-/// 相机原样输出的 8 位 Bayer 马赛克：检测设置“同时保存原始 Bayer”打开时随帧带上，只录制、不参与测量。
+/// 相机原样输出的 8 位 Bayer 马赛克：彩色模式下每帧都带，灰度模式下检测设置“同时保存原始 Bayer”打开时带上；只录制、不参与测量。
 #[derive(Clone, Debug)]
 pub struct BayerMosaic {
     pub pattern: BayerPattern,
@@ -230,10 +451,10 @@ pub struct Frame {
     /// 软触发（示教取图、样本集"下一张"）出来的帧
     #[serde(skip)]
     pub manual: bool,
-    /// 按视角 1–3 排列的整帧灰度图；三目必须整组交付。单视角模拟测量可只交元数据。
+    /// 按视角 1–3 排列的整帧图（灰度或 RGB）；三目必须整组交付。单视角模拟测量可只交元数据。
     #[serde(skip)]
     pub images: Vec<Arc<FrameImage>>,
-    /// 单视角彩色相机的原始马赛克，只在保存原始 Bayer 时带上
+    /// 单视角彩色相机的原始马赛克：彩色模式每帧都带，灰度模式只在保存原始 Bayer 时带上
     #[serde(skip)]
     pub bayer: Option<BayerMosaic>,
 }
@@ -274,6 +495,82 @@ mod tests {
             assert!(alloc(&pool).is_err(), "{name}：别处还持有这幅图，预算不能归还");
             drop(held_elsewhere);
             assert!(alloc(&pool).is_ok(), "{name}：最后一个引用释放后预算归还");
+        }
+    }
+
+    #[test]
+    fn preview_bytes_have_20_byte_header_and_channel_sized_body() {
+        // 防的回归：读图命令的字节格式（u32 小端 [预览宽, 预览高, 原图宽, 原图高, 通道数] + 预览宽 × 预览高 × 通道数）
+        // 与前端不一致：头部仍是 16 字节或彩色帧按灰度长度写，前端解码整幅错位
+        let (w, h) = (1920u32, 1000u32);
+        for channels in [1u8, 3] {
+            let pixels: Vec<u8> = (0..w * h * channels as u32)
+                .map(|i| (i % 251) as u8)
+                .collect();
+            let image = if channels == 3 {
+                FrameImage::rgb(w, h, pixels)
+            } else {
+                FrameImage::new(w, h, pixels)
+            };
+            let bytes = preview_bytes(&image);
+            let header: Vec<u32> = bytes[..20]
+                .chunks(4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                .collect();
+            assert_eq!(header[2..], [w, h, u32::from(channels)]);
+            assert!(header[0] < w && header[1] < h, "应缩小");
+            assert_eq!(
+                bytes.len(),
+                20 + (header[0] * header[1]) as usize * channels as usize
+            );
+        }
+    }
+
+    #[test]
+    fn demosaic_of_each_genicam_phase_keeps_red_and_blue_in_place() {
+        // 防的回归：GenICam 相位（BayerBG = 第 0 行 B G、第 1 行 G R）与 OpenCV 命名差一格，按错的相位去马赛克红蓝互换，
+        // 粉色胶条变成紫色
+        let pink = [230u8, 120, 130];
+        let (w, h) = (6usize, 5usize);
+        for pattern in [
+            BayerPattern::Bg,
+            BayerPattern::Rg,
+            BayerPattern::Gb,
+            BayerPattern::Gr,
+        ] {
+            let row0: Vec<char> = pattern.name().chars().collect();
+            let row1: Vec<char> = row0
+                .iter()
+                .map(|&c| match c {
+                    'G' => {
+                        if row0.contains(&'R') {
+                            'B'
+                        } else {
+                            'R'
+                        }
+                    }
+                    _ => 'G',
+                })
+                .collect();
+            let mosaic: Vec<u8> = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (y, x)))
+                .map(|(y, x)| {
+                    let color = if y % 2 == 0 { row0[x % 2] } else { row1[x % 2] };
+                    pink["RGB".find(color).unwrap()]
+                })
+                .collect();
+            let mut rgb = Vec::new();
+            bayer8_rgb_into(pattern, w, h, &mosaic, &mut rgb).unwrap();
+            assert_eq!(rgb.len(), w * h * 3);
+            for (i, px) in rgb.chunks_exact(3).enumerate() {
+                for c in 0..3 {
+                    assert!(
+                        px[c].abs_diff(pink[c]) <= 2,
+                        "{} 第 {i} 像素 {px:?}",
+                        pattern.name()
+                    );
+                }
+            }
         }
     }
 }

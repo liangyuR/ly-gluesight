@@ -1,4 +1,6 @@
 export type CameraSource = "mvs" | "sim" | "sampleSet";
+/** 图像模式：gray 为 8 位灰度；color 为 8 位 Bayer 去马赛克后的 RGB（三目拼接不支持） */
+export type ImageMode = "gray" | "color";
 
 export interface CameraConfig {
   /** 相机编号：配方用它引用相机，建相机时分配、之后不变 */
@@ -18,6 +20,7 @@ export interface CameraConfig {
   strobe: boolean;
   chunk: boolean;
   counterAfterOpen?: number | null;
+  imageMode: ImageMode;
 }
 
 export interface DeviceSummary {
@@ -58,7 +61,7 @@ export interface CameraImaging {
   gainDb: number;
 }
 
-/** 相机组链路带宽估算（camera_bandwidth）：各海康相机最近一帧的 宽 × 高 × 8 bit × 触发频率之和，计入 GigE 协议开销（按不开巨帧约 5%） */
+/** 相机组链路带宽估算（camera_bandwidth）：各海康相机最近一帧的 宽 × 高 × 8 bit（灰度与彩色模式线上都是 8 位一像素）× 触发频率之和，计入 GigE 协议开销（按不开巨帧约 5%） */
 export interface BandwidthEstimate {
   hz: number;
   mbpsTotal: number;

@@ -14,7 +14,7 @@ vi.mock("../src/features/workspace/api", () => ({
 const ROUND = "capture-1-0";
 
 beforeEach(() => {
-  vi.mocked(workspaceApi.captureRoundThumbs).mockResolvedValue({ width: 0, height: 0, frames: Array(9).fill(null) });
+  vi.mocked(workspaceApi.captureRoundThumbs).mockResolvedValue({ width: 0, height: 0, channels: 1, frames: Array(9).fill(null) });
   vi.mocked(workspaceApi.captureFrameImage).mockReturnValue(deferred<never>().promise);
 });
 

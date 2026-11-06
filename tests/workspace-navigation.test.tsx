@@ -40,7 +40,7 @@ beforeEach(() => {
       case "history_query": return { items: [], total: 0 };
       case "recipe_capture_get": return captureRoundV2({ recipeId: "A" });
       case "recipe_capture_round_thumbs": {
-        const bytes = new Uint8Array(24); new DataView(bytes.buffer).setUint32(0, 12, true); return Array.from(bytes);
+        const bytes = new Uint8Array(28), header = new DataView(bytes.buffer); header.setUint32(0, 12, true); header.setUint32(12, 1, true); return Array.from(bytes);
       }
       case "workspace_image": case "recipe_capture_frame_image": throw new Error("原图不可用");
       case "workspace_navigation_save": {

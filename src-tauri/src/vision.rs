@@ -137,12 +137,21 @@ fn check_operators(manifest: &Value) -> Result<(), String> {
     if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少必需算子：{}。请使用本版本锁定系列的 lyFlow 运行库。", missing.join("、"))) }
 }
 
+/// 整帧注入 lyFlow：灰度 1 通道，彩色 3 通道 RGB 交错（glue 算子入口按 BT.601 转灰，彩色帧在灰度模板下也能测）。
 pub(crate) fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
-    let count = (image.width as usize).checked_mul(image.height as usize).filter(|&n| n > 0)
-        .ok_or("图像尺寸无效")?;
-    if image.pixels.len() != count { return Err("图像像素缓冲与尺寸不一致".into()); }
-    Ok(RunImageInput { node_id: "n_load".into(), port: "image".into(), width: image.width, height: image.height,
-        channels: 1, depth: 1, pixels: image.pixels.clone() })
+    image.expected_len().ok_or("图像尺寸无效")?;
+    if !image.consistent() {
+        return Err("图像像素缓冲与尺寸不一致".into());
+    }
+    Ok(RunImageInput {
+        node_id: "n_load".into(),
+        port: "image".into(),
+        width: image.width,
+        height: image.height,
+        channels: u32::from(image.channels),
+        depth: 1,
+        pixels: image.pixels.clone(),
+    })
 }
 
 pub struct RunResult {
@@ -652,7 +661,9 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
             "outputs": {"calib": {"node": "n_calib", "port": "calib"}, "overlay": {"node": "n_calib", "port": "overlay"}}
         });
         let run_id = format!("calib-{}", ly_plc::now_ms());
-        let r = engine.run(&graph.to_string(), &run_id, "", &image, &json!({}))?;
+        // 棋盘格按灰度找角点：彩色帧换算成亮度再标定，标定原图仍存彩色
+        let gray = image.is_color().then(|| image.to_luma());
+        let r = engine.run(&graph.to_string(), &run_id, "", gray.as_ref().unwrap_or(&*image), &json!({}))?;
         if r.status() == "failed" {
             let why = r.failure();
             return Err(if why.contains("no_board") {

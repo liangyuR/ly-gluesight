@@ -6,7 +6,8 @@ import { Alert, Button, Card, Chip, EmptyState, IconButton, NumberField as Steel
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import type { GrayImage, GrayPixels } from "./types";
+import type { FrameImage, FramePixels } from "./types";
+import { fillRgba } from "../../lib/frame";
 import { errorText } from "../../lib/errors";
 import { PlanSteps } from "./PlanSteps";
 import { searchBand } from "./searchBand";
@@ -59,9 +60,9 @@ export function Steps() {
   return data ? <PlanSteps /> : null;
 }
 
-export function useGrayImage(id: string | null, imageId: string | null) {
+export function useFrameImage(id: string | null, imageId: string | null) {
   const key=JSON.stringify([id,imageId]);
-  const [state, setState] = useState<{key:string;image:GrayImage|null;error:string;loading:boolean}>({key,image:null,error:"",loading:false});
+  const [state, setState] = useState<{key:string;image:FrameImage|null;error:string;loading:boolean}>({key,image:null,error:"",loading:false});
   useEffect(() => {
     let alive = true;
     setState({key,image:null,error:"",loading:!!id&&!!imageId});
@@ -94,6 +95,11 @@ function HeadingLayer({ guide, size, screenPx, turnable, turning, hinted }: { gu
   const fan = fanRadii(guide, size);
   const [nx, ny] = c;
   const arm = screenPx(12);
+  const cross = <>
+    <line x1={nx - arm} y1={ny} x2={nx + arm} y2={ny} vectorEffect="non-scaling-stroke" />
+    <line x1={nx} y1={ny - arm} x2={nx} y2={ny + arm} vectorEffect="non-scaling-stroke" />
+    <circle cx={nx} cy={ny} r={screenPx(6)} vectorEffect="non-scaling-stroke" />
+  </>;
   const base = guide.sector ? (guide.sector[0] + guide.sector[1]) / 2 : 90;
   const dim = (part: HeadingPart) => guide.focus && guide.focus !== part ? .15 : 1;
   const mark = (part: HeadingPart, r: number, deg: number) => {
@@ -104,10 +110,10 @@ function HeadingLayer({ guide, size, screenPx, turnable, turning, hinted }: { gu
     </g>;
   };
   return <g aria-label="逐帧定向叠加" pointerEvents="none" fill="none" vectorEffect="non-scaling-stroke">
-    {guide.zone && guide.zone[0] > 0 && <path aria-label="跳过段" opacity={dim("skip")} d={wedgePath(c, [0, guide.zone[0]], [0, 360])} fill="var(--on-surface-variant)" fillOpacity={.18} stroke="var(--on-surface-variant)" strokeOpacity={.5} strokeWidth={1} vectorEffect="non-scaling-stroke" />}
-    {guide.zone && <path aria-label="测量区间环带" opacity={dim("zone")} d={wedgePath(c, guide.zone, [0, 360])} fill="var(--primary)" fillOpacity={.06} fillRule="evenodd" stroke="var(--primary)" strokeOpacity={.6} strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />}
-    {guide.sector && <path aria-label="搜索扇区" opacity={dim("sector")} d={wedgePath(c, fan, guide.sector)} fill="var(--warn)" fillOpacity={turning ? .3 : .16} stroke="var(--warn)" strokeWidth={turning ? 2.5 : 1.5} vectorEffect="non-scaling-stroke" />}
-    {guide.measured != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.measured); return <line aria-label="实测方向" opacity={dim("reading")} x1={nx} y1={ny} x2={x} y2={y} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />; })()}
+    {guide.zone && guide.zone[0] > 0 && <path aria-label="跳过段" opacity={dim("skip")} d={wedgePath(c, [0, guide.zone[0]], [0, 360])} fill="var(--ov-halo)" fillOpacity={.35} stroke="var(--ov-muted)" strokeOpacity={.7} strokeWidth={1} vectorEffect="non-scaling-stroke" />}
+    {guide.zone && <path aria-label="测量区间环带" opacity={dim("zone")} d={wedgePath(c, guide.zone, [0, 360])} fill="var(--ov-line)" fillOpacity={.06} fillRule="evenodd" stroke="var(--ov-line)" strokeOpacity={.8} strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />}
+    {guide.sector && <path aria-label="搜索扇区" opacity={dim("sector")} d={wedgePath(c, fan, guide.sector)} fill="var(--ov-warn)" fillOpacity={turning ? .3 : .16} stroke="var(--ov-warn)" strokeWidth={turning ? 2.5 : 1.5} vectorEffect="non-scaling-stroke" />}
+    {guide.measured != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.measured); return <g aria-label="实测方向" opacity={dim("reading")}><line x1={nx} y1={ny} x2={x} y2={y} stroke="var(--ov-halo)" strokeWidth={4} vectorEffect="non-scaling-stroke" /><line x1={nx} y1={ny} x2={x} y2={y} stroke="var(--ov-line)" strokeWidth={2} vectorEffect="non-scaling-stroke" /></g>; })()}
     {guide.zone && guide.zone[0] > 0 && mark("skip", guide.zone[0] / 2, base)}
     {guide.zone && mark("zone", (guide.zone[0] + guide.zone[1]) / 2, base + 60)}
     {guide.sector && (turnable ? (() => {
@@ -127,32 +133,30 @@ function HeadingLayer({ guide, size, screenPx, turnable, turning, hinted }: { gu
         <circle cx={hx} cy={hy} r={r * 2.4} fill="transparent" />
         <path className="wp-sector-arrows" d={arrow(1) + arrow(-1)} />
         <circle className="wp-sector-knob" cx={hx} cy={hy} r={r} />
-        <text x={hx} y={hy} textAnchor="middle" dominantBaseline="central" fontSize={screenPx(12)} fontWeight="bold" fill="var(--surface-lowest)">{HEADING_MARK.sector}</text>
-        {turning && <text x={hx} y={hy} dy={-r * 2} textAnchor="middle" fontSize={screenPx(13)} fill="var(--warn)" stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke">{Math.round(((base % 360) + 540) % 360 - 180)}°</text>}
+        <text x={hx} y={hy} textAnchor="middle" dominantBaseline="central" fontSize={screenPx(12)} fontWeight="bold" fill="var(--ov-ink)">{HEADING_MARK.sector}</text>
+        {turning && <text x={hx} y={hy} dy={-r * 2} textAnchor="middle" fontSize={screenPx(13)} fill="var(--ov-warn)" stroke="var(--ov-halo)" strokeWidth={3} paintOrder="stroke">{Math.round(((base % 360) + 540) % 360 - 180)}°</text>}
       </g>;
     })() : mark("sector", fan[1], base))}
     {guide.measured != null && mark("reading", radii[1] * .8, guide.measured)}
-    <g aria-label={guide.calibrated ? "出胶点（已标定）" : "出胶点（走廊推算）"} stroke={guide.calibrated ? "var(--ok)" : "var(--warn)"} strokeWidth={2}>
-      <line x1={nx - arm} y1={ny} x2={nx + arm} y2={ny} vectorEffect="non-scaling-stroke" />
-      <line x1={nx} y1={ny - arm} x2={nx} y2={ny + arm} vectorEffect="non-scaling-stroke" />
-      <circle cx={nx} cy={ny} r={screenPx(6)} vectorEffect="non-scaling-stroke" />
-      <text x={nx} y={ny} dx={screenPx(14)} dy={screenPx(-10)} fontSize={screenPx(13)} fill={guide.calibrated ? "var(--ok)" : "var(--warn)"} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke">{HEADING_MARK.nozzle} {guide.calibrated ? "出胶点" : "出胶点（推算）"}</text>
+    <g aria-label={guide.calibrated ? "出胶点（已标定）" : "出胶点（走廊推算）"} stroke={guide.calibrated ? "var(--ov-ok)" : "var(--ov-warn)"} strokeWidth={2}>
+      <g stroke="var(--ov-halo)" strokeWidth={4}>{cross}</g>
+      {cross}
+      <text x={nx} y={ny} dx={screenPx(14)} dy={screenPx(-10)} fontSize={screenPx(13)} fill={guide.calibrated ? "var(--ov-ok)" : "var(--ov-warn)"} stroke="var(--ov-halo)" strokeWidth={3} paintOrder="stroke">{HEADING_MARK.nozzle} {guide.calibrated ? "出胶点" : "出胶点（推算）"}</text>
     </g>
   </g>;
 }
-/** 灰度像素直接画进同一块 canvas：换帧只重画，不产生新的图片资源。 */
-function GrayCanvas({ image, pixels }: { image: GrayImage; pixels: GrayPixels }) {
+/** 像素直接画进同一块 canvas：换帧只重画，不产生新的图片资源。 */
+function FrameCanvas({ image, pixels }: { image: FrameImage; pixels: FramePixels }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const rgba = useRef<ImageData | null>(null);
   useEffect(() => {
     const element = canvas.current;
     const context = element?.getContext("2d");
     if (!element || !context) return;
-    const { data, width, height } = pixels;
+    const { width, height } = pixels;
     if (element.width !== width || element.height !== height) { element.width = width; element.height = height; }
     if (rgba.current?.width !== width || rgba.current.height !== height) rgba.current = new ImageData(width, height);
-    const out = new Uint32Array(rgba.current.data.buffer);
-    for (let i = 0; i < data.length; i++) out[i] = 0xff000000 | data[i] * 0x010101;
+    fillRgba(pixels, rgba.current.data);
     context.putImageData(rgba.current, 0, 0);
   }, [pixels]);
   return <foreignObject width={image.width} height={image.height} pointerEvents="none"><canvas ref={canvas} className="wp-gray-canvas" /></foreignObject>;
@@ -169,8 +173,8 @@ export interface PathEditing {
  * controlsAt="footer"（仅走廊示教页）：缩放与显示开关下沉到底部信息行，左侧放 summary，
  * 开关文案为“中线 / 搜索带 / 点柄”，操作提示由页面自己给；默认 "header" 的外观与行为不变。
  */
-export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, marks, onEdit, editDisabled = false, region, onRegion, brush, onBrush, onPoint, onSectorTurn, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
-  image: GrayImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay;
+export function FrameViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, marks, onEdit, editDisabled = false, region, onRegion, brush, onBrush, onPoint, onSectorTurn, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
+  image: FrameImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay;
   /** 图像上的点标记（标定页：棋盘内角点），带“角点”开关 */
   marks?: { at: [number, number]; color: string }[] | null; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
   brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; onPoint?: (p: [number, number]) => void;
@@ -330,30 +334,30 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
         const p = point(e, current.inverse);
         if (p) onEdit.move(current.index, p);
       }} onPointerUp={() => { if (turning.current && turnDeg != null) onSectorTurn?.(turnDeg); stopGesture(); }} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
-        <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <GrayCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}
-          {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--primary)" opacity={.45}>
+        <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <FrameCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}
+          {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--ov-line)" opacity={.75}>
             <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
             {[band.left, band.right].map((edge, i) => <polyline key={i} points={edge.map(p => p.join(",")).join(" ")} strokeWidth={1} strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />)}
             {band.bars.map(i => <line key={i} x1={band.left[i][0]} y1={band.left[i][1]} x2={band.right[i][0]} y2={band.right[i][1]} strokeWidth={1} strokeDasharray="2 6" vectorEffect="non-scaling-stroke" />)}
           </g>}
           {brush && brush.points.length > 0 && <g aria-label="刷选胶路区域" pointerEvents="none">
-            <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeOpacity={.22} strokeWidth={brush.radiusPx * 2} strokeLinecap="round" strokeLinejoin="round" />
-            <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={1} strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
-            {[brush.points[0], brush.points[brush.points.length - 1]].map(([px, py], i) => <g key={i}><circle cx={px} cy={py} r={handle} fill={i === 0 ? "var(--ok)" : "var(--primary)"} /><text x={px} y={py} dx={screenPx(10)} dy={screenPx(-8)} fontSize={screenPx(13)} fill="var(--primary)" stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{i === 0 ? "起点" : "终点"}</text></g>)}
+            <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--ov-line)" strokeOpacity={.25} strokeWidth={brush.radiusPx * 2} strokeLinecap="round" strokeLinejoin="round" />
+            <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--ov-line)" strokeWidth={1} strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
+            {[brush.points[0], brush.points[brush.points.length - 1]].map(([px, py], i) => <g key={i}><circle cx={px} cy={py} r={handle} fill={i === 0 ? "var(--ov-ok)" : "var(--ov-line)"} stroke="var(--ov-halo)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" /><text x={px} y={py} dx={screenPx(10)} dy={screenPx(-8)} fontSize={screenPx(13)} fill="var(--ov-line)" stroke="var(--ov-halo)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{i === 0 ? "起点" : "终点"}</text></g>)}
           </g>}
           {extractionFailure && <g aria-label="中线提取失败位置" pointerEvents="none" transform={`translate(${extractionFailure.point[0]} ${extractionFailure.point[1]})`}>
             <title>{extractionFailure.message}</title>
-            <circle r={screenPx(13)} fill="var(--surface-lowest)" fillOpacity={.8} stroke="var(--ng)" strokeWidth={3} vectorEffect="non-scaling-stroke" />
-            <text textAnchor="middle" dy={screenPx(5.5)} fontSize={screenPx(16)} fontWeight="bold" fill="var(--ng)">!</text>
+            <circle r={screenPx(13)} fill="var(--ov-halo)" stroke="var(--ov-ng)" strokeWidth={3} vectorEffect="non-scaling-stroke" />
+            <text textAnchor="middle" dy={screenPx(5.5)} fontSize={screenPx(16)} fontWeight="bold" fill="var(--ov-ng)">!</text>
           </g>}
           {overlay?.heading && headingShown && <HeadingLayer guide={turnDeg != null ? { ...overlay.heading, sector: [turnDeg - 90, turnDeg + 90] } : overlay.heading} size={[image.width, image.height]} screenPx={screenPx} turnable={turnable} turning={turningNow} hinted={!turnedHere && !overlay.heading.turned} />}
-          {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
+          {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--ov-line)" fillOpacity={.12} stroke="var(--ov-line)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {!!marks?.length && marksShown && <g aria-label="标定角点" pointerEvents="none">
-            {marks.map((mark, i) => <circle key={i} cx={mark.at[0]} cy={mark.at[1]} r={screenPx(3)} fill={mark.color} stroke="var(--surface-lowest)" strokeWidth={1} vectorEffect="non-scaling-stroke" />)}
+            {marks.map((mark, i) => <circle key={i} cx={mark.at[0]} cy={mark.at[1]} r={screenPx(3)} fill={mark.color} stroke="var(--ov-halo)" strokeWidth={1} vectorEffect="non-scaling-stroke" />)}
           </g>}
           {overlay && shown && <g aria-label="中线叠加">
-            {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
-            {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            {path.length >= 2 && ([["var(--ov-halo)", 4], ["var(--ov-line)", 2]] as const).map(([stroke, width]) => <polyline key={stroke} points={path.map(p => p.join(",")).join(" ")} fill="none" stroke={stroke} strokeWidth={width} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
+            {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--ov-line)" : "var(--ov-halo)"} fillOpacity={.85} stroke={i === 0 ? "var(--ov-ok)" : "var(--ov-line)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
             {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
               {overlay.segments.map((segment, i) => <line key={i} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={segment.width ?? 2} vectorEffect="non-scaling-stroke" />)}
             </g>}
@@ -363,6 +367,6 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
             </g>}
           </g>}
         </g></svg>}
-    {footer ? <div className="wp-image-footer">{summary}{controls}</div> : image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onBrush ? "按住左键沿胶路刷过；每一笔重画选区，中键拖动视图" : onRegion ? "拖动框选一段连续胶路区域" : onEdit ? (path.length > 24 && !allHandles ? "密集中线仅显示端点；打开“编辑点”可调整全部点" : "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整") : "原始灰度图像"}</span></div>}
+    {footer ? <div className="wp-image-footer">{summary}{controls}</div> : image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onBrush ? "按住左键沿胶路刷过；每一笔重画选区，中键拖动视图" : onRegion ? "拖动框选一段连续胶路区域" : onEdit ? (path.length > 24 && !allHandles ? "密集中线仅显示端点；打开“编辑点”可调整全部点" : "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整") : image.channels === 3 ? "原始彩色图像" : image.channels === 1 ? "原始灰度图像" : "原始图像"}</span></div>}
   </div>;
 }

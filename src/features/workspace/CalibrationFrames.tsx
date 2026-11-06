@@ -4,8 +4,8 @@ import { errorText } from "../../lib/errors";
 import type { CalibrationFrameView, FrameMetrics, FrameState, WorkspacePlanView } from "../plan/types";
 import { groupCellColor, groupCellText, segmentLabel, type GroupCellState } from "../plan/vis";
 import { workspaceApi } from "./api";
-import { Badge, GrayViewer, KV, Panel } from "./components";
-import type { GrayImage, WorkspaceView } from "./types";
+import { Badge, FrameViewer, KV, Panel } from "./components";
+import type { FrameImage, WorkspaceView } from "./types";
 
 const cellState: Record<FrameState, GroupCellState> = {
   measured: "ok", missing: "missing", error: "error", unmeasured: "unmeasured", outOfCorridor: "outOfCorridor", notInspected: "notInspected",
@@ -24,7 +24,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
   const round = roundId && piece ? { roundId, groupCount: piece.groupCount } : null;
   const [features, setFeatures] = useState<{ round: string; frames: FrameMetrics[]; error: string }>({ round: "", frames: [], error: "" });
   const [selected, setSelected] = useState<{ camera: number; seq: number } | null>(null);
-  const [detail, setDetail] = useState<{ key: string; image: GrayImage | null; view: CalibrationFrameView | null; error: string; loading: boolean }>({ key: "", image: null, view: null, error: "", loading: false });
+  const [detail, setDetail] = useState<{ key: string; image: FrameImage | null; view: CalibrationFrameView | null; error: string; loading: boolean }>({ key: "", image: null, view: null, error: "", loading: false });
 
   useEffect(() => { setSelected(null); }, [id, roundId]);
   // 重新测量示教件不换轮次：测量失效再测好时重读每帧特征（只在走廊改过后才需要重测）
@@ -71,7 +71,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
   const view = shown.view;
   const before = selected ? stored(selected.camera, selected.seq) : undefined;
   const segment = selected ? segmentOf(selected.seq) : undefined;
-  const edges = (view?.edges ?? []).flatMap(edge => edge ? [{ from: edge[0], to: edge[1], color: "var(--primary)" }] : []);
+  const edges = (view?.edges ?? []).flatMap(edge => edge ? [{ from: edge[0], to: edge[1], color: "var(--ov-line)" }] : []);
   const metrics = view?.metrics;
 
   return <Panel title="逐帧查看" help="测量示教件时测得的每帧状态；点一帧看原图，并用当前段走廊重测（只读，不改测量结果）。方向键切换帧组、相机">
@@ -96,7 +96,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
         </div>)}
       </div>
       {selected && camera && <div className="wp-calib-frame">
-        <GrayViewer image={shown.image} loading={shown.loading} error={shown.error} label={`${camera} · 帧组 ${selected.seq}`}
+        <FrameViewer image={shown.image} loading={shown.loading} error={shown.error} label={`${camera} · 帧组 ${selected.seq}`}
           overlay={view && view.corridor.length >= 2 ? { path: view.corridor, searchHalfPx: view.searchHalfPx ?? undefined, segments: edges } : undefined}
           emptyTitle="读取中" emptyHint="正在读这一帧的原图并重测。" />
         <div className="wp-calib-frame-info" aria-label="这一帧的指标">

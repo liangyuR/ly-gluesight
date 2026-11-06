@@ -82,9 +82,30 @@ CHANNELS = {
 }
 
 
+def pgm_bayer_pattern(path: Path) -> str | None:
+    """彩色模式录制的原图：P5 头里有注释 `# bayer {相位}` 时返回相位，否则为 None。"""
+    if path.suffix.lower() != ".pgm":
+        return None
+    with open(path, "rb") as f:
+        lines = f.read(64).split(b"\n")
+    if lines[0].strip() != b"P5":
+        return None
+    for line in lines[1:]:
+        if not line.startswith(b"#"):
+            return None
+        words = line.split()
+        if words[:2] == [b"#", b"bayer"] and len(words) == 3:
+            return words[2].decode("ascii").upper()
+    return None
+
+
 def load_image(path: Path, bayer: dict | None) -> tuple[np.ndarray, np.ndarray | None]:
     """返回 (RGB float32, 原始 Bayer 或 None)。"""
-    is_raw, is_bayer_pgm = path.suffix.lower() == ".raw", path.name.lower().endswith(BAYER_PGM)
+    color_pgm = pgm_bayer_pattern(path)
+    if color_pgm:
+        bayer = {**(bayer or {}), "pattern": (bayer or {}).get("pattern") or color_pgm}
+    is_raw = path.suffix.lower() == ".raw"
+    is_bayer_pgm = path.name.lower().endswith(BAYER_PGM) or color_pgm is not None
     if is_raw or is_bayer_pgm:
         if not bayer:
             raise EvalError(f"{path.name} 是原始 Bayer，标注文件需要 bayer: {{pattern}}（.raw 还要 width、height）")
@@ -362,14 +383,19 @@ def recorded_pattern(image_dir: Path) -> str | None:
 
 
 def init_spec(image_dir: Path, spec_path: Path) -> int:
+    color_pgms = {p.name: pattern for p in image_dir.iterdir() if (pattern := pgm_bayer_pattern(p))}
     files = sorted(p.name for p in image_dir.iterdir()
-                   if p.suffix.lower() in IMAGE_SUFFIXES or p.name.lower().endswith(BAYER_PGM))
+                   if p.suffix.lower() in IMAGE_SUFFIXES or p.name.lower().endswith(BAYER_PGM) or p.name in color_pgms)
     if not files:
         raise EvalError(f"{image_dir} 里没有图像（{', '.join(sorted(IMAGE_SUFFIXES))} 或录制件的 *{BAYER_PGM}）")
     if spec_path.exists():
         raise EvalError(f"{spec_path} 已存在，不覆盖")
     pattern = recorded_pattern(image_dir)
-    if any(f.lower().endswith(BAYER_PGM) for f in files):
+    if len(set(color_pgms.values())) > 1:
+        raise EvalError(f"{image_dir} 里各帧 Bayer 相位不一致：{sorted(set(color_pgms.values()))}，请按相机分开标注")
+    if color_pgms:
+        bayer = {"pattern": next(iter(color_pgms.values()))}
+    elif any(f.lower().endswith(BAYER_PGM) for f in files):
         bayer = {"pattern": pattern or "BG"}
     elif any(f.lower().endswith(".raw") for f in files):
         bayer = {"pattern": "BG", "width": 1280, "height": 1024}

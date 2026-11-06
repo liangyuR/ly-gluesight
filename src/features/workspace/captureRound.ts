@@ -4,7 +4,7 @@
  */
 import type { CaptureRoundV2, CaptureState, LossAlarm } from "../plan/types";
 import { workspaceApi } from "./api";
-import type { GrayImage } from "./types";
+import type { FrameImage } from "./types";
 
 export interface RoundView {
   roundId: string;
@@ -44,6 +44,6 @@ export function frameArrived(view: RoundView, cameraId: string, seq: number): bo
 }
 
 /** 读取第 seq 帧原图（按帧号）。 */
-export function readRoundFrame(round: CaptureRoundV2, cameraId: string, seq: number): Promise<GrayImage> {
+export function readRoundFrame(round: CaptureRoundV2, cameraId: string, seq: number): Promise<FrameImage> {
   return workspaceApi.captureFrameImage(round.roundId, cameraId, seq);
 }

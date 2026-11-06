@@ -106,9 +106,14 @@ impl Prepared {
             return Err("发布包的算法图或引擎版本与当前引擎不一致，请重新验证并发布".into());
         }
         let mut sizes = Vec::with_capacity(recipe.inspect.len());
+        let mut channels = Vec::with_capacity(recipe.inspect.len());
         for (idx, inspect) in recipe.inspect.iter().enumerate() {
             let resource = bundle.camera(idx)?;
             sizes.push(resource.size);
+            channels.push(match resource.corridors.first() {
+                Some(corridor) => crate::image_file::load_channels(&corridor.image)?,
+                None => 1,
+            });
             let calibration: Value = serde_json::from_str(&crate::fsio::read_text(&resource.calibration).map_err(|e| e.to_string())?)
                 .map_err(|e| format!("发布包标定无效：{e}"))?;
             let scale = calibration["mmPerPx"].as_f64().ok_or("发布包标定没有有效像素当量")?;
@@ -124,7 +129,7 @@ impl Prepared {
         if stored != burst_graphs(&recipe, &sizes)? {
             return Err("发布包算法图与配方走廊不一致".into());
         }
-        let corridors = vision::CorridorSet::build(&recipe, &sizes)?;
+        let corridors = vision::CorridorSet::build(&recipe, &sizes)?.with_channels(&channels);
         let engine_note = engine_file_note(&bundle.manifest.versions.engine, &engine);
         Ok(Self {
             bundle,

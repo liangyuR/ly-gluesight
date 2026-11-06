@@ -4,6 +4,7 @@
  */
 import type { KindDefaults, PathSegment, SegmentKind } from "../plan/types";
 import { clearCalibration, newSegment } from "./segmentEdit";
+import { frameChannels } from "../../lib/frame";
 
 export interface WorkbenchDraft {
   groupCount: number;
@@ -135,21 +136,23 @@ export function segmentsForSave(current: PathSegment[], draft: Pick<WorkbenchDra
 export interface ThumbStrip {
   width: number;
   height: number;
-  /** 帧组 1..N 的灰度缩略图；缺帧为 null */
+  channels: 1 | 3;
+  /** 帧组 1..N 的缩略图像素（宽 × 高 × channels）；缺帧为 null */
   frames: (Uint8Array | null)[];
 }
 
-/** 解码后端 recipe_capture_round_thumbs 的条带：头部 [帧组数, 宽, 高]（u32 小端），之后每组 1 字节状态加 宽 × 高 灰度。 */
+/** 解码后端 recipe_capture_round_thumbs 的条带：头部 [帧组数, 宽, 高, 通道数]（u32 小端），之后每组 1 字节状态加 宽 × 高 × 通道数 字节。 */
 export function decodeThumbStrip(input: ArrayBuffer | number[]): ThumbStrip {
   const buf = input instanceof ArrayBuffer ? input : Uint8Array.from(input).buffer;
-  if (buf.byteLength < 12) throw new Error("缩略图数据为空");
+  if (buf.byteLength < 16) throw new Error("缩略图数据为空");
   const view = new DataView(buf);
-  const [count, width, height] = [0, 4, 8].map(offset => view.getUint32(offset, true));
-  const size = width * height;
-  if (buf.byteLength < 12 + count * (1 + size)) throw new Error("缩略图数据不完整");
+  const [count, width, height, raw] = [0, 4, 8, 12].map(offset => view.getUint32(offset, true));
+  const channels = frameChannels(raw);
+  const size = width * height * channels;
+  if (buf.byteLength < 16 + count * (1 + size)) throw new Error("缩略图数据不完整");
   const frames = Array.from({ length: count }, (_, i) => {
-    const at = 12 + i * (1 + size);
+    const at = 16 + i * (1 + size);
     return view.getUint8(at) ? new Uint8Array(buf, at + 1, size) : null;
   });
-  return { width, height, frames };
+  return { width, height, channels, frames };
 }

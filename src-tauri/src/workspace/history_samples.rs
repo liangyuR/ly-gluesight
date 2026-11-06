@@ -16,7 +16,10 @@ fn managed_part(root: &Path, detail: &PartDetail, recipe: &Recipe) -> Result<(Sa
     }
     let reference = detail.summary.sample.as_ref().ok_or("候选调试历史没有样本件引用，不能确定离线样本原图")?;
     let set = crate::managed_samples::load_by_id(root, &reference.set_id)?;
-    if set.reference(&reference.part_id).as_ref() != Some(reference) {
+    if !set
+        .reference(&reference.part_id)
+        .is_some_and(|r| r.same_part(reference))
+    {
         return Err("受管样本件的 ID、SN 或标签与历史引用不一致，拒绝关联原图".into());
     }
     Ok((set, reference.clone()))
@@ -27,6 +30,8 @@ fn managed_part(root: &Path, detail: &PartDetail, recipe: &Recipe) -> Result<(Sa
 pub(super) struct BurstSamples {
     set: SampleSet,
     part_id: String,
+    /// 取图时按彩色读的相机（见 `SampleRef::color_cameras`）
+    color_cameras: Vec<String>,
     /// 按计划相机顺序：(相机编号, 这台相机按清单顺序的拍照点编号)
     frames: Vec<(String, Vec<String>)>,
 }
@@ -38,17 +43,35 @@ impl BurstSamples {
             return Err("历史记录的计划相机与冻结配方快照不一致，不能确定样本原图".into());
         }
         let (set, reference) = managed_part(root, detail, recipe)?;
-        let frames = burst.cameras.iter().map(|camera| {
-            (camera.clone(), set.manifest().shots.iter().filter(|shot| &shot.camera_id == camera).map(|shot| shot.shot_id.clone()).collect())
-        }).collect();
-        Ok(Self { set, part_id: reference.part_id, frames })
+        let frames = burst
+            .cameras
+            .iter()
+            .map(|camera| {
+                (
+                    camera.clone(),
+                    set.manifest()
+                        .shots
+                        .iter()
+                        .filter(|shot| &shot.camera_id == camera)
+                        .map(|shot| shot.shot_id.clone())
+                        .collect(),
+                )
+            })
+            .collect();
+        Ok(Self {
+            set,
+            part_id: reference.part_id,
+            color_cameras: reference.color_cameras,
+            frames,
+        })
     }
 
-    /// 第 camera 台计划相机第 seq 帧组（从 1 起）的样本原图。
+    /// 第 camera 台计划相机第 seq 帧组（从 1 起）的样本原图，按取图时这台相机的图像模式读（彩色读 RGB）。
     pub(super) fn load(&self, camera: usize, seq: u64) -> Result<FrameImage, String> {
         let (camera_id, shots) = self.frames.get(camera).ok_or("相机下标超出本件计划相机")?;
         let shot = usize::try_from(seq).ok().and_then(|seq| seq.checked_sub(1)).and_then(|index| shots.get(index))
             .ok_or_else(|| format!("样本集里相机 {camera_id} 只有 {} 帧，没有第 {seq} 帧组", shots.len()))?;
-        self.set.load_view(&self.part_id, shot, camera_id, 1)
+        let color = self.color_cameras.contains(camera_id);
+        self.set.load_view(&self.part_id, shot, camera_id, 1, color)
     }
 }

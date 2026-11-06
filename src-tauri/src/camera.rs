@@ -31,7 +31,8 @@ mod delivery;
 /// 帧通道容量：检测节拍处理不过来时丢新帧并计数。条数只防失控，图像内存由 IMAGE_BUDGET_PER_CAMERA 封顶（D-SB-32）。
 pub const FRAME_QUEUE: usize = 1024;
 
-/// 每台海康相机在途图像的字节上限（FramePool 预算，D-SB-32）：约 190 幅 1.3 MB 图，25 Hz 下 7.6 s 积压。
+/// 每台海康相机在途图像的字节上限（FramePool 预算，D-SB-32）：约 190 幅 1.3 MB 图，25 Hz 下 7.6 s 积压；彩色模式每帧
+/// RGB 约 3.9 MB，约 65 幅（原始马赛克另记在 Bayer 池）。
 /// 预算满时取图回调丢弃该帧、按缺帧记账，不中断回调。初值待 P1 实测后回填。合成图、样本集来源不经过这个池。
 pub const IMAGE_BUDGET_PER_CAMERA: usize = 256 * 1024 * 1024;
 
@@ -103,10 +104,15 @@ pub struct SampleTarget {
 }
 
 impl SampleTarget {
-    /// 本身份在指定相机下的全部视角原图；缺任一幅即整帧不可用。
-    pub fn images(&self, camera_id: &str, view_count: u8) -> Result<Vec<Arc<FrameImage>>, String> {
+    /// 本身份在指定相机下的全部视角原图（彩色模式按 RGB 读）；缺任一幅即整帧不可用。
+    pub fn images(
+        &self,
+        camera_id: &str,
+        view_count: u8,
+        color: bool,
+    ) -> Result<Vec<Arc<FrameImage>>, String> {
         self.set
-            .load_views(&self.part_id, &self.shot_id, camera_id, view_count)
+            .load_views(&self.part_id, &self.shot_id, camera_id, view_count, color)
     }
 }
 
@@ -145,6 +151,26 @@ impl CameraSource {
     /// 合成图像（模拟相机）；其余来源都是真实原图，示教资料与标定按真实相机处理。
     pub fn synthetic(self) -> bool {
         self == CameraSource::Sim
+    }
+}
+
+/// 相机出图模式：灰度（Mono8 优先，彩色相机 Bayer 转灰）或彩色（只取 8 位 Bayer，去马赛克成 RGB，录制存原始马赛克）。
+/// 灰度时不写进序列化结果：相机配置标签与改版前完全相同，已有示教、轮次与历史的相机配置比对不受影响。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImageMode {
+    #[default]
+    Gray,
+    Color,
+}
+
+impl ImageMode {
+    pub fn is_gray(&self) -> bool {
+        *self == ImageMode::Gray
+    }
+
+    pub fn color(self) -> bool {
+        self == ImageMode::Color
     }
 }
 
@@ -191,6 +217,8 @@ pub struct CameraConfig {
     pub strobe: bool,
     pub chunk: bool,
     pub counter_after_open: Option<u64>,
+    #[serde(skip_serializing_if = "ImageMode::is_gray")]
+    pub image_mode: ImageMode,
 }
 
 impl Default for CameraConfig {
@@ -210,6 +238,7 @@ impl Default for CameraConfig {
             strobe: true,
             chunk: true,
             counter_after_open: None,
+            image_mode: ImageMode::Gray,
         }
     }
 }
@@ -224,6 +253,9 @@ impl CameraConfig {
             && self.composite_layout.is_none()
         {
             return Err("三幅拼接图必须明确配置 SDK 交付布局，未确认布局不能启用".into());
+        }
+        if self.image_mode.color() && (self.view_count != 1 || self.composite_layout.is_some()) {
+            return Err("三目拼接相机不支持彩色模式，请改用灰度".into());
         }
         if !["Line0", "Software"].contains(&self.trigger_source.as_str()) {
             return Err("触发源只能是 Line0 或 Software".into());
@@ -357,24 +389,48 @@ struct Preview {
     height: u32,
     full_width: u32,
     full_height: u32,
+    /// 1 = 灰度，3 = RGB
+    channels: u8,
     data: Vec<u8>,
 }
 
-/// 降采样到宽度不超过 960 的缩略图。
-fn make_preview(src: &[u8], w: usize, h: usize) -> Preview {
+/// 降采样到宽度不超过 960 的缩略图，通道数同原图。
+fn make_preview(src: &[u8], w: usize, h: usize, channels: u8) -> Preview {
+    let c = channels.max(1) as usize;
     let step = w.div_ceil(960).max(1);
     let (pw, ph) = (w / step, h / step);
-    let mut data = Vec::with_capacity(pw * ph);
+    let mut data = Vec::with_capacity(pw * ph * c);
     for y in 0..ph {
-        let row = &src[y * step * w..];
-        data.extend((0..pw).map(|x| row[x * step]));
+        let row = &src[y * step * w * c..];
+        for x in 0..pw {
+            data.extend_from_slice(&row[x * step * c..x * step * c + c]);
+        }
     }
     Preview {
         width: pw as u32,
         height: ph as u32,
         full_width: w as u32,
         full_height: h as u32,
+        channels: c as u8,
         data,
+    }
+}
+
+impl Preview {
+    /// 预览命令的字节：前 20 字节为缩略图宽、高、原图宽、高、通道数（u32 小端），其后为 宽 × 高 × 通道数 字节。
+    fn bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(20 + self.data.len());
+        for v in [
+            self.width,
+            self.height,
+            self.full_width,
+            self.full_height,
+            u32::from(self.channels),
+        ] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&self.data);
+        out
     }
 }
 
@@ -419,9 +475,10 @@ fn sample_set_arrival(
     session: u64,
     n: u64,
     manual: bool,
+    color: bool,
     mut deliver: impl FnMut(Frame),
 ) -> Option<String> {
-    let loaded = target.and_then(|target| target.images(camera, views));
+    let loaded = target.and_then(|target| target.images(camera, views, color));
     let (frame, error) = match loaded {
         Ok(images) => (Some(synthetic_frame(cam, session, n, images, manual)), None),
         Err(error) => (None, Some(error)),
@@ -515,6 +572,8 @@ struct Shared {
     bayer_dropped: AtomicU64,
     /// 最近一帧是 Mono8：相机没给颜色，存不了原始 Bayer
     mono: AtomicBool,
+    /// 彩色模式（配置的 image_mode）：Bayer 去马赛克成 RGB，每帧附原始马赛克
+    color: AtomicBool,
     recent: Mutex<VecDeque<Instant>>,
     preview: Mutex<Vec<Preview>>,
     last_full: Mutex<Option<CapturedFrame>>,
@@ -553,34 +612,70 @@ impl Shared {
         }
         *self.preview.lock().unwrap() = images
             .iter()
-            .map(|img| make_preview(&img.pixels, img.width as usize, img.height as usize))
+            .filter(|img| img.consistent())
+            .map(|img| {
+                make_preview(
+                    &img.pixels,
+                    img.width as usize,
+                    img.height as usize,
+                    img.channels,
+                )
+            })
             .collect();
     }
 
-    /// 海康相机的一帧（像素格式已认过）：缩略图与整帧用同一张灰度。要留整帧而图像内存预算已满时返回 Err，
-    /// 这一帧按缺帧处理；不留整帧时预算满只是没有缩略图。
-    fn gray_image(
+    /// 海康相机的一帧（像素格式已认过）：缩略图与整帧用同一张图（灰度模式为灰度，彩色模式为去马赛克的 RGB）。
+    /// 要留整帧而图像内存预算已满时返回 Err，这一帧按缺帧处理；不留整帧时预算满只是没有缩略图。
+    /// 留了整帧时一并给出原始马赛克：彩色模式必带（Bayer 缓冲满也按预算满处理），灰度模式见 [`bayer_mosaic`](Self::bayer_mosaic)。
+    fn frame_image(
         &self,
-        pixel_type: u32,
+        kind: PixelKind,
         w: u32,
         h: u32,
         data: &[u8],
-    ) -> Result<Option<Arc<FrameImage>>, BudgetExceeded> {
+    ) -> Result<(Option<Arc<FrameImage>>, Option<BayerMosaic>), BudgetExceeded> {
         let keep = self.capture() | self.grab.swap(false, Ordering::SeqCst);
-        let gray = match to_gray(&self.pool, pixel_type, w, h, data) {
+        let color = self.color.load(Ordering::Relaxed);
+        self.mono.store(kind == PixelKind::Mono8, Ordering::Relaxed);
+        let converted = match (color, kind) {
+            (true, PixelKind::Bayer8(pattern)) => self
+                .pool
+                .bayer8_to_rgb(pattern, w, h, data)
+                .map(Converted::Pooled),
+            (true, PixelKind::Mono8) => Err(GrayError::Invalid(
+                "彩色模式需要 8 位 Bayer，相机以 Mono8 出图".into(),
+            )),
+            (false, kind) => to_gray(&self.pool, kind, w, h, data),
+        };
+        let image = match converted {
             Ok(g) => g,
             Err(GrayError::Invalid(e)) => {
                 self.unusable(e);
-                return Ok(None);
+                return Ok((None, None));
             }
-            Err(GrayError::BudgetExceeded(full)) => return if keep { Err(full) } else { Ok(None) },
+            Err(GrayError::BudgetExceeded(full)) => {
+                return if keep { Err(full) } else { Ok((None, None)) }
+            }
         };
-        *self.preview.lock().unwrap() = vec![make_preview(gray.pixels(), w as usize, h as usize)];
+        let channels = if color { 3 } else { 1 };
+        *self.preview.lock().unwrap() = vec![make_preview(
+            image.pixels(),
+            w as usize,
+            h as usize,
+            channels,
+        )];
         if !keep {
-            return Ok(None);
+            return Ok((None, None));
         }
-        gray.into_image(&self.pool, w, h)
-            .map(|image| Some(Arc::new(image)))
+        let image = Arc::new(image.into_image(&self.pool, w, h)?);
+        let bayer = match kind {
+            PixelKind::Bayer8(pattern) if color => Some(BayerMosaic {
+                pattern,
+                image: Arc::new(self.bayer_pool.copy(w, h, data)?),
+            }),
+            _ => self.bayer_mosaic(kind, w, h, data),
+        };
+        Ok((Some(image), bayer))
     }
 
     /// 图像内存预算满被丢弃的帧给状态栏的说明。
@@ -594,9 +689,8 @@ impl Shared {
         })
     }
 
-    /// 留了整帧的 Bayer 帧另拷一份原始马赛克；没开保存、不是 Bayer 或缓冲已满时没有。
+    /// 灰度模式下留了整帧的 Bayer 帧另拷一份原始马赛克；没开保存、不是 Bayer 或缓冲已满时没有。
     fn bayer_mosaic(&self, kind: PixelKind, w: u32, h: u32, data: &[u8]) -> Option<BayerMosaic> {
-        self.mono.store(kind == PixelKind::Mono8, Ordering::Relaxed);
         let PixelKind::Bayer8(pattern) = kind else {
             return None;
         };
@@ -617,7 +711,8 @@ impl Shared {
 
     /// 打开了保存原始 Bayer 却存不下时给状态栏的说明。
     fn bayer_note(&self) -> Option<String> {
-        if !self.rig.keep_bayer.load(Ordering::Relaxed) {
+        // 彩色模式每帧必带原始马赛克，存不下按预算满丢帧（见 budget_note）
+        if self.color.load(Ordering::Relaxed) || !self.rig.keep_bayer.load(Ordering::Relaxed) {
             return None;
         }
         if self.mono.load(Ordering::Relaxed) {
@@ -747,39 +842,39 @@ fn frame_bytes(kind: PixelKind, w: u32, h: u32, frame_len: u32) -> Result<usize,
     Ok(need)
 }
 
-/// 一帧灰度：Mono8 直接借 SDK 的缓冲（留整帧时才拷），Bayer 转换后的已在缓冲池里。
-enum Gray<'a> {
+/// 一帧转换后的图：Mono8 直接借 SDK 的缓冲（留整帧时才拷），Bayer 转灰度或去马赛克后的已在缓冲池里。
+enum Converted<'a> {
     Raw(&'a [u8]),
     Pooled(FrameImage),
 }
 
-impl Gray<'_> {
+impl Converted<'_> {
     fn pixels(&self) -> &[u8] {
         match self {
-            Gray::Raw(p) => p,
-            Gray::Pooled(img) => &img.pixels,
+            Converted::Raw(p) => p,
+            Converted::Pooled(img) => &img.pixels,
         }
     }
 
     fn into_image(self, pool: &FramePool, w: u32, h: u32) -> Result<FrameImage, BudgetExceeded> {
         match self {
-            Gray::Raw(p) => pool.copy(w, h, p),
-            Gray::Pooled(img) => Ok(img),
+            Converted::Raw(p) => pool.copy(w, h, p),
+            Converted::Pooled(img) => Ok(img),
         }
     }
 }
 
-/// 取图回调收到的像素转成 8 位灰度。
+/// 灰度模式：取图回调收到的像素转成 8 位灰度。
 fn to_gray<'a>(
     pool: &FramePool,
-    pixel_type: u32,
+    kind: PixelKind,
     w: u32,
     h: u32,
     data: &'a [u8],
-) -> Result<Gray<'a>, GrayError> {
-    match pixel_kind(pixel_type).map_err(GrayError::Invalid)? {
-        PixelKind::Mono8 => Ok(Gray::Raw(data)),
-        PixelKind::Bayer8(_) => pool.bayer8_to_gray(w, h, data).map(Gray::Pooled),
+) -> Result<Converted<'a>, GrayError> {
+    match kind {
+        PixelKind::Mono8 => Ok(Converted::Raw(data)),
+        PixelKind::Bayer8(_) => pool.bayer8_to_gray(w, h, data).map(Converted::Pooled),
     }
 }
 
@@ -894,13 +989,8 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             Ok(_) if data.is_null() => (None, None),
             Ok((kind, len)) => {
                 let data = unsafe { std::slice::from_raw_parts(data, len) };
-                match shared.gray_image(info.pixel_type, w, h, data) {
-                    Ok(image) => {
-                        let bayer = image
-                            .as_ref()
-                            .and_then(|_| shared.bayer_mosaic(kind, w, h, data));
-                        (image, bayer)
-                    }
+                match shared.frame_image(kind, w, h, data) {
+                    Ok(captured) => captured,
                     // 图像内存预算满（D-SB-32）：这一帧不拷图、不交付，台账照记
                     Err(_) => return shared.discard_over_budget(frame(Vec::new(), None)),
                 }
@@ -987,6 +1077,7 @@ impl CameraSlot {
                 bayer_pool: FramePool::with_budget(POOL_KEEP_PER_CAMERA, IMAGE_BUDGET_PER_CAMERA),
                 bayer_dropped: AtomicU64::new(0),
                 mono: AtomicBool::new(false),
+                color: AtomicBool::new(config.image_mode.color()),
                 recent: Mutex::new(VecDeque::new()),
                 preview: Mutex::new(Vec::new()),
                 last_full: Mutex::new(None),
@@ -1037,6 +1128,9 @@ impl CameraSlot {
         } else {
             None
         };
+        self.shared
+            .color
+            .store(config.image_mode.color(), Ordering::Relaxed);
         *self.config.lock().unwrap() = config;
         self.state.lock().unwrap().warnings.clear();
     }
@@ -1403,6 +1497,7 @@ impl CameraSlot {
                 }
                 let camera = config.id.clone();
                 let views = config.view_count;
+                let color = config.image_mode.color();
                 tauri::async_runtime::spawn(async move {
                     let worker = shared.clone();
                     let failed = tauri::async_runtime::spawn_blocking(move || {
@@ -1415,6 +1510,7 @@ impl CameraSlot {
                             session,
                             n,
                             manual,
+                            color,
                             |frame| worker.deliver(frame),
                         )
                     })
@@ -1609,6 +1705,8 @@ impl CameraSlot {
         )?;
         let format = if format == "Mono8" {
             format.to_string()
+        } else if config.image_mode.color() {
+            format!("{format} → 彩色")
         } else {
             format!("{format} → 灰度")
         };
@@ -1652,8 +1750,25 @@ fn bayer8_choices(entries: &[String]) -> Vec<&'static str> {
         .collect()
 }
 
-/// 先设 Mono8；彩色相机没有 Mono8 时取 8 位 Bayer，取图回调里转灰度（D-9）。都设不上时不能取流。
-fn set_pixel_format(d: &mvs::Device) -> Result<&'static str, String> {
+/// 灰度模式先设 Mono8；彩色相机没有 Mono8 时取 8 位 Bayer，取图回调里转灰度（D-9）。都设不上时不能取流。
+/// 彩色模式只设 8 位 Bayer（按 BAYER8 的顺序），都不支持时报错，不回退到 Mono8。
+fn set_pixel_format(d: &mvs::Device, mode: ImageMode) -> Result<&'static str, String> {
+    if mode.color() {
+        let entries = d
+            .enum_entries("PixelFormat")
+            .map_err(|e| format!("读不出相机支持的像素格式：{e}"))?;
+        let mut last = None;
+        for f in bayer8_choices(&entries) {
+            match d.set_enum("PixelFormat", f) {
+                Ok(()) => return Ok(f),
+                Err(e) => last = Some(e),
+            }
+        }
+        return Err(match last {
+            Some(e) => format!("相机不支持彩色（8 位 Bayer 像素格式设不上：{e}）"),
+            None => "相机不支持彩色（无 8 位 Bayer 像素格式）".into(),
+        });
+    }
     let Err(mut last) = d.set_enum("PixelFormat", "Mono8") else {
         return Ok("Mono8");
     };
@@ -1779,7 +1894,7 @@ fn apply(
     c: &CameraConfig,
 ) -> Result<(Vec<String>, Option<f32>, Option<f32>, &'static str, Chunks), String> {
     let configured_frame_rate = configure_trigger(d, c)?;
-    let format = set_pixel_format(d)?;
+    let format = set_pixel_format(d, c.image_mode)?;
     let mut warnings = Vec::new();
     let mut must = |r: Result<(), String>| match r {
         Ok(()) => true,
@@ -2625,7 +2740,7 @@ pub async fn camera_list_devices() -> Result<Vec<DeviceSummary>, String> {
         .map_err(|e| e.to_string())?
 }
 
-/// 最近一帧的缩略图：前 16 字节为缩略图宽、高与原图宽、高（u32 小端），其后为 8 位灰度像素。
+/// 最近一帧的缩略图：格式见 `Preview::bytes`（20 字节头 + 灰度或 RGB 像素）；没有缩略图时为空。
 #[tauri::command]
 pub fn camera_preview(
     cycle: State<'_, CycleHost>,
@@ -2640,10 +2755,7 @@ pub fn camera_preview(
             .checked_sub(1)
             .and_then(|i| previews.get(i as usize))
         {
-            for v in [p.width, p.height, p.full_width, p.full_height] {
-                out.extend_from_slice(&v.to_le_bytes());
-            }
-            out.extend_from_slice(&p.data);
+            out = p.bytes();
         }
     }
     tauri::ipc::Response::new(out)

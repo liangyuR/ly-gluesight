@@ -4,9 +4,9 @@ import { ChevronLeft, ChevronRight, Play } from "lucide-react";
 import { errorText } from "../../lib/errors";
 import type { CalibrationFrameView, FrameMetrics, TeachPreviewSegment } from "../plan/types";
 import { workspaceApi } from "./api";
-import { Badge, GrayViewer } from "./components";
+import { Badge, FrameViewer } from "./components";
 import type { HeadingGuide } from "./headingOverlay";
-import type { GrayImage } from "./types";
+import type { FrameImage } from "./types";
 
 type TrialState = "ok" | "fallback" | "empty" | "out" | "error" | "missing";
 const trialOrder: TrialState[] = ["ok", "fallback", "empty", "out", "error", "missing"];
@@ -60,7 +60,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
 
   const frameKey = seq == null ? "" : JSON.stringify([id, camera, segment, round, seq]);
   const key = seq == null ? "" : JSON.stringify([frameKey, revision]);
-  const [detail, setDetail] = useState<{ key: string; frameKey: string; image: GrayImage | null; view: CalibrationFrameView | null; error: string }>({ key: "", frameKey: "", image: null, view: null, error: "" });
+  const [detail, setDetail] = useState<{ key: string; frameKey: string; image: FrameImage | null; view: CalibrationFrameView | null; error: string }>({ key: "", frameKey: "", image: null, view: null, error: "" });
   useEffect(() => {
     if (seq == null || locked || waiting) return;
     let alive = true;
@@ -86,7 +86,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
     event.preventDefault();
     step(event.key === "ArrowLeft" ? -1 : 1);
   };
-  const edges = (view?.edges ?? []).flatMap(edge => edge ? [{ from: edge[0], to: edge[1], color: "var(--primary)" }] : []);
+  const edges = (view?.edges ?? []).flatMap(edge => edge ? [{ from: edge[0], to: edge[1], color: "var(--ov-line)" }] : []);
   const counts = batch.result ? trialOrder.map(item => [item, cells.filter(cell => cell.state === item).length] as const).filter(([, n]) => n > 0) : [];
 
   return <>
@@ -118,7 +118,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
         {stale && <span className="c-warn">参数已修改，结果已过期，请重新试测</span>}
       </div>}
     </Surface>
-    {seq != null && <GrayViewer controlsAt="footer" image={shown?.image ?? null} loading={!shown} error={shown?.error ?? ""} label={`${camera} · 段 ${segment} · 帧组 ${seq} · 试测`}
+    {seq != null && <FrameViewer controlsAt="footer" image={shown?.image ?? null} loading={!shown} error={shown?.error ?? ""} label={`${camera} · 段 ${segment} · 帧组 ${seq} · 试测`}
       overlay={{ path: view?.corridor ?? [], searchHalfPx: view?.searchHalfPx ?? undefined, segments: edges, heading: guide && { ...guide, measured: metrics?.headingDeg ?? null } }}
       tools={<div className="wp-corridor-seq" role="group" aria-label="试测帧组">
         <IconButton size="sm" aria-label="试测上一帧组" disabled={!span || seq <= span.start} onClick={() => step(-1)}><ChevronLeft size={15}/></IconButton>
