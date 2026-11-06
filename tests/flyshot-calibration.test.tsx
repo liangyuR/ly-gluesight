@@ -59,7 +59,7 @@ it("相机未就绪 → 禁止拍照但可导入离线标定图",async()=>{
  render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
  await screen.findByRole("heading",{name:"标定板参数"});
  expect(screen.getByRole("button",{name:"拍照"})).toBeDisabled();
- expect(screen.getByLabelText("导入离线图",{selector:"input"})).toBeEnabled();
+ await vi.waitFor(()=>expect(screen.getByLabelText("导入离线图",{selector:"input"})).toBeEnabled());
  const file=new File(["image"],"calibration.png",{type:"image/png"});
  file.arrayBuffer=async()=>new TextEncoder().encode("image").buffer;
  await userEvent.upload(screen.getByLabelText("导入离线图",{selector:"input"}),file);
