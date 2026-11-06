@@ -16,7 +16,7 @@ beforeEach(() => {
     productSource: "plc", manualRecipeId: null, historyDays: 180,
     timeouts: { motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
     record: "failed", recordKeep: 100, recordMaxGb: 20,
-    offlineRecordKeep: 300, offlineRecordMaxGb: 10, recordBayer: false, autoReset: false,
+    offlineRecordKeep: 300, offlineRecordMaxGb: 10, autoReset: false,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
@@ -55,16 +55,6 @@ describe("离线原图保留设置", () => {
     expect(screen.getByRole("spinbutton", { name: "真机录制最多保留（件）" })).toHaveValue(100);
     expect(screen.getByRole("spinbutton", { name: "真机录制总大小上限（GB）" })).toHaveValue(20);
     expect(screen.getByRole("combobox", { name: "真机帧录制" }).closest(".qs-select")!.querySelector("select")!).toHaveValue("failed");
-  });
-
-  it("勾选保存原始 Bayer 并保存 → 后端设置打开且重新打开仍勾选", async () => {
-    const page = render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
-    await userEvent.click(await screen.findByRole("checkbox", { name: /同时保存原始 Bayer/ }));
-    await userEvent.click(recordSaveButton());
-    await waitFor(() => expect(saved.recordBayer).toBe(true));
-    page.unmount();
-    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
-    expect(await screen.findByRole("checkbox", { name: /同时保存原始 Bayer/ })).toBeChecked();
   });
 
   it("检测节拍里勾选自动复位并保存 → 后端设置打开且重新打开仍勾选", async () => {

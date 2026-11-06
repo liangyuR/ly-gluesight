@@ -396,7 +396,7 @@ impl BayerPattern {
     }
 }
 
-/// 相机原样输出的 8 位 Bayer 马赛克：彩色模式下每帧都带，灰度模式下检测设置“同时保存原始 Bayer”打开时带上；只录制、不参与测量。
+/// 相机原样输出的 8 位 Bayer 马赛克：彩色模式下每帧都带，作为录制原图；不参与测量。
 #[derive(Clone, Debug)]
 pub struct BayerMosaic {
     pub pattern: BayerPattern,
@@ -454,7 +454,7 @@ pub struct Frame {
     /// 按视角 1–3 排列的整帧图（灰度或 RGB）；三目必须整组交付。单视角模拟测量可只交元数据。
     #[serde(skip)]
     pub images: Vec<Arc<FrameImage>>,
-    /// 单视角彩色相机的原始马赛克：彩色模式每帧都带，灰度模式只在保存原始 Bayer 时带上
+    /// 单视角彩色相机的原始马赛克：彩色模式每帧都带，灰度模式没有
     #[serde(skip)]
     pub bayer: Option<BayerMosaic>,
 }

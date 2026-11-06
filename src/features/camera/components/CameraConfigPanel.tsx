@@ -220,7 +220,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
               <TextField label="设备视角" readOnly value="单视角" />
               <Select id="cam-image-mode" label="图像模式" aria-label="图像模式" value={config.imageMode} disabled={!mvs} onValueChange={v => set("imageMode", v as ImageMode)}
                 options={[{ value: "gray", label: "灰度" }, { value: "color", label: "彩色", disabled: stitched }]}
-                description={stitched ? "三目拼接相机只支持灰度，彩色不可选。" : config.imageMode === "color" ? "彩色模式按 8 位 Bayer 取图，由电脑去马赛克为 RGB；录制保存原始 Bayer。切换图像模式后，已有示教需重新示教。" : "切换图像模式后，已有示教需重新示教。"} />
+                description={stitched ? "三目拼接相机只支持灰度，彩色不可选。" : config.imageMode === "color" ? "彩色模式按 8 位 Bayer 取图，由电脑去马赛克为 RGB；录制每帧只存一份原始 Bayer。切换图像模式后，已有示教需重新示教。" : "灰度模式不保留颜色，现场相机请用彩色。切换图像模式后，已有示教需重新示教。"} />
               {config.source === "sampleSet" && <span className="cg-small muted">图像来自离线模式所选样本集，相机与视角按样本集生成，不可在此更改。</span>}
               {config.source === "sim" && <span className="cg-small muted">合成图相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。</span>}
             </Stack>
@@ -293,7 +293,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
             <Alert title="不适用：离线图像源按节拍自动出图">不接触发线，没有触发沿、滤波、延时、频闪和 Chunk 设置；触发计数即样本序号。</Alert>
           </Card>}
 
-          {mvs ? <Card role="region" aria-label="曝光与增益" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>曝光与增益</Heading><ContextHelp label="曝光与增益说明">曝光与增益只记录在采集件与轮次里，修改后不影响已有示教、标定与轮次复核。固定写入：ExposureAuto / GainAuto = Off、TriggerMode = On；GigE 相机自动设置最佳包长。像素格式按图像模式：灰度模式优先 Mono8，相机没有 Mono8 时取 8 位 Bayer 转灰度；彩色模式使用 8 位 Bayer，由电脑去马赛克为 RGB，录制保存原始 Bayer。{status?.sdkVersion && ` SDK ${status.sdkVersion}。`}</ContextHelp></div>} actions={<span className="cg-note">保存即写入相机，打开或重连时自动写入</span>}>
+          {mvs ? <Card role="region" aria-label="曝光与增益" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>曝光与增益</Heading><ContextHelp label="曝光与增益说明">曝光与增益只记录在采集件与轮次里，修改后不影响已有示教、标定与轮次复核。固定写入：ExposureAuto / GainAuto = Off、TriggerMode = On；GigE 相机自动设置最佳包长。像素格式按图像模式：灰度模式优先 Mono8，相机没有 Mono8 时取 8 位 Bayer 转灰度；彩色模式（新建相机的缺省）使用 8 位 Bayer，由电脑去马赛克为 RGB，录制每帧只存一份原始 Bayer。{status?.sdkVersion && ` SDK ${status.sdkVersion}。`}</ContextHelp></div>} actions={<span className="cg-note">保存即写入相机，打开或重连时自动写入</span>}>
             <Stack direction="column" align="stretch" gap={12}>
               <div className="cg-adv-grid">
                 <NumberField label="曝光时间" aria-label="曝光时间（µs）" unit="µs" min={1} step={1} value={exposure===""?"":Number(exposure)} onValueChange={v => editImaging("exposure", v===""?"":String(v))} />
