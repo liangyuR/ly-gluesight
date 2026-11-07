@@ -8,7 +8,7 @@
       },
       "nsis": {
         "installMode": "perMachine",
-        "compression": "zlib",
+        "compression": "lzma",
         "installerHooks": "installer-hooks.nsh",
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": true
