@@ -10,6 +10,8 @@
 
 Node 使用 `setup-node` 的 pnpm 缓存；Rust 仅缓存依赖，不缓存工作区产物，CI Rust 缓存只在 main 保存供 PR 复用。沿用已有缓存路径，避免缓存版本改变后依赖全部重编；不通过 `cargo install` 安装工具。前端任务不恢复 Rust 缓存。Rust 库测试命令使用 `--config 'profile.dev.package.gluesight.opt-level=0'` 减少根 crate 编译耗时，保留图像解码依赖优化，不改变本地开发和正式打包配置。测试仍完整发现并执行，不按耗时分片重复编译。
 
+Rust 依赖缓存精确命中时，测试构建使用 Cargo 离线模式，避免为已锁定且已缓存的依赖再次更新索引；缓存未命中或关闭缓存时正常联网恢复依赖。
+
 `Windows package` 保留运行库、实际 DLL 视觉与应用验证、NSIS 构建及报告；依赖安装与编译各执行一次，发布草稿仍等待安装包验证成功。
 
 ## 当前保留范围
