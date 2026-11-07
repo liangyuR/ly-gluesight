@@ -665,12 +665,18 @@ pub(super) fn round_origins(
 }
 
 /// 历史记录录制时的相机设备记录（part.json 的 devices）；没有录制或旧录制为 None。
-pub(super) fn recorded_devices(app: &AppHandle, recording: &RecordingEvidence) -> Option<Value> {
-    let root = app
-        .state::<CycleHost>()
-        .recorders
-        .root(RecordSource::Real)
-        .to_path_buf();
+/// 记录录制时的相机设备配置（`part.json` 的 `devices`），按记录所属项目的真机录制根读。
+pub(super) fn recorded_devices(
+    app: &AppHandle,
+    summary: &PartSummary,
+    recording: &RecordingEvidence,
+) -> Option<Value> {
+    let root = crate::project::records::record_root(
+        &crate::storage::root(app),
+        &summary.project_id,
+        RecordSource::Real,
+    )
+    .ok()?;
     read_part(&root, recording)
         .ok()
         .map(|(_, part)| part["devices"].clone())

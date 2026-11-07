@@ -466,7 +466,7 @@ fn validate_sample(
     }
     let origins =
         history_import::round_origins(app.state::<CycleHost>().camera.recipe_capture(), &w.doc.id)?;
-    let devices = history_import::recorded_devices(app, &detail.recording);
+    let devices = history_import::recorded_devices(app, &detail.summary, &detail.recording);
     history_import::check_history_sample(
         w,
         detail.summary.cycle_id.as_deref(),
