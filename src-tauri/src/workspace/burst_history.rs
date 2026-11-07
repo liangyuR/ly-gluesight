@@ -418,7 +418,15 @@ pub async fn workspace_record_frame_view(
             .get(camera)
             .cloned()
             .ok_or("相机下标超出候选计划相机")?;
-        let graphs = vision::CorridorSet::build(recipe, &sizes)?;
+        // 部分复测的对照里可能有建不成的组合（D-SB-57）：只建得成的建，不让别的段挡住这一帧
+        let (graphs, unavailable) = vision::CorridorSet::build_available(recipe, &sizes);
+        if graphs.get(camera, segment).is_none() {
+            let why = unavailable
+                .iter()
+                .find(|u| (u.camera_idx, u.segment) == (camera, segment))
+                .map_or_else(|| format!("第 {segment} 段没有这台相机的走廊测量图"), |u| u.reason.clone());
+            return Err(why);
+        }
         let image = frame_image(&app, &detail, camera, seq)?;
         burst::frame_view(
             &app,
