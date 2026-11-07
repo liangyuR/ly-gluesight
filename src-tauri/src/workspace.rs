@@ -1024,7 +1024,7 @@ pub fn workspace_publish(
     }
     // D-SB-46：发布不再要求独立样本验证，发布时当场核对发布前检查
     let validated = burst_release::publish_checks(&app, w)?;
-    if let Some(failed) = validated.checks.iter().find(|c| !c.passed && !c.advisory) {
+    if let Some(failed) = burst_release::publish_blocker(&validated.checks) {
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
     }
     let recipes = &app.state::<CycleHost>().recipes;

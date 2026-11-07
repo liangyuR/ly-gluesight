@@ -544,6 +544,7 @@ fn sample_check(samples: &[SampleResult]) -> Check {
 }
 
 /// 一（段, 相机）用候选走廊在自己的示教帧上试测的结果：测成为 Ok，没测成为原因。
+#[derive(Clone)]
 pub(super) struct TeachTrial {
     pub segment: u32,
     pub camera: String,
@@ -589,36 +590,38 @@ pub(super) fn teach_trial_check(trials: &[TeachTrial]) -> Option<Check> {
 }
 
 /// 每段每台检测相机用候选走廊在自己的示教帧上量一次（与 `Prepared::warm` 同一口径：Measured 才算测成）。
-/// 候选修订不变时复用上次结果；走廊建不成或核心库没加载时不试测（由其余检查与冻结发布包报原因）。
+/// 同一候选实例、修订与核心库下复用上次结果；核心库没加载时不试测也不缓存（冻结发布包要求核心库，发布照样被拦），
+/// 走廊建不成时不试测（由“走廊示教”拦）。
 fn teach_trials(app: &AppHandle, w: &Workspace) -> Vec<TeachTrial> {
-    static CACHE: LazyLock<
-        Mutex<HashMap<String, (u64, Arc<Vec<(u32, String, Result<(), String>)>>)>>,
-    > = LazyLock::new(Default::default);
+    type Key = (u64, u64, String);
+    static CACHE: LazyLock<Mutex<HashMap<String, (Key, Arc<Vec<TeachTrial>>)>>> =
+        LazyLock::new(Default::default);
+    let Some(engine) = app.state::<vision::VisionHost>().engine() else {
+        return Vec::new();
+    };
+    let key: Key = (w.instance_id, w.revision, engine.identity.clone());
     let cached = CACHE
         .lock()
         .unwrap()
         .get(&w.doc.id)
-        .filter(|(revision, _)| *revision == w.revision)
+        .filter(|(k, _)| *k == key)
         .map(|(_, v)| v.clone());
-    let results = cached.unwrap_or_else(|| {
-        let results = Arc::new(measure_teach_frames(app, w));
+    let trials = cached.unwrap_or_else(|| {
+        let trials = Arc::new(measure_teach_frames(app, w, &engine));
         CACHE
             .lock()
             .unwrap()
-            .insert(w.doc.id.clone(), (w.revision, results.clone()));
-        results
+            .insert(w.doc.id.clone(), (key, trials.clone()));
+        trials
     });
-    results
-        .iter()
-        .map(|(segment, camera, outcome)| TeachTrial {
-            segment: *segment,
-            camera: camera.clone(),
-            outcome: outcome.clone(),
-        })
-        .collect()
+    trials.to_vec()
 }
 
-fn measure_teach_frames(app: &AppHandle, w: &Workspace) -> Vec<(u32, String, Result<(), String>)> {
+fn measure_teach_frames(
+    app: &AppHandle,
+    w: &Workspace,
+    engine: &vision::Engine,
+) -> Vec<TeachTrial> {
     let Ok(recipe) = w.doc.build() else {
         return Vec::new();
     };
@@ -626,9 +629,6 @@ fn measure_teach_frames(app: &AppHandle, w: &Workspace) -> Vec<(u32, String, Res
         return Vec::new();
     };
     let graphs = graphs.with_channels(&super::burst::teaching_channels(w));
-    let Some(engine) = app.state::<vision::VisionHost>().engine() else {
-        return Vec::new();
-    };
     let host = app.state::<WorkspaceHost>();
     let cameras = recipe.plan_cameras();
     let run = vision::unique_run_id(&format!("publish-trial-{}-{}", recipe.id, w.revision));
@@ -651,7 +651,7 @@ fn measure_teach_frames(app: &AppHandle, w: &Workspace) -> Vec<(u32, String, Res
                 .and_then(|path| crate::image_file::load(&path))
                 .and_then(|image| {
                     vision::measure_frame(
-                        &engine,
+                        engine,
                         graph,
                         &image,
                         0,
@@ -662,10 +662,19 @@ fn measure_teach_frames(app: &AppHandle, w: &Workspace) -> Vec<(u32, String, Res
                     crate::burst_judge::FrameState::Measured => Ok(()),
                     _ => Err(m.metrics.error.unwrap_or_else(|| "状态异常".into())),
                 });
-            out.push((segment.index, inspect.camera.clone(), outcome));
+            out.push(TeachTrial {
+                segment: segment.index,
+                camera: inspect.camera.clone(),
+                outcome,
+            });
         }
     }
     out
+}
+
+/// 拦发布的第一项：没满足且不是只提醒的项（D-SB-59）。`workspace_publish` 按它决定能否发布。
+pub(super) fn publish_blocker(checks: &[Check]) -> Option<&Check> {
+    checks.iter().find(|c| !c.passed && !c.advisory)
 }
 
 /// 发布前检查（D-SB-46，发布时当场核对，不跑样本，不要求相机在线）：相机配置、走廊示教、段标定、标定采集参数、x_ref、生产版本，
@@ -688,7 +697,7 @@ pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validatio
     checks.extend(teach_trial_check(&teach_trials(app, w)));
     Ok(Validation {
         revision: w.revision,
-        passed: checks.iter().all(|c| c.passed || c.advisory),
+        passed: publish_blocker(&checks).is_none(),
         checked_at: ly_plc::now_ms(),
         checks,
         samples: Vec::new(),
