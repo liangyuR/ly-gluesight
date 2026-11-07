@@ -1,6 +1,6 @@
 use super::burst::{calibration_round, measure_round, CameraTeaching};
 use super::burst_tests::{burst_workspace, capture_round, configs, measured, DEVICE};
-use super::capture_review::{apply_capture_review, CaptureReviewEdit};
+use super::capture_review::{apply_capture_review, save_template_round, CaptureReviewEdit};
 use super::pieces::{measure_teaching, replace_teaching_piece, teaching_measured, TeachingPiece};
 use super::*;
 use crate::plan::{
@@ -9,6 +9,7 @@ use crate::plan::{
 };
 use crate::recipe::SegmentCorridor;
 use crate::recipe_capture::CaptureRoundV2;
+use std::collections::BTreeSet;
 
 const GROUPS: u64 = 30;
 
@@ -77,10 +78,10 @@ fn measure_with(w: &Workspace, teach: &CaptureRoundV2, x: f64) -> Result<Workspa
 }
 
 #[test]
-fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_structure() {
-    // 防的回归（RB-2、RB-8）：换示教件后原示教件的边界、其余件的已确认边界、走廊与示教帧、示教件测量或 N_exp / 标定统计 /
-    // partCalib / x_ref 还留着（新示教件图像与旧走廊、旧测量混用）；或把段的数量、类型、检测相机、容差等结构与配方级参数也清掉；
-    // 同一件重复设置时照样清空
+fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts() {
+    // 防的回归（RB-2、RB-8）：换示教件把走廊与示教帧全部清空，示教要从头重做；或原示教件的边界、其余件的已确认边界、
+    // 示教件测量、N_exp / 标定统计 / partCalib / x_ref 还留着（新示教件的帧组与旧边界、旧测量混用）；或把段的数量、类型、
+    // 检测相机、容差等结构与配方级参数也清掉；同一件重复设置时照样改动
     let (mut w, _) = with_teaching(&[Straight, Corner], true);
     let other = capture_round("other", &w.doc, GROUPS, DEVICE, &[]);
     apply_capture_review(&mut w, &other, CaptureReviewEdit::Save(vec![14])).unwrap();
@@ -114,7 +115,7 @@ fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_struc
 
     let before = w.clone();
     assert!(
-        replace_teaching_piece(&mut w, piece("teach-again", 1)).is_err(),
+        replace_teaching_piece(&mut w, piece("teach-again", 1), GROUPS).is_err(),
         "同一件"
     );
     assert_eq!(
@@ -123,11 +124,43 @@ fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_struc
         "同一件被拒时候选不变"
     );
 
-    replace_teaching_piece(&mut w, piece("new", 2)).unwrap();
+    // 新件 60 个帧组：不按帧组数换算，沿用原示教件的边界帧号（15）作为新件的边界草稿
+    let carried = replace_teaching_piece(&mut w, piece("new", 2), 2 * GROUPS).unwrap();
+    assert_eq!(carried, Some(vec![15]), "沿用原来的分段帧数");
     assert_eq!(w.teaching_piece, Some(piece("new", 2)));
-    assert!(
-        w.camera_teaching.is_empty() && w.doc.inspect.iter().all(|i| i.segments.is_empty()),
-        "走廊与示教帧"
+    assert!(!before.camera_teaching.is_empty(), "前提：换件前已示教走廊");
+    assert_eq!(
+        w.camera_teaching.len(),
+        before.camera_teaching.len(),
+        "示教帧保留"
+    );
+    for (after, old) in w.camera_teaching.iter().zip(&before.camera_teaching) {
+        assert_eq!(
+            (
+                state_value(&after.frame),
+                &after.camera,
+                after.segment,
+                after.seq
+            ),
+            (state_value(&old.frame), &old.camera, old.segment, old.seq),
+            "冻结的示教图、所属段与帧组号不变"
+        );
+        // 改指向新示教件：导出回传包、走廊试测与分段对应都按新件的轮次，旧轮次随后删除
+        assert_eq!(after.round, "new");
+    }
+    assert_eq!(
+        w.doc
+            .inspect
+            .iter()
+            .map(|i| state_value(&i.segments))
+            .collect::<Vec<_>>(),
+        before
+            .doc
+            .inspect
+            .iter()
+            .map(|i| state_value(&i.segments))
+            .collect::<Vec<_>>(),
+        "走廊保留"
     );
     assert!(
         w.capture_review.rounds.is_empty() && w.capture_review.template.is_none(),
@@ -210,5 +243,72 @@ fn measuring_teaching_writes_x_ref_and_a_corridor_change_invalidates_it() {
         changed.doc.segments[0].expected_frames,
         Some(15),
         "N_exp 不受走廊影响"
+    );
+}
+
+#[test]
+fn new_piece_keeps_the_original_segment_frames_and_resaving_keeps_corridors() {
+    // 防的回归（RB-2）：换示教件后按帧组数等比例换算边界与示教帧；沿用原分段帧数的边界原样确认、再保存一次就丢走廊
+    let (mut w, _) = with_teaching(&[Straight, Corner], true);
+    let cuts = replace_teaching_piece(&mut w, piece("new", 2), 2 * GROUPS)
+        .unwrap()
+        .unwrap();
+    let new = capture_round("new", &w.doc, 2 * GROUPS, DEVICE, &[]);
+    apply_capture_review(&mut w, &new, CaptureReviewEdit::Save(cuts.clone())).unwrap();
+    assert_eq!(
+        w.capture_review.rounds["new"].cuts,
+        vec![15],
+        "新件的边界草稿按原帧号，不按 60/30 换算成 30"
+    );
+    let segments = w.doc.segments.clone();
+    let first = save_template_round(&w, &new, segments.clone(), cuts.clone()).unwrap();
+    let again = save_template_round(&first, &new, segments, cuts).unwrap();
+    for camera in again.doc.plan_cameras() {
+        let corridors: Vec<u32> = again
+            .doc
+            .inspect
+            .iter()
+            .find(|i| i.camera == camera)
+            .unwrap()
+            .segments
+            .iter()
+            .map(|c| c.segment)
+            .collect();
+        assert_eq!(corridors, vec![1, 2], "{camera} 两段走廊都在");
+    }
+}
+
+#[test]
+fn new_piece_with_fewer_frames_trims_the_segments_that_do_not_fit() {
+    // 防的回归（RB-2）：新示教件帧组不够时按比例把所有段挤进去；或放不下的段还留着、示教帧落在新件之外
+    let (mut w, _) = with_teaching(&[Straight, Corner, Straight], true);
+    // 原件 45 个帧组、边界 15 / 30，示教帧在 10、25、40；新件只有 20 个帧组
+    let cuts = replace_teaching_piece(&mut w, piece("new", 2), 20).unwrap();
+    assert_eq!(cuts, Some(vec![15]), "放得下的边界照原帧号保留");
+    assert_eq!(
+        w.doc
+            .segments
+            .iter()
+            .map(|s| (s.index, s.kind))
+            .collect::<Vec<_>>(),
+        vec![(1, Straight), (2, Corner)],
+        "第 3 段裁掉"
+    );
+    assert!(
+        w.doc
+            .inspect
+            .iter()
+            .all(|i| i.segments.iter().map(|c| c.segment).collect::<Vec<_>>() == vec![1, 2]),
+        "第 3 段的走廊随段裁掉"
+    );
+    let seqs: BTreeSet<(Option<u32>, u64)> = w
+        .camera_teaching
+        .iter()
+        .map(|t| (t.segment, t.seq))
+        .collect();
+    assert_eq!(
+        seqs,
+        BTreeSet::from([(Some(1), 10), (Some(2), 18)]),
+        "第 1 段帧组号不变，截短的第 2 段的示教帧移到 16–20 中间，第 3 段的随段裁掉"
     );
 }

@@ -354,12 +354,43 @@ pub fn save_template_round(
     let mut next = w.clone();
     match super::segment_remap::remap(w, &round.round_id, &segments, &cuts) {
         Some(remapped) => replace_doc(&mut next, remapped.doc, Some(remapped.teaching))?,
-        None => burst::update_segments(&mut next, segments)?,
+        None => {
+            burst::update_segments(&mut next, segments)?;
+            settle_teaching_frames(&mut next, &round.round_id, &cuts, round.group_count);
+        }
     }
     apply_capture_review(&mut next, round, CaptureReviewEdit::Save(cuts))?;
     apply_capture_review(&mut next, round, CaptureReviewEdit::Confirm)?;
     apply_capture_review(&mut next, round, CaptureReviewEdit::SetTemplate)?;
     Ok(next)
+}
+
+/// 把指向示教件 `round`、却落在所属段帧范围外的示教帧移到该段中间：换示教件后保留的示教帧来自原件，帧组号在新件上可能
+/// 落到别的段（末段被截短、或第一次确认的边界与原件不同）；不移的话下次保存分段按帧组号对应，会把它归到别的段而丢掉走廊。
+pub(super) fn settle_teaching_frames(
+    w: &mut Workspace,
+    round: &str,
+    cuts: &[u64],
+    group_count: u64,
+) {
+    let ends: Vec<u64> = cuts.iter().copied().chain([group_count]).collect();
+    let span = |index: u32| -> Option<(u64, u64)> {
+        let i = w.doc.segments.iter().position(|s| s.index == index)?;
+        let last = *ends.get(i)?;
+        Some((if i == 0 { 1 } else { ends[i - 1] + 1 }, last))
+    };
+    let spans: Vec<Option<(u64, u64)>> = w
+        .camera_teaching
+        .iter()
+        .map(|t| t.segment.and_then(span))
+        .collect();
+    for (t, span) in w.camera_teaching.iter_mut().zip(spans) {
+        if let Some((first, last)) = span.filter(|_| t.round == round) {
+            if !(first..=last).contains(&t.seq) {
+                t.seq = (first + last) / 2;
+            }
+        }
+    }
 }
 
 /// 示教件的轮次：没有示教件时报错。

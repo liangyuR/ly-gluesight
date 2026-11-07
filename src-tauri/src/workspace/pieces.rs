@@ -2,7 +2,7 @@
 //! 各段 N_exp 与胶偏参考 x_ref 的唯一来源，换件即清空图像派生内容；选件即导入为轮次。
 //! 轮次只作存储格式，界面面对历史件。旧流程候选（`flow` 缺省）停用，只能删除。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::burst::{self, CalibrationRound, CALIBRATION_DIR};
 use super::capture_review::{self, ConfirmedBy, ReviewStatus};
@@ -80,12 +80,19 @@ pub(super) fn teaching_measured(w: &Workspace) -> bool {
     })
 }
 
-/// 设定（更换）示教件（RB-2、RB-8）：由示教件图像得出的内容全部清空——全部轮次的边界复核与模板、走廊与示教帧、
-/// 示教件测量与派生结果（N_exp、标定统计、partCalib、x_ref）；段列表结构与配方级参数保留。轮次目录与测量特征由调用方删除。
+/// 设定（更换）示教件（RB-2、RB-8）：保留走廊与示教帧、段列表结构与配方级参数，不做任何等比例换算。
+/// - 新件沿用原来的分段帧数：边界取原示教件的边界帧号（没有时按各段原 N_exp 累加），落在新件帧组数以内的保留；
+///   帧数不够时放不下的后面几段整段裁掉（连同它们的走廊与示教帧），最后保留的那段截到新件末尾。返回预填的边界，
+///   由调用方作为新件的边界草稿保存，分段页确认即可。
+/// - 保留的示教帧改指向新示教件（旧轮次随后删除），帧组号不变；落到所属段范围外（末段被截短）的移到该段中间。
+///   冻结的示教图不变，走廊照旧在它上面编辑。
+/// - 清空跟着原示教件走的边界复核与模板、示教件测量与派生结果（N_exp、标定统计、partCalib、x_ref），确认分段、重新测量即可得出。
+/// 轮次目录与测量特征由调用方删除。
 pub(super) fn replace_teaching_piece(
     w: &mut Workspace,
     piece: TeachingPiece,
-) -> Result<(), String> {
+    piece_groups: u64,
+) -> Result<Option<Vec<u64>>, String> {
     burst::require_burst(&w.doc)?;
     if w.teaching_piece
         .as_ref()
@@ -93,14 +100,71 @@ pub(super) fn replace_teaching_piece(
     {
         return Err("这一件已是示教件".into());
     }
-    w.camera_teaching.clear();
+    let carried = original_cuts(w).map(|cuts| {
+        cuts.into_iter()
+            .filter(|&c| c < piece_groups)
+            .collect::<Vec<u64>>()
+    });
+    if let Some(cuts) = &carried {
+        // 帧数不够：只留得下 cuts.len() + 1 段，后面的段连同走廊与示教帧裁掉
+        let keep = cuts.len() + 1;
+        if keep < w.doc.segments.len() {
+            let kept: BTreeSet<u32> = w.doc.segments[..keep].iter().map(|s| s.index).collect();
+            w.doc.segments.truncate(keep);
+            for inspect in &mut w.doc.inspect {
+                inspect.segments.retain(|c| kept.contains(&c.segment));
+            }
+            w.camera_teaching
+                .retain(|t| t.segment.is_some_and(|s| kept.contains(&s)));
+        }
+    }
+    for t in &mut w.camera_teaching {
+        t.round = piece.round_id.clone();
+    }
+    match &carried {
+        Some(cuts) => {
+            capture_review::settle_teaching_frames(w, &piece.round_id, cuts, piece_groups)
+        }
+        // 不知道原分段：只把帧组号夹在新件范围内
+        None => w
+            .camera_teaching
+            .iter_mut()
+            .for_each(|t| t.seq = t.seq.clamp(1, piece_groups.max(1))),
+    }
     w.capture_review = capture_review::CaptureReview::default();
     w.calibration = burst::Calibration::default();
     burst::clear_calibration(&mut w.doc);
-    w.doc.inspect.iter_mut().for_each(|i| i.segments.clear());
     w.teaching_piece = Some(piece);
     w.changed();
-    Ok(())
+    Ok(carried)
+}
+
+/// 原来的分段帧数（每段最后一个帧组）：原示教件的边界帧号；没有时按各段 N_exp 累加；都没有为 None。
+fn original_cuts(w: &Workspace) -> Option<Vec<u64>> {
+    let segments = w.doc.segments.len();
+    let reviewed = w
+        .teaching_piece
+        .as_ref()
+        .and_then(|t| w.capture_review.rounds.get(&t.round_id))
+        .filter(|r| r.cuts.len() + 1 == segments)
+        .map(|r| r.cuts.clone());
+    reviewed.or_else(|| {
+        let frames: Option<Vec<u64>> = w
+            .doc
+            .segments
+            .iter()
+            .map(|s| s.expected_frames.map(u64::from))
+            .collect();
+        frames.map(|frames| {
+            frames[..frames.len().saturating_sub(1)]
+                .iter()
+                .scan(0, |sum, n| {
+                    *sum += n;
+                    Some(*sum)
+                })
+                .collect()
+        })
+    })
 }
 
 /// 本候选导入的轮次：属于本配方、已完整的轮次，不含验证样本库用到的轮次；示教件在前，其余（旧流程留下的标定件）按创建时间。
@@ -235,7 +299,7 @@ pub(super) fn remove_legacy_dir(dir: &Path) -> Result<(), String> {
 
 // ───────────── 示教件 ─────────────
 
-/// 设定（更换）示教件：按历史件的可用条件核对并导入为轮次，再按 RB-2 清空候选里由原示教件图像得出的内容，删除本候选
+/// 设定（更换）示教件：按历史件的可用条件核对并导入为轮次，再按 RB-2 清空跟着原示教件帧组走的内容（保留走廊与示教帧），删除本候选
 /// 原有的全部轮次目录及测量特征。同一件不能重复设置。
 #[tauri::command]
 pub async fn workspace_set_teaching_piece(
@@ -299,7 +363,15 @@ fn set_teaching_piece(
             .filter(|r| *r != round_id)
             .collect();
         let mut next = current.clone();
-        replace_teaching_piece(&mut next, piece)?;
+        // 新件沿用原来的分段帧数：预填边界作为新件的边界草稿，分段页确认即可
+        if let Some(cuts) = replace_teaching_piece(&mut next, piece, part.group_count)? {
+            let round = capture.get_burst(&round_id)?;
+            capture_review::apply_capture_review(
+                &mut next,
+                &round,
+                capture_review::CaptureReviewEdit::Save(cuts),
+            )?;
+        }
         host.save(&next)?;
         *current = next;
         Ok::<_, String>((current.clone(), stale))
