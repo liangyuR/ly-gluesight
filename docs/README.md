@@ -79,7 +79,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 
 | 目录 | 内容 |
 | --- | --- |
-| [integration/](integration) | [生产通讯协议 8](integration/plc-communication-protocol.md)、[离线样本集格式](integration/sample-set-format.md)、[Agent 示教接口（MCP）](integration/agent-teaching.md) |
+| [integration/](integration) | [生产通讯协议 8](integration/plc-communication-protocol.md)、[离线样本集格式](integration/sample-set-format.md)、[Agent 示教接口（MCP）](integration/agent-teaching.md)、[示教执行问题与改进项](integration/agent-teaching-findings.md) |
 | [architecture/](architecture) | [配方创建流程](architecture/recipe-creation-workflow.md)、[在线投运方案](architecture/online-commissioning.md)、[项目设计](architecture/project.md)、[存储布局](architecture/storage-layout.md)、[lyFlow 依赖](architecture/lyflow-dependency.md)、[运行日志](architecture/agent-logging.md)与[事件编码表](architecture/agent-logging-codes.md) |
 | [decisions/](decisions/README.md) | 现行决策：取舍、回退方式与需要用户确认的事项 |
 | [testing/](testing/TESTING.md) | 测试运行与复现、长稳与故障注入运行说明 |
