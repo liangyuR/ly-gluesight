@@ -8,7 +8,7 @@
 
 前端 Vitest、增量 Rust 格式和空白检查在 Ubuntu 执行，与 Windows Rust 库回归并行。`verify` 汇总全部结果，任何失败或意外跳过都不能通过。`node --test scripts/Plan-Ci.test.mjs` 保护文档过滤不能漏掉代码与混合改动。PR 连续推送只保留最新运行；main 和手动运行使用独立并发组，既不取消执行中的提交，也不替换排队中的提交。
 
-Node 使用 `setup-node` 的 pnpm 缓存；Rust 仅缓存依赖，不缓存工作区产物或工具二进制，CI Rust 缓存只在 main 保存供 PR 复用。前端任务不恢复 Rust 缓存。Rust 库测试命令使用 `--config 'profile.dev.package.gluesight.opt-level=1'` 减少根 crate 编译耗时，保留图像解码依赖优化，不改变本地开发和正式打包配置。测试仍完整发现并执行，不按耗时分片重复编译。
+Node 使用 `setup-node` 的 pnpm 缓存；Rust 仅缓存依赖，不缓存工作区产物，CI Rust 缓存只在 main 保存供 PR 复用。沿用已有缓存路径，避免缓存版本改变后依赖全部重编；不通过 `cargo install` 安装工具。前端任务不恢复 Rust 缓存。Rust 库测试命令使用 `--config 'profile.dev.package.gluesight.opt-level=0'` 减少根 crate 编译耗时，保留图像解码依赖优化，不改变本地开发和正式打包配置。测试仍完整发现并执行，不按耗时分片重复编译。
 
 `Windows package` 保留运行库、实际 DLL 视觉与应用验证、NSIS 构建及报告；依赖安装与编译各执行一次，发布草稿任务在 Ubuntu 下载构建产物后执行，仍等待安装包验证成功。
 

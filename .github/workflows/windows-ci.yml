@@ -103,11 +103,10 @@ jobs:
           workspaces: src-tauri -> target/cargo-ci
           shared-key: windows-ci-${{ needs.changes.outputs.rust }}
           cache-workspace-crates: false
-          cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rust unit tests
         working-directory: src-tauri
-        run: cargo test --locked --lib --config 'profile.dev.package.gluesight.opt-level=1'
+        run: cargo test --locked --lib --config 'profile.dev.package.gluesight.opt-level=0'
 
   verify:
     needs: [changes, frontend, rust]

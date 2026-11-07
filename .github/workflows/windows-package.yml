@@ -63,7 +63,6 @@ jobs:
           workspaces: src-tauri -> target/cargo-release
           shared-key: windows-release-${{ steps.tools.outputs.rust }}
           cache-workspace-crates: false
-          cache-bin: false
       - name: Resolve lyFlow release
         id: lyflow
         env:

@@ -31,6 +31,7 @@ for (const { name, event = "pull_request", change, required } of [
     const commit = () => { git("add", "--all"); git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture"); };
     try {
       git("init", "--quiet");
+      git("config", "core.autocrlf", "false");
       git("config", "user.name", "CI routing test");
       git("config", "user.email", "ci-routing@example.invalid");
       write("package.json", JSON.stringify({ engines: { node: ">=24.15.0" }, packageManager: "pnpm@12.15.0" }));
