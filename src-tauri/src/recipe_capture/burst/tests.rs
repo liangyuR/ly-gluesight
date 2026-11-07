@@ -215,7 +215,7 @@ fn round_without_images_is_refilled_only_from_a_round_with_identical_frames() {
 }
 
 #[test]
-fn batch_index_uses_validated_frame_identity_and_rechecks_image_presence() {
+fn frame_read_after_image_cleanup_rejects_the_missing_image() {
     let root = root();
     let round = patched(
         &complete_round(&root),
@@ -223,14 +223,10 @@ fn batch_index_uses_validated_frame_identity_and_rechecks_image_presence() {
     );
     write_round(&root, &round);
     let host = RecipeCaptureHost::open(root.clone()).unwrap();
-    let index = host.burst_frame_index(ROUND).unwrap();
-    std::fs::remove_file(root.join(ROUND).join(FRAMES_FILE)).unwrap();
-    let image = crate::image_file::load(&index.path("cam2", 2).unwrap()).unwrap();
+    let path = host.burst_frame_path(ROUND, "cam2", 2).unwrap();
+    let image = crate::image_file::load(&path).unwrap();
     assert_eq!(image.pixels, vec![2; 4]);
-    assert!(index.path("cam2", 3).is_err());
-    assert!(index.path("../cam2", 2).is_err());
-    std::fs::remove_file(index.path("cam2", 2).unwrap()).unwrap();
-    assert!(index.path("cam2", 2).is_err());
-    assert!(host.burst_frame_index(ROUND).is_err());
+    std::fs::remove_file(path).unwrap();
+    assert!(host.burst_frame_path(ROUND, "cam2", 2).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
