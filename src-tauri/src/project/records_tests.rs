@@ -165,10 +165,10 @@ fn two_project_databases_merge_once_with_renumbered_references_and_project_snaps
     // 上次启动：两个项目都已合并提交；line-a 还没改写引用就退出，line-b 改写已换上、还没记下完成就退出
     let store = Store::open_for(&database(data), "line-a").unwrap();
     store
-        .merge_project(&a.join("inspection.db"), "line-a", true)
+        .merge_project(&a.join("inspection.db"), "line-a", true, false)
         .unwrap();
     store
-        .merge_project(&b.join("inspection.db"), "line-b", false)
+        .merge_project(&b.join("inspection.db"), "line-b", false, false)
         .unwrap();
     remap_refs(&b, &store.pending_refs("line-b").unwrap().unwrap()).unwrap();
     let notes = migrate(data, &store, "line-a");
@@ -265,4 +265,46 @@ fn two_project_databases_merge_once_with_renumbered_references_and_project_snaps
         read_json(&b.join("recipe-capture/r1/round.json"))["origin"]["recordId"],
         4
     );
+}
+
+/// 防的回归：导入时记录已并入本机库、项目目录还没装上就退出，重启后这些记录挂在不存在的项目下，同一编号也不能再导入；
+/// 目录已装好、只差记下时又被误撤回。
+#[test]
+fn interrupted_import_is_rolled_back_or_completed_by_whether_its_project_landed() {
+    let data = TempDir::new("interrupted-import");
+    let data = data.0.as_path();
+    crate::project::create_dir(
+        data,
+        &crate::project::ProjectMeta::new("landed", "已装好", "", None),
+        |_| Ok(()),
+    )
+    .unwrap();
+    std::fs::create_dir_all(crate::project::dir(data, "lost")).unwrap();
+    let recipe = burst_fixture::recipe();
+    for id in ["landed", "lost"] {
+        legacy(data, id, |store| {
+            part(data, store, &recipe, &format!("{id}-1"), "SN-1", 100)
+        });
+    }
+    let store = Store::open_for(&database(data), "landed").unwrap();
+    for id in ["landed", "lost"] {
+        store
+            .merge_project(
+                &crate::project::dir(data, id).join("inspection.db"),
+                id,
+                false,
+                true,
+            )
+            .unwrap();
+    }
+    std::fs::remove_dir_all(crate::project::dir(data, "lost")).unwrap();
+
+    recover_installs(data, &store);
+    assert!(store.pending_installs().unwrap().is_empty());
+    let records = store.project_records().unwrap();
+    assert!(
+        records.contains_key("landed") && !records.contains_key("lost"),
+        "{records:?}"
+    );
+    assert!(crate::project::manage::check_new_id(data, "lost").is_ok());
 }

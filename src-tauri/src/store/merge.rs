@@ -80,11 +80,13 @@ impl Store {
     }
 
     /// 把 `source` 的记录作为项目 `project` 的记录并入本机库（一个事务；同一项目只能合并一次）。
+    /// `installing` 为导入中的新项目：项目目录装好后调 `finish_install`；之前中断的由 `pending_installs` 在启动时找出处理。
     pub fn merge_project(
         &self,
         source: &Path,
         project: &str,
         keep_ids: bool,
+        installing: bool,
     ) -> Result<Merged, String> {
         if !crate::project::valid_id(project) {
             return Err(format!("项目编号 {project} 不合法"));
@@ -93,7 +95,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         conn.execute("ATTACH DATABASE ?1 AS src", [source.to_string_lossy()])
             .map_err(db_err)?;
-        let result = merge_attached(&conn, project, keep_ids);
+        let result = merge_attached(&conn, project, keep_ids, installing);
         if result.is_err() {
             let _ = conn.execute_batch("ROLLBACK;");
         }
@@ -140,6 +142,31 @@ impl Store {
         )
         .map_err(db_err)?;
         tx.commit().map_err(db_err)
+    }
+
+    /// 导入的项目目录已装好：它并入的记录从此算数。
+    pub fn finish_install(&self, project: &str) -> Result<(), String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE project_merges SET installed = 1 WHERE project_id = ?1",
+                [project],
+            )
+            .map(|_| ())
+            .map_err(db_err)
+    }
+
+    /// 记录已并入、项目目录还没装好的导入（上次导入中断）。
+    pub fn pending_installs(&self) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT project_id FROM project_merges WHERE installed = 0 ORDER BY project_id",
+            )
+            .map_err(db_err)?;
+        let rows = stmt.query_map([], |r| r.get(0)).map_err(db_err)?;
+        rows.collect::<Result<_, _>>().map_err(db_err)
     }
 
     /// 撤回一个项目的全部记录（导入在合并后失败时用；项目是新建的，记录只来自这次合并）。
@@ -205,7 +232,12 @@ impl Store {
     }
 }
 
-fn merge_attached(conn: &Connection, project: &str, keep_ids: bool) -> Result<Merged, String> {
+fn merge_attached(
+    conn: &Connection,
+    project: &str,
+    keep_ids: bool,
+    installing: bool,
+) -> Result<Merged, String> {
     if !has_table(conn, "parts")? {
         return Err("来源不是检测记录库".into());
     }
@@ -350,8 +382,8 @@ fn merge_attached(conn: &Connection, project: &str, keep_ids: bool) -> Result<Me
         )).map_err(db_err)?;
     }
     conn.execute(
-        "INSERT INTO project_merges (project_id, merged_at, inserted, duplicates) VALUES (?1, ?2, ?3, ?4)",
-        params![project, ly_plc::now_ms(), merged.inserted as i64, merged.duplicates as i64],
+        "INSERT INTO project_merges (project_id, merged_at, inserted, duplicates, installed) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![project, ly_plc::now_ms(), merged.inserted as i64, merged.duplicates as i64, !installing],
     ).map_err(db_err)?;
     conn.execute(
         "INSERT INTO project_merge_ids (project_id, old, new) SELECT ?1, old, new FROM temp.merge_ids",

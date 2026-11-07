@@ -105,7 +105,10 @@ fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
     let data = storage::root(app);
     let current = project::current_id(app);
     let store = store::Store::open_deferred_recovery(&project::records::database(&data), &current)?;
-    for (level, message) in project::records::migrate(&data, &store, &current) {
+    for (level, message) in project::records::recover_installs(&data, &store)
+        .into_iter()
+        .chain(project::records::migrate(&data, &store, &current))
+    {
         applog::write(level, "检测记录合并", &message);
     }
     Ok(store)

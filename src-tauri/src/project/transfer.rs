@@ -771,7 +771,7 @@ fn finish(
     if merged {
         let result = store
             .ok_or_else(|| "本机记录库未打开，不能并入检测记录".to_string())
-            .and_then(|store| store.merge_project(&db, new.id, false))
+            .and_then(|store| store.merge_project(&db, new.id, false, true))
             .and_then(|merged| {
                 super::records::finish_refs(store.ok_or("本机记录库未打开")?, root, new.id)?;
                 if merged.duplicates > 0 {
@@ -798,6 +798,16 @@ fn finish(
     if let Err(error) = std::fs::rename(root, &target) {
         undo(merged);
         return Err(format!("移入项目目录失败：{error}"));
+    }
+    if merged {
+        // 失败时下次启动由 records::recover_installs 按项目目录已在补记
+        if let Err(error) = store.map_or(Ok(()), |s| s.finish_install(new.id)) {
+            crate::applog::write(
+                "warn",
+                "项目导入记录待补记",
+                &format!("{}：{error}", new.id),
+            );
+        }
     }
     if let Some(external) = external {
         if let Err(error) = std::fs::remove_file(external.join(PENDING_RECORDINGS)) {

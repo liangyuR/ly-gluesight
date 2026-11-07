@@ -90,7 +90,7 @@ pub fn migrate(data: &Path, store: &Store, current: &str) -> Vec<(&'static str, 
             if !db.is_file() {
                 continue;
             }
-            match store.merge_project(&db, id, id == current) {
+            match store.merge_project(&db, id, id == current, false) {
                 Ok(merged) => notes.push((
                     "info",
                     format!(
@@ -129,6 +129,33 @@ pub fn migrate(data: &Path, store: &Store, current: &str) -> Vec<(&'static str, 
         }
     }
     notes
+}
+
+/// 上次导入中断的项目：记录已并入本机库，但项目目录没装上。目录在（装好后还没来得及记下）就记下装好；不在就撤回这次并入的
+/// 记录，编号可以再用（它的外部原图暂存已由 `transfer::recover_pending_recordings` 清掉）。返回 (级别, 说明) 供写日志。
+pub fn recover_installs(data: &Path, store: &Store) -> Vec<(&'static str, String)> {
+    let pending = match store.pending_installs() {
+        Ok(pending) => pending,
+        Err(error) => return vec![("err", format!("核对中断的项目导入失败：{error}"))],
+    };
+    pending
+        .into_iter()
+        .map(|id| {
+            let result = if project_available(data, &id) {
+                store
+                    .finish_install(&id)
+                    .map(|_| ("info", format!("项目 {id} 的导入已完成，记下其检测记录")))
+            } else {
+                store.forget_project(&id).map(|_| {
+                    (
+                        "warn",
+                        format!("项目 {id} 的导入中断，已撤回并入的检测记录，可用同一编号重新导入"),
+                    )
+                })
+            };
+            result.unwrap_or_else(|error| ("err", format!("处理中断的项目导入 {id} 失败：{error}")))
+        })
+        .collect()
 }
 
 /// 并入后还没改写完的记录引用：按本机库记下的编号对照改写，完成后在库里记下。没有待改写的什么也不做。

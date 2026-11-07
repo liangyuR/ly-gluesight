@@ -807,7 +807,8 @@ impl Store {
                  merged_at INTEGER NOT NULL,
                  inserted INTEGER NOT NULL,
                  duplicates INTEGER NOT NULL,
-                 refs_done INTEGER NOT NULL DEFAULT 0
+                 refs_done INTEGER NOT NULL DEFAULT 0,
+                 installed INTEGER NOT NULL DEFAULT 1
              );
              CREATE TABLE IF NOT EXISTS project_merge_ids (
                  project_id TEXT NOT NULL,
