@@ -523,3 +523,32 @@ fn heading_reads_the_fitted_path_not_the_start_direction() {
         .metrics;
     assert_eq!(m.heading_deg, Some(-90.0));
 }
+
+#[test]
+fn build_available_keeps_usable_pairs_while_build_still_rejects_broken_ones() {
+    // 防的回归（D-SB-57）：改段后有段没示教或建不成时，历史复测整件都不能做；发布、预热用的 build 也不能因此放宽
+    let mut doc = burst_doc();
+    doc.inspect[1].segments.clear();
+    let recipe = doc.clone().build().unwrap();
+    let pairs = |u: &[UnavailableCorridor]| {
+        u.iter()
+            .map(|u| (u.camera_idx, u.untaught))
+            .collect::<Vec<_>>()
+    };
+    let (set, unavailable) = CorridorSet::build_available(&recipe, &[FRAME; 3]);
+    assert!(set.get(0, 1).is_some() && set.get(1, 1).is_none() && set.get(2, 1).is_some());
+    assert_eq!(pairs(&unavailable), vec![(1, true)]);
+    assert!(
+        CorridorSet::build(&recipe, &[FRAME; 3]).is_ok(),
+        "没示教的组合照旧跳过"
+    );
+    doc.inspect[2].mm_per_px = None;
+    let recipe = doc.build().unwrap();
+    assert!(
+        CorridorSet::build(&recipe, &[FRAME; 3]).is_err(),
+        "建不成的组合照旧报错"
+    );
+    let (set, unavailable) = CorridorSet::build_available(&recipe, &[FRAME; 3]);
+    assert!(set.get(0, 1).is_some() && set.get(2, 1).is_none());
+    assert_eq!(pairs(&unavailable), vec![(1, true), (2, false)]);
+}

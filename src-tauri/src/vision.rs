@@ -24,7 +24,9 @@ mod taught;
 pub mod template;
 #[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
 pub use taught::measure_frame_with;
-pub use taught::{corridor_inside, measure_frame, CorridorSet, FrameMeasurement};
+pub use taught::{
+    corridor_inside, measure_frame, CorridorSet, FrameMeasurement, UnavailableCorridor,
+};
 
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
 

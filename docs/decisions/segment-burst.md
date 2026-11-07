@@ -601,6 +601,16 @@
   - 在线、历史详情、复测对照都调用它：在线判定后按区域判，判定前按这一帧所测走廊的段临时判；历史与对照在读取时现算，不落库。
   - 帧组条上方的段条按区域着色、写明区域结论与原因，整段性问题看段条。历史里测过但整件没有区域判定的帧（如在途中断）显示“未判定”。
 
+### D-SB-57 历史件从原图复测按段部分可测（2026-11-07 用户确认，已实现）
+
+- 问题：改段（增删、拆分、改类型）后，新段的走廊按 D-SB-52 清空；从原图复测（历史详情与试测页“触发测试”）要求候选每一段都示教完，整件都不能复测，帧数一致的历史件也测不了。
+- 采用：
+  - 从原图复测只要求计划相机相同、原图齐全、候选至少有一（相机, 段）能量。能量 = 走廊已示教、建得成测量图（当量、走廊在示教帧内等）、没有定向配置问题（`heading::issues`）。
+  - 量不了的（相机, 段）不测：落在里面的帧记未测（`unmeasured`，原因写明是哪一段哪台相机、为什么），按 D-SB-13 只算检测不完整，不改 OK/NG。没有预期帧数的段照比例分段的规则退回未分段区域。
+  - 复测前（`CompareOptions.raw.note`）与复测结果（`Comparison.burst.unmeasured`）都列出不测的段，界面写明“结论只覆盖其余段”；试测页一段都没示教才禁用，部分示教时提示。
+  - 按候选规则重判仍要求段结构与记录时相同（存的每帧指标按旧段的走廊测，段一变不能复用），原因分开写“段结构变了”和“走廊、当量或检测参数变了”。
+  - 发布、预热、验证用的测量图（`CorridorSet::build`）不放宽：没示教的组合跳过，其余建不成即报错；部分可测只用 `CorridorSet::build_available`。
+
 ## 五、IPC 契约
 
 完整字段以 `src/features/plan/types.ts` 为准（serde camelCase，Rust 的 `Option` 一律序列化为 null）。段配方的数据挂在现有 DTO 的可空字段上，下表列出段配方时旧字段的取值。
@@ -619,7 +629,7 @@
 | `WorkspaceView`（workspace.rs） | `plan: WorkspacePlanView \| null` | `productionPlc = candidatePlc = null`，`candidatePlcError = null`，`coverage = null`，`progress = { steps: [], shots: [], next: null }`（段配方进度在 `plan.progress`）；`planChanged` 按 D-SB-19 的身份 |
 | `Progress`（workspace/progress.rs） | — | 段配方用 `ProgressV2` |
 | `Overrides`（history.rs，重判试算参数） | `straight`、`corner`（`KindOverride`：`tolUpper`、`tolLower`、`maxExcursionLen`，绝对限不适用；TS `Overrides` 已有这两个可选字段） | 每帧胶宽只读它们（`Overrides::apply_segments`），`position` / `width` 不适用，未分段区域取两者中较宽的一档；前端 `RejudgeDialog` 的直线段 / 弯道段两行可填 |
-| `Comparison`（workspace.rs，候选 / 原包对照） | `burst: {segments, cameras, expectedTotal, judgement, frames, sizes} \| null`（TS `Comparison.burst`；`frames` 为这次对照用的每帧指标，`sizes` 为候选对照当时的各相机示教帧尺寸，叠图按它重建；旧对照读入为空；`frameVerdicts` 为逐帧结论，读出时按 D-SB-56 现算） | `judgement` 为结论摘要（verdict / plcCode / faultCode / reason 与 `burst.judgement` 相同，segments、gaps 为空），`measurements = []` |
+| `Comparison`（workspace.rs，候选 / 原包对照） | `burst: {segments, cameras, expectedTotal, judgement, frames, sizes} \| null`（TS `Comparison.burst`；`frames` 为这次对照用的每帧指标，`sizes` 为候选对照当时的各相机示教帧尺寸，叠图按它重建；旧对照读入为空；`frameVerdicts` 为逐帧结论，读出时按 D-SB-56 现算；`unmeasured` 为从原图复测时没测的段与原因，D-SB-57） | `judgement` 为结论摘要（verdict / plcCode / faultCode / reason 与 `burst.judgement` 相同，segments、gaps 为空），`measurements = []` |
 
 ### 5.2 新 DTO
 
@@ -799,7 +809,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 - **验证样本**（可选，D-SB-46）：`workspace_capture_sample` 把采集轮次记进样本库（`BankSample.captureId` = 轮次编号，帧留在采集轮次目录，验证时按 (相机, seq) 读；`geometryTag` = 产品代码 + 有序计划相机 + 各段 (序号, 类型)，不含 N_exp，示教件分段确认前采的样本之后仍可用）。样本轮次不能是示教件，相机集合等于计划相机，各相机采集时的设备配置与当前相同。原图齐全的生产历史也可作样本：段结构身份与候选相同（历史没有记相机配置，不比较）。样本与生产同一规则选走廊重测（D-SB-45；缺帧不读图，读图或测量失败只算检测不完整），按 D-SB-40 分段判定；丢帧告警对采集轮次按计划相机顺序重算，对历史沿用记录。帧组数超出 ΣN_exp ± Σtol 与检测不完整只写进样本原因，不改是否符合。不接受按拍照点导入的样本图片。
 - **发布**：`workspace_publish` 调用 `burst_release::freeze_bundle` → `release::publish_burst`（schema 5）：每台计划相机一份标定 JSON（`mmPerPx` = 示教当量，`reference` = 标定引用或 `device/{device}`，`source` = 工位标定文件内容），它检测的每一段一张示教帧与走廊（D-SB-45）；测量图为 `production::burst_graphs`，`versions.graph` = `GRAPH_VERSION_BURST`。发布门槛 = 发布前检查当场通过 + `ready_burst`（D-SB-46）。计划版本由 `plan_version_for` 按 `same_plan` 分配，换示教件或改分段使 N_exp 变化即换新号。配方版本也在发布时由配方库当场分配（`RecipeStore::release_version`，与生效时 `save_published` 的核对同一口径），不沿用候选里记的版本：候选建好后，启动时会按历史记录里出现过的版本抬高版本下限，候选里的版本可能已过时。验证环境标签（`environment`）含各检测相机的工位标定（缺省为设备标定 `device/{device}`）。
 - **进度**：发布步骤的阻塞项取未完成的必经步骤（示教件、分段、走廊示教；试测可选、不阻断），各自跳到该步骤的第一个阻塞目标：选示教件、在示教件上确认分段、第一个没示教好的（段, 相机）。设备与生产版本在发布时当场核对。
-- **历史**：`workspace_record_frame_image(historyId, camera, seq)`（5.4）读历史一帧原图。生产记录读录制目录：路径在 `*_cycle_{cycleId}` 内、文件名为 `{相机}_s{seq:06}.pgm`，part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号一致且已落盘，解码尺寸等于录制尺寸。候选离线调试记录读受管样本集（D-SB-28 口径）。`workspace_compare` 从原图用候选走廊逐帧复测（要求计划相机相同、原图齐全），或按已存每帧指标与记录里的区域用候选规则重判（要求 `store::same_measurement_layout`，ERR 记录不重判）；`workspace_compare_original` 按原发布包（schema 5）的走廊逐帧重现。结果写进 `Comparison.burst`（5.1）。`workspace_record_frame_view(historyId, comparison, camera, seq)` 给历史详情叠图（只读）：用对照保存的候选配方、示教帧尺寸（`Comparison.burst.sizes`）与这一帧在对照里所用的走廊段从录制原图重测，返回走廊、搜索带、胶边与胶边距线（与试测页逐帧查看同一形状），不依赖候选现在的示教，候选换了示教件或已删除也能看；按原发布包重现的对照用那个发布包重测；没有保存尺寸的旧候选对照不支持。看原始记录时用 `workspace_history_frame_view(historyId, camera, seq)`：按记录的发布包与这一帧当时所用走廊段从录制原图重测（与在线检测同一入口 `Prepared::measure_frame`，生产预热里有这个包就复用，否则加载并只缓存一个），线不落盘，指标取记录里存的；没有发布包、原图或走廊段时写明原因。`workspace_history_compare_options(historyId)` 给历史详情三种复测各自能不能做与原因：按记录的配方找本机候选（不新建候选、不看工作台当前选的配方），检查与真正执行对照时同一处（按规则重判还要求原记录有区域判定，从原图复测还要求候选走廊示教完成）。
+- **历史**：`workspace_record_frame_image(historyId, camera, seq)`（5.4）读历史一帧原图。生产记录读录制目录：路径在 `*_cycle_{cycleId}` 内、文件名为 `{相机}_s{seq:06}.pgm`，part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号一致且已落盘，解码尺寸等于录制尺寸。候选离线调试记录读受管样本集（D-SB-28 口径）。`workspace_compare` 从原图用候选走廊逐帧复测（要求计划相机相同、原图齐全、至少一段能量，量不了的段记未测，D-SB-57），或按已存每帧指标与记录里的区域用候选规则重判（要求 `store::same_measurement_layout`，ERR 记录不重判）；`workspace_compare_original` 按原发布包（schema 5）的走廊逐帧重现。结果写进 `Comparison.burst`（5.1）。`workspace_record_frame_view(historyId, comparison, camera, seq)` 给历史详情叠图（只读）：用对照保存的候选配方、示教帧尺寸（`Comparison.burst.sizes`）与这一帧在对照里所用的走廊段从录制原图重测，返回走廊、搜索带、胶边与胶边距线（与试测页逐帧查看同一形状），不依赖候选现在的示教，候选换了示教件或已删除也能看；按原发布包重现的对照用那个发布包重测；没有保存尺寸的旧候选对照不支持。看原始记录时用 `workspace_history_frame_view(historyId, camera, seq)`：按记录的发布包与这一帧当时所用走廊段从录制原图重测（与在线检测同一入口 `Prepared::measure_frame`，生产预热里有这个包就复用，否则加载并只缓存一个），线不落盘，指标取记录里存的；没有发布包、原图或走廊段时写明原因。`workspace_history_compare_options(historyId)` 给历史详情三种复测各自能不能做与原因：按记录的配方找本机候选（不新建候选、不看工作台当前选的配方），检查与真正执行对照时同一处（按规则重判还要求段结构相同、原记录有区域判定；从原图复测要求至少一段能量，有段不测时在 `raw.note` 里写明）。
 
 #### 14. 离线仿真
 

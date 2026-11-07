@@ -32,8 +32,12 @@ export function HistoryTrials({ recipeId }: { recipeId: string }) {
     workspaceApi.historyCandidates(recipeId).then(r => { if (alive) setRows(r); }).catch(e => { if (alive) { setRows([]); setError(errorText(e)); } });
     return () => { alive = false; };
   }, [recipeId]);
-  const taught = !!data && data.plan.cameraTeaching.length > 0 && data.plan.cameraTeaching.every(item => item.ready);
-  const blocked = !data ? "候选未加载" : !taught ? "走廊示教还没完成：各相机要有像素当量、检测的每一段都要有走廊" : data.workspace.pending ? "候选版本正在等待生效" : "";
+  // 至少有一段示教了走廊就能试测（D-SB-57）：没示教的段不测、只算检测不完整
+  const teaching = data?.plan.cameraTeaching ?? [];
+  const usable = teaching.some(item => item.mmPerPx != null && item.segments.some(s => s.saved));
+  const partial = teaching.filter(item => !item.ready).map(item => item.camera);
+  const blocked = !data ? "候选未加载" : !usable ? "还没有任何一段示教走廊：各相机要有像素当量，至少一段要有走廊" : data.workspace.pending ? "候选版本正在等待生效" : "";
+  const partialHint = !blocked && partial.length ? `走廊示教未完成（${partial.join("、")}）：没示教的段不测，只算检测不完整，结论只覆盖已示教的段` : "";
   const run = async (recordId: number) => {
     if (!data || blocked || running != null) return;
     setRunning(recordId); setError("");
@@ -51,6 +55,7 @@ export function HistoryTrials({ recipeId }: { recipeId: string }) {
   }, [queued, pendingSave, acting, saveState]);
   return <Panel title="历史件试测" help="用当前候选（已保存的走廊与参数）从录制原图重测历史件并判定，各段按示教件得出的预期帧数分段。结果另存为对照，不改历史记录，也不改示教件基准">
     {blocked && <p className="muted hint">{blocked}</p>}
+    {partialHint && <p className="muted hint">{partialHint}</p>}
     {error && <p className="c-warn" role="alert">{error}</p>}
     {rows == null ? <p className="muted">正在读取历史件…</p> : !rows.length ? <p className="wp-capture-empty">本配方还没有历史件。</p>
       : <ul className="wp-piece-list" aria-label="历史件试测">{rows.map(row => {
@@ -66,6 +71,7 @@ export function HistoryTrials({ recipeId }: { recipeId: string }) {
             <span className="muted">{row.groupCount} 帧组</span>
             {result && <Badge tone={toneOf(result)}>{verdictLabel[result.judgement.verdict]}</Badge>}
             {result?.judgement.reason && <span className="muted">{result.judgement.reason}</span>}
+            {!!result?.burst?.unmeasured?.length && <span title={result.burst.unmeasured.map(u => u.reason).join("；")}><Badge tone="warn">部分段未测</Badge></span>}
             <div className="wp-actions">
               {result && <Link className="wp-text-link" to={`/history/${row.recordId}?comparison=${encodeURIComponent(result.id)}`}
                 state={{ returnTo: { path: "/recipe/calibration", label: "返回试测" } } satisfies HistoryDetailState}>看详情</Link>}

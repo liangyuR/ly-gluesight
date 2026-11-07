@@ -247,6 +247,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
           {rawReason && <li><b>从原图复测</b>：{rawReason}</li>}
         </>}
       </ul>}
+      {options && !rawReason && options.raw.note && <Text as="p" muted className="compare-note">从原图复测：{options.raw.note}</Text>}
       {editing && ws.error && <Alert tone="warn">{ws.error}</Alert>}
       {!!saved.length && <Select label="已保存的对照结果" aria-label="已保存对照结果" disabled={working} value={comparison?.id ?? ""} onValueChange={id => { setComparison(saved.find(c => c.id === id) ?? null); setShowOriginal(false); }}
         options={[{ value: "", label: "选择记录" }, ...saved.map(c => ({ value: c.id, label: formatTime(c.createdAt) + " · " + comparisonLabel[c.source] + " · 修订 " + c.candidateRevision + " · " + verdictLabel[c.judgement.verdict] }))]} />}
@@ -257,6 +258,9 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         <StatusBadge tone={comparison.judgement.verdict.startsWith("OK") ? "ok" : comparison.judgement.verdict === "ERR_INSPECT" ? "warn" : "ng"}>{comparison.source === "original" ? "重现" : "候选"} {verdictLabel[comparison.judgement.verdict]}</StatusBadge>
         <b>{displayReason(comparison.judgement.reason)}</b>
       </div>
+      {!!comparison.burst?.unmeasured?.length && <Alert tone="warn" title="有段没测，结论只覆盖其余段">
+        <ul className="compare-reasons" aria-label="没测的段">{comparison.burst.unmeasured.map(u => <li key={`${u.segment}:${u.camera}`}>{u.reason}</li>)}</ul>
+      </Alert>}
       {!comparison.burst ? <Text as="p" muted>这次对照没有区域明细，只能看整件结论。</Text>
         : !burst.judgement.regions.length ? <Text as="p" muted>原记录没有区域判定（如维护采集件只录图不判定），不做逐区域对比；{comparisonLabel[comparison.source]}的逐段结果见下方帧组与原图和右侧整件判定。</Text>
           : <RegionReplayDiff diffs={diffs} source={comparison.source} />}

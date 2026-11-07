@@ -570,11 +570,36 @@ impl FrameGraph<'_> {
     }
 }
 
+/// 建不成测量图的一（相机, 段）：没示教走廊，或走廊、当量、定向参数有问题。
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnavailableCorridor {
+    pub camera_idx: usize,
+    pub camera: String,
+    pub segment: u32,
+    pub reason: String,
+    /// 只是还没示教走廊（`build` 跳过这类，不报错）
+    pub untaught: bool,
+}
+
 impl CorridorSet {
+    /// 全部建成：没示教的组合跳过，其余任一组合建不成即报错（发布、预热、验证用）。
     pub fn build(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Self, String> {
+        let (set, unavailable) = Self::build_available(recipe, sizes);
+        match unavailable.into_iter().find(|u| !u.untaught) {
+            Some(u) => Err(u.reason),
+            None => Ok(set),
+        }
+    }
+
+    /// 能建的都建，建不成的（含没示教的）连同原因列出，按段、计划相机顺序（历史件按段部分复测用）。
+    pub fn build_available(
+        recipe: &Recipe,
+        sizes: &[[u32; 2]],
+    ) -> (Self, Vec<UnavailableCorridor>) {
         let cameras = recipe.plan_cameras();
         let mut graphs = BTreeMap::new();
         let mut headings = BTreeMap::new();
+        let mut unavailable = Vec::new();
         for segment in &recipe.path_segments {
             for camera in crate::plan::segment_cameras(segment, &cameras) {
                 let Some((idx, inspect)) = recipe
@@ -585,25 +610,44 @@ impl CorridorSet {
                 else {
                     continue;
                 };
+                let skip = |reason: String, untaught: bool| UnavailableCorridor {
+                    camera_idx: idx,
+                    camera: camera.clone(),
+                    segment: segment.index,
+                    reason,
+                    untaught,
+                };
                 if !inspect.segment_taught(segment.index) {
+                    unavailable.push(skip(
+                        format!("第 {} 段相机 {camera}：尚未示教检测走廊", segment.index),
+                        true,
+                    ));
                     continue;
                 }
-                let size = *sizes
+                let built = sizes
                     .get(idx)
-                    .ok_or_else(|| format!("相机 {camera} 没有示教帧尺寸"))?;
-                graphs.insert(
-                    (idx, segment.index),
-                    plan_corridor(inspect, segment.index, recipe, size)?,
-                );
-                if segment.heading.is_some() {
-                    headings.insert(
-                        (idx, segment.index),
-                        plan_heading(inspect, segment.index, recipe, size)?,
-                    );
+                    .copied()
+                    .ok_or_else(|| format!("相机 {camera} 没有示教帧尺寸"))
+                    .and_then(|size| {
+                        let corridor = plan_corridor(inspect, segment.index, recipe, size)?;
+                        let heading = match segment.heading {
+                            Some(_) => Some(plan_heading(inspect, segment.index, recipe, size)?),
+                            None => None,
+                        };
+                        Ok((corridor, heading))
+                    });
+                match built {
+                    Ok((corridor, heading)) => {
+                        graphs.insert((idx, segment.index), corridor);
+                        if let Some(heading) = heading {
+                            headings.insert((idx, segment.index), heading);
+                        }
+                    }
+                    Err(reason) => unavailable.push(skip(reason, false)),
                 }
             }
         }
-        Ok(Self { graphs, headings })
+        (Self { graphs, headings }, unavailable)
     }
 
     /// 记下各计划相机示教帧的通道数（计划相机顺序），量帧时彩色 / 灰度与示教帧不一致即报错。

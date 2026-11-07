@@ -1834,7 +1834,7 @@ pub(super) fn teach_preview_frames(
 }
 
 /// 建测量图用的各计划相机示教帧尺寸：还没有示教帧的相机也没有走廊，不建图，尺寸不会被用到。
-fn taught_sizes(w: &Workspace) -> Vec<[u32; 2]> {
+pub(super) fn taught_sizes(w: &Workspace) -> Vec<[u32; 2]> {
     w.doc
         .plan_cameras()
         .iter()
