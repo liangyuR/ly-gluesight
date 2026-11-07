@@ -63,6 +63,9 @@ export function KindChecksEditor<T extends Value>({ value, kind, onChange, disab
       <Num label="胶宽上公差" unit="mm" disabled={disabled || !width.enabled} value={width.tolUpper} onChange={tolUpper => setWidth({ tolUpper })} />
       <Num label="胶宽下公差" unit="mm" disabled={disabled || !width.enabled} value={width.tolLower} onChange={tolLower => setWidth({ tolLower })} />
       <Num label="帧内允许超差长度" unit="mm" disabled={disabled || !width.enabled} value={width.maxExcursionMm} onChange={maxExcursionMm => setWidth({ maxExcursionMm })} />
+      <Switch label="偏宽只预警" checked={!!width.wideWarnOnly} disabled={disabled || !width.enabled}
+        onCheckedChange={wideWarnOnly => setWidth({ wideWarnOnly })} />
+      {width.wideWarnOnly && <p className="plan-check-note muted">超出上限与溢胶上限只预警、不判 NG，PLC 收到合格；偏窄照常按允许超差长度判 NG。</p>}
       {straight && <>
         <Switch label="检胶宽均匀性" checked={width.maxRangeMm != null} disabled={disabled || !width.enabled}
           onCheckedChange={on => setWidth({ maxRangeMm: on ? defaultMaxRangeMm : null })} />

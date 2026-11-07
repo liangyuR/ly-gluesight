@@ -2,7 +2,7 @@
  * 分段标定工作台的编辑规则（纯函数，SegmentWorkbench 用，D-SB-44）：在模板轮的帧组时间轴上定段结构与边界。
  * cuts 与后端 CaptureReview 同一口径：每个值是上一段的最后一个原始帧组，严格递增，0 < cut < 帧组数，个数 = 段数 − 1。
  */
-import type { KindDefaults, PathSegment, SegmentKind } from "../plan/types";
+import type { KindDefaults, PassSkip, PathSegment, SegmentKind } from "../plan/types";
 import { clearCalibration, newSegment } from "./segmentEdit";
 import { frameChannels } from "../../lib/frame";
 
@@ -131,6 +131,20 @@ export function segmentsForSave(current: PathSegment[], draft: Pick<WorkbenchDra
     const { skip: _, ...rest } = segment;
     return skip ? { ...rest, cameras, offsetRef, skip: true } : { ...rest, cameras, offsetRef };
   });
+}
+
+/** 示教件一个帧组所在的笔（从 1 起）、是否该笔最后一帧（后面还有笔）与每笔首尾跳过的情况；short = 整笔不超过首尾之和，整笔不检。 */
+export interface PassCell { pass: number; end: boolean; skip: "head" | "tail" | "short" | null }
+
+/** 按示教件各笔帧组数展开到每个帧组（与后端 passes::skipped 同一口径）；没有笔结构或与帧组数对不上为 null。 */
+export function passCells(passes: number[] | undefined, groupCount: number, skip: PassSkip | undefined): PassCell[] | null {
+  if (!passes?.length || passes.reduce((sum, n) => sum + n, 0) !== groupCount) return null;
+  const head = Number.isFinite(skip?.head) ? skip!.head : 0, tail = Number.isFinite(skip?.tail) ? skip!.tail : 0;
+  return passes.flatMap((n, j) => Array.from({ length: n }, (_, k): PassCell => ({
+    pass: j + 1,
+    end: k === n - 1 && j < passes.length - 1,
+    skip: n <= head + tail ? "short" : k < head ? "head" : k >= n - tail ? "tail" : null,
+  })));
 }
 
 export interface ThumbStrip {

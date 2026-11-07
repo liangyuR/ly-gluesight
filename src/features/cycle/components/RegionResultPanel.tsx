@@ -1,7 +1,7 @@
 import { Button, StatusBadge } from "qing-steel";
 import { verdictLabel, verdictTone } from "../../history/meta";
 import type { BurstJudgement, LossAlarm, PathSegment, RegionResult } from "../../plan/types";
-import { countStatusLabel, expectedText, regionBadges, regionKindLabel, regionSegments, uncheckedText, uninspectedText } from "../../plan/vis";
+import { countStatusLabel, expectedText, passCountText, regionBadges, regionKindLabel, regionSegments, uncheckedText, uninspectedText } from "../../plan/vis";
 import "./burst.css";
 
 /** 丢帧告警的文字：哪台相机、收到几帧、与谁相差超过 1。camera 是计划相机下标。 */
@@ -71,6 +71,7 @@ export default function RegionResultPanel({ judgement, segments = [], cameras = 
   return <div className="region-panel" aria-label="检测区域结果">
     <div className="region-sum">
       <span className="mono">帧组 {judgement.groupCount}</span>
+      {passCountText(judgement) && <span className={`mono${judgement.flags.passCountAnomaly ? " c-warn" : " muted"}`} aria-label="笔数">{passCountText(judgement)}</span>}
       {expectedTotal !== undefined && <span className="mono muted">预期 {expectedText(expectedTotal, toleranceTotal)}</span>}
       <StatusBadge tone={judgement.countStatus === "normal" ? "ok" : judgement.countStatus ? "warn" : "off"}>{countStatusLabel(judgement.countStatus)}</StatusBadge>
     </div>

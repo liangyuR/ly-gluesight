@@ -4,7 +4,7 @@
  */
 import type { Verdict } from "../cycle/types";
 import type {
-  CountStatus, Flags, FrameGroupView, OffsetUnjudged, RegionKind, RegionResult, SegmentKind, UncheckedItem, Uninspected, UnsegReason,
+  CountStatus, Flags, FrameGroupView, OffsetUnjudged, RegionKind, RegionResult, SegmentKind, UncheckedItem, Uninspected, UnsegReason, WidthWarning,
 } from "./types";
 
 export type PlanTone = "info" | "ok" | "warn" | "ng" | "neutral";
@@ -24,6 +24,13 @@ export const segmentKindLabel: Record<SegmentKind, string> = { straight: "直线
 /** 段的类型名：不检测的段（D-SB-53）显示“不检测”。 */
 export const segmentLabel = (segment: { kind: SegmentKind; skip?: boolean }) => segment.skip ? "不检测" : segmentKindLabel[segment.kind];
 
+/** 本件笔数：“3 笔”，示教件笔数不同时“2 笔（示教件 3 笔）”；没有笔结构为 null。 */
+export function passCountText(judgement: { passes?: number[]; expectedPasses?: number } | null | undefined): string | null {
+  const n = judgement?.passes?.length;
+  if (!n) return null;
+  return judgement!.expectedPasses != null && judgement!.expectedPasses !== n ? `${n} 笔（示教件 ${judgement!.expectedPasses} 笔）` : `${n} 笔`;
+}
+
 /** 预期帧数与容差：“20 ± 1”；N_exp 为 null 时“待标定”。整件用 expectedTotal / toleranceTotal。 */
 export function expectedText(expected: number | null | undefined, tolerance: number): string {
   return expected == null ? "待标定" : `${expected} ± ${tolerance}`;
@@ -38,12 +45,12 @@ export function countStatusLabel(status: CountStatus | null | undefined): string
 
 export const unsegReasonText: Record<UnsegReason, string> = { algorithmPending: "分段算法未就绪", lowConfidence: "分段不确定", transition: "边界过渡区" };
 
-/** 区域名：“段 1 · 直线”“段 2 · 弯道”“段 1–3 · 未分段”“段 1–2 · 边界过渡”。 */
+/** 区域名：“段 1 · 直线”“段 2 · 弯道”“段 1–3 · 未分段”“段 1–2 · 边界过渡”；每笔首尾跳过为“第 2 笔 · 首尾跳过”“第 3 笔 · 太短不检”。 */
 export function regionKindLabel(kind: RegionKind): string {
   switch (kind.type) {
     case "straight": return `段 ${kind.segment} · 直线`;
     case "corner": return `段 ${kind.segment} · 弯道`;
-    case "skipped": return `段 ${kind.segment} · 跳过`;
+    case "skipped": return kind.pass != null ? `第 ${kind.pass} 笔 · ${kind.short ? "太短不检" : "首尾跳过"}` : `段 ${kind.segment} · 跳过`;
     case "unsegmented": return `${kind.firstSegment === kind.lastSegment ? `段 ${kind.firstSegment}` : `段 ${kind.firstSegment}–${kind.lastSegment}`} · ${kind.reason === "transition" ? "边界过渡" : "未分段"}`;
   }
 }
@@ -63,13 +70,16 @@ export const offsetUnjudgedText: Record<OffsetUnjudged, string> = {
 
 export const uncheckedText: Record<UncheckedItem, string> = { bubble: "气泡", stringing: "拉丝" };
 
-/** 未检区域：“段 1 · 帧组 1–2（跳过）”；旧记录按毫米：“段 1 · 0–5 mm”，段长未知时“段 3 · 75 mm 之后”。 */
+/** 未检区域：“段 1 · 帧组 1–2（跳过）”，每笔首尾跳过写明第几笔；旧记录按毫米：“段 1 · 0–5 mm”，段长未知时“段 3 · 75 mm 之后”。 */
 export function uninspectedText(u: Uninspected): string {
+  if (u.fromSeq != null && u.pass != null) return `第 ${u.pass} 笔 · 帧组 ${u.fromSeq === u.toSeq ? u.fromSeq : `${u.fromSeq}–${u.toSeq}`}（${u.short ? "太短不检" : "首尾跳过"}）`;
   if (u.fromSeq != null) return `段 ${u.segment} · 帧组 ${u.fromSeq === u.toSeq ? u.fromSeq : `${u.fromSeq}–${u.toSeq}`}（跳过）`;
   return `段 ${u.segment} · ${u.toMm == null ? `${u.fromMm} mm 之后` : `${u.fromMm}–${u.toMm} mm`}`;
 }
 
-/** 整件标记徽标（都只告警，不改 OK/NG），顺序固定：检测不完整、帧数异常、胶偏未判、含未分段、疑似提前终止。 */
+export const widthWarningText: Record<WidthWarning, string> = { wide: "胶宽偏宽", overflow: "溢胶预警" };
+
+/** 整件标记徽标（都只告警，不改 OK/NG），顺序固定：检测不完整、帧数异常、胶偏未判、含未分段、疑似提前终止、胶宽偏宽、溢胶预警、笔数异常。 */
 export function flagBadges(flags: Flags | null | undefined): PlanBadge[] {
   if (!flags) return [];
   const all: [boolean, PlanBadge][] = [
@@ -78,13 +88,16 @@ export function flagBadges(flags: Flags | null | undefined): PlanBadge[] {
     [flags.offsetUnjudged, { key: "offsetUnjudged", label: "胶偏未判", tone: "neutral" }],
     [flags.unsegmented, { key: "unsegmented", label: "含未分段", tone: "neutral" }],
     [flags.shortPart, { key: "shortPart", label: "疑似提前终止", tone: "warn" }],
+    [!!flags.wideWarning, { key: "wideWarning", label: widthWarningText.wide, tone: "warn" }],
+    [!!flags.overflowWarning, { key: "overflowWarning", label: widthWarningText.overflow, tone: "warn" }],
+    [!!flags.passCountAnomaly, { key: "passCountAnomaly", label: "笔数异常", tone: "warn" }],
   ];
   return all.filter(([on]) => on).map(([, badge]) => badge);
 }
 
-/** 一个区域的徽标：帧数越界、不完整组个数、胶偏未判原因、未分段原因。帧数正常与未核对不出徽标。 */
+/** 一个区域的徽标：偏宽只预警下的预警、帧数越界、不完整组个数、胶偏未判原因、未分段原因。帧数正常与未核对不出徽标。 */
 export function regionBadges(result: RegionResult): PlanBadge[] {
-  const out: PlanBadge[] = [];
+  const out: PlanBadge[] = (result.warnings ?? []).map(w => ({ key: `warning-${w}`, label: widthWarningText[w], tone: "warn" }));
   if (result.countStatus === "low" || result.countStatus === "high")
     out.push({ key: "count", label: `${countStatusText[result.countStatus]}（${result.frameCount} / ${expectedText(result.expected, result.tolerance)}）`, tone: "warn" });
   if (result.incompleteGroups.length) out.push({ key: "incomplete", label: `不完整组 ${result.incompleteGroups.length}`, tone: "warn" });

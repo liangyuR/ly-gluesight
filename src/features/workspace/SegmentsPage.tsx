@@ -9,7 +9,7 @@ import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { errorText } from "../../lib/errors";
 import { patchSegment, segmentIssues } from "./segmentEdit";
-import { BoundaryGuardField, BoundaryRefineField } from "./DocParams";
+import { BoundaryGuardField, BoundaryRefineField, PassSkipFields } from "./DocParams";
 import SegmentWorkbench from "./SegmentWorkbench";
 import { segmentCameras } from "./workbenchDraft";
 import "../plan/plan.css";
@@ -106,6 +106,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
       actions={<>
         <BoundaryGuardField locked={docLocked && `${docLocked}边界过渡帧数`} />
         <BoundaryRefineField locked={docLocked && `${docLocked}边界细化`} available={segments.some(segment => !!segment.heading)} />
+        <PassSkipFields locked={docLocked && `${docLocked}每笔首尾跳过`} />
       </>}>
       {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改段列表。</Notice>}
       {workbenchDirty && <Notice title="分段有未保存的改动">先保存或撤销上方的分段改动，再编辑段参数。</Notice>}

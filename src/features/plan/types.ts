@@ -23,6 +23,8 @@ export interface WidthCheck {
   maxExcursionMm: number;
   /** 均匀性：区域内各帧 widthMean 的极差上限，只在直线区域判；null 不判 */
   maxRangeMm: number | null;
+  /** 偏宽只预警：超上限的站不计入超差长度，溢胶也只预警；只有偏窄判 NG。缺省 false（D-SB-61） */
+  wideWarnOnly?: boolean;
 }
 
 /** 断胶，每帧独立判。 */
@@ -33,7 +35,7 @@ export interface BreakCheck {
   minPresent: number;
 }
 
-/** 溢胶：每帧最大胶宽超过上限判 NG_WIDTH，原因“溢胶”。 */
+/** 溢胶：每帧最大胶宽超过上限判 NG_WIDTH，原因“溢胶”；胶宽开了偏宽只预警时只记溢胶预警、不判 NG。 */
 export interface OverflowCheck {
   enabled: boolean;
   maxWidthMm: number;
@@ -192,8 +194,8 @@ export type RegionKind =
   | { type: "straight"; segment: number }
   | { type: "corner"; segment: number }
   | { type: "unsegmented"; firstSegment: number; lastSegment: number; reason: UnsegReason }
-  /** 段首尾跳过的帧：不判定 */
-  | { type: "skipped"; segment: number };
+  /** 段首尾跳过的帧：不判定；pass（从 1 起）= 每笔首尾跳过的第几笔，short = 整笔太短不检（D-SB-62） */
+  | { type: "skipped"; segment: number; pass?: number; short?: boolean };
 
 /** 一段连续帧组；帧数 = lastSeq − firstSeq + 1。 */
 export interface Region {
@@ -325,7 +327,11 @@ export interface RegionResult {
   offset: OffsetStat | null;
   offsetUnjudged: OffsetUnjudged | null;
   incompleteGroups: number[];
+  /** 偏宽只预警时记下的预警；为空时不序列化 */
+  warnings?: WidthWarning[];
 }
+
+export type WidthWarning = "wide" | "overflow";
 
 /** 整件标记：都只告警，不改 OK/NG。 */
 export interface Flags {
@@ -335,6 +341,12 @@ export interface Flags {
   unsegmented: boolean;
   /** 疑似提前终止：整件帧组数 < expectedTotal − toleranceTotal */
   shortPart: boolean;
+  /** 偏宽只预警下出现胶宽偏宽；旧记录没有该字段 */
+  wideWarning?: boolean;
+  /** 偏宽只预警下出现溢胶；旧记录没有该字段 */
+  overflowWarning?: boolean;
+  /** 笔数异常：本件笔数与示教件不同，整件按未分段判（D-SB-62） */
+  passCountAnomaly?: boolean;
 }
 
 /** 未检区域：跳过的帧组 fromSeq–toSeq；2026-10-26 之前的记录按毫米检测区间写 fromMm / toMm。 */
@@ -345,6 +357,10 @@ export interface Uninspected {
   fromMm?: number | null;
   /** 段长未知时为 null */
   toMm?: number | null;
+  /** 每笔首尾跳过的第几笔（从 1 起，D-SB-62） */
+  pass?: number;
+  /** 整笔太短（不超过首尾跳过之和），整笔不检 */
+  short?: boolean;
 }
 
 /** 本轮没有算法的检测项（“未检项”）。 */
@@ -362,6 +378,10 @@ export interface BurstJudgement {
   alarms: LossAlarm[];
   uninspected: Uninspected[];
   unchecked: UncheckedItem[];
+  /** 本件各笔帧组数（D-SB-62）；没有门控信息或旧记录缺省 */
+  passes?: number[];
+  /** 示教件的笔数；配方没有笔结构缺省 */
+  expectedPasses?: number;
 }
 
 // ───────────── 配方新增字段（C1，RecipeDoc schema 8）─────────────
@@ -426,6 +446,10 @@ export interface RecipeDocSegmentFields {
   boundaryGuard: number;
   /** 按逐帧定向的胶条方向序列细化比例边界（D-SB-47），默认 false；只作用于开启定向的段 */
   boundaryRefine?: boolean;
+  /** 每笔开头、结尾跳过的帧组数，0–50（D-SB-62）；缺省为都不跳 */
+  passSkip?: PassSkip;
+  /** 示教件各笔帧组数，随 N_exp 由示教件得出，只读：保存时后端不采用传入值；缺省 = 不按笔分段 */
+  passFrames?: number[];
   partCalib: PartCalib | null;
   /** 专家参数的配方默认（LF-5）；没写的用模板默认值 */
   expert?: ExpertParams;
@@ -593,6 +617,19 @@ export interface SegmentCalibView {
 }
 
 export type SkipEnd = "head" | "tail";
+
+/** 每笔首尾跳过（D-SB-62）：一笔 = 机械臂一次起涂到收胶 = 一次 Line0 门控。 */
+export interface PassSkip { head: number; tail: number }
+
+/** 每笔起涂跳过的建议（workspace_pass_skip_suggest）：示教件各笔起涂未成形的帧组数，建议取最大值。 */
+export interface PassSkipSuggestView {
+  /** 配方里当前每笔开头跳过的帧组数 */
+  current: number;
+  suggested: number | null;
+  /** frames 为 null 时这一笔不参与建议，原因见 note */
+  passes: { pass: number; firstSeq: number; framesInPass: number; frames: number | null; note: string | null }[];
+  pending: string | null;
+}
 
 /** 一段一头的跳过帧建议（workspace_calibration_skip_suggest，D-SB-50）。 */
 export interface SkipSuggestView {

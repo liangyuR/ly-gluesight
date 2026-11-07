@@ -57,3 +57,6 @@
 .seg-tabs .qs-tabs { width: fit-content; max-width: 100%; }
 .swb-cell.skipped::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(135deg, transparent 0 5px, rgba(0, 0, 0, .55) 5px 9px); pointer-events: none; }
 .wp-doc-identity { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px 16px; }
+.wp-pass-skip { display: inline-flex; align-items: flex-end; gap: 8px; }
+.swb-cell.pass-end.qs-btn { border-right: 3px solid var(--primary); }
+.swb-seam.pass.qs-btn { box-shadow: inset -3px 0 0 var(--primary); }

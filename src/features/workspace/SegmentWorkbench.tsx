@@ -10,7 +10,7 @@ import { useWorkspace } from "./context";
 import { Badge, FrameViewer, Notice, Panel } from "./components";
 import { ignoreKey, stripGroups, Thumb, useThumbs } from "./thumbs";
 import {
-  initialDraft, moveCut, segmentsForSave, spans, structureChanged, toggleCamera, toggleCut, toggleKind, valid,
+  initialDraft, moveCut, passCells, segmentsForSave, spans, structureChanged, toggleCamera, toggleCut, toggleKind, valid,
   type WorkbenchDraft,
 } from "./workbenchDraft";
 import type { FrameImage, SegmentSaveImpact } from "./types";
@@ -133,6 +133,9 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     return mmPerPx && mmPerPx > 0 && doc ? (item?.detect ?? doc.detect).searchMm / mmPerPx : undefined;
   };
   const columns = `56px repeat(${groupCount}, var(--swb-cell))`;
+  // 示教件的笔结构（D-SB-62）：笔间的竖缝加粗，便于把段边界放在笔间（笔间边界不留过渡区）；每笔首尾跳过的帧组按跳过标出
+  const passOf = passCells(data?.workspace.teachingPiece?.passes, groupCount, doc?.passSkip);
+  const passSkipText = { head: "开头跳过", tail: "结尾跳过", short: "太短，整笔不检" } as const;
   const navigation = <WorkspaceNavigation segments={plan.segments} ranges={!restructured && draft && valid(draft) ? segmentSpans : null}
     seq={seq} currentSegment={seqSegment?.index} frameStatus={restructured || !draft ? "unavailable" : dirty || !isConfirmed ? "draft" : "confirmed"}
     editable locked={locked || (dirty ? "先保存或撤销分段草稿，再编辑地图" : "")}
@@ -146,7 +149,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
       {/* 操作放在时间轴上方：下方原图预览加载时会改变高度，按钮放在下面会被挤动而点错 */}
       <div className="swb-toolbar">
         <div className="swb-summary" role="status" aria-label="分段草稿">
-          <span>{groupCount} 个帧组 · {segmentSpans.length} 段 · 边界 {draft.cuts.length ? draft.cuts.join(" / ") : "无"}</span>
+          <span>{groupCount} 个帧组{passOf && ` · ${data?.workspace.teachingPiece?.passes?.length} 笔`} · {segmentSpans.length} 段 · 边界 {draft.cuts.length ? draft.cuts.join(" / ") : "无"}</span>
           {saved && <Badge tone={saved.status === "confirmed" ? "ok" : "warn"}>{reviewLabel[saved.status]}</Badge>}
           {restructured && <Badge tone="warn">段结构有改动</Badge>}
           {!restructured && dirty && JSON.stringify([draft.cameras, draft.skips]) !== JSON.stringify([baseline?.cameras, baseline?.skips]) && <Badge tone="warn">检测相机有改动</Badge>}
@@ -194,10 +197,15 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
                 // 段首尾跳过的帧（段参数里设置；段结构有改动时还没对应到新段，先不标）
                 const params = restructured ? null : plan.segments[segment];
                 const [first, last] = segmentSpans[segment] ?? [0, 0];
-                const skipped = !!params && (group < first + params.skipHead || group > last - params.skipTail);
+                const segmentSkipped = !!params && (group < first + params.skipHead || group > last - params.skipTail);
+                const pass = passOf?.[k];
+                const skipped = segmentSkipped || !!pass?.skip;
+                const title = segmentSkipped ? `帧组 ${group} 在段 ${segment + 1} 的跳过范围内，不判定`
+                  : pass?.skip ? `帧组 ${group}：第 ${pass.pass} 笔${passSkipText[pass.skip]}，不判定`
+                  : pass ? `帧组 ${group} · 第 ${pass.pass} 笔` : undefined;
                 return <Button variant="text" size="sm" key={`${camera}-${group}`} type="button" aria-label={`${camera} 帧组 ${group}`} aria-pressed={group === seq}
-                  className={`swb-cell${group === seq ? " selected" : ""}${cut ? " cut" : ""}${used ? "" : " unused"}${skipped ? " skipped" : ""}`} onClick={() => setSeq(group)}
-                  title={skipped ? `帧组 ${group} 在段 ${segment + 1} 的跳过范围内，不判定` : undefined}>
+                  className={`swb-cell${group === seq ? " selected" : ""}${cut ? " cut" : ""}${used ? "" : " unused"}${skipped ? " skipped" : ""}${pass?.end ? " pass-end" : ""}`} onClick={() => setSeq(group)}
+                  title={title}>
                   <Thumb pixels={pixels} width={strip?.width ?? 0} height={strip?.height ?? 0} channels={strip?.channels ?? 1} />
                 </Button>;
               })];
@@ -207,7 +215,9 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
             const group = k + 1;
             const at = draft.cuts.indexOf(group);
             if (group === groupCount) return <span key="end" className="swb-seam-end">{group}</span>;
-            return <Button variant="text" size="sm" key={`seam-${group}`} type="button" className={`swb-seam${at >= 0 ? " on" : ""}${dragging != null && dragging !== at ? " target" : ""}`} disabled={frozen}
+            const passEnd = passOf?.[k]?.end ? passOf[k].pass : null;
+            return <Button variant="text" size="sm" key={`seam-${group}`} type="button" className={`swb-seam${at >= 0 ? " on" : ""}${passEnd ? " pass" : ""}${dragging != null && dragging !== at ? " target" : ""}`} disabled={frozen}
+              title={passEnd ? `第 ${passEnd} 笔与第 ${passEnd + 1} 笔之间：边界放这里不留过渡区` : undefined}
               aria-label={at >= 0 ? `删除帧组 ${group} 之后的边界` : `在帧组 ${group} 之后插入边界`}
               onPointerDown={() => { if (at >= 0) setDragging(at); }}
               onPointerUp={() => { if (dragging != null && draft.cuts[dragging] !== group) change(moveCut(draft, dragging, group)); }}
