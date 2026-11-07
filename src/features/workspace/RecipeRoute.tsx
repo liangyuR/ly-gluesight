@@ -7,16 +7,17 @@ import { recipeHref } from "./recipeRoutes";
 
 /**
  * 配方步骤页的入口：打开哪个配方由地址里的编号决定（`/recipe/<编号>/…`），没有全局“选中配方”。
- * 进入时按编号打开这个配方的候选；另一个配方还有没保存的修改时不切换，提示回去保存或撤销。
+ * 进入时按编号打开这个配方的候选；另一个配方还有没保存的修改时不切换，提示回去保存或撤销；
+ * 另一个配方还有操作或保存在途时等它（连同页面卸载时的续存）做完再切换，免得切换打断续存、丢掉最后一次修改。
  */
 function RecipeRoute({ children }: { children: React.ReactNode }) {
   const { recipeId = "" } = useParams();
-  const { selectedId, select, dirty, frameDirty, navigationDirty } = useWorkspace();
+  const { selectedId, select, dirty, frameDirty, navigationDirty, busy } = useWorkspace();
   const unsaved = dirty || frameDirty || navigationDirty;
   const other = selectedId != null && selectedId !== recipeId;
   useEffect(() => {
-    if (recipeId && selectedId !== recipeId && !unsaved) void select(recipeId);
-  }, [recipeId, selectedId, unsaved, select]);
+    if (recipeId && selectedId !== recipeId && !unsaved && !busy) void select(recipeId);
+  }, [recipeId, selectedId, unsaved, busy, select]);
   if (other && unsaved) {
     return <div className="wp-page"><Notice title={`配方 ${selectedId} 有未保存的修改`} tone="warn">
       先回到 {selectedId} 保存或撤销修改，再打开 {recipeId}。
