@@ -5,6 +5,7 @@ import { SnackbarProvider } from "qing-steel";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import { WorkspaceProvider, useWorkspace } from "../src/features/workspace/context";
+import { WorkspaceEmpty } from "../src/features/workspace/components";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
 import { cameraApi } from "../src/features/camera/api";
@@ -18,11 +19,12 @@ vi.mock("../src/features/plc/api", () => ({ subscribe: vi.fn(() => () => {}) }))
 
 const view = (id: string) => burstWorkspaceView(burstRecipe({ id }));
 let workspace: ReturnType<typeof useWorkspace>;
-/** 配方步骤页：显示工作区打开的配方，并能按地址换到配方 B */
+/** 配方步骤页：显示工作区打开的配方，并能按地址换到配方 B；没读到配方时同真实页面一样显示空状态 */
 const Page = inRecipe(function Page() {
   workspace = useWorkspace();
   const navigate = useNavigate();
-  return <><output aria-label="打开的配方">{workspace.data?.workspace.doc.id ?? "无"}</output>
+  if (!workspace.data) return <WorkspaceEmpty />;
+  return <><output aria-label="打开的配方">{workspace.data.workspace.doc.id}</output>
     <button onClick={() => navigate("/recipe/B/progress")}>打开配方 B</button></>;
 });
 const show = (path: string) => render(<SnackbarProvider><WorkspaceProvider><MemoryRouter initialEntries={[path]}><Routes>
@@ -45,6 +47,15 @@ describe("配方页按地址打开配方", () => {
     await waitFor(() => expect(screen.getByLabelText("打开的配方")).toHaveTextContent("B"));
     expect(workspaceApi.get).toHaveBeenCalledTimes(1);
     expect(workspaceApi.get).toHaveBeenCalledWith("B");
+  });
+
+  // 防的回归：读取配方临时失败后地址里的编号已等于打开的编号，入口不再重读，只能先打开别的配方或重启
+  it("读取失败后可以就地重试", async () => {
+    vi.mocked(workspaceApi.get).mockRejectedValueOnce(new Error("候选文件暂时读不到"));
+    show("/recipe/A/progress");
+    expect(await screen.findByText("候选文件暂时读不到")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "重试读取 A" }));
+    await waitFor(() => expect(screen.getByLabelText("打开的配方")).toHaveTextContent("A"));
   });
 
   // 防的回归：按地址换配方时丢掉另一个配方未保存的修改

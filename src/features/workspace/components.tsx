@@ -36,9 +36,10 @@ export function NumberField({ label, value, unit, onChange, min, max, step = 1, 
   return <SteelNumberField label={label} className="num" value={value != null && Number.isFinite(value) ? value : ""} min={min} max={max} step={step} disabled={disabled} unit={unit} clamp={false} onValueChange={value => onChange(value === "" ? NaN : value)} />;
 }
 export function WorkspaceEmpty() {
-  const { error, selectedId } = useWorkspace();
+  const { error, selectedId, select } = useWorkspace();
   if (desktopAvailable() && selectedId && !error) return <div className="wp-page"><p className="muted">正在读取配方 {selectedId}…</p></div>;
-  return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "没有打开配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库打开或新建配方，再开始规划段与示教走廊。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Button asChild><Link to="/recipe">打开配方库</Link></Button>} /></div></div>;
+  // 读取失败（如临时读不到文件）时可以就地重试，不必先打开别的配方
+  return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}{selectedId && desktopAvailable() && <Button size="sm" onClick={() => void select(selectedId)}>重试读取 {selectedId}</Button>}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "没有打开配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库打开或新建配方，再开始规划段与示教走廊。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Button asChild><Link to="/recipe">打开配方库</Link></Button>} /></div></div>;
 }
 export function WorkspaceBar({ showNavigation = true }: { showNavigation?: boolean } = {}) {
   const { data, doc, navigationDirty, previewError, error, saveState, retrySave, setError } = useWorkspace();

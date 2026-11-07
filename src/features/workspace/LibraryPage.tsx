@@ -83,6 +83,8 @@ export default function LibraryPage() {
     if(pending.current||blocked)return;
     // 继续有未保存修改的配方：回到修改所在的页面
     if(unsaved&&id===selectedId&&data?.workspace.doc.id===id){navigate(recipeHref(id,resumePath));return;}
+    // 上次打开这个配方没读成（data 为空）：配方页不会重读同一编号，这里先重读
+    if(id===selectedId&&data?.workspace.doc.id!==id)void select(id);
     navigate(recipeHref(id,"/recipe/progress"));
   };
   const create = async () => {
