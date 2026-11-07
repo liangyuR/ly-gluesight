@@ -92,7 +92,7 @@ export default function TeachingPiecePage() {
       <div className="wp-stack">
         <p>以下跟着原示教件帧组得出的内容将清空，在新示教件上重新确认分段、重新测量即可得出：</p>
         <ul aria-label="将清空的内容">{cleared.map(item => <li key={item}>{item}</li>)}</ul>
-        <p className="muted">保留{kept ? `全部走廊与示教帧（${kept} 条）、` : ""}段列表结构（段的数量、顺序、类型、检测相机、检测项与容差）与配方级参数；进入分段时按现有段结构按比例给出初始边界，须重新确认。</p>
+        <p className="muted">保留{kept ? `全部走廊与示教帧（${kept} 条）、` : ""}段列表结构（段的数量、顺序、类型、检测相机、检测项与容差）与配方级参数。新示教件沿用原来的分段帧数（原边界帧号）预填边界，不按比例换算；帧组不够时放不下的后面几段连同走廊裁掉。到分段页确认边界后重新测量示教件。</p>
       </div>
     </Dialog>}
   </div>;
