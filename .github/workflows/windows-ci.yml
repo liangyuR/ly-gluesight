@@ -14,70 +14,128 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: pwsh
+
 concurrency:
-  group: windows-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: windows-ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  verify:
+  changes:
     runs-on: windows-2022
-    timeout-minutes: 60
-    env:
-      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target/cargo-ci
-    defaults:
-      run:
-        shell: pwsh
+    timeout-minutes: 5
+    outputs:
+      required: ${{ steps.plan.outputs.required }}
+      rust-format: ${{ steps.plan.outputs.rust-format }}
+      base: ${{ steps.plan.outputs.base }}
+      node: ${{ steps.plan.outputs.node }}
+      pnpm: ${{ steps.plan.outputs.pnpm }}
+      rust: ${{ steps.plan.outputs.rust }}
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Read tool versions
-        id: tools
-        run: |
-          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
-          "node=$($package.engines.node -replace '^>=', '')" >> $env:GITHUB_OUTPUT
-          "pnpm=$($package.packageManager -replace '^pnpm@', '')" >> $env:GITHUB_OUTPUT
-          $toolchain = Get-Content -LiteralPath rust-toolchain.toml -Raw
-          if ($toolchain -notmatch '(?m)^channel\s*=\s*"(\d+\.\d+\.\d+)"\s*$') { throw 'Rust toolchain must pin a complete version.' }
-          "rust=$($Matches[1])" >> $env:GITHUB_OUTPUT
+      - name: Select validation from changed paths
+        id: plan
+        env:
+          FORMAT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/Plan-Ci.mjs
+
+  frontend:
+    needs: changes
+    if: needs.changes.outputs.required == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ matrix.shard == 1 && '0' || '1' }}
       - uses: pnpm/action-setup@v4
         with:
-          version: ${{ steps.tools.outputs.pnpm }}
+          version: ${{ needs.changes.outputs.pnpm }}
           standalone: true
           run_install: false
       - uses: actions/setup-node@v6
         with:
-          node-version: ${{ steps.tools.outputs.node }}
+          node-version: ${{ needs.changes.outputs.node }}
           cache: ${{ (github.event_name != 'workflow_dispatch' || inputs.use_cache) && 'pnpm' || '' }}
           package-manager-cache: false
+      - name: Prepare Rust formatter
+        if: matrix.shard == 1 && needs.changes.outputs.rust-format == 'true'
+        run: rustup toolchain install ${{ needs.changes.outputs.rust }} --profile minimal --component rustfmt
+      - name: Format check
+        if: matrix.shard == 1
+        env:
+          FORMAT_BASE: ${{ needs.changes.outputs.base }}
+        run: |
+          git diff --check $env:FORMAT_BASE $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Changed files contain whitespace errors.' }
+          node scripts/Check-RustFormat.mjs --base $env:FORMAT_BASE --head $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Incremental Rust format check failed.' }
+      - name: CI routing regression
+        if: matrix.shard == 1
+        run: node --test scripts/Plan-Ci.test.mjs
+      - name: Install locked frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Frontend unit tests
+        run: pnpm test --shard=${{ matrix.shard }}/2
+
+  rust:
+    needs: changes
+    if: needs.changes.outputs.required == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target/cargo-ci
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - name: Prepare Rust tools
         run: |
-          rustup toolchain install ${{ steps.tools.outputs.rust }} --profile minimal --component rustfmt
+          rustup toolchain install ${{ needs.changes.outputs.rust }} --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
           git config --global url.https://github.com/.insteadOf ssh://git@github.com/
           git config --global --add url.https://github.com/.insteadOf git@github.com:
-      - name: Format check
-        env:
-          FORMAT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          $base = $env:FORMAT_BASE
-          if ([string]::IsNullOrWhiteSpace($base) -or $base -match '^0+$') { $base = "$env:GITHUB_SHA^" }
-          git diff --check $base $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { throw 'Changed files contain whitespace errors.' }
-          node scripts/Check-RustFormat.mjs --base $base --head $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { throw 'Incremental Rust format check failed.' }
       - uses: Swatinem/rust-cache@v2
         if: github.event_name != 'workflow_dispatch' || inputs.use_cache
         with:
           workspaces: src-tauri -> target/cargo-ci
-          shared-key: windows-ci-${{ steps.tools.outputs.rust }}
+          shared-key: windows-ci-${{ needs.changes.outputs.rust }}
           cache-workspace-crates: false
-      - name: Install locked frontend dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Frontend unit tests
-        run: pnpm test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rust unit tests
         working-directory: src-tauri
-        run: cargo test --locked --lib
+        run: cargo test --locked --lib --config 'profile.dev.package.gluesight.opt-level=0'
+
+  verify:
+    needs: [changes, frontend, rust]
+    if: always()
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - name: Require all selected validations
+        env:
+          PLAN_RESULT: ${{ needs.changes.result }}
+          REQUIRED: ${{ needs.changes.outputs.required }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          RUST_RESULT: ${{ needs.rust.result }}
+        run: |
+          if ($env:PLAN_RESULT -ne 'success') { throw 'CI path selection failed.' }
+          $expected = switch ($env:REQUIRED) {
+            'true' { 'success' }
+            'false' { 'skipped' }
+            default { throw 'Missing or invalid CI path selection.' }
+          }
+          if ($env:FRONTEND_RESULT -ne $expected -or $env:RUST_RESULT -ne $expected) {
+            throw "Required validations did not complete: frontend=$env:FRONTEND_RESULT rust=$env:RUST_RESULT"
+          }
