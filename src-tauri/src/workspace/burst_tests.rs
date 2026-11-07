@@ -349,3 +349,24 @@ fn raw_recheck_is_unavailable_when_only_cameras_the_candidate_does_not_use_have_
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn raw_recheck_is_unavailable_when_the_recording_was_cleaned_up() {
+    // 防的回归（D-SB-58）：录制目录按保留策略清理后帧的原图引用还在，被当成有原图判原图复测可用，执行时读图全部失败、存下一条 ERR 对照
+    let (dir, mut detail) = stored_record(&[0, 1, 2]);
+    detail.recording.state = crate::store::RecordingState::NotRetained;
+    let w = candidate_with(&["cam1", "cam2", "cam3"]);
+    let options = super::burst_history::compare_options(&detail, None, Some(&w), None);
+    assert!(!options.raw.available);
+    assert!(
+        options
+            .raw
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("按录制策略本件未保存原图"),
+        "{:?}",
+        options.raw.reason
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
