@@ -272,7 +272,9 @@ impl MeasureError {
     /// 写进帧指标的状态：队满、超时、预热没测成的段是没测（Unmeasured），其余是测量失败（Error）。
     pub fn state(&self) -> FrameState {
         match self {
-            MeasureError::QueueFull | MeasureError::Timeout | MeasureError::Untested(_) => FrameState::Unmeasured,
+            MeasureError::QueueFull | MeasureError::Timeout | MeasureError::Untested(_) => {
+                FrameState::Unmeasured
+            }
             MeasureError::Failed(_) => FrameState::Error,
         }
     }
@@ -413,7 +415,12 @@ pub fn spawn_frame_worker(sink: FrameSink) -> FramePool {
 }
 
 fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), MeasureError> {
-    if let Some(why) = job.production.as_ref().filter(|_| job.candidate.is_none()).and_then(|p| p.untested(job.camera_idx, job.segment)) {
+    if let Some(why) = job
+        .production
+        .as_ref()
+        .filter(|_| job.candidate.is_none())
+        .and_then(|p| p.untested(job.camera_idx, job.segment))
+    {
         return Err(MeasureError::Untested(why.to_owned()));
     }
     match (job.image.as_deref(), job.image_measurement) {

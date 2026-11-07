@@ -160,7 +160,9 @@ impl Prepared {
 
     /// 这一（相机, 段）预热没测成、生产不测时的原因。
     pub fn untested(&self, camera_idx: usize, segment: u32) -> Option<&str> {
-        self.untested.get(&(camera_idx, segment)).map(String::as_str)
+        self.untested
+            .get(&(camera_idx, segment))
+            .map(String::as_str)
     }
 
     /// 预热没测成、生产不测的各（相机, 段）原因；全部测成时为空。
@@ -174,7 +176,11 @@ impl Prepared {
             self.untested
                 .keys()
                 .map(|&(idx, segment)| {
-                    let camera = self.recipe.inspect.get(idx).map_or("?", |i| i.camera.as_str());
+                    let camera = self
+                        .recipe
+                        .inspect
+                        .get(idx)
+                        .map_or("?", |i| i.camera.as_str());
                     format!("第 {segment} 段相机 {camera}")
                 })
                 .collect::<Vec<_>>()
@@ -219,7 +225,12 @@ impl Prepared {
             let resource = self.bundle.camera(idx)?;
             for corridor in &resource.corridors {
                 let image = crate::image_file::load(&corridor.image)?;
-                let run = format!("warm-{}-c{idx}-s{}-{}", self.bundle.id, corridor.segment, ly_plc::now_ms());
+                let run = format!(
+                    "warm-{}-c{idx}-s{}-{}",
+                    self.bundle.id,
+                    corridor.segment,
+                    ly_plc::now_ms()
+                );
                 let problem = match self.measure_frame(idx, corridor.segment, 0, &image, &run) {
                     Ok(m) if m.metrics.state == FrameState::Measured => None,
                     Ok(m) => Some(m.metrics.error.unwrap_or_else(|| "状态异常".into())),
@@ -230,7 +241,10 @@ impl Prepared {
                     Some(error) => {
                         untested.insert(
                             (idx, corridor.segment),
-                            format!("第 {} 段相机 {}：示教帧上没测成（{error}）", corridor.segment, resource.camera),
+                            format!(
+                                "第 {} 段相机 {}：示教帧上没测成（{error}）",
+                                corridor.segment, resource.camera
+                            ),
                         );
                     }
                 }
@@ -377,11 +391,25 @@ impl ProductionHost {
                     let elapsed = started.elapsed().as_millis();
                     let untested = prepared.untested_reasons();
                     if untested.is_empty() {
-                        crate::cycle::log(&app, "ok", "生产预热", format!("发布包 {} 已就绪，耗时 {elapsed} ms", prepared.bundle.id));
+                        crate::cycle::log(
+                            &app,
+                            "ok",
+                            "生产预热",
+                            format!("发布包 {} 已就绪，耗时 {elapsed} ms", prepared.bundle.id),
+                        );
                     } else if prepared.measurable() {
                         crate::cycle::log(&app, "warn", "生产预热", format!("发布包 {} 已就绪，耗时 {elapsed} ms；这些段不测（帧记未测，结论只覆盖其余段）：{}", prepared.bundle.id, untested.join("；")));
                     } else {
-                        crate::cycle::log(&app, "err", "生产预热", format!("发布包 {} 每一段都没测成，来件只录原图、回检测错误：{}", prepared.bundle.id, untested.join("；")));
+                        crate::cycle::log(
+                            &app,
+                            "err",
+                            "生产预热",
+                            format!(
+                                "发布包 {} 每一段都没测成，来件只录原图、回检测错误：{}",
+                                prepared.bundle.id,
+                                untested.join("；")
+                            ),
+                        );
                     }
                     if let Some(note) = &prepared.engine_note { crate::cycle::log(&app, "warn", "生产预热", note.clone()); }
                     Entry::Ready(prepared)
@@ -448,14 +476,22 @@ impl ProductionHost {
 
 /// 已预热好的发布包里不测的段（D-SB-59）：部分不测返回说明；一段都测不了返回 Err；没预热好或全部能测为 Ok(None)。
 pub fn coverage(app: &AppHandle, recipe: &Recipe) -> Result<Option<String>, String> {
-    let Some(prepared) = app.state::<ProductionHost>().prepared(&warmup_key(recipe)) else { return Ok(None) };
+    let Some(prepared) = app.state::<ProductionHost>().prepared(&warmup_key(recipe)) else {
+        return Ok(None);
+    };
     let untested = prepared.untested_reasons();
     if untested.is_empty() {
         Ok(None)
     } else if prepared.measurable() {
-        Ok(Some(format!("部分段不测（结论只覆盖其余段）：{}", untested.join("；"))))
+        Ok(Some(format!(
+            "部分段不测（结论只覆盖其余段）：{}",
+            untested.join("；")
+        )))
     } else {
-        Err(format!("发布包每一段在示教帧上都没测成，来件只录原图、回检测错误：{}", untested.join("；")))
+        Err(format!(
+            "发布包每一段在示教帧上都没测成，来件只录原图、回检测错误：{}",
+            untested.join("；")
+        ))
     }
 }
 

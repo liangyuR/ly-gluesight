@@ -322,11 +322,27 @@ fn teach_trial_failures_warn_when_partial_and_block_only_when_nothing_measures()
     let blocks = |c: &Check| !c.passed && !c.advisory;
     for (trials, blocked, warned) in [
         (vec![trial(1, Ok(())), trial(2, Ok(()))], false, false),
-        (vec![trial(1, Ok(())), trial(2, Err("runs：n_map（bad_param）"))], false, true),
-        (vec![trial(1, Err("runs：n_map（bad_param）")), trial(2, Err("状态异常"))], true, false),
+        (
+            vec![trial(1, Ok(())), trial(2, Err("runs：n_map（bad_param）"))],
+            false,
+            true,
+        ),
+        (
+            vec![
+                trial(1, Err("runs：n_map（bad_param）")),
+                trial(2, Err("状态异常")),
+            ],
+            true,
+            false,
+        ),
     ] {
         let check = teach_trial_check(&trials).unwrap();
-        assert_eq!((blocks(&check), !check.passed && check.advisory), (blocked, warned), "{}", check.detail);
+        assert_eq!(
+            (blocks(&check), !check.passed && check.advisory),
+            (blocked, warned),
+            "{}",
+            check.detail
+        );
     }
     assert!(teach_trial_check(&[]).is_none());
 }

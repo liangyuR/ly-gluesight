@@ -2005,7 +2005,10 @@ impl Machine {
         let unmeasurable = production.as_ref().filter(|p| !p.measurable()).map(|p| {
             (
                 fault::NO_RECIPE,
-                format!("发布包每一段在示教帧上都没测成，本件只录原图、不检测：{}", p.untested_reasons().join("；")),
+                format!(
+                    "发布包每一段在示教帧上都没测成，本件只录原图、不检测：{}",
+                    p.untested_reasons().join("；")
+                ),
             )
         });
         let record = if maintenance || untested.is_some() {
@@ -2077,7 +2080,9 @@ impl Machine {
                 "{} · N={planned} · 登记耗时 {} ms{}",
                 recipe.id,
                 started.elapsed().as_millis(),
-                untested.as_ref().map_or_else(String::new, |label| format!(" · 预热没测成、不测：{label}"))
+                untested
+                    .as_ref()
+                    .map_or_else(String::new, |label| format!(" · 预热没测成、不测：{label}"))
             ),
             Fields::stage("admitted")
                 .with_data(json!({"intakeMs": millis(started), "shots": planned})),
@@ -2371,7 +2376,10 @@ impl Machine {
         let fields = Fields { cycle_id: Some(part.cycle_id.clone()), camera: Some(camera.clone()), seq: Some(seq), ..Fields::default() }.with_stage("measured")
             .with_data(json!({"ms": ms, "queueMs": queue_ms, "engineMs": engine_ms, "state": metrics.state, "error": metrics.error}));
         let why = metrics.error.clone().unwrap_or_default();
-        let untested = part.production.as_ref().is_some_and(|p| p.untested(metrics.camera, segment).is_some());
+        let untested = part
+            .production
+            .as_ref()
+            .is_some_and(|p| p.untested(metrics.camera, segment).is_some());
         match metrics.state {
             FrameState::Measured => trace(
                 &self.app,
@@ -2767,8 +2775,16 @@ impl Machine {
             uninspected_judgement(0, reason)
         } else {
             let mut decided = part.burst_judgement();
-            if let Some(label) = part.fault.is_none().then(|| part.production.as_ref().and_then(|p| p.untested_label())).flatten() {
-                decided.reason = format!("{}；{label} 预热没测成、未测，结论只覆盖其余段", decided.reason);
+            if let Some(label) = part
+                .fault
+                .is_none()
+                .then(|| part.production.as_ref().and_then(|p| p.untested_label()))
+                .flatten()
+            {
+                decided.reason = format!(
+                    "{}；{label} 预热没测成、未测，结论只覆盖其余段",
+                    decided.reason
+                );
             }
             let burst = &mut part.burst;
             warnings = burst_warnings(&decided, |camera| burst.camera_name(camera).to_owned());

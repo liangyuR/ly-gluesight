@@ -173,10 +173,45 @@ fn production_recipe_item(f: &Facts) -> ReadinessItem {
     match &f.product {
         Product::Manual(None) => blocked("人工选型号：尚未选择检测配方".into(), Some("在在线检测页顶部选择一个可开工配方".into()), None),
         Product::Manual(Some(id)) => match f.recipes.iter().find(|r| &r.id == id) {
-            None => blocked(format!("选中的配方 {id} 不在配方库中"), None, Some(Target::Workspace)),
-            Some(r) if !r.runnable => blocked(format!("配方 {id} 不能开工：{}", r.reason.as_deref().unwrap_or("原因未知")), Some(CREATE.into()), r.target),
-            Some(RecipeOption { waiting: Some(wait), .. }) => item(ItemKey::Recipe, TITLE, ItemState::Waiting, format!("配方 {id}：{wait}"), None, None),
-            Some(r) => item(ItemKey::Recipe, TITLE, ItemState::Ok, format!("{} · v{}{}", r.id, r.version, r.note.as_ref().map_or_else(String::new, |n| format!("；{n}"))), None, Some(Target::Workspace).filter(|_| r.note.is_some())),
+            None => blocked(
+                format!("选中的配方 {id} 不在配方库中"),
+                None,
+                Some(Target::Workspace),
+            ),
+            Some(r) if !r.runnable => blocked(
+                format!(
+                    "配方 {id} 不能开工：{}",
+                    r.reason.as_deref().unwrap_or("原因未知")
+                ),
+                Some(CREATE.into()),
+                r.target,
+            ),
+            Some(RecipeOption {
+                waiting: Some(wait),
+                ..
+            }) => item(
+                ItemKey::Recipe,
+                TITLE,
+                ItemState::Waiting,
+                format!("配方 {id}：{wait}"),
+                None,
+                None,
+            ),
+            Some(r) => item(
+                ItemKey::Recipe,
+                TITLE,
+                ItemState::Ok,
+                format!(
+                    "{} · v{}{}",
+                    r.id,
+                    r.version,
+                    r.note
+                        .as_ref()
+                        .map_or_else(String::new, |n| format!("；{n}"))
+                ),
+                None,
+                Some(Target::Workspace).filter(|_| r.note.is_some()),
+            ),
         },
         Product::Plc if runnable.is_empty() => {
             let first = f.recipes.iter().find(|r| !r.runnable);
@@ -189,10 +224,27 @@ fn production_recipe_item(f: &Facts) -> ReadinessItem {
         Product::Plc if runnable.iter().all(|r| r.waiting.is_some()) => item(ItemKey::Recipe, TITLE, ItemState::Waiting,
             runnable.iter().map(|r| format!("{}：{}", r.id, r.waiting.as_deref().unwrap_or_default())).collect::<Vec<_>>().join("；"), None, None),
         Product::Plc => {
-            let notes: Vec<String> = runnable.iter().filter_map(|r| r.note.as_ref().map(|n| format!("；{} {n}", r.id))).collect();
-            item(ItemKey::Recipe, TITLE, ItemState::Ok,
-                format!("{} 个可开工配方，按 PLC 产品代码匹配：{}{}", runnable.len(), runnable.iter().map(|r| r.id.as_str()).collect::<Vec<_>>().join("、"), notes.concat()),
-                None, Some(Target::Workspace).filter(|_| !notes.is_empty()))
+            let notes: Vec<String> = runnable
+                .iter()
+                .filter_map(|r| r.note.as_ref().map(|n| format!("；{} {n}", r.id)))
+                .collect();
+            item(
+                ItemKey::Recipe,
+                TITLE,
+                ItemState::Ok,
+                format!(
+                    "{} 个可开工配方，按 PLC 产品代码匹配：{}{}",
+                    runnable.len(),
+                    runnable
+                        .iter()
+                        .map(|r| r.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join("、"),
+                    notes.concat()
+                ),
+                None,
+                Some(Target::Workspace).filter(|_| !notes.is_empty()),
+            )
         }
     }
 }
@@ -307,15 +359,22 @@ impl BundleChecks {
 static BUNDLE_CHECKS: LazyLock<BundleChecks> = LazyLock::new(BundleChecks::default);
 
 /// 已发布版本能否在当前站点运行，生产预热进度与预热后不测的段（只读查询，不触发预热）：返回（等待原因, 部分段不测的说明）。
-fn production_state(app: &AppHandle, recipe: &Recipe) -> Result<(Option<String>, Option<String>), (String, Target)> {
-    if crate::offline::candidate(app).is_some_and(|c| c.matches(recipe)) { return Ok((None, None)); }
+fn production_state(
+    app: &AppHandle,
+    recipe: &Recipe,
+) -> Result<(Option<String>, Option<String>), (String, Target)> {
+    if crate::offline::candidate(app).is_some_and(|c| c.matches(recipe)) {
+        return Ok((None, None));
+    }
     use crate::production::Warmup;
     let workspace = |e: String| (e, Target::Workspace);
     let key = (recipe.id.clone(), recipe.revision_id.clone());
     let manifest = BUNDLE_CHECKS.check(key, Instant::now(), || crate::workspace::published_manifest(app, recipe)).map_err(workspace)?;
     crate::production::site_admits(manifest.validation_site, crate::offline::enabled(app)).map_err(workspace)?;
     match crate::production::warmup(app, recipe) {
-        Warmup::Ready => crate::production::coverage(app, recipe).map(|note| (None, note)).map_err(workspace),
+        Warmup::Ready => crate::production::coverage(app, recipe)
+            .map(|note| (None, note))
+            .map_err(workspace),
         Warmup::Pending => Ok((Some("等待生产预热".into()), None)),
         Warmup::Preparing => Ok((Some("发布资源与图像引擎预热中".into()), None)),
         Warmup::Retryable(error) => Err((error, Target::Settings)),
@@ -348,8 +407,15 @@ fn recipe_problem(
     Ok((cams, waiting, note))
 }
 
-fn option(recipe: &Recipe, problem: Option<(String, Target)>, waiting: Option<String>, note: Option<String>) -> RecipeOption {
-    let (reason, target) = problem.map_or((None, None), |(reason, target)| (Some(reason), Some(target)));
+fn option(
+    recipe: &Recipe,
+    problem: Option<(String, Target)>,
+    waiting: Option<String>,
+    note: Option<String>,
+) -> RecipeOption {
+    let (reason, target) = problem.map_or((None, None), |(reason, target)| {
+        (Some(reason), Some(target))
+    });
     RecipeOption {
         id: recipe.id.clone(),
         name: recipe.name.clone(),

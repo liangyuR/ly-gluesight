@@ -558,7 +558,12 @@ pub(super) fn teach_trial_check(trials: &[TeachTrial]) -> Option<Check> {
     }
     let failed: Vec<String> = trials
         .iter()
-        .filter_map(|t| t.outcome.as_ref().err().map(|e| format!("第 {} 段相机 {}：{e}", t.segment, t.camera)))
+        .filter_map(|t| {
+            t.outcome
+                .as_ref()
+                .err()
+                .map(|e| format!("第 {} 段相机 {}：{e}", t.segment, t.camera))
+        })
         .collect();
     let all = failed.len() == trials.len();
     Some(Check {
@@ -568,7 +573,10 @@ pub(super) fn teach_trial_check(trials: &[TeachTrial]) -> Option<Check> {
         detail: if failed.is_empty() {
             format!("{} 组（段, 相机）在各自示教帧上都测成", trials.len())
         } else if all {
-            format!("每一段在示教帧上都没测成，发布后来件只能录原图、回检测错误：{}", failed.join("；"))
+            format!(
+                "每一段在示教帧上都没测成，发布后来件只能录原图、回检测错误：{}",
+                failed.join("；")
+            )
         } else {
             format!(
                 "{} / {} 组在示教帧上没测成；可以发布，但生产时这些段不测（帧记未测，结论只覆盖其余段），建议在示教页重新取色或调整走廊后再发布：{}",
@@ -583,40 +591,73 @@ pub(super) fn teach_trial_check(trials: &[TeachTrial]) -> Option<Check> {
 /// 每段每台检测相机用候选走廊在自己的示教帧上量一次（与 `Prepared::warm` 同一口径：Measured 才算测成）。
 /// 候选修订不变时复用上次结果；走廊建不成或核心库没加载时不试测（由其余检查与冻结发布包报原因）。
 fn teach_trials(app: &AppHandle, w: &Workspace) -> Vec<TeachTrial> {
-    static CACHE: LazyLock<Mutex<HashMap<String, (u64, Arc<Vec<(u32, String, Result<(), String>)>>)>>> =
-        LazyLock::new(Default::default);
-    let cached = CACHE.lock().unwrap().get(&w.doc.id).filter(|(revision, _)| *revision == w.revision).map(|(_, v)| v.clone());
+    static CACHE: LazyLock<
+        Mutex<HashMap<String, (u64, Arc<Vec<(u32, String, Result<(), String>)>>)>>,
+    > = LazyLock::new(Default::default);
+    let cached = CACHE
+        .lock()
+        .unwrap()
+        .get(&w.doc.id)
+        .filter(|(revision, _)| *revision == w.revision)
+        .map(|(_, v)| v.clone());
     let results = cached.unwrap_or_else(|| {
         let results = Arc::new(measure_teach_frames(app, w));
-        CACHE.lock().unwrap().insert(w.doc.id.clone(), (w.revision, results.clone()));
+        CACHE
+            .lock()
+            .unwrap()
+            .insert(w.doc.id.clone(), (w.revision, results.clone()));
         results
     });
     results
         .iter()
-        .map(|(segment, camera, outcome)| TeachTrial { segment: *segment, camera: camera.clone(), outcome: outcome.clone() })
+        .map(|(segment, camera, outcome)| TeachTrial {
+            segment: *segment,
+            camera: camera.clone(),
+            outcome: outcome.clone(),
+        })
         .collect()
 }
 
 fn measure_teach_frames(app: &AppHandle, w: &Workspace) -> Vec<(u32, String, Result<(), String>)> {
-    let Ok(recipe) = w.doc.build() else { return Vec::new() };
-    let Ok(graphs) = vision::CorridorSet::build(&recipe, &super::burst::taught_sizes(w)) else { return Vec::new() };
+    let Ok(recipe) = w.doc.build() else {
+        return Vec::new();
+    };
+    let Ok(graphs) = vision::CorridorSet::build(&recipe, &super::burst::taught_sizes(w)) else {
+        return Vec::new();
+    };
     let graphs = graphs.with_channels(&super::burst::teaching_channels(w));
-    let Some(engine) = app.state::<vision::VisionHost>().engine() else { return Vec::new() };
+    let Some(engine) = app.state::<vision::VisionHost>().engine() else {
+        return Vec::new();
+    };
     let host = app.state::<WorkspaceHost>();
     let cameras = recipe.plan_cameras();
     let run = vision::unique_run_id(&format!("publish-trial-{}-{}", recipe.id, w.revision));
     let mut out = Vec::new();
     for (idx, inspect) in recipe.inspect.iter().enumerate() {
-        for segment in recipe.path_segments.iter().filter(|s| crate::plan::segment_cameras(s, &cameras).contains(&inspect.camera)) {
+        for segment in recipe
+            .path_segments
+            .iter()
+            .filter(|s| crate::plan::segment_cameras(s, &cameras).contains(&inspect.camera))
+        {
             let (Some(graph), Some(teaching)) = (
                 graphs.get(idx, segment.index),
-                w.camera_teaching.iter().find(|t| t.camera == inspect.camera && t.segment == Some(segment.index)),
+                w.camera_teaching
+                    .iter()
+                    .find(|t| t.camera == inspect.camera && t.segment == Some(segment.index)),
             ) else {
                 continue;
             };
             let outcome = image_file(&host, &recipe.id, &teaching.frame.id)
                 .and_then(|path| crate::image_file::load(&path))
-                .and_then(|image| vision::measure_frame(&engine, graph, &image, 0, &format!("{run}-c{idx}-s{}", segment.index)))
+                .and_then(|image| {
+                    vision::measure_frame(
+                        &engine,
+                        graph,
+                        &image,
+                        0,
+                        &format!("{run}-c{idx}-s{}", segment.index),
+                    )
+                })
                 .and_then(|m| match m.metrics.state {
                     crate::burst_judge::FrameState::Measured => Ok(()),
                     _ => Err(m.metrics.error.unwrap_or_else(|| "状态异常".into())),
