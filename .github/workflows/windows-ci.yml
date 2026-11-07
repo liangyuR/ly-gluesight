@@ -107,7 +107,6 @@ jobs:
           git config --global url.https://github.com/.insteadOf ssh://git@github.com/
           git config --global --add url.https://github.com/.insteadOf git@github.com:
       - uses: Swatinem/rust-cache@v2
-        id: rust-cache
         if: github.event_name != 'workflow_dispatch' || inputs.use_cache
         with:
           workspaces: src-tauri -> target/cargo-ci
@@ -116,8 +115,6 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rust unit tests
         working-directory: src-tauri
-        env:
-          CARGO_NET_OFFLINE: ${{ steps.rust-cache.outputs.cache-hit == 'true' }}
         run: cargo test --locked --lib --config 'profile.dev.package.gluesight.opt-level=0'
 
   verify:
