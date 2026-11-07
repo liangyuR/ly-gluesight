@@ -78,11 +78,12 @@ function useRoundFrame(round: CaptureRoundV2 | null, camera: string, seq: number
   useEffect(() => {
     if (!enabled || !round) { setState({ key, image: null, error: "", loading: false }); return; }
     let alive = true;
+    const request = new AbortController();
     setState({ key, image: null, error: "", loading: true });
-    readRoundFrame(round, camera, seq)
+    readRoundFrame(round, camera, seq, request.signal)
       .then(image => alive && setState({ key, image, error: "", loading: false }))
       .catch(e => alive && setState({ key, image: null, error: errorText(e), loading: false }));
-    return () => { alive = false; };
+    return () => { alive = false; request.abort(); };
   }, [key]);
   return state.key === key ? state : { image: null, error: "", loading: enabled && !!round };
 }

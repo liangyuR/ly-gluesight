@@ -44,6 +44,6 @@ export function frameArrived(view: RoundView, cameraId: string, seq: number): bo
 }
 
 /** 读取第 seq 帧原图（按帧号）。 */
-export function readRoundFrame(round: CaptureRoundV2, cameraId: string, seq: number): Promise<FrameImage> {
-  return workspaceApi.captureFrameImage(round.roundId, cameraId, seq);
+export function readRoundFrame(round: CaptureRoundV2, cameraId: string, seq: number, signal?: AbortSignal): Promise<FrameImage> {
+  return workspaceApi.captureFrameImage(round.roundId, cameraId, seq, signal);
 }

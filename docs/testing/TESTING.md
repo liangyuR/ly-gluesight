@@ -70,6 +70,13 @@ gh run view $runId --log
 
 单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`；Rust 模块示例：`cargo test --manifest-path src-tauri/Cargo.toml --locked --lib segmentation::`。默认测试不生成覆盖率报告。
 
+长件浏览与复算的读取、进度和取消契约见[长件浏览与复算](../architecture/frame-browsing.md)。定向验证：
+
+- `pnpm exec vitest run tests/frame-navigation.test.tsx tests/frame-inspection-navigation.test.tsx tests/history-detail.test.tsx tests/operation.test.tsx tests/preview-cache.test.ts`：保护千帧跨窗口导航与分页选择、全局帧号、迟到对照不覆盖新结果、进度任务隔离及保存边界、离页取消、快速切帧淘汰旧请求。
+- `cargo test --locked --lib --manifest-path src-tauri/Cargo.toml -- operation:: workspace:: store:: recipe_capture:: history::`：覆盖批量元数据复用后的身份校验、概览与单帧读取契约、对照摘要失效与单项隔离、取消不返回部分结果、示教提交失败保留原结果及受影响业务回归。
+
+浏览器布局验证使用合成的 1000 帧组、三台相机检查末帧跳转、跨窗口方向键、焦点及 DOM 规模；真实图像解码、整件复测耗时和生产并行负载仍需现场性能验收。
+
 胶条算法定向回归：`cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- workspace::centerline:: burst_judge:: vision::taught:: vision::judge::`。其中合成胶条图通过提取入口验证汇合路径歧义；公开逐帧判定入口验证胶宽边界舍入与真实超差；找边判定验证左右找边平票不产生可信边距。它们保护具体回归，不代表现场检测准确率或吞吐验收。
 
 `Test-DevStartup.ps1` 临时修改用户级 `GLUESIGHT_LYFLOW_RUNTIME`，在 `finally` 中恢复原值；验证期间不要并行修改该配置或启动 GlueSight。测试通过临时 CLI 进程观察启动环境，不启动实际 GUI，不修改配方。

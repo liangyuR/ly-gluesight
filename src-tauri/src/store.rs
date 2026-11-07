@@ -623,37 +623,64 @@ fn same_burst(actual: Option<&PartDetailBurst>, expected: Option<&BurstRecord>) 
         && content(&actual.frames)? == content(&expected.frames)?)
 }
 
-fn frame_rows(conn: &Connection, id: i64) -> Result<Vec<FrameRecord>, String> {
-    let mut stmt = conn
-        .prepare("SELECT camera,seq,status,frame_counter,trigger_counter,region,metrics,raw_file FROM part_frames WHERE part_id=?1 ORDER BY camera, seq")
-        .map_err(db_err)?;
+type RawFrameRow = (FrameRecord, Option<String>);
+
+fn frame_rows_raw(
+    conn: &Connection,
+    id: i64,
+    selected: Option<(usize, u64)>,
+) -> Result<Vec<RawFrameRow>, String> {
+    let (query, values) = match selected {
+        Some((camera, seq)) => ("SELECT camera,seq,status,frame_counter,trigger_counter,region,metrics,raw_file FROM part_frames WHERE part_id=?1 AND camera=?2 AND seq=?3", vec![id, camera as i64, seq as i64]),
+        None => ("SELECT camera,seq,status,frame_counter,trigger_counter,region,metrics,raw_file FROM part_frames WHERE part_id=?1 ORDER BY camera, seq", vec![id]),
+    };
+    let mut stmt = conn.prepare(query).map_err(db_err)?;
     let rows = stmt
-        .query_map([id], |row| {
-            Ok(FrameRecord {
-                camera: row.get::<_, i64>(0)? as usize,
-                seq: row.get::<_, i64>(1)? as u64,
-                status: enum_column(row, 2)?,
-                frame_counter: count_column(row, 3)?,
-                trigger_counter: count_column(row, 4)?,
-                region: row.get::<_, Option<i64>>(5)?.map(|n| n as usize),
-                metrics: row.get::<_, Option<String>>(6)?.map(|text| serde_json::from_str(&text)
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e)))).transpose()?,
-                raw_file: row.get(7)?,
-            })
+        .query_map(params_from_iter(values), |row| {
+            Ok((
+                FrameRecord {
+                    camera: row.get::<_, i64>(0)? as usize,
+                    seq: row.get::<_, i64>(1)? as u64,
+                    status: enum_column(row, 2)?,
+                    frame_counter: count_column(row, 3)?,
+                    trigger_counter: count_column(row, 4)?,
+                    region: row.get::<_, Option<i64>>(5)?.map(|n| n as usize),
+                    metrics: None,
+                    raw_file: row.get(7)?,
+                },
+                row.get(6)?,
+            ))
         })
         .map_err(db_err)?;
     rows.collect::<Result<_, _>>().map_err(db_err)
 }
 
-fn snapshot_in(
+fn decode_frame_rows(rows: Vec<RawFrameRow>) -> Result<Vec<FrameRecord>, String> {
+    rows.into_iter()
+        .map(|(mut frame, text)| {
+            frame.metrics = text
+                .map(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+                .transpose()?;
+            Ok(frame)
+        })
+        .collect()
+}
+
+type RawSnapshot = (String, u32, String);
+
+fn snapshot_raw(
     conn: &Connection,
     project: &str,
     revision_id: &str,
+) -> Result<Option<RawSnapshot>, String> {
+    conn.query_row("SELECT recipe_id,version,json FROM recipe_snapshots WHERE project_id = ?1 AND revision_id = ?2", [project, revision_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(db_err)
+}
+
+fn decode_snapshot(
+    snapshot: Option<RawSnapshot>,
+    revision_id: &str,
 ) -> Result<Option<Recipe>, String> {
-    let snapshot: Option<(String, u32, String)> = conn.query_row(
-        "SELECT recipe_id,version,json FROM recipe_snapshots WHERE project_id = ?1 AND revision_id = ?2", [project, revision_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).optional().map_err(db_err)?;
     snapshot.map(|(id, version, json)| {
         let recipe = Recipe::from_snapshot(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
         if recipe.revision_id != revision_id || recipe.id != id || recipe.version != version {
@@ -1438,7 +1465,53 @@ impl Store {
         Ok((one("<", "DESC")?, one(">", "ASC")?))
     }
 
+    pub fn summary(&self, id: i64) -> Result<PartSummary, String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                &format!("SELECT {SUMMARY_COLS} FROM parts WHERE id=?1"),
+                [id],
+                summary,
+            )
+            .optional()
+            .map_err(db_err)?
+            .ok_or_else(|| format!("记录 {id} 不存在或已过期清理"))
+    }
+
     pub fn detail(&self, id: i64) -> Result<PartDetail, String> {
+        self.detail_selected(id, None)
+    }
+
+    pub fn detail_frame(&self, id: i64, camera: usize, seq: u64) -> Result<PartDetail, String> {
+        let detail = self.detail_selected(id, Some((camera, seq)))?;
+        if detail
+            .burst
+            .as_ref()
+            .is_none_or(|burst| burst.frames.is_empty())
+        {
+            return Err("没有这一帧的记录".into());
+        }
+        Ok(detail)
+    }
+
+    pub fn detail_overview(&self, id: i64) -> Result<PartDetail, String> {
+        let mut detail = self.detail(id)?;
+        if let Some(burst) = detail.burst.as_mut() {
+            for frame in &mut burst.frames {
+                if let Some(metrics) = frame.metrics.as_mut() {
+                    metrics.widths.clear();
+                }
+            }
+        }
+        Ok(detail)
+    }
+
+    fn detail_selected(
+        &self,
+        id: i64,
+        selected: Option<(usize, u64)>,
+    ) -> Result<PartDetail, String> {
         let conn = self.conn.lock().unwrap();
         const N: usize = SUMMARY_LEN;
         let (summary, judgement, frames, triggers, software_version, recording, burst_judgement) = conn
@@ -1451,27 +1524,54 @@ impl Store {
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| format!("记录 {id} 不存在或已过期清理"))?;
+        let raw_snapshot = match summary.recipe_revision.as_deref() {
+            Some(revision) if summary.burst.is_some() => {
+                snapshot_raw(&conn, &summary.project_id, revision)?
+            }
+            _ => None,
+        };
+        let raw_frames = if summary.burst.is_some() {
+            frame_rows_raw(&conn, id, selected)?
+        } else {
+            Vec::new()
+        };
+        let retests = {
+            let mut stmt = conn
+                .prepare("SELECT id FROM parts WHERE retest_of = ?1 ORDER BY id")
+                .map_err(db_err)?;
+            let values = stmt
+                .query_map([id], |row| row.get(0))
+                .map_err(db_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            values
+        };
+        drop(conn);
         let burst = match (burst_judgement, &summary.burst) {
             (Some(judgement), Some(counts)) => {
                 let revision = summary
                     .recipe_revision
                     .as_deref()
                     .ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
-                let recipe = snapshot_in(&conn, &summary.project_id, revision)?
+                let recipe = decode_snapshot(raw_snapshot, revision)?
                     .ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
                 let judgement: BurstJudgement = serde_json::from_str(&judgement)
                     .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
-                let frames = frame_rows(&conn, id)?;
+                let frames = decode_frame_rows(raw_frames)?;
                 let cameras = recipe.plan_cameras();
                 let regions: Vec<_> = judgement.regions.iter().map(|r| r.region.clone()).collect();
                 let metrics: Vec<FrameMetrics> =
                     frames.iter().filter_map(|f| f.metrics.clone()).collect();
-                let frame_verdicts = crate::burst_judge::frame_verdicts(
-                    &recipe.path_segments,
-                    &regions,
-                    &metrics,
-                    &cameras,
-                );
+                let frame_verdicts = if selected.is_none() {
+                    crate::burst_judge::frame_verdicts(
+                        &recipe.path_segments,
+                        &regions,
+                        &metrics,
+                        &cameras,
+                    )
+                } else {
+                    Vec::new()
+                };
                 Some(PartDetailBurst {
                     segments: recipe.path_segments.clone(),
                     cameras,
@@ -1487,8 +1587,6 @@ impl Store {
             (None, None) => None,
             _ => return Err(format!("记录 {id} 的段配方字段不完整")),
         };
-        let mut stmt = conn.prepare("SELECT id FROM parts WHERE retest_of = ?1 ORDER BY id").map_err(db_err)?;
-        let retests = stmt.query_map([id], |row| row.get(0)).map_err(db_err)?.collect::<Result<_, _>>().map_err(db_err)?;
         Ok(PartDetail {
             summary,
             judgement: serde_json::from_str(&judgement).map_err(|e| e.to_string())?,
@@ -1515,7 +1613,8 @@ impl Store {
         project: &str,
         revision_id: &str,
     ) -> Result<Option<Recipe>, String> {
-        snapshot_in(&self.conn.lock().unwrap(), project, revision_id)
+        let raw = snapshot_raw(&self.conn.lock().unwrap(), project, revision_id)?;
+        decode_snapshot(raw, revision_id)
     }
 
     /// 一条记录的原配方快照；记录没有配方修订号时为 None。
@@ -1528,7 +1627,8 @@ impl Store {
 
     /// 段配方记录的逐帧记录，按 (camera, seq) 排序；旧记录为空。
     pub fn burst_frames(&self, id: i64) -> Result<Vec<FrameRecord>, String> {
-        frame_rows(&self.conn.lock().unwrap(), id)
+        let rows = frame_rows_raw(&self.conn.lock().unwrap(), id, None)?;
+        decode_frame_rows(rows)
     }
 
     /// 区域判定为空、但有测过的帧的维护试判件：回写码 0 与区域判定不同，落库时退回了没有区域的摘要。

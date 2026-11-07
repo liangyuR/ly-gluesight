@@ -25,7 +25,7 @@ export default function HistoryDetailPage() {
 
   useEffect(() => {
     let alive = true; setDetail(null); setError("");
-    void historyApi.detail(Number(id)).then(d => alive && setDetail(d)).catch(e => alive && setError(errorText(e)));
+    void historyApi.overview(Number(id)).then(d => alive && setDetail(d)).catch(e => alive && setError(errorText(e)));
     return () => { alive = false; };
   }, [id]);
   useEffect(() => {
@@ -37,7 +37,7 @@ export default function HistoryDetailPage() {
     let alive = true;
     const stop = subscribe<string>("history://updated", cycleId => {
       if (!detail || cycleId !== detail.summary.cycleId) return;
-      void historyApi.detail(detail.summary.id).then(next => alive && setDetail(next)).catch(e => alive && setError(errorText(e)));
+      void historyApi.overview(detail.summary.id).then(next => alive && setDetail(next)).catch(e => alive && setError(errorText(e)));
     });
     return () => { alive = false; stop(); };
   }, [detail?.summary.id, detail?.summary.cycleId]);

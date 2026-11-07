@@ -203,6 +203,37 @@ fn apply(round: &mut CaptureRoundV2, summary: Summary) {
     round.loss_alarms = summary.loss_alarms;
 }
 
+pub struct BurstFrameIndex {
+    dir: PathBuf,
+    round: CaptureRoundV2,
+    saved: BTreeMap<String, BTreeSet<u64>>,
+}
+
+impl BurstFrameIndex {
+    pub fn round(&self) -> &CaptureRoundV2 {
+        &self.round
+    }
+
+    pub fn path(&self, camera_id: &str, seq: u64) -> Result<PathBuf, String> {
+        let saved = self
+            .saved
+            .get(camera_id)
+            .ok_or_else(|| format!("采集轮次没有相机 {camera_id}"))?;
+        if !saved.contains(&seq) {
+            return Err(format!("相机 {camera_id} 缺第 {seq} 帧组的图像"));
+        }
+        let path = self.dir.join(camera_id).join(frame_file(seq));
+        crate::image_file::checked_source_path(&path)?;
+        let path = path
+            .canonicalize()
+            .map_err(|_| "示教件原图不在本项目，请在示教件页补回原图".to_string())?;
+        if !path.starts_with(&self.dir) || !path.is_file() {
+            return Err("示教件原图不在本轮目录内".into());
+        }
+        Ok(path)
+    }
+}
+
 impl RecipeCaptureHost {
     /// 新建一轮的目录 `capture-{创建时间}-{序号}`。
     fn new_round_dir(&self) -> Result<(String, i64), String> {
@@ -246,23 +277,24 @@ impl RecipeCaptureHost {
 
     /// 某台相机第 seq 帧（帧组序号，从 1 起）的原图路径；这台相机缺这一帧时报错。路径由相机与 seq 推出，不取记录里写的路径。
     pub fn burst_frame_path(&self, round_id: &str, camera_id: &str, seq: u64) -> Result<PathBuf, String> {
+        self.burst_frame_index(round_id)?.path(camera_id, seq)
+    }
+
+    pub fn burst_frame_index(&self, round_id: &str) -> Result<BurstFrameIndex, String> {
         let dir = self.safe_round_path(round_id)?;
         let (round, lines) = self.load_burst(round_id, true)?;
-        let mut saved = vec![BTreeSet::new(); round.cameras.len()];
+        let mut saved: BTreeMap<String, BTreeSet<u64>> = round
+            .camera_ids()
+            .into_iter()
+            .map(|id| (id, BTreeSet::new()))
+            .collect();
         for line in lines.unwrap_or_default() {
-            saved[line.camera].insert(line.seq);
+            saved
+                .get_mut(&round.cameras[line.camera].camera_id)
+                .unwrap()
+                .insert(line.seq);
         }
-        let cameras = round.camera_ids();
-        let camera = cameras.iter().position(|id| id == camera_id).ok_or_else(|| format!("采集轮次没有相机 {camera_id}"))?;
-        if !saved[camera].contains(&seq) { return Err(format!("相机 {camera_id} 缺第 {seq} 帧组的图像")); }
-        let path = dir.join(camera_id).join(frame_file(seq));
-        if !path.is_file() {
-            return Err(
-                "示教件原图不在本项目（导出或复制项目时未包含示教件原图），请在示教件页补回原图"
-                    .into(),
-            );
-        }
-        Ok(path)
+        Ok(BurstFrameIndex { dir, round, saved })
     }
 
     /// 帧记录里有原图不在盘上（导出或复制项目时没带示教件原图）。

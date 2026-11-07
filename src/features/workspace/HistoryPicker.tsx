@@ -89,7 +89,7 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
       {preview
         ? <FrameBrowser key={preview.recordId} source={String(preview.recordId)} label={`SN ${preview.sn}`} groupCount={preview.groupCount}
           cameras={preview.cameras.map(c => ({ id: c.cameraId, name: nameOf(c.cameraId) }))}
-          read={(camera, seq) => burstImageApi.record(preview.recordId, camera, seq)} />
+          read={(camera, seq, signal) => burstImageApi.record(preview.recordId, camera, seq, signal)} />
         : <p className="wp-capture-empty">勾选一件或点“看图”，在这里按相机、帧组查看录制原图。</p>}
     </aside>
   </Panel>;

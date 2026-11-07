@@ -941,14 +941,19 @@ fn preview_response(image: &FrameImage) -> tauri::ipc::Response {
 }
 
 #[tauri::command]
-pub fn workspace_image(
-    host: State<'_, WorkspaceHost>,
+pub async fn workspace_image(
+    app: AppHandle,
     id: String,
     image_id: String,
 ) -> Result<tauri::ipc::Response, String> {
-    safe_id(&id)?;
-    let image = crate::image_file::load(&image_file(&host, &id, &image_id)?)?;
-    Ok(preview_response(&image))
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<WorkspaceHost>();
+        safe_id(&id)?;
+        let image = crate::image_file::load(&image_file(&host, &id, &image_id)?)?;
+        Ok(preview_response(&image))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 impl SampleResult {
@@ -1344,8 +1349,9 @@ pub async fn workspace_compare(
     revision: u64,
     history_id: i64,
     raw: bool,
+    task_id: Option<String>,
 ) -> Result<Comparison, String> {
-    compare_at(app, id, revision, None, history_id, raw).await
+    compare_at(app, id, revision, None, history_id, raw, task_id).await
 }
 
 pub(crate) async fn workspace_compare_at(
@@ -1356,7 +1362,7 @@ pub(crate) async fn workspace_compare_at(
     history_id: i64,
     raw: bool,
 ) -> Result<Comparison, String> {
-    compare_at(app, id, revision, Some(instance_id), history_id, raw).await
+    compare_at(app, id, revision, Some(instance_id), history_id, raw, None).await
 }
 
 async fn compare_at(
@@ -1366,39 +1372,51 @@ async fn compare_at(
     instance_id: Option<u64>,
     history_id: i64,
     raw: bool,
+    task_id: Option<String>,
 ) -> Result<Comparison, String> {
+    let operation = crate::operation::Operation::start(&app, task_id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let w = app
-            .state::<WorkspaceHost>()
-            .comparison_snapshot(&id, revision, instance_id)?;
-        let recipe = w.doc.build()?;
-        let store = app.state::<Store>();
-        let detail = store.detail(history_id)?;
-        // 任意候选都能复测任意记录（不看型号、配方编号与所属项目）；按规则重判仍需记录的配方快照
-        let original = store.record_recipe(&detail.summary)?;
-        let (judgement, burst) =
-            burst_history::compare(&app, &w, &recipe, &detail, original.as_ref(), raw)?;
-        let comparison = Comparison {
-            id: comparison_id(&app, history_id),
-            history_id,
-            source: if raw { "raw".into() } else { "rules".into() },
-            cycle_id: detail
-                .summary
-                .cycle_id
-                .clone()
-                .ok_or("历史记录没有工件身份")?,
-            bundle_id: detail.summary.bundle_id.clone(),
-            candidate_id: id.clone(),
-            candidate_revision: revision,
-            candidate_recipe: recipe,
-            original_verdict: detail.summary.verdict,
-            judgement,
-            measurements: Vec::new(),
-            created_at: ly_plc::now_ms(),
-            burst: Some(burst),
-        };
-        save_comparison(&app, &comparison)?;
-        Ok(comparison)
+        operation.run(|operation| {
+            let w = app
+                .state::<WorkspaceHost>()
+                .comparison_snapshot(&id, revision, instance_id)?;
+            let recipe = w.doc.build()?;
+            let store = app.state::<Store>();
+            let detail = store.detail(history_id)?;
+            // 任意候选都能复测任意记录（不看型号、配方编号与所属项目）；按规则重判仍需记录的配方快照
+            let original = store.record_recipe(&detail.summary)?;
+            let (judgement, burst) = burst_history::compare(
+                &app,
+                &w,
+                &recipe,
+                &detail,
+                original.as_ref(),
+                raw,
+                operation,
+            )?;
+            let comparison = Comparison {
+                id: comparison_id(&app, history_id),
+                history_id,
+                source: if raw { "raw".into() } else { "rules".into() },
+                cycle_id: detail
+                    .summary
+                    .cycle_id
+                    .clone()
+                    .ok_or("历史记录没有工件身份")?,
+                bundle_id: detail.summary.bundle_id.clone(),
+                candidate_id: id.clone(),
+                candidate_revision: revision,
+                candidate_recipe: recipe,
+                original_verdict: detail.summary.verdict,
+                judgement,
+                measurements: Vec::new(),
+                created_at: ly_plc::now_ms(),
+                burst: Some(burst),
+            };
+            operation.saving()?;
+            save_comparison(&app, &comparison)?;
+            Ok(comparison)
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1443,55 +1461,60 @@ pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<
 pub async fn workspace_compare_original(
     app: AppHandle,
     history_id: i64,
+    task_id: Option<String>,
 ) -> Result<Comparison, String> {
+    let operation = crate::operation::Operation::start(&app, task_id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let store = app.state::<Store>();
-        let detail = store.detail(history_id)?;
-        if !detail.recording.available {
-            return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into());
-        }
-        let cycle_id = detail
-            .summary
-            .cycle_id
-            .clone()
-            .ok_or("历史记录缺少 cycleId")?;
-        let bundle_id = detail
-            .summary
-            .bundle_id
-            .as_deref()
-            .ok_or("本件没有不可变发布包，不能按原版本重现")?;
-        if detail.summary.recipe_revision.is_none() {
-            return Err("历史记录缺少配方快照身份".into());
-        }
-        let original = store
-            .record_recipe(&detail.summary)?
-            .ok_or("原始配方快照缺失；不能使用当前配方替代")?;
-        let bundle = record_bundle(&app, &detail.summary.project_id, &original.id, bundle_id)?;
-        let engine = app
-            .state::<vision::VisionHost>()
-            .engine()
-            .ok_or("原版本兼容引擎未加载")?;
-        let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
-        prepared.verify()?;
-        let (judgement, burst) =
-            burst_history::reproduce_original(&app, &detail, &prepared, &cycle_id)?;
-        let comparison = Comparison {
-            id: comparison_id(&app, history_id),
-            history_id,
-            source: "original".into(),
-            cycle_id,
-            bundle_id: Some(bundle_id.into()),
-            candidate_id: original.id.clone(),
-            candidate_revision: 0,
-            candidate_recipe: original,
-            original_verdict: detail.summary.verdict,
-            judgement,
-            measurements: Vec::new(),
-            created_at: ly_plc::now_ms(),
-            burst: Some(burst),
-        };
-        save_comparison(&app, &comparison)?;
-        Ok(comparison)
+        operation.run(|operation| {
+            let store = app.state::<Store>();
+            let detail = store.detail(history_id)?;
+            if !detail.recording.available {
+                return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into());
+            }
+            let cycle_id = detail
+                .summary
+                .cycle_id
+                .clone()
+                .ok_or("历史记录缺少 cycleId")?;
+            let bundle_id = detail
+                .summary
+                .bundle_id
+                .as_deref()
+                .ok_or("本件没有不可变发布包，不能按原版本重现")?;
+            if detail.summary.recipe_revision.is_none() {
+                return Err("历史记录缺少配方快照身份".into());
+            }
+            let original = store
+                .record_recipe(&detail.summary)?
+                .ok_or("原始配方快照缺失；不能使用当前配方替代")?;
+            let bundle = record_bundle(&app, &detail.summary.project_id, &original.id, bundle_id)?;
+            let engine = app
+                .state::<vision::VisionHost>()
+                .engine()
+                .ok_or("原版本兼容引擎未加载")?;
+            let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
+            prepared.verify()?;
+            let (judgement, burst) =
+                burst_history::reproduce_original(&app, &detail, &prepared, &cycle_id, operation)?;
+            let comparison = Comparison {
+                id: comparison_id(&app, history_id),
+                history_id,
+                source: "original".into(),
+                cycle_id,
+                bundle_id: Some(bundle_id.into()),
+                candidate_id: original.id.clone(),
+                candidate_revision: 0,
+                candidate_recipe: original,
+                original_verdict: detail.summary.verdict,
+                judgement,
+                measurements: Vec::new(),
+                created_at: ly_plc::now_ms(),
+                burst: Some(burst),
+            };
+            operation.saving()?;
+            save_comparison(&app, &comparison)?;
+            Ok(comparison)
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1551,6 +1574,39 @@ pub fn workspace_comparisons(
     // 历史详情列出这件记录所有候选的对照（任意配方都能验证任意记录）；id 只核对格式
     safe_id(&id)?;
     host.comparisons.list(&host.root, &store, None, history_id)
+}
+
+#[tauri::command]
+pub async fn workspace_comparison_summaries(
+    app: AppHandle,
+    history_id: i64,
+) -> Result<Vec<comparisons::ComparisonSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<WorkspaceHost>();
+        host.comparisons
+            .summaries(&host.root, &app.state::<Store>(), None, history_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn workspace_comparison_get(
+    app: AppHandle,
+    history_id: i64,
+    comparison_id: String,
+) -> Result<Comparison, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<WorkspaceHost>();
+        host.comparisons.get(
+            &host.root,
+            &app.state::<Store>(),
+            history_id,
+            &comparison_id,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 pub fn clear_live(app: &AppHandle) {
@@ -1628,7 +1684,7 @@ pub async fn workspace_history_frame_view(
 ) -> Result<CalibrationFrameView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
-        let detail = store.detail(history_id)?;
+        let detail = store.detail_frame(history_id, camera, seq)?;
         let burst = detail
             .burst
             .as_ref()

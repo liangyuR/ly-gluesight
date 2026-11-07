@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight, Scale, ScanEye } from "lucide-react";
 import { Alert, Button, Card, Chip, IconButton, Select, Stack, StatusBadge, Text } from "qing-steel";
@@ -13,7 +13,9 @@ import { burstImageApi } from "../../workspace/burstImages";
 import { workspaceApi } from "../../workspace/api";
 import { FrameViewer, KV, Panel } from "../../workspace/components";
 import { useWorkspace } from "../../workspace/context";
-import type { CompareCandidate, CompareOptions, Comparison, FrameImage } from "../../workspace/types";
+import type { CompareCandidate, CompareOptions, Comparison, ComparisonSummary, FrameImage } from "../../workspace/types";
+import { OperationStatus, useOperation } from "../../workspace/operation";
+import { historyApi } from "../api";
 import { CycleTimeline } from "../../logs";
 import { errorText } from "../../../lib/errors";
 import { displayReason, formatTime, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel } from "../meta";
@@ -25,6 +27,8 @@ import { RegionReplayDiff } from "./ReplayDiff";
 const comparisonLabel = { rules: "规则重判", raw: "候选原图复测", original: "原发布包重现" };
 const recordingReason = { off: "录制关闭，本件未保存原图", notRetained: "按录制策略本件未保存原图", pending: "原图仍在落盘", incomplete: "原图不完整", failed: "原图录制失败", complete: "原图已按保留策略清理或无法核验" };
 const frameStateName = { measured: "已测", missing: "缺帧", error: "测量失败", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测" };
+const comparisonSummary = ({ id, historyId, source, cycleId, candidateId, candidateRevision, createdAt, originalVerdict, judgement }: Comparison): ComparisonSummary =>
+  ({ id, historyId, source, cycleId, candidateId, candidateRevision, createdAt, originalVerdict, judgement });
 
 /** 格子按该帧的单帧结论着色（后端按所在区域判，与在线同一口径），整段性问题只在段条上；测过但没有结论的为未判定，
  * 缺帧、测量失败等状态照常显示为灰色 / 紫色。 */
@@ -53,10 +57,11 @@ function useFrameImage(historyId: number, camera: number, seq: number, enabled: 
     let alive = true;
     setState({ key, image: null, error: "", loading: enabled });
     if (!enabled) return;
-    burstImageApi.record(historyId, camera, seq)
+    const request = new AbortController();
+    burstImageApi.record(historyId, camera, seq, request.signal)
       .then(image => alive && setState({ key, image, error: "", loading: false }))
       .catch(e => alive && setState({ key, image: null, error: errorText(e), loading: false }));
-    return () => { alive = false; };
+    return () => { alive = false; request.abort(); };
   }, [key]);
   return state.key === key ? state : { key, image: null, error: "", loading: enabled };
 }
@@ -69,10 +74,11 @@ function useFrameOverlay(historyId: number, comparison: Comparison | null, camer
     let alive = true;
     setState({ key, view: null, error: "" });
     if (!enabled) return;
-    (comparison ? workspaceApi.recordFrameView(historyId, comparison.id, camera, seq) : workspaceApi.historyFrameView(historyId, camera, seq))
+    const request = new AbortController();
+    (comparison ? workspaceApi.recordFrameView(historyId, comparison.id, camera, seq, request.signal) : workspaceApi.historyFrameView(historyId, camera, seq, request.signal))
       .then(view => alive && setState({ key, view, error: "" }))
       .catch(e => alive && setState({ key, view: null, error: errorText(e) }));
-    return () => { alive = false; };
+    return () => { alive = false; request.abort(); };
   }, [key]);
   return state.key === key ? state : { key, view: null, error: "" };
 }
@@ -119,6 +125,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   foreignProject?: string;
 }) {
   const ws = useWorkspace();
+  const operation = useOperation();
   const [search] = useSearchParams();
   const wanted = search.get("comparison");
   const s = detail.summary;
@@ -132,7 +139,9 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const [selection, setSelection] = useState({ camera: 0, seq: groups[0]?.seq ?? 1 });
   const [station, setStation] = useState<number | null>(null);
   useEffect(() => { setStation(null); }, [selection.camera, selection.seq, comparison?.id, showOriginal]);
-  const [saved, setSaved] = useState<Comparison[]>([]);
+  const [saved, setSaved] = useState<ComparisonSummary[]>([]);
+  const [loadingComparison, setLoadingComparison] = useState("");
+  const comparisonRequest = useRef(0);
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
   const pending = useRef(false), serial = useRef(0), alive = useRef(true);
@@ -148,7 +157,22 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   useEffect(() => { alive.current = true; return () => { alive.current = false; serial.current++; }; }, []);
   useEffect(() => { setSelection({ camera: 0, seq: groups[0]?.seq ?? 1 }); setComparison(null); setShowOriginal(false); setError(""); }, [s.id]);
 
-  const frame = shown.frames.find(f => f.camera === selection.camera && f.seq === selection.seq) ?? null;
+  const frames = useMemo(() => new Map(shown.frames.map(frame => [`${frame.camera}:${frame.seq}`, frame])), [shown.frames]);
+  const summaryFrame = frames.get(`${selection.camera}:${selection.seq}`) ?? null;
+  const originalShown = shown === burst;
+  const frameKey = `${s.id}:${selection.camera}:${selection.seq}`;
+  const [frameDetail, setFrameDetail] = useState<{ key: string; frame: FrameRecord | null; error: string } | null>(null);
+  useEffect(() => {
+    if (!originalShown || !summaryFrame?.metrics) return;
+    let live = true;
+    void historyApi.frameDetail(s.id, selection.camera, selection.seq)
+      .then(value => live && setFrameDetail({ key: frameKey, frame: value.burst?.frames.find(frame => frame.camera === selection.camera && frame.seq === selection.seq) ?? null, error: "" }))
+      .catch(error => live && setFrameDetail({ key: frameKey, frame: null, error: errorText(error) }));
+    return () => { live = false; };
+  }, [frameKey, originalShown, burst]);
+  const frame = originalShown && frameDetail?.key === frameKey ? frameDetail.frame ?? summaryFrame : summaryFrame;
+  const frameLoading = originalShown && !!summaryFrame?.metrics && frameDetail?.key !== frameKey;
+  const selectFrame = useCallback((camera: number, seq: number) => setSelection({ camera, seq }), []);
   const step = (delta: number) => setSelection(prev => ({ ...prev, seq: Math.min(lastSeq, Math.max(groups[0]?.seq ?? 1, prev.seq + delta)) }));
   const stepRef = useRef(step);
   stepRef.current = step;
@@ -170,11 +194,14 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     const mine = ++serial.current;
     setSaved([]);
     // 列出这件记录所有候选的对照（不只记录所属配方的）
-    void workspaceApi.comparisons(s.recipeId ?? "history", s.id).then(v => {
+    void workspaceApi.comparisonSummaries(s.id).then(async v => {
       if (!live || mine !== serial.current) return;
       setSaved(v);
       const target = wanted && v.find(c => c.id === wanted);
-      if (target) setComparison(previous => previous ?? target);
+      if (target) {
+        const result = await workspaceApi.comparisonGet(s.id, target.id);
+        if (live && mine === serial.current) setComparison(previous => previous ?? result);
+      }
     }).catch(e => live && mine === serial.current && setError(errorText(e)));
     return () => { live = false; };
   }, [s.id, s.recipeId, ws.data?.workspace.revision, wanted]);
@@ -197,21 +224,31 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const rawReason = options ? candidateBlock || (options.raw.available ? "" : options.raw.reason ?? "") : "";
   const originalReason = options && !options.original.available ? options.original.reason ?? "" : "";
 
-  const compare = async (run: () => Promise<Comparison>, guard: () => boolean) => {
+  const chooseComparison = async (id: string) => {
+    const request = ++comparisonRequest.current;
+    if (!id) { setComparison(null); setLoadingComparison(""); return; }
+    setLoadingComparison(id); setError("");
+    try {
+      const result = await workspaceApi.comparisonGet(s.id, id);
+      if (alive.current && request === comparisonRequest.current && current.current.historyId === s.id) { setComparison(result); setShowOriginal(false); }
+    } catch (e) { if (alive.current && request === comparisonRequest.current) setError(errorText(e)); }
+    finally { if (alive.current && request === comparisonRequest.current) setLoadingComparison(""); }
+  };
+  const compare = async (run: (taskId: string) => Promise<Comparison>, guard: () => boolean) => {
     if (pending.current) return;
-    pending.current = true; serial.current++; setWorking(true); setError("");
-    try { const result = await run(); if (guard()) { setComparison(result); setShowOriginal(false); setSaved(v => [result, ...v.filter(c => c.id !== result.id)]); } }
+    pending.current = true; serial.current++; comparisonRequest.current++; setLoadingComparison(""); setWorking(true); setError("");
+    try { const result = await operation.run(run); if (guard()) { setComparison(result); setShowOriginal(false); setSaved(v => [comparisonSummary(result), ...v.filter(c => c.id !== result.id)].slice(0, 100)); } }
     catch (e) { if (guard()) setError(errorText(e)); }
     finally { pending.current = false; if (alive.current) setWorking(false); }
   };
   const runCompare = (fromRaw: boolean) => {
     if (working || !options || !candidate || (fromRaw ? rawReason : rulesReason)) return;
     const { id, revision } = candidate;
-    void compare(() => workspaceApi.compare(id, revision, s.id, fromRaw), () => alive.current && current.current.scope === scope);
+    void compare(taskId => workspaceApi.compare(id, revision, s.id, fromRaw, taskId), () => alive.current && current.current.scope === scope);
   };
   const runOriginal = () => {
     if (working || !options || originalReason) return;
-    void compare(() => workspaceApi.compareOriginal(s.id), () => alive.current && current.current.historyId === s.id);
+    void compare(taskId => workspaceApi.compareOriginal(s.id, taskId), () => alive.current && current.current.historyId === s.id);
   };
 
   const flags = flagBadges(burst.judgement.flags);
@@ -261,7 +298,9 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       </ul>}
       {options && !rawReason && options.raw.note && <Text as="p" muted className="compare-note">从原图复测：{options.raw.note}</Text>}
       {editing && ws.error && <Alert tone="warn">{ws.error}</Alert>}
-      {!!saved.length && <Select label="已保存的对照结果" aria-label="已保存对照结果" disabled={working} value={comparison?.id ?? ""} onValueChange={id => { setComparison(saved.find(c => c.id === id) ?? null); setShowOriginal(false); }}
+      <OperationStatus operation={operation} label="历史复算" />
+      {loadingComparison && <Text muted role="status">正在读取对照结果…</Text>}
+      {!!saved.length && <Select label="已保存的对照结果" aria-label="已保存对照结果" disabled={working} value={loadingComparison || comparison?.id || ""} onValueChange={id => void chooseComparison(id)}
         options={[{ value: "", label: "选择记录" }, ...saved.map(c => ({ value: c.id, label: formatTime(c.createdAt) + " · " + comparisonLabel[c.source] + (c.source === "original" ? "" : " · " + c.candidateId + " 修订 " + c.candidateRevision) + " · " + verdictLabel[c.judgement.verdict] }))]} />}
     </Panel>
     {comparison && <Panel title={comparisonLabel[comparison.source] + "结果"} detail={(comparison.source === "original" ? "原发布 v" + comparison.candidateRecipe.version + " · 包 " + comparison.bundleId : "候选 v" + comparison.candidateRecipe.version + " · 修订 " + comparison.candidateRevision) + " · " + formatTime(comparison.createdAt)}>
@@ -304,7 +343,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
             {metrics?.headingFallback && <KV label="定向">没找到胶条{metrics.fallbackReason ? `：${metrics.fallbackReason}` : ""}</KV>}
             {metrics?.error && <KV label="说明">{metrics.error}</KV>}
           </div>
-          {metrics && frame?.status === "measured" && metrics.widths.length > 0
+          {frameLoading ? <Text muted role="status">正在读取逐站指标…</Text> : originalShown && frameDetail?.key === frameKey && frameDetail.error ? <Alert tone="warn">{frameDetail.error}</Alert> : metrics && frame?.status === "measured" && metrics.widths.length > 0
             ? <div className="hist-width-profile">
               <Text as="p" muted>{cameraName} · 帧组 {selection.seq} 逐站胶宽{station != null ? ` · 第 ${station + 1} 站` : ""}（悬停折线或原图上的测量线联动）</Text>
               <Suspense fallback={<Text as="p" muted>正在加载图表…</Text>}>
@@ -329,7 +368,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
           <span>后续复检</span><b>{detail.retests.length ? detail.retests.map(r => <Link key={r} to={"/history/" + r}>#{r} </Link>) : "—"}</b>
         </div>
       </Panel>
-      <BurstPartTrace detail={detail} burst={burst} selected={selection} onSelect={(camera, seq) => setSelection({ camera, seq })} />
+      <BurstPartTrace detail={detail} burst={burst} selected={selection} onSelect={selectFrame} />
       <CycleTimeline historyId={s.id} cycleId={s.cycleId} ts={s.ts} frame={{ camera: cameraName, seq: selection.seq, onSelect: (camera, seq) => setSelection({ camera: Math.max(0, burst.cameras.indexOf(camera)), seq }) }} />
     </div>
   </div>;

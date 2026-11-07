@@ -150,7 +150,7 @@ describe("示教帧选择", () => {
     const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2 · 段 2" });
     await vi.waitFor(() => expect(choose).toBeDisabled());
     expect(choose).toHaveAccessibleDescription(expect.stringContaining("缺帧"));
-    expect(workspaceApi.captureFrameImage).not.toHaveBeenCalledWith("round-1", "CAM-2", 5);
+    expect(vi.mocked(workspaceApi.captureFrameImage).mock.calls.map(args => args.slice(0, 3))).not.toContainEqual(["round-1", "CAM-2", 5]);
     expect(workspaceApi.teachSegmentCorridor).not.toHaveBeenCalled();
   });
 });

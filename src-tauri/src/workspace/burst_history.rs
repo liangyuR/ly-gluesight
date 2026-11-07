@@ -90,12 +90,22 @@ pub(super) fn summary(judgement: &BurstJudgement) -> judge::Judgement {
 /// 由每帧指标还原帧组（与在线 Grouper 同一口径）：到了的帧（不论测没测成）算 present，缺帧不算；帧组数 = 最大 seq。
 pub(super) fn frame_groups(metrics: &[FrameMetrics], cameras: usize) -> Vec<FrameGroup> {
     let total = metrics.iter().map(|m| m.seq).max().unwrap_or(0);
-    (1..=total).map(|seq| {
-        let present: Vec<bool> = (0..cameras)
-            .map(|camera| metrics.iter().any(|m| m.camera == camera && m.seq == seq && m.state != FrameState::Missing))
-            .collect();
-        FrameGroup { seq, incomplete: present.contains(&false), present }
-    }).collect()
+    let mut groups: Vec<_> = (1..=total)
+        .map(|seq| FrameGroup {
+            seq,
+            incomplete: true,
+            present: vec![false; cameras],
+        })
+        .collect();
+    for metric in metrics {
+        if metric.seq > 0 && metric.camera < cameras && metric.state != FrameState::Missing {
+            groups[(metric.seq - 1) as usize].present[metric.camera] = true;
+        }
+    }
+    for group in &mut groups {
+        group.incomplete = group.present.contains(&false);
+    }
+    groups
 }
 
 /// 按生产同一规则（按笔或按比例分段，D-SB-62、D-SB-40）重新划分区域后判一件；丢帧告警原样带出。
@@ -218,8 +228,32 @@ pub(super) fn remeasure_by_rule(
     cameras: &[String],
     frames: &[(usize, u64, bool)],
     passes: PassRules,
-    mut measure: impl FnMut(usize, u64, u32) -> Result<FrameMetrics, String>,
+    measure: impl FnMut(usize, u64, u32) -> Result<FrameMetrics, String>,
 ) -> Vec<FrameMetrics> {
+    remeasure_by_rule_operation(
+        segments,
+        boundary_guard,
+        cameras,
+        frames,
+        passes,
+        measure,
+        None,
+    )
+    .expect("无取消任务的测量总会返回帧结果")
+}
+
+fn remeasure_by_rule_operation(
+    segments: &[PathSegment],
+    boundary_guard: u32,
+    cameras: &[String],
+    frames: &[(usize, u64, bool)],
+    passes: PassRules,
+    mut measure: impl FnMut(usize, u64, u32) -> Result<FrameMetrics, String>,
+    operation: Option<&crate::operation::Operation>,
+) -> Result<Vec<FrameMetrics>, String> {
+    if let Some(operation) = operation {
+        operation.measuring(frames.len())?;
+    }
     let arrived: Vec<FrameMetrics> = frames
         .iter()
         .map(|&(camera, seq, arrived)| {
@@ -259,12 +293,15 @@ pub(super) fn remeasure_by_rule(
         .iter()
         .zip(arrived)
         .map(|(&(camera, seq, present), skipped)| {
+            if let Some(operation) = operation {
+                operation.check()?;
+            }
             let segment = choice
                 .get(camera)
                 .and_then(|c| c.get((seq as usize).wrapping_sub(1)))
                 .copied()
                 .flatten();
-            match (present, segment) {
+            let metrics = match (present, segment) {
                 (false, _) | (true, None) => skipped,
                 (true, Some(segment)) => match measure(camera, seq, segment) {
                     Ok(metrics) => FrameMetrics {
@@ -277,7 +314,11 @@ pub(super) fn remeasure_by_rule(
                         ..burst::frame_without_metrics(camera, seq, FrameState::Error, Some(error))
                     },
                 },
+            };
+            if let Some(operation) = operation {
+                operation.advance(metrics.state)?;
             }
+            Ok(metrics)
         })
         .collect()
 }
@@ -287,25 +328,38 @@ pub(super) fn remeasure(
     recipe: &Recipe,
     frames: &[FrameRecord],
     passes: &[u32],
-    mut measure: impl FnMut(&FrameRecord, u32) -> Result<FrameMetrics, String>,
+    measure: impl FnMut(&FrameRecord, u32) -> Result<FrameMetrics, String>,
 ) -> Vec<FrameMetrics> {
+    remeasure_with_operation(recipe, frames, passes, measure, None)
+        .expect("无取消任务的测量总会返回帧结果")
+}
+
+pub(super) fn remeasure_with_operation(
+    recipe: &Recipe,
+    frames: &[FrameRecord],
+    passes: &[u32],
+    mut measure: impl FnMut(&FrameRecord, u32) -> Result<FrameMetrics, String>,
+    operation: Option<&crate::operation::Operation>,
+) -> Result<Vec<FrameMetrics>, String> {
+    let indexed: BTreeMap<_, _> = frames
+        .iter()
+        .map(|frame| ((frame.camera, frame.seq), frame))
+        .collect();
     let keys: Vec<(usize, u64, bool)> = frames
         .iter()
         .map(|f| (f.camera, f.seq, f.status != FrameState::Missing))
         .collect();
-    remeasure_by_rule(
+    remeasure_by_rule_operation(
         &recipe.path_segments,
         recipe.boundary_guard,
         &recipe.plan_cameras(),
         &keys,
         recipe.pass_rules(passes),
         |camera, seq, segment| {
-            let frame = frames
-                .iter()
-                .find(|f| f.camera == camera && f.seq == seq)
-                .ok_or("没有这一帧的记录")?;
+            let frame = indexed.get(&(camera, seq)).ok_or("没有这一帧的记录")?;
             measure(frame, segment)
         },
+        operation,
     )
 }
 
@@ -332,6 +386,69 @@ fn burst_samples(app: &AppHandle, detail: &PartDetail) -> Result<history_samples
         .record_recipe(&detail.summary)?
         .ok_or("历史配方快照缺失，不能确定离线样本原图")?;
     history_samples::BurstSamples::open(&crate::storage::root(app), detail, &recipe)
+}
+
+enum FrameSource {
+    Recorded(recorded::VerifiedFrames),
+    Samples(history_samples::BurstSamples),
+}
+
+struct FrameReader<'a> {
+    app: AppHandle,
+    detail: &'a PartDetail,
+    frames: BTreeMap<(usize, u64), &'a FrameRecord>,
+    cameras: &'a [String],
+    source: Option<Result<FrameSource, String>>,
+}
+
+impl<'a> FrameReader<'a> {
+    fn new(app: &AppHandle, detail: &'a PartDetail) -> Result<Self, String> {
+        let burst = detail.burst.as_ref().ok_or("历史没有段配方帧记录")?;
+        Ok(Self {
+            app: app.clone(),
+            detail,
+            frames: burst
+                .frames
+                .iter()
+                .map(|frame| ((frame.camera, frame.seq), frame))
+                .collect(),
+            cameras: &burst.cameras,
+            source: None,
+        })
+    }
+
+    fn open_source(app: &AppHandle, detail: &PartDetail) -> Result<FrameSource, String> {
+        if detail.summary.source == RecordSource::OfflineCandidate {
+            return burst_samples(app, detail).map(FrameSource::Samples);
+        }
+        let cycle_id = detail
+            .summary
+            .cycle_id
+            .as_deref()
+            .ok_or("历史记录没有 cycleId")?;
+        let root = crate::project::records::record_root(
+            &crate::storage::root(app),
+            &detail.summary.project_id,
+            detail.summary.source,
+        )?;
+        recorded::VerifiedFrames::new(&root, cycle_id).map(FrameSource::Recorded)
+    }
+
+    fn load(&mut self, camera: usize, seq: u64) -> Result<FrameImage, String> {
+        let frame = self.frames.get(&(camera, seq)).ok_or("没有这一帧的记录")?;
+        if frame.status == FrameState::Missing {
+            return Err("这台相机本帧组缺帧，没有原图".into());
+        }
+        let camera_id = self.cameras.get(camera).ok_or("相机下标超出本件计划相机")?;
+        let source = self
+            .source
+            .get_or_insert_with(|| Self::open_source(&self.app, self.detail));
+        match source {
+            Ok(FrameSource::Recorded(recorded)) => recorded.load(camera_id, frame),
+            Ok(FrameSource::Samples(samples)) => samples.load(camera, seq),
+            Err(error) => Err(error.clone()),
+        }
+    }
 }
 
 /// 段配方历史件第 camera 台计划相机第 seq 帧组的原图：生产记录读录制目录，候选离线调试记录读受管样本集。
@@ -375,9 +492,18 @@ pub(super) fn frame_image(
 
 /// 段配方历史件一帧的录制原图（决策记录 5.4，camera 为计划相机下标）；未录制、录制队满丢弃或缺帧时报错。
 #[tauri::command]
-pub fn workspace_record_frame_image(app: AppHandle, history_id: i64, camera: usize, seq: u64) -> Result<tauri::ipc::Response, String> {
-    let detail = app.state::<Store>().detail(history_id)?;
-    Ok(preview_response(&frame_image(&app, &detail, camera, seq)?))
+pub async fn workspace_record_frame_image(
+    app: AppHandle,
+    history_id: i64,
+    camera: usize,
+    seq: u64,
+) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let detail = app.state::<Store>().detail_frame(history_id, camera, seq)?;
+        Ok(preview_response(&frame_image(&app, &detail, camera, seq)?))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// 历史件一帧按对照重测的叠图（历史详情，只读）：用对照保存的候选配方与这一帧在对照里所用的走廊段，从录制原图重测，
@@ -394,14 +520,15 @@ pub async fn workspace_record_frame_view(
 ) -> Result<burst::CalibrationFrameView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
-        let detail = store.detail(history_id)?;
         let host = app.state::<WorkspaceHost>();
         let found = host
             .comparisons
-            .list(&host.root, &store, None, history_id)?
-            .into_iter()
-            .find(|c| c.id == comparison)
-            .ok_or("找不到这次对照结果")?;
+            .get(&host.root, &store, history_id, &comparison)?;
+        let camera_id = found.candidate_recipe.plan_cameras().get(camera).cloned().ok_or("相机下标超出候选计划相机")?;
+        let summary = store.summary(history_id)?;
+        let original = store.record_recipe(&summary)?.ok_or("历史配方快照缺失")?;
+        let record_camera = original.plan_cameras().iter().position(|id| id == &camera_id).ok_or_else(|| format!("记录里没有相机 {camera_id} 的原图"))?;
+        let detail = store.detail_frame(history_id, record_camera, seq)?;
         let burst = found.burst.as_ref().ok_or("这次对照没有逐帧结果")?;
         let metrics = burst
             .frames
@@ -951,6 +1078,7 @@ pub(super) fn compare(
     detail: &PartDetail,
     original: Option<&Recipe>,
     raw: bool,
+    operation: &crate::operation::Operation,
 ) -> Result<(judge::Judgement, ComparisonBurst), String> {
     let burst = detail
         .burst
@@ -997,7 +1125,8 @@ pub(super) fn compare(
             })
             .collect();
         let loss = crate::frame_group::loss_alarms(&counts);
-        let metrics = remeasure(
+        let mut reader = FrameReader::new(app, detail)?;
+        let metrics = remeasure_with_operation(
             recipe,
             &frames,
             &burst.judgement.passes,
@@ -1024,10 +1153,12 @@ pub(super) fn compare(
                     frame.camera,
                     segment,
                     frame.seq,
-                    &frame_image(app, detail, record, frame.seq)?,
+                    &reader.load(record, frame.seq)?,
                 )
             },
-        );
+            Some(operation),
+        )?;
+        operation.stage("summarizing")?;
         let judgement = judge_frames(
             &recipe.path_segments,
             recipe.boundary_guard,
@@ -1040,6 +1171,7 @@ pub(super) fn compare(
         );
         (judgement, metrics)
     } else {
+        operation.stage("summarizing")?;
         let regions: Vec<Region> = burst.judgement.regions.iter().map(|r| r.region.clone()).collect();
         let metrics = stored_metrics(&burst.frames);
         let judgement = burst_judge::judge(
@@ -1068,6 +1200,7 @@ pub(super) fn reproduce_original(
     detail: &PartDetail,
     prepared: &crate::production::Prepared,
     cycle_id: &str,
+    operation: &crate::operation::Operation,
 ) -> Result<(judge::Judgement, ComparisonBurst), String> {
     let burst = detail
         .burst
@@ -1076,13 +1209,15 @@ pub(super) fn reproduce_original(
     if let Some(reason) = original_blocker(detail, burst) {
         return Err(reason);
     }
-    let (judgement, metrics) = reproduce::measure_burst(
+    let mut reader = FrameReader::new(app, detail)?;
+    let (judgement, metrics) = reproduce::measure_burst_with_operation(
         prepared,
         &burst.frames,
         &burst.judgement.alarms,
         &burst.judgement.passes,
         cycle_id,
-        |frame| frame_image(app, detail, frame.camera, frame.seq),
+        |frame| reader.load(frame.camera, frame.seq),
+        Some(operation),
     )?;
     Ok((
         summary(&judgement),

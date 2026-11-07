@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
+import { useHorizontalWindow } from "../../../lib/useHorizontalWindow";
 import type { FrameGroupView, RegionResult } from "../../plan/types";
 import { groupCellColor, groupCellState, groupCellText, regionKindLabel, verdictPlanTone, type PlanTone } from "../../plan/vis";
 import { verdictLabel } from "../../history/meta";
@@ -24,7 +25,7 @@ function RegionBand({ regions, seq }: { regions: RegionResult[]; seq: number }) 
  * 格子颜色只表示该帧单独的结论（判定后按所在区域的检查项判，在线与历史同一口径）；给了区域时上方画段条，
  * 胶宽不均、整段胶偏、帧数异常等整段性问题只体现在段条上。颜色只是显示，结论以后端为准。
  */
-export default function FrameGroupStrip({ groups, cameras, regions, selected, onSelect, selectedCamera, onSelectCell, label = "帧组" }: {
+export default memo(function FrameGroupStrip({ groups, cameras, regions, selected, onSelect, selectedCamera, onSelectCell, label = "帧组" }: {
   groups: FrameGroupView[];
   /** 计划相机，按 cells 的顺序 */
   cameras: string[];
@@ -37,16 +38,34 @@ export default function FrameGroupStrip({ groups, cameras, regions, selected, on
   onSelectCell?: (seq: number, camera: number) => void;
   label?: string;
 }) {
-  const current = useRef<HTMLLIElement>(null);
-  useEffect(() => { current.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" }); }, [selected]);
+  const selectedIndex = groups.findIndex(group => group.seq === selected);
+  const window = useHorizontalWindow<HTMLOListElement>(groups.length, 34, selectedIndex);
+  const root = useRef<HTMLDivElement>(null), restoreFocus = useRef(false);
+  useEffect(() => {
+    const cell = root.current?.querySelector<HTMLElement>(onSelectCell ? '.fg-cell-button[aria-pressed="true"]' : '.fg-group[aria-pressed="true"]');
+    if (restoreFocus.current && cell) { cell.focus({ preventScroll: true }); restoreFocus.current = false; }
+  }, [selected, selectedCamera, window.start, window.end]);
   const banded = !!regions?.length;
-  return <div className={"fg-strip" + (banded ? " banded" : "")} role="group" aria-label={label}>
+  return <div ref={root} className={"fg-strip" + (banded ? " banded" : "")} role="group" aria-label={label} onKeyDown={event => {
+    if (!onSelect && !onSelectCell) return;
+    const delta = { ArrowLeft: -1, ArrowRight: 1, Home: -Infinity, End: Infinity }[event.key];
+    const cameraDelta = { ArrowUp: -1, ArrowDown: 1 }[event.key];
+    if (delta == null && (cameraDelta == null || !onSelectCell)) return;
+    event.preventDefault();
+    const index = Math.min(groups.length - 1, Math.max(0, selectedIndex + (delta ?? 0)));
+    const group = groups[index];
+    if (!group) return;
+    restoreFocus.current = true;
+    if (onSelectCell) onSelectCell(group.seq, Math.min(cameras.length - 1, Math.max(0, (selectedCamera ?? 0) + (cameraDelta ?? 0))));
+    else onSelect?.(group.seq);
+  }}>
     <div className="fg-cams" aria-hidden="true">{cameras.map(camera => <span key={camera} title={camera}>{camera}</span>)}</div>
-    <ol className="fg-groups">
-      {groups.map(group => <li key={group.seq} ref={group.seq === selected ? current : undefined}>
+    <ol className="fg-groups" ref={window.ref} onScroll={window.onScroll}>
+      {window.start > 0 && <li aria-hidden="true" style={{ width: window.start * 34 - 4 }} />}
+      {groups.slice(window.start, window.end).map(group => <li key={group.seq}>
         {banded && <RegionBand regions={regions!} seq={group.seq} />}
         {onSelectCell ? <div className={"fg-group fg-individual" + (group.seq === selected ? " selected" : "") + (group.incomplete ? " incomplete" : "")}>
-          <button type="button" className="fg-seq fg-seq-button" aria-label={`选择帧组 ${group.seq}`} onClick={() => onSelect?.(group.seq)}>{group.seq}</button>
+          <button type="button" className="fg-seq fg-seq-button" aria-label={`选择帧组 ${group.seq}`} onClick={() => onSelect ? onSelect(group.seq) : onSelectCell(group.seq, selectedCamera ?? 0)}>{group.seq}</button>
           {cameras.map((camera, c) => {
             const state = groupCellState(group, c);
             return <button key={camera} type="button" className="fg-cell fg-cell-button" data-state={state} aria-label={`帧组 ${group.seq} · ${camera} · ${groupCellText[state]}`} aria-pressed={group.seq === selected && c === selectedCamera} title={`${camera} · ${groupCellText[state]}`} style={{ background: groupCellColor[state] }} onClick={() => onSelectCell(group.seq, c)} />;
@@ -62,6 +81,7 @@ export default function FrameGroupStrip({ groups, cameras, regions, selected, on
           })}
         </button>}
       </li>)}
+      {window.end < groups.length && <li aria-hidden="true" style={{ width: (groups.length - window.end) * 34 - 4 }} />}
     </ol>
   </div>;
-}
+});

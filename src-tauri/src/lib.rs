@@ -30,6 +30,7 @@ mod managed_samples;
 mod measure;
 mod mvs;
 mod offline;
+mod operation;
 mod packaging;
 mod passes;
 mod plan;
@@ -192,6 +193,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            operation::operation_cancel,
+            operation::operation_status,
             storage_startup::storage_startup_status,
             storage_startup::storage_startup_answer,
             storage_startup::startup_ready,
@@ -268,6 +271,8 @@ pub fn run() {
             teach::records_list,
             history::history_query,
             history::history_detail,
+            history::history_overview,
+            history::history_frame_detail,
             history::history_neighbors,
             history::history_rejudge,
             history::history_export,
@@ -309,6 +314,8 @@ pub fn run() {
             workspace::workspace_compare,
             workspace::workspace_compare_original,
             workspace::workspace_comparisons,
+            workspace::workspace_comparison_summaries,
+            workspace::workspace_comparison_get,
             workspace::workspace_live_frame_image,
             workspace::workspace_live_frame_view,
             workspace::workspace_station_capture,
@@ -322,6 +329,7 @@ pub fn run() {
             workspace::workspace_fit_color_model,
             workspace::workspace_measure_teaching,
             workspace::workspace_calibration_round_features,
+            workspace::workspace_calibration_round_overview,
             workspace::workspace_calibration_frame,
             workspace::workspace_teach_preview_frame,
             workspace::workspace_teach_preview_segment,
@@ -405,6 +413,7 @@ fn start_services(
     }
     app.manage(open_store(app)?);
     app.manage(vision::VisionHost::default());
+    app.manage(operation::Operations::default());
     app.manage(flow_debug::FlowDebugHost::default());
     app.manage(production::ProductionHost::default());
     app.manage(offline::OfflineHost::default());

@@ -11,7 +11,7 @@ import "./capture.css";
  */
 export function FrameBrowser({ source, label, cameras, groupCount, read }: {
   source: string; label: string; cameras: { id: string; name: string }[]; groupCount: number;
-  read: (camera: number, seq: number) => Promise<FrameImage>;
+  read: (camera: number, seq: number, signal?: AbortSignal) => Promise<FrameImage>;
 }) {
   const [camera, setCamera] = useState(0);
   const [seq, setSeq] = useState(1);
@@ -21,10 +21,11 @@ export function FrameBrowser({ source, label, cameras, groupCount, read }: {
   useEffect(() => {
     if (!groupCount || !cameras.length) return;
     let alive = true;
-    reader.current(camera, seq)
+    const request = new AbortController();
+    reader.current(camera, seq, request.signal)
       .then(image => alive && setState({ key, image, error: "" }))
       .catch(e => alive && setState({ key, image: null, error: errorText(e) }));
-    return () => { alive = false; };
+    return () => { alive = false; request.abort(); };
   }, [key, groupCount, cameras.length]);
   const shown = state.key === key ? state : null;
   const name = cameras[camera]?.name ?? "";

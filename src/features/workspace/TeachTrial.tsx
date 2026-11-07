@@ -1,4 +1,5 @@
-import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useHorizontalWindow } from "../../lib/useHorizontalWindow";
 import { Button, IconButton, Surface } from "qing-steel";
 import { ChevronLeft, ChevronRight, Play } from "lucide-react";
 import { errorText } from "../../lib/errors";
@@ -7,6 +8,7 @@ import { workspaceApi } from "./api";
 import { Badge, FrameViewer } from "./components";
 import type { HeadingGuide } from "./headingOverlay";
 import type { FrameImage } from "./types";
+import { OperationStatus, useOperation } from "./operation";
 
 type TrialState = "ok" | "fallback" | "empty" | "out" | "error" | "missing";
 const trialOrder: TrialState[] = ["ok", "fallback", "empty", "out", "error", "missing"];
@@ -38,13 +40,14 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
 }) {
   const [batch, setBatch] = useState<{ result: TeachPreviewSegment | null; revision: number; error: string; running: boolean }>({ result: null, revision, error: "", running: false });
   const [queued, setQueued] = useState(false);
+  const operation = useOperation();
   const run = async () => {
     if (locked || batch.running) return;
     if (waiting) { setQueued(true); onFlush?.(); return; }
     const at = revision;
     setBatch(previous => ({ ...previous, running: true, error: "" }));
     try {
-      const result = await workspaceApi.teachPreviewSegment(id, camera, segment, round);
+      const result = await operation.run(taskId => workspaceApi.teachPreviewSegment(id, camera, segment, round, taskId));
       setBatch({ result, revision: at, error: "", running: false });
     } catch (e) { setBatch(previous => ({ ...previous, running: false, error: errorText(e) })); }
   };
@@ -55,10 +58,19 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
   }, [queued, waiting, locked]);
   const span = batch.result ? { start: batch.result.start, end: batch.result.end } : range;
   const stale = !!batch.result && batch.revision !== revision;
-  const cells = span ? Array.from({ length: span.end - span.start + 1 }, (_, i) => {
-    const frame = batch.result?.frames.find(item => item.seq === span.start + i);
-    return { seq: span.start + i, state: frame ? trialState(frame) : null, note: frame?.error ?? frame?.fallbackReason ?? null };
-  }) : [];
+  const cells = useMemo(() => {
+    const bySeq = new Map(batch.result?.frames.map(frame => [frame.seq, frame]));
+    return span ? Array.from({ length: span.end - span.start + 1 }, (_, i) => {
+      const frame = bySeq.get(span.start + i);
+      return { seq: span.start + i, state: frame ? trialState(frame) : null, note: frame?.error ?? frame?.fallbackReason ?? null };
+    }) : [];
+  }, [batch.result, span?.start, span?.end]);
+  const window = useHorizontalWindow<HTMLDivElement>(cells.length, 10, seq != null && span ? seq - span.start : null);
+  const restoreFocus = useRef(false);
+  useEffect(() => {
+    const cell = window.ref.current?.querySelector<HTMLElement>('[aria-pressed="true"]');
+    if (restoreFocus.current && cell) { cell.focus({ preventScroll: true }); restoreFocus.current = false; }
+  }, [seq, window.start, window.end]);
 
   const frameKey = seq == null ? "" : JSON.stringify([id, camera, segment, round, seq]);
   const key = seq == null ? "" : JSON.stringify([frameKey, revision]);
@@ -66,12 +78,13 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
   useEffect(() => {
     if (seq == null || locked || waiting) return;
     let alive = true;
-    void Promise.allSettled([workspaceApi.captureFrameImage(round, camera, seq), workspaceApi.teachPreviewFrame(id, camera, segment, round, seq)])
+    const request = new AbortController();
+    void Promise.allSettled([workspaceApi.captureFrameImage(round, camera, seq, request.signal), workspaceApi.teachPreviewFrame(id, camera, segment, round, seq, request.signal)])
       .then(([image, view]) => alive && setDetail({ key, frameKey,
         image: image.status === "fulfilled" ? image.value : null,
         view: view.status === "fulfilled" ? view.value : null,
         error: [image, view].flatMap(r => r.status === "rejected" ? [errorText(r.reason)] : []).join("；") }));
-    return () => { alive = false; };
+    return () => { alive = false; request.abort(); };
   }, [key, !!locked, waiting]);
   // 同一帧在参数保存后重测：结果回来前继续显示上一次的，画面不闪
   const shown = detail.key === key || (frameKey && detail.frameKey === frameKey) ? detail : null;
@@ -84,9 +97,11 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
     if (next !== seq) onSeq(next);
   };
   const move = (event: KeyboardEvent) => {
-    if (seq == null || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+    const delta = { ArrowLeft: -1, ArrowRight: 1, Home: -Infinity, End: Infinity }[event.key];
+    if (seq == null || delta == null) return;
     event.preventDefault();
-    step(event.key === "ArrowLeft" ? -1 : 1);
+    restoreFocus.current = !!window.ref.current?.contains(event.target as Node);
+    step(delta);
   };
   const edges = (view?.edges ?? []).flatMap(edge => edge ? [{ from: edge[0], to: edge[1], color: "var(--ov-line)" }] : []);
   const counts = batch.result ? trialOrder.map(item => [item, cells.filter(cell => cell.state === item).length] as const).filter(([, n]) => n > 0) : [];
@@ -99,19 +114,22 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
           disabled={!!locked || batch.running} title={locked || "测本段全部帧，用已保存的走廊与定向参数，只读"} onClick={() => void run()}>{batch.running || queued ? "试测中…" : batch.result ? "重新试测" : "全段试测"}</Button>
         <Button size="sm" variant="tonal" disabled={!!locked || seq === teachSeq} title={locked || "只测示教帧"} onClick={() => onSeq(teachSeq)}>试测当前帧</Button>
         {span
-          ? <div className={"wp-trial-strip" + (stale ? " stale" : "")} role="group" aria-label="逐帧试测状态" title={batch.result ? undefined : "点格子试测那一帧；“全段试测”给每一格标上状态"} style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(4px, 1fr))` }}>
-            {cells.map(cell => {
+          ? <div ref={window.ref} onScroll={window.onScroll} className={"wp-trial-strip" + (stale ? " stale" : "")} role="group" aria-label="逐帧试测状态" title={batch.result ? undefined : "点格子试测那一帧；“全段试测”给每一格标上状态"}>
+            {window.start > 0 && <span aria-hidden="true" style={{ flex: `0 0 ${window.start * 10 - 2}px` }} />}
+            {cells.slice(window.start, window.end).map(cell => {
               const text = `帧组 ${cell.seq}：${cell.state ? trialText[cell.state] : "未试测"}${cell.seq === teachSeq ? "（示教帧）" : ""}`;
               return <Button variant="text" size="sm" key={cell.seq} type="button" aria-pressed={cell.seq === seq} aria-label={text} title={cell.note ? `${text}：${cell.note}` : text} disabled={!!locked}
                 className={"wp-trial-cell" + (cell.seq === seq ? " selected" : "") + (cell.seq === teachSeq ? " teach" : "")}
                 style={{ background: cell.state ? trialColor[cell.state] : "var(--surface-high)" }} onClick={() => onSeq(cell.seq)} />;
             })}
+            {window.end < cells.length && <span aria-hidden="true" style={{ flex: `0 0 ${(cells.length - window.end) * 10 - 2}px` }} />}
           </div>
           : <span className="muted wp-trial-fill" title="“试测当前帧”只测示教帧；“全段试测”测本段全部帧，得到逐帧状态条，之后可点任一帧看原图与测量叠加。">{batch.running ? "正在逐帧试测本段…" : "全段试测后显示逐帧状态"}</span>}
         {span && <span className="muted wp-trial-span" title="示教件里本段的帧组范围">帧组 {span.start}–{span.end}</span>}
         {seq != null && <Button size="sm" variant="text" onClick={() => onSeq(null)}>回到示教帧</Button>}
         {side && <span className="wp-trial-actions">{side}</span>}
       </div>
+      <OperationStatus operation={operation} label="全段试测" />
       {locked && <p className="muted hint">{locked}</p>}
       {batch.error && <p className="c-warn" role="alert">{batch.error}</p>}
       {batch.result && <div className="wp-trial-legend">

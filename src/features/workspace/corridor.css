@@ -29,7 +29,8 @@
 .wp-camera-segments { display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none; }
 .wp-camera-segments li { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; }
 .wp-calib-frames { display:flex; flex-direction:column; gap:12px; }
-.wp-calib-grid { display:grid; gap:2px; align-items:center; overflow-x:auto; padding:2px; outline:none; }
+.wp-calib-viewport { overflow-x:auto; min-width:0; }
+.wp-calib-grid { display:grid; gap:2px; align-items:center; padding:2px; outline:none; }
 .wp-calib-grid:focus-visible { box-shadow:0 0 0 2px var(--primary); border-radius:var(--r-sm); }
 .wp-calib-grid-row { display:contents; }
 .wp-calib-grid-corner, .wp-calib-grid-camera { font-size:12px; color:var(--on-surface-variant); }
@@ -54,7 +55,8 @@
 .wp-trial-fill { flex:1 1 120px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .wp-trial-span { white-space:nowrap; font-variant-numeric:tabular-nums; }
 .wp-trial-actions { display:flex; align-items:center; gap:4px; margin-left:auto; }
-.wp-trial-strip { display:grid; gap:2px; }
+.wp-trial-strip { display:flex; gap:2px; overflow-x:auto; padding-bottom:6px; }
+.wp-trial-strip > .wp-trial-cell.qs-btn { flex:0 0 8px; }
 .wp-trial-strip.stale { opacity:.45; }
 .wp-trial-cell.qs-btn { position:relative; height:16px; min-width:0; padding:0; border:1px solid transparent; border-radius:3px; cursor:pointer; }
 .wp-trial-cell:disabled { cursor:not-allowed; }
