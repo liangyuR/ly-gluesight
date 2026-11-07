@@ -168,10 +168,20 @@ pub fn skipped(layout: &[u32], skip: PassSkip) -> Vec<(usize, u64, u64, bool)> {
     out
 }
 
+/// 示教件的段边界换算到本件的结果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MappedCut {
+    pub seq: u64,
+    /// 正好在两笔之间
+    pub hard: bool,
+    /// 换算后仍落在示教件这条边界所在的那一笔里；本件这一笔太短、放不下其中的段时为 false（边界不可信）
+    pub fits: bool,
+}
+
 /// 示教件的段边界（各段最后一个 seq，`cuts` 严格递增）按笔换算到本件：边界正好是示教件某笔的最后一帧时取本件同一笔的
 /// 最后一帧（硬边界，不留过渡区）；落在笔中间时按这一笔本件与示教件的帧组数比例换算，并留在同一笔内。
-/// 返回 (本件边界 seq, 是否硬边界)，保证严格递增且每段至少一帧。两边笔数不一致时为 None。
-pub fn map_cuts(cuts: &[u64], taught: &[u32], part: &[u32]) -> Option<Vec<(u64, bool)>> {
+/// 保证严格递增且每段至少一帧；为此被推出原来那一笔的边界标 `fits = false`，也不再算硬边界。两边笔数不一致时为 None。
+pub fn map_cuts(cuts: &[u64], taught: &[u32], part: &[u32]) -> Option<Vec<MappedCut>> {
     if taught.is_empty() || taught.len() != part.len() {
         return None;
     }
@@ -195,7 +205,12 @@ pub fn map_cuts(cuts: &[u64], taught: &[u32], part: &[u32]) -> Option<Vec<(u64, 
         let remaining = (cuts.len() - k) as u64;
         let seq = seq.max(previous + 1).min(total.saturating_sub(remaining));
         previous = seq;
-        out.push((seq, hard));
+        let fits = (first..=last).contains(&seq);
+        out.push(MappedCut {
+            seq,
+            hard: hard && fits,
+            fits,
+        });
     }
     Some(out)
 }
@@ -227,11 +242,33 @@ mod tests {
         let taught = [10, 20, 4];
         let part = [12, 18, 4];
         let cuts = [10, 20, 30];
+        let mapped = |cuts: &[u64], taught: &[u32], part: &[u32]| {
+            map_cuts(cuts, taught, part).map(|m| {
+                m.iter()
+                    .map(|c| (c.seq, c.hard, c.fits))
+                    .collect::<Vec<_>>()
+            })
+        };
         assert_eq!(
-            map_cuts(&cuts, &taught, &part),
-            Some(vec![(12, true), (21, false), (30, true)])
+            mapped(&cuts, &taught, &part),
+            Some(vec![(12, true, true), (21, false, true), (30, true, true)])
         );
-        assert_eq!(map_cuts(&cuts, &taught, &[12, 22]), None);
+        assert_eq!(mapped(&cuts, &taught, &[12, 22]), None);
+    }
+
+    /// 防的回归（PR #257 评审）：本件某笔太短、放不下示教件在这一笔里的几段时，为保持递增被推进下一笔的边界不能仍算可信、
+    /// 更不能仍算两笔之间的硬边界。
+    #[test]
+    fn cuts_pushed_out_of_their_pass_are_not_trusted() {
+        let fits: Vec<(u64, bool, bool)> = map_cuts(&[3, 6, 10], &[10, 10], &[1, 20])
+            .unwrap()
+            .iter()
+            .map(|c| (c.seq, c.hard, c.fits))
+            .collect();
+        assert_eq!(
+            fits,
+            vec![(1, false, true), (2, false, false), (3, false, false)]
+        );
     }
 
     /// 防的回归：每笔开头跳过的帧要按每一笔定位；帧数不超过首尾跳过之和的笔整笔不检。

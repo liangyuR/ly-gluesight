@@ -123,11 +123,11 @@ fn by_passes(segments: &[PathSegment], passes: PassRules) -> Option<SegOutcome> 
         mapped
             .into_iter()
             .zip(segments)
-            .map(|((frame_seq, hard), segment)| Boundary {
+            .map(|(cut, segment)| Boundary {
                 after_segment: segment.index,
-                frame_seq,
-                confidence: 1.0,
-                hard,
+                frame_seq: cut.seq,
+                confidence: if cut.fits { 1.0 } else { 0.0 },
+                hard: cut.hard,
             })
             .collect(),
     ))
@@ -535,8 +535,11 @@ pub fn resolve_regions(
             if hard.contains(&cut) {
                 continue;
             }
-            let from = cut.saturating_sub(u64::from(guard) - 1).max(1);
-            let to = (cut + u64::from(guard)).min(total_seq);
+            // 过渡区不越过两笔之间的硬边界：硬边界两侧的帧归属确定
+            let floor = hard.range(..cut).next_back().map_or(1, |&h| h + 1);
+            let ceiling = hard.range(cut..).next().copied().unwrap_or(total_seq);
+            let from = cut.saturating_sub(u64::from(guard) - 1).max(floor);
+            let to = (cut + u64::from(guard)).min(total_seq).min(ceiling);
             for label in &mut labels[from as usize - 1..to as usize] {
                 *label = match *label {
                     Label::Transition(a, b) => Label::Transition(a.min(left), b.max(right)),
@@ -1367,6 +1370,30 @@ mod tests {
                 region(RegionKind::Straight { segment: 1 }, 2, 7),
                 region(skipped(2, 2), 8, 8),
                 region(RegionKind::Corner { segment: 2 }, 9, 11),
+            ]
+        );
+    }
+
+    /// 防的回归（PR #257 评审）：笔中间的边界离两笔之间的硬边界不到 guard 帧时，过渡区不能越过硬边界，
+    /// 硬边界前的帧仍归前一段。
+    #[test]
+    fn transition_stops_at_a_hard_pass_boundary() {
+        let segments = calibrated(&[S, C, S], &[5, 1, 9]);
+        let regions = by_pass(&segments, &[5, 10], &[5, 10], 0);
+        assert_eq!(
+            regions,
+            vec![
+                region(RegionKind::Straight { segment: 1 }, 1, 5),
+                region(
+                    RegionKind::Unsegmented {
+                        first_segment: 2,
+                        last_segment: 3,
+                        reason: UnsegReason::Transition,
+                    },
+                    6,
+                    8
+                ),
+                region(RegionKind::Straight { segment: 3 }, 9, 15),
             ]
         );
     }
