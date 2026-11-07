@@ -114,7 +114,7 @@ fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts
 
     let before = w.clone();
     assert!(
-        replace_teaching_piece(&mut w, piece("teach-again", 1)).is_err(),
+        replace_teaching_piece(&mut w, piece("teach-again", 1), GROUPS, &BTreeMap::new()).is_err(),
         "同一件"
     );
     assert_eq!(
@@ -123,14 +123,31 @@ fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts
         "同一件被拒时候选不变"
     );
 
-    replace_teaching_piece(&mut w, piece("new", 2)).unwrap();
+    // 新件 60 个帧组，是原件（30）的两倍
+    replace_teaching_piece(
+        &mut w,
+        piece("new", 2),
+        2 * GROUPS,
+        &BTreeMap::from([("teach".to_string(), GROUPS)]),
+    )
+    .unwrap();
     assert_eq!(w.teaching_piece, Some(piece("new", 2)));
     assert!(!before.camera_teaching.is_empty(), "前提：换件前已示教走廊");
     assert_eq!(
-        state_value(&w.camera_teaching),
-        state_value(&before.camera_teaching),
+        w.camera_teaching.len(),
+        before.camera_teaching.len(),
         "示教帧保留"
     );
+    for (after, old) in w.camera_teaching.iter().zip(&before.camera_teaching) {
+        assert_eq!(
+            (state_value(&after.frame), &after.camera, after.segment),
+            (state_value(&old.frame), &old.camera, old.segment),
+            "冻结的示教图与所属段不变"
+        );
+        // 改指向新示教件：导出回传包、走廊试测与分段对应都按新件的轮次与帧组，旧轮次随后删除
+        assert_eq!(after.round, "new");
+        assert_eq!(after.seq, (old.seq - 1) * 2 + 1, "帧组号按帧组数等比例换算");
+    }
     assert_eq!(
         w.doc
             .inspect

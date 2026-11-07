@@ -2,7 +2,7 @@
 //! 各段 N_exp 与胶偏参考 x_ref 的唯一来源，换件即清空图像派生内容；选件即导入为轮次。
 //! 轮次只作存储格式，界面面对历史件。旧流程候选（`flow` 缺省）停用，只能删除。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::burst::{self, CalibrationRound, CALIBRATION_DIR};
 use super::capture_review::{self, ConfirmedBy, ReviewStatus};
@@ -80,12 +80,15 @@ pub(super) fn teaching_measured(w: &Workspace) -> bool {
     })
 }
 
-/// 设定（更换）示教件（RB-2、RB-8）：保留走廊与示教帧（示教帧已冻结在候选目录，不随旧轮次删除）、段列表结构与配方级参数；
-/// 只清空跟着原示教件帧组走的内容——全部轮次的边界复核与模板、示教件测量与派生结果（N_exp、标定统计、partCalib、x_ref），
-/// 在新示教件上重新确认分段、重新测量即可得出。轮次目录与测量特征由调用方删除。
+/// 设定（更换）示教件（RB-2、RB-8）：保留走廊与示教帧、段列表结构与配方级参数；只清空跟着原示教件帧组走的内容——
+/// 全部轮次的边界复核与模板、示教件测量与派生结果（N_exp、标定统计、partCalib、x_ref），在新示教件上重新确认分段、重新测量即可得出。
+/// 保留的示教帧改指向新示教件：轮次换成新件（旧轮次随后删除），帧组号按两件的帧组数等比例换算（`groups` 为各旧轮次的帧组数，
+/// 查不到的只夹在新件范围内）；冻结的示教图不变，走廊照旧在它上面编辑。轮次目录与测量特征由调用方删除。
 pub(super) fn replace_teaching_piece(
     w: &mut Workspace,
     piece: TeachingPiece,
+    piece_groups: u64,
+    groups: &BTreeMap<String, u64>,
 ) -> Result<(), String> {
     burst::require_burst(&w.doc)?;
     if w.teaching_piece
@@ -94,12 +97,26 @@ pub(super) fn replace_teaching_piece(
     {
         return Err("这一件已是示教件".into());
     }
+    for t in &mut w.camera_teaching {
+        t.seq = scaled_seq(t.seq, groups.get(&t.round).copied(), piece_groups);
+        t.round = piece.round_id.clone();
+    }
     w.capture_review = capture_review::CaptureReview::default();
     w.calibration = burst::Calibration::default();
     burst::clear_calibration(&mut w.doc);
     w.teaching_piece = Some(piece);
     w.changed();
     Ok(())
+}
+
+/// 原件第 seq 帧组按帧组数等比例落到新件（都从 1 起），夹在新件范围内；原件帧组数不知道时只夹范围。
+fn scaled_seq(seq: u64, from: Option<u64>, to: u64) -> u64 {
+    let to = to.max(1);
+    let scaled = match from.filter(|&n| n > 0) {
+        Some(from) => (seq.saturating_sub(1) * to + from / 2) / from + 1,
+        None => seq,
+    };
+    scaled.clamp(1, to)
 }
 
 /// 本候选导入的轮次：属于本配方、已完整的轮次，不含验证样本库用到的轮次；示教件在前，其余（旧流程留下的标定件）按创建时间。
@@ -279,6 +296,20 @@ fn set_teaching_piece(
     let (round_id, part) = history_import::import_records(app, &w, &picks)?
         .pop()
         .ok_or("示教件导入失败")?;
+    // 保留的示教帧要按帧组数换算到新件：先记下它们所在旧轮次的帧组数（旧轮次随后删除）
+    let groups: BTreeMap<String, u64> = w
+        .camera_teaching
+        .iter()
+        .map(|t| t.round.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|round| {
+            capture
+                .get_burst(&round)
+                .ok()
+                .map(|r| (round, r.group_count))
+        })
+        .collect();
     let replaced = (|| {
         let piece = TeachingPiece {
             round_id: round_id.clone(),
@@ -298,7 +329,7 @@ fn set_teaching_piece(
             .filter(|r| *r != round_id)
             .collect();
         let mut next = current.clone();
-        replace_teaching_piece(&mut next, piece)?;
+        replace_teaching_piece(&mut next, piece, part.group_count, &groups)?;
         host.save(&next)?;
         *current = next;
         Ok::<_, String>((current.clone(), stale))
