@@ -1,4 +1,4 @@
-import type { BurstJudgement, FrameMetrics, PathSegment, RegionResult } from "../plan/types";
+import type { BurstJudgement, FrameMetrics, FrameVerdict, PathSegment, RegionResult } from "../plan/types";
 import { regionKindLabel, regionSegments } from "../plan/vis";
 import type { PartDetailBurst } from "./types";
 
@@ -16,9 +16,9 @@ export const burstSideOf = (burst: PartDetailBurst): BurstSide => ({ segments: b
 
 /**
  * 把一次对照的结果套到原记录上，供帧组条、段布置与区域结论按对照显示：段、相机、预期与判定取对照，
- * 每帧状态与指标取对照的逐帧指标，帧号、触发计数与原图引用沿用原记录；没有逐帧指标的旧对照返回 null。
+ * 每帧状态、指标与单帧结论取对照的，帧号、触发计数与原图引用沿用原记录；没有逐帧指标的旧对照返回 null。
  */
-export function comparisonBurst(burst: PartDetailBurst, side: BurstSide & { frames: FrameMetrics[] }): PartDetailBurst | null {
+export function comparisonBurst(burst: PartDetailBurst, side: BurstSide & { frames: FrameMetrics[]; frameVerdicts?: FrameVerdict[] }): PartDetailBurst | null {
   if (!side.frames.length) return null;
   const regionOf = (seq: number) => { const i = side.judgement.regions.findIndex(r => r.region.firstSeq <= seq && seq <= r.region.lastSeq); return i < 0 ? null : i; };
   // 先按 (相机, seq) 建索引：长件可达数万帧，逐帧在整个数组里找会卡住界面
@@ -28,7 +28,7 @@ export function comparisonBurst(burst: PartDetailBurst, side: BurstSide & { fram
     return { ...frame, status: metrics?.state ?? frame.status, metrics, region: regionOf(frame.seq) };
   });
   return { ...burst, segments: side.segments, cameras: side.cameras, expectedTotal: side.expectedTotal,
-    toleranceTotal: side.segments.reduce((sum, s) => sum + s.tolerance, 0), judgement: side.judgement, frames };
+    toleranceTotal: side.segments.reduce((sum, s) => sum + s.tolerance, 0), judgement: side.judgement, frames, frameVerdicts: side.frameVerdicts ?? [] };
 }
 
 /**

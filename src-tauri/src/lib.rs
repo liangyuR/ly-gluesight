@@ -326,6 +326,8 @@ pub fn run() {
             workspace::workspace_calibration_skip_suggest,
             workspace::workspace_record_frame_image,
             workspace::workspace_record_frame_view,
+            workspace::workspace_history_frame_view,
+            workspace::workspace_history_compare_options,
             flow_debug::flow_open,
             flow_debug::flow_manifest,
             flow_debug::flow_core_info,
@@ -424,6 +426,9 @@ fn start_services(
     agent_mcp::start(app);
     measure::apply_settings(app);
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || cycle::purge_history(&handle));
+    tauri::async_runtime::spawn_blocking(move || {
+        cycle::purge_history(&handle);
+        cycle::repair_history(&handle);
+    });
     Ok(())
 }

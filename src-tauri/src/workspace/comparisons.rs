@@ -144,7 +144,11 @@ fn inventory(dir: &Path, history_id: i64) -> Result<Vec<(PathBuf, Comparison)>, 
         if !metadata.is_file() || path.extension().and_then(|s| s.to_str()) != Some("json") {
             return Err(format!("未确认的复测目录项：{}", path.display()));
         }
-        let saved: Comparison = serde_json::from_slice(&fs::read(&path).map_err(error)?).map_err(error)?;
+        let mut saved: Comparison =
+            serde_json::from_slice(&fs::read(&path).map_err(error)?).map_err(error)?;
+        if let Some(burst) = saved.burst.as_mut() {
+            burst.fill_verdicts();
+        }
         valid_identity(&saved)?;
         if saved.history_id != history_id || path.file_stem().and_then(|s| s.to_str()) != Some(saved.id.as_str()) {
             return Err("复测文件与历史编号或文件名不一致".into());

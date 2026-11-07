@@ -1,6 +1,6 @@
 import type { Judgement, Recipe, RecipeDoc, RecipeStage, Verdict } from "../cycle/types";
 import type { CameraImaging } from "../camera/types";
-import type { BurstJudgement, CalibrationRound, CameraTeaching, FrameMetrics, PathSegment, WorkspacePlanView } from "../plan/types";
+import type { BurstJudgement, CalibrationRound, CameraTeaching, FrameMetrics, FrameVerdict, PathSegment, WorkspacePlanView } from "../plan/types";
 import type { PartMode } from "../history/types";
 import type { NavigationMapData } from "./navigation/types";
 import type { FramePixels } from "../../lib/frame";
@@ -115,7 +115,17 @@ export interface Comparison {
     /** 这次对照用的每帧指标；之前保存的对照为空 */
     frames: FrameMetrics[];
     /** 建测量图用的各计划相机示教帧尺寸 [宽, 高]，叠图按它重建；原包重现与之前保存的对照为空 */
-    sizes?: [number, number][] } | null;
+    sizes?: [number, number][];
+    /** 逐帧结论（帧格颜色），后端读出时按这次对照的区域与逐帧指标算出 */
+    frameVerdicts?: FrameVerdict[] } | null;
+}
+/** 一种复测能不能做（后端 burst_history::CompareOption）：不能做时 reason 写明原因。 */
+export interface CompareOption { available: boolean; reason: string | null }
+/** 一条历史记录能做哪几种复测（后端 burst_history::CompareOptions）：按记录的配方找本机候选，与工作台当前选的配方无关。 */
+export interface CompareOptions {
+  /** 记录所属配方的候选；本机没有（如从发布包导入）为 null */
+  candidate: { id: string; revision: number; version: number } | null;
+  original: CompareOption; rules: CompareOption; raw: CompareOption;
 }
 /** 分段保存的影响（后端 capture_review::SegmentSaveImpact，保存前确认用）。 */
 export interface SegmentSaveImpact {

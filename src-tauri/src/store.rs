@@ -99,6 +99,8 @@ pub struct PartDetailBurst {
     pub judgement: BurstJudgement,
     /// 按 (camera, seq) 排序
     pub frames: Vec<FrameRecord>,
+    /// 逐帧结论（帧格颜色）：读取时按配方快照的段、记录的区域与已存指标算出（`burst_judge::frame_verdicts`），不落库
+    pub frame_verdicts: Vec<crate::burst_judge::FrameVerdict>,
 }
 
 /// 历史列表里段配方记录的帧数（只供 CSV 导出，不进 IPC：界面契约只有 `PartSummary.flags`）。
@@ -1345,17 +1347,35 @@ impl Store {
             .ok_or_else(|| format!("记录 {id} 不存在或已过期清理"))?;
         let burst = match (burst_judgement, &summary.burst) {
             (Some(judgement), Some(counts)) => {
-                let revision = summary.recipe_revision.as_deref().ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
-                let recipe = snapshot_in(&conn, revision)?.ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
+                let revision = summary
+                    .recipe_revision
+                    .as_deref()
+                    .ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
+                let recipe = snapshot_in(&conn, revision)?
+                    .ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
+                let judgement: BurstJudgement = serde_json::from_str(&judgement)
+                    .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
+                let frames = frame_rows(&conn, id)?;
+                let cameras = recipe.plan_cameras();
+                let regions: Vec<_> = judgement.regions.iter().map(|r| r.region.clone()).collect();
+                let metrics: Vec<FrameMetrics> =
+                    frames.iter().filter_map(|f| f.metrics.clone()).collect();
+                let frame_verdicts = crate::burst_judge::frame_verdicts(
+                    &recipe.path_segments,
+                    &regions,
+                    &metrics,
+                    &cameras,
+                );
                 Some(PartDetailBurst {
                     segments: recipe.path_segments.clone(),
-                    cameras: recipe.plan_cameras(),
+                    cameras,
                     expected_total: counts.expected_total,
                     tolerance_total: counts.tolerance_total,
                     device_triggers: counts.device_triggers,
                     camera_frames: counts.camera_frames.clone(),
-                    judgement: serde_json::from_str(&judgement).map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?,
-                    frames: frame_rows(&conn, id)?,
+                    judgement,
+                    frames,
+                    frame_verdicts,
                 })
             }
             (None, None) => None,
@@ -1390,6 +1410,65 @@ impl Store {
     /// 段配方记录的逐帧记录，按 (camera, seq) 排序；旧记录为空。
     pub fn burst_frames(&self, id: i64) -> Result<Vec<FrameRecord>, String> {
         frame_rows(&self.conn.lock().unwrap(), id)
+    }
+
+    /// 区域判定为空、但有测过的帧的维护试判件：回写码 0 与区域判定不同，落库时退回了没有区域的摘要。
+    pub fn shadow_parts_without_regions(&self) -> Result<Vec<i64>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.id FROM parts p WHERE p.mode='maintenanceShadow' AND p.burst_judgement IS NOT NULL \
+                 AND json_array_length(p.burst_judgement,'$.regions')=0 \
+                 AND EXISTS(SELECT 1 FROM part_frames f WHERE f.part_id=p.id AND f.status='measured') ORDER BY p.id",
+            )
+            .map_err(db_err)?;
+        let ids = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(db_err)?
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+        Ok(ids)
+    }
+
+    /// 补回维护试判件的区域判定：结论摘要（verdict / plc_code / fault_code / reason）须与新判定相同，只换区域判定、整件标记
+    /// 与每帧所属区域；记录已有区域或结论不同时不动，返回 false。
+    pub fn repair_burst_regions(
+        &self,
+        id: i64,
+        judgement: &BurstJudgement,
+        regions: &[(usize, u64, Option<usize>)],
+    ) -> Result<bool, String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(db_err)?;
+        let text = |value: Result<String, serde_json::Error>| value.map_err(|e| e.to_string());
+        let changed = tx
+            .execute(
+                "UPDATE parts SET burst_judgement=?2, flags=?3 WHERE id=?1 AND mode='maintenanceShadow' \
+                 AND verdict=?4 AND plc_code=?5 AND fault_code=?6 AND reason=?7 AND json_array_length(burst_judgement,'$.regions')=0",
+                params![
+                    id,
+                    text(serde_json::to_string(judgement))?,
+                    text(serde_json::to_string(&judgement.flags))?,
+                    verdict_str(judgement.verdict),
+                    judgement.plc_code,
+                    judgement.fault_code,
+                    judgement.reason,
+                ],
+            )
+            .map_err(db_err)?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        for &(camera, seq, region) in regions {
+            let seq = i64::try_from(seq).map_err(|_| "帧组序号超出存储范围")?;
+            tx.execute(
+                "UPDATE part_frames SET region=?4 WHERE part_id=?1 AND camera=?2 AND seq=?3",
+                params![id, camera as i64, seq, region.map(|n| n as i64)],
+            )
+            .map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(true)
     }
 
     /// 取出重判候选；ids 为空时按筛选条件。

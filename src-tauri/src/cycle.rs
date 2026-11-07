@@ -175,6 +175,9 @@ pub struct FrameCellView {
     pub status: FrameCellStatus,
     /// 这一帧单独判的结论；没测成或未测完为 None
     pub verdict: Option<Verdict>,
+    /// 测过、已判定，但没有单帧结论（整件故障判 ERR、没有区域）：与还在测量中区分
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unjudged: bool,
     pub frame_counter: Option<u64>,
     /// 测量所用走廊的段；收尾补测换了走廊时随之变，检测视图据此重读叠图
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -673,6 +676,30 @@ pub fn purge_history(app: &AppHandle) {
         Err(e) => log(app, "err", "记录清理", e),
     }
     purge_handshake_audit(app);
+}
+
+/// 启动时补回维护试判件丢失的区域判定（MM-10），幂等：已补回的记录不再列出。
+pub fn repair_history(app: &AppHandle) {
+    let store = app.state::<crate::store::Store>();
+    match host(app)
+        .audit
+        .with_ready(|| crate::workspace::repair_shadow_regions(&store))
+    {
+        Ok((n, skipped)) => {
+            if n > 0 {
+                log(
+                    app,
+                    "info",
+                    "记录修复",
+                    format!("补回 {n} 条维护试判记录的区域判定"),
+                );
+            }
+            for reason in skipped {
+                log(app, "warn", "记录修复", reason);
+            }
+        }
+        Err(e) => log(app, "err", "记录修复", e),
+    }
 }
 
 /// 握手审计分段与检测记录同时清理：未结交付（PLC 尚未确认的件）读不到时整次跳过，不冒险删掉 ACK 恢复要读的记录。
@@ -1955,8 +1982,8 @@ impl Machine {
                 .await;
         }
         let source = crate::site::record_source(&app);
-        // 维护采集件是示教与标定的样本：不论录制设置都录全部帧
-        let record = if collect {
+        // 维护件不论录制设置都录全部帧：采集件是示教与标定的样本，试判件要靠原图复核误判（MM-11）
+        let record = if maintenance {
             crate::settings::RecordMode::All
         } else {
             crate::site::record_mode(&app)

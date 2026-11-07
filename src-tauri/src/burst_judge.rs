@@ -373,9 +373,74 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
     found
 }
 
-/// 一帧单独的结论（在线帧格显示用）：只看这一帧的独立指标，不含区域级的均匀性与胶偏。
+/// 一帧按给定检查项的独立结论：只看这一帧的指标，不含区域级的均匀性与胶偏。区域划定前的在线帧格用它（检查项取所测走廊的段）。
 pub fn frame_verdict(frame: &FrameMetrics, checks: &SegmentChecks) -> Verdict {
     judge_frame(frame, checks).iter().map(|f| f.verdict()).max().unwrap_or(Verdict::Ok)
+}
+
+/// 一帧的单帧结论（帧格颜色，TS `FrameVerdict`）。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameVerdict {
+    pub camera: usize,
+    pub seq: u64,
+    pub verdict: Verdict,
+}
+
+/// 区域划定后的逐帧结论（在线、历史与复测对照共用）：每帧按所在区域的检测相机与检查项判独立指标，与区域判定同一口径；
+/// 直线区域的局部跑偏落到偏离均值超限的帧。胶宽不均、整段胶偏、帧数异常只属于区域，不落到帧上。
+/// 不在区域检测相机里、没测成或不在任何区域的帧没有结论。按 (camera, seq) 排序。
+pub fn frame_verdicts(
+    segments: &[PathSegment],
+    regions: &[Region],
+    metrics: &[FrameMetrics],
+    cameras: &[String],
+) -> Vec<FrameVerdict> {
+    let frames: BTreeMap<(u64, usize), &FrameMetrics> = metrics
+        .iter()
+        .filter(|m| m.camera < cameras.len())
+        .map(|m| ((m.seq, m.camera), m))
+        .collect();
+    let part = PartInput {
+        segments,
+        expected_total: None,
+        tol_total: 0,
+        incomplete_seqs: BTreeSet::new(),
+        frames: &frames,
+        cameras,
+    };
+    let mut verdicts: BTreeMap<(usize, u64), Verdict> = BTreeMap::new();
+    for region in regions {
+        if covered(segments, region).is_empty() {
+            continue;
+        }
+        let scope = RegionScope::of(&part, region);
+        let measured = scope.measured();
+        for m in &measured {
+            verdicts.insert((m.camera, m.seq), frame_verdict(m, &scope.checks));
+        }
+        if matches!(region.kind, RegionKind::Straight { .. }) {
+            if let Ok((check, _, series)) =
+                offset_series(scope.covered[0], &scope.checks, region, &measured, cameras)
+            {
+                let mean = series.iter().map(|&(_, x)| x).sum::<f64>() / series.len() as f64;
+                for (m, x) in series {
+                    if (x - mean).abs() > check.max_local_dev_mm {
+                        let verdict = verdicts.entry((m.camera, m.seq)).or_insert(Verdict::Ok);
+                        *verdict = (*verdict).max(Finding::LocalDev.verdict());
+                    }
+                }
+            }
+        }
+    }
+    verdicts
+        .into_iter()
+        .map(|((camera, seq), verdict)| FrameVerdict {
+            camera,
+            seq,
+            verdict,
+        })
+        .collect()
 }
 
 /// 直线段胶偏（xs 已去掉区域首尾各一帧，非空）：x 均值 − x_ref 判整段偏移，各帧 x 与均值的最大偏差判局部跑偏。
@@ -435,20 +500,58 @@ fn region_cameras(part: &PartInput, region: &Region, covered: &[&PathSegment]) -
     }
 }
 
+/// 区域判定的范围：覆盖的段、参与判定的相机、所用检查项（未分段区域取覆盖段里最宽的）与区域内这些相机的帧。
+struct RegionScope<'a> {
+    covered: Vec<&'a PathSegment>,
+    allowed: BTreeSet<usize>,
+    checks: SegmentChecks,
+    in_region: Vec<&'a FrameMetrics>,
+}
+
+impl<'a> RegionScope<'a> {
+    fn of(part: &PartInput<'a>, region: &Region) -> Self {
+        let covered = covered(part.segments, region);
+        let allowed = region_cameras(part, region, &covered);
+        let checks = match region.kind {
+            RegionKind::Unsegmented { .. } => wider_checks(
+                &covered
+                    .iter()
+                    .map(|segment| &segment.checks)
+                    .collect::<Vec<_>>(),
+            ),
+            _ => covered[0].checks.clone(),
+        };
+        let in_region = part
+            .frames
+            .range((region.first_seq, 0)..=(region.last_seq, usize::MAX))
+            .map(|(_, &m)| m)
+            .filter(|m| allowed.contains(&m.camera))
+            .collect();
+        Self {
+            covered,
+            allowed,
+            checks,
+            in_region,
+        }
+    }
+
+    fn measured(&self) -> Vec<&'a FrameMetrics> {
+        self.in_region
+            .iter()
+            .copied()
+            .filter(|m| m.state == FrameState::Measured)
+            .collect()
+    }
+}
+
 fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
-    let covered = covered(part.segments, region);
-    let allowed = region_cameras(part, region, &covered);
-    let checks = match region.kind {
-        RegionKind::Unsegmented { .. } => wider_checks(&covered.iter().map(|segment| &segment.checks).collect::<Vec<_>>()),
-        _ => covered[0].checks.clone(),
-    };
+    let RegionScope {
+        covered,
+        allowed,
+        checks,
+        in_region,
+    } = RegionScope::of(part, region);
     let straight = matches!(region.kind, RegionKind::Straight { .. });
-    let in_region: Vec<&FrameMetrics> = part
-        .frames
-        .range((region.first_seq, 0)..=(region.last_seq, usize::MAX))
-        .map(|(_, &m)| m)
-        .filter(|m| allowed.contains(&m.camera))
-        .collect();
     let measured: Vec<&FrameMetrics> = in_region.iter().copied().filter(|m| m.state == FrameState::Measured).collect();
 
     let mut findings: BTreeSet<Finding> = measured.iter().flat_map(|m| judge_frame(m, &checks)).collect();
@@ -564,8 +667,29 @@ fn region_offset(
     measured: &[&FrameMetrics],
     cameras: &[String],
 ) -> (Option<OffsetStat>, Option<OffsetUnjudged>, BTreeSet<Finding>) {
-    let Some(check) = checks.offset.as_ref().filter(|check| check.enabled) else { return (None, None, BTreeSet::new()) };
-    let unjudged = |why| (None, Some(why), BTreeSet::new());
+    match offset_series(segment, checks, region, measured, cameras) {
+        Err(why) => (None, why, BTreeSet::new()),
+        Ok((check, x_ref, series)) => {
+            let xs: Vec<f64> = series.iter().map(|&(_, x)| x).collect();
+            let (stat, found) = straight_offset(&xs, x_ref, check);
+            (Some(stat), None, found)
+        }
+    }
+}
+
+/// 直线区域胶偏用的 (帧, 测量量) 序列与参考值；不判胶偏时为 Err（没启用为 None，否则为未判原因）。序列非空。
+#[allow(clippy::type_complexity)]
+fn offset_series<'c, 'm>(
+    segment: &PathSegment,
+    checks: &'c SegmentChecks,
+    region: &Region,
+    measured: &[&'m FrameMetrics],
+    cameras: &[String],
+) -> Result<(&'c OffsetCheck, f64, Vec<(&'m FrameMetrics, f64)>), Option<OffsetUnjudged>> {
+    let Some(check) = checks.offset.as_ref().filter(|check| check.enabled) else {
+        return Err(None);
+    };
+    let unjudged = |why| Err(Some(why));
     let Some(reference) = &segment.offset_ref else {
         return unjudged(OffsetUnjudged::NoReference);
     };
@@ -585,16 +709,15 @@ fn region_offset(
     ) else {
         return unjudged(OffsetUnjudged::NoReference);
     };
-    let xs: Vec<f64> = measured
+    let series: Vec<(&FrameMetrics, f64)> = measured
         .iter()
         .filter(|m| m.camera == camera && m.seq != region.first_seq && m.seq != region.last_seq)
-        .filter_map(|m| value(m))
+        .filter_map(|&m| value(m).map(|x| (m, x)))
         .collect();
-    if xs.is_empty() {
+    if series.is_empty() {
         return unjudged(OffsetUnjudged::NoFrames);
     }
-    let (stat, found) = straight_offset(&xs, x_ref, check);
-    (Some(stat), None, found)
+    Ok((check, x_ref, series))
 }
 
 /// max − min；空为 None。
@@ -729,6 +852,104 @@ mod tests {
 
     fn run(segments: &[PathSegment], expected_total: Option<u32>, regions: &[Region], metrics: &[FrameMetrics]) -> BurstJudgement {
         judge(segments, expected_total, regions, &groups_of(metrics), metrics, &cameras(), &[])
+    }
+
+    fn verdict_map(
+        segments: &[PathSegment],
+        regions: &[Region],
+        metrics: &[FrameMetrics],
+    ) -> BTreeMap<(usize, u64), Verdict> {
+        frame_verdicts(segments, regions, metrics, &cameras())
+            .into_iter()
+            .map(|v| ((v.camera, v.seq), v.verdict))
+            .collect()
+    }
+
+    /// 防的回归：段内一帧超差时历史帧格整段变红——帧格颜色只看本帧，同段其它帧仍合格；区域结论照常 NG。
+    #[test]
+    fn one_frame_over_width_limit_is_the_only_ng_frame_in_its_region() {
+        let segments = plan(&[Corner]);
+        let regions = [region(RegionKind::Corner { segment: 1 }, 1, 4)];
+        let mut metrics = frames(4);
+        set_widths(at(&mut metrics, 0, 2), &[7.0; 10]);
+        assert_eq!(
+            run(&segments, None, &regions, &metrics).verdict,
+            Verdict::NgWidth
+        );
+        let verdicts = verdict_map(&segments, &regions, &metrics);
+        assert_eq!(verdicts[&(0, 2)], Verdict::NgWidth);
+        assert!(verdicts
+            .iter()
+            .filter(|(key, _)| **key != (0, 2))
+            .all(|(_, v)| *v == Verdict::Ok));
+    }
+
+    /// 防的回归：在线帧格曾用各段里最宽松的允差判帧，严格段里超差的帧显示合格。逐帧结论按帧所在区域的段允差判。
+    #[test]
+    fn frame_is_judged_with_the_tolerance_of_its_own_region() {
+        let mut segments = plan(&[Corner, Corner]);
+        segments[1].checks.width.tol_upper = 0.5;
+        let regions = [
+            region(RegionKind::Corner { segment: 1 }, 1, 3),
+            region(RegionKind::Corner { segment: 2 }, 4, 6),
+        ];
+        let mut metrics = frames(6);
+        for seq in [2, 5] {
+            set_widths(at(&mut metrics, 0, seq), &[5.0; 10]);
+        }
+        let verdicts = verdict_map(&segments, &regions, &metrics);
+        assert_eq!(
+            (verdicts[&(0, 2)], verdicts[&(0, 5)]),
+            (Verdict::Ok, Verdict::NgWidth)
+        );
+    }
+
+    /// 防的回归：局部跑偏只落到偏离超限的帧；整段胶偏、胶宽不均属于整段，不把任何帧标成不合格（否则又回到整段变红）。
+    #[test]
+    fn local_deviation_marks_its_frames_but_region_wide_findings_mark_none() {
+        type Edit = fn(&mut Vec<FrameMetrics>);
+        let cases: [(&str, Edit, Vec<(usize, u64)>); 3] = [
+            (
+                "第 4 帧组 x 偏离均值 2.5 mm > 2 mm",
+                |m| at(m, 0, 4).x_mm = Some(3.0),
+                vec![(0, 4)],
+            ),
+            (
+                "整段 x 偏 2.5 mm > 2 mm",
+                |m| m.iter_mut().for_each(|f| f.x_mm = Some(2.5)),
+                vec![],
+            ),
+            (
+                "各帧均值极差 0.8 mm > 0.5 mm",
+                |m| set_widths(at(m, 1, 3), &[4.8; 10]),
+                vec![],
+            ),
+        ];
+        for (case, edit, expected) in cases {
+            let mut segments = plan(&[Straight]);
+            segments[0].checks.width.max_range_mm = Some(0.5);
+            segments[0].offset_ref = Some(OffsetRef {
+                measure: OffsetMeasure::AbsoluteX,
+                camera: "camA".into(),
+                x_ref: Some(0.0),
+                spread: None,
+                edge: None,
+            });
+            let regions = [region(RegionKind::Straight { segment: 1 }, 1, 8)];
+            let mut metrics = frames(8);
+            edit(&mut metrics);
+            assert_ne!(
+                run(&segments, None, &regions, &metrics).verdict,
+                Verdict::Ok,
+                "{case}"
+            );
+            let flagged: Vec<(usize, u64)> = verdict_map(&segments, &regions, &metrics)
+                .into_iter()
+                .filter(|(_, v)| *v != Verdict::Ok)
+                .map(|(key, _)| key)
+                .collect();
+            assert_eq!(flagged, expected, "{case}");
+        }
     }
 
     /// D-SB-41：直线 / 弯道区域只用本段检测相机——没选中的相机这一帧断胶、缺帧都不影响结论与检测不完整；

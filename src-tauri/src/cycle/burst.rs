@@ -71,7 +71,7 @@ pub(super) struct BurstPart {
     /// 已送测、还没有结果的帧数
     pending: usize,
     trusted: Vec<CounterSource>,
-    /// 每帧单独结论用的允差：未分段区域覆盖全部段，取各段中较宽一档（与 burst_judge 的区域允差相同）
+    /// 判定前临时帧格结论的兜底允差（帧没记所测走廊时）：各段中较宽一档
     checks: SegmentChecks,
     /// 判定后存下，落库与结果显示用
     pub(super) judgement: Option<BurstJudgement>,
@@ -406,8 +406,14 @@ fn from_summary(judgement: &Judgement) -> BurstJudgement {
     }
 }
 
+/// plc_code 是回写 PLC 的码（维护件为 0，MM-2），不属于结论，不参与比较。
 fn same_conclusion(burst: &BurstJudgement, judgement: &Judgement) -> bool {
-    (burst.verdict, burst.plc_code, burst.fault_code, burst.reason.as_str()) == (judgement.verdict, judgement.plc_code, judgement.fault_code, judgement.reason.as_str())
+    (burst.verdict, burst.fault_code, burst.reason.as_str())
+        == (
+            judgement.verdict,
+            judgement.fault_code,
+            judgement.reason.as_str(),
+        )
 }
 
 /// 没有帧的记录（接件时就不能检测、进程中断补记录）：预期帧组数与容差取配方，各相机帧数为 0，判定与摘要相同。
@@ -641,12 +647,20 @@ impl Part {
         )
     }
 
-    /// 落库用的段配方记录：1..=帧组数内每台相机每一帧一条，缺帧也有。判定取本件的区域判定；结论摘要与它不同
+    /// 落库用的段配方记录：1..=帧组数内每台相机每一帧一条，缺帧也有。判定取本件的区域判定，回写码取摘要的；结论摘要与它不同
     /// （在途中断记 ERR 98 等）时按摘要给出。
     pub(super) fn burst_record(&self, judgement: &Judgement) -> BurstRecord {
         let burst = &self.burst;
         let group_count = burst.grouper.group_count();
-        let decided = burst.judgement.clone().filter(|decided| same_conclusion(decided, judgement)).unwrap_or_else(|| BurstJudgement {
+        let decided = burst
+            .judgement
+            .clone()
+            .filter(|decided| same_conclusion(decided, judgement))
+            .map(|decided| BurstJudgement {
+                plc_code: judgement.plc_code,
+                ..decided
+            })
+            .unwrap_or_else(|| BurstJudgement {
             group_count: u32::try_from(group_count).unwrap_or(u32::MAX),
             alarms: loss_alarms(&burst.grouper.camera_counts()),
             ..from_summary(judgement)
@@ -677,6 +691,28 @@ impl Part {
     pub(super) fn burst_view(&self) -> PartViewBurst {
         let burst = &self.burst;
         let settled = burst.judgement.is_some() || self.burst_deadline(Instant::now());
+        // 判定后帧格按所在区域判（与历史同一口径）；判定前按这一帧所测走廊的段临时判
+        let decided: Option<BTreeMap<(usize, u64), crate::judge::Verdict>> =
+            burst.judgement.as_ref().map(|judgement| {
+                let regions: Vec<Region> =
+                    judgement.regions.iter().map(|r| r.region.clone()).collect();
+                let metrics: Vec<FrameMetrics> = burst
+                    .frames
+                    .values()
+                    .filter_map(|frame| frame.metrics.clone())
+                    .collect();
+                burst_judge::frame_verdicts(&burst.segments, &regions, &metrics, &burst.cameras)
+                    .into_iter()
+                    .map(|v| ((v.camera, v.seq), v.verdict))
+                    .collect()
+            });
+        let provisional = |m: &FrameMetrics| {
+            let checks = m
+                .corridor
+                .and_then(|c| burst.segments.iter().find(|s| s.index == c))
+                .map_or(&burst.checks, |s| &s.checks);
+            burst_judge::frame_verdict(m, checks)
+        };
         let groups = burst
             .grouper
             .groups()
@@ -688,14 +724,22 @@ impl Part {
                             let (status, verdict) = match &frame.metrics {
                                 Some(m) => (
                                     FrameCellStatus::from(m.state),
-                                    (m.state == FrameState::Measured)
-                                        .then(|| burst_judge::frame_verdict(m, &burst.checks)),
+                                    match &decided {
+                                        Some(verdicts) => {
+                                            verdicts.get(&(camera, group.seq)).copied()
+                                        }
+                                        None => (m.state == FrameState::Measured)
+                                            .then(|| provisional(m)),
+                                    },
                                 ),
                                 None => (FrameCellStatus::Measuring, None),
                             };
                             FrameCellView {
                                 status,
                                 verdict,
+                                unjudged: decided.is_some()
+                                    && status == FrameCellStatus::Measured
+                                    && verdict.is_none(),
                                 frame_counter: Some(frame.frame_counter),
                                 segment: frame.metrics.as_ref().and_then(|m| m.corridor),
                             }
@@ -707,6 +751,7 @@ impl Part {
                                 FrameCellStatus::Waiting
                             },
                             verdict: None,
+                            unjudged: false,
                             frame_counter: None,
                             segment: None,
                         },

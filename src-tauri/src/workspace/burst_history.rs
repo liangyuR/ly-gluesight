@@ -34,23 +34,41 @@ pub struct ComparisonBurst {
     /// 按原发布包重现的对照与之前保存的对照为空
     #[serde(default)]
     pub sizes: Vec<[u32; 2]>,
+    /// 逐帧结论（帧格颜色）：按这次对照的段、区域与逐帧指标算出（`burst_judge::frame_verdicts`），读出时重算
+    #[serde(default, skip_deserializing)]
+    pub frame_verdicts: Vec<burst_judge::FrameVerdict>,
 }
 
 impl ComparisonBurst {
+    /// 按这次对照的段、区域与逐帧指标算出逐帧结论。
+    pub(super) fn fill_verdicts(&mut self) {
+        let regions: Vec<Region> = self
+            .judgement
+            .regions
+            .iter()
+            .map(|r| r.region.clone())
+            .collect();
+        self.frame_verdicts =
+            burst_judge::frame_verdicts(&self.segments, &regions, &self.frames, &self.cameras);
+    }
+
     fn of(
         recipe: &Recipe,
         judgement: BurstJudgement,
         frames: Vec<FrameMetrics>,
         sizes: Vec<[u32; 2]>,
     ) -> Self {
-        Self {
+        let mut burst = Self {
             segments: recipe.path_segments.clone(),
             cameras: recipe.plan_cameras(),
             expected_total: recipe.expected_total(),
             judgement,
             frames,
             sizes,
-        }
+            frame_verdicts: Vec::new(),
+        };
+        burst.fill_verdicts();
+        burst
     }
 }
 
@@ -112,6 +130,80 @@ pub(super) fn judge_frames(
         cameras,
         loss,
     )
+}
+
+/// 补回维护试判件丢失的区域判定（MM-10）：按记录的配方快照、已存每帧指标与丢帧告警重新划分区域并判定（与在线同一规则）；
+/// 结论与摘要相同才写回，回写码沿用摘要的 0。返回补回件数与跳过的原因。
+pub(crate) fn repair_shadow_regions(store: &Store) -> Result<(usize, Vec<String>), String> {
+    let (mut repaired, mut skipped) = (0, Vec::new());
+    for id in store.shadow_parts_without_regions()? {
+        let detail = match store.detail(id) {
+            Ok(detail) => detail,
+            Err(error) => {
+                skipped.push(format!("记录 #{id} 读取失败，未补回：{error}"));
+                continue;
+            }
+        };
+        let Some(burst) = detail.burst.as_ref() else {
+            continue;
+        };
+        let s = &detail.summary;
+        let Some(recipe) = s
+            .recipe_revision
+            .as_deref()
+            .map(|r| store.recipe_snapshot(r))
+            .transpose()?
+            .flatten()
+        else {
+            skipped.push(format!("记录 #{id} 的原配方快照缺失"));
+            continue;
+        };
+        let metrics: Vec<FrameMetrics> = burst
+            .frames
+            .iter()
+            .filter_map(|f| f.metrics.clone())
+            .collect();
+        let judged = judge_frames(
+            &recipe.path_segments,
+            recipe.boundary_guard,
+            recipe.boundary_refine,
+            recipe.expected_total(),
+            &burst.cameras,
+            &metrics,
+            &burst.judgement.alarms,
+        );
+        if (judged.verdict, judged.fault_code, judged.reason.as_str())
+            != (s.verdict, s.fault_code, s.reason.as_str())
+        {
+            skipped.push(format!(
+                "记录 #{id} 重判结论（{}）与原结论（{}）不同，未补回",
+                judged.reason, s.reason
+            ));
+            continue;
+        }
+        let judgement = BurstJudgement {
+            plc_code: s.plc_code,
+            ..judged
+        };
+        let regions: Vec<(usize, u64, Option<usize>)> = burst
+            .frames
+            .iter()
+            .map(|f| {
+                (
+                    f.camera,
+                    f.seq,
+                    judgement
+                        .regions
+                        .iter()
+                        .position(|r| (r.region.first_seq..=r.region.last_seq).contains(&f.seq)),
+                )
+            })
+            .collect();
+        if store.repair_burst_regions(id, &judgement, &regions)? {
+            repaired += 1;
+        }
+    }
+    Ok((repaired, skipped))
 }
 
 /// 按生产规则从原图复测一件（D-SB-45）：由各帧到没到（`frames` 为 (计划相机下标, seq, 到了)）得出帧组数，按比例分段得出区域，
@@ -258,7 +350,8 @@ pub fn workspace_record_frame_image(app: AppHandle, history_id: i64, camera: usi
 
 /// 历史件一帧按对照重测的叠图（历史详情，只读）：用对照保存的候选配方与这一帧在对照里所用的走廊段，从录制原图重测，
 /// 给出走廊、搜索带与测到的胶边。示教帧尺寸取对照保存时记下的（`ComparisonBurst.sizes`），不依赖候选现在的示教，
-/// 候选换了示教件或已删除也能看。这一帧在对照里没测（缺帧、本段不检测）时只给指标、不画线；按原发布包重现的对照不支持。
+/// 候选换了示教件或已删除也能看。按原发布包重现的对照用那个发布包重测（与历史原始记录的叠图同一入口）。
+/// 这一帧在对照里没测（缺帧、本段不检测）时只给指标、不画线。
 #[tauri::command]
 pub async fn workspace_record_frame_view(
     app: AppHandle,
@@ -282,9 +375,6 @@ pub async fn workspace_record_frame_view(
             .into_iter()
             .find(|c| c.id == comparison)
             .ok_or("找不到这次对照结果")?;
-        if found.source == "original" {
-            return Err("按原发布包重现的对照不支持叠图".into());
-        }
         let burst = found.burst.as_ref().ok_or("这次对照没有逐帧结果")?;
         let metrics = burst
             .frames
@@ -306,6 +396,14 @@ pub async fn workspace_record_frame_view(
                 metrics: metrics.clone(),
             });
         };
+        if found.source == "original" {
+            let bundle_id = found.bundle_id.as_deref().ok_or("这次重现没有记下发布包")?;
+            let prepared = history_prepared(&app, &found.candidate_recipe, bundle_id)?;
+            let image = frame_image(&app, &detail, camera, seq)?;
+            let measured = prepared.measure_frame(camera, segment, seq, &image, &format!("record-view-{history_id}-c{camera}-{seq}"))?;
+            let trace = crate::measure::FrameTrace { edges: measured.edges, part_edges: measured.part_edges, line: measured.line };
+            return Ok(trace_view(&prepared.recipe, segment, trace, metrics));
+        }
         if burst.sizes.is_empty() {
             return Err("这次对照没有保存示教帧尺寸（之前保存的对照或候选当时未示教完）：重新触发测试后再看叠图".into());
         }
@@ -380,17 +478,202 @@ impl CandidateMeasurer {
 
 /// `workspace_compare` 的段配方分支：`raw` 从原图用候选走廊复测整件；否则用记录里存的每帧指标按候选规则重判
 /// （要求每帧指标的测量定义与计划身份不变，见 `store::same_measurement_layout`）。
-pub(super) fn compare(app: &AppHandle, w: &Workspace, recipe: &Recipe, detail: &PartDetail, original: &Recipe, raw: bool) -> Result<(judge::Judgement, ComparisonBurst), String> {
-    let burst = detail.burst.as_ref().ok_or("这条历史是旧拍照点记录，不能用段配方候选对照")?;
+/// 一种复测能不能做（TS `CompareOption`）：不能做时 reason 写明原因。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareOption {
+    pub available: bool,
+    pub reason: Option<String>,
+}
+
+impl CompareOption {
+    fn of(blocker: Option<String>) -> Self {
+        Self {
+            available: blocker.is_none(),
+            reason: blocker,
+        }
+    }
+}
+
+/// 对照用的候选：记录所属配方的候选编号、修订与版本。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareCandidate {
+    pub id: String,
+    pub revision: u64,
+    pub version: u32,
+}
+
+/// 一条历史记录能做哪几种复测（TS `CompareOptions`）：以记录为准，按记录的配方找候选，与工作台当前选的配方无关；
+/// 原因与真正执行对照时的检查同一处给出。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareOptions {
+    pub candidate: Option<CompareCandidate>,
+    pub original: CompareOption,
+    pub rules: CompareOption,
+    pub raw: CompareOption,
+}
+
+fn recording_reason(detail: &PartDetail) -> String {
+    use crate::store::RecordingState::*;
+    match detail.recording.state {
+        Off => "录制关闭，本件未保存原图",
+        NotRetained => "按录制策略本件未保存原图",
+        Pending => "原图仍在落盘",
+        Incomplete => "原图不完整",
+        Failed => "原图录制失败",
+        Complete => "原图已按保留策略清理或无法核验",
+    }
+    .into()
+}
+
+/// 按规则重判的前置条件：复用记录里存的区域与每帧指标，测量布局须相同、原记录须有区域。
+fn rules_blocker(burst: &PartDetailBurst, original: &Recipe, recipe: &Recipe) -> Option<String> {
     if !original.is_burst() || !recipe.is_burst() {
-        return Err("段配方记录只能与段配方候选对照".into());
+        return Some("段配方记录只能与段配方候选对照".into());
+    }
+    if !crate::store::same_measurement_layout(original, recipe) {
+        return Some(
+            "保存的每帧指标与候选的走廊、当量、检测参数或计划身份不同，不能复用；请从原图复测"
+                .into(),
+        );
+    }
+    if burst.judgement.verdict == Verdict::ErrInspect
+        || burst.frames.is_empty()
+        || burst.judgement.regions.is_empty()
+    {
+        return Some("原记录没有区域判定（结论为 ERR、没有逐帧指标或只录图未判定），没有可重判的区域；请从原图复测".into());
+    }
+    None
+}
+
+/// 从原图复测的前置条件：计划相机相同、原图齐（候选调试记录读样本集，不看录制）、候选走廊示教完成。
+fn raw_blocker(
+    detail: &PartDetail,
+    burst: &PartDetailBurst,
+    original: &Recipe,
+    recipe: &Recipe,
+    w: &Workspace,
+) -> Option<String> {
+    if !original.is_burst() || !recipe.is_burst() {
+        return Some("段配方记录只能与段配方候选对照".into());
+    }
+    if original.plan_cameras() != recipe.plan_cameras() {
+        return Some("历史原图的计划相机与候选不同；请重新采集样本".into());
+    }
+    if detail.summary.source != RecordSource::OfflineCandidate && !raw_complete(detail, burst) {
+        return Some(format!(
+            "原图未完整保留，无法完成整件复测：{}",
+            recording_reason(detail)
+        ));
+    }
+    let untaught: Vec<String> = super::burst::camera_teaching_views(w)
+        .into_iter()
+        .filter(|c| !c.ready)
+        .map(|c| c.camera)
+        .collect();
+    if !untaught.is_empty() {
+        return Some(format!(
+            "候选走廊示教未完成（{}）；在配方工作台示教后才能从原图复测",
+            untaught.join("、")
+        ));
+    }
+    None
+}
+
+/// 按原发布包重现的前置条件。
+fn original_blocker(detail: &PartDetail, burst: &PartDetailBurst) -> Option<String> {
+    if detail.summary.source == RecordSource::OfflineCandidate {
+        return Some("候选离线调试记录没有发布包".into());
+    }
+    if detail.summary.bundle_id.is_none() {
+        return Some(
+            "本件没有不可变发布包（维护采集件或未匹配到可用配方），不能按原版本重现".into(),
+        );
+    }
+    if !raw_complete(detail, burst) {
+        return Some(format!(
+            "原图未完整保留，不能按原版本重现：{}",
+            recording_reason(detail)
+        ));
+    }
+    None
+}
+
+/// 记录能做哪几种复测。`original` 是记录的配方快照，`w` 是记录所属配方的候选（没有为 None）。
+pub(super) fn compare_options(
+    detail: &PartDetail,
+    original: Option<&Recipe>,
+    w: Option<&Workspace>,
+) -> CompareOptions {
+    let unavailable = |reason: &str| CompareOption::of(Some(reason.into()));
+    let candidate = w.map(|w| CompareCandidate {
+        id: w.doc.id.clone(),
+        revision: w.revision,
+        version: w.doc.version,
+    });
+    let Some(burst) = detail.burst.as_ref() else {
+        let reason = "这条历史是旧拍照点记录，不能按相机帧复测";
+        return CompareOptions {
+            candidate,
+            original: unavailable(reason),
+            rules: unavailable(reason),
+            raw: unavailable(reason),
+        };
+    };
+    let original_option = CompareOption::of(original_blocker(detail, burst));
+    let (rules, raw) = match (original, w) {
+        (None, _) => (
+            unavailable("历史配方快照缺失"),
+            unavailable("历史配方快照缺失"),
+        ),
+        (_, None) => {
+            let reason =
+                "这个配方在本机没有候选（如从发布包导入），不能按候选对照；可按原发布包重现";
+            (unavailable(reason), unavailable(reason))
+        }
+        (Some(original), Some(w)) => match w.doc.build() {
+            Err(error) => {
+                let reason = format!("候选配置不完整：{error}");
+                (unavailable(&reason), unavailable(&reason))
+            }
+            Ok(recipe) => (
+                CompareOption::of(rules_blocker(burst, original, &recipe)),
+                CompareOption::of(raw_blocker(detail, burst, original, &recipe, w)),
+            ),
+        },
+    };
+    CompareOptions {
+        candidate,
+        original: original_option,
+        rules,
+        raw,
+    }
+}
+
+pub(super) fn compare(
+    app: &AppHandle,
+    w: &Workspace,
+    recipe: &Recipe,
+    detail: &PartDetail,
+    original: &Recipe,
+    raw: bool,
+) -> Result<(judge::Judgement, ComparisonBurst), String> {
+    let burst = detail
+        .burst
+        .as_ref()
+        .ok_or("这条历史是旧拍照点记录，不能用段配方候选对照")?;
+    let blocker = if raw {
+        raw_blocker(detail, burst, original, recipe, w)
+    } else {
+        rules_blocker(burst, original, recipe)
+    };
+    if let Some(reason) = blocker {
+        return Err(reason);
     }
     let cameras = recipe.plan_cameras();
     let (judgement, metrics) = if raw {
-        if original.plan_cameras() != cameras { return Err("历史原图的计划相机与候选不同；请重新采集样本".into()); }
-        if detail.summary.source != RecordSource::OfflineCandidate && !raw_complete(detail, burst) {
-            return Err("原图未完整保留，无法完成整件复测".into());
-        }
         let measurer = CandidateMeasurer::new(app, w, recipe)?;
         let metrics = remeasure(recipe, &burst.frames, |frame, segment| {
             measurer.measure(
@@ -411,12 +694,6 @@ pub(super) fn compare(app: &AppHandle, w: &Workspace, recipe: &Recipe, detail: &
         );
         (judgement, metrics)
     } else {
-        if !crate::store::same_measurement_layout(original, recipe) {
-            return Err("保存的每帧指标与候选的走廊、当量、检测参数或计划身份不同，不能复用；请从原图复测".into());
-        }
-        if burst.judgement.verdict == Verdict::ErrInspect || burst.frames.is_empty() {
-            return Err("原始结论为 ERR 或没有逐帧指标，没有可重判的区域；缺失的测量不能靠修改规则补齐".into());
-        }
         let regions: Vec<Region> = burst.judgement.regions.iter().map(|r| r.region.clone()).collect();
         let metrics = stored_metrics(&burst.frames);
         let judgement = burst_judge::judge(
@@ -449,8 +726,8 @@ pub(super) fn reproduce_original(
         .burst
         .as_ref()
         .ok_or("这条历史是旧拍照点记录，不能按相机帧重现")?;
-    if !raw_complete(detail, burst) {
-        return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into());
+    if let Some(reason) = original_blocker(detail, burst) {
+        return Err(reason);
     }
     let (judgement, metrics) = reproduce::measure_burst(
         prepared,

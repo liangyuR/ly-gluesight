@@ -216,11 +216,11 @@ export default function InspectPage() {
           <Card className="prod-shots">
             <div className="panel-head">
               <h3 className="panel-title">帧组</h3>
-              <ContextHelp label="帧组说明">同一触发序号（相机 SDK 帧号）的三台相机各出一帧，配成一个帧组；每格是一台相机的一帧。绿色为合格，黄色为允许范围内的局部超差，红色为 NG，紫色为测量失败，蓝色为测量中；灰色为缺帧、未测或走出走廊，只算检测不完整，不影响 OK/NG。</ContextHelp>
+              <ContextHelp label="帧组说明">同一触发序号（相机 SDK 帧号）的三台相机各出一帧，配成一个帧组；每格是一台相机的一帧，颜色只表示本帧：绿色为合格，黄色为允许范围内的局部超差，红色为 NG，紫色为测量失败，蓝色为测量中；灰色为缺帧、未测或走出走廊，只算检测不完整，不影响 OK/NG。本件判完后上方色带是各段结论，胶宽不均、整段胶偏、帧数异常等整段性问题看色带。</ContextHelp>
               <span className="spacer" />
               <span className="muted mono">{burst ? `收到 ${burst.groupCount} 帧组 / 预期 ${expectedText(burst.expectedTotal, burst.toleranceTotal)}` : "—"}</span>
             </div>
-            {burst ? <FrameGroupStrip groups={burst.groups} cameras={burst.cameras} selected={burstSeq} onSelect={selectGroup} /> : <EmptyState title="等待工件" description="新工件开始后按帧组显示三台相机的帧。" />}
+            {burst ? <FrameGroupStrip groups={burst.groups} cameras={burst.cameras} regions={partResult?.burst?.regions} selected={burstSeq} onSelect={selectGroup} /> : <EmptyState title="等待工件" description="新工件开始后按帧组显示三台相机的帧。" />}
           </Card>
         </div>
 
