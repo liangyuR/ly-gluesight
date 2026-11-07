@@ -401,7 +401,7 @@ export interface FrameCellView {
   status: FrameCellStatus;
   /** 这一帧单独判的结论；未测完为 null */
   verdict: Verdict | null;
-  /** 历史：测过但没有单帧结论（整件没有区域判定，如在途中断）；在线不出现 */
+  /** 测过、已判定但没有单帧结论（整件故障判 ERR、没有区域）；与测量中区分，省略为 false */
   unjudged?: boolean;
   frameCounter: number | null;
   /** 测量所用走廊的段；收尾补测换了走廊时随之变 */

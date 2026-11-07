@@ -133,9 +133,15 @@ describe("历史详情（段配方记录）", () => {
   });
 
   // 防的回归：原始记录只有选了候选对照才有辅助线，现场多配方并行时看不到；原始记录按记录自己的发布包取叠图
-  it("看原始记录时不需要对照，按记录的发布包为每台相机取叠图；缺帧的相机不取", async () => {
+  it("看原始记录时不需要对照，按记录的发布包为每台相机取叠图并画在原图上；缺帧的相机不取", async () => {
+    const edge = (y: number): [[number, number], [number, number]] => [[10, y], [20, y]];
+    vi.mocked(workspaceApi.historyFrameView).mockResolvedValue({ segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5, edges: [edge(10), edge(20)], partEdges: [], metrics: frameMetrics(0, 1) });
     show();
     await waitFor(() => expect(workspaceApi.historyFrameView).toHaveBeenCalledWith(detail.summary.id, 0, 1));
+    // 三台相机都测成，每幅原图都叠出两条测量横线和搜索带
+    await waitFor(() => expect(document.querySelectorAll('[aria-label="测量横线"]')).toHaveLength(3));
+    expect(document.querySelectorAll('[aria-label="测量横线"] line')).toHaveLength(6);
+    expect(document.querySelectorAll('[aria-label="搜索带边界"]')).toHaveLength(3);
     await userEvent.click(screen.getByRole("button", { name: /^帧组 5 · CAM-2 ·/ }));
     await waitFor(() => expect(workspaceApi.historyFrameView).toHaveBeenCalledWith(detail.summary.id, 0, 5));
     expect(workspaceApi.historyFrameView).not.toHaveBeenCalledWith(detail.summary.id, 1, 5);

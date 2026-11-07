@@ -458,6 +458,23 @@ fn maintenance_summary_with_plc_code_zero_keeps_region_judgement_in_record() {
     assert!(record.frames.iter().all(|f| f.region.is_some()));
 }
 
+/// 防的回归：测过帧后整件故障判 ERR（没有区域）时，帧格没有单帧结论，在线显示成还在“测量中”。
+#[test]
+fn measured_frames_of_a_faulted_part_are_unjudged_not_measuring() {
+    let mut p = burst_part("faulted-view", &Ledgers::default());
+    deliver_groups(&mut p, 2);
+    p.fault = Some((fault::PROCESS_TIMEOUT, "等工件结束超时".into()));
+    end(&mut p, Some(2), true);
+    let judgement = judge_burst(&mut p);
+    assert!(judgement.regions.is_empty());
+    let view = p.burst_view();
+    let cells: Vec<&FrameCellView> = view.groups.iter().flat_map(|g| &g.cells).collect();
+    assert!(!cells.is_empty());
+    assert!(cells
+        .iter()
+        .all(|c| c.status == FrameCellStatus::Measured && c.verdict.is_none() && c.unjudged));
+}
+
 #[test]
 fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result() {
     let mut p = burst_part("tail-measurement", &Ledgers::default());

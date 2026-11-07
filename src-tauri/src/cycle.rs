@@ -175,6 +175,9 @@ pub struct FrameCellView {
     pub status: FrameCellStatus,
     /// 这一帧单独判的结论；没测成或未测完为 None
     pub verdict: Option<Verdict>,
+    /// 测过、已判定，但没有单帧结论（整件故障判 ERR、没有区域）：与还在测量中区分
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unjudged: bool,
     pub frame_counter: Option<u64>,
     /// 测量所用走廊的段；收尾补测换了走廊时随之变，检测视图据此重读叠图
     #[serde(skip_serializing_if = "Option::is_none")]

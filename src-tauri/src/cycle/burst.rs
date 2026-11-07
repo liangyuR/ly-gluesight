@@ -737,6 +737,9 @@ impl Part {
                             FrameCellView {
                                 status,
                                 verdict,
+                                unjudged: decided.is_some()
+                                    && status == FrameCellStatus::Measured
+                                    && verdict.is_none(),
                                 frame_counter: Some(frame.frame_counter),
                                 segment: frame.metrics.as_ref().and_then(|m| m.corridor),
                             }
@@ -748,6 +751,7 @@ impl Part {
                                 FrameCellStatus::Waiting
                             },
                             verdict: None,
+                            unjudged: false,
                             frame_counter: None,
                             segment: None,
                         },
