@@ -529,14 +529,19 @@ fn validate_sample(
         return Err("历史样本的原图不完整，不能整件复测".into());
     }
     let measurer = measurer.map_err(|e| e.clone())?;
-    let metrics = remeasure(recipe, &burst.frames, &burst.judgement.passes, |frame, segment| {
-        measurer.measure(
-            frame.camera,
-            segment,
-            frame.seq,
-            &burst_history::frame_image(app, &detail, frame.camera, frame.seq)?,
-        )
-    });
+    let metrics = remeasure(
+        recipe,
+        &burst.frames,
+        &burst.judgement.passes,
+        |frame, segment| {
+            measurer.measure(
+                frame.camera,
+                segment,
+                frame.seq,
+                &burst_history::frame_image(app, &detail, frame.camera, frame.seq)?,
+            )
+        },
+    );
     let judgement = judge_frames(
         &recipe.path_segments,
         recipe.boundary_guard,

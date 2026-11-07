@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::frame_group::{count_status, CountStatus, FrameGroup, LossAlarm};
+use crate::judge::{fault, Verdict};
 use crate::passes::PassRules;
 use crate::judge::{fault, Verdict};
 use crate::plan::{tolerance_total, wider_checks, OffsetCheck, OffsetMeasure, PathSegment, SegmentChecks, SegmentKind};
@@ -275,7 +276,15 @@ pub fn judge(
     loss: &[LossAlarm],
     passes: PassRules,
 ) -> BurstJudgement {
-    let mut judgement = judge_regions(segments, expected_total, regions, groups, metrics, cameras, loss);
+    let mut judgement = judge_regions(
+        segments,
+        expected_total,
+        regions,
+        groups,
+        metrics,
+        cameras,
+        loss,
+    );
     judgement.passes = passes.part.to_vec();
     judgement.expected_passes = passes.taught.map(|taught| taught.len() as u32);
     judgement.flags.pass_count_anomaly = passes.mismatch();
@@ -390,7 +399,9 @@ impl Finding {
         match self {
             Finding::Gap | Finding::Sparse => Verdict::NgGap,
             // 溢胶沿用 NG_WIDTH（默认做法 1），胶宽不均也是 NG_WIDTH（D-SB-16）
-            Finding::Overflow | Finding::Width | Finding::Narrow | Finding::Uneven => Verdict::NgWidth,
+            Finding::Overflow | Finding::Width | Finding::Narrow | Finding::Uneven => {
+                Verdict::NgWidth
+            }
             Finding::Shift | Finding::LocalDev => Verdict::NgPosition,
             Finding::Excursion => Verdict::OkWithExcursion,
             Finding::Wide | Finding::OverflowWarn => Verdict::Ok,
@@ -445,14 +456,27 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
         let length_known = !frame.widths.is_empty() && frame.spacing_mm > 0.0;
         let (narrow, wide) = if !length_known {
             let beyond = |out: bool| if out { f64::INFINITY } else { 0.0 };
-            (beyond(frame.width_min.is_some_and(|w| w < lower)), beyond(frame.width_max.is_some_and(|w| w > upper)))
+            (
+                beyond(frame.width_min.is_some_and(|w| w < lower)),
+                beyond(frame.width_max.is_some_and(|w| w > upper)),
+            )
         } else {
-            let length = |out: &dyn Fn(f32) -> bool| stations().filter(|&w| out(w)).count() as f64 * frame.spacing_mm;
+            let length = |out: &dyn Fn(f32) -> bool| {
+                stations().filter(|&w| out(w)).count() as f64 * frame.spacing_mm
+            };
             (length(&|w| w < lower as f32), length(&|w| w > upper as f32))
         };
-        let excursion = if width.wide_warn_only { narrow } else { narrow + wide };
+        let excursion = if width.wide_warn_only {
+            narrow
+        } else {
+            narrow + wide
+        };
         if excursion > width.max_excursion_mm {
-            found.insert(if width.wide_warn_only { Finding::Narrow } else { Finding::Width });
+            found.insert(if width.wide_warn_only {
+                Finding::Narrow
+            } else {
+                Finding::Width
+            });
         } else if excursion > 0.0 {
             found.insert(Finding::Excursion);
         }
@@ -467,7 +491,11 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
             |w| w > overflow.max_width_mm,
         )
     {
-        found.insert(if width.wide_warn_only { Finding::OverflowWarn } else { Finding::Overflow });
+        found.insert(if width.wide_warn_only {
+            Finding::OverflowWarn
+        } else {
+            Finding::Overflow
+        });
     }
     found
 }
@@ -886,9 +914,19 @@ fn region_label(region: &Region) -> String {
         RegionKind::Unsegmented { first_segment, last_segment, .. } if first_segment == last_segment => {
             format!("未分段区域（第 {first_segment} 段）")
         }
-        RegionKind::Unsegmented { first_segment, last_segment, .. } => format!("未分段区域（第 {first_segment}–{last_segment} 段）"),
-        RegionKind::Skipped { pass: Some(pass), short: true, .. } => format!("第 {pass} 笔（太短，不检）"),
-        RegionKind::Skipped { pass: Some(pass), .. } => format!("第 {pass} 笔首尾（跳过）"),
+        RegionKind::Unsegmented {
+            first_segment,
+            last_segment,
+            ..
+        } => format!("未分段区域（第 {first_segment}–{last_segment} 段）"),
+        RegionKind::Skipped {
+            pass: Some(pass),
+            short: true,
+            ..
+        } => format!("第 {pass} 笔（太短，不检）"),
+        RegionKind::Skipped {
+            pass: Some(pass), ..
+        } => format!("第 {pass} 笔首尾（跳过）"),
         RegionKind::Skipped { segment, .. } => format!("第 {segment} 段（跳过）"),
     }
 }
@@ -898,7 +936,11 @@ fn uninspected(regions: &[Region]) -> Vec<Uninspected> {
     regions
         .iter()
         .filter_map(|region| match region.kind {
-            RegionKind::Skipped { segment, pass, short } => Some(Uninspected {
+            RegionKind::Skipped {
+                segment,
+                pass,
+                short,
+            } => Some(Uninspected {
                 segment,
                 from_seq: Some(region.first_seq),
                 to_seq: Some(region.last_seq),
@@ -996,8 +1038,22 @@ mod tests {
         Region { kind, first_seq, last_seq }
     }
 
-    fn run(segments: &[PathSegment], expected_total: Option<u32>, regions: &[Region], metrics: &[FrameMetrics]) -> BurstJudgement {
-        judge(segments, expected_total, regions, &groups_of(metrics), metrics, &cameras(), &[], PassRules::NONE)
+    fn run(
+        segments: &[PathSegment],
+        expected_total: Option<u32>,
+        regions: &[Region],
+        metrics: &[FrameMetrics],
+    ) -> BurstJudgement {
+        judge(
+            segments,
+            expected_total,
+            regions,
+            &groups_of(metrics),
+            metrics,
+            &cameras(),
+            &[],
+            PassRules::NONE,
+        )
     }
 
     fn verdict_map(
@@ -1021,7 +1077,12 @@ mod tests {
         set_widths(at(&mut metrics, 0, 2), &[9.0; 10]);
         let judgement = run(&segments, Some(3), &regions, &metrics);
         assert_eq!(
-            (judgement.verdict, judgement.plc_code, judgement.flags.wide_warning, judgement.flags.overflow_warning),
+            (
+                judgement.verdict,
+                judgement.plc_code,
+                judgement.flags.wide_warning,
+                judgement.flags.overflow_warning
+            ),
             (Verdict::Ok, 1, true, true)
         );
     }
@@ -1033,12 +1094,22 @@ mod tests {
         segments[0].checks.width.wide_warn_only = true;
         let regions = [region(RegionKind::Corner { segment: 1 }, 1, 2)];
         let mut metrics = frames(2);
-        set_widths(at(&mut metrics, 0, 1), &[2.0, 2.0, 2.0, 6.0, 6.0, 6.0, 4.0, 4.0, 4.0, 4.0]);
-        set_widths(at(&mut metrics, 1, 2), &[2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0]);
+        set_widths(
+            at(&mut metrics, 0, 1),
+            &[2.0, 2.0, 2.0, 6.0, 6.0, 6.0, 4.0, 4.0, 4.0, 4.0],
+        );
+        set_widths(
+            at(&mut metrics, 1, 2),
+            &[2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0],
+        );
         let verdicts = verdict_map(&segments, &regions, &metrics);
         let judgement = run(&segments, Some(2), &regions, &metrics);
         assert_eq!(
-            (verdicts[&(0, 1)], verdicts[&(1, 2)], judgement.regions[0].reason.as_str()),
+            (
+                verdicts[&(0, 1)],
+                verdicts[&(1, 2)],
+                judgement.regions[0].reason.as_str()
+            ),
             (Verdict::OkWithExcursion, Verdict::NgWidth, "胶宽偏窄")
         );
     }
@@ -1112,7 +1183,15 @@ mod tests {
     fn skipped_region_is_not_judged_and_listed_as_uninspected() {
         let segments = plan(&[Straight]);
         let regions = [
-            region(RegionKind::Skipped { segment: 1, pass: None, short: false }, 1, 2),
+            region(
+                RegionKind::Skipped {
+                    segment: 1,
+                    pass: None,
+                    short: false,
+                },
+                1,
+                2,
+            ),
             region(RegionKind::Straight { segment: 1 }, 3, 6),
         ];
         let mut metrics = frames(6);

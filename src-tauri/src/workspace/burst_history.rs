@@ -12,9 +12,7 @@ use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
 use crate::frame_group::{FrameGroup, LossAlarm};
 use crate::passes::PassRules;
 use crate::plan::PathSegment;
-use crate::segmentation::{
-    frame_corridors, resolve_regions, segment_part, Region, SegInput,
-};
+use crate::segmentation::{frame_corridors, resolve_regions, segment_part, Region, SegInput};
 use crate::store::{FrameRecord, PartDetail, PartDetailBurst, RecordSource};
 
 /// 区域划分的置信度门槛，与在线节拍（cycle/burst.rs）相同：比例分段器在帧数容差内给 1、之外给 0。
@@ -248,7 +246,14 @@ pub(super) fn remeasure_by_rule(
         false,
         passes,
     );
-    let regions = resolve_regions(segments, &outcome, total, MIN_CONFIDENCE, boundary_guard, passes);
+    let regions = resolve_regions(
+        segments,
+        &outcome,
+        total,
+        MIN_CONFIDENCE,
+        boundary_guard,
+        passes,
+    );
     let choice = frame_corridors(segments, cameras, &regions, &outcome, total);
     frames
         .iter()
@@ -992,32 +997,37 @@ pub(super) fn compare(
             })
             .collect();
         let loss = crate::frame_group::loss_alarms(&counts);
-        let metrics = remeasure(recipe, &frames, &burst.judgement.passes, |frame, segment| {
-            let skip = |reason: String| {
-                Ok(FrameMetrics {
-                    corridor: Some(segment),
-                    ..burst::frame_without_metrics(
-                        frame.camera,
-                        frame.seq,
-                        FrameState::Unmeasured,
-                        Some(reason),
-                    )
-                })
-            };
-            if !offline && frame.raw_file.is_none() {
-                return skip("这一帧原图没有保存".into());
-            }
-            if let Some(reason) = measurer.skipped(frame.camera, segment) {
-                return skip(reason.to_owned());
-            }
-            let record = map[frame.camera].ok_or("记录里没有这台相机的原图")?;
-            measurer.measure(
-                frame.camera,
-                segment,
-                frame.seq,
-                &frame_image(app, detail, record, frame.seq)?,
-            )
-        });
+        let metrics = remeasure(
+            recipe,
+            &frames,
+            &burst.judgement.passes,
+            |frame, segment| {
+                let skip = |reason: String| {
+                    Ok(FrameMetrics {
+                        corridor: Some(segment),
+                        ..burst::frame_without_metrics(
+                            frame.camera,
+                            frame.seq,
+                            FrameState::Unmeasured,
+                            Some(reason),
+                        )
+                    })
+                };
+                if !offline && frame.raw_file.is_none() {
+                    return skip("这一帧原图没有保存".into());
+                }
+                if let Some(reason) = measurer.skipped(frame.camera, segment) {
+                    return skip(reason.to_owned());
+                }
+                let record = map[frame.camera].ok_or("记录里没有这台相机的原图")?;
+                measurer.measure(
+                    frame.camera,
+                    segment,
+                    frame.seq,
+                    &frame_image(app, detail, record, frame.seq)?,
+                )
+            },
+        );
         let judgement = judge_frames(
             &recipe.path_segments,
             recipe.boundary_guard,

@@ -141,7 +141,11 @@ pub(crate) fn parameter_warnings(segment: &PathSegment) -> Vec<Diagnostic> {
         let upper = checks.width.nominal_mm + checks.width.tol_upper;
         let nominal = checks.width.nominal_mm;
         let limit = checks.overflow.max_width_mm;
-        let overflow = if checks.width.wide_warn_only { "报溢胶预警" } else { "判溢胶" };
+        let overflow = if checks.width.wide_warn_only {
+            "报溢胶预警"
+        } else {
+            "判溢胶"
+        };
         if nominal > limit {
             warnings.push(Diagnostic {
                 code: "nominalAboveOverflow",

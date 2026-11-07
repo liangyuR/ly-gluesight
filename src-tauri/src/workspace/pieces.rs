@@ -31,8 +31,15 @@ pub struct TeachingPiece {
 }
 
 /// 示教件还没记笔结构（选示教件早于 D-SB-62）时按轮次帧记录补上。
-pub(super) fn fill_piece_passes(capture: &RecipeCaptureHost, w: &mut Workspace) -> Result<(), String> {
-    if let Some(piece) = w.teaching_piece.as_mut().filter(|piece| piece.passes.is_empty()) {
+pub(super) fn fill_piece_passes(
+    capture: &RecipeCaptureHost,
+    w: &mut Workspace,
+) -> Result<(), String> {
+    if let Some(piece) = w
+        .teaching_piece
+        .as_mut()
+        .filter(|piece| piece.passes.is_empty())
+    {
         piece.passes = capture.burst_passes(&piece.round_id)?;
     }
     Ok(())

@@ -17,7 +17,11 @@ fn burst_doc() -> RecipeDoc {
 /// 相机 3 第 2 帧缺帧（检测不完整）。原结论按配方算出，为胶宽 NG。
 fn burst_row(recipe: &Recipe) -> (StoredMeasurement, Vec<FrameRecord>) {
     let mut frames = burst_fixture::frames(6, &[(2, 2)]);
-    frames.iter_mut().find(|frame| (frame.camera, frame.seq) == (0, 5)).unwrap().metrics = Some(burst_fixture::measured(0, 5, 2.0));
+    frames
+        .iter_mut()
+        .find(|frame| (frame.camera, frame.seq) == (0, 5))
+        .unwrap()
+        .metrics = Some(burst_fixture::measured(0, 5, 2.0));
     let regions = vec![
         Region { kind: RegionKind::Straight { segment: 1 }, first_seq: 1, last_seq: 3 },
         Region { kind: RegionKind::Corner { segment: 2 }, first_seq: 4, last_seq: 6 },

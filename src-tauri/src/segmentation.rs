@@ -101,7 +101,9 @@ fn proportional_for_count(segments: &[PathSegment], total: u64) -> SegOutcome {
 /// 按笔分段（D-SB-62）：本件笔数与示教件一致、各段 N_exp 之和等于示教件笔结构的帧组数时，示教件的段边界逐个按笔换算到本件
 /// （`passes::map_cuts`），置信度 1。条件不满足为 None。
 fn by_passes(segments: &[PathSegment], passes: PassRules) -> Option<SegOutcome> {
-    let taught = passes.taught.filter(|_| passes.aligned() && segments.len() >= 2)?;
+    let taught = passes
+        .taught
+        .filter(|_| passes.aligned() && segments.len() >= 2)?;
     let counts: Vec<u64> = segments
         .iter()
         .map(|s| s.expected_frames.map(u64::from))
@@ -827,8 +829,8 @@ pub fn proportional_coverage(
     excluded_groups: &[u64],
     passes: PassRules,
 ) -> InspectionCoverage {
-    let outcome = by_passes(segments, passes)
-        .unwrap_or_else(|| proportional_for_count(segments, total_seq));
+    let outcome =
+        by_passes(segments, passes).unwrap_or_else(|| proportional_for_count(segments, total_seq));
     let core = core_regions(segments, &outcome, total_seq, 0.5);
     let boundaries_trusted = !core.is_empty()
         && core
@@ -1054,7 +1056,8 @@ mod tests {
         segments[1].cameras = vec!["camA".into()];
         let cameras = vec!["camA".into(), "camB".into(), "camC".into()];
         for (guard, expected) in [(1, 0), (0, 2)] {
-            let coverage = proportional_coverage(&segments, &cameras, 10, guard, false, &[], PassRules::NONE);
+            let coverage =
+                proportional_coverage(&segments, &cameras, 10, guard, false, &[], PassRules::NONE);
             assert!(coverage.boundaries_trusted);
             assert_eq!(coverage.expected_camera_frames, Some(expected));
             assert_eq!(coverage.segments[1].expected_camera_frames, Some(expected));
@@ -1086,7 +1089,8 @@ mod tests {
             (calibrated(&[S], &[8]), 8),
             (calibrated(&[S, C], &[4, 4]), 16),
         ] {
-            let coverage = proportional_coverage(&segments, &cameras, total, 1, false, &[], PassRules::NONE);
+            let coverage =
+                proportional_coverage(&segments, &cameras, total, 1, false, &[], PassRules::NONE);
             assert!(!coverage.boundaries_trusted);
             assert_eq!(coverage.expected_camera_frames, None);
             assert!(coverage.zero_coverage_segments.is_empty());
@@ -1118,7 +1122,15 @@ mod tests {
             edge: None,
         });
         let clear = proportional_coverage(&segments, &cameras, 12, 1, false, &[], PassRules::NONE);
-        let masked = proportional_coverage(&segments, &cameras, 12, 1, false, &[3, 4, 5, 6], PassRules::NONE);
+        let masked = proportional_coverage(
+            &segments,
+            &cameras,
+            12,
+            1,
+            false,
+            &[3, 4, 5, 6],
+            PassRules::NONE,
+        );
         assert_eq!(masked.expected_camera_frames, clear.expected_camera_frames);
         assert_eq!(
             masked.available_camera_frames,
@@ -1223,7 +1235,15 @@ mod tests {
             regions,
             vec![
                 region(RegionKind::Straight { segment: 1 }, 1, 8),
-                region(RegionKind::Skipped { segment: 2, pass: None, short: false }, 9, 16),
+                region(
+                    RegionKind::Skipped {
+                        segment: 2,
+                        pass: None,
+                        short: false
+                    },
+                    9,
+                    16
+                ),
                 region(RegionKind::Straight { segment: 3 }, 17, 24),
             ]
         );
@@ -1242,7 +1262,11 @@ mod tests {
         segments[0].skip_head = 2;
         segments[1].skip_tail = 1;
         segments[2].skip_tail = 3;
-        let skipped = |segment| RegionKind::Skipped { segment, pass: None, short: false };
+        let skipped = |segment| RegionKind::Skipped {
+            segment,
+            pass: None,
+            short: false,
+        };
         let transition = |first_segment, last_segment| RegionKind::Unsegmented {
             first_segment,
             last_segment,

@@ -357,7 +357,9 @@ pub(super) fn pass_skip_suggestion(
                     "成形之前第 {} 帧组无法判断（缺帧、测量失败、不检测的段或已屏蔽）",
                     seqs[k - 1]
                 ),
-                OnsetError::NotFound => format!("没有连续 {ONSET_RUN} 个成形帧组（点胶或很短的线），整笔按跳过规则处理"),
+                OnsetError::NotFound => {
+                    format!("没有连续 {ONSET_RUN} 个成形帧组（点胶或很短的线），整笔按跳过规则处理")
+                }
             });
             PassLeadView {
                 pass: j as u32 + 1,
@@ -401,7 +403,12 @@ pub async fn workspace_pass_skip_suggest(
             .and_then(|p| w.capture_review.rounds.get(&p.round_id))
             .map_or(0, |r| r.group_count);
         let metrics = piece
-            .filter(|p| w.calibration.rounds.iter().any(|r| r.round_id == p.round_id))
+            .filter(|p| {
+                w.calibration
+                    .rounds
+                    .iter()
+                    .any(|r| r.round_id == p.round_id)
+            })
             .ok_or_else(|| "示教件还没有测量".to_string())
             .and_then(|p| super::burst::read_features(&dir.join(&p.round_id), &cameras));
         pass_skip_suggestion(

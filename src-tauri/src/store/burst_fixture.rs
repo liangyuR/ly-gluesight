@@ -5,7 +5,6 @@ use crate::burst_judge::{self, FrameMetrics, FrameState};
 use crate::frame_group::{loss_alarms, FrameGroup};
 use crate::judge::Judgement;
 use crate::recipe::Recipe;
-use crate::passes::PassRules;
 use crate::segmentation::{resolve_regions, Region, SegOutcome};
 
 /// 段配方样例配方（cam1–cam3、一个直线段 N_exp = 4）。
@@ -84,7 +83,16 @@ pub(crate) fn record(recipe: &Recipe, mut frames: Vec<FrameRecord>, regions: Opt
         .collect();
     let metrics: Vec<FrameMetrics> = frames.iter().filter_map(|frame| frame.metrics.clone()).collect();
     let alarms = loss_alarms(&camera_frames);
-    let judgement = burst_judge::judge(&recipe.path_segments, recipe.expected_total(), &regions, &groups, &metrics, &cameras, &alarms, PassRules::NONE);
+    let judgement = burst_judge::judge(
+        &recipe.path_segments,
+        recipe.expected_total(),
+        &regions,
+        &groups,
+        &metrics,
+        &cameras,
+        &alarms,
+        PassRules::NONE,
+    );
     for frame in &mut frames {
         frame.region = regions.iter().position(|region| (region.first_seq..=region.last_seq).contains(&frame.seq));
     }

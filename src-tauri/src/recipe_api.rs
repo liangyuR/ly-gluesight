@@ -101,7 +101,12 @@ pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
 fn template(used_codes: &[u16], rig_cameras: &[String]) -> RecipeDoc {
     let product_code = (1..=i16::MAX as u16).find(|c| !used_codes.contains(c)).unwrap_or(0);
     let cameras = &rig_cameras[..rig_cameras.len().min(plan::PLAN_CAMERAS)];
-    let mut doc = recipe::burst_template(format!("NEW-{product_code}"), "新配方".into(), product_code, cameras);
+    let mut doc = recipe::burst_template(
+        format!("NEW-{product_code}"),
+        "新配方".into(),
+        product_code,
+        cameras,
+    );
     doc.pass_skip.head = crate::passes::DEFAULT_SKIP_HEAD;
     doc
 }

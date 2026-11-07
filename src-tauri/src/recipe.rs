@@ -663,7 +663,9 @@ impl RecipeDoc {
                 BOUNDARY_GUARD.end()
             ));
         }
-        if self.pass_skip.head > crate::passes::MAX_SKIP || self.pass_skip.tail > crate::passes::MAX_SKIP {
+        if self.pass_skip.head > crate::passes::MAX_SKIP
+            || self.pass_skip.tail > crate::passes::MAX_SKIP
+        {
             return Err(format!(
                 "每笔首尾跳过的帧组数需在 0–{} 之间",
                 crate::passes::MAX_SKIP

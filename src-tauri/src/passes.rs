@@ -187,7 +187,10 @@ pub fn map_cuts(cuts: &[u64], taught: &[u32], part: &[u32]) -> Option<Vec<(u64, 
             (last, true)
         } else {
             let scaled = (2 * u64::from(offset) * p + n) / (2 * n);
-            (first - 1 + scaled.clamp(1, p.saturating_sub(1).max(1)), false)
+            (
+                first - 1 + scaled.clamp(1, p.saturating_sub(1).max(1)),
+                false,
+            )
         };
         let remaining = (cuts.len() - k) as u64;
         let seq = seq.max(previous + 1).min(total.saturating_sub(remaining));

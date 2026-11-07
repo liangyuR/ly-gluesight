@@ -611,14 +611,24 @@ fn production_splits_passes_by_gate_pause_and_skips_each_pass_head() {
     // 防的回归：门控停顿后的帧被当成同一笔（笔开头没跳过，起涂短胶误判断胶），或笔结构没进记录、重判与复测拿不到
     let mut recipe = crate::recipe::samples_burst().build().unwrap();
     recipe.pass_skip.head = 1;
-    let mut p = armed_part_with(recipe, "passes", &Ledgers::default(), Some(CounterSource::Synthetic), Policy::burst_offline(None));
+    let mut p = armed_part_with(
+        recipe,
+        "passes",
+        &Ledgers::default(),
+        Some(CounterSource::Synthetic),
+        Policy::burst_offline(None),
+    );
     let period = crate::frame_clock::SYNTH_PERIOD_NS;
     for counter in 1..=6u64 {
         let pause = if counter >= 4 { period * 21 / 2 } else { 0 };
         for cam in 0..3u8 {
-            let frame = Frame { dev_ts: Some(counter * period + pause), ..burst_frame(cam, counter) };
+            let frame = Frame {
+                dev_ts: Some(counter * period + pause),
+                ..burst_frame(cam, counter)
+            };
             if let Some(burst::Arrival::Accepted { camera, seq }) = p.receive_burst(&frame) {
-                let simulated = measure::simulate_frame(Scenario::Normal, camera, seq, 1, &p.recipe);
+                let simulated =
+                    measure::simulate_frame(Scenario::Normal, camera, seq, 1, &p.recipe);
                 let result = frame_result(&p, camera, seq, Ok(simulated));
                 p.apply_burst(result).unwrap();
             }
@@ -626,6 +636,13 @@ fn production_splits_passes_by_gate_pause_and_skips_each_pass_head() {
     }
     end(&mut p, Some(6), true);
     let judgement = judge_burst(&mut p);
-    let skipped: Vec<(Option<u32>, Option<u64>)> = judgement.uninspected.iter().map(|u| (u.pass, u.from_seq)).collect();
-    assert_eq!((judgement.passes.clone(), skipped), (vec![3, 3], vec![(Some(1), Some(1)), (Some(2), Some(4))]));
+    let skipped: Vec<(Option<u32>, Option<u64>)> = judgement
+        .uninspected
+        .iter()
+        .map(|u| (u.pass, u.from_seq))
+        .collect();
+    assert_eq!(
+        (judgement.passes.clone(), skipped),
+        (vec![3, 3], vec![(Some(1), Some(1)), (Some(2), Some(4))])
+    );
 }

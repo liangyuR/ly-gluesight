@@ -279,9 +279,24 @@ impl Default for KindDefaults {
     /// 允许超差 5 mm、断胶 6 mm、有胶比例 0.8，溢胶上限取旧胶宽绝对上限 8 mm，胶偏 ±2 mm；新建的段偏宽只预警（D-SB-61）。
     fn default() -> Self {
         let checks = |offset: Option<OffsetCheck>| SegmentChecks {
-            width: WidthCheck { enabled: true, nominal_mm: 4.0, tol_upper: 1.5, tol_lower: 1.5, max_excursion_mm: 5.0, max_range_mm: None, wide_warn_only: true },
-            gap: BreakCheck { enabled: true, max_gap_mm: 6.0, min_present: 0.8 },
-            overflow: OverflowCheck { enabled: true, max_width_mm: 8.0 },
+            width: WidthCheck {
+                enabled: true,
+                nominal_mm: 4.0,
+                tol_upper: 1.5,
+                tol_lower: 1.5,
+                max_excursion_mm: 5.0,
+                max_range_mm: None,
+                wide_warn_only: true,
+            },
+            gap: BreakCheck {
+                enabled: true,
+                max_gap_mm: 6.0,
+                min_present: 0.8,
+            },
+            overflow: OverflowCheck {
+                enabled: true,
+                max_width_mm: 8.0,
+            },
             offset,
         };
         Self {
@@ -713,10 +728,29 @@ mod tests {
             }),
             ("停用的检测项不校验限值", |p| {
                 let checks = &mut p.segments[0].checks;
-                checks.width = WidthCheck { enabled: false, nominal_mm: 0.0, tol_upper: -1.0, tol_lower: -1.0, max_excursion_mm: -1.0, max_range_mm: Some(-1.0), wide_warn_only: false };
-                checks.gap = BreakCheck { enabled: false, max_gap_mm: -1.0, min_present: 1.2 };
-                checks.overflow = OverflowCheck { enabled: false, max_width_mm: 0.0 };
-                checks.offset = Some(OffsetCheck { enabled: false, max_mean_shift_mm: -1.0, max_local_dev_mm: -1.0 });
+                checks.width = WidthCheck {
+                    enabled: false,
+                    nominal_mm: 0.0,
+                    tol_upper: -1.0,
+                    tol_lower: -1.0,
+                    max_excursion_mm: -1.0,
+                    max_range_mm: Some(-1.0),
+                    wide_warn_only: false,
+                };
+                checks.gap = BreakCheck {
+                    enabled: false,
+                    max_gap_mm: -1.0,
+                    min_present: 1.2,
+                };
+                checks.overflow = OverflowCheck {
+                    enabled: false,
+                    max_width_mm: 0.0,
+                };
+                checks.offset = Some(OffsetCheck {
+                    enabled: false,
+                    max_mean_shift_mm: -1.0,
+                    max_local_dev_mm: -1.0,
+                });
             }),
         ];
         for (case, edit) in accepted {
