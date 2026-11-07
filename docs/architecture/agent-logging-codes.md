@@ -42,6 +42,8 @@
 | `frame.route_fault.summary` | 帧归属故障汇总 | error | `frame.route_fault` 的聚合摘要：10 s 窗口到期 | `reason`、`count`、`firstTs`、`lastTs`、`frameCounterMin`、`frameCounterMax` |
 | `frame.dropped` | 丢帧 | warn | 帧通道满、相机回调丢弃了帧（节拍发现累计丢弃数增加）；窗口内首次照写 | `dropped`（这次新增的丢弃数）、`total`（进程内累计） |
 | `frame.dropped.summary` | 丢帧汇总 | warn | `frame.dropped` 的聚合摘要：10 s 窗口到期 | `count`（发现增加的次数）、`firstTs`、`lastTs`、`dropped`（计入的新增丢弃合计）、`total` |
+| `frame.budget_dropped` | 图像内存满丢帧 | error | 图像内存预算满、相机回调没拷图就丢了帧（节拍发现累计数增加，D-SB-60）；在途件记检测不完整；窗口内首次照写 | `dropped`（这次新增的丢弃数）、`total`（进程内累计） |
+| `frame.budget_dropped.summary` | 图像内存满丢帧汇总 | error | `frame.budget_dropped` 的聚合摘要：10 s 窗口到期 | `count`（发现增加的次数）、`firstTs`、`lastTs`、`dropped`（计入的新增丢弃合计）、`total` |
 | `camera.reconnect_failed` | 相机重连失败 | warn | 监督线程重开海康相机失败（约每 2 s 一次，含掉线后的重连）；按相机聚合，窗口 60 s | `error`、`lost`（本次是否因掉线而重连）；相机在顶层 `camera` |
 | `camera.reconnect_failed.summary` | 相机重连失败汇总 | warn | `camera.reconnect_failed` 的聚合摘要：60 s 窗口到期，或重连成功、相机移出相机组 | `count`、`firstTs`、`lastTs`、`error`（最后一次）、`lost`（最后一次） |
 | `plc.engine.warn` | PLC 引擎告警 | warn | ly_plc 引擎写出 warn 级日志；按 category 聚合 | `category`、`message` |

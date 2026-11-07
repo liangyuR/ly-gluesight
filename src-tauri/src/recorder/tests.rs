@@ -212,3 +212,95 @@ fn maintenance_collect_recordings_survive_retention() {
         "普通旧录制照常按保留数清理，维护采集样本不占保留件数"
     );
 }
+
+/// D-SB-60：录制关闭时要测图的件写临时录制。防的回归：收尾补测读不到原图（只能记检测不完整）；或录制关闭了，
+/// 临时原图却留在盘上（NG 件按“只留 NG”被留下），录制结果也不再报“录制关闭”。
+#[test]
+fn scratch_recording_is_readable_during_the_part_and_never_kept() {
+    for verdict in [Verdict::Ok, Verdict::NgGap] {
+        let dir = TestDir::new();
+        let (callback, outcomes) = callback();
+        let recorder = Recorder::new(dir.root(), Some(callback));
+        let mut rec = recorder.scratch("SN-S", recipe(), "scratch", None).unwrap();
+        recorder.burst_frame(&mut rec, &frame(42), 0, 1);
+        // 写完之前报“还在写”，写完才给可读的原图文件：补测按它等，不会读到半截文件
+        let deadline = std::time::Instant::now() + WRITER_HANG;
+        let file = loop {
+            match rec.burst_frame_file(0, 1) {
+                RecordedFrame::Ready(file) => break file,
+                RecordedFrame::Writing => {}
+                RecordedFrame::Missing => panic!("{verdict:?}：排队写盘的帧不能报没录"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{verdict:?}：临时原图写不出来"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let image = crate::image_file::load(&file).expect("报已写完的原图必须读得出来");
+        assert_eq!(image.pixels, vec![42], "{verdict:?}");
+        assert_eq!(
+            rec.burst_frame_file(0, 2),
+            RecordedFrame::Missing,
+            "没录的帧"
+        );
+        recorder.finish(rec, verdict, "", 10, u64::MAX, Vec::new());
+        let outcome = wait(&outcomes);
+        assert_eq!(
+            (outcome.state, outcome.directory),
+            (RecordingState::Off, None),
+            "{verdict:?}"
+        );
+        let left: Vec<_> = walk(&dir.root());
+        assert!(
+            left.is_empty(),
+            "{verdict:?}：录制关闭却留下了原图 {left:?}"
+        );
+    }
+    // 防的回归：临时录制写盘失败（盘满、无权限）时文件不留，录制结果却报健康，盘故障报警被清掉而补测一直读不到原图
+    let dir = TestDir::new();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(dir.root(), Some(callback));
+    let mut rec = recorder
+        .scratch("SN-F", recipe(), "scratch-fail", None)
+        .unwrap();
+    std::fs::create_dir_all(rec.dir.parent().unwrap()).unwrap();
+    std::fs::write(&rec.dir, b"").unwrap();
+    recorder.burst_frame(&mut rec, &frame(7), 0, 1);
+    let deadline = std::time::Instant::now() + WRITER_HANG;
+    while rec.burst_frame_file(0, 1) == RecordedFrame::Writing {
+        assert!(std::time::Instant::now() < deadline, "写盘结果没回来");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        rec.burst_frame_file(0, 1),
+        RecordedFrame::Missing,
+        "写盘失败的帧补测不能读"
+    );
+    std::fs::remove_file(&rec.dir).unwrap();
+    recorder.finish(rec, Verdict::Ok, "", 10, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert_eq!(outcome.state, RecordingState::Off);
+    assert!(
+        outcome.errors.iter().any(|e| is_write_error(e)),
+        "写盘失败没报出来：{:?}",
+        outcome.errors
+    );
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .flat_map(|e| {
+                    if e.path().is_dir() {
+                        walk(&e.path())
+                    } else {
+                        vec![e.path()]
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}

@@ -1130,6 +1130,7 @@ fn frame_job(
         seq,
         segment,
         image,
+        image_file: None,
         image_measurement: part.image_measurement,
         recipe: part.recipe.clone(),
         scenario: part.scenario,
@@ -1236,6 +1237,7 @@ struct Machine {
     dirty: bool,
     published: Instant,
     dropped_seen: u64,
+    budget_seen: u64,
     /// 逐帧、逐拍重复的告警聚合（游离帧、迟到帧、丢帧等），节拍每拍写出到期摘要
     noise: Throttle,
     /// 报警写日志的去重：alarms 每件开工、复位都会清空，同一报警不再每件重写
@@ -1356,6 +1358,7 @@ impl Machine {
             dirty: true,
             published: Instant::now(),
             dropped_seen: 0,
+            budget_seen: 0,
             noise: Throttle::new(throttle::WINDOW),
             alarm_log: Throttle::new(ALARM_LOG_WINDOW),
             s7,
@@ -2016,14 +2019,23 @@ impl Machine {
         } else {
             crate::site::record_mode(&app)
         };
-        let mut recording = host.recorders.begin(
-            source,
-            record,
-            &sn,
-            recipe.clone(),
-            &cycle_id,
-            bundle_id.as_deref(),
-        );
+        // 收尾补测只从录制原图读（D-SB-60）：录制关闭时要测图的件也写临时录制，收尾删除
+        let mut recording = if record == crate::settings::RecordMode::Off
+            && !collect
+            && crate::site::image_measurement(&app)
+        {
+            host.recorders
+                .scratch(source, &sn, recipe.clone(), &cycle_id, bundle_id.as_deref())
+        } else {
+            host.recorders.begin(
+                source,
+                record,
+                &sn,
+                recipe.clone(),
+                &cycle_id,
+                bundle_id.as_deref(),
+            )
+        };
         if let Some(rec) = recording.as_mut() {
             annotate_recording(rec, host, mode, &recipe, &cams, &identities, &request);
         }
@@ -2264,7 +2276,6 @@ impl Machine {
                     seq,
                     &image,
                 );
-                burst.retain_image(camera, seq, image.clone());
                 trace(&app, "帧到达", format!("cycle={cycle_id} · {camera_id} 第 {seq} 帧 · 帧计数 {}", f.frame_counter),
                     fields(&camera_id, Some(seq)).with_stage("frame")
                         .with_data(json!({"frameCounter": f.frame_counter, "triggerCounter": f.trigger_counter, "session": f.session})));
@@ -2491,6 +2502,33 @@ impl Machine {
                 fields,
             );
         }
+        // 图像内存预算满（D-SB-32）：帧没拷图、不交付，相机页也不刷新；报警并记到在途件上（D-SB-60）
+        let budget = host(&self.app).camera.budget_dropped_total();
+        if budget < self.budget_seen {
+            self.budget_seen = budget;
+        }
+        if budget > self.budget_seen {
+            let added = budget - self.budget_seen;
+            self.budget_seen = budget;
+            if matches!(self.phase, Phase::Acquire | Phase::Drain) {
+                if let Some(part) = self.part.as_mut() {
+                    part.burst.budget_dropped += added;
+                }
+            }
+            let msg = format!(
+                "图像内存预算（每台相机 {} MiB）已满，新丢弃 {added} 帧（累计 {budget} 帧）：这些帧没收进来，在途件记检测不完整",
+                crate::camera::IMAGE_BUDGET_PER_CAMERA >> 20
+            );
+            let fields = Fields::default().with_data(json!({"dropped": added, "total": budget}));
+            self.noisy(
+                &codes::FRAME_BUDGET_DROPPED,
+                &codes::FRAME_BUDGET_DROPPED_SUMMARY,
+                "",
+                Tally::Sum("dropped", added),
+                msg,
+                fields,
+            );
+        }
         {
             let audit_ready = match host(&self.app).audit.readiness() {
                 Ok(crate::audit::AuditReadiness::Ready) => true,
@@ -2698,7 +2736,7 @@ impl Machine {
             }
             Phase::Drain => {
                 if let Some(part) = self.part.as_mut() {
-                    for (camera, seq, segment, image) in part.start_post_measure(Instant::now()) {
+                    for (camera, seq, segment, file) in part.start_post_measure(Instant::now()) {
                         let camera_id = part.burst.camera_name(camera).to_owned();
                         trace(
                             &self.app,
@@ -2715,8 +2753,10 @@ impl Machine {
                             }
                             .with_stage("post"),
                         );
-                        self.frame_pool
-                            .submit(frame_job(part, camera, camera_id, seq, segment, image));
+                        self.frame_pool.submit(FrameJob {
+                            image_file: file,
+                            ..frame_job(part, camera, camera_id, seq, segment, None)
+                        });
                     }
                 }
                 if self.part.as_ref().is_some_and(Part::complete) {

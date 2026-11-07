@@ -248,6 +248,8 @@ pub struct FrameJob {
     /// 用第几段（`PathSegment.index`）的走廊测（D-SB-45）
     pub segment: u32,
     pub image: Option<Arc<FrameImage>>,
+    /// 没带图像时从这个原图文件读（收尾补测读回本件录制的原图，D-SB-60）
+    pub image_file: Option<std::path::PathBuf>,
     pub image_measurement: bool,
     pub recipe: Arc<Recipe>,
     pub scenario: Scenario,
@@ -437,7 +439,25 @@ fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), Measu
                 )
             })
             .map_err(MeasureError::Failed),
-        (None, true) => Err(MeasureError::Failed("这一帧没有图像：相机未拷贝整帧".into())),
+        (None, true) => match &job.image_file {
+            Some(path) => crate::image_file::load(path)
+                .map_err(|e| format!("读回录制原图失败：{e}"))
+                .and_then(|image| vision::LyFlowMeasurer.measure_frame(job, &image))
+                .map(|m| {
+                    (
+                        m.metrics,
+                        Some(FrameTrace {
+                            edges: m.edges,
+                            part_edges: m.part_edges,
+                            line: m.line,
+                        }),
+                    )
+                })
+                .map_err(MeasureError::Failed),
+            None => Err(MeasureError::Failed(
+                "这一帧没有图像：相机未拷贝整帧".into(),
+            )),
+        },
         (_, false) => {
             std::thread::sleep(Duration::from_millis(5 + job.seq % 5));
             Ok((
@@ -596,6 +616,7 @@ mod tests {
             segment: 1,
             seq,
             image: None,
+            image_file: None,
             image_measurement: false,
             recipe: recipe.clone(),
             scenario: Scenario::Normal,

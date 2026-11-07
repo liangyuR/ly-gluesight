@@ -100,6 +100,16 @@ pub const FRAME_DROPPED_SUMMARY: Event = Event {
     ev: "丢帧汇总",
     level: Level::Warn,
 };
+pub const FRAME_BUDGET_DROPPED: Event = Event {
+    code: "frame.budget_dropped",
+    ev: "图像内存满丢帧",
+    level: Level::Error,
+};
+pub const FRAME_BUDGET_DROPPED_SUMMARY: Event = Event {
+    code: "frame.budget_dropped.summary",
+    ev: "图像内存满丢帧汇总",
+    level: Level::Error,
+};
 pub const CAMERA_RECONNECT_FAILED: Event = Event {
     code: "camera.reconnect_failed",
     ev: "相机重连失败",
