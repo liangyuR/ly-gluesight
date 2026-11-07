@@ -765,10 +765,14 @@ fn raw_blocker(
             burst.cameras.join("、")
         ));
     }
-    // 只看候选用到的相机：记录里别的相机有原图不算
+    // 只看候选用到的相机：记录里别的相机有原图不算；录制已按保留策略清理或录制关闭时，残留的帧引用不算有原图
     let (_, frames) = candidate_inputs(recipe, burst);
+    let cleared = matches!(
+        detail.recording.state,
+        crate::store::RecordingState::Off | crate::store::RecordingState::NotRetained
+    );
     let recorded = detail.summary.source == RecordSource::OfflineCandidate
-        || frames.iter().any(|f| f.raw_file.is_some());
+        || (!cleared && frames.iter().any(|f| f.raw_file.is_some()));
     if !recorded {
         let used: Vec<&str> = cameras
             .iter()
