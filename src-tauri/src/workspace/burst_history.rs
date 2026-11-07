@@ -375,15 +375,10 @@ pub async fn workspace_record_frame_view(
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
         let detail = store.detail(history_id)?;
-        let recipe_id = detail
-            .summary
-            .recipe_id
-            .as_deref()
-            .ok_or("历史记录没有配方")?;
         let host = app.state::<WorkspaceHost>();
         let found = host
             .comparisons
-            .list(&host.root, &store, recipe_id, history_id)?
+            .list(&host.root, &store, None, history_id)?
             .into_iter()
             .find(|c| c.id == comparison)
             .ok_or("找不到这次对照结果")?;
@@ -435,7 +430,13 @@ pub async fn workspace_record_frame_view(
                 .map_or_else(|| format!("第 {segment} 段没有这台相机的走廊测量图"), |u| u.reason.clone());
             return Err(why);
         }
-        let image = frame_image(&app, &detail, camera, seq)?;
+        // 对照按候选的计划相机编下标，原图按记录的：按相机编号对应
+        let record_camera = detail
+            .burst
+            .as_ref()
+            .and_then(|b| b.cameras.iter().position(|c| *c == camera_id))
+            .ok_or_else(|| format!("记录里没有相机 {camera_id} 的原图"))?;
+        let image = frame_image(&app, &detail, record_camera, seq)?;
         burst::frame_view(
             &app,
             recipe,
@@ -671,6 +672,18 @@ pub struct CompareCandidate {
     pub id: String,
     pub revision: u64,
     pub version: u32,
+    pub name: String,
+}
+
+impl CompareCandidate {
+    pub(super) fn of(w: &Workspace) -> Self {
+        Self {
+            id: w.doc.id.clone(),
+            revision: w.revision,
+            version: w.doc.version,
+            name: w.doc.name.clone(),
+        }
+    }
 }
 
 /// 一条历史记录能做哪几种复测（TS `CompareOptions`）：以记录为准，按记录的配方找候选，与工作台当前选的配方无关；
@@ -682,6 +695,8 @@ pub struct CompareOptions {
     pub original: CompareOption,
     pub rules: CompareOption,
     pub raw: CompareOption,
+    /// 本机可选来复测的全部候选（任意配方都能验证任意记录）
+    pub choices: Vec<CompareCandidate>,
 }
 
 fn recording_reason(detail: &PartDetail) -> String {
@@ -698,7 +713,16 @@ fn recording_reason(detail: &PartDetail) -> String {
 }
 
 /// 按规则重判的前置条件：复用记录里存的区域与每帧指标，测量布局须相同、原记录须有区域。
-fn rules_blocker(burst: &PartDetailBurst, original: &Recipe, recipe: &Recipe) -> Option<String> {
+fn rules_blocker(
+    burst: &PartDetailBurst,
+    original: Option<&Recipe>,
+    recipe: &Recipe,
+) -> Option<String> {
+    let Some(original) = original else {
+        return Some(
+            "历史配方快照缺失，存的每帧指标不知道按什么测的，不能复用；请从原图复测".into(),
+        );
+    };
     if !original.is_burst() || !recipe.is_burst() {
         return Some("段配方记录只能与段配方候选对照".into());
     }
@@ -717,24 +741,43 @@ fn rules_blocker(burst: &PartDetailBurst, original: &Recipe, recipe: &Recipe) ->
     None
 }
 
-/// 从原图复测的前置条件：计划相机相同、原图齐（候选调试记录读样本集，不看录制）、候选至少有一段能量（D-SB-57）。
-/// 能做时返回没有可用走廊、不测的段的说明。
+/// 从原图复测的前置条件（D-SB-58）：任意候选都能测任意记录，不看型号、配方编号与所属项目。只要求记录有原图、
+/// 候选至少一台计划相机在记录里有原图、候选至少有一段能量（D-SB-57）；其余（记录里没有的相机、没保存原图的帧、
+/// 没有可用走廊的段）都记未测。能做时返回这些不测部分的说明。
 fn raw_blocker(
     detail: &PartDetail,
     burst: &PartDetailBurst,
-    original: &Recipe,
     recipe: &Recipe,
     w: &Workspace,
 ) -> Result<Option<String>, String> {
-    if !original.is_burst() || !recipe.is_burst() {
-        return Err("段配方记录只能与段配方候选对照".into());
+    if !recipe.is_burst() {
+        return Err("旧拍照点配方已停用，不能复测".into());
     }
-    if original.plan_cameras() != recipe.plan_cameras() {
-        return Err("历史原图的计划相机与候选不同；请重新采集样本".into());
-    }
-    if detail.summary.source != RecordSource::OfflineCandidate && !raw_complete(detail, burst) {
+    let cameras = recipe.plan_cameras();
+    let absent: Vec<&String> = cameras
+        .iter()
+        .filter(|c| !burst.cameras.contains(c))
+        .collect();
+    if absent.len() == cameras.len() {
         return Err(format!(
-            "原图未完整保留，无法完成整件复测：{}",
+            "候选的计划相机（{}）在这条记录里都没有原图（记录的相机：{}）",
+            cameras.join("、"),
+            burst.cameras.join("、")
+        ));
+    }
+    // 只看候选用到的相机：记录里别的相机有原图不算
+    let (_, frames) = candidate_inputs(recipe, burst);
+    let recorded = detail.summary.source == RecordSource::OfflineCandidate
+        || frames.iter().any(|f| f.raw_file.is_some());
+    if !recorded {
+        let used: Vec<&str> = cameras
+            .iter()
+            .filter(|c| !absent.contains(c))
+            .map(String::as_str)
+            .collect();
+        return Err(format!(
+            "候选用到的相机（{}）在这条记录里没有保存原图：{}",
+            used.join("、"),
             recording_reason(detail)
         ));
     }
@@ -742,7 +785,74 @@ fn raw_blocker(
     if usable_pairs(recipe, &graphs, &unavailable) == 0 {
         return Err("候选还没有任何一段可用的走廊；在配方工作台示教走廊后才能从原图复测".into());
     }
-    Ok(coverage_note(&unavailable))
+    let mut notes: Vec<String> = Vec::new();
+    if !absent.is_empty() {
+        notes.push(format!(
+            "记录里没有相机 {} 的原图，这些相机不测",
+            absent
+                .iter()
+                .map(|c| c.as_str())
+                .collect::<Vec<_>>()
+                .join("、")
+        ));
+    }
+    if detail.summary.source != RecordSource::OfflineCandidate && !raw_complete(detail, burst) {
+        notes.push(format!(
+            "原图不全（{}），没保存原图的帧不测",
+            recording_reason(detail)
+        ));
+    }
+    notes.extend(coverage_note(&unavailable));
+    Ok((!notes.is_empty()).then(|| notes.join("；")))
+}
+
+/// 从原图复测的输入：候选计划相机下标 → 记录相机下标的对应，与按候选相机重排的记录帧（复测与前置检查共用）。
+pub(super) fn candidate_inputs(
+    recipe: &Recipe,
+    burst: &PartDetailBurst,
+) -> (Vec<Option<usize>>, Vec<FrameRecord>) {
+    let map = record_cameras(recipe, burst);
+    let frames = candidate_frames(&map, &burst.frames);
+    (map, frames)
+}
+
+/// 候选计划相机下标 → 记录计划相机下标（按相机编号对应，记录里没有的为 None）。
+fn record_cameras(recipe: &Recipe, burst: &PartDetailBurst) -> Vec<Option<usize>> {
+    recipe
+        .plan_cameras()
+        .iter()
+        .map(|c| burst.cameras.iter().position(|r| r == c))
+        .collect()
+}
+
+/// 记录的帧按相机编号换成候选的计划相机下标：记录里有的相机取它的帧，没有的相机每个帧组记一帧“没到”；记录里多出的相机不用。
+fn candidate_frames(map: &[Option<usize>], frames: &[FrameRecord]) -> Vec<FrameRecord> {
+    let groups = frames.iter().map(|f| f.seq).max().unwrap_or(0);
+    map.iter()
+        .enumerate()
+        .flat_map(|(camera, record)| match record {
+            Some(record) => frames
+                .iter()
+                .filter(|f| f.camera == *record)
+                .map(|f| FrameRecord {
+                    camera,
+                    ..f.clone()
+                })
+                .collect::<Vec<_>>(),
+            None => (1..=groups)
+                .map(|seq| FrameRecord {
+                    camera,
+                    seq,
+                    status: FrameState::Missing,
+                    frame_counter: None,
+                    trigger_counter: None,
+                    region: None,
+                    metrics: None,
+                    raw_file: None,
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// 按原发布包重现的前置条件。
@@ -764,21 +874,16 @@ fn original_blocker(detail: &PartDetail, burst: &PartDetailBurst) -> Option<Stri
     None
 }
 
-/// 记录能做哪几种复测。`original` 是记录的配方快照，`w` 是记录所属配方的候选（没有为 None）；`foreign` 是记录不属于
-/// 当前项目时按候选对照的阻止原因，`releases` 是记录所属项目的发布包不可用（项目已删除）的原因。
+/// 记录能做哪几种复测。`original` 是记录的配方快照，`w` 是选来复测的候选（任意候选，没有为 None），
+/// `releases` 是记录所属项目的发布包不可用（项目已删除）的原因。
 pub(super) fn compare_options(
     detail: &PartDetail,
     original: Option<&Recipe>,
     w: Option<&Workspace>,
-    foreign: Option<String>,
     releases: Option<String>,
 ) -> CompareOptions {
     let unavailable = |reason: &str| CompareOption::of(Some(reason.into()));
-    let candidate = w.map(|w| CompareCandidate {
-        id: w.doc.id.clone(),
-        revision: w.revision,
-        version: w.doc.version,
-    });
+    let candidate = w.map(CompareCandidate::of);
     let Some(burst) = detail.burst.as_ref() else {
         let reason = "这条历史是旧拍照点记录，不能按相机帧复测";
         return CompareOptions {
@@ -786,35 +891,23 @@ pub(super) fn compare_options(
             original: unavailable(reason),
             rules: unavailable(reason),
             raw: unavailable(reason),
+            choices: Vec::new(),
         };
     };
     let original_option = CompareOption::of(original_blocker(detail, burst).or(releases));
-    if let Some(reason) = foreign {
-        return CompareOptions {
-            candidate,
-            original: original_option,
-            rules: unavailable(&reason),
-            raw: unavailable(&reason),
-        };
-    }
-    let (rules, raw) = match (original, w) {
-        (None, _) => (
-            unavailable("历史配方快照缺失"),
-            unavailable("历史配方快照缺失"),
-        ),
-        (_, None) => {
-            let reason =
-                "这个配方在本机没有候选（如从发布包导入），不能按候选对照；可按原发布包重现";
+    let (rules, raw) = match w {
+        None => {
+            let reason = "选一个本机候选来复测（任意配方都可以）；没有候选时可按原发布包重现";
             (unavailable(reason), unavailable(reason))
         }
-        (Some(original), Some(w)) => match w.doc.build() {
+        Some(w) => match w.doc.build() {
             Err(error) => {
                 let reason = format!("候选配置不完整：{error}");
                 (unavailable(&reason), unavailable(&reason))
             }
             Ok(recipe) => (
                 CompareOption::of(rules_blocker(burst, original, &recipe)),
-                CompareOption::checked(raw_blocker(detail, burst, original, &recipe, w)),
+                CompareOption::checked(raw_blocker(detail, burst, &recipe, w)),
             ),
         },
     };
@@ -823,6 +916,7 @@ pub(super) fn compare_options(
         original: original_option,
         rules,
         raw,
+        choices: Vec::new(),
     }
 }
 
@@ -831,7 +925,7 @@ pub(super) fn compare(
     w: &Workspace,
     recipe: &Recipe,
     detail: &PartDetail,
-    original: &Recipe,
+    original: Option<&Recipe>,
     raw: bool,
 ) -> Result<(judge::Judgement, ComparisonBurst), String> {
     let burst = detail
@@ -839,7 +933,7 @@ pub(super) fn compare(
         .as_ref()
         .ok_or("这条历史是旧拍照点记录，不能用段配方候选对照")?;
     if raw {
-        raw_blocker(detail, burst, original, recipe, w)?;
+        raw_blocker(detail, burst, recipe, w)?;
     } else if let Some(reason) = rules_blocker(burst, original, recipe) {
         return Err(reason);
     }
@@ -848,23 +942,61 @@ pub(super) fn compare(
     let (judgement, metrics) = if raw {
         let (measurer, skipped) = CandidateMeasurer::partial(app, w, recipe)?;
         unmeasured = skipped;
-        let metrics = remeasure(recipe, &burst.frames, |frame, segment| {
-            if let Some(reason) = measurer.skipped(frame.camera, segment) {
-                return Ok(FrameMetrics {
+        let (map, frames) = candidate_inputs(recipe, burst);
+        for id in cameras
+            .iter()
+            .zip(&map)
+            .filter(|(_, record)| record.is_none())
+            .map(|(id, _)| id)
+        {
+            for segment in recipe
+                .path_segments
+                .iter()
+                .filter(|s| crate::plan::segment_cameras(s, &cameras).contains(id))
+            {
+                unmeasured.push(UnmeasuredSegment {
+                    segment: segment.index,
+                    camera: id.clone(),
+                    reason: format!("第 {} 段相机 {id}：记录里没有这台相机的原图", segment.index),
+                });
+            }
+        }
+        unmeasured.sort_by_key(|u| (u.segment, cameras.iter().position(|c| *c == u.camera)));
+        let offline = detail.summary.source == RecordSource::OfflineCandidate;
+        // 丢帧告警按候选的相机顺序重算（与记录的相机顺序可能不同）
+        let counts: Vec<u32> = (0..cameras.len())
+            .map(|c| {
+                frames
+                    .iter()
+                    .filter(|f| f.camera == c && f.status != FrameState::Missing)
+                    .count() as u32
+            })
+            .collect();
+        let loss = crate::frame_group::loss_alarms(&counts);
+        let metrics = remeasure(recipe, &frames, |frame, segment| {
+            let skip = |reason: String| {
+                Ok(FrameMetrics {
                     corridor: Some(segment),
                     ..burst::frame_without_metrics(
                         frame.camera,
                         frame.seq,
                         FrameState::Unmeasured,
-                        Some(reason.to_owned()),
+                        Some(reason),
                     )
-                });
+                })
+            };
+            if !offline && frame.raw_file.is_none() {
+                return skip("这一帧原图没有保存".into());
             }
+            if let Some(reason) = measurer.skipped(frame.camera, segment) {
+                return skip(reason.to_owned());
+            }
+            let record = map[frame.camera].ok_or("记录里没有这台相机的原图")?;
             measurer.measure(
                 frame.camera,
                 segment,
                 frame.seq,
-                &frame_image(app, detail, frame.camera, frame.seq)?,
+                &frame_image(app, detail, record, frame.seq)?,
             )
         });
         let judgement = judge_frames(
@@ -874,7 +1006,7 @@ pub(super) fn compare(
             recipe.expected_total(),
             &cameras,
             &metrics,
-            &burst.judgement.alarms,
+            &loss,
         );
         (judgement, metrics)
     } else {

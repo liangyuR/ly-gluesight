@@ -13,7 +13,7 @@ import { burstImageApi } from "../../workspace/burstImages";
 import { workspaceApi } from "../../workspace/api";
 import { FrameViewer, KV, Panel } from "../../workspace/components";
 import { useWorkspace } from "../../workspace/context";
-import type { CompareOptions, Comparison, FrameImage } from "../../workspace/types";
+import type { CompareCandidate, CompareOptions, Comparison, FrameImage } from "../../workspace/types";
 import { CycleTimeline } from "../../logs";
 import { errorText } from "../../../lib/errors";
 import { displayReason, formatTime, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel } from "../meta";
@@ -78,14 +78,14 @@ function useFrameOverlay(historyId: number, comparison: Comparison | null, camer
 }
 
 /** 一台相机一帧的原图格：叠出测量所用的走廊、搜索带与胶边（原始记录按原发布包，对照按对照的配方）；点格子选中这台相机。 */
-function FrameTile({ detail, comparison, camera, cameraName, seq, frame, selected, onSelect, station, onStation }: {
-  /** 显示对照结果时为该对照，显示原始记录时为 null */
-  detail: PartDetail; comparison: Comparison | null; camera: number; cameraName: string; seq: number; frame: FrameRecord | null; selected: boolean; onSelect: () => void;
+function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, frame, selected, onSelect, station, onStation }: {
+  /** 显示对照结果时为该对照，显示原始记录时为 null；recordCamera 是这台相机在记录里的下标（读原图用，记录里没有为 null） */
+  detail: PartDetail; comparison: Comparison | null; camera: number; recordCamera: number | null; cameraName: string; seq: number; frame: FrameRecord | null; selected: boolean; onSelect: () => void;
   /** 选中相机这一帧与胶宽折线联动的测站（0 起） */
   station: number | null; onStation: (station: number | null) => void;
 }) {
   const s = detail.summary;
-  const image = useFrameImage(s.id, camera, seq, !!frame?.rawFile);
+  const image = useFrameImage(s.id, recordCamera ?? -1, seq, !!frame?.rawFile && recordCamera != null);
   const traced = useFrameOverlay(s.id, comparison, camera, seq, !!frame?.rawFile && frame.status !== "notInspected" && frame.status !== "missing");
   const lit = selected ? station : null;
   // 联动的测站画在最后、加粗换色，免得被相邻测站盖住
@@ -93,7 +93,7 @@ function FrameTile({ detail, comparison, camera, cameraName, seq, frame, selecte
     color: i === lit ? "var(--ov-warn)" : "var(--ov-line)", width: i === lit ? 4 : 2 }] : []).sort((a, b) => Number(a.station === lit) - Number(b.station === lit));
   const overlay = traced.view && traced.view.corridor.length >= 2 ? { path: traced.view.corridor, searchHalfPx: traced.view.searchHalfPx ?? undefined,
     segments: lines, partEdges: traced.view.partEdges, onSegmentHover: selected ? onStation : undefined } : undefined;
-  const unavailable = !frame ? "没有这一帧的记录"
+  const unavailable = recordCamera == null ? "记录里没有这台相机的原图" : !frame ? "没有这一帧的记录"
     : frame.status === "missing" ? "这台相机本帧组缺帧，没有原图（检测不完整，不影响 OK/NG）"
       : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;
   return <div className={"hist-frame-tile" + (selected ? " selected" : "")} onClickCapture={onSelect}>
@@ -137,6 +137,10 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const [working, setWorking] = useState(false);
   const pending = useRef(false), serial = useRef(0), alive = useRef(true);
   const [options, setOptions] = useState<CompareOptions | null>(null);
+  // 选来复测的候选：任意本机候选都行（D-SB-58）；null 为记录所属配方的候选
+  const [chosen, setChosen] = useState<string | null>(null);
+  // 可选候选单独留着：换候选时重新查选项，选择框不随之消失
+  const [choices, setChoices] = useState<CompareCandidate[]>([]);
   const candidate = options?.candidate ?? null;
   const scope = `${s.id}:${candidate?.id ?? ""}:${candidate?.revision ?? ""}`;
   const current = useRef({ scope, historyId: s.id });
@@ -165,7 +169,8 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     let live = true;
     const mine = ++serial.current;
     setSaved([]);
-    if (s.recipeId) void workspaceApi.comparisons(s.recipeId, s.id).then(v => {
+    // 列出这件记录所有候选的对照（不只记录所属配方的）
+    void workspaceApi.comparisons(s.recipeId ?? "history", s.id).then(v => {
       if (!live || mine !== serial.current) return;
       setSaved(v);
       const target = wanted && v.find(c => c.id === wanted);
@@ -174,16 +179,18 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     return () => { live = false; };
   }, [s.id, s.recipeId, ws.data?.workspace.revision, wanted]);
 
-  // 复测能不能做以记录为准（后端按记录的配方找本机候选），与工作台当前选的配方无关；候选改了（修订变化）重新查
-  const editedRevision = ws.data?.workspace.doc.id === s.recipeId ? ws.data.workspace.revision : null;
+  // 复测能不能做以记录与所选候选为准（任意候选都行），与工作台打开的配方无关；所选候选改了（修订变化）重新查
+  const wantedCandidate = chosen ?? s.recipeId;
+  const editedRevision = ws.data?.workspace.doc.id === wantedCandidate ? ws.data.workspace.revision : null;
+  useEffect(() => { setChosen(null); setChoices([]); }, [s.id]);
   useEffect(() => {
     let live = true;
     setOptions(null);
-    void workspaceApi.historyCompareOptions(s.id).then(v => live && setOptions(v)).catch(e => live && setError(errorText(e)));
+    void workspaceApi.historyCompareOptions(s.id, chosen).then(v => { if (live) { setOptions(v); setChoices(v.choices); } }).catch(e => live && setError(errorText(e)));
     return () => { live = false; };
-  }, [s.id, editedRevision]);
-  // 工作台正在编辑这个配方的候选且有没保存的改动时先保存：对照按候选已保存的修订做
-  const editing = ws.data?.workspace.doc.id === s.recipeId;
+  }, [s.id, chosen, editedRevision]);
+  // 工作台正在编辑所选候选且有没保存的改动时先保存：对照按候选已保存的修订做
+  const editing = !!candidate && ws.data?.workspace.doc.id === candidate.id;
   const unsaved = editing && (ws.dirty || ws.frameDirty) ? "先保存候选配置和走廊示教，再执行对照。" : editing && ws.busy ? "候选正在保存，稍后再对照。" : "";
   const candidateBlock = !candidate ? "" : unsaved;
   const rulesReason = options ? candidateBlock || (options.rules.available ? "" : options.rules.reason ?? "") : "";
@@ -232,12 +239,14 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       </Stack>
     </Card>
     {s.source !== "real" && <Alert title={s.source === "offlineCandidate" ? "候选离线调试记录" : "离线回放记录"}>结果来自离线环境，不作为真机生产验收；切换当前站点模式不会改变此记录的来源。</Alert>}
-    {foreignProject && <Alert title="其他项目的记录">{foreignProject}复测与对照的限制见下方原因。</Alert>}
+    {foreignProject && <Alert title="其他项目的记录">{foreignProject}可以选任意候选复测；按原发布包重现用这条记录所属项目的发布包。</Alert>}
     {error && <Alert tone="warn" title="操作未完成">{error}</Alert>}
     <Panel title="复测与候选对照" help="对照结果另存，原始判定保留">
       <div className="wp-actions">
         <Chip>{s.source === "offlineCandidate" ? "原始候选 " + (s.recipeRevision ?? "未记录") : "原始发布 v" + (s.recipeVersion ?? "—")}</Chip>
-        <StatusBadge>候选 {!options ? "…" : candidate ? "v" + candidate.version + " · 修订 " + candidate.revision : foreignProject ? "不适用（其他项目的记录）" : "本机没有此配方的候选"}</StatusBadge>
+        {choices.length > 0 ? <Select label="复测配方" aria-label="复测配方" disabled={working || !options} value={chosen ?? candidate?.id ?? ""} onValueChange={id => setChosen(id || null)}
+          options={[...(chosen ?? candidate ? [] : [{ value: "", label: "选择候选" }]), ...choices.map(c => ({ value: c.id, label: `${c.id} · ${c.name} · v${c.version} 修订 ${c.revision}${c.id === s.recipeId ? "（本件配方）" : ""}` }))]} />
+          : <StatusBadge>候选 {!options ? "…" : "本机没有候选"}</StatusBadge>}
         <span className="spacer" />
         {s.source !== "offlineCandidate" && <Button leadingIcon={<ScanEye size={15} />} disabled={working || !options || !!originalReason} title={originalReason || undefined} onClick={runOriginal}>按原发布包重现</Button>}
         <Button leadingIcon={<Scale size={15} />} disabled={working || !options || !!rulesReason} title={rulesReason || undefined} onClick={() => runCompare(false)}>按候选规则重判</Button>
@@ -253,7 +262,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       {options && !rawReason && options.raw.note && <Text as="p" muted className="compare-note">从原图复测：{options.raw.note}</Text>}
       {editing && ws.error && <Alert tone="warn">{ws.error}</Alert>}
       {!!saved.length && <Select label="已保存的对照结果" aria-label="已保存对照结果" disabled={working} value={comparison?.id ?? ""} onValueChange={id => { setComparison(saved.find(c => c.id === id) ?? null); setShowOriginal(false); }}
-        options={[{ value: "", label: "选择记录" }, ...saved.map(c => ({ value: c.id, label: formatTime(c.createdAt) + " · " + comparisonLabel[c.source] + " · 修订 " + c.candidateRevision + " · " + verdictLabel[c.judgement.verdict] }))]} />}
+        options={[{ value: "", label: "选择记录" }, ...saved.map(c => ({ value: c.id, label: formatTime(c.createdAt) + " · " + comparisonLabel[c.source] + (c.source === "original" ? "" : " · " + c.candidateId + " 修订 " + c.candidateRevision) + " · " + verdictLabel[c.judgement.verdict] }))]} />}
     </Panel>
     {comparison && <Panel title={comparisonLabel[comparison.source] + "结果"} detail={(comparison.source === "original" ? "原发布 v" + comparison.candidateRecipe.version + " · 包 " + comparison.bundleId : "候选 v" + comparison.candidateRecipe.version + " · 修订 " + comparison.candidateRevision) + " · " + formatTime(comparison.createdAt)}>
       <div className="wp-actions">
@@ -279,7 +288,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         <FrameGroupStrip groups={groups} cameras={shown.cameras} regions={j.regions} selected={selection.seq} selectedCamera={selection.camera} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} onSelectCell={(seq, camera) => setSelection({ seq, camera })} />
         <div className="wp-stack">
           <div className="hist-frame-tiles" aria-label={`帧组 ${selection.seq} 各相机原图`}>
-            {shown.cameras.map((name, c) => <FrameTile key={c} detail={detail} comparison={viewing ? comparison : null} camera={c} cameraName={name} seq={selection.seq}
+            {shown.cameras.map((name, c) => <FrameTile key={c} detail={detail} comparison={viewing ? comparison : null} camera={c} recordCamera={shown.recordCameras ? shown.recordCameras[c] : c} cameraName={name} seq={selection.seq}
               frame={shown.frames.find(f => f.camera === c && f.seq === selection.seq) ?? null} selected={c === selection.camera} onSelect={() => setSelection(prev => ({ ...prev, camera: c }))}
               station={station} onStation={setStation} />)}
           </div>

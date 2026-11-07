@@ -217,3 +217,135 @@ fn saving_expected_frames_or_x_ref_is_ignored_and_kind_change_clears_them() {
         assert_eq!(state, after, "{name}");
     }
 }
+
+/// 存进记录库再读出的一件段配方记录（样例配方 cam1–cam3、4 个帧组）：`saved` 里的相机下标每帧都有原图引用，其余相机没保存原图。
+fn stored_record(saved: &[usize]) -> (std::path::PathBuf, crate::store::PartDetail) {
+    use crate::store::{
+        burst_fixture, PartMode, PartRecord, PlcDelivery, PlcDeliveryState, RecordSource, Store,
+    };
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "gluesight-any-recipe-{}-{}-{n}",
+        std::process::id(),
+        ly_plc::now_ms()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("parts.sqlite")).unwrap();
+    let recipe = burst_fixture::recipe();
+    let mut frames = burst_fixture::frames(4, &[]);
+    for frame in &mut frames {
+        frame.raw_file = saved
+            .contains(&frame.camera)
+            .then(|| format!("rec/cam{}_s{:06}.pgm", frame.camera + 1, frame.seq));
+    }
+    let (judgement, burst) = burst_fixture::record(&recipe, frames, None, Some(4));
+    let delivery = PlcDelivery {
+        state: PlcDeliveryState::NotRequired,
+        updated_at: 0,
+        message: None,
+    };
+    let id = store
+        .insert(&PartRecord {
+            mode: PartMode::Production,
+            ts: 1,
+            sn: "SN-X",
+            recipe: Some(&recipe),
+            judgement: &judgement,
+            drain_ms: None,
+            frames: &[],
+            frames_expected: burst.expected_total.unwrap_or(0) as usize,
+            frames_received: 4,
+            triggers: 4,
+            table: None,
+            software_version: "test",
+            cycle_id: Some("cycle-any"),
+            bundle_id: None,
+            delivery: &delivery,
+            shots: &[],
+            source: RecordSource::Real,
+            sample: None,
+            burst: Some(&burst),
+        })
+        .unwrap();
+    let detail = store.detail(id).unwrap();
+    (dir, detail)
+}
+
+/// 计划相机按 `cameras` 顺序的候选；样例配方里没有的相机编号照 cam1 的参数新建（记录里也就没有它的原图）。
+fn candidate_with(cameras: &[&str]) -> Workspace {
+    let mut w = burst_workspace(&[Straight]);
+    let inspect = std::mem::take(&mut w.doc.inspect);
+    w.doc.inspect = cameras
+        .iter()
+        .map(|id| {
+            let base = inspect
+                .iter()
+                .find(|i| i.camera == *id)
+                .unwrap_or(&inspect[0]);
+            crate::recipe::CameraInspect {
+                camera: (*id).into(),
+                ..base.clone()
+            }
+        })
+        .collect();
+    w
+}
+
+#[test]
+fn candidate_with_other_camera_order_measures_each_camera_from_its_own_record_frames() {
+    // 防的回归（D-SB-58）：任意候选从原图复测时按下标取记录的帧，候选相机顺序与记录不同就读到别的相机的原图；
+    // 记录里没有的相机被当成有原图
+    let (dir, detail) = stored_record(&[0, 1, 2]);
+    let burst = detail.burst.as_ref().unwrap();
+    assert_eq!(burst.cameras, ["cam1", "cam2", "cam3"]);
+    let w = candidate_with(&["cam3", "cam1", "camX"]);
+    let recipe = w.doc.build().unwrap();
+    let (map, frames) = super::burst_history::candidate_inputs(&recipe, burst);
+    assert_eq!(map, vec![Some(2), Some(0), None]);
+    let raw = |camera: usize| {
+        frames
+            .iter()
+            .filter(|f| f.camera == camera)
+            .map(|f| f.raw_file.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        raw(0),
+        (1..=4)
+            .map(|seq| Some(format!("rec/cam3_s{seq:06}.pgm")))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        raw(1),
+        (1..=4)
+            .map(|seq| Some(format!("rec/cam1_s{seq:06}.pgm")))
+            .collect::<Vec<_>>()
+    );
+    assert!(frames
+        .iter()
+        .filter(|f| f.camera == 2)
+        .all(|f| f.status == FrameState::Missing && f.raw_file.is_none()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn raw_recheck_is_unavailable_when_only_cameras_the_candidate_does_not_use_have_raw_images() {
+    // 防的回归（D-SB-58）：记录里别的相机有原图就判原图复测可用，候选用到的相机一帧原图都没有，执行时整件没有一帧测成
+    let (dir, detail) = stored_record(&[1]);
+    // 候选用 cam1 与两台记录里没有的相机；记录只有 cam2 存了原图
+    let w = candidate_with(&["cam1", "camX", "camY"]);
+    let options = super::burst_history::compare_options(&detail, None, Some(&w), None);
+    assert!(!options.raw.available);
+    assert!(
+        options
+            .raw
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("候选用到的相机（cam1）在这条记录里没有保存原图"),
+        "{:?}",
+        options.raw.reason
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

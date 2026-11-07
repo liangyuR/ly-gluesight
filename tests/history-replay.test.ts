@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { burstSideOf, regionDiffs, type BurstSide } from "../src/features/history/replay";
+import { burstSideOf, comparisonBurst, regionDiffs, type BurstSide } from "../src/features/history/replay";
 import type { RegionKind, RegionResult } from "../src/features/plan/types";
-import { burstJudgement, burstPartDetail } from "./fixtures";
+import { burstJudgement, burstPartDetail, frameMetrics } from "./fixtures";
 
 describe("段配方按区域比对", () => {
   // 原结果：直线段 1（帧组 1–6，带胶偏统计）与弯道段 2（帧组 7–12）两个区域，其余由默认判定带出
@@ -34,5 +34,22 @@ describe("段配方按区域比对", () => {
     const tuned = segments().map(s => ({ ...s, tolerance: s.tolerance + 2, inspectRange: { aMm: 8, bMm: 100 }, checks: { ...s.checks, width: { ...s.checks.width, nominalMm: 5 } },
       offsetRef: s.offsetRef && { ...s.offsetRef, xRef: .2, spread: .1 } }));
     expect(regionDiffs(side(), side({ segments: tuned }))!.some(d => d.differs)).toBe(false);
+  });
+});
+
+describe("任意配方复测的对照显示", () => {
+  // 防的回归（D-SB-58）：对照按候选的相机下标，显示时按下标套到记录的帧上，候选相机顺序不同就配错原图；记录里没有的相机被当成有原图
+  it("对照的相机按编号对应记录的帧，记录里没有的相机没有原图", () => {
+    const burst = burstPartDetail().burst!;
+    const [cam1, cam2] = burst.cameras;
+    const shown = comparisonBurst(burst, { ...burstSideOf(burst), cameras: [cam2, "CAM-X"],
+      frames: [frameMetrics(0, 1), frameMetrics(1, 1, { state: "missing" })] })!;
+    expect(shown.recordCameras).toEqual([1, null]);
+    const at = (camera: number, seq: number) => shown.frames.find(f => f.camera === camera && f.seq === seq)!;
+    expect(at(0, 1).rawFile).toBe(burst.frames.find(f => f.camera === 1 && f.seq === 1)!.rawFile);
+    expect(at(0, 1).rawFile).not.toBe(burst.frames.find(f => f.camera === 0 && f.seq === 1)!.rawFile);
+    expect([at(1, 1).rawFile, at(1, 1).status]).toEqual([null, "missing"]);
+    expect(shown.cameras).toEqual([cam2, "CAM-X"]);
+    expect(cam1).not.toBe(cam2);
   });
 });

@@ -57,6 +57,9 @@ pub struct HistoryCandidate {
     pub usage: Option<PieceUsage>,
     /// 手动配置数据（`capture_fixture` 写的仿历史件）的标签；真机件为 None
     pub fixture: Option<String>,
+    /// 记录所属的配方与项目（试测“全部历史件”里可能是别的配方、别的项目）
+    pub recipe_id: Option<String>,
+    pub project_id: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -149,6 +152,8 @@ pub(super) fn assess(
             .cloned(),
         usage: None,
         fixture: None,
+        recipe_id: summary.recipe_id.clone(),
+        project_id: summary.project_id.clone(),
     };
     if summary.source != RecordSource::Real {
         reasons.push(format!("{}记录不能导入", summary.source.label()));
@@ -426,7 +431,8 @@ fn current_configs(cycle: &CycleHost) -> BTreeMap<String, Value> {
         .collect()
 }
 
-fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
+/// `all` 为真时列本机全部历史件（试测用，任意配方都能测任意记录），否则只列本配方的（选示教件用）。
+fn assess_all(app: &AppHandle, w: &Workspace, all: bool) -> Result<Vec<Assessed>, String> {
     let doc = &w.doc;
     if !doc.is_burst() {
         return Err("旧拍照点配方已停用，请创建段配方".into());
@@ -436,9 +442,9 @@ fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
     let imported = imported_cycles(cycle.camera.recipe_capture(), &doc.id)?;
     let data = crate::storage::root(app);
     let store = app.state::<Store>();
-    let mut parts = store.recorded_parts(&doc.id, LIST_LIMIT)?;
+    let mut parts = store.recorded_parts((!all).then_some(doc.id.as_str()), LIST_LIMIT)?;
     // 复制来的项目：示教件那一件仍归来源项目（检测历史本机共用），按 cycleId 找回，补回原图时照样能用
-    if let Some(piece) = &w.teaching_piece {
+    if let Some(piece) = w.teaching_piece.as_ref().filter(|_| !all) {
         if !parts
             .iter()
             .any(|(s, _)| s.cycle_id.as_deref() == Some(piece.cycle_id.as_str()))
@@ -491,6 +497,7 @@ fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
 pub async fn workspace_history_candidates(
     app: AppHandle,
     id: String,
+    all: Option<bool>,
 ) -> Result<Vec<HistoryCandidate>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let w = app
@@ -501,7 +508,10 @@ pub async fn workspace_history_candidates(
             .get(&id)
             .ok_or("候选配置不存在")?
             .clone();
-        Ok(assess_all(&app, &w)?.into_iter().map(|a| a.view).collect())
+        Ok(assess_all(&app, &w, all.unwrap_or(false))?
+            .into_iter()
+            .map(|a| a.view)
+            .collect())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -540,7 +550,7 @@ fn import(
     if picks.iter().any(|p| !unique.insert(p.record_id)) {
         return Err("不能重复选择同一件".into());
     }
-    let mut assessed: BTreeMap<i64, Assessed> = assess_all(app, w)?
+    let mut assessed: BTreeMap<i64, Assessed> = assess_all(app, w, false)?
         .into_iter()
         .map(|a| (a.view.record_id, a))
         .collect();
@@ -591,7 +601,7 @@ pub(super) fn refill_teaching_images(app: &AppHandle, w: &Workspace) -> Result<(
         return Err("示教件原图齐全，不需要补回".into());
     }
     let result = (|| {
-        let entry = assess_all(app, w)?
+        let entry = assess_all(app, w, false)?
             .into_iter()
             .find(|a| a.view.imported_round.as_deref() == Some(piece.round_id.as_str()))
             .ok_or("示教件那一件不在本配方最近的录制件里，不能补回原图；请重新选用示教件")?;

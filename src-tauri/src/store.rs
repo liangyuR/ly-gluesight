@@ -1724,24 +1724,30 @@ impl Store {
     }
 
     /// 当前项目某配方有录制目录的真机记录（最新在前，最多 limit 件），历史件导入为采集轮次时据此逐件核对。
+    /// 最近的真机录制件：给了配方编号时只取当前项目这个配方的，否则取本机全部（任意项目、任意配方，试测“全部历史件”用）。
     pub fn recorded_parts(
         &self,
-        recipe_id: &str,
+        recipe_id: Option<&str>,
         limit: u32,
     ) -> Result<Vec<(PartSummary, RecordingEvidence)>, String> {
         let conn = self.conn.lock().unwrap();
+        let filter = if recipe_id.is_some() {
+            "AND project_id = ?2 AND recipe_id = ?1"
+        } else {
+            ""
+        };
         let sql = format!(
-            "SELECT {SUMMARY_COLS}, recording_state, recording_available, recording_directory, recording_errors FROM parts \
-            WHERE {} AND project_id = ?2 AND recipe_id = ?1 AND recording_directory IS NOT NULL ORDER BY ts DESC, id DESC LIMIT {}",
+            "SELECT {SUMMARY_COLS}, recording_state, recording_available, recording_directory, recording_errors FROM parts             WHERE {} {filter} AND recording_directory IS NOT NULL ORDER BY ts DESC, id DESC LIMIT {}",
             HistoryScope::Real.clause(""),
             limit.clamp(1, 500)
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let rows = stmt
-            .query_map([recipe_id, self.project.as_str()], |row| {
-                Ok((summary(row)?, recording_row(row, SUMMARY_LEN)?))
-            })
-            .map_err(db_err)?;
+        let read = |row: &rusqlite::Row| Ok((summary(row)?, recording_row(row, SUMMARY_LEN)?));
+        let rows = match recipe_id {
+            Some(id) => stmt.query_map([id, self.project.as_str()], read),
+            None => stmt.query_map([], read),
+        }
+        .map_err(db_err)?;
         rows.collect::<Result<_, _>>().map_err(db_err)
     }
 

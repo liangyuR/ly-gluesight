@@ -1162,13 +1162,6 @@ fn record_bundle(
     crate::release::load(&root, recipe_id, bundle_id)
 }
 
-/// 记录不属于当前项目时按候选对照的阻止原因。
-fn foreign_record(app: &AppHandle, summary: &crate::store::PartSummary) -> Option<String> {
-    (summary.project_id != crate::project::current_id(app)).then(|| {
-        crate::project::records::foreign_reason(&crate::storage::root(app), &summary.project_id)
-    })
-}
-
 pub fn published_bundle(
     app: &AppHandle,
     recipe: &Recipe,
@@ -1347,14 +1340,10 @@ pub async fn workspace_compare(
         let recipe = w.doc.build()?;
         let store = app.state::<Store>();
         let detail = store.detail(history_id)?;
-        if let Some(reason) = foreign_record(&app, &detail.summary) {
-            return Err(reason);
-        }
-        let original = store
-            .record_recipe(&detail.summary)?
-            .ok_or("历史配方快照缺失")?;
+        // 任意候选都能复测任意记录（不看型号、配方编号与所属项目）；按规则重判仍需记录的配方快照
+        let original = store.record_recipe(&detail.summary)?;
         let (judgement, burst) =
-            burst_history::compare(&app, &w, &recipe, &detail, &original, raw)?;
+            burst_history::compare(&app, &w, &recipe, &detail, original.as_ref(), raw)?;
         let comparison = Comparison {
             id: comparison_id(&app, history_id),
             history_id,
@@ -1474,39 +1463,45 @@ pub async fn workspace_compare_original(
     .map_err(|error| error.to_string())?
 }
 
-/// 一条历史记录能做哪几种复测（历史详情的按钮与原因）：按记录的配方找本机候选，不新建候选、不看工作台当前选择。
+/// 一条历史记录能做哪几种复测（历史详情的按钮与原因）：用 `candidate` 指定的本机候选（不给时用记录所属配方的候选），
+/// 任意候选都能选，不看型号、配方编号与所属项目；不新建候选、不看工作台当前打开的配方。`choices` 列出可选的候选。
 #[tauri::command]
 pub async fn workspace_history_compare_options(
     app: AppHandle,
     history_id: i64,
+    candidate: Option<String>,
 ) -> Result<burst_history::CompareOptions, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
         let detail = store.detail(history_id)?;
         let original = store.record_recipe(&detail.summary)?;
-        let foreign = foreign_record(&app, &detail.summary);
-        let candidate = detail
-            .summary
-            .recipe_id
-            .as_deref()
-            .filter(|_| foreign.is_none())
-            .and_then(|id| {
-                let host = app.state::<WorkspaceHost>();
-                let items = host.items.lock().unwrap();
-                items.get(id).filter(|w| !w.legacy()).cloned()
-            });
+        let (chosen, choices) = {
+            let host = app.state::<WorkspaceHost>();
+            let items = host.items.lock().unwrap();
+            let mut choices: Vec<&Workspace> = items.values().filter(|w| !w.legacy()).collect();
+            choices.sort_by(|a, b| a.doc.id.cmp(&b.doc.id));
+            let wanted = candidate.as_deref().or(detail.summary.recipe_id.as_deref());
+            let chosen = wanted
+                .and_then(|id| items.get(id))
+                .filter(|w| !w.legacy())
+                .cloned();
+            (
+                chosen,
+                choices
+                    .into_iter()
+                    .map(burst_history::CompareCandidate::of)
+                    .collect(),
+            )
+        };
         let releases = crate::project::records::releases_root(
             &crate::storage::root(&app),
             &detail.summary.project_id,
         )
         .err();
-        Ok(burst_history::compare_options(
-            &detail,
-            original.as_ref(),
-            candidate.as_ref(),
-            foreign,
-            releases,
-        ))
+        let mut options =
+            burst_history::compare_options(&detail, original.as_ref(), chosen.as_ref(), releases);
+        options.choices = choices;
+        Ok(options)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1519,8 +1514,9 @@ pub fn workspace_comparisons(
     id: String,
     history_id: i64,
 ) -> Result<Vec<Comparison>, String> {
+    // 历史详情列出这件记录所有候选的对照（任意配方都能验证任意记录）；id 只核对格式
     safe_id(&id)?;
-    host.comparisons.list(&host.root, &store, &id, history_id)
+    host.comparisons.list(&host.root, &store, None, history_id)
 }
 
 pub fn clear_live(app: &AppHandle) {

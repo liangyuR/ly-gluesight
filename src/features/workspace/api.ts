@@ -41,7 +41,8 @@ export const workspaceApi = {
   /** 导入件（轮次）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
   captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeFrameImage),
   /** 历史件选择器：本配方最近的真机录制件、能否选用与是否已被本候选使用（只读） */
-  historyCandidates: (id: string) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id }),
+  /** all：列本机全部历史件（试测用），否则只列本配方的（选示教件用） */
+  historyCandidates: (id: string, all = false) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id, all }),
   /** 导入这件并设为示教件；按 RB-2 / RB-8 清空图像派生内容，保留段列表结构 */
   setTeachingPiece: (id: string, revision: number, recordId: number) => desktopCall<WorkspaceView>("workspace_set_teaching_piece", { id, revision, recordId }),
   /** 从示教件那一件历史记录补回导出或复制时没带的原图；候选内容不变 */
@@ -70,7 +71,8 @@ export const workspaceApi = {
   comparisons: (id:string,historyId:number)=>desktopCall<Comparison[]>("workspace_comparisons",{id,historyId}),
   recordFrameView: (historyId: number, comparison: string, camera: number, seq: number) => desktopCall<CalibrationFrameView>("workspace_record_frame_view", { historyId, comparison, camera, seq }),
   historyFrameView: (historyId: number, camera: number, seq: number) => desktopCall<CalibrationFrameView>("workspace_history_frame_view", { historyId, camera, seq }),
-  historyCompareOptions: (historyId: number) => desktopCall<CompareOptions>("workspace_history_compare_options", { historyId }),
+  /** candidate 不给时用记录所属配方的候选 */
+  historyCompareOptions: (historyId: number, candidate: string | null = null) => desktopCall<CompareOptions>("workspace_history_compare_options", { historyId, candidate }),
   stationCapture: (cam:number,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,view}),
   stationImport: (cam:number,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes,view}),
   /** 当前标定所用原图载入为冻结样本；没有可载入的原图为 null */
