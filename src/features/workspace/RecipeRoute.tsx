@@ -1,0 +1,36 @@
+import { useEffect, type ComponentType } from "react";
+import { Link, useParams } from "react-router-dom";
+import { Button } from "qing-steel";
+import { useWorkspace } from "./context";
+import { Notice } from "./components";
+import { recipeHref } from "./recipeRoutes";
+
+/**
+ * 配方步骤页的入口：打开哪个配方由地址里的编号决定（`/recipe/<编号>/…`），没有全局“选中配方”。
+ * 进入时按编号打开这个配方的候选；另一个配方还有没保存的修改时不切换，提示回去保存或撤销。
+ */
+function RecipeRoute({ children }: { children: React.ReactNode }) {
+  const { recipeId = "" } = useParams();
+  const { selectedId, select, dirty, frameDirty, navigationDirty } = useWorkspace();
+  const unsaved = dirty || frameDirty || navigationDirty;
+  const other = selectedId != null && selectedId !== recipeId;
+  useEffect(() => {
+    if (recipeId && selectedId !== recipeId && !unsaved) void select(recipeId);
+  }, [recipeId, selectedId, unsaved, select]);
+  if (other && unsaved) {
+    return <div className="wp-page"><Notice title={`配方 ${selectedId} 有未保存的修改`} tone="warn">
+      先回到 {selectedId} 保存或撤销修改，再打开 {recipeId}。
+      <Button asChild size="sm"><Link to={recipeHref(selectedId, "/recipe/progress")}>回到 {selectedId}</Link></Button>
+    </Notice></div>;
+  }
+  // 还没换到地址里的配方时不渲染页面，免得先露出上一个配方的内容
+  if (selectedId !== recipeId) return <div className="wp-page"><p className="muted">正在打开配方 {recipeId}…</p></div>;
+  return <>{children}</>;
+}
+
+/** 把配方步骤页包上按地址打开配方的入口。 */
+export function inRecipe(Page: ComponentType): ComponentType {
+  const Wrapped = () => <RecipeRoute><Page /></RecipeRoute>;
+  Wrapped.displayName = `InRecipe(${Page.displayName ?? Page.name})`;
+  return Wrapped;
+}

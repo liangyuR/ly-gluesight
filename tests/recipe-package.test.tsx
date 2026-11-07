@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { SnackbarProvider } from "qing-steel";
@@ -12,7 +12,7 @@ import { desktopAvailable } from "../src/lib/desktop";
 import { subscribe } from "../src/features/plc/api";
 import type { WorkspaceView } from "../src/features/workspace/types";
 import { burstRecipe, burstSummary, burstWorkspaceView } from "./fixtures";
-vi.mock("../src/lib/storage", () => ({ storageApi: { preferences: async () => ({ lastWorkspace: "A" }), updatePreferences: vi.fn(async () => ({})) } }));
+vi.mock("../src/lib/storage", () => ({ storageApi: { preferences: async () => ({}), updatePreferences: vi.fn(async () => ({})) } }));
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDoc: vi.fn(), packagePick: vi.fn(), packageImport: vi.fn() } }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn(), preview: vi.fn() } }));
@@ -26,8 +26,10 @@ function candidate(revision: number, name: string): WorkspaceView {
 }
 let current = candidate(3, "现场候选");
 
+let workspace: ReturnType<typeof useWorkspace>;
 function Shown() {
-  const { data } = useWorkspace();
+  workspace = useWorkspace();
+  const { data } = workspace;
   return <output aria-label="当前候选">{data ? `${data.workspace.doc.name} r${data.workspace.revision}` : ""}</output>;
 }
 
@@ -51,6 +53,7 @@ beforeEach(() => {
 describe("配方回传包导入", () => {
   it("替换了当前打开的候选：导入后工作台持有包里的新候选，不停在旧修订上", async () => {
     render(<SnackbarProvider><WorkspaceProvider><MemoryRouter initialEntries={["/recipe"]}><LibraryPage /><Shown /></MemoryRouter></WorkspaceProvider></SnackbarProvider>);
+    await act(() => workspace.select("A"));
     await waitFor(() => expect(screen.getByLabelText("当前候选")).toHaveTextContent("现场候选 r3"));
     await userEvent.click(screen.getByRole("button", { name: "导入回传包" }));
     await userEvent.click(await screen.findByRole("button", { name: "导入并替换候选" }));

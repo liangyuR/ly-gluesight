@@ -14,13 +14,14 @@ import SegmentWorkbench from "./SegmentWorkbench";
 import { segmentCameras } from "./workbenchDraft";
 import "../plan/plan.css";
 import "./segments.css";
+import { useRecipeHref } from "./recipeRoutes";
 
 const DEBOUNCE_MS = 700;
 type SaveState = "saved" | "pending" | "saving" | "failed";
 const saveText: Record<SaveState, string> = { saved: "段列表已保存", pending: "等待保存…", saving: "保存中…", failed: "保存失败" };
 
 /**
- * 段列表（段配方，路由 /recipe/segments）：顶部分段标定工作台（SegmentWorkbench）按示教件图像定段结构与边界；
+ * 段列表（段配方，路由 /recipe/<编号>/segments）：顶部分段标定工作台（SegmentWorkbench）按示教件图像定段结构与边界；
  * 下方设各段长度、帧数容差与跳过帧数；逐帧定向、检测项与胶偏参考在走廊示教页。预期帧数 N_exp 只读：取自示教件已确认分段的帧组数。
  */
 export default function SegmentsPage() {
@@ -33,6 +34,7 @@ export default function SegmentsPage() {
 }
 
 function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected: MutableRefObject<string | null> }) {
+  const href = useRecipeHref();
   const { data, doc, act, busy, setError, navigationDirty } = useWorkspace();
   // 未保存的本地编辑；null 时显示后端给的 plan.segments
   const [edits, setEdits] = useState<PathSegment[] | null>(null);
@@ -126,7 +128,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
         <strong aria-label="整件预期总帧数">{expectedText(plan.expectedTotal, plan.toleranceTotal)}</strong>
         <span className="muted">ΣN_exp ± Σtol{plan.cameras.length !== PLAN_CAMERAS && `（需要 ${PLAN_CAMERAS} 台相机，当前 ${plan.cameras.length} 台）`}</span>
         {plan.expectedTotal == null && <Badge tone="warn">待示教件分段{pending.length > 0 && "：" + pending.map(index => `段 ${index}`).join("、")}</Badge>}
-        <Link className="wp-progress-link" to="/recipe/calibration">前往试测</Link>
+        <Link className="wp-progress-link" to={href("/recipe/calibration")}>前往试测</Link>
       </div>
       <p className="muted">新建段时，检测项与帧数容差沿用同类型已有段的设置；检测项可在走廊示教页用“检测项套用到其余同类段”一次改齐。</p>
     </Panel>
@@ -134,6 +136,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
 }
 
 function SegmentCard({ segment, cameras, disabled, onPatch }: { segment: PathSegment; cameras: string[]; disabled: boolean; onPatch: (change: Partial<PathSegment>) => void }) {
+  const href = useRecipeHref();
   const name = `段 ${segment.index}`;
   const range = segment.inspectRange;
   const inspecting = segmentCameras(segment, cameras);
@@ -163,6 +166,6 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: { segment: PathSeg
       检 {range.aMm}–{range.bMm} mm 从未在判定中排除帧，现在不再使用，请改用上面的段首 / 段尾跳过帧数。
       <Button size="sm" disabled={disabled} onClick={() => onPatch({ inspectRange: null })}>清除</Button>
     </Notice>}
-    <p className="muted">逐帧定向（{segment.heading ? "开" : "关"}）、检测项与胶偏参考在<Link to={`/recipe/teach?camera=${encodeURIComponent(inspecting[0])}&segment=${segment.index}`}>走廊示教</Link>页按段设置。</p>
+    <p className="muted">逐帧定向（{segment.heading ? "开" : "关"}）、检测项与胶偏参考在<Link to={href(`/recipe/teach?camera=${encodeURIComponent(inspecting[0])}&segment=${segment.index}`)}>走廊示教</Link>页按段设置。</p>
   </section>;
 }

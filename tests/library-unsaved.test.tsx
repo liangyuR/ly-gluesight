@@ -1,9 +1,10 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { SnackbarProvider } from "qing-steel";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LibraryPage from "../src/features/workspace/LibraryPage";
+import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import { WorkspaceProvider, useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
@@ -19,6 +20,8 @@ vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigConfig: vi.fn() }
 vi.mock("../src/features/plc/api", () => ({ subscribe: vi.fn(() => () => {}) }));
 const view = (id: string) => burstWorkspaceView(burstRecipe({ id }));
 let workspace: ReturnType<typeof useWorkspace>;
+/** 配方步骤页：只按地址打开配方，内容不重要 */
+const RecipePage = inRecipe(() => null);
 function Probe() { workspace = useWorkspace(); return <output aria-label="页面地址">{useLocation().pathname}</output>; }
 beforeEach(() => {
   const a = view("A"), b = view("B");
@@ -30,7 +33,11 @@ beforeEach(() => {
 });
 /** 在工作台改了导航图没保存，再从“配方库”退回配方库页 */
 async function leaveWithUnsavedMap() {
-  render(<SnackbarProvider><WorkspaceProvider><MemoryRouter initialEntries={["/recipe"]}><LibraryPage /><Probe /></MemoryRouter></WorkspaceProvider></SnackbarProvider>);
+  render(<SnackbarProvider><WorkspaceProvider><MemoryRouter initialEntries={["/recipe"]}><Routes>
+    <Route path="/recipe" element={<LibraryPage />} />
+    <Route path="/recipe/:recipeId/*" element={<RecipePage />} />
+  </Routes><Probe /></MemoryRouter></WorkspaceProvider></SnackbarProvider>);
+  await act(() => workspace.select("A"));
   await waitFor(() => expect(workspace.data?.workspace.doc.id).toBe("A"));
   act(() => workspace.setNavigationDraft({ map: { image: { id: "img" } } as NavigationMapData, revision: workspace.data!.workspace.revision }));
   expect(workspace.navigationDirty).toBe(true);
@@ -41,7 +48,7 @@ describe("配方库：带着未保存修改退出后继续配置", () => {
   it("继续配置当前配方 → 回到修改所在的分段页，未保存的导航图草稿保留", async () => {
     await leaveWithUnsavedMap();
     await resume("A");
-    await waitFor(() => expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/segments"));
+    await waitFor(() => expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/A/segments"));
     expect(workspace.navigationDirty).toBe(true);
   });
 
@@ -50,7 +57,7 @@ describe("配方库：带着未保存修改退出后继续配置", () => {
     await resume("B");
     const dialog = await screen.findByRole("dialog", { name: "配方 A 有未保存的修改" });
     await userEvent.click(within(dialog).getByRole("button", { name: "放弃修改并打开 B" }));
-    await waitFor(() => expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/progress"));
+    await waitFor(() => expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/B/progress"));
     expect(workspace.data?.workspace.doc.id).toBe("B");
     expect(workspace.navigationDirty).toBe(false);
   });

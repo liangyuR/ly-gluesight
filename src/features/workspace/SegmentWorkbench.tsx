@@ -15,6 +15,7 @@ import {
 } from "./workbenchDraft";
 import type { FrameImage, SegmentSaveImpact } from "./types";
 import WorkspaceNavigation from "./WorkspaceNavigation";
+import { useRecipeHref } from "./recipeRoutes";
 
 const reviewLabel = { draft: "边界草稿待确认", confirmed: "边界已确认", stale: "边界需复核" } as const;
 
@@ -45,6 +46,7 @@ function FramePreview({ roundId, camera, seq, corridor, searchHalfPx }: { roundI
  * 点缩略图在下方并排预览三台相机原图（叠加已示教走廊）。
  */
 export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: WorkspacePlanView; locked: string; onDirty: (dirty: boolean) => void }) {
+  const href = useRecipeHref();
   const { data, doc, act, busy, navigationDirty, setError } = useWorkspace();
   const roundId = data?.workspace.teachingPiece?.roundId ?? "";
   const [edit, setEdit] = useState<{ roundId: string; draft: WorkbenchDraft } | null>(null);
@@ -93,7 +95,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   if (!roundId) {
     return <><WorkspaceNavigation segments={plan.segments} ranges={null} seq={1} frameStatus="unavailable" editable locked={locked} onNavigate={() => {}} />
     <Panel title="分段标定" help="在示教件的帧组时间轴上划分直线段与弯道段">
-      <Notice title="还没有示教件" tone="warn">先选一件历史件设为示教件，再回到这里按它的图像划分段。<Link className="wp-text-link" to="/recipe/capture">前往示教件<ArrowRight size={12} aria-hidden="true" /></Link></Notice>
+      <Notice title="还没有示教件" tone="warn">先选一件历史件设为示教件，再回到这里按它的图像划分段。<Link className="wp-text-link" to={href("/recipe/capture")}>前往示教件<ArrowRight size={12} aria-hidden="true" /></Link></Notice>
     </Panel></>;
   }
 

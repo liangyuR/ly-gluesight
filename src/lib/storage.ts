@@ -11,7 +11,6 @@ export interface StorageStatus {
 export interface StoragePreferences {
   flyshotSpeedMmS?: number | null;
   flyshotSpacingMm?: number | null;
-  lastWorkspace?: string | null;
 }
 let queue = Promise.resolve();
 function serial<T>(operation: () => Promise<T>): Promise<T> {

@@ -10,6 +10,7 @@ import { FrameBrowser } from "./FrameBrowser";
 import HistoryPicker from "./HistoryPicker";
 import { pieceTime } from "./pieces";
 import type { WorkspaceView } from "./types";
+import { useRecipeHref } from "./recipeRoutes";
 
 /** 设示教件会清空的内容（RB-2、RB-8）：只列候选里实际有的。 */
 export function clearedByTeachingPiece(view: WorkspaceView): string[] {
@@ -31,10 +32,11 @@ export function clearedByTeachingPiece(view: WorkspaceView): string[] {
 }
 
 /**
- * 示教件（RB-1，路由 /recipe/capture）：从本配方的历史件里选一件，分段边界与全部走廊示教帧都只来自它；它是唯一的基准件，兼作标准件。
+ * 示教件（RB-1，路由 /recipe/<编号>/capture）：从本配方的历史件里选一件，分段边界与全部走廊示教帧都只来自它；它是唯一的基准件，兼作标准件。
  * 已有示教件或候选里有继承的走廊、标定结果时，先列出将清空的内容（RB-2、RB-8），确认后才替换。
  */
 export default function TeachingPiecePage() {
+  const href = useRecipeHref();
   const { data, doc, cameras, busy, dirty, frameDirty, act, setError } = useWorkspace();
   const [confirming, setConfirming] = useState<{ recordId: number; done: (ok: boolean) => void } | null>(null);
   if (!doc || !data) return <WorkspaceEmpty />;
@@ -63,7 +65,7 @@ export default function TeachingPiecePage() {
           <span className="wp-capture-chip"><small>SN</small><strong className="mono">{piece.sn}</strong></span>
           <span className="wp-capture-chip"><small>时间</small><strong>{pieceTime(piece.ts)}</strong></span>
           <span className="wp-capture-chip"><small>帧组</small><strong>{groupCount} 个</strong></span>
-          <Link className="wp-text-link" to="/recipe/segments">前往分段<ArrowRight size={12} aria-hidden="true" /></Link>
+          <Link className="wp-text-link" to={href("/recipe/segments")}>前往分段<ArrowRight size={12} aria-hidden="true" /></Link>
         </div>
         {pieceView?.imagesMissing
           ? <Notice tone="warn" title="示教件原图不在本项目">导出或复制项目时没带示教件原图。分段、走廊与测量结果都还在；要看图、示教走廊、测量示教件或试测，先从这一件的历史记录补回原图（需要它的检测记录与历史原图仍在本项目）。

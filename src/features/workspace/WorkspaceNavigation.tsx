@@ -8,6 +8,7 @@ import { Notice, Panel } from "./components";
 import NavigationMap from "./navigation/NavigationMap";
 import type { NavigationMapData } from "./navigation/types";
 import type { PathSegment } from "../plan/types";
+import { useRecipeHref } from "./recipeRoutes";
 
 export interface WorkspaceNavigationProps {
   segments: Pick<PathSegment, "index" | "kind">[];
@@ -27,6 +28,7 @@ export default function WorkspaceNavigation(props: WorkspaceNavigationProps) {
 }
 
 function NavigationContent({ editable = false, locked = "", ...props }: WorkspaceNavigationProps) {
+  const href = useRecipeHref();
   const { data, busy, dirty, frameDirty, act, navigationDraft, setNavigationDraft } = useWorkspace();
   const id = data!.workspace.doc.id;
   const navigation = data!.navigation;
@@ -81,7 +83,7 @@ function NavigationContent({ editable = false, locked = "", ...props }: Workspac
   const imageReady = !!navigation?.imageAvailable && picture.key === imageKey && !!picture.url && !error;
   return <div className="workspace-navigation" onKeyDown={event => event.stopPropagation()}>
     {error && <Notice title="导航资料不可用" tone="warn">{error} <Button variant="text" size="sm" onClick={() => setRetry(value => value + 1)}>重试读图</Button></Notice>}
-    {!editable && !map && <section className="navigation-map" aria-label="工件胶路导航图"><strong>工件胶路导航图</strong><p className="muted">尚未添加导航图，可在<Link to="/recipe/segments">分段页</Link>导入工件图并标注胶路。</p></section>}
+    {!editable && !map && <section className="navigation-map" aria-label="工件胶路导航图"><strong>工件胶路导航图</strong><p className="muted">尚未添加导航图，可在<Link to={href("/recipe/segments")}>分段页</Link>导入工件图并标注胶路。</p></section>}
     {(editable || map) && <NavigationMap {...props} ranges={imageReady ? props.ranges : null} map={map}
       imageUrl={picture.key === imageKey && navigation?.imageAvailable ? picture.url : ""}
       editable={editable} disabled={!!reason} disabledReason={reason}
@@ -91,6 +93,7 @@ function NavigationContent({ editable = false, locked = "", ...props }: Workspac
 }
 
 export function NavigationPublication() {
+  const href = useRecipeHref();
   const { data } = useWorkspace();
   const navigation = data?.navigation;
   const map = navigation?.map;
@@ -106,6 +109,6 @@ export function NavigationPublication() {
     <p>{!map ? "候选未配置导航图" : !spatialReady ? "地图尚未确认或图片不可用，不提供帧定位" : framesReady ? "空间对应已确认，发布时冻结独立辅助快照" : "空间对应已确认，但示教件范围未确认，暂不可冻结导航快照"}</p>
     {navigation?.error && <p className="c-warn">{navigation.error}</p>}
     {navigation?.published && <p role="status">{navigation.published.detail}</p>}
-    <p className="muted">辅助资料与检测包独立；缺失或损坏不影响生产。<Link to="/recipe/segments">编辑导航图</Link></p>
+    <p className="muted">辅助资料与检测包独立；缺失或损坏不影响生产。<Link to={href("/recipe/segments")}>编辑导航图</Link></p>
   </Panel>;
 }
