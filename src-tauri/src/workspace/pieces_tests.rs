@@ -77,10 +77,10 @@ fn measure_with(w: &Workspace, teach: &CaptureRoundV2, x: f64) -> Result<Workspa
 }
 
 #[test]
-fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_structure() {
-    // 防的回归（RB-2、RB-8）：换示教件后原示教件的边界、其余件的已确认边界、走廊与示教帧、示教件测量或 N_exp / 标定统计 /
-    // partCalib / x_ref 还留着（新示教件图像与旧走廊、旧测量混用）；或把段的数量、类型、检测相机、容差等结构与配方级参数也清掉；
-    // 同一件重复设置时照样清空
+fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts() {
+    // 防的回归（RB-2、RB-8）：换示教件把走廊与示教帧全部清空，示教要从头重做；或原示教件的边界、其余件的已确认边界、
+    // 示教件测量、N_exp / 标定统计 / partCalib / x_ref 还留着（新示教件的帧组与旧边界、旧测量混用）；或把段的数量、类型、
+    // 检测相机、容差等结构与配方级参数也清掉；同一件重复设置时照样改动
     let (mut w, _) = with_teaching(&[Straight, Corner], true);
     let other = capture_round("other", &w.doc, GROUPS, DEVICE, &[]);
     apply_capture_review(&mut w, &other, CaptureReviewEdit::Save(vec![14])).unwrap();
@@ -125,9 +125,25 @@ fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_struc
 
     replace_teaching_piece(&mut w, piece("new", 2)).unwrap();
     assert_eq!(w.teaching_piece, Some(piece("new", 2)));
-    assert!(
-        w.camera_teaching.is_empty() && w.doc.inspect.iter().all(|i| i.segments.is_empty()),
-        "走廊与示教帧"
+    assert!(!before.camera_teaching.is_empty(), "前提：换件前已示教走廊");
+    assert_eq!(
+        state_value(&w.camera_teaching),
+        state_value(&before.camera_teaching),
+        "示教帧保留"
+    );
+    assert_eq!(
+        w.doc
+            .inspect
+            .iter()
+            .map(|i| state_value(&i.segments))
+            .collect::<Vec<_>>(),
+        before
+            .doc
+            .inspect
+            .iter()
+            .map(|i| state_value(&i.segments))
+            .collect::<Vec<_>>(),
+        "走廊保留"
     );
     assert!(
         w.capture_review.rounds.is_empty() && w.capture_review.template.is_none(),

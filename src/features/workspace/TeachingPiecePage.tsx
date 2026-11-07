@@ -12,28 +12,32 @@ import { pieceTime } from "./pieces";
 import type { WorkspaceView } from "./types";
 import { useRecipeHref } from "./recipeRoutes";
 
-/** 设示教件会清空的内容（RB-2、RB-8）：只列候选里实际有的。 */
-export function clearedByTeachingPiece(view: WorkspaceView): string[] {
+/** 候选里已示教的走廊条数（按 相机#段）：换示教件时保留。 */
+export function keptCorridors(view: WorkspaceView): number {
   const { workspace, plan } = view;
+  return new Set([
+    ...plan.cameraTeaching.flatMap(item => item.segments.map(segment => `${item.camera}#${segment.segment}`)),
+    ...(workspace.doc.inspect ?? []).flatMap(item => (item.segments ?? []).filter(segment => segment.corridor.length > 0).map(segment => `${item.camera}#${segment.segment}`)),
+  ]).size;
+}
+
+/** 设示教件会清空的内容（RB-2、RB-8）：只列候选里实际有的、跟着原示教件帧组走的内容；走廊与示教帧保留。 */
+export function clearedByTeachingPiece(view: WorkspaceView): string[] {
+  const { workspace } = view;
   const doc = workspace.doc;
   const confirmed = Object.values(workspace.captureReview?.rounds ?? {}).some(review => review.status === "confirmed");
-  const corridors = new Set([
-    ...plan.cameraTeaching.flatMap(item => item.segments.map(segment => `${item.camera}#${segment.segment}`)),
-    ...(doc.inspect ?? []).flatMap(item => (item.segments ?? []).filter(segment => segment.corridor.length > 0).map(segment => `${item.camera}#${segment.segment}`)),
-  ]).size;
   const segments = doc.segments ?? [];
   const calibrated = !!doc.partCalib || workspace.calibration.rounds.length > 0
     || segments.some(segment => segment.expectedFrames != null || segment.calib != null || segment.offsetRef?.xRef != null);
   return [
     ...(workspace.teachingPiece || confirmed ? ["示教件的分段边界"] : []),
-    ...(corridors ? [`全部走廊与示教帧（${corridors} 条）`] : []),
     ...(calibrated ? ["示教件得出的结果：各段预期帧数 N_exp、示教件测量与胶偏参考 x_ref"] : []),
   ];
 }
 
 /**
  * 示教件（RB-1，路由 /recipe/<编号>/capture）：从本配方的历史件里选一件，分段边界与全部走廊示教帧都只来自它；它是唯一的基准件，兼作标准件。
- * 已有示教件或候选里有继承的走廊、标定结果时，先列出将清空的内容（RB-2、RB-8），确认后才替换。
+ * 已有示教件或候选里有边界、标定结果时，先列出将清空的内容（RB-2、RB-8），确认后才替换；走廊与示教帧保留。
  */
 export default function TeachingPiecePage() {
   const href = useRecipeHref();
@@ -47,6 +51,7 @@ export default function TeachingPiecePage() {
   const locked = busy || dirty || frameDirty || !!workspace.pending;
   const nameOf = (id: string) => cameras.find(camera => camera.id === id)?.name ?? id;
   const cleared = clearedByTeachingPiece(data);
+  const kept = keptCorridors(data);
   const refill = () => act(() => workspaceApi.refillTeachingImages(doc.id, workspace.revision), "已补回示教件原图");
   const apply = async (recordId: number) => !!await act(() => workspaceApi.setTeachingPiece(doc.id, workspace.revision, recordId), "已设为示教件，请到分段确认边界");
   const choose = async (recordId: number) => {
@@ -85,9 +90,9 @@ export default function TeachingPiecePage() {
     {confirming && <Dialog open title={piece ? "更换示教件" : "设为示教件"} onOpenChange={open => { if (!open) close(false); }}
       footer={<><Button disabled={busy} onClick={() => close(false)}>取消</Button><Button variant="filled" danger disabled={busy} onClick={() => void confirm()}>清空并设为示教件</Button></>}>
       <div className="wp-stack">
-        <p>以下由示教件图像得出的内容将清空，不按图像迁移：</p>
+        <p>以下跟着原示教件帧组得出的内容将清空，在新示教件上重新确认分段、重新测量即可得出：</p>
         <ul aria-label="将清空的内容">{cleared.map(item => <li key={item}>{item}</li>)}</ul>
-        <p className="muted">保留段列表结构（段的数量、顺序、类型、检测相机、检测项与容差）与配方级参数；进入分段时按现有段结构按比例给出初始边界，须重新确认。</p>
+        <p className="muted">保留{kept ? `全部走廊与示教帧（${kept} 条）、` : ""}段列表结构（段的数量、顺序、类型、检测相机、检测项与容差）与配方级参数；进入分段时按现有段结构按比例给出初始边界，须重新确认。</p>
       </div>
     </Dialog>}
   </div>;

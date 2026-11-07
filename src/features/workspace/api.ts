@@ -43,7 +43,7 @@ export const workspaceApi = {
   /** 历史件选择器：本配方最近的真机录制件、能否选用与是否已被本候选使用（只读） */
   /** all：列本机全部历史件（试测用），否则只列本配方的（选示教件用） */
   historyCandidates: (id: string, all = false) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id, all }),
-  /** 导入这件并设为示教件；按 RB-2 / RB-8 清空图像派生内容，保留段列表结构 */
+  /** 导入这件并设为示教件；按 RB-2 / RB-8 清空边界与示教件测量结果，保留走廊、示教帧与段列表结构 */
   setTeachingPiece: (id: string, revision: number, recordId: number) => desktopCall<WorkspaceView>("workspace_set_teaching_piece", { id, revision, recordId }),
   /** 从示教件那一件历史记录补回导出或复制时没带的原图；候选内容不变 */
   refillTeachingImages: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_refill_teaching_images", { id, revision }),

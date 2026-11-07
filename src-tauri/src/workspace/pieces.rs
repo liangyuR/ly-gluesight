@@ -80,8 +80,9 @@ pub(super) fn teaching_measured(w: &Workspace) -> bool {
     })
 }
 
-/// 设定（更换）示教件（RB-2、RB-8）：由示教件图像得出的内容全部清空——全部轮次的边界复核与模板、走廊与示教帧、
-/// 示教件测量与派生结果（N_exp、标定统计、partCalib、x_ref）；段列表结构与配方级参数保留。轮次目录与测量特征由调用方删除。
+/// 设定（更换）示教件（RB-2、RB-8）：保留走廊与示教帧（示教帧已冻结在候选目录，不随旧轮次删除）、段列表结构与配方级参数；
+/// 只清空跟着原示教件帧组走的内容——全部轮次的边界复核与模板、示教件测量与派生结果（N_exp、标定统计、partCalib、x_ref），
+/// 在新示教件上重新确认分段、重新测量即可得出。轮次目录与测量特征由调用方删除。
 pub(super) fn replace_teaching_piece(
     w: &mut Workspace,
     piece: TeachingPiece,
@@ -93,11 +94,9 @@ pub(super) fn replace_teaching_piece(
     {
         return Err("这一件已是示教件".into());
     }
-    w.camera_teaching.clear();
     w.capture_review = capture_review::CaptureReview::default();
     w.calibration = burst::Calibration::default();
     burst::clear_calibration(&mut w.doc);
-    w.doc.inspect.iter_mut().for_each(|i| i.segments.clear());
     w.teaching_piece = Some(piece);
     w.changed();
     Ok(())
@@ -235,7 +234,7 @@ pub(super) fn remove_legacy_dir(dir: &Path) -> Result<(), String> {
 
 // ───────────── 示教件 ─────────────
 
-/// 设定（更换）示教件：按历史件的可用条件核对并导入为轮次，再按 RB-2 清空候选里由原示教件图像得出的内容，删除本候选
+/// 设定（更换）示教件：按历史件的可用条件核对并导入为轮次，再按 RB-2 清空跟着原示教件帧组走的内容（保留走廊与示教帧），删除本候选
 /// 原有的全部轮次目录及测量特征。同一件不能重复设置。
 #[tauri::command]
 pub async fn workspace_set_teaching_piece(
