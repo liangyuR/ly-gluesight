@@ -8,6 +8,8 @@ import { subscribe } from "../features/plc";
 import { Panel } from "../features/workspace/components";
 import { CycleTimeline } from "../features/logs";
 import { errorText } from "../lib/errors";
+import { useProjectDirectory, type ProjectDirectory } from "../features/project/hooks";
+import { recordProject } from "../features/project/rules";
 
 type Neighbors = { older: number | null; newer: number | null };
 
@@ -19,6 +21,7 @@ export default function HistoryDetailPage() {
   const [neighbors, setNeighbors] = useState<Neighbors>({ older: null, newer: null });
   const [detail, setDetail] = useState<PartDetail | null>(null);
   const [error, setError] = useState("");
+  const projects = useProjectDirectory();
 
   useEffect(() => {
     let alive = true; setDetail(null); setError("");
@@ -41,12 +44,20 @@ export default function HistoryDetailPage() {
 
   const openPart = (target: number | null) => { if (target != null) navigate("/history/" + target, { state: location.state }); };
   if (!detail) return error ? <Alert tone="ng">{error}</Alert> : <Text muted>加载中…</Text>;
-  if (detail.burst) return <BurstHistoryDetail detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} {...back} />;
-  return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} {...back} />;
+  const foreignProject = foreignProjectNote(detail.summary.projectId, projects);
+  if (detail.burst) return <BurstHistoryDetail detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} {...back} />;
+  return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} {...back} />;
+}
+
+/** 记录不属于当前项目时的提示；当前项目还没读到时不提示。 */
+function foreignProjectNote(projectId: string, projects: ProjectDirectory): string {
+  if (!projects.current || projects.current.id === projectId) return "";
+  const owner = recordProject(projectId, projects.entries);
+  return owner.deleted ? `这条记录属于已删除的项目 ${projectId}。` : owner.label === projectId ? `这条记录属于项目 ${projectId}。` : `这条记录属于项目“${owner.label}”（${projectId}）。`;
 }
 
 /** 没有帧记录的记录（如工件身份分配失败）：只有整件结论与追溯信息。 */
-function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel }: { detail: PartDetail; neighbors: Neighbors; onOpen: (target: number | null) => void; onBack: () => void; backLabel: string }) {
+function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel, foreignProject }: { detail: PartDetail; neighbors: Neighbors; onOpen: (target: number | null) => void; onBack: () => void; backLabel: string; foreignProject: string }) {
   const s = detail.summary;
   return <div className="stack hist-detail">
     <Card className="detail-head">
@@ -64,6 +75,7 @@ function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel }: { 
         <StatusBadge tone={partVerdict(s).tone}>{partVerdict(s).label} · PLC {s.plcCode}{s.faultCode ? " / " + s.faultCode : ""}</StatusBadge>
       </Stack>
     </Card>
+    {foreignProject && <Alert title="其他项目的记录">{foreignProject}</Alert>}
     <Alert>本件没有帧记录，只能查看整件结论与事件。</Alert>
     <Panel title="原始整件判定">
       <p className="reason-box">{displayReason(detail.judgement.reason)}</p>

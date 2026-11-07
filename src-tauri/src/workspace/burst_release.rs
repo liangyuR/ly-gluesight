@@ -466,7 +466,7 @@ fn validate_sample(
     }
     let origins =
         history_import::round_origins(app.state::<CycleHost>().camera.recipe_capture(), &w.doc.id)?;
-    let devices = history_import::recorded_devices(app, &detail.recording);
+    let devices = history_import::recorded_devices(app, &detail.summary, &detail.recording);
     history_import::check_history_sample(
         w,
         detail.summary.cycle_id.as_deref(),
@@ -478,13 +478,8 @@ fn validate_sample(
         .burst
         .as_ref()
         .ok_or("旧拍照点记录不能作为段配方的验证样本")?;
-    let original = detail
-        .summary
-        .recipe_revision
-        .as_deref()
-        .map(|h| store.recipe_snapshot(h))
-        .transpose()?
-        .flatten()
+    let original = store
+        .record_recipe(&detail.summary)?
         .ok_or("原始配方快照缺失")?;
     if !original.is_burst()
         || sample_tag(

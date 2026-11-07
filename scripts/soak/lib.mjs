@@ -135,11 +135,13 @@ async function treeSize(dir) {
   return { bytes, files };
 }
 
-/** 资料目录各部分占用：原图、记录库、日志、握手状态等。项目资料取当前项目。 */
+/** 资料目录各部分占用：原图、记录库、日志、握手状态等。项目资料取当前项目，记录库与审计 spool 是本机的。 */
 export async function diskUsage(manifest, call) {
   const result = {};
   const { data, project, runtime, vision } = await isolatedStorage(call, manifest, identifier);
-  for (const name of ["audit-spool", "recipe-capture", "workspaces", "vision"]) {
+  const history = path.join(data, "history");
+  result["audit-spool"] = await treeSize(path.join(history, "audit-spool"));
+  for (const name of ["recipe-capture", "workspaces", "vision"]) {
     result[name] = await treeSize(path.join(project, name));
   }
   for (const name of ["records-offline", "records"]) result[name] = await treeSize(path.join(vision, name));
@@ -149,7 +151,7 @@ export async function diskUsage(manifest, call) {
   }
   let db = 0;
   for (const suffix of ["", "-wal", "-shm"]) {
-    const file = path.join(project, `inspection.db${suffix}`);
+    const file = path.join(history, `inspection.db${suffix}`);
     if (existsSync(file)) db += (await stat(file)).size;
   }
   result["inspection.db"] = { bytes: db, files: 3 };

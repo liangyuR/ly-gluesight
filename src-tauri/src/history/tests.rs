@@ -25,6 +25,7 @@ fn burst_row(recipe: &Recipe) -> (StoredMeasurement, Vec<FrameRecord>) {
     let (_, burst) = burst_fixture::record(recipe, frames, Some(regions), Some(6));
     let row = StoredMeasurement {
         id: 7,
+        project_id: "default".into(),
         ts: 1234,
         sn: "SN-B7".into(),
         recipe_id: Some(recipe.id.clone()),
@@ -71,7 +72,15 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_tolerance_only_change() {
         edit(&mut doc);
         let candidate = Arc::new(doc.build().unwrap());
         let (row, frames) = burst_row(&original);
-        let result = rejudge_rows(vec![row], &request, |_| Ok(Some(original.clone())), |_| Some(candidate.clone()), |_| Ok(frames.clone())).unwrap();
+        let result = rejudge_rows(
+            vec![row],
+            &request,
+            "default",
+            |_, _| Ok(Some(original.clone())),
+            |_| Some(candidate.clone()),
+            |_| Ok(frames.clone()),
+        )
+        .unwrap();
         match rejudged {
             None => assert_eq!(result.skip_reasons.iter().map(|skip| skip.kind).collect::<Vec<_>>(), [SkipKind::LayoutChanged], "{case}"),
             Some(verdict) => assert_eq!(result.matrix.iter().map(|cell| (cell.from, cell.to)).collect::<Vec<_>>(), [(Verdict::NgWidth, verdict)], "{case}"),

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { projectApi } from "../../lib/project";
+import { projectApi, type ProjectEntry, type ProjectMeta } from "../../lib/project";
 import { errorText } from "../../lib/errors";
 import { useWorkspace } from "../workspace/context";
 import type { UsageState } from "./rules";
@@ -17,6 +17,38 @@ export function useAlive() {
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   return alive;
+}
+
+/** 当前项目与本机项目列表；entries 为 null 表示列表没读到（不能据此判定项目已删除）。 */
+export interface ProjectDirectory {
+  current: ProjectMeta | null;
+  entries: ProjectEntry[] | null;
+  loading: boolean;
+  error: string;
+}
+
+export function useProjectDirectory(): ProjectDirectory {
+  const [state, setState] = useState<ProjectDirectory>({ current: null, entries: null, loading: true, error: "" });
+  useEffect(() => {
+    let serial = 0;
+    const load = () => {
+      const request = ++serial;
+      void Promise.allSettled([projectApi.current(), projectApi.list()]).then(([current, list]) => {
+        if (request !== serial) return;
+        const failed = current.status === "rejected" ? current.reason : list.status === "rejected" ? list.reason : null;
+        setState({
+          current: current.status === "fulfilled" ? current.value : null,
+          entries: list.status === "fulfilled" ? list.value : null,
+          loading: false,
+          error: failed == null ? "" : errorText(failed),
+        });
+      });
+    };
+    load();
+    const stop = onProjectsChanged(load);
+    return () => { serial++; stop(); };
+  }, []);
+  return state;
 }
 
 export function useProjectUsage(ids: string[], version = 0): Record<string, UsageState> {

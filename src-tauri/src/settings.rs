@@ -132,8 +132,16 @@ impl CycleSettings {
         format!("{} 的检测设置不符合当前取值范围（{why}），{done}", path.display())
     }
 
+    /// 写项目的 `cycle.json`；历史保留天数是本机设置（`save_history_days`），不写进项目。
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        crate::fsio::write_atomic(path, &serde_json::to_string_pretty(self).map_err(|e| e.to_string())?)
+        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        if let Some(object) = value.as_object_mut() {
+            object.remove("historyDays");
+        }
+        crate::fsio::write_atomic(
+            path,
+            &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+        )
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -164,6 +172,46 @@ impl CycleSettings {
         }
         Ok(())
     }
+}
+
+/// 本机检测历史设置（资料目录 `config/history.json`）：历史保留天数，所有项目共用。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryFile {
+    history_days: u32,
+}
+
+/// 读本机历史保留天数；文件还没有时用 `seed`（当前项目旧 `cycle.json` 里的值）建立。读不了或越界时用 `seed` 并给出说明。
+pub fn load_history_days(path: &Path, seed: u32) -> (u32, Option<String>) {
+    match crate::fsio::read_json::<HistoryFile>(path) {
+        Ok(Some(file)) if (1..=3650).contains(&file.history_days) => (file.history_days, None),
+        Ok(Some(file)) => (
+            seed,
+            Some(format!(
+                "{} 的历史保留天数 {} 越界，先按 {seed} 天运行",
+                path.display(),
+                file.history_days
+            )),
+        ),
+        Ok(None) => match save_history_days(path, seed) {
+            Ok(()) => (seed, None),
+            Err(error) => (
+                seed,
+                Some(format!(
+                    "本机历史保留天数写入失败（{error}），先按 {seed} 天运行"
+                )),
+            ),
+        },
+        Err(note) => (seed, Some(note)),
+    }
+}
+
+pub fn save_history_days(path: &Path, days: u32) -> Result<(), String> {
+    crate::fsio::write_atomic(
+        path,
+        &serde_json::to_string_pretty(&HistoryFile { history_days: days })
+            .map_err(|e| e.to_string())?,
+    )
 }
 
 #[cfg(test)]

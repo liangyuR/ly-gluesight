@@ -167,11 +167,7 @@ fn durable_spool_replays_sqlite_commit_before_receipt_cleanup_without_duplicate_
     );
     assert!(stored.judgement.flags.incomplete);
     assert_eq!(before.judgement.verdict, crate::judge::Verdict::NgWidth);
-    let snapshot = sink
-        .store
-        .recipe_snapshot(before.summary.recipe_revision.as_deref().unwrap())
-        .unwrap()
-        .unwrap();
+    let snapshot = sink.store.record_recipe(&before.summary).unwrap().unwrap();
     assert_eq!(snapshot.path_segments, stored.segments);
     assert_eq!(snapshot.plan_cameras(), stored.cameras);
     drop(coordinator);

@@ -23,7 +23,7 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 5. **分段（比例分段，D-SB-40）**：段结构由人定，各段 N_exp 取示教件已确认手动分段的各段帧组数；本件收尾后 `Proportional` 按各段 N_exp 比例与本件帧组数推算边界，帧组数在 ΣN_exp ± Σtol 内时边界可信，两侧各 `boundaryGuard`（默认 2）帧为过渡区（只判每帧指标、不判胶偏）。单段配方、有段还没有 N_exp 或帧组数越界时整条胶路（或越界时全部段）按未分段区域判：只跑每帧检测、不判胶偏。帧数只核对整件。
 6. **每帧测量**：帧到达时按预测段选择检测相机与该段走廊，收尾后补测归属变化的帧，其余相机记 `NotInspected`；参与检测的帧用 lyFlow 的测量算子量出每站暗段、GlueSight 判每站有无胶（[LF-3](decisions/lyflow-operators.md)），得出胶宽、断胶与胶中心偏移 x，输出 `FrameMetrics`；测量队列满、超时记 Unmeasured，走出走廊记 OutOfCorridor，都只算检测不完整。
 7. **区域判定**（`burst_judge`）：每帧胶宽、断胶、溢胶（NG_WIDTH）三类区域都判；胶偏只在直线段，去首尾各一帧后用 x 均值与参考值（测量示教件得出的 x_ref，或 ToEdge 的图纸胶边距，D-SB-48）判整段偏移、最大偏差判局部跑偏；按本段检测相机取最差，未分段区域按每帧预测段的检测相机取最差。`flags`（检测不完整、帧数异常、`short_part` 疑似提前终止）、未检区域、未检项（气泡、拉丝）与“胶偏未判”原因都不改 OK/NG；只有三台相机整件没有一帧测成才判 ERR 91。
-8. **落库与历史**：记录库版本 9，`part_frames` 每台相机每帧一条（缺帧也有），`parts.burst_judgement` 存整份区域判定，`parts.mode` 区分正常件与维护件；原图按帧录制为 `{相机}_s{seq:06}.pgm`，每帧一份；现场相机用彩色模式，原图是带 `# bayer` 注释的原始 Bayer PGM，读图时还原为 RGB（[r2-records](decisions/r2-records.md) R-8、[color](decisions/color.md) CL-1）；审计 spool 格式 4；历史按 (计划相机, seq) 读图、复测与重判。
+8. **落库与历史**：本机一份记录库（版本 10，记录带所属项目，[history-scope](decisions/history-scope.md)），`part_frames` 每台相机每帧一条（缺帧也有），`parts.burst_judgement` 存整份区域判定，`parts.mode` 区分正常件与维护件；原图按帧录制为 `{相机}_s{seq:06}.pgm`，每帧一份；现场相机用彩色模式，原图是带 `# bayer` 注释的原始 Bayer PGM，读图时还原为 RGB（[r2-records](decisions/r2-records.md) R-8、[color](decisions/color.md) CL-1）；审计 spool 格式 4；历史按 (计划相机, seq) 读图、复测与重判。
 
 配方的建立流程（候选工作区，[示教件决策](decisions/recipe-build-flow.md)）：示教件（从维护模式录制的历史件里选一件，导入前可预览原图；开发与测试用 `capture_fixture` 生成仿历史录制件）→ 分段（在示教件上按图像定段与边界，确认后各段 N_exp 取示教件各段帧组数，ΣN_exp 取各段之和）→ 每段每台检测相机的走廊示教（示教帧只取自示教件）→ 试测（测量示教件：单段配方的直线段得 x_ref；逐段确认容差，默认 2 帧；起涂收尾建议；用历史件试测）→ 发布（发布前检查当场核对，独立样本验证可选，D-SB-46）。示教件即基准件，兼作标准件，没有另选的标定件。换示教件或从生产配方改版时清空边界、走廊、N_exp 与 x_ref，保留段结构。示教件支持带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除测量取样，不改已确认的分段。界面不显示采集轮次（只是存储格式）。旧流程建的候选已停用，只能删除。生产与独立样本判定按各段 N_exp 的比例分段；手动边界本身不直接进生产。见 [配方创建流程](architecture/recipe-creation-workflow.md) 与其中的[示教件分段与帧组屏蔽](architecture/recipe-creation-workflow.md#示教件分段与帧组屏蔽)。
 
@@ -38,7 +38,7 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 
 ### 项目
 
-一套可上线的检测方案（相机组、PLC 配置、标定、配方、候选、记录）收拢成一个项目，存于 `projects/<id>/`；支持新建、重命名、删除、整个项目导出导入与复制，切换项目要重启。见 [项目设计](architecture/project.md) 与 [存储布局](architecture/storage-layout.md)。
+一套可上线的检测方案（相机组、PLC 配置、标定、配方、候选）收拢成一个项目，存于 `projects/<id>/`；支持新建、重命名、删除、整个项目导出导入与复制，切换项目要重启。检测记录存于本机一份记录库 `history/inspection.db`，每条记录带所属项目，历史页默认看全部项目，统计按当前项目；删除项目保留历史（[history-scope](decisions/history-scope.md)）。见 [项目设计](architecture/project.md) 与 [存储布局](architecture/storage-layout.md)。
 
 运行日志和历史原图集中在 `~/gs_logs`，按环境、资料实例和项目隔离；示教、标定及发布资源随项目保存。根绑定及项目导出规则见[日志与视觉证据存储](architecture/log-storage-research.md)。
 
@@ -56,8 +56,8 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 采集轮次 | `recipe_capture/burst.rs`（`CaptureRoundV2`） |
 | 候选工作区 | `workspace.rs`、`workspace/pieces.rs`（示教件、测量示教件、旧流程候选）、`workspace/burst.rs`（走廊示教、按示教件分段写 N_exp、x_ref、容差确认）、`workspace/burst_release.rs`（验证与发布、采集版）、`workspace/burst_history.rs`（历史读图与复测） |
 | 发布包 | `release.rs`（`publish_burst`，schema 5） |
-| 记录、录制、审计 | `store.rs`（`part_frames`，库版本 9）、`recorder.rs`、`audit/` |
-| 项目 | `project.rs`（`ActiveProject`、`resolve`、`project_switch`）、`project/manage.rs`、`project/transfer.rs`（导出导入、复制）、`storage_startup.rs`；前端 `src/pages/ProjectsPage.tsx`、`src/features/project/` |
+| 记录、录制、审计 | `store.rs`（`part_frames`、`parts.project_id`，库版本 10）、`store/merge.rs`（旧库并入、按项目导出子集）、`recorder.rs`、`audit/` |
+| 项目 | `project.rs`（`ActiveProject`、`resolve`、`project_switch`）、`project/manage.rs`、`project/transfer.rs`（导出导入、复制）、`project/records.rs`（本机记录库路径、记录所属项目的原图与发布包、启动合并）、`storage_startup.rs`；前端 `src/pages/ProjectsPage.tsx`、`src/features/project/` |
 | 离线仿真 | `offline/line.rs`、`offline/scenario.rs`、`offline/sample_set.rs`、`offline/s7_server.rs`、`simimage.rs` |
 | 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`TeachingPiecePage`、`HistoryPicker`、`PlanProgress`；`src/features/plan/` |
 

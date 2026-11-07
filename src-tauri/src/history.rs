@@ -145,6 +145,7 @@ pub enum SkipKind {
     LayoutMismatch,
     NoCandidate,
     LayoutChanged,
+    OtherProject,
 }
 
 impl SkipKind {
@@ -158,6 +159,9 @@ impl SkipKind {
             Self::NoCandidate => "当前候选配方不存在",
             Self::LayoutChanged => {
                 "当前候选的段序列 / 类型 / 预期帧数、相机或走廊已改变，需要使用原图复测"
+            }
+            Self::OtherProject => {
+                "记录属于其他项目，配方编号只在项目内唯一，不能用当前项目的配方重判"
             }
         }
     }
@@ -192,7 +196,18 @@ pub async fn history_rejudge(app: AppHandle, request: RejudgeRequest) -> Result<
         let store = app.state::<Store>();
         let cycle = app.state::<CycleHost>();
         let rows = store.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
-        rejudge_rows(rows, &request, |revision_id| store.recipe_snapshot(revision_id).map(|r| r.map(Arc::new)), |id| cycle.recipe(id), |id| store.burst_frames(id))
+        rejudge_rows(
+            rows,
+            &request,
+            store.project(),
+            |project, revision_id| {
+                store
+                    .recipe_snapshot(project, revision_id)
+                    .map(|r| r.map(Arc::new))
+            },
+            |id| cycle.recipe(id),
+            |id| store.burst_frames(id),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -258,7 +273,8 @@ fn rejudge_burst(recipe: &Recipe, overrides: &Overrides, judgement: &BurstJudgem
 fn rejudge_rows(
     rows: Vec<StoredMeasurement>,
     request: &RejudgeRequest,
-    mut snapshot: impl FnMut(&str) -> Result<Option<Arc<Recipe>>, String>,
+    current_project: &str,
+    mut snapshot: impl FnMut(&str, &str) -> Result<Option<Arc<Recipe>>, String>,
     mut current: impl FnMut(&str) -> Option<Arc<Recipe>>,
     mut burst_frames: impl FnMut(i64) -> Result<Vec<FrameRecord>, String>,
 ) -> Result<RejudgeResult, String> {
@@ -288,7 +304,11 @@ fn rejudge_rows(
             skip(SkipKind::NoRevision);
             continue;
         };
-        let Some(original) = cached_recipe(&mut originals, revision_id, || snapshot(revision_id))? else {
+        let key = format!("{}/{revision_id}", row.project_id);
+        let Some(original) = cached_recipe(&mut originals, &key, || {
+            snapshot(&row.project_id, revision_id)
+        })?
+        else {
             skip(SkipKind::SnapshotMissing);
             continue;
         };
@@ -305,6 +325,10 @@ fn rejudge_rows(
             continue;
         }
         let recipe = if request.use_current_recipe {
+            if row.project_id != current_project {
+                skip(SkipKind::OtherProject);
+                continue;
+            }
             let Some(candidate) =
                 cached_recipe(&mut candidates, &original.id, || Ok(current(&original.id)))?
             else {
@@ -371,6 +395,7 @@ pub(crate) fn csv_row(p: &PartSummary) -> String {
         burst.map(|b| b.camera_frames.iter().map(u32::to_string).collect::<Vec<_>>().join("/")).unwrap_or_default(),
         burst.and_then(|b| b.device_triggers).map(|n| n.to_string()).unwrap_or_default(),
         esc(&p.flags.as_ref().map(flag_labels).unwrap_or_default().join("、")),
+        esc(&p.project_id),
     ];
     format!("{}\r\n", cells.join(","))
 }
@@ -388,7 +413,7 @@ fn flag_labels(flags: &Flags) -> Vec<&'static str> {
     .collect()
 }
 
-pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明,预期帧组数(ΣN_exp),帧组容差(Σtol),各相机帧数,deviceTriggers,标记\r\n";
+pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明,预期帧组数(ΣN_exp),帧组容差(Σtol),各相机帧数,deviceTriggers,标记,项目\r\n";
 
 /// 按筛选条件导出 CSV（带 BOM，Excel 可直接打开），返回文件路径。
 #[tauri::command]

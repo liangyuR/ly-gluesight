@@ -1162,6 +1162,7 @@ async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolE
             app.clone(),
             crate::store::HistoryQuery {
                 limit: 30,
+                project: Some(crate::project::current_id(app)),
                 ..Default::default()
             },
         )

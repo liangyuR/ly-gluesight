@@ -23,7 +23,7 @@ assert(typeof instance.startedAt === 'string' && Number.isFinite(new Date(instan
 assert(instance.dataRoot, '隔离实例未声明资料目录，请重新启动测试实例');
 const profile = cPath(instance.dataRoot);
 assert(profile.endsWith(instance.identifier));
-const projectDir = join(profile, 'projects', JSON.parse((await readFile(join(profile, 'config', 'current-project.json'), 'utf8')).replace(/^\uFEFF/, '')).current);
+const database = join(profile, 'history', 'inspection.db');
 const executable = cPath(instance.executable);
 
 assert(Number.isInteger(instance.pid) && instance.pid > 0);
@@ -36,7 +36,7 @@ const processState = async () => JSON.parse((await execute('pwsh', ['-NoProfile'
   { windowsHide: true, encoding: 'utf8' })).stdout);
 const databaseState = async () => {
   const code = `import sqlite3,json,pathlib,sys\np=pathlib.Path(sys.argv[1]);c=sqlite3.connect(p.as_uri()+'?mode=ro',uri=True);r={}\nfor (n,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):\n q='SELECT * FROM "'+n.replace('"','""')+'" ORDER BY rowid';rows=c.execute(q).fetchall();r[n]={'rows':len(rows),'values':rows}\nprint(json.dumps(r,default=lambda b:list(b)));c.close()`;
-  return JSON.parse((await execute('python', ['-c', code, join(projectDir, 'inspection.db')], { windowsHide: true, encoding: 'utf8' })).stdout);
+  return JSON.parse((await execute('python', ['-c', code, database], { windowsHide: true, encoding: 'utf8' })).stdout);
 };
 const rawState = async vision => {
   const files = [];

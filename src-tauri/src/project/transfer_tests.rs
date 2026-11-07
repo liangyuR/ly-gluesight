@@ -1,5 +1,9 @@
 use super::*;
 use crate::recipe::{Recipe, RecipeStore};
+use crate::store::{
+    burst_fixture, PartMode, PartRecord, PlcDelivery, PlcDeliveryState, RecordSource,
+    RecordingEvidence, RecordingState,
+};
 use std::sync::Arc;
 
 struct TempDir(PathBuf);
@@ -22,8 +26,59 @@ impl Drop for TempDir {
     }
 }
 
-/// 来源机上的项目：一份已保存的生产配方（带修订来源）、一轮记了绝对原图路径的采集、一件带原图目录与配方快照的检测记录。
-fn source_project(data: &Path) -> (PathBuf, Arc<Recipe>) {
+/// 本机记录库，当前项目为 `project`。
+fn local_store(data: &Path, project: &str) -> Store {
+    Store::open_for(&super::super::records::database(data), project).unwrap()
+}
+
+/// 在 `store` 的当前项目下记一件带录制目录 `directory` 的检测记录，返回记录编号。
+fn record(store: &Store, recipe: &Recipe, cycle: &str, directory: &Path) -> i64 {
+    let (judgement, burst) =
+        burst_fixture::record(recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let id = store
+        .insert(&PartRecord {
+            mode: PartMode::Production,
+            ts: 1234,
+            sn: "SN-T1",
+            recipe: Some(recipe),
+            judgement: &judgement,
+            drain_ms: None,
+            frames: &[],
+            frames_expected: burst.expected_total.unwrap_or(0) as usize,
+            frames_received: burst.judgement.group_count as usize,
+            triggers: 0,
+            table: None,
+            software_version: "test",
+            cycle_id: Some(cycle),
+            bundle_id: None,
+            delivery: &PlcDelivery {
+                state: PlcDeliveryState::NotRequired,
+                updated_at: 0,
+                message: None,
+            },
+            shots: &[],
+            source: RecordSource::Real,
+            sample: None,
+            burst: Some(&burst),
+        })
+        .unwrap();
+    store
+        .update_recording(
+            cycle,
+            &RecordingEvidence {
+                state: RecordingState::Incomplete,
+                available: false,
+                directory: Some(directory.to_string_lossy().into_owned()),
+                errors: vec!["测试".into()],
+            },
+        )
+        .unwrap();
+    id
+}
+
+/// 来源机上的项目：一份已保存的生产配方（带修订来源）、一轮记了绝对原图路径与来源记录的采集，本机记录库里一件带原图目录与
+/// 配方快照的检测记录。
+fn source_project(data: &Path) -> (PathBuf, Arc<Recipe>, Store) {
     let root = super::super::create_dir(
         data,
         &ProjectMeta::new("line-a", "A 线", "三相机", None),
@@ -40,42 +95,30 @@ fn source_project(data: &Path) -> (PathBuf, Arc<Recipe>) {
     let round = root.join("recipe-capture").join("capture-1");
     std::fs::create_dir_all(&round).unwrap();
     std::fs::write(round.join("a.pgm"), b"P5").unwrap();
+    let directory = root.join("records").join("c1");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("part.json"), "{}").unwrap();
+    let store = local_store(data, "line-a");
+    let id = record(&store, &recipe, "c1", &directory);
     let original = round.join("a.pgm").to_string_lossy().into_owned();
     std::fs::write(
         round.join("round.json"),
-        serde_json::json!({"frames": [{"cameras": [{"originalPath": original}]}]}).to_string(),
+        serde_json::json!({
+            "origin": {"kind": "history", "cycleId": "c1", "recordId": id},
+            "frames": [{"cameras": [{"originalPath": original}]}],
+        })
+        .to_string(),
     )
     .unwrap();
-    let record = root.join("records").join("c1");
-    std::fs::create_dir_all(&record).unwrap();
-    std::fs::write(record.join("part.json"), "{}").unwrap();
-    let conn = rusqlite::Connection::open(root.join("inspection.db")).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE parts (recording_directory TEXT);
-         CREATE TABLE recipe_snapshots (revision_id TEXT PRIMARY KEY, recipe_id TEXT NOT NULL, version INTEGER NOT NULL, json TEXT NOT NULL);",
-    )
-    .unwrap();
-    conn.execute("INSERT INTO parts VALUES (?1)", [record.to_string_lossy()])
-        .unwrap();
-    conn.execute(
-        "INSERT INTO recipe_snapshots VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![
-            recipe.revision_id,
-            recipe.id,
-            recipe.version,
-            serde_json::to_string(&*recipe).unwrap()
-        ],
-    )
-    .unwrap();
-    (root, recipe)
+    (root, recipe, store)
 }
 
-fn export(data: &Path, root: &Path) -> PathBuf {
+fn export(data: &Path, root: &Path, store: &Store) -> PathBuf {
     let package = data.join("exports").join("line-a.zip");
     std::fs::create_dir_all(package.parent().unwrap()).unwrap();
     export_to(
         root,
-        true,
+        Some(store),
         true,
         &data.join("cache").join("export"),
         &package,
@@ -87,9 +130,10 @@ fn export(data: &Path, root: &Path) -> PathBuf {
 #[test]
 fn damaged_or_tampered_package_is_refused_without_leaving_a_project_behind() {
     let (from, to) = (TempDir::new("bad-from"), TempDir::new("bad-to"));
-    let (source, _) = source_project(&from.0);
-    let package = export(&from.0, &source);
+    let (source, _, store) = source_project(&from.0);
+    let package = export(&from.0, &source, &store);
     let manifest = inspect(&package).unwrap();
+    let local = local_store(&to.0, "default");
     let rewrite = |name: &str, change: &dyn Fn(&mut Manifest)| -> PathBuf {
         let mut zip = open_archive(&package).unwrap();
         let path = from.0.join(name);
@@ -137,10 +181,12 @@ fn damaged_or_tampered_package_is_refused_without_leaving_a_project_behind() {
             "line-b",
             "B 线",
             &to.0.join("state").join("plan-version"),
-            &to.0.join("cache")
+            &to.0.join("cache"),
+            &local,
         )
         .is_err());
         assert!(!super::super::dir(&to.0, "line-b").exists());
+        assert!(local.project_records().unwrap().is_empty());
         assert_eq!(
             std::fs::read_dir(to.0.join("cache")).unwrap().count(),
             0,
@@ -161,12 +207,11 @@ fn snapshot_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         .collect()
 }
 
-fn copy(data: &Path, include_records: bool) -> Result<ProjectImported, String> {
+fn copy(data: &Path, capture_images: bool) -> Result<ProjectImported, String> {
     copy_from(
         data,
         "line-a",
-        include_records,
-        include_records,
+        capture_images,
         &New {
             id: "line-a2",
             name: "A 线副本",
@@ -177,10 +222,12 @@ fn copy(data: &Path, include_records: bool) -> Result<ProjectImported, String> {
     )
 }
 
+/// 防的回归：复制项目改写不到自己的目录、复用来源的计划版本、改动来源项目，或把本机共用的检测记录再复制一份
+/// （同一工件出现两次）。
 #[test]
 fn copied_project_gets_its_own_paths_and_plan_versions_and_leaves_the_source_untouched() {
     let data = TempDir::new("copy");
-    let (source, recipe) = source_project(&data.0);
+    let (source, recipe, store) = source_project(&data.0);
     let before = snapshot_files(&source);
     let copied = copy(&data.0, true).unwrap();
     assert_eq!(copied.meta.copied_from.as_deref(), Some("line-a"));
@@ -196,11 +243,16 @@ fn copied_project_gets_its_own_paths_and_plan_versions_and_leaves_the_source_unt
         .as_str()
         .unwrap();
     assert!(Path::new(original).starts_with(&target), "{original}");
-    let conn = rusqlite::Connection::open(target.join("inspection.db")).unwrap();
-    let directory: String = conn
-        .query_row("SELECT recording_directory FROM parts", [], |r| r.get(0))
-        .unwrap();
-    assert!(Path::new(&directory).starts_with(&target), "{directory}");
+    assert!(!target.join("inspection.db").exists());
+    assert_eq!(
+        store
+            .project_records()
+            .unwrap()
+            .into_iter()
+            .map(|(id, (n, ..))| (id, n))
+            .collect::<Vec<_>>(),
+        [("line-a".to_string(), 1)]
+    );
     let plan_file = data.0.join("state").join("plan-version");
     let loaded = RecipeStore::open_with_floors(target.join("recipes"), plan_file, &BTreeMap::new())
         .unwrap()
@@ -220,7 +272,7 @@ fn transferred_navigation_assets_keep_release_identity_and_damaged_maps_do_not_b
         } else {
             "navigation-copy"
         });
-        let (source, recipe) = source_project(&data.0);
+        let (source, recipe, store) = source_project(&data.0);
         let candidate = PathBuf::from("workspaces")
             .join(&recipe.id)
             .join("navigation");
@@ -252,14 +304,7 @@ fn transferred_navigation_assets_keep_release_identity_and_damaged_maps_do_not_b
         let plan_file = data.0.join("state").join("plan-version");
         let (transferred, target) = if importing {
             let package = data.0.join("navigation.zip");
-            export_to(
-                &source,
-                false,
-                false,
-                &data.0.join("cache/export"),
-                &package,
-            )
-            .unwrap();
+            export_to(&source, None, false, &data.0.join("cache/export"), &package).unwrap();
             (
                 import_from(
                     &data.0,
@@ -268,6 +313,7 @@ fn transferred_navigation_assets_keep_release_identity_and_damaged_maps_do_not_b
                     "B 线",
                     &plan_file,
                     &data.0.join("cache"),
+                    &store,
                 )
                 .unwrap(),
                 super::super::dir(&data.0, "line-b"),
@@ -306,11 +352,11 @@ fn capture_images_option_decides_whether_teaching_frames_travel_with_the_project
         } else {
             "capture-off"
         });
-        let (source, _) = source_project(&data.0);
+        let (source, _, store) = source_project(&data.0);
         let package = data.0.join("capture.zip");
         export_to(
             &source,
-            false,
+            None,
             capture_images,
             &data.0.join("cache/export"),
             &package,
@@ -330,12 +376,12 @@ fn capture_images_option_decides_whether_teaching_frames_travel_with_the_project
             "B 线",
             &plan_file,
             &data.0.join("cache"),
+            &store,
         )
         .unwrap();
         copy_from(
             &data.0,
             "line-a",
-            false,
             capture_images,
             &New {
                 id: "line-a2",
@@ -371,8 +417,9 @@ fn external_layout(data: &Path, instance: &str) {
 #[test]
 fn external_recording_conflict_refuses_import_without_overwriting_existing_files() {
     let (from, to) = (TempDir::new("conflict-from"), TempDir::new("conflict-to"));
-    let (source, _) = source_project(&from.0);
-    let package = export(&from.0, &source);
+    let (source, _, store) = source_project(&from.0);
+    let package = export(&from.0, &source, &store);
+    let local = local_store(&to.0, "default");
     external_layout(&to.0, "4444444444444444");
     let conflict = super::super::dir(&to.0, "blocked");
     let conflict_recordings = crate::log_storage::recording_project(&conflict).unwrap();
@@ -384,9 +431,11 @@ fn external_recording_conflict_refuses_import_without_overwriting_existing_files
         "blocked",
         "冲突",
         &to.0.join("state/plan-version"),
-        &to.0.join("cache")
+        &to.0.join("cache"),
+        &local,
     )
     .is_err());
+    assert!(local.project_records().unwrap().is_empty());
     assert!(!conflict.exists());
     assert_eq!(
         std::fs::read_to_string(conflict_recordings.join("preserve")).unwrap(),
@@ -441,4 +490,92 @@ fn interrupted_recording_install_is_removed_before_commit_and_preserved_after_pr
     );
     assert!(committed_project.join("project.json").is_file());
     assert!(!committed.join(PENDING_RECORDINGS).exists());
+}
+
+/// 防的回归：导出“含检测记录”把本机别的项目的记录也带走；导入时记录编号与本机已有的冲突却不重新编号、采集轮次里的来源
+/// 记录编号没跟着改，或本机已有的同一工件（同一 cycleId）被再存一份。
+#[test]
+fn exported_records_are_only_this_projects_and_import_renumbers_them_into_the_local_history() {
+    let (from, to) = (TempDir::new("records-from"), TempDir::new("records-to"));
+    let (source, recipe, store) = source_project(&from.0);
+    let other = local_store(&from.0, "line-x");
+    record(&other, &recipe, "x1", &from.0.join("x1"));
+    let package = export(&from.0, &source, &store);
+    let packaged = from.0.join("packaged.db");
+    std::io::copy(
+        &mut open_archive(&package)
+            .unwrap()
+            .by_name("project/inspection.db")
+            .unwrap(),
+        &mut File::create(&packaged).unwrap(),
+    )
+    .unwrap();
+    let projects: Vec<(String, String)> = rusqlite::Connection::open(&packaged)
+        .unwrap()
+        .prepare("SELECT project_id, cycle_id FROM parts")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(projects, [("line-a".to_string(), "c1".to_string())]);
+
+    let local = local_store(&to.0, "default");
+    let existing = record(&local, &recipe, "d1", &to.0.join("d1"));
+    let plan_file = to.0.join("state/plan-version");
+    let origin = |id: &str| {
+        read_value(&super::super::dir(&to.0, id).join("recipe-capture/capture-1/round.json"))
+            .unwrap()["origin"]["recordId"]
+            .as_i64()
+            .unwrap()
+    };
+    import_from(
+        &to.0,
+        &package,
+        "line-b",
+        "B 线",
+        &plan_file,
+        &to.0.join("cache"),
+        &local,
+    )
+    .unwrap();
+    let page = local
+        .query(&crate::store::HistoryQuery {
+            project: Some("line-b".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let imported = &page.items[0];
+    assert_eq!((page.total, imported.cycle_id.as_deref()), (1, Some("c1")));
+    assert_ne!(imported.id, existing);
+    assert_eq!(origin("line-b"), imported.id);
+    let directory = local
+        .detail(imported.id)
+        .unwrap()
+        .recording
+        .directory
+        .unwrap();
+    assert!(
+        Path::new(&directory).starts_with(super::super::dir(&to.0, "line-b")),
+        "{directory}"
+    );
+    assert!(local.record_recipe(imported).unwrap().is_some());
+
+    let again = import_from(
+        &to.0,
+        &package,
+        "line-c",
+        "C 线",
+        &plan_file,
+        &to.0.join("cache"),
+        &local,
+    )
+    .unwrap();
+    assert!(
+        again.notes.iter().any(|note| note.contains("同一工件")),
+        "{:?}",
+        again.notes
+    );
+    assert!(!local.project_records().unwrap().contains_key("line-c"));
+    assert_eq!(origin("line-c"), imported.id);
 }

@@ -9,6 +9,7 @@ const GROUPS: u64 = 3;
 fn summary(cycle_id: &str) -> PartSummary {
     PartSummary {
         id: 7,
+        project_id: "default".into(),
         ts: 1,
         sn: "SN-7".into(),
         recipe_id: None,

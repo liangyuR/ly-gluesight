@@ -150,7 +150,7 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
           )}
           <NumberField
             label="记录保留（天）"
-            description="超过天数的检测记录每天自动删除"
+            description="本机所有项目共用；超过天数的检测记录每天自动删除"
             id="history-days"
             min={1}
             max={3650}

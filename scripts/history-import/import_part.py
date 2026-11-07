@@ -138,9 +138,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         project = args.data_root / "projects" / args.project
-        db = project / "inspection.db"
+        if not (project / "project.json").is_file():
+            raise ImportFailure(f"项目 {args.project} 不存在：{project}")
+        db = args.data_root / "history" / "inspection.db"
         if not db.is_file():
-            raise ImportFailure(f"{db} 不存在：先用软件打开一次该项目")
+            raise ImportFailure(f"{db} 不存在：先启动一次软件建库")
         work = args.work or REPO / "output" / "history-import" / args.source.name.removesuffix(".zip")
         work.mkdir(parents=True, exist_ok=True)
         part_dir = unpack(args.source.resolve(), work)
@@ -162,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
             "cargo", "run", "--manifest-path", str(REPO / "src-tauri" / "Cargo.toml"), "--offline", "--locked",
             "--example", "capture_fixture", "--",
             "--doc", str(work / "doc.json"), "--cameras", str(work / "cameras.json"),
-            "--db", str(db), "--records", str(records_root(args.project, args.records)),
+            "--db", str(db), "--project", args.project, "--records", str(records_root(args.project, args.records)),
             "--parts", "1", "--label", args.label or part_dir.name,
             "--sample-set", str(work / "sample-set"), "--part", "p01",
         ]

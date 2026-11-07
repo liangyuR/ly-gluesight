@@ -131,16 +131,16 @@ export function DeleteProjectDialog({ entry, usage, onClose }: { entry: ProjectE
   return <Dialog open title="删除项目" initialFocus="first-field" closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
     footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button danger variant="filled" loading={working} disabled={working || !confirmed} onClick={() => void submit()}>{working ? "删除中…" : "删除"}</Button></>}>
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
-      <Alert tone="ng" title="将永久删除以下内容，不可恢复">
-        <p>包括本项目在日志目录中的视觉原图。</p>
+      <Alert tone="ng" title="将永久删除项目资产，不可恢复">
+        <p>删除配方、候选、采集轮次、标定与发布包。检测记录与历史原图保留在本机历史中；这些记录的“按原发布包重现”和辅助线随发布包一起不可用。</p>
         <dl className="kv pj-delete-list">
           <dt>项目</dt><dd>{entry.meta ? <>{expected} <span className="mono">{entry.id}</span></> : <span className="mono">{entry.id}</span>}</dd>
           {usage?.status === "ok" ? <>
             <dt>配方</dt><dd>{usage.usage.recipes} 个</dd>
             <dt>候选</dt><dd>{usage.usage.workspaces} 个</dd>
             <dt>采集轮次</dt><dd>{usage.usage.captureRounds} 轮</dd>
-            <dt>检测记录</dt><dd>{recordsText(usage.usage)}</dd>
-            <dt>占用空间</dt><dd>{formatBytes(usage.usage.bytes)}</dd>
+            <dt>检测记录</dt><dd>{recordsText(usage.usage)}，保留在本机历史中</dd>
+            <dt>项目占用</dt><dd>{formatBytes(usage.usage.projectBytes ?? usage.usage.bytes)}</dd>
           </> : <><dt>内容</dt><dd>{usage?.status === "error" ? `统计失败：${usage.error}` : "统计计算中"}</dd></>}
         </dl>
       </Alert>
