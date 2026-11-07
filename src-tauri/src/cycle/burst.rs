@@ -6,12 +6,10 @@
 //! `Machine` 负责。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::RangeInclusive;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
-use crate::frame::{CounterSource, Frame, FrameImage};
+use crate::frame::{CounterSource, Frame};
 use crate::frame_clock::{ClockStart, FrameClock, Stamp};
 use crate::frame_group::{loss_alarms, Grouper, Offer, MAX_SEQ};
 use crate::judge::{fault, Judgement};
@@ -57,8 +55,8 @@ struct BurstFrame {
     corridor: Option<u32>,
 }
 
-/// 收尾补测的一帧：计划相机下标、seq、用第几段走廊、原图（模拟测量时为空）。
-pub(super) type PostJob = (usize, u64, u32, Option<Arc<FrameImage>>);
+/// 收尾补测的一帧：计划相机下标、seq、用第几段走廊、本件录制的原图文件（模拟测量不读图，为空）。
+pub(super) type PostJob = (usize, u64, u32, Option<std::path::PathBuf>);
 
 /// 段配方一件的帧归属与测量状态。相机下标与计划相机顺序（`Recipe.inspect`）一致。
 pub(super) struct BurstPart {
@@ -83,38 +81,10 @@ pub(super) struct BurstPart {
     sectors: BTreeMap<(usize, u32), f64>,
     boundary_guard: u32,
     boundary_refine: bool,
-    /// 预测边界附近的帧组：这些帧（全部计划相机）的原图留到判定，供收尾补测
-    bands: Vec<RangeInclusive<u64>>,
-    /// 留着的原图；模拟测量没有原图，记 None 也算留着
-    retained: BTreeMap<(usize, u64), Option<Arc<FrameImage>>>,
+    /// 本件采集期间因图像内存预算满被丢弃、没收进来的帧数（D-SB-60）
+    pub(super) budget_dropped: u64,
     /// 收尾补测已经排过（每件只排一次）
     post_started: bool,
-}
-
-/// 预测边界附近要留原图的帧组（D-SB-45）：第 k 个预测边界 C_k 两侧各 `boundary_guard` + m_k 帧，
-/// m_k = ⌈Σtol × C_k / ΣN_exp⌉ + 1 是总帧组数在 ΣN_exp ± Σtol 内时比例边界偏离预测边界的最大帧数。单段或未逐段标定时为空。
-fn retention_bands(segments: &[PathSegment], guard: u32) -> Vec<RangeInclusive<u64>> {
-    let Some(counts) = segments
-        .iter()
-        .map(|s| s.expected_frames.map(u64::from))
-        .collect::<Option<Vec<u64>>>()
-    else {
-        return Vec::new();
-    };
-    let total: u64 = counts.iter().sum();
-    if counts.len() < 2 || total == 0 {
-        return Vec::new();
-    }
-    let tolerance = u64::from(crate::plan::tolerance_total(segments));
-    let mut cumulative = 0u64;
-    counts[..counts.len() - 1]
-        .iter()
-        .map(|n| {
-            cumulative += n;
-            let reach = u64::from(guard) + (tolerance * cumulative).div_ceil(total) + 1;
-            cumulative.saturating_sub(reach)..=cumulative + reach + 1
-        })
-        .collect()
 }
 
 /// 一帧到达后的去向。
@@ -178,12 +148,11 @@ impl BurstPart {
             judgement: None,
             warned: BTreeSet::new(),
             collect: false,
-            bands: retention_bands(&recipe.path_segments, recipe.boundary_guard),
             segments: recipe.path_segments.clone(),
             sectors,
             boundary_guard: recipe.boundary_guard,
             boundary_refine: recipe.boundary_refine,
-            retained: BTreeMap::new(),
+            budget_dropped: 0,
             post_started: false,
         }
     }
@@ -194,13 +163,6 @@ impl BurstPart {
             .get(&(camera, seq))
             .filter(|f| f.measuring_since.is_some())
             .and_then(|f| f.corridor)
-    }
-
-    /// 预测边界附近的帧留下原图，供收尾补测。
-    pub(super) fn retain_image(&mut self, camera: usize, seq: u64, image: Option<Arc<FrameImage>>) {
-        if !self.collect && self.bands.iter().any(|band| band.contains(&seq)) {
-            self.retained.insert((camera, seq), image);
-        }
     }
 
     /// 本件的分段结果与区域（比例分段，D-SB-40；配方开了方向细化时按已测帧的胶条方向细化，D-SB-47）。
@@ -577,19 +539,20 @@ impl Part {
     }
 
     /// 收尾补测（D-SB-45）：收尾窗口到期、到达时送测的帧都测完后排一次。按比例分段得出区域，找出判定需要、但到达时
-    /// 没用对应走廊测过的（帧, 相机），用留着的原图补测（返回给 `Machine` 送测）；原图没留住的记没测（检测不完整）。
-    /// 已有故障（整件 ERR）时不补测。留着的原图随之释放。
+    /// 没用对应走廊测过的（帧, 相机），从本件录制的原图读回补测（返回给 `Machine` 送测；内存里不为补测留图，D-SB-60）；
+    /// 没录到原图的记没测（检测不完整）。已有故障（整件 ERR）时不补测。
     pub(super) fn start_post_measure(&mut self, now: Instant) -> Vec<PostJob> {
         if self.end_at.is_none() || !self.burst_deadline(now) {
             return Vec::new();
         }
         let faulted = self.fault.is_some();
+        let image_measurement = self.image_measurement;
+        let recording = self.recording.as_ref();
         let burst = &mut self.burst;
         if burst.collect || burst.post_started || burst.pending > 0 {
             return Vec::new();
         }
         burst.post_started = true;
-        let retained = std::mem::take(&mut burst.retained);
         if faulted {
             return Vec::new();
         }
@@ -599,18 +562,25 @@ impl Part {
                 continue;
             };
             frame.corridor = Some(segment);
-            match retained.get(&(camera, seq)) {
-                Some(image) => {
+            let source = if image_measurement {
+                recording
+                    .and_then(|r| r.burst_frame_file(camera, seq))
+                    .map(Some)
+            } else {
+                Some(None)
+            };
+            match source {
+                Some(file) => {
                     frame.measuring_since = Some(now);
                     frame.metrics = None;
-                    jobs.push((camera, seq, segment, image.clone()));
+                    jobs.push((camera, seq, segment, file));
                 }
                 None => {
                     frame.metrics = Some(unmeasured(
                         camera,
                         seq,
                         FrameState::Unmeasured,
-                        format!("收尾补测要用第 {segment} 段走廊，但这一帧原图没有留住"),
+                        format!("收尾补测要用第 {segment} 段走廊，但这一帧没有录到原图"),
                     ));
                 }
             }
@@ -636,7 +606,7 @@ impl Part {
         let metrics: Vec<FrameMetrics> = burst.frames.values().filter_map(|frame| frame.metrics.clone()).collect();
         let segments = &burst.segments;
         let (_, regions) = burst.regions();
-        burst_judge::judge(
+        let mut judgement = burst_judge::judge(
             segments,
             self.recipe.expected_total(),
             &regions,
@@ -644,7 +614,16 @@ impl Part {
             &metrics,
             &burst.cameras,
             &loss,
-        )
+        );
+        // 预算满丢的帧没收进来，帧组里看不出缺：整件记检测不完整并写明，免得被当成“提前终止”的正常件
+        if burst.budget_dropped > 0 {
+            judgement.flags.incomplete = true;
+            judgement.reason = format!(
+                "{}；图像内存预算满，{} 帧没收进来，检测不完整",
+                judgement.reason, burst.budget_dropped
+            );
+        }
+        judgement
     }
 
     /// 落库用的段配方记录：1..=帧组数内每台相机每一帧一条，缺帧也有。判定取本件的区域判定，回写码取摘要的；结论摘要与它不同

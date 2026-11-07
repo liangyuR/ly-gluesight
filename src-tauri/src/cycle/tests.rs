@@ -177,8 +177,8 @@ fn deliver_groups(part: &mut Part, groups: u64) {
 }
 
 /// D-SB-45：帧到达时按累计 N_exp 预测所属段，只由预测段的检测相机用该段走廊送测，其余相机记“本段不检测”、不送测；
-/// 收尾后按比例边界解析区域，对判定需要、但到达时没用对应走廊送测过的（帧, 相机）用留下的原图补测，补测完才收尾；
-/// 原图没留住的记没测（检测不完整）。直线 5 帧（三台相机）+ 弯道 5 帧（只由第一台相机），本件 12 帧：比例边界在 6、
+/// 收尾后按比例边界解析区域，对判定需要、但到达时没用对应走廊送测过的（帧, 相机）补测，补测完才收尾；
+/// 要测图却没录到原图的记没测（检测不完整，D-SB-60）。直线 5 帧（三台相机）+ 弯道 5 帧（只由第一台相机），本件 12 帧：比例边界在 6、
 /// 预测边界在 5。
 #[test]
 fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_remeasured_after_drain(
@@ -189,12 +189,12 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
     };
     use crate::recipe::SegmentCorridor;
     // 防的回归：不检测某段的相机也被送测（没有它在这段的走廊，只能量出检测不完整）；比例边界相对预测边界移动后，
-    // 移到另一段或进了过渡区的帧仍用到达时的走廊判定；不等补测完就判定；或原图没留住时把没测的帧当测成；
+    // 移到另一段或进了过渡区的帧仍用到达时的走廊判定；不等补测完就判定；或没录到原图时把没测的帧当测成；
     // 两段都开逐帧定向时（D-SB-47，测量不依赖段归属）仍把用相邻段定向图测过的帧拿去补测；
     // 两段的搜索扇区拖成不同方向时（测量图不同）却当成同一测量图不补测（PR #218 评审）
     for (case, keep_images, heading, turned) in [
-        ("原图留住", true, false, false),
-        ("原图没留住", false, false, false),
+        ("补测有原图", true, false, false),
+        ("要测图却没录到原图", false, false, false),
         ("两段都开逐帧定向", true, true, false),
         ("两段都开逐帧定向、扇区方向不同", true, true, true),
     ] {
@@ -243,9 +243,6 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
                 else {
                     panic!("{case}")
                 };
-                if keep_images {
-                    p.burst.retain_image(camera, seq, None);
-                }
                 if let Some(segment) = p.burst.arrival_corridor(camera, seq) {
                     let result = FrameMeasured {
                         segment,
@@ -272,6 +269,8 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             (None, None, None),
             "{case}：测完后不再是送测中"
         );
+        // 模拟测量不读图；要测图的件补测只读本件录制，这里没有录制
+        p.image_measurement = !keep_images;
         end(&mut p, Some(12), true);
         assert!(!p.complete(), "{case}：还有要补测的帧，不能收尾");
         let mut jobs: Vec<(usize, u64, u32)> = p

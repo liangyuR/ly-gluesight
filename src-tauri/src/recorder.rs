@@ -157,6 +157,15 @@ pub struct Recording {
 pub const KEEP_MARKER: &str = "maintenance-collect";
 
 impl Recording {
+    /// 本件计划相机 `camera` 第 `seq` 帧已排进写盘的原图文件（还在本件的录制目录里，收尾前可读回）；没录或排队失败为 None。
+    pub fn burst_frame_file(&self, camera: usize, seq: u64) -> Option<PathBuf> {
+        self.burst
+            .frames
+            .iter()
+            .find(|f| f.camera == camera && f.seq == seq && f.queued)
+            .map(|f| self.dir.join(&f.file))
+    }
+
     pub fn annotate(&mut self, key: &str, value: serde_json::Value) {
         self.extra.insert(key.to_owned(), value);
     }
@@ -204,6 +213,19 @@ impl Recorders {
 
     pub fn begin(&self, source: RecordSource, mode: RecordMode, sn: &str, recipe: Arc<Recipe>, cycle_id: &str, bundle_id: Option<&str>) -> Option<Recording> {
         self.get(HistoryScope::of(source)).begin(mode, sn, recipe, cycle_id, bundle_id)
+    }
+
+    /// 录制关闭时的临时录制，见 [`Recorder::scratch`]。
+    pub fn scratch(
+        &self,
+        source: RecordSource,
+        sn: &str,
+        recipe: Arc<Recipe>,
+        cycle_id: &str,
+        bundle_id: Option<&str>,
+    ) -> Option<Recording> {
+        self.get(HistoryScope::of(source))
+            .scratch(sn, recipe, cycle_id, bundle_id)
     }
 
     /// 段配方：按 (计划相机下标, seq) 录一帧。
@@ -276,6 +298,29 @@ impl Recorder {
             );
             return None;
         }
+        self.open(mode, sn, recipe, cycle_id, bundle_id)
+    }
+
+    /// 录制关闭时的临时录制（D-SB-60）：采集期间照常把原图写进本件的临时目录，供收尾补测读回；收尾时一律删除，
+    /// 结果按“录制关闭”报。
+    pub fn scratch(
+        &self,
+        sn: &str,
+        recipe: Arc<Recipe>,
+        cycle_id: &str,
+        bundle_id: Option<&str>,
+    ) -> Option<Recording> {
+        self.open(RecordMode::Off, sn, recipe, cycle_id, bundle_id)
+    }
+
+    fn open(
+        &self,
+        mode: RecordMode,
+        sn: &str,
+        recipe: Arc<Recipe>,
+        cycle_id: &str,
+        bundle_id: Option<&str>,
+    ) -> Option<Recording> {
         let error = if !safe_cycle_id(cycle_id) {
             Some("录制 cycleId 只能包含字母、数字、- 和 _，长度为 1–128".to_string())
         } else {
@@ -405,7 +450,7 @@ impl Recorder {
 
     pub fn finish(&self, rec: Recording, verdict: Verdict, reason: &str, keep: u32, max_bytes: u64, in_use: Vec<PathBuf>) {
         let failed = !matches!(verdict, Verdict::Ok | Verdict::OkWithExcursion);
-        let keep_this = rec.mode == RecordMode::All || failed;
+        let keep_this = rec.mode == RecordMode::All || (rec.mode == RecordMode::Failed && failed);
         let tag = serde_json::to_value(verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
         let target = keep_this.then(|| self.root.join(&rec.name[..8]).join(format!("{}_{tag}_cycle_{}", rec.name, rec.cycle_id)));
         let job = FinishJob { recording: rec, target, verdict, reason: reason.into(), keep, max_bytes, in_use };
@@ -635,7 +680,8 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
     if target.is_none() {
         if rec.dir.exists() {
             if let Err(error) = std::fs::remove_dir_all(&rec.dir) {
-                rec.errors.push(format!("NG-only 合格件临时录制清理失败：{error}"));
+                rec.errors
+                    .push(format!("不保留的临时录制清理失败：{error}"));
             }
         }
         return RecordingOutcome {
@@ -645,7 +691,11 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
             errors: rec.errors,
             retention_errors: state.retention_errors,
             available: false,
-            state: RecordingState::NotRetained,
+            state: if rec.mode == RecordMode::Off {
+                RecordingState::Off
+            } else {
+                RecordingState::NotRetained
+            },
         };
     }
     let mut burst = std::mem::take(&mut rec.burst);

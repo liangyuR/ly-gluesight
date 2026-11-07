@@ -212,3 +212,60 @@ fn maintenance_collect_recordings_survive_retention() {
         "普通旧录制照常按保留数清理，维护采集样本不占保留件数"
     );
 }
+
+/// D-SB-60：录制关闭时要测图的件写临时录制。防的回归：收尾补测读不到原图（只能记检测不完整）；或录制关闭了，
+/// 临时原图却留在盘上（NG 件按“只留 NG”被留下），录制结果也不再报“录制关闭”。
+#[test]
+fn scratch_recording_is_readable_during_the_part_and_never_kept() {
+    for verdict in [Verdict::Ok, Verdict::NgGap] {
+        let dir = TestDir::new();
+        let (callback, outcomes) = callback();
+        let recorder = Recorder::new(dir.root(), Some(callback));
+        let mut rec = recorder.scratch("SN-S", recipe(), "scratch", None).unwrap();
+        recorder.burst_frame(&mut rec, &frame(42), 0, 1);
+        let file = rec
+            .burst_frame_file(0, 1)
+            .expect("排队写盘的帧要能找到原图文件");
+        let deadline = std::time::Instant::now() + WRITER_HANG;
+        let image = loop {
+            if let Ok(image) = crate::image_file::load(&file) {
+                break image;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{verdict:?}：临时原图写不出来"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(image.pixels, vec![42], "{verdict:?}");
+        recorder.finish(rec, verdict, "", 10, u64::MAX, Vec::new());
+        let outcome = wait(&outcomes);
+        assert_eq!(
+            (outcome.state, outcome.directory),
+            (RecordingState::Off, None),
+            "{verdict:?}"
+        );
+        let left: Vec<_> = walk(&dir.root());
+        assert!(
+            left.is_empty(),
+            "{verdict:?}：录制关闭却留下了原图 {left:?}"
+        );
+    }
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .flat_map(|e| {
+                    if e.path().is_dir() {
+                        walk(&e.path())
+                    } else {
+                        vec![e.path()]
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}

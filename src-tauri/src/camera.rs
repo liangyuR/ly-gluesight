@@ -2035,6 +2035,14 @@ impl CameraRig {
         ids.iter().map(|id| self.require(id)).collect()
     }
 
+    /// 各相机累计因图像内存预算满没拷图、被丢弃的帧。
+    pub fn budget_dropped_total(&self) -> u64 {
+        self.slots()
+            .iter()
+            .map(|s| s.shared.budget_dropped.load(Ordering::Relaxed))
+            .sum()
+    }
+
     /// 各相机累计被丢弃的帧。
     pub fn dropped_total(&self) -> u64 {
         self.slots()
