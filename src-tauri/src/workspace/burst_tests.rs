@@ -217,3 +217,52 @@ fn saving_expected_frames_or_x_ref_is_ignored_and_kind_change_clears_them() {
         assert_eq!(state, after, "{name}");
     }
 }
+
+#[test]
+fn candidate_cameras_take_frames_by_camera_id_and_absent_cameras_have_no_frames() {
+    // 防的回归（D-SB-58）：任意候选复测时按下标取记录的原图，候选相机顺序与记录不同就读到别的相机；记录里没有的相机被当成有原图
+    use crate::store::FrameRecord;
+    let frame = |camera: usize, seq: u64| FrameRecord {
+        camera,
+        seq,
+        status: FrameState::Measured,
+        frame_counter: Some(seq),
+        trigger_counter: None,
+        region: None,
+        metrics: None,
+        raw_file: Some(format!("c{camera}-{seq}")),
+    };
+    let frames: Vec<FrameRecord> = (1..=2)
+        .flat_map(|seq| (0..3).map(move |c| frame(c, seq)))
+        .collect();
+    // 记录的相机 [cam1, cam2, cam3]，候选的 [cam3, cam1, camX]
+    let mapped = super::burst_history::candidate_frames(&[Some(2), Some(0), None], &frames);
+    let of = |camera: usize| {
+        mapped
+            .iter()
+            .filter(|f| f.camera == camera)
+            .map(|f| (f.seq, f.status, f.raw_file.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        of(0),
+        vec![
+            (1, FrameState::Measured, Some("c2-1".into())),
+            (2, FrameState::Measured, Some("c2-2".into()))
+        ]
+    );
+    assert_eq!(
+        of(1),
+        vec![
+            (1, FrameState::Measured, Some("c0-1".into())),
+            (2, FrameState::Measured, Some("c0-2".into()))
+        ]
+    );
+    assert_eq!(
+        of(2),
+        vec![
+            (1, FrameState::Missing, None),
+            (2, FrameState::Missing, None)
+        ]
+    );
+}

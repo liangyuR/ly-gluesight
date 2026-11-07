@@ -21,14 +21,20 @@ export const burstSideOf = (burst: PartDetailBurst): BurstSide => ({ segments: b
 export function comparisonBurst(burst: PartDetailBurst, side: BurstSide & { frames: FrameMetrics[]; frameVerdicts?: FrameVerdict[] }): PartDetailBurst | null {
   if (!side.frames.length) return null;
   const regionOf = (seq: number) => { const i = side.judgement.regions.findIndex(r => r.region.firstSeq <= seq && seq <= r.region.lastSeq); return i < 0 ? null : i; };
+  // 对照按它的计划相机编下标（任意配方复测时可能与记录不同，D-SB-58）：按相机编号对应记录的帧，记录里没有的相机没有原图
+  const recordCameras = side.cameras.map(id => { const i = burst.cameras.indexOf(id); return i < 0 ? null : i; });
   // 先按 (相机, seq) 建索引：长件可达数万帧，逐帧在整个数组里找会卡住界面
   const byFrame = new Map(side.frames.map(m => [`${m.camera}:${m.seq}`, m]));
-  const frames = burst.frames.map(frame => {
-    const metrics = byFrame.get(`${frame.camera}:${frame.seq}`) ?? null;
-    return { ...frame, status: metrics?.state ?? frame.status, metrics, region: regionOf(frame.seq) };
-  });
+  const recorded = new Map(burst.frames.map(f => [`${f.camera}:${f.seq}`, f]));
+  const seqs = [...new Set(burst.frames.map(f => f.seq))].sort((a, b) => a - b);
+  const frames = side.cameras.flatMap((_, camera) => seqs.map(seq => {
+    const record = recordCameras[camera] == null ? undefined : recorded.get(`${recordCameras[camera]}:${seq}`);
+    const metrics = byFrame.get(`${camera}:${seq}`) ?? null;
+    return { camera, seq, status: metrics?.state ?? record?.status ?? "missing", frameCounter: record?.frameCounter ?? null, triggerCounter: record?.triggerCounter ?? null,
+      metrics, rawFile: record?.rawFile ?? null, region: regionOf(seq) };
+  }));
   return { ...burst, segments: side.segments, cameras: side.cameras, expectedTotal: side.expectedTotal,
-    toleranceTotal: side.segments.reduce((sum, s) => sum + s.tolerance, 0), judgement: side.judgement, frames, frameVerdicts: side.frameVerdicts ?? [] };
+    toleranceTotal: side.segments.reduce((sum, s) => sum + s.tolerance, 0), judgement: side.judgement, frames, frameVerdicts: side.frameVerdicts ?? [], recordCameras };
 }
 
 /**

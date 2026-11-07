@@ -103,7 +103,7 @@ describe("创建配方流程", () => {
 
     await user.click(screen.getByRole("link", { name: "选示教件" }));
     expect(await screen.findByRole("heading", { name: "选示教件" })).toBeVisible();
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("workspace_history_candidates", { id: "SHELL-2026" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("workspace_history_candidates", { id: "SHELL-2026", all: false }));
     expect(screen.getByRole("navigation", { name: "配方位置" })).toHaveTextContent("SHELL-2026 · 新壳体配方");
   }, 20_000);
 });

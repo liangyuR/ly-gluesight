@@ -611,6 +611,16 @@
   - 按候选规则重判仍要求段结构与记录时相同（存的每帧指标按旧段的走廊测，段一变不能复用），原因分开写“段结构变了”和“走廊、当量或检测参数变了”。
   - 发布、预热、验证用的测量图（`CorridorSet::build`）不放宽：没示教的组合跳过，其余建不成即报错；部分可测只用 `CorridorSet::build_available`。
 
+### D-SB-58 任意配方都能复测任意历史记录（2026-11-07 用户确认，已实现）
+
+- 问题：历史复测只能用记录所属配方的候选，其他项目的记录只能按原发布包重现；原图复测还要求候选与记录的计划相机完全相同、原图齐全。拿另一个型号或另一个项目的配方验证一件记录做不到。
+- 采用：
+  - 历史详情可选当前项目的任意候选复测（`workspace_history_compare_options(historyId, candidate)`，`choices` 列出全部候选，缺省为记录所属配方的候选），不看型号、配方编号与所属项目；`workspace_compare` 不再按项目拦。对照列表列出这件记录所有候选的对照。
+  - 从原图复测只要求：记录有原图、候选至少一台计划相机在记录里有原图、候选至少一段能量（D-SB-57）。候选相机按编号对应记录的原图（顺序可以不同）；记录里没有的相机、没保存原图的帧、没有可用走廊的段都记未测，原因列在 `raw.note` 与 `Comparison.burst.unmeasured`。丢帧告警按候选的相机顺序重算。
+  - 对照显示按对照的计划相机排帧组条与原图，每台相机按编号对应记录的帧与原图（记录里没有的相机写明没有原图）。
+  - 按规则重判仍要求记录的配方快照、段结构与测量布局相同（存的每帧指标按原配方的走廊测），原因引导到原图复测。
+  - 试测页“历史件试测”可勾选“显示全部历史件”，列本机全部项目、全部配方的真机录制件，标出所属配方与项目；原图不全的件也能测。选示教件仍只列本配方、当前项目的件。
+
 ## 五、IPC 契约
 
 完整字段以 `src/features/plan/types.ts` 为准（serde camelCase，Rust 的 `Option` 一律序列化为 null）。段配方的数据挂在现有 DTO 的可空字段上，下表列出段配方时旧字段的取值。
@@ -809,7 +819,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 - **验证样本**（可选，D-SB-46）：`workspace_capture_sample` 把采集轮次记进样本库（`BankSample.captureId` = 轮次编号，帧留在采集轮次目录，验证时按 (相机, seq) 读；`geometryTag` = 产品代码 + 有序计划相机 + 各段 (序号, 类型)，不含 N_exp，示教件分段确认前采的样本之后仍可用）。样本轮次不能是示教件，相机集合等于计划相机，各相机采集时的设备配置与当前相同。原图齐全的生产历史也可作样本：段结构身份与候选相同（历史没有记相机配置，不比较）。样本与生产同一规则选走廊重测（D-SB-45；缺帧不读图，读图或测量失败只算检测不完整），按 D-SB-40 分段判定；丢帧告警对采集轮次按计划相机顺序重算，对历史沿用记录。帧组数超出 ΣN_exp ± Σtol 与检测不完整只写进样本原因，不改是否符合。不接受按拍照点导入的样本图片。
 - **发布**：`workspace_publish` 调用 `burst_release::freeze_bundle` → `release::publish_burst`（schema 5）：每台计划相机一份标定 JSON（`mmPerPx` = 示教当量，`reference` = 标定引用或 `device/{device}`，`source` = 工位标定文件内容），它检测的每一段一张示教帧与走廊（D-SB-45）；测量图为 `production::burst_graphs`，`versions.graph` = `GRAPH_VERSION_BURST`。发布门槛 = 发布前检查当场通过 + `ready_burst`（D-SB-46）。计划版本由 `plan_version_for` 按 `same_plan` 分配，换示教件或改分段使 N_exp 变化即换新号。配方版本也在发布时由配方库当场分配（`RecipeStore::release_version`，与生效时 `save_published` 的核对同一口径），不沿用候选里记的版本：候选建好后，启动时会按历史记录里出现过的版本抬高版本下限，候选里的版本可能已过时。验证环境标签（`environment`）含各检测相机的工位标定（缺省为设备标定 `device/{device}`）。
 - **进度**：发布步骤的阻塞项取未完成的必经步骤（示教件、分段、走廊示教；试测可选、不阻断），各自跳到该步骤的第一个阻塞目标：选示教件、在示教件上确认分段、第一个没示教好的（段, 相机）。设备与生产版本在发布时当场核对。
-- **历史**：`workspace_record_frame_image(historyId, camera, seq)`（5.4）读历史一帧原图。生产记录读录制目录：路径在 `*_cycle_{cycleId}` 内、文件名为 `{相机}_s{seq:06}.pgm`，part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号一致且已落盘，解码尺寸等于录制尺寸。候选离线调试记录读受管样本集（D-SB-28 口径）。`workspace_compare` 从原图用候选走廊逐帧复测（要求计划相机相同、原图齐全、至少一段能量，量不了的段记未测，D-SB-57），或按已存每帧指标与记录里的区域用候选规则重判（要求 `store::same_measurement_layout`，ERR 记录不重判）；`workspace_compare_original` 按原发布包（schema 5）的走廊逐帧重现。结果写进 `Comparison.burst`（5.1）。`workspace_record_frame_view(historyId, comparison, camera, seq)` 给历史详情叠图（只读）：用对照保存的候选配方、示教帧尺寸（`Comparison.burst.sizes`）与这一帧在对照里所用的走廊段从录制原图重测，返回走廊、搜索带、胶边与胶边距线（与试测页逐帧查看同一形状），不依赖候选现在的示教，候选换了示教件或已删除也能看；按原发布包重现的对照用那个发布包重测；没有保存尺寸的旧候选对照不支持。看原始记录时用 `workspace_history_frame_view(historyId, camera, seq)`：按记录的发布包与这一帧当时所用走廊段从录制原图重测（与在线检测同一入口 `Prepared::measure_frame`，生产预热里有这个包就复用，否则加载并只缓存一个），线不落盘，指标取记录里存的；没有发布包、原图或走廊段时写明原因。`workspace_history_compare_options(historyId)` 给历史详情三种复测各自能不能做与原因：按记录的配方找本机候选（不新建候选、不看工作台当前选的配方），检查与真正执行对照时同一处（按规则重判还要求段结构相同、原记录有区域判定；从原图复测要求至少一段能量，有段不测时在 `raw.note` 里写明）。
+- **历史**：`workspace_record_frame_image(historyId, camera, seq)`（5.4）读历史一帧原图。生产记录读录制目录：路径在 `*_cycle_{cycleId}` 内、文件名为 `{相机}_s{seq:06}.pgm`，part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号一致且已落盘，解码尺寸等于录制尺寸。候选离线调试记录读受管样本集（D-SB-28 口径）。`workspace_compare` 从原图用候选走廊逐帧复测（任意候选；相机按编号对应记录原图，至少一台相机有原图、至少一段能量，其余记未测，D-SB-57、D-SB-58），或按已存每帧指标与记录里的区域用候选规则重判（要求 `store::same_measurement_layout`，ERR 记录不重判）；`workspace_compare_original` 按原发布包（schema 5）的走廊逐帧重现。结果写进 `Comparison.burst`（5.1）。`workspace_record_frame_view(historyId, comparison, camera, seq)` 给历史详情叠图（只读）：用对照保存的候选配方、示教帧尺寸（`Comparison.burst.sizes`）与这一帧在对照里所用的走廊段从录制原图重测，返回走廊、搜索带、胶边与胶边距线（与试测页逐帧查看同一形状），不依赖候选现在的示教，候选换了示教件或已删除也能看；按原发布包重现的对照用那个发布包重测；没有保存尺寸的旧候选对照不支持。看原始记录时用 `workspace_history_frame_view(historyId, camera, seq)`：按记录的发布包与这一帧当时所用走廊段从录制原图重测（与在线检测同一入口 `Prepared::measure_frame`，生产预热里有这个包就复用，否则加载并只缓存一个），线不落盘，指标取记录里存的；没有发布包、原图或走廊段时写明原因。`workspace_history_compare_options(historyId, candidate)` 给历史详情三种复测各自能不能做与原因：`candidate` 为选来复测的本机候选（任意候选，缺省为记录所属配方的候选，不新建候选、不看工作台打开的配方），`choices` 列出可选的全部候选；检查与真正执行对照时同一处（按规则重判还要求记录的配方快照、段结构相同、原记录有区域判定；从原图复测按 D-SB-58，有不测部分时在 `raw.note` 里写明）。`workspace_history_candidates(id, all)` 的 `all` 为真时列本机全部真机录制件（试测用）。
 
 #### 14. 离线仿真
 

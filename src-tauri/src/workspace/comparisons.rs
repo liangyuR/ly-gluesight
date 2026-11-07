@@ -36,7 +36,14 @@ impl Comparisons {
         Ok(())
     }
 
-    pub(super) fn list(&self, root: &Path, store: &Store, candidate: &str, history_id: i64) -> Result<Vec<Comparison>, String> {
+    /// 一件历史记录保存的对照，新的在前；`candidate` 为 None 时列出所有候选的对照。
+    pub(super) fn list(
+        &self,
+        root: &Path,
+        store: &Store,
+        candidate: Option<&str>,
+        history_id: i64,
+    ) -> Result<Vec<Comparison>, String> {
         let _gate = self.0.lock().unwrap();
         let Some(cycle) = store.comparison_cycle(history_id)? else { return Ok(Vec::new()); };
         let dir = directory(root, history_id, false)?;
@@ -44,8 +51,14 @@ impl Comparisons {
         let mut files = inventory(&dir, history_id)?;
         files.retain(|(_, saved)| saved.cycle_id == cycle);
         newest_first(&mut files);
-        Ok(files.into_iter().take(LIMIT).map(|(_, saved)| saved)
-            .filter(|saved| saved.source == "original" || saved.candidate_id == candidate).collect())
+        Ok(files
+            .into_iter()
+            .take(LIMIT)
+            .map(|(_, saved)| saved)
+            .filter(|saved| {
+                saved.source == "original" || candidate.is_none_or(|c| saved.candidate_id == c)
+            })
+            .collect())
     }
 
     /// 删除早于 before 的记录并清理失效的对照；另返回被删记录里非当前项目的录制目录（项目、来源、目录）。

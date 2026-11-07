@@ -40,17 +40,6 @@ pub fn project_available(data: &Path, project: &str) -> bool {
     super::valid_id(project) && super::read_meta(&super::dir(data, project)).is_ok()
 }
 
-/// 记录不属于当前项目时，按候选对照不可用的原因。
-pub fn foreign_reason(data: &Path, project: &str) -> String {
-    match super::read_meta(&super::dir(data, project)) {
-        Ok(meta) => format!(
-            "这条记录属于项目“{}”（{project}），切换到该项目后可按候选对照",
-            meta.name
-        ),
-        Err(_) => format!("这条记录属于已删除的项目 {project}，不能按候选对照"),
-    }
-}
-
 /// 记录的发布包所在目录；项目已删除时报原因。
 pub fn releases_root(data: &Path, project: &str) -> Result<PathBuf, String> {
     if !project_available(data, project) {

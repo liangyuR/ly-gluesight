@@ -468,6 +468,8 @@ export interface PartDetailBurst {
   frames: FrameRecord[];
   /** 逐帧结论（帧格颜色）；没有结论的帧（不在区域检测相机里、没测成、整件没有区域）不列出 */
   frameVerdicts: FrameVerdict[];
+  /** 只在按对照显示时有：每台显示相机对应记录里的相机下标（按相机编号对应，记录里没有为 null），读原图用 */
+  recordCameras?: (number | null)[];
 }
 
 /** 历史列表：段配方记录带标记（疑似提前终止等单独显示）；没有帧记录的为 null。 */

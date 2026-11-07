@@ -127,11 +127,15 @@ export interface CompareOption { available: boolean; reason: string | null;
   note?: string | null }
 /** 从原图复测时没有可用走廊、没测的一段一台相机（后端 burst_history::UnmeasuredSegment）。 */
 export interface UnmeasuredSegment { segment: number; camera: string; reason: string }
-/** 一条历史记录能做哪几种复测（后端 burst_history::CompareOptions）：按记录的配方找本机候选，与工作台当前选的配方无关。 */
+/** 可选来复测的一个本机候选。 */
+export interface CompareCandidate { id: string; revision: number; version: number; name: string }
+/** 一条历史记录能做哪几种复测（后端 burst_history::CompareOptions）：任意本机候选都能复测任意记录（不看型号、配方编号与项目）。 */
 export interface CompareOptions {
-  /** 记录所属配方的候选；本机没有（如从发布包导入）为 null */
-  candidate: { id: string; revision: number; version: number } | null;
+  /** 选来复测的候选：指定的，或缺省为记录所属配方的候选；本机没有时为 null */
+  candidate: CompareCandidate | null;
   original: CompareOption; rules: CompareOption; raw: CompareOption;
+  /** 本机全部可选的候选 */
+  choices: CompareCandidate[];
 }
 /** 分段保存的影响（后端 capture_review::SegmentSaveImpact，保存前确认用）。 */
 export interface SegmentSaveImpact {
@@ -171,4 +175,7 @@ export interface HistoryCandidate {
   usage: "teaching" | "calibration" | null;
   /** 手动配置数据（capture_fixture 写的仿历史件）的标签；真机件为 null */
   fixture: string | null;
+  /** 记录所属的配方与项目（试测“全部历史件”里可能是别的配方、别的项目） */
+  recipeId?: string | null;
+  projectId?: string;
 }
