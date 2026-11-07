@@ -257,6 +257,35 @@ fn scratch_recording_is_readable_during_the_part_and_never_kept() {
             "{verdict:?}：录制关闭却留下了原图 {left:?}"
         );
     }
+    // 防的回归：临时录制写盘失败（盘满、无权限）时文件不留，录制结果却报健康，盘故障报警被清掉而补测一直读不到原图
+    let dir = TestDir::new();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(dir.root(), Some(callback));
+    let mut rec = recorder
+        .scratch("SN-F", recipe(), "scratch-fail", None)
+        .unwrap();
+    std::fs::create_dir_all(rec.dir.parent().unwrap()).unwrap();
+    std::fs::write(&rec.dir, b"").unwrap();
+    recorder.burst_frame(&mut rec, &frame(7), 0, 1);
+    let deadline = std::time::Instant::now() + WRITER_HANG;
+    while rec.burst_frame_file(0, 1) == RecordedFrame::Writing {
+        assert!(std::time::Instant::now() < deadline, "写盘结果没回来");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        rec.burst_frame_file(0, 1),
+        RecordedFrame::Missing,
+        "写盘失败的帧补测不能读"
+    );
+    std::fs::remove_file(&rec.dir).unwrap();
+    recorder.finish(rec, Verdict::Ok, "", 10, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert_eq!(outcome.state, RecordingState::Off);
+    assert!(
+        outcome.errors.iter().any(|e| is_write_error(e)),
+        "写盘失败没报出来：{:?}",
+        outcome.errors
+    );
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {

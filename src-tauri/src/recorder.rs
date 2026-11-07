@@ -723,6 +723,23 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
     let FinishJob { recording: mut rec, target, verdict, reason, keep, max_bytes, in_use } = job;
     rec.errors.append(&mut state.errors);
     if target.is_none() {
+        // 不保留的录制也要报写盘失败：临时录制是收尾补测的原图来源（D-SB-60），盘满或无权限要能报警
+        let mut failed: Vec<(usize, u64, String)> = state
+            .frame_results
+            .iter()
+            .filter_map(|(key, result)| {
+                result
+                    .as_ref()
+                    .err()
+                    .map(|e| (key.camera, key.seq, e.clone()))
+            })
+            .collect();
+        failed.sort();
+        rec.errors.extend(
+            failed
+                .into_iter()
+                .map(|(camera, seq, error)| format!("计划相机 {camera} 第 {seq} 帧：{error}")),
+        );
         if rec.dir.exists() {
             if let Err(error) = std::fs::remove_dir_all(&rec.dir) {
                 rec.errors
