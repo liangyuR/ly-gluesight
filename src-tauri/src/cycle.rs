@@ -1999,8 +1999,19 @@ impl Machine {
                 .await;
         }
         let source = crate::site::record_source(&app);
-        // 维护件不论录制设置都录全部帧：采集件是示教与标定的样本，试判件要靠原图复核误判（MM-11）
-        let record = if maintenance {
+        // 维护件不论录制设置都录全部帧：采集件是示教与标定的样本，试判件要靠原图复核误判（MM-11）；
+        // 发布包有段预热没测成时也录全部帧，修好配方后能从原图复测这些段（D-SB-59）
+        let untested = production.as_ref().and_then(|p| p.untested_label());
+        let unmeasurable = production.as_ref().filter(|p| !p.measurable()).map(|p| {
+            (
+                fault::NO_RECIPE,
+                format!(
+                    "发布包每一段在示教帧上都没测成，本件只录原图、不检测：{}",
+                    p.untested_reasons().join("；")
+                ),
+            )
+        });
+        let record = if maintenance || untested.is_some() {
             crate::settings::RecordMode::All
         } else {
             crate::site::record_mode(&app)
@@ -2034,7 +2045,7 @@ impl Machine {
             gate_guard: settings.timeouts.gate_guard(),
             admitted_at: Instant::now(),
             end_at: None,
-            fault: None,
+            fault: unmeasurable,
             cams,
             camera_ids,
             rig_gen,
@@ -2066,9 +2077,12 @@ impl Machine {
             "info",
             "接件登记",
             format!(
-                "{} · N={planned} · 登记耗时 {} ms",
+                "{} · N={planned} · 登记耗时 {} ms{}",
                 recipe.id,
-                started.elapsed().as_millis()
+                started.elapsed().as_millis(),
+                untested
+                    .as_ref()
+                    .map_or_else(String::new, |label| format!(" · 预热没测成、不测：{label}"))
             ),
             Fields::stage("admitted")
                 .with_data(json!({"intakeMs": millis(started), "shots": planned})),
@@ -2362,6 +2376,10 @@ impl Machine {
         let fields = Fields { cycle_id: Some(part.cycle_id.clone()), camera: Some(camera.clone()), seq: Some(seq), ..Fields::default() }.with_stage("measured")
             .with_data(json!({"ms": ms, "queueMs": queue_ms, "engineMs": engine_ms, "state": metrics.state, "error": metrics.error}));
         let why = metrics.error.clone().unwrap_or_default();
+        let untested = part
+            .production
+            .as_ref()
+            .is_some_and(|p| p.untested(metrics.camera, segment).is_some());
         match metrics.state {
             FrameState::Measured => trace(
                 &self.app,
@@ -2384,6 +2402,12 @@ impl Machine {
                 &self.app,
                 "本段不检测",
                 format!("{camera} 第 {seq} 帧所在段不由这台相机检测，不测"),
+                fields,
+            ),
+            FrameState::Unmeasured if untested => trace(
+                &self.app,
+                "本段不测",
+                format!("{camera} 第 {seq} 帧所在段预热没测成，不测，记检测不完整"),
                 fields,
             ),
             FrameState::Unmeasured => log_with(
@@ -2750,7 +2774,18 @@ impl Machine {
             };
             uninspected_judgement(0, reason)
         } else {
-            let decided = part.burst_judgement();
+            let mut decided = part.burst_judgement();
+            if let Some(label) = part
+                .fault
+                .is_none()
+                .then(|| part.production.as_ref().and_then(|p| p.untested_label()))
+                .flatten()
+            {
+                decided.reason = format!(
+                    "{}；{label} 预热没测成、未测，结论只覆盖其余段",
+                    decided.reason
+                );
+            }
             let burst = &mut part.burst;
             warnings = burst_warnings(&decided, |camera| burst.camera_name(camera).to_owned());
             let summary = burst::summary(&decided);

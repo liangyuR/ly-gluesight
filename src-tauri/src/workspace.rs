@@ -135,6 +135,9 @@ pub struct Check {
     pub name: String,
     pub passed: bool,
     pub detail: String,
+    /// 只提醒、不拦发布：没满足时照样能发布（如有段在示教帧上没测成，D-SB-59）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub advisory: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1003,7 +1006,7 @@ pub async fn workspace_validate(
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn workspace_publish(
     app: AppHandle,
     id: String,
@@ -1021,7 +1024,7 @@ pub fn workspace_publish(
     }
     // D-SB-46：发布不再要求独立样本验证，发布时当场核对发布前检查
     let validated = burst_release::publish_checks(&app, w)?;
-    if let Some(failed) = validated.checks.iter().find(|c| !c.passed) {
+    if let Some(failed) = burst_release::publish_blocker(&validated.checks) {
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
     }
     let recipes = &app.state::<CycleHost>().recipes;

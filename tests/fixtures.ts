@@ -46,7 +46,7 @@ export function sampleSet(name = "壳体样本"): SampleSetSummary {
 
 export function recipeOption(id: string, runnable = true, over: Partial<RecipeOption> = {}): RecipeOption {
   return { id, name: `工件 ${id}`, version: 1, productCode: 1, published: true, runnable,
-    reason: runnable ? null : "与样本集不符", target: runnable ? null : "workspace", waiting: null, ...over };
+    reason: runnable ? null : "与样本集不符", target: runnable ? null : "workspace", waiting: null, note: null, ...over };
 }
 
 export function readiness(over: Partial<Readiness> = {}): Readiness {

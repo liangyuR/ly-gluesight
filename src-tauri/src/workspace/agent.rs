@@ -326,7 +326,7 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
             Ok(checks) => json!(checks
                 .iter()
                 .filter(|c| !c.passed)
-                .map(|c| json!({ "name": c.name, "detail": c.detail }))
+                .map(|c| json!({ "name": c.name, "detail": c.detail, "advisory": c.advisory }))
                 .collect::<Vec<_>>()),
             Err(e) => json!(e),
         }

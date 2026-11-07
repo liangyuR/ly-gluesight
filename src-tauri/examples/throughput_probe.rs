@@ -184,8 +184,8 @@ fn probe_production(engine: &Arc<Engine>, teach: &FrameImage) -> (Prepared, Temp
     )
     .unwrap();
     let bundle = load_release(&root.0, &recipe.id, &published.id).unwrap();
-    let prepared = Prepared::load(bundle, engine.clone(), &recipe).unwrap();
-    warm(&prepared).unwrap();
+    let mut prepared = Prepared::load(bundle, engine.clone(), &recipe).unwrap();
+    warm(&mut prepared).unwrap();
     (prepared, root)
 }
 
