@@ -765,11 +765,19 @@ fn raw_blocker(
             burst.cameras.join("、")
         ));
     }
+    // 只看候选用到的相机：记录里别的相机有原图不算
+    let (_, frames) = candidate_inputs(recipe, burst);
     let recorded = detail.summary.source == RecordSource::OfflineCandidate
-        || burst.frames.iter().any(|f| f.raw_file.is_some());
+        || frames.iter().any(|f| f.raw_file.is_some());
     if !recorded {
+        let used: Vec<&str> = cameras
+            .iter()
+            .filter(|c| !absent.contains(c))
+            .map(String::as_str)
+            .collect();
         return Err(format!(
-            "这条记录没有保存原图：{}",
+            "候选用到的相机（{}）在这条记录里没有保存原图：{}",
+            used.join("、"),
             recording_reason(detail)
         ));
     }
@@ -798,8 +806,18 @@ fn raw_blocker(
     Ok((!notes.is_empty()).then(|| notes.join("；")))
 }
 
+/// 从原图复测的输入：候选计划相机下标 → 记录相机下标的对应，与按候选相机重排的记录帧（复测与前置检查共用）。
+pub(super) fn candidate_inputs(
+    recipe: &Recipe,
+    burst: &PartDetailBurst,
+) -> (Vec<Option<usize>>, Vec<FrameRecord>) {
+    let map = record_cameras(recipe, burst);
+    let frames = candidate_frames(&map, &burst.frames);
+    (map, frames)
+}
+
 /// 候选计划相机下标 → 记录计划相机下标（按相机编号对应，记录里没有的为 None）。
-pub(super) fn record_cameras(recipe: &Recipe, burst: &PartDetailBurst) -> Vec<Option<usize>> {
+fn record_cameras(recipe: &Recipe, burst: &PartDetailBurst) -> Vec<Option<usize>> {
     recipe
         .plan_cameras()
         .iter()
@@ -808,7 +826,7 @@ pub(super) fn record_cameras(recipe: &Recipe, burst: &PartDetailBurst) -> Vec<Op
 }
 
 /// 记录的帧按相机编号换成候选的计划相机下标：记录里有的相机取它的帧，没有的相机每个帧组记一帧“没到”；记录里多出的相机不用。
-pub(super) fn candidate_frames(map: &[Option<usize>], frames: &[FrameRecord]) -> Vec<FrameRecord> {
+fn candidate_frames(map: &[Option<usize>], frames: &[FrameRecord]) -> Vec<FrameRecord> {
     let groups = frames.iter().map(|f| f.seq).max().unwrap_or(0);
     map.iter()
         .enumerate()
@@ -924,7 +942,7 @@ pub(super) fn compare(
     let (judgement, metrics) = if raw {
         let (measurer, skipped) = CandidateMeasurer::partial(app, w, recipe)?;
         unmeasured = skipped;
-        let map = record_cameras(recipe, burst);
+        let (map, frames) = candidate_inputs(recipe, burst);
         for id in cameras
             .iter()
             .zip(&map)
@@ -945,7 +963,6 @@ pub(super) fn compare(
         }
         unmeasured.sort_by_key(|u| (u.segment, cameras.iter().position(|c| *c == u.camera)));
         let offline = detail.summary.source == RecordSource::OfflineCandidate;
-        let frames = candidate_frames(&map, &burst.frames);
         // 丢帧告警按候选的相机顺序重算（与记录的相机顺序可能不同）
         let counts: Vec<u32> = (0..cameras.len())
             .map(|c| {
