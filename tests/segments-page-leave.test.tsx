@@ -79,4 +79,24 @@ describe("防抖没到期就离开段列表页", () => {
     await waitFor(() => expect(screen.getByLabelText("工作区配方")).toHaveTextContent("B"));
   });
 
+  // 防的回归：按地址换配方不等在途保存，select 抬高请求序号让在途的 act 返回空，卸载时的续存不再提交，第二次修改被静默丢弃
+  it("段参数还在保存时又改一次再换配方 → 两次修改都提交到原配方，之后才打开新配方", async () => {
+    const saving = deferred<WorkspaceView>();
+    const saved = view("A");
+    saved.workspace.revision = 4;
+    vi.mocked(workspaceApi.updateSegments).mockReset().mockImplementationOnce(() => saving.promise).mockResolvedValue(saved);
+    await editWithoutWaiting();
+    await waitFor(() => expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    fireEvent.change(within(screen.getByRole("region", { name: "段 1" })).getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value: "3" } });
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "打开配方 B" }));
+    expect(workspaceApi.get).not.toHaveBeenCalledWith("B");
+    await act(async () => saving.resolve(saved));
+
+    await waitFor(() => expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(2));
+    const [id, revision, sent] = vi.mocked(workspaceApi.updateSegments).mock.calls[1];
+    expect([id, revision, sent[0].tolerance]).toEqual(["A", 4, 3]);
+    await waitFor(() => expect(screen.getByLabelText("工作区配方")).toHaveTextContent("B"));
+  });
+
 });
