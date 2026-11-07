@@ -441,9 +441,72 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
         "segments": segments,
         "cameras": teaching,
         "blockers": blockers,
+        "passes": pass_status(app, &w),
         "coverage": coverage,
         "coverageSource": coverage.as_ref().map(|_| "teachingPieceProportional"),
     }))])
+}
+
+/// 示教件的笔结构、每笔首尾跳过设置与每笔起涂建议（D-SB-62）；没有示教件为 null。
+fn pass_status(app: &AppHandle, w: &Workspace) -> Value {
+    let Some(piece) = w.teaching_piece.as_ref() else {
+        return Value::Null;
+    };
+    let group_count = w
+        .capture_review
+        .rounds
+        .get(&piece.round_id)
+        .map_or(0, |r| r.group_count);
+    let measured = w
+        .calibration
+        .rounds
+        .iter()
+        .any(|r| r.round_id == piece.round_id);
+    let dir = app
+        .state::<WorkspaceHost>()
+        .dir(&w.doc.id)
+        .join(burst::CALIBRATION_DIR)
+        .join(&piece.round_id);
+    let metrics = if measured {
+        burst::read_features(&dir, &w.doc.plan_cameras())
+    } else {
+        Err("示教件还没有测量".into())
+    };
+    let suggestion = super::burst_skip::pass_skip_suggestion(
+        &w.doc,
+        Some((
+            piece.round_id.as_str(),
+            group_count,
+            piece.passes.as_slice(),
+        )),
+        &w.capture_review.rounds,
+        metrics,
+    );
+    let skipped: Vec<Value> = crate::passes::skipped(&piece.passes, w.doc.pass_skip)
+        .into_iter()
+        .map(|(j, first, last, short)| json!({ "pass": j + 1, "frames": [first, last], "short": short }))
+        .collect();
+    json!({
+        "count": piece.passes.len(),
+        "frames": piece.passes,
+        "skip": w.doc.pass_skip,
+        "inRecipe": w.doc.pass_frames.is_some(),
+        "skipped": skipped,
+        "suggestion": suggestion,
+    })
+}
+
+/// 按示教件笔结构与配方每笔首尾跳过，不判定的示教件帧组（D-SB-62）。
+fn pass_skipped_seqs(w: &Workspace) -> std::collections::BTreeSet<u64> {
+    w.teaching_piece
+        .as_ref()
+        .map(|piece| {
+            crate::passes::skipped(&piece.passes, w.doc.pass_skip)
+                .into_iter()
+                .flat_map(|(_, first, last, _)| first..=last)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ───────────── teach_view ─────────────
@@ -973,14 +1036,28 @@ struct TrialArgs {
 }
 
 /// 断口、存在率与最大宽度按检测阈值提示；widthOutside 只比较均值，生产胶宽还看逐站超差累计长度。
+/// 每笔首尾跳过的帧（`skipped`，D-SB-62）生产不判，不进这些列表，另列在 `passSkipped`。
 /// 这些线索不替代逐帧及整件的生产判定。
-fn against_checks(frames: &[FrameMetrics], window: (u64, u64), checks: &Value) -> Value {
+fn against_checks(
+    frames: &[FrameMetrics],
+    window: (u64, u64),
+    checks: &Value,
+    skipped: &std::collections::BTreeSet<u64>,
+) -> Value {
     let measured: Vec<&FrameMetrics> = frames
         .iter()
-        .filter(|f| (window.0..=window.1).contains(&f.seq) && f.state == FrameState::Measured)
+        .filter(|f| {
+            (window.0..=window.1).contains(&f.seq)
+                && f.state == FrameState::Measured
+                && !skipped.contains(&f.seq)
+        })
         .collect();
     let enabled = |c: &Value| c["enabled"].as_bool().unwrap_or(false);
     let mut out = serde_json::Map::new();
+    out.insert(
+        "passSkipped".into(),
+        json!(skipped.range(window.0..=window.1).collect::<Vec<_>>()),
+    );
     let gap = &checks["break"];
     if enabled(gap) {
         let max_gap = gap["maxGapMm"].as_f64().unwrap_or(f64::INFINITY);
@@ -1018,6 +1095,18 @@ fn against_checks(frames: &[FrameMetrics], window: (u64, u64), checks: &Value) -
                 .filter(|f| f.width_mean.is_some_and(|m| m < band[0] || m > band[1]))
                 .map(|f| f.seq)
                 .collect::<Vec<_>>()),
+        );
+        out.insert(
+            "widthBelow".into(),
+            json!(measured
+                .iter()
+                .filter(|f| f.width_mean.is_some_and(|m| m < band[0]))
+                .map(|f| f.seq)
+                .collect::<Vec<_>>()),
+        );
+        out.insert(
+            "wideWarnOnly".into(),
+            json!(width["wideWarnOnly"].as_bool().unwrap_or(false)),
         );
     }
     let overflow = &checks["overflow"];
@@ -1060,7 +1149,7 @@ async fn trial(app: &AppHandle, args: TrialArgs) -> Result<Vec<Content>, ToolErr
         .find(|s| s.index == args.segment)
         .ok_or("试测快照没有这一段")?;
     let checks = serde_json::to_value(&segment.checks).unwrap_or_default();
-    summary["limits"] = against_checks(&result.frames, window, &checks);
+    summary["limits"] = against_checks(&result.frames, window, &checks, &pass_skipped_seqs(&w));
     let scope: Vec<u64> = (window.0..=window.1).collect();
     let expected: Vec<u64> = scope
         .iter()
@@ -1371,4 +1460,47 @@ async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolE
         result[field] = serde_json::to_value(identity).unwrap_or_default();
     }
     Ok(vec![text(json!({ "results": results }))])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn measured(seq: u64, gap_max_mm: f64) -> FrameMetrics {
+        FrameMetrics {
+            camera: 0,
+            seq,
+            state: FrameState::Measured,
+            error: None,
+            width_min: Some(4.0),
+            width_max: Some(4.0),
+            width_mean: Some(4.0),
+            widths: Vec::new(),
+            spacing_mm: 1.0,
+            gap_max_mm,
+            present_ratio: 1.0,
+            x_mm: None,
+            corridor: Some(1),
+            heading_deg: None,
+            heading_fallback: false,
+            fallback_reason: None,
+            edge_mm: None,
+        }
+    }
+
+    /// 防的回归（D-SB-62）：每笔开头跳过的帧生产不判，试测线索不能把它们列进断胶，否则示教代理按“断胶列表须为空”误判不合格。
+    #[test]
+    fn trial_limits_leave_pass_skipped_frames_out_of_gap_findings() {
+        let frames = [measured(1, 20.0), measured(2, 20.0), measured(3, 0.0)];
+        let checks = json!({ "break": { "enabled": true, "maxGapMm": 6.0, "minPresent": 0.8 } });
+        let skipped = std::collections::BTreeSet::from([1]);
+        let limits = against_checks(&frames, (1, 3), &checks, &skipped);
+        assert_eq!(
+            (
+                limits["gapOverLimit"].clone(),
+                limits["passSkipped"].clone()
+            ),
+            (json!([2]), json!([1]))
+        );
+    }
 }

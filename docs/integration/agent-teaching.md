@@ -62,7 +62,8 @@ MCP Streamable HTTP 的无状态子集：
 - `cameras[]`：彩色模式、`mmPerPx`、`calibMmPerPx`、`ready`、`window`（`startMm`、`lengthMm`）、`nozzle`（点、`calibrated`、`source: calibrated | corridorStarts`）与 `headingIssues`。后者指出窗口缺失、窗口不足 8 px 或走廊起点不一致等前置问题。
 - 每台相机的 `segments[]`：`segment`、`seq`、`corridorPoints`、`saved`、`modelPresent`、`modelUsable`、`quality`、`modelIssues`。`colorModel` 仍表示字段存在，不能用它判断可用。`quality` 保留引擎的 `glueCount`、`bgCount`、`centerShift`、`separation`、高光占比等；非法 JSON、缺少质量证据、胶样本不足、背景样本或分量缺失分别给出原因。`modelUsable=true` 也不证明走廊位于新胶上。
 - `engine`：加载状态、版本、运行库目录、`overridden`、`source`（`bundledRuntime` / `developmentOverride`）、`requiredSeries`、`requiredOperators` 与失败原因。`loaded=true` 包含必需算子校验；为 false 时从 `message` 核对缺失算子或运行库问题，解决后再逐段量测。
-- `coverage`：按示教件总帧数和比例边界预览 guard、skip 后的真实检测范围；`coverageSource=teachingPieceProportional`。包括逐段逐相机应测/可用帧数、被屏蔽帧、零覆盖段和胶偏首尾剔除后的窗口。没有示教件或无法读取时为 null；没有可信边界时相关范围/计数为 null，不能当作完整覆盖。`boundaryRefinementPending=true` 表示还没有测量方向来预测细化后的边界。
+- `passes`：示教件的笔结构（D-SB-62）。`count`、`frames`（各笔帧组数）、`skip`（配方每笔开头 `head`、结尾 `tail` 跳过帧组数）、`inRecipe`（笔结构已随 N_exp 写进配方，生产按笔分段）、`skipped`（示教件上被跳过的帧组：`pass`、`frames: [first, last]`、`short` 为整笔不检）与 `suggestion`（每笔起涂建议：`current`、`suggested`、逐笔 `passes[]` 的起涂帧组数或不参与原因、`pending`）。没有示教件为 null。每笔首尾跳过只能由人在界面设置。
+- `coverage`：按示教件总帧数预览 guard、段与每笔首尾跳过后的真实检测范围，有笔结构时按笔分段，否则按比例边界；`coverageSource=teachingPieceProportional`。包括逐段逐相机应测/可用帧数、被屏蔽帧、零覆盖段和胶偏首尾剔除后的窗口。没有示教件或无法读取时为 null；没有可信边界时相关范围/计数为 null，不能当作完整覆盖。`boundaryRefinementPending=true` 表示还没有测量方向来预测细化后的边界。
 - `blockers`：未通过的发布配置检查，包含 `advisory`；配置检查不代替实测覆盖和产品验收。
 
 ### `teach_view`
@@ -97,7 +98,7 @@ MCP Streamable HTTP 的无状态子集：
 - `states`、`width`（mm：中位、P5、P95、最小、最大）、`edgeMm`、`xMm`、`gapFrames`、`fallbackFrames`、`errors` 与 `worst`（前 5 帧）保留量测分布和看图线索。
 - `measurement`：`expectedFrames`、`measuredFrames`、`states`、`plannedSkipFrames`、`unmeasuredFrames` 以及不截断的 `nonMeasuredFrames`（`seq`、`state`、`expected`、`reason`）。Missing、Error、Unmeasured、OutOfCorridor 都不能因为 `errors=[]` 而被忽略；按计划不测单独标记。
 - 配置为这台相机测 ToEdge 时，`measurement.edge` 给出实际量测区间的 `expectedFrames`、`validFrames`、`validRate`（无应测帧为 null）及 `missingFrames`。分母包含应测但失败的帧；计划不测不进入分母。有效数值不保证绿线落在真实零件边，仍需 `teach_view` 核对。这里未按整件胶偏规则剔除区域首尾。
-- `limits` 给出 `maxGapMm` / `gapOverLimit`、`minPresent` / `presentBelow`、`widthBand` / `widthOutside`，以及独立的 `overflowMaxWidthMm` / `overflowFrames`（按每帧最大胶宽）。`widthOutside` 只比较一帧的平均宽度，是看图线索；生产胶宽判定使用逐站超差累计长度等规则。平均胶宽在公差带内也可能因局部超宽判溢胶；段开了偏宽只预警（`checks.width.wideWarnOnly`，D-SB-61）时，超出上限与溢胶上限只记预警（`flags.wideWarning` / `overflowWarning`），不判 NG。`parameterWarnings` 提示标称或公差带高于溢胶上限、胶偏参考缺失等矛盾，不自动改参数。局部诊断不代替完整生产判定。
+- `limits` 给出 `maxGapMm` / `gapOverLimit`、`minPresent` / `presentBelow`、`widthBand` / `widthOutside` / `widthBelow`（平均宽度低于下限）、`wideWarnOnly`，以及独立的 `overflowMaxWidthMm` / `overflowFrames`（按每帧最大胶宽）。每笔首尾跳过的帧生产不判，不进这些列表，另列在 `passSkipped`。`widthOutside` 只比较一帧的平均宽度，是看图线索；生产胶宽判定使用逐站超差累计长度等规则。平均胶宽在公差带内也可能因局部超宽判溢胶；段开了偏宽只预警（`checks.width.wideWarnOnly`，D-SB-61）时，超出上限与溢胶上限只记预警（`flags.wideWarning` / `overflowWarning`），不判 NG。`parameterWarnings` 提示标称或公差带高于溢胶上限、胶偏参考缺失等矛盾，不自动改参数。局部诊断不代替完整生产判定。
 
 ### `teach_segment`
 
@@ -111,8 +112,8 @@ MCP Streamable HTTP 的无状态子集：
 
 - 不给 `records`：返回最近 30 件历史记录（`id`、`ts`、`sn`、`recipeId`、`verdict`、`reason`、`mode`）。
 - 给了：逐件从原图复测并整件判定，对照记录照常保存。每件返回 `comparisonId`、`cycleId`、实际 `snapshot`、`originalVerdict`、`verdict`、`reason`、`flags`、`alarms`、`uninspected`、`unchecked` 和没有可用走廊等原因造成的 `unmeasuredSegments`；失败项带 `error` 与 `attemptedSnapshot`。
-- `regions` 保留 `kind` 和帧组范围；段内为 `{type: "straight" | "corner", segment}`，跳过为 `{type: "skipped", segment}`，未分段为 `{type: "unsegmented", firstSegment, lastSegment, reason}`。每区同时返回判定、宽度、胶偏、`offsetUnjudged`、`incompleteGroups`、帧数比较与相机帧数。直线区 `offsetEvidence` 按最终判定区域和相同的胶偏规则剔除首尾，给出参考相机、有效窗口、应测/有效帧数、缺失帧及未判原因；不与量测全范围的边距有效率混同。
-- `measurement.cameras[]` 和其中 `segments[]` 给出各相机/段的应测、实测、全部非 measured 帧及原因、计划不测帧、ToEdge 有效率。`basis=measurementPlan` 明确它复用实际原图复测的比例分段、guard 和走廊选择；`coverage` 是相同规则的覆盖预览。判定开启方向细化时，最终 `regions` 可与该量测计划不同，胶偏证据以最终区域为准。
+- `regions` 保留 `kind` 和帧组范围；段内为 `{type: "straight" | "corner", segment}`，跳过为 `{type: "skipped", segment}`（每笔首尾跳过另带 `pass`，整笔不检带 `short: true`），未分段为 `{type: "unsegmented", firstSegment, lastSegment, reason}`。每区同时返回判定、宽度、胶偏、`offsetUnjudged`、`incompleteGroups`、帧数比较与相机帧数。直线区 `offsetEvidence` 按最终判定区域和相同的胶偏规则剔除首尾，给出参考相机、有效窗口、应测/有效帧数、缺失帧及未判原因；不与量测全范围的边距有效率混同。
+- `measurement.cameras[]` 和其中 `segments[]` 给出各相机/段的应测、实测、全部非 measured 帧及原因、计划不测帧、ToEdge 有效率。`basis=measurementPlan` 明确它复用实际原图复测的分段（按笔或按比例）、guard、每笔首尾跳过和走廊选择；`coverage` 是相同规则的覆盖预览。判定开启方向细化时，最终 `regions` 可与该量测计划不同，胶偏证据以最终区域为准。
 
 这些信息不改变生产 OK/NG 策略：`flags.incomplete`、`flags.passCountAnomaly`、胶宽偏宽与溢胶预警、`offsetUnjudged` 等仍是告警；`uninspected` 里带 `pass` 的是每笔首尾跳过的帧（D-SB-62）。生产结论为 OK 与测量完整是两个独立结论；任一应测帧未测成时，不可宣称示教验收完成。
 
