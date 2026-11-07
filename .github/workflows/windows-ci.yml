@@ -14,13 +14,17 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: pwsh
+
 concurrency:
   group: windows-ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: windows-2022
     timeout-minutes: 5
     outputs:
       required: ${{ steps.plan.outputs.required }}
@@ -43,7 +47,7 @@ jobs:
   frontend:
     needs: changes
     if: needs.changes.outputs.required == 'true'
-    runs-on: ubuntu-latest
+    runs-on: windows-2022
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
@@ -67,8 +71,10 @@ jobs:
         env:
           FORMAT_BASE: ${{ needs.changes.outputs.base }}
         run: |
-          git diff --check "$FORMAT_BASE" "$GITHUB_SHA"
-          node scripts/Check-RustFormat.mjs --base "$FORMAT_BASE" --head "$GITHUB_SHA"
+          git diff --check $env:FORMAT_BASE $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Changed files contain whitespace errors.' }
+          node scripts/Check-RustFormat.mjs --base $env:FORMAT_BASE --head $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Incremental Rust format check failed.' }
       - name: CI routing regression
         run: node --test scripts/Plan-Ci.test.mjs
       - name: Install locked frontend dependencies
@@ -84,9 +90,6 @@ jobs:
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
       CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target/cargo-ci
-    defaults:
-      run:
-        shell: pwsh
     steps:
       - uses: actions/checkout@v5
         with:
@@ -111,7 +114,7 @@ jobs:
   verify:
     needs: [changes, frontend, rust]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: windows-2022
     timeout-minutes: 5
     steps:
       - name: Require all selected validations
@@ -121,12 +124,12 @@ jobs:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           RUST_RESULT: ${{ needs.rust.result }}
         run: |
-          test "$PLAN_RESULT" = success
-          if [[ "$REQUIRED" == true ]]; then
-            test "$FRONTEND_RESULT" = success
-            test "$RUST_RESULT" = success
-          else
-            test "$REQUIRED" = false
-            test "$FRONTEND_RESULT" = skipped
-            test "$RUST_RESULT" = skipped
-          fi
+          if ($env:PLAN_RESULT -ne 'success') { throw 'CI path selection failed.' }
+          $expected = switch ($env:REQUIRED) {
+            'true' { 'success' }
+            'false' { 'skipped' }
+            default { throw 'Missing or invalid CI path selection.' }
+          }
+          if ($env:FRONTEND_RESULT -ne $expected -or $env:RUST_RESULT -ne $expected) {
+            throw "Required validations did not complete: frontend=$env:FRONTEND_RESULT rust=$env:RUST_RESULT"
+          }
