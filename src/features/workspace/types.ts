@@ -109,8 +109,6 @@ export interface Comparison {
   id: string; historyId: number; source: "rules" | "raw" | "original"; cycleId: string; bundleId: string | null; candidateId: string; candidateRevision: number;
   candidateRecipe: Recipe;
   originalVerdict: Verdict; judgement: Judgement; measurements: unknown[]; createdAt: number;
-  /** 对照的是其他项目的记录时那个项目的称呼；当前项目的记录与之前保存的对照没有 */
-  recordProject?: string;
   /** 复测结果（后端 workspace::burst_history::ComparisonBurst）：重判所用的候选段、相机、预期总数与区域判定。
    * 之前保存的旧对照为 null；有值时 judgement 的 verdict / plcCode / faultCode / reason 与 burst.judgement 相同 */
   burst: { segments: PathSegment[]; cameras: string[]; expectedTotal: number | null; judgement: BurstJudgement;
@@ -127,8 +125,6 @@ export interface CompareOption { available: boolean; reason: string | null }
 export interface CompareOptions {
   /** 记录所属配方的候选；本机没有（如从发布包导入）为 null */
   candidate: { id: string; revision: number; version: number } | null;
-  /** 记录不属于当前项目时它所属项目的称呼：对照用当前项目里同编号配方的候选 */
-  recordProject: string | null;
   original: CompareOption; rules: CompareOption; raw: CompareOption;
 }
 /** 分段保存的影响（后端 capture_review::SegmentSaveImpact，保存前确认用）。 */
@@ -149,8 +145,6 @@ export interface CaptureCamera { cameraId: string; deviceSession: number; receiv
 /** 历史件选择器的一行：reasons 为空、usage 为 null 即可选用 */
 export interface HistoryCandidate {
   recordId: number;
-  /** 记录所属项目；试测列表可列出其他项目同编号配方的记录 */
-  projectId: string;
   cycleId: string | null;
   ts: number;
   sn: string;

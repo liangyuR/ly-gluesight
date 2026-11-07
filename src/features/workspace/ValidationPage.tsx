@@ -78,10 +78,10 @@ export default function ValidationPage() {
   useEffect(()=>{
     setRecords([]);
     if(!doc)return;
-    // 当前配方：本机各项目里同编号配方的记录都列出（候选验证时按段结构身份核对）；全部配方：配方编号只在项目内唯一，只列当前项目
-    if(historyScope==="all"&&!projectId){if(!projects.loading)setError(`当前项目读取失败${projects.error?"："+projects.error:""}，不能列出历史样本`);return;}
+    // 配方编号只在项目内唯一：历史样本只取当前项目的记录
+    if(!projectId){if(!projects.loading)setError(`当前项目读取失败${projects.error?"："+projects.error:""}，不能列出历史样本`);return;}
     let alive=true;
-    historyApi.query({project:historyScope==="all"?projectId:null,recipeId:historyScope==="current"?doc.id:undefined,limit:50,scope:recordScope}).then(r=>alive&&setRecords(r.items)).catch(e=>alive&&setError(errorText(e)));
+    historyApi.query({project:projectId,recipeId:historyScope==="current"?doc.id:undefined,limit:50,scope:recordScope}).then(r=>alive&&setRecords(r.items)).catch(e=>alive&&setError(errorText(e)));
     return()=>{alive=false;};
   },[doc?.id,historyScope,recordScope,setError,projectId,projects.loading,projects.error]);
   // 已选的历史样本不在当前列表里（如复制来的项目沿用来源项目的记录、或已排到 50 件之外）时单独读出，仍可查看、取消或改期望结论
@@ -160,7 +160,7 @@ export default function ValidationPage() {
   return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack"><Panel title="发布前检查" help="设备、走廊示教与示教件基准满足即可发布；独立样本验证可选" actions={<Badge tone={failedChecks.length?"warn":"ok"}>{failedChecks.length?`${failedChecks.length} 项未满足`:`${checks.length} 项全部满足`}</Badge>}>
     <div className="wp-checklist">{failedChecks.map(checkRow)}{passedChecks.length>0&&<Accordion collapsible items={[{ value: "passed", title: <span>已满足 {passedChecks.length} 项：{passedChecks.map(c=>c.name).join("、")}</span>, content: <div className="wp-checklist">{passedChecks.map(checkRow)}</div> }]} />}</div>
     </Panel><Panel title="独立样本验证（可选）" help={<><p>不是发布前提：使用完整原图重新运行当前候选检测，看结论是否符合预期；正常样本必须独立于示教与标定采集。</p><p>历史样本必须保留完整整圈原图，轨迹顺序与成像条件适用；验证时重新运行当前候选。</p><p>建议覆盖良品、断胶、偏位、胶宽异常和无法测量等现场情况。期望“合格”时，候选结论 OK 或 OK · 局部超差都算符合。修改人工期望后，需要重新验证。</p></>}>
-      <Select className="wp-sample-source" label="历史样本来源" value={historyScope} disabled={samplesLocked} options={[{value:"current",label:"当前配方（含其他项目同编号配方）"},{value:"all",label:"本项目全部配方"}]} onValueChange={value=>setHistoryScope(value as "current"|"all")}/>
+      <Select className="wp-sample-source" label="历史样本来源" value={historyScope} disabled={samplesLocked} options={[{value:"current",label:"当前配方"},{value:"all",label:"本项目全部配方"}]} onValueChange={value=>setHistoryScope(value as "current"|"all")}/>
       <Table caption="代表性验证样本选用" columns={sampleColumns} rows={sampleRows} rowKey={row=>row.key} emptyState={<p className="muted center">尚无代表性样本；请选择完整历史原图。</p>}/>
       <div className="wp-validate-actions">
         <Checkbox label="已确认所选样本的拍摄条件、轨迹和触发顺序适用于当前候选" checked={sourceConfirmed} disabled={samplesLocked} onCheckedChange={setSourceConfirmed}/>

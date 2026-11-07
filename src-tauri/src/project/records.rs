@@ -40,11 +40,14 @@ pub fn project_available(data: &Path, project: &str) -> bool {
     super::valid_id(project) && super::read_meta(&super::dir(data, project)).is_ok()
 }
 
-/// 记录所属项目的称呼（其他项目的记录在复测、对照里标明来源）：`项目“名称”（编号）`，项目已删除时为 `已删除的项目 编号`。
-pub fn project_label(data: &Path, project: &str) -> String {
+/// 记录不属于当前项目时，按候选对照不可用的原因。
+pub fn foreign_reason(data: &Path, project: &str) -> String {
     match super::read_meta(&super::dir(data, project)) {
-        Ok(meta) => format!("项目“{}”（{project}）", meta.name),
-        Err(_) => format!("已删除的项目 {project}"),
+        Ok(meta) => format!(
+            "这条记录属于项目“{}”（{project}），切换到该项目后可按候选对照",
+            meta.name
+        ),
+        Err(_) => format!("这条记录属于已删除的项目 {project}，不能按候选对照"),
     }
 }
 

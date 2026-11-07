@@ -41,8 +41,7 @@ export const workspaceApi = {
   /** 导入件（轮次）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
   captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeFrameImage),
   /** 历史件选择器：本配方最近的真机录制件、能否选用与是否已被本候选使用（只读） */
-  /** `others` 时另列其他项目同编号配方的录制件（只供试测，不能选作示教件或标定件） */
-  historyCandidates: (id: string, others = false) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id, others }),
+  historyCandidates: (id: string) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id }),
   /** 导入这件并设为示教件；按 RB-2 / RB-8 清空图像派生内容，保留段列表结构 */
   setTeachingPiece: (id: string, revision: number, recordId: number) => desktopCall<WorkspaceView>("workspace_set_teaching_piece", { id, revision, recordId }),
   /** 从示教件那一件历史记录补回导出或复制时没带的原图；候选内容不变 */

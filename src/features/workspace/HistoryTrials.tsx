@@ -10,14 +10,12 @@ import { Badge, Panel } from "./components";
 import { pieceTime } from "./pieces";
 import type { Comparison, HistoryCandidate } from "./types";
 import type { HistoryDetailState } from "../history/types";
-import { useProjectDirectory } from "../project/hooks";
-import { recordProject } from "../project/rules";
 
 const modeLabels: Record<PartMode, string> = { production: "生产", maintenanceCollect: "维护采集", maintenanceShadow: "维护试判" };
 const toneOf = (comparison: Comparison) => { const tone = verdictTone(comparison.judgement.verdict); return tone === "fault" ? "ng" : tone; };
 
 /**
- * 历史件试测（试测页）：直接列出本配方的历史件（含其他项目里同编号配方的历史件，标出所属项目），“触发测试”用当前候选（已保存的走廊与参数）从录制原图重测并判定一件，
+ * 历史件试测（试测页）：直接列出本配方的历史件，“触发测试”用当前候选（已保存的走廊与参数）从录制原图重测并判定一件，
  * 结果另存为对照（`workspace_compare`，raw），不改历史记录，也不改示教件基准；详情在历史记录页里看。
  * 还有改动等着自动保存时，点测试先立即保存，存好再按保存后的修订测。
  */
@@ -28,11 +26,10 @@ export function HistoryTrials({ recipeId }: { recipeId: string }) {
   const [running, setRunning] = useState<number | null>(null);
   const [queued, setQueued] = useState<number | null>(null);
   const [results, setResults] = useState<Record<number, Comparison>>({});
-  const projects = useProjectDirectory();
   useEffect(() => {
     let alive = true;
     setRows(null); setResults({});
-    workspaceApi.historyCandidates(recipeId, true).then(r => { if (alive) setRows(r); }).catch(e => { if (alive) { setRows([]); setError(errorText(e)); } });
+    workspaceApi.historyCandidates(recipeId).then(r => { if (alive) setRows(r); }).catch(e => { if (alive) { setRows([]); setError(errorText(e)); } });
     return () => { alive = false; };
   }, [recipeId]);
   const taught = !!data && data.plan.cameraTeaching.length > 0 && data.plan.cameraTeaching.every(item => item.ready);
@@ -65,7 +62,6 @@ export function HistoryTrials({ recipeId }: { recipeId: string }) {
           <div className="wp-piece-head">
             <strong>{label}</strong>
             <Badge tone="neutral">{row.fixture ? "手动配置" : modeLabels[row.mode]}</Badge>
-            {projects.current && row.projectId !== projects.current.id && <Badge tone="info">{"项目 " + recordProject(row.projectId, projects.entries).label}</Badge>}
             {row.usage && <Badge tone="info">{row.usage === "teaching" ? "示教件" : "标定件"}</Badge>}
             <span className="muted">{row.groupCount} 帧组</span>
             {result && <Badge tone={toneOf(result)}>{verdictLabel[result.judgement.verdict]}</Badge>}

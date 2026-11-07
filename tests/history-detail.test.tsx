@@ -35,7 +35,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.compareOriginal).mockResolvedValue({...comparison(),source:"original"});
   vi.mocked(workspaceApi.recordFrameView).mockReset().mockResolvedValue({ segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5, edges: [], partEdges: [], metrics: frameMetrics(0, 1) });
   const yes = { available: true, reason: null };
-  vi.mocked(workspaceApi.historyCompareOptions).mockReset().mockResolvedValue({ recordProject: null, candidate: { id: "S", revision: 9, version: 2 }, original: yes, rules: yes, raw: yes });
+  vi.mocked(workspaceApi.historyCompareOptions).mockReset().mockResolvedValue({ candidate: { id: "S", revision: 9, version: 2 }, original: yes, rules: yes, raw: yes });
   vi.mocked(workspaceApi.historyFrameView).mockReset().mockResolvedValue({ segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5, edges: [], partEdges: [], metrics: frameMetrics(0, 1) });
   vi.mocked(burstImageApi.record).mockReset().mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
 });
@@ -115,7 +115,7 @@ describe("历史详情（段配方记录）", () => {
 
   // 防的回归：复测按钮只在工作台选中本配方时可用、禁用时不说原因，现场多配方并行时用不了
   it("复测不能做时按钮禁用并写明原因；工作台正在编辑本配方且有未保存改动时先要求保存", async () => {
-    vi.mocked(workspaceApi.historyCompareOptions).mockResolvedValue({ recordProject: null, candidate: null, original: { available: true, reason: null },
+    vi.mocked(workspaceApi.historyCompareOptions).mockResolvedValue({ candidate: null, original: { available: true, reason: null },
       rules: { available: false, reason: "这个配方在本机没有候选" }, raw: { available: false, reason: "这个配方在本机没有候选" } });
     const view = show();
     const reasons = within(await screen.findByRole("list", { name: "不能复测的原因" }));
@@ -125,7 +125,7 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.getByRole("button", { name: "按原发布包重现" })).toBeEnabled();
     view.unmount();
     ws.data!.workspace.doc.id = "S"; ws.dirty = true;
-    vi.mocked(workspaceApi.historyCompareOptions).mockResolvedValue({ recordProject: null, candidate: { id: "S", revision: 9, version: 2 }, original: { available: true, reason: null },
+    vi.mocked(workspaceApi.historyCompareOptions).mockResolvedValue({ candidate: { id: "S", revision: 9, version: 2 }, original: { available: true, reason: null },
       rules: { available: true, reason: null }, raw: { available: true, reason: null } });
     show();
     expect(within(await screen.findByRole("list", { name: "不能复测的原因" })).getByRole("listitem")).toHaveTextContent("先保存候选配置和走廊示教，再执行对照。");

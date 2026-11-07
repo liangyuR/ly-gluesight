@@ -15,7 +15,7 @@ vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { recor
 let ws: ReturnType<typeof workspaceState>;
 const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
 const row = (recordId: number, sn: string, reasons: string[] = [], usage: HistoryCandidate["usage"] = null): HistoryCandidate => ({
-  recordId, projectId: "default", cycleId: `c-${recordId}`, ts: 1, sn, mode: "maintenanceCollect", groupCount: 12,
+  recordId, cycleId: `c-${recordId}`, ts: 1, sn, mode: "maintenanceCollect", groupCount: 12,
   cameras: ["CAM-1", "CAM-2", "CAM-3"].map(cameraId => ({ cameraId, frames: 12 })), complete: !reasons.length, reasons, warnings: [],
   durationMs: null, measuredFps: null, setFps: null, importedRound: null, usage, fixture: null,
 });

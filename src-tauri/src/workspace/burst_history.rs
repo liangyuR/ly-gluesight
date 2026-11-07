@@ -518,8 +518,6 @@ pub struct CompareCandidate {
 #[serde(rename_all = "camelCase")]
 pub struct CompareOptions {
     pub candidate: Option<CompareCandidate>,
-    /// 记录不属于当前项目时，它所属项目的称呼：对照用当前项目里同编号配方的候选
-    pub record_project: Option<String>,
     pub original: CompareOption,
     pub rules: CompareOption,
     pub raw: CompareOption,
@@ -611,9 +609,8 @@ fn original_blocker(detail: &PartDetail, burst: &PartDetailBurst) -> Option<Stri
     None
 }
 
-/// 记录能做哪几种复测。`original` 是记录的配方快照，`w` 是当前项目里与记录同编号配方的候选（没有为 None）；`foreign` 是
-/// 记录不属于当前项目时它所属项目的称呼：其他项目的同编号配方照样能用当前候选对照，其余检查不变，只有没有候选时写明来源；
-/// `releases` 是记录所属项目的发布包不可用（项目已删除）的原因。
+/// 记录能做哪几种复测。`original` 是记录的配方快照，`w` 是记录所属配方的候选（没有为 None）；`foreign` 是记录不属于
+/// 当前项目时按候选对照的阻止原因，`releases` 是记录所属项目的发布包不可用（项目已删除）的原因。
 pub(super) fn compare_options(
     detail: &PartDetail,
     original: Option<&Recipe>,
@@ -631,30 +628,29 @@ pub(super) fn compare_options(
         let reason = "这条历史是旧拍照点记录，不能按相机帧复测";
         return CompareOptions {
             candidate,
-            record_project: foreign,
             original: unavailable(reason),
             rules: unavailable(reason),
             raw: unavailable(reason),
         };
     };
     let original_option = CompareOption::of(original_blocker(detail, burst).or(releases));
+    if let Some(reason) = foreign {
+        return CompareOptions {
+            candidate,
+            original: original_option,
+            rules: unavailable(&reason),
+            raw: unavailable(&reason),
+        };
+    }
     let (rules, raw) = match (original, w) {
         (None, _) => (
             unavailable("历史配方快照缺失"),
             unavailable("历史配方快照缺失"),
         ),
         (_, None) => {
-            let reason = match &foreign {
-                Some(label) => format!(
-                    "{label}的记录；当前项目没有配方 {} 的候选，不能按候选对照",
-                    detail.summary.recipe_id.as_deref().unwrap_or("（未记录）")
-                ),
-                None => {
-                    "这个配方在本机没有候选（如从发布包导入），不能按候选对照；可按原发布包重现"
-                        .into()
-                }
-            };
-            (unavailable(&reason), unavailable(&reason))
+            let reason =
+                "这个配方在本机没有候选（如从发布包导入），不能按候选对照；可按原发布包重现";
+            (unavailable(reason), unavailable(reason))
         }
         (Some(original), Some(w)) => match w.doc.build() {
             Err(error) => {
@@ -669,7 +665,6 @@ pub(super) fn compare_options(
     };
     CompareOptions {
         candidate,
-        record_project: foreign,
         original: original_option,
         rules,
         raw,
