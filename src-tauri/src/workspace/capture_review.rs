@@ -444,6 +444,7 @@ pub struct SegmentSaveImpact {
     pub untaught: Vec<String>,
     /// 示教件已按当前走廊测量、保存后失效（胶偏参考与起涂收尾建议要重新测量）
     pub measurement_cleared: bool,
+    pub coverage: Option<crate::segmentation::InspectionCoverage>,
 }
 
 pub(super) fn save_impact(before: &Workspace, after: &Workspace) -> SegmentSaveImpact {
@@ -506,6 +507,24 @@ pub(super) fn save_impact(before: &Workspace, after: &Workspace) -> SegmentSaveI
         untaught,
         measurement_cleared: super::pieces::teaching_measured(before)
             && !super::pieces::teaching_measured(after),
+        coverage: after
+            .teaching_piece
+            .as_ref()
+            .and_then(|piece| after.capture_review.rounds.get(&piece.round_id))
+            .map(|review| {
+                crate::segmentation::proportional_coverage(
+                    &after.doc.segments,
+                    &cameras,
+                    review.group_count,
+                    after.doc.boundary_guard,
+                    after.doc.boundary_refine,
+                    &review
+                        .excluded_groups
+                        .iter()
+                        .map(|group| group.seq)
+                        .collect::<Vec<_>>(),
+                )
+            }),
     }
 }
 

@@ -282,8 +282,16 @@ pub fn switch_state(app: &AppHandle) -> Result<crate::site::ProjectSwitch, Strin
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSwitchResult {
+    pub current_project: String,
+    pub next_project: String,
+    pub restart_required: bool,
+}
+
 #[tauri::command]
-pub async fn project_switch(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn project_switch(app: AppHandle, id: String) -> Result<ProjectSwitchResult, String> {
     let data = crate::storage::root(&app);
     let from = current_id(&app);
     if id == from {
@@ -295,6 +303,21 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<(), String> {
     let _config = cycle.config_gate.lock().await;
     crate::site::check_project_switch(&switch_state(&app)?)?;
     write_pointer(&data, &id)?;
+    if tauri::is_dev() {
+        crate::applog::write(
+            "info",
+            "项目切换",
+            &format!(
+                "{from} → {}（{}），已保存下次启动项目，等待重新运行开发入口",
+                target.id, target.name
+            ),
+        );
+        return Ok(ProjectSwitchResult {
+            current_project: from,
+            next_project: id,
+            restart_required: true,
+        });
+    }
     crate::applog::write(
         "info",
         "项目切换",

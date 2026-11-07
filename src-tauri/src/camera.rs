@@ -2446,18 +2446,26 @@ pub fn camera_bandwidth(cycle: State<'_, CycleHost>, hz: f64) -> Result<Bandwidt
     Ok(aggregate_bandwidth(&sizes, hz))
 }
 
-/// 保存并应用一台相机的配置。返回相机未接受的参数。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraConfigSaved {
+    pub saved: bool,
+    pub applied: bool,
+    pub warnings: Vec<String>,
+    pub apply_error: Option<String>,
+}
+
 #[tauri::command]
 pub async fn camera_save_config(
     app: AppHandle,
     cam: usize,
     config: CameraConfig,
-) -> Result<Vec<String>, String> {
+) -> Result<CameraConfigSaved, String> {
     let result = camera_save_config_inner(app.clone(), cam, config).await;
     crate::cycle::log_op(
         &app,
         &crate::applog::codes::OP_CAMERA,
-        serde_json::json!({"action": "save_config", "cam": cam}),
+        serde_json::json!({"action": "save_config", "cam": cam, "outcome": result.as_ref().ok()}),
         &result,
     );
     result
@@ -2467,7 +2475,7 @@ async fn camera_save_config_inner(
     app: AppHandle,
     cam: usize,
     config: CameraConfig,
-) -> Result<Vec<String>, String> {
+) -> Result<CameraConfigSaved, String> {
     let cycle = app.state::<CycleHost>();
     check_user_editable(&app, Some(&config))?;
     let _gate = cycle.config_gate.lock().await;
@@ -2488,11 +2496,30 @@ async fn camera_save_config_inner(
     crate::commands::log_config(&app);
     let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
     let _ = app.emit("camera://changed", ());
-    let warnings = tauri::async_runtime::spawn_blocking(move || slot.apply_config())
+    let applied = tauri::async_runtime::spawn_blocking(move || slot.apply_config())
         .await
-        .map_err(|e| e.to_string())??;
-    saved.map_err(|e| format!("已生效，但没能写回 cameras.json：{e}"))?;
-    Ok(warnings)
+        .map_err(|e| e.to_string())
+        .and_then(|result| result);
+    if let Err(error) = saved {
+        return Err(match applied {
+            Ok(_) => format!("已应用到设备，但没能写回 cameras.json，请重试保存：{error}"),
+            Err(apply_error) => format!("配置未写回 cameras.json：{error}；设备应用也失败：{apply_error}。当前内存配置已修改，请重试保存"),
+        });
+    }
+    Ok(match applied {
+        Ok(warnings) => CameraConfigSaved {
+            saved: true,
+            applied: true,
+            warnings,
+            apply_error: None,
+        },
+        Err(error) => CameraConfigSaved {
+            saved: true,
+            applied: false,
+            warnings: Vec::new(),
+            apply_error: Some(error),
+        },
+    })
 }
 
 fn check_camera_target(current_id: &str, requested_id: &str) -> Result<(), String> {

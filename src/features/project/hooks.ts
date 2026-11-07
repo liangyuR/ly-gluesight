@@ -84,6 +84,7 @@ export function useUnsavedCandidate(): string {
 
 export function useProjectSwitch() {
   const [restarting, setRestarting] = useState(false);
+  const [restartMessage, setRestartMessage] = useState("");
   const [error, setError] = useState("");
   const pending = useRef(false);
   const alive = useRef(true);
@@ -94,7 +95,10 @@ export function useProjectSwitch() {
     setError("");
     setRestarting(true);
     try {
-      await projectApi.switchTo(id);
+      const result = await projectApi.switchTo(id);
+      if (alive.current && result.restartRequired) {
+        setRestartMessage(`已将下次启动项目设为 ${result.nextProject}，当前仍运行 ${result.currentProject}。请停止当前开发命令，再用原来的 pnpm dev 或 pnpm dev:joint 命令启动，随后核对当前项目。`);
+      }
       return true;
     } catch (e) {
       pending.current = false;
@@ -102,5 +106,5 @@ export function useProjectSwitch() {
       return false;
     }
   };
-  return { restarting, error, run };
+  return { restarting, restartMessage, error, run };
 }

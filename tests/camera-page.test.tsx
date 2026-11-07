@@ -30,7 +30,7 @@ beforeEach(() => {
       case "camera_bandwidth": return bandwidth;
       case "camera_rig_status": return configs.map((c, i) => ({ ...status(i, c), ...(released.includes(c.id) ? { ready: false, released: true, device: null } : {}) }));
       case "camera_list_devices": return configs.map(c => device(c.serial));
-      case "camera_save_config": return [];
+      case "camera_save_config": return { saved: true, applied: true, warnings: [], applyError: null };
       case "camera_preview": return new ArrayBuffer(0);
       case "recipe_list": return { recipes: [], errors: [] };
       case "site_status": return siteStatus();
@@ -48,6 +48,28 @@ async function openCamera(label: string) {
 }
 
 describe("相机参数未保存修改", () => {
+  it("配置落盘但设备离线 → 显示应用失败、保留当前页面且不再提示未保存", async () => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+      if (command === "camera_save_config") {
+        const { cam, config } = args as { cam: number; config: CameraConfig };
+        configs = configs.map((current, i) => i === cam ? config : current);
+        return { saved: true, applied: false, warnings: [], applyError: "设备未连接" };
+      }
+      return original(command, args, options);
+    });
+    await openCamera("左相机 cam1");
+    await userEvent.type(screen.getByRole("textbox", { name: "名称" }), "A");
+    await userEvent.click(switcher().getByRole("button", { name: "右相机 cam2" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "保存并应用" }));
+    expect(await screen.findByText(/配置已保存，设备应用失败：设备未连接/)).toBeVisible();
+    expect(switcher().getByRole("button", { name: "左相机A cam1" })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: "放弃" })).toBeDisabled();
+    await userEvent.click(switcher().getByRole("button", { name: "右相机 cam2" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(switcher().getByRole("button", { name: "右相机 cam2" })).toHaveAttribute("aria-current", "true");
+  });
+
   it("改名后切换相机并选保存并应用 → 先把修改写入当前相机，再切到目标相机", async () => {
     await openCamera("左相机 cam1");
     const name = await screen.findByRole("textbox", { name: "名称" });

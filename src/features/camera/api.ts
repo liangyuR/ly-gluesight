@@ -2,7 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
 import { decodeFrame, FRAME_HEADER_BYTES, frameImageData } from "../../lib/frame";
-import type { BandwidthEstimate, CameraConfig, CameraImaging, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
+import type { BandwidthEstimate, CameraConfig, CameraConfigSaved, CameraImaging, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_release","camera_reconnect","camera_set_imaging"].includes(cmd))
@@ -40,7 +40,7 @@ export const cameraApi = {
   rigConfig: () => call<CameraConfig[]>("camera_rig_config", undefined, () => []).then(configs => configs.map(c => ({ ...c, imageMode: c.imageMode ?? "gray" }))),
   bandwidth: (hz: number) => call<BandwidthEstimate | null>("camera_bandwidth", { hz }, () => null),
   calibInfo: (cam: number, view: number) => call<{ mmPerPx: number | null } | null>("vision_calib_info", { cam, view }, () => null),
-  saveConfig: (cam: number, config: CameraConfig) => call<string[]>("camera_save_config", { cam, config }, () => []),
+  saveConfig: (cam: number, config: CameraConfig) => call<CameraConfigSaved>("camera_save_config", { cam, config }, () => ({ saved: true, applied: false, warnings: [], applyError: "需要桌面后端" })),
   add: (config: CameraConfig) => call<number>("camera_add", { config }, () => 0),
   remove: (cam: number) => call<void>("camera_remove", { cam }, () => undefined),
   listDevices: () => call<DeviceSummary[]>("camera_list_devices", undefined, () => []),
