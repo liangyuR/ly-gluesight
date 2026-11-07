@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::frame_group::{count_status, CountStatus, FrameGroup, LossAlarm};
+use crate::passes::PassRules;
 use crate::judge::{fault, Verdict};
 use crate::plan::{tolerance_total, wider_checks, OffsetCheck, OffsetMeasure, PathSegment, SegmentChecks, SegmentKind};
 use crate::segmentation::{Region, RegionKind, UnsegReason};
@@ -129,6 +130,28 @@ pub struct RegionResult {
     pub offset_unjudged: Option<OffsetUnjudged>,
     /// 区域内缺帧（含非 Measured 帧）的帧组 seq
     pub incomplete_groups: Vec<u64>,
+    /// 只预警、不改结论的胶宽发现（偏宽只预警，D-SB-61）；旧记录没有
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<WidthWarning>,
+}
+
+/// 偏宽只预警时记下的胶宽发现（D-SB-61）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WidthWarning {
+    /// 超出胶宽上限
+    Wide,
+    /// 超出溢胶上限
+    Overflow,
+}
+
+impl WidthWarning {
+    pub fn label(self) -> &'static str {
+        match self {
+            WidthWarning::Wide => "胶宽偏宽",
+            WidthWarning::Overflow => "溢胶",
+        }
+    }
 }
 
 /// 整件标记：都只告警，不改 OK/NG。
@@ -144,9 +167,18 @@ pub struct Flags {
     pub unsegmented: bool,
     /// 疑似提前终止：整件帧组数 < expected_total − tolerance_total（默认做法 3）
     pub short_part: bool,
+    /// 胶宽偏宽（偏宽只预警的段超出胶宽上限，D-SB-61）
+    #[serde(default)]
+    pub wide_warning: bool,
+    /// 溢胶预警（偏宽只预警的段超出溢胶上限，D-SB-61）
+    #[serde(default)]
+    pub overflow_warning: bool,
+    /// 笔数异常：本件笔数与示教件不同，整件按未分段判（D-SB-62）
+    #[serde(default)]
+    pub pass_count_anomaly: bool,
 }
 
-/// 未检区域：本段跳过的帧组 from_seq..=to_seq（`skip_head` / `skip_tail`）。
+/// 未检区域：本段跳过的帧组 from_seq..=to_seq（`skip_head` / `skip_tail`，或每笔首尾跳过时的第 `pass` 笔，`short` 为整笔太短）。
 /// 2026-10-26 之前的记录按毫米检测区间写 from_mm / to_mm（判定其实没排除这些帧），读旧记录时保留原样。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -160,6 +192,10 @@ pub struct Uninspected {
     pub from_mm: Option<f64>,
     #[serde(default)]
     pub to_mm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub short: bool,
 }
 
 /// 本轮没有算法的检测项，结果中标“未检项”（默认做法 1）。
@@ -188,6 +224,12 @@ pub struct BurstJudgement {
     pub alarms: Vec<LossAlarm>,
     pub uninspected: Vec<Uninspected>,
     pub unchecked: Vec<UncheckedItem>,
+    /// 本件的笔结构（各笔帧组数，D-SB-62）；没有门控信息或旧记录为空
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passes: Vec<u32>,
+    /// 示教件的笔数；配方没有笔结构为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_passes: Option<u32>,
 }
 
 impl BurstJudgement {
@@ -205,6 +247,8 @@ impl BurstJudgement {
             alarms: Vec::new(),
             uninspected: Vec::new(),
             unchecked: Vec::new(),
+            passes: Vec::new(),
+            expected_passes: None,
         }
     }
 }
@@ -219,7 +263,26 @@ impl BurstJudgement {
 /// - 过渡区（D-SB-40）按未分段区域判每帧指标，不判也不标胶偏，不算“含未分段”。
 /// - 帧数越界、缺帧、疑似提前终止只进 flags，不改 OK/NG；帧数只核对整件与未分段区域，直线 / 弯道区域不逐段核对。
 /// - 三台相机整件没有一帧测成时判 ERR 91；区域引用了配方里没有的段时判 ERR 93。
+/// - 笔结构（D-SB-62）原样记进结果；本件笔数与示教件不同只记笔数异常，不改结论。
+#[allow(clippy::too_many_arguments)]
 pub fn judge(
+    segments: &[PathSegment],
+    expected_total: Option<u32>,
+    regions: &[Region],
+    groups: &[FrameGroup],
+    metrics: &[FrameMetrics],
+    cameras: &[String],
+    loss: &[LossAlarm],
+    passes: PassRules,
+) -> BurstJudgement {
+    let mut judgement = judge_regions(segments, expected_total, regions, groups, metrics, cameras, loss);
+    judgement.passes = passes.part.to_vec();
+    judgement.expected_passes = passes.taught.map(|taught| taught.len() as u32);
+    judgement.flags.pass_count_anomaly = passes.mismatch();
+    judgement
+}
+
+fn judge_regions(
     segments: &[PathSegment],
     expected_total: Option<u32>,
     regions: &[Region],
@@ -255,7 +318,8 @@ pub fn judge(
     let results: Vec<RegionResult> = regions.iter().map(|region| judge_region(&part, region)).collect();
 
     let verdict = results.iter().map(|r| r.verdict).max().unwrap_or(Verdict::Ok);
-    let reason = match verdict {
+    let warned = |warning: WidthWarning| results.iter().any(|r| r.warnings.contains(&warning));
+    let mut reason = match verdict {
         Verdict::Ok => format!("{group_count} 个帧组全部合格"),
         _ => results
             .iter()
@@ -264,6 +328,17 @@ pub fn judge(
             .collect::<Vec<_>>()
             .join("；"),
     };
+    let warnings: Vec<String> = results
+        .iter()
+        .filter(|r| !r.warnings.is_empty())
+        .map(|r| {
+            let labels: Vec<&str> = r.warnings.iter().map(|w| w.label()).collect();
+            format!("{}：{}", region_label(&r.region), labels.join("、"))
+        })
+        .collect();
+    if !warnings.is_empty() {
+        reason = format!("{reason}；预警：{}", warnings.join("；"));
+    }
     let anomalous = |status: Option<CountStatus>| matches!(status, Some(CountStatus::Low | CountStatus::High));
     let flags = Flags {
         // 区域首尾相接覆盖全部帧组，各区域只看自己的检测相机（D-SB-41）：没选中的相机缺帧、没测成不算检测不完整
@@ -272,6 +347,9 @@ pub fn judge(
         offset_unjudged: results.iter().any(|r| r.offset_unjudged.is_some()),
         unsegmented: results.iter().any(|r| matches!(r.region.kind, RegionKind::Unsegmented { reason, .. } if reason != UnsegReason::Transition)),
         short_part,
+        wide_warning: warned(WidthWarning::Wide),
+        overflow_warning: warned(WidthWarning::Overflow),
+        pass_count_anomaly: false,
     };
     BurstJudgement {
         verdict,
@@ -285,20 +363,26 @@ pub fn judge(
         alarms: loss.to_vec(),
         uninspected: uninspected(regions),
         unchecked: vec![UncheckedItem::Bubble, UncheckedItem::Stringing],
+        passes: Vec::new(),
+        expected_passes: None,
     }
 }
 
-/// 一项不合格（或允许范围内的超差）。声明顺序即区域摘要里的先后。
+/// 一项不合格、允许范围内的超差或只预警的发现。声明顺序即区域摘要里的先后。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Finding {
     Gap,
     Sparse,
     Overflow,
     Width,
+    Narrow,
     Uneven,
     Shift,
     LocalDev,
     Excursion,
+    /// 偏宽只预警（D-SB-61）：不改结论
+    Wide,
+    OverflowWarn,
 }
 
 impl Finding {
@@ -306,9 +390,18 @@ impl Finding {
         match self {
             Finding::Gap | Finding::Sparse => Verdict::NgGap,
             // 溢胶沿用 NG_WIDTH（默认做法 1），胶宽不均也是 NG_WIDTH（D-SB-16）
-            Finding::Overflow | Finding::Width | Finding::Uneven => Verdict::NgWidth,
+            Finding::Overflow | Finding::Width | Finding::Narrow | Finding::Uneven => Verdict::NgWidth,
             Finding::Shift | Finding::LocalDev => Verdict::NgPosition,
             Finding::Excursion => Verdict::OkWithExcursion,
+            Finding::Wide | Finding::OverflowWarn => Verdict::Ok,
+        }
+    }
+
+    fn warning(self) -> Option<WidthWarning> {
+        match self {
+            Finding::Wide => Some(WidthWarning::Wide),
+            Finding::OverflowWarn => Some(WidthWarning::Overflow),
+            _ => None,
         }
     }
 
@@ -318,10 +411,13 @@ impl Finding {
             Finding::Sparse => "胶条断续",
             Finding::Overflow => "溢胶",
             Finding::Width => "胶宽超差",
+            Finding::Narrow => "胶宽偏窄",
             Finding::Uneven => "胶宽不均",
             Finding::Shift => "整段胶偏",
             Finding::LocalDev => "局部跑偏",
             Finding::Excursion => "胶宽局部超差（允许范围内）",
+            Finding::Wide => "胶宽偏宽（预警）",
+            Finding::OverflowWarn => "溢胶（预警）",
         }
     }
 }
@@ -330,6 +426,7 @@ impl Finding {
 ///
 /// 胶宽超差长度按 `widths × spacing_mm` 累计，不超过 `max_excursion_mm` 为允许范围内的超差；
 /// 没有逐站胶宽（或站距未知）时量不出长度，帧内极值超限即按超过允许长度算。
+/// 偏宽只预警（D-SB-61）时只累计偏窄的站，偏宽的站与溢胶只记预警。
 fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding> {
     let mut found = BTreeSet::new();
     let gap = &checks.gap;
@@ -345,20 +442,22 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
     let width = &checks.width;
     if width.enabled {
         let (lower, upper) = (width.nominal_mm - width.tol_lower, width.nominal_mm + width.tol_upper);
-        let out = |w: f64| w < lower || w > upper;
         let length_known = !frame.widths.is_empty() && frame.spacing_mm > 0.0;
-        let excursion = if !length_known {
-            if frame.width_min.is_some_and(out) || frame.width_max.is_some_and(out) { f64::INFINITY } else { 0.0 }
+        let (narrow, wide) = if !length_known {
+            let beyond = |out: bool| if out { f64::INFINITY } else { 0.0 };
+            (beyond(frame.width_min.is_some_and(|w| w < lower)), beyond(frame.width_max.is_some_and(|w| w > upper)))
         } else {
-            stations()
-                .filter(|&w| w < lower as f32 || w > upper as f32)
-                .count() as f64
-                * frame.spacing_mm
+            let length = |out: &dyn Fn(f32) -> bool| stations().filter(|&w| out(w)).count() as f64 * frame.spacing_mm;
+            (length(&|w| w < lower as f32), length(&|w| w > upper as f32))
         };
+        let excursion = if width.wide_warn_only { narrow } else { narrow + wide };
         if excursion > width.max_excursion_mm {
-            found.insert(Finding::Width);
+            found.insert(if width.wide_warn_only { Finding::Narrow } else { Finding::Width });
         } else if excursion > 0.0 {
             found.insert(Finding::Excursion);
+        }
+        if width.wide_warn_only && wide > 0.0 {
+            found.insert(Finding::Wide);
         }
     }
     let overflow = &checks.overflow;
@@ -368,7 +467,7 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
             |w| w > overflow.max_width_mm,
         )
     {
-        found.insert(Finding::Overflow);
+        found.insert(if width.wide_warn_only { Finding::OverflowWarn } else { Finding::Overflow });
     }
     found
 }
@@ -473,7 +572,7 @@ fn covered<'a>(segments: &'a [PathSegment], region: &Region) -> Vec<&'a PathSegm
     let (first, last) = match region.kind {
         RegionKind::Straight { segment } | RegionKind::Corner { segment } => (segment, segment),
         RegionKind::Unsegmented { first_segment, last_segment, .. } => (first_segment, last_segment),
-        RegionKind::Skipped { segment } => (segment, segment),
+        RegionKind::Skipped { segment, .. } => (segment, segment),
     };
     segments.iter().filter(|segment| (first..=last).contains(&segment.index)).collect()
 }
@@ -593,7 +692,13 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
     };
 
     let verdict = findings.iter().map(|f| f.verdict()).max().unwrap_or(Verdict::Ok);
-    let reason = findings.iter().filter(|f| f.verdict() == verdict).map(|f| f.label()).collect::<Vec<_>>().join("、");
+    let reason = findings
+        .iter()
+        .filter(|f| f.verdict() == verdict && f.warning().is_none())
+        .map(|f| f.label())
+        .collect::<Vec<_>>()
+        .join("、");
+    let warnings: Vec<WidthWarning> = findings.iter().filter_map(|f| f.warning()).collect();
 
     let frame_count = region.frame_count();
     let covers_all = part.segments.first().map(|s| s.index) == covered.first().map(|s| s.index)
@@ -653,6 +758,7 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         offset,
         offset_unjudged,
         incomplete_groups,
+        warnings,
     }
 }
 
@@ -781,21 +887,25 @@ fn region_label(region: &Region) -> String {
             format!("未分段区域（第 {first_segment} 段）")
         }
         RegionKind::Unsegmented { first_segment, last_segment, .. } => format!("未分段区域（第 {first_segment}–{last_segment} 段）"),
-        RegionKind::Skipped { segment } => format!("第 {segment} 段（跳过）"),
+        RegionKind::Skipped { pass: Some(pass), short: true, .. } => format!("第 {pass} 笔（太短，不检）"),
+        RegionKind::Skipped { pass: Some(pass), .. } => format!("第 {pass} 笔首尾（跳过）"),
+        RegionKind::Skipped { segment, .. } => format!("第 {segment} 段（跳过）"),
     }
 }
 
-/// 未检区域：分段解析出的跳过区域（各段 `skip_head` / `skip_tail`），按帧组号给出。
+/// 未检区域：分段解析出的跳过区域（各段 `skip_head` / `skip_tail`、每笔首尾），按帧组号给出。
 fn uninspected(regions: &[Region]) -> Vec<Uninspected> {
     regions
         .iter()
         .filter_map(|region| match region.kind {
-            RegionKind::Skipped { segment } => Some(Uninspected {
+            RegionKind::Skipped { segment, pass, short } => Some(Uninspected {
                 segment,
                 from_seq: Some(region.first_seq),
                 to_seq: Some(region.last_seq),
                 from_mm: None,
                 to_mm: None,
+                pass,
+                short,
             }),
             _ => None,
         })
@@ -815,9 +925,18 @@ mod tests {
     }
 
     /// 默认允差的段：胶宽 4.0 ± 1.5、允许超差 5 mm、断胶 6 mm、有胶比例 0.8、溢胶 8 mm；直线段胶偏 ±2 mm。
+    /// 偏宽照旧判 NG（偏宽只预警关闭），只预警的用例自己打开。
     fn plan(kinds: &[SegmentKind]) -> Vec<PathSegment> {
         let defaults = KindDefaults::default();
-        kinds.iter().enumerate().map(|(i, &kind)| new_segment(i as u32 + 1, kind, &defaults)).collect()
+        kinds
+            .iter()
+            .enumerate()
+            .map(|(i, &kind)| {
+                let mut segment = new_segment(i as u32 + 1, kind, &defaults);
+                segment.checks.width.wide_warn_only = false;
+                segment
+            })
+            .collect()
     }
 
     /// 合格帧：10 站胶宽都是 4.0（站距 1 mm），无断口，胶中心 x = 0。
@@ -878,7 +997,7 @@ mod tests {
     }
 
     fn run(segments: &[PathSegment], expected_total: Option<u32>, regions: &[Region], metrics: &[FrameMetrics]) -> BurstJudgement {
-        judge(segments, expected_total, regions, &groups_of(metrics), metrics, &cameras(), &[])
+        judge(segments, expected_total, regions, &groups_of(metrics), metrics, &cameras(), &[], PassRules::NONE)
     }
 
     fn verdict_map(
@@ -890,6 +1009,38 @@ mod tests {
             .into_iter()
             .map(|v| ((v.camera, v.seq), v.verdict))
             .collect()
+    }
+
+    /// D-SB-61：偏宽只预警的段，整帧偏宽、溢胶都不判 NG，整件仍合格（PLC 收到 1），只记预警标记。
+    #[test]
+    fn wide_warn_only_records_wide_and_overflow_as_warnings_and_stays_ok() {
+        let mut segments = plan(&[Corner]);
+        segments[0].checks.width.wide_warn_only = true;
+        let regions = [region(RegionKind::Corner { segment: 1 }, 1, 3)];
+        let mut metrics = frames(3);
+        set_widths(at(&mut metrics, 0, 2), &[9.0; 10]);
+        let judgement = run(&segments, Some(3), &regions, &metrics);
+        assert_eq!(
+            (judgement.verdict, judgement.plc_code, judgement.flags.wide_warning, judgement.flags.overflow_warning),
+            (Verdict::Ok, 1, true, true)
+        );
+    }
+
+    /// D-SB-61：偏宽只预警时只累计偏窄的站——偏窄未超允许长度，即使加上偏宽的站超了也不判 NG；偏窄超了判胶宽偏窄。
+    #[test]
+    fn wide_warn_only_counts_only_narrow_stations_toward_the_excursion_limit() {
+        let mut segments = plan(&[Corner]);
+        segments[0].checks.width.wide_warn_only = true;
+        let regions = [region(RegionKind::Corner { segment: 1 }, 1, 2)];
+        let mut metrics = frames(2);
+        set_widths(at(&mut metrics, 0, 1), &[2.0, 2.0, 2.0, 6.0, 6.0, 6.0, 4.0, 4.0, 4.0, 4.0]);
+        set_widths(at(&mut metrics, 1, 2), &[2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0]);
+        let verdicts = verdict_map(&segments, &regions, &metrics);
+        let judgement = run(&segments, Some(2), &regions, &metrics);
+        assert_eq!(
+            (verdicts[&(0, 1)], verdicts[&(1, 2)], judgement.regions[0].reason.as_str()),
+            (Verdict::OkWithExcursion, Verdict::NgWidth, "胶宽偏窄")
+        );
     }
 
     /// 防的回归：在线帧格曾用各段里最宽松的允差判帧，严格段里超差的帧显示合格。逐帧结论按帧所在区域的段允差判。
@@ -961,7 +1112,7 @@ mod tests {
     fn skipped_region_is_not_judged_and_listed_as_uninspected() {
         let segments = plan(&[Straight]);
         let regions = [
-            region(RegionKind::Skipped { segment: 1 }, 1, 2),
+            region(RegionKind::Skipped { segment: 1, pass: None, short: false }, 1, 2),
             region(RegionKind::Straight { segment: 1 }, 3, 6),
         ];
         let mut metrics = frames(6);
@@ -979,7 +1130,9 @@ mod tests {
                 from_seq: Some(1),
                 to_seq: Some(2),
                 from_mm: None,
-                to_mm: None
+                to_mm: None,
+                pass: None,
+                short: false,
             }]
         );
     }

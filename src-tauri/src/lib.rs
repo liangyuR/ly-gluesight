@@ -31,6 +31,7 @@ mod measure;
 mod mvs;
 mod offline;
 mod packaging;
+mod passes;
 mod plan;
 mod plc;
 mod plc_plan;
@@ -337,6 +338,8 @@ pub fn run() {
             workspace::workspace_confirm_tolerance,
             workspace::workspace_confirm_skip,
             workspace::workspace_calibration_skip_suggest,
+            workspace::workspace_pass_skip_suggest,
+            workspace::workspace_confirm_pass_skip,
             workspace::workspace_record_frame_image,
             workspace::workspace_record_frame_view,
             workspace::workspace_history_frame_view,

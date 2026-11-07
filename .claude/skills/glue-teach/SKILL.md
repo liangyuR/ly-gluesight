@@ -45,7 +45,7 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 
 硬性：快照没有 stale，`measurement.measuredFrames == expectedFrames`，逐项核对所有 `nonMeasuredFrames`；只有 `expected=false` 的计划不测可以排除，Error、Missing、Unmeasured、OutOfCorridor 均不能因 `errors=[]` 被漏掉。`fallbackFrames`、`limits.gapOverLimit`、`limits.presentBelow` 为空（有胶的帧不能按这一段的断胶口径报断）。窄区间通过只说明该范围。
 
-参考：`gapFrames` 中小断口、`limits.widthOutside` 与 `limits.overflowFrames` 要逐个看图，分清胶本身（绕圈、堆胶、收窄）与测偏。平均宽度在公差带内也可能因最大宽度判溢胶。ToEdge 须联合核对实际测量范围的有效率、缺失帧、真实边落点及图纸值；首尾剔除后的可判窗口留到整件结果单独核对。
+参考：`gapFrames` 中小断口、`limits.widthOutside` 与 `limits.overflowFrames` 要逐个看图，分清胶本身（绕圈、堆胶、收窄）与测偏。平均宽度在公差带内也可能因最大宽度判溢胶；开了偏宽只预警（`wideWarnOnly`）的段，偏宽与溢胶只记预警，重点核对偏窄与断口。ToEdge 须联合核对实际测量范围的有效率、缺失帧、真实边落点及图纸值；首尾剔除后的可判窗口留到整件结果单独核对。
 
 不合格时，对 `worst` 里的帧用 `teach_view` 带 `segment` 看测量叠图（黄线 = 每站测到的胶宽，绿线 = 胶边距），判断是走廊偏、示教帧不典型还是图像本身（高光、遮挡）。前两种换帧或重画；同一段连续两次不合格，或判断是图像或参数问题，停下来把现象和帧号报给人。
 

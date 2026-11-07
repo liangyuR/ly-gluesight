@@ -256,7 +256,7 @@ fn burst_layout_matches(recipe: &Recipe, judgement: &BurstJudgement, frames: &[F
                 last_segment,
                 ..
             } => inside(first_segment, last_segment),
-            RegionKind::Skipped { segment } => inside(segment, segment),
+            RegionKind::Skipped { segment, .. } => inside(segment, segment),
         })
         && frames.iter().all(|frame| frame.camera < cameras)
 }
@@ -267,7 +267,16 @@ fn rejudge_burst(recipe: &Recipe, overrides: &Overrides, judgement: &BurstJudgem
     let segments = overrides.apply_segments(&recipe.path_segments);
     let regions: Vec<_> = judgement.regions.iter().map(|result| result.region.clone()).collect();
     let metrics: Vec<_> = frames.iter().filter_map(|frame| frame.metrics.clone()).collect();
-    burst_judge::judge(&segments, recipe.expected_total(), &regions, &frame_groups(frames, cameras.len()), &metrics, &cameras, &judgement.alarms)
+    burst_judge::judge(
+        &segments,
+        recipe.expected_total(),
+        &regions,
+        &frame_groups(frames, cameras.len()),
+        &metrics,
+        &cameras,
+        &judgement.alarms,
+        recipe.pass_rules(&judgement.passes),
+    )
 }
 
 fn rejudge_rows(
@@ -407,6 +416,8 @@ fn flag_labels(flags: &Flags) -> Vec<&'static str> {
         (flags.offset_unjudged, "胶偏未判"),
         (flags.unsegmented, "含未分段区域"),
         (flags.short_part, "疑似提前终止"),
+        (flags.wide_warning, "胶宽偏宽"),
+        (flags.overflow_warning, "溢胶预警"),
     ]
     .into_iter()
     .filter_map(|(set, label)| set.then_some(label))

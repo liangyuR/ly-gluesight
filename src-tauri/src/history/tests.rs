@@ -13,11 +13,11 @@ fn burst_doc() -> RecipeDoc {
     doc
 }
 
-/// 一件段配方记录：直线区域 seq 1–3、弯道区域 seq 4–6；相机 1 第 5 帧整帧胶宽 6.5 mm（超出默认上限 5.5 mm），
+/// 一件段配方记录：直线区域 seq 1–3、弯道区域 seq 4–6；相机 1 第 5 帧整帧胶宽 2.0 mm（低于默认下限 2.5 mm），
 /// 相机 3 第 2 帧缺帧（检测不完整）。原结论按配方算出，为胶宽 NG。
 fn burst_row(recipe: &Recipe) -> (StoredMeasurement, Vec<FrameRecord>) {
     let mut frames = burst_fixture::frames(6, &[(2, 2)]);
-    frames.iter_mut().find(|frame| (frame.camera, frame.seq) == (0, 5)).unwrap().metrics = Some(burst_fixture::measured(0, 5, 6.5));
+    frames.iter_mut().find(|frame| (frame.camera, frame.seq) == (0, 5)).unwrap().metrics = Some(burst_fixture::measured(0, 5, 2.0));
     let regions = vec![
         Region { kind: RegionKind::Straight { segment: 1 }, first_seq: 1, last_seq: 3 },
         Region { kind: RegionKind::Corner { segment: 2 }, first_seq: 4, last_seq: 6 },
@@ -60,8 +60,8 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_tolerance_only_change() {
             Some(Verdict::NgWidth),
         ),
         (
-            "弯道段胶宽上允差",
-            |doc| doc.segments[1].checks.width.tol_upper = 3.0,
+            "弯道段胶宽下允差",
+            |doc| doc.segments[1].checks.width.tol_lower = 3.0,
             Some(Verdict::Ok),
         ),
     ];

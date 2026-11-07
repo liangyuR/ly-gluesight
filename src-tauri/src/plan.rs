@@ -27,6 +27,10 @@ pub struct WidthCheck {
     /// 均匀性：区域内各帧 width_mean 的极差上限（mm），只在 Straight 区域判；None 不判
     #[serde(default)]
     pub max_range_mm: Option<f64>,
+    /// 偏宽只预警：超出胶宽上限与溢胶上限都不判 NG，整件记预警（`Flags.wide_warning` / `overflow_warning`），
+    /// 只有偏窄按允许超差长度判（D-SB-61）。旧配方没有这个字段，读作关闭
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wide_warn_only: bool,
 }
 
 /// 断胶，每帧独立判。
@@ -40,7 +44,7 @@ pub struct BreakCheck {
     pub min_present: f64,
 }
 
-/// 溢胶：每帧最大胶宽超过上限判 NG_WIDTH，原因“溢胶”（决策补充默认做法 1）。
+/// 溢胶：每帧最大胶宽超过上限判 NG_WIDTH，原因“溢胶”（决策补充默认做法 1）；胶宽开了偏宽只预警时只记预警（D-SB-61）。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OverflowCheck {
@@ -272,10 +276,10 @@ pub struct KindDefaults {
 
 impl Default for KindDefaults {
     /// 容差默认 1（默认做法 7）；限值沿用旧模型 `recipe::default_limits` 的胶宽 4.0 ± 1.5 mm、
-    /// 允许超差 5 mm、断胶 6 mm、有胶比例 0.8，溢胶上限取旧胶宽绝对上限 8 mm，胶偏 ±2 mm。
+    /// 允许超差 5 mm、断胶 6 mm、有胶比例 0.8，溢胶上限取旧胶宽绝对上限 8 mm，胶偏 ±2 mm；新建的段偏宽只预警（D-SB-61）。
     fn default() -> Self {
         let checks = |offset: Option<OffsetCheck>| SegmentChecks {
-            width: WidthCheck { enabled: true, nominal_mm: 4.0, tol_upper: 1.5, tol_lower: 1.5, max_excursion_mm: 5.0, max_range_mm: None },
+            width: WidthCheck { enabled: true, nominal_mm: 4.0, tol_upper: 1.5, tol_lower: 1.5, max_excursion_mm: 5.0, max_range_mm: None, wide_warn_only: true },
             gap: BreakCheck { enabled: true, max_gap_mm: 6.0, min_present: 0.8 },
             overflow: OverflowCheck { enabled: true, max_width_mm: 8.0 },
             offset,
@@ -551,7 +555,7 @@ pub fn plan_identity(product_code: u16, segments: &[PathSegment], cameras: &[Str
     }
 }
 
-/// 未分段区域用的较宽一档：上限取大、下限取小、max_gap 取大、min_present 取小、溢胶上限取大，
+/// 未分段区域用的较宽一档：上限取大、下限取小、max_gap 取大、min_present 取小、溢胶上限取大、有一段偏宽只预警即只预警，
 /// max_range_mm 与 offset 置 None（未分段不判均匀性和胶偏）。
 ///
 /// 某项只要有一段停用，合并后即停用（停用是最宽的一档：不知道哪些帧属于停用该项的段）。
@@ -572,6 +576,7 @@ pub fn wider_checks(checks: &[&SegmentChecks]) -> SegmentChecks {
             tol_lower: nominal - lower,
             max_excursion_mm: fold(f64::NEG_INFINITY, f64::max, &|c| c.width.max_excursion_mm),
             max_range_mm: None,
+            wide_warn_only: checks.iter().any(|c| c.width.wide_warn_only),
         },
         gap: BreakCheck {
             enabled: checks.iter().all(|c| c.gap.enabled),
@@ -708,7 +713,7 @@ mod tests {
             }),
             ("停用的检测项不校验限值", |p| {
                 let checks = &mut p.segments[0].checks;
-                checks.width = WidthCheck { enabled: false, nominal_mm: 0.0, tol_upper: -1.0, tol_lower: -1.0, max_excursion_mm: -1.0, max_range_mm: Some(-1.0) };
+                checks.width = WidthCheck { enabled: false, nominal_mm: 0.0, tol_upper: -1.0, tol_lower: -1.0, max_excursion_mm: -1.0, max_range_mm: Some(-1.0), wide_warn_only: false };
                 checks.gap = BreakCheck { enabled: false, max_gap_mm: -1.0, min_present: 1.2 };
                 checks.overflow = OverflowCheck { enabled: false, max_width_mm: 0.0 };
                 checks.offset = Some(OffsetCheck { enabled: false, max_mean_shift_mm: -1.0, max_local_dev_mm: -1.0 });

@@ -25,6 +25,30 @@ pub struct TeachingPiece {
     pub cycle_id: String,
     pub sn: String,
     pub ts: i64,
+    /// 示教件的笔结构（各笔帧组数，D-SB-62），按轮次帧记录的时间戳算出；旧候选没有，保存分段时补上
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passes: Vec<u32>,
+}
+
+/// 示教件还没记笔结构（选示教件早于 D-SB-62）时按轮次帧记录补上。
+pub(super) fn fill_piece_passes(capture: &RecipeCaptureHost, w: &mut Workspace) -> Result<(), String> {
+    if let Some(piece) = w.teaching_piece.as_mut().filter(|piece| piece.passes.is_empty()) {
+        piece.passes = capture.burst_passes(&piece.round_id)?;
+    }
+    Ok(())
+}
+
+/// 示教件自己按笔判定的规则：本件与示教件都是示教件的笔结构（预演覆盖范围、诊断用）。
+pub(super) fn piece_pass_rules(w: &Workspace) -> crate::passes::PassRules<'_> {
+    let passes = w
+        .teaching_piece
+        .as_ref()
+        .map_or(&[][..], |piece| piece.passes.as_slice());
+    crate::passes::PassRules {
+        part: passes,
+        taught: Some(passes).filter(|p| !p.is_empty()),
+        skip: w.doc.pass_skip,
+    }
 }
 
 impl TeachingPiece {
@@ -351,6 +375,7 @@ fn set_teaching_piece(
             cycle_id: part.cycle_id.clone().ok_or("记录没有 cycleId")?,
             sn: part.sn.clone(),
             ts: part.ts,
+            passes: capture.burst_passes(&round_id)?,
         };
         let mut items = host.items.lock().unwrap();
         let current = items.get_mut(id).ok_or("候选配置不存在")?;

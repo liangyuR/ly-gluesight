@@ -217,6 +217,24 @@ fn segment_check(w: &Workspace) -> Check {
     };
     let multi = doc.segments.len() > 1;
     let last = doc.segments.len().saturating_sub(1);
+    // 按示教件的笔结构（D-SB-62）：去掉过渡区、段与每笔首尾跳过的帧后一帧不剩的段，生产整段不检
+    let empty: BTreeSet<u32> = match (total, w.teaching_piece.as_ref()) {
+        (Some(total), Some(piece)) if !piece.passes.is_empty() => {
+            crate::segmentation::proportional_coverage(
+                &doc.segments,
+                &doc.plan_cameras(),
+                u64::from(total),
+                doc.boundary_guard,
+                doc.boundary_refine,
+                &[],
+                super::pieces::piece_pass_rules(w),
+            )
+            .zero_coverage_segments
+            .into_iter()
+            .collect()
+        }
+        _ => BTreeSet::new(),
+    };
     let segments: Vec<String> = doc
         .segments
         .iter()
@@ -225,6 +243,10 @@ fn segment_check(w: &Workspace) -> Check {
             let kind = if s.skip { "不检测" } else { kind_label(s.kind) };
             let offset_min = offset_frames_min(s, k > 0, k < last, doc.boundary_guard);
             match (s.expected_frames, total) {
+                (Some(n), _) if !s.skip && empty.contains(&s.index) => format!(
+                    "第 {} 段（{kind}）N_exp {n} ± {}：去掉过渡区与跳过帧后示教件上没有可判的帧，生产整段不检",
+                    s.index, s.tolerance
+                ),
                 (Some(n), _) if multi && !s.skip && s.kind == SegmentKind::Straight && n < offset_min => format!(
                     "第 {} 段（{kind}）N_exp {n} ± {}：短于 {offset_min} 帧，去掉过渡区、跳过帧与首尾各一帧后没有帧判胶偏，建议并入相邻弯道段",
                     s.index, s.tolerance
@@ -349,11 +371,13 @@ fn round_loss(cameras: &[String], round: &CaptureRoundV2) -> Vec<LossAlarm> {
     loss_alarms(&counts)
 }
 
-/// 用当前候选判一轮验证样本：每帧指标（`measure_round` 的结果，按计划相机）→ 比例分段区域 → 丢帧告警 → burst_judge。
+/// 用当前候选判一轮验证样本：每帧指标（`measure_round` 的结果，按计划相机）→ 按笔或按比例分段的区域 → 丢帧告警 →
+/// burst_judge。`passes` 是这一轮的笔结构。
 pub(super) fn judge_round(
     doc: &RecipeDoc,
     round: &CaptureRoundV2,
     metrics: &[FrameMetrics],
+    passes: &[u32],
 ) -> BurstJudgement {
     let cameras = doc.plan_cameras();
     judge_frames(
@@ -364,6 +388,7 @@ pub(super) fn judge_round(
         &cameras,
         metrics,
         &round_loss(&cameras, round),
+        doc.pass_rules(passes),
     )
 }
 
@@ -442,11 +467,13 @@ fn validate_sample(
         check_sample_round(w, &round, current)?;
         let measurer = measurer.map_err(|e| e.clone())?;
         let cameras = w.doc.plan_cameras();
+        let passes = capture.burst_passes(round_id)?;
         let metrics = burst_history::remeasure_by_rule(
             &recipe.path_segments,
             recipe.boundary_guard,
             &cameras,
             &round_frames(&cameras, &round),
+            recipe.pass_rules(&passes),
             |camera, seq, segment| {
                 let image = crate::image_file::load(&capture.burst_frame_path(
                     round_id,
@@ -456,7 +483,7 @@ fn validate_sample(
                 measurer.measure(camera, segment, seq, &image)
             },
         );
-        let judgement = judge_round(&w.doc, &round, &metrics);
+        let judgement = judge_round(&w.doc, &round, &metrics, &passes);
         return Ok(sample_result(
             sample,
             bank.name.clone(),
@@ -502,7 +529,7 @@ fn validate_sample(
         return Err("历史样本的原图不完整，不能整件复测".into());
     }
     let measurer = measurer.map_err(|e| e.clone())?;
-    let metrics = remeasure(recipe, &burst.frames, |frame, segment| {
+    let metrics = remeasure(recipe, &burst.frames, &burst.judgement.passes, |frame, segment| {
         measurer.measure(
             frame.camera,
             segment,
@@ -518,6 +545,7 @@ fn validate_sample(
         &recipe.plan_cameras(),
         &metrics,
         &burst.judgement.alarms,
+        recipe.pass_rules(&burst.judgement.passes),
     );
     Ok(sample_result(
         sample,

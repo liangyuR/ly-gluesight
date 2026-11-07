@@ -116,7 +116,7 @@ fn outcome(cycle: &str, files: &[(usize, u8)], state: RecorderState) -> Recordin
 fn part(cycle: &str, sn: u32) -> RecordedPart {
     let recipe = Arc::new(crate::store::burst_fixture::recipe());
     let mut frames = crate::store::burst_fixture::frames(4, &[(1, 2)]);
-    frames[0].metrics = Some(crate::store::burst_fixture::measured(0, 1, 6.5));
+    frames[0].metrics = Some(crate::store::burst_fixture::measured(0, 1, 2.0));
     let (judgement, burst) = crate::store::burst_fixture::record(&recipe, frames, None, Some(0));
     RecordedPart {
         mode: Default::default(),

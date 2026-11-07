@@ -227,6 +227,18 @@ impl RecipeCaptureHost {
         self.load_burst(round_id, true).map(|(round, _)| round)
     }
 
+    /// 一轮的笔结构（D-SB-62）：按帧记录里每帧的时间戳重算。
+    pub fn burst_passes(&self, round_id: &str) -> Result<Vec<u32>, String> {
+        let (round, lines) = self.load_burst(round_id, true)?;
+        Ok(crate::passes::from_times(
+            lines
+                .unwrap_or_default()
+                .iter()
+                .map(|line| (line.camera, line.seq, line.ts as f64)),
+            round.group_count,
+        ))
+    }
+
     /// 历史列表用：只核对 round.json（不逐帧读 frames.jsonl）。
     pub(super) fn burst_summary(&self, round_id: &str) -> Result<CaptureRoundV2, String> {
         self.load_burst(round_id, false).map(|(round, _)| round)

@@ -422,12 +422,15 @@ pub fn workspace_segment_template_save(
         .map_err(|_| "正在处理采集或设备事务，请稍后保存分段")?;
     crate::camera::check_idle(&cycle)?;
     let round = teaching_round(&app, &id, revision)?;
-    let captured = cycle.camera.recipe_capture().get_burst(&round)?;
+    let capture = cycle.camera.recipe_capture();
+    let captured = capture.get_burst(&round)?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     let current = items.get_mut(&id).ok_or("候选配置不存在")?;
     current.expect(revision)?;
-    let next = save_template_round(current, &captured, segments, cuts)?;
+    let mut base = current.clone();
+    super::pieces::fill_piece_passes(capture, &mut base)?;
+    let next = save_template_round(&base, &captured, segments, cuts)?;
     host.save(&next)?;
     *current = next;
     view(&app, current.clone())
@@ -523,6 +526,7 @@ pub(super) fn save_impact(before: &Workspace, after: &Workspace) -> SegmentSaveI
                         .iter()
                         .map(|group| group.seq)
                         .collect::<Vec<_>>(),
+                    super::pieces::piece_pass_rules(after),
                 )
             }),
     }
@@ -538,16 +542,16 @@ pub fn workspace_segment_template_preview(
     cuts: Vec<u64>,
 ) -> Result<SegmentSaveImpact, String> {
     let round = teaching_round(&app, &id, revision)?;
-    let captured = app
-        .state::<CycleHost>()
-        .camera
-        .recipe_capture()
-        .get_burst(&round)?;
+    let cycle = app.state::<CycleHost>();
+    let capture = cycle.camera.recipe_capture();
+    let captured = capture.get_burst(&round)?;
     let host = app.state::<WorkspaceHost>();
     let items = host.items.lock().unwrap();
     let current = items.get(&id).ok_or("候选配置不存在")?;
     current.expect(revision)?;
-    let next = save_template_round(current, &captured, segments, cuts)?;
+    let mut base = current.clone();
+    super::pieces::fill_piece_passes(capture, &mut base)?;
+    let next = save_template_round(&base, &captured, segments, cuts)?;
     Ok(save_impact(current, &next))
 }
 

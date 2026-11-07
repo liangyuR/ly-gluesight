@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::burst_judge::FrameMetrics;
 use crate::frame_group::FrameGroup;
+use crate::passes::{self, PassRules};
 use crate::plan::{PathSegment, SegmentKind};
 
 /// 分段输入：三路帧组和计划（段类型序列、N_exp、tol）。
@@ -24,6 +25,9 @@ pub struct Boundary {
     pub frame_seq: u64,
     /// 0–1
     pub confidence: f32,
+    /// 边界正好在两笔之间（D-SB-62）：位置确定，不留过渡区、不按方向细化
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hard: bool,
 }
 
 /// 分段结果；示教轮次写进 boundaries.json。
@@ -87,27 +91,80 @@ fn proportional_for_count(segments: &[PathSegment], total: u64) -> SegOutcome {
                 after_segment: segments[k].index,
                 frame_seq,
                 confidence,
+                hard: false,
             }
         })
         .collect();
     SegOutcome::Boundaries(boundaries)
 }
 
-/// 本件的分段：配方开了 `boundary_refine` 时用 [`refine_by_heading`]（要每帧特征），否则用 [`Proportional`]。生产与历史重判共用。
-pub fn segment_part(input: &SegInput, features: &[FrameMetrics], refine: bool) -> SegOutcome {
+/// 按笔分段（D-SB-62）：本件笔数与示教件一致、各段 N_exp 之和等于示教件笔结构的帧组数时，示教件的段边界逐个按笔换算到本件
+/// （`passes::map_cuts`），置信度 1。条件不满足为 None。
+fn by_passes(segments: &[PathSegment], passes: PassRules) -> Option<SegOutcome> {
+    let taught = passes.taught.filter(|_| passes.aligned() && segments.len() >= 2)?;
+    let counts: Vec<u64> = segments
+        .iter()
+        .map(|s| s.expected_frames.map(u64::from))
+        .collect::<Option<_>>()?;
+    if counts.iter().sum::<u64>() != taught.iter().map(|&n| u64::from(n)).sum::<u64>() {
+        return None;
+    }
+    let cuts: Vec<u64> = counts[..counts.len() - 1]
+        .iter()
+        .scan(0, |sum, &n| {
+            *sum += n;
+            Some(*sum)
+        })
+        .collect();
+    let mapped = passes::map_cuts(&cuts, taught, passes.part)?;
+    Some(SegOutcome::Boundaries(
+        mapped
+            .into_iter()
+            .zip(segments)
+            .map(|((frame_seq, hard), segment)| Boundary {
+                after_segment: segment.index,
+                frame_seq,
+                confidence: 1.0,
+                hard,
+            })
+            .collect(),
+    ))
+}
+
+/// 本件的分段（生产、复测与历史重判共用）：本件笔数与示教件一致时按笔换算边界（D-SB-62），笔数不一致时比例边界一律不可信
+/// （整件按未分段判），没有笔结构时按 [`Proportional`]；配方开了 `boundary_refine` 时再用 [`refine_by_heading`] 细化
+/// （要每帧特征）。
+pub fn segment_part(
+    input: &SegInput,
+    features: &[FrameMetrics],
+    refine: bool,
+    passes: PassRules,
+) -> SegOutcome {
+    let outcome = by_passes(input.segments, passes).unwrap_or_else(|| {
+        let mut outcome = Proportional.segment(input);
+        if let (true, SegOutcome::Boundaries(boundaries)) = (passes.mismatch(), &mut outcome) {
+            boundaries.iter_mut().for_each(|b| b.confidence = 0.0);
+        }
+        outcome
+    });
     if refine {
-        refine_by_heading(input, features)
+        refine_by_heading(input, features, outcome, passes.part)
     } else {
-        Proportional.segment(input)
+        outcome
     }
 }
 
-/// 方向细化（D-SB-47）：先按比例分段；直线段与弯道之间、直线段开了逐帧定向的边界，在比例边界 ± (两段容差之和 + 1)
+/// 方向细化（D-SB-47）：直线段与弯道之间、直线段开了逐帧定向的边界，在给定边界 ± (两段容差之和 + 1)
 /// 帧内对准直线段检测相机的胶条方向开始偏离（或回到）该段方向的帧。直线段方向取每台相机在该段核心帧（离两端边界都超出窗口）
-/// 上测得方向的中位数，偏离阈值为该段的方向容差；某帧多数相机偏离即算离开直线段。窗口内没有方向数据时保留比例边界，
-/// 置信度不变。只用找到了胶条的帧。`features` 是本件各相机的每帧指标。
-pub fn refine_by_heading(input: &SegInput, features: &[FrameMetrics]) -> SegOutcome {
-    let outcome = Proportional.segment(input);
+/// 上测得方向的中位数，偏离阈值为该段的方向容差；某帧多数相机偏离即算离开直线段。窗口内没有方向数据时保留原边界，
+/// 置信度不变。只用找到了胶条的帧。`features` 是本件各相机的每帧指标。两笔之间的硬边界不动；知道笔结构（`layout`）时
+/// 笔中间的边界只在本笔内移动（D-SB-62）。
+pub fn refine_by_heading(
+    input: &SegInput,
+    features: &[FrameMetrics],
+    outcome: SegOutcome,
+    layout: &[u32],
+) -> SegOutcome {
     let SegOutcome::Boundaries(mut boundaries) = outcome else {
         return outcome;
     };
@@ -135,16 +192,30 @@ pub fn refine_by_heading(input: &SegInput, features: &[FrameMetrics]) -> SegOutc
         } else {
             end.saturating_sub(window)
         });
-        let lo = cuts[k].saturating_sub(window).max(if k == 0 {
-            1
-        } else {
-            boundaries[k - 1].frame_seq + 1
-        });
-        let hi = (cuts[k] + window).min(if k + 1 < last {
-            cuts[k + 1] - 1
-        } else {
-            total.saturating_sub(1)
-        });
+        if boundaries[k].hard {
+            continue;
+        }
+        let pass = passes::locate(layout, cuts[k])
+            .map(|(j, _)| {
+                let first = passes::first_seq(layout, j);
+                (first, first + u64::from(layout[j]).saturating_sub(2))
+            })
+            .unwrap_or((1, u64::MAX));
+        let lo = cuts[k]
+            .saturating_sub(window)
+            .max(if k == 0 {
+                1
+            } else {
+                boundaries[k - 1].frame_seq + 1
+            })
+            .max(pass.0);
+        let hi = (cuts[k] + window)
+            .min(if k + 1 < last {
+                cuts[k + 1] - 1
+            } else {
+                total.saturating_sub(1)
+            })
+            .min(pass.1);
         if lo > hi {
             continue;
         }
@@ -232,9 +303,14 @@ pub enum RegionKind {
     Corner { segment: u32 },
     /// 覆盖 first_segment..=last_segment；只跑每帧独立检测，允差取覆盖各段中较宽一档，不判胶偏
     Unsegmented { first_segment: u32, last_segment: u32, reason: UnsegReason },
-    /// 段首尾跳过的帧（`skip_head` / `skip_tail`）：不判定，结果里列为未检区域
+    /// 段首尾跳过的帧（`skip_head` / `skip_tail`）或每笔首尾跳过的帧（D-SB-62，`pass` 为第几笔，从 1 起；`short`：
+    /// 整笔太短全部跳过）：不判定，结果里列为未检区域
     Skipped {
         segment: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pass: Option<u32>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        short: bool,
     },
 }
 
@@ -414,6 +490,8 @@ fn core_regions(
 /// Unsegmented(Transition)，覆盖边界两侧的段；相邻的过渡区（中间的段被取空）合并成一个。guard = 0 时没有过渡区。
 /// 各段的跳过帧（`skip_head` / `skip_tail`）最后划为 Skipped 区域，优先于过渡区：能定位到的段（单段区域）按本段首尾跳过；
 /// 合并区域里只有贴着整件首尾的那一头能定位，只跳过第 1 段的 skip_head 与末段的 skip_tail。
+/// 两笔之间的硬边界（D-SB-62）不留过渡区。知道本件笔结构时，每笔首尾按 `passes.skip` 跳过（不论分段是否可信），
+/// 区域记下第几笔，整笔太短的标 `short`；已按段跳过的帧不重复标。
 ///
 /// 算法缺给某个段间边界，或给出的帧号不在上一可信边界之后、不给下一段留帧，都按置信度不足处理。
 /// 区域首尾相接、覆盖 1..=total_seq。没有帧组（total_seq = 0）或没有段时返回空。
@@ -423,17 +501,27 @@ pub fn resolve_regions(
     total_seq: u64,
     min_conf: f32,
     guard: u32,
+    passes: PassRules,
 ) -> Vec<Region> {
     let regions = core_regions(segments, outcome, total_seq, min_conf);
     if regions.is_empty() {
         return Vec::new();
     }
-    // 逐帧标注：所属区域、过渡区覆盖的段下标范围（多个边界的过渡区重叠时取并），或跳过的段
+    let hard: std::collections::BTreeSet<u64> = match outcome {
+        SegOutcome::Boundaries(boundaries) => boundaries
+            .iter()
+            .filter(|b| b.hard)
+            .map(|b| b.frame_seq)
+            .collect(),
+        SegOutcome::Unsegmented => Default::default(),
+    };
+    // 逐帧标注：所属区域、过渡区覆盖的段下标范围（多个边界的过渡区重叠时取并），跳过的段，或每笔首尾跳过（段下标、笔下标、整笔）
     #[derive(Clone, Copy, PartialEq)]
     enum Label {
         Core(usize),
         Transition(usize, usize),
         Skipped(usize),
+        PassSkipped(usize, usize, bool),
     }
     let mut labels: Vec<Label> = Vec::with_capacity(total_seq as usize);
     for (i, (region, _, _)) in regions.iter().enumerate() {
@@ -442,6 +530,9 @@ pub fn resolve_regions(
     if guard > 0 {
         for i in 1..regions.len() {
             let (cut, left, right) = (regions[i - 1].0.last_seq, regions[i - 1].2, regions[i].1);
+            if hard.contains(&cut) {
+                continue;
+            }
             let from = cut.saturating_sub(u64::from(guard) - 1).max(1);
             let to = (cut + u64::from(guard)).min(total_seq);
             for label in &mut labels[from as usize - 1..to as usize] {
@@ -491,6 +582,18 @@ pub fn resolve_regions(
         }
     }
 
+    for (j, from, to, short) in passes::skipped(passes.part, passes.skip) {
+        for seq in from.max(1)..=to.min(total_seq) {
+            let label = &mut labels[seq as usize - 1];
+            let segment = match *label {
+                Label::Core(i) => regions[i].1,
+                Label::Transition(a, _) => a,
+                Label::Skipped(_) | Label::PassSkipped(..) => continue,
+            };
+            *label = Label::PassSkipped(segment, j, short);
+        }
+    }
+
     let mut out: Vec<(Label, Region)> = Vec::new();
     for (k, &label) in labels.iter().enumerate() {
         let seq = k as u64 + 1;
@@ -498,6 +601,11 @@ pub fn resolve_regions(
             (Some((Label::Core(a), region)), Label::Core(b))
             | (Some((Label::Skipped(a), region)), Label::Skipped(b))
                 if *a == b =>
+            {
+                region.last_seq = seq
+            }
+            (Some((Label::PassSkipped(a, j, s), region)), Label::PassSkipped(b, k, t))
+                if (*a, *j, *s) == (b, k, t) =>
             {
                 region.last_seq = seq
             }
@@ -510,6 +618,13 @@ pub fn resolve_regions(
                     Label::Core(i) => regions[i].0.kind.clone(),
                     Label::Skipped(k) => RegionKind::Skipped {
                         segment: segments[k].index,
+                        pass: None,
+                        short: false,
+                    },
+                    Label::PassSkipped(k, j, short) => RegionKind::Skipped {
+                        segment: segments[k].index,
+                        pass: Some(j as u32 + 1),
+                        short,
                     },
                     Label::Transition(..) => RegionKind::Unsegmented {
                         first_segment: 0,
@@ -702,6 +817,7 @@ fn offset_coverage(
 }
 
 /// 比例分段下的应测范围；不读取图像、不保证测量成功。屏蔽只影响示教件可用帧，不改变生产应测帧。
+/// 给了笔结构时按笔分段并扣掉每笔首尾跳过的帧（D-SB-62）。
 pub fn proportional_coverage(
     segments: &[PathSegment],
     cameras: &[String],
@@ -709,14 +825,16 @@ pub fn proportional_coverage(
     guard: u32,
     refine: bool,
     excluded_groups: &[u64],
+    passes: PassRules,
 ) -> InspectionCoverage {
-    let outcome = proportional_for_count(segments, total_seq);
+    let outcome = by_passes(segments, passes)
+        .unwrap_or_else(|| proportional_for_count(segments, total_seq));
     let core = core_regions(segments, &outcome, total_seq, 0.5);
     let boundaries_trusted = !core.is_empty()
         && core
             .iter()
             .all(|(r, _, _)| !matches!(r.kind, RegionKind::Unsegmented { .. }));
-    let regions = resolve_regions(segments, &outcome, total_seq, 0.5, guard);
+    let regions = resolve_regions(segments, &outcome, total_seq, 0.5, guard, passes);
     let corridors = frame_corridors(segments, cameras, &regions, &outcome, total_seq);
     let excluded: std::collections::BTreeSet<u64> = excluded_groups
         .iter()
@@ -936,7 +1054,7 @@ mod tests {
         segments[1].cameras = vec!["camA".into()];
         let cameras = vec!["camA".into(), "camB".into(), "camC".into()];
         for (guard, expected) in [(1, 0), (0, 2)] {
-            let coverage = proportional_coverage(&segments, &cameras, 10, guard, false, &[]);
+            let coverage = proportional_coverage(&segments, &cameras, 10, guard, false, &[], PassRules::NONE);
             assert!(coverage.boundaries_trusted);
             assert_eq!(coverage.expected_camera_frames, Some(expected));
             assert_eq!(coverage.segments[1].expected_camera_frames, Some(expected));
@@ -968,7 +1086,7 @@ mod tests {
             (calibrated(&[S], &[8]), 8),
             (calibrated(&[S, C], &[4, 4]), 16),
         ] {
-            let coverage = proportional_coverage(&segments, &cameras, total, 1, false, &[]);
+            let coverage = proportional_coverage(&segments, &cameras, total, 1, false, &[], PassRules::NONE);
             assert!(!coverage.boundaries_trusted);
             assert_eq!(coverage.expected_camera_frames, None);
             assert!(coverage.zero_coverage_segments.is_empty());
@@ -999,8 +1117,8 @@ mod tests {
             spread: None,
             edge: None,
         });
-        let clear = proportional_coverage(&segments, &cameras, 12, 1, false, &[]);
-        let masked = proportional_coverage(&segments, &cameras, 12, 1, false, &[3, 4, 5, 6]);
+        let clear = proportional_coverage(&segments, &cameras, 12, 1, false, &[], PassRules::NONE);
+        let masked = proportional_coverage(&segments, &cameras, 12, 1, false, &[3, 4, 5, 6], PassRules::NONE);
         assert_eq!(masked.expected_camera_frames, clear.expected_camera_frames);
         assert_eq!(
             masked.available_camera_frames,
@@ -1035,7 +1153,7 @@ mod tests {
                 "{total} 帧"
             );
             assert_eq!(
-                resolve_regions(&segments, &outcome, total, 0.5, 2),
+                resolve_regions(&segments, &outcome, total, 0.5, 2, PassRules::NONE),
                 vec![region(
                     RegionKind::Unsegmented {
                         first_segment: 1,
@@ -1060,7 +1178,7 @@ mod tests {
             segment.cameras = vec![cameras[camera].clone()];
         }
         let outcome = proportional(&segments, 12);
-        let regions = resolve_regions(&segments, &outcome, 12, 0.5, 2);
+        let regions = resolve_regions(&segments, &outcome, 12, 0.5, 2, PassRules::NONE);
         assert!(regions.contains(&region(
             RegionKind::Unsegmented {
                 first_segment: 1,
@@ -1100,12 +1218,12 @@ mod tests {
         }
         segments[1].skip = true;
         let outcome = proportional(&segments, 24);
-        let regions = resolve_regions(&segments, &outcome, 24, 0.5, 2);
+        let regions = resolve_regions(&segments, &outcome, 24, 0.5, 2, PassRules::NONE);
         assert_eq!(
             regions,
             vec![
                 region(RegionKind::Straight { segment: 1 }, 1, 8),
-                region(RegionKind::Skipped { segment: 2 }, 9, 16),
+                region(RegionKind::Skipped { segment: 2, pass: None, short: false }, 9, 16),
                 region(RegionKind::Straight { segment: 3 }, 17, 24),
             ]
         );
@@ -1124,7 +1242,7 @@ mod tests {
         segments[0].skip_head = 2;
         segments[1].skip_tail = 1;
         segments[2].skip_tail = 3;
-        let skipped = |segment| RegionKind::Skipped { segment };
+        let skipped = |segment| RegionKind::Skipped { segment, pass: None, short: false };
         let transition = |first_segment, last_segment| RegionKind::Unsegmented {
             first_segment,
             last_segment,
@@ -1135,11 +1253,13 @@ mod tests {
                 after_segment: 1,
                 frame_seq: 10,
                 confidence: 1.0,
+                hard: false,
             },
             Boundary {
                 after_segment: 2,
                 frame_seq: 16,
                 confidence: 1.0,
+                hard: false,
             },
         ]);
         let pending = RegionKind::Unsegmented {
@@ -1174,10 +1294,75 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                resolve_regions(&segments, &outcome, 26, 0.5, 2),
+                resolve_regions(&segments, &outcome, 26, 0.5, 2, PassRules::NONE),
                 expected,
                 "{case}"
             );
         }
+    }
+
+    fn by_pass(segments: &[PathSegment], part: &[u32], taught: &[u32], head: u32) -> Vec<Region> {
+        let total: u64 = part.iter().map(|&n| u64::from(n)).sum();
+        let groups: Vec<FrameGroup> = (1..=total)
+            .map(|seq| FrameGroup {
+                seq,
+                present: vec![true; 3],
+                incomplete: false,
+            })
+            .collect();
+        let passes = PassRules {
+            part,
+            taught: Some(taught),
+            skip: crate::passes::PassSkip { head, tail: 0 },
+        };
+        let outcome = segment_part(
+            &SegInput {
+                groups: &groups,
+                segments,
+            },
+            &[],
+            false,
+            passes,
+        );
+        resolve_regions(segments, &outcome, total, 0.5, 2, passes)
+    }
+
+    /// D-SB-62：段边界落在两笔之间时取本件同一笔的末帧，不留过渡区；每笔开头按笔定位跳过，区域记下第几笔。
+    #[test]
+    fn pass_boundary_follows_the_part_without_transition_and_skips_each_pass_head() {
+        let segments = calibrated(&[S, C], &[5, 5]);
+        let skipped = |segment, pass| RegionKind::Skipped {
+            segment,
+            pass: Some(pass),
+            short: false,
+        };
+        assert_eq!(
+            by_pass(&segments, &[7, 4], &[5, 5], 1),
+            vec![
+                region(skipped(1, 1), 1, 1),
+                region(RegionKind::Straight { segment: 1 }, 2, 7),
+                region(skipped(2, 2), 8, 8),
+                region(RegionKind::Corner { segment: 2 }, 9, 11),
+            ]
+        );
+    }
+
+    /// D-SB-62：本件笔数与示教件不同，边界一律不可信，整件按未分段判（起涂照样按本件的笔跳过）。
+    #[test]
+    fn pass_count_mismatch_leaves_the_part_unsegmented() {
+        let segments = calibrated(&[S, C], &[5, 5]);
+        let regions = by_pass(&segments, &[10], &[5, 5], 0);
+        assert_eq!(
+            regions,
+            vec![region(
+                RegionKind::Unsegmented {
+                    first_segment: 1,
+                    last_segment: 2,
+                    reason: UnsegReason::LowConfidence,
+                },
+                1,
+                10
+            )]
+        );
     }
 }

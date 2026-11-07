@@ -97,7 +97,7 @@ MCP Streamable HTTP 的无状态子集：
 - `states`、`width`（mm：中位、P5、P95、最小、最大）、`edgeMm`、`xMm`、`gapFrames`、`fallbackFrames`、`errors` 与 `worst`（前 5 帧）保留量测分布和看图线索。
 - `measurement`：`expectedFrames`、`measuredFrames`、`states`、`plannedSkipFrames`、`unmeasuredFrames` 以及不截断的 `nonMeasuredFrames`（`seq`、`state`、`expected`、`reason`）。Missing、Error、Unmeasured、OutOfCorridor 都不能因为 `errors=[]` 而被忽略；按计划不测单独标记。
 - 配置为这台相机测 ToEdge 时，`measurement.edge` 给出实际量测区间的 `expectedFrames`、`validFrames`、`validRate`（无应测帧为 null）及 `missingFrames`。分母包含应测但失败的帧；计划不测不进入分母。有效数值不保证绿线落在真实零件边，仍需 `teach_view` 核对。这里未按整件胶偏规则剔除区域首尾。
-- `limits` 给出 `maxGapMm` / `gapOverLimit`、`minPresent` / `presentBelow`、`widthBand` / `widthOutside`，以及独立的 `overflowMaxWidthMm` / `overflowFrames`（按每帧最大胶宽）。`widthOutside` 只比较一帧的平均宽度，是看图线索；生产胶宽判定使用逐站超差累计长度等规则。平均胶宽在公差带内也可能因局部超宽判溢胶。`parameterWarnings` 提示标称或公差带高于溢胶上限、胶偏参考缺失等矛盾，不自动改参数。局部诊断不代替完整生产判定。
+- `limits` 给出 `maxGapMm` / `gapOverLimit`、`minPresent` / `presentBelow`、`widthBand` / `widthOutside`，以及独立的 `overflowMaxWidthMm` / `overflowFrames`（按每帧最大胶宽）。`widthOutside` 只比较一帧的平均宽度，是看图线索；生产胶宽判定使用逐站超差累计长度等规则。平均胶宽在公差带内也可能因局部超宽判溢胶；段开了偏宽只预警（`checks.width.wideWarnOnly`，D-SB-61）时，超出上限与溢胶上限只记预警（`flags.wideWarning` / `overflowWarning`），不判 NG。`parameterWarnings` 提示标称或公差带高于溢胶上限、胶偏参考缺失等矛盾，不自动改参数。局部诊断不代替完整生产判定。
 
 ### `teach_segment`
 
@@ -114,7 +114,7 @@ MCP Streamable HTTP 的无状态子集：
 - `regions` 保留 `kind` 和帧组范围；段内为 `{type: "straight" | "corner", segment}`，跳过为 `{type: "skipped", segment}`，未分段为 `{type: "unsegmented", firstSegment, lastSegment, reason}`。每区同时返回判定、宽度、胶偏、`offsetUnjudged`、`incompleteGroups`、帧数比较与相机帧数。直线区 `offsetEvidence` 按最终判定区域和相同的胶偏规则剔除首尾，给出参考相机、有效窗口、应测/有效帧数、缺失帧及未判原因；不与量测全范围的边距有效率混同。
 - `measurement.cameras[]` 和其中 `segments[]` 给出各相机/段的应测、实测、全部非 measured 帧及原因、计划不测帧、ToEdge 有效率。`basis=measurementPlan` 明确它复用实际原图复测的比例分段、guard 和走廊选择；`coverage` 是相同规则的覆盖预览。判定开启方向细化时，最终 `regions` 可与该量测计划不同，胶偏证据以最终区域为准。
 
-这些信息不改变生产 OK/NG 策略：`flags.incomplete`、`offsetUnjudged` 等仍是告警。生产结论为 OK 与测量完整是两个独立结论；任一应测帧未测成时，不可宣称示教验收完成。
+这些信息不改变生产 OK/NG 策略：`flags.incomplete`、`flags.passCountAnomaly`、胶宽偏宽与溢胶预警、`offsetUnjudged` 等仍是告警；`uninspected` 里带 `pass` 的是每笔首尾跳过的帧（D-SB-62）。生产结论为 OK 与测量完整是两个独立结论；任一应测帧未测成时，不可宣称示教验收完成。
 
 逐帧诊断当前随响应内联返回，没有分页或独立诊断文件入口。大录制宜按记录分别复测并保留完整 JSON；工具未截断不表示客户端能显示全部内容。
 
