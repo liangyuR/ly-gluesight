@@ -4,7 +4,7 @@ import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { Check, Comparison, FrozenImage, FrameImage, HistoryCandidate, PackageExported, PackageImported, PackagePreview, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
+import type { Check, CompareOptions, Comparison, FrozenImage, FrameImage, HistoryCandidate, PackageExported, PackageImported, PackagePreview, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
 
 let liveSeq = 0;
 
@@ -69,6 +69,8 @@ export const workspaceApi = {
   compareOriginal: (historyId: number) => desktopCall<Comparison>("workspace_compare_original", { historyId }),
   comparisons: (id:string,historyId:number)=>desktopCall<Comparison[]>("workspace_comparisons",{id,historyId}),
   recordFrameView: (historyId: number, comparison: string, camera: number, seq: number) => desktopCall<CalibrationFrameView>("workspace_record_frame_view", { historyId, comparison, camera, seq }),
+  historyFrameView: (historyId: number, camera: number, seq: number) => desktopCall<CalibrationFrameView>("workspace_history_frame_view", { historyId, camera, seq }),
+  historyCompareOptions: (historyId: number) => desktopCall<CompareOptions>("workspace_history_compare_options", { historyId }),
   stationCapture: (cam:number,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,view}),
   stationImport: (cam:number,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes,view}),
   /** 当前标定所用原图载入为冻结样本；没有可载入的原图为 null */

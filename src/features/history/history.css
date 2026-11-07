@@ -69,3 +69,6 @@
 .rj-cell.changed { color: var(--warn); font-weight: 600; }
 .rj-cell.release { color: var(--on-ng-container); font-weight: 700; background: var(--ng-container); }
 .rj-changes { max-height: 220px; overflow: auto; }
+/* 复测按钮不能用的原因 */
+.compare-reasons { margin: 0; padding-left: 1.2em; font-size: 12px; color: var(--on-surface-variant); }
+.compare-reasons li + li { margin-top: 2px; }

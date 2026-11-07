@@ -232,6 +232,7 @@ export function burstPartDetail(): PartDetail {
     summary: burstPartSummary(), judgement: { verdict: judgement.verdict, plcCode: judgement.plcCode, faultCode: judgement.faultCode, reason: judgement.reason, segments: [], gaps: [] },
     frames: [], shots: [], points: null, triggers: 12, softwareVersion: "test", retests: [],
     recording: { state: "complete", available: true, directory: "recorded", errors: [] },
-    burst: { segments: burstRecipe().segments, cameras: burstCameras, expectedTotal: 12, toleranceTotal: 3, deviceTriggers: 12, cameraFrames: burstCameraFrames(), judgement, frames },
+    burst: { segments: burstRecipe().segments, cameras: burstCameras, expectedTotal: 12, toleranceTotal: 3, deviceTriggers: 12, cameraFrames: burstCameraFrames(), judgement, frames,
+      frameVerdicts: frames.filter(f => f.status === "measured").map(f => ({ camera: f.camera, seq: f.seq, verdict: "OK" as const })) },
   };
 }

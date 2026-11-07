@@ -389,6 +389,18 @@ impl ProductionHost {
     fn prepared(&self, key: &str) -> Option<Arc<Prepared>> {
         match self.entries.lock().unwrap().get(key) { Some(Entry::Ready(prepared)) => Some(prepared.clone()), _ => None }
     }
+
+    /// 已预热好的这个发布包（历史叠图复用，不另加载）。
+    pub fn ready_bundle(&self, bundle_id: &str) -> Option<Arc<Prepared>> {
+        self.entries
+            .lock()
+            .unwrap()
+            .values()
+            .find_map(|entry| match entry {
+                Entry::Ready(prepared) if prepared.bundle.id == bundle_id => Some(prepared.clone()),
+                _ => None,
+            })
+    }
 }
 
 pub fn warmup(app: &AppHandle, recipe: &Recipe) -> Warmup {

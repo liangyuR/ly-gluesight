@@ -405,6 +405,8 @@ pub struct WorkspaceHost {
     station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
     capture_seq: std::sync::atomic::AtomicU64,
     comparisons: comparisons::Comparisons,
+    /// 历史叠图最近用的发布包（不在生产预热里时另加载，只留一个，不占生产预热）
+    history_bundle: Mutex<Option<Arc<crate::production::Prepared>>>,
 }
 
 /// 在途件的实时原图：按工件与配方修订成组，换件即清空；总量超过上限时丢最早的。
@@ -521,6 +523,7 @@ impl WorkspaceHost {
             station: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
             comparisons: comparisons::Comparisons::default(),
+            history_bundle: Mutex::new(None),
         })
     }
 
@@ -1442,6 +1445,37 @@ pub async fn workspace_compare_original(
     .map_err(|error| error.to_string())?
 }
 
+/// 一条历史记录能做哪几种复测（历史详情的按钮与原因）：按记录的配方找本机候选，不新建候选、不看工作台当前选择。
+#[tauri::command]
+pub async fn workspace_history_compare_options(
+    app: AppHandle,
+    history_id: i64,
+) -> Result<burst_history::CompareOptions, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        let detail = store.detail(history_id)?;
+        let original = detail
+            .summary
+            .recipe_revision
+            .as_deref()
+            .map(|r| store.recipe_snapshot(r))
+            .transpose()?
+            .flatten();
+        let candidate = detail.summary.recipe_id.as_deref().and_then(|id| {
+            let host = app.state::<WorkspaceHost>();
+            let items = host.items.lock().unwrap();
+            items.get(id).filter(|w| !w.legacy()).cloned()
+        });
+        Ok(burst_history::compare_options(
+            &detail,
+            original.as_ref(),
+            candidate.as_ref(),
+        ))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub fn workspace_comparisons(
     host: State<'_, WorkspaceHost>,
@@ -1460,6 +1494,132 @@ pub fn clear_live(app: &AppHandle) {
     }
 }
 
+/// 一帧测量轨迹转成叠图（第 `segment` 段走廊、搜索带与胶边）：在线与历史按原发布包重算共用，保证两边画出的线一致。
+fn trace_view(
+    recipe: &Recipe,
+    segment: u32,
+    trace: crate::measure::FrameTrace,
+    metrics: &crate::burst_judge::FrameMetrics,
+) -> CalibrationFrameView {
+    let (corridor, search_half_px) = burst::corridor_overlay(recipe, metrics.camera, segment);
+    CalibrationFrameView {
+        segment: Some(segment),
+        corridor: if trace.line.is_empty() {
+            corridor
+        } else {
+            trace.line
+        },
+        search_half_px,
+        edges: trace.edges,
+        part_edges: trace.part_edges,
+        metrics: metrics.clone(),
+    }
+}
+
+/// 记录的发布包：生产预热里有就复用，否则加载并留作历史叠图的唯一缓存。
+fn history_prepared(
+    app: &AppHandle,
+    original: &Recipe,
+    bundle_id: &str,
+) -> Result<Arc<crate::production::Prepared>, String> {
+    if let Some(prepared) = app
+        .state::<crate::production::ProductionHost>()
+        .ready_bundle(bundle_id)
+    {
+        return Ok(prepared);
+    }
+    let host = app.state::<WorkspaceHost>();
+    let mut cached = host.history_bundle.lock().unwrap();
+    if let Some(prepared) = cached.as_ref().filter(|p| p.bundle.id == bundle_id) {
+        return Ok(prepared.clone());
+    }
+    let bundle = load_bundle(app, &original.id, bundle_id)?;
+    let engine = app
+        .state::<vision::VisionHost>()
+        .engine()
+        .ok_or("图像核心库未加载")?;
+    let prepared = Arc::new(crate::production::Prepared::load(bundle, engine, original)?);
+    prepared.verify()?;
+    *cached = Some(prepared.clone());
+    Ok(prepared)
+}
+
+/// 历史件一帧按原发布包重算的叠图（历史详情看原始记录时显示，只读、不落盘）：用记录的发布包、这一帧当时所用走廊段，
+/// 从录制原图走与在线检测同一测量入口（`Prepared::measure_frame`），给出走廊、搜索带与胶边。缺帧、本段不检测、
+/// 没记走廊的帧只给记录的指标、不画线。指标一律取记录里存的。
+#[tauri::command]
+pub async fn workspace_history_frame_view(
+    app: AppHandle,
+    history_id: i64,
+    camera: usize,
+    seq: u64,
+) -> Result<CalibrationFrameView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        let detail = store.detail(history_id)?;
+        let burst = detail
+            .burst
+            .as_ref()
+            .ok_or("这条历史是旧拍照点记录，没有按帧的叠图")?;
+        let frame = burst
+            .frames
+            .iter()
+            .find(|f| f.camera == camera && f.seq == seq)
+            .ok_or("没有这一帧的记录")?;
+        let metrics = frame
+            .metrics
+            .clone()
+            .ok_or("这台相机本帧组缺帧，没有原图")?;
+        let Some(segment) = metrics.corridor.filter(|_| {
+            !matches!(
+                metrics.state,
+                crate::burst_judge::FrameState::Missing
+                    | crate::burst_judge::FrameState::NotInspected
+            )
+        }) else {
+            return Ok(CalibrationFrameView {
+                segment: None,
+                corridor: Vec::new(),
+                search_half_px: None,
+                edges: Vec::new(),
+                part_edges: Vec::new(),
+                metrics,
+            });
+        };
+        if frame.raw_file.is_none() {
+            return Err("这一帧原图未保存或已按保留策略清理，画不了辅助线".into());
+        }
+        let bundle_id = detail
+            .summary
+            .bundle_id
+            .as_deref()
+            .ok_or("本件没有发布包（维护采集件或未匹配到可用配方），画不了辅助线")?;
+        let revision = detail
+            .summary
+            .recipe_revision
+            .as_deref()
+            .ok_or("历史记录缺少配方快照身份")?;
+        let original = store.recipe_snapshot(revision)?.ok_or("原始配方快照缺失")?;
+        let prepared = history_prepared(&app, &original, bundle_id)?;
+        let image = burst_history::frame_image(&app, &detail, camera, seq)?;
+        let measured = prepared.measure_frame(
+            camera,
+            segment,
+            seq,
+            &image,
+            &format!("history-view-{history_id}-c{camera}-{seq}"),
+        )?;
+        let trace = crate::measure::FrameTrace {
+            edges: measured.edges,
+            part_edges: measured.part_edges,
+            line: measured.line,
+        };
+        Ok(trace_view(&prepared.recipe, segment, trace, &metrics))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// 段配方在途件一帧测到的叠图（第 `segment` 段走廊、搜索带与胶边），供 `workspace_live_frame_view` 读。
 pub fn retain_live_view(
     app: &AppHandle,
@@ -1472,19 +1632,7 @@ pub fn retain_live_view(
     let Some(host) = app.try_state::<WorkspaceHost>() else {
         return;
     };
-    let (corridor, search_half_px) = burst::corridor_overlay(recipe, metrics.camera, segment);
-    let view = CalibrationFrameView {
-        segment: Some(segment),
-        corridor: if trace.line.is_empty() {
-            corridor
-        } else {
-            trace.line
-        },
-        search_half_px,
-        edges: trace.edges,
-        part_edges: trace.part_edges,
-        metrics: metrics.clone(),
-    };
+    let view = trace_view(recipe, segment, trace, metrics);
     let mut live = host.live_views.lock().unwrap();
     let key = (cycle_id.to_owned(), recipe.revision_id.clone());
     if live.key.as_ref() != Some(&key) {

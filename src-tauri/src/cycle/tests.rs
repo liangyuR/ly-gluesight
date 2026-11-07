@@ -436,6 +436,28 @@ fn no_frame_from_any_camera_is_err_91() {
     assert_eq!((judgement.verdict, judgement.plc_code, judgement.fault_code), (Verdict::ErrInspect, 90, fault::MISSING_FRAME));
 }
 
+/// 防的回归（MM-2）：维护件回写码改成 0 后，落库记录不能因摘要与区域判定的回写码不同而退回没有区域的摘要
+/// （历史帧格全部按整件结论着色、区域面板为空）。
+#[test]
+fn maintenance_summary_with_plc_code_zero_keeps_region_judgement_in_record() {
+    let mut p = burst_part("maintenance-record", &Ledgers::default());
+    deliver_groups(&mut p, 4);
+    end(&mut p, Some(4), true);
+    let judgement = judge_burst(&mut p);
+    assert!(!judgement.regions.is_empty());
+    let delivered = Judgement {
+        plc_code: 0,
+        ..burst::summary(&judgement)
+    };
+    let record = p.burst_record(&delivered);
+    assert_eq!(record.judgement.regions, judgement.regions);
+    assert_eq!(
+        (record.judgement.verdict, record.judgement.plc_code),
+        (judgement.verdict, 0)
+    );
+    assert!(record.frames.iter().all(|f| f.region.is_some()));
+}
+
 #[test]
 fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result() {
     let mut p = burst_part("tail-measurement", &Ledgers::default());

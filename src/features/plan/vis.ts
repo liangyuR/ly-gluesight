@@ -100,14 +100,14 @@ export function verdictPlanTone(verdict: Verdict): PlanTone {
 
 /** 帧组格子（一台相机一帧）的显示状态：到达前 waiting，测量中 measuring，测完按该帧结论，其余为缺帧类状态（都只算检测不完整）；
  * notInspected 是这一帧所在段不由这台相机检测，按设计不测，不算检测不完整。 */
-export type GroupCellState = "waiting" | "measuring" | "ok" | "excursion" | "ng" | "error" | "missing" | "unmeasured" | "outOfCorridor" | "notInspected";
+export type GroupCellState = "waiting" | "measuring" | "ok" | "excursion" | "ng" | "error" | "missing" | "unmeasured" | "outOfCorridor" | "notInspected" | "unjudged";
 
 export function groupCellState(group: FrameGroupView, cam: number): GroupCellState {
   const cell = group.cells[cam];
   if (!cell) return "missing";
   if (cell.status !== "measured") return cell.status;
   switch (cell.verdict) {
-    case null: return "measuring";
+    case null: return cell.unjudged ? "unjudged" : "measuring";
     case "OK": return "ok";
     case "OK_WITH_EXCURSION": return "excursion";
     case "ERR_INSPECT": return "error";
@@ -117,11 +117,12 @@ export function groupCellState(group: FrameGroupView, cam: number): GroupCellSta
 
 export const groupCellText: Record<GroupCellState, string> = {
   waiting: "等待", measuring: "测量中", ok: "OK", excursion: "局部超差", ng: "NG", error: "测量失败",
-  missing: "缺帧", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测",
+  missing: "缺帧", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测", unjudged: "未判定",
 };
 
 /** 格子颜色：缺帧、未测、出走廊为灰色（只算检测不完整，不是 NG）；本段不检测为浅灰。 */
 export const groupCellColor: Record<GroupCellState, string> = {
   waiting: "var(--surface-high)", measuring: "var(--primary)", ok: "var(--ok)", excursion: "var(--warn)", ng: "var(--ng)", error: "var(--fault)",
   missing: "var(--on-surface-disabled)", unmeasured: "var(--on-surface-disabled)", outOfCorridor: "var(--on-surface-disabled)", notInspected: "var(--outline-variant)",
+  unjudged: "var(--outline-variant)",
 };

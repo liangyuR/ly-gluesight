@@ -401,6 +401,8 @@ export interface FrameCellView {
   status: FrameCellStatus;
   /** 这一帧单独判的结论；未测完为 null */
   verdict: Verdict | null;
+  /** 历史：测过但没有单帧结论（整件没有区域判定，如在途中断）；在线不出现 */
+  unjudged?: boolean;
   frameCounter: number | null;
   /** 测量所用走廊的段；收尾补测换了走廊时随之变 */
   segment?: number | null;
@@ -446,6 +448,13 @@ export interface FrameRecord {
 }
 
 /** 历史详情：段配方的部分（store::PartDetail.burst）；没有帧记录的记录为 null。 */
+/** 一帧的单帧结论（后端 burst_judge::FrameVerdict）：按所在区域的检测相机与检查项判，整段性问题不落到帧上。 */
+export interface FrameVerdict {
+  camera: number;
+  seq: number;
+  verdict: Verdict;
+}
+
 export interface PartDetailBurst {
   /** 本件配方快照的段 */
   segments: PathSegment[];
@@ -457,6 +466,8 @@ export interface PartDetailBurst {
   judgement: BurstJudgement;
   /** 按 (camera, seq) 排序 */
   frames: FrameRecord[];
+  /** 逐帧结论（帧格颜色）；没有结论的帧（不在区域检测相机里、没测成、整件没有区域）不列出 */
+  frameVerdicts: FrameVerdict[];
 }
 
 /** 历史列表：段配方记录带标记（疑似提前终止等单独显示）；没有帧记录的为 null。 */
