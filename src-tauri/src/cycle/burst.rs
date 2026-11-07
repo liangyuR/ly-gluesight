@@ -16,6 +16,7 @@ use crate::judge::{fault, Judgement};
 use crate::measure::{FrameMeasured, MeasureError};
 use crate::plan::{wider_checks, PathSegment, SegmentChecks};
 use crate::recipe::Recipe;
+use crate::recorder::RecordedFrame;
 use crate::segmentation::{
     frame_corridors, resolve_regions, segment_part, Region, SegInput, SegOutcome,
 };
@@ -55,6 +56,9 @@ struct BurstFrame {
     corridor: Option<u32>,
 }
 
+/// 收尾补测等录制原图写完的上限：写盘一般毫秒级，盘卡住时不能无限拖住收尾。
+const RAW_WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// 收尾补测的一帧：计划相机下标、seq、用第几段走廊、本件录制的原图文件（模拟测量不读图，为空）。
 pub(super) type PostJob = (usize, u64, u32, Option<std::path::PathBuf>);
 
@@ -83,6 +87,8 @@ pub(super) struct BurstPart {
     boundary_refine: bool,
     /// 本件采集期间因图像内存预算满被丢弃、没收进来的帧数（D-SB-60）
     pub(super) budget_dropped: u64,
+    /// 收尾补测开始等录制原图写完的时刻（D-SB-60）
+    post_wait: Option<Instant>,
     /// 收尾补测已经排过（每件只排一次）
     post_started: bool,
 }
@@ -153,6 +159,7 @@ impl BurstPart {
             boundary_guard: recipe.boundary_guard,
             boundary_refine: recipe.boundary_refine,
             budget_dropped: 0,
+            post_wait: None,
             post_started: false,
         }
     }
@@ -540,7 +547,8 @@ impl Part {
 
     /// 收尾补测（D-SB-45）：收尾窗口到期、到达时送测的帧都测完后排一次。按比例分段得出区域，找出判定需要、但到达时
     /// 没用对应走廊测过的（帧, 相机），从本件录制的原图读回补测（返回给 `Machine` 送测；内存里不为补测留图，D-SB-60）；
-    /// 没录到原图的记没测（检测不完整）。已有故障（整件 ERR）时不补测。
+    /// 要用的原图还在写盘时先等，最多等 `RAW_WRITE_WAIT`；没录到、写盘失败或到时没写完的记没测（检测不完整）。
+    /// 已有故障（整件 ERR）时不补测。
     pub(super) fn start_post_measure(&mut self, now: Instant) -> Vec<PostJob> {
         if self.end_at.is_none() || !self.burst_deadline(now) {
             return Vec::new();
@@ -552,35 +560,58 @@ impl Part {
         if burst.collect || burst.post_started || burst.pending > 0 {
             return Vec::new();
         }
-        burst.post_started = true;
         if faulted {
+            burst.post_started = true;
             return Vec::new();
         }
+        // 模拟测量不读图（Ready(None)）；要测图的件只读本件录制
+        let sources: Vec<_> = burst
+            .post_targets()
+            .into_iter()
+            .map(|((camera, seq), segment)| {
+                let source = match (image_measurement, recording) {
+                    (false, _) => Ok(None),
+                    (true, None) => Err(RecordedFrame::Missing),
+                    (true, Some(r)) => match r.burst_frame_file(camera, seq) {
+                        RecordedFrame::Ready(file) => Ok(Some(file)),
+                        other => Err(other),
+                    },
+                };
+                (camera, seq, segment, source)
+            })
+            .collect();
+        let writing = sources
+            .iter()
+            .any(|(.., s)| *s == Err(RecordedFrame::Writing));
+        if writing
+            && now.saturating_duration_since(*burst.post_wait.get_or_insert(now)) < RAW_WRITE_WAIT
+        {
+            return Vec::new();
+        }
+        burst.post_started = true;
         let mut jobs = Vec::new();
-        for ((camera, seq), segment) in burst.post_targets() {
+        for (camera, seq, segment, source) in sources {
             let Some(frame) = burst.frames.get_mut(&(camera, seq)) else {
                 continue;
             };
             frame.corridor = Some(segment);
-            let source = if image_measurement {
-                recording
-                    .and_then(|r| r.burst_frame_file(camera, seq))
-                    .map(Some)
-            } else {
-                Some(None)
-            };
             match source {
-                Some(file) => {
+                Ok(file) => {
                     frame.measuring_since = Some(now);
                     frame.metrics = None;
                     jobs.push((camera, seq, segment, file));
                 }
-                None => {
+                Err(missing) => {
+                    let why = if missing == RecordedFrame::Writing {
+                        format!("录制原图 {} s 内没写完", RAW_WRITE_WAIT.as_secs())
+                    } else {
+                        "没有录到原图".to_owned()
+                    };
                     frame.metrics = Some(unmeasured(
                         camera,
                         seq,
                         FrameState::Unmeasured,
-                        format!("收尾补测要用第 {segment} 段走廊，但这一帧没有录到原图"),
+                        format!("收尾补测要用第 {segment} 段走廊，但这一帧{why}"),
                     ));
                 }
             }

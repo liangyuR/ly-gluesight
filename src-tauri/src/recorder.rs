@@ -1,9 +1,9 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -108,6 +108,19 @@ struct BurstFrameJob {
     /// 主文件的图：灰度帧、彩色帧的原始马赛克（`pattern` 为其相位），或没有马赛克的 RGB 帧
     image: Arc<FrameImage>,
     pattern: Option<BayerPattern>,
+    /// 写盘结果（成功为 true），供收尾补测知道这一帧原图读得了没有（D-SB-60）
+    written: Arc<OnceLock<bool>>,
+}
+
+/// 收尾补测读回一帧录制原图的状态（D-SB-60）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordedFrame {
+    /// 已写盘，可读
+    Ready(PathBuf),
+    /// 已排队、还没写完
+    Writing,
+    /// 没录（没到、排队失败）或写盘失败
+    Missing,
 }
 
 /// 段配方录制的帧状态：按 (计划相机下标, seq) 记，缺帧在收尾时按“1..=最大 seq 内没到的帧”列出。
@@ -119,6 +132,8 @@ struct BurstFrames {
     /// 录制队满或写入线程停止而没录的帧
     dropped: Vec<FrameKey>,
     drop_reason: Option<String>,
+    /// 已排队写盘的帧的写盘结果
+    written: BTreeMap<FrameKey, Arc<OnceLock<bool>>>,
 }
 
 struct FinishJob {
@@ -158,12 +173,25 @@ pub const KEEP_MARKER: &str = "maintenance-collect";
 
 impl Recording {
     /// 本件计划相机 `camera` 第 `seq` 帧已排进写盘的原图文件（还在本件的录制目录里，收尾前可读回）；没录或排队失败为 None。
-    pub fn burst_frame_file(&self, camera: usize, seq: u64) -> Option<PathBuf> {
-        self.burst
+    pub fn burst_frame_file(&self, camera: usize, seq: u64) -> RecordedFrame {
+        let Some(frame) = self
+            .burst
             .frames
             .iter()
             .find(|f| f.camera == camera && f.seq == seq && f.queued)
-            .map(|f| self.dir.join(&f.file))
+        else {
+            return RecordedFrame::Missing;
+        };
+        match self
+            .burst
+            .written
+            .get(&FrameKey { camera, seq })
+            .and_then(|w| w.get())
+        {
+            Some(true) => RecordedFrame::Ready(self.dir.join(&frame.file)),
+            Some(false) => RecordedFrame::Missing,
+            None => RecordedFrame::Writing,
+        }
     }
 
     pub fn annotate(&mut self, key: &str, value: serde_json::Value) {
@@ -425,12 +453,15 @@ impl Recorder {
         let queue_error = if self.queued.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < BURST_QUEUE).then_some(n + 1)).is_err() {
             Some(format!("录制队列已满（{BURST_QUEUE} 帧）"))
         } else {
+            let written = Arc::new(OnceLock::new());
+            burst.written.insert(key, written.clone());
             let job = BurstFrameJob {
                 cycle_id: rec.cycle_id.clone(),
                 pending: rec.dir.clone(),
                 meta: meta.clone(),
                 image: main,
                 pattern,
+                written,
             };
             if self.tx.send(Msg::BurstFrame(job)).is_err() {
                 self.queued.fetch_sub(1, Ordering::AcqRel);
@@ -469,11 +500,24 @@ impl Recorder {
 }
 
 const WRITE_FAILURES: &[&str] = &[
-    "创建录制目录失败", "创建原图失败", "写入原图失败", "创建 part.json 失败", "写入 part.json 失败", "提交 part.json 失败",
-    "创建收尾目录失败", "录制目录收尾失败", "录制目标目录已存在", "NG-only 合格件临时录制清理失败",
-    "录制线程启动失败", "录制写入线程已停止",
-    "原图未取得写入成功确认", "已写入原图不可用", "原图路径不能是 reparse point", "原图路径不是普通文件或文件长度与录制尺寸不符",
-    "原图解码失败", "原图解码尺寸与录制尺寸不符",
+    "创建录制目录失败",
+    "创建原图失败",
+    "写入原图失败",
+    "创建 part.json 失败",
+    "写入 part.json 失败",
+    "提交 part.json 失败",
+    "创建收尾目录失败",
+    "录制目录收尾失败",
+    "录制目标目录已存在",
+    "临时录制清理失败",
+    "录制线程启动失败",
+    "录制写入线程已停止",
+    "原图未取得写入成功确认",
+    "已写入原图不可用",
+    "原图路径不能是 reparse point",
+    "原图路径不是普通文件或文件长度与录制尺寸不符",
+    "原图解码失败",
+    "原图解码尺寸与录制尺寸不符",
 ];
 
 pub fn is_write_error(error: &str) -> bool {
@@ -533,6 +577,7 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
                     seq: job.meta.seq,
                 };
                 let result = save_raw(&job.pending.join(&job.meta.file), &job.image, job.pattern);
+                let _ = job.written.set(result.is_ok());
                 state.frame_results.insert(key, result);
                 queued.fetch_sub(1, Ordering::AcqRel);
             }

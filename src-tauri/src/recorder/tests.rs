@@ -223,13 +223,13 @@ fn scratch_recording_is_readable_during_the_part_and_never_kept() {
         let recorder = Recorder::new(dir.root(), Some(callback));
         let mut rec = recorder.scratch("SN-S", recipe(), "scratch", None).unwrap();
         recorder.burst_frame(&mut rec, &frame(42), 0, 1);
-        let file = rec
-            .burst_frame_file(0, 1)
-            .expect("排队写盘的帧要能找到原图文件");
+        // 写完之前报“还在写”，写完才给可读的原图文件：补测按它等，不会读到半截文件
         let deadline = std::time::Instant::now() + WRITER_HANG;
-        let image = loop {
-            if let Ok(image) = crate::image_file::load(&file) {
-                break image;
+        let file = loop {
+            match rec.burst_frame_file(0, 1) {
+                RecordedFrame::Ready(file) => break file,
+                RecordedFrame::Writing => {}
+                RecordedFrame::Missing => panic!("{verdict:?}：排队写盘的帧不能报没录"),
             }
             assert!(
                 std::time::Instant::now() < deadline,
@@ -237,7 +237,13 @@ fn scratch_recording_is_readable_during_the_part_and_never_kept() {
             );
             std::thread::sleep(Duration::from_millis(5));
         };
+        let image = crate::image_file::load(&file).expect("报已写完的原图必须读得出来");
         assert_eq!(image.pixels, vec![42], "{verdict:?}");
+        assert_eq!(
+            rec.burst_frame_file(0, 2),
+            RecordedFrame::Missing,
+            "没录的帧"
+        );
         recorder.finish(rec, verdict, "", 10, u64::MAX, Vec::new());
         let outcome = wait(&outcomes);
         assert_eq!(
