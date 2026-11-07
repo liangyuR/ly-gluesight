@@ -14,13 +14,13 @@ function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallbac
 const defaultSettings: CycleSettings = {
   productSource: "plc",
   manualRecipeId: null,
-  timeouts: { motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
+  timeouts: { motionMs: 1_200_000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
   historyDays: 180,
-  record: "off",
+  record: "all",
   recordKeep: 100,
-  recordMaxGb: 20,
+  recordMaxGb: 100,
   offlineRecordKeep: 300,
-  offlineRecordMaxGb: 10,
+  offlineRecordMaxGb: 100,
   autoReset: false,
 };
 
