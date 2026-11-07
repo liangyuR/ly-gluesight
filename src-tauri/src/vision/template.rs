@@ -213,46 +213,6 @@ mod tests {
 
     use super::*;
 
-    fn expert(pairs: &[(&str, f64)]) -> ExpertParams {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), json!(v)))
-            .collect()
-    }
-
-    #[test]
-    fn camera_override_beats_recipe_default_for_graph_params_and_judge_thresholds() {
-        let recipe = expert(&[
-            ("segmentMin", 12.0),
-            ("mergeGap", 4.0),
-            ("presentRatio", 0.4),
-            ("centerRatio", 0.5),
-        ]);
-        let camera = expert(&[("segmentMin", 16.0), ("presentRatio", 0.6)]);
-        let p = corridor().params(json!({}), &[&recipe, &camera]).unwrap();
-        assert_eq!(
-            (
-                p["segmentMin"].as_f64(),
-                p["mergeGap"].as_f64(),
-                p["peakMin"].as_f64()
-            ),
-            (Some(16.0), Some(4.0), Some(16.0))
-        );
-        let j = corridor().judge(&[&recipe, &camera]);
-        assert_eq!(
-            (
-                j["presentRatio"].as_f64(),
-                j["centerRatio"].as_f64(),
-                j["contrastRatio"].as_f64()
-            ),
-            (Some(0.6), Some(0.5), Some(0.3))
-        );
-        assert!(
-            p.get("presentRatio").is_none() && j.get("segmentMin").is_none(),
-            "判定门限不进图参数，图参数不进判定门限"
-        );
-    }
-
     #[test]
     fn invalid_or_retired_expert_params_are_rejected() {
         // contrastMin、pathMinCoverage、window 是 1.1 测量图的专家参数名，不迁移

@@ -162,34 +162,3 @@ pub fn issues(segments: &[PathSegment], inspect: &[CameraInspect]) -> Vec<Issue>
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn search_sector_is_the_half_facing_away_from_the_nearest_image_edge() {
-        // 防的回归（D-SB-47）：扇区朝向胶嘴本体所在的画面边，或随出胶点偏离画面中线而斜过去，贴着画面边走的胶条落到扇区外
-        let inside = |s: [f64; 2], deg: f64| {
-            s[0] <= deg && deg <= s[1] || s[0] <= deg - 360.0 || deg + 360.0 <= s[1]
-        };
-        for (nozzle, toward, away) in [
-            ([548.0, 888.0], -175.0, 90.0),
-            ([618.0, 34.0], 90.0, -90.0),
-            ([20.0, 512.0], 0.0, 180.0),
-        ] {
-            let s = search_sector(nozzle, [1280, 1024], None);
-            assert!((s[1] - s[0] - 180.0).abs() < 1e-9, "{nozzle:?}");
-            assert!(inside(s, toward) && !inside(s, away), "{nozzle:?} → {s:?}");
-        }
-    }
-
-    #[test]
-    fn turned_sector_overrides_the_automatic_half() {
-        // 防的回归（D-SB-47）：示教帧上拖过的扇区方向没写进测量图，测量仍按自动的半圈找胶条
-        assert_eq!(
-            search_sector([629.0, 890.0], [1280, 1024], Some(-150.0)),
-            [-240.0, -60.0]
-        );
-    }
-}

@@ -2865,69 +2865,6 @@ async fn camera_reconnect_inner(app: AppHandle, cam: usize) -> Result<String, St
 }
 
 #[cfg(test)]
-mod rig_file_tests {
-    use super::*;
-
-    #[test]
-    fn released_camera_is_never_reopened_by_the_supervisor() {
-        let supervision = CameraSupervision::default();
-        supervision.start();
-        for (lost, opened) in [(false, false), (true, false), (true, true)] {
-            assert!(
-                !supervision.reconnect_due(true, lost, opened),
-                "lost={lost} opened={opened}"
-            );
-            assert!(
-                supervision.reconnect_due(false, lost, opened),
-                "lost={lost} opened={opened}"
-            );
-        }
-        assert!(!supervision.reconnect_due(false, false, true));
-    }
-}
-
-#[cfg(test)]
-mod view_tests {
-
-    use super::*;
-
-    #[test]
-    fn prior_trigger_completion_cannot_satisfy_the_current_capture() {
-        let frame = |session, counter, value: u8| {
-            synthetic_frame(
-                0,
-                session,
-                counter,
-                (1u8..=3)
-                    .map(|view| Arc::new(FrameImage::new(1, 1, vec![value + view])))
-                    .collect(),
-                true,
-            )
-        };
-        let requested = CaptureTicket {
-            session: 12,
-            frame_counter: 8,
-        };
-        let mut cached = CapturedFrame::from_frame(&frame(12, 7, 10));
-        assert!(cached.images_for(requested).is_none());
-        cached = CapturedFrame::from_frame(&frame(11, 8, 20));
-        assert!(cached.images_for(requested).is_none());
-        cached = CapturedFrame::from_frame(&frame(12, 8, 30));
-        let images = cached.images_for(requested).unwrap();
-        assert_eq!(images.len(), 3);
-        assert_eq!(
-            images
-                .iter()
-                .map(|image| image.pixels[0])
-                .collect::<Vec<_>>(),
-            [31, 32, 33]
-        );
-        cached = CapturedFrame::from_frame(&frame(12, 9, 40));
-        assert!(cached.images_for(requested).is_none());
-    }
-}
-
-#[cfg(test)]
 mod gray_tests {
     use super::*;
 

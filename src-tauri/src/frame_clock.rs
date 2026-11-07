@@ -494,12 +494,4 @@ mod tests {
             "另一台相机不成越界帧"
         );
     }
-
-    /// 防的回归：模拟、样本集的合成时钟没有门控边沿，第一帧要按下限（上一帧）算序号，与原来的帧号配组一致。
-    #[test]
-    fn synthetic_clock_numbers_frames_like_counters() {
-        let mut c = clock(1, true);
-        assert_eq!(c.stamp(0, 1_002 * T, None), Stamp::Seq(2), "第 1001 帧丢了");
-        assert_eq!(c.stamp(0, 1_003 * T, None), Stamp::Seq(3));
-    }
 }

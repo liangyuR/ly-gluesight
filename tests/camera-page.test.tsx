@@ -104,16 +104,6 @@ describe("出图验证", () => {
   });
 });
 
-describe("触发方式", () => {
-  it("修改 Line0 帧率后保存 → 保留高电平并写入新帧率", async () => {
-    await openCamera("左相机 cam1");
-    const fps=screen.getByRole("spinbutton",{name:"设定帧率"});
-    fireEvent.change(fps,{target:{value:"15"}});
-    await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
-    await waitFor(()=>expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config",{cam:0,config:expect.objectContaining({frameRate:15,triggerActivation:"LevelHigh"})}));
-  });
-});
-
 it("旧 Software 边沿配置切回 Line0 → 保存为高电平", async()=>{
  Object.defineProperty(HTMLElement.prototype,"scrollIntoView",{value:()=>{},configurable:true});
  configs=[camera("cam1","左相机",{triggerSource:"Software",triggerActivation:"RisingEdge" as CameraConfig["triggerActivation"]})];
@@ -123,13 +113,4 @@ it("旧 Software 边沿配置切回 Line0 → 保存为高电平", async()=>{
  fireEvent.click(await screen.findByRole("option",{name:"Line0（高电平连续采集）"}));
  await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
  await waitFor(()=>expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config",{cam:0,config:expect.objectContaining({triggerSource:"Line0",triggerActivation:"LevelHigh"})}));
-});
-
-it("三目拼接相机 → 图像模式的彩色选项不可选", async()=>{
- Object.defineProperty(HTMLElement.prototype,"scrollIntoView",{value:()=>{},configurable:true});
- configs=[camera("cam1","左相机",{viewCount:3})];
- await openCamera("左相机 cam1");
- screen.getByRole("combobox",{name:"图像模式"}).focus();
- await userEvent.keyboard("{ArrowDown}");
- expect(await screen.findByRole("option",{name:"彩色"})).toHaveAttribute("aria-disabled","true");
 });

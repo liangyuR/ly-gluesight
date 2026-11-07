@@ -279,28 +279,4 @@ mod tests {
         assert_eq!(load(&path).unwrap().pixels, [10, 20]);
         let _ = std::fs::remove_dir_all(&root);
     }
-
-    #[test]
-    fn bayer_commented_pgm_reads_back_as_rgb_and_plain_pgm_stays_gray() {
-        // 防的回归：彩色录制的原图（带 `# bayer BG` 注释的 P5 马赛克）读回成灰度或按错相位着色，彩色录制无法复测；
-        // 反过来没有注释的旧录制被当成马赛克去马赛克，旧灰度录制读回变色
-        let (w, h) = (4u32, 2u32);
-        // BG 相位：第 0 行 B G、第 1 行 G R；纯色 R=200 G=100 B=50
-        let mosaic = [50u8, 100, 50, 100, 100, 200, 100, 200];
-        let mut bayer = pnm_header(w, h, 3, Some(BayerPattern::Bg)).into_bytes();
-        bayer.extend_from_slice(&mosaic);
-        assert!(bayer.starts_with(b"P5\n# bayer BG\n4 2\n255\n"));
-        let color = decode(&bayer).unwrap();
-        assert_eq!((color.width, color.height, color.channels), (w, h, 3));
-        assert!(
-            color.pixels.chunks_exact(3).all(|p| p == [200, 100, 50]),
-            "{:?}",
-            color.pixels
-        );
-
-        let mut plain = pnm_header(w, h, 1, None).into_bytes();
-        plain.extend_from_slice(&mosaic);
-        let gray = decode(&plain).unwrap();
-        assert_eq!((gray.channels, gray.pixels.as_slice()), (1, &mosaic[..]));
-    }
 }

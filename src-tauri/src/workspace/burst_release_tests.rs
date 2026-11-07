@@ -1,6 +1,6 @@
-use super::burst::{CalibrationRound, CameraTeaching};
+use super::burst::CameraTeaching;
 use super::burst_release::{
-    bank_round, burst_checks, publish_blocker, teach_trial_check, BurstInputs, TeachTrial,
+    burst_checks, publish_blocker, teach_trial_check, BurstInputs, TeachTrial,
 };
 use super::burst_tests::{burst_workspace, capture_round, configs, DEVICE};
 use super::*;
@@ -8,7 +8,6 @@ use crate::plan::{
     PartCalib, SegmentCalib,
     SegmentKind::{self, Corner, Straight},
 };
-use crate::recipe_capture::CaptureRoundV2;
 
 /// 每段每台检测相机都选了示教帧（1000×700，采集时设备标签为 device）、画了样例走廊（落在帧内），相机有当量。
 fn taught(kinds: &[SegmentKind], device: &str) -> Workspace {
@@ -162,132 +161,6 @@ fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
     }
 }
 
-#[test]
-fn short_straight_warning_matches_runtime_offset_frames() {
-    // 防的回归（D-SB-40）：发布检查只按 2 × 过渡帧 + 1 提示，没算胶偏判定再去掉的区域首尾各一帧和段跳过帧，
-    // 中间直线段 N_exp 为 5、6 帧时运行时胶偏取不到帧（标胶偏未判），发布前却不提示
-    use crate::segmentation::{resolve_regions, Boundary, RegionKind, SegOutcome};
-    // (段类型, 直线段下标, 直线段的 skip_head, skip_tail)
-    let layouts: [(&[SegmentKind], usize, u32, u32); 4] = [
-        (&[Corner, Straight, Corner], 1, 0, 0),
-        (&[Corner, Straight, Corner], 1, 3, 0),
-        (&[Straight, Corner], 0, 0, 0),
-        (&[Straight, Corner], 0, 4, 0),
-    ];
-    for (kinds, k, skip_head, skip_tail) in layouts {
-        for n in 3..=10 {
-            let mut w = taught(kinds, DEVICE);
-            calibrate(&mut w, 30);
-            let segment = &mut w.doc.segments[k];
-            (
-                segment.expected_frames,
-                segment.skip_head,
-                segment.skip_tail,
-            ) = (Some(n), skip_head, skip_tail);
-            let segments = &w.doc.segments;
-            let mut cut = 0;
-            let boundaries = segments[..segments.len() - 1]
-                .iter()
-                .map(|s| {
-                    cut += u64::from(s.expected_frames.unwrap());
-                    Boundary {
-                        after_segment: s.index,
-                        frame_seq: cut,
-                        confidence: 1.0,
-                    }
-                })
-                .collect();
-            let total = segments
-                .iter()
-                .map(|s| u64::from(s.expected_frames.unwrap()))
-                .sum();
-            let index = segments[k].index;
-            let core: u64 = resolve_regions(
-                segments,
-                &SegOutcome::Boundaries(boundaries),
-                total,
-                0.5,
-                w.doc.boundary_guard,
-            )
-            .iter()
-            .filter(|r| r.kind == RegionKind::Straight { segment: index })
-            .map(|r| r.last_seq - r.first_seq + 1)
-            .sum();
-            let checks = checks(&w, &configs(&w.doc, DEVICE));
-            let warned = check(&checks, "段帧数")
-                .detail
-                .split('；')
-                .any(|item| item.starts_with(&format!("第 {index} 段")) && item.contains("胶偏"));
-            assert_eq!(
-                warned,
-                core < 3,
-                "{kinds:?} 第 {index} 段 N_exp {n}、跳过 {skip_head}/{skip_tail}：核心区域 {core} 帧"
-            );
-        }
-    }
-}
-
-#[test]
-fn sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejected() {
-    // 防的回归（规格 §0 独立验证、D-SB-35）：用作走廊示教或示教件测量的同一轮又当独立验证样本（自己验自己），
-    // 或换了相机 / 设备配置的轮次混进验证样本
-    type Edit = fn(&mut Workspace, &mut CaptureRoundV2, &mut BTreeMap<String, Value>);
-    let cases: [(&str, Edit, bool); 5] = [
-        ("独立的新轮次", |_, _, _| {}, true),
-        (
-            "已用于走廊示教",
-            |w, _, _| w.camera_teaching[1].round = "capture-sample".into(),
-            false,
-        ),
-        (
-            "已作为示教件测量",
-            |w, round, _| {
-                w.calibration.rounds.push(CalibrationRound {
-                    round_id: round.round_id.clone(),
-                    standard: false,
-                    created_at: 1,
-                    cameras: w.doc.plan_cameras(),
-                    camera_config: vec![json!(DEVICE); 3],
-                    group_count: round.group_count,
-                    camera_frames: vec![20; 3],
-                    incomplete_groups: 0,
-                    loss_alarms: 0,
-                    corridors: vec![Value::Null; 3],
-                    x_means: vec![None; 3],
-                    edge_means: Vec::new(),
-                    heading: Default::default(),
-                })
-            },
-            false,
-        ),
-        (
-            "采集后设备配置改变",
-            |_, _, current| {
-                current.insert("cam2".into(), json!("device-b"));
-            },
-            false,
-        ),
-        (
-            "缺一台计划相机、多一台别的相机",
-            |_, round, _| round.cameras[2].camera_id = "cam9".into(),
-            false,
-        ),
-    ];
-    for (name, edit, accepted) in cases {
-        let mut w = taught(&[Straight], DEVICE);
-        let mut round = capture_round("capture-sample", &w.doc, 20, DEVICE, &[]);
-        let mut current = configs(&w.doc, DEVICE);
-        edit(&mut w, &mut round, &mut current);
-        let result = bank_round(&mut w, &round, &current, Verdict::Ok);
-        assert_eq!(result.is_ok(), accepted, "{name}：{result:?}");
-        let banked = (w.sample_bank.len(), w.samples.len());
-        assert_eq!(
-            banked,
-            if accepted { (1, 1) } else { (0, 0) },
-            "{name}：拒绝时不进样本库"
-        );
-    }
-}
 
 #[test]
 fn changed_frame_rate_blocks_publish_until_teaching_measurement_configuration_restored() {

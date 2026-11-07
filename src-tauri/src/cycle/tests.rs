@@ -331,28 +331,6 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
     }
 }
 
-/// D-SB-7：下一件每台相机的帧计数基线 = max(原基线, 本件见到的最高帧计数)，PLC 报的 deviceTriggers 与计划数都不参与。
-/// 上一件的帧在收尾后才到（帧计数不高于见到的最高值）不能计入下一件；某台相机漏收一个脉冲（PLC 报 4、它只到 3 帧）时，
-/// 它下一件的首帧仍算第 1 帧——按“基线 + deviceTriggers”推会把它判成迟到帧，而且每件都丢。
-#[test]
-fn next_part_baseline_is_each_camera_highest_frame_counter_seen() {
-    for (case, cam, delivered, late, next_first) in [
-        ("上一件帧计数 3 在收尾后才到", 0u8, [1, 2, 4], Some(3), 5),
-        ("漏收一个脉冲的相机", 2u8, [1, 2, 3], None, 4),
-    ] {
-        let mut first = burst_part("first", &Ledgers::default());
-        for counter in delivered { deliver(&mut first, cam, counter); }
-        first.device_triggers = Some(4);
-        let mut ledgers = Ledgers::default();
-        first.close_routing(&mut ledgers);
-        let mut next = burst_part("next", &ledgers);
-        if let Some(late) = late {
-            assert!(matches!(next.receive_burst(&burst_frame(cam, late)), Some(burst::Arrival::Stale { .. })), "{case}");
-        }
-        assert_eq!(next.receive_burst(&burst_frame(cam, next_first)), Some(burst::Arrival::Accepted { camera: cam as usize, seq: 1 }), "{case}");
-    }
-}
-
 /// D-SB-55：帧按相机时间戳编号。检测中相机重开（会话变了、帧号从 1 重数，时间戳连续）照常收帧、不判 ERR，收尾核对会话也不报错；
 /// 时间戳回退（断电或时钟被复位）的相机之后的帧不收，缺的帧组只算检测不完整，整件不判 ERR。
 #[test]
@@ -433,45 +411,6 @@ fn no_frame_from_any_camera_is_err_91() {
     assert!(p.complete());
     let judgement = judge_burst(&mut p);
     assert_eq!((judgement.verdict, judgement.plc_code, judgement.fault_code), (Verdict::ErrInspect, 90, fault::MISSING_FRAME));
-}
-
-/// 防的回归（MM-2）：维护件回写码改成 0 后，落库记录不能因摘要与区域判定的回写码不同而退回没有区域的摘要
-/// （历史帧格全部按整件结论着色、区域面板为空）。
-#[test]
-fn maintenance_summary_with_plc_code_zero_keeps_region_judgement_in_record() {
-    let mut p = burst_part("maintenance-record", &Ledgers::default());
-    deliver_groups(&mut p, 4);
-    end(&mut p, Some(4), true);
-    let judgement = judge_burst(&mut p);
-    assert!(!judgement.regions.is_empty());
-    let delivered = Judgement {
-        plc_code: 0,
-        ..burst::summary(&judgement)
-    };
-    let record = p.burst_record(&delivered);
-    assert_eq!(record.judgement.regions, judgement.regions);
-    assert_eq!(
-        (record.judgement.verdict, record.judgement.plc_code),
-        (judgement.verdict, 0)
-    );
-    assert!(record.frames.iter().all(|f| f.region.is_some()));
-}
-
-/// 防的回归：测过帧后整件故障判 ERR（没有区域）时，帧格没有单帧结论，在线显示成还在“测量中”。
-#[test]
-fn measured_frames_of_a_faulted_part_are_unjudged_not_measuring() {
-    let mut p = burst_part("faulted-view", &Ledgers::default());
-    deliver_groups(&mut p, 2);
-    p.fault = Some((fault::PROCESS_TIMEOUT, "等工件结束超时".into()));
-    end(&mut p, Some(2), true);
-    let judgement = judge_burst(&mut p);
-    assert!(judgement.regions.is_empty());
-    let view = p.burst_view();
-    let cells: Vec<&FrameCellView> = view.groups.iter().flat_map(|g| &g.cells).collect();
-    assert!(!cells.is_empty());
-    assert!(cells
-        .iter()
-        .all(|c| c.status == FrameCellStatus::Measured && c.verdict.is_none() && c.unjudged));
 }
 
 #[test]

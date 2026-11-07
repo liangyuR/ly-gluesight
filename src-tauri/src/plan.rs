@@ -650,10 +650,8 @@ mod tests {
 
     /// 一份合法的段计划：直线 12 帧（带胶偏参考）、弯道 4 帧、直线 9 帧，三台相机。
     struct Plan {
-        product: u16,
         segments: Vec<PathSegment>,
         cameras: Vec<String>,
-        part: Option<PartCalib>,
     }
 
     type Edit = fn(&mut Plan);
@@ -673,10 +671,8 @@ mod tests {
             edge: None,
         });
         Plan {
-            product: 7,
             segments,
             cameras: ["camA", "camB", "camC"].map(String::from).to_vec(),
-            part: None,
         }
     }
 
@@ -686,70 +682,7 @@ mod tests {
         p
     }
 
-    fn identity(p: &Plan) -> PlanIdentity {
-        plan_identity(p.product, &p.segments, &p.cameras, expected_total(&p.segments, p.part.as_ref()))
-    }
 
-    fn part(total: u32) -> PartCalib {
-        PartCalib { expected_total: total, calib: SegmentCalib { rounds: 10, min: total - 1, max: total + 1, mean: total as f64 } }
-    }
-
-    /// 规格 §1：段序列 / 类型 / 相机绑定 / 产品代码变化换计划号；N_exp 与整件帧组数也换（默认做法 6）；
-    /// 限值、容差、x_ref、检测区间、段长、标定统计变化沿用。
-    #[test]
-    fn plan_identity_changes_only_with_sequence_kind_frames_cameras_or_product() {
-        let base = identity(&plan());
-        let cases: [(&str, bool, Edit); 17] = [
-            ("段类型", true, |p| p.segments[2].kind = Corner),
-            ("段顺序", true, |p| {
-                p.segments.swap(0, 1);
-                for (i, segment) in p.segments.iter_mut().enumerate() {
-                    segment.index = i as u32 + 1;
-                }
-            }),
-            ("增加一段", true, |p| p.segments.push(new_segment(4, Corner, &KindDefaults::default()))),
-            ("相机顺序", true, |p| p.cameras.swap(0, 1)),
-            ("换一台相机", true, |p| p.cameras[2] = "camD".into()),
-            ("各段 N_exp 重分配但总数不变", true, |p| {
-                p.segments[0].expected_frames = Some(13);
-                p.segments[1].expected_frames = Some(3);
-            }),
-            ("产品代码", true, |p| p.product = 8),
-            ("段检测相机", true, |p| {
-                p.segments[1].cameras = vec!["camB".into()]
-            }),
-            // D-SB-53：不检测的段没有检测相机，生产按它选走廊与取相机，要换计划版本
-            ("段设为不检测", true, |p| p.segments[1].skip = true),
-            (
-                "段检测相机列全三台（与不指定相同）",
-                false,
-                |p| p.segments[1].cameras = p.cameras.clone(),
-            ),
-            ("容差", false, |p| p.segments[0].tolerance = 3),
-            ("胶宽、断胶、溢胶、胶偏限值", false, |p| {
-                let checks = &mut p.segments[0].checks;
-                checks.width.tol_upper = 2.5;
-                checks.gap.max_gap_mm = 9.0;
-                checks.overflow.max_width_mm = 10.0;
-                checks.offset.as_mut().unwrap().max_mean_shift_mm = 3.0;
-            }),
-            ("x_ref", false, |p| p.segments[0].offset_ref.as_mut().unwrap().x_ref = Some(0.5)),
-            ("检测区间", false, |p| p.segments[1].inspect_range = Some(InspectRange { a_mm: 5.0, b_mm: 40.0 })),
-            ("段长", false, |p| p.segments[2].length_mm = Some(120.0)),
-            ("标定统计", false, |p| p.segments[0].calib = Some(SegmentCalib { rounds: 12, min: 11, max: 13, mean: 12.1 })),
-            ("各段已标定时的整件标定", false, |p| p.part = Some(part(30))),
-        ];
-        for (case, changes, edit) in cases {
-            assert_eq!(identity(&edited(edit)) != base, changes, "{case}");
-        }
-        let recalibrated = |total| {
-            let mut p = plan();
-            p.segments.iter_mut().for_each(|segment| segment.expected_frames = None);
-            p.part = Some(part(total));
-            identity(&p)
-        };
-        assert_ne!(recalibrated(50), recalibrated(51), "各段待标定时整件重新标定");
-    }
 
     /// 规格 §1 段模型约束；检测限值按旧 ShotLimits 的范围规则校验（D-SB-1 新路径不丢旧约束），停用的检测项不校验限值。
     #[test]

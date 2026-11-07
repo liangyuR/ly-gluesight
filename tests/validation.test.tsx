@@ -35,18 +35,13 @@ beforeEach(() => {
 
 describe("验证与发布页面", () => {
 
-  // 防的回归：记录库本机共用、配方编号只在项目内唯一，历史样本查询不带项目时混入其他项目（含同编号配方）的记录
-  it("列历史样本 → 查询带当前项目编号", async () => {
-    show();
-    await waitFor(() => expect(historyApi.query).toHaveBeenCalledWith(expect.objectContaining({ project: "line-a" })));
-  });
-
   // 防的回归：复制来的项目沿用来源项目的历史记录作验证样本，查询只列当前项目时这些已选样本看不到，也取消不了
-  it("已选的历史样本不在当前项目的列表里 → 单独读出并显示为已选", async () => {
+  it("只列当前项目历史样本且已选样本来自别的项目 → 按项目查询并单独显示已选样本", async () => {
     ws.data!.workspace.samples = [{ historyId: 42, sampleId: null, expected: "OK" }];
     vi.mocked(historyApi.detail).mockResolvedValue({ ...burstPartDetail(), summary: { ...burstPartSummary(42), sn: "SN-SRC", projectId: "line-src" } });
     show();
     expect(await screen.findByRole("checkbox", { name: "选用历史 SN SN-SRC" })).toBeChecked();
+    expect(historyApi.query).toHaveBeenCalledWith(expect.objectContaining({ project: "line-a" }));
     expect(historyApi.detail).toHaveBeenCalledWith(42);
   });
 

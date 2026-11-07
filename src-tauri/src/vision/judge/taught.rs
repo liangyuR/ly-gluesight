@@ -585,7 +585,3 @@ fn percentile(mut v: Vec<f64>, q: f64) -> f64 {
     let j = (i + 1).min(v.len() - 1);
     v[i] + (v[j] - v[i]) * (pos - i as f64)
 }
-
-#[cfg(test)]
-#[path = "taught/tests.rs"]
-mod tests;

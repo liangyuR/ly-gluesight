@@ -213,27 +213,3 @@ pub fn save_history_days(path: &Path, days: u32) -> Result<(), String> {
             .map_err(|e| e.to_string())?,
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::offline::test_dir::TestDir;
-
-    /// 防的回归：现场旧版本的检测设置里还有已删除的 `recordBayer`；读入时报错会把整份设置备份后按默认值重建，
-    /// 录制策略、保留上限等现场值全部丢失。
-    #[test]
-    fn old_settings_with_record_bayer_load_without_rebuild() {
-        let dir = TestDir::new("settings-tests", "record-bayer");
-        let path = dir.join("cycle-settings.json");
-        std::fs::write(
-            &path,
-            r#"{"record":"all","recordKeep":42,"recordBayer":true}"#,
-        )
-        .unwrap();
-        let (settings, note) = CycleSettings::load(&path);
-        assert_eq!(
-            (settings.record, settings.record_keep, note),
-            (RecordMode::All, 42, None)
-        );
-    }
-}

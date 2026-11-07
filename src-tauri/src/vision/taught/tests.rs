@@ -219,7 +219,7 @@ fn color_corridor_station_under_highlight_is_unknown_but_a_bare_hole_stays_a_gap
 }
 
 #[test]
-fn part_edge_lines_run_from_bead_center_to_the_edge_on_the_voted_side() {
+fn part_edge_distance_and_overlay_follow_the_majority_side_from_bead_center() {
     // 防的回归：胶边距线画到另一侧、或终点不在测得的胶边距上（叠图与 edgeMm 对不上，现场按图调极性、对比度会被误导）
     let mut doc = burst_doc();
     doc.segments[0].offset_ref = Some(crate::plan::OffsetRef {
@@ -240,10 +240,13 @@ fn part_edge_lines_run_from_bead_center_to_the_edge_on_the_voted_side() {
         let side = |t: Option<f64>| json!({"length": 100, "edges": t.map(|t| vec![json!({"t": t})]).unwrap_or_default()});
         let mut output = corridor_output(&beads(&[], &[]));
         output.outputs["edges"] = record(json!({"start": 0.0, "searchLength": 100.0,
-            "stations": (0..41).map(|_| json!({"right": side(right), "left": side(left)})).collect::<Vec<_>>()}));
+            "stations": (0..41).map(|i| {
+                let (r, l) = if i == 40 { (left, right) } else { (right, left) };
+                json!({"right": side(r), "left": side(l)})
+            }).collect::<Vec<_>>()}));
         let m = measure(&c, FRAME, output).unwrap();
         assert!((m.metrics.edge_mm.unwrap() - 5.5).abs() < 1e-6);
-        assert_eq!(m.part_edges.len(), 41);
+        assert_eq!(m.part_edges.len(), 40);
         for (i, line) in m.part_edges.iter().enumerate() {
             let x = 40.0 + 4.0 * i as f32;
             assert_eq!(*line, [[x, 82.0], [x, end_y]], "第 {} 站", i + 1);
@@ -492,7 +495,7 @@ fn fake_heading_run(
 }
 
 #[test]
-fn heading_without_bead_found_marks_whole_window_absent_with_reason() {
+fn heading_result_uses_fitted_direction_when_found_and_marks_window_absent_otherwise() {
     // 防的回归（D-SB-47）：选中的方向没找到胶条时仍按它的卡尺量出“有胶”（阴影、纹理被当成胶），或不标、不记原因
     let g = heading_graph();
     let image = FrameImage::new(FRAME[0], FRAME[1], vec![0; (FRAME[0] * FRAME[1]) as usize]);
@@ -501,8 +504,18 @@ fn heading_without_bead_found_marks_whole_window_absent_with_reason() {
             .unwrap()
             .metrics;
         assert_eq!(
-            (m.heading_fallback, m.width_mean, m.present_ratio),
-            (missed, width_mm, present),
+            (
+                m.heading_fallback,
+                m.width_mean,
+                m.present_ratio,
+                m.heading_deg
+            ),
+            (
+                missed,
+                width_mm,
+                present,
+                Some(if missed { -80.0 } else { -90.0 })
+            ),
             "找到 {found} 个胶点"
         );
         assert_eq!(
@@ -511,17 +524,6 @@ fn heading_without_bead_found_marks_whole_window_absent_with_reason() {
             "找到 {found} 个胶点"
         );
     }
-}
-
-#[test]
-fn heading_reads_the_fitted_path_not_the_start_direction() {
-    // 防的回归（D-SB-47）：方向记成候选的起跑方向，同一条胶因起跑方向不同读数跳动，分段边界细化被带偏
-    let g = heading_graph();
-    let image = FrameImage::new(FRAME[0], FRAME[1], vec![0; (FRAME[0] * FRAME[1]) as usize]);
-    let m = measure_heading_with(&g, &image, 7, fake_heading_run(8))
-        .unwrap()
-        .metrics;
-    assert_eq!(m.heading_deg, Some(-90.0));
 }
 
 #[test]

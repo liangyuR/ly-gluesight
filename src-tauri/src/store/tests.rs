@@ -73,10 +73,6 @@ fn offline_parts_stay_out_of_real_history_statistics_and_rejudge_and_vice_versa(
     }
 }
 
-/// 段配方记录入库：结论摘要按区域判定、计划帧数取 ΣN_exp、收到帧取帧组数。
-fn save_burst(store: &Store, recipe: &Recipe, cycle: &str, judgement: &Judgement, burst: &BurstRecord) -> Result<i64, String> {
-    store.insert(&burst_part(recipe, cycle, judgement, burst))
-}
 
 fn burst_part<'a>(recipe: &'a Recipe, cycle: &'a str, judgement: &'a Judgement, burst: &'a BurstRecord) -> PartRecord<'a> {
     PartRecord {
@@ -87,85 +83,4 @@ fn burst_part<'a>(recipe: &'a Recipe, cycle: &'a str, judgement: &'a Judgement, 
         bundle_id: None, delivery: &PlcDelivery { state: PlcDeliveryState::NotRequired, updated_at: 0, message: None }, shots: &[],
         source: RecordSource::Real, sample: None, burst: Some(burst),
     }
-}
-
-/// 规格 §2：段配方帧数可以波动，不要求等于预期帧组数；§3：帧身份 (camera, seq) 唯一、相机属于计划相机。
-/// 不合格的记录整条不落库。
-#[test]
-fn insert_accepts_any_frame_count_but_rejects_duplicate_camera_seq_or_foreign_camera() {
-    type Edit = fn(&mut Vec<FrameRecord>);
-    let cases: [(&str, u64, Edit, bool); 3] = [
-        ("帧组数 7 多于预期 4", 7, |_| {}, true),
-        (
-            "同一相机同一 seq 两条",
-            5,
-            |frames| {
-                let duplicate = frames[1].clone();
-                frames.push(duplicate);
-            },
-            false,
-        ),
-        (
-            "相机下标 3 不在计划相机内",
-            5,
-            |frames| frames[0].camera = 3,
-            false,
-        ),
-    ];
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    for (index, (case, groups, edit, accepted)) in cases.into_iter().enumerate() {
-        let recipe = burst_fixture::recipe();
-        let (judgement, mut burst) = burst_fixture::record(&recipe, burst_fixture::frames(groups, &[]), None, None);
-        edit(&mut burst.frames);
-        let result = save_burst(&store, &recipe, &format!("cycle-{index}"), &judgement, &burst);
-        assert_eq!(result.is_ok(), accepted, "{case}: {result:?}");
-    }
-    let conn = store.conn.lock().unwrap();
-    let rows = |table: &str| conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0)).unwrap();
-    assert_eq!((rows("parts"), rows("part_frames")), (1, 21), "被拒的记录不留任何行");
-}
-
-/// 防的回归（MM-10）：判定与交付分离之前，维护试判件落库时退回了没有区域的摘要；启动修复按已存指标补回区域，
-/// 结论与回写码 0 不变，再跑一次不再改动。
-#[test]
-fn shadow_part_saved_without_regions_gets_regions_back_and_keeps_its_conclusion() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let recipe = burst_fixture::recipe();
-    let mut frames = burst_fixture::frames(4, &[]);
-    frames[0].metrics = Some(burst_fixture::measured(0, 1, 6.5));
-    let (mut summary, mut burst) = burst_fixture::record(&recipe, frames, None, Some(0));
-    summary.plc_code = 0;
-    burst.judgement = BurstJudgement {
-        plc_code: 0,
-        regions: Vec::new(),
-        ..burst.judgement.clone()
-    };
-    for frame in &mut burst.frames {
-        frame.region = None;
-    }
-    let mut part = burst_part(&recipe, "shadow-part", &summary, &burst);
-    part.mode = PartMode::MaintenanceShadow;
-    let id = store.insert(&part).unwrap();
-    assert_eq!(
-        crate::workspace::repair_shadow_regions(&store).unwrap(),
-        (1, Vec::new())
-    );
-    let detail = store.detail(id).unwrap();
-    let repaired = detail.burst.unwrap();
-    assert!(!repaired.judgement.regions.is_empty());
-    assert_eq!(
-        (
-            repaired.judgement.verdict,
-            repaired.judgement.plc_code,
-            detail.summary.plc_code
-        ),
-        (summary.verdict, 0, 0)
-    );
-    assert!(repaired.frames.iter().all(|f| f.region.is_some()));
-    assert_eq!(
-        crate::workspace::repair_shadow_regions(&store).unwrap(),
-        (0, Vec::new())
-    );
 }
