@@ -12,6 +12,17 @@ Node 使用 `setup-node` 的 pnpm 缓存；Rust 仅缓存依赖，不缓存工�
 
 `Windows package` 保留运行库、实际 DLL 视觉与应用验证、NSIS 构建及报告；依赖安装与编译各执行一次，发布草稿仍等待安装包验证成功。
 
+纯文档 PR 仍会执行轻量的 `changes` 与 `verify`，测试任务显示为跳过；`verify` 成功后即可满足分支保护，不需要修改必需检查配置。
+
+复查耗时时，按 job 的 `created_at → started_at` 统计排队；准备阶段包含依赖恢复与编译，不能把整个 `cargo test` 步骤都算作测试。Rust 实际测试时长以日志中的 `test result` 为准，前端以测试命令耗时计；清理单独记录。并行 job 的时间不能直接相加作为整条 workflow 耗时，比较时还应确认测试发现范围与条数一致。
+
+```powershell
+gh run list --workflow windows-ci.yml --limit 50 --json databaseId,headSha,event,conclusion,createdAt,updatedAt
+$runId = gh run list --workflow windows-ci.yml --limit 1 --json databaseId --jq '.[0].databaseId'
+gh api "repos/liangyuR/ly-gluesight/actions/runs/$runId/jobs?per_page=100"
+gh run view $runId --log
+```
+
 ## 当前保留范围
 
 默认 Rust 库回归保留 131 条、前端 Vitest 保留 112 条用例，维护规模各约 100 条，以测试运行器展开后的实际用例数计数。保留集优先覆盖结果交付、数据归属、发布准入、草稿防丢和资料安全；同一业务规则的等价输入使用参数化，重复验证优先保留能观察业务结果的一层。增删用例按保护规则评估，数量是维护规模参考，不通过跳过测试或修改发现范围控制计数。
