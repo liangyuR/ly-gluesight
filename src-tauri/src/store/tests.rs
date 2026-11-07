@@ -114,9 +114,7 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
         .find(|frame| frame.camera == 0 && frame.seq == 1)
         .unwrap();
     assert!(!expected.metrics.as_ref().unwrap().widths.is_empty());
-    store
-        .conn
-        .lock()
+    rusqlite::Connection::open(db.path())
         .unwrap()
         .execute(
             "UPDATE part_frames SET metrics='broken' WHERE part_id=?1 AND camera=1 AND seq=2",

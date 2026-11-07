@@ -263,7 +263,10 @@ mod tests {
         let received = events.clone();
         let operation =
             Operation::with_events(tasks.clone(), Some("measurement".into()), move |event| {
-                received.lock().unwrap().push(event.clone())
+                received
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::to_value(event).unwrap())
             })
             .unwrap();
         let mut saved = "previous";
@@ -278,9 +281,9 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(saved, "previous");
         let events = events.lock().unwrap();
-        assert_eq!(events.first().unwrap().stage, "preparing");
-        assert_eq!(events.last().unwrap().stage, "cancelled");
-        assert_eq!(events.last().unwrap().completed, 1);
+        assert_eq!(events.first().unwrap()["stage"], "preparing");
+        assert_eq!(events.last().unwrap()["stage"], "cancelled");
+        assert_eq!(events.last().unwrap()["completed"], 1);
         assert!(Operation::with_events(tasks, Some("measurement".into()), |_| {}).is_ok());
     }
 
@@ -307,16 +310,19 @@ mod tests {
         let observed = tasks.clone();
         let operation =
             Operation::with_events(tasks.clone(), Some("measurement".into()), move |event| {
-                if event.stage == "completed" {
-                    let final_state = observed.status("measurement").unwrap();
+                let event = serde_json::to_value(event).unwrap();
+                if event["stage"] == "completed" {
+                    let final_state =
+                        serde_json::to_value(observed.status("measurement").unwrap()).unwrap();
                     assert_eq!(
-                        (
-                            final_state.completed,
-                            final_state.failed,
-                            final_state.skipped
-                        ),
-                        (3, 1, 1)
+                        serde_json::json!([
+                            final_state["completed"],
+                            final_state["failed"],
+                            final_state["skipped"]
+                        ]),
+                        serde_json::json!([3, 1, 1])
                     );
+                    assert_eq!(final_state, event);
                 }
             })
             .unwrap();
@@ -329,6 +335,9 @@ mod tests {
                 operation.saving()
             })
             .unwrap();
-        assert_eq!(tasks.status("measurement").unwrap().stage, "completed");
+        assert_eq!(
+            serde_json::to_value(tasks.status("measurement").unwrap()).unwrap()["stage"],
+            "completed"
+        );
     }
 }

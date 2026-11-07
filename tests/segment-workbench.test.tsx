@@ -1,10 +1,12 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SegmentWorkbench from "../src/features/workspace/SegmentWorkbench";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
+import { scheduleFrameRead } from "../src/features/workspace/previewCache";
+import type { FrameImage } from "../src/features/workspace/types";
 import type { InspectionCoverage } from "../src/features/plan/types";
 import { burstRecipe, burstWorkspaceView, deferred, pathSegment, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
@@ -17,6 +19,30 @@ const ROUND = "capture-1-0";
 beforeEach(() => {
   vi.mocked(workspaceApi.captureRoundThumbs).mockResolvedValue({ width: 0, height: 0, channels: 1, frames: Array(9).fill(null) });
   vi.mocked(workspaceApi.captureFrameImage).mockReturnValue(deferred<never>().promise);
+});
+
+it("分段预览快速切帧 → 取消过期排队图，空出读取槽后直接显示最新帧，卸载取消当前请求", async () => {
+  const view = burstWorkspaceView();
+  view.workspace.teachingPiece = { ...view.workspace.teachingPiece!, roundId: "preview-cancel-round" };
+  vi.mocked(useWorkspace).mockImplementation(() => workspaceState(view));
+  const first = deferred<FrameImage>(), obsolete = deferred<FrameImage>();
+  const signals: AbortSignal[] = [];
+  vi.mocked(workspaceApi.captureFrameImage).mockImplementation((_round, camera, seq, signal) => {
+    if (signal) signals.push(signal);
+    return scheduleFrameRead(() => seq === 1 ? first.promise : seq === 2 ? obsolete.promise : Promise.resolve({ url: `current-${camera}-${seq}.png`, width: 100, height: 60 }), signal);
+  });
+  const user = userEvent.setup();
+  const page = render(<MemoryRouter><SegmentWorkbench plan={view.plan} locked="" onDirty={() => {}} /></MemoryRouter>);
+  await user.click(await screen.findByRole("button", { name: "CAM-1 帧组 2" }));
+  await user.click(screen.getByRole("button", { name: "CAM-1 帧组 3" }));
+  try {
+    await act(async () => first.resolve({ url: "old-frame.png", width: 100, height: 60 }));
+    await waitFor(() => expect([...page.container.querySelectorAll(".swb-preview svg image")].map(image => image.getAttribute("href"))).toEqual(view.plan.cameras.map(camera => `current-${camera}-3.png`)));
+    page.unmount();
+    expect(signals.every(signal => signal.aborted)).toBe(true);
+  } finally {
+    await act(async () => obsolete.resolve({ url: "obsolete-frame.png", width: 100, height: 60 }));
+  }
 });
 
 describe("分段标定工作台改变段结构", () => {

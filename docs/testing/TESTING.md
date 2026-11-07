@@ -72,8 +72,8 @@ gh run view $runId --log
 
 长件浏览与复算的读取、进度和取消契约见[长件浏览与复算](../architecture/frame-browsing.md)。定向验证：
 
-- `pnpm exec vitest run tests/frame-navigation.test.tsx tests/frame-inspection-navigation.test.tsx tests/history-detail.test.tsx tests/operation.test.tsx tests/preview-cache.test.ts`：保护千帧跨窗口导航与分页选择、全局帧号、迟到对照不覆盖新结果、进度任务隔离及保存边界、离页取消、快速切帧淘汰旧请求。
-- `cargo test --locked --lib --manifest-path src-tauri/Cargo.toml -- operation:: workspace:: store:: recipe_capture:: history::`：覆盖批量元数据复用后的身份校验、概览与单帧读取契约、对照摘要失效与单项隔离、取消不返回部分结果、示教提交失败保留原结果及受影响业务回归。
+- `pnpm exec vitest run tests/frame-navigation.test.tsx tests/frame-inspection-navigation.test.tsx tests/history-detail.test.tsx tests/operation.test.tsx tests/preview-cache.test.ts tests/segment-workbench.test.tsx`：保护千帧跨窗口导航与分页选择、全局帧号、迟到对照不覆盖新结果、进度任务隔离及保存边界、离页取消、快速切帧淘汰旧请求。
+- `cargo test --locked --lib --manifest-path src-tauri/Cargo.toml -- operation:: workspace:: store:: recipe_capture:: history::`：覆盖概览与单帧读取契约、公开示教读取接口的身份及缺图拒绝、任务生命周期取消与提交边界、终态事件与查询计数一致及受影响业务回归。真实历史批量读取、对照摘要缓存、实际测量循环取消与测量产物保存失败回滚尚无公开命令集成覆盖。
 
 浏览器布局验证使用合成的 1000 帧组、三台相机检查末帧跳转、跨窗口方向键、焦点及 DOM 规模；真实图像解码、整件复测耗时和生产并行负载仍需现场性能验收。
 
