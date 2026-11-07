@@ -27,13 +27,6 @@ pub struct Merged {
     pub duplicates: usize,
 }
 
-impl Merged {
-    /// 编号有变化（需要改写项目文件里的记录引用）。
-    pub fn renumbered(&self) -> bool {
-        self.ids.iter().any(|(old, new)| old != new)
-    }
-}
-
 /// 打开来源库做合并前的准备：核对版本，9 版补齐旧格式升级（调试来源、维护模式列），合并 WAL。
 fn prepare_source(path: &Path) -> Result<i64, String> {
     let conn = Connection::open(path).map_err(db_err)?;
@@ -109,6 +102,46 @@ impl Store {
         result
     }
 
+    /// 并入后还没改写完项目文件里记录引用的编号对照（来源编号 → 本机编号）；没合并过或已改写完为 None。
+    pub fn pending_refs(&self, project: &str) -> Result<Option<BTreeMap<i64, i64>>, String> {
+        let conn = self.conn.lock().unwrap();
+        let done: Option<bool> = conn
+            .query_row(
+                "SELECT refs_done FROM project_merges WHERE project_id = ?1",
+                [project],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        if done != Some(false) {
+            return Ok(None);
+        }
+        let mut stmt = conn
+            .prepare("SELECT old, new FROM project_merge_ids WHERE project_id = ?1")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([project], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(db_err)?;
+        rows.collect::<Result<_, _>>().map_err(db_err).map(Some)
+    }
+
+    /// 记下项目文件里的记录引用已改写完，编号对照不再需要。
+    pub fn finish_refs(&self, project: &str) -> Result<(), String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(db_err)?;
+        tx.execute(
+            "UPDATE project_merges SET refs_done = 1 WHERE project_id = ?1",
+            [project],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "DELETE FROM project_merge_ids WHERE project_id = ?1",
+            [project],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)
+    }
+
     /// 撤回一个项目的全部记录（导入在合并后失败时用；项目是新建的，记录只来自这次合并）。
     pub fn forget_project(&self, project: &str) -> Result<(), String> {
         let mut conn = self.conn.lock().unwrap();
@@ -118,6 +151,7 @@ impl Store {
             "DELETE FROM recipe_snapshots WHERE project_id = ?1",
             "DELETE FROM workspace_instances WHERE project_id = ?1",
             "DELETE FROM project_merges WHERE project_id = ?1",
+            "DELETE FROM project_merge_ids WHERE project_id = ?1",
         ] {
             tx.execute(sql, [project]).map_err(db_err)?;
         }
@@ -319,6 +353,11 @@ fn merge_attached(conn: &Connection, project: &str, keep_ids: bool) -> Result<Me
         "INSERT INTO project_merges (project_id, merged_at, inserted, duplicates) VALUES (?1, ?2, ?3, ?4)",
         params![project, ly_plc::now_ms(), merged.inserted as i64, merged.duplicates as i64],
     ).map_err(db_err)?;
+    conn.execute(
+        "INSERT INTO project_merge_ids (project_id, old, new) SELECT ?1, old, new FROM temp.merge_ids",
+        [project],
+    )
+    .map_err(db_err)?;
     conn.execute_batch("DROP TABLE temp.merge_ids; COMMIT;")
         .map_err(db_err)?;
     Ok(merged)

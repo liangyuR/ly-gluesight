@@ -109,7 +109,8 @@ fn read_json(path: &Path) -> serde_json::Value {
 }
 
 /// 防的回归：项目旧库并入本机库时丢件、把复制项目带来的同一工件存两份、复测链断开、两个项目同修订号的配方快照混用、
-/// 记录找不到所在项目的原图、重新编号后候选采集轮次与复测目录仍指着旧编号；以及再启动（含合并后改名前中断）时重复合并。
+/// 记录找不到所在项目的原图、重新编号后候选采集轮次与复测目录仍指着旧编号、编号没变的项目留着指向已清理记录的引用；
+/// 合并提交后（改写引用前、或改写完还没记下时）中断，下次启动丢了改写或把编号映射两次；以及再启动时重复合并。
 #[test]
 fn two_project_databases_merge_once_with_renumbered_references_and_project_snapshots() {
     let data = TempDir::new("migrate");
@@ -155,12 +156,26 @@ fn two_project_databases_merge_once_with_renumbered_references_and_project_snaps
         serde_json::json!({"id": "9-100-0", "historyId": 9, "cycleId": "gone"}),
     );
 
+    let a = crate::project::dir(data, "line-a");
+    write_json(
+        &a.join("recipe-capture/r9/round.json"),
+        serde_json::json!({"origin": {"kind": "history", "cycleId": "purged", "recordId": 7}}),
+    );
+
+    // 上次启动：两个项目都已合并提交；line-a 还没改写引用就退出，line-b 改写已换上、还没记下完成就退出
     let store = Store::open_for(&database(data), "line-a").unwrap();
+    store
+        .merge_project(&a.join("inspection.db"), "line-a", true)
+        .unwrap();
+    store
+        .merge_project(&b.join("inspection.db"), "line-b", false)
+        .unwrap();
+    remap_refs(&b, &store.pending_refs("line-b").unwrap().unwrap()).unwrap();
     let notes = migrate(data, &store, "line-a");
+    assert!(notes.iter().all(|(level, _)| *level == "info"), "{notes:?}");
     assert_eq!(
-        notes.iter().filter(|(level, _)| *level == "info").count(),
-        2,
-        "{notes:?}"
+        read_json(&a.join("recipe-capture/r9/round.json"))["origin"]["recordId"],
+        0
     );
     let counts = |store: &Store| {
         store
@@ -221,6 +236,8 @@ fn two_project_databases_merge_once_with_renumbered_references_and_project_snaps
         (Some(3), Some("3-100-0"))
     );
     assert!(!b.join("workspaces/comparisons/2").exists());
+    assert!(!b.join("workspaces/comparisons/4").exists());
+    assert!(!b.join(".record-remap.json").exists());
     assert!(!b.join("workspaces/comparisons/9").exists());
     assert!(!crate::project::dir(data, "line-a")
         .join("inspection.db")

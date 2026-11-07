@@ -40,14 +40,11 @@ pub fn project_available(data: &Path, project: &str) -> bool {
     super::valid_id(project) && super::read_meta(&super::dir(data, project)).is_ok()
 }
 
-/// 记录不属于当前项目时，按候选对照不可用的原因。
-pub fn foreign_reason(data: &Path, project: &str) -> String {
+/// 记录所属项目的称呼（其他项目的记录在复测、对照里标明来源）：`项目“名称”（编号）`，项目已删除时为 `已删除的项目 编号`。
+pub fn project_label(data: &Path, project: &str) -> String {
     match super::read_meta(&super::dir(data, project)) {
-        Ok(meta) => format!(
-            "这条记录属于项目“{}”（{project}），切换到该项目后可按候选对照",
-            meta.name
-        ),
-        Err(_) => format!("这条记录属于已删除的项目 {project}，不能按候选对照"),
+        Ok(meta) => format!("项目“{}”（{project}）", meta.name),
+        Err(_) => format!("已删除的项目 {project}"),
     }
 }
 
@@ -61,9 +58,9 @@ pub fn releases_root(data: &Path, project: &str) -> Result<PathBuf, String> {
     Ok(super::dir(data, project).join("vision").join("releases"))
 }
 
-/// 启动时把各项目的旧记录库（`projects/<id>/inspection.db`）并入本机库：当前项目先并、尽量沿用原编号，其余项目重新编号
-/// 并改写项目文件里的记录引用；并完的旧库改名为 `inspection.db.merged-<毫秒>.bak`，不删。当前项目未写完的审计 spool
-/// 移到本机 spool。返回 (级别, 说明) 供写日志。
+/// 启动时把各项目的旧记录库（`projects/<id>/inspection.db`）并入本机库：当前项目先并、尽量沿用原编号，其余项目重新编号；
+/// 并入后按记在本机库里的编号对照改写项目文件里的记录引用（`remap_refs`，中断后下次启动接着做），改写完才把旧库改名为
+/// `inspection.db.merged-<毫秒>.bak`（不删）。当前项目未写完的审计 spool 移到本机 spool。返回 (级别, 说明) 供写日志。
 pub fn migrate(data: &Path, store: &Store, current: &str) -> Vec<(&'static str, String)> {
     let mut notes = Vec::new();
     let mut ids: Vec<String> = super::list(data)
@@ -79,13 +76,30 @@ pub fn migrate(data: &Path, store: &Store, current: &str) -> Vec<(&'static str, 
             notes.push(("warn", format!("项目 {id} 的审计 spool：{error}")));
         }
         let db = dir.join("inspection.db");
-        if !db.is_file() {
-            continue;
-        }
         let merged = match store.merged(id) {
-            Ok(true) => None,
-            Ok(false) => match store.merge_project(&db, id, id == current) {
-                Ok(merged) => Some(merged),
+            Ok(merged) => merged,
+            Err(error) => {
+                notes.push(("err", format!("核对项目 {id} 的记录合并状态失败：{error}")));
+                continue;
+            }
+        };
+        if !merged {
+            if !db.is_file() {
+                continue;
+            }
+            match store.merge_project(&db, id, id == current) {
+                Ok(merged) => notes.push((
+                    "info",
+                    format!(
+                        "项目 {id} 的 {} 件检测记录并入本机记录库{}",
+                        merged.inserted,
+                        if merged.duplicates > 0 {
+                            format!("，{} 件与已有记录是同一工件，未重复保存", merged.duplicates)
+                        } else {
+                            String::new()
+                        }
+                    ),
+                )),
                 Err(error) => {
                     notes.push((
                         "err",
@@ -93,44 +107,37 @@ pub fn migrate(data: &Path, store: &Store, current: &str) -> Vec<(&'static str, 
                     ));
                     continue;
                 }
-            },
-            Err(error) => {
-                notes.push(("err", format!("核对项目 {id} 的记录合并状态失败：{error}")));
-                continue;
             }
-        };
-        if let Some(merged) = &merged {
-            if merged.renumbered() {
-                if let Err(error) = remap_refs(&dir, &merged.ids) {
-                    notes.push((
-                        "err",
-                        format!(
-                            "项目 {id} 的记录已并入，但候选与采集轮次里的记录引用未改写完：{error}"
-                        ),
-                    ));
-                }
-            }
-            notes.push((
-                "info",
-                format!(
-                    "项目 {id} 的 {} 件检测记录并入本机记录库{}",
-                    merged.inserted,
-                    if merged.duplicates > 0 {
-                        format!("，{} 件与已有记录是同一工件，未重复保存", merged.duplicates)
-                    } else {
-                        String::new()
-                    }
-                ),
-            ));
         }
-        if let Err(error) = retire(&db) {
+        if let Err(error) = finish_refs(store, &dir, id) {
             notes.push((
-                "warn",
-                format!("项目 {id} 的旧记录库已并入，改名备份失败：{error}"),
+                "err",
+                format!("项目 {id} 的记录已并入，候选与采集轮次里的记录引用还没改写完，旧库保留，下次启动继续：{error}"),
             ));
+            continue;
+        }
+        if db.is_file() {
+            if let Err(error) = retire(&db) {
+                notes.push((
+                    "warn",
+                    format!("项目 {id} 的旧记录库已并入，改名备份失败：{error}"),
+                ));
+            }
         }
     }
     notes
+}
+
+/// 并入后还没改写完的记录引用：按本机库记下的编号对照改写，完成后在库里记下。没有待改写的什么也不做。
+pub(crate) fn finish_refs(store: &Store, project: &Path, id: &str) -> Result<(), String> {
+    match store.pending_refs(id)? {
+        Some(ids) => {
+            remap_refs(project, &ids)?;
+            store.finish_refs(id)?;
+            remove_manifest(project)
+        }
+        None => remove_manifest(project),
+    }
 }
 
 /// 删一件过期记录的录制目录（非当前项目，没有在运行的录制滚动清理）：目录须在该项目对应的录制根下。
@@ -194,11 +201,42 @@ fn move_spool(data: &Path, project: &Path, current: bool) -> Result<(), String> 
     std::fs::rename(&old, &target).map_err(|e| format!("移入本机 spool 失败：{e}"))
 }
 
+const MANIFEST: &str = ".record-remap.json";
+const STAGED: &str = ".remap-new";
+const COMPARISONS_NEW: &str = ".comparisons-remap";
+const COMPARISONS_OLD: &str = ".comparisons-old";
+
+fn staged(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(STAGED);
+    PathBuf::from(name)
+}
+
+fn remove_manifest(project: &Path) -> Result<(), String> {
+    let manifest = project.join(MANIFEST);
+    if manifest.exists() {
+        std::fs::remove_file(&manifest).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// 项目文件里的记录引用按 `ids`（旧编号 → 本机编号）改写；不在 `ids` 里的编号（旧库里已清理的记录）改为 0，
-/// 免得指到别的项目的记录。改写：候选 `workspace.json` 与示教帧元数据里的 `historyId`、候选的示教件 `recordId`
-/// （冻结的配方文档 `doc`、待生效版本 `pending` 不改，它们只按 SN 与时间显示示教件，并与发布辅助快照逐字核对）、
-/// 采集轮次 `round.json` 的来源 `recordId`，以及 `workspaces/comparisons/<编号>/` 的目录、文件名与内容。
+/// 免得指到别的项目的记录，编号没变时也照样清理。改写：候选 `workspace.json` 与示教帧元数据里的 `historyId`、候选的示教件
+/// `recordId`（冻结的配方文档 `doc`、待生效版本 `pending` 不改，它们只按 SN 与时间显示示教件，并与发布辅助快照逐字核对）、
+/// 采集轮次 `round.json` 的来源 `recordId`，以及 `workspaces/comparisons/<编号>/` 的目录、文件名与内容（旧库里已清理的
+/// 记录的对照删除，与历史清理一致）。
+///
+/// 先把改写结果全部写成暂存（文件旁的 `.remap-new`、整个新的 `workspaces/.comparisons-remap/`），再写清单
+/// `.record-remap.json`，最后按清单逐项换上：清单写好之前中断，下次从头再算一遍（原文件没动）；之后中断，下次按清单接着换，
+/// 每一步都可重复，不会把编号映射两次。
 pub(crate) fn remap_refs(project: &Path, ids: &BTreeMap<i64, i64>) -> Result<(), String> {
+    if !project.join(MANIFEST).is_file() {
+        stage_refs(project, ids)?;
+    }
+    apply_staged(project)
+}
+
+fn stage_refs(project: &Path, ids: &BTreeMap<i64, i64>) -> Result<(), String> {
     let map = |old: i64| {
         if old <= 0 {
             old
@@ -206,15 +244,20 @@ pub(crate) fn remap_refs(project: &Path, ids: &BTreeMap<i64, i64>) -> Result<(),
             ids.get(&old).copied().unwrap_or(0)
         }
     };
+    let mut files = Vec::new();
     let workspaces = project.join("workspaces");
     for entry in read_dirs(&workspaces)? {
-        if entry.file_name().is_some_and(|n| n == "comparisons") {
+        if entry
+            .file_name()
+            .is_some_and(|n| n == "comparisons" || n.to_string_lossy().starts_with('.'))
+        {
             continue;
         }
         for file in json_files(&entry)? {
-            rewrite(&file, |value| {
+            let workspace = file.file_name().is_some_and(|n| n == "workspace.json");
+            stage(&file, &mut files, |value| {
                 let mut changed = history_ids(value, &map, true);
-                if file.file_name().is_some_and(|n| n == "workspace.json") {
+                if workspace {
                     if let Some(record) = value.pointer_mut("/teachingPiece/recordId") {
                         changed |= remap_number(record, &map);
                     }
@@ -226,7 +269,7 @@ pub(crate) fn remap_refs(project: &Path, ids: &BTreeMap<i64, i64>) -> Result<(),
     for entry in read_dirs(&project.join("recipe-capture"))? {
         let file = entry.join("round.json");
         if file.is_file() {
-            rewrite(&file, |value| {
+            stage(&file, &mut files, |value| {
                 if value.pointer("/origin/kind").and_then(Value::as_str) != Some("history") {
                     return false;
                 }
@@ -236,7 +279,134 @@ pub(crate) fn remap_refs(project: &Path, ids: &BTreeMap<i64, i64>) -> Result<(),
             })?;
         }
     }
-    remap_comparisons(&workspaces.join("comparisons"), &map)
+    let comparisons = stage_comparisons(&workspaces, &map)?;
+    crate::fsio::write_atomic(
+        &project.join(MANIFEST),
+        &serde_json::json!({"files": files, "comparisons": comparisons}).to_string(),
+    )
+}
+
+/// 改写一个 JSON 文件到它旁边的暂存文件；有改动时记下相对项目根的路径。
+fn stage(
+    path: &Path,
+    files: &mut Vec<PathBuf>,
+    edit: impl FnOnce(&mut Value) -> bool,
+) -> Result<(), String> {
+    let text = crate::fsio::read_text(path).map_err(|e| format!("{}：{e}", path.display()))?;
+    let Ok(mut value) = serde_json::from_str::<Value>(&text) else {
+        return Ok(());
+    };
+    if edit(&mut value) {
+        crate::fsio::write_atomic(
+            &staged(path),
+            &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+        )?;
+        files.push(path.to_path_buf());
+    }
+    Ok(())
+}
+
+/// 按新编号把复测对照整份复制到 `workspaces/.comparisons-remap/`；没有对照目录时为 false。
+fn stage_comparisons(workspaces: &Path, map: &impl Fn(i64) -> i64) -> Result<bool, String> {
+    let root = workspaces.join("comparisons");
+    if !root.is_dir() {
+        return Ok(false);
+    }
+    let target = workspaces.join(COMPARISONS_NEW);
+    if target.exists() {
+        crate::image_file::checked_source_path(&target)?;
+        std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+    for dir in read_dirs(&root)? {
+        let name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let parsed = name
+            .parse::<i64>()
+            .ok()
+            .filter(|id| *id > 0 && name == id.to_string());
+        let (old, new) = match parsed {
+            Some(old) => (old, map(old)),
+            None => continue,
+        };
+        if new == 0 {
+            continue;
+        }
+        let into = target.join(new.to_string());
+        std::fs::create_dir_all(&into).map_err(|e| e.to_string())?;
+        let prefix = format!("{old}-");
+        for file in json_files(&dir)? {
+            let mut value: Value = serde_json::from_str(
+                &crate::fsio::read_text(&file).map_err(|e| format!("{}：{e}", file.display()))?,
+            )
+            .map_err(|e| format!("{}：{e}", file.display()))?;
+            if let Some(id) = value.get_mut("historyId") {
+                *id = new.into();
+            }
+            if let Some(Value::String(id)) = value.get_mut("id") {
+                if let Some(rest) = id.strip_prefix(&prefix) {
+                    *id = format!("{new}-{rest}");
+                }
+            }
+            let stem = file
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let name = stem
+                .strip_prefix(&prefix)
+                .map_or(stem.clone(), |rest| format!("{new}-{rest}"));
+            crate::fsio::write_atomic(
+                &into.join(format!("{name}.json")),
+                &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+            )?;
+        }
+    }
+    Ok(true)
+}
+
+/// 按清单换上暂存的改写：文件逐个改名覆盖（已换上的跳过），复测对照整份换目录；每一步都可重复。
+fn apply_staged(project: &Path) -> Result<(), String> {
+    let manifest = project.join(MANIFEST);
+    let value: Value = serde_json::from_str(
+        &crate::fsio::read_text(&manifest).map_err(|e| format!("记录引用改写清单：{e}"))?,
+    )
+    .map_err(|e| format!("记录引用改写清单损坏：{e}"))?;
+    for file in value["files"].as_array().into_iter().flatten() {
+        let target = PathBuf::from(file.as_str().ok_or("记录引用改写清单损坏")?);
+        if !target.starts_with(project) {
+            return Err("记录引用改写清单里的文件不在项目目录".into());
+        }
+        let source = staged(&target);
+        if source.exists() {
+            std::fs::rename(&source, &target)
+                .map_err(|e| format!("换上 {} 失败：{e}", target.display()))?;
+        }
+    }
+    if value["comparisons"].as_bool() == Some(true) {
+        let workspaces = project.join("workspaces");
+        let (current, new, old) = (
+            workspaces.join("comparisons"),
+            workspaces.join(COMPARISONS_NEW),
+            workspaces.join(COMPARISONS_OLD),
+        );
+        if new.exists() {
+            if current.exists() && !old.exists() {
+                std::fs::rename(&current, &old).map_err(|e| e.to_string())?;
+            }
+            if !current.exists() {
+                std::fs::rename(&new, &current).map_err(|e| e.to_string())?;
+            }
+        }
+        if old.exists() && !new.exists() {
+            crate::image_file::checked_source_path(&old)?;
+            std::fs::remove_dir_all(&old).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn read_dirs(dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -275,20 +445,6 @@ fn json_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-fn rewrite(path: &Path, edit: impl FnOnce(&mut Value) -> bool) -> Result<(), String> {
-    let text = crate::fsio::read_text(path).map_err(|e| format!("{}：{e}", path.display()))?;
-    let Ok(mut value) = serde_json::from_str::<Value>(&text) else {
-        return Ok(());
-    };
-    if edit(&mut value) {
-        crate::fsio::write_atomic(
-            path,
-            &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
-        )?;
-    }
-    Ok(())
-}
-
 fn remap_number(value: &mut Value, map: &impl Fn(i64) -> i64) -> bool {
     match value.as_i64() {
         Some(old) if map(old) != old => {
@@ -321,80 +477,6 @@ fn history_ids(value: &mut Value, map: &impl Fn(i64) -> i64, top: bool) -> bool 
         }),
         _ => false,
     }
-}
-
-/// 复测对照目录按新编号改名（先全部移到暂存目录再放回，免得新旧编号互相覆盖）；旧库里已清理的记录的对照删除，
-/// 与历史清理时的处理相同。
-fn remap_comparisons(root: &Path, map: &impl Fn(i64) -> i64) -> Result<(), String> {
-    if !root.is_dir() {
-        return Ok(());
-    }
-    let staging = root.join(format!(".remap-{}", ly_plc::now_ms()));
-    let mut moved = Vec::new();
-    for dir in read_dirs(root)? {
-        let name = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let Ok(old) = name.parse::<i64>() else {
-            continue;
-        };
-        if old <= 0 || name != old.to_string() {
-            continue;
-        }
-        let new = map(old);
-        if new == old {
-            continue;
-        }
-        if new == 0 {
-            crate::image_file::checked_source_path(&dir)?;
-            std::fs::remove_dir_all(&dir)
-                .map_err(|e| format!("清理复测目录 {} 失败：{e}", dir.display()))?;
-            continue;
-        }
-        std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
-        let target = staging.join(new.to_string());
-        std::fs::rename(&dir, &target)
-            .map_err(|e| format!("复测目录 {} 改名失败：{e}", dir.display()))?;
-        moved.push((old, new));
-    }
-    for (old, new) in moved {
-        let dir = staging.join(new.to_string());
-        for file in json_files(&dir)? {
-            let stem = file
-                .file_stem()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            let prefix = format!("{old}-");
-            rewrite(&file, |value| {
-                let mut changed = value
-                    .get_mut("historyId")
-                    .is_some_and(|id| remap_number(id, &|_| new));
-                if let Some(Value::String(id)) = value.get_mut("id") {
-                    if let Some(rest) = id.strip_prefix(&prefix) {
-                        *id = format!("{new}-{rest}");
-                        changed = true;
-                    }
-                }
-                changed
-            })?;
-            if let Some(rest) = stem.strip_prefix(&prefix) {
-                std::fs::rename(&file, dir.join(format!("{new}-{rest}.json")))
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-        let target = root.join(new.to_string());
-        if target.exists() {
-            return Err(format!("复测目录 {} 已存在，未覆盖", target.display()));
-        }
-        std::fs::rename(&dir, &target).map_err(|e| e.to_string())?;
-    }
-    if staging.exists() {
-        std::fs::remove_dir(&staging).map_err(|e| e.to_string())?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

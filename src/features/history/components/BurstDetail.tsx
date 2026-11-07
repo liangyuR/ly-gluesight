@@ -232,12 +232,12 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       </Stack>
     </Card>
     {s.source !== "real" && <Alert title={s.source === "offlineCandidate" ? "候选离线调试记录" : "离线回放记录"}>结果来自离线环境，不作为真机生产验收；切换当前站点模式不会改变此记录的来源。</Alert>}
-    {foreignProject && <Alert title="其他项目的记录">{foreignProject}复测与对照的限制见下方原因。</Alert>}
+    {foreignProject && <Alert title="其他项目的记录">{foreignProject}原图与发布包按记录所属项目读取；按候选对照时用当前项目里同编号配方的候选。</Alert>}
     {error && <Alert tone="warn" title="操作未完成">{error}</Alert>}
     <Panel title="复测与候选对照" help="对照结果另存，原始判定保留">
       <div className="wp-actions">
         <Chip>{s.source === "offlineCandidate" ? "原始候选 " + (s.recipeRevision ?? "未记录") : "原始发布 v" + (s.recipeVersion ?? "—")}</Chip>
-        <StatusBadge>候选 {!options ? "…" : candidate ? "v" + candidate.version + " · 修订 " + candidate.revision : foreignProject ? "不适用（其他项目的记录）" : "本机没有此配方的候选"}</StatusBadge>
+        <StatusBadge>候选 {!options ? "…" : candidate ? "v" + candidate.version + " · 修订 " + candidate.revision + (options.recordProject ? " · 当前项目" : "") : foreignProject ? "当前项目没有同编号配方的候选" : "本机没有此配方的候选"}</StatusBadge>
         <span className="spacer" />
         {s.source !== "offlineCandidate" && <Button leadingIcon={<ScanEye size={15} />} disabled={working || !options || !!originalReason} title={originalReason || undefined} onClick={runOriginal}>按原发布包重现</Button>}
         <Button leadingIcon={<Scale size={15} />} disabled={working || !options || !!rulesReason} title={rulesReason || undefined} onClick={() => runCompare(false)}>按候选规则重判</Button>
@@ -254,7 +254,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       {!!saved.length && <Select label="已保存的对照结果" aria-label="已保存对照结果" disabled={working} value={comparison?.id ?? ""} onValueChange={id => { setComparison(saved.find(c => c.id === id) ?? null); setShowOriginal(false); }}
         options={[{ value: "", label: "选择记录" }, ...saved.map(c => ({ value: c.id, label: formatTime(c.createdAt) + " · " + comparisonLabel[c.source] + " · 修订 " + c.candidateRevision + " · " + verdictLabel[c.judgement.verdict] }))]} />}
     </Panel>
-    {comparison && <Panel title={comparisonLabel[comparison.source] + "结果"} detail={(comparison.source === "original" ? "原发布 v" + comparison.candidateRecipe.version + " · 包 " + comparison.bundleId : "候选 v" + comparison.candidateRecipe.version + " · 修订 " + comparison.candidateRevision) + " · " + formatTime(comparison.createdAt)}>
+    {comparison && <Panel title={comparisonLabel[comparison.source] + "结果"} detail={(comparison.source === "original" ? "原发布 v" + comparison.candidateRecipe.version + " · 包 " + comparison.bundleId : "候选 v" + comparison.candidateRecipe.version + " · 修订 " + comparison.candidateRevision) + " · " + formatTime(comparison.createdAt) + (comparison.recordProject ? " · 对照的是" + comparison.recordProject + "的记录" : "")}>
       <div className="wp-actions">
         <StatusBadge tone={comparison.originalVerdict.startsWith("OK") ? "ok" : "ng"}>原始 {verdictLabel[comparison.originalVerdict]}</StatusBadge><span>→</span>
         <StatusBadge tone={comparison.judgement.verdict.startsWith("OK") ? "ok" : comparison.judgement.verdict === "ERR_INSPECT" ? "warn" : "ng"}>{comparison.source === "original" ? "重现" : "候选"} {verdictLabel[comparison.judgement.verdict]}</StatusBadge>

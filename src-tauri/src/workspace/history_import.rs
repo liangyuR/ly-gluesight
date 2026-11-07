@@ -32,6 +32,8 @@ pub struct HistoryCameraFrames {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryCandidate {
     pub record_id: i64,
+    /// 记录所属项目；试测列表里可以有其他项目同编号配方的记录
+    pub project_id: String,
     pub cycle_id: Option<String>,
     pub ts: i64,
     pub sn: String,
@@ -130,6 +132,7 @@ pub(super) fn assess(
     let mut reasons = Vec::new();
     let mut view = HistoryCandidate {
         record_id: summary.id,
+        project_id: summary.project_id.clone(),
         cycle_id: summary.cycle_id.clone(),
         ts: summary.ts,
         sn: summary.sn.clone(),
@@ -426,7 +429,8 @@ fn current_configs(cycle: &CycleHost) -> BTreeMap<String, Value> {
         .collect()
 }
 
-fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
+/// 本配方最近的录制件逐件核对；`others` 时另列其他项目同编号配方的录制件（只供试测：标为不能选用，不参与疑似提前结束的比较）。
+fn assess_all(app: &AppHandle, w: &Workspace, others: bool) -> Result<Vec<Assessed>, String> {
     let doc = &w.doc;
     if !doc.is_burst() {
         return Err("旧拍照点配方已停用，请创建段配方".into());
@@ -454,25 +458,30 @@ fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
             }
         }
     }
-    let mut assessed: Vec<Assessed> = parts
-        .iter()
-        .map(|(summary, recording)| {
-            assess(
-                doc,
-                &current,
-                &imported,
-                summary,
-                recording,
-                crate::project::records::record_root(
-                    &data,
-                    &summary.project_id,
-                    RecordSource::Real,
-                )
+    let check = |summary: &PartSummary, recording: &RecordingEvidence| {
+        assess(
+            doc,
+            &current,
+            &imported,
+            summary,
+            recording,
+            crate::project::records::record_root(&data, &summary.project_id, RecordSource::Real)
                 .and_then(|root| read_part(&root, recording)),
-            )
-        })
-        .collect();
+        )
+    };
+    let mut assessed: Vec<Assessed> = parts.iter().map(|(s, r)| check(s, r)).collect();
     flag_short_parts(&mut assessed);
+    if others {
+        for (summary, recording) in store.recorded_parts_elsewhere(&doc.id, LIST_LIMIT)? {
+            let mut other = check(&summary, &recording);
+            other.view.reasons.push(format!(
+                "{}的记录，只能试测，不能选作示教件或标定件",
+                crate::project::records::project_label(&data, &summary.project_id)
+            ));
+            other.round = None;
+            assessed.push(other);
+        }
+    }
     let teaching = w.teaching_piece.as_ref().map(|t| t.round_id.as_str());
     for a in &mut assessed {
         a.view.usage = a.view.imported_round.as_deref().map(|round| {
@@ -491,6 +500,7 @@ fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
 pub async fn workspace_history_candidates(
     app: AppHandle,
     id: String,
+    others: Option<bool>,
 ) -> Result<Vec<HistoryCandidate>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let w = app
@@ -501,7 +511,10 @@ pub async fn workspace_history_candidates(
             .get(&id)
             .ok_or("候选配置不存在")?
             .clone();
-        Ok(assess_all(&app, &w)?.into_iter().map(|a| a.view).collect())
+        Ok(assess_all(&app, &w, others.unwrap_or(false))?
+            .into_iter()
+            .map(|a| a.view)
+            .collect())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -540,7 +553,7 @@ fn import(
     if picks.iter().any(|p| !unique.insert(p.record_id)) {
         return Err("不能重复选择同一件".into());
     }
-    let mut assessed: BTreeMap<i64, Assessed> = assess_all(app, w)?
+    let mut assessed: BTreeMap<i64, Assessed> = assess_all(app, w, false)?
         .into_iter()
         .map(|a| (a.view.record_id, a))
         .collect();
@@ -591,7 +604,7 @@ pub(super) fn refill_teaching_images(app: &AppHandle, w: &Workspace) -> Result<(
         return Err("示教件原图齐全，不需要补回".into());
     }
     let result = (|| {
-        let entry = assess_all(app, w)?
+        let entry = assess_all(app, w, false)?
             .into_iter()
             .find(|a| a.view.imported_round.as_deref() == Some(piece.round_id.as_str()))
             .ok_or("示教件那一件不在本配方最近的录制件里，不能补回原图；请重新选用示教件")?;

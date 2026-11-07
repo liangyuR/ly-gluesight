@@ -1162,10 +1162,10 @@ fn record_bundle(
     crate::release::load(&root, recipe_id, bundle_id)
 }
 
-/// 记录不属于当前项目时按候选对照的阻止原因。
+/// 记录不属于当前项目时，它所属项目的称呼（对照结果与复测选项里标明）；当前项目的记录为 None。
 fn foreign_record(app: &AppHandle, summary: &crate::store::PartSummary) -> Option<String> {
     (summary.project_id != crate::project::current_id(app)).then(|| {
-        crate::project::records::foreign_reason(&crate::storage::root(app), &summary.project_id)
+        crate::project::records::project_label(&crate::storage::root(app), &summary.project_id)
     })
 }
 
@@ -1326,6 +1326,9 @@ pub struct Comparison {
     /// 有值时 judgement 的 verdict / plcCode / faultCode / reason 与它相同，segments、gaps 为空
     #[serde(default)]
     pub burst: Option<burst_history::ComparisonBurst>,
+    /// 对照的是其他项目的记录时，那个项目的称呼；当前项目的记录与之前保存的对照为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_project: Option<String>,
 }
 
 #[tauri::command]
@@ -1347,8 +1350,15 @@ pub async fn workspace_compare(
         let recipe = w.doc.build()?;
         let store = app.state::<Store>();
         let detail = store.detail(history_id)?;
-        if let Some(reason) = foreign_record(&app, &detail.summary) {
-            return Err(reason);
+        // 其他项目的记录：配方编号只在项目内唯一，只用当前项目里同编号的候选对照（原图与发布包仍按记录的项目取）
+        let record_project = foreign_record(&app, &detail.summary);
+        if let Some(label) = &record_project {
+            if detail.summary.recipe_id.as_deref() != Some(id.as_str()) {
+                return Err(format!(
+                    "{label}的这条记录属于配方 {}，不能用候选 {id} 对照",
+                    detail.summary.recipe_id.as_deref().unwrap_or("（未记录）")
+                ));
+            }
         }
         let original = store
             .record_recipe(&detail.summary)?
@@ -1373,6 +1383,7 @@ pub async fn workspace_compare(
             measurements: Vec::new(),
             created_at: ly_plc::now_ms(),
             burst: Some(burst),
+            record_project,
         };
         save_comparison(&app, &comparison)?;
         Ok(comparison)
@@ -1466,6 +1477,7 @@ pub async fn workspace_compare_original(
             measurements: Vec::new(),
             created_at: ly_plc::now_ms(),
             burst: Some(burst),
+            record_project: foreign_record(&app, &detail.summary),
         };
         save_comparison(&app, &comparison)?;
         Ok(comparison)
@@ -1485,16 +1497,11 @@ pub async fn workspace_history_compare_options(
         let detail = store.detail(history_id)?;
         let original = store.record_recipe(&detail.summary)?;
         let foreign = foreign_record(&app, &detail.summary);
-        let candidate = detail
-            .summary
-            .recipe_id
-            .as_deref()
-            .filter(|_| foreign.is_none())
-            .and_then(|id| {
-                let host = app.state::<WorkspaceHost>();
-                let items = host.items.lock().unwrap();
-                items.get(id).filter(|w| !w.legacy()).cloned()
-            });
+        let candidate = detail.summary.recipe_id.as_deref().and_then(|id| {
+            let host = app.state::<WorkspaceHost>();
+            let items = host.items.lock().unwrap();
+            items.get(id).filter(|w| !w.legacy()).cloned()
+        });
         let releases = crate::project::records::releases_root(
             &crate::storage::root(&app),
             &detail.summary.project_id,

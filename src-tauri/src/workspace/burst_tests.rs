@@ -217,3 +217,72 @@ fn saving_expected_frames_or_x_ref_is_ignored_and_kind_change_clears_them() {
         assert_eq!(state, after, "{name}");
     }
 }
+
+/// 防的回归：其他项目同编号配方的记录不能用当前候选复测（按规则重判、从原图复测都被“其他项目”一律禁用）；
+/// 当前项目没有同编号候选时，仍然禁用并写明记录属于哪个项目、缺哪个配方的候选。
+#[test]
+fn other_project_record_uses_same_numbered_candidate_and_names_its_project_when_none() {
+    use crate::store::{
+        burst_fixture, PartMode, PartRecord, PlcDelivery, PlcDeliveryState, RecordSource,
+    };
+    let dir = crate::offline::test_dir::TestDir::new("compare-options", "other-project");
+    let store = Store::open_for(&dir.join("inspection.db"), "line-b").unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let id = store
+        .insert(&PartRecord {
+            mode: PartMode::Production,
+            ts: 1,
+            sn: "SN-B",
+            recipe: Some(&recipe),
+            judgement: &judgement,
+            drain_ms: None,
+            frames: &[],
+            frames_expected: burst.expected_total.unwrap_or(0) as usize,
+            frames_received: burst.judgement.group_count as usize,
+            triggers: 0,
+            table: None,
+            software_version: "test",
+            cycle_id: Some("b1"),
+            bundle_id: None,
+            delivery: &PlcDelivery {
+                state: PlcDeliveryState::NotRequired,
+                updated_at: 0,
+                message: None,
+            },
+            shots: &[],
+            source: RecordSource::Real,
+            sample: None,
+            burst: Some(&burst),
+        })
+        .unwrap();
+    let detail = store.detail(id).unwrap();
+    let original = store.record_recipe(&detail.summary).unwrap().unwrap();
+    let w = Workspace::new(crate::recipe::samples_burst(), None);
+    let label = "项目“B 线”（line-b）".to_string();
+    let own = super::burst_history::compare_options(&detail, Some(&original), Some(&w), None, None);
+    let other = super::burst_history::compare_options(
+        &detail,
+        Some(&original),
+        Some(&w),
+        Some(label.clone()),
+        None,
+    );
+    assert_eq!((&other.rules, &other.raw), (&own.rules, &own.raw));
+    assert_eq!(other.record_project.as_deref(), Some(label.as_str()));
+    let none = super::burst_history::compare_options(
+        &detail,
+        Some(&original),
+        None,
+        Some(label.clone()),
+        None,
+    );
+    for option in [&none.rules, &none.raw] {
+        let reason = option.reason.as_deref().unwrap_or_default();
+        assert!(
+            !option.available && reason.contains(&label) && reason.contains(&recipe.id),
+            "{reason}"
+        );
+    }
+}

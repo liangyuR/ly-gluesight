@@ -773,9 +773,7 @@ fn finish(
             .ok_or_else(|| "本机记录库未打开，不能并入检测记录".to_string())
             .and_then(|store| store.merge_project(&db, new.id, false))
             .and_then(|merged| {
-                if merged.renumbered() {
-                    super::records::remap_refs(root, &merged.ids)?;
-                }
+                super::records::finish_refs(store.ok_or("本机记录库未打开")?, root, new.id)?;
                 if merged.duplicates > 0 {
                     notes.push(format!(
                         "{} 件检测记录与本机已有记录是同一工件，沿用已有记录",

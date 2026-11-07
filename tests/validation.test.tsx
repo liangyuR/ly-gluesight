@@ -35,10 +35,16 @@ beforeEach(() => {
 
 describe("验证与发布页面", () => {
 
-  // 防的回归：记录库本机共用、配方编号只在项目内唯一，历史样本查询不带项目时混入其他项目（含同编号配方）的记录
-  it("列历史样本 → 查询带当前项目编号", async () => {
+  // 防的回归：配方编号只在项目内唯一，“全部配方”不限项目时混入其他项目的不同配方；“当前配方”限了项目时，
+  // 其他项目同编号配方的历史件不能选作独立验证样本
+  it.each([
+    [null, { project: "line-a", recipeId: undefined }],
+    ["S-v1", { project: null, recipeId: "S" }],
+  ])("基础修订 %s → 历史样本查询 %o", async (baseRevision, expected) => {
+    ws.data!.workspace.baseRevision = baseRevision;
+    ws.doc!.id = "S";
     show();
-    await waitFor(() => expect(historyApi.query).toHaveBeenCalledWith(expect.objectContaining({ project: "line-a" })));
+    await waitFor(() => expect(historyApi.query).toHaveBeenLastCalledWith(expect.objectContaining(expected)));
   });
 
   it("发布失败后冻结样本配置并重试同一待生效版本", async () => {

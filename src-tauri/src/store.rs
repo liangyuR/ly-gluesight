@@ -801,7 +801,14 @@ impl Store {
                  project_id TEXT PRIMARY KEY NOT NULL,
                  merged_at INTEGER NOT NULL,
                  inserted INTEGER NOT NULL,
-                 duplicates INTEGER NOT NULL
+                 duplicates INTEGER NOT NULL,
+                 refs_done INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS project_merge_ids (
+                 project_id TEXT NOT NULL,
+                 old INTEGER NOT NULL,
+                 new INTEGER NOT NULL,
+                 PRIMARY KEY (project_id, old)
              );
              CREATE TABLE IF NOT EXISTS parts (
                  id INTEGER PRIMARY KEY,
@@ -1716,10 +1723,29 @@ impl Store {
         recipe_id: &str,
         limit: u32,
     ) -> Result<Vec<(PartSummary, RecordingEvidence)>, String> {
+        self.recorded_parts_in(recipe_id, limit, "=")
+    }
+
+    /// 其他项目里同编号配方有录制目录的真机记录（最新在前，最多 limit 件），只供试测：配方编号只在项目内唯一，
+    /// 当前候选按同编号对照。
+    pub fn recorded_parts_elsewhere(
+        &self,
+        recipe_id: &str,
+        limit: u32,
+    ) -> Result<Vec<(PartSummary, RecordingEvidence)>, String> {
+        self.recorded_parts_in(recipe_id, limit, "!=")
+    }
+
+    fn recorded_parts_in(
+        &self,
+        recipe_id: &str,
+        limit: u32,
+        project: &str,
+    ) -> Result<Vec<(PartSummary, RecordingEvidence)>, String> {
         let conn = self.conn.lock().unwrap();
         let sql = format!(
             "SELECT {SUMMARY_COLS}, recording_state, recording_available, recording_directory, recording_errors FROM parts \
-            WHERE {} AND project_id = ?2 AND recipe_id = ?1 AND recording_directory IS NOT NULL ORDER BY ts DESC, id DESC LIMIT {}",
+            WHERE {} AND project_id {project} ?2 AND recipe_id = ?1 AND recording_directory IS NOT NULL ORDER BY ts DESC, id DESC LIMIT {}",
             HistoryScope::Real.clause(""),
             limit.clamp(1, 500)
         );
