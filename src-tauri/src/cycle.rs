@@ -409,13 +409,17 @@ impl CycleHost {
         let (frame_tx, frame_rx) = channel(FRAME_QUEUE);
         let (mut settings, project_note) = CycleSettings::load(&settings_path);
         let history_path = crate::storage::config(app).join("history.json");
-        let (history_days, history_note) = crate::settings::load_history_days(&history_path, settings.history_days);
+        let (history_days, history_note) =
+            crate::settings::load_history_days(&history_path, settings.history_days);
         settings.history_days = history_days;
         let settings_note = match (project_note, history_note) {
             (Some(a), Some(b)) => Some(format!("{a}；{b}")),
             (a, b) => a.or(b),
         };
-        let audit = Audit::new(app, crate::project::records::spool(&crate::storage::root(app)))?;
+        let audit = Audit::new(
+            app,
+            crate::project::records::spool(&crate::storage::root(app)),
+        )?;
         let interrupted_recordings = app.state::<Store>().finish_interrupted_recordings()?;
         let camera = CameraRig::new(app, frame_tx)?;
         let recording_health = Arc::new(RecordingHealth::default());

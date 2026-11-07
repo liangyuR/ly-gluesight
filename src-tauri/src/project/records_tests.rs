@@ -1,12 +1,19 @@
 use super::*;
 use crate::recipe::Recipe;
-use crate::store::{burst_fixture, PartMode, PartRecord, PlcDelivery, PlcDeliveryState, RecordingEvidence, RecordingState};
+use crate::store::{
+    burst_fixture, PartMode, PartRecord, PlcDelivery, PlcDeliveryState, RecordingEvidence,
+    RecordingState,
+};
 
 struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("gluesight-records-{name}-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let path = std::env::temp_dir().join(format!(
+            "gluesight-records-{name}-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
         std::fs::create_dir_all(&path).unwrap();
         Self(path)
     }
@@ -48,7 +55,11 @@ fn part(data: &Path, store: &Store, recipe: &Recipe, cycle: &str, sn: &str, ts: 
             software_version: "test",
             cycle_id: Some(cycle),
             bundle_id: None,
-            delivery: &PlcDelivery { state: PlcDeliveryState::NotRequired, updated_at: 0, message: None },
+            delivery: &PlcDelivery {
+                state: PlcDeliveryState::NotRequired,
+                updated_at: 0,
+                message: None,
+            },
             shots: &[],
             source: RecordSource::Real,
             sample: None,
@@ -56,12 +67,15 @@ fn part(data: &Path, store: &Store, recipe: &Recipe, cycle: &str, sn: &str, ts: 
         })
         .unwrap();
     store
-        .update_recording(cycle, &RecordingEvidence {
-            state: RecordingState::Complete,
-            available: true,
-            directory: Some(root.join("2026").join(cycle).to_string_lossy().into_owned()),
-            errors: Vec::new(),
-        })
+        .update_recording(
+            cycle,
+            &RecordingEvidence {
+                state: RecordingState::Complete,
+                available: true,
+                directory: Some(root.join("2026").join(cycle).to_string_lossy().into_owned()),
+                errors: Vec::new(),
+            },
+        )
         .unwrap();
 }
 
@@ -71,8 +85,10 @@ fn legacy(data: &Path, project: &str, write: impl FnOnce(&Store)) {
     let scratch = data.join(format!("{project}-scratch.db"));
     write(&Store::open_for(&scratch, project).unwrap());
     let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch(include_str!("fixtures/inspection-v9.sql")).unwrap();
-    conn.execute("ATTACH DATABASE ?1 AS v10", [scratch.to_string_lossy()]).unwrap();
+    conn.execute_batch(include_str!("fixtures/inspection-v9.sql"))
+        .unwrap();
+    conn.execute("ATTACH DATABASE ?1 AS v10", [scratch.to_string_lossy()])
+        .unwrap();
     conn.execute_batch(&format!(
         "INSERT INTO parts ({PARTS}) SELECT {PARTS} FROM v10.parts;
          INSERT INTO part_frames SELECT * FROM v10.part_frames;
@@ -104,10 +120,18 @@ fn two_project_databases_merge_once_with_renumbered_references_and_project_snaps
         "ownerData": data.canonicalize().unwrap(),
     }).to_string()).unwrap();
     for id in ["line-a", "line-b"] {
-        crate::project::create_dir(data, &crate::project::ProjectMeta::new(id, id, "", None), |_| Ok(())).unwrap();
+        crate::project::create_dir(
+            data,
+            &crate::project::ProjectMeta::new(id, id, "", None),
+            |_| Ok(()),
+        )
+        .unwrap();
     }
     let recipe_a = burst_fixture::recipe();
-    let recipe_b = Recipe { plan_version: recipe_a.plan_version + 7, ..recipe_a.clone() };
+    let recipe_b = Recipe {
+        plan_version: recipe_a.plan_version + 7,
+        ..recipe_a.clone()
+    };
     legacy(data, "line-a", |store| {
         part(data, store, &recipe_a, "a1", "SN-A1", 100);
         part(data, store, &recipe_a, "a2", "SN-A2", 200);
@@ -118,36 +142,98 @@ fn two_project_databases_merge_once_with_renumbered_references_and_project_snaps
         part(data, store, &recipe_b, "b2", "SN-B", 400);
     });
     let b = crate::project::dir(data, "line-b");
-    write_json(&b.join("recipe-capture/r1/round.json"), serde_json::json!({"origin": {"kind": "history", "cycleId": "b2", "recordId": 3}}));
-    write_json(&b.join("workspaces/comparisons/2/2-100-0.json"), serde_json::json!({"id": "2-100-0", "historyId": 2, "cycleId": "b1"}));
-    write_json(&b.join("workspaces/comparisons/9/9-100-0.json"), serde_json::json!({"id": "9-100-0", "historyId": 9, "cycleId": "gone"}));
+    write_json(
+        &b.join("recipe-capture/r1/round.json"),
+        serde_json::json!({"origin": {"kind": "history", "cycleId": "b2", "recordId": 3}}),
+    );
+    write_json(
+        &b.join("workspaces/comparisons/2/2-100-0.json"),
+        serde_json::json!({"id": "2-100-0", "historyId": 2, "cycleId": "b1"}),
+    );
+    write_json(
+        &b.join("workspaces/comparisons/9/9-100-0.json"),
+        serde_json::json!({"id": "9-100-0", "historyId": 9, "cycleId": "gone"}),
+    );
 
     let store = Store::open_for(&database(data), "line-a").unwrap();
     let notes = migrate(data, &store, "line-a");
-    assert_eq!(notes.iter().filter(|(level, _)| *level == "info").count(), 2, "{notes:?}");
-    let counts = |store: &Store| store.project_records().unwrap().into_iter().map(|(id, (n, ..))| (id, n)).collect::<Vec<_>>();
+    assert_eq!(
+        notes.iter().filter(|(level, _)| *level == "info").count(),
+        2,
+        "{notes:?}"
+    );
+    let counts = |store: &Store| {
+        store
+            .project_records()
+            .unwrap()
+            .into_iter()
+            .map(|(id, (n, ..))| (id, n))
+            .collect::<Vec<_>>()
+    };
     assert_eq!(counts(&store), [("line-a".into(), 2), ("line-b".into(), 2)]);
 
     let a1 = store.detail(1).unwrap();
-    assert_eq!((a1.summary.project_id.as_str(), a1.summary.cycle_id.as_deref()), ("line-a", Some("a1")));
+    assert_eq!(
+        (
+            a1.summary.project_id.as_str(),
+            a1.summary.cycle_id.as_deref()
+        ),
+        ("line-a", Some("a1"))
+    );
     let b2 = store.detail_by_cycle("b2").unwrap().unwrap();
     let b1 = store.detail_by_cycle("b1").unwrap().unwrap();
-    assert_eq!((b1.summary.id, b2.summary.id, b2.summary.retest_of), (3, 4, Some(3)));
-    assert_eq!(store.record_recipe(&a1.summary).unwrap().unwrap().plan_version, recipe_a.plan_version);
-    assert_eq!(store.record_recipe(&b2.summary).unwrap().unwrap().plan_version, recipe_b.plan_version);
-    let raw = b2.burst.as_ref().unwrap().frames[0].raw_file.clone().unwrap();
-    assert!(record_root(data, &b2.summary.project_id, b2.summary.source).unwrap().join(raw).is_file());
+    assert_eq!(
+        (b1.summary.id, b2.summary.id, b2.summary.retest_of),
+        (3, 4, Some(3))
+    );
+    assert_eq!(
+        store
+            .record_recipe(&a1.summary)
+            .unwrap()
+            .unwrap()
+            .plan_version,
+        recipe_a.plan_version
+    );
+    assert_eq!(
+        store
+            .record_recipe(&b2.summary)
+            .unwrap()
+            .unwrap()
+            .plan_version,
+        recipe_b.plan_version
+    );
+    let raw = b2.burst.as_ref().unwrap().frames[0]
+        .raw_file
+        .clone()
+        .unwrap();
+    assert!(record_root(data, &b2.summary.project_id, b2.summary.source)
+        .unwrap()
+        .join(raw)
+        .is_file());
 
-    assert_eq!(read_json(&b.join("recipe-capture/r1/round.json"))["origin"]["recordId"], 4);
+    assert_eq!(
+        read_json(&b.join("recipe-capture/r1/round.json"))["origin"]["recordId"],
+        4
+    );
     let comparison = read_json(&b.join("workspaces/comparisons/3/3-100-0.json"));
-    assert_eq!((comparison["historyId"].as_i64(), comparison["id"].as_str()), (Some(3), Some("3-100-0")));
+    assert_eq!(
+        (comparison["historyId"].as_i64(), comparison["id"].as_str()),
+        (Some(3), Some("3-100-0"))
+    );
     assert!(!b.join("workspaces/comparisons/2").exists());
     assert!(!b.join("workspaces/comparisons/9").exists());
-    assert!(!crate::project::dir(data, "line-a").join("inspection.db").exists());
+    assert!(!crate::project::dir(data, "line-a")
+        .join("inspection.db")
+        .exists());
     let retired: Vec<PathBuf> = std::fs::read_dir(&b)
         .unwrap()
         .map(|e| e.unwrap().path())
-        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("inspection.db.merged-"))
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("inspection.db.merged-")
+        })
         .collect();
     assert_eq!(retired.len(), 1);
 
@@ -158,5 +244,8 @@ fn two_project_databases_merge_once_with_renumbered_references_and_project_snaps
     assert!(migrate(data, &store, "line-a").is_empty());
     assert!(!b.join("inspection.db").exists());
     assert_eq!(counts(&store), [("line-a".into(), 2), ("line-b".into(), 2)]);
-    assert_eq!(read_json(&b.join("recipe-capture/r1/round.json"))["origin"]["recordId"], 4);
+    assert_eq!(
+        read_json(&b.join("recipe-capture/r1/round.json"))["origin"]["recordId"],
+        4
+    );
 }

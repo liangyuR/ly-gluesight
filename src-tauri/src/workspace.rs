@@ -1164,8 +1164,9 @@ fn record_bundle(
 
 /// 记录不属于当前项目时按候选对照的阻止原因。
 fn foreign_record(app: &AppHandle, summary: &crate::store::PartSummary) -> Option<String> {
-    (summary.project_id != crate::project::current_id(app))
-        .then(|| crate::project::records::foreign_reason(&crate::storage::root(app), &summary.project_id))
+    (summary.project_id != crate::project::current_id(app)).then(|| {
+        crate::project::records::foreign_reason(&crate::storage::root(app), &summary.project_id)
+    })
 }
 
 pub fn published_bundle(
@@ -1349,7 +1350,9 @@ pub async fn workspace_compare(
         if let Some(reason) = foreign_record(&app, &detail.summary) {
             return Err(reason);
         }
-        let original = store.record_recipe(&detail.summary)?.ok_or("历史配方快照缺失")?;
+        let original = store
+            .record_recipe(&detail.summary)?
+            .ok_or("历史配方快照缺失")?;
         let (judgement, burst) =
             burst_history::compare(&app, &w, &recipe, &detail, &original, raw)?;
         let comparison = Comparison {
@@ -1394,12 +1397,20 @@ fn save_comparison(app: &AppHandle, comparison: &Comparison) -> Result<(), Strin
 
 pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<String>), String> {
     let host = app.state::<WorkspaceHost>();
-    let (count, mut warnings, orphaned) = host.comparisons
-        .purge(&host.root, &app.state::<Store>(), before)?;
+    let (count, mut warnings, orphaned) =
+        host.comparisons
+            .purge(&host.root, &app.state::<Store>(), before)?;
     let data = crate::storage::root(app);
     for (project, source, directory) in orphaned {
-        if let Err(error) = crate::project::records::remove_recording(&data, &project, source, Path::new(&directory)) {
-            warnings.push(format!("项目 {project} 的过期原图 {directory} 未删除：{error}"));
+        if let Err(error) = crate::project::records::remove_recording(
+            &data,
+            &project,
+            source,
+            Path::new(&directory),
+        ) {
+            warnings.push(format!(
+                "项目 {project} 的过期原图 {directory} 未删除：{error}"
+            ));
         }
     }
     Ok((count, warnings))
@@ -1474,12 +1485,21 @@ pub async fn workspace_history_compare_options(
         let detail = store.detail(history_id)?;
         let original = store.record_recipe(&detail.summary)?;
         let foreign = foreign_record(&app, &detail.summary);
-        let candidate = detail.summary.recipe_id.as_deref().filter(|_| foreign.is_none()).and_then(|id| {
-            let host = app.state::<WorkspaceHost>();
-            let items = host.items.lock().unwrap();
-            items.get(id).filter(|w| !w.legacy()).cloned()
-        });
-        let releases = crate::project::records::releases_root(&crate::storage::root(&app), &detail.summary.project_id).err();
+        let candidate = detail
+            .summary
+            .recipe_id
+            .as_deref()
+            .filter(|_| foreign.is_none())
+            .and_then(|id| {
+                let host = app.state::<WorkspaceHost>();
+                let items = host.items.lock().unwrap();
+                items.get(id).filter(|w| !w.legacy()).cloned()
+            });
+        let releases = crate::project::records::releases_root(
+            &crate::storage::root(&app),
+            &detail.summary.project_id,
+        )
+        .err();
         Ok(burst_history::compare_options(
             &detail,
             original.as_ref(),
@@ -1549,7 +1569,10 @@ fn history_prepared(
     }
     let host = app.state::<WorkspaceHost>();
     let mut cached = host.history_bundle.lock().unwrap();
-    if let Some(prepared) = cached.as_ref().filter(|(owner, p)| owner == project && p.bundle.id == bundle_id) {
+    if let Some(prepared) = cached
+        .as_ref()
+        .filter(|(owner, p)| owner == project && p.bundle.id == bundle_id)
+    {
         return Ok(prepared.1.clone());
     }
     let bundle = record_bundle(app, project, &original.id, bundle_id)?;
@@ -1616,7 +1639,9 @@ pub async fn workspace_history_frame_view(
         if detail.summary.recipe_revision.is_none() {
             return Err("历史记录缺少配方快照身份".into());
         }
-        let original = store.record_recipe(&detail.summary)?.ok_or("原始配方快照缺失")?;
+        let original = store
+            .record_recipe(&detail.summary)?
+            .ok_or("原始配方快照缺失")?;
         let prepared = history_prepared(&app, &detail.summary.project_id, &original, bundle_id)?;
         let image = burst_history::frame_image(&app, &detail, camera, seq)?;
         let measured = prepared.measure_frame(

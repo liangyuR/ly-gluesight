@@ -49,7 +49,19 @@ impl Comparisons {
     }
 
     /// 删除早于 before 的记录并清理失效的对照；另返回被删记录里非当前项目的录制目录（项目、来源、目录）。
-    pub(super) fn purge(&self, root: &Path, store: &Store, before: i64) -> Result<(usize, Vec<String>, Vec<(String, crate::store::RecordSource, String)>), String> {
+    pub(super) fn purge(
+        &self,
+        root: &Path,
+        store: &Store,
+        before: i64,
+    ) -> Result<
+        (
+            usize,
+            Vec<String>,
+            Vec<(String, crate::store::RecordSource, String)>,
+        ),
+        String,
+    > {
         let _gate = self.0.lock().unwrap();
         let (count, orphaned) = store.purge_before(before)?;
         let mut warnings = Vec::new();

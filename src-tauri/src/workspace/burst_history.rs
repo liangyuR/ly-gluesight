@@ -303,7 +303,10 @@ fn burst_samples(app: &AppHandle, detail: &PartDetail) -> Result<history_samples
     if detail.summary.recipe_revision.is_none() {
         return Err("历史配方快照身份缺失".into());
     }
-    let recipe = app.state::<Store>().record_recipe(&detail.summary)?.ok_or("历史配方快照缺失，不能确定离线样本原图")?;
+    let recipe = app
+        .state::<Store>()
+        .record_recipe(&detail.summary)?
+        .ok_or("历史配方快照缺失，不能确定离线样本原图")?;
     history_samples::BurstSamples::open(&crate::storage::root(app), detail, &recipe)
 }
 
@@ -333,8 +336,16 @@ pub(super) fn frame_image(
     if detail.summary.source == RecordSource::OfflineCandidate {
         return burst_samples(app, detail)?.load(camera, seq);
     }
-    let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId，不能确定对应原图")?;
-    let root = crate::project::records::record_root(&crate::storage::root(app), &detail.summary.project_id, detail.summary.source)?;
+    let cycle_id = detail
+        .summary
+        .cycle_id
+        .as_deref()
+        .ok_or("历史记录没有 cycleId，不能确定对应原图")?;
+    let root = crate::project::records::record_root(
+        &crate::storage::root(app),
+        &detail.summary.project_id,
+        detail.summary.source,
+    )?;
     recorded::load_frame_verified(&root, cycle_id, camera_id, frame)
 }
 

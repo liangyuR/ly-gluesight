@@ -336,7 +336,11 @@ fn part_images<W: std::io::Write>(app: &AppHandle, package: &mut Package<W>, det
         package.notes.push(format!("记录 #{id} 没有 cycleId，无法确定原图"));
         return Ok(0);
     };
-    let root = crate::project::records::record_root(&crate::storage::root(app), &detail.summary.project_id, detail.summary.source)?;
+    let root = crate::project::records::record_root(
+        &crate::storage::root(app),
+        &detail.summary.project_id,
+        detail.summary.source,
+    )?;
     let folder = format!("records/{id}_{cycle_id}");
     let mut count = 0;
     let mut directory = None;
@@ -453,13 +457,18 @@ fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &
         csv.extend_from_slice(crate::history::csv_row(&detail.summary).as_bytes());
         details.extend_from_slice(&serde_json::to_vec(detail).map_err(|e| e.to_string())?);
         details.push(b'\n');
-        if let Some(revision) = &detail.summary.recipe_revision { revisions.insert((detail.summary.project_id.clone(), revision.clone())); }
+        if let Some(revision) = &detail.summary.recipe_revision {
+            revisions.insert((detail.summary.project_id.clone(), revision.clone()));
+        }
     }
     package.add("records/parts.csv", &csv)?;
     package.add("records/parts.jsonl", &details)?;
     for (project, revision) in &revisions {
         match store.recipe_snapshot(project, revision) {
-            Ok(Some(recipe)) => package.add(&format!("recipes/{project}/{revision}.json"), &serde_json::to_vec_pretty(&recipe).map_err(|e| e.to_string())?)?,
+            Ok(Some(recipe)) => package.add(
+                &format!("recipes/{project}/{revision}.json"),
+                &serde_json::to_vec_pretty(&recipe).map_err(|e| e.to_string())?,
+            )?,
             Ok(None) => package.notes.push(format!("配方快照 {revision} 缺失")),
             Err(error) => package.notes.push(format!("配方快照 {revision} 读取失败：{error}")),
         }

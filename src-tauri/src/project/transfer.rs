@@ -206,7 +206,11 @@ fn collect(
 ) -> Result<Vec<(String, PathBuf)>, String> {
     let tops: Vec<&str> = CONTENT
         .iter()
-        .chain(if records.is_some() { &RECORDS[1..] } else { &[] })
+        .chain(if records.is_some() {
+            &RECORDS[1..]
+        } else {
+            &[]
+        })
         .copied()
         .collect();
     let mut out = walk_tops(root, &tops, notes)?;
@@ -1257,7 +1261,9 @@ pub async fn project_transfer_size(app: AppHandle, id: String) -> Result<Transfe
         let bytes = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         let mut wal = database.as_os_str().to_os_string();
         wal.push("-wal");
-        let records_db = if total == 0 { 0 } else {
+        let records_db = if total == 0 {
+            0
+        } else {
             ((bytes(&database) + bytes(Path::new(&wal))) as f64 * own as f64 / total as f64) as u64
         };
         transfer_size(&super::dir(&data, &id), records_db)

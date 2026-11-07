@@ -640,7 +640,11 @@ fn frame_rows(conn: &Connection, id: i64) -> Result<Vec<FrameRecord>, String> {
     rows.collect::<Result<_, _>>().map_err(db_err)
 }
 
-fn snapshot_in(conn: &Connection, project: &str, revision_id: &str) -> Result<Option<Recipe>, String> {
+fn snapshot_in(
+    conn: &Connection,
+    project: &str,
+    revision_id: &str,
+) -> Result<Option<Recipe>, String> {
     let snapshot: Option<(String, u32, String)> = conn.query_row(
         "SELECT recipe_id,version,json FROM recipe_snapshots WHERE project_id = ?1 AND revision_id = ?2", [project, revision_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -894,8 +898,14 @@ impl Store {
              COMMIT;",
         )
         .map_err(db_err)?;
-        if !defer_recovery { fail_interrupted_recordings(&mut conn)?; }
-        Ok(Self { conn: Mutex::new(conn), backup_path, project: project.into() })
+        if !defer_recovery {
+            fail_interrupted_recordings(&mut conn)?;
+        }
+        Ok(Self {
+            conn: Mutex::new(conn),
+            backup_path,
+            project: project.into(),
+        })
     }
 
     /// 当前项目编号。
@@ -918,8 +928,13 @@ impl Store {
             UNION ALL SELECT recipe_id,version FROM recipe_snapshots s WHERE s.project_id=?1 AND revision_id = recipe_id || '-v' || version
                 AND (NOT EXISTS (SELECT 1 FROM parts p WHERE p.project_id=?1 AND p.recipe_revision=s.revision_id AND p.source='offlineCandidate')
                     OR EXISTS (SELECT 1 FROM parts p WHERE p.project_id=?1 AND p.recipe_revision=s.revision_id AND p.source!='offlineCandidate'))) GROUP BY recipe_id").map_err(db_err)?;
-        let rows = stmt.query_map([&self.project], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))).map_err(db_err)?;
-        rows.collect::<Result<std::collections::BTreeMap<_, _>, _>>().map_err(db_err)
+        let rows = stmt
+            .query_map([&self.project], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+            })
+            .map_err(db_err)?;
+        rows.collect::<Result<std::collections::BTreeMap<_, _>, _>>()
+            .map_err(db_err)
     }
 
     pub(crate) fn workspace_instance(&self, recipe_id: &str, instance_id: u64) -> Result<u64, String> {
@@ -933,8 +948,16 @@ impl Store {
         }
         let stored = i64::try_from(instance_id).map_err(|_| "候选实例 ID 超出范围")?;
         conn.execute("INSERT OR IGNORE INTO workspace_instances (project_id, id, recipe_id) VALUES (?1, ?2, ?3)", params![self.project, stored, recipe_id]).map_err(db_err)?;
-        let original: String = conn.query_row("SELECT recipe_id FROM workspace_instances WHERE project_id = ?1 AND id = ?2", params![self.project, stored], |row| row.get(0)).map_err(db_err)?;
-        if original != recipe_id { return Err("候选实例 ID 已属于其他配方".into()); }
+        let original: String = conn
+            .query_row(
+                "SELECT recipe_id FROM workspace_instances WHERE project_id = ?1 AND id = ?2",
+                params![self.project, stored],
+                |row| row.get(0),
+            )
+            .map_err(db_err)?;
+        if original != recipe_id {
+            return Err("候选实例 ID 已属于其他配方".into());
+        }
         Ok(instance_id)
     }
 
@@ -1093,8 +1116,11 @@ impl Store {
             Some(revision) => self.recipe_snapshot(&summary.project_id, revision)?,
             None => None,
         };
-        let consistent = summary.project_id == self.project && summary.ts == record.ts && summary.sn == record.sn
-            && summary.cycle_id.as_deref() == record.cycle_id && summary.bundle_id.as_deref() == record.bundle_id
+        let consistent = summary.project_id == self.project
+            && summary.ts == record.ts
+            && summary.sn == record.sn
+            && summary.cycle_id.as_deref() == record.cycle_id
+            && summary.bundle_id.as_deref() == record.bundle_id
             && summary.recipe_id.as_deref() == record.recipe.map(|recipe| recipe.id.as_str())
             && summary.recipe_version == record.recipe.map(|recipe| recipe.version)
             && summary.recipe_revision.as_deref() == record.recipe.map(|recipe| recipe.revision_id.as_str())
@@ -1316,12 +1342,23 @@ impl Store {
         };
         let conn = self.conn.lock().map_err(|_| "数据库锁异常，暂停孤立录制清理".to_string())?;
         let mut stmt = conn.prepare(&format!("SELECT recording_directory FROM parts WHERE project_id=?1 AND instr(lower(recording_directory),'_pending')>0 AND {}", scope.clause(""))).map_err(db_err)?;
-        for row in stmt.query_map([&self.project], |row| row.get::<_, String>(0)).map_err(db_err)? {
+        for row in stmt
+            .query_map([&self.project], |row| row.get::<_, String>(0))
+            .map_err(db_err)?
+        {
             protect(&row.map_err(db_err)?)?;
         }
-        let mut stmt = conn.prepare(&format!("SELECT f.raw_file FROM part_frames f JOIN parts p ON p.id=f.part_id \
-            WHERE p.project_id=?1 AND instr(lower(f.raw_file),'_pending')>0 AND {}", scope.clause("p."))).map_err(db_err)?;
-        for row in stmt.query_map([&self.project], |row| row.get::<_, String>(0)).map_err(db_err)? {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT f.raw_file FROM part_frames f JOIN parts p ON p.id=f.part_id \
+            WHERE p.project_id=?1 AND instr(lower(f.raw_file),'_pending')>0 AND {}",
+                scope.clause("p.")
+            ))
+            .map_err(db_err)?;
+        for row in stmt
+            .query_map([&self.project], |row| row.get::<_, String>(0))
+            .map_err(db_err)?
+        {
             let file = row.map_err(db_err)?;
             validate_raw_path(&file)?;
             protect(&file)?;
@@ -1365,13 +1402,23 @@ impl Store {
     /// 同一筛选条件下与 id 相邻的记录：(较早一件, 较晚一件)，按（时间, 编号）排序，与历史列表同序。
     pub fn neighbors(&self, q: &HistoryQuery, id: i64) -> Result<(Option<i64>, Option<i64>), String> {
         let conn = self.conn.lock().unwrap();
-        let Some(ts) = conn.query_row("SELECT ts FROM parts WHERE id = ?1", [id], |row| row.get::<_, i64>(0)).optional().map_err(db_err)? else {
+        let Some(ts) = conn
+            .query_row("SELECT ts FROM parts WHERE id = ?1", [id], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()
+            .map_err(db_err)?
+        else {
             return Ok((None, None));
         };
         let (filter, args) = Self::filter(q, "");
         let one = |cmp: &str, order: &str| -> Result<Option<i64>, String> {
             let mut values = args.clone();
-            values.extend([SqlValue::Integer(ts), SqlValue::Integer(ts), SqlValue::Integer(id)]);
+            values.extend([
+                SqlValue::Integer(ts),
+                SqlValue::Integer(ts),
+                SqlValue::Integer(id),
+            ]);
             conn.query_row(&format!("SELECT id FROM parts{filter} AND (ts {cmp} ? OR (ts = ? AND id {cmp} ?)) ORDER BY ts {order}, id {order} LIMIT 1"),
                 params_from_iter(values.iter()), |row| row.get(0)).optional().map_err(db_err)
         };
@@ -1450,7 +1497,11 @@ impl Store {
     }
 
     /// 记录所属项目 `project` 的配方快照：配方编号与修订号只在项目内唯一。
-    pub fn recipe_snapshot(&self, project: &str, revision_id: &str) -> Result<Option<Recipe>, String> {
+    pub fn recipe_snapshot(
+        &self,
+        project: &str,
+        revision_id: &str,
+    ) -> Result<Option<Recipe>, String> {
         snapshot_in(&self.conn.lock().unwrap(), project, revision_id)
     }
 
@@ -1702,7 +1753,10 @@ impl Store {
 
     /// 删除本机全部项目里早于 ts 的记录；返回删除件数与其中非当前项目记录的录制目录（项目、来源、目录），
     /// 这些原图没有在运行的录制滚动清理，由调用方随记录一起删。
-    pub fn purge_before(&self, ts: i64) -> Result<(usize, Vec<(String, RecordSource, String)>), String> {
+    pub fn purge_before(
+        &self,
+        ts: i64,
+    ) -> Result<(usize, Vec<(String, RecordSource, String)>), String> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(db_err)?;
         let orphaned = {
@@ -1710,21 +1764,38 @@ impl Store {
                 .prepare("SELECT project_id, source, recording_directory FROM parts WHERE ts < ?1 AND project_id != ?2 AND recording_directory IS NOT NULL")
                 .map_err(db_err)?;
             let rows = stmt
-                .query_map(params![ts, self.project], |row| Ok((row.get::<_, String>(0)?, enum_column::<RecordSource>(row, 1)?, row.get::<_, String>(2)?)))
+                .query_map(params![ts, self.project], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        enum_column::<RecordSource>(row, 1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
                 .map_err(db_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
         };
-        let count = tx.execute("DELETE FROM parts WHERE ts < ?1", [ts]).map_err(db_err)?;
+        let count = tx
+            .execute("DELETE FROM parts WHERE ts < ?1", [ts])
+            .map_err(db_err)?;
         tx.commit().map_err(db_err)?;
         Ok((count, orphaned))
     }
 
     /// 各项目的记录数与时间范围：项目编号 → (件数, 最早, 最晚)。
-    pub fn project_records(&self) -> Result<std::collections::BTreeMap<String, (u64, Option<i64>, Option<i64>)>, String> {
+    pub fn project_records(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, (u64, Option<i64>, Option<i64>)>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT project_id, COUNT(*), MIN(ts), MAX(ts) FROM parts GROUP BY project_id").map_err(db_err)?;
+        let mut stmt = conn
+            .prepare("SELECT project_id, COUNT(*), MIN(ts), MAX(ts) FROM parts GROUP BY project_id")
+            .map_err(db_err)?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, (row.get::<_, i64>(1)? as u64, row.get(2)?, row.get(3)?))))
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (row.get::<_, i64>(1)? as u64, row.get(2)?, row.get(3)?),
+                ))
+            })
             .map_err(db_err)?;
         rows.collect::<Result<_, _>>().map_err(db_err)
     }
@@ -1736,17 +1807,26 @@ pub fn recorded_projects(path: &Path) -> Result<BTreeSet<String>, String> {
     if !path.is_file() {
         return Ok(BTreeSet::new());
     }
-    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
-        .map_err(db_err)?;
+    let conn = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(db_err)?;
     conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
-    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(db_err)?;
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(db_err)?;
     if version != DB_VERSION {
         return Ok(BTreeSet::new());
     }
     let mut stmt = conn
-        .prepare("SELECT DISTINCT project_id FROM parts UNION SELECT project_id FROM project_merges")
+        .prepare(
+            "SELECT DISTINCT project_id FROM parts UNION SELECT project_id FROM project_merges",
+        )
         .map_err(db_err)?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(db_err)?;
     rows.collect::<Result<_, _>>().map_err(db_err)
 }
 

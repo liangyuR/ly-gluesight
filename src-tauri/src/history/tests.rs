@@ -72,7 +72,15 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_tolerance_only_change() {
         edit(&mut doc);
         let candidate = Arc::new(doc.build().unwrap());
         let (row, frames) = burst_row(&original);
-        let result = rejudge_rows(vec![row], &request, "default", |_, _| Ok(Some(original.clone())), |_| Some(candidate.clone()), |_| Ok(frames.clone())).unwrap();
+        let result = rejudge_rows(
+            vec![row],
+            &request,
+            "default",
+            |_, _| Ok(Some(original.clone())),
+            |_| Some(candidate.clone()),
+            |_| Ok(frames.clone()),
+        )
+        .unwrap();
         match rejudged {
             None => assert_eq!(result.skip_reasons.iter().map(|skip| skip.kind).collect::<Vec<_>>(), [SkipKind::LayoutChanged], "{case}"),
             Some(verdict) => assert_eq!(result.matrix.iter().map(|cell| (cell.from, cell.to)).collect::<Vec<_>>(), [(Verdict::NgWidth, verdict)], "{case}"),

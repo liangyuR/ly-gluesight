@@ -295,7 +295,11 @@ fn dir_bytes(root: &Path) -> u64 {
 }
 
 /// 项目的占用与统计；`records` 是本机记录库里该项目的（件数, 最早, 最晚）。
-pub fn usage(data: &Path, id: &str, records: (u64, Option<i64>, Option<i64>)) -> Result<ProjectUsage, String> {
+pub fn usage(
+    data: &Path,
+    id: &str,
+    records: (u64, Option<i64>, Option<i64>),
+) -> Result<ProjectUsage, String> {
     if !super::valid_id(id) {
         return Err(format!("项目编号 {id} 不合法"));
     }
@@ -364,7 +368,11 @@ pub async fn project_delete(app: AppHandle, id: String) -> Result<(), String> {
 pub async fn project_usage(app: AppHandle, id: String) -> Result<ProjectUsage, String> {
     let data = crate::storage::root(&app);
     tauri::async_runtime::spawn_blocking(move || {
-        let records = app.state::<crate::store::Store>().project_records()?.remove(&id).unwrap_or_default();
+        let records = app
+            .state::<crate::store::Store>()
+            .project_records()?
+            .remove(&id)
+            .unwrap_or_default();
         usage(&data, &id, records)
     })
         .await

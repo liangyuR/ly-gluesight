@@ -138,7 +138,10 @@ impl CycleSettings {
         if let Some(object) = value.as_object_mut() {
             object.remove("historyDays");
         }
-        crate::fsio::write_atomic(path, &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?)
+        crate::fsio::write_atomic(
+            path,
+            &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+        )
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -182,17 +185,33 @@ struct HistoryFile {
 pub fn load_history_days(path: &Path, seed: u32) -> (u32, Option<String>) {
     match crate::fsio::read_json::<HistoryFile>(path) {
         Ok(Some(file)) if (1..=3650).contains(&file.history_days) => (file.history_days, None),
-        Ok(Some(file)) => (seed, Some(format!("{} 的历史保留天数 {} 越界，先按 {seed} 天运行", path.display(), file.history_days))),
+        Ok(Some(file)) => (
+            seed,
+            Some(format!(
+                "{} 的历史保留天数 {} 越界，先按 {seed} 天运行",
+                path.display(),
+                file.history_days
+            )),
+        ),
         Ok(None) => match save_history_days(path, seed) {
             Ok(()) => (seed, None),
-            Err(error) => (seed, Some(format!("本机历史保留天数写入失败（{error}），先按 {seed} 天运行"))),
+            Err(error) => (
+                seed,
+                Some(format!(
+                    "本机历史保留天数写入失败（{error}），先按 {seed} 天运行"
+                )),
+            ),
         },
         Err(note) => (seed, Some(note)),
     }
 }
 
 pub fn save_history_days(path: &Path, days: u32) -> Result<(), String> {
-    crate::fsio::write_atomic(path, &serde_json::to_string_pretty(&HistoryFile { history_days: days }).map_err(|e| e.to_string())?)
+    crate::fsio::write_atomic(
+        path,
+        &serde_json::to_string_pretty(&HistoryFile { history_days: days })
+            .map_err(|e| e.to_string())?,
+    )
 }
 
 #[cfg(test)]

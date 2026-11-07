@@ -64,7 +64,11 @@ fn deleting_project_keeps_its_recordings_while_old_trash_markers_still_clean() {
         "ownerData": data.0.canonicalize().unwrap(),
     }).to_string()).unwrap();
     let recording = |id: &str| crate::log_storage::recording_project(&dir(&data.0, id)).unwrap();
-    let (a, b, c) = (recording("line-a"), recording("line-b"), recording("line-c"));
+    let (a, b, c) = (
+        recording("line-a"),
+        recording("line-b"),
+        recording("line-c"),
+    );
     for root in [&a, &b, &c] {
         std::fs::create_dir_all(root.join("records")).unwrap();
         std::fs::write(root.join("records/image.pgm"), b"image").unwrap();

@@ -160,7 +160,9 @@ impl SkipKind {
             Self::LayoutChanged => {
                 "当前候选的段序列 / 类型 / 预期帧数、相机或走廊已改变，需要使用原图复测"
             }
-            Self::OtherProject => "记录属于其他项目，配方编号只在项目内唯一，不能用当前项目的配方重判",
+            Self::OtherProject => {
+                "记录属于其他项目，配方编号只在项目内唯一，不能用当前项目的配方重判"
+            }
         }
     }
 }
@@ -194,7 +196,18 @@ pub async fn history_rejudge(app: AppHandle, request: RejudgeRequest) -> Result<
         let store = app.state::<Store>();
         let cycle = app.state::<CycleHost>();
         let rows = store.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
-        rejudge_rows(rows, &request, store.project(), |project, revision_id| store.recipe_snapshot(project, revision_id).map(|r| r.map(Arc::new)), |id| cycle.recipe(id), |id| store.burst_frames(id))
+        rejudge_rows(
+            rows,
+            &request,
+            store.project(),
+            |project, revision_id| {
+                store
+                    .recipe_snapshot(project, revision_id)
+                    .map(|r| r.map(Arc::new))
+            },
+            |id| cycle.recipe(id),
+            |id| store.burst_frames(id),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -292,7 +305,10 @@ fn rejudge_rows(
             continue;
         };
         let key = format!("{}/{revision_id}", row.project_id);
-        let Some(original) = cached_recipe(&mut originals, &key, || snapshot(&row.project_id, revision_id))? else {
+        let Some(original) = cached_recipe(&mut originals, &key, || {
+            snapshot(&row.project_id, revision_id)
+        })?
+        else {
             skip(SkipKind::SnapshotMissing);
             continue;
         };
