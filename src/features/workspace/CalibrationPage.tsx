@@ -17,6 +17,7 @@ import { pieceLabel } from "./pieces";
 import "./corridor.css";
 import "./capture.css";
 import { useRecipeHref } from "./recipeRoutes";
+import { OperationStatus, useOperation } from "./operation";
 
 /**
  * 试测（段配方，路由 /recipe/<编号>/calibration）：示教件是唯一的基准件，兼作标准件。各段 N_exp 在示教件分段确认后由后端写入；
@@ -25,6 +26,7 @@ import { useRecipeHref } from "./recipeRoutes";
  */
 export default function CalibrationPage() {
   const href = useRecipeHref();
+  const operation = useOperation();
   const { data, doc, busy, dirty, frameDirty, act, setError } = useWorkspace();
   // 键入但还没确认的容差，按段序号缓存；只在配方与各段类型 / N_exp 不变时有效（见 resultKey）
   const [typed, setTyped] = useState<{ key: string; values: Record<number, number> }>({ key: "", values: {} });
@@ -45,7 +47,7 @@ export default function CalibrationPage() {
   const toleranceTotal = calibration?.toleranceTotal ?? plan.toleranceTotal;
   const measured = !!calibration?.measured;
   const stale = !measured && calibration?.roundId != null;
-  const measure = () => void act(() => workspaceApi.measureTeaching(doc.id, data.workspace.revision), "示教件已按当前走廊测量");
+  const measure = () => void act(() => operation.run(taskId => workspaceApi.measureTeaching(doc.id, data.workspace.revision, taskId)), "示教件已按当前走廊测量");
   const confirm = (segment: SegmentCalibView) => {
     const value = tolerances[segment.index] ?? segment.tolerance;
     if (!Number.isInteger(value) || value < 0) { setError("帧数容差需为不小于 0 的整数"); return; }
@@ -76,6 +78,7 @@ export default function CalibrationPage() {
         <Link className="wp-text-link" to={href("/recipe/segments")}>段列表</Link>
       </div>
       {calibration && calibration.segments.length > 0 && <Table className="wp-calib-table" caption="逐段基准" columns={columns} rows={calibration.segments} rowKey={row => String(row.index)} />}
+      <OperationStatus operation={operation} label="测量示教件" />
       {hinted.length > 0 && <Notice title="定向提示" tone="warn">
         <ul className="wp-calib-hints" aria-label="按段的定向提示">{hinted.flatMap(segment => segment.hints.map((hint, i) => <li key={`${segment.index}-${i}`}>段 {segment.index} · {segmentKindLabel[segment.kind]}：{hint}</li>))}</ul>
       </Notice>}

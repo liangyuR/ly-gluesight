@@ -11,10 +11,10 @@ import { burstJudgement, burstPartDetail, burstWorkspaceView, frameMetrics, work
 import type { Comparison } from "../src/features/workspace/types";
 import type { HistoryDetailState } from "../src/features/history/types";
 
-vi.mock("../src/features/history/api", () => ({ historyApi: { detail: vi.fn(), neighbors: vi.fn() } }));
+vi.mock("../src/features/history/api", () => ({ historyApi: { overview: vi.fn(), frameDetail: vi.fn(), neighbors: vi.fn() } }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
-  comparisons: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), recordFrameView: vi.fn(), historyFrameView: vi.fn(), historyCompareOptions: vi.fn(),
+  comparisonSummaries: vi.fn(), comparisonGet: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), recordFrameView: vi.fn(), historyFrameView: vi.fn(), historyCompareOptions: vi.fn(),
 } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), record: vi.fn() } }));
 let ws: ReturnType<typeof workspaceState>;
@@ -28,9 +28,11 @@ function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rule
 beforeEach(() => {
   ws = workspaceState(burstWorkspaceView());
   detail = burstPartDetail(); vi.mocked(useWorkspace).mockImplementation(() => ws);
-  vi.mocked(historyApi.detail).mockResolvedValue(detail);
+  vi.mocked(historyApi.overview).mockResolvedValue(detail);
+  vi.mocked(historyApi.frameDetail).mockImplementation(async (_, camera, seq) => ({ ...detail, burst: { ...detail.burst!, frames: detail.burst!.frames.filter(frame => frame.camera === camera && frame.seq === seq) } }));
+  vi.mocked(workspaceApi.comparisonGet).mockImplementation(async (_, id) => (await workspaceApi.comparisonSummaries(detail.summary.id)).find(item => item.id === id) as Comparison);
   vi.mocked(historyApi.neighbors).mockResolvedValue({ older: null, newer: null });
-  vi.mocked(workspaceApi.comparisons).mockResolvedValue([]);
+  vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([]);
   vi.mocked(workspaceApi.compare).mockResolvedValue(comparison());
   vi.mocked(workspaceApi.compareOriginal).mockResolvedValue({...comparison(),source:"original"});
   vi.mocked(workspaceApi.recordFrameView).mockReset().mockResolvedValue({ segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5, edges: [], partEdges: [], metrics: frameMetrics(0, 1) });
@@ -41,6 +43,23 @@ beforeEach(() => {
 });
 
 describe("历史详情（段配方记录）", () => {
+  it("加载旧对照期间重新复算 → 迟到的旧对照不能覆盖新结果", async () => {
+    const old = { ...comparison(), judgement: { ...comparison().judgement, reason: "旧对照结果" } };
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([old]);
+    let finish!: (value: Comparison) => void;
+    vi.mocked(workspaceApi.comparisonGet).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const next = { ...comparison(), id: "new-comparison", judgement: { ...comparison().judgement, reason: "最新复算结果" } };
+    vi.mocked(workspaceApi.compare).mockResolvedValue(next);
+    show();
+    await userEvent.selectOptions(await screen.findByLabelText("已保存对照结果", { selector: "select" }), old.id);
+    await userEvent.click(screen.getByRole("button", { name: "按候选规则重判" }));
+    expect(await screen.findByText("最新复算结果")).toBeVisible();
+    finish(old);
+    await waitFor(() => expect(screen.queryByText("正在读取对照结果…")).toBeNull());
+    expect(screen.getByText("最新复算结果")).toBeVisible();
+    expect(screen.queryByText("旧对照结果")).toBeNull();
+  });
+
   // 防的回归：从试测“看详情”进来，返回按钮写死回历史列表，操作员要重新找到试测页
   it("从试测进入历史详情 → 返回试测页", async () => {
     show({ pathname: "/history/1", state: { returnTo: { path: "/recipe/calibration", label: "返回试测" } } });
@@ -68,7 +87,7 @@ describe("历史详情（段配方记录）", () => {
     show();
     await userEvent.click(await screen.findByRole("button", { name: "按候选规则重判" }));
     // 工作台选的是别的配方（多配方并行）：仍按记录配方 S 的候选对照
-    await waitFor(() => expect(workspaceApi.compare).toHaveBeenCalledWith("S", 9, detail.summary.id, false));
+    await waitFor(() => expect(workspaceApi.compare).toHaveBeenCalledWith("S", 9, detail.summary.id, false, expect.any(String)));
     expect(await screen.findByText("1 / 1 个区域与原结果不同", { exact: false })).toBeVisible();
     const row = within(screen.getByRole("table", { name: "逐区域比对" })).getAllByRole("row")[1];
     expect(row).toHaveTextContent(/段 1–3 · 未分段.*OK.*NG · 胶宽超差.*结论.*不同/);
@@ -79,13 +98,13 @@ describe("历史详情（段配方记录）", () => {
     const edge = (y: number): [[number, number], [number, number]] => [[10, y], [20, y]];
     vi.mocked(workspaceApi.recordFrameView).mockResolvedValue({ segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5, edges: [edge(10), edge(20), edge(30)], partEdges: [], metrics: frameMetrics(0, 1) });
     const replay = burstJudgement({ verdict: "NG_GAP", plcCode: 13, reason: "断胶" });
-    vi.mocked(workspaceApi.comparisons).mockResolvedValue([{ ...comparison(), source: "raw", judgement: { ...detail.judgement, verdict: "NG_GAP", reason: "断胶" },
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([{ ...comparison(), source: "raw", judgement: { ...detail.judgement, verdict: "NG_GAP", reason: "断胶" },
       burst: { segments: burst.segments, cameras: burst.cameras, expectedTotal: burst.expectedTotal, judgement: replay,
-        frames: burst.frames.map(f => frameMetrics(f.camera, f.seq, { gapMaxMm: f.camera === 0 && f.seq === 1 ? 12 : 0 })) } }]);
+        frames: burst.frames.map(f => frameMetrics(f.camera, f.seq, { gapMaxMm: f.camera === 0 && f.seq === 1 ? 12 : 0 })) } } as Comparison]);
     show("/history/1?comparison=compare-1");
     expect(await screen.findByText("候选原图复测整件判定")).toBeVisible();
     expect(screen.getByText("12.00 mm")).toBeVisible();
-    await waitFor(() => expect(workspaceApi.recordFrameView).toHaveBeenCalledWith(detail.summary.id, "compare-1", 0, 1));
+    await waitFor(() => expect(workspaceApi.recordFrameView).toHaveBeenCalledWith(detail.summary.id, "compare-1", 0, 1, expect.any(AbortSignal)));
     // 只有选中相机的原图能悬停测站；悬停第 2 站的测量线 → 胶宽折线标出第 2 站，原图上这条线加粗
     const hit = await waitFor(() => { const lines = document.querySelectorAll('[data-station="1"]'); expect(lines).toHaveLength(1); return lines[0]; });
     await userEvent.hover(hit);
@@ -128,7 +147,7 @@ describe("历史详情（段配方记录）", () => {
     await waitFor(() => expect(workspaceApi.historyCompareOptions).toHaveBeenLastCalledWith(detail.summary.id, "B"));
     await waitFor(() => expect(picker).toHaveValue("B"));
     await userEvent.click(screen.getByRole("button", { name: "从原图复测整件" }));
-    await waitFor(() => expect(workspaceApi.compare).toHaveBeenCalledWith("B", 4, detail.summary.id, true));
+    await waitFor(() => expect(workspaceApi.compare).toHaveBeenCalledWith("B", 4, detail.summary.id, true, expect.any(String)));
   });
 
   // 防的回归（D-SB-57）：有段没测的原图复测被当成整件结论，操作员以为没测的段也合格
@@ -137,8 +156,8 @@ describe("历史详情（段配方记录）", () => {
     vi.mocked(workspaceApi.historyCompareOptions).mockResolvedValue({ candidate: { id: "S", revision: 9, version: 2, name: "段配方" }, choices: [{ id: "S", revision: 9, version: 2, name: "段配方" }], original: yes, rules: yes,
       raw: { ...yes, note: "这些段没有可用走廊，复测时不测：第 2 段相机 CAM-2：尚未示教检测走廊" } });
     const burst = detail.burst!;
-    vi.mocked(workspaceApi.comparisons).mockResolvedValue([{ ...comparison(), source: "raw", burst: { segments: burst.segments, cameras: burst.cameras,
-      expectedTotal: burst.expectedTotal, judgement: burst.judgement, frames: [], unmeasured: [{ segment: 2, camera: "CAM-2", reason: "第 2 段相机 CAM-2：尚未示教检测走廊" }] } }]);
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([{ ...comparison(), source: "raw", burst: { segments: burst.segments, cameras: burst.cameras,
+      expectedTotal: burst.expectedTotal, judgement: burst.judgement, frames: [], unmeasured: [{ segment: 2, camera: "CAM-2", reason: "第 2 段相机 CAM-2：尚未示教检测走廊" }] } } as Comparison]);
     show("/history/1?comparison=compare-1");
     expect(await screen.findByText(/从原图复测：这些段没有可用走廊，复测时不测/)).toBeVisible();
     expect(within(await screen.findByRole("list", { name: "没测的段" })).getByRole("listitem")).toHaveTextContent("第 2 段相机 CAM-2：尚未示教检测走廊");
@@ -152,18 +171,18 @@ describe("历史详情（段配方记录）", () => {
     show();
     expect(within(await screen.findByRole("list", { name: "区域" })).getByText("段 1–3 · 未分段")).toBeVisible();
     expect(screen.getByText("检测不完整", { selector: "[data-flag]" })).toBeVisible();
-    await waitFor(() => expect(workspaceApi.historyFrameView).toHaveBeenCalledWith(detail.summary.id, 0, 1));
+    await waitFor(() => expect(workspaceApi.historyFrameView).toHaveBeenCalledWith(detail.summary.id, 0, 1, expect.any(AbortSignal)));
     // 三台相机都测成，每幅原图都叠出两条测量横线和搜索带
     await waitFor(() => expect(document.querySelectorAll('[aria-label="测量横线"]')).toHaveLength(3));
     expect(document.querySelectorAll('[aria-label="测量横线"] line')).toHaveLength(6);
     expect(document.querySelectorAll('[aria-label="搜索带边界"]')).toHaveLength(3);
     await userEvent.click(screen.getByRole("button", { name: /^帧组 5 · CAM-2 ·/ }));
-    await waitFor(() => expect(workspaceApi.historyFrameView).toHaveBeenCalledWith(detail.summary.id, 0, 5));
-    expect(workspaceApi.historyFrameView).not.toHaveBeenCalledWith(detail.summary.id, 1, 5);
+    await waitFor(() => expect(workspaceApi.historyFrameView).toHaveBeenCalledWith(detail.summary.id, 0, 5, expect.any(AbortSignal)));
+    expect(vi.mocked(workspaceApi.historyFrameView).mock.calls.some(([id, camera, seq]) => id === detail.summary.id && camera === 1 && seq === 5)).toBe(false);
     expect(screen.getByLabelText("历史相机选择", { selector: "select" })).toHaveValue("1");
     expect(await screen.findByText(/本帧组缺帧，没有原图/)).toBeVisible();
-    expect(burstImageApi.record).toHaveBeenCalledWith(detail.summary.id, 0, 5);
-    expect(burstImageApi.record).not.toHaveBeenCalledWith(detail.summary.id, 1, 5);
+    expect(burstImageApi.record).toHaveBeenCalledWith(detail.summary.id, 0, 5, expect.any(AbortSignal));
+    expect(vi.mocked(burstImageApi.record).mock.calls.some(([id, camera, seq]) => id === detail.summary.id && camera === 1 && seq === 5)).toBe(false);
     expect(workspaceApi.recordFrameView).not.toHaveBeenCalled();
   });
 });

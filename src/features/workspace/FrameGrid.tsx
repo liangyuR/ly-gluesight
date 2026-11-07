@@ -1,4 +1,5 @@
 import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useHorizontalWindow } from "../../lib/useHorizontalWindow";
 import "../cycle/components/burst.css";
 import "./capture.css";
 
@@ -17,22 +18,28 @@ export function FrameGrid({ label, cameras, groupCount, camera, seq, onSelect, m
   range?: { start: number; end: number } | null;
 }) {
   const root = useRef<HTMLDivElement>(null);
+  const window = useHorizontalWindow<HTMLOListElement>(groupCount, 34, seq - 1);
+  const restoreFocus = useRef(false);
   const first = range?.start ?? 1, last = range?.end ?? groupCount;
   useEffect(() => {
     const cell = root.current?.querySelector<HTMLElement>(".fg-cell-button[aria-pressed='true']");
-    cell?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-    if (root.current?.contains(document.activeElement) && document.activeElement !== cell) cell?.focus();
-  }, [camera, seq]);
+    if (restoreFocus.current && cell) { cell.focus({ preventScroll: true }); restoreFocus.current = false; }
+  }, [camera, seq, window.start, window.end]);
   const key = (e: KeyboardEvent) => {
+    if (e.key === "Home" || e.key === "End") {
+      e.preventDefault(); restoreFocus.current = true; onSelect(camera, e.key === "Home" ? first : last); return;
+    }
     const step = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] }[e.key];
     if (!step) return;
     e.preventDefault();
+    restoreFocus.current = true;
     onSelect(Math.min(Math.max(0, camera + step[0]), cameras.length - 1), Math.min(Math.max(first, seq + step[1]), last));
   };
-  const groups = Array.from({ length: groupCount }, (_, i) => i + 1);
+  const groups = Array.from({ length: window.end - window.start }, (_, i) => window.start + i + 1);
   return <div ref={root} className="fg-strip wp-frame-grid" role="group" aria-label={label} onKeyDown={key}>
     <div className="fg-cams" aria-hidden="true">{cameras.map(item => <span key={item.id} title={item.name}>{item.name}</span>)}</div>
-    <ol className="fg-groups">
+    <ol className="fg-groups" ref={window.ref} onScroll={window.onScroll}>
+      {window.start > 0 && <li aria-hidden="true" style={{ width: window.start * 34 - 4 }} />}
       {groups.map(s => {
         const outside = s < first || s > last;
         const gaps = cameras.map((_, c) => !!missing?.(c, s));
@@ -45,6 +52,7 @@ export function FrameGrid({ label, cameras, groupCount, camera, seq, onSelect, m
           </div>
         </li>;
       })}
+      {window.end < groupCount && <li aria-hidden="true" style={{ width: (groupCount - window.end) * 34 - 4 }} />}
     </ol>
   </div>;
 }

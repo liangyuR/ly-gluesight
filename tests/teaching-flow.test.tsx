@@ -227,7 +227,7 @@ it("段已有示教帧时重新选帧 → 只在示教件这一段内选帧，�
   expect(await screen.findByRole("img", { name: "CAM-2 · 帧组 4 · 候选示教帧" })).toBeVisible();
   expect(calls("recipe_capture_get")).toEqual([{ roundId: "round-1" }]);
   await user.click(await screen.findByRole("button", { name: "帧组 2 · CAM-2" }));
-  await waitFor(() => expect(frameImage).toHaveBeenLastCalledWith("round-1", "CAM-2", 2));
+  await waitFor(() => expect(frameImage.mock.calls.at(-1)?.slice(0, 3)).toEqual(["round-1", "CAM-2", 2]));
   const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2 · 段 1" });
   await waitFor(() => expect(choose).toBeEnabled());
   await user.click(choose);

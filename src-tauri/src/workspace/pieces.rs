@@ -515,17 +515,26 @@ pub async fn workspace_measure_teaching(
     app: AppHandle,
     id: String,
     revision: u64,
+    task_id: Option<String>,
 ) -> Result<WorkspaceView, String> {
+    let operation = crate::operation::Operation::start(&app, task_id)?;
     let cycle = app.state::<CycleHost>();
     let _config = cycle.config_gate.lock().await;
     let task = app.clone();
-    tauri::async_runtime::spawn_blocking(move || measure(&task, &id, revision))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        operation.run(|operation| measure(&task, &id, revision, operation))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 测量在候选锁外；写入前核对修订号，测量期间候选被改过时不写入。调用方持配置门。
-fn measure(app: &AppHandle, id: &str, revision: u64) -> Result<WorkspaceView, String> {
+fn measure(
+    app: &AppHandle,
+    id: &str,
+    revision: u64,
+    operation: &crate::operation::Operation,
+) -> Result<WorkspaceView, String> {
     let cycle = app.state::<CycleHost>();
     crate::camera::check_idle(&cycle)?;
     let host = app.state::<WorkspaceHost>();
@@ -538,7 +547,8 @@ fn measure(app: &AppHandle, id: &str, revision: u64) -> Result<WorkspaceView, St
     burst::require_burst(&w.doc)?;
     let piece = w.teaching_piece.as_ref().ok_or("先选示教件")?;
     let capture = cycle.camera.recipe_capture();
-    let round = capture.get_burst(&piece.round_id)?;
+    let frame_index = capture.burst_frame_index(&piece.round_id)?;
+    let round = frame_index.round();
     let current: BTreeMap<String, Value> = cycle
         .camera
         .configs()
@@ -553,10 +563,11 @@ fn measure(app: &AppHandle, id: &str, revision: u64) -> Result<WorkspaceView, St
         let graphs = vision::CorridorSet::build(&recipe, &burst::teaching_sizes(w)?)?;
         let choice = burst::calibration_corridors(w, &round.round_id, round.group_count)?;
         let round_id = &round.round_id;
-        Ok(capture_review::measure_calibration_round(
-            w,
+        burst::measure_round_with_operation(
+            &w.doc.plan_cameras(),
             round,
             |camera, camera_id, seq| {
+                capture_review::require_available(w, &round.round_id, seq)?;
                 let Some(segment) = choice[camera][(seq - 1) as usize] else {
                     return Ok(burst::frame_without_metrics(
                         camera,
@@ -568,8 +579,7 @@ fn measure(app: &AppHandle, id: &str, revision: u64) -> Result<WorkspaceView, St
                 let graph = graphs
                     .get(camera, segment)
                     .ok_or_else(|| format!("第 {segment} 段相机 {camera_id} 还没有示教走廊"))?;
-                let image =
-                    crate::image_file::load(&capture.burst_frame_path(round_id, camera_id, seq)?)?;
+                let image = crate::image_file::load(&frame_index.path(camera_id, seq)?)?;
                 vision::measure_frame(
                     engine,
                     graph,
@@ -579,23 +589,110 @@ fn measure(app: &AppHandle, id: &str, revision: u64) -> Result<WorkspaceView, St
                 )
                 .map(|m| m.metrics)
             },
-        ))
+            Some(operation),
+        )
     };
-    let outcome = measure_teaching(&w, &round, &current, measure)?;
-    let mut items = host.items.lock().unwrap();
-    let current = items.get_mut(id).ok_or("候选配置不存在")?;
-    current
-        .expect(revision)
-        .map_err(|_| "测量期间候选已被修改，本次没有写入，请重试".to_string())?;
-    let dir = host.dir(id).join(CALIBRATION_DIR);
-    let _ = std::fs::remove_dir_all(&dir);
-    burst::write_features(
-        &dir.join(&round.round_id),
-        &outcome.next.doc.plan_cameras(),
-        &outcome.metrics,
-        &outcome.segmented,
-    )?;
-    host.save(&outcome.next)?;
-    *current = outcome.next;
-    view(app, current.clone())
+    let prepared = PreparedTeachingMeasurement::stage(&host, &w, round, &current, |w, round| {
+        let metrics = measure(w, round)?;
+        operation.stage("summarizing")?;
+        Ok(metrics)
+    })?;
+    let result = view(app, prepared.workspace.clone())?;
+    operation.saving()?;
+    prepared.commit(&host)?;
+    Ok(result)
+}
+
+pub struct PreparedTeachingMeasurement {
+    pub workspace: Workspace,
+    staging: CalibrationStaging,
+    revision: u64,
+    instance_id: u64,
+}
+
+impl PreparedTeachingMeasurement {
+    pub fn stage(
+        host: &WorkspaceHost,
+        workspace: &Workspace,
+        round: &CaptureRoundV2,
+        current: &BTreeMap<String, Value>,
+        measure: impl FnOnce(&Workspace, &CaptureRoundV2) -> Result<Vec<FrameMetrics>, String>,
+    ) -> Result<Self, String> {
+        workspace.expect(workspace.revision)?;
+        let outcome = measure_teaching(workspace, round, current, measure)?;
+        let staging = CalibrationStaging(
+            host.dir(&workspace.doc.id)
+                .join(vision::unique_run_id("calibration-staging")),
+        );
+        burst::write_features(
+            &staging.0.join(&round.round_id),
+            &outcome.next.doc.plan_cameras(),
+            &outcome.metrics,
+            &outcome.segmented,
+        )?;
+        Ok(Self {
+            workspace: outcome.next,
+            staging,
+            revision: workspace.revision,
+            instance_id: workspace.instance_id,
+        })
+    }
+
+    pub fn commit(self, host: &WorkspaceHost) -> Result<Workspace, String> {
+        let id = &self.workspace.doc.id;
+        let mut items = host.items.lock().unwrap();
+        let current = items.get_mut(id).ok_or("候选配置不存在")?;
+        current
+            .expect(self.revision)
+            .map_err(|_| "测量期间候选已被修改，本次没有写入，请重试".to_string())?;
+        if current.instance_id != self.instance_id {
+            return Err("候选已重建，请重新加载后测量".into());
+        }
+        commit_calibration(&self.staging.0, &host.dir(id).join(CALIBRATION_DIR), || {
+            host.save(&self.workspace)
+        })?;
+        *current = self.workspace.clone();
+        Ok(self.workspace)
+    }
+}
+
+struct CalibrationStaging(PathBuf);
+
+impl Drop for CalibrationStaging {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn commit_calibration(
+    staging: &Path,
+    target: &Path,
+    save: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let backup = target.with_file_name(vision::unique_run_id("calibration-backup"));
+    let had_previous = target.exists();
+    if had_previous {
+        std::fs::rename(target, &backup).map_err(|error| format!("保留原测量结果失败：{error}"))?;
+    }
+    if let Err(error) = std::fs::rename(staging, target) {
+        if had_previous {
+            std::fs::rename(&backup, target).map_err(|rollback| {
+                format!("更新测量结果失败：{error}；恢复原结果失败：{rollback}")
+            })?;
+        }
+        return Err(format!("更新测量结果失败：{error}"));
+    }
+    if let Err(error) = save() {
+        std::fs::rename(target, staging)
+            .map_err(|rollback| format!("{error}；撤回测量结果失败：{rollback}"))?;
+        if had_previous {
+            std::fs::rename(&backup, target)
+                .map_err(|rollback| format!("{error}；恢复原结果失败：{rollback}"))?;
+        }
+        return Err(error);
+    }
+    if had_previous {
+        let _ = std::fs::remove_dir_all(backup);
+    }
+    Ok(())
 }

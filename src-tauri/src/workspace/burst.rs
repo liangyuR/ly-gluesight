@@ -1496,9 +1496,23 @@ pub(super) fn check_round(
 pub(super) fn measure_round(
     cameras: &[String],
     round: &CaptureRoundV2,
-    mut measure: impl FnMut(usize, &str, u64) -> Result<FrameMetrics, String>,
+    measure: impl FnMut(usize, &str, u64) -> Result<FrameMetrics, String>,
 ) -> Vec<FrameMetrics> {
-    let mut metrics = Vec::with_capacity(cameras.len() * round.group_count as usize);
+    measure_round_with_operation(cameras, round, measure, None)
+        .expect("无取消任务的测量总会返回帧结果")
+}
+
+pub(super) fn measure_round_with_operation(
+    cameras: &[String],
+    round: &CaptureRoundV2,
+    mut measure: impl FnMut(usize, &str, u64) -> Result<FrameMetrics, String>,
+    operation: Option<&crate::operation::Operation>,
+) -> Result<Vec<FrameMetrics>, String> {
+    let total = cameras.len() * round.group_count as usize;
+    if let Some(operation) = operation {
+        operation.measuring(total)?;
+    }
+    let mut metrics = Vec::with_capacity(total);
     for (index, camera) in cameras.iter().enumerate() {
         let source = round.cameras.iter().position(|c| &c.camera_id == camera);
         let missing: BTreeSet<u64> = round
@@ -1508,21 +1522,28 @@ pub(super) fn measure_round(
             .map(|m| m.seq)
             .collect();
         for seq in 1..=round.group_count {
-            if source.is_none() || missing.contains(&seq) {
-                metrics.push(frame_without_metrics(index, seq, FrameState::Missing, None));
-                continue;
+            if let Some(operation) = operation {
+                operation.check()?;
             }
-            metrics.push(match measure(index, camera, seq) {
-                Ok(m) => FrameMetrics {
-                    camera: index,
-                    seq,
-                    ..m
-                },
-                Err(error) => frame_without_metrics(index, seq, FrameState::Error, Some(error)),
-            });
+            let metric = if source.is_none() || missing.contains(&seq) {
+                frame_without_metrics(index, seq, FrameState::Missing, None)
+            } else {
+                match measure(index, camera, seq) {
+                    Ok(m) => FrameMetrics {
+                        camera: index,
+                        seq,
+                        ..m
+                    },
+                    Err(error) => frame_without_metrics(index, seq, FrameState::Error, Some(error)),
+                }
+            };
+            if let Some(operation) = operation {
+                operation.advance(metric.state)?;
+            }
+            metrics.push(metric);
         }
     }
-    metrics
+    Ok(metrics)
 }
 
 /// 用比例分段器分段（D-SB-40；各段 N_exp 未全部标定时为未分段），结果写进 boundaries.json 供追溯。
@@ -1532,22 +1553,15 @@ pub(super) fn segment_round(
     group_count: u64,
     metrics: &[FrameMetrics],
 ) -> SegOutcome {
-    let groups: Vec<FrameGroup> = (1..=group_count)
-        .map(|seq| {
-            let present: Vec<bool> = (0..cameras)
-                .map(|camera| {
-                    metrics.iter().any(|m| {
-                        m.camera == camera && m.seq == seq && m.state != FrameState::Missing
-                    })
-                })
-                .collect();
-            FrameGroup {
-                seq,
-                incomplete: present.contains(&false),
-                present,
-            }
-        })
-        .collect();
+    let mut groups = super::burst_history::frame_groups(metrics, cameras);
+    groups.resize_with(group_count as usize, || FrameGroup {
+        seq: 0,
+        incomplete: true,
+        present: vec![false; cameras],
+    });
+    for (index, group) in groups.iter_mut().enumerate() {
+        group.seq = index as u64 + 1;
+    }
     Proportional.segment(&SegInput {
         groups: &groups,
         segments,
@@ -1823,22 +1837,49 @@ pub(super) fn calibration_view(w: &Workspace, production: Option<&RecipeDoc>) ->
 
 /// 示教件测量写下的每帧特征，按计划相机、seq；只读，试测页逐帧查看用。
 #[tauri::command]
-pub fn workspace_calibration_round_features(
+pub async fn workspace_calibration_round_features(
     app: AppHandle,
     id: String,
     round: String,
 ) -> Result<Vec<FrameMetrics>, String> {
+    tauri::async_runtime::spawn_blocking(move || calibration_round_features(&app, &id, &round))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn workspace_calibration_round_overview(
+    app: AppHandle,
+    id: String,
+    round: String,
+) -> Result<Vec<FrameMetrics>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut frames = calibration_round_features(&app, &id, &round)?;
+        for frame in &mut frames {
+            frame.widths.clear();
+        }
+        Ok(frames)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn calibration_round_features(
+    app: &AppHandle,
+    id: &str,
+    round: &str,
+) -> Result<Vec<FrameMetrics>, String> {
     let host = app.state::<WorkspaceHost>();
     let cameras = {
         let items = host.items.lock().unwrap();
-        let w = items.get(&id).ok_or("候选配置不存在")?;
+        let w = items.get(id).ok_or("候选配置不存在")?;
         require_burst(&w.doc)?;
         if !w.calibration.rounds.iter().any(|r| r.round_id == round) {
             return Err(format!("采集轮次 {round} 还没有测量"));
         }
         w.doc.plan_cameras()
     };
-    read_features(&host.dir(&id).join(CALIBRATION_DIR).join(&round), &cameras)
+    read_features(&host.dir(id).join(CALIBRATION_DIR).join(round), &cameras)
 }
 
 /// 示教件一帧按当前规则重测的结果（试测页逐帧查看）：所用段与走廊、测到的胶边（px，无胶站为 None）与帧指标。
@@ -2066,17 +2107,24 @@ fn frame_missing(round: &CaptureRoundV2, camera: &str, seq: u64) -> bool {
 
 /// 试测一段的每一帧（按 seq 升序覆盖整段）：缺帧记 Missing，帧组已屏蔽记 Unmeasured，`measure(seq)` 失败的帧记 Error，
 /// 单帧失败不影响其余帧。
-pub(super) fn teach_preview_frames(
+fn teach_preview_frames_operation(
     w: &Workspace,
     round: &CaptureRoundV2,
     camera: &str,
     scope: &TeachPreviewScope,
     mut measure: impl FnMut(u64) -> Result<FrameMetrics, String>,
-) -> Vec<FrameMetrics> {
+    operation: Option<&crate::operation::Operation>,
+) -> Result<Vec<FrameMetrics>, String> {
+    if let Some(operation) = operation {
+        operation.measuring((scope.end - scope.start + 1) as usize)?;
+    }
     let index = scope.index;
     (scope.start..=scope.end)
         .map(|seq| {
-            if frame_missing(round, camera, seq) {
+            if let Some(operation) = operation {
+                operation.check()?;
+            }
+            let metrics = if frame_missing(round, camera, seq) {
                 frame_without_metrics(index, seq, FrameState::Missing, None)
             } else if capture_review::require_available(w, &round.round_id, seq).is_err() {
                 frame_without_metrics(
@@ -2094,7 +2142,11 @@ pub(super) fn teach_preview_frames(
                     },
                     Err(error) => frame_without_metrics(index, seq, FrameState::Error, Some(error)),
                 }
+            };
+            if let Some(operation) = operation {
+                operation.advance(metrics.state)?;
             }
+            Ok(metrics)
         })
         .collect()
 }
@@ -2273,12 +2325,37 @@ pub fn measure_teaching_range(
     expected_revision: Option<u64>,
     measure: impl FnMut(u64) -> Result<FrameMetrics, String>,
 ) -> Result<TeachPreviewRange, String> {
+    measure_teaching_range_operation(
+        w,
+        round,
+        camera,
+        segment,
+        from,
+        to,
+        expected_revision,
+        measure,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn measure_teaching_range_operation(
+    w: &Workspace,
+    round: &CaptureRoundV2,
+    camera: &str,
+    segment: u32,
+    from: Option<u64>,
+    to: Option<u64>,
+    expected_revision: Option<u64>,
+    measure: impl FnMut(u64) -> Result<FrameMetrics, String>,
+    operation: Option<&crate::operation::Operation>,
+) -> Result<TeachPreviewRange, String> {
     if let Some(revision) = expected_revision {
         w.expect(revision)?;
     }
     let scope = teach_preview_scope(w, round, camera, segment)?;
     let window = preview_window(&scope, from, to)?;
-    let frames = teach_preview_frames(w, round, camera, &window, measure);
+    let frames = teach_preview_frames_operation(w, round, camera, &window, measure, operation)?;
     Ok(TeachPreviewRange {
         round: round.round_id.clone(),
         start: scope.start,
@@ -2320,9 +2397,10 @@ pub async fn workspace_teach_preview_segment(
     camera: String,
     segment: u32,
     round: String,
+    task_id: Option<String>,
 ) -> Result<TeachPreviewSegment, String> {
     let result =
-        workspace_teach_preview_range(app, id, camera, segment, round, None, None, None).await?;
+        preview_range_operation(app, id, camera, segment, round, None, None, None, task_id).await?;
     Ok(TeachPreviewSegment {
         round: result.round,
         start: result.start,
@@ -2342,47 +2420,82 @@ pub(super) async fn workspace_teach_preview_range(
     to: Option<u64>,
     expected_revision: Option<u64>,
 ) -> Result<TeachPreviewRange, String> {
+    preview_range_operation(
+        app,
+        id,
+        camera,
+        segment,
+        round,
+        from,
+        to,
+        expected_revision,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn preview_range_operation(
+    app: AppHandle,
+    id: String,
+    camera: String,
+    segment: u32,
+    round: String,
+    from: Option<u64>,
+    to: Option<u64>,
+    expected_revision: Option<u64>,
+    task_id: Option<String>,
+) -> Result<TeachPreviewRange, String> {
+    let operation = crate::operation::Operation::start(&app, task_id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let w = workspace_clone(&app, &id)?;
-        if let Some(revision) = expected_revision {
-            w.expect(revision)?;
-        }
-        require_burst(&w.doc)?;
-        let cycle = app.state::<CycleHost>();
-        let captured = cycle.camera.recipe_capture().get_burst(&round)?;
-        let scope = teach_preview_scope(&w, &captured, &camera, segment)?;
-        preview_window(&scope, from, to)?;
-        let recipe = w.doc.build()?;
-        let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
-            .with_channels(&teaching_channels(&w));
-        if graphs.get(scope.index, segment).is_none() {
-            return Err(format!("第 {segment} 段相机 {camera} 还没有示教走廊"));
-        }
-        crate::camera::check_idle(&cycle)?;
-        app.state::<vision::VisionHost>()
-            .engine()
-            .ok_or("lyFlow 核心库未加载")?;
-        measure_teaching_range(
-            &w,
-            &captured,
-            &camera,
-            segment,
-            from,
-            to,
-            expected_revision,
-            |seq| {
-                segment_frame_view(
-                    &app,
-                    &recipe,
-                    &graphs,
-                    (scope.index, &camera),
-                    segment,
-                    (&round, seq),
-                    &format!("teach-preview-{id}-{round}-c{}-{seq}", scope.index),
-                )
-                .map(|view| view.metrics)
-            },
-        )
+        operation.run(|operation| {
+            let w = workspace_clone(&app, &id)?;
+            if let Some(revision) = expected_revision {
+                w.expect(revision)?;
+            }
+            require_burst(&w.doc)?;
+            let cycle = app.state::<CycleHost>();
+            let index = cycle.camera.recipe_capture().burst_frame_index(&round)?;
+            let captured = index.round();
+            let scope = teach_preview_scope(&w, &captured, &camera, segment)?;
+            preview_window(&scope, from, to)?;
+            let recipe = w.doc.build()?;
+            let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
+                .with_channels(&teaching_channels(&w));
+            if graphs.get(scope.index, segment).is_none() {
+                return Err(format!("第 {segment} 段相机 {camera} 还没有示教走廊"));
+            }
+            crate::camera::check_idle(&cycle)?;
+            let engine = app
+                .state::<vision::VisionHost>()
+                .engine()
+                .ok_or("lyFlow 核心库未加载")?;
+            let result = measure_teaching_range_operation(
+                &w,
+                &captured,
+                &camera,
+                segment,
+                from,
+                to,
+                expected_revision,
+                |seq| {
+                    crate::camera::check_idle(&cycle)?;
+                    let image = crate::image_file::load(&index.path(&camera, seq)?)?;
+                    let graph = graphs.get(scope.index, segment).ok_or("走廊测量图缺失")?;
+                    vision::measure_frame(
+                        &engine,
+                        graph,
+                        &image,
+                        seq,
+                        &format!("teach-preview-{id}-{round}-c{}-{seq}", scope.index),
+                    )
+                    .map(|measured| measured.metrics)
+                },
+                Some(operation),
+            )?;
+            operation.stage("summarizing")?;
+            Ok(result)
+        })
     })
     .await
     .map_err(|e| e.to_string())?

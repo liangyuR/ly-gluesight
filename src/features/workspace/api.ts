@@ -1,10 +1,11 @@
 import { desktopCall } from "../../lib/desktop";
-import { decodeFrame, frameImageData } from "../../lib/frame";
+import { decodeFrame } from "../../lib/frame";
+import { loadPreview, scheduleFrameRead } from "./previewCache";
 import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PassSkipSuggestView, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { Check, CompareOptions, Comparison, FrozenImage, FrameImage, HistoryCandidate, PackageExported, PackageImported, PackagePreview, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
+import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidate, PackageExported, PackageImported, PackagePreview, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
 
 let liveSeq = 0;
 
@@ -15,11 +16,7 @@ export function liveFrame(input: ArrayBuffer | number[]): FrameImage {
 }
 
 export async function decodeFrameImage(input: ArrayBuffer | number[]): Promise<FrameImage> {
-  const { fullWidth, fullHeight, pixels } = decodeFrame(input);
-  const canvas = document.createElement("canvas");
-  canvas.width = pixels.width; canvas.height = pixels.height;
-  canvas.getContext("2d")!.putImageData(frameImageData(pixels), 0, 0);
-  return { url: canvas.toDataURL("image/png"), width: fullWidth, height: fullHeight, channels: pixels.channels };
+  return liveFrame(input);
 }
 
 export const workspaceApi = {
@@ -39,7 +36,7 @@ export const workspaceApi = {
   retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),
   abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
   /** 导入件（轮次）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
-  captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeFrameImage),
+  captureFrameImage: (roundId: string, cameraId: string, seq: number, signal?: AbortSignal) => loadPreview(JSON.stringify(["capture", roundId, cameraId, seq]), () => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeFrameImage), signal),
   /** 历史件选择器：本配方最近的真机录制件、能否选用与是否已被本候选使用（只读） */
   /** all：列本机全部历史件（试测用），否则只列本配方的（选示教件用） */
   historyCandidates: (id: string, all = false) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id, all }),
@@ -65,12 +62,14 @@ export const workspaceApi = {
   publishChecks: (id: string, revision: number) => desktopCall<Check[]>("workspace_publish_checks", { id, revision }),
   /** 发布采集版（只供维护模式采图，不判定），在工件边界生效 */
   publishCollect: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish_collect", { id, revision }),
-  compare: (id: string, revision: number, historyId: number, raw: boolean) =>
-    desktopCall<Comparison>("workspace_compare", { id, revision, historyId, raw }),
-  compareOriginal: (historyId: number) => desktopCall<Comparison>("workspace_compare_original", { historyId }),
+  compare: (id: string, revision: number, historyId: number, raw: boolean, taskId?: string) =>
+    desktopCall<Comparison>("workspace_compare", { id, revision, historyId, raw, taskId }),
+  compareOriginal: (historyId: number, taskId?: string) => desktopCall<Comparison>("workspace_compare_original", { historyId, taskId }),
   comparisons: (id:string,historyId:number)=>desktopCall<Comparison[]>("workspace_comparisons",{id,historyId}),
-  recordFrameView: (historyId: number, comparison: string, camera: number, seq: number) => desktopCall<CalibrationFrameView>("workspace_record_frame_view", { historyId, comparison, camera, seq }),
-  historyFrameView: (historyId: number, camera: number, seq: number) => desktopCall<CalibrationFrameView>("workspace_history_frame_view", { historyId, camera, seq }),
+  comparisonSummaries: (historyId: number) => desktopCall<ComparisonSummary[]>("workspace_comparison_summaries", { historyId }),
+  comparisonGet: (historyId: number, comparisonId: string) => desktopCall<Comparison>("workspace_comparison_get", { historyId, comparisonId }),
+  recordFrameView: (historyId: number, comparison: string, camera: number, seq: number, signal?: AbortSignal) => scheduleFrameRead(() => desktopCall<CalibrationFrameView>("workspace_record_frame_view", { historyId, comparison, camera, seq }), signal),
+  historyFrameView: (historyId: number, camera: number, seq: number, signal?: AbortSignal) => scheduleFrameRead(() => desktopCall<CalibrationFrameView>("workspace_history_frame_view", { historyId, camera, seq }), signal),
   /** candidate 不给时用记录所属配方的候选 */
   historyCompareOptions: (historyId: number, candidate: string | null = null) => desktopCall<CompareOptions>("workspace_history_compare_options", { historyId, candidate }),
   stationCapture: (cam:number,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,view}),
@@ -96,16 +95,17 @@ export const workspaceApi = {
   fitColorModel: (id: string, revision: number, camera: string, segment: number) =>
     desktopCall<WorkspaceView>("workspace_fit_color_model", { id, revision, camera, segment }),
   /** 测量示教件：按当前走廊测每帧特征，得出胶偏参考 x_ref（单段配方）与跳过帧建议的依据 */
-  measureTeaching: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_measure_teaching", { id, revision }),
+  measureTeaching: (id: string, revision: number, taskId?: string) => desktopCall<WorkspaceView>("workspace_measure_teaching", { id, revision, taskId }),
   /** 屏蔽或恢复示教件的帧组：只排除图像测量，示教件已有的测量随之失效 */
   captureReviewExclude: (id: string, revision: number, round: string, start: number, end: number, excluded: boolean, reason: string) =>
     desktopCall<WorkspaceView>("workspace_capture_review_exclude", { id, revision, round, start, end, excluded, reason }),
   /** 示教件测量时写下的每帧特征，只读 */
   calibrationRoundFeatures: (id: string, round: string) => desktopCall<FrameMetrics[]>("workspace_calibration_round_features", { id, round }),
+  calibrationRoundOverview: (id: string, round: string) => desktopCall<FrameMetrics[]>("workspace_calibration_round_overview", { id, round }),
   /** 用当前段走廊重测示教件的一帧，只读 */
-  calibrationFrame: (id: string, round: string, camera: string, seq: number) => desktopCall<CalibrationFrameView>("workspace_calibration_frame", { id, round, camera, seq }),
-  teachPreviewFrame: (id: string, camera: string, segment: number, round: string, seq: number) => desktopCall<CalibrationFrameView>("workspace_teach_preview_frame", { id, camera, segment, round, seq }),
-  teachPreviewSegment: (id: string, camera: string, segment: number, round: string) => desktopCall<TeachPreviewSegment>("workspace_teach_preview_segment", { id, camera, segment, round }),
+  calibrationFrame: (id: string, round: string, camera: string, seq: number, signal?: AbortSignal) => scheduleFrameRead(() => desktopCall<CalibrationFrameView>("workspace_calibration_frame", { id, round, camera, seq }), signal),
+  teachPreviewFrame: (id: string, camera: string, segment: number, round: string, seq: number, signal?: AbortSignal) => scheduleFrameRead(() => desktopCall<CalibrationFrameView>("workspace_teach_preview_frame", { id, camera, segment, round, seq }), signal),
+  teachPreviewSegment: (id: string, camera: string, segment: number, round: string, taskId?: string) => desktopCall<TeachPreviewSegment>("workspace_teach_preview_segment", { id, camera, segment, round, taskId }),
   /** 操作员确认第 segment 段（PathSegment.index）的帧数容差 */
   confirmTolerance: (id: string, revision: number, segment: number, tolerance: number) =>
     desktopCall<WorkspaceView>("workspace_confirm_tolerance", { id, revision, segment, tolerance }),

@@ -1,4 +1,5 @@
-use std::path::{Component, Path};
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 
 use crate::burst_judge::FrameState;
 use crate::frame::FrameImage;
@@ -37,34 +38,117 @@ fn cycle_metadata(root: &Path, relative: &Path, cycle_id: &str) -> Result<serde_
 /// 路径在本件录制目录内、文件名由相机与 seq 推出；part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号
 /// （历史记有触发计数时还有触发计数）都与历史记录一致且已落盘，解码尺寸等于录制尺寸。缺帧、未录制或任一项对不上都报错，
 /// 不拿别的帧顶替。
-pub(super) fn load_frame_verified(root: &Path, cycle_id: &str, camera_id: &str, frame: &FrameRecord) -> Result<FrameImage, String> {
-    if frame.status == FrameState::Missing { return Err(format!("相机 {camera_id} 第 {} 帧组缺帧，没有原图", frame.seq)); }
-    let file = frame.raw_file.as_deref().ok_or_else(|| format!("相机 {camera_id} 第 {} 帧组的原图未录制或录制队满未保存", frame.seq))?;
-    crate::image_file::checked_source_path(root)?;
-    let root = root.canonicalize().map_err(|_| "原图目录不存在或已清理".to_string())?;
-    let relative = cycle_relative(cycle_id, file)?;
-    let name = format!("{camera_id}_s{:06}.pgm", frame.seq);
-    if relative.file_name().and_then(|n| n.to_str()) != Some(name.as_str()) {
-        return Err(format!("历史原图 {file} 与相机 {camera_id} 第 {} 帧组的身份不一致，拒绝读取", frame.seq));
+pub(super) fn load_frame_verified(
+    root: &Path,
+    cycle_id: &str,
+    camera_id: &str,
+    frame: &FrameRecord,
+) -> Result<FrameImage, String> {
+    VerifiedFrames::new(root, cycle_id)?.load(camera_id, frame)
+}
+
+pub(super) struct VerifiedFrames {
+    root: PathBuf,
+    cycle_id: String,
+    metadata: HashMap<PathBuf, HashMap<String, Option<serde_json::Value>>>,
+}
+
+impl VerifiedFrames {
+    pub(super) fn new(root: &Path, cycle_id: &str) -> Result<Self, String> {
+        crate::image_file::checked_source_path(root)?;
+        let root = root
+            .canonicalize()
+            .map_err(|_| "原图目录不存在或已清理".to_string())?;
+        Ok(Self {
+            root,
+            cycle_id: cycle_id.to_owned(),
+            metadata: HashMap::new(),
+        })
     }
-    let metadata = cycle_metadata(&root, relative, cycle_id)?;
-    let frames = metadata["frames"].as_array().ok_or("录制元数据缺少原图引用")?;
-    let mut matching = frames.iter().filter(|entry| entry["file"].as_str() == Some(name.as_str()));
-    let entry = matching.next().ok_or("录制元数据缺少对应原图")?;
-    if matching.next().is_some() || entry["cycleId"].as_str() != Some(cycle_id) || entry["available"].as_bool() != Some(true) {
-        return Err("录制元数据的原图身份重复、不一致或未落盘".into());
+
+    pub(super) fn load(
+        &mut self,
+        camera_id: &str,
+        frame: &FrameRecord,
+    ) -> Result<FrameImage, String> {
+        let root = &self.root;
+        let cycle_id = self.cycle_id.as_str();
+        if frame.status == FrameState::Missing {
+            return Err(format!(
+                "相机 {camera_id} 第 {} 帧组缺帧，没有原图",
+                frame.seq
+            ));
+        }
+        let file = frame.raw_file.as_deref().ok_or_else(|| {
+            format!(
+                "相机 {camera_id} 第 {} 帧组的原图未录制或录制队满未保存",
+                frame.seq
+            )
+        })?;
+        let relative = cycle_relative(cycle_id, file)?;
+        let name = format!("{camera_id}_s{:06}.pgm", frame.seq);
+        if relative.file_name().and_then(|n| n.to_str()) != Some(name.as_str()) {
+            return Err(format!(
+                "历史原图 {file} 与相机 {camera_id} 第 {} 帧组的身份不一致，拒绝读取",
+                frame.seq
+            ));
+        }
+        let directory = relative.parent().ok_or("原图目录无效")?.to_path_buf();
+        if !self.metadata.contains_key(&directory) {
+            let metadata = cycle_metadata(root, relative, cycle_id)?;
+            let frames = metadata["frames"]
+                .as_array()
+                .ok_or("录制元数据缺少原图引用")?;
+            let mut entries = HashMap::with_capacity(frames.len());
+            for entry in frames {
+                let Some(file) = entry["file"].as_str() else {
+                    continue;
+                };
+                if entries
+                    .insert(file.to_owned(), Some(entry.clone()))
+                    .is_some()
+                {
+                    entries.insert(file.to_owned(), None);
+                }
+            }
+            self.metadata.insert(directory.clone(), entries);
+        }
+        let entry = self.metadata[&directory]
+            .get(&name)
+            .ok_or("录制元数据缺少对应原图")?
+            .as_ref()
+            .ok_or("录制元数据的原图身份重复")?;
+        if entry["cycleId"].as_str() != Some(cycle_id) || entry["available"].as_bool() != Some(true)
+        {
+            return Err("录制元数据的原图身份不一致或未落盘".into());
+        }
+        let frame_counter = frame
+            .frame_counter
+            .ok_or("历史帧记录缺少帧号，不能核验原图身份")?;
+        if entry["camera"].as_u64() != Some(frame.camera as u64)
+            || entry["cameraId"].as_str() != Some(camera_id)
+            || entry["seq"].as_u64() != Some(frame.seq)
+            || entry["frameCounter"].as_u64() != Some(frame_counter)
+            || frame
+                .trigger_counter
+                .is_some_and(|trigger| entry["triggerCounter"].as_u64() != Some(trigger))
+        {
+            return Err("录制原图的相机、帧组序号或帧号与历史记录不一致".into());
+        }
+        let dimension = |field: &str| {
+            entry[field]
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+        };
+        let size = [
+            dimension("width").ok_or("录制原图宽度无效")?,
+            dimension("height").ok_or("录制原图高度无效")?,
+        ];
+        let bytes = original_bytes(&root, relative)?;
+        checked_dimensions(&bytes, Some(size), file)?;
+        crate::image_file::decode(&bytes).map_err(|error| format!("原图 {file} 解码失败：{error}"))
     }
-    let frame_counter = frame.frame_counter.ok_or("历史帧记录缺少帧号，不能核验原图身份")?;
-    if entry["camera"].as_u64() != Some(frame.camera as u64) || entry["cameraId"].as_str() != Some(camera_id)
-        || entry["seq"].as_u64() != Some(frame.seq) || entry["frameCounter"].as_u64() != Some(frame_counter)
-        || frame.trigger_counter.is_some_and(|trigger| entry["triggerCounter"].as_u64() != Some(trigger)) {
-        return Err("录制原图的相机、帧组序号或帧号与历史记录不一致".into());
-    }
-    let dimension = |field: &str| entry[field].as_u64().and_then(|value| u32::try_from(value).ok()).filter(|value| *value > 0);
-    let size = [dimension("width").ok_or("录制原图宽度无效")?, dimension("height").ok_or("录制原图高度无效")?];
-    let bytes = original_bytes(&root, relative)?;
-    checked_dimensions(&bytes, Some(size), file)?;
-    crate::image_file::decode(&bytes).map_err(|error| format!("原图 {file} 解码失败：{error}"))
 }
 
 fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {

@@ -75,6 +75,8 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 - **已接受、待确认的取舍**：气泡、拉丝不检；弯道的出胶点短走廊没有真实弯道图验证；提前结束只加 `short_part`、不判 ERR。汇总见 [决策索引](decisions/README.md)。
 - **真机验证**：PLC 协议 8、机械臂信号接口、三台相机共用触发、带宽（三路 25 Hz 估算约 826 Mbps）、现场节拍与检测准确率都没有验证。仓库不保存 PLC 程序，PLC 侧按协议 8 规格由现场工程实现。
 
+长件的按需读取、帧条窗口化、复算进度与取消契约见[长件浏览与复算](architecture/frame-browsing.md)。
+
 ## 三、目录
 
 | 目录 | 内容 |

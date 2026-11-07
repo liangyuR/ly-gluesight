@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, Metadata, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -7,18 +8,56 @@ use super::Comparison;
 use crate::store::Store;
 
 const LIMIT: usize = 100;
+const SUMMARY_CACHE_LIMIT: usize = 1024;
 
 #[derive(Default)]
-pub(super) struct Comparisons(Mutex<()>);
+pub(super) struct Comparisons(Mutex<HashMap<PathBuf, CachedSummary>>);
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComparisonSummary {
+    pub id: String,
+    pub history_id: i64,
+    pub source: String,
+    pub cycle_id: String,
+    pub candidate_id: String,
+    pub candidate_revision: u64,
+    pub original_verdict: crate::judge::Verdict,
+    pub judgement: crate::judge::Judgement,
+    pub created_at: i64,
+}
+
+impl From<&Comparison> for ComparisonSummary {
+    fn from(saved: &Comparison) -> Self {
+        Self {
+            id: saved.id.clone(),
+            history_id: saved.history_id,
+            source: saved.source.clone(),
+            cycle_id: saved.cycle_id.clone(),
+            candidate_id: saved.candidate_id.clone(),
+            candidate_revision: saved.candidate_revision,
+            original_verdict: saved.original_verdict,
+            judgement: saved.judgement.clone(),
+            created_at: saved.created_at,
+        }
+    }
+}
+
+struct CachedSummary {
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+    created: Option<std::time::SystemTime>,
+    summary: ComparisonSummary,
+}
 
 impl Comparisons {
     pub(super) fn save(&self, root: &Path, store: &Store, comparison: &Comparison) -> Result<(), String> {
-        let _gate = self.0.lock().unwrap();
+        let mut cache = self.0.lock().unwrap();
         valid_identity(comparison)?;
         let cycle = store.comparison_cycle(comparison.history_id)?.ok_or("历史记录已清理，复测结果未保存")?;
         if cycle != comparison.cycle_id { return Err("历史工件身份已改变，复测结果未保存".into()); }
         let dir = directory(root, comparison.history_id, true)?;
-        reconcile(&dir, comparison.history_id, Some(&cycle))?;
+        let mut files = inventory(&dir, comparison.history_id, &mut cache)?;
         let file = dir.join(format!("{}.json", comparison.id));
         let temporary = dir.join(format!("{}.tmp", comparison.id));
         checked_directory(&dir, false)?;
@@ -29,7 +68,8 @@ impl Comparisons {
         drop(writer);
         if let Err(e) = written { let _ = fs::remove_file(&temporary); return Err(error(e)); }
         if let Err(e) = fs::rename(&temporary, &file) { let _ = fs::remove_file(&temporary); return Err(error(e)); }
-        if let Err(e) = reconcile(&dir, comparison.history_id, Some(&cycle)) {
+        files.push((file.clone(), comparison.into()));
+        if let Err(e) = reconcile(files, comparison.history_id, Some(&cycle), &mut cache) {
             let rollback = remove_checked(&file);
             return Err(format!("复测记录保留清理失败：{e}；新记录回退：{rollback:?}"));
         }
@@ -44,11 +84,39 @@ impl Comparisons {
         candidate: Option<&str>,
         history_id: i64,
     ) -> Result<Vec<Comparison>, String> {
-        let _gate = self.0.lock().unwrap();
+        let mut cache = self.0.lock().unwrap();
         let Some(cycle) = store.comparison_cycle(history_id)? else { return Ok(Vec::new()); };
         let dir = directory(root, history_id, false)?;
         if !exists(&dir)? { return Ok(Vec::new()); }
-        let mut files = inventory(&dir, history_id)?;
+        let mut files = inventory(&dir, history_id, &mut cache)?;
+        files.retain(|(_, saved)| saved.cycle_id == cycle);
+        newest_first(&mut files);
+        files
+            .into_iter()
+            .take(LIMIT)
+            .filter(|(_, saved)| {
+                saved.source == "original" || candidate.is_none_or(|c| saved.candidate_id == c)
+            })
+            .map(|(path, _)| read_comparison(&path, history_id, true))
+            .collect()
+    }
+
+    pub(super) fn summaries(
+        &self,
+        root: &Path,
+        store: &Store,
+        candidate: Option<&str>,
+        history_id: i64,
+    ) -> Result<Vec<ComparisonSummary>, String> {
+        let mut cache = self.0.lock().unwrap();
+        let Some(cycle) = store.comparison_cycle(history_id)? else {
+            return Ok(Vec::new());
+        };
+        let dir = directory(root, history_id, false)?;
+        if !exists(&dir)? {
+            return Ok(Vec::new());
+        }
+        let mut files = inventory(&dir, history_id, &mut cache)?;
         files.retain(|(_, saved)| saved.cycle_id == cycle);
         newest_first(&mut files);
         Ok(files
@@ -59,6 +127,30 @@ impl Comparisons {
                 saved.source == "original" || candidate.is_none_or(|c| saved.candidate_id == c)
             })
             .collect())
+    }
+
+    pub(super) fn get(
+        &self,
+        root: &Path,
+        store: &Store,
+        history_id: i64,
+        id: &str,
+    ) -> Result<Comparison, String> {
+        let _gate = self.0.lock().unwrap();
+        if !id.starts_with(&format!("{history_id}-"))
+            || !id.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        {
+            return Err("复测记录身份无效".into());
+        }
+        let cycle = store
+            .comparison_cycle(history_id)?
+            .ok_or("历史记录已清理")?;
+        let path = directory(root, history_id, false)?.join(format!("{id}.json"));
+        let saved = read_comparison(&path, history_id, true)?;
+        if saved.cycle_id != cycle {
+            return Err("历史工件身份已改变".into());
+        }
+        Ok(saved)
     }
 
     /// 删除早于 before 的记录并清理失效的对照；另返回被删记录里非当前项目的录制目录（项目、来源、目录）。
@@ -75,7 +167,7 @@ impl Comparisons {
         ),
         String,
     > {
-        let _gate = self.0.lock().unwrap();
+        let mut cache = self.0.lock().unwrap();
         let (count, orphaned) = store.purge_before(before)?;
         let mut warnings = Vec::new();
         let comparisons = root.join("comparisons");
@@ -91,7 +183,8 @@ impl Comparisons {
                     if id <= 0 || name != id.to_string() { return Err("复测目录编号无效".into()); }
                     checked_directory(&path, false)?;
                     let cycle = store.comparison_cycle(id)?;
-                    reconcile(&path, id, cycle.as_deref())?;
+                    let files = inventory(&path, id, &mut cache)?;
+                    reconcile(files, id, cycle.as_deref(), &mut cache)?;
                     if cycle.is_none() { fs::remove_dir(&path).map_err(error)?; }
                     Ok::<_, String>(())
                 })();
@@ -160,7 +253,38 @@ pub(super) fn checked_directory(path: &Path, create: bool) -> Result<(), String>
     Ok(())
 }
 
-fn inventory(dir: &Path, history_id: i64) -> Result<Vec<(PathBuf, Comparison)>, String> {
+fn read_comparison(
+    path: &Path,
+    history_id: i64,
+    with_verdicts: bool,
+) -> Result<Comparison, String> {
+    checked_directory(path.parent().ok_or("复测文件没有父目录")?, false)?;
+    let metadata = fs::symlink_metadata(path).map_err(error)?;
+    plain(&metadata)?;
+    if !metadata.is_file() {
+        return Err("复测记录不是普通文件".into());
+    }
+    let mut saved: Comparison =
+        serde_json::from_slice(&fs::read(path).map_err(error)?).map_err(error)?;
+    valid_identity(&saved)?;
+    if saved.history_id != history_id
+        || path.file_stem().and_then(|s| s.to_str()) != Some(saved.id.as_str())
+    {
+        return Err("复测文件与历史编号或文件名不一致".into());
+    }
+    if with_verdicts {
+        if let Some(burst) = saved.burst.as_mut() {
+            burst.fill_verdicts();
+        }
+    }
+    Ok(saved)
+}
+
+fn inventory(
+    dir: &Path,
+    history_id: i64,
+    cache: &mut HashMap<PathBuf, CachedSummary>,
+) -> Result<Vec<(PathBuf, ComparisonSummary)>, String> {
     checked_directory(dir, false)?;
     let mut files = Vec::new();
     for entry in fs::read_dir(dir).map_err(error)? {
@@ -170,31 +294,64 @@ fn inventory(dir: &Path, history_id: i64) -> Result<Vec<(PathBuf, Comparison)>, 
         if !metadata.is_file() || path.extension().and_then(|s| s.to_str()) != Some("json") {
             return Err(format!("未确认的复测目录项：{}", path.display()));
         }
-        let mut saved: Comparison =
-            serde_json::from_slice(&fs::read(&path).map_err(error)?).map_err(error)?;
-        if let Some(burst) = saved.burst.as_mut() {
-            burst.fill_verdicts();
-        }
-        valid_identity(&saved)?;
-        if saved.history_id != history_id || path.file_stem().and_then(|s| s.to_str()) != Some(saved.id.as_str()) {
-            return Err("复测文件与历史编号或文件名不一致".into());
-        }
-        files.push((path, saved));
+        let modified = metadata.modified().ok();
+        let created = metadata.created().ok();
+        let cached = cache.get(&path).filter(|cached| {
+            modified.is_some()
+                && cached.length == metadata.len()
+                && cached.modified == modified
+                && cached.created == created
+        });
+        let summary = if let Some(cached) = cached {
+            cached.summary.clone()
+        } else {
+            let saved = read_comparison(&path, history_id, false)?;
+            let summary = ComparisonSummary::from(&saved);
+            if cache.len() >= SUMMARY_CACHE_LIMIT {
+                cache.clear();
+            }
+            cache.insert(
+                path.clone(),
+                CachedSummary {
+                    length: metadata.len(),
+                    modified,
+                    created,
+                    summary: summary.clone(),
+                },
+            );
+            summary
+        };
+        files.push((path, summary));
     }
     Ok(files)
 }
 
-fn newest_first(files: &mut [(PathBuf, Comparison)]) {
+fn newest_first(files: &mut [(PathBuf, ComparisonSummary)]) {
     files.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at).then_with(|| b.1.id.cmp(&a.1.id)));
 }
 
-fn reconcile(dir: &Path, history_id: i64, cycle: Option<&str>) -> Result<(), String> {
-    let mut files = inventory(dir, history_id)?;
+fn reconcile(
+    mut files: Vec<(PathBuf, ComparisonSummary)>,
+    history_id: i64,
+    cycle: Option<&str>,
+    cache: &mut HashMap<PathBuf, CachedSummary>,
+) -> Result<(), String> {
     newest_first(&mut files);
     let mut kept = 0;
-    for (file, saved) in files {
-        if cycle == Some(saved.cycle_id.as_str()) && kept < LIMIT { kept += 1; }
-        else { remove_checked(&file)?; }
+    for (file, summary) in files {
+        if cycle == Some(summary.cycle_id.as_str()) && kept < LIMIT {
+            kept += 1;
+        } else {
+            let saved = read_comparison(&file, history_id, false)?;
+            if saved.id != summary.id
+                || saved.cycle_id != summary.cycle_id
+                || saved.created_at != summary.created_at
+            {
+                return Err("复测记录在清理期间改变，未删除".into());
+            }
+            remove_checked(&file)?;
+            cache.remove(&file);
+        }
     }
     Ok(())
 }

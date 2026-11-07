@@ -110,6 +110,7 @@ export interface WorkspaceView {
   planChanged: boolean;
   plan: WorkspacePlanView;
 }
+export type ComparisonSummary = Pick<Comparison, "id" | "historyId" | "source" | "cycleId" | "candidateId" | "candidateRevision" | "createdAt" | "originalVerdict" | "judgement">;
 export interface Comparison {
   id: string; historyId: number; source: "rules" | "raw" | "original"; cycleId: string; bundleId: string | null; candidateId: string; candidateRevision: number;
   candidateRecipe: Recipe;

@@ -84,3 +84,46 @@ fn burst_part<'a>(recipe: &'a Recipe, cycle: &'a str, judgement: &'a Judgement, 
         source: RecordSource::Real, sample: None, burst: Some(burst),
     }
 }
+
+#[test]
+fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let mut frames = burst_fixture::frames(4, &[]);
+    for frame in &mut frames {
+        frame.metrics = Some(burst_fixture::measured(frame.camera, frame.seq, 2.0));
+    }
+    let (judgement, burst) = burst_fixture::record(&recipe, frames, None, Some(0));
+    let id = store
+        .insert(&burst_part(&recipe, "overview-part", &judgement, &burst))
+        .unwrap();
+    let full = store.detail(id).unwrap().burst.unwrap();
+    let overview = store.detail_overview(id).unwrap().burst.unwrap();
+    assert_eq!(
+        serde_json::to_value(&overview.frame_verdicts).unwrap(),
+        serde_json::to_value(&full.frame_verdicts).unwrap()
+    );
+    assert!(overview
+        .frames
+        .iter()
+        .all(|frame| frame.metrics.as_ref().unwrap().widths.is_empty()));
+    let expected = full
+        .frames
+        .iter()
+        .find(|frame| frame.camera == 0 && frame.seq == 1)
+        .unwrap();
+    assert!(!expected.metrics.as_ref().unwrap().widths.is_empty());
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "UPDATE part_frames SET metrics='broken' WHERE part_id=?1 AND camera=1 AND seq=2",
+            [id],
+        )
+        .unwrap();
+    let selected = store.detail_frame(id, 0, 1).unwrap().burst.unwrap();
+    assert_eq!(selected.frames, vec![expected.clone()]);
+    assert!(selected.frame_verdicts.is_empty());
+    assert!(store.detail_frame(id, 0, 100).is_err());
+    assert!(store.detail(id).is_err());
+}

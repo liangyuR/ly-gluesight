@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Checkbox, EmptyState, Select, StatusBadge, Table, type TableColumn } from "qing-steel";
 import { Panel } from "../../workspace/components";
 import type { FrameRecord, FrameState, PartDetailBurst } from "../../plan/types";
@@ -19,17 +19,33 @@ export const frameAbnormal = (frame: FrameRecord) => frame.status !== "measured"
  * 逐帧追溯：每台相机每个帧组一行（缺帧也有），写帧号、触发计数、所在区域、状态、胶宽与胶中心、原图。
  * 原图按 (相机, seq) 选，没保存的帧（缺帧、录制队满丢弃、未录制）按钮禁用。
  */
-export function BurstPartTrace({ detail, burst, selected, onSelect }: {
+type TraceProps = {
   detail: PartDetail;
   burst: PartDetailBurst;
   selected: { camera: number; seq: number } | null;
   onSelect: (camera: number, seq: number) => void;
-}) {
+};
+
+export function BurstPartTrace(props: TraceProps) {
+  const select = useRef(props.onSelect);
+  select.current = props.onSelect;
+  const onSelect = useCallback((camera: number, seq: number) => select.current(camera, seq), []);
+  return <TraceTable {...props} onSelect={onSelect} />;
+}
+
+const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect }: TraceProps) {
   const { summary, recording } = detail;
   const [onlyAbnormal, setOnlyAbnormal] = useState(false);
   const [camera, setCamera] = useState("all");
-  const rows = burst.frames.filter(frame => (!onlyAbnormal || frameAbnormal(frame)) && (camera === "all" || frame.camera === Number(camera)));
-  const abnormal = burst.frames.filter(frameAbnormal).length;
+  const [page, setPage] = useState(0), [pageSize, setPageSize] = useState(50);
+  const rows = useMemo(() => burst.frames.filter(frame => (!onlyAbnormal || frameAbnormal(frame)) && (camera === "all" || frame.camera === Number(camera))), [burst.frames, onlyAbnormal, camera]);
+  const abnormal = useMemo(() => burst.frames.filter(frameAbnormal).length, [burst.frames]);
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const shownPage = Math.min(page, pages - 1);
+  useEffect(() => {
+    const index = selected ? rows.findIndex(frame => frame.camera === selected.camera && frame.seq === selected.seq) : -1;
+    setPage(index < 0 ? 0 : Math.floor(index / pageSize));
+  }, [selected?.camera, selected?.seq, rows, pageSize]);
   const columns: TableColumn<FrameRecord>[] = [
     {
       key: "frame",
@@ -68,13 +84,17 @@ export function BurstPartTrace({ detail, burst, selected, onSelect }: {
       <Select aria-label="相机筛选" value={camera} onValueChange={setCamera} options={[{ value: "all", label: "全部相机" }, ...burst.cameras.map((name, c) => ({ value: String(c), label: name }))]} />
       <Checkbox label={`只看异常帧（${abnormal}）`} checked={onlyAbnormal} onCheckedChange={setOnlyAbnormal} />
       <span className="muted">{rows.length} / {burst.frames.length} 帧</span>
+      <Select aria-label="每页帧数" value={String(pageSize)} onValueChange={value => setPageSize(Number(value))} options={[{ value: "50", label: "50 帧 / 页" }, { value: "100", label: "100 帧 / 页" }]} />
+      <Button size="sm" disabled={shownPage === 0} onClick={() => setPage(shownPage - 1)}>上一页帧记录</Button>
+      <span aria-live="polite">第 {shownPage + 1} / {pages} 页</span>
+      <Button size="sm" disabled={shownPage >= pages - 1} onClick={() => setPage(shownPage + 1)}>下一页帧记录</Button>
     </div>
     <Table<FrameRecord>
       caption="逐帧追溯"
-      rows={rows}
+      rows={rows.slice(shownPage * pageSize, (shownPage + 1) * pageSize)}
       columns={columns}
       rowKey={frame => `${frame.camera}:${frame.seq}`}
       emptyState={<EmptyState title={onlyAbnormal ? "没有异常帧" : "本件没有帧记录"} />}
     />
   </Panel>;
-}
+}, (previous, next) => previous.detail === next.detail && previous.burst === next.burst && previous.selected?.camera === next.selected?.camera && previous.selected?.seq === next.selected?.seq && previous.onSelect === next.onSelect);

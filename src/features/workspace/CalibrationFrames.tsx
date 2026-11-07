@@ -1,4 +1,5 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useHorizontalWindow } from "../../lib/useHorizontalWindow";
 import { Button } from "qing-steel";
 import { errorText } from "../../lib/errors";
 import type { CalibrationFrameView, FrameMetrics, FrameState, WorkspacePlanView } from "../plan/types";
@@ -32,7 +33,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
   useEffect(() => {
     if (!round) return;
     let alive = true;
-    workspaceApi.calibrationRoundFeatures(id, round.roundId)
+    workspaceApi.calibrationRoundOverview(id, round.roundId)
       .then(frames => alive && setFeatures({ round: round.roundId, frames, error: "" }))
       .catch(e => alive && setFeatures({ round: round.roundId, frames: [], error: errorText(e) }));
     return () => { alive = false; };
@@ -43,27 +44,36 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
   useEffect(() => {
     if (!round || !selected || !camera) return;
     let alive = true;
+    const request = new AbortController();
     setDetail({ key, image: null, view: null, error: "", loading: true });
-    Promise.allSettled([workspaceApi.captureFrameImage(round.roundId, camera, selected.seq), workspaceApi.calibrationFrame(id, round.roundId, camera, selected.seq)])
+    Promise.allSettled([workspaceApi.captureFrameImage(round.roundId, camera, selected.seq, request.signal), workspaceApi.calibrationFrame(id, round.roundId, camera, selected.seq, request.signal)])
       .then(([image, view]) => alive && setDetail({ key, loading: false,
         image: image.status === "fulfilled" ? image.value : null,
         view: view.status === "fulfilled" ? view.value : null,
         error: [image, view].flatMap(r => r.status === "rejected" ? [errorText(r.reason)] : []).join("；") }));
-    return () => { alive = false; };
+    return () => { alive = false; request.abort(); };
   }, [key]);
 
+  const indexed = useMemo(() => new Map(features.frames.map(frame => [`${frame.camera}:${frame.seq}`, frame])), [features.frames]);
+  const window = useHorizontalWindow<HTMLDivElement>(round?.groupCount ?? 0, 16, selected ? selected.seq - 1 : null, 58);
+  const restoreFocus = useRef(false);
+  useEffect(() => {
+    const cell = window.ref.current?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (restoreFocus.current && cell) { cell.focus({ preventScroll: true }); restoreFocus.current = false; }
+  }, [selected?.camera, selected?.seq, window.start, window.end]);
   if (!round) return null;
   const groups = round.groupCount;
   const cuts = reviews[round.roundId]?.status === "confirmed" ? reviews[round.roundId].cuts : null;
   const segmentOf = (seq: number) => cuts ? plan.segments[cuts.filter(cut => cut < seq).length] : plan.segments.length === 1 ? plan.segments[0] : undefined;
   const loaded = features.round === round.roundId;
-  const stored = (cam: number, seq: number) => loaded ? features.frames.find(f => f.camera === cam && f.seq === seq) : undefined;
+  const stored = (cam: number, seq: number) => loaded ? indexed.get(`${cam}:${seq}`) : undefined;
   const move = (event: KeyboardEvent) => {
     if (!selected) return;
-    const delta: Record<string, [number, number]> = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] };
+    const delta: Record<string, [number, number]> = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0], Home: [0, -Infinity], End: [0, Infinity] };
     const step = delta[event.key];
     if (!step) return;
     event.preventDefault();
+    restoreFocus.current = true;
     setSelected({ camera: Math.min(plan.cameras.length - 1, Math.max(0, selected.camera + step[0])), seq: Math.min(groups, Math.max(1, selected.seq + step[1])) });
   };
 
@@ -78,22 +88,26 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
     <div className="wp-calib-frames">
       {features.error && loaded && <p className="c-warn" role="alert">{features.error}</p>}
       {!cuts && plan.segments.length > 1 && <p className="muted hint">示教件的边界已不是确认状态：帧组上方不标段。</p>}
-      <div className="wp-calib-grid" role="grid" aria-label="逐帧状态" tabIndex={0} onKeyDown={move} style={{ gridTemplateColumns: `56px repeat(${groups}, minmax(14px, 1fr))` }}>
+      <div className="wp-calib-viewport" ref={window.ref} onScroll={window.onScroll}>
+      <div className="wp-calib-grid" role="grid" aria-label="逐帧状态" tabIndex={0} onKeyDown={move} style={{ width: 58 + groups * 16, gridTemplateColumns: `56px repeat(${groups}, 14px)` }}>
         <span className="wp-calib-grid-corner">段</span>
-        {Array.from({ length: groups }, (_, i) => {
+        {Array.from({ length: window.end - window.start }, (_, k) => {
+          const i = window.start + k;
           const s = segmentOf(i + 1), first = s && (i === 0 || segmentOf(i)?.index !== s.index);
-          return <span key={i} className={"wp-calib-grid-seg" + (s && s.index % 2 === 0 ? " even" : "")} title={s ? `第 ${s.index} 段（${segmentLabel(s)}）· 帧组 ${i + 1}` : `帧组 ${i + 1}`}>{first ? s.index : ""}</span>;
+          return <span key={i} style={{ gridColumn: i + 2, gridRow: 1 }} className={"wp-calib-grid-seg" + (s && s.index % 2 === 0 ? " even" : "")} title={s ? `第 ${s.index} 段（${segmentLabel(s)}）· 帧组 ${i + 1}` : `帧组 ${i + 1}`}>{first ? s.index : ""}</span>;
         })}
         {plan.cameras.map((cameraId, cam) => <div key={cameraId} role="row" className="wp-calib-grid-row">
-          <span className="wp-calib-grid-camera" role="rowheader">{cameraId}</span>
-          {Array.from({ length: groups }, (_, i) => {
+          <span className="wp-calib-grid-camera" role="rowheader" style={{ gridColumn: 1, gridRow: cam + 2 }}>{cameraId}</span>
+          {Array.from({ length: window.end - window.start }, (_, k) => {
+            const i = window.start + k;
             const seq = i + 1, m = stored(cam, seq), state = m ? cellState[m.state] : "waiting";
             const active = selected?.camera === cam && selected.seq === seq;
             return <Button variant="text" key={seq} role="gridcell" aria-selected={active} className={"wp-calib-cell" + (active ? " selected" : "")}
-              style={{ background: m ? groupCellColor[state] : "var(--surface-high)" }} aria-label={`${cameraId} 帧组 ${seq}：${m ? groupCellText[state] : "无记录"}`}
+              style={{ gridColumn: i + 2, gridRow: cam + 2, background: m ? groupCellColor[state] : "var(--surface-high)" }} aria-label={`${cameraId} 帧组 ${seq}：${m ? groupCellText[state] : "无记录"}`}
               title={`${cameraId} · 帧组 ${seq} · ${m ? groupCellText[state] : "无记录"}${m?.error ? `：${m.error}` : ""}`} onClick={() => setSelected({ camera: cam, seq })} />;
           })}
         </div>)}
+      </div>
       </div>
       {selected && camera && <div className="wp-calib-frame">
         <FrameViewer image={shown.image} loading={shown.loading} error={shown.error} label={`${camera} · 帧组 ${selected.seq}`}

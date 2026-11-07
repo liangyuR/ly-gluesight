@@ -77,7 +77,7 @@ export default function TeachingPiecePage() {
             <div className="wp-actions"><Button variant="filled" disabled={locked} onClick={() => void refill()}>补回原图</Button></div></Notice>
           : <FrameBrowser key={piece.roundId} source={piece.roundId} label="示教件" groupCount={groupCount}
             cameras={plan.cameras.map(id => ({ id, name: nameOf(id) }))}
-            read={(camera, seq) => workspaceApi.captureFrameImage(piece.roundId, plan.cameras[camera], seq)} />}
+            read={(camera, seq, signal) => workspaceApi.captureFrameImage(piece.roundId, plan.cameras[camera], seq, signal)} />}
       </> : <Notice title="还没有示教件">从下方历史件里选一件完整的录制件设为示教件：分段与走廊示教都在它的图像上进行。没有示教件的候选不能发布。</Notice>}
     </Panel>
     <HistoryPicker recipeId={doc.id} title="选示教件" disabled={locked} nameOf={nameOf} onError={setError}

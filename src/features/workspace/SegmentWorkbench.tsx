@@ -27,10 +27,11 @@ function useFrame(roundId: string, camera: string, seq: number) {
   useEffect(() => {
     if (!roundId || seq < 1) return;
     let alive = true;
-    workspaceApi.captureFrameImage(roundId, camera, seq)
+    const request = new AbortController();
+    workspaceApi.captureFrameImage(roundId, camera, seq, request.signal)
       .then(image => alive && setState({ key, image, error: "" }))
       .catch(e => alive && setState({ key, image: null, error: errorText(e) }));
-    return () => { alive = false; };
+    return () => { alive = false; request.abort(); };
   }, [key]);
   return state.key === key ? { ...state, loading: false } : { image: null, error: "", loading: !!roundId && seq > 0 };
 }

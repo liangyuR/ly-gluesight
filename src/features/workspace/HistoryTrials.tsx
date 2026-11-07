@@ -11,6 +11,7 @@ import { pieceTime } from "./pieces";
 import type { Comparison, HistoryCandidate } from "./types";
 import type { HistoryDetailState } from "../history/types";
 import { useRecipeHref } from "./recipeRoutes";
+import { OperationStatus, useOperation } from "./operation";
 
 const modeLabels: Record<PartMode, string> = { production: "生产", maintenanceCollect: "维护采集", maintenanceShadow: "维护试判" };
 const toneOf = (comparison: Comparison) => { const tone = verdictTone(comparison.judgement.verdict); return tone === "fault" ? "ng" : tone; };
@@ -22,6 +23,7 @@ const toneOf = (comparison: Comparison) => { const tone = verdictTone(comparison
  */
 export function HistoryTrials({ recipeId }: { recipeId: string }) {
   const href = useRecipeHref();
+  const operation = useOperation();
   const { data, acting, pendingSave, saveNow, saveState } = useWorkspace();
   const [rows, setRows] = useState<HistoryCandidate[] | null>(null);
   const [error, setError] = useState("");
@@ -46,7 +48,7 @@ export function HistoryTrials({ recipeId }: { recipeId: string }) {
     if (!data || blocked || running != null) return;
     setRunning(recordId); setError("");
     try {
-      const result = await workspaceApi.compare(data.workspace.doc.id, data.workspace.revision, recordId, true);
+      const result = await operation.run(taskId => workspaceApi.compare(data.workspace.doc.id, data.workspace.revision, recordId, true, taskId));
       setResults(previous => ({ ...previous, [recordId]: result }));
     } catch (e) { setError(errorText(e)); }
     finally { setRunning(null); }
@@ -59,6 +61,7 @@ export function HistoryTrials({ recipeId }: { recipeId: string }) {
   }, [queued, pendingSave, acting, saveState]);
   return <Panel title="历史件试测" help="用当前候选（已保存的走廊与参数）从录制原图重测历史件并判定，各段按示教件得出的预期帧数分段。结果另存为对照，不改历史记录，也不改示教件基准">
     <Checkbox label="显示全部历史件（任意配方、任意项目）" checked={all} onCheckedChange={setAll} />
+    <OperationStatus operation={operation} label="历史件试测" />
     {blocked && <p className="muted hint">{blocked}</p>}
     {partialHint && <p className="muted hint">{partialHint}</p>}
     {error && <p className="c-warn" role="alert">{error}</p>}

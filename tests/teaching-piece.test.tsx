@@ -68,7 +68,7 @@ it("不可用或已使用的历史件不能勾选并写明原因；看图按记�
 
   await user.click(screen.getByRole("button", { name: "预览 SN SN-3" }));
   const preview = within(screen.getByRole("complementary", { name: "历史件原图预览" }));
-  expect(burstImageApi.record).toHaveBeenLastCalledWith(3, 0, 1);
+  expect(burstImageApi.record).toHaveBeenLastCalledWith(3, 0, 1, expect.any(AbortSignal));
   await user.click(preview.getByRole("button", { name: "帧组 2 · CAM-2" }));
-  expect(burstImageApi.record).toHaveBeenLastCalledWith(3, 1, 2);
+  expect(burstImageApi.record).toHaveBeenLastCalledWith(3, 1, 2, expect.any(AbortSignal));
 });

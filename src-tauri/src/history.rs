@@ -38,6 +38,25 @@ pub async fn history_detail(app: AppHandle, id: i64) -> Result<PartDetail, Strin
     tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail(id)).await.map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+pub async fn history_overview(app: AppHandle, id: i64) -> Result<PartDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail_overview(id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn history_frame_detail(
+    app: AppHandle,
+    id: i64,
+    camera: usize,
+    seq: u64,
+) -> Result<PartDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail_frame(id, camera, seq))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[derive(Serialize)]
 pub struct Neighbors {
     pub older: Option<i64>,
