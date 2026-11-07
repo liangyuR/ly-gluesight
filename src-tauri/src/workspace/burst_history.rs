@@ -37,6 +37,9 @@ pub struct ComparisonBurst {
     /// 逐帧结论（帧格颜色）：按这次对照的段、区域与逐帧指标算出（`burst_judge::frame_verdicts`），读出时重算
     #[serde(default, skip_deserializing)]
     pub frame_verdicts: Vec<burst_judge::FrameVerdict>,
+    /// 从原图复测时没有可用走廊、没测的段（D-SB-57）；其余对照与之前保存的对照为空
+    #[serde(default)]
+    pub unmeasured: Vec<UnmeasuredSegment>,
 }
 
 impl ComparisonBurst {
@@ -66,6 +69,7 @@ impl ComparisonBurst {
             frames,
             sizes,
             frame_verdicts: Vec::new(),
+            unmeasured: Vec::new(),
         };
         burst.fill_verdicts();
         burst
@@ -392,7 +396,7 @@ pub async fn workspace_record_frame_view(
         let Some(segment) = metrics.corridor.filter(|_| {
             !matches!(
                 metrics.state,
-                FrameState::Missing | FrameState::NotInspected
+                FrameState::Missing | FrameState::NotInspected | FrameState::Unmeasured
             )
         }) else {
             return Ok(burst::CalibrationFrameView {
@@ -422,7 +426,15 @@ pub async fn workspace_record_frame_view(
             .get(camera)
             .cloned()
             .ok_or("相机下标超出候选计划相机")?;
-        let graphs = vision::CorridorSet::build(recipe, &sizes)?;
+        // 部分复测的对照里可能有建不成的组合（D-SB-57）：只建得成的建，不让别的段挡住这一帧
+        let (graphs, unavailable) = vision::CorridorSet::build_available(recipe, &sizes);
+        if graphs.get(camera, segment).is_none() {
+            let why = unavailable
+                .iter()
+                .find(|u| (u.camera_idx, u.segment) == (camera, segment))
+                .map_or_else(|| format!("第 {segment} 段没有这台相机的走廊测量图"), |u| u.reason.clone());
+            return Err(why);
+        }
         let image = frame_image(&app, &detail, camera, seq)?;
         burst::frame_view(
             &app,
@@ -439,14 +451,147 @@ pub async fn workspace_record_frame_view(
     .map_err(|e| e.to_string())?
 }
 
+/// 候选能量哪些（相机, 段）：建得成走廊测量图、且没有定向配置问题的组合；其余连同原因列出（D-SB-57）。
+pub(super) fn candidate_coverage(
+    w: &Workspace,
+    recipe: &Recipe,
+) -> (vision::CorridorSet, Vec<vision::UnavailableCorridor>) {
+    let (graphs, mut unavailable) =
+        vision::CorridorSet::build_available(recipe, &super::burst::taught_sizes(w));
+    let cameras = recipe.plan_cameras();
+    for issue in crate::heading::issues(&recipe.path_segments, &recipe.inspect) {
+        let Some(idx) = cameras.iter().position(|c| *c == issue.camera) else {
+            continue;
+        };
+        for segment in recipe.path_segments.iter().filter(|s| {
+            s.heading.is_some()
+                && issue.segment.is_none_or(|i| i == s.index)
+                && crate::plan::segment_cameras(s, &cameras).contains(&issue.camera)
+        }) {
+            if graphs.get(idx, segment.index).is_some() {
+                unavailable.push(vision::UnavailableCorridor {
+                    camera_idx: idx,
+                    camera: issue.camera.clone(),
+                    segment: segment.index,
+                    reason: format!(
+                        "第 {} 段相机 {}：{}",
+                        segment.index, issue.camera, issue.message
+                    ),
+                    untaught: false,
+                });
+            }
+        }
+    }
+    unavailable.sort_by_key(|u| (u.segment, u.camera_idx));
+    (graphs, unavailable)
+}
+
+/// 候选里能量的（相机, 段）组合数。
+fn usable_pairs(
+    recipe: &Recipe,
+    graphs: &vision::CorridorSet,
+    unavailable: &[vision::UnavailableCorridor],
+) -> usize {
+    let cameras = recipe.plan_cameras();
+    recipe
+        .path_segments
+        .iter()
+        .flat_map(|s| {
+            crate::plan::segment_cameras(s, &cameras)
+                .into_iter()
+                .filter_map(|c| cameras.iter().position(|id| *id == c))
+                .map(move |idx| (idx, s.index))
+        })
+        .filter(|&(idx, seg)| {
+            graphs.get(idx, seg).is_some()
+                && !unavailable
+                    .iter()
+                    .any(|u| (u.camera_idx, u.segment) == (idx, seg))
+        })
+        .count()
+}
+
+/// 没有可用走廊、复测不测的段的说明（按段列相机与原因）。
+fn coverage_note(unavailable: &[vision::UnavailableCorridor]) -> Option<String> {
+    (!unavailable.is_empty()).then(|| {
+        format!(
+            "这些段没有可用走廊，复测时不测（记未测、只算检测不完整），结论只覆盖其余段：{}",
+            unavailable
+                .iter()
+                .map(|u| u.reason.as_str())
+                .collect::<Vec<_>>()
+                .join("；")
+        )
+    })
+}
+
+/// 历史复测里没测的一段一台相机（TS `UnmeasuredSegment`）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnmeasuredSegment {
+    pub segment: u32,
+    pub camera: String,
+    pub reason: String,
+}
+
 /// 用候选当前的走廊量帧：每段每台检测相机一张走廊测量图，按各相机冻结的示教帧尺寸建（与加入标定同一做法）。
+/// `partial` 建的测量器只量能量的（相机, 段），其余记在 `unavailable` 里，量到时记未测。
 pub(super) struct CandidateMeasurer {
     engine: Arc<vision::Engine>,
     graphs: vision::CorridorSet,
     run: String,
+    unavailable: BTreeMap<(usize, u32), String>,
 }
 
 impl CandidateMeasurer {
+    /// 历史件从原图复测用（D-SB-57）：不要求每一段都示教完，至少要有一段能量；返回没测的段。
+    pub(super) fn partial(
+        app: &AppHandle,
+        w: &Workspace,
+        recipe: &Recipe,
+    ) -> Result<(Self, Vec<UnmeasuredSegment>), String> {
+        let (graphs, unavailable) = candidate_coverage(w, recipe);
+        if usable_pairs(recipe, &graphs, &unavailable) == 0 {
+            return Err(format!(
+                "候选还没有任何一段可用的走廊，不能从原图复测：{}",
+                unavailable
+                    .iter()
+                    .map(|u| u.reason.as_str())
+                    .collect::<Vec<_>>()
+                    .join("；")
+            ));
+        }
+        let engine = app
+            .state::<vision::VisionHost>()
+            .engine()
+            .ok_or("lyFlow 核心库未加载")?;
+        let skipped = unavailable
+            .iter()
+            .map(|u| UnmeasuredSegment {
+                segment: u.segment,
+                camera: u.camera.clone(),
+                reason: u.reason.clone(),
+            })
+            .collect();
+        Ok((
+            Self {
+                engine,
+                graphs: graphs.with_channels(&super::burst::teaching_channels(w)),
+                run: vision::unique_run_id(&format!("candidate-{}", recipe.revision_id)),
+                unavailable: unavailable
+                    .into_iter()
+                    .map(|u| ((u.camera_idx, u.segment), u.reason))
+                    .collect(),
+            },
+            skipped,
+        ))
+    }
+
+    /// 这一（相机, 段）不量时的原因。
+    pub(super) fn skipped(&self, camera: usize, segment: u32) -> Option<&str> {
+        self.unavailable.get(&(camera, segment)).map(String::as_str)
+    }
+
     pub(super) fn new(app: &AppHandle, w: &Workspace, recipe: &Recipe) -> Result<Self, String> {
         recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
         let graphs = vision::CorridorSet::build(recipe, &super::burst::teaching_sizes(w)?)?
@@ -459,6 +604,7 @@ impl CandidateMeasurer {
             engine,
             graphs,
             run: vision::unique_run_id(&format!("candidate-{}", recipe.revision_id)),
+            unavailable: BTreeMap::new(),
         })
     }
 
@@ -492,6 +638,9 @@ impl CandidateMeasurer {
 pub struct CompareOption {
     pub available: bool,
     pub reason: Option<String>,
+    /// 能做但只覆盖一部分时的说明（如有段没有可用走廊、不测）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl CompareOption {
@@ -499,6 +648,18 @@ impl CompareOption {
         Self {
             available: blocker.is_none(),
             reason: blocker,
+            note: None,
+        }
+    }
+
+    fn checked(result: Result<Option<String>, String>) -> Self {
+        match result {
+            Ok(note) => Self {
+                available: true,
+                reason: None,
+                note,
+            },
+            Err(reason) => Self::of(Some(reason)),
         }
     }
 }
@@ -541,11 +702,11 @@ fn rules_blocker(burst: &PartDetailBurst, original: &Recipe, recipe: &Recipe) ->
     if !original.is_burst() || !recipe.is_burst() {
         return Some("段配方记录只能与段配方候选对照".into());
     }
+    if !crate::store::same_burst_plan(original, recipe) {
+        return Some("段结构（段数、类型、预期帧数或检测相机）与记录时不同，存的每帧指标是按旧段测的，不能复用；请从原图复测".into());
+    }
     if !crate::store::same_measurement_layout(original, recipe) {
-        return Some(
-            "保存的每帧指标与候选的走廊、当量、检测参数或计划身份不同，不能复用；请从原图复测"
-                .into(),
-        );
+        return Some("存的每帧指标与候选的走廊、当量或检测参数不同，不能复用；请从原图复测".into());
     }
     if burst.judgement.verdict == Verdict::ErrInspect
         || burst.frames.is_empty()
@@ -556,38 +717,32 @@ fn rules_blocker(burst: &PartDetailBurst, original: &Recipe, recipe: &Recipe) ->
     None
 }
 
-/// 从原图复测的前置条件：计划相机相同、原图齐（候选调试记录读样本集，不看录制）、候选走廊示教完成。
+/// 从原图复测的前置条件：计划相机相同、原图齐（候选调试记录读样本集，不看录制）、候选至少有一段能量（D-SB-57）。
+/// 能做时返回没有可用走廊、不测的段的说明。
 fn raw_blocker(
     detail: &PartDetail,
     burst: &PartDetailBurst,
     original: &Recipe,
     recipe: &Recipe,
     w: &Workspace,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     if !original.is_burst() || !recipe.is_burst() {
-        return Some("段配方记录只能与段配方候选对照".into());
+        return Err("段配方记录只能与段配方候选对照".into());
     }
     if original.plan_cameras() != recipe.plan_cameras() {
-        return Some("历史原图的计划相机与候选不同；请重新采集样本".into());
+        return Err("历史原图的计划相机与候选不同；请重新采集样本".into());
     }
     if detail.summary.source != RecordSource::OfflineCandidate && !raw_complete(detail, burst) {
-        return Some(format!(
+        return Err(format!(
             "原图未完整保留，无法完成整件复测：{}",
             recording_reason(detail)
         ));
     }
-    let untaught: Vec<String> = super::burst::camera_teaching_views(w)
-        .into_iter()
-        .filter(|c| !c.ready)
-        .map(|c| c.camera)
-        .collect();
-    if !untaught.is_empty() {
-        return Some(format!(
-            "候选走廊示教未完成（{}）；在配方工作台示教后才能从原图复测",
-            untaught.join("、")
-        ));
+    let (graphs, unavailable) = candidate_coverage(w, recipe);
+    if usable_pairs(recipe, &graphs, &unavailable) == 0 {
+        return Err("候选还没有任何一段可用的走廊；在配方工作台示教走廊后才能从原图复测".into());
     }
-    None
+    Ok(coverage_note(&unavailable))
 }
 
 /// 按原发布包重现的前置条件。
@@ -659,7 +814,7 @@ pub(super) fn compare_options(
             }
             Ok(recipe) => (
                 CompareOption::of(rules_blocker(burst, original, &recipe)),
-                CompareOption::of(raw_blocker(detail, burst, original, &recipe, w)),
+                CompareOption::checked(raw_blocker(detail, burst, original, &recipe, w)),
             ),
         },
     };
@@ -683,18 +838,28 @@ pub(super) fn compare(
         .burst
         .as_ref()
         .ok_or("这条历史是旧拍照点记录，不能用段配方候选对照")?;
-    let blocker = if raw {
-        raw_blocker(detail, burst, original, recipe, w)
-    } else {
-        rules_blocker(burst, original, recipe)
-    };
-    if let Some(reason) = blocker {
+    if raw {
+        raw_blocker(detail, burst, original, recipe, w)?;
+    } else if let Some(reason) = rules_blocker(burst, original, recipe) {
         return Err(reason);
     }
     let cameras = recipe.plan_cameras();
+    let mut unmeasured = Vec::new();
     let (judgement, metrics) = if raw {
-        let measurer = CandidateMeasurer::new(app, w, recipe)?;
+        let (measurer, skipped) = CandidateMeasurer::partial(app, w, recipe)?;
+        unmeasured = skipped;
         let metrics = remeasure(recipe, &burst.frames, |frame, segment| {
+            if let Some(reason) = measurer.skipped(frame.camera, segment) {
+                return Ok(FrameMetrics {
+                    corridor: Some(segment),
+                    ..burst::frame_without_metrics(
+                        frame.camera,
+                        frame.seq,
+                        FrameState::Unmeasured,
+                        Some(reason.to_owned()),
+                    )
+                });
+            }
             measurer.measure(
                 frame.camera,
                 segment,
@@ -726,12 +891,12 @@ pub(super) fn compare(
         );
         (judgement, metrics)
     };
-    // 按规则重判不建测量图，候选还没示教完时没有尺寸，这次对照就不能叠图
-    let sizes = super::burst::teaching_sizes(w).unwrap_or_default();
-    Ok((
-        summary(&judgement),
-        ComparisonBurst::of(recipe, judgement, metrics, sizes),
-    ))
+    // 叠图按这些尺寸重建测量图；还没示教帧的相机没有走廊，尺寸用不到
+    let sizes = super::burst::taught_sizes(w);
+    let conclusion = summary(&judgement);
+    let mut compared = ComparisonBurst::of(recipe, judgement, metrics, sizes);
+    compared.unmeasured = unmeasured;
+    Ok((conclusion, compared))
 }
 
 /// `workspace_compare_original` 的段配方分支：按原发布包逐帧重现（见 `reproduce::measure_burst`）。

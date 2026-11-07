@@ -132,6 +132,20 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.getByRole("button", { name: "按候选规则重判" })).toBeDisabled();
   });
 
+  // 防的回归（D-SB-57）：有段没测的原图复测被当成整件结论，操作员以为没测的段也合格
+  it("原图复测有段没测时，复测前写明哪些段不测，结果里列出没测的段", async () => {
+    const yes = { available: true, reason: null };
+    vi.mocked(workspaceApi.historyCompareOptions).mockResolvedValue({ candidate: { id: "S", revision: 9, version: 2 }, original: yes, rules: yes,
+      raw: { ...yes, note: "这些段没有可用走廊，复测时不测：第 2 段相机 CAM-2：尚未示教检测走廊" } });
+    const burst = detail.burst!;
+    vi.mocked(workspaceApi.comparisons).mockResolvedValue([{ ...comparison(), source: "raw", burst: { segments: burst.segments, cameras: burst.cameras,
+      expectedTotal: burst.expectedTotal, judgement: burst.judgement, frames: [], unmeasured: [{ segment: 2, camera: "CAM-2", reason: "第 2 段相机 CAM-2：尚未示教检测走廊" }] } }]);
+    show("/history/1?comparison=compare-1");
+    expect(await screen.findByText(/从原图复测：这些段没有可用走廊，复测时不测/)).toBeVisible();
+    expect(within(await screen.findByRole("list", { name: "没测的段" })).getByRole("listitem")).toHaveTextContent("第 2 段相机 CAM-2：尚未示教检测走廊");
+    expect(screen.getByRole("button", { name: "从原图复测整件" })).toBeEnabled();
+  });
+
   // 防的回归：原始记录只有选了候选对照才有辅助线，现场多配方并行时看不到；原始记录按记录自己的发布包取叠图
   it("看原始记录时不需要对照，按记录的发布包为每台相机取叠图并画在原图上；缺帧的相机不取", async () => {
     const edge = (y: number): [[number, number], [number, number]] => [[10, y], [20, y]];

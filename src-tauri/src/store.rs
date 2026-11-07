@@ -523,6 +523,11 @@ fn burst_plan_identity(recipe: &Recipe) -> crate::plan::PlanIdentity {
     )
 }
 
+/// 段的计划身份（段序列、类型、N_exp、检测相机、ΣN_exp、产品代码）相同。
+pub fn same_burst_plan(original: &Recipe, candidate: &Recipe) -> bool {
+    burst_plan_identity(original) == burst_plan_identity(candidate)
+}
+
 /// 已存的每帧指标能否在候选上复用：测量布局与计划身份都相同（计划身份变了，区域与预期帧数的口径就变了，需要原图复测）。
 pub fn same_measurement_layout(original: &Recipe, candidate: &Recipe) -> bool {
     measurement_layout(original) == measurement_layout(candidate) && burst_plan_identity(original) == burst_plan_identity(candidate)
