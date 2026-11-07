@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RecordMode {
-    #[default]
     Off,
     /// 只留 NG / ERR 件
     Failed,
+    #[default]
     All,
 }
 
@@ -35,7 +35,7 @@ pub struct Timeouts {
 impl Default for Timeouts {
     fn default() -> Self {
         Self {
-            motion_ms: 30_000,
+            motion_ms: 1_200_000,
             drain_ms: 1000,
             proc_ms: 3000,
             ack_ms: 5000,
@@ -97,11 +97,11 @@ impl Default for CycleSettings {
             manual_recipe_id: None,
             timeouts: Timeouts::default(),
             history_days: 180,
-            record: RecordMode::Off,
+            record: RecordMode::All,
             record_keep: 100,
-            record_max_gb: 20.0,
+            record_max_gb: 100.0,
             offline_record_keep: 300,
-            offline_record_max_gb: 10.0,
+            offline_record_max_gb: 100.0,
             maintenance: None,
             auto_reset: false,
         }
