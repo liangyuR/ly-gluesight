@@ -41,6 +41,8 @@ mod reproduce;
 #[cfg(test)]
 mod segment_corridor_tests;
 mod segment_remap;
+#[cfg(test)]
+mod teaching_transaction_tests;
 mod workflow;
 pub use burst::*;
 pub use burst_history::*;
@@ -455,6 +457,21 @@ impl<K: PartialEq + Default> LiveFrames<K> {
 }
 
 impl WorkspaceHost {
+    pub(crate) fn comparison_snapshot(
+        &self,
+        id: &str,
+        revision: u64,
+        instance_id: Option<u64>,
+    ) -> Result<Workspace, String> {
+        let items = self.items.lock().unwrap();
+        let w = items.get(id).ok_or("候选配置不存在")?;
+        if instance_id.is_some_and(|instance| instance != w.instance_id) {
+            return Err("候选已删除或重建，请重新读取后复测".into());
+        }
+        w.expect(revision)?;
+        Ok(w.clone())
+    }
+
     /// 候选与已提交的发布快照都保留相机引用，删除相机前核对。
     pub fn camera_users(&self, camera: &str) -> Vec<String> {
         let uses = |doc: &RecipeDoc| doc.plan_cameras().iter().any(|c| c == camera);
@@ -1328,14 +1345,32 @@ pub async fn workspace_compare(
     history_id: i64,
     raw: bool,
 ) -> Result<Comparison, String> {
+    compare_at(app, id, revision, None, history_id, raw).await
+}
+
+pub(crate) async fn workspace_compare_at(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    instance_id: u64,
+    history_id: i64,
+    raw: bool,
+) -> Result<Comparison, String> {
+    compare_at(app, id, revision, Some(instance_id), history_id, raw).await
+}
+
+async fn compare_at(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    instance_id: Option<u64>,
+    history_id: i64,
+    raw: bool,
+) -> Result<Comparison, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let w = {
-            let host = app.state::<WorkspaceHost>();
-            let items = host.items.lock().unwrap();
-            let w = items.get(&id).ok_or("候选配置不存在")?;
-            w.expect(revision)?;
-            w.clone()
-        };
+        let w = app
+            .state::<WorkspaceHost>()
+            .comparison_snapshot(&id, revision, instance_id)?;
         let recipe = w.doc.build()?;
         let store = app.state::<Store>();
         let detail = store.detail(history_id)?;

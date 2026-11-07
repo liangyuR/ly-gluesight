@@ -15,6 +15,7 @@ import {
 } from "./workbenchDraft";
 import type { FrameImage, SegmentSaveImpact } from "./types";
 import WorkspaceNavigation from "./WorkspaceNavigation";
+import SegmentCoveragePreview from "./SegmentCoveragePreview";
 import { useRecipeHref } from "./recipeRoutes";
 
 const reviewLabel = { draft: "边界草稿待确认", confirmed: "边界已确认", stale: "边界需复核" } as const;
@@ -110,7 +111,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     setConfirming(null);
     if (next) setEdit(null);
   };
-  // 先预演：会清掉走廊、段结构改变或示教件测量失效时列出影响再保存
+  // 先预演检测覆盖及保存影响，再确认保存
   const requestSave = async () => {
     if (!draft || !doc) return;
     const segments: PathSegment[] = segmentsForSave(plan.segments, draft, plan.segmentDefaults, plan.cameras);
@@ -119,7 +120,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     try { impact = await workspaceApi.segmentTemplatePreview(doc.id, revision, segments, draft.cuts); }
     catch (e) { setError(errorText(e)); return; }
     finally { setPreviewing(false); }
-    if (impact.restructured || impact.dropped.length || impact.measurementCleared) setConfirming(impact);
+    if (impact.coverage || impact.restructured || impact.dropped.length || impact.measurementCleared) setConfirming(impact);
     else void save();
   };
   const inspect = (camera: string) => doc?.inspect?.find(item => item.camera === camera);
@@ -223,6 +224,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     {confirming && <Dialog open title={confirming.restructured ? "段结构将改变" : "保存分段的影响"} onOpenChange={open => { if (!open) setConfirming(null); }}
       footer={<><Button disabled={busy} onClick={() => setConfirming(null)}>取消</Button><Button variant="filled" disabled={busy} onClick={() => void save()}>保存分段</Button></>}>
       <div className="wp-stack">
+        {confirming.coverage && <SegmentCoveragePreview coverage={confirming.coverage} />}
         <p>没动的段连同走廊原样保留（按示教件上的帧范围对应）。保存后：</p>
         <ul>
           <li>各段预期帧数按新的示教件分段重新得出；</li>

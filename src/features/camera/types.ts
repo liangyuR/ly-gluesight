@@ -2,6 +2,13 @@ export type CameraSource = "mvs" | "sim" | "sampleSet";
 /** 图像模式：gray 为 8 位灰度；color 为 8 位 Bayer 去马赛克后的 RGB（三目拼接不支持） */
 export type ImageMode = "gray" | "color";
 
+export interface CameraConfigSaved {
+  saved: true;
+  applied: boolean;
+  warnings: string[];
+  applyError: string | null;
+}
+
 export interface CameraConfig {
   /** 相机编号：配方用它引用相机，建相机时分配、之后不变 */
   id: string;

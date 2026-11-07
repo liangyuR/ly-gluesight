@@ -202,6 +202,45 @@ export interface Region {
   lastSeq: number;
 }
 
+export interface CoverageRange { firstSeq: number; lastSeq: number }
+export interface CameraCoverage {
+  camera: string;
+  ranges: CoverageRange[];
+  expectedFrames: number | null;
+  availableFrames: number | null;
+}
+export type OffsetCoverageReason = "disabled" | "skipped" | "corner" | "unsegmented" | "lowConfidence" | "noReference" | "measureNotImplemented" | "noInteriorFrames" | "excludedGroups";
+export interface OffsetCoverage {
+  camera: string | null;
+  ranges: CoverageRange[];
+  expectedFrames: number;
+  availableFrames: number;
+  unjudgedReasons: OffsetCoverageReason[];
+}
+export interface SegmentCoverage {
+  segment: number;
+  kind: SegmentKind;
+  skipped: boolean;
+  range: CoverageRange | null;
+  cameras: CameraCoverage[];
+  expectedCameraFrames: number | null;
+  availableCameraFrames: number | null;
+  offset: OffsetCoverage;
+}
+/** 按比例分段展开的应测范围；available 另扣除示教件屏蔽帧，不代表实测成功。 */
+export interface InspectionCoverage {
+  groupCount: number;
+  boundaryGuard: number;
+  boundariesTrusted: boolean;
+  boundaryRefinementPending: boolean;
+  regions: Region[];
+  excludedGroups: number[];
+  expectedCameraFrames: number | null;
+  availableCameraFrames: number | null;
+  zeroCoverageSegments: number[];
+  segments: SegmentCoverage[];
+}
+
 // ───────────── burst_judge.rs ─────────────
 
 /** 除 measured、notInspected 外都只记“检测不完整”，不影响 OK/NG；notInspected = 这一帧所在段不由这台相机检测，按设计不测、不判定（D-SB-45）。 */

@@ -129,12 +129,14 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
     setNotice(null);
     try {
       const next = { ...config };
-      const warnings = await cameraApi.saveConfig(cam, next);
+      const result = await cameraApi.saveConfig(cam, next);
       if(!mounted.current||current.current.cam!==cam)return true;
-      setNotice({ tone: warnings.length ? "warn" : "ok", text: warnings.length ? `已应用，${warnings.length} 项参数相机未接受` : `已保存并应用 · ${clock(Date.now())}` });
+      setNotice(!result.applied
+        ? { tone: "warn", text: `配置已保存，设备应用失败：${result.applyError}。连接设备后重新连接并核对参数。` }
+        : { tone: result.warnings.length ? "warn" : "ok", text: result.warnings.length ? `配置已保存，${result.warnings.length} 项参数相机未接受` : `已保存并应用 · ${clock(Date.now())}` });
       setBaseline(next);
       onSaved?.(next);
-      return true;
+      return result.applied;
     } catch (e) {
       if(mounted.current&&current.current.cam===cam)setNotice({ tone: "ng", text: String(e) });
       return false;
@@ -162,8 +164,10 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
         if (st?.released) { items.push({ id: c.id, name: c.name, tone: "warn", text: "跳过：已释放给 MVS，重新连接后再应用" }); continue; }
         try {
           const next = { ...c, ...wiring(baseline) };
-          const w = await cameraApi.saveConfig(j, next);
-          items.push(w.length ? { id: c.id, name: c.name, tone: "warn", text: `已应用，${w.length} 项参数相机未接受`, list: w } : { id: c.id, name: c.name, tone: "ok", text: "已应用" });
+          const result = await cameraApi.saveConfig(j, next);
+          items.push(!result.applied
+            ? { id: c.id, name: c.name, tone: "warn", text: `配置已保存，设备应用失败：${result.applyError}` }
+            : result.warnings.length ? { id: c.id, name: c.name, tone: "warn", text: `配置已保存，${result.warnings.length} 项参数相机未接受`, list: result.warnings } : { id: c.id, name: c.name, tone: "ok", text: "已保存并应用" });
         } catch (e) { items.push({ id: c.id, name: c.name, tone: "ng", text: "未能应用：" + errorText(e) }); }
       }
     } catch (e) { items.push({ id: "", name: "相机组", tone: "ng", text: "读取相机组失败：" + errorText(e) }); }
@@ -206,7 +210,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
     : saveBlocked && dirty ? <StatusBadge tone="warn">{saveBlocked}</StatusBadge>
     : dirty ? <Stack gap={8}><StatusBadge tone="warn">有未保存修改</StatusBadge><span className="muted cg-small">离开前会提示保存或放弃</span></Stack>
     : notice ? <StatusBadge tone={notice.tone}>{notice.text}</StatusBadge>
-    : <span className="muted">参数与相机一致</span>;
+    : <span className="muted">参数与已保存配置一致</span>;
 
   return <>
     <div className="cg-detail">

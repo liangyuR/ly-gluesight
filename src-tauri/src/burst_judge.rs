@@ -686,6 +686,35 @@ fn offset_series<'c, 'm>(
     measured: &[&'m FrameMetrics],
     cameras: &[String],
 ) -> Result<(&'c OffsetCheck, f64, Vec<(&'m FrameMetrics, f64)>), Option<OffsetUnjudged>> {
+    let window = offset_window(segment, checks, region, cameras)?;
+    let series: Vec<(&FrameMetrics, f64)> = measured
+        .iter()
+        .filter(|m| {
+            m.camera == window.camera && (window.first_seq..=window.last_seq).contains(&m.seq)
+        })
+        .filter_map(|&m| (window.value)(m).map(|x| (m, x)))
+        .collect();
+    if series.is_empty() {
+        return Err(Some(OffsetUnjudged::NoFrames));
+    }
+    Ok((window.check, window.x_ref, series))
+}
+
+pub(crate) struct OffsetWindow<'a> {
+    pub camera: usize,
+    pub first_seq: u64,
+    pub last_seq: u64,
+    check: &'a OffsetCheck,
+    x_ref: f64,
+    value: fn(&FrameMetrics) -> Option<f64>,
+}
+
+pub(crate) fn offset_window<'c>(
+    segment: &PathSegment,
+    checks: &'c SegmentChecks,
+    region: &Region,
+    cameras: &[String],
+) -> Result<OffsetWindow<'c>, Option<OffsetUnjudged>> {
     let Some(check) = checks.offset.as_ref().filter(|check| check.enabled) else {
         return Err(None);
     };
@@ -709,15 +738,17 @@ fn offset_series<'c, 'm>(
     ) else {
         return unjudged(OffsetUnjudged::NoReference);
     };
-    let series: Vec<(&FrameMetrics, f64)> = measured
-        .iter()
-        .filter(|m| m.camera == camera && m.seq != region.first_seq && m.seq != region.last_seq)
-        .filter_map(|&m| value(m).map(|x| (m, x)))
-        .collect();
-    if series.is_empty() {
+    if region.last_seq.saturating_sub(region.first_seq) < 2 {
         return unjudged(OffsetUnjudged::NoFrames);
     }
-    Ok((check, x_ref, series))
+    Ok(OffsetWindow {
+        camera,
+        first_seq: region.first_seq + 1,
+        last_seq: region.last_seq - 1,
+        check,
+        x_ref,
+        value,
+    })
 }
 
 /// max − min；空为 None。

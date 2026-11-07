@@ -18,14 +18,17 @@ pub use crate::frame::FrameImage;
 use crate::measure::FrameJob;
 use crate::recipe::{CameraInspect, Recipe};
 
+mod color_model;
 mod heading;
 mod judge;
 mod taught;
 pub mod template;
+pub(crate) use color_model::color_model_status;
 #[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
 pub use taught::measure_frame_with;
 pub use taught::{
-    corridor_inside, measure_frame, CorridorSet, FrameMeasurement, UnavailableCorridor,
+    corridor_inside, measure_frame, plan_corridor, CorridorSet, FrameMeasurement,
+    UnavailableCorridor,
 };
 
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}

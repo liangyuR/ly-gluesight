@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import SegmentWorkbench from "../src/features/workspace/SegmentWorkbench";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
+import type { InspectionCoverage } from "../src/features/plan/types";
 import { burstRecipe, burstWorkspaceView, deferred, pathSegment, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({
@@ -28,7 +29,7 @@ describe("分段标定工作台改变段结构", () => {
     const ws = workspaceState(view);
     vi.mocked(useWorkspace).mockImplementation(() => ws);
     vi.mocked(workspaceApi.segmentTemplateSave).mockResolvedValue(view);
-    vi.mocked(workspaceApi.segmentTemplatePreview).mockResolvedValue({ restructured: true, dropped: ["原第 3 段（直线）· CAM-1"], untaught: [], measurementCleared: true });
+    vi.mocked(workspaceApi.segmentTemplatePreview).mockResolvedValue({ restructured: true, dropped: ["原第 3 段（直线）· CAM-1"], untaught: [], measurementCleared: true, coverage: null });
     const user = userEvent.setup();
     render(<MemoryRouter><SegmentWorkbench plan={view.plan!} locked="" onDirty={() => {}} /></MemoryRouter>);
 
@@ -45,6 +46,37 @@ describe("分段标定工作台改变段结构", () => {
     const [, , segments, cuts] = vi.mocked(workspaceApi.segmentTemplateSave).mock.calls[0];
     expect(cuts).toEqual([3]);
     expect(segments.map(s => [s.index, s.kind, s.expectedFrames])).toEqual([[1, "straight", null], [2, "corner", null]]);
+  });
+
+  it.each([
+    { trusted: true, warning: "有检测段没有有效帧", details: "应测帧数为 0" },
+    { trusted: false, warning: "检测范围尚无法确认", details: "不能据此认定各段已经覆盖" },
+  ])("$warning → 即使不清除示教数据，也先显示覆盖风险再允许确认保存", async ({ trusted, warning, details }) => {
+    const view = burstWorkspaceView();
+    view.workspace.teachingPiece = { ...view.workspace.teachingPiece!, roundId: ROUND };
+    vi.mocked(useWorkspace).mockImplementation(() => workspaceState(view));
+    vi.mocked(workspaceApi.segmentTemplateSave).mockResolvedValue(view);
+    const coverage: InspectionCoverage = {
+      groupCount: 9, boundaryGuard: 1, boundariesTrusted: trusted, boundaryRefinementPending: false,
+      regions: [], excludedGroups: [], expectedCameraFrames: trusted ? 0 : null, availableCameraFrames: trusted ? 0 : null,
+      zeroCoverageSegments: trusted ? [2] : [],
+      segments: [{ segment: 2, kind: "straight", skipped: false, range: trusted ? { firstSeq: 5, lastSeq: 6 } : null,
+        cameras: [{ camera: "CAM-1", ranges: [], expectedFrames: trusted ? 0 : null, availableFrames: trusted ? 0 : null }],
+        expectedCameraFrames: trusted ? 0 : null, availableCameraFrames: trusted ? 0 : null,
+        offset: { camera: "CAM-1", ranges: [], expectedFrames: 0, availableFrames: 0, unjudgedReasons: [trusted ? "noInteriorFrames" : "unsegmented"] } }],
+    };
+    vi.mocked(workspaceApi.segmentTemplatePreview).mockResolvedValue({ restructured: false, dropped: [], untaught: [], measurementCleared: false, coverage });
+    const user = userEvent.setup();
+    render(<MemoryRouter><SegmentWorkbench plan={view.plan!} locked="" onDirty={() => {}} /></MemoryRouter>);
+    await screen.findByRole("button", { name: /^段 1（/ });
+    await user.click(await screen.findByRole("button", { name: "保存分段" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(warning);
+    expect(dialog).toHaveTextContent(details);
+    expect(dialog).toHaveTextContent("实测帧数");
+    expect(workspaceApi.segmentTemplateSave).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: "保存分段" }));
+    expect(workspaceApi.segmentTemplateSave).toHaveBeenCalled();
   });
 
   // 防的回归（PR #214 评审）：只把一段改成不检测、边界没动时，保存后的段列表里 skip 变了，工作台却还显示原来的检测状态，

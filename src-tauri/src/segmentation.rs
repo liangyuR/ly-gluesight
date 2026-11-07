@@ -46,46 +46,51 @@ pub struct Proportional;
 
 impl Segmenter for Proportional {
     fn segment(&self, input: &SegInput) -> SegOutcome {
-        let segments = input.segments;
-        let Some(counts) = segments
-            .iter()
-            .map(|s| s.expected_frames.map(u64::from))
-            .collect::<Option<Vec<u64>>>()
-        else {
-            return SegOutcome::Unsegmented;
-        };
-        let expected: u64 = counts.iter().sum();
-        let total = input.groups.iter().map(|g| g.seq).max().unwrap_or(0);
-        if counts.len() < 2 || expected == 0 || total == 0 {
-            return SegOutcome::Unsegmented;
-        }
-        let tolerance: u64 = segments.iter().map(|s| u64::from(s.tolerance)).sum();
-        let confidence = if total.abs_diff(expected) <= tolerance {
-            1.0
-        } else {
-            0.0
-        };
-        let (mut cumulative, mut previous) = (0, 0);
-        let last = counts.len() - 1;
-        let boundaries = counts[..last]
-            .iter()
-            .enumerate()
-            .map(|(k, &n)| {
-                cumulative += n;
-                let scaled = (2 * total * cumulative + expected) / (2 * expected);
-                let frame_seq = scaled
-                    .max(previous + 1)
-                    .min(total.saturating_sub((last - k) as u64));
-                previous = frame_seq;
-                Boundary {
-                    after_segment: segments[k].index,
-                    frame_seq,
-                    confidence,
-                }
-            })
-            .collect();
-        SegOutcome::Boundaries(boundaries)
+        proportional_for_count(
+            input.segments,
+            input.groups.iter().map(|g| g.seq).max().unwrap_or(0),
+        )
     }
+}
+
+fn proportional_for_count(segments: &[PathSegment], total: u64) -> SegOutcome {
+    let Some(counts) = segments
+        .iter()
+        .map(|s| s.expected_frames.map(u64::from))
+        .collect::<Option<Vec<u64>>>()
+    else {
+        return SegOutcome::Unsegmented;
+    };
+    let expected: u64 = counts.iter().sum();
+    if counts.len() < 2 || expected == 0 || total == 0 {
+        return SegOutcome::Unsegmented;
+    }
+    let tolerance: u64 = segments.iter().map(|s| u64::from(s.tolerance)).sum();
+    let confidence = if total.abs_diff(expected) <= tolerance {
+        1.0
+    } else {
+        0.0
+    };
+    let (mut cumulative, mut previous) = (0, 0);
+    let last = counts.len() - 1;
+    let boundaries = counts[..last]
+        .iter()
+        .enumerate()
+        .map(|(k, &n)| {
+            cumulative += n;
+            let scaled = (2 * total * cumulative + expected) / (2 * expected);
+            let frame_seq = scaled
+                .max(previous + 1)
+                .min(total.saturating_sub((last - k) as u64));
+            previous = frame_seq;
+            Boundary {
+                after_segment: segments[k].index,
+                frame_seq,
+                confidence,
+            }
+        })
+        .collect();
+    SegOutcome::Boundaries(boundaries)
 }
 
 /// 本件的分段：配方开了 `boundary_refine` 时用 [`refine_by_heading`]（要每帧特征），否则用 [`Proportional`]。生产与历史重判共用。
@@ -321,22 +326,12 @@ pub fn frame_corridors(
     out
 }
 
-/// 把分段结果解析成区域：Unsegmented 时一个覆盖 1..=total_seq 的区域（AlgorithmPending）；
-/// 置信度低于 min_conf 的边界把两侧两段合并为 Unsegmented(LowConfidence)，连续多个低置信度边界一并合并，不回退计划边界。
-/// 每个可信边界两侧各 `guard` 帧（边界帧 b 时为 b − guard + 1..=b + guard，截在 1..=total_seq 内）划为过渡区
-/// Unsegmented(Transition)，覆盖边界两侧的段；相邻的过渡区（中间的段被取空）合并成一个。guard = 0 时没有过渡区。
-/// 各段的跳过帧（`skip_head` / `skip_tail`）最后划为 Skipped 区域，优先于过渡区：能定位到的段（单段区域）按本段首尾跳过；
-/// 合并区域里只有贴着整件首尾的那一头能定位，只跳过第 1 段的 skip_head 与末段的 skip_tail。
-///
-/// 算法缺给某个段间边界，或给出的帧号不在上一可信边界之后、不给下一段留帧，都按置信度不足处理。
-/// 区域首尾相接、覆盖 1..=total_seq。没有帧组（total_seq = 0）或没有段时返回空。
-pub fn resolve_regions(
+fn core_regions(
     segments: &[PathSegment],
     outcome: &SegOutcome,
     total_seq: u64,
     min_conf: f32,
-    guard: u32,
-) -> Vec<Region> {
+) -> Vec<(Region, usize, usize)> {
     if segments.is_empty() || total_seq == 0 {
         return Vec::new();
     }
@@ -410,6 +405,29 @@ pub fn resolve_regions(
         }
     }
 
+    regions
+}
+
+/// 把分段结果解析成区域：Unsegmented 时一个覆盖 1..=total_seq 的区域（AlgorithmPending）；
+/// 置信度低于 min_conf 的边界把两侧两段合并为 Unsegmented(LowConfidence)，连续多个低置信度边界一并合并，不回退计划边界。
+/// 每个可信边界两侧各 `guard` 帧（边界帧 b 时为 b − guard + 1..=b + guard，截在 1..=total_seq 内）划为过渡区
+/// Unsegmented(Transition)，覆盖边界两侧的段；相邻的过渡区（中间的段被取空）合并成一个。guard = 0 时没有过渡区。
+/// 各段的跳过帧（`skip_head` / `skip_tail`）最后划为 Skipped 区域，优先于过渡区：能定位到的段（单段区域）按本段首尾跳过；
+/// 合并区域里只有贴着整件首尾的那一头能定位，只跳过第 1 段的 skip_head 与末段的 skip_tail。
+///
+/// 算法缺给某个段间边界，或给出的帧号不在上一可信边界之后、不给下一段留帧，都按置信度不足处理。
+/// 区域首尾相接、覆盖 1..=total_seq。没有帧组（total_seq = 0）或没有段时返回空。
+pub fn resolve_regions(
+    segments: &[PathSegment],
+    outcome: &SegOutcome,
+    total_seq: u64,
+    min_conf: f32,
+    guard: u32,
+) -> Vec<Region> {
+    let regions = core_regions(segments, outcome, total_seq, min_conf);
+    if regions.is_empty() {
+        return Vec::new();
+    }
     // 逐帧标注：所属区域、过渡区覆盖的段下标范围（多个边界的过渡区重叠时取并），或跳过的段
     #[derive(Clone, Copy, PartialEq)]
     enum Label {
@@ -524,6 +542,283 @@ pub fn resolve_regions(
         .collect()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageRange {
+    pub first_seq: u64,
+    pub last_seq: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraCoverage {
+    pub camera: String,
+    pub ranges: Vec<CoverageRange>,
+    pub expected_frames: Option<u64>,
+    pub available_frames: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OffsetCoverageReason {
+    Disabled,
+    Skipped,
+    Corner,
+    Unsegmented,
+    LowConfidence,
+    NoReference,
+    MeasureNotImplemented,
+    NoInteriorFrames,
+    ExcludedGroups,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OffsetCoverage {
+    pub camera: Option<String>,
+    pub ranges: Vec<CoverageRange>,
+    pub expected_frames: u64,
+    pub available_frames: u64,
+    pub unjudged_reasons: Vec<OffsetCoverageReason>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentCoverage {
+    pub segment: u32,
+    pub kind: SegmentKind,
+    pub skipped: bool,
+    pub range: Option<CoverageRange>,
+    pub cameras: Vec<CameraCoverage>,
+    pub expected_camera_frames: Option<u64>,
+    pub available_camera_frames: Option<u64>,
+    pub offset: OffsetCoverage,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectionCoverage {
+    pub group_count: u64,
+    pub boundary_guard: u32,
+    pub boundaries_trusted: bool,
+    pub boundary_refinement_pending: bool,
+    pub regions: Vec<Region>,
+    pub excluded_groups: Vec<u64>,
+    pub expected_camera_frames: Option<u64>,
+    pub available_camera_frames: Option<u64>,
+    pub zero_coverage_segments: Vec<u32>,
+    pub segments: Vec<SegmentCoverage>,
+}
+
+fn coverage_ranges(seqs: impl IntoIterator<Item = u64>) -> Vec<CoverageRange> {
+    let mut ranges: Vec<CoverageRange> = Vec::new();
+    for seq in seqs {
+        if let Some(last) = ranges.last_mut().filter(|last| last.last_seq + 1 == seq) {
+            last.last_seq = seq;
+        } else {
+            ranges.push(CoverageRange {
+                first_seq: seq,
+                last_seq: seq,
+            });
+        }
+    }
+    ranges
+}
+
+fn offset_coverage(
+    segment: &PathSegment,
+    cameras: &[String],
+    regions: &[Region],
+    uncertainty: Option<UnsegReason>,
+    excluded: &std::collections::BTreeSet<u64>,
+) -> OffsetCoverage {
+    use crate::burst_judge::{offset_window, OffsetUnjudged};
+    use OffsetCoverageReason as Reason;
+    let mut result = OffsetCoverage {
+        camera: segment.offset_ref.as_ref().map(|r| r.camera.clone()),
+        ranges: Vec::new(),
+        expected_frames: 0,
+        available_frames: 0,
+        unjudged_reasons: Vec::new(),
+    };
+    let inactive = if segment.skip {
+        Some(Reason::Skipped)
+    } else if segment.kind == SegmentKind::Corner {
+        Some(Reason::Corner)
+    } else if segment.checks.offset.as_ref().is_none_or(|o| !o.enabled) {
+        Some(Reason::Disabled)
+    } else {
+        uncertainty.map(|reason| match reason {
+            UnsegReason::LowConfidence => Reason::LowConfidence,
+            _ => Reason::Unsegmented,
+        })
+    };
+    if let Some(reason) = inactive {
+        result.unjudged_reasons.push(reason);
+        return result;
+    }
+    for region in regions.iter().filter(
+        |r| matches!(r.kind, RegionKind::Straight { segment: index } if index == segment.index),
+    ) {
+        match offset_window(segment, &segment.checks, region, cameras) {
+            Ok(window)
+                if crate::plan::detects(
+                    std::slice::from_ref(segment),
+                    segment.index,
+                    &cameras[window.camera],
+                    cameras,
+                ) =>
+            {
+                result.expected_frames += window.last_seq - window.first_seq + 1;
+                result.available_frames += (window.first_seq..=window.last_seq)
+                    .filter(|seq| !excluded.contains(seq))
+                    .count() as u64;
+                result.ranges.push(CoverageRange {
+                    first_seq: window.first_seq,
+                    last_seq: window.last_seq,
+                });
+            }
+            other => {
+                let reason = match other {
+                    Err(Some(OffsetUnjudged::NoReference)) => Reason::NoReference,
+                    Err(Some(OffsetUnjudged::MeasureNotImplemented)) => {
+                        Reason::MeasureNotImplemented
+                    }
+                    _ => Reason::NoInteriorFrames,
+                };
+                if !result.unjudged_reasons.contains(&reason) {
+                    result.unjudged_reasons.push(reason);
+                }
+            }
+        }
+    }
+    if result.expected_frames == 0 && result.unjudged_reasons.is_empty() {
+        result.unjudged_reasons.push(Reason::NoInteriorFrames);
+    }
+    if result.expected_frames > 0 && result.available_frames == 0 {
+        result.unjudged_reasons.push(Reason::ExcludedGroups);
+    }
+    result
+}
+
+/// 比例分段下的应测范围；不读取图像、不保证测量成功。屏蔽只影响示教件可用帧，不改变生产应测帧。
+pub fn proportional_coverage(
+    segments: &[PathSegment],
+    cameras: &[String],
+    total_seq: u64,
+    guard: u32,
+    refine: bool,
+    excluded_groups: &[u64],
+) -> InspectionCoverage {
+    let outcome = proportional_for_count(segments, total_seq);
+    let core = core_regions(segments, &outcome, total_seq, 0.5);
+    let boundaries_trusted = !core.is_empty()
+        && core
+            .iter()
+            .all(|(r, _, _)| !matches!(r.kind, RegionKind::Unsegmented { .. }));
+    let regions = resolve_regions(segments, &outcome, total_seq, 0.5, guard);
+    let corridors = frame_corridors(segments, cameras, &regions, &outcome, total_seq);
+    let excluded: std::collections::BTreeSet<u64> = excluded_groups
+        .iter()
+        .copied()
+        .filter(|seq| (1..=total_seq).contains(seq))
+        .collect();
+    let covered: Vec<SegmentCoverage> = segments
+        .iter()
+        .map(|segment| {
+            let region = core
+                .iter()
+                .find(|(_, first, last)| first == last && segments[*first].index == segment.index)
+                .map(|(region, _, _)| region);
+            let trusted = region.is_some_and(|r| !matches!(r.kind, RegionKind::Unsegmented { .. }));
+            let camera_coverage: Vec<CameraCoverage> =
+                crate::plan::segment_cameras(segment, cameras)
+                    .into_iter()
+                    .map(|camera| {
+                        let camera_index = cameras.iter().position(|id| *id == camera).unwrap();
+                        let seqs: Vec<u64> = corridors[camera_index]
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, corridor)| trusted && **corridor == Some(segment.index))
+                            .map(|(k, _)| k as u64 + 1)
+                            .collect();
+                        CameraCoverage {
+                            camera,
+                            ranges: coverage_ranges(seqs.iter().copied()),
+                            expected_frames: trusted.then_some(seqs.len() as u64),
+                            available_frames: trusted.then_some(
+                                seqs.iter().filter(|seq| !excluded.contains(seq)).count() as u64,
+                            ),
+                        }
+                    })
+                    .collect();
+            SegmentCoverage {
+                segment: segment.index,
+                kind: segment.kind,
+                skipped: segment.skip,
+                range: region.filter(|_| trusted).map(|r| CoverageRange {
+                    first_seq: r.first_seq,
+                    last_seq: r.last_seq,
+                }),
+                expected_camera_frames: trusted.then(|| {
+                    camera_coverage
+                        .iter()
+                        .filter_map(|c| c.expected_frames)
+                        .sum()
+                }),
+                available_camera_frames: trusted.then(|| {
+                    camera_coverage
+                        .iter()
+                        .filter_map(|c| c.available_frames)
+                        .sum()
+                }),
+                cameras: camera_coverage,
+                offset: offset_coverage(
+                    segment,
+                    cameras,
+                    &regions,
+                    core.iter().find_map(|(r, first, last)| {
+                        (segments[*first].index <= segment.index
+                            && segment.index <= segments[*last].index)
+                            .then(|| match r.kind {
+                                RegionKind::Unsegmented { reason, .. } => Some(reason),
+                                _ => None,
+                            })
+                            .flatten()
+                    }),
+                    &excluded,
+                ),
+            }
+        })
+        .collect();
+    InspectionCoverage {
+        group_count: total_seq,
+        boundary_guard: guard,
+        boundaries_trusted,
+        boundary_refinement_pending: refine,
+        regions,
+        excluded_groups: excluded.into_iter().collect(),
+        expected_camera_frames: boundaries_trusted.then(|| {
+            covered
+                .iter()
+                .filter_map(|s| s.expected_camera_frames)
+                .sum()
+        }),
+        available_camera_frames: boundaries_trusted.then(|| {
+            covered
+                .iter()
+                .filter_map(|s| s.available_camera_frames)
+                .sum()
+        }),
+        zero_coverage_segments: covered
+            .iter()
+            .filter(|s| !s.skipped && s.expected_camera_frames == Some(0))
+            .map(|s| s.segment)
+            .collect(),
+        segments: covered,
+    }
+}
+
 pub mod synthetic {
     use crate::plan::SegmentKind;
 
@@ -631,6 +926,100 @@ mod tests {
                 .collect(),
             SegOutcome::Unsegmented => panic!("应给出边界"),
         }
+    }
+
+    #[test]
+    fn coverage_short_detection_between_skips_reports_zero_until_guard_cleared() {
+        let mut segments = calibrated(&[S, S, S], &[4, 2, 4]);
+        segments[0].skip = true;
+        segments[2].skip = true;
+        segments[1].cameras = vec!["camA".into()];
+        let cameras = vec!["camA".into(), "camB".into(), "camC".into()];
+        for (guard, expected) in [(1, 0), (0, 2)] {
+            let coverage = proportional_coverage(&segments, &cameras, 10, guard, false, &[]);
+            assert!(coverage.boundaries_trusted);
+            assert_eq!(coverage.expected_camera_frames, Some(expected));
+            assert_eq!(coverage.segments[1].expected_camera_frames, Some(expected));
+            assert_eq!(
+                coverage.zero_coverage_segments,
+                if expected == 0 { vec![2] } else { vec![] }
+            );
+            assert_eq!(
+                coverage.segments[1].cameras[0].ranges,
+                if expected == 0 {
+                    vec![]
+                } else {
+                    vec![CoverageRange {
+                        first_seq: 5,
+                        last_seq: 6,
+                    }]
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn coverage_untrusted_boundaries_leave_frame_counts_unknown() {
+        let mut missing = calibrated(&[S, C], &[4, 4]);
+        missing[1].expected_frames = None;
+        let cameras = vec!["camA".into(), "camB".into(), "camC".into()];
+        for (segments, total) in [
+            (missing, 8),
+            (calibrated(&[S], &[8]), 8),
+            (calibrated(&[S, C], &[4, 4]), 16),
+        ] {
+            let coverage = proportional_coverage(&segments, &cameras, total, 1, false, &[]);
+            assert!(!coverage.boundaries_trusted);
+            assert_eq!(coverage.expected_camera_frames, None);
+            assert!(coverage.zero_coverage_segments.is_empty());
+            for segment in coverage.segments {
+                assert!(segment.range.is_none());
+                assert_eq!(segment.expected_camera_frames, None);
+                assert!(segment
+                    .cameras
+                    .iter()
+                    .all(|camera| camera.ranges.is_empty()));
+                assert_eq!(segment.offset.expected_frames, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_exclusions_and_skipped_ends_preserve_production_counts_and_reduce_offset_availability(
+    ) {
+        let mut segments = calibrated(&[S, C], &[8, 4]);
+        let cameras: Vec<String> = vec!["camA".into(), "camB".into(), "camC".into()];
+        segments[0].cameras = vec![cameras[0].clone()];
+        segments[0].skip_head = 1;
+        segments[0].skip_tail = 1;
+        segments[0].offset_ref = Some(crate::plan::OffsetRef {
+            measure: crate::plan::OffsetMeasure::AbsoluteX,
+            camera: cameras[0].clone(),
+            x_ref: Some(1.0),
+            spread: None,
+            edge: None,
+        });
+        let clear = proportional_coverage(&segments, &cameras, 12, 1, false, &[]);
+        let masked = proportional_coverage(&segments, &cameras, 12, 1, false, &[3, 4, 5, 6]);
+        assert_eq!(masked.expected_camera_frames, clear.expected_camera_frames);
+        assert_eq!(
+            masked.available_camera_frames,
+            clear.expected_camera_frames.map(|n| n - 4)
+        );
+        let offset = &masked.segments[0].offset;
+        assert_eq!(
+            offset.ranges,
+            vec![CoverageRange {
+                first_seq: 3,
+                last_seq: 6
+            }]
+        );
+        assert_eq!(offset.expected_frames, 4);
+        assert_eq!(offset.available_frames, 0);
+        assert_eq!(
+            offset.unjudged_reasons,
+            vec![OffsetCoverageReason::ExcludedGroups]
+        );
     }
 
     /// D-SB-40：本件帧组数超出 ΣN_exp ± Σtol 时比例边界不可信，整件合并为一个“分段不确定”区域，不回退计划边界。

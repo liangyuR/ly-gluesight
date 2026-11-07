@@ -7,11 +7,13 @@ use crate::agent_mcp::Content;
 use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::cycle::CycleHost;
 use crate::plan::PathSegment;
-use crate::recipe::SegmentCorridor;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
+
+pub(crate) mod diagnostics;
+pub(crate) mod snapshots;
 
 pub enum ToolError {
     Unknown,
@@ -50,10 +52,11 @@ pub fn tools() -> Value {
     let segment =
         json!({ "type": "integer", "minimum": 1, "description": "段号（PathSegment.index）" });
     let seq = json!({ "type": "integer", "minimum": 1, "description": "示教件轮次里的帧组号" });
+    let expected_revision = json!({ "type": "integer", "minimum": 0, "description": "读到的候选 revision；不一致时拒绝写入，省略则基于入口读取的快照提交" });
     json!([
         {
             "name": "teach_status",
-            "description": "示教现状。不给 recipe 时列出当前项目的候选；给了时返回下一步、示教件、各段的帧组范围与检测相机、各相机各段的走廊/颜色模型/示教帧、发布前未通过的检查。",
+            "description": "示教现状。不给 recipe 时列当前项目候选和引擎；给了时返回候选身份、定向前提、颜色模型可用性与原因、比例分段覆盖、发布配置检查。配置齐全与测量验收分别报告。",
             "inputSchema": { "type": "object", "properties": { "recipe": recipe }, "additionalProperties": false },
             "annotations": { "readOnlyHint": true },
         },
@@ -76,11 +79,12 @@ pub fn tools() -> Value {
         },
         {
             "name": "teach_corridor",
-            "description": "示教一台相机一段的走廊：在第 seq 帧上冻结示教帧，沿 stroke（沿胶条的原图像素点列，从起胶端画向收胶端；彩色帧粗略即可）得出走廊并保存；彩色帧随即沿新走廊重新取色。返回走廊长度、站数、取色结果与叠图（品红=笔划，青=走廊）。",
+            "description": "示教一台相机一段的走廊：在第 seq 帧沿 stroke（原图像素，从起胶端到收胶端）提取，校验最终走廊并完成彩色取色后，一次提交示教帧、走廊与模型；准备失败不改候选。返回提交阶段、质量和叠图。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "recipe": recipe, "camera": camera, "segment": segment, "seq": seq,
+                    "expectedRevision": expected_revision,
                     "stroke": { "type": "array", "minItems": 2, "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } },
                     "radiusPx": { "type": "number", "exclusiveMinimum": 0, "description": "笔划半径（px），缺省 30：按胶色吸附时是笔划到胶中心的最大偏差，边缘提取时是找边范围" },
                     "extract": { "type": "string", "enum": ["auto", "color", "edges", "none"], "description": "缺省 auto：彩色帧按胶色把笔划吸附到胶中心（笔划偏几十 px 也行，radiusPx 内找胶），灰度帧按胶两侧边提取；none：笔划按 20 px 插点直接作走廊" },
@@ -94,14 +98,14 @@ pub fn tools() -> Value {
             "description": "沿已保存的走廊取胶色与两侧背景色，写入这一段的颜色模型（示教帧须是彩色）。返回胶色、背景色与分离度。",
             "inputSchema": {
                 "type": "object",
-                "properties": { "recipe": recipe, "camera": camera, "segment": segment },
+                "properties": { "recipe": recipe, "camera": camera, "segment": segment, "expectedRevision": expected_revision },
                 "required": ["recipe", "camera", "segment"],
                 "additionalProperties": false,
             },
         },
         {
             "name": "teach_trial",
-            "description": "用已保存的走廊试测示教件里这一段的全部帧（只读）。返回状态计数、胶宽/胶边距/偏移分布（mm）、有断口的帧、没找到胶条的帧、出错的帧与最差的几帧。from/to 限定统计范围，用来排除起胶、收胶的过渡帧。",
+            "description": "用已保存走廊试测示教件这一段（只读）；from/to 限制实际读取和量测的区间。返回真实快照身份、范围、各状态及全部未测成帧、ToEdge 有效率与缺失帧、分布、阈值和参数冲突提示。区间试测不改变生产覆盖。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -121,6 +125,7 @@ pub fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "recipe": recipe, "segment": segment,
+                    "expectedRevision": expected_revision,
                     "checks": { "type": "object", "description": "如 {\"width\": {\"nominalMm\": 4, \"tolUpper\": 1.5}, \"break\": {\"maxGapMm\": 6}}" },
                     "offsetRef": { "type": ["object", "null"], "description": "如 {\"measure\": \"toEdge\", \"camera\": \"cam1\", \"edge\": {\"polarity\": \"brightToDark\", \"searchMm\": 18, \"contrastMin\": 70, \"nominalMm\": 10}}" },
                 },
@@ -130,7 +135,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "teach_replay",
-            "description": "用候选现在的配置复测历史件并整件判定（从原图重测，只读，不改候选）。不给 records 时列出最近 30 件历史记录。返回每件的原判定、复测判定、原因与各区域结果。",
+            "description": "用候选快照复测历史件并整件判定（只读，不改候选）。不给 records 时列出最近 30 件。返回每件实际修订、stale、flags、完整区域结论、逐相机逐段应测/实测与未测帧、胶偏未判原因；OK 不代表测量完整。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -182,6 +187,64 @@ async fn blocking<T: Send + 'static>(
 async fn open(app: &AppHandle, recipe: &str) -> Result<WorkspaceView, String> {
     let (app, id) = (app.clone(), recipe.to_string());
     blocking(move || super::get(app, id)).await
+}
+
+fn expect_revision(w: &Workspace, expected: Option<u64>) -> Result<(), String> {
+    w.expect(expected.unwrap_or(w.revision))
+}
+
+fn snapshot(app: &AppHandle, project: &str, w: &Workspace) -> Value {
+    snapshot_identity(
+        app,
+        project,
+        &w.doc.id,
+        w.instance_id,
+        w.revision,
+        w.teaching_piece.as_ref().map(|p| p.round_id.as_str()),
+    )
+}
+
+fn snapshot_identity(
+    app: &AppHandle,
+    project: &str,
+    recipe: &str,
+    instance: u64,
+    revision: u64,
+    round: Option<&str>,
+) -> Value {
+    let used = snapshots::UsedSnapshot {
+        project: project.into(),
+        recipe: recipe.into(),
+        instance_id: instance,
+        revision,
+        round_id: round.map(str::to_owned),
+    };
+    serde_json::to_value(finish_snapshots(app, vec![used]).pop()).unwrap_or_default()
+}
+
+fn finish_snapshots(
+    app: &AppHandle,
+    used: Vec<snapshots::UsedSnapshot>,
+) -> Vec<snapshots::SnapshotState> {
+    let current_project = crate::project::current_id(app);
+    let host = app.state::<WorkspaceHost>();
+    let items = host.items.lock().unwrap();
+    snapshots::finish_batch(used, &current_project, &items)
+}
+
+fn engine_status(app: &AppHandle) -> Value {
+    let status = app.state::<crate::vision::VisionHost>().status();
+    let mut value = serde_json::to_value(&status).unwrap_or_default();
+    value["requiredSeries"] = json!(crate::vision::LYFLOW_SERIES);
+    value["requiredOperators"] = json!(crate::vision::REQUIRED_OPERATORS
+        .split(',')
+        .collect::<Vec<_>>());
+    value["source"] = json!(if status.overridden {
+        "developmentOverride"
+    } else {
+        "bundledRuntime"
+    });
+    value
 }
 
 fn teaching_round(w: &Workspace) -> Result<String, String> {
@@ -238,8 +301,10 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
         return Ok(vec![text(json!({
             "project": crate::project::current_id(app),
             "candidates": candidates,
+            "engine": engine_status(app),
         }))]);
     };
+    let project = crate::project::current_id(app);
     let view = open(app, &id).await?;
     let w = &view.workspace;
     if !w.doc.is_burst() {
@@ -280,6 +345,10 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                 "checks": value["checks"],
                 "offsetRef": value["offsetRef"],
                 "heading": value["heading"],
+                "skip": s.skip,
+                "skipHead": s.skip_head,
+                "skipTail": s.skip_tail,
+                "parameterWarnings": diagnostics::parameter_warnings(s),
             })
         })
         .collect();
@@ -298,12 +367,17 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                 .map(|s| {
                     let taught = t.segments.iter().find(|x| x.segment == s.index);
                     let corridor = inspect.and_then(|i| i.segment_corridor(s.index));
+                    let model = diagnostics::color_model_status(corridor.and_then(|c| c.color_model.as_deref()));
                     json!({
                         "segment": s.index,
                         "seq": taught.map(|x| x.seq),
                         "saved": taught.is_some_and(|x| x.saved),
                         "corridorPoints": corridor.map_or(0, |c| c.corridor.len()),
                         "colorModel": corridor.is_some_and(|c| c.color_model.is_some()),
+                        "modelPresent": model.model_present,
+                        "modelUsable": model.model_usable,
+                        "quality": model.quality,
+                        "modelIssues": model.issues,
                     })
                 })
                 .collect();
@@ -313,7 +387,11 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                 "mmPerPx": t.mm_per_px,
                 "calibMmPerPx": t.calib_mm_per_px,
                 "ready": t.ready,
-                "nozzle": t.nozzle.as_ref().map(|n| json!({ "point": n.point, "calibrated": n.calibrated })),
+                "window": inspect.and_then(|i| i.window.as_ref()),
+                "nozzle": t.nozzle.as_ref().map(|n| json!({ "point": n.point, "calibrated": n.calibrated, "source": if n.calibrated { "calibrated" } else { "corridorStarts" } })),
+                "headingIssues": crate::heading::issues(&w.doc.segments, &w.doc.inspect).iter()
+                    .filter(|issue| issue.camera == t.camera)
+                    .map(|issue| json!({ "segment": issue.segment, "message": issue.message })).collect::<Vec<_>>(),
                 "segments": segments,
             })
         })
@@ -332,9 +410,27 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
         }
     };
     let progress = serde_json::to_value(&view.plan.progress).unwrap_or_default();
+    let coverage = groups.as_ref().and_then(|g| g.as_ref().ok()).map(|&total| {
+        let excluded: Vec<u64> = round
+            .as_ref()
+            .and_then(|r| w.capture_review.rounds.get(r))
+            .map(|r| r.excluded_groups.iter().map(|g| g.seq).collect())
+            .unwrap_or_default();
+        crate::segmentation::proportional_coverage(
+            &w.doc.segments,
+            &cameras,
+            total,
+            w.doc.boundary_guard,
+            w.doc.boundary_refine,
+            &excluded,
+        )
+    });
     Ok(vec![text(json!({
+        "project": project,
         "recipe": w.doc.id,
         "revision": w.revision,
+        "snapshot": snapshot(app, &project, w),
+        "engine": engine_status(app),
         "next": progress["next"],
         "teachingPiece": w.teaching_piece.as_ref().map(|p| json!({
             "roundId": p.round_id,
@@ -344,6 +440,8 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
         "segments": segments,
         "cameras": teaching,
         "blockers": blockers,
+        "coverage": coverage,
+        "coverageSource": coverage.as_ref().map(|_| "teachingPieceProportional"),
     }))])
 }
 
@@ -371,13 +469,16 @@ fn metrics_value(metrics: &FrameMetrics) -> Value {
 }
 
 async fn view_frame(app: &AppHandle, args: ViewArgs) -> Result<Vec<Content>, ToolError> {
+    let project = crate::project::current_id(app);
     let w = open(app, &args.recipe).await?.workspace;
     let round = teaching_round(&w)?;
     let measured = match args.segment {
         Some(segment) => Some(
-            burst::workspace_teach_preview_frame(
+            burst::workspace_teach_preview_frame_at(
                 app.clone(),
                 args.recipe.clone(),
+                w.revision,
+                w.instance_id,
                 args.camera.clone(),
                 segment,
                 round.clone(),
@@ -389,6 +490,7 @@ async fn view_frame(app: &AppHandle, args: ViewArgs) -> Result<Vec<Content>, Too
     };
     let (image, located) = {
         let (app, round, camera, seq) = (app.clone(), round.clone(), args.camera.clone(), args.seq);
+        let w = w.clone();
         blocking(move || {
             let cycle = app.state::<CycleHost>();
             let path = cycle
@@ -430,6 +532,7 @@ async fn view_frame(app: &AppHandle, args: ViewArgs) -> Result<Vec<Content>, Too
     Ok(vec![
         Content::Png(canvas.png()?),
         text(json!({
+            "snapshot": snapshot(app, &project, &w),
             "size": canvas.source_size(),
             "crop": canvas.crop(),
             "scale": canvas.scale(),
@@ -464,6 +567,7 @@ struct CorridorArgs {
     stroke: Vec<[f32; 2]>,
     radius_px: Option<f32>,
     extract: Option<Extract>,
+    expected_revision: Option<u64>,
 }
 
 /// 笔划直接作走廊：各段按不超过 `spacing` px 等分插点（同示教页“笔划直接生成走廊”的点间距）
@@ -581,47 +685,30 @@ fn snap_path(
 /// 按胶色把粗笔划吸附到胶中心（[`snap_path`]）：重新居中用 `glue.color_model`，以线为示教线，每站在偏移上限内找胶色段。
 async fn snap_color(
     app: &AppHandle,
-    recipe: &str,
+    w: &Workspace,
     camera: &str,
-    image_id: &str,
+    image: std::sync::Arc<crate::frame::FrameImage>,
     stroke: &[[f32; 2]],
     shift: f32,
 ) -> Result<(Vec<[f32; 2]>, Option<f64>), String> {
-    let (app, recipe, camera, image_id, stroke) = (
-        app.clone(),
-        recipe.to_string(),
-        camera.to_string(),
-        image_id.to_string(),
-        stroke.to_vec(),
-    );
+    let (app, w, camera, stroke) = (app.clone(), w.clone(), camera.to_string(), stroke.to_vec());
     blocking(move || {
-        let host = app.state::<WorkspaceHost>();
-        let (path, detect, scale) = {
-            let items = host.items.lock().unwrap();
-            let w = items.get(&recipe).ok_or("候选不存在")?;
-            let inspect = w
-                .doc
-                .inspect
-                .iter()
-                .find(|i| i.camera == camera)
-                .ok_or_else(|| format!("相机 {camera} 不是段配方的计划相机"))?;
-            (
-                super::image_file(&host, &recipe, &image_id)?,
-                inspect
-                    .detect
-                    .clone()
-                    .unwrap_or_else(|| w.doc.detect.clone()),
-                inspect.mm_per_px.ok_or("先填像素当量再按胶色吸附")?,
-            )
-        };
-        let image = crate::image_file::load(&path)?;
+        let recipe = &w.doc.id;
+        let inspect = w
+            .doc
+            .inspect
+            .iter()
+            .find(|i| i.camera == camera)
+            .ok_or_else(|| format!("相机 {camera} 不是段配方的计划相机"))?;
+        let detect = inspect.detect.as_ref().unwrap_or(&w.doc.detect);
+        let scale = inspect.mm_per_px.ok_or("先填像素当量再按胶色吸附")?;
         let engine = app
             .state::<crate::vision::VisionHost>()
             .engine()
             .ok_or("lyFlow 核心库未加载")?;
         let recenter =
             |line: &[[f32; 2]], shift: f32| -> Result<(Vec<[f32; 2]>, Option<f64>), String> {
-                let mut params = burst::color_teach_params(line, &detect, scale)?;
+                let mut params = burst::color_teach_params(line, detect, scale)?;
                 params["shiftMax"] = json!(shift);
                 let result = engine.run_targets(
                     crate::vision::template::color_teach().text,
@@ -653,35 +740,26 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         return Err("笔划至少要 2 个点".into());
     }
     let radius = args.radius_px.unwrap_or(DEFAULT_RADIUS);
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err("笔划半径必须是正有限数".into());
+    }
+    let project = crate::project::current_id(app);
     let w = open(app, &args.recipe).await?.workspace;
+    expect_revision(&w, args.expected_revision)?;
     let round = teaching_round(&w)?;
-    let frozen = burst::workspace_teach_segment_corridor(
+    let prepared = burst::prepare_segment_teaching(
         app.clone(),
         args.recipe.clone(),
         w.revision,
+        Some(w.instance_id),
         args.camera.clone(),
         args.segment,
         round,
         args.seq,
     )
     .await?;
-    changed(app, &args.recipe);
-    let frame = frozen
-        .plan
-        .camera_teaching
-        .iter()
-        .find(|t| t.camera == args.camera)
-        .and_then(|t| t.segments.iter().find(|s| s.segment == args.segment))
-        .map(|s| s.frame.clone())
-        .ok_or("示教帧没有冻结上")?;
-    let image = {
-        let (app, id, image_id) = (app.clone(), args.recipe.clone(), frame.id.clone());
-        blocking(move || {
-            let host = app.state::<WorkspaceHost>();
-            crate::image_file::load(&super::image_file(&host, &id, &image_id)?)
-        })
-        .await?
-    };
+    let frame = prepared.frame.clone();
+    let image = prepared.image.clone();
     let color = image.is_color();
     let mode = match args.extract.unwrap_or(Extract::Auto) {
         Extract::Auto if color => Extract::Color,
@@ -709,9 +787,9 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         Extract::Color => {
             let (path, shift) = snap_color(
                 app,
-                &args.recipe,
+                &prepared.workspace,
                 &args.camera,
-                &frame.id,
+                image.clone(),
                 &args.stroke,
                 radius,
             )
@@ -722,49 +800,49 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         Extract::Edges => {
             let roi = canvas::bounds(&stroke, f64::from(radius) + EXTRACT_MARGIN, frame.size)
                 .ok_or("笔划不在示教帧内")?;
-            let extracted = burst::workspace_extract_corridor(
-                app.clone(),
-                args.recipe.clone(),
-                frozen.workspace.revision,
-                args.camera.clone(),
-                frame.id.clone(),
-                roi,
-                Some(super::centerline::BrushGuide {
+            let polarity = prepared
+                .workspace
+                .doc
+                .inspect
+                .iter()
+                .find(|i| i.camera == args.camera)
+                .and_then(|i| i.detect.as_ref())
+                .unwrap_or(&prepared.workspace.doc.detect)
+                .polarity;
+            let (image, guide) = (
+                image.clone(),
+                super::centerline::BrushGuide {
                     points: args.stroke.clone(),
                     radius_px: radius,
-                }),
-                None,
-            )
-            .await?;
-            if extracted.path.len() < 2 {
-                let at = extracted
-                    .failure
-                    .as_ref()
-                    .map(|f| {
-                        format!(
-                            "（在 [{:.0}, {:.0}]：{}）",
-                            f.point[0], f.point[1], f.reason
-                        )
+                },
+            );
+            let extracted = blocking(move || {
+                super::centerline::extract(&image, roi, polarity, Some(&guide), STROKE_SPACING)
+                    .map_err(|error| match error {
+                        super::centerline::ExtractionError::Invalid(message) => message,
+                        super::centerline::ExtractionError::Failed(f) => format!(
+                            "没有提取出走廊：{}（在 [{:.0}, {:.0}]：{}）",
+                            f.message, f.point[0], f.point[1], f.reason
+                        ),
                     })
-                    .unwrap_or_default();
-                let hint = if color {
-                    "彩色帧改用 extract: \"color\""
-                } else {
-                    "笔划已贴着胶条中心时可用 extract: \"none\""
-                };
-                return Err(format!("没有提取出走廊：{}{at}。{hint}", extracted.message).into());
-            }
-            (extracted.path, extracted.message)
+            })
+            .await?;
+            (
+                extracted.path,
+                extracted
+                    .notice
+                    .unwrap_or_else(|| "走廊已提取，请核对叠图".into()),
+            )
         }
         _ => (
             densify(&args.stroke, STROKE_SPACING),
             "笔划直接作走廊".to_string(),
         ),
     };
-    let mut doc = frozen.workspace.doc.clone();
+    let doc = &prepared.workspace.doc;
     let inspect = doc
         .inspect
-        .iter_mut()
+        .iter()
         .find(|i| i.camera == args.camera)
         .ok_or_else(|| format!("相机 {} 不是段配方的计划相机", args.camera))?;
     let length_px = path_length(&corridor);
@@ -779,44 +857,6 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         )
         .into());
     }
-    let previous = inspect.segment_corridor(args.segment).cloned();
-    inspect.segments.retain(|s| s.segment != args.segment);
-    inspect.segments.push(SegmentCorridor {
-        segment: args.segment,
-        corridor: corridor.clone(),
-        sector_deg: previous.as_ref().and_then(|p| p.sector_deg),
-        color_model: None,
-    });
-    inspect.segments.sort_by_key(|s| s.segment);
-    let mut saved = super::workspace_save_doc(
-        app.clone(),
-        args.recipe.clone(),
-        frozen.workspace.revision,
-        doc,
-    )
-    .await?;
-    // 彩色帧走廊一变就沿新走廊重新取色，免得这一段没有颜色模型
-    let color_model = if color {
-        match burst::workspace_fit_color_model(
-            app.clone(),
-            args.recipe.clone(),
-            saved.workspace.revision,
-            args.camera.clone(),
-            args.segment,
-        )
-        .await
-        {
-            Ok(view) => {
-                let summary = color_summary(&view, &args.camera, args.segment);
-                saved = view;
-                summary
-            }
-            Err(e) => json!({ "error": e }),
-        }
-    } else {
-        Value::Null
-    };
-    changed(app, &args.recipe);
     let path: Vec<[f64; 2]> = corridor
         .iter()
         .map(|p| [f64::from(p[0]), f64::from(p[1])])
@@ -831,10 +871,17 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
     canvas.grid(grid);
     canvas.polyline(&stroke, MAGENTA, 1.0);
     canvas.polyline(&path, CYAN, 2.0);
+    let png = canvas.png()?;
+    let saved = burst::commit_segment_teaching(app.clone(), prepared, corridor.clone()).await?;
+    let color_model = color.then(|| color_summary(&saved, &args.camera, args.segment));
+    changed(app, &args.recipe);
     Ok(vec![
-        Content::Png(canvas.png()?),
+        Content::Png(png),
         text(json!({
             "revision": saved.workspace.revision,
+            "baseRevision": w.revision,
+            "snapshot": snapshot(app, &project, &saved.workspace),
+            "commit": { "frameUpdated": true, "corridorSaved": true, "colorFitted": color },
             "frame": frame.id,
             "extract": format!("{mode:?}").to_lowercase(),
             "points": corridor.len(),
@@ -850,27 +897,28 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
 // ───────────── teach_fit_color ─────────────
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SegmentArgs {
     recipe: String,
     camera: String,
     segment: u32,
+    expected_revision: Option<u64>,
 }
 
 /// 这一段颜色模型的摘要：胶色、背景色、分离度等质量指标
 fn color_summary(view: &WorkspaceView, camera: &str, segment: u32) -> Value {
-    let Some(model) = view
+    let raw = view
         .workspace
         .doc
         .inspect
         .iter()
         .find(|i| i.camera == camera)
         .and_then(|i| i.segment_corridor(segment))
-        .and_then(|s| s.color_model.as_deref())
+        .and_then(|s| s.color_model.as_deref());
+    let status = diagnostics::color_model_status(raw);
+    let model = raw
         .and_then(|m| serde_json::from_str::<Value>(m).ok())
-    else {
-        return json!({ "error": "取色后没有颜色模型" });
-    };
+        .unwrap_or_default();
     let background: Vec<Value> = model["background"]
         .as_array()
         .map(|b| {
@@ -884,15 +932,21 @@ fn color_summary(view: &WorkspaceView, camera: &str, segment: u32) -> Value {
         "background": background,
         "quality": model["quality"],
         "space": model["space"],
+        "modelPresent": status.model_present,
+        "modelUsable": status.model_usable,
+        "modelIssues": status.issues,
     })
 }
 
 async fn fit_color(app: &AppHandle, args: SegmentArgs) -> Result<Vec<Content>, ToolError> {
+    let project = crate::project::current_id(app);
     let w = open(app, &args.recipe).await?.workspace;
-    let view = burst::workspace_fit_color_model(
+    expect_revision(&w, args.expected_revision)?;
+    let view = burst::workspace_fit_color_model_at(
         app.clone(),
         args.recipe.clone(),
         w.revision,
+        w.instance_id,
         args.camera.clone(),
         args.segment,
     )
@@ -900,6 +954,8 @@ async fn fit_color(app: &AppHandle, args: SegmentArgs) -> Result<Vec<Content>, T
     changed(app, &args.recipe);
     let mut summary = color_summary(&view, &args.camera, args.segment);
     summary["revision"] = json!(view.workspace.revision);
+    summary["baseRevision"] = json!(w.revision);
+    summary["snapshot"] = snapshot(app, &project, &view.workspace);
     Ok(vec![text(summary)])
 }
 
@@ -915,8 +971,8 @@ struct TrialArgs {
     to: Option<u64>,
 }
 
-/// 稳态范围内按这一段的检测项（`checks`）超限的帧（与生产判定 `judge_frame` 同口径）：帧内断口长于断胶长度、有胶站占比低于下限、平均胶宽出了公差带。
-/// 整件判定还看跨帧的连续长度，这里只给逐帧的线索。
+/// 断口、存在率与最大宽度按检测阈值提示；widthOutside 只比较均值，生产胶宽还看逐站超差累计长度。
+/// 这些线索不替代逐帧及整件的生产判定。
 fn against_checks(frames: &[FrameMetrics], window: (u64, u64), checks: &Value) -> Value {
     let measured: Vec<&FrameMetrics> = frames
         .iter()
@@ -963,42 +1019,80 @@ fn against_checks(frames: &[FrameMetrics], window: (u64, u64), checks: &Value) -
                 .collect::<Vec<_>>()),
         );
     }
+    let overflow = &checks["overflow"];
+    if let (true, Some(limit)) = (enabled(overflow), overflow["maxWidthMm"].as_f64()) {
+        out.insert("overflowMaxWidthMm".into(), json!(limit));
+        out.insert(
+            "overflowFrames".into(),
+            json!(measured
+                .iter()
+                .filter(|f| f.width_max.is_some_and(|width| width > limit))
+                .map(|f| f.seq)
+                .collect::<Vec<_>>()),
+        );
+    }
     Value::Object(out)
 }
 
 async fn trial(app: &AppHandle, args: TrialArgs) -> Result<Vec<Content>, ToolError> {
+    let project = crate::project::current_id(app);
     let w = open(app, &args.recipe).await?.workspace;
     let round = teaching_round(&w)?;
-    let result = burst::workspace_teach_preview_segment(
+    let result = burst::workspace_teach_preview_range(
         app.clone(),
-        args.recipe,
-        args.camera,
+        args.recipe.clone(),
+        args.camera.clone(),
         args.segment,
         round,
+        args.from,
+        args.to,
+        Some(w.revision),
     )
     .await?;
-    let window = (
-        args.from.unwrap_or(result.start).max(result.start),
-        args.to.unwrap_or(result.end).min(result.end),
-    );
-    if window.0 > window.1 {
-        return Err(format!(
-            "统计范围与这一段的帧组 {}–{} 没有交集",
-            result.start, result.end
-        )
-        .into());
-    }
+    let window = (result.from, result.to);
     let mut summary = summarize(&result.frames, window);
     summary["range"] = json!([result.start, result.end]);
-    let checks = w
+    let segment = result
         .doc
         .segments
         .iter()
         .find(|s| s.index == args.segment)
-        .and_then(|s| serde_json::to_value(s).ok())
-        .map(|v| v["checks"].clone())
-        .unwrap_or_default();
+        .ok_or("试测快照没有这一段")?;
+    let checks = serde_json::to_value(&segment.checks).unwrap_or_default();
     summary["limits"] = against_checks(&result.frames, window, &checks);
+    let scope: Vec<u64> = (window.0..=window.1).collect();
+    let expected: Vec<u64> = scope
+        .iter()
+        .copied()
+        .filter(|seq| {
+            !result
+                .frames
+                .iter()
+                .any(|f| f.seq == *seq && f.state == FrameState::NotInspected)
+        })
+        .collect();
+    summary["measurement"] = serde_json::to_value(diagnostics::measurement_evidence(
+        &result.frames,
+        &scope,
+        &expected,
+        diagnostics::edge_requested(segment, &args.camera),
+    ))
+    .unwrap_or_default();
+    summary["parameterWarnings"] = json!(diagnostics::parameter_warnings(segment));
+    summary["camera"] = json!(args.camera);
+    summary["segment"] = json!(args.segment);
+    summary["checks"] = checks;
+    summary["offsetRef"] = json!(segment.offset_ref);
+    summary["requestedWindow"] = json!({ "from": args.from, "to": args.to });
+    summary["measurementPlan"] = json!("selectedSegment");
+    summary["snapshot"] = snapshot_identity(
+        app,
+        &project,
+        &result.doc.id,
+        result.instance_id,
+        result.revision,
+        Some(&result.round),
+    );
     Ok(vec![text(summary)])
 }
 
@@ -1104,10 +1198,16 @@ fn patch_segment(
 
 async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content>, ToolError> {
     let map = arguments.as_object().ok_or("参数要是对象")?;
-    if let Some(key) = map
-        .keys()
-        .find(|k| !["recipe", "segment", "checks", "offsetRef"].contains(&k.as_str()))
-    {
+    if let Some(key) = map.keys().find(|k| {
+        ![
+            "recipe",
+            "segment",
+            "checks",
+            "offsetRef",
+            "expectedRevision",
+        ]
+        .contains(&k.as_str())
+    }) {
         return Err(format!("参数不对：不认识 {key}").into());
     }
     let recipe = map
@@ -1118,8 +1218,15 @@ async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content
     let index = map
         .get("segment")
         .and_then(Value::as_u64)
-        .ok_or("缺少 segment")? as u32;
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or("segment 必须是有效段号")?;
+    let expected_revision = map
+        .get("expectedRevision")
+        .map(|value| value.as_u64().ok_or("expectedRevision 必须是非负整数"))
+        .transpose()?;
+    let project = crate::project::current_id(app);
     let w = open(app, &recipe).await?.workspace;
+    expect_revision(&w, expected_revision)?;
     let mut segments = w.doc.segments.clone();
     let target = segments
         .iter_mut()
@@ -1127,8 +1234,12 @@ async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content
         .ok_or_else(|| format!("没有第 {index} 段"))?;
     *target = patch_segment(target, map)?;
     let view = {
-        let (app, recipe, revision) = (app.clone(), recipe.clone(), w.revision);
-        blocking(move || burst::workspace_update_segments(app, recipe, revision, segments)).await?
+        let (app, recipe, revision, instance) =
+            (app.clone(), recipe.clone(), w.revision, w.instance_id);
+        blocking(move || {
+            burst::workspace_update_segments_at(app, recipe, revision, instance, segments)
+        })
+        .await?
     };
     changed(app, &recipe);
     let saved = view
@@ -1141,6 +1252,9 @@ async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content
         .unwrap_or_default();
     Ok(vec![text(json!({
         "revision": view.workspace.revision,
+        "baseRevision": w.revision,
+        "snapshot": snapshot(app, &project, &view.workspace),
+        "impact": super::capture_review::save_impact(&w, &view.workspace),
         "segment": index,
         "checks": saved["checks"],
         "offsetRef": saved["offsetRef"],
@@ -1158,11 +1272,12 @@ struct ReplayArgs {
 
 async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolError> {
     let Some(records) = args.records else {
+        let project = crate::project::current_id(app);
         let page = crate::history::history_query(
             app.clone(),
             crate::store::HistoryQuery {
                 limit: 30,
-                project: Some(crate::project::current_id(app)),
+                project: Some(project.clone()),
                 ..Default::default()
             },
         )
@@ -1178,26 +1293,34 @@ async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolE
                 })
             })
             .collect();
-        return Ok(vec![text(json!({ "total": page.total, "recent": items }))]);
+        return Ok(vec![text(
+            json!({ "project": project, "recipe": args.recipe, "total": page.total, "recent": items }),
+        )]);
     };
     // 复测逐帧占用测量引擎：与示教试测同一规则，有在途件或正在采集时拒绝
     crate::camera::check_idle(&app.state::<CycleHost>())?;
     let mut results = Vec::new();
+    let mut used = Vec::new();
     for record in records {
+        let project = crate::project::current_id(app);
         let w = open(app, &args.recipe).await?.workspace;
-        let outcome =
-            super::workspace_compare(app.clone(), args.recipe.clone(), w.revision, record, true)
-                .await;
+        let outcome = super::workspace_compare_at(
+            app.clone(),
+            args.recipe.clone(),
+            w.revision,
+            w.instance_id,
+            record,
+            true,
+        )
+        .await;
+        used.push(snapshots::UsedSnapshot::from_workspace(project, &w));
         results.push(match outcome {
             Ok(c) => {
                 let regions: Vec<Value> = c
                     .burst
                     .as_ref()
-                    .and_then(|b| serde_json::to_value(&b.judgement).ok())
-                    .and_then(|j| j["regions"].as_array().cloned())
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|r| {
+                    .map(|b| b.judgement.regions.iter().map(|result| {
+                        let r = serde_json::to_value(result).unwrap_or_default();
                         json!({
                             "kind": r["region"]["kind"],
                             "frames": [r["region"]["firstSeq"], r["region"]["lastSeq"]],
@@ -1205,19 +1328,46 @@ async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolE
                             "reason": r["reason"],
                             "width": r["width"],
                             "offset": r["offset"],
+                            "offsetUnjudged": r["offsetUnjudged"],
+                            "incompleteGroups": r["incompleteGroups"],
+                            "frameCount": r["frameCount"],
+                            "expected": r["expected"],
+                            "tolerance": r["tolerance"],
+                            "countStatus": r["countStatus"],
+                            "cameraFrames": r["cameraFrames"],
+                            "offsetEvidence": diagnostics::offset_evidence(b, result),
                         })
-                    })
-                    .collect();
+                    }).collect())
+                    .unwrap_or_default();
                 json!({
                     "record": record,
+                    "comparisonId": c.id,
+                    "cycleId": c.cycle_id,
                     "originalVerdict": c.original_verdict,
                     "verdict": c.judgement.verdict,
                     "reason": c.judgement.reason,
                     "regions": regions,
+                    "flags": c.burst.as_ref().map(|b| &b.judgement.flags),
+                    "alarms": c.burst.as_ref().map(|b| &b.judgement.alarms),
+                    "uninspected": c.burst.as_ref().map(|b| &b.judgement.uninspected),
+                    "unchecked": c.burst.as_ref().map(|b| &b.judgement.unchecked),
+                    "unmeasuredSegments": c.burst.as_ref().map(|b| &b.unmeasured),
+                    "measurement": c.burst.as_ref().map(|b| diagnostics::replay_measurements(b, c.candidate_recipe.boundary_guard, c.candidate_recipe.boundary_refine)),
+                    "parameterWarnings": c.candidate_recipe.path_segments.iter().map(|s| json!({
+                        "segment": s.index, "warnings": diagnostics::parameter_warnings(s),
+                    })).collect::<Vec<_>>(),
                 })
             }
             Err(e) => json!({ "record": record, "error": e }),
         });
+    }
+    for (result, identity) in results.iter_mut().zip(finish_snapshots(app, used)) {
+        let field = if result.get("error").is_some() {
+            "attemptedSnapshot"
+        } else {
+            "snapshot"
+        };
+        result[field] = serde_json::to_value(identity).unwrap_or_default();
     }
     Ok(vec![text(json!({ "results": results }))])
 }

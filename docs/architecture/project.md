@@ -101,7 +101,7 @@
    - 没有在途工件，没有未结 PLC 事务（与站点模式切换共用 `site::check_switch`）；
    - 录制队列与审计 spool 已写完；
    - 前端没有未保存的候选编辑（前端自查后才发请求）。
-3. 原子写 `current-project.json`，写一条 info 日志（旧项目 → 新项目），然后 `app.restart()`。
+3. 原子写 `current-project.json`，写一条 info 日志（旧项目 → 新项目）。正式版调用 `app.restart()`；`tauri dev` 返回 `restartRequired=true`、`currentProject` 和 `nextProject`，不自行重启可执行文件。界面保留等待状态，明确当前项目尚未切换；停止原开发命令后，用原来的 `pnpm dev` 或 `pnpm dev:joint` 参数重新启动。
 4. 重启后按“启动”流程打开新项目。
 
 ### PLC 握手与项目无关

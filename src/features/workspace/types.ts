@@ -1,6 +1,6 @@
 import type { Judgement, Recipe, RecipeDoc, RecipeStage, Verdict } from "../cycle/types";
 import type { CameraImaging } from "../camera/types";
-import type { BurstJudgement, CalibrationRound, CameraTeaching, FrameMetrics, FrameVerdict, PathSegment, WorkspacePlanView } from "../plan/types";
+import type { BurstJudgement, CalibrationRound, CameraTeaching, FrameMetrics, FrameVerdict, InspectionCoverage, PathSegment, WorkspacePlanView } from "../plan/types";
 import type { PartMode } from "../history/types";
 import type { NavigationMapData } from "./navigation/types";
 import type { FramePixels } from "../../lib/frame";
@@ -146,6 +146,7 @@ export interface SegmentSaveImpact {
   /** 保存后还没有走廊的（段, 检测相机） */
   untaught: string[];
   measurementCleared: boolean;
+  coverage: InspectionCoverage | null;
 }
 export type { FramePixels };
 /** width / height 为原图尺寸；channels 为 1（灰度）或 3（RGB）；带 pixels 时直接画到 canvas，url 只作为这张图的标识。 */
