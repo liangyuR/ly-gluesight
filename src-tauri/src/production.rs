@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -79,6 +79,10 @@ pub struct Prepared {
     engine: Arc<Engine>,
     /// 按（计划相机下标, 段号）的走廊测量图（D-SB-45）
     corridors: vision::CorridorSet,
+    /// 预热时在自己的示教帧上没测成的（计划相机下标, 段号）与原因：生产不测，落在里面的帧记未测（D-SB-59）
+    untested: BTreeMap<(usize, u32), String>,
+    /// 预热测成的（相机, 段）数
+    measurable: usize,
 }
 
 impl Prepared {
@@ -149,7 +153,38 @@ impl Prepared {
             engine_note,
             engine,
             corridors,
+            untested: BTreeMap::new(),
+            measurable: 0,
         })
+    }
+
+    /// 这一（相机, 段）预热没测成、生产不测时的原因。
+    pub fn untested(&self, camera_idx: usize, segment: u32) -> Option<&str> {
+        self.untested.get(&(camera_idx, segment)).map(String::as_str)
+    }
+
+    /// 预热没测成、生产不测的各（相机, 段）原因；全部测成时为空。
+    pub fn untested_reasons(&self) -> Vec<&str> {
+        self.untested.values().map(String::as_str).collect()
+    }
+
+    /// 整件说明里不测的段：“第 2 段相机 cam1、第 5 段相机 cam3”；全部测成时为 None。
+    pub fn untested_label(&self) -> Option<String> {
+        (!self.untested.is_empty()).then(|| {
+            self.untested
+                .keys()
+                .map(|&(idx, segment)| {
+                    let camera = self.recipe.inspect.get(idx).map_or("?", |i| i.camera.as_str());
+                    format!("第 {segment} 段相机 {camera}")
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        })
+    }
+
+    /// 至少有一（相机, 段）预热测成；一段都测不了时来件只录原图、回检测错误。
+    pub fn measurable(&self) -> bool {
+        self.measurable > 0
     }
 
     pub fn verify(&self) -> Result<(), String> {
@@ -175,34 +210,34 @@ impl Prepared {
         vision::measure_frame(&self.engine, corridor, image, seq, run_id)
     }
 
-    /// 预热：每台相机在它每一段的发布示教帧上用该段走廊量一次，必须测成（Measured）——现场证明发布包、走廊与运行库接线正确。
-    pub(crate) fn warm(&self) -> Result<(), String> {
+    /// 预热：每台相机在它每一段的发布示教帧上用该段走廊量一次——现场证明发布包、走廊与运行库接线正确。
+    /// 没测成（Measured 以外或运行失败）的（相机, 段）记进不测清单，其余段照常检测（D-SB-59）；示教帧读不出、发布包核验失败仍整包失败。
+    pub(crate) fn warm(&mut self) -> Result<(), String> {
+        let mut untested = BTreeMap::new();
+        let mut measurable = 0;
         for idx in 0..self.recipe.inspect.len() {
             let resource = self.bundle.camera(idx)?;
             for corridor in &resource.corridors {
                 let image = crate::image_file::load(&corridor.image)?;
-                let m = self.measure_frame(
-                    idx,
-                    corridor.segment,
-                    0,
-                    &image,
-                    &format!(
-                        "warm-{}-c{idx}-s{}-{}",
-                        self.bundle.id,
-                        corridor.segment,
-                        ly_plc::now_ms()
-                    ),
-                )?;
-                if m.metrics.state != FrameState::Measured {
-                    return Err(format!(
-                        "相机 {} 第 {} 段：发布包走廊在自己的示教帧上没有测成（{}），不能接件",
-                        resource.camera,
-                        corridor.segment,
-                        m.metrics.error.as_deref().unwrap_or("状态异常")
-                    ));
+                let run = format!("warm-{}-c{idx}-s{}-{}", self.bundle.id, corridor.segment, ly_plc::now_ms());
+                let problem = match self.measure_frame(idx, corridor.segment, 0, &image, &run) {
+                    Ok(m) if m.metrics.state == FrameState::Measured => None,
+                    Ok(m) => Some(m.metrics.error.unwrap_or_else(|| "状态异常".into())),
+                    Err(error) => Some(error),
+                };
+                match problem {
+                    None => measurable += 1,
+                    Some(error) => {
+                        untested.insert(
+                            (idx, corridor.segment),
+                            format!("第 {} 段相机 {}：示教帧上没测成（{error}）", corridor.segment, resource.camera),
+                        );
+                    }
                 }
             }
         }
+        self.untested = untested;
+        self.measurable = measurable;
         self.verify()
     }
 }
@@ -333,13 +368,21 @@ impl ProductionHost {
             let result = run_warmup(slot, Duration::from_secs(30), move || {
                 let bundle = crate::workspace::published_bundle(&run_app, &recipe)?;
                 let engine = run_app.state::<VisionHost>().engine().ok_or("图像核心库未加载")?;
-                let prepared = Prepared::load(bundle, engine, &recipe)?;
+                let mut prepared = Prepared::load(bundle, engine, &recipe)?;
                 prepared.warm()?;
                 Ok(Arc::new(prepared))
             }).await;
             let state = match result {
                 Ok(prepared) => {
-                    crate::cycle::log(&app, "ok", "生产预热", format!("发布包 {} 已就绪，耗时 {} ms", prepared.bundle.id, started.elapsed().as_millis()));
+                    let elapsed = started.elapsed().as_millis();
+                    let untested = prepared.untested_reasons();
+                    if untested.is_empty() {
+                        crate::cycle::log(&app, "ok", "生产预热", format!("发布包 {} 已就绪，耗时 {elapsed} ms", prepared.bundle.id));
+                    } else if prepared.measurable() {
+                        crate::cycle::log(&app, "warn", "生产预热", format!("发布包 {} 已就绪，耗时 {elapsed} ms；这些段不测（帧记未测，结论只覆盖其余段）：{}", prepared.bundle.id, untested.join("；")));
+                    } else {
+                        crate::cycle::log(&app, "err", "生产预热", format!("发布包 {} 每一段都没测成，来件只录原图、回检测错误：{}", prepared.bundle.id, untested.join("；")));
+                    }
                     if let Some(note) = &prepared.engine_note { crate::cycle::log(&app, "warn", "生产预热", note.clone()); }
                     Entry::Ready(prepared)
                 }
@@ -400,6 +443,19 @@ impl ProductionHost {
                 Entry::Ready(prepared) if prepared.bundle.id == bundle_id => Some(prepared.clone()),
                 _ => None,
             })
+    }
+}
+
+/// 已预热好的发布包里不测的段（D-SB-59）：部分不测返回说明；一段都测不了返回 Err；没预热好或全部能测为 Ok(None)。
+pub fn coverage(app: &AppHandle, recipe: &Recipe) -> Result<Option<String>, String> {
+    let Some(prepared) = app.state::<ProductionHost>().prepared(&warmup_key(recipe)) else { return Ok(None) };
+    let untested = prepared.untested_reasons();
+    if untested.is_empty() {
+        Ok(None)
+    } else if prepared.measurable() {
+        Ok(Some(format!("部分段不测（结论只覆盖其余段）：{}", untested.join("；"))))
+    } else {
+        Err(format!("发布包每一段在示教帧上都没测成，来件只录原图、回检测错误：{}", untested.join("；")))
     }
 }
 

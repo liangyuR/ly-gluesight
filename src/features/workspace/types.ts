@@ -31,7 +31,8 @@ export interface FrozenImage {
 }
 export interface Sample { historyId: number | null; sampleId?: string | null; expected: Verdict }
 export interface BankSample { id:string; name:string; geometryTag: unknown; expected:Verdict; createdAt:number; captureId?: string | null }
-export interface Check { name: string; passed: boolean; detail: string }
+/** 发布前检查的一项；advisory 为只提醒、不拦发布的项（如有段在示教帧上没测成）。 */
+export interface Check { name: string; passed: boolean; detail: string; advisory?: boolean }
 export interface Validation {
   revision: number; passed: boolean; checkedAt: number; environmentTag: unknown;
   checks: Check[];

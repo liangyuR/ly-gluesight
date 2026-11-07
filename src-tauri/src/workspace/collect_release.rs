@@ -30,6 +30,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Chec
             .enumerate()
             .all(|(i, c)| valid_camera_id(c) && !cameras[..i].contains(c));
     let mut checks = vec![Check {
+        advisory: false,
         name: "计划相机".into(),
         passed: distinct,
         detail: if distinct {
@@ -50,6 +51,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Chec
         })
         .collect();
     checks.push(Check {
+        advisory: false,
         name: "相机组".into(),
         passed: !cameras.is_empty() && rig.is_empty(),
         detail: if rig.is_empty() {
@@ -59,6 +61,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Chec
         },
     });
     checks.push(Check {
+        advisory: false,
         name: "PLC 型号".into(),
         passed: inputs.conflict.is_none(),
         detail: match &inputs.conflict {
@@ -67,6 +70,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Chec
         },
     });
     checks.push(Check {
+        advisory: false,
         name: "段".into(),
         passed: !doc.segments.is_empty(),
         detail: if doc.segments.is_empty() {
@@ -77,6 +81,7 @@ pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Chec
     });
     let formal = inputs.production.filter(|r| !r.is_collect());
     checks.push(Check {
+        advisory: false,
         name: "生产版本".into(),
         passed: formal.is_none() && inputs.base_matches,
         detail: match (formal, inputs.production) {

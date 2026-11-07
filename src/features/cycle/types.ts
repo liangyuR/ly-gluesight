@@ -391,6 +391,8 @@ export interface RecipeOption {
   target: ReadinessTarget | null;
   /** 可运行但仍需等待的原因（如生产预热中） */
   waiting: string | null;
+  /** 可运行但部分段不测的说明（发布包有段预热没测成） */
+  note: string | null;
 }
 
 export interface Readiness {

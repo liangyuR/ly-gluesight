@@ -116,6 +116,15 @@ describe("验证与发布页面", () => {
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
   });
 
+  // 防的回归（D-SB-59）：示教帧上部分段没测成只是提醒，却把发布拦住；或发布确认时不再提醒这些段生产不测
+  it("发布前检查只有提醒项未满足 → 仍可发布，确认框列出不测的段", async () => {
+    vi.mocked(workspaceApi.publishChecks).mockResolvedValue([{ name: "示教帧试测", passed: false, advisory: true, detail: "第 2 段相机 cam1：runs：n_map（bad_param）" }]);
+    show();
+    await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("第 2 段相机 cam1：runs：n_map（bad_param）");
+  });
+
   it("确认期间候选修订变更必须重新核对发布前检查和确认",async()=>{
     const page=show();await waitFor(()=>expect(screen.getByRole("button",{name:"发布生产配方"})).toBeEnabled());await userEvent.click(screen.getByRole("button",{name:"发布生产配方"}));
     ws.data!.workspace.revision++;page.rerender(<MemoryRouter><ValidationPage/></MemoryRouter>);

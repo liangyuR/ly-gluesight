@@ -95,9 +95,13 @@ pub mod probe_api {
     pub use crate::simimage::{render_burst, render_burst_span};
     pub use crate::vision::{Engine, FrameImage};
 
-    /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。
-    pub fn warm(prepared: &Prepared) -> Result<(), String> {
-        prepared.warm()
+    /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见），每一段都须测成。
+    pub fn warm(prepared: &mut Prepared) -> Result<(), String> {
+        prepared.warm()?;
+        match prepared.untested_reasons() {
+            reasons if reasons.is_empty() => Ok(()),
+            reasons => Err(reasons.join("；")),
+        }
     }
 }
 

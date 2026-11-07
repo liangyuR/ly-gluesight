@@ -1,5 +1,5 @@
 use super::burst::{CalibrationRound, CameraTeaching};
-use super::burst_release::{bank_round, burst_checks, BurstInputs};
+use super::burst_release::{bank_round, burst_checks, teach_trial_check, BurstInputs, TeachTrial};
 use super::burst_tests::{burst_workspace, capture_round, configs, DEVICE};
 use super::*;
 use crate::plan::{
@@ -309,4 +309,24 @@ fn changed_frame_rate_blocks_publish_until_teaching_measurement_configuration_re
     assert!(!check(&checks(&w, &current), "示教件采集参数").passed);
     current.get_mut("cam1").unwrap()["frameRate"] = json!(10.0);
     assert!(check(&checks(&w, &current), "示教件采集参数").passed);
+}
+
+/// D-SB-59：示教帧上部分段没测成只提醒、不拦发布（生产时这些段不测）；一段都没测成拦发布。
+#[test]
+fn teach_trial_failures_warn_when_partial_and_block_only_when_nothing_measures() {
+    let trial = |segment, outcome: Result<(), &str>| TeachTrial {
+        segment,
+        camera: "cam1".into(),
+        outcome: outcome.map_err(str::to_owned),
+    };
+    let blocks = |c: &Check| !c.passed && !c.advisory;
+    for (trials, blocked, warned) in [
+        (vec![trial(1, Ok(())), trial(2, Ok(()))], false, false),
+        (vec![trial(1, Ok(())), trial(2, Err("runs：n_map（bad_param）"))], false, true),
+        (vec![trial(1, Err("runs：n_map（bad_param）")), trial(2, Err("状态异常"))], true, false),
+    ] {
+        let check = teach_trial_check(&trials).unwrap();
+        assert_eq!((blocks(&check), !check.passed && check.advisory), (blocked, warned), "{}", check.detail);
+    }
+    assert!(teach_trial_check(&[]).is_none());
 }
