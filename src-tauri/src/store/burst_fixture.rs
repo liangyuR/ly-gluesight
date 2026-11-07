@@ -4,6 +4,7 @@ use super::{BurstRecord, FrameRecord};
 use crate::burst_judge::{self, FrameMetrics, FrameState};
 use crate::frame_group::{loss_alarms, FrameGroup};
 use crate::judge::Judgement;
+use crate::passes::PassRules;
 use crate::recipe::Recipe;
 use crate::segmentation::{resolve_regions, Region, SegOutcome};
 

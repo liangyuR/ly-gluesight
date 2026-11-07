@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use crate::frame_group::{count_status, CountStatus, FrameGroup, LossAlarm};
 use crate::judge::{fault, Verdict};
 use crate::passes::PassRules;
-use crate::judge::{fault, Verdict};
 use crate::plan::{tolerance_total, wider_checks, OffsetCheck, OffsetMeasure, PathSegment, SegmentChecks, SegmentKind};
 use crate::segmentation::{Region, RegionKind, UnsegReason};
 
