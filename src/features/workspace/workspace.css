@@ -12,6 +12,13 @@
 .wp-kv span { color:var(--on-surface-variant); }
 .wp-kv strong { text-align:right; font-weight:500; overflow-wrap:anywhere; }
 .wp-workbench-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+/* 步骤条与配方选择同一行，放不下整体换到下一行 */
+.wp-workbench-bar > .qs-steps { flex:0 0 auto; max-width:100%; }
+.wp-workbench-bar .qs-steps > ol { gap:2px; }
+.wp-workbench-bar .qs-steps .qs-step { min-height:var(--ctl-h-sm); gap:6px; padding:3px 10px; }
+.wp-workbench-bar .qs-step-number { min-width:20px; height:20px; font-size:12px; }
+.qs-step-number:has(> .wp-step-done) { background:color-mix(in srgb, var(--ok) 22%, transparent); color:var(--ok); }
+.wp-step-done { display:inline-flex; }
 .wp-recipe-picker { display:flex; align-items:center; gap:8px; color:var(--on-surface-variant); }
 .wp-recipe-picker .qs-select-trigger { width:200px; max-width:100%; }
 .wp-empty { display:flex; flex-direction:column; min-height:380px; justify-content:center; align-items:center; gap:14px; text-align:center; background:var(--surface-low); border-radius:var(--r-lg); padding:30px; }
@@ -187,8 +194,13 @@
 .wp-teach-page .wp-mid > .wp-viewport { flex:1 1 auto; min-height:400px; display:flex; flex-direction:column; border-radius:var(--r-lg); }
 .wp-teach-page .wp-viewport > * { flex-shrink:0; }
 /* 照 cycle.css 的 .wp-runtime-frame 写法：画布吃掉剩余高度，FrameViewer 按 clientWidth/clientHeight letterbox；aspectRatio 保留 */
-.wp-teach-page .wp-viewport > .wp-gray-image { flex:1 1 auto; min-height:0; height:0; }
-.wp-teach-page .wp-viewport > .wp-image-empty { flex:1 1 auto; min-height:0; }
+.wp-image-stage-plain { display:contents; }
+.wp-teach-page .wp-viewport > .wp-image-stage { position:relative; display:flex; flex-direction:column; flex:1 1 auto; min-height:0; }
+.wp-image-stage > .wp-gray-image { flex:1 1 auto; min-height:0; height:0; }
+.wp-image-stage > .wp-image-empty { flex:1 1 auto; min-height:0; }
+/* 专注画布：收起左侧目标列表与右栏 */
+.wp-teach-page.wp-teach-focus > .wp-teach { grid-template-columns:minmax(0,1fr); }
+.wp-teach-page.wp-teach-focus .wp-group-panel, .wp-teach-page.wp-teach-focus .wp-rail-wrap { display:none; }
 .wp-teach-page .wp-teach-settings { min-height:0; overflow:auto; scrollbar-width:thin; }
 /* 右栏左缘的分隔条：拖动改右栏宽度，双击恢复默认 */
 .wp-rail-wrap { position:relative; display:flex; flex-direction:column; min-width:0; min-height:0; }
@@ -227,14 +239,14 @@
 .wp-canvas-tools > .qs-btn { flex-shrink:0; }
 .wp-canvas-tools > .qs-btn.sm { padding:0 12px; }
 .wp-canvas-tools .qs-seg button { gap:5px; padding:0 9px; }
+.wp-seg-label { display:inline-flex; align-items:center; gap:5px; }
 .wp-seg-icon { display:inline-flex; }
-.wp-seg-short { display:none; }
-.wp-canvas-params { position:relative; display:flex; align-items:center; flex-wrap:wrap; gap:8px 16px; padding:6px 10px; border-bottom:1px solid var(--outline-variant); background:var(--surface-low); font-size:12px; color:var(--on-surface-variant); }
-.wp-inline-num { display:inline-flex; align-items:center; gap:8px; }
-.wp-inline-num > .qs-input { width:96px; }
-.wp-inline-num > .wp-brush-width { width:160px; }
-.wp-canvas-hint { flex-basis:100%; margin:0; font-size:12px; line-height:1.6; }
-.wp-canvas-hint.warn { display:flex; align-items:flex-start; gap:6px; color:var(--warn); }
+.wp-inline-num { display:inline-flex; align-items:center; gap:6px; color:var(--on-surface-variant); }
+.wp-inline-num > .qs-input { width:86px; }
+.wp-canvas-edit { display:inline-flex; align-items:center; gap:2px; margin-left:auto; padding-left:6px; border-left:1px solid var(--outline-variant); }
+/* 操作提示浮在画布左下角，不占高度、不挡指针 */
+.wp-image-stage > .wp-canvas-hint { position:absolute; left:8px; bottom:8px; z-index:1; max-width:min(620px, calc(100% - 16px)); margin:0; padding:4px 10px; border-radius:var(--r-sm); background:color-mix(in srgb, var(--surface-lowest) 84%, transparent); color:var(--on-surface-variant); font-size:12px; line-height:1.6; pointer-events:none; }
+.wp-image-stage > .wp-canvas-hint.warn { display:flex; align-items:flex-start; gap:6px; color:var(--warn); background:color-mix(in srgb, var(--surface-lowest) 92%, transparent); box-shadow:inset 3px 0 0 var(--warn); }
 .wp-canvas-hint.warn svg { flex-shrink:0; margin-top:3px; }
 .wp-viewport-footer > .wp-image-footer { align-items:center; gap:6px 14px; min-height:34px; padding:4px 10px; }
 .wp-viewport-footer .wp-zoom { display:flex; align-items:center; flex-wrap:wrap; gap:3px; margin-left:auto; }
@@ -249,14 +261,12 @@
 .wp-dock-hint a { color:var(--primary); }
 .wp-dock-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
 
-/* 工具行变窄（中栏 < 700px）或窗口 ≤1300：分段控件只显两字 */
-@container (max-width:700px) {
-  .wp-canvas-tools .wp-seg-long, .wp-canvas-tools .wp-seg-icon { display:none; }
-  .wp-canvas-tools .wp-seg-short { display:inline; }
+/* 工具行变窄（中栏 < 640px）或窗口 ≤1300：分段控件只显文字 */
+@container (max-width:640px) {
+  .wp-canvas-tools .wp-seg-icon { display:none; }
 }
 @media(max-width:1300px) {
-  .wp-canvas-tools .wp-seg-long, .wp-canvas-tools .wp-seg-icon { display:none; }
-  .wp-canvas-tools .wp-seg-short { display:inline; }
+  .wp-canvas-tools .wp-seg-icon { display:none; }
   .wp-canvas-tools .qs-seg button { padding:0 10px; }
   .wp-teach-page .wp-mid > .wp-viewport { min-height:340px; }
   .wp-teach-dock .qs-btn { height:var(--ctl-h-sm); padding:0 14px; font-size:13px; }
@@ -269,7 +279,7 @@
   .wp-rail-resizer { display:none; }
   .wp-teach-page .wp-group-panel, .wp-teach-page .wp-mid, .wp-teach-page .wp-teach-settings { overflow:visible; }
   .wp-teach-page .wp-mid > .wp-viewport { min-height:0; }
-  .wp-teach-page .wp-viewport > .wp-gray-image { flex:none; height:clamp(250px,36vh,420px); }
+  .wp-teach-page .wp-image-stage > .wp-gray-image { flex:none; height:clamp(250px,36vh,420px); }
   .wp-teach-dock, .wp-dock-actions { flex-wrap:wrap; }
   .wp-dock-hint { white-space:normal; }
   .wp-group-list { flex-direction:row; overflow-x:auto; }

@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Button, IconButton, Surface } from "qing-steel";
 import { ChevronLeft, ChevronRight, Play } from "lucide-react";
 import { errorText } from "../../lib/errors";
@@ -30,9 +30,11 @@ const mm = (value: number | null | undefined, digits = 2) => value == null ? "�
  * 本段试测：用候选已保存的走廊与定向参数只读地测示教件里本段的帧。`locked` 是真正不能试测的原因（显示出来）；
  * `waiting` 是还有改动等着自动保存：按钮照常可点，点下去先 `onFlush` 立即保存，存好再测，期间不换掉正在看的这一帧。
  */
-export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revision, locked, waiting = false, onFlush, guide, seq, onSeq }: {
+export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revision, locked, waiting = false, onFlush, guide, seq, onSeq, lead, side }: {
   id: string; camera: string; segment: number; round: string; teachSeq: number; range: { start: number; end: number } | null; revision: number;
   locked: string; waiting?: boolean; onFlush?: () => void; guide: HeadingGuide | null; seq: number | null; onSeq: (seq: number | null) => void;
+  /** 与试测并在同一行的示教帧标题（行首）与操作（行尾） */
+  lead?: ReactNode; side?: ReactNode;
 }) {
   const [batch, setBatch] = useState<{ result: TeachPreviewSegment | null; revision: number; error: string; running: boolean }>({ result: null, revision, error: "", running: false });
   const [queued, setQueued] = useState(false);
@@ -92,26 +94,26 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
   return <>
     <Surface role="region" className="wp-trial" aria-label="本段试测" onKeyDown={move}>
       <div className="wp-trial-head">
-        <h3>本段试测</h3>
+        {lead}
         <Button size="sm" variant={batch.result && !stale ? "tonal" : "filled"} data-variant={batch.result && !stale ? "tonal" : "filled"} leadingIcon={<Play size={13}/>}
-          disabled={!!locked || batch.running} title={locked || undefined} onClick={() => void run()}>{batch.running || queued ? "试测中…" : batch.result ? "重新试测" : "全段试测"}</Button>
-        <Button size="sm" variant="tonal" disabled={!!locked || seq === teachSeq} title={locked || undefined} onClick={() => onSeq(teachSeq)}>试测当前帧</Button>
-        <span className="muted">示教件{span ? ` · 帧组 ${span.start}–${span.end}` : ""} · 用已保存的走廊与定向参数，只读</span>
-        {seq != null && <span className="wp-trial-actions"><Button size="sm" variant="text" onClick={() => onSeq(null)}>回到示教帧</Button></span>}
+          disabled={!!locked || batch.running} title={locked || "测本段全部帧，用已保存的走廊与定向参数，只读"} onClick={() => void run()}>{batch.running || queued ? "试测中…" : batch.result ? "重新试测" : "全段试测"}</Button>
+        <Button size="sm" variant="tonal" disabled={!!locked || seq === teachSeq} title={locked || "只测示教帧"} onClick={() => onSeq(teachSeq)}>试测当前帧</Button>
+        {span
+          ? <div className={"wp-trial-strip" + (stale ? " stale" : "")} role="group" aria-label="逐帧试测状态" title={batch.result ? undefined : "点格子试测那一帧；“全段试测”给每一格标上状态"} style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(4px, 1fr))` }}>
+            {cells.map(cell => {
+              const text = `帧组 ${cell.seq}：${cell.state ? trialText[cell.state] : "未试测"}${cell.seq === teachSeq ? "（示教帧）" : ""}`;
+              return <Button variant="text" size="sm" key={cell.seq} type="button" aria-pressed={cell.seq === seq} aria-label={text} title={cell.note ? `${text}：${cell.note}` : text} disabled={!!locked}
+                className={"wp-trial-cell" + (cell.seq === seq ? " selected" : "") + (cell.seq === teachSeq ? " teach" : "")}
+                style={{ background: cell.state ? trialColor[cell.state] : "var(--surface-high)" }} onClick={() => onSeq(cell.seq)} />;
+            })}
+          </div>
+          : <span className="muted wp-trial-fill" title="“试测当前帧”只测示教帧；“全段试测”测本段全部帧，得到逐帧状态条，之后可点任一帧看原图与测量叠加。">{batch.running ? "正在逐帧试测本段…" : "全段试测后显示逐帧状态"}</span>}
+        {span && <span className="muted wp-trial-span" title="示教件里本段的帧组范围">帧组 {span.start}–{span.end}</span>}
+        {seq != null && <Button size="sm" variant="text" onClick={() => onSeq(null)}>回到示教帧</Button>}
+        {side && <span className="wp-trial-actions">{side}</span>}
       </div>
       {locked && <p className="muted hint">{locked}</p>}
       {batch.error && <p className="c-warn" role="alert">{batch.error}</p>}
-      {span
-        ? <div className={"wp-trial-strip" + (stale ? " stale" : "")} role="group" aria-label="逐帧试测状态" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(6px, 1fr))` }}>
-          {cells.map(cell => {
-            const text = `帧组 ${cell.seq}：${cell.state ? trialText[cell.state] : "未试测"}${cell.seq === teachSeq ? "（示教帧）" : ""}`;
-            return <Button variant="text" size="sm" key={cell.seq} type="button" aria-pressed={cell.seq === seq} aria-label={text} title={cell.note ? `${text}：${cell.note}` : text} disabled={!!locked}
-              className={"wp-trial-cell" + (cell.seq === seq ? " selected" : "") + (cell.seq === teachSeq ? " teach" : "")}
-              style={{ background: cell.state ? trialColor[cell.state] : "var(--surface-high)" }} onClick={() => onSeq(cell.seq)} />;
-          })}
-        </div>
-        : <p className="muted hint">{batch.running ? "正在逐帧试测本段…" : "“试测当前帧”只测示教帧；“全段试测”测本段全部帧，得到逐帧状态条，之后可点任一帧看原图与测量叠加。"}</p>}
-      {span && !batch.result && !batch.running && <p className="muted hint">点格子试测那一帧；“全段试测”给每一格标上状态。</p>}
       {batch.result && <div className="wp-trial-legend">
         {counts.map(([item, n]) => <span key={item}><i style={{ background: trialColor[item] }} aria-hidden="true" />{trialText[item]} {n}</span>)}
         <span><i className="teach" aria-hidden="true" />示教帧</span>

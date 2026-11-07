@@ -2,8 +2,8 @@ import { pathLength, resampleTeachingPath, type ImagePoint } from "./teachingPat
 import { errorText } from "../../lib/errors";
 import { cloneElement, useEffect, useId, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowRight, Brush, Camera, Crosshair, Eraser, Hand, Info, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles, Workflow } from "lucide-react";
-import { Button, Divider, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Slider, Surface, Tooltip } from "qing-steel";
+import { ArrowRight, Brush, Camera, Crosshair, Eraser, Hand, Info, Maximize2, Minimize2, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles, Workflow } from "lucide-react";
+import { Button, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Surface, Tooltip } from "qing-steel";
 import { cameraApi } from "../camera/api";
 import type { CameraImaging } from "../camera/types";
 import { useCycle } from "../cycle/api";
@@ -162,6 +162,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   }, [frame?.id, frame?.camera]);
   const targetLabel = segment == null ? camera : `${camera} · 段 ${segment}`;
   const [railWidth, setRailWidth] = useRailWidth();
+  /** 专注画布：收起左侧目标列表与右栏，只留中栏 */
+  const [focus, setFocus] = useState(false);
   const [working, setWorking] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const [operation, setOperation] = useState<"extract" | "color" | null>(null);
@@ -348,7 +350,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   if (!cameraItems.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="段配方还没有计划相机" description="先在“段列表”里确认计划相机，再回来示教走廊。" action={<Button asChild><Link to="/recipe/segments">前往段列表<ArrowRight size={15} aria-hidden="true" /></Link></Button>} /></Surface></div>;
 
   const imagingHint = imagingMismatch(frame, cameraImaging);
-  const order = cameraItems.flatMap(item => [item.camera, ...tasks.filter(t => t.camera === item.camera).map(taskKey)]);
+  const order = [...cameraItems.map(item => item.camera), ...tasks.map(taskKey)];
   const nextTask = tasks.find(item => order.indexOf(taskKey(item)) > order.indexOf(key));
   const allDone = cameraItems.every(item => item.ready);
   const doneCount = tasks.filter(item => item.status === "done").length;
@@ -404,30 +406,30 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     if (tool !== selectionTool) { setSelectionTool(tool); setExtractionFailure(null); setExtractionHint(""); setBrushFailures(0); }
     setRegionMode(true);
   };
-  const modeLabel = (icon: ReactNode, long: string, short: string) => <><span className="wp-seg-icon">{icon}</span><span className="wp-seg-long">{long}</span><span className="wp-seg-short">{short}</span></>;
+  const modeLabel = (icon: ReactNode, long: string, short: string) => <span className="wp-seg-label" title={long}><span className="wp-seg-icon">{icon}</span><span className="wp-seg-short">{short}</span></span>;
+  const brushing = regionMode && selectionTool === "brush";
+  const focusToggle = <IconButton size="sm" aria-label="专注画布" aria-pressed={focus} title={focus ? "退出专注：恢复左侧列表与右栏" : "专注画布：收起左侧列表与右栏"} onClick={() => setFocus(v => !v)}>{focus ? <Minimize2 size={15}/> : <Maximize2 size={15}/>}</IconButton>;
   const tools = <div className="wp-canvas-tools" role="group" aria-label="示教工具">
     <SegmentedControl size="sm" label="画布模式" value={regionMode ? selectionTool : picking ? "nozzle" : pointMode === "edit" ? "edit" : "view"} disabled={!canEdit || (!frame && !regionMode)} options={[
-      { value: "view", label: modeLabel(<Hand size={14} aria-hidden="true"/>, "只看", "只看"), "aria-label": "只看" },
-      { value: "edit", label: modeLabel(<MousePointer2 size={14} aria-hidden="true"/>, "编辑点", "编辑"), "aria-label": "编辑点" },
+      { value: "view", label: modeLabel(<Hand size={14} aria-hidden="true"/>, "只看：点图不改走廊", "只看"), "aria-label": "只看" },
+      { value: "edit", label: modeLabel(<MousePointer2 size={14} aria-hidden="true"/>, "编辑点：点图加点、拖动点", "编辑"), "aria-label": "编辑点" },
       { value: "brush", label: modeLabel(<Brush size={14} aria-hidden="true"/>, "沿胶路刷选", "刷选"), "aria-label": "沿胶路刷选" },
       { value: "box", label: modeLabel(<SquareDashed size={14} aria-hidden="true"/>, "矩形框选", "框选"), "aria-label": "矩形框选" },
       ...(headingOn ? [{ value: "nozzle", label: modeLabel(<Crosshair size={14} aria-hidden="true"/>, "标出胶点", "出胶点"), "aria-label": "标出胶点" }] : []),
     ]} onValueChange={changeMode}/>
+    {brushing && <span className="wp-inline-num" title="笔刷宽度：约为胶宽的 3 倍较稳">笔刷<NumberField aria-label="笔刷宽度" unit="px" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? brushWidth : ""} disabled={!canEdit} onValueChange={value => changeBrushWidth(value === "" ? NaN : value)}/></span>}
+    {(regionMode || pointing) && <span className="wp-inline-num" title="走廊点间距：提取与按笔划生成都按它取点，转弯处保留点">点距<NumberField aria-label="走廊点间距" unit="px" min={4} max={80} step={2} value={Number.isFinite(pointSpacing) ? pointSpacing : ""} disabled={!canEdit} onValueChange={value => setPointSpacing(value === "" ? NaN : value)}/></span>}
+    {pointing && <Button size="sm" variant="text" aria-label="应用到当前走廊" title="按点距重排当前走廊的点" disabled={!canEdit || !spacingValid || t.corridor.length < 2} onClick={() => { setVertex(null); setPath(resampleTeachingPath(t.corridor, pointSpacing)); }}>按点距重排</Button>}
     <Button size="sm" variant={primary === "extract" ? "filled" : "tonal"} data-variant={primary === "extract" ? "filled" : "tonal"} leadingIcon={<WandSparkles size={14}/>} disabled={!canEdit || !ready || loading || !!error} onClick={startExtract}>{operation === "extract" ? "提取中…" : "自动提取走廊"}</Button>
-    <Button size="sm" variant={primary === "stroke" ? "filled" : "tonal"} data-variant={primary === "stroke" ? "filled" : "tonal"} title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成走廊草稿"} disabled={!canEdit || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成走廊</Button>
-    <Divider vertical/>
-    <IconButton size="sm" aria-label="删除末点" title="删除末点" disabled={!canEdit || !t.corridor.length} onClick={() => { setVertex(null); setPath(t.corridor.slice(0, -1)); }}><Undo2 size={15}/></IconButton>
-    <IconButton size="sm" aria-label="删除选中点" title="删除选中点" disabled={!canEdit || vertex === null || vertex >= t.corridor.length} onClick={() => { const i = vertex; setVertex(null); setPath(t.corridor.filter((_, j) => j !== i)); }}><Trash2 size={15}/></IconButton>
-    <IconButton size="sm" aria-label="清空走廊" title="清空走廊" disabled={!canEdit || !t.corridor.length} onClick={() => { setVertex(null); setPath([]); }}><Eraser size={15}/></IconButton>
+    {brushing && <Button size="sm" variant={primary === "stroke" ? "filled" : "tonal"} data-variant={primary === "stroke" ? "filled" : "tonal"} title={!strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成走廊草稿"} disabled={!canEdit || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成走廊</Button>}
+    <span className="wp-canvas-edit">
+      <IconButton size="sm" aria-label="删除末点" title="删除末点" disabled={!canEdit || !t.corridor.length} onClick={() => { setVertex(null); setPath(t.corridor.slice(0, -1)); }}><Undo2 size={15}/></IconButton>
+      <IconButton size="sm" aria-label="删除选中点" title="删除选中点" disabled={!canEdit || vertex === null || vertex >= t.corridor.length} onClick={() => { const i = vertex; setVertex(null); setPath(t.corridor.filter((_, j) => j !== i)); }}><Trash2 size={15}/></IconButton>
+      <IconButton size="sm" aria-label="清空走廊" title="清空走廊" disabled={!canEdit || !t.corridor.length} onClick={() => { setVertex(null); setPath([]); }}><Eraser size={15}/></IconButton>
+    </span>
   </div>;
-  const canvasParams = <div className="wp-canvas-params">
-    {selectionTool === "brush" && <span className="wp-inline-num">笔刷宽度<NumberField aria-label="笔刷宽度" unit="px" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? brushWidth : ""} disabled={!canEdit} onValueChange={value => changeBrushWidth(value === "" ? NaN : value)}/>
-      <Slider className="wp-brush-width" label="拖动调整笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? Math.min(300, Math.max(6, brushWidth)) : DEFAULT_BRUSH_PX} disabled={!canEdit} formatValue={value => value + " px"} onValueChange={changeBrushWidth}/></span>}
-    <span className="wp-inline-num" title="编辑点按目标最大间距调整，转弯处保留点">走廊点间距<NumberField aria-label="走廊点间距" unit="px" min={4} max={80} step={2} value={Number.isFinite(pointSpacing) ? pointSpacing : ""} disabled={!canEdit} onValueChange={value => setPointSpacing(value === "" ? NaN : value)}/></span>
-    <Button size="sm" variant="text" disabled={!canEdit || !spacingValid || t.corridor.length < 2} onClick={() => { setVertex(null); setPath(resampleTeachingPath(t.corridor, pointSpacing)); }}>应用到当前走廊</Button>
-    {regionMode ? <p className={"wp-canvas-hint" + (extractionFailure ? " warn" : "")} role="status">{extractionFailure && <TriangleAlert size={14} aria-hidden="true"/>}{regionHint}</p>
-      : <p className="wp-canvas-hint" role="status">{extractionHint && <><span>{extractionHint}</span> </>}<span>{editHint}</span></p>}
-  </div>;
+  const canvasHint = regionMode ? <p className={"wp-canvas-hint" + (extractionFailure ? " warn" : "")} role="status">{extractionFailure && <TriangleAlert size={14} aria-hidden="true"/>}<span>{regionHint}</span></p>
+    : <p className="wp-canvas-hint" role="status">{extractionHint && <><span>{extractionHint}</span> </>}<span>{editHint}</span></p>;
   const summary = <span className="wp-trial-inline">
     <Badge tone={done && !editing ? "ok" : "neutral"}>{editing ? "走廊未保存" : done ? "段走廊已示教" : "待画走廊"}</Badge>
     <span className="muted">走廊 <b>{t.corridor.length}</b> 点 · <b>{lengthValue}</b> {lengthUnit}</span>
@@ -441,6 +443,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     {imagingHint && <p className="c-warn" role="note">{imagingHint}；只作提示，示教与标定仍然有效</p>}
     <p className="muted hint">走廊保存进候选配方，已发布版本不变。用于生产前仍需试测与发布。</p>
   </Popover>;
+  const frameTitle = <h2 className="wp-trial-title" title={frame ? `${frame.source} · ${frame.id}` : undefined}>{targetLabel}<small>示教帧</small></h2>;
+  const frameActions = <>{imageInfo}<Button size="sm" variant="text" disabled={groupsLocked} onClick={() => { setTrialSeq(null); setChoosing(true); }}>重新选帧</Button></>;
   const pickReason = !teachingPiece ? "还没有示教件：先选示教件" : !picked ? "正在读取示教件" : !range ? "示教件的分段边界还没确认：先在分段标定里保存分段"
     : !inSegment ? `第 ${segment} 段在示教件为帧组 ${range.start}–${range.end}` : !arrived ? "该相机本帧组缺帧，请换一个帧组" : !ready ? "正在处理，请稍候" : "";
   const pickPanel = <Surface role="region" className="wp-picker wp-corridor-picker" aria-label="示教帧选择">
@@ -478,17 +482,15 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     : <>
       {choosingNow && pickPanel}
       {pickError && choosingNow && <p className="c-warn wp-picker-warn" role="alert">{pickError}</p>}
-      {!choosingNow && frame && <Surface role="region" className="wp-picker wp-corridor-frame" aria-label="示教帧">
-        <h2>{targetLabel}<small>示教帧</small></h2>
-        <span className="muted wp-corridor-source">{frame.source} · {frame.id}</span>
-        <div className="wp-picker-side">{imageInfo}<Button variant="text" disabled={groupsLocked} onClick={() => { setTrialSeq(null); setChoosing(true); }}>重新选帧</Button></div>
-      </Surface>}
-      {!choosingNow && frame && segmentTeaching && <SegmentTrial key={scope} id={doc.id} camera={camera} segment={segment!} round={segmentTeaching.round} teachSeq={segmentTeaching.seq}
-        range={trialRange} revision={data.workspace.revision} locked={trialLocked} waiting={pendingSave} onFlush={saveNow} guide={headingGuide} seq={trialSeq} onSeq={setTrialSeq} />}
+      {!choosingNow && frame && (segmentTeaching
+        ? <SegmentTrial key={scope} id={doc.id} camera={camera} segment={segment!} round={segmentTeaching.round} teachSeq={segmentTeaching.seq}
+          range={trialRange} revision={data.workspace.revision} locked={trialLocked} waiting={pendingSave} onFlush={saveNow} guide={headingGuide} seq={trialSeq} onSeq={setTrialSeq}
+          lead={frameTitle} side={frameActions} />
+        : <Surface role="region" className="wp-trial" aria-label="示教帧"><div className="wp-trial-head">{frameTitle}<span className="wp-trial-actions">{frameActions}</span></div></Surface>)}
       {choosingNow
         ? <FrameViewer controlsAt="footer" image={candidate.image} loading={candidate.loading} error={candidate.error || (picked && !arrived ? "该相机本帧组缺帧，请换一个帧组" : "")} label={`${camera} · 帧组 ${pickSeqSafe} · 候选示教帧`}
           emptyTitle="选择示教帧" emptyHint="在示教件这一段内选这台相机的帧组；缺帧的帧组不能选。" summary={<span className="muted">{`选定后冻结为第 ${segment} 段的示教帧，这条走廊只用于这一段的帧。`}</span>}/>
-        : trialSeq != null ? null : <FrameViewer controlsAt="footer" summary={summary} image={image} loading={loading} error={error} label={frame ? `${targetLabel} · 示教帧` : "等待取样"} tools={tools} subtools={canvasParams} emptyTitle="示教帧尚未就绪" emptyHint="选定示教帧后，这里显示这一帧。"
+        : trialSeq != null ? null : <FrameViewer controlsAt="footer" summary={summary} image={image} loading={loading} error={error} label={frame ? `${targetLabel} · 示教帧` : "等待取样"} tools={tools} notice={canvasHint} emptyTitle="示教帧尚未就绪" emptyHint="选定示教帧后，这里显示这一帧。"
           region={selectionTool === "box" ? region : null}
           onRegion={regionMode && selectionTool === "box" && canEdit ? setRegion : undefined}
           brush={regionMode && selectionTool === "brush" && Number.isFinite(brushWidth) ? { points: brushPoints, radiusPx: brushWidth / 2 } : null} onBrush={regionMode && selectionTool === "brush" && canEdit ? points => { setBrushPoints(points); setExtractionFailure(null); setExtractionHint(""); } : undefined}
@@ -536,21 +538,24 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       <WithReason block reason={groupsLocked ? groupLockReason : ""}><Button variant="outlined" className="wp-rail-link" disabled={groupsLocked} onClick={() => setSelected(camera)}>
         <strong>测量</strong><span>{cameraScaleText} · {params.detect ? "本相机自定义" : "配方默认"}</span><span className="wp-rail-link-go">去 {camera} 改<ArrowRight size={13} aria-hidden="true" /></span>
       </Button></WithReason></div>;
-  return <div className="wp-page wp-teach-page"><WorkspaceBar />
+  const slot = (itemKey: string, button: ReactElement<{ "aria-describedby"?: string }>) => groupsLocked && itemKey !== key ? <WithReason key={itemKey} block reason={groupLockReason}>{button}</WithReason> : <span key={itemKey} className="wp-group-slot">{button}</span>;
+  const groupPanel = <Surface role="region" className="wp-group-panel" aria-label="走廊示教目标">
+    <h2>相机参数</h2>
+    <nav className="wp-group-cameras" aria-label="相机参数选择">{cameraItems.map(item => slot(item.camera,
+      <Button variant={item.camera === key ? "tonal" : "text"} size="sm" className={"wp-group-item wp-group-camera" + (item.camera === key ? " selected" : "")} aria-label={"选择相机 " + item.camera} aria-pressed={item.camera === key} disabled={groupsLocked && item.camera !== key} title={item.mmPerPx != null ? `${item.camera} · ${Number(item.mmPerPx.toPrecision(6))} mm/px` : `${item.camera} · 缺像素当量`} onClick={() => setSelected(item.camera)}>
+        <i className={"dot " + (item.mmPerPx != null ? "ok" : "warn")} aria-hidden="true"/><strong>{item.camera}</strong>
+      </Button>))}</nav>
+    <h2>段走廊 <small>{doneCount} / {tasks.length}</small></h2>
+    <nav className="wp-group-list" aria-label="段走廊选择">{tasks.map(s => {
+      const itemKey = taskKey(s);
+      return slot(itemKey, <Button variant={itemKey === key ? "tonal" : "text"} size="sm" className={"wp-group-item wp-group-seg" + (itemKey === key ? " selected" : "")} aria-label={`选择 ${s.camera} 段 ${s.segment} 走廊`} aria-pressed={itemKey === key} disabled={groupsLocked && itemKey !== key} title={`段 ${s.segment} · ${segmentKindLabel[s.kind]} · ${s.camera} · ${s.label}`} onClick={() => setSelected(itemKey)}>
+        <i className={"dot " + (s.status === "done" ? "ok" : s.frame ? "warn" : "off")} aria-hidden="true"/><strong>段 {s.segment}</strong><em>{s.kind === "corner" ? "弯道" : "直线"}</em><span>{s.camera}</span>
+      </Button>);
+    })}</nav>
+  </Surface>;
+  return <div className={"wp-page wp-teach-page" + (focus ? " wp-teach-focus" : "")}><WorkspaceBar />
     <div className="wp-teach" style={railWidth != null ? { "--wp-rail-w": railWidth + "px" } as CSSProperties : undefined}>
-      <Surface role="region" className="wp-group-panel" aria-label="走廊示教目标"><h2>段走廊 <small>{doneCount} / {tasks.length}</small></h2><nav className="wp-group-list" aria-label="相机与段选择">{cameraItems.flatMap(item => {
-        const slot = (itemKey: string, button: ReactElement<{ "aria-describedby"?: string }>) => groupsLocked && itemKey !== key ? <WithReason key={itemKey} block reason={groupLockReason}>{button}</WithReason> : <span key={itemKey} className="wp-group-slot">{button}</span>;
-        const cameraButton = <Button variant={item.camera === key ? "tonal" : "text"} size="sm" className={"wp-group-item" + (item.camera === key ? " selected" : "")} aria-label={"选择相机 " + item.camera} aria-pressed={item.camera === key} disabled={groupsLocked && item.camera !== key} title={item.mmPerPx != null ? `${item.camera} · ${Number(item.mmPerPx.toPrecision(6))} mm/px` : "缺像素当量"} onClick={() => setSelected(item.camera)}>
-          <i className={"dot " + (item.mmPerPx != null ? "ok" : "warn")} aria-hidden="true"/><strong>{item.camera}</strong><span>{item.label}</span>
-        </Button>;
-        const segmentButtons = tasks.filter(s => s.camera === item.camera).map(s => {
-          const itemKey = taskKey(s);
-          return slot(itemKey, <Button variant={itemKey === key ? "tonal" : "text"} size="sm" className={"wp-group-item wp-group-sub" + (itemKey === key ? " selected" : "")} aria-label={`选择 ${item.camera} 段 ${s.segment} 走廊`} aria-pressed={itemKey === key} disabled={groupsLocked && itemKey !== key} onClick={() => setSelected(itemKey)}>
-            <i className={"dot " + (s.status === "done" ? "ok" : s.frame ? "warn" : "off")} aria-hidden="true"/><strong>段 {s.segment}</strong>{s.kind === "corner" ? "弯道" : "直线"}<span>{s.label}</span>
-          </Button>);
-        });
-        return [slot(item.camera, cameraButton), ...segmentButtons];
-      })}</nav></Surface>
+      {groupPanel}
       <div className="wp-stack wp-mid">
         {plan.cameras.length !== 3 && <Notice title="段配方需要 3 台相机" tone="warn">当前计划相机 {plan.cameras.length} 台：三台相机共用一个触发，缺相机的配方不能发布。</Notice>}
         {middle}
@@ -559,6 +564,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         {rail}</div>
     </div>
     <div className="wp-teach-dock" role="group" aria-label="走廊示教操作">
+      {focusToggle}
       <span className="wp-dock-mid"><Badge tone={stateTone}>{stateText}</Badge><span className="wp-dock-hint">{dockHint}</span></span>
       <span className="wp-dock-actions">
         {segment != null && <WithReason reason={saveReason}><Button variant="text" data-variant="text" leadingIcon={<Save size={15}/>} disabled={!!saveReason} onClick={saveCorridor}>保存走廊</Button></WithReason>}

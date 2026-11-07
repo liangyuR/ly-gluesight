@@ -279,6 +279,6 @@ it("段已有示教帧时重新选帧 → 只在示教件这一段内选帧，�
   await user.click(choose);
   expect(calls("workspace_teach_segment_corridor")).toEqual([{ id: "A", revision: 3, camera: "CAM-2", segment: 1, round: "round-1", seq: 2 }]);
   expect(await screen.findByRole("img", { name: CAM2 })).toBeVisible();
-  expect(screen.getByText("capture:round-1 · S-CAM-2-new-frame")).toBeVisible();
+  expect(screen.getByTitle("capture:round-1 · S-CAM-2-new-frame")).toBeVisible();
   expect(screen.queryByRole("region", { name: "示教帧选择" })).not.toBeInTheDocument();
 });
