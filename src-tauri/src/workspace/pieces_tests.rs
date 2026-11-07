@@ -19,6 +19,7 @@ pub(super) fn piece(round: &str, record: i64) -> TeachingPiece {
         cycle_id: format!("cycle-{record}"),
         sn: format!("SN-{record}"),
         ts: record,
+        passes: Vec::new(),
     }
 }
 

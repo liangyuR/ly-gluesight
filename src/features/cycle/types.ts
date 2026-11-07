@@ -1,6 +1,6 @@
 
 import type { PartMode } from "../history/types";
-import type { BurstJudgement, CameraInspect, KindDefaults, PartCalib, PartViewBurst, PathSegment, RecipeDocSegmentFields } from "../plan/types";
+import type { BurstJudgement, CameraInspect, KindDefaults, PartCalib, PartViewBurst, PassSkip, PathSegment, RecipeDocSegmentFields } from "../plan/types";
 
 /** 段模型（分段连拍飞拍）的契约类型，定义在 plan/types.ts；这里转出供 cycle 相关页面使用。 */
 export type {
@@ -78,6 +78,8 @@ export interface Recipe {
   segmentDefaults: KindDefaults;
   boundaryGuard: number;
   boundaryRefine?: boolean;
+  passSkip?: PassSkip;
+  passFrames?: number[];
   partCalib: PartCalib | null;
 }
 

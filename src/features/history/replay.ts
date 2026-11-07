@@ -60,7 +60,19 @@ export interface RegionDiff {
   differs: boolean;
 }
 
-const regionKey = (r: RegionResult) => { const [first, last] = regionSegments(r.region.kind); return `${r.region.kind.type}:${first}-${last}`; };
+const regionKey = (r: RegionResult) => {
+  const [first, last] = regionSegments(r.region.kind);
+  return `${r.region.kind.type}:${first}-${last}${r.region.kind.type === "skipped" && r.region.kind.pass != null ? `:p${r.region.kind.pass}` : ""}`;
+};
+/** 同键的区域（如同一笔的首、尾跳过）按出现顺序编号，两侧按序对应 */
+function keyed(regions: RegionResult[]): [string, RegionResult][] {
+  const seen = new Map<string, number>();
+  return regions.map(r => {
+    const base = regionKey(r), n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return [n ? `${base}#${n}` : base, r];
+  });
+}
 const near = (a: number | null | undefined, b: number | null | undefined) => a == null || b == null ? a == b : Math.abs(a - b) <= REPLAY_TOLERANCE_MM;
 
 function regionChanges(a: RegionResult, b: RegionResult): RegionChange[] {
@@ -77,14 +89,14 @@ function regionChanges(a: RegionResult, b: RegionResult): RegionChange[] {
 /** 逐区域比较原结果与重判 / 复测结果；计划身份不同（段序列、类型、N_exp、相机或预期总数变了）时区域无法对应，返回 null，只比较整件结论。 */
 export function regionDiffs(original: BurstSide, replay: BurstSide): RegionDiff[] | null {
   if (!samePlanIdentity(original, replay)) return null;
-  const after = new Map(replay.judgement.regions.map(r => [regionKey(r), r]));
+  const after = new Map(keyed(replay.judgement.regions));
   const seen = new Set<string>();
-  const diffs: RegionDiff[] = original.judgement.regions.map(r => {
-    const key = regionKey(r), other = after.get(key) ?? null;
+  const diffs: RegionDiff[] = keyed(original.judgement.regions).map(([key, r]) => {
+    const other = after.get(key) ?? null;
     seen.add(key);
     const changes = other ? regionChanges(r, other) : [];
     return { key, label: regionKindLabel(r.region.kind), original: r, replay: other, changes, differs: !other || changes.length > 0 };
   });
-  for (const r of replay.judgement.regions) if (!seen.has(regionKey(r))) diffs.push({ key: regionKey(r), label: regionKindLabel(r.region.kind), original: null, replay: r, changes: [], differs: true });
+  for (const [key, r] of after) if (!seen.has(key)) diffs.push({ key, label: regionKindLabel(r.region.kind), original: null, replay: r, changes: [], differs: true });
   return diffs;
 }

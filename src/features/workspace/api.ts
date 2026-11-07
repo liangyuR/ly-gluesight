@@ -2,7 +2,7 @@ import { desktopCall } from "../../lib/desktop";
 import { decodeFrame, frameImageData } from "../../lib/frame";
 import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
-import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
+import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PassSkipSuggestView, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
 import type { Check, CompareOptions, Comparison, FrozenImage, FrameImage, HistoryCandidate, PackageExported, PackageImported, PackagePreview, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
 
@@ -114,4 +114,9 @@ export const workspaceApi = {
   /** 操作员确认第 segment 段一头的跳过帧组数 */
   confirmSkip: (id: string, revision: number, segment: number, end: SkipEnd, frames: number) =>
     desktopCall<WorkspaceView>("workspace_confirm_skip", { id, revision, segment, end, frames }),
+  /** 每笔起涂跳过的建议（D-SB-62），由示教件测量的每帧特征算出，只读 */
+  passSkipSuggest: (id: string) => desktopCall<PassSkipSuggestView>("workspace_pass_skip_suggest", { id }),
+  /** 操作员确认每笔开头、结尾跳过的帧组数 */
+  confirmPassSkip: (id: string, revision: number, head: number, tail: number) =>
+    desktopCall<WorkspaceView>("workspace_confirm_pass_skip", { id, revision, head, tail }),
 };

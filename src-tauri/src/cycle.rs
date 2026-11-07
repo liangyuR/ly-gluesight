@@ -3441,6 +3441,17 @@ fn burst_warnings(
             ),
         ));
     }
+    for (set, title, what) in [
+        (judgement.flags.wide_warning, "胶宽偏宽", "超出胶宽上限"),
+        (judgement.flags.overflow_warning, "溢胶预警", "超出溢胶上限"),
+    ] {
+        if set {
+            out.push((
+                title,
+                format!("有帧{what}，本段设为偏宽只预警（只告警，PLC 照常收到合格）"),
+            ));
+        }
+    }
     out
 }
 

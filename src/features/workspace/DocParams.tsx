@@ -35,6 +35,26 @@ export function BoundaryGuardField({ locked = "" }: { locked?: string }) {
   </span>;
 }
 
+/** 每笔开头、结尾跳过的帧组数（0–50，D-SB-62）；都为 0 时不写入配方。段列表页。 */
+export function PassSkipFields({ locked = "" }: { locked?: string }) {
+  const { doc, set, disabled } = useDocField();
+  const passes = useWorkspace().data?.workspace.teachingPiece?.passes ?? doc?.passFrames;
+  if (!doc) return null;
+  const skip = doc.passSkip ?? { head: 0, tail: 0 };
+  const change = (end: "head" | "tail", value: number | "") => {
+    const next = { ...skip, [end]: value === "" ? NaN : value };
+    set("passSkip", next.head === 0 && next.tail === 0 ? undefined : next);
+  };
+  const hint = "机械臂每次起涂打开、收胶关闭拍照；每笔开头胶条还没铺满，这几帧不判；整笔帧数不超过首尾之和的笔整笔不检";
+  return <span className="wp-pass-skip" title={locked || hint}>
+    <NumberField label="每笔开头跳过" unit="帧组" aria-label="每笔开头跳过" step={1} min={0} max={50} value={Number.isFinite(skip.head) ? skip.head : ""} disabled={disabled || !!locked}
+      onValueChange={value => change("head", value)} />
+    <NumberField label="每笔结尾跳过" unit="帧组" aria-label="每笔结尾跳过" step={1} min={0} max={50} value={Number.isFinite(skip.tail) ? skip.tail : ""} disabled={disabled || !!locked}
+      onValueChange={value => change("tail", value)} />
+    {!!passes?.length && <span className="muted" aria-label="示教件笔数">示教件 {passes.length} 笔</span>}
+  </span>;
+}
+
 /** 按逐帧定向的胶条方向序列细化比例边界（D-SB-47）。只有开启逐帧定向的段时可用。段列表页。 */
 export function BoundaryRefineField({ locked = "", available }: { locked?: string; available: boolean }) {
   const { doc, set, disabled } = useDocField();

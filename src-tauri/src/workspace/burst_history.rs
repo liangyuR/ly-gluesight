@@ -10,10 +10,9 @@
 use super::*;
 use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
 use crate::frame_group::{FrameGroup, LossAlarm};
+use crate::passes::PassRules;
 use crate::plan::PathSegment;
-use crate::segmentation::{
-    frame_corridors, resolve_regions, segment_part, Proportional, Region, SegInput, Segmenter,
-};
+use crate::segmentation::{frame_corridors, resolve_regions, segment_part, Region, SegInput};
 use crate::store::{FrameRecord, PartDetail, PartDetailBurst, RecordSource};
 
 /// 区域划分的置信度门槛，与在线节拍（cycle/burst.rs）相同：比例分段器在帧数容差内给 1、之外给 0。
@@ -99,7 +98,8 @@ pub(super) fn frame_groups(metrics: &[FrameMetrics], cameras: usize) -> Vec<Fram
     }).collect()
 }
 
-/// 按给定的段比例分段（与生产同一规则，D-SB-40）重新划分区域后判一件；丢帧告警原样带出。
+/// 按生产同一规则（按笔或按比例分段，D-SB-62、D-SB-40）重新划分区域后判一件；丢帧告警原样带出。
+#[allow(clippy::too_many_arguments)]
 pub(super) fn judge_frames(
     segments: &[PathSegment],
     boundary_guard: u32,
@@ -108,6 +108,7 @@ pub(super) fn judge_frames(
     cameras: &[String],
     metrics: &[FrameMetrics],
     loss: &[LossAlarm],
+    passes: PassRules,
 ) -> BurstJudgement {
     let groups = frame_groups(metrics, cameras.len());
     let outcome = segment_part(
@@ -117,6 +118,7 @@ pub(super) fn judge_frames(
         },
         metrics,
         boundary_refine,
+        passes,
     );
     let regions = resolve_regions(
         segments,
@@ -124,6 +126,7 @@ pub(super) fn judge_frames(
         groups.len() as u64,
         MIN_CONFIDENCE,
         boundary_guard,
+        passes,
     );
     burst_judge::judge(
         segments,
@@ -133,6 +136,7 @@ pub(super) fn judge_frames(
         metrics,
         cameras,
         loss,
+        passes,
     )
 }
 
@@ -169,6 +173,7 @@ pub(crate) fn repair_shadow_regions(store: &Store) -> Result<(usize, Vec<String>
             &burst.cameras,
             &metrics,
             &burst.judgement.alarms,
+            recipe.pass_rules(&burst.judgement.passes),
         );
         if (judged.verdict, judged.fault_code, judged.reason.as_str())
             != (s.verdict, s.fault_code, s.reason.as_str())
@@ -212,6 +217,7 @@ pub(super) fn remeasure_by_rule(
     boundary_guard: u32,
     cameras: &[String],
     frames: &[(usize, u64, bool)],
+    passes: PassRules,
     mut measure: impl FnMut(usize, u64, u32) -> Result<FrameMetrics, String>,
 ) -> Vec<FrameMetrics> {
     let arrived: Vec<FrameMetrics> = frames
@@ -231,11 +237,23 @@ pub(super) fn remeasure_by_rule(
         .collect();
     let groups = frame_groups(&arrived, cameras.len());
     let total = groups.len() as u64;
-    let outcome = Proportional.segment(&SegInput {
-        groups: &groups,
+    let outcome = segment_part(
+        &SegInput {
+            groups: &groups,
+            segments,
+        },
+        &[],
+        false,
+        passes,
+    );
+    let regions = resolve_regions(
         segments,
-    });
-    let regions = resolve_regions(segments, &outcome, total, MIN_CONFIDENCE, boundary_guard);
+        &outcome,
+        total,
+        MIN_CONFIDENCE,
+        boundary_guard,
+        passes,
+    );
     let choice = frame_corridors(segments, cameras, &regions, &outcome, total);
     frames
         .iter()
@@ -264,10 +282,11 @@ pub(super) fn remeasure_by_rule(
         .collect()
 }
 
-/// 历史帧记录按生产规则重测（见 `remeasure_by_rule`）。
+/// 历史帧记录按生产规则重测（见 `remeasure_by_rule`）；`passes` 是这件记录的笔结构（`BurstJudgement.passes`）。
 pub(super) fn remeasure(
     recipe: &Recipe,
     frames: &[FrameRecord],
+    passes: &[u32],
     mut measure: impl FnMut(&FrameRecord, u32) -> Result<FrameMetrics, String>,
 ) -> Vec<FrameMetrics> {
     let keys: Vec<(usize, u64, bool)> = frames
@@ -279,6 +298,7 @@ pub(super) fn remeasure(
         recipe.boundary_guard,
         &recipe.plan_cameras(),
         &keys,
+        recipe.pass_rules(passes),
         |camera, seq, segment| {
             let frame = frames
                 .iter()
@@ -977,32 +997,37 @@ pub(super) fn compare(
             })
             .collect();
         let loss = crate::frame_group::loss_alarms(&counts);
-        let metrics = remeasure(recipe, &frames, |frame, segment| {
-            let skip = |reason: String| {
-                Ok(FrameMetrics {
-                    corridor: Some(segment),
-                    ..burst::frame_without_metrics(
-                        frame.camera,
-                        frame.seq,
-                        FrameState::Unmeasured,
-                        Some(reason),
-                    )
-                })
-            };
-            if !offline && frame.raw_file.is_none() {
-                return skip("这一帧原图没有保存".into());
-            }
-            if let Some(reason) = measurer.skipped(frame.camera, segment) {
-                return skip(reason.to_owned());
-            }
-            let record = map[frame.camera].ok_or("记录里没有这台相机的原图")?;
-            measurer.measure(
-                frame.camera,
-                segment,
-                frame.seq,
-                &frame_image(app, detail, record, frame.seq)?,
-            )
-        });
+        let metrics = remeasure(
+            recipe,
+            &frames,
+            &burst.judgement.passes,
+            |frame, segment| {
+                let skip = |reason: String| {
+                    Ok(FrameMetrics {
+                        corridor: Some(segment),
+                        ..burst::frame_without_metrics(
+                            frame.camera,
+                            frame.seq,
+                            FrameState::Unmeasured,
+                            Some(reason),
+                        )
+                    })
+                };
+                if !offline && frame.raw_file.is_none() {
+                    return skip("这一帧原图没有保存".into());
+                }
+                if let Some(reason) = measurer.skipped(frame.camera, segment) {
+                    return skip(reason.to_owned());
+                }
+                let record = map[frame.camera].ok_or("记录里没有这台相机的原图")?;
+                measurer.measure(
+                    frame.camera,
+                    segment,
+                    frame.seq,
+                    &frame_image(app, detail, record, frame.seq)?,
+                )
+            },
+        );
         let judgement = judge_frames(
             &recipe.path_segments,
             recipe.boundary_guard,
@@ -1011,6 +1036,7 @@ pub(super) fn compare(
             &cameras,
             &metrics,
             &loss,
+            recipe.pass_rules(&burst.judgement.passes),
         );
         (judgement, metrics)
     } else {
@@ -1024,6 +1050,7 @@ pub(super) fn compare(
             &metrics,
             &cameras,
             &burst.judgement.alarms,
+            recipe.pass_rules(&burst.judgement.passes),
         );
         (judgement, metrics)
     };
@@ -1053,6 +1080,7 @@ pub(super) fn reproduce_original(
         prepared,
         &burst.frames,
         &burst.judgement.alarms,
+        &burst.judgement.passes,
         cycle_id,
         |frame| frame_image(app, detail, frame.camera, frame.seq),
     )?;

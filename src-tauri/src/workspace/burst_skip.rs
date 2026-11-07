@@ -2,6 +2,7 @@
 //! 检测相机与已确认分段算出，只读；操作员确认（`workspace_confirm_skip`）后才写进配方。
 //!
 //! 成形帧组 = 本段每台检测相机都测成且独立判定没有 NG 级发现；起涂帧组数见 `calibration::unformed_lead`。
+//! 每笔起涂（D-SB-62）按同一规则在示教件的每一笔上数，确认后写配方的 `pass_skip`。
 
 use std::collections::BTreeSet;
 
@@ -262,5 +263,188 @@ pub fn workspace_confirm_skip(
     confirm_skip(&mut w, segment, end, frames)?;
     host.save(&w)?;
     items.insert(id, w.clone());
+    view(&app, w)
+}
+
+/// 示教件一笔的起涂帧组数（D-SB-62）；不参与建议时为 None，原因见 note。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PassLeadView {
+    /// 第几笔（从 1 起）
+    pub pass: u32,
+    pub first_seq: u64,
+    pub frames_in_pass: u32,
+    pub frames: Option<u32>,
+    pub note: Option<String>,
+}
+
+/// 每笔起涂跳过的建议（TS `PassSkipSuggestView`）。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PassSkipSuggestView {
+    /// 配方里当前每笔开头跳过的帧组数
+    pub current: u32,
+    pub suggested: Option<u32>,
+    pub passes: Vec<PassLeadView>,
+    /// 不给建议的原因
+    pub pending: Option<String>,
+}
+
+/// 每笔起涂的建议（D-SB-62，规则同 D-SB-50）：示教件每一笔从第一帧起，第一处连续成形帧组之前的帧组数，按帧所在段的
+/// 检测项与检测相机判成形；建议取各笔最大值。没有连续成形帧组的笔（只点胶、很短的线）不参与，按配方规则整笔不检。
+pub(super) fn pass_skip_suggestion(
+    doc: &RecipeDoc,
+    piece: Option<(&str, u64, &[u32])>,
+    reviews: &BTreeMap<String, RoundReview>,
+    metrics: Result<Vec<FrameMetrics>, String>,
+) -> PassSkipSuggestView {
+    let pending = |why: &str| PassSkipSuggestView {
+        current: doc.pass_skip.head,
+        suggested: None,
+        passes: Vec::new(),
+        pending: Some(why.into()),
+    };
+    let Some((round_id, group_count, layout)) = piece.filter(|p| !p.2.is_empty()) else {
+        return pending("示教件没有笔结构：先选示教件并保存分段");
+    };
+    let counts: Vec<u64> = if doc.segments.len() == 1 {
+        vec![group_count]
+    } else {
+        match confirmed_segment_counts(doc, reviews, round_id, group_count) {
+            Some(counts) => counts.into_iter().map(u64::from).collect(),
+            None => return pending("示教件分段未确认或已失效"),
+        }
+    };
+    let metrics = match metrics {
+        Ok(metrics) => metrics,
+        Err(_) => return pending("示教件还没有可用的测量：测量示教件后给出建议"),
+    };
+    let frames: BTreeMap<(u64, usize), &FrameMetrics> =
+        metrics.iter().map(|m| ((m.seq, m.camera), m)).collect();
+    let excluded: BTreeSet<u64> = reviews
+        .get(round_id)
+        .map(|r| r.excluded_groups.iter().map(|g| g.seq).collect())
+        .unwrap_or_default();
+    let plan = doc.plan_cameras();
+    let segment_of = |seq: u64| {
+        let mut end = 0;
+        counts.iter().position(|&n| {
+            end += n;
+            seq <= end
+        })
+    };
+    let passes: Vec<PassLeadView> = layout
+        .iter()
+        .enumerate()
+        .map(|(j, &n)| {
+            let first = crate::passes::first_seq(layout, j);
+            let seqs: Vec<u64> = (first..first + u64::from(n)).collect();
+            let forms = seqs.iter().map(|&seq| {
+                let Some(segment) = segment_of(seq).map(|k| &doc.segments[k]) else {
+                    return GroupForm::Unknown;
+                };
+                let cameras: Vec<usize> = crate::plan::segment_cameras(segment, &plan)
+                    .iter()
+                    .filter_map(|id| plan.iter().position(|c| c == id))
+                    .collect();
+                if cameras.is_empty() {
+                    return GroupForm::Unknown;
+                }
+                group_form(&frames, segment, &cameras, seq, &excluded)
+            });
+            let result = unformed_lead(forms).map_err(|e| match e {
+                OnsetError::Unknown(k) => format!(
+                    "成形之前第 {} 帧组无法判断（缺帧、测量失败、不检测的段或已屏蔽）",
+                    seqs[k - 1]
+                ),
+                OnsetError::NotFound => {
+                    format!("没有连续 {ONSET_RUN} 个成形帧组（点胶或很短的线），整笔按跳过规则处理")
+                }
+            });
+            PassLeadView {
+                pass: j as u32 + 1,
+                first_seq: first,
+                frames_in_pass: n,
+                frames: result.as_ref().ok().copied(),
+                note: result.err(),
+            }
+        })
+        .collect();
+    let suggested = passes.iter().filter_map(|p| p.frames).max();
+    PassSkipSuggestView {
+        current: doc.pass_skip.head,
+        suggested,
+        pending: suggested
+            .is_none()
+            .then(|| "没有一笔找到连续成形的帧组：检查走廊与检测项".to_string()),
+        passes,
+    }
+}
+
+#[tauri::command]
+pub async fn workspace_pass_skip_suggest(
+    app: AppHandle,
+    id: String,
+) -> Result<PassSkipSuggestView, String> {
+    let host = app.state::<WorkspaceHost>();
+    let w = host
+        .items
+        .lock()
+        .unwrap()
+        .get(&id)
+        .ok_or("候选配置不存在")?
+        .clone();
+    super::burst::require_burst(&w.doc)?;
+    let dir = host.dir(&id).join(CALIBRATION_DIR);
+    let cameras = w.doc.plan_cameras();
+    tauri::async_runtime::spawn_blocking(move || {
+        let piece = w.teaching_piece.as_ref();
+        let group_count = piece
+            .and_then(|p| w.capture_review.rounds.get(&p.round_id))
+            .map_or(0, |r| r.group_count);
+        let metrics = piece
+            .filter(|p| {
+                w.calibration
+                    .rounds
+                    .iter()
+                    .any(|r| r.round_id == p.round_id)
+            })
+            .ok_or_else(|| "示教件还没有测量".to_string())
+            .and_then(|p| super::burst::read_features(&dir.join(&p.round_id), &cameras));
+        pass_skip_suggestion(
+            &w.doc,
+            piece.map(|p| (p.round_id.as_str(), group_count, p.passes.as_slice())),
+            &w.capture_review.rounds,
+            metrics,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 操作员确认每笔开头、结尾跳过的帧组数（不进计划身份，不换计划版本）。
+#[tauri::command]
+pub fn workspace_confirm_pass_skip(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    head: u32,
+    tail: u32,
+) -> Result<WorkspaceView, String> {
+    let host = app.state::<WorkspaceHost>();
+    let mut items = host.items.lock().unwrap();
+    let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
+    w.expect(revision)?;
+    super::burst::require_burst(&w.doc)?;
+    let skip = crate::passes::PassSkip { head, tail };
+    if w.doc.pass_skip != skip {
+        let mut doc = w.doc.clone();
+        doc.pass_skip = skip;
+        doc.build()?;
+        w.doc = doc;
+        w.changed();
+        host.save(&w)?;
+        items.insert(id, w.clone());
+    }
     view(&app, w)
 }

@@ -101,7 +101,14 @@ pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
 fn template(used_codes: &[u16], rig_cameras: &[String]) -> RecipeDoc {
     let product_code = (1..=i16::MAX as u16).find(|c| !used_codes.contains(c)).unwrap_or(0);
     let cameras = &rig_cameras[..rig_cameras.len().min(plan::PLAN_CAMERAS)];
-    recipe::burst_template(format!("NEW-{product_code}"), "新配方".into(), product_code, cameras)
+    let mut doc = recipe::burst_template(
+        format!("NEW-{product_code}"),
+        "新配方".into(),
+        product_code,
+        cameras,
+    );
+    doc.pass_skip.head = crate::passes::DEFAULT_SKIP_HEAD;
+    doc
 }
 
 /// 段配方的计划导出 JSON（规格 §1）：段序列、各段 N_exp、容差、ΣN_exp，给 PLC / 机器人工程师核对使能点位；

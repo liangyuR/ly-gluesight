@@ -10,12 +10,13 @@ pub(super) fn measure_burst(
     prepared: &Prepared,
     frames: &[FrameRecord],
     loss: &[LossAlarm],
+    passes: &[u32],
     cycle_id: &str,
     mut load: impl FnMut(&FrameRecord) -> Result<crate::frame::FrameImage, String>,
 ) -> Result<(BurstJudgement, Vec<FrameMetrics>), String> {
     let recipe = &prepared.recipe;
     let run = format!("reproduce-{cycle_id}-{}", ly_plc::now_ms());
-    let metrics = super::burst_history::remeasure(recipe, frames, |frame, segment| {
+    let metrics = super::burst_history::remeasure(recipe, frames, passes, |frame, segment| {
         let image = load(frame)?;
         prepared
             .measure_frame(
@@ -36,6 +37,7 @@ pub(super) fn measure_burst(
         &recipe.plan_cameras(),
         &metrics,
         loss,
+        recipe.pass_rules(passes),
     );
     Ok((judgement, metrics))
 }

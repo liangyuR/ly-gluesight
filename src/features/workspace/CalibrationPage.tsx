@@ -10,6 +10,7 @@ import { useWorkspace } from "./context";
 import { Badge, Notice, NumberField, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { CalibrationFrames } from "./CalibrationFrames";
 import { SkipSuggest } from "./SkipSuggest";
+import { PassSkipSuggest } from "./PassSkipSuggest";
 import { HistoryTrials } from "./HistoryTrials";
 import { PieceMask } from "./PieceMask";
 import { pieceLabel } from "./pieces";
@@ -85,6 +86,7 @@ export default function CalibrationPage() {
       {masking && <PieceMask roundId={piece.roundId} groupCount={piece.groupCount} disabled={locked} measured={piece.measured} />}
     </Panel>}
     {calibration?.roundId != null && <SkipSuggest locked={locked} />}
+    {calibration?.roundId != null && <PassSkipSuggest locked={locked} />}
     {calibration?.roundId != null && <CalibrationFrames data={data} plan={plan} />}
     <HistoryTrials recipeId={doc.id} />
   </div>;

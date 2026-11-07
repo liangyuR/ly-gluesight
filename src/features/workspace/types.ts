@@ -63,7 +63,11 @@ export interface Workspace {
   navigationId?: string | null;
   navigationStructureRevision?: number;
 }
-export interface TeachingPiece { roundId: string; recordId: number; cycleId: string; sn: string; ts: number }
+export interface TeachingPiece {
+  roundId: string; recordId: number; cycleId: string; sn: string; ts: number;
+  /** 示教件各笔帧组数（D-SB-62）；旧候选保存分段前缺省 */
+  passes?: number[];
+}
 
 /** 配方回传包（候选与示教件轮次记录，不带原图）的导出结果、导入预览与导入结果 */
 export interface PackageExported { path: string; bytes: number; files: number }

@@ -30,7 +30,7 @@ fn offline_parts_stay_out_of_real_history_statistics_and_rejudge_and_vice_versa(
     let store = Store::open(&db.path()).unwrap();
     let recipe = burst_fixture::recipe();
     let mut frames = burst_fixture::frames(4, &[(1, 2)]);
-    frames[0].metrics = Some(burst_fixture::measured(0, 1, 6.5));
+    frames[0].metrics = Some(burst_fixture::measured(0, 1, 2.0));
     let (judgement, burst) = burst_fixture::record(&recipe, frames, None, Some(0));
     let save_source = |recipe: &Recipe, cycle: &str, source| {
         let mut part = burst_part(recipe, cycle, &judgement, &burst);

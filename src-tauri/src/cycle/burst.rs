@@ -85,6 +85,9 @@ pub(super) struct BurstPart {
     sectors: BTreeMap<(usize, u32), f64>,
     boundary_guard: u32,
     boundary_refine: bool,
+    pass_skip: crate::passes::PassSkip,
+    /// 示教件的笔结构（D-SB-62）
+    pass_frames: Option<Vec<u32>>,
     /// 本件采集期间因图像内存预算满被丢弃、没收进来的帧数（D-SB-60）
     pub(super) budget_dropped: u64,
     /// 收尾补测开始等录制原图写完的时刻（D-SB-60）
@@ -158,6 +161,8 @@ impl BurstPart {
             sectors,
             boundary_guard: recipe.boundary_guard,
             boundary_refine: recipe.boundary_refine,
+            pass_skip: recipe.pass_skip,
+            pass_frames: recipe.pass_frames.clone(),
             budget_dropped: 0,
             post_wait: None,
             post_started: false,
@@ -172,8 +177,43 @@ impl BurstPart {
             .and_then(|f| f.corridor)
     }
 
-    /// 本件的分段结果与区域（比例分段，D-SB-40；配方开了方向细化时按已测帧的胶条方向细化，D-SB-47）。
+    /// 到达时按笔预测段（D-SB-62）：这一帧在本件第 j 笔第 i 帧，换成示教件第 j 笔的第 i 帧（超出示教件这一笔取它的末帧）
+    /// 再按累计 N_exp 预测；配方没有笔结构或本件笔数已超过示教件时照旧用 seq。
+    fn taught_seq(&self, seq: u64) -> u64 {
+        let Some(taught) = self.pass_frames.as_deref() else {
+            return seq;
+        };
+        let slots: Vec<u32> = self
+            .clock
+            .gate_slots()
+            .iter()
+            .map(|&n| u32::try_from(n).unwrap_or(u32::MAX))
+            .collect();
+        crate::passes::locate(&slots, seq)
+            .and_then(|(j, offset)| {
+                let n = *taught.get(j)?;
+                Some(crate::passes::first_seq(taught, j) + u64::from(offset.min(n)) - 1)
+            })
+            .unwrap_or(seq)
+    }
+
+    /// 本件的笔结构（D-SB-62）：帧编号器的门控槽数，截到本件帧组数。
+    fn pass_layout(&self) -> Vec<u32> {
+        crate::passes::from_slots(self.clock.gate_slots(), self.grouper.group_count())
+    }
+
+    fn pass_rules<'a>(&'a self, layout: &'a [u32]) -> crate::passes::PassRules<'a> {
+        crate::passes::PassRules {
+            part: layout,
+            taught: self.pass_frames.as_deref(),
+            skip: self.pass_skip,
+        }
+    }
+
+    /// 本件的分段结果与区域（按笔或按比例分段，D-SB-62、D-SB-40；配方开了方向细化时按已测帧的胶条方向细化，D-SB-47）。
     fn regions(&self) -> (SegOutcome, Vec<Region>) {
+        let layout = self.pass_layout();
+        let passes = self.pass_rules(&layout);
         let groups = self.grouper.groups();
         let metrics: Vec<FrameMetrics> = if self.boundary_refine {
             self.frames
@@ -190,6 +230,7 @@ impl BurstPart {
             },
             &metrics,
             self.boundary_refine,
+            passes,
         );
         let regions = resolve_regions(
             &self.segments,
@@ -197,6 +238,7 @@ impl BurstPart {
             self.grouper.group_count(),
             MIN_CONFIDENCE,
             self.boundary_guard,
+            passes,
         );
         (outcome, regions)
     }
@@ -469,8 +511,12 @@ impl Part {
                     CounterSource::ChunkTrigger | CounterSource::Synthetic
                 )
                 .then_some(frame.trigger_counter);
-                let corridor =
-                    crate::plan::arrival_corridor(&burst.segments, &burst.cameras, camera, seq);
+                let corridor = crate::plan::arrival_corridor(
+                    &burst.segments,
+                    &burst.cameras,
+                    camera,
+                    burst.taught_seq(seq),
+                );
                 let measuring = !burst.collect && corridor.is_some();
                 let metrics = (!burst.collect && corridor.is_none()).then(|| {
                     unmeasured(
@@ -637,6 +683,7 @@ impl Part {
         let metrics: Vec<FrameMetrics> = burst.frames.values().filter_map(|frame| frame.metrics.clone()).collect();
         let segments = &burst.segments;
         let (_, regions) = burst.regions();
+        let layout = burst.pass_layout();
         let mut judgement = burst_judge::judge(
             segments,
             self.recipe.expected_total(),
@@ -645,6 +692,7 @@ impl Part {
             &metrics,
             &burst.cameras,
             &loss,
+            burst.pass_rules(&layout),
         );
         // 预算满丢的帧没收进来，帧组里看不出缺：整件记检测不完整并写明，免得被当成“提前终止”的正常件
         if burst.budget_dropped > 0 {

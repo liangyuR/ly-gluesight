@@ -555,13 +555,14 @@ pub(super) fn frame_without_metrics(
 
 // ───────────── 段列表与配方编辑 ─────────────
 
-/// 清空全部 N_exp、标定统计、整件标定与 x_ref。
+/// 清空全部 N_exp、标定统计、整件标定、笔结构与 x_ref。
 pub(super) fn clear_calibration(doc: &mut RecipeDoc) {
     for segment in &mut doc.segments {
         segment.expected_frames = None;
         segment.calib = None;
     }
     doc.part_calib = None;
+    doc.pass_frames = None;
     clear_reference(doc);
 }
 
@@ -594,6 +595,15 @@ pub(super) fn calibrate_from_teaching(w: &mut Workspace) {
         segment.expected_frames = n;
         segment.calib = n.map(stat);
     }
+    // 笔结构随 N_exp 一起取自示教件（D-SB-62）：帧组数要与已确认的分段对得上
+    let passes = w.teaching_piece.as_ref().map(|piece| piece.passes.clone());
+    w.doc.pass_frames = passes.filter(|passes| {
+        !passes.is_empty()
+            && counts.as_ref().is_some_and(|counts| {
+                counts.iter().map(|&n| u64::from(n)).sum::<u64>()
+                    == passes.iter().map(|&n| u64::from(n)).sum::<u64>()
+            })
+    });
     w.doc.part_calib = None;
     if !super::pieces::teaching_measured(w) {
         clear_reference(&mut w.doc);
@@ -608,7 +618,7 @@ pub(super) fn prepare_new_doc(doc: &mut RecipeDoc) {
     clear_calibration(doc);
 }
 
-/// 段配方的基准只能由示教件得出（RB-3）：保存时不采用传入的 N_exp、标定统计、整件标定与 x_ref，沿用候选当前的值
+/// 段配方的基准只能由示教件得出（RB-3）：保存时不采用传入的 N_exp、标定统计、整件标定、笔结构与 x_ref，沿用候选当前的值
 /// （随后 `Workspace::changed` 按示教件重算 N_exp），界面拿着旧值保存也不会改动或被拒。段的类型序列（段数、顺序、类型）
 /// 变了全部清空；胶偏参考的测量量、相机或找边参数变了，旧 x_ref 不再适用，清空。两份都是旧拍照点配方时不处理。
 pub(super) fn guard_calibration(old: &RecipeDoc, new: &mut RecipeDoc) {
@@ -621,6 +631,7 @@ pub(super) fn guard_calibration(old: &RecipeDoc, new: &mut RecipeDoc) {
         return;
     }
     new.part_calib.clone_from(&old.part_calib);
+    new.pass_frames.clone_from(&old.pass_frames);
     let edge = |r: &OffsetRef| {
         r.edge
             .as_ref()

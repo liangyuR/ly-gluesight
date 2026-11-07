@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PathSegment } from "../src/features/plan/types";
-import { segmentsForSave, toggleCamera, toggleKind, valid, type WorkbenchDraft } from "../src/features/workspace/workbenchDraft";
+import { passCells, segmentsForSave, toggleCamera, toggleKind, valid, type WorkbenchDraft } from "../src/features/workspace/workbenchDraft";
 import { applyToKind } from "../src/features/workspace/segmentEdit";
 
 import { kindDefaults, pathSegment } from "./fixtures";
@@ -56,5 +56,15 @@ describe("工作台保存的段列表", () => {
     expect(next.map(s => s.cameras)).toEqual([["CAM-2"], [], ["CAM-1", "CAM-3"]]);
     expect(next.map(s => s.expectedFrames)).toEqual([5, 4, 3]);
     expect(next[0].offsetRef).toMatchObject({ camera: "CAM-2", xRef: null, spread: null });
+  });
+});
+
+describe("工作台的笔结构", () => {
+  // 防的回归：时间轴标出的每笔首尾跳过与后端 passes::skipped 不一致（整笔不超过首尾之和时整笔不检），操作员按错误的跳过范围放边界
+  it("每笔开头 2、结尾 1 → 各笔首尾标跳过，3 帧的笔整笔不检，笔间最后一帧标笔界；笔结构与帧组数对不上 → 不标", () => {
+    const cells = passCells([5, 3, 4], 12, { head: 2, tail: 1 })!;
+    expect(cells.map(c => c.skip ?? "-")).toEqual(["head", "head", "-", "-", "tail", "short", "short", "short", "head", "head", "-", "tail"]);
+    expect(cells.flatMap((c, k) => c.end ? [k + 1] : [])).toEqual([5, 8]);
+    expect(passCells([5, 3], 12, { head: 2, tail: 1 })).toBeNull();
   });
 });

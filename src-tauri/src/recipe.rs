@@ -391,6 +391,8 @@ pub struct Recipe {
     pub segment_defaults: KindDefaults,
     pub boundary_guard: u32,
     pub boundary_refine: bool,
+    pub pass_skip: crate::passes::PassSkip,
+    pub pass_frames: Option<Vec<u32>>,
     pub part_calib: Option<PartCalib>,
     pub expert: ExpertParams,
 }
@@ -399,6 +401,15 @@ impl Recipe {
     /// 段配方（分段连拍）：段列表非空。否则是旧拍照点配方。
     pub fn is_burst(&self) -> bool {
         !self.path_segments.is_empty()
+    }
+
+    /// 一件按笔判定的规则（D-SB-62）：`part` 是本件的笔结构（不知道为空）。
+    pub fn pass_rules<'a>(&'a self, part: &'a [u32]) -> crate::passes::PassRules<'a> {
+        crate::passes::PassRules {
+            part,
+            taught: self.pass_frames.as_deref(),
+            skip: self.pass_skip,
+        }
     }
 
     /// 段配方的计划相机（按 inspect 顺序）：PLC 一个触发同时触发它们。旧拍照点配方为空。
@@ -542,6 +553,12 @@ pub struct RecipeDoc {
     /// 按逐帧定向的胶条方向序列细化比例边界（D-SB-47）；只作用于开启定向的段，不进计划身份
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub boundary_refine: bool,
+    /// 每笔开头、结尾跳过的帧组数（D-SB-62）；不进计划身份
+    #[serde(default, skip_serializing_if = "crate::passes::PassSkip::is_zero")]
+    pub pass_skip: crate::passes::PassSkip,
+    /// 示教件的笔结构（各笔帧组数，D-SB-62）：随 N_exp 由示教件得出，保存时不采用传入值；None = 不按笔分段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass_frames: Option<Vec<u32>>,
     /// 整件帧组数标定：各段 N_exp 待分段算法时凭它得到 expected_total 并发布（决策补充第二节）；只由标定写入
     #[serde(default)]
     pub part_calib: Option<PartCalib>,
@@ -572,6 +589,15 @@ impl RecipeDoc {
     /// 段配方的计划相机（按 inspect 顺序）。
     pub fn plan_cameras(&self) -> Vec<String> {
         self.inspect.iter().map(|i| i.camera.clone()).collect()
+    }
+
+    /// 一件按笔判定的规则（D-SB-62）：`part` 是这一件的笔结构（不知道为空）。
+    pub fn pass_rules<'a>(&'a self, part: &'a [u32]) -> crate::passes::PassRules<'a> {
+        crate::passes::PassRules {
+            part,
+            taught: self.pass_frames.as_deref(),
+            skip: self.pass_skip,
+        }
     }
 
     /// 整件预期帧组数 ΣN_exp（见 `plan::expected_total`）。
@@ -637,6 +663,21 @@ impl RecipeDoc {
                 BOUNDARY_GUARD.end()
             ));
         }
+        if self.pass_skip.head > crate::passes::MAX_SKIP
+            || self.pass_skip.tail > crate::passes::MAX_SKIP
+        {
+            return Err(format!(
+                "每笔首尾跳过的帧组数需在 0–{} 之间",
+                crate::passes::MAX_SKIP
+            ));
+        }
+        if self
+            .pass_frames
+            .as_ref()
+            .is_some_and(|frames| frames.is_empty() || frames.contains(&0))
+        {
+            return Err("示教件的笔结构无效：每笔至少一个帧组".into());
+        }
         for inspect in &self.inspect {
             inspect.validate()?;
             let cameras = self.plan_cameras();
@@ -688,6 +729,8 @@ impl RecipeDoc {
             segment_defaults: self.segment_defaults.clone(),
             boundary_guard: self.boundary_guard,
             boundary_refine: self.boundary_refine,
+            pass_skip: self.pass_skip,
+            pass_frames: self.pass_frames.clone(),
             part_calib: self.part_calib.clone(),
             expert: self.expert.clone(),
         };
@@ -807,6 +850,8 @@ pub fn burst_template(
         segment_defaults,
         boundary_guard: DEFAULT_BOUNDARY_GUARD,
         boundary_refine: false,
+        pass_skip: crate::passes::PassSkip::default(),
+        pass_frames: None,
         part_calib: None,
         teaching_piece: None,
         expert: ExpertParams::new(),

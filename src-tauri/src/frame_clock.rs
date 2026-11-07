@@ -192,6 +192,11 @@ impl FrameClock {
         stamp
     }
 
+    /// 本件各门控的槽数（D-SB-62 的笔结构来源）。
+    pub fn gate_slots(&self) -> &[u64] {
+        &self.slots
+    }
+
     /// 这台相机本件收到的最后一帧时间戳与帧周期（ns）。
     pub fn last(&self, cam: usize) -> Option<(u64, f64)> {
         let track = self.tracks.get(cam)?;

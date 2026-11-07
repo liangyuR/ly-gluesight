@@ -141,10 +141,15 @@ pub(crate) fn parameter_warnings(segment: &PathSegment) -> Vec<Diagnostic> {
         let upper = checks.width.nominal_mm + checks.width.tol_upper;
         let nominal = checks.width.nominal_mm;
         let limit = checks.overflow.max_width_mm;
+        let overflow = if checks.width.wide_warn_only {
+            "报溢胶预警"
+        } else {
+            "判溢胶"
+        };
         if nominal > limit {
             warnings.push(Diagnostic {
                 code: "nominalAboveOverflow",
-                message: format!("胶宽标称 {nominal} mm 高于独立溢胶上限 {limit} mm；落在胶宽公差带内也可能判溢胶"),
+                message: format!("胶宽标称 {nominal} mm 高于独立溢胶上限 {limit} mm；落在胶宽公差带内也可能{overflow}"),
             });
         } else if upper > limit {
             warnings.push(Diagnostic {
@@ -179,17 +184,21 @@ pub(crate) fn replay_measurements(
     burst: &super::super::burst_history::ComparisonBurst,
     guard: u32,
     refine: bool,
+    passes: crate::passes::PassRules,
 ) -> Value {
-    use crate::segmentation::{
-        frame_corridors, resolve_regions, Proportional, SegInput, Segmenter,
-    };
+    use crate::segmentation::{frame_corridors, resolve_regions, segment_part, SegInput};
     let groups = super::super::burst_history::frame_groups(&burst.frames, burst.cameras.len());
     let total = groups.len() as u64;
-    let outcome = Proportional.segment(&SegInput {
-        groups: &groups,
-        segments: &burst.segments,
-    });
-    let regions = resolve_regions(&burst.segments, &outcome, total, 0.5, guard);
+    let outcome = segment_part(
+        &SegInput {
+            groups: &groups,
+            segments: &burst.segments,
+        },
+        &[],
+        false,
+        passes,
+    );
+    let regions = resolve_regions(&burst.segments, &outcome, total, 0.5, guard, passes);
     let choice = frame_corridors(&burst.segments, &burst.cameras, &regions, &outcome, total);
     let coverage = crate::segmentation::proportional_coverage(
         &burst.segments,
@@ -198,6 +207,7 @@ pub(crate) fn replay_measurements(
         guard,
         refine,
         &[],
+        passes,
     );
     let scope: Vec<u64> = (1..=total).collect();
     let cameras: Vec<Value> = burst.cameras.iter().enumerate().map(|(index, camera)| {

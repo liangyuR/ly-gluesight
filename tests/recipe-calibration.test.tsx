@@ -8,7 +8,7 @@ import { workspaceApi } from "../src/features/workspace/api";
 import type { WorkspaceView } from "../src/features/workspace/types";
 import { burstRecipe, burstWorkspaceView, pathSegment, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { historyCandidates: vi.fn(), measureTeaching: vi.fn(), confirmTolerance: vi.fn(), calibrationSkipSuggest: vi.fn(), confirmSkip: vi.fn(), calibrationRoundFeatures: vi.fn(), calibrationFrame: vi.fn(), captureFrameImage: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { historyCandidates: vi.fn(), measureTeaching: vi.fn(), confirmTolerance: vi.fn(), calibrationSkipSuggest: vi.fn(), confirmSkip: vi.fn(), passSkipSuggest: vi.fn(), confirmPassSkip: vi.fn(), calibrationRoundFeatures: vi.fn(), calibrationFrame: vi.fn(), captureFrameImage: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter initialEntries={["/recipe/calibration"]}><CalibrationPage /></MemoryRouter>);
@@ -27,6 +27,7 @@ beforeEach(() => {
   vi.mocked(useWorkspace).mockImplementation(() => ws);
   vi.mocked(workspaceApi.historyCandidates).mockResolvedValue([]);
   vi.mocked(workspaceApi.calibrationSkipSuggest).mockResolvedValue([]);
+  vi.mocked(workspaceApi.passSkipSuggest).mockResolvedValue({ current: 0, suggested: null, passes: [], pending: "示教件还没有测量" });
   vi.mocked(workspaceApi.calibrationRoundFeatures).mockResolvedValue([]);
   for (const fn of [workspaceApi.measureTeaching, workspaceApi.confirmTolerance]) vi.mocked(fn).mockResolvedValue(ws.data!);
 });
