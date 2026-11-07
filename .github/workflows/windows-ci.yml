@@ -49,11 +49,15 @@ jobs:
     if: needs.changes.outputs.required == 'true'
     runs-on: windows-2022
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: ${{ matrix.shard == 1 && '0' || '1' }}
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ needs.changes.outputs.pnpm }}
@@ -65,9 +69,10 @@ jobs:
           cache: ${{ (github.event_name != 'workflow_dispatch' || inputs.use_cache) && 'pnpm' || '' }}
           package-manager-cache: false
       - name: Prepare Rust formatter
-        if: needs.changes.outputs.rust-format == 'true'
+        if: matrix.shard == 1 && needs.changes.outputs.rust-format == 'true'
         run: rustup toolchain install ${{ needs.changes.outputs.rust }} --profile minimal --component rustfmt
       - name: Format check
+        if: matrix.shard == 1
         env:
           FORMAT_BASE: ${{ needs.changes.outputs.base }}
         run: |
@@ -76,11 +81,12 @@ jobs:
           node scripts/Check-RustFormat.mjs --base $env:FORMAT_BASE --head $env:GITHUB_SHA
           if ($LASTEXITCODE -ne 0) { throw 'Incremental Rust format check failed.' }
       - name: CI routing regression
+        if: matrix.shard == 1
         run: node --test scripts/Plan-Ci.test.mjs
       - name: Install locked frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Frontend unit tests
-        run: pnpm test
+        run: pnpm test --shard=${{ matrix.shard }}/2
 
   rust:
     needs: changes
