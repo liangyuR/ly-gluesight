@@ -48,16 +48,13 @@ export function cameraParamsTasks(plan: TeachingPlan): CameraParamsTask[] {
   });
 }
 
-/** 按相机、再按段的顺序列出每一对（段, 检测相机）的走廊任务。 */
+/** 按段的顺序、同一段再按计划相机顺序列出每一对（段, 检测相机）的走廊任务。 */
 export function corridorTasks(plan: TeachingPlan): CorridorTask[] {
-  return plan.cameras.flatMap(camera => {
-    const views = plan.cameraTeaching.find(t => t.camera === camera)?.segments ?? [];
-    return plan.segments.filter(segment => segmentCameras(segment, plan.cameras).includes(camera)).map(segment => {
-      const view = views.find(v => v.segment === segment.index);
-      const status: CorridorPhase = view?.saved ? "done" : view ? "teach" : "selectFrame";
-      return { camera, segment: segment.index, kind: segment.kind, status, ...(view ? { frame: view.frame } : {}), label: phaseLabel[status], href: corridorPath(camera, segment.index) };
-    });
-  });
+  return plan.segments.flatMap(segment => segmentCameras(segment, plan.cameras).map(camera => {
+    const view = plan.cameraTeaching.find(t => t.camera === camera)?.segments.find(v => v.segment === segment.index);
+    const status: CorridorPhase = view?.saved ? "done" : view ? "teach" : "selectFrame";
+    return { camera, segment: segment.index, kind: segment.kind, status, ...(view ? { frame: view.frame } : {}), label: phaseLabel[status], href: corridorPath(camera, segment.index) };
+  }));
 }
 
 /** 下一个要做的示教：第一条未完成的走廊，其次第一台缺像素当量的相机；都完成为 null。 */
