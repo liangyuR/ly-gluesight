@@ -10,6 +10,7 @@ import { Badge, Panel } from "./components";
 import { pieceTime } from "./pieces";
 import type { Comparison, HistoryCandidate } from "./types";
 import type { HistoryDetailState } from "../history/types";
+import { useRecipeHref } from "./recipeRoutes";
 
 const modeLabels: Record<PartMode, string> = { production: "生产", maintenanceCollect: "维护采集", maintenanceShadow: "维护试判" };
 const toneOf = (comparison: Comparison) => { const tone = verdictTone(comparison.judgement.verdict); return tone === "fault" ? "ng" : tone; };
@@ -20,6 +21,7 @@ const toneOf = (comparison: Comparison) => { const tone = verdictTone(comparison
  * 还有改动等着自动保存时，点测试先立即保存，存好再按保存后的修订测。
  */
 export function HistoryTrials({ recipeId }: { recipeId: string }) {
+  const href = useRecipeHref();
   const { data, acting, pendingSave, saveNow, saveState } = useWorkspace();
   const [rows, setRows] = useState<HistoryCandidate[] | null>(null);
   const [error, setError] = useState("");
@@ -74,7 +76,7 @@ export function HistoryTrials({ recipeId }: { recipeId: string }) {
             {!!result?.burst?.unmeasured?.length && <span title={result.burst.unmeasured.map(u => u.reason).join("；")}><Badge tone="warn">部分段未测</Badge></span>}
             <div className="wp-actions">
               {result && <Link className="wp-text-link" to={`/history/${row.recordId}?comparison=${encodeURIComponent(result.id)}`}
-                state={{ returnTo: { path: "/recipe/calibration", label: "返回试测" } } satisfies HistoryDetailState}>看详情</Link>}
+                state={{ returnTo: { path: href("/recipe/calibration"), label: "返回试测" } } satisfies HistoryDetailState}>看详情</Link>}
               <Button size="sm" aria-label={`触发测试 ${label}`} disabled={!!reason || (running != null && !busy)} title={reason || undefined} onClick={() => trigger(row.recordId)}>{busy ? "测试中…" : result ? "重新测试" : "触发测试"}</Button>
             </div>
           </div>

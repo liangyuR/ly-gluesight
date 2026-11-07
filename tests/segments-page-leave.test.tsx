@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { SnackbarProvider } from "qing-steel";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SegmentsPage from "../src/features/workspace/SegmentsPage";
+import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import { WorkspaceProvider, useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
@@ -35,21 +36,27 @@ beforeEach(() => {
   vi.mocked(cameraApi.rigConfig).mockResolvedValue([]);
 });
 
-/** 页面之外读出工作区当前的配方与修订，并能把页面卸掉（仍留在这个配方）。 */
+const Segments = inRecipe(SegmentsPage);
+
+/** 页面之外读出工作区当前的配方与修订，能把页面卸掉（仍留在这个配方），也能按地址换到配方 B。 */
 function Shell() {
   const ws = useWorkspace();
+  const navigate = useNavigate();
   const [onPage, setOnPage] = useState(true);
   return <>
     <button onClick={() => setOnPage(false)}>离开本页</button>
+    <button onClick={() => navigate("/recipe/B/segments")}>打开配方 B</button>
     <output aria-label="工作区配方">{ws.data?.workspace.doc.id ?? "无"}</output>
     <output aria-label="工作区修订">{ws.data?.workspace.revision ?? "无"}</output>
-    {onPage && <SegmentsPage />}
+    {onPage && <Segments />}
   </>;
 }
 
 /** 打开配方 A 的段列表页，并把第 1 段的帧数容差改成 2（防抖没到期，还没提交）。 */
 async function editWithoutWaiting() {
-  render(<MemoryRouter><SnackbarProvider><WorkspaceProvider><Shell /></WorkspaceProvider></SnackbarProvider></MemoryRouter>);
+  render(<MemoryRouter initialEntries={["/recipe/A/segments"]}><SnackbarProvider><WorkspaceProvider><Routes>
+    <Route path="/recipe/:recipeId/segments" element={<Shell />} />
+  </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>);
   const first = within(await screen.findByRole("region", { name: "段 1" }));
   await waitFor(() => expect(screen.getByLabelText("工作区配方")).toHaveTextContent("A"));
   fireEvent.change(first.getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value: "2" } });
@@ -63,8 +70,7 @@ describe("防抖没到期就离开段列表页", () => {
     vi.mocked(workspaceApi.get).mockImplementation(id => id === "B" ? loadingB.promise : Promise.resolve(view(id)));
     await editWithoutWaiting();
 
-    fireEvent.keyDown(screen.getByRole("combobox", { name: "当前配方" }), { key: "ArrowDown" });
-    await userEvent.setup().click(screen.getByRole("option", { name: /^B ·/ }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "打开配方 B" }));
     await act(async () => loadingB.resolve(view("B")));
 
     expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1);

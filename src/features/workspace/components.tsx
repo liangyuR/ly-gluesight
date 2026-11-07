@@ -2,7 +2,7 @@ import type { BrushGuide, ImagePoint } from "./teachingPath";
 import { createContext, useContext, useEffect, useId, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Camera, Minus, Plus, RotateCcw } from "lucide-react";
-import { Alert, Button, Card, Chip, EmptyState, IconButton, NumberField as SteelNumberField, Select, StatusBadge } from "qing-steel";
+import { Alert, Button, Card, Chip, EmptyState, IconButton, NumberField as SteelNumberField, StatusBadge } from "qing-steel";
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
@@ -11,6 +11,7 @@ import { fillRgba } from "../../lib/frame";
 import { errorText } from "../../lib/errors";
 import { PlanSteps } from "./PlanSteps";
 import { searchBand } from "./searchBand";
+import { useRecipeHref } from "./recipeRoutes";
 import { fanRadii, guideRadii, HEADING_MARK, rayEnd, wedgePath, type HeadingGuide, type HeadingPart } from "./headingOverlay";
 import ContextHelp from "../cycle/components/ContextHelp";
 
@@ -35,18 +36,20 @@ export function NumberField({ label, value, unit, onChange, min, max, step = 1, 
   return <SteelNumberField label={label} className="num" value={value != null && Number.isFinite(value) ? value : ""} min={min} max={max} step={step} disabled={disabled} unit={unit} clamp={false} onValueChange={value => onChange(value === "" ? NaN : value)} />;
 }
 export function WorkspaceEmpty() {
-  const { error } = useWorkspace();
-  return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库选择或新建配方，再开始规划段与示教走廊。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Button asChild><Link to="/recipe">打开配方库</Link></Button>} /></div></div>;
+  const { error, selectedId, select } = useWorkspace();
+  if (desktopAvailable() && selectedId && !error) return <div className="wp-page"><p className="muted">正在读取配方 {selectedId}…</p></div>;
+  // 读取失败（如临时读不到文件）时可以就地重试，不必先打开别的配方
+  return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}{selectedId && desktopAvailable() && <Button size="sm" onClick={() => void select(selectedId)}>重试读取 {selectedId}</Button>}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "没有打开配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库打开或新建配方，再开始规划段与示教走廊。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Button asChild><Link to="/recipe">打开配方库</Link></Button>} /></div></div>;
 }
 export function WorkspaceBar({ showNavigation = true }: { showNavigation?: boolean } = {}) {
-  const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, navigationDirty, busy, previewError, error, saveState, retrySave, setError } = useWorkspace();
+  const { data, doc, navigationDirty, previewError, error, saveState, retrySave, setError } = useWorkspace();
   const { pathname } = useLocation();
+  const href = useRecipeHref();
   useEffect(() => () => setError(""), [pathname, setError]);
-  const choices = [...list.map(r => ({ id:r.id, name:r.name })), ...drafts.filter(w => !list.some(r => r.id === w.doc.id)).map(w => ({ id:w.doc.id, name:w.doc.name }))];
   const publish = data?.workspace.publish;
-  return <>{showNavigation && <><div className="wp-workbench-bar"><div className="wp-recipe-picker"><Select aria-label="当前配方" title="当前配方" value={selectedId ?? ""} disabled={busy || dirty || frameDirty || navigationDirty} onValueChange={value => void select(value)} placeholder="选择配方" options={choices.map(r => ({ value: r.id, label: `${r.id} · ${r.name}` }))} /></div>{data && <Badge tone={data.productionVersion ? "ok" : "warn"}>{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge>}{data && publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}<Steps /><span className="wp-save-state" title={data ? `候选 v${doc?.version} · 修订 ${data.workspace.revision}` : undefined}><Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge></span>{saveState === "failed" && <Button size="sm" onClick={retrySave}>重试保存</Button>}<Button asChild variant="outlined"><Link to="/recipe">配方库</Link></Button></div></>}
+  return <>{showNavigation && <><div className="wp-workbench-bar"><nav className="wp-recipe-picker" aria-label="配方位置"><Link to="/recipe">配方库</Link><span aria-hidden="true">/</span><strong title={doc ? `${doc.id} · ${doc.name}` : undefined}>{doc ? `${doc.id} · ${doc.name}` : "…"}</strong></nav>{data && <Badge tone={data.productionVersion ? "ok" : "warn"}>{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge>}{data && publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}<Steps /><span className="wp-save-state" title={data ? `候选 v${doc?.version} · 修订 ${data.workspace.revision}` : undefined}><Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge></span>{saveState === "failed" && <Button size="sm" onClick={retrySave}>重试保存</Button>}</div></>}
     {!showNavigation && saveState === "failed" && <Notice title="候选保存失败" tone="warn"><Button size="sm" onClick={retrySave}>重试保存</Button></Notice>}
-    {navigationDirty && <Notice title="工件导航图尚未保存" tone="warn">修改已保留，请在地图中保存或撤销；标注可到<Link to="/recipe/segments">分段页</Link>继续编辑。保存后再发布或切换配方。</Notice>}
+    {navigationDirty && <Notice title="工件导航图尚未保存" tone="warn">修改已保留，请在地图中保存或撤销；标注可到<Link to={href("/recipe/segments")}>分段页</Link>继续编辑。保存后再发布或切换配方。</Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
     {publish?.state === "waiting" && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效失败可在发布页重试同一版本。</Notice>}

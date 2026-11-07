@@ -1,3 +1,4 @@
+import { createElement } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
@@ -5,6 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { SnackbarProvider } from "qing-steel";
 import { WorkspaceProvider } from "../src/features/workspace/context";
+import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import SegmentsPage from "../src/features/workspace/SegmentsPage";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
@@ -57,15 +59,15 @@ beforeEach(() => {
 
 function show(path: string) {
   render(<MemoryRouter initialEntries={[path]}><SnackbarProvider><WorkspaceProvider><Routes>
-    <Route path="/recipe/segments" element={<SegmentsPage />} />
-    <Route path="/recipe/teach" element={<TeachingPage />} />
-    <Route path="/recipe/validation" element={<ValidationPage />} />
+    <Route path="/recipe/:recipeId/segments" element={createElement(inRecipe(SegmentsPage))} />
+    <Route path="/recipe/:recipeId/teach" element={createElement(inRecipe(TeachingPage))} />
+    <Route path="/recipe/:recipeId/validation" element={createElement(inRecipe(ValidationPage))} />
   </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>);
   return userEvent.setup();
 }
 
 it("地图跨段点击 → 浏览点击对应的原始帧组，未确认选帧前不写入示教数据", async () => {
-  const user = show("/recipe/teach?camera=CAM-1&segment=1");
+  const user = show("/recipe/A/teach?camera=CAM-1&segment=1");
   const canvas = await screen.findByRole("img", { name: "工件图与有向胶路" });
   await waitFor(() => expect(canvas.querySelector("image")).toHaveAttribute("href", "blob:navigation"));
   vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ width: 400, height: 400, x: 0, y: 0, left: 0, top: 0, right: 400, bottom: 400, toJSON() {} });
@@ -77,7 +79,7 @@ it("地图跨段点击 → 浏览点击对应的原始帧组，未确认选帧�
 });
 
 it("编辑地图后离页 → 草稿保留并阻止发布，回到分段保存后恢复可发布状态", async () => {
-  const user = show("/recipe/segments");
+  const user = show("/recipe/A/segments");
   await user.click(await screen.findByRole("button", { name: "编辑地图" }));
   await user.click(screen.getByText("精确调整与更多操作", { exact: true }));
   fireEvent.change(screen.getByLabelText("段 1 后分界（路径 %）"), { target: { value: "45" } });
@@ -98,7 +100,7 @@ it("编辑地图后离页 → 草稿保留并阻止发布，回到分段保存�
 });
 
 it("示教页修改视图并保存 → 重开恢复朝向和底色，空间确认及胶路保持不变", async () => {
-  const user = show("/recipe/teach?camera=CAM-1&segment=1");
+  const user = show("/recipe/A/teach?camera=CAM-1&segment=1");
   await screen.findByRole("img", { name: "工件图与有向胶路" });
   const before = structuredClone(view.navigation!.map!);
   await user.click(screen.getByText("视图设置", { exact: true }));
@@ -110,7 +112,7 @@ it("示教页修改视图并保存 → 重开恢复朝向和底色，空间确�
   await waitFor(() => expect(screen.queryByRole("button", { name: "保存视图" })).toBeNull());
   expect(view.navigation!.map).toEqual({ ...before, view: { rotation: 90, flipX: true, flipY: false, background: "light" } });
   cleanup();
-  show("/recipe/segments");
+  show("/recipe/A/segments");
   await user.click(await screen.findByText("视图设置", { exact: true }));
   expect(screen.getByLabelText("工件视图旋转角度")).toHaveValue(90);
   expect(screen.getByRole("button", { name: "水平翻转" })).toHaveAttribute("aria-pressed", "true");

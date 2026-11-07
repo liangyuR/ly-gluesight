@@ -34,7 +34,7 @@
 | 握手审计、日志 | `state/plc-handshake*`；运行日志和 PLC 日志在 `~/gs_logs/runtime/<环境>/<实例>/` | 本机 | 握手恢复状态不外置；新运行日志条目带项目及会话标识 |
 | 站点模式、离线选择 | `config/site-offline.json` | 本机 | |
 | 受管样本 | `samples/` | 本机 | 按样本集 ID 引用，各项目共用 |
-| 界面偏好 | `config/preferences-<SID>.json` | 本机（按账号） | `lastWorkspace` 改为按项目分别记 |
+| 界面偏好 | `config/preferences-<SID>.json` | 本机（按账号） | 不记上次打开的配方：配方页按地址打开（[ui-recipe D12](../decisions/ui-recipe.md)） |
 | 缓存、WebView、导出、迁移 | `cache/` 等 | 本机 | |
 
 ## 三、目录结构
@@ -173,7 +173,7 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 | 路径调用方 | `camera.rs`（`cameras.json`、`recipe-capture`）、`plc.rs`（`plc.json`）、`cycle.rs`（`cycle.json`、`recipes`、`records`、`records-offline`、`audit-spool`）、`vision.rs`（`calib`）、`workspace.rs` 与 `workspace/transfer.rs`（`workspaces`、`vision/releases`、`recipe-capture`）、`diagnostics.rs`、`storage.rs` 的飞拍估算参数 |
 | `recipe.rs` | 计划版本计数放在 `state/plan-version` |
 | `site.rs` | `check_switch` 抽成站点模式切换与项目切换共用 |
-| 前端 | 侧栏当前项目与切换菜单；项目管理页；启动时的“选择项目”状态；`lastWorkspace` 按项目记 |
+| 前端 | 侧栏当前项目与切换菜单；项目管理页；启动时的“选择项目”状态 |
 | 文档、脚本 | `storage-layout.md` 改为项目目录结构；`docs/README.md` 关键模块表；`scripts/soak/lib.mjs` 的清理目录 |
 
 ## 九、已确认

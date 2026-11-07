@@ -309,10 +309,8 @@ pub fn storage_open_directory(app: AppHandle, target: Option<String>) -> Result<
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-const LAST_WORKSPACE_BY_PROJECT: &str = "lastWorkspaceByProject";
-fn project_id(app: &AppHandle) -> String {
-    app.state::<crate::project::ActiveProject>().id.clone()
-}
+/// 旧版本记过的“上次打开的配方”：配方页改为按地址打开后不再使用，读写时丢掉。
+const OBSOLETE_PREFERENCES: [&str; 2] = ["lastWorkspace", "lastWorkspaceByProject"];
 fn preference_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(config(app).join(format!("preferences-{}.json", user_key()?)))
 }
@@ -334,12 +332,8 @@ fn feasibility_file(app: &AppHandle) -> PathBuf {
 fn preferences(app: &AppHandle) -> Result<Value, String> {
     let mut value = read_object(&preference_file(app)?)?;
     let object = value.as_object_mut().unwrap();
-    let last = object
-        .remove(LAST_WORKSPACE_BY_PROJECT)
-        .and_then(|mut map| map.get_mut(project_id(app).as_str()).map(Value::take));
-    object.remove("lastWorkspace");
-    if let Some(last) = last {
-        object.insert("lastWorkspace".into(), last);
+    for key in OBSOLETE_PREFERENCES {
+        object.remove(key);
     }
     let shared = read_object(&feasibility_file(app))?;
     object.extend(shared.as_object().unwrap().clone());
@@ -358,9 +352,10 @@ pub fn storage_preferences_update(app: AppHandle, patch: Value) -> Result<Value,
     let patch = patch.as_object().ok_or("参数补丁必须是对象")?;
     let file = preference_file(&app)?;
     let shared_file = feasibility_file(&app);
-    let project = project_id(&app);
     let mut user = read_object(&file)?;
-    user.as_object_mut().unwrap().remove("lastWorkspace");
+    for key in OBSOLETE_PREFERENCES {
+        user.as_object_mut().unwrap().remove(key);
+    }
     let mut shared = read_object(&shared_file)?;
     for (key, value) in patch {
         let target = match key.as_str() {
@@ -369,25 +364,6 @@ pub fn storage_preferences_update(app: AppHandle, patch: Value) -> Result<Value,
                     return Err("飞拍参数必须为正数".into());
                 }
                 &mut shared
-            }
-            "lastWorkspace" => {
-                if !value.is_null() && !value.is_string() {
-                    return Err("工作区标识必须是字符串".into());
-                }
-                let map = user
-                    .as_object_mut()
-                    .unwrap()
-                    .entry(LAST_WORKSPACE_BY_PROJECT)
-                    .or_insert_with(|| json!({}));
-                if !map.is_object() {
-                    *map = json!({});
-                }
-                if value.is_null() {
-                    map.as_object_mut().unwrap().remove(&project);
-                } else {
-                    map[&project] = value.clone();
-                }
-                continue;
             }
             _ => return Err(format!("未知偏好字段：{key}")),
         };

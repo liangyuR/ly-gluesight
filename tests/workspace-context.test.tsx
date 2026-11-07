@@ -46,6 +46,8 @@ async function openBurst() {
 async function open() {
   const wrapper = ({ children }: { children: ReactNode }) => <SnackbarProvider><WorkspaceProvider>{children}</WorkspaceProvider></SnackbarProvider>;
   const hook = renderHook(() => useWorkspace(), { wrapper });
+  // 不再自动打开配方：配方页按地址打开，这里直接打开 A
+  await act(() => hook.result.current.select("A"));
   await waitFor(() => expect(hook.result.current.data?.workspace.doc.id).toBe("A"));
   return hook;
 }

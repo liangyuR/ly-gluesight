@@ -649,11 +649,11 @@
 
 | StepIdV2 | 页面 | 路由 |
 | --- | --- | --- |
-| `capture` | 示教件 | `/recipe/capture` |
-| `segments` | 段列表 | `/recipe/segments` |
-| `corridor` | 按段 × 检测相机示教走廊 | `/recipe/teach` |
-| `calibration` | 试测 | `/recipe/calibration` |
-| `validation`、`publish` | 发布（样本验证可选） | `/recipe/validation` |
+| `capture` | 示教件 | `/recipe/<编号>/capture` |
+| `segments` | 段列表 | `/recipe/<编号>/segments` |
+| `corridor` | 按段 × 检测相机示教走廊 | `/recipe/<编号>/teach` |
+| `calibration` | 试测 | `/recipe/<编号>/calibration` |
+| `validation`、`publish` | 发布（样本验证可选） | `/recipe/<编号>/validation` |
 
 ### 5.4 新命令
 

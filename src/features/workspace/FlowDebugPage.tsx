@@ -12,6 +12,7 @@ import { flowChanges, type FlowChanges } from "./flowDebug";
 import { flowGraphPath, FlowTransport, openFlow, type FlowVariant } from "./flowTransport";
 import { confirmedSegmentRange } from "./teach";
 import type { WorkspaceView } from "./types";
+import { useRecipeHref } from "./recipeRoutes";
 
 const FlowEditor = lazy(() => import("./FlowEditor"));
 
@@ -29,6 +30,7 @@ export default function FlowDebugPage() {
  * 改过的专家参数可存为本相机覆盖，其余改动只在本页试跑。切换相机、段、测量图或帧组时编辑器卸载重挂。
  */
 function FlowDebug({ data, doc }: { data: WorkspaceView; doc: RecipeDoc }) {
+  const href = useRecipeHref();
   const { setDoc } = useWorkspace();
   const { show: snack } = useSnackbar();
   const [search, setSearch] = useSearchParams();
@@ -107,7 +109,7 @@ function FlowDebug({ data, doc }: { data: WorkspaceView; doc: RecipeDoc }) {
   };
 
   if (!entries.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Workflow size={32} aria-hidden="true" />} title="还没有可调试的测量图" description="先在走廊示教里为至少一段保存走廊，再回来逐节点调试。"
-    action={<Button asChild><Link to="/recipe/teach">前往走廊示教<ArrowRight size={15} aria-hidden="true" /></Link></Button>} /></Surface></div>;
+    action={<Button asChild><Link to={href("/recipe/teach")}>前往走廊示教<ArrowRight size={15} aria-hidden="true" /></Link></Button>} /></Surface></div>;
 
   return <div className="wp-page wp-flow-page"><WorkspaceBar />
     <Surface role="region" className="wp-flow-bar" aria-label="调试对象">

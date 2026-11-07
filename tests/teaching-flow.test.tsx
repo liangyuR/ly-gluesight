@@ -1,12 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { PointerEventsCheckLevel } from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
-import { StrictMode } from "react";
+import { StrictMode, createElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import { WorkspaceProvider } from "../src/features/workspace/context";
+import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import { SnackbarProvider } from "qing-steel";
 import { workspaceApi } from "../src/features/workspace/api";
 import type { WorkspaceView } from "../src/features/workspace/types";
@@ -66,8 +67,8 @@ function renderWorkspace(path: string, strict = false) {
   // Testing Library 只在全局有 jest 时才在 waitFor / findBy 里推进假时钟
   Object.assign(globalThis, { jest: { advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms) } });
   const workspace = <MemoryRouter initialEntries={[path]}><SnackbarProvider><WorkspaceProvider><Routes>
-    <Route path="/recipe/teach" element={<TeachingPage />} />
-    <Route path="/recipe/validation" element={<ValidationPage />} />
+    <Route path="/recipe/:recipeId/teach" element={createElement(inRecipe(TeachingPage))} />
+    <Route path="/recipe/:recipeId/validation" element={createElement(inRecipe(ValidationPage))} />
   </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>;
   render(strict ? <StrictMode>{workspace}</StrictMode> : workspace);
   // jsdom 没有样式表，逐级检查 pointer-events 只是空耗
@@ -105,7 +106,7 @@ it("保存期间继续加点 → 不锁编辑、缩放与走廊不重置，保�
   const candidate = corridorCandidate();
   const saving = deferred<void>();
   mockSite(candidate, { workspace_save_doc: savingDoc(candidate, saving.promise) });
-  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   const image = await screen.findByRole("img", { name: CAM2 });
   fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
   await user.click(screen.getByRole("button", { name: "放大原图" }));
@@ -141,7 +142,7 @@ it("保存期间改相机参数 → 保存结果回来不覆盖新值，按新�
   const candidate = corridorCandidate();
   const saving = deferred<void>();
   mockSite(candidate, { workspace_save_doc: savingDoc(candidate, saving.promise) });
-  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   await user.click(await screen.findByRole("button", { name: "选择相机 CAM-2" }));
   const scale = await screen.findByRole("spinbutton", { name: /^像素当量/ });
   fireEvent.change(scale, { target: { value: "0.2" } });
@@ -161,7 +162,7 @@ it("保存期间改相机参数 → 保存结果回来不覆盖新值，按新�
 it.each([[null], [0.2]])("候选当量为 %s、设备标定为 0.115 mm/px → 点“采用标定当量”把标定值存进候选配方", async mmPerPx => {
   const candidate = corridorCandidate((inspect, view) => { inspect.mmPerPx = mmPerPx; view.plan!.cameraTeaching[1].calibMmPerPx = .115; });
   mockSite(candidate, { workspace_save_doc: savingDoc(candidate) });
-  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   await user.click(await screen.findByRole("button", { name: "选择相机 CAM-2" }));
   await user.click(await screen.findByRole("button", { name: "采用标定当量" }));
   act(() => { vi.advanceTimersByTime(900); });
@@ -177,7 +178,7 @@ it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保�
   const candidate = corridorCandidate();
   const saving = deferred<void>();
   mockSite(candidate, { workspace_save_doc: savingDoc(candidate, saving.promise) });
-  renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   const image = await screen.findByRole("img", { name: CAM2 });
   fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
   for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
@@ -207,7 +208,7 @@ it("刚改了走廊、还没自动保存就点全段试测 → 立即保存，�
     workspace_save_doc: savingDoc(candidate),
     workspace_teach_preview_segment: () => ({ start: 1, end: 6, frames: [] }),
   });
-  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   const image = await screen.findByRole("img", { name: CAM2 });
   fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
   for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
@@ -229,7 +230,7 @@ it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引�
     workspace_save_doc: savingDoc(candidate),
     workspace_extract_corridor: () => ({ path: bend, message: "走廊已提取" }),
   });
-  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   const image = await screen.findByRole("img", { name: CAM2 });
   fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
   fireEvent.pointerDown(image, { clientX: 10, clientY: 10 });
@@ -266,7 +267,7 @@ it("段已有示教帧时重新选帧 → 只在示教件这一段内选帧，�
     workspace_teach_segment_corridor: () => response,
   });
   const frameImage = vi.spyOn(workspaceApi, "captureFrameImage").mockResolvedValue(picture);
-  const user = renderWorkspace("/recipe/teach?camera=CAM-2&segment=1");
+  const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   await screen.findByRole("img", { name: CAM2 });
   await user.click(screen.getByRole("button", { name: "重新选帧" }));
   await screen.findByRole("region", { name: "示教帧选择" });

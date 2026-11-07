@@ -18,6 +18,7 @@ import ValidationPage from "../features/workspace/ValidationPage";
 import SegmentsPage from "../features/workspace/SegmentsPage";
 import CalibrationPage from "../features/workspace/CalibrationPage";
 import { AppLogPage } from "../features/logs";
+import { inRecipe } from "../features/workspace/RecipeRoute";
 
 export interface PageRoute {
   path: string;
@@ -67,17 +68,17 @@ export const navEntries: NavEntry[] = [
 
 export const navItems: NavItem[] = navEntries.flatMap((entry) => (isNavGroup(entry) ? entry.children : [entry]));
 
-/** 配方工作台各步骤的页面（段配方，StepIdV2）：capture 走 /recipe/capture，segments 走 /recipe/segments，corridor 走 /recipe/teach，
- * calibration 走 /recipe/calibration，validation / publish 走 /recipe/validation。 */
+/** 配方工作台各步骤的页面（段配方，StepIdV2），地址带配方编号：capture 走 /recipe/<编号>/capture，segments 走 …/segments，
+ * corridor 走 …/teach，calibration 走 …/calibration，validation / publish 走 …/validation。打开哪个配方只由地址决定。 */
 const recipeSteps: PageRoute[] = [
-  { path:"/recipe/progress",label:"进度总览",element:ProgressPage },
-  { path:"/recipe/capture",label:"示教件",element:TeachingPiecePage },
-  { path:"/recipe/segments",label:"段列表",element:SegmentsPage },
-  { path:"/recipe/teach",label:"走廊示教",element:TeachingPage },
-  { path:"/recipe/flow",label:"流程调试",element:FlowDebugPage },
-  { path:"/recipe/calibration",label:"试测",element:CalibrationPage },
-  { path:"/recipe/validation",label:"发布",element:ValidationPage },
-].map(step => ({ ...step, label:`${recipe.label} · ${step.label}` }));
+  { path:"/recipe/:recipeId/progress",label:"进度总览",element:ProgressPage },
+  { path:"/recipe/:recipeId/capture",label:"示教件",element:TeachingPiecePage },
+  { path:"/recipe/:recipeId/segments",label:"段列表",element:SegmentsPage },
+  { path:"/recipe/:recipeId/teach",label:"走廊示教",element:TeachingPage },
+  { path:"/recipe/:recipeId/flow",label:"流程调试",element:FlowDebugPage },
+  { path:"/recipe/:recipeId/calibration",label:"试测",element:CalibrationPage },
+  { path:"/recipe/:recipeId/validation",label:"发布",element:ValidationPage },
+].map(step => ({ ...step, element:inRecipe(step.element), label:`${recipe.label} · ${step.label}` }));
 
 export const pageRoutes: PageRoute[] = [...navItems, ...recipeSteps, projectsItem, settingsItem];
 

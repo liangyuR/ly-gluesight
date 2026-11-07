@@ -30,7 +30,7 @@
 
 ### 步骤与页面
 
-进度步骤为 示教件 → 分段 → 走廊示教 → 试测 → 验证（可选）→ 发布。步骤 ID 与路由沿用（`capture`、`/recipe/capture`；`calibration`、`/recipe/calibration`），标签分别为“示教件”“试测”，减少改动面。
+进度步骤为 示教件 → 分段 → 走廊示教 → 试测 → 验证（可选）→ 发布。步骤 ID 与路由沿用（`capture`、`/recipe/<编号>/capture`；`calibration`、`/recipe/<编号>/calibration`，地址带配方编号见 [ui-recipe D12](ui-recipe.md)），标签分别为“示教件”“试测”，减少改动面。
 
 | 步骤 | 行为与完成条件 |
 | --- | --- |

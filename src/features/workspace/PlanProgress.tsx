@@ -10,6 +10,7 @@ import { pieceLabel } from "./pieces";
 import { returnState } from "./returnNavigation";
 import { stageOfV2, stageOptionalV2, stagesV2, stageStatusText, stageStatusTone, stageStatusV2 } from "./stages";
 import "./segments.css";
+import { useRecipeHref } from "./recipeRoutes";
 
 const actions: Record<string, string> = {
   "/recipe/capture": "查看示教件", "/recipe/segments": "编辑段列表", "/recipe/teach": "查看走廊示教",
@@ -18,6 +19,7 @@ const actions: Record<string, string> = {
 
 /** 配方进度（段配方）：示教件 → 段列表 → 走廊示教 → 试测 → 发布（独立样本验证可选）。 */
 export default function PlanProgressPage() {
+  const href = useRecipeHref();
   const { data } = useWorkspace();
   const location = useLocation();
   if (!data) return <WorkspaceEmpty />;
@@ -45,7 +47,7 @@ export default function PlanProgressPage() {
         <strong>{nextStep?.detail || "继续完成当前候选配置"}</strong>
         {reasons.length > 0 && <p>{reasons[0]}{reasons.length > 1 && `（另有 ${reasons.length - 1} 项）`}</p>}
       </div>
-      <Button asChild><Link to={targetPathV2(next.target)} state={back}>{next.label}<ArrowRight size={15} aria-hidden="true" /></Link></Button>
+      <Button asChild><Link to={href(targetPathV2(next.target))} state={back}>{next.label}<ArrowRight size={15} aria-hidden="true" /></Link></Button>
     </section>}
     <div className="wp-progress-list">{stagesV2.map((stage, index) => {
       const status = stageStatusV2(data, stage);
@@ -71,7 +73,7 @@ export default function PlanProgressPage() {
         <output className="wp-progress-state" aria-label={stage.label + "状态"}>{waiting
           ? <Badge tone="neutral"><Lock size={12} aria-hidden="true" />{stageStatusText.waiting}</Badge>
           : status && <Badge tone={stageStatusTone[status]}>{stageStatusText[status]}</Badge>}</output>
-        <Link className="wp-progress-link" to={link.href} state={back}>{link.label}<ArrowRight size={14} aria-hidden="true" /></Link>
+        <Link className="wp-progress-link" to={href(link.href)} state={back}>{link.label}<ArrowRight size={14} aria-hidden="true" /></Link>
       </section>;
     })}</div>
   </Panel></div>;

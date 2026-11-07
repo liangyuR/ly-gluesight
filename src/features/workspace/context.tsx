@@ -1,4 +1,3 @@
-import { storageApi } from "../../lib/storage";
 import { errorText } from "../../lib/errors";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { cameraApi, type CameraConfig } from "../camera";
@@ -9,7 +8,7 @@ import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import type { CameraTeachDraft } from "../plan/types";
 import type { NavigationMapData } from "./navigation/types";
-import { isCurrentFlow, type Workspace, type WorkspaceView } from "./types";
+import type { Workspace, WorkspaceView } from "./types";
 import { corridorStationError, draftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
 import { useSnackbar, type SnackbarMessage } from "qing-steel";
 import "./workspace.css";
@@ -57,7 +56,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [corridorDrafts, setCorridorDrafts] = useState<Record<string, CameraTeachDraft>>({});
   const [navigationDraft, setNavigationDraft] = useState<NavigationDraft | null>(null);
   const [error, setError] = useState("");
-  const [preferenceError, setPreferenceError] = useState("");
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
@@ -148,7 +146,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       if (serial === requestSerial.current) {
         if(next.workspace.doc.id!==id)throw new Error("候选响应与所选配方不一致，请重试选择");
         accept(next);
-        void storageApi.updatePreferences({ lastWorkspace: id }).then(() => { if (serial === requestSerial.current) setPreferenceError(""); }).catch(e => { if (serial === requestSerial.current) setPreferenceError(`工作区偏好未保存：${errorText(e)}`); });
         return next;
       }
     } catch (e) { if (serial === requestSerial.current) setError(errorText(e)); }
@@ -158,17 +155,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!desktopAvailable()) return;
     let alive = true;
-    reloadList().then(async () => {
-      const records = await recipeApi.list();
-      const drafts = await workspaceApi.list();
-      let preferred: string | null = null;
-      try { preferred = (await storageApi.preferences()).lastWorkspace ?? null; }
-      catch (e) { if (alive) setPreferenceError(`工作区偏好读取失败：${errorText(e)}`); }
-      // 旧流程候选不能打开（RB-5），不自动选它
-      const stale = new Set(drafts.filter(w => !isCurrentFlow(w)).map(w => w.doc.id));
-      const ids = [...records.recipes.map(r => r.id), ...drafts.map(w => w.doc.id)].filter(id => !stale.has(id));
-      if (alive && !selected.current && ids.length) await select(preferred && ids.includes(preferred) ? preferred : ids[0]);
-    }).catch(e => setError(errorText(e)));
+    // 不自动打开任何配方：打开哪个由配方页的地址决定（/recipe/<编号>/…）
+    reloadList().catch(e => { if (alive) setError(errorText(e)); });
     const refresh = (id: string) => {
       void reloadList().catch(e => setError(errorText(e)));
       if (id && id === selected.current) {
@@ -267,7 +255,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(timer);
   }, [doc, data, corridorDrafts, dirty, frameDirty, busy, saving, saveRetry, urgent, accept]);
 
-  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || preferenceError || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft,
+  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft,
     clearSelection:()=>{if(dirtyRef.current){setError("当前草稿尚未保存，请先保存或撤销修改");return;}pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setNavigationDraft(null);setError("");clearSnack();},
     discardDrafts:()=>{if(acting.current||savingRef.current)return false;dirtyRef.current=false;navigationDirtyRef.current=false;failedSave.current="";setDoc(data?.workspace.doc??null);setPreview(data?.layout??null);setPreviewError("");setCorridorDrafts({});setNavigationDraft(null);setError("");return true;},
     corridorDrafts, select, reloadList, setDoc,

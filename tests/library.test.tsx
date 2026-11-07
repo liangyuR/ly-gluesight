@@ -27,11 +27,12 @@ beforeEach(() => {
 });
 
 describe("配方库操作", () => {
-  it("创建已成功但选用失败，重试仅打开已有候选，避免二次创建",async()=>{
-    vi.mocked(ws.select).mockResolvedValueOnce(null);show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
-    await userEvent.click(screen.getByRole("button",{name:"创建候选"}));expect(await screen.findByText(/候选已创建，选用未完成/)).toBeVisible();
+  // 防的回归：候选已创建、刷新配方列表失败后重试，又建了第二个候选
+  it("创建已成功但刷新列表失败，重试仅打开已有候选，避免二次创建",async()=>{
+    vi.mocked(ws.reloadList).mockRejectedValueOnce(new Error("配方列表读取失败"));show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
+    await userEvent.click(screen.getByRole("button",{name:"创建候选"}));expect(await screen.findByText(/配方列表读取失败/)).toBeVisible();
     expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe");expect(screen.getByRole("textbox",{name:"配方编号"})).toBeDisabled();
     await userEvent.click(screen.getByRole("button",{name:"打开已创建候选"}));expect(workspaceApi.create).toHaveBeenCalledTimes(1);
-    await waitFor(()=>expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/progress"));
+    await waitFor(()=>expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/NEW/progress"));
   });
 });

@@ -15,13 +15,15 @@ import { PieceMask } from "./PieceMask";
 import { pieceLabel } from "./pieces";
 import "./corridor.css";
 import "./capture.css";
+import { useRecipeHref } from "./recipeRoutes";
 
 /**
- * 试测（段配方，路由 /recipe/calibration）：示教件是唯一的基准件，兼作标准件。各段 N_exp 在示教件分段确认后由后端写入；
+ * 试测（段配方，路由 /recipe/<编号>/calibration）：示教件是唯一的基准件，兼作标准件。各段 N_exp 在示教件分段确认后由后端写入；
  * 本页测量示教件得出胶偏参考 x_ref（单段配方的直线段），逐段确认容差，屏蔽示教件的异常帧组，并用历史件试测。
  * 走廊、当量或检测参数改了之后测量失效，需重新测量。
  */
 export default function CalibrationPage() {
+  const href = useRecipeHref();
   const { data, doc, busy, dirty, frameDirty, act, setError } = useWorkspace();
   // 键入但还没确认的容差，按段序号缓存；只在配方与各段类型 / N_exp 不变时有效（见 resultKey）
   const [typed, setTyped] = useState<{ key: string; values: Record<number, number> }>({ key: "", values: {} });
@@ -66,11 +68,11 @@ export default function CalibrationPage() {
       <div className="wp-calib-need">
         <Badge tone={expectedTotal != null ? "ok" : "warn"}>{expectedTotal != null ? `预期总数 ${expectedText(expectedTotal, toleranceTotal)}` : "预期总数待示教件分段"}</Badge>
         {piece ? <span className="muted">示教件 {pieceLabel(piece)}</span>
-          : <span className="muted">还没有示教件：<Link className="wp-text-link" to="/recipe/capture">先选示教件<ArrowRight size={12} aria-hidden="true" /></Link></span>}
+          : <span className="muted">还没有示教件：<Link className="wp-text-link" to={href("/recipe/capture")}>先选示教件<ArrowRight size={12} aria-hidden="true" /></Link></span>}
         <Badge tone={measured ? "ok" : stale ? "warn" : "neutral"}>{measured ? "已按当前走廊测量" : stale ? "走廊或检测参数改过，需重新测量" : "还没测量"}</Badge>
         <Button variant={measured ? "tonal" : "filled"} disabled={!!measureReason} title={measureReason || "按当前走廊测量示教件的每一帧，得出胶偏参考"} onClick={measure}>测量示教件</Button>
         {measureReason && <span className="muted" role="note">{measureReason}</span>}
-        <Link className="wp-text-link" to="/recipe/segments">段列表</Link>
+        <Link className="wp-text-link" to={href("/recipe/segments")}>段列表</Link>
       </div>
       {calibration && calibration.segments.length > 0 && <Table className="wp-calib-table" caption="逐段基准" columns={columns} rows={calibration.segments} rowKey={row => String(row.index)} />}
       {hinted.length > 0 && <Notice title="定向提示" tone="warn">
