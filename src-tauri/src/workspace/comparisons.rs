@@ -48,9 +48,10 @@ impl Comparisons {
             .filter(|saved| saved.source == "original" || saved.candidate_id == candidate).collect())
     }
 
-    pub(super) fn purge(&self, root: &Path, store: &Store, before: i64) -> Result<(usize, Vec<String>), String> {
+    /// 删除早于 before 的记录并清理失效的对照；另返回被删记录里非当前项目的录制目录（项目、来源、目录）。
+    pub(super) fn purge(&self, root: &Path, store: &Store, before: i64) -> Result<(usize, Vec<String>, Vec<(String, crate::store::RecordSource, String)>), String> {
         let _gate = self.0.lock().unwrap();
-        let count = store.purge_before(before)?;
+        let (count, orphaned) = store.purge_before(before)?;
         let mut warnings = Vec::new();
         let comparisons = root.join("comparisons");
         let scan = (|| {
@@ -74,7 +75,7 @@ impl Comparisons {
             Ok::<_, String>(())
         })();
         if let Err(e) = scan { warnings.push(format!("复测目录清理未完成：{e}")); }
-        Ok((count, warnings))
+        Ok((count, warnings, orphaned))
     }
 }
 

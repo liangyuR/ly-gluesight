@@ -14,7 +14,7 @@
 - **MM-2 结果码**：维护件回写 PLC 的结果码与异常码都是 0；会话只在锁存 pcMode=1 的事务上接受 0，正常事务拒绝 0（PLC 判非法）。记录的 `plc_code` 也写 0，试判结论留在 verdict 与 faultCode。`plc_code` 是回写码、不属于结论：落库时比较摘要与区域判定只看 verdict、faultCode 与原因，区域判定照常保留，它的 `plcCode` 取回写码 0。
 - **MM-3 不能检测的件也回 0**：正常模式下工件结束后回 90 与 faultCode 的情况（找不到配方、配方或发布包问题、相机未就绪等），维护模式下都回结果码 0、PLC 按未检放行，原因记进本件记录（verdict 记 ERR 以免混入合格统计，plc_code 0）。维护期间 PC 只因协议故障置 90。
 - **MM-4 采集件只录图**：采集版件照常按相机帧号分组、录全部帧（不论录制设置，试判件同样，见 MM-11），不送测量，收尾只等收尾窗口；不编拍照计划（会话允许维护件无计划接件）、不要求发布包与走廊。
-- **MM-5 记录库原地加列**：`inspection.db` 版本仍为 9，`parts` 原地加 `mode` 列（production / maintenanceCollect / maintenanceShadow，默认 production），不重建、不丢旧记录。当日统计只算 production。
+- **MM-5 记录库原地加列**：`parts` 带 `mode` 列（production / maintenanceCollect / maintenanceShadow，默认 production）；没有该列的 9 版项目旧库在并入本机记录库时原地补列（[history-scope](history-scope.md) HS-4），旧记录按 production，不丢记录。当日统计只算 production。
 - **MM-6 录制元数据与保留**：`part.json` 新增 `partMode`、`devices`（每台计划相机的 `cameraId`、`cameraConfig`、本次打开实际写入的 `imaging`（没有则取相机保存值）、`deviceSession`）、`plc`（`requestSeq`、`productCode`）；字段名避开已有的 `mode`（录制方式）与 `cameras`（计划相机编号）。维护采集件的录制目录放 `maintenance-collect` 标记文件，按件数与大小的自动清理跳过它们，也不占保留件数。
 - **MM-7 日志**：开关记 `op.maintenance`（`action`、`reason`、退出时仍只有采集版的配方 `collectOnly`）。
 

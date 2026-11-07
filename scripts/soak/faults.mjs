@@ -229,8 +229,8 @@ const scenarios = {
 /** 追溯目录不可写会进入只能重启恢复的故障，单独运行，之后由外层脚本重启实例再验证恢复。 */
 const auditScenarios = {
   async auditSpoolReadOnly(c) {
-    const { project } = await isolatedStorage(c.call, c.manifest, identifier);
-    const dir = await isolatedDirectory(project, "audit-spool");
+    const { data } = await isolatedStorage(c.call, c.manifest, identifier);
+    const dir = await isolatedDirectory(path.join(data, "history"), "audit-spool");
     const user = await whoami();
     await icacls(dir, "/deny", `${user}:(OI)(CI)(W)`);
     let result;

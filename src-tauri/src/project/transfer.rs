@@ -12,13 +12,16 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use super::{manage, ProjectMeta};
+use crate::store::Store;
 
-pub const FORMAT: u32 = 1;
+/// 2：检测记录库是本机记录库按项目导出的子集（记录库版本 10）；1 的包（项目自己的 9 版记录库）照常导入。
+pub const FORMAT: u32 = 2;
+const FORMATS: [u32; 2] = [1, 2];
 const MANIFEST: &str = "manifest.json";
 const MANIFEST_MAX_BYTES: u64 = 64 << 20;
 const PREFIX: &str = "project/";
@@ -193,17 +196,17 @@ fn walk_tops(
 }
 
 /// 待写进包的文件：（包内路径，磁盘路径）。不带示教件原图时只留采集轮次的 `round.json` 与 `frames.jsonl`。
-/// 检测记录库用 `VACUUM INTO` 做含 WAL 的一致性快照，快照放在 `scratch`。
+/// `records` 有值时带上该项目的检测记录：从本机记录库导出本项目记录的子集，放在 `scratch`。
 fn collect(
     root: &Path,
-    include_records: bool,
+    records: Option<&Store>,
     capture_images: bool,
     scratch: &Path,
     notes: &mut Vec<String>,
 ) -> Result<Vec<(String, PathBuf)>, String> {
     let tops: Vec<&str> = CONTENT
         .iter()
-        .chain(if include_records { &RECORDS[1..] } else { &[] })
+        .chain(if records.is_some() { &RECORDS[1..] } else { &[] })
         .copied()
         .collect();
     let mut out = walk_tops(root, &tops, notes)?;
@@ -215,18 +218,13 @@ fn collect(
         }
     }
     let recording_root = crate::log_storage::recording_project(root)?;
-    let db = root.join("inspection.db");
-    if include_records && db.is_file() {
+    if let Some(store) = records {
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
         let snapshot = scratch.join("inspection.db");
-        let conn =
-            rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .map_err(|e| format!("打开检测记录库失败：{e}"))?;
-        conn.busy_timeout(std::time::Duration::from_secs(10))
-            .map_err(|e| e.to_string())?;
-        conn.execute("VACUUM INTO ?1", [snapshot.to_string_lossy()])
-            .map_err(|e| format!("检测记录库快照失败：{e}"))?;
-        drop(conn);
+        let project = super::read_meta(root)?.id;
+        store
+            .export_project(&project, &snapshot)
+            .map_err(|e| format!("导出检测记录失败：{e}"))?;
         if recording_root != root {
             crate::storage::relocate::database(&snapshot, &recording_root, root)?;
         }
@@ -243,8 +241,8 @@ pub struct TransferSize {
     pub records: u64,
 }
 
-/// 导出或复制要带的字节数（压缩前），按是否带示教件原图、是否带检测记录分开给；记录库按当前文件与 WAL 估算。
-pub fn transfer_size(root: &Path) -> Result<TransferSize, String> {
+/// 导出或复制要带的字节数（压缩前），按是否带示教件原图、是否带检测记录分开给；`records_db` 是本项目记录在本机记录库里的估算字节数。
+pub fn transfer_size(root: &Path, records_db: u64) -> Result<TransferSize, String> {
     let bytes = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut notes = Vec::new();
     let mut size = TransferSize::default();
@@ -258,7 +256,7 @@ pub fn transfer_size(root: &Path) -> Result<TransferSize, String> {
     for (_, path) in walk_tops(root, &RECORDS[1..], &mut notes)? {
         size.records += bytes(&path);
     }
-    size.records += bytes(&root.join("inspection.db")) + bytes(&root.join("inspection.db-wal"));
+    size.records += records_db;
     Ok(size)
 }
 
@@ -328,17 +326,18 @@ pub(crate) fn write_zip<M: Serialize>(
     manifest
 }
 
-/// 把项目目录 `root` 导出到 `target`（先写 `.tmp` 再改名）。
+/// 把项目目录 `root` 导出到 `target`（先写 `.tmp` 再改名）；`records` 有值时带上本项目的检测记录与历史原图。
 pub fn export_to(
     root: &Path,
-    include_records: bool,
+    records: Option<&Store>,
     capture_images: bool,
     scratch: &Path,
     target: &Path,
 ) -> Result<Manifest, String> {
     let project = super::read_meta(root)?;
+    let include_records = records.is_some();
     let mut notes = Vec::new();
-    let entries = collect(root, include_records, capture_images, scratch, &mut notes)?;
+    let entries = collect(root, records, capture_images, scratch, &mut notes)?;
     let manifest = Manifest {
         format: FORMAT,
         project,
@@ -402,9 +401,9 @@ pub(crate) fn check_listed(
 fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest, String> {
     let value = manifest_value(zip, "项目导出包")?;
     let format = value.get("format").and_then(Value::as_u64);
-    if format != Some(FORMAT as u64) {
+    if !format.is_some_and(|f| FORMATS.iter().any(|known| u64::from(*known) == f)) {
         return Err(format!(
-            "项目导出包格式 {} 不受本机软件支持（支持 {FORMAT}）",
+            "项目导出包格式 {} 不受本机软件支持（支持 1、{FORMAT}）",
             format.map_or("未知".into(), |f| f.to_string())
         ));
     }
@@ -624,6 +623,7 @@ pub(crate) fn staging_dir(parent: &Path, kind: &str) -> Result<PathBuf, String> 
 }
 
 /// 把导出包导入为资料目录 `data` 下的新项目 `id`；`plan_file` 是本机计划版本记录，`cache` 放暂存目录（用后删除）。
+/// 包里的检测记录并入本机记录库 `store`，归新项目。
 pub fn import_from(
     data: &Path,
     package: &Path,
@@ -631,9 +631,10 @@ pub fn import_from(
     name: &str,
     plan_file: &Path,
     cache: &Path,
+    store: &Store,
 ) -> Result<ProjectImported, String> {
     let staging = staging_dir(cache, "import")?;
-    let result = install(data, package, id, name, plan_file, &staging);
+    let result = install(data, package, id, name, plan_file, &staging, store);
     let _ = std::fs::remove_dir_all(&staging);
     result
 }
@@ -645,6 +646,7 @@ fn install(
     name: &str,
     plan_file: &Path,
     staging: &Path,
+    store: &Store,
 ) -> Result<ProjectImported, String> {
     let manifest = extract(package, staging)?;
     let mut imported = finish(
@@ -653,7 +655,7 @@ fn install(
         &Source {
             id: &manifest.project.id,
             root: Path::new(&manifest.source_root),
-            includes_records: manifest.includes_records,
+            keep_history: manifest.includes_records,
             capture_images: manifest.files.iter().any(|f| capture_image(&f.path)),
         },
         &New {
@@ -662,6 +664,7 @@ fn install(
             description: &manifest.project.description,
         },
         plan_file,
+        Some(store),
     )?;
     imported
         .notes
@@ -672,7 +675,8 @@ fn install(
 struct Source<'a> {
     id: &'a str,
     root: &'a Path,
-    includes_records: bool,
+    /// 候选里来自检测历史的验证样本能留下：导入带了记录，或复制（记录本机共用）
+    keep_history: bool,
     capture_images: bool,
 }
 
@@ -682,13 +686,15 @@ pub struct New<'a> {
     pub description: &'a str,
 }
 
-/// 暂存目录 `root` 里的项目内容落成新项目：改写来源目录路径、重新分配计划版本、候选回到草稿，再原子移入 `projects/<id>`。
+/// 暂存目录 `root` 里的项目内容落成新项目：改写来源目录路径、重新分配计划版本、候选回到草稿，暂存的检测记录库并入本机
+/// 记录库 `store`（重新编号并改写候选与轮次里的记录引用），再原子移入 `projects/<id>`。
 fn finish(
     data: &Path,
     root: &Path,
     source: &Source,
     new: &New,
     plan_file: &Path,
+    store: Option<&Store>,
 ) -> Result<ProjectImported, String> {
     let _guard = manage::LOCK.lock().unwrap_or_else(|e| e.into_inner());
     manage::check_new_id(data, new.id)?;
@@ -720,7 +726,7 @@ fn finish(
             notes.extend(crate::workspace::reset_for_project_import(
                 &candidate,
                 &plans,
-                source.includes_records,
+                source.keep_history,
             )?);
             if !source.capture_images
                 && teaching_round(&candidate)
@@ -733,7 +739,7 @@ fn finish(
     if !without_images.is_empty() {
         without_images.sort();
         notes.push(format!(
-            "候选 {} 的示教件原图未带入：已发布的配方照常检测；要看图、示教走廊、测量示教件或试测，需在示教件页补回原图（要求带入了示教件那一件的检测记录与历史原图），否则重新选用示教件",
+            "候选 {} 的示教件原图未带入：已发布的配方照常检测；要看图、示教走廊、测量示教件或试测，需在示教件页补回原图（要求示教件那一件的检测记录与历史原图在本机：复制的项目沿用来源项目的记录，导入的项目须在导出时带上检测记录），否则重新选用示教件",
             without_images.join("、")
         ));
     }
@@ -746,10 +752,49 @@ fn finish(
     }
     std::fs::create_dir_all(super::projects_root(data)).map_err(|e| e.to_string())?;
     let external = install_recordings(root, &target)?;
-    if let Err(error) = std::fs::rename(root, &target) {
-        if let Some(external) = external {
-            let _ = remove_owned_tree(&external);
+    let undo = |forget: bool| {
+        if forget {
+            if let Some(store) = store {
+                let _ = store.forget_project(new.id);
+            }
         }
+        if let Some(external) = &external {
+            let _ = remove_owned_tree(external);
+        }
+    };
+    let db = root.join("inspection.db");
+    let merged = db.is_file();
+    if merged {
+        let result = store
+            .ok_or_else(|| "本机记录库未打开，不能并入检测记录".to_string())
+            .and_then(|store| store.merge_project(&db, new.id, false))
+            .and_then(|merged| {
+                if merged.renumbered() {
+                    super::records::remap_refs(root, &merged.ids)?;
+                }
+                if merged.duplicates > 0 {
+                    notes.push(format!(
+                        "{} 件检测记录与本机已有记录是同一工件，沿用已有记录",
+                        merged.duplicates
+                    ));
+                }
+                for suffix in ["", "-wal", "-shm"] {
+                    let mut name = db.as_os_str().to_os_string();
+                    name.push(suffix);
+                    let path = PathBuf::from(name);
+                    if path.exists() {
+                        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+                    }
+                }
+                Ok(())
+            });
+        if let Err(error) = result {
+            undo(store.is_some_and(|s| s.merged(new.id).unwrap_or(false)));
+            return Err(format!("检测记录并入本机记录库失败：{error}"));
+        }
+    }
+    if let Err(error) = std::fs::rename(root, &target) {
+        undo(merged);
         return Err(format!("移入项目目录失败：{error}"));
     }
     if let Some(external) = external {
@@ -937,11 +982,11 @@ pub(crate) fn recover_pending_recordings(data: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 把本机项目 `source_id` 复制为新项目：按导出的取舍收集文件（记录库做一致性快照），拷进暂存目录后按导入规则落成新项目。
+/// 把本机项目 `source_id` 复制为新项目：按导出的取舍收集文件，拷进暂存目录后按导入规则落成新项目。检测记录本机共用，
+/// 不复制：仍归来源项目，新项目的候选照常引用。
 pub fn copy_from(
     data: &Path,
     source_id: &str,
-    include_records: bool,
     capture_images: bool,
     new: &New,
     plan_file: &Path,
@@ -951,7 +996,6 @@ pub fn copy_from(
     let result = copy_into(
         data,
         source_id,
-        include_records,
         capture_images,
         new,
         plan_file,
@@ -964,7 +1008,6 @@ pub fn copy_from(
 fn copy_into(
     data: &Path,
     source_id: &str,
-    include_records: bool,
     capture_images: bool,
     new: &New,
     plan_file: &Path,
@@ -974,7 +1017,7 @@ fn copy_into(
     let mut notes = Vec::new();
     let entries = collect(
         &source_root,
-        include_records,
+        None,
         capture_images,
         &staging.join("snapshot"),
         &mut notes,
@@ -993,11 +1036,12 @@ fn copy_into(
         &Source {
             id: source_id,
             root: &source_root,
-            includes_records: include_records,
+            keep_history: true,
             capture_images,
         },
         new,
         plan_file,
+        None,
     )?;
     notes.append(&mut copied.notes);
     copied.notes = notes;
@@ -1050,9 +1094,10 @@ pub async fn project_export(
             return Ok(None);
         };
         let scratch = staging_dir(&data.join("cache"), "export")?;
+        let store = app.state::<Store>();
         let exported = export_to(
             &super::dir(&data, &id),
-            include_records,
+            include_records.then_some(&*store),
             capture_images,
             &scratch,
             &path,
@@ -1134,6 +1179,7 @@ pub async fn project_import(
             &name,
             &plan_file,
             &data.join("cache"),
+            &app.state::<Store>(),
         )?;
         crate::applog::write(
             "info",
@@ -1158,8 +1204,6 @@ pub struct CopyProject {
     #[serde(default)]
     pub description: String,
     #[serde(default)]
-    pub include_records: bool,
-    #[serde(default)]
     pub capture_images: bool,
 }
 
@@ -1176,7 +1220,6 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
         let copied = copy_from(
             &data,
             &request.source_id,
-            request.include_records,
             request.capture_images,
             &New {
                 id: &request.id,
@@ -1190,15 +1233,10 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
             "info",
             "项目复制",
             &format!(
-                "已把项目 {} 复制为 {}（{}）{}",
+                "已把项目 {} 复制为 {}（{}）",
                 request.source_id,
                 copied.meta.id,
                 copied.meta.name,
-                if request.include_records {
-                    "，含检测记录"
-                } else {
-                    ""
-                }
             ),
         );
         Ok(copied)
@@ -1211,9 +1249,21 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
 pub async fn project_transfer_size(app: AppHandle, id: String) -> Result<TransferSize, String> {
     let data = crate::storage::root(&app);
     super::open_target(&data, &id)?;
-    tauri::async_runtime::spawn_blocking(move || transfer_size(&super::dir(&data, &id)))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let projects = app.state::<Store>().project_records()?;
+        let total: u64 = projects.values().map(|(count, ..)| count).sum();
+        let own = projects.get(&id).map_or(0, |(count, ..)| *count);
+        let database = super::records::database(&data);
+        let bytes = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let mut wal = database.as_os_str().to_os_string();
+        wal.push("-wal");
+        let records_db = if total == 0 { 0 } else {
+            ((bytes(&database) + bytes(Path::new(&wal))) as f64 * own as f64 / total as f64) as u64
+        };
+        transfer_size(&super::dir(&data, &id), records_db)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

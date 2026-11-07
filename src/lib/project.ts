@@ -79,7 +79,6 @@ export interface CopyProject {
   id: string;
   name: string;
   description: string;
-  includeRecords: boolean;
   captureImages: boolean;
 }
 

@@ -31,6 +31,8 @@ export interface HistoryQuery {
   verdicts?: Verdict[];
   sn?: string;
   recipeId?: string | null;
+  /** 记录所属项目编号；为空看本机全部项目。配方编号只在项目内唯一，带 recipeId 查询时要同时给项目 */
+  project?: string | null;
   /** 为空不按模式筛选 */
   modes?: PartMode[];
   offset?: number;
@@ -39,6 +41,8 @@ export interface HistoryQuery {
 
 /** 从别的页面跳到历史页时带的初始筛选（如在线检测页“复核试判”） */
 export interface HistoryFilter {
+  /** 只看当前项目（带配方编号的筛选要带上） */
+  currentProject?: boolean;
   recipeId?: string;
   modes?: PartMode[];
   groups?: string[];
@@ -48,6 +52,8 @@ export interface PartSummary {
   id: number;
   ts: number;
   sn: string;
+  /** 记录所属项目编号（记录库本机共用） */
+  projectId: string;
   recipeId: string | null;
   recipeVersion: number | null;
   recipeRevision: string | null;
@@ -127,6 +133,9 @@ export interface RejudgeRequest {
   overrides: Overrides;
 }
 
+/** 重判跳过一条记录的原因种类（后端 history::SkipKind）；界面显示 reason */
+export type SkipKind = "errResult" | "noTable" | "noRevision" | "snapshotMissing" | "layoutMismatch" | "noCandidate" | "layoutChanged" | "otherProject";
+
 export interface RejudgeResult {
   total: number;
   skipped: number;
@@ -134,5 +143,5 @@ export interface RejudgeResult {
   matrix: { from: Verdict; to: Verdict; count: number }[];
   /** flags：重判后的整件标记（检测不完整等与阈值无关，照常带出） */
   changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string; flags: Flags | null }[];
-  skipReasons: { id: number; sn: string; ts: number; reason: string }[];
+  skipReasons: { id: number; sn: string; ts: number; kind: SkipKind; reason: string }[];
 }

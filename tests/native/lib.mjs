@@ -103,7 +103,7 @@ export async function clearRecipe(call, id) {
 /**
  * 手动配置数据（docs/decisions/recipe-build-flow.md「手动配置数据」）：按现场顺序先用 workspace_create 按 doc 建候选并发布采集版
  *（现场在采集版下维护采集），再用 src-tauri/examples/capture_fixture.rs 按采集版与本机相机配置把 count 件仿历史录制件写进
- * 真机录制根（records_list 的 root）与项目记录库（资料根目录/projects/<project_current 编号>/inspection.db）。
+ * 真机录制根（records_list 的 root）与本机记录库（资料根目录/history/inspection.db），记录归 project_current 的项目。
  * 记录引用采集版的修订号：这个版本已由软件分配，之后发布的正式版不会与它的快照冲突。
  * sampleSet 与 partId 同时给出时取样本集原图，否则合成图。输入写在 output/capture-fixture/<编号>/。
  * 生成后经历史件选择器（workspace_history_candidates）核对每件都可选用并带手动配置标签。
@@ -117,7 +117,7 @@ export async function createFixtureCandidate(call, doc, { count, sampleSet = nul
   await until(() => ws.get(), v => !v.workspace.pending && v.workspace.publish.state === "active", "采集版未生效", 30000);
   const collect = await call("recipe_doc", { id });
   const [{ root }, project, records] = await Promise.all([call("storage_status"), call("project_current"), call("records_list")]);
-  const db = path.join(root, "projects", project.id, "inspection.db");
+  const db = path.join(root, "history", "inspection.db");
   const dir = path.join(REPO_ROOT, "output", "capture-fixture", id);
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
@@ -125,7 +125,7 @@ export async function createFixtureCandidate(call, doc, { count, sampleSet = nul
   await writeFile(files.doc, JSON.stringify(collect, null, 2) + "\n");
   await writeFile(files.cameras, JSON.stringify(await call("camera_rig_config"), null, 2) + "\n");
   const args = ["run", "--manifest-path", path.join(REPO_ROOT, "src-tauri", "Cargo.toml"), "--offline", "--locked", "--example", "capture_fixture", "--",
-    "--doc", files.doc, "--cameras", files.cameras, "--db", db, "--records", records.root, "--parts", String(count), "--seed", String(seed), "--label", label];
+    "--doc", files.doc, "--cameras", files.cameras, "--db", db, "--project", project.id, "--records", records.root, "--parts", String(count), "--seed", String(seed), "--label", label];
   if (sampleSet) args.push("--sample-set", sampleSet, "--part", partId);
   log(`采集版 v${collect.version} 已生效；生成手动配置数据：${count} 件（${sampleSet ? `样本集 ${partId}` : "合成图"}）→ ${records.root}`);
   const { stdout } = await execFileAsync("cargo", args, { cwd: REPO_ROOT, windowsHide: true, maxBuffer: 64 << 20 });

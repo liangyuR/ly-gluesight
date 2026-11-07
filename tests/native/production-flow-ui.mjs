@@ -39,9 +39,10 @@ async function runOfflinePart(page, invokeRead, navigation, option, id) {
   return summary;
 }
 
-async function verifyBurstDisk(root, project, detail, facts) {
+async function verifyBurstDisk(root, storage, detail, facts) {
   const { DatabaseSync } = await import("node:sqlite");
-  const database = await verifiedPath(project, path.join(project, "inspection.db"));
+  const history = path.join(storage.data, "history");
+  const database = await verifiedPath(history, path.join(history, "inspection.db"));
   const db = new DatabaseSync(database, { readOnly: true });
   const summary = detail.summary;
   const cameras = detail.burst.cameras.length;
@@ -50,6 +51,7 @@ async function verifyBurstDisk(root, project, detail, facts) {
     part = db.prepare("SELECT * FROM parts WHERE cycle_id=?").get(summary.cycleId);
     assert(part, "独立 SQLite 连接未找到本件");
     assert.equal(part.id, summary.id);
+    assert.equal(part.project_id, storage.projectId, "记录应归当前项目");
     assert.equal(part.verdict, summary.verdict);
     assert.equal(part.source, "offlineSynthetic");
     assert.equal(part.frames_received, facts.groupCount, "收到帧 = 帧组数");
@@ -67,7 +69,7 @@ async function verifyBurstDisk(root, project, detail, facts) {
     assert.equal(frames.length, facts.groupCount * cameras, "每台相机每个帧组序号都应有一行（缺帧也有）");
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM part_shots WHERE part_id=?").get(part.id).n, 0, "段配方不写旧的逐拍照点表");
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM part_points WHERE part_id=?").get(part.id).n, 0, "段配方不写旧的逐站测点表");
-    const snapshot = db.prepare("SELECT recipe_id,json FROM recipe_snapshots WHERE revision_id=?").get(part.recipe_revision);
+    const snapshot = db.prepare("SELECT recipe_id,json FROM recipe_snapshots WHERE project_id=? AND revision_id=?").get(part.project_id, part.recipe_revision);
     assert.equal(snapshot.recipe_id, summary.recipeId);
     assert(JSON.parse(snapshot.json).pathSegments.length > 0, "配方快照应是段配方（编译后的配方带 pathSegments）");
   } finally { db.close(); }
@@ -139,7 +141,7 @@ async function runBurstStage(page, invokeRead, navigation, ctx) {
   assert.deepEqual(facts.missing, [], "5 Hz 下不应缺帧");
   assert.equal(facts.framesRecorded, facts.groupCount * 3);
   const root = path.join(path.dirname((await invokeRead("records_list")).root), "records-offline");
-  const disk = await verifyBurstDisk(root, ctx.storage.project, detail, { ...facts, ...expected });
+  const disk = await verifyBurstDisk(root, ctx.storage, detail, { ...facts, ...expected });
   await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
   await page.getByText(`SN ${summary.sn}`).first().waitFor();
   await navigation.getByRole("link", { name: "历史记录", exact: true }).click();

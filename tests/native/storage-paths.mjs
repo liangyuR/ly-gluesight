@@ -42,7 +42,7 @@ export async function isolatedStorage(call, manifest, identifier) {
   assert(samePath(vision, path.join(logRoot, "vision", "test", config.instance, projectId)), "视觉日志路径不匹配");
   const project = path.join(data, "projects", projectId);
   assert(samePath(await realpath(project), project), "项目目录不能指向其他位置");
-  return { data, project, runtime, vision };
+  return { data, project, projectId, runtime, vision };
 }
 
 export async function isolatedDirectory(parent, name) {

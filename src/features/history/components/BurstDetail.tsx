@@ -107,7 +107,7 @@ function FrameTile({ detail, comparison, camera, cameraName, seq, frame, selecte
  * 历史详情：按区域展示——整件的段布置与区域结论、帧组条、按 (相机, seq) 选的原图、每相机帧表与时间线。
  * 只处理 PartDetail.burst 非空的记录。
  */
-export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, onBack, backLabel = "返回历史列表" }: {
+export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, onBack, backLabel = "返回历史列表", foreignProject = "" }: {
   detail: PartDetail;
   burst: PartDetailBurst;
   neighbors: { older: number | null; newer: number | null };
@@ -115,6 +115,8 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   onBack: () => void;
   /** 返回按钮的说明：从历史列表进来为“返回历史列表”，从试测进来为“返回试测” */
   backLabel?: string;
+  /** 记录不属于当前项目时的提示（“这条记录属于项目…”），属于当前项目为空 */
+  foreignProject?: string;
 }) {
   const ws = useWorkspace();
   const [search] = useSearchParams();
@@ -230,11 +232,12 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       </Stack>
     </Card>
     {s.source !== "real" && <Alert title={s.source === "offlineCandidate" ? "候选离线调试记录" : "离线回放记录"}>结果来自离线环境，不作为真机生产验收；切换当前站点模式不会改变此记录的来源。</Alert>}
+    {foreignProject && <Alert title="其他项目的记录">{foreignProject}复测与对照的限制见下方原因。</Alert>}
     {error && <Alert tone="warn" title="操作未完成">{error}</Alert>}
     <Panel title="复测与候选对照" help="对照结果另存，原始判定保留">
       <div className="wp-actions">
         <Chip>{s.source === "offlineCandidate" ? "原始候选 " + (s.recipeRevision ?? "未记录") : "原始发布 v" + (s.recipeVersion ?? "—")}</Chip>
-        <StatusBadge>候选 {!options ? "…" : candidate ? "v" + candidate.version + " · 修订 " + candidate.revision : "本机没有此配方的候选"}</StatusBadge>
+        <StatusBadge>候选 {!options ? "…" : candidate ? "v" + candidate.version + " · 修订 " + candidate.revision : foreignProject ? "不适用（其他项目的记录）" : "本机没有此配方的候选"}</StatusBadge>
         <span className="spacer" />
         {s.source !== "offlineCandidate" && <Button leadingIcon={<ScanEye size={15} />} disabled={working || !options || !!originalReason} title={originalReason || undefined} onClick={runOriginal}>按原发布包重现</Button>}
         <Button leadingIcon={<Scale size={15} />} disabled={working || !options || !!rulesReason} title={rulesReason || undefined} onClick={() => runCompare(false)}>按候选规则重判</Button>

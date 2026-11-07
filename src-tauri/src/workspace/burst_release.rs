@@ -478,14 +478,7 @@ fn validate_sample(
         .burst
         .as_ref()
         .ok_or("旧拍照点记录不能作为段配方的验证样本")?;
-    let original = detail
-        .summary
-        .recipe_revision
-        .as_deref()
-        .map(|h| store.recipe_snapshot(h))
-        .transpose()?
-        .flatten()
-        .ok_or("原始配方快照缺失")?;
+    let original = store.record_recipe(&detail.summary)?.ok_or("原始配方快照缺失")?;
     if !original.is_burst()
         || sample_tag(
             original.product_code,

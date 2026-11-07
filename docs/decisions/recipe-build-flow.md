@@ -66,7 +66,7 @@
 
 ### 手动配置数据（`capture_fixture`）
 
-`capture_fixture` 改为生成仿历史录制件，不再直接写轮次（`src-tauri/src/history_fixture.rs`）：按录制时生效的生产配方（采集版）用库里的 `Recorder` 写与真机同格式的录制目录（`part.json` 带 `partMode`、`devices`、`plc` 与来源标记 `fixture: {label}`，原图 `{相机}_s{seq:06}.pgm`），并用记录库现有接口写对应的 `parts` 行（模式为维护采集，不进当日统计；SN 前缀 `FIXTURE-`；库版本不变）。这样选择器只有历史件一个来源，端到端与长稳测试走与现场相同的选件、导入路径。`HistoryCandidate.fixture` 带来源标签，选择器标“手动配置”；历史页按 SN 前缀辨认，不另加标记。轮次的 `origin.kind = prepared` 不再产生，已有的照常读取。
+`capture_fixture` 改为生成仿历史录制件，不再直接写轮次（`src-tauri/src/history_fixture.rs`）：按录制时生效的生产配方（采集版）用库里的 `Recorder` 写与真机同格式的录制目录（`part.json` 带 `partMode`、`devices`、`plc` 与来源标记 `fixture: {label}`，原图 `{相机}_s{seq:06}.pgm`），并用记录库现有接口写对应的 `parts` 行（模式为维护采集，不进当日统计；SN 前缀 `FIXTURE-`；写进本机记录库，归 `--project` 指定的项目）。这样选择器只有历史件一个来源，端到端与长稳测试走与现场相同的选件、导入路径。`HistoryCandidate.fixture` 带来源标签，选择器标“手动配置”；历史页按 SN 前缀辨认，不另加标记。轮次的 `origin.kind = prepared` 不再产生，已有的照常读取。
 
 记录引用采集版的修订号，所以脚本先建候选、发布采集版，再生成数据：候选的版本号留给之后的正式版，若仿历史件用它写快照，正式版投产时同修订号的真实记录会因快照不同被记录库拒绝。这与现场先发采集版、再维护采集的顺序一致。
 

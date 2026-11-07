@@ -1,4 +1,5 @@
 pub mod manage;
+pub mod records;
 pub mod transfer;
 
 use serde::{Deserialize, Serialize};
@@ -184,9 +185,10 @@ pub fn create_dir(
 
 pub fn next_id(data: &Path) -> String {
     let day = chrono::Local::now().format("%Y%m%d");
+    let recorded = crate::store::recorded_projects(&records::database(data)).unwrap_or_default();
     (1..)
         .map(|n| format!("p-{day}-{n:02}"))
-        .find(|id| !dir(data, id).exists())
+        .find(|id| !dir(data, id).exists() && !recorded.contains(id))
         .unwrap()
 }
 

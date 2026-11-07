@@ -28,7 +28,7 @@ export function TrialProgressPanel({ trial, recipes }: { trial: TrialProgress[] 
       const name = recipes.find(recipe => recipe.id === item.recipeId)?.name;
       const { ok, excursion, ng, err } = item.counts;
       const split = item.ng.map(n => `${verdictLabel[n.verdict].replace("NG · ", "")} ${n.count}`).join("、");
-      const filter: HistoryFilter = { recipeId: item.recipeId, modes: ["maintenanceShadow"], groups: ["ng", "err"] };
+      const filter: HistoryFilter = { currentProject: true, recipeId: item.recipeId, modes: ["maintenanceShadow"], groups: ["ng", "err"] };
       return <li key={item.recipeId}>
         <b>{item.recipeId}</b> v{item.recipeVersion}{name && <span className="muted"> · {name}</span>}：试判 {ok + excursion + ng + err} 件 · OK {ok} · 局部超差 {excursion} · NG {ng}{split && `（${split}）`} · ERR {err}
         {ng + err > 0 && <Button size="sm" variant="text" onClick={() => go("/history", { state: { filter } })}>复核</Button>}

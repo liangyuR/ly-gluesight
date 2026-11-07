@@ -18,6 +18,7 @@ import { Badge, KV, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./compon
 import { PlanPublishBody } from "./PlcParams";
 import type { Check, Sample } from "./types";
 import { NavigationPublication } from "./WorkspaceNavigation";
+import { useProjectDirectory } from "../project/hooks";
 
 const expectedOptions=expectedChoices.map(([value,label])=>({value,label}));
 interface SampleRow { key:string; sample:Sample; name:ReactNode; source:string; checkLabel:string; expectedLabel:string; selected:boolean; expected:Verdict }
@@ -33,6 +34,8 @@ export default function ValidationPage() {
   const {data,doc,dirty,frameDirty,navigationDirty,busy,act,setError} = useWorkspace();
   const [records,setRecords] = useState<PartSummary[]>([]);
   const [historyScope,setHistoryScope] = useState<"current"|"all">("current");
+  const projects = useProjectDirectory();
+  const projectId = projects.current?.id ?? null;
   const candidate = data ? JSON.stringify([data.workspace.doc.id,data.workspace.doc.version,data.workspace.baseRevision]) : null;
   const [selection,setSelection] = useState<{candidate:string|null;samples:Sample[]}>(()=>({candidate,samples:data?.workspace.samples??[]}));
   const selectedSamples = selection.candidate===candidate?selection.samples:data?.workspace.samples??[];
@@ -72,10 +75,13 @@ export default function ValidationPage() {
   },[checksKey]);
   useEffect(()=>{
     setRecords([]);
-    if(!doc)return;let alive=true;
-    historyApi.query({recipeId:historyScope==="current"?doc.id:undefined,limit:50,scope:recordScope}).then(r=>alive&&setRecords(r.items)).catch(e=>alive&&setError(errorText(e)));
+    if(!doc)return;
+    // 配方编号只在项目内唯一：历史样本只取当前项目的记录
+    if(!projectId){if(!projects.loading)setError(`当前项目读取失败${projects.error?"："+projects.error:""}，不能列出历史样本`);return;}
+    let alive=true;
+    historyApi.query({project:projectId,recipeId:historyScope==="current"?doc.id:undefined,limit:50,scope:recordScope}).then(r=>alive&&setRecords(r.items)).catch(e=>alive&&setError(errorText(e)));
     return()=>{alive=false;};
-  },[doc?.id,historyScope,recordScope,setError]);
+  },[doc?.id,historyScope,recordScope,setError,projectId,projects.loading,projects.error]);
   if(!data||!doc)return <WorkspaceEmpty/>;
   const plan=data.plan;
   const validation=data.workspace.validation;
@@ -141,7 +147,7 @@ export default function ValidationPage() {
   return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack"><Panel title="发布前检查" help="设备、走廊示教与示教件基准满足即可发布；独立样本验证可选" actions={<Badge tone={failedChecks.length?"warn":"ok"}>{failedChecks.length?`${failedChecks.length} 项未满足`:`${checks.length} 项全部满足`}</Badge>}>
     <div className="wp-checklist">{failedChecks.map(checkRow)}{passedChecks.length>0&&<Accordion collapsible items={[{ value: "passed", title: <span>已满足 {passedChecks.length} 项：{passedChecks.map(c=>c.name).join("、")}</span>, content: <div className="wp-checklist">{passedChecks.map(checkRow)}</div> }]} />}</div>
     </Panel><Panel title="独立样本验证（可选）" help={<><p>不是发布前提：使用完整原图重新运行当前候选检测，看结论是否符合预期；正常样本必须独立于示教与标定采集。</p><p>历史样本必须保留完整整圈原图，轨迹顺序与成像条件适用；验证时重新运行当前候选。</p><p>建议覆盖良品、断胶、偏位、胶宽异常和无法测量等现场情况。期望“合格”时，候选结论 OK 或 OK · 局部超差都算符合。修改人工期望后，需要重新验证。</p></>}>
-      <Select className="wp-sample-source" label="历史样本来源" value={historyScope} disabled={samplesLocked} options={[{value:"current",label:"当前配方"},{value:"all",label:"全部配方"}]} onValueChange={value=>setHistoryScope(value as "current"|"all")}/>
+      <Select className="wp-sample-source" label="历史样本来源" value={historyScope} disabled={samplesLocked} options={[{value:"current",label:"当前配方"},{value:"all",label:"本项目全部配方"}]} onValueChange={value=>setHistoryScope(value as "current"|"all")}/>
       <Table caption="代表性验证样本选用" columns={sampleColumns} rows={sampleRows} rowKey={row=>row.key} emptyState={<p className="muted center">尚无代表性样本；请选择完整历史原图。</p>}/>
       <div className="wp-validate-actions">
         <Checkbox label="已确认所选样本的拍摄条件、轨迹和触发顺序适用于当前候选" checked={sourceConfirmed} disabled={samplesLocked} onCheckedChange={setSourceConfirmed}/>

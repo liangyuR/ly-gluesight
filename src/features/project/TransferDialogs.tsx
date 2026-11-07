@@ -26,7 +26,7 @@ function useTransferSize(id: string): SizeState {
   return state;
 }
 
-function sizeText(state: SizeState, captureImages: boolean, includeRecords: boolean): string {
+function sizeText(state: SizeState, captureImages: boolean, includeRecords = false): string {
   if (state.status === "loading") return "计算中";
   if (state.status === "error") return `统计失败：${state.error}`;
   const { content, captureImages: images, records } = state.size;
@@ -34,6 +34,7 @@ function sizeText(state: SizeState, captureImages: boolean, includeRecords: bool
 }
 
 const CAPTURE_IMAGES_HINT = "不带示教件原图时，已发布的配方照常检测；要看候选的示教图、示教走廊、测量示教件或试测，需在示教件页从历史记录补回原图（要同时带上检测记录与历史原图），否则只能重新选用示教件。";
+const COPY_CAPTURE_IMAGES_HINT = "不带示教件原图时，已发布的配方照常检测；要看候选的示教图、示教走廊、测量示教件或试测，需在示教件页从历史记录补回原图，否则只能重新选用示教件。";
 
 export function ExportProjectDialog({ project, onClose }: { project: ProjectMeta; onClose: () => void }) {
   const alive = useAlive();
@@ -66,7 +67,7 @@ export function ExportProjectDialog({ project, onClose }: { project: ProjectMeta
         <dt>项目</dt><dd>{project.name} <span className="mono">{project.id}</span></dd>
         <dt>保存位置</dt><dd className="mono pj-path">{exported.path}</dd>
         <dt>大小</dt><dd>{formatBytes(exported.bytes)} · {exported.files} 个文件</dd>
-        <dt>检测记录</dt><dd>{exported.includesRecords ? "已包含检测记录与历史原图" : "未包含"}</dd>
+        <dt>检测记录</dt><dd>{exported.includesRecords ? "已包含本项目的检测记录与历史原图" : "未包含"}</dd>
         <dt>示教件原图</dt><dd>{captureImages ? "已包含" : "未包含"}</dd>
       </dl>
       <Notes notes={exported.notes} />
@@ -81,8 +82,8 @@ export function ExportProjectDialog({ project, onClose }: { project: ProjectMeta
         <dt>导出大小</dt><dd>{sizeText(size, captureImages, includeRecords)}</dd>
       </dl>
       <Checkbox label="包含示教件原图" disabled={working} checked={captureImages} onCheckedChange={setCaptureImages} />
-      <Checkbox label="包含检测记录与历史原图" disabled={working} checked={includeRecords} onCheckedChange={setIncludeRecords} />
-      <Text muted>导出项目的相机组与 PLC 配置、标定、生产配方与发布包、候选；默认不含示教件原图、检测记录与历史原图。{!captureImages && CAPTURE_IMAGES_HINT}只把示教好的配方送回原项目时，在配方库导出回传包，不用导出整个项目。</Text>
+      <Checkbox label="包含本项目的检测记录与历史原图" disabled={working} checked={includeRecords} onCheckedChange={setIncludeRecords} />
+      <Text muted>导出项目的相机组与 PLC 配置、标定、生产配方与发布包、候选；默认不含示教件原图、检测记录与历史原图。{!captureImages && CAPTURE_IMAGES_HINT}检测记录本机共用，包含时只带本项目的记录与历史原图。只把示教好的配方送回原项目时，在配方库导出回传包，不用导出整个项目。</Text>
       {includeRecords && <Alert tone="warn" title="导出包可能很大">检测记录与历史原图可能有几十 GB，导出需要较长时间，请确认目标磁盘空间充足。</Alert>}
       {error && <Alert tone="ng" title="导出未完成">{error}</Alert>}
       {working && <Alert tone="info" role="status">正在导出，请勿关闭软件。</Alert>}
@@ -151,7 +152,7 @@ export function ImportProjectDialog({ preview, entries, onClose, onSwitch }: { p
 export function CopyProjectDialog({ project, entries, onClose, onSwitch }: { project: ProjectMeta; entries: ProjectEntry[]; onClose: () => void; onSwitch: (project: ProjectMeta) => void }) {
   const alive = useAlive();
   const size = useTransferSize(project.id);
-  const [form, setForm] = useState(() => ({ id: defaultProjectId(entries.map(entry => entry.id)), name: importedProjectName(project.name, entries, "副本"), description: project.description, includeRecords: false, captureImages: false }));
+  const [form, setForm] = useState(() => ({ id: defaultProjectId(entries.map(entry => entry.id)), name: importedProjectName(project.name, entries, "副本"), description: project.description, captureImages: false }));
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState<ProjectImported | null>(null);
@@ -164,7 +165,7 @@ export function CopyProjectDialog({ project, entries, onClose, onSwitch }: { pro
     setWorking(true);
     setError("");
     try {
-      const result = await projectTransferApi.copyProject({ sourceId: project.id, id: form.id, name: form.name.trim(), description: form.description.trim(), includeRecords: form.includeRecords, captureImages: form.captureImages });
+      const result = await projectTransferApi.copyProject({ sourceId: project.id, id: form.id, name: form.name.trim(), description: form.description.trim(), captureImages: form.captureImages });
       notifyProjectsChanged();
       if (alive.current) setCopied(result);
     } catch (e) {
@@ -190,15 +191,13 @@ export function CopyProjectDialog({ project, entries, onClose, onSwitch }: { pro
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
       <dl className="kv pj-transfer-list">
         <dt>来源项目</dt><dd>{project.name} <span className="mono">{project.id}</span></dd>
-        <dt>复制大小</dt><dd>{sizeText(size, form.captureImages, form.includeRecords)}</dd>
+        <dt>复制大小</dt><dd>{sizeText(size, form.captureImages)}</dd>
       </dl>
       <TextField label="新项目名称" required disabled={working} value={form.name} error={nameError || undefined} onChange={e => setForm({ ...form, name: e.target.value })} />
       <TextField label="新项目编号" className="mono" disabled={working} maxLength={64} value={form.id} description="创建后不可修改，同时作为项目目录名" error={idError || undefined} onChange={e => setForm({ ...form, id: e.target.value })} />
       <TextArea label="描述" disabled={working} rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
       <Checkbox label="包含示教件原图" disabled={working} checked={form.captureImages} onCheckedChange={captureImages => setForm({ ...form, captureImages })} />
-      <Checkbox label="包含检测记录与历史原图" disabled={working} checked={form.includeRecords} onCheckedChange={includeRecords => setForm({ ...form, includeRecords })} />
-      <Text muted>复制相机组与 PLC 配置、标定、生产配方与发布包、候选。生产配方的计划号按本机重新分配，候选回到草稿；复制后不会自动切换。{!form.captureImages && CAPTURE_IMAGES_HINT}</Text>
-      {form.includeRecords && <Alert tone="warn" title="复制可能占用大量磁盘">检测记录与历史原图会整份复制一遍，请确认磁盘空间充足。</Alert>}
+      <Text muted>复制相机组与 PLC 配置、标定、生产配方与发布包、候选。生产配方的计划号按本机重新分配，候选回到草稿；复制后不会自动切换。检测记录与历史原图本机共用、不复制：仍归来源项目，新项目的候选照常引用。{!form.captureImages && COPY_CAPTURE_IMAGES_HINT}</Text>
       {error && <Alert tone="ng" title="复制未完成">{error}</Alert>}
       {working && <Alert tone="info" role="status">正在复制，项目较大时需要几分钟，请勿关闭软件。</Alert>}
     </Stack>

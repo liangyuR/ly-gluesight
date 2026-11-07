@@ -61,10 +61,11 @@ pub struct FixtureSite {
 }
 
 impl FixtureSite {
-    /// `db` 为项目已有的记录库（不新建、版本须一致），`records` 为真机录制根；`configs` 按计划相机顺序给出设备配置
-    /// （与软件核对历史件时同一口径：`CameraConfig` 的序列化）。
+    /// `db` 为本机已有的记录库（不新建、版本须一致），记录归项目 `project`；`records` 为该项目的真机录制根；`configs` 按
+    /// 计划相机顺序给出设备配置（与软件核对历史件时同一口径：`CameraConfig` 的序列化）。
     pub fn open(
         db: &Path,
+        project: &str,
         records: &Path,
         recipe: Recipe,
         configs: Vec<Value>,
@@ -88,8 +89,8 @@ impl FixtureSite {
             return Err(format!("真机录制根 {} 不存在", records.display()));
         }
         check_database(db)?;
-        let store = Store::open_deferred_recovery(db)?;
-        if let Some(previous) = store.recipe_snapshot(&recipe.revision_id)? {
+        let store = Store::open_deferred_recovery(db, project)?;
+        if let Some(previous) = store.recipe_snapshot(project, &recipe.revision_id)? {
             let same = serde_json::to_value(&previous).map_err(|e| e.to_string())?
                 == serde_json::to_value(&recipe).map_err(|e| e.to_string())?;
             if !same {

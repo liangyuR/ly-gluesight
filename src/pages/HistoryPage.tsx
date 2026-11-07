@@ -4,6 +4,8 @@ import { Download, History, RefreshCw, Scale } from "lucide-react";
 import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, SegmentedControl, Select, Stack, StatusBadge, Table, Text, TextField, type TableColumn } from "qing-steel";
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
+import { useProjectDirectory } from "../features/project/hooks";
+import { projectLabel, recordProject } from "../features/project/rules";
 import { errorText } from "../lib/errors";
 import { flagBadges } from "../features/plan/vis";
 import { displayReason, formatTime, historyApi, partVerdict, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, type HistoryFilter, type HistoryPage as Page, type HistoryQuery, type HistoryScope, type PartMode } from "../features/history";
@@ -23,6 +25,8 @@ const ranges: [string, string, number | null][] = [
   ["all", "全部", null],
 ];
 const rangeOptions = ranges.map(([value, label]) => ({ value, label }));
+/** 项目范围选“当前项目”的取值；项目编号只含字母、数字、- 和 _，不会与它重名 */
+const CURRENT_PROJECT = "@current";
 const modeOptions: { value: string; label: string; modes: PartMode[] }[] = [
   { value: "all", label: "全部", modes: [] },
   { value: "production", label: "正式检测", modes: ["production"] },
@@ -40,6 +44,7 @@ function rangeStart(days: number | null) {
 export default function HistoryPage() {
   const go = useNavigate();
   const recipes = useRecipes();
+  const projects = useProjectDirectory();
   const location = useLocation();
   const [initial] = useState(() => (location.state as { filter?: HistoryFilter } | null)?.filter ?? null);
   const [scope, setScope] = useState<HistoryScope>("real");
@@ -48,6 +53,7 @@ export default function HistoryPage() {
   const [mode, setMode] = useState(modeOptions.find((m) => m.modes.join() === (initial?.modes ?? []).join())?.value ?? "all");
   const [sn, setSn] = useState("");
   const [recipeId, setRecipeId] = useState(initial?.recipeId ?? "");
+  const [project, setProject] = useState(initial?.currentProject ? CURRENT_PROJECT : "");
   const [offset, setOffset] = useState(0);
   const [result, setResult] = useState<{ page: Page; query: HistoryQuery; offset: number } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -62,26 +68,30 @@ export default function HistoryPage() {
   const revealPending = useRef(false);
   const alive = useRef(true);
 
+  const currentId = projects.current?.id ?? null;
+  // 选“当前项目”但当前项目还没读到（或读取失败）时不查询，免得把全部项目的记录当成当前项目的
+  const projectBlocked = project === CURRENT_PROJECT && !currentId;
   const query = useMemo<HistoryQuery>(
     () => ({
       scope,
+      project: project === CURRENT_PROJECT ? currentId : project || null,
       from: rangeStart(ranges.find((r) => r[0] === range)![2]),
       verdicts: verdictGroups.filter((g) => groups.includes(g.key)).flatMap((g) => g.verdicts),
       sn,
       recipeId: recipeId || null,
       modes: modeOptions.find((m) => m.value === mode)!.modes,
     }),
-    [scope, range, groups, sn, recipeId, mode],
+    [scope, range, groups, sn, recipeId, mode, project, currentId],
   );
   const currentQuery = useRef(query);
   currentQuery.current = query;
   const stale = result?.query !== query || result.offset !== offset;
-  const page = result && !(stale && error) ? result.page : null;
+  const page = result && !(stale && (error || projectBlocked)) ? result.page : null;
   const pending = stale && !!page;
   const shownScope = page ? result!.query.scope : scope;
-  const hasFilters = range !== "today" || groups.length > 0 || mode !== "all" || !!sn || !!recipeId;
+  const hasFilters = range !== "today" || groups.length > 0 || mode !== "all" || !!sn || !!recipeId || !!project;
   const resetFilters = () => {
-    setRange("today"); setGroups([]); setMode("all"); setSn(""); setRecipeId(""); setOffset(0);
+    setRange("today"); setGroups([]); setMode("all"); setSn(""); setRecipeId(""); setProject(""); setOffset(0);
   };
   const navigate = (to: string) => go(to, { state: { query: result?.query ?? query } });
 
@@ -98,6 +108,7 @@ export default function HistoryPage() {
 
   const load = useCallback(() => {
     const serial = ++requestSerial.current;
+    if (projectBlocked) { setLoading(false); return; }
     setLoading(true);
     setError("");
     historyApi
@@ -109,7 +120,7 @@ export default function HistoryPage() {
       })
       .catch((e) => { if (serial === requestSerial.current) setError(errorText(e)); })
       .finally(() => { if (serial === requestSerial.current) setLoading(false); });
-  }, [query, offset]);
+  }, [query, offset, projectBlocked]);
 
   useEffect(() => { load(); return () => { requestSerial.current++; }; }, [load]);
   useEffect(() => subscribe<number>("history://inserted", () => offset === 0 && load()), [load, offset]);
@@ -172,6 +183,17 @@ export default function HistoryPage() {
       ),
     },
     {
+      key: "project",
+      header: "项目",
+      render: (p) => {
+        const owner = recordProject(p.projectId, projects.entries);
+        return <span className="hist-project" title={p.projectId}>
+          {owner.label}
+          {owner.deleted && <StatusBadge tone="off">已删除</StatusBadge>}
+        </span>;
+      },
+    },
+    {
       key: "recipe",
       header: "配方",
       render: (p) => (
@@ -229,6 +251,18 @@ export default function HistoryPage() {
               </Stack>
               <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="筛选 SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} />
               <Select
+                id="history-project"
+                aria-label="历史项目"
+                className="hist-project-select"
+                value={project}
+                options={[
+                  { value: "", label: "全部项目" },
+                  { value: CURRENT_PROJECT, label: projects.current ? `当前项目（${projects.current.name}）` : "当前项目" },
+                  ...(projects.entries ?? []).filter((e) => e.id !== currentId).map((e) => ({ value: e.id, label: `${projectLabel(e)} · ${e.id}` })),
+                ]}
+                onValueChange={(value) => { setProject(value); setOffset(0); }}
+              />
+              <Select
                 id="history-recipe"
                 aria-label="历史配方"
                 className="hist-recipe"
@@ -264,6 +298,7 @@ export default function HistoryPage() {
             </Alert>
           )}
           {error && <Alert tone="ng">{error}</Alert>}
+          {projectBlocked && !projects.loading && <Alert tone="ng">当前项目读取失败{projects.error && `：${projects.error}`}，不能只看当前项目的记录。</Alert>}
           {operationError && <Alert tone="ng">{operationError}</Alert>}
         </Stack>
       </Card>
@@ -276,7 +311,7 @@ export default function HistoryPage() {
             rows={page?.items ?? []}
             columns={columns}
             rowKey={(p) => String(p.id)}
-            loading={!page && loading}
+            loading={!page && (loading || (projectBlocked && projects.loading))}
             emptyState={page ? <EmptyState icon={<History />} title="没有符合条件的记录" description={hasFilters ? "试试扩大日期范围，或重置筛选。" : "当前来源今天暂无记录，可扩大日期范围查看。"} /> : <></>}
           />
         </div>

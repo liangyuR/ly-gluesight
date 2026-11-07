@@ -434,8 +434,20 @@ fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
     let cycle = app.state::<CycleHost>();
     let current = current_configs(&cycle);
     let imported = imported_cycles(cycle.camera.recipe_capture(), &doc.id)?;
-    let root = cycle.recorders.root(RecordSource::Real).to_path_buf();
-    let parts = app.state::<Store>().recorded_parts(&doc.id, LIST_LIMIT)?;
+    let data = crate::storage::root(app);
+    let store = app.state::<Store>();
+    let mut parts = store.recorded_parts(&doc.id, LIST_LIMIT)?;
+    // 复制来的项目：示教件那一件仍归来源项目（检测历史本机共用），按 cycleId 找回，补回原图时照样能用
+    if let Some(piece) = &w.teaching_piece {
+        if !parts.iter().any(|(s, _)| s.cycle_id.as_deref() == Some(piece.cycle_id.as_str())) {
+            if let Some(detail) = store.detail_by_cycle(&piece.cycle_id)? {
+                let s = &detail.summary;
+                if s.source == RecordSource::Real && s.recipe_id.as_deref() == Some(doc.id.as_str()) && detail.recording.directory.is_some() {
+                    parts.push((detail.summary, detail.recording));
+                }
+            }
+        }
+    }
     let mut assessed: Vec<Assessed> = parts
         .iter()
         .map(|(summary, recording)| {
@@ -445,7 +457,8 @@ fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
                 &imported,
                 summary,
                 recording,
-                read_part(&root, recording),
+                crate::project::records::record_root(&data, &summary.project_id, RecordSource::Real)
+                    .and_then(|root| read_part(&root, recording)),
             )
         })
         .collect();

@@ -385,6 +385,8 @@ pub struct CycleHost {
     pub disk: crate::disk_guard::DiskGuard,
     pub recording_health: Arc<RecordingHealth>,
     settings_path: PathBuf,
+    /// 本机历史保留天数（`config/history.json`）
+    history_path: PathBuf,
     shared: Mutex<Shared>,
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
     /// 有在途工件或未结 PLC 事务。
@@ -405,8 +407,15 @@ impl CycleHost {
         std::fs::create_dir_all(&recording_root).map_err(|e| e.to_string())?;
         let (tx, rx) = unbounded_channel();
         let (frame_tx, frame_rx) = channel(FRAME_QUEUE);
-        let (settings, settings_note) = CycleSettings::load(&settings_path);
-        let audit = Audit::new(app, data.join("audit-spool"))?;
+        let (mut settings, project_note) = CycleSettings::load(&settings_path);
+        let history_path = crate::storage::config(app).join("history.json");
+        let (history_days, history_note) = crate::settings::load_history_days(&history_path, settings.history_days);
+        settings.history_days = history_days;
+        let settings_note = match (project_note, history_note) {
+            (Some(a), Some(b)) => Some(format!("{a}；{b}")),
+            (a, b) => a.or(b),
+        };
+        let audit = Audit::new(app, crate::project::records::spool(&crate::storage::root(app)))?;
         let interrupted_recordings = app.state::<Store>().finish_interrupted_recordings()?;
         let camera = CameraRig::new(app, frame_tx)?;
         let recording_health = Arc::new(RecordingHealth::default());
@@ -499,6 +508,7 @@ impl CycleHost {
                 settings,
             }),
             settings_path,
+            history_path,
             rx: Mutex::new(Some((rx, frame_rx))),
             busy: AtomicBool::new(false),
             in_flight: AtomicBool::new(false),
@@ -645,6 +655,9 @@ impl CycleHost {
             return Err("在途事务结束或故障复位后才能修改检测设置".into());
         }
         settings.validate()?;
+        if settings.history_days != self.settings().history_days {
+            crate::settings::save_history_days(&self.history_path, settings.history_days)?;
+        }
         settings.save(&self.settings_path)?;
         self.recorders.apply_retention(&settings);
         self.shared.lock().unwrap().settings = settings;
@@ -653,7 +666,7 @@ impl CycleHost {
     }
 }
 
-/// 删除超过保留天数的检测记录。
+/// 删除超过保留天数的检测记录（本机全部项目）；非当前项目的记录连同原图一起删，当前项目的原图由录制滚动清理。
 pub fn purge_history(app: &AppHandle) {
     let days = host(app).settings().history_days.max(1) as i64;
     match host(app)

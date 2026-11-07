@@ -148,13 +148,7 @@ pub(crate) fn repair_shadow_regions(store: &Store) -> Result<(usize, Vec<String>
             continue;
         };
         let s = &detail.summary;
-        let Some(recipe) = s
-            .recipe_revision
-            .as_deref()
-            .map(|r| store.recipe_snapshot(r))
-            .transpose()?
-            .flatten()
-        else {
+        let Some(recipe) = store.record_recipe(s)? else {
             skipped.push(format!("记录 #{id} 的原配方快照缺失"));
             continue;
         };
@@ -306,8 +300,10 @@ pub(super) fn raw_complete(detail: &PartDetail, burst: &PartDetailBurst) -> bool
 
 /// 段配方候选离线调试记录的样本原图。
 fn burst_samples(app: &AppHandle, detail: &PartDetail) -> Result<history_samples::BurstSamples, String> {
-    let revision = detail.summary.recipe_revision.as_deref().ok_or("历史配方快照身份缺失")?;
-    let recipe = app.state::<Store>().recipe_snapshot(revision)?.ok_or("历史配方快照缺失，不能确定离线样本原图")?;
+    if detail.summary.recipe_revision.is_none() {
+        return Err("历史配方快照身份缺失".into());
+    }
+    let recipe = app.state::<Store>().record_recipe(&detail.summary)?.ok_or("历史配方快照缺失，不能确定离线样本原图")?;
     history_samples::BurstSamples::open(&crate::storage::root(app), detail, &recipe)
 }
 
@@ -338,7 +334,8 @@ pub(super) fn frame_image(
         return burst_samples(app, detail)?.load(camera, seq);
     }
     let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId，不能确定对应原图")?;
-    recorded::load_frame_verified(app.state::<CycleHost>().recorders.root(detail.summary.source), cycle_id, camera_id, frame)
+    let root = crate::project::records::record_root(&crate::storage::root(app), &detail.summary.project_id, detail.summary.source)?;
+    recorded::load_frame_verified(&root, cycle_id, camera_id, frame)
 }
 
 /// 段配方历史件一帧的录制原图（决策记录 5.4，camera 为计划相机下标）；未录制、录制队满丢弃或缺帧时报错。
@@ -398,7 +395,7 @@ pub async fn workspace_record_frame_view(
         };
         if found.source == "original" {
             let bundle_id = found.bundle_id.as_deref().ok_or("这次重现没有记下发布包")?;
-            let prepared = history_prepared(&app, &found.candidate_recipe, bundle_id)?;
+            let prepared = history_prepared(&app, &detail.summary.project_id, &found.candidate_recipe, bundle_id)?;
             let image = frame_image(&app, &detail, camera, seq)?;
             let measured = prepared.measure_frame(camera, segment, seq, &image, &format!("record-view-{history_id}-c{camera}-{seq}"))?;
             let trace = crate::measure::FrameTrace { edges: measured.edges, part_edges: measured.part_edges, line: measured.line };
@@ -601,11 +598,14 @@ fn original_blocker(detail: &PartDetail, burst: &PartDetailBurst) -> Option<Stri
     None
 }
 
-/// 记录能做哪几种复测。`original` 是记录的配方快照，`w` 是记录所属配方的候选（没有为 None）。
+/// 记录能做哪几种复测。`original` 是记录的配方快照，`w` 是记录所属配方的候选（没有为 None）；`foreign` 是记录不属于
+/// 当前项目时按候选对照的阻止原因，`releases` 是记录所属项目的发布包不可用（项目已删除）的原因。
 pub(super) fn compare_options(
     detail: &PartDetail,
     original: Option<&Recipe>,
     w: Option<&Workspace>,
+    foreign: Option<String>,
+    releases: Option<String>,
 ) -> CompareOptions {
     let unavailable = |reason: &str| CompareOption::of(Some(reason.into()));
     let candidate = w.map(|w| CompareCandidate {
@@ -622,7 +622,15 @@ pub(super) fn compare_options(
             raw: unavailable(reason),
         };
     };
-    let original_option = CompareOption::of(original_blocker(detail, burst));
+    let original_option = CompareOption::of(original_blocker(detail, burst).or(releases));
+    if let Some(reason) = foreign {
+        return CompareOptions {
+            candidate,
+            original: original_option,
+            rules: unavailable(&reason),
+            raw: unavailable(&reason),
+        };
+    }
     let (rules, raw) = match (original, w) {
         (None, _) => (
             unavailable("历史配方快照缺失"),

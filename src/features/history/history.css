@@ -3,6 +3,8 @@
 .hist-filter-options { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
 .hist-filter-options .hist-sn-input { width:220px; flex:0 1 220px; }
 .hist-filter-options .hist-recipe { min-width:160px; }
+.hist-filter-options .hist-project-select { min-width:180px; }
+.hist-project { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
 .hist-toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
 .hist-dot { width: 8px; height: 8px; border-radius: var(--r-full); background: var(--outline); }
 .hist-chip.g-ok .hist-dot { background: var(--ok); }

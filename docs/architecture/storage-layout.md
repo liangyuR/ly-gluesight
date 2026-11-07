@@ -10,7 +10,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 本地开发首次在管理员 PowerShell 执行 `pnpm storage:init`，之后正常执行 `pnpm dev`。初始化命令只创建目录并授权，不移动或删除资料。无法写入时应修复权限，不会回退到 AppData。
 
-资料分为本机资料和项目资料。项目是一个工位的完整检测方案（相机组、PLC、标定、配方及其检测历史），设计见 [项目（Project）设计](project.md)。任一时刻只打开一个当前项目，切换项目会重启软件。
+资料分为本机资料和项目资料。项目是一个工位的完整检测方案（相机组、PLC、标定、配方），设计见 [项目（Project）设计](project.md)。检测记录存于本机一份记录库，每条记录带所属项目（[history-scope](../decisions/history-scope.md)）。任一时刻只打开一个当前项目，切换项目会重启软件。
 
 新项目的检测设置默认工件结束超时为 20 分钟（1,200,000 ms），真机帧录制为“全部”；真机原图默认保留 100 件 / 100 GB，离线原图默认保留 300 件 / 100 GB。缺少配置文件或相应字段时使用默认值，已有配置中的显式设置继续保留。原图清理的保护规则见[运行日志与视觉证据存储](log-storage-research.md)。
 
@@ -18,7 +18,9 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 | 位置 | 用途 |
 | --- | --- |
-| `config/` | 本机配置：`current-project.json`（当前项目编号）、`site-offline.json`（离线选择）、`preferences-<SID>.json`（按账号的界面偏好，最后打开的工作区按项目分别记）、`log-storage.json`（日志根、环境和资料实例绑定） |
+| `config/` | 本机配置：`current-project.json`（当前项目编号）、`history.json`（历史保留天数 `historyDays`，所有项目共用；首次启动用当前项目 `cycle.json` 里原有的值建立）、`site-offline.json`（离线选择）、`preferences-<SID>.json`（按账号的界面偏好，最后打开的工作区按项目分别记）、`log-storage.json`（日志根、环境和资料实例绑定） |
+| `history/inspection.db` | 本机检测记录库（版本 10），本机全部项目的记录都在这里，`parts.project_id` 记所属项目，记录编号本机唯一。`parts.mode` 记件的检测模式（`production` / `maintenanceCollect` / `maintenanceShadow`）。每台相机每一帧写 `part_frames` 表，`parts` 另存整份区域判定与整件标记。配方快照 `recipe_snapshots` 按（项目, 修订号）、候选实例 `workspace_instances` 按（项目, 实例号）保存；`project_merges` 记已并入的项目旧库。库版本不符（含更高版本）时先备份为 `.v<版本>.*.bak` 再新建空库。项目目录里遗留的旧记录库 `projects/<项目编号>/inspection.db`（版本 9）启动时并入，并完改名为 `inspection.db.merged-<毫秒>.bak`，不删（[项目设计](project.md)第五节） |
+| `history/audit-spool/` | 待入库的件证据与审计。审计 spool 格式为 4（帧引用 `files[].frame`）；目录里残留其他格式的文件时就绪检查失败、拒绝接件（保护证据）；切换项目前必须写完 |
 | `projects/<项目编号>/` | 各项目的资料，见下表；`projects/.trash/` 是删除中的项目，启动时清理 |
 | `state/` | PLC 握手状态与审计，以及所有项目共用的计划版本计数 `plan-version`（换项目不回退）。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
 | `samples/` | 外部样本导入后的受管副本 |
@@ -33,14 +35,12 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 | 位置 | 用途 |
 | --- | --- |
 | `project.json` | 项目编号、名称、描述、创建时间与来源 |
-| `config/` | 相机组 `cameras.json`（含按相机编号保存的曝光与增益 `imaging`）、PLC `plc.json`、节拍与检测设置 `cycle.json`（含历史保留天数；`maintenance` 为维护模式的开启时间与原因，未开启时为空）、飞拍估算参数 `feasibility.json` |
+| `config/` | 相机组 `cameras.json`（含按相机编号保存的曝光与增益 `imaging`）、PLC `plc.json`、节拍与检测设置 `cycle.json`（`maintenance` 为维护模式的开启时间与原因，未开启时为空）、飞拍估算参数 `feasibility.json` |
 | `recipes/`、`workspaces/` | 生产配方、候选配方及示教资料。`recipes/<配方>.json` 的 `stage` 为 `"collect"` 时是采集版（只供维护模式采图，没有发布包）；正式版不写这一项，没有该项的文件按正式版读。候选目录 `workspaces/<配方>/` 另有 `calibration/<轮次>/`：每轮标定的 `features.jsonl`（一行一帧 `{camera, seq, metrics}`，1..=帧组数内每台相机每个 seq 一行，缺帧也有）与 `boundaries.json`（分段结果，本轮恒为 `{"kind":"unsegmented"}`，供以后的分段算法和重新标定使用）；各相机的示教帧冻结为 `images/` 下的 PGM |
 | `calib/`、`vision/releases/` | 标定、发布资源。棋盘格标定成功时原图写入 `calib/images/<样本ID>.pgm`，结果 JSON 的 `samplePath` 保存项目相对路径，`corners` 记内角点像素坐标；标定页进入时载入该原图，其余临时冻结样本只在内存。发布包在 `vision/releases/<配方>/<发布 ID>/`（schema 5）：`manifest.json`、`recipe.json`、`graph.json`，每台计划相机一个 `cameras/NN/`（NN 为计划相机下标，从 00 起），内有 `calibration.json`（像素当量与标定引用），它检测的每一段一个 `sMM/`（MM 为段号）子目录，内有 `image.<扩展名>`（示教帧）与 `corridor.json`（走廊）。工位标定缺省为设备标定 `calib/device/plane_calib_{device}.json`（发布包 `calibration.json` 的 `reference` 记 `device/{device}`）；显式标定引用 `{引用}` 为 `calib/plane_calib_{引用}.json` |
 | `workspaces/<配方>/navigation/`、`recipe-support/<配方>/<发布 ID>/` | RB-9 可选导航辅助资料：候选的 `images/<SHA-256>.png` 和 `maps/<SHA-256>.json` 由 `workspace.json.navigationId` 引用；正式辅助快照含 `image.png`、`snapshot.json`、`manifest.json`，独立记录发布身份、空间分段及示教件原始帧范围。发布准备在 `.pending-<发布 ID>`，生效后转为正式目录；临时与未生效目录不导出。地图不加入检测发布包，不进计划身份；缺失或损坏只关闭导航。项目复制和导出导入携带资料，资料不按日志或图像缓存清理 |
 | `recipe-capture/` | 采集轮次原图。每个轮次：`<轮次>/round.json`（格式 3，格式 2 照常读取）、`frames.jsonl`（一帧一行）和 `<相机>/<seq:06>.pgm`（无压缩 PGM，一帧一个文件，seq 为相机帧号减该相机基线）。历史件导入的轮次（[在线投运](online-commissioning.md) 5.2）的 PGM 同卷时为外部录制原图的硬链接，跨卷时为校验后的独立副本，`round.json` 的 `origin` 记 `{kind: "history", cycleId, recordId}`（`standard` 恒为 false，只为读入旧轮次保留），录制被清理后轮次原图仍在。轮次只在选示教件时导入，界面不显示；换示教件或删除候选时删除对应轮次（[示教件决策](../decisions/recipe-build-flow.md)）。`capture_fixture` 生成的仿历史录制件在真机录制根下（`part.json` 带 `fixture: {label}`），同样经导入成为 `history` 轮次。磁盘上已有的 `{kind: "prepared", label}` 轮次与示教实拍轮次（格式 2 带 `teachingRoundId`，或格式 3）照常读取 |
-| `inspection.db` | 检测历史数据库（版本 9）。`parts.mode` 记件的检测模式（`production` / `maintenanceCollect` / `maintenanceShadow`），旧库启动时原地加列、旧记录按 `production`。每台相机每一帧写 `part_frames` 表，`parts` 另存整份区域判定与整件标记。库版本不符（含更高版本）时先备份为 `.v<版本>.*.bak` 再新建空库 |
-| 外部 `records/`、`records-offline/` | 位于日志根的 `vision/<环境>/<实例>/<项目>/`，不再写入项目目录。真机、离线历史原图。每件目录 `*_cycle_<cycleId>` 内的原图为 `{相机}_s{seq:06}.pgm`，`part.json` 另列 `missingFrames`（相机没出图，只追溯）与 `rawDropped`（录制队列满没录，证据标不完整），以及 `partMode`、`devices`（每台计划相机的 `cameraId`、`cameraConfig`、本次打开实际写入的 `imaging`（没有则取相机保存值）、`deviceSession`）与 `plc`（`requestSeq`、`productCode`）；维护采集件目录另有空文件 `maintenance-collect`，自动清理跳过这些目录。相机图像模式为彩色时（现场做法），`{相机}_s{seq:06}.pgm` 是原始 8 位马赛克，PGM 头带注释 `# bayer {相位}`，part.json 帧项记 `imageMode: "color"`，读图时还原为 RGB，每帧只有这一份（[color](../decisions/color.md) CL-1）。已有录制里的 `{相机}_s{seq:06}_bayer.pgm` 与帧项 `bayer`、件级 `bayerFrames`、`bayerErrors` 读图时忽略，主文件按灰度读（[r2-records](../decisions/r2-records.md) R-8） |
-| `audit-spool/` | 待入库的件证据与审计。审计 spool 格式为 4（帧引用 `files[].frame`）；目录里残留其他格式的文件时就绪检查失败、拒绝接件（保护证据）；切换项目前必须写完 |
+| 外部 `records/`、`records-offline/` | 位于日志根的 `vision/<环境>/<实例>/<项目>/`，不写入项目目录，也不随记录库搬到本机；读图按记录所属项目解析，删除项目时保留。真机、离线历史原图。每件目录 `*_cycle_<cycleId>` 内的原图为 `{相机}_s{seq:06}.pgm`，`part.json` 另列 `missingFrames`（相机没出图，只追溯）与 `rawDropped`（录制队列满没录，证据标不完整），以及 `partMode`、`devices`（每台计划相机的 `cameraId`、`cameraConfig`、本次打开实际写入的 `imaging`（没有则取相机保存值）、`deviceSession`）与 `plc`（`requestSeq`、`productCode`）；维护采集件目录另有空文件 `maintenance-collect`，自动清理跳过这些目录。相机图像模式为彩色时（现场做法），`{相机}_s{seq:06}.pgm` 是原始 8 位马赛克，PGM 头带注释 `# bayer {相位}`，part.json 帧项记 `imageMode: "color"`，读图时还原为 RGB，每帧只有这一份（[color](../decisions/color.md) CL-1）。已有录制里的 `{相机}_s{seq:06}_bayer.pgm` 与帧项 `bayer`、件级 `bayerFrames`、`bayerErrors` 读图时忽略，主文件按灰度读（[r2-records](../decisions/r2-records.md) R-8） |
 
 项目化之前放在资料目录根下的 `config/cameras.json`、`plc.json`、`cycle.json`、`feasibility.json`、`calib/`、`recipes/`、`workspaces/`、`vision/`、`recipe-capture/`、`inspection.db`、`records/`、`records-offline/`、`audit-spool/` 不迁移、不读取，也不自动删除；启动时检测到会写一条提示日志，确认不再需要后人工删除。
 
@@ -54,7 +54,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 ## 项目导出包
 
-项目管理页的“导出 / 导入项目”把项目资产和所选外部历史原图打成 ZIP（`src-tauri/src/project/transfer.rs`，格式版本 1），规则见[项目设计](project.md#导出与导入)。导出默认保存在 `exports/`；导入暂存在 `cache/project-import-*`，校验通过、路径与计划版本改写完成后才原子移入 `projects/<新编号>/`。“复制”不经 ZIP，把同样的内容拷进 `cache/project-copy-*` 后走相同的落地流程。
+项目管理页的“导出 / 导入项目”把项目资产和所选外部历史原图打成 ZIP（`src-tauri/src/project/transfer.rs`，格式版本 2：所含检测记录库是本机记录库按项目导出的子集，版本 10；格式 1 的包照常导入），规则见[项目设计](project.md#导出与导入)。导出默认保存在 `exports/`；导入暂存在 `cache/project-import-*`，校验通过、路径与计划版本改写完成后才原子移入 `projects/<新编号>/`。“复制”不经 ZIP，把除检测记录与历史原图外的同样内容拷进 `cache/project-copy-*` 后走相同的落地流程；记录本机共用，仍归来源项目。
 
 配方库的“导出 / 导入回传包”只打一个候选（`workspace/package.rs`，`kind: "recipe"`，格式版本 1）：`candidate/` 下是 `workspace.json`、被引用的冻结示教帧、示教件测量与导航图，`rounds/` 下是示教件轮次的 `round.json` 与 `frames.jsonl`，不带原图与发布快照。导入暂存在 `cache/project-recipe-import-*`，本机同编号的旧候选与轮次先移入暂存目录再放入新的，失败撤回；规则见 [RB-10](../decisions/recipe-build-flow.md#rb-10-配方回传包)。
 
