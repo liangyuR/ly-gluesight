@@ -352,6 +352,252 @@ impl FixtureSite {
     }
 }
 
+/// 原样导入现场的一件录制：录制目录（`part.json` 与原图）原样放到真机录制根下（同卷硬链接、跨卷复制），记录库按
+/// `part.json` 写 `parts` 行、逐帧记录与录制证据，cycleId、SN、时间、帧计数与录制时生效的配方都保持现场原值。
+/// 这样从它物化的示教件轮次与现场逐行相同，回传包导入现场后能从现场的历史记录补回原图。
+pub fn import_recording(db: &Path, records: &Path, source: &Path) -> Result<FixturePart, String> {
+    crate::image_file::checked_source_path(&source.join("part.json"))?;
+    let part: Value = serde_json::from_str(
+        std::fs::read_to_string(source.join("part.json"))
+            .map_err(|e| format!("读取 {} 失败：{e}", source.join("part.json").display()))?
+            .trim_start_matches('\u{feff}'),
+    )
+    .map_err(|e| format!("part.json 不是有效 JSON：{e}"))?;
+    let text = |key: &str| {
+        part[key]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| format!("part.json 缺少 {key}"))
+    };
+    let cycle_id = text("cycleId")?;
+    if cycle_id.len() > 128
+        || !cycle_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("cycleId 只能包含字母、数字、- 和 _".into());
+    }
+    let sn = text("sn")?;
+    let reason = text("reason")?;
+    let verdict = text("verdict")?;
+    let recorded_verdict: Verdict = serde_json::from_value(part["verdict"].clone())
+        .map_err(|_| "part.json 的 verdict 无效".to_string())?;
+    let ts = part["startedTs"]
+        .as_i64()
+        .ok_or("part.json 缺少 startedTs")?;
+    let mode: PartMode = serde_json::from_value(part["partMode"].clone())
+        .map_err(|_| "part.json 的 partMode 无效".to_string())?;
+    let recipe: Recipe = serde_json::from_value(part["recipe"].clone())
+        .map_err(|e| format!("part.json 里的配方无法读取：{e}"))?;
+    if part["recipeRevision"].as_str() != Some(recipe.revision_id.as_str()) {
+        return Err("part.json 的配方修订号与配方快照不一致".into());
+    }
+    let cameras: Vec<String> = serde_json::from_value(part["cameras"].clone())
+        .map_err(|_| "part.json 的相机列表无效".to_string())?;
+    if cameras != recipe.plan_cameras() {
+        return Err("part.json 的相机与配方的计划相机不一致".into());
+    }
+    let groups = part["groupCount"]
+        .as_u64()
+        .filter(|g| *g > 0)
+        .ok_or("part.json 没有帧组")?;
+    let mut frames = Vec::new();
+    let mut files = BTreeMap::new();
+    let mut camera_frames = vec![0u32; cameras.len()];
+    for frame in part["frames"].as_array().ok_or("part.json 没有帧")? {
+        let camera = frame["camera"]
+            .as_u64()
+            .map(|c| c as usize)
+            .filter(|c| *c < cameras.len())
+            .ok_or("part.json 的帧相机下标无效")?;
+        let seq = frame["seq"]
+            .as_u64()
+            .filter(|s| (1..=groups).contains(s))
+            .ok_or("part.json 的帧组序号越界")?;
+        let available = frame["available"].as_bool() == Some(true);
+        let file = frame["file"].as_str().unwrap_or_default();
+        if available {
+            if file != format!("{}_s{seq:06}.pgm", cameras[camera]) || !source.join(file).is_file()
+            {
+                return Err(format!(
+                    "相机 {} 第 {seq} 帧的原图 {file} 缺失或命名不符",
+                    cameras[camera]
+                ));
+            }
+            let path = source.join(file);
+            crate::image_file::checked_source_path(&path)?;
+            let bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            if !crate::image_file::read_pnm_info(&path)?.is_some_and(|info| {
+                frame["width"].as_u64() == Some(u64::from(info.width))
+                    && frame["height"].as_u64() == Some(u64::from(info.height))
+                    && info.file_len() == bytes
+            }) {
+                return Err(format!(
+                    "相机 {} 第 {seq} 帧的原图 {file} 尺寸或像素长度与录制元数据不符",
+                    cameras[camera]
+                ));
+            }
+            camera_frames[camera] += 1;
+            files.insert(FrameKey { camera, seq }, file.to_string());
+        }
+        frames.push(FrameRecord {
+            camera,
+            seq,
+            status: if available {
+                FrameState::Unmeasured
+            } else {
+                FrameState::Missing
+            },
+            frame_counter: frame["frameCounter"].as_u64().filter(|_| available),
+            trigger_counter: frame["triggerCounter"].as_u64().filter(|_| available),
+            region: None,
+            metrics: None,
+            raw_file: None,
+        });
+    }
+    if part["available"].as_bool() != Some(true)
+        || camera_frames
+            .iter()
+            .any(|&count| u64::from(count) != groups)
+        || ["missingFrames", "rawDropped", "errors"]
+            .iter()
+            .any(|key| part[*key].as_array().is_some_and(|items| !items.is_empty()))
+    {
+        return Err("原样导入要求原图完整且无录制错误".into());
+    }
+    if !records.is_dir() {
+        return Err(format!(
+            "真机录制根不存在：先创建 {} 再导入",
+            records.display()
+        ));
+    }
+    let records = records.canonicalize().map_err(|e| e.to_string())?;
+    let started = chrono::DateTime::from_timestamp_millis(ts)
+        .ok_or("startedTs 无效")?
+        .with_timezone(&chrono::Local);
+    let name = started.format("%Y%m%d_%H%M%S_%3f").to_string();
+    let relative = format!("{}/{name}_{verdict}_cycle_{cycle_id}", &name[..8]);
+    let target = records.join(&relative);
+    if target.exists() {
+        return Err(format!("录制目录 {} 已存在", target.display()));
+    }
+    check_database(db)?;
+    let store = Store::open_deferred_recovery(db)?;
+    if let Some(previous) = store.recipe_snapshot(&recipe.revision_id)? {
+        if serde_json::to_value(&previous).map_err(|e| e.to_string())?
+            != serde_json::to_value(&recipe).map_err(|e| e.to_string())?
+        {
+            return Err(format!(
+                "记录库已有修订 {} 的另一份配方快照，与这件录制时的配方不同",
+                recipe.revision_id
+            ));
+        }
+    }
+    let judgement = Judgement {
+        verdict: recorded_verdict,
+        plc_code: 0,
+        ..Judgement::error(0, reason)
+    };
+    for frame in &mut frames {
+        frame.raw_file = files
+            .get(&FrameKey {
+                camera: frame.camera,
+                seq: frame.seq,
+            })
+            .map(|file| format!("{relative}/{file}"));
+    }
+    let burst = BurstRecord {
+        expected_total: recipe.expected_total(),
+        tolerance_total: recipe.tolerance_total(),
+        device_triggers: u32::try_from(groups).ok(),
+        camera_frames: camera_frames.clone(),
+        judgement: BurstJudgement {
+            verdict: recorded_verdict,
+            plc_code: 0,
+            group_count: u32::try_from(groups).unwrap_or(u32::MAX),
+            alarms: crate::frame_group::loss_alarms(&camera_frames),
+            ..BurstJudgement::error(0, reason)
+        },
+        frames,
+    };
+    let software = format!("import_recording {}", env!("CARGO_PKG_VERSION"));
+    let record = PartRecord {
+        mode,
+        ts,
+        sn,
+        recipe: Some(&recipe),
+        judgement: &judgement,
+        drain_ms: None,
+        frames: &[],
+        frames_expected: recipe.expected_total().unwrap_or(0) as usize,
+        frames_received: groups as usize,
+        triggers: groups,
+        table: None,
+        software_version: &software,
+        cycle_id: Some(cycle_id),
+        bundle_id: part["bundleId"].as_str(),
+        delivery: &PlcDelivery {
+            state: PlcDeliveryState::Acknowledged,
+            updated_at: ts,
+            message: None,
+        },
+        shots: &[],
+        source: RecordSource::Real,
+        sample: None,
+        burst: Some(&burst),
+    };
+    let staging = records.join(format!(".importing-{cycle_id}"));
+    std::fs::create_dir(&staging).map_err(|e| {
+        format!(
+            "创建导入临时目录 {} 失败（已有目录时请先确认没有并发导入）：{e}",
+            staging.display()
+        )
+    })?;
+    let mut renamed = false;
+    let imported = (|| {
+        for entry in std::fs::read_dir(source).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
+                continue;
+            }
+            let to = staging.join(entry.file_name());
+            if std::fs::hard_link(entry.path(), &to).is_err() {
+                std::fs::copy(entry.path(), &to)
+                    .map_err(|e| format!("复制 {} 失败：{e}", entry.path().display()))?;
+            }
+        }
+        store.insert_recording(&record, &target, || {
+            std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+            std::fs::rename(&staging, &target)
+                .map_err(|e| format!("完成录制目录 {} 失败：{e}", target.display()))?;
+            renamed = true;
+            Ok(())
+        })
+    })();
+    let record_id = match imported {
+        Ok(id) => id,
+        Err(error) => {
+            let owned = if renamed { &target } else { &staging };
+            return Err(match std::fs::remove_dir_all(owned) {
+                Ok(()) => error,
+                Err(cleanup) => format!(
+                    "{error}；清理本次导入目录 {} 失败：{cleanup}",
+                    owned.display()
+                ),
+            });
+        }
+    };
+    Ok(FixturePart {
+        record_id,
+        cycle_id: cycle_id.to_string(),
+        sn: sn.to_string(),
+        ts,
+        directory: target.to_string_lossy().into_owned(),
+        group_count: groups,
+        camera_frames,
+    })
+}
+
 /// 只往软件已建好的记录库写：文件须存在且版本一致，避免旧库被当成版本不符备份重建。
 fn check_database(db: &Path) -> Result<(), String> {
     if !db.is_file() {
@@ -373,4 +619,206 @@ fn check_database(db: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct Recording {
+        root: PathBuf,
+        db: PathBuf,
+        records: PathBuf,
+        source: PathBuf,
+        part: Value,
+    }
+
+    impl Recording {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "gluesight-import-{}-{}-{}",
+                std::process::id(),
+                ly_plc::now_ms(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            let db = root.join("inspection.db");
+            let records = root.join("records");
+            let source = root.join("source");
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::create_dir_all(&records).unwrap();
+            drop(Store::open(&db).unwrap());
+            let mut doc = crate::recipe::samples_burst();
+            doc.version = 7;
+            doc.stage = crate::recipe::RecipeStage::Collect;
+            let recipe = doc.build().unwrap();
+            let cameras = recipe.plan_cameras();
+            let mut frames = Vec::new();
+            for seq in 1..=3u64 {
+                for (camera, id) in cameras.iter().enumerate() {
+                    let file = format!("{id}_s{seq:06}.pgm");
+                    std::fs::write(source.join(&file), b"P5\n2 2\n255\n\x10\x20\x30\x40").unwrap();
+                    frames.push(json!({
+                        "camera": camera, "seq": seq, "frameCounter": 9000 + 100 * camera as u64 + seq,
+                        "triggerCounter": 700 + seq, "width": 2, "height": 2, "ts": 1700000000000i64 + seq as i64 * 200,
+                        "available": true, "file": file,
+                    }));
+                }
+            }
+            let part = json!({
+                "cycleId": "0123456789abcdef0123456789abcdef", "sn": "FIELD-SN-9",
+                "startedTs": 1700000000000i64, "partMode": "maintenanceCollect",
+                "verdict": "ERR_INSPECT", "reason": "维护采集", "available": true,
+                "recipeRevision": recipe.revision_id, "recipe": recipe,
+                "cameras": cameras, "groupCount": 3, "frames": frames,
+                "missingFrames": [], "rawDropped": [], "errors": [],
+            });
+            std::fs::write(
+                source.join("part.json"),
+                format!("{}\n", serde_json::to_string_pretty(&part).unwrap()),
+            )
+            .unwrap();
+            Self {
+                root,
+                db,
+                records,
+                source,
+                part,
+            }
+        }
+
+        fn import(&self) -> Result<FixturePart, String> {
+            import_recording(&self.db, &self.records, &self.source)
+        }
+    }
+
+    impl Drop for Recording {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn verbatim_recording_keeps_field_identity_and_rejects_duplicate_without_extra_files() {
+        let fixture = Recording::new();
+        let imported = fixture.import().unwrap();
+        let store = Store::open(&fixture.db).unwrap();
+        let rows = store
+            .recorded_parts(fixture.part["recipe"]["id"].as_str().unwrap(), 10)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let (record, evidence) = &rows[0];
+        assert_eq!(record.cycle_id.as_deref(), fixture.part["cycleId"].as_str());
+        assert_eq!(record.sn, fixture.part["sn"].as_str().unwrap());
+        assert_eq!(record.ts, fixture.part["startedTs"].as_i64().unwrap());
+        assert_eq!(evidence.state, RecordingState::Complete);
+        assert!(evidence.available);
+        let directory = PathBuf::from(evidence.directory.as_ref().unwrap());
+        assert!(directory
+            .canonicalize()
+            .unwrap()
+            .starts_with(fixture.records.canonicalize().unwrap()));
+        assert_eq!(
+            std::fs::read(directory.join("part.json")).unwrap(),
+            std::fs::read(fixture.source.join("part.json")).unwrap()
+        );
+        let detail = store.detail_by_cycle(&imported.cycle_id).unwrap().unwrap();
+        for frame in detail.burst.unwrap().frames {
+            let original = fixture.part["frames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| {
+                    f["camera"].as_u64() == Some(frame.camera as u64)
+                        && f["seq"].as_u64() == Some(frame.seq)
+                })
+                .unwrap();
+            assert_eq!(frame.frame_counter, original["frameCounter"].as_u64());
+            assert_eq!(frame.trigger_counter, original["triggerCounter"].as_u64());
+            assert_eq!(
+                std::fs::read(fixture.records.join(frame.raw_file.unwrap())).unwrap(),
+                std::fs::read(fixture.source.join(original["file"].as_str().unwrap())).unwrap()
+            );
+        }
+        assert!(fixture.import().is_err());
+        assert_eq!(
+            store
+                .recorded_parts(fixture.part["recipe"]["id"].as_str().unwrap(), 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(std::fs::read_dir(&fixture.records).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_dir(directory.parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn import_failure_leaves_no_record_or_owned_directory_then_allows_retry() {
+        for failure in ["directory", "commit", "truncated", "dimensions"] {
+            let fixture = Recording::new();
+            let conn = rusqlite::Connection::open(&fixture.db).unwrap();
+            let image = fixture.source.join("cam1_s000001.pgm");
+            let original = std::fs::read(&image).unwrap();
+            let day = chrono::DateTime::from_timestamp_millis(
+                fixture.part["startedTs"].as_i64().unwrap(),
+            )
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%Y%m%d")
+            .to_string();
+            let date_dir = fixture.records.join(day);
+            match failure {
+                "commit" => conn.execute_batch("CREATE TABLE import_guard (part_id INTEGER REFERENCES parts(id) DEFERRABLE INITIALLY DEFERRED);
+                    CREATE TRIGGER reject_import AFTER UPDATE OF recording_state ON parts BEGIN INSERT INTO import_guard VALUES(NEW.id + 100000); END;").unwrap(),
+                "directory" => std::fs::write(&date_dir, b"keep-existing-file").unwrap(),
+                "truncated" => std::fs::write(&image, &original[..original.len() - 1]).unwrap(),
+                "dimensions" => std::fs::write(&image, b"P5\n4 1\n255\n\x10\x20\x30\x40").unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(fixture.import().is_err(), "{failure}");
+            let store = Store::open(&fixture.db).unwrap();
+            assert!(store
+                .detail_by_cycle(fixture.part["cycleId"].as_str().unwrap())
+                .unwrap()
+                .is_none());
+            assert!(store
+                .recipe_snapshot(fixture.part["recipeRevision"].as_str().unwrap())
+                .unwrap()
+                .is_none());
+            assert!(!fixture
+                .records
+                .join(format!(
+                    ".importing-{}",
+                    fixture.part["cycleId"].as_str().unwrap()
+                ))
+                .exists());
+            if failure == "commit" {
+                assert_eq!(std::fs::read_dir(&date_dir).unwrap().count(), 0);
+                conn.execute_batch("DROP TRIGGER reject_import; DROP TABLE import_guard;")
+                    .unwrap();
+            } else if failure == "directory" {
+                assert_eq!(std::fs::read(&date_dir).unwrap(), b"keep-existing-file");
+                std::fs::remove_file(&date_dir).unwrap();
+            } else {
+                assert!(!date_dir.exists());
+                std::fs::write(&image, original).unwrap();
+            }
+            fixture.import().unwrap();
+            assert_eq!(
+                store
+                    .recorded_parts(fixture.part["recipe"]["id"].as_str().unwrap(), 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
 }

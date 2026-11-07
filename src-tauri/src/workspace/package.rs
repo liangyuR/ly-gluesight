@@ -399,6 +399,64 @@ pub struct PackageExported {
     pub files: usize,
 }
 
+pub fn export_saved_candidate(
+    project: &Path,
+    id: &str,
+    target: &Path,
+) -> Result<PackageExported, String> {
+    safe_id(id)?;
+    let project = project
+        .canonicalize()
+        .map_err(|e| format!("项目目录无法访问：{e}"))?;
+    let meta = crate::project::read_meta(&project)?;
+    let file = project.join("workspaces").join(id).join("workspace.json");
+    let saved = crate::fsio::read_text(&file).map_err(|e| format!("读取候选文件失败：{e}"))?;
+    let w: Workspace =
+        serde_json::from_str(&saved).map_err(|e| format!("候选文件无法读取：{e}"))?;
+    if w.doc.id != id {
+        return Err("候选文件里的编号与 --recipe 不一致".into());
+    }
+    let name = target.file_name().ok_or("输出路径必须包含文件名")?;
+    if !target
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+    {
+        return Err("输出文件必须以 .zip 结尾".into());
+    }
+    if target.try_exists().map_err(|e| e.to_string())? {
+        return Err(format!("输出文件已存在，不覆盖：{}", target.display()));
+    }
+    let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let staging = transfer::staging_dir(parent, "recipe-export")?;
+    let result = (|| {
+        let temporary = staging.join("candidate.zip");
+        let manifest = export_candidate(&project, &meta, &w, &temporary)?;
+        let current =
+            crate::fsio::read_text(&file).map_err(|e| format!("导出后核对候选文件失败：{e}"))?;
+        if current != saved {
+            return Err("候选在导出期间发生变化，请保存完成后重新导出".into());
+        }
+        let bytes = std::fs::metadata(&temporary)
+            .map_err(|e| e.to_string())?
+            .len();
+        let target = parent.canonicalize().map_err(|e| e.to_string())?.join(name);
+        std::fs::hard_link(&temporary, &target).map_err(|e| {
+            format!("不能在输出目录原子创建回传包（需要支持硬链接且目标不存在）：{e}")
+        })?;
+        Ok(PackageExported {
+            path: target.display().to_string(),
+            bytes,
+            files: manifest.files.len(),
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalCandidate {

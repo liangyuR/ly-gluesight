@@ -235,6 +235,7 @@ seq = a + min(N - 1, floor(t * N))
   - 候选引用的采集轮次（示教件轮次）的 `rounds/<轮次>/round.json` 与 `frames.jsonl`。
 
   以下内容不带：示教件原图、重画走廊留下的未被引用的冻结图、别的轮次的测量、发布快照 `published/`，以及生产配方与发布包。
+- **脚本导出**：先编译 `cargo build --manifest-path src-tauri/Cargo.toml --example export_recipe_package`，再直接运行 `src-tauri/target/debug/examples/export_recipe_package.exe --project <项目目录> --recipe <编号> --out <回传包.zip>`；设置了 `CARGO_TARGET_DIR` 时从该目录取可执行文件。工具读取已保存的候选与 `project.json`，复用同一回传包格式，输出包含 `path`、`bytes`、`files` 的 JSON；软件可以继续运行，但应等候选保存完成、待生效状态结束后再导出。导出期间候选变化或目标文件已存在时拒绝导出；输出目录须支持硬链接（如 NTFS），成包后原子创建目标文件，不覆盖旧包。
 - **清单与校验**：`manifest.json` 记配方编号、名称、型号、来源项目、来源项目目录、来源候选的基础修订、示教件（`cycleId`、记录 ID、SN、时间）、导出时间、软件版本，以及每个文件的字节数与 SHA-256。解包规则与项目导出包相同：清单外、重复、大小或校验和不符的条目整包拒绝。项目导出包不能当回传包导入，回传包也不能当项目导出包导入。
 - **导入到当前项目**：配方库“导入回传包”选包后先预览，内容包括：配方、示教件、来源、本机生产配方版本、本机是否已有同编号候选、能否导入。确认后导入，持配置门，不要求停线，生产配方照常检测。以下情况拒绝导入：
   - 本机同编号候选正在等待生效；
@@ -255,6 +256,8 @@ seq = a + min(N - 1, floor(t * N))
 - **补回原图**：落盘后按示教件那一件的 `cycleId` 走示教件页“补回原图”的同一流程：从本机历史记录重新物化一轮，帧记录逐行相同才把原图（同卷硬链接）移进示教件轮次。补不回时导入仍成功，结果里列出原因，例如那一件不在本配方最近的录制件里或录制已被清理。补不回时：
   - 候选仍可发布，发布只用冻结的示教帧与轮次记录；
   - 看示教图、示教走廊、测量示教件或试测前，需在示教件页补回，或重新选用示教件。
+
+  开发机用现场录制件示教并回传时，必须[原样导入录制](../testing/TESTING.md)，保留 `cycleId`、SN、时间与帧计数，`part.json` 与现场逐字节相同；样本集导入会重建身份，不能用于此链路。
 - **发布在本机做**：回传包不带生产配方与发布包。现场在本机走发布前检查后发布，计划版本、发布 ID 与 PLC 侧都按本机分配，不出现开发机的版本号。
 - **日志**：导出与导入记 `op.recipe.package`；补回原图另记 `op.capture.import`（`refill: true`）。
 
@@ -273,6 +276,7 @@ seq = a + min(N - 1, floor(t * N))
 - 后端：
   - `workspace/package.rs`：`export_candidate`、`stage`、`rebase`、`install`，以及命令 `workspace_package_export`、`workspace_package_pick`、`workspace_package_import`；
   - `project/transfer.rs` 的 ZIP 读写与清单校验，与项目导出包共用。
+  - `examples/export_recipe_package.rs` 经 `probe_api::export_recipe_package` 调用 `export_saved_candidate`，供脚本无对话框导出。
 - 前端：`LibraryPage`（候选卡片“导出回传包”、页头“导入回传包”）、`PackageDialogs`。
 - 默认测试：`workspace::package::tests` 覆盖以下两点：
   - 包里不带原图、未引用的冻结图、别的轮次测量与发布快照，导入后改基、路径改写、去掉验证样本、保留本机发布快照、替换旧候选的轮次且不动别的配方；
