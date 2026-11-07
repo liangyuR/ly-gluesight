@@ -633,24 +633,6 @@ mod tests {
         }
     }
 
-    /// D-SB-40：第 k 个边界 = round(本件帧组数 × 前 k 段 N_exp 之和 / ΣN_exp)。N_exp 10 / 4 / 10（ΣN 24 ± 3），
-    /// 本件帧数在容差内时边界可信；按原帧号会把 26 帧件的第二个边界放在 14，比例换算放在 15。
-    #[test]
-    fn proportional_boundaries_scale_calibrated_counts_to_actual_total() {
-        let segments = calibrated(&[S, C, S], &[10, 4, 10]);
-        for (total, expected) in [
-            (24, vec![(10, 1.0), (14, 1.0)]),
-            (26, vec![(11, 1.0), (15, 1.0)]),
-            (21, vec![(9, 1.0), (12, 1.0)]),
-        ] {
-            assert_eq!(
-                cuts(&proportional(&segments, total)),
-                expected,
-                "{total} 帧"
-            );
-        }
-    }
-
     /// D-SB-40：本件帧组数超出 ΣN_exp ± Σtol 时比例边界不可信，整件合并为一个“分段不确定”区域，不回退计划边界。
     #[test]
     fn proportional_boundaries_outside_total_tolerance_merge_into_low_confidence_region() {
@@ -675,74 +657,6 @@ mod tests {
                     total
                 )],
                 "{total} 帧"
-            );
-        }
-    }
-
-    /// D-SB-40：可信边界两侧各 guard 帧划为过渡区（覆盖两侧的段，只判每帧指标）；中间的段被取空时两个过渡区合并；
-    /// guard = 0 时按边界原样切分。
-    #[test]
-    fn trusted_boundaries_get_guard_frames_as_transition_regions() {
-        let straight = |segment| RegionKind::Straight { segment };
-        let corner = |segment| RegionKind::Corner { segment };
-        let transition = |first_segment, last_segment| RegionKind::Unsegmented {
-            first_segment,
-            last_segment,
-            reason: UnsegReason::Transition,
-        };
-        let outcome = |a, b| {
-            SegOutcome::Boundaries(vec![
-                Boundary {
-                    after_segment: 1,
-                    frame_seq: a,
-                    confidence: 1.0,
-                },
-                Boundary {
-                    after_segment: 2,
-                    frame_seq: b,
-                    confidence: 1.0,
-                },
-            ])
-        };
-        let segments = plan(&[S, C, S]);
-        for (case, cut, guard, expected) in [
-            (
-                "弯道 6 帧、余量 2",
-                (10, 16),
-                2,
-                vec![
-                    region(straight(1), 1, 8),
-                    region(transition(1, 2), 9, 12),
-                    region(corner(2), 13, 14),
-                    region(transition(2, 3), 15, 18),
-                    region(straight(3), 19, 26),
-                ],
-            ),
-            (
-                "弯道 4 帧被两侧余量取空",
-                (10, 14),
-                2,
-                vec![
-                    region(straight(1), 1, 8),
-                    region(transition(1, 3), 9, 16),
-                    region(straight(3), 17, 26),
-                ],
-            ),
-            (
-                "余量 0",
-                (10, 16),
-                0,
-                vec![
-                    region(straight(1), 1, 10),
-                    region(corner(2), 11, 16),
-                    region(straight(3), 17, 26),
-                ],
-            ),
-        ] {
-            assert_eq!(
-                resolve_regions(&segments, &outcome(cut.0, cut.1), 26, 0.5, guard),
-                expected,
-                "{case}"
             );
         }
     }

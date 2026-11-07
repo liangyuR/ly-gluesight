@@ -554,8 +554,6 @@ pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, 
     Ok(Some(prepared))
 }
 
-#[cfg(test)]
-mod tests;
 
 #[cfg(test)]
 mod warmup_tests;

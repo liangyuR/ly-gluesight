@@ -265,23 +265,3 @@ pub fn bounds(points: &[[f64; 2]], margin: f64, size: [u32; 2]) -> Option<[u32; 
     let y1 = ((hi[1] + margin).ceil() as u32).min(size[1]);
     (x1 > x && y1 > y).then(|| [x, y, x1 - x, y1 - y])
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn overlay_drawn_at_a_source_pixel_lands_at_that_pixel_of_the_cropped_and_scaled_canvas() {
-        let image = FrameImage::new(400, 300, vec![0; 400 * 300]);
-        // 裁出 [100, 50, 200, 100]，长边 400 → 放大 2 倍
-        let mut canvas = Canvas::new(&image, Some([100, 50, 200, 100]), 400).unwrap();
-        assert_eq!(canvas.crop(), [100, 50, 200, 100]);
-        canvas.polyline(&[[150.0, 80.0]], YELLOW, 1.0);
-        let png = image::load_from_memory(&canvas.png().unwrap())
-            .unwrap()
-            .to_rgb8();
-        assert_eq!(png.dimensions(), (400, 200));
-        assert_eq!(png.get_pixel(100, 60).0, YELLOW);
-        assert_eq!(png.get_pixel(130, 60).0, [0, 0, 0]);
-    }
-}

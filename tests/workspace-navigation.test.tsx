@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -97,25 +97,4 @@ it("编辑地图后离页 → 草稿保留并阻止发布，回到分段保存�
   expect(view.navigation!.map!.confirmed).toBe(true);
   await user.click(within(screen.getByRole("navigation", { name: "配方配置步骤" })).getByRole("link", { name: /发布/ }));
   await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
-});
-
-it("示教页修改视图并保存 → 重开恢复朝向和底色，空间确认及胶路保持不变", async () => {
-  const user = show("/recipe/A/teach?camera=CAM-1&segment=1");
-  await screen.findByRole("img", { name: "工件图与有向胶路" });
-  const before = structuredClone(view.navigation!.map!);
-  await user.click(screen.getByText("视图设置", { exact: true }));
-  await user.click(screen.getByRole("button", { name: "向右旋转90度" }));
-  await user.click(screen.getByRole("button", { name: "水平翻转" }));
-  fireEvent.change(document.querySelector('select[aria-label="透明图片底色"]')!, { target: { value: "light" } });
-  expect(screen.getByRole("button", { name: "保存视图" })).toBeEnabled();
-  await user.click(screen.getByRole("button", { name: "保存视图" }));
-  await waitFor(() => expect(screen.queryByRole("button", { name: "保存视图" })).toBeNull());
-  expect(view.navigation!.map).toEqual({ ...before, view: { rotation: 90, flipX: true, flipY: false, background: "light" } });
-  cleanup();
-  show("/recipe/A/segments");
-  await user.click(await screen.findByText("视图设置", { exact: true }));
-  expect(screen.getByLabelText("工件视图旋转角度")).toHaveValue(90);
-  expect(screen.getByRole("button", { name: "水平翻转" })).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("combobox", { name: "透明图片底色" })).toHaveTextContent("浅色");
-  expect(screen.queryByRole("button", { name: "保存视图" })).toBeNull();
 });

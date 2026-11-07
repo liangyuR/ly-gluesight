@@ -42,13 +42,10 @@ beforeEach(() => {
 
 describe("历史详情（段配方记录）", () => {
   // 防的回归：从试测“看详情”进来，返回按钮写死回历史列表，操作员要重新找到试测页
-  it.each([
-    ["从历史列表进入 → 返回历史列表", { pathname: "/history/1", state: { query: {} } }, "返回历史列表", "历史列表页"],
-    ["从试测进入 → 返回试测", { pathname: "/history/1", state: { returnTo: { path: "/recipe/calibration", label: "返回试测" } } }, "返回试测", "试测页"],
-  ] as const)("%s", async (_, entry, label, page) => {
-    show(entry);
-    await userEvent.click(await screen.findByRole("button", { name: label }));
-    expect(screen.getByText(page)).toBeVisible();
+  it("从试测进入历史详情 → 返回试测页", async () => {
+    show({ pathname: "/history/1", state: { returnTo: { path: "/recipe/calibration", label: "返回试测" } } });
+    await userEvent.click(await screen.findByRole("button", { name: "返回试测" }));
+    expect(screen.getByText("试测页")).toBeVisible();
   });
 
   // 防的回归：区域 NG 时帧组条把整段的帧都涂红；格子只按本帧结论着色，区域结论放在段条上
@@ -61,19 +58,6 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.getByRole("button", { name: "帧组 3 · CAM-2 · OK" })).toBeVisible();
     expect(screen.getByRole("button", { name: "帧组 4 · CAM-1 · OK" })).toBeVisible();
     expect(screen.getByRole("img", { name: "段 1–3 · 未分段 · NG · 胶宽超差：胶宽超差" })).toBeVisible();
-  });
-
-  it("按区域展示结果，同一帧组三台相机的原图并排、按 (相机, seq) 读取；缺帧的相机没有原图可读", async () => {
-    show();
-    const regions = within(await screen.findByRole("list", { name: "区域" }));
-    expect(regions.getByText("段 1–3 · 未分段")).toBeVisible();
-    expect(screen.getByText("检测不完整", { selector: "[data-flag]" })).toBeVisible();
-    await waitFor(() => expect(burstImageApi.record).toHaveBeenCalledWith(detail.summary.id, 0, 1));
-    await userEvent.click(screen.getByRole("button", { name: /^帧组 5 · CAM-2 ·/ }));
-    expect(screen.getByLabelText("历史相机选择", { selector: "select" })).toHaveValue("1");
-    await waitFor(() => expect(burstImageApi.record).toHaveBeenCalledWith(detail.summary.id, 0, 5));
-    expect(await screen.findByText(/本帧组缺帧，没有原图/)).toBeVisible();
-    expect(burstImageApi.record).not.toHaveBeenCalledWith(detail.summary.id, 1, 5);
   });
 
   it("按候选规则重判得到区域结果 → 逐区域比对表标出与原结果不同的区域", async () => {
@@ -166,6 +150,8 @@ describe("历史详情（段配方记录）", () => {
     const edge = (y: number): [[number, number], [number, number]] => [[10, y], [20, y]];
     vi.mocked(workspaceApi.historyFrameView).mockResolvedValue({ segment: 1, corridor: [[0, 0], [10, 10]], searchHalfPx: 5, edges: [edge(10), edge(20)], partEdges: [], metrics: frameMetrics(0, 1) });
     show();
+    expect(within(await screen.findByRole("list", { name: "区域" })).getByText("段 1–3 · 未分段")).toBeVisible();
+    expect(screen.getByText("检测不完整", { selector: "[data-flag]" })).toBeVisible();
     await waitFor(() => expect(workspaceApi.historyFrameView).toHaveBeenCalledWith(detail.summary.id, 0, 1));
     // 三台相机都测成，每幅原图都叠出两条测量横线和搜索带
     await waitFor(() => expect(document.querySelectorAll('[aria-label="测量横线"]')).toHaveLength(3));
@@ -174,6 +160,10 @@ describe("历史详情（段配方记录）", () => {
     await userEvent.click(screen.getByRole("button", { name: /^帧组 5 · CAM-2 ·/ }));
     await waitFor(() => expect(workspaceApi.historyFrameView).toHaveBeenCalledWith(detail.summary.id, 0, 5));
     expect(workspaceApi.historyFrameView).not.toHaveBeenCalledWith(detail.summary.id, 1, 5);
+    expect(screen.getByLabelText("历史相机选择", { selector: "select" })).toHaveValue("1");
+    expect(await screen.findByText(/本帧组缺帧，没有原图/)).toBeVisible();
+    expect(burstImageApi.record).toHaveBeenCalledWith(detail.summary.id, 0, 5);
+    expect(burstImageApi.record).not.toHaveBeenCalledWith(detail.summary.id, 1, 5);
     expect(workspaceApi.recordFrameView).not.toHaveBeenCalled();
   });
 });

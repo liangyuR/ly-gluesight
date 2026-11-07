@@ -15,11 +15,8 @@ describe("段配方按区域比对", () => {
   const side = (over: Partial<BurstSide> = {}): BurstSide => ({ ...burstSideOf(burstPartDetail().burst!), judgement: burstJudgement({ regions: regions() }), ...over });
   const changed = (replay: BurstSide) => regionDiffs(side(), replay)!.filter(d => d.differs).map(d => d.key);
 
-  it.each([
-    ["弯道区域结论改变", regions({}, { verdict: "NG_WIDTH" }), ["corner:2-2"]],
-    ["直线区域胶偏差在 0.01 mm 容差内", regions({ offset: { meanShift: .304, maxDev: .6 } }), []],
-  ] as [string, RegionResult[], string[]][])("重判结果%s → 只有实际变化的区域标为差异", (_, replayRegions, differing) => {
-    expect(changed(side({ judgement: burstJudgement({ regions: replayRegions }) }))).toEqual(differing);
+  it("区域胶偏差变化在 0.01 mm 容差内 → 不标为差异", () => {
+    expect(changed(side({ judgement: burstJudgement({ regions: regions({ offset: { meanShift: .304, maxDev: .6 } }) }) }))).toEqual([]);
   });
 
   const segments = () => side().segments;

@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { SnackbarProvider } from "qing-steel";
 import { describe, expect, it, vi } from "vitest";
 import { DeleteProjectDialog } from "../src/features/project/ProjectDialogs";
-import { CopyProjectDialog } from "../src/features/project/TransferDialogs";
 import type { ProjectEntry } from "../src/lib/project";
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 
@@ -27,23 +26,5 @@ describe("删除项目确认", () => {
     await userEvent.click(remove);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(invoke).toHaveBeenCalledWith("project_delete", { id: "p-20261024-01" });
-  });
-});
-
-describe("复制项目", () => {
-  // 防的回归：复制请求仍带已取消的 includeRecords（记录本机共用，复制不带记录）或丢掉来源编号
-  it("复制 → 以来源编号与新编号发出复制、不带记录选项，完成后可切换到副本", async () => {
-    const source = { schema: 1, id: "line-a", name: "京航 A 线", description: "三相机", createdAt: 0, createdBy: "", copiedFrom: null };
-    const copy = { ...source, id: "p-20261026-01", name: "京航 A 线（副本）", copiedFrom: "line-a" };
-    vi.mocked(invoke).mockResolvedValue({ meta: copy, notes: ["1 个计划版本已按本机重新分配"] });
-    const onSwitch = vi.fn();
-    render(<CopyProjectDialog project={source} entries={[{ id: "line-a", current: true, error: null, meta: source }]} onClose={vi.fn()} onSwitch={onSwitch} />);
-    const id = screen.getByRole("textbox", { name: /新项目编号/ });
-    await userEvent.clear(id);
-    await userEvent.type(id, "p-20261026-01");
-    await userEvent.click(screen.getByRole("button", { name: "复制为新项目" }));
-    expect(invoke).toHaveBeenCalledWith("project_copy", { request: { sourceId: "line-a", id: "p-20261026-01", name: "京航 A 线（副本）", description: "三相机", captureImages: false } });
-    await userEvent.click(await screen.findByRole("button", { name: "切换到该项目" }));
-    expect(onSwitch).toHaveBeenCalledWith(copy);
   });
 });

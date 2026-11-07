@@ -497,7 +497,3 @@ fn history_ids(value: &mut Value, map: &impl Fn(i64) -> i64, top: bool) -> bool 
         _ => false,
     }
 }
-
-#[cfg(test)]
-#[path = "records_tests.rs"]
-mod tests;

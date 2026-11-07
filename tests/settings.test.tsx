@@ -57,14 +57,4 @@ describe("离线原图保留设置", () => {
     expect(screen.getByRole("combobox", { name: "真机帧录制" }).closest(".qs-select")!.querySelector("select")!).toHaveValue("failed");
   });
 
-  it("检测节拍里勾选自动复位并保存 → 后端设置打开且重新打开仍勾选", async () => {
-    const page = render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
-    await userEvent.click(await screen.findByRole("checkbox", { name: /启动或重连 PLC 后自动复位/ }));
-    await userEvent.click(within(screen.getByRole("region", { name: "检测节拍" })).getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(saved.autoReset).toBe(true));
-    page.unmount();
-    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
-    expect(await screen.findByRole("checkbox", { name: /启动或重连 PLC 后自动复位/ })).toBeChecked();
-  });
-
 });

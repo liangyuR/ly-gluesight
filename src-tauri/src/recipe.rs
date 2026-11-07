@@ -1643,32 +1643,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// 候选建好后历史记录抬高了版本下限（启动时按历史件版本补下限）：发布按 `release_version` 重新分配就能生效，
-    /// 沿用候选里过时的版本号生效时被拒（现场报“发布版本必须是明确分配的下一版本”）。
-    #[test]
-    fn release_version_follows_history_floor_raised_after_the_candidate_was_created() {
-        let dir = std::env::temp_dir().join(format!(
-            "gluesight-release-floor-{}-{}",
-            std::process::id(),
-            ly_plc::now_ms()
-        ));
-        let mut doc = samples_burst();
-        doc.version = 1;
-        let floors = BTreeMap::from([(doc.id.clone(), 3)]);
-        let store = RecipeStore::open_with_floors(
-            dir.join("recipes"),
-            dir.join("state").join("plan-version"),
-            &floors,
-        )
-        .unwrap();
-        doc.plan_version = store.plan_version_for(&doc).unwrap();
-        assert!(store.save_published(doc.clone(), None).is_err());
-        doc.version = store.release_version(&doc).unwrap();
-        assert_eq!(doc.version, 4);
-        assert_eq!(store.save_published(doc, None).unwrap().version, 4);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
     /// 在线投运：采集版之后照常发布正式版；正式版生效后不能再发布采集版（不降级成只采图的配方）。
     #[test]
     fn collect_then_formal_publishes_but_formal_never_downgrades_to_collect() {

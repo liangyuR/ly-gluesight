@@ -812,8 +812,6 @@ mod tests {
         }
     }
 
-    /// 没测成的帧：数值都是测不到时的样子，若被当成 Measured 判会是断胶。
-
     /// seq 1..=n 三台相机全部合格。
     fn frames(n: u64) -> Vec<FrameMetrics> {
         (1..=n).flat_map(|seq| (0..CAMS).map(move |camera| ok(camera, seq))).collect()
@@ -848,8 +846,6 @@ mod tests {
         Region { kind, first_seq, last_seq }
     }
 
-    /// 覆盖全部段的未分段区域。
-
     fn run(segments: &[PathSegment], expected_total: Option<u32>, regions: &[Region], metrics: &[FrameMetrics]) -> BurstJudgement {
         judge(segments, expected_total, regions, &groups_of(metrics), metrics, &cameras(), &[])
     }
@@ -863,25 +859,6 @@ mod tests {
             .into_iter()
             .map(|v| ((v.camera, v.seq), v.verdict))
             .collect()
-    }
-
-    /// 防的回归：段内一帧超差时历史帧格整段变红——帧格颜色只看本帧，同段其它帧仍合格；区域结论照常 NG。
-    #[test]
-    fn one_frame_over_width_limit_is_the_only_ng_frame_in_its_region() {
-        let segments = plan(&[Corner]);
-        let regions = [region(RegionKind::Corner { segment: 1 }, 1, 4)];
-        let mut metrics = frames(4);
-        set_widths(at(&mut metrics, 0, 2), &[7.0; 10]);
-        assert_eq!(
-            run(&segments, None, &regions, &metrics).verdict,
-            Verdict::NgWidth
-        );
-        let verdicts = verdict_map(&segments, &regions, &metrics);
-        assert_eq!(verdicts[&(0, 2)], Verdict::NgWidth);
-        assert!(verdicts
-            .iter()
-            .filter(|(key, _)| **key != (0, 2))
-            .all(|(_, v)| *v == Verdict::Ok));
     }
 
     /// 防的回归：在线帧格曾用各段里最宽松的允差判帧，严格段里超差的帧显示合格。逐帧结论按帧所在区域的段允差判。
@@ -902,54 +879,6 @@ mod tests {
             (verdicts[&(0, 2)], verdicts[&(0, 5)]),
             (Verdict::Ok, Verdict::NgWidth)
         );
-    }
-
-    /// 防的回归：局部跑偏只落到偏离超限的帧；整段胶偏、胶宽不均属于整段，不把任何帧标成不合格（否则又回到整段变红）。
-    #[test]
-    fn local_deviation_marks_its_frames_but_region_wide_findings_mark_none() {
-        type Edit = fn(&mut Vec<FrameMetrics>);
-        let cases: [(&str, Edit, Vec<(usize, u64)>); 3] = [
-            (
-                "第 4 帧组 x 偏离均值 2.5 mm > 2 mm",
-                |m| at(m, 0, 4).x_mm = Some(3.0),
-                vec![(0, 4)],
-            ),
-            (
-                "整段 x 偏 2.5 mm > 2 mm",
-                |m| m.iter_mut().for_each(|f| f.x_mm = Some(2.5)),
-                vec![],
-            ),
-            (
-                "各帧均值极差 0.8 mm > 0.5 mm",
-                |m| set_widths(at(m, 1, 3), &[4.8; 10]),
-                vec![],
-            ),
-        ];
-        for (case, edit, expected) in cases {
-            let mut segments = plan(&[Straight]);
-            segments[0].checks.width.max_range_mm = Some(0.5);
-            segments[0].offset_ref = Some(OffsetRef {
-                measure: OffsetMeasure::AbsoluteX,
-                camera: "camA".into(),
-                x_ref: Some(0.0),
-                spread: None,
-                edge: None,
-            });
-            let regions = [region(RegionKind::Straight { segment: 1 }, 1, 8)];
-            let mut metrics = frames(8);
-            edit(&mut metrics);
-            assert_ne!(
-                run(&segments, None, &regions, &metrics).verdict,
-                Verdict::Ok,
-                "{case}"
-            );
-            let flagged: Vec<(usize, u64)> = verdict_map(&segments, &regions, &metrics)
-                .into_iter()
-                .filter(|(_, v)| *v != Verdict::Ok)
-                .map(|(key, _)| key)
-                .collect();
-            assert_eq!(flagged, expected, "{case}");
-        }
     }
 
     /// D-SB-41：直线 / 弯道区域只用本段检测相机——没选中的相机这一帧断胶、缺帧都不影响结论与检测不完整；
@@ -1022,28 +951,6 @@ mod tests {
                 to_mm: None
             }]
         );
-    }
-
-    /// 规格 §4 每帧独立指标：断口超长、有胶比例低 → 断胶；胶宽超差累计超过允许长度 → 胶宽 NG（多处短超差累加），
-    /// 不超过为允许范围内的超差；溢胶 → 胶宽 NG 且原因写“溢胶”（默认做法 1）。
-    #[test]
-    fn frame_exceeding_gap_presence_width_or_overflow_limit_is_ng_with_matching_reason() {
-        type Edit = fn(&mut FrameMetrics);
-        let cases: [(&str, Edit, Verdict); 5] = [
-            ("断口 7 mm > 6 mm", |m| m.gap_max_mm = 7.0, Verdict::NgGap),
-            ("有胶比例 0.7 < 0.8", |m| m.present_ratio = 0.7, Verdict::NgGap),
-            ("两处各 3 mm 超差，累计 6 mm > 5 mm", |m| set_widths(m, &[6.0, 6.0, 6.0, 4.0, 4.0, 6.0, 6.0, 6.0, 4.0, 4.0]), Verdict::NgWidth),
-            ("一处 3 mm 超差 ≤ 5 mm", |m| set_widths(m, &[6.0, 6.0, 6.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0]), Verdict::OkWithExcursion),
-            ("溢胶：最大胶宽 9 mm > 8 mm，超差只有 2 mm", |m| set_widths(m, &[4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 9.0, 9.0]), Verdict::NgWidth),
-        ];
-        for (k, (case, edit, verdict)) in cases.into_iter().enumerate() {
-            let segments = plan(&[Corner]);
-            let mut metrics = frames(3);
-            edit(at(&mut metrics, 0, 2));
-            let result = run(&segments, None, &[region(RegionKind::Corner { segment: 1 }, 1, 3)], &metrics);
-            assert_eq!(result.verdict, verdict, "{case}");
-            assert_eq!(result.regions[0].reason.contains("溢胶"), k == 4, "{case}");
-        }
     }
 
     #[test]

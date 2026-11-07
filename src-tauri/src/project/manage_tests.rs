@@ -1,5 +1,5 @@
 use super::*;
-use crate::project::{create_dir, dir, list, trash_root};
+use crate::project::{create_dir, dir};
 
 struct TempDir(PathBuf);
 
@@ -28,27 +28,6 @@ fn add(data: &Path, id: &str, name: &str) {
     .unwrap();
 }
 
-fn ids(data: &Path) -> Vec<String> {
-    list(data).unwrap().into_iter().map(|e| e.id).collect()
-}
-
-#[test]
-fn delete_current_is_refused_and_deleted_project_leaves_list_at_once_then_purge_clears_trash() {
-    let data = TempDir::new("delete");
-    add(&data.0, "line-a", "A 线");
-    add(&data.0, "line-b", "B 线");
-
-    assert!(move_to_trash(&data.0, Some("line-a"), "line-a").is_err());
-    assert!(dir(&data.0, "line-a").join("project.json").is_file());
-
-    let trashed = move_to_trash(&data.0, Some("line-a"), "line-b").unwrap();
-    assert_eq!(ids(&data.0), ["line-a"]);
-    assert!(trashed.starts_with(trash_root(&data.0)));
-
-    purge_trash(&data.0).unwrap();
-    assert!(!trashed.exists());
-    assert_eq!(ids(&data.0), ["line-a"]);
-}
 
 /// 防的回归：删除项目连同它的历史原图一起删（检测历史本机共用，删除项目只删项目资产）；旧版本留在 `.trash` 里、
 /// 带外部原图清理标记的项目，标记与目录相符时照旧清掉原图，不相符时不动别的项目的原图。

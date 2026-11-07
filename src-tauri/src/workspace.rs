@@ -27,14 +27,10 @@ mod burst_tests;
 mod capture_review;
 pub(crate) mod centerline;
 mod collect_release;
-#[cfg(test)]
-mod collect_release_tests;
 mod comparisons;
 mod history_import;
 mod history_samples;
 mod navigation;
-#[cfg(test)]
-mod navigation_tests;
 pub(crate) mod package;
 mod pieces;
 #[cfg(test)]

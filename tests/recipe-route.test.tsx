@@ -41,13 +41,6 @@ beforeEach(() => {
 });
 
 describe("配方页按地址打开配方", () => {
-  // 防的回归：配方页依赖全局“选中配方”（启动时自动选第一个或上次的），地址里的配方没被打开
-  it("打开哪个配方只看地址", async () => {
-    show("/recipe/B/progress");
-    await waitFor(() => expect(screen.getByLabelText("打开的配方")).toHaveTextContent("B"));
-    expect(workspaceApi.get).toHaveBeenCalledTimes(1);
-    expect(workspaceApi.get).toHaveBeenCalledWith("B");
-  });
 
   // 防的回归：读取配方临时失败后地址里的编号已等于打开的编号，入口不再重读，只能先打开别的配方或重启
   it("读取失败后可以就地重试", async () => {

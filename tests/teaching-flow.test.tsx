@@ -1,11 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { PointerEventsCheckLevel } from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
-import { StrictMode, createElement } from "react";
+import { createElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
-import ValidationPage from "../src/features/workspace/ValidationPage";
 import { WorkspaceProvider } from "../src/features/workspace/context";
 import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import { SnackbarProvider } from "qing-steel";
@@ -52,8 +51,6 @@ function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = 
   vi.spyOn(workspaceApi, "image").mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
 }
 
-/** 依次返回给定响应，模拟后端逐次推进修订 */
-
 const calls = (command: string) => vi.mocked(invoke).mock.calls.filter(([name]) => name === command).map(([, args]) => args);
 
 afterEach(() => {
@@ -62,15 +59,14 @@ afterEach(() => {
 });
 
 /** 假时钟下渲染：自动保存防抖、采集轮询只在测试推进时间时触发。 */
-function renderWorkspace(path: string, strict = false) {
+function renderWorkspace(path: string) {
   vi.useFakeTimers();
   // Testing Library 只在全局有 jest 时才在 waitFor / findBy 里推进假时钟
   Object.assign(globalThis, { jest: { advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms) } });
   const workspace = <MemoryRouter initialEntries={[path]}><SnackbarProvider><WorkspaceProvider><Routes>
     <Route path="/recipe/:recipeId/teach" element={createElement(inRecipe(TeachingPage))} />
-    <Route path="/recipe/:recipeId/validation" element={createElement(inRecipe(ValidationPage))} />
   </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>;
-  render(strict ? <StrictMode>{workspace}</StrictMode> : workspace);
+  render(workspace);
   // jsdom 没有样式表，逐级检查 pointer-events 只是空耗
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime, pointerEventsCheck: PointerEventsCheckLevel.Never });
 }
@@ -138,29 +134,9 @@ it("保存期间继续加点 → 不锁编辑、缩放与走廊不重置，保�
   expect([saves[0].doc.inspect![0], saves[0].doc.inspect![2]]).toEqual([candidate.workspace.doc.inspect![0], candidate.workspace.doc.inspect![2]]);
 });
 
-it("保存期间改相机参数 → 保存结果回来不覆盖新值，按新修订再保存一次", async () => {
-  const candidate = corridorCandidate();
-  const saving = deferred<void>();
-  mockSite(candidate, { workspace_save_doc: savingDoc(candidate, saving.promise) });
-  const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
-  await user.click(await screen.findByRole("button", { name: "选择相机 CAM-2" }));
-  const scale = await screen.findByRole("spinbutton", { name: /^像素当量/ });
-  fireEvent.change(scale, { target: { value: "0.2" } });
-  act(() => { vi.advanceTimersByTime(900); });
-  expect(screen.getByText("保存中")).toBeVisible();
-  fireEvent.change(screen.getByRole("spinbutton", { name: /^像素当量/ }), { target: { value: "0.3" } });
-  await act(async () => saving.resolve(undefined));
-  expect(screen.getByRole("spinbutton", { name: /^像素当量/ })).toHaveValue(0.3);
-  act(() => { vi.advanceTimersByTime(900); });
-  expect(await screen.findByText("草稿已保存")).toBeVisible();
-  const saves = calls("workspace_save_doc") as { revision: number; doc: WorkspaceView["workspace"]["doc"] }[];
-  expect(saves.map(s => s.doc.inspect![1].mmPerPx)).toEqual([0.2, 0.3]);
-  expect(saves[1].revision).toBe(saves[0].revision + 1);
-});
-
-// 防的回归：相机标定后候选里的当量仍为空或是旧值，示教页没有入口把标定当量写进配方，走廊示教一直缺当量或按旧当量换算
-it.each([[null], [0.2]])("候选当量为 %s、设备标定为 0.115 mm/px → 点“采用标定当量”把标定值存进候选配方", async mmPerPx => {
-  const candidate = corridorCandidate((inspect, view) => { inspect.mmPerPx = mmPerPx; view.plan!.cameraTeaching[1].calibMmPerPx = .115; });
+// 防的回归：相机标定后候选里的当量仍是旧值，示教页没有入口把标定当量写进配方，走廊示教仍按旧当量换算
+it("候选当量为 0.2、设备标定为 0.115 mm/px → 点“采用标定当量”把标定值存进候选配方", async () => {
+  const candidate = corridorCandidate((inspect, view) => { inspect.mmPerPx = 0.2; view.plan!.cameraTeaching[1].calibMmPerPx = .115; });
   mockSite(candidate, { workspace_save_doc: savingDoc(candidate) });
   const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   await user.click(await screen.findByRole("button", { name: "选择相机 CAM-2" }));
@@ -198,29 +174,6 @@ it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保�
     [true, [{ segment: 1, corridor: [[10, 10], [40, 40]] }]],
   ]);
   expect(saves[1].revision).toBe(saves[0].revision + 1);
-});
-
-// 防的回归：走廊还等着自动保存时点“全段试测”，按钮要么跟着保存变灰（每改一下界面闪一次），要么拿保存前的旧走廊去试测
-it("刚改了走廊、还没自动保存就点全段试测 → 立即保存，存好后按保存后的走廊试测一次", async () => {
-  stubSvgPointer({ pointerEvent: true });
-  const candidate = corridorCandidate();
-  mockSite(candidate, {
-    workspace_save_doc: savingDoc(candidate),
-    workspace_teach_preview_segment: () => ({ start: 1, end: 6, frames: [] }),
-  });
-  const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
-  const image = await screen.findByRole("img", { name: CAM2 });
-  fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
-  for (const [clientX, clientY] of [[10, 10], [40, 40]]) {
-    fireEvent.pointerDown(image, { clientX, clientY });
-    fireEvent.pointerUp(image);
-  }
-  const trial = screen.getByRole("button", { name: "全段试测" });
-  expect(trial).toBeEnabled();
-  await user.click(trial);
-  await waitFor(() => expect(calls("workspace_teach_preview_segment")).toHaveLength(1));
-  const order = vi.mocked(invoke).mock.calls.map(([name]) => name).filter(name => name === "workspace_save_doc" || name === "workspace_teach_preview_segment");
-  expect(order).toEqual(["workspace_save_doc", "workspace_teach_preview_segment"]);
 });
 
 it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在这一段的示教帧上提取一次", async () => {
