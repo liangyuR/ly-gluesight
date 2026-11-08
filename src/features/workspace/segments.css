@@ -60,3 +60,15 @@
 .wp-pass-skip { display: inline-flex; align-items: flex-end; gap: 8px; }
 .swb-cell.pass-end.qs-btn { border-right: 3px solid var(--primary); }
 .swb-seam.pass.qs-btn { box-shadow: inset -3px 0 0 var(--primary); }
+.pa-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.pa-scroll { max-height: 420px; overflow: auto; }
+.pa-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pa-table th, .pa-table td { padding: 4px 8px; border-bottom: 1px solid var(--outline-variant); text-align: left; vertical-align: middle; }
+.pa-table th { position: sticky; top: 0; background: var(--surface-low); color: var(--on-surface-variant); font-weight: 500; }
+.pa-fold td { color: var(--on-surface-variant); background: var(--surface-mid); }
+.pa-picking td { background: var(--surface-mid); }
+.pa-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.pa-pending { color: var(--warn); }
+.pa-carry { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.pa-carry li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.pa-details summary { cursor: pointer; font-size: 13px; color: var(--on-surface-variant); }

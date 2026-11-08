@@ -166,8 +166,52 @@ pub(super) fn replace_teaching_piece(
     w.calibration = burst::Calibration::default();
     burst::clear_calibration(&mut w.doc);
     w.teaching_piece = Some(piece);
+    w.pass_alignment = None;
     w.changed();
     Ok(carried)
+}
+
+/// 按笔对照换示教件所需（RB-11）：原示教件与新件都有笔结构、原边界对得上原件的笔结构时，读两件原图算逐笔图像距离。
+/// 原示教件还没记笔结构时按它的轮次补上。条件不满足为 None，按 RB-2 处理。
+fn alignment_input(
+    capture: &RecipeCaptureHost,
+    w: &Workspace,
+    new_round: &str,
+    new_passes: &[u32],
+) -> Option<super::pass_align::AlignInput> {
+    let mut old = w.teaching_piece.clone()?;
+    if new_passes.is_empty() || w.doc.segments.is_empty() {
+        return None;
+    }
+    if old.passes.is_empty() {
+        old.passes = capture.burst_passes(&old.round_id).ok()?;
+    }
+    let cuts = original_cuts(w)?;
+    if cuts.len() + 1 != w.doc.segments.len() || !super::pass_align::cuts_fit(&cuts, &old.passes) {
+        return None;
+    }
+    let cameras = w.doc.plan_cameras();
+    let before = capture.burst_frame_index(&old.round_id).ok()?;
+    let after = capture.burst_frame_index(new_round).ok()?;
+    let a = super::pass_align::pass_features(
+        &|camera, seq| before.path(camera, seq).ok(),
+        &cameras,
+        &old.passes,
+    );
+    let b = super::pass_align::pass_features(
+        &|camera, seq| after.path(camera, seq).ok(),
+        &cameras,
+        new_passes,
+    );
+    let distances = a
+        .iter()
+        .map(|x| b.iter().map(|y| super::pass_align::distance(x, y)).collect())
+        .collect();
+    Some(super::pass_align::AlignInput {
+        old_piece: old,
+        cuts,
+        distances,
+    })
 }
 
 /// 原来的分段帧数（每段最后一个帧组）：原示教件的边界帧号；没有时按各段 N_exp 累加；都没有为 None。
@@ -384,6 +428,7 @@ fn set_teaching_piece(
             ts: part.ts,
             passes: capture.burst_passes(&round_id)?,
         };
+        let aligned = alignment_input(capture, &w, &round_id, &piece.passes);
         let mut items = host.items.lock().unwrap();
         let current = items.get_mut(id).ok_or("候选配置不存在")?;
         current
@@ -395,8 +440,12 @@ fn set_teaching_piece(
             .filter(|r| *r != round_id)
             .collect();
         let mut next = current.clone();
-        // 新件沿用原来的分段帧数：预填边界作为新件的边界草稿，分段页确认即可
-        if let Some(cuts) = replace_teaching_piece(&mut next, piece, part.group_count)? {
+        // RB-11：两件都有笔结构时按笔对照迁移；否则按 RB-2 沿用原来的分段帧数。预填边界作为新件的边界草稿，分段页确认即可
+        let cuts = match aligned {
+            Some(input) => Some(super::pass_align::replace_by_passes(&mut next, piece, input)?),
+            None => replace_teaching_piece(&mut next, piece, part.group_count)?,
+        };
+        if let Some(cuts) = cuts {
             let round = capture.get_burst(&round_id)?;
             capture_review::apply_capture_review(
                 &mut next,

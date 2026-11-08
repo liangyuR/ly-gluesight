@@ -154,6 +154,9 @@ pub fn workspace_publish_collect(
     doc.version = recipes.release_version(&w.doc)?;
     doc.stage = RecipeStage::Collect;
     doc.teaching_id = None;
+    for segment in &mut doc.segments {
+        segment.id = None;
+    }
     doc.plan_version = recipes.plan_version_for(&doc)?;
     doc.build()?;
     let mut next = w.clone();

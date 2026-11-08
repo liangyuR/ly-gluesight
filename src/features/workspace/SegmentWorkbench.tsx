@@ -49,7 +49,8 @@ function FramePreview({ roundId, camera, seq, corridor, searchHalfPx }: { roundI
  * 段列表 + 示教件已确认边界。三台相机的缩略图按帧组排成三行；点帧间竖缝插入或删除边界，点段名切换直线 / 弯道，
  * 点缩略图在下方并排预览三台相机原图（叠加已示教走廊）。
  */
-export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: WorkspacePlanView; locked: string; onDirty: (dirty: boolean) => void }) {
+/** locked：不能保存分段、也不能编辑地图的原因；saveLocked：只拦保存分段的原因（如换示教件的逐笔对照还没确认）。 */
+export default function SegmentWorkbench({ plan, locked, saveLocked = "", onDirty }: { plan: WorkspacePlanView; locked: string; saveLocked?: string; onDirty: (dirty: boolean) => void }) {
   const href = useRecipeHref();
   const { data, doc, act, busy, navigationDirty, setError } = useWorkspace();
   const roundId = data?.workspace.teachingPiece?.roundId ?? "";
@@ -127,7 +128,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   const segmentSpans = draft ? spans(draft) : [];
   const restructured = !!draft && structureChanged(plan.segments, draft.kinds);
   const isConfirmed = saved?.status === "confirmed";
-  const blocked = !draft || !valid(draft) || busy || previewing || frozen || !!locked || !doc;
+  const blocked = !draft || !valid(draft) || busy || previewing || frozen || !!locked || !!saveLocked || !doc;
   const save = async () => {
     if (!draft || !doc) return;
     const segments: PathSegment[] = segmentsForSave(plan.segments, draft, plan.segmentDefaults, plan.cameras);
@@ -184,7 +185,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
           {!valid(draft) && draft.skips.every(Boolean) && <Badge tone="warn">至少要有一段检测</Badge>}
         </div>
         <div className="wp-actions">
-          {locked && <span className="muted">{locked}</span>}
+          {(locked || saveLocked) && <span className="muted">{locked || saveLocked}</span>}
           {seq < groupCount && <Button disabled={frozen} onClick={() => change(toggleCut(draft, seq))}>
             {draft.cuts.includes(seq) ? `删除帧组 ${seq} 后的边界` : `在帧组 ${seq} 后插入边界`}
           </Button>}

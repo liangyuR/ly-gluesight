@@ -87,6 +87,7 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
     });
     checks.push(corridor_check(w, inputs.cameras));
     checks.push(segment_check(w));
+    checks.extend(super::pass_align::alignment_check(w));
     let calibration_devices =
         super::burst::check_calibration_devices(&w.calibration.rounds, inputs.cameras);
     checks.push(Check {

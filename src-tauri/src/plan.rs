@@ -199,6 +199,9 @@ pub struct PathSegment {
     /// 取消后恢复
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skip: bool,
+    /// 段 ID（RB-11）：只在候选里，换示教件按笔迁移时用它关联沿用状态；建段时生成，改边界、改类型、迁移都不变，发布时去掉
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// 一段实际参与判定的相机（按计划相机顺序）：段没指定时为全部计划相机；不检测的段没有。
@@ -638,6 +641,24 @@ pub fn new_segment(index: u32, kind: SegmentKind, defaults: &KindDefaults) -> Pa
         skip_tail: 0,
         heading: Some(HeadingSettings::default()),
         skip: false,
+        id: None,
+    }
+}
+
+/// 给缺段 ID 或与前面重复的段补新 ID（`s<序号>`，序号接在已有最大值之后）。
+pub fn ensure_segment_ids(segments: &mut [PathSegment]) {
+    let mut next = segments
+        .iter()
+        .filter_map(|s| s.id.as_deref()?.strip_prefix('s')?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    let mut seen = std::collections::BTreeSet::new();
+    for segment in segments {
+        if segment.id.as_ref().is_none_or(|id| !seen.insert(id.clone())) {
+            next += 1;
+            segment.id = Some(format!("s{next}"));
+            seen.insert(format!("s{next}"));
+        }
     }
 }
 

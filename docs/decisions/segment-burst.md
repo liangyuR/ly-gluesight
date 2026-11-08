@@ -750,7 +750,9 @@
 | `workspace_update_segments` | `id, revision, segments: PathSegment[]` | WorkspaceView |
 | `workspace_teach_segment_corridor` | `id, revision, camera, segment, round, seq` | WorkspaceView（冻结这一段这台相机的示教帧，D-SB-42/45） |
 | `workspace_clear_segment_corridor` | `id, revision, camera, segment` | WorkspaceView（去掉这一段这台相机的走廊与示教帧，D-SB-42/45） |
-| `workspace_set_teaching_piece` | `id, revision, recordId` | WorkspaceView（导入并设为示教件，清空边界与示教件测量结果、保留走廊与示教帧，[recipe-build-flow](recipe-build-flow.md) RB-2 / RB-8） |
+| `workspace_set_teaching_piece` | `id, revision, recordId` | WorkspaceView（导入并设为示教件，清空边界与示教件测量结果、保留走廊与示教帧；两件都有笔结构时按逐笔对照迁移，见 [recipe-build-flow](recipe-build-flow.md) RB-2 / RB-8 / RB-11） |
+| `workspace_pass_alignment_save` | `id, revision, links: {old, new, changed}[], confirm` | WorkspaceView（改换示教件的逐笔对照并重新迁移，`confirm` 时确认，确认后不能再改，RB-11） |
+| `workspace_pass_carry_accept` | `id, revision, segment, accepted` | WorkspaceView（确认或撤销沿用某一沿用段，RB-11） |
 | `workspace_measure_teaching` | `id, revision` | WorkspaceView（示教件分段已确认、走廊示教完成时，按示教件分段用已示教的走廊测量每一帧，替换原有测量，写单段配方的 x_ref；有在途件时拒绝，测量期间候选被改过时不写入） |
 | `workspace_capture_review_exclude` | `id, revision, round, start, end, excluded, reason` | WorkspaceView（屏蔽或恢复示教件的帧组：只影响测量取样，不改已确认的分段；屏蔽后测量失效，需重新测量） |
 | `workspace_publish_checks` | `id, revision` | `Check[]`（发布前检查，当场核对，只读，D-SB-46；`advisory` 为真的项只提醒、不拦发布，D-SB-59） |

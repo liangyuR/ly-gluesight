@@ -356,6 +356,8 @@ pub fn run() {
             workspace::workspace_capture_review_exclude,
             workspace::workspace_history_candidates,
             workspace::workspace_set_teaching_piece,
+            workspace::workspace_pass_alignment_save,
+            workspace::workspace_pass_carry_accept,
             workspace::workspace_refill_teaching_images,
             workspace::package::workspace_package_target,
             workspace::package::workspace_package_export,
