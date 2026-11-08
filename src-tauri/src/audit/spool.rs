@@ -180,10 +180,7 @@ impl Spool {
                 spool.next = spool.next.max(next);
             }
             match name {
-                UNRECOVERED if meta.is_dir() => {
-                    spool.load_quarantined(&path);
-                    continue;
-                }
+                UNRECOVERED if meta.is_dir() => continue,
                 INTERRUPTED if meta.is_dir() => {
                     spool.load_interrupted(&path, &mut notes)?;
                     continue;
@@ -225,6 +222,9 @@ impl Spool {
                 Err(error) => spool.set_aside(&path, name, &error, &mut notes),
             }
         }
+        // 扫描后再读：本次启动刚移进去的可解析事件也要保护原图、可被补记录检查识别
+        let quarantine = spool.root.join(UNRECOVERED);
+        spool.load_quarantined(&quarantine);
         Ok((spool, notes))
     }
 
@@ -276,16 +276,43 @@ impl Spool {
     }
 
     /// 原样移到未恢复目录，保留原文件名；重名时加序号前缀。
-    fn move_aside(&self, path: &Path, name: &str) -> Result<PathBuf, String> {
+    fn unrecovered_target(&self, name: &str) -> Result<PathBuf, String> {
         let root = self.root.join(UNRECOVERED);
         ancestors(&root)?;
         std::fs::create_dir_all(&root)
             .map_err(|error| format!("创建未恢复追溯目录失败：{error}"))?;
         ancestors(&root)?;
-        let target = std::iter::once(root.join(name))
+        std::iter::once(root.join(name))
             .chain((1u32..10_000).map(|n| root.join(format!("{n}-{name}"))))
             .find(|path| std::fs::symlink_metadata(path).is_err())
-            .ok_or("未恢复追溯文件名耗尽")?;
+            .ok_or_else(|| "未恢复追溯文件名耗尽".to_string())
+    }
+
+    /// 序列化后超过单事件上限的事件永远进不了 spool：直接写进未恢复目录，不占重试队列。
+    pub(super) fn set_aside_oversized(&mut self, event: &Event) -> Result<Option<PathBuf>, String> {
+        let encoded = serde_json::to_vec(&Envelope {
+            format: FORMAT,
+            event,
+        })
+        .map_err(|error| error.to_string())?;
+        if encoded.len() as u64 <= MAX_EVENT_BYTES {
+            return Ok(None);
+        }
+        let target = self.unrecovered_target(&format!("oversized-{}.json", self.next))?;
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&target)
+            .map_err(|error| format!("写入超大追溯事件失败：{error}"))?;
+        file.write_all(&encoded)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| format!("写入超大追溯事件失败：{error}"))?;
+        self.quarantined.push(event.clone());
+        Ok(Some(target))
+    }
+
+    fn move_aside(&self, path: &Path, name: &str) -> Result<PathBuf, String> {
+        let target = self.unrecovered_target(name)?;
         std::fs::rename(path, &target)
             .map_err(|error| format!("移出 {} 失败：{error}", path.display()))?;
         Ok(target)

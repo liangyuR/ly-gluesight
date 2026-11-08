@@ -409,3 +409,50 @@ fn manually_deleted_history_consumes_stale_spool_without_resurrecting_or_blockin
     );
     assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 1);
 }
+
+#[test]
+fn oversized_event_set_aside_without_blocking_later_events() {
+    let dir = TestDir::new();
+    let (spool, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let (spool, backlog, barriers) = (
+        Mutex::new(spool),
+        Mutex::new(VecDeque::new()),
+        Mutex::new(BTreeMap::new()),
+    );
+    let mut huge = outcome("huge", &[], RecorderState::Failed);
+    huge.errors = vec!["x".repeat(5 * 1024 * 1024)];
+    persist_event(&spool, &backlog, &barriers, Event::Recording(huge)).unwrap();
+    persist_event(
+        &spool,
+        &backlog,
+        &barriers,
+        Event::Delivery("next".into(), delivery(PlcDeliveryState::Acknowledged, 1)),
+    )
+    .unwrap();
+    assert!(backlog.lock().unwrap().is_empty());
+    let spool = spool.lock().unwrap();
+    assert_eq!(spool.cycles(), BTreeSet::from(["next".to_string()]));
+    assert!(spool.quarantined_cycles().any(|cycle| cycle == "huge"));
+}
+
+#[test]
+fn readable_crash_leftover_tmp_is_quarantined_and_identified_in_same_startup() {
+    let dir = TestDir::new();
+    let root = dir.0.join("spool");
+    let (mut spool, _) = spool::Spool::open(root.clone()).unwrap();
+    spool
+        .append(&Event::Delivery(
+            "left".into(),
+            delivery(PlcDeliveryState::Acknowledged, 1),
+        ))
+        .unwrap();
+    drop(spool);
+    std::fs::rename(
+        root.join("00000000000000000001.json"),
+        root.join("00000000000000000001.tmp"),
+    )
+    .unwrap();
+    let (spool, _) = spool::Spool::open(root).unwrap();
+    assert!(spool.empty());
+    assert!(spool.quarantined_cycles().any(|cycle| cycle == "left"));
+}

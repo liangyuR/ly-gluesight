@@ -223,6 +223,26 @@ fn enqueue(
     event: Event,
     problems: &mut Vec<Problem>,
 ) {
+    match spool.set_aside_oversized(&event) {
+        Ok(None) => (),
+        Ok(Some(path)) => {
+            return problems.push(Problem {
+                cycle: event.cycle_id().into(),
+                message: format!(
+                    "事件超过单事件上限，进不了 spool，已移到 {}，待人工核对",
+                    path.display()
+                ),
+                current: false,
+            })
+        }
+        Err(error) => {
+            return problems.push(Problem {
+                cycle: event.cycle_id().into(),
+                message: format!("事件超过单事件上限且无法移到未恢复目录，已丢弃：{error}"),
+                current: true,
+            })
+        }
+    }
     if backlog.is_empty() {
         match spool.append(&event) {
             Ok(()) => return,
