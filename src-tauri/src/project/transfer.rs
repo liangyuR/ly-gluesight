@@ -270,6 +270,16 @@ pub(crate) fn write_zip<M: Serialize>(
     entries: Vec<(String, PathBuf)>,
     manifest: impl FnOnce(Vec<PackageFile>) -> M,
 ) -> Result<M, String> {
+    write_zip_with(target, entries, manifest, || Ok(()))
+}
+
+/// 同 [`write_zip`]，每写完一个文件调一次 `progress`；它报错（如任务取消）时停止并删掉未完成的包。
+pub(crate) fn write_zip_with<M: Serialize>(
+    target: &Path,
+    entries: Vec<(String, PathBuf)>,
+    manifest: impl FnOnce(Vec<PackageFile>) -> M,
+    mut progress: impl FnMut() -> Result<(), String>,
+) -> Result<M, String> {
     let mut temporary = target.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = PathBuf::from(temporary);
@@ -300,6 +310,7 @@ pub(crate) fn write_zip<M: Serialize>(
                     bytes,
                     sha256,
                 });
+                progress()?;
             }
             let manifest = manifest(files);
             zip.start_file(
@@ -463,6 +474,20 @@ pub(crate) fn extract_listed<R: Read + Seek>(
     allowed: impl Fn(&str) -> bool,
     label: &str,
 ) -> Result<(), String> {
+    extract_listed_with(zip, files, staging, allowed, label, |_| true, || Ok(()))
+}
+
+/// 同 [`extract_listed`]，但只写出 `wanted` 的条目（其余仍须在清单里、通过 `allowed`，不解出）；
+/// 每处理一个条目调一次 `progress`，它报错（如任务取消）时停止。
+pub(crate) fn extract_listed_with<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    files: &[PackageFile],
+    staging: &Path,
+    allowed: impl Fn(&str) -> bool,
+    label: &str,
+    wanted: impl Fn(&str) -> bool,
+    mut progress: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let listed: BTreeMap<&str, &PackageFile> = files.iter().map(|f| (f.path.as_str(), f)).collect();
     let mut seen = HashSet::new();
     for index in 0..zip.len() {
@@ -486,6 +511,11 @@ pub(crate) fn extract_listed<R: Read + Seek>(
         if !entry.is_file() || entry.encrypted() || entry.size() != expected.bytes {
             return Err(format!("{label}条目 {name} 不是普通文件或大小与清单不符"));
         }
+        if !wanted(&name) {
+            drop(entry);
+            progress()?;
+            continue;
+        }
         let target = name
             .split('/')
             .fold(staging.to_path_buf(), |path, part| path.join(part));
@@ -500,6 +530,7 @@ pub(crate) fn extract_listed<R: Read + Seek>(
         if bytes != expected.bytes || sha256 != expected.sha256.to_ascii_lowercase() {
             return Err(format!("{label}文件 {name} 校验和不符，文件已损坏或被改动"));
         }
+        progress()?;
     }
     if seen.len() != files.len() + 1 {
         return Err(format!("{label}缺少清单列出的文件"));

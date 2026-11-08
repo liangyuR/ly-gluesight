@@ -38,7 +38,7 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 
 ### 项目
 
-一套可上线的检测方案（相机组、PLC 配置、标定、配方、候选）收拢成一个项目，存于 `projects/<id>/`；支持新建、重命名、删除、整个项目导出导入与复制，切换项目要重启。检测记录存于本机一份记录库 `history/inspection.db`，每条记录带所属项目，历史页默认看全部项目，统计按当前项目；删除项目保留历史（[history-scope](decisions/history-scope.md)）。见 [项目设计](architecture/project.md) 与 [存储布局](architecture/storage-layout.md)。
+一套可上线的检测方案（相机组、PLC 配置、标定、配方、候选）收拢成一个项目，存于 `projects/<id>/`；支持新建、重命名、删除、整个项目导出导入与复制，切换项目要重启。检测记录存于本机一份记录库 `history/inspection.db`，每条记录带所属项目，历史页默认看全部项目，统计按当前项目；删除项目保留历史（[history-scope](decisions/history-scope.md)）。历史页可以把选中的几件导出为历史件导出包，在本机或别的机器上导入到当前项目，原图可选（[历史件导出包](architecture/history-package.md)）。见 [项目设计](architecture/project.md) 与 [存储布局](architecture/storage-layout.md)。
 
 运行日志和历史原图集中在 `~/gs_logs`，按环境、资料实例和项目隔离；示教、标定及发布资源随项目保存。根绑定及项目导出规则见[日志与视觉证据存储](architecture/log-storage-research.md)。
 
@@ -56,7 +56,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 采集轮次 | `recipe_capture/burst.rs`（`CaptureRoundV2`） |
 | 候选工作区 | `workspace.rs`、`workspace/pieces.rs`（示教件、测量示教件、旧流程候选）、`workspace/burst.rs`（走廊示教、按示教件分段写 N_exp、x_ref、容差确认）、`workspace/burst_release.rs`（验证与发布、采集版）、`workspace/burst_history.rs`（历史读图与复测） |
 | 发布包 | `release.rs`（`publish_burst`，schema 5） |
-| 记录、录制、审计 | `store.rs`（`part_frames`、`parts.project_id`，库版本 10）、`store/merge.rs`（旧库并入、按项目导出子集）、`recorder.rs`、`audit/` |
+| 记录、录制、审计 | `store.rs`（`part_frames`、`parts.project_id`，库版本 10）、`store/merge.rs`（旧库并入、按项目导出子集）、`store/package.rs` 与 `history_package.rs`（历史件导出包）、`recorder.rs`、`audit/` |
 | 项目 | `project.rs`（`ActiveProject`、`resolve`、`project_switch`）、`project/manage.rs`、`project/transfer.rs`（导出导入、复制）、`project/records.rs`（本机记录库路径、记录所属项目的原图与发布包、启动合并）、`storage_startup.rs`；前端 `src/pages/ProjectsPage.tsx`、`src/features/project/` |
 | 离线仿真 | `offline/line.rs`、`offline/scenario.rs`、`offline/sample_set.rs`、`offline/s7_server.rs`、`simimage.rs` |
 | 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`TeachingPiecePage`、`HistoryPicker`、`PlanProgress`；`src/features/plan/` |
@@ -82,7 +82,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 目录 | 内容 |
 | --- | --- |
 | [integration/](integration) | [生产通讯协议 8](integration/plc-communication-protocol.md)、[离线样本集格式](integration/sample-set-format.md)、[Agent 示教接口（MCP）](integration/agent-teaching.md)、[示教执行问题与改进项](integration/agent-teaching-findings.md) |
-| [architecture/](architecture) | [配方创建流程](architecture/recipe-creation-workflow.md)、[在线投运方案](architecture/online-commissioning.md)、[项目设计](architecture/project.md)、[存储布局](architecture/storage-layout.md)、[lyFlow 依赖](architecture/lyflow-dependency.md)、[运行日志](architecture/agent-logging.md)与[事件编码表](architecture/agent-logging-codes.md) |
+| [architecture/](architecture) | [配方创建流程](architecture/recipe-creation-workflow.md)、[在线投运方案](architecture/online-commissioning.md)、[项目设计](architecture/project.md)、[存储布局](architecture/storage-layout.md)、[历史件导出包](architecture/history-package.md)、[lyFlow 依赖](architecture/lyflow-dependency.md)、[运行日志](architecture/agent-logging.md)与[事件编码表](architecture/agent-logging-codes.md) |
 | [decisions/](decisions/README.md) | 现行决策：取舍、回退方式与需要用户确认的事项 |
 | [testing/](testing/TESTING.md) | 测试运行与复现、长稳与故障注入运行说明 |
 | [deployment/](deployment/PACKAGING.md) | Windows 打包与运行库部署 |

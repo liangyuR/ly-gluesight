@@ -21,6 +21,7 @@ mod handshake;
 mod handshake_audit;
 mod history;
 mod history_fixture;
+mod history_package;
 mod image_file;
 mod inspection;
 mod instance;
@@ -116,6 +117,14 @@ fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
         .chain(project::records::migrate(&data, &store, &current))
     {
         applog::write(level, "检测记录合并", &message);
+    }
+    match project::records::record_root(&data, &current, store::RecordSource::Real) {
+        Ok(root) => {
+            for warning in history_package::recover(&store, &root) {
+                applog::write("warn", "历史件导入中断清理", &warning);
+            }
+        }
+        Err(error) => applog::write("warn", "历史件导入中断清理", &error),
     }
     Ok(store)
 }
@@ -276,6 +285,10 @@ pub fn run() {
             history::history_neighbors,
             history::history_rejudge,
             history::history_export,
+            history_package::history_package_target,
+            history_package::history_package_export,
+            history_package::history_package_pick,
+            history_package::history_package_import,
             history::reveal_path,
             vision::vision_calib_info,
             vision::vision_calibrate,

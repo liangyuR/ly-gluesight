@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { expect, it, vi } from "vitest";
 import HistoryPage from "../src/pages/HistoryPage";
@@ -48,4 +48,25 @@ it("默认查本机全部项目；选当前项目 → 查询带当前项目编�
   expect(queries().at(-1)?.project ?? null).toBeNull();
   await userEvent.selectOptions(screen.getByLabelText("历史项目", { selector: "select" }), "当前项目（A 线）");
   await waitFor(() => expect(queries().at(-1)?.project).toBe("line-a"));
+});
+
+// 防的回归：勾选框点击被当成点行跳到详情；或换筛选后仍保留看不见的旧选择，导出包里混进当前列表外的件
+it("勾选件后改筛选 → 不跳详情且选择被清空", async () => {
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_query") return page([burstPartSummary(1), burstPartSummary(2)]);
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(<MemoryRouter initialEntries={["/history"]}><Routes>
+    <Route path="/history" element={<HistoryPage />} />
+    <Route path="/history/:id" element={<p>详情页</p>} />
+  </Routes></MemoryRouter>);
+  await row(1);
+  await userEvent.click(screen.getByRole("checkbox", { name: /SN-101/ }));
+  expect(screen.queryByText("详情页")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /导出历史件（1）/ })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "7 天" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: /导出历史件（0）/ })).toBeDisabled());
 });
