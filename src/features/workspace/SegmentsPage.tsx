@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Button, NumberField, Tabs } from "qing-steel";
 import type { PathSegment, WorkspacePlanView } from "../plan/types";
 import type { WorkspaceView } from "./types";
@@ -15,6 +15,8 @@ import { segmentCameras } from "./workbenchDraft";
 import "../plan/plan.css";
 import "./segments.css";
 import { useRecipeHref } from "./recipeRoutes";
+import { ReturnButton } from "./returnNavigation";
+import { segmentLocateOf } from "./segmentLocate";
 
 const DEBOUNCE_MS = 700;
 type SaveState = "saved" | "pending" | "saving" | "failed";
@@ -41,7 +43,9 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
   const [state, setState] = useState<SaveState>("saved");
   const [retry, setRetry] = useState(0);
   const [workbenchDirty, setWorkbenchDirty] = useState(false);
-  const [tab, setTab] = useState(0);
+  // 从历史件跳来时先打开所在段的页签
+  const locate = segmentLocateOf(useLocation());
+  const [tab, setTab] = useState(() => Math.max(0, plan.segments.findIndex(segment => segment.index === locate?.segment)));
   const immediate = useRef(false);
   const failed = useRef("");
   const saved = useRef("");
@@ -101,6 +105,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
   const docLocked = edits || workbenchDirty || navigationDirty ? "段列表有未保存的改动，保存后再改" : "";
 
   return <div className="wp-page"><WorkspaceBar />
+    <ReturnButton disabled={workbenchDirty} hint={workbenchDirty ? "分段有未保存的改动：先保存或撤销，再返回。" : locate ? "保存分段后返回，在历史件上重新复测。" : undefined} />
     <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
     <Panel title="段列表" help="各段帧数容差、长度与跳过帧数；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数取自示教件分段，这里只读"
       actions={<>

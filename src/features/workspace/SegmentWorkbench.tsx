@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import { Button, Dialog } from "qing-steel";
 import type { PathSegment, WorkspacePlanView } from "../plan/types";
@@ -17,6 +17,7 @@ import type { FrameImage, SegmentSaveImpact } from "./types";
 import WorkspaceNavigation from "./WorkspaceNavigation";
 import SegmentCoveragePreview from "./SegmentCoveragePreview";
 import { useRecipeHref } from "./recipeRoutes";
+import { segmentLocateOf, teachingSeqFor } from "./segmentLocate";
 
 const reviewLabel = { draft: "边界草稿待确认", confirmed: "边界已确认", stale: "边界需复核" } as const;
 
@@ -93,6 +94,26 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     }
   };
   useEffect(() => { setSeq(1); }, [roundId]);
+  // 从历史件跳来：缩略图读到后定位到对应的示教件帧组并滚到可见处（每次跳来只定位一次）
+  const locate = segmentLocateOf(useLocation());
+  const teachingPasses = data?.workspace.teachingPiece?.passes;
+  const mapped = locate && groupCount ? teachingSeqFor(locate, groupCount, teachingPasses) : null;
+  const located = useRef("");
+  const body = useRef<HTMLDivElement>(null);
+  const reveal = useRef<number | null>(null);
+  useEffect(() => {
+    if (!mapped || !locate) return;
+    const key = `${roundId}:${locate.historyId}:${locate.seq}`;
+    if (located.current === key) return;
+    located.current = key;
+    setSeq(mapped.seq);
+    reveal.current = mapped.seq;
+  }, [mapped?.seq, roundId]);
+  // 定位的帧组渲染为选中后再滚到可见处
+  useEffect(() => {
+    const cell = reveal.current === seq ? body.current?.querySelector(".swb-cell.selected") : null;
+    if (cell) { reveal.current = null; cell.scrollIntoView({ block: "nearest", inline: "center" }); }
+  });
 
   if (!roundId) {
     return <><WorkspaceNavigation segments={plan.segments} ranges={null} seq={1} frameStatus="unavailable" editable locked={locked} onNavigate={() => {}} />
@@ -146,7 +167,11 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     {thumbs.error && <Notice title="读取示教件图像失败" tone="warn">{thumbs.error}</Notice>}
     {!!data?.workspace.pending && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改分段。</Notice>}
     {!ready && !thumbs.error && <p className="muted">正在读取缩略图…</p>}
-    {draft && ready && <div className="swb-body" onKeyDown={onKey}>
+    {locate && mapped && <Notice title={`从历史件 SN ${locate.sn || "—"} 跳来`}>
+      历史件帧组 {locate.seq}{locate.segment != null ? `（段 ${locate.segment}）` : " "}对应示教件帧组 {mapped.seq}，{mapped.byPass ? "按所在笔的笔内进度" : "按整件进度"}估算，只用于定位。
+      各段预期帧数取自示教件的分段，历史件按它们分段；在这里调整边界并保存分段后返回历史件，重新复测看结果。
+    </Notice>}
+    {draft && ready && <div className="swb-body" ref={body} onKeyDown={onKey}>
       {/* 操作放在时间轴上方：下方原图预览加载时会改变高度，按钮放在下面会被挤动而点错 */}
       <div className="swb-toolbar">
         <div className="swb-summary" role="status" aria-label="分段草稿">

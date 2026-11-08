@@ -42,7 +42,7 @@ export default function HistoryDetailPage() {
     return () => { alive = false; stop(); };
   }, [detail?.summary.id, detail?.summary.cycleId]);
 
-  const openPart = (target: number | null) => { if (target != null) navigate("/history/" + target, { state: location.state }); };
+  const openPart = (target: number | null) => { if (target != null) navigate("/history/" + target, { state: { ...state, scrollTop: undefined } }); };
   if (!detail) return error ? <Alert tone="ng">{error}</Alert> : <Text muted>加载中…</Text>;
   const foreignProject = foreignProjectNote(detail.summary.projectId, projects);
   if (detail.burst) return <BurstHistoryDetail detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} {...back} />;
