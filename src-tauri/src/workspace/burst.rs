@@ -241,7 +241,7 @@ pub struct CameraTeachingView {
     pub ready: bool,
     /// 已选示教帧的段，按段号
     pub segments: Vec<SegmentTeachingView>,
-    /// 定向用的出胶点（D-SB-47）：标定值，或由开启定向的各段走廊起点推出；推不出或不一致时为空
+    /// 定向用的出胶点（D-SB-47）：标定值，或由开启定向的各段走廊起点推出（起点相差过大时带提示）；推不出时为空
     pub nozzle: Option<crate::heading::Nozzle>,
 }
 
@@ -2576,9 +2576,7 @@ pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
         .inspect
         .iter()
         .map(|inspect| {
-            let nozzle = crate::heading::nozzle(&w.doc.segments, &cameras, inspect)
-                .ok()
-                .flatten();
+            let nozzle = crate::heading::nozzle(&w.doc.segments, &cameras, inspect);
             let mut segments: Vec<SegmentTeachingView> = w
                 .camera_teaching
                 .iter()

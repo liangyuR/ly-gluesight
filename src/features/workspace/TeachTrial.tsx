@@ -131,7 +131,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, revi
       </div>
       <OperationStatus operation={operation} label="全段试测" />
       {locked && <p className="muted hint">{locked}</p>}
-      {batch.error && <p className="c-warn" role="alert">{batch.error}</p>}
+      {batch.error && batch.error !== operation.snapshot()?.error && <p className="c-warn" role="alert">{batch.error}</p>}
       {batch.result && <div className="wp-trial-legend">
         {counts.map(([item, n]) => <span key={item}><i style={{ background: trialColor[item] }} aria-hidden="true" />{trialText[item]} {n}</span>)}
         <span><i className="teach" aria-hidden="true" />示教帧</span>

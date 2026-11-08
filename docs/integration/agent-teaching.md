@@ -59,7 +59,7 @@ MCP Streamable HTTP 的无状态子集：
 
 - `project`、`recipe`、`revision`、`snapshot`、`next`，以及 `teachingPiece`（`roundId`、`recordId`、`groupCount`；没选为 null）。
 - `segments[]`：段号、类型、检测相机、帧组范围或不能确定的原因、`checks`、`offsetRef`、`heading`、`skip`、`skipHead`、`skipTail`、`parameterWarnings`。
-- `cameras[]`：彩色模式、`mmPerPx`、`calibMmPerPx`、`ready`、`window`（`startMm`、`lengthMm`）、`nozzle`（点、`calibrated`、`source: calibrated | corridorStarts`）与 `headingIssues`。后者指出窗口缺失、窗口不足 8 px 或走廊起点不一致等前置问题。
+- `cameras[]`：彩色模式、`mmPerPx`、`calibMmPerPx`、`ready`、`window`（`startMm`、`lengthMm`）、`nozzle`（点、`calibrated`、`source: calibrated | corridorStarts`、`warning`）与 `headingIssues`。`warning` 是推算出胶点时有走廊起点偏离超过 1 mm 的提示，不阻断；`headingIssues` 指出窗口缺失、窗口不足 8 px 等前置问题。
 - 每台相机的 `segments[]`：`segment`、`seq`、`corridorPoints`、`saved`、`modelPresent`、`modelUsable`、`quality`、`modelIssues`。`colorModel` 仍表示字段存在，不能用它判断可用。`quality` 保留引擎的 `glueCount`、`bgCount`、`centerShift`、`separation`、高光占比等；非法 JSON、缺少质量证据、胶样本不足、背景样本或分量缺失分别给出原因。`modelUsable=true` 也不证明走廊位于新胶上。
 - `engine`：加载状态、版本、运行库目录、`overridden`、`source`（`bundledRuntime` / `developmentOverride`）、`requiredSeries`、`requiredOperators` 与失败原因。`loaded=true` 包含必需算子校验；为 false 时从 `message` 核对缺失算子或运行库问题，解决后再逐段量测。
 - `passes`：示教件的笔结构（D-SB-62）。`count`、`frames`（各笔帧组数）、`skip`（配方每笔开头 `head`、结尾 `tail` 跳过帧组数）、`inRecipe`（笔结构已随 N_exp 写进配方，生产按笔分段）、`skipped`（示教件上被跳过的帧组：`pass`、`frames: [first, last]`、`short` 为整笔不检）与 `suggestion`（每笔起涂建议：`current`、`suggested`、逐笔 `passes[]` 的起涂帧组数或不参与原因、`pending`）。没有示教件为 null。每笔首尾跳过只能由人在界面设置。

@@ -388,7 +388,7 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                 "calibMmPerPx": t.calib_mm_per_px,
                 "ready": t.ready,
                 "window": inspect.and_then(|i| i.window.as_ref()),
-                "nozzle": t.nozzle.as_ref().map(|n| json!({ "point": n.point, "calibrated": n.calibrated, "source": if n.calibrated { "calibrated" } else { "corridorStarts" } })),
+                "nozzle": t.nozzle.as_ref().map(|n| json!({ "point": n.point, "calibrated": n.calibrated, "source": if n.calibrated { "calibrated" } else { "corridorStarts" }, "warning": n.warning })),
                 "headingIssues": crate::heading::issues(&w.doc.segments, &w.doc.inspect).iter()
                     .filter(|issue| issue.camera == t.camera)
                     .map(|issue| json!({ "segment": issue.segment, "message": issue.message })).collect::<Vec<_>>(),

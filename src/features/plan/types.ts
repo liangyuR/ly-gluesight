@@ -669,8 +669,8 @@ export interface CameraTeachingView {
   ready: boolean;
   /** 已选示教帧的段（D-SB-45：走廊只按段示教） */
   segments: SegmentTeachingView[];
-  /** 定向用的出胶点：标定值，或由开启定向的各段走廊起点推出；推不出或不一致时为 null */
-  nozzle: { point: [number, number]; calibrated: boolean } | null;
+  /** 定向用的出胶点：标定值，或由开启定向的各段走廊起点推出；推不出时为 null。`warning` 是推算时起点相差过大的提示，不阻断 */
+  nozzle: { point: [number, number]; calibrated: boolean; warning: string | null } | null;
 }
 
 export interface SegmentTeachingView {
