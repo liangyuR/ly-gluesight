@@ -305,64 +305,30 @@ fn manual_history_deletion_only_removes_exclusive_cycle_directories_inside_the_p
     }
 }
 
-#[test]
-fn offline_parts_stay_out_of_real_history_statistics_and_rejudge_and_vice_versa() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let recipe = burst_fixture::recipe();
-    let mut frames = burst_fixture::frames(4, &[(1, 2)]);
-    frames[0].metrics = Some(burst_fixture::measured(0, 1, 2.0));
-    let (judgement, burst) = burst_fixture::record(&recipe, frames, None, Some(0));
-    let save_source = |recipe: &Recipe, cycle: &str, source| {
-        let mut part = burst_part(recipe, cycle, &judgement, &burst);
-        part.source = source;
-        store.insert(&part)
-    };
-    let real = save_source(&recipe, "real-part", RecordSource::Real).unwrap();
-    let synthetic = save_source(&recipe, "synthetic-part", RecordSource::OfflineSynthetic).unwrap();
-    let sample = save_source(&recipe, "sample-part", RecordSource::OfflineSample).unwrap();
-    let mut debug_recipe = recipe.clone();
-    debug_recipe.revision_id = format!("candidate-{}-i1-r355", recipe.id);
-    let debug = save_source(&debug_recipe, "debug-part", RecordSource::OfflineCandidate).unwrap();
-    for (scope, expected) in [(HistoryScope::Real, vec![real]), (HistoryScope::Offline, vec![sample, synthetic]), (HistoryScope::Debug, vec![debug])] {
-        let query = HistoryQuery { scope, ..Default::default() };
-        let page = store.query(&query).unwrap();
-        assert_eq!(
-            page.items.iter().map(|p| p.id).collect::<Vec<_>>(),
-            expected,
-            "{scope:?}"
-        );
-        assert_eq!(
-            (page.total, page.counts.ng),
-            (expected.len() as u64, expected.len() as u64),
-            "{scope:?}"
-        );
-        assert_eq!(
-            store.counts_since(0, scope).unwrap().ng,
-            expected.len() as u64,
-            "{scope:?}"
-        );
-        let measurements = store.measurements(&query, &[], 10).unwrap();
-        assert_eq!(
-            measurements.iter().map(|m| m.id).collect::<Vec<_>>(),
-            expected,
-            "{scope:?}"
-        );
-        assert!(measurements
-            .iter()
-            .all(|measurement| measurement.burst.as_ref() == Some(&burst.judgement)));
-    }
-}
-
-
 fn burst_part<'a>(recipe: &'a Recipe, cycle: &'a str, judgement: &'a Judgement, burst: &'a BurstRecord) -> PartRecord<'a> {
     PartRecord {
         mode: PartMode::Production,
-        ts: 1234, sn: "SN-B1", recipe: Some(recipe), judgement, drain_ms: None, frames: &[],
-        frames_expected: burst.expected_total.unwrap_or(0) as usize, frames_received: burst.judgement.group_count as usize,
-        triggers: burst.device_triggers.unwrap_or(0).into(), table: None, software_version: "test-burst", cycle_id: Some(cycle),
-        bundle_id: None, delivery: &PlcDelivery { state: PlcDeliveryState::NotRequired, updated_at: 0, message: None }, shots: &[],
-        source: RecordSource::Real, sample: None, burst: Some(burst),
+        ts: 1234,
+        sn: "SN-B1",
+        recipe: Some(recipe),
+        judgement,
+        drain_ms: None,
+        frames: &[],
+        frames_expected: burst.expected_total.unwrap_or(0) as usize,
+        frames_received: burst.judgement.group_count as usize,
+        triggers: burst.device_triggers.unwrap_or(0).into(),
+        table: None,
+        software_version: "test-burst",
+        cycle_id: Some(cycle),
+        bundle_id: None,
+        delivery: &PlcDelivery {
+            state: PlcDeliveryState::NotRequired,
+            updated_at: 0,
+            message: None,
+        },
+        shots: &[],
+        source: RecordSource::Real,
+        burst: Some(burst),
     }
 }
 
@@ -447,4 +413,93 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
     assert!(selected.frame_verdicts.is_empty());
     assert!(store.detail_frame(id, 0, 100).is_err());
     assert!(store.detail(id).is_err());
+}
+
+#[test]
+fn upgrading_v10_removes_retired_records_without_losing_production_and_prevents_replay() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let cycles = [
+        "production-kept",
+        "retired-synthetic",
+        "retired-sample",
+        "retired-candidate",
+    ];
+    let ids: Vec<_> = cycles
+        .iter()
+        .map(|cycle| {
+            store
+                .insert(&burst_part(&recipe, cycle, &judgement, &burst))
+                .unwrap()
+        })
+        .collect();
+    store
+        .set_history_tags(&[ids[0]], &["保留生产".into()])
+        .unwrap();
+    let retained = store.detail(ids[0]).unwrap();
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute_batch("DROP TRIGGER production_source_insert; DROP TRIGGER production_source_update; PRAGMA ignore_check_constraints = ON; PRAGMA user_version = 10;").unwrap();
+        for (id, source) in
+            ids[1..]
+                .iter()
+                .zip(["offlineSynthetic", "offlineSample", "offlineCandidate"])
+        {
+            conn.execute(
+                "UPDATE parts SET source = ?2, recording_directory = ?3 WHERE id = ?1",
+                params![id, source, format!("not-a-production-path-{id}")],
+            )
+            .unwrap();
+        }
+    }
+    drop(store);
+    for _ in 0..2 {
+        let store = Store::open(&db.path()).unwrap();
+        assert!(
+            store.backup_path().is_none(),
+            "v10 production data must be upgraded in place"
+        );
+        let page = store.query(&HistoryQuery::default()).unwrap();
+        assert_eq!(
+            page.items.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![ids[0]]
+        );
+        let production = store.detail(ids[0]).unwrap();
+        assert_eq!(production.summary.tags, retained.summary.tags);
+        assert_eq!(
+            production.burst.as_ref().unwrap().frames,
+            retained.burst.as_ref().unwrap().frames
+        );
+        for (id, cycle) in ids[1..].iter().zip(&cycles[1..]) {
+            assert!(store.history_cycle_deleted(cycle).unwrap());
+            assert!(store
+                .insert(&burst_part(&recipe, cycle, &judgement, &burst))
+                .is_err());
+            let conn = store.conn.lock().unwrap();
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM part_frames WHERE part_id=?1",
+                    [id],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM retired_recordings", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            11
+        );
+    }
 }

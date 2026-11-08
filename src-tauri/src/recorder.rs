@@ -217,21 +217,19 @@ pub struct Recorder {
     scope: HistoryScope,
 }
 
-/// 真机与离线各用一个录制根目录、各自滚动清理：离线连续跑多少件都不会挤掉真机原图。
+/// 生产原图录制与滚动清理。
 pub struct Recorders {
     real: Recorder,
-    offline: Recorder,
 }
 
 impl Recorders {
-    pub fn new(real: Recorder, offline: Recorder) -> Self {
-        Self { real, offline: Recorder { scope: HistoryScope::Offline, ..offline } }
+    pub fn new(real: Recorder) -> Self {
+        Self { real }
     }
 
     pub fn get(&self, scope: HistoryScope) -> &Recorder {
         match scope {
             HistoryScope::Real => &self.real,
-            HistoryScope::Offline | HistoryScope::Debug => &self.offline,
         }
     }
 
@@ -266,9 +264,9 @@ impl Recorders {
         self.get(rec.scope).finish(rec, verdict, reason, keep, max_bytes, Vec::new())
     }
 
-    /// 按当前保留上限立即滚动清理两个录制根目录，不等下一件收尾（资料盘不足暂停接件时没有下一件）。
+    /// 按当前保留上限立即滚动清理录制根目录，不等下一件收尾（资料盘不足暂停接件时没有下一件）。
     pub fn apply_retention(&self, settings: &CycleSettings) {
-        for scope in [HistoryScope::Real, HistoryScope::Offline] {
+        for scope in [HistoryScope::Real] {
             let (keep, max_bytes) = retention(scope, settings);
             let _ = self.get(scope).tx.send(Msg::Prune { keep, max_bytes });
         }
@@ -277,7 +275,6 @@ impl Recorders {
 
 fn retention(scope: HistoryScope, settings: &CycleSettings) -> (u32, u64) {
     let (keep, max_gb) = match scope {
-        HistoryScope::Offline | HistoryScope::Debug => (settings.offline_record_keep, settings.offline_record_max_gb),
         HistoryScope::Real => (settings.record_keep, settings.record_max_gb),
     };
     (keep, (max_gb as f64 * 1e9) as u64)

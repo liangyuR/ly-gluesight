@@ -190,7 +190,6 @@ pub struct LyFlowMeasurer;
 impl LyFlowMeasurer {
     /// 段配方一台相机一帧：候选试运行用候选的走廊测量图，生产用已核验并预热的发布包。
     pub fn measure_frame(&self, job: &FrameJob, image: &FrameImage) -> Result<FrameMeasurement, String> {
-        if let Some(candidate) = &job.candidate { return candidate.measure_frame(job, image); }
         let prepared = job.production.as_ref().ok_or("图像检测没有已核验并预热的发布包")?;
         if job.bundle_id.as_deref() != Some(prepared.bundle.id.as_str()) || job.recipe.revision_id != prepared.recipe.revision_id {
             return Err("测量任务与已冻结发布包不一致".into());

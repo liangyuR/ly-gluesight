@@ -161,7 +161,6 @@ async fn plc_save_config_inner(
 ) -> Result<(), String> {
     let _gate = cycle.link_gate.lock().await;
     require_idle(&cycle)?;
-    if crate::offline::enabled(&app) { return Err("离线模式由站点模式管理 PLC 配置，退出离线后再修改".into()); }
     validate_config(&config)?;
     config.save(&plc.config_path)?;
     let r = plc.engine.apply_config(config).await;

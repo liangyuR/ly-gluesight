@@ -606,7 +606,6 @@ impl Part {
             return Vec::new();
         }
         let faulted = self.fault.is_some();
-        let image_measurement = self.image_measurement;
         let recording = self.recording.as_ref();
         let burst = &mut self.burst;
         if burst.collect || burst.post_started || burst.pending > 0 {
@@ -616,15 +615,13 @@ impl Part {
             burst.post_started = true;
             return Vec::new();
         }
-        // 模拟测量不读图（Ready(None)）；要测图的件只读本件录制
         let sources: Vec<_> = burst
             .post_targets()
             .into_iter()
             .map(|((camera, seq), segment)| {
-                let source = match (image_measurement, recording) {
-                    (false, _) => Ok(None),
-                    (true, None) => Err(RecordedFrame::Missing),
-                    (true, Some(r)) => match r.burst_frame_file(camera, seq) {
+                let source = match recording {
+                    None => Err(RecordedFrame::Missing),
+                    Some(r) => match r.burst_frame_file(camera, seq) {
                         RecordedFrame::Ready(file) => Ok(Some(file)),
                         other => Err(other),
                     },

@@ -66,24 +66,6 @@ fn old_recording(root: &Path, i: u32, bytes: u64) -> PathBuf {
     path
 }
 
-#[test]
-fn offline_retention_prunes_only_offline_recordings_and_never_real_raw_images() {
-    let dir = TestDir::new();
-    let offline_root = dir.0.join("records-offline");
-    let (offline_callback, offline_outcomes) = callback();
-    let recorders = Recorders::new(Recorder::new(dir.root(), None), Recorder::new(offline_root.clone(), Some(offline_callback)));
-    // 真机 3 件：离线清理若误用到真机目录，无论按真机还是离线的保留数都会删掉最旧的
-    let real: Vec<_> = (0..3).map(|i| old_recording(&dir.root(), i, 10)).collect();
-    let offline: Vec<_> = (0..3).map(|i| old_recording(&offline_root, i, 10)).collect();
-    let settings = CycleSettings { record_keep: 1, offline_record_keep: 2, ..CycleSettings::default() };
-    let mut rec = recorders.begin(RecordSource::OfflineSynthetic, RecordMode::All, "SN-2", recipe(), "offline-new", None).unwrap();
-    recorders.burst_frame(&mut rec, &frame(10), 0, 1);
-    recorders.finish(rec, Verdict::Ok, "离线件", &settings);
-    assert!(wait(&offline_outcomes).directory.unwrap().starts_with(&offline_root));
-    assert_eq!(offline.iter().map(|d| d.is_dir()).collect::<Vec<_>>(), [false, false, true], "离线按离线保留数 2 清理");
-    assert!(real.iter().all(|d| d.is_dir()), "离线录制超过保留数后真机原图被清理");
-}
-
 /// 防的回归：彩色帧的主文件是带 `# bayer BG` 注释的原始马赛克，写盘核对按固定的 `P5\n宽 高\n255\n` 头算长度时
 /// 每帧都判写入失败、整件录制不可用；主文件写成 RGB 或另写 `_bayer.pgm` 时与读者约定不符，读回不是同一幅彩色图。
 #[test]

@@ -9,10 +9,7 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{
-    add_part_mode, add_part_tags, db_err, extend_candidate_source, Store, DB_VERSION,
-    PROJECT_DB_VERSION,
-};
+use super::{add_part_mode, add_part_tags, db_err, Store, DB_VERSION, PROJECT_DB_VERSION};
 
 /// parts 中除 id、project_id、retest_of 外的列；9 版与 10 版相同。
 const PART_COLUMNS: &str = "ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
@@ -36,13 +33,12 @@ pub(super) fn prepare_source(path: &Path) -> Result<i64, String> {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(db_err)?;
-    if version != PROJECT_DB_VERSION && version != DB_VERSION {
+    if version != PROJECT_DB_VERSION && version != 10 && version != DB_VERSION {
         return Err(format!(
             "记录库版本 {version} 不能合并（支持 {PROJECT_DB_VERSION}、{DB_VERSION}）"
         ));
     }
     if version == PROJECT_DB_VERSION {
-        extend_candidate_source(&conn, path)?;
         add_part_mode(&conn)?;
     }
     add_part_tags(&conn)?;
@@ -290,7 +286,7 @@ pub(super) fn merge_rows(
 ) -> Result<Merged, String> {
     let sources: Vec<(i64, Option<String>)> = {
         let mut stmt = conn
-            .prepare("SELECT id, cycle_id FROM src.parts ORDER BY id")
+            .prepare("SELECT id, cycle_id FROM src.parts WHERE source = 'real' ORDER BY id")
             .map_err(db_err)?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -358,14 +354,14 @@ pub(super) fn merge_rows(
     }
     conn.execute(
         "INSERT INTO recipe_snapshots (project_id, revision_id, recipe_id, version, json) \
-         SELECT ?1, revision_id, recipe_id, version, json FROM src.recipe_snapshots WHERE true \
+         SELECT ?1, revision_id, recipe_id, version, json FROM src.recipe_snapshots s WHERE NOT EXISTS (SELECT 1 FROM src.parts p WHERE p.source != 'real' AND p.recipe_revision = s.revision_id) OR EXISTS (SELECT 1 FROM src.parts p WHERE p.source = 'real' AND p.recipe_revision = s.revision_id) \
          ON CONFLICT (project_id, revision_id) DO NOTHING",
         [project],
     )
     .map_err(db_err)?;
     let conflict: Option<String> = conn.query_row(
         "SELECT s.revision_id FROM src.recipe_snapshots s JOIN main.recipe_snapshots m ON m.project_id = ?1 AND m.revision_id = s.revision_id \
-         WHERE m.json != s.json OR m.recipe_id != s.recipe_id OR m.version != s.version LIMIT 1",
+         WHERE (m.json != s.json OR m.recipe_id != s.recipe_id OR m.version != s.version) AND (NOT EXISTS (SELECT 1 FROM src.parts p WHERE p.source != 'real' AND p.recipe_revision = s.revision_id) OR EXISTS (SELECT 1 FROM src.parts p WHERE p.source = 'real' AND p.recipe_revision = s.revision_id)) LIMIT 1",
         [project], |r| r.get(0),
     ).optional().map_err(db_err)?;
     if let Some(revision) = conflict {

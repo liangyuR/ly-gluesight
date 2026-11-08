@@ -1071,7 +1071,7 @@ pub(super) async fn prepare_segment_teaching(
         );
         let calib = vision::camera_calib_path(&app, inspect)?;
         let default_scale = calib_scale(&app, inspect, config.source)?;
-        let sample_set = crate::offline::sample_set(&app).map(|set| set.manifest().id.clone());
+        let sample_set = None::<String>;
         let frame = FrozenImage {
             id: format!(
                 "corridor-{}-{revision}-{seq}-{}",

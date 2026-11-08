@@ -201,11 +201,6 @@ pub const OP_PLC: Event = Event {
     ev: "操作：PLC",
     level: Level::Info,
 };
-pub const OP_SITE: Event = Event {
-    code: "op.site",
-    ev: "操作：站点模式",
-    level: Level::Info,
-};
 pub const OP_MAINTENANCE: Event = Event {
     code: "op.maintenance",
     ev: "操作：维护模式",

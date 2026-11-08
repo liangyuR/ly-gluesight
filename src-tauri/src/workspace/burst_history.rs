@@ -13,7 +13,7 @@ use crate::frame_group::{FrameGroup, LossAlarm};
 use crate::passes::PassRules;
 use crate::plan::PathSegment;
 use crate::segmentation::{frame_corridors, resolve_regions, segment_part, Region, SegInput};
-use crate::store::{FrameRecord, PartDetail, PartDetailBurst, RecordSource};
+use crate::store::{FrameRecord, PartDetail, PartDetailBurst};
 
 /// 区域划分的置信度门槛，与在线节拍（cycle/burst.rs）相同：比例分段器在帧数容差内给 1、之外给 0。
 const MIN_CONFIDENCE: f32 = 0.5;
@@ -376,21 +376,8 @@ pub(super) fn raw_complete(detail: &PartDetail, burst: &PartDetailBurst) -> bool
     detail.recording.available && burst.frames.iter().all(|f| f.status == FrameState::Missing || f.raw_file.is_some())
 }
 
-/// 段配方候选离线调试记录的样本原图。
-fn burst_samples(app: &AppHandle, detail: &PartDetail) -> Result<history_samples::BurstSamples, String> {
-    if detail.summary.recipe_revision.is_none() {
-        return Err("历史配方快照身份缺失".into());
-    }
-    let recipe = app
-        .state::<Store>()
-        .record_recipe(&detail.summary)?
-        .ok_or("历史配方快照缺失，不能确定离线样本原图")?;
-    history_samples::BurstSamples::open(&crate::storage::root(app), detail, &recipe)
-}
-
 enum FrameSource {
     Recorded(recorded::VerifiedFrames),
-    Samples(history_samples::BurstSamples),
 }
 
 struct FrameReader<'a> {
@@ -418,9 +405,6 @@ impl<'a> FrameReader<'a> {
     }
 
     fn open_source(app: &AppHandle, detail: &PartDetail) -> Result<FrameSource, String> {
-        if detail.summary.source == RecordSource::OfflineCandidate {
-            return burst_samples(app, detail).map(FrameSource::Samples);
-        }
         let cycle_id = detail
             .summary
             .cycle_id
@@ -445,13 +429,12 @@ impl<'a> FrameReader<'a> {
             .get_or_insert_with(|| Self::open_source(&self.app, self.detail));
         match source {
             Ok(FrameSource::Recorded(recorded)) => recorded.load(camera_id, frame),
-            Ok(FrameSource::Samples(samples)) => samples.load(camera, seq),
             Err(error) => Err(error.clone()),
         }
     }
 }
 
-/// 段配方历史件第 camera 台计划相机第 seq 帧组的原图：生产记录读录制目录，候选离线调试记录读受管样本集。
+/// 段配方历史件第 camera 台计划相机第 seq 帧组的原图：读取生产录制目录。
 pub(super) fn frame_image(
     app: &AppHandle,
     detail: &PartDetail,
@@ -474,9 +457,6 @@ pub(super) fn frame_image(
         .cameras
         .get(camera)
         .ok_or("相机下标超出本件计划相机")?;
-    if detail.summary.source == RecordSource::OfflineCandidate {
-        return burst_samples(app, detail)?.load(camera, seq);
-    }
     let cycle_id = detail
         .summary
         .cycle_id
@@ -918,8 +898,7 @@ fn raw_blocker(
         detail.recording.state,
         crate::store::RecordingState::Off | crate::store::RecordingState::NotRetained
     );
-    let recorded = detail.summary.source == RecordSource::OfflineCandidate
-        || (!cleared && frames.iter().any(|f| f.raw_file.is_some()));
+    let recorded = !cleared && frames.iter().any(|f| f.raw_file.is_some());
     if !recorded {
         let used: Vec<&str> = cameras
             .iter()
@@ -947,7 +926,7 @@ fn raw_blocker(
                 .join("、")
         ));
     }
-    if detail.summary.source != RecordSource::OfflineCandidate && !raw_complete(detail, burst) {
+    if !raw_complete(detail, burst) {
         notes.push(format!(
             "原图不全（{}），没保存原图的帧不测",
             recording_reason(detail)
@@ -1008,9 +987,6 @@ fn candidate_frames(map: &[Option<usize>], frames: &[FrameRecord]) -> Vec<FrameR
 
 /// 按原发布包重现的前置条件。
 fn original_blocker(detail: &PartDetail, burst: &PartDetailBurst) -> Option<String> {
-    if detail.summary.source == RecordSource::OfflineCandidate {
-        return Some("候选离线调试记录没有发布包".into());
-    }
     if detail.summary.bundle_id.is_none() {
         return Some(
             "本件没有不可变发布包（维护采集件或未匹配到可用配方），不能按原版本重现".into(),
@@ -1114,7 +1090,6 @@ pub(super) fn compare(
             }
         }
         unmeasured.sort_by_key(|u| (u.segment, cameras.iter().position(|c| *c == u.camera)));
-        let offline = detail.summary.source == RecordSource::OfflineCandidate;
         // 丢帧告警按候选的相机顺序重算（与记录的相机顺序可能不同）
         let counts: Vec<u32> = (0..cameras.len())
             .map(|c| {
@@ -1142,7 +1117,7 @@ pub(super) fn compare(
                         )
                     })
                 };
-                if !offline && frame.raw_file.is_none() {
+                if frame.raw_file.is_none() {
                     return skip("这一帧原图没有保存".into());
                 }
                 if let Some(reason) = measurer.skipped(frame.camera, segment) {

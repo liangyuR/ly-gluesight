@@ -4,7 +4,7 @@ import { CalibPanel, cameraApi, FeasibilityCalc, useRigStatus, type CameraConfig
 import CameraList, { type CalibrationSummary } from "../features/camera/components/CameraList";
 import type { CalibInfo } from "../features/camera/components/CalibPanel";
 import { useRigConfig } from "../features/camera/useRigConfig";
-import { useCycle, useSiteStatus } from "../features/cycle";
+import { useCycle } from "../features/cycle";
 import { desktopAvailable } from "../lib/desktop";
 import { Notice } from "../features/workspace/components";
 import StationCapture, { type StationView } from "../features/workspace/StationCapture";
@@ -32,9 +32,7 @@ export default function FlyshotCalibrationPage() {
   const navigationState:CaptureNavigationState={...(location.state as CaptureNavigationState | null)};
   const {statuses}=useRigStatus();
   const {snapshot}=useCycle();
-  const site=useSiteStatus();
-  const offline=site?.mode==="offline";
-  const {configs,cam,setCam,error,loading,reload}=useRigConfig({withReferences:false,preferredId:captureReturn?.cameraIds[0],reloadKey:offline});
+  const {configs,cam,setCam,error,loading,reload}=useRigConfig({withReferences:false,preferredId:captureReturn?.cameraIds[0]});
   const [calibView,setCalibView]=useState(1);
   const [sample,setSample]=useState<StationView|null>(null);
   const [calibMm,setCalibMm]=useState<number|null>(null);
@@ -59,13 +57,12 @@ export default function FlyshotCalibrationPage() {
   const marks=useMemo(()=>corners?.map((at,i)=>({at,color:i===0?"var(--ov-ok)":"var(--ov-line)"})),[corners]);
   const status=statuses.find(s=>s.cam===cam)??null;
   const busy=productionBusy(snapshot);
-  const sampleSet=offline&&site?.source==="sampleSet"?site.sampleSet:null;
   const feasibility:FeasibilitySources={
     exposure:status&&config?.source==="mvs"?{value:status.imaging.exposureUs,from:"来自相机页保存的曝光"}:null,
     fps:status?.configuredFrameRate?{value:status.configuredFrameRate,from:"来自相机设定帧率回读"}:null,
-    mmPerPx:sampleSet?.mmPerPx?{value:sampleSet.mmPerPx,from:"来自样本集声明"}:calibMm?{value:calibMm,from:"来自工位标定"}:null,
+    mmPerPx:calibMm?{value:calibMm,from:"来自工位标定"}:null,
   };
-  const notice=error?<Notice title="操作未完成" tone="warn">{error}</Notice>:busy?<Notice title="当前工件正在检测">取样与标定在工件结束后可操作。</Notice>:sampleSet?<Notice title="离线样本集可跳过工位标定">{sampleSet.mmPerPx?`样本集「${sampleSet.name}」的像素当量为 ${sampleSet.mmPerPx} mm/px，示教与标定采用此值。`:`样本集「${sampleSet.name}」未声明像素当量，示教时需用已知尺寸人工验证。`}</Notice>:null;
+  const notice=error?<Notice title="操作未完成" tone="warn">{error}</Notice>:busy?<Notice title="当前工件正在检测">取样与标定在工件结束后可操作。</Notice>:null;
 
   return <div className="cam-page calib-page">
     <ReturnButton hint="标定完成后返回继续。"/>

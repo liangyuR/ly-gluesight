@@ -139,7 +139,6 @@ fn part(cycle: &str, sn: u32) -> RecordedPart {
         delivery: delivery(PlcDeliveryState::Pending, 10),
         shots: Vec::new(),
         source: RecordSource::Real,
-        sample: None,
         burst: Some(burst),
     }
 }
@@ -458,4 +457,52 @@ fn readable_crash_leftover_tmp_is_quarantined_and_identified_in_same_startup() {
     let (spool, _) = spool::Spool::open(root).unwrap();
     assert!(spool.empty());
     assert!(spool.quarantined_cycles().any(|cycle| cycle == "left"));
+}
+
+#[test]
+fn retired_offline_spool_is_removed_while_production_is_recovered() {
+    let dir = TestDir::new();
+    let root = dir.0.join("spool");
+    std::fs::create_dir_all(root.join(".unrecovered")).unwrap();
+    for (index, source) in [
+        "real",
+        "offlineSynthetic",
+        "offlineSample",
+        "offlineCandidate",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let mut value = serde_json::to_value(Event::Insert(Box::new(part(
+            &format!("source-{index}"),
+            42,
+        ))))
+        .unwrap();
+        value["Insert"]["source"] = serde_json::json!(source);
+        let envelope = serde_json::json!({"format":4,"event":value});
+        let name = format!("{index:020}.json");
+        std::fs::write(root.join(&name), serde_json::to_vec(&envelope).unwrap()).unwrap();
+        if *source != "real" {
+            std::fs::write(
+                root.join(".unrecovered").join(name),
+                serde_json::to_vec(&envelope).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+    let mut sink = dir.sink();
+    let (mut spool, _) = spool::Spool::open(root.clone()).unwrap();
+    recover_all(&mut spool, &mut sink, 1);
+    let page = sink.store.query(&HistoryQuery::default()).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].cycle_id.as_deref(), Some("source-0"));
+    assert!(spool.empty());
+    assert!(spool.quarantined_cycles().next().is_none());
+    for index in 1..4 {
+        assert!(!root.join(format!("{index:020}.json")).exists());
+        assert!(!root
+            .join(".unrecovered")
+            .join(format!("{index:020}.json"))
+            .exists());
+    }
 }

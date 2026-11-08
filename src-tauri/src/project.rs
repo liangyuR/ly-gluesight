@@ -268,14 +268,14 @@ pub fn open_target(data: &Path, id: &str) -> Result<ProjectMeta, String> {
 }
 
 /// 当前项目此刻能否安全离开（切换或导出）：没有在途件与未结事务、录制与追溯已写完。
-pub fn switch_state(app: &AppHandle) -> Result<crate::site::ProjectSwitch, String> {
+pub fn switch_state(app: &AppHandle) -> Result<ProjectSwitch, String> {
     use crate::cycle::{CycleHost, Phase};
     let cycle = app.state::<CycleHost>();
     let audit_pending = !matches!(
         cycle.audit.readiness(),
         Ok(crate::audit::AuditReadiness::Ready)
     ) || !cycle.audit.protected_cycle_ids()?.is_empty();
-    Ok(crate::site::ProjectSwitch {
+    Ok(ProjectSwitch {
         block: cycle.switch_block(),
         busy: !matches!(cycle.phase(), Phase::Idle | Phase::Fault),
         audit_pending,
@@ -301,7 +301,7 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<ProjectSwitchR
     let cycle = app.state::<crate::cycle::CycleHost>();
     let _link = cycle.link_gate.lock().await;
     let _config = cycle.config_gate.lock().await;
-    crate::site::check_project_switch(&switch_state(&app)?)?;
+    check_project_switch(&switch_state(&app)?)?;
     write_pointer(&data, &id)?;
     if tauri::is_dev() {
         crate::applog::write(
@@ -328,3 +328,24 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<ProjectSwitchR
 
 #[cfg(test)]
 mod tests;
+
+/// 切换项目前要满足的条件：比站点模式切换多一条，件记录与追溯必须已写进本项目。
+pub struct ProjectSwitch {
+    /// 在途工件或未结 S7 事务给出的阻止原因
+    pub block: Option<String>,
+    pub busy: bool,
+    pub audit_pending: bool,
+}
+
+pub fn check_project_switch(pre: &ProjectSwitch) -> Result<(), String> {
+    if let Some(reason) = &pre.block {
+        return Err(reason.clone());
+    }
+    if pre.busy {
+        return Err("检测仍有在途事务，完成握手或复位故障后再切换项目".into());
+    }
+    if pre.audit_pending {
+        return Err("上一件的录制或追溯还没写完，稍后再切换项目".into());
+    }
+    Ok(())
+}

@@ -35,7 +35,7 @@ const CONTENT: [&str; 8] = [
     "recipe-capture",
     "recipe-support",
 ];
-const RECORDS: [&str; 3] = ["inspection.db", "records", "records-offline"];
+const RECORDS: [&str; 2] = ["inspection.db", "records"];
 const PENDING_RECORDINGS: &str = ".project-install-pending.json";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -126,7 +126,8 @@ fn allowed(path: &str, records: bool) -> bool {
     let single = matches!(top, "project.json" | "inspection.db");
     named
         && single == (parts.len() == 1)
-        && (CONTENT.contains(&top) || records && RECORDS.contains(&top))
+        && (CONTENT.contains(&top)
+            || records && (RECORDS.contains(&top) || top == "records-offline"))
 }
 
 fn capture_image(path: &str) -> bool {
@@ -870,6 +871,10 @@ fn remove_owned_tree(path: &Path) -> Result<(), String> {
 }
 
 fn install_recordings(root: &Path, project: &Path) -> Result<Option<PathBuf>, String> {
+    let retired = root.join("records-offline");
+    if retired.exists() {
+        remove_owned_tree(&retired)?;
+    }
     let external = crate::log_storage::recording_project(project)?;
     if external == project {
         return Ok(None);
@@ -1039,14 +1044,7 @@ pub fn copy_from(
     cache: &Path,
 ) -> Result<ProjectImported, String> {
     let staging = staging_dir(cache, "copy")?;
-    let result = copy_into(
-        data,
-        source_id,
-        capture_images,
-        new,
-        plan_file,
-        &staging,
-    );
+    let result = copy_into(data, source_id, capture_images, new, plan_file, &staging);
     let _ = std::fs::remove_dir_all(&staging);
     result
 }
@@ -1123,7 +1121,7 @@ pub async fn project_export(
     let data = crate::storage::root(&app);
     let meta = super::open_target(&data, &id)?;
     if id == super::current_id(&app) {
-        crate::site::check_project_switch(&super::switch_state(&app)?)
+        crate::project::check_project_switch(&super::switch_state(&app)?)
             .map_err(|e| e.replace("切换项目", "导出当前项目"))?;
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -1258,7 +1256,7 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
     let data = crate::storage::root(&app);
     super::open_target(&data, &request.source_id)?;
     if request.source_id == super::current_id(&app) {
-        crate::site::check_project_switch(&super::switch_state(&app)?)
+        crate::project::check_project_switch(&super::switch_state(&app)?)
             .map_err(|e| e.replace("切换项目", "复制当前项目"))?;
     }
     let plan_file = crate::storage::state(&app).join("plan-version");
@@ -1280,9 +1278,7 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
             "项目复制",
             &format!(
                 "已把项目 {} 复制为 {}（{}）",
-                request.source_id,
-                copied.meta.id,
-                copied.meta.name,
+                request.source_id, copied.meta.id, copied.meta.name,
             ),
         );
         Ok(copied)

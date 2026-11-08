@@ -86,9 +86,6 @@ function measureError(settings: CycleSettings) {
   if (!integerIn(settings.recordKeep, 1, 100000)) return "帧录制保留件数需为 1–100000 之间的整数";
   if (!Number.isFinite(settings.recordMaxGb) || settings.recordMaxGb < 0.5 || settings.recordMaxGb > 10000)
     return "帧录制总大小需在 0.5–10000 GB 之间";
-  if (!integerIn(settings.offlineRecordKeep, 1, 100000)) return "离线原图保留件数需为 1–100000 之间的整数";
-  if (!Number.isFinite(settings.offlineRecordMaxGb) || settings.offlineRecordMaxGb < 0.5 || settings.offlineRecordMaxGb > 10000)
-    return "离线原图总大小需在 0.5–10000 GB 之间";
   return null;
 }
 
@@ -198,8 +195,8 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
     setSaving(true);
     setSaveError("");
     try {
-      const { record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb } = settings;
-      const saved = await savePart({ record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb });
+      const { record, recordKeep, recordMaxGb } = settings;
+      const saved = await savePart({ record, recordKeep, recordMaxGb });
       if (saved && mounted.current) {
         snack("lyFlow 与帧录制设置已保存");
         refresh();
@@ -239,24 +236,6 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
             step={0.5}
             value={numberInput(settings.recordMaxGb)}
             onValueChange={(value) => update({ ...settings, recordMaxGb: numberValue(value) })}
-          />
-          <NumberField
-            id="offline-record-keep"
-            label="离线原图最多保留（件）"
-            min={1}
-            max={100000}
-            step={1}
-            value={numberInput(settings.offlineRecordKeep)}
-            onValueChange={(value) => update({ ...settings, offlineRecordKeep: numberValue(value) })}
-          />
-          <NumberField
-            id="offline-record-max-gb"
-            label="离线原图总大小上限（GB）"
-            min={0.5}
-            max={10000}
-            step={0.5}
-            value={numberInput(settings.offlineRecordMaxGb)}
-            onValueChange={(value) => update({ ...settings, offlineRecordMaxGb: numberValue(value) })}
           />
         </Grid>
       </fieldset>

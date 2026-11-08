@@ -248,7 +248,7 @@ pub fn initialize(app: &AppHandle, target: PathBuf) -> Result<(), String> {
             &json!({"version":1,"environment":environment()}).to_string(),
         )?;
     }
-    for dir in ["config", "state", "samples", "cache", "logs", "exports"] {
+    for dir in ["config", "state", "cache", "logs", "exports"] {
         fs::create_dir_all(target.join(dir)).map_err(|e| e.to_string())?;
     }
     let status = StorageStatus {

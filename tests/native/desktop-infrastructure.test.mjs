@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,7 +14,7 @@ const windows = process.platform === 'win32';
 function fixture() {
   const directory = mkdtempSync(path.join(scratch, 'desktop-'));
   mkdirSync(path.join(directory, 'scripts'));
-  for (const name of ['UiTest-Common', 'Desktop-Test', 'Build-UiTestInstance', 'Start-UiTestInstance', 'Stop-UiTestInstance', 'Test-UiProductionFlow']) {
+  for (const name of ['UiTest-Common', 'Build-UiTestInstance', 'Start-UiTestInstance', 'Stop-UiTestInstance']) {
     copyFileSync(path.join(root, `scripts/${name}.ps1`), path.join(directory, `scripts/${name}.ps1`));
   }
   return directory;
@@ -30,15 +30,6 @@ function run(directory, name, args = []) {
     cwd: directory, encoding: 'utf8', windowsHide: true, timeout: 20000,
   });
 }
-
-test('显式运行库目录无 DLL → 构建启动前失败，不误报为跳过', { skip: !windows }, () => {
-  const directory = fixture();
-  try {
-    const result = run(directory, 'Test-UiProductionFlow', ['-Suite', 'burst', '-LyFlowRuntime', path.join(directory, 'missing-runtime')]);
-    assert.notEqual(result.status, 0);
-    assert.equal(existsSync(path.join(directory, 'output')), false);
-  } finally { remove(directory); }
-});
 
 test('同 profile 被另一进程占用 → 拒绝构建和清空资料，释放后可重新取得锁', { skip: !windows }, async () => {
   const directory = fixture();

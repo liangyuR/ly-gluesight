@@ -2,14 +2,12 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useSiteStatus } from "../src/features/cycle/api";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { historyApi } from "../src/features/history/api";
 import { projectApi } from "../src/lib/project";
-import { burstPartDetail, burstPartSummary, burstRecipe, burstWorkspaceView, siteStatus, workspaceState } from "./fixtures";
-vi.mock("../src/features/cycle/api", () => ({ useSiteStatus: vi.fn() }));
+import { burstPartDetail, burstPartSummary, burstRecipe, burstWorkspaceView, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn(), collectChecks: vi.fn(), publishCollect: vi.fn(), publishChecks: vi.fn() } }));
 vi.mock("../src/features/history/api", () => ({ historyApi: { query: vi.fn(), detail: vi.fn() } }));
@@ -17,7 +15,6 @@ vi.mock("../src/lib/project", () => ({ projectApi: { current: vi.fn(), list: vi.
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><ValidationPage /></MemoryRouter>);
 beforeEach(() => {
-  vi.mocked(useSiteStatus).mockReturnValue(siteStatus());
   const view = burstWorkspaceView(burstRecipe({ id: "A" }));
   view.workspace.revision = 7;
   view.plan!.segments.forEach(segment => { segment.expectedFrames = 4; });

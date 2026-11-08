@@ -1,4 +1,4 @@
-import type { FrameView, Judgement, SampleLabel, Verdict } from "../cycle/types";
+import type { FrameView, Judgement, Verdict } from "../cycle/types";
 import type { Flags, PartDetailBurst } from "../plan/types";
 
 /** 段模型（分段连拍飞拍）的历史记录类型，定义在 plan/types.ts；这里转出供历史页面使用。 */
@@ -17,9 +17,8 @@ export interface RecordingEvidence {
   errors: string[];
 }
 
-/** 记录来源：真机件与离线件分开统计。 */
-export type RecordSource = "real" | "offlineSynthetic" | "offlineSample" | "offlineCandidate";
-export type HistoryScope = "real" | "offline" | "debug";
+export type RecordSource = "real";
+export type HistoryScope = "real";
 
 /** 进入历史详情时的路由 state：历史列表带筛选（前后件按它导航）；其他页面（如试测）带返回目标，返回按钮回到那里。 */
 /** 历史详情的地址状态：列表筛选、返回目标；从分段页返回时带回离开时的滚动位置。 */
@@ -73,7 +72,6 @@ export interface PartSummary {
   bundleId: string | null;
   delivery: PlcDelivery;
   source: RecordSource;
-  sample: { setId: string; partId: string; sn: string; label: SampleLabel } | null;
   /** 段配方记录的整件标记（疑似提前终止等单独显示）；没有帧记录的为 null。
    * framesExpected = expectedTotal（待标定为 0），framesReceived = 帧组数 */
   flags: Flags | null;

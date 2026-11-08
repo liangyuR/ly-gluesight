@@ -19,10 +19,11 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
   useEffect(()=>{serial.current++;pending.current=false;setBusy(false);setError("");},[scope]);
 
   const mvs = config?.source === "mvs";
+  const supported = mvs || config?.source === "simulator";
   const software = config?.triggerSource === "Software";
-  const unbound = mvs && !config?.serial;
+  const unbound = supported && !config?.serial;
   const reason = blockedReason || (!status?.ready ? (status?.message || "相机未就绪") : "");
-  const canTrigger = !reason && mvs && software;
+  const canTrigger = !reason && supported && software;
   const soft = async () => {
     if(pending.current||!canTrigger)return;
     const request=++serial.current;
@@ -34,8 +35,8 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
   };
   const age = lastFrame ? now - lastFrame.ts : null;
   const fault = !unbound && !status?.ready && !status?.released;
-  const mode = !mvs ? "样本集 · 按节拍自动出图" : software ? "Software · 软触发取图" : "Line0 · 高电平连续采集";
-  const hint = reason ? reason : !mvs ? "离线图像源按节拍自动出图，不需要也不能软触发" : software ? "点「取一帧」软触发一次" : "Line0 为高电平期间由相机按设定帧率连续出图；改为 Software 后可在此软触发取一帧。";
+  const mode = !supported ? "已停用图像源" : software ? "Software · 软触发取图" : "Line0 · 高电平连续采集";
+  const hint = reason ? reason : !supported ? "请改用海康 MVS 或外部模拟器" : software ? "点「取一帧」软触发一次" : "Line0 为高电平期间由相机按设定帧率连续出图；改为 Software 后可在此软触发取一帧。";
 
   return (
     <Card role="region" aria-label="出图验证" title={<Heading level={3}>出图验证</Heading>} actions={<>
@@ -60,7 +61,7 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
         </div>
       </>}
       <div className="cg-actions">
-        {mvs && !unbound && <Button leadingIcon={<Zap size={15} />} onClick={()=>void soft()} disabled={busy||!canTrigger}>{busy?"取图中…":"取一帧"}</Button>}
+        {supported && !unbound && <Button leadingIcon={<Zap size={15} />} onClick={()=>void soft()} disabled={busy||!canTrigger}>{busy?"取图中…":"取一帧"}</Button>}
         <span className={reason && !unbound ? "cg-warn" : undefined}>{unbound ? "" : hint}</span>
         <span className="spacer" />
         {actions}
@@ -74,7 +75,7 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
 export function AppliedPanel({ config, status }: { config: CameraConfig; status: CameraStatus | null }) {
   const warnings = status?.warnings ?? [];
   const body = config.source !== "mvs"
-    ? <><StatusBadge tone="off">不适用</StatusBadge><p>离线图像源没有设备参数可写入，也不会产生“未接受”列表。</p></>
+    ? <><StatusBadge tone="off">不适用</StatusBadge><p>外部图像源不写入海康设备参数；连接状态及触发方式请在出图验证中核对。</p></>
     : !config.serial ? <><StatusBadge tone="off">未绑定设备</StatusBadge><p>绑定并保存后由设备确认参数。</p></>
     : !status ? <><StatusBadge tone="off">正在读取相机状态</StatusBadge><p>状态返回后显示参数写入结果。</p></>
     : status.released ? <><StatusBadge tone="off">已释放给 MVS</StatusBadge><p>重新连接时按已保存的参数写入相机，写入结果在这里显示。</p></>

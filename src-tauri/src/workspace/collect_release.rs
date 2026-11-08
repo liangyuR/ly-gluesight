@@ -174,11 +174,7 @@ pub fn workspace_publish_collect(
             samples: Vec::new(),
             environment_tag: Value::Null,
         },
-        validation_site: if crate::offline::enabled(&app) {
-            ValidationSite::Offline
-        } else {
-            ValidationSite::Real
-        },
+        validation_site: ValidationSite::Real,
     }));
     next.publish = PublishState::Waiting;
     host.save(&next)?;

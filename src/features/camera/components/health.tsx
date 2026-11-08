@@ -4,11 +4,11 @@ import type { CameraConfig, CameraStatus } from "../types";
 
 export type Tone = "ok" | "warn" | "fault" | "off";
 
-export const sourceText = { mvs: "海康 MVS", sim: "合成图（离线）", sampleSet: "样本集（离线）" } as const;
+export const sourceText = { mvs: "海康 MVS", simulator: "外部模拟器", sim: "合成图（离线）", sampleSet: "样本集（离线）" } as const;
 
 /** 总览与详情共用的相机状态：未绑定、已释放是要人处理的黄色；未就绪是紫色系统故障。 */
 export function cameraHealth(config: CameraConfig, status: CameraStatus | null): { tone: Tone; label: string } {
-  if (config.source === "mvs" && !config.serial) return { tone: "warn", label: "未绑定" };
+  if ((config.source === "mvs" || config.source === "simulator") && !config.serial) return { tone: "warn", label: "未绑定" };
   if (status?.released) return { tone: "warn", label: "已释放给 MVS" };
   if (status?.ready) return { tone: "ok", label: "已连接" };
   if (!status) return { tone: "off", label: "读取中" };
@@ -44,6 +44,7 @@ export function clock(ts: number, ms = false) {
 export const count = (n: number | null | undefined) => n == null ? "—" : n.toLocaleString("en-US").replace(/,/g, " ");
 
 export function triggerSummary(c: CameraConfig) {
+  if (c.source === "simulator") return `外部模拟器 · ${c.triggerSource} · ${c.serial}`;
   if (c.source !== "mvs") return sourceText[c.source];
   if (c.triggerSource === "Software") return "Software 软触发";
   return `Line0 · 高电平 · ${c.frameRate} fps · 滤波 ${c.debouncerUs} µs`;

@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
-import { AlertTriangle, Copy, Lock, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { AlertTriangle, Copy, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { Alert, Button, Card, Checkbox, FormField, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Surface, TextField } from "qing-steel";
 import { cameraApi } from "../api";
 import type { BandwidthEstimate, CameraConfig, CameraImaging, CameraStatus, DeviceSummary, ImageMode } from "../types";
@@ -111,12 +111,14 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
     <NumberField id={`cam-${key}`} label={label(text, key)} aria-label={numberLabels[key]} unit="µs" step={1} value={Number.isFinite(config[key])?config[key]:""} onValueChange={v => set(key, v===""?NaN:v)} description={note(hint, key)} />
   );
   const mvs = config.source === "mvs";
+  const simulator = config.source === "simulator";
   const line0 = config.triggerSource === "Line0";
   const stitched = config.viewCount === 3;
   const invalid=!Number.isFinite(config.frameRate)||config.frameRate<=0?"帧率必须为正数":
     !config.name.trim()?"相机名称不能为空":
     ![1,3].includes(config.viewCount)?"设备视角数只能为 1 或 3":
     stitched&&config.imageMode==="color"?"三目拼接相机只能使用灰度模式":
+    simulator&&(!/^127\.0\.0\.1:\d+$/.test(config.serial)||Number(config.serial.split(":")[1])<1||Number(config.serial.split(":")[1])>65535)?"模拟器地址需为 127.0.0.1:端口（1–65535）":
     mvs&&!config.serial?"请选择要绑定的相机设备":
     mvs&&config.counterAfterOpen!=null&&(!Number.isSafeInteger(config.counterAfterOpen)||config.counterAfterOpen<0)?"开流前触发计数需为非负安全整数，未知时请留空":
     ![config.triggerDelayUs,config.debouncerUs].every(v=>Number.isFinite(v)&&v>=0)?"触发延时与输入滤波需为非负有限数":"";
@@ -216,17 +218,20 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
     <div className="cg-detail">
       <div className="cg-col">
         <fieldset disabled={saving||locked} className="cg-fields">
-          <Card role="region" aria-label="基础信息" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>基础信息</Heading><ContextHelp label="基础信息说明">相机编号供配方引用，在创建相机时分配，不可修改。</ContextHelp></div>} actions={!mvs && <span className="cg-note"><Lock size={12} /> 由离线来源生成，只读</span>}>
+          <Card role="region" aria-label="基础信息" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>基础信息</Heading><ContextHelp label="基础信息说明">相机编号供配方引用，在创建相机时分配，不可修改。</ContextHelp></div>}>
             <Stack direction="column" align="stretch" gap={12}>
-              <TextField id="cam-name" label="名称" value={config.name} onChange={(e) => set("name", e.target.value)} disabled={!mvs} />
+              <TextField id="cam-name" label="名称" value={config.name} onChange={(e) => set("name", e.target.value)} />
               <TextField label="相机编号" readOnly value={config.id} />
-              <TextField label="图像源" readOnly value={sourceText[config.source]} />
+              <Select label="图像源" value={config.source} onValueChange={source => setConfig(c => ({ ...c, source: source as CameraConfig["source"], serial: "", viewCount: 1, triggerSource: "Line0", triggerActivation: "LevelHigh" }))} options={[
+                { value: "mvs", label: "海康 MVS" }, { value: "simulator", label: "外部模拟器" },
+                ...(!mvs && !simulator ? [{ value: config.source, label: sourceText[config.source], disabled: true }] : []),
+              ]} />
               <TextField label="设备视角" readOnly value="单视角" />
-              <Select id="cam-image-mode" label="图像模式" aria-label="图像模式" value={config.imageMode} disabled={!mvs} onValueChange={v => set("imageMode", v as ImageMode)}
+              <Select id="cam-image-mode" label="图像模式" aria-label="图像模式" value={config.imageMode} disabled={!mvs && !simulator} onValueChange={v => set("imageMode", v as ImageMode)}
                 options={[{ value: "gray", label: "灰度" }, { value: "color", label: "彩色", disabled: stitched }]}
-                description={stitched ? "三目拼接相机只支持灰度，彩色不可选。" : config.imageMode === "color" ? "彩色模式按 8 位 Bayer 取图，由电脑去马赛克为 RGB；录制每帧只存一份原始 Bayer。切换图像模式后，已有示教需重新示教。" : "灰度模式不保留颜色，现场相机请用彩色。切换图像模式后，已有示教需重新示教。"} />
-              {config.source === "sampleSet" && <span className="cg-small muted">图像来自离线模式所选样本集，相机与视角按样本集生成，不可在此更改。</span>}
-              {config.source === "sim" && <span className="cg-small muted">合成图相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。</span>}
+                description={simulator ? "与模拟器输入图像的灰度或彩色通道保持一致。切换图像模式后，已有示教需重新示教。" : stitched ? "三目拼接相机只支持灰度，彩色不可选。" : config.imageMode === "color" ? "彩色模式按 8 位 Bayer 取图，由电脑去马赛克为 RGB；录制每帧只存一份原始 Bayer。切换图像模式后，已有示教需重新示教。" : "灰度模式不保留颜色，现场相机请用彩色。切换图像模式后，已有示教需重新示教。"} />
+              {config.source === "sampleSet" && <span className="cg-small muted">旧样本集图像源已停用，请改用海康 MVS 或外部模拟器。</span>}
+              {config.source === "sim" && <span className="cg-small muted">旧合成图图像源已停用，请改用海康 MVS 或外部模拟器。</span>}
             </Stack>
           </Card>
 
@@ -250,7 +255,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
               </Surface>}
             </Stack>
           </Card> : <Card role="region" aria-label="绑定设备" title={<Heading level={3}>绑定设备</Heading>}>
-            <Alert title="不适用：离线图像源没有物理设备">离线期间不枚举、不绑定海康设备；原相机组的绑定关系已保留，退出离线后恢复。</Alert>
+            {simulator ? <TextField label="模拟器地址" value={config.serial} placeholder={`127.0.0.1:${7101 + cam}`} onChange={e => set("serial", e.target.value.trim())} description="填写独立工具对应相机的 TCP 地址；保存后接收模拟器发来的生产帧。" /> : <Alert tone="warn">请改用海康 MVS 或外部模拟器。</Alert>}
           </Card>}
 
           {mvs && <Card role="region" aria-label="链路带宽" title={<Heading level={3}>链路带宽</Heading>} actions={<span className="cg-note">按组内最高设定帧率 {bandwidthHz} fps 估算</span>}>
@@ -294,7 +299,11 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
               </Surface>
             </Stack>
           </Card> : <Card role="region" aria-label="触发接线" title={<Heading level={3}>触发接线</Heading>}>
-            <Alert title="不适用：离线图像源按节拍自动出图">不接触发线，没有触发沿、滤波、延时、频闪和 Chunk 设置；触发计数即样本序号。</Alert>
+            {simulator ? <Stack direction="column" align="stretch" gap={12}>
+              <Select label="触发源" value={config.triggerSource} onValueChange={value => set("triggerSource", value as CameraConfig["triggerSource"])} options={[{ value: "Line0", label: "Line0（正常生产）" }, { value: "Software", label: "Software（标定、调试单帧）" }]} />
+              <NumberField label="设定帧率" unit="fps" min={0.01} step={1} value={Number.isFinite(config.frameRate) ? config.frameRate : ""} onValueChange={value => set("frameRate", value === "" ? NaN : value)} />
+              <span className="muted">正常生产使用 Line0，由独立模拟器发送门控和图像；Software 仅供标定、调试取一帧。</span>
+            </Stack> : <Alert tone="warn">请改用海康 MVS 或外部模拟器。</Alert>}
           </Card>}
 
           {mvs ? <Card role="region" aria-label="曝光与增益" title={<div style={{ display: "flex", alignItems: "center" }}><Heading level={3}>曝光与增益</Heading><ContextHelp label="曝光与增益说明">曝光与增益只记录在采集件与轮次里，修改后不影响已有示教、标定与轮次复核。固定写入：ExposureAuto / GainAuto = Off、TriggerMode = On；GigE 相机自动设置最佳包长。像素格式按图像模式：灰度模式优先 Mono8，相机没有 Mono8 时取 8 位 Bayer 转灰度；彩色模式（新建相机的缺省）使用 8 位 Bayer，由电脑去马赛克为 RGB，录制每帧只存一份原始 Bayer。{status?.sdkVersion && ` SDK ${status.sdkVersion}。`}</ContextHelp></div>} actions={<span className="cg-note">保存即写入相机，打开或重连时自动写入</span>}>
@@ -310,7 +319,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
               {imagingError && <Alert tone="ng">{imagingError}</Alert>}
             </Stack>
           </Card> : <Card role="region" aria-label="曝光与增益" title={<Heading level={3}>曝光与增益</Heading>}>
-            <Alert>样本集与合成图没有曝光和增益可写入。</Alert>
+            <Alert>图像由外部工具或文件提供，没有曝光和增益可写入。</Alert>
           </Card>}
         </fieldset>
         {footer}

@@ -1,7 +1,8 @@
 .hist-page { display: flex; flex-direction: column; gap: var(--space-12); height: 100%; min-height: 480px; }
 .hist-filters { flex-shrink: 0; }
 .hist-filter-options { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
-.hist-filter-options .hist-sn-input { width:220px; flex:0 1 220px; }
+.hist-filter-options .hist-result-filters { flex-basis:100%; }
+.hist-filter-options .hist-sn-input, .hist-filter-options .hist-tag-input { width:220px; flex:0 1 220px; }
 .hist-filter-options .hist-recipe { min-width:160px; }
 .hist-filter-options .hist-project-select { min-width:180px; }
 .hist-project { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }

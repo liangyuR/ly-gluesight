@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import { Alert, Card, IconButton, Stack, StatusBadge, Text } from "qing-steel";
-import { displayReason, formatTime, HistoryRecordActions, historyApi, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, type HistoryDetailState, type PartDetail } from "../features/history";
+import { displayReason, formatTime, HistoryRecordActions, historyApi, partVerdict, triggerModeLabel, type HistoryDetailState, type PartDetail } from "../features/history";
 import BurstHistoryDetail from "../features/history/components/BurstDetail";
 import { subscribe } from "../features/plc";
 import { Panel } from "../features/workspace/components";
@@ -94,7 +94,6 @@ function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel, fore
             <IconButton aria-label="后一件" title="后一件" disabled={neighbors.newer == null} onClick={() => onOpen(neighbors.newer)}><ChevronRight size={18} /></IconButton>
           </span>
           <b className="sn" title={s.sn || undefined}>SN {s.sn || "—"}</b>
-          {s.source !== "real" && <StatusBadge tone="off">{sourceLabel[s.source]}</StatusBadge>}
           <Text muted>{formatTime(s.ts)} · {s.recipeId ?? "无配方"} · {"v" + (s.recipeVersion ?? "—") + " · #" + (s.recipeRevision?.slice(0, 6) ?? "—")} · {triggerModeLabel(s.triggerMode)}</Text>
         </Stack>
         <StatusBadge tone={partVerdict(s).tone}>{partVerdict(s).label} · PLC {s.plcCode}{s.faultCode ? " / " + s.faultCode : ""}</StatusBadge>
@@ -107,7 +106,6 @@ function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel, fore
       <p className="reason-box">{displayReason(detail.judgement.reason)}</p>
       <div className="kv2">
         <span>记录号</span><b>#{s.id}</b>
-        {s.sample && <><span>离线样本</span><b>{s.sample.partId} · SN <span className="sn">{s.sample.sn}</span> · 期望 {sampleLabelText[s.sample.label]}</b></>}
         <span>配方修订</span><b>{s.recipeRevision ?? "—"}</b>
         <span>软件版本</span><b>{detail.softwareVersion}</b>
         <span>复检自</span><b>{s.retestOf ? <Link to={"/history/" + s.retestOf}>#{s.retestOf}</Link> : "—"}</b>

@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { BookOpen, Cable, Camera, Crosshair, FileClock, FlaskConical, FolderKanban, History, LayoutDashboard, ScanEye, ScrollText, Settings, type LucideIcon } from "lucide-react";
+import { BookOpen, Cable, Camera, Crosshair, FileClock, FolderKanban, History, LayoutDashboard, ScanEye, ScrollText, Settings, type LucideIcon } from "lucide-react";
 import InspectPage from "../pages/InspectPage";
 import CameraPage from "../pages/CameraPage";
 import FlyshotCalibrationPage from "../pages/FlyshotCalibrationPage";
@@ -7,7 +7,6 @@ import { PlcLogsPage, PlcSettingsPage } from "../pages/PlcPages";
 import HistoryPage from "../pages/HistoryPage";
 import SettingsPage from "../pages/SettingsPage";
 import OperationGuidePage from "../pages/OperationGuidePage";
-import OfflinePage from "../pages/OfflinePage";
 import ProjectsPage from "../pages/ProjectsPage";
 import LibraryPage from "../features/workspace/LibraryPage";
 import ProgressPage from "../features/workspace/ProgressPage";
@@ -56,7 +55,6 @@ export const navEntries: NavEntry[] = [
   ] },
   { label:"工艺",children:[
     recipe,
-    { path:"/offline",label:"离线模式",icon:FlaskConical,element:OfflinePage },
   ] },
   { label:"设备",children:[
     { path:"/camera",label:"相机",icon:Camera,element:CameraPage },

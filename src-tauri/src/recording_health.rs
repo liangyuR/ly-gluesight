@@ -1,5 +1,5 @@
 //! 原图录制失败告警：录制失败不停产、不改判定，但操作员要能看到原图没存下来。
-//! 真机与离线各自计数；下一件录制成功、按策略无需留图或录制关闭时清除。
+//! 下一件录制成功、按策略无需留图或录制关闭时清除。
 //! 只有写盘错误算失败：采集前校验不过（少视角、重复拍照点）、队列满、相机少帧都不是资料盘问题，不计入；
 //! 没有任何原图写成的件没有写盘证据，既不报警也不清除告警，已有原图写成则视为写盘正常。
 
@@ -28,13 +28,12 @@ impl RecordingAlarm {
 
 #[derive(Default)]
 pub struct RecordingHealth {
-    scopes: Mutex<[Option<RecordingAlarm>; 2]>,
+    scopes: Mutex<[Option<RecordingAlarm>; 1]>,
 }
 
 fn slot(scope: HistoryScope) -> usize {
     match scope {
         HistoryScope::Real => 0,
-        HistoryScope::Offline | HistoryScope::Debug => 1,
     }
 }
 

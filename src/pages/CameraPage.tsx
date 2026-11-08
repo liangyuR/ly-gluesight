@@ -9,7 +9,7 @@ import { cameraHealth, StateBadge } from "../features/camera/components/health";
 import type { CameraConfigHandle } from "../features/camera/components/CameraConfigPanel";
 import { useRigConfig } from "../features/camera/useRigConfig";
 import { useUnsavedGuard } from "../features/camera/useUnsavedGuard";
-import { OfflineManagedNotice, useCycle, useSiteStatus } from "../features/cycle";
+import { useCycle } from "../features/cycle";
 import { desktopAvailable } from "../lib/desktop";
 import { Notice } from "../features/workspace/components";
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
@@ -24,9 +24,7 @@ export default function CameraPage() {
   const navigationState:CaptureNavigationState={...(location.state as CaptureNavigationState | null)};
   const {statuses,lastFrame}=useRigStatus();
   const {snapshot}=useCycle();
-  const site=useSiteStatus();
-  const readOnly=site?.mode==="offline";
-  const {configs,error,setError,loading,references,referencesReady,referenceError,reload}=useRigConfig({withReferences:true,preferredId:captureReturn?.cameraIds[0],reloadKey:readOnly});
+  const {configs,error,setError,loading,references,referencesReady,referenceError,reload}=useRigConfig({withReferences:true,preferredId:captureReturn?.cameraIds[0]});
   const [detailId,setDetailId]=useState<string|null>(captureReturn?.cameraIds[0]??null);
   const [action,setAction]=useState("");
   const [removeError,setRemoveError]=useState("");
@@ -45,7 +43,7 @@ export default function CameraPage() {
   const busy=productionBusy(snapshot);
   const desktop=desktopAvailable();
   const referencedBy=config?references[config.id]??[]:[];
-  const lockedReason=busy?"工件结束后可修改":readOnly?"离线期间由站点模式管理":!desktop?"需要桌面后端":"";
+  const lockedReason=busy?"工件结束后可修改":!desktop?"需要桌面后端":"";
   const locked=!!lockedReason||!!action;
   const open=(i:number)=>{const id=configs[i]?.id;if(id&&id!==detailId)guard(()=>{setRemoveError("");setHandError("");setDetailId(id);});};
   const back=()=>guard(()=>{setRemoveError("");setHandError("");setDetailId(null);});
@@ -73,7 +71,7 @@ export default function CameraPage() {
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
   const released=!!status?.released;
-  const handOverBlocked=!desktop||readOnly||busy||!!action||configSaving||loading;
+  const handOverBlocked=!desktop||busy||!!action||configSaving||loading;
   const handOver=async()=>{
     if(!config||config.source!=="mvs"||!config.serial||pending.current||handOverBlocked)return;
     pending.current=true;setAction(released?"reconnect":"release");setHandError("");
@@ -82,21 +80,21 @@ export default function CameraPage() {
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
 
-  const notice=busy?<Notice title="当前工件正在检测，配置在工件结束后可修改">总览与帧计数继续实时刷新；添加 / 移除相机、绑定、触发接线、取一帧和释放给 MVS 暂不可用，避免打断在途采集。</Notice>:readOnly?<OfflineManagedNotice>相机组按离线来源临时生成，离线期间不能修改或增删相机。</OfflineManagedNotice>:null;
+  const notice=busy?<Notice title="当前工件正在检测，配置在工件结束后可修改">总览与帧计数继续实时刷新；添加 / 移除相机、绑定、触发接线、取一帧和释放给 MVS 暂不可用，避免打断在途采集。</Notice>:null;
   const calibration=(text:string)=><Link className="cg-link quiet" to="/camera/calibration" state={navigationState}>{text}<ChevronRight size={14}/></Link>;
 
   if(!configs.length)return <div className="cg-page">
     <ReturnButton disabled={!!action} guard={guard} hint="配置后保存并应用，再返回继续。"/>
     {notice}
     <EmptyState icon={<Camera size={32}/>} title={loading?"正在读取相机配置":"尚未添加相机"} description={desktop?"添加相机后绑定具体设备，配置触发接线并测试出图。":"请在桌面软件中添加或连接相机。"}
-      action={<>{error&&<Alert tone="ng">{error}</Alert>}{desktop&&!readOnly&&!loading&&<Button variant="filled" leadingIcon={<Plus size={15}/>} onClick={()=>void add()} disabled={locked}>添加相机</Button>}</>}/>
+      action={<>{error&&<Alert tone="ng">{error}</Alert>}{desktop&&!loading&&<Button variant="filled" leadingIcon={<Plus size={15}/>} onClick={()=>void add()} disabled={locked}>添加相机</Button>}</>}/>
   </div>;
 
   if(!config)return <div className="cg-page">
     <ReturnButton disabled={!!action} guard={guard} hint="配置后保存并应用，再返回继续。"/>
     {notice}
-    <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} lockedReason={lockedReason} canReconnect={desktop&&!readOnly&&!busy} loading={loading} adding={action==="add"} error={error}
-      onOpen={open} onRefresh={()=>void reload()} onAdd={readOnly?undefined:()=>void add()} onReconnect={i=>cameraApi.reconnect(i)}
+    <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} lockedReason={lockedReason} canReconnect={desktop&&!busy} loading={loading} adding={action==="add"} error={error}
+      onOpen={open} onRefresh={()=>void reload()} onAdd={()=>void add()} onReconnect={i=>cameraApi.reconnect(i)}
       footer={<div className="cg-row" style={{justifyContent:"flex-end"}}>{calibration("前往标定")}</div>}/>
     {dialog}
   </div>;
@@ -104,8 +102,8 @@ export default function CameraPage() {
   const health=cameraHealth(config,status);
   const warnings=status?.warnings??[];
   const mvs=config.source==="mvs";
-  const handOverButton=!readOnly&&mvs&&!!config.serial&&<Button leadingIcon={released?<RefreshCw size={15}/>:<ExternalLink size={15}/>} onClick={()=>void handOver()} disabled={handOverBlocked} title={released?"收回相机并重新打开":"关闭相机，供海康 MVS 客户端连接调焦"}>{action==="release"?"释放中…":action==="reconnect"?"连接中…":released?"重新连接":"释放给 MVS"}</Button>;
-  const leading=!readOnly&&<div className="cg-remove">
+  const handOverButton=mvs&&!!config.serial&&<Button leadingIcon={released?<RefreshCw size={15}/>:<ExternalLink size={15}/>} onClick={()=>void handOver()} disabled={handOverBlocked} title={released?"收回相机并重新打开":"关闭相机，供海康 MVS 客户端连接调焦"}>{action==="release"?"释放中…":action==="reconnect"?"连接中…":released?"重新连接":"释放给 MVS"}</Button>;
+  const leading=<div className="cg-remove">
     <Button size="sm" leadingIcon={<Trash2 size={13}/>} onClick={()=>void remove()} disabled={locked||loading||configSaving||!!removeBlocked}>{action==="remove"?"移除中…":"移除相机"}</Button>
     <small className={removeError?"cg-err":undefined}>{removeError||removeBlocked||(referencedBy.length?"":"未被任何配方引用，可移除。")}{!referencesReady&&referenceError&&<> <Link className="cg-link" to="/recipe">在配方库处理</Link></>}</small>
   </div>;

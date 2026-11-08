@@ -24,7 +24,6 @@ export const workspaceApi = {
   navigationSave: (id: string, revision: number, map: NavigationMapData, confirm: boolean) => desktopCall<WorkspaceView>("workspace_navigation_save", { id, revision, map, confirm }),
   navigationDelete: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_navigation_delete", { id, revision }),
   navigationImage: (id: string, imageId: string) => desktopCall<ArrayBuffer | number[]>("workspace_navigation_image", { id, imageId }),
-  debugRun: (id: string, revision: number, partId: string | null) => desktopCall<void>("workspace_debug_run", { id, revision, partId }),
   captureGet: (roundId?: string) => desktopCall<CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
   list: () => desktopCall<Workspace[]>("workspace_list"),
   get: (id: string) => desktopCall<WorkspaceView>("workspace_get", { id }),

@@ -38,7 +38,6 @@ pub fn config_summary(app: &AppHandle) -> serde_json::Value {
         .map(|meta| meta.name);
     serde_json::json!({
         "project": {"id": project.id, "name": name},
-        "offline": crate::offline::enabled(app),
         "plc": connection,
         "cameras": cycle.camera.configs(),
         "settings": cycle.settings(),
@@ -85,16 +84,6 @@ pub struct EngineStatus {
 #[tauri::command]
 pub async fn engine_status(app: AppHandle) -> EngineStatus {
     tauri::async_runtime::spawn_blocking(move || {
-        if !crate::site::image_measurement(&app) {
-            return EngineStatus {
-                backend: "模拟测量",
-                ready: true,
-                message: "离线·合成图：模拟测量".into(),
-                version: None,
-                path: None,
-                measuring: false,
-            };
-        }
         let s = app.state::<VisionHost>().status();
         EngineStatus { backend: "LyFlow", ready: s.loaded, message: format!("飞拍：lyFlow {}", s.message), version: s.version, path: s.path, measuring: s.loaded }
     })

@@ -6,15 +6,15 @@ import {invoke} from "@tauri-apps/api/core";
 import { SnackbarProvider } from "qing-steel";
 import FlyshotCalibrationPage from "../src/pages/FlyshotCalibrationPage";
 import {cameraApi,defaultCameraConfig,useRigStatus} from "../src/features/camera/api";
-import {useCycle,useSiteStatus} from "../src/features/cycle/api";
+import {useCycle} from "../src/features/cycle/api";
 import type {CameraStatus} from "../src/features/camera/types";
 import {workspaceApi} from "../src/features/workspace/api";
 import type {FrozenImage} from "../src/features/workspace/types";
-import {snapshot,siteStatus} from "./fixtures";
+import {snapshot} from "./fixtures";
 const desktop=vi.hoisted(()=>({on:false}));
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:()=>desktop.on}));
 vi.mock("../src/features/camera/api",async original=>({...await original<object>(),cameraApi:{rigConfig:vi.fn(),calibInfo:vi.fn()},useRigStatus:vi.fn()}));
-vi.mock("../src/features/cycle/api",async original=>({...await original<object>(),useCycle:vi.fn(),useSiteStatus:vi.fn()}));
+vi.mock("../src/features/cycle/api",async original=>({...await original<object>(),useCycle:vi.fn()}));
 const status=(frames:number):CameraStatus=>({cam:0,id:"CAM-1",name:"相机 1",source:"mvs",ready:true,released:false,message:"",device:null,sdkVersion:null,frames,fps:0,configuredFrameRate:10, maxFps:5.6,lostPackets:0,droppedFrames:0,warnings:[],imaging:{exposureUs:60,gainDb:6}});
 beforeEach(()=>{
  localStorage.clear();
@@ -24,7 +24,6 @@ beforeEach(()=>{
  vi.mocked(cameraApi.calibInfo).mockResolvedValue(null);
  vi.mocked(useRigStatus).mockReturnValue({statuses:[status(1)],lastFrame:{}} as ReturnType<typeof useRigStatus>);
  vi.mocked(useCycle).mockReturnValue({snapshot:snapshot(),logs:[]});
- vi.mocked(useSiteStatus).mockReturnValue(siteStatus());
 });
 
 it("单视角相机完成标定 → 按冻结图像更新像素当量与飞拍视野，相机条改为已标定并计入标定数",async()=>{

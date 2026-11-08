@@ -12,7 +12,7 @@ use crate::frame::FrameImage;
 use crate::judge::{self, Verdict};
 use crate::recipe::{Recipe, RecipeDoc, RecipeStage};
 use crate::release::ValidationSite;
-use crate::store::{self, Store};
+use crate::store::Store;
 use crate::vision;
 
 pub(crate) mod agent;
@@ -29,7 +29,6 @@ pub(crate) mod centerline;
 mod collect_release;
 mod comparisons;
 mod history_import;
-mod history_samples;
 mod navigation;
 pub(crate) mod package;
 mod pieces;
@@ -273,16 +272,6 @@ impl Workspace {
     fn ensure_instance(&mut self, store: &Store) -> Result<(), String> {
         self.instance_id = store.workspace_instance(&self.doc.id, self.instance_id)?;
         Ok(())
-    }
-
-    fn debug_revision(&self) -> Result<String, String> {
-        if self.instance_id == 0 {
-            return Err("候选尚未分配持久实例 ID".into());
-        }
-        Ok(format!(
-            "candidate-{}-i{}-r{}",
-            self.doc.id, self.instance_id, self.revision
-        ))
     }
 
     /// 旧流程候选（RB-5）：只能在配方库删除。
@@ -607,7 +596,7 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
             app, inspect,
         )?)?);
     }
-    values.push(json!([crate::site::image_measurement(app)]));
+    values.push(json!([true]));
     values.push(json!(app
         .state::<vision::VisionHost>()
         .engine()
@@ -2059,69 +2048,4 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-}
-
-/// 候选试运行冻结的配方：过 `Recipe::ready_burst`（三台相机走廊与当量、整件 ΣN_exp）。修订号为候选调试修订，计划版本至少为 1。
-fn debug_recipe(w: &Workspace) -> Result<Recipe, String> {
-    let mut recipe = w.doc.build()?;
-    recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
-    recipe.revision_id = w.debug_revision()?;
-    if recipe.plan_version == 0 {
-        recipe.plan_version = 1;
-    }
-    Ok(recipe)
-}
-
-#[tauri::command]
-pub async fn workspace_debug_run(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    part_id: Option<String>,
-) -> Result<(), String> {
-    if !crate::offline::enabled(&app) || crate::offline::sample_set(&app).is_none() {
-        return Err("候选试运行仅支持离线样本集模式".into());
-    }
-    let set = crate::offline::sample_set(&app).ok_or("离线样本集缺失")?;
-    let current = burst_release::current_camera_tags(&app);
-    let (recipe, sizes) = {
-        let host = app.state::<WorkspaceHost>();
-        let items = host.items.lock().unwrap();
-        let w = items.get(&id).ok_or("候选配方不存在")?;
-        if w.revision != revision {
-            return Err("候选已修改，请刷新后重试".into());
-        }
-        if w.pending.is_some() {
-            return Err("候选正在等待发布，请先完成或取消发布".into());
-        }
-        let recipe = debug_recipe(w)?;
-        // 每台计划相机按示教帧尺寸建走廊测量图，结果只量不判（D3 的候选调试记录按样本集读原图）
-        let sizes = burst_release::debug_sizes(w, &current)?;
-        (recipe, sizes)
-    };
-    let engine = app
-        .state::<vision::VisionHost>()
-        .engine()
-        .ok_or("lyFlow 核心库未加载")?;
-    let candidate = crate::candidate::Candidate::new_burst(recipe, revision, engine, &sizes)?;
-    crate::offline::run_candidate(app, Arc::new(candidate), set, part_id).await
-}
-
-pub(crate) fn recheck_debug_candidate(
-    app: &AppHandle,
-    candidate: &crate::candidate::Candidate,
-) -> Result<(), String> {
-    let current = burst_release::current_camera_tags(app);
-    let host = app.state::<WorkspaceHost>();
-    let items = host.items.lock().unwrap();
-    let w = items.get(&candidate.info.recipe_id).ok_or("候选已删除")?;
-    if w.revision != candidate.info.revision
-        || w.pending.is_some()
-        || w.debug_revision()? != candidate.recipe.revision_id
-    {
-        return Err("候选已修改、重建或正在发布，请重新试运行".into());
-    }
-    // 修订号不变即示教帧与走廊没变，只需再核对示教后设备标签没变
-    burst_release::debug_sizes(w, &current)?;
-    Ok(())
 }

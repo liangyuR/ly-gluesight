@@ -17,6 +17,7 @@ const FORMAT: u32 = 4;
 /// 恢复不了的件和读不了的文件：原样移到这里留待人工核对，不阻止启动与接件。
 const UNRECOVERED: &str = ".unrecovered";
 const INTERRUPTED: &str = ".interrupted-preinsert";
+const RETIRED: &str = "停用离线记录";
 
 #[derive(serde::Serialize)]
 struct Envelope<'a> {
@@ -264,6 +265,13 @@ impl Spool {
     }
 
     fn set_aside(&self, path: &Path, name: &str, reason: &str, notes: &mut Vec<String>) {
+        if reason == RETIRED {
+            notes.push(match std::fs::remove_file(path) {
+                Ok(()) => format!("已清理停用离线审计记录 {name}"),
+                Err(error) => format!("清理停用离线审计记录 {name} 失败：{error}"),
+            });
+            return;
+        }
         notes.push(match self.move_aside(path, name) {
             Ok(target) => format!(
                 "审计 spool 文件 {name}：{reason}；已移到 {}，待人工核对",
@@ -409,6 +417,15 @@ impl Spool {
                     .map_or("缺失".into(), |format| format.to_string())
             ));
         }
+        let value: serde_json::Value = serde_json::from_slice(&content).map_err(unreadable)?;
+        if matches!(
+            value
+                .pointer("/event/Insert/source")
+                .and_then(|v| v.as_str()),
+            Some("offlineSynthetic" | "offlineSample" | "offlineCandidate")
+        ) {
+            return Err(RETIRED.into());
+        }
         let event = serde_json::from_slice::<Stored>(&content)
             .map_err(unreadable)?
             .event;
@@ -502,8 +519,12 @@ impl Spool {
             return;
         };
         for item in items.flatten() {
-            if let Ok(event) = self.read_quarantined(&item.path()) {
-                self.quarantined.push(event);
+            match self.read_quarantined(&item.path()) {
+                Ok(event) => self.quarantined.push(event),
+                Err(error) if error == RETIRED => {
+                    let _ = std::fs::remove_file(item.path());
+                }
+                Err(_) => {}
             }
         }
     }

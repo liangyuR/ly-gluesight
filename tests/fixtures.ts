@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { DetectParams, Readiness, ReadinessItem, Recipe, RecipeDoc, RecipeOption, SampleSetSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
+import type { DetectParams, Readiness, ReadinessItem, Recipe, RecipeDoc, RecipeOption, Snapshot } from "../src/features/cycle/types";
 import type { PartDetail, PartSummary } from "../src/features/history/types";
 import type { FrozenImage, WorkspaceView } from "../src/features/workspace/types";
 import type { useWorkspace } from "../src/features/workspace/context";
@@ -34,23 +34,13 @@ export function snapshot(phase: Snapshot["phase"] = "IDLE"): Snapshot {
   };
 }
 
-export function siteStatus(over: Partial<SiteStatus> = {}): SiteStatus {
-  return { mode: "real", source: null, last: null, measurement: "lyFlow", port: null, running: false, continuous: false, parts: 0, message: "",
-    heartbeatStopped: false, sampleSet: null, nextPart: null, recent: [], ...over };
-}
-
-export function sampleSet(name = "壳体样本"): SampleSetSummary {
-  return { id: "set-1", name, source: "现场", dir: "C:/samples/set-1", shotCount: 2, cameras: [{ id: "CAM-1", views: [1] }], mmPerPx: 0.1,
-    parts: [{ partId: "part-1", sn: "SN1", label: "ok" }], missing: [], missingCount: 0 };
-}
-
 export function recipeOption(id: string, runnable = true, over: Partial<RecipeOption> = {}): RecipeOption {
   return { id, name: `工件 ${id}`, version: 1, productCode: 1, published: true, runnable,
     reason: runnable ? null : "与样本集不符", target: runnable ? null : "workspace", waiting: null, note: null, ...over };
 }
 
 export function readiness(over: Partial<Readiness> = {}): Readiness {
-  const items: ReadinessItem[] = (["plc", "camera", "recipe", "engine", "audit", "site"] as const).map(key => ({ key, title: key, state: "ok", detail: "就绪", hint: null, target: null }));
+  const items: ReadinessItem[] = (["plc", "camera", "recipe", "engine", "audit"] as const).map(key => ({ key, title: key, state: "ok", detail: "就绪", hint: null, target: null }));
   return { ready: true, items, recipes: [recipeOption("A"), recipeOption("B")], ...over };
 }
 
@@ -216,7 +206,7 @@ export function burstPartSummary(id = 1): PartSummary {
   return { id, sn: `SN-${100 + id}`, ts: 1, projectId: "line-a", recipeId: "S", recipeVersion: 1, recipeRevision: "revisionId-S", triggerMode: "fly",
     verdict: "OK", plcCode: 1, faultCode: 0, reason: "合格", drainMs: 20, framesExpected: 12, framesReceived: burstGroups,
     retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-S", delivery: { state: "acknowledged", updatedAt: 1, message: null },
-    source: "real", sample: null, flags: burstJudgement().flags };
+    source: "real", flags: burstJudgement().flags };
 }
 
 /** 段配方一件的历史详情：每台相机每个 seq 一条帧记录（缺帧也有）。 */

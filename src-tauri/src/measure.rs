@@ -1,4 +1,4 @@
-//! 逐帧测量。测量后端只量不判：模拟或 lyFlow（飞拍流程），由系统设置选择；判定在 burst_judge。
+//! 逐帧测量。lyFlow 只量不判，判定在 burst_judge。
 //!
 //! 段配方的 `FrameJob`：每台相机每一帧独立测，输出 `FrameMetrics`（D-SB-12）；排队、并发、超时与异常回收见 `dispatch_tasks`。
 
@@ -15,7 +15,7 @@ use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::cycle::CycleHost;
 use crate::frame::FrameImage;
 use crate::recipe::Recipe;
-use crate::settings::RecordMode;
+#[cfg(test)]
 use crate::offline::Scenario;
 use crate::vision;
 
@@ -29,10 +29,8 @@ pub const MEASURE_TIMEOUT: &str = "单帧测量超时";
 /// 需要整帧图像的场合：图像测量或帧录制。设置变了之后调一次。
 pub fn apply_settings(app: &AppHandle) {
     app.state::<crate::production::ProductionHost>().clear();
-    let record = crate::site::record_mode(app) != RecordMode::Off;
     let host = app.state::<CycleHost>();
-    host.camera
-        .set_capture(crate::site::image_measurement(app) || record);
+    host.camera.set_capture(true);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -239,7 +237,6 @@ pub struct FrameJob {
     pub cycle_id: String,
     pub bundle_id: Option<String>,
     pub production: Option<Arc<crate::production::Prepared>>,
-    pub candidate: Option<Arc<crate::candidate::Candidate>>,
     /// 计划相机下标（`Recipe.inspect` 的顺序）
     pub camera_idx: usize,
     pub camera: String,
@@ -250,9 +247,7 @@ pub struct FrameJob {
     pub image: Option<Arc<FrameImage>>,
     /// 没带图像时从这个原图文件读（收尾补测读回本件录制的原图，D-SB-60）
     pub image_file: Option<std::path::PathBuf>,
-    pub image_measurement: bool,
     pub recipe: Arc<Recipe>,
-    pub scenario: Scenario,
     pub submitted_at: Instant,
     pub timeout: Duration,
 }
@@ -421,13 +416,12 @@ fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), Measu
     if let Some(why) = job
         .production
         .as_ref()
-        .filter(|_| job.candidate.is_none())
         .and_then(|p| p.untested(job.camera_idx, job.segment))
     {
         return Err(MeasureError::Untested(why.to_owned()));
     }
-    match (job.image.as_deref(), job.image_measurement) {
-        (Some(image), true) => vision::LyFlowMeasurer
+    match job.image.as_deref() {
+        Some(image) => vision::LyFlowMeasurer
             .measure_frame(job, image)
             .map(|m| {
                 (
@@ -440,7 +434,7 @@ fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), Measu
                 )
             })
             .map_err(MeasureError::Failed),
-        (None, true) => match &job.image_file {
+        None => match &job.image_file {
             Some(path) => crate::image_file::load(path)
                 .map_err(|e| format!("读回录制原图失败：{e}"))
                 .and_then(|image| vision::LyFlowMeasurer.measure_frame(job, &image))
@@ -459,19 +453,6 @@ fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), Measu
                 "这一帧没有图像：相机未拷贝整帧".into(),
             )),
         },
-        (_, false) => {
-            std::thread::sleep(Duration::from_millis(5 + job.seq % 5));
-            Ok((
-                simulate_frame(
-                    job.scenario,
-                    job.camera_idx,
-                    job.seq,
-                    job.segment,
-                    &job.recipe,
-                ),
-                None,
-            ))
-        }
     }
 }
 
@@ -480,6 +461,7 @@ fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), Measu
 /// 弯道帧胶宽略宽、胶中心 x 随段内进度拱形偏出（峰值 1.5 mm），与合成图里弯道胶条绕胶嘴转动一致；PC 判定照常按未分段。
 /// 断胶工况让第 1 台相机第 2 帧中部缺一段（比该段允许的断口长 2 mm），超差工况让同一帧 3 站胶宽超上限 1 mm
 /// （超差长度在默认允许范围内）。脉冲串类工况（缺帧、波动、提前终止等）不改指标。
+#[cfg(test)]
 pub(crate) fn simulate_frame(
     scenario: Scenario,
     camera_idx: usize,
@@ -612,16 +594,13 @@ mod tests {
             cycle_id: "cycle-7".into(),
             bundle_id: None,
             production: None,
-            candidate: None,
             camera_idx: 0,
             camera: "cam1".into(),
             segment: 1,
             seq,
             image: None,
             image_file: None,
-            image_measurement: false,
             recipe: recipe.clone(),
-            scenario: Scenario::Normal,
             submitted_at: clock(),
             timeout,
         }
@@ -659,7 +638,7 @@ mod tests {
             FrameMeasured::new(
                 job,
                 Ok(simulate_frame(
-                    job.scenario,
+                    Scenario::Normal,
                     job.camera_idx,
                     job.seq,
                     job.segment,
@@ -744,7 +723,7 @@ mod tests {
             FrameMeasured::new(
                 job,
                 Ok(simulate_frame(
-                    job.scenario,
+                    Scenario::Normal,
                     job.camera_idx,
                     job.seq,
                     job.segment,

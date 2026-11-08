@@ -1,11 +1,11 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
-import type { CycleSettings, LogLine, Maintenance, OfflineFault, OfflineSource, Readiness, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
+import type { CycleSettings, LogLine, Maintenance, Readiness, Recipe, RecipeDoc, RecipeSummary, Snapshot } from "./types";
 import type { ExpertSpec } from "../plan/types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["cycle_save_settings","cycle_set_maintenance","cycle_select_recipe","cycle_reset","site_enter_offline","site_leave_offline","site_preview_sample_set","site_pick_dir","offline_run","offline_stop","offline_inject"].includes(cmd))
+  if (!isTauri() && ["cycle_save_settings","cycle_set_maintenance","cycle_select_recipe","cycle_reset"].includes(cmd))
     return Promise.reject(new Error("生产配置与检测操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -19,8 +19,6 @@ const defaultSettings: CycleSettings = {
   record: "all",
   recordKeep: 100,
   recordMaxGb: 100,
-  offlineRecordKeep: 300,
-  offlineRecordMaxGb: 100,
 };
 
 export const cycleApi = {
@@ -35,25 +33,6 @@ export const cycleApi = {
   selectRecipe: (recipeId: string) => call<void>("cycle_select_recipe", { recipeId }, () => undefined),
   reset: () => call<void>("cycle_reset", undefined, () => undefined),
   readiness: () => call<Readiness | null>("cycle_readiness", undefined, () => null),
-  offlineRun: (recipeId: string, scenario: Scenario, continuous: boolean, partId: string | null) =>
-    call<void>("offline_run", { recipeId, scenario, continuous, partId }, () => undefined),
-  offlineStop: (now: boolean) => call<void>("offline_stop", { now }, () => undefined),
-  offlineInject: (fault: OfflineFault) => call<void>("offline_inject", { fault }, () => undefined),
-};
-
-const siteReal: SiteStatus = { mode: "real", source: null, last: null, measurement: "lyFlow", port: null, running: false, continuous: false, parts: 0, message: "", heartbeatStopped: false, sampleSet: null, nextPart: null, recent: [] };
-const siteListeners = new Set<(status: SiteStatus) => void>();
-function publishSite(status: SiteStatus) {
-  siteListeners.forEach(f => f(status));
-  return status;
-}
-
-export const siteApi = {
-  status: () => call<SiteStatus>("site_status", undefined, () => ({ ...siteReal })),
-  enterOffline: (source: OfflineSource) => call<SiteStatus>("site_enter_offline", { source }, () => ({ ...siteReal })).then(publishSite),
-  leaveOffline: () => call<SiteStatus>("site_leave_offline", undefined, () => ({ ...siteReal })).then(publishSite),
-  previewSampleSet: (dir: string) => call<SampleSetSummary>("site_preview_sample_set", { dir }, () => Promise.reject("非桌面环境") as never),
-  pickDir: (directory: string, title: string) => call<string | null>("site_pick_dir", { directory, title }, () => null),
 };
 
 export interface UnavailableRecipe {
@@ -165,19 +144,6 @@ export function useCycle() {
   return { snapshot, logs };
 }
 
-export function useSiteStatus() {
-  const [status, setStatus] = useState<SiteStatus | null>(null);
-  useEffect(() => {
-    let alive = true, received = false;
-    const update = (next: SiteStatus) => { if (alive) { received = true; setStatus(next); } };
-    siteListeners.add(update);
-    const off = subscribe<SiteStatus>("site://status", update);
-    void siteApi.status().then(next => { if (alive && !received) setStatus(next); }).catch(() => {});
-    return () => { alive = false; siteListeners.delete(update); off(); };
-  }, []);
-  return status;
-}
-
 export function useMaintenance() {
   const [maintenance, setMaintenance] = useState<Maintenance | null>(null);
   useEffect(() => {
@@ -192,7 +158,7 @@ export function useMaintenance() {
   return maintenance;
 }
 
-/** 开工就绪报告：定时刷新，站点模式、配方库变化或 refreshKey 变化时立即重查。 */
+/** 开工就绪报告：定时刷新，配方库变化或 refreshKey 变化时立即重查。 */
 export type ReadinessLoadStatus = "loading" | "success" | "error";
 
 export function useReadiness(refreshKey?: string) {
@@ -232,8 +198,7 @@ export function useReadiness(refreshKey?: string) {
     alive.current = true;
     const timer = setInterval(() => { if (!inflight.current && !queued.current) void start(); }, 2000);
     const offRecipes = listenRecipes(() => void refresh());
-    const offSite = subscribe<SiteStatus>("site://status", () => void refresh());
-    return () => { alive.current = false; clearInterval(timer); offRecipes(); offSite(); };
+    return () => { alive.current = false; clearInterval(timer); offRecipes(); };
   }, [refresh, start]);
   useEffect(() => { void refresh(); }, [refresh, refreshKey]);
   return { readiness, refresh, status, error };

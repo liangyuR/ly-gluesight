@@ -1,7 +1,6 @@
 /* 生产运行页：1920×1080 一屏放下全部关键信息，右栏判定字两米外可读；本件进行中不改变任何区块高度 */
 .prod { display: flex; flex-direction: column; gap: var(--space-8); height: 100%; min-height: 640px; }
 .prod > .qs-banner, .prod > .qs-react-card { flex-shrink: 0; }
-.prod > .maintenance-banner { font-size: 15px; }
 .prod .maintenance-collection ul { display: flex; flex-wrap: wrap; gap: 4px 24px; margin: 0; padding: 0; list-style: none; }
 .prod .qs-react-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; padding: 10px 14px; }
 
@@ -12,7 +11,6 @@
 .prod-bar .prod-sn b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prod-bar .qs-select.prod-recipe { max-width: 360px; }
 .prod-phase.run .dot { background: var(--primary); }
-.prod-bar .offline-msg[role="status"] { width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .prod .inspection-readiness { display: grid; grid-template-columns: minmax(320px, max-content) minmax(0, 1fr) auto; align-items: center; gap: 4px 16px; min-height: 44px; padding: 6px 14px; }
 .prod .inspection-readiness > * { grid-column: 1 / -1; }

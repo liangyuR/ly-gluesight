@@ -58,7 +58,6 @@ fn record(store: &Store, recipe: &Recipe, cycle: &str, directory: &Path) -> i64 
             },
             shots: &[],
             source: RecordSource::Real,
-            sample: None,
             burst: Some(&burst),
         })
         .unwrap();
@@ -472,4 +471,72 @@ fn cancel_after_last_file_keeps_previous_target_and_reports_cancelled() {
     assert!(result.unwrap_err().starts_with("OPERATION_CANCELLED"));
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
     assert!(!temp.0.join("out.zip.tmp").exists());
+}
+
+#[test]
+fn old_package_with_offline_images_installs_only_production_images_without_changing_source() {
+    let from = TempDir::new("retired-images-from");
+    let (source, _, store) = source_project(&from.0);
+    let retired = source.join("records-offline/old/frame.pgm");
+    std::fs::create_dir_all(retired.parent().unwrap()).unwrap();
+    std::fs::write(&retired, b"retired-image").unwrap();
+    let package = export(&from.0, &source, &store);
+    let mut manifest = inspect(&package).unwrap();
+    assert!(!manifest
+        .files
+        .iter()
+        .any(|f| f.path.contains("records-offline")));
+    let legacy = from.0.join("legacy.zip");
+    let mut zip = open_archive(&package).unwrap();
+    let mut out = ZipWriter::new(File::create(&legacy).unwrap());
+    for file in &manifest.files {
+        out.start_file(&file.path, SimpleFileOptions::default())
+            .unwrap();
+        std::io::copy(&mut zip.by_name(&file.path).unwrap(), &mut out).unwrap();
+    }
+    let name = "project/records-offline/old/frame.pgm";
+    out.start_file(name, SimpleFileOptions::default()).unwrap();
+    let (bytes, sha256) = copy_hashed(&b"retired-image"[..], &mut out).unwrap();
+    manifest.files.push(PackageFile {
+        path: name.into(),
+        bytes,
+        sha256,
+    });
+    out.start_file(MANIFEST, SimpleFileOptions::default())
+        .unwrap();
+    serde_json::to_writer(&mut out, &manifest).unwrap();
+    out.finish().unwrap();
+    let original = std::fs::read(&legacy).unwrap();
+    for external in [false, true] {
+        let to = TempDir::new(if external {
+            "retired-external"
+        } else {
+            "retired-local"
+        });
+        if external {
+            external_layout(&to.0, "5555555555555555");
+        }
+        let local = local_store(&to.0, "default");
+        import_from(
+            &to.0,
+            &legacy,
+            "line-b",
+            "B 线",
+            &to.0.join("state/plan-version"),
+            &to.0.join("cache"),
+            &local,
+        )
+        .unwrap();
+        let project = super::super::dir(&to.0, "line-b");
+        let recordings = crate::log_storage::recording_project(&project).unwrap();
+        assert_eq!(
+            std::fs::read(recordings.join("records/c1/part.json")).unwrap(),
+            b"{}"
+        );
+        assert!(!recordings.join("records-offline").exists());
+        assert!(!project.join("records-offline").exists());
+        assert_eq!(std::fs::read_dir(to.0.join("cache")).unwrap().count(), 0);
+    }
+    assert_eq!(std::fs::read(&legacy).unwrap(), original);
+    assert_eq!(std::fs::read(&retired).unwrap(), b"retired-image");
 }

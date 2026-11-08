@@ -16,7 +16,6 @@ beforeEach(() => {
     productSource: "plc", manualRecipeId: null, historyDays: 180,
     timeouts: { motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
     record: "failed", recordKeep: 100, recordMaxGb: 20,
-    offlineRecordKeep: 300, offlineRecordMaxGb: 10,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
@@ -37,23 +36,21 @@ function recordSaveButton() {
   return within(screen.getByRole("region", { name: "lyFlow 与帧录制" })).getByRole("button", { name: "保存" });
 }
 
-describe("离线原图保留设置", () => {
+describe("原图保留设置", () => {
 
-  it("修改离线保留上限并保存 → 重新打开显示新值且保留其他分区设置", async () => {
+  it("修改录制保留上限并保存 → 重新打开显示新值且保留其他分区设置", async () => {
     const page = render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
-    const keep = await screen.findByRole("spinbutton", { name: "离线原图最多保留（件）" });
+    const keep = await screen.findByRole("spinbutton", { name: "真机录制最多保留（件）" });
     fireEvent.change(keep, { target: { value: "450" } });
-    fireEvent.change(screen.getByRole("spinbutton", { name: "离线原图总大小上限（GB）" }), { target: { value: "12.5" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "真机录制总大小上限（GB）" }), { target: { value: "12.5" } });
     saved.historyDays = 90;
     await userEvent.click(recordSaveButton());
-    await waitFor(() => expect(saved.offlineRecordKeep).toBe(450));
+    await waitFor(() => expect(saved.recordKeep).toBe(450));
     page.unmount();
     render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
-    expect(await screen.findByRole("spinbutton", { name: "离线原图最多保留（件）" })).toHaveValue(450);
-    expect(screen.getByRole("spinbutton", { name: "离线原图总大小上限（GB）" })).toHaveValue(12.5);
+    expect(await screen.findByRole("spinbutton", { name: "真机录制最多保留（件）" })).toHaveValue(450);
+    expect(screen.getByRole("spinbutton", { name: "真机录制总大小上限（GB）" })).toHaveValue(12.5);
     expect(screen.getByRole("spinbutton", { name: "记录保留（天）" })).toHaveValue(90);
-    expect(screen.getByRole("spinbutton", { name: "真机录制最多保留（件）" })).toHaveValue(100);
-    expect(screen.getByRole("spinbutton", { name: "真机录制总大小上限（GB）" })).toHaveValue(20);
     expect(screen.getByRole("combobox", { name: "真机帧录制" }).closest(".qs-select")!.querySelector("select")!).toHaveValue("failed");
   });
 

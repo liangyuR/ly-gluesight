@@ -119,7 +119,7 @@ impl Store {
         if !crate::project::valid_id(project) {
             return Err(format!("项目编号 {project} 不合法"));
         }
-        if prepare_source(source)? != DB_VERSION {
+        if ![10, DB_VERSION].contains(&prepare_source(source)?) {
             return Err(format!("导出包的记录库版本不是 {DB_VERSION}"));
         }
         let conn = self.conn.lock().unwrap();
