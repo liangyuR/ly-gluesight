@@ -74,7 +74,7 @@ pub mod probe_api {
     pub use crate::calibration::{calibrate_counts, unformed_lead, GroupForm, ONSET_RUN};
     pub use crate::camera::{configure_for_probe, BurstRender, CameraConfig};
     pub use crate::frame_align::{
-        align_cuts, downsample, ReviewReason, Sequence, ALIGN_FACTOR, ALIGN_SHARPNESS,
+        align_cuts, downsample, thumb_strip, ReviewReason, Sequence, ALIGN_FACTOR, ALIGN_SHARPNESS,
     };
     pub use crate::frame_group::{loss_alarms, FrameGroup};
     pub use crate::history_fixture::{FixtureFrames, FixturePart, FixtureSite, SN_PREFIX};
@@ -90,6 +90,7 @@ pub mod probe_api {
     pub use crate::recipe::{
         burst_template, DetectParams, HeadingWindow, Polarity, Recipe, RecipeDoc, SegmentCorridor,
     };
+    pub use crate::recipe_capture::RecipeCaptureHost;
     pub use crate::release::{
         load as load_release, publish_burst, BurstPublishInput, CameraInput, CorridorInput,
         ResourceSource, ValidationSite, Versions,
