@@ -70,7 +70,7 @@ gh run view $runId --log
 
 单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`；Rust 模块示例：`cargo test --manifest-path src-tauri/Cargo.toml --locked --lib segmentation::`。默认测试不生成覆盖率报告。
 
-[历史件管理](../architecture/history-management.md)定向验证：`pnpm exec vitest run tests/history-list.test.tsx tests/history-detail.test.tsx`，覆盖人工 Tag 保存与筛选、删除取消与确认、失败重试、保留原图警告及迟到请求；后端使用 `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib -- store:: audit:: history_package:: workspace::comparisons::`，覆盖标签持久化与记录包往返、批量校验、编号不复用、删除后旧追溯不回补及对照清理。
+[历史件管理](../architecture/history-management.md)定向验证：`pnpm exec vitest run tests/history-list.test.tsx tests/history-detail.test.tsx tests/history-management.test.tsx`，覆盖人工 Tag 保存与筛选、删除取消与确认、失败重试、保留原图警告及迟到请求；后端使用 `cargo test --manifest-path src-tauri/Cargo.toml --locked --lib -- store:: audit:: history_package:: workspace::comparisons::`，覆盖标签持久化与记录包往返、批量校验、编号不复用、删除后旧追溯不回补及对照清理。
 
 长件浏览与复算的读取、进度和取消契约见[长件浏览与复算](../architecture/frame-browsing.md)。定向验证：
 
