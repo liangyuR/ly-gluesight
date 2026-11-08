@@ -8,7 +8,7 @@ import { CameraSegmentOverview } from "../../plan/CameraSegmentOverview";
 // 图表库按需加载：只有打开带逐站数据的历史详情时才进来
 const WidthProfile = lazy(() => import("../../plan/WidthProfile").then(m => ({ default: m.WidthProfile })));
 import type { CalibrationFrameView, FrameGroupView, FrameRecord, PartDetailBurst } from "../../plan/types";
-import { expectedText, flagBadges, regionKindLabel, regionSegments } from "../../plan/vis";
+import { expectedText, flagBadges, productionSkippedRegion, regionKindLabel, regionSegments } from "../../plan/vis";
 import { burstImageApi } from "../../workspace/burstImages";
 import { workspaceApi } from "../../workspace/api";
 import { FrameViewer, KV, Panel } from "../../workspace/components";
@@ -87,11 +87,12 @@ function useFrameOverlay(historyId: number, comparison: Comparison | null, camer
 }
 
 /** 一台相机一帧的原图格：叠出测量所用的走廊、搜索带与胶边（原始记录按原发布包，对照按对照的配方）；点格子选中这台相机。 */
-function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, frame, selected, onSelect, station, onStation }: {
+function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, frame, skipped, selected, onSelect, station, onStation }: {
   /** 显示对照结果时为该对照，显示原始记录时为 null；recordCamera 是这台相机在记录里的下标（读原图用，记录里没有为 null） */
   detail: PartDetail; comparison: Comparison | null; camera: number; recordCamera: number | null; cameraName: string; seq: number; frame: FrameRecord | null; selected: boolean; onSelect: () => void;
   /** 选中相机这一帧与胶宽折线联动的测站（0 起） */
   station: number | null; onStation: (station: number | null) => void;
+  skipped: boolean;
 }) {
   const s = detail.summary;
   const image = useFrameImage(s.id, recordCamera ?? -1, seq, !!frame?.rawFile && recordCamera != null);
@@ -107,7 +108,7 @@ function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, 
       : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;
   return <div className={"hist-frame-tile" + (selected ? " selected" : "")} onClickCapture={onSelect}>
     <FrameViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={`原始 SN ${s.sn} · ${cameraName} · 帧组 ${seq}`} overlay={overlay}
-      caption={<>{cameraName} · 帧组 {seq}{frame ? ` · ${frameStateName[frame.status]}` : ""}</>} />
+      caption={<>{cameraName} · 帧组 {seq}{skipped ? " · 生产跳过" : frame ? ` · ${frameStateName[frame.status]}` : ""}</>} />
     {traced.error && <p className="muted hint">叠图：{traced.error}</p>}
   </div>;
 }
@@ -308,6 +309,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const flags = flagBadges(burst.judgement.flags);
   const diffs = comparison?.burst ? regionDiffs(burstSideOf(burst), comparison.burst) : null;
   const region = frame?.region != null ? j.regions[frame.region] : null;
+  const skipped = productionSkippedRegion(j.regions, selection.seq);
   const metrics = frame?.metrics;
   const mm = (v: number | null | undefined) => v == null ? "—" : v.toFixed(2);
   const viewing = shown === compared && comparison ? comparisonLabel[comparison.source] : null;
@@ -385,11 +387,13 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
           <div className="hist-frame-tiles" aria-label={`帧组 ${selection.seq} 各相机原图`}>
             {shown.cameras.map((name, c) => <FrameTile key={c} detail={detail} comparison={viewing ? comparison : null} camera={c} recordCamera={shown.recordCameras ? shown.recordCameras[c] : c} cameraName={name} seq={selection.seq}
               frame={shown.frames.find(f => f.camera === c && f.seq === selection.seq) ?? null} selected={c === selection.camera} onSelect={() => setSelection(prev => ({ ...prev, camera: c }))}
-              station={station} onStation={setStation} />)}
+              station={station} onStation={setStation} skipped={!!skipped} />)}
           </div>
+          {skipped && <Text as="p" muted role="note">生产跳过 · {regionKindLabel(skipped.region.kind)} · 不参与判定，原图与测量数据仅供诊断。</Text>}
           <div className="wp-runtime-strip">
             <KV label="相机">{cameraName}</KV>
-            <KV label="帧状态">{frame ? frameStateName[frame.status] : "—"}</KV>
+            <KV label="帧状态">{skipped ? "生产跳过" : frame ? frameStateName[frame.status] : "—"}</KV>
+            {skipped && <KV label="诊断状态">{frame ? frameStateName[frame.status] : "无帧记录"}</KV>}
             <KV label="帧号 / 触发计数">{frame?.frameCounter ?? "—"} / {frame?.triggerCounter ?? "—"}</KV>
             <KV label="所在区域">{region ? regionKindLabel(region.region.kind) : "—"}</KV>
             <KV label="所用走廊">{metrics?.corridor != null ? `段 ${metrics.corridor}` : "—"}</KV>

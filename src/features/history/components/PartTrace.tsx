@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Checkbox, EmptyState, Select, StatusBadge, Table, type TableColumn } from "qing-steel";
 import { Panel } from "../../workspace/components";
 import type { FrameRecord, FrameState, PartDetailBurst } from "../../plan/types";
-import { expectedText, regionKindLabel } from "../../plan/vis";
+import { expectedText, productionSkippedRegion, regionKindLabel } from "../../plan/vis";
 import type { PartDetail } from "../types";
 import "../../cycle/components/burst.css";
 
@@ -56,7 +56,9 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
     { key: "counter", header: "帧号 / 触发计数", render: frame => `${frame.frameCounter ?? "—"} / ${frame.triggerCounter ?? "—"}` },
     { key: "region", header: "区域", render: frame => frame.region != null && burst.judgement.regions[frame.region] ? regionKindLabel(burst.judgement.regions[frame.region].region.kind) : "—" },
     { key: "status", header: "状态", render: frame => <>
-      <StatusBadge tone={frame.status === "measured" ? "ok" : frame.status === "error" ? "fault" : frame.status === "notInspected" ? "neutral" : "warn"}>{frameStateText[frame.status]}</StatusBadge>
+      {productionSkippedRegion(burst.judgement.regions, frame.seq)
+        ? <><StatusBadge tone="neutral">生产跳过</StatusBadge><div className="muted">仅供诊断：{frameStateText[frame.status]}</div></>
+        : <StatusBadge tone={frame.status === "measured" ? "ok" : frame.status === "error" ? "fault" : frame.status === "notInspected" ? "neutral" : "warn"}>{frameStateText[frame.status]}</StatusBadge>}
       {frame.metrics?.error && <div>{frame.metrics.error}</div>}
     </> },
     { key: "width", header: "胶宽 min / max / mean", render: frame => frame.metrics && frame.status === "measured" ? `${mm(frame.metrics.widthMin)} / ${mm(frame.metrics.widthMax)} / ${mm(frame.metrics.widthMean)}` : "—" },
