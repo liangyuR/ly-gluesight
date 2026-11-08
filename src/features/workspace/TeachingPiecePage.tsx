@@ -73,7 +73,7 @@ export default function TeachingPiecePage() {
           <Link className="wp-text-link" to={href("/recipe/segments")}>前往分段<ArrowRight size={12} aria-hidden="true" /></Link>
         </div>
         {pieceView?.imagesMissing
-          ? <Notice tone="warn" title="示教件原图不在本项目">导出或复制项目时没带示教件原图。分段、走廊与测量结果都还在；要看图、示教走廊、测量示教件或试测，先从这一件的历史记录补回原图（需要它的检测记录与历史原图仍在本项目）。
+          ? <Notice tone="warn" title="示教件原图不在本项目">导出、复制项目或导入不带原图的工件配方时没带示教件原图。分段、走廊与测量结果都还在；要看图、示教走廊、测量示教件或试测，先从这一件的历史记录补回原图（需要它的检测记录与历史原图仍在本项目）。
             <div className="wp-actions"><Button variant="filled" disabled={locked} onClick={() => void refill()}>补回原图</Button></div></Notice>
           : <FrameBrowser key={piece.roundId} source={piece.roundId} label="示教件" groupCount={groupCount}
             cameras={plan.cameras.map(id => ({ id, name: nameOf(id) }))}
