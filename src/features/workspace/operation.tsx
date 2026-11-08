@@ -91,7 +91,7 @@ export function OperationStatus({ operation, label }: { operation: Operation; la
   if (!state) return null;
   const { progress, cancelling, registered, error } = state;
   const done = terminal(progress.stage);
-  const percent = progress.stage === "completed" ? 100 : progress.total > 0 ? Math.min(99, Math.floor(progress.completed / progress.total * 100)) : undefined;
+  const percent = progress.stage === "completed" ? 100 : progress.total > 0 ? Math.min(99, Math.floor(progress.completed / progress.total * 100)) : done ? 0 : undefined;
   return <div className="wp-operation" role="status" aria-label={`${label}进度`}>
     <div className="wp-operation-line"><strong>{label} · {cancelling && !done ? "正在取消，等待当前帧结束" : labels[progress.stage]}</strong>
       {!done && <Button size="sm" disabled={!registered || cancelling || progress.stage === "saving"} onClick={() => void operation.cancel()}>{progress.stage === "saving" ? "保存中" : "取消"}</Button>}

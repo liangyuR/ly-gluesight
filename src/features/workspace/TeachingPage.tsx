@@ -341,6 +341,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   // 出胶点、测量区间与搜索扇区都按候选配方即时算，保存前后显示不换来源
   const savedNozzle = plan.cameraTeaching.find(item => item.camera === camera)?.nozzle ?? null;
   const derivedNozzle = savedNozzle && !savedNozzle.calibrated ? savedNozzle.point : null;
+  const nozzleWarning = !params.nozzle && savedNozzle && !savedNozzle.calibrated ? savedNozzle.warning : null;
   const headingOn = segment != null && !!doc.segments?.find(item => item.index === segment)?.heading;
   const cameraScale = params.mmPerPx != null && Number.isFinite(params.mmPerPx) && params.mmPerPx > 0 ? params.mmPerPx : null;
   const nozzlePoint = params.nozzle ?? derivedNozzle;
@@ -515,7 +516,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       {navigation}
       <MeasureCard key={camera} camera={camera} params={params} calibMmPerPx={plan.cameraTeaching.find(item => item.camera === camera)?.calibMmPerPx ?? null} defaults={doc.detect} spacing={doc.spacing} sharing={sharing} disabled={paramsDisabled || frameDirty} spacingError={value => spacingError(doc, value)}
         onParams={setParams} onDefaults={detect => setDoc({ ...doc, detect })} onSpacing={spacing => setDoc({ ...doc, spacing })} />
-      <HeadingCard key={`heading-${camera}`} camera={camera} params={params} derivedNozzle={derivedNozzle} segments={doc.segments ?? []} index={null} sector={null}
+      <HeadingCard key={`heading-${camera}`} camera={camera} params={params} derivedNozzle={derivedNozzle} nozzleWarning={nozzleWarning} segments={doc.segments ?? []} index={null} sector={null}
         headingSegments={(doc.segments ?? []).filter(item => item.heading && cameraTasks.some(task => task.segment === item.index))}
         expertDefaults={doc.expert ?? {}} disabled={paramsDisabled || frameDirty} sharedLocked="" onFocus={setHeadingFocus}
         onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />
@@ -531,7 +532,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         <WithReason reason={editing ? "走廊有未保存的修改：保存后再调试" : !done ? "这一段还没有保存的走廊" : ""}><Button variant="text" size="sm" leadingIcon={<Workflow size={14}/>} disabled={editing || !done}
           onClick={() => navigate(href(`/recipe/flow?camera=${encodeURIComponent(camera)}&segment=${segment}&seq=${trialSeq ?? segmentTeaching?.seq ?? ""}`))}>流程调试</Button></WithReason>
       </Surface>
-      {segmentItem && <HeadingCard key={`heading-${camera}-${segment}`} camera={camera} params={params} derivedNozzle={derivedNozzle} segments={doc.segments ?? []} index={segment} headingSegments={[]}
+      {segmentItem && <HeadingCard key={`heading-${camera}-${segment}`} camera={camera} params={params} derivedNozzle={derivedNozzle} nozzleWarning={nozzleWarning} segments={doc.segments ?? []} index={segment} headingSegments={[]}
         sector={{ range: headingGuide?.sector ?? null, turned: sectorDeg != null, onReset: () => setSectorDeg(null) }} expertDefaults={doc.expert ?? {}} disabled={checksDisabled}
         sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改出胶点与测量区间。" : ""} onFocus={setHeadingFocus}
         onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />}

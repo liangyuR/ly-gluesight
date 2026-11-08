@@ -89,7 +89,7 @@ pub fn plan_heading(
         .window
         .as_ref()
         .ok_or_else(|| fail("缺少测量区间"))?;
-    let anchor = nozzle(segments, &cameras, inspect)?
+    let anchor = nozzle(segments, &cameras, inspect)
         .ok_or_else(|| fail("尚未标定出胶点或示教走廊，推不出出胶点"))?
         .point;
     if !(anchor[0] >= 0.0

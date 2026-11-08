@@ -180,8 +180,8 @@ function PartRow({ part, title, hint, onFocus, children }: { part: HeadingPart; 
  * 段视图另设本段开关（直线段另有细化分段边界用的方向容差），显示本段的搜索扇区（`sector`：示教页按出胶点与本段拖过的方向算的范围，
  * `turned` 为本段拖过，`onReset` 恢复自动）。`sharedLocked` 非空时共用参数只读并说明原因。
  */
-export function HeadingCard({ camera, params, derivedNozzle, segments, index, headingSegments, sector, expertDefaults, disabled, sharedLocked, onFocus, onSegments, onParams, onExpertDefaults }: {
-  camera: string; params: CameraParams; derivedNozzle: [number, number] | null; segments: PathSegment[]; index: number | null; headingSegments: PathSegment[];
+export function HeadingCard({ camera, params, derivedNozzle, nozzleWarning, segments, index, headingSegments, sector, expertDefaults, disabled, sharedLocked, onFocus, onSegments, onParams, onExpertDefaults }: {
+  camera: string; params: CameraParams; derivedNozzle: [number, number] | null; nozzleWarning: string | null; segments: PathSegment[]; index: number | null; headingSegments: PathSegment[];
   sector: { range: [number, number] | null; turned: boolean; onReset: () => void } | null; expertDefaults: ExpertParams; disabled: boolean; sharedLocked: string;
   onFocus: (part: HeadingPart | null) => void; onSegments: (segments: PathSegment[]) => void; onParams: (next: CameraParams) => void; onExpertDefaults: (next: ExpertParams) => void;
 }) {
@@ -207,9 +207,10 @@ export function HeadingCard({ camera, params, derivedNozzle, segments, index, he
       <div className="wp-settings-group" role="group" aria-label="出胶点与测量区间">
         <span className="wp-settings-label">出胶点与测量区间<Scope>{camera} 各段共用</Scope>{missing && <Badge tone="warn">需设置</Badge>}</span>
         {sharedLocked && <p className="wp-settings-hint">{sharedLocked}</p>}
-        <PartRow part="nozzle" title="出胶点" onFocus={point} hint="胶嘴出胶处，下面的距离和方向都从这里量。在开启定向的段的示教帧上选“标出胶点”点选；未标定时取这些段走廊起点的平均，相差超过 1 mm 报“出胶点不一致”。">
+        <PartRow part="nozzle" title="出胶点" onFocus={point} hint="胶嘴出胶处，下面的距离和方向都从这里量。在开启定向的段的示教帧上选“标出胶点”点选；未标定时取这些段走廊起点的中位数，有起点偏离超过 1 mm 只提示，不影响试测与发布。">
           <NozzleStatus value={params.nozzle ?? null} derived={derivedNozzle} needed={needed} disabled={sharedDisabled} onClear={() => onParams({ ...params, nozzle: null })}/>
         </PartRow>
+        {nozzleWarning && <p className="c-warn" role="note">{nozzleWarning}</p>}
         <WindowFields value={params.window ?? null} disabled={sharedDisabled} onFocus={point} onChange={window => onParams({ ...params, window })}/>
       </div>
       {index != null && heading ? <div className="wp-settings-group" role="group" aria-label={`段 ${index} 方向`}>
