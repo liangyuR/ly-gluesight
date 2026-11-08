@@ -276,17 +276,49 @@ fn wide_color_beads_keep_exact_widths_while_clipping_and_occlusion_do_not_erase_
 
 #[test]
 fn similarly_near_parallel_color_beads_are_unknown_instead_of_arbitrarily_chosen() {
-    let output = lateral(&[Some((0.0, 16.0)); 5]);
-    let mut raw = output;
-    for station in raw["stations"].as_array_mut().unwrap() {
-        station["runs"] = json!([dark_run(-9.0, 16.0), dark_run(9.0, 16.0)]);
-    }
-    let runs = lateral_runs(&raw, "test").unwrap();
-    for tolerance in [None, Some(20.0)] {
-        let calls = judge_color_stations(&runs, 8.0, 24.0, 0.3, tolerance);
-        assert!(calls
+    let image = FrameImage::rgb(
+        FRAME[0],
+        FRAME[1],
+        vec![0; (FRAME[0] * FRAME[1] * 3) as usize],
+    );
+    for heading in [false, true] {
+        let mut raw = lateral(&vec![Some((0.0, 16.0)); if heading { 11 } else { 41 }]);
+        for station in raw["stations"].as_array_mut().unwrap() {
+            station["runs"] = json!([dark_run(-9.0, 16.0), dark_run(9.0, 16.0)]);
+        }
+        let measurement = if heading {
+            let mut doc = burst_doc();
+            doc.segments[0].heading = Some(Default::default());
+            doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+            doc.inspect[0].window = Some(HeadingWindow {
+                start_mm: 1.0,
+                length_mm: 10.0,
+            });
+            let recipe = doc.build().unwrap();
+            let graph = plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap();
+            measure_heading_with(&graph, &image, 7, |run, frame| {
+                let mut result = fake_heading_run(8)(run, frame)?;
+                result.outputs["runs0"] = record(raw);
+                Ok(result)
+            })
+        } else {
+            measure_frame_with(&color_corridor(), &image, 7, |_, _| {
+                Ok(RunResult {
+                    summary: json!({"status": "ok"}),
+                    outputs: json!({"runs": record(raw.clone()), "split": record(raw)}),
+                })
+            })
+        }
+        .unwrap();
+        let metrics = measurement.metrics;
+        let evidence = metrics.measurement_evidence.unwrap();
+        assert!(!evidence.stations.is_empty());
+        assert!(evidence
+            .stations
             .iter()
-            .all(|c| c.state == StationEvidenceState::Unknown && c.bead.is_none()));
+            .all(|station| station.state == StationEvidenceState::Unknown));
+        assert!(metrics.widths.iter().all(Option::is_none));
+        assert_eq!((metrics.width_max, metrics.gap_max_mm), (None, 0.0));
     }
 }
 

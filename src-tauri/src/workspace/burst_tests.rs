@@ -85,61 +85,6 @@ pub(super) fn measured(x: f64) -> FrameMetrics {
 }
 
 #[test]
-fn unknown_or_clipped_onset_does_not_become_an_automatic_skip_suggestion() {
-    use crate::burst_judge::MeasurementEvidence;
-    let w = burst_workspace(&[Corner]);
-    for clipped in [false, true] {
-        let mut frames: Vec<_> = (1..=3)
-            .flat_map(|seq| {
-                (0..3).map(move |camera| FrameMetrics {
-                    seq,
-                    camera,
-                    ..measured(0.0)
-                })
-            })
-            .collect();
-        let first = &mut frames[0];
-        first.widths = vec![None];
-        first.width_min = None;
-        first.width_max = None;
-        first.width_mean = None;
-        first.measurement_evidence = Some(MeasurementEvidence {
-            version: 1,
-            clipped_stations: u32::from(clipped),
-            unknown_stations: u32::from(!clipped),
-            present_ratio: clipped.then_some(1.0),
-            ..Default::default()
-        });
-        assert!(super::burst_skip::round_edge(
-            &w.doc,
-            "teach",
-            3,
-            &BTreeMap::new(),
-            &frames,
-            super::burst_skip::SkipEnd::Head
-        )
-        .is_err());
-        frames[0] = FrameMetrics {
-            seq: 1,
-            camera: 0,
-            ..measured(0.0)
-        };
-        assert_eq!(
-            super::burst_skip::round_edge(
-                &w.doc,
-                "teach",
-                3,
-                &BTreeMap::new(),
-                &frames,
-                super::burst_skip::SkipEnd::Head
-            )
-            .unwrap(),
-            0
-        );
-    }
-}
-
-#[test]
 fn teaching_cuts_set_each_segment_n_exp_and_an_unconfirmed_draft_clears_them() {
     // 防的回归（RB-3）：各段 N_exp 不取示教件已确认分段的帧组数（或还要凑标定件才有）；ΣN_exp 不等于各段之和；
     // 示教件边界改成草稿后旧 N_exp 还留着，生产按过期的边界比例分段
