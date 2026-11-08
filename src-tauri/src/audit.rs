@@ -256,12 +256,8 @@ pub struct Audit {
 impl Audit {
     pub fn new(app: &AppHandle, path: PathBuf) -> Result<Self, String> {
         let mut spool = spool::Spool::open(path)?;
-        let mut sink = AppSink(app);
-        for cycle in spool.cycles() {
-            let (complete, notices) = recover_cycle(&mut spool, &cycle, &mut sink, ly_plc::now_ms())?;
-            publish(app, notices);
-            if !complete { return Err(format!("cycleId={cycle} 的持久追溯尚未恢复，保留 spool 并拒绝启动生产")); }
-        }
+        let notices = recover_all(&mut spool, &mut AppSink(app), ly_plc::now_ms())?;
+        publish(app, notices);
         let (tx, rx) = sync_channel(1);
         let audit = Self { tx, app: app.clone(), spool: Arc::new(Mutex::new(spool)), failure: Arc::new(Mutex::new(None)), running: Arc::new(AtomicBool::new(true)), pending_recordings: Arc::new(Mutex::new(BTreeMap::new())) };
         let worker = audit.clone();
@@ -301,6 +297,14 @@ impl Audit {
 
     pub fn protected_cycle_ids(&self) -> Result<BTreeSet<String>, String> {
         Ok(self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?.cycles())
+    }
+
+    /// 已有追溯证据的件：活动 spool 加上已隔离到 .unrecovered 的件，后者不阻止接件与切换项目。
+    pub fn evidenced_cycle_ids(&self) -> Result<BTreeSet<String>, String> {
+        let spool = self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
+        let mut cycles = spool.cycles();
+        cycles.extend(spool.quarantined_cycles());
+        Ok(cycles)
     }
 
     pub(crate) fn fail(&self, error: String) {
@@ -978,10 +982,18 @@ fn immutable_record(part: &RecordedPart) -> Result<serde_json::Value, String> {
     Ok(value)
 }
 
-fn apply_spooled(events: Vec<(u64, Event)>, cycle: &str, sink: &mut impl Sink, now: i64) -> (bool, Vec<u64>, Vec<Notice>) {
+fn apply_spooled(
+    events: Vec<(u64, Event)>,
+    cycle: &str,
+    sink: &mut impl Sink,
+    now: i64,
+) -> (bool, Vec<u64>, Vec<Notice>) {
     let mut coordinator = Coordinator::new(1, 1);
     let mut notices = Vec::new();
-    let receipts = events.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>();
+    let receipts = events
+        .iter()
+        .map(|(sequence, _)| *sequence)
+        .collect::<Vec<_>>();
     match sink.deleted(cycle) {
         Ok(true) => {
             log(
@@ -1077,6 +1089,37 @@ fn recover_cycle(spool: &mut spool::Spool, cycle: &str, sink: &mut impl Sink, no
         return Ok((true, notices));
     }
     replay_cycle(spool, cycle, sink, now)
+}
+
+/// 启动恢复：恢复不了的件移到 spool 的未恢复目录并记错误，不阻止启动与接件。
+fn recover_all(
+    spool: &mut spool::Spool,
+    sink: &mut impl Sink,
+    now: i64,
+) -> Result<Vec<Notice>, String> {
+    let mut notices = Vec::new();
+    for cycle in spool.cycles() {
+        let reason = match recover_cycle(spool, &cycle, sink, now) {
+            Ok((true, cycle_notices)) => {
+                notices.extend(cycle_notices);
+                continue;
+            }
+            Ok((false, cycle_notices)) => {
+                notices.extend(cycle_notices);
+                "待写事件无法入库".to_string()
+            }
+            Err(error) => error,
+        };
+        let directory = spool.quarantine(&cycle)?;
+        log(
+            &mut notices,
+            "err",
+            "持久追溯未恢复",
+            &cycle,
+            format!("{reason}；事件已移到 {}，待人工核对", directory.display()),
+        );
+    }
+    Ok(notices)
 }
 
 fn replay_cycle(spool: &mut spool::Spool, cycle: &str, sink: &mut impl Sink, now: i64) -> Result<(bool, Vec<Notice>), String> {

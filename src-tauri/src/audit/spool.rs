@@ -14,6 +14,8 @@ const PROBE_COMMITTED: &str = ".health-commit";
 /// 4：检测记录加段配方的帧与区域记录（burst），原图引用加段配方帧身份（files[].frame）。
 /// 其他版本或没有 format 的是旧软件留下的文件：不兼容（D-0），拒绝就绪并提示清理，不猜测迁移。
 const FORMAT: u32 = 4;
+/// 启动时恢复不了的件：事件原样移到这里留待人工核对，不再阻止启动与接件。
+const UNRECOVERED: &str = ".unrecovered";
 
 #[derive(serde::Serialize)]
 struct Envelope<'a> {
@@ -41,6 +43,8 @@ pub(super) struct Spool {
     receipts: BTreeMap<u64, Receipt>,
     interrupted: BTreeMap<u64, Event>,
     interrupted_bytes: u64,
+    /// 已隔离到 .unrecovered 的事件：人工核对前仍保护其引用的原图目录
+    quarantined: Vec<Event>,
     next: u64,
     bytes: u64,
     limit: usize,
@@ -98,7 +102,17 @@ impl Spool {
         std::fs::create_dir_all(&root).map_err(|error| format!("创建审计 spool 失败：{error}"))?;
         ancestors(&root)?;
         let root = root.canonicalize().map_err(|error| error.to_string())?;
-        let mut spool = Self { root, receipts: BTreeMap::new(), interrupted: BTreeMap::new(), interrupted_bytes: 0, next: 1, bytes: 0, limit, byte_limit };
+        let mut spool = Self {
+            root,
+            receipts: BTreeMap::new(),
+            interrupted: BTreeMap::new(),
+            interrupted_bytes: 0,
+            quarantined: Vec::new(),
+            next: 1,
+            bytes: 0,
+            limit,
+            byte_limit,
+        };
         for item in std::fs::read_dir(&spool.root).map_err(|error| error.to_string())? {
             let path = item.map_err(|error| error.to_string())?.path();
             let name = path.file_name().and_then(|name| name.to_str()).ok_or("审计 spool 文件名无效")?;
@@ -114,6 +128,16 @@ impl Spool {
                     spool.interrupted_bytes = spool.interrupted_bytes.saturating_add(path.metadata().map_err(|error| error.to_string())?.len());
                     if spool.interrupted.len() >= MAX_EVENTS || spool.interrupted_bytes > MAX_BYTES { return Err("中断录制归档超过容量，保留并拒绝就绪".into()); }
                     spool.interrupted.insert(sequence, event);
+                }
+                continue;
+            }
+            if name == UNRECOVERED {
+                plain(&path, true)?;
+                for item in std::fs::read_dir(&path).map_err(|error| error.to_string())? {
+                    let path = item.map_err(|error| error.to_string())?.path();
+                    if let Ok(event) = spool.read_path(&path) {
+                        spool.quarantined.push(event);
+                    }
                 }
                 continue;
             }
@@ -242,6 +266,42 @@ impl Spool {
         Ok(())
     }
 
+    /// 把一件的全部待写事件原样移出 spool，返回存放目录。
+    pub(super) fn quarantine(&mut self, cycle: &str) -> Result<PathBuf, String> {
+        let root = self.root.join(UNRECOVERED);
+        ancestors(&root)?;
+        std::fs::create_dir_all(&root)
+            .map_err(|error| format!("创建未恢复追溯目录失败：{error}"))?;
+        ancestors(&root)?;
+        let sequences = self
+            .receipts
+            .iter()
+            .filter(|(_, receipt)| receipt.cycle == cycle)
+            .map(|(&sequence, _)| sequence)
+            .collect::<Vec<_>>();
+        for sequence in sequences {
+            let source = self.path(sequence);
+            plain(&source, false)?;
+            let event = self.read_file(sequence).ok();
+            let target = (0u32..)
+                .map(|n| root.join(format!("{sequence:020}-{n}.json")))
+                .find(|path| !path.exists())
+                .ok_or("未恢复追溯文件名耗尽")?;
+            std::fs::rename(&source, &target)
+                .map_err(|error| format!("移出未恢复追溯事件失败：{error}"))?;
+            self.quarantined.extend(event);
+            let receipt = self.receipts.remove(&sequence).unwrap();
+            self.bytes -= receipt.bytes;
+        }
+        Ok(root)
+    }
+
+    pub(super) fn quarantined_cycles(&self) -> impl Iterator<Item = String> + '_ {
+        self.quarantined
+            .iter()
+            .map(|event| event.cycle_id().to_string())
+    }
+
     pub(super) fn empty(&self) -> bool { self.receipts.is_empty() }
 
     pub(super) fn cycles(&self) -> BTreeSet<String> { self.receipts.values().map(|receipt| receipt.cycle.clone()).collect() }
@@ -268,12 +328,23 @@ impl Spool {
     }
 
     pub(super) fn protected_directories(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
-        if self.empty() && self.interrupted.is_empty() { return Ok(Vec::new()); }
+        if self.empty() && self.interrupted.is_empty() && self.quarantined.is_empty() {
+            return Ok(Vec::new());
+        }
         ancestors(root)?;
         let checked_root = root.canonicalize().map_err(|error| format!("录制根目录不可用，暂停清理：{error}"))?;
         let mut paths = BTreeSet::new();
         let mut cycles = self.cycles();
-        cycles.extend(self.interrupted.values().map(|event| event.cycle_id().to_string()));
+        cycles.extend(
+            self.interrupted
+                .values()
+                .map(|event| event.cycle_id().to_string()),
+        );
+        cycles.extend(
+            self.quarantined
+                .iter()
+                .map(|event| event.cycle_id().to_string()),
+        );
         let mut scanned = 0usize;
         for item in std::fs::read_dir(root).map_err(|error| error.to_string())? {
             scanned += 1;
@@ -295,24 +366,53 @@ impl Spool {
                 }
             }
         }
-        let mut events = self.interrupted.values().cloned().collect::<Vec<_>>();
-        for cycle in self.cycles() { events.extend(self.events(&cycle)?.into_iter().map(|(_, event)| event)); }
-        for event in events {
-                if let Event::Recording(outcome) = event {
-                    if outcome.directory.as_deref().is_some_and(|directory| !directory.starts_with(root)) { continue; }
-                    let mut candidates = Vec::new();
-                    if let Some(directory) = outcome.directory { candidates.push(directory); }
-                    for file in outcome.files {
-                        let path = root.join(file.file);
-                        if let Some(parent) = path.parent() { candidates.push(parent.to_path_buf()); }
-                    }
-                    for path in candidates {
-                        ancestors(&path)?;
-                        let checked = path.canonicalize().map_err(|error| format!("待入库录制目录不可核对，暂停清理：{error}"))?;
-                        if !checked.starts_with(&checked_root) || checked == checked_root { return Err("待入库录制引用越过 records 子目录，暂停清理".into()); }
-                        paths.insert(checked);
+        let mut events = self
+            .interrupted
+            .values()
+            .cloned()
+            .map(|event| (event, false))
+            .collect::<Vec<_>>();
+        events.extend(self.quarantined.iter().cloned().map(|event| (event, true)));
+        for cycle in self.cycles() {
+            events.extend(
+                self.events(&cycle)?
+                    .into_iter()
+                    .map(|(_, event)| (event, false)),
+            );
+        }
+        for (event, quarantined) in events {
+            if let Event::Recording(outcome) = event {
+                if outcome
+                    .directory
+                    .as_deref()
+                    .is_some_and(|directory| !directory.starts_with(root))
+                {
+                    continue;
+                }
+                let mut candidates = Vec::new();
+                if let Some(directory) = outcome.directory {
+                    candidates.push(directory);
+                }
+                for file in outcome.files {
+                    let path = root.join(file.file);
+                    if let Some(parent) = path.parent() {
+                        candidates.push(parent.to_path_buf());
                     }
                 }
+                for path in candidates {
+                    if quarantined && !path.exists() {
+                        continue;
+                    }
+                    ancestors(&path)?;
+                    let checked = path
+                        .canonicalize()
+                        .map_err(|error| format!("待入库录制目录不可核对，暂停清理：{error}"))?;
+                    if !checked.starts_with(&checked_root) || checked == checked_root {
+                        return Err("待入库录制引用越过 records 子目录，暂停清理".into());
+                    }
+                    paths.insert(checked);
+                }
+            }
         }
         Ok(paths.into_iter().collect())
     }

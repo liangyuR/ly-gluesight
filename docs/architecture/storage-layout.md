@@ -20,7 +20,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 | --- | --- |
 | `config/` | 本机配置：`current-project.json`（当前项目编号）、`history.json`（历史保留天数 `historyDays`，所有项目共用；首次启动用当前项目 `cycle.json` 里原有的值建立）、`site-offline.json`（离线选择）、`preferences-<SID>.json`（按账号的界面偏好，最后打开的工作区按项目分别记）、`log-storage.json`（日志根、环境和资料实例绑定） |
 | `history/inspection.db` | 本机检测记录库（版本 10），本机全部项目的记录都在这里，`parts.project_id` 记所属项目，记录编号本机唯一。`parts.mode` 记件的检测模式（`production` / `maintenanceCollect` / `maintenanceShadow`）。每台相机每一帧写 `part_frames` 表，`parts` 另存整份区域判定与整件标记。配方快照 `recipe_snapshots` 按（项目, 修订号）、候选实例 `workspace_instances` 按（项目, 实例号）保存；`project_merges` 记已并入的项目旧库。库版本不符（含更高版本）时先备份为 `.v<版本>.*.bak` 再新建空库。项目目录里遗留的旧记录库 `projects/<项目编号>/inspection.db`（版本 9）启动时并入，并完改名为 `inspection.db.merged-<毫秒>.bak`，不删（[项目设计](project.md)第五节） |
-| `history/audit-spool/` | 待入库的件证据与审计。审计 spool 格式为 4（帧引用 `files[].frame`）；目录里残留其他格式的文件时就绪检查失败、拒绝接件（保护证据）；切换项目前必须写完 |
+| `history/audit-spool/` | 待入库的件证据与审计。审计 spool 格式为 4（帧引用 `files[].frame`）；目录里残留其他格式的文件时就绪检查失败、拒绝接件（保护证据）；启动时有件的待写事件入不了库，就原样移到 `.unrecovered/` 并写错误日志，照常启动和接件，由人工核对；切换项目前必须写完 |
 | `projects/<项目编号>/` | 各项目的资料，见下表；`projects/.trash/` 是删除中的项目，启动时清理 |
 | `state/` | PLC 握手状态与审计，以及所有项目共用的计划版本计数 `plan-version`（换项目不回退）。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
 | `samples/` | 外部样本导入后的受管副本 |
