@@ -51,6 +51,41 @@ struct CachedSummary {
 }
 
 impl Comparisons {
+    pub(super) fn delete_history(
+        &self,
+        data: &Path,
+        store: &Store,
+        ids: &[i64],
+    ) -> Result<Vec<String>, String> {
+        let mut cache = self.0.lock().unwrap();
+        let projects = crate::project::list(data)?;
+        let mut warnings = store.delete_history_with_recordings(data, ids)?;
+        for (project, id) in projects
+            .iter()
+            .flat_map(|project| ids.iter().map(move |id| (&project.id, *id)))
+        {
+            let cleaned = (|| {
+                if !crate::project::valid_id(project) {
+                    return Err("记录所属项目编号无效".into());
+                }
+                let root = crate::project::dir(data, project).join("workspaces");
+                let dir = directory(&root, id, false)?;
+                if !exists(&dir)? {
+                    return Ok(());
+                }
+                let files = inventory(&dir, id, &mut cache)?;
+                reconcile(files, id, None, &mut cache)?;
+                fs::remove_dir(&dir).map_err(error)
+            })();
+            if let Err(error) = cleaned {
+                warnings.push(format!(
+                    "记录 #{id} 已删除，项目 {project} 的复测对照清理未完成：{error}"
+                ));
+            }
+        }
+        Ok(warnings)
+    }
+
     pub(super) fn save(&self, root: &Path, store: &Store, comparison: &Comparison) -> Result<(), String> {
         let mut cache = self.0.lock().unwrap();
         valid_identity(comparison)?;

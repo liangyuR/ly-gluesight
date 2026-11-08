@@ -31,6 +31,7 @@ export interface HistoryQuery {
   to?: number | null;
   verdicts?: Verdict[];
   sn?: string;
+  tag?: string;
   recipeId?: string | null;
   /** 记录所属项目编号；为空看本机全部项目。配方编号只在项目内唯一，带 recipeId 查询时要同时给项目 */
   project?: string | null;
@@ -51,6 +52,7 @@ export interface HistoryFilter {
 
 export interface PartSummary {
   id: number;
+  tags?: string[];
   ts: number;
   sn: string;
   /** 记录所属项目编号（记录库本机共用） */
@@ -77,6 +79,11 @@ export interface PartSummary {
   flags: Flags | null;
   /** 维护采集件 verdict 为 ERR、未判定；试判件为真实判定。两者 plcCode 都是 0 */
   mode?: PartMode;
+}
+
+export interface HistoryDeleted {
+  deleted: number;
+  warnings: string[];
 }
 
 export type PartMode = "production" | "maintenanceCollect" | "maintenanceShadow";

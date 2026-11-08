@@ -783,7 +783,10 @@ pub(crate) fn record_interrupted_part(
         .protected_cycle_ids()
         .map(|ids| ids.contains(cycle_id))
         .and_then(|spooled| {
-            Ok(spooled || app.state::<Store>().detail_by_cycle(cycle_id)?.is_some())
+            let store = app.state::<Store>();
+            Ok(spooled
+                || store.detail_by_cycle(cycle_id)?.is_some()
+                || store.history_cycle_deleted(cycle_id)?)
         });
     match known {
         Ok(true) => return,

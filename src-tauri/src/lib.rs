@@ -279,6 +279,8 @@ pub fn run() {
             recipe_api::recipe_plan_export,
             teach::records_list,
             history::history_query,
+            history::history_set_tags,
+            history::history_delete,
             history::history_detail,
             history::history_overview,
             history::history_frame_detail,
