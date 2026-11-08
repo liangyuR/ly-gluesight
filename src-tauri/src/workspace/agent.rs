@@ -1494,4 +1494,3 @@ async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolE
     }
     Ok(vec![text(json!({ "results": results }))])
 }
-
