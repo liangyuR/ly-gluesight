@@ -469,7 +469,17 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   </Surface>;
   const cameraTasks = tasks.filter(item => item.camera === camera);
   const trialReview = segmentTeaching ? reviews[segmentTeaching.round] : undefined;
-  const trialRange = segment == null ? null : plan.segments.length === 1 ? (trialReview ? { start: 1, end: trialReview.groupCount } : null) : confirmedSegmentRange(trialReview, plan.segments, segment);
+  const trialGroups = picked && picked.round.roundId === segmentTeaching?.round ? picked.view.groupCount : trialReview?.groupCount ?? 0;
+  const savedSegments = data.workspace.doc.segments ?? [];
+  const trialRangeFor = (index: number) => savedSegments.length === 1
+    ? (trialGroups > 0 ? { start: 1, end: trialGroups } : null)
+    : confirmedSegmentRange(trialReview, savedSegments, index);
+  const trialRange = segment == null ? null : trialRangeFor(segment);
+  const guard = data.workspace.doc.boundaryGuard ?? 0;
+  const guardRanges = guard > 0 ? savedSegments.filter(item => item.skip).flatMap(item => {
+    const span = trialRangeFor(item.index);
+    return span ? [{ start: Math.max(1, span.start - guard), end: Math.min(trialGroups, span.end + guard), segment: item.index }] : [];
+  }) : [];
   const trialLocked = productionBusy ? "工件正在检测，结束后再试测" : editing && invalid ? `走廊未完成：${invalid}` : !ready ? "正在处理，请稍候" : !hasPath ? "这一段还没有走廊" : "";
   const paramsError = cameraParamsError(params);
   const paramsDisabled = !editable;
@@ -488,7 +498,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       {pickError && choosingNow && <p className="c-warn wp-picker-warn" role="alert">{pickError}</p>}
       {!choosingNow && frame && (segmentTeaching
         ? <SegmentTrial key={scope} id={doc.id} camera={camera} segment={segment!} round={segmentTeaching.round} teachSeq={segmentTeaching.seq}
-          skipRules={{ passes: data.workspace.teachingPiece?.passes, groupCount: trialReview?.groupCount ?? 0, passSkip: data.workspace.doc.passSkip, segment: data.workspace.doc.segments?.find(item => item.index === segment) }}
+          skipRules={{ passes: data.workspace.teachingPiece?.passes, groupCount: trialGroups, passSkip: data.workspace.doc.passSkip, segment: savedSegments.find(item => item.index === segment), guardRanges }}
           range={trialRange} revision={data.workspace.revision} locked={trialLocked} waiting={pendingSave} onFlush={saveNow} guide={headingGuide} seq={trialSeq} onSeq={setTrialSeq}
           lead={frameTitle} side={frameActions} />
         : <Surface role="region" className="wp-trial" aria-label="示教帧"><div className="wp-trial-head">{frameTitle}<span className="wp-trial-actions">{frameActions}</span></div></Surface>)}

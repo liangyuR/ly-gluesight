@@ -5,7 +5,7 @@ import TeachingPage from "../src/features/workspace/TeachingPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { useCycle } from "../src/features/cycle/api";
-import { burstRecipe, burstWorkspaceView, captureRoundV2, snapshot, workspaceState } from "./fixtures";
+import { burstRecipe, burstWorkspaceView, captureRoundV2, frameMetrics, pathSegment, snapshot, workspaceState } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn(), recipeApi: { expertSpecs: vi.fn(async () => ({})) } }));
@@ -27,6 +27,37 @@ beforeEach(() => {
 });
 
 describe("走廊示教", () => {
+
+  it("单段没有分段审查记录 → 按实际轮次帧数标记笔首及段尾跳过，无胶统计排除跳过帧", async () => {
+    ws = workspaceState(burstWorkspaceView(burstRecipe({ id: "A", segments: [pathSegment(1, "straight", { expectedFrames: 12, skipTail: 1 })], passSkip: { head: 4, tail: 0 } })));
+    ws.data!.workspace.teachingPiece!.passes = [12];
+    vi.mocked(workspaceApi.teachPreviewSegment).mockResolvedValue({ round: "round-1", start: 1, end: 12, frames: Array.from({ length: 12 }, (_, i) => frameMetrics(0, i + 1, { presentRatio: 0 })) });
+    show("/recipe/teach?camera=CAM-1&segment=1");
+    expect(await screen.findByRole("button", { name: "帧组 1：生产跳过" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "帧组 12：生产跳过" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "全段试测" }));
+    const counts = within(screen.getByLabelText("试测统计"));
+    expect(await counts.findByText("无胶 7")).toBeVisible();
+    expect(counts.getByText("生产跳过 5")).toBeVisible();
+  });
+
+  it("检测段两侧为免检段 → 两侧保护帧合并到生产跳过，段内其余无胶帧仍计数", async () => {
+    const doc = ws.data!.workspace.doc;
+    doc.segments![0].skip = true;
+    doc.segments![2].skip = true;
+    doc.boundaryGuard = 1;
+    doc.passSkip = { head: 1, tail: 0 };
+    ws.data!.workspace.teachingPiece!.passes = [4, 4, 4];
+    ws.data!.workspace.captureReview = { rounds: { "round-1": { groupCount: 12, cuts: [4, 8], status: "confirmed", excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null } } };
+    vi.mocked(workspaceApi.teachPreviewSegment).mockResolvedValue({ round: "round-1", start: 5, end: 8, frames: Array.from({ length: 4 }, (_, i) => frameMetrics(0, i + 5, { presentRatio: 0 })) });
+    show("/recipe/teach?camera=CAM-1&segment=2");
+    expect(await screen.findByRole("button", { name: "帧组 5：生产跳过" })).toHaveAttribute("title", expect.stringContaining("段 1 不检测的边界保护"));
+    expect(screen.getByRole("button", { name: "帧组 8：生产跳过" })).toHaveAttribute("title", expect.stringContaining("段 3 不检测的边界保护"));
+    fireEvent.click(screen.getByRole("button", { name: "全段试测" }));
+    const counts = within(screen.getByLabelText("试测统计"));
+    expect(await counts.findByText("无胶 2")).toBeVisible();
+    expect(counts.getByText("生产跳过 2")).toBeVisible();
+  });
 
   // 防的回归：走廊草稿按站距不足三站、不会自动保存时还能切到别的段，草稿按“相机#段”存、切走后不再显示，操作员以为丢了；
   // 或者能自动保存的草稿在等保存时也把切换按钮变灰，每改一下界面就闪一次

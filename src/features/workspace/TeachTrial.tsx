@@ -36,7 +36,7 @@ const skipColor = "var(--outline-variant)";
  */
 export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skipRules, revision, locked, waiting = false, onFlush, guide, seq, onSeq, lead, side }: {
   id: string; camera: string; segment: number; round: string; teachSeq: number; range: { start: number; end: number } | null; revision: number;
-  skipRules: { passes: number[] | undefined; groupCount: number; passSkip: PassSkip | undefined; segment: PathSegment | undefined };
+  skipRules: { passes: number[] | undefined; groupCount: number; passSkip: PassSkip | undefined; segment: PathSegment | undefined; guardRanges?: { start: number; end: number; segment: number }[] };
   locked: string; waiting?: boolean; onFlush?: () => void; guide: HeadingGuide | null; seq: number | null; onSeq: (seq: number | null) => void;
   /** 与试测并在同一行的示教帧标题（行首）与操作（行尾） */
   lead?: ReactNode; side?: ReactNode;
@@ -75,10 +75,13 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
         if (n < range.start + params.skipHead) reasons.push("段首跳过");
         if (n > range.end - params.skipTail) reasons.push("段尾跳过");
       }
+      for (const guard of skipRules.guardRanges ?? []) {
+        if (n >= guard.start && n <= guard.end) reasons.push(`段 ${guard.segment} 不检测的边界保护`);
+      }
       if (reasons.length) result.set(n, reasons.join("；"));
     }
     return result;
-  }, [range?.start, range?.end, skipRules.passes, skipRules.groupCount, skipRules.passSkip, skipRules.segment]);
+  }, [range?.start, range?.end, skipRules.passes, skipRules.groupCount, skipRules.passSkip, skipRules.segment, skipRules.guardRanges]);
   const cells = useMemo(() => {
     const bySeq = new Map(batch.result?.frames.map(frame => [frame.seq, frame]));
     return span ? Array.from({ length: span.end - span.start + 1 }, (_, i) => {
