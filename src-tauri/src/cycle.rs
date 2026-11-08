@@ -458,21 +458,10 @@ impl CycleHost {
                 root,
                 Some(Arc::new(
                     move |outcome: crate::recorder::RecordingOutcome| {
-                        let cycle_id = outcome.cycle_id.clone();
                         if let Some(change) = health.observe(scope, &outcome, now_ms()) {
                             log_recording_alarm(&alarm_app, change);
                         }
-                        if let Err(error) = record_audit.recording(outcome) {
-                            applog::emit(
-                                applog::Level::Error,
-                                "录制审计持久化失败",
-                                &error,
-                                Fields {
-                                    cycle_id: Some(cycle_id),
-                                    ..Fields::default()
-                                },
-                            );
-                        }
+                        record_audit.recording(outcome);
                     },
                 )),
                 crate::recorder::Cleanup {
@@ -822,16 +811,14 @@ pub(crate) fn record_interrupted_part(
     let counted = part.mode == crate::store::PartMode::Production
         && interrupted::counts_in_stats(part.source, part.ts, scope, history::local_midnight_ms());
     let outcome = interrupted::recording(cycle_id, site.record);
-    let inserted = host.audit.insert(part);
-    if inserted.is_ok() && counted {
+    host.audit.insert(part);
+    if counted {
         stats.total += 1;
         stats.err += 1;
     }
-    match inserted.and_then(|()| host.audit.recording(outcome)) {
-        Ok(()) => log_with(app, "warn", "中断工件补记录", format!("SN={} 请求序号 {}：进程在事务中中断，已按 ERR 补入历史（{label}）；PLC 事务仍需复位处置", request.sn, request.request_seq),
-            Fields { cycle_id: Some(cycle_id.into()), sn: Some(request.sn.clone()), request_seq: Some(request.request_seq), ..Fields::default() }),
-        Err(error) => log(app, "err", "中断工件补记录", format!("cycleId={cycle_id}：{error}")),
-    }
+    host.audit.recording(outcome);
+    log_with(app, "warn", "中断工件补记录", format!("SN={} 请求序号 {}：进程在事务中中断，已按 ERR 补入历史（{label}）；PLC 事务仍需复位处置", request.sn, request.request_seq),
+        Fields { cycle_id: Some(cycle_id.into()), sn: Some(request.sn.clone()), request_seq: Some(request.request_seq), ..Fields::default() });
 }
 
 fn plc(app: &AppHandle) -> &PlcEngine {
@@ -1991,16 +1978,7 @@ impl Machine {
         let bundle_id = production
             .as_ref()
             .map(|prepared| prepared.bundle.id.clone());
-        if let Err(reason) = host.audit.begin_recording(&cycle_id) {
-            return self
-                .refuse(
-                    sn,
-                    id,
-                    fault::PROCESS_TIMEOUT,
-                    format!("录制追溯屏障建立失败：{reason}"),
-                )
-                .await;
-        }
+        host.audit.begin_recording(&cycle_id);
         let source = crate::site::record_source(&app);
         // 维护件不论录制设置都录全部帧：采集件是示教与标定的样本，试判件要靠原图复核误判（MM-11）；
         // 发布包有段预热没测成时也录全部帧，修好配方后能从原图复测这些段（D-SB-59）
@@ -2065,19 +2043,6 @@ impl Machine {
             recording,
             recipe: recipe.clone(),
         });
-        let audit = host.audit.clone();
-        if let Err(reason) =
-            intake_health_check(move || audit.health(), |error| host.audit.fail(error)).await
-        {
-            return self
-                .refuse(
-                    sn,
-                    id,
-                    fault::PROCESS_TIMEOUT,
-                    format!("录制开始后追溯健康检查失败：{reason}"),
-                )
-                .await;
-        }
         if let Err(reason) = self.s7.commit_intake(engine).await {
             log(&app, "err", "接件阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "elapsedMs": millis(started)}).to_string());
             return self.enter_fault("intake", format!("接件登记失败：{reason}"));
@@ -2573,8 +2538,11 @@ impl Machine {
             let mut _config = None;
             if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7) {
                 let result = match self.current_cycle_id.as_deref() {
-                    Some(cycle_id) => host(&app).audit.delivery_durable(cycle_id, delivery).await,
-                    None => Err("PLC 交付缺少工件身份".into()),
+                    Some(cycle_id) => {
+                        host(&app).audit.delivery_durable(cycle_id, delivery).await;
+                        Ok(())
+                    }
+                    None => Err("PLC 交付缺少工件身份".to_string()),
                 };
                 if let Err(error) = result {
                     self.s7
@@ -2882,11 +2850,13 @@ impl Machine {
             .and_then(|part| part.burst.as_ref())
             .map(|b| b.judgement.clone());
         let durable = match record {
-            Ok(part) => host(&app)
-                .audit
-                .insert_durable(part, host(&app).settings().timeouts.proc())
-                .await
-                .and_then(|_| self.record_without_part(&sn, &judgement)),
+            Ok(part) => {
+                host(&app)
+                    .audit
+                    .insert_durable(part, host(&app).settings().timeouts.proc())
+                    .await;
+                self.record_without_part(&sn, &judgement)
+            }
             Err(error) => Err(error),
         };
         let mut failure_saved = false;
@@ -2922,9 +2892,10 @@ impl Machine {
                         host(&app)
                             .audit
                             .submission_durable(id, delivery, drain_ms)
-                            .await
+                            .await;
+                        Ok(())
                     }
-                    None => Err("工件身份缺失".into()),
+                    None => Err("工件身份缺失".to_string()),
                 };
                 failure_saved = sent.is_err() && saved.is_ok();
                 sent.map_err(|error| format!("回写 PLC 失败：{error}"))
@@ -3159,7 +3130,7 @@ impl Machine {
                     } else {
                         vec![format!("接件校验未通过，未开始录制：{}", judgement.reason)]
                     },
-                })?;
+                });
         }
         Ok(())
     }
@@ -3192,7 +3163,7 @@ impl Machine {
             drain_ms,
             delivery,
             self.part_mode(sn),
-        )?)?;
+        )?);
         self.record_without_part(sn, judgement)
     }
 
@@ -3208,7 +3179,8 @@ impl Machine {
                 updated_at: now_ms(),
                 message,
             },
-        )
+        );
+        Ok(())
     }
 
     fn fail_delivery(&self, reason: &str) {
