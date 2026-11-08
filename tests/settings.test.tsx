@@ -16,7 +16,7 @@ beforeEach(() => {
     productSource: "plc", manualRecipeId: null, historyDays: 180,
     timeouts: { motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
     record: "failed", recordKeep: 100, recordMaxGb: 20,
-    offlineRecordKeep: 300, offlineRecordMaxGb: 10, autoReset: false,
+    offlineRecordKeep: 300, offlineRecordMaxGb: 10,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {

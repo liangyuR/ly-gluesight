@@ -298,8 +298,6 @@ export interface CycleSettings {
   recordMaxGb: number;
   offlineRecordKeep: number;
   offlineRecordMaxGb: number;
-  /** PC 启动或 PLC 重连后、没有未结事务时自动复位握手 */
-  autoReset: boolean;
   /** 只由 cycle_set_maintenance 改写；保存设置时后端沿用当前值 */
   maintenance?: Maintenance | null;
 }
