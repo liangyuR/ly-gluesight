@@ -2451,7 +2451,6 @@ impl Machine {
         });
         let settings = host(&app).settings();
         self.s7.set_maintenance(settings.maintenance.is_some());
-        self.s7.set_auto_reset(settings.auto_reset);
         if !host(&app).busy()
             && matches!(self.phase, Phase::Idle | Phase::Fault)
             && crate::offline::candidate(&self.app).is_none()
@@ -2530,7 +2529,7 @@ impl Machine {
             );
         }
         {
-            let audit_ready = match host(&self.app).audit.readiness() {
+            let _audit_ready = match host(&self.app).audit.readiness() {
                 Ok(crate::audit::AuditReadiness::Ready) => true,
                 Ok(
                     crate::audit::AuditReadiness::WaitingRecording
@@ -2552,9 +2551,9 @@ impl Machine {
                 self.s7.phase(),
                 SessionPhase::ResetRequired | SessionPhase::Fault
             ) || self.s7_reset_requested;
-            let intake_ready =
+            let _intake_ready =
                 self.disk_space_ready() && (!resetting || self.check_idle_devices().is_ok());
-            let devices = if resetting {
+            let _devices = if resetting {
                 self.service_ready()
             } else if matches!(self.phase, Phase::Report | Phase::Release) {
                 self.check_idle_devices()
@@ -2565,10 +2564,7 @@ impl Machine {
             let previous = self.s7.phase();
             let previous_reset_blocked = self.s7.view().reset_blocked_reason;
             let had_ack = self.s7.acknowledged();
-            let event = self
-                .s7
-                .poll_with_devices(plc(&app), reset, &devices, audit_ready, intake_ready)
-                .await;
+            let event = self.s7.poll(plc(&app), reset).await;
             // 接件持有配置门直到下面 store_busy 登记在途，相机与配置操作要么在接件前完成，要么看到在途后拒绝
             let mut _config = None;
             if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7) {

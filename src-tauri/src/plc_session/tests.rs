@@ -92,8 +92,14 @@ struct Rig {
 
 impl Rig {
     async fn new(name: &str) -> Self {
+        Self::with_files(name, |_| {}).await
+    }
+
+    /// `prepare` 在打开会话前改写会话目录（如预置损坏的握手日志）。
+    async fn with_files(name: &str, prepare: impl FnOnce(&std::path::Path)) -> Self {
         let plc = TestPlc::start().await;
         let directory = TestDir::new("s7-session-tests", name);
+        prepare(&directory);
         let mut config = crate::inspection::default_plc_config();
         config.connection.host = "127.0.0.1".into();
         config.connection.port = plc.server.port();
@@ -116,7 +122,7 @@ impl Rig {
         rig.engine.connect().await;
         rig.connected().await;
         rig.live().await;
-        assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
+        assert!(matches!(rig.session.poll(&rig.engine, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
         assert_eq!(rig.plc.pc(), state::PC_READY);
         rig
     }
@@ -134,7 +140,7 @@ impl Rig {
     async fn live(&mut self) {
         let until = Instant::now() + Duration::from_secs(5);
         loop {
-            self.session.poll(&self.engine, false, true).await;
+            self.session.poll(&self.engine, false).await;
             if self.session.heartbeat.lock().unwrap().is_live(now_ms()) { return; }
             assert!(Instant::now() < until, "PLC heartbeat not live: {:?}", self.session.view());
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -144,7 +150,7 @@ impl Rig {
     async fn phase(&mut self, phase: SessionPhase) {
         let until = Instant::now() + Duration::from_secs(6);
         while self.session.phase() != phase {
-            let event = self.session.poll(&self.engine, false, true).await;
+            let event = self.session.poll(&self.engine, false).await;
             if self.session.phase() == phase { return; }
             assert!(Instant::now() < until, "expected {phase:?}, got {:?}: {event:?}", self.session.view());
             if self.session.phase() == SessionPhase::Fault && phase != SessionPhase::Fault {
@@ -182,7 +188,7 @@ impl Rig {
     async fn end(&mut self) {
         self.plc.plc_state(state::PLC_MOTION_END);
         self.fresh().await;
-        let event = self.session.poll(&self.engine, false, true).await;
+        let event = self.session.poll(&self.engine, false).await;
         assert!(
             matches!(event, SessionEvent::End(_)),
             "expected part end, got {event:?}"
@@ -201,7 +207,7 @@ impl Rig {
         self.plc.ack();
         let until = Instant::now() + Duration::from_secs(6);
         while self.plc.pc() != state::PC_READY {
-            let event = self.session.poll(&self.engine, false, true).await;
+            let event = self.session.poll(&self.engine, false).await;
             assert!(
                 Instant::now() < until,
                 "PC 未回就绪：{:?} {event:?}",
@@ -234,7 +240,7 @@ async fn s7_wire_part_returns_ready_only_after_plc_latches_result() {
         rig.end().await;
         rig.report().await;
         rig.fresh().await;
-        rig.session.poll(&rig.engine, false, true).await;
+        rig.session.poll(&rig.engine, false).await;
         assert_eq!(
             (rig.session.phase(), rig.plc.pc()),
             (SessionPhase::AwaitAck, state::PC_RESULT),
@@ -261,7 +267,7 @@ async fn idle_notice_holds_while_plc_state_flaps() {
     ] {
         rig.plc.plc_state(plc);
         rig.fresh().await;
-        rig.session.poll(&rig.engine, false, true).await;
+        rig.session.poll(&rig.engine, false).await;
         assert!(
             rig.session.notice().is_some(),
             "plcState={plc}：{:?}",
@@ -270,7 +276,7 @@ async fn idle_notice_holds_while_plc_state_flaps() {
     }
     tokio::time::sleep(NOTICE_HOLD).await;
     rig.fresh().await;
-    rig.session.poll(&rig.engine, false, true).await;
+    rig.session.poll(&rig.engine, false).await;
     assert_eq!(rig.session.notice(), None);
     rig.finish().await;
 }
@@ -284,7 +290,7 @@ async fn software_reset_waits_for_plc_idle_before_ready() {
         (tag::PLC_STATE, state::PLC_FAULT as u32),
     ]);
     rig.fresh().await;
-    rig.session.poll(&rig.engine, false, true).await;
+    rig.session.poll(&rig.engine, false).await;
     assert!(
         rig.session
             .notice()
@@ -293,13 +299,13 @@ async fn software_reset_waits_for_plc_idle_before_ready() {
         rig.session.view()
     );
     assert!(matches!(
-        rig.session.poll(&rig.engine, true, true).await,
+        rig.session.poll(&rig.engine, true).await,
         SessionEvent::None
     ));
     assert_eq!(rig.plc.pc(), state::PC_RESET);
     rig.fresh().await;
     assert!(matches!(
-        rig.session.poll(&rig.engine, false, true).await,
+        rig.session.poll(&rig.engine, false).await,
         SessionEvent::None
     ));
     assert_eq!(rig.plc.pc(), state::PC_RESET);
@@ -309,7 +315,7 @@ async fn software_reset_waits_for_plc_idle_before_ready() {
     ]);
     rig.fresh().await;
     assert!(matches!(
-        rig.session.poll(&rig.engine, false, true).await,
+        rig.session.poll(&rig.engine, false).await,
         SessionEvent::Ready
     ));
     assert_eq!(rig.plc.pc(), state::PC_READY);
@@ -328,7 +334,7 @@ async fn request_seq_restarting_after_reset_is_accepted() {
     rig.fresh().await;
     assert!(
         matches!(
-            rig.session.poll(&rig.engine, true, true).await,
+            rig.session.poll(&rig.engine, true).await,
             SessionEvent::Ready
         ),
         "{:?}",
@@ -349,7 +355,7 @@ async fn request_seq_rewinding_while_idle_is_accepted_and_audited() {
     rig.ack_release().await;
     rig.plc.set(&[(tag::REQUEST_SEQ, 0)]);
     rig.fresh().await;
-    rig.session.poll(&rig.engine, false, true).await;
+    rig.session.poll(&rig.engine, false).await;
     assert!(rig.audit().iter().any(|r| r["action"] == "plcSeqRestarted"));
     rig.request(1, "SN-50").await;
     rig.finish().await;
@@ -364,13 +370,13 @@ async fn reset_signal_rising_edge_runs_software_reset() {
         (tag::PLC_STATE, state::PLC_FAULT as u32),
     ]);
     rig.fresh().await;
-    rig.session.poll(&rig.engine, false, true).await;
+    rig.session.poll(&rig.engine, false).await;
     assert!(!rig.session.reset_signal(&rig.engine));
     rig.plc.reset_signal(true);
     rig.fresh().await;
     let reset = rig.session.reset_signal(&rig.engine);
     assert!(reset, "{:?}", rig.session.view());
-    rig.session.poll(&rig.engine, reset, true).await;
+    rig.session.poll(&rig.engine, reset).await;
     assert_eq!(rig.plc.pc(), state::PC_RESET);
     rig.plc.set(&[
         (tag::PLC_REASON, 0),
@@ -379,7 +385,7 @@ async fn reset_signal_rising_edge_runs_software_reset() {
     rig.fresh().await;
     assert!(!rig.session.reset_signal(&rig.engine));
     assert!(matches!(
-        rig.session.poll(&rig.engine, false, true).await,
+        rig.session.poll(&rig.engine, false).await,
         SessionEvent::Ready
     ));
     assert_eq!(rig.plc.pc(), state::PC_READY);
@@ -402,7 +408,7 @@ async fn reset_signal_already_high_never_triggers_reset() {
             "{:?}",
             rig.session.view()
         );
-        rig.session.poll(&rig.engine, false, true).await;
+        rig.session.poll(&rig.engine, false).await;
     }
     assert_eq!(
         rig.session.view().reset_blocked_reason,
@@ -414,29 +420,16 @@ async fn reset_signal_already_high_never_triggers_reset() {
 }
 
 impl Rig {
-    async fn reconnect(&mut self) {
-        self.engine.disconnect().await;
-        self.session.poll(&self.engine, false, true).await;
-        self.engine.connect().await;
-        self.connected().await;
-        self.live().await;
-        assert_eq!(
-            self.session.phase(),
-            SessionPhase::ResetRequired,
-            "{:?}",
-            self.session.view()
-        );
-    }
-
-    /// 按节拍的顺序：先问自动复位，再带着结果轮询；返回是否到了就绪。
+    /// 按节拍的顺序：先问自动复位，再带着结果轮询；PC 置 99 后 PLC 清事务回空闲。返回是否到了就绪。
     async fn auto_poll(&mut self, rounds: usize) -> bool {
         for _ in 0..rounds {
             self.fresh().await;
+            if self.plc.pc() == state::PC_RESET {
+                self.plc.set(&[(tag::PLC_REASON, 0), (tag::PLC_STATE, state::PLC_IDLE as u32)]);
+                self.fresh().await;
+            }
             let reset = self.session.auto_reset();
-            if matches!(
-                self.session.poll(&self.engine, reset, true).await,
-                SessionEvent::Ready
-            ) {
+            if matches!(self.session.poll(&self.engine, reset).await, SessionEvent::Ready) {
                 return true;
             }
         }
@@ -444,45 +437,58 @@ impl Rig {
     }
 }
 
-/// 自动复位只在开关打开时生效：关着时重连后一直待复位；打开后没有未结事务就自动复位到就绪。
+/// 握手日志损坏、留有未提交临时文件都不挡复位：两个文件改名到旁边保留，会话以空日志启动并复位到就绪。
 #[tokio::test]
-async fn auto_reset_after_reconnect_reaches_ready_only_when_enabled() {
-    let mut rig = Rig::new("auto-reset").await;
-    rig.reconnect().await;
-    assert!(!rig.auto_poll(10).await);
-    assert_eq!(
-        rig.session.view().reset_blocked_reason,
-        None,
-        "复位条件满足仍不复位，才说明是开关在拦"
-    );
-    assert_ne!(rig.plc.pc(), state::PC_READY);
-    rig.session.set_auto_reset(true);
-    assert!(rig.auto_poll(10).await, "{:?}", rig.session.view());
-    assert_eq!(rig.plc.pc(), state::PC_READY);
+async fn unusable_journal_files_are_set_aside_and_reset_reaches_ready() {
+    let mut rig = Rig::with_files("journal-set-aside", |dir| {
+        std::fs::write(dir.join("session.json"), "{ 不是 JSON").unwrap();
+        std::fs::write(dir.join("session.pending.tmp"), "{").unwrap();
+    })
+    .await;
+    assert!(rig.session.archived().is_some());
+    let dir = rig.session.path.parent().unwrap().to_owned();
+    let names: Vec<String> = std::fs::read_dir(&dir).unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert!(!names.iter().any(|n| n == "session.pending.tmp"), "{names:?}");
+    assert!(names.iter().any(|n| n.starts_with("session.corrupt-") && n.ends_with(".json")), "{names:?}");
+    assert!(names.iter().any(|n| n.starts_with("session.pending-") && n.ends_with(".tmp")), "{names:?}");
+    rig.request(1, "SN-J1").await;
     rig.finish().await;
 }
 
-/// 有未结事务时不自动复位：在途件的处置留给人工、PLC 复位信号或 PLC 置 99。
+/// 在途件遇协议故障（PLC 中途报 90）：不等操作员，自动复位置 99，PLC 回空闲后就绪，在途事务记入审计后清除。
 #[tokio::test]
-async fn auto_reset_never_clears_pending_transaction() {
+async fn protocol_fault_with_pending_part_auto_resets_to_ready() {
     let mut rig = Rig::new("auto-reset-pending").await;
-    rig.session.set_auto_reset(true);
     rig.request(1, "SN-50").await;
     rig.intake().await;
-    rig.reconnect().await;
-    rig.plc.plc_state(state::PLC_IDLE);
-    assert!(!rig.auto_poll(10).await);
-    assert_eq!(
-        rig.session.view().reset_blocked_reason,
-        None,
-        "复位条件满足仍不复位，才说明是未结事务在拦"
-    );
+    rig.plc.set(&[(tag::PLC_REASON, 9), (tag::PLC_STATE, state::PLC_FAULT as u32)]);
+    rig.phase(SessionPhase::Fault).await;
     assert!(rig.session.pending());
-    assert_ne!(rig.plc.pc(), state::PC_READY);
+    assert!(rig.auto_poll(20).await, "{:?}", rig.session.view());
+    assert_eq!(rig.plc.pc(), state::PC_READY);
+    assert!(!rig.session.pending());
+    assert!(rig.audit().iter().any(|r| r["action"] == "resetCompleted" && r["pending"]["request"]["requestSeq"] == 1));
     rig.finish().await;
 }
 
-/// 协议 8 PC 在任何状态都可置 99：在途时软件复位，可复位预检不拦（录制未落盘也不拦）；
+/// 反复故障：连续自动复位 3 次后进入退避，复位条件满足也不再立刻复位；退避期满后照常自动复位，不永久放弃。
+#[tokio::test]
+async fn repeated_faults_back_off_auto_reset_then_resume() {
+    let mut rig = Rig::new("auto-reset-backoff").await;
+    for _ in 0..AUTO_RESET_BURST {
+        rig.session.fault(&rig.engine, "测试故障".into()).await;
+        assert!(rig.auto_poll(10).await, "{:?}", rig.session.view());
+    }
+    rig.session.fault(&rig.engine, "测试故障".into()).await;
+    assert!(!rig.auto_poll(10).await);
+    assert_eq!(rig.session.view().reset_blocked_reason, None, "复位条件满足仍不复位，才说明是退避在拦");
+    rig.session.auto_last = Instant::now().checked_sub(AUTO_RESET_BACKOFF);
+    assert!(rig.auto_poll(10).await, "{:?}", rig.session.view());
+    rig.finish().await;
+}
+
+/// 协议 8 PC 在任何状态都可置 99：在途时软件复位，可复位预检不拦；
 /// 本件按故障中断后不必再点一次，PC 接着置 99，PLC 回空闲即就绪。
 #[tokio::test]
 async fn software_reset_while_part_in_flight_interrupts_part_then_resets() {
@@ -490,20 +496,18 @@ async fn software_reset_while_part_in_flight_interrupts_part_then_resets() {
     rig.request(1, "SN-R").await;
     rig.intake().await;
     rig.fresh().await;
-    rig.session
-        .poll_gated(&rig.engine, false, true, false, true)
-        .await;
+    rig.session.poll(&rig.engine, false).await;
     assert_eq!(
         rig.session.view().reset_blocked_reason,
         None,
         "{:?}",
         rig.session.view()
     );
-    let event = rig.session.poll(&rig.engine, true, true).await;
+    let event = rig.session.poll(&rig.engine, true).await;
     assert!(matches!(event, SessionEvent::Fault(_)), "{event:?}");
     let until = Instant::now() + Duration::from_secs(3);
     while rig.plc.pc() != state::PC_RESET {
-        rig.session.poll(&rig.engine, false, true).await;
+        rig.session.poll(&rig.engine, false).await;
         assert!(
             Instant::now() < until,
             "未接着发起软件复位：{:?}",
@@ -515,7 +519,7 @@ async fn software_reset_while_part_in_flight_interrupts_part_then_resets() {
     rig.fresh().await;
     assert!(
         matches!(
-            rig.session.poll(&rig.engine, false, true).await,
+            rig.session.poll(&rig.engine, false).await,
             SessionEvent::Ready
         ),
         "{:?}",
@@ -545,7 +549,7 @@ async fn s7_wire_disconnect_after_result_applied_never_commits_success() {
     assert!(matches!(rig.session.phase(), SessionPhase::ResetRequired | SessionPhase::Fault));
     rig.plc.plc_state(state::PLC_IDLE);
     rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready));
+    assert!(matches!(rig.session.poll(&rig.engine, true).await, SessionEvent::Ready));
     assert!(!rig.session.pending());
     assert!(rig.audit().iter().any(|r| r["action"] == "resetCompleted" && r["pending"]["result"]["requestSeq"] == 1));
     rig.finish().await;
@@ -587,7 +591,7 @@ async fn maintenance_part_reports_with_pc_mode_1_and_accepts_only_result_code_0(
     let mut rig = Rig::new("maintenance").await;
     rig.session.set_maintenance(true);
     rig.fresh().await;
-    let event = rig.session.poll(&rig.engine, false, true).await;
+    let event = rig.session.poll(&rig.engine, false).await;
     assert!(matches!(event, SessionEvent::None), "{event:?}");
     assert_eq!(
         (rig.plc.pc(), rig.plc.get(tag::PC_MODE)),
