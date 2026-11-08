@@ -4,7 +4,6 @@ import { ArrowLeft, ChevronLeft, ChevronRight, Scale, ScanEye, SplitSquareHorizo
 import { Alert, Button, Card, Chip, IconButton, Select, Stack, StatusBadge, Text } from "qing-steel";
 import FrameGroupStrip from "../../cycle/components/FrameGroupStrip";
 import RegionResultPanel from "../../cycle/components/RegionResultPanel";
-import { CameraSegmentOverview } from "../../plan/CameraSegmentOverview";
 // 图表库按需加载：只有打开带逐站数据的历史详情时才进来
 const WidthProfile = lazy(() => import("../../plan/WidthProfile").then(m => ({ default: m.WidthProfile })));
 import type { CalibrationFrameView, FrameGroupView, FrameRecord, PartDetailBurst } from "../../plan/types";
@@ -381,7 +380,6 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         <Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
           options={shown.cameras.map((name, c) => ({ value: String(c), label: name }))} />
       </>}>
-        <CameraSegmentOverview cameras={shown.cameras} segments={shown.segments} regions={j.regions} />
         <FrameGroupStrip groups={groups} cameras={shown.cameras} regions={j.regions} selected={selection.seq} selectedCamera={selection.camera} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} onSelectCell={(seq, camera) => setSelection({ seq, camera })} />
         <div className="wp-stack">
           <div className="hist-frame-tiles" aria-label={`帧组 ${selection.seq} 各相机原图`}>
