@@ -19,7 +19,7 @@ import type { SegmentLocateState } from "../../workspace/segmentLocate";
 import { historyApi } from "../api";
 import { CycleTimeline } from "../../logs";
 import { errorText } from "../../../lib/errors";
-import { displayReason, formatTime, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel } from "../meta";
+import { displayReason, formatTime, partVerdict, triggerModeLabel, verdictLabel } from "../meta";
 import { burstSideOf, comparisonBurst, regionDiffs } from "../replay";
 import type { HistoryDetailState, PartDetail } from "../types";
 import { BurstPartTrace } from "./PartTrace";
@@ -325,30 +325,28 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
             <IconButton aria-label="后一件" title="后一件（] 键）" disabled={neighbors.newer == null} onClick={() => onOpen(neighbors.newer)}><ChevronRight size={18} /></IconButton>
           </span>
           <b className="sn" title={s.sn || undefined}>SN {s.sn || "—"}</b>
-          {s.source !== "real" && <StatusBadge tone="off">{sourceLabel[s.source]}</StatusBadge>}
-          <Text muted>{formatTime(s.ts)} · {s.recipeId ?? "无配方"} · {s.source === "offlineCandidate" ? "候选修订 " + (s.recipeRevision ?? "未记录") : "v" + (s.recipeVersion ?? "—") + " · #" + (s.recipeRevision?.slice(0, 6) ?? "—")} · {triggerModeLabel(s.triggerMode)} · 帧组 {burst.judgement.groupCount} / 预期 {expectedText(burst.expectedTotal, burst.toleranceTotal)}</Text>
+          <Text muted>{formatTime(s.ts)} · {s.recipeId ?? "无配方"} · {"v" + (s.recipeVersion ?? "—") + " · #" + (s.recipeRevision?.slice(0, 6) ?? "—")} · {triggerModeLabel(s.triggerMode)} · 帧组 {burst.judgement.groupCount} / 预期 {expectedText(burst.expectedTotal, burst.toleranceTotal)}</Text>
           {flags.map(flag => <StatusBadge key={flag.key} tone={flag.tone} data-flag={flag.key}>{flag.label}</StatusBadge>)}
         </Stack>
         <StatusBadge tone={verdict.tone}>{verdict.label} · PLC {s.plcCode}{s.faultCode ? " / " + s.faultCode : ""}</StatusBadge>
       </Stack>
       {actions}
     </Card>
-    {s.source !== "real" && <Alert title={s.source === "offlineCandidate" ? "候选离线调试记录" : "离线回放记录"}>结果来自离线环境，不作为真机生产验收；切换当前站点模式不会改变此记录的来源。</Alert>}
     {foreignProject && <Alert title="其他项目的记录">{foreignProject}可以选任意候选复测；按原发布包重现用这条记录所属项目的发布包。</Alert>}
     {error && <Alert tone="warn" title="操作未完成">{error}</Alert>}
     <Panel title="复测与候选对照" help="对照结果另存，原始判定保留">
       <div className="wp-actions">
-        <Chip>{s.source === "offlineCandidate" ? "原始候选 " + (s.recipeRevision ?? "未记录") : "原始发布 v" + (s.recipeVersion ?? "—")}</Chip>
+        <Chip>{"原始发布 v" + (s.recipeVersion ?? "—")}</Chip>
         {choices.length > 0 ? <Select label="复测配方" aria-label="复测配方" disabled={working || !options} value={chosen ?? candidate?.id ?? ""} onValueChange={id => setChosen(id || null)}
           options={[...(chosen ?? candidate ? [] : [{ value: "", label: "选择候选" }]), ...choices.map(c => ({ value: c.id, label: `${c.id} · ${c.name} · v${c.version} 修订 ${c.revision}${c.id === s.recipeId ? "（本件配方）" : ""}` }))]} />
           : <StatusBadge>候选 {!options ? "…" : "本机没有候选"}</StatusBadge>}
         <span className="spacer" />
-        {s.source !== "offlineCandidate" && <Button leadingIcon={<ScanEye size={15} />} disabled={working || !options || !!originalReason} title={originalReason || undefined} onClick={runOriginal}>按原发布包重现</Button>}
+        <Button leadingIcon={<ScanEye size={15} />} disabled={working || !options || !!originalReason} title={originalReason || undefined} onClick={runOriginal}>按原发布包重现</Button>
         <Button leadingIcon={<Scale size={15} />} disabled={working || !options || !!rulesReason} title={rulesReason || undefined} onClick={() => runCompare(false)}>按候选规则重判</Button>
         <Button variant="filled" leadingIcon={<ScanEye size={15} />} disabled={working || !options || !!rawReason} title={rawReason || undefined} onClick={() => runCompare(true)}>从原图复测整件</Button>
       </div>
       {options && (originalReason || rulesReason || rawReason) && <ul className="compare-reasons" aria-label="不能复测的原因">
-        {s.source !== "offlineCandidate" && originalReason && <li><b>按原发布包重现</b>：{originalReason}</li>}
+        {originalReason && <li><b>按原发布包重现</b>：{originalReason}</li>}
         {rulesReason && rulesReason === rawReason ? <li><b>按候选规则重判、从原图复测</b>：{rulesReason}</li> : <>
           {rulesReason && <li><b>按候选规则重判</b>：{rulesReason}</li>}
           {rawReason && <li><b>从原图复测</b>：{rawReason}</li>}
@@ -421,7 +419,6 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
           onSelectGroup={seq => setSelection(prev => ({ ...prev, seq }))} />
         <div className="kv2">
           <span>记录号</span><b>#{s.id}</b>
-          {s.sample && <><span>离线样本</span><b>{s.sample.partId} · SN <span className="sn">{s.sample.sn}</span> · 期望 {sampleLabelText[s.sample.label]}</b></>}
           <span>配方修订</span><b>{s.recipeRevision ?? "—"}</b>
           <span>软件版本</span><b>{detail.softwareVersion}</b>
           <span>收尾耗时</span><b>{s.drainMs ?? "—"} ms</b>

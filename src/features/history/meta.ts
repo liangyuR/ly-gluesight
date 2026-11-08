@@ -1,5 +1,5 @@
-import type { SampleLabel, Verdict } from "../cycle/types";
-import type { PartSummary, RecordSource } from "./types";
+import type { Verdict } from "../cycle/types";
+import type { PartSummary } from "./types";
 
 export const verdictLabel: Record<Verdict, string> = {
   OK: "OK",
@@ -11,9 +11,7 @@ export const verdictLabel: Record<Verdict, string> = {
   ERR_INSPECT: "ERR · 未测成",
 };
 
-export const sourceLabel: Record<RecordSource, string> = { real: "真机", offlineSynthetic: "离线·合成图", offlineSample: "离线·样本集", offlineCandidate: "候选调试" };
 
-export const sampleLabelText: Record<SampleLabel, string> = { ok: "合格", ng: "不合格", unknown: "未标注" };
 
 /** 检测记录里的触发方式。 */
 export function triggerModeLabel(mode: string | null | undefined) {

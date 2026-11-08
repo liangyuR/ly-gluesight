@@ -23,16 +23,12 @@ pub fn spool(data: &Path) -> PathBuf {
 }
 
 /// 项目 `project` 的真机或离线录制根：记录的原图引用相对于它。
-pub fn record_root(data: &Path, project: &str, source: RecordSource) -> Result<PathBuf, String> {
+pub fn record_root(data: &Path, project: &str, _source: RecordSource) -> Result<PathBuf, String> {
     if !super::valid_id(project) {
         return Err(format!("记录的项目编号 {project} 无效"));
     }
     let base = crate::log_storage::recording_project(&super::dir(data, project))?;
-    Ok(base.join(if source.offline() {
-        "records-offline"
-    } else {
-        "records"
-    }))
+    Ok(base.join("records"))
 }
 
 /// 项目还在本机（目录与 `project.json` 可读）；删除后的项目只剩历史记录与原图。

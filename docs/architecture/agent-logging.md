@@ -79,7 +79,7 @@
 
 ### 4.3 拆分的同名事件
 
-只拆分了带编码的事件：`故障`（S7、追溯、接件都记成同一事件）改为 `fault.enter`，用 `source` 区分（5.3）；`PLC {category}`（ev 动态拼接）改为 `plc.engine.warn` / `plc.engine.error`，`data.category`；相机断线重试改为 `camera.reconnect_failed`。其余同名事件（`相机`、`站点模式`、`接件阶段`、`接件校验` 等）没有 `code`，按 `ev` 与 `msg` 理解；`接件阶段` 的 `msg` 是 JSON：`cycleId`、`sn`、`status`（`admitted` / `deferred` / `fault`）、`elapsedMs`。
+只拆分了带编码的事件：`故障`（S7、追溯、接件都记成同一事件）改为 `fault.enter`，用 `source` 区分（5.3）；`PLC {category}`（ev 动态拼接）改为 `plc.engine.warn` / `plc.engine.error`，`data.category`；相机断线重试改为 `camera.reconnect_failed`。其余同名事件（`相机`、`接件阶段`、`接件校验` 等）没有 `code`，按 `ev` 与 `msg` 理解；`接件阶段` 的 `msg` 是 JSON：`cycleId`、`sn`、`status`（`admitted` / `deferred` / `fault`）、`elapsedMs`。
 
 ## 5. 补齐关键证据
 
@@ -177,7 +177,7 @@
 
 为便于断言，`applog` 提供测试用的内存 sink（只在 `cfg(test)` 下替换文件 sink），测试断言 `code` 与 `data`，不断言 `msg` 文案。
 
-端到端核对：跑一次 `pnpm test:ui:production`，检查生成的日志里有 `app.start`、`app.config`、完整的 `part.*` 链，且无逐帧 warn 刷屏；离线模式注入一次故障与复位，检查 `fault.enter` / `s7.fault_output` / `s7.reset.*` 顺序。
+端到端核对：按[独立生产模拟器](../testing/production-simulator.md)运行正常生产，检查日志里有 `app.start`、`app.config`、完整的 `part.*` 链，且无逐帧 warn 刷屏。故障与复位需要独立专项验收，核对 `fault.enter` / `s7.fault_output` / `s7.reset.*` 顺序。
 
 ## 10. 风险与待定
 

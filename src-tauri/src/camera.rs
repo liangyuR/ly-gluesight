@@ -21,12 +21,12 @@ use crate::frame::{
     GrayError,
 };
 use crate::mvs::{self, DeviceSummary, FrameInfo};
-use crate::offline::sample_set::SampleSet;
 use crate::offline::Scenario;
 use crate::recipe::{valid_camera_id, Recipe};
 use crate::simimage;
 
 mod delivery;
+mod simulator;
 
 /// 帧通道容量：检测节拍处理不过来时丢新帧并计数。条数只防失控，图像内存由 IMAGE_BUDGET_PER_CAMERA 封顶（D-SB-32）。
 pub const FRAME_QUEUE: usize = 1024;
@@ -87,32 +87,12 @@ pub fn aggregate_bandwidth(sizes: &[Option<(u32, u32)>], hz: f64) -> BandwidthEs
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 fn manual_arm_ready(source: CameraSource, pending: u32) -> Result<(), String> {
-    if source == CameraSource::Mvs && pending > 0 {
+    if matches!(source, CameraSource::Mvs | CameraSource::Simulator) && pending > 0 {
         Err(format!(
             "仍有 {pending} 次手动触发未确认，等待回调或重开相机后才能接件"
         ))
     } else {
         Ok(())
-    }
-}
-
-/// 样本集相机取图的身份：哪个样本集的哪一件、清单里的哪一帧（shotId；相机编号与视角取自相机自身配置）。
-pub struct SampleTarget {
-    pub set: Arc<SampleSet>,
-    pub part_id: String,
-    pub shot_id: String,
-}
-
-impl SampleTarget {
-    /// 本身份在指定相机下的全部视角原图（彩色模式按 RGB 读）；缺任一幅即整帧不可用。
-    pub fn images(
-        &self,
-        camera_id: &str,
-        view_count: u8,
-        color: bool,
-    ) -> Result<Vec<Arc<FrameImage>>, String> {
-        self.set
-            .load_views(&self.part_id, &self.shot_id, camera_id, view_count, color)
     }
 }
 
@@ -131,19 +111,19 @@ pub struct BurstRender {
     pub seed: u64,
 }
 
-/// 触发携带的取图依据：模拟相机按段配方合成，样本集相机按身份取原图。
+/// 内部合成夹具的取图依据。
 pub enum TriggerPayload {
     Burst(BurstRender),
-    Sample(SampleTarget),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CameraSource {
-    /// 离线·合成图：由站点模式生成，不能手动配置
+    /// 内部合成夹具，不允许用户配置
     Sim,
     Mvs,
-    /// 离线·样本集：由站点模式按样本集生成，按触发携带的样本件与拍照点取现场原图
+    Simulator,
+    /// 已停用，保留旧配置的反序列化识别
     SampleSet,
 }
 
@@ -246,6 +226,10 @@ impl Default for CameraConfig {
 
 impl CameraConfig {
     fn validate(&self) -> Result<(), String> {
+        if self.source == CameraSource::Simulator {
+            self.require_single_view()?;
+            simulator::endpoint(&self.serial)?;
+        }
         if !matches!(self.view_count, 1 | 3) {
             return Err("视角数量只能是 1 或 3".into());
         }
@@ -464,33 +448,6 @@ impl Reorder {
     }
 }
 
-/// 样本集相机按触发身份取图后按帧号交付；取不到图（缺图、未选样本集）时本帧按缺帧占位，后面的帧照常交付。
-/// 返回取图失败的原因。
-#[allow(clippy::too_many_arguments)]
-fn sample_set_arrival(
-    order: &Mutex<Reorder>,
-    target: Result<SampleTarget, String>,
-    camera: &str,
-    views: u8,
-    cam: u8,
-    session: u64,
-    n: u64,
-    manual: bool,
-    color: bool,
-    mut deliver: impl FnMut(Frame),
-) -> Option<String> {
-    let loaded = target.and_then(|target| target.images(camera, views, color));
-    let (frame, error) = match loaded {
-        Ok(images) => (Some(synthetic_frame(cam, session, n, images, manual)), None),
-        Err(error) => (None, Some(error)),
-    };
-    let mut order = order.lock().unwrap();
-    for frame in order.accept(session, n, frame) {
-        deliver(frame);
-    }
-    error
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CaptureTicket {
     session: u64,
@@ -591,6 +548,7 @@ struct Shared {
     chunk_frame: AtomicBool,
     /// 相机时间戳频率（Hz，`GevTimestampTickFrequency`），打开时读；0 = 读不到，帧不带相机时间戳
     tick_hz: AtomicU64,
+    simulator_clock: Mutex<Option<(u64, Instant)>>,
     /// 旧拍照点模型：三目拼接的拆分布局，段配方不经过（D-SB-11）
     composite_layout: Mutex<Option<crate::recipe_capture::CompositeLayout>>,
 }
@@ -989,6 +947,7 @@ struct DeviceState {
 
 pub struct CameraSlot {
     device: Mutex<Option<mvs::Device>>,
+    simulator: Mutex<Option<std::net::TcpStream>>,
     shared: Arc<Shared>,
     config: Mutex<CameraConfig>,
     state: Mutex<DeviceState>,
@@ -1018,7 +977,9 @@ impl CameraSupervision {
 
 impl Drop for CameraSlot {
     fn drop(&mut self) {
-        // 先停取流，回调里用的 Shared 才能安全释放
+        if let Some(stream) = self.simulator.lock().unwrap().take() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
         self.device.lock().unwrap().take();
     }
 }
@@ -1027,6 +988,7 @@ impl CameraSlot {
     fn new(rig: &Arc<RigShared>, cam: u8, config: CameraConfig) -> Self {
         let slot = Self {
             device: Mutex::new(None),
+            simulator: Mutex::new(None),
             shared: Arc::new(Shared {
                 cam,
                 rig: rig.clone(),
@@ -1052,6 +1014,7 @@ impl CameraSlot {
                 chunk_trigger: AtomicBool::new(false),
                 chunk_frame: AtomicBool::new(false),
                 tick_hz: AtomicU64::new(0),
+                simulator_clock: Mutex::new(None),
                 composite_layout: Mutex::new(if config.view_count == 3 {
                     config.composite_layout.clone()
                 } else {
@@ -1121,17 +1084,8 @@ impl CameraSlot {
                     "离线·合成图：每次触发交付一帧 · {} 个视角",
                     config.view_count
                 ),
-                CameraSource::SampleSet => match crate::offline::sample_set(&self.shared.rig.app) {
-                    Some(set) if set.has_camera(&config.id) => format!(
-                        "离线·样本集 {}：{} 件 · {} 个拍照点 · {} 个视角",
-                        set.manifest().name,
-                        set.manifest().parts.len(),
-                        set.manifest().shots.len(),
-                        config.view_count
-                    ),
-                    Some(set) => format!("样本集 {} 没有相机 {}", set.manifest().id, config.id),
-                    None => "样本集相机只在离线·样本集模式下可用".to_string(),
-                },
+                CameraSource::SampleSet => "样本集相机已停用，请使用独立模拟器".into(),
+                CameraSource::Simulator => state_message,
                 CameraSource::Mvs if released => {
                     "已释放给海康 MVS 客户端，调整完点重新连接".to_string()
                 }
@@ -1224,7 +1178,7 @@ impl CameraSlot {
         let config = self.config();
         manual_arm_ready(config.source, self.shared.manual.load(Ordering::SeqCst))?;
         let session = self.shared.session.load(Ordering::SeqCst);
-        let observed = if config.source == CameraSource::Mvs {
+        let observed = if matches!(config.source, CameraSource::Mvs | CameraSource::Simulator) {
             self.shared
                 .identity
                 .lock()
@@ -1244,7 +1198,11 @@ impl CameraSlot {
                 cam: self.shared.cam,
                 camera: config.id,
                 session,
-                source: (config.source != CameraSource::Mvs).then_some(CounterSource::Synthetic),
+                source: match config.source {
+                    CameraSource::Simulator => Some(CounterSource::SdkFrame),
+                    CameraSource::Sim => Some(CounterSource::Synthetic),
+                    _ => None,
+                },
                 counter_after_open: config.counter_after_open,
             },
             observed,
@@ -1330,8 +1288,11 @@ impl CameraSlot {
                 self.device.lock().unwrap().is_some()
                     && !self.shared.disconnected.load(Ordering::SeqCst)
             }
-            CameraSource::SampleSet => crate::offline::sample_set(&self.shared.rig.app)
-                .is_some_and(|set| set.has_camera(&config.id)),
+            CameraSource::SampleSet => false,
+            CameraSource::Simulator => {
+                self.simulator.lock().unwrap().is_some()
+                    && !self.shared.disconnected.load(Ordering::SeqCst)
+            }
         }
     }
 
@@ -1358,12 +1319,6 @@ impl CameraSlot {
         let mut seq = self.seq.lock().unwrap();
         *seq += 1;
         (self.shared.session.load(Ordering::SeqCst), *seq)
-    }
-
-    /// 按触发出一帧。模拟相机合成（没有合成依据时只有元数据），样本集按触发身份取原图，海康发软触发。
-    /// `lose_in_transfer` 仅模拟 / 样本集相机使用：相机已曝光但帧在传输中丢失，主机侧表现为帧计数跳号。
-    pub fn trigger(&self, lose_in_transfer: bool, payload: Option<TriggerPayload>) -> bool {
-        self.trigger_frame(lose_in_transfer, payload, false).is_ok()
     }
 
     fn trigger_frame(
@@ -1429,64 +1384,20 @@ impl CameraSlot {
                 });
                 Ok(Some(ticket))
             }
-            CameraSource::SampleSet => {
-                let target = match payload {
-                    Some(TriggerPayload::Sample(target)) => Ok(target),
-                    Some(TriggerPayload::Burst(_)) => {
-                        Err("样本集相机收到合成图触发，没有样本件身份".to_string())
-                    }
-                    None => crate::offline::preview_target(&self.shared.rig.app, &config.id)
-                        .ok_or_else(|| {
-                            format!(
-                                "未选择离线样本集，或样本集里没有相机 {} 的拍照点",
-                                config.id
-                            )
-                        }),
-                };
-                let (session, n) = self.next_counters();
-                let ticket = CaptureTicket {
-                    session,
-                    frame_counter: n,
-                };
-                let shared = self.shared.clone();
-                if lose_in_transfer {
-                    shared.deliver_in_order(session, n, None);
-                    return Ok(Some(ticket));
+            CameraSource::SampleSet => Err("样本集相机已停用，请使用独立模拟器".into()),
+            CameraSource::Simulator => {
+                use std::io::Write;
+                if config.trigger_source != "Software" {
+                    return Err("触发源不是 Software，不能发送软触发".into());
                 }
-                let camera = config.id.clone();
-                let views = config.view_count;
-                let color = config.image_mode.color();
-                tauri::async_runtime::spawn(async move {
-                    let worker = shared.clone();
-                    let failed = tauri::async_runtime::spawn_blocking(move || {
-                        sample_set_arrival(
-                            &worker.order,
-                            target,
-                            &camera,
-                            views,
-                            cam,
-                            session,
-                            n,
-                            manual,
-                            color,
-                            |frame| worker.deliver(frame),
-                        )
-                    })
-                    .await
-                    .unwrap_or_else(|e| {
-                        shared.deliver_in_order(session, n, None);
-                        Some(e.to_string())
-                    });
-                    if let Some(e) = failed {
-                        cycle::log(
-                            &shared.rig.app,
-                            "err",
-                            "样本集取图",
-                            format!("{e}；本帧按缺帧处理"),
-                        );
-                    }
-                });
-                Ok(Some(ticket))
+                self.simulator
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .ok_or("模拟器未连接")?
+                    .write_all(b"{\"command\":\"trigger\"}\n")
+                    .map_err(|e| e.to_string())?;
+                Ok(None)
             }
             CameraSource::Mvs => {
                 if config.trigger_source != "Software" {
@@ -1506,10 +1417,12 @@ impl CameraSlot {
     fn soft_trigger(&self, payload: Option<TriggerPayload>) -> Result<CaptureRequest, String> {
         let config = self.config();
         config.validate()?;
-        if config.source == CameraSource::Mvs && config.trigger_source != "Software" {
+        if matches!(config.source, CameraSource::Mvs | CameraSource::Simulator)
+            && config.trigger_source != "Software"
+        {
             return Err("触发源为 Line0，软触发前先把触发源改为 Software".into());
         }
-        if config.source == CameraSource::Mvs {
+        if matches!(config.source, CameraSource::Mvs | CameraSource::Simulator) {
             self.shared
                 .manual
                 .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
@@ -1524,9 +1437,10 @@ impl CameraSlot {
             .get(self.shared.cam)
             .filter(|ledger| ledger.session == session)
             .and_then(|ledger| ledger.last_frame);
-        self.shared
-            .grab
-            .store(config.source == CameraSource::Mvs, Ordering::SeqCst);
+        self.shared.grab.store(
+            matches!(config.source, CameraSource::Mvs | CameraSource::Simulator),
+            Ordering::SeqCst,
+        );
         match self.trigger_frame(false, payload, true) {
             Ok(Some(ticket)) => Ok(CaptureRequest::Exact(ticket)),
             Ok(None) => Ok(CaptureRequest::After {
@@ -1535,11 +1449,13 @@ impl CameraSlot {
             }),
             Err(e) => {
                 self.shared.grab.store(false, Ordering::SeqCst);
-                Err(if config.source == CameraSource::Mvs {
-                    format!("{e}；软触发结果未确认，请重开相机后再接件")
-                } else {
-                    e
-                })
+                Err(
+                    if matches!(config.source, CameraSource::Mvs | CameraSource::Simulator) {
+                        format!("{e}；软触发结果未确认，请重开相机后再接件")
+                    } else {
+                        e
+                    },
+                )
             }
         }
     }
@@ -1555,6 +1471,12 @@ impl CameraSlot {
                     self.shared.tick_hz.load(Ordering::Relaxed),
                 )
             }
+            CameraSource::Simulator => self
+                .shared
+                .simulator_clock
+                .lock()
+                .unwrap()
+                .map(|(clock, at)| clock.saturating_add(at.elapsed().as_nanos() as u64)),
             CameraSource::Sim | CameraSource::SampleSet => Some(
                 self.seq
                     .lock()
@@ -1577,7 +1499,7 @@ impl CameraSlot {
     /// 这台相机的帧周期（ns）：海康取打开时确认的帧率，模拟 / 样本集为合成帧周期。
     pub fn frame_period_ns(&self) -> f64 {
         match self.config().source {
-            CameraSource::Mvs => {
+            CameraSource::Mvs | CameraSource::Simulator => {
                 let rate = self
                     .state
                     .lock()
@@ -1593,6 +1515,10 @@ impl CameraSlot {
     }
 
     fn close(&self) {
+        if let Some(stream) = self.simulator.lock().unwrap().take() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        *self.shared.simulator_clock.lock().unwrap() = None;
         self.device.lock().unwrap().take();
         self.new_session();
         self.state.lock().unwrap().configured_frame_rate = None;
@@ -1635,6 +1561,9 @@ impl CameraSlot {
         let config = self.config();
         config.validate()?;
         config.require_bound()?;
+        if config.source == CameraSource::Simulator {
+            return simulator::open(self, &config);
+        }
         let device = mvs::Device::open(&config.serial)?;
         let (warnings, max_fps, configured_frame_rate, format, chunks) = apply(&device, &config)?;
         let imaging = self.saved_imaging();
@@ -1687,7 +1616,7 @@ impl CameraSlot {
                 self.new_session();
                 Ok(Vec::new())
             }
-            CameraSource::Mvs => {
+            CameraSource::Mvs | CameraSource::Simulator => {
                 self.open()?;
                 Ok(self.state.lock().unwrap().warnings.clone())
             }
@@ -1972,14 +1901,14 @@ impl CameraRig {
         let offline_sources: Vec<String> = file
             .cameras
             .iter_mut()
-            .filter(|c| c.source != CameraSource::Mvs)
+            .filter(|c| matches!(c.source, CameraSource::Sim | CameraSource::SampleSet))
             .map(|c| {
                 c.source = CameraSource::Mvs;
                 c.id.clone()
             })
             .collect();
         if !offline_sources.is_empty() {
-            notes.push(format!("cameras.json 中的相机 {} 不是海康来源，已改为海康 MVS；合成图与样本集相机只由离线模式临时生成", offline_sources.join("、")));
+            notes.push(format!("cameras.json 中的相机 {} 使用已停用的内置来源，已改为海康 MVS；模拟生产请配置外部模拟器", offline_sources.join("、")));
         }
         let assigned = assign_ids(&mut file.cameras, &mut file.next_id)
             || !offline_sources.is_empty()
@@ -2053,9 +1982,6 @@ impl CameraRig {
 
     fn save(&self) -> Result<(), String> {
         let _one = self.save_lock.lock().unwrap();
-        if crate::offline::enabled(&self.rig.app) {
-            return Err("离线期间相机组为临时配置，不写回 cameras.json".into());
-        }
         let cameras = self.configs();
         let mut imaging = self.rig.imaging.lock().unwrap().clone();
         imaging.retain(|id, _| cameras.iter().any(|c| &c.id == id));
@@ -2126,16 +2052,6 @@ impl CameraRig {
         self.rig.capture.store(on, Ordering::Relaxed);
     }
 
-    pub fn trigger(
-        &self,
-        cam: u8,
-        lose_in_transfer: bool,
-        payload: Option<TriggerPayload>,
-    ) -> bool {
-        self.slot(cam as usize)
-            .is_some_and(|s| s.trigger(lose_in_transfer, payload))
-    }
-
     pub fn last_view(&self, cam: u8, view: u8) -> Option<Arc<FrameImage>> {
         self.slot(cam as usize).and_then(|s| s.last_view(view))
     }
@@ -2162,7 +2078,7 @@ impl CameraRig {
                 return Err("模拟相机尚未出图，请先运行一个模拟工件".into());
             }
             images
-        } else if config.source != CameraSource::Mvs || config.trigger_source == "Software" {
+        } else if config.source == CameraSource::Sim || config.trigger_source == "Software" {
             let request = slot.soft_trigger(payload)?;
             let captured = slot.wait_capture(request, Duration::from_secs(2))?;
             captured.ok_or("2 秒内没有收到本次触发的完整图像；检查触发与相机连接")?
@@ -2223,13 +2139,6 @@ impl CameraRig {
         }
     }
 
-    /// 站点模式切换时整组替换相机，不写回 cameras.json。
-    pub fn replace_temporarily(&self, app: &AppHandle, configs: Vec<CameraConfig>) {
-        self.rebuild(app, configs);
-        let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
-        let _ = app.emit("camera://changed", ());
-    }
-
     pub fn start(app: &AppHandle) {
         for s in app.state::<CycleHost>().camera.slots() {
             supervise(app, &s);
@@ -2252,6 +2161,11 @@ fn watch_gate(slot: std::sync::Weak<CameraSlot>) {
             let Some(s) = slot.upgrade() else { break };
             let (gate, cam) = (s.shared.rig.gate.clone(), s.shared.cam);
             let config = s.config();
+            if config.source == CameraSource::Simulator {
+                drop(s);
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
             // 拿设备锁之前取帧周期：它要锁配置，`is_ready` 是先锁配置再锁设备，反过来会死锁
             let period = Duration::from_nanos(s.frame_period_ns() as u64);
             let usable = config.source == CameraSource::Mvs
@@ -2318,7 +2232,9 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
         loop {
             let Some(s) = slot.upgrade() else { break };
             let config = s.config();
-            if config.source == CameraSource::Mvs && Instant::now() >= next_retry {
+            if matches!(config.source, CameraSource::Mvs | CameraSource::Simulator)
+                && Instant::now() >= next_retry
+            {
                 next_retry = Instant::now() + Duration::from_secs(2);
                 let attempt = {
                     let cycle = app.state::<CycleHost>();
@@ -2334,8 +2250,12 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
                         Some(_gate) => {
                             let config = s.config();
                             let lost = s.shared.disconnected.load(Ordering::SeqCst);
-                            let opened = s.device.lock().unwrap().is_some();
-                            if config.source == CameraSource::Mvs
+                            let opened = if config.source == CameraSource::Simulator {
+                                s.simulator.lock().unwrap().is_some()
+                            } else {
+                                s.device.lock().unwrap().is_some()
+                            };
+                            if matches!(config.source, CameraSource::Mvs | CameraSource::Simulator)
                                 && !config.serial.trim().is_empty()
                                 && s.supervision.reconnect_due(
                                     s.released.load(Ordering::SeqCst),
@@ -2531,13 +2451,15 @@ fn check_camera_target(current_id: &str, requested_id: &str) -> Result<(), Strin
 
 /// 同一个序列号不能给两台海康相机（留空的是刚加、还没绑定设备的相机）。
 fn check_serial(configs: &[CameraConfig], cam: usize, config: &CameraConfig) -> Result<(), String> {
-    if config.source != CameraSource::Mvs || config.serial.is_empty() {
+    if !matches!(config.source, CameraSource::Mvs | CameraSource::Simulator)
+        || config.serial.is_empty()
+    {
         return Ok(());
     }
     match configs
         .iter()
         .enumerate()
-        .find(|(i, c)| *i != cam && c.source == CameraSource::Mvs && c.serial == config.serial)
+        .find(|(i, c)| *i != cam && c.source == config.source && c.serial == config.serial)
     {
         Some((_, c)) => Err(format!("序列号 {} 已经给了{}", config.serial, c.name)),
         None => Ok(()),
@@ -2585,15 +2507,9 @@ fn assign_ids(configs: &mut [CameraConfig], next_id: &mut u32) -> bool {
     changed
 }
 
-/// 真机模式下用户只能配置海康相机；合成图、样本集相机由站点模式在离线期间临时生成。
-fn check_user_editable(app: &AppHandle, config: Option<&CameraConfig>) -> Result<(), String> {
-    if crate::offline::enabled(app) {
-        return Err("离线模式由站点模式管理相机组，退出离线后再修改".into());
-    }
-    if config.is_some_and(|c| c.source != CameraSource::Mvs) {
-        return Err(
-            "真机模式下相机来源只能是海康 MVS；合成图与样本集请在离线控制台进入离线".into(),
-        );
+fn check_user_editable(_app: &AppHandle, config: Option<&CameraConfig>) -> Result<(), String> {
+    if config.is_some_and(|c| !matches!(c.source, CameraSource::Mvs | CameraSource::Simulator)) {
+        return Err("相机来源必须是海康 MVS 或外部模拟器".into());
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 # 隔离实例与桌面测试设施决策记录（r2-test-infra）
 
-范围：`scripts/Start-UiTestInstance.ps1`、`scripts/Test-*.ps1` 桌面测试入口、`tests/native/` 与 `tests/desktop/` 脚本，以及让桌面测试稳定跑通所需的最小产品修复（启动时 WebView2 资料目录长度校验、隐藏窗口启动失败退出）。运行方式见 [测试记录与复现](../testing/TESTING.md)。
+范围：`scripts/Start-UiTestInstance.ps1`、`scripts/Test-*.ps1` 桌面测试入口、`tests/native/` 脚本，以及让桌面测试稳定跑通所需的最小产品修复（启动时 WebView2 资料目录长度校验、隐藏窗口启动失败退出）。运行方式见 [测试记录与复现](../testing/TESTING.md)。
 
 ## 1. 隔离实例不再继承调用方的输出管道
 
@@ -41,18 +41,5 @@
 ## 5. 测试资料根目录可配置：`-DataRoot` / `GLUESIGHT_TEST_DATA_ROOT`
 
 - 问题：隔离实例的资料目录固定在 `output/playwright/<profile>-regression/<测试标识>`。主检出下约 107 字符，工作树（`.claude/worktrees/<名称>/`）下约 143 字符，再深一点或换更长的检出路径就超过第 3 条的上限。
-- 采用：`Start-UiTestInstance.ps1` 新增 `-DataRoot`，未传时读环境变量 `GLUESIGHT_TEST_DATA_ROOT`，都没有时仍用原输出目录。资料目录 = `<DataRoot>\<测试标识>`，产品仍校验末级名称等于测试标识；`-ResetData` 只清理这一目录（父目录必须等于 DataRoot，且整条路径不含链接）。`Test-UiProductionFlow.ps1` 原样透传。不自动回落到临时目录：资料去向必须是调用方明确指定的位置，避免不同检出共用同一测试资料。
+- 采用：`Start-UiTestInstance.ps1` 新增 `-DataRoot`，未传时读环境变量 `GLUESIGHT_TEST_DATA_ROOT`，都没有时仍用原输出目录。资料目录 = `<DataRoot>\<测试标识>`，产品仍校验末级名称等于测试标识；`-ResetData` 只清理这一目录（父目录必须等于 DataRoot，且整条路径不含链接）。不自动回落到临时目录：资料去向必须是调用方明确指定的位置，避免不同检出共用同一测试资料。
 - 回退：去掉 `-DataRoot` 参数，资料目录恢复为输出目录下。
-
-## 6. 生产落盘测试经侧栏进入离线控制台
-
-- 问题：顶栏没有站点模式链接，测试不能再点它进入离线控制台。
-- 采用：经侧栏“操作导航 → 离线模式”进入离线控制台，用控制台标题“当前：真机”“当前：离线 · 合成图”判断模式。断言含义不变：界面显示的模式与后端 `site_status` 一致。
-- 回退：不适用（顶栏链接已不存在）。
-
-## 9. 生产落盘接入 Playwright Test
-
-- 问题：普通 Node CLI 自行组织生命周期、超时和证据，失败阶段不易定位。
-- 采用：生产落盘（`pnpm test:ui:production`）用独立 Playwright Test 配置管理用例及报告，固定单 worker、无整条自动重跑、单用例 15 分钟。PowerShell 负责预检、公共构建及同 profile 执行期互斥；夹具复用原启动设施和身份核对，管理 CDP context、失败截图、trace 及最终关闭。构建与启动分离为 `Build-UiTestInstance.ps1` / `Start-UiTestInstance.ps1`，后者可独立使用。用例只有合成图段配方（`-Suite burst`）；无运行库时明确跳过，显式给出的坏运行库在构建前失败。
-- 证据：业务 JSON 和实例日志路径不变；框架只管理 `flow-regression/runner/{html,junit.xml,test-results}`，不清理业务目录，取证失败不得覆盖业务错误。
-- 回退：框架报告与业务数据独立，无资料迁移；依赖现场样本集的桌面测试已删除，只能从 Git 历史查看。

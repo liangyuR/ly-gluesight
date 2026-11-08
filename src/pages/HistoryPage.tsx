@@ -8,16 +8,11 @@ import { useProjectDirectory } from "../features/project/hooks";
 import { projectLabel, recordProject } from "../features/project/rules";
 import { errorText } from "../lib/errors";
 import { flagBadges } from "../features/plan/vis";
-import { commonHistoryTags, displayReason, formatTime, HistoryExportDialog, HistoryImportDialog, HistoryRecordDialog, historyApi, partVerdict, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, type HistoryDeleted, type HistoryFilter, type HistoryPackagePreview, type HistoryPage as Page, type HistoryQuery, type HistoryScope, type PartMode } from "../features/history";
+import { commonHistoryTags, displayReason, formatTime, HistoryExportDialog, HistoryImportDialog, HistoryRecordDialog, historyApi, partVerdict, RejudgeDialog, triggerModeLabel, verdictGroups, type HistoryDeleted, type HistoryFilter, type HistoryPackagePreview, type HistoryPage as Page, type HistoryQuery, type PartMode } from "../features/history";
 
 type Item = Page["items"][number];
 
 const PAGE = 50;
-const scopeOptions: { value: HistoryScope; label: string }[] = [
-  { value: "real", label: "真机件" },
-  { value: "offline", label: "离线件" },
-  { value: "debug", label: "候选调试" },
-];
 const ranges: [string, string, number | null][] = [
   ["today", "今天", 0],
   ["7d", "7 天", 7],
@@ -47,7 +42,6 @@ export default function HistoryPage() {
   const projects = useProjectDirectory();
   const location = useLocation();
   const [initial] = useState(() => (location.state as { filter?: HistoryFilter } | null)?.filter ?? null);
-  const [scope, setScope] = useState<HistoryScope>("real");
   const [range, setRange] = useState(initial ? "all" : "today");
   const [groups, setGroups] = useState<string[]>(initial?.groups ?? []);
   const [mode, setMode] = useState(modeOptions.find((m) => m.modes.join() === (initial?.modes ?? []).join())?.value ?? "all");
@@ -83,7 +77,7 @@ export default function HistoryPage() {
   const projectBlocked = project === CURRENT_PROJECT && !currentId;
   const query = useMemo<HistoryQuery>(
     () => ({
-      scope,
+      scope: "real",
       project: project === CURRENT_PROJECT ? currentId : project || null,
       from: rangeStart(ranges.find((r) => r[0] === range)![2]),
       verdicts: verdictGroups.filter((g) => groups.includes(g.key)).flatMap((g) => g.verdicts),
@@ -92,14 +86,13 @@ export default function HistoryPage() {
       recipeId: recipeId || null,
       modes: modeOptions.find((m) => m.value === mode)!.modes,
     }),
-    [scope, range, groups, sn, tag, recipeId, mode, project, currentId],
+    [range, groups, sn, tag, recipeId, mode, project, currentId],
   );
   const currentQuery = useRef(query);
   currentQuery.current = query;
   const stale = result?.query !== query || result.offset !== offset;
   const page = result && !(stale && (error || projectBlocked)) ? result.page : null;
   const pending = stale && !!page;
-  const shownScope = page ? result!.query.scope : scope;
   const hasFilters = range !== "today" || groups.length > 0 || mode !== "all" || !!sn || !!tag || !!recipeId || !!project;
   const resetFilters = () => {
     setRange("today"); setGroups([]); setMode("all"); setSn(""); setTag(""); setRecipeId(""); setProject(""); setOffset(0);
@@ -143,7 +136,7 @@ export default function HistoryPage() {
   useEffect(() => subscribe<number[]>("history://changed", () => { if (!mutationBusy.current) load(); }), [load]);
 
   const selectedItems = page?.items.filter(item => selected.includes(String(item.id))) ?? [];
-  const canExportSelected = selectedItems.length === selected.length && selectedItems.every(item => item.source === "real" && !!item.cycleId && !!item.flags);
+  const canExportSelected = selectedItems.length === selected.length && selectedItems.every(item => !!item.cycleId && !!item.flags);
   const selectedTags = selectedItems.length === 1 ? selectedItems[0].tags ?? [] : [];
   const savedTags = () => {
     setRecordAction(null); setSelected([]); setNotice({ message: "人工 Tag 已保存。", warnings: [] }); load();
@@ -219,8 +212,6 @@ export default function HistoryPage() {
         <div className="hist-sn">
           <span className="sn" title={p.sn || undefined}>{p.sn || "—"}</span>
           {p.retestOf && <StatusBadge tone="warn" title={`复检，上一次记录 #${p.retestOf}`}>复检</StatusBadge>}
-          {p.source !== "real" && <StatusBadge tone="off">{sourceLabel[p.source]}</StatusBadge>}
-          {p.sample && <span title={`样本集 ${p.sample.setId} · 样本 SN ${p.sample.sn}`}><Chip>样本 {p.sample.partId}（{sampleLabelText[p.sample.label]}）</Chip></span>}
         </div>
       ),
     },
@@ -246,9 +237,7 @@ export default function HistoryPage() {
       render: (p) => (
         <span className="nowrap">
           {p.recipeId ?? "—"}
-          {p.source === "offlineCandidate"
-            ? <span className="muted"> · 候选修订 {p.recipeRevision ?? "未记录"}</span>
-            : p.recipeVersion != null && <span className="muted"> v{p.recipeVersion}</span>}
+          {p.recipeVersion != null && <span className="muted"> v{p.recipeVersion}</span>}
           {p.triggerMode && <span className="muted"> · {triggerModeLabel(p.triggerMode)}</span>}
         </span>
       ),
@@ -277,7 +266,6 @@ export default function HistoryPage() {
       <Card className="hist-filters">
         <Stack direction="column" align="stretch" gap={10}>
           <Stack gap={12}>
-              <SegmentedControl label="记录来源" options={scopeOptions} value={scope} onValueChange={(value) => { setScope(value as HistoryScope); setOffset(0); }} />
               <SegmentedControl label="记录日期" options={rangeOptions} value={range} onValueChange={(value) => { setRange(value); setOffset(0); }} />
               <SegmentedControl label="检测模式" options={modeOptions} value={mode} onValueChange={(value) => { setMode(value); setOffset(0); }} />
           </Stack>
@@ -323,7 +311,7 @@ export default function HistoryPage() {
           </div>
           <div className="hist-toolbar">
             <div className={`hist-counts${pending ? " is-loading" : ""}`} aria-busy={pending}>
-              <span>{shownScope === "debug" ? "候选调试" : shownScope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
+              <span>共 <b>{page?.total ?? 0}</b> 件</span>
               <span>OK <b className="c-ok">{page?.counts.ok ?? 0}</b></span>
               <span>局部超差 <b className="c-warn">{page?.counts.excursion ?? 0}</b></span>
               <span>NG <b className="c-ng">{page?.counts.ng ?? 0}</b></span>
@@ -346,8 +334,6 @@ export default function HistoryPage() {
             <Button leadingIcon={<Trash2 size={15} />} disabled={!selected.length || loading || stale} onClick={() => setRecordAction("delete")}>删除历史件（{selected.length}）</Button>
           </Stack>
           {notice && <Alert tone={notice.warnings.length ? "warn" : "ok"}>{notice.message}{notice.warnings.length > 0 && <ul className="hist-package-list">{notice.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}</Alert>}
-          {scope === "debug" && <Text as="p" variant="label" muted>候选调试仅供离线测试，不作为生产验收或生产统计。</Text>}
-          {scope === "offline" && <Text as="p" variant="label" muted>离线记录独立统计，不计入真机产量与良率。</Text>}
           {loading && stale && <Text variant="label" muted role="status">正在加载历史记录…</Text>}
           {exported && (
             <Alert tone="ok" action={<Button variant="text" size="sm" disabled={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</Button>}>

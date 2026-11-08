@@ -265,7 +265,6 @@ fn stored_record(saved: &[usize]) -> (std::path::PathBuf, crate::store::PartDeta
             delivery: &delivery,
             shots: &[],
             source: RecordSource::Real,
-            sample: None,
             burst: Some(&burst),
         })
         .unwrap();

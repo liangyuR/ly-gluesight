@@ -404,7 +404,7 @@ fn staging_dir(parent: &Path) -> Result<PathBuf, String> {
     Err("无法创建导入暂存目录".into())
 }
 
-/// 暂存记录库与清单逐件核对：库版本 10，记录正好是清单里的各件、都是真机段配方记录，原图引用都是包内相对路径；
+/// 暂存记录库与清单逐件核对：库版本 10 或 11，记录正好是清单里的各件、都是真机段配方记录，原图引用都是包内相对路径；
 /// 带原图的新件的 part.json 属于本件。`fresh` 为要装的件的 cycleId。
 fn verify_staged(
     database: &Path,
@@ -418,9 +418,9 @@ fn verify_staged(
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    if version != DB_VERSION {
+    if version != 10 && version != DB_VERSION {
         return Err(format!(
-            "{LABEL}的记录库版本 {version} 不受支持（支持 {DB_VERSION}）"
+            "{LABEL}的记录库版本 {version} 不受支持（支持 10、{DB_VERSION}）"
         ));
     }
     let mut stmt = conn

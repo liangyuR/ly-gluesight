@@ -15,7 +15,6 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::applog;
 use crate::cycle::{self, FrameView};
 use crate::judge::{Judgement, PointState};
-use crate::offline::sample_set::SampleRef;
 use crate::recipe::Recipe;
 use crate::recorder::{RecordedRawFile, RecordingOutcome, RecordingState as RecorderState};
 use crate::store::{
@@ -47,7 +46,6 @@ pub struct RecordedPart {
     pub delivery: PlcDelivery,
     pub shots: Vec<PartShot>,
     pub source: RecordSource,
-    pub sample: Option<SampleRef>,
     /// 段配方的帧与区域记录；没有原配方的记录为 None
     #[serde(default)]
     pub burst: Option<BurstRecord>,
@@ -75,7 +73,6 @@ impl RecordedPart {
             delivery: &self.delivery,
             shots: &self.shots,
             source: self.source,
-            sample: self.sample.as_ref(),
             burst: self.burst.as_ref(),
         }
     }

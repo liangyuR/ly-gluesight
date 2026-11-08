@@ -86,7 +86,7 @@
 ## 实现与验证
 
 - 后端：`workspace/pieces.rs`（`TeachingPiece`、`PieceView`、`replace_teaching_piece`、`measure_teaching`、旧流程候选），`workspace_set_teaching_piece`、`workspace_measure_teaching`；`workspace/burst.rs` 的 `calibrate_from_teaching`（按示教件分段写 N_exp）、`apply_reference`（写 x_ref）、`calibration_view` 与进度 `progress_v2`（示教件 → 分段 → 走廊示教 → 试测 → 验证 → 发布）；`burst_release.rs` 的 `segment_check`、`x_ref_check`。
-- 测试数据：`history_fixture.rs` 与 `examples/capture_fixture.rs`；`tests/native/lib.mjs` 与 `scripts/soak/` 按新流程建站。
+- 测试数据：`history_fixture.rs` 与 `examples/capture_fixture.rs`；`tests/native/lib.mjs` 保留按当前流程建站的手工辅助函数。
 - 前端：`HistoryPicker`、`FrameBrowser`、`TeachingPiecePage`、`PieceMask`、`HistoryTrials`；分段工作台与走廊示教固定用示教件；试测页测量示教件、确认容差、屏蔽帧组、历史件试测；配方库旧流程候选只能删除。
 - 默认测试：Rust `workspace/pieces_tests.rs` 覆盖换示教件后的清空范围（保留走廊与示教帧）、测量示教件写 x_ref 且走廊身份改变后失效；`burst_tests.rs` 覆盖示教件分段写各段 N_exp、未确认的草稿清空它们，以及保存时手改 N_exp / x_ref 不生效、改段类型清空；`burst_release_tests.rs` 覆盖示教件采集参数变化阻断发布；`segment_corridor_tests` 覆盖示教帧归属及逐段检测相机选择；`history_import_tests` 覆盖导入原图不依赖历史保留目录。前端 `teaching-piece.test.tsx` 覆盖不可用件禁选与原图参数，`recipe-calibration.test.tsx` 覆盖有未保存改动时不能测量示教件、容差按键入值确认。其他兼容路径与统计展示按改动范围专项验证。
 - 未验证：依赖设备与 lyFlow 的命令路径（导入、测量）只在编译与纯函数测试层面覆盖；原生端到端（`tests/native`）未跑。

@@ -352,19 +352,6 @@ export function burstFacts(detail) {
   };
 }
 
-/** 离线跑一件段配方（工况 scenario）：等出记录、握手结束、录制落定。notInspected 工况 PC 没有记录，不能用本函数。 */
-export async function produceBurst(call, recipeId, { scenario = "normal", partId = null, timeout = 90000 } = {}) {
-  const query = { recipeId, scope: "offline", limit: 1 };
-  const previous = await call("history_query", { query });
-  await call("offline_run", { recipeId, scenario, continuous: false, partId });
-  const summary = await until(async () => (await call("history_query", { query })).items.find(i => i.id !== previous.items[0]?.id),
-    Boolean, `工况 ${scenario} 未生成检测记录`, timeout);
-  const site = await until(() => call("site_status"), s => !s.running, `工况 ${scenario} 握手未结束`, 30000);
-  const detail = await until(() => call("history_detail", { id: summary.id }), d => d.recording.state !== "pending",
-    `工况 ${scenario} 的原图录制未落定（本件结论 ${summary.verdict}：${summary.reason}）`, 30000);
-  return { summary: detail.summary, detail, facts: burstFacts(detail), message: site.message };
-}
-
 /** 读取隔离实例清单，返回主窗口所在的 CDP 地址（显式 --cdp 优先）。 */
 export async function instanceCdp(instancePath, override, acceptsIdentifier) {
   const manifest = JSON.parse(await readFile(instancePath, "utf8"));

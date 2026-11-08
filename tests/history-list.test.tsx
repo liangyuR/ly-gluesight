@@ -21,17 +21,17 @@ it("换筛选后查询失败 → 不把上一次条件的记录当成新条件�
     if (command === "project_current") return projects[0].meta;
     if (command === "project_list") return projects;
     if (command === "history_query") {
-      if ((args as { query: { scope: string } }).query.scope === "offline") throw new Error("记录库忙");
+      if ((args as { query: { project: string } }).query.project === "line-a") throw new Error("记录库忙");
       return { total: 1, counts: { ok: 0, excursion: 0, ng: 1, err: 0 }, items: [burstPartSummary(1)] };
     }
     throw new Error(`Unexpected command: ${command}`);
   });
   render(<MemoryRouter><HistoryPage /></MemoryRouter>);
   await row(1);
-  await userEvent.click(screen.getByRole("button", { name: "离线件" }));
+  await userEvent.selectOptions(screen.getByLabelText("历史项目", { selector: "select" }), "当前项目（A 线）");
   expect(await screen.findByRole("alert")).toHaveTextContent("记录库忙");
   expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument();
-  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("离线共 0 件");
+  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 0 件");
 });
 
 // 防的回归：历史页默认只看当前项目（看不到其他项目的记录），或选“当前项目”后查询没带项目编号、仍混入其他项目的记录
@@ -97,7 +97,7 @@ it("保存常用与自定义 Tag → 列表显示标签并按标签精确筛选"
   await userEvent.click(table.getByRole("button", { name: "夜班复核" }));
   await waitFor(() => expect(screen.queryByRole("button", { name: "查看 SN SN-102 的记录" })).not.toBeInTheDocument());
   expect(screen.getByLabelText("历史 Tag")).toHaveValue("夜班复核");
-  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("真机共 1 件");
+  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 1 件");
   expect(screen.getByRole("button", { name: "查看 SN SN-101 的记录" })).toBeVisible();
 });
 
@@ -107,7 +107,7 @@ it("确认删除已选历史件 → 记录与统计刷新，取消确认则保�
     if (command === "recipe_list") return { recipes: [], errors: [] };
     if (command === "project_current") return projects[0].meta;
     if (command === "project_list") return projects;
-    if (command === "history_query") return page(deleted ? [] : [{ ...burstPartSummary(1), source: "offlineSample" }]);
+    if (command === "history_query") return page(deleted ? [] : [{ ...burstPartSummary(1), cycleId: null }]);
     if (command === "history_delete") { deleted = true; return { deleted: 1, warnings: [] }; }
     throw new Error(`Unexpected command: ${command}`);
   });
@@ -123,6 +123,6 @@ it("确认删除已选历史件 → 记录与统计刷新，取消确认则保�
   await userEvent.click(screen.getByRole("button", { name: "确认删除 1 件" }));
   expect(await screen.findByText("已删除 1 件历史记录。")).toBeVisible();
   await waitFor(() => expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument());
-  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("真机共 0 件");
+  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 0 件");
   expect(screen.getByRole("button", { name: "删除历史件（0）" })).toBeDisabled();
 });

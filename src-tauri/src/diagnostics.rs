@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::applog;
 use crate::judge::Verdict;
-use crate::store::{HistoryQuery, HistoryScope, PartDetail, RecordSource, Store};
+use crate::store::{HistoryQuery, HistoryScope, PartDetail, Store};
 use crate::ziparchive::ZipWriter;
 
 const MAX_RANGE_MS: i64 = 31 * 86_400_000;
@@ -281,7 +281,9 @@ fn collect_parts(store: &Store, request: &ExportRequest, notes: &mut Vec<String>
         }
         return Ok(parts);
     }
-    let scopes = request.scope.map_or_else(|| vec![HistoryScope::Real, HistoryScope::Offline, HistoryScope::Debug], |s| vec![s]);
+    let scopes = request
+        .scope
+        .map_or_else(|| vec![HistoryScope::Real], |s| vec![s]);
     let mut ids = Vec::new();
     for scope in scopes {
         let mut query = HistoryQuery { from: Some(request.from), to: Some(request.to + 1), scope, limit: 500, ..HistoryQuery::default() };
@@ -328,10 +330,6 @@ fn plc_logs(app: &AppHandle, from: i64, to: i64, notes: &mut Vec<String>) -> Vec
 
 fn part_images<W: std::io::Write>(app: &AppHandle, package: &mut Package<W>, detail: &PartDetail, budget: &mut u64) -> Result<usize, String> {
     let id = detail.summary.id;
-    if detail.summary.source == RecordSource::OfflineCandidate {
-        package.notes.push(format!("记录 #{id} 为候选调试件，原图在受管样本 samples/ 中，未重复打包"));
-        return Ok(0);
-    }
     let Some(cycle_id) = detail.summary.cycle_id.as_deref() else {
         package.notes.push(format!("记录 #{id} 没有 cycleId，无法确定原图"));
         return Ok(0);

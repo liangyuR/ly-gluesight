@@ -4,7 +4,6 @@ mod audit;
 mod burst_judge;
 mod calibration;
 mod camera;
-mod candidate;
 mod commands;
 mod cycle;
 mod cycle_ids;
@@ -27,7 +26,6 @@ mod inspection;
 mod instance;
 mod judge;
 mod log_storage;
-mod managed_samples;
 mod measure;
 mod mvs;
 mod offline;
@@ -50,7 +48,6 @@ mod segmentation;
 mod settings;
 mod shot_router;
 mod simimage;
-mod site;
 mod storage;
 mod storage_startup;
 mod store;
@@ -126,6 +123,9 @@ fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
             }
         }
         Err(error) => applog::write("warn", "历史件导入中断清理", &error),
+    }
+    for warning in store.cleanup_retired_recordings(&data) {
+        applog::write("warn", "清理停用离线记录", &warning);
     }
     Ok(store)
 }
@@ -295,22 +295,11 @@ pub fn run() {
             history::reveal_path,
             vision::vision_calib_info,
             vision::vision_calibrate,
-            site::site_status,
-            site::site_enter_offline,
-            site::site_leave_offline,
-            site::site_preview_sample_set,
-            site::site_pick_dir,
-            offline::offline_run,
-            offline::offline_stop,
-            offline::offline_inject,
             workspace::workspace_list,
-            offline::offline_pace,
-            offline::offline_fault_reset,
             recipe_capture::recipe_capture_get,
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_frame_image,
             recipe_capture::recipe_capture_round_thumbs,
-            workspace::workspace_debug_run,
             workspace::workspace_retry_publish,
             workspace::workspace_abandon_publish,
             workspace::workspace_capture_sample,
@@ -434,13 +423,8 @@ fn start_services(
     app.manage(operation::Operations::default());
     app.manage(flow_debug::FlowDebugHost::default());
     app.manage(production::ProductionHost::default());
-    app.manage(offline::OfflineHost::default());
-    let site_note = site::restore_choice(app);
     storage_startup::stage(app, 2);
     app.manage(cycle::CycleHost::init(app)?);
-    if let Some(note) = site_note {
-        cycle::log(app, "warn", "站点模式", note);
-    }
     storage_startup::stage(app, 3);
     app.manage(workspace::WorkspaceHost::init(app)?);
     storage_startup::stage(app, 4);

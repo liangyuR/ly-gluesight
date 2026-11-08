@@ -29,9 +29,8 @@
 .window-badges { display: flex; align-items: center; gap: 6px; min-width: 0; margin-left: 16px; }
 .window-badge { display: inline-flex; align-items: center; gap: 4px; height: 22px; min-width: 0; padding: 0 10px; overflow: hidden; border: 1px solid var(--outline-variant); border-radius: var(--r-full); color: var(--on-surface-variant); font-size: 11px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; text-decoration: none; }
 .window-badge:hover { color: var(--on-surface); }
-.window-badge.offline { border-color: transparent; background: var(--tertiary-container); color: var(--on-tertiary-container); }
 .window-badge.maintenance { flex-shrink: 0; border-color: transparent; background: var(--warn); color: var(--surface-lowest); }
-.window-badge:is(.offline, .maintenance):hover { filter: brightness(1.12); }
+.window-badge.maintenance:hover { filter: brightness(1.12); }
 .window-connections { display: flex; align-items: center; gap: 16px; flex-shrink: 0; margin-left: auto; padding-left: 16px; }
 .window-connection { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--on-surface-variant); white-space: nowrap; text-decoration: none; }
 .window-connection:hover { color: var(--on-surface); }

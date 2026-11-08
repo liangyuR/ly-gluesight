@@ -24,7 +24,6 @@ type Editing = { point: PlcPoint; isNew: boolean } | null;
 
 interface PlcPageProps {
   tagPresets?: TagPreset[];
-  readOnly?: boolean;
 }
 
 const configText = (config: PlcConfig | null) => JSON.stringify(config, (_key, value) =>
@@ -34,7 +33,7 @@ const fieldsetStyle = { border: 0, padding: 0, margin: 0, minWidth: 0 };
 const isCommonPoint = (point: PlcPoint) => point.tags.some(tag => commonPlcTags.has(tag));
 const isHandshakePoint = (point: PlcPoint) => point.tags.some(tag => inspectionHandshakeTags.has(tag));
 
-export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPageProps) {
+export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
   const status = usePlcStatus();
   const values = usePlcValues();
   const { blockedReason, handshake } = usePlcOperationState();
@@ -169,7 +168,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   const protectedWrite = (point: PlcPoint) => saved?.connection.protocol === "s7"
     && (point.id === saved.heartbeat.pointId || isHandshakePoint(point))
     ? "S7 握手和心跳由检测流程管理，不能手动写入" : "";
-  const lockReason = readOnly ? "离线期间只读" : blockedReason || (busy ? "PLC 操作进行中，请稍候" : "");
+  const lockReason = blockedReason || (busy ? "PLC 操作进行中，请稍候" : "");
   const writeBlocked = (p: PlcPoint) => lockReason || (p.access !== "readWrite" ? "只读点位不能写入"
     : !connected ? "PLC 未连接"
     : !live(p) ? "点位改动保存后才能写入"
@@ -247,7 +246,6 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
     action: <Button asChild size="sm"><Link to="/inspect">前往在线检测</Link></Button>,
   });
   if (dirty && invalid) notices.push({ key: "invalid", tone: "warn", text: invalid });
-  if (readOnly) notices.push({ key: "readOnly", tone: "info", text: "离线期间 PLC 由站点模式管理，本页只读", secondary: true });
   if (!tauri) notices.push({ key: "preview", tone: "info", text: "浏览器预览模式：PLC 连接、保存、写入需在桌面端运行" });
 
   const connectDisabledReason = !status ? "正在读取 PLC 状态"
@@ -269,7 +267,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
             <span>错误 <b className="mono">{status?.errorCount ?? 0}</b></span>
             <span>最近 <b className="mono">{connected && status?.lastPoll ? formatClock(status.lastPoll) : "--"}</b></span>
           </div>
-          <fieldset className="plc-actionbar-group plc-actionbar-actions" disabled={busy || readOnly} style={{ ...fieldsetStyle, marginLeft: "auto" }}>
+          <fieldset className="plc-actionbar-group plc-actionbar-actions" disabled={busy} style={{ ...fieldsetStyle, marginLeft: "auto" }}>
             {dirty && <>
               <StatusBadge tone="warn">未保存</StatusBadge>
               <Button leadingIcon={<Undo2 size={16} />} disabled={!!blockedReason} title={blockedReason || undefined}
@@ -289,10 +287,10 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
 
       <CommonMonitor connected={connected} tagValue={tagValue} />
 
-      <fieldset disabled={busy || readOnly} style={fieldsetStyle}>
+      <fieldset disabled={busy} style={fieldsetStyle}>
         <ConnectionCard draft={draft} saved={saved} onChange={setDraft} cpuPreset={cpuPreset}
           open={connectionOpen} onOpenChange={(open) => { connectionToggled.current = true; setConnectionOpen(open); }}
-          editBlockedReason={readOnly ? "离线期间只读" : blockedReason} blockedReason={blockedReason}
+          editBlockedReason={blockedReason} blockedReason={blockedReason}
           connected={connected} reconnectSaved={reconnectSaved} />
       </fieldset>
 

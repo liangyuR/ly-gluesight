@@ -29,7 +29,6 @@ fn summary(cycle_id: &str) -> PartSummary {
         bundle_id: None,
         delivery: PlcDelivery::default(),
         source: RecordSource::Real,
-        sample: None,
         flags: None,
         burst: None,
         mode: PartMode::MaintenanceCollect,

@@ -1,4 +1,4 @@
-export type CameraSource = "mvs" | "sim" | "sampleSet";
+export type CameraSource = "mvs" | "simulator" | "sim" | "sampleSet";
 /** 图像模式：gray 为 8 位灰度；color 为 8 位 Bayer 去马赛克后的 RGB（三目拼接不支持） */
 export type ImageMode = "gray" | "color";
 

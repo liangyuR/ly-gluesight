@@ -459,21 +459,19 @@ pub fn coverage(app: &AppHandle, recipe: &Recipe) -> Result<Option<String>, Stri
 }
 
 pub fn warmup(app: &AppHandle, recipe: &Recipe) -> Warmup {
-    if !crate::site::image_measurement(app) { return Warmup::Ready; }
     let key = warmup_key(recipe);
     app.state::<ProductionHost>().warmup(&key, Instant::now())
 }
 
-/// 这一配方的发布资源与图像引擎正在预热（尚未就绪也未失败）。
-pub fn warming(app: &AppHandle, recipe: &Recipe) -> bool {
-    warmup(app, recipe) == Warmup::Preparing
-}
-
 pub const OFFLINE_VALIDATED: &str = "该版本在离线环境验证发布，需在真机重新验证并发布";
 
-/// 离线验证发布的版本只能在离线模式运行。
-pub fn site_admits(site: ValidationSite, offline: bool) -> Result<(), String> {
-    if site == ValidationSite::Offline && !offline { Err(OFFLINE_VALIDATED.into()) } else { Ok(()) }
+/// 拒绝旧离线环境发布的版本，必须重新验证发布。
+pub fn site_admits(site: ValidationSite) -> Result<(), String> {
+    if site == ValidationSite::Offline {
+        Err(OFFLINE_VALIDATED.into())
+    } else {
+        Ok(())
+    }
 }
 
 pub const COLLECT_ONLY: &str = "配方只有采集版，仅维护模式可用";
@@ -503,15 +501,13 @@ fn check_acquisition(bundle: &ReleaseBundle, configs: &[crate::camera::CameraCon
 }
 
 pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, String> {
-    if crate::offline::candidate(app).is_some_and(|c| c.matches(recipe)) { return Ok(None); }
     stage_admits(recipe)?;
-    if !crate::site::image_measurement(app) { return Ok(None); }
     let host = app.state::<ProductionHost>();
     let site = match host.prepared(&warmup_key(recipe)) {
         Some(prepared) => prepared.bundle.manifest.validation_site,
         None => crate::workspace::published_manifest(app, recipe)?.validation_site,
     };
-    site_admits(site, crate::offline::enabled(app))?;
+    site_admits(site)?;
     let prepared = host.ensure(app, Arc::new(recipe.clone()))?;
     check_acquisition(&prepared.bundle, &app.state::<crate::cycle::CycleHost>().camera.configs())?;
     Ok(Some(prepared))

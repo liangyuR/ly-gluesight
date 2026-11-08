@@ -1,5 +1,6 @@
 use super::*;
 use crate::frame::CounterSource;
+use crate::offline::Scenario;
 
 /// 段配方在途件：samples_burst（cam1–cam3 共用触发、一个直线段 N_exp = 4、容差 1），相机组序号 0–2、会话 11–13，
 /// 按计数账定帧计数基线（模拟相机本会话没见过帧时从 0 起）。
@@ -66,9 +67,7 @@ fn armed_part_with(
         cycle_id: cycle_id.into(),
         bundle_id: None,
         production: None,
-        candidate: None,
         sn: "SN-88".into(),
-        scenario: Scenario::Normal,
         burst: Box::new(burst::BurstPart::arm(
             &recipe,
             baselines,
@@ -77,7 +76,6 @@ fn armed_part_with(
         )),
         device_triggers: None,
         routing_closed: false,
-        image_measurement: false,
         proc_timeout: Duration::from_secs(1),
         drain_timeout: Duration::from_secs(2),
         gate: None,
@@ -273,8 +271,39 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             (None, None, None),
             "{case}：测完后不再是送测中"
         );
-        // 模拟测量不读图；要测图的件补测只读本件录制，这里没有录制
-        p.image_measurement = !keep_images;
+        let recording_dir = crate::offline::test_dir::TestDir::new("cycle-post", case);
+        if keep_images {
+            let recorder = crate::recorder::Recorder::new(recording_dir.to_path_buf(), None);
+            let mut recording = recorder
+                .begin(
+                    crate::settings::RecordMode::All,
+                    &p.sn,
+                    p.recipe.clone(),
+                    &p.cycle_id,
+                    None,
+                )
+                .unwrap();
+            for seq in 1..=12 {
+                for camera in 0..3 {
+                    let mut frame = burst_frame(camera as u8, seq);
+                    frame.images = vec![Arc::new(crate::frame::FrameImage::new(1, 1, vec![128]))];
+                    recorder.burst_frame(&mut recording, &frame, camera, seq);
+                }
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while (1..=12).any(|seq| {
+                (0..3).any(|camera| {
+                    !matches!(
+                        recording.burst_frame_file(camera, seq),
+                        crate::recorder::RecordedFrame::Ready(_)
+                    )
+                })
+            }) {
+                assert!(Instant::now() < deadline, "{case}：测试原图未落盘");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            p.recording = Some(recording);
+        }
         end(&mut p, Some(12), true);
         assert!(!p.complete(), "{case}：还有要补测的帧，不能收尾");
         let mut jobs: Vec<(usize, u64, u32)> = p

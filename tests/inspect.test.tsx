@@ -1,24 +1,23 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import InspectPage from "../src/pages/InspectPage";
 import { cycleApi, recipeApi, useCycle, useLayout } from "../src/features/cycle/api";
-import { workspaceApi } from "../src/features/workspace/api";
 import { burstImageApi } from "../src/features/workspace/burstImages";
 import { plcApi } from "../src/features/plc/api";
-import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, deferred, readiness, sampleSet, siteStatus, snapshot } from "./fixtures";
+import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, readiness, snapshot } from "./fixtures";
 import { burstPartView, burstResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
-import type { LogLine, Readiness, Recipe, RecipeSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
+import type { LogLine, Readiness, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
 import type { PlcHandshakeState, PointValue } from "../src/features/plc/types";
 
 vi.mock("../src/features/cycle/api", () => ({
   useCycle: vi.fn(), useRecipes: () => recipeList, useLayout: vi.fn(),
-  useSiteStatus: () => site, useReadiness: () => ({ readiness: report, refresh: async () => report }), cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), offlineRun: vi.fn(), offlineStop: vi.fn(), setMaintenance: vi.fn() },
+  useReadiness: () => ({ readiness: report, refresh: async () => report }), cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), setMaintenance: vi.fn() },
   recipeApi: { doc: vi.fn(), list: vi.fn() },
 }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), debugRun: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(),  } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), liveView: vi.fn(), record: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
   usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {},
@@ -26,7 +25,6 @@ vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, useP
 
 let state: Snapshot, layout: Recipe | null, logs: LogLine[];
 let recipeList: RecipeSummary[];
-let site: SiteStatus;
 let report: Readiness;
 let values: Record<string, PointValue>;
 let plcHandshake: PlcHandshakeState | null;
@@ -35,18 +33,13 @@ const candidate = (id = "A") => burstWorkspaceView(recipe(id));
 beforeEach(() => {
   state = snapshot(); layout = candidate().layout; logs = []; values = {}; plcHandshake = null;
   recipeList = [burstSummary(recipe()), burstSummary(recipe("B"))];
-  site = siteStatus();
   report = readiness();
   vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, logs }));
   vi.mocked(useLayout).mockImplementation(() => layout);
   vi.mocked(cycleApi.selectRecipe).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.reset).mockReset().mockResolvedValue(undefined);
-  vi.mocked(cycleApi.offlineRun).mockReset().mockResolvedValue(undefined);
-  vi.mocked(cycleApi.offlineStop).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.setMaintenance).mockReset().mockResolvedValue(undefined);
   vi.mocked(recipeApi.list).mockReset().mockResolvedValue({ recipes: recipeList, errors: [], unavailable: [] });
-  vi.mocked(workspaceApi.list).mockReset().mockResolvedValue([candidate().workspace, candidate("B").workspace]);
-  vi.mocked(workspaceApi.debugRun).mockReset().mockResolvedValue(undefined);
   vi.mocked(burstImageApi.live).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
   vi.mocked(burstImageApi.liveView).mockReset().mockResolvedValue(null);
   vi.mocked(recipeApi.doc).mockReset().mockImplementation(async id => recipe(id));
@@ -175,33 +168,6 @@ describe("在线检测段配方", () => {
     await waitFor(() => expect(burstImageApi.live).toHaveBeenCalledTimes(3));
     expect(live()).toEqual([[0, 12], [1, 12], [2, 12]]);
     expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
-  });
-
-});
-
-describe("候选配方离线试运行", () => {
-  it("未发布候选请求被拒绝 → 保留真实原因并允许按同一修订重试，准备中不重复启动", async () => {
-    site = siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet(), nextPart: "part-1" });
-    const request = deferred<void>();
-    vi.mocked(workspaceApi.debugRun).mockReturnValueOnce(request.promise);
-    render(<MemoryRouter initialEntries={["/inspect?candidate=B"]}><InspectPage /></MemoryRouter>);
-    const panel = within(screen.getByRole("region", { name: "候选配方离线试运行" }));
-    const run = panel.getByRole("button", { name: "候选试运行一圈" });
-    await waitFor(() => expect(run).toBeEnabled());
-    expect(nativeSelect("调试候选配方", panel)).toHaveValue("B");
-    await userEvent.selectOptions(nativeSelect("调试样本件", panel), "part-1");
-    fireEvent.click(run);
-    fireEvent.click(run);
-    expect(workspaceApi.debugRun).toHaveBeenCalledTimes(1);
-    expect(workspaceApi.debugRun).toHaveBeenLastCalledWith("B", candidate("B").workspace.revision, "part-1");
-    expect(run).toBeDisabled();
-    await act(async () => request.reject(new Error("候选已变化，请刷新候选")));
-    expect(panel.getByRole("alert")).toHaveTextContent("候选已变化，请刷新候选");
-    expect(run).toBeEnabled();
-    await userEvent.click(run);
-    expect(workspaceApi.debugRun).toHaveBeenCalledTimes(2);
-    expect(panel.queryByRole("alert")).not.toBeInTheDocument();
-    expect(cycleApi.offlineRun).not.toHaveBeenCalled();
   });
 
 });

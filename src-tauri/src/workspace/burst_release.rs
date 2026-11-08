@@ -169,38 +169,13 @@ fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
 
 /// 当前设备的相机标签（`camera_state`，与示教帧冻结时同一口径：样本集相机带样本集编号），按相机编号。
 pub(super) fn current_camera_tags(app: &AppHandle) -> BTreeMap<String, Value> {
-    let sample_set = crate::offline::sample_set(app).map(|set| set.manifest().id.clone());
+    let sample_set = None::<String>;
     app.state::<CycleHost>()
         .camera
         .configs()
         .iter()
         .map(|c| (c.id.clone(), camera_state(c, sample_set.as_deref())))
         .collect()
-}
-
-/// 段配方候选试运行（`workspace_debug_run`）用的各计划相机示教帧尺寸（计划相机顺序，交给 `Candidate::new_burst`）：
-/// 每段每台检测相机都示教了走廊，且各示教帧采集后这台相机的设备标签（`current`）没变——与走廊示教验证项同一口径。
-/// 开跑前 `recheck_debug_candidate` 再核对一次。
-pub(super) fn debug_sizes(
-    w: &Workspace,
-    current: &BTreeMap<String, Value>,
-) -> Result<Vec<[u32; 2]>, String> {
-    if let Some((camera, segment)) = untaught_pairs(w).into_iter().next() {
-        return Err(format!(
-            "第 {segment} 段相机 {camera} 还没有示教走廊：先完成走廊示教"
-        ));
-    }
-    if let Some(t) = w
-        .camera_teaching
-        .iter()
-        .find(|t| t.segment.is_some() && current.get(&t.camera) != Some(&t.frame.camera_tag))
-    {
-        return Err(format!(
-            "相机 {}：示教帧采集后设备参数或样本集已改变，请重新采集并重选示教帧",
-            t.camera
-        ));
-    }
-    super::burst::teaching_sizes(w)
 }
 
 /// 段帧数（规格 §1 没有 N_exp 不能发布）：各段 N_exp 取示教件已确认分段的帧组数（RB-3；D-SB-45：生产按累计 N_exp 预测
@@ -496,9 +471,6 @@ fn validate_sample(
     let history_id = sample.history_id.ok_or("样本来源未指定")?;
     let store = app.state::<Store>();
     let detail = store.detail(history_id)?;
-    if detail.summary.source == store::RecordSource::OfflineCandidate {
-        return Err("候选调试记录不能作为独立发布验证样本".into());
-    }
     let origins =
         history_import::round_origins(app.state::<CycleHost>().camera.recipe_capture(), &w.doc.id)?;
     let devices = history_import::recorded_devices(app, &detail.summary, &detail.recording);
@@ -973,11 +945,7 @@ pub(super) fn freeze_bundle(
                 engine: engine.identity.clone(),
                 graph: crate::production::GRAPH_VERSION_BURST.into(),
             },
-            validation_site: if crate::offline::enabled(app) {
-                ValidationSite::Offline
-            } else {
-                ValidationSite::Real
-            },
+            validation_site: ValidationSite::Real,
             graph: crate::release::ResourceSource::Bytes(
                 serde_json::to_vec(&crate::production::burst_graphs(&recipe, &sizes)?)
                     .map_err(|e| e.to_string())?,

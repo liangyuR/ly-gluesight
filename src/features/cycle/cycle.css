@@ -5,13 +5,6 @@
 .c-mut { color: var(--on-surface-variant); }
 
 
-.offline-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sample-part-select { max-width: 100%; }
-.offline-controls.compact { padding: 4px 8px; border: 1px dashed var(--outline-variant); border-radius: var(--r-md); }
-.offline-label { font-size: 12px; color: var(--warn); }
-.offline-msg { font-size: 12px; color: var(--on-surface-variant); }
-.offline-summary { margin: 0; }
-
 .wp-runtime-frame .wp-viewport { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .wp-runtime-frame .wp-gray-image { flex: 1; min-height: 0; height: 0; }
 .wp-runtime-frame .wp-image-empty { flex: 1; min-height: 0; padding: 12px; }
@@ -43,8 +36,7 @@
 .readiness-item.r-waiting { background: var(--warn-container); }
 .readiness-detail { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .readiness-hint { font-size: 12px; }
-.readiness-item a, .offline-guide a, .offline-msg a { color: var(--primary); margin-left: 6px; white-space: nowrap; }
-.offline-guide { font-size: 12.5px; color: var(--warn); }
+.readiness-item a { color: var(--primary); margin-left: 6px; white-space: nowrap; }
 .readiness-diagnostics-entry { grid-column: 2; grid-row: 1; }
 .inspection-drawer > .bd { display: flex; flex-direction: column; gap: 16px; }
 .diagnostic-content { overflow-wrap: anywhere; }
@@ -76,6 +68,3 @@
   .readiness-embedded .readiness-item { grid-template-columns: max-content minmax(0, 1fr); }
   .readiness-embedded .readiness-detail, .readiness-embedded .readiness-item > a { grid-column: 2; }
 }
-
-.offline-published-controls { width: 100%; }
-.offline-published-controls > summary { cursor: pointer; color: var(--on-surface-variant); padding: 8px 0; }

@@ -23,7 +23,7 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 5. **分段（按笔或按比例，D-SB-62、D-SB-40）**：段结构由人定，各段 N_exp 取示教件已确认手动分段的各段帧组数。一次门控即一笔，示教件的笔结构随 N_exp 写进配方；本件笔数相同时段边界按笔换算，两笔之间的边界确定、不留过渡区，笔中间的边界两侧各 `boundaryGuard`（默认 2）帧为过渡区（只判每帧指标、不判胶偏）。没有笔结构时 `Proportional` 按各段 N_exp 比例与本件帧组数推算边界，帧组数在 ΣN_exp ± Σtol 内时可信。每笔开头、结尾按配方 `passSkip` 跳过，整笔太短的不检。单段配方、有段还没有 N_exp、笔数不同或帧组数越界时整条胶路按未分段区域判：只跑每帧检测、不判胶偏。帧数只核对整件，笔数不同只告警。
 6. **每帧测量**：帧到达时按预测段选择检测相机与该段走廊，收尾后补测归属变化的帧，其余相机记 `NotInspected`；参与检测的帧用 lyFlow 的测量算子量出每站暗段、GlueSight 判每站有无胶（[LF-3](decisions/lyflow-operators.md)），得出胶宽、断胶与胶中心偏移 x，输出 `FrameMetrics`；测量队列满、超时记 Unmeasured，走出走廊记 OutOfCorridor，都只算检测不完整。
 7. **区域判定**（`burst_judge`）：每帧胶宽、断胶、溢胶（NG_WIDTH）三类区域都判，开了偏宽只预警的段超出上限与溢胶上限只记预警、PLC 收到合格（D-SB-61）；胶偏只在直线段，去首尾各一帧后用 x 均值与参考值（测量示教件得出的 x_ref，或 ToEdge 的图纸胶边距，D-SB-48）判整段偏移、最大偏差判局部跑偏；按本段检测相机取最差，未分段区域按每帧预测段的检测相机取最差。`flags`（检测不完整、帧数异常、笔数异常、`short_part` 疑似提前终止、胶宽偏宽与溢胶预警）、未检区域、未检项（气泡、拉丝）与“胶偏未判”原因都不改 OK/NG；只有三台相机整件没有一帧测成才判 ERR 91。
-8. **落库与历史**：本机一份记录库（版本 10，记录带所属项目，[history-scope](decisions/history-scope.md)），`part_frames` 每台相机每帧一条（缺帧也有），`parts.burst_judgement` 存整份区域判定，`parts.mode` 区分正常件与维护件；原图按帧录制为 `{相机}_s{seq:06}.pgm`，每帧一份；现场相机用彩色模式，原图是带 `# bayer` 注释的原始 Bayer PGM，读图时还原为 RGB（[r2-records](decisions/r2-records.md) R-8、[color](decisions/color.md) CL-1）；审计 spool 格式 4；历史按 (计划相机, seq) 读图、复测与重判。
+8. **落库与历史**：本机一份记录库（版本 11，记录带所属项目，[history-scope](decisions/history-scope.md)），`part_frames` 每台相机每帧一条（缺帧也有），`parts.burst_judgement` 存整份区域判定，`parts.mode` 区分正常件与维护件；原图按帧录制为 `{相机}_s{seq:06}.pgm`，每帧一份；现场相机用彩色模式，原图是带 `# bayer` 注释的原始 Bayer PGM，读图时还原为 RGB（[r2-records](decisions/r2-records.md) R-8、[color](decisions/color.md) CL-1）；10 版库原地迁移到 11，保留生产记录，删除旧离线及候选调试记录，写墓碑防止回放恢复；原图只在旧离线根下核对归属后清理，不合规路径保留并告警（[项目设计](architecture/project.md)）；审计 spool 格式 4；历史按 (计划相机, seq) 读图、复测与重判。
 
 配方的建立流程（候选工作区，[示教件决策](decisions/recipe-build-flow.md)）：示教件（从维护模式录制的历史件里选一件，导入前可预览原图；开发与测试用 `capture_fixture` 生成仿历史录制件）→ 分段（在示教件上按图像定段与边界，确认后各段 N_exp 取示教件各段帧组数，ΣN_exp 取各段之和）→ 每段每台检测相机的走廊示教（示教帧只取自示教件）→ 试测（测量示教件：单段配方的直线段得 x_ref；逐段确认容差，默认 2 帧；起涂收尾建议；用历史件试测）→ 发布（发布前检查当场核对，独立样本验证可选，D-SB-46）。示教件即基准件，兼作标准件，没有另选的标定件。换示教件或从生产配方改版时清空边界、走廊、N_exp 与 x_ref，保留段结构。示教件支持带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除测量取样，不改已确认的分段。界面不显示采集轮次（只是存储格式）。旧流程建的候选已停用，只能删除。生产与独立样本判定按各段 N_exp 的比例分段；手动边界本身不直接进生产。见 [配方创建流程](architecture/recipe-creation-workflow.md) 与其中的[示教件分段与帧组屏蔽](architecture/recipe-creation-workflow.md#示教件分段与帧组屏蔽)。
 
@@ -56,9 +56,9 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 采集轮次 | `recipe_capture/burst.rs`（`CaptureRoundV2`） |
 | 候选工作区 | `workspace.rs`、`workspace/pieces.rs`（示教件、测量示教件、旧流程候选）、`workspace/burst.rs`（走廊示教、按示教件分段写 N_exp、x_ref、容差确认）、`workspace/burst_release.rs`（验证与发布、采集版）、`workspace/burst_history.rs`（历史读图与复测） |
 | 发布包 | `release.rs`（`publish_burst`，schema 5） |
-| 记录、录制、审计 | `store.rs`（`part_frames`、`parts.project_id`，库版本 10）、`store/merge.rs`（旧库并入、按项目导出子集）、`store/package.rs` 与 `history_package.rs`（历史件导出包）、`recorder.rs`、`audit/` |
+| 记录、录制、审计 | `store.rs`（`part_frames`、`parts.project_id`，库版本 11）、`store/merge.rs`（旧库并入、按项目导出子集）、`store/package.rs` 与 `history_package.rs`（历史件导出包）、`recorder.rs`、`audit/` |
 | 项目 | `project.rs`（`ActiveProject`、`resolve`、`project_switch`）、`project/manage.rs`、`project/transfer.rs`（导出导入、复制）、`project/records.rs`（本机记录库路径、记录所属项目的原图与发布包、启动合并）、`storage_startup.rs`；前端 `src/pages/ProjectsPage.tsx`、`src/features/project/` |
-| 离线仿真 | `offline/line.rs`、`offline/scenario.rs`、`offline/sample_set.rs`、`offline/s7_server.rs`、`simimage.rs` |
+| 独立生产模拟 | `tools/production-simulator/` 提供 S7 与 TCP 相机服务，应用以 `camera::CameraSource::Simulator` 接收；使用方式见 [独立生产模拟器](testing/production-simulator.md) |
 | 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`TeachingPiecePage`、`HistoryPicker`、`PlanProgress`；`src/features/plan/` |
 
 ## 二、未完成事项
@@ -72,7 +72,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
   - 检测相机在本段的测成率提示（D-SB-41、D-SB-45）。
   - 现场工控机吞吐复测（D-SB-45 按预测段测量与收尾补测后，见下条）。
   - 原生端到端脚本没有按段走廊重跑；多段配方的端到端夹具要按段准备示教帧。
-- **3 × 25 Hz 吞吐门槛**：没有达标，也没有被直接验证。门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput`（并重跑 `throughput_probe` 探针）后，再决定降帧率还是加测量并发（[segment-burst](decisions/segment-burst.md) 第七节）。
+- **3 × 25 Hz 吞吐门槛**：没有达标，也没有被直接验证。门槛口径不改，等现场工控机用真实相机做持续生产压测（并重跑 `throughput_probe` 探针）后，再决定降帧率还是加测量并发（[segment-burst](decisions/segment-burst.md) 第七节）。
 - **在线投运**：一期至三期（维护模式采集、历史件导入为采集轮次、试判统计与复核）已实施，只有软件回归覆盖，隔离实例端到端与现场都没有跑过（[在线投运方案](architecture/online-commissioning.md)）。
 - **已接受、待确认的取舍**：气泡、拉丝不检；弯道的出胶点短走廊没有真实弯道图验证；提前结束只加 `short_part`、不判 ERR。汇总见 [决策索引](decisions/README.md)。
 - **真机验证**：PLC 协议 8、机械臂信号接口、三台相机共用触发、带宽（三路 25 Hz 估算约 826 Mbps）、现场节拍与检测准确率都没有验证。仓库不保存 PLC 程序，PLC 侧按协议 8 规格由现场工程实现。
@@ -85,7 +85,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 
 | 目录 | 内容 |
 | --- | --- |
-| [integration/](integration) | [生产通讯协议 8](integration/plc-communication-protocol.md)、[离线样本集格式](integration/sample-set-format.md)、[Agent 示教接口（MCP）](integration/agent-teaching.md)、[示教执行问题与改进项](integration/agent-teaching-findings.md) |
+| [integration/](integration) | [生产通讯协议 8](integration/plc-communication-protocol.md)、[样本夹具格式](integration/sample-set-format.md)、[Agent 示教接口（MCP）](integration/agent-teaching.md)、[示教执行问题与改进项](integration/agent-teaching-findings.md) |
 | [architecture/](architecture) | [配方创建流程](architecture/recipe-creation-workflow.md)、[在线投运方案](architecture/online-commissioning.md)、[项目设计](architecture/project.md)、[存储布局](architecture/storage-layout.md)、[历史件导出包](architecture/history-package.md)、[lyFlow 依赖](architecture/lyflow-dependency.md)、[运行日志](architecture/agent-logging.md)与[事件编码表](architecture/agent-logging-codes.md) |
 | [decisions/](decisions/README.md) | 现行决策：取舍、回退方式与需要用户确认的事项 |
 | [testing/](testing/TESTING.md) | 测试运行与复现、长稳与故障注入运行说明 |

@@ -104,7 +104,6 @@ fn recorded(m: &Machine, recipe: &Recipe, cycle: &str, sn: &str) -> i64 {
             },
             shots: &[],
             source: RecordSource::Real,
-            sample: None,
             burst: Some(&burst),
         })
         .unwrap();

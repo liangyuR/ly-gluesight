@@ -3,12 +3,12 @@ import { RefreshCw } from "lucide-react";
 import { Button, List, ListItem } from "qing-steel";
 import type { CameraConfig, CameraStatus } from "../types";
 
-const sourceText = { mvs:"海康 MVS",sim:"合成图（离线）",sampleSet:"样本集（离线）" } as const;
+const sourceText = { mvs:"海康 MVS",simulator:"外部模拟器",sim:"合成图（离线）",sampleSet:"样本集（离线）" } as const;
 
 export function cameraState(config: CameraConfig, status: CameraStatus | null): { tone: "ok" | "warn" | "off"; label: string; text: string } {
   if (status?.released) return { tone:"warn", label:"已释放", text:"已释放给 MVS" };
   if (status?.ready) return { tone:"ok", label:"已连接", text:status.device ? `${status.device.model} · ${status.device.serial}` : sourceText[config.source] };
-  if (config.source === "mvs" && !config.serial) return { tone:"warn", label:"未绑定", text:"未绑定设备" };
+  if ((config.source === "mvs" || config.source === "simulator") && !config.serial) return { tone:"warn", label:"未绑定", text:"未绑定设备" };
   if (!status) return { tone:"off", label:"读取中", text:"正在读取相机状态" };
   return { tone:"warn", label:"未就绪", text:status.message || "相机未就绪" };
 }

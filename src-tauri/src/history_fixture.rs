@@ -229,7 +229,6 @@ impl FixtureSite {
             },
             shots: &[],
             source: RecordSource::Real,
-            sample: None,
             burst: Some(&burst),
         })?;
         let outcome = self.record(sn, &cycle_id, ts, &reason, part);

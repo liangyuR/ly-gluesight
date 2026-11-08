@@ -32,7 +32,7 @@
 
 - 问题：日志散落在相机、PLC、测量、录制等模块，逐处传 cycleId 改动面大。
 - 可选项：A 每个调用点显式传入；B 在途工件上下文自动附加；C 只按时间窗口关联。
-- 采用：A + B。partStart 时 `applog::begin_cycle`（cycleId、SN、requestSeq，选定配方后补 recipeId），S7 事务结束、复位完成或站点模式切换（丢弃当前工件身份）时 `end_cycle`；在途期间写入的记录自动补齐这些字段。帧到达、测量完成等显式带相机、seq 与耗时数据。显式指明了其他 cycleId 的记录不会被改写。
+- 采用：A + B。partStart 时 `applog::begin_cycle`（cycleId、SN、requestSeq，选定配方后补 recipeId），S7 事务结束或复位完成时 `end_cycle`；在途期间写入的记录自动补齐这些字段。帧到达、测量完成等显式带相机、seq 与耗时数据。显式指明了其他 cycleId 的记录不会被改写。
 - 说明：在途期间其他模块的记录（相机断线、PLC 告警）也会挂到本件，这是有意的：回看时需要看到本件期间发生的设备事件。不按内容哈希、不按时间猜测关联运行日志。
 - 回退：去掉 `correlate` 中的自动补齐，只保留显式字段。
 
@@ -47,7 +47,7 @@
 - 可选项：A 导出目录；B tar；C ZIP（引入 zip crate）；D ZIP（自写最小写入器）。
 - 采用：D。Windows 资源管理器直接打开，不新增依赖（复用已锁定的 `flate2` 与 `crc32fast`）。只写普通 ZIP（无 ZIP64），因此限制：时间范围 ≤ 31 天、记录 ≤ 5000 件、附原图 ≤ 200 件且原图总量 ≤ 2 GB、PLC 日志 ≤ 20 万条；超限部分不打包并写入 `manifest.json` 的 notes。
 - 哈希规则：ZIP 条目的 CRC32 是格式规定的传输校验，由解压工具使用；软件不用它做任何业务匹配、校验或身份关联，不违反“禁止哈希匹配”。
-- 内容：`manifest.json`（导出参数、构建信息 `build`、`utcOffset`、`logSchema`、`configSummary`、`notes`，以及除自身外每个文件的 path、bytes、sha256）、`README.md`（包结构、时间口径、事件编码表与推荐分析顺序）、`logs/gluesight-*.jsonl`（时间段内）、`logs/plc.jsonl`（时间段内，时间正序，每行带本地时间 `t`）、`config/`、`state/`（单文件 ≤ 8 MB；握手审计当前文件只写时间段内的行，已滚动分段取与时间段有交集的）、`records/parts.csv` 与 `records/parts.jsonl`（完整明细）、`recipes/<revisionId>.json`（涉及的配方快照）、`records/<记录号>_<cycleId>/`（原图、`part.json`、对照结果）。不含 WebView 资料与样本原件；候选调试件的原图在受管样本中，不重复打包。
+- 内容：`manifest.json`（导出参数、构建信息 `build`、`utcOffset`、`logSchema`、`configSummary`、`notes`，以及除自身外每个文件的 path、bytes、sha256）、`README.md`（包结构、时间口径、事件编码表与推荐分析顺序）、`logs/gluesight-*.jsonl`（时间段内）、`logs/plc.jsonl`（时间段内，时间正序，每行带本地时间 `t`）、`config/`、`state/`（单文件 ≤ 8 MB；握手审计当前文件只写时间段内的行，已滚动分段取与时间段有交集的）、`records/parts.csv` 与 `records/parts.jsonl`（完整明细）、`recipes/<revisionId>.json`（涉及的配方快照）、`records/<记录号>_<cycleId>/`（原图、`part.json`、对照结果）。不含 WebView 资料与样本原件。
 - 原图默认只附异常件（NG / ERR / 局部超差），新的优先；从历史详情导出“本件诊断包”时附该件全部原图。
 - 回退：删除 `diagnostics_export` 命令与界面入口，不影响其他功能。
 

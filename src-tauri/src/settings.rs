@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// 帧录制：把一件工件的整帧图像与元数据落盘，供历史复测。离线期间临时为保留全部。
+/// 帧录制：把一件工件的整帧图像与元数据落盘，供历史复测。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RecordMode {
@@ -82,8 +82,6 @@ pub struct CycleSettings {
     /// 帧录制最多保留多少件、总共多少 GB，超出删最旧的
     pub record_keep: u32,
     pub record_max_gb: f32,
-    pub offline_record_keep: u32,
-    pub offline_record_max_gb: f32,
     /// 只由维护模式命令改写，保存检测设置时沿用当前值
     pub maintenance: Option<Maintenance>,
 }
@@ -98,8 +96,6 @@ impl Default for CycleSettings {
             record: RecordMode::All,
             record_keep: 100,
             record_max_gb: 100.0,
-            offline_record_keep: 300,
-            offline_record_max_gb: 100.0,
             maintenance: None,
         }
     }
@@ -160,12 +156,6 @@ impl CycleSettings {
         }
         if !(self.record_max_gb >= 0.5 && self.record_max_gb <= 10_000.0) {
             return Err("帧录制总大小需在 0.5–10000 GB 之间".into());
-        }
-        if !(1..=100_000).contains(&self.offline_record_keep) {
-            return Err("离线原图保留件数需在 1–100000 之间".into());
-        }
-        if !(self.offline_record_max_gb >= 0.5 && self.offline_record_max_gb <= 10_000.0) {
-            return Err("离线原图总大小需在 0.5–10000 GB 之间".into());
         }
         Ok(())
     }

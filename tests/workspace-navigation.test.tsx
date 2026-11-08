@@ -10,7 +10,7 @@ import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import SegmentsPage from "../src/features/workspace/SegmentsPage";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
-import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, siteStatus, snapshot } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, snapshot } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
@@ -35,7 +35,6 @@ beforeEach(() => {
       case "workspace_navigation_image": return [1, 2, 3];
       case "camera_rig_config": case "camera_rig_status": case "cycle_logs": return [];
       case "cycle_snapshot": return snapshot();
-      case "site_status": return siteStatus();
       case "vision_calib_info": return null;
       case "plc_get_status": return { state: "connected" };
       case "workspace_publish_checks": return [{ name: "示教", passed: true, detail: "已完成" }];

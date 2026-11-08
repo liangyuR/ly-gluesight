@@ -8,7 +8,7 @@
 - Node.js ≥ 24.15，pnpm 12（版本见 `package.json` 的 `engines` 与 `packageManager`）
 - Rust 1.99.1（`rust-toolchain.toml` 锁定，rustup 会自动安装）与 MSVC 生成工具、WebView2
 - PowerShell 7（`pwsh`），用于依赖与打包脚本
-- 可选：海康 MVS SDK。未安装时只能使用模拟相机
+- 可选：海康 MVS SDK。未安装时可使用独立生产模拟器的 TCP 相机
 
 ## 开发运行
 
@@ -58,19 +58,13 @@ pnpm test                                   # 前端单元测试
 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
 
-Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 Rust 默认库回归（`cargo test --locked --lib`）。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、样本转换、打包与长稳脚本检查及桌面 E2E 均不在普通 PR CI 中执行。
+Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）和独立生产模拟器测试。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、样本转换、打包及桌面验收 均不在普通 PR CI 中执行。
 
 按 [测试说明](docs/testing/TESTING.md) 选择受影响文件或模块运行。Rust 默认集合包含少量 S7 回环、SQLite 与原图落盘集成测试，不需要现场硬件或 lyFlow DLL。算法评测通过独立 example 手动运行。
 
-桌面 E2E 保留手动入口，使用 Playwright Test 连接应用 WebView2，无需下载 Playwright 浏览器。合成图段配方生产验证需要 lyFlow，无需现场样本集：
+正常生产模拟使用[独立生产模拟器](docs/testing/production-simulator.md)：工具作为单独进程提供 S7 PLC 和 TCP 相机图像，GlueSight 按正式配方走生产检测、结果回写与记录落盘，不切换应用模式。使用现场原图和匹配的正式配方验证正常生产；自动生成的条图只用于连通性检查。
 
-```powershell
-pnpm test:ui:production -Suite burst -ResetData
-```
-
-生产落盘入口保留原命令并支持 `-Grep` 筛选，默认构建一次，再由夹具管理实例和失败证据。单独准备构建使用 `pnpm test:desktop:build -Profile flow`；测试加 `-SkipBuild` 可复用该 profile 的产物，但不会检查源码是否更新。HTML、JUnit 和失败截图、trace 位于 `output/playwright/<profile>-regression/runner/`；原业务 JSON 位置保持不变。
-
-长稳与故障注入见[长稳运行说明](docs/testing/soak-report.md)。参数、隔离实例、现场验收与证据边界见[测试说明](docs/testing/TESTING.md)。
+需要隔离桌面实例时使用 `pnpm test:desktop:build -Profile flow`，再运行 `scripts/Start-UiTestInstance.ps1 -Profile flow -SkipBuild`。参数、现场验收与证据边界见[测试说明](docs/testing/TESTING.md)。
 
 ## 打包
 

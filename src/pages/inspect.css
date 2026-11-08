@@ -11,7 +11,6 @@
 .prod-bar .prod-sn b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prod-bar .qs-select.prod-recipe { max-width: 360px; }
 .prod-phase.run .dot { background: var(--primary); }
-.prod-bar .offline-msg[role="status"] { width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .prod .inspection-readiness { display: grid; grid-template-columns: minmax(320px, max-content) minmax(0, 1fr) auto; align-items: center; gap: 4px 16px; min-height: 44px; padding: 6px 14px; }
 .prod .inspection-readiness > * { grid-column: 1 / -1; }

@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use crate::burst_judge::{BurstJudgement, Flags, FrameMetrics, FrameState};
 use crate::cycle::{FrameStatus, FrameView};
 use crate::judge::{Judgement, PointState, Verdict};
-use crate::offline::sample_set::SampleRef;
 use crate::plan::PathSegment;
 use crate::recipe::Recipe;
 
@@ -37,7 +36,6 @@ pub struct PartRecord<'a> {
     pub delivery: &'a PlcDelivery,
     pub shots: &'a [PartShot],
     pub source: RecordSource,
-    pub sample: Option<&'a SampleRef>,
     /// 段配方的帧与区域记录；没有原配方的记录为 None
     pub burst: Option<&'a BurstRecord>,
 }
@@ -122,53 +120,30 @@ pub enum PartMode {
     MaintenanceShadow,
 }
 
-/// 记录来源：按写库时的站点模式与离线来源决定。真机件与离线件分开统计、分开保存原图。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RecordSource {
     #[default]
     Real,
-    OfflineSynthetic,
-    OfflineSample,
-    OfflineCandidate,
 }
-
 impl RecordSource {
-    pub fn offline(self) -> bool {
-        self != Self::Real
-    }
-
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Real => "真机",
-            Self::OfflineSynthetic => "离线·合成图",
-            Self::OfflineSample => "离线·样本集",
-            Self::OfflineCandidate => "候选离线调试",
-        }
+        "生产"
     }
 }
 
-/// 历史查询范围：真机件或离线件，两者不混在一起统计。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HistoryScope {
     #[default]
     Real,
-    Offline,
-    Debug,
 }
-
 impl HistoryScope {
-    pub fn of(source: RecordSource) -> Self {
-        if source == RecordSource::OfflineCandidate { Self::Debug } else if source.offline() { Self::Offline } else { Self::Real }
+    pub fn of(_: RecordSource) -> Self {
+        Self::Real
     }
-
     fn clause(self, prefix: &str) -> String {
-        match self {
-            Self::Real => format!("{prefix}source = 'real'"),
-            Self::Debug => format!("{prefix}source = 'offlineCandidate'"),
-            Self::Offline => format!("{prefix}source IN ('offlineSynthetic','offlineSample')"),
-        }
+        format!("{prefix}source = 'real'")
     }
 }
 
@@ -245,8 +220,8 @@ pub struct PartShot {
 /// 8：帧的各视图结果加特征定位位姿（viewResults[].pose）。
 /// 9：段配方按每相机每帧落库（表 part_frames；parts 加 expected_total、tolerance_total、device_triggers、camera_frames、flags、burst_judgement）。
 /// 10：本机一份记录库，记录带项目（parts.project_id）；配方快照与候选实例按项目区分；各项目的 9 版旧库启动时并入（`merge`）。
-/// 本机库版本不符时备份后重建（D-0）。
-pub const DB_VERSION: i64 = 10;
+/// 11：10 版原地删除停用离线记录并登记墓碑与原图清理队列，保留生产记录；其他不兼容版本备份后重建。
+pub const DB_VERSION: i64 = 11;
 /// 项目旧记录库的版本：启动时并入本机库。
 pub const PROJECT_DB_VERSION: i64 = 9;
 
@@ -293,8 +268,6 @@ pub struct PartSummary {
     pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
     pub source: RecordSource,
-    /// 离线样本集运行的样本件引用，用于追溯和读取对应原图。
-    pub sample: Option<SampleRef>,
     /// 段配方记录的整件标记（疑似提前终止等单独显示）；旧记录为 None
     pub flags: Option<Flags>,
     /// 段配方记录的帧数；旧记录为 None。只供 CSV 导出
@@ -448,8 +421,6 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
         cycle_id: row.get(15)?,
         bundle_id: row.get(16)?,
         delivery: delivery_row(row, 17)?,
-        sample: row.get::<_, Option<String>>(20)?.map(|text| serde_json::from_str(&text)
-            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(20, rusqlite::types::Type::Text, Box::new(e)))).transpose()?,
         source: enum_column(row, 21)?,
         flags,
         burst,
@@ -744,29 +715,6 @@ fn fail_interrupted_recordings(conn: &mut Connection) -> Result<usize, String> {
     Ok(interrupted)
 }
 
-fn extend_candidate_source(conn: &Connection, path: &Path) -> Result<(), String> {
-    let sql: Option<String> = conn.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='parts'", [], |r| r.get(0)).optional().map_err(db_err)?;
-    let Some(sql) = sql else { return Ok(()); };
-    const OLD: &str = "CHECK(source IN ('real','offlineSynthetic','offlineSample'))";
-    if !sql.contains(OLD) { return Ok(()); }
-    let indexes = conn.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='parts' AND sql IS NOT NULL").map_err(db_err)?
-        .query_map([], |r| r.get::<_, String>(0)).map_err(db_err)?.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
-    let backup = path.with_extension(format!("before-candidate-{}.sqlite3", ly_plc::now_ms()));
-    conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()]).map_err(|e| format!("调试记录格式升级前备份失败：{e}"))?;
-    let definition = sql[sql.find('(').ok_or("记录表定义无效")?..].replace(OLD, "CHECK(source IN ('real','offlineSynthetic','offlineSample','offlineCandidate'))");
-    conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;").map_err(db_err)?;
-    let migrated = conn.execute_batch(&format!("CREATE TABLE parts_candidate_upgrade {definition}; INSERT INTO parts_candidate_upgrade SELECT * FROM parts; DROP TABLE parts; ALTER TABLE parts_candidate_upgrade RENAME TO parts;"))
-        .and_then(|_| {
-            for index in &indexes { conn.execute_batch(index)?; }
-            let violations: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
-            if violations != 0 { return Err(rusqlite::Error::InvalidQuery); }
-            conn.execute_batch("COMMIT;")
-        });
-    if migrated.is_err() { let _ = conn.execute_batch("ROLLBACK;"); }
-    conn.execute_batch("PRAGMA foreign_keys=ON;").map_err(db_err)?;
-    migrated.map_err(|e| format!("调试记录格式升级失败，旧记录保持原样，备份 {}：{e}", backup.display()))
-}
-
 /// 记录库 9 版原地加 `mode` 列（维护模式），旧记录都是正式检测件，不重建、不丢记录。
 fn add_part_mode(conn: &Connection) -> Result<(), String> {
     let sql: Option<String> = conn
@@ -826,7 +774,7 @@ impl Store {
         let mut conn = Connection::open(path).map_err(db_err)?;
         conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(db_err)?;
-        let backup_path = if existing && version != DB_VERSION {
+        let backup_path = if existing && version != 10 && version != DB_VERSION {
             let backup = backup_old_database(conn, path, version)?;
             conn = Connection::open(path).map_err(|e| format!("旧记录库已备份到 {}；新库打开失败：{e}", backup.display()))?;
             conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
@@ -898,7 +846,7 @@ impl Store {
                  recording_directory TEXT,
                  recording_errors TEXT NOT NULL DEFAULT '[]',
                  sample TEXT,
-                 source TEXT NOT NULL CHECK(source IN ('real','offlineSynthetic','offlineSample','offlineCandidate')),
+                 source TEXT NOT NULL CHECK(source = 'real'),
                  expected_total INTEGER,
                  tolerance_total INTEGER,
                  device_triggers INTEGER,
@@ -959,11 +907,12 @@ impl Store {
                  raw_file TEXT,
                  PRIMARY KEY (part_id, camera, seq)
              );
-             PRAGMA user_version = 10;
+             PRAGMA user_version = 11;
              COMMIT;",
         )
         .map_err(db_err)?;
         add_part_tags(&conn)?;
+        retired::migrate(&mut conn)?;
         if !defer_recovery {
             fail_interrupted_recordings(&mut conn)?;
         }
@@ -990,10 +939,8 @@ impl Store {
     pub fn recipe_version_floors(&self) -> Result<std::collections::BTreeMap<String, u32>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT recipe_id,MAX(version) FROM (
-            SELECT recipe_id,recipe_version AS version FROM parts WHERE project_id=?1 AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL AND source != 'offlineCandidate'
-            UNION ALL SELECT recipe_id,version FROM recipe_snapshots s WHERE s.project_id=?1 AND revision_id = recipe_id || '-v' || version
-                AND (NOT EXISTS (SELECT 1 FROM parts p WHERE p.project_id=?1 AND p.recipe_revision=s.revision_id AND p.source='offlineCandidate')
-                    OR EXISTS (SELECT 1 FROM parts p WHERE p.project_id=?1 AND p.recipe_revision=s.revision_id AND p.source!='offlineCandidate'))) GROUP BY recipe_id").map_err(db_err)?;
+            SELECT recipe_id,recipe_version AS version FROM parts WHERE project_id=?1 AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL
+            UNION ALL SELECT recipe_id,version FROM recipe_snapshots WHERE project_id=?1 AND revision_id = recipe_id || '-v' || version) GROUP BY recipe_id").map_err(db_err)?;
         let rows = stmt
             .query_map([&self.project], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
@@ -1044,8 +991,7 @@ impl Store {
             return Err("检测记录的 cycleId 或发布包 ID 为空".into());
         }
         if let Some(recipe) = r.recipe {
-            let valid_revision = if r.source == RecordSource::OfflineCandidate { recipe.candidate_revision().is_some() }
-                else { recipe.revision_id == format!("{}-v{}", recipe.id, recipe.version) };
+            let valid_revision = recipe.revision_id == format!("{}-v{}", recipe.id, recipe.version);
             if !valid_revision || recipe.version == 0 {
                 return Err("配方修订号与实际 ID、版本不一致".into());
             }
@@ -1061,9 +1007,6 @@ impl Store {
         }
         if !r.shots.is_empty() || r.table.is_some() {
             return Err(crate::recipe::LEGACY_RECIPE.into());
-        }
-        if r.sample.is_some() && !matches!(r.source, RecordSource::OfflineSample | RecordSource::OfflineCandidate) {
-            return Err("只有离线·样本集的记录可以关联样本件".into());
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(db_err)?;
@@ -1150,7 +1093,7 @@ impl Store {
                 enum_name(r.delivery.state),
                 r.delivery.updated_at,
                 r.delivery.message,
-                r.sample.map(serde_json::to_string).transpose().map_err(|e| e.to_string())?,
+                None::<String>,
                 enum_name(r.source),
                 burst_columns.0,
                 burst_columns.1,
@@ -1204,7 +1147,7 @@ impl Store {
             && summary.recipe_version == record.recipe.map(|recipe| recipe.version)
             && summary.recipe_revision.as_deref() == record.recipe.map(|recipe| recipe.revision_id.as_str())
             && summary.frames_expected == record.frames_expected && summary.frames_received == record.frames_received
-            && summary.sample.as_ref() == record.sample && summary.source == record.source
+            && summary.source == record.source
             && existing.triggers == record.triggers && existing.software_version == record.software_version
             && serde_json::to_value(&existing.judgement).map_err(|error| error.to_string())? == serde_json::to_value(record.judgement).map_err(|error| error.to_string())?
             && serde_json::to_value(&existing.frames).map_err(|error| error.to_string())? == serde_json::to_value(record.frames).map_err(|error| error.to_string())?
@@ -1400,7 +1343,7 @@ impl Store {
         (format!(" WHERE {}", clauses.join(" AND ")), args)
     }
 
-    /// 某个录制根目录下仍被历史引用的 _pending 目录；只看同一范围的记录，真机与离线各管各的根目录。
+    /// 某个录制根目录下仍被生产历史引用的 _pending 目录。
     pub fn pending_recording_directories(&self, root: &Path, scope: HistoryScope) -> Result<Vec<PathBuf>, String> {
         let root_text = root.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string();
         let prefix = format!("{root_text}/");
@@ -1989,7 +1932,7 @@ pub fn recorded_projects(path: &Path) -> Result<BTreeSet<String>, String> {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(db_err)?;
-    if version != DB_VERSION {
+    if version != 10 && version != DB_VERSION {
         return Ok(BTreeSet::new());
     }
     let mut stmt = conn
@@ -2006,6 +1949,7 @@ pub fn recorded_projects(path: &Path) -> Result<BTreeSet<String>, String> {
 mod history_edit;
 mod merge;
 mod package;
+mod retired;
 
 #[cfg(test)]
 #[path = "store/tests.rs"]

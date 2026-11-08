@@ -10,7 +10,7 @@ import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import { SnackbarProvider } from "qing-steel";
 import { workspaceApi } from "../src/features/workspace/api";
 import type { WorkspaceView } from "../src/features/workspace/types";
-import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, siteStatus, snapshot, type BurstRecipeDoc } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, snapshot, type BurstRecipeDoc } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 // 只替身桌面后端：invoke 按命令名分派到 backend 夹具，其余全是真实模块。
 // 例外：原图解码要用 canvas（jsdom 没有），workspaceApi.image 直接给出解码结果。
@@ -36,7 +36,6 @@ function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = 
     camera_rig_status: () => [{ id: "CAM-1", ready: true }],
     vision_calib_info: () => null,
     plc_get_status: () => ({ state: "connected", message: "PLC 已连接" }),
-    site_status: () => siteStatus(),
     cycle_snapshot: () => snapshot(),
     cycle_logs: () => [],
     history_query: () => ({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } }),
