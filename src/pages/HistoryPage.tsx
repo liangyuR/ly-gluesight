@@ -282,7 +282,7 @@ export default function HistoryPage() {
               <SegmentedControl label="检测模式" options={modeOptions} value={mode} onValueChange={(value) => { setMode(value); setOffset(0); }} />
           </Stack>
           <div className="hist-filter-options">
-              <Stack gap={8}>
+              <Stack gap={8} className="hist-result-filters">
                 <Text variant="label" muted>结果</Text>
                 {verdictGroups.map((g) => (
                   <Chip
@@ -297,7 +297,7 @@ export default function HistoryPage() {
                 ))}
               </Stack>
               <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="筛选 SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} />
-              <TextField id="history-tag" aria-label="历史 Tag" list="history-common-tags" placeholder="按 Tag 精确筛选" value={tag} onChange={(e) => { setTag(e.target.value); setOffset(0); }} />
+              <TextField id="history-tag" className="hist-tag-input" aria-label="历史 Tag" list="history-common-tags" placeholder="按 Tag 精确筛选" value={tag} onChange={(e) => { setTag(e.target.value); setOffset(0); }} />
               <datalist id="history-common-tags">{commonHistoryTags.map(value => <option key={value} value={value} />)}</datalist>
               <Select
                 id="history-project"
