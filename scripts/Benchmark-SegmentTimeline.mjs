@@ -96,4 +96,3 @@ for(let index=0;index<modes.length;index++){
 }
 await writeFile(path.join(out,process.argv.includes("--smoke")?"smoke-results.json":"browser-results.json"),JSON.stringify(all,null,2));
 } finally { server.close(); }
-
