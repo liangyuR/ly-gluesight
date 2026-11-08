@@ -301,6 +301,10 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     navigate(recipeHref(segmentTarget, "/recipe/segments"), { state });
   };
 
+  // 选着的候选对照所用的候选（不一定是复测配方所选的）在对照之后改过，提示重新复测
+  const comparedWith = comparison && comparison.source !== "original" ? choices.find(c => c.id === comparison.candidateId) : undefined;
+  const staleCandidate = comparedWith && comparedWith.revision !== comparison?.candidateRevision ? comparedWith : null;
+
   const flags = flagBadges(burst.judgement.flags);
   const diffs = comparison?.burst ? regionDiffs(burstSideOf(burst), comparison.burst) : null;
   const region = frame?.region != null ? j.regions[frame.region] : null;
@@ -359,8 +363,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         <StatusBadge tone={comparison.judgement.verdict.startsWith("OK") ? "ok" : comparison.judgement.verdict === "ERR_INSPECT" ? "warn" : "ng"}>{comparison.source === "original" ? "重现" : "候选"} {verdictLabel[comparison.judgement.verdict]}</StatusBadge>
         <b>{displayReason(comparison.judgement.reason)}</b>
       </div>
-      {comparison.source !== "original" && candidate?.id === comparison.candidateId && candidate.revision !== comparison.candidateRevision &&
-        <Text as="p" muted role="note">候选 {candidate.id} 已改到修订 {candidate.revision}，这份对照按修订 {comparison.candidateRevision} 做；重新复测才能看到改动后的结果。</Text>}
+      {staleCandidate && <Text as="p" muted role="note">候选 {staleCandidate.id} 已改到修订 {staleCandidate.revision}，这份对照按修订 {comparison.candidateRevision} 做；{candidate?.id === staleCandidate.id ? "" : `在“复测配方”里选 ${staleCandidate.id} `}重新复测才能看到改动后的结果。</Text>}
       {!!comparison.burst?.unmeasured?.length && <Alert tone="warn" title="有段没测，结论只覆盖其余段">
         <ul className="compare-reasons" aria-label="没测的段">{comparison.burst.unmeasured.map(u => <li key={`${u.segment}:${u.camera}`}>{u.reason}</li>)}</ul>
       </Alert>}
