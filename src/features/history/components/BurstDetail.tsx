@@ -197,6 +197,8 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     return () => window.removeEventListener("keydown", key);
   }, []);
 
+  // 地址里要的对照读完（或没有、读不到）才算页面成形，从分段页返回时据此恢复滚动位置
+  const [settled, setSettled] = useState(false);
   useEffect(() => {
     let live = true;
     const mine = ++serial.current;
@@ -210,7 +212,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         const result = await workspaceApi.comparisonGet(s.id, target.id);
         if (live && mine === serial.current) setComparison(previous => previous ?? result);
       }
-    }).catch(e => live && mine === serial.current && setError(errorText(e)));
+    }).catch(e => live && mine === serial.current && setError(errorText(e))).finally(() => live && setSettled(true));
     return () => { live = false; };
   }, [s.id, s.recipeId, ws.data?.workspace.revision, wanted]);
 
@@ -258,6 +260,23 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     if (working || !options || originalReason) return;
     void compare(taskId => workspaceApi.compareOriginal(s.id, taskId), () => alive.current && current.current.historyId === s.id);
   };
+
+  // 从分段页返回：对照读完后回到离开时的滚动位置。原图、胶宽折线陆续加载还会撑高页面，约 1 秒内反复回到原位置，
+  // 操作员一动滚轮或点击就停；回到过或被打断后这次进入不再恢复
+  const restoreTop = (location.state as HistoryDetailState | null)?.scrollTop;
+  const restored = useRef("");
+  useEffect(() => {
+    const body = document.querySelector(".main-body");
+    if (!settled || restoreTop == null || !body || restored.current === location.key) return;
+    const key = location.key;
+    const events = ["wheel", "pointerdown", "keydown", "touchstart"] as const;
+    let frame = 0, left = 60;
+    const done = () => { restored.current = key; cancelAnimationFrame(frame); };
+    const keep = () => { body.scrollTop = restoreTop; if (--left > 0) frame = requestAnimationFrame(keep); else done(); };
+    events.forEach(name => body.addEventListener(name, done, { passive: true }));
+    frame = requestAnimationFrame(keep);
+    return () => { cancelAnimationFrame(frame); events.forEach(name => body.removeEventListener(name, done)); };
+  }, [settled, location.key]);
 
   // 到分段页调整分段的配方：选着候选对照时是那次对照的候选，否则是选来复测的候选；只有候选能改分段
   const segmentTarget = (comparison && comparison.source !== "original" ? comparison.candidateId : null) ?? candidate?.id ?? null;
