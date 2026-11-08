@@ -145,7 +145,7 @@ fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts
             (state_value(&old.frame), &old.camera, old.segment, old.seq),
             "冻结的示教图、所属段与帧组号不变"
         );
-        // 改指向新示教件：导出回传包、走廊试测与分段对应都按新件的轮次，旧轮次随后删除
+        // 改指向新示教件：导出工件配方、走廊试测与分段对应都按新件的轮次，旧轮次随后删除
         assert_eq!(after.round, "new");
     }
     assert_eq!(

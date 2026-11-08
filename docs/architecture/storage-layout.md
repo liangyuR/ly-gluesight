@@ -56,7 +56,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 项目管理页的“导出 / 导入项目”把项目资产和所选外部历史原图打成 ZIP（`src-tauri/src/project/transfer.rs`，格式版本 2：所含检测记录库是本机记录库按项目导出的子集，版本 10；格式 1 的包照常导入），规则见[项目设计](project.md#导出与导入)。导出默认保存在 `exports/`；导入暂存在 `cache/project-import-*`，校验通过、路径与计划版本改写完成后才原子移入 `projects/<新编号>/`。“复制”不经 ZIP，把除检测记录与历史原图外的同样内容拷进 `cache/project-copy-*` 后走相同的落地流程；记录本机共用，仍归来源项目。
 
-配方库的“导出 / 导入回传包”只打一个候选（`workspace/package.rs`，`kind: "recipe"`，格式版本 1）：`candidate/` 下是 `workspace.json`、被引用的冻结示教帧、示教件测量与导航图，`rounds/` 下是示教件轮次的 `round.json` 与 `frames.jsonl`，不带原图与发布快照。导入暂存在 `cache/project-recipe-import-*`，本机同编号的旧候选与轮次先移入暂存目录再放入新的，失败撤回；规则见 [RB-10](../decisions/recipe-build-flow.md#rb-10-配方回传包)。
+配方库的“导出 / 导入工件配方”（回传包）只打一个候选（`workspace/package.rs`，`kind: "recipe"`，格式版本 2，兼容读格式 1）：`candidate/` 下是 `workspace.json`、被引用的冻结示教帧、示教件测量与导航图，`rounds/` 下是示教件轮次的 `round.json` 与 `frames.jsonl`；导出时勾选“包含示教件原图”才再带 `rounds/<轮次>/<相机>/<seq>.pgm`，清单 `teachingImages` 记是否带。不带发布快照。导入暂存在 `cache/project-recipe-import-*`，本机同编号的旧候选与轮次先移入暂存目录再放入新的，失败撤回；规则见 [RB-10](../decisions/recipe-build-flow.md#rb-10-配方回传包)。
 
 历史页的“导出 / 导入历史件”只打所选的几件检测记录（`history_package.rs`，`kind: "history"`，格式版本 1）：记录库子集 `records.db` 与可选的 `parts/<录制目录>/` 原图，导入到当前项目；暂存在当前项目真机录制根的 `imported/.staging-*`，规则见[历史件导出包](history-package.md)。
 

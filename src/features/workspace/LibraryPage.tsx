@@ -12,8 +12,8 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar } from "./components";
 import { pieceLabel } from "./pieces";
-import { PackageExportedDialog, PackageImportDialog } from "./PackageDialogs";
-import { isCurrentFlow, type PackageExported, type PackagePreview } from "./types";
+import { PackageExportDialog, PackageImportDialog } from "./PackageDialogs";
+import { isCurrentFlow, type PackagePreview } from "./types";
 import { recipeHref } from "./recipeRoutes";
 
 /** 阶段标记：只有候选、没发布过是草稿；已发布的按生产配方的阶段。 */
@@ -41,7 +41,7 @@ export default function LibraryPage() {
   const [createdId,setCreatedId]=useState<string|null>(null);
   const [removedId,setRemovedId]=useState<string|null>(null);
   const [leaving,setLeaving]=useState<{label:string;run:()=>void}|null>(null);
-  const [exported,setExported]=useState<{id:string;result:PackageExported}|null>(null);
+  const [exporting,setExporting]=useState<string|null>(null);
   const [importing,setImporting]=useState<PackagePreview|null>(null);
   const pending=useRef(false);
   const current=useRef({alive:true,selectedId});current.current.selectedId=selectedId;
@@ -136,7 +136,6 @@ export default function LibraryPage() {
     catch(e){if(current.current.alive)setError(errorText(e));}
     finally{pending.current=false;if(current.current.alive)setWorking(false);}
   };
-  const exportPackage=(id:string)=>run(async()=>{const result=await workspaceApi.packageExport(id);if(result&&current.current.alive)setExported({id,result});});
   const pickPackage=()=>run(async()=>{const preview=await workspaceApi.packagePick();if(preview&&current.current.alive)setImporting(preview);});
   const afterImport=async(id:string)=>{await reloadList();if(current.current.selectedId===id)await select(id);};
   const visibleUnavailable = unavailable.filter(r => [r.fileName,r.id,r.name].join(" ").toLowerCase().includes(search.trim().toLowerCase()));
@@ -145,18 +144,18 @@ export default function LibraryPage() {
     const draft = drafts.find(w => w.doc.id === id);
     return {id,production,draft,stale:!!draft&&!isCurrentFlow(draft),name:draft?.doc.name ?? production?.name ?? id,scale:burstScale(draft?.doc,production)};
   }).filter(r => (r.id + r.name + (r.draft?.doc.productCode ?? r.production?.productCode)).toLowerCase().includes(search.trim().toLowerCase()));
-  return <div className="wp-page"><WorkspaceBar showNavigation={false} /><div className="wp-actions"><TextField className="wp-library-search" aria-label="搜索配方" placeholder="编号、名称或型号" leading={<Search size={16} aria-hidden="true" />} value={search} onChange={e => setSearch(e.target.value)} /><span className="spacer" /><Button leadingIcon={<PackageOpen size={16} />} disabled={blocked} title="导入开发机导出的配方回传包，替换本机同编号的候选" onClick={() => guard("导入回传包",()=>void pickPackage())}>导入回传包</Button><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!desktopAvailable() || busy || working} onClick={() => guard("新建配方",()=>void prepare())}>新建配方</Button></div>
+  return <div className="wp-page"><WorkspaceBar showNavigation={false} /><div className="wp-actions"><TextField className="wp-library-search" aria-label="搜索配方" placeholder="编号、名称或型号" leading={<Search size={16} aria-hidden="true" />} value={search} onChange={e => setSearch(e.target.value)} /><span className="spacer" /><Button leadingIcon={<PackageOpen size={16} />} disabled={blocked} title="导入工件配方包，替换本机同编号的候选" onClick={() => guard("导入工件配方",()=>void pickPackage())}>导入工件配方</Button><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!desktopAvailable() || busy || working} onClick={() => guard("新建配方",()=>void prepare())}>新建配方</Button></div>
     {!desktopAvailable() && <Notice title="配方操作需要桌面后端" tone="warn">本页不会在浏览器中创建、保存或发布生产配置。</Notice>}
     <div className="wp-library-grid">{visible.map(r => <Panel key={r.id} title={r.name} detail={r.id} className="wp-recipe-card" actions={<Badge tone="neutral">飞拍</Badge>}>
       <div className="wp-actions">{stageBadge(r.production)}{r.draft && <Badge>候选 v{r.draft.doc.version}</Badge>}{r.draft?.pending && <Badge tone="warn">待生效</Badge>}{r.stale && <Badge tone="warn">旧流程候选，已停用</Badge>}</div><p className="muted mono">{r.production && r.draft && r.production.productCode !== r.draft.doc.productCode ? `已发布型号 ${r.production.productCode} · 候选型号 ${r.draft.doc.productCode}` : `PLC 型号 ${r.production?.productCode ?? r.draft?.doc.productCode}`}{r.scale && ` · ${r.scale.segmentCount} 段 · ${r.draft && r.production ? "候选" : ""}预期帧组数 ${expectedText(r.scale.expectedTotal, r.scale.toleranceTotal)}`}</p>{r.production && <p className="muted mono">计划版本 {r.production.planVersion}</p>}{r.production?.teachingPiece && <p className="muted">示教件：{pieceLabel(r.production.teachingPiece)}</p>}
       {r.stale && <p className="muted">按旧流程建的候选不能打开或编辑，请删除后从配方库重建。</p>}
-      <div className="wp-actions">{!r.stale && <><Button variant="filled" disabled={blocked} onClick={()=>r.id===selectedId?open(r.id):guard("打开 "+r.id,()=>open(r.id))}>继续配置</Button><IconButton title="复制配方" aria-label={"复制配方 " + r.id} disabled={blocked} onClick={() => guard("复制 "+r.id,()=>void prepare(r.id))}><Copy size={16} /></IconButton>{r.draft && <IconButton title="导出回传包（候选与示教件帧记录，不带原图）" aria-label={"导出回传包 " + r.id} disabled={blocked || !!r.draft.pending} onClick={() => guard("导出 "+r.id+" 的回传包",()=>void exportPackage(r.id))}><Package size={16} /></IconButton>}</>}<IconButton title="删除配方" aria-label={"删除配方 " + r.id} disabled={blocked || !!r.draft?.pending} onClick={() => {setDeleting(r.id);setRemovedId(null);setDialogError("");}}><Trash2 size={16} /></IconButton></div>
+      <div className="wp-actions">{!r.stale && <><Button variant="filled" disabled={blocked} onClick={()=>r.id===selectedId?open(r.id):guard("打开 "+r.id,()=>open(r.id))}>继续配置</Button><IconButton title="复制配方" aria-label={"复制配方 " + r.id} disabled={blocked} onClick={() => guard("复制 "+r.id,()=>void prepare(r.id))}><Copy size={16} /></IconButton>{r.draft && <IconButton title="导出工件配方（候选与示教件帧记录，可选带示教件原图）" aria-label={"导出工件配方 " + r.id} disabled={blocked || !!r.draft.pending} onClick={() => guard("导出工件配方 "+r.id,()=>setExporting(r.id))}><Package size={16} /></IconButton>}</>}<IconButton title="删除配方" aria-label={"删除配方 " + r.id} disabled={blocked || !!r.draft?.pending} onClick={() => {setDeleting(r.id);setRemovedId(null);setDialogError("");}}><Trash2 size={16} /></IconButton></div>
     </Panel>)}{visibleUnavailable.map(r => <Panel key={"unavailable:"+r.fileName} title={r.name || r.id || r.fileName} detail={r.fileName} className="wp-recipe-card" actions={<Badge tone="warn">不可用</Badge>}>
       <p className="muted">文件格式 {r.schemaVersion ?? "未知"} · 当前格式 {r.currentSchemaVersion}</p>
       <p>{r.reason}</p><p className="muted">此文件无法用于配置或生产。</p>
       <div className="wp-actions"><Button danger leadingIcon={<Trash2 size={16} />} disabled={blocked} onClick={()=>{setDeletingUnavailable(r);setUnavailableRemoved(false);setDialogError("");}}>删除文件</Button></div>
     </Panel>)}</div>{!visible.length && !visibleUnavailable.length && <EmptyState icon={<Search size={30} aria-hidden="true" />} title={ids.length || unavailable.length ? "没有匹配的配方" : "尚未加载配方"} description={ids.length || unavailable.length ? "修改搜索条件后重试。" : "桌面软件会从本地配方库读取已有配置。"} />}
-    {exported && <PackageExportedDialog id={exported.id} exported={exported.result} onClose={()=>setExported(null)} />}
+    {exporting && <PackageExportDialog id={exporting} onClose={()=>setExporting(null)} />}
     {importing && <PackageImportDialog preview={importing} onClose={()=>setImporting(null)} onImported={afterImport} onOpen={id=>{setImporting(null);void open(id);}} />}
     {leaving && <Dialog open title={`配方 ${selectedId} 有未保存的修改`} onOpenChange={open=>{if(!open)setLeaving(null);}} footer={<><Button onClick={()=>setLeaving(null)}>取消</Button><Button danger disabled={blocked} onClick={()=>{if(!discardDrafts())return;const next=leaving;setLeaving(null);next.run();}}>放弃修改并{leaving.label}</Button><Button variant="filled" onClick={()=>{setLeaving(null);if(selectedId)navigate(recipeHref(selectedId,resumePath));}}>回到 {selectedId} 继续编辑</Button></>}><p>{unsavedParts}尚未保存。可以回到 {selectedId} 保存或撤销，也可以放弃这些修改后{leaving.label}；候选里已保存的内容不受影响。</p></Dialog>}
     {deletingUnavailable && <Dialog open title="删除不可用配方文件" closeDisabled={working} onOpenChange={open=>{if(!open)setDeletingUnavailable(null);}} footer={<><Button disabled={working} onClick={()=>setDeletingUnavailable(null)}>取消</Button><Button danger disabled={blocked} onClick={()=>void removeUnavailable()}>{working ? "处理中…" : unavailableRemoved ? "刷新配方库" : "确认删除文件"}</Button></>}><p>将永久删除文件 {deletingUnavailable.fileName}。此操作不可撤销，同编号的候选、示教资料及历史记录保留。</p>{dialogError && <Notice title="操作未完成" tone="warn">{dialogError}</Notice>}</Dialog>}

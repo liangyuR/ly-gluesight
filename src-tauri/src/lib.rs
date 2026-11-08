@@ -353,6 +353,7 @@ pub fn run() {
             workspace::workspace_history_candidates,
             workspace::workspace_set_teaching_piece,
             workspace::workspace_refill_teaching_images,
+            workspace::package::workspace_package_target,
             workspace::package::workspace_package_export,
             workspace::package::workspace_package_pick,
             workspace::package::workspace_package_import,
