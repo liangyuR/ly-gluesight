@@ -923,4 +923,4 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 ## D-SB-63 宽胶证据与完整性
 
-彩色固定走廊与逐帧定向采用 `flow-3` 发布图和 `widthPolicy=extent`，测量证据版本为 1。超过预期宽度的完整胶继续量测；截断下界只在严格超过规格时证明偏宽，保留 `maxExcursionMm` 和 `wideWarnOnly`。部分截断/未知列入 `incompleteGroups`，不覆盖已经确认的缺陷；全无可用证据沿现有检测错误路径返回 PLC 90 / fault 91。生产跳过先排除，旧记录无证据字段按原语义读取。旧生产包因图/引擎版本不一致被明确拒绝，需重新验证发布。完整数据与显示契约见[宽胶测量](../architecture/wide-bead-measurement-plan.md)。
+彩色固定走廊与逐帧定向采用 `flow-3` 发布图和 `widthPolicy=extent`，测量证据版本为 1。超过预期宽度的完整胶继续量测；截断下界只在严格超过规格时证明偏宽，保留 `maxExcursionMm` 和 `wideWarnOnly`。部分截断/未知列入 `incompleteGroups`，不覆盖已经确认的缺陷；全无可用证据沿现有检测错误路径返回 PLC 90 / fault 91。生产跳过先排除，旧记录无证据字段按原语义读取。生产加载不按测量图版本或 lyFlow 版本拒绝已发布配方。完整数据与显示契约见[宽胶测量](../architecture/wide-bead-measurement-plan.md)。
