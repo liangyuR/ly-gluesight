@@ -515,7 +515,11 @@ pub fn plan_corridor(
     let judge = template.judge(&expert);
     let gate = |name: &str| number(&judge, name).map_err(|e| fail(&e));
     let taught = TaughtParams {
-        tolerance: params.tolerance,
+        tolerance: if color_model.is_some() {
+            params.half
+        } else {
+            params.tolerance
+        },
         sharp_min: gate("trackSharpMin")?,
         width_range: [params.lo, params.hi],
         present_ratio: gate("presentRatio")?,

@@ -310,10 +310,10 @@ fn color_corridor_exit_marks_only_proven_end_stations_unknown_and_preserves_widt
     checks.gap.min_present = 0.0;
     checks.overflow.enabled = false;
     for (absent, exits, clipped, expected_gap, expected_unknown) in [
-        (vec![30..=40], vec![(29, 12.0)], false, 0.0, 11),
+        (vec![30..=40], vec![(29, 18.0)], false, 0.0, 11),
         (vec![30..=40], vec![], false, 11.0, 0),
-        (vec![10..=16, 30..=40], vec![(29, 12.0)], false, 7.0, 11),
-        (vec![30..=40], vec![(29, 12.0)], true, 11.0, 0),
+        (vec![10..=16, 30..=40], vec![(29, 18.0)], false, 7.0, 11),
+        (vec![30..=40], vec![(29, 18.0)], true, 11.0, 0),
     ] {
         let mut values = beads(&absent, &exits);
         values[20] = Some((2.0, 40.0));
@@ -321,8 +321,8 @@ fn color_corridor_exit_marks_only_proven_end_stations_unknown_and_preserves_widt
         if clipped {
             let r = &mut output.outputs["runs"]["value"]["data"]["stations"][29]["runs"][0];
             r["hi"] = json!(32.0);
-            r["width"] = json!(28.0);
-            r["mid"] = json!(18.0);
+            r["width"] = json!(22.0);
+            r["mid"] = json!(21.0);
             r["hiComplete"] = json!(false);
             r["hiCause"] = json!("caliper");
         }

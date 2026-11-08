@@ -176,7 +176,7 @@
         "n_runs.searchHalf",
         "n_split.searchHalf"
       ],
-      "doc": "卡尺半长（px）：不小于中心偏移容差 + 胶宽上限的一半"
+      "doc": "有限观察半宽（px），独立于胶宽参考上限"
     },
     "widthMax": {
       "default": 24.0,
