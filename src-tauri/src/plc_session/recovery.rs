@@ -99,7 +99,12 @@ pub(super) fn read(session: &PlcSession, unresolved: &BTreeSet<String>) -> AckRe
     match read_journal(&session.path) {
         Ok(Some(durable)) => {
             if let Some(pending) = &durable.pending {
-                recovery.pending(pending, durable.last_request_seq, pending.started_at.max(0), "当前握手日志");
+                recovery.pending(
+                    pending,
+                    durable.last_request_seq,
+                    pending.started_at.max(0),
+                    "当前握手日志",
+                );
             }
         }
         Ok(None) => {}

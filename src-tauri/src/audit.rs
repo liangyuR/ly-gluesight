@@ -178,14 +178,35 @@ fn check_health(failure: &Mutex<Option<String>>, running: &AtomicBool) -> Result
     Ok(())
 }
 
-fn readiness(spool: &spool::Spool, backlog: &Backlog, failure: &Mutex<Option<String>>, running: &AtomicBool, pending_recordings: &RecordingBarriers) -> Result<AuditReadiness, String> {
+fn readiness(
+    spool: &spool::Spool,
+    backlog: &Backlog,
+    failure: &Mutex<Option<String>>,
+    running: &AtomicBool,
+    pending_recordings: &RecordingBarriers,
+) -> Result<AuditReadiness, String> {
     check_health(failure, running)?;
-    if !pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?.is_empty() { return Ok(AuditReadiness::WaitingRecording); }
+    if !pending_recordings
+        .lock()
+        .map_err(|_| "录制收尾状态锁损坏")?
+        .is_empty()
+    {
+        return Ok(AuditReadiness::WaitingRecording);
+    }
     let backlog = backlog.lock().map_err(|_| "追溯暂存锁损坏")?;
-    Ok(if spool.empty() && backlog.is_empty() { AuditReadiness::Ready } else { AuditReadiness::WaitingStore })
+    Ok(if spool.empty() && backlog.is_empty() {
+        AuditReadiness::Ready
+    } else {
+        AuditReadiness::WaitingStore
+    })
 }
 
-fn with_ready_spool<T>(spool: &Mutex<spool::Spool>, backlog: &Backlog, failure: &Mutex<Option<String>>, running: &AtomicBool, pending_recordings: &RecordingBarriers,
+fn with_ready_spool<T>(
+    spool: &Mutex<spool::Spool>,
+    backlog: &Backlog,
+    failure: &Mutex<Option<String>>,
+    running: &AtomicBool,
+    pending_recordings: &RecordingBarriers,
     action: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
     let spool = spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
@@ -196,31 +217,62 @@ fn with_ready_spool<T>(spool: &Mutex<spool::Spool>, backlog: &Backlog, failure: 
 }
 
 /// 落盘；落不了或内存里已有排队的事件时排到队尾（保持顺序），由追溯线程重试。
-fn enqueue(spool: &mut spool::Spool, backlog: &mut VecDeque<Event>, event: Event, problems: &mut Vec<Problem>) {
+fn enqueue(
+    spool: &mut spool::Spool,
+    backlog: &mut VecDeque<Event>,
+    event: Event,
+    problems: &mut Vec<Problem>,
+) {
     if backlog.is_empty() {
         match spool.append(&event) {
             Ok(()) => return,
-            Err(error) => problems.push(Problem { cycle: event.cycle_id().into(), message: format!("{error}；事件暂存内存，后台重试落盘"), current: true }),
+            Err(error) => problems.push(Problem {
+                cycle: event.cycle_id().into(),
+                message: format!("{error}；事件暂存内存，后台重试落盘"),
+                current: true,
+            }),
         }
     }
     if backlog.len() >= BACKLOG_LIMIT {
         if let Some(dropped) = backlog.pop_front() {
-            problems.push(Problem { cycle: dropped.cycle_id().into(), message: format!("内存暂存已满 {BACKLOG_LIMIT} 条，丢弃最早一条未落盘的追溯事件"), current: true });
+            problems.push(Problem {
+                cycle: dropped.cycle_id().into(),
+                message: format!("内存暂存已满 {BACKLOG_LIMIT} 条，丢弃最早一条未落盘的追溯事件"),
+                current: true,
+            });
         }
     }
     backlog.push_back(event);
 }
 
-fn persist_event(spool: &Mutex<spool::Spool>, backlog: &Backlog, pending_recordings: &RecordingBarriers, event: Event) -> Result<Vec<Problem>, String> {
+fn persist_event(
+    spool: &Mutex<spool::Spool>,
+    backlog: &Backlog,
+    pending_recordings: &RecordingBarriers,
+    event: Event,
+) -> Result<Vec<Problem>, String> {
     let mut spool = spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
     let mut backlog = backlog.lock().map_err(|_| "追溯暂存锁损坏")?;
     spool::validate(&event)?;
-    let mut pending = pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?;
+    let mut pending = pending_recordings
+        .lock()
+        .map_err(|_| "录制收尾状态锁损坏")?;
     let mut problems = Vec::new();
     if let Event::Recording(outcome) = &event {
-        if let Some(barrier) = pending.get_mut(&outcome.cycle_id).filter(|barrier| !barrier.inserted) {
-            if barrier.terminal.as_ref().is_some_and(|previous| previous != outcome) {
-                problems.push(Problem { cycle: outcome.cycle_id.clone(), message: "主记录接受前出现另一份录制结果，保留首次结果".into(), current: false });
+        if let Some(barrier) = pending
+            .get_mut(&outcome.cycle_id)
+            .filter(|barrier| !barrier.inserted)
+        {
+            if barrier
+                .terminal
+                .as_ref()
+                .is_some_and(|previous| previous != outcome)
+            {
+                problems.push(Problem {
+                    cycle: outcome.cycle_id.clone(),
+                    message: "主记录接受前出现另一份录制结果，保留首次结果".into(),
+                    current: false,
+                });
             } else {
                 barrier.terminal = Some(outcome.clone());
             }
@@ -235,7 +287,12 @@ fn persist_event(spool: &Mutex<spool::Spool>, backlog: &Backlog, pending_recordi
         if let Some(barrier) = pending.get_mut(&cycle) {
             barrier.inserted = true;
             if let Some(outcome) = barrier.terminal.take() {
-                enqueue(&mut spool, &mut backlog, Event::Recording(outcome), &mut problems);
+                enqueue(
+                    &mut spool,
+                    &mut backlog,
+                    Event::Recording(outcome),
+                    &mut problems,
+                );
                 pending.remove(&cycle);
             }
         }
@@ -248,7 +305,9 @@ fn persist_event(spool: &Mutex<spool::Spool>, backlog: &Backlog, pending_recordi
 fn drain(spool: &mut spool::Spool, backlog: &Backlog) -> Result<(), String> {
     let mut backlog = backlog.lock().map_err(|_| "追溯暂存锁损坏")?;
     while let Some(event) = backlog.front() {
-        spool.append(event).map_err(|error| format!("内存暂存的追溯事件仍未落盘：{error}"))?;
+        spool
+            .append(event)
+            .map_err(|error| format!("内存暂存的追溯事件仍未落盘：{error}"))?;
         backlog.pop_front();
     }
     Ok(())
@@ -269,18 +328,29 @@ pub struct Audit {
 impl Audit {
     pub fn new(app: &AppHandle, path: PathBuf) -> Result<Self, String> {
         let (mut spool, notes) = spool::Spool::open(path)?;
-        for note in notes { app_log(app, "err", "持久追溯未恢复", None, note); }
+        for note in notes {
+            app_log(app, "err", "持久追溯未恢复", None, note);
+        }
         let notices = recover_all(&mut spool, &mut AppSink(app), ly_plc::now_ms());
         publish(app, notices);
         let failure = spool.probe().err();
-        if let Some(error) = &failure { app_log(app, "err", "持久追溯故障", None, error.clone()); }
+        if let Some(error) = &failure {
+            app_log(app, "err", "持久追溯故障", None, error.clone());
+        }
         let (tx, rx) = sync_channel(1);
         let audit = Self {
-            tx, app: app.clone(), spool: Arc::new(Mutex::new(spool)), backlog: Arc::new(Mutex::new(VecDeque::new())),
-            failure: Arc::new(Mutex::new(failure)), running: Arc::new(AtomicBool::new(true)), pending_recordings: Arc::new(Mutex::new(BTreeMap::new())),
+            tx,
+            app: app.clone(),
+            spool: Arc::new(Mutex::new(spool)),
+            backlog: Arc::new(Mutex::new(VecDeque::new())),
+            failure: Arc::new(Mutex::new(failure)),
+            running: Arc::new(AtomicBool::new(true)),
+            pending_recordings: Arc::new(Mutex::new(BTreeMap::new())),
         };
         let worker = audit.clone();
-        std::thread::Builder::new().name("inspection-audit".into()).spawn(move || writer(worker, rx))
+        std::thread::Builder::new()
+            .name("inspection-audit".into())
+            .spawn(move || writer(worker, rx))
             .map_err(|error| format!("追溯线程启动失败：{error}"))?;
         Ok(audit)
     }
@@ -288,20 +358,48 @@ impl Audit {
     /// Err 是追溯当前问题，只用于界面显示和历史清理、项目切换这类非生产操作的守卫。
     pub(crate) fn readiness(&self) -> Result<AuditReadiness, String> {
         let spool = self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
-        readiness(&spool, &self.backlog, &self.failure, &self.running, &self.pending_recordings)
+        readiness(
+            &spool,
+            &self.backlog,
+            &self.failure,
+            &self.running,
+            &self.pending_recordings,
+        )
     }
 
     pub fn with_ready<T>(&self, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-        with_ready_spool(&self.spool, &self.backlog, &self.failure, &self.running, &self.pending_recordings, action)
+        with_ready_spool(
+            &self.spool,
+            &self.backlog,
+            &self.failure,
+            &self.running,
+            &self.pending_recordings,
+            action,
+        )
     }
 
     pub fn begin_recording(&self, cycle_id: &str) {
-        let result = self.pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏".to_string()).map(|mut pending| {
-            if pending.contains_key(cycle_id) { false } else { pending.insert(cycle_id.into(), RecordingBarrier::default()); true }
-        });
+        let result = self
+            .pending_recordings
+            .lock()
+            .map_err(|_| "录制收尾状态锁损坏".to_string())
+            .map(|mut pending| {
+                if pending.contains_key(cycle_id) {
+                    false
+                } else {
+                    pending.insert(cycle_id.into(), RecordingBarrier::default());
+                    true
+                }
+            });
         match result {
             Ok(true) => (),
-            Ok(false) => app_log(&self.app, "warn", "录制追溯屏障", Some(cycle_id), format!("cycleId={cycle_id} 的录制仍未收尾又再次开始，沿用首次屏障")),
+            Ok(false) => app_log(
+                &self.app,
+                "warn",
+                "录制追溯屏障",
+                Some(cycle_id),
+                format!("cycleId={cycle_id} 的录制仍未收尾又再次开始，沿用首次屏障"),
+            ),
             Err(error) => app_log(&self.app, "err", "录制追溯屏障", Some(cycle_id), error),
         }
     }
@@ -315,23 +413,46 @@ impl Audit {
     pub fn protected_cycle_ids(&self) -> Result<BTreeSet<String>, String> {
         let spool = self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
         let mut cycles = spool.cycles();
-        cycles.extend(self.backlog.lock().map_err(|_| "追溯暂存锁损坏")?.iter().map(|event| event.cycle_id().to_string()));
+        cycles.extend(
+            self.backlog
+                .lock()
+                .map_err(|_| "追溯暂存锁损坏")?
+                .iter()
+                .map(|event| event.cycle_id().to_string()),
+        );
         Ok(cycles)
     }
 
     /// 记为当前问题；与当前问题相同的不重复写日志。
     fn problem(&self, cycle: Option<&str>, error: String) {
-        let repeated = self.failure.lock().map(|mut failure| failure.replace(error.clone()).as_ref() == Some(&error)).unwrap_or(false);
-        if !repeated { app_log(&self.app, "err", "持久追溯故障", cycle, error); }
+        let repeated = self
+            .failure
+            .lock()
+            .map(|mut failure| failure.replace(error.clone()).as_ref() == Some(&error))
+            .unwrap_or(false);
+        if !repeated {
+            app_log(&self.app, "err", "持久追溯故障", cycle, error);
+        }
     }
 
     /// 健康检查并把内存暂存落盘；两者都成功才清除当前问题。
     fn maintain(&self) {
-        let Ok(mut spool) = self.spool.lock() else { return self.problem(None, "追溯 spool 锁损坏".into()) };
-        match spool.probe().and_then(|()| drain(&mut spool, &self.backlog)) {
+        let Ok(mut spool) = self.spool.lock() else {
+            return self.problem(None, "追溯 spool 锁损坏".into());
+        };
+        match spool
+            .probe()
+            .and_then(|()| drain(&mut spool, &self.backlog))
+        {
             Ok(()) => {
                 if let Ok(Some(previous)) = self.failure.lock().map(|mut failure| failure.take()) {
-                    app_log(&self.app, "info", "持久追溯恢复", None, format!("此前问题已恢复：{previous}"));
+                    app_log(
+                        &self.app,
+                        "info",
+                        "持久追溯恢复",
+                        None,
+                        format!("此前问题已恢复：{previous}"),
+                    );
                 }
             }
             Err(error) => self.problem(None, error),
@@ -341,15 +462,38 @@ impl Audit {
     fn persist(&self, event: Event) {
         let cycle = event.cycle_id().to_string();
         match persist_event(&self.spool, &self.backlog, &self.pending_recordings, event) {
-            Ok(problems) => for problem in problems {
-                let message = format!("cycleId={}：{}；原检测结论不变", problem.cycle, problem.message);
-                if problem.current { self.problem(Some(&problem.cycle), message); }
-                else { app_log(&self.app, "err", "持久追溯故障", Some(&problem.cycle), message); }
-            },
-            Err(error) => app_log(&self.app, "err", "持久追溯故障", Some(&cycle), format!("cycleId={cycle}：{error}；本条事件未保存，原检测结论不变")),
+            Ok(problems) => {
+                for problem in problems {
+                    let message = format!(
+                        "cycleId={}：{}；原检测结论不变",
+                        problem.cycle, problem.message
+                    );
+                    if problem.current {
+                        self.problem(Some(&problem.cycle), message);
+                    } else {
+                        app_log(
+                            &self.app,
+                            "err",
+                            "持久追溯故障",
+                            Some(&problem.cycle),
+                            message,
+                        );
+                    }
+                }
+            }
+            Err(error) => app_log(
+                &self.app,
+                "err",
+                "持久追溯故障",
+                Some(&cycle),
+                format!("cycleId={cycle}：{error}；本条事件未保存，原检测结论不变"),
+            ),
         }
         if matches!(self.tx.try_send(()), Err(TrySendError::Disconnected(()))) {
-            self.problem(Some(&cycle), "追溯线程已停止，已落盘的事件在重启后入库".into());
+            self.problem(
+                Some(&cycle),
+                "追溯线程已停止，已落盘的事件在重启后入库".into(),
+            );
         }
     }
 
@@ -358,32 +502,67 @@ impl Audit {
         let audit = self.clone();
         let task = tauri::async_runtime::spawn_blocking(move || audit.persist(event));
         if timeout.is_zero() {
-            app_log(&self.app, "warn", "持久追溯接收超时", Some(&cycle), format!("cycleId={cycle}：已无剩余处理预算，后台继续落盘"));
+            app_log(
+                &self.app,
+                "warn",
+                "持久追溯接收超时",
+                Some(&cycle),
+                format!("cycleId={cycle}：已无剩余处理预算，后台继续落盘"),
+            );
             return;
         }
         match tokio::time::timeout(timeout, task).await {
             Ok(Ok(())) => (),
-            Ok(Err(error)) => self.problem(Some(&cycle), format!("cycleId={cycle}：持久追溯接收线程异常：{error}")),
-            Err(_) => app_log(&self.app, "warn", "持久追溯接收超时", Some(&cycle),
-                format!("cycleId={cycle}：超过 {} ms 未完成，后台继续落盘", timeout.as_millis())),
+            Ok(Err(error)) => self.problem(
+                Some(&cycle),
+                format!("cycleId={cycle}：持久追溯接收线程异常：{error}"),
+            ),
+            Err(_) => app_log(
+                &self.app,
+                "warn",
+                "持久追溯接收超时",
+                Some(&cycle),
+                format!(
+                    "cycleId={cycle}：超过 {} ms 未完成，后台继续落盘",
+                    timeout.as_millis()
+                ),
+            ),
         }
     }
 
     pub async fn insert_durable(&self, part: RecordedPart, timeout: Duration) {
-        self.persist_async(Event::Insert(Box::new(part)), timeout).await
+        self.persist_async(Event::Insert(Box::new(part)), timeout)
+            .await
     }
 
     pub async fn delivery_durable(&self, cycle_id: &str, delivery: PlcDelivery) {
-        self.persist_async(Event::Delivery(cycle_id.into(), delivery), Duration::from_secs(5)).await
+        self.persist_async(
+            Event::Delivery(cycle_id.into(), delivery),
+            Duration::from_secs(5),
+        )
+        .await
     }
 
-    pub async fn submission_durable(&self, cycle_id: &str, delivery: PlcDelivery, drain_ms: Option<u64>) {
-        self.persist_async(Event::Submission(cycle_id.into(), delivery, drain_ms), Duration::from_secs(5)).await
+    pub async fn submission_durable(
+        &self,
+        cycle_id: &str,
+        delivery: PlcDelivery,
+        drain_ms: Option<u64>,
+    ) {
+        self.persist_async(
+            Event::Submission(cycle_id.into(), delivery, drain_ms),
+            Duration::from_secs(5),
+        )
+        .await
     }
 
-    pub fn insert(&self, part: RecordedPart) { self.persist(Event::Insert(Box::new(part))) }
+    pub fn insert(&self, part: RecordedPart) {
+        self.persist(Event::Insert(Box::new(part)))
+    }
 
-    pub fn delivery(&self, cycle_id: &str, delivery: PlcDelivery) { self.persist(Event::Delivery(cycle_id.into(), delivery)) }
+    pub fn delivery(&self, cycle_id: &str, delivery: PlcDelivery) {
+        self.persist(Event::Delivery(cycle_id.into(), delivery))
+    }
 
     pub fn recording(&self, outcome: RecordingOutcome) {
         log_recording(&self.app, &outcome);
@@ -997,19 +1176,36 @@ enum Replay {
     Conflict,
 }
 
-fn apply_spooled(events: Vec<(u64, Event)>, cycle: &str, sink: &mut impl Sink, now: i64) -> (Replay, Vec<u64>, Vec<Notice>) {
+fn apply_spooled(
+    events: Vec<(u64, Event)>,
+    cycle: &str,
+    sink: &mut impl Sink,
+    now: i64,
+) -> (Replay, Vec<u64>, Vec<Notice>) {
     let mut coordinator = Coordinator::new(1, 1);
     let mut notices = Vec::new();
-    let receipts = events.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>();
+    let receipts = events
+        .iter()
+        .map(|(sequence, _)| *sequence)
+        .collect::<Vec<_>>();
     let mut original = None;
     for (_, event) in &events {
         if let Event::Insert(part) = event {
             let value = match immutable_record(part) {
                 Ok(value) => value,
-                Err(error) => { log(&mut notices, "err", "持久检测记录结构错误", cycle, error); return (Replay::Conflict, receipts, notices); }
+                Err(error) => {
+                    log(&mut notices, "err", "持久检测记录结构错误", cycle, error);
+                    return (Replay::Conflict, receipts, notices);
+                }
             };
             if original.as_ref().is_some_and(|previous| *previous != value) {
-                log(&mut notices, "err", "持久检测记录身份冲突", cycle, "同 cycleId 对应不同不可变检测内容");
+                log(
+                    &mut notices,
+                    "err",
+                    "持久检测记录身份冲突",
+                    cycle,
+                    "同 cycleId 对应不同不可变检测内容",
+                );
                 return (Replay::Conflict, receipts, notices);
             }
             original = Some(value);
@@ -1017,28 +1213,64 @@ fn apply_spooled(events: Vec<(u64, Event)>, cycle: &str, sink: &mut impl Sink, n
                 Ok(Some(_)) => match sink.matches_record(part) {
                     Ok(true) => (),
                     Ok(false) => {
-                        log(&mut notices, "err", "持久检测记录身份冲突", cycle, "数据库原检测内容不同，保留原记录");
+                        log(
+                            &mut notices,
+                            "err",
+                            "持久检测记录身份冲突",
+                            cycle,
+                            "数据库原检测内容不同，保留原记录",
+                        );
                         return (Replay::Conflict, receipts, notices);
                     }
-                    Err(error) => { log(&mut notices, "err", "持久检测记录核对失败", cycle, error); return (Replay::Pending, receipts, notices); }
+                    Err(error) => {
+                        log(&mut notices, "err", "持久检测记录核对失败", cycle, error);
+                        return (Replay::Pending, receipts, notices);
+                    }
                 },
                 Ok(None) => (),
-                Err(error) => { log(&mut notices, "err", "持久检测记录核对失败", cycle, error); return (Replay::Pending, receipts, notices); }
+                Err(error) => {
+                    log(&mut notices, "err", "持久检测记录核对失败", cycle, error);
+                    return (Replay::Pending, receipts, notices);
+                }
             }
         }
     }
-    for (_, event) in &events { notices.extend(coordinator.handle(event.clone(), sink, now)); }
+    for (_, event) in &events {
+        notices.extend(coordinator.handle(event.clone(), sink, now));
+    }
     let conflict = notices.iter().any(|notice| matches!(notice, Notice::Log { event, .. }
         if matches!(*event, "追溯身份无效" | "PLC 交付身份冲突" | "原图归属失败" | "原图身份冲突" | "原图引用无效" | "录制收尾证据冲突" | "PLC 提交耗时身份冲突")));
-    if conflict { return (Replay::Conflict, receipts, notices); }
-    if !coordinator.entries.get(cycle).is_some_and(|entry| entry.inserted && !entry.pending()) { return (Replay::Pending, receipts, notices); }
+    if conflict {
+        return (Replay::Conflict, receipts, notices);
+    }
+    if !coordinator
+        .entries
+        .get(cycle)
+        .is_some_and(|entry| entry.inserted && !entry.pending())
+    {
+        return (Replay::Pending, receipts, notices);
+    }
     let mut replay = Replay::Complete;
     for (_, event) in &events {
         if let Event::Insert(part) = event {
             match sink.matches_record(part) {
                 Ok(true) => (),
-                Ok(false) => { replay = Replay::Conflict; log(&mut notices, "err", "持久检测记录身份冲突", cycle, "入库后实际检测内容不符"); },
-                Err(error) => { if replay == Replay::Complete { replay = Replay::Pending; } log(&mut notices, "err", "持久检测记录核对失败", cycle, error); },
+                Ok(false) => {
+                    replay = Replay::Conflict;
+                    log(
+                        &mut notices,
+                        "err",
+                        "持久检测记录身份冲突",
+                        cycle,
+                        "入库后实际检测内容不符",
+                    );
+                }
+                Err(error) => {
+                    if replay == Replay::Complete {
+                        replay = Replay::Pending;
+                    }
+                    log(&mut notices, "err", "持久检测记录核对失败", cycle, error);
+                }
             }
         }
     }
@@ -1077,8 +1309,14 @@ fn recover_all(spool: &mut spool::Spool, sink: &mut impl Sink, now: i64) -> Vec<
     let mut notices = Vec::new();
     for cycle in spool.cycles() {
         let reason = match recover_cycle(spool, &cycle, sink, now) {
-            Ok((true, cycle_notices)) => { notices.extend(cycle_notices); continue; }
-            Ok((false, cycle_notices)) => { notices.extend(cycle_notices); "待写事件无法入库".to_string() }
+            Ok((true, cycle_notices)) => {
+                notices.extend(cycle_notices);
+                continue;
+            }
+            Ok((false, cycle_notices)) => {
+                notices.extend(cycle_notices);
+                "待写事件无法入库".to_string()
+            }
             Err(error) => error,
         };
         quarantine(spool, &cycle, &reason, &mut notices);
@@ -1086,25 +1324,72 @@ fn recover_all(spool: &mut spool::Spool, sink: &mut impl Sink, now: i64) -> Vec<
     notices
 }
 
-fn quarantine(spool: &mut spool::Spool, cycle: &str, reason: &str, notices: &mut Vec<Notice>) -> bool {
+fn quarantine(
+    spool: &mut spool::Spool,
+    cycle: &str,
+    reason: &str,
+    notices: &mut Vec<Notice>,
+) -> bool {
     match spool.quarantine(cycle) {
-        Ok(directory) => { log(notices, "err", "持久追溯未恢复", cycle, format!("{reason}；事件已移到 {}，待人工核对", directory.display())); true }
-        Err(error) => { log(notices, "err", "持久追溯未恢复", cycle, format!("{reason}；移到未恢复目录失败，稍后重试：{error}")); false }
+        Ok(directory) => {
+            log(
+                notices,
+                "err",
+                "持久追溯未恢复",
+                cycle,
+                format!("{reason}；事件已移到 {}，待人工核对", directory.display()),
+            );
+            true
+        }
+        Err(error) => {
+            log(
+                notices,
+                "err",
+                "持久追溯未恢复",
+                cycle,
+                format!("{reason}；移到未恢复目录失败，稍后重试：{error}"),
+            );
+            false
+        }
     }
 }
 
-fn replay_cycle(spool: &mut spool::Spool, cycle: &str, sink: &mut impl Sink, now: i64) -> Result<(bool, Vec<Notice>), String> {
+fn replay_cycle(
+    spool: &mut spool::Spool,
+    cycle: &str,
+    sink: &mut impl Sink,
+    now: i64,
+) -> Result<(bool, Vec<Notice>), String> {
     let (replay, receipts, notices) = apply_spooled(spool.events(cycle)?, cycle, sink, now);
     let complete = replay == Replay::Complete;
-    if complete { spool.remove(&receipts)?; }
+    if complete {
+        spool.remove(&receipts)?;
+    }
     Ok((complete, notices))
 }
 
 /// 追溯线程对一件的一次入库尝试。冲突的件、连续 QUARANTINE_ATTEMPTS 次没入库的件移到未恢复目录。
-fn retry_cycle(spool: &Mutex<spool::Spool>, retries: &mut BTreeMap<String, (u32, i64)>, cycle: &str, sink: &mut impl Sink, now: i64) -> Vec<Notice> {
+fn retry_cycle(
+    spool: &Mutex<spool::Spool>,
+    retries: &mut BTreeMap<String, (u32, i64)>,
+    cycle: &str,
+    sink: &mut impl Sink,
+    now: i64,
+) -> Vec<Notice> {
     let mut notices = Vec::new();
-    if retries.get(cycle).is_some_and(|(_, due)| now < *due) { return notices; }
-    let Ok(guard) = spool.lock() else { log(&mut notices, "err", "持久追溯故障", cycle, "追溯 spool 锁损坏"); return notices };
+    if retries.get(cycle).is_some_and(|(_, due)| now < *due) {
+        return notices;
+    }
+    let Ok(guard) = spool.lock() else {
+        log(
+            &mut notices,
+            "err",
+            "持久追溯故障",
+            cycle,
+            "追溯 spool 锁损坏",
+        );
+        return notices;
+    };
     let events = guard.events(cycle);
     drop(guard);
     let conflict = match events {
@@ -1112,26 +1397,52 @@ fn retry_cycle(spool: &Mutex<spool::Spool>, retries: &mut BTreeMap<String, (u32,
             let (replay, receipts, applied) = apply_spooled(events, cycle, sink, now);
             notices.extend(applied);
             if replay == Replay::Complete {
-                match spool.lock().map_err(|_| "追溯 spool 锁损坏".to_string()).and_then(|mut spool| spool.remove(&receipts)) {
-                    Ok(()) => { retries.remove(cycle); return notices; }
+                match spool
+                    .lock()
+                    .map_err(|_| "追溯 spool 锁损坏".to_string())
+                    .and_then(|mut spool| spool.remove(&receipts))
+                {
+                    Ok(()) => {
+                        retries.remove(cycle);
+                        return notices;
+                    }
                     Err(error) => log(&mut notices, "err", "持久追溯故障", cycle, error),
                 }
             }
             replay == Replay::Conflict
         }
-        Err(error) => { log(&mut notices, "err", "持久追溯读取失败", cycle, error); false }
+        Err(error) => {
+            log(&mut notices, "err", "持久追溯读取失败", cycle, error);
+            false
+        }
     };
     let (failures, due) = retries.entry(cycle.into()).or_default();
     *failures = failures.saturating_add(1);
-    *due = now.saturating_add((RETRY_BASE_MS << failures.saturating_sub(1).min(5)).min(RETRY_MAX_MS));
-    let reason = if conflict { "待写事件与已有记录冲突".to_string() }
-        else if *failures >= QUARANTINE_ATTEMPTS { format!("连续 {failures} 次未能入库") }
-        else { return notices };
+    *due =
+        now.saturating_add((RETRY_BASE_MS << failures.saturating_sub(1).min(5)).min(RETRY_MAX_MS));
+    let reason = if conflict {
+        "待写事件与已有记录冲突".to_string()
+    } else if *failures >= QUARANTINE_ATTEMPTS {
+        format!("连续 {failures} 次未能入库")
+    } else {
+        return notices;
+    };
     let moved = match spool.lock() {
         Ok(mut spool) => quarantine(&mut spool, cycle, &reason, &mut notices),
-        Err(_) => { log(&mut notices, "err", "持久追溯故障", cycle, "追溯 spool 锁损坏"); false }
+        Err(_) => {
+            log(
+                &mut notices,
+                "err",
+                "持久追溯故障",
+                cycle,
+                "追溯 spool 锁损坏",
+            );
+            false
+        }
     };
-    if moved { retries.remove(cycle); }
+    if moved {
+        retries.remove(cycle);
+    }
     notices
 }
 
@@ -1150,14 +1461,25 @@ fn writer(audit: Audit, rx: Receiver<()>) {
         }
         let cycles = match audit.spool.lock() {
             Ok(spool) => spool.cycles(),
-            Err(_) => { audit.problem(None, "追溯 spool 锁损坏".into()); return; }
+            Err(_) => {
+                audit.problem(None, "追溯 spool 锁损坏".into());
+                return;
+            }
         };
         retries.retain(|cycle, _| cycles.contains(cycle));
         for cycle in cycles {
-            let notices = retry_cycle(&audit.spool, &mut retries, &cycle, &mut sink, ly_plc::now_ms());
+            let notices = retry_cycle(
+                &audit.spool,
+                &mut retries,
+                &cycle,
+                &mut sink,
+                ly_plc::now_ms(),
+            );
             publish(&audit.app, notices);
         }
-        if disconnected { return; }
+        if disconnected {
+            return;
+        }
     }
 }
 

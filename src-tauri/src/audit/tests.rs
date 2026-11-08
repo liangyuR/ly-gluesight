@@ -184,28 +184,55 @@ fn startup_spool_with_unrecoverable_cycle_then_quarantined_and_spool_ready_after
     let dir = TestDir::new();
     let mut sink = dir.sink();
     let (mut spool, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
-    spool.append(&Event::Insert(Box::new(part("committed", 42)))).unwrap();
-    spool.append(&Event::Delivery("orphan".into(), delivery(PlcDeliveryState::Acknowledged, 88))).unwrap();
+    spool
+        .append(&Event::Insert(Box::new(part("committed", 42))))
+        .unwrap();
+    spool
+        .append(&Event::Delivery(
+            "orphan".into(),
+            delivery(PlcDeliveryState::Acknowledged, 88),
+        ))
+        .unwrap();
     let notices = recover_all(&mut spool, &mut sink, 1);
     assert!(spool.empty());
     assert!(notices.iter().any(|notice| matches!(notice, Notice::Log { event: "持久追溯未恢复", cycle, .. } if cycle == "orphan")));
     assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 1);
     assert!(spool::Spool::open(dir.0.join("spool")).unwrap().0.empty());
-    assert_eq!(std::fs::read_dir(dir.0.join("spool").join(".unrecovered")).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read_dir(dir.0.join("spool").join(".unrecovered"))
+            .unwrap()
+            .count(),
+        1
+    );
 }
 
 #[test]
-fn spool_with_crash_leftover_tmp_and_old_format_file_then_opens_moves_both_aside_and_appends_after_them() {
+fn spool_with_crash_leftover_tmp_and_old_format_file_then_opens_moves_both_aside_and_appends_after_them(
+) {
     let dir = TestDir::new();
     let root = dir.0.join("spool");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("00000000000000000007.tmp"), b"{\"format\":4,\"ev").unwrap();
-    std::fs::write(root.join("00000000000000000003.json"), br#"{"format":3,"event":{}}"#).unwrap();
+    std::fs::write(
+        root.join("00000000000000000003.json"),
+        br#"{"format":3,"event":{}}"#,
+    )
+    .unwrap();
     let (mut spool, notes) = spool::Spool::open(root.clone()).unwrap();
     assert_eq!(notes.len(), 2);
     assert!(spool.empty());
-    assert_eq!(std::fs::read_dir(root.join(".unrecovered")).unwrap().count(), 2);
-    spool.append(&Event::Delivery("next".into(), delivery(PlcDeliveryState::Acknowledged, 1))).unwrap();
+    assert_eq!(
+        std::fs::read_dir(root.join(".unrecovered"))
+            .unwrap()
+            .count(),
+        2
+    );
+    spool
+        .append(&Event::Delivery(
+            "next".into(),
+            delivery(PlcDeliveryState::Acknowledged, 1),
+        ))
+        .unwrap();
     assert!(root.join("00000000000000000008.json").is_file());
 }
 
@@ -213,13 +240,36 @@ fn spool_with_crash_leftover_tmp_and_old_format_file_then_opens_moves_both_aside
 fn spool_full_then_events_wait_in_memory_in_order_and_drain_when_space_frees() {
     let dir = TestDir::new();
     let (spool, _) = spool::Spool::with_limits(dir.0.join("spool"), 1, 64 * 1024 * 1024).unwrap();
-    let (spool, backlog, barriers) = (Mutex::new(spool), Mutex::new(VecDeque::new()), Mutex::new(BTreeMap::new()));
+    let (spool, backlog, barriers) = (
+        Mutex::new(spool),
+        Mutex::new(VecDeque::new()),
+        Mutex::new(BTreeMap::new()),
+    );
     for (cycle, at) in [("a", 1), ("b", 2), ("c", 3)] {
-        persist_event(&spool, &backlog, &barriers, Event::Delivery(cycle.into(), delivery(PlcDeliveryState::Acknowledged, at))).unwrap();
+        persist_event(
+            &spool,
+            &backlog,
+            &barriers,
+            Event::Delivery(cycle.into(), delivery(PlcDeliveryState::Acknowledged, at)),
+        )
+        .unwrap();
     }
-    assert_eq!(backlog.lock().unwrap().iter().map(|event| event.cycle_id().to_string()).collect::<Vec<_>>(), ["b", "c"]);
+    assert_eq!(
+        backlog
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| event.cycle_id().to_string())
+            .collect::<Vec<_>>(),
+        ["b", "c"]
+    );
     let mut spool = spool.lock().unwrap();
-    let receipts = spool.events("a").unwrap().into_iter().map(|(sequence, _)| sequence).collect::<Vec<_>>();
+    let receipts = spool
+        .events("a")
+        .unwrap()
+        .into_iter()
+        .map(|(sequence, _)| sequence)
+        .collect::<Vec<_>>();
     spool.remove(&receipts).unwrap();
     assert!(drain(&mut spool, &backlog).is_err());
     assert_eq!(spool.cycles(), BTreeSet::from(["b".to_string()]));
@@ -231,7 +281,12 @@ fn cycle_still_unrecorded_after_retry_limit_then_writer_quarantines_it() {
     let dir = TestDir::new();
     let mut sink = dir.sink();
     let (mut spool, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
-    spool.append(&Event::Delivery("orphan".into(), delivery(PlcDeliveryState::Acknowledged, 88))).unwrap();
+    spool
+        .append(&Event::Delivery(
+            "orphan".into(),
+            delivery(PlcDeliveryState::Acknowledged, 88),
+        ))
+        .unwrap();
     let spool = Mutex::new(spool);
     let mut retries = BTreeMap::new();
     let mut now = 0;
@@ -242,8 +297,19 @@ fn cycle_still_unrecorded_after_retry_limit_then_writer_quarantines_it() {
     assert!(!spool.lock().unwrap().empty());
     let notices = retry_cycle(&spool, &mut retries, "orphan", &mut sink, now);
     assert!(spool.lock().unwrap().empty());
-    assert!(notices.iter().any(|notice| matches!(notice, Notice::Log { event: "持久追溯未恢复", .. })));
-    assert_eq!(std::fs::read_dir(dir.0.join("spool").join(".unrecovered")).unwrap().count(), 1);
+    assert!(notices.iter().any(|notice| matches!(
+        notice,
+        Notice::Log {
+            event: "持久追溯未恢复",
+            ..
+        }
+    )));
+    assert_eq!(
+        std::fs::read_dir(dir.0.join("spool").join(".unrecovered"))
+            .unwrap()
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -257,14 +323,19 @@ fn quarantined_cycle_recording_directory_stays_protected_after_reopen() {
     recording.directory = Some(records.join("cycle_orphan"));
     spool.append(&Event::Recording(recording)).unwrap();
     spool
-        .append(&Event::Delivery("orphan".into(), delivery(PlcDeliveryState::Acknowledged, 88)))
+        .append(&Event::Delivery(
+            "orphan".into(),
+            delivery(PlcDeliveryState::Acknowledged, 88),
+        ))
         .unwrap();
     recover_all(&mut spool, &mut sink, 1);
     assert!(spool.empty());
     let expected = records.join("cycle_orphan").canonicalize().unwrap();
     let (reopened, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
     assert_eq!(
-        reopened.protected_directories(&records, &VecDeque::new()).unwrap(),
+        reopened
+            .protected_directories(&records, &VecDeque::new())
+            .unwrap(),
         vec![expected]
     );
 }

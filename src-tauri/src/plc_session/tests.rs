@@ -122,7 +122,14 @@ impl Rig {
         rig.engine.connect().await;
         rig.connected().await;
         rig.live().await;
-        assert!(matches!(rig.session.poll(&rig.engine, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
+        assert!(
+            matches!(
+                rig.session.poll(&rig.engine, true).await,
+                SessionEvent::Ready
+            ),
+            "{:?}",
+            rig.session.view()
+        );
         assert_eq!(rig.plc.pc(), state::PC_READY);
         rig
     }
@@ -425,11 +432,17 @@ impl Rig {
         for _ in 0..rounds {
             self.fresh().await;
             if self.plc.pc() == state::PC_RESET {
-                self.plc.set(&[(tag::PLC_REASON, 0), (tag::PLC_STATE, state::PLC_IDLE as u32)]);
+                self.plc.set(&[
+                    (tag::PLC_REASON, 0),
+                    (tag::PLC_STATE, state::PLC_IDLE as u32),
+                ]);
                 self.fresh().await;
             }
             let reset = self.session.auto_reset();
-            if matches!(self.session.poll(&self.engine, reset).await, SessionEvent::Ready) {
+            if matches!(
+                self.session.poll(&self.engine, reset).await,
+                SessionEvent::Ready
+            ) {
                 return true;
             }
         }
@@ -447,11 +460,26 @@ async fn unusable_journal_files_are_set_aside_and_reset_reaches_ready() {
     .await;
     assert!(rig.session.archived().is_some());
     let dir = rig.session.path.parent().unwrap().to_owned();
-    let names: Vec<String> = std::fs::read_dir(&dir).unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
-    assert!(!names.iter().any(|n| n == "session.pending.tmp"), "{names:?}");
-    assert!(names.iter().any(|n| n.starts_with("session.corrupt-") && n.ends_with(".json")), "{names:?}");
-    assert!(names.iter().any(|n| n.starts_with("session.pending-") && n.ends_with(".tmp")), "{names:?}");
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == "session.pending.tmp"),
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .any(|n| n.starts_with("session.corrupt-") && n.ends_with(".json")),
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .any(|n| n.starts_with("session.pending-") && n.ends_with(".tmp")),
+        "{names:?}"
+    );
     rig.request(1, "SN-J1").await;
     rig.finish().await;
 }
@@ -462,13 +490,19 @@ async fn protocol_fault_with_pending_part_auto_resets_to_ready() {
     let mut rig = Rig::new("auto-reset-pending").await;
     rig.request(1, "SN-50").await;
     rig.intake().await;
-    rig.plc.set(&[(tag::PLC_REASON, 9), (tag::PLC_STATE, state::PLC_FAULT as u32)]);
+    rig.plc.set(&[
+        (tag::PLC_REASON, 9),
+        (tag::PLC_STATE, state::PLC_FAULT as u32),
+    ]);
     rig.phase(SessionPhase::Fault).await;
     assert!(rig.session.pending());
     assert!(rig.auto_poll(20).await, "{:?}", rig.session.view());
     assert_eq!(rig.plc.pc(), state::PC_READY);
     assert!(!rig.session.pending());
-    assert!(rig.audit().iter().any(|r| r["action"] == "resetCompleted" && r["pending"]["request"]["requestSeq"] == 1));
+    assert!(rig
+        .audit()
+        .iter()
+        .any(|r| r["action"] == "resetCompleted" && r["pending"]["request"]["requestSeq"] == 1));
     rig.finish().await;
 }
 
@@ -482,7 +516,11 @@ async fn repeated_faults_back_off_auto_reset_then_resume() {
     }
     rig.session.fault(&rig.engine, "测试故障".into()).await;
     assert!(!rig.auto_poll(10).await);
-    assert_eq!(rig.session.view().reset_blocked_reason, None, "复位条件满足仍不复位，才说明是退避在拦");
+    assert_eq!(
+        rig.session.view().reset_blocked_reason,
+        None,
+        "复位条件满足仍不复位，才说明是退避在拦"
+    );
     rig.session.auto_last = Instant::now().checked_sub(AUTO_RESET_BACKOFF);
     assert!(rig.auto_poll(10).await, "{:?}", rig.session.view());
     rig.finish().await;
@@ -543,15 +581,26 @@ async fn s7_wire_disconnect_after_result_applied_never_commits_success() {
     assert!(rig.session.pending());
     let saved: Value = serde_json::from_slice(&std::fs::read(&rig.session.path).unwrap()).unwrap();
     assert_eq!(saved["pending"]["result"]["requestSeq"], 1);
-    if rig.engine.status().state == LinkState::Disconnected { rig.engine.connect().await; }
+    if rig.engine.status().state == LinkState::Disconnected {
+        rig.engine.connect().await;
+    }
     rig.connected().await;
     rig.live().await;
-    assert!(matches!(rig.session.phase(), SessionPhase::ResetRequired | SessionPhase::Fault));
+    assert!(matches!(
+        rig.session.phase(),
+        SessionPhase::ResetRequired | SessionPhase::Fault
+    ));
     rig.plc.plc_state(state::PLC_IDLE);
     rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, true).await, SessionEvent::Ready));
+    assert!(matches!(
+        rig.session.poll(&rig.engine, true).await,
+        SessionEvent::Ready
+    ));
     assert!(!rig.session.pending());
-    assert!(rig.audit().iter().any(|r| r["action"] == "resetCompleted" && r["pending"]["result"]["requestSeq"] == 1));
+    assert!(rig
+        .audit()
+        .iter()
+        .any(|r| r["action"] == "resetCompleted" && r["pending"]["result"]["requestSeq"] == 1));
     rig.finish().await;
 }
 

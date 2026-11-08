@@ -500,9 +500,16 @@ pub fn gather(app: &AppHandle) -> Readiness {
         _ => Ok(()),
     };
     let audit = match host.audit.readiness() {
-        Ok(crate::audit::AuditReadiness::Ready) => host.disk.check().map_or_else(Check::Waiting, |()| Check::Ok),
-        Ok(crate::audit::AuditReadiness::WaitingRecording) => Check::Waiting("原图录制收尾中，不影响接件".into()),
-        Ok(crate::audit::AuditReadiness::WaitingStore) => Check::Waiting("追溯事件后台入库中，不影响接件".into()),
+        Ok(crate::audit::AuditReadiness::Ready) => host
+            .disk
+            .check()
+            .map_or_else(Check::Waiting, |()| Check::Ok),
+        Ok(crate::audit::AuditReadiness::WaitingRecording) => {
+            Check::Waiting("原图录制收尾中，不影响接件".into())
+        }
+        Ok(crate::audit::AuditReadiness::WaitingStore) => {
+            Check::Waiting("追溯事件后台入库中，不影响接件".into())
+        }
         Err(error) => Check::Blocked(format!("持久追溯异常：{error}")),
     };
     let link = plc(app).status();

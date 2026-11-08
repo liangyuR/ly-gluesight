@@ -1449,7 +1449,12 @@ impl Machine {
                 if shown {
                     self.alarms.retain(|m| !m.starts_with(PREFIX));
                     self.dirty = true;
-                    log(&self.app, "ok", "资料盘空间", "剩余空间已恢复，恢复录制原图");
+                    log(
+                        &self.app,
+                        "ok",
+                        "资料盘空间",
+                        "剩余空间已恢复，恢复录制原图",
+                    );
                 }
             }
         }
@@ -2494,7 +2499,12 @@ impl Machine {
             if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7) {
                 match self.current_cycle_id.as_deref() {
                     Some(cycle_id) => host(&app).audit.delivery_durable(cycle_id, delivery).await,
-                    None => log(&app, "err", "PLC 交付", "PLC 已确认结果，但缺少工件身份，交付状态未记录"),
+                    None => log(
+                        &app,
+                        "err",
+                        "PLC 交付",
+                        "PLC 已确认结果，但缺少工件身份，交付状态未记录",
+                    ),
                 }
             }
             match event {
@@ -2804,7 +2814,12 @@ impl Machine {
             Err(error) => Err(error),
         };
         if let Err(error) = recorded {
-            log(&app, "err", "检测记录", format!("本件检测记录未生成，结果照常回写 PLC：{error}"));
+            log(
+                &app,
+                "err",
+                "检测记录",
+                format!("本件检测记录未生成，结果照常回写 PLC：{error}"),
+            );
         }
         let (code, fault_code) = if maintenance {
             (0, 0)
