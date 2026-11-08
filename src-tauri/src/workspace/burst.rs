@@ -955,34 +955,15 @@ impl PreparedSegmentTeaching {
         corridor: Vec<[f32; 2]>,
         color_model: Option<String>,
     ) -> Result<Workspace, String> {
-        let mut next = self.workspace.clone();
-        let mut doc = next.doc.clone();
-        let inspect = doc
-            .inspect
-            .iter_mut()
-            .find(|i| i.camera == self.camera)
-            .ok_or("示教相机不在候选中")?;
-        let previous = inspect.segment_corridor(self.segment).cloned();
-        inspect.segments.retain(|s| s.segment != self.segment);
-        inspect.segments.push(crate::recipe::SegmentCorridor {
-            segment: self.segment,
+        with_segment_corridor(
+            &self.workspace,
+            self.revision,
+            &self.camera,
+            self.segment,
+            self.frame.size,
             corridor,
-            sector_deg: previous.and_then(|p| p.sector_deg),
             color_model,
-        });
-        inspect.segments.sort_by_key(|s| s.segment);
-        let recipe = doc.build()?;
-        let inspect = recipe
-            .inspect
-            .iter()
-            .find(|i| i.camera == self.camera)
-            .ok_or("示教相机不在候选中")?;
-        vision::plan_corridor(inspect, self.segment, &recipe, self.frame.size)?;
-        update_doc(&mut next, doc)?;
-        if next.revision == self.revision {
-            next.changed();
-        }
-        Ok(next)
+        )
     }
 
     pub fn commit(
@@ -992,18 +973,7 @@ impl PreparedSegmentTeaching {
         color_model: Option<String>,
     ) -> Result<Workspace, String> {
         if self.image.is_color() {
-            let status = vision::color_model_status(color_model.as_deref());
-            if !status.model_usable {
-                let reasons = status
-                    .issues
-                    .iter()
-                    .map(|i| i.message.as_str())
-                    .collect::<Vec<_>>()
-                    .join("；");
-                return Err(format!(
-                    "取色结果不可用：{reasons}；换一帧示教帧或调整笔划后重试，候选未保存"
-                ));
-            }
+            require_usable_color_model(color_model.as_deref())?;
         }
         let next = self.corridor_workspace(corridor, color_model)?;
         self.persist(host, next)
@@ -1160,7 +1130,7 @@ pub(super) async fn commit_segment_teaching(
                 .as_ref()
                 .unwrap_or(&prepared.workspace.doc.detect);
             let text = fit_color_model(
-                &app,
+                &*lyflow(&app)?,
                 &prepared.workspace.doc.id,
                 &prepared.camera,
                 &prepared.image,
@@ -1264,7 +1234,15 @@ async fn fit_workspace_color_model(
                 "示教帧是灰度图，不能取色：把相机图像模式改为彩色后重新选这一段的示教帧".into(),
             );
         }
-        let text = fit_color_model(&app, &id, &camera, &image, corridor, detect, scale)?;
+        let text = fit_color_model(
+            &*lyflow(&app)?,
+            &id,
+            &camera,
+            &image,
+            corridor,
+            detect,
+            scale,
+        )?;
         let saved = host.save_fitted_color_model(&before, &camera, segment, text)?;
         let revision = saved.revision;
         view(&app, saved)
@@ -1325,8 +1303,14 @@ impl WorkspaceHost {
     }
 }
 
-fn fit_color_model(
-    app: &AppHandle,
+pub(super) fn lyflow(app: &AppHandle) -> Result<Arc<vision::Engine>, String> {
+    app.state::<vision::VisionHost>()
+        .engine()
+        .ok_or_else(|| "lyFlow 核心库未加载".into())
+}
+
+pub(super) fn fit_color_model(
+    engine: &vision::Engine,
     id: &str,
     camera: &str,
     image: &FrameImage,
@@ -1335,10 +1319,6 @@ fn fit_color_model(
     scale: f64,
 ) -> Result<String, String> {
     let params = color_teach_params(corridor, detect, scale)?;
-    let engine = app
-        .state::<vision::VisionHost>()
-        .engine()
-        .ok_or("lyFlow 核心库未加载")?;
     let result = engine.run_targets(
         vision::template::color_teach().text,
         &vision::unique_run_id(&format!("color-teach-{id}-{camera}")),
@@ -1368,8 +1348,9 @@ pub(super) fn color_teach_params(
     }))
 }
 
-/// 段配方的走廊提取（决策记录 5.4）：在相机 `camera` 冻结的示教帧 `image_id` 上按选区提取，复用旧中线提取的边缘算法；
-/// 检测极性取这台相机的检测参数，没有时取配方默认。旧配方仍用 `workspace_extract_centerline`。
+/// 段配方的走廊提取（决策记录 5.4）：在相机 `camera` 冻结的示教帧 `image_id` 上按选区找两侧胶边（彩色帧换算成亮度）；
+/// 这台相机的检测极性（没有时取配方默认）只决定先试哪种，胶比背景暗还是亮按图自动判断（见 `centerline::extract`）。
+/// 彩色帧的刷选走 [`workspace_snap_corridor`] 按胶色吸附。
 #[tauri::command]
 pub async fn workspace_extract_corridor(
     app: AppHandle,
@@ -1436,6 +1417,183 @@ pub async fn workspace_extract_corridor(
             }),
             Err(super::centerline::ExtractionError::Invalid(message)) => Err(message),
         }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 把相机 `camera` 第 `segment` 段的走廊（连同颜色模型）写进 `workspace` 的副本：保留这一段拖过的扇区方向，
+/// 按示教帧尺寸 `size` 核对走廊能建测量图。`base` 为提交所基于的修订，副本修订未前进时补一次。
+fn with_segment_corridor(
+    workspace: &Workspace,
+    base: u64,
+    camera: &str,
+    segment: u32,
+    size: [u32; 2],
+    corridor: Vec<[f32; 2]>,
+    color_model: Option<String>,
+) -> Result<Workspace, String> {
+    let mut next = workspace.clone();
+    let mut doc = next.doc.clone();
+    let inspect = doc
+        .inspect
+        .iter_mut()
+        .find(|i| i.camera == camera)
+        .ok_or("示教相机不在候选中")?;
+    let previous = inspect.segment_corridor(segment).cloned();
+    inspect.segments.retain(|s| s.segment != segment);
+    inspect.segments.push(crate::recipe::SegmentCorridor {
+        segment,
+        corridor,
+        sector_deg: previous.and_then(|p| p.sector_deg),
+        color_model,
+    });
+    inspect.segments.sort_by_key(|s| s.segment);
+    let recipe = doc.build()?;
+    let inspect = recipe
+        .inspect
+        .iter()
+        .find(|i| i.camera == camera)
+        .ok_or("示教相机不在候选中")?;
+    vision::plan_corridor(inspect, segment, &recipe, size)?;
+    update_doc(&mut next, doc)?;
+    if next.revision == base {
+        next.changed();
+    }
+    Ok(next)
+}
+
+fn require_usable_color_model(model: Option<&str>) -> Result<(), String> {
+    let status = vision::color_model_status(model);
+    if status.model_usable {
+        return Ok(());
+    }
+    let reasons = status
+        .issues
+        .iter()
+        .map(|i| i.message.as_str())
+        .collect::<Vec<_>>()
+        .join("；");
+    Err(format!(
+        "取色结果不可用：{reasons}；换一帧示教帧或调整笔划后重试，候选未保存"
+    ))
+}
+
+#[derive(Serialize)]
+pub struct SnapCorridorResult {
+    /// 提交后的候选；吸附、取色或走廊核对没通过时为空，候选不变
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<WorkspaceView>,
+    pub message: String,
+}
+
+/// 彩色示教帧上的刷选（与示教 MCP `teach_corridor` 按胶色吸附同一口径）：在相机 `camera` 第 `segment` 段冻结的示教帧
+/// `image_id` 上，把笔划按胶色吸附到胶中心（偏移上限为笔刷半径），沿吸附后的走廊取色，走廊与颜色模型一次提交。
+/// 吸附、取色或走廊核对没通过时候选不变，原因放在 `message`；候选修订或示教帧变了时报错。
+#[tauri::command]
+pub async fn workspace_snap_corridor(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    camera: String,
+    segment: u32,
+    image_id: String,
+    guide: super::centerline::BrushGuide,
+) -> Result<SnapCorridorResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<WorkspaceHost>();
+        let frozen = |w: &Workspace| {
+            w.camera_teaching.iter().any(|t| {
+                t.camera == camera && t.segment == Some(segment) && t.frame.id == image_id
+            })
+        };
+        let before = {
+            let items = host.items.lock().unwrap();
+            let w = items.get(&id).ok_or("候选不存在")?;
+            w.expect(revision)?;
+            require_burst(&w.doc)?;
+            if !frozen(w) {
+                return Err("图像已变化，请重新刷选".into());
+            }
+            w.clone()
+        };
+        let fail = |message: String| Ok(SnapCorridorResult { view: None, message });
+        let inspect = before
+            .doc
+            .inspect
+            .iter()
+            .find(|i| i.camera == camera)
+            .ok_or_else(|| format!("相机 {camera} 不是段配方的计划相机"))?;
+        let Some(scale) = inspect.mm_per_px else {
+            return fail(format!(
+                "按胶色吸附要用像素当量把胶宽换成像素：{camera} 还没有像素当量，先在左侧“相机参数”里填写或采用设备标定当量，再刷选"
+            ));
+        };
+        let detect = inspect.detect.as_ref().unwrap_or(&before.doc.detect);
+        let radius = guide.radius_px;
+        if !radius.is_finite() || !(3.0..=150.0).contains(&radius) || guide.points.len() < 2 {
+            return Err("请沿胶路绘制笔划，笔刷半径需为 3–150 像素".into());
+        }
+        let image = crate::image_file::load(&image_file(&host, &id, &image_id)?)?;
+        if !image.is_color() {
+            return Err("示教帧是灰度图，不能按胶色吸附".into());
+        }
+        if !vision::corridor_inside(&guide.points, [image.width, image.height]) {
+            return Err("笔划必须位于示教帧内".into());
+        }
+        let engine = lyflow(&app)?;
+        let (corridor, moved) = match super::snap::snap_color(
+            &engine,
+            &id,
+            &camera,
+            detect,
+            scale,
+            &image,
+            &guide.points,
+            radius,
+        ) {
+            Ok(snapped) => snapped,
+            Err(message) => return fail(message),
+        };
+        let model = match fit_color_model(&engine, &id, &camera, &image, &corridor, detect, scale) {
+            Ok(model) => model,
+            Err(message) => return fail(message),
+        };
+        if let Err(message) = require_usable_color_model(Some(&model)) {
+            return fail(message);
+        }
+        let mut items = host.items.lock().unwrap();
+        let current = items.get_mut(&id).ok_or("候选不存在")?;
+        current.expect(revision)?;
+        if current.instance_id != before.instance_id {
+            return Err("吸附期间候选已重建，请重新刷选".into());
+        }
+        if !frozen(current) {
+            return Err("吸附期间示教帧已变化，请重新刷选".into());
+        }
+        let next = match with_segment_corridor(
+            current,
+            revision,
+            &camera,
+            segment,
+            [image.width, image.height],
+            corridor,
+            Some(model),
+        ) {
+            Ok(next) => next,
+            Err(message) => return fail(message),
+        };
+        host.save(&next)?;
+        *current = next.clone();
+        drop(items);
+        let note = moved.map_or_else(String::new, |s| format!("，平均移动 {s:.1} px"));
+        let revision = next.revision;
+        let view = view(&app, next)
+            .map_err(|e| format!("走廊已保存为修订 {revision}，但刷新视图失败：{e}"))?;
+        Ok(SnapCorridorResult {
+            view: Some(view),
+            message: format!("已按胶色吸附到胶中心{note}，走廊与胶色已保存，请核对叠图"),
+        })
     })
     .await
     .map_err(|e| e.to_string())?

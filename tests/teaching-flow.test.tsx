@@ -205,6 +205,31 @@ it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引�
     guide: { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 60 }, pointSpacingPx: 10 }]);
 });
 
+// 防的回归：彩色示教帧的刷选仍按灰度找两侧胶边，胶路明显却常报找不到边缘；示教 MCP 按胶色吸附在同类帧上一次成功
+it("彩色示教帧上刷选后自动提取 → 按胶色吸附提交一次（笔刷半径为偏移上限），不走灰度提取，显示的走廊即已保存的走廊", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate();
+  const snapped = structuredClone(candidate);
+  snapped.workspace.revision++;
+  snapped.workspace.doc.inspect![1].segments = [{ segment: 1, corridor: bend, colorModel: "{}" }];
+  mockSite(candidate, { workspace_snap_corridor: () => ({ view: snapped, message: "已按胶色吸附到胶中心" }) });
+  vi.mocked(workspaceApi.image).mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60, channels: 3 } as Awaited<ReturnType<typeof workspaceApi.image>>);
+  const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  fireEvent.click(screen.getByRole("button", { name: "沿胶路刷选" }));
+  fireEvent.pointerDown(image, { clientX: 10.2, clientY: 12.4 });
+  fireEvent.pointerMove(image, { clientX: 50.8, clientY: 42.7 });
+  fireEvent.pointerUp(image);
+  await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
+  expect(await screen.findByText(/已按胶色吸附到胶中心/)).toBeVisible();
+  expect(screen.getByText((_, node) => node?.tagName === "SPAN" && /^走廊 5 点/.test(node.textContent ?? ""))).toBeVisible();
+  expect(screen.queryByText("走廊未保存")).toBeNull();
+  expect(calls("workspace_snap_corridor")).toEqual([{ id: "A", revision: 3, camera: "CAM-2", segment: 1, imageId: FRAME2,
+    guide: { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 60 } }]);
+  expect(calls("workspace_extract_corridor")).toEqual([]);
+  expect(calls("workspace_save_doc")).toEqual([]);
+});
+
 // 防的回归（RB-1）：示教帧可以从示教件以外的轮次选取；重新选帧确认后仍显示旧帧
 it("段已有示教帧时重新选帧 → 只在示教件这一段内选帧，确认后按示教件提交并显示新帧", async () => {
   const candidate = corridorCandidate();

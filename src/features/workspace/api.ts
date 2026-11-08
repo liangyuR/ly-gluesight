@@ -86,6 +86,9 @@ export const workspaceApi = {
   /** 在这台相机某段冻结的示教帧 imageId 上按选区提取走廊 */
   extractCorridor: (id: string, revision: number, camera: string, imageId: string, roi: [number, number, number, number], guide?: import("./teachingPath").BrushGuide, pointSpacingPx = 20) =>
     desktopCall<{path: [number, number][]; message: string; failure?: { point: [number, number]; reason: string; message: string } | null}>("workspace_extract_corridor", { id, revision, camera, imageId, roi, guide, pointSpacingPx }),
+  /** 彩色示教帧上的刷选：按胶色把笔划吸附到胶中心（偏移上限为笔刷半径），走廊与颜色模型一次保存；没通过时 view 为空、候选不变，原因在 message */
+  snapCorridor: (id: string, revision: number, camera: string, segment: number, imageId: string, guide: import("./teachingPath").BrushGuide) =>
+    desktopCall<{ view?: WorkspaceView | null; message: string }>("workspace_snap_corridor", { id, revision, camera, segment, imageId, guide }),
   /** 整体替换候选的段列表。后端拒绝直接改 expectedFrames / calib；段序列或类型变化时清空全部 N_exp、标定与 xRef */
   updateSegments: (id: string, revision: number, segments: PathSegment[]) =>
     desktopCall<WorkspaceView>("workspace_update_segments", { id, revision, segments }),

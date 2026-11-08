@@ -41,12 +41,16 @@ function imagingMismatch(image: FrozenImage | null | undefined, current: CameraI
 }
 
 const DEFAULT_BRUSH_PX = 120;
-const WIDEN_BRUSH_REASONS = new Set(["discontinuity", "missing_edges"]);
+/** 重刷可能提取成功的失败：灰度找不到两侧胶边、胶边连不上，彩色按胶色没吸附上 */
+const RETRY_REASONS = new Set(["discontinuity", "missing_edges", "color"]);
 
-/** 刷选提取找不到连续两侧边缘时的下一步：先加大笔刷重刷，同一组再失败改用笔划生成走廊。 */
+/** 刷选提取失败后的下一步：按失败原因重刷，同一帧连续两次失败改用笔划生成走廊。胶比背景暗还是亮由后端两种都试，不用调笔刷去凑。 */
 function extractionAdvice(reason: string, failures: number, brushWidth: number) {
-  if (!WIDEN_BRUSH_REASONS.has(reason)) return "";
-  return failures >= 2 ? "加大笔刷后仍无法连续提取（常见于胶堆、断胶等局部异常）：请点「笔划直接生成走廊」，再手工修正。" : `可加大笔刷宽度（当前 ${brushWidth} px，约为胶宽的 3 倍较稳）后沿胶路重刷，再自动提取。`;
+  if (!RETRY_REASONS.has(reason)) return "";
+  if (failures >= 2) return "仍无法提取（常见于胶堆、断胶等局部异常）：请点「笔划直接生成走廊」，再手工修正。";
+  if (reason === "color") return `请让笔划压在胶条上重刷：笔刷宽度的一半（当前 ±${brushWidth / 2} px）是允许偏离胶中心的距离。`;
+  if (reason === "discontinuity") return "可在标记处把胶路分成两段分别刷选，避开胶堆、断胶或急弯。";
+  return `请沿胶条中心重刷，让笔刷盖住整条胶宽和两侧少量背景（当前 ${brushWidth} px），避开阴影和邻近胶条。`;
 }
 
 type DeferredAction = "extract" | "choose" | "clear" | "color";
@@ -258,12 +262,16 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     return [x, y, Math.min(frame.size[0], Math.ceil(selectionRegion[0] + selectionRegion[2])) - x, Math.min(frame.size[1], Math.ceil(selectionRegion[1] + selectionRegion[3])) - y];
   })() : null;
   const roiValid = (selectionTool === "box" || brushValid) && !!roi && roi[2] >= 5 && roi[3] >= 5 && roi[2] * roi[3] <= 4_000_000;
+  /** 彩色示教帧上的刷选按胶色吸附（与示教 MCP 同口径），走廊与胶色一并保存；灰度帧与框选按两侧胶边提取 */
+  const colorFrame = image?.channels === 3;
+  const snapByColor = selectionTool === "brush" && colorFrame;
 
   /** 把这一段的走廊草稿并入候选配方并整份保存（段走廊没有单独的草稿命令）。 */
   const commit = (message: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => perform(() => workspaceApi.saveDoc(doc.id, data.workspace.revision, withCorridor(data.workspace.doc, key, t)), message);
   const extract = async () => {
     if (!canEdit || !frame || pending.current) return;
     if (!roiValid || !roi || !spacingValid) { setRegionMode(true); setExtractionHint("请沿胶路刷过至少 8 px，并设置有效的笔刷宽度和走廊点间距。"); return; }
+    if (snapByColor && !(t.mmPerPx != null && t.mmPerPx > 0)) { setRegionMode(true); setExtractionHint(`彩色示教帧按胶色吸附，要用像素当量把胶宽换成像素：${camera} 还没有像素当量，先在左侧“相机参数”里填写或采用设备标定当量，再自动提取。`); return; }
     if (!unlocked) return;
     const capturedScope = scope;
     setOperation("extract"); setExtractionHint(""); setExtractionFailure(null);
@@ -274,6 +282,26 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         if (!savedView) return;
         candidateView = savedView;
       }
+      if (snapByColor && segment != null) {
+        let snapped: Awaited<ReturnType<typeof workspaceApi.snapCorridor>> | null = null;
+        const result = await perform(async () => {
+          snapped = await workspaceApi.snapCorridor(doc.id, candidateView.workspace.revision, camera, segment, frame.id, { points: brushPoints, radiusPx: brushWidth / 2 });
+          return snapped.view ?? candidateView;
+        }, "");
+        if (!result || !snapped || current.current.scope !== capturedScope) return;
+        const output = snapped as Awaited<ReturnType<typeof workspaceApi.snapCorridor>>;
+        if (!output.view) {
+          const failures = brushFailures + 1;
+          setBrushFailures(failures);
+          // 胶色吸附不报位置：失败标记只用于提示样式与“笔划直接生成走廊”主操作，画布上不画点
+          setExtractionFailure({ point: brushPoints[0], reason: "color", message: output.message });
+          setExtractionHint(output.message + " " + extractionAdvice("color", failures, brushWidth)); setRegionMode(true); return;
+        }
+        setBrushFailures(0);
+        setCorridorDraft(key, savedDraft(output.view.workspace.doc, key)); setRegionMode(false); setVertex(null);
+        setExtractionHint(output.message);
+        return;
+      }
       let extracted: Awaited<ReturnType<typeof workspaceApi.extractCorridor>> | null = null;
       // 按相机 id 在这一段冻结的示教帧上提取（workspace_extract_corridor）
       const result = await perform(async () => {
@@ -283,7 +311,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       if (result && extracted && current.current.scope === capturedScope) {
         const output = extracted as Awaited<ReturnType<typeof workspaceApi.extractCorridor>>;
         if (output.failure) {
-          const failures = selectionTool === "brush" && WIDEN_BRUSH_REASONS.has(output.failure.reason) ? brushFailures + 1 : 0;
+          const failures = selectionTool === "brush" && RETRY_REASONS.has(output.failure.reason) ? brushFailures + 1 : 0;
           const advice = selectionTool === "brush" ? extractionAdvice(output.failure.reason, failures, brushWidth) : "";
           setBrushFailures(failures);
           setExtractionFailure(output.failure); setExtractionHint(advice ? output.failure.message + " " + advice : output.failure.message); setRegionMode(true); return;
@@ -405,7 +433,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const pointing = pointMode === "edit";
   const editHint = !picking && !pointing ? "只看：点图不改走廊，可缩放、平移、拖动扇区把手；要加点或拖点请选“编辑点”。" : picking ? `点击胶嘴出胶处标定 ${camera} 的出胶点（${camera} 各段共用，自动保存到候选配方）；叠加图上的编号与右侧“逐帧定向”面板各行对应，指着面板某一行时图上只突出它。`
     : "点击图像加点（绿圈为起点），拖动点可调整；密集走廊打开“点柄”显示全部点，Ctrl＋滚轮缩放。";
-  const regionHint = extractionHint || (selectionTool === "brush" ? "按住左键沿胶路从起点刷到终点，每笔重画选区；笔刷覆盖胶路和两侧少量背景，尽量避开阴影。" : "按住左键框选一段连续胶路，再自动提取走廊；框选包含阴影时建议改用刷选。");
+  const regionHint = extractionHint || (snapByColor ? "彩色示教帧：按住左键沿胶条从起点刷到终点，自动提取按胶色吸附到胶中心，走廊与胶色一并保存；笔刷宽度的一半是允许偏离胶中心的距离。"
+    : selectionTool === "brush" ? "按住左键沿胶路从起点刷到终点，每笔重画选区；笔刷覆盖胶路和两侧少量背景，尽量避开阴影。胶比背景暗还是亮自动判断。" : "按住左键框选一段连续胶路，再自动提取走廊；框选包含阴影时建议改用刷选。");
   const changeMode = (value: string) => {
     if (value === "view" || value === "edit" || value === "nozzle") { setPointMode(value); setRegionMode(false); return; }
     const tool = value as "brush" | "box";
@@ -423,7 +452,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       { value: "box", label: modeLabel(<SquareDashed size={14} aria-hidden="true"/>, "矩形框选", "框选"), "aria-label": "矩形框选" },
       ...(headingOn ? [{ value: "nozzle", label: modeLabel(<Crosshair size={14} aria-hidden="true"/>, "标出胶点", "出胶点"), "aria-label": "标出胶点" }] : []),
     ]} onValueChange={changeMode}/>
-    {brushing && <span className="wp-inline-num" title="笔刷宽度：约为胶宽的 3 倍较稳">笔刷<NumberField aria-label="笔刷宽度" unit="px" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? brushWidth : ""} disabled={!canEdit} onValueChange={value => changeBrushWidth(value === "" ? NaN : value)}/></span>}
+    {brushing && <span className="wp-inline-num" title={snapByColor ? "笔刷宽度：一半是允许偏离胶中心的距离" : "笔刷宽度：约为胶宽的 3 倍较稳"}>笔刷<NumberField aria-label="笔刷宽度" unit="px" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? brushWidth : ""} disabled={!canEdit} onValueChange={value => changeBrushWidth(value === "" ? NaN : value)}/></span>}
     {(regionMode || pointing) && <span className="wp-inline-num" title="走廊点间距：提取与按笔划生成都按它取点，转弯处保留点">点距<NumberField aria-label="走廊点间距" unit="px" min={4} max={80} step={2} value={Number.isFinite(pointSpacing) ? pointSpacing : ""} disabled={!canEdit} onValueChange={value => setPointSpacing(value === "" ? NaN : value)}/></span>}
     {pointing && <Button size="sm" variant="text" aria-label="应用到当前走廊" title="按点距重排当前走廊的点" disabled={!canEdit || !spacingValid || t.corridor.length < 2} onClick={() => { setVertex(null); setPath(resampleTeachingPath(t.corridor, pointSpacing)); }}>按点距重排</Button>}
     <Button size="sm" variant={primary === "extract" ? "filled" : "tonal"} data-variant={primary === "extract" ? "filled" : "tonal"} leadingIcon={<WandSparkles size={14}/>} disabled={!canEdit || !ready || loading || !!error} onClick={startExtract}>{operation === "extract" ? "提取中…" : "自动提取走廊"}</Button>
@@ -511,7 +540,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
           region={selectionTool === "box" ? region : null}
           onRegion={regionMode && selectionTool === "box" && canEdit ? setRegion : undefined}
           brush={regionMode && selectionTool === "brush" && Number.isFinite(brushWidth) ? { points: brushPoints, radiusPx: brushWidth / 2 } : null} onBrush={regionMode && selectionTool === "brush" && canEdit ? points => { setBrushPoints(points); setExtractionFailure(null); setExtractionHint(""); } : undefined}
-          extractionFailure={extractionFailure}
+          extractionFailure={extractionFailure?.reason === "color" ? null : extractionFailure}
           overlay={{ path: t.corridor, searchHalfPx, selected: vertex, heading: headingGuide }}
           editDisabled={!canEdit}
           onPoint={picking && frame ? p => setParams({ ...params, nozzle: p }) : undefined}
