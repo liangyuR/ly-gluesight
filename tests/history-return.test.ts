@@ -6,6 +6,6 @@ describe("历史详情的返回地址", () => {
   it("离开时的复测上下文写进地址 → 读回同一份上下文", () => {
     const context = { candidate: "B", camera: 2, seq: 40, comparison: "compare-1", original: true };
     const search = new URLSearchParams(historyReturnSearch(context));
-    expect(historyReturnContext(search, 3, [1, 20, 40, 41])).toEqual(context);
+    expect(historyReturnContext(search, [1, 20, 40, 41])).toEqual(context);
   });
 });

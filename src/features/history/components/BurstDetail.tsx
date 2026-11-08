@@ -161,7 +161,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   useEffect(() => { alive.current = true; return () => { alive.current = false; serial.current++; }; }, []);
   // 换件时回到第一帧组；从分段页返回时地址带着离开时的相机、帧组与显示哪份结果
   useEffect(() => {
-    const back = historyReturnContext(search, shown.cameras.length, groups.map(g => g.seq));
+    const back = historyReturnContext(search, groups.map(g => g.seq));
     setSelection({ camera: back.camera, seq: back.seq });
     setComparison(null); setShowOriginal(back.original); setError("");
     setChosen(back.candidate); setChoices([]);
@@ -261,6 +261,11 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     if (working || !options || originalReason) return;
     void compare(taskId => workspaceApi.compareOriginal(s.id, taskId), () => alive.current && current.current.historyId === s.id);
   };
+
+  // 对照读完后按显示的相机列表核对选中的相机（返回时地址里的相机可能属于相机更多的对照），超出范围回到第一台
+  useEffect(() => {
+    if (settled && selection.camera >= shown.cameras.length) setSelection(prev => ({ ...prev, camera: 0 }));
+  }, [settled, selection.camera, shown.cameras.length]);
 
   // 从分段页返回：对照读完后回到离开时的滚动位置。原图、胶宽折线陆续加载还会撑高页面，约 1 秒内反复回到原位置，
   // 操作员一动滚轮或点击就停；回到过或被打断后这次进入不再恢复

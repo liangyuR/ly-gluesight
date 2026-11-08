@@ -15,12 +15,15 @@ export function historyReturnSearch(context: HistoryReturnContext): string {
   return "?" + search.toString();
 }
 
-/** 从地址读回复测上下文；相机、帧组不在本件范围内时回到第一台相机、第一个帧组（换件进来的地址不带这些参数）。 */
-export function historyReturnContext(search: URLSearchParams, cameraCount: number, seqs: number[]): HistoryReturnContext {
+/**
+ * 从地址读回复测上下文；帧组不在本件里时回到第一个帧组，相机不是非负整数时回到第一台（换件进来的地址不带这些参数）。
+ * 相机是否超出范围要等对照读完再按显示的相机列表核对：对照的相机可以比原始记录多。
+ */
+export function historyReturnContext(search: URLSearchParams, seqs: number[]): HistoryReturnContext {
   const camera = Number(search.get("camera")), seq = Number(search.get("seq"));
   return {
     candidate: search.get("candidate"),
-    camera: Number.isInteger(camera) && camera >= 0 && camera < cameraCount ? camera : 0,
+    camera: Number.isInteger(camera) && camera >= 0 ? camera : 0,
     seq: search.has("seq") && seqs.includes(seq) ? seq : seqs[0] ?? 1,
     comparison: search.get("comparison"),
     original: search.get("view") === "original",
