@@ -12,6 +12,7 @@ fn summary(cycle_id: &str) -> PartSummary {
         project_id: "default".into(),
         ts: 1,
         sn: "SN-7".into(),
+        tags: Vec::new(),
         recipe_id: None,
         recipe_version: None,
         recipe_revision: None,

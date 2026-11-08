@@ -6,6 +6,10 @@
 .hist-filter-options .hist-project-select { min-width:180px; }
 .hist-project { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
 .hist-toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+.hist-tags, .hist-tag-options { display:flex; flex-wrap:wrap; gap:6px; }
+.hist-record-actions { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.hist-record-actions > .qs-stack { flex-wrap:wrap; }
+.detail-head .hist-record-actions { margin-top:10px; padding-top:10px; border-top:1px solid var(--outline-variant); }
 .hist-dot { width: 8px; height: 8px; border-radius: var(--r-full); background: var(--outline); }
 .hist-chip.g-ok .hist-dot { background: var(--ok); }
 .hist-chip.g-excursion .hist-dot { background: var(--warn); }

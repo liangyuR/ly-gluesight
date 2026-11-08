@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight, Scale, ScanEye, SplitSquareHorizontal } from "lucide-react";
 import { Alert, Button, Card, Chip, IconButton, Select, Stack, StatusBadge, Text } from "qing-steel";
@@ -117,7 +117,7 @@ function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, 
  * 历史详情：按区域展示——整件的段布置与区域结论、帧组条、按 (相机, seq) 选的原图、每相机帧表与时间线。
  * 只处理 PartDetail.burst 非空的记录。
  */
-export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, onBack, backLabel = "返回历史列表", foreignProject = "" }: {
+export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, onBack, backLabel = "返回历史列表", foreignProject = "", actions }: {
   detail: PartDetail;
   burst: PartDetailBurst;
   neighbors: { older: number | null; newer: number | null };
@@ -127,6 +127,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   backLabel?: string;
   /** 记录不属于当前项目时的提示（“这条记录属于项目…”），属于当前项目为空 */
   foreignProject?: string;
+  actions?: ReactNode;
 }) {
   const ws = useWorkspace();
   const operation = useOperation();
@@ -330,6 +331,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         </Stack>
         <StatusBadge tone={verdict.tone}>{verdict.label} · PLC {s.plcCode}{s.faultCode ? " / " + s.faultCode : ""}</StatusBadge>
       </Stack>
+      {actions}
     </Card>
     {s.source !== "real" && <Alert title={s.source === "offlineCandidate" ? "候选离线调试记录" : "离线回放记录"}>结果来自离线环境，不作为真机生产验收；切换当前站点模式不会改变此记录的来源。</Alert>}
     {foreignProject && <Alert title="其他项目的记录">{foreignProject}可以选任意候选复测；按原发布包重现用这条记录所属项目的发布包。</Alert>}

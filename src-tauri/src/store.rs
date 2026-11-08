@@ -257,6 +257,7 @@ pub struct HistoryQuery {
     pub to: Option<i64>,
     pub verdicts: Vec<Verdict>,
     pub sn: Option<String>,
+    pub tag: Option<String>,
     pub recipe_id: Option<String>,
     /// 只看这个项目的记录；为空看本机全部项目
     pub project: Option<String>,
@@ -275,6 +276,7 @@ pub struct PartSummary {
     pub project_id: String,
     pub ts: i64,
     pub sn: String,
+    pub tags: Vec<String>,
     pub recipe_id: Option<String>,
     pub recipe_version: Option<u32>,
     pub recipe_revision: Option<String>,
@@ -411,9 +413,9 @@ fn parse_verdict(s: &str) -> Verdict {
 const SUMMARY_COLS: &str = "id, ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
                             reason, drain_ms, frames_expected, frames_received, retest_of, cycle_id, bundle_id, \
                             delivery_state, delivery_updated_at, delivery_message, sample, source, \
-                            flags, expected_total, tolerance_total, device_triggers, camera_frames, mode, project_id";
+                            flags, expected_total, tolerance_total, device_triggers, camera_frames, mode, project_id, tags";
 /// SUMMARY_COLS 的列数；detail 在其后追加的列从这里起算。
-const SUMMARY_LEN: usize = 29;
+const SUMMARY_LEN: usize = 30;
 
 fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
     let flags: Option<Flags> = row.get::<_, Option<String>>(22)?.map(|text| serde_json::from_str(&text)
@@ -453,6 +455,7 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
         burst,
         mode: enum_column(row, 27)?,
         project_id: row.get(28)?,
+        tags: json_column(row, 29)?,
     })
 }
 
@@ -781,6 +784,21 @@ fn add_part_mode(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("记录库加维护模式列失败：{e}"))
 }
 
+fn add_part_tags(conn: &Connection) -> Result<(), String> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM pragma_table_info('parts') WHERE name = 'tags')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_err)?;
+    if !exists {
+        conn.execute_batch("ALTER TABLE parts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+            .map_err(db_err)?;
+    }
+    Ok(())
+}
+
 impl Store {
     #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -824,6 +842,11 @@ impl Store {
                  id TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(16)))),
                  created_at INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS history_deletions (
+                 id INTEGER PRIMARY KEY,
+                 cycle_id TEXT
+             );
+             CREATE INDEX IF NOT EXISTS history_deletions_cycle ON history_deletions(cycle_id);
              CREATE TABLE IF NOT EXISTS workspace_instances (
                  project_id TEXT NOT NULL,
                  id INTEGER NOT NULL CHECK(id > 0),
@@ -882,7 +905,8 @@ impl Store {
                  camera_frames TEXT,
                  flags TEXT,
                  burst_judgement TEXT,
-                 mode TEXT NOT NULL DEFAULT 'production' CHECK(mode IN ('production','maintenanceCollect','maintenanceShadow'))
+                 mode TEXT NOT NULL DEFAULT 'production' CHECK(mode IN ('production','maintenanceCollect','maintenanceShadow')),
+                 tags TEXT NOT NULL DEFAULT '[]'
              );
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
              CREATE INDEX IF NOT EXISTS parts_source_ts ON parts(source, ts);
@@ -939,6 +963,7 @@ impl Store {
              COMMIT;",
         )
         .map_err(db_err)?;
+        add_part_tags(&conn)?;
         if !defer_recovery {
             fail_interrupted_recordings(&mut conn)?;
         }
@@ -1042,6 +1067,18 @@ impl Store {
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(db_err)?;
+        if let Some(cycle) = r.cycle_id {
+            let deleted: bool = tx
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM history_deletions WHERE cycle_id = ?1)",
+                    [cycle],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)?;
+            if deleted {
+                return Err("该历史工件已人工删除，不能自动补回".into());
+            }
+        }
         if let Some(recipe) = r.recipe {
             let json = serde_json::to_string(recipe).map_err(|e| e.to_string())?;
             let previous: Option<(String, u32, String)> = tx.query_row(
@@ -1085,9 +1122,10 @@ impl Store {
             "INSERT INTO parts (ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code,
                  reason, drain_ms, frames_expected, frames_received, triggers, retest_of, software_version, judgement, frames,
                  cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message, sample, source,
-                 expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement, mode, project_id)
+                 expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement, mode, project_id, id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
+                 ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
+                 (SELECT MAX(COALESCE((SELECT MAX(id) FROM parts), 0), COALESCE((SELECT MAX(id) FROM history_deletions), 0)) + 1))",
             params![
                 r.ts,
                 r.sn,
@@ -1337,6 +1375,12 @@ impl Store {
         if let Some(sn) = q.sn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             clauses.push(format!("{prefix}sn LIKE ? ESCAPE '\\'"));
             args.push(SqlValue::Text(format!("%{}%", sn.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))));
+        }
+        if let Some(tag) = q.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            clauses.push(format!(
+                "EXISTS (SELECT 1 FROM json_each({prefix}tags) WHERE value = ?)"
+            ));
+            args.push(SqlValue::Text(tag.to_string()));
         }
         if let Some(id) = q.recipe_id.as_deref().filter(|s| !s.is_empty()) {
             clauses.push(format!("{prefix}recipe_id = ?"));
@@ -1959,6 +2003,7 @@ pub fn recorded_projects(path: &Path) -> Result<BTreeSet<String>, String> {
     rows.collect::<Result<_, _>>().map_err(db_err)
 }
 
+mod history_edit;
 mod merge;
 mod package;
 

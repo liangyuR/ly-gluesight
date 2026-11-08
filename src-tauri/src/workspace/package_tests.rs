@@ -94,8 +94,14 @@ fn source_candidate(project: &Path) -> Workspace {
         &round.join("round.json"),
         &json!({"format": 3, "roundId": ROUND, "recipeId": w.doc.id}).to_string(),
     );
-    write(&round.join("frames.jsonl"), "{}\n");
-    write(&round.join("cam1").join("000001.pgm"), "P5 1 1 255 x");
+    write(
+        &round.join("frames.jsonl"),
+        &format!(
+            "{}\n",
+            json!({"camera": 0, "seq": 1, "path": "cam1/000001.pgm"})
+        ),
+    );
+    write(&round.join("cam1").join("000001.pgm"), "P5 1 1 255 raw");
     w
 }
 
@@ -115,16 +121,28 @@ fn target_project(project: &Path, id: &str) {
     );
 }
 
-fn exported(dirs: &Dirs) -> Workspace {
-    let w = source_candidate(&dirs.source);
+fn quiet() -> Operation {
+    Operation::with_events(crate::operation::Operations::default(), None, |_| {}).unwrap()
+}
+
+fn export(dirs: &Dirs, w: &Workspace, images: bool) -> Result<PackageManifest, String> {
     let meta = ProjectMeta::new("dev", "开发", "", None);
-    export_candidate(&dirs.source, &meta, &w, &dirs.package).unwrap();
+    export_candidate(&dirs.source, &meta, w, images, &dirs.package, &quiet())
+}
+
+fn exported_with(dirs: &Dirs, images: bool) -> Workspace {
+    let w = source_candidate(&dirs.source);
+    export(dirs, &w, images).unwrap();
     target_project(&dirs.target, &w.doc.id);
     w
 }
 
+fn exported(dirs: &Dirs) -> Workspace {
+    exported_with(dirs, false)
+}
+
 fn staged(dirs: &Dirs) -> (Workspace, Vec<String>) {
-    let (manifest, mut w) = stage(&dirs.package, &dirs.staging).unwrap();
+    let (manifest, mut w) = stage(&dirs.package, &dirs.staging, &quiet()).unwrap();
     let local = Local {
         production: Some((format!("{}-v3", w.doc.id), 7)),
         next_version: 4,
@@ -217,4 +235,114 @@ fn failed_install_restores_previous_candidate_and_rounds() {
     let capture = dirs.target.join("recipe-capture");
     assert!(capture.join("capture-9-0").join("round.json").is_file());
     assert!(!capture.join(ROUND).exists());
+}
+
+/// 选“包含示教件原图”导出：示教件轮次的原图随包走，导入后原样落在本机示教件轮次里，不用再从历史记录补回。
+#[test]
+fn package_with_teaching_images_restores_round_images() {
+    let dirs = Dirs::new("images");
+    exported_with(&dirs, true);
+    assert!(inspect(&dirs.package).unwrap().teaching_images);
+
+    let (w, _) = staged(&dirs);
+    install(&dirs.target, &dirs.staging, &w).unwrap();
+
+    let frame = Path::new(ROUND).join("cam1").join("000001.pgm");
+    assert_eq!(
+        std::fs::read(dirs.target.join("recipe-capture").join(&frame)).unwrap(),
+        std::fs::read(dirs.source.join("recipe-capture").join(&frame)).unwrap()
+    );
+}
+
+/// 示教件轮次缺原图（例如它本身是从不带原图的包导入的）时，不能导出一个自称带原图、导入后却不能试测的包；不带原图照常导出。
+#[test]
+fn export_with_images_rejects_round_missing_a_frame() {
+    let dirs = Dirs::new("missing-frame");
+    let w = source_candidate(&dirs.source);
+    std::fs::remove_file(
+        dirs.source
+            .join("recipe-capture")
+            .join(ROUND)
+            .join("cam1")
+            .join("000001.pgm"),
+    )
+    .unwrap();
+
+    assert!(export(&dirs, &w, true).is_err());
+    assert!(!dirs.package.exists());
+    assert!(export(&dirs, &w, false).is_ok());
+}
+
+/// 把 `dirs.package` 重写成格式 1（清单没有 teachingImages），`extra` 为额外塞进包里的条目。
+fn rewrite_as_format_one(dirs: &Dirs, target: &Path, extra: Option<(String, PathBuf)>) {
+    let unzip = dirs.base.join("unzip");
+    let _ = std::fs::remove_dir_all(&unzip);
+    let manifest = inspect(&dirs.package).unwrap();
+    let mut zip = transfer::open_zip(&dirs.package, LABEL).unwrap();
+    transfer::extract_listed(&mut zip, &manifest.files, &unzip, |_| true, LABEL).unwrap();
+    let mut entries: Vec<(String, PathBuf)> = manifest
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), unzip.join(&f.path)))
+        .collect();
+    entries.extend(extra);
+    let mut value = serde_json::to_value(&manifest).unwrap();
+    value["format"] = json!(1);
+    value.as_object_mut().unwrap().remove("teachingImages");
+    transfer::write_zip(target, entries, |files| {
+        value["files"] = serde_json::to_value(files).unwrap();
+        value
+    })
+    .unwrap();
+}
+
+/// 0.2.x 导出的格式 1 包（清单没有 teachingImages）照样能导入，按不带原图处理；不带原图的包里夹了原图则整包拒绝。
+#[test]
+fn format_one_package_imports_without_images_and_rejects_smuggled_frames() {
+    let dirs = Dirs::new("format1");
+    let source = exported(&dirs);
+
+    let old = dirs.base.join("old.zip");
+    rewrite_as_format_one(&dirs, &old, None);
+    let (manifest, w) = stage(&old, &dirs.staging, &quiet()).unwrap();
+    assert!(!manifest.teaching_images);
+    assert_eq!(w.doc.id, source.doc.id);
+
+    let smuggled = dirs.base.join("smuggled.zip");
+    let frame = dirs
+        .source
+        .join("recipe-capture")
+        .join(ROUND)
+        .join("cam1")
+        .join("000001.pgm");
+    rewrite_as_format_one(
+        &dirs,
+        &smuggled,
+        Some((format!("rounds/{ROUND}/cam1/000001.pgm"), frame)),
+    );
+    assert!(inspect(&smuggled).is_err());
+}
+
+/// 本机相机设备配置与示教件采集时不同、或本机没有这台相机时给出提示（不拦导入）；一致的相机不提。
+#[test]
+fn camera_notes_flag_changed_or_absent_cameras_only() {
+    let round = json!({"cameras": [
+        {"cameraId": "cam1", "cameraConfig": {"serial": "A"}},
+        {"cameraId": "cam2", "cameraConfig": {"serial": "B"}},
+        {"cameraId": "cam3", "cameraConfig": {"serial": "C"}}
+    ]});
+    let same: BTreeMap<String, Value> = [
+        ("cam1".to_string(), json!({"serial": "A"})),
+        ("cam2".to_string(), json!({"serial": "B"})),
+        ("cam3".to_string(), json!({"serial": "C"})),
+    ]
+    .into();
+    assert!(camera_notes(&[round.clone()], &same).is_empty());
+
+    let mut other = same.clone();
+    other.insert("cam2".into(), json!({"serial": "X"}));
+    other.remove("cam3");
+    let notes = camera_notes(&[round], &other);
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].contains("cam2") && notes[0].contains("cam3") && !notes[0].contains("cam1"));
 }

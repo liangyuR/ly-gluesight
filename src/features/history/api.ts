@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { HistoryPackageExported, HistoryPackageImported, HistoryPackagePreview, HistoryPage, HistoryQuery, PartDetail, RejudgeRequest, RejudgeResult } from "./types";
+import type { HistoryDeleted, HistoryPackageExported, HistoryPackageImported, HistoryPackagePreview, HistoryPage, HistoryQuery, PartDetail, RejudgeRequest, RejudgeResult } from "./types";
 import { desktopCall } from "../../lib/desktop";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
@@ -8,6 +8,8 @@ function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallbac
 }
 
 export const historyApi = {
+  setTags: (ids: number[], tags: string[]) => desktopCall<string[]>("history_set_tags", { ids, tags }),
+  delete: (ids: number[]) => desktopCall<HistoryDeleted>("history_delete", { ids }),
   query: (query: HistoryQuery) =>
     call<HistoryPage>("history_query", { query }, () => ({ total: 0, counts: { ok: 0, excursion: 0, ng: 0, err: 0 }, items: [] })),
   detail: (id: number) => call<PartDetail>("history_detail", { id }, () => Promise.reject("浏览器预览模式") as never),

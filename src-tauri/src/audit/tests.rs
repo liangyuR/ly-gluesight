@@ -53,6 +53,9 @@ impl TestSink {
 }
 
 impl Sink for TestSink {
+    fn deleted(&mut self, cycle: &str) -> Result<bool, String> {
+        self.store.history_cycle_deleted(cycle)
+    }
     fn find(&mut self, cycle: &str) -> Result<Option<PartDetail>, String> {
         self.store.detail_by_cycle(cycle)
     }
@@ -232,4 +235,69 @@ fn quarantined_cycle_keeps_identity_and_recording_protection_after_reopen_withou
         reopened.protected_directories(&records).unwrap(),
         vec![expected]
     );
+}
+
+#[test]
+fn manually_deleted_history_consumes_stale_spool_without_resurrecting_or_blocking_readiness() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let original = part("deleted-spool", 8);
+    let id = sink.store.insert(&original.borrowed()).unwrap();
+    sink.store
+        .update_delivery(
+            "deleted-spool",
+            &delivery(PlcDeliveryState::Acknowledged, 88),
+        )
+        .unwrap();
+    sink.store
+        .update_recording(
+            "deleted-spool",
+            &RecordingEvidence {
+                state: RecordingState::Off,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let package = dir.0.join("restore.sqlite");
+    sink.store.export_parts(&[id], &package).unwrap();
+    sink.store.delete_history(&[id]).unwrap();
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    spool
+        .append(&Event::Insert(Box::new(original.clone())))
+        .unwrap();
+    assert!(
+        recover_cycle(&mut spool, "deleted-spool", &mut sink, 2)
+            .unwrap()
+            .0
+    );
+    assert!(spool.empty());
+    assert!(sink
+        .store
+        .detail_by_cycle("deleted-spool")
+        .unwrap()
+        .is_none());
+    assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 0);
+    let restored = sink
+        .store
+        .import_parts(&package, "default", |_| Ok(()))
+        .unwrap()
+        .ids[&id];
+    spool.append(&Event::Insert(Box::new(original))).unwrap();
+    spool
+        .append(&Event::Delivery(
+            "deleted-spool".into(),
+            delivery(PlcDeliveryState::Submitted, 100),
+        ))
+        .unwrap();
+    assert!(
+        recover_cycle(&mut spool, "deleted-spool", &mut sink, 3)
+            .unwrap()
+            .0
+    );
+    assert!(spool.empty());
+    assert_eq!(
+        sink.store.detail(restored).unwrap().summary.delivery.state,
+        PlcDeliveryState::Acknowledged
+    );
+    assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 1);
 }
