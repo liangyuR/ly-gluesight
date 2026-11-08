@@ -77,6 +77,8 @@ gh run view $runId --log
 - `pnpm exec vitest run tests/frame-navigation.test.tsx tests/frame-inspection-navigation.test.tsx tests/history-detail.test.tsx tests/operation.test.tsx tests/preview-cache.test.ts tests/segment-workbench.test.tsx`：保护千帧跨窗口导航与分页选择、全局帧号、迟到对照不覆盖新结果、进度任务隔离及保存边界、离页取消、快速切帧淘汰旧请求。
 - `cargo test --locked --lib --manifest-path src-tauri/Cargo.toml -- operation:: workspace:: store:: recipe_capture:: history::`：覆盖概览与单帧读取契约、公开示教读取接口的身份及缺图拒绝、任务生命周期取消与提交边界、终态事件与查询计数一致及受影响业务回归。真实历史批量读取、对照摘要缓存、实际测量循环取消与测量产物保存失败回滚尚无公开命令集成覆盖。
 
+真实 3882 张原图的前后性能对照与复现入口见[分段时间轴性能验证](segment-timeline-performance.md)。
+
 分段按需缩略图定向验证：`pnpm exec vitest run tests/thumbPages.test.ts tests/segment-workbench.test.tsx tests/segments-page.test.tsx tests/segments-page-leave.test.tsx tests/workspace-navigation.test.tsx`。保护未加载图像时可编辑段落、千帧窗口与全局边界保存、按需页调度和缓存上限。后端 `thumbnail_range_reads_only_requested_frames_and_rejects_unbounded_requests` 验证只读请求范围、尾页截断与非法范围拒绝。
 
 浏览器布局验证使用合成的 1000 帧组、三台相机检查末帧跳转、跨窗口方向键、焦点及 DOM 规模；真实图像解码、整件复测耗时和生产并行负载仍需现场性能验收。
