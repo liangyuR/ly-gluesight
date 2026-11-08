@@ -91,11 +91,11 @@ Windows 受限环境遇到 Node realpath EPERM、回环连接被拒等权限失�
 
 ## Windows CI 与手动验收
 
-Windows PR CI 执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）和独立生产模拟器测试。Format 用 rustfmt 解析变更的 Rust 文件并生成格式结果，仅检查与本次新增、修改行相交的格式差异；新文件全检，纯删除文件中的测试时仍解析保留代码，无 Rust 变更则跳过。所有变更文件另用 `git diff --check` 检查空白。PR 比较 base SHA 与当前提交，main 推送比较 before 与当前提交，手动运行比较当前提交与上一提交。存量 Rust 尚未全仓格式化，因此使用增量格式检查，避免无关源码重排；项目尚未配置前端格式化工具。
+Windows PR CI 执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）、独立生产模拟器测试和生产录制输入转换测试。Format 用 rustfmt 解析变更的 Rust 文件并生成格式结果，仅检查与本次新增、修改行相交的格式差异；新文件全检，纯删除文件中的测试时仍解析保留代码，无 Rust 变更则跳过。所有变更文件另用 `git diff --check` 检查空白。PR 比较 base SHA 与当前提交，main 推送比较 before 与当前提交，手动运行比较当前提交与上一提交。存量 Rust 尚未全仓格式化，因此使用增量格式检查，避免无关源码重排；项目尚未配置前端格式化工具。
 
 本地使用 `node scripts/Check-RustFormat.mjs --base main` 检查相对 main 的已跟踪文件变更；加 `--head <commit>` 可检查指定提交快照。脚本只读，需先为项目工具链安装 rustfmt（`rustup component add rustfmt`）。
 
-类型检查、样本转换、打包与桌面生产验收均不在普通 PR CI 中执行，CI 不恢复 lyFlow 运行库、不构建桌面应用。推送 main 和手动运行 Windows CI 使用同样的轻量验证；Windows 发包工作流仅由手动运行或 `v*` tag 触发，保留发布门禁。
+类型检查、旧样本集转换、打包与桌面生产验收均不在普通 PR CI 中执行，CI 不恢复 lyFlow 运行库、不构建桌面应用。推送 main 和手动运行 Windows CI 使用同样的轻量验证；Windows 发包工作流仅由手动运行或 `v*` tag 触发，保留发布门禁。
 
 
 ## S7 生产握手

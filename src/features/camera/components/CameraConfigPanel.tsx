@@ -227,9 +227,9 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
                 ...(!mvs && !simulator ? [{ value: config.source, label: sourceText[config.source], disabled: true }] : []),
               ]} />
               <TextField label="设备视角" readOnly value="单视角" />
-              <Select id="cam-image-mode" label="图像模式" aria-label="图像模式" value={config.imageMode} disabled={!mvs} onValueChange={v => set("imageMode", v as ImageMode)}
+              <Select id="cam-image-mode" label="图像模式" aria-label="图像模式" value={config.imageMode} disabled={!mvs && !simulator} onValueChange={v => set("imageMode", v as ImageMode)}
                 options={[{ value: "gray", label: "灰度" }, { value: "color", label: "彩色", disabled: stitched }]}
-                description={stitched ? "三目拼接相机只支持灰度，彩色不可选。" : config.imageMode === "color" ? "彩色模式按 8 位 Bayer 取图，由电脑去马赛克为 RGB；录制每帧只存一份原始 Bayer。切换图像模式后，已有示教需重新示教。" : "灰度模式不保留颜色，现场相机请用彩色。切换图像模式后，已有示教需重新示教。"} />
+                description={simulator ? "与模拟器输入图像的灰度或彩色通道保持一致。切换图像模式后，已有示教需重新示教。" : stitched ? "三目拼接相机只支持灰度，彩色不可选。" : config.imageMode === "color" ? "彩色模式按 8 位 Bayer 取图，由电脑去马赛克为 RGB；录制每帧只存一份原始 Bayer。切换图像模式后，已有示教需重新示教。" : "灰度模式不保留颜色，现场相机请用彩色。切换图像模式后，已有示教需重新示教。"} />
               {config.source === "sampleSet" && <span className="cg-small muted">旧样本集图像源已停用，请改用海康 MVS 或外部模拟器。</span>}
               {config.source === "sim" && <span className="cg-small muted">旧合成图图像源已停用，请改用海康 MVS 或外部模拟器。</span>}
             </Stack>

@@ -136,7 +136,7 @@ it("旧 Software 边沿配置切回 Line0 → 保存为高电平", async()=>{
  await waitFor(()=>expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config",{cam:0,config:expect.objectContaining({triggerSource:"Line0",triggerActivation:"LevelHigh"})}));
 });
 
-it("切换外部模拟器并保存 → 使用 TCP 地址和单视角 Line0 生产采集", async () => {
+it("切换外部模拟器并选灰度 → 保存匹配输入通道的 TCP 单视角 Line0 配置", async () => {
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { value: () => {}, configurable: true });
   configs = [camera("cam1", "左相机", { triggerSource: "Software" })];
   await openCamera("左相机 cam1");
@@ -146,6 +146,9 @@ it("切换外部模拟器并保存 → 使用 TCP 地址和单视角 Line0 生�
   const save = screen.getByRole("button", { name: "保存并应用" });
   expect(save).toBeDisabled();
   await userEvent.type(screen.getByRole("textbox", { name: "模拟器地址" }), "127.0.0.1:7101");
+  screen.getByRole("combobox", { name: "图像模式" }).focus();
+  await userEvent.keyboard("{ArrowDown}");
+  await userEvent.click(await screen.findByRole("option", { name: "灰度" }));
   await userEvent.click(save);
-  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config", { cam: 0, config: expect.objectContaining({ source: "simulator", serial: "127.0.0.1:7101", triggerSource: "Line0", triggerActivation: "LevelHigh", viewCount: 1 }) }));
+  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config", { cam: 0, config: expect.objectContaining({ source: "simulator", serial: "127.0.0.1:7101", imageMode: "gray", triggerSource: "Line0", triggerActivation: "LevelHigh", viewCount: 1 }) }));
 });

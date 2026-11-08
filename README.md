@@ -58,7 +58,7 @@ pnpm test                                   # 前端单元测试
 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
 
-Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）和独立生产模拟器测试。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、样本转换、打包及桌面验收 均不在普通 PR CI 中执行。
+Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）、独立生产模拟器测试和生产录制输入转换测试。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、旧样本集转换、打包及桌面验收均不在普通 PR CI 中执行。
 
 按 [测试说明](docs/testing/TESTING.md) 选择受影响文件或模块运行。Rust 默认集合包含少量 S7 回环、SQLite 与原图落盘集成测试，不需要现场硬件或 lyFlow DLL。算法评测通过独立 example 手动运行。
 
