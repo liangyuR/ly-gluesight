@@ -210,7 +210,7 @@ export default function InspectPage() {
             </div>
             {view === "part"
               ? <CameraSegmentOverview cameras={burst?.cameras ?? summary?.cameras ?? []} segments={burstSegments} regions={burstJudgement?.regions} />
-              : <BurstRuntimeFrame part={part} seq={burstSeq} />}
+              : <BurstRuntimeFrame part={part} seq={burstSeq} regions={partResult?.burst?.regions} />}
           </Card>
 
           <Card className="prod-shots">
@@ -221,6 +221,7 @@ export default function InspectPage() {
               <span className="muted mono">{burst ? `收到 ${burst.groupCount} 帧组 / 预期 ${expectedText(burst.expectedTotal, burst.toleranceTotal)}` : "—"}</span>
             </div>
             {burst ? <FrameGroupStrip groups={burst.groups} cameras={burst.cameras} regions={partResult?.burst?.regions} selected={burstSeq} onSelect={selectGroup} /> : <EmptyState title="等待工件" description="新工件开始后按帧组显示三台相机的帧。" />}
+            {burst && !partResult?.burst && <p className="muted" role="note">当前为临时测量状态；本件判定完成后标出生产跳过帧，跳过帧不参与判定。</p>}
           </Card>
         </div>
 

@@ -43,6 +43,33 @@ beforeEach(() => {
 });
 
 describe("历史详情（段配方记录）", () => {
+  it("对照有生产跳过区域 → 帧格、详情和区域显示跳过，切回原始记录恢复真实NG", async () => {
+    const burst = detail.burst!;
+    burst.frameVerdicts = burst.frameVerdicts.map(v => v.camera === 0 && v.seq === 1 ? { ...v, verdict: "NG_GAP" } : v);
+    const base = burst.judgement.regions[0];
+    const skipped = { ...base, region: { firstSeq: 1, lastSeq: 4, kind: { type: "skipped" as const, segment: 1, pass: 1 } }, frameCount: 4 };
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([{ ...comparison(), burst: {
+      segments: burst.segments, cameras: burst.cameras, expectedTotal: burst.expectedTotal,
+      judgement: { ...burst.judgement, regions: [skipped, { ...base, region: { ...base.region, firstSeq: 5 } }] },
+      frames: burst.frames.map(f => frameMetrics(f.camera, f.seq, { presentRatio: 0 })),
+      frameVerdicts: burst.frameVerdicts,
+    } } as Comparison]);
+    show("/history/1?comparison=compare-1");
+    const cell = await screen.findByRole("button", { name: "帧组 1 · CAM-1 · 生产跳过" });
+    expect(cell).toHaveStyle({ background: "var(--outline-variant)" });
+    expect(screen.getByText("生产跳过 4 帧组 · 不参与判定")).toBeVisible();
+    await userEvent.click(cell);
+    expect(screen.getByText(/不参与判定，原图与测量数据仅供诊断/)).toBeVisible();
+    const region = screen.getByRole("list", { name: "区域" }).querySelector('[data-kind="skipped"]')!;
+    expect(region).toHaveAttribute("data-tone", "neutral");
+    expect(within(region as HTMLElement).getByText("生产跳过")).toBeVisible();
+    expect(within(region as HTMLElement).queryByText("OK")).toBeNull();
+    await userEvent.selectOptions(screen.getByLabelText("显示结果", { selector: "select" }), "original");
+    expect(await screen.findByRole("button", { name: "帧组 1 · CAM-1 · NG" })).toHaveStyle({ background: "var(--ng)" });
+    expect(screen.queryByText("生产跳过 4 帧组 · 不参与判定")).toBeNull();
+    expect(screen.queryByText(/不参与判定，原图与测量数据仅供诊断/)).toBeNull();
+  });
+
   it("加载旧对照期间重新复算 → 迟到的旧对照不能覆盖新结果", async () => {
     const old = { ...comparison(), judgement: { ...comparison().judgement, reason: "旧对照结果" } };
     vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([old]);

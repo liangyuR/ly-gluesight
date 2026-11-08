@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef } from "react";
 import { useHorizontalWindow } from "../../../lib/useHorizontalWindow";
 import type { FrameGroupView, RegionResult } from "../../plan/types";
-import { groupCellColor, groupCellState, groupCellText, regionKindLabel, verdictPlanTone, type PlanTone } from "../../plan/vis";
+import { groupCellColor, groupCellState, groupCellText, productionSkippedRegion, regionKindLabel, verdictPlanTone, type PlanTone } from "../../plan/vis";
 import { verdictLabel } from "../../history/meta";
 import "./burst.css";
 
@@ -13,7 +13,7 @@ function RegionBand({ regions, seq }: { regions: RegionResult[]; seq: number }) 
   const r = regions[index];
   if (!r) return <span className="fg-band" aria-hidden="true" />;
   const skipped = r.region.kind.type === "skipped";
-  const text = `${regionKindLabel(r.region.kind)} · ${skipped ? "不检测" : verdictLabel[r.verdict]}${r.reason ? "：" + r.reason : ""}`;
+  const text = `${regionKindLabel(r.region.kind)} · ${skipped ? "生产跳过 · 不参与判定" : verdictLabel[r.verdict]}${r.reason ? "：" + r.reason : ""}`;
   return <span className="fg-band" data-start={seq === r.region.firstSeq || undefined} data-end={seq === r.region.lastSeq || undefined}
     title={text} aria-label={seq === r.region.firstSeq ? text : undefined} role={seq === r.region.firstSeq ? "img" : undefined}
     style={{ background: skipped ? "var(--outline-variant)" : bandColor[verdictPlanTone(r.verdict)] }} />;
@@ -46,7 +46,8 @@ export default memo(function FrameGroupStrip({ groups, cameras, regions, selecte
     if (restoreFocus.current && cell) { cell.focus({ preventScroll: true }); restoreFocus.current = false; }
   }, [selected, selectedCamera, window.start, window.end]);
   const banded = !!regions?.length;
-  return <div ref={root} className={"fg-strip" + (banded ? " banded" : "")} role="group" aria-label={label} onKeyDown={event => {
+  const skippedCount = groups.filter(group => productionSkippedRegion(regions, group.seq)).length;
+  return <><div ref={root} className={"fg-strip" + (banded ? " banded" : "")} role="group" aria-label={label} onKeyDown={event => {
     if (!onSelect && !onSelectCell) return;
     const delta = { ArrowLeft: -1, ArrowRight: 1, Home: -Infinity, End: Infinity }[event.key];
     const cameraDelta = { ArrowUp: -1, ArrowDown: 1 }[event.key];
@@ -67,7 +68,7 @@ export default memo(function FrameGroupStrip({ groups, cameras, regions, selecte
         {onSelectCell ? <div className={"fg-group fg-individual" + (group.seq === selected ? " selected" : "") + (group.incomplete ? " incomplete" : "")}>
           <button type="button" className="fg-seq fg-seq-button" aria-label={`选择帧组 ${group.seq}`} onClick={() => onSelect ? onSelect(group.seq) : onSelectCell(group.seq, selectedCamera ?? 0)}>{group.seq}</button>
           {cameras.map((camera, c) => {
-            const state = groupCellState(group, c);
+            const state = groupCellState(group, c, regions);
             return <button key={camera} type="button" className="fg-cell fg-cell-button" data-state={state} aria-label={`帧组 ${group.seq} · ${camera} · ${groupCellText[state]}`} aria-pressed={group.seq === selected && c === selectedCamera} title={`${camera} · ${groupCellText[state]}`} style={{ background: groupCellColor[state] }} onClick={() => onSelectCell(group.seq, c)} />;
           })}
         </div> : <button type="button"
@@ -76,12 +77,12 @@ export default memo(function FrameGroupStrip({ groups, cameras, regions, selecte
           onClick={() => onSelect?.(group.seq)}>
           <span className="fg-seq">{group.seq}</span>
           {cameras.map((camera, c) => {
-            const state = groupCellState(group, c);
+            const state = groupCellState(group, c, regions);
             return <i key={camera} role="img" className="fg-cell" data-state={state} aria-label={`${camera} · ${groupCellText[state]}`} title={`${camera} · ${groupCellText[state]}`} style={{ background: groupCellColor[state] }} />;
           })}
         </button>}
       </li>)}
       {window.end < groups.length && <li aria-hidden="true" style={{ width: (groups.length - window.end) * 34 - 4 }} />}
     </ol>
-  </div>;
+  </div>{skippedCount > 0 && <p className="muted" role="note">生产跳过 {skippedCount} 帧组 · 不参与判定</p>}</>;
 });

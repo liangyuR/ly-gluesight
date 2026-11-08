@@ -56,6 +56,36 @@ const nativeSelect = (name: string, root: Pick<typeof screen, "getByLabelText"> 
 const manual = () => nativeSelect("当前检测配方");
 
 describe("在线检测切型锁定", () => {
+  it("本件判定包含生产跳过 → 帧格与原图标记不判定，新工件不沿用上一件跳过范围", async () => {
+    const part = burstPartView(), result = burstResult();
+    part.burst.groups[0].cells[0].verdict = "NG_GAP";
+    part.burst.groups[0].cells[1] = { status: "missing", verdict: null, frameCounter: null };
+    part.burst.groups[5].cells[0].verdict = "NG_GAP";
+    const base = result.burst!.regions[0];
+    result.burst!.regions = [
+      { ...base, region: { firstSeq: 1, lastSeq: 4, kind: { type: "skipped", segment: 1, pass: 1 } }, frameCount: 4 },
+      { ...base, region: { ...base.region, firstSeq: 5 } },
+    ];
+    state = { ...state, phase: "REPORT", part, result };
+    const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const strip = within(screen.getByRole("group", { name: "帧组" }));
+    const first = strip.getByRole("button", { name: "帧组 1" });
+    expect(within(first).getByRole("img", { name: "CAM-1 · 生产跳过" })).toHaveStyle({ background: "var(--outline-variant)" });
+    expect(within(strip.getByRole("button", { name: "帧组 6" })).getByRole("img", { name: "CAM-1 · NG" })).toHaveStyle({ background: "var(--ng)" });
+    await userEvent.click(first);
+    const camera = within(await screen.findByRole("region", { name: "CAM-1 帧组 1" }));
+    expect(camera.getByText("生产跳过")).toBeVisible();
+    expect(camera.getByText("不参与判定")).toBeVisible();
+    expect(camera.getByText("NG · 仅供诊断")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "CAM-2 帧组 1" })).getByText("原图缺失；本帧组生产跳过，不参与判定。")).toBeVisible();
+    state = { ...state, part: { ...part, cycleId: "next-cycle" } };
+    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const next = within(screen.getByRole("group", { name: "帧组" }));
+    expect(within(next.getByRole("button", { name: "帧组 1" })).getByRole("img", { name: "CAM-1 · NG" })).toBeVisible();
+    expect(screen.queryByText("生产跳过 4 帧组 · 不参与判定")).toBeNull();
+    expect(screen.getByText(/当前为临时测量状态/)).toBeVisible();
+  });
+
   it("切型确认期间开始接收工件，禁止切换并允许取消", async () => {
     const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
     await userEvent.selectOptions(manual(), "B");
