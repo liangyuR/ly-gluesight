@@ -52,29 +52,9 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
     Ok(doc)
 }
 
-/// 同一 主.次 系列的引擎兼容运行：发布时 1.1.0 的版本可以在 1.1.x 上生产。
-fn engine_version_matches(published: &str, loaded: &str) -> bool {
-    let published = vision::series_of(published.split(':').next().unwrap_or_default());
-    published.is_some() && published == vision::series_of(loaded)
-}
-
-/// 引擎与发布时不是同一份（同系列另一补丁版本，或同版本号但文件大小、修改时间变了）：照常生产，但要让人知道结果不是验证时那份引擎量的。
-fn engine_file_note(published: &str, engine: &Engine) -> Option<String> {
-    if published == engine.identity { return None; }
-    let version = published.split(':').next().unwrap_or_default();
-    Some(if version != engine.version {
-        format!("发布时引擎 lyFlow {version}，当前 {}：同系列兼容运行，建议择机重新验证并发布", engine.version)
-    } else {
-        format!("当前核心库 {} 与发布时的文件不同（发布时 {published}，现在 {}）：同版本号但文件大小或修改时间变了，建议重新验证并发布",
-            engine.path.display(), engine.identity)
-    })
-}
-
 pub struct Prepared {
     pub bundle: ReleaseBundle,
     pub recipe: Arc<Recipe>,
-    /// 核心库文件与发布时不同的提示（见 engine_file_note）
-    pub engine_note: Option<String>,
     engine: Arc<Engine>,
     /// 按（计划相机下标, 段号）的走廊测量图（D-SB-45）
     corridors: vision::CorridorSet,
@@ -85,8 +65,8 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// 按段与检测相机建走廊测量图。发布包与所选生产版本的配方逐项一致、测量图版本与引擎系列匹配、
-    /// 包内测量图等于按配方和各相机示教帧尺寸重算的结果、各相机发布标定的当量等于示教当量。
+    /// 按段与检测相机建走廊测量图。发布包与所选生产版本的配方逐项一致、各相机发布标定的当量等于示教当量；
+    /// 不按包内测量图或发布时 lyFlow 版本拒绝，走廊按配方和各相机示教帧尺寸重建。
     pub fn load(
         bundle: ReleaseBundle,
         engine: Arc<Engine>,
@@ -115,11 +95,6 @@ impl Prepared {
         {
             return Err("发布包配方与所选生产版本不一致，请重新发布".into());
         }
-        if bundle.manifest.versions.graph != GRAPH_VERSION_BURST
-            || !engine_version_matches(&bundle.manifest.versions.engine, &engine.version)
-        {
-            return Err("发布包的算法图或引擎版本与当前引擎不一致，请重新验证并发布".into());
-        }
         let mut sizes = Vec::with_capacity(recipe.inspect.len());
         let mut channels = Vec::with_capacity(recipe.inspect.len());
         for (idx, inspect) in recipe.inspect.iter().enumerate() {
@@ -136,20 +111,10 @@ impl Prepared {
                 return Err(format!("相机 {} 的发布标定与示教像素当量不一致", inspect.camera));
             }
         }
-        let stored: Value = serde_json::from_str(
-            &crate::fsio::read_text(&bundle.root.join(&bundle.manifest.graph))
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| format!("发布包算法图无效：{e}"))?;
-        if stored != burst_graphs(&recipe, &sizes)? {
-            return Err("发布包算法图与配方走廊不一致".into());
-        }
         let corridors = vision::CorridorSet::build(&recipe, &sizes)?.with_channels(&channels);
-        let engine_note = engine_file_note(&bundle.manifest.versions.engine, &engine);
         Ok(Self {
             bundle,
             recipe,
-            engine_note,
             engine,
             corridors,
             untested: BTreeMap::new(),
@@ -410,7 +375,6 @@ impl ProductionHost {
                             ),
                         );
                     }
-                    if let Some(note) = &prepared.engine_note { crate::cycle::log(&app, "warn", "生产预热", note.clone()); }
                     Entry::Ready(prepared)
                 }
                 Err(error) => {
