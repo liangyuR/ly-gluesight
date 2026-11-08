@@ -14,6 +14,8 @@ const PROBE_COMMITTED: &str = ".health-commit";
 /// 4：检测记录加段配方的帧与区域记录（burst），原图引用加段配方帧身份（files[].frame）。
 /// 其他版本或没有 format 的是旧软件留下的文件：不兼容（D-0），拒绝就绪并提示清理，不猜测迁移。
 const FORMAT: u32 = 4;
+/// 启动时恢复不了的件：事件原样移到这里留待人工核对，不再阻止启动与接件。
+const UNRECOVERED: &str = ".unrecovered";
 
 #[derive(serde::Serialize)]
 struct Envelope<'a> {
@@ -117,6 +119,7 @@ impl Spool {
                 }
                 continue;
             }
+            if name == UNRECOVERED { plain(&path, true)?; continue; }
             plain(&path, false)?;
             if matches!(name, ".health" | PROBE_TEMPORARY | PROBE_COMMITTED) { validate_probe(&path)?; continue; }
             let sequence = name.strip_suffix(".json").filter(|name| name.len() == 20 && name.bytes().all(|byte| byte.is_ascii_digit()))
@@ -240,6 +243,25 @@ impl Spool {
             self.remove(&[receipt])?;
         }
         Ok(())
+    }
+
+    /// 把一件的全部待写事件原样移出 spool，返回存放目录。
+    pub(super) fn quarantine(&mut self, cycle: &str) -> Result<PathBuf, String> {
+        let root = self.root.join(UNRECOVERED);
+        ancestors(&root)?;
+        std::fs::create_dir_all(&root).map_err(|error| format!("创建未恢复追溯目录失败：{error}"))?;
+        ancestors(&root)?;
+        let sequences = self.receipts.iter().filter(|(_, receipt)| receipt.cycle == cycle).map(|(&sequence, _)| sequence).collect::<Vec<_>>();
+        for sequence in sequences {
+            let source = self.path(sequence);
+            plain(&source, false)?;
+            let target = (0u32..).map(|n| root.join(format!("{sequence:020}-{n}.json")))
+                .find(|path| !path.exists()).ok_or("未恢复追溯文件名耗尽")?;
+            std::fs::rename(&source, &target).map_err(|error| format!("移出未恢复追溯事件失败：{error}"))?;
+            let receipt = self.receipts.remove(&sequence).unwrap();
+            self.bytes -= receipt.bytes;
+        }
+        Ok(root)
     }
 
     pub(super) fn empty(&self) -> bool { self.receipts.is_empty() }

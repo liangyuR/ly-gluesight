@@ -178,3 +178,18 @@ fn durable_spool_replays_sqlite_commit_before_receipt_cleanup_without_duplicate_
     assert_eq!(sink.detail("committed").recording, before.recording);
     assert_eq!(sink.detail("committed").summary.delivery, before.summary.delivery);
 }
+
+#[test]
+fn startup_spool_with_unrecoverable_cycle_then_quarantined_and_spool_ready_after_reopen() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    spool.append(&Event::Insert(Box::new(part("committed", 42)))).unwrap();
+    spool.append(&Event::Delivery("orphan".into(), delivery(PlcDeliveryState::Acknowledged, 88))).unwrap();
+    let notices = recover_all(&mut spool, &mut sink, 1).unwrap();
+    assert!(spool.empty());
+    assert!(notices.iter().any(|notice| matches!(notice, Notice::Log { event: "持久追溯未恢复", cycle, .. } if cycle == "orphan")));
+    assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 1);
+    assert!(spool::Spool::open(dir.0.join("spool")).unwrap().empty());
+    assert_eq!(std::fs::read_dir(dir.0.join("spool").join(".unrecovered")).unwrap().count(), 1);
+}
