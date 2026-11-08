@@ -191,12 +191,13 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
     // 防的回归：不检测某段的相机也被送测（没有它在这段的走廊，只能量出检测不完整）；比例边界相对预测边界移动后，
     // 移到另一段或进了过渡区的帧仍用到达时的走廊判定；不等补测完就判定；或没录到原图时把没测的帧当测成；
     // 两段都开逐帧定向时（D-SB-47，测量不依赖段归属）仍把用相邻段定向图测过的帧拿去补测；
-    // 两段的搜索扇区拖成不同方向时（测量图不同）却当成同一测量图不补测（PR #218 评审）
-    for (case, keep_images, heading, turned) in [
-        ("补测有原图", true, false, false),
-        ("要测图却没录到原图", false, false, false),
-        ("两段都开逐帧定向", true, true, false),
-        ("两段都开逐帧定向、扇区方向不同", true, true, true),
+    // 两段的搜索扇区拖成不同方向（PR #218 评审）或测量区间按段设得不同时（测量图不同）却当成同一测量图不补测
+    for (case, keep_images, heading, differ) in [
+        ("补测有原图", true, false, None),
+        ("要测图却没录到原图", false, false, None),
+        ("两段都开逐帧定向", true, true, None),
+        ("两段都开逐帧定向、扇区方向不同", true, true, Some("sector")),
+        ("两段都开逐帧定向、测量区间不同", true, true, Some("window")),
     ] {
         let mut doc = crate::recipe::samples_burst();
         doc.segments = vec![
@@ -215,20 +216,23 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
         doc.inspect[0].segments.push(SegmentCorridor {
             segment: 2,
             corridor,
-            sector_deg: turned.then_some(90.0),
+            sector_deg: (differ == Some("sector")).then_some(90.0),
             color_model: None,
         });
-        doc.segments
-            .iter_mut()
-            .for_each(|s| s.heading = heading.then(Default::default));
-        if heading {
-            doc.inspect.iter_mut().for_each(|i| {
-                i.window = Some(crate::recipe::HeadingWindow {
+        doc.segments.iter_mut().for_each(|s| {
+            let length_mm = if differ == Some("window") && s.index == 2 {
+                20.0
+            } else {
+                10.0
+            };
+            s.heading = heading.then(|| crate::plan::HeadingSettings {
+                tolerance_deg: 5.0,
+                window: Some(crate::recipe::HeadingWindow {
                     start_mm: 1.0,
-                    length_mm: 10.0,
-                })
-            });
-        }
+                    length_mm,
+                }),
+            })
+        });
         let mut p = armed_part_with(
             doc.build().unwrap(),
             "burst-post",
@@ -280,7 +284,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             .collect();
         jobs.sort();
         if keep_images {
-            let expected: &[(usize, u64, u32)] = if heading && !turned {
+            let expected: &[(usize, u64, u32)] = if heading && differ.is_none() {
                 &[(1, 6, 1), (1, 7, 1), (2, 6, 1), (2, 7, 1)]
             } else {
                 &[(0, 6, 1), (1, 6, 1), (1, 7, 1), (2, 6, 1), (2, 7, 1)]

@@ -288,12 +288,8 @@ fn similarly_near_parallel_color_beads_are_unknown_instead_of_arbitrarily_chosen
         }
         let measurement = if heading {
             let mut doc = burst_doc();
-            doc.segments[0].heading = Some(Default::default());
+            doc.segments[0].heading = heading_1_11();
             doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
-            doc.inspect[0].window = Some(HeadingWindow {
-                start_mm: 1.0,
-                length_mm: 10.0,
-            });
             let recipe = doc.build().unwrap();
             let graph = plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap();
             measure_heading_with(&graph, &image, 7, |run, frame| {
@@ -564,16 +560,21 @@ fn camera_override_of_a_judge_threshold_reaches_station_presence() {
     );
 }
 
-/// 第 1 段开逐帧定向：检测窗口距出胶点 1–11 mm（4–44 px），出胶点由走廊起点推出。
-fn heading_graph() -> HeadingGraph {
-    let mut doc = burst_doc();
-    doc.segments[0].heading = Some(Default::default());
-    for inspect in &mut doc.inspect {
-        inspect.window = Some(HeadingWindow {
+/// 逐帧定向开启，本段测量区间距出胶点 1–11 mm。
+fn heading_1_11() -> Option<crate::plan::HeadingSettings> {
+    Some(crate::plan::HeadingSettings {
+        tolerance_deg: 5.0,
+        window: Some(HeadingWindow {
             start_mm: 1.0,
             length_mm: 10.0,
-        });
-    }
+        }),
+    })
+}
+
+/// 第 1 段开逐帧定向：测量区间距出胶点 1–11 mm（4–44 px），出胶点由走廊起点推出。
+fn heading_graph() -> HeadingGraph {
+    let mut doc = burst_doc();
+    doc.segments[0].heading = heading_1_11();
     let recipe = doc.build().unwrap();
     plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap()
 }
@@ -586,15 +587,11 @@ fn sector_turned_on_one_segment_leaves_other_segments_of_the_camera_automatic() 
     doc.segments = (1..=2)
         .map(|index| crate::plan::PathSegment {
             index,
-            heading: Some(Default::default()),
+            heading: heading_1_11(),
             ..first.clone()
         })
         .collect();
     for inspect in &mut doc.inspect {
-        inspect.window = Some(HeadingWindow {
-            start_mm: 1.0,
-            length_mm: 10.0,
-        });
         let corridor = inspect.segments[0].clone();
         inspect.segments = vec![
             corridor.clone(),
@@ -617,6 +614,56 @@ fn sector_turned_on_one_segment_leaves_other_segments_of_the_camera_automatic() 
         (sector(1), sector(2)),
         (json!([-90.0, 90.0]), json!([0.0, 180.0]))
     );
+}
+
+#[test]
+fn segment_window_is_measured_and_old_segments_without_one_keep_the_camera_window() {
+    // 防的回归（D-SB-47）：测量区间改按段设置后，段上设的区间没进测量图（仍按相机级测）；
+    // 或旧配方的段（定向只有 toleranceDeg）丢了相机级区间，建不出测量图或换了测量范围
+    let mut doc = burst_doc();
+    let first = doc.segments[0].clone();
+    let old_heading = serde_json::from_value(json!({ "toleranceDeg": 5.0 })).unwrap();
+    doc.segments = vec![
+        crate::plan::PathSegment {
+            index: 1,
+            heading: heading_1_11(),
+            ..first.clone()
+        },
+        crate::plan::PathSegment {
+            index: 2,
+            heading: Some(old_heading),
+            ..first
+        },
+    ];
+    for inspect in &mut doc.inspect {
+        inspect.window = Some(HeadingWindow {
+            start_mm: 2.0,
+            length_mm: 20.0,
+        });
+        let corridor = inspect.segments[0].clone();
+        inspect.segments = vec![
+            corridor.clone(),
+            crate::recipe::SegmentCorridor {
+                segment: 2,
+                ..corridor
+            },
+        ];
+    }
+    let recipe = doc.build().unwrap();
+    let scale = recipe.inspect[0].mm_per_px.unwrap();
+    for (segment, [start, end]) in [(1, [1.0, 11.0]), (2, [2.0, 22.0])] {
+        let graph = plan_heading(&recipe.inspect[0], segment, &recipe, FRAME).unwrap();
+        let zone: Vec<f64> = graph.params["zone"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap() * scale)
+            .collect();
+        assert!(
+            (zone[0] - start).abs() < 1e-6 && (zone[1] - end).abs() < 1e-6,
+            "第 {segment} 段：{zone:?}"
+        );
+    }
 }
 
 /// 假的定向图运行：只有第 0 个峰，粗找到 `found` 个胶点（10 步），卡尺量到 16 px 宽的胶。
@@ -694,12 +741,8 @@ fn heading_result_uses_fitted_direction_when_found_and_marks_window_absent_other
 #[test]
 fn color_heading_preserves_wide_beads_and_distinguishes_untrusted_paths_from_background() {
     let mut doc = burst_doc();
-    doc.segments[0].heading = Some(Default::default());
+    doc.segments[0].heading = heading_1_11();
     doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
-    doc.inspect[0].window = Some(HeadingWindow {
-        start_mm: 1.0,
-        length_mm: 10.0,
-    });
     let recipe = doc.build().unwrap();
     let g = plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap();
     let image = FrameImage::rgb(

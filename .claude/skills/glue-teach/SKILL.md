@@ -22,7 +22,7 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 - 某段 `frames` 是原因文字而不是 `[start, end]`（分段没确认）；
 - 要示教的相机 `mmPerPx` 为空；
 - `engine.loaded=false`，先按返回的运行库来源和错误恢复引擎；
-- 开启逐帧定向的相机有 `headingIssues`，先处理 `window`、出胶点等前提；
+- 开启逐帧定向的相机有 `headingIssues`，先处理测量区间、出胶点等前提；测量区间按段设置（各相机 `segments[].window`，`source=camera` 为沿用相机级旧值），取值由人给出后用 `teach_segment` 的 `headingWindow` 写入，胶条短的笔“测量到”不要超过胶条长度；
 - `coverage` 未知、边界不可信、出现 `zeroCoverageSegments` 或直线段没有有效胶偏窗口，先核对真实覆盖，不用单段试测替代生产覆盖检查；
 - 分段已确认但 `passes.inRecipe=false`（示教件笔结构与分段对不上，生产会退回按比例分段），请人重新保存分段。
 

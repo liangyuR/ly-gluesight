@@ -89,6 +89,8 @@ export interface OffsetRef {
 /** 逐帧定向（D-SB-47）：toleranceDeg（0–45°）只用于细化分段边界，直线段方向偏离超过它算离开直线段。 */
 export interface HeadingSettings {
   toleranceDeg: number;
+  /** 本段的测量区间，本段各检测相机共用；null / 缺省 = 沿用旧配方的相机级区间（CameraInspect.window） */
+  window?: InspectWindow | null;
 }
 
 /** 帧组数统计（旧配方的多件统计，只读）。 */
@@ -418,7 +420,7 @@ export interface CameraInspect {
   detect: DetectParams | null;
   /** 这台相机在它检测的各段的走廊（图像像素） */
   segments?: SegmentCorridor[];
-  /** 逐帧定向的检测窗口（D-SB-47）；null / 缺省 = 未设置 */
+  /** 旧配方的相机级测量区间（D-SB-47）：段没设 heading.window 时沿用；界面不再编辑 */
   window?: InspectWindow | null;
   /** 标定的出胶点（图像像素，D-SB-47）；null / 缺省 = 由开启定向的各段走廊起点推出 */
   nozzle?: [number, number] | null;
@@ -443,7 +445,7 @@ export interface ExpertSpec {
   advanced: true;
 }
 
-/** 检测窗口：沿胶路距出胶点 [startMm, startMm + lengthMm]（mm）。 */
+/** 测量区间：沿胶路距出胶点 [startMm, startMm + lengthMm]（mm）。 */
 export interface InspectWindow {
   startMm: number;
   lengthMm: number;

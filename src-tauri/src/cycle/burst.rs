@@ -269,18 +269,19 @@ impl BurstPart {
             .collect()
     }
 
-    /// 两段在这台相机上都开了逐帧定向、找边参数与搜索扇区方向也相同（D-SB-47）：测量不依赖帧归哪一段（扇区已含相邻段），
-    /// 用到达时那段的定向图测过就不必补测。扇区方向按段存，两段拖成不同方向时测量图不同，照常补测。
+    /// 两段在这台相机上都开了逐帧定向、找边参数、搜索扇区方向与段级测量区间也相同（D-SB-47）：测量不依赖帧归哪一段（扇区已含相邻段），
+    /// 用到达时那段的定向图测过就不必补测。扇区方向与测量区间按段存，两段不同时测量图不同，照常补测。
     fn same_heading_graph(&self, camera: usize, a: u32, b: u32) -> bool {
         let key = |index: u32| {
             let segment = self.segments.iter().find(|s| s.index == index)?;
-            segment.heading.as_ref()?;
+            // 段级测量区间不同测量图就不同；都没设时同用相机级区间
+            let window = segment.heading.as_ref()?.window.clone();
             let edge = segment
                 .offset_ref
                 .as_ref()
                 .filter(|o| self.cameras.get(camera) == Some(&o.camera))
                 .and_then(|o| o.edge.clone());
-            Some((edge, self.sectors.get(&(camera, index)).copied()))
+            Some((edge, self.sectors.get(&(camera, index)).copied(), window))
         };
         key(a).is_some() && key(a) == key(b)
     }

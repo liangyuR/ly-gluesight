@@ -3,12 +3,13 @@
  * N_exp 取自示教件分段、x_ref 由测量示教件得出：段序列或类型变化时清空（见 workbenchDraft.segmentsForSave），不在这里手填。
  */
 import type { EdgeParams, HeadingSettings, KindDefaults, PathSegment, SegmentKind } from "../plan/types";
+import { windowError } from "./teach";
 
 /** 与后端 plan::MAX_TOLERANCE 一致。 */
 export const MAX_TOLERANCE = 1000;
 
-/** 逐帧定向的默认方向容差（与后端 HeadingSettings::default 一致）。 */
-export const DEFAULT_HEADING: HeadingSettings = { toleranceDeg: 5 };
+/** 新开启逐帧定向的段：方向容差 5°，测量区间跳过前 5 mm、测到 20 mm（与后端 HeadingSettings::default 一致）。 */
+export const DEFAULT_HEADING: HeadingSettings = { toleranceDeg: 5, window: { startMm: 5, lengthMm: 15 } };
 /** 胶偏改为 toEdge 时的默认找边参数（D-SB-48）。 */
 export const DEFAULT_EDGE: EdgeParams = { polarity: "brightToDark", searchMm: 20, contrastMin: 40, nominalMm: null };
 
@@ -17,7 +18,7 @@ export function newSegment(index: number, kind: SegmentKind, defaults: KindDefau
   const base = defaults[kind];
   return {
     index, kind, lengthMm: null, expectedFrames: null, tolerance: base.tolerance, calib: null,
-    checks: structuredClone(base.checks), offsetRef: null, inspectRange: null, cameras: [], skipHead: 0, skipTail: 0, heading: { ...DEFAULT_HEADING },
+    checks: structuredClone(base.checks), offsetRef: null, inspectRange: null, cameras: [], skipHead: 0, skipTail: 0, heading: structuredClone(DEFAULT_HEADING),
   };
 }
 
@@ -55,6 +56,8 @@ export function segmentIssues(segments: PathSegment[]): string[] {
       if (!Number.isInteger(value) || value < 0 || value > MAX_TOLERANCE) issues.push(`${name} ${label}帧数需为 0–${MAX_TOLERANCE} 的整数`);
     if (containsNaN(segment.checks)) issues.push(`${name} 检测项有未填写的数值`);
     if (segment.heading && !(segment.heading.toleranceDeg > 0 && segment.heading.toleranceDeg <= 45)) issues.push(`${name} 方向容差需在 0–45° 之间`);
+    const windowIssue = segment.heading?.window ? windowError(segment.heading.window) : "";
+    if (windowIssue) issues.push(`${name} ${windowIssue}`);
     const edge = segment.offsetRef?.measure === "toEdge" ? segment.offsetRef.edge : null;
     if (edge) {
       if (!(edge.searchMm > 0 && edge.searchMm <= 50)) issues.push(`${name} 找边搜索长度需在 0–50 mm 之间`);

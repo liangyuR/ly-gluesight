@@ -155,18 +155,35 @@ describe("搜索扇区", () => {
 
 describe("测量区间", () => {
 
-  // 防的回归（D-SB-47）：面板按“跳过前 / 测到”填，配方仍存起点与长度；把“测到”当长度写进配方，实测区间整体后移
-  it("跳过前 5 mm、测到 25 mm → 配方存起点 5、长度 20；测到不大于跳过 → 提示且不写配方", async () => {
+  // 防的回归（D-SB-47）：面板按“跳过前 / 测到”填，配方仍存起点与长度；把“测到”当长度写进配方，实测区间整体后移；
+  // 测量区间按段设置后仍写到相机上，同一相机各段共用一个区间
+  it("段 1 跳过前 5 mm、测到 25 mm → 段 1 存起点 5、长度 20，相机不变；测到不大于跳过 → 提示且不写配方", async () => {
     ws.data!.workspace.doc.segments![0].heading = { toleranceDeg: 5 };
     show("/recipe/teach?camera=CAM-2&segment=1");
-    const zone = await screen.findByRole("group", { name: "出胶点与测量区间" });
+    const zone = await screen.findByRole("group", { name: "段 1 测量区间" });
     fireEvent.change(within(zone).getByRole("spinbutton", { name: "跳过前" }), { target: { value: "5" } });
     fireEvent.change(within(zone).getByRole("spinbutton", { name: "测到距出胶点" }), { target: { value: "25" } });
-    expect(vi.mocked(ws.setDoc).mock.lastCall![0].inspect!.find(item => item.camera === "CAM-2")!.window).toEqual({ startMm: 5, lengthMm: 20 });
+    const doc = vi.mocked(ws.setDoc).mock.lastCall![0];
+    expect(doc.segments![0].heading!.window).toEqual({ startMm: 5, lengthMm: 20 });
+    expect(doc.inspect!.find(item => item.camera === "CAM-2")!.window).toBeUndefined();
     const calls = vi.mocked(ws.setDoc).mock.calls.length;
     fireEvent.change(within(zone).getByRole("spinbutton", { name: "测到距出胶点" }), { target: { value: "5" } });
     expect(within(zone).getByRole("alert")).toHaveTextContent("测量到的距离需大于跳过的距离");
     expect(ws.setDoc).toHaveBeenCalledTimes(calls);
+  });
+
+  // 防的回归（PR #274 评审）：沿用相机级区间的段第一次改动就写成段级，区间来源一变输入框被重建、失去焦点，多位数输入被打断
+  it("段沿用相机级区间、改跳过前 → 写入段级区间，输入框仍是同一个", async () => {
+    const doc = ws.data!.workspace.doc;
+    doc.segments![0].heading = { toleranceDeg: 5 };
+    doc.inspect![1].window = { startMm: 5, lengthMm: 20 };
+    const { rerender } = show("/recipe/teach?camera=CAM-2&segment=1");
+    const input = within(await screen.findByRole("group", { name: "段 1 测量区间" })).getByRole("spinbutton", { name: "跳过前" });
+    fireEvent.change(input, { target: { value: "3" } });
+    ws.doc = vi.mocked(ws.setDoc).mock.lastCall![0];
+    expect(ws.doc.segments![0].heading!.window).toEqual({ startMm: 3, lengthMm: 22 });
+    rerender(<MemoryRouter initialEntries={["/recipe/teach?camera=CAM-2&segment=1"]}><TeachingPage /></MemoryRouter>);
+    expect(within(screen.getByRole("group", { name: "段 1 测量区间" })).getByRole("spinbutton", { name: "跳过前" })).toBe(input);
   });
 });
 

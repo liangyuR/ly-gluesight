@@ -4,7 +4,7 @@
 use serde::Serialize;
 
 use crate::plan::{segment_cameras, PathSegment};
-use crate::recipe::CameraInspect;
+use crate::recipe::{CameraInspect, HeadingWindow};
 
 /// 同一台相机开启定向的各段走廊起点（即出胶点）之间允许的最大距离（mm）。
 pub const NOZZLE_TOLERANCE_MM: f64 = 1.0;
@@ -12,7 +12,7 @@ pub const NOZZLE_TOLERANCE_MM: f64 = 1.0;
 /// `glue.track_path` 要求检测窗口至少 8 px 长。
 const MIN_WINDOW_PX: f64 = 8.0;
 
-/// 定向配置上的问题：`segment` 为 None 是相机级（检测窗口）。
+/// 定向配置上的问题（按相机与段）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Issue {
     pub camera: String,
@@ -134,37 +134,52 @@ pub fn search_sector(nozzle: [f64; 2], size: [u32; 2], turned: Option<f64>) -> [
     [mid - 90.0, mid + 90.0]
 }
 
-/// 定向配置是否齐全（D-SB-47）：开启定向的段，它的每台检测相机要有检测窗口（换算后不短于 8 px）。出胶点起点相差过大只提示，见 `nozzle`。
+/// 测量区间从哪来：本段设的，或旧配方这台相机的相机级区间。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowSource {
+    Segment,
+    Camera,
+}
+
+/// 这台相机在这一段用的测量区间（D-SB-47）：本段设了就用本段的（本段各检测相机共用），否则沿用旧配方的相机级区间；
+/// 都没有为 None。不看本段是否开启定向。
+pub fn window<'a>(
+    segment: &'a PathSegment,
+    inspect: &'a CameraInspect,
+) -> Option<(&'a HeadingWindow, WindowSource)> {
+    match segment.heading.as_ref().and_then(|h| h.window.as_ref()) {
+        Some(w) => Some((w, WindowSource::Segment)),
+        None => inspect.window.as_ref().map(|w| (w, WindowSource::Camera)),
+    }
+}
+
+/// 定向配置是否齐全（D-SB-47）：开启定向的段，它的每台检测相机要有测量区间（换算后不短于 8 px）。出胶点起点相差过大只提示，见 `nozzle`。
 /// 走廊与当量缺失由 `untaught_corridors` 报，这里不重复。
 pub fn issues(segments: &[PathSegment], inspect: &[CameraInspect]) -> Vec<Issue> {
     let cameras: Vec<String> = inspect.iter().map(|i| i.camera.clone()).collect();
     let mut out = Vec::new();
     for i in inspect {
-        let used: Vec<u32> = segments
+        for s in segments
             .iter()
             .filter(|s| s.heading.is_some() && detected(s, i, &cameras))
-            .map(|s| s.index)
-            .collect();
-        if used.is_empty() {
-            continue;
-        }
-        let camera_issue = |message: String| Issue {
-            camera: i.camera.clone(),
-            segment: None,
-            message,
-        };
-        match (&i.window, i.mm_per_px) {
-            (None, _) => out.push(camera_issue(format!(
-                "相机 {}：第 {used:?} 段开启了逐帧定向，需要设置测量区间（跳过胶嘴附近与测量到的距离）",
-                i.camera
-            ))),
-            (Some(w), Some(scale)) if w.length_mm / scale < MIN_WINDOW_PX => {
-                out.push(camera_issue(format!(
-                    "相机 {}：测量区间长 {} mm 换算后不足 {MIN_WINDOW_PX} px",
-                    i.camera, w.length_mm
-                )))
-            }
-            _ => {}
+        {
+            let message = match (window(s, i), i.mm_per_px) {
+                (None, _) => format!(
+                    "第 {} 段相机 {}：开启了逐帧定向，需要设置本段的测量区间（跳过胶嘴附近与测量到的距离）",
+                    s.index, i.camera
+                ),
+                (Some((w, _)), Some(scale)) if w.length_mm / scale < MIN_WINDOW_PX => format!(
+                    "第 {} 段相机 {}：测量区间长 {} mm 换算后不足 {MIN_WINDOW_PX} px",
+                    s.index, i.camera, w.length_mm
+                ),
+                _ => continue,
+            };
+            out.push(Issue {
+                camera: i.camera.clone(),
+                segment: Some(s.index),
+                message,
+            });
         }
     }
     out

@@ -15,7 +15,7 @@ import { workspaceApi } from "./api";
 import { useWorkspace, type SnackMessage } from "./context";
 import { Badge, FrameViewer, KV, Notice, useFrameImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { CaptureRoundV2, FrozenImage, FrameImage, WorkspaceView } from "./types";
-import { cameraParamsError, confirmedSegmentRange, CORNER_CORRIDOR_MM, corridorError, spacingError, draftKey, parseDraftKey, sameCorridor, savedDraft, withCorridor, withSectorDeg } from "./teach";
+import { cameraParamsError, confirmedSegmentRange, CORNER_CORRIDOR_MM, corridorError, spacingError, draftKey, headingWindow, parseDraftKey, sameCorridor, savedDraft, withCorridor, withSectorDeg } from "./teach";
 import { cameraParamsTasks, corridorTasks, type CameraParamsTask, type CorridorTask } from "./cameraTasks";
 import { frameArrived, readRoundFrame, roundView, type RoundView } from "./captureRound";
 import { SegmentTrial } from "./TeachTrial";
@@ -342,12 +342,14 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const savedNozzle = plan.cameraTeaching.find(item => item.camera === camera)?.nozzle ?? null;
   const derivedNozzle = savedNozzle && !savedNozzle.calibrated ? savedNozzle.point : null;
   const nozzleWarning = !params.nozzle && savedNozzle && !savedNozzle.calibrated ? savedNozzle.warning : null;
-  const headingOn = segment != null && !!doc.segments?.find(item => item.index === segment)?.heading;
+  const segmentDoc = segment == null ? undefined : doc.segments?.find(item => item.index === segment);
+  const headingOn = !!segmentDoc?.heading;
+  const zoneWindow = headingWindow(segmentDoc, params)?.window;
   const cameraScale = params.mmPerPx != null && Number.isFinite(params.mmPerPx) && params.mmPerPx > 0 ? params.mmPerPx : null;
   const nozzlePoint = params.nozzle ?? derivedNozzle;
   const headingGuide: HeadingGuide | null = headingOn && nozzlePoint ? {
     nozzle: nozzlePoint, calibrated: !!params.nozzle, focus: headingFocus, turned: sectorDeg != null,
-    zone: params.window && cameraScale ? [params.window.startMm / cameraScale, (params.window.startMm + params.window.lengthMm) / cameraScale] : null,
+    zone: zoneWindow && cameraScale ? [zoneWindow.startMm / cameraScale, (zoneWindow.startMm + zoneWindow.lengthMm) / cameraScale] : null,
     sector: frame ? searchSector(nozzlePoint, frame.size, sectorDeg) : null,
   } : null;
 

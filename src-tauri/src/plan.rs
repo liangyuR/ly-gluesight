@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::recipe::HeadingWindow;
+
 /// 段类型：直线段判胶偏，弯道段不判。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,15 +124,21 @@ pub struct EdgeParams {
 
 /// 逐帧定向（D-SB-47）：开启的段在出胶点周围扇形搜索定向、拟合胶路后测量，扇区按相机（出胶点背离最近画面边的半圈）。
 /// `tolerance_deg` 只用于细化分段边界：直线段的方向偏离它在核心帧上的方向超过它，算离开直线段。
+/// `window` 是本段的测量区间，本段各检测相机共用；为空时沿用旧配方的相机级区间（`CameraInspect.window`），见 `heading::window`。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HeadingSettings {
     pub tolerance_deg: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<HeadingWindow>,
 }
 
 impl Default for HeadingSettings {
     fn default() -> Self {
-        Self { tolerance_deg: 5.0 }
+        Self {
+            tolerance_deg: 5.0,
+            window: Some(HeadingWindow::DEFAULT),
+        }
     }
 }
 
@@ -502,6 +510,9 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
                     "第 {index} 段逐帧定向的方向容差 {}° 需在 0–45° 之间",
                     heading.tolerance_deg
                 ));
+            }
+            if let Some(window) = &heading.window {
+                window.validate(&format!("第 {index} 段"))?;
             }
         }
         if segment.skip_head > MAX_TOLERANCE || segment.skip_tail > MAX_TOLERANCE {

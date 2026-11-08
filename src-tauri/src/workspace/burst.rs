@@ -184,21 +184,31 @@ pub(super) fn heading_hints(
         (Some(_), None) => {}
         (Some(length), Some(n)) => {
             let travel = length / f64::from(n);
+            // 本段设了区间时各相机共用，只提示一次；沿用旧的相机级区间时按相机提示
+            let mut checked = Vec::new();
             for inspect in doc.inspect.iter().filter(|i| cameras.contains(&i.camera)) {
-                let Some(window) = &inspect.window else {
+                let Some((window, source)) = crate::heading::window(segment, inspect) else {
                     continue;
                 };
+                let who = match source {
+                    crate::heading::WindowSource::Segment => "本段".to_string(),
+                    crate::heading::WindowSource::Camera => format!("相机 {}", inspect.camera),
+                };
+                if checked.contains(&who) {
+                    continue;
+                }
                 if window.length_mm < travel {
                     hints.push(format!(
-                        "相机 {} 测量区间长 {:.1} mm，短于每帧后移量约 {travel:.1} mm：相邻帧之间有胶测不到，断胶可能漏检",
-                        inspect.camera, window.length_mm
+                        "{who}测量区间长 {:.1} mm，短于每帧后移量约 {travel:.1} mm：相邻帧之间有胶测不到，断胶可能漏检",
+                        window.length_mm
                     ));
                 } else if window.length_mm > 3.0 * travel {
                     hints.push(format!(
-                        "相机 {} 测量区间长 {:.1} mm，超过每帧后移量约 {travel:.1} mm 的 3 倍：同一处胶会被测多次",
-                        inspect.camera, window.length_mm
+                        "{who}测量区间长 {:.1} mm，超过每帧后移量约 {travel:.1} mm 的 3 倍：同一处胶会被测多次",
+                        window.length_mm
                     ));
                 }
+                checked.push(who);
             }
         }
     }

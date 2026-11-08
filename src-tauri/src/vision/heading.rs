@@ -14,7 +14,7 @@ use super::taught::{
 };
 use super::template::{self, number, Template};
 use super::{FrameImage, RunResult};
-use crate::heading::{nozzle, search_sector};
+use crate::heading::{nozzle, search_sector, window};
 use crate::recipe::{CameraInspect, Recipe};
 
 /// 扇形扫描在检测区前段最多看这么远（px，同 1.1）。
@@ -63,7 +63,7 @@ fn run_targets(edge: bool) -> Vec<String> {
 }
 
 /// 第 `segment` 段、一台检测相机的定向测量图：出胶点见 `heading::nozzle`（标定值或走廊起点推出），扇区见 `heading::search_sector`，
-/// 检测窗口按相机当量换成像素；出胶点须在示教帧内。响应图只算出胶点 ± 检测区外沿 + max(胶宽上限 + 8, 卡尺半长 + 5) 的一块，
+/// 测量区间（见 `heading::window`，本段设的或旧配方的相机级区间）按相机当量换成像素；出胶点须在示教帧内。响应图只算出胶点 ± 检测区外沿 + max(胶宽上限 + 8, 卡尺半长 + 5) 的一块，
 /// 盖住粗跟踪与卡尺够得着的地方。
 pub fn plan_heading(
     inspect: &CameraInspect,
@@ -87,10 +87,7 @@ pub fn plan_heading(
         return Err(fail("本段没有开启逐帧定向"));
     }
     let scale = inspect.mm_per_px.ok_or_else(|| fail("缺少像素当量"))?;
-    let window = inspect
-        .window
-        .as_ref()
-        .ok_or_else(|| fail("缺少测量区间"))?;
+    let (window, _) = window(&segments[k], inspect).ok_or_else(|| fail("缺少测量区间"))?;
     let anchor = nozzle(segments, &cameras, inspect)
         .ok_or_else(|| fail("尚未标定出胶点或示教走廊，推不出出胶点"))?
         .point;
