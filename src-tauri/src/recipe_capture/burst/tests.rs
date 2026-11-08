@@ -230,3 +230,63 @@ fn frame_read_after_image_cleanup_rejects_the_missing_image() {
     assert!(host.burst_frame_path(ROUND, "cam2", 2).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn thumbnail_range_reads_only_requested_frames_and_rejects_unbounded_requests() {
+    let root = root();
+    let round = patched(
+        &complete_round(&root),
+        json!({"origin": {"kind": "prepared", "label": "缩略图范围测试"}}),
+    );
+    write_round(&root, &round);
+    for seq in 1..=GROUPS {
+        crate::image_file::save_pgm(
+            &root.join(ROUND).join(frame_rel_path("cam1", seq)),
+            &FrameImage::new(8, 8, vec![seq as u8; 64]),
+        )
+        .unwrap();
+    }
+    let host = RecipeCaptureHost::open(root.clone()).unwrap();
+    for (start, count, expected) in [(1, 1, vec![1]), (2, 32, vec![2])] {
+        let mut reads = Vec::new();
+        let bytes = host
+            .burst_frame_thumbs(ROUND, "cam1", start, count, |path| {
+                reads.push(path.to_path_buf());
+                crate::image_file::load(path)
+            })
+            .unwrap();
+        let expected_paths: Vec<_> = expected
+            .iter()
+            .map(|seq| {
+                root.join(ROUND)
+                    .join(frame_rel_path("cam1", *seq))
+                    .canonicalize()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(reads, expected_paths);
+        assert_eq!(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 1);
+        assert_eq!(&bytes[16..], &[1, expected[0] as u8]);
+    }
+    crate::image_file::save_pgm(
+        &root.join(ROUND).join(frame_rel_path("cam1", 1)),
+        &FrameImage::new(1601, 1281, vec![7; 1601 * 1281]),
+    )
+    .unwrap();
+    let bytes = host
+        .burst_frame_thumbs(ROUND, "cam1", 1, 1, crate::image_file::load)
+        .unwrap();
+    let width = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    let height = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    assert!(width > 0 && width <= 160 && height > 0 && height <= 128);
+    assert_eq!(bytes.len(), 17 + (width * height) as usize);
+    assert!(bytes[17..].iter().all(|pixel| *pixel == 7));
+    for (start, count) in [(0, 1), (1, 0), (1, 33), (GROUPS + 1, 1)] {
+        assert!(host
+            .burst_frame_thumbs(ROUND, "cam1", start, count, |_| {
+                panic!("invalid range must not read an image")
+            })
+            .is_err());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

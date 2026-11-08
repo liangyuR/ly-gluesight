@@ -6,7 +6,7 @@ import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { burstRecipe, burstWorkspaceView, deferred, pathSegment, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { updateSegments: vi.fn(), captureRoundThumbs: vi.fn(() => new Promise(() => {})) } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { updateSegments: vi.fn(), captureRoundThumbs: vi.fn(() => new Promise(() => {})), captureFrameImage: vi.fn(() => new Promise(() => {})) } }));
 
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><SegmentsPage /></MemoryRouter>);

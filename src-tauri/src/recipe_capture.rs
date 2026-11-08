@@ -273,31 +273,28 @@ pub async fn recipe_capture_frame_image(
 /// 缩略图下采样倍数：1280×1024 → 160×128。
 const THUMB_FACTOR: u32 = 8;
 
-/// 新轮次一台相机全部帧组的缩略图条带（格式见 `frame_align::thumb_strip`），分段标定工作台的时间轴用。
-/// 进行中的轮次没有完整帧记录，按 `load_burst` 的核对报错；读不了的帧按缺帧给出。
+/// 一台相机指定帧组范围的缩略图条带，每批最多 32 组。
 #[tauri::command]
 pub async fn recipe_capture_round_thumbs(
     app: AppHandle,
     round_id: String,
     camera_id: String,
+    start_seq: u64,
+    count: u32,
 ) -> Result<tauri::ipc::Response, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let paths = app
+        let bytes = app
             .state::<CycleHost>()
             .camera
             .recipe_capture()
-            .burst_frame_paths(&round_id, &camera_id)?;
-        let frames: Vec<Option<FrameImage>> = paths
-            .iter()
-            .map(|path| {
-                path.as_ref()
-                    .and_then(|path| crate::image_file::load(path).ok())
-                    .map(|image| crate::frame_align::downsample(&image, THUMB_FACTOR))
-            })
-            .collect();
-        Ok(tauri::ipc::Response::new(crate::frame_align::thumb_strip(
-            &frames,
-        )))
+            .burst_frame_thumbs(
+                &round_id,
+                &camera_id,
+                start_seq,
+                count,
+                crate::image_file::load,
+            )?;
+        Ok(tauri::ipc::Response::new(bytes))
     })
     .await
     .map_err(|e| e.to_string())?

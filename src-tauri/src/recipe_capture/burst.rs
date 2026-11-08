@@ -336,32 +336,42 @@ impl RecipeCaptureHost {
         result
     }
 
-    /// 某台相机一轮全部帧组（1..=帧组数）的原图路径，缺帧为 None；轮次与帧记录只读一次（缩略图条带用）。
-    pub fn burst_frame_paths(
+    pub fn burst_frame_thumbs(
         &self,
         round_id: &str,
         camera_id: &str,
-    ) -> Result<Vec<Option<PathBuf>>, String> {
-        let dir = self.safe_round_path(round_id)?;
-        let (round, lines) = self.load_burst(round_id, true)?;
-        let camera = round
-            .camera_ids()
-            .iter()
-            .position(|id| id == camera_id)
-            .ok_or_else(|| format!("采集轮次没有相机 {camera_id}"))?;
-        let saved: BTreeSet<u64> = lines
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|line| line.camera == camera)
-            .map(|line| line.seq)
-            .collect();
-        Ok((1..=round.group_count)
+        start_seq: u64,
+        count: u32,
+        mut load: impl FnMut(&Path) -> Result<FrameImage, String>,
+    ) -> Result<Vec<u8>, String> {
+        if start_seq == 0 || !(1..=32).contains(&count) {
+            return Err("缩略图起始帧组须从 1 起，每批须为 1–32 组".into());
+        }
+        let index = self.burst_frame_index(round_id)?;
+        if !index.saved.contains_key(camera_id) {
+            return Err(format!("采集轮次没有相机 {camera_id}"));
+        }
+        if start_seq > index.round.group_count {
+            return Err("缩略图起始帧组超出本件范围".into());
+        }
+        let end = start_seq
+            .saturating_add(u64::from(count) - 1)
+            .min(index.round.group_count);
+        let frames: Vec<Option<FrameImage>> = (start_seq..=end)
             .map(|seq| {
-                saved
-                    .contains(&seq)
-                    .then(|| dir.join(camera_id).join(frame_file(seq)))
+                index
+                    .path(camera_id, seq)
+                    .ok()
+                    .and_then(|path| load(&path).ok())
+                    .map(|image| {
+                        let factor = super::THUMB_FACTOR
+                            .max(image.width.div_ceil(160))
+                            .max(image.height.div_ceil(128));
+                        crate::frame_align::downsample(&image, factor)
+                    })
             })
-            .collect())
+            .collect();
+        Ok(crate::frame_align::thumb_strip(&frames))
     }
 
     fn load_burst(&self, round_id: &str, deep: bool) -> Result<(CaptureRoundV2, Option<Vec<FrameLine>>), String> {

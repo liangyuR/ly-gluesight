@@ -51,8 +51,8 @@ export const workspaceApi = {
     desktopCall<PackageExported>("workspace_package_export", { id, includeImages, path, taskId }),
   packagePick: () => desktopCall<PackagePreview | null>("workspace_package_pick"),
   packageImport: (path: string, taskId: string) => desktopCall<PackageImported>("workspace_package_import", { path, taskId }),
-  /** 导入件一台相机全部帧组的缩略图条带（分段标定工作台） */
-  captureRoundThumbs: (roundId: string, cameraId: string) => desktopCall<ArrayBuffer>("recipe_capture_round_thumbs", { roundId, cameraId }).then(decodeThumbStrip),
+  /** 导入件一台相机指定范围的缩略图，startSeq 从 1 起，count 不超过 32。 */
+  captureRoundThumbs: (roundId: string, cameraId: string, startSeq: number, count: number) => desktopCall<ArrayBuffer>("recipe_capture_round_thumbs", { roundId, cameraId, startSeq, count }).then(decodeThumbStrip),
   /** 工作台一次保存：段列表 + 示教件边界（确认） */
   segmentTemplateSave: (id: string, revision: number, segments: PathSegment[], cuts: number[]) =>
     desktopCall<WorkspaceView>("workspace_segment_template_save", { id, revision, segments, cuts }),
