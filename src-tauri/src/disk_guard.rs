@@ -36,7 +36,7 @@ impl DiskGuard {
         self
     }
 
-    /// 剩余空间低于下限时返回暂停原因；查询失败不拦生产。
+    /// 剩余空间低于下限时返回告警原因；查询失败不告警。
     pub fn check(&self) -> Result<(), String> {
         self.check_volumes(Instant::now(), free_bytes)
     }
@@ -52,7 +52,7 @@ impl DiskGuard {
         }
         let result = std::iter::once(&self.root).chain(self.recording_root.iter()).find_map(|root| {
             match free(root) {
-                Ok(bytes) if bytes < self.min_free => Some(Err(format!("资料盘 {} 剩余空间 {:.1} GB，低于 {:.1} GB 下限，新件暂停录制原图（照常检测）；清理磁盘或调低原图保留上限后自动恢复",
+                Ok(bytes) if bytes < self.min_free => Some(Err(format!("资料盘剩余空间不足：{} 剩余 {:.1} GB，低于 {:.1} GB 下限，新件暂停录制原图（照常检测）；清理磁盘或调低原图保留上限后自动恢复",
                     root.display(), bytes as f64 / GIB, self.min_free as f64 / GIB))),
                 _ => None,
             }
