@@ -56,9 +56,10 @@ export function CameraSegmentOverview({ cameras, segments, regions }: CameraSegm
       {regions.map((r, i) => {
         const [first, last] = regionSegments(r.region.kind);
         const from = column.get(first), to = column.get(last);
-        return <li key={i} className={"plan-region " + verdictPlanTone(r.verdict)} data-verdict={r.verdict} style={{ gridColumn: from != null && to != null ? `${from} / ${to + 1}` : "1 / -1" }}>
+        const skipped = r.region.kind.type === "skipped";
+        return <li key={i} className={"plan-region " + (skipped ? "neutral" : verdictPlanTone(r.verdict))} data-verdict={skipped ? undefined : r.verdict} style={{ gridColumn: from != null && to != null ? `${from} / ${to + 1}` : "1 / -1" }}>
           <strong>{regionKindLabel(r.region.kind)}</strong>
-          <span>{verdictLabel[r.verdict]}</span>
+          <span>{skipped ? "生产跳过 · 不参与判定" : verdictLabel[r.verdict]}</span>
           <small className="plan-mono">{r.frameCount} 帧 · {countStatusLabel(r.countStatus)}</small>
         </li>;
       })}

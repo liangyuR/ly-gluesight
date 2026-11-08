@@ -21,6 +21,7 @@ function coveredSegments(region: RegionResult, segments: PathSegment[]) {
 }
 
 function RegionItem({ result, segments, cameras, onSelectGroup }: { result: RegionResult; segments: PathSegment[]; cameras: string[]; onSelectGroup?: (seq: number) => void }) {
+  const skipped = result.region.kind.type === "skipped";
   const badges = regionBadges(result);
   const covered = coveredSegments(result, segments);
   const lengths = covered.map(s => s.lengthMm);
@@ -29,13 +30,14 @@ function RegionItem({ result, segments, cameras, onSelectGroup }: { result: Regi
   const offset = result.offset
     ? `均值偏移 ${mm(result.offset.meanShift)} · 最大偏差 ${mm(result.offset.maxDev)} mm`
     : result.region.kind.type === "corner" ? "弯道不判" : result.region.kind.type === "skipped" ? "跳过不检" : "—";
-  return <li className="region-item" data-tone={verdictTone(result.verdict)} data-kind={result.region.kind.type}>
+  return <li className="region-item" data-tone={skipped ? "neutral" : verdictTone(result.verdict)} data-kind={result.region.kind.type}>
     <div className="region-head">
       <strong>{regionKindLabel(result.region.kind)}</strong>
-      <StatusBadge tone={verdictTone(result.verdict)}>{verdictLabel[result.verdict]}</StatusBadge>
+      <StatusBadge tone={skipped ? "neutral" : verdictTone(result.verdict)}>{skipped ? "生产跳过" : verdictLabel[result.verdict]}</StatusBadge>
     </div>
+    {skipped && <p className="muted">不参与判定，测量数据仅供诊断。</p>}
     <div className="mono">{result.frameCount} 帧 · 预期 {expectedText(result.expected, result.tolerance)}{status}{length != null && ` · 全长 ${length} mm`}</div>
-    {!!badges.length && <div className="region-badges">{badges.map(b => <StatusBadge key={b.key} tone={b.tone}>{b.label}</StatusBadge>)}</div>}
+    {!skipped && !!badges.length && <div className="region-badges">{badges.map(b => <StatusBadge key={b.key} tone={b.tone}>{b.label}</StatusBadge>)}</div>}
     <dl className="region-kv">
       <dt>胶宽 min / max / mean</dt>
       <dd>{result.width ? `${mm(result.width.min)} / ${mm(result.width.max)} / ${mm(result.width.mean)} mm` : "—"}</dd>
