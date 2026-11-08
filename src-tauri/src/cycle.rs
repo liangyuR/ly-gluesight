@@ -780,7 +780,7 @@ pub(crate) fn record_interrupted_part(
     let host = host(app);
     let known = host
         .audit
-        .protected_cycle_ids()
+        .evidenced_cycle_ids()
         .map(|ids| ids.contains(cycle_id))
         .and_then(|spooled| {
             Ok(spooled || app.state::<Store>().detail_by_cycle(cycle_id)?.is_some())

@@ -296,6 +296,12 @@ impl Spool {
         Ok(root)
     }
 
+    pub(super) fn quarantined_cycles(&self) -> impl Iterator<Item = String> + '_ {
+        self.quarantined
+            .iter()
+            .map(|event| event.cycle_id().to_string())
+    }
+
     pub(super) fn empty(&self) -> bool { self.receipts.is_empty() }
 
     pub(super) fn cycles(&self) -> BTreeSet<String> { self.receipts.values().map(|receipt| receipt.cycle.clone()).collect() }

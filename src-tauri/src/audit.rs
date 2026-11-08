@@ -299,6 +299,14 @@ impl Audit {
         Ok(self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?.cycles())
     }
 
+    /// 已有追溯证据的件：活动 spool 加上已隔离到 .unrecovered 的件，后者不阻止接件与切换项目。
+    pub fn evidenced_cycle_ids(&self) -> Result<BTreeSet<String>, String> {
+        let spool = self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
+        let mut cycles = spool.cycles();
+        cycles.extend(spool.quarantined_cycles());
+        Ok(cycles)
+    }
+
     pub(crate) fn fail(&self, error: String) {
         self.fail_for(None, error);
     }
@@ -967,10 +975,18 @@ fn immutable_record(part: &RecordedPart) -> Result<serde_json::Value, String> {
     Ok(value)
 }
 
-fn apply_spooled(events: Vec<(u64, Event)>, cycle: &str, sink: &mut impl Sink, now: i64) -> (bool, Vec<u64>, Vec<Notice>) {
+fn apply_spooled(
+    events: Vec<(u64, Event)>,
+    cycle: &str,
+    sink: &mut impl Sink,
+    now: i64,
+) -> (bool, Vec<u64>, Vec<Notice>) {
     let mut coordinator = Coordinator::new(1, 1);
     let mut notices = Vec::new();
-    let receipts = events.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>();
+    let receipts = events
+        .iter()
+        .map(|(sequence, _)| *sequence)
+        .collect::<Vec<_>>();
     let mut original = None;
     for (_, event) in &events {
         if let Event::Insert(part) = event {

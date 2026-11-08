@@ -207,7 +207,7 @@ fn startup_spool_with_unrecoverable_cycle_then_quarantined_and_spool_ready_after
 }
 
 #[test]
-fn quarantined_cycle_recording_directory_stays_protected_after_reopen() {
+fn quarantined_cycle_keeps_identity_and_recording_protection_after_reopen_without_blocking() {
     let dir = TestDir::new();
     let mut sink = dir.sink();
     let records = dir.0.join("records");
@@ -226,6 +226,9 @@ fn quarantined_cycle_recording_directory_stays_protected_after_reopen() {
     assert!(spool.empty());
     let expected = records.join("cycle_orphan").canonicalize().unwrap();
     let reopened = spool::Spool::open(dir.0.join("spool")).unwrap();
+    assert!(reopened.cycles().is_empty());
+    assert_eq!(
+    assert!(reopened.quarantined_cycles().any(|cycle| cycle == "orphan"));
     assert_eq!(
         reopened.protected_directories(&records).unwrap(),
         vec![expected]
