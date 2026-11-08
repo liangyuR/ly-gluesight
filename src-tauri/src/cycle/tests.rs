@@ -219,17 +219,20 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             sector_deg: (differ == Some("sector")).then_some(90.0),
             color_model: None,
         });
-        doc.segments
-            .iter_mut()
-            .for_each(|s| {
-                s.heading = heading.then(|| crate::plan::HeadingSettings {
-                    tolerance_deg: 5.0,
-                    window: Some(crate::recipe::HeadingWindow {
-                        start_mm: 1.0,
-                        length_mm: if differ == Some("window") && s.index == 2 { 20.0 } else { 10.0 },
-                    }),
-                })
-            });
+        doc.segments.iter_mut().for_each(|s| {
+            let length_mm = if differ == Some("window") && s.index == 2 {
+                20.0
+            } else {
+                10.0
+            };
+            s.heading = heading.then(|| crate::plan::HeadingSettings {
+                tolerance_deg: 5.0,
+                window: Some(crate::recipe::HeadingWindow {
+                    start_mm: 1.0,
+                    length_mm,
+                }),
+            })
+        });
         let mut p = armed_part_with(
             doc.build().unwrap(),
             "burst-post",
