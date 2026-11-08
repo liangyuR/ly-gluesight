@@ -11,20 +11,25 @@ GlueSight 内嵌一个 MCP 服务，让 Agent（Claude Code 等）直接完成�
 
 ## 启用与连接
 
-服务默认关闭。启动 GlueSight 前设置环境变量：
+`pnpm dev` 默认启用 MCP。未设置或设置了空的 `GLUESIGHT_MCP_TOKEN` 时，启动脚本会生成 32 字节随机临时令牌，并在终端输出“MCP 开发访问令牌（仅本次启动）”。令牌只传给启动脚本及其子进程（包括应用），不写入用户环境变量，也不会回传调用终端；重新运行 `pnpm dev` 会生成新令牌，客户端需同步更新。
+
+已设置非空令牌时，`pnpm dev` 原样沿用；太短的令牌仍会使服务启动失败。直接启动 GlueSight、`pnpm tauri dev` 或 `pnpm dev:joint` 时不自动生成令牌，需在启动前设置环境变量；不设令牌时服务默认关闭。`pnpm dev:web` 仅启动前端，不提供 MCP。
 
 | 变量 | 含义 |
 |---|---|
-| `GLUESIGHT_MCP_TOKEN` | 访问令牌，至少 16 个字符；不设或太短则不启动服务 |
+| `GLUESIGHT_MCP_TOKEN` | 访问令牌，至少 16 个字符；`pnpm dev` 在缺失或为空时自动生成，其余应用启动入口不设令牌则不启用；太短则启动失败 |
 | `GLUESIGHT_MCP_PORT` | 端口，缺省 47821 |
 
 服务只监听 `127.0.0.1`，地址为 `http://127.0.0.1:<端口>/mcp`。启动结果写应用日志（标题“示教 MCP”）；设置页“关于”里的“示教 MCP”一项只读显示服务状态：未启用、监听地址或启动失败的原因。
 
-Claude Code 里注册（令牌取同一个环境变量）：
+使用 `pnpm dev` 自动生成的令牌时，在另一个 PowerShell 终端复制启动输出中的令牌，再注册 Claude Code：
 
-```bash
-claude mcp add --transport http gluesight http://127.0.0.1:47821/mcp --header "Authorization: Bearer $GLUESIGHT_MCP_TOKEN"
+```powershell
+$env:GLUESIGHT_MCP_TOKEN = '<复制本次启动输出的临时令牌>'
+claude mcp add --transport http gluesight http://127.0.0.1:47821/mcp --header "Authorization: Bearer $env:GLUESIGHT_MCP_TOKEN"
 ```
+
+若启动前已配置令牌，客户端使用相同令牌；若配置了 `GLUESIGHT_MCP_PORT`，注册命令中的端口也需同步修改。自动令牌每次变化后需更新客户端配置。
 
 ## 传输
 

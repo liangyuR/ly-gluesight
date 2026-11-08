@@ -22,6 +22,8 @@ pnpm dev               # tauri dev：启动 Vite 并编译运行 debug 版；编
 
 只调试前端界面时可用 `pnpm dev:web` 单独启动 Vite（端口 1420），不含后端。
 
+`pnpm dev` 默认启用示教 MCP；未配置令牌时会在终端显示本次启动的临时令牌。客户端连接与其他启动入口的启用方式见 [Agent 示教接口（MCP）](docs/integration/agent-teaching.md#启用与连接)。
+
 开发版切换项目后会保存下次启动的项目并提示等待手动重启。停止当前开发命令，再用相同入口和参数启动，核对当前项目后继续操作；正式版仍自动重启。
 
 同时改 lyFlow 引擎或客户端时使用 `pnpm dev:joint`，参数见 [lyFlow 运行库依赖](docs/architecture/lyflow-dependency.md#联合开发)。
