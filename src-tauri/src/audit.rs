@@ -1,9 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{
+    channel, sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError,
+};
+use std::sync::{Arc, Mutex};
 
 mod spool;
 use std::time::{Duration, Instant};
@@ -274,10 +276,13 @@ fn persist_event(
     let mut spool = spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
     let mut backlog = backlog.lock().map_err(|_| "追溯暂存锁损坏")?;
     spool::validate(&event)?;
+    let mut problems = Vec::new();
+    // 录制屏障锁只在决定写哪些事件时持有，落盘时放开：接件登记屏障不会被卡住的磁盘写入拖住；
+    // 写入顺序由 spool 锁保证
+    let mut writes = Vec::new();
     let mut pending = pending_recordings
         .lock()
         .map_err(|_| "录制收尾状态锁损坏")?;
-    let mut problems = Vec::new();
     if let Event::Recording(outcome) = &event {
         if let Some(barrier) = pending
             .get_mut(&outcome.cycle_id)
@@ -302,22 +307,21 @@ fn persist_event(
     let cycle = event.cycle_id().to_string();
     let inserted = matches!(event, Event::Insert(_));
     let recorded = matches!(event, Event::Recording(_));
-    enqueue(&mut spool, &mut backlog, event, &mut problems);
+    writes.push(event);
     if inserted {
         if let Some(barrier) = pending.get_mut(&cycle) {
             barrier.inserted = true;
             if let Some(outcome) = barrier.terminal.take() {
-                enqueue(
-                    &mut spool,
-                    &mut backlog,
-                    Event::Recording(outcome),
-                    &mut problems,
-                );
+                writes.push(Event::Recording(outcome));
                 pending.remove(&cycle);
             }
         }
     } else if recorded {
         pending.remove(&cycle);
+    }
+    drop(pending);
+    for event in writes {
+        enqueue(&mut spool, &mut backlog, event, &mut problems);
     }
     Ok(problems)
 }
@@ -333,9 +337,16 @@ fn drain(spool: &mut spool::Spool, backlog: &Backlog) -> Result<(), String> {
     Ok(())
 }
 
+/// 待落盘的事件批次；批次落完后通知等待方（带时限的接口）。
+type Persist = (Vec<Event>, Option<tokio::sync::oneshot::Sender<()>>);
+
 #[derive(Clone)]
 pub struct Audit {
     tx: SyncSender<()>,
+    /// 所有追溯事件按提交顺序交给落盘线程，调用方（节拍）从不等磁盘或 spool 锁
+    queue: Sender<Persist>,
+    /// 已提交、落盘线程还没处理完的批次数
+    queued: Arc<std::sync::atomic::AtomicUsize>,
     app: AppHandle,
     spool: Arc<Mutex<spool::Spool>>,
     backlog: Arc<Backlog>,
@@ -358,8 +369,11 @@ impl Audit {
             app_log(app, "err", "持久追溯故障", None, error.clone());
         }
         let (tx, rx) = sync_channel(1);
+        let (queue, queued) = channel::<Persist>();
         let audit = Self {
             tx,
+            queue,
+            queued: Arc::default(),
             app: app.clone(),
             spool: Arc::new(Mutex::new(spool)),
             backlog: Arc::new(Mutex::new(VecDeque::new())),
@@ -372,22 +386,47 @@ impl Audit {
             .name("inspection-audit".into())
             .spawn(move || writer(worker, rx))
             .map_err(|error| format!("追溯线程启动失败：{error}"))?;
+        let persister = audit.clone();
+        std::thread::Builder::new()
+            .name("inspection-audit-persist".into())
+            .spawn(move || {
+                for (events, done) in queued {
+                    for event in events {
+                        persister.persist_now(event);
+                    }
+                    persister.queued.fetch_sub(1, Ordering::SeqCst);
+                    if let Some(done) = done {
+                        let _ = done.send(());
+                    }
+                }
+            })
+            .map_err(|error| format!("追溯落盘线程启动失败：{error}"))?;
         Ok(audit)
     }
 
     /// Err 是追溯当前问题，只用于界面显示和历史清理、项目切换这类非生产操作的守卫。
     pub(crate) fn readiness(&self) -> Result<AuditReadiness, String> {
         let spool = self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
-        readiness(
+        let state = readiness(
             &spool,
             &self.backlog,
             &self.failure,
             &self.running,
             &self.pending_recordings,
+        )?;
+        Ok(
+            if state == AuditReadiness::Ready && self.queued.load(Ordering::SeqCst) > 0 {
+                AuditReadiness::WaitingStore
+            } else {
+                state
+            },
         )
     }
 
     pub fn with_ready<T>(&self, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        if self.queued.load(Ordering::SeqCst) > 0 {
+            AuditReadiness::WaitingStore.require_ready()?;
+        }
         with_ready_spool(
             &self.spool,
             &self.backlog,
@@ -487,7 +526,18 @@ impl Audit {
         }
     }
 
+    /// 交给落盘线程按序处理，不阻塞调用方；落盘线程已停止时就地落盘。
     fn persist(&self, event: Event) {
+        self.queued.fetch_add(1, Ordering::SeqCst);
+        if let Err(error) = self.queue.send((vec![event], None)) {
+            self.queued.fetch_sub(1, Ordering::SeqCst);
+            for event in error.0 .0 {
+                self.persist_now(event);
+            }
+        }
+    }
+
+    fn persist_now(&self, event: Event) {
         let cycle = event.cycle_id().to_string();
         match persist_event(&self.spool, &self.backlog, &self.pending_recordings, event) {
             Ok(problems) => {
@@ -530,12 +580,22 @@ impl Audit {
         let Some(cycle) = events.first().map(|event| event.cycle_id().to_string()) else {
             return;
         };
-        let audit = self.clone();
-        let task = tauri::async_runtime::spawn_blocking(move || {
-            for event in events {
-                audit.persist(event);
-            }
-        });
+        let (done, task) = tokio::sync::oneshot::channel();
+        self.queued.fetch_add(1, Ordering::SeqCst);
+        if let Err(error) = self.queue.send((events, Some(done))) {
+            self.queued.fetch_sub(1, Ordering::SeqCst);
+            let audit = self.clone();
+            let events = error.0 .0;
+            tauri::async_runtime::spawn_blocking(move || {
+                for event in events {
+                    audit.persist_now(event);
+                }
+            });
+            return self.problem(
+                Some(&cycle),
+                "追溯落盘线程已停止，事件在后台直接落盘".into(),
+            );
+        }
         if timeout.is_zero() {
             app_log(
                 &self.app,
@@ -548,9 +608,9 @@ impl Audit {
         }
         match tokio::time::timeout(timeout, task).await {
             Ok(Ok(())) => (),
-            Ok(Err(error)) => self.problem(
+            Ok(Err(_)) => self.problem(
                 Some(&cycle),
-                format!("cycleId={cycle}：持久追溯接收线程异常：{error}"),
+                format!("cycleId={cycle}：追溯落盘线程异常退出"),
             ),
             Err(_) => app_log(
                 &self.app,
