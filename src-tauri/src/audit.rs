@@ -423,6 +423,14 @@ impl Audit {
         Ok(cycles)
     }
 
+    /// 已有追溯证据的件：活动 spool、内存暂存，加上已隔离到 .unrecovered 的件；后者不阻止接件与切换项目。
+    pub fn evidenced_cycle_ids(&self) -> Result<BTreeSet<String>, String> {
+        let mut cycles = self.protected_cycle_ids()?;
+        let spool = self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
+        cycles.extend(spool.quarantined_cycles());
+        Ok(cycles)
+    }
+
     /// 记为当前问题；与当前问题相同的不重复写日志。
     fn problem(&self, cycle: Option<&str>, error: String) {
         let repeated = self
