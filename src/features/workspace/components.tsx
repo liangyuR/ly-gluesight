@@ -83,6 +83,7 @@ export interface ImageOverlay {
   searchHalfPx?: number;
   /** 测量横线（试测页逐帧查看：各站两侧边缘）；`station` 为测站号（0 起，供悬停联动），`width` 为屏幕线宽（默认 2） */
   segments?: { from: [number, number]; to: [number, number]; color: string; width?: number; station?: number }[];
+  clipped?: { station: number; loEdge?: [number, number]; hiEdge?: [number, number]; normal?: [number, number]; position?: [number, number]; loClipped?: boolean; hiClipped?: boolean; label: string }[];
   /** 鼠标移到某条带测站号的测量横线上（移开为 null） */
   onSegmentHover?: (station: number | null) => void;
   /** 胶边距线（ToEdge）：找到零件边的站，胶中心 → 零件边；带“胶边距”开关 */
@@ -372,6 +373,20 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
             {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--ov-line)" : "var(--ov-halo)"} fillOpacity={.85} stroke={i === 0 ? "var(--ov-ok)" : "var(--ov-line)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
             {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
               {overlay.segments.map((segment, i) => <line key={i} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={segment.width ?? 2} vectorEffect="non-scaling-stroke" />)}
+            </g>}
+            {overlay.clipped && <g aria-label="截断测站" fill="none" stroke="var(--ov-warn)" strokeWidth={2} vectorEffect="non-scaling-stroke">
+              {overlay.clipped.map(station => <g key={station.station} aria-label={`第 ${station.station + 1} 站：${station.label}`} onPointerEnter={() => overlay.onSegmentHover?.(station.station)} onPointerLeave={() => overlay.onSegmentHover?.(null)}>
+                <title>{`第 ${station.station + 1} 站：${station.label}`}</title>
+                {[station.loEdge, station.hiEdge].map((edge, i) => edge && <circle key={i} cx={edge[0]} cy={edge[1]} r={screenPx(3)} />)}
+                {([-1, 1] as const).map(direction => {
+                  if (!(direction < 0 ? station.loClipped : station.hiClipped) || !station.normal) return null;
+                  const anchor = (direction < 0 ? station.hiEdge : station.loEdge) ?? station.position;
+                  if (!anchor) return null;
+                  const [nx, ny] = station.normal, length = screenPx(20), wing = screenPx(5);
+                  const end = [anchor[0] + direction * nx * length, anchor[1] + direction * ny * length];
+                  return <path key={direction} d={`M ${anchor[0]} ${anchor[1]} L ${end[0]} ${end[1]} M ${end[0] - direction * nx * wing - ny * wing} ${end[1] - direction * ny * wing + nx * wing} L ${end[0]} ${end[1]} L ${end[0] - direction * nx * wing + ny * wing} ${end[1] - direction * ny * wing - nx * wing}`} />;
+                })}
+              </g>)}
             </g>}
             {overlay.segments && overlay.onSegmentHover && <g aria-label="测站悬停区" onPointerLeave={() => overlay.onSegmentHover?.(null)}>
               {overlay.segments.map((segment, i) => segment.station != null && <line key={i} data-station={segment.station} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke="transparent" strokeWidth={10} vectorEffect="non-scaling-stroke" pointerEvents="stroke"

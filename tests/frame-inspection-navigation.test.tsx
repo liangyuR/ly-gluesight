@@ -11,6 +11,31 @@ vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { calibrationRou
 const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
 const view = (camera: number, seq: number) => ({ segment: 1, corridor: [] as [number, number][], searchHalfPx: 5, edges: [], partEdges: [], metrics: frameMetrics(camera, seq, { widthMean: seq / 100 }) });
 
+it("截断与全未知的试测 → 不显示无胶，生产跳过仍优先，未知在位率不可用", async () => {
+  const frames = [1, 2, 3].map(seq => frameMetrics(0, seq, { presentRatio: 0, measurementEvidence: {
+    version: 1, stations: [], exactStations: 0, clippedStations: seq === 3 ? 0 : 2, unknownStations: seq === 3 ? 2 : 0, absentStations: 0,
+    presentRatio: seq === 3 ? null : 1, maxWidthLowerBoundMm: seq === 3 ? undefined : 11,
+  } }));
+  vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);
+  vi.mocked(workspaceApi.teachPreviewFrame).mockImplementation(async (_id, _camera, _segment, _round, seq) => ({ ...view(0, seq), metrics: frames[seq - 1] }));
+  vi.mocked(workspaceApi.teachPreviewSegment).mockResolvedValue({ round: "round-1", start: 1, end: 3, frames });
+  function Trial() {
+    const [seq, setSeq] = useState<number | null>(null);
+    return <SegmentTrial id="A" camera="CAM-1" segment={1} round="round-1" teachSeq={1} range={{ start: 1, end: 3 }}
+      skipRules={{ passes: [3], groupCount: 3, passSkip: { head: 1, tail: 0 }, segment: pathSegment(1, "straight") }}
+      revision={3} locked="" guide={null} seq={seq} onSeq={setSeq} />;
+  }
+  render(<Trial />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "全段试测" }));
+  expect(await screen.findByLabelText("帧组 1：生产跳过（示教帧）")).toBeVisible();
+  expect(screen.getByLabelText("帧组 2：超出测量范围")).toBeVisible();
+  await user.click(screen.getByLabelText("帧组 3：测量不完整"));
+  const detail = within(screen.getByLabelText("试测指标"));
+  expect(await detail.findByText("不可用")).toBeVisible();
+  expect(within(screen.getByLabelText("试测统计")).queryByText(/^无胶/)).not.toBeInTheDocument();
+});
+
 it.each([
   { name: "笔首4帧且段首0", passes: [6, 6], passSkip: { head: 4, tail: 0 }, skipHead: 0, skipTail: 0, skipped: [7, 8, 9, 10] },
   { name: "笔首与段首重叠并跳段尾", passes: [6, 6], passSkip: { head: 2, tail: 0 }, skipHead: 3, skipTail: 1, skipped: [7, 8, 9, 12] },

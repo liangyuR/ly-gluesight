@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use super::burst::{CalibrationRound, CALIBRATION_DIR};
 use super::capture_review::{confirmed_segment_counts, RoundReview};
 use super::*;
-use crate::burst_judge::{frame_verdict, FrameMetrics, FrameState};
+use crate::burst_judge::{frame_verdict, FrameMetrics};
 use crate::calibration::{unformed_lead, GroupForm, OnsetError, ONSET_RUN};
 use crate::plan::PathSegment;
 
@@ -59,12 +59,15 @@ fn group_form(
     let mut form = GroupForm::Formed;
     for &camera in cameras {
         match frames.get(&(seq, camera)) {
-            Some(m) if m.state == FrameState::Measured => {
+            Some(m) if m.has_usable_evidence() => {
                 if !matches!(
                     frame_verdict(m, &segment.checks),
                     Verdict::Ok | Verdict::OkWithExcursion
                 ) {
                     return GroupForm::Unformed;
+                }
+                if m.measurement_incomplete() {
+                    form = GroupForm::Unknown;
                 }
             }
             _ => form = GroupForm::Unknown,
@@ -125,7 +128,7 @@ pub(super) fn round_edge(
     )
     .map_err(|e| match e {
         OnsetError::Unknown(n) => format!(
-            "成形之前第 {} 帧组无法判断（缺帧、测量失败、走出走廊或已屏蔽）",
+            "成形之前第 {} 帧组无法判断（缺帧、无可用证据、测量失败、走出走廊或已屏蔽）",
             seqs[n - 1]
         ),
         OnsetError::NotFound => format!("本段内没有连续 {ONSET_RUN} 个成形帧组：检查走廊与检测项"),

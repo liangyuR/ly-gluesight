@@ -540,6 +540,7 @@ pub(super) fn frame_without_metrics(
         width_min: None,
         width_max: None,
         width_mean: None,
+        measurement_evidence: None,
         widths: Vec::new(),
         spacing_mm: 0.0,
         gap_max_mm: 0.0,
@@ -1857,6 +1858,9 @@ pub async fn workspace_calibration_round_overview(
         let mut frames = calibration_round_features(&app, &id, &round)?;
         for frame in &mut frames {
             frame.widths.clear();
+            if let Some(evidence) = &mut frame.measurement_evidence {
+                evidence.stations.clear();
+            }
         }
         Ok(frames)
     })

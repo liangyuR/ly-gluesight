@@ -249,6 +249,29 @@ export interface InspectionCoverage {
 export type FrameState = "measured" | "missing" | "error" | "unmeasured" | "outOfCorridor" | "notInspected";
 
 /** 一台相机一帧的独立指标；数值只在 state = measured 时有意义。 */
+export interface StationEvidence {
+  state: "exact" | "clipped" | "absent" | "unknown";
+  widthLowerBoundMm?: number;
+  reason?: string;
+  loEdge?: [number, number];
+  hiEdge?: [number, number];
+  loClipped?: boolean;
+  hiClipped?: boolean;
+  normal?: [number, number];
+  position?: [number, number];
+}
+
+export interface MeasurementEvidence {
+  version: number;
+  stations: StationEvidence[];
+  exactStations: number;
+  clippedStations: number;
+  unknownStations: number;
+  absentStations: number;
+  maxWidthLowerBoundMm?: number;
+  presentRatio: number | null;
+}
+
 export interface FrameMetrics {
   /** 计划相机下标 */
   camera: number;
@@ -263,6 +286,7 @@ export interface FrameMetrics {
   spacingMm: number;
   gapMaxMm: number;
   presentRatio: number;
+  measurementEvidence?: MeasurementEvidence;
   /** 测量用的是第几段的走廊（PathSegment.index）；旧记录没有 */
   corridor?: number | null;
   /** 帧内胶中心相对走廊的法向偏移均值（absoluteX） */

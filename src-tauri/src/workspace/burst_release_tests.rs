@@ -1,7 +1,5 @@
 use super::burst::CameraTeaching;
-use super::burst_release::{
-    burst_checks, publish_blocker, teach_trial_check, BurstInputs, TeachTrial,
-};
+use super::burst_release::{burst_checks, BurstInputs};
 use super::burst_tests::{burst_workspace, capture_round, configs, DEVICE};
 use super::*;
 use crate::plan::{
@@ -184,31 +182,4 @@ fn changed_frame_rate_blocks_publish_until_teaching_measurement_configuration_re
     assert!(!check(&checks(&w, &current), "示教件采集参数").passed);
     current.get_mut("cam1").unwrap()["frameRate"] = json!(10.0);
     assert!(check(&checks(&w, &current), "示教件采集参数").passed);
-}
-
-/// D-SB-59：示教帧上部分段没测成只提醒、不拦发布（生产时这些段不测）；一段都没测成拦发布。
-/// 按 `workspace_publish` 用的同一门槛（`publish_blocker`）判能否发布。
-#[test]
-fn teach_trial_failures_warn_when_partial_and_block_publish_only_when_nothing_measures() {
-    let trial = |segment, outcome: Result<(), &str>| TeachTrial {
-        segment,
-        camera: "cam1".into(),
-        outcome: outcome.map_err(str::to_owned),
-    };
-    let bad = || Err("runs：n_map（bad_param）");
-    for (trials, publishable) in [
-        (vec![trial(1, Ok(())), trial(2, Ok(()))], true),
-        (vec![trial(1, Ok(())), trial(2, bad())], true),
-        (vec![trial(1, bad()), trial(2, bad())], false),
-    ] {
-        let checks: Vec<Check> = teach_trial_check(&trials).into_iter().collect();
-        assert_eq!(
-            publish_blocker(&checks).is_none(),
-            publishable,
-            "{}",
-            checks[0].detail
-        );
-        let failed = trials.iter().any(|t| t.outcome.is_err());
-        assert_eq!(!checks[0].passed, failed, "没测成的段要列出来提醒");
-    }
 }

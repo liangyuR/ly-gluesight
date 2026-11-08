@@ -176,7 +176,7 @@
         "n_runs.searchHalf",
         "n_split.searchHalf"
       ],
-      "doc": "卡尺半长（px）：不小于中心偏移容差 + 胶宽上限的一半"
+      "doc": "有限观察半宽（px），独立于胶宽参考上限"
     },
     "widthMax": {
       "default": 24.0,
@@ -184,7 +184,7 @@
         "n_runs.mergeWidthMax",
         "n_split.mergeWidthMax"
       ],
-      "doc": "胶宽上限（px）：合并后不宽于它"
+      "doc": "胶宽参考上限（px）；extent策略不据此排除或截窄胶条"
     },
     "edgeLength": {
       "default": 200.0,
@@ -260,7 +260,7 @@
       "default": 8.0,
       "advanced": true,
       "group": "量胶宽",
-      "doc": "胶色段之间的缝不超过它、合并后不宽于胶宽上限就合并（湿胶面未饱和的反光）",
+      "doc": "胶色段之间的缝不超过它且有反光证据时合并；真实背景阻断合并，总宽度受有限搜索窗口限制",
       "binds": [
         "n_runs.mergeGap"
       ]
@@ -279,6 +279,14 @@
       "binds": [
         "n_runs.mergeUnknownGap"
       ]
+    },
+    "widthPolicy": {
+      "default": "extent",
+      "binds": [
+        "n_runs.widthPolicy",
+        "n_split.widthPolicy"
+      ],
+      "doc": "有限观察窗内保留宽胶；宽度参考不排除候选"
     }
   },
   "x": {
@@ -304,7 +312,7 @@
           "default": 0.5,
           "advanced": true,
           "group": "量胶宽",
-          "doc": "宽度不小于参考宽的这一比例才算有胶"
+          "doc": "灰度测量：宽度不小于参考宽的这一比例才算有胶；胶色测量不使用此门限"
         },
         "centerRatio": {
           "type": "float",
@@ -326,7 +334,7 @@
           "default": 0.3,
           "advanced": true,
           "group": "量胶宽",
-          "doc": "峰值（示教走廊用峰值 / 局部亮度）不低于参考值的这一比例才算有胶"
+          "doc": "灰度测量：峰值（示教走廊用峰值 / 局部亮度）不低于参考值的这一比例才算有胶；胶色测量不使用此门限"
         }
       }
     }

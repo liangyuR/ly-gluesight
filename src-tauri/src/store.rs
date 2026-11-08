@@ -556,6 +556,7 @@ fn finite_metrics(m: &FrameMetrics) -> bool {
         && m.spacing_mm.is_finite()
         && m.gap_max_mm.is_finite()
         && m.present_ratio.is_finite()
+        && m.measurement_evidence.as_ref().is_none_or(|e| e.valid())
         && m.widths.iter().flatten().all(|w| w.is_finite())
 }
 
@@ -1501,6 +1502,9 @@ impl Store {
             for frame in &mut burst.frames {
                 if let Some(metrics) = frame.metrics.as_mut() {
                     metrics.widths.clear();
+                    if let Some(evidence) = &mut metrics.measurement_evidence {
+                        evidence.stations.clear();
+                    }
                 }
             }
         }

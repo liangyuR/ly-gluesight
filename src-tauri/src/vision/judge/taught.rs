@@ -69,10 +69,161 @@ pub struct LateralRun {
     pub peak: f64,
     pub lo_complete: bool,
     pub hi_complete: bool,
+    #[serde(default)]
+    pub lo_cause: Option<String>,
+    #[serde(default)]
+    pub hi_cause: Option<String>,
     /// D15 陡度；采样无效时为 None
     pub sharpness: Option<f64>,
     /// 段内最亮的局部亮度；没接 level 或全无效时为 None
     pub level: Option<f64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ColorStation {
+    pub bead: Option<(f64, f64)>,
+    pub state: crate::burst_judge::StationEvidenceState,
+    pub lower_bound: Option<f64>,
+    pub reason: Option<String>,
+    pub lo: Option<f64>,
+    pub hi: Option<f64>,
+    pub lo_clipped: bool,
+    pub hi_clipped: bool,
+}
+
+impl ColorStation {
+    pub(crate) fn empty(
+        state: crate::burst_judge::StationEvidenceState,
+        reason: Option<&str>,
+    ) -> Self {
+        Self {
+            bead: None,
+            state,
+            lower_bound: None,
+            reason: reason.map(str::to_owned),
+            lo: None,
+            hi: None,
+            lo_clipped: false,
+            hi_clipped: false,
+        }
+    }
+}
+
+pub fn judge_color_stations(
+    runs: &LateralRuns,
+    min_width: f64,
+    reference_max: f64,
+    center_ratio: f64,
+    tolerance: Option<f64>,
+) -> Vec<ColorStation> {
+    use crate::burst_judge::StationEvidenceState::{Absent, Clipped, Exact, Unknown};
+    let anchors: Vec<Station> = runs
+        .stations
+        .iter()
+        .map(|s| Station {
+            s: s.s,
+            runs: s
+                .runs
+                .iter()
+                .filter(|r| r.width >= min_width && r.lo_complete && r.hi_complete)
+                .map(|r| {
+                    let mut r = r.clone();
+                    r.width = r.width.min(reference_max);
+                    r
+                })
+                .collect(),
+        })
+        .collect();
+    let expect = tolerance
+        .map(|tol| track_offsets(&anchors, tol, center_ratio).expect)
+        .unwrap_or_else(|| vec![0.0; runs.stations.len()]);
+    let reference = anchors
+        .iter()
+        .flat_map(|s| &s.runs)
+        .map(|r| r.width)
+        .reduce(f64::min)
+        .unwrap_or(min_width)
+        .max(min_width);
+    let gate = GATE_MIN.max(center_ratio * reference);
+    runs.stations
+        .iter()
+        .zip(expect)
+        .map(|(station, e)| {
+            if tolerance.is_some() {
+                let mut initial: Vec<_> = station
+                    .runs
+                    .iter()
+                    .filter(|r| r.width >= min_width && r.lo.max(-r.hi).max(0.0) <= gate)
+                    .collect();
+                initial.sort_by(|a, b| a.mid.abs().total_cmp(&b.mid.abs()));
+                if let [a, b, ..] = initial.as_slice() {
+                    if a.mid * b.mid < 0.0
+                        && (a.mid.abs() - b.mid.abs()).abs() <= min_width
+                        && a.lo * a.hi > 0.0
+                        && b.lo * b.hi > 0.0
+                    {
+                        return ColorStation::empty(Unknown, Some("ambiguous"));
+                    }
+                }
+            }
+            let distance = |r: &LateralRun| (r.lo - e).max(e - r.hi).max(0.0);
+            let mut candidates: Vec<&LateralRun> = station
+                .runs
+                .iter()
+                .filter(|r| r.width >= min_width && distance(r) <= gate)
+                .collect();
+            candidates.sort_by(|a, b| {
+                distance(a)
+                    .total_cmp(&distance(b))
+                    .then_with(|| (a.mid - e).abs().total_cmp(&(b.mid - e).abs()))
+            });
+            let Some(r) = candidates.first().copied() else {
+                let obscured = station
+                    .unknown_spans
+                    .iter()
+                    .any(|s| s.hi > e - min_width * 0.5 && s.lo < e + min_width * 0.5);
+                return ColorStation::empty(
+                    if obscured { Unknown } else { Absent },
+                    obscured.then_some("occluded"),
+                );
+            };
+            if candidates.get(1).is_some_and(|other| {
+                distance(other) <= distance(r) + min_width * 0.5
+                    && (other.mid - e).abs() <= (r.mid - e).abs() + min_width
+            }) {
+                return ColorStation::empty(Unknown, Some("ambiguous"));
+            }
+            if r.lo_complete && r.hi_complete {
+                return ColorStation {
+                    bead: Some((r.lo, r.hi)),
+                    state: Exact,
+                    lower_bound: None,
+                    reason: None,
+                    lo: Some(r.lo),
+                    hi: Some(r.hi),
+                    lo_clipped: false,
+                    hi_clipped: false,
+                };
+            }
+            let boundary = |complete: bool, cause: &Option<String>| {
+                complete || matches!(cause.as_deref(), Some("caliper" | "roi" | "image"))
+            };
+            if boundary(r.lo_complete, &r.lo_cause) && boundary(r.hi_complete, &r.hi_cause) {
+                ColorStation {
+                    bead: None,
+                    state: Clipped,
+                    lower_bound: Some(r.hi - r.lo),
+                    reason: Some("observation_boundary".into()),
+                    lo: r.lo_complete.then_some(r.lo),
+                    hi: r.hi_complete.then_some(r.hi),
+                    lo_clipped: !r.lo_complete,
+                    hi_clipped: !r.hi_complete,
+                }
+            } else {
+                ColorStation::empty(Unknown, Some("occluded"))
+            }
+        })
+        .collect()
 }
 
 impl LateralRun {

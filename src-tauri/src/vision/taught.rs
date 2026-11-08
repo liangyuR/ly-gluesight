@@ -6,10 +6,14 @@ use serde_json::{json, Value};
 
 use super::heading::{measure_heading_with, plan_heading, HeadingGraph};
 use super::judge::edge::{judge_edges, EdgeSide, EdgeStatus, EdgeWindow};
-use super::judge::taught::{judge_taught, LateralRuns, TaughtParams};
+use super::judge::taught::{
+    judge_color_stations, judge_taught, ColorStation, LateralRuns, TaughtParams,
+};
 use super::template::{self, number, Template};
 use super::{Engine, FrameImage, RunResult};
-use crate::burst_judge::{FrameMetrics, FrameState};
+use crate::burst_judge::{
+    FrameMetrics, FrameState, MeasurementEvidence, StationEvidence, StationEvidenceState,
+};
 use crate::plan::{EdgePolarity, OffsetMeasure};
 use crate::recipe::{CameraInspect, DetectParams, Polarity, Recipe};
 
@@ -511,7 +515,11 @@ pub fn plan_corridor(
     let judge = template.judge(&expert);
     let gate = |name: &str| number(&judge, name).map_err(|e| fail(&e));
     let taught = TaughtParams {
-        tolerance: params.tolerance,
+        tolerance: if color_model.is_some() {
+            params.half
+        } else {
+            params.tolerance
+        },
         sharp_min: gate("trackSharpMin")?,
         width_range: [params.lo, params.hi],
         present_ratio: gate("presentRatio")?,
@@ -802,7 +810,34 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
         }
         poses.push((center, normal));
     }
-    let judged = judge_taught(&runs, Some(&split), &c.taught)?;
+    let evidence = (c.params["widthPolicy"] == "extent").then(|| {
+        let mut stations = judge_color_stations(
+            &runs,
+            c.taught.width_range[0],
+            c.taught.width_range[1],
+            c.taught.center_ratio,
+            Some(c.taught.tolerance),
+        );
+        color_corridor_exits(&mut stations, c.taught.tolerance);
+        stations
+    });
+    let judged = match &evidence {
+        Some(stations) => super::judge::taught::TaughtJudgement {
+            beads: stations.iter().map(|s| s.bead).collect(),
+            unknown: stations
+                .iter()
+                .map(|s| {
+                    matches!(
+                        s.state,
+                        StationEvidenceState::Clipped | StationEvidenceState::Unknown
+                    )
+                })
+                .collect(),
+            expect: Vec::new(),
+            no_bead: None,
+        },
+        None => judge_taught(&runs, Some(&split), &c.taught)?,
+    };
     // 有胶站的胶宽（px）与胶中心相对走廊的法向偏移（px，沿算法法向为正）
     let beads: Vec<Option<(f64, f64)>> = judged
         .beads
@@ -825,6 +860,9 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
         &judged.unknown,
     );
     let mut part_edges = Vec::new();
+    if let Some(stations) = &evidence {
+        apply_color_evidence(&mut metrics, stations, &poses, c.scale);
+    }
     if let Some(window) = &c.edge {
         let edge = edge_measure(
             result.record("edges"),
@@ -836,7 +874,11 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
         metrics.edge_mm = edge.mm;
         part_edges = edge.lines;
     }
-    if let Some(why) = corridor_exit(&beads, c.taught.tolerance, c.scale) {
+    if let Some(why) = evidence
+        .is_none()
+        .then(|| corridor_exit(&beads, c.taught.tolerance, c.scale))
+        .flatten()
+    {
         metrics.state = FrameState::OutOfCorridor;
         metrics.error = Some(why);
     }
@@ -852,6 +894,38 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
 /// `glue.LateralRuns` 记录里判定用到的字段；`what` 是出错时的主语。
 pub(super) fn lateral_runs(record: &Value, what: &str) -> Result<LateralRuns, String> {
     LateralRuns::deserialize(record).map_err(|e| format!("算法{what}结果不合契约：{e}"))
+}
+
+fn color_corridor_exits(stations: &mut [ColorStation], tolerance: f64) {
+    let exits = |station: &ColorStation| {
+        station.state == StationEvidenceState::Exact
+            && station
+                .bead
+                .is_some_and(|(lo, hi)| (0.5 * (lo + hi)).abs() >= EXIT_OFFSET_RATIO * tolerance)
+    };
+    let head = stations
+        .iter()
+        .take_while(|s| s.state == StationEvidenceState::Absent)
+        .count();
+    let tail = stations
+        .iter()
+        .rev()
+        .take_while(|s| s.state == StationEvidenceState::Absent)
+        .count();
+    let head_exits = head > 0 && stations.get(head).is_some_and(exits);
+    let tail_exits = tail > 0
+        && stations
+            .len()
+            .checked_sub(tail + 1)
+            .and_then(|i| stations.get(i))
+            .is_some_and(exits);
+    let end = stations.len().saturating_sub(tail);
+    for (i, station) in stations.iter_mut().enumerate() {
+        if (head_exits && i < head) || (tail_exits && i >= end) {
+            station.state = StationEvidenceState::Unknown;
+            station.reason = Some("out_of_corridor".into());
+        }
+    }
 }
 
 /// 帧内汇总（规格 §4）：逐站胶宽（mm）、胶宽极值与均值、最长连续缺胶（缺胶站数 × 站距）、
@@ -896,7 +970,51 @@ pub(super) fn bead_metrics(
         heading_fallback: false,
         fallback_reason: None,
         edge_mm: None,
+        measurement_evidence: None,
     }
+}
+
+pub(super) fn apply_color_evidence(
+    metrics: &mut FrameMetrics,
+    stations: &[ColorStation],
+    poses: &[([f64; 2], [f64; 2])],
+    scale: f64,
+) {
+    let mut evidence = MeasurementEvidence {
+        version: 1,
+        ..Default::default()
+    };
+    for (s, &(center, normal)) in stations.iter().zip(poses) {
+        match s.state {
+            StationEvidenceState::Exact => evidence.exact_stations += 1,
+            StationEvidenceState::Clipped => evidence.clipped_stations += 1,
+            StationEvidenceState::Absent => evidence.absent_stations += 1,
+            StationEvidenceState::Unknown => evidence.unknown_stations += 1,
+        }
+        let point = |t: f64| [center[0] + normal[0] * t, center[1] + normal[1] * t];
+        evidence.stations.push(StationEvidence {
+            state: s.state,
+            width_lower_bound_mm: s.lower_bound.map(|w| w * scale),
+            reason: s.reason.clone(),
+            lo_edge: s.lo.map(point),
+            hi_edge: s.hi.map(point),
+            lo_clipped: s.lo_clipped,
+            hi_clipped: s.hi_clipped,
+            normal: (normal[0].hypot(normal[1]) > 0.0).then_some(normal),
+            position: (normal[0].hypot(normal[1]) > 0.0).then_some(center),
+            ..Default::default()
+        });
+    }
+    evidence.max_width_lower_bound_mm = evidence
+        .stations
+        .iter()
+        .filter_map(|s| s.width_lower_bound_mm)
+        .reduce(f64::max);
+    let present = evidence.exact_stations + evidence.clipped_stations;
+    let informative = present + evidence.absent_stations;
+    evidence.present_ratio = (informative > 0).then(|| f64::from(present) / f64::from(informative));
+    metrics.present_ratio = evidence.present_ratio.unwrap_or(0.0);
+    metrics.measurement_evidence = Some(evidence);
 }
 
 /// 胶条从走廊端点一侧走出（默认做法 4：弯道帧常见，记检测不完整、不判 NG）：缺胶只在连到走廊端点的一段或两段上，

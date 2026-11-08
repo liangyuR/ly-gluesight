@@ -4,6 +4,7 @@ import { Button } from "qing-steel";
 import { errorText } from "../../lib/errors";
 import type { CalibrationFrameView, FrameMetrics, FrameState, WorkspacePlanView } from "../plan/types";
 import { groupCellColor, groupCellText, segmentLabel, type GroupCellState } from "../plan/vis";
+import { MeasurementEvidenceSummary, measurementIssue, presentRatioText, stationStateText, evidenceOverlay } from "../plan/measurementEvidence";
 import { workspaceApi } from "./api";
 import { Badge, FrameViewer, KV, Panel } from "./components";
 import type { FrameImage, WorkspaceView } from "./types";
@@ -12,6 +13,10 @@ const cellState: Record<FrameState, GroupCellState> = {
   measured: "ok", missing: "missing", error: "error", unmeasured: "unmeasured", outOfCorridor: "outOfCorridor", notInspected: "notInspected",
 };
 const mm = (value: number | null | undefined, digits = 2) => value == null ? "—" : `${value.toFixed(digits)} mm`;
+const metricLabel = (m: FrameMetrics) => {
+  const issue = measurementIssue(m.measurementEvidence);
+  return issue ? stationStateText[issue] : groupCellText[cellState[m.state]];
+};
 
 /**
  * 试测页的逐帧查看：按帧组 × 计划相机列出测量示教件时测得的每帧状态（帧组上方标出按已确认边界所属的段）；
@@ -103,30 +108,31 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
             const seq = i + 1, m = stored(cam, seq), state = m ? cellState[m.state] : "waiting";
             const active = selected?.camera === cam && selected.seq === seq;
             return <Button variant="text" key={seq} role="gridcell" aria-selected={active} className={"wp-calib-cell" + (active ? " selected" : "")}
-              style={{ gridColumn: i + 2, gridRow: cam + 2, background: m ? groupCellColor[state] : "var(--surface-high)" }} aria-label={`${cameraId} 帧组 ${seq}：${m ? groupCellText[state] : "无记录"}`}
-              title={`${cameraId} · 帧组 ${seq} · ${m ? groupCellText[state] : "无记录"}${m?.error ? `：${m.error}` : ""}`} onClick={() => setSelected({ camera: cam, seq })} />;
+              style={{ gridColumn: i + 2, gridRow: cam + 2, background: measurementIssue(m?.measurementEvidence) ? "var(--warn)" : m ? groupCellColor[state] : "var(--surface-high)" }} aria-label={`${cameraId} 帧组 ${seq}：${m ? metricLabel(m) : "无记录"}`}
+              title={`${cameraId} · 帧组 ${seq} · ${m ? metricLabel(m) : "无记录"}${m?.error ? `：${m.error}` : ""}`} onClick={() => setSelected({ camera: cam, seq })} />;
           })}
         </div>)}
       </div>
       </div>
       {selected && camera && <div className="wp-calib-frame">
         <FrameViewer image={shown.image} loading={shown.loading} error={shown.error} label={`${camera} · 帧组 ${selected.seq}`}
-          overlay={view && view.corridor.length >= 2 ? { path: view.corridor, searchHalfPx: view.searchHalfPx ?? undefined, segments: edges, partEdges: view.partEdges } : undefined}
+          overlay={view && view.corridor.length >= 2 ? { path: view.corridor, searchHalfPx: view.searchHalfPx ?? undefined, segments: edges, clipped: evidenceOverlay(view?.metrics), partEdges: view.partEdges } : undefined}
           emptyTitle="读取中" emptyHint="正在读这一帧的原图并重测。" />
         <div className="wp-calib-frame-info" aria-label="这一帧的指标">
           <KV label="所在段">{segment ? `第 ${segment.index} 段 · ${segmentLabel(segment)}` : "—"}</KV>
-          <KV label="测量时">{before ? <Badge tone={before.state === "measured" ? "ok" : "neutral"}>{groupCellText[cellState[before.state]]}</Badge> : "—"}</KV>
+          <KV label="测量时">{before ? <Badge tone={measurementIssue(before.measurementEvidence) ? "warn" : before.state === "measured" ? "ok" : "neutral"}>{metricLabel(before)}</Badge> : "—"}</KV>
           {view && <>
             <KV label="重测走廊">{view.segment == null ? "本段不由这台相机检测，不测" : `第 ${view.segment} 段走廊`}</KV>
             {metrics && view.segment != null && <>
-              <KV label="重测状态"><Badge tone={metrics.state === "measured" ? "ok" : "warn"}>{groupCellText[cellState[metrics.state]]}</Badge></KV>
+              <KV label="重测状态"><Badge tone={metrics.state === "measured" && !measurementIssue(metrics.measurementEvidence) ? "ok" : "warn"}>{metricLabel(metrics)}</Badge></KV>
               <KV label="胶宽 最小 / 均值 / 最大">{`${mm(metrics.widthMin)} / ${mm(metrics.widthMean)} / ${mm(metrics.widthMax)}`}</KV>
               <KV label="胶中心偏移 x">{mm(metrics.xMm)}</KV>
               {metrics.headingDeg != null && <KV label="胶条方向">{`${metrics.headingDeg.toFixed(1)}°`}</KV>}
-              {metrics.headingFallback && <KV label="定向"><Badge tone="warn">没找到胶条</Badge>{metrics.fallbackReason && <span className="muted"> {metrics.fallbackReason}</span>}</KV>}
+              {metrics.headingFallback && <KV label="定向"><Badge tone="warn">{metrics.measurementEvidence ? "方向未确定" : "没找到胶条"}</Badge>{metrics.fallbackReason && <span className="muted"> {metrics.fallbackReason}</span>}</KV>}
               {metrics.edgeMm != null && <KV label="胶边距">{mm(metrics.edgeMm)}</KV>}
               <KV label="最长断胶">{mm(metrics.gapMaxMm, 1)}</KV>
-              <KV label="有胶站">{`${Math.round(metrics.presentRatio * 100)}%（${metrics.widths.filter(w => w != null).length} / ${metrics.widths.length} 站，站距 ${metrics.spacingMm} mm）`}</KV>
+              <KV label="有胶站">{presentRatioText(metrics)}（站距 {metrics.spacingMm} mm）</KV>
+              {metrics.measurementEvidence && <KV label="量测证据"><MeasurementEvidenceSummary evidence={metrics.measurementEvidence} /></KV>}
               {metrics.error && <p className="muted hint">{metrics.error}</p>}
               {before && before.state !== metrics.state && <p className="muted hint">与测量时的状态不同：走廊或参数在测量后改过。</p>}
             </>}

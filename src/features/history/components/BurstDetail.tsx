@@ -25,6 +25,7 @@ import type { HistoryDetailState, PartDetail } from "../types";
 import { BurstPartTrace } from "./PartTrace";
 import { RegionReplayDiff } from "./ReplayDiff";
 import { historyReturnContext, historyReturnSearch } from "../returnContext";
+import { evidenceOverlay, MeasurementEvidenceSummary } from "../../plan/measurementEvidence";
 
 const comparisonLabel = { rules: "规则重判", raw: "候选原图复测", original: "原发布包重现" };
 const recordingReason = { off: "录制关闭，本件未保存原图", notRetained: "按录制策略本件未保存原图", pending: "原图仍在落盘", incomplete: "原图不完整", failed: "原图录制失败", complete: "原图已按保留策略清理或无法核验" };
@@ -101,7 +102,7 @@ function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, 
   const lines = (traced.view?.edges ?? []).flatMap((edge, i) => edge ? [{ from: edge[0], to: edge[1], station: i,
     color: i === lit ? "var(--ov-warn)" : "var(--ov-line)", width: i === lit ? 4 : 2 }] : []).sort((a, b) => Number(a.station === lit) - Number(b.station === lit));
   const overlay = traced.view && traced.view.corridor.length >= 2 ? { path: traced.view.corridor, searchHalfPx: traced.view.searchHalfPx ?? undefined,
-    segments: lines, partEdges: traced.view.partEdges, onSegmentHover: selected ? onStation : undefined } : undefined;
+    segments: lines, clipped: evidenceOverlay(traced.view?.metrics), partEdges: traced.view.partEdges, onSegmentHover: selected ? onStation : undefined } : undefined;
   const unavailable = recordCamera == null ? "记录里没有这台相机的原图" : !frame ? "没有这一帧的记录"
     : frame.status === "missing" ? "这台相机本帧组缺帧，没有原图（检测不完整，不影响 OK/NG）"
       : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;
@@ -398,7 +399,8 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
             <KV label="胶宽 min / max / mean">{metrics && frame?.status === "measured" ? `${mm(metrics.widthMin)} / ${mm(metrics.widthMax)} / ${mm(metrics.widthMean)} mm` : "—"}</KV>
             <KV label="胶中心 x">{metrics && frame?.status === "measured" ? `${mm(metrics.xMm)} mm` : "—"}</KV>
             <KV label="最长断胶">{metrics && frame?.status === "measured" ? `${mm(metrics.gapMaxMm)} mm` : "—"}</KV>
-            {metrics?.headingFallback && <KV label="定向">没找到胶条{metrics.fallbackReason ? `：${metrics.fallbackReason}` : ""}</KV>}
+            {metrics?.measurementEvidence && <KV label={skipped ? "诊断量测证据" : "量测证据"}><MeasurementEvidenceSummary evidence={metrics.measurementEvidence} /></KV>}
+            {metrics?.headingFallback && <KV label="定向">{metrics.measurementEvidence ? "方向未确定" : "没找到胶条"}{metrics.fallbackReason ? `：${metrics.fallbackReason}` : ""}</KV>}
             {metrics?.error && <KV label="说明">{metrics.error}</KV>}
           </div>
           {frameLoading ? <Text muted role="status">正在读取逐站指标…</Text> : originalShown && frameDetail?.key === frameKey && frameDetail.error ? <Alert tone="warn">{frameDetail.error}</Alert> : metrics && frame?.status === "measured" && metrics.widths.length > 0

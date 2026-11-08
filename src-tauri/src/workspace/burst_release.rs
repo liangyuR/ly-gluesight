@@ -582,6 +582,7 @@ pub(super) struct TeachTrial {
     pub segment: u32,
     pub camera: String,
     pub outcome: Result<(), String>,
+    pub incomplete: bool,
 }
 
 /// “示教帧试测”（D-SB-59）：与生产预热同一口径。部分没测成只提醒——发布后这些段不测、帧记未测，结论只覆盖其余段；
@@ -600,11 +601,21 @@ pub(super) fn teach_trial_check(trials: &[TeachTrial]) -> Option<Check> {
         })
         .collect();
     let all = failed.len() == trials.len();
+    let incomplete: Vec<String> = trials
+        .iter()
+        .filter(|t| t.incomplete)
+        .map(|t| format!("第 {} 段相机 {}", t.segment, t.camera))
+        .collect();
     Some(Check {
-        advisory: !failed.is_empty() && !all,
+        advisory: (!failed.is_empty() || !incomplete.is_empty()) && !all,
         name: "示教帧试测".into(),
-        passed: failed.is_empty(),
-        detail: if failed.is_empty() {
+        passed: failed.is_empty() && incomplete.is_empty(),
+        detail: if failed.is_empty() && !incomplete.is_empty() {
+            format!(
+                "存在可用测量，但部分测站未完整量测，请复核截断/未知证据：{}",
+                incomplete.join("；")
+            )
+        } else if failed.is_empty() {
             format!("{} 组（段, 相机）在各自示教帧上都测成", trials.len())
         } else if all {
             format!(
@@ -680,6 +691,7 @@ fn measure_teach_frames(
             ) else {
                 continue;
             };
+            let mut incomplete = false;
             let outcome = image_file(&host, &recipe.id, &teaching.frame.id)
                 .and_then(|path| crate::image_file::load(&path))
                 .and_then(|image| {
@@ -691,14 +703,19 @@ fn measure_teach_frames(
                         &format!("{run}-c{idx}-s{}", segment.index),
                     )
                 })
-                .and_then(|m| match m.metrics.state {
-                    crate::burst_judge::FrameState::Measured => Ok(()),
-                    _ => Err(m.metrics.error.unwrap_or_else(|| "状态异常".into())),
+                .and_then(|m| {
+                    incomplete = m.metrics.measurement_incomplete();
+                    if m.metrics.has_usable_evidence() {
+                        Ok(())
+                    } else {
+                        Err(m.metrics.error.unwrap_or_else(|| "没有可用测量证据".into()))
+                    }
                 });
             out.push(TeachTrial {
                 segment: segment.index,
                 camera: inspect.camera.clone(),
                 outcome,
+                incomplete,
             });
         }
     }

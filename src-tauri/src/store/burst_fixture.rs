@@ -23,6 +23,7 @@ pub(crate) fn measured(camera: usize, seq: u64, width: f64) -> FrameMetrics {
         width_min: Some(width),
         width_max: Some(width),
         width_mean: Some(width),
+        measurement_evidence: None,
         widths: vec![Some(width as f32); 10],
         spacing_mm: 1.0,
         gap_max_mm: 0.0,

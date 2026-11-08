@@ -6,7 +6,6 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Semaphore;
 
-use crate::burst_judge::FrameState;
 use crate::cycle::{CycleHost, Input};
 use crate::frame::FrameImage;
 use crate::recipe::Recipe;
@@ -14,8 +13,8 @@ use crate::release::{ReleaseBundle, ValidationSite, RELEASE_SCHEMA_BURST};
 use crate::vision::{self, Engine, FrameMeasurement, VisionHost};
 
 /// 段配方的测量图版本（LF-4）：测量图模板加每（相机, 段）的全部有效参数；发布包 schema 5 的 `versions.graph`。
-/// `flow-2` 起测量图用 lyFlow 1.2 的测量算子、判定归 GlueSight；不兼容此前的发布包，它们加载时要求重新发布。
-pub const GRAPH_VERSION_BURST: &str = "flow-2";
+/// `flow-3` 冻结彩色 extent 观测与站级证据；旧图发布包需重新验证发布。
+pub const GRAPH_VERSION_BURST: &str = "flow-3";
 
 /// 段配方的测量图（发布包 graph.json）：用到的模板原文，加每段每台检测相机的走廊参数与判定门限，开启定向的（段, 相机）另有定向图的；
 /// sizes 是各相机示教帧尺寸。
@@ -217,7 +216,7 @@ impl Prepared {
     }
 
     /// 预热：每台相机在它每一段的发布示教帧上用该段走廊量一次——现场证明发布包、走廊与运行库接线正确。
-    /// 没测成（Measured 以外或运行失败）的（相机, 段）记进不测清单，其余段照常检测（D-SB-59）；示教帧读不出、发布包核验失败仍整包失败。
+    /// 没测成（无可用测量证据或运行失败）的（相机, 段）记进不测清单，其余段照常检测（D-SB-59）；示教帧读不出、发布包核验失败仍整包失败。
     pub(crate) fn warm(&mut self) -> Result<(), String> {
         let mut untested = BTreeMap::new();
         let mut measurable = 0;
@@ -232,8 +231,8 @@ impl Prepared {
                     ly_plc::now_ms()
                 );
                 let problem = match self.measure_frame(idx, corridor.segment, 0, &image, &run) {
-                    Ok(m) if m.metrics.state == FrameState::Measured => None,
-                    Ok(m) => Some(m.metrics.error.unwrap_or_else(|| "状态异常".into())),
+                    Ok(m) if m.metrics.has_usable_evidence() => None,
+                    Ok(m) => Some(m.metrics.error.unwrap_or_else(|| "没有可用测量证据".into())),
                     Err(error) => Some(error),
                 };
                 match problem {

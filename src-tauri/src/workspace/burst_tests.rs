@@ -70,6 +70,7 @@ pub(super) fn measured(x: f64) -> FrameMetrics {
         width_min: Some(4.0),
         width_max: Some(4.0),
         width_mean: Some(4.0),
+        measurement_evidence: None,
         widths: vec![Some(4.0)],
         spacing_mm: 1.0,
         gap_max_mm: 0.0,
