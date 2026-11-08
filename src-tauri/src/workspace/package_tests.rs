@@ -346,3 +346,47 @@ fn camera_notes_flag_changed_or_absent_cameras_only() {
     assert_eq!(notes.len(), 1);
     assert!(notes[0].contains("cam2") && notes[0].contains("cam3") && !notes[0].contains("cam1"));
 }
+
+/// 换示教件的对照还没确认时，迁移起点里的示教帧（人断开对应后已不在当前示教帧里）也随包带走，改回对照时图像不缺。
+#[test]
+fn package_carries_teaching_frames_of_an_unconfirmed_pass_alignment() {
+    let dirs = Dirs::new("pass-alignment");
+    let mut w = source_candidate(&dirs.source);
+    let mut pending = w.camera_teaching[0].clone();
+    pending.frame.id = "pending-1".into();
+    w.pass_alignment = Some(crate::workspace::PassAlignment {
+        old_piece: crate::workspace::OldPiece {
+            record_id: 1,
+            sn: "SN-1".into(),
+            ts: 1,
+            passes: vec![10],
+        },
+        new_passes: vec![10],
+        suggested: Vec::new(),
+        rows: Vec::new(),
+        confirmed: false,
+        source: Some(crate::workspace::AlignSource {
+            segments: w.doc.segments.clone(),
+            corridors: Default::default(),
+            teaching: vec![pending],
+            cuts: Vec::new(),
+        }),
+        carry: Default::default(),
+        removed: Vec::new(),
+    });
+    let dir = dirs.source.join("workspaces").join(&w.doc.id);
+    write(
+        &dir.join("workspace.json"),
+        &serde_json::to_string_pretty(&w).unwrap(),
+    );
+    write(&dir.join("images").join("pending-1.pgm"), "P5 1 1 255 x");
+    export(&dirs, &w, false).unwrap();
+    target_project(&dirs.target, &w.doc.id);
+    staged(&dirs);
+    assert!(dirs
+        .staging
+        .join(CANDIDATE)
+        .join("images")
+        .join("pending-1.pgm")
+        .is_file());
+}

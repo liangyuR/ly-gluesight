@@ -747,6 +747,16 @@ pub(super) fn edit_alignment(
     Ok(cuts)
 }
 
+/// 候选引用的全部冻结示教帧：当前的示教帧，加上未确认对照的迁移起点里的（改回对照时还要用）。
+pub(super) fn frozen_teaching(w: &Workspace) -> impl Iterator<Item = &CameraTeaching> {
+    w.camera_teaching.iter().chain(
+        w.pass_alignment
+            .iter()
+            .filter_map(|a| a.source.as_ref())
+            .flat_map(|s| s.teaching.iter()),
+    )
+}
+
 /// 对照未确认前不能改段列表、不能保存分段。
 pub(super) fn require_confirmed(w: &Workspace) -> Result<(), String> {
     if w.pass_alignment.as_ref().is_some_and(|a| !a.confirmed) {
