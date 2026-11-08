@@ -23,19 +23,22 @@ export default function HistoryDetailPage() {
   const [error, setError] = useState("");
   const overviewSerial = useRef(0);
   const mutationBusy = useRef(false);
-  const setMutationBusy = useCallback((busy: boolean) => {
-    mutationBusy.current = busy;
-    if (busy) overviewSerial.current++;
-  }, []);
+  const refreshPending = useRef(false);
   const projects = useProjectDirectory();
-  const reload = useCallback(() => {
+  const reload = useCallback((preserveDetailOnError = false) => {
     const serial = ++overviewSerial.current;
     void historyApi.overview(Number(id)).then(next => {
       if (serial === overviewSerial.current) { setDetail(next); setError(""); }
     }).catch(cause => {
-      if (serial === overviewSerial.current) { setDetail(null); setError(errorText(cause)); }
+      if (serial === overviewSerial.current) { if (!preserveDetailOnError) setDetail(null); setError(errorText(cause)); }
     });
   }, [id]);
+  const setMutationBusy = useCallback((busy: boolean) => {
+    const wasBusy = mutationBusy.current;
+    mutationBusy.current = busy;
+    if (busy) overviewSerial.current++;
+    else if (wasBusy && refreshPending.current) { refreshPending.current = false; reload(true); }
+  }, [reload]);
 
   useEffect(() => {
     setDetail(null); setError(""); reload();
@@ -49,20 +52,24 @@ export default function HistoryDetailPage() {
   useEffect(() => {
     const stop = subscribe<string>("history://updated", cycleId => {
       if (!detail || cycleId !== detail.summary.cycleId) return;
-      if (mutationBusy.current) return;
+      if (mutationBusy.current) { refreshPending.current = true; return; }
       reload();
     });
     return stop;
   }, [detail?.summary.id, detail?.summary.cycleId, reload]);
-  useEffect(() => subscribe<number[]>("history://changed", ids => { if (!mutationBusy.current && ids.includes(Number(id))) reload(); }), [id, reload]);
+  useEffect(() => subscribe<number[]>("history://changed", ids => {
+    if (!ids.includes(Number(id))) return;
+    if (mutationBusy.current) refreshPending.current = true;
+    else reload();
+  }), [id, reload]);
 
   const openPart = (target: number | null) => { if (target != null) navigate("/history/" + target, { state: { ...state, scrollTop: undefined } }); };
   if (!detail || detail.summary.id !== Number(id)) return error ? <div className="stack"><IconButton onClick={back.onBack} aria-label={back.backLabel}><ArrowLeft size={18} /></IconButton><Alert tone="ng">{error}</Alert></div> : <Text muted>加载中…</Text>;
   const foreignProject = foreignProjectNote(detail.summary.projectId, projects);
   const actions = <HistoryRecordActions key={detail.summary.id} id={detail.summary.id} tags={detail.summary.tags ?? []}
       onBusyChange={setMutationBusy}
-      onSaved={tags => { overviewSerial.current++; setDetail(current => current?.summary.id === detail.summary.id ? { ...current, summary: { ...current.summary, tags } } : current); }}
-      onDeleted={result => navigate(state?.returnTo?.path ?? "/history", { replace: true, state: { historyNotice: { message: `已删除 ${result.deleted} 件历史记录。`, warnings: result.warnings } } })} />;
+      onSaved={tags => { refreshPending.current = false; setDetail(current => current?.summary.id === detail.summary.id ? { ...current, summary: { ...current.summary, tags } } : current); reload(); }}
+      onDeleted={result => { refreshPending.current = false; navigate(state?.returnTo?.path ?? "/history", { replace: true, state: { historyNotice: { message: `已删除 ${result.deleted} 件历史记录。`, warnings: result.warnings } } }); }} />;
   if (detail.burst) return <BurstHistoryDetail key={detail.summary.id} detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} actions={actions} {...back} />;
   return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} actions={actions} {...back} />;
 }

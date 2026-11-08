@@ -2003,6 +2003,7 @@ pub fn recorded_projects(path: &Path) -> Result<BTreeSet<String>, String> {
     rows.collect::<Result<_, _>>().map_err(db_err)
 }
 
+mod history_edit;
 mod merge;
 mod package;
 

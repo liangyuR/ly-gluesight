@@ -45,8 +45,9 @@ beforeEach(() => {
 });
 
 describe("历史详情（段配方记录）", () => {
-  it("Tag 保存后旧详情请求迟到 → 保留刚保存的人工标签", async () => {
-    detail.burst = null;
+  it("Tag 保存期间交付与录制状态更新 → 补读完整详情且旧请求不能覆盖", async () => {
+    detail.summary.delivery.state = "pending";
+    detail.recording = { ...detail.recording, state: "pending", available: false };
     const old = { ...detail, summary: { ...detail.summary, tags: [] } };
     show();
     await screen.findByRole("button", { name: "编辑 Tag" });
@@ -54,14 +55,19 @@ describe("历史详情（段配方记录）", () => {
     vi.mocked(historyApi.overview).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const update = vi.mocked(subscribe).mock.calls.filter(([event]) => event === "history://updated").at(-1)![1] as (cycleId: string | null) => void;
     act(() => update(detail.summary.cycleId));
-    vi.mocked(historyApi.setTags).mockResolvedValue(["故障件"]);
+    const latest = { ...detail, summary: { ...detail.summary, tags: ["故障件"], delivery: { state: "acknowledged" as const, updatedAt: 2, message: "结果已接收" } }, recording: { ...detail.recording, state: "complete" as const, available: true } };
+    vi.mocked(historyApi.overview).mockResolvedValue(latest);
+    vi.mocked(historyApi.setTags).mockImplementation(async () => { update(detail.summary.cycleId); return ["故障件"]; });
     await userEvent.click(screen.getByRole("button", { name: "编辑 Tag" }));
     await userEvent.click(within(screen.getByRole("dialog", { name: "编辑 Tag" })).getByRole("button", { name: "故障件" }));
     await userEvent.click(screen.getByRole("button", { name: "保存 Tag" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(await screen.findByText("PLC 已确认 · 结果已接收")).toBeVisible();
+    expect(screen.getByText("完整落盘 · 已核验落盘")).toBeVisible();
     await act(async () => { finish(old); });
     expect(screen.getByText("故障件")).toBeVisible();
     expect(screen.queryByText("未标记")).not.toBeInTheDocument();
+    expect(screen.getByText("PLC 已确认 · 结果已接收")).toBeVisible();
   });
 
   it("删除失败可重试 → 成功后先展示原图保留提示，再返回原入口", async () => {
