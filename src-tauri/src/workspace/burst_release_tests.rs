@@ -194,12 +194,20 @@ fn teach_trial_failures_warn_when_partial_and_block_publish_only_when_nothing_me
         segment,
         camera: "cam1".into(),
         outcome: outcome.map_err(str::to_owned),
+        incomplete: false,
     };
     let bad = || Err("runs：n_map（bad_param）");
     for (trials, publishable) in [
         (vec![trial(1, Ok(())), trial(2, Ok(()))], true),
         (vec![trial(1, Ok(())), trial(2, bad())], true),
         (vec![trial(1, bad()), trial(2, bad())], false),
+        (
+            vec![TeachTrial {
+                incomplete: true,
+                ..trial(1, Ok(()))
+            }],
+            true,
+        ),
     ] {
         let checks: Vec<Check> = teach_trial_check(&trials).into_iter().collect();
         assert_eq!(
@@ -208,7 +216,7 @@ fn teach_trial_failures_warn_when_partial_and_block_publish_only_when_nothing_me
             "{}",
             checks[0].detail
         );
-        let failed = trials.iter().any(|t| t.outcome.is_err());
+        let failed = trials.iter().any(|t| t.outcome.is_err() || t.incomplete);
         assert_eq!(!checks[0].passed, failed, "没测成的段要列出来提醒");
     }
 }

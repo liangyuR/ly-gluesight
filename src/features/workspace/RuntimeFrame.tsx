@@ -9,6 +9,7 @@ import { burstImageApi } from "./burstImages";
 import { FrameViewer, KV } from "./components";
 import "../cycle/components/burst.css";
 import type { FrameImage } from "./types";
+import { evidenceOverlay, MeasurementEvidenceSummary } from "../plan/measurementEvidence";
 
 /** 一次读图请求：scope 变了就要读新图，part 相同的上一张在新图到之前保留。 */
 interface LiveJob { scope:string; part:string }
@@ -79,7 +80,7 @@ function BurstCameraFrame({part,camera,name,seq,group,regions}:{part:PartView;ca
   const view=useLiveView(part,camera,seq,cell);
   // 新帧组的图还没到、显示的是上一张时不叠这一帧的线
   const edges=(view?.edges??[]).flatMap(edge=>edge?[{from:edge[0],to:edge[1],color:"var(--ov-line)"}]:[]);
-  const overlay=view&&view.corridor.length>=2&&shownSeq===seq?{path:view.corridor,searchHalfPx:view.searchHalfPx??undefined,segments:edges,partEdges:view.partEdges}:undefined;
+  const overlay=view&&view.corridor.length>=2&&shownSeq===seq?{path:view.corridor,searchHalfPx:view.searchHalfPx??undefined,segments:edges,clipped:evidenceOverlay(view?.metrics),partEdges:view.partEdges}:undefined;
   return <section className="wp-burst-cam" aria-label={`${name} 帧组 ${seq}`}>
     <FrameViewer image={arrived?image?.image??null:null} loading={arrived&&live.loading} error={live.current?.error??""} label={`${name} · 帧组 ${shownSeq}`} overlay={overlay}
       emptyTitle={missing?"缺帧":"等待本帧组图像"} emptyHint={missing?(skipped?"原图缺失；本帧组生产跳过，不参与判定。":"这台相机没有出本帧组的图，本组按其余相机判（检测不完整，不影响 OK/NG）。"):""}/>
@@ -88,6 +89,8 @@ function BurstCameraFrame({part,camera,name,seq,group,regions}:{part:PartView;ca
       <KV label="单帧结论">{skipped?"不参与判定":cell?.verdict?verdictLabel[cell.verdict]:"—"}</KV>
       {skipped&&<KV label="诊断状态">{group?groupCellText[groupCellState(group,camera)]:"—"} · 仅供诊断</KV>}
       <KV label="设备帧计数">{cell?.frameCounter??"—"}</KV>
+      {view?.metrics?.measurementEvidence && <KV label="完整测站胶宽 min / max / mean">{[view.metrics.widthMin,view.metrics.widthMax,view.metrics.widthMean].map(v=>v==null?"—":v.toFixed(2)).join(" / ")} mm</KV>}
+      {view?.metrics?.measurementEvidence && <KV label={skipped?"诊断量测证据":"量测证据"}><MeasurementEvidenceSummary evidence={view.metrics.measurementEvidence}/></KV>}
     </div>
   </section>;
 }

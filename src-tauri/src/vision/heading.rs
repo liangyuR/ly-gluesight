@@ -1,14 +1,16 @@
 //! 逐帧定向测量（D-SB-47）：开启定向的（段, 检测相机）在出胶点周围的扇区里定向、拟合胶路，只量距出胶点 [s₀, s₀ + L] 的一段。
 //! 测量图是 `template::heading`：一张响应图，在扇区（出胶点背离最近画面边的半圈，见 `heading::search_sector`）里扇形扫描，
-//! 取 3 个候选方向各粗跟踪、量卡尺，按 `judge::fit` 选方向；没找到胶条就照常按缺胶判，不记检测不完整。
+//! 取 3 个候选方向各粗跟踪、量卡尺，按 `judge::fit` 选方向；彩色路径区分背景无胶与路径不可信，灰度保留原判定。
 
 use serde_json::{json, Value};
 
 use super::judge::edge::EdgeWindow;
 use super::judge::fit::{choose_path, judge_stations, PathChoice, PathGate, StationGate};
+use super::judge::taught::{judge_color_stations, ColorStation};
 use super::taught::{
-    bead_metrics, bead_params, bead_params_into, check_color, color_params_into, edge_graph,
-    edge_measure, edge_points, response_params_into, FrameMeasurement, GraphRun,
+    apply_color_evidence, bead_metrics, bead_params, bead_params_into, check_color,
+    color_params_into, edge_graph, edge_measure, edge_points, lateral_runs, response_params_into,
+    FrameMeasurement, GraphRun,
 };
 use super::template::{self, number, Template};
 use super::{FrameImage, RunResult};
@@ -205,6 +207,31 @@ pub fn measure_heading_with(
         return measure_chosen(g, &result, &choice, seq);
     }
     let mut measured = no_bead(g, &choice, seq);
+    if g.params["widthPolicy"] == "extent" {
+        use crate::burst_judge::StationEvidenceState::{Absent, Unknown};
+        let tracks: Vec<_> = (0..3)
+            .filter_map(|k| result.record(&format!("track{k}")))
+            .filter(|t| t["valid"] == true)
+            .collect();
+        let background = !tracks.is_empty()
+            && tracks
+                .iter()
+                .all(|t| t["found"].as_u64() == Some(0) && t["unknownSteps"].as_u64() == Some(0));
+        let stations = vec![
+            ColorStation::empty(
+                if background { Absent } else { Unknown },
+                (!background).then_some("path_untrusted")
+            );
+            measured.metrics.widths.len()
+        ];
+        let poses = vec![(g.nozzle, [0.0, 0.0]); stations.len()];
+        apply_color_evidence(&mut measured.metrics, &stations, &poses, g.scale);
+        if !background {
+            measured.metrics.gap_max_mm = 0.0;
+        }
+        measured.metrics.heading_deg = None;
+        measured.line.clear();
+    }
     measured.metrics.heading_fallback = true;
     measured.metrics.fallback_reason = Some(choice.reason).filter(|reason| !reason.is_empty());
     Ok(measured)
@@ -235,7 +262,29 @@ fn measure_chosen(
     let runs = result
         .record(&format!("runs{k}"))
         .ok_or("算法缺少横向卡尺结果")?;
-    let calls = judge_stations(runs, g.station_gate, true)?;
+    let color = g.params["widthPolicy"] == "extent";
+    let mut calls = judge_stations(runs, g.station_gate, !color)?;
+    let evidence = if color {
+        let parsed = lateral_runs(runs, "胶色卡尺")?;
+        let evidence = judge_color_stations(
+            &parsed,
+            g.station_gate.width_range[0],
+            g.station_gate.width_range[1],
+            g.station_gate.center_ratio,
+            None,
+        );
+        for (call, station) in calls.iter_mut().zip(&evidence) {
+            call.bead = station.bead;
+            call.unknown = matches!(
+                station.state,
+                crate::burst_judge::StationEvidenceState::Clipped
+                    | crate::burst_judge::StationEvidenceState::Unknown
+            );
+        }
+        Some(evidence)
+    } else {
+        None
+    };
     if calls.is_empty() {
         return Err("定向测量没有测站".into());
     }
@@ -255,6 +304,10 @@ fn measure_chosen(
         &unknown,
     );
     metrics.x_mm = None;
+    if let Some(stations) = &evidence {
+        let poses: Vec<_> = calls.iter().map(|c| (c.center, c.normal)).collect();
+        apply_color_evidence(&mut metrics, stations, &poses, g.scale);
+    }
     let mut part_edges = Vec::new();
     if let Some(window) = &g.edge {
         let poses: Vec<([f64; 2], [f64; 2])> = calls.iter().map(|c| (c.center, c.normal)).collect();

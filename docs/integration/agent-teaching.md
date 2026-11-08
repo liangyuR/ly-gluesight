@@ -124,3 +124,9 @@ MCP Streamable HTTP 的无状态子集：
 - 服务：`src-tauri/src/agent_mcp.rs`（hyper，JSON-RPC 分派、鉴权），随应用启动。
 - 工具：`src-tauri/src/workspace/agent.rs`，直接调用示教页命令的同一组函数；叠图绘制在 `src-tauri/src/agent_mcp/canvas.rs`。
 - 按胶色吸附用取色图 `src-tauri/graphs/color_teach.lyflow.json`：它另外输出 `n_model.overlay`，并把 `shiftMax` 作为图参数。
+
+## 彩色宽胶测量证据
+
+`teach_trial` 的 `measurementEvidence` 按帧返回版本、精确/截断/无胶/未知站数、可空 `presentRatio` 与可选 `maxWidthLowerBoundMm`。`limits.measurementIncomplete` 列出截断/未知帧，`widthLowerBounds` 列可靠下界，`overflowFrames` 包含下界已超过上限的帧；生产跳过不进入这些判定线索。`presentBelow` 与 `worst` 不把全未知帧当成 0% 有胶。
+
+`measurement` 新增 `completeFrames`、`incompleteMeasurementFrames`、`noEvidenceFrames`；`measuredFrames` 只表示产出测量结果，不能单独证明完整量测。全未知不按断胶处理，但也不是可接受的完整合格。宽度统计只含精确站，下界和未知须另行核对。`widthPolicy=extent` 与 `flow-3` 的兼容和发布要求见[宽胶测量契约](../architecture/wide-bead-measurement-plan.md)。

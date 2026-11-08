@@ -139,7 +139,27 @@ pub(crate) const REQUIRED_OPERATORS: &str = env!("GLUESIGHT_REQUIRED_OPERATORS")
 fn check_operators(manifest: &Value) -> Result<(), String> {
     let ops = manifest["operators"].as_array().ok_or("核心库没有算子清单")?;
     let missing: Vec<_> = REQUIRED_OPERATORS.split(',').filter(|id| !ops.iter().any(|op| op["id"].as_str() == Some(id))).collect();
-    if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少必需算子：{}。请使用本版本锁定系列的 lyFlow 运行库。", missing.join("、"))) }
+    if !missing.is_empty() {
+        return Err(format!(
+            "核心库缺少必需算子：{}。请使用本版本锁定系列的 lyFlow 运行库。",
+            missing.join("、")
+        ));
+    }
+    for id in ["glue.color_track", "glue.color_runs"] {
+        let supported = ops
+            .iter()
+            .find(|op| op["id"] == id)
+            .and_then(|op| op["params"].as_array())
+            .and_then(|params| params.iter().find(|p| p["name"] == "widthPolicy"))
+            .and_then(|p| p["options"].as_array())
+            .is_some_and(|options| options.iter().any(|o| o["value"] == "extent"));
+        if !supported {
+            return Err(format!(
+                "核心库 {id} 不支持宽胶观测策略 extent，请更新到 lyFlow 1.3.2 或同系列兼容版本"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// 整帧注入 lyFlow：灰度 1 通道，彩色 3 通道 RGB 交错（glue 算子入口按 BT.601 转灰，彩色帧在灰度模板下也能测）。

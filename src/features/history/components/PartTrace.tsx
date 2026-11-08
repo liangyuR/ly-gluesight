@@ -5,6 +5,7 @@ import type { FrameRecord, FrameState, PartDetailBurst } from "../../plan/types"
 import { expectedText, productionSkippedRegion, regionKindLabel } from "../../plan/vis";
 import type { PartDetail } from "../types";
 import "../../cycle/components/burst.css";
+import { MeasurementEvidenceSummary, measurementIssue } from "../../plan/measurementEvidence";
 
 const deliveryLabel = { notRequired: "无需交付", pending: "等待提交", submitted: "已提交，等待 PLC 确认", acknowledged: "PLC 已确认", failed: "交付失败" };
 const recordingLabel = { pending: "正在落盘", off: "录制关闭", notRetained: "本件按保留策略不存图", complete: "完整落盘", incomplete: "原图不完整", failed: "录制失败" };
@@ -13,7 +14,7 @@ const frameStateText: Record<FrameState, string> = { measured: "已测", missing
 const mm = (v: number | null | undefined) => v == null ? "—" : v.toFixed(2);
 
 /** 一帧没出完整结果：缺帧、测量失败、未测、走出走廊（都只算检测不完整，不影响 OK/NG）；本段不由这台相机检测的帧按设计不测，不算异常。 */
-export const frameAbnormal = (frame: FrameRecord) => frame.status !== "measured" && frame.status !== "notInspected";
+export const frameAbnormal = (frame: FrameRecord) => (frame.status !== "measured" && frame.status !== "notInspected") || !!measurementIssue(frame.metrics?.measurementEvidence);
 
 /**
  * 逐帧追溯：每台相机每个帧组一行（缺帧也有），写帧号、触发计数、所在区域、状态、胶宽与胶中心、原图。
@@ -60,6 +61,7 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
         ? <><StatusBadge tone="neutral">生产跳过</StatusBadge><div className="muted">仅供诊断：{frameStateText[frame.status]}</div></>
         : <StatusBadge tone={frame.status === "measured" ? "ok" : frame.status === "error" ? "fault" : frame.status === "notInspected" ? "neutral" : "warn"}>{frameStateText[frame.status]}</StatusBadge>}
       {frame.metrics?.error && <div>{frame.metrics.error}</div>}
+      {frame.metrics?.measurementEvidence && <div><MeasurementEvidenceSummary evidence={frame.metrics.measurementEvidence} /></div>}
     </> },
     { key: "width", header: "胶宽 min / max / mean", render: frame => frame.metrics && frame.status === "measured" ? `${mm(frame.metrics.widthMin)} / ${mm(frame.metrics.widthMax)} / ${mm(frame.metrics.widthMean)}` : "—" },
     { key: "x", header: "胶中心 x（mm）", align: "right", render: frame => frame.status === "measured" ? mm(frame.metrics?.xMm) : "—" },

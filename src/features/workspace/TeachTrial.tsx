@@ -10,16 +10,20 @@ import { Badge, FrameViewer } from "./components";
 import type { HeadingGuide } from "./headingOverlay";
 import type { FrameImage } from "./types";
 import { OperationStatus, useOperation } from "./operation";
+import { evidenceOverlay, MeasurementEvidenceSummary, measurementIssue, presentRatioText } from "../plan/measurementEvidence";
 
-type TrialState = "ok" | "fallback" | "empty" | "out" | "error" | "missing";
-const trialOrder: TrialState[] = ["ok", "fallback", "empty", "out", "error", "missing"];
-const trialText: Record<TrialState, string> = { ok: "测到", fallback: "没找到胶条", empty: "无胶", out: "出走廊", error: "测量失败", missing: "缺帧或未测" };
+type TrialState = "ok" | "clipped" | "unknown" | "fallback" | "empty" | "out" | "error" | "missing";
+const trialOrder: TrialState[] = ["ok", "clipped", "unknown", "fallback", "empty", "out", "error", "missing"];
+const trialText: Record<TrialState, string> = { ok: "测到", clipped: "超出测量范围", unknown: "测量不完整", fallback: "没找到胶条", empty: "无胶", out: "出走廊", error: "测量失败", missing: "缺帧或未测" };
 const trialColor: Record<TrialState, string> = {
-  ok: "var(--ok)", fallback: "var(--warn)", empty: "var(--ng)", out: "var(--on-surface-disabled)", error: "var(--fault)", missing: "var(--outline-variant)",
+  ok: "var(--ok)", clipped: "var(--warn)", unknown: "var(--on-surface-disabled)", fallback: "var(--warn)", empty: "var(--ng)", out: "var(--on-surface-disabled)", error: "var(--fault)", missing: "var(--outline-variant)",
 };
-const trialTone: Record<TrialState, "ok" | "warn" | "ng" | "neutral"> = { ok: "ok", fallback: "warn", empty: "ng", out: "neutral", error: "ng", missing: "neutral" };
+const trialTone: Record<TrialState, "ok" | "warn" | "ng" | "neutral"> = { ok: "ok", clipped: "warn", unknown: "warn", fallback: "warn", empty: "ng", out: "neutral", error: "ng", missing: "neutral" };
 
 function trialState(m: FrameMetrics): TrialState {
+  const issue = measurementIssue(m.measurementEvidence);
+  if (issue) return issue;
+  if (m.measurementEvidence && m.state === "measured") return (m.measurementEvidence.presentRatio ?? 0) > 0 ? "ok" : "empty";
   if (m.state === "measured") return m.headingFallback ? "fallback" : m.presentRatio > 0 ? "ok" : "empty";
   return m.state === "outOfCorridor" ? "out" : m.state === "error" ? "error" : "missing";
 }
@@ -169,7 +173,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
       {skippedCount > 0 && <p className="muted hint">生产跳过的帧不参与判定；全段试测仍测量这些帧供诊断查看，不计入其余帧的试测统计。</p>}
     </Surface>
     {seq != null && <FrameViewer controlsAt="footer" image={shown?.image ?? null} loading={!shown} error={shown?.error ?? ""} label={`${camera} · 段 ${segment} · 帧组 ${seq} · 试测`}
-      overlay={{ path: view?.corridor ?? [], searchHalfPx: view?.searchHalfPx ?? undefined, segments: edges, partEdges: view?.partEdges, heading: guide && { ...guide, measured: metrics?.headingDeg ?? null } }}
+      overlay={{ path: view?.corridor ?? [], searchHalfPx: view?.searchHalfPx ?? undefined, segments: edges, clipped: evidenceOverlay(view?.metrics), partEdges: view?.partEdges, heading: guide && { ...guide, measured: metrics?.headingDeg ?? null } }}
       tools={<div className="wp-corridor-seq" role="group" aria-label="试测帧组">
         <IconButton size="sm" aria-label="试测上一帧组" disabled={!span || seq <= span.start} onClick={() => step(-1)}><ChevronLeft size={15}/></IconButton>
         <span>帧组 {seq}{seq === teachSeq ? "（示教帧）" : ""}</span>
@@ -179,9 +183,10 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
         {skipReason && <><Badge tone="neutral">生产跳过</Badge><span className="muted">{skipReason} · 不参与判定</span></>}
         {metrics && state && <>
         {skipReason ? <span className="muted">仅供诊断：{trialText[state]}</span> : <Badge tone={trialTone[state]}>{trialText[state]}</Badge>}
-        <span className="muted">胶宽 <b>{mm(metrics.widthMean)}</b>（{mm(metrics.widthMin)}–{mm(metrics.widthMax)}）· 有胶 <b>{Math.round(metrics.presentRatio * 100)}%</b> · 最长断胶 {mm(metrics.gapMaxMm, 1)}
+        <span className="muted">胶宽 <b>{mm(metrics.widthMean)}</b>（{mm(metrics.widthMin)}–{mm(metrics.widthMax)}）· 有胶 <b>{presentRatioText(metrics)}</b> · 最长断胶 {mm(metrics.gapMaxMm, 1)}
           {metrics.headingDeg != null && <> · 方向 <b>{metrics.headingDeg.toFixed(1)}°</b></>}{metrics.edgeMm != null && <> · 胶边距 {mm(metrics.edgeMm)}</>}</span>
-        {metrics.fallbackReason && <span className="c-warn">没找到胶条：{metrics.fallbackReason}</span>}
+        <MeasurementEvidenceSummary evidence={metrics.measurementEvidence} />
+        {metrics.fallbackReason && <span className="c-warn">{metrics.measurementEvidence ? "定向说明" : "没找到胶条"}：{metrics.fallbackReason}</span>}
         {metrics.error && <span className="c-warn">{metrics.error}</span>}
         </>}
       </span> : undefined}

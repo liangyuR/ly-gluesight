@@ -364,6 +364,7 @@ fn unmeasured(camera: usize, seq: u64, state: FrameState, error: String) -> Fram
         width_min: None,
         width_max: None,
         width_mean: None,
+        measurement_evidence: None,
         widths: Vec::new(),
         spacing_mm: 0.0,
         gap_max_mm: 0.0,
@@ -390,6 +391,10 @@ fn checked(metrics: FrameMetrics, camera: usize, seq: u64) -> FrameMetrics {
         && metrics.spacing_mm.is_finite()
         && metrics.gap_max_mm.is_finite()
         && metrics.present_ratio.is_finite()
+        && metrics
+            .measurement_evidence
+            .as_ref()
+            .is_none_or(|e| e.valid())
         && metrics.widths.iter().flatten().all(|w| w.is_finite());
     if valid { metrics } else { unmeasured(camera, seq, FrameState::Error, "测量输出与送测帧不一致或含无效数值".into()) }
 }

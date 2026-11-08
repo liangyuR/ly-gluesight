@@ -437,14 +437,11 @@
         "n_t0.widthMax",
         "n_t1.widthMax",
         "n_t2.widthMax",
-        "n_t0.searchHalf",
-        "n_t1.searchHalf",
-        "n_t2.searchHalf",
         "n_t0.mergeWidthMax",
         "n_t1.mergeWidthMax",
         "n_t2.mergeWidthMax"
       ],
-      "doc": "粗跟踪的胶宽上限取整（px），也是粗跟踪的卡尺半长"
+      "doc": "粗跟踪宽度参考（px），不限制搜索范围"
     },
     "stationStep": {
       "default": 4.0,
@@ -463,7 +460,10 @@
       "binds": [
         "n_r0.searchHalf",
         "n_r1.searchHalf",
-        "n_r2.searchHalf"
+        "n_r2.searchHalf",
+        "n_t0.searchHalf",
+        "n_t1.searchHalf",
+        "n_t2.searchHalf"
       ],
       "doc": "卡尺半长（px）"
     },
@@ -474,7 +474,7 @@
         "n_r1.mergeWidthMax",
         "n_r2.mergeWidthMax"
       ],
-      "doc": "胶宽上限（px）：合并后不宽于它"
+      "doc": "胶宽参考上限（px）；extent策略不据此排除或截窄胶条"
     },
     "edgeLength": {
       "default": 200.0,
@@ -560,7 +560,7 @@
       "default": 8.0,
       "advanced": true,
       "group": "量胶宽",
-      "doc": "胶色段之间的缝不超过它、合并后不宽于胶宽上限就合并（湿胶面未饱和的反光）",
+      "doc": "胶色段之间的缝不超过它且有反光证据时合并；真实背景阻断合并，总宽度受有限搜索窗口限制",
       "binds": [
         "n_r0.mergeGap",
         "n_r1.mergeGap",
@@ -648,6 +648,18 @@
         "n_t1.infoMin",
         "n_t2.infoMin"
       ]
+    },
+    "widthPolicy": {
+      "default": "extent",
+      "binds": [
+        "n_t0.widthPolicy",
+        "n_r0.widthPolicy",
+        "n_t1.widthPolicy",
+        "n_r1.widthPolicy",
+        "n_t2.widthPolicy",
+        "n_r2.widthPolicy"
+      ],
+      "doc": "有限观察窗内保留宽胶；宽度参考不排除候选"
     }
   },
   "x": {
@@ -673,7 +685,7 @@
           "default": 0.5,
           "advanced": true,
           "group": "量胶宽",
-          "doc": "宽度不小于参考宽的这一比例才算有胶"
+          "doc": "灰度测量：宽度不小于参考宽的这一比例才算有胶；胶色测量不使用此门限"
         },
         "centerRatio": {
           "type": "float",
@@ -695,7 +707,7 @@
           "default": 0.3,
           "advanced": true,
           "group": "量胶宽",
-          "doc": "峰值（示教走廊用峰值 / 局部亮度）不低于参考值的这一比例才算有胶"
+          "doc": "灰度测量：峰值（示教走廊用峰值 / 局部亮度）不低于参考值的这一比例才算有胶；胶色测量不使用此门限"
         }
       }
     }

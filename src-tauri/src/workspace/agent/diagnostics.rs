@@ -37,6 +37,9 @@ pub(crate) struct EdgeEvidence {
 pub(crate) struct MeasurementEvidence {
     pub expected_frames: usize,
     pub measured_frames: usize,
+    pub complete_frames: usize,
+    pub incomplete_measurement_frames: Vec<u64>,
+    pub no_evidence_frames: Vec<u64>,
     pub planned_skip_frames: Vec<u64>,
     pub states: BTreeMap<String, usize>,
     pub non_measured_frames: Vec<FrameIssue>,
@@ -60,6 +63,9 @@ pub(crate) fn measurement_evidence(
     let mut evidence = MeasurementEvidence {
         expected_frames: expected.len(),
         measured_frames: 0,
+        complete_frames: 0,
+        incomplete_measurement_frames: Vec::new(),
+        no_evidence_frames: Vec::new(),
         planned_skip_frames: scope.difference(&expected).copied().collect(),
         states: BTreeMap::new(),
         non_measured_frames: Vec::new(),
@@ -83,6 +89,14 @@ pub(crate) fn measurement_evidence(
         if should_measure {
             if state == FrameState::Measured {
                 evidence.measured_frames += 1;
+                if frame.is_some_and(|f| f.measurement_incomplete()) {
+                    evidence.incomplete_measurement_frames.push(seq);
+                } else {
+                    evidence.complete_frames += 1;
+                }
+                if frame.is_some_and(|f| !f.has_usable_evidence()) {
+                    evidence.no_evidence_frames.push(seq);
+                }
             } else {
                 evidence.unmeasured_frames.push(seq);
             }
@@ -295,6 +309,7 @@ mod tests {
             width_min: None,
             width_max: None,
             width_mean: None,
+            measurement_evidence: None,
             widths: Vec::new(),
             spacing_mm: 1.0,
             gap_max_mm: 0.0,

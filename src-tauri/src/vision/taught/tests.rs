@@ -219,6 +219,139 @@ fn color_corridor_station_under_highlight_is_unknown_but_a_bare_hole_stays_a_gap
 }
 
 #[test]
+fn wide_color_beads_keep_exact_widths_while_clipping_and_occlusion_do_not_erase_real_gaps() {
+    let c = color_corridor();
+    let image = FrameImage::rgb(
+        FRAME[0],
+        FRAME[1],
+        vec![0; (FRAME[0] * FRAME[1] * 3) as usize],
+    );
+    let mut output = color_output(|i| match i {
+        33 => ColorStation::Highlight,
+        34..=39 => ColorStation::Bare,
+        _ => ColorStation::Bead,
+    });
+    let stations = output.outputs["runs"]["value"]["data"]["stations"]
+        .as_array_mut()
+        .unwrap();
+    for station in &mut stations[..30] {
+        let r = &mut station["runs"][0];
+        r["lo"] = json!(-18.0);
+        r["hi"] = json!(22.0);
+        r["width"] = json!(40.0);
+    }
+    let clipped = &mut stations[32]["runs"][0];
+    clipped["hi"] = json!(32.0);
+    clipped["width"] = json!(38.0);
+    clipped["mid"] = json!(13.0);
+    clipped["hiComplete"] = json!(false);
+    clipped["hiCause"] = json!("caliper");
+    let m = measure_frame_with(&c, &image, 7, |_, _| Ok(output)).unwrap();
+    assert_eq!(
+        (m.metrics.width_max, m.metrics.width_min),
+        (Some(10.0), Some(4.0))
+    );
+    assert_eq!(
+        (
+            m.metrics.widths[30],
+            m.metrics.widths[32],
+            m.metrics.gap_max_mm
+        ),
+        (Some(4.0), None, 6.0)
+    );
+    let evidence = m.metrics.measurement_evidence.unwrap();
+    assert_eq!(
+        (
+            evidence.exact_stations,
+            evidence.clipped_stations,
+            evidence.unknown_stations,
+            evidence.absent_stations
+        ),
+        (33, 1, 1, 6)
+    );
+    assert_eq!(evidence.stations[32].width_lower_bound_mm, Some(9.5));
+    assert_eq!(evidence.stations[32].lo_edge, Some([168.0, 74.0]));
+    assert!(evidence.stations[32].hi_edge.is_none() && m.edges[32].is_none());
+}
+
+#[test]
+fn similarly_near_parallel_color_beads_are_unknown_instead_of_arbitrarily_chosen() {
+    let output = lateral(&[Some((0.0, 16.0)); 5]);
+    let mut raw = output;
+    for station in raw["stations"].as_array_mut().unwrap() {
+        station["runs"] = json!([dark_run(-9.0, 16.0), dark_run(9.0, 16.0)]);
+    }
+    let runs = lateral_runs(&raw, "test").unwrap();
+    for tolerance in [None, Some(20.0)] {
+        let calls = judge_color_stations(&runs, 8.0, 24.0, 0.3, tolerance);
+        assert!(calls
+            .iter()
+            .all(|c| c.state == StationEvidenceState::Unknown && c.bead.is_none()));
+    }
+}
+
+#[test]
+fn color_corridor_exit_marks_only_proven_end_stations_unknown_and_preserves_width_and_gaps() {
+    let c = color_corridor();
+    let image = FrameImage::rgb(
+        FRAME[0],
+        FRAME[1],
+        vec![0; (FRAME[0] * FRAME[1] * 3) as usize],
+    );
+    let mut checks = burst_doc().segments[0].checks.clone();
+    checks.width.enabled = true;
+    checks.width.nominal_mm = 4.0;
+    checks.width.tol_upper = 1.0;
+    checks.width.tol_lower = 1.0;
+    checks.width.max_excursion_mm = 0.0;
+    checks.width.wide_warn_only = false;
+    checks.gap.enabled = true;
+    checks.gap.max_gap_mm = 6.0;
+    checks.gap.min_present = 0.0;
+    checks.overflow.enabled = false;
+    for (absent, exits, clipped, expected_gap, expected_unknown) in [
+        (vec![30..=40], vec![(29, 12.0)], false, 0.0, 11),
+        (vec![30..=40], vec![], false, 11.0, 0),
+        (vec![10..=16, 30..=40], vec![(29, 12.0)], false, 7.0, 11),
+        (vec![30..=40], vec![(29, 12.0)], true, 11.0, 0),
+    ] {
+        let mut values = beads(&absent, &exits);
+        values[20] = Some((2.0, 40.0));
+        let mut output = corridor_output(&values);
+        if clipped {
+            let r = &mut output.outputs["runs"]["value"]["data"]["stations"][29]["runs"][0];
+            r["hi"] = json!(32.0);
+            r["width"] = json!(28.0);
+            r["mid"] = json!(18.0);
+            r["hiComplete"] = json!(false);
+            r["hiCause"] = json!("caliper");
+        }
+        let m = measure_frame_with(&c, &image, 7, |_, _| Ok(output))
+            .unwrap()
+            .metrics;
+        assert_eq!(
+            (m.state, m.width_max, m.gap_max_mm),
+            (FrameState::Measured, Some(10.0), expected_gap)
+        );
+        let evidence = m.measurement_evidence.as_ref().unwrap();
+        assert_eq!(evidence.unknown_stations, expected_unknown);
+        assert!(evidence
+            .stations
+            .iter()
+            .filter(|s| s.state == StationEvidenceState::Unknown)
+            .all(|s| s.reason.as_deref() == Some("out_of_corridor")));
+        assert_eq!(
+            crate::burst_judge::frame_verdict(&m, &checks),
+            if expected_gap > 6.0 {
+                crate::judge::Verdict::NgGap
+            } else {
+                crate::judge::Verdict::NgWidth
+            }
+        );
+    }
+}
+
+#[test]
 fn part_edge_distance_and_overlay_follow_the_majority_side_from_bead_center() {
     // 防的回归：胶边距线画到另一侧、或终点不在测得的胶边距上（叠图与 edgeMm 对不上，现场按图调极性、对比度会被误导）
     let mut doc = burst_doc();
@@ -522,6 +655,55 @@ fn heading_result_uses_fitted_direction_when_found_and_marks_window_absent_other
             m.fallback_reason.is_some_and(|r| r.contains("minCoverage")),
             missed,
             "找到 {found} 个胶点"
+        );
+    }
+}
+
+#[test]
+fn color_heading_preserves_wide_beads_and_distinguishes_untrusted_paths_from_background() {
+    let mut doc = burst_doc();
+    doc.segments[0].heading = Some(Default::default());
+    doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+    doc.inspect[0].window = Some(HeadingWindow {
+        start_mm: 1.0,
+        length_mm: 10.0,
+    });
+    let recipe = doc.build().unwrap();
+    let g = plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap();
+    let image = FrameImage::rgb(
+        FRAME[0],
+        FRAME[1],
+        vec![0; (FRAME[0] * FRAME[1] * 3) as usize],
+    );
+    for (found, unknown, state) in [
+        (8, 0, StationEvidenceState::Exact),
+        (0, 5, StationEvidenceState::Unknown),
+        (0, 0, StationEvidenceState::Absent),
+    ] {
+        let m = measure_heading_with(&g, &image, 7, |run, frame| {
+            assert_eq!(run.params["widthPolicy"], "extent");
+            let mut result = fake_heading_run(found)(run, frame)?;
+            result.outputs["track0"]["value"]["data"]["unknownSteps"] = json!(unknown);
+            result.outputs["runs0"] = record(lateral(&[Some((0.0, 40.0)); 11]));
+            Ok(result)
+        })
+        .unwrap()
+        .metrics;
+        assert!(m
+            .measurement_evidence
+            .as_ref()
+            .unwrap()
+            .stations
+            .iter()
+            .all(|s| s.state == state));
+        assert_eq!(m.width_max, (found > 0).then_some(10.0));
+        assert_eq!(
+            m.gap_max_mm,
+            if state == StationEvidenceState::Absent {
+                11.0
+            } else {
+                0.0
+            }
         );
     }
 }

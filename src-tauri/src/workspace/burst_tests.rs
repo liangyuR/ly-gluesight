@@ -70,6 +70,7 @@ pub(super) fn measured(x: f64) -> FrameMetrics {
         width_min: Some(4.0),
         width_max: Some(4.0),
         width_mean: Some(4.0),
+        measurement_evidence: None,
         widths: vec![Some(4.0)],
         spacing_mm: 1.0,
         gap_max_mm: 0.0,
@@ -80,6 +81,61 @@ pub(super) fn measured(x: f64) -> FrameMetrics {
         heading_fallback: false,
         fallback_reason: None,
         edge_mm: None,
+    }
+}
+
+#[test]
+fn unknown_or_clipped_onset_does_not_become_an_automatic_skip_suggestion() {
+    use crate::burst_judge::MeasurementEvidence;
+    let w = burst_workspace(&[Corner]);
+    for clipped in [false, true] {
+        let mut frames: Vec<_> = (1..=3)
+            .flat_map(|seq| {
+                (0..3).map(move |camera| FrameMetrics {
+                    seq,
+                    camera,
+                    ..measured(0.0)
+                })
+            })
+            .collect();
+        let first = &mut frames[0];
+        first.widths = vec![None];
+        first.width_min = None;
+        first.width_max = None;
+        first.width_mean = None;
+        first.measurement_evidence = Some(MeasurementEvidence {
+            version: 1,
+            clipped_stations: u32::from(clipped),
+            unknown_stations: u32::from(!clipped),
+            present_ratio: clipped.then_some(1.0),
+            ..Default::default()
+        });
+        assert!(super::burst_skip::round_edge(
+            &w.doc,
+            "teach",
+            3,
+            &BTreeMap::new(),
+            &frames,
+            super::burst_skip::SkipEnd::Head
+        )
+        .is_err());
+        frames[0] = FrameMetrics {
+            seq: 1,
+            camera: 0,
+            ..measured(0.0)
+        };
+        assert_eq!(
+            super::burst_skip::round_edge(
+                &w.doc,
+                "teach",
+                3,
+                &BTreeMap::new(),
+                &frames,
+                super::burst_skip::SkipEnd::Head
+            )
+            .unwrap(),
+            0
+        );
     }
 }
 

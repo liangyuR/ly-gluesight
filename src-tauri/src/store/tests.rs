@@ -94,12 +94,52 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
     for frame in &mut frames {
         frame.metrics = Some(burst_fixture::measured(frame.camera, frame.seq, 2.0));
     }
+    let metrics = frames[0].metrics.as_mut().unwrap();
+    metrics.widths[0] = None;
+    metrics.measurement_evidence = Some(crate::burst_judge::MeasurementEvidence {
+        version: 1,
+        stations: (0..metrics.widths.len())
+            .map(|i| crate::burst_judge::StationEvidence {
+                state: if i == 0 {
+                    crate::burst_judge::StationEvidenceState::Clipped
+                } else {
+                    crate::burst_judge::StationEvidenceState::Exact
+                },
+                width_lower_bound_mm: (i == 0).then_some(9.0),
+                ..Default::default()
+            })
+            .collect(),
+        exact_stations: metrics.widths.len() as u32 - 1,
+        clipped_stations: 1,
+        max_width_lower_bound_mm: Some(9.0),
+        present_ratio: Some(1.0),
+        ..Default::default()
+    });
     let (judgement, burst) = burst_fixture::record(&recipe, frames, None, Some(0));
     let id = store
         .insert(&burst_part(&recipe, "overview-part", &judgement, &burst))
         .unwrap();
     let full = store.detail(id).unwrap().burst.unwrap();
     let overview = store.detail_overview(id).unwrap().burst.unwrap();
+    let full_evidence = full.frames[0]
+        .metrics
+        .as_ref()
+        .unwrap()
+        .measurement_evidence
+        .as_ref()
+        .unwrap();
+    let summary_evidence = overview.frames[0]
+        .metrics
+        .as_ref()
+        .unwrap()
+        .measurement_evidence
+        .as_ref()
+        .unwrap();
+    assert!(!full_evidence.stations.is_empty());
+    assert!(summary_evidence.stations.is_empty());
+    let mut expected_summary = full_evidence.clone();
+    expected_summary.stations.clear();
+    assert_eq!(summary_evidence, &expected_summary);
     assert_eq!(
         serde_json::to_value(&overview.frame_verdicts).unwrap(),
         serde_json::to_value(&full.frame_verdicts).unwrap()

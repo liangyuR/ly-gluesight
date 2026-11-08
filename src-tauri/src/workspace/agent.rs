@@ -1058,6 +1058,26 @@ fn against_checks(
         "passSkipped".into(),
         json!(skipped.range(window.0..=window.1).collect::<Vec<_>>()),
     );
+    out.insert(
+        "measurementIncomplete".into(),
+        json!(measured
+            .iter()
+            .filter(|f| f.measurement_incomplete())
+            .map(|f| f.seq)
+            .collect::<Vec<_>>()),
+    );
+    out.insert(
+        "widthLowerBounds".into(),
+        json!(measured
+            .iter()
+            .filter_map(|f| {
+                f.measurement_evidence
+                    .as_ref()?
+                    .max_width_lower_bound_mm
+                    .map(|bound| json!([f.seq, bound]))
+            })
+            .collect::<Vec<_>>()),
+    );
     let gap = &checks["break"];
     if enabled(gap) {
         let max_gap = gap["maxGapMm"].as_f64().unwrap_or(f64::INFINITY);
@@ -1076,7 +1096,7 @@ fn against_checks(
             "presentBelow".into(),
             json!(measured
                 .iter()
-                .filter(|f| f.present_ratio < min_present)
+                .filter(|f| f.presence().is_some_and(|v| v < min_present))
                 .map(|f| f.seq)
                 .collect::<Vec<_>>()),
         );
@@ -1116,7 +1136,11 @@ fn against_checks(
             "overflowFrames".into(),
             json!(measured
                 .iter()
-                .filter(|f| f.width_max.is_some_and(|width| width > limit))
+                .filter(|f| f.width_max.is_some_and(|width| width > limit)
+                    || f.measurement_evidence
+                        .as_ref()
+                        .and_then(|e| e.max_width_lower_bound_mm)
+                        .is_some_and(|w| w > limit))
                 .map(|f| f.seq)
                 .collect::<Vec<_>>()),
         );
@@ -1226,12 +1250,14 @@ fn summarize(frames: &[FrameMetrics], window: (u64, u64)) -> Value {
     let mut worst: Vec<&&FrameMetrics> = measured
         .iter()
         .copied()
-        .filter(|f| f.gap_max_mm > 0.0 || f.present_ratio < 1.0)
+        .filter(|f| f.gap_max_mm > 0.0 || f.presence().is_some_and(|v| v < 1.0))
         .collect();
     worst.sort_by(|a, b| {
-        b.gap_max_mm
-            .total_cmp(&a.gap_max_mm)
-            .then(a.present_ratio.total_cmp(&b.present_ratio))
+        b.gap_max_mm.total_cmp(&a.gap_max_mm).then(
+            a.presence()
+                .unwrap_or(1.0)
+                .total_cmp(&b.presence().unwrap_or(1.0)),
+        )
     });
     json!({
         "window": [window.0, window.1],
@@ -1239,6 +1265,13 @@ fn summarize(frames: &[FrameMetrics], window: (u64, u64)) -> Value {
         "width": spread(values(|f| f.width_mean)),
         "edgeMm": spread(values(|f| f.edge_mm)),
         "xMm": spread(values(|f| f.x_mm)),
+        "measurementEvidence": measured.iter().filter_map(|f| {
+            let e = f.measurement_evidence.as_ref()?;
+            Some(json!({"seq": f.seq, "version": e.version, "exactStations": e.exact_stations,
+                "clippedStations": e.clipped_stations, "absentStations": e.absent_stations,
+                "unknownStations": e.unknown_stations, "presentRatio": e.present_ratio,
+                "maxWidthLowerBoundMm": e.max_width_lower_bound_mm}))
+        }).collect::<Vec<_>>(),
         "gapFrames": measured.iter().filter(|f| f.gap_max_mm > 0.0)
             .map(|f| json!([f.seq, (f.gap_max_mm * 100.0).round() / 100.0])).collect::<Vec<_>>(),
         "fallbackFrames": frames.iter().filter(|f| f.heading_fallback)
@@ -1248,7 +1281,7 @@ fn summarize(frames: &[FrameMetrics], window: (u64, u64)) -> Value {
         "worst": worst.iter().take(WORST).map(|f| json!({
             "seq": f.seq,
             "gapMm": (f.gap_max_mm * 100.0).round() / 100.0,
-            "present": (f.present_ratio * 1000.0).round() / 1000.0,
+            "present": f.presence().map(|v| (v * 1000.0).round() / 1000.0),
             "widthMean": f.width_mean.map(|v| (v * 1000.0).round() / 1000.0),
         })).collect::<Vec<_>>(),
     })
@@ -1475,6 +1508,7 @@ mod tests {
             width_min: Some(4.0),
             width_max: Some(4.0),
             width_mean: Some(4.0),
+            measurement_evidence: None,
             widths: Vec::new(),
             spacing_mm: 1.0,
             gap_max_mm,
@@ -1501,6 +1535,44 @@ mod tests {
                 limits["passSkipped"].clone()
             ),
             (json!([2]), json!([1]))
+        );
+    }
+
+    #[test]
+    fn trial_reports_unknown_and_lower_bounds_without_inventing_gaps_or_exact_widths() {
+        use crate::burst_judge::MeasurementEvidence;
+        let mut unknown = measured(1, 0.0);
+        unknown.present_ratio = 0.0;
+        unknown.width_mean = None;
+        unknown.width_max = None;
+        unknown.measurement_evidence = Some(MeasurementEvidence {
+            version: 1,
+            unknown_stations: 10,
+            ..Default::default()
+        });
+        let mut clipped = unknown.clone();
+        clipped.seq = 2;
+        clipped.measurement_evidence = Some(MeasurementEvidence {
+            version: 1,
+            clipped_stations: 10,
+            present_ratio: Some(1.0),
+            max_width_lower_bound_mm: Some(9.0),
+            ..Default::default()
+        });
+        let frames = [unknown, clipped];
+        let checks = json!({ "break": { "enabled": true, "maxGapMm": 6.0, "minPresent": 0.8 },
+            "overflow": { "enabled": true, "maxWidthMm": 8.0 } });
+        let limits = against_checks(&frames, (1, 2), &checks, &Default::default());
+        assert_eq!(limits["presentBelow"], json!([]));
+        assert_eq!(limits["overflowFrames"], json!([2]));
+        assert_eq!(limits["measurementIncomplete"], json!([1, 2]));
+        let summary = summarize(&frames, (1, 2));
+        assert!(summary["width"].is_null());
+        assert_eq!(summary["worst"], json!([]));
+        assert!(summary["measurementEvidence"][0]["presentRatio"].is_null());
+        assert_eq!(
+            summary["measurementEvidence"][1]["maxWidthLowerBoundMm"],
+            json!(9.0)
         );
     }
 }

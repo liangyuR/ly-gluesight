@@ -32,7 +32,7 @@
 - 采用：B。
   - 示教取色：走廊示教页“胶色”卡片（`workspace_fit_color_model`）在这一段冻结的彩色示教帧上，沿已保存的走廊取胶色、两侧取背景色，拟合颜色模型（`glue.color_model`），原文存进 `inspect[].segments[].colorModel`。示教帧须是彩色；改走廊点后颜色模型作废、要重新取色，只改扇区、出胶点时保留。
   - 有颜色模型的（相机, 段）按胶色测：示教走廊用 `corridor_color`（`glue.color_map` → `glue.color_runs`，找边仍是 `glue.part_edges` 量亮度），逐帧定向用 `heading_color`（`glue.color_fan` → `glue.color_track` → `glue.color_runs`）；没有颜色模型的段照旧按灰度测。发布包 graph.json 的胶色图记模板 id，模板原文一并冻结。胶色图的专家参数单独命名（`colorSegmentMin`、`colorPeakMin`、`colorMergeGap`、`colorMergeUnknownGap`、`colorPathSegmentMin`、`colorPathPeakMin`、`colorPathMaxGap`、`colorInfoMin`），单位是得分（0–1），不与灰度图的同名参数混用。
-  - 判定（LF-3 仍在 GlueSight）：胶色跟踪没有边缘陡度，选方向不看陡度门限；覆盖率用去掉高光、暗区等无信息步之后的值。没量到胶的一站，若该有胶的区间（胶路 ± 参考宽的一半）被无信息区间与胶色段盖住 80% 以上、且其中有无信息的部分，这一站记无信息：不算缺胶，不进有胶比例的分母，也不连成断口。逐帧定向与示教走廊两种段同一规则；示教走廊的胶路取偏移轨迹上的期望中心。
+  - 判定（LF-3 仍在 GlueSight）：新彩色图采用 `widthPolicy=extent`，完整宽胶不因超过预期胶宽上限被删除；搜索受 `searchMm` 限定，真实背景阻断反光合并。固定走廊和逐帧定向共享 `exact/clipped/absent/unknown` 证据：精确值只来自完整边，观察边界截断可报告可靠宽度下界，遮挡/歧义记未知。未知不计在位率分母、不连接断口；全未知为检测错误，部分未知或截断明确标不完整。产品公差、允许超差长度和偏宽只预警仍由 GlueSight 决定。字段、发布版本与回退契约见[宽胶测量](../architecture/wide-bead-measurement-plan.md)。
   - 量胶帧须是彩色；胶色段遇到灰度帧报错，要求把相机图像模式改回彩色。
 - 理由：现场件 f2d30b6d 上，以颜色掩膜参考（人工复核过 151 帧）为准，胶色测量的结果为：
   - 稳态帧（cam1、cam3 第 2 段与 cam3 第 4 段共 130 帧）误报断胶 0；
