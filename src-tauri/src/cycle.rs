@@ -1463,8 +1463,8 @@ impl Machine {
         }
     }
 
-    /// 资料盘空间不足时暂停接件：在途件照常完成释放，回到空闲后 pcState 撤到 0；空间恢复后自动就绪，无需复位。
-    fn disk_space_ready(&mut self) -> bool {
+    /// 资料盘空间不足时告警（新件不录原图，见 start_part）；空间恢复后撤告警。
+    fn sync_disk_alarm(&mut self) {
         const PREFIX: &str = "资料盘剩余空间";
         let shown = self.alarms.iter().any(|m| m.starts_with(PREFIX));
         match host(&self.app).disk.check() {
@@ -1477,15 +1477,13 @@ impl Machine {
                     }
                     None => self.alarm(reason),
                 }
-                false
             }
             Ok(()) => {
                 if shown {
                     self.alarms.retain(|m| !m.starts_with(PREFIX));
                     self.dirty = true;
-                    log(&self.app, "ok", "资料盘空间", "剩余空间已恢复，恢复接件");
+                    log(&self.app, "ok", "资料盘空间", "剩余空间已恢复，恢复录制原图");
                 }
-                true
             }
         }
     }
@@ -1728,18 +1726,10 @@ impl Machine {
     async fn start_part(&mut self, request: Request) {
         let started = Instant::now();
         let settings = host(&self.app).settings();
-        if let Err(error) = host(&self.app).audit.ready() {
-            self.enter_fault("audit", format!("审计尚未就绪，不能接件：{error}"));
-            return;
-        }
         if crate::offline::candidate(&self.app).is_none()
             && crate::workspace::apply_pending(&self.app)
         {
             self.required = None;
-        }
-        if crate::workspace::activation_uncertain(&self.app) {
-            self.enter_fault("intake", "生产生效版本尚未确认，禁止启动下一件".into());
-            return;
         }
         self.set_phase(Phase::Validate);
         self.part = None;
@@ -1791,6 +1781,16 @@ impl Machine {
                     None,
                     fault::PROCESS_TIMEOUT,
                     format!("S7 事务无法绑定工件身份：{error}"),
+                )
+                .await;
+        }
+        if crate::workspace::activation_uncertain(&app) {
+            return self
+                .refuse(
+                    sn,
+                    None,
+                    fault::NO_RECIPE,
+                    "生产生效版本尚未确认，本件未检；请在配方工作台核实发布状态".into(),
                 )
                 .await;
         }
@@ -2014,7 +2014,10 @@ impl Machine {
                 ),
             )
         });
-        let record = if maintenance || untested.is_some() {
+        // 资料盘不足时不录原图，照常检测（收尾补测仍用临时录制）
+        let record = if host.disk.check().is_err() {
+            crate::settings::RecordMode::Off
+        } else if maintenance || untested.is_some() {
             crate::settings::RecordMode::All
         } else {
             crate::site::record_mode(&app)
@@ -2529,37 +2532,13 @@ impl Machine {
             );
         }
         {
-            let _audit_ready = match host(&self.app).audit.readiness() {
-                Ok(crate::audit::AuditReadiness::Ready) => true,
-                Ok(
-                    crate::audit::AuditReadiness::WaitingRecording
-                    | crate::audit::AuditReadiness::WaitingStore,
-                ) => false,
-                Err(error) => {
-                    let reason = format!("持久追溯故障：{error}");
-                    self.s7.fault(plc(&app), reason.clone()).await;
-                    if self.phase != Phase::Fault || self.fault.as_ref() != Some(&reason) {
-                        self.enter_fault("audit", reason);
-                    }
-                    return;
-                }
-            };
+            self.sync_disk_alarm();
+            if let Err(reason) = cameras {
+                self.latch_device_lost(reason);
+            }
             if self.s7.reset_signal(plc(&app)) || self.s7.auto_reset() {
                 self.s7_reset_requested = true;
             }
-            let resetting = matches!(
-                self.s7.phase(),
-                SessionPhase::ResetRequired | SessionPhase::Fault
-            ) || self.s7_reset_requested;
-            let _intake_ready =
-                self.disk_space_ready() && (!resetting || self.check_idle_devices().is_ok());
-            let _devices = if resetting {
-                self.service_ready()
-            } else if matches!(self.phase, Phase::Report | Phase::Release) {
-                self.check_idle_devices()
-            } else {
-                cameras.clone()
-            };
             let reset = std::mem::take(&mut self.s7_reset_requested);
             let previous = self.s7.phase();
             let previous_reset_blocked = self.s7.view().reset_blocked_reason;
@@ -2767,9 +2746,6 @@ impl Machine {
                         timeouts.ack_ms
                     ));
                 }
-            }
-            Phase::Release if now_ms().saturating_sub(self.since) > timeouts.ack_ms as i64 => {
-                self.alarm("PLC 已锁存结果，等待追溯落盘后回就绪；暂不接收下一件".into());
             }
             _ => {}
         }
@@ -2994,6 +2970,27 @@ impl Machine {
         if let Some(part) = self.part.as_mut() {
             part.close_routing(&mut self.ledgers);
         }
+    }
+
+    /// 在途件的相机掉线只让本件记 ERR 98，不打断握手；相机恢复后下一件照常检测。
+    fn latch_device_lost(&mut self, reason: String) {
+        if !matches!(self.phase, Phase::Acquire | Phase::Drain) {
+            return;
+        }
+        let Some(part) = self.part.as_mut() else {
+            return;
+        };
+        if part.fault.is_some() {
+            return;
+        }
+        log(
+            &self.app,
+            "err",
+            "相机",
+            format!("在途件相机异常，本件记 ERR 98：{reason}"),
+        );
+        part.fault = Some((fault::DEVICE_LOST, reason));
+        self.dirty = true;
     }
 
     fn check_part_cams(&self, part: &Part) -> Result<(), String> {
