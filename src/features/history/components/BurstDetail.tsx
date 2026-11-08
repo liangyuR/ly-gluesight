@@ -25,6 +25,7 @@ import { burstSideOf, comparisonBurst, regionDiffs } from "../replay";
 import type { HistoryDetailState, PartDetail } from "../types";
 import { BurstPartTrace } from "./PartTrace";
 import { RegionReplayDiff } from "./ReplayDiff";
+import { historyReturnContext, historyReturnSearch } from "../returnContext";
 
 const comparisonLabel = { rules: "规则重判", raw: "候选原图复测", original: "原发布包重现" };
 const recordingReason = { off: "录制关闭，本件未保存原图", notRetained: "按录制策略本件未保存原图", pending: "原图仍在落盘", incomplete: "原图不完整", failed: "原图录制失败", complete: "原图已按保留策略清理或无法核验" };
@@ -160,9 +161,10 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   useEffect(() => { alive.current = true; return () => { alive.current = false; serial.current++; }; }, []);
   // 换件时回到第一帧组；从分段页返回时地址带着离开时的相机、帧组与显示哪份结果
   useEffect(() => {
-    const camera = Number(search.get("camera")), seq = Number(search.get("seq"));
-    setSelection({ camera: Number.isInteger(camera) && camera >= 0 && camera < shown.cameras.length ? camera : 0, seq: groups.some(g => g.seq === seq) ? seq : groups[0]?.seq ?? 1 });
-    setComparison(null); setShowOriginal(search.get("view") === "original"); setError("");
+    const back = historyReturnContext(search, shown.cameras.length, groups.map(g => g.seq));
+    setSelection({ camera: back.camera, seq: back.seq });
+    setComparison(null); setShowOriginal(back.original); setError("");
+    setChosen(back.candidate); setChoices([]);
   }, [s.id]);
 
   const frames = useMemo(() => new Map(shown.frames.map(frame => [`${frame.camera}:${frame.seq}`, frame])), [shown.frames]);
@@ -219,7 +221,6 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   // 复测能不能做以记录与所选候选为准（任意候选都行），与工作台打开的配方无关；所选候选改了（修订变化）重新查
   const wantedCandidate = chosen ?? s.recipeId;
   const editedRevision = ws.data?.workspace.doc.id === wantedCandidate ? ws.data.workspace.revision : null;
-  useEffect(() => { setChosen(search.get("candidate")); setChoices([]); }, [s.id]);
   useEffect(() => {
     let live = true;
     setOptions(null);
@@ -285,13 +286,12 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const openSegments = () => {
     if (!segmentTarget || segmentBlock) return;
     const at = j.regions.find(r => selection.seq >= r.region.firstSeq && selection.seq <= r.region.lastSeq);
-    const back = new URLSearchParams({ candidate: segmentTarget, camera: String(selection.camera), seq: String(selection.seq) });
-    if (comparison) back.set("comparison", comparison.id);
-    if (showOriginal) back.set("view", "original");
     const keep: HistoryDetailState = { ...(location.state as HistoryDetailState | null), scrollTop: document.querySelector(".main-body")?.scrollTop };
     const state: SegmentLocateState = {
       locate: { sn: s.sn, historyId: s.id, seq: selection.seq, groupCount: j.groupCount, passes: j.passes, segment: at ? regionSegments(at.region.kind)[0] : null },
-      returnTo: { pathname: location.pathname, search: "?" + back.toString(), label: "历史件", state: keep },
+      // 复测配方按离开时所选的带回，与要改分段的候选（可能是对照的候选）无关
+      returnTo: { pathname: location.pathname, label: "历史件", state: keep,
+        search: historyReturnSearch({ candidate: chosen ?? candidate?.id ?? null, camera: selection.camera, seq: selection.seq, comparison: comparison?.id ?? null, original: showOriginal }) },
     };
     navigate(recipeHref(segmentTarget, "/recipe/segments"), { state });
   };
