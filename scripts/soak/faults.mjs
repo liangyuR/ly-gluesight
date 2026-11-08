@@ -226,26 +226,38 @@ const scenarios = {
   },
 };
 
-/** 追溯目录不可写会进入只能重启恢复的故障，单独运行，之后由外层脚本重启实例再验证恢复。 */
+/** 追溯目录不可写只告警：本件照常回写 PLC、不进故障，“审计与录制”就绪项告警；恢复写权限后不重启，告警自动消失。单独成组运行。 */
 const auditScenarios = {
   async auditSpoolReadOnly(c) {
     const { data } = await isolatedStorage(c.call, c.manifest, identifier);
     const dir = await isolatedDirectory(path.join(data, "history"), "audit-spool");
     const user = await whoami();
+    const auditItem = async () => (await c.call("cycle_readiness")).items?.find(i => i.key === "audit") ?? null;
+    const before = await c.latest();
+    const startedAt = Date.now();
     await icacls(dir, "/deny", `${user}:(OI)(CI)(W)`);
     let result;
     try {
-      const before = await c.latest();
       await c.start("normal");
-      const seen = await until(c.faultView, v => v.phase === "FAULT", "追溯目录不可写后未进入故障", 60000, 200).catch(error => ({ timeout: error.message }));
-      await c.stopLine();
-      const record = await c.latest();
-      result = { seen, newRecord: record?.id !== before?.id ? { verdict: record.verdict, delivery: record.delivery.state } : null };
+      let fault = null, auditAlarm = null, run = null, view = null;
+      const deadline = Date.now() + 90000;
+      while (Date.now() < deadline) {
+        const [v, status, audit] = await Promise.all([c.faultView(), c.site(), auditItem()]);
+        view = v;
+        if (v.phase === "FAULT") fault ??= v;
+        if (audit && audit.state !== "ok") auditAlarm ??= audit;
+        run = status.recent?.find(r => r.ts >= startedAt && r.resultCode != null) ?? run;
+        if (run && !status.running && auditAlarm) break;
+        await sleep(300);
+      }
+      result = { expectFault: false, seen: fault ?? view, auditAlarm, alarms: view?.alarms ?? [],
+        plcResult: run && { resultCode: run.resultCode, faultCode: run.faultCode, verdict: run.verdict, cycleId: run.cycleId } };
     } finally { await icacls(dir, "/remove:d", user); }
-    await sleep(2000);
-    const afterRestore = await c.faultView();
-    const readiness = await c.call("cycle_readiness");
-    return { ...result, afterRestore, auditReadiness: readiness.items?.find(i => i.key === "audit") ?? null, needsRestart: true };
+    await c.stopLine();
+    const auditCleared = await until(auditItem, a => a?.state === "ok", "恢复写权限后“审计与录制”告警未自动消失", 60000, 500).catch(error => ({ timeout: error.message }));
+    const record = await c.latest();
+    return { ...result, auditCleared, afterRestore: await c.faultView(),
+      recordAfterRestore: record && record.id !== before?.id ? { id: record.id, verdict: record.verdict, delivery: record.delivery.state } : null };
   },
 };
 
@@ -286,7 +298,7 @@ async function inject(c, name, scenario, recover) {
   return { ...outcome, recovery, falseOk, recovered: recovery ? OK_CLASS.has(recovery.verdict) : null, logLines: window.length, logs };
 }
 
-/** 依次注入：每类注入后复位并跑正常件，确认恢复生产。`audit` 组最后单独跑，进入需要重启的故障。 */
+/** 依次注入：每类注入后跑正常件，确认恢复生产。`audit` 组单独跑：追溯目录拒写只告警，恢复写权限后不重启即恢复。 */
 export async function runFaults(session, out, group, only) {
   const setup = await readSetup(out);
   const c = context(session, out, setup.model ?? "burst");
@@ -301,7 +313,7 @@ export async function runFaults(session, out, group, only) {
   const selected = group === "audit" ? auditScenarios : { ...scenarios, ...lateScenarios };
   for (const [name, scenario] of Object.entries(selected)) {
     if (only && !only.includes(name)) continue;
-    results[name] = await inject(c, name, scenario, group !== "audit");
+    results[name] = await inject(c, name, scenario, true);
   }
   return results;
 }
@@ -328,6 +340,11 @@ export function assess(results, model = "burst") {
     if (r.afterEdge?.timeout) fail(r.afterEdge.timeout);
     if (r.reconnectAfterMs != null && r.reconnectAfterMs < r.outageMs) fail(`停机 ${r.outageMs} ms 未到就已重连（${r.reconnectAfterMs} ms）`);
     if (r.falseOk) fail(`错误的 OK（${r.record.verdict}）`);
+    if (name === "auditSpoolReadOnly" && !r.error) {
+      if (!r.plcResult) fail("追溯目录不可写时本件没有回写 PLC 结果");
+      if (!r.auditAlarm) fail("追溯目录不可写时“审计与录制”就绪项没有告警");
+      if (r.auditCleared?.timeout) fail(r.auditCleared.timeout);
+    }
     if (EXPECT_INCOMPLETE.has(name) && r.record && !r.record.flags?.incomplete) fail("缺帧或坏帧的件应标“检测不完整”（规格 §0），没有标");
     if (name === "pulseJitter" && r.record) {
       // 首尾各 ±1 个脉冲，总数最多偏离名义 2 个；长稳用样本集标定，Σtol 只有 1，帧组数可以落到 ΣN_exp − Σtol 之下，

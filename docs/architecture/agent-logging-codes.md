@@ -12,8 +12,8 @@
 | `app.config` | 配置摘要 | info | PLC 与相机组初始化完成后；保存 PLC 配置、相机配置、检测设置后 | `project`（当前项目 `id`、`name`）、`offline`、`plc`（连接配置：协议、地址、端口、机架、插槽等）、`cameras`（相机组配置）、`settings`（检测设置） |
 | `app.panic` | 程序异常 | error | 任一线程 panic | 无；线程名与 panic 信息在 `msg` |
 | `app.log_write_failed` | 日志写入失败 | warn | 日志写不进去后首次恢复写入 | `count`（未写入的行数）、`firstTs`、`lastTs` |
-| `s7.fault_output` | S7 故障输出 | warn | PC 撤下输出：故障时置 pcState=90、faultCode=101，待复位时置 pcState=0；或因无法确认而断开通讯 | `cause`：startup / new_connection / reset_operator / reset_signal（PLC 复位信号）/ reset_auto（自动复位）/ reset_timeout（软件复位 10 s 内 PLC 未回空闲）/ fault / observation_failed，`reason`，`phase`，`ok`，`error` |
-| `s7.reset.request` | S7 复位请求 | info | 收到复位：操作员软件复位、PLC 复位信号上升沿、启动或重连后的自动复位，或 PLC 置复位请求（plcState=99）后 PC 开始完成复位；PLC 复位信号被拒也记一条 | `source`：operator / plc_signal / auto / plc，`phase`：收到时的会话阶段；被拒时 `ok`=false、`error` |
+| `s7.fault_output` | S7 故障输出 | warn | PC 撤下输出：故障时置 pcState=90、faultCode=101，待复位时置 pcState=0；或因无法确认而断开通讯 | `cause`：startup / new_connection / reset_operator / reset_signal（PLC 复位信号）/ reset_timeout（软件复位 10 s 内 PLC 未回空闲）/ fault / observation_failed，`reason`，`phase`，`ok`，`error` |
+| `s7.reset.request` | S7 复位请求 | info | 收到复位：操作员软件复位、PLC 复位信号上升沿、待复位或故障后的自动复位，或 PLC 置复位请求（plcState=99）后 PC 开始完成复位；PLC 复位信号被拒也记一条 | `source`：operator / plc_signal / auto / plc，`phase`：收到时的会话阶段；被拒时 `ok`=false、`error` |
 | `s7.reset.done` | S7 复位完成 | info | 复位完成、视觉就绪 | 无 |
 | `s7.ack` | S7 结果确认 | info | PLC 确认本件结果 | `requestSeq`、`resultCode`、`faultCode` |
 | `s7.reconnect.forced` | S7 主动断开 | error | 无法确认撤下 pcState，PC 断开通讯以停止心跳 | `error` |

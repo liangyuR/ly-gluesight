@@ -1,6 +1,6 @@
 [package]
 name = "gluesight"
-version = "0.2.0"
+version = "0.2.1"
 description = "GlueSight · 胶路智检"
 edition = "2021"
 default-run = "GlueSight"

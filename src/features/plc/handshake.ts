@@ -9,7 +9,7 @@ export const handshakePhaseLabels: Record<Phase, string> = {
 
 /** 协议 8 第五节时序、第六节迁移与第七节复位规则推导出的“现在在等谁”。 */
 const waitingTexts: Record<Phase, string> = {
-  resetRequired: "PC 启动或重连后需复位：在在线检测页点“软件复位”（PC 置 pcState=99，等 PLC 回 plcState=0 后 PC 置 10），或由 PLC 复位信号、PLC 置 plcState=99 发起；设置页“检测节拍”可打开启动或重连后自动复位",
+  resetRequired: "PC 启动或重连后需复位：在在线检测页点“软件复位”（PC 置 pcState=99，等 PLC 回 plcState=0 后 PC 置 10），或由 PLC 复位信号、PLC 置 plcState=99 发起；复位条件满足时 PC 自动发起软件复位",
   idle: "PLC：先写 requestSeq、productCode（型号）与 sn，最后置 plcState=10",
   validating: "PC：读到 plcState=10 后登记本件（核对配方、定帧计数基线），不回写 PLC；不能检测的件照常运动采图，工件结束后回 90 与异常码",
   acquiring: "PLC：按机械臂 CaptureActive 门控 Line0（一件内可多次开关），相机按设定帧率采集；收到 PartDone 先拉低 Line0，再置 plcState=20",

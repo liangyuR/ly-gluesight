@@ -105,7 +105,7 @@ fn reset_hint(offline: bool) -> String {
     if offline {
         "离线模式由离线产线自动复位：进入离线和每次运行前都会由虚拟 PLC 置复位请求（plcState=99）；仍未复位时在离线控制台查看原因".into()
     } else {
-        "复位前提：PLC 已连接且心跳在变化、相机就绪。真机可在 PLC 现场复位（plcState=99），也可在任何阶段点“软件复位”（在途件按中断记录，追溯落盘后 PC 置 99，等 PLC 回空闲）".into()
+        "复位前提：PLC 已连接且心跳在变化。满足后 PC 自动发起软件复位；也可在 PLC 现场复位（plcState=99），或在任何阶段点“软件复位”（在途件按中断记录，PC 置 99，等 PLC 回空闲）".into()
     }
 }
 
@@ -268,7 +268,7 @@ fn audit_item(f: &Facts) -> ReadinessItem {
     match &f.audit {
         Check::Ok => item(ItemKey::Audit, TITLE, ItemState::Ok, format!("追溯可写 · 帧录制{scope}：{record}"), None, None),
         Check::Waiting(reason) => item(ItemKey::Audit, TITLE, ItemState::Waiting, reason.clone(), None, None),
-        Check::Blocked(reason) => item(ItemKey::Audit, TITLE, ItemState::Blocked, reason.clone(), Some("排查记录库与磁盘后重启检测服务".into()), Some(Target::Settings)),
+        Check::Blocked(reason) => item(ItemKey::Audit, TITLE, ItemState::Waiting, reason.clone(), Some("不影响接件与检测；写不进的记录后台重试，仍失败的移到 audit-spool/.unrecovered 待人工核对".into()), Some(Target::Settings)),
     }
 }
 
@@ -500,10 +500,17 @@ pub fn gather(app: &AppHandle) -> Readiness {
         _ => Ok(()),
     };
     let audit = match host.audit.readiness() {
-        Ok(crate::audit::AuditReadiness::Ready) => host.disk.check().map_or_else(Check::Waiting, |()| Check::Ok),
-        Ok(crate::audit::AuditReadiness::WaitingRecording) => Check::Waiting("原图录制尚未完成耐久接受，完成后自动就绪".into()),
-        Ok(crate::audit::AuditReadiness::WaitingStore) => Check::Waiting("持久追溯仍有待入库事件，入库后自动就绪".into()),
-        Err(error) => Check::Blocked(format!("持久追溯故障：{error}")),
+        Ok(crate::audit::AuditReadiness::Ready) => host
+            .disk
+            .check()
+            .map_or_else(Check::Waiting, |()| Check::Ok),
+        Ok(crate::audit::AuditReadiness::WaitingRecording) => {
+            Check::Waiting("原图录制收尾中，不影响接件".into())
+        }
+        Ok(crate::audit::AuditReadiness::WaitingStore) => {
+            Check::Waiting("追溯事件后台入库中，不影响接件".into())
+        }
+        Err(error) => Check::Blocked(format!("持久追溯异常：{error}")),
     };
     let link = plc(app).status();
     let handshake = snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref());

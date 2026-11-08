@@ -154,7 +154,7 @@ fn original(detail: &PartDetail) -> serde_json::Value {
 fn durable_spool_replays_sqlite_commit_before_receipt_cleanup_without_duplicate_or_regression() {
     let dir = TestDir::new();
     let mut sink = dir.sink();
-    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let (mut spool, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
     spool.append(&Event::Insert(Box::new(part("committed", 42)))).unwrap();
     spool.append(&Event::Delivery("committed".into(), delivery(PlcDeliveryState::Acknowledged, 88))).unwrap();
     spool.append(&Event::Recording(outcome("committed", &[(0, 2)], RecorderState::Complete))).unwrap();
@@ -186,7 +186,7 @@ fn durable_spool_replays_sqlite_commit_before_receipt_cleanup_without_duplicate_
 fn startup_spool_with_unrecoverable_cycle_then_quarantined_and_spool_ready_after_reopen() {
     let dir = TestDir::new();
     let mut sink = dir.sink();
-    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let (mut spool, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
     spool
         .append(&Event::Insert(Box::new(part("committed", 42))))
         .unwrap();
@@ -196,11 +196,117 @@ fn startup_spool_with_unrecoverable_cycle_then_quarantined_and_spool_ready_after
             delivery(PlcDeliveryState::Acknowledged, 88),
         ))
         .unwrap();
-    let notices = recover_all(&mut spool, &mut sink, 1).unwrap();
+    let notices = recover_all(&mut spool, &mut sink, 1);
     assert!(spool.empty());
     assert!(notices.iter().any(|notice| matches!(notice, Notice::Log { event: "持久追溯未恢复", cycle, .. } if cycle == "orphan")));
     assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 1);
-    assert!(spool::Spool::open(dir.0.join("spool")).unwrap().empty());
+    assert!(spool::Spool::open(dir.0.join("spool")).unwrap().0.empty());
+    assert_eq!(
+        std::fs::read_dir(dir.0.join("spool").join(".unrecovered"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn spool_with_crash_leftover_tmp_and_old_format_file_then_opens_moves_both_aside_and_appends_after_them(
+) {
+    let dir = TestDir::new();
+    let root = dir.0.join("spool");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("00000000000000000007.tmp"), b"{\"format\":4,\"ev").unwrap();
+    std::fs::write(
+        root.join("00000000000000000003.json"),
+        br#"{"format":3,"event":{}}"#,
+    )
+    .unwrap();
+    let (mut spool, notes) = spool::Spool::open(root.clone()).unwrap();
+    assert_eq!(notes.len(), 2);
+    assert!(spool.empty());
+    assert_eq!(
+        std::fs::read_dir(root.join(".unrecovered"))
+            .unwrap()
+            .count(),
+        2
+    );
+    spool
+        .append(&Event::Delivery(
+            "next".into(),
+            delivery(PlcDeliveryState::Acknowledged, 1),
+        ))
+        .unwrap();
+    assert!(root.join("00000000000000000008.json").is_file());
+}
+
+#[test]
+fn spool_full_then_events_wait_in_memory_in_order_and_drain_when_space_frees() {
+    let dir = TestDir::new();
+    let (spool, _) = spool::Spool::with_limits(dir.0.join("spool"), 1, 64 * 1024 * 1024).unwrap();
+    let (spool, backlog, barriers) = (
+        Mutex::new(spool),
+        Mutex::new(VecDeque::new()),
+        Mutex::new(BTreeMap::new()),
+    );
+    for (cycle, at) in [("a", 1), ("b", 2), ("c", 3)] {
+        persist_event(
+            &spool,
+            &backlog,
+            &barriers,
+            Event::Delivery(cycle.into(), delivery(PlcDeliveryState::Acknowledged, at)),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        backlog
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| event.cycle_id().to_string())
+            .collect::<Vec<_>>(),
+        ["b", "c"]
+    );
+    let mut spool = spool.lock().unwrap();
+    let receipts = spool
+        .events("a")
+        .unwrap()
+        .into_iter()
+        .map(|(sequence, _)| sequence)
+        .collect::<Vec<_>>();
+    spool.remove(&receipts).unwrap();
+    assert!(drain(&mut spool, &backlog).is_err());
+    assert_eq!(spool.cycles(), BTreeSet::from(["b".to_string()]));
+    assert_eq!(backlog.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn cycle_still_unrecorded_after_retry_limit_then_writer_quarantines_it() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let (mut spool, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
+    spool
+        .append(&Event::Delivery(
+            "orphan".into(),
+            delivery(PlcDeliveryState::Acknowledged, 88),
+        ))
+        .unwrap();
+    let spool = Mutex::new(spool);
+    let mut retries = BTreeMap::new();
+    let mut now = 0;
+    for _ in 1..QUARANTINE_ATTEMPTS {
+        retry_cycle(&spool, &mut retries, "orphan", &mut sink, now);
+        now += RETRY_MAX_MS;
+    }
+    assert!(!spool.lock().unwrap().empty());
+    let notices = retry_cycle(&spool, &mut retries, "orphan", &mut sink, now);
+    assert!(spool.lock().unwrap().empty());
+    assert!(notices.iter().any(|notice| matches!(
+        notice,
+        Notice::Log {
+            event: "持久追溯未恢复",
+            ..
+        }
+    )));
     assert_eq!(
         std::fs::read_dir(dir.0.join("spool").join(".unrecovered"))
             .unwrap()
@@ -215,7 +321,7 @@ fn quarantined_cycle_keeps_identity_and_recording_protection_after_reopen_withou
     let mut sink = dir.sink();
     let records = dir.0.join("records");
     std::fs::create_dir_all(records.join("cycle_orphan")).unwrap();
-    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let (mut spool, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
     let mut recording = outcome("orphan", &[(0, 2)], RecorderState::Complete);
     recording.directory = Some(records.join("cycle_orphan"));
     spool.append(&Event::Recording(recording)).unwrap();
@@ -225,14 +331,16 @@ fn quarantined_cycle_keeps_identity_and_recording_protection_after_reopen_withou
             delivery(PlcDeliveryState::Acknowledged, 88),
         ))
         .unwrap();
-    recover_all(&mut spool, &mut sink, 1).unwrap();
+    recover_all(&mut spool, &mut sink, 1);
     assert!(spool.empty());
     let expected = records.join("cycle_orphan").canonicalize().unwrap();
-    let reopened = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let (reopened, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
     assert!(reopened.cycles().is_empty());
     assert!(reopened.quarantined_cycles().any(|cycle| cycle == "orphan"));
     assert_eq!(
-        reopened.protected_directories(&records).unwrap(),
+        reopened
+            .protected_directories(&records, &VecDeque::new())
+            .unwrap(),
         vec![expected]
     );
 }
@@ -261,7 +369,7 @@ fn manually_deleted_history_consumes_stale_spool_without_resurrecting_or_blockin
     let package = dir.0.join("restore.sqlite");
     sink.store.export_parts(&[id], &package).unwrap();
     sink.store.delete_history(&[id]).unwrap();
-    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let (mut spool, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
     spool
         .append(&Event::Insert(Box::new(original.clone())))
         .unwrap();
@@ -300,4 +408,54 @@ fn manually_deleted_history_consumes_stale_spool_without_resurrecting_or_blockin
         PlcDeliveryState::Acknowledged
     );
     assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 1);
+}
+
+#[test]
+fn oversized_event_set_aside_without_blocking_later_events_and_identified_after_reopen() {
+    let dir = TestDir::new();
+    let (spool, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let (spool, backlog, barriers) = (
+        Mutex::new(spool),
+        Mutex::new(VecDeque::new()),
+        Mutex::new(BTreeMap::new()),
+    );
+    let mut huge = outcome("huge", &[], RecorderState::Failed);
+    huge.errors = vec!["x".repeat(5 * 1024 * 1024)];
+    persist_event(&spool, &backlog, &barriers, Event::Recording(huge)).unwrap();
+    persist_event(
+        &spool,
+        &backlog,
+        &barriers,
+        Event::Delivery("next".into(), delivery(PlcDeliveryState::Acknowledged, 1)),
+    )
+    .unwrap();
+    assert!(backlog.lock().unwrap().is_empty());
+    let spool = spool.lock().unwrap();
+    assert_eq!(spool.cycles(), BTreeSet::from(["next".to_string()]));
+    assert!(spool.quarantined_cycles().any(|cycle| cycle == "huge"));
+    drop(spool);
+    let (reopened, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
+    assert!(reopened.quarantined_cycles().any(|cycle| cycle == "huge"));
+}
+
+#[test]
+fn readable_crash_leftover_tmp_is_quarantined_and_identified_in_same_startup() {
+    let dir = TestDir::new();
+    let root = dir.0.join("spool");
+    let (mut spool, _) = spool::Spool::open(root.clone()).unwrap();
+    spool
+        .append(&Event::Delivery(
+            "left".into(),
+            delivery(PlcDeliveryState::Acknowledged, 1),
+        ))
+        .unwrap();
+    drop(spool);
+    std::fs::rename(
+        root.join("00000000000000000001.json"),
+        root.join("00000000000000000001.tmp"),
+    )
+    .unwrap();
+    let (spool, _) = spool::Spool::open(root).unwrap();
+    assert!(spool.empty());
+    assert!(spool.quarantined_cycles().any(|cycle| cycle == "left"));
 }

@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader};
 
 use serde::Deserialize;
 
-use super::{validate_pending, Pending, PlcSession, Request, ResultEnvelope};
+use super::{read_journal, validate_pending, Pending, PlcSession, Request, ResultEnvelope};
 
 const ERROR_LIMIT: usize = 64;
 
@@ -96,15 +96,19 @@ impl<'a> Recovery<'a> {
 
 pub(super) fn read(session: &PlcSession, unresolved: &BTreeSet<String>) -> AckRecovery {
     let mut recovery = Recovery::new(unresolved);
-    if let Some(error) = &session.load_error {
-        recovery.error(format!("当前握手日志不能恢复 ACK：{error}"));
-    } else {
-        let durable = PlcSession::open(session.path.clone());
-        if let Some(error) = durable.load_error {
-            recovery.error(format!("当前握手日志不能恢复 ACK：{error}"));
-        } else if let Some(pending) = &durable.journal.pending {
-            recovery.pending(pending, durable.journal.last_request_seq, pending.started_at.max(0), "当前握手日志");
+    match read_journal(&session.path) {
+        Ok(Some(durable)) => {
+            if let Some(pending) = &durable.pending {
+                recovery.pending(
+                    pending,
+                    durable.last_request_seq,
+                    pending.started_at.max(0),
+                    "当前握手日志",
+                );
+            }
         }
+        Ok(None) => {}
+        Err(error) => recovery.error(format!("当前握手日志不能恢复 ACK：{error}")),
     }
     if unresolved.is_empty() { return recovery.finish(); }
     for path in crate::handshake_audit::files(&session.path.with_extension("audit.jsonl")) {
