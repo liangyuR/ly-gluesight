@@ -270,15 +270,17 @@ pub(crate) fn write_zip<M: Serialize>(
     entries: Vec<(String, PathBuf)>,
     manifest: impl FnOnce(Vec<PackageFile>) -> M,
 ) -> Result<M, String> {
-    write_zip_with(target, entries, manifest, || Ok(()))
+    write_zip_with(target, entries, manifest, || Ok(()), || Ok(()))
 }
 
 /// 同 [`write_zip`]，每写完一个文件调一次 `progress`；它报错（如任务取消）时停止并删掉未完成的包。
+/// 包写完、替换目标文件前调一次 `commit`（如进入不可取消的保存阶段），它报错时同样删掉包、不动目标文件。
 pub(crate) fn write_zip_with<M: Serialize>(
     target: &Path,
     entries: Vec<(String, PathBuf)>,
     manifest: impl FnOnce(Vec<PackageFile>) -> M,
     mut progress: impl FnMut() -> Result<(), String>,
+    commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<M, String> {
     let mut temporary = target.as_os_str().to_owned();
     temporary.push(".tmp");
@@ -329,6 +331,7 @@ pub(crate) fn write_zip_with<M: Serialize>(
             Ok(manifest)
         });
     let manifest = written.and_then(|manifest| {
+        commit()?;
         if target.exists() {
             std::fs::remove_file(target).map_err(|e| format!("覆盖导出文件失败：{e}"))?;
         }

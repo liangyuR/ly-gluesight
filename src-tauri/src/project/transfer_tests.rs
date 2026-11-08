@@ -442,3 +442,34 @@ fn exported_records_are_only_this_projects_and_import_renumbers_them_into_the_lo
     assert!(!local.project_records().unwrap().contains_key("line-c"));
     assert_eq!(origin("line-c"), imported.id);
 }
+
+#[test]
+fn cancel_after_last_file_keeps_previous_target_and_reports_cancelled() {
+    let temp = TempDir::new("cancel-commit");
+    let source = temp.0.join("a.txt");
+    std::fs::write(&source, "new").unwrap();
+    let target = temp.0.join("out.zip");
+    std::fs::write(&target, "previous").unwrap();
+    let operations = crate::operation::Operations::default();
+    let operation =
+        crate::operation::Operation::with_events(operations.clone(), Some("t".into()), |_| {})
+            .unwrap();
+
+    let result = operation.run(|operation| {
+        write_zip_with(
+            &target,
+            vec![("project/a.txt".into(), source.clone())],
+            |files| files,
+            || {
+                operation.check()?;
+                operations.cancel("t");
+                Ok(())
+            },
+            || operation.saving(),
+        )
+    });
+
+    assert!(result.unwrap_err().starts_with("OPERATION_CANCELLED"));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
+    assert!(!temp.0.join("out.zip.tmp").exists());
+}

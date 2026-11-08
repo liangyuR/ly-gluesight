@@ -288,6 +288,7 @@ pub fn export_package(
         entries,
         |files| PackageManifest { files, ..manifest },
         || operation.advance(FrameState::Measured),
+        || operation.saving(),
     )
 }
 
