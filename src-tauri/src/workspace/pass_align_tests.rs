@@ -1,8 +1,9 @@
-use super::burst::CameraTeaching;
-use super::burst_tests::burst_workspace;
+use super::burst::{apply_segment_teaching, CameraTeaching};
+use super::burst_tests::{burst_workspace, capture_round, DEVICE};
+use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::pass_align::{
-    accept_carry, align, alignment_check, edit_alignment, mark_retaught, replace_by_passes,
-    AlignInput, PassChange, PassLink,
+    accept_carry, align, alignment_check, edit_alignment, replace_by_passes, AlignInput,
+    PassChange, PassLink,
 };
 use super::pieces_tests::piece;
 use super::*;
@@ -86,8 +87,8 @@ fn auto_alignment_finds_inserted_removed_and_changed_passes() {
     }
 }
 
-fn teaching(camera: &str, seq: u64, segment: u32) -> CameraTeaching {
-    serde_json::from_value(json!({"camera": camera, "round": "teach", "seq": seq, "segment": segment,
+fn teaching(camera: &str, round: &str, seq: u64, segment: u32) -> CameraTeaching {
+    serde_json::from_value(json!({"camera": camera, "round": round, "seq": seq, "segment": segment,
         "frame": {"id": format!("{camera}-{segment}"), "view": 1, "source": "", "capturedAt": 0, "size": [1000, 700],
             "camera": camera, "cameraTag": null, "calibTag": null, "geometryTag": null, "exposureUs": null,
             "gainDb": null, "historyId": null}}))
@@ -118,7 +119,7 @@ fn taught(passes: &[u32], cuts: &[u64]) -> Workspace {
             .collect();
         for (k, start) in starts.iter().enumerate() {
             w.camera_teaching
-                .push(teaching(&inspect.camera, start + 5, k as u32 + 1));
+                .push(teaching(&inspect.camera, "teach", start + 5, k as u32 + 1));
         }
     }
     w.doc.build().unwrap();
@@ -214,6 +215,15 @@ fn a_pass_added_inside_a_segment_joins_that_segment_as_changed() {
 }
 
 #[test]
+fn shortening_a_changed_pass_keeps_every_segment_in_it() {
+    let mut w = taught(&[100], &[1]);
+    let cuts = replace(&mut w, &["a"], &["a'"], &[50], &[1]);
+    assert_eq!(cuts, vec![1]);
+    assert_eq!(color_model(&w, 1), Some("m1".into()));
+    assert_eq!(color_model(&w, 2), Some("m2".into()));
+}
+
+#[test]
 fn removing_a_pass_drops_only_the_segments_inside_it() {
     let mut w = taught(&[10, 10, 10], &[10, 20]);
     let cuts = replace(&mut w, &["a", "b", "c"], &["a", "c"], &[10, 10], &[10, 20]);
@@ -254,9 +264,16 @@ fn publishing_waits_for_reteaching_changed_and_added_segments_and_accepting_carr
         check.detail
     );
     assert!(check.detail.contains("第 7 段为新增"), "{}", check.detail);
-    for segment in [5, 6, 7] {
+    // 在新示教件上确认分段，再给改动与新增的段逐台相机选示教帧（走公开的示教操作）
+    let (cuts, groups) = (vec![10, 20, 30, 40, 54, 62, 68, 78, 88, 98], 108);
+    let round = capture_round("new", &w.doc, groups, DEVICE, &[]);
+    apply_capture_review(&mut w, &round, CaptureReviewEdit::Save(cuts.clone())).unwrap();
+    apply_capture_review(&mut w, &round, CaptureReviewEdit::Confirm).unwrap();
+    for segment in [5u32, 6, 7] {
+        let seq = cuts[segment as usize - 2] + 1;
         for camera in w.doc.plan_cameras() {
-            mark_retaught(&mut w, segment, &camera);
+            apply_segment_teaching(&mut w, teaching(&camera, "new", seq, segment), groups, None)
+                .unwrap();
         }
     }
     assert!(!alignment_check(&w).unwrap().passed, "沿用的段还没确认");

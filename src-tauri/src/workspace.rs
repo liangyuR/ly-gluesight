@@ -1306,6 +1306,8 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 if w.revision == release.revision {
                     w.doc = app.state::<CycleHost>().recipes.doc(&id).unwrap();
                     w.doc.teaching_piece = None;
+                    // 生产配方不带段 ID：按位置接回候选原来的段 ID，逐笔对照的沿用状态不丢（采集版生效后还要继续示教）
+                    inherit_segment_ids(&before.doc.segments, &mut w.doc.segments);
                 }
                 let next_version = app.state::<CycleHost>().recipes.next_version(&saved.id);
                 w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);

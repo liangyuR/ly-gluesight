@@ -154,15 +154,17 @@ pub fn workspace_publish_collect(
     doc.version = recipes.release_version(&w.doc)?;
     doc.stage = RecipeStage::Collect;
     doc.teaching_id = None;
-    for segment in &mut doc.segments {
-        segment.id = None;
-    }
     doc.plan_version = recipes.plan_version_for(&doc)?;
     doc.build()?;
+    // 段 ID 留在候选里（逐笔对照的沿用状态按它记），只从发布的配方去掉（RB-11）
+    let mut released = doc.clone();
+    for segment in &mut released.segments {
+        segment.id = None;
+    }
     let mut next = w.clone();
-    next.doc = doc.clone();
+    next.doc = doc;
     next.pending = Some(Box::new(Release {
-        doc,
+        doc: released,
         bundle_id: String::new(),
         navigation: None,
         base_revision: w.base_revision.clone(),

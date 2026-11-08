@@ -389,15 +389,27 @@ pub(super) fn migrate(
     // 旧段是否全部落在不变的笔里且没丢帧
     let mut intact = vec![true; source.segments.len()];
     let mut owner = vec![Owner::None; new_total as usize];
+    // 新笔变短时几个旧帧组会映射到同一帧组：先到的段占住，后一段从下一帧组起（不出这一笔），不把前一段整段挤掉
+    let mut last: Option<(u64, usize)> = None;
     for seq in 1..=old_total {
         let k = segment_of(seq);
         let pass = passes::locate(old, seq).map(|(p, _)| p);
         if pass.and_then(|p| change_of_old_pass.get(&p)) != Some(&PassChange::Same) {
             intact[k] = false;
         }
-        if let Some(x) = map[(seq - 1) as usize] {
-            owner[(x - 1) as usize] = Owner::Old(k);
+        let Some(mut x) = map[(seq - 1) as usize] else {
+            continue;
+        };
+        if let Some((taken, by)) = last.filter(|&(taken, _)| x <= taken) {
+            let same_pass = passes::locate(new, taken + 1).map(|(q, _)| q)
+                == passes::locate(new, x).map(|(q, _)| q);
+            if by == k || !same_pass {
+                continue;
+            }
+            x = taken + 1;
         }
+        owner[(x - 1) as usize] = Owner::Old(k);
+        last = Some((x, k));
     }
     let added_passes: Vec<(u64, u64)> = rows
         .iter()
