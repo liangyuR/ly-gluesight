@@ -171,6 +171,20 @@ describe("测量区间", () => {
     expect(within(zone).getByRole("alert")).toHaveTextContent("测量到的距离需大于跳过的距离");
     expect(ws.setDoc).toHaveBeenCalledTimes(calls);
   });
+
+  // 防的回归（PR #274 评审）：沿用相机级区间的段第一次改动就写成段级，区间来源一变输入框被重建、失去焦点，多位数输入被打断
+  it("段沿用相机级区间、改跳过前 → 写入段级区间，输入框仍是同一个", async () => {
+    const doc = ws.data!.workspace.doc;
+    doc.segments![0].heading = { toleranceDeg: 5 };
+    doc.inspect![1].window = { startMm: 5, lengthMm: 20 };
+    const { rerender } = show("/recipe/teach?camera=CAM-2&segment=1");
+    const input = within(await screen.findByRole("group", { name: "段 1 测量区间" })).getByRole("spinbutton", { name: "跳过前" });
+    fireEvent.change(input, { target: { value: "3" } });
+    ws.doc = vi.mocked(ws.setDoc).mock.lastCall![0];
+    expect(ws.doc.segments![0].heading!.window).toEqual({ startMm: 3, lengthMm: 22 });
+    rerender(<MemoryRouter initialEntries={["/recipe/teach?camera=CAM-2&segment=1"]}><TeachingPage /></MemoryRouter>);
+    expect(within(screen.getByRole("group", { name: "段 1 测量区间" })).getByRole("spinbutton", { name: "跳过前" })).toBe(input);
+  });
 });
 
 describe("示教帧选择", () => {

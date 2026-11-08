@@ -221,7 +221,7 @@ export function HeadingCard({ camera, params, derivedNozzle, nozzleWarning, segm
       </div>
       {index != null && heading ? <div className="wp-settings-group" role="group" aria-label={`段 ${index} 测量区间`}>
         <span className="wp-settings-label">测量区间<Scope>段 {index} 各检测相机共用</Scope>{missing && <Badge tone="warn">需设置</Badge>}</span>
-        <WindowFields key={`${index}:${own?.source ?? ""}`} value={own?.window ?? null} disabled={disabled} onFocus={point} onChange={setWindow}/>
+        <WindowFields key={index} value={own?.window ?? null} disabled={disabled} onFocus={point} onChange={setWindow}/>
         {own?.source === "camera" && <p className="wp-settings-hint">本段没有单独设置，沿用 {camera} 旧的相机级测量区间；改动只写本段。</p>}
         {own && windowTravelHint(own.window, current!) && <p className="c-warn" role="note">{windowTravelHint(own.window, current!)}</p>}
         {heading.window && others.length > 0 && <Button size="sm" disabled={disabled} onClick={applyWindow}
