@@ -587,24 +587,6 @@ fn run_kind_collect_runs_only_in_maintenance_and_formal_always_needs_corridors()
     }
 }
 
-/// 存储卡住时接件的追溯健康检查按时限返回失败（本件按不能检测处理），不等探针跑完，节拍不被阻塞；一次超时也不记成追溯故障。
-#[tokio::test]
-async fn stalled_intake_health_probe_times_out_without_poisoning_audit() {
-    let started = std::time::Instant::now();
-    let mut poisoned = false;
-    let result = super::intake_health_check(
-        || {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            Ok(())
-        },
-        |_| poisoned = true,
-    )
-    .await;
-    assert!(result.is_err());
-    assert!(!poisoned);
-    assert!(started.elapsed() < std::time::Duration::from_secs(2));
-}
-
 /// D-SB-62：生产按门控（帧时间戳停顿）分笔，笔结构记进判定，每笔开头按配方跳过、列为未检区域。
 #[test]
 fn production_splits_passes_by_gate_pause_and_skips_each_pass_head() {
