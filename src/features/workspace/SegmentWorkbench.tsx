@@ -100,14 +100,20 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   const mapped = locate && groupCount ? teachingSeqFor(locate, groupCount, teachingPasses) : null;
   const located = useRef("");
   const body = useRef<HTMLDivElement>(null);
+  const reveal = useRef<number | null>(null);
   useEffect(() => {
     if (!mapped || !locate) return;
     const key = `${roundId}:${locate.historyId}:${locate.seq}`;
     if (located.current === key) return;
     located.current = key;
     setSeq(mapped.seq);
-    requestAnimationFrame(() => body.current?.querySelector(".swb-cell.selected")?.scrollIntoView({ block: "nearest", inline: "center" }));
+    reveal.current = mapped.seq;
   }, [mapped?.seq, roundId]);
+  // 定位的帧组渲染为选中后再滚到可见处
+  useEffect(() => {
+    const cell = reveal.current === seq ? body.current?.querySelector(".swb-cell.selected") : null;
+    if (cell) { reveal.current = null; cell.scrollIntoView({ block: "nearest", inline: "center" }); }
+  });
 
   if (!roundId) {
     return <><WorkspaceNavigation segments={plan.segments} ranges={null} seq={1} frameStatus="unavailable" editable locked={locked} onNavigate={() => {}} />
@@ -162,7 +168,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     {!!data?.workspace.pending && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改分段。</Notice>}
     {!ready && !thumbs.error && <p className="muted">正在读取缩略图…</p>}
     {locate && mapped && <Notice title={`从历史件 SN ${locate.sn || "—"} 跳来`}>
-      历史件帧组 {locate.seq}{locate.segment != null && `（段 ${locate.segment}）`}对应示教件帧组 {mapped.seq}，{mapped.byPass ? "按所在笔的笔内进度" : "按整件进度"}估算，只用于定位。
+      历史件帧组 {locate.seq}{locate.segment != null ? `（段 ${locate.segment}）` : " "}对应示教件帧组 {mapped.seq}，{mapped.byPass ? "按所在笔的笔内进度" : "按整件进度"}估算，只用于定位。
       各段预期帧数取自示教件的分段，历史件按它们分段；在这里调整边界并保存分段后返回历史件，重新复测看结果。
     </Notice>}
     {draft && ready && <div className="swb-body" ref={body} onKeyDown={onKey}>

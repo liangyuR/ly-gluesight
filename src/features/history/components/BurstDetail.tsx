@@ -269,7 +269,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     const back = new URLSearchParams({ candidate: segmentTarget, camera: String(selection.camera), seq: String(selection.seq) });
     if (comparison) back.set("comparison", comparison.id);
     if (showOriginal) back.set("view", "original");
-    const keep: HistoryDetailState = { ...(location.state as HistoryDetailState | null), scrollTop: document.querySelector("main.main")?.scrollTop };
+    const keep: HistoryDetailState = { ...(location.state as HistoryDetailState | null), scrollTop: document.querySelector(".main-body")?.scrollTop };
     const state: SegmentLocateState = {
       locate: { sn: s.sn, historyId: s.id, seq: selection.seq, groupCount: j.groupCount, passes: j.passes, segment: at ? regionSegments(at.region.kind)[0] : null },
       returnTo: { pathname: location.pathname, search: "?" + back.toString(), label: "历史件", state: keep },

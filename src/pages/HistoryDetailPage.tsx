@@ -42,13 +42,20 @@ export default function HistoryDetailPage() {
     return () => { alive = false; stop(); };
   }, [detail?.summary.id, detail?.summary.cycleId]);
 
-  // 从分段页返回：详情读到后回到离开时的滚动位置（每次进入只恢复一次）
+  // 从分段页返回：详情读到后回到离开时的滚动位置。帧组条、原图陆续加载会撑高页面，约 1 秒内反复回到原位置，
+  // 操作员一动滚轮或点击就停；回到过或被打断后这次进入不再恢复
   const restored = useRef("");
   useEffect(() => {
-    if (!detail || state?.scrollTop == null || restored.current === location.key) return;
-    restored.current = location.key;
-    const top = state.scrollTop;
-    requestAnimationFrame(() => document.querySelector("main.main")?.scrollTo({ top }));
+    const body = document.querySelector(".main-body");
+    if (!detail || state?.scrollTop == null || !body || restored.current === location.key) return;
+    const key = location.key, top = state.scrollTop;
+    const events = ["wheel", "pointerdown", "keydown", "touchstart"] as const;
+    let frame = 0, left = 60;
+    const done = () => { restored.current = key; cancelAnimationFrame(frame); };
+    const keep = () => { body.scrollTop = top; if (--left > 0) frame = requestAnimationFrame(keep); else done(); };
+    events.forEach(name => body.addEventListener(name, done, { passive: true }));
+    frame = requestAnimationFrame(keep);
+    return () => { cancelAnimationFrame(frame); events.forEach(name => body.removeEventListener(name, done)); };
   }, [detail, location.key]);
 
   const openPart = (target: number | null) => { if (target != null) navigate("/history/" + target, { state: { ...state, scrollTop: undefined } }); };
