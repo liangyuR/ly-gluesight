@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,8 +10,10 @@ import { useWorkspace } from "../src/features/workspace/context";
 import { burstJudgement, burstPartDetail, burstWorkspaceView, frameMetrics, workspaceState } from "./fixtures";
 import type { Comparison } from "../src/features/workspace/types";
 import type { HistoryDetailState } from "../src/features/history/types";
+import { subscribe } from "../src/features/plc";
 
-vi.mock("../src/features/history/api", () => ({ historyApi: { overview: vi.fn(), frameDetail: vi.fn(), neighbors: vi.fn() } }));
+vi.mock("../src/features/history/api", () => ({ historyApi: { overview: vi.fn(), frameDetail: vi.fn(), neighbors: vi.fn(), delete: vi.fn(), setTags: vi.fn() } }));
+vi.mock("../src/features/plc", () => ({ subscribe: vi.fn(() => vi.fn()) }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   comparisonSummaries: vi.fn(), comparisonGet: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), recordFrameView: vi.fn(), historyFrameView: vi.fn(), historyCompareOptions: vi.fn(),
@@ -28,7 +30,7 @@ function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rule
 beforeEach(() => {
   ws = workspaceState(burstWorkspaceView());
   detail = burstPartDetail(); vi.mocked(useWorkspace).mockImplementation(() => ws);
-  vi.mocked(historyApi.overview).mockResolvedValue(detail);
+  vi.mocked(historyApi.overview).mockReset().mockResolvedValue(detail);
   vi.mocked(historyApi.frameDetail).mockImplementation(async (_, camera, seq) => ({ ...detail, burst: { ...detail.burst!, frames: detail.burst!.frames.filter(frame => frame.camera === camera && frame.seq === seq) } }));
   vi.mocked(workspaceApi.comparisonGet).mockImplementation(async (_, id) => (await workspaceApi.comparisonSummaries(detail.summary.id)).find(item => item.id === id) as Comparison);
   vi.mocked(historyApi.neighbors).mockResolvedValue({ older: null, newer: null });
@@ -43,6 +45,46 @@ beforeEach(() => {
 });
 
 describe("历史详情（段配方记录）", () => {
+  it("Tag 保存后旧详情请求迟到 → 保留刚保存的人工标签", async () => {
+    detail.burst = null;
+    const old = { ...detail, summary: { ...detail.summary, tags: [] } };
+    show();
+    await screen.findByRole("button", { name: "编辑 Tag" });
+    let finish!: (value: typeof detail) => void;
+    vi.mocked(historyApi.overview).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const update = vi.mocked(subscribe).mock.calls.filter(([event]) => event === "history://updated").at(-1)![1] as (cycleId: string | null) => void;
+    act(() => update(detail.summary.cycleId));
+    vi.mocked(historyApi.setTags).mockResolvedValue(["故障件"]);
+    await userEvent.click(screen.getByRole("button", { name: "编辑 Tag" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "编辑 Tag" })).getByRole("button", { name: "故障件" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存 Tag" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await act(async () => { finish(old); });
+    expect(screen.getByText("故障件")).toBeVisible();
+    expect(screen.queryByText("未标记")).not.toBeInTheDocument();
+  });
+
+  it("删除失败可重试 → 成功后先展示原图保留提示，再返回原入口", async () => {
+    vi.mocked(historyApi.delete).mockReset().mockRejectedValueOnce(new Error("原图仍在落盘"))
+      .mockImplementationOnce(async () => {
+        vi.mocked(historyApi.overview).mockRejectedValueOnce(new Error("记录已删除"));
+        const changed = vi.mocked(subscribe).mock.calls.filter(([event]) => event === "history://changed").at(-1)![1] as (ids: number[]) => void;
+        changed([1]);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        return { deleted: 1, warnings: ["共享原图已保留"] };
+      });
+    show({ pathname: "/history/1", state: { returnTo: { path: "/recipe/calibration", label: "返回试测" } } });
+    await userEvent.click(await screen.findByRole("button", { name: "删除历史件" }));
+    await userEvent.click(screen.getByRole("button", { name: "确认删除 1 件" }));
+    expect(await screen.findByText("原图仍在落盘")).toBeVisible();
+    expect(screen.queryByText("试测页")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "确认删除 1 件" }));
+    expect(await screen.findByText("共享原图已保留")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "确认删除 1 件" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "完成" }));
+    expect(screen.getByText("试测页")).toBeVisible();
+  });
+
   it("对照有生产跳过区域 → 帧格、详情和区域显示跳过，切回原始记录恢复真实NG", async () => {
     const burst = detail.burst!;
     burst.frameVerdicts = burst.frameVerdicts.map(v => v.camera === 0 && v.seq === 1 ? { ...v, verdict: "NG_GAP" } : v);

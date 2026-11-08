@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::burst_judge::{self, BurstJudgement, Flags, FrameState};
 use crate::cycle::CycleHost;
@@ -31,6 +31,49 @@ pub(crate) fn format_ts(ts: i64) -> String {
 #[tauri::command]
 pub async fn history_query(app: AppHandle, query: HistoryQuery) -> Result<HistoryPage, String> {
     tauri::async_runtime::spawn_blocking(move || app.state::<Store>().query(&query)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn history_set_tags(
+    app: AppHandle,
+    ids: Vec<i64>,
+    tags: Vec<String>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let tags = app.state::<Store>().set_history_tags(&ids, &tags)?;
+        let _ = app.emit("history://changed", &ids);
+        Ok(tags)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[derive(Serialize)]
+pub struct HistoryDeleted {
+    pub deleted: usize,
+    pub warnings: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn history_delete(app: AppHandle, ids: Vec<i64>) -> Result<HistoryDeleted, String> {
+    let cycle = app.state::<CycleHost>();
+    let _gate = cycle.config_gate.lock().await;
+    if cycle.busy() {
+        return Err("有在途工件或未结 PLC 事务，不能删除历史记录".into());
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<CycleHost>().audit.with_ready(|| {
+            let warnings = crate::workspace::delete_history(&app, &ids)?;
+            let _ = app.emit("history://changed", &ids);
+            Ok(HistoryDeleted {
+                deleted: ids.len(),
+                warnings,
+            })
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -424,6 +467,7 @@ pub(crate) fn csv_row(p: &PartSummary) -> String {
         burst.and_then(|b| b.device_triggers).map(|n| n.to_string()).unwrap_or_default(),
         esc(&p.flags.as_ref().map(flag_labels).unwrap_or_default().join("、")),
         esc(&p.project_id),
+        esc(&p.tags.join("、")),
     ];
     format!("{}\r\n", cells.join(","))
 }
@@ -443,7 +487,7 @@ fn flag_labels(flags: &Flags) -> Vec<&'static str> {
     .collect()
 }
 
-pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明,预期帧组数(ΣN_exp),帧组容差(Σtol),各相机帧数,deviceTriggers,标记,项目\r\n";
+pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明,预期帧组数(ΣN_exp),帧组容差(Σtol),各相机帧数,deviceTriggers,标记,项目,人工 Tag\r\n";
 
 /// 按筛选条件导出 CSV（带 BOM，Excel 可直接打开），返回文件路径。
 #[tauri::command]

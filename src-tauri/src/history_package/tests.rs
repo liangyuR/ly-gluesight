@@ -185,6 +185,9 @@ fn exported_parts_import_on_another_machine_with_same_measurements_and_images_un
         recorded(&a, &recipe, "c-one", "SN-1"),
         recorded(&a, &recipe, "c-two", "SN-2"),
     ];
+    a.store
+        .set_history_tags(&[ids[0]], &["故障件".into(), "参考件".into()])
+        .unwrap();
     let package = temp.0.join("parts.zip");
     export(&a, &ids, &temp.0.join("scratch"), &package);
 
@@ -220,6 +223,7 @@ fn exported_parts_import_on_another_machine_with_same_measurements_and_images_un
     for (&id, &new_id) in ids.iter().zip(&result.ids) {
         let original = a.store.detail(id).unwrap();
         let copy = b.store.detail(new_id).unwrap();
+        assert_eq!(copy.summary.tags, original.summary.tags);
         assert_eq!(copy.summary.project_id, "line-b");
         assert_eq!(
             (

@@ -25,6 +25,287 @@ impl Drop for TestDb {
 }
 
 #[test]
+fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejudge_aligned() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let ids: Vec<_> = ["tag-a", "tag-b", "tag-c"]
+        .into_iter()
+        .map(|cycle| {
+            store
+                .insert(&burst_part(&recipe, cycle, &judgement, &burst))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        store
+            .set_history_tags(
+                &[ids[0], ids[2]],
+                &[
+                    " 故障件 ".into(),
+                    "".into(),
+                    "故障件".into(),
+                    "参考件".into()
+                ]
+            )
+            .unwrap(),
+        ["故障件", "参考件"]
+    );
+    drop(store);
+    let store = Store::open(&db.path()).unwrap();
+    let query = HistoryQuery {
+        tag: Some("故障件".into()),
+        ..Default::default()
+    };
+    let page = store.query(&query).unwrap();
+    assert_eq!(
+        page.items.iter().map(|part| part.id).collect::<Vec<_>>(),
+        [ids[2], ids[0]]
+    );
+    assert_eq!(page.total, 2);
+    assert_eq!(
+        page.counts.ok + page.counts.excursion + page.counts.ng + page.counts.err,
+        2
+    );
+    assert_eq!(
+        store.neighbors(&query, ids[0]).unwrap(),
+        (None, Some(ids[2]))
+    );
+    assert_eq!(
+        store
+            .measurements(&query, &[], 10)
+            .unwrap()
+            .iter()
+            .map(|part| part.id)
+            .collect::<Vec<_>>(),
+        [ids[2], ids[0]]
+    );
+    let detail = store.detail(ids[0]).unwrap();
+    assert_eq!(detail.summary.tags, ["故障件", "参考件"]);
+    assert_eq!(detail.judgement.verdict, judgement.verdict);
+    assert!(crate::history::csv_row(&detail.summary).contains("故障件、参考件"));
+    store.set_history_tags(&[ids[0]], &[]).unwrap();
+    assert_eq!(store.query(&query).unwrap().total, 1);
+}
+
+#[test]
+fn invalid_or_stale_history_tag_selection_leaves_every_selected_record_unchanged() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let id = store
+        .insert(&burst_part(&recipe, "tag-validation", &judgement, &burst))
+        .unwrap();
+    store.set_history_tags(&[id], &["参考件".into()]).unwrap();
+    for invalid in [
+        vec!["长".repeat(25)],
+        (0..9).map(|n| n.to_string()).collect(),
+        vec!["故障\n件".into()],
+    ] {
+        assert!(store.set_history_tags(&[id], &invalid).is_err());
+        assert_eq!(store.detail(id).unwrap().summary.tags, ["参考件"]);
+    }
+    assert!(store
+        .set_history_tags(&[id, id + 100], &["故障件".into()])
+        .is_err());
+    assert_eq!(store.detail(id).unwrap().summary.tags, ["参考件"]);
+}
+
+#[test]
+fn manually_deleted_history_stays_absent_and_explicit_reimport_uses_a_fresh_nonreusable_identity() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let record = burst_part(&recipe, "delete-restore", &judgement, &burst);
+    let id = store.insert(&record).unwrap();
+    store.set_history_tags(&[id], &["故障件".into()]).unwrap();
+    assert!(store.delete_history(&[id]).is_err());
+    assert!(store.detail(id).is_ok());
+    store
+        .update_recording(
+            "delete-restore",
+            &RecordingEvidence {
+                state: RecordingState::Off,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let package = db.0.join("restore.sqlite");
+    store.export_parts(&[id], &package).unwrap();
+    assert!(store.delete_history(&[id, id + 100]).is_err());
+    assert!(store.detail(id).is_ok());
+    store.delete_history(&[id]).unwrap();
+    assert!(store.detail(id).is_err());
+    assert!(store.burst_frames(id).unwrap().is_empty());
+    assert!(store.insert(&record).is_err());
+    assert!(store.history_cycle_deleted("delete-restore").unwrap());
+    let merged = store.import_parts(&package, "default", |_| Ok(())).unwrap();
+    let restored = merged.ids[&id];
+    assert!(restored > id);
+    assert_eq!(store.detail(restored).unwrap().summary.tags, ["故障件"]);
+    assert!(store.history_cycle_deleted("delete-restore").unwrap());
+    store.delete_history(&[restored]).unwrap();
+    drop(store);
+    let store = Store::open(&db.path()).unwrap();
+    let fresh = store
+        .insert(&burst_part(&recipe, "after-delete", &judgement, &burst))
+        .unwrap();
+    assert!(fresh > restored);
+    assert!(store.detail(id).is_err());
+    assert!(store.detail(restored).is_err());
+    assert!(store.history_cycle_deleted("delete-restore").unwrap());
+}
+
+#[test]
+fn legacy_history_without_tags_upgrades_in_place_and_imports_without_losing_existing_records() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let id = store
+        .insert(&burst_part(&recipe, "legacy-tags", &judgement, &burst))
+        .unwrap();
+    let package = db.0.join("legacy.sqlite");
+    store.export_parts(&[id], &package).unwrap();
+    drop(store);
+    for path in [&package, &db.path()] {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch("ALTER TABLE parts DROP COLUMN tags")
+            .unwrap();
+    }
+    let store = Store::open(&db.path()).unwrap();
+    assert!(store.backup_path().is_none());
+    assert!(store.detail(id).unwrap().summary.tags.is_empty());
+    let imported = Store::open_for(&db.0.join("target.sqlite"), "target").unwrap();
+    let merged = imported
+        .import_parts(&package, "target", |_| Ok(()))
+        .unwrap();
+    assert_eq!(merged.inserted, 1);
+    assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 1);
+    assert!(imported
+        .detail(merged.ids[&id])
+        .unwrap()
+        .summary
+        .tags
+        .is_empty());
+}
+
+#[test]
+fn malformed_package_tags_are_rejected_before_any_history_is_imported() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let id = store
+        .insert(&burst_part(
+            &recipe,
+            "invalid-package-tags",
+            &judgement,
+            &burst,
+        ))
+        .unwrap();
+    let package = db.0.join("invalid.sqlite");
+    store.export_parts(&[id], &package).unwrap();
+    let imported = Store::open_for(&db.0.join("target.sqlite"), "target").unwrap();
+    for invalid in [
+        "{}".to_string(),
+        "[42]".into(),
+        serde_json::to_string(&vec!["长".repeat(25)]).unwrap(),
+    ] {
+        let conn = Connection::open(&package).unwrap();
+        conn.execute("UPDATE parts SET tags = ?1", [invalid])
+            .unwrap();
+        drop(conn);
+        assert!(imported
+            .import_parts(&package, "target", |_| Ok(()))
+            .is_err());
+        assert_eq!(imported.query(&HistoryQuery::default()).unwrap().total, 0);
+    }
+}
+
+#[test]
+fn manual_history_deletion_only_removes_exclusive_cycle_directories_inside_the_project_recording_root(
+) {
+    for case in [
+        "exclusive",
+        "shared",
+        "descendant",
+        "ancestor",
+        "outside",
+        "parent",
+    ] {
+        let db = TestDb::new();
+        let store = Store::open(&db.path()).unwrap();
+        let recipe = burst_fixture::recipe();
+        let (judgement, burst) =
+            burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+        let root =
+            crate::project::records::record_root(&db.0, "default", RecordSource::Real).unwrap();
+        let day = root.join("20261108");
+        let leaf = "20261108_120000_OK_cycle_delete-images";
+        let target = match case {
+            "outside" => db.0.join("outside").join(leaf),
+            "parent" => day.clone(),
+            _ => day.join(leaf),
+        };
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = target.join("original.pgm");
+        std::fs::write(&marker, b"history image").unwrap();
+        let unrelated = root.join("unrelated.pgm");
+        std::fs::write(&unrelated, b"keep").unwrap();
+        let id = store
+            .insert(&burst_part(&recipe, "delete-images", &judgement, &burst))
+            .unwrap();
+        store
+            .update_recording(
+                "delete-images",
+                &RecordingEvidence {
+                    state: RecordingState::Incomplete,
+                    directory: Some(target.to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let shared = match case {
+            "shared" => Some(target.clone()),
+            "descendant" => Some(target.join("another-record")),
+            "ancestor" => Some(day.clone()),
+            _ => None,
+        };
+        if let Some(shared) = shared {
+            std::fs::create_dir_all(&shared).unwrap();
+            store
+                .insert(&burst_part(&recipe, "keep-images", &judgement, &burst))
+                .unwrap();
+            store
+                .update_recording(
+                    "keep-images",
+                    &RecordingEvidence {
+                        state: RecordingState::Incomplete,
+                        directory: Some(shared.to_string_lossy().into_owned()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        let warnings = store.delete_history_with_recordings(&db.0, &[id]).unwrap();
+        assert!(store.detail(id).is_err(), "{case}");
+        assert_eq!(marker.exists(), case != "exclusive", "{case}");
+        assert_eq!(warnings.is_empty(), case == "exclusive", "{case}");
+        assert!(unrelated.exists(), "{case}");
+    }
+}
+
+#[test]
 fn offline_parts_stay_out_of_real_history_statistics_and_rejudge_and_vice_versa() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

@@ -94,7 +94,7 @@ fn valid_cycle(cycle: &str) -> bool {
 }
 
 /// 录制目录名：`*_cycle_<cycleId>`，只含字母、数字、`-` 与 `_`（与读原图时的核对一致）。
-fn valid_directory(name: &str, cycle: &str) -> bool {
+pub(crate) fn valid_directory(name: &str, cycle: &str) -> bool {
     name.bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
         && name

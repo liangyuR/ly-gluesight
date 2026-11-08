@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import { Alert, Card, IconButton, Stack, StatusBadge, Text } from "qing-steel";
-import { displayReason, formatTime, historyApi, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, type HistoryDetailState, type PartDetail } from "../features/history";
+import { displayReason, formatTime, HistoryRecordActions, historyApi, partVerdict, sampleLabelText, sourceLabel, triggerModeLabel, type HistoryDetailState, type PartDetail } from "../features/history";
 import BurstHistoryDetail from "../features/history/components/BurstDetail";
 import { subscribe } from "../features/plc";
 import { Panel } from "../features/workspace/components";
@@ -21,32 +21,50 @@ export default function HistoryDetailPage() {
   const [neighbors, setNeighbors] = useState<Neighbors>({ older: null, newer: null });
   const [detail, setDetail] = useState<PartDetail | null>(null);
   const [error, setError] = useState("");
+  const overviewSerial = useRef(0);
+  const mutationBusy = useRef(false);
+  const setMutationBusy = useCallback((busy: boolean) => {
+    mutationBusy.current = busy;
+    if (busy) overviewSerial.current++;
+  }, []);
   const projects = useProjectDirectory();
+  const reload = useCallback(() => {
+    const serial = ++overviewSerial.current;
+    void historyApi.overview(Number(id)).then(next => {
+      if (serial === overviewSerial.current) { setDetail(next); setError(""); }
+    }).catch(cause => {
+      if (serial === overviewSerial.current) { setDetail(null); setError(errorText(cause)); }
+    });
+  }, [id]);
 
   useEffect(() => {
-    let alive = true; setDetail(null); setError("");
-    void historyApi.overview(Number(id)).then(d => alive && setDetail(d)).catch(e => alive && setError(errorText(e)));
-    return () => { alive = false; };
-  }, [id]);
+    setDetail(null); setError(""); reload();
+    return () => { overviewSerial.current++; };
+  }, [reload]);
   useEffect(() => {
     let alive = true; setNeighbors({ older: null, newer: null });
     void historyApi.neighbors(Number(id), listQuery).then(v => alive && setNeighbors(v)).catch(() => {});
     return () => { alive = false; };
   }, [id, JSON.stringify(listQuery)]);
   useEffect(() => {
-    let alive = true;
     const stop = subscribe<string>("history://updated", cycleId => {
       if (!detail || cycleId !== detail.summary.cycleId) return;
-      void historyApi.overview(detail.summary.id).then(next => alive && setDetail(next)).catch(e => alive && setError(errorText(e)));
+      if (mutationBusy.current) return;
+      reload();
     });
-    return () => { alive = false; stop(); };
-  }, [detail?.summary.id, detail?.summary.cycleId]);
+    return stop;
+  }, [detail?.summary.id, detail?.summary.cycleId, reload]);
+  useEffect(() => subscribe<number[]>("history://changed", ids => { if (!mutationBusy.current && ids.includes(Number(id))) reload(); }), [id, reload]);
 
   const openPart = (target: number | null) => { if (target != null) navigate("/history/" + target, { state: { ...state, scrollTop: undefined } }); };
-  if (!detail) return error ? <Alert tone="ng">{error}</Alert> : <Text muted>加载中…</Text>;
+  if (!detail || detail.summary.id !== Number(id)) return error ? <div className="stack"><IconButton onClick={back.onBack} aria-label={back.backLabel}><ArrowLeft size={18} /></IconButton><Alert tone="ng">{error}</Alert></div> : <Text muted>加载中…</Text>;
   const foreignProject = foreignProjectNote(detail.summary.projectId, projects);
-  if (detail.burst) return <BurstHistoryDetail detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} {...back} />;
-  return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} {...back} />;
+  const actions = <HistoryRecordActions key={detail.summary.id} id={detail.summary.id} tags={detail.summary.tags ?? []}
+      onBusyChange={setMutationBusy}
+      onSaved={tags => { overviewSerial.current++; setDetail(current => current?.summary.id === detail.summary.id ? { ...current, summary: { ...current.summary, tags } } : current); }}
+      onDeleted={result => navigate(state?.returnTo?.path ?? "/history", { replace: true, state: { historyNotice: { message: `已删除 ${result.deleted} 件历史记录。`, warnings: result.warnings } } })} />;
+  if (detail.burst) return <BurstHistoryDetail key={detail.summary.id} detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} actions={actions} {...back} />;
+  return <PlainHistoryDetail detail={detail} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} actions={actions} {...back} />;
 }
 
 /** 记录不属于当前项目时的提示；当前项目还没读到时不提示。 */
@@ -57,7 +75,7 @@ function foreignProjectNote(projectId: string, projects: ProjectDirectory): stri
 }
 
 /** 没有帧记录的记录（如工件身份分配失败）：只有整件结论与追溯信息。 */
-function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel, foreignProject }: { detail: PartDetail; neighbors: Neighbors; onOpen: (target: number | null) => void; onBack: () => void; backLabel: string; foreignProject: string }) {
+function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel, foreignProject, actions }: { detail: PartDetail; neighbors: Neighbors; onOpen: (target: number | null) => void; onBack: () => void; backLabel: string; foreignProject: string; actions: ReactNode }) {
   const s = detail.summary;
   return <div className="stack hist-detail">
     <Card className="detail-head">
@@ -74,6 +92,7 @@ function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel, fore
         </Stack>
         <StatusBadge tone={partVerdict(s).tone}>{partVerdict(s).label} · PLC {s.plcCode}{s.faultCode ? " / " + s.faultCode : ""}</StatusBadge>
       </Stack>
+      {actions}
     </Card>
     {foreignProject && <Alert title="其他项目的记录">{foreignProject}</Alert>}
     <Alert>本件没有帧记录，只能查看整件结论与事件。</Alert>

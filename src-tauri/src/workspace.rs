@@ -1457,6 +1457,13 @@ pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<
     Ok((count, warnings))
 }
 
+pub(crate) fn delete_history(app: &AppHandle, ids: &[i64]) -> Result<Vec<String>, String> {
+    let host = app.state::<WorkspaceHost>();
+    let store = app.state::<Store>();
+    let data = crate::storage::root(app);
+    host.comparisons.delete_history(&data, &store, ids)
+}
+
 #[tauri::command]
 pub async fn workspace_compare_original(
     app: AppHandle,

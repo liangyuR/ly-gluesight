@@ -426,6 +426,7 @@ enum InsertResult {
 }
 
 trait Sink {
+    fn deleted(&mut self, cycle: &str) -> Result<bool, String>;
     fn find(&mut self, cycle: &str) -> Result<Option<PartDetail>, String>;
     fn insert(&mut self, part: &RecordedPart) -> Result<InsertResult, String>;
     fn matches_record(&mut self, part: &RecordedPart) -> Result<bool, String>;
@@ -450,6 +451,12 @@ fn insert_store(store: &Store, part: &RecordedPart) -> Result<InsertResult, Stri
 struct AppSink<'a>(&'a AppHandle);
 
 impl Sink for AppSink<'_> {
+    fn deleted(&mut self, cycle: &str) -> Result<bool, String> {
+        self.0
+            .try_state::<Store>()
+            .ok_or("检测记录数据库尚未初始化")?
+            .history_cycle_deleted(cycle)
+    }
     fn find(&mut self, cycle: &str) -> Result<Option<PartDetail>, String> {
         self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.detail_by_cycle(cycle)
     }
@@ -975,6 +982,23 @@ fn apply_spooled(events: Vec<(u64, Event)>, cycle: &str, sink: &mut impl Sink, n
     let mut coordinator = Coordinator::new(1, 1);
     let mut notices = Vec::new();
     let receipts = events.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>();
+    match sink.deleted(cycle) {
+        Ok(true) => {
+            log(
+                &mut notices,
+                "info",
+                "人工删除的历史件",
+                cycle,
+                "忽略已删除工件的迟到追溯事件，不自动重建历史记录",
+            );
+            return (true, receipts, notices);
+        }
+        Ok(false) => (),
+        Err(error) => {
+            log(&mut notices, "err", "人工删除记录核对失败", cycle, error);
+            return (false, receipts, notices);
+        }
+    }
     let mut original = None;
     for (_, event) in &events {
         if let Event::Insert(part) = event {
@@ -1021,6 +1045,13 @@ fn apply_spooled(events: Vec<(u64, Event)>, cycle: &str, sink: &mut impl Sink, n
 
 fn recover_cycle(spool: &mut spool::Spool, cycle: &str, sink: &mut impl Sink, now: i64) -> Result<(bool, Vec<Notice>), String> {
     let events = spool.events(cycle)?;
+    if sink.deleted(cycle)? {
+        let (complete, receipts, notices) = apply_spooled(events, cycle, sink, now);
+        if complete {
+            spool.remove(&receipts)?;
+        }
+        return Ok((complete, notices));
+    }
     if !events.is_empty() && events.iter().all(|(_, event)| matches!(event, Event::Recording(_))) && sink.find(cycle)?.is_none() {
         let Event::Recording(first) = &events[0].1 else { unreachable!() };
         if events.iter().any(|(_, event)| !matches!(event, Event::Recording(outcome) if outcome == first)) {

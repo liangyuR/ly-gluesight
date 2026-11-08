@@ -10,14 +10,15 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
-    add_part_mode, db_err, extend_candidate_source, Store, DB_VERSION, PROJECT_DB_VERSION,
+    add_part_mode, add_part_tags, db_err, extend_candidate_source, Store, DB_VERSION,
+    PROJECT_DB_VERSION,
 };
 
 /// parts 中除 id、project_id、retest_of 外的列；9 版与 10 版相同。
 const PART_COLUMNS: &str = "ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
     reason, drain_ms, frames_expected, frames_received, triggers, software_version, judgement, frames, cycle_id, bundle_id, \
     delivery_state, delivery_updated_at, delivery_message, recording_state, recording_available, recording_directory, \
-    recording_errors, sample, source, expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement, mode";
+    recording_errors, sample, source, expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement, mode, tags";
 
 /// 一次合并的结果。`ids` 是来源记录编号 → 本机记录编号（含按 cycleId 映射到已有记录的）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -44,6 +45,19 @@ pub(super) fn prepare_source(path: &Path) -> Result<i64, String> {
         extend_candidate_source(&conn, path)?;
         add_part_mode(&conn)?;
     }
+    add_part_tags(&conn)?;
+    let mut tags = conn.prepare("SELECT tags FROM parts").map_err(db_err)?;
+    for row in tags
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(db_err)?
+    {
+        let tags: Vec<String> = serde_json::from_str(&row.map_err(db_err)?)
+            .map_err(|e| format!("来源记录的 Tag 格式无效：{e}"))?;
+        if super::history_edit::normalize_tags(&tags)? != tags {
+            return Err("来源记录的 Tag 未规范化，拒绝导入".into());
+        }
+    }
+    drop(tags);
     let (busy, log, done): (i64, i64, i64) = conn
         .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
@@ -284,7 +298,7 @@ pub(super) fn merge_rows(
         rows.collect::<Result<_, _>>().map_err(db_err)?
     };
     let main_max: i64 = conn
-        .query_row("SELECT COALESCE(MAX(id), 0) FROM main.parts", [], |r| {
+        .query_row("SELECT MAX(COALESCE((SELECT MAX(id) FROM main.parts), 0), COALESCE((SELECT MAX(id) FROM main.history_deletions), 0))", [], |r| {
             r.get(0)
         })
         .map_err(db_err)?;
@@ -303,7 +317,7 @@ pub(super) fn merge_rows(
             .prepare("SELECT id FROM main.parts WHERE cycle_id = ?1")
             .map_err(db_err)?;
         let mut existing_id = conn
-            .prepare("SELECT EXISTS (SELECT 1 FROM main.parts WHERE id = ?1)")
+            .prepare("SELECT EXISTS (SELECT 1 FROM main.parts WHERE id = ?1 UNION ALL SELECT 1 FROM main.history_deletions WHERE id = ?1)")
             .map_err(db_err)?;
         let mut record = conn
             .prepare("INSERT INTO temp.merge_ids (old, new, fresh) VALUES (?1, ?2, ?3)")
