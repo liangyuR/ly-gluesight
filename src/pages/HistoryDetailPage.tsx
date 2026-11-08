@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import { Alert, Card, IconButton, Stack, StatusBadge, Text } from "qing-steel";
@@ -42,7 +42,16 @@ export default function HistoryDetailPage() {
     return () => { alive = false; stop(); };
   }, [detail?.summary.id, detail?.summary.cycleId]);
 
-  const openPart = (target: number | null) => { if (target != null) navigate("/history/" + target, { state: location.state }); };
+  // 从分段页返回：详情读到后回到离开时的滚动位置（每次进入只恢复一次）
+  const restored = useRef("");
+  useEffect(() => {
+    if (!detail || state?.scrollTop == null || restored.current === location.key) return;
+    restored.current = location.key;
+    const top = state.scrollTop;
+    requestAnimationFrame(() => document.querySelector("main.main")?.scrollTo({ top }));
+  }, [detail, location.key]);
+
+  const openPart = (target: number | null) => { if (target != null) navigate("/history/" + target, { state: { ...state, scrollTop: undefined } }); };
   if (!detail) return error ? <Alert tone="ng">{error}</Alert> : <Text muted>加载中…</Text>;
   const foreignProject = foreignProjectNote(detail.summary.projectId, projects);
   if (detail.burst) return <BurstHistoryDetail detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} foreignProject={foreignProject} {...back} />;

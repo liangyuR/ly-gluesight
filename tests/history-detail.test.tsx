@@ -10,6 +10,7 @@ import { useWorkspace } from "../src/features/workspace/context";
 import { burstJudgement, burstPartDetail, burstWorkspaceView, frameMetrics, workspaceState } from "./fixtures";
 import type { Comparison } from "../src/features/workspace/types";
 import type { HistoryDetailState } from "../src/features/history/types";
+import { ReturnButton } from "../src/features/workspace/returnNavigation";
 
 vi.mock("../src/features/history/api", () => ({ historyApi: { overview: vi.fn(), frameDetail: vi.fn(), neighbors: vi.fn() } }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
@@ -21,7 +22,8 @@ let ws: ReturnType<typeof workspaceState>;
 let detail: ReturnType<typeof burstPartDetail>;
 type Entry = string | { pathname: string; state?: HistoryDetailState };
 function element(entry: Entry = "/history/1"){return <MemoryRouter initialEntries={[entry]}><Routes><Route path="/history/:id" element={<HistoryDetailPage />} />
-  <Route path="/history" element={<p>历史列表页</p>} /><Route path="/recipe/calibration" element={<p>试测页</p>} /></Routes></MemoryRouter>;}
+  <Route path="/history" element={<p>历史列表页</p>} /><Route path="/recipe/calibration" element={<p>试测页</p>} />
+  <Route path="/recipe/:recipeId/segments" element={<><p>分段页</p><ReturnButton /></>} /></Routes></MemoryRouter>;}
 function show(entry?: Entry) { return render(element(entry)); }
 function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleId:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
   originalVerdict:"NG_GAP",judgement:{...detail.judgement,verdict:"OK",reason:"候选合格"},measurements:[],createdAt:1,burst:null};}
@@ -162,6 +164,25 @@ describe("历史详情（段配方记录）", () => {
     expect(await screen.findByText(/从原图复测：这些段没有可用走廊，复测时不测/)).toBeVisible();
     expect(within(await screen.findByRole("list", { name: "没测的段" })).getByRole("listitem")).toHaveTextContent("第 2 段相机 CAM-2：尚未示教检测走廊");
     expect(screen.getByRole("button", { name: "从原图复测整件" })).toBeEnabled();
+  });
+
+  // 防的回归：从历史件去分段页调整后返回，选中的相机、帧组、复测配方和对照丢了，要重新找到问题帧再复测
+  it("选中帧组去分段页再返回 → 回到同一件的同一相机、帧组、复测配方与对照", async () => {
+    const yes = { available: true, reason: null };
+    const S = { id: "S", revision: 9, version: 2, name: "段配方" }, B = { id: "B", revision: 4, version: 1, name: "别的型号" };
+    vi.mocked(workspaceApi.historyCompareOptions).mockImplementation(async (_, candidate) =>
+      ({ candidate: candidate === "B" ? B : S, choices: [B, S], original: yes, rules: yes, raw: yes }));
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([{ ...comparison(), candidateId: "B", candidateRevision: 4 }]);
+    show("/history/1?comparison=compare-1");
+    expect(await screen.findByText("规则重判结果")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: /^帧组 4 · CAM-2 ·/ }));
+    await userEvent.click(screen.getByRole("button", { name: "调整分段" }));
+    expect(screen.getByText("分段页")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "返回历史件" }));
+    expect(await screen.findByText("规则重判结果")).toBeVisible();
+    expect(screen.getByLabelText("历史相机选择", { selector: "select" })).toHaveValue("1");
+    expect(screen.getByLabelText("帧组 4 各相机原图")).toBeVisible();
+    await waitFor(() => expect(screen.getByLabelText("复测配方", { selector: "select" })).toHaveValue("B"));
   });
 
   // 防的回归：原始记录只有选了候选对照才有辅助线，现场多配方并行时看不到；原始记录按记录自己的发布包取叠图
