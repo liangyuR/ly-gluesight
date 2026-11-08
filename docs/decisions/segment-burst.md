@@ -761,7 +761,8 @@
 | `workspace_confirm_skip` | `id, revision, segment, end: "head" \| "tail", frames` | WorkspaceView（写该段 `skipHead` / `skipTail`，不换计划版本） |
 | `workspace_pass_skip_suggest` | `id` | `PassSkipSuggestView`（每笔起涂跳过帧建议：示教件逐笔的起涂帧组数与建议值，只读，D-SB-62） |
 | `workspace_confirm_pass_skip` | `id, revision, head, tail` | WorkspaceView（写配方 `passSkip`，不换计划版本） |
-| `workspace_extract_corridor` | `id, revision, camera: String, imageId, roi: [u32; 4], guide: BrushGuide?, pointSpacingPx: f32?` | `Result<CenterlineResult, String>`（与 `workspace_extract_centerline` 相同：`path`、`message`、`failure`） |
+| `workspace_extract_corridor` | `id, revision, camera: String, imageId, roi: [u32; 4], guide: BrushGuide?, pointSpacingPx: f32?` | `Result<CenterlineResult, String>`（`path`、`message`、`failure`；只返回草稿，不改候选） |
+| `workspace_snap_corridor` | `id, revision, camera: String, segment, imageId, guide: BrushGuide` | `Result<{view?: WorkspaceView, message}, String>`（彩色示教帧的刷选：按胶色吸附并取色，走廊与颜色模型一次提交；没通过时 `view` 为空、候选不变） |
 | `recipe_capture_round_thumbs` | `roundId, cameraId: String` | `Result<tauri::ipc::Response, String>`（头部 [帧组数, 宽, 高, 通道数] u32 小端，之后每组 1 字节状态 + 宽 × 高 × 通道数字节，通道数 1 为灰度、3 为 RGB，见 `frame_align::thumb_strip`；D-SB-44、[color](color.md) CL-1） |
 | `workspace_segment_template_save` | `id, revision, segments: PathSegment[], cuts: u64[]` | WorkspaceView（段列表 + 示教件边界确认，原子写入，D-SB-44） |
 | `recipe_capture_frame_image` | `roundId, cameraId: String, seq`（帧组序号，从 1 起） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `recipe_capture_image`）；该相机缺这一帧时报错 |
@@ -772,7 +773,7 @@
 - **`recipe_plan_export` 前端不调用**：计划导出随 `WorkspaceView.plan.productionExport / candidateExport` 到达，发布确认框（`PlanPublishBody`）用它们列出候选与生产的对比。命令保留给脚本与工程师工具。
 - **相机示教的单帧试测没有命令**：若以后要在相机走廊示教里做单帧试测，由后端先登记命令与 `FrameMetrics` 的返回方式，前端再新增组件。
 
-- **走廊提取**：`workspace_extract_corridor` 按 `camera`（相机 id）找到 `plan.cameraTeaching` 里这台相机冻结的示教帧，`imageId` 必须等于该帧 id（不等报“图像已变化”），检测极性取这台相机 `inspect.detect`，没有时取配方默认。
+- **走廊提取**：`workspace_extract_corridor` 按 `camera`（相机 id）找到 `plan.cameraTeaching` 里这台相机冻结的示教帧，`imageId` 必须等于该帧 id（不等报“图像已变化”）；按亮度找两侧胶边，胶比背景暗还是亮自动判断，这台相机的检测极性（没有时取配方默认）只决定两种都像时先试哪种（[r2-algorithm](r2-algorithm.md) RA-6）。示教帧是彩色时，示教页的刷选改调 `workspace_snap_corridor`：与示教 MCP `teach_corridor` 的 `color` 同一吸附（偏移上限为笔刷半径），沿吸附后的走廊取色，走廊与颜色模型一起写进候选、只推进一次修订；缺像素当量、吸附或取色不可用、走廊核对不过时候选不变，原因放在 `message`。框选和灰度帧仍用 `workspace_extract_corridor`。
 - **读图命令的参数口径**：`camera` 在在线与历史命令里是计划相机下标（与 `FrameGroupView.cells`、`FrameRecord.camera` 一致）；示教轮次命令用 `cameraId`（与 `CaptureRound.cameras[].cameraId` 一致）。
 - **前端调用**：上表命令前端直接调用（`desktopCall`），失败按普通错误显示。
 

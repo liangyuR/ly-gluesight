@@ -386,74 +386,109 @@ fn highlight_union(p: (f32, f32), q: (f32, f32)) -> Option<(f32, f32)> {
 /// 法向取前后各 NORMAL_REACH 个采样点（3 px 一个）连线的垂线，笔划上的小折角不会把剖面拧斜。
 const NORMAL_REACH: usize = 4;
 
-/// 返回中线及笔划起点前、终点后截去的长度（px）。
-fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: &BrushGuide, spacing: f32) -> Result<(Vec<[f32; 2]>, [f32; 2]), ExtractionError> {
-    if !guide.radius_px.is_finite() || !(3.0..=150.0).contains(&guide.radius_px) || !(2..=4096).contains(&guide.points.len()) {
-        return Err("请沿胶路绘制笔划，笔刷半径需为 3–150 像素".into());
-    }
-    let [x, y, w, h] = roi;
-    if guide.points.iter().any(|p| !p[0].is_finite() || !p[1].is_finite() || p[0] < x as f32 || p[1] < y as f32 || p[0] >= (x+w) as f32 || p[1] >= (y+h) as f32) {
-        return Err("笔划必须位于图像选区内".into());
-    }
-    let length: f32 = guide.points.windows(2).map(|p| distance(p[0],p[1])).sum();
-    if !(8.0..=20000.0).contains(&length) { return Err("笔划长度需为 8–20000 像素".into()); }
-    let samples = resample(&guide.points, 3.0);
-    let radius = guide.radius_px.floor() as i32;
-    // 剖面比笔刷多伸出半个半径：笔划偏向胶的一侧时，另一侧的胶边落在笔刷外也能量到；候选中心仍须在笔刷内
-    let reach = radius + radius / 2;
-    let mut all = Vec::new();
-    let mut relaxed = Vec::new();
-    let mut widest = Vec::new();
-    for (i, &center) in samples.iter().enumerate() {
-        let before = samples[i.saturating_sub(NORMAL_REACH)];
-        let after = samples[(i+NORMAL_REACH).min(samples.len()-1)];
-        let len = distance(before, after);
-        if len < 0.5 { return Err(failure(center, "reversal", "标记处笔划折返，无法确定胶路方向。请沿单段胶路单向重画，或用笔划生成中线后手工修正。")); }
-        let normal = [-(after[1]-before[1])/len, (after[0]-before[0])/len];
-        let profile: Vec<_> = (-reach..=reach).map(|d| {
-            gray(image, [center[0]+normal[0]*d as f32, center[1]+normal[1]*d as f32]).map(|value| if polarity == Polarity::Dark { 255.0-value } else { value })
-        }).collect();
-        let smooth: Vec<_> = (0..profile.len()).map(|j| {
-            if j == 0 || j+1 == profile.len() { profile[j] } else {
-                match (profile[j-1], profile[j], profile[j+1]) { (Some(a),Some(b),Some(c)) => Some((a+2.0*b+c)/4.0), _ => None }
+/// 一种极性下各站的候选：`all` 是各自独立的半高胶段，`relaxed`、`widest` 另并入被反光劈开的相邻 / 隔一段的两段。
+struct Stations {
+    all: Vec<Vec<Candidate>>,
+    relaxed: Vec<Vec<Candidate>>,
+    widest: Vec<Vec<Candidate>>,
+    /// 找到候选的站数：胶对哪种极性连续成立
+    found: usize,
+}
+
+/// 剖面按极性翻成“胶为峰”后，找中心在笔刷内的半高胶段。
+fn spans(profile: &[Option<f32>], polarity: Polarity, reach: i32, radius: i32) -> Vec<(f32, f32)> {
+    let profile: Vec<_> = profile
+        .iter()
+        .map(|v| {
+            v.map(|value| {
+                if polarity == Polarity::Dark {
+                    255.0 - value
+                } else {
+                    value
+                }
+            })
+        })
+        .collect();
+    let smooth: Vec<_> = (0..profile.len())
+        .map(|j| {
+            if j == 0 || j + 1 == profile.len() {
+                profile[j]
+            } else {
+                match (profile[j - 1], profile[j], profile[j + 1]) {
+                    (Some(a), Some(b), Some(c)) => Some((a + 2.0 * b + c) / 4.0),
+                    _ => None,
+                }
             }
-        }).collect();
-        let mut spans: Vec<(f32, f32)> = Vec::new();
-        let mut j = 1;
-        while j+1 < smooth.len() {
-            let Some(peak) = smooth[j] else { j+=1; continue; };
-            let mut end = j;
-            while end+1 < smooth.len() && smooth[end+1] == Some(peak) { end+=1; }
-            if smooth[j-1].is_some_and(|v| v < peak) && end+1 < smooth.len() && smooth[end+1].is_some_and(|v| v < peak) {
-                let mut left = j-1;
-                let mut left_min = smooth[left].unwrap();
-                while left > 0 && smooth[left-1].is_some_and(|v| v <= peak) { left-=1; left_min=left_min.min(smooth[left].unwrap()); }
-                let mut right = end+1;
-                let mut right_min = smooth[right].unwrap();
-                while right+1 < smooth.len() && smooth[right+1].is_some_and(|v| v <= peak) { right+=1; right_min=right_min.min(smooth[right].unwrap()); }
-                let base = left_min.max(right_min);
-                if peak-base >= 8.0 {
-                    let half = base+(peak-base)*0.5;
-                    let mut l = j;
-                    while l > left && smooth[l-1].unwrap() >= half { l-=1; }
-                    let mut r = end;
-                    while r < right && smooth[r+1].unwrap() >= half { r+=1; }
-                    if l > 0 && r+1 < smooth.len() {
-                        if let (Some(lv),Some(rv)) = (smooth[l-1],smooth[r+1]) {
-                            if lv < half && rv < half {
-                                let a = l as f32 - (smooth[l].unwrap()-half)/(smooth[l].unwrap()-lv);
-                                let b = r as f32 + (smooth[r].unwrap()-half)/(smooth[r].unwrap()-rv);
-                                if b-a >= 2.0 { spans.push((a, b)); }
+        })
+        .collect();
+    let mut spans = Vec::new();
+    let mut j = 1;
+    while j + 1 < smooth.len() {
+        let Some(peak) = smooth[j] else {
+            j += 1;
+            continue;
+        };
+        let mut end = j;
+        while end + 1 < smooth.len() && smooth[end + 1] == Some(peak) {
+            end += 1;
+        }
+        if smooth[j - 1].is_some_and(|v| v < peak)
+            && end + 1 < smooth.len()
+            && smooth[end + 1].is_some_and(|v| v < peak)
+        {
+            let mut left = j - 1;
+            let mut left_min = smooth[left].unwrap();
+            while left > 0 && smooth[left - 1].is_some_and(|v| v <= peak) {
+                left -= 1;
+                left_min = left_min.min(smooth[left].unwrap());
+            }
+            let mut right = end + 1;
+            let mut right_min = smooth[right].unwrap();
+            while right + 1 < smooth.len() && smooth[right + 1].is_some_and(|v| v <= peak) {
+                right += 1;
+                right_min = right_min.min(smooth[right].unwrap());
+            }
+            let base = left_min.max(right_min);
+            if peak - base >= 8.0 {
+                let half = base + (peak - base) * 0.5;
+                let mut l = j;
+                while l > left && smooth[l - 1].unwrap() >= half {
+                    l -= 1;
+                }
+                let mut r = end;
+                while r < right && smooth[r + 1].unwrap() >= half {
+                    r += 1;
+                }
+                if l > 0 && r + 1 < smooth.len() {
+                    if let (Some(lv), Some(rv)) = (smooth[l - 1], smooth[r + 1]) {
+                        if lv < half && rv < half {
+                            let a =
+                                l as f32 - (smooth[l].unwrap() - half) / (smooth[l].unwrap() - lv);
+                            let b =
+                                r as f32 + (smooth[r].unwrap() - half) / (smooth[r].unwrap() - rv);
+                            if b - a >= 2.0 {
+                                spans.push((a, b));
                             }
                         }
                     }
                 }
             }
-            j=end+1;
         }
-        let inside = |(a, b): &(f32, f32)| ((a+b)*0.5-reach as f32).abs() <= radius as f32;
-        spans.retain(inside);
-        spans.sort_by(|x, y| x.0.total_cmp(&y.0));
+        j = end + 1;
+    }
+    spans.retain(|(a, b)| ((a + b) * 0.5 - reach as f32).abs() <= radius as f32);
+    spans.sort_by(|x, y| x.0.total_cmp(&y.0));
+    spans
+}
+
+type Profile = ([f32; 2], [f32; 2], Vec<Option<f32>>);
+
+fn stations(profiles: &[Profile], polarity: Polarity, reach: i32, radius: i32) -> Stations {
+    let (mut all, mut relaxed, mut widest, mut found) = (Vec::new(), Vec::new(), Vec::new(), 0);
+    for (center, normal, profile) in profiles {
+        let spans = self::spans(profile, polarity, reach, radius);
+        found += usize::from(!spans.is_empty());
+        let inside = |(a, b): &(f32, f32)| ((a + b) * 0.5 - reach as f32).abs() <= radius as f32;
         let candidate = |(a, b): (f32, f32)| {
             let offset = (a+b)*0.5-reach as f32;
             (offset, b-a, [center[0]+normal[0]*offset,center[1]+normal[1]*offset])
@@ -472,6 +507,113 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
         widest.push(candidates.iter().copied().chain(wide.into_iter().map(candidate)).collect::<Vec<_>>());
         all.push(candidates);
     }
+    Stations {
+        all,
+        relaxed,
+        widest,
+        found,
+    }
+}
+
+/// 另一种极性找到候选的站数比配方极性多出这个比例（按笔划站数）时，先按它提取。
+const POLARITY_MARGIN: f32 = 0.1;
+
+/// 返回中线及笔划起点前、终点后截去的长度（px）。
+/// 胶比背景暗还是亮不只看配方极性：两种极性各找一遍候选，另一种明显在更多站成立时先按它提取，否则先按配方极性；
+/// 先试的找不到边缘或连不上时再试另一种。报多条同样可信的候选时不换——另一极性下多半是两条胶之间的缝。
+fn extract_guided(
+    image: &FrameImage,
+    roi: [u32; 4],
+    polarity: Polarity,
+    guide: &BrushGuide,
+    spacing: f32,
+) -> Result<(Vec<[f32; 2]>, [f32; 2]), ExtractionError> {
+    if !guide.radius_px.is_finite()
+        || !(3.0..=150.0).contains(&guide.radius_px)
+        || !(2..=4096).contains(&guide.points.len())
+    {
+        return Err("请沿胶路绘制笔划，笔刷半径需为 3–150 像素".into());
+    }
+    let [x, y, w, h] = roi;
+    if guide.points.iter().any(|p| {
+        !p[0].is_finite()
+            || !p[1].is_finite()
+            || p[0] < x as f32
+            || p[1] < y as f32
+            || p[0] >= (x + w) as f32
+            || p[1] >= (y + h) as f32
+    }) {
+        return Err("笔划必须位于图像选区内".into());
+    }
+    let length: f32 = guide.points.windows(2).map(|p| distance(p[0], p[1])).sum();
+    if !(8.0..=20000.0).contains(&length) {
+        return Err("笔划长度需为 8–20000 像素".into());
+    }
+    let samples = resample(&guide.points, 3.0);
+    let radius = guide.radius_px.floor() as i32;
+    // 剖面比笔刷多伸出半个半径：笔划偏向胶的一侧时，另一侧的胶边落在笔刷外也能量到；候选中心仍须在笔刷内
+    let reach = radius + radius / 2;
+    let mut profiles: Vec<Profile> = Vec::with_capacity(samples.len());
+    for (i, &center) in samples.iter().enumerate() {
+        let before = samples[i.saturating_sub(NORMAL_REACH)];
+        let after = samples[(i + NORMAL_REACH).min(samples.len() - 1)];
+        let len = distance(before, after);
+        if len < 0.5 {
+            return Err(failure(center, "reversal", "标记处笔划折返，无法确定胶路方向。请沿单段胶路单向重画，或用笔划生成中线后手工修正。"));
+        }
+        let normal = [-(after[1] - before[1]) / len, (after[0] - before[0]) / len];
+        let profile = (-reach..=reach)
+            .map(|d| {
+                gray(
+                    image,
+                    [
+                        center[0] + normal[0] * d as f32,
+                        center[1] + normal[1] * d as f32,
+                    ],
+                )
+            })
+            .collect();
+        profiles.push((center, normal, profile));
+    }
+    let other = if polarity == Polarity::Dark {
+        Polarity::Light
+    } else {
+        Polarity::Dark
+    };
+    let (configured, flipped) = (
+        stations(&profiles, polarity, reach, radius),
+        stations(&profiles, other, reach, radius),
+    );
+    let margin = (POLARITY_MARGIN * samples.len() as f32).ceil() as usize;
+    let [first, second] = if flipped.found > configured.found + margin {
+        [flipped, configured]
+    } else {
+        [configured, flipped]
+    };
+    match solve_stations(&first, &samples, guide.radius_px, spacing) {
+        Err(ExtractionError::Failed(f))
+            if f.reason == "missing_edges" || f.reason == "discontinuity" =>
+        {
+            solve_stations(&second, &samples, guide.radius_px, spacing)
+                .map_err(|_| ExtractionError::Failed(f))
+        }
+        result => result,
+    }
+}
+
+/// 在一种极性的各站候选上连出中线：头尾找不到胶边的站截掉，逐站连不上时依次并入反光劈开的段，再从断处裁一次。
+fn solve_stations(
+    stations: &Stations,
+    samples: &[[f32; 2]],
+    radius: f32,
+    spacing: f32,
+) -> Result<(Vec<[f32; 2]>, [f32; 2]), ExtractionError> {
+    let Stations {
+        all,
+        relaxed,
+        widest,
+        ..
+    } = stations;
     // 笔划两头伸出胶路（喷嘴、图像边缘）时，两头各至多四分之一的采样点找不到胶边就截掉，截去的长度交给调用方提示
     let mut longest = 0..0;
     let mut start = 0;
@@ -490,7 +632,7 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
     // 并集只在逐站连不上时重试：先只并相邻两段；仍连不上，再并隔着一段（高光里的小暗点）的两段
     let solve = |keep: std::ops::Range<usize>| {
         let (samples, all) = (&samples[keep.clone()], &all[keep.clone()]);
-        let mut result = trace(all, samples, guide.radius_px, spacing);
+        let mut result = trace(all, samples, radius, spacing);
         for retry in [&relaxed[keep.clone()], &widest[keep.clone()]] {
             let Err(ExtractionError::Failed(f)) = &result else {
                 break;
@@ -499,7 +641,7 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
             {
                 break;
             }
-            match trace(retry, samples, guide.radius_px, spacing) {
+            match trace(retry, samples, radius, spacing) {
                 Ok(path) => return Ok(path),
                 Err(ExtractionError::Failed(g)) if g.reason == "discontinuity" => {
                     if g.abrupt_widening {

@@ -1,6 +1,39 @@
 use super::{extract, BrushGuide, ExtractionError};
 use crate::{frame::FrameImage, recipe::Polarity};
 
+// 防的回归：刷选只按配方极性找胶边，红胶在黑色治具上比背景亮（配方 dark 下是谷不是峰），胶路明显却报找不到两侧边缘
+#[test]
+fn bright_bead_on_dark_background_is_extracted_although_recipe_polarity_is_dark() {
+    let (width, height) = (200, 100);
+    let pixels = (0..height)
+        .flat_map(|y| {
+            (0..width).map(move |_| {
+                if (y as f32 - 50.0).abs() <= 6.0 {
+                    190
+                } else {
+                    35
+                }
+            })
+        })
+        .collect();
+    let image = FrameImage::new(width, height, pixels);
+    let guide = BrushGuide {
+        points: vec![[20.0, 45.0], [180.0, 46.0]],
+        radius_px: 30.0,
+    };
+    let path = extract(
+        &image,
+        [0, 0, width, height],
+        Polarity::Dark,
+        Some(&guide),
+        10.0,
+    )
+    .unwrap()
+    .path;
+    assert!(path.len() >= 2);
+    assert!(path.iter().all(|p| (p[1] - 50.0).abs() < 1.0), "{path:?}");
+}
+
 #[test]
 fn equally_plausible_branches_are_rejected_even_when_their_tails_merge() {
     let (width, height) = (200, 100);

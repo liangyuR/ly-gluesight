@@ -41,6 +41,7 @@ mod reproduce;
 #[cfg(test)]
 mod segment_corridor_tests;
 mod segment_remap;
+mod snap;
 #[cfg(test)]
 mod teaching_transaction_tests;
 mod workflow;
