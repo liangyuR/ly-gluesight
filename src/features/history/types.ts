@@ -145,3 +145,33 @@ export interface RejudgeResult {
   changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string; flags: Flags | null }[];
   skipReasons: { id: number; sn: string; ts: number; kind: SkipKind; reason: string }[];
 }
+
+/** 历史件导出包：导出结果 */
+export interface HistoryPackageExported {
+  path: string;
+  bytes: number;
+  parts: number;
+  withImages: number;
+  notes: string[];
+}
+
+/** 历史件导出包：导入前读到的清单；duplicates 为本机已有同一 cycleId、导入时跳过的件数 */
+export interface HistoryPackagePreview {
+  path: string;
+  bytes: number;
+  sourceProject: string;
+  sourceProjectName: string;
+  exportedAt: number;
+  appVersion: string;
+  parts: number;
+  withImages: number;
+  duplicates: number;
+  notes: string[];
+}
+
+export interface HistoryPackageImported {
+  imported: number;
+  ids: number[];
+  skipped: { sn: string; ts: number; cycleId: string }[];
+  notes: string[];
+}

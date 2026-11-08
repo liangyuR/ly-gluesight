@@ -74,3 +74,7 @@
 /* 复测按钮不能用的原因 */
 .compare-reasons { margin: 0; padding-left: 1.2em; font-size: 12px; color: var(--on-surface-variant); }
 .compare-reasons li + li { margin-top: 2px; }
+.hist-package-list { margin: 0; padding-left: 1.2em; font-size: 12.5px; color: var(--on-surface-variant); }
+.hist-package-list li + li { margin-top: 2px; }
+.hist-package-skipped { max-height: 200px; overflow: auto; }
+.hist-package-path { word-break: break-all; }

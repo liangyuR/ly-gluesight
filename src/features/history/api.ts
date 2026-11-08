@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { HistoryPage, HistoryQuery, PartDetail, RejudgeRequest, RejudgeResult } from "./types";
+import type { HistoryPackageExported, HistoryPackageImported, HistoryPackagePreview, HistoryPage, HistoryQuery, PartDetail, RejudgeRequest, RejudgeResult } from "./types";
 import { desktopCall } from "../../lib/desktop";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
@@ -18,4 +18,9 @@ export const historyApi = {
     desktopCall<RejudgeResult>("history_rejudge", { request }),
   exportCsv: (query: HistoryQuery) => desktopCall<string>("history_export", { query }),
   reveal: (path: string) => desktopCall<void>("reveal_path", { path }),
+  packageTarget: (count: number) => desktopCall<string | null>("history_package_target", { count }),
+  packageExport: (ids: number[], includeImages: boolean, path: string, taskId: string) =>
+    desktopCall<HistoryPackageExported>("history_package_export", { ids, includeImages, path, taskId }),
+  packagePick: () => desktopCall<HistoryPackagePreview | null>("history_package_pick"),
+  packageImport: (path: string, taskId: string) => desktopCall<HistoryPackageImported>("history_package_import", { path, taskId }),
 };

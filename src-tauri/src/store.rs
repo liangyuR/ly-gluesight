@@ -1870,7 +1870,7 @@ impl Store {
         ).optional().map_err(db_err)
     }
 
-    /// 删除本机全部项目里早于 ts 的记录；返回删除件数与其中非当前项目记录的录制目录（项目、来源、目录），
+    /// 删除本机全部项目里早于 ts 的记录；返回删除件数与其中非当前项目记录、导入件的录制目录（项目、来源、目录），
     /// 这些原图没有在运行的录制滚动清理，由调用方随记录一起删。
     pub fn purge_before(
         &self,
@@ -1880,10 +1880,10 @@ impl Store {
         let tx = conn.transaction().map_err(db_err)?;
         let orphaned = {
             let mut stmt = tx
-                .prepare("SELECT project_id, source, recording_directory FROM parts WHERE ts < ?1 AND project_id != ?2 AND recording_directory IS NOT NULL")
+                .prepare("SELECT project_id, source, recording_directory FROM parts WHERE ts < ?1 AND recording_directory IS NOT NULL")
                 .map_err(db_err)?;
             let rows = stmt
-                .query_map(params![ts, self.project], |row| {
+                .query_map(params![ts], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         enum_column::<RecordSource>(row, 1)?,
@@ -1891,7 +1891,13 @@ impl Store {
                     ))
                 })
                 .map_err(db_err)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
+            let rows = rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+            rows.into_iter()
+                .filter(|(project, _, directory)| {
+                    *project != self.project
+                        || crate::history_package::imported_recording(Path::new(directory))
+                })
+                .collect()
         };
         let count = tx
             .execute("DELETE FROM parts WHERE ts < ?1", [ts])
@@ -1950,6 +1956,7 @@ pub fn recorded_projects(path: &Path) -> Result<BTreeSet<String>, String> {
 }
 
 mod merge;
+mod package;
 
 #[cfg(test)]
 #[path = "store/tests.rs"]

@@ -28,7 +28,7 @@ pub struct Merged {
 }
 
 /// 打开来源库做合并前的准备：核对版本，9 版补齐旧格式升级（调试来源、维护模式列），合并 WAL。
-fn prepare_source(path: &Path) -> Result<i64, String> {
+pub(super) fn prepare_source(path: &Path) -> Result<i64, String> {
     let conn = Connection::open(path).map_err(db_err)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(db_err)?;
@@ -56,7 +56,7 @@ fn prepare_source(path: &Path) -> Result<i64, String> {
     Ok(version)
 }
 
-fn has_table(conn: &Connection, table: &str) -> Result<bool, String> {
+pub(super) fn has_table(conn: &Connection, table: &str) -> Result<bool, String> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM src.sqlite_master WHERE type='table' AND name=?1)",
         [table],
@@ -251,6 +251,29 @@ fn merge_attached(
     if already {
         return Err(format!("项目 {project} 的记录已经合并过"));
     }
+    conn.execute_batch("BEGIN IMMEDIATE;").map_err(db_err)?;
+    let merged = merge_rows(conn, project, keep_ids)?;
+    conn.execute(
+        "INSERT INTO project_merges (project_id, merged_at, inserted, duplicates, installed) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![project, ly_plc::now_ms(), merged.inserted as i64, merged.duplicates as i64, !installing],
+    ).map_err(db_err)?;
+    conn.execute(
+        "INSERT INTO project_merge_ids (project_id, old, new) SELECT ?1, old, new FROM temp.merge_ids",
+        [project],
+    )
+    .map_err(db_err)?;
+    conn.execute_batch("DROP TABLE temp.merge_ids; COMMIT;")
+        .map_err(db_err)?;
+    Ok(merged)
+}
+
+/// 在调用方已开的事务里把附加库 `src` 的记录并入项目 `project`：按 cycleId 去重、分配本机编号（编号对照留在
+/// `temp.merge_ids`，调用方用完删除），带入配方快照（同修订号内容不同则拒绝）、候选实例与帧记录。
+pub(super) fn merge_rows(
+    conn: &Connection,
+    project: &str,
+    keep_ids: bool,
+) -> Result<Merged, String> {
     let sources: Vec<(i64, Option<String>)> = {
         let mut stmt = conn
             .prepare("SELECT id, cycle_id FROM src.parts ORDER BY id")
@@ -273,7 +296,7 @@ fn merge_attached(
     };
     let mut assigned = HashSet::new();
     let mut merged = Merged::default();
-    conn.execute_batch("BEGIN IMMEDIATE; CREATE TEMP TABLE merge_ids (old INTEGER PRIMARY KEY, new INTEGER NOT NULL, fresh INTEGER NOT NULL);")
+    conn.execute_batch("CREATE TEMP TABLE merge_ids (old INTEGER PRIMARY KEY, new INTEGER NOT NULL, fresh INTEGER NOT NULL);")
         .map_err(db_err)?;
     {
         let mut existing_cycle = conn
@@ -381,16 +404,5 @@ fn merge_attached(
              FROM src.{table} f JOIN temp.merge_ids m ON m.old = f.part_id WHERE m.fresh = 1;"
         )).map_err(db_err)?;
     }
-    conn.execute(
-        "INSERT INTO project_merges (project_id, merged_at, inserted, duplicates, installed) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![project, ly_plc::now_ms(), merged.inserted as i64, merged.duplicates as i64, !installing],
-    ).map_err(db_err)?;
-    conn.execute(
-        "INSERT INTO project_merge_ids (project_id, old, new) SELECT ?1, old, new FROM temp.merge_ids",
-        [project],
-    )
-    .map_err(db_err)?;
-    conn.execute_batch("DROP TABLE temp.merge_ids; COMMIT;")
-        .map_err(db_err)?;
     Ok(merged)
 }

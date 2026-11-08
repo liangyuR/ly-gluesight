@@ -86,18 +86,20 @@ export function useOperation() {
   return operation;
 }
 
-export function OperationStatus({ operation, label }: { operation: Operation; label: string }) {
+export type OperationLabels = Partial<Record<OperationProgress["stage"] | "cancelling", string>>;
+
+export function OperationStatus({ operation, label, labels: custom, unit = "个相机帧" }: { operation: Operation; label: string; labels?: OperationLabels; unit?: string }) {
   const state = useSyncExternalStore(operation.subscribe, operation.snapshot);
   if (!state) return null;
   const { progress, cancelling, registered, error } = state;
   const done = terminal(progress.stage);
   const percent = progress.stage === "completed" ? 100 : progress.total > 0 ? Math.min(99, Math.floor(progress.completed / progress.total * 100)) : done ? 0 : undefined;
   return <div className="wp-operation" role="status" aria-label={`${label}进度`}>
-    <div className="wp-operation-line"><strong>{label} · {cancelling && !done ? "正在取消，等待当前帧结束" : labels[progress.stage]}</strong>
+    <div className="wp-operation-line"><strong>{label} · {cancelling && !done ? custom?.cancelling ?? "正在取消，等待当前帧结束" : custom?.[progress.stage] ?? labels[progress.stage]}</strong>
       {!done && <Button size="sm" disabled={!registered || cancelling || progress.stage === "saving"} onClick={() => void operation.cancel()}>{progress.stage === "saving" ? "保存中" : "取消"}</Button>}
     </div>
     <progress aria-label={`${label}完成进度`} max={100} value={percent} />
-    <span>{progress.total > 0 ? `已处理 ${progress.completed} / ${progress.total} 个相机帧 · ` : ""}已用 {(progress.elapsedMs / 1000).toFixed(1)} 秒{progress.failed > 0 ? ` · 测量失败 ${progress.failed}` : ""}{progress.skipped > 0 ? ` · 跳过 ${progress.skipped}` : ""}</span>
+    <span>{progress.total > 0 ? `已处理 ${progress.completed} / ${progress.total} ${unit} · ` : ""}已用 {(progress.elapsedMs / 1000).toFixed(1)} 秒{progress.failed > 0 ? ` · 测量失败 ${progress.failed}` : ""}{progress.skipped > 0 ? ` · 跳过 ${progress.skipped}` : ""}</span>
     {error && <span role="alert">{error}</span>}
   </div>;
 }

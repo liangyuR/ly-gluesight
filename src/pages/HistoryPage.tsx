@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Download, History, RefreshCw, Scale } from "lucide-react";
+import { Download, History, Package, PackageOpen, RefreshCw, Scale } from "lucide-react";
 import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, SegmentedControl, Select, Stack, StatusBadge, Table, Text, TextField, type TableColumn } from "qing-steel";
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
@@ -8,7 +8,7 @@ import { useProjectDirectory } from "../features/project/hooks";
 import { projectLabel, recordProject } from "../features/project/rules";
 import { errorText } from "../lib/errors";
 import { flagBadges } from "../features/plan/vis";
-import { displayReason, formatTime, historyApi, partVerdict, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, type HistoryFilter, type HistoryPage as Page, type HistoryQuery, type HistoryScope, type PartMode } from "../features/history";
+import { displayReason, formatTime, HistoryExportDialog, HistoryImportDialog, historyApi, partVerdict, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, type HistoryFilter, type HistoryPackagePreview, type HistoryPage as Page, type HistoryQuery, type HistoryScope, type PartMode } from "../features/history";
 
 type Item = Page["items"][number];
 
@@ -63,9 +63,14 @@ export default function HistoryPage() {
   const [exporting, setExporting] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const [rejudge, setRejudge] = useState<{ query: HistoryQuery; total: number } | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [packageIds, setPackageIds] = useState<number[] | null>(null);
+  const [packagePreview, setPackagePreview] = useState<HistoryPackagePreview | null>(null);
+  const [picking, setPicking] = useState(false);
   const requestSerial = useRef(0);
   const exportPending = useRef(false);
   const revealPending = useRef(false);
+  const pickPending = useRef(false);
   const alive = useRef(true);
 
   const currentId = projects.current?.id ?? null;
@@ -104,6 +109,7 @@ export default function HistoryPage() {
     setExported(null);
     setOperationError("");
     setRejudge(null);
+    setSelected([]);
   }, [query]);
 
   const load = useCallback(() => {
@@ -153,9 +159,23 @@ export default function HistoryPage() {
     }
   };
 
+  const pickPackage = async () => {
+    if (pickPending.current) return;
+    pickPending.current = true; setPicking(true); setOperationError("");
+    try {
+      const preview = await historyApi.packagePick();
+      if (alive.current && preview) setPackagePreview(preview);
+    } catch (e) {
+      if (alive.current) setOperationError(errorText(e));
+    } finally {
+      pickPending.current = false;
+      if (alive.current) setPicking(false);
+    }
+  };
+
   const openRow = (e: MouseEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
-    if (target.closest("button, a")) return;
+    if (target.closest("button, a, input, label, .qs-table-checkbox")) return;
     const id = target.closest("tbody tr")?.querySelector<HTMLElement>("[data-history-id]")?.dataset.historyId;
     if (id) navigate(`/history/${id}`);
   };
@@ -287,6 +307,8 @@ export default function HistoryPage() {
               <Button leadingIcon={<Download size={15} />} onClick={() => void exportCsv()} disabled={exporting || loading || stale || !page?.total}>
                 {exporting ? "导出中…" : "导出 CSV"}
               </Button>
+              <Button leadingIcon={<Package size={15} />} onClick={() => setPackageIds(selected.map(Number))} disabled={!selected.length}>导出历史件（{selected.length}）</Button>
+              <Button leadingIcon={<PackageOpen size={15} />} onClick={() => void pickPackage()} disabled={picking}>{picking ? "正在读取…" : "导入历史件"}</Button>
             </Stack>
           </div>
           {scope === "debug" && <Text as="p" variant="label" muted>候选调试仅供离线测试，不作为生产验收或生产统计。</Text>}
@@ -311,6 +333,11 @@ export default function HistoryPage() {
             rows={page?.items ?? []}
             columns={columns}
             rowKey={(p) => String(p.id)}
+            selectable
+            selectedKeys={selected}
+            onSelectionChange={setSelected}
+            isRowSelectable={(p) => p.source === "real" && !!p.cycleId && !!p.flags}
+            getRowLabel={(p) => `SN ${p.sn || p.id}`}
             loading={!page && (loading || (projectBlocked && projects.loading))}
             emptyState={page ? <EmptyState icon={<History />} title="没有符合条件的记录" description={hasFilters ? "试试扩大日期范围，或重置筛选。" : "当前来源今天暂无记录，可扩大日期范围查看。"} /> : <></>}
           />
@@ -328,6 +355,8 @@ export default function HistoryPage() {
         )}
       </Card>
       {rejudge && <RejudgeDialog query={rejudge.query} total={rejudge.total} onClose={() => setRejudge(null)} />}
+      {packageIds && <HistoryExportDialog ids={packageIds} onClose={() => setPackageIds(null)} />}
+      {packagePreview && <HistoryImportDialog preview={packagePreview} projectName={projects.current?.name} onClose={() => setPackagePreview(null)} onImported={load} />}
     </div>
   );
 }
