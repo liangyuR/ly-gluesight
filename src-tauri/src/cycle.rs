@@ -2808,11 +2808,15 @@ impl Machine {
         // 记录写不写得进都照常回写结果：追溯尽力而为，不挡 PLC 交互
         let recorded = match record {
             Ok(part) => {
+                let (recording, missing) = match self.no_part_recording(&sn, &judgement) {
+                    Ok(recording) => (recording, Ok(())),
+                    Err(error) => (None, Err(error)),
+                };
                 host(&app)
                     .audit
-                    .insert_durable(part, host(&app).settings().timeouts.proc())
+                    .insert_durable(part, recording, host(&app).settings().timeouts.proc())
                     .await;
-                self.record_without_part(&sn, &judgement)
+                missing
             }
             Err(error) => Err(error),
         };
@@ -3083,30 +3087,40 @@ impl Machine {
     }
 
     fn record_without_part(&self, sn: &str, judgement: &Judgement) -> Result<(), String> {
-        if self.part.as_ref().is_none_or(|part| part.sn != sn) {
-            let cycle_id = self.current_cycle_id.clone().ok_or("工件身份缺失")?;
-            let off = crate::site::record_mode(&self.app) == crate::settings::RecordMode::Off;
-            host(&self.app)
-                .audit
-                .recording(crate::recorder::RecordingOutcome {
-                    cycle_id,
-                    directory: None,
-                    files: Vec::new(),
-                    retention_errors: Vec::new(),
-                    available: false,
-                    state: if off {
-                        crate::recorder::RecordingState::Off
-                    } else {
-                        crate::recorder::RecordingState::Failed
-                    },
-                    errors: if off {
-                        Vec::new()
-                    } else {
-                        vec![format!("接件校验未通过，未开始录制：{}", judgement.reason)]
-                    },
-                });
+        if let Some(outcome) = self.no_part_recording(sn, judgement)? {
+            host(&self.app).audit.recording(outcome);
         }
         Ok(())
+    }
+
+    /// 没建立检测的件（接件被拒）没有录制，补一条录制结果；建立了检测的件返回 None。
+    fn no_part_recording(
+        &self,
+        sn: &str,
+        judgement: &Judgement,
+    ) -> Result<Option<crate::recorder::RecordingOutcome>, String> {
+        if self.part.as_ref().is_some_and(|part| part.sn == sn) {
+            return Ok(None);
+        }
+        let cycle_id = self.current_cycle_id.clone().ok_or("工件身份缺失")?;
+        let off = crate::site::record_mode(&self.app) == crate::settings::RecordMode::Off;
+        Ok(Some(crate::recorder::RecordingOutcome {
+            cycle_id,
+            directory: None,
+            files: Vec::new(),
+            retention_errors: Vec::new(),
+            available: false,
+            state: if off {
+                crate::recorder::RecordingState::Off
+            } else {
+                crate::recorder::RecordingState::Failed
+            },
+            errors: if off {
+                Vec::new()
+            } else {
+                vec![format!("接件校验未通过，未开始录制：{}", judgement.reason)]
+            },
+        }))
     }
 
     /// 没建立检测的件（拒收或维护模式未检）按会话锁存的模式记。

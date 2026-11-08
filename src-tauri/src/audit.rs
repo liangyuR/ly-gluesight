@@ -525,10 +525,17 @@ impl Audit {
         }
     }
 
-    async fn persist_async(&self, event: Event, timeout: Duration) {
-        let cycle = event.cycle_id().to_string();
+    /// 在后台线程按顺序落盘；超过时限只记告警、不等，调用方（节拍）不被磁盘或锁卡住。
+    async fn persist_async(&self, events: Vec<Event>, timeout: Duration) {
+        let Some(cycle) = events.first().map(|event| event.cycle_id().to_string()) else {
+            return;
+        };
         let audit = self.clone();
-        let task = tauri::async_runtime::spawn_blocking(move || audit.persist(event));
+        let task = tauri::async_runtime::spawn_blocking(move || {
+            for event in events {
+                audit.persist(event);
+            }
+        });
         if timeout.is_zero() {
             app_log(
                 &self.app,
@@ -558,14 +565,24 @@ impl Audit {
         }
     }
 
-    pub async fn insert_durable(&self, part: RecordedPart, timeout: Duration) {
-        self.persist_async(Event::Insert(Box::new(part)), timeout)
-            .await
+    /// 主记录与（没建立检测的件的）录制结果一起在后台落盘，保持先主记录后录制的顺序。
+    pub async fn insert_durable(
+        &self,
+        part: RecordedPart,
+        recording: Option<RecordingOutcome>,
+        timeout: Duration,
+    ) {
+        let mut events = vec![Event::Insert(Box::new(part))];
+        if let Some(outcome) = recording {
+            log_recording(&self.app, &outcome);
+            events.push(Event::Recording(outcome));
+        }
+        self.persist_async(events, timeout).await
     }
 
     pub async fn delivery_durable(&self, cycle_id: &str, delivery: PlcDelivery) {
         self.persist_async(
-            Event::Delivery(cycle_id.into(), delivery),
+            vec![Event::Delivery(cycle_id.into(), delivery)],
             Duration::from_secs(5),
         )
         .await
@@ -578,7 +595,7 @@ impl Audit {
         drain_ms: Option<u64>,
     ) {
         self.persist_async(
-            Event::Submission(cycle_id.into(), delivery, drain_ms),
+            vec![Event::Submission(cycle_id.into(), delivery, drain_ms)],
             Duration::from_secs(5),
         )
         .await

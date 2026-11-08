@@ -411,7 +411,7 @@ fn manually_deleted_history_consumes_stale_spool_without_resurrecting_or_blockin
 }
 
 #[test]
-fn oversized_event_set_aside_without_blocking_later_events() {
+fn oversized_event_set_aside_without_blocking_later_events_and_identified_after_reopen() {
     let dir = TestDir::new();
     let (spool, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
     let (spool, backlog, barriers) = (
@@ -433,6 +433,9 @@ fn oversized_event_set_aside_without_blocking_later_events() {
     let spool = spool.lock().unwrap();
     assert_eq!(spool.cycles(), BTreeSet::from(["next".to_string()]));
     assert!(spool.quarantined_cycles().any(|cycle| cycle == "huge"));
+    drop(spool);
+    let (reopened, _) = spool::Spool::open(dir.0.join("spool")).unwrap();
+    assert!(reopened.quarantined_cycles().any(|cycle| cycle == "huge"));
 }
 
 #[test]

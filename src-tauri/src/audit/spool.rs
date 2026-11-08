@@ -373,19 +373,28 @@ impl Spool {
     }
 
     fn read_path(&self, path: &Path) -> Result<Event, String> {
+        self.read_limited(path, MAX_EVENT_BYTES)
+    }
+
+    /// 隔离件里有超过单事件上限、直接写进来的事件，按 spool 总容量读，重启后仍能识别并保护原图。
+    fn read_quarantined(&self, path: &Path) -> Result<Event, String> {
+        self.read_limited(path, MAX_BYTES)
+    }
+
+    fn read_limited(&self, path: &Path, limit: u64) -> Result<Event, String> {
         ancestors(path.parent().ok_or("审计文件缺少父目录")?)?;
         plain(path, false)?;
         let bytes = path.metadata().map_err(|error| error.to_string())?.len();
-        if bytes > MAX_EVENT_BYTES {
+        if bytes > limit {
             return Err("审计事件超过文件大小限制".into());
         }
         let mut content = Vec::new();
         std::fs::File::open(&path)
             .map_err(|error| error.to_string())?
-            .take(MAX_EVENT_BYTES + 1)
+            .take(limit + 1)
             .read_to_end(&mut content)
             .map_err(|error| error.to_string())?;
-        if content.len() as u64 > MAX_EVENT_BYTES {
+        if content.len() as u64 > limit {
             return Err("审计事件读取超过大小限制".into());
         }
         let unreadable =
@@ -493,7 +502,7 @@ impl Spool {
             return;
         };
         for item in items.flatten() {
-            if let Ok(event) = self.read_path(&item.path()) {
+            if let Ok(event) = self.read_quarantined(&item.path()) {
                 self.quarantined.push(event);
             }
         }
