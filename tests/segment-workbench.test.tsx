@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,7 @@ beforeEach(() => {
 it("分段预览快速切帧 → 取消过期排队图，空出读取槽后直接显示最新帧，卸载取消当前请求", async () => {
   const view = burstWorkspaceView();
   view.workspace.teachingPiece = { ...view.workspace.teachingPiece!, roundId: "preview-cancel-round" };
+  view.plan.pieces[0] = { ...view.plan.pieces[0], roundId: "preview-cancel-round", groupCount: 9 };
   vi.mocked(useWorkspace).mockImplementation(() => workspaceState(view));
   const first = deferred<FrameImage>(), obsolete = deferred<FrameImage>();
   const signals: AbortSignal[] = [];
@@ -52,6 +53,7 @@ describe("分段标定工作台改变段结构", () => {
       segments: [pathSegment(1, "straight", { expectedFrames: 3 }), pathSegment(2, "corner", { expectedFrames: 3 }), pathSegment(3, "straight", { expectedFrames: 3 })],
     }));
     view.workspace.teachingPiece = { ...view.workspace.teachingPiece!, roundId: ROUND };
+    view.plan.pieces[0] = { ...view.plan.pieces[0], roundId: ROUND, groupCount: 9 };
     const ws = workspaceState(view);
     vi.mocked(useWorkspace).mockImplementation(() => ws);
     vi.mocked(workspaceApi.segmentTemplateSave).mockResolvedValue(view);
@@ -60,7 +62,6 @@ describe("分段标定工作台改变段结构", () => {
     render(<MemoryRouter><SegmentWorkbench plan={view.plan!} locked="" onDirty={() => {}} /></MemoryRouter>);
 
     await user.click(await screen.findByRole("button", { name: "删除帧组 6 之后的边界" }));
-    expect(workspaceApi.captureRoundThumbs).toHaveBeenCalledWith(ROUND, expect.any(String));
     await user.click(screen.getByRole("button", { name: "保存分段" }));
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("原第 3 段（直线）· CAM-1");
@@ -80,6 +81,7 @@ describe("分段标定工作台改变段结构", () => {
   ])("$warning → 即使不清除示教数据，也先显示覆盖风险再允许确认保存", async ({ trusted, warning, details }) => {
     const view = burstWorkspaceView();
     view.workspace.teachingPiece = { ...view.workspace.teachingPiece!, roundId: ROUND };
+    view.plan.pieces[0] = { ...view.plan.pieces[0], roundId: ROUND, groupCount: 9 };
     vi.mocked(useWorkspace).mockImplementation(() => workspaceState(view));
     vi.mocked(workspaceApi.segmentTemplateSave).mockResolvedValue(view);
     const coverage: InspectionCoverage = {
@@ -111,6 +113,7 @@ describe("分段标定工作台改变段结构", () => {
     const segments = [pathSegment(1, "straight", { expectedFrames: 3 }), pathSegment(2, "corner", { expectedFrames: 3 }), pathSegment(3, "straight", { expectedFrames: 3 })];
     const view = burstWorkspaceView(burstRecipe({ segments }));
     view.workspace.teachingPiece = { ...view.workspace.teachingPiece!, roundId: ROUND };
+    view.plan.pieces[0] = { ...view.plan.pieces[0], roundId: ROUND, groupCount: 9 };
     vi.mocked(useWorkspace).mockImplementation(() => workspaceState(view));
     const page = (plan: typeof view.plan) => <MemoryRouter><SegmentWorkbench plan={plan!} locked="" onDirty={() => {}} /></MemoryRouter>;
     const { rerender } = render(page(view.plan));
@@ -118,4 +121,38 @@ describe("分段标定工作台改变段结构", () => {
     rerender(page({ ...view.plan!, segments: segments.map(s => s.index === 2 ? { ...s, skip: true } : s) }));
     expect(await screen.findByRole("button", { name: /^段 2（不检测/ })).toBeVisible();
   });
+});
+
+
+it("千帧件缩略图未完成 → 段落立即可编辑，跨窗口跳到末帧后保存原始帧号边界", async () => {
+  const view = burstWorkspaceView(burstRecipe({ segments: [pathSegment(1, "straight", { expectedFrames: 1000 })] }));
+  view.workspace.teachingPiece = { ...view.workspace.teachingPiece!, roundId: "long-pending-round" };
+  view.plan.pieces[0] = { ...view.plan.pieces[0], roundId: "long-pending-round", groupCount: 1000 };
+  vi.mocked(useWorkspace).mockImplementation(() => workspaceState(view));
+  const pending = deferred<Awaited<ReturnType<typeof workspaceApi.captureRoundThumbs>>>();
+  vi.mocked(workspaceApi.captureRoundThumbs).mockReturnValue(pending.promise);
+  vi.mocked(workspaceApi.segmentTemplatePreview).mockResolvedValue({ restructured: false, dropped: [], untaught: [], measurementCleared: false, coverage: null });
+  vi.mocked(workspaceApi.segmentTemplateSave).mockResolvedValue(view);
+  const user = userEvent.setup();
+  const page = render(<MemoryRouter><SegmentWorkbench plan={view.plan} locked="" onDirty={() => {}} /></MemoryRouter>);
+  try {
+    expect(screen.getByRole("status", { name: "分段草稿" })).toHaveTextContent("1000 个帧组");
+    expect(page.container.querySelectorAll(".swb-cell").length).toBeLessThan(100);
+    const first = screen.getByRole("button", { name: "CAM-2 帧组 1" });
+    first.focus();
+    fireEvent.keyDown(first, { key: "End" });
+    const last = screen.getByRole("button", { name: "CAM-2 帧组 1000" });
+    expect(last).toHaveAttribute("aria-pressed", "true");
+    expect(last).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "CAM-2 帧组 1" })).not.toBeInTheDocument();
+    expect(page.container.querySelectorAll(".swb-cell").length).toBeLessThan(100);
+    fireEvent.keyDown(last, { key: "ArrowLeft" });
+    expect(screen.getByRole("button", { name: "CAM-2 帧组 999" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "在帧组 999 后插入边界" }));
+    await user.click(screen.getByRole("button", { name: "保存分段" }));
+    expect(vi.mocked(workspaceApi.segmentTemplateSave).mock.lastCall?.[3]).toEqual([999]);
+  } finally {
+    page.unmount();
+    await act(async () => pending.resolve({ width: 0, height: 0, channels: 1, frames: Array(32).fill(null) }));
+  }
 });

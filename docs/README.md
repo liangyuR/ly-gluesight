@@ -90,3 +90,5 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | [decisions/](decisions/README.md) | 现行决策：取舍、回退方式与需要用户确认的事项 |
 | [testing/](testing/TESTING.md) | 测试运行与复现、长稳与故障注入运行说明 |
 | [deployment/](deployment/PACKAGING.md) | Windows 打包与运行库部署 |
+
+分段时间轴的范围读图、虚拟渲染及缓存预算见[长件浏览与复算](architecture/frame-browsing.md#分段时间轴按需加载决策)。

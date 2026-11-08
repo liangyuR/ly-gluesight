@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { errorText } from "../../lib/errors";
 import { fillRgba } from "../../lib/frame";
 import { workspaceApi } from "./api";
-import type { ThumbStrip } from "./workbenchDraft";
+import { ThumbPages, THUMB_PAGE_SIZE, type ThumbFrame } from "./thumbPages";
 
 /** 一张缩略图：直接把像素画进 canvas（不生成图片地址）。 */
-export function Thumb({ pixels, width, height, channels }: { pixels: Uint8Array | null; width: number; height: number; channels: 1 | 3 }) {
+export function Thumb({ pixels, width, height, channels, status = pixels ? "ready" : "missing" }: Omit<ThumbFrame, "status"> & { status?: ThumbFrame["status"] }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const context = canvas.current?.getContext("2d");
@@ -14,40 +13,23 @@ export function Thumb({ pixels, width, height, channels }: { pixels: Uint8Array 
     fillRgba({ data: pixels, width, height, channels }, image.data);
     context.putImageData(image, 0, 0);
   }, [pixels, width, height, channels]);
-  return pixels ? <canvas ref={canvas} width={width} height={height} /> : <span className="swb-missing">缺帧</span>;
+  return pixels ? <canvas ref={canvas} width={width} height={height} /> : <span className="swb-missing">{status === "loading" ? "加载中…" : status === "error" ? "读取失败" : "缺帧"}</span>;
 }
 
-/** 已取过的缩略图条带：同一轮同一相机只取一次（轮次原图不会变）。 */
-const cache = new Map<string, Promise<ThumbStrip>>();
-function strip(roundId: string, camera: string) {
-  const key = `${roundId}|${camera}`;
-  let request = cache.get(key);
-  if (!request) {
-    request = workspaceApi.captureRoundThumbs(roundId, camera);
-    cache.set(key, request);
-    request.catch(() => cache.delete(key));
-  }
-  return request;
-}
+const pages = new ThumbPages((round, camera, startSeq, count) => workspaceApi.captureRoundThumbs(round, camera, startSeq, count));
 
-/** 一轮各台相机的缩略图条带；roundId 为空时不取。 */
-export function useThumbs(roundId: string, cameras: string[]) {
-  const key = `${roundId}|${cameras.join("|")}`;
-  const [state, setState] = useState<{ key: string; strips: Record<string, ThumbStrip> | null; error: string }>({ key: "", strips: null, error: "" });
-  useEffect(() => {
-    if (!roundId) return;
-    let alive = true;
-    Promise.all(cameras.map(camera => strip(roundId, camera).then(value => [camera, value] as const)))
-      .then(entries => alive && setState({ key, strips: Object.fromEntries(entries), error: "" }))
-      .catch(e => alive && setState({ key, strips: null, error: errorText(e) }));
-    return () => { alive = false; };
-  }, [key]);
-  return state.key === key ? state : { key, strips: null, error: "" };
+export function useThumbs(roundId: string, cameras: string[], groupCount: number, start: number, end: number) {
+  const [, refresh] = useState(0);
+  const first = Math.floor(start / THUMB_PAGE_SIZE) * THUMB_PAGE_SIZE;
+  const last = Math.min(groupCount, Math.ceil(end / THUMB_PAGE_SIZE) * THUMB_PAGE_SIZE);
+  const key = JSON.stringify([roundId, cameras, groupCount, first, last]);
+  useEffect(() => pages.watch(roundId, cameras, groupCount, first, last, () => refresh(value => value + 1)), [key]);
+  return {
+    getFrame: (camera: string, index: number) => pages.frame(roundId, camera, index),
+    error: pages.error(roundId, cameras, first, last),
+    retry: () => { pages.retry(roundId); refresh(value => value + 1); },
+  };
 }
-
-/** 帧组数 = 各相机条带帧数的最大值。 */
-export const stripGroups = (strips: Record<string, ThumbStrip> | null) =>
-  strips ? Math.max(0, ...Object.values(strips).map(item => item.frames.length)) : 0;
 
 /** 方向键等快捷键的统一过滤：带修饰键、已处理，或焦点在输入控件与对话框里时不处理。 */
 export const ignoreKey = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; defaultPrevented: boolean; target: EventTarget | null }) =>

@@ -4,11 +4,12 @@ import { ArrowRight } from "lucide-react";
 import { Button, Dialog } from "qing-steel";
 import type { PathSegment, WorkspacePlanView } from "../plan/types";
 import { segmentLabel } from "../plan/vis";
+import { useHorizontalWindow } from "../../lib/useHorizontalWindow";
 import { errorText } from "../../lib/errors";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, FrameViewer, Notice, Panel } from "./components";
-import { ignoreKey, stripGroups, Thumb, useThumbs } from "./thumbs";
+import { ignoreKey, Thumb, useThumbs } from "./thumbs";
 import {
   initialDraft, moveCut, passCells, segmentsForSave, spans, structureChanged, toggleCamera, toggleCut, toggleKind, valid,
   type WorkbenchDraft,
@@ -56,6 +57,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   const [seq, setSeq] = useState(1);
   const [confirming, setConfirming] = useState<SegmentSaveImpact | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  const keyboardSelection = useRef<string | null>(null);
   // 按住一个已有边界拖到另一条竖缝上松开即移动它（指针事件，不用 HTML5 拖放：WebView2 里不可靠）
   const [dragging, setDragging] = useState<number | null>(null);
   useEffect(() => {
@@ -68,9 +70,10 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   const revision = data?.workspace.revision ?? 0;
   const frozen = !!data?.workspace.pending || navigationDirty;
 
-  const thumbs = useThumbs(roundId, plan.cameras);
-  const ready = thumbs.strips;
-  const groupCount = stripGroups(ready);
+  const groupCount = plan.pieces.find(piece => piece.roundId === roundId)?.groupCount ?? 0;
+  const timeline = useHorizontalWindow<HTMLDivElement>(groupCount, 66, seq - 1, 58);
+  const thumbs = useThumbs(roundId, plan.cameras, groupCount, timeline.start, timeline.end);
+  const visibleGroups = Array.from({ length: timeline.end - timeline.start }, (_, i) => timeline.start + i + 1);
   const saved = review?.rounds[roundId] ?? null;
   const baseline = useMemo(
     () => groupCount ? initialDraft(groupCount, plan.segments, plan.cameras, saved) : null,
@@ -85,35 +88,34 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
   // 快捷键只在工作台内有焦点时生效（下方对齐复核也用方向键）
   const onKey = (e: KeyboardEvent) => {
     if (!draft || ignoreKey(e)) return;
-    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
       e.preventDefault();
-      setSeq(Math.min(groupCount, Math.max(1, seq + (e.key === "ArrowLeft" ? -1 : 1))));
+      keyboardSelection.current = (e.target as HTMLElement).closest(".swb-cell")?.getAttribute("data-camera") ?? plan.cameras[0];
+      setSeq(e.key === "Home" ? 1 : e.key === "End" ? groupCount : Math.min(groupCount, Math.max(1, seq + (e.key === "ArrowLeft" ? -1 : 1))));
     } else if ((e.key === "b" || e.key === "B") && !frozen) {
       e.preventDefault();
       change(toggleCut(draft, seq));
     }
   };
   useEffect(() => { setSeq(1); }, [roundId]);
-  // 从历史件跳来：缩略图读到后定位到对应的示教件帧组并滚到可见处（每次跳来只定位一次）
+  useEffect(() => {
+    if (!keyboardSelection.current) return;
+    const cell = Array.from(timeline.ref.current?.querySelectorAll<HTMLButtonElement>(".swb-cell.selected") ?? []).find(item => item.dataset.camera === keyboardSelection.current);
+    if (cell) { cell.focus({ preventScroll: true }); keyboardSelection.current = null; }
+  }, [seq, timeline.start, timeline.end]);
+  // 从历史件跳来时按元数据定位，不等待缩略图。
   const locate = segmentLocateOf(useLocation());
   const teachingPasses = data?.workspace.teachingPiece?.passes;
   const mapped = locate && groupCount ? teachingSeqFor(locate, groupCount, teachingPasses) : null;
   const located = useRef("");
-  const body = useRef<HTMLDivElement>(null);
-  const reveal = useRef<number | null>(null);
+
   useEffect(() => {
     if (!mapped || !locate) return;
     const key = `${roundId}:${locate.historyId}:${locate.seq}`;
     if (located.current === key) return;
     located.current = key;
     setSeq(mapped.seq);
-    reveal.current = mapped.seq;
   }, [mapped?.seq, roundId]);
-  // 定位的帧组渲染为选中后再滚到可见处
-  useEffect(() => {
-    const cell = reveal.current === seq ? body.current?.querySelector(".swb-cell.selected") : null;
-    if (cell) { reveal.current = null; cell.scrollIntoView({ block: "nearest", inline: "center" }); }
-  });
 
   if (!roundId) {
     return <><WorkspaceNavigation segments={plan.segments} ranges={null} seq={1} frameStatus="unavailable" editable locked={locked} onNavigate={() => {}} />
@@ -164,14 +166,14 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     onNavigate={(_, nextSeq) => setSeq(nextSeq)} />;
 
   return <Panel title="分段标定" help="在示教件的帧组时间轴上划分直线段与弯道段：点缩略图选中帧组（下方并排显示三台相机原图），再点“在帧组 N 后插入边界”（或按 B，或点时间轴下方对应的 ＋）；点段名按 直线 → 弯道 → 不检测 循环切换（不检测的段照常计帧，不测不判，结果列为未检区域）；点段下方的相机名选这段由哪几台相机检测（没选中的相机变暗，判定时不用）；← → 切换帧组">
-    {thumbs.error && <Notice title="读取示教件图像失败" tone="warn">{thumbs.error}</Notice>}
+    {thumbs.error && <Notice title="读取示教件图像失败" tone="warn">{thumbs.error}<Button onClick={thumbs.retry}>重试缩略图</Button></Notice>}
     {!!data?.workspace.pending && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改分段。</Notice>}
-    {!ready && !thumbs.error && <p className="muted">正在读取缩略图…</p>}
+    {!groupCount && <p className="muted">示教件没有可显示的帧组</p>}
     {locate && mapped && <Notice title={`从历史件 SN ${locate.sn || "—"} 跳来`}>
       历史件帧组 {locate.seq}{locate.segment != null ? `（段 ${locate.segment}）` : " "}对应示教件帧组 {mapped.seq}，{mapped.byPass ? "按所在笔的笔内进度" : "按整件进度"}估算，只用于定位。
       各段预期帧数取自示教件的分段，历史件按它们分段；在这里调整边界并保存分段后返回历史件，重新复测看结果。
     </Notice>}
-    {draft && ready && <div className="swb-body" ref={body} onKeyDown={onKey}>
+    {draft && <div className="swb-body" onKeyDown={onKey}>
       {/* 操作放在时间轴上方：下方原图预览加载时会改变高度，按钮放在下面会被挤动而点错 */}
       <div className="swb-toolbar">
         <div className="swb-summary" role="status" aria-label="分段草稿">
@@ -190,19 +192,19 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
           <Button variant="filled" disabled={blocked} onClick={() => void requestSave()}>{isConfirmed && !dirty ? "重新保存分段" : "保存分段"}</Button>
         </div>
       </div>
-      <div className="swb-scroll">
+      <div className="swb-scroll" ref={timeline.ref} onScroll={timeline.onScroll}>
         <div className="swb-grid" style={{ gridTemplateColumns: columns }}>
-          <span className="swb-label">段</span>
+          <span className="swb-label" style={{ gridRow: 1, gridColumn: 1 }}>段</span>
           {segmentSpans.map(([first, last], i) => {
             const kind = draft.kinds[i], skip = draft.skips[i];
             const label = segmentLabel({ kind, skip });
-            return <Button variant="text" size="sm" key={`${first}-${kind}-${skip}`} type="button" className={`swb-seg ${skip ? "skip" : kind}`} style={{ gridColumn: `${first + 1} / ${last + 2}` }}
+            return <Button variant="text" size="sm" key={`${first}-${kind}-${skip}`} type="button" className={`swb-seg ${skip ? "skip" : kind}`} style={{ gridRow: 1, gridColumn: `${first + 1} / ${last + 2}` }}
               aria-label={`段 ${i + 1}（${label}，帧组 ${first}–${last}），点击切换类型`} disabled={frozen} onClick={() => change(toggleKind(draft, i))}>
               段 {i + 1} · {label} · {last - first + 1} 组
             </Button>;
           })}
-          <span className="swb-label" title="点相机名决定该段由哪几台相机检测（至少一台）；不检测的段不用相机">检测相机</span>
-          {segmentSpans.map(([first, last], i) => <div key={`cams-${first}`} className="swb-cams" style={{ gridColumn: `${first + 1} / ${last + 2}` }}
+          <span className="swb-label" style={{ gridRow: 2, gridColumn: 1 }} title="点相机名决定该段由哪几台相机检测（至少一台）；不检测的段不用相机">检测相机</span>
+          {segmentSpans.map(([first, last], i) => <div key={`cams-${first}`} className="swb-cams" style={{ gridRow: 2, gridColumn: `${first + 1} / ${last + 2}` }}
             role="group" aria-label={`段 ${i + 1} 检测相机`}>
             {plan.cameras.map(camera => {
               const on = !draft.skips[i] && (draft.cameras[i]?.includes(camera) ?? false);
@@ -211,12 +213,11 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
                 onClick={() => change(toggleCamera(draft, i, camera, plan.cameras))}>{camera}</Button>;
             })}
           </div>)}
-          {plan.cameras.map(camera => {
-            const strip = ready[camera];
-            return [<span key={`${camera}-label`} className="swb-label">{camera}</span>,
-              ...Array.from({ length: groupCount }, (_, k) => {
-                const group = k + 1;
-                const pixels = strip?.frames[k] ?? null;
+          {plan.cameras.map((camera, cameraIndex) => {
+            return [<span key={`${camera}-label`} className="swb-label" style={{ gridRow: cameraIndex + 3, gridColumn: 1 }}>{camera}</span>,
+              ...visibleGroups.map(group => {
+                const k = group - 1;
+                const frame = thumbs.getFrame(camera, k);
                 const cut = draft.cuts.includes(group);
                 const segment = segmentSpans.findIndex(([first, last]) => group >= first && group <= last);
                 const used = !draft.skips[segment] && (draft.cameras[segment]?.includes(camera) ?? true);
@@ -229,20 +230,21 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
                 const title = segmentSkipped ? `帧组 ${group} 在段 ${segment + 1} 的跳过范围内，不判定`
                   : pass?.skip ? `帧组 ${group}：第 ${pass.pass} 笔${passSkipText[pass.skip]}，不判定`
                   : pass ? `帧组 ${group} · 第 ${pass.pass} 笔` : undefined;
-                return <Button variant="text" size="sm" key={`${camera}-${group}`} type="button" aria-label={`${camera} 帧组 ${group}`} aria-pressed={group === seq}
+                return <Button variant="text" size="sm" key={`${camera}-${group}`} data-camera={camera} type="button" aria-label={`${camera} 帧组 ${group}`} aria-pressed={group === seq} style={{ gridRow: cameraIndex + 3, gridColumn: group + 1 }}
                   className={`swb-cell${group === seq ? " selected" : ""}${cut ? " cut" : ""}${used ? "" : " unused"}${skipped ? " skipped" : ""}${pass?.end ? " pass-end" : ""}`} onClick={() => setSeq(group)}
                   title={title}>
-                  <Thumb pixels={pixels} width={strip?.width ?? 0} height={strip?.height ?? 0} channels={strip?.channels ?? 1} />
+                  <Thumb {...frame} />
                 </Button>;
               })];
           })}
-          <span className="swb-label" title="点 ＋ 在该帧组之后插入边界，点 × 删除">边界</span>
-          {Array.from({ length: groupCount }, (_, k) => {
-            const group = k + 1;
+          <span className="swb-label" style={{ gridRow: plan.cameras.length + 3, gridColumn: 1 }} title="点 ＋ 在该帧组之后插入边界，点 × 删除">边界</span>
+          {visibleGroups.map(group => {
+            const k = group - 1;
+            const position = { gridRow: plan.cameras.length + 3, gridColumn: group + 1 };
             const at = draft.cuts.indexOf(group);
-            if (group === groupCount) return <span key="end" className="swb-seam-end">{group}</span>;
+            if (group === groupCount) return <span key="end" className="swb-seam-end" style={position}>{group}</span>;
             const passEnd = passOf?.[k]?.end ? passOf[k].pass : null;
-            return <Button variant="text" size="sm" key={`seam-${group}`} type="button" className={`swb-seam${at >= 0 ? " on" : ""}${passEnd ? " pass" : ""}${dragging != null && dragging !== at ? " target" : ""}`} disabled={frozen}
+            return <Button variant="text" size="sm" key={`seam-${group}`} style={position} type="button" className={`swb-seam${at >= 0 ? " on" : ""}${passEnd ? " pass" : ""}${dragging != null && dragging !== at ? " target" : ""}`} disabled={frozen}
               title={passEnd ? `第 ${passEnd} 笔与第 ${passEnd + 1} 笔之间：边界放这里不留过渡区` : undefined}
               aria-label={at >= 0 ? `删除帧组 ${group} 之后的边界` : `在帧组 ${group} 之后插入边界`}
               onPointerDown={() => { if (at >= 0) setDragging(at); }}
@@ -254,7 +256,7 @@ export default function SegmentWorkbench({ plan, locked, onDirty }: { plan: Work
     </div>}
     <div className="swb-preview" aria-label={`帧组 ${seq} 三台相机原图`} onKeyDown={onKey}>
       {navigation}
-      {draft && ready && plan.cameras.map(camera => <FramePreview key={camera} roundId={roundId} camera={camera} seq={seq}
+      {draft && plan.cameras.map(camera => <FramePreview key={camera} roundId={roundId} camera={camera} seq={seq}
         corridor={corridorOf(camera)} searchHalfPx={halfPx(camera)} />)}
     </div>
     {confirming && <Dialog open title={confirming.restructured ? "段结构将改变" : "保存分段的影响"} onOpenChange={open => { if (!open) setConfirming(null); }}
