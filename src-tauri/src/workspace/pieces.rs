@@ -205,7 +205,11 @@ fn alignment_input(
     );
     let distances = a
         .iter()
-        .map(|x| b.iter().map(|y| super::pass_align::distance(x, y)).collect())
+        .map(|x| {
+            b.iter()
+                .map(|y| super::pass_align::distance(x, y))
+                .collect()
+        })
         .collect();
     Some(super::pass_align::AlignInput {
         old_piece: old,
@@ -442,7 +446,9 @@ fn set_teaching_piece(
         let mut next = current.clone();
         // RB-11：两件都有笔结构时按笔对照迁移；否则按 RB-2 沿用原来的分段帧数。预填边界作为新件的边界草稿，分段页确认即可
         let cuts = match aligned {
-            Some(input) => Some(super::pass_align::replace_by_passes(&mut next, piece, input)?),
+            Some(input) => Some(super::pass_align::replace_by_passes(
+                &mut next, piece, input,
+            )?),
             None => replace_teaching_piece(&mut next, piece, part.group_count)?,
         };
         if let Some(cuts) = cuts {

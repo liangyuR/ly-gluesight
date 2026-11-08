@@ -908,11 +908,19 @@ fn replace_doc(
 
 /// 候选已用段 ID（按笔换过示教件，RB-11）时，回传的段没带段 ID（前端新建的段）：段数与类型序列没变就按位置沿用原来的
 /// 段 ID，其余补新 ID。没用过段 ID 的候选不加。
-fn inherit_segment_ids(before: &[crate::plan::PathSegment], segments: &mut [crate::plan::PathSegment]) {
+fn inherit_segment_ids(
+    before: &[crate::plan::PathSegment],
+    segments: &mut [crate::plan::PathSegment],
+) {
     if before.iter().all(|s| s.id.is_none()) {
         return;
     }
-    if before.len() == segments.len() && before.iter().zip(segments.iter()).all(|(a, b)| a.kind == b.kind) {
+    if before.len() == segments.len()
+        && before
+            .iter()
+            .zip(segments.iter())
+            .all(|(a, b)| a.kind == b.kind)
+    {
         for (a, b) in before.iter().zip(segments.iter_mut()) {
             if b.id.is_none() {
                 b.id = a.id.clone();

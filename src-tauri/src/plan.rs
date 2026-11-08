@@ -654,7 +654,11 @@ pub fn ensure_segment_ids(segments: &mut [PathSegment]) {
         .unwrap_or(0);
     let mut seen = std::collections::BTreeSet::new();
     for segment in segments {
-        if segment.id.as_ref().is_none_or(|id| !seen.insert(id.clone())) {
+        if segment
+            .id
+            .as_ref()
+            .is_none_or(|id| !seen.insert(id.clone()))
+        {
             next += 1;
             segment.id = Some(format!("s{next}"));
             seen.insert(format!("s{next}"));
