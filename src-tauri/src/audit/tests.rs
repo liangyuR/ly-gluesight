@@ -184,12 +184,50 @@ fn startup_spool_with_unrecoverable_cycle_then_quarantined_and_spool_ready_after
     let dir = TestDir::new();
     let mut sink = dir.sink();
     let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
-    spool.append(&Event::Insert(Box::new(part("committed", 42)))).unwrap();
-    spool.append(&Event::Delivery("orphan".into(), delivery(PlcDeliveryState::Acknowledged, 88))).unwrap();
+    spool
+        .append(&Event::Insert(Box::new(part("committed", 42))))
+        .unwrap();
+    spool
+        .append(&Event::Delivery(
+            "orphan".into(),
+            delivery(PlcDeliveryState::Acknowledged, 88),
+        ))
+        .unwrap();
     let notices = recover_all(&mut spool, &mut sink, 1).unwrap();
     assert!(spool.empty());
     assert!(notices.iter().any(|notice| matches!(notice, Notice::Log { event: "持久追溯未恢复", cycle, .. } if cycle == "orphan")));
     assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 1);
     assert!(spool::Spool::open(dir.0.join("spool")).unwrap().empty());
-    assert_eq!(std::fs::read_dir(dir.0.join("spool").join(".unrecovered")).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read_dir(dir.0.join("spool").join(".unrecovered"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn quarantined_cycle_recording_directory_stays_protected_after_reopen() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let records = dir.0.join("records");
+    std::fs::create_dir_all(records.join("cycle_orphan")).unwrap();
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let mut recording = outcome("orphan", &[(0, 2)], RecorderState::Complete);
+    recording.directory = Some(records.join("cycle_orphan"));
+    spool.append(&Event::Recording(recording)).unwrap();
+    spool
+        .append(&Event::Delivery(
+            "orphan".into(),
+            delivery(PlcDeliveryState::Acknowledged, 88),
+        ))
+        .unwrap();
+    recover_all(&mut spool, &mut sink, 1).unwrap();
+    assert!(spool.empty());
+    let expected = records.join("cycle_orphan").canonicalize().unwrap();
+    let reopened = spool::Spool::open(dir.0.join("spool")).unwrap();
+    assert_eq!(
+        reopened.protected_directories(&records).unwrap(),
+        vec![expected]
+    );
 }

@@ -1045,16 +1045,32 @@ fn recover_cycle(spool: &mut spool::Spool, cycle: &str, sink: &mut impl Sink, no
 }
 
 /// 启动恢复：恢复不了的件移到 spool 的未恢复目录并记错误，不阻止启动与接件。
-fn recover_all(spool: &mut spool::Spool, sink: &mut impl Sink, now: i64) -> Result<Vec<Notice>, String> {
+fn recover_all(
+    spool: &mut spool::Spool,
+    sink: &mut impl Sink,
+    now: i64,
+) -> Result<Vec<Notice>, String> {
     let mut notices = Vec::new();
     for cycle in spool.cycles() {
         let reason = match recover_cycle(spool, &cycle, sink, now) {
-            Ok((true, cycle_notices)) => { notices.extend(cycle_notices); continue; }
-            Ok((false, cycle_notices)) => { notices.extend(cycle_notices); "待写事件无法入库".to_string() }
+            Ok((true, cycle_notices)) => {
+                notices.extend(cycle_notices);
+                continue;
+            }
+            Ok((false, cycle_notices)) => {
+                notices.extend(cycle_notices);
+                "待写事件无法入库".to_string()
+            }
             Err(error) => error,
         };
         let directory = spool.quarantine(&cycle)?;
-        log(&mut notices, "err", "持久追溯未恢复", &cycle, format!("{reason}；事件已移到 {}，待人工核对", directory.display()));
+        log(
+            &mut notices,
+            "err",
+            "持久追溯未恢复",
+            &cycle,
+            format!("{reason}；事件已移到 {}，待人工核对", directory.display()),
+        );
     }
     Ok(notices)
 }
