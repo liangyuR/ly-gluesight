@@ -120,7 +120,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "teach_segment",
-            "description": "改一段的检测项（checks）与零件边参考（offsetRef），按补丁深合并：只给要改的字段。offsetRef 给 null 即关掉胶偏参考。检测项开关、公差与图纸标称值（offsetRef.edge.nominalMm）须用人给的值。",
+            "description": "改一段的检测项（checks）、零件边参考（offsetRef）与逐帧定向的测量区间（headingWindow），按补丁深合并：只给要改的字段。offsetRef 给 null 即关掉胶偏参考。headingWindow 只用于开启逐帧定向的段，本段各检测相机共用，给 null 即沿用相机级旧区间。检测项开关、公差、测量区间与图纸标称值（offsetRef.edge.nominalMm）须用人给的值。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -128,6 +128,7 @@ pub fn tools() -> Value {
                     "expectedRevision": expected_revision,
                     "checks": { "type": "object", "description": "如 {\"width\": {\"nominalMm\": 4, \"tolUpper\": 1.5}, \"break\": {\"maxGapMm\": 6}}" },
                     "offsetRef": { "type": ["object", "null"], "description": "如 {\"measure\": \"toEdge\", \"camera\": \"cam1\", \"edge\": {\"polarity\": \"brightToDark\", \"searchMm\": 18, \"contrastMin\": 70, \"nominalMm\": 10}}" },
+                    "headingWindow": { "type": ["object", "null"], "description": "距出胶点只测 [startMm, startMm + lengthMm]：startMm 即界面“跳过胶嘴附近”，startMm + lengthMm 即“测量到”。如跳过 5、测到 20 给 {\"startMm\": 5, \"lengthMm\": 15}" },
                 },
                 "required": ["recipe", "segment"],
                 "additionalProperties": false,
@@ -368,8 +369,12 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                     let taught = t.segments.iter().find(|x| x.segment == s.index);
                     let corridor = inspect.and_then(|i| i.segment_corridor(s.index));
                     let model = diagnostics::color_model_status(corridor.and_then(|c| c.color_model.as_deref()));
+                    let window = s.heading.as_ref().and(inspect).and_then(|i| crate::heading::window(s, i)).map(|(w, source)| json!({
+                        "startMm": w.start_mm, "lengthMm": w.length_mm, "endMm": w.start_mm + w.length_mm, "source": source,
+                    }));
                     json!({
                         "segment": s.index,
+                        "window": window,
                         "seq": taught.map(|x| x.seq),
                         "saved": taught.is_some_and(|x| x.saved),
                         "corridorPoints": corridor.map_or(0, |c| c.corridor.len()),
@@ -387,7 +392,7 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                 "mmPerPx": t.mm_per_px,
                 "calibMmPerPx": t.calib_mm_per_px,
                 "ready": t.ready,
-                "window": inspect.and_then(|i| i.window.as_ref()),
+                "cameraWindow": inspect.and_then(|i| i.window.as_ref()),
                 "nozzle": t.nozzle.as_ref().map(|n| json!({ "point": n.point, "calibrated": n.calibrated, "source": if n.calibrated { "calibrated" } else { "corridorStarts" }, "warning": n.warning })),
                 "headingIssues": crate::heading::issues(&w.doc.segments, &w.doc.inspect).iter()
                     .filter(|issue| issue.camera == t.camera)
@@ -1316,6 +1321,16 @@ fn patch_segment(
         Some(offset) => merge(&mut value["offsetRef"], offset),
         None => {}
     }
+    if let Some(window) = patch.get("headingWindow") {
+        let heading = value
+            .get_mut("heading")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| format!("第 {} 段没有开启逐帧定向，不能设测量区间", segment.index))?;
+        match window {
+            Value::Null => heading.remove("window"),
+            window => heading.insert("window".into(), window.clone()),
+        };
+    }
     serde_json::from_value(value).map_err(|e| format!("段配置不对：{e}"))
 }
 
@@ -1327,6 +1342,7 @@ async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content
             "segment",
             "checks",
             "offsetRef",
+            "headingWindow",
             "expectedRevision",
         ]
         .contains(&k.as_str())
@@ -1381,6 +1397,7 @@ async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content
         "segment": index,
         "checks": saved["checks"],
         "offsetRef": saved["offsetRef"],
+        "heading": saved["heading"],
     }))])
 }
 

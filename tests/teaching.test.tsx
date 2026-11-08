@@ -155,14 +155,17 @@ describe("搜索扇区", () => {
 
 describe("测量区间", () => {
 
-  // 防的回归（D-SB-47）：面板按“跳过前 / 测到”填，配方仍存起点与长度；把“测到”当长度写进配方，实测区间整体后移
-  it("跳过前 5 mm、测到 25 mm → 配方存起点 5、长度 20；测到不大于跳过 → 提示且不写配方", async () => {
+  // 防的回归（D-SB-47）：面板按“跳过前 / 测到”填，配方仍存起点与长度；把“测到”当长度写进配方，实测区间整体后移；
+  // 测量区间按段设置后仍写到相机上，同一相机各段共用一个区间
+  it("段 1 跳过前 5 mm、测到 25 mm → 段 1 存起点 5、长度 20，相机不变；测到不大于跳过 → 提示且不写配方", async () => {
     ws.data!.workspace.doc.segments![0].heading = { toleranceDeg: 5 };
     show("/recipe/teach?camera=CAM-2&segment=1");
-    const zone = await screen.findByRole("group", { name: "出胶点与测量区间" });
+    const zone = await screen.findByRole("group", { name: "段 1 测量区间" });
     fireEvent.change(within(zone).getByRole("spinbutton", { name: "跳过前" }), { target: { value: "5" } });
     fireEvent.change(within(zone).getByRole("spinbutton", { name: "测到距出胶点" }), { target: { value: "25" } });
-    expect(vi.mocked(ws.setDoc).mock.lastCall![0].inspect!.find(item => item.camera === "CAM-2")!.window).toEqual({ startMm: 5, lengthMm: 20 });
+    const doc = vi.mocked(ws.setDoc).mock.lastCall![0];
+    expect(doc.segments![0].heading!.window).toEqual({ startMm: 5, lengthMm: 20 });
+    expect(doc.inspect!.find(item => item.camera === "CAM-2")!.window).toBeUndefined();
     const calls = vi.mocked(ws.setDoc).mock.calls.length;
     fireEvent.change(within(zone).getByRole("spinbutton", { name: "测到距出胶点" }), { target: { value: "5" } });
     expect(within(zone).getByRole("alert")).toHaveTextContent("测量到的距离需大于跳过的距离");

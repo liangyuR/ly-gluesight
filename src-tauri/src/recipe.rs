@@ -224,7 +224,7 @@ pub struct CameraInspect {
     /// 这台相机在它检测的各段的走廊（D-SB-42/45）：落在该段的帧用它测量，没有相机级的默认走廊
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segments: Vec<SegmentCorridor>,
-    /// 逐帧定向的检测窗口（D-SB-47）：只测沿胶路距出胶点 [start, start + length] mm 的一段
+    /// 旧配方的相机级测量区间（D-SB-47）：测量区间按段设在 `HeadingSettings.window`，段没设时沿用这里；界面不再编辑
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<HeadingWindow>,
     /// 标定的出胶点（图像像素，D-SB-47）；为空时由开启定向的各段走廊起点推出
@@ -235,12 +235,36 @@ pub struct CameraInspect {
     pub expert: ExpertParams,
 }
 
-/// 逐帧定向的检测窗口（mm，沿胶路从出胶点量起）。
+/// 逐帧定向的测量区间（mm，沿胶路从出胶点量起）：只测 [start, start + length]。界面填“跳过前 start”和“测到 start + length”。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HeadingWindow {
     pub start_mm: f64,
     pub length_mm: f64,
+}
+
+impl HeadingWindow {
+    /// 新开启逐帧定向的段的测量区间：跳过前 5 mm，测到 20 mm。
+    pub const DEFAULT: Self = Self {
+        start_mm: 5.0,
+        length_mm: 15.0,
+    };
+
+    /// 起点 ≥ 0、长度 > 0、终点不超过 500 mm。`what` 是报错主语。
+    pub fn validate(&self, what: &str) -> Result<(), String> {
+        if self.start_mm.is_finite()
+            && self.length_mm.is_finite()
+            && self.start_mm >= 0.0
+            && self.length_mm > 0.0
+            && self.start_mm + self.length_mm <= 500.0
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "{what}的测量区间需满足 跳过距离 ≥ 0、测量到的距离大于跳过距离且不超过 500 mm"
+            ))
+        }
+    }
 }
 
 /// 一台相机在某一段（`PathSegment.index`）的走廊（图像像素，只决定 ROI 和测站）；少于 2 点为尚未示教。
@@ -316,16 +340,7 @@ impl CameraInspect {
             d.validate(&format!("相机 {id} 检测参数"))?;
         }
         if let Some(w) = &self.window {
-            if !(w.start_mm.is_finite()
-                && w.length_mm.is_finite()
-                && w.start_mm >= 0.0
-                && w.length_mm > 0.0
-                && w.start_mm + w.length_mm <= 500.0)
-            {
-                return Err(format!(
-                    "相机 {id} 的测量区间需满足 跳过距离 ≥ 0、测量到的距离大于跳过距离且不超过 500 mm"
-                ));
-            }
+            w.validate(&format!("相机 {id} "))?;
         }
         if self.nozzle.is_some_and(|p| {
             p.iter()

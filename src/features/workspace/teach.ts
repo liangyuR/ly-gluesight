@@ -1,5 +1,5 @@
 import type { RecipeDoc } from "../cycle/types";
-import type { CameraTeachDraft, InspectWindow, SegmentCorridor } from "../plan/types";
+import type { CameraInspect, CameraTeachDraft, InspectWindow, PathSegment, SegmentCorridor } from "../plan/types";
 import { pathLength } from "./teachingPath";
 
 const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical)
@@ -20,6 +20,21 @@ export function windowError(window: InspectWindow) {
   if (!(Number.isFinite(startMm) && startMm >= 0)) return "跳过胶嘴附近的距离需不小于 0 mm";
   if (!(Number.isFinite(lengthMm) && lengthMm > 0)) return "测量到的距离需大于跳过的距离";
   if (startMm + lengthMm > MAX_WINDOW_END_MM) return `测量到的距离不能超过 ${MAX_WINDOW_END_MM} mm`;
+  return "";
+}
+
+/** 一台相机在一段用的测量区间（与后端 heading::window 一致）：本段设了用本段的，否则沿用旧配方的相机级区间；都没有为 null。 */
+export function headingWindow(segment: Pick<PathSegment, "heading"> | undefined, inspect: Pick<CameraInspect, "window"> | undefined): { window: InspectWindow; source: "segment" | "camera" } | null {
+  if (segment?.heading?.window) return { window: segment.heading.window, source: "segment" };
+  return inspect?.window ? { window: inspect.window, source: "camera" } : null;
+}
+
+/** 测量区间与每帧胶条后移量（段长 ÷ N_exp）的核对，与试测页提示同一口径；段长或 N_exp 未知时不判，返回空串。 */
+export function windowTravelHint(window: InspectWindow, segment: Pick<PathSegment, "lengthMm" | "expectedFrames">) {
+  if (segment.lengthMm == null || !segment.expectedFrames) return "";
+  const travel = segment.lengthMm / segment.expectedFrames;
+  if (window.lengthMm < travel) return `测量区间长 ${fixed(window.lengthMm)} mm，短于每帧后移量约 ${fixed(travel)} mm：相邻帧之间有胶测不到`;
+  if (window.lengthMm > 3 * travel) return `测量区间长 ${fixed(window.lengthMm)} mm，超过每帧后移量约 ${fixed(travel)} mm 的 3 倍：同一处胶会被测多次`;
   return "";
 }
 

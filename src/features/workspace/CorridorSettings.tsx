@@ -13,7 +13,7 @@ import { HeadingDiagram } from "./HeadingDiagram";
 import { FAN_LENGTH_PX, HEADING_MARK, type HeadingPart } from "./headingOverlay";
 import { returnState } from "./returnNavigation";
 import { applyToKind, DEFAULT_EDGE, DEFAULT_HEADING, segmentIssues } from "./segmentEdit";
-import { MAX_WINDOW_END_MM, windowError } from "./teach";
+import { headingWindow, MAX_WINDOW_END_MM, windowError, windowTravelHint } from "./teach";
 import { segmentCameras } from "./workbenchDraft";
 
 export type CameraParams = Pick<CameraInspect, "mmPerPx" | "detect" | "window" | "nozzle" | "expert">;
@@ -160,8 +160,9 @@ function useSegmentDraft(segments: PathSegment[], index: number, onChange: (segm
   return { saved, current, issues, patch, dirty: !!draft };
 }
 
-const headingSummary = (params: CameraParams, derived: [number, number] | null) =>
-  `${params.window ? `跳过前 ${params.window.startMm} mm，测到 ${params.window.startMm + params.window.lengthMm} mm` : "测量区间未设置"} · ${params.nozzle ? "出胶点已标定" : derived ? "出胶点按走廊推算" : "出胶点未标定"}`;
+const mm = (value: number) => Number(value.toFixed(3));
+const windowText = (window: InspectWindow) => `跳过前 ${mm(window.startMm)} mm，测到 ${mm(window.startMm + window.lengthMm)} mm`;
+const nozzleText = (params: CameraParams, derived: [number, number] | null) => params.nozzle ? "出胶点已标定" : derived ? "出胶点按走廊推算" : "出胶点未标定";
 
 const deg = (value: number) => `${Math.round(value)}°`;
 
@@ -176,9 +177,9 @@ function PartRow({ part, title, hint, onFocus, children }: { part: HeadingPart; 
 
 /**
  * “逐帧定向”面板（D-SB-47）：出胶点、测量区间、方向与“什么算找到胶”的门限都在这里，配一张编号示意图；
- * 每行编号与示意图、示教帧上的叠加一致。相机视图（`index` 为 null）设这台相机各段共用的部分并列出开启的段；
- * 段视图另设本段开关（直线段另有细化分段边界用的方向容差），显示本段的搜索扇区（`sector`：示教页按出胶点与本段拖过的方向算的范围，
- * `turned` 为本段拖过，`onReset` 恢复自动）。`sharedLocked` 非空时共用参数只读并说明原因。
+ * 每行编号与示意图、示教帧上的叠加一致。相机视图（`index` 为 null）设这台相机各段共用的出胶点，列出开启的段及其测量区间；
+ * 段视图另设本段开关与本段的测量区间（本段各检测相机共用，没设时沿用旧配方的相机级区间），显示本段的搜索扇区（`sector`：示教页按出胶点与本段拖过的方向算的范围，
+ * `turned` 为本段拖过，`onReset` 恢复自动）。`sharedLocked` 非空时相机共用参数只读并说明原因。
  */
 export function HeadingCard({ camera, params, derivedNozzle, nozzleWarning, segments, index, headingSegments, sector, expertDefaults, disabled, sharedLocked, onFocus, onSegments, onParams, onExpertDefaults }: {
   camera: string; params: CameraParams; derivedNozzle: [number, number] | null; nozzleWarning: string | null; segments: PathSegment[]; index: number | null; headingSegments: PathSegment[];
@@ -191,28 +192,48 @@ export function HeadingCard({ camera, params, derivedNozzle, nozzleWarning, segm
   if (index != null && (!saved || !current)) return null;
   const heading = current?.heading ?? null;
   const needed = index != null ? !!heading : headingSegments.length > 0;
-  const missing = needed && !params.window;
+  const own = index != null && heading ? headingWindow(current, params) : null;
+  const unset = index != null ? (heading && !own ? [index] : []) : headingSegments.filter(item => !headingWindow(item, params)).map(item => item.index);
+  const missing = unset.length > 0;
   const sharedDisabled = disabled || !!sharedLocked;
   const scale = scaleOf(params.mmPerPx);
-  const zonePx = params.window && scale ? params.window.lengthMm / scale : null;
+  const zonePx = own && scale ? own.window.lengthMm / scale : null;
   const fanPx = zonePx != null ? Math.min(FAN_LENGTH_PX, zonePx) : FAN_LENGTH_PX;
+  const others = index != null ? segments.filter(item => item.heading && item.index !== index) : [];
   const [badge, tone]: [string, Tone] = index != null ? [saved!.heading ? "开" : "关", saved!.heading ? "info" : "neutral"]
     : missing ? ["测量区间需设置", "warn"] : needed ? [`段 ${headingSegments.map(item => item.index).join("、")} 开启`, "neutral"] : ["未使用", "neutral"];
   const absoluteX = current?.checks.offset?.enabled && (current.offsetRef?.measure ?? "absoluteX") === "absoluteX";
-  return <SettingsCard title="逐帧定向" badge={badge} tone={tone} open={index != null || missing}
-    summary={index != null && !saved!.heading ? "关闭：按示教走廊测量" : headingSummary(params, derivedNozzle)}>
-    {index != null && <Switch label="本段逐帧定向" aria-label={`段 ${index} 逐帧定向`} checked={!!heading} disabled={disabled} onCheckedChange={on => patch({ heading: on ? { ...DEFAULT_HEADING } : null })}/>}
+  const summary = index != null && !saved!.heading ? "关闭：按示教走廊测量"
+    : `${index != null ? (own ? windowText(own.window) : "测量区间未设置") : missing ? `段 ${unset.join("、")} 测量区间未设置` : "测量区间按段设置"} · ${nozzleText(params, derivedNozzle)}`;
+  const setWindow = (window: InspectWindow | null) => heading && patch({ heading: { ...heading, window } });
+  const applyWindow = () => heading?.window && onSegments(segments.map(item => item.heading && item.index !== index ? { ...item, heading: { ...item.heading, window: { ...heading.window! } } } : item));
+  return <SettingsCard title="逐帧定向" badge={badge} tone={tone} open={index != null || missing} summary={summary}>
+    {index != null && <Switch label="本段逐帧定向" aria-label={`段 ${index} 逐帧定向`} checked={!!heading} disabled={disabled} onCheckedChange={on => patch({ heading: on ? structuredClone(DEFAULT_HEADING) : null })}/>}
     {index != null && !heading ? <p className="wp-settings-hint">开启后每帧按图像找胶条从出胶点出去的方向，只测测量区间内的一段，不再依赖按帧号选走廊。</p> : <>
       <HeadingDiagram focus={focus}/>
-      <div className="wp-settings-group" role="group" aria-label="出胶点与测量区间">
-        <span className="wp-settings-label">出胶点与测量区间<Scope>{camera} 各段共用</Scope>{missing && <Badge tone="warn">需设置</Badge>}</span>
+      <div className="wp-settings-group" role="group" aria-label="出胶点">
+        <span className="wp-settings-label">出胶点<Scope>{camera} 各段共用</Scope></span>
         {sharedLocked && <p className="wp-settings-hint">{sharedLocked}</p>}
         <PartRow part="nozzle" title="出胶点" onFocus={point} hint="胶嘴出胶处，下面的距离和方向都从这里量。在开启定向的段的示教帧上选“标出胶点”点选；未标定时取这些段走廊起点的中位数，有起点偏离超过 1 mm 只提示，不影响试测与发布。">
           <NozzleStatus value={params.nozzle ?? null} derived={derivedNozzle} needed={needed} disabled={sharedDisabled} onClear={() => onParams({ ...params, nozzle: null })}/>
         </PartRow>
         {nozzleWarning && <p className="c-warn" role="note">{nozzleWarning}</p>}
-        <WindowFields value={params.window ?? null} disabled={sharedDisabled} onFocus={point} onChange={window => onParams({ ...params, window })}/>
       </div>
+      {index != null && heading ? <div className="wp-settings-group" role="group" aria-label={`段 ${index} 测量区间`}>
+        <span className="wp-settings-label">测量区间<Scope>段 {index} 各检测相机共用</Scope>{missing && <Badge tone="warn">需设置</Badge>}</span>
+        <WindowFields key={`${index}:${own?.source ?? ""}`} value={own?.window ?? null} disabled={disabled} onFocus={point} onChange={setWindow}/>
+        {own?.source === "camera" && <p className="wp-settings-hint">本段没有单独设置，沿用 {camera} 旧的相机级测量区间；改动只写本段。</p>}
+        {own && windowTravelHint(own.window, current!) && <p className="c-warn" role="note">{windowTravelHint(own.window, current!)}</p>}
+        {heading.window && others.length > 0 && <Button size="sm" disabled={disabled} onClick={applyWindow}
+          title={`段 ${others.map(item => item.index).join("、")} 的测量区间改成${windowText(heading.window)}`}>测量区间套用到其余 {others.length} 个开启定向的段</Button>}
+      </div> : <div className="wp-settings-group" role="group" aria-label="各段测量区间">
+        <span className="wp-settings-label">测量区间<Scope>按段设置</Scope>{missing && <Badge tone="warn">需设置</Badge>}</span>
+        {headingSegments.length > 0 ? <ul className="wp-settings-hint">{headingSegments.map(item => {
+          const resolved = headingWindow(item, params);
+          return <li key={item.index}>段 {item.index}：{resolved ? `${windowText(resolved.window)}${resolved.source === "camera" ? "（沿用相机级旧值）" : ""}` : <span className="c-warn">未设置</span>}</li>;
+        })}</ul> : <p className="wp-settings-hint">没有段开启逐帧定向。</p>}
+        <p className="wp-settings-hint">不同笔的胶条长短不同，测量区间按段设置：在左侧选段后填写。</p>
+      </div>}
       {index != null && heading ? <div className="wp-settings-group" role="group" aria-label={`段 ${index} 方向`}>
         <span className="wp-settings-label">方向<Scope>段 {index}</Scope></span>
         <PartRow part="sector" title="搜索扇区" onFocus={point}
@@ -227,7 +248,7 @@ export function HeadingCard({ camera, params, derivedNozzle, nozzleWarning, segm
         {absoluteX && <p className="c-warn">定向测量时胶路由图像拟合，绝对 x 恒为 0：本段胶偏请在“检测项”里改用“胶条到边缘距离”。</p>}
       </div> : <div className="wp-settings-group" role="group" aria-label="各段方向">
         <span className="wp-settings-label">方向<Scope>按段设置</Scope></span>
-        <p className="wp-settings-hint">{needed ? `已开启：${headingSegments.map(item => `段 ${item.index}`).join("、")}。` : "没有段开启逐帧定向，上面的参数可不填。"}开关在左侧选段后设置；搜索扇区选段后在示教帧上显示，可拖动转动，每段各自设置。</p>
+        <p className="wp-settings-hint">{needed ? `已开启：${headingSegments.map(item => `段 ${item.index}`).join("、")}。` : "没有段开启逐帧定向，上面的参数可不填。"}开关与测量区间在左侧选段后设置；搜索扇区选段后在示教帧上显示，可拖动转动，每段各自设置。</p>
       </div>}
       <div className="wp-settings-group" role="group" aria-label="什么算找到胶">
         <span className="wp-settings-label">什么算找到胶<Scope>高级</Scope></span>
@@ -239,7 +260,7 @@ export function HeadingCard({ camera, params, derivedNozzle, nozzleWarning, segm
   </SettingsCard>;
 }
 
-/** 测量区间：配方存起点与长度，这里按“跳过前多少、测到多少”填；两项都空为未设置，不合法时只提示、不写入配方。 */
+/** 本段测量区间：配方存起点与长度，这里按“跳过前多少、测到多少”填；两项都空为本段不设（沿用相机级旧值或未设置），不合法时只提示、不写入配方。 */
 function WindowFields({ value, disabled, onFocus, onChange }: { value: InspectWindow | null; disabled: boolean; onFocus: (part: HeadingPart | null) => void; onChange: (next: InspectWindow | null) => void }) {
   const [skip, setSkip] = useState(value?.startMm ?? NaN);
   const [end, setEnd] = useState(value ? value.startMm + value.lengthMm : NaN);
@@ -256,7 +277,7 @@ function WindowFields({ value, disabled, onFocus, onChange }: { value: InspectWi
     <PartRow part="skip" title="跳过胶嘴附近" onFocus={onFocus} hint="胶嘴会挡住胶条，各方向在出胶点附近也挤在一起分不开，这一段不测；一般取 5 mm 左右。">
       <NumberField label="跳过前" value={skip} unit="mm" min={0} max={MAX_WINDOW_END_MM} step={.5} onChange={v => update(v, end)} disabled={disabled}/>
     </PartRow>
-    <PartRow part="zone" title="测量到" onFocus={onFocus} hint="每帧只测距出胶点从跳过处到这里的一段（图上环带）。这一段不要短于每帧胶条后移量（20 fps 约 20 mm），否则相邻帧之间有胶测不到。两项都清空即未设置。">
+    <PartRow part="zone" title="测量到" onFocus={onFocus} hint="每帧只测距出胶点从跳过处到这里的一段（图上环带）。这一段不要短于每帧胶条后移量（20 fps 约 20 mm），否则相邻帧之间有胶测不到；也不要长过本段胶条。两项都清空即本段不单独设置。">
       <NumberField label="测到距出胶点" value={end} unit="mm" min={0} max={MAX_WINDOW_END_MM} step={.5} onChange={v => update(skip, v)} disabled={disabled}/>
     </PartRow>
     {error && <p className="c-warn" role="alert">{error}，未保存</p>}

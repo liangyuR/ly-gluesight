@@ -53,7 +53,7 @@ MCP Streamable HTTP 的无状态子集：
 | `teach_corridor` | 写 | 由笔划提取并校验最终走廊、完成彩色取色，再一次提交示教帧、走廊和模型。返回提交状态、长度、质量与叠图 |
 | `teach_fit_color` | 写 | 沿已保存的走廊取色，写入这一段的颜色模型（只对彩色示教帧）；返回胶色、背景色与分离度 |
 | `teach_trial` | 读 | 用已保存走廊量测指定区间，返回实际范围、全部未测成帧、边距有效率、分布和阈值诊断 |
-| `teach_segment` | 写 | 按补丁改一段的检测项（`checks`）与零件边参考（`offsetRef`） |
+| `teach_segment` | 写 | 按补丁改一段的检测项（`checks`）、零件边参考（`offsetRef`）与逐帧定向的测量区间（`headingWindow`） |
 | `teach_replay` | 读 | 按候选现在的配置从原图复测历史件并整件判定；不给记录时列出最近的历史件 |
 
 ### `teach_status`
@@ -64,8 +64,8 @@ MCP Streamable HTTP 的无状态子集：
 
 - `project`、`recipe`、`revision`、`snapshot`、`next`，以及 `teachingPiece`（`roundId`、`recordId`、`groupCount`；没选为 null）。
 - `segments[]`：段号、类型、检测相机、帧组范围或不能确定的原因、`checks`、`offsetRef`、`heading`、`skip`、`skipHead`、`skipTail`、`parameterWarnings`。
-- `cameras[]`：彩色模式、`mmPerPx`、`calibMmPerPx`、`ready`、`window`（`startMm`、`lengthMm`）、`nozzle`（点、`calibrated`、`source: calibrated | corridorStarts`、`warning`）与 `headingIssues`。`warning` 是推算出胶点时有走廊起点偏离超过 1 mm 的提示，不阻断；`headingIssues` 指出窗口缺失、窗口不足 8 px 等前置问题。
-- 每台相机的 `segments[]`：`segment`、`seq`、`corridorPoints`、`saved`、`modelPresent`、`modelUsable`、`quality`、`modelIssues`。`colorModel` 仍表示字段存在，不能用它判断可用。`quality` 保留引擎的 `glueCount`、`bgCount`、`centerShift`、`separation`、高光占比等；非法 JSON、缺少质量证据、胶样本不足、背景样本或分量缺失分别给出原因。`modelUsable=true` 也不证明走廊位于新胶上。
+- `cameras[]`：彩色模式、`mmPerPx`、`calibMmPerPx`、`ready`、`cameraWindow`（旧配方的相机级测量区间 `startMm`、`lengthMm`，段没设区间时沿用；没有为 null）、`nozzle`（点、`calibrated`、`source: calibrated | corridorStarts`、`warning`）与 `headingIssues`（`segment`、`message`）。`warning` 是推算出胶点时有走廊起点偏离超过 1 mm 的提示，不阻断；`headingIssues` 按段指出测量区间缺失、区间不足 8 px 等前置问题。
+- 每台相机的 `segments[]`：`segment`、`window`（开启逐帧定向的段实际用的测量区间：`startMm`、`lengthMm`、`endMm` 即界面“测量到”、`source: segment | camera`；没开定向或没有区间为 null）、`seq`、`corridorPoints`、`saved`、`modelPresent`、`modelUsable`、`quality`、`modelIssues`。`colorModel` 仍表示字段存在，不能用它判断可用。`quality` 保留引擎的 `glueCount`、`bgCount`、`centerShift`、`separation`、高光占比等；非法 JSON、缺少质量证据、胶样本不足、背景样本或分量缺失分别给出原因。`modelUsable=true` 也不证明走廊位于新胶上。
 - `engine`：加载状态、版本、运行库目录、`overridden`、`source`（`bundledRuntime` / `developmentOverride`）、`requiredSeries`、`requiredOperators` 与失败原因。`loaded=true` 包含必需算子校验；为 false 时从 `message` 核对缺失算子或运行库问题，解决后再逐段量测。
 - `passes`：示教件的笔结构（D-SB-62）。`count`、`frames`（各笔帧组数）、`skip`（配方每笔开头 `head`、结尾 `tail` 跳过帧组数）、`inRecipe`（笔结构已随 N_exp 写进配方，生产按笔分段）、`skipped`（示教件上被跳过的帧组：`pass`、`frames: [first, last]`、`short` 为整笔不检）与 `suggestion`（每笔起涂建议：`current`、`suggested`、逐笔 `passes[]` 的起涂帧组数或不参与原因、`pending`）。没有示教件为 null。每笔首尾跳过只能由人在界面设置。
 - `coverage`：按示教件总帧数预览 guard、段与每笔首尾跳过后的真实检测范围，有笔结构时按笔分段，否则按比例边界；`coverageSource=teachingPieceProportional`。包括逐段逐相机应测/可用帧数、被屏蔽帧、零覆盖段和胶偏首尾剔除后的窗口。没有示教件或无法读取时为 null；没有可信边界时相关范围/计数为 null，不能当作完整覆盖。`boundaryRefinementPending=true` 表示还没有测量方向来预测细化后的边界。
@@ -107,9 +107,9 @@ MCP Streamable HTTP 的无状态子集：
 
 ### `teach_segment`
 
-参数：`recipe`、`segment`；可选 `checks`、`offsetRef`、`expectedRevision`。两项配置补丁深合并进同一快照：对象逐键合并，其余值（含 null）直接替换。`offsetRef: null` 关掉胶偏参考；原来没有参考时补丁要给全（`measure`、`camera`，ToEdge 另加 `edge`）。合并后按段配置与候选校验，`xRef` 等由示教件测得的量不能直接改。此工具不开放段结构或检测相机修改。
+参数：`recipe`、`segment`；可选 `checks`、`offsetRef`、`headingWindow`、`expectedRevision`。配置补丁合并进同一快照：`checks`、`offsetRef` 对象逐键合并，其余值（含 null）直接替换。`offsetRef: null` 关掉胶偏参考；原来没有参考时补丁要给全（`measure`、`camera`，ToEdge 另加 `edge`）。`headingWindow` 整体替换本段的测量区间 `{startMm, lengthMm}`（距出胶点只测 [startMm, startMm + lengthMm]，界面“跳过胶嘴附近”= `startMm`、“测量到”= `startMm + lengthMm`），本段各检测相机共用；`null` 去掉本段的值、沿用相机级区间；本段没开逐帧定向时拒绝。合并后按段配置与候选校验，`xRef` 等由示教件测得的量不能直接改。此工具不开放段结构、检测相机或逐帧定向开关修改。
 
-返回这一段合并后的 `checks`、`offsetRef`、提交身份和 `impact`（是否结构改变、移除的示教、待示教项、测量是否失效、覆盖预览）。界面的段结构修改仍应先查看影响预览；普通检测项补丁不等于结构修改。
+返回这一段合并后的 `checks`、`offsetRef`、`heading`、提交身份和 `impact`（是否结构改变、移除的示教、待示教项、测量是否失效、覆盖预览）。界面的段结构修改仍应先查看影响预览；普通检测项补丁不等于结构修改。
 
 ### `teach_replay`
 
