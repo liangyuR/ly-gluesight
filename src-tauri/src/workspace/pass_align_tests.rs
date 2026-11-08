@@ -224,6 +224,21 @@ fn shortening_a_changed_pass_keeps_every_segment_in_it() {
 }
 
 #[test]
+fn replacing_still_works_when_the_only_detecting_segment_has_no_counterpart() {
+    let mut w = taught(&[10, 10], &[10]);
+    w.doc.segments[0].skip = true;
+    for inspect in &mut w.doc.inspect {
+        inspect.segments.retain(|c| c.segment != 1);
+    }
+    w.camera_teaching.retain(|t| t.segment != Some(1));
+    w.doc.build().unwrap();
+    let cuts = replace(&mut w, &["a", "b"], &["x"], &[100], &[10]);
+    assert!(cuts.is_empty());
+    assert!(!w.doc.segments[0].skip);
+    assert_eq!(change(&w, 1), Some(PassChange::Added));
+}
+
+#[test]
 fn removing_a_pass_drops_only_the_segments_inside_it() {
     let mut w = taught(&[10, 10, 10], &[10, 20]);
     let cuts = replace(&mut w, &["a", "b", "c"], &["a", "c"], &[10, 10], &[10, 20]);

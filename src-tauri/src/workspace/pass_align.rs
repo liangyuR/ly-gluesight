@@ -261,6 +261,16 @@ pub(super) fn align(old: &[u32], new: &[u32], distances: &[Vec<Option<f32>>]) ->
     rows
 }
 
+impl PassChange {
+    /// 沿用的段改为检测后要重新示教，算改动。
+    fn max_change(self) -> Self {
+        match self {
+            PassChange::Same => PassChange::Changed,
+            other => other,
+        }
+    }
+}
+
 fn removed(old: u32) -> PassPair {
     PassPair {
         old: Some(old),
@@ -502,11 +512,24 @@ pub(super) fn migrate(
                         _ => None,
                     })
                     .unwrap_or(0);
-                (fresh(&source.segments[neighbor]), PassChange::Added)
+                // 新增的笔默认检测：要不要检测由人在示教时决定
+                let mut segment = fresh(&source.segments[neighbor]);
+                segment.skip = false;
+                (segment, PassChange::Added)
             }
         };
         segments.push(segment);
         changes.push(change);
+    }
+    // 迁移后没有检测的段（检测的段都在删除的笔里）时，第一段改动或新增的段（没有就第一段）改为检测并算改动，
+    // 让换件先走到对照编辑，不因段列表校验失败而换不了
+    if segments.iter().all(|s| s.skip) {
+        let k = changes
+            .iter()
+            .position(|&c| c != PassChange::Same)
+            .unwrap_or(0);
+        segments[k].skip = false;
+        changes[k] = changes[k].max_change();
     }
     for (i, segment) in segments.iter_mut().enumerate() {
         segment.index = i as u32 + 1;
