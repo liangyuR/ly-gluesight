@@ -488,6 +488,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
       {pickError && choosingNow && <p className="c-warn wp-picker-warn" role="alert">{pickError}</p>}
       {!choosingNow && frame && (segmentTeaching
         ? <SegmentTrial key={scope} id={doc.id} camera={camera} segment={segment!} round={segmentTeaching.round} teachSeq={segmentTeaching.seq}
+          skipRules={{ passes: data.workspace.teachingPiece?.passes, groupCount: trialReview?.groupCount ?? 0, passSkip: data.workspace.doc.passSkip, segment: data.workspace.doc.segments?.find(item => item.index === segment) }}
           range={trialRange} revision={data.workspace.revision} locked={trialLocked} waiting={pendingSave} onFlush={saveNow} guide={headingGuide} seq={trialSeq} onSeq={setTrialSeq}
           lead={frameTitle} side={frameActions} />
         : <Surface role="region" className="wp-trial" aria-label="示教帧"><div className="wp-trial-head">{frameTitle}<span className="wp-trial-actions">{frameActions}</span></div></Surface>)}
