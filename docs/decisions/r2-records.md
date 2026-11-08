@@ -22,8 +22,8 @@
 
 - 问题：检测进程在 S7 事务中退出，PLC 已开工、握手日志里留着在途事务，历史里却没有这一件，复盘只能看到序号缺口。
 - 可选项：A 不处理；B 启动时按握手身份补一条 ERR 记录，不动握手事务；C 补记录并自动复位 PLC。
-- 采用：B。故障码 98（设备丢失），原因写明进程在事务中中断、结果未回写 PLC；交付记为失败，录制记为失败。场景与配方取本件 partStart 之后的运行日志，partStart 日志为此带 `source` 字段；找不到开工日志时按真机记录并在原因里注明（宁可多计入真机统计，也不把真机件漏记成离线）。C 不可取：在途件的复位必须是明确动作，PC 不能替现场决定；自动复位开关（[r2-plc.md](r2-plc.md) R2P-9）同样不处理有未结事务的情形。
-- 边界：只补记录，不改握手事务的恢复与复位；同一 cycleId 已在历史或追溯暂存里时不重复补。离线事务的恢复见 [r2-plc.md](r2-plc.md) R2P-2。
+- 采用：B。故障码 98（设备丢失），原因写明进程在事务中中断、结果未回写 PLC；交付记为失败，录制记为失败。场景与配方取本件 partStart 之后的运行日志，partStart 日志为此带 `source` 字段；找不到开工日志时按真机记录并在原因里注明（宁可多计入真机统计，也不把真机件漏记成离线）。
+- 边界：补记录本身不动握手事务；之后 S7 会话按 [r2-plc.md](r2-plc.md) R2P-9 自动复位，有未结事务也照常复位，效果即 C。同一 cycleId 已在历史或追溯暂存里时不重复补。离线事务的恢复见 [r2-plc.md](r2-plc.md) R2P-2。
 - 回退：回滚该提交。
 
 ## R-5 握手审计的滚动与保留
@@ -51,14 +51,14 @@
   2. PLC 值变化的其余重复不动：PC 输出点位（pcState、resultCode 等）每次写入有一条写入行，下一次轮询又有一条值变化行；但 PLC 日志页的点位历史曲线只读值变化行，去掉它输出点位就没有历史，保留。
   3. 运行日志的 1 GB / 30 天不变。按上面的外推，每天数千件时实际只能保留几天，不是 30 天。这一点要告诉现场，不能当作 30 天追溯来承诺。
 - 建议（未实现，需要用户按现场磁盘和节拍定）：
-  - 提高 `applog::LIMITS.max_total_bytes` 到 4–8 GB。资料盘剩余 2 GB 以下会暂停接件，这个上限只占一小部分。
+  - 提高 `applog::LIMITS.max_total_bytes` 到 4–8 GB。资料盘剩余 2 GB 以下会停录原图并告警，这个上限只占一小部分。
   - 超限时先把旧分段里的 debug 行去掉，再整段删除。debug 行是逐帧明细；去掉后每件只剩不超过 3.6 KB 的关键事件（partStart、接件阶段、admitted、partEnd、检测结果、S7 事务结束），1 万件 / 天 30 天约 1 GB，最近几天仍有逐帧明细。必须放到后台线程里做，不能放在持有日志锁的 `Sink::write` 路径里，否则会拖慢节拍。
   - `plc.db` 只有保留天数（30 天，`log_retention_days`，界面没有入口）、没有容量上限，ly-plc 需要新增容量上限；在此之前现场可按节拍把模板的天数降到 7–14 天。
 - 回退：没有行为改动。
 
 ## R-7 负载敏感测试
 
-- 问题：机器满载时偶发失败：`recorder_outcome_round_trips_all_views_with_verified_pixels_and_cycle_identity`、`low_disk_during_part_still_releases_then_withholds_ready_until_space_recovers`、`sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_claims_the_sample_by_part_sn`，另有预热、测量、录制写线程的三类超时测试。
+- 问题：机器满载时偶发失败：`recorder_outcome_round_trips_all_views_with_verified_pixels_and_cycle_identity`、`sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_claims_the_sample_by_part_sn`，另有预热、测量、录制写线程的三类超时测试。
 - 原因：
   1. 超时判定用真实时钟上的固定预算，去等一个启动或完成时间取决于机器负载的线程（预热、测量、录制写线程）。
   2. `ImportTestDir` 用纳秒时间戳命名临时目录，并行线程取到同一时间戳时 `create_dir` 报 `AlreadyExists`（os error 183）。

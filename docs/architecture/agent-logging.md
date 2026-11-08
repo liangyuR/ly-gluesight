@@ -88,7 +88,7 @@
 | code | 触发 | data |
 |---|---|---|
 | `s7.fault_output` | PC 撤下输出（故障时置 pcState=90、faultCode=101，待复位时置 pcState=0），或因无法确认而断开通讯 | `cause`（触发路径，含 `reset_operator`、`reset_signal`、`reset_timeout`）、`reason`、`phase` |
-| `s7.reset.request` | 收到复位：操作员软件复位、PLC 复位信号上升沿、启动或重连后的自动复位，或 PLC 置复位请求（plcState=99）；PLC 复位信号被拒也记 | `source: operator / plc_signal / auto / plc`、收到时的 `phase`；被拒时 `ok: false`、`error` |
+| `s7.reset.request` | 收到复位：操作员软件复位、PLC 复位信号上升沿、待复位或故障后的自动复位，或 PLC 置复位请求（plcState=99）；PLC 复位信号被拒也记 | `source: operator / plc_signal / auto / plc`、收到时的 `phase`；被拒时 `ok: false`、`error` |
 | `s7.reset.done` | 复位完成、视觉就绪 | 无 |
 | `s7.ack` | 收到结果确认 | `requestSeq`、`resultCode`、`faultCode` |
 | `s7.reconnect.forced` | 无法确认撤下 pcState，主动断开重连 | `error` |
@@ -103,7 +103,7 @@
 
 ### 5.3 故障事件与来源
 
-- `fault.enter`：节拍进入故障，或故障原因变化。`source` 取 `s7 / audit / intake / motion / device / storage / operator`（`motion` 为等工件结束超时），`data` 带 `reason`、`s7Phase`、在途 `cycleId`。
+- `fault.enter`：节拍进入故障，或故障原因变化。`source` 取 `s7 / intake / motion`（`motion` 为等工件结束超时）；追溯、磁盘与设备问题只告警或记本件检测错误，不进故障，`data` 带 `reason`、`s7Phase`、在途 `cycleId`。
 - `fault.repeat`：同一来源、同一原因重复上报时不再逐条写，按聚合规则（第 6 节）定期输出 `{count, firstTs, lastTs}`。
 - `fault.cleared`：复位完成、故障解除，带持续时长。
 
