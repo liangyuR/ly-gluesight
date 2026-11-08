@@ -227,7 +227,6 @@ fn quarantined_cycle_keeps_identity_and_recording_protection_after_reopen_withou
     let expected = records.join("cycle_orphan").canonicalize().unwrap();
     let reopened = spool::Spool::open(dir.0.join("spool")).unwrap();
     assert!(reopened.cycles().is_empty());
-    assert_eq!(
     assert!(reopened.quarantined_cycles().any(|cycle| cycle == "orphan"));
     assert_eq!(
         reopened.protected_directories(&records).unwrap(),
