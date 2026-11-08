@@ -69,14 +69,20 @@ export interface TeachingPiece {
   passes?: number[];
 }
 
-/** 配方回传包（候选与示教件轮次记录，不带原图）的导出结果、导入预览与导入结果 */
-export interface PackageExported { path: string; bytes: number; files: number }
+/** 工件配方（回传包：候选与示教件轮次记录，可选带示教件原图）的导出结果、导入预览与导入结果 */
+export interface PackageExported { path: string; bytes: number; files: number; teachingImages: boolean }
 export interface PackagePreview {
   path: string; bytes: number; recipeId: string; name: string; productCode: number; sourceProjectName: string;
   exportedAt: number; appVersion: string; teachingPiece: TeachingPiece | null;
-  productionVersion: number | null; candidate: { revision: number; updatedAt: number; pending: boolean } | null; blocker: string | null;
+  /** 包里带示教件原图 */
+  teachingImages: boolean;
+  productionVersion: number | null; candidate: { revision: number; updatedAt: number; pending: boolean } | null;
+  /** 不拦导入的提示（如相机设备配置与示教件采集时不一致） */
+  warnings: string[];
+  blocker: string | null;
 }
-export interface PackageImported { id: string; notes: string[] }
+/** teachingImages：导入后示教件原图齐全（随包带入或从本机历史记录补回） */
+export interface PackageImported { id: string; teachingImages: boolean; notes: string[] }
 /** 新流程候选（RB-5）：flow 不是 2 的候选只能在配方库删除。 */
 export const isCurrentFlow = (workspace: Pick<Workspace, "flow">) => workspace.flow === 2;
 export interface CaptureRoundReview {

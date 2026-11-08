@@ -79,6 +79,8 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 
 长件的按需读取、帧条窗口化、复算进度与取消契约见[长件浏览与复算](architecture/frame-browsing.md)。
 
+历史件的人工 Tag、筛选、批量编辑与手动删除规则见[历史件管理](architecture/history-management.md)。
+
 ## 三、目录
 
 | 目录 | 内容 |

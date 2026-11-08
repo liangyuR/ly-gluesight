@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -69,4 +69,60 @@ it("勾选件后改筛选 → 不跳详情且选择被清空", async () => {
   expect(screen.getByRole("button", { name: /导出历史件（1）/ })).toBeEnabled();
   await userEvent.click(screen.getByRole("button", { name: "7 天" }));
   await waitFor(() => expect(screen.getByRole("button", { name: /导出历史件（0）/ })).toBeDisabled());
+});
+
+it("保存常用与自定义 Tag → 列表显示标签并按标签精确筛选", async () => {
+  let tags: string[] = [];
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_set_tags") { tags = (args as { tags: string[] }).tags; return tags; }
+    if (command === "history_query") {
+      const tag = (args as { query: { tag?: string } }).query.tag;
+      return page([{ ...burstPartSummary(1), tags }, burstPartSummary(2)].filter(item => !tag || item.tags?.includes(tag)));
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(1);
+  await userEvent.click(screen.getByRole("checkbox", { name: /SN-101/ }));
+  await userEvent.click(screen.getByRole("button", { name: "编辑 Tag（1）" }));
+  const dialog = within(screen.getByRole("dialog", { name: "编辑 Tag" }));
+  await userEvent.click(dialog.getByRole("button", { name: "故障件" }));
+  await userEvent.type(dialog.getByLabelText("自定义 Tag"), "夜班复核{Enter}");
+  await userEvent.click(dialog.getByRole("button", { name: "保存 Tag" }));
+  const table = within(screen.getByRole("table", { name: "历史记录" }));
+  expect(await table.findByRole("button", { name: "故障件" })).toBeVisible();
+  await userEvent.click(table.getByRole("button", { name: "夜班复核" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "查看 SN SN-102 的记录" })).not.toBeInTheDocument());
+  expect(screen.getByLabelText("历史 Tag")).toHaveValue("夜班复核");
+  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("真机共 1 件");
+  expect(screen.getByRole("button", { name: "查看 SN SN-101 的记录" })).toBeVisible();
+});
+
+it("确认删除已选历史件 → 记录与统计刷新，取消确认则保留记录", async () => {
+  let deleted = false;
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_query") return page(deleted ? [] : [{ ...burstPartSummary(1), source: "offlineSample" }]);
+    if (command === "history_delete") { deleted = true; return { deleted: 1, warnings: [] }; }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(1);
+  await userEvent.click(screen.getByRole("checkbox", { name: /SN-101/ }));
+  expect(screen.getByRole("button", { name: "导出历史件（1）" })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "删除历史件（1）" }));
+  await userEvent.click(within(screen.getByRole("dialog", { name: "删除历史件" })).getByRole("button", { name: "取消" }));
+  expect(await row(1)).toBeVisible();
+  expect(deleted).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "删除历史件（1）" }));
+  await userEvent.click(screen.getByRole("button", { name: "确认删除 1 件" }));
+  expect(await screen.findByText("已删除 1 件历史记录。")).toBeVisible();
+  await waitFor(() => expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument());
+  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("真机共 0 件");
+  expect(screen.getByRole("button", { name: "删除历史件（0）" })).toBeDisabled();
 });

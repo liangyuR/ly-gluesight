@@ -71,7 +71,7 @@ MCP 仍只负责候选示教。建项目、选示教件、确认分段、设置�
 | 回传包命令行导出 | 原样导入与无对话框导出由 [PR #240](https://github.com/liangyuR/ly-gluesight/pull/240) 维护，须核对目标版本实际包含的入口；不能把临时任务脚本当作产品契约 |
 | 执行器反复要求批准 | 来自宿主终端执行审批，不是 GlueSight MCP 鉴权故障；权限配置不属于本接口 |
 
-补图只搜索同配方最近 200 件录制，原件已清理或不在范围内都可能无法补回；重新选示教件会清空示教，不是无损恢复。模拟现场验证应先发布采集版，再导入回传包检查改基。发布后等 `pending` 为空且 `publish.state=active`，读取实际发布版本，不能用下一候选版本冒充生产版本。详见 [配方创建与回传](../architecture/recipe-creation-workflow.md)、[项目切换](../architecture/project.md)、[相机保存](../architecture/online-commissioning.md)。
+补图只搜索同配方最近 200 件录制，原件已清理或不在范围内都可能无法补回；重新选示教件会清空示教，不是无损恢复。模拟现场验证应先发布采集版，再导入工件配方（回传包）检查改基。发布后等 `pending` 为空且 `publish.state=active`，读取实际发布版本，不能用下一候选版本冒充生产版本。详见 [配方创建与回传](../architecture/recipe-creation-workflow.md)、[项目切换](../architecture/project.md)、[相机保存](../architecture/online-commissioning.md)。
 
 ## 验收边界
 
