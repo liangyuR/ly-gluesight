@@ -2,6 +2,8 @@
 
 本项目为 Windows 上的 Tauri（Rust）+ React 应用，集成 lyFlow、海康相机与 S7 PLC。
 
+## 使用中文交流回复
+
 ## GitHub 仓库与发布
 
 - `liangyuR/ly-gluesight` 与 `liangyuR/lyFlow` 均托管在 GitHub，使用 GitHub PR、Actions 和 Releases，不走 Bitbucket 流程，也不使用 `bitbucket-pr` 技能。
@@ -24,12 +26,6 @@
 - 旧拍照点配方从未部署，代码已删除；没有段的配方文件读入时报“已停用”。保留通用标定和 Software 单帧调试能力。
 - PLC 协议为生产通讯协议 8（`docs/integration/plc-communication-protocol.md`）：PLC 只报型号、序号与 SN，双方状态字握手，`pcMode` 表示维护模式；PLC 不等 PC，PC 读到请求只做接件登记、不回写，不能检测的件在工件结束后回检测错误。
 - Line0 使用高电平门控，由机械臂的拍照信号经 PLC 驱动，相机按软件设定的固定帧率采集，默认 10 fps。
-
-## 多 agent 协作
-
-- 大型任务自主分配多个 agent，按可独立交付的范围拆分；小型修改直接完成。
-- 分配时说明目标、文件边界和验收方式，避免多个 agent 同时修改同一文件。
-- 主 agent 负责检查交叉影响、整合结果和最终验证；不覆盖用户或其他 agent 的未提交改动。
 
 ## 任务执行
 

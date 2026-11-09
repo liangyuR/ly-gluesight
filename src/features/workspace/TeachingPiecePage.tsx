@@ -30,7 +30,7 @@ export function clearedByTeachingPiece(view: WorkspaceView): string[] {
   const calibrated = !!doc.partCalib || workspace.calibration.rounds.length > 0
     || segments.some(segment => segment.expectedFrames != null || segment.calib != null || segment.offsetRef?.xRef != null);
   return [
-    ...(workspace.teachingPiece || confirmed ? ["示教件的分段边界（在新件上给出边界草稿，到分段页重新确认）"] : []),
+    ...(workspace.teachingPiece || confirmed ? ["示教件的分段边界（在新件上给出边界草稿，到分段与示教页重新确认）"] : []),
     ...(calibrated ? ["示教件得出的结果：各段示教帧数、示教件测量与胶偏参考 x_ref"] : []),
     ...(workspace.passAlignment ? ["上一次换示教件的逐笔对照与各段沿用状态"] : []),
   ];
@@ -42,19 +42,19 @@ export function clearedByTeachingPiece(view: WorkspaceView): string[] {
  */
 export default function TeachingPiecePage() {
   const href = useRecipeHref();
-  const { data, doc, cameras, busy, dirty, frameDirty, act, setError } = useWorkspace();
+  const { data, doc, cameras, busy, dirty, frameDirty, segmentDirty, act, setError } = useWorkspace();
   const [confirming, setConfirming] = useState<{ recordId: number; done: (ok: boolean) => void } | null>(null);
   if (!doc || !data) return <WorkspaceEmpty />;
   const { workspace, plan } = data;
   const piece = workspace.teachingPiece;
   const pieceView = plan.pieces.find(item => item.roundId === piece?.roundId);
   const groupCount = pieceView?.groupCount ?? 0;
-  const locked = busy || dirty || frameDirty || !!workspace.pending;
+  const locked = busy || dirty || frameDirty || segmentDirty || !!workspace.pending;
   const nameOf = (id: string) => cameras.find(camera => camera.id === id)?.name ?? id;
   const cleared = clearedByTeachingPiece(data);
   const kept = keptCorridors(data);
   const apply = async (recordId: number) => !!await act(() => workspaceApi.setTeachingPiece(doc.id, workspace.revision, recordId),
-    next => next.workspace.passAlignment && !next.workspace.passAlignment.confirmed ? "已设为示教件并按笔迁移示教，请到分段页确认逐笔对照" : "已设为示教件，请到分段确认边界");
+    next => next.workspace.passAlignment && !next.workspace.passAlignment.confirmed ? "已设为示教件并按笔迁移示教，请到分段与示教页确认逐笔对照" : "已设为示教件，请到分段与示教页确认边界");
   const choose = async (recordId: number) => {
     if (!cleared.length) return apply(recordId);
     return new Promise<boolean>(done => setConfirming({ recordId, done }));
@@ -71,7 +71,7 @@ export default function TeachingPiecePage() {
           <span className="wp-capture-chip"><small>SN</small><strong className="mono">{piece.sn}</strong></span>
           <span className="wp-capture-chip"><small>时间</small><strong>{pieceTime(piece.ts)}</strong></span>
           <span className="wp-capture-chip"><small>帧组</small><strong>{groupCount} 个</strong></span>
-          <Link className="wp-text-link" to={href("/recipe/segments")}>前往分段<ArrowRight size={12} aria-hidden="true" /></Link>
+          <Link className="wp-text-link" to={href("/recipe/teach")}>前往分段与示教<ArrowRight size={12} aria-hidden="true" /></Link>
         </div>
         {pieceView?.imagesUnavailable
           ? <Notice tone="warn" title="原图不可用">{pieceView.imagesUnavailable}。示教件只引用这件历史件的录制原图：分段、走廊与测量结果都还在，已发布的配方照常检测；要看图、示教走廊、测量示教件或试测，需要本机有这件的检测记录与录制，否则从下方重新选用示教件。</Notice>
@@ -92,8 +92,8 @@ export default function TeachingPiecePage() {
       <div className="wp-stack">
         <p>以下跟着原示教件帧组得出的内容将清空，在新示教件上重新确认分段、重新测量即可得出：</p>
         <ul aria-label="将清空的内容">{cleared.map(item => <li key={item}>{item}</li>)}</ul>
-        <p className="muted">原示教件与新示教件都有笔结构时，按笔（一次门控为一笔）自动对照两件的笔并迁移示教，到分段页确认对照（确认前可改）：不变的笔沿用{kept ? `走廊、示教帧（现有走廊与示教帧 ${kept} 条）` : "走廊、示教帧"}与段配置；改动、新增的笔要在新件上重新示教；删除的笔连同其段与走廊去掉。</p>
-        <p className="muted">没有笔结构时沿用原来的分段帧数（原边界帧号）预填边界，不按比例换算；帧组不够时放不下的后面几段连同走廊裁掉。配方级参数保留。之后到分段页确认边界，再重新测量示教件。</p>
+        <p className="muted">原示教件与新示教件都有笔结构时，按笔（一次门控为一笔）自动对照两件的笔并迁移示教，到分段与示教页确认对照（确认前可改）：不变的笔沿用{kept ? `走廊、示教帧（现有走廊与示教帧 ${kept} 条）` : "走廊、示教帧"}与段配置；改动、新增的笔要在新件上重新示教；删除的笔连同其段与走廊去掉。</p>
+        <p className="muted">没有笔结构时沿用原来的分段帧数（原边界帧号）预填边界，不按比例换算；帧组不够时放不下的后面几段连同走廊裁掉。配方级参数保留。之后到分段与示教页确认边界，再重新测量示教件。</p>
       </div>
     </Dialog>}
   </div>;

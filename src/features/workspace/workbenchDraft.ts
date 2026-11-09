@@ -1,5 +1,5 @@
 /**
- * 分段标定工作台的编辑规则（纯函数，SegmentWorkbench 用，D-SB-44）：在模板轮的帧组时间轴上定段结构与边界。
+ * 分段草稿的编辑规则（纯函数，分段与示教页用，D-SB-44）：在示教件的帧组时间轴上定段结构与边界，段不跨笔。
  * cuts 与后端 CaptureReview 同一口径：每个值是上一段的最后一个原始帧组，严格递增，0 < cut < 帧组数，个数 = 段数 − 1。
  */
 import type { KindDefaults, PassSkip, PathSegment, SegmentKind } from "../plan/types";
@@ -30,25 +30,56 @@ export function spans(draft: WorkbenchDraft): [number, number][] {
   return bounds.slice(0, -1).map((start, i) => [start + 1, bounds[i + 1]]);
 }
 
-/** 起始草稿：本轮已有且与段数相符、未失效的边界原样带入；否则按段数等分。段类型与检测相机取现有段列表。 */
-export function initialDraft(groupCount: number, segments: PathSegment[], planCameras: string[], saved?: { cuts: number[]; status: string } | null): WorkbenchDraft {
+/** 示教件各笔帧组数：缺省、为空或与帧组数对不上时整件当一笔。 */
+export function piecePasses(passes: number[] | undefined, groupCount: number): number[] {
+  return passes?.length && passes.every(n => Number.isInteger(n) && n > 0) && passes.reduce((sum, n) => sum + n, 0) === groupCount ? [...passes] : groupCount > 0 ? [groupCount] : [];
+}
+
+/** 各笔最后一个帧组（最后一笔除外）：段不跨笔，这些都必须是段边界。 */
+export function passEnds(passes: number[]): number[] {
+  return passes.slice(0, -1).map((_, i) => passes.slice(0, i + 1).reduce((sum, n) => sum + n, 0));
+}
+
+/** 补上缺的笔末边界：跨笔的段在笔末拆开，各半段沿用原段的类型、检测相机与是否检测。 */
+export function withPassEnds(draft: WorkbenchDraft, ends: number[]): WorkbenchDraft {
+  return ends.reduce((next, end) => next.cuts.includes(end) ? next : toggleCut(next, end), draft);
+}
+
+/** 整笔帧数不超过每笔首尾跳过之和：这一笔整笔不检（与 passCells 的 short 同一口径）。 */
+const shortPass = (n: number, skip: PassSkip | undefined) => n <= (Number.isFinite(skip?.head) ? skip!.head : 0) + (Number.isFinite(skip?.tail) ? skip!.tail : 0);
+
+/**
+ * 起始草稿，始终含全部笔末边界：本轮已有且与段数相符、未失效的边界原样带入，跨笔的段在笔末拆开；
+ * 本轮还没存过边界时每笔一段，类型与检测相机按位置沿用现有段（多出的笔沿用最后一段），短笔默认不检测；
+ * 边界失效或对不上时按段数等分再补笔末。
+ */
+export function initialDraft(groupCount: number, segments: PathSegment[], planCameras: string[], saved?: { cuts: number[]; status: string } | null, passes?: number[], passSkip?: PassSkip): WorkbenchDraft {
   const kinds = segments.map(s => s.kind);
   const cameras = segments.map(s => chosenCameras(s, planCameras));
   const skips = segments.map(s => !!s.skip);
+  const strokes = piecePasses(passes, groupCount);
+  const ends = passEnds(strokes);
   if (saved && saved.status !== "stale" && saved.cuts.length === kinds.length - 1 && valid({ groupCount, cuts: saved.cuts, kinds, cameras, skips })) {
-    return { groupCount, cuts: [...saved.cuts], kinds, cameras, skips };
+    return withPassEnds({ groupCount, cuts: [...saved.cuts], kinds, cameras, skips }, ends);
+  }
+  if (!saved && strokes.length && kinds.length) {
+    const like = (i: number) => Math.min(i, kinds.length - 1);
+    const draft = { groupCount, cuts: ends, kinds: strokes.map((_, i) => kinds[like(i)]), cameras: strokes.map((_, i) => [...cameras[like(i)]]), skips: strokes.map(n => shortPass(n, passSkip)) };
+    return valid(draft) ? draft : { ...draft, skips: draft.skips.map(() => false) };
   }
   const count = Math.max(1, Math.min(kinds.length, groupCount));
   const cuts = Array.from({ length: count - 1 }, (_, i) => Math.round(groupCount * (i + 1) / count));
-  const draft = { groupCount, cuts, kinds: kinds.slice(0, count), cameras: cameras.slice(0, count), skips: skips.slice(0, count) };
+  const even = { groupCount, cuts, kinds: kinds.slice(0, count), cameras: cameras.slice(0, count), skips: skips.slice(0, count) };
+  const draft = withPassEnds(valid(even) ? even : { ...even, skips: even.skips.map(() => false) }, ends);
   return valid(draft) ? draft : { ...draft, skips: draft.skips.map(() => false) };
 }
 
-/** 在帧组 after 之后插入边界（所在段一分为二，类型、检测相机与是否检测相同）；已有边界则删除它（与后一段合并，保留前一段的）。 */
-export function toggleCut(draft: WorkbenchDraft, after: number): WorkbenchDraft {
+/** 在帧组 after 之后插入边界（所在段一分为二，类型、检测相机与是否检测相同）；已有边界则删除它（与后一段合并，保留前一段的）。fixed 里的边界（笔末）不能删。 */
+export function toggleCut(draft: WorkbenchDraft, after: number, fixed: number[] = []): WorkbenchDraft {
   if (!Number.isInteger(after) || after <= 0 || after >= draft.groupCount) return draft;
   const at = draft.cuts.indexOf(after);
   if (at >= 0) {
+    if (fixed.includes(after)) return draft;
     const keep = (_: unknown, i: number) => i !== at + 1;
     return { ...draft, cuts: draft.cuts.filter((_, i) => i !== at), kinds: draft.kinds.filter(keep), cameras: draft.cameras.filter(keep), skips: draft.skips.filter(keep) };
   }
@@ -63,11 +94,11 @@ export function toggleCut(draft: WorkbenchDraft, after: number): WorkbenchDraft 
   return { ...draft, cuts: [...draft.cuts, after].sort((a, b) => a - b), kinds, cameras, skips };
 }
 
-/** 把第 at 个边界挪到 after 之后：不越过相邻边界，不产生空段。 */
-export function moveCut(draft: WorkbenchDraft, at: number, after: number): WorkbenchDraft {
+/** 把第 at 个边界挪到 after 之后：不越过相邻边界，不产生空段；fixed 里的边界（笔末）不能挪。 */
+export function moveCut(draft: WorkbenchDraft, at: number, after: number, fixed: number[] = []): WorkbenchDraft {
   const low = (draft.cuts[at - 1] ?? 0) + 1;
   const high = (draft.cuts[at + 1] ?? draft.groupCount) - 1;
-  if (at < 0 || at >= draft.cuts.length || after < low || after > high) return draft;
+  if (at < 0 || at >= draft.cuts.length || after < low || after > high || fixed.includes(draft.cuts[at])) return draft;
   return { ...draft, cuts: draft.cuts.map((cut, i) => (i === at ? after : cut)) };
 }
 
@@ -76,6 +107,20 @@ export function toggleKind(draft: WorkbenchDraft, segment: number): WorkbenchDra
   const [kind, skip]: [SegmentKind, boolean] = draft.skips[segment] ? ["straight", false]
     : draft.kinds[segment] === "straight" ? ["corner", false] : ["corner", true];
   return { ...draft, kinds: draft.kinds.map((k, i) => (i === segment ? kind : k)), skips: draft.skips.map((s, i) => (i === segment ? skip : s)) };
+}
+
+/** 设第 segment 段的类型或不检测（右栏段参数）：设为不检测时类型不变，取消不检测时按所选类型。 */
+export function setKind(draft: WorkbenchDraft, segment: number, value: SegmentKind | "skip"): WorkbenchDraft {
+  return {
+    ...draft,
+    kinds: draft.kinds.map((k, i) => (i === segment && value !== "skip" ? value : k)),
+    skips: draft.skips.map((s, i) => (i === segment ? value === "skip" : s)),
+  };
+}
+
+/** 把几段一起设为不检测或恢复检测（批量按笔操作），类型与检测相机不变。 */
+export function setSkips(draft: WorkbenchDraft, segments: number[], skip: boolean): WorkbenchDraft {
+  return { ...draft, skips: draft.skips.map((s, i) => (segments.includes(i) ? skip : s)) };
 }
 
 /** 选中 / 取消第 segment 段的一台检测相机（按计划相机顺序）；每段至少保留一台；不检测的段不能改。 */
@@ -130,6 +175,24 @@ export function segmentsForSave(current: PathSegment[], draft: Pick<WorkbenchDra
       : segment.offsetRef;
     const { skip: _, ...rest } = segment;
     return skip ? { ...rest, cameras, offsetRef, skip: true } : { ...rest, cameras, offsetRef };
+  });
+}
+
+/** 笔内的一段：pos 为草稿里的段位置（= 段号 − 1），label 为界面上的“笔-段”。 */
+export interface PassSegment { pos: number; label: string; first: number; last: number; kind: SegmentKind; skip: boolean; cameras: string[] }
+/** 一笔：帧组范围、是否短笔（整笔不超过首尾跳过之和）与笔内各段。 */
+export interface PassNode { pass: number; first: number; last: number; short: boolean; segments: PassSegment[] }
+
+/** 按笔分组草稿里的段（草稿含全部笔末边界，每段只落在一笔里）。 */
+export function passTree(draft: WorkbenchDraft, passes: number[], skip: PassSkip | undefined): PassNode[] {
+  const all = spans(draft);
+  let start = 0;
+  return passes.map((n, j) => {
+    const first = start + 1, last = start + n;
+    start = last;
+    const segments = all.flatMap(([a, b], pos) => a >= first && a <= last ? [{ pos, a, b }] : [])
+      .map(({ pos, a, b }, k): PassSegment => ({ pos, label: `${j + 1}-${k + 1}`, first: a, last: b, kind: draft.kinds[pos], skip: draft.skips[pos], cameras: draft.cameras[pos] ?? [] }));
+    return { pass: j + 1, first, last, short: shortPass(n, skip), segments };
   });
 }
 

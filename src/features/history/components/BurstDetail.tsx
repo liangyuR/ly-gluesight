@@ -161,7 +161,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
   const current = useRef({ scope, historyId: s.id });
   current.current = { scope, historyId: s.id };
   useEffect(() => { alive.current = true; return () => { alive.current = false; serial.current++; }; }, []);
-  // 换件时回到第一帧组；从分段页返回时地址带着离开时的相机、帧组与显示哪份结果
+  // 换件时回到第一帧组；从分段与示教页返回时地址带着离开时的相机、帧组与显示哪份结果
   useEffect(() => {
     const back = historyReturnContext(search, groups.map(g => g.seq));
     setSelection({ camera: back.camera, seq: back.seq });
@@ -201,7 +201,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     return () => window.removeEventListener("keydown", key);
   }, []);
 
-  // 地址里要的对照读完（或没有、读不到）才算页面成形，从分段页返回时据此恢复滚动位置
+  // 地址里要的对照读完（或没有、读不到）才算页面成形，从分段与示教页返回时据此恢复滚动位置
   const [settled, setSettled] = useState(false);
   useEffect(() => {
     let live = true;
@@ -269,7 +269,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     if (settled && selection.camera >= shown.cameras.length) setSelection(prev => ({ ...prev, camera: 0 }));
   }, [settled, selection.camera, shown.cameras.length]);
 
-  // 从分段页返回：对照读完后回到离开时的滚动位置。原图、胶宽折线陆续加载还会撑高页面，约 1 秒内反复回到原位置，
+  // 从分段与示教页返回：对照读完后回到离开时的滚动位置。原图、胶宽折线陆续加载还会撑高页面，约 1 秒内反复回到原位置，
   // 操作员一动滚轮或点击就停；回到过或被打断后这次进入不再恢复
   const restoreTop = (location.state as HistoryDetailState | null)?.scrollTop;
   const restored = useRef("");
@@ -286,7 +286,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
     return () => { cancelAnimationFrame(frame); events.forEach(name => body.removeEventListener(name, done)); };
   }, [settled, location.key]);
 
-  // 到分段页调整分段的配方：选着候选对照时是那次对照的候选，否则是选来复测的候选；只有候选能改分段
+  // 到分段与示教页调整分段的配方：选着候选对照时是那次对照的候选，否则是选来复测的候选；只有候选能改分段
   const segmentTarget = (comparison && comparison.source !== "original" ? comparison.candidateId : null) ?? candidate?.id ?? null;
   const segmentBlock = !options ? "正在读取候选…" : !segmentTarget ? (s.recipeId ? `本机没有配方 ${s.recipeId} 的候选，先在“复测配方”里选一个候选` : "本机没有候选")
     : !choices.some(c => c.id === segmentTarget) ? `对照所用的候选 ${segmentTarget} 已不在本机` : "";
@@ -300,7 +300,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       returnTo: { pathname: location.pathname, label: "历史件", state: keep,
         search: historyReturnSearch({ candidate: chosen ?? candidate?.id ?? null, camera: selection.camera, seq: selection.seq, comparison: comparison?.id ?? null, original: showOriginal }) },
     };
-    navigate(recipeHref(segmentTarget, "/recipe/segments"), { state });
+    navigate(recipeHref(segmentTarget, "/recipe/teach"), { state });
   };
 
   // 选着的候选对照所用的候选（不一定是复测配方所选的）在对照之后改过，提示重新复测
@@ -377,7 +377,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       <Panel title="帧组与原图" detail={viewing ? `显示${viewing}结果` : compared ? "显示原始记录" : undefined} help="点击小方块选择相机与帧组查看原图，左右方向键切换帧组。格子颜色只表示本帧；上方色带是所在段的结论，胶宽不均、整段胶偏等整段性问题看色带。灰色为检测不完整，浅灰为本段不检测或未判定。选了带逐帧指标的对照时，可切换显示对照结果或原始记录。" actions={<>
         {compared && <Select aria-label="显示结果" value={showOriginal ? "original" : "comparison"} onValueChange={value => setShowOriginal(value === "original")}
           options={[{ value: "comparison", label: "对照结果" }, { value: "original", label: "原始记录" }]} />}
-        <Button size="sm" leadingIcon={<SplitSquareHorizontal size={15} />} disabled={!!segmentBlock} title={segmentBlock || `到候选 ${segmentTarget} 的分段页调整段边界，定位到帧组 ${selection.seq} 的对应位置；改完可返回本件`} onClick={openSegments}>调整分段</Button>
+        <Button size="sm" leadingIcon={<SplitSquareHorizontal size={15} />} disabled={!!segmentBlock} title={segmentBlock || `到候选 ${segmentTarget} 的分段与示教页调整段边界，定位到帧组 ${selection.seq} 的对应位置；改完可返回本件`} onClick={openSegments}>调整分段</Button>
         <Select aria-label="历史相机选择" value={String(selection.camera)} onValueChange={value => setSelection(prev => ({ ...prev, camera: Number(value) }))}
           options={shown.cameras.map((name, c) => ({ value: String(c), label: name }))} />
       </>}>

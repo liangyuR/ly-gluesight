@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PathSegment } from "../src/features/plan/types";
-import { passCells, segmentsForSave, toggleCamera, toggleKind, valid, type WorkbenchDraft } from "../src/features/workspace/workbenchDraft";
+import { initialDraft, moveCut, passCells, segmentsForSave, toggleCamera, toggleCut, toggleKind, valid, type WorkbenchDraft } from "../src/features/workspace/workbenchDraft";
 import { applyToKind } from "../src/features/workspace/segmentEdit";
 
 import { kindDefaults, pathSegment } from "./fixtures";
@@ -68,5 +68,35 @@ describe("工作台的笔结构", () => {
     expect(cells.map(c => c.skip ?? "-")).toEqual(["head", "head", "-", "-", "tail", "short", "short", "short", "head", "head", "-", "tail"]);
     expect(cells.flatMap((c, k) => c.end ? [k + 1] : [])).toEqual([5, 8]);
     expect(passCells([5, 3], 12, { head: 2, tail: 1 })).toBeNull();
+  });
+});
+
+describe("段不跨笔", () => {
+  // 防的回归：后端拒绝缺笔末边界的分段（段只在笔内）；打开页面时已有候选的段跨笔、或新示教件没有边界，草稿缺笔末边界就永远存不进去；
+  // 跨笔的段拆开后半段丢了原段的类型、检测相机或不检测；新件的短笔（整笔都在首尾跳过里）默认检测，生产时全判成无胶
+  it.each([
+    {
+      name: "已存边界的段跨过笔末 → 在笔末拆开，两半沿用原段的类型、检测相机与不检测",
+      passes: [4, 4], saved: { cuts: [6], status: "confirmed" },
+      segments: [pathSegment(1, "straight", { cameras: ["CAM-2"] }), pathSegment(2, "corner", { skip: true })],
+      expected: { cuts: [4, 6], kinds: ["straight", "straight", "corner"], cameras: [["CAM-2"], ["CAM-2"], CAMS], skips: [false, false, true] },
+    },
+    {
+      name: "本轮还没存过边界 → 每笔一段，类型与检测相机按位置沿用现有段，短笔不检测",
+      passes: [5, 2, 5], saved: null,
+      segments: [pathSegment(1, "straight", { cameras: ["CAM-1"] }), pathSegment(2, "corner")],
+      expected: { cuts: [5, 7], kinds: ["straight", "corner", "corner"], cameras: [["CAM-1"], CAMS, CAMS], skips: [false, true, false] },
+    },
+  ])("$name", ({ passes, saved, segments, expected }) => {
+    const groupCount = passes.reduce((a, b) => a + b, 0);
+    expect(initialDraft(groupCount, segments, CAMS, saved, passes, { head: 1, tail: 1 })).toEqual({ groupCount, ...expected });
+  });
+
+  // 防的回归：在帧条上删掉或拖走笔末边界，段又跨笔，自动保存被后端拒绝
+  it("删除或拖动笔末边界 → 草稿不变；笔内的边界照常删除", () => {
+    const draft: WorkbenchDraft = { groupCount: 8, cuts: [2, 4], kinds: ["straight", "straight", "corner"], cameras: all(3), skips: [false, false, false] };
+    expect(toggleCut(draft, 4, [4])).toBe(draft);
+    expect(moveCut(draft, 1, 5, [4])).toBe(draft);
+    expect(toggleCut(draft, 2, [4]).cuts).toEqual([4]);
   });
 });

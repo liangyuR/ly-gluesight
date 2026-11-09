@@ -40,6 +40,7 @@ function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = 
     cycle_logs: () => [],
     history_query: () => ({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } }),
     recipe_capture_get: () => null,
+    recipe_capture_round_thumbs: () => new Promise(() => {}),
     ...handlers,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -73,13 +74,14 @@ function renderWorkspace(path: string) {
 // ───────────── 段配方：每段每台检测相机一条走廊 ─────────────
 
 type Inspect = NonNullable<WorkspaceView["workspace"]["doc"]["inspect"]>[number];
-const CAM2 = "CAM-2 · 段 1 · 示教帧";
+const CAM2 = "CAM-2 · 1-1 · 示教帧";
 const FRAME2 = "S-CAM-2-frame";
 const bend: [number, number][] = [[12, 20], [32, 20], [52, 20], [52, 40], [52, 60]];
 
-/** 段配方候选：CAM-2 段 1 已选示教帧、还没画走廊（相机 0.1 mm/px）；edit 改写 CAM-2 的配方项与示教状态 */
+/** 段配方候选：示教件已确认分段，CAM-2 段 1 已选示教帧、还没画走廊（相机 0.1 mm/px）；edit 改写 CAM-2 的配方项与示教状态 */
 function corridorCandidate(edit: (inspect: Inspect, view: WorkspaceView) => void = () => {}) {
   const candidate = burstWorkspaceView(burstRecipe({ id: "A" }));
+  confirmed(candidate, "round-1");
   edit(candidate.workspace.doc.inspect![1], candidate);
   return candidate;
 }
@@ -230,14 +232,14 @@ it("彩色示教帧上刷选后自动提取 → 按胶色吸附提交一次（�
 });
 
 // 防的回归（RB-1）：示教帧可以从示教件以外的轮次选取；重新选帧确认后仍显示旧帧
-it("段已有示教帧时重新选帧 → 只在示教件这一段内选帧，确认后按示教件提交并显示新帧", async () => {
+it("段已有示教帧时在帧条上点本段另一帧组 → 按示教件提交这一帧并显示新帧", async () => {
   const candidate = corridorCandidate();
-  confirmed(candidate, "round-1");
   const response = structuredClone(candidate);
   response.workspace.revision++;
   const frame = { ...candidate.plan!.cameraTeaching[1].segments[0].frame, id: "S-CAM-2-new-frame", source: "capture:round-1" };
   response.plan!.cameraTeaching[1].segments[0].frame = frame;
-  response.workspace.cameraTeaching = response.workspace.cameraTeaching.map(item => item.camera === "CAM-2" && item.segment === 1 ? { camera: "CAM-2", frame, round: "round-1", seq: 2, segment: 1 } : item);
+  response.plan!.cameraTeaching[1].segments[0].seq = 3;
+  response.workspace.cameraTeaching = response.workspace.cameraTeaching.map(item => item.camera === "CAM-2" && item.segment === 1 ? { camera: "CAM-2", frame, round: "round-1", seq: 3, segment: 1 } : item);
   const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
   mockSite(candidate, {
     recipe_capture_get: ({ roundId }) => captureRoundV2({ recipeId: "A", roundId: roundId as string }),
@@ -246,16 +248,15 @@ it("段已有示教帧时重新选帧 → 只在示教件这一段内选帧，�
   const frameImage = vi.spyOn(workspaceApi, "captureFrameImage").mockResolvedValue(picture);
   const user = renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
   await screen.findByRole("img", { name: CAM2 });
-  await user.click(screen.getByRole("button", { name: "重新选帧" }));
-  await screen.findByRole("region", { name: "示教帧选择" });
-  expect(await screen.findByRole("img", { name: "CAM-2 · 帧组 4 · 候选示教帧" })).toBeVisible();
   expect(calls("recipe_capture_get")).toEqual([{ roundId: "round-1" }]);
-  await user.click(await screen.findByRole("button", { name: "帧组 2 · CAM-2" }));
-  await waitFor(() => expect(frameImage.mock.calls.at(-1)?.slice(0, 3)).toEqual(["round-1", "CAM-2", 2]));
-  const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2 · 段 1" });
+  await user.click(await screen.findByRole("button", { name: "CAM-2 帧组 3" }));
+  await screen.findByRole("region", { name: "示教帧选择" });
+  expect(await screen.findByRole("img", { name: "CAM-2 · 帧组 3 · 候选示教帧" })).toBeVisible();
+  await waitFor(() => expect(frameImage.mock.calls.at(-1)?.slice(0, 3)).toEqual(["round-1", "CAM-2", 3]));
+  const choose = await screen.findByRole("button", { name: "用此帧示教 1-1 CAM-2" });
   await waitFor(() => expect(choose).toBeEnabled());
   await user.click(choose);
-  expect(calls("workspace_teach_segment_corridor")).toEqual([{ id: "A", revision: 3, camera: "CAM-2", segment: 1, round: "round-1", seq: 2 }]);
+  expect(calls("workspace_teach_segment_corridor")).toEqual([{ id: "A", revision: 3, camera: "CAM-2", segment: 1, round: "round-1", seq: 3 }]);
   expect(await screen.findByRole("img", { name: CAM2 })).toBeVisible();
   expect(screen.getByTitle("capture:round-1 · S-CAM-2-new-frame")).toBeVisible();
   expect(screen.queryByRole("region", { name: "示教帧选择" })).not.toBeInTheDocument();

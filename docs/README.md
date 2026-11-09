@@ -25,7 +25,7 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 7. **区域判定**（`burst_judge`）：每帧胶宽、断胶、溢胶（NG_WIDTH）三类区域都判，开了偏宽只预警的段超出上限与溢胶上限只记预警、PLC 收到合格（D-SB-61）；胶偏只在直线段，去首尾各一帧后用 x 均值与参考值（测量示教件得出的 x_ref，或 ToEdge 的图纸胶边距，D-SB-48）判整段偏移、最大偏差判局部跑偏；按本段检测相机取最差，未分段区域按每帧预测段的检测相机取最差。`flags`（检测不完整、笔数异常、胶宽偏宽与溢胶预警）、未检区域、未检项（气泡、拉丝）与“胶偏未判”原因都不改 OK/NG；只有三台相机整件没有一帧测成才判 ERR 91。
 8. **落库与历史**：本机一份记录库（版本 11，记录带所属项目，[history-scope](decisions/history-scope.md)），`part_frames` 每台相机每帧一条（缺帧也有），`parts.burst_judgement` 存整份区域判定，`parts.mode` 区分正常件与维护件；原图按帧录制为 `{相机}_s{seq:06}.pgm`，每帧一份；现场相机用彩色模式，原图是带 `# bayer` 注释的原始 Bayer PGM，读图时还原为 RGB（[r2-records](decisions/r2-records.md) R-8、[color](decisions/color.md) CL-1）；10 版库原地迁移到 11，保留生产记录，删除旧离线及候选调试记录，写墓碑防止回放恢复；原图只在旧离线根下核对归属后清理，不合规路径保留并告警（[项目设计](architecture/project.md)）；审计 spool 格式 4；历史按 (计划相机, seq) 读图、复测与重判。
 
-配方的建立流程（候选工作区，[示教件决策](decisions/recipe-build-flow.md)）：示教件（从维护模式录制的历史件里选一件，导入前可预览原图；开发与测试用 `capture_fixture` 生成仿历史录制件）→ 分段（在示教件上按图像定段与边界，确认后各段 N_exp 取示教件各段帧组数，ΣN_exp 取各段之和）→ 每段每台检测相机的走廊示教（示教帧只取自示教件）→ 试测（测量示教件：单段配方的直线段得 x_ref；起涂收尾建议；用历史件试测）→ 发布（发布前检查当场核对，D-SB-46；检测结果在历史页用任意配方重算历史记录核对）。示教件即基准件，兼作标准件，没有另选的标定件。换示教件或从生产配方改版时清空边界、走廊、N_exp 与 x_ref，保留段结构。示教件支持带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除测量取样，不改已确认的分段。界面不显示采集轮次（只是存储格式）。旧流程建的候选已停用，只能删除。生产与历史复测判定按笔或按各段 N_exp 比例分段；手动边界本身不直接进生产。见 [配方创建流程](architecture/recipe-creation-workflow.md) 与其中的[示教件分段与帧组屏蔽](architecture/recipe-creation-workflow.md#示教件分段与帧组屏蔽)。
+配方的建立流程（候选工作区，[示教件决策](decisions/recipe-build-flow.md)）：示教件（从维护模式录制的历史件里选一件，导入前可预览原图；开发与测试用 `capture_fixture` 生成仿历史录制件）→ 分段与示教（同一页，[RB-12](decisions/recipe-build-flow.md#rb-12-笔内分段分段与走廊示教合为一页)：段只在笔内，每笔默认一段，在示教件上逐笔按图像加边界，边改边自动保存即确认，各段 N_exp 取示教件各段帧组数，ΣN_exp 取各段之和；同页示教每段每台检测相机的走廊，示教帧只取自示教件）→ 试测（测量示教件：单段配方的直线段得 x_ref；起涂收尾建议；用历史件试测）→ 发布（发布前检查当场核对，D-SB-46；检测结果在历史页用任意配方重算历史记录核对）。示教件即基准件，兼作标准件，没有另选的标定件。换示教件或从生产配方改版时清空边界、走廊、N_exp 与 x_ref，保留段结构。示教件支持带原因的帧组屏蔽与恢复；屏蔽保留原始序号、原图和帧数，仅排除测量取样，不改已确认的分段。界面不显示采集轮次（只是存储格式）。旧流程建的候选已停用，只能删除。生产与历史复测判定按笔或按各段 N_exp 比例分段；手动边界本身不直接进生产。见 [配方创建流程](architecture/recipe-creation-workflow.md) 与其中的[示教件分段与帧组屏蔽](architecture/recipe-creation-workflow.md#示教件分段与帧组屏蔽)。
 
 分段与走廊示教支持可选的[工件胶路导航图](decisions/recipe-build-flow.md#rb-9-工件胶路导航图)：在候选中导入整件图、标注有向胶路及采集范围，按段原始帧组进度浏览位置，不做图像配准或相机偏移。正式发布时冻结独立辅助快照，随项目流转；地图缺失或损坏只关闭导航，不影响检测。现场导航精度尚未验证。
 
@@ -59,7 +59,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 记录、录制、审计 | `store.rs`（`part_frames`、`parts.project_id`，库版本 11）、`store/merge.rs`（旧库并入、按项目导出子集）、`store/package.rs` 与 `history_package.rs`（历史件导出包）、`recorder.rs`、`audit/` |
 | 项目 | `project.rs`（`ActiveProject`、`resolve`、`project_switch`）、`project/manage.rs`、`project/transfer.rs`（导出导入、复制）、`project/records.rs`（本机记录库路径、记录所属项目的原图与发布包、启动合并）、`storage_startup.rs`；前端 `src/pages/ProjectsPage.tsx`、`src/features/project/` |
 | 独立生产模拟 | `tools/production-simulator/` 提供 S7 与 TCP 相机服务，应用以 `camera::CameraSource::Simulator` 接收；使用方式见 [独立生产模拟器](testing/production-simulator.md) |
-| 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`TeachingPiecePage`、`HistoryPicker`、`PlanProgress`；`src/features/plan/` |
+| 前端 | `src/features/workspace/` 的 `TeachingPage`（分段与示教：笔内分段与相机走廊示教）、`CalibrationPage`、`TeachingPiecePage`、`HistoryPicker`、`PlanProgress`；`src/features/plan/` |
 
 ## 二、未完成事项
 

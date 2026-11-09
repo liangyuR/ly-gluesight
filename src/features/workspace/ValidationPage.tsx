@@ -15,7 +15,7 @@ import type { Check } from "./types";
 import { NavigationPublication } from "./WorkspaceNavigation";
 
 export default function ValidationPage() {
-  const {data,doc,dirty,frameDirty,navigationDirty,busy,act,setError} = useWorkspace();
+  const {data,doc,dirty,frameDirty,navigationDirty,segmentDirty,busy,act,setError} = useWorkspace();
   const candidate = data ? JSON.stringify([data.workspace.doc.id,data.workspace.doc.version]) : null;
   const [confirm,setConfirm] = useState(false);
   const [abandoning,setAbandoning] = useState(false);
@@ -41,7 +41,7 @@ export default function ValidationPage() {
   if(!data||!doc)return <WorkspaceEmpty/>;
   const plan=data.plan;
   const locked=busy||operating;
-  const ready=!dirty&&!frameDirty&&!navigationDirty&&!locked;
+  const ready=!dirty&&!frameDirty&&!navigationDirty&&!segmentDirty&&!locked;
   // 没有整件 ΣN_exp（多段时各段 N_exp）时不能发布
   const planBlocked=planPublishBlocker(plan);
   const liveChecks=publishChecks.key===checksKey?publishChecks:{checks:null,error:""};
@@ -58,7 +58,7 @@ export default function ValidationPage() {
   const checks:Check[]=[...stepChecks,...liveRows,...planCheck];
   const failedChecks=checks.filter(c=>!c.passed&&!c.advisory),passedChecks=checks.filter(c=>c.passed);
   const checkRow=(c:Check)=><div key={c.name} className={"wp-check-row "+(c.passed?"passed":"")}>{c.passed?<CheckCircle2 size={20}/>:<AlertTriangle size={20}/>}<div><strong>{c.name}{!c.passed&&c.advisory&&"（提醒，不拦发布）"}</strong><p>{c.detail}</p></div></div>;
-  const publishBlocked=data.workspace.pending?"":planBlocked?planBlocked:liveChecks.error?liveChecks.error:!liveChecks.checks?"正在核对发布前检查":failedLive?`${failedLive.name}：${failedLive.detail}`:dirty||frameDirty||navigationDirty?"候选配置有未保存修改，保存后再发布":"";
+  const publishBlocked=data.workspace.pending?"":planBlocked?planBlocked:liveChecks.error?liveChecks.error:!liveChecks.checks?"正在核对发布前检查":failedLive?`${failedLive.name}：${failedLive.detail}`:dirty||frameDirty||navigationDirty||segmentDirty?"候选配置有未保存修改，保存后再发布":"";
   const action=async(request:()=>ReturnType<typeof workspaceApi.publish>,message:string)=>{
     if(pending.current||!ready)return null;
     const operation={scope,sequence:current.current.sequence};

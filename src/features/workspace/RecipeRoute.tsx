@@ -1,5 +1,5 @@
 import { useEffect, type ComponentType } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, Navigate, useLocation, useParams } from "react-router-dom";
 import { Button } from "qing-steel";
 import { useWorkspace } from "./context";
 import { Notice } from "./components";
@@ -12,8 +12,8 @@ import { recipeHref } from "./recipeRoutes";
  */
 function RecipeRoute({ children }: { children: React.ReactNode }) {
   const { recipeId = "" } = useParams();
-  const { selectedId, select, dirty, frameDirty, navigationDirty, busy } = useWorkspace();
-  const unsaved = dirty || frameDirty || navigationDirty;
+  const { selectedId, select, dirty, frameDirty, navigationDirty, segmentDirty, busy } = useWorkspace();
+  const unsaved = dirty || frameDirty || navigationDirty || segmentDirty;
   const other = selectedId != null && selectedId !== recipeId;
   useEffect(() => {
     if (recipeId && selectedId !== recipeId && !unsaved && !busy) void select(recipeId);
@@ -27,6 +27,13 @@ function RecipeRoute({ children }: { children: React.ReactNode }) {
   // 还没换到地址里的配方时不渲染页面，免得先露出上一个配方的内容
   if (selectedId !== recipeId) return <div className="wp-page"><p className="muted">正在打开配方 {recipeId}…</p></div>;
   return <>{children}</>;
+}
+
+/** 原段列表页地址（/recipe/<编号>/segments）转到分段与示教页，带上查询与定位状态（历史件“调整分段”的定位）。 */
+export function SegmentsRedirect() {
+  const { recipeId = "" } = useParams();
+  const { search, state } = useLocation();
+  return <Navigate replace to={{ pathname: recipeHref(recipeId, "/recipe/teach"), search }} state={state} />;
 }
 
 /** 把配方步骤页包上按地址打开配方的入口。 */

@@ -78,7 +78,7 @@ function FlowDebug({ data, doc }: { data: WorkspaceView; doc: RecipeDoc }) {
   const ready = opened.key === key ? opened : { transport: null, name: "", error: "" };
 
   if (!entries.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Workflow size={32} aria-hidden="true" />} title="还没有可调试的测量图" description="先在走廊示教里为至少一段保存走廊，再回来逐节点调试。"
-    action={<Button asChild><Link to={href("/recipe/teach")}>前往走廊示教<ArrowRight size={15} aria-hidden="true" /></Link></Button>} /></Surface></div>;
+    action={<Button asChild><Link to={href("/recipe/teach")}>前往分段与示教<ArrowRight size={15} aria-hidden="true" /></Link></Button>} /></Surface></div>;
 
   return <div className="wp-page wp-flow-page"><WorkspaceBar />
     <Surface role="region" className="wp-flow-bar" aria-label="调试对象">

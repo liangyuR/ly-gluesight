@@ -37,7 +37,7 @@ export const workspaceApi = {
   captureFrameImage: (roundId: string, cameraId: string, seq: number, signal?: AbortSignal) => loadPreview(JSON.stringify(["capture", roundId, cameraId, seq]), () => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeFrameImage), signal),
   /** 历史件选择器与试测：按筛选条件分页列出真机录制件、能否选用与是否已被本候选使用（只读）；ownRecipe 只看当前项目本配方的 */
   historyCandidates: (id: string, query: HistoryCandidateQuery) => desktopCall<HistoryCandidatePage>("workspace_history_candidates", { id, query }),
-  /** 导入这件并设为示教件：两件都有笔结构时按笔自动对照并迁移示教（RB-11，对照待分段页确认），否则沿用原分段帧数（RB-2）；清空示教件测量结果 */
+  /** 导入这件并设为示教件：两件都有笔结构时按笔自动对照并迁移示教（RB-11，对照待分段与示教页确认），否则沿用原分段帧数（RB-2）；清空示教件测量结果 */
   setTeachingPiece: (id: string, revision: number, recordId: number) => desktopCall<WorkspaceView>("workspace_set_teaching_piece", { id, revision, recordId }),
   /** 改换示教件的逐笔对照（RB-11）：links 只列对上的笔；对照变了后端从迁移起点重新迁移并更新边界草稿；confirm 时同时确认，之后不能再改 */
   passAlignmentSave: (id: string, revision: number, links: PassLink[], confirm: boolean) =>
@@ -90,9 +90,6 @@ export const workspaceApi = {
   /** 彩色示教帧上的刷选：按胶色把笔划吸附到胶中心（偏移上限为笔刷半径），走廊与颜色模型一次保存；没通过时 view 为空、候选不变，原因在 message */
   snapCorridor: (id: string, revision: number, camera: string, segment: number, imageId: string, guide: import("./teachingPath").BrushGuide) =>
     desktopCall<{ view?: WorkspaceView | null; message: string }>("workspace_snap_corridor", { id, revision, camera, segment, imageId, guide }),
-  /** 整体替换候选的段列表。后端拒绝直接改 expectedFrames / calib；段序列或类型变化时清空全部 N_exp、标定与 xRef */
-  updateSegments: (id: string, revision: number, segments: PathSegment[]) =>
-    desktopCall<WorkspaceView>("workspace_update_segments", { id, revision, segments }),
   /** 段走廊的示教帧（D-SB-45）：只取自示教件，帧组落在该段内；相机还没有像素当量时后端用设备标定的当量填上 */
   teachSegmentCorridor: (id: string, revision: number, camera: string, segment: number, round: string, seq: number) =>
     desktopCall<WorkspaceView>("workspace_teach_segment_corridor", { id, revision, camera, segment, round, seq }),

@@ -1,8 +1,8 @@
 import type { BrushGuide, ImagePoint } from "./teachingPath";
-import { createContext, useContext, useEffect, useId, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { cloneElement, createContext, useContext, useEffect, useId, useRef, useState, type PointerEvent, type ReactElement, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Camera, Minus, Plus, RotateCcw } from "lucide-react";
-import { Alert, Button, Card, Chip, EmptyState, IconButton, NumberField as SteelNumberField, StatusBadge } from "qing-steel";
+import { Alert, Button, Card, Chip, EmptyState, IconButton, NumberField as SteelNumberField, StatusBadge, Tooltip } from "qing-steel";
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
@@ -14,6 +14,13 @@ import { searchBand } from "./searchBand";
 import { useRecipeHref } from "./recipeRoutes";
 import { fanRadii, guideRadii, HEADING_MARK, rayEnd, wedgePath, type HeadingGuide, type HeadingPart } from "./headingOverlay";
 import ContextHelp from "../cycle/components/ContextHelp";
+
+/** 禁用控件不发指针事件：Tooltip 挂在外包的可聚焦 span 上，原因同时作为控件的无障碍描述。 */
+export function WithReason({ reason, block = false, children }: { reason: string; block?: boolean; children: ReactElement<{ "aria-describedby"?: string }> }) {
+  const id = useId();
+  if (!reason) return children;
+  return <Tooltip content={reason}><span tabIndex={0} className={"wp-tip-anchor" + (block ? " block" : "")}>{cloneElement(children, { "aria-describedby": id })}<span id={id} className="qs-sr-only">{reason}</span></span></Tooltip>;
+}
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
   return <StatusBadge tone={tone}>{children}</StatusBadge>;
@@ -42,14 +49,15 @@ export function WorkspaceEmpty() {
   return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}{selectedId && desktopAvailable() && <Button size="sm" onClick={() => void select(selectedId)}>重试读取 {selectedId}</Button>}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "没有打开配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库打开或新建配方，再开始规划段与示教走廊。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Button asChild><Link to="/recipe">打开配方库</Link></Button>} /></div></div>;
 }
 export function WorkspaceBar({ showNavigation = true }: { showNavigation?: boolean } = {}) {
-  const { data, doc, navigationDirty, previewError, error, saveState, retrySave, setError } = useWorkspace();
+  const { data, doc, navigationDirty, segmentDirty, previewError, error, saveState, retrySave, setError } = useWorkspace();
   const { pathname } = useLocation();
   const href = useRecipeHref();
   useEffect(() => () => setError(""), [pathname, setError]);
   const publish = data?.workspace.publish;
   return <>{showNavigation && <><div className="wp-workbench-bar"><nav className="wp-recipe-picker" aria-label="配方位置"><Link to="/recipe">配方库</Link><span aria-hidden="true">/</span><strong title={doc ? `${doc.id} · ${doc.name}` : undefined}>{doc ? `${doc.id} · ${doc.name}` : "…"}</strong></nav>{data && <Badge tone={data.productionVersion ? "ok" : "warn"}>{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge>}{data && publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}<Steps /><span className="wp-save-state" title={data ? `候选 v${doc?.version} · 修订 ${data.workspace.revision}` : undefined}><Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge></span>{saveState === "failed" && <Button size="sm" onClick={retrySave}>重试保存</Button>}</div></>}
     {!showNavigation && saveState === "failed" && <Notice title="候选保存失败" tone="warn"><Button size="sm" onClick={retrySave}>重试保存</Button></Notice>}
-    {navigationDirty && <Notice title="工件导航图尚未保存" tone="warn">修改已保留，请在地图中保存或撤销；标注可到<Link to={href("/recipe/segments")}>分段页</Link>继续编辑。保存后再发布或切换配方。</Notice>}
+    {segmentDirty && <Notice title="分段尚未保存" tone="warn">修改已保留，请回到<Link to={href("/recipe/teach")}>分段与示教</Link>页完成保存或撤销，再发布或切换配方。</Notice>}
+    {navigationDirty && <Notice title="工件导航图尚未保存" tone="warn">修改已保留，请在地图中保存或撤销；标注可到<Link to={href("/recipe/teach")}>分段与示教</Link>页继续编辑。保存后再发布或切换配方。</Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
     {publish?.state === "waiting" && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效失败可在发布页重试同一版本。</Notice>}

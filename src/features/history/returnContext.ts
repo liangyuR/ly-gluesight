@@ -1,4 +1,4 @@
-/** 离开历史详情（去分段页）时要带回来的复测上下文：复测配方、选中的相机与帧组、选着的对照、是否显示原始记录。 */
+/** 离开历史详情（去分段与示教页）时要带回来的复测上下文：复测配方、选中的相机与帧组、选着的对照、是否显示原始记录。 */
 export interface HistoryReturnContext {
   candidate: string | null;
   camera: number;

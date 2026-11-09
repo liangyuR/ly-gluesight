@@ -242,3 +242,23 @@ fn saving_the_segmentation_keeps_corridors_and_params_of_segments_that_did_not_c
         }
     }
 }
+
+#[test]
+fn saving_a_segmentation_whose_segment_spans_a_pass_end_is_rejected() {
+    // 防的回归（RB-12）：段只在笔内，笔末必须是段边界；漏了笔末的分段照常保存，段就会跨笔。
+    // 笔结构与帧组数对不上（旧件、轮次不一致）时不按笔校验。
+    let cases: [(&str, &[u32], &[u64], bool); 3] = [
+        ("笔末 10、20 都是边界", &[10, 10, 10], &[10, 20], true),
+        ("第 2 笔末 20 不是边界", &[10, 10, 10], &[10, 25], false),
+        ("笔结构与帧组数对不上时不校验", &[10, 10], &[12, 25], true),
+    ];
+    for (name, passes, cuts, ok) in cases {
+        let (mut w, _) = workspace();
+        w.teaching_piece.as_mut().unwrap().passes = passes.to_vec();
+        let round = capture_round("confirmed", &w.doc, GROUPS, DEVICE, &[]);
+        let incoming = w.doc.segments.clone();
+        let result =
+            super::capture_review::save_template_round(&w, &round, incoming, cuts.to_vec());
+        assert_eq!(result.is_ok(), ok, "{name}: {:?}", result.err());
+    }
+}

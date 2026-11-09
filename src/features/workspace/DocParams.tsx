@@ -25,7 +25,7 @@ export function RecipeIdentity() {
   </div>;
 }
 
-/** 比例分段边界两侧的过渡帧数（0–5，D-SB-40）。段列表页。 */
+/** 比例分段边界两侧的过渡帧数（0–5，D-SB-40）。分段与示教页。 */
 export function BoundaryGuardField({ locked = "" }: { locked?: string }) {
   const { doc, set, disabled } = useDocField();
   if (!doc) return null;
@@ -35,7 +35,7 @@ export function BoundaryGuardField({ locked = "" }: { locked?: string }) {
   </span>;
 }
 
-/** 每笔开头、结尾跳过的帧组数（0–50，D-SB-62）；都为 0 时不写入配方。段列表页。 */
+/** 每笔开头、结尾跳过的帧组数（0–50，D-SB-62）；都为 0 时不写入配方。分段与示教页。 */
 export function PassSkipFields({ locked = "" }: { locked?: string }) {
   const { doc, set, disabled } = useDocField();
   const passes = useWorkspace().data?.workspace.teachingPiece?.passes ?? doc?.passFrames;
