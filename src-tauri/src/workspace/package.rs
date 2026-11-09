@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
-use super::{check_identity, pieces, safe_id, state_value, PublishState, Workspace, WorkspaceHost};
+use super::{
+    check_identity, pieces, safe_id, state_value, Discarded, PublishState, Workspace, WorkspaceHost,
+};
 use crate::burst_judge::FrameState;
 use crate::cycle::CycleHost;
 use crate::operation::Operation;
@@ -38,7 +40,8 @@ pub struct PackageManifest {
     pub source_project: String,
     pub source_project_name: String,
     pub source_root: String,
-    pub base_revision: Option<String>,
+    #[serde(default, rename = "baseRevision", skip_serializing)]
+    pub _base_revision: Discarded,
     pub teaching_piece: Option<pieces::TeachingPiece>,
     pub exported_at: i64,
     pub app_version: String,
@@ -208,7 +211,7 @@ pub(crate) fn export_candidate(
         source_project: project_meta.id.clone(),
         source_project_name: project_meta.name.clone(),
         source_root: project.to_string_lossy().into_owned(),
-        base_revision: w.base_revision.clone(),
+        _base_revision: Discarded,
         teaching_piece: w.teaching_piece.clone(),
         exported_at: ly_plc::now_ms(),
         app_version: env!("CARGO_PKG_VERSION").into(),
@@ -410,13 +413,13 @@ pub(crate) fn stage(
     Ok((manifest, w))
 }
 
-/// 本机这一配方的现状：生产配方（修订号、计划版本）与下一版本号。
+/// 本机这一配方的现状：生产配方的计划版本（没有生产配方时为空）与下一版本号。
 pub(crate) struct Local {
-    pub production: Option<(String, u32)>,
+    pub production: Option<u32>,
     pub next_version: u32,
 }
 
-/// 改基到本机：基础修订换成本机生产配方的修订，计划版本取本机的，候选回到草稿；
+/// 改到本机：版本号与计划版本按本机配方库取，候选回到草稿；
 /// 去掉验证样本（它们指向来源机的检测记录与采集轮次）；指向来源项目目录的绝对路径改到本机项目目录。
 pub(crate) fn rebase(
     w: &mut Workspace,
@@ -432,11 +435,7 @@ pub(crate) fn rebase(
         Some(_) => local.next_version,
         None => local.next_version.max(w.doc.version.max(1)),
     };
-    w.base_revision = local
-        .production
-        .as_ref()
-        .map(|(revision, _)| revision.clone());
-    w.doc.plan_version = local.production.as_ref().map_or(0, |(_, plan)| *plan);
+    w.doc.plan_version = local.production.unwrap_or(0);
     w.doc.teaching_piece = None;
     w.pending = None;
     w.publish = PublishState::Draft;
@@ -818,9 +817,7 @@ fn import(
             return Err(reason);
         }
         let local = Local {
-            production: cycle
-                .recipe(&id)
-                .map(|r| (r.revision_id.clone(), r.plan_version)),
+            production: cycle.recipe(&id).map(|r| r.plan_version),
             next_version: cycle.recipes.next_version(&id)?,
         };
         notes.extend(rebase(

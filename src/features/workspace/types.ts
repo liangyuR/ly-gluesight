@@ -41,12 +41,12 @@ export interface Validation {
 /** 发布时所在站点：离线验证发布的版本只能在离线运行。 */
 export type ValidationSite = "real" | "offline";
 export interface Release {
-  doc: RecipeDoc; bundleId: string; baseRevision: string | null; revision: number; validation: Validation;
+  doc: RecipeDoc; bundleId: string; revision: number; validation: Validation;
   validationSite: ValidationSite;
   navigation?: NavigationArchiveStatus | null;
 }
 export interface Workspace {
-  doc: RecipeDoc; baseRevision: string | null; revision: number;
+  doc: RecipeDoc; revision: number;
   samples: Sample[]; validation: Validation | null; pending: Release | null;
   sampleBank: BankSample[];
   captureId?: string | null;

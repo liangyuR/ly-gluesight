@@ -181,7 +181,6 @@ impl<'de> Deserialize<'de> for Discarded {
 pub struct Release {
     pub doc: RecipeDoc,
     pub bundle_id: String,
-    pub base_revision: Option<String>,
     pub revision: u64,
     pub validation: Validation,
     pub validation_site: ValidationSite,
@@ -195,6 +194,8 @@ pub struct Release {
     pub _frames: Discarded,
     #[serde(default, rename = "overview", skip_serializing)]
     pub _overview: Discarded,
+    #[serde(default, rename = "baseRevision", skip_serializing)]
+    pub _base_revision: Discarded,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -203,7 +204,6 @@ pub struct Workspace {
     pub doc: RecipeDoc,
     #[serde(default)]
     pub instance_id: u64,
-    pub base_revision: Option<String>,
     pub revision: u64,
     pub samples: Vec<Sample>,
     pub sample_bank: Vec<BankSample>,
@@ -242,18 +242,16 @@ pub struct Workspace {
     pub _last_position: Discarded,
     #[serde(default, rename = "unboundImaging", skip_serializing)]
     pub _unbound_imaging: Discarded,
+    #[serde(default, rename = "baseRevision", skip_serializing)]
+    pub _base_revision: Discarded,
 }
 
 impl Workspace {
-    fn new(mut doc: RecipeDoc, base_revision: Option<String>) -> Self {
-        if base_revision.is_some() {
-            doc.version = doc.version.saturating_add(1);
-        }
+    fn new(mut doc: RecipeDoc) -> Self {
         doc.teaching_piece = None;
         Self {
             doc,
             instance_id: 0,
-            base_revision,
             revision: 1,
             samples: Vec::new(),
             sample_bank: Vec::new(),
@@ -274,6 +272,7 @@ impl Workspace {
             _overview: Discarded,
             _last_position: Discarded,
             _unbound_imaging: Discarded,
+            _base_revision: Discarded,
         }
     }
 
@@ -575,7 +574,11 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         production_version,
     );
     Ok(WorkspaceView {
-        navigation: navigation::navigation_view(&crate::storage::project(app), &w),
+        navigation: navigation::navigation_view(
+            &crate::storage::project(app),
+            &w,
+            production_recipe.as_ref().map(|r| r.revision_id.as_str()),
+        ),
         workspace: w,
         layout,
         production_version,
@@ -661,16 +664,15 @@ fn get(app: AppHandle, id: String) -> Result<WorkspaceView, String> {
         ensure_workspace_can_be_created(&host.dir(&id).join("workspace.json"))?;
         let cycle = app.state::<CycleHost>();
         let mut doc = cycle.recipes.doc(&id).ok_or("配方不存在")?;
-        let base = cycle.recipe(&id).map(|r| r.revision_id.clone());
+        let production = cycle.recipe(&id).map(|r| r.revision_id.clone());
         doc.version = cycle.recipes.next_version(&id)?;
-        if base.is_some() {
-            doc.version -= 1;
-        }
-        let mut w = Workspace::new(doc, base);
+        let mut w = Workspace::new(doc);
         w.ensure_instance(&app.state::<Store>())?;
-        if let Some(message) =
-            navigation::inherit_navigation(&crate::storage::project(&app), &mut w)
-        {
+        if let Some(message) = navigation::inherit_navigation(
+            &crate::storage::project(&app),
+            &mut w,
+            production.as_deref(),
+        ) {
             cycle::log(&app, "warn", "导航资料", message);
         }
         host.save(&w)?;
@@ -706,7 +708,7 @@ pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceV
         .recipes
         .next_version(&doc.id)?
         .max(doc.version.max(1));
-    let mut w = Workspace::new(doc, None);
+    let mut w = Workspace::new(doc);
     w.ensure_instance(&app.state::<Store>())?;
     host.save(&w)?;
     items.insert(w.doc.id.clone(), w.clone());
@@ -1088,13 +1090,13 @@ pub fn workspace_publish(
     next.pending = Some(Box::new(Release {
         doc: release_doc,
         bundle_id: bundle.id,
-        base_revision: w.base_revision.clone(),
         revision,
         validation: validated.clone(),
         validation_site: bundle.manifest.validation_site,
         navigation: Some(navigation),
         _frames: Discarded,
         _overview: Discarded,
+        _base_revision: Discarded,
     }));
     next.publish = PublishState::Waiting;
     host.save(&next)?;
@@ -1284,7 +1286,6 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                     &release,
                 )
                 .err();
-                w.base_revision = Some(saved.revision_id.clone());
                 if w.revision == release.revision {
                     w.doc = app.state::<CycleHost>().recipes.doc(&id).unwrap();
                     w.doc.teaching_piece = None;

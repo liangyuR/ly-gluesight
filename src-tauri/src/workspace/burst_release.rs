@@ -53,22 +53,14 @@ fn doc_sample_tag(doc: &RecipeDoc) -> Value {
     sample_tag(doc.product_code, &doc.plan_cameras(), &doc.segments)
 }
 
-/// 段配方发布前检查的输入：设备检查由调用方（访问设备）给出，其余只读候选。
-pub(super) struct BurstInputs<'a> {
-    /// 计划相机解析、三台单视角独立设备（`cycle::usable_cams`）；不含在线就绪
-    pub device: Result<(), String>,
-    /// 当前设备的相机标签（`camera_state`，与示教帧冻结时同一口径），按相机编号
-    pub cameras: &'a BTreeMap<String, Value>,
-}
-
-/// 段配方的全部验证项，按页面展示顺序。
-pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
+/// 段配方的全部验证项，按页面展示顺序。`device` 是调用方（访问设备）核对的计划相机解析、
+/// 三台单视角独立设备（`cycle::usable_cams`），不含在线就绪；其余只读候选。
+pub(super) fn burst_checks(w: &Workspace, device: Result<(), String>) -> Vec<Check> {
     let mut checks = vec![Check {
         advisory: false,
         name: "相机配置".into(),
-        passed: inputs.device.is_ok(),
-        detail: inputs
-            .device
+        passed: device.is_ok(),
+        detail: device
             .err()
             .unwrap_or_else(|| "三台计划相机已配置；是否在线就绪在接件时核对".into()),
     }];
@@ -82,26 +74,16 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
             |p| format!("示教件 SN {}", p.sn),
         ),
     });
-    checks.push(corridor_check(w, inputs.cameras));
+    checks.push(corridor_check(w));
     checks.push(segment_check(w));
     checks.extend(super::pass_align::alignment_check(w));
-    let calibration_devices =
-        super::burst::check_calibration_devices(&w.calibration.rounds, inputs.cameras);
-    checks.push(Check {
-        advisory: false,
-        name: "示教件采集参数".into(),
-        passed: calibration_devices.is_ok(),
-        detail: calibration_devices
-            .err()
-            .unwrap_or_else(|| "示教件测量时的相机采集参数与当前一致".into()),
-    });
     checks.extend(x_ref_check(&w.doc));
     checks
 }
 
 /// 走廊示教（规格 §1 Plan.cameras = 3、§4 检测走廊、D-SB-45）：每段每台检测相机都有示教帧、走廊完整落在帧内，
-/// 每台相机有像素当量，各示教帧采集后这台相机的设备配置没变（`current` 是当前设备的相机标签）。
-fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
+/// 每台相机有像素当量。示教后改了相机参数不拦发布。
+fn corridor_check(w: &Workspace) -> Check {
     let doc = &w.doc;
     let mut problems = Vec::new();
     if doc.inspect.len() != PLAN_CAMERAS {
@@ -126,15 +108,6 @@ fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
             .into_iter()
             .map(|i| i.message),
     );
-    for teaching in w.camera_teaching.iter().filter(|t| t.segment.is_some()) {
-        if current.get(&teaching.camera) != Some(&teaching.frame.camera_tag) {
-            problems.push(format!(
-                "第 {} 段相机 {}：示教帧采集后设备参数或样本集已改变，请重新采集并重选示教帧",
-                teaching.segment.unwrap_or_default(),
-                teaching.camera
-            ));
-        }
-    }
     let pairs: usize = doc
         .segments
         .iter()
@@ -153,17 +126,6 @@ fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
             problems.join("；")
         },
     }
-}
-
-/// 当前设备的相机标签（`camera_state`，与示教帧冻结时同一口径：样本集相机带样本集编号），按相机编号。
-pub(super) fn current_camera_tags(app: &AppHandle) -> BTreeMap<String, Value> {
-    let sample_set = None::<String>;
-    app.state::<CycleHost>()
-        .camera
-        .configs()
-        .iter()
-        .map(|c| (c.id.clone(), camera_state(c, sample_set.as_deref())))
-        .collect()
 }
 
 /// 段帧数（规格 §1 没有 N_exp 不能发布）：各段 N_exp 取示教件已确认分段的帧组数（RB-3；D-SB-45：生产按累计 N_exp 预测
@@ -687,20 +649,13 @@ pub(super) fn publish_blocker(checks: &[Check]) -> Option<&Check> {
     checks.iter().find(|c| !c.passed && !c.advisory)
 }
 
-/// 发布前检查（D-SB-46，发布时当场核对，不跑样本，不要求相机在线）：相机配置、走廊示教、段标定、标定采集参数、x_ref，
+/// 发布前检查（D-SB-46，发布时当场核对，不跑样本，不要求相机在线）：相机配置、走廊示教、段标定、x_ref，
 /// 以及示教帧试测（D-SB-59，部分没测成只提醒）。结果随待生效版本存档（`Release.validation`，样本为空）。
 pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let recipe = w.doc.build()?;
     let environment_tag = environment(app, &recipe)?;
     let device = cycle::usable_cams(app, &recipe).map(|_| ());
-    let tags = current_camera_tags(app);
-    let mut checks = burst_checks(
-        w,
-        BurstInputs {
-            device,
-            cameras: &tags,
-        },
-    );
+    let mut checks = burst_checks(w, device);
     checks.extend(teach_trial_check(&teach_trials(app, w)));
     Ok(Validation {
         revision: w.revision,
@@ -739,7 +694,6 @@ pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, S
     let cycle = app.state::<CycleHost>();
     let device = cycle::usable_cams(app, &recipe).map(|_| ());
     let configs = cycle.camera.configs();
-    let tags = current_camera_tags(app);
     let current: BTreeMap<String, Value> = configs
         .iter()
         .map(|c| (c.id.clone(), state_value(c)))
@@ -753,13 +707,7 @@ pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, S
                 .unwrap_or_else(|reason| failed_sample(sample, reason))
         })
         .collect();
-    let mut checks = burst_checks(
-        w,
-        BurstInputs {
-            device,
-            cameras: &tags,
-        },
-    );
+    let mut checks = burst_checks(w, device);
     checks.push(sample_check(&samples));
     if environment(app, &recipe)? != initial_environment {
         return Err("验证期间设备、标定或引擎发生变化，请重新验证".into());
