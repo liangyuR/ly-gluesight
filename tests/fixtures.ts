@@ -94,7 +94,7 @@ export function burstRecipe(over: Partial<BurstRecipeDoc> = {}): BurstRecipeDoc 
       pathSegment(2, "corner", { lengthMm: 30 }),
       pathSegment(3, "straight", { lengthMm: 80 }),
     ],
-    inspect: burstCameras.map(camera => ({ camera, mmPerPx: .1, calib: null, detect: null, segments: camera === "CAM-1" ? [1, 2, 3].map(segment => ({ segment, corridor: [[10, 30], [90, 30]] as [number, number][] })) : [] })),
+    inspect: burstCameras.map(camera => ({ camera, mmPerPx: .1, segments: camera === "CAM-1" ? [1, 2, 3].map(segment => ({ segment, corridor: [[10, 30], [90, 30]] as [number, number][] })) : [] })),
     segmentDefaults: kindDefaults(), boundaryGuard: 2,
     partCalib: { expectedTotal: 12, calib: { ...partStats } },
     ...over,
@@ -123,7 +123,6 @@ export function progressV2(): ProgressV2 {
       step("segments", "段列表", "done", "3 段"),
       step("corridor", "走廊示教", "inProgress", "3 / 9 条走廊已示教"),
       { ...step("calibration", "试测", "notStarted", "可选：测量示教件、用历史件试测"), optional: true },
-      step("validation", "验证", "notStarted", "未验证"),
       step("publish", "发布与生效", "notStarted", "未发布"),
     ],
     next: { step: "corridor", label: "示教 CAM-2 段 1 的走廊", target: { page: "corridor", camera: "CAM-2", segment: 1 } },
@@ -177,7 +176,7 @@ export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
   return {
     layout, productionVersion: null, plan,
     workspace: { doc, revision: 3, updatedAt: 1, publish: { state: "draft" }, pending: null,
-      samples: [], sampleBank: [], validation: null, cameraTeaching, calibration: { rounds },
+      cameraTeaching, calibration: { rounds },
       flow: 2, teachingPiece: { roundId: "round-1", recordId: 1, cycleId: "cycle-1", sn: "SN-1", ts: 1 } },
   };
 }

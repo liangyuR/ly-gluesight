@@ -218,26 +218,6 @@ pub(crate) fn repair_shadow_regions(store: &Store) -> Result<(usize, Vec<String>
 /// 按生产规则从原图复测一件（D-SB-45）：由各帧到没到（`frames` 为 (计划相机下标, seq, 到了)）得出帧组数，按比例分段得出区域，
 /// 再按 `frame_corridors` 逐帧选走廊交给 `measure(相机, seq, 段号)`。判定用不到的帧记 NotInspected、不读图；缺帧仍记缺帧；
 /// 读图或测量失败记测量失败。结果的帧身份一律取输入的 (camera, seq)。
-pub(super) fn remeasure_by_rule(
-    segments: &[PathSegment],
-    boundary_guard: u32,
-    cameras: &[String],
-    frames: &[(usize, u64, bool)],
-    passes: PassRules,
-    measure: impl FnMut(usize, u64, u32) -> Result<FrameMetrics, String>,
-) -> Vec<FrameMetrics> {
-    remeasure_by_rule_operation(
-        segments,
-        boundary_guard,
-        cameras,
-        frames,
-        passes,
-        measure,
-        None,
-    )
-    .expect("无取消任务的测量总会返回帧结果")
-}
-
 fn remeasure_by_rule_operation(
     segments: &[PathSegment],
     boundary_guard: u32,
@@ -317,17 +297,7 @@ fn remeasure_by_rule_operation(
         .collect()
 }
 
-/// 历史帧记录按生产规则重测（见 `remeasure_by_rule`）；`passes` 是这件记录的笔结构（`BurstJudgement.passes`）。
-pub(super) fn remeasure(
-    recipe: &Recipe,
-    frames: &[FrameRecord],
-    passes: &[u32],
-    measure: impl FnMut(&FrameRecord, u32) -> Result<FrameMetrics, String>,
-) -> Vec<FrameMetrics> {
-    remeasure_with_operation(recipe, frames, passes, measure, None)
-        .expect("无取消任务的测量总会返回帧结果")
-}
-
+/// 历史帧记录按生产规则重测（见 `remeasure_by_rule_operation`）；`passes` 是这件记录的笔结构（`BurstJudgement.passes`）。
 pub(super) fn remeasure_with_operation(
     recipe: &Recipe,
     frames: &[FrameRecord],
@@ -712,22 +682,6 @@ impl CandidateMeasurer {
     /// 这一（相机, 段）不量时的原因。
     pub(super) fn skipped(&self, camera: usize, segment: u32) -> Option<&str> {
         self.unavailable.get(&(camera, segment)).map(String::as_str)
-    }
-
-    pub(super) fn new(app: &AppHandle, w: &Workspace, recipe: &Recipe) -> Result<Self, String> {
-        recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
-        let graphs = vision::CorridorSet::build(recipe, &super::burst::teaching_sizes(w)?)?
-            .with_channels(&super::burst::teaching_channels(w));
-        let engine = app
-            .state::<vision::VisionHost>()
-            .engine()
-            .ok_or("lyFlow 核心库未加载")?;
-        Ok(Self {
-            engine,
-            graphs,
-            run: vision::unique_run_id(&format!("candidate-{}", recipe.revision_id)),
-            unavailable: BTreeMap::new(),
-        })
     }
 
     pub(super) fn measure(

@@ -464,7 +464,8 @@ fn delivery_row(row: &rusqlite::Row, first: usize) -> rusqlite::Result<PlcDelive
     Ok(PlcDelivery { state: enum_column(row, first)?, updated_at: row.get(first + 1)?, message: row.get(first + 2)? })
 }
 
-/// 各相机的走廊、检测窗口、当量、标定、检测参数，以及各段的逐帧定向与找边参数决定每帧指标（计划身份另见 burst_plan_identity）；
+/// 各相机的走廊、测量区间、当量，配方检测参数，以及各段的检测参数覆盖、逐帧定向与找边参数决定每帧指标（计划身份另见 burst_plan_identity）；
+/// 快照带已停用的测量覆盖时（`Recipe::retired_overrides`）与没有它们的配方不同，要原图复测。
 /// 限值、x_ref、图纸胶边距、检测区间不在这里，改了可以直接用已存指标重判。
 fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
     let measure: Vec<serde_json::Value> = recipe
@@ -476,11 +477,11 @@ fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
                     .as_ref()
                     .map(|e| (o.camera.as_str(), e.polarity, e.search_mm, e.contrast_min))
             });
-            serde_json::json!([s.index, s.heading, edge])
+            serde_json::json!([s.index, s.heading, edge, s.search_mm, s.width_range])
         })
         .collect();
     serde_json::json!({"unit":"mm", "schema":recipe.schema_version, "spacing":recipe.spacing, "detect":recipe.detect,
-        "inspect": serde_json::to_value(&recipe.inspect).unwrap_or_default(), "measure": measure})
+        "inspect": serde_json::to_value(&recipe.inspect).unwrap_or_default(), "measure": measure, "retired": recipe.retired_overrides})
 }
 
 /// 段配方的计划身份（规格 §1：段序列 / 类型 / N_exp、相机、ΣN_exp、产品代码）。

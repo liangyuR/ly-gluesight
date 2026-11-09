@@ -654,7 +654,6 @@ fn install(
         &Source {
             id: &manifest.project.id,
             root: Path::new(&manifest.source_root),
-            keep_history: manifest.includes_records,
             capture_images: manifest.files.iter().any(|f| capture_image(&f.path)),
             records: manifest.includes_records,
         },
@@ -674,8 +673,6 @@ fn install(
 struct Source<'a> {
     id: &'a str,
     root: &'a Path,
-    /// 候选里来自检测历史的验证样本能留下：导入带了记录，或复制（记录本机共用）
-    keep_history: bool,
     /// 以前带示教件原图导出的包：采集轮次目录里有原图
     capture_images: bool,
     /// 示教件那一件的检测记录与录制在本机：导入带了记录，或复制（记录本机共用）
@@ -723,10 +720,7 @@ fn finish(
     {
         let candidate = entry.path().join("workspace.json");
         if candidate.is_file() {
-            notes.extend(crate::workspace::reset_for_project_import(
-                &candidate,
-                source.keep_history,
-            )?);
+            crate::workspace::reset_for_project_import(&candidate)?;
             if !source.records
                 && teaching_round(&candidate)
                     .is_some_and(|round| root.join("recipe-capture").join(round).is_dir())
@@ -1024,7 +1018,6 @@ fn copy_into(
         &Source {
             id: source_id,
             root: &source_root,
-            keep_history: true,
             capture_images: true,
             records: true,
         },

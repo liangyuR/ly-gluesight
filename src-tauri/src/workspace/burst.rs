@@ -207,15 +207,14 @@ pub(super) fn heading_hints(
         (Some(_), None) => {}
         (Some(length), Some(n)) => {
             let travel = length / f64::from(n);
-            // 本段设了区间时各相机共用，只提示一次；沿用旧的相机级区间时按相机提示
+            // 本段覆盖与默认值各相机共用，只提示一次；用相机的测量区间时按相机提示
             let mut checked = Vec::new();
             for inspect in doc.inspect.iter().filter(|i| cameras.contains(&i.camera)) {
-                let Some((window, source)) = crate::heading::window(segment, inspect) else {
-                    continue;
-                };
+                let (window, source) = crate::heading::window(segment, inspect);
                 let who = match source {
                     crate::heading::WindowSource::Segment => "本段".to_string(),
                     crate::heading::WindowSource::Camera => format!("相机 {}", inspect.camera),
+                    crate::heading::WindowSource::Default => "默认".to_string(),
                 };
                 if checked.contains(&who) {
                     continue;
@@ -265,7 +264,7 @@ pub struct CalibrationView {
 pub struct CameraTeachingView {
     pub camera: String,
     pub mm_per_px: Option<f64>,
-    /// 这台相机工位标定当前的像素当量（标定引用，缺省为设备标定；模拟相机为固定当量）；没有标定为空。与 `mm_per_px` 不同时示教页提示采用
+    /// 这台相机工位标定当前的像素当量（设备标定；模拟相机为固定当量）；没有标定为空。与 `mm_per_px` 不同时示教页提示采用
     pub calib_mm_per_px: Option<f64>,
     /// 走廊示教完成：有像素当量，且它检测的每一段都有已保存的走廊（D-SB-45）
     pub ready: bool,
@@ -293,7 +292,6 @@ pub enum StepIdV2 {
     Segments,
     Corridor,
     Calibration,
-    Validation,
     Publish,
 }
 
@@ -388,16 +386,18 @@ pub(super) fn require_burst(doc: &RecipeDoc) -> Result<(), String> {
     }
 }
 
-/// 一台相机的走廊身份：测每帧特征用到的当量、检测参数、站距、各段走廊（含拖过的扇区方向）与专家参数；不是计划相机为 null。
-/// 段上没拖过扇区时不写这一项，身份与加这一项之前相同，已有的示教件测量不因此过期。
+/// 一台相机的走廊身份：测每帧特征用到的当量、配方检测参数、站距、各段走廊（含拖过的扇区方向）、测量区间与出胶点、
+/// 各段的逐帧定向与检测参数覆盖；不是计划相机为 null。
+/// 第 8 项是已删除的专家参数层，恒为两个空表，留着让身份与删除前相同；段覆盖只在有段设了覆盖时追加，已有的示教件测量
+/// 不因这两处改动过期。
 pub(super) fn corridor_tag(doc: &RecipeDoc, camera: &str) -> Value {
     doc.inspect
         .iter()
         .find(|i| i.camera == camera)
         .map_or(Value::Null, |i| {
-            json!([
+            let mut tag = json!([
                 i.mm_per_px,
-                i.detect.as_ref().unwrap_or(&doc.detect),
+                doc.detect,
                 doc.spacing,
                 i.segments,
                 i.window,
@@ -406,8 +406,20 @@ pub(super) fn corridor_tag(doc: &RecipeDoc, camera: &str) -> Value {
                     .iter()
                     .map(|s| (s.index, &s.heading))
                     .collect::<Vec<_>>(),
-                [&doc.expert, &i.expert]
-            ])
+                [{}, {}]
+            ]);
+            if doc
+                .segments
+                .iter()
+                .any(|s| s.search_mm.is_some() || s.width_range.is_some())
+            {
+                tag.as_array_mut().unwrap().push(json!(doc
+                    .segments
+                    .iter()
+                    .map(|s| (s.index, s.search_mm, s.width_range))
+                    .collect::<Vec<_>>()));
+            }
+            tag
         })
 }
 
@@ -532,26 +544,6 @@ pub(super) fn calibration_corridors(
                 .collect()
         })
         .collect())
-}
-
-/// 一轮里每台计划相机每个 seq 到没到（缺帧为 false），按计划相机、seq 排列，复测用（见 `burst_history::remeasure_by_rule`）。
-pub(super) fn round_frames(cameras: &[String], round: &CaptureRoundV2) -> Vec<(usize, u64, bool)> {
-    cameras
-        .iter()
-        .enumerate()
-        .flat_map(|(index, camera)| {
-            let source = round.cameras.iter().position(|c| &c.camera_id == camera);
-            (1..=round.group_count).map(move |seq| {
-                let missing = source.is_none_or(|j| {
-                    round
-                        .missing_frames
-                        .iter()
-                        .any(|m| m.camera == j && m.seq == seq)
-                });
-                (index, seq, !missing)
-            })
-        })
-        .collect()
 }
 
 /// 没有测量值的一帧（缺帧、测量失败）。
@@ -1127,17 +1119,15 @@ pub(super) async fn commit_segment_teaching(
             .ok_or("示教相机不在候选中")?;
         let model = if prepared.image.is_color() && !gray_chosen(inspect, prepared.segment) {
             let scale = inspect.mm_per_px.ok_or("先填像素当量再取色")?;
-            let detect = inspect
-                .detect
-                .as_ref()
-                .unwrap_or(&prepared.workspace.doc.detect);
+            let doc = &prepared.workspace.doc;
+            let detect = doc.detect.for_segment(&doc.segments, prepared.segment);
             let text = fit_color_model(
                 &*lyflow(&app)?,
                 &prepared.workspace.doc.id,
                 &prepared.camera,
                 &prepared.image,
                 &corridor,
-                detect,
+                &detect,
                 scale,
             )?;
             Some(text)
@@ -1152,7 +1142,7 @@ pub(super) async fn commit_segment_teaching(
     .map_err(|e| e.to_string())?
 }
 
-/// 相机工位标定的像素当量：模拟相机取固定当量，其余读它的标定引用（缺省为设备标定）的标定文件。
+/// 相机工位标定的像素当量：模拟相机取固定当量，其余读它的设备标定文件。
 fn calib_scale(
     app: &AppHandle,
     inspect: &CameraInspect,
@@ -1229,7 +1219,7 @@ async fn fit_workspace_color_model(
                 format!("相机 {camera} 第 {segment} 段还没有保存走廊，先示教走廊再取色")
             })?;
         let scale = inspect.mm_per_px.ok_or("先填像素当量再取色")?;
-        let detect = inspect.detect.as_ref().unwrap_or(&before.doc.detect);
+        let detect = &before.doc.detect.for_segment(&before.doc.segments, segment);
         if gray_chosen(inspect, segment) {
             return Err(format!(
                 "相机 {camera} 第 {segment} 段选了按灰度测量：先改为按胶色测量再取色"
@@ -1384,16 +1374,10 @@ pub async fn workspace_extract_corridor(
             if !frozen(w) {
                 return Err("图像已变化，请重新框选".into());
             }
-            let inspect = w
-                .doc
-                .inspect
-                .iter()
-                .find(|i| i.camera == camera)
-                .ok_or_else(|| format!("相机 {camera} 不是段配方的计划相机"))?;
-            (
-                image_file(&host, &id, &image_id)?,
-                inspect.detect.as_ref().unwrap_or(&w.doc.detect).polarity,
-            )
+            if !w.doc.inspect.iter().any(|i| i.camera == camera) {
+                return Err(format!("相机 {camera} 不是段配方的计划相机"));
+            }
+            (image_file(&host, &id, &image_id)?, w.doc.detect.polarity)
         };
         let image = crate::image_file::load(&path)?;
         let result = super::centerline::extract(
@@ -1571,7 +1555,7 @@ pub async fn workspace_snap_corridor(
                 "相机 {camera} 第 {segment} 段选了按灰度测量，刷选按两侧胶边提取，不按胶色吸附"
             ));
         }
-        let detect = inspect.detect.as_ref().unwrap_or(&before.doc.detect);
+        let detect = &before.doc.detect.for_segment(&before.doc.segments, segment);
         let radius = guide.radius_px;
         if !radius.is_finite() || !(3.0..=150.0).contains(&radius) || guide.points.len() < 2 {
             return Err("请沿胶路绘制笔划，笔刷半径需为 3–150 像素".into());
@@ -2188,9 +2172,9 @@ pub(super) fn corridor_overlay(
         .segment_corridor(segment)
         .map(|s| s.corridor.clone())
         .unwrap_or_default();
-    let search_half_px = inspect.mm_per_px.map(|scale| {
-        f64::from(inspect.detect.as_ref().unwrap_or(&recipe.detect).search_mm) / scale
-    });
+    let search_half_px = inspect
+        .mm_per_px
+        .map(|scale| f64::from(recipe.segment_detect(segment).search_mm) / scale);
     (corridor, search_half_px)
 }
 
@@ -2937,32 +2921,6 @@ pub(super) fn progress_v2(
         } if *revision == w.revision => Some(*version),
         _ => None,
     };
-    // D-SB-46：独立样本验证可选，不是发布前提；发布只要示教件、分段、走廊示教完成（设备与生产版本在发布时当场核对）
-    let validation = {
-        let current = w.validation.as_ref().filter(|v| v.revision == w.revision);
-        let (status, detail) = match current {
-            Some(v) if v.passed => (
-                StepStatus::Done,
-                format!("当前修订验证通过（{} 件样本）", v.samples.len()),
-            ),
-            Some(_) => (
-                StepStatus::NotStarted,
-                "可选：上次验证未通过，不影响发布".to_string(),
-            ),
-            None => (
-                StepStatus::NotStarted,
-                "可选：用独立整圈样本试验证，不影响发布".to_string(),
-            ),
-        };
-        StepV2 {
-            id: StepIdV2::Validation,
-            label: "验证（可选）",
-            optional: true,
-            status,
-            detail,
-            blockers: Vec::new(),
-        }
-    };
     let publish = {
         let production =
             production_version.map_or("未发布".to_string(), |v| format!("生产 v{v}"));
@@ -3082,7 +3040,6 @@ pub(super) fn progress_v2(
             segments,
             corridor,
             calibration,
-            validation,
             publish,
         ],
         next,

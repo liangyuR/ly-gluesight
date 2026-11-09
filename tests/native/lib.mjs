@@ -165,12 +165,10 @@ function strokeRoi(points, [width, height], margin = 40) {
 
 // ───────────── 段配方（分段连拍，RecipeDoc.segments 非空）─────────────
 // 流程（docs/decisions/recipe-build-flow.md 的步骤，与 docs/decisions/segment-burst.md 一致）：
-//   建候选、发布采集版并写入手动配置数据（recipe_template 即段配方：三台相机、一个直线段，待标定；仿历史录制件，示教件与验证件）→
+//   建候选、发布采集版并写入手动配置数据（recipe_template 即段配方：三台相机、一个直线段，待标定；仿历史录制件，示教件）→
 //   选示教件并确认分段（各段 N_exp 取示教件分段的帧组数）→ 示教件上每台相机一条走廊 → 测量示教件（兼作标准件，得出 x_ref）→
-//   独立样本验证（另一件历史件）→ 发布 → 投产。
+//   发布前检查 → 发布 → 投产。
 // 运行时整条胶路按“未分段”处理（分段算法未做）：只跑每帧独立检测，只记录整件帧组数与 ΣN_exp，不核对。
-
-const FRAME_NARROW = { searchMm: 3, polarity: "dark", widthRange: [1, 5] };
 
 /** 合成图缺省胶条：三台相机从不同方位看胶嘴，胶条在画面里上下错开（与 src-tauri/src/simimage.rs 的 burst_default_path 同口径），按相机下标给刷选笔划。 */
 function syntheticBead(index) {
@@ -200,7 +198,7 @@ export const CAMERA_FIXTURES = {
       return {
         cam1: { seq: 3, guide: [[40, 472], [65, 470], [90, 467], [115, 458], [140, 450], [165, 442], [190, 429], [215, 420], [240, 401], [265, 397], [290, 383], [315, 370], [340, 349], [365, 336], [390, 329], [415, 316], [440, 303], [465, 284], [490, 278], [515, 265], [540, 258]] },
         cam2: { seq: 1, guide: [[745, 60], [740, 85], [735, 110], [734, 135], [740, 160], [746, 185], [743, 210], [736, 235], [735, 260], [734, 285], [740, 310], [739, 335], [738, 360], [731, 385], [724, 410], [723, 435]] },
-        cam3: { seq: 4, guide: [[715, 380], [722, 405], [723, 430], [732, 455], [738, 480], [749, 505], [746, 530], [743, 555], [739, 580], [739, 605], [738, 630], [735, 655], [733, 680]], detect: FRAME_NARROW },
+        cam3: { seq: 4, guide: [[715, 380], [722, 405], [723, 430], [732, 455], [738, 480], [749, 505], [746, 530], [743, 555], [739, 580], [739, 605], [738, 630], [735, 655], [733, 680]] },
       }[camera];
     },
   },
@@ -252,7 +250,6 @@ export async function teachCorridors(ws, teaching, fixture) {
       const inspect = doc.inspect.map(item => item.camera !== camera ? item : {
         ...item,
         ...(fixture.mmPerPx != null ? { mmPerPx: fixture.mmPerPx } : {}),
-        ...(choice.detect ? { detect: choice.detect } : {}),
         segments: [...(item.segments ?? []).filter(s => s.segment !== segment), { segment, corridor: extracted.path }].sort((a, b) => a.segment - b.segment),
       });
       const saved = planOf(await ws.edit("workspace_save_doc", { doc: { ...doc, inspect } })).cameraTeaching.find(t => t.camera === camera);
@@ -282,10 +279,10 @@ export async function measureTeaching(ws, teaching, { log = () => {} } = {}) {
   };
 }
 
-/** 独立正常样本验证：手动配置数据的另一件历史件（不能是示教件），用候选走廊逐帧重测录制原图后按未分段判定。 */
-export async function validateCandidate(ws, piece) {
-  const validation = (await ws.edit("workspace_validate", { samples: [{ historyId: piece.recordId, sampleId: null, expected: "OK" }], sourceConfirmed: true })).workspace.validation;
-  return { piece, validation };
+/** 发布前检查（与发布页同一口径）：返回各项与拦发布的第一项（只提醒的项不拦）。 */
+export async function publishChecks(ws) {
+  const checks = await ws.edit("workspace_publish_checks", {});
+  return { checks, blocker: checks.find(c => !c.passed && !c.advisory) ?? null };
 }
 
 /** 发布候选（正式版）并等它生效：生产配方换成已标定的版本。 */
@@ -296,25 +293,25 @@ export async function publishCandidate(call, ws, id) {
 }
 
 /**
- * 新建段配方并走到发布：建候选、发布采集版并写入手动配置数据（示教件 1 件、验证 1 件）→ 设示教件并确认分段 →
- * 各段 × 检测相机的走廊 →（patchSegments：可选，改各段检测项）→ 测量示教件 → 验证 → 发布正式版；件用计划相机（模板取相机组前三台）。
+ * 新建段配方并走到发布：建候选、发布采集版并写入手动配置数据（示教件 1 件）→ 设示教件并确认分段 →
+ * 各段 × 检测相机的走廊 →（patchSegments：可选，改各段检测项）→ 测量示教件 → 发布前检查 → 发布正式版；件用计划相机（模板取相机组前三台）。
  * 样本集来源（sampleSet、partId）取样本件原图，各件相同；合成图来源每件帧数有波动。
- * 返回 { id, ws, teachingPiece, taught, calibration, samplePiece, validation, active }（calibration 为 measureTeaching 的结果）；
- * 验证没通过时 active 为 null 且不发布（调用方决定是否算失败）。
+ * 返回 { id, ws, teachingPiece, taught, calibration, checks, active }（calibration 为 measureTeaching 的结果）；
+ * 发布前检查有拦发布的项时 active 为 null 且不发布（调用方决定是否算失败）。
  */
 export async function buildBurstRecipe(call, { sourceId, sampleSet = null, partId = null, doc = null, patchSegments = null, log = () => {} }) {
   const fixture = CAMERA_FIXTURES[sourceId];
   assert(fixture, `没有段配方夹具 ${sourceId}，已有：${Object.keys(CAMERA_FIXTURES).join("、")}`);
   const template = doc ?? await call("recipe_template");
   assert(template.segments?.length > 0, "recipe_template 应给段配方");
-  const imported = await createFixtureCandidate(call, template, { count: 2, sampleSet, partId, log });
+  const imported = await createFixtureCandidate(call, template, { count: 1, sampleSet, partId, log });
   const id = imported.id;
   const created = await call("workspace_get", { id });
   assert(created.plan, "新建的候选应带 plan（段配方）");
   const cameraIds = created.plan.cameras;
   assert.equal(cameraIds.length, 3, `段配方需要三台计划相机：${cameraIds}`);
   const ws = workspaceCalls(call, id);
-  const [teachPiece, samplePiece] = imported.pieces;
+  const [teachPiece] = imported.pieces;
   const teachingPiece = await setTeachingPiece(ws, teachPiece);
   log(`示教件 ${teachingPiece.sn}：${teachPiece.groupCount} 个帧组，各相机 ${teachPiece.cameras.map(c => c.frames).join("/")} 帧`);
   const taught = await teachCorridors(ws, teachingPiece, fixture);
@@ -325,10 +322,10 @@ export async function buildBurstRecipe(call, { sourceId, sampleSet = null, partI
   }
   const calibration = await measureTeaching(ws, teachPiece, { log });
   log(`示教件基准：ΣN_exp=${calibration.expectedTotal}`);
-  const { validation } = await validateCandidate(ws, samplePiece);
-  log(`验证${validation.passed ? "通过" : "未通过"}：${validation.checks.map(c => `${c.name}${c.passed ? "√" : "×"}`).join(" ")}`);
-  const active = validation.passed ? await publishCandidate(call, ws, id) : null;
-  return { id, ws, teachingPiece, taught, calibration, samplePiece, validation, active };
+  const { checks, blocker } = await publishChecks(ws);
+  log(`发布前检查${blocker ? "未满足" : "满足"}：${checks.map(c => `${c.name}${c.passed ? "√" : "×"}`).join(" ")}`);
+  const active = blocker ? null : await publishCandidate(call, ws, id);
+  return { id, ws, teachingPiece, taught, calibration, checks, active };
 }
 
 /** 段配方记录的事实：历史详情 burst 里的帧组数、各相机帧数、整件标记与区域结论（脚本断言与写进报告共用）。 */

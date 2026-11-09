@@ -107,7 +107,7 @@ export function PackageImportDialog({ preview, onClose, onImported, onOpen }: { 
       </dl>
       {local && <Notice tone="warn" title="将替换本机候选">本机已有候选 {preview.recipeId}（更新于 {formatDateTime(local.updatedAt)}），导入后被包里的候选替换，它的分段、走廊与示教件不保留；本机的发布记录不受影响。</Notice>}
       {preview.warnings.length > 0 && <Notice tone="warn" title="相机与示教件采集时不一致"><Notes notes={preview.warnings} /></Notice>}
-      <Notice title="导入后">候选回到草稿，版本号按本机分配、基于本机的生产配方；验证样本不随包导入。{preview.teachingImages ? "" : IMAGES_MISSING}</Notice>
+      <Notice title="导入后">候选回到草稿，版本号按本机分配、基于本机的生产配方。{preview.teachingImages ? "" : IMAGES_MISSING}</Notice>
       {preview.blocker && <Notice tone="warn" title="不能导入">{preview.blocker}</Notice>}
       <OperationStatus operation={operation} label="导入工件配方" labels={importLabels} unit="个文件" />
       {error && <Notice tone="warn" title="导入未完成">{error}</Notice>}

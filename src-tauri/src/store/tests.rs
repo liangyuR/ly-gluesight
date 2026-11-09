@@ -503,3 +503,52 @@ fn upgrading_v10_removes_retired_records_without_losing_production_and_prevents_
         );
     }
 }
+
+/// 防的回归（PR #292 评审）：相机级 `detect`、相机级或配方级 `expert` 已停用、读入时丢弃，按它们测的历史件快照与当前配方
+/// 被当成同一测量布局，只按规则重判就复用了口径不同的已存指标。旧快照里这些键为空（null / {}）或只有标定引用时照常复用。
+#[test]
+fn snapshot_with_retired_measure_overrides_needs_raw_remeasurement() {
+    let current = crate::recipe::samples_burst().build().unwrap();
+    type Edit = fn(&mut serde_json::Value);
+    let cases: [(&str, Edit, bool); 5] = [
+        (
+            "相机级检测参数",
+            |s| s["inspect"][0]["detect"] = serde_json::json!({ "searchMm": 6.0, "polarity": "dark", "widthRange": [1.0, 5.0] }),
+            false,
+        ),
+        (
+            "相机级专家参数",
+            |s| s["inspect"][1]["expert"] = serde_json::json!({ "presentRatio": 0.4 }),
+            false,
+        ),
+        (
+            "配方级专家参数",
+            |s| s["expert"] = serde_json::json!({ "trackSharpMin": 0.6 }),
+            false,
+        ),
+        (
+            "旧快照的空值",
+            |s| {
+                s["expert"] = serde_json::json!({});
+                s["inspect"][0]["detect"] = serde_json::Value::Null;
+                s["inspect"][0]["expert"] = serde_json::json!({});
+            },
+            true,
+        ),
+        (
+            "相机级标定引用",
+            |s| s["inspect"][0]["calib"] = "cam1-v1".into(),
+            true,
+        ),
+    ];
+    for (case, edit, reusable) in cases {
+        let mut snapshot = serde_json::to_value(&current).unwrap();
+        edit(&mut snapshot);
+        let original = Recipe::from_snapshot(snapshot).unwrap();
+        assert_eq!(
+            same_measurement_layout(&original, &current),
+            reusable,
+            "{case}"
+        );
+    }
+}

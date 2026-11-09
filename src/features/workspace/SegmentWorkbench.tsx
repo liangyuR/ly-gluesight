@@ -155,7 +155,7 @@ export default function SegmentWorkbench({ plan, locked, saveLocked = "", onDirt
   const halfPx = (camera: string) => {
     const item = inspect(camera);
     const mmPerPx = item?.mmPerPx;
-    return mmPerPx && mmPerPx > 0 && doc ? (item?.detect ?? doc.detect).searchMm / mmPerPx : undefined;
+    return mmPerPx && mmPerPx > 0 && doc ? (seqSegment?.searchMm ?? doc.detect.searchMm) / mmPerPx : undefined;
   };
   const columns = `56px repeat(${groupCount}, var(--swb-cell))`;
   // 示教件的笔结构（D-SB-62）：笔间的竖缝加粗，便于把段边界放在笔间（笔间边界不留过渡区）；每笔首尾跳过的帧组按跳过标出

@@ -1,9 +1,7 @@
 use super::*;
-use crate::judge::Verdict;
 use crate::plan::SegmentKind::Straight;
 use crate::project::ProjectMeta;
 use crate::workspace::pieces_tests::measured_teaching;
-use crate::workspace::Sample;
 
 const ROUND: &str = "capture-1-0";
 
@@ -46,7 +44,7 @@ fn write(path: &Path, text: &str) {
 }
 
 /// 开发机项目里示教好的候选：示教件轮次带原图，候选目录里还有重画走廊留下的旧示教帧、旧轮次的测量与发布快照，
-/// 示教帧的标定引用是开发机项目里的绝对路径，另有一个来自检测历史的验证样本。
+/// 示教帧的标定引用是开发机项目里的绝对路径；workspace.json 还带着已删除的验证样本字段（旧候选）。
 fn source_candidate(project: &Path) -> Workspace {
     let measured = measured_teaching(&[Straight], 100.0);
     let text = serde_json::to_string(&measured)
@@ -58,15 +56,14 @@ fn source_candidate(project: &Path) -> Workspace {
         .join("device")
         .join("plane_calib_cam1.json");
     w.camera_teaching[0].frame.calib_tag = json!({"path": calib, "value": null});
-    w.samples.push(Sample {
-        history_id: Some(5),
-        sample_id: None,
-        expected: Verdict::Ok,
-    });
+    let mut legacy = serde_json::to_value(&w).unwrap();
+    legacy["samples"] = json!([{"historyId": 5, "sampleId": null, "expected": "OK"}]);
+    legacy["sampleBank"] = json!([{"id": "capture-7-0", "name": "独立采集", "geometryTag": [], "expected": "OK", "createdAt": 1, "captureId": "capture-7-0"}]);
+    legacy["validation"] = json!({"revision": 1, "passed": false, "checkedAt": 1, "checks": [], "samples": [], "environmentTag": null});
     let dir = project.join("workspaces").join(&w.doc.id);
     write(
         &dir.join("workspace.json"),
-        &serde_json::to_string_pretty(&w).unwrap(),
+        &serde_json::to_string_pretty(&legacy).unwrap(),
     );
     for t in &w.camera_teaching {
         write(
@@ -137,24 +134,24 @@ fn exported(dirs: &Dirs) -> Workspace {
     w
 }
 
-fn staged(dirs: &Dirs) -> (Workspace, Vec<String>) {
+fn staged(dirs: &Dirs) -> Workspace {
     let (manifest, mut w) = stage(&dirs.package, &dirs.staging, &quiet()).unwrap();
     let local = Local {
         has_production: true,
         next_version: 4,
     };
-    let notes = rebase(
+    rebase(
         &mut w,
         &local,
         Path::new(&manifest.source_root),
         &dirs.target,
     )
     .unwrap();
-    (w, notes)
+    w
 }
 
 /// 回传包只带候选与示教件轮次记录（原图、旧示教帧、旧轮次测量、发布快照都不带）；导入后版本号按本机配方库、
-/// 回到草稿、路径改到本机项目、验证样本去掉，本机的发布快照保留，旧候选的轮次换成包里的轮次，别的配方不受影响。
+/// 回到草稿、路径改到本机项目，旧候选带的验证样本字段读入时丢弃，本机的发布快照保留，旧候选的轮次换成包里的轮次，别的配方不受影响。
 #[test]
 fn package_skips_raw_images_and_import_rebases_onto_local_recipe() {
     let dirs = Dirs::new("roundtrip");
@@ -171,7 +168,7 @@ fn package_skips_raw_images_and_import_rebases_onto_local_recipe() {
         || n.contains("published")
         || n.contains("capture-0-0")));
 
-    let (w, notes) = staged(&dirs);
+    let w = staged(&dirs);
     install(&dirs.target, &dirs.staging, &w).unwrap();
 
     let dir = dirs.target.join("workspaces").join(&source.doc.id);
@@ -180,7 +177,6 @@ fn package_skips_raw_images_and_import_rebases_onto_local_recipe() {
             .unwrap();
     assert_eq!(installed.doc.version, 4);
     assert!(matches!(installed.publish, PublishState::Draft));
-    assert!(installed.samples.is_empty() && notes.len() == 1);
     assert_eq!(
         installed.camera_teaching[0].frame.calib_tag["path"].as_str(),
         dirs.target
@@ -210,7 +206,7 @@ fn package_skips_raw_images_and_import_rebases_onto_local_recipe() {
 fn failed_install_restores_previous_candidate_and_rounds() {
     let dirs = Dirs::new("rollback");
     let source = exported(&dirs);
-    let (w, _) = staged(&dirs);
+    let w = staged(&dirs);
     std::fs::remove_dir_all(dirs.staging.join(ROUNDS).join(ROUND)).unwrap();
 
     assert!(install(&dirs.target, &dirs.staging, &w).is_err());
@@ -258,7 +254,7 @@ fn older_package_with_teaching_images_restores_round_images() {
     .unwrap();
     std::fs::rename(&old, &dirs.package).unwrap();
 
-    let (w, _) = staged(&dirs);
+    let w = staged(&dirs);
     install(&dirs.target, &dirs.staging, &w).unwrap();
 
     let frame = Path::new(ROUND).join("cam1").join("000001.pgm");

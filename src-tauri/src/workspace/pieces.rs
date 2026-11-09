@@ -246,20 +246,15 @@ fn original_cuts(w: &Workspace) -> Option<Vec<u64>> {
     })
 }
 
-/// 本候选导入的轮次：属于本配方、已完整的轮次，不含验证样本库用到的轮次；示教件在前，其余（旧流程留下的标定件）按创建时间。
+/// 本候选导入的轮次：属于本配方、已完整的轮次；示教件在前，其余（旧流程留下的轮次）按创建时间。
 pub(super) fn piece_rounds(
     capture: &RecipeCaptureHost,
     w: &Workspace,
 ) -> Result<Vec<CaptureSummary>, String> {
-    let bank: BTreeSet<&str> = w
-        .sample_bank
-        .iter()
-        .flat_map(|b| std::iter::once(b.id.as_str()).chain(b.capture_id.as_deref()))
-        .collect();
     let mut rounds: Vec<_> = capture
         .list(&w.doc.id)?
         .into_iter()
-        .filter(|r| r.state == CaptureState::Complete && !bank.contains(r.round_id.as_str()))
+        .filter(|r| r.state == CaptureState::Complete)
         .collect();
     rounds.sort_by_key(|r| (!is_teaching(w, &r.round_id), r.created_at));
     Ok(rounds)
