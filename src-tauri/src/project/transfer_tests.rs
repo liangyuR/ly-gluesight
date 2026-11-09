@@ -436,6 +436,43 @@ fn reimported_duplicate_adopts_packaged_recording_when_local_one_is_gone() {
     assert!(store.record_recipe(&detail.summary).unwrap().is_some());
 }
 
+/// 防的回归：合并记录时就把本机已有、录制已被清理的同一工件改归新项目，导入失败撤回（`forget_project`）时连同这条本机记录一起删掉；
+/// 历史件导入包等不装重复件原图的调用方也会把它改指向不存在的录制。合并只收集，不改本机记录。
+#[test]
+fn merging_a_duplicate_with_pruned_recording_leaves_the_local_record_until_install() {
+    let data = TempDir::new("adopt-rollback");
+    let (source, _, store) = source_project(&data.0);
+    let original = source.join("records").join("c1");
+    let package = export(&data.0, &source, &store);
+    std::fs::remove_dir_all(&original).unwrap();
+    let packaged = data.0.join("packaged.db");
+    std::io::copy(
+        &mut open_archive(&package)
+            .unwrap()
+            .by_name("project/inspection.db")
+            .unwrap(),
+        &mut File::create(&packaged).unwrap(),
+    )
+    .unwrap();
+    let merged = store
+        .merge_project(&packaged, "line-b", false, true)
+        .unwrap();
+    assert_eq!((merged.duplicates, merged.adoptable.len()), (1, 1));
+    let owner = || {
+        store
+            .detail_by_cycle("c1")
+            .unwrap()
+            .map(|d| d.summary.project_id)
+    };
+    assert_eq!(owner().as_deref(), Some("line-a"), "合并时不改本机记录");
+    assert_eq!(
+        store.recording_directory("c1").unwrap(),
+        Some(original.clone())
+    );
+    store.forget_project("line-b").unwrap();
+    assert_eq!(owner().as_deref(), Some("line-a"), "撤回导入不带走本机记录");
+}
+
 /// 防的回归：导出“含检测记录”把本机别的项目的记录也带走；导入时记录编号与本机已有的冲突却不重新编号、采集轮次里的来源
 /// 记录编号没跟着改，或本机已有的同一工件（同一 cycleId）被再存一份。
 #[test]

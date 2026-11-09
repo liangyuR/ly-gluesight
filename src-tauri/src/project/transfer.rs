@@ -751,12 +751,14 @@ fn finish(
     };
     let db = root.join("inspection.db");
     let merged = db.is_file();
+    let mut adoptable = Vec::new();
     if merged {
         let result = store
             .ok_or_else(|| "本机记录库未打开，不能并入检测记录".to_string())
             .and_then(|store| store.merge_project(&db, new.id, false, true))
             .and_then(|merged| {
                 super::records::finish_refs(store.ok_or("本机记录库未打开")?, root, new.id)?;
+                adoptable = merged.adoptable;
                 if merged.duplicates > 0 {
                     notes.push(format!(
                         "{} 件检测记录与本机已有记录是同一工件，沿用已有记录",
@@ -790,6 +792,14 @@ fn finish(
                 "项目导入记录待补记",
                 &format!("{}：{error}", new.id),
             );
+        }
+        // 项目装好后再改用包里的录制：中途失败撤回这次并入时不会带走本机已有的记录
+        match store.map_or(Ok(0), |s| s.adopt_recordings(new.id, &adoptable)) {
+            Ok(0) => {}
+            Ok(n) => notes.push(format!(
+                "{n} 件本机已有、录制已被清理的检测记录改用包里的录制，改归本项目"
+            )),
+            Err(error) => notes.push(format!("改用包里的录制失败：{error}")),
         }
     }
     if let Some(external) = external {
