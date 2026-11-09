@@ -79,19 +79,37 @@ pub(super) fn teaching_sizes(w: &Workspace) -> Result<Vec<[u32; 2]>, String> {
         .collect()
 }
 
-/// 示教帧冻结时的相机标签：图像模式按录制原图本身（彩色或灰度），不按本机当前配置，示教件常在别的机器上示教。
-pub(super) fn frozen_camera_tag(
+/// 示教件 `round`（轮次编号, 采集时间）里相机 `camera` 第 `seq` 帧冻结成示教帧。相机标签的图像模式按录制原图本身
+/// （彩色或灰度），不按本机当前配置：示教件常在别的机器上示教。
+pub(super) fn teaching_frame(
+    id: String,
+    (round, captured_at): (&str, i64),
+    (camera, seq): (&str, u64),
+    imaging: &crate::camera::CameraImaging,
     config: &crate::camera::CameraConfig,
     image: &FrameImage,
-    sample_set: Option<&str>,
-) -> Value {
+    calib_tag: Value,
+) -> FrozenImage {
     let mut recorded = config.clone();
     recorded.image_mode = if image.is_color() {
         crate::camera::ImageMode::Color
     } else {
         crate::camera::ImageMode::Gray
     };
-    camera_state(&recorded, sample_set)
+    FrozenImage {
+        id,
+        view: 1,
+        source: format!("capture:{round}#{seq}"),
+        captured_at,
+        size: [image.width, image.height],
+        camera: camera.to_owned(),
+        camera_tag: camera_state(&recorded, None),
+        calib_tag,
+        geometry_tag: json!({"round": round, "camera": camera, "seq": seq}),
+        exposure_us: Some(imaging.exposure_us),
+        gain_db: Some(imaging.gain_db),
+        history_id: None,
+    }
 }
 
 /// 各计划相机示教帧的通道数（计划相机顺序）：示教帧冻结时的相机标签是彩色模式为 3，否则为 1。
@@ -1076,25 +1094,19 @@ pub(super) async fn prepare_segment_teaching(
         );
         let calib = vision::camera_calib_path(&app, inspect)?;
         let default_scale = calib_scale(&app, inspect, config.source)?;
-        let sample_set = None::<String>;
-        let frame = FrozenImage {
-            id: format!(
+        let frame = teaching_frame(
+            format!(
                 "corridor-{}-{revision}-{seq}-{}",
                 ly_plc::now_ms(),
                 host.capture_seq.fetch_add(1, Ordering::Relaxed)
             ),
-            view: 1,
-            source: format!("capture:{round}#{seq}"),
-            captured_at: captured.created_at,
-            size: [image.width, image.height],
-            camera: camera.clone(),
-            camera_tag: frozen_camera_tag(&config, &image, sample_set.as_deref()),
-            calib_tag: calibration_state(&calib)?,
-            geometry_tag: json!({"round": round, "camera": camera, "seq": seq}),
-            exposure_us: Some(imaging.exposure_us),
-            gain_db: Some(imaging.gain_db),
-            history_id: None,
-        };
+            (&round, captured.created_at),
+            (&camera, seq),
+            &imaging,
+            &config,
+            &image,
+            calibration_state(&calib)?,
+        );
         PreparedSegmentTeaching::stage(
             &workspace,
             CameraTeaching {
