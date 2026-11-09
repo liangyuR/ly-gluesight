@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useHorizontalWindow } from "../../lib/useHorizontalWindow";
 import { Button, IconButton, Surface } from "qing-steel";
-import { ChevronLeft, ChevronRight, Play } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Play } from "lucide-react";
 import { errorText } from "../../lib/errors";
 import type { CalibrationFrameView, FrameMetrics, PassSkip, PathSegment, TeachPreviewSegment } from "../plan/types";
 import { passCells } from "./workbenchDraft";
@@ -47,11 +47,13 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
 }) {
   const [batch, setBatch] = useState<{ result: TeachPreviewSegment | null; revision: number; error: string; running: boolean }>({ result: null, revision, error: "", running: false });
   const [queued, setQueued] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const operation = useOperation();
   const run = async () => {
     if (locked || batch.running) return;
     if (waiting) { setQueued(true); onFlush?.(); return; }
     const at = revision;
+    setExpanded(false);
     setBatch(previous => ({ ...previous, running: true, error: "" }));
     try {
       const result = await operation.run(taskId => workspaceApi.teachPreviewSegment(id, camera, segment, round, taskId));
@@ -135,6 +137,8 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
   const edges = (view?.edges ?? []).flatMap(edge => edge ? [{ from: edge[0], to: edge[1], color: "var(--ov-line)" }] : []);
   const counts = batch.result ? trialOrder.map(item => [item, cells.filter(cell => !cell.skipReason && cell.state === item).length] as const).filter(([, n]) => n > 0) : [];
   const skippedCount = cells.filter(cell => cell.skipReason).length;
+  const finished = !!batch.result && !batch.running && !queued && !batch.error;
+  const details = !finished || expanded;
 
   return <>
     <Surface role="region" className="wp-trial" aria-label="本段试测" onKeyDown={move}>
@@ -160,17 +164,20 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
         {seq != null && <Button size="sm" variant="text" onClick={() => onSeq(null)}>回到示教帧</Button>}
         {side && <span className="wp-trial-actions">{side}</span>}
       </div>
-      <OperationStatus operation={operation} label="全段试测" />
+      {details && <OperationStatus operation={operation} label="全段试测" />}
       {locked && <p className="muted hint">{locked}</p>}
       {batch.error && batch.error !== operation.snapshot()?.error && <p className="c-warn" role="alert">{batch.error}</p>}
       {(batch.result || skippedCount > 0) && <div className="wp-trial-legend" aria-label="试测统计">
+        {finished && <strong>全段试测已完成</strong>}
         {skippedCount > 0 && <span><i style={{ background: skipColor }} aria-hidden="true" />生产跳过 {skippedCount}</span>}
         {batch.result && <span>其余帧试测：</span>}
         {counts.map(([item, n]) => <span key={item}><i style={{ background: trialColor[item] }} aria-hidden="true" />{trialText[item]} {n}</span>)}
         <span><i className="teach" aria-hidden="true" />示教帧</span>
         {stale && <span className="c-warn">参数已修改，结果已过期，请重新试测</span>}
+        {finished && <Button size="sm" variant="text" className="wp-trial-toggle" aria-expanded={expanded} trailingIcon={expanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
+          onClick={() => setExpanded(open => !open)}>{expanded ? "收起" : "详情"}</Button>}
       </div>}
-      {skippedCount > 0 && <p className="muted hint">生产跳过的帧不参与判定；全段试测仍测量这些帧供诊断查看，不计入其余帧的试测统计。</p>}
+      {details && skippedCount > 0 && <p className="muted hint">生产跳过的帧不参与判定；全段试测仍测量这些帧供诊断查看，不计入其余帧的试测统计。</p>}
     </Surface>
     {seq != null && <FrameViewer controlsAt="footer" image={shown?.image ?? null} loading={!shown} error={shown?.error ?? ""} label={`${camera} · 段 ${segment} · 帧组 ${seq} · 试测`}
       overlay={{ path: view?.corridor ?? [], searchHalfPx: view?.searchHalfPx ?? undefined, segments: edges, clipped: evidenceOverlay(view?.metrics), partEdges: view?.partEdges, heading: guide && { ...guide, measured: metrics?.headingDeg ?? null } }}
