@@ -810,12 +810,7 @@ fn import(
             has_production: cycle.recipe(&id).is_some(),
             next_version: cycle.recipes.next_version(&id)?,
         };
-        rebase(
-            &mut w,
-            &local,
-            Path::new(&manifest.source_root),
-            &project,
-        )?;
+        rebase(&mut w, &local, Path::new(&manifest.source_root), &project)?;
         w.ensure_instance(&app.state::<Store>())?;
         install(&project, staging, &w)?;
         items.insert(id.clone(), w.clone());
