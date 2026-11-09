@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -9,7 +9,7 @@ import { WorkspaceProvider } from "../src/features/workspace/context";
 import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
-import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, snapshot } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, snapshot } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
@@ -112,4 +112,33 @@ it("分段后在防抖前离页 → 草稿跨页保留并阻止发布，返回�
   expect(screen.queryByText("分段尚未保存")).toBeNull();
   await user.click(within(screen.getByRole("navigation", { name: "配方配置步骤" })).getByRole("link", { name: /发布/ }));
   await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
+});
+
+
+it("分段保存响应未返回 → 禁止回退边界和撤销，保存完成后恢复编辑", async () => {
+  const pending = deferred<ReturnType<typeof burstWorkspaceView>>();
+  const originalInvoke = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "workspace_segment_template_preview") return { restructured: true, dropped: [], untaught: [], measurementCleared: false, coverage: null };
+    if (command === "workspace_segment_template_save") {
+      const input = args as { segments: typeof view.plan.segments; cuts: number[] };
+      view.plan.segments = input.segments;
+      view.workspace.doc.segments = input.segments;
+      view.workspace.captureReview!.rounds["round-1"].cuts = input.cuts;
+      view.workspace.revision++;
+      return pending.promise;
+    }
+    return originalInvoke(command, args);
+  });
+  const user = show("/recipe/A/teach?camera=CAM-1&segment=1");
+  await user.click(await screen.findByRole("button", { name: "在帧组 2 之后插入边界" }));
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "workspace_segment_template_save")).toBe(true));
+  const boundary = screen.getByRole("button", { name: "删除帧组 2 之后的边界" });
+  expect(boundary).toBeDisabled();
+  expect(screen.getByRole("button", { name: "撤销改动" })).toBeDisabled();
+  await user.click(boundary);
+  await act(async () => pending.resolve(structuredClone(view)));
+  await waitFor(() => expect(screen.getByRole("status", { name: "分段保存状态" })).toHaveTextContent("分段已保存"));
+  expect(screen.getByRole("button", { name: "删除帧组 2 之后的边界" })).toBeEnabled();
+  expect(view.workspace.captureReview!.rounds["round-1"].cuts).toEqual([2, 4, 8]);
 });

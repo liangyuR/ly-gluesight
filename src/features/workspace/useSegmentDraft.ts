@@ -39,15 +39,15 @@ export function useSegmentDraft(view: WorkspaceView, plan: WorkspacePlanView) {
   const signature = JSON.stringify(draft);
   const dirty = !!draft && (!stored || signature !== JSON.stringify(stored));
   const restructured = !!draft && structureChanged(plan.segments, draft.kinds);
+  const [working, setWorking] = useState(false);
   const alignment = view.workspace.passAlignment;
   const locked = view.workspace.pending ? "候选版本正在等待生效"
     : alignment && !alignment.confirmed ? "换示教件的逐笔对照还没确认：先在上方确认对照"
       : navigationDirty ? "请先保存或撤销导航图修改"
-        : unsavable ? "走廊有未保存的修改（按站距不足三站，不会自动保存）：改好或清空后再改分段" : "";
+        : unsavable ? "走廊有未保存的修改（按站距不足三站，不会自动保存）：改好或清空后再改分段" : busy || working ? "正在处理分段或保存配置，请稍候" : "";
   const waiting = busy || pendingSave || frameDirty || !doc;
 
   const [prompt, setPrompt] = useState<{ signature: string; revision: number; impact: SegmentSaveImpact } | null>(null);
-  const [working, setWorking] = useState(false);
   /** 最近一次预演的检测覆盖：有检测段应测帧数为 0 时提示（不拦保存） */
   const [coverage, setCoverage] = useState<InspectionCoverage | null>(null);
   const [retry, setRetry] = useState(0);
@@ -98,7 +98,7 @@ export function useSegmentDraft(view: WorkspaceView, plan: WorkspacePlanView) {
     return () => clearTimeout(timer);
   }, [ready, signature, prompting, retry, view.workspace.revision]);
 
-  const status: SegmentSaveStatus = !dirty ? "saved" : prompting ? "confirm" : working ? "saving"
+  const status: SegmentSaveStatus = !dirty ? "saved" : working ? "saving" : prompting ? "confirm"
     : failed.current === signature ? "failed" : draft && !valid(draft) ? "invalid" : "pending";
 
   return {
@@ -112,7 +112,7 @@ export function useSegmentDraft(view: WorkspaceView, plan: WorkspacePlanView) {
       const edit = stored && JSON.stringify(next) === JSON.stringify(stored) ? null : { roundId, draft: next };
       setEdit(edit); setSegmentDraft(edit);
     },
-    undo: () => { setEdit(null); setSegmentDraft(null); setPrompt(null); },
+    undo: () => { if (busy || working) return; setEdit(null); setSegmentDraft(null); setPrompt(null); },
     confirm: () => { if (draft && prompting && !waiting && !working) void commit(draft, signature); },
     retry: () => { failed.current = ""; setRetry(n => n + 1); },
   };
