@@ -22,13 +22,54 @@ pub fn spool(data: &Path) -> PathBuf {
     history_dir(data).join("audit-spool")
 }
 
-/// 项目 `project` 的真机或离线录制根：记录的原图引用相对于它。
-pub fn record_root(data: &Path, project: &str, _source: RecordSource) -> Result<PathBuf, String> {
+/// 项目 `project` 在各录制盘上的录制根，按写入优先顺序：每件的录制目录与帧原图引用相对于其中一个。
+pub fn record_roots(data: &Path, project: &str) -> Result<Vec<PathBuf>, String> {
     if !super::valid_id(project) {
         return Err(format!("记录的项目编号 {project} 无效"));
     }
-    let base = crate::log_storage::recording_project(&super::dir(data, project))?;
-    Ok(base.join("records"))
+    Ok(
+        crate::log_storage::recording_projects(&super::dir(data, project))?
+            .into_iter()
+            .map(|base| base.join("records"))
+            .collect(),
+    )
+}
+
+/// 各录制盘上的录制根，建好目录；离线的盘建不了，照样列出（接上后录制时再建）。
+pub fn prepared_roots(projects: &[PathBuf]) -> Vec<PathBuf> {
+    projects
+        .iter()
+        .map(|base| {
+            let root = base.join("records");
+            let _ = std::fs::create_dir_all(&root);
+            root
+        })
+        .collect()
+}
+
+/// 一件记录的录制目录所在的录制根：必须在已配置的某块录制盘上；那块盘离线或移除时报“原图所在盘不可用”。
+pub fn record_root_of(
+    data: &Path,
+    project: &str,
+    directory: Option<&str>,
+) -> Result<PathBuf, String> {
+    let directory = Path::new(directory.ok_or("这条记录没有录制目录，原图未录制或已清理")?);
+    let root = record_roots(data, project)?
+        .into_iter()
+        .find(|root| crate::log_storage::within(root, directory))
+        .ok_or_else(|| {
+            format!(
+                "原图所在盘不可用：录制目录 {} 不在已配置的录制盘上，在设置里加回这块盘后可读",
+                directory.display()
+            )
+        })?;
+    if !root.is_dir() {
+        return Err(format!(
+            "原图所在盘不可用：{} 无法访问（盘离线或已拔出）",
+            root.display()
+        ));
+    }
+    Ok(root)
 }
 
 /// 本机各项目采集轮次（示教件、标定件）引用的历史件 cycleId：这些记录与录制不参与按天清理与录制滚动清理，也不能手动删除；
@@ -169,19 +210,24 @@ pub(crate) fn finish_refs(store: &Store, project: &Path, id: &str) -> Result<(),
     }
 }
 
-/// 删一件过期记录的录制目录（非当前项目，没有在运行的录制滚动清理）：目录须在该项目对应的录制根下。
+/// 删一件过期记录的录制目录（非当前项目，没有在运行的录制滚动清理）：目录须在该项目某块录制盘的录制根下；
+/// 目录已不在或所在盘离线时什么也不做。
 pub fn remove_recording(
     data: &Path,
     project: &str,
-    source: RecordSource,
+    _source: RecordSource,
     directory: &Path,
 ) -> Result<(), String> {
-    let root = record_root(data, project, source)?;
-    let (Ok(root), Ok(checked)) = (root.canonicalize(), directory.canonicalize()) else {
+    let roots = record_roots(data, project)?;
+    let Ok(checked) = directory.canonicalize() else {
         return Ok(());
     };
-    if !checked.starts_with(&root) || checked == root {
-        return Err("录制目录不在该项目的录制根下".into());
+    if !roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| checked.starts_with(&root) && checked != root)
+    {
+        return Err("录制目录不在该项目的录制盘上".into());
     }
     crate::image_file::checked_source_path(&checked)?;
     std::fs::remove_dir_all(&checked).map_err(|e| e.to_string())

@@ -1820,7 +1820,7 @@ fn recorded_part_frame(
     let store = app.state::<Store>();
     let id = store
         .id_by_cycle(cycle_id)?
-        .ok_or("这一帧原图已不在内存里，本件也没有录到它（录制关闭、资料盘不足或录制队满）")?;
+        .ok_or("这一帧原图已不在内存里，本件也没有录到它（录制关闭、录制盘都不足或录制队满）")?;
     let detail = store.detail_frame(id, camera, seq)?;
     if detail.summary.recipe_revision.as_deref() != Some(revision_id) {
         return Err("本件的历史记录与所看的配方修订不一致".into());

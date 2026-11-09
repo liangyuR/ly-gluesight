@@ -73,9 +73,16 @@ fn color_frame_records_bayer_mosaic_as_main_file_and_reads_back_rgb() {
     use crate::frame::{BayerMosaic, BayerPattern};
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
-    let recorder = Recorder::new(dir.root(), Some(callback));
+    let recorder = Recorder::new(vec![dir.root()], Some(callback));
     let mut rec = recorder
-        .begin(RecordMode::All, "SN-COLOR", recipe(), "color", None)
+        .begin(
+            RecordMode::All,
+            Some(&dir.root()),
+            "SN-COLOR",
+            recipe(),
+            "color",
+            None,
+        )
         .unwrap();
     // BG 相位纯色马赛克：R=200 G=100 B=50
     let mosaic = vec![50, 100, 100, 200];
@@ -122,7 +129,7 @@ fn color_frame_records_bayer_mosaic_as_main_file_and_reads_back_rgb() {
 fn maintenance_collect_recordings_survive_retention() {
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
-    let recorder = Recorder::new(dir.root(), Some(callback));
+    let recorder = Recorder::new(vec![dir.root()], Some(callback));
     let kept: Vec<_> = (0..2)
         .map(|i| {
             let path = old_recording(&dir.root(), i, 10);
@@ -133,7 +140,14 @@ fn maintenance_collect_recordings_survive_retention() {
     let pruned = old_recording(&dir.root(), 5, 10);
     let newest = old_recording(&dir.root(), 6, 10);
     let mut rec = recorder
-        .begin(RecordMode::All, "SN-M", recipe(), "collect-new", None)
+        .begin(
+            RecordMode::All,
+            Some(&dir.root()),
+            "SN-M",
+            recipe(),
+            "collect-new",
+            None,
+        )
         .unwrap();
     rec.annotate("partMode", serde_json::json!("maintenanceCollect"));
     recorder.burst_frame(&mut rec, &frame(10), 0, 1);
@@ -173,8 +187,10 @@ fn scratch_recording_is_readable_during_the_part_and_never_kept() {
     for verdict in [Verdict::Ok, Verdict::NgGap] {
         let dir = TestDir::new();
         let (callback, outcomes) = callback();
-        let recorder = Recorder::new(dir.root(), Some(callback));
-        let mut rec = recorder.scratch("SN-S", recipe(), "scratch", None).unwrap();
+        let recorder = Recorder::new(vec![dir.root()], Some(callback));
+        let mut rec = recorder
+            .scratch(Some(&dir.root()), "SN-S", recipe(), "scratch", None)
+            .unwrap();
         recorder.burst_frame(&mut rec, &frame(42), 0, 1);
         // 写完之前报“还在写”，写完才给可读的原图文件：补测按它等，不会读到半截文件
         let deadline = std::time::Instant::now() + WRITER_HANG;
@@ -213,9 +229,9 @@ fn scratch_recording_is_readable_during_the_part_and_never_kept() {
     // 防的回归：临时录制写盘失败（盘满、无权限）时文件不留，录制结果却报健康，盘故障报警被清掉而补测一直读不到原图
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
-    let recorder = Recorder::new(dir.root(), Some(callback));
+    let recorder = Recorder::new(vec![dir.root()], Some(callback));
     let mut rec = recorder
-        .scratch("SN-F", recipe(), "scratch-fail", None)
+        .scratch(Some(&dir.root()), "SN-F", recipe(), "scratch-fail", None)
         .unwrap();
     std::fs::create_dir_all(rec.dir.parent().unwrap()).unwrap();
     std::fs::write(&rec.dir, b"").unwrap();
@@ -267,6 +283,56 @@ fn default_retention_is_unlimited_and_prunes_nothing() {
         .map(|i| old_recording(&dir.root(), i, 10))
         .collect();
     let (keep, max_bytes) = retention(HistoryScope::Real, &CycleSettings::default());
-    assert!(prune(&dir.root(), keep as usize, max_bytes, &[], None).is_empty());
+    assert!(prune(&[dir.root()], keep as usize, max_bytes, &[], None).is_empty());
     assert!(old.iter().all(|d| d.is_dir()));
+}
+
+/// 一件只写开录时选定的那块盘：防的回归是收尾目录落回第一块盘，或帧原图引用仍相对第一块盘，读图时按记录的盘找不到原图。
+#[test]
+fn part_started_on_second_disk_finishes_there_with_raw_paths_relative_to_it() {
+    let (first, second) = (TestDir::new(), TestDir::new());
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(vec![first.root(), second.root()], Some(callback));
+    let mut rec = recorder
+        .begin(
+            RecordMode::All,
+            Some(&second.root()),
+            "SN-D",
+            recipe(),
+            "second-disk",
+            None,
+        )
+        .unwrap();
+    recorder.burst_frame(&mut rec, &frame(10), 0, 1);
+    recorder.finish(rec, Verdict::Ok, "", u32::MAX, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert_eq!(
+        outcome.state,
+        RecordingState::Complete,
+        "{:?}",
+        outcome.errors
+    );
+    assert!(outcome
+        .directory
+        .as_ref()
+        .unwrap()
+        .starts_with(second.root()));
+    assert!(second.root().join(&outcome.files[0].file).is_file());
+    assert!(
+        walk(&first.root()).is_empty(),
+        "第一块盘上不该有这件的任何文件"
+    );
+}
+
+/// 清理跨所有录制盘按件的时间从旧到新：防的回归是每块盘各自按上限清理（两块盘合计超限也不删），或先删某块盘上较新的件。
+#[test]
+fn prune_across_disks_removes_oldest_parts_whichever_disk_they_are_on() {
+    let (first, second) = (TestDir::new(), TestDir::new());
+    let oldest = old_recording(&first.root(), 1, 10);
+    let older = old_recording(&second.root(), 2, 10);
+    let newer = old_recording(&first.root(), 3, 10);
+    let newest = old_recording(&second.root(), 4, 10);
+    assert!(prune(&[first.root(), second.root()], 2, u64::MAX, &[], None).is_empty());
+    assert!(!oldest.exists() && !older.exists());
+    assert!(newer.is_dir() && newest.is_dir());
 }

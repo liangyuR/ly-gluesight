@@ -40,7 +40,7 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 
 一套可上线的检测方案（相机组、PLC 配置、标定、配方、候选）收拢成一个项目，存于 `projects/<id>/`；支持新建、重命名、删除、整个项目导出导入与复制，切换项目要重启。检测记录存于本机一份记录库 `history/inspection.db`，每条记录带所属项目，历史页默认看全部项目，统计按当前项目；删除项目保留历史（[history-scope](decisions/history-scope.md)）。历史页可以把选中的几件导出为历史件导出包，在本机或别的机器上导入到当前项目，原图可选（[历史件导出包](architecture/history-package.md)）。见 [项目设计](architecture/project.md) 与 [存储布局](architecture/storage-layout.md)。
 
-运行日志和历史原图集中在 `~/gs_logs`，按环境、资料实例和项目隔离；示教、标定及发布资源随项目保存。根绑定及项目导出规则见[日志与视觉证据存储](architecture/log-storage-research.md)。
+运行日志在 `~/gs_logs`，历史原图在有序的一块或多块录制盘上（默认 `~/gs_logs`），按环境、资料实例和项目隔离；示教、标定及发布资源随项目保存。根绑定及项目导出规则见[日志与视觉证据存储](architecture/log-storage-research.md)。
 
 ### 关键模块与文件
 

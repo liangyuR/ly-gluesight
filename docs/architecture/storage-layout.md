@@ -2,7 +2,7 @@
 
 Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘符。正式版使用 `%ProgramData%\ly\GlueSight`，开发版使用 `%ProgramData%\ly\GlueSight-dev`。两套资料独立，不自动同步。程序、运行库和源码不属于资料目录。
 
-运行日志与历史原图集中在 `~/gs_logs`，按环境、资料实例和项目隔离；示教、标定和发布资源继续随项目保存。根绑定和清理规则见[运行日志与视觉证据存储](log-storage-research.md)。
+运行日志在 `~/gs_logs`，历史原图在一块或多块录制盘上（默认就是 `~/gs_logs`），按环境、资料实例和项目隔离；示教、标定和发布资源继续随项目保存。根绑定和清理规则见[运行日志与视觉证据存储](log-storage-research.md)。
 
 ## 初始化与日常运行
 
@@ -23,7 +23,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 | `history/audit-spool/` | 待入库的件证据与审计，尽力而为、不挡生产（[soak S-8](../decisions/soak.md)）。审计 spool 格式为 4（帧引用 `files[].frame`）。启动时入不了库的件、崩溃残留的 `.tmp`、旧格式、解析不了或超容量的文件、内容不对的 `.interrupted-preinsert` 都原样移到 `.unrecovered/` 并写错误日志，残留的探测文件删除，照常启动和接件，由人工核对；隔离事件引用的原图目录继续受保护。运行中多次重试仍存不下或身份冲突的件也移到 `.unrecovered/`。切换项目前必须写完 |
 | `projects/<项目编号>/` | 各项目的资料，见下表；`projects/.trash/` 是删除中的项目，启动时清理 |
 | `state/` | PLC 握手状态与审计。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
-| 日志根外置 | `~/gs_logs/runtime/<环境>/<实例>/` 保存运行与 PLC 日志，`vision/<环境>/<实例>/<项目>/` 保存生产历史原图 |
+| 日志根外置 | `~/gs_logs/runtime/<环境>/<实例>/` 保存运行与 PLC 日志；各录制盘的 `vision/<环境>/<实例>/<项目>/` 保存生产历史原图，录制盘列表在 `config/log-storage.json` 的 `recordingRoots`，设置页可改 |
 | `cache/` | 可重建缓存 |
 | `webview/<SID>/` | 按 Windows 用户隔离的浏览器资料 |
 | `exports/` | 默认导出位置；项目导出包与历史件导出包的保存对话框默认打开这里 |
@@ -39,7 +39,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 | `calib/`、`vision/releases/` | 标定、发布资源。棋盘格标定成功时原图写入 `calib/images/<样本ID>.pgm`，结果 JSON 的 `samplePath` 保存项目相对路径，`corners` 记内角点像素坐标；标定页进入时载入该原图，其余临时冻结样本只在内存。发布包在 `vision/releases/<配方>/<发布 ID>/`（schema 5）：`manifest.json`、`recipe.json`、`graph.json`，每台计划相机一个 `cameras/NN/`（NN 为计划相机下标，从 00 起），内有 `calibration.json`（像素当量与标定引用），它检测的每一段一个 `sMM/`（MM 为段号）子目录，内有 `image.<扩展名>`（示教帧）与 `corridor.json`（走廊）。段配方一律用设备标定 `calib/device/plane_calib_{device}.json`（发布包 `calibration.json` 的 `reference` 记 `device/{device}`） |
 | `workspaces/<配方>/navigation/`、`recipe-support/<配方>/<发布 ID>/` | RB-9 可选导航辅助资料：候选的 `images/<SHA-256>.png` 和 `maps/<SHA-256>.json` 由 `workspace.json.navigationId` 引用；正式辅助快照含 `image.png`、`snapshot.json`、`manifest.json`，独立记录发布身份、空间分段及示教件原始帧范围。发布准备在 `.pending-<发布 ID>`，生效后转为正式目录；临时与未生效目录不导出。地图不加入检测发布包，不进计划身份；缺失或损坏只关闭导航。项目复制和导出导入携带资料，资料不按日志或图像缓存清理 |
 | `recipe-capture/` | 采集轮次。每个轮次：`<轮次>/round.json` 与 `frames.jsonl`（一帧一行，seq 为相机帧号减该相机基线）。历史件导入的轮次（[在线投运](online-commissioning.md) 5.2）为格式 4：`origin` 记 `{kind: "history", cycleId, recordId}`（`standard` 恒为 false，只为读入旧轮次保留），帧的 `path` 是录制目录里的文件名 `{相机}_s{seq:06}.pgm`，轮次目录没有原图，读帧按 cycleId 在记录库查录制目录；被引用的录制不参与清理。格式 3 与 2 的旧轮次另有 `<相机>/<seq:06>.pgm`（无压缩 PGM，以前导入时为录制原图的硬链接或校验后的副本），照常读取，本轮目录缺图时改读来源历史件的录制。轮次只在选示教件时导入，界面不显示；换示教件或删除候选时删除对应轮次（[示教件决策](../decisions/recipe-build-flow.md)）。`capture_fixture` 生成的仿历史录制件在真机录制根下（`part.json` 带 `fixture: {label}`），同样经导入成为 `history` 轮次。磁盘上已有的 `{kind: "prepared", label}` 轮次与示教实拍轮次（格式 2 带 `teachingRoundId`，或格式 3）照常读取 |
-| 外部 `records/` | 位于日志根的 `vision/<环境>/<实例>/<项目>/`，不写入项目目录，也不随记录库搬到本机；读图按记录所属项目解析，删除项目时保留。生产历史原图。每件目录 `*_cycle_<cycleId>` 内的原图为 `{相机}_s{seq:06}.pgm`，`part.json` 另列 `missingFrames`（相机没出图，只追溯）与 `rawDropped`（录制队列满没录，证据标不完整），以及 `partMode`、`devices`（每台计划相机的 `cameraId`、`cameraConfig`、本次打开实际写入的 `imaging`（没有则取相机保存值）、`deviceSession`）与 `plc`（`requestSeq`、`productCode`）；维护采集件目录另有空文件 `maintenance-collect`，自动清理跳过这些目录。真机录制根下的 `imported/<录制目录名>/` 是从历史件导出包导入的件的原图，录制的滚动清理不扫这里，按保留天数清理时随记录删除（[历史件导出包](history-package.md)）。相机图像模式为彩色时（现场做法），`{相机}_s{seq:06}.pgm` 是原始 8 位马赛克，PGM 头带注释 `# bayer {相位}`，part.json 帧项记 `imageMode: "color"`，读图时还原为 RGB，每帧只有这一份（[color](../decisions/color.md) CL-1）。已有录制里的 `{相机}_s{seq:06}_bayer.pgm` 与帧项 `bayer`、件级 `bayerFrames`、`bayerErrors` 读图时忽略，主文件按灰度读（[r2-records](../decisions/r2-records.md) R-8） |
+| 外部 `records/` | 位于每块录制盘的 `vision/<环境>/<实例>/<项目>/`，不写入项目目录，也不随记录库搬到本机；一件只在一块盘上，读图按记录的录制目录找所在盘，删除项目时保留。生产历史原图。每件目录 `*_cycle_<cycleId>` 内的原图为 `{相机}_s{seq:06}.pgm`，`part.json` 另列 `missingFrames`（相机没出图，只追溯）与 `rawDropped`（录制队列满没录，证据标不完整），以及 `partMode`、`devices`（每台计划相机的 `cameraId`、`cameraConfig`、本次打开实际写入的 `imaging`（没有则取相机保存值）、`deviceSession`）与 `plc`（`requestSeq`、`productCode`）；维护采集件目录另有空文件 `maintenance-collect`，自动清理跳过这些目录。录制盘的真机录制根下的 `imported/<录制目录名>/` 是从历史件导出包导入的件的原图，录制的滚动清理不扫这里，按保留天数清理时随记录删除（[历史件导出包](history-package.md)）。相机图像模式为彩色时（现场做法），`{相机}_s{seq:06}.pgm` 是原始 8 位马赛克，PGM 头带注释 `# bayer {相位}`，part.json 帧项记 `imageMode: "color"`，读图时还原为 RGB，每帧只有这一份（[color](../decisions/color.md) CL-1）。已有录制里的 `{相机}_s{seq:06}_bayer.pgm` 与帧项 `bayer`、件级 `bayerFrames`、`bayerErrors` 读图时忽略，主文件按灰度读（[r2-records](../decisions/r2-records.md) R-8） |
 
 项目化之前放在资料目录根下的 `config/cameras.json`、`plc.json`、`cycle.json`、`feasibility.json`、`calib/`、`recipes/`、`workspaces/`、`vision/`、`recipe-capture/`、`inspection.db`、`records/`、`records-offline/`、`audit-spool/` 不迁移、不读取，也不自动删除；启动时检测到会写一条提示日志，确认不再需要后人工删除。
 

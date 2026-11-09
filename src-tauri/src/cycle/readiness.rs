@@ -477,10 +477,9 @@ pub fn gather(app: &AppHandle) -> Readiness {
         _ => Ok(()),
     };
     let audit = match host.audit.readiness() {
-        Ok(crate::audit::AuditReadiness::Ready) => host
-            .disk
-            .check()
-            .map_or_else(Check::Waiting, |()| Check::Ok),
+        Ok(crate::audit::AuditReadiness::Ready) => {
+            host.disk.status().alarm.map_or(Check::Ok, Check::Waiting)
+        }
         Ok(crate::audit::AuditReadiness::WaitingRecording) => {
             Check::Waiting("原图录制收尾中，不影响接件".into())
         }

@@ -183,19 +183,25 @@ fn walk_tops(
     notes: &mut Vec<String>,
 ) -> Result<Vec<(String, PathBuf)>, String> {
     let mut out = Vec::new();
-    let recording_root = crate::log_storage::recording_project(root)?;
+    let recordings = crate::log_storage::recording_projects(root)?;
     for top in tops {
-        let path = if RECORDS[1..].contains(top) {
-            recording_root.join(top)
+        // 录制分在几块录制盘上，包里合成一个 records/（件的录制目录名带时间戳与 cycleId，不会重名）
+        let paths: Vec<PathBuf> = if RECORDS[1..].contains(top) {
+            recordings
+                .iter()
+                .map(|recording| recording.join(top))
+                .collect()
         } else {
-            root.join(top)
+            vec![root.join(top)]
         };
         let relative = format!("{PREFIX}{top}");
-        if path.is_dir() {
-            crate::image_file::checked_source_path(&path)?;
-            walk(&path, &relative, &mut out, notes)?;
-        } else if path.is_file() {
-            out.push((relative, path));
+        for path in paths {
+            if path.is_dir() {
+                crate::image_file::checked_source_path(&path)?;
+                walk(&path, &relative, &mut out, notes)?;
+            } else if path.is_file() {
+                out.push((relative.clone(), path));
+            }
         }
     }
     Ok(out)
@@ -220,7 +226,7 @@ fn collect(
         .copied()
         .collect();
     let mut out = walk_tops(root, &tops, notes)?;
-    let recording_root = crate::log_storage::recording_project(root)?;
+    let recordings = crate::log_storage::recording_projects(root)?;
     if let Some(store) = records {
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
         let snapshot = scratch.join("inspection.db");
@@ -229,14 +235,9 @@ fn collect(
         let (_, foreign) = store
             .export_project(&project, &snapshot, &linked)
             .map_err(|e| format!("导出检测记录失败：{e}"))?;
-        out.extend(link_recordings(
-            &snapshot,
-            &recording_root,
-            &foreign,
-            notes,
-        )?);
-        if recording_root != root {
-            crate::storage::relocate::database(&snapshot, &recording_root, root)?;
+        out.extend(link_recordings(&snapshot, &recordings[0], &foreign, notes)?);
+        for recording in recordings.iter().filter(|recording| *recording != root) {
+            crate::storage::relocate::database(&snapshot, recording, root)?;
         }
         out.push((format!("{PREFIX}inspection.db"), snapshot));
     }
@@ -833,16 +834,19 @@ fn install_recordings(root: &Path, project: &Path) -> Result<Option<PathBuf>, St
     if retired.exists() {
         remove_owned_tree(&retired)?;
     }
-    let external = crate::log_storage::recording_project(project)?;
-    if external == project {
+    let recordings = crate::log_storage::recording_projects(project)?;
+    if recordings.iter().any(|recording| recording == project) {
         return Ok(None);
     }
-    if external.exists() {
+    if let Some(existing) = recordings.iter().find(|recording| recording.exists()) {
         return Err(format!(
             "项目原图目录已存在，拒绝覆盖：{}",
-            external.display()
+            existing.display()
         ));
     }
+    // 导入的原图整体装到第一块剩余不少于余量的录制盘；都不足时装第一块
+    let external = crate::disk_guard::first_with_reserve(&recordings)
+        .map_or_else(|| recordings[0].clone(), |i| recordings[i].clone());
     let db = root.join("inspection.db");
     let has_recordings = RECORDS[1..].iter().any(|top| root.join(top).exists());
     if !has_recordings {
@@ -937,14 +941,25 @@ pub(crate) fn recover_pending_recordings(data: &Path) -> Result<(), String> {
     let Some(config) = crate::log_storage::read(data)? else {
         return Ok(());
     };
-    let namespace = config
-        .vision("_")
-        .parent()
-        .ok_or("视觉日志命名空间无效")?
-        .to_path_buf();
-    if !namespace.exists() {
-        return Ok(());
+    for (disk, placeholder) in config.visions("_").iter().enumerate() {
+        let namespace = placeholder
+            .parent()
+            .ok_or("视觉日志命名空间无效")?
+            .to_path_buf();
+        if namespace.exists() {
+            recover_namespace(data, &config, disk, &namespace)?;
+        }
     }
+    Ok(())
+}
+
+/// 一块录制盘的命名空间里中断的项目原图导入：装好了的去掉提交标记，项目没装上的连同暂存删掉。
+fn recover_namespace(
+    data: &Path,
+    config: &crate::log_storage::Config,
+    disk: usize,
+    namespace: &Path,
+) -> Result<(), String> {
     crate::image_file::checked_source_path(&namespace)?;
     for entry in std::fs::read_dir(&namespace).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
@@ -960,7 +975,7 @@ pub(crate) fn recover_pending_recordings(data: &Path) -> Result<(), String> {
             .as_str()
             .filter(|id| super::valid_id(id))
             .ok_or("项目原图提交标记的项目编号无效")?;
-        let expected = config.vision(id);
+        let expected = config.visions(id).swap_remove(disk);
         if path == expected {
             if super::dir(data, id).is_dir() {
                 std::fs::remove_file(&marker).map_err(|e| e.to_string())?;

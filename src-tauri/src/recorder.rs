@@ -9,6 +9,7 @@ use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::disk_guard::RecordRoots;
 use crate::frame::{BayerPattern, CounterSource, Frame, FrameImage};
 use crate::judge::Verdict;
 use crate::recipe::{valid_camera_id, Recipe};
@@ -154,6 +155,8 @@ enum Msg {
 
 pub struct Recording {
     scope: HistoryScope,
+    /// 本件写入的录制根（开录时选定的录制盘），收尾目录也在这里
+    root: PathBuf,
     started: i64,
     dir: PathBuf,
     name: String,
@@ -229,7 +232,7 @@ impl Recording {
 }
 
 pub struct Recorder {
-    root: PathBuf,
+    roots: RecordRoots,
     tx: Sender<Msg>,
     queued: Arc<AtomicUsize>,
     callback: Option<RecordingCallback>,
@@ -255,25 +258,39 @@ impl Recorders {
         }
     }
 
-    pub fn root(&self, source: RecordSource) -> &Path {
-        self.get(HistoryScope::of(source)).root()
+    /// 各录制盘上的录制根，按写入优先顺序。
+    pub fn roots(&self, source: RecordSource) -> Vec<PathBuf> {
+        self.get(HistoryScope::of(source)).roots()
     }
 
-    pub fn begin(&self, source: RecordSource, mode: RecordMode, sn: &str, recipe: Arc<Recipe>, cycle_id: &str, bundle_id: Option<&str>) -> Option<Recording> {
-        self.get(HistoryScope::of(source)).begin(mode, sn, recipe, cycle_id, bundle_id)
-    }
-
-    /// 录制关闭时的临时录制，见 [`Recorder::scratch`]。
-    pub fn scratch(
+    /// `root` 是开录时选定的录制盘上的录制根；录制关闭时不用。
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin(
         &self,
         source: RecordSource,
+        mode: RecordMode,
+        root: Option<&Path>,
         sn: &str,
         recipe: Arc<Recipe>,
         cycle_id: &str,
         bundle_id: Option<&str>,
     ) -> Option<Recording> {
         self.get(HistoryScope::of(source))
-            .scratch(sn, recipe, cycle_id, bundle_id)
+            .begin(mode, root, sn, recipe, cycle_id, bundle_id)
+    }
+
+    /// 录制关闭时的临时录制，见 [`Recorder::scratch`]。
+    pub fn scratch(
+        &self,
+        source: RecordSource,
+        root: Option<&Path>,
+        sn: &str,
+        recipe: Arc<Recipe>,
+        cycle_id: &str,
+        bundle_id: Option<&str>,
+    ) -> Option<Recording> {
+        self.get(HistoryScope::of(source))
+            .scratch(root, sn, recipe, cycle_id, bundle_id)
     }
 
     /// 段配方：按 (计划相机下标, seq) 录一帧。
@@ -286,7 +303,7 @@ impl Recorders {
         self.get(rec.scope).finish(rec, verdict, reason, keep, max_bytes, Vec::new())
     }
 
-    /// 按当前保留上限立即滚动清理录制根目录，不等下一件收尾（资料盘不足暂停接件时没有下一件）。
+    /// 按当前保留上限立即滚动清理各录制盘，不等下一件收尾（资料盘不足暂停接件时没有下一件）。
     pub fn apply_retention(&self, settings: &CycleSettings) {
         for scope in [HistoryScope::Real] {
             let (keep, max_bytes) = retention(scope, settings);
@@ -308,33 +325,73 @@ fn retention(scope: HistoryScope, settings: &CycleSettings) -> (u32, u64) {
 
 impl Recorder {
     #[cfg(test)]
-    pub fn new(root: PathBuf, callback: Option<RecordingCallback>) -> Self {
-        Self::start(root, callback, None)
+    pub fn new(roots: Vec<PathBuf>, callback: Option<RecordingCallback>) -> Self {
+        Self::start(Arc::new(std::sync::RwLock::new(roots)), callback, None)
     }
 
-    pub fn guarded(root: PathBuf, callback: Option<RecordingCallback>, cleanup: Cleanup) -> Self {
-        Self::start(root, callback, Some(cleanup))
+    pub fn guarded(
+        roots: RecordRoots,
+        callback: Option<RecordingCallback>,
+        cleanup: Cleanup,
+    ) -> Self {
+        Self::start(roots, callback, Some(cleanup))
     }
 
-    fn start(root: PathBuf, callback: Option<RecordingCallback>, cleanup: Option<Cleanup>) -> Self {
+    fn start(
+        roots: RecordRoots,
+        callback: Option<RecordingCallback>,
+        cleanup: Option<Cleanup>,
+    ) -> Self {
         let (tx, rx) = channel();
         let queued = Arc::new(AtomicUsize::new(0));
         let active = Arc::new(Mutex::new(HashSet::new()));
-        let (writer_root, writer_queue, writer_callback, writer_active, writer_cleanup) = (root.clone(), queued.clone(), callback.clone(), active.clone(), cleanup.clone());
+        let (writer_roots, writer_queue, writer_callback, writer_active, writer_cleanup) = (
+            roots.clone(),
+            queued.clone(),
+            callback.clone(),
+            active.clone(),
+            cleanup.clone(),
+        );
         let startup_error = std::thread::Builder::new()
             .name("frame-recorder".into())
-            .spawn(move || writer(writer_root, rx, writer_queue, writer_callback, writer_active, writer_cleanup))
+            .spawn(move || {
+                writer(
+                    writer_roots,
+                    rx,
+                    writer_queue,
+                    writer_callback,
+                    writer_active,
+                    writer_cleanup,
+                )
+            })
             .err()
             .map(|e| format!("录制线程启动失败：{e}"));
-        Self { root, tx, queued, callback, startup_error, active, cleanup, scope: HistoryScope::Real }
+        Self {
+            roots,
+            tx,
+            queued,
+            callback,
+            startup_error,
+            active,
+            cleanup,
+            scope: HistoryScope::Real,
+        }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    pub fn roots(&self) -> Vec<PathBuf> {
+        self.roots.read().unwrap().clone()
     }
 
-    pub fn begin(&self, mode: RecordMode, sn: &str, recipe: Arc<Recipe>, cycle_id: &str, bundle_id: Option<&str>) -> Option<Recording> {
-        if mode == RecordMode::Off {
+    pub fn begin(
+        &self,
+        mode: RecordMode,
+        root: Option<&Path>,
+        sn: &str,
+        recipe: Arc<Recipe>,
+        cycle_id: &str,
+        bundle_id: Option<&str>,
+    ) -> Option<Recording> {
+        if mode == RecordMode::Off || root.is_none() {
             notify(
                 &self.callback,
                 RecordingOutcome {
@@ -349,24 +406,27 @@ impl Recorder {
             );
             return None;
         }
-        self.open(mode, sn, recipe, cycle_id, bundle_id)
+        self.open(mode, root, sn, recipe, cycle_id, bundle_id)
     }
 
     /// 录制关闭时的临时录制（D-SB-60）：采集期间照常把原图写进本件的临时目录，供收尾补测读回；收尾时一律删除，
     /// 结果按“录制关闭”报。
+    /// `root` 为 None（没有在线的录制盘）时不写临时录制，收尾补测读不到原图。
     pub fn scratch(
         &self,
+        root: Option<&Path>,
         sn: &str,
         recipe: Arc<Recipe>,
         cycle_id: &str,
         bundle_id: Option<&str>,
     ) -> Option<Recording> {
-        self.open(RecordMode::Off, sn, recipe, cycle_id, bundle_id)
+        self.open(RecordMode::Off, root, sn, recipe, cycle_id, bundle_id)
     }
 
     fn open(
         &self,
         mode: RecordMode,
+        root: Option<&Path>,
         sn: &str,
         recipe: Arc<Recipe>,
         cycle_id: &str,
@@ -374,6 +434,8 @@ impl Recorder {
     ) -> Option<Recording> {
         let error = if !safe_cycle_id(cycle_id) {
             Some("录制 cycleId 只能包含字母、数字、- 和 _，长度为 1–128".to_string())
+        } else if root.is_none() {
+            Some("没有可用的录制盘，本件不写临时录制".to_string())
         } else {
             self.startup_error.clone()
         };
@@ -393,13 +455,23 @@ impl Recorder {
             return None;
         }
         let name = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-        let dir = self.root.join("_pending").join(format!("{name}_cycle_{cycle_id}"));
+        let root = root.unwrap().to_path_buf();
+        let dir = root
+            .join("_pending")
+            .join(format!("{name}_cycle_{cycle_id}"));
         if !self.active.lock().unwrap().insert(dir.clone()) {
-            notify(&self.callback, RecordingOutcome {
-                cycle_id: cycle_id.into(), directory: None, files: Vec::new(),
-                errors: vec!["录制目录仍在使用或清理，拒绝覆盖".into()], retention_errors: Vec::new(),
-                available: false, state: RecordingState::Failed,
-            });
+            notify(
+                &self.callback,
+                RecordingOutcome {
+                    cycle_id: cycle_id.into(),
+                    directory: None,
+                    files: Vec::new(),
+                    errors: vec!["录制目录仍在使用或清理，拒绝覆盖".into()],
+                    retention_errors: Vec::new(),
+                    available: false,
+                    state: RecordingState::Failed,
+                },
+            );
             return None;
         }
         let burst = BurstFrames {
@@ -408,6 +480,7 @@ impl Recorder {
         };
         Some(Recording {
             scope: self.scope,
+            root,
             started: ly_plc::now_ms(),
             dir,
             name,
@@ -502,20 +575,56 @@ impl Recorder {
         burst.frames.push(meta);
     }
 
-    pub fn finish(&self, rec: Recording, verdict: Verdict, reason: &str, keep: u32, max_bytes: u64, in_use: Vec<PathBuf>) {
+    pub fn finish(
+        &self,
+        rec: Recording,
+        verdict: Verdict,
+        reason: &str,
+        keep: u32,
+        max_bytes: u64,
+        in_use: Vec<PathBuf>,
+    ) {
         let failed = !matches!(verdict, Verdict::Ok | Verdict::OkWithExcursion);
         let keep_this = rec.mode == RecordMode::All || (rec.mode == RecordMode::Failed && failed);
-        let tag = serde_json::to_value(verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-        let target = keep_this.then(|| self.root.join(&rec.name[..8]).join(format!("{}_{tag}_cycle_{}", rec.name, rec.cycle_id)));
-        let job = FinishJob { recording: rec, target, verdict, reason: reason.into(), keep, max_bytes, in_use };
+        let tag = serde_json::to_value(verdict)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default();
+        let target = keep_this.then(|| {
+            rec.root
+                .join(&rec.name[..8])
+                .join(format!("{}_{tag}_cycle_{}", rec.name, rec.cycle_id))
+        });
+        let job = FinishJob {
+            recording: rec,
+            target,
+            verdict,
+            reason: reason.into(),
+            keep,
+            max_bytes,
+            in_use,
+        };
         if let Err(error) = self.tx.send(Msg::Finish(job)) {
             if let Msg::Finish(mut job) = error.0 {
-                job.recording.errors.push("录制写入线程已停止，收尾改为同步保存并报告".into());
+                job.recording
+                    .errors
+                    .push("录制写入线程已停止，收尾改为同步保存并报告".into());
                 let pending = job.recording.dir.clone();
                 let mut state = WriteState::default();
-                protect_retention(&mut job, &mut state, self.cleanup.as_ref().map(|c| &c.protection));
-                let outcome = finish_recording(&self.root, job, state, self.cleanup.as_ref().map(|c| &c.release));
-                if !pending.exists() { self.active.lock().unwrap().remove(&pending); }
+                protect_retention(
+                    &mut job,
+                    &mut state,
+                    self.cleanup.as_ref().map(|c| &c.protection),
+                );
+                let outcome = finish_recording(
+                    &self.roots(),
+                    job,
+                    state,
+                    self.cleanup.as_ref().map(|c| &c.release),
+                );
+                if !pending.exists() {
+                    self.active.lock().unwrap().remove(&pending);
+                }
                 notify(&self.callback, outcome);
             }
         }
@@ -583,12 +692,36 @@ fn protect_retention(job: &mut FinishJob, state: &mut WriteState, protection: Op
     }
 }
 
-fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: Option<RecordingCallback>,
-    active: Arc<Mutex<HashSet<PathBuf>>>, cleanup: Option<Cleanup>) {
-    let mut cleaner = PendingCleaner::default();
+fn writer(
+    roots: RecordRoots,
+    rx: Receiver<Msg>,
+    queued: Arc<AtomicUsize>,
+    callback: Option<RecordingCallback>,
+    active: Arc<Mutex<HashSet<PathBuf>>>,
+    cleanup: Option<Cleanup>,
+) {
+    let current = || roots.read().unwrap().clone();
+    let mut cleaners: HashMap<PathBuf, PendingCleaner> = HashMap::new();
+    let mut sweep = |cleanup: &Cleanup, in_use: &[PathBuf]| -> Vec<String> {
+        let roots = current();
+        cleaners.retain(|root, _| roots.contains(root));
+        roots
+            .iter()
+            .flat_map(|root| {
+                cleaners.entry(root.clone()).or_default().sweep(
+                    root,
+                    &active,
+                    &cleanup.protection,
+                    in_use,
+                )
+            })
+            .collect()
+    };
     if let Some(cleanup) = &cleanup {
-        let errors = cleaner.sweep(&root, &active, &cleanup.protection, &[]);
-        if !errors.is_empty() { (cleanup.warning)(&errors); }
+        let errors = sweep(cleanup, &[]);
+        if !errors.is_empty() {
+            (cleanup.warning)(&errors);
+        }
     }
     let mut cycles: HashMap<String, WriteState> = HashMap::new();
     while let Ok(msg) = rx.recv() {
@@ -607,7 +740,7 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
             Msg::Finish(mut job) => {
                 let mut state = cycles.remove(&job.recording.cycle_id).unwrap_or_default();
                 if let Some(cleanup) = &cleanup {
-                    state.retention_errors = cleaner.sweep(&root, &active, &cleanup.protection, &job.in_use);
+                    state.retention_errors = sweep(cleanup, &job.in_use);
                 }
                 let pending = job.recording.dir.clone();
                 // 查保护目录到滚动清理删除之间不让示教件登记新引用；通知回调前放开
@@ -618,7 +751,7 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
                         &mut state,
                         cleanup.as_ref().map(|c| &c.protection),
                     );
-                    finish_recording(&root, job, state, cleanup.as_ref().map(|c| &c.release))
+                    finish_recording(&current(), job, state, cleanup.as_ref().map(|c| &c.release))
                 };
                 if !pending.exists() { active.lock().unwrap().remove(&pending); }
                 notify(&callback, outcome);
@@ -626,7 +759,13 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
             Msg::Prune { keep, max_bytes } => {
                 let _references = crate::recipe_capture::lock_references();
                 let errors = match cleanup.as_ref().map(|c| (c.protection)()).transpose() {
-                    Ok(protected) => prune(&root, keep as usize, max_bytes, &protected.unwrap_or_default(), cleanup.as_ref().map(|c| &c.release)),
+                    Ok(protected) => prune(
+                        &current(),
+                        keep as usize,
+                        max_bytes,
+                        &protected.unwrap_or_default(),
+                        cleanup.as_ref().map(|c| &c.release),
+                    ),
                     Err(error) => vec![format!("无法确认待入库原图保护，跳过滚动清理：{error}")],
                 };
                 if !errors.is_empty() {
@@ -747,12 +886,28 @@ fn burst_files(root: &Path, actual_dir: &Path, burst: &mut BurstFrames, results:
         }
     }
     if failures > BURST_FRAME_ERRORS {
-        errors.push(format!("另有 {} 帧原图未确认写入，见 part.json 的 frames", failures - BURST_FRAME_ERRORS));
+        errors.push(format!(
+            "另有 {} 帧原图未确认写入，见 part.json 的 frames",
+            failures - BURST_FRAME_ERRORS
+        ));
     }
 }
 
-fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release: Option<&RecordingRelease>) -> RecordingOutcome {
-    let FinishJob { recording: mut rec, target, verdict, reason, keep, max_bytes, in_use } = job;
+fn finish_recording(
+    roots: &[PathBuf],
+    job: FinishJob,
+    mut state: WriteState,
+    release: Option<&RecordingRelease>,
+) -> RecordingOutcome {
+    let FinishJob {
+        recording: mut rec,
+        target,
+        verdict,
+        reason,
+        keep,
+        max_bytes,
+        in_use,
+    } = job;
     rec.errors.append(&mut state.errors);
     if target.is_none() {
         // 不保留的录制也要报写盘失败：临时录制是收尾补测的原图来源（D-SB-60），盘满或无权限要能报警
@@ -829,7 +984,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
     let directory = actual_dir.is_dir().then_some(actual_dir.clone());
     let mut files = Vec::new();
     burst_files(
-        root,
+        &rec.root,
         &actual_dir,
         &mut burst,
         &mut state.frame_results,
@@ -842,8 +997,11 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
     let mut protected = in_use;
     protected.push(actual_dir.clone());
     let mut retention_errors = state.retention_errors;
-    if !state.retention_blocked { retention_errors.extend(prune(root, keep as usize, max_bytes, &protected, release)); }
-    let mut available = promoted && directory.is_some() && !files.is_empty() && rec.errors.is_empty();
+    if !state.retention_blocked {
+        retention_errors.extend(prune(roots, keep as usize, max_bytes, &protected, release));
+    }
+    let mut available =
+        promoted && directory.is_some() && !files.is_empty() && rec.errors.is_empty();
     meta["frames"] = serde_json::to_value(&burst.frames).unwrap();
     meta["available"] = json!(available);
     meta["errors"] = json!(rec.errors);
@@ -987,7 +1145,15 @@ fn dir_bytes(dir: &Path) -> Result<u64, String> {
     Ok(size)
 }
 
-fn prune(root: &Path, keep: usize, max_bytes: u64, in_use: &[PathBuf], release: Option<&RecordingRelease>) -> Vec<String> {
+/// 跨所有录制盘按件的时间（目录名的时间戳）从新到旧累计，最新一件总是保留；超出件数或字节上限的旧件删除，
+/// `in_use`（待入库、示教件引用）与带 `KEEP_MARKER` 的跳过。离线的盘不扫。
+fn prune(
+    roots: &[PathBuf],
+    keep: usize,
+    max_bytes: u64,
+    in_use: &[PathBuf],
+    release: Option<&RecordingRelease>,
+) -> Vec<String> {
     let mut errors = Vec::new();
     let mut protected = Vec::new();
     for path in in_use {
@@ -997,40 +1163,53 @@ fn prune(root: &Path, keep: usize, max_bytes: u64, in_use: &[PathBuf], release: 
             Err(error) => return vec![format!("保留目录无法解析，暂停清理录制 {}：{error}", path.display())],
         }
     }
-    let days = match std::fs::read_dir(root) {
-        Ok(days) => days,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(error) => return vec![format!("扫描录制目录失败：{error}")],
-    };
     let mut parts = Vec::new();
-    for day in days {
-        let day = match day {
-            Ok(day) => day.path(),
+    for root in roots {
+        let days = match std::fs::read_dir(root) {
+            Ok(days) => days,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
-                errors.push(error.to_string());
+                errors.push(format!("扫描录制目录失败 {}：{error}", root.display()));
                 continue;
             }
         };
-        let name = day.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-        if name.len() != 8 || !name.bytes().all(|b| b.is_ascii_digit()) || !plain_directory(&day) {
-            continue;
-        }
-        match std::fs::read_dir(&day) {
-            Ok(entries) => {
-                for entry in entries {
-                    match entry {
-                        Ok(entry)
-                            if plain_directory(&entry.path())
-                                && !entry.path().join(KEEP_MARKER).exists() =>
-                        {
-                            parts.push(entry.path())
+        for day in days {
+            let day = match day {
+                Ok(day) => day.path(),
+                Err(error) => {
+                    errors.push(error.to_string());
+                    continue;
+                }
+            };
+            let name = day
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if name.len() != 8
+                || !name.bytes().all(|b| b.is_ascii_digit())
+                || !plain_directory(&day)
+            {
+                continue;
+            }
+            match std::fs::read_dir(&day) {
+                Ok(entries) => {
+                    for entry in entries {
+                        match entry {
+                            Ok(entry)
+                                if plain_directory(&entry.path())
+                                    && !entry.path().join(KEEP_MARKER).exists() =>
+                            {
+                                parts.push(entry.path())
+                            }
+                            Ok(_) => {}
+                            Err(error) => errors.push(error.to_string()),
                         }
-                        Ok(_) => {}
-                        Err(error) => errors.push(error.to_string()),
                     }
                 }
+                Err(error) => {
+                    errors.push(format!("扫描每日录制目录失败 {}：{error}", day.display()))
+                }
             }
-            Err(error) => errors.push(format!("扫描每日录制目录失败 {}：{error}", day.display())),
         }
     }
     parts.sort_by(|a, b| b.file_name().cmp(&a.file_name()));

@@ -388,11 +388,20 @@ pub struct CycleHost {
 }
 
 impl CycleHost {
+    /// 设置页改了录制盘：新件按新列表选盘，滚动清理与孤立录制清理也按新列表。
+    pub fn set_record_roots(&self, roots: Vec<PathBuf>) {
+        *self.disk.roots().write().unwrap() = roots;
+        self.disk.invalidate();
+    }
+
     pub fn init(app: &AppHandle) -> Result<Self, String> {
         let settings_path = crate::storage::project_config(app).join("cycle.json");
         let data = crate::storage::project(app);
-        let recording_root = crate::log_storage::recording_project(&data)?;
-        std::fs::create_dir_all(&recording_root).map_err(|e| e.to_string())?;
+        let record_roots: crate::disk_guard::RecordRoots = Arc::new(std::sync::RwLock::new(
+            crate::project::records::prepared_roots(&crate::log_storage::recording_projects(
+                &data,
+            )?),
+        ));
         let (tx, rx) = unbounded_channel();
         let (frame_tx, frame_rx) = channel(FRAME_QUEUE);
         let (mut settings, project_note) = CycleSettings::load(&settings_path);
@@ -411,9 +420,9 @@ impl CycleHost {
         let interrupted_recordings = app.state::<Store>().finish_interrupted_recordings()?;
         let camera = CameraRig::new(app, frame_tx)?;
         let recording_health = Arc::new(RecordingHealth::default());
-        let recorder = |root: PathBuf, scope: HistoryScope| {
-            let (guarded_root, guard_app, protection_audit, warning_app, record_audit) = (
-                root.clone(),
+        let recorder = |roots: crate::disk_guard::RecordRoots, scope: HistoryScope| {
+            let (guarded_roots, guard_app, protection_audit, warning_app, record_audit) = (
+                roots.clone(),
                 app.clone(),
                 audit.clone(),
                 app.clone(),
@@ -424,8 +433,12 @@ impl CycleHost {
                 let store = guard_app
                     .try_state::<Store>()
                     .ok_or("检测记录数据库尚未初始化")?;
-                let mut paths = store.pending_recording_directories(&guarded_root, scope)?;
-                paths.extend(protection_audit.protected_recording_directories(&guarded_root)?);
+                let roots = guarded_roots.read().unwrap().clone();
+                let mut paths = store.pending_recording_directories(&roots, scope)?;
+                // 离线的盘不清理，也不用核对它上面待入库的录制
+                for root in roots.iter().filter(|root| root.is_dir()) {
+                    paths.extend(protection_audit.protected_recording_directories(root)?);
+                }
                 // 示教件、标定件引用的录制不滚动清理
                 let referenced =
                     crate::project::records::referenced_cycles(&crate::storage::root(&guard_app))?;
@@ -447,7 +460,7 @@ impl CycleHost {
                     .release_recordings(directories)
             });
             Recorder::guarded(
-                root,
+                roots,
                 Some(Arc::new(
                     move |outcome: crate::recorder::RecordingOutcome| {
                         if let Some(change) = health.observe(scope, &outcome, now_ms()) {
@@ -463,9 +476,7 @@ impl CycleHost {
                 },
             )
         };
-        let recorders = Recorders::new(
-            recorder(recording_root.join("records"), HistoryScope::Real),
-        );
+        let recorders = Recorders::new(recorder(record_roots.clone(), HistoryScope::Real));
         Ok(Self {
             camera,
             tx,
@@ -478,8 +489,7 @@ impl CycleHost {
             recorders,
             cycle_ids: crate::cycle_ids::CycleIds::default(),
             audit,
-            disk: crate::disk_guard::DiskGuard::new(data.clone())
-                .with_recording_root(recording_root),
+            disk: crate::disk_guard::DiskGuard::new(data.clone(), record_roots),
             recording_health,
             shared: Mutex::new(Shared {
                 snapshot: None,
@@ -1409,31 +1419,24 @@ impl Machine {
         }
     }
 
-    /// 资料盘空间不足时告警（新件不录原图，见 start_part）；空间恢复后撤告警。
+    /// 磁盘空间不足时告警（所有录制盘都低于余量时新件不录原图，见 start_part）；空间恢复后撤告警。
     fn sync_disk_alarm(&mut self) {
-        const PREFIX: &str = "资料盘剩余空间";
+        const PREFIX: &str = crate::disk_guard::ALARM_PREFIX;
         let shown = self.alarms.iter().any(|m| m.starts_with(PREFIX));
-        match host(&self.app).disk.check() {
-            Err(reason) => {
-                match self.alarms.iter_mut().find(|m| m.starts_with(PREFIX)) {
-                    Some(m) if *m == reason => {}
-                    Some(m) => {
-                        *m = reason;
-                        self.dirty = true;
-                    }
-                    None => self.alarm(reason),
+        match host(&self.app).disk.status().alarm {
+            Some(reason) => match self.alarms.iter_mut().find(|m| m.starts_with(PREFIX)) {
+                Some(m) if *m == reason => {}
+                Some(m) => {
+                    *m = reason;
+                    self.dirty = true;
                 }
-            }
-            Ok(()) => {
+                None => self.alarm(reason),
+            },
+            None => {
                 if shown {
                     self.alarms.retain(|m| !m.starts_with(PREFIX));
                     self.dirty = true;
-                    log(
-                        &self.app,
-                        "ok",
-                        "资料盘空间",
-                        "剩余空间已恢复，恢复录制原图",
-                    );
+                    log(&self.app, "ok", "磁盘空间", "剩余空间已恢复，磁盘告警解除");
                 }
             }
         }
@@ -1905,8 +1908,10 @@ impl Machine {
                 ),
             )
         });
-        // 资料盘不足时不录原图，照常检测（收尾补测仍用临时录制）
-        let record = if host.disk.check().is_err() {
+        // 按录制盘顺序写到第一块剩余不少于余量的盘；所有盘都不足时不录原图，照常检测（收尾补测仍用临时录制，
+        // 写到剩余最多的在线盘）
+        let disk = host.disk.status();
+        let record = if disk.target.is_none() {
             crate::settings::RecordMode::Off
         } else if maintenance || untested.is_some() {
             crate::settings::RecordMode::All
@@ -1917,12 +1922,19 @@ impl Machine {
         let mut recording = if record == crate::settings::RecordMode::Off
             && !collect
         {
-            host.recorders
-                .scratch(source, &sn, recipe.clone(), &cycle_id, bundle_id.as_deref())
+            host.recorders.scratch(
+                source,
+                disk.scratch.as_deref(),
+                &sn,
+                recipe.clone(),
+                &cycle_id,
+                bundle_id.as_deref(),
+            )
         } else {
             host.recorders.begin(
                 source,
                 record,
+                disk.target.as_deref(),
                 &sn,
                 recipe.clone(),
                 &cycle_id,

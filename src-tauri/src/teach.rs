@@ -23,9 +23,9 @@ pub struct RecordListing {
 /// 帧录制目录，新的在前，最多 200 条。
 #[tauri::command]
 pub fn records_list(cycle: State<'_, CycleHost>) -> RecordListing {
-    let root = cycle.recorders.root(crate::store::RecordSource::Real).to_path_buf();
+    let roots = cycle.recorders.roots(crate::store::RecordSource::Real);
     let mut items = Vec::new();
-    if let Ok(days) = std::fs::read_dir(&root) {
+    for days in roots.iter().filter_map(|root| std::fs::read_dir(root).ok()) {
         for day in days.flatten().map(|d| d.path()).filter(|p| p.is_dir() && !p.ends_with("_pending")) {
             for part in std::fs::read_dir(&day).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
                 let frames = std::fs::read_dir(&part).map(|rd| rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "pgm")).count()).unwrap_or(0);
@@ -36,5 +36,12 @@ pub fn records_list(cycle: State<'_, CycleHost>) -> RecordListing {
     }
     items.sort_by(|a, b| b.name.cmp(&a.name));
     items.truncate(200);
-    RecordListing { root: root.display().to_string(), items }
+    RecordListing {
+        root: roots
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect::<Vec<_>>()
+            .join("；"),
+        items,
+    }
 }
