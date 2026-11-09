@@ -59,6 +59,7 @@ fn with_corridor(w: &mut Workspace, camera: &str, segment: u32, corridor: Vec<[f
             corridor,
             sector_deg: None,
             color_model: None,
+            measure: None,
         });
     update_doc(w, doc).unwrap();
 }

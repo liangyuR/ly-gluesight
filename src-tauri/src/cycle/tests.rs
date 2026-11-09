@@ -216,6 +216,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             corridor,
             sector_deg: (differ == Some("sector")).then_some(90.0),
             color_model: None,
+            measure: None,
         });
         doc.segments.iter_mut().for_each(|s| {
             let length_mm = if differ == Some("window") && s.index == 2 {

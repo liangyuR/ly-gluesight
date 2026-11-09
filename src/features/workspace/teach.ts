@@ -1,5 +1,5 @@
 import type { RecipeDoc } from "../cycle/types";
-import type { CameraInspect, CameraTeachDraft, InspectWindow, PathSegment, SegmentCorridor } from "../plan/types";
+import type { CameraInspect, CameraTeachDraft, InspectWindow, MeasureMode, PathSegment, SegmentCorridor } from "../plan/types";
 import { pathLength } from "./teachingPath";
 
 const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical)
@@ -142,7 +142,7 @@ function withSegmentCorridor(doc: RecipeDoc, camera: string, segment: number, pa
     const others = (item.segments ?? []).filter(s => s.segment !== segment);
     const { sectorDeg, colorModel, ...rest }: SegmentCorridor = { segment, corridor: [], ...item.segments?.find(s => s.segment === segment), ...patch };
     const next: SegmentCorridor = { ...rest, ...(sectorDeg != null ? { sectorDeg } : {}), ...(colorModel != null ? { colorModel } : {}) };
-    const segments = next.corridor.length || sectorDeg != null ? [...others, next].sort((a, b) => a.segment - b.segment) : others;
+    const segments = next.corridor.length || sectorDeg != null || next.measure != null ? [...others, next].sort((a, b) => a.segment - b.segment) : others;
     return { ...item, segments };
   }) };
 }
@@ -155,6 +155,17 @@ export function withCorridor(doc: RecipeDoc, key: string, draft: CameraTeachDraf
   const before = doc.inspect?.find(item => item.camera === target.camera)?.segments?.find(item => item.segment === target.segment);
   const moved = JSON.stringify(canonical(before?.corridor ?? [])) !== JSON.stringify(canonical(draft.corridor));
   return withSegmentCorridor(doc, target.camera, target.segment, { corridor: draft.corridor, ...(moved ? { colorModel: undefined } : {}) });
+}
+
+/** 一台相机在一段实际的测量方式：选过就按选的；有胶色模型按胶色；还没画走廊的彩色示教帧默认按胶色；其余按灰度（color CL-3）。 */
+export function measureMode(item: SegmentCorridor | undefined, colorFrame: boolean): MeasureMode {
+  if (!colorFrame) return "gray";
+  return item?.measure ?? (item?.colorModel ? "color" : item?.corridor.length ? "gray" : "color");
+}
+
+/** 把一台相机在一段选的测量方式写进配方副本；改按灰度时去掉胶色模型，改回胶色要重新取色。 */
+export function withMeasure(doc: RecipeDoc, camera: string, segment: number, measure: MeasureMode): RecipeDoc {
+  return withSegmentCorridor(doc, camera, segment, { measure, ...(measure === "gray" ? { colorModel: undefined } : {}) });
 }
 
 /** 把一台相机在一段的搜索扇区方向（D-SB-47）写进配方副本；null 为恢复自动。 */

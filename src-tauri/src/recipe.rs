@@ -278,9 +278,40 @@ pub struct SegmentCorridor {
     /// 为空时取背离离出胶点最近的画面边
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sector_deg: Option<f64>,
-    /// 这台相机在这一段的颜色模型（`glue.ColorModel` 的 JSON 原文）：彩色图像示教时沿走廊取色得出；有它这一段按胶色测量
+    /// 这台相机在这一段的颜色模型（`glue.ColorModel` 的 JSON 原文）：彩色示教帧上沿走廊取色得出，按胶色测量时用
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_model: Option<String>,
+    /// 操作员选的测量方式；没选时有颜色模型按胶色、否则按灰度（[`SegmentCorridor::measure_mode`]）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measure: Option<MeasureMode>,
+}
+
+/// 一台相机在一段按什么测胶条（color CL-3）：灰度图找暗 / 亮段，或按示教取得的胶色。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MeasureMode {
+    Gray,
+    Color,
+}
+
+impl SegmentCorridor {
+    pub fn measure_mode(&self) -> MeasureMode {
+        self.measure.unwrap_or(if self.color_model.is_some() {
+            MeasureMode::Color
+        } else {
+            MeasureMode::Gray
+        })
+    }
+
+    /// 测量用的颜色模型：按灰度测为 None；选了按胶色测却还没取色时报错。
+    pub fn measuring_color_model(&self) -> Result<Option<&str>, String> {
+        match self.measure_mode() {
+            MeasureMode::Gray => Ok(None),
+            MeasureMode::Color => self.color_model.as_deref().map(Some).ok_or_else(|| {
+                "选了按胶色测量，还没取色：在走廊示教页取色，或改按灰度测量".to_string()
+            }),
+        }
+    }
 }
 
 impl CameraInspect {
@@ -370,6 +401,13 @@ pub fn untaught_corridors(segments: &[PathSegment], inspect: &[CameraInspect]) -
                     "第 {} 段的相机 {camera} 尚未示教走廊",
                     segment.index
                 ));
+            } else if let Some(Err(reason)) = inspect
+                .iter()
+                .find(|i| i.camera == camera)
+                .and_then(|i| i.segment_corridor(segment.index))
+                .map(|c| c.measuring_color_model())
+            {
+                reasons.push(format!("第 {} 段的相机 {camera}{reason}", segment.index));
             }
         }
     }
@@ -860,6 +898,7 @@ pub fn samples_burst() -> RecipeDoc {
             corridor: sample_path(0),
             sector_deg: None,
             color_model: None,
+            measure: None,
         }];
         inspect.mm_per_px = Some(f64::from(SIM_MM_PER_PX));
     }

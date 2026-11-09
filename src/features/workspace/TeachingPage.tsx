@@ -9,13 +9,13 @@ import type { CameraImaging } from "../camera/types";
 import { useCycle } from "../cycle/api";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
 import type { RecipeDoc } from "../cycle/types";
-import type { PathSegment, WorkspacePlanView } from "../plan/types";
+import type { MeasureMode, PathSegment, WorkspacePlanView } from "../plan/types";
 import { segmentKindLabel } from "../plan/vis";
 import { workspaceApi } from "./api";
 import { useWorkspace, type SnackMessage } from "./context";
 import { Badge, FrameViewer, KV, Notice, useFrameImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { CaptureRoundV2, FrozenImage, FrameImage, WorkspaceView } from "./types";
-import { cameraParamsError, confirmedSegmentRange, CORNER_CORRIDOR_MM, corridorError, spacingError, draftKey, headingWindow, parseDraftKey, sameCorridor, savedDraft, withCorridor, withSectorDeg } from "./teach";
+import { cameraParamsError, confirmedSegmentRange, CORNER_CORRIDOR_MM, corridorError, spacingError, draftKey, headingWindow, parseDraftKey, measureMode, sameCorridor, savedDraft, withCorridor, withMeasure, withSectorDeg } from "./teach";
 import { cameraParamsTasks, corridorTasks, type CameraParamsTask, type CorridorTask } from "./cameraTasks";
 import { frameArrived, readRoundFrame, roundView, type RoundView } from "./captureRound";
 import { SegmentTrial } from "./TeachTrial";
@@ -262,9 +262,11 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
     return [x, y, Math.min(frame.size[0], Math.ceil(selectionRegion[0] + selectionRegion[2])) - x, Math.min(frame.size[1], Math.ceil(selectionRegion[1] + selectionRegion[3])) - y];
   })() : null;
   const roiValid = (selectionTool === "box" || brushValid) && !!roi && roi[2] >= 5 && roi[3] >= 5 && roi[2] * roi[3] <= 4_000_000;
-  /** 彩色示教帧上的刷选按胶色吸附（与示教 MCP 同口径），走廊与胶色一并保存；灰度帧与框选按两侧胶边提取 */
+  /** 按胶色测量的段在彩色示教帧上的刷选按胶色吸附（与示教 MCP 同口径），走廊与胶色一并保存；按灰度测量的段与框选按两侧胶边提取 */
   const colorFrame = image?.channels === 3;
-  const snapByColor = selectionTool === "brush" && colorFrame;
+  const segmentCorridor = segment == null ? undefined : doc.inspect?.find(item => item.camera === camera)?.segments?.find(item => item.segment === segment);
+  const measure = measureMode(segmentCorridor, colorFrame);
+  const snapByColor = selectionTool === "brush" && colorFrame && measure === "color";
 
   /** 把这一段的走廊草稿并入候选配方并整份保存（段走廊没有单独的草稿命令）。 */
   const commit = (message: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => perform(() => workspaceApi.saveDoc(doc.id, data.workspace.revision, withCorridor(data.workspace.doc, key, t)), message);
@@ -360,7 +362,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const setParams = (next: CameraParams) => setDoc({ ...doc, inspect: (doc.inspect ?? []).map(item => item.camera === camera ? { ...item, ...next } : item) });
   // 搜索扇区方向按（相机, 段）存在这一段的走廊项上，拖动只改本段
   const sectorDeg = segment == null ? null : inspect?.segments?.find(item => item.segment === segment)?.sectorDeg ?? null;
-  const colorModel = segment == null ? undefined : inspect?.segments?.find(item => item.segment === segment)?.colorModel;
+  const colorModel = segmentCorridor?.colorModel;
+  const changeMeasure = (next: MeasureMode) => { if (segment != null && next !== measure) setDoc(withMeasure(doc, camera, segment, next)); };
   const colorBlocked = saved.corridor.length < 2 ? "这一段还没有保存的走廊：先画好走廊并保存，再取色"
     : editing ? "走廊有未保存的修改：保存后再取色"
       : !(saved.mmPerPx != null && saved.mmPerPx > 0) ? `${camera} 缺像素当量：先在相机参数里设置`
@@ -579,7 +582,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改出胶点与测量区间。" : ""} onFocus={setHeadingFocus}
         onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />}
       {segmentItem && frame && <ColorCard key={`color-${camera}-${segment}-${image?.channels ?? "-"}`} camera={camera} segment={segment} colorModel={colorModel} color={image ? image.channels === 3 : null}
-        blocked={colorBlocked} edited={editing} working={operation === "color"} onFit={() => deferAction("color")} />}
+        measure={measure} measureLocked={checksDisabled ? "当前不能修改" : editing ? "走廊有未保存的修改：保存后再改测量方式" : ""} blocked={colorBlocked} edited={editing} working={operation === "color"} onMeasure={changeMeasure} onFit={() => deferAction("color")} />}
       {segmentItem && <SegmentChecksCard key={`checks-${segment}`} segments={doc.segments ?? []} index={segment} cameras={plan.cameras} disabled={checksDisabled} onChange={changeSegments} />}
       <WithReason block reason={groupsLocked ? groupLockReason : ""}><Button variant="outlined" className="wp-rail-link" disabled={groupsLocked} onClick={() => setSelected(camera)}>
         <strong>测量</strong><span>{cameraScaleText} · {params.detect ? "本相机自定义" : "配方默认"}</span><span className="wp-rail-link-go">去 {camera} 改<ArrowRight size={13} aria-hidden="true" /></span>

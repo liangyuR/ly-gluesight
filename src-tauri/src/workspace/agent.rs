@@ -375,6 +375,7 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                         "saved": taught.is_some_and(|x| x.saved),
                         "corridorPoints": corridor.map_or(0, |c| c.corridor.len()),
                         "colorModel": corridor.is_some_and(|c| c.color_model.is_some()),
+                        "measure": corridor.map(|c| c.measure_mode()),
                         "modelPresent": model.model_present,
                         "modelUsable": model.model_usable,
                         "quality": model.quality,
@@ -711,10 +712,22 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
     .await?;
     let frame = prepared.frame.clone();
     let image = prepared.image.clone();
-    let color = image.is_color();
+    let gray_chosen = w
+        .doc
+        .inspect
+        .iter()
+        .find(|i| i.camera == args.camera)
+        .and_then(|i| i.segment_corridor(args.segment))
+        .is_some_and(|s| s.measure == Some(crate::recipe::MeasureMode::Gray));
+    let color = image.is_color() && !gray_chosen;
     let mode = match args.extract.unwrap_or(Extract::Auto) {
         Extract::Auto if color => Extract::Color,
         Extract::Auto => Extract::Edges,
+        Extract::Color if gray_chosen => {
+            return Err(
+                "这一段选了按灰度测量，不按胶色吸附：用 extract: \"edges\" 或 \"none\"".into(),
+            )
+        }
         Extract::Color if !color => {
             return Err("示教帧是灰度图，不能按胶色吸附：用 extract: \"edges\" 或 \"none\"".into())
         }

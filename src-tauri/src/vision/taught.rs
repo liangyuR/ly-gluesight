@@ -128,6 +128,17 @@ fn corridor_params(
     Ok((params, half))
 }
 
+/// 这台相机这一段测量用的颜色模型（按选的测量方式，见 `SegmentCorridor::measuring_color_model`）。
+pub(super) fn measuring_color_model<'a>(
+    inspect: &'a CameraInspect,
+    segment: u32,
+) -> Result<Option<&'a str>, String> {
+    match inspect.segment_corridor(segment) {
+        Some(s) => s.measuring_color_model(),
+        None => Ok(None),
+    }
+}
+
 /// 胶色得分图（`glue.color_map`）的业务参数：颜色模型原文，只算 roi 那一块。
 pub(super) fn color_params_into(params: &mut Value, model: &str, roi: [f64; 4]) {
     params["colorModel"] = json!(model);
@@ -500,9 +511,7 @@ pub fn plan_corridor(
         .map(|i| polyline_at(corridor, i as f64 * params.step))
         .collect();
     let edge = edge_graph(recipe, segment, &inspect.camera, scale)?;
-    let color_model = inspect
-        .segment_corridor(segment)
-        .and_then(|s| s.color_model.as_deref());
+    let color_model = measuring_color_model(inspect, segment).map_err(|e| fail(&e))?;
     let template = if color_model.is_some() {
         template::corridor_color()
     } else {
@@ -755,7 +764,7 @@ pub(super) fn check_color(
         || std::ptr::eq(template, template::heading_color());
     if color && !image.is_color() {
         return Err(format!(
-            "相机 {camera} 这一段按胶色测量（示教时取了色），当前帧却是灰度：请把相机图像模式改回彩色"
+            "相机 {camera} 这一段按胶色测量，当前帧却是灰度：请把相机图像模式改回彩色，或把这一段改按灰度测量"
         ));
     }
     Ok(())
