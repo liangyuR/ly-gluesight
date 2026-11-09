@@ -178,7 +178,7 @@ export default function SegmentWorkbench({ plan, locked, saveLocked = "", onDirt
       {/* 操作放在时间轴上方：下方原图预览加载时会改变高度，按钮放在下面会被挤动而点错 */}
       <div className="swb-toolbar">
         <div className="swb-summary" role="status" aria-label="分段草稿">
-          <span>{groupCount} 个帧组{passOf && ` · ${data?.workspace.teachingPiece?.passes?.length} 笔`} · {segmentSpans.length} 段 · 边界 {draft.cuts.length ? draft.cuts.join(" / ") : "无"}</span>
+          <span>{groupCount} 个帧组{passOf && ` · ${data?.workspace.teachingPiece?.passes?.length} 笔`} · {segmentSpans.length} 段</span>
           {saved && <Badge tone={saved.status === "confirmed" ? "ok" : "warn"}>{reviewLabel[saved.status]}</Badge>}
           {restructured && <Badge tone="warn">段结构有改动</Badge>}
           {!restructured && dirty && JSON.stringify([draft.cameras, draft.skips]) !== JSON.stringify([baseline?.cameras, baseline?.skips]) && <Badge tone="warn">检测相机有改动</Badge>}
