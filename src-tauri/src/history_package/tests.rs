@@ -125,7 +125,7 @@ fn export(m: &Machine, ids: &[i64], scratch: &Path, target: &Path) -> PackageMan
         &ExportSource {
             project: m.project,
             project_name: "A 线",
-            root: &m.root,
+            roots: std::slice::from_ref(&m.root),
         },
         scratch,
         target,

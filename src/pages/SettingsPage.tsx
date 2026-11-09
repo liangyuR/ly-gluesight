@@ -3,6 +3,7 @@ import { Alert, Button, Card, Checkbox, Grid, Heading, NumberField, Select, Stac
 import { getAgentMcpStatus, getAppInfo, getEngineStatus, type AgentMcpStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
+import RecordingDisksPanel from "./RecordingDisksPanel";
 import { errorText } from "../lib/errors";
 import { useSnackbar } from "qing-steel";
 import "./SettingsPage.css";
@@ -291,7 +292,7 @@ function StoragePanel() {
         <dt>资料目录</dt><dd className="mono"><Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("data")} aria-label={`打开资料目录：${displayPath(data.root)}`}>{displayPath(data.root)}</Button></dd>
         <dt>日志根目录</dt><dd className="mono">{data.logRoot ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("logs")} aria-label={`打开日志根目录：${displayPath(data.logRoot)}`}>{displayPath(data.logRoot)}</Button> : "—"}</dd>
         <dt>运行日志</dt><dd className="mono">{data.runtimeLogDir ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("runtime")} aria-label={`打开运行日志：${displayPath(data.runtimeLogDir)}`}>{displayPath(data.runtimeLogDir)}</Button> : "—"}</dd>
-        <dt>当前项目视觉原图</dt><dd className="mono">{data.visionLogDir ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("vision")} aria-label={`打开视觉原图：${displayPath(data.visionLogDir)}`}>{displayPath(data.visionLogDir)}</Button> : "—"}</dd>
+        <dt>当前项目原图（第一块录制盘）</dt><dd className="mono">{data.visionLogDir ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("vision")} aria-label={`打开视觉原图：${displayPath(data.visionLogDir)}`}>{displayPath(data.visionLogDir)}</Button> : "—"}</dd>
       </dl>
     </>}
     {openError && <Alert tone="ng">打开目录失败：{openError}</Alert>}
@@ -314,6 +315,7 @@ export default function SettingsPage() {
   return (
     <Stack direction="column" align="stretch" gap={16} wrap={false}>
       <StoragePanel />
+      <RecordingDisksPanel />
       <CycleSettingsPanel savePart={savePart} />
       <MeasurePanel savePart={savePart} />
       <Card role="region" aria-label="关于" title={<Heading level={3}>关于</Heading>}>

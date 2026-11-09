@@ -334,11 +334,19 @@ fn part_images<W: std::io::Write>(app: &AppHandle, package: &mut Package<W>, det
         package.notes.push(format!("记录 #{id} 没有 cycleId，无法确定原图"));
         return Ok(0);
     };
-    let root = crate::project::records::record_root(
+    let root = match crate::project::records::record_root_of(
         &crate::storage::root(app),
         &detail.summary.project_id,
-        detail.summary.source,
-    )?;
+        detail.recording.directory.as_deref(),
+    ) {
+        Ok(root) => root,
+        Err(error) => {
+            package
+                .notes
+                .push(format!("记录 #{id} 的原图未打包：{error}"));
+            return Ok(0);
+        }
+    };
     let folder = format!("records/{id}_{cycle_id}");
     let mut count = 0;
     let mut directory = None;

@@ -274,10 +274,11 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
         );
         let recording_dir = crate::offline::test_dir::TestDir::new("cycle-post", case);
         if keep_images {
-            let recorder = crate::recorder::Recorder::new(recording_dir.to_path_buf(), None);
+            let recorder = crate::recorder::Recorder::new(vec![recording_dir.to_path_buf()], None);
             let mut recording = recorder
                 .begin(
                     crate::settings::RecordMode::All,
+                    Some(&recording_dir.to_path_buf()),
                     &p.sn,
                     p.recipe.clone(),
                     &p.cycle_id,

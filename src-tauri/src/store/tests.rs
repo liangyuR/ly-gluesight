@@ -247,8 +247,9 @@ fn manual_history_deletion_only_removes_exclusive_cycle_directories_inside_the_p
         let recipe = burst_fixture::recipe();
         let (judgement, burst) =
             burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
-        let root =
-            crate::project::records::record_root(&db.0, "default", RecordSource::Real).unwrap();
+        let root = crate::project::records::record_roots(&db.0, "default")
+            .unwrap()
+            .swap_remove(0);
         let day = root.join("20261108");
         let leaf = "20261108_120000_OK_cycle_delete-images";
         let target = match case {

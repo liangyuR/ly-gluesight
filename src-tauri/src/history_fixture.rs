@@ -121,7 +121,7 @@ impl FixtureSite {
             release: Arc::new(|_| Err("手动配置数据不清理录制".into())),
         };
         let recorder = Recorder::guarded(
-            records.to_path_buf(),
+            Arc::new(std::sync::RwLock::new(vec![records.to_path_buf()])),
             Some(Arc::new(move |outcome| {
                 let _ = tx.send(outcome);
             })),
@@ -292,10 +292,14 @@ impl FixtureSite {
                 .recv_timeout(RECORDING_TIMEOUT)
                 .map_err(|_| "等待录制收尾超时".to_string())
         };
-        let Some(mut rec) =
-            self.recorder
-                .begin(RecordMode::All, sn, self.recipe.clone(), cycle_id, None)
-        else {
+        let Some(mut rec) = self.recorder.begin(
+            RecordMode::All,
+            Some(&self.recorder.roots()[0]),
+            sn,
+            self.recipe.clone(),
+            cycle_id,
+            None,
+        ) else {
             let outcome = receive()?;
             return Err(outcome.errors.join("；"));
         };

@@ -21,7 +21,7 @@ pub struct RecordingAlarm {
 
 impl RecordingAlarm {
     pub fn message(&self) -> String {
-        format!("原图录制失败：连续 {} 件原图未完整保存（最近 {}：{}）；检测与判定照常，请检查资料盘空间与录制目录写权限",
+        format!("原图录制失败：连续 {} 件原图未完整保存（最近 {}：{}）；检测与判定照常，请检查录制盘空间与录制目录写权限",
             self.consecutive, self.cycle_id, self.reason)
     }
 }

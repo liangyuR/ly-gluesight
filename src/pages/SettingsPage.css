@@ -2,3 +2,9 @@
 .settings-storage-list dt { white-space: nowrap; }
 .settings-storage-list dd { min-width: 0; }
 .settings-path-link.qs-btn.sm { height: auto; min-height: var(--ctl-h-sm); max-width: 100%; justify-content: flex-start; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.settings-disk-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.settings-disk-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; }
+.settings-disk-path { overflow-wrap: anywhere; }
+.settings-disk-state { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.settings-disk-actions { display: flex; gap: 4px; }
+.settings-disk-input { min-width: 280px; }

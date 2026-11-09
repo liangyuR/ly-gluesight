@@ -275,11 +275,107 @@ pub fn storage_status(app: AppHandle) -> Result<StorageStatus, String> {
         status.log_root = Some(layout.config.root.display().to_string());
         status.runtime_log_dir = Some(layout.runtime().display().to_string());
         if let Some(project) = app.try_state::<crate::project::ActiveProject>() {
-            status.vision_log_dir = Some(layout.vision(&project.id).display().to_string());
+            let config =
+                crate::log_storage::read(&root(&app))?.unwrap_or_else(|| layout.config.clone());
+            status.vision_log_dir = Some(config.vision(&project.id).display().to_string());
         }
     }
     Ok(status)
 }
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingDisk {
+    path: String,
+    /// 所在盘剩余空间；盘离线或查询失败为 None
+    free_bytes: Option<u64>,
+    writable: bool,
+    error: Option<String>,
+    /// 新件现在写到这块盘
+    current: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingDisks {
+    /// 每块录制盘固定保留的剩余空间
+    reserve_bytes: u64,
+    disks: Vec<RecordingDisk>,
+}
+
+fn recording_disks(app: &AppHandle) -> Result<RecordingDisks, String> {
+    let config = crate::log_storage::read(&root(app))?.ok_or("日志根尚未初始化")?;
+    let target = app
+        .try_state::<crate::cycle::CycleHost>()
+        .and_then(|host| host.disk.status().target);
+    let disks = config
+        .recording_disks()
+        .into_iter()
+        .map(|disk| {
+            let probe = crate::log_storage::probe_write(&disk);
+            RecordingDisk {
+                path: disk.display().to_string(),
+                free_bytes: crate::disk_guard::free_space(&disk),
+                writable: probe.is_ok(),
+                error: probe.err(),
+                current: target
+                    .as_deref()
+                    .is_some_and(|target| crate::log_storage::within(&disk, target)),
+            }
+        })
+        .collect();
+    Ok(RecordingDisks {
+        reserve_bytes: crate::disk_guard::RECORDING_RESERVE_BYTES,
+        disks,
+    })
+}
+
+/// 录制盘列表，按写入优先顺序，带每块盘的剩余空间与是否可写。
+#[tauri::command]
+pub async fn storage_recording_disks(app: AppHandle) -> Result<RecordingDisks, String> {
+    tauri::async_runtime::spawn_blocking(move || recording_disks(&app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 保存录制盘列表（有序）：路径须可写、不重复、不互相包含；保存后新件按新列表选盘，已录的件照旧按记录的目录读。
+#[tauri::command]
+pub async fn storage_recording_disks_save(
+    app: AppHandle,
+    paths: Vec<String>,
+) -> Result<RecordingDisks, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths: Vec<PathBuf> = paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .collect();
+        let config = crate::log_storage::save_recording_disks(&root(&app), &paths)?;
+        if let Some(host) = app.try_state::<crate::cycle::CycleHost>() {
+            let id = crate::project::current_id(&app);
+            host.set_record_roots(crate::project::records::prepared_roots(
+                &config.visions(&id),
+            ));
+        }
+        crate::applog::write(
+            "info",
+            "录制盘",
+            &format!(
+                "录制盘改为：{}",
+                config
+                    .recording_disks()
+                    .iter()
+                    .map(|disk| disk.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("；")
+            ),
+        );
+        recording_disks(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub fn storage_open_directory(app: AppHandle, target: Option<String>) -> Result<(), String> {
     let directory = match target.as_deref().unwrap_or("data") {
@@ -291,7 +387,7 @@ pub fn storage_open_directory(app: AppHandle, target: Option<String>) -> Result<
             .root
             .clone(),
         "runtime" => crate::log_storage::runtime_dir(&app)?,
-        "vision" => crate::log_storage::recording_project(&project(&app))?,
+        "vision" => crate::log_storage::recording_projects(&project(&app))?.swap_remove(0),
         "lyflow" => {
             let directory = crate::vision::runtime_directory()?;
             if !directory.is_dir() {

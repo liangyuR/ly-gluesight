@@ -62,14 +62,12 @@ impl Store {
                     return Ok(());
                 }
                 crate::image_file::checked_source_path(path)?;
-                let base =
-                    crate::log_storage::recording_project(&crate::project::dir(data, &project))?;
-                let root = base
-                    .join("records-offline")
-                    .canonicalize()
-                    .map_err(|e| e.to_string())?;
                 let path = path.canonicalize().map_err(|e| e.to_string())?;
-                if path == root || !path.starts_with(&root) {
+                if !crate::log_storage::recording_projects(&crate::project::dir(data, &project))?
+                    .iter()
+                    .filter_map(|base| base.join("records-offline").canonicalize().ok())
+                    .any(|root| path != root && path.starts_with(&root))
+                {
                     return Err("原图目录不在该项目已停用的离线录制根下".into());
                 }
                 let cycle = cycle.as_deref().ok_or("原图记录没有 cycleId")?;

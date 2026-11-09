@@ -62,7 +62,7 @@ fn imported_round_references_recording_images_without_copying_them() {
     let records = root.0.join("records");
     let (tx, rx) = channel();
     let recorder = Recorder::new(
-        records.clone(),
+        vec![records.clone()],
         Some(Arc::new(move |outcome| tx.send(outcome).unwrap())),
     );
     let doc = crate::recipe::samples_burst();
@@ -70,7 +70,7 @@ fn imported_round_references_recording_images_without_copying_them() {
     let cameras = doc.plan_cameras();
     let pixel = |camera: usize, seq: u64| 10 * seq as u8 + camera as u8;
     let mut rec = recorder
-        .begin(RecordMode::All, "SN-7", recipe, CYCLE, None)
+        .begin(RecordMode::All, Some(&records), "SN-7", recipe, CYCLE, None)
         .unwrap();
     for seq in 1..=GROUPS {
         for camera in 0..cameras.len() {
