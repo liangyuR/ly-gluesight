@@ -1138,12 +1138,7 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
         .as_ref()
         .is_some_and(|saved| saved.revision_id == recipe.revision_id)
     {
-        return cycle
-            .recipes
-            .save_published(release.doc.clone(), release.base_revision.as_deref());
-    }
-    if current.as_ref().map(|r| r.revision_id.clone()) != release.base_revision {
-        return Err("待生效版本与当前生产配方冲突".into());
+        return cycle.recipes.save_published(release.doc.clone());
     }
     let archive = host.dir(&recipe.id).join("published");
     std::fs::create_dir_all(&archive).map_err(|e| e.to_string())?;
@@ -1151,9 +1146,7 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
         &archive.join(format!("{}.json", recipe.revision_id)),
         &serde_json::to_string(release).map_err(|e| e.to_string())?,
     )?;
-    cycle
-        .recipes
-        .save_published(release.doc.clone(), release.base_revision.as_deref())
+    cycle.recipes.save_published(release.doc.clone())
 }
 
 pub fn releases_root(app: &AppHandle) -> Result<PathBuf, String> {

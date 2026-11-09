@@ -11,8 +11,7 @@
 //! - 胶偏参考 x_ref：只在有启用胶偏检查的直线段时列出参考值或不判的原因，不阻断（运行时只有按比例分段可信的多段配方
 //!   判胶偏，单段配方整条胶路按未分段处理）；
 //! - 独立正常样本：样本轮次与示教件不同，相机配置与段结构一致；用当前候选的走廊逐帧重测、
-//!   burst_judge 得出结论，帧组数超出 ΣN_exp ± Σtol 只告警；
-//! - 生产版本：候选基于当前生产版本。
+//!   burst_judge 得出结论，帧组数超出 ΣN_exp ± Σtol 只告警。
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
@@ -60,8 +59,6 @@ pub(super) struct BurstInputs<'a> {
     pub device: Result<(), String>,
     /// 当前设备的相机标签（`camera_state`，与示教帧冻结时同一口径），按相机编号
     pub cameras: &'a BTreeMap<String, Value>,
-    /// 候选基于当前生产版本
-    pub base_matches: bool,
 }
 
 /// 段配方的全部验证项，按页面展示顺序。
@@ -99,16 +96,6 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
             .unwrap_or_else(|| "示教件测量时的相机采集参数与当前一致".into()),
     });
     checks.extend(x_ref_check(&w.doc));
-    checks.push(Check {
-        advisory: false,
-        name: "生产版本".into(),
-        passed: inputs.base_matches,
-        detail: if inputs.base_matches {
-            "候选基于当前生产版本".into()
-        } else {
-            "生产配方已被其他操作更新，请重新建立候选".into()
-        },
-    });
     checks
 }
 
@@ -700,21 +687,18 @@ pub(super) fn publish_blocker(checks: &[Check]) -> Option<&Check> {
     checks.iter().find(|c| !c.passed && !c.advisory)
 }
 
-/// 发布前检查（D-SB-46，发布时当场核对，不跑样本，不要求相机在线）：相机配置、走廊示教、段标定、标定采集参数、x_ref、生产版本，
+/// 发布前检查（D-SB-46，发布时当场核对，不跑样本，不要求相机在线）：相机配置、走廊示教、段标定、标定采集参数、x_ref，
 /// 以及示教帧试测（D-SB-59，部分没测成只提醒）。结果随待生效版本存档（`Release.validation`，样本为空）。
 pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let recipe = w.doc.build()?;
     let environment_tag = environment(app, &recipe)?;
-    let cycle = app.state::<CycleHost>();
     let device = cycle::usable_cams(app, &recipe).map(|_| ());
     let tags = current_camera_tags(app);
-    let base = cycle.recipe(&recipe.id).map(|r| r.revision_id.clone());
     let mut checks = burst_checks(
         w,
         BurstInputs {
             device,
             cameras: &tags,
-            base_matches: base == w.base_revision,
         },
     );
     checks.extend(teach_trial_check(&teach_trials(app, w)));
@@ -769,13 +753,11 @@ pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, S
                 .unwrap_or_else(|reason| failed_sample(sample, reason))
         })
         .collect();
-    let base = cycle.recipe(&recipe.id).map(|r| r.revision_id.clone());
     let mut checks = burst_checks(
         w,
         BurstInputs {
             device,
             cameras: &tags,
-            base_matches: base == w.base_revision,
         },
     );
     checks.push(sample_check(&samples));

@@ -1583,11 +1583,7 @@ impl RecipeStore {
         })
     }
 
-    pub fn save_published(
-        &self,
-        mut doc: RecipeDoc,
-        expected_base: Option<&str>,
-    ) -> Result<Arc<Recipe>, String> {
+    pub fn save_published(&self, mut doc: RecipeDoc) -> Result<Arc<Recipe>, String> {
         doc.name = doc.name.trim().to_string();
         let built = doc.build()?;
         let mut inner = self.inner.write().unwrap();
@@ -1599,9 +1595,6 @@ impl RecipeStore {
                 return Ok(recipe.clone());
             }
             return Err("同一发布修订的实际配方不同，不能覆盖".into());
-        }
-        if current.map(|(_, recipe)| recipe.revision_id.as_str()) != expected_base {
-            return Err("待发布版本与当前生产配方冲突".into());
         }
         if doc.stage == RecipeStage::Collect
             && current.is_some_and(|(previous, _)| previous.stage.is_formal())
@@ -1679,26 +1672,21 @@ mod tests {
         doc.product_code = 60000;
         doc.version = 7;
         assert!(store
-            .save_published(doc.clone(), None)
+            .save_published(doc.clone())
             .unwrap_err()
             .contains("计划版本"));
         doc.plan_version = store.plan_version_for(&doc).unwrap();
-        let first = store.save_published(doc.clone(), None).unwrap();
+        let first = store.save_published(doc.clone()).unwrap();
         assert_eq!(first.revision_id, "EXPLICIT-PUBLISHED-v7");
-        assert_eq!(store.save_published(doc.clone(), None).unwrap().version, 7);
+        assert_eq!(store.save_published(doc.clone()).unwrap().version, 7);
         let mut different = doc.clone();
         different.inspect[0].segments[0].corridor[0][0] -= 1.0;
-        assert!(store.save_published(different, None).is_err());
-        doc.version = 8;
-        let second = store
-            .save_published(doc.clone(), Some(&first.revision_id))
-            .unwrap();
-        assert_eq!(second.revision_id, "EXPLICIT-PUBLISHED-v8");
+        assert!(store.save_published(different).is_err());
         doc.version = 9;
-        assert!(store
-            .save_published(doc.clone(), Some(&first.revision_id))
-            .is_err());
-        assert_eq!(store.get(&doc.id).unwrap().version, 8);
+        assert!(store.save_published(doc.clone()).is_err());
+        doc.version = 8;
+        let second = store.save_published(doc.clone()).unwrap();
+        assert_eq!(second.revision_id, "EXPLICIT-PUBLISHED-v8");
         assert_eq!(store.save(doc, None).unwrap().version, 9);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1712,19 +1700,19 @@ mod tests {
             ly_plc::now_ms()
         ));
         let store = RecipeStore::open(dir.clone()).unwrap();
-        let publish = |stage: RecipeStage, base: Option<&str>| {
+        let publish = |stage: RecipeStage| {
             let mut doc = samples_burst();
             doc.stage = stage;
             doc.version = store.next_version(&doc.id).unwrap();
             doc.plan_version = store.plan_version_for(&doc).unwrap();
-            store.save_published(doc, base)
+            store.save_published(doc)
         };
-        let collect = publish(RecipeStage::Collect, None).unwrap();
+        let collect = publish(RecipeStage::Collect).unwrap();
         assert!(collect.is_collect());
-        let formal = publish(RecipeStage::Formal, Some(&collect.revision_id)).unwrap();
+        let formal = publish(RecipeStage::Formal).unwrap();
         assert!(!formal.is_collect());
         assert_eq!(
-            publish(RecipeStage::Collect, Some(&formal.revision_id)).unwrap_err(),
+            publish(RecipeStage::Collect).unwrap_err(),
             COLLECT_AFTER_FORMAL
         );
         assert!(!store.get(&formal.id).unwrap().is_collect());
