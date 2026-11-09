@@ -336,8 +336,9 @@ fn merge_attached(
 }
 
 /// 本机已有同一工件（按 cycleId 去重、不再存一份）但它的录制目录已不在（如被滚动清理）时，改用附加库这件已装好的录制：
-/// 示教件按 cycleId 读录制原图，否则导入包里带的原图用不上。
-fn adopt_recordings(conn: &Connection) -> Result<(), String> {
+/// 示教件按 cycleId 读录制原图，否则导入包里带的原图用不上。录制在导入的项目 `project` 的录制根下，记录随之改归该项目，
+/// 帧原图引用取附加库的（相对该项目录制根），配方快照已在上面并入该项目。
+fn adopt_recordings(conn: &Connection, project: &str) -> Result<(), String> {
     let pairs: Vec<(i64, Option<String>, i64)> = conn
         .prepare(
             "SELECT p.id, p.recording_directory, s.id FROM temp.merge_ids m JOIN main.parts p ON p.id = m.new JOIN src.parts s ON s.id = m.old WHERE m.fresh = 0 AND s.recording_directory IS NOT NULL",
@@ -353,7 +354,12 @@ fn adopt_recordings(conn: &Connection) -> Result<(), String> {
             continue;
         }
         conn.execute(
-            "UPDATE main.parts SET (recording_directory, recording_state, recording_available, recording_errors) =              (SELECT recording_directory, recording_state, recording_available, recording_errors FROM src.parts WHERE id = ?2) WHERE id = ?1",
+            "UPDATE main.parts SET (project_id, recording_directory, recording_state, recording_available, recording_errors) = \n             (SELECT ?3, recording_directory, recording_state, recording_available, recording_errors FROM src.parts WHERE id = ?2) WHERE id = ?1",
+            params![local, source, project],
+        )
+        .map_err(db_err)?;
+        conn.execute(
+            "UPDATE main.part_frames SET raw_file = (SELECT f.raw_file FROM src.part_frames f WHERE f.part_id = ?2 AND f.camera = main.part_frames.camera AND f.seq = main.part_frames.seq) WHERE part_id = ?1",
             params![local, source],
         )
         .map_err(db_err)?;
@@ -478,7 +484,7 @@ pub(super) fn merge_rows(
     if has_table(conn, "cycle_ids")? {
         conn.execute_batch("INSERT OR IGNORE INTO cycle_ids (id, created_at) SELECT id, created_at FROM src.cycle_ids;").map_err(db_err)?;
     }
-    adopt_recordings(conn)?;
+    adopt_recordings(conn, project)?;
     let source_columns = PART_COLUMNS
         .split(", ")
         .map(|c| format!("s.{}", c.trim()))

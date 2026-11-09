@@ -428,6 +428,9 @@ fn reimported_duplicate_adopts_packaged_recording_when_local_one_is_gone() {
         directory.display()
     );
     assert!(directory.join("part.json").is_file());
+    let detail = store.detail_by_cycle("c1").unwrap().unwrap();
+    assert_eq!(detail.summary.project_id, "line-b", "录制在哪个项目的录制根下，记录就归哪个项目");
+    assert!(store.record_recipe(&detail.summary).unwrap().is_some());
 }
 
 /// 防的回归：导出“含检测记录”把本机别的项目的记录也带走；导入时记录编号与本机已有的冲突却不重新编号、采集轮次里的来源
