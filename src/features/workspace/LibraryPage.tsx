@@ -1,32 +1,17 @@
 import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Copy, Package, PackageOpen, Plus, Search, Trash2 } from "lucide-react";
-import { Button, Dialog, EmptyState, IconButton, NumberField, TextField } from "qing-steel";
+import { Copy, Ellipsis, Package, PackageOpen, Plus, Search, Trash2 } from "lucide-react";
+import { Button, Dialog, EmptyState, IconButton, Menu, NumberField, TextField } from "qing-steel";
 import { desktopAvailable } from "../../lib/desktop";
 import { recipeApi, type UnavailableRecipe } from "../cycle/api";
-import type { RecipeDoc, RecipeSummary } from "../cycle/types";
-import { planTotals } from "../plan/scale";
-import { expectedText } from "../plan/vis";
+import type { RecipeDoc } from "../cycle/types";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar } from "./components";
-import { pieceLabel } from "./pieces";
 import { PackageExportDialog, PackageImportDialog } from "./PackageDialogs";
 import { isCurrentFlow, type PackagePreview } from "./types";
 import { recipeHref } from "./recipeRoutes";
-
-/** 阶段标记：只有候选、没发布过是草稿；已发布的按生产配方的阶段。 */
-function stageBadge(production: RecipeSummary | undefined) {
-  if (!production) return <Badge tone="warn">草稿</Badge>;
-  return production.stage === "collect" ? <Badge tone="info">采集版 v{production.version}</Badge> : <Badge tone="ok">正式版 v{production.version}</Badge>;
-}
-
-/** 段配方的规模（段数、ΣN_exp）：有候选时取候选，否则取已发布配方的摘要；没有段时返回 null。 */
-function burstScale(draft: RecipeDoc | undefined, production: RecipeSummary | undefined) {
-  if (draft) return draft.segments?.length ? { segmentCount: draft.segments.length, ...planTotals(draft) } : null;
-  return production?.segmentCount ? { segmentCount: production.segmentCount, expectedTotal: production.expectedTotal ?? null } : null;
-}
 
 export default function LibraryPage() {
   const {list,drafts,unavailable,selectedId,data,dirty,frameDirty,navigationDirty,segmentDirty,select,clearSelection,discardDrafts,reloadList,busy,setError} = useWorkspace();
@@ -142,14 +127,22 @@ export default function LibraryPage() {
   const visible = ids.map(id => {
     const production = list.find(r => r.id === id);
     const draft = drafts.find(w => w.doc.id === id);
-    return {id,production,draft,stale:!!draft&&!isCurrentFlow(draft),name:draft?.doc.name ?? production?.name ?? id,scale:burstScale(draft?.doc,production)};
+    return {id,production,draft,stale:!!draft&&!isCurrentFlow(draft),name:draft?.doc.name ?? production?.name ?? id};
   }).filter(r => (r.id + r.name + (r.draft?.doc.productCode ?? r.production?.productCode)).toLowerCase().includes(search.trim().toLowerCase()));
-  return <div className="wp-page"><WorkspaceBar showNavigation={false} /><div className="wp-actions"><TextField className="wp-library-search" aria-label="搜索配方" placeholder="编号、名称或型号" leading={<Search size={16} aria-hidden="true" />} value={search} onChange={e => setSearch(e.target.value)} /><span className="spacer" /><Button leadingIcon={<PackageOpen size={16} />} disabled={blocked} title="导入工件配方包，替换本机同编号的候选" onClick={() => guard("导入工件配方",()=>void pickPackage())}>导入工件配方</Button><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!desktopAvailable() || busy || working} onClick={() => guard("新建配方",()=>void prepare())}>新建配方</Button></div>
+  return <div className="wp-page"><WorkspaceBar showNavigation={false} /><div className="wp-library-toolbar"><div className="wp-library-search"><TextField aria-label="搜索配方" placeholder="编号、名称或型号" leading={<Search size={16} aria-hidden="true" />} value={search} onChange={e => setSearch(e.target.value)} /></div><Button leadingIcon={<PackageOpen size={16} />} disabled={blocked} title="导入工件配方包，替换本机同编号的候选" onClick={() => guard("导入工件配方",()=>void pickPackage())}>导入工件配方</Button><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!desktopAvailable() || busy || working} onClick={() => guard("新建配方",()=>void prepare())}>新建配方</Button></div>
     {!desktopAvailable() && <Notice title="配方操作需要桌面后端" tone="warn">本页不会在浏览器中创建、保存或发布生产配置。</Notice>}
-    <div className="wp-library-grid">{visible.map(r => <Panel key={r.id} title={r.name} detail={r.id} className="wp-recipe-card" actions={<Badge tone="neutral">飞拍</Badge>}>
-      <div className="wp-actions">{stageBadge(r.production)}{r.draft && <Badge>候选 v{r.draft.doc.version}</Badge>}{r.draft?.pending && <Badge tone="warn">待生效</Badge>}{r.stale && <Badge tone="warn">旧流程候选，已停用</Badge>}</div><p className="muted mono">{r.production && r.draft && r.production.productCode !== r.draft.doc.productCode ? `已发布型号 ${r.production.productCode} · 候选型号 ${r.draft.doc.productCode}` : `PLC 型号 ${r.production?.productCode ?? r.draft?.doc.productCode}`}{r.scale && ` · ${r.scale.segmentCount} 段 · ${r.draft && r.production ? "候选" : ""}预期帧组数 ${expectedText(r.scale.expectedTotal)}`}</p>{r.production?.teachingPiece && <p className="muted">示教件：{pieceLabel(r.production.teachingPiece)}</p>}
-      {r.stale && <p className="muted">按旧流程建的候选不能打开或编辑，请删除后从配方库重建。</p>}
-      <div className="wp-actions">{!r.stale && <><Button variant="filled" disabled={blocked} onClick={()=>r.id===selectedId?open(r.id):guard("打开 "+r.id,()=>open(r.id))}>继续配置</Button><IconButton title="复制配方" aria-label={"复制配方 " + r.id} disabled={blocked} onClick={() => guard("复制 "+r.id,()=>void prepare(r.id))}><Copy size={16} /></IconButton>{r.draft && <IconButton title="导出工件配方（候选与示教件帧记录，可选带示教件原图）" aria-label={"导出工件配方 " + r.id} disabled={blocked || !!r.draft.pending} onClick={() => guard("导出工件配方 "+r.id,()=>setExporting(r.id))}><Package size={16} /></IconButton>}</>}<IconButton title="删除配方" aria-label={"删除配方 " + r.id} disabled={blocked || !!r.draft?.pending} onClick={() => {setDeleting(r.id);setRemovedId(null);setDialogError("");}}><Trash2 size={16} /></IconButton></div>
+    <div className="wp-library-grid">{visible.map(r => <Panel key={r.id} title={r.name} hoverEffect={!r.stale && !blocked} className="wp-recipe-card" actions={<Menu label={`${r.id} 配方操作`} align="end"
+      trigger={<IconButton aria-label={`更多操作 ${r.id}`} title="更多操作" disabled={blocked}><Ellipsis size={18} /></IconButton>}
+      items={[
+        ...(!r.stale ? [{ id: "copy", label: "复制配方", icon: <Copy size={16} />, onSelect: () => guard("复制 "+r.id,()=>void prepare(r.id)) },
+          ...(r.draft ? [{ id: "export", label: "导出工件配方", icon: <Package size={16} />, disabled: !!r.draft.pending, onSelect: () => guard("导出工件配方 "+r.id,()=>setExporting(r.id)) }] : [])] : []),
+        { id: "delete", label: "删除配方", icon: <Trash2 size={16} />, danger: true, disabled: !!r.draft?.pending, onSelect: () => {setDeleting(r.id);setRemovedId(null);setDialogError("");} },
+      ]} />}>
+      <p className="wp-recipe-identity muted"><span>{r.id}</span><span aria-hidden="true"> · </span>{`PLC 型号 ${r.production?.productCode ?? r.draft?.doc.productCode}`}</p>
+      <p className="wp-recipe-versions"><span className={r.production ? "" : "c-warn"}>{r.production ? `${r.production.stage === "collect" ? "采集版" : "已发布"} v${r.production.version}` : "未发布"}</span></p>
+      {r.draft?.pending && <Badge tone="warn">等待生效</Badge>}
+      {r.stale ? <p className="c-warn">旧流程候选已停用，请删除后重建。</p> : !(r.draft ? r.draft.teachingPiece : r.production?.teachingPiece) && <p className="wp-recipe-notice muted">尚未选择示教件</p>}
+      {!r.stale && <div className="wp-actions wp-recipe-open"><Button variant="filled" size="sm" disabled={blocked} onClick={()=>r.id===selectedId?open(r.id):guard("打开 "+r.id,()=>open(r.id))}>打开配方</Button></div>}
     </Panel>)}{visibleUnavailable.map(r => <Panel key={"unavailable:"+r.fileName} title={r.name || r.id || r.fileName} detail={r.fileName} className="wp-recipe-card" actions={<Badge tone="warn">不可用</Badge>}>
       <p className="muted">文件格式 {r.schemaVersion ?? "未知"} · 当前格式 {r.currentSchemaVersion}</p>
       <p>{r.reason}</p><p className="muted">此文件无法用于配置或生产。</p>

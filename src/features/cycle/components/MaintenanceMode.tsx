@@ -1,38 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { Wrench } from "lucide-react";
-import { Alert, Button, Card, Dialog, TextField } from "qing-steel";
+import { Alert, Button, Dialog, Popover, TextField } from "qing-steel";
+import { formatTime } from "../../history/meta";
 import { errorText } from "../../../lib/errors";
-import { verdictLabel } from "../../history/meta";
-import type { HistoryFilter } from "../../history/types";
 import { cycleApi, recipeApi } from "../api";
-import type { Maintenance, RecipeSummary, TrialProgress } from "../types";
-
-export function TrialProgressPanel({ trial, recipes }: { trial: TrialProgress[] | undefined; recipes: RecipeSummary[] }) {
-  const go = useNavigate();
-  if (!trial?.length) return null;
-  return <Card className="maintenance-collection" role="region" aria-label="维护试判统计">
-    <div className="panel-head">
-      <h3 className="panel-title">维护试判</h3>
-      <span className="spacer" />
-      <span className="muted">结论不输出给 PLC；逐件复核 NG 与 ERR 后再退出维护模式</span>
-    </div>
-    <ul>{trial.map(item => {
-      const name = recipes.find(recipe => recipe.id === item.recipeId)?.name;
-      const { ok, excursion, ng, err } = item.counts;
-      const split = item.ng.map(n => `${verdictLabel[n.verdict].replace("NG · ", "")} ${n.count}`).join("、");
-      const filter: HistoryFilter = { currentProject: true, recipeId: item.recipeId, modes: ["maintenanceShadow"], groups: ["ng", "err"] };
-      return <li key={item.recipeId}>
-        <b>{item.recipeId}</b> v{item.recipeVersion}{name && <span className="muted"> · {name}</span>}：试判 {ok + excursion + ng + err} 件 · OK {ok} · 局部超差 {excursion} · NG {ng}{split && `（${split}）`} · ERR {err}
-        {ng + err > 0 && <Button size="sm" variant="text" onClick={() => go("/history", { state: { filter } })}>复核</Button>}
-      </li>;
-    })}</ul>
-  </Card>;
-}
+import type { Maintenance, RecipeSummary } from "../types";
 
 type Pending = { enabled: boolean; collectOnly: RecipeSummary[] | null; listError: string };
 
-export function MaintenanceToggle({ maintenance }: { maintenance: Maintenance | null | undefined }) {
+export function MaintenanceToggle({ maintenance, compact = false }: { maintenance: Maintenance | null | undefined; compact?: boolean }) {
   const [pending, setPending] = useState<Pending | null>(null);
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
@@ -67,7 +43,12 @@ export function MaintenanceToggle({ maintenance }: { maintenance: Maintenance | 
   };
 
   return <>
-    <Button variant={enabled ? "filled" : undefined} leadingIcon={<Wrench size={15} />} onClick={open}>{enabled ? "退出维护模式" : "维护模式"}</Button>
+    {compact && maintenance ? <Popover side="bottom" align="start" label="维护模式详情" title="维护模式" trigger={<button type="button" className="window-badge maintenance"><Wrench size={12} aria-hidden="true" />维护模式</button>}>
+      <Alert tone="warn" title="不向 PLC 输出 NG">每件向 PLC 回结果码 0，按未检放行。</Alert>
+      <p>开启于 {formatTime(maintenance.since)}</p>
+      <p>原因：{maintenance.reason}</p>
+      <Button onClick={open}>退出维护模式</Button>
+    </Popover> : <Button size={compact ? "sm" : undefined} variant={enabled ? "filled" : "text"} leadingIcon={<Wrench size={compact ? 12 : 15} />} onClick={open}>{enabled ? "退出维护模式" : "维护模式"}</Button>}
     {pending && <Dialog
       open
       title={pending.enabled ? "开启维护模式" : "退出维护模式"}

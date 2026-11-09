@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { TitlebarSlotsContext } from "../src/layout/TitlebarContent";
 import InspectPage from "../src/pages/InspectPage";
 import { cycleApi, recipeApi, useCycle, useLayout } from "../src/features/cycle/api";
 import { burstImageApi } from "../src/features/workspace/burstImages";
@@ -47,6 +49,57 @@ beforeEach(() => {
 });
 const nativeSelect = (name: string, root: Pick<typeof screen, "getByLabelText"> = screen) => root.getByLabelText(name, { selector: "select" });
 const manual = () => nativeSelect("当前检测配方");
+
+function TitlebarHarness({ showPage = true }: { showPage?: boolean }) {
+  const [details, setDetails] = useState<HTMLDivElement | null>(null);
+  const [actions, setActions] = useState<HTMLDivElement | null>(null);
+  return <MemoryRouter>
+    <header aria-label="窗口标题栏"><div ref={setDetails} aria-label="标题栏状态" /><div ref={setActions} aria-label="标题栏操作" /></header>
+    <TitlebarSlotsContext.Provider value={{ details, actions }}>
+      <main aria-label="在线检测内容">{showPage && <InspectPage />}</main>
+    </TitlebarSlotsContext.Provider>
+  </MemoryRouter>;
+}
+
+it("在线检测挂到窗口标题栏 → 状态与操作可用，离页后清理标题栏内容", async () => {
+  state = { ...state, phase: "FAULT", part: { ...burstPartView("TITLEBAR-SN"), recipeId: "A" } };
+  plcHandshake = { phase: "fault", requestSeq: 17, resultSeq: null, message: null, resetBlockedReason: null };
+  const user = userEvent.setup();
+  const page = render(<TitlebarHarness />);
+  const titlebar = within(screen.getByRole("banner", { name: "窗口标题栏" }));
+  const content = within(screen.getByRole("main", { name: "在线检测内容" }));
+  expect(nativeSelect("当前检测配方", titlebar)).toHaveValue("A");
+  expect(titlebar.getByText("TITLEBAR-SN")).toBeVisible();
+  expect(titlebar.getByRole("button", { name: "维护模式" })).toBeVisible();
+  expect(content.queryByLabelText("当前检测配方", { selector: "select" })).toBeNull();
+  expect(content.queryByRole("button", { name: "软件复位" })).toBeNull();
+
+  await user.click(titlebar.getByRole("button", { name: /^诊断$/ }));
+  expect(await screen.findByRole("dialog", { name: "检测诊断" })).toBeVisible();
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "检测诊断" })).toBeNull());
+  await user.click(titlebar.getByRole("button", { name: "软件复位" }));
+  const reset = within(await screen.findByRole("dialog", { name: "软件复位" }));
+  expect(reset.getByText("在途件将记为未检后复位。")).toBeVisible();
+  expect(cycleApi.reset).not.toHaveBeenCalled();
+  await user.click(reset.getByRole("button", { name: "确认复位" }));
+  expect(cycleApi.reset).toHaveBeenCalledTimes(1);
+
+  state = { ...state, maintenance: { since: 1, reason: "标题栏维护采图" } };
+  page.rerender(<TitlebarHarness />);
+  await user.click(titlebar.getByRole("button", { name: /^维护模式$/ }));
+  expect(await screen.findByText("原因：标题栏维护采图")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: /^退出维护模式$/ }));
+  const maintenance = within(await screen.findByRole("dialog", { name: "退出维护模式" }));
+  const exitMaintenance = maintenance.getByRole("button", { name: "确认退出" });
+  await waitFor(() => expect(exitMaintenance).toBeEnabled());
+  await user.click(exitMaintenance);
+  expect(cycleApi.setMaintenance).toHaveBeenCalledWith(false, "");
+
+  page.rerender(<TitlebarHarness showPage={false} />);
+  expect(screen.getByLabelText("标题栏状态")).toBeEmptyDOMElement();
+  expect(screen.getByLabelText("标题栏操作")).toBeEmptyDOMElement();
+});
 
 describe("在线检测切型锁定", () => {
   it("本件判定包含生产跳过 → 帧格与原图标记不判定，新工件不沿用上一件跳过范围", async () => {

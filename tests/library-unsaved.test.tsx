@@ -42,17 +42,17 @@ async function leaveWithUnsavedMap() {
   act(() => workspace.setNavigationDraft({ map: { image: { id: "img" } } as NavigationMapData, revision: workspace.data!.workspace.revision }));
   expect(workspace.navigationDirty).toBe(true);
 }
-const resume = (id: string) => userEvent.click(within(screen.getByText(id).closest(".wp-recipe-card") as HTMLElement).getByRole("button", { name: "继续配置" }));
+const resume = (id: string) => userEvent.click(within(screen.getByText(id).closest(".wp-recipe-card") as HTMLElement).getByRole("button", { name: "打开配方" }));
 
-describe("配方库：带着未保存修改退出后继续配置", () => {
-  it("继续配置当前配方 → 回到修改所在的分段与示教页，未保存的导航图草稿保留", async () => {
+describe("配方库：带着未保存修改退出后打开配方", () => {
+  it("打开配方当前配方 → 回到修改所在的分段与示教页，未保存的导航图草稿保留", async () => {
     await leaveWithUnsavedMap();
     await resume("A");
     await waitFor(() => expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/A/teach"));
     expect(workspace.navigationDirty).toBe(true);
   });
 
-  it("继续配置其他配方 → 提示未保存，放弃修改后打开该配方", async () => {
+  it("打开配方其他配方 → 提示未保存，放弃修改后打开该配方", async () => {
     await leaveWithUnsavedMap();
     await resume("B");
     const dialog = await screen.findByRole("dialog", { name: "配方 A 有未保存的修改" });

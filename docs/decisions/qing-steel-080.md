@@ -1,6 +1,6 @@
 # qing-steel React 组件使用约定
 
-当前依赖 qing-steel 0.10.0，样式入口为 `qing-steel/react.css`；应用使用 `ThemeProvider` 和 `SnackbarProvider`。通用交互优先使用组件库，业务图像叠加、胶路几何和采集时序保留领域实现。组件能力以锁定版本的公开类型和实际行为为准。
+当前依赖 qing-steel 0.11.2，样式入口为 `qing-steel/react.css`；应用使用 `ThemeProvider` 和 `SnackbarProvider`。通用交互优先使用组件库，业务图像叠加、胶路几何和采集时序保留领域实现。组件能力以锁定版本的公开类型和实际行为为准。
 
 ## 样式与测试
 
@@ -35,14 +35,14 @@
 
 通讯页使用 `Card` 承载状态条和配置分组，提示折叠使用 `Accordion`，心跳信号使用 `StatusBadge` 与 `Tooltip`。新增点位按钮独立于折叠标题，避免嵌套交互。通讯弹窗复用 `Dialog` 的 `width`、`initialFocus` 和关闭锁；日志刷新、导出使用组件的 `loading`，日志表格使用内置加载状态。PLC 阶梯趋势图属于领域绘图，保留采样和时间映射，空态使用 `EmptyState`。生产操作锁、受保护点位和草稿保存规则继续由业务层负责。
 
-0.10.0 的公开接口包含下列能力。仍使用本地实现的调用方应按实际业务行为迁移，不能再以这些能力缺失为保留理由。
+0.11.2 的公开接口包含下列能力。仍使用本地实现的调用方应按实际业务行为迁移，不能再以这些能力缺失为保留理由。
 
 - `NavigationDrawer`：`renderLink`、`collapsedLabels`、`footerItems`、自定义展开与折叠标签。
 - `SnackbarProvider`：`placement`、`container`、`max`。
 - `Alert`：原生属性、`className`、`role`、`tertiary` 色调。
 - `Select` / `SegmentedControl`：ReactNode 选项、`textValue`、选项可访问名称。
 - `NumberField`：`clamp`、`rangeError`、`step="any"`。
-- `Card`：继承 `Surface` 的 `as` 及原生属性。
+- `Card`：继承 `Surface` 的 `as` 及原生属性；配方库可用卡片通过 `hoverEffect` 启用悬停放大与状态层，业务 CSS 只负责布局。
 - `Table`：行属性、行色调、行头、跨列、加载时保留数据、列不换行；`Pagination` 支持隐藏每页数量选择。
 - `Chip`：ReactNode 内容及原生属性；`IconButton` 支持 `xs`。
 - `VerdictCard`：结果代码和标题、状态内容、故障时保留结果、头部序列号与自定义元信息。

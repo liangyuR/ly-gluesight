@@ -26,10 +26,10 @@ export function Badge({ children, tone = "info" }: { children: ReactNode; tone?:
   return <StatusBadge tone={tone}>{children}</StatusBadge>;
 }
 const PanelDepth = createContext(0);
-export function Panel({ title, titleHelp, help, detail, actions, children, className = "" }: { title: string; titleHelp?: ReactNode; help?: ReactNode; detail?: string; actions?: ReactNode; children: ReactNode; className?: string }) {
+export function Panel({ title, titleHelp, help, detail, actions, children, className = "", hoverEffect = false }: { title: string; titleHelp?: ReactNode; help?: ReactNode; detail?: string; actions?: ReactNode; children: ReactNode; className?: string; hoverEffect?: boolean }) {
   const depth = useContext(PanelDepth);
   const headingHelp = titleHelp ?? (help ? <ContextHelp label={`${title}说明`}>{help}</ContextHelp> : null);
-  return <Card level={depth ? "mid" : "low"} className={"panel wp-panel " + className} title={<>{headingHelp ? <div style={{ display: "flex", alignItems: "center" }}><h2>{title}</h2>{headingHelp}</div> : <h2>{title}</h2>}{detail && <p className="muted">{detail}</p>}</>} actions={actions}>
+  return <Card level={depth ? "mid" : "low"} hoverEffect={hoverEffect} className={"panel wp-panel " + className} title={<>{headingHelp ? <div style={{ display: "flex", alignItems: "center" }}><h2>{title}</h2>{headingHelp}</div> : <h2>{title}</h2>}{detail && <p className="muted">{detail}</p>}</>} actions={actions}>
     <PanelDepth.Provider value={depth + 1}>{children}</PanelDepth.Provider>
   </Card>;
 }
