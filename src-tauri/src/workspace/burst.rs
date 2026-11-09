@@ -1492,12 +1492,21 @@ fn with_segment_corridor(
     });
     inspect.segments.sort_by_key(|s| s.segment);
     let recipe = doc.build()?;
-    let inspect = recipe
+    let mut inspect = recipe
         .inspect
         .iter()
         .find(|i| i.camera == camera)
-        .ok_or("示教相机不在候选中")?;
-    vision::plan_corridor(inspect, segment, &recipe, size)?;
+        .ok_or("示教相机不在候选中")?
+        .clone();
+    // 取色前先核对走廊几何：还没有模型时按灰度建图，不因“待取色”拦下
+    if let Some(s) = inspect
+        .segments
+        .iter_mut()
+        .find(|s| s.segment == segment && s.color_model.is_none())
+    {
+        s.measure = Some(crate::recipe::MeasureMode::Gray);
+    }
+    vision::plan_corridor(&inspect, segment, &recipe, size)?;
     update_doc(&mut next, doc)?;
     if next.revision == base {
         next.changed();

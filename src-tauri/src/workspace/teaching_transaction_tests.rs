@@ -432,3 +432,66 @@ fn reteaching_on_a_gray_frame_drops_a_pending_color_choice() {
         None
     );
 }
+
+#[test]
+fn color_segment_corridor_passes_geometry_check_before_its_model_is_fitted() {
+    // 防的回归：按胶色测量的段重新示教时，取色前的走廊核对因“还没取色”报错，示教 MCP 走不到取色
+    let fixture = Fixture::new();
+    let mut w = fixture.workspace.clone();
+    w.doc.inspect[0].segments[0].measure = Some(crate::recipe::MeasureMode::Color);
+    fixture
+        .host
+        .items
+        .lock()
+        .unwrap()
+        .insert(w.doc.id.clone(), w.clone());
+    let saved = Fixture::prepare(&w, "replacement", 2, true)
+        .commit(&fixture.host, path(), None)
+        .unwrap();
+    assert_eq!(
+        saved.doc.inspect[0].segment_corridor(1).unwrap().measure,
+        Some(crate::recipe::MeasureMode::Color)
+    );
+}
+
+#[test]
+fn saving_a_corridor_without_color_model_keeps_color_segments_pending_fit_and_legacy_gray() {
+    // 防的回归：按胶色测量的段改了走廊点（旧模型作废）、彩色示教帧上新画的走廊没取色，保存后都悄悄按灰度测；
+    // 或旧配方里没选测量方式也没取色的走廊被改成按胶色
+    use crate::recipe::MeasureMode::Color;
+    // （原走廊有颜色模型, 原来没有走廊, 示教帧是彩色）→ 保存后的测量方式
+    let cases = [
+        (true, false, true, Some(Color)),
+        (false, true, true, Some(Color)),
+        (false, false, true, None),
+    ];
+    for (model, fresh, color, expected) in cases {
+        let fixture = Fixture::new();
+        let mut w = fixture.workspace.clone();
+        let segment = &mut w.doc.inspect[0].segments[0];
+        if model {
+            segment.color_model = Some(r#"{"version":1}"#.into());
+        }
+        if fresh {
+            segment.corridor.clear();
+        }
+        if color {
+            w.camera_teaching[0].frame.camera_tag = json!({"imageMode": "color"});
+        }
+        fixture
+            .host
+            .items
+            .lock()
+            .unwrap()
+            .insert(w.doc.id.clone(), w.clone());
+        let mut doc = w.doc.clone();
+        doc.inspect[0].segments[0].corridor = vec![[12.0, 50.0], [90.0, 50.0]];
+        doc.inspect[0].segments[0].color_model = None;
+        let saved = fixture.host.save_doc(&w.doc.id, w.revision, doc).unwrap();
+        assert_eq!(
+            saved.doc.inspect[0].segment_corridor(1).unwrap().measure,
+            expected,
+            "model={model} fresh={fresh}"
+        );
+    }
+}
