@@ -328,3 +328,11 @@ fn candidate_with_other_camera_order_measures_each_camera_from_its_own_record_fr
         .all(|f| f.status == FrameState::Missing && f.raw_file.is_none()));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// 防的回归：彩色录制拿到相机配成灰度的机器上示教，冻结帧按本机配置记成灰度，试测与发布时按通道数拒掉这张彩色原图。
+#[test]
+fn color_recording_frozen_on_gray_configured_machine_is_tagged_color() {
+    let gray = crate::camera::CameraConfig::default();
+    let tag = super::burst::frozen_camera_tag(&gray, &FrameImage::rgb(1, 1, vec![0; 3]), None);
+    assert_eq!(tag["imageMode"], "color");
+}

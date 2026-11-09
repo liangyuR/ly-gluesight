@@ -79,6 +79,21 @@ pub(super) fn teaching_sizes(w: &Workspace) -> Result<Vec<[u32; 2]>, String> {
         .collect()
 }
 
+/// 示教帧冻结时的相机标签：图像模式按录制原图本身（彩色或灰度），不按本机当前配置，示教件常在别的机器上示教。
+pub(super) fn frozen_camera_tag(
+    config: &crate::camera::CameraConfig,
+    image: &FrameImage,
+    sample_set: Option<&str>,
+) -> Value {
+    let mut recorded = config.clone();
+    recorded.image_mode = if image.is_color() {
+        crate::camera::ImageMode::Color
+    } else {
+        crate::camera::ImageMode::Gray
+    };
+    camera_state(&recorded, sample_set)
+}
+
 /// 各计划相机示教帧的通道数（计划相机顺序）：示教帧冻结时的相机标签是彩色模式为 3，否则为 1。
 pub(super) fn teaching_channels(w: &Workspace) -> Vec<u8> {
     w.doc
@@ -1073,7 +1088,7 @@ pub(super) async fn prepare_segment_teaching(
             captured_at: captured.created_at,
             size: [image.width, image.height],
             camera: camera.clone(),
-            camera_tag: camera_state(&config, sample_set.as_deref()),
+            camera_tag: frozen_camera_tag(&config, &image, sample_set.as_deref()),
             calib_tag: calibration_state(&calib)?,
             geometry_tag: json!({"round": round, "camera": camera, "seq": seq}),
             exposure_us: Some(imaging.exposure_us),
