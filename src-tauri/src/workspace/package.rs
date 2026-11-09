@@ -419,15 +419,13 @@ pub(crate) struct Local {
     pub next_version: u32,
 }
 
-/// 改到本机：版本号按本机配方库取，候选回到草稿；
-/// 去掉验证样本（它们指向来源机的检测记录与采集轮次）；指向来源项目目录的绝对路径改到本机项目目录。
+/// 改到本机：版本号按本机配方库取，候选回到草稿；指向来源项目目录的绝对路径改到本机项目目录。
 pub(crate) fn rebase(
     w: &mut Workspace,
     local: &Local,
     source_root: &Path,
     project: &Path,
-) -> Result<Vec<String>, String> {
-    let mut notes = Vec::new();
+) -> Result<(), String> {
     let mut value = serde_json::to_value(&*w).map_err(|e| e.to_string())?;
     crate::storage::relocate::all_strings(&mut value, source_root, project);
     *w = serde_json::from_value(value).map_err(|e| e.to_string())?;
@@ -439,16 +437,8 @@ pub(crate) fn rebase(
     w.doc.teaching_piece = None;
     w.pending = None;
     w.publish = PublishState::Draft;
-    let samples = w.samples.len() + w.sample_bank.len();
-    if samples > 0 {
-        notes.push(format!(
-            "{samples} 个验证样本未导入（它们来自来源机的检测记录或采集轮次），需要时在现场重新加入"
-        ));
-    }
-    w.samples.clear();
-    w.sample_bank.clear();
     w.changed();
-    Ok(notes)
+    Ok(())
 }
 
 /// 已执行的改名，失败时倒序撤回。
@@ -820,12 +810,7 @@ fn import(
             has_production: cycle.recipe(&id).is_some(),
             next_version: cycle.recipes.next_version(&id)?,
         };
-        notes.extend(rebase(
-            &mut w,
-            &local,
-            Path::new(&manifest.source_root),
-            &project,
-        )?);
+        rebase(&mut w, &local, Path::new(&manifest.source_root), &project)?;
         w.ensure_instance(&app.state::<Store>())?;
         install(&project, staging, &w)?;
         items.insert(id.clone(), w.clone());

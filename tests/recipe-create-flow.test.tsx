@@ -95,7 +95,7 @@ describe("创建配方流程", () => {
     });
     expect(invoke).toHaveBeenCalledWith("workspace_get", { id: "SHELL-2026" });
     expect(screen.getByRole("navigation", { name: "配方位置" })).toHaveTextContent("SHELL-2026");
-    // 新建的段配方按段模型的步骤显示：示教件 → 段列表 → 走廊示教 → 试测 → 验证与发布
+    // 新建的段配方按段模型的步骤显示：示教件 → 段列表 → 走廊示教 → 试测 → 发布
     expect(within(screen.getByRole("region", { name: "示教件进度" })).getByText("还没有示教件")).toBeVisible();
     const steps = within(screen.getByRole("navigation", { name: "配方配置步骤" }));
     for (const name of [/段列表/, /走廊示教/, /试测/]) expect(steps.getByRole("link", { name })).toBeVisible();

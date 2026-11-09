@@ -67,7 +67,7 @@ export const navEntries: NavEntry[] = [
 export const navItems: NavItem[] = navEntries.flatMap((entry) => (isNavGroup(entry) ? entry.children : [entry]));
 
 /** 配方工作台各步骤的页面（段配方，StepIdV2），地址带配方编号：capture 走 /recipe/<编号>/capture，segments 走 …/segments，
- * corridor 走 …/teach，calibration 走 …/calibration，validation / publish 走 …/validation。打开哪个配方只由地址决定。 */
+ * corridor 走 …/teach，calibration 走 …/calibration，publish 走 …/validation。打开哪个配方只由地址决定。 */
 const recipeSteps: PageRoute[] = [
   { path:"/recipe/:recipeId/progress",label:"进度总览",element:ProgressPage },
   { path:"/recipe/:recipeId/capture",label:"示教件",element:TeachingPiecePage },

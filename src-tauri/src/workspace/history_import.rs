@@ -1,6 +1,5 @@
 //! 历史件导入为采集轮次（docs/architecture/online-commissioning.md 5.2、5.3）：历史件选择器列出本配方的真机录制件
 //! 并逐件给出能否选用的原因；选为示教件时按 `RecipeCaptureHost::import_history` 物化成采集轮次（见 `pieces`）。
-//! 已导入并用作示教件的历史件不能再作独立验证样本（[`check_history_sample`]）。
 
 use std::collections::BTreeSet;
 
@@ -332,7 +331,7 @@ pub(super) fn assess(
                 reasons.push("PLC 提前结束运动".into());
             }
         }
-        _ => reasons.push("旧录制没有相机设备与 PLC 请求元数据，只能作验证样本".into()),
+        _ => reasons.push("旧录制没有相机设备与 PLC 请求元数据，不能选作示教件".into()),
     }
     let mut planned = doc.plan_cameras();
     planned.sort();
@@ -622,72 +621,6 @@ pub(super) fn refill_teaching_images(app: &AppHandle, w: &Workspace) -> Result<(
         &result,
     );
     result
-}
-
-/// 历史记录作独立验证样本前的核对（5.3）：这件已导入为本候选的轮次且该轮用于走廊示教或示教件测量时拒绝（`origins` 为本候选
-/// 各轮次的来源）；录制有相机设备记录时，各计划相机的设备配置须与当前一致（`current` 按相机编号，`state_value` 口径）。
-pub(super) fn check_history_sample(
-    w: &Workspace,
-    cycle_id: Option<&str>,
-    origins: &BTreeMap<String, RoundOrigin>,
-    devices: Option<&Value>,
-    current: &BTreeMap<String, Value>,
-) -> Result<(), String> {
-    if let Some(cycle_id) = cycle_id {
-        let trained = origins.iter().find(|(round, origin)| {
-            origin.cycle_id() == cycle_id
-                && (w.camera_teaching.iter().any(|t| &t.round == *round)
-                    || w.calibration.rounds.iter().any(|r| &r.round_id == *round))
-        });
-        if let Some((round, _)) = trained {
-            return Err(format!(
-                "这件已导入为轮次 {round} 并用作示教件：训练数据不能再作独立验证样本"
-            ));
-        }
-    }
-    for device in devices.and_then(Value::as_array).into_iter().flatten() {
-        let camera = device["cameraId"].as_str().unwrap_or_default();
-        if w.doc.plan_cameras().iter().any(|c| c == camera)
-            && !device["cameraConfig"].is_null()
-            && current.get(camera) != Some(&device["cameraConfig"])
-        {
-            return Err(format!(
-                "录制时相机 {camera} 的设备配置与当前不同，不能作验证样本"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// 本候选各轮次的来源（历史件导入的轮次），轮次 → 来源。
-pub(super) fn round_origins(
-    capture: &RecipeCaptureHost,
-    recipe_id: &str,
-) -> Result<BTreeMap<String, RoundOrigin>, String> {
-    Ok(capture
-        .list(recipe_id)?
-        .into_iter()
-        .filter_map(|r| r.origin.map(|o| (r.round_id, o)))
-        .collect())
-}
-
-/// 历史记录录制时的相机设备记录（part.json 的 devices）；没有录制或旧录制为 None。
-/// 记录录制时的相机设备配置（`part.json` 的 `devices`），按记录所属项目的真机录制根读。
-pub(super) fn recorded_devices(
-    app: &AppHandle,
-    summary: &PartSummary,
-    recording: &RecordingEvidence,
-) -> Option<Value> {
-    let root = crate::project::records::record_root(
-        &crate::storage::root(app),
-        &summary.project_id,
-        RecordSource::Real,
-    )
-    .ok()?;
-    read_part(&root, recording)
-        .ok()
-        .map(|(_, part)| part["devices"].clone())
-        .filter(|d| !d.is_null())
 }
 
 #[cfg(test)]

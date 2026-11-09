@@ -17,7 +17,7 @@ const actions: Record<string, string> = {
   "/recipe/calibration": "查看试测", "/recipe/validation": "查看发布",
 };
 
-/** 配方进度（段配方）：示教件 → 段列表 → 走廊示教 → 试测 → 发布（独立样本验证可选）。 */
+/** 配方进度（段配方）：示教件 → 段列表 → 走廊示教 → 试测 → 发布。 */
 export default function PlanProgressPage() {
   const href = useRecipeHref();
   const { data } = useWorkspace();

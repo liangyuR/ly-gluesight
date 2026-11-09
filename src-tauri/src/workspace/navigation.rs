@@ -414,16 +414,8 @@ pub(super) fn structure_changed(before: &RecipeDoc, after: &RecipeDoc) -> bool {
 }
 
 fn auxiliary_changed(w: &mut Workspace) {
-    let previous_revision = w.revision;
     w.revision += 1;
     w.updated_at = ly_plc::now_ms();
-    if let Some(validation) = w
-        .validation
-        .as_mut()
-        .filter(|v| v.revision == previous_revision)
-    {
-        validation.revision = w.revision;
-    }
 }
 
 pub(super) enum NavigationEdit {
