@@ -31,9 +31,13 @@ export default function SegmentParams({ seg, pos, label, segments, cameras, disa
   const edit = (field: Field, value: number | null) => {
     if (!segment) return;
     const next = { ...values, [field]: value } as Partial<Pick<PathSegment, Field>>;
-    setLocal({ index: segment.index, values: next });
     const patched = { ...segment, ...next } as PathSegment;
-    if (!segmentIssues([patched]).length) onSegments(patchSegment(segments, at, next));
+    if (segmentIssues([patched]).length) {
+      setLocal({ index: segment.index, values: next });
+    } else {
+      setLocal({ index: segment.index, values: {} });
+      onSegments(patchSegment(segments, at, next));
+    }
   };
   const changeKind = (value: string) => {
     const next = setKind(draft, pos, value as SegmentKind | "skip");

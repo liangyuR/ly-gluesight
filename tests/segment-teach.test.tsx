@@ -110,3 +110,27 @@ it("左栏选 1-2 再改长度 → 候选配置只改第 2 段的长度", async 
   await act(async () => { fireEvent.change(within(params).getByRole("spinbutton", { name: "1-2 长度" }), { target: { value: "130" } }); });
   expect(vi.mocked(ws.setDoc).mock.lastCall![0].segments).toEqual(original.map((segment, at) => at === 1 ? { ...segment, lengthMm: 130 } : segment));
 });
+
+it("已保存长度在分段重映射后被清空 → 再改跳过帧数不恢复旧长度", async () => {
+  ws = workspaceState(twoPasses());
+  const user = userEvent.setup();
+  const { rerender } = render(page());
+  await user.click(await screen.findByRole("button", { name: "选择 1-2 段" }));
+  fireEvent.change(screen.getByRole("spinbutton", { name: "1-2 长度" }), { target: { value: "130" } });
+  const saved = structuredClone(ws.data!);
+  saved.workspace.doc = vi.mocked(ws.setDoc).mock.lastCall![0];
+  saved.plan.segments = saved.workspace.doc.segments!;
+  ws = workspaceState(saved);
+  rerender(page());
+  expect(screen.getByRole("spinbutton", { name: "1-2 长度" })).toHaveValue(130);
+
+  const remapped = structuredClone(saved);
+  remapped.workspace.captureReview!.rounds["round-1"].cuts = [3, 8];
+  remapped.workspace.doc.segments![1] = { ...remapped.workspace.doc.segments![1], lengthMm: null, skipHead: 0, skipTail: 0, expectedFrames: 5 };
+  remapped.plan.segments = remapped.workspace.doc.segments!;
+  ws = workspaceState(remapped);
+  rerender(page());
+  expect(screen.getByRole("spinbutton", { name: "1-2 长度" })).toHaveValue(null);
+  fireEvent.change(screen.getByRole("spinbutton", { name: "1-2 段尾跳过帧数" }), { target: { value: "1" } });
+  expect(vi.mocked(ws.setDoc).mock.lastCall![0].segments![1]).toMatchObject({ lengthMm: null, skipHead: 0, skipTail: 1 });
+});
