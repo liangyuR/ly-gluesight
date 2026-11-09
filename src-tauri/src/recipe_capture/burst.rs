@@ -463,9 +463,7 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
     {
         return Err("历史件导入或手动配置数据的轮次来源或状态无效".into());
     }
-    let started = teaching
-        || history
-        || round.plc_shot_count.is_some();
+    let started = teaching || history || round.plc_shot_count.is_some();
     let terminal_ok = match round.state {
         CaptureState::WaitingStart => {
             round.teaching_round_id.is_none()

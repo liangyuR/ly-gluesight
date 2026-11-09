@@ -27,15 +27,31 @@ pub struct PlcPlan {
 impl PlcPlan {
     /// 段计划（规格 §5）：PLC 的 shotCount 与 deviceShots 都等于 ΣN_exp（1–32767）；三台不重复的相机共用一个触发；
     /// 整件容差取各段容差之和。
-    pub fn compile_burst(recipe_id: String, device_ids: Vec<String>, segments: Vec<ExportSegment>, expected_total: u32) -> Result<Self, String> {
+    pub fn compile_burst(
+        recipe_id: String,
+        device_ids: Vec<String>,
+        segments: Vec<ExportSegment>,
+        expected_total: u32,
+    ) -> Result<Self, String> {
         if segments.is_empty() {
             return Err("段计划至少需要一段".into());
         }
         if !(1..=plan::MAX_EXPECTED_TOTAL).contains(&expected_total) {
-            return Err(format!("段计划的预期帧组数 ΣN_exp = {expected_total} 超出 PLC shotCount 范围 1–{}", plan::MAX_EXPECTED_TOTAL));
+            return Err(format!(
+                "段计划的预期帧组数 ΣN_exp = {expected_total} 超出 PLC shotCount 范围 1–{}",
+                plan::MAX_EXPECTED_TOTAL
+            ));
         }
-        if device_ids.len() != plan::PLAN_CAMERAS || device_ids.iter().enumerate().any(|(i, id)| id.trim().is_empty() || device_ids[..i].contains(id)) {
-            return Err(format!("段计划需要 {} 台不重复、非空的相机共用一个触发：{device_ids:?}", plan::PLAN_CAMERAS));
+        if device_ids.len() != plan::PLAN_CAMERAS
+            || device_ids
+                .iter()
+                .enumerate()
+                .any(|(i, id)| id.trim().is_empty() || device_ids[..i].contains(id))
+        {
+            return Err(format!(
+                "段计划需要 {} 台不重复、非空的相机共用一个触发：{device_ids:?}",
+                plan::PLAN_CAMERAS
+            ));
         }
         let tolerance_total = segments
             .iter()
@@ -77,18 +93,19 @@ impl PlcPlan {
                 pending.join("、")
             ));
         };
-        Self::compile_burst(
-            recipe.id.clone(),
-            export.cameras,
-            export.segments,
-            total,
-        )
+        Self::compile_burst(recipe.id.clone(), export.cameras, export.segments, total)
     }
 }
 
 impl PlanExport {
     /// 段配方的计划导出（规格 §1，命令 recipe_plan_export）：不要求已标定（未标定时 expectedTotal 为 null）。
     pub fn from_recipe(recipe: &Recipe) -> Result<Self, String> {
-        Ok(plan::export(&recipe.id, recipe.product_code, &recipe.path_segments, &recipe.plan_cameras(), recipe.part_calib.as_ref()))
+        Ok(plan::export(
+            &recipe.id,
+            recipe.product_code,
+            &recipe.path_segments,
+            &recipe.plan_cameras(),
+            recipe.part_calib.as_ref(),
+        ))
     }
 }

@@ -1532,7 +1532,10 @@ mod tests {
         std::fs::write(recipes.join(".revision-sources"), sources.to_string()).unwrap();
         let store = RecipeStore::open(dir.clone()).unwrap();
         assert!(store.errors().is_empty(), "{:?}", store.errors());
-        assert_eq!(store.get(&doc.id).unwrap().revision_id, format!("{}-v1", doc.id));
+        assert_eq!(
+            store.get(&doc.id).unwrap().revision_id,
+            format!("{}-v1", doc.id)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

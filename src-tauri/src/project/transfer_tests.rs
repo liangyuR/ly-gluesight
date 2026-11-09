@@ -509,7 +509,7 @@ fn old_package_with_offline_images_installs_only_production_images_without_chang
             &legacy,
             "line-b",
             "B 线",
-                &to.0.join("cache"),
+            &to.0.join("cache"),
             &local,
         )
         .unwrap();
