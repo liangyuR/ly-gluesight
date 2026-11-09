@@ -24,7 +24,7 @@ pub(super) fn burst_workspace(kinds: &[SegmentKind]) -> Workspace {
         .iter_mut()
         .for_each(|inspect| inspect.segments.clear());
     doc.build().unwrap();
-    Workspace::new(doc, None)
+    Workspace::new(doc)
 }
 
 /// 一轮完整的段配方示教采集：计划相机都在，采集时设备配置为 config；missing 为 (本轮相机下标, seq) 的缺帧。

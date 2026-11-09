@@ -1,26 +1,16 @@
 //! 采集版发布（在线投运）：新产线还没有可用配方时，先把未完成的候选发布成采集版，维护模式按它的型号与三台计划相机
 //! 跟着生产采图（曝光增益取相机页的设定）；攒够历史件再示教、标定、验证，发布正式版（`workspace_publish`）。
 //!
-//! 采集版只检查相机、型号、段与生产版本，不要求走廊示教、ΣN_exp 标定与独立验证，也不生成发布包；版本号照常递增，
-//! 同样在工件边界生效。已有正式版时不能发布采集版（正式版不降级，`RecipeStore::save_published` 同样拒绝）。
+//! 采集版只检查计划相机、段与生产版本，不要求走廊示教、ΣN_exp 标定与独立验证，也不生成发布包；相机组与型号在
+//! 接件和写入配方库时照常核对。版本号照常递增，同样在工件边界生效。已有正式版时不能发布采集版
+//! （正式版不降级，`RecipeStore::save_published` 同样拒绝）。
 
 use super::*;
-use crate::camera::CameraConfig;
 use crate::plan::PLAN_CAMERAS;
 use crate::recipe::{valid_camera_id, RecipeStage, COLLECT_AFTER_FORMAL};
 
-/// 采集版检查项的输入：设备与配方库由调用方读出，其余只看候选。
-pub(super) struct CollectInputs<'a> {
-    /// 当前相机组
-    pub rig: &'a [CameraConfig],
-    /// 同编号的当前生产配方
-    pub production: Option<&'a Recipe>,
-    /// 用了同一型号的其他生产配方
-    pub conflict: Option<String>,
-}
-
-/// 采集版的全部检查项，按页面展示顺序。
-pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Check> {
+/// 采集版的全部检查项，按页面展示顺序；`production` 是同编号的当前生产配方。
+pub(super) fn collect_checks(doc: &RecipeDoc, production: Option<&Recipe>) -> Vec<Check> {
     let cameras = doc.plan_cameras();
     let distinct = cameras.len() == PLAN_CAMERAS
         && cameras
@@ -41,32 +31,6 @@ pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Chec
             )
         },
     }];
-    let rig: Vec<String> = cameras
-        .iter()
-        .filter_map(|camera| match inputs.rig.iter().find(|c| &c.id == camera) {
-            None => Some(format!("相机组里没有 {camera}")),
-            Some(config) => config.require_single_view().err(),
-        })
-        .collect();
-    checks.push(Check {
-        advisory: false,
-        name: "相机组".into(),
-        passed: !cameras.is_empty() && rig.is_empty(),
-        detail: if rig.is_empty() {
-            "计划相机都在当前相机组里，且是单视角独立相机".into()
-        } else {
-            rig.join("；")
-        },
-    });
-    checks.push(Check {
-        advisory: false,
-        name: "PLC 型号".into(),
-        passed: inputs.conflict.is_none(),
-        detail: match &inputs.conflict {
-            None => format!("PLC 下发型号 {}", doc.product_code),
-            Some(other) => format!("型号 {} 已被配方 {other} 使用", doc.product_code),
-        },
-    });
     checks.push(Check {
         advisory: false,
         name: "段".into(),
@@ -77,12 +41,12 @@ pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Chec
             format!("{} 段；采集版不要求示教与标定", doc.segments.len())
         },
     });
-    let formal = inputs.production.filter(|r| !r.is_collect());
+    let formal = production.filter(|r| !r.is_collect());
     checks.push(Check {
         advisory: false,
         name: "生产版本".into(),
         passed: formal.is_none(),
-        detail: match (formal, inputs.production) {
+        detail: match (formal, production) {
             (Some(r), _) => format!("已有正式版 v{}。{COLLECT_AFTER_FORMAL}", r.version),
             (None, Some(r)) => format!("替换当前采集版 v{}", r.version),
             (None, None) => "尚无生产版本".into(),
@@ -92,22 +56,8 @@ pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Chec
 }
 
 fn current_checks(app: &AppHandle, w: &Workspace) -> Vec<Check> {
-    let cycle = app.state::<CycleHost>();
-    let production = cycle.recipe(&w.doc.id);
-    let conflict = cycle
-        .recipes
-        .list()
-        .iter()
-        .find(|r| !r.id.eq_ignore_ascii_case(&w.doc.id) && r.product_code == w.doc.product_code)
-        .map(|r| r.id.clone());
-    collect_checks(
-        &w.doc,
-        CollectInputs {
-            rig: &cycle.camera.configs(),
-            production: production.as_deref(),
-            conflict,
-        },
-    )
+    let production = app.state::<CycleHost>().recipe(&w.doc.id);
+    collect_checks(&w.doc, production.as_deref())
 }
 
 /// 采集版检查结果（发布确认框展示，不改候选）。
@@ -162,10 +112,10 @@ pub fn workspace_publish_collect(
         doc: released,
         bundle_id: String::new(),
         navigation: None,
-        base_revision: w.base_revision.clone(),
         revision,
         _frames: Discarded,
         _overview: Discarded,
+        _base_revision: Discarded,
         validation: Validation {
             revision,
             passed: true,

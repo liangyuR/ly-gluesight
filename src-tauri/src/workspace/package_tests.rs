@@ -144,7 +144,7 @@ fn exported(dirs: &Dirs) -> Workspace {
 fn staged(dirs: &Dirs) -> (Workspace, Vec<String>) {
     let (manifest, mut w) = stage(&dirs.package, &dirs.staging, &quiet()).unwrap();
     let local = Local {
-        production: Some((format!("{}-v3", w.doc.id), 7)),
+        production: Some(7),
         next_version: 4,
     };
     let notes = rebase(
@@ -157,7 +157,7 @@ fn staged(dirs: &Dirs) -> (Workspace, Vec<String>) {
     (w, notes)
 }
 
-/// 回传包只带候选与示教件轮次记录（原图、旧示教帧、旧轮次测量、发布快照都不带）；导入后候选基于本机生产配方、
+/// 回传包只带候选与示教件轮次记录（原图、旧示教帧、旧轮次测量、发布快照都不带）；导入后版本号按本机配方库、
 /// 回到草稿、路径改到本机项目、验证样本去掉，本机的发布快照保留，旧候选的轮次换成包里的轮次，别的配方不受影响。
 #[test]
 fn package_skips_raw_images_and_import_rebases_onto_local_recipe() {
@@ -182,10 +182,6 @@ fn package_skips_raw_images_and_import_rebases_onto_local_recipe() {
     let installed: Workspace =
         serde_json::from_str(&std::fs::read_to_string(dir.join("workspace.json")).unwrap())
             .unwrap();
-    assert_eq!(
-        installed.base_revision,
-        Some(format!("{}-v3", source.doc.id))
-    );
     assert_eq!((installed.doc.version, installed.doc.plan_version), (4, 7));
     assert!(matches!(installed.publish, PublishState::Draft));
     assert!(installed.samples.is_empty() && notes.len() == 1);

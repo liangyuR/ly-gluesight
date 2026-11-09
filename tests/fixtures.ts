@@ -176,7 +176,7 @@ export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
     groupCount: burstGroups, cameraFrames: plan.cameras.map(() => burstGroups), incompleteGroups: 0, lossAlarms: 0, corridors: plan.cameras.map(() => null), xMeans: plan.cameras.map(() => null) }];
   return {
     layout, productionVersion: null, productionPlanVersion: null, planChanged: false, plan,
-    workspace: { doc, baseRevision: null, revision: 3, updatedAt: 1, publish: { state: "draft" }, pending: null,
+    workspace: { doc, revision: 3, updatedAt: 1, publish: { state: "draft" }, pending: null,
       samples: [], sampleBank: [], validation: null, cameraTeaching, calibration: { rounds },
       flow: 2, teachingPiece: { roundId: "round-1", recordId: 1, cycleId: "cycle-1", sn: "SN-1", ts: 1 } },
   };
