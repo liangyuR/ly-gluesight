@@ -352,7 +352,6 @@ pub fn run() {
             workspace::package::workspace_package_export,
             workspace::package::workspace_package_pick,
             workspace::package::workspace_package_import,
-            workspace::workspace_confirm_tolerance,
             workspace::workspace_confirm_skip,
             workspace::workspace_calibration_skip_suggest,
             workspace::workspace_pass_skip_suggest,

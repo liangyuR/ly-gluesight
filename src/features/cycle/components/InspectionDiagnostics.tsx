@@ -47,7 +47,7 @@ export default function InspectionDiagnostics({ group, onGroup, onClose, snapsho
       {group === "capture" && burst && <>
         <h3>帧组 {selectedSeq ?? "—"}</h3>
         <dl className="diagnostic-kv">
-          <dt>帧组 / 预期</dt><dd>{burst.groupCount} / {expectedText(burst.expectedTotal, burst.toleranceTotal)}</dd>
+          <dt>帧组 / 预期</dt><dd>{burst.groupCount} / {expectedText(burst.expectedTotal)}</dd>
           <dt>各相机帧数</dt><dd>{burst.cameras.map((camera, c) => `${camera} ${burst.cameraFrames[c] ?? 0}`).join(" · ")}</dd>
           <dt>触发计数（参考）</dt><dd>{burst.deviceTriggers ?? "—"}</dd>
           <dt>已测 / 待测</dt><dd>{burst.measuredFrames} / {burst.pendingMeasure}</dd>

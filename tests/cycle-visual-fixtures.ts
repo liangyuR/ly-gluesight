@@ -15,7 +15,7 @@ export function burstPartView(sn = "1", cycleId = `cycle-${sn}`): PartView {
   });
   return { cycleId, bundleId: "bundle-S", sn, recipeId: "S", recipeRevision: "revisionId-S", n: 12, received, triggers: 12, queue: 0,
     measuredFrames: received,
-    burst: { cameras: burstCameras, expectedTotal: 12, toleranceTotal: 3, deviceTriggers: 12, groupCount: burstGroups, cameraFrames, measuredFrames: received, pendingMeasure: 0, groups } };
+    burst: { cameras: burstCameras, expectedTotal: 12, deviceTriggers: 12, groupCount: burstGroups, cameraFrames, measuredFrames: received, pendingMeasure: 0, groups } };
 }
 /** 段配方一件的结果（ResultView.burst）：flatten 的旧字段与 burst 相同，segments、gaps 为空。 */
 export function burstResult(sn = "1", cycleId = `cycle-${sn}`): ResultView {

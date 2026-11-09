@@ -196,7 +196,6 @@ pub struct FrameGroupView {
 pub struct PartViewBurst {
     pub cameras: Vec<String>,
     pub expected_total: Option<u32>,
-    pub tolerance_total: u32,
     /// partEnd 时 PLC 报的 deviceTriggers，只作参考；partEnd 前为 None
     pub device_triggers: Option<u32>,
     /// 已见帧组数 = 各相机最大 seq 的最大值
@@ -309,8 +308,6 @@ pub struct RecipeSummary {
     pub segment_count: usize,
     /// 整件预期帧组数 ΣN_exp；未标定为空
     pub expected_total: Option<u32>,
-    /// 整件帧数容差 Σtolerance
-    pub tolerance_total: u32,
     /// 已标定（expected_total 非空）
     pub calibrated: bool,
     /// 示教件来源（RB-7）：取自生产配方文档；旧流程发布的配方为空
@@ -347,7 +344,6 @@ impl From<&Recipe> for RecipeSummary {
             trigger_count: expected_total.map(|n| n as usize),
             segment_count: r.path_segments.len(),
             expected_total,
-            tolerance_total: r.tolerance_total(),
             calibrated: expected_total.is_some(),
             teaching_piece: None,
         }
@@ -3223,12 +3219,12 @@ struct FaultRepeat {
     last: i64,
 }
 
-/// 段配方判定里只告警的项（丢帧、帧数异常、疑似提前终止），写进运行日志。
+/// 段配方判定里只告警的项（丢帧、偏宽预警），写进运行日志。
 fn burst_warnings(
     judgement: &BurstJudgement,
     camera: impl Fn(usize) -> String,
 ) -> Vec<(&'static str, String)> {
-    use crate::frame_group::{CountStatus, LossReason};
+    use crate::frame_group::LossReason;
     let mut out: Vec<(&'static str, String)> = judgement
         .alarms
         .iter()
@@ -3251,28 +3247,6 @@ fn burst_warnings(
             )
         })
         .collect();
-    if matches!(
-        judgement.count_status,
-        Some(CountStatus::Low | CountStatus::High)
-    ) || judgement.flags.frame_count_anomaly
-    {
-        out.push((
-            "帧数异常",
-            format!(
-                "整件 {} 个帧组，有区域帧组数超出预期 ± 容差（只告警，不改结论）",
-                judgement.group_count
-            ),
-        ));
-    }
-    if judgement.flags.short_part {
-        out.push((
-            "疑似提前终止",
-            format!(
-                "整件 {} 个帧组，少于 ΣN_exp − Σtol：疑似 PLC 提前报运动结束（只告警，不改结论）",
-                judgement.group_count
-            ),
-        ));
-    }
     for (set, title, what) in [
         (judgement.flags.wide_warning, "胶宽偏宽", "超出胶宽上限"),
         (judgement.flags.overflow_warning, "溢胶预警", "超出溢胶上限"),

@@ -307,7 +307,7 @@ fn segment_edits_sent_without_ids_keep_the_carry_state() {
     for segment in &mut doc.segments {
         segment.id = None;
     }
-    doc.segments[0].tolerance += 1;
+    doc.segments[0].checks.width.tol_upper += 0.5;
     super::update_doc(&mut w, doc).unwrap();
     assert_eq!(
         w.doc

@@ -325,7 +325,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
             <IconButton aria-label="后一件" title="后一件（] 键）" disabled={neighbors.newer == null} onClick={() => onOpen(neighbors.newer)}><ChevronRight size={18} /></IconButton>
           </span>
           <b className="sn" title={s.sn || undefined}>SN {s.sn || "—"}</b>
-          <Text muted>{formatTime(s.ts)} · {s.recipeId ?? "无配方"} · {"v" + (s.recipeVersion ?? "—") + " · #" + (s.recipeRevision?.slice(0, 6) ?? "—")} · {triggerModeLabel(s.triggerMode)} · 帧组 {burst.judgement.groupCount} / 预期 {expectedText(burst.expectedTotal, burst.toleranceTotal)}</Text>
+          <Text muted>{formatTime(s.ts)} · {s.recipeId ?? "无配方"} · {"v" + (s.recipeVersion ?? "—") + " · #" + (s.recipeRevision?.slice(0, 6) ?? "—")} · {triggerModeLabel(s.triggerMode)} · 帧组 {burst.judgement.groupCount} / 预期 {expectedText(burst.expectedTotal)}</Text>
           {flags.map(flag => <StatusBadge key={flag.key} tone={flag.tone} data-flag={flag.key}>{flag.label}</StatusBadge>)}
         </Stack>
         <StatusBadge tone={verdict.tone}>{verdict.label} · PLC {s.plcCode}{s.faultCode ? " / " + s.faultCode : ""}</StatusBadge>
@@ -374,7 +374,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
           : <RegionReplayDiff diffs={diffs} source={comparison.source} />}
     </Panel>}
     <div className="detail-grid burst">
-      <Panel title="帧组与原图" detail={viewing ? `显示${viewing}结果` : compared ? "显示原始记录" : undefined} help="点击小方块选择相机与帧组查看原图，左右方向键切换帧组。格子颜色只表示本帧；上方色带是所在段的结论，胶宽不均、整段胶偏、帧数异常等整段性问题看色带。灰色为检测不完整，浅灰为本段不检测或未判定。选了带逐帧指标的对照时，可切换显示对照结果或原始记录。" actions={<>
+      <Panel title="帧组与原图" detail={viewing ? `显示${viewing}结果` : compared ? "显示原始记录" : undefined} help="点击小方块选择相机与帧组查看原图，左右方向键切换帧组。格子颜色只表示本帧；上方色带是所在段的结论，胶宽不均、整段胶偏等整段性问题看色带。灰色为检测不完整，浅灰为本段不检测或未判定。选了带逐帧指标的对照时，可切换显示对照结果或原始记录。" actions={<>
         {compared && <Select aria-label="显示结果" value={showOriginal ? "original" : "comparison"} onValueChange={value => setShowOriginal(value === "original")}
           options={[{ value: "comparison", label: "对照结果" }, { value: "original", label: "原始记录" }]} />}
         <Button size="sm" leadingIcon={<SplitSquareHorizontal size={15} />} disabled={!!segmentBlock} title={segmentBlock || `到候选 ${segmentTarget} 的分段页调整段边界，定位到帧组 ${selection.seq} 的对应位置；改完可返回本件`} onClick={openSegments}>调整分段</Button>
@@ -415,7 +415,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
       </Panel>
       <Panel title={viewing ? `${viewing}整件判定` : "原始整件判定"} className="side">
         <p className="reason-box">{displayReason(j.reason)}</p>
-        <RegionResultPanel judgement={j} segments={shown.segments} cameras={shown.cameras} expectedTotal={shown.expectedTotal} toleranceTotal={shown.toleranceTotal}
+        <RegionResultPanel judgement={j} segments={shown.segments} cameras={shown.cameras} expectedTotal={shown.expectedTotal}
           onSelectGroup={seq => setSelection(prev => ({ ...prev, seq }))} />
         <div className="kv2">
           <span>记录号</span><b>#{s.id}</b>

@@ -403,7 +403,6 @@ pub struct Recipe {
     pub inspect: Vec<CameraInspect>,
     pub segment_defaults: KindDefaults,
     pub boundary_guard: u32,
-    pub boundary_refine: bool,
     pub pass_skip: crate::passes::PassSkip,
     pub pass_frames: Option<Vec<u32>>,
     pub part_calib: Option<PartCalib>,
@@ -438,11 +437,6 @@ impl Recipe {
     /// 整件预期帧组数 ΣN_exp（各段都已标定取其和，否则取整件标定）；未标定为 None。
     pub fn expected_total(&self) -> Option<u32> {
         plan::expected_total(&self.path_segments, self.part_calib.as_ref())
-    }
-
-    /// 整件帧数容差 Σtolerance。
-    pub fn tolerance_total(&self) -> u32 {
-        plan::tolerance_total(&self.path_segments)
     }
 
     /// 段配方能不能发布生产（D-SB-20）：每段每台检测相机都示教了走廊、相机有像素当量，且已标定——单段配方凭整件
@@ -552,15 +546,12 @@ pub struct RecipeDoc {
     /// 三台检测相机（有序，计划相机顺序取它）
     #[serde(default)]
     pub inspect: Vec<CameraInspect>,
-    /// 新建段时取用的直线 / 弯道默认容差与检测项
+    /// 新建段时取用的直线 / 弯道默认检测项
     #[serde(default)]
     pub segment_defaults: KindDefaults,
     /// 比例分段边界两侧的过渡帧数，0..=5（D-SB-40）；不进计划身份
     #[serde(default = "default_boundary_guard")]
     pub boundary_guard: u32,
-    /// 按逐帧定向的胶条方向序列细化比例边界（D-SB-47）；只作用于开启定向的段，不进计划身份
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub boundary_refine: bool,
     /// 每笔开头、结尾跳过的帧组数（D-SB-62）；不进计划身份
     #[serde(default, skip_serializing_if = "crate::passes::PassSkip::is_zero")]
     pub pass_skip: crate::passes::PassSkip,
@@ -720,7 +711,6 @@ impl RecipeDoc {
             inspect: self.inspect.clone(),
             segment_defaults: self.segment_defaults.clone(),
             boundary_guard: self.boundary_guard,
-            boundary_refine: self.boundary_refine,
             pass_skip: self.pass_skip,
             pass_frames: self.pass_frames.clone(),
             part_calib: self.part_calib.clone(),
@@ -840,7 +830,6 @@ pub fn burst_template(
             .collect(),
         segment_defaults,
         boundary_guard: DEFAULT_BOUNDARY_GUARD,
-        boundary_refine: false,
         pass_skip: crate::passes::PassSkip::default(),
         pass_frames: None,
         part_calib: None,
@@ -1514,9 +1503,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// 防的回归：现场已有的配方文件与修订来源都带 `planVersion`，读入时不能报错，也不能因与来源记录不一致而被当成手改文件升版本。
+    /// 防的回归：现场已有的配方文件与修订来源都带已停用的键（`planVersion`、每段与默认参数的 `tolerance`、`boundaryRefine`），
+    /// 读入时不能报错，也不能因与来源记录不一致而被当成手改文件升版本。
     #[test]
-    fn recipe_and_revision_source_with_plan_version_load_at_their_revision() {
+    fn recipe_and_revision_source_with_retired_keys_load_at_their_revision() {
         let dir = std::env::temp_dir().join(format!(
             "gluesight-legacy-plan-version-{}-{}",
             std::process::id(),
@@ -1527,6 +1517,12 @@ mod tests {
         let doc = samples_burst();
         let mut legacy = serde_json::to_value(&doc).unwrap();
         legacy["planVersion"] = 14.into();
+        legacy["boundaryRefine"] = true.into();
+        legacy["segmentDefaults"]["straight"]["tolerance"] = 2.into();
+        legacy["segmentDefaults"]["corner"]["tolerance"] = 2.into();
+        for segment in legacy["segments"].as_array_mut().unwrap() {
+            segment["tolerance"] = 1.into();
+        }
         std::fs::write(recipes.join(format!("{}.json", doc.id)), legacy.to_string()).unwrap();
         let sources = serde_json::json!({ doc.id.to_ascii_lowercase(): legacy });
         std::fs::write(recipes.join(".revision-sources"), sources.to_string()).unwrap();

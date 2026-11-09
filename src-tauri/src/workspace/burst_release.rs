@@ -132,11 +132,8 @@ fn corridor_check(w: &Workspace) -> Check {
 fn segment_check(w: &Workspace) -> Check {
     let doc = &w.doc;
     let total = doc.expected_total();
-    let tolerance_total = crate::plan::tolerance_total(&doc.segments);
     let head = match total {
-        Some(total) => {
-            format!("整件预期 {total} ± {tolerance_total} 个帧组（PLC shotCount = {total}）")
-        }
+        Some(total) => format!("整件预期 {total} 个帧组（PLC shotCount = {total}）"),
         None => "整件预期帧组数待示教件分段：先在分段步骤确认示教件边界".into(),
     };
     let multi = doc.segments.len() > 1;
@@ -149,7 +146,6 @@ fn segment_check(w: &Workspace) -> Check {
                 &doc.plan_cameras(),
                 u64::from(total),
                 doc.boundary_guard,
-                doc.boundary_refine,
                 &[],
                 super::pieces::piece_pass_rules(w),
             )
@@ -168,14 +164,14 @@ fn segment_check(w: &Workspace) -> Check {
             let offset_min = offset_frames_min(s, k > 0, k < last, doc.boundary_guard);
             match (s.expected_frames, total) {
                 (Some(n), _) if !s.skip && empty.contains(&s.index) => format!(
-                    "第 {} 段（{kind}）N_exp {n} ± {}：去掉过渡区与跳过帧后示教件上没有可判的帧，生产整段不检",
-                    s.index, s.tolerance
+                    "第 {} 段（{kind}）N_exp {n}：去掉过渡区与跳过帧后示教件上没有可判的帧，生产整段不检",
+                    s.index
                 ),
                 (Some(n), _) if multi && !s.skip && s.kind == SegmentKind::Straight && n < offset_min => format!(
-                    "第 {} 段（{kind}）N_exp {n} ± {}：短于 {offset_min} 帧，去掉过渡区、跳过帧与首尾各一帧后没有帧判胶偏，建议并入相邻弯道段",
-                    s.index, s.tolerance
+                    "第 {} 段（{kind}）N_exp {n}：短于 {offset_min} 帧，去掉过渡区、跳过帧与首尾各一帧后没有帧判胶偏，建议并入相邻弯道段",
+                    s.index
                 ),
-                (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n} ± {}", s.index, s.tolerance),
+                (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n}", s.index),
                 (None, _) => format!("第 {} 段（{kind}）待示教件分段", s.index),
             }
         })
@@ -307,7 +303,6 @@ pub(super) fn judge_round(
     judge_frames(
         &doc.segments,
         doc.boundary_guard,
-        doc.boundary_refine,
         doc.expected_total(),
         &cameras,
         metrics,
@@ -316,32 +311,17 @@ pub(super) fn judge_round(
     )
 }
 
-/// 段配方样本的结论：按 burst_judge 的整件结论对照人工期望（规则同 `SampleResult::judged`）。帧组数超出 ΣN_exp ± Σtol
-/// 与检测不完整只在原因里告警，不改是否符合（规格 §2、§0）。
+/// 段配方样本的结论：按 burst_judge 的整件结论对照人工期望（规则同 `SampleResult::judged`）。检测不完整只在原因里告警，
+/// 不改是否符合（规格 §2、§0）。
 pub(super) fn sample_result(
     sample: &Sample,
     name: String,
     sn: String,
     judgement: &BurstJudgement,
-    expected_total: Option<u32>,
-    tolerance_total: u32,
 ) -> SampleResult {
     let mut result = SampleResult::judged(sample, name, sn, burst_history::summary(judgement));
-    let mut warnings = Vec::new();
-    if judgement.flags.frame_count_anomaly {
-        let expected = expected_total.map_or("预期".to_string(), |n| {
-            format!("预期 {n} ± {tolerance_total}")
-        });
-        warnings.push(format!(
-            "帧组数 {} 超出{expected}（只告警，不影响结论）",
-            judgement.group_count
-        ));
-    }
     if judgement.flags.incomplete {
-        warnings.push("检测不完整：有帧组缺帧或有帧没测成（只告警，不影响结论）".to_string());
-    }
-    if !warnings.is_empty() {
-        result.reason = format!("{}；{}", result.reason, warnings.join("；"));
+        result.reason = format!("{}；检测不完整：有帧组缺帧或有帧没测成（只告警，不影响结论）", result.reason);
     }
     result
 }
@@ -371,7 +351,6 @@ fn validate_sample(
     sample: &Sample,
     current: &BTreeMap<String, Value>,
 ) -> Result<SampleResult, String> {
-    let tolerance_total = recipe.tolerance_total();
     if let Some(sample_id) = &sample.sample_id {
         let bank = w
             .sample_bank
@@ -413,8 +392,6 @@ fn validate_sample(
             bank.name.clone(),
             String::new(),
             &judgement,
-            recipe.expected_total(),
-            tolerance_total,
         ));
     }
     let history_id = sample.history_id.ok_or("样本来源未指定")?;
@@ -466,7 +443,6 @@ fn validate_sample(
     let judgement = judge_frames(
         &recipe.path_segments,
         recipe.boundary_guard,
-        recipe.boundary_refine,
         recipe.expected_total(),
         &recipe.plan_cameras(),
         &metrics,
@@ -478,8 +454,6 @@ fn validate_sample(
         format!("SN {}", detail.summary.sn),
         detail.summary.sn.clone(),
         &judgement,
-        recipe.expected_total(),
-        tolerance_total,
     ))
 }
 

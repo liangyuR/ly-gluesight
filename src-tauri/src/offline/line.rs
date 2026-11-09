@@ -72,8 +72,7 @@ impl PulseProfile {
 }
 
 /// 段配方的名义剖面（不含波动）：各段 N_exp；有段待标定时按段长 × 频率 / 速度估算（没有段长按类型取默认帧数），
-/// 已有整件 ΣN_exp（整件标定）时把待标定的段按估算比例缩放，使合计等于 ΣN_exp——正常件的帧数才落在
-/// ΣN_exp ± Σtol 内，不会被当成帧数异常。
+/// 已有整件 ΣN_exp（整件标定）时把待标定的段按估算比例缩放，使合计等于 ΣN_exp，按比例分段的边界与正常件对得上。
 pub fn nominal_frames(segments: &[PathSegment], expected_total: Option<u32>, hz: f64) -> Vec<(SegmentKind, u32)> {
     let estimate = |segment: &PathSegment| segment.length_mm.map_or(match segment.kind {
         SegmentKind::Straight => DEFAULT_STRAIGHT_FRAMES,

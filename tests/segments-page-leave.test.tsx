@@ -52,14 +52,14 @@ function Shell() {
   </>;
 }
 
-/** 打开配方 A 的段列表页，并把第 1 段的帧数容差改成 2（防抖没到期，还没提交）。 */
+/** 打开配方 A 的段列表页，并把第 1 段的长度改成 2（防抖没到期，还没提交）。 */
 async function editWithoutWaiting() {
   render(<MemoryRouter initialEntries={["/recipe/A/segments"]}><SnackbarProvider><WorkspaceProvider><Routes>
     <Route path="/recipe/:recipeId/segments" element={<Shell />} />
   </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>);
   const first = within(await screen.findByRole("region", { name: "段 1" }));
   await waitFor(() => expect(screen.getByLabelText("工作区配方")).toHaveTextContent("A"));
-  fireEvent.change(first.getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value: "2" } });
+  fireEvent.change(first.getByRole("spinbutton", { name: "段 1 长度" }), { target: { value: "2" } });
   expect(workspaceApi.updateSegments).not.toHaveBeenCalled();
 }
 
@@ -75,7 +75,7 @@ describe("防抖没到期就离开段列表页", () => {
 
     expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1);
     const [id, revision, sent] = vi.mocked(workspaceApi.updateSegments).mock.calls[0];
-    expect([id, revision, sent[0].tolerance]).toEqual(["A", 3, 2]);
+    expect([id, revision, sent[0].lengthMm]).toEqual(["A", 3, 2]);
     await waitFor(() => expect(screen.getByLabelText("工作区配方")).toHaveTextContent("B"));
   });
 
@@ -87,7 +87,7 @@ describe("防抖没到期就离开段列表页", () => {
     vi.mocked(workspaceApi.updateSegments).mockReset().mockImplementationOnce(() => saving.promise).mockResolvedValue(saved);
     await editWithoutWaiting();
     await waitFor(() => expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1), { timeout: 3000 });
-    fireEvent.change(within(screen.getByRole("region", { name: "段 1" })).getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value: "3" } });
+    fireEvent.change(within(screen.getByRole("region", { name: "段 1" })).getByRole("spinbutton", { name: "段 1 长度" }), { target: { value: "3" } });
 
     await userEvent.setup().click(screen.getByRole("button", { name: "打开配方 B" }));
     expect(workspaceApi.get).not.toHaveBeenCalledWith("B");
@@ -95,7 +95,7 @@ describe("防抖没到期就离开段列表页", () => {
 
     await waitFor(() => expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(2));
     const [id, revision, sent] = vi.mocked(workspaceApi.updateSegments).mock.calls[1];
-    expect([id, revision, sent[0].tolerance]).toEqual(["A", 4, 3]);
+    expect([id, revision, sent[0].lengthMm]).toEqual(["A", 4, 3]);
     await waitFor(() => expect(screen.getByLabelText("工作区配方")).toHaveTextContent("B"));
   });
 

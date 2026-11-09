@@ -1,4 +1,4 @@
-import { NumberField, Switch, TextField } from "qing-steel";
+import { NumberField, TextField } from "qing-steel";
 import type { RecipeDoc } from "../cycle/types";
 import { useWorkspace } from "./context";
 
@@ -52,16 +52,5 @@ export function PassSkipFields({ locked = "" }: { locked?: string }) {
     <NumberField label="每笔结尾跳过" unit="帧组" aria-label="每笔结尾跳过" step={1} min={0} max={50} value={Number.isFinite(skip.tail) ? skip.tail : ""} disabled={disabled || !!locked}
       onValueChange={value => change("tail", value)} />
     {!!passes?.length && <span className="muted" aria-label="示教件笔数">示教件 {passes.length} 笔</span>}
-  </span>;
-}
-
-/** 按逐帧定向的胶条方向序列细化比例边界（D-SB-47）。只有开启逐帧定向的段时可用。段列表页。 */
-export function BoundaryRefineField({ locked = "", available }: { locked?: string; available: boolean }) {
-  const { doc, set, disabled } = useDocField();
-  if (!doc) return null;
-  const reason = locked || (available ? "" : "没有开启逐帧定向的段，按比例边界分段");
-  return <span title={reason || "在比例边界附近，按胶条方向开始变化与停止变化的帧细化段边界；比例分段仍作兜底"}>
-    <Switch label="按胶条方向细化边界" aria-label="按胶条方向细化边界" checked={!!doc.boundaryRefine} disabled={disabled || !!reason}
-      onCheckedChange={on => set("boundaryRefine", on)} />
   </span>;
 }

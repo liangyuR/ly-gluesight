@@ -166,8 +166,8 @@ pub struct Validation {
     pub environment_tag: Value,
 }
 
-/// 旧拍照点模型写进候选文件的键（`frames`、`overview`、`lastPosition`）：读入时丢弃，不再写出。
-#[derive(Clone, Debug, Default)]
+/// 已停用的键：读入时丢弃，不再写出（`#[serde(default, rename = "…", skip_serializing)]`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Discarded;
 
 impl<'de> Deserialize<'de> for Discarded {

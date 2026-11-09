@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { verdictLabel } from "../history/meta";
 import type { PathSegment, RegionResult } from "./types";
-import { countStatusLabel, PLAN_CAMERAS, regionKindLabel, regionSegments, segmentLabel, verdictPlanTone } from "./vis";
+import { PLAN_CAMERAS, regionKindLabel, regionSegments, segmentLabel, verdictPlanTone } from "./vis";
 import "./plan.css";
 
 export interface CameraSegmentOverviewProps {
@@ -24,11 +24,11 @@ function segmentWeights(segments: PathSegment[]): number[] {
 }
 
 function segmentAria(s: PathSegment) {
-  return `段 ${s.index} · ${segmentLabel(s)} · ${s.expectedFrames == null ? "待标定" : `预期 ${s.expectedFrames} ± ${s.tolerance} 帧`}`;
+  return `段 ${s.index} · ${segmentLabel(s)} · ${s.expectedFrames == null ? "待标定" : `预期 ${s.expectedFrames} 帧`}`;
 }
 
 /**
- * 工件总览（段模型）：上面是三台计划相机，下面是沿胶路的段条（直线 / 弯道、N_exp 或“待标定”、容差、检测区间）；
+ * 工件总览（段模型）：上面是三台计划相机，下面是沿胶路的段条（直线 / 弯道、N_exp 或“待标定”、检测区间）；
  * 给了 regions 时再画一行区域结果，未分段区域横跨它覆盖的段。只做展示。
  */
 export function CameraSegmentOverview({ cameras, segments, regions }: CameraSegmentOverviewProps) {
@@ -46,7 +46,7 @@ export function CameraSegmentOverview({ cameras, segments, regions }: CameraSegm
     {segments.length ? <ol className="plan-segbar" style={columns} aria-label="段序列">
       {segments.map(s => <li key={s.index} className={`plan-seg ${s.kind}` + (s.expectedFrames == null ? " pending" : "")} aria-label={segmentAria(s)}>
         <strong>{s.index} · {segmentLabel(s)}</strong>
-        <span className="plan-seg-n plan-mono">{s.expectedFrames == null ? "待标定" : `${s.expectedFrames} ± ${s.tolerance} 帧`}</span>
+        <span className="plan-seg-n plan-mono">{s.expectedFrames == null ? "待标定" : `${s.expectedFrames} 帧`}</span>
         {(s.lengthMm != null || s.skipHead > 0 || s.skipTail > 0) && <small className="plan-mono">
           {s.lengthMm != null && `${s.lengthMm} mm`}{s.lengthMm != null && (s.skipHead > 0 || s.skipTail > 0) && " · "}{(s.skipHead > 0 || s.skipTail > 0) && `跳过首 ${s.skipHead} / 尾 ${s.skipTail} 帧`}
         </small>}
@@ -60,7 +60,7 @@ export function CameraSegmentOverview({ cameras, segments, regions }: CameraSegm
         return <li key={i} className={"plan-region " + (skipped ? "neutral" : verdictPlanTone(r.verdict))} data-verdict={skipped ? undefined : r.verdict} style={{ gridColumn: from != null && to != null ? `${from} / ${to + 1}` : "1 / -1" }}>
           <strong>{regionKindLabel(r.region.kind)}</strong>
           <span>{skipped ? "生产跳过 · 不参与判定" : verdictLabel[r.verdict]}</span>
-          <small className="plan-mono">{r.frameCount} 帧 · {countStatusLabel(r.countStatus)}</small>
+          <small className="plan-mono">{r.frameCount} 帧</small>
         </li>;
       })}
     </ol> : null}

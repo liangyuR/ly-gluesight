@@ -9,7 +9,7 @@ import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { errorText } from "../../lib/errors";
 import { patchSegment, segmentIssues } from "./segmentEdit";
-import { BoundaryGuardField, BoundaryRefineField, PassSkipFields } from "./DocParams";
+import { BoundaryGuardField, PassSkipFields } from "./DocParams";
 import SegmentWorkbench from "./SegmentWorkbench";
 import PassAlignmentPanel from "./PassAlignmentPanel";
 import { segmentCameras } from "./workbenchDraft";
@@ -25,7 +25,7 @@ const saveText: Record<SaveState, string> = { saved: "段列表已保存", pendi
 
 /**
  * 段列表（段配方，路由 /recipe/<编号>/segments）：顶部分段标定工作台（SegmentWorkbench）按示教件图像定段结构与边界；
- * 下方设各段长度、帧数容差与跳过帧数；逐帧定向、检测项与胶偏参考在走廊示教页。预期帧数 N_exp 只读：取自示教件已确认分段的帧组数。
+ * 下方设各段长度与跳过帧数；逐帧定向、检测项与胶偏参考在走廊示教页。示教帧数只读：取自示教件已确认分段的帧组数。
  */
 export default function SegmentsPage() {
   const { data, doc, selectedId } = useWorkspace();
@@ -113,10 +113,9 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
     {alignment && <PassAlignmentPanel alignment={alignment} plan={plan}
       locked={edits || workbenchDirty ? "段列表或分段有未保存的改动：保存或撤销后再改对照" : ""} />}
     <SegmentWorkbench plan={plan} locked={paramsPending} saveLocked={alignmentPending} onDirty={setWorkbenchDirty} />
-    <Panel title="段列表" help="各段帧数容差、长度与跳过帧数；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数取自示教件分段，这里只读"
+    <Panel title="段列表" help="各段长度与跳过帧数；段的数量、顺序与类型在上方分段标定里按图像划分，示教帧数取自示教件分段，这里只读"
       actions={<>
         <BoundaryGuardField locked={docLocked && `${docLocked}边界过渡帧数`} />
-        <BoundaryRefineField locked={docLocked && `${docLocked}边界细化`} available={segments.some(segment => !!segment.heading)} />
         <PassSkipFields locked={docLocked && `${docLocked}每笔首尾跳过`} />
       </>}>
       {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改段列表。</Notice>}
@@ -136,14 +135,14 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
           }))} />
       </div>
     </Panel>
-    <Panel title="整件预期帧数" help="各段预期帧数之和，取自示教件已确认分段的帧组数">
+    <Panel title="整件示教帧数" help="各段示教帧数之和，取自示教件已确认分段的帧组数">
       <div className="seg-total">
-        <strong aria-label="整件预期总帧数">{expectedText(plan.expectedTotal, plan.toleranceTotal)}</strong>
-        <span className="muted">ΣN_exp ± Σtol{plan.cameras.length !== PLAN_CAMERAS && `（需要 ${PLAN_CAMERAS} 台相机，当前 ${plan.cameras.length} 台）`}</span>
+        <strong aria-label="整件示教总帧数">{expectedText(plan.expectedTotal)}</strong>
+        <span className="muted">ΣN_exp{plan.cameras.length !== PLAN_CAMERAS && `（需要 ${PLAN_CAMERAS} 台相机，当前 ${plan.cameras.length} 台）`}</span>
         {plan.expectedTotal == null && <Badge tone="warn">待示教件分段{pending.length > 0 && "：" + pending.map(index => `段 ${index}`).join("、")}</Badge>}
         <Link className="wp-progress-link" to={href("/recipe/calibration")}>前往试测</Link>
       </div>
-      <p className="muted">新建段时，检测项与帧数容差沿用同类型已有段的设置；检测项可在走廊示教页用“检测项套用到其余同类段”一次改齐。</p>
+      <p className="muted">新建段时，检测项沿用同类型已有段的设置；检测项可在走廊示教页用“检测项套用到其余同类段”一次改齐。</p>
     </Panel>
   </div>;
 }
@@ -156,17 +155,15 @@ function SegmentCard({ segment, cameras, disabled, onPatch }: { segment: PathSeg
   return <section className="seg-card" aria-label={name}>
     <div className="seg-card-head">
       <strong>{name} · {segmentLabel(segment)}</strong>
-      <Badge tone={segment.expectedFrames == null ? "warn" : "ok"}>{segment.expectedFrames == null ? "待标定" : `预期 ${segment.expectedFrames} ± ${segment.tolerance} 帧`}</Badge>
+      <Badge tone={segment.expectedFrames == null ? "warn" : "ok"}>{segment.expectedFrames == null ? "待标定" : `示教 ${segment.expectedFrames} 帧`}</Badge>
       <span className="muted plan-mono" aria-label={`${name} 检测相机`}>检测相机 {inspecting.join(" · ")}</span>
     </div>
     <div className="seg-fields">
       <div className="seg-readonly">
-        <span>预期帧数 N_exp（只读）</span>
-        <output aria-label={`${name} 预期帧数`} className={segment.expectedFrames == null ? "seg-pending" : undefined}>{segment.expectedFrames == null ? "待标定" : segment.expectedFrames}</output>
+        <span>示教帧数（只读）</span>
+        <output aria-label={`${name} 示教帧数`} className={segment.expectedFrames == null ? "seg-pending" : undefined}>{segment.expectedFrames == null ? "待标定" : segment.expectedFrames}</output>
         {segment.calib && <small>{segment.calib.rounds} 轮 · {segment.calib.min}–{segment.calib.max} · 均值 {segment.calib.mean}</small>}
       </div>
-      <NumberField label="帧数容差" unit="帧" aria-label={`${name} 帧数容差`} step={1} min={0} disabled={disabled}
-        value={Number.isFinite(segment.tolerance) ? segment.tolerance : ""} onValueChange={value => onPatch({ tolerance: value === "" ? NaN : value })} />
       <NumberField label="长度" unit="mm" aria-label={`${name} 长度`} step={1} min={0} disabled={disabled}
         value={segment.lengthMm ?? ""} onValueChange={value => onPatch({ lengthMm: value === "" ? null : value })} />
       <NumberField label="段首跳过" unit="帧" aria-label={`${name} 段首跳过帧数`} step={1} min={0} disabled={disabled}

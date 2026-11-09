@@ -78,7 +78,7 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
       <span>工件身份</span><b className="mono">{summary.cycleId ?? "未分配"}</b>
       <span>发布包</span><b className="mono">{summary.bundleId ?? "未使用图像发布包"}</b>
       <span>PLC 交付</span><b>{deliveryLabel[summary.delivery.state]}{summary.delivery.message && ` · ${summary.delivery.message}`}</b>
-      <span>帧组 / 预期</span><b>{burst.judgement.groupCount} / {expectedText(burst.expectedTotal, burst.toleranceTotal)}</b>
+      <span>帧组 / 预期</span><b>{burst.judgement.groupCount} / {expectedText(burst.expectedTotal)}</b>
       <span>各相机帧数</span><b>{burst.cameras.map((name, c) => `${name} ${burst.cameraFrames[c] ?? 0}`).join(" · ")}</b>
       <span>触发计数（参考）</span><b>{burst.deviceTriggers ?? "—"}</b>
       <span>原图保留</span><b>{recordingLabel[recording.state]}{recording.available ? " · 已核验落盘" : ""}</b>

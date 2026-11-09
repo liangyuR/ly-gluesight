@@ -4,7 +4,7 @@ import type { BurstJudgement, CameraInspect, KindDefaults, PartCalib, PartViewBu
 
 /** 段模型（分段连拍飞拍）的契约类型，定义在 plan/types.ts；这里转出供 cycle 相关页面使用。 */
 export type {
-  BurstJudgement, CameraInspect, CountStatus, Flags, FrameCellStatus, FrameCellView, FrameGroupView, FrameMetrics, FrameState,
+  BurstJudgement, CameraInspect, Flags, FrameCellStatus, FrameCellView, FrameGroupView, FrameMetrics, FrameState,
   KindDefault, KindDefaults, LossAlarm, PartCalib, PartViewBurst, PathSegment, PlanExport, Region, RegionKind, RegionResult,
   RecipeDocSegmentFields, RecipeSummaryV2, SegmentChecks, SegmentKind, Uninspected,
 } from "../plan/types";
@@ -71,14 +71,13 @@ export interface Recipe {
   inspect: CameraInspect[];
   segmentDefaults: KindDefaults;
   boundaryGuard: number;
-  boundaryRefine?: boolean;
   passSkip?: PassSkip;
   passFrames?: number[];
   partCalib: PartCalib | null;
 }
 
 /** 配方文件内容，配方页编辑它。
- * 段模型字段（segments、inspect、segmentDefaults、boundaryGuard、boundaryRefine、partCalib）后端总是输出；前端提交时可缺省（后端按默认值补齐）。 */
+ * 段模型字段（segments、inspect、segmentDefaults、boundaryGuard、partCalib）后端总是输出；前端提交时可缺省（后端按默认值补齐）。 */
 export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   id: string;
   name: string;
@@ -119,7 +118,6 @@ export interface RecipeSummary {
   segmentCount: number;
   /** ΣN_exp；待标定为 null */
   expectedTotal: number | null;
-  toleranceTotal: number;
   /** expectedTotal 非空 */
   calibrated: boolean;
   /** 只有配方库列表（recipe_list）给出 */

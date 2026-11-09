@@ -31,7 +31,7 @@ export function clearedByTeachingPiece(view: WorkspaceView): string[] {
     || segments.some(segment => segment.expectedFrames != null || segment.calib != null || segment.offsetRef?.xRef != null);
   return [
     ...(workspace.teachingPiece || confirmed ? ["示教件的分段边界（在新件上给出边界草稿，到分段页重新确认）"] : []),
-    ...(calibrated ? ["示教件得出的结果：各段预期帧数 N_exp、示教件测量与胶偏参考 x_ref"] : []),
+    ...(calibrated ? ["示教件得出的结果：各段示教帧数、示教件测量与胶偏参考 x_ref"] : []),
     ...(workspace.passAlignment ? ["上一次换示教件的逐笔对照与各段沿用状态"] : []),
   ];
 }

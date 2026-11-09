@@ -20,16 +20,6 @@ pub struct Issue {
     pub message: String,
 }
 
-/// 把角度差折到 (−180, 180]。
-pub fn wrap(d: f64) -> f64 {
-    let r = (d + 180.0).rem_euclid(360.0) - 180.0;
-    if r == -180.0 {
-        180.0
-    } else {
-        r
-    }
-}
-
 fn taught(inspect: &CameraInspect, segment: u32) -> Option<&[[f32; 2]]> {
     inspect
         .segment_corridor(segment)

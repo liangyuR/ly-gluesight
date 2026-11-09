@@ -108,7 +108,6 @@ pub(crate) fn record(recipe: &Recipe, mut frames: Vec<FrameRecord>, regions: Opt
     };
     let record = BurstRecord {
         expected_total: recipe.expected_total(),
-        tolerance_total: recipe.tolerance_total(),
         device_triggers,
         camera_frames,
         judgement,

@@ -85,7 +85,7 @@ describe("分段标定工作台改变段结构", () => {
     vi.mocked(useWorkspace).mockImplementation(() => workspaceState(view));
     vi.mocked(workspaceApi.segmentTemplateSave).mockResolvedValue(view);
     const coverage: InspectionCoverage = {
-      groupCount: 9, boundaryGuard: 1, boundariesTrusted: trusted, boundaryRefinementPending: false,
+      groupCount: 9, boundaryGuard: 1, boundariesTrusted: trusted,
       regions: [], excludedGroups: [], expectedCameraFrames: trusted ? 0 : null, availableCameraFrames: trusted ? 0 : null,
       zeroCoverageSegments: trusted ? [2] : [],
       segments: [{ segment: 2, kind: "straight", skipped: false, range: trusted ? { firstSeq: 5, lastSeq: 6 } : null,

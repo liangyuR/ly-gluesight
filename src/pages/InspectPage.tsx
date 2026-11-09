@@ -202,9 +202,9 @@ export default function InspectPage() {
           <Card className="prod-shots">
             <div className="panel-head">
               <h3 className="panel-title">帧组</h3>
-              <ContextHelp label="帧组说明">同一触发序号（相机 SDK 帧号）的三台相机各出一帧，配成一个帧组；每格是一台相机的一帧，颜色只表示本帧：绿色为合格，黄色为允许范围内的局部超差，红色为 NG，紫色为测量失败，蓝色为测量中；灰色为缺帧、未测或走出走廊，只算检测不完整，不影响 OK/NG。本件判完后上方色带是各段结论，胶宽不均、整段胶偏、帧数异常等整段性问题看色带。</ContextHelp>
+              <ContextHelp label="帧组说明">同一触发序号（相机 SDK 帧号）的三台相机各出一帧，配成一个帧组；每格是一台相机的一帧，颜色只表示本帧：绿色为合格，黄色为允许范围内的局部超差，红色为 NG，紫色为测量失败，蓝色为测量中；灰色为缺帧、未测或走出走廊，只算检测不完整，不影响 OK/NG。本件判完后上方色带是各段结论，胶宽不均、整段胶偏等整段性问题看色带。</ContextHelp>
               <span className="spacer" />
-              <span className="muted mono">{burst ? `收到 ${burst.groupCount} 帧组 / 预期 ${expectedText(burst.expectedTotal, burst.toleranceTotal)}` : "—"}</span>
+              <span className="muted mono">{burst ? `收到 ${burst.groupCount} 帧组 / 预期 ${expectedText(burst.expectedTotal)}` : "—"}</span>
             </div>
             {burst ? <FrameGroupStrip groups={burst.groups} cameras={burst.cameras} regions={partResult?.burst?.regions} selected={burstSeq} onSelect={selectGroup} /> : <EmptyState title="等待工件" description="新工件开始后按帧组显示三台相机的帧。" />}
             {burst && !partResult?.burst && <p className="muted" role="note">当前为临时测量状态；本件判定完成后标出生产跳过帧，跳过帧不参与判定。</p>}
@@ -218,10 +218,10 @@ export default function InspectPage() {
           <Card className="prod-segments" role="region" aria-label="检测区域结果">
             <div className="panel-head">
               <h3 className="panel-title">检测区域结果</h3>
-              <ContextHelp label="区域结果说明">整件按区域（直线、弯道、未分段）分别判；每个区域写帧数是否在预期容差内、胶宽范围、胶偏或未判原因。未分段区域只跑每帧独立检测、不判胶偏。缺帧只标检测不完整，帧数异常只告警，都不改 OK/NG。</ContextHelp>
+              <ContextHelp label="区域结果说明">整件按区域（直线、弯道、未分段）分别判；每个区域写帧数、胶宽范围、胶偏或未判原因。未分段区域只跑每帧独立检测、不判胶偏。缺帧只标检测不完整，不改 OK/NG。</ContextHelp>
             </div>
             <RegionResultPanel judgement={burstJudgement} segments={burstSegments} cameras={burst?.cameras ?? summary?.cameras}
-              expectedTotal={burst ? burst.expectedTotal : undefined} toleranceTotal={burst?.toleranceTotal} onSelectGroup={burst ? selectGroup : undefined} />
+              expectedTotal={burst ? burst.expectedTotal : undefined} onSelectGroup={burst ? selectGroup : undefined} />
           </Card>
         </aside>
       </div>
@@ -282,7 +282,7 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
   const parts = result ? (result.mode === "maintenanceCollect" ? { code: "未判定", detail: "维护采集，只录图" }
     : { ...verdictParts(result.verdict), ...(result.mode === "maintenanceShadow" ? { detail: `试判 · ${verdictParts(result.verdict).detail}` } : {}) }) : null;
   const reason = result ? displayReason(result.reason) : "";
-  // 整件标记：检测不完整、帧数异常、胶偏未判、含未分段、疑似提前终止。只告警，不改上面的结论
+  // 整件标记：检测不完整、胶偏未判、含未分段、笔数异常等。只告警，不改上面的结论
   const flags = flagBadges(result?.burst?.flags);
   const progress = part ? burstProgressText(part.burst) : "—";
   return (
@@ -315,9 +315,9 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
   );
 }
 
-/** 在途件的进度：帧组数 / 预期总数 ± 容差；预期待标定时只写已收到的帧组数。 */
+/** 在途件的进度：帧组数 / 预期总数；预期待标定时只写已收到的帧组数。 */
 function burstProgressText(burst: PartViewBurst) {
-  return burst.expectedTotal == null ? String(burst.groupCount) : `${burst.groupCount} / ${expectedText(burst.expectedTotal, burst.toleranceTotal)}`;
+  return burst.expectedTotal == null ? String(burst.groupCount) : `${burst.groupCount} / ${expectedText(burst.expectedTotal)}`;
 }
 
 /** 本件进度：帧组数对预期总数，已测帧数对已收帧数，各台相机收到的帧数分别列出（缺帧的相机一眼可见）。 */

@@ -25,11 +25,11 @@ use crate::store::{BurstRecord, FrameRecord};
 
 use super::{FrameCellStatus, FrameCellView, FrameGroupView, Part, PartViewBurst};
 
-/// 分段边界的最低置信度：比例分段器在帧数容差内给 1、之外给 0（D-SB-40）。
+/// 分段边界的最低置信度：可信边界为 1；笔数与示教件不同、或按笔换算放不下的边界为 0（D-SB-40、D-SB-62）。
 const MIN_CONFIDENCE: f32 = 0.5;
 
-/// 生产的 seq 上限在 ΣN_exp + Σtol 之上留的余量：超出即帧号异常，按 OutOfRange 丢弃并告警（防异常帧号生成海量帧组）。
-const SEQ_MARGIN: u64 = 64;
+/// 生产的 seq 上限在 ΣN_exp 之上留的余量：超出即帧号异常，按 OutOfRange 丢弃并告警（防异常帧号生成海量帧组）。
+const SEQ_MARGIN: u64 = 128;
 
 /// 同一相机同一类异常每件只告警一次。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -84,7 +84,6 @@ pub(super) struct BurstPart {
     /// 各（计划相机下标, 段）拖过的搜索扇区方向（度）；没拖过的段用自动方向，不在表里
     sectors: BTreeMap<(usize, u32), f64>,
     boundary_guard: u32,
-    boundary_refine: bool,
     pass_skip: crate::passes::PassSkip,
     /// 示教件的笔结构（D-SB-62）
     pass_frames: Option<Vec<u32>>,
@@ -125,14 +124,14 @@ impl BurstPart {
     }
 
     /// 接件：cams 是 `shot_router::arm_frames` 按计划相机顺序给出的相机身份（帧计数基线只留作手动帧判断与下一件下限），
-    /// starts 是各计划相机的帧编号起点（接件时的相机时钟与帧周期，D-SB-55）。seq 上限 = ΣN_exp + Σtol + 余量。
+    /// starts 是各计划相机的帧编号起点（接件时的相机时钟与帧周期，D-SB-55）。seq 上限 = ΣN_exp + 余量。
     pub(super) fn arm(
         recipe: &Recipe,
         cams: Vec<FrameBaseline>,
         trusted: Vec<CounterSource>,
         starts: &[ClockStart],
     ) -> Self {
-        let limit = recipe.expected_total().map_or(MAX_SEQ, |n| u64::from(n) + u64::from(recipe.tolerance_total()) + SEQ_MARGIN);
+        let limit = recipe.expected_total().map_or(MAX_SEQ, |n| u64::from(n) + SEQ_MARGIN);
         let checks = wider_checks(&recipe.path_segments.iter().map(|s| &s.checks).collect::<Vec<_>>());
         let sectors = recipe
             .inspect
@@ -160,7 +159,6 @@ impl BurstPart {
             segments: recipe.path_segments.clone(),
             sectors,
             boundary_guard: recipe.boundary_guard,
-            boundary_refine: recipe.boundary_refine,
             pass_skip: recipe.pass_skip,
             pass_frames: recipe.pass_frames.clone(),
             budget_dropped: 0,
@@ -210,26 +208,16 @@ impl BurstPart {
         }
     }
 
-    /// 本件的分段结果与区域（按笔或按比例分段，D-SB-62、D-SB-40；配方开了方向细化时按已测帧的胶条方向细化，D-SB-47）。
+    /// 本件的分段结果与区域（按笔或按比例分段，D-SB-62、D-SB-40）。
     fn regions(&self) -> (SegOutcome, Vec<Region>) {
         let layout = self.pass_layout();
         let passes = self.pass_rules(&layout);
         let groups = self.grouper.groups();
-        let metrics: Vec<FrameMetrics> = if self.boundary_refine {
-            self.frames
-                .values()
-                .filter_map(|frame| frame.metrics.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
         let outcome = segment_part(
             &SegInput {
                 groups: &groups,
                 segments: &self.segments,
             },
-            &metrics,
-            self.boundary_refine,
             passes,
         );
         let regions = resolve_regions(
@@ -433,11 +421,10 @@ fn same_conclusion(burst: &BurstJudgement, judgement: &Judgement) -> bool {
         )
 }
 
-/// 没有帧的记录（接件时就不能检测、进程中断补记录）：预期帧组数与容差取配方，各相机帧数为 0，判定与摘要相同。
+/// 没有帧的记录（接件时就不能检测、进程中断补记录）：预期帧组数取配方，各相机帧数为 0，判定与摘要相同。
 pub(super) fn empty_record(recipe: &Recipe, judgement: &Judgement) -> BurstRecord {
     BurstRecord {
         expected_total: recipe.expected_total(),
-        tolerance_total: recipe.tolerance_total(),
         device_triggers: None,
         camera_frames: vec![0; recipe.plan_cameras().len()],
         judgement: from_summary(judgement),
@@ -740,7 +727,6 @@ impl Part {
             .collect();
         BurstRecord {
             expected_total: self.recipe.expected_total(),
-            tolerance_total: self.recipe.tolerance_total(),
             device_triggers: self.device_triggers.map(u32::from),
             camera_frames: burst.grouper.camera_counts(),
             judgement: decided,
@@ -837,7 +823,6 @@ impl Part {
         PartViewBurst {
             cameras: burst.cameras.clone(),
             expected_total: self.recipe.expected_total(),
-            tolerance_total: self.recipe.tolerance_total(),
             device_triggers: self.device_triggers.map(u32::from),
             group_count: burst.grouper.group_count(),
             camera_frames: burst.grouper.camera_counts(),

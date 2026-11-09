@@ -42,7 +42,6 @@ pub(super) fn measure_burst_with_operation(
     let judgement = super::burst_history::judge_frames(
         &recipe.path_segments,
         recipe.boundary_guard,
-        recipe.boundary_refine,
         recipe.expected_total(),
         &recipe.plan_cameras(),
         &metrics,

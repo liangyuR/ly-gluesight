@@ -39,9 +39,6 @@ export default function SegmentCoveragePreview({ coverage }: { coverage: Inspect
     {!coverage.boundariesTrusted && <Notice title="检测范围尚无法确认" tone="warn">
       当前帧数或分段配置不能确定每段位置，不能据此认定各段已经覆盖；逐帧检测结果仍需试测确认。
     </Notice>}
-    {coverage.boundaryRefinementPending && <Notice title="分段位置还可能调整">
-      已开启按胶条方向调整边界。这里按当前帧数比例预估，测量后的检测范围可能变化。
-    </Notice>}
     {coverage.excludedGroups.length > 0 && <p>示教件已屏蔽帧组 {coverage.excludedGroups.join("、")}，只扣除本次示教可用帧，不改变生产检测范围。</p>}
     <Table caption="逐段检测覆盖" columns={columns} rows={coverage.segments} rowKey={row => String(row.segment)} />
     <p className="muted">以上按检测规则计算应测、应判帧数；图像缺失或测量失败仍会减少实测帧数，请在试测结果中核对。</p>

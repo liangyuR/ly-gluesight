@@ -161,9 +161,6 @@ pub(super) fn assess(
     if view.imported_round.is_some() {
         reasons.push(ALREADY_IMPORTED.into());
     }
-    if summary.flags.as_ref().is_some_and(|f| f.short_part) {
-        reasons.push("PLC 提前结束运动（疑似提前终止）".into());
-    }
     let recorded = recording.state == RecordingState::Complete && recording.available;
     if !recorded {
         reasons.push("录制不完整或原图已清理".into());
