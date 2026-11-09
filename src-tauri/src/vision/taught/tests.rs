@@ -15,6 +15,7 @@ fn burst_doc() -> RecipeDoc {
             corridor: vec![[40.0, 80.0], [200.0, 80.0]],
             sector_deg: None,
             color_model: None,
+            measure: None,
         }];
         inspect.mm_per_px = Some(0.25);
     }
@@ -599,6 +600,7 @@ fn sector_turned_on_one_segment_leaves_other_segments_of_the_camera_automatic() 
                 segment: 2,
                 sector_deg: Some(90.0),
                 color_model: None,
+                measure: None,
                 ..corridor
             },
         ];
@@ -810,4 +812,19 @@ fn build_available_keeps_usable_pairs_while_build_still_rejects_broken_ones() {
     let (set, unavailable) = CorridorSet::build_available(&recipe, &[FRAME; 3]);
     assert!(set.get(0, 1).is_some() && set.get(2, 1).is_none());
     assert_eq!(pairs(&unavailable), vec![(1, true), (2, false)]);
+}
+
+#[test]
+fn chosen_measure_mode_overrides_color_model_presence_and_color_without_model_blocks_release() {
+    // 防的回归：操作员选了按灰度，留下的胶色模型仍让这一段按胶色测；选了按胶色却还没取色时悄悄按灰度测、照样能发布
+    use crate::recipe::MeasureMode;
+    let mut doc = burst_doc();
+    doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+    doc.inspect[0].segments[0].measure = Some(MeasureMode::Gray);
+    doc.inspect[1].segments[0].measure = Some(MeasureMode::Color);
+    let recipe = doc.build().unwrap();
+    assert_eq!(corridor_of(doc.clone(), 0).template.id, "corridor");
+    assert!(plan_corridor(&recipe.inspect[1], 1, &recipe, FRAME).is_err());
+    let reasons = recipe.ready_burst().unwrap_err();
+    assert_eq!(reasons.iter().filter(|r| r.contains("还没取色")).count(), 1);
 }

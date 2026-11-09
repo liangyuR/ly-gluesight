@@ -124,9 +124,7 @@ pub fn plan_heading(
         "nozzle": anchor, "zone": zone, "radial": [z0, z0 + FAN_LENGTH_PX.min(z1 - z0)],
         "sector": search_sector(anchor, size, turned), "pathWidthMax": path_width_max,
     });
-    let color_model = inspect
-        .segment_corridor(segment)
-        .and_then(|s| s.color_model.as_deref());
+    let color_model = super::taught::measuring_color_model(inspect, segment).map_err(|e| fail(&e))?;
     let template = match color_model {
         Some(model) => {
             color_params_into(&mut business, model, roi);

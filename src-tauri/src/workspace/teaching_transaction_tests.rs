@@ -332,6 +332,7 @@ fn narrow_trial_reads_only_its_window_and_preserves_frame_numbers_and_segment_co
             corridor: path(),
             sector_deg: Some(45.0),
             color_model: None,
+            measure: None,
         });
     w.doc.segments[1].heading = Some(crate::plan::HeadingSettings::default());
     let inputs = fixture.host.root.join("trial-inputs");
@@ -409,4 +410,17 @@ fn narrow_trial_reads_only_its_window_and_preserves_frame_numbers_and_segment_co
             serde_json::to_value(&full.frames[(frame.seq - full.start) as usize]).unwrap()
         );
     }
+}
+
+#[test]
+fn reteaching_on_a_gray_frame_drops_a_pending_color_choice() {
+    // 防的回归：段记为按胶色、待取色后换成灰度示教帧，灰度帧取不了色，这一段一直卡在“还没取色”发布不了
+    let fixture = Fixture::new();
+    let mut w = fixture.workspace.clone();
+    w.doc.inspect[0].segments[0].measure = Some(crate::recipe::MeasureMode::Color);
+    fixture.host.items.lock().unwrap().insert(w.doc.id.clone(), w.clone());
+    let saved = Fixture::prepare(&w, "replacement", 2, false)
+        .commit(&fixture.host, path(), None)
+        .unwrap();
+    assert_eq!(saved.doc.inspect[0].segment_corridor(1).unwrap().measure, None);
 }

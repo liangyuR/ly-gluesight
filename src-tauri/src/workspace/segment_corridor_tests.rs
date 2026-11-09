@@ -59,6 +59,7 @@ fn with_corridor(w: &mut Workspace, camera: &str, segment: u32, corridor: Vec<[f
             corridor,
             sector_deg: None,
             color_model: None,
+            measure: None,
         });
     update_doc(w, doc).unwrap();
 }
@@ -240,4 +241,37 @@ fn saving_the_segmentation_keeps_corridors_and_params_of_segments_that_did_not_c
             );
         }
     }
+}
+
+#[test]
+fn saving_corridor_without_color_model_keeps_color_segments_pending_fit_and_legacy_gray() {
+    // 防的回归：按胶色测量的段改了走廊点（旧模型作废）、彩色示教帧上新画的走廊没取色，保存后都悄悄按灰度测；
+    // 或旧配方里没选测量方式也没取色的走廊被改成按胶色
+    use crate::recipe::MeasureMode::Color;
+    let (mut w, cameras) = workspace();
+    let line = vec![[10.0, 50.0], [90.0, 50.0]];
+    with_corridor(&mut w, &cameras[0], 1, line.clone());
+    with_corridor(&mut w, &cameras[1], 1, line.clone());
+    let mut doc = w.doc.clone();
+    doc.inspect[1].segments[0].color_model = Some(r#"{"version":1}"#.into());
+    update_doc(&mut w, doc).unwrap();
+    let mut fresh = teaching(&cameras[0], "confirmed", 25, 3, [100, 100]);
+    fresh.frame.camera_tag = json!({"imageMode": "color"});
+    apply_segment_teaching(&mut w, fresh, GROUPS, None).unwrap();
+
+    let moved = vec![[12.0, 50.0], [90.0, 50.0]];
+    let mut doc = w.doc.clone();
+    doc.inspect[0].segments[0].corridor = moved.clone();
+    doc.inspect[1].segments[0].corridor = moved.clone();
+    doc.inspect[1].segments[0].color_model = None;
+    doc.inspect[0].segments.push(SegmentCorridor {
+        segment: 3,
+        corridor: moved,
+        sector_deg: None,
+        color_model: None,
+        measure: None,
+    });
+    super::burst::keep_color_measure(&w, &mut doc);
+    let measure = |camera: usize, segment: u32| doc.inspect[camera].segment_corridor(segment).unwrap().measure;
+    assert_eq!((measure(0, 1), measure(1, 1), measure(0, 3)), (None, Some(Color), Some(Color)));
 }

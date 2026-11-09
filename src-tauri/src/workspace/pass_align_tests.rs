@@ -115,6 +115,7 @@ fn taught(passes: &[u32], cuts: &[u64]) -> Workspace {
                 corridor: corridor.clone(),
                 sector_deg: None,
                 color_model: Some(format!("m{segment}")),
+                measure: None,
             })
             .collect();
         for (k, start) in starts.iter().enumerate() {

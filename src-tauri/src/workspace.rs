@@ -832,6 +832,8 @@ fn save_doc(
     let mut items = host.items.lock().unwrap();
     let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
     w.expect(revision)?;
+    let mut doc = doc;
+    burst::keep_color_measure(&w, &mut doc);
     update_doc(&mut w, doc)?;
     host.save(&w)?;
     items.insert(id, w.clone());

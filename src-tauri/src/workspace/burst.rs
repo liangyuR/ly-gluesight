@@ -102,6 +102,32 @@ pub(super) fn teaching_channels(w: &Workspace) -> Vec<u8> {
         .collect()
 }
 
+/// 没选测量方式也没有颜色模型的走廊按灰度测。彩色示教帧上新画的走廊、按胶色测量的段改了走廊点（旧模型随之去掉）时，
+/// 记为按胶色测量、待取色，不悄悄回到灰度（color CL-3）。
+pub(super) fn keep_color_measure(w: &Workspace, doc: &mut RecipeDoc) {
+    for inspect in &mut doc.inspect {
+        let before = w.doc.inspect.iter().find(|i| i.camera == inspect.camera);
+        for s in &mut inspect.segments {
+            if s.measure.is_some() || s.color_model.is_some() || s.corridor.is_empty() {
+                continue;
+            }
+            let previous = before.and_then(|b| b.segment_corridor(s.segment));
+            let color = match previous.filter(|p| !p.corridor.is_empty()) {
+                Some(p) => p.measure_mode() == crate::recipe::MeasureMode::Color,
+                None => w.camera_teaching.iter().any(|t| {
+                    t.camera == inspect.camera
+                        && t.segment == Some(s.segment)
+                        && t.frame.camera_tag.get("imageMode").and_then(Value::as_str)
+                            == Some("color")
+                }),
+            };
+            if color {
+                s.measure = Some(crate::recipe::MeasureMode::Color);
+            }
+        }
+    }
+}
+
 /// 示教件的一次测量（RB-3）：用已示教的走廊按示教件分段量每一帧，得出胶偏参考 x_ref（示教件兼作标准件）、起涂收尾建议与定向统计。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -883,7 +909,14 @@ pub async fn workspace_teach_segment_corridor(
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<WorkspaceHost>();
         let mut next = prepared.workspace.clone();
-        next.changed();
+        if !prepared.image.is_color() {
+            let mut doc = next.doc.clone();
+            gray_frame_measures_gray(&mut doc, &prepared.camera, prepared.segment);
+            update_doc(&mut next, doc)?;
+        }
+        if next.revision == prepared.revision {
+            next.changed();
+        }
         let result = view(&app, next.clone())?;
         prepared.persist(&host, next)?;
         Ok(result)
@@ -954,8 +987,12 @@ impl PreparedSegmentTeaching {
         corridor: Vec<[f32; 2]>,
         color_model: Option<String>,
     ) -> Result<Workspace, String> {
+        let mut base = self.workspace.clone();
+        if !self.image.is_color() {
+            gray_frame_measures_gray(&mut base.doc, &self.camera, self.segment);
+        }
         with_segment_corridor(
-            &self.workspace,
+            &base,
             self.revision,
             &self.camera,
             self.segment,
@@ -971,7 +1008,7 @@ impl PreparedSegmentTeaching {
         corridor: Vec<[f32; 2]>,
         color_model: Option<String>,
     ) -> Result<Workspace, String> {
-        if self.image.is_color() {
+        if color_model.is_some() {
             require_usable_color_model(color_model.as_deref())?;
         }
         let next = self.corridor_workspace(corridor, color_model)?;
@@ -1122,7 +1159,7 @@ pub(super) async fn commit_segment_teaching(
             .iter()
             .find(|i| i.camera == prepared.camera)
             .ok_or("示教相机不在候选中")?;
-        let model = if prepared.image.is_color() {
+        let model = if prepared.image.is_color() && !gray_chosen(inspect, prepared.segment) {
             let scale = inspect.mm_per_px.ok_or("先填像素当量再取色")?;
             let detect = inspect
                 .detect
@@ -1227,6 +1264,11 @@ async fn fit_workspace_color_model(
             })?;
         let scale = inspect.mm_per_px.ok_or("先填像素当量再取色")?;
         let detect = inspect.detect.as_ref().unwrap_or(&before.doc.detect);
+        if gray_chosen(inspect, segment) {
+            return Err(format!(
+                "相机 {camera} 第 {segment} 段选了按灰度测量：先改为按胶色测量再取色"
+            ));
+        }
         let image = crate::image_file::load(&image_file(&host, &id, frame)?)?;
         if !image.is_color() {
             return Err(
@@ -1444,8 +1486,9 @@ fn with_segment_corridor(
     inspect.segments.push(crate::recipe::SegmentCorridor {
         segment,
         corridor,
-        sector_deg: previous.and_then(|p| p.sector_deg),
+        sector_deg: previous.as_ref().and_then(|p| p.sector_deg),
         color_model,
+        measure: previous.and_then(|p| p.measure),
     });
     inspect.segments.sort_by_key(|s| s.segment);
     let recipe = doc.build()?;
@@ -1460,6 +1503,26 @@ fn with_segment_corridor(
         next.changed();
     }
     Ok(next)
+}
+
+/// 灰度示教帧只能按灰度测：去掉这一段的胶色选择与颜色模型，免得卡在取不了色的“待取色”（color CL-3）。
+pub(super) fn gray_frame_measures_gray(doc: &mut RecipeDoc, camera: &str, segment: u32) {
+    if let Some(s) = doc
+        .inspect
+        .iter_mut()
+        .find(|i| i.camera == camera)
+        .and_then(|i| i.segments.iter_mut().find(|s| s.segment == segment))
+    {
+        s.color_model = None;
+        s.measure = None;
+    }
+}
+
+/// 操作员明确选了按灰度测这一段：不取色、不按胶色吸附。
+fn gray_chosen(inspect: &CameraInspect, segment: u32) -> bool {
+    inspect
+        .segment_corridor(segment)
+        .is_some_and(|s| s.measure == Some(crate::recipe::MeasureMode::Gray))
 }
 
 fn require_usable_color_model(model: Option<&str>) -> Result<(), String> {
@@ -1528,6 +1591,11 @@ pub async fn workspace_snap_corridor(
                 "按胶色吸附要用像素当量把胶宽换成像素：{camera} 还没有像素当量，先在左侧“相机参数”里填写或采用设备标定当量，再刷选"
             ));
         };
+        if gray_chosen(inspect, segment) {
+            return Err(format!(
+                "相机 {camera} 第 {segment} 段选了按灰度测量，刷选按两侧胶边提取，不按胶色吸附"
+            ));
+        }
         let detect = inspect.detect.as_ref().unwrap_or(&before.doc.detect);
         let radius = guide.radius_px;
         if !radius.is_finite() || !(3.0..=150.0).contains(&radius) || guide.points.len() < 2 {

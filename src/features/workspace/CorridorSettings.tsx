@@ -5,7 +5,7 @@ import { Accordion, Button, SegmentedControl, Select, Switch } from "qing-steel"
 import { DetectEditor } from "../recipe";
 import { recipeApi } from "../cycle/api";
 import type { DetectParams } from "../cycle/types";
-import type { CameraInspect, EdgeParams, EdgePolarity, ExpertParams, ExpertSpec, InspectWindow, OffsetMeasure, PathSegment } from "../plan/types";
+import type { CameraInspect, EdgeParams, EdgePolarity, ExpertParams, ExpertSpec, InspectWindow, MeasureMode, OffsetMeasure, PathSegment } from "../plan/types";
 import { KindChecksEditor } from "../plan/KindChecksEditor";
 import { segmentKindLabel } from "../plan/vis";
 import { Badge, NumberField } from "./components";
@@ -388,21 +388,28 @@ const percent = (value: number | undefined) => value != null && Number.isFinite(
 const LOW_SEPARATION = 3;
 
 /**
- * 段视图“胶色”：示教帧是彩色时可沿已保存的走廊取色，这一段这台相机改按胶色测量；`color` 为 null 表示示教帧还在读取。
- * `blocked` 非空时取色按钮禁用并说明原因；`edited` 为走廊有未保存的修改（保存后旧模型作废）。
+ * 段视图“测量方式”（color CL-3）：示教帧是彩色时这一段这台相机可选按灰度或按胶色测量，按胶色时沿已保存的走廊取色；
+ * `color` 为 null 表示示教帧还在读取。`measureLocked` 非空时不能切换；`blocked` 非空时取色按钮禁用并说明原因；
+ * `edited` 为走廊有未保存的修改（保存后旧模型作废）。
  */
-export function ColorCard({ camera, segment, colorModel, color, blocked, edited, working, onFit }: {
-  camera: string; segment: number; colorModel: string | undefined; color: boolean | null; blocked: string; edited: boolean; working: boolean; onFit: () => void;
+export function ColorCard({ camera, segment, colorModel, color, measure, measureLocked, blocked, edited, working, onMeasure, onFit }: {
+  camera: string; segment: number; colorModel: string | undefined; color: boolean | null; measure: MeasureMode; measureLocked: string;
+  blocked: string; edited: boolean; working: boolean; onMeasure: (measure: MeasureMode) => void; onFit: () => void;
 }) {
   const model = colorModel ? readColorModel(colorModel) : null;
   const separation = model?.quality.separation;
   const low = separation != null && separation < LOW_SEPARATION;
-  const [badge, tone]: [string, Tone] = color === false ? ["灰度图", "neutral"] : !colorModel ? ["灰度测量", "neutral"]
+  const gray = color === false || measure === "gray";
+  const [badge, tone]: [string, Tone] = gray ? ["按灰度测量", "neutral"] : !colorModel ? ["待取色", "warn"]
     : !model || model.quality.usable === false ? ["不可用", "warn"] : low ? ["分离度低", "warn"] : ["按胶色测量", "ok"];
-  const summary = color === false ? "示教帧是灰度图，按灰度测量" : !colorModel ? "未取色：按灰度测量"
-    : model ? `分离度 ${separation != null ? separation.toFixed(1) : "—"} · 高光 ${percent(model.quality.saturatedFraction)}` : "胶色模型无法读取";
-  return <SettingsCard title="胶色" badge={badge} tone={tone} summary={summary} open={color === true || !!colorModel}>
-    {color === false ? <p className="wp-settings-hint">示教帧是灰度图：相机图像模式改为彩色后重新选示教帧，才能按胶色测量</p> : <>
+  const summary = color === false ? "示教帧是灰度图，按灰度测量" : gray ? "按灰度测量" : !colorModel ? "按胶色测量，还没取色"
+    : model ? `按胶色 · 分离度 ${separation != null ? separation.toFixed(1) : "—"} · 高光 ${percent(model.quality.saturatedFraction)}` : "胶色模型无法读取";
+  return <SettingsCard title="测量方式" badge={badge} tone={tone} summary={summary} open={color === true || !!colorModel}>
+    {color === false ? <p className="wp-settings-hint">示教帧是灰度图，只能按灰度测量：相机图像模式改为彩色后重新选示教帧，才能按胶色测量</p> : <>
+      {color != null && <SegmentedControl size="sm" label="测量方式" value={measure} disabled={!!measureLocked}
+        options={[{ value: "color", label: "按胶色" }, { value: "gray", label: "按灰度" }]} onValueChange={value => onMeasure(value as MeasureMode)}/>}
+      {measureLocked && <p className="wp-settings-hint">{measureLocked}</p>}
+      {gray ? <p className="wp-settings-hint">按亮度找胶条，用相机检测参数里的胶色明暗；刷选按两侧胶边提取。改回按胶色后要重新取色。</p> : <>
       {colorModel && (model ? <div className="wp-settings-group wp-color-model" role="group" aria-label="胶色模型">
         <p className="wp-settings-hint">这一段按胶色测量：{camera} 在段 {segment} 按示教帧取得的胶色与背景色区分胶条。</p>
         <div className="wp-color-row"><span className="wp-settings-label">胶</span><span className="wp-color-swatch" style={{ background: colorOf(model.glue) }} title={colorOf(model.glue)}/></div>
@@ -421,7 +428,7 @@ export function ColorCard({ camera, segment, colorModel, color, blocked, edited,
         {blocked && <p className="wp-settings-hint">{blocked}</p>}
       </>}
       {colorModel && edited && <p className="wp-settings-hint">走廊改动保存后，这里的胶色模型作废，需要重新取色。</p>}
-      {!colorModel && <p className="wp-settings-hint">示教帧是彩色图：沿已保存的走廊取胶色与背景色后，这一段改按胶色测量；不取色则按灰度测量。</p>}
-    </>}
+      {!colorModel && <p className="wp-settings-hint">沿已保存的走廊取胶色与背景色后才能按胶色测量；没取色时试测与发布都会提示待取色。</p>}
+    </>}</>}
   </SettingsCard>;
 }
