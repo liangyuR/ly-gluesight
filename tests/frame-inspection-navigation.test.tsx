@@ -36,6 +36,24 @@ it("截断与全未知的试测 → 不显示无胶，生产跳过仍优先，�
   expect(within(screen.getByLabelText("试测统计")).queryByText(/^无胶/)).not.toBeInTheDocument();
 });
 
+it("全段试测完成 → 进度卡与跳过说明收起，统计行保留，点详情再展开", async () => {
+  const frames = [1, 2, 3].map(seq => frameMetrics(0, seq));
+  vi.mocked(workspaceApi.teachPreviewSegment).mockResolvedValue({ round: "round-1", start: 1, end: 3, frames });
+  render(<SegmentTrial id="A" camera="CAM-1" segment={1} round="round-1" teachSeq={2} range={{ start: 1, end: 3 }}
+    skipRules={{ passes: [3], groupCount: 3, passSkip: { head: 1, tail: 0 }, segment: pathSegment(1, "straight") }}
+    revision={3} locked="" guide={null} seq={null} onSeq={() => undefined} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "全段试测" }));
+  const counts = within(screen.getByLabelText("试测统计"));
+  expect(await counts.findByText("全段试测已完成")).toBeVisible();
+  expect(counts.getByText("测到 2")).toBeVisible();
+  expect(screen.queryByRole("status", { name: "全段试测进度" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/^生产跳过的帧不参与判定/)).not.toBeInTheDocument();
+  await user.click(counts.getByRole("button", { name: "详情" }));
+  expect(screen.getByRole("status", { name: "全段试测进度" })).toHaveTextContent("已完成");
+  expect(screen.getByText(/^生产跳过的帧不参与判定/)).toBeVisible();
+});
+
 it.each([
   { name: "笔首4帧且段首0", passes: [6, 6], passSkip: { head: 4, tail: 0 }, skipHead: 0, skipTail: 0, skipped: [7, 8, 9, 10] },
   { name: "笔首与段首重叠并跳段尾", passes: [6, 6], passSkip: { head: 2, tail: 0 }, skipHead: 3, skipTail: 1, skipped: [7, 8, 9, 12] },
