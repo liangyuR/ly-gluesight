@@ -5,7 +5,7 @@
  * （serde camelCase，Option 一律序列化为 null）；后半部分是各 IPC 新增的 DTO（cycle.rs、store.rs、recipe_capture/burst.rs、
  * workspace/burst.rs、workspace/burst_history.rs），字段与 Rust serde 输出逐一对应。字段口径与命令清单见 docs/decisions/segment-burst.md。
  */
-import type { DetectParams, RecipeSummary, Verdict } from "../cycle/types";
+import type { RecipeSummary, Verdict } from "../cycle/types";
 import type { PartSummary } from "../history/types";
 import type { CaptureCamera, FrozenImage, StepStatus } from "../workspace/types";
 
@@ -23,6 +23,8 @@ export interface WidthCheck {
   maxExcursionMm: number;
   /** 均匀性：区域内各帧 widthMean 的极差上限，只在直线区域判；null 不判 */
   maxRangeMm: number | null;
+  /** 偏宽只预警：超上限的站不计入超差长度，溢胶也只预警；只有偏窄判 NG。缺省 false（D-SB-61） */
+  wideWarnOnly?: boolean;
 }
 
 /** 断胶，每帧独立判。 */
@@ -33,7 +35,7 @@ export interface BreakCheck {
   minPresent: number;
 }
 
-/** 溢胶：每帧最大胶宽超过上限判 NG_WIDTH，原因“溢胶”。 */
+/** 溢胶：每帧最大胶宽超过上限判 NG_WIDTH，原因“溢胶”；胶宽开了偏宽只预警时只记溢胶预警、不判 NG。 */
 export interface OverflowCheck {
   enabled: boolean;
   maxWidthMm: number;
@@ -84,9 +86,11 @@ export interface OffsetRef {
   edge?: EdgeParams | null;
 }
 
-/** 逐帧定向（D-SB-47）：toleranceDeg（0–45°）只用于细化分段边界，直线段方向偏离超过它算离开直线段。 */
+/** 逐帧定向（D-SB-47）：toleranceDeg（0–45°）不参与计算，保留以免走廊身份变化。 */
 export interface HeadingSettings {
   toleranceDeg: number;
+  /** 本段的测量区间覆盖，本段各检测相机共用；null / 缺省 = 用相机的测量区间（CameraInspect.window），相机也没设时用默认值 */
+  window?: InspectWindow | null;
 }
 
 /** 帧组数统计（旧配方的多件统计，只读）。 */
@@ -111,8 +115,6 @@ export interface PathSegment {
   lengthMm: number | null;
   /** N_exp：取示教件已确认分段的帧组数，由后端写入；null = 待标定 */
   expectedFrames: number | null;
-  /** 帧数容差，默认 2 */
-  tolerance: number;
   calib: SegmentCalib | null;
   checks: SegmentChecks;
   offsetRef: OffsetRef | null;
@@ -125,8 +127,14 @@ export interface PathSegment {
   skipTail: number;
   /** 逐帧定向（D-SB-47）；null / 缺省 = 关闭，照旧用示教走廊 */
   heading?: HeadingSettings | null;
+  /** 本段的搜索半宽覆盖（mm），本段各检测相机共用；null / 缺省 = 配方默认（RecipeDoc.detect） */
+  searchMm?: number | null;
+  /** 本段的胶宽范围覆盖（mm），同 searchMm */
+  widthRange?: [number, number] | null;
   /** 不检测（D-SB-53）：照常计入帧数与分段，没有检测相机、不测不判；类型、检测相机与检测项保留，取消后恢复。缺省 = 检测 */
   skip?: boolean;
+  /** 段 ID（RB-11）：只在候选里，由后端生成；前端新建段时不填 */
+  id?: string;
 }
 
 /** 整件标定：旧配方的整件帧组数统计，只为读入保留；新配方恒为 null。 */
@@ -136,11 +144,10 @@ export interface PartCalib {
 }
 
 export interface KindDefault {
-  tolerance: number;
   checks: SegmentChecks;
 }
 
-/** 配方默认参数：直线段与弯道段各一套，容差默认 1。 */
+/** 配方默认参数：直线段与弯道段各一套。 */
 export interface KindDefaults {
   straight: KindDefault;
   corner: KindDefault;
@@ -151,7 +158,6 @@ export interface ExportSegment {
   kind: SegmentKind;
   lengthMm: number | null;
   expectedFrames: number | null;
-  tolerance: number;
   inspectRange: InspectRange | null;
   skipHead?: number;
   skipTail?: number;
@@ -162,16 +168,12 @@ export interface PlanExport {
   protocolVersion: number;
   recipeId: string;
   productCode: number;
-  planVersion: number;
   cameras: string[];
   segments: ExportSegment[];
   expectedTotal: number | null;
-  toleranceTotal: number;
 }
 
 // ───────────── frame_group.rs ─────────────
-
-export type CountStatus = "normal" | "low" | "high";
 
 export type LossReason =
   | { type: "triggers"; deviceTriggers: number }
@@ -192,8 +194,8 @@ export type RegionKind =
   | { type: "straight"; segment: number }
   | { type: "corner"; segment: number }
   | { type: "unsegmented"; firstSegment: number; lastSegment: number; reason: UnsegReason }
-  /** 段首尾跳过的帧：不判定 */
-  | { type: "skipped"; segment: number };
+  /** 段首尾跳过的帧：不判定；pass（从 1 起）= 每笔首尾跳过的第几笔，short = 整笔太短不检（D-SB-62） */
+  | { type: "skipped"; segment: number; pass?: number; short?: boolean };
 
 /** 一段连续帧组；帧数 = lastSeq − firstSeq + 1。 */
 export interface Region {
@@ -202,12 +204,73 @@ export interface Region {
   lastSeq: number;
 }
 
+export interface CoverageRange { firstSeq: number; lastSeq: number }
+export interface CameraCoverage {
+  camera: string;
+  ranges: CoverageRange[];
+  expectedFrames: number | null;
+  availableFrames: number | null;
+}
+export type OffsetCoverageReason = "disabled" | "skipped" | "corner" | "unsegmented" | "lowConfidence" | "noReference" | "measureNotImplemented" | "noInteriorFrames" | "excludedGroups";
+export interface OffsetCoverage {
+  camera: string | null;
+  ranges: CoverageRange[];
+  expectedFrames: number;
+  availableFrames: number;
+  unjudgedReasons: OffsetCoverageReason[];
+}
+export interface SegmentCoverage {
+  segment: number;
+  kind: SegmentKind;
+  skipped: boolean;
+  range: CoverageRange | null;
+  cameras: CameraCoverage[];
+  expectedCameraFrames: number | null;
+  availableCameraFrames: number | null;
+  offset: OffsetCoverage;
+}
+/** 按比例分段展开的应测范围；available 另扣除示教件屏蔽帧，不代表实测成功。 */
+export interface InspectionCoverage {
+  groupCount: number;
+  boundaryGuard: number;
+  boundariesTrusted: boolean;
+  regions: Region[];
+  excludedGroups: number[];
+  expectedCameraFrames: number | null;
+  availableCameraFrames: number | null;
+  zeroCoverageSegments: number[];
+  segments: SegmentCoverage[];
+}
+
 // ───────────── burst_judge.rs ─────────────
 
 /** 除 measured、notInspected 外都只记“检测不完整”，不影响 OK/NG；notInspected = 这一帧所在段不由这台相机检测，按设计不测、不判定（D-SB-45）。 */
 export type FrameState = "measured" | "missing" | "error" | "unmeasured" | "outOfCorridor" | "notInspected";
 
 /** 一台相机一帧的独立指标；数值只在 state = measured 时有意义。 */
+export interface StationEvidence {
+  state: "exact" | "clipped" | "absent" | "unknown";
+  widthLowerBoundMm?: number;
+  reason?: string;
+  loEdge?: [number, number];
+  hiEdge?: [number, number];
+  loClipped?: boolean;
+  hiClipped?: boolean;
+  normal?: [number, number];
+  position?: [number, number];
+}
+
+export interface MeasurementEvidence {
+  version: number;
+  stations: StationEvidence[];
+  exactStations: number;
+  clippedStations: number;
+  unknownStations: number;
+  absentStations: number;
+  maxWidthLowerBoundMm?: number;
+  presentRatio: number | null;
+}
+
 export interface FrameMetrics {
   /** 计划相机下标 */
   camera: number;
@@ -222,6 +285,7 @@ export interface FrameMetrics {
   spacingMm: number;
   gapMaxMm: number;
   presentRatio: number;
+  measurementEvidence?: MeasurementEvidence;
   /** 测量用的是第几段的走廊（PathSegment.index）；旧记录没有 */
   corridor?: number | null;
   /** 帧内胶中心相对走廊的法向偏移均值（absoluteX） */
@@ -245,6 +309,8 @@ export interface CalibrationFrameView {
   searchHalfPx: number | null;
   /** 逐站两侧胶边（px），无胶站为 null */
   edges: ([[number, number], [number, number]] | null)[];
+  /** 胶边距线（ToEdge）：找到零件边的站，胶中心 → 零件边（px）；不找边时为空 */
+  partEdges: [[number, number], [number, number]][];
   metrics: FrameMetrics;
 }
 
@@ -277,23 +343,28 @@ export interface RegionResult {
   frameCount: number;
   /** 单段区域为该段 N_exp，覆盖全部段的未分段区域为 expectedTotal；无从比较为 null */
   expected: number | null;
-  tolerance: number;
-  countStatus: CountStatus | null;
   cameraFrames: number[];
   width: WidthStats | null;
   offset: OffsetStat | null;
   offsetUnjudged: OffsetUnjudged | null;
   incompleteGroups: number[];
+  /** 偏宽只预警时记下的预警；为空时不序列化 */
+  warnings?: WidthWarning[];
 }
+
+export type WidthWarning = "wide" | "overflow";
 
 /** 整件标记：都只告警，不改 OK/NG。 */
 export interface Flags {
   incomplete: boolean;
-  frameCountAnomaly: boolean;
   offsetUnjudged: boolean;
   unsegmented: boolean;
-  /** 疑似提前终止：整件帧组数 < expectedTotal − toleranceTotal */
-  shortPart: boolean;
+  /** 偏宽只预警下出现胶宽偏宽；旧记录没有该字段 */
+  wideWarning?: boolean;
+  /** 偏宽只预警下出现溢胶；旧记录没有该字段 */
+  overflowWarning?: boolean;
+  /** 笔数异常：本件笔数与示教件不同，整件按未分段判（D-SB-62） */
+  passCountAnomaly?: boolean;
 }
 
 /** 未检区域：跳过的帧组 fromSeq–toSeq；2026-10-26 之前的记录按毫米检测区间写 fromMm / toMm。 */
@@ -304,6 +375,10 @@ export interface Uninspected {
   fromMm?: number | null;
   /** 段长未知时为 null */
   toMm?: number | null;
+  /** 每笔首尾跳过的第几笔（从 1 起，D-SB-62） */
+  pass?: number;
+  /** 整笔太短（不超过首尾跳过之和），整笔不检 */
+  short?: boolean;
 }
 
 /** 本轮没有算法的检测项（“未检项”）。 */
@@ -315,50 +390,32 @@ export interface BurstJudgement {
   faultCode: number;
   reason: string;
   groupCount: number;
-  countStatus: CountStatus | null;
   regions: RegionResult[];
   flags: Flags;
   alarms: LossAlarm[];
   uninspected: Uninspected[];
   unchecked: UncheckedItem[];
+  /** 本件各笔帧组数（D-SB-62）；没有门控信息或旧记录缺省 */
+  passes?: number[];
+  /** 示教件的笔数；配方没有笔结构缺省 */
+  expectedPasses?: number;
 }
 
 // ───────────── 配方新增字段（C1，RecipeDoc schema 8）─────────────
 
-/** 一台相机的参数（D-SB-45）：像素当量、标定引用与检测参数；走廊只按“段 × 检测相机”示教，存在 segments。 */
+/** 一台相机的参数（D-SB-45）：像素当量、逐帧定向的测量区间与出胶点；走廊只按“段 × 检测相机”示教，存在 segments。标定一律用设备标定。 */
 export interface CameraInspect {
   camera: string;
   mmPerPx: number | null;
-  calib: string | null;
-  detect: DetectParams | null;
   /** 这台相机在它检测的各段的走廊（图像像素） */
   segments?: SegmentCorridor[];
-  /** 逐帧定向的检测窗口（D-SB-47）；null / 缺省 = 未设置 */
+  /** 逐帧定向的测量区间（D-SB-47），这台相机各段的默认值，段可在 heading.window 覆盖；null / 缺省 = 默认值（跳过前 5 mm，测到 20 mm） */
   window?: InspectWindow | null;
   /** 标定的出胶点（图像像素，D-SB-47）；null / 缺省 = 由开启定向的各段走廊起点推出 */
   nozzle?: [number, number] | null;
-  /** 这台相机覆盖的专家参数（LF-5，测量图模板参数名 → 值），叠在配方默认之上 */
-  expert?: ExpertParams;
 }
 
-/** 专家参数：测量图模板参数名 → 值（LF-5）。 */
-export type ExpertParams = Record<string, number>;
-
-/** 专家参数规格，取自测量图模板的顶层图参数。 */
-export interface ExpertSpec {
-  type: "float";
-  label: string;
-  unit?: string;
-  min: number;
-  max: number;
-  step: number;
-  default: number;
-  group: string;
-  doc: string;
-  advanced: true;
-}
-
-/** 检测窗口：沿胶路距出胶点 [startMm, startMm + lengthMm]（mm）。 */
+/** 测量区间：沿胶路距出胶点 [startMm, startMm + lengthMm]（mm）。 */
 export interface InspectWindow {
   startMm: number;
   lengthMm: number;
@@ -370,7 +427,14 @@ export interface SegmentCorridor {
   corridor: [number, number][];
   /** 这台相机在这一段的逐帧定向搜索扇区中线方向（度，D-SB-47），在这一段的示教帧上拖动扇区得出；null / 缺省 = 背离离出胶点最近的画面边 */
   sectorDeg?: number | null;
+  /** 胶色模型（lyFlow `glue.ColorModel` 的 JSON 原文），由 workspace_fit_color_model 在这一段的彩色示教帧上沿已保存的走廊取色得出；
+   *  按胶色测量时用。走廊点改动后旧模型失效，随之去掉。 */
+  colorModel?: string;
+  /** 操作员选的测量方式（color CL-3）；缺省时有胶色模型按胶色、否则按灰度 */
+  measure?: MeasureMode;
 }
+
+export type MeasureMode = "gray" | "color";
 
 /** RecipeDoc 的段模型字段。 */
 export interface RecipeDocSegmentFields {
@@ -380,11 +444,11 @@ export interface RecipeDocSegmentFields {
   segmentDefaults: KindDefaults;
   /** 比例分段边界两侧各留的过渡帧数，默认 2，范围 0..=5（D-SB-40） */
   boundaryGuard: number;
-  /** 按逐帧定向的胶条方向序列细化比例边界（D-SB-47），默认 false；只作用于开启定向的段 */
-  boundaryRefine?: boolean;
+  /** 每笔开头、结尾跳过的帧组数，0–50（D-SB-62）；缺省为都不跳 */
+  passSkip?: PassSkip;
+  /** 示教件各笔帧组数，随 N_exp 由示教件得出，只读：保存时后端不采用传入值；缺省 = 不按笔分段 */
+  passFrames?: number[];
   partCalib: PartCalib | null;
-  /** 专家参数的配方默认（LF-5）；没写的用模板默认值 */
-  expert?: ExpertParams;
 }
 
 // ───────────── IPC DTO ─────────────
@@ -396,6 +460,8 @@ export interface FrameCellView {
   status: FrameCellStatus;
   /** 这一帧单独判的结论；未测完为 null */
   verdict: Verdict | null;
+  /** 测过、已判定但没有单帧结论（整件故障判 ERR、没有区域）；与测量中区分，省略为 false */
+  unjudged?: boolean;
   frameCounter: number | null;
   /** 测量所用走廊的段；收尾补测换了走廊时随之变 */
   segment?: number | null;
@@ -412,7 +478,6 @@ export interface FrameGroupView {
 export interface PartViewBurst {
   cameras: string[];
   expectedTotal: number | null;
-  toleranceTotal: number;
   /** PLC partEnd 时的 deviceTriggers，只作参考；partEnd 前为 null */
   deviceTriggers: number | null;
   /** 已见帧组数 = 各相机最大 seq 的最大值 */
@@ -441,20 +506,30 @@ export interface FrameRecord {
 }
 
 /** 历史详情：段配方的部分（store::PartDetail.burst）；没有帧记录的记录为 null。 */
+/** 一帧的单帧结论（后端 burst_judge::FrameVerdict）：按所在区域的检测相机与检查项判，整段性问题不落到帧上。 */
+export interface FrameVerdict {
+  camera: number;
+  seq: number;
+  verdict: Verdict;
+}
+
 export interface PartDetailBurst {
   /** 本件配方快照的段 */
   segments: PathSegment[];
   cameras: string[];
   expectedTotal: number | null;
-  toleranceTotal: number;
   deviceTriggers: number | null;
   cameraFrames: number[];
   judgement: BurstJudgement;
   /** 按 (camera, seq) 排序 */
   frames: FrameRecord[];
+  /** 逐帧结论（帧格颜色）；没有结论的帧（不在区域检测相机里、没测成、整件没有区域）不列出 */
+  frameVerdicts: FrameVerdict[];
+  /** 只在按对照显示时有：每台显示相机对应记录里的相机下标（按相机编号对应，记录里没有为 null），读原图用 */
+  recordCameras?: (number | null)[];
 }
 
-/** 历史列表：段配方记录带标记（疑似提前终止等单独显示）；没有帧记录的为 null。 */
+/** 历史列表：段配方记录带标记（检测不完整、笔数异常等单独显示）；没有帧记录的为 null。 */
 export interface PartSummaryV2 extends PartSummary {
   flags: Flags | null;
 }
@@ -489,7 +564,7 @@ export interface CaptureAlarm {
   seq: number;
 }
 
-/** 历史件导入的轮次的来源（round.json 3，代替示教握手编号）；standard 只为读入旧流程导入的轮次，界面不用 */
+/** 历史件导入的轮次的来源（round.json 3 起，代替示教握手编号）；standard 只为读入旧流程导入的轮次，界面不用 */
 export interface RoundOrigin { kind: "history"; cycleId: string; recordId: number; standard: boolean }
 
 /** 段配方采集轮次（D1）：按帧号配组，不核对计数；帧元数据在 frames.jsonl，这里只给统计。format 3 加 origin。 */
@@ -501,7 +576,6 @@ export interface CaptureRoundV2 {
   state: CaptureState;
   /** PLC 写来的 shotCount（示教轮次可为估算值，不核对） */
   plcShotCount: number | null;
-  plcPlanVersion: number | null;
   /** partEnd 时的 deviceTriggers，只作参考 */
   deviceTriggers: number | null;
   /** 整轮帧组数（标定统计用） */
@@ -526,8 +600,6 @@ export interface SegmentCalibView {
   kind: SegmentKind;
   /** 示教件这一段的帧组数；示教件分段未确认时为 null */
   nExp: number | null;
-  /** 配方里当前的容差 */
-  tolerance: number;
   xRef: { xRef: number; spread: number } | null;
   /** x_ref 待定的原因，如“还没测量示教件”“多段配方暂不计算” */
   xRefPending: string | null;
@@ -536,6 +608,19 @@ export interface SegmentCalibView {
 }
 
 export type SkipEnd = "head" | "tail";
+
+/** 每笔首尾跳过（D-SB-62）：一笔 = 机械臂一次起涂到收胶 = 一次 Line0 门控。 */
+export interface PassSkip { head: number; tail: number }
+
+/** 每笔起涂跳过的建议（workspace_pass_skip_suggest）：示教件各笔起涂未成形的帧组数，建议取最大值。 */
+export interface PassSkipSuggestView {
+  /** 配方里当前每笔开头跳过的帧组数 */
+  current: number;
+  suggested: number | null;
+  /** frames 为 null 时这一笔不参与建议，原因见 note */
+  passes: { pass: number; firstSeq: number; framesInPass: number; frames: number | null; note: string | null }[];
+  pending: string | null;
+}
 
 /** 一段一头的跳过帧建议（workspace_calibration_skip_suggest，D-SB-50）。 */
 export interface SkipSuggestView {
@@ -561,9 +646,6 @@ export interface CalibrationView {
   segments: SegmentCalibView[];
   /** ΣN_exp */
   expectedTotal: number | null;
-  toleranceTotal: number;
-  /** 已有 N_exp 且计划身份与生产不同：发布时分配新计划版本 */
-  planVersionChange: boolean;
 }
 
 export interface CameraTeachingView {
@@ -575,8 +657,8 @@ export interface CameraTeachingView {
   ready: boolean;
   /** 已选示教帧的段（D-SB-45：走廊只按段示教） */
   segments: SegmentTeachingView[];
-  /** 定向用的出胶点：标定值，或由开启定向的各段走廊起点推出；推不出或不一致时为 null */
-  nozzle: { point: [number, number]; calibrated: boolean } | null;
+  /** 定向用的出胶点：标定值，或由开启定向的各段走廊起点推出；推不出时为 null。`warning` 是推算时起点相差过大的提示，不阻断 */
+  nozzle: { point: [number, number]; calibrated: boolean; warning: string | null } | null;
 }
 
 export interface SegmentTeachingView {
@@ -617,13 +699,11 @@ export interface CalibrationRound {
   xMeans: (number | null)[];
 }
 
-/** 走廊示教页里一条段走廊的草稿：走廊（图像像素）按段，像素当量与检测参数随相机（只读，用于校验与换算）。 */
+/** 走廊示教页里一条段走廊的草稿：走廊（图像像素）按段，像素当量与测量区间随相机（只读，用于校验与换算）。 */
 export interface CameraTeachDraft {
   corridor: [number, number][];
   mmPerPx: number | null;
-  /** null = 用配方的检测参数 */
-  detect: DetectParams | null;
-  /** 这台相机的检测窗口 */
+  /** 这台相机的测量区间 */
   window: InspectWindow | null;
 }
 
@@ -634,7 +714,6 @@ export interface WorkspacePlanView {
   segmentDefaults: KindDefaults;
   partCalib: PartCalib | null;
   expectedTotal: number | null;
-  toleranceTotal: number;
   /** expectedTotal 非空：满足发布的帧数门槛 */
   calibrated: boolean;
   cameraTeaching: CameraTeachingView[];
@@ -663,19 +742,20 @@ export interface PieceView {
   /** 已按当前走廊测量 */
   measured: boolean;
   excludedGroups: number;
+  /** 原图读不到的原因（来源历史件的录制已清理、检测记录不在本机等）；读得到为 null */
+  imagesUnavailable: string | null;
 }
 
 /** 配方库摘要的段模型字段。 */
 export interface RecipeSummaryV2 extends RecipeSummary {
   segmentCount: number;
   expectedTotal: number | null;
-  toleranceTotal: number;
   calibrated: boolean;
 }
 
-/** 段配方的进度步骤；路由：capture→/recipe/capture，segments→/recipe/segments，corridor→/recipe/teach，
- * calibration→/recipe/calibration，validation / publish→/recipe/validation。 */
-export type StepIdV2 = "capture" | "segments" | "corridor" | "calibration" | "validation" | "publish";
+/** 段配方的进度步骤；路由：capture→/recipe/<编号>/capture，segments→/recipe/<编号>/segments，corridor→/recipe/<编号>/teach，
+ * calibration→/recipe/<编号>/calibration，publish→/recipe/<编号>/validation。 */
+export type StepIdV2 = "capture" | "segments" | "corridor" | "calibration" | "publish";
 
 export type ProgressTargetV2 =
   | { page: "capture" }

@@ -20,6 +20,20 @@ fn remap(value: &mut Value, source: &Path, target: &Path) {
     *value = Value::String(target.join(relative).to_string_lossy().into_owned());
 }
 
+/// 把 JSON 里所有指向 `source` 目录下的字符串路径改写到 `target` 下（配方回传包用：候选文件里的项目内绝对路径）。
+pub(crate) fn all_strings(value: &mut Value, source: &Path, target: &Path) {
+    match value {
+        Value::String(_) => remap(value, source, target),
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|v| all_strings(v, source, target)),
+        Value::Object(map) => map
+            .values_mut()
+            .for_each(|v| all_strings(v, source, target)),
+        _ => {}
+    }
+}
+
 fn at(value: &mut Value, pointer: &str, apply: &mut impl FnMut(&mut Value)) {
     if let Some(value) = value.pointer_mut(pointer) {
         apply(value);
@@ -222,10 +236,12 @@ pub(crate) fn tree_references(root: &Path, source: &Path, target: &Path) -> Resu
     visit(root, root, source, target)
 }
 
+/// `capture_images` 为 false 时示教件原图是有意不带的，指向它们的引用不算丢失。
 pub(crate) fn validate_references(
     staging: &Path,
     source: &Path,
     target: &Path,
+    capture_images: bool,
 ) -> Result<Vec<String>, String> {
     fn collect(root: &Path, dir: &Path, references: &mut Vec<String>) -> Result<(), String> {
         crate::image_file::checked_source_path(dir)?;
@@ -291,8 +307,13 @@ pub(crate) fn validate_references(
                 return Err(format!("资料引用越界：{text}"));
             }
             let copied = staging.join(relative);
+            let omitted = !capture_images
+                && relative.starts_with("recipe-capture")
+                && relative.extension().is_some_and(|e| e == "pgm");
             if copied.exists() {
                 crate::image_file::checked_source_path(&copied)?;
+            } else if omitted {
+                continue;
             } else if source.join(relative).exists() {
                 return Err(format!("迁移后资料引用丢失：{text}"));
             } else {

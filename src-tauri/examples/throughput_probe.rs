@@ -93,7 +93,6 @@ fn probe_scene() -> FrameImage {
 fn probe_document() -> RecipeDoc {
     let cameras: Vec<String> = PROBE_CAMERAS.iter().map(|c| c.to_string()).collect();
     let mut doc = burst_template("PROBE".into(), "吞吐探针".into(), 1, &cameras);
-    doc.plan_version = 1;
     doc.spacing = 1.0;
     doc.segments[0].expected_frames = Some(4);
     for inspect in &mut doc.inspect {
@@ -101,6 +100,7 @@ fn probe_document() -> RecipeDoc {
             segment: 1,
             corridor: PROBE_PATH.to_vec(),
             sector_deg: None,
+            color_model: None,
         }];
         inspect.mm_per_px = Some(f64::from(PROBE_MM_PER_PX));
         inspect.detect = Some(DetectParams {
@@ -183,8 +183,8 @@ fn probe_production(engine: &Arc<Engine>, teach: &FrameImage) -> (Prepared, Temp
     )
     .unwrap();
     let bundle = load_release(&root.0, &recipe.id, &published.id).unwrap();
-    let prepared = Prepared::load(bundle, engine.clone(), &recipe).unwrap();
-    warm(&prepared).unwrap();
+    let mut prepared = Prepared::load(bundle, engine.clone(), &recipe).unwrap();
+    warm(&mut prepared).unwrap();
     (prepared, root)
 }
 

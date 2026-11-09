@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -6,7 +6,6 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Semaphore;
 
-use crate::burst_judge::FrameState;
 use crate::cycle::{CycleHost, Input};
 use crate::frame::FrameImage;
 use crate::recipe::Recipe;
@@ -14,8 +13,8 @@ use crate::release::{ReleaseBundle, ValidationSite, RELEASE_SCHEMA_BURST};
 use crate::vision::{self, Engine, FrameMeasurement, VisionHost};
 
 /// 段配方的测量图版本（LF-4）：测量图模板加每（相机, 段）的全部有效参数；发布包 schema 5 的 `versions.graph`。
-/// `flow-2` 起测量图用 lyFlow 1.2 的测量算子、判定归 GlueSight；不兼容此前的发布包，它们加载时要求重新发布。
-pub const GRAPH_VERSION_BURST: &str = "flow-2";
+/// `flow-3` 冻结彩色 extent 观测与站级证据；旧图发布包需重新验证发布。
+pub const GRAPH_VERSION_BURST: &str = "flow-3";
 
 /// 段配方的测量图（发布包 graph.json）：用到的模板原文，加每段每台检测相机的走廊参数与判定门限，开启定向的（段, 相机）另有定向图的；
 /// sizes 是各相机示教帧尺寸。
@@ -24,54 +23,50 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
         return Err(format!("段配方有 {} 台检测相机，示教帧尺寸却有 {} 份", recipe.inspect.len(), sizes.len()));
     }
     let set = vision::CorridorSet::build(recipe, sizes)?;
-    let graphs: Vec<Value> = set.iter()
-        .map(|c| json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "params": c.params, "judge": c.judge}))
-        .collect();
+    // 灰度图沿用原来的形状（不记模板 id），胶色图记下用的是哪张模板
+    let entry = |template: &vision::template::Template, mut v: Value| {
+        if template.id.ends_with("_color") {
+            v["template"] = json!(template.id);
+        }
+        v
+    };
     let mut templates =
         json!({ vision::template::corridor().id: vision::template::corridor().doc });
+    let graphs: Vec<Value> = set.iter()
+        .map(|c| {
+            templates[c.template.id] = c.template.doc.clone();
+            entry(c.template, json!({"index": c.camera_idx, "camera": c.camera, "segment": c.segment, "size": c.size, "params": c.params, "judge": c.judge}))
+        })
+        .collect();
     let mut doc = json!({"schemaVersion": 5, "version": GRAPH_VERSION_BURST, "graphs": graphs});
     let headings: Vec<Value> = set.headings()
-        .map(|h| json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "params": h.params, "judge": h.judge}))
+        .map(|h| {
+            templates[h.template.id] = h.template.doc.clone();
+            entry(h.template, json!({"index": h.camera_idx, "camera": h.camera, "segment": h.segment, "size": h.size, "params": h.params, "judge": h.judge}))
+        })
         .collect();
     if !headings.is_empty() {
-        templates[vision::template::heading().id] = vision::template::heading().doc.clone();
         doc["headings"] = json!(headings);
     }
     doc["templates"] = templates;
     Ok(doc)
 }
 
-/// 同一 主.次 系列的引擎兼容运行：发布时 1.1.0 的版本可以在 1.1.x 上生产。
-fn engine_version_matches(published: &str, loaded: &str) -> bool {
-    let published = vision::series_of(published.split(':').next().unwrap_or_default());
-    published.is_some() && published == vision::series_of(loaded)
-}
-
-/// 引擎与发布时不是同一份（同系列另一补丁版本，或同版本号但文件大小、修改时间变了）：照常生产，但要让人知道结果不是验证时那份引擎量的。
-fn engine_file_note(published: &str, engine: &Engine) -> Option<String> {
-    if published == engine.identity { return None; }
-    let version = published.split(':').next().unwrap_or_default();
-    Some(if version != engine.version {
-        format!("发布时引擎 lyFlow {version}，当前 {}：同系列兼容运行，建议择机重新验证并发布", engine.version)
-    } else {
-        format!("当前核心库 {} 与发布时的文件不同（发布时 {published}，现在 {}）：同版本号但文件大小或修改时间变了，建议重新验证并发布",
-            engine.path.display(), engine.identity)
-    })
-}
-
 pub struct Prepared {
     pub bundle: ReleaseBundle,
     pub recipe: Arc<Recipe>,
-    /// 核心库文件与发布时不同的提示（见 engine_file_note）
-    pub engine_note: Option<String>,
     engine: Arc<Engine>,
     /// 按（计划相机下标, 段号）的走廊测量图（D-SB-45）
     corridors: vision::CorridorSet,
+    /// 预热时在自己的示教帧上没测成的（计划相机下标, 段号）与原因：生产不测，落在里面的帧记未测（D-SB-59）
+    untested: BTreeMap<(usize, u32), String>,
+    /// 预热测成的（相机, 段）数
+    measurable: usize,
 }
 
 impl Prepared {
-    /// 按段与检测相机建走廊测量图。发布包与所选生产版本的配方逐项一致、测量图版本与引擎系列匹配、
-    /// 包内测量图等于按配方和各相机示教帧尺寸重算的结果、各相机发布标定的当量等于示教当量。
+    /// 按段与检测相机建走廊测量图。发布包与所选生产版本的配方逐项一致、各相机发布标定的当量等于示教当量；
+    /// 不按包内测量图或发布时 lyFlow 版本拒绝，走廊按配方和各相机示教帧尺寸重建。
     pub fn load(
         bundle: ReleaseBundle,
         engine: Arc<Engine>,
@@ -92,23 +87,21 @@ impl Prepared {
             || recipe.detect != expected.detect
             || recipe.filter_window != expected.filter_window
             || recipe.teaching_id != expected.teaching_id
-            || recipe.plan_version != expected.plan_version
             || recipe.path_segments != expected.path_segments
             || recipe.inspect != expected.inspect
             || recipe.part_calib != expected.part_calib
-            || recipe.expert != expected.expert
         {
             return Err("发布包配方与所选生产版本不一致，请重新发布".into());
         }
-        if bundle.manifest.versions.graph != GRAPH_VERSION_BURST
-            || !engine_version_matches(&bundle.manifest.versions.engine, &engine.version)
-        {
-            return Err("发布包的算法图或引擎版本与当前引擎不一致，请重新验证并发布".into());
-        }
         let mut sizes = Vec::with_capacity(recipe.inspect.len());
+        let mut channels = Vec::with_capacity(recipe.inspect.len());
         for (idx, inspect) in recipe.inspect.iter().enumerate() {
             let resource = bundle.camera(idx)?;
             sizes.push(resource.size);
+            channels.push(match resource.corridors.first() {
+                Some(corridor) => crate::image_file::load_channels(&corridor.image)?,
+                None => 1,
+            });
             let calibration: Value = serde_json::from_str(&crate::fsio::read_text(&resource.calibration).map_err(|e| e.to_string())?)
                 .map_err(|e| format!("发布包标定无效：{e}"))?;
             let scale = calibration["mmPerPx"].as_f64().ok_or("发布包标定没有有效像素当量")?;
@@ -116,23 +109,50 @@ impl Prepared {
                 return Err(format!("相机 {} 的发布标定与示教像素当量不一致", inspect.camera));
             }
         }
-        let stored: Value = serde_json::from_str(
-            &crate::fsio::read_text(&bundle.root.join(&bundle.manifest.graph))
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| format!("发布包算法图无效：{e}"))?;
-        if stored != burst_graphs(&recipe, &sizes)? {
-            return Err("发布包算法图与配方走廊不一致".into());
-        }
-        let corridors = vision::CorridorSet::build(&recipe, &sizes)?;
-        let engine_note = engine_file_note(&bundle.manifest.versions.engine, &engine);
+        let corridors = vision::CorridorSet::build(&recipe, &sizes)?.with_channels(&channels);
         Ok(Self {
             bundle,
             recipe,
-            engine_note,
             engine,
             corridors,
+            untested: BTreeMap::new(),
+            measurable: 0,
         })
+    }
+
+    /// 这一（相机, 段）预热没测成、生产不测时的原因。
+    pub fn untested(&self, camera_idx: usize, segment: u32) -> Option<&str> {
+        self.untested
+            .get(&(camera_idx, segment))
+            .map(String::as_str)
+    }
+
+    /// 预热没测成、生产不测的各（相机, 段）原因；全部测成时为空。
+    pub fn untested_reasons(&self) -> Vec<&str> {
+        self.untested.values().map(String::as_str).collect()
+    }
+
+    /// 整件说明里不测的段：“第 2 段相机 cam1、第 5 段相机 cam3”；全部测成时为 None。
+    pub fn untested_label(&self) -> Option<String> {
+        (!self.untested.is_empty()).then(|| {
+            self.untested
+                .keys()
+                .map(|&(idx, segment)| {
+                    let camera = self
+                        .recipe
+                        .inspect
+                        .get(idx)
+                        .map_or("?", |i| i.camera.as_str());
+                    format!("第 {segment} 段相机 {camera}")
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        })
+    }
+
+    /// 至少有一（相机, 段）预热测成；一段都测不了时来件只录原图、回检测错误。
+    pub fn measurable(&self) -> bool {
+        self.measurable > 0
     }
 
     pub fn verify(&self) -> Result<(), String> {
@@ -158,34 +178,42 @@ impl Prepared {
         vision::measure_frame(&self.engine, corridor, image, seq, run_id)
     }
 
-    /// 预热：每台相机在它每一段的发布示教帧上用该段走廊量一次，必须测成（Measured）——现场证明发布包、走廊与运行库接线正确。
-    pub(crate) fn warm(&self) -> Result<(), String> {
+    /// 预热：每台相机在它每一段的发布示教帧上用该段走廊量一次——现场证明发布包、走廊与运行库接线正确。
+    /// 没测成（无可用测量证据或运行失败）的（相机, 段）记进不测清单，其余段照常检测（D-SB-59）；示教帧读不出、发布包核验失败仍整包失败。
+    pub(crate) fn warm(&mut self) -> Result<(), String> {
+        let mut untested = BTreeMap::new();
+        let mut measurable = 0;
         for idx in 0..self.recipe.inspect.len() {
             let resource = self.bundle.camera(idx)?;
             for corridor in &resource.corridors {
                 let image = crate::image_file::load(&corridor.image)?;
-                let m = self.measure_frame(
-                    idx,
+                let run = format!(
+                    "warm-{}-c{idx}-s{}-{}",
+                    self.bundle.id,
                     corridor.segment,
-                    0,
-                    &image,
-                    &format!(
-                        "warm-{}-c{idx}-s{}-{}",
-                        self.bundle.id,
-                        corridor.segment,
-                        ly_plc::now_ms()
-                    ),
-                )?;
-                if m.metrics.state != FrameState::Measured {
-                    return Err(format!(
-                        "相机 {} 第 {} 段：发布包走廊在自己的示教帧上没有测成（{}），不能接件",
-                        resource.camera,
-                        corridor.segment,
-                        m.metrics.error.as_deref().unwrap_or("状态异常")
-                    ));
+                    ly_plc::now_ms()
+                );
+                let problem = match self.measure_frame(idx, corridor.segment, 0, &image, &run) {
+                    Ok(m) if m.metrics.has_usable_evidence() => None,
+                    Ok(m) => Some(m.metrics.error.unwrap_or_else(|| "没有可用测量证据".into())),
+                    Err(error) => Some(error),
+                };
+                match problem {
+                    None => measurable += 1,
+                    Some(error) => {
+                        untested.insert(
+                            (idx, corridor.segment),
+                            format!(
+                                "第 {} 段相机 {}：示教帧上没测成（{error}）",
+                                corridor.segment, resource.camera
+                            ),
+                        );
+                    }
                 }
             }
         }
+        self.untested = untested;
+        self.measurable = measurable;
         self.verify()
     }
 }
@@ -316,14 +344,35 @@ impl ProductionHost {
             let result = run_warmup(slot, Duration::from_secs(30), move || {
                 let bundle = crate::workspace::published_bundle(&run_app, &recipe)?;
                 let engine = run_app.state::<VisionHost>().engine().ok_or("图像核心库未加载")?;
-                let prepared = Prepared::load(bundle, engine, &recipe)?;
+                let mut prepared = Prepared::load(bundle, engine, &recipe)?;
                 prepared.warm()?;
                 Ok(Arc::new(prepared))
             }).await;
             let state = match result {
                 Ok(prepared) => {
-                    crate::cycle::log(&app, "ok", "生产预热", format!("发布包 {} 已就绪，耗时 {} ms", prepared.bundle.id, started.elapsed().as_millis()));
-                    if let Some(note) = &prepared.engine_note { crate::cycle::log(&app, "warn", "生产预热", note.clone()); }
+                    let elapsed = started.elapsed().as_millis();
+                    let untested = prepared.untested_reasons();
+                    if untested.is_empty() {
+                        crate::cycle::log(
+                            &app,
+                            "ok",
+                            "生产预热",
+                            format!("发布包 {} 已就绪，耗时 {elapsed} ms", prepared.bundle.id),
+                        );
+                    } else if prepared.measurable() {
+                        crate::cycle::log(&app, "warn", "生产预热", format!("发布包 {} 已就绪，耗时 {elapsed} ms；这些段不测（帧记未测，结论只覆盖其余段）：{}", prepared.bundle.id, untested.join("；")));
+                    } else {
+                        crate::cycle::log(
+                            &app,
+                            "err",
+                            "生产预热",
+                            format!(
+                                "发布包 {} 每一段都没测成，来件只录原图、回检测错误：{}",
+                                prepared.bundle.id,
+                                untested.join("；")
+                            ),
+                        );
+                    }
                     Entry::Ready(prepared)
                 }
                 Err(error) => {
@@ -372,24 +421,55 @@ impl ProductionHost {
     fn prepared(&self, key: &str) -> Option<Arc<Prepared>> {
         match self.entries.lock().unwrap().get(key) { Some(Entry::Ready(prepared)) => Some(prepared.clone()), _ => None }
     }
+
+    /// 已预热好的这个发布包（历史叠图复用，不另加载）。
+    pub fn ready_bundle(&self, bundle_id: &str) -> Option<Arc<Prepared>> {
+        self.entries
+            .lock()
+            .unwrap()
+            .values()
+            .find_map(|entry| match entry {
+                Entry::Ready(prepared) if prepared.bundle.id == bundle_id => Some(prepared.clone()),
+                _ => None,
+            })
+    }
+}
+
+/// 已预热好的发布包里不测的段（D-SB-59）：部分不测返回说明；一段都测不了返回 Err；没预热好或全部能测为 Ok(None)。
+pub fn coverage(app: &AppHandle, recipe: &Recipe) -> Result<Option<String>, String> {
+    let Some(prepared) = app.state::<ProductionHost>().prepared(&warmup_key(recipe)) else {
+        return Ok(None);
+    };
+    let untested = prepared.untested_reasons();
+    if untested.is_empty() {
+        Ok(None)
+    } else if prepared.measurable() {
+        Ok(Some(format!(
+            "部分段不测（结论只覆盖其余段）：{}",
+            untested.join("；")
+        )))
+    } else {
+        Err(format!(
+            "发布包每一段在示教帧上都没测成，来件只录原图、回检测错误：{}",
+            untested.join("；")
+        ))
+    }
 }
 
 pub fn warmup(app: &AppHandle, recipe: &Recipe) -> Warmup {
-    if !crate::site::image_measurement(app) { return Warmup::Ready; }
     let key = warmup_key(recipe);
     app.state::<ProductionHost>().warmup(&key, Instant::now())
 }
 
-/// 这一配方的发布资源与图像引擎正在预热（尚未就绪也未失败）。
-pub fn warming(app: &AppHandle, recipe: &Recipe) -> bool {
-    warmup(app, recipe) == Warmup::Preparing
-}
-
 pub const OFFLINE_VALIDATED: &str = "该版本在离线环境验证发布，需在真机重新验证并发布";
 
-/// 离线验证发布的版本只能在离线模式运行。
-pub fn site_admits(site: ValidationSite, offline: bool) -> Result<(), String> {
-    if site == ValidationSite::Offline && !offline { Err(OFFLINE_VALIDATED.into()) } else { Ok(()) }
+/// 拒绝旧离线环境发布的版本，必须重新验证发布。
+pub fn site_admits(site: ValidationSite) -> Result<(), String> {
+    if site == ValidationSite::Offline {
+        Err(OFFLINE_VALIDATED.into())
+    } else {
+        Ok(())
+    }
 }
 
 pub const COLLECT_ONLY: &str = "配方只有采集版，仅维护模式可用";
@@ -419,22 +499,18 @@ fn check_acquisition(bundle: &ReleaseBundle, configs: &[crate::camera::CameraCon
 }
 
 pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, String> {
-    if crate::offline::candidate(app).is_some_and(|c| c.matches(recipe)) { return Ok(None); }
     stage_admits(recipe)?;
-    if !crate::site::image_measurement(app) { return Ok(None); }
     let host = app.state::<ProductionHost>();
     let site = match host.prepared(&warmup_key(recipe)) {
         Some(prepared) => prepared.bundle.manifest.validation_site,
         None => crate::workspace::published_manifest(app, recipe)?.validation_site,
     };
-    site_admits(site, crate::offline::enabled(app))?;
+    site_admits(site)?;
     let prepared = host.ensure(app, Arc::new(recipe.clone()))?;
     check_acquisition(&prepared.bundle, &app.state::<crate::cycle::CycleHost>().camera.configs())?;
     Ok(Some(prepared))
 }
 
-#[cfg(test)]
-mod tests;
 
 #[cfg(test)]
 mod warmup_tests;

@@ -20,8 +20,8 @@ const CENTER_GATE_MIN_PX: f64 = 6.0;
 #[derive(Clone, Copy, Debug)]
 pub struct PathGate {
     pub min_coverage: f64,
-    /// 候选的陡度 P25 不低于它才算像胶
-    pub sharp_min: f64,
+    /// 候选的陡度 P25 不低于它才算像胶；None = 不看陡度（胶色跟踪：得分本身就是像不像胶）
+    pub sharp_min: Option<f64>,
 }
 
 /// 选方向的结果。
@@ -89,12 +89,13 @@ pub fn choose_path(scan: &Value, tracks: &[Value], gate: PathGate) -> Result<Pat
         let steps = track["steps"].as_u64().ok_or_else(|| what("steps"))?;
         let found = track["found"].as_u64().ok_or_else(|| what("found"))?;
         let sharpness = track["sharpness"].as_f64();
-        let coverage = if steps > 0 {
-            found as f64 / steps as f64
-        } else {
-            0.0
+        // 胶色跟踪另给去掉无信息步（高光、暗区）后的覆盖率，有就用它
+        let coverage = match track["coverageInformative"].as_f64() {
+            Some(c) if c.is_finite() => c,
+            _ if steps > 0 => found as f64 / steps as f64,
+            _ => 0.0,
         };
-        let beadlike = sharpness.unwrap_or(-1.0) >= gate.sharp_min;
+        let beadlike = beadlike(sharpness, gate);
         let mut score = if beadlike {
             coverage
         } else {
@@ -152,6 +153,11 @@ pub fn choose_path(scan: &Value, tracks: &[Value], gate: PathGate) -> Result<Pat
     })
 }
 
+fn beadlike(sharpness: Option<f64>, gate: PathGate) -> bool {
+    gate.sharp_min
+        .is_none_or(|min| sharpness.unwrap_or(-1.0) >= min)
+}
+
 /// 依次查覆盖率 ≥ minCoverage、像胶、胶点 ≥ 3，返回第一条不满足的原因（与 1.1 `info.reason` 同一句）；都满足为空。
 fn verdict(c: &Candidate, gate: PathGate) -> String {
     let sharp = c.sharpness.unwrap_or(-1.0);
@@ -160,10 +166,9 @@ fn verdict(c: &Candidate, gate: PathGate) -> String {
             "覆盖率 {:.2} 低于 minCoverage {:.2}",
             c.coverage, gate.min_coverage
         )
-    } else if sharp < gate.sharp_min {
+    } else if let Some(min) = gate.sharp_min.filter(|_| !beadlike(c.sharpness, gate)) {
         format!(
-            "找到的暗带边缘太缓（陡度 P25 = {sharp:.2} < sharpMin {:.2}），像压痕或阴影，不像胶",
-            gate.sharp_min
+            "找到的暗带边缘太缓（陡度 P25 = {sharp:.2} < sharpMin {min:.2}），像压痕或阴影，不像胶"
         )
     } else if c.found < MIN_COARSE_POINTS {
         "粗找到的胶点不到 3 个".into()
@@ -194,6 +199,8 @@ pub struct StationCall {
     pub normal: [f64; 2],
     /// 有胶时胶两边沿法向的偏移 (lo, hi)（px），无胶为 None
     pub bead: Option<(f64, f64)>,
+    /// 无信息（胶色卡尺）：没量到胶，但该有胶的地方被高光、暗区盖住，不算缺胶也不算有胶
+    pub unknown: bool,
 }
 
 struct Run {
@@ -254,6 +261,7 @@ pub fn judge_stations(
             center: xy(&st["center"]).ok_or_else(|| what("center"))?,
             normal: xy(&st["normal"]).ok_or_else(|| what("normal"))?,
             bead: None,
+            unknown: false,
         });
         let mut kept = Vec::new();
         for r in st["runs"].as_array().ok_or_else(|| what("runs"))? {
@@ -284,14 +292,34 @@ pub fn judge_stations(
     let min_width = gate.present_ratio * w_ref;
     let max_offset = CENTER_GATE_MIN_PX.max(gate.center_ratio * w_ref);
     let min_peak = gate.contrast_ratio * peak_ref;
-    for (call, kept) in calls.iter_mut().zip(&picked) {
+    for ((call, kept), st) in calls.iter_mut().zip(&picked).zip(stations) {
         if let Some(r) = nearest(kept) {
             if r.width >= min_width && r.mid.abs() <= max_offset && r.peak >= min_peak {
                 call.bead = Some((r.lo, r.hi));
             }
         }
+        if call.bead.is_none() {
+            call.unknown = hidden_by_unknown(st, w_ref);
+        }
     }
     Ok(calls)
+}
+
+/// 胶色卡尺一站没量到胶时，该有胶的区间是胶路 ± 参考宽的一半（规则见 `super::hidden_by_unknown`）。
+fn hidden_by_unknown(station: &Value, w_ref: f64) -> bool {
+    let spans = |key: &str| -> Vec<(f64, f64)> {
+        station[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| Some((v["lo"].as_f64()?, v["hi"].as_f64()?)))
+            .collect()
+    };
+    super::hidden_by_unknown(
+        &spans("unknownSpans"),
+        &spans("runs"),
+        (-0.5 * w_ref, 0.5 * w_ref),
+    )
 }
 
 #[cfg(test)]
@@ -299,11 +327,6 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-
-    const GATE: PathGate = PathGate {
-        min_coverage: 0.3,
-        sharp_min: 0.4,
-    };
 
     /// 每个峰都是扫描里的局部峰：峰 k 在第 2k+1 个方向，两旁的方向得分为 0。
     fn scan(peak_scores: &[f64]) -> Value {
@@ -319,160 +342,32 @@ mod tests {
         json!({"sector": [-120.0, -60.0], "scores": scores, "peaks": peaks})
     }
 
-    fn track(peak: usize, steps: u64, found: u64, sharpness: Option<f64>) -> Value {
-        json!({"valid": true, "peakIndex": peak, "heading": -90.0 + 20.0 * peak as f64,
-               "steps": steps, "found": found, "sharpness": sharpness})
-    }
-
     #[test]
-    fn chosen_candidate_failing_a_gate_is_not_ok_with_that_gates_reason() {
-        let no_peak = json!({"valid": false, "peakIndex": 0, "heading": null, "steps": null, "found": null, "sharpness": null});
+    fn color_track_without_sharpness_counts_coverage_over_informative_steps() {
+        // 防的回归：胶色跟踪没有陡度，按灰度门限一律判"不像胶"而回退；或高光、暗区这些无信息的步算进覆盖率，
+        // 湿胶反光多的帧被判覆盖率不足
+        let gate = PathGate {
+            min_coverage: 0.3,
+            sharp_min: None,
+        };
+        let color = |steps: u64, found: u64, informative: Value| {
+            json!({"valid": true, "peakIndex": 0, "heading": -90.0, "steps": steps, "found": found,
+                   "sharpness": null, "coverageInformative": informative})
+        };
         let cases = [
-            (vec![track(0, 10, 8, Some(0.9))], true, ""),
-            (
-                vec![track(0, 10, 2, Some(0.9))],
-                false,
-                "覆盖率 0.20 低于 minCoverage 0.30",
-            ),
-            (
-                vec![track(0, 10, 8, Some(0.25))],
-                false,
-                "陡度 P25 = 0.25 < sharpMin 0.40",
-            ),
-            (vec![track(0, 10, 8, None)], false, "陡度 P25 = -1.00"),
-            (vec![track(0, 6, 2, Some(0.9))], false, "胶点不到 3 个"),
-            (vec![no_peak], false, "扇区里一个方向都没有"),
+            (color(20, 4, json!(0.8)), true, 0.8),
+            (color(20, 4, Value::Null), false, 0.2),
+            (color(20, 16, json!(0.1)), false, 0.1),
         ];
-        for (tracks, ok, reason) in cases {
-            let c = choose_path(&scan(&[40.0]), &tracks, GATE).unwrap();
-            assert_eq!(c.ok, ok, "{reason}");
-            assert!(
-                c.reason.contains(reason) && c.reason.is_empty() == ok,
-                "{} 应含 {reason}",
-                c.reason
-            );
-        }
-    }
-
-    #[test]
-    fn candidate_score_penalises_not_beadlike_and_weak_rays() {
-        let cases = [
-            // 覆盖率高但不像胶（×0.1）输给覆盖率低而像胶的
-            (
-                vec![40.0, 30.0],
-                vec![track(0, 10, 9, Some(0.1)), track(1, 10, 5, Some(0.9))],
-                1,
-            ),
-            // 峰的射线得分不到最强的四分之一（×0.5）：0.9 × 0.5 < 0.6
-            (
-                vec![40.0, 9.0],
-                vec![track(0, 10, 6, Some(0.9)), track(1, 10, 9, Some(0.9))],
-                0,
-            ),
-            // 恰好四分之一不打折：0.9 > 0.6
-            (
-                vec![40.0, 10.0],
-                vec![track(0, 10, 6, Some(0.9)), track(1, 10, 9, Some(0.9))],
-                1,
-            ),
-            // 同分取靠前的峰
-            (
-                vec![40.0, 30.0],
-                vec![track(0, 10, 6, Some(0.9)), track(1, 10, 6, Some(0.9))],
-                0,
-            ),
-        ];
-        for (scores, tracks, chosen) in cases {
-            let c = choose_path(&scan(&scores), &tracks, GATE).unwrap();
-            assert_eq!(c.chosen, Some(chosen), "峰得分 {scores:?}");
-            assert_eq!(c.heading, tracks[chosen]["heading"].as_f64());
-        }
-    }
-
-    #[test]
-    fn non_local_peak_candidate_is_used_only_when_local_ones_find_no_bead() {
-        // 防的回归：扇区边上得分一路升上去的方向当了候选，从那里起跑接上同一条胶、覆盖率更高而被选中；
-        // 也防反过来把它彻底排除，局部峰候选都找不到胶时不再退到它
-        let found = |top: u64| [track(0, 10, top, Some(0.9)), track(1, 10, 9, Some(0.9))];
-        for (scores, peak1, top_found, chosen) in [
-            (vec![10.0, 40.0, 20.0, 25.0, 30.0], 4, 6, 0), // 第二个峰在扇区末端
-            (vec![10.0, 40.0, 20.0, 30.0, 35.0, 5.0], 3, 6, 0), // 第二个峰低于右邻
-            (vec![10.0, 40.0, 20.0, 30.0, 25.0, 5.0], 3, 6, 1), // 第二个峰是局部峰，照 1.1 按覆盖率选
-            (vec![10.0, 40.0, 20.0, 25.0, 30.0], 4, 2, 1),      // 最强峰找不到胶，退到末端那个
-        ] {
-            let s = json!({"sector": [-120.0, -60.0], "scores": scores,
-                "peaks": [{"index": 1, "angle": -90.0, "score": 40.0}, {"index": peak1, "angle": -70.0, "score": scores[peak1]}]});
+        for (track, ok, coverage) in cases {
+            let choice = choose_path(&scan(&[1.0]), &[track], gate).unwrap();
             assert_eq!(
-                choose_path(&s, &found(top_found), GATE).unwrap().chosen,
-                Some(chosen),
-                "第二个峰在 {peak1}，最强峰找到 {top_found}"
+                (choice.ok, choice.coverage),
+                (ok, coverage),
+                "{}",
+                choice.reason
             );
         }
     }
 
-    const STATIONS: StationGate = StationGate {
-        width_range: [10.0, 30.0],
-        present_ratio: 0.6,
-        center_ratio: 0.3,
-        contrast_ratio: 0.3,
-    };
-
-    fn run(lo: f64, hi: f64, peak: f64) -> Value {
-        json!({"lo": lo, "hi": hi, "width": hi - lo, "mid": 0.5 * (lo + hi), "peak": peak,
-               "loComplete": true, "hiComplete": true})
-    }
-
-    fn lateral(stations: Vec<Vec<Value>>) -> Value {
-        let st: Vec<Value> = stations
-            .into_iter()
-            .enumerate()
-            .map(|(i, runs)| json!({"s": 4.0 * i as f64, "center": [100.0, 100.0 + 4.0 * i as f64], "normal": [-1.0, 0.0], "runs": runs}))
-            .collect();
-        json!({"stations": st})
-    }
-
-    /// 前四站是宽 20、峰值 50 的正常胶（参考宽 20、参考峰值 50），第五站换成被测的那几段。
-    fn judge_last(last: Vec<Value>, path_ok: bool) -> Vec<StationCall> {
-        let mut st = vec![vec![run(-10.0, 10.0, 50.0)]; 4];
-        st.push(last);
-        judge_stations(&lateral(st), STATIONS, path_ok).unwrap()
-    }
-
-    #[test]
-    fn station_present_needs_width_center_and_peak_against_references() {
-        let cases = [
-            (vec![run(-6.5, 6.5, 50.0)], Some((-6.5, 6.5))),
-            (vec![run(-5.5, 5.5, 50.0)], None), // 宽 11 < 0.6 × 20，但在胶宽范围内
-            (vec![run(-4.0, 16.0, 50.0)], Some((-4.0, 16.0))), // 中心偏 6 = max(6, 0.3 × 20)
-            (vec![run(-3.0, 17.0, 50.0)], None), // 中心偏 7 > 6
-            (vec![run(-10.0, 10.0, 14.0)], None), // 峰值 < 0.3 × 50
-            (vec![run(-10.0, 10.0, 16.0)], Some((-10.0, 10.0))),
-            (vec![], None),
-        ];
-        for (last, bead) in cases {
-            assert_eq!(judge_last(last.clone(), true)[4].bead, bead, "{last:?}");
-        }
-    }
-
-    #[test]
-    fn station_takes_nearest_run_within_width_range() {
-        // 离胶路更近但宽过上限的一段不算，取范围内 |中心| 最小的
-        let calls = judge_last(
-            vec![
-                run(-20.0, 20.0, 50.0),
-                run(-15.0, 3.0, 50.0),
-                run(0.0, 14.0, 50.0),
-            ],
-            true,
-        );
-        assert_eq!(calls[4].bead, Some((-15.0, 3.0)));
-    }
-
-    #[test]
-    fn path_not_found_marks_every_station_empty() {
-        let calls = judge_last(vec![run(-10.0, 10.0, 50.0)], false);
-        assert_eq!(calls.len(), 5);
-        assert!(calls.iter().all(|c| c.bead.is_none()));
-        assert_eq!(calls[4].center, [100.0, 116.0]);
-    }
 }

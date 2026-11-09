@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Checkbox, EmptyState, Select, StatusBadge, Table, type TableColumn } from "qing-steel";
 import { Panel } from "../../workspace/components";
 import type { FrameRecord, FrameState, PartDetailBurst } from "../../plan/types";
-import { expectedText, regionKindLabel } from "../../plan/vis";
+import { expectedText, productionSkippedRegion, regionKindLabel } from "../../plan/vis";
 import type { PartDetail } from "../types";
 import "../../cycle/components/burst.css";
+import { MeasurementEvidenceSummary, measurementIssue } from "../../plan/measurementEvidence";
 
 const deliveryLabel = { notRequired: "无需交付", pending: "等待提交", submitted: "已提交，等待 PLC 确认", acknowledged: "PLC 已确认", failed: "交付失败" };
 const recordingLabel = { pending: "正在落盘", off: "录制关闭", notRetained: "本件按保留策略不存图", complete: "完整落盘", incomplete: "原图不完整", failed: "录制失败" };
@@ -13,23 +14,39 @@ const frameStateText: Record<FrameState, string> = { measured: "已测", missing
 const mm = (v: number | null | undefined) => v == null ? "—" : v.toFixed(2);
 
 /** 一帧没出完整结果：缺帧、测量失败、未测、走出走廊（都只算检测不完整，不影响 OK/NG）；本段不由这台相机检测的帧按设计不测，不算异常。 */
-export const frameAbnormal = (frame: FrameRecord) => frame.status !== "measured" && frame.status !== "notInspected";
+export const frameAbnormal = (frame: FrameRecord) => (frame.status !== "measured" && frame.status !== "notInspected") || !!measurementIssue(frame.metrics?.measurementEvidence);
 
 /**
  * 逐帧追溯：每台相机每个帧组一行（缺帧也有），写帧号、触发计数、所在区域、状态、胶宽与胶中心、原图。
  * 原图按 (相机, seq) 选，没保存的帧（缺帧、录制队满丢弃、未录制）按钮禁用。
  */
-export function BurstPartTrace({ detail, burst, selected, onSelect }: {
+type TraceProps = {
   detail: PartDetail;
   burst: PartDetailBurst;
   selected: { camera: number; seq: number } | null;
   onSelect: (camera: number, seq: number) => void;
-}) {
+};
+
+export function BurstPartTrace(props: TraceProps) {
+  const select = useRef(props.onSelect);
+  select.current = props.onSelect;
+  const onSelect = useCallback((camera: number, seq: number) => select.current(camera, seq), []);
+  return <TraceTable {...props} onSelect={onSelect} />;
+}
+
+const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect }: TraceProps) {
   const { summary, recording } = detail;
   const [onlyAbnormal, setOnlyAbnormal] = useState(false);
   const [camera, setCamera] = useState("all");
-  const rows = burst.frames.filter(frame => (!onlyAbnormal || frameAbnormal(frame)) && (camera === "all" || frame.camera === Number(camera)));
-  const abnormal = burst.frames.filter(frameAbnormal).length;
+  const [page, setPage] = useState(0), [pageSize, setPageSize] = useState(50);
+  const rows = useMemo(() => burst.frames.filter(frame => (!onlyAbnormal || frameAbnormal(frame)) && (camera === "all" || frame.camera === Number(camera))), [burst.frames, onlyAbnormal, camera]);
+  const abnormal = useMemo(() => burst.frames.filter(frameAbnormal).length, [burst.frames]);
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const shownPage = Math.min(page, pages - 1);
+  useEffect(() => {
+    const index = selected ? rows.findIndex(frame => frame.camera === selected.camera && frame.seq === selected.seq) : -1;
+    setPage(index < 0 ? 0 : Math.floor(index / pageSize));
+  }, [selected?.camera, selected?.seq, rows, pageSize]);
   const columns: TableColumn<FrameRecord>[] = [
     {
       key: "frame",
@@ -40,8 +57,11 @@ export function BurstPartTrace({ detail, burst, selected, onSelect }: {
     { key: "counter", header: "帧号 / 触发计数", render: frame => `${frame.frameCounter ?? "—"} / ${frame.triggerCounter ?? "—"}` },
     { key: "region", header: "区域", render: frame => frame.region != null && burst.judgement.regions[frame.region] ? regionKindLabel(burst.judgement.regions[frame.region].region.kind) : "—" },
     { key: "status", header: "状态", render: frame => <>
-      <StatusBadge tone={frame.status === "measured" ? "ok" : frame.status === "error" ? "fault" : frame.status === "notInspected" ? "neutral" : "warn"}>{frameStateText[frame.status]}</StatusBadge>
+      {productionSkippedRegion(burst.judgement.regions, frame.seq)
+        ? <><StatusBadge tone="neutral">生产跳过</StatusBadge><div className="muted">仅供诊断：{frameStateText[frame.status]}</div></>
+        : <StatusBadge tone={frame.status === "measured" ? "ok" : frame.status === "error" ? "fault" : frame.status === "notInspected" ? "neutral" : "warn"}>{frameStateText[frame.status]}</StatusBadge>}
       {frame.metrics?.error && <div>{frame.metrics.error}</div>}
+      {frame.metrics?.measurementEvidence && <div><MeasurementEvidenceSummary evidence={frame.metrics.measurementEvidence} /></div>}
     </> },
     { key: "width", header: "胶宽 min / max / mean", render: frame => frame.metrics && frame.status === "measured" ? `${mm(frame.metrics.widthMin)} / ${mm(frame.metrics.widthMax)} / ${mm(frame.metrics.widthMean)}` : "—" },
     { key: "x", header: "胶中心 x（mm）", align: "right", render: frame => frame.status === "measured" ? mm(frame.metrics?.xMm) : "—" },
@@ -58,7 +78,7 @@ export function BurstPartTrace({ detail, burst, selected, onSelect }: {
       <span>工件身份</span><b className="mono">{summary.cycleId ?? "未分配"}</b>
       <span>发布包</span><b className="mono">{summary.bundleId ?? "未使用图像发布包"}</b>
       <span>PLC 交付</span><b>{deliveryLabel[summary.delivery.state]}{summary.delivery.message && ` · ${summary.delivery.message}`}</b>
-      <span>帧组 / 预期</span><b>{burst.judgement.groupCount} / {expectedText(burst.expectedTotal, burst.toleranceTotal)}</b>
+      <span>帧组 / 预期</span><b>{burst.judgement.groupCount} / {expectedText(burst.expectedTotal)}</b>
       <span>各相机帧数</span><b>{burst.cameras.map((name, c) => `${name} ${burst.cameraFrames[c] ?? 0}`).join(" · ")}</b>
       <span>触发计数（参考）</span><b>{burst.deviceTriggers ?? "—"}</b>
       <span>原图保留</span><b>{recordingLabel[recording.state]}{recording.available ? " · 已核验落盘" : ""}</b>
@@ -68,13 +88,17 @@ export function BurstPartTrace({ detail, burst, selected, onSelect }: {
       <Select aria-label="相机筛选" value={camera} onValueChange={setCamera} options={[{ value: "all", label: "全部相机" }, ...burst.cameras.map((name, c) => ({ value: String(c), label: name }))]} />
       <Checkbox label={`只看异常帧（${abnormal}）`} checked={onlyAbnormal} onCheckedChange={setOnlyAbnormal} />
       <span className="muted">{rows.length} / {burst.frames.length} 帧</span>
+      <Select aria-label="每页帧数" value={String(pageSize)} onValueChange={value => setPageSize(Number(value))} options={[{ value: "50", label: "50 帧 / 页" }, { value: "100", label: "100 帧 / 页" }]} />
+      <Button size="sm" disabled={shownPage === 0} onClick={() => setPage(shownPage - 1)}>上一页帧记录</Button>
+      <span aria-live="polite">第 {shownPage + 1} / {pages} 页</span>
+      <Button size="sm" disabled={shownPage >= pages - 1} onClick={() => setPage(shownPage + 1)}>下一页帧记录</Button>
     </div>
     <Table<FrameRecord>
       caption="逐帧追溯"
-      rows={rows}
+      rows={rows.slice(shownPage * pageSize, (shownPage + 1) * pageSize)}
       columns={columns}
       rowKey={frame => `${frame.camera}:${frame.seq}`}
       emptyState={<EmptyState title={onlyAbnormal ? "没有异常帧" : "本件没有帧记录"} />}
     />
   </Panel>;
-}
+}, (previous, next) => previous.detail === next.detail && previous.burst === next.burst && previous.selected?.camera === next.selected?.camera && previous.selected?.seq === next.selected?.seq && previous.onSelect === next.onSelect);

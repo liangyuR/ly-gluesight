@@ -1,4 +1,5 @@
 pub mod manage;
+pub mod records;
 pub mod transfer;
 
 use serde::{Deserialize, Serialize};
@@ -184,9 +185,10 @@ pub fn create_dir(
 
 pub fn next_id(data: &Path) -> String {
     let day = chrono::Local::now().format("%Y%m%d");
+    let recorded = crate::store::recorded_projects(&records::database(data)).unwrap_or_default();
     (1..)
         .map(|n| format!("p-{day}-{n:02}"))
-        .find(|id| !dir(data, id).exists())
+        .find(|id| !dir(data, id).exists() && !recorded.contains(id))
         .unwrap()
 }
 
@@ -266,22 +268,30 @@ pub fn open_target(data: &Path, id: &str) -> Result<ProjectMeta, String> {
 }
 
 /// 当前项目此刻能否安全离开（切换或导出）：没有在途件与未结事务、录制与追溯已写完。
-pub fn switch_state(app: &AppHandle) -> Result<crate::site::ProjectSwitch, String> {
+pub fn switch_state(app: &AppHandle) -> Result<ProjectSwitch, String> {
     use crate::cycle::{CycleHost, Phase};
     let cycle = app.state::<CycleHost>();
     let audit_pending = !matches!(
         cycle.audit.readiness(),
         Ok(crate::audit::AuditReadiness::Ready)
     ) || !cycle.audit.protected_cycle_ids()?.is_empty();
-    Ok(crate::site::ProjectSwitch {
+    Ok(ProjectSwitch {
         block: cycle.switch_block(),
         busy: !matches!(cycle.phase(), Phase::Idle | Phase::Fault),
         audit_pending,
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSwitchResult {
+    pub current_project: String,
+    pub next_project: String,
+    pub restart_required: bool,
+}
+
 #[tauri::command]
-pub async fn project_switch(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn project_switch(app: AppHandle, id: String) -> Result<ProjectSwitchResult, String> {
     let data = crate::storage::root(&app);
     let from = current_id(&app);
     if id == from {
@@ -291,8 +301,23 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<(), String> {
     let cycle = app.state::<crate::cycle::CycleHost>();
     let _link = cycle.link_gate.lock().await;
     let _config = cycle.config_gate.lock().await;
-    crate::site::check_project_switch(&switch_state(&app)?)?;
+    check_project_switch(&switch_state(&app)?)?;
     write_pointer(&data, &id)?;
+    if tauri::is_dev() {
+        crate::applog::write(
+            "info",
+            "项目切换",
+            &format!(
+                "{from} → {}（{}），已保存下次启动项目，等待重新运行开发入口",
+                target.id, target.name
+            ),
+        );
+        return Ok(ProjectSwitchResult {
+            current_project: from,
+            next_project: id,
+            restart_required: true,
+        });
+    }
     crate::applog::write(
         "info",
         "项目切换",
@@ -303,3 +328,24 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests;
+
+/// 切换项目前要满足的条件：比站点模式切换多一条，件记录与追溯必须已写进本项目。
+pub struct ProjectSwitch {
+    /// 在途工件或未结 S7 事务给出的阻止原因
+    pub block: Option<String>,
+    pub busy: bool,
+    pub audit_pending: bool,
+}
+
+pub fn check_project_switch(pre: &ProjectSwitch) -> Result<(), String> {
+    if let Some(reason) = &pre.block {
+        return Err(reason.clone());
+    }
+    if pre.busy {
+        return Err("检测仍有在途事务，完成握手或复位故障后再切换项目".into());
+    }
+    if pre.audit_pending {
+        return Err("上一件的录制或追溯还没写完，稍后再切换项目".into());
+    }
+    Ok(())
+}

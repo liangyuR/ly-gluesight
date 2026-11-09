@@ -1,21 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Download, History, RefreshCw, Scale } from "lucide-react";
+import { Download, History, Package, PackageOpen, RefreshCw, Scale, Tag, Trash2 } from "lucide-react";
 import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, SegmentedControl, Select, Stack, StatusBadge, Table, Text, TextField, type TableColumn } from "qing-steel";
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
+import { useProjectDirectory } from "../features/project/hooks";
+import { projectLabel, recordProject } from "../features/project/rules";
 import { errorText } from "../lib/errors";
 import { flagBadges } from "../features/plan/vis";
-import { displayReason, formatTime, historyApi, partVerdict, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, type HistoryFilter, type HistoryPage as Page, type HistoryQuery, type HistoryScope, type PartMode } from "../features/history";
+import { commonHistoryTags, displayReason, formatTime, HistoryExportDialog, HistoryImportDialog, HistoryRecordDialog, historyApi, partVerdict, RejudgeDialog, triggerModeLabel, verdictGroups, type HistoryDeleted, type HistoryFilter, type HistoryPackagePreview, type HistoryPage as Page, type HistoryQuery, type PartMode } from "../features/history";
 
 type Item = Page["items"][number];
 
 const PAGE = 50;
-const scopeOptions: { value: HistoryScope; label: string }[] = [
-  { value: "real", label: "真机件" },
-  { value: "offline", label: "离线件" },
-  { value: "debug", label: "候选调试" },
-];
 const ranges: [string, string, number | null][] = [
   ["today", "今天", 0],
   ["7d", "7 天", 7],
@@ -23,12 +20,28 @@ const ranges: [string, string, number | null][] = [
   ["all", "全部", null],
 ];
 const rangeOptions = ranges.map(([value, label]) => ({ value, label }));
+/** 项目范围选“当前项目”的取值；项目编号只含字母、数字、- 和 _，不会与它重名 */
+const CURRENT_PROJECT = "@current";
 const modeOptions: { value: string; label: string; modes: PartMode[] }[] = [
   { value: "all", label: "全部", modes: [] },
   { value: "production", label: "正式检测", modes: ["production"] },
   { value: "maintenanceShadow", label: "维护试判", modes: ["maintenanceShadow"] },
   { value: "maintenanceCollect", label: "维护采集", modes: ["maintenanceCollect"] },
 ];
+
+const LONG_REASON = 80;
+
+function ReasonCell({ reason }: { reason: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const text = displayReason(reason);
+  const long = text.length > LONG_REASON;
+  return (
+    <div className="hist-reason">
+      <span className={expanded ? undefined : "hist-reason-text"} title={expanded ? undefined : text}>{text}</span>
+      {long && <Button variant="text" size="sm" className="hist-reason-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : "展开"}</Button>}
+    </div>
+  );
+}
 
 function rangeStart(days: number | null) {
   if (days === null) return null;
@@ -40,16 +53,18 @@ function rangeStart(days: number | null) {
 export default function HistoryPage() {
   const go = useNavigate();
   const recipes = useRecipes();
+  const projects = useProjectDirectory();
   const location = useLocation();
   const [initial] = useState(() => (location.state as { filter?: HistoryFilter } | null)?.filter ?? null);
-  const [scope, setScope] = useState<HistoryScope>("real");
   const [range, setRange] = useState(initial ? "all" : "today");
   const [groups, setGroups] = useState<string[]>(initial?.groups ?? []);
   const [mode, setMode] = useState(modeOptions.find((m) => m.modes.join() === (initial?.modes ?? []).join())?.value ?? "all");
   const [sn, setSn] = useState("");
+  const [tag, setTag] = useState("");
   const [recipeId, setRecipeId] = useState(initial?.recipeId ?? "");
+  const [project, setProject] = useState(initial?.currentProject ? CURRENT_PROJECT : "");
   const [offset, setOffset] = useState(0);
-  const [result, setResult] = useState<{ page: Page; query: HistoryQuery; offset: number } | null>(null);
+  const [result, setResult] = useState<{ page: Page; counts: Page["counts"]; query: HistoryQuery; offset: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [operationError, setOperationError] = useState("");
@@ -57,31 +72,46 @@ export default function HistoryPage() {
   const [exporting, setExporting] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const [rejudge, setRejudge] = useState<{ query: HistoryQuery; total: number } | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [recordAction, setRecordAction] = useState<"tags" | "delete" | null>(null);
+  const [notice, setNotice] = useState<{ message: string; warnings: string[] } | null>(() => (location.state as { historyNotice?: { message: string; warnings: string[] } } | null)?.historyNotice ?? null);
+  const [packageIds, setPackageIds] = useState<number[] | null>(null);
+  const [packagePreview, setPackagePreview] = useState<HistoryPackagePreview | null>(null);
+  const [picking, setPicking] = useState(false);
   const requestSerial = useRef(0);
   const exportPending = useRef(false);
   const revealPending = useRef(false);
+  const pickPending = useRef(false);
   const alive = useRef(true);
+  const mutationBusy = useRef(false);
+  const setMutationBusy = useCallback((busy: boolean) => { mutationBusy.current = busy; }, []);
 
+  const currentId = projects.current?.id ?? null;
+  // 选“当前项目”但当前项目还没读到（或读取失败）时不查询，免得把全部项目的记录当成当前项目的
+  const projectBlocked = project === CURRENT_PROJECT && !currentId;
   const query = useMemo<HistoryQuery>(
     () => ({
-      scope,
+      scope: "real",
+      project: project === CURRENT_PROJECT ? currentId : project || null,
       from: rangeStart(ranges.find((r) => r[0] === range)![2]),
       verdicts: verdictGroups.filter((g) => groups.includes(g.key)).flatMap((g) => g.verdicts),
       sn,
+      tag: tag.trim() || undefined,
       recipeId: recipeId || null,
       modes: modeOptions.find((m) => m.value === mode)!.modes,
     }),
-    [scope, range, groups, sn, recipeId, mode],
+    [range, groups, sn, tag, recipeId, mode, project, currentId],
   );
   const currentQuery = useRef(query);
   currentQuery.current = query;
   const stale = result?.query !== query || result.offset !== offset;
-  const page = result && !(stale && error) ? result.page : null;
+  const page = result && !(stale && (error || projectBlocked)) ? result.page : null;
+  const counts = page ? result!.counts : null;
+  const countedTotal = counts ? counts.ok + counts.excursion + counts.ng + counts.err : 0;
   const pending = stale && !!page;
-  const shownScope = page ? result!.query.scope : scope;
-  const hasFilters = range !== "today" || groups.length > 0 || mode !== "all" || !!sn || !!recipeId;
+  const hasFilters = range !== "today" || groups.length > 0 || mode !== "all" || !!sn || !!tag || !!recipeId || !!project;
   const resetFilters = () => {
-    setRange("today"); setGroups([]); setMode("all"); setSn(""); setRecipeId(""); setOffset(0);
+    setRange("today"); setGroups([]); setMode("all"); setSn(""); setTag(""); setRecipeId(""); setProject(""); setOffset(0);
   };
   const navigate = (to: string) => go(to, { state: { query: result?.query ?? query } });
 
@@ -94,25 +124,45 @@ export default function HistoryPage() {
     setExported(null);
     setOperationError("");
     setRejudge(null);
+    setSelected([]);
+    setRecordAction(null);
   }, [query]);
+  useEffect(() => { setSelected([]); setRecordAction(null); }, [offset]);
 
   const load = useCallback(() => {
     const serial = ++requestSerial.current;
+    if (projectBlocked) { setLoading(false); return; }
     setLoading(true);
     setError("");
-    historyApi
-      .query({ ...query, offset, limit: PAGE })
-      .then((p) => {
+    Promise.all([
+      historyApi.query({ ...query, offset, limit: PAGE }),
+      query.verdicts?.length ? historyApi.query({ ...query, verdicts: [], offset: 0, limit: 1 }) : null,
+    ])
+      .then(([p, all]) => {
         if (serial !== requestSerial.current) return;
-        setResult({ page: p, query, offset });
+        if (offset > 0 && offset >= p.total) { setOffset(Math.max(0, Math.ceil(p.total / PAGE) - 1) * PAGE); return; }
+        setResult({ page: p, counts: (all ?? p).counts, query, offset });
+        setSelected(previous => previous.filter(key => p.items.some(item => String(item.id) === key)));
         setError("");
       })
       .catch((e) => { if (serial === requestSerial.current) setError(errorText(e)); })
       .finally(() => { if (serial === requestSerial.current) setLoading(false); });
-  }, [query, offset]);
+  }, [query, offset, projectBlocked]);
 
   useEffect(() => { load(); return () => { requestSerial.current++; }; }, [load]);
   useEffect(() => subscribe<number>("history://inserted", () => offset === 0 && load()), [load, offset]);
+  useEffect(() => subscribe<number[]>("history://changed", () => { if (!mutationBusy.current) load(); }), [load]);
+
+  const selectedItems = page?.items.filter(item => selected.includes(String(item.id))) ?? [];
+  const canExportSelected = selectedItems.length === selected.length && selectedItems.every(item => !!item.cycleId && !!item.flags);
+  const selectedTags = selectedItems.length === 1 ? selectedItems[0].tags ?? [] : [];
+  const savedTags = () => {
+    setRecordAction(null); setSelected([]); setNotice({ message: "人工 Tag 已保存。", warnings: [] }); load();
+  };
+  const deletedRecords = (result: HistoryDeleted) => {
+    setRecordAction(null); setSelected([]); setNotice({ message: `已删除 ${result.deleted} 件历史记录。`, warnings: result.warnings });
+    load();
+  };
 
   const exportCsv = async () => {
     if (exportPending.current || loading || !page?.total) return;
@@ -142,9 +192,23 @@ export default function HistoryPage() {
     }
   };
 
+  const pickPackage = async () => {
+    if (pickPending.current) return;
+    pickPending.current = true; setPicking(true); setOperationError("");
+    try {
+      const preview = await historyApi.packagePick();
+      if (alive.current && preview) setPackagePreview(preview);
+    } catch (e) {
+      if (alive.current) setOperationError(errorText(e));
+    } finally {
+      pickPending.current = false;
+      if (alive.current) setPicking(false);
+    }
+  };
+
   const openRow = (e: MouseEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
-    if (target.closest("button, a")) return;
+    if (target.closest("button, a, input, label, .qs-table-checkbox")) return;
     const id = target.closest("tbody tr")?.querySelector<HTMLElement>("[data-history-id]")?.dataset.historyId;
     if (id) navigate(`/history/${id}`);
   };
@@ -166,10 +230,24 @@ export default function HistoryPage() {
         <div className="hist-sn">
           <span className="sn" title={p.sn || undefined}>{p.sn || "—"}</span>
           {p.retestOf && <StatusBadge tone="warn" title={`复检，上一次记录 #${p.retestOf}`}>复检</StatusBadge>}
-          {p.source !== "real" && <StatusBadge tone="off">{sourceLabel[p.source]}</StatusBadge>}
-          {p.sample && <span title={`样本集 ${p.sample.setId} · 样本 SN ${p.sample.sn}`}><Chip>样本 {p.sample.partId}（{sampleLabelText[p.sample.label]}）</Chip></span>}
         </div>
       ),
+    },
+    {
+      key: "tags",
+      header: "人工 Tag",
+      render: (p) => <div className="hist-tags">{(p.tags ?? []).map(value => <Chip key={value} onClick={() => { setTag(value); setOffset(0); }}>{value}</Chip>)}</div>,
+    },
+    {
+      key: "project",
+      header: "项目",
+      render: (p) => {
+        const owner = recordProject(p.projectId, projects.entries);
+        return <span className="hist-project" title={p.projectId}>
+          {owner.label}
+          {owner.deleted && <StatusBadge tone="off">已删除</StatusBadge>}
+        </span>;
+      },
     },
     {
       key: "recipe",
@@ -177,21 +255,19 @@ export default function HistoryPage() {
       render: (p) => (
         <span className="nowrap">
           {p.recipeId ?? "—"}
-          {p.source === "offlineCandidate"
-            ? <span className="muted"> · 候选修订 {p.recipeRevision ?? "未记录"}</span>
-            : p.recipeVersion != null && <span className="muted"> v{p.recipeVersion}</span>}
+          {p.recipeVersion != null && <span className="muted"> v{p.recipeVersion}</span>}
           {p.triggerMode && <span className="muted"> · {triggerModeLabel(p.triggerMode)}</span>}
         </span>
       ),
     },
     { key: "verdict", header: "结果", render: (p) => { const v = partVerdict(p); return <StatusBadge tone={v.tone}>{v.label}</StatusBadge>; } },
     { key: "plc", header: "PLC 码", render: (p) => <span className="mono">{p.plcCode}{p.faultCode ? ` / ${p.faultCode}` : ""}</span> },
-    { key: "reason", header: "原因", render: (p) => <span className="hist-reason">{displayReason(p.reason)}</span> },
+    { key: "reason", header: "原因", render: (p) => <ReasonCell reason={p.reason} /> },
     {
       key: "frames",
       header: "帧",
       render: (p) => {
-        // 帧组数 / 预期总数 ΣN_exp（待标定为 0），整件标记（检测不完整、帧数异常、疑似提前终止…）单独显示；没有帧记录的为 收到/计划
+        // 帧组数 / 预期总数 ΣN_exp（待标定为 0），整件标记（检测不完整、笔数异常…）单独显示；没有帧记录的为 收到/计划
         if (!p.flags) return <span className="mono nowrap">{p.framesExpected ? `${p.framesReceived}/${p.framesExpected}` : "—"}</span>;
         const badges = flagBadges(p.flags);
         return <div className="hist-frames">
@@ -207,14 +283,38 @@ export default function HistoryPage() {
     <div className="hist-page">
       <Card className="hist-filters">
         <Stack direction="column" align="stretch" gap={10}>
-          <Stack gap={12}>
-              <SegmentedControl label="记录来源" options={scopeOptions} value={scope} onValueChange={(value) => { setScope(value as HistoryScope); setOffset(0); }} />
-              <SegmentedControl label="记录日期" options={rangeOptions} value={range} onValueChange={(value) => { setRange(value); setOffset(0); }} />
-              <SegmentedControl label="检测模式" options={modeOptions} value={mode} onValueChange={(value) => { setMode(value); setOffset(0); }} />
-          </Stack>
-          <div className="hist-filter-options">
-              <Stack gap={8}>
-                <Text variant="label" muted>结果</Text>
+          <div className="hist-filter-row">
+            <SegmentedControl label="记录日期" options={rangeOptions} value={range} onValueChange={(value) => { setRange(value); setOffset(0); }} />
+            <SegmentedControl label="检测模式" options={modeOptions} value={mode} onValueChange={(value) => { setMode(value); setOffset(0); }} />
+            <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="筛选 SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} />
+            <TextField id="history-tag" className="hist-tag-input" aria-label="历史 Tag" list="history-common-tags" placeholder="按 Tag 精确筛选" value={tag} onChange={(e) => { setTag(e.target.value); setOffset(0); }} />
+            <datalist id="history-common-tags">{commonHistoryTags.map(value => <option key={value} value={value} />)}</datalist>
+            <Select
+              id="history-project"
+              aria-label="历史项目"
+              className="hist-project-select"
+              value={project}
+              options={[
+                { value: "", label: "全部项目" },
+                { value: CURRENT_PROJECT, label: projects.current ? `当前项目（${projects.current.name}）` : "当前项目" },
+                ...(projects.entries ?? []).filter((e) => e.id !== currentId).map((e) => ({ value: e.id, label: `${projectLabel(e)} · ${e.id}` })),
+              ]}
+              onValueChange={(value) => { setProject(value); setOffset(0); }}
+            />
+            <Select
+              id="history-recipe"
+              aria-label="历史配方"
+              className="hist-recipe"
+              value={recipeId}
+              options={[{ value: "", label: "全部配方" }, ...recipes.map((r) => ({ value: r.id, label: r.id }))]}
+              onValueChange={(value) => { setRecipeId(value); setOffset(0); }}
+            />
+            {hasFilters && <Button variant="text" size="sm" onClick={resetFilters}>重置筛选</Button>}
+          </div>
+          <div className="hist-toolbar">
+            <div className={`hist-counts${pending ? " is-loading" : ""}`} aria-busy={pending}>
+              <span>共 <b>{page?.total ?? 0}</b> 件</span>
+              <div className="hist-result-filters" role="group" aria-label="按结果筛选">
                 {verdictGroups.map((g) => (
                   <Chip
                     key={g.key}
@@ -224,39 +324,30 @@ export default function HistoryPage() {
                   >
                     <span className="hist-dot" aria-hidden="true" />
                     {g.label}
+                    <b>{counts?.[g.key as keyof Page["counts"]] ?? 0}</b>
                   </Chip>
                 ))}
-              </Stack>
-              <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="筛选 SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} />
-              <Select
-                id="history-recipe"
-                aria-label="历史配方"
-                className="hist-recipe"
-                value={recipeId}
-                options={[{ value: "", label: "全部配方" }, ...recipes.map((r) => ({ value: r.id, label: r.id }))]}
-                onValueChange={(value) => { setRecipeId(value); setOffset(0); }}
-              />
-              {hasFilters && <Button variant="text" size="sm" onClick={resetFilters}>重置筛选</Button>}
-          </div>
-          <div className="hist-toolbar">
-            <div className={`hist-counts${pending ? " is-loading" : ""}`} aria-busy={pending}>
-              <span>{shownScope === "debug" ? "候选调试" : shownScope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
-              <span>OK <b className="c-ok">{page?.counts.ok ?? 0}</b></span>
-              <span>局部超差 <b className="c-warn">{page?.counts.excursion ?? 0}</b></span>
-              <span>NG <b className="c-ng">{page?.counts.ng ?? 0}</b></span>
-              <span>ERR <b className="c-err">{page?.counts.err ?? 0}</b></span>
-              {page && page.total > 0 && <span>良率 <b>{(((page.counts.ok + page.counts.excursion) / page.total) * 100).toFixed(1)}%</b></span>}
+              </div>
+              {countedTotal > 0 && <span>良率 <b>{(((counts!.ok + counts!.excursion) / countedTotal) * 100).toFixed(1)}%</b></span>}
             </div>
-            <Stack gap={8}>
-              <IconButton aria-label="刷新" title="刷新" onClick={load} disabled={loading}><RefreshCw size={16} /></IconButton>
+            <div className="hist-actions">
               <Button leadingIcon={<Scale size={15} />} onClick={() => page && setRejudge({ query, total: page.total })} disabled={loading || stale || !page?.total}>批量重判</Button>
               <Button leadingIcon={<Download size={15} />} onClick={() => void exportCsv()} disabled={exporting || loading || stale || !page?.total}>
                 {exporting ? "导出中…" : "导出 CSV"}
               </Button>
-            </Stack>
+              <span className="hist-actions-divider" aria-hidden="true" />
+              <Button leadingIcon={<PackageOpen size={15} />} onClick={() => void pickPackage()} disabled={picking}>{picking ? "正在读取…" : "导入历史件"}</Button>
+              <IconButton aria-label="刷新" title="刷新" onClick={load} disabled={loading}><RefreshCw size={16} /></IconButton>
+            </div>
           </div>
-          {scope === "debug" && <Text as="p" variant="label" muted>候选调试仅供离线测试，不作为生产验收或生产统计。</Text>}
-          {scope === "offline" && <Text as="p" variant="label" muted>离线记录独立统计，不计入真机产量与良率。</Text>}
+          <div className="hist-selection-bar" data-active={selected.length > 0 || undefined} role="toolbar" aria-label="已选历史件操作">
+            <Text variant="label" muted={!selected.length}>已选 {selected.length} 件</Text>
+            <Button size="sm" leadingIcon={<Package size={15} />} onClick={() => setPackageIds(selected.map(Number))} disabled={!selected.length || !canExportSelected || loading || stale}>导出历史件（{selected.length}）</Button>
+            <Button size="sm" leadingIcon={<Tag size={15} />} disabled={!selected.length || loading || stale} onClick={() => setRecordAction("tags")}>编辑 Tag（{selected.length}）</Button>
+            <Button size="sm" leadingIcon={<Trash2 size={15} />} disabled={!selected.length || loading || stale} onClick={() => setRecordAction("delete")}>删除历史件（{selected.length}）</Button>
+            {selected.length > 0 && <Button variant="text" size="sm" onClick={() => setSelected([])}>取消选择</Button>}
+          </div>
+          {notice && <Alert tone={notice.warnings.length ? "warn" : "ok"}>{notice.message}{notice.warnings.length > 0 && <ul className="hist-package-list">{notice.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}</Alert>}
           {loading && stale && <Text variant="label" muted role="status">正在加载历史记录…</Text>}
           {exported && (
             <Alert tone="ok" action={<Button variant="text" size="sm" disabled={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</Button>}>
@@ -264,6 +355,7 @@ export default function HistoryPage() {
             </Alert>
           )}
           {error && <Alert tone="ng">{error}</Alert>}
+          {projectBlocked && !projects.loading && <Alert tone="ng">当前项目读取失败{projects.error && `：${projects.error}`}，不能只看当前项目的记录。</Alert>}
           {operationError && <Alert tone="ng">{operationError}</Alert>}
         </Stack>
       </Card>
@@ -276,7 +368,12 @@ export default function HistoryPage() {
             rows={page?.items ?? []}
             columns={columns}
             rowKey={(p) => String(p.id)}
-            loading={!page && loading}
+            selectable
+            selectedKeys={selected}
+            onSelectionChange={setSelected}
+            isRowSelectable={() => !loading && !stale}
+            getRowLabel={(p) => `SN ${p.sn || p.id}`}
+            loading={!page && (loading || (projectBlocked && projects.loading))}
             emptyState={page ? <EmptyState icon={<History />} title="没有符合条件的记录" description={hasFilters ? "试试扩大日期范围，或重置筛选。" : "当前来源今天暂无记录，可扩大日期范围查看。"} /> : <></>}
           />
         </div>
@@ -293,6 +390,9 @@ export default function HistoryPage() {
         )}
       </Card>
       {rejudge && <RejudgeDialog query={rejudge.query} total={rejudge.total} onClose={() => setRejudge(null)} />}
+      {recordAction && <HistoryRecordDialog action={recordAction} ids={selected.map(Number)} initialTags={selectedTags} onClose={() => setRecordAction(null)} onSaved={savedTags} onDeleted={deletedRecords} onBusyChange={setMutationBusy} />}
+      {packageIds && <HistoryExportDialog ids={packageIds} onClose={() => setPackageIds(null)} />}
+      {packagePreview && <HistoryImportDialog preview={packagePreview} projectName={projects.current?.name} onClose={() => setPackagePreview(null)} onImported={load} />}
     </div>
   );
 }

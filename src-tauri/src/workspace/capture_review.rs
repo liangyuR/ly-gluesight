@@ -197,6 +197,43 @@ fn validate_cuts(cuts: &[u64], groups: u64, segments: usize) -> Result<(), Strin
     Ok(())
 }
 
+/// 段只在笔内（RB-12）：示教件每笔的最后一个帧组必须是段边界。笔结构与本件帧组数对不上时不校验。
+fn require_pass_ends(w: &Workspace, cuts: &[u64], groups: u64) -> Result<(), String> {
+    let passes = w
+        .teaching_piece
+        .as_ref()
+        .map_or(&[][..], |piece| piece.passes.as_slice());
+    if passes.iter().map(|&n| u64::from(n)).sum::<u64>() != groups {
+        return Ok(());
+    }
+    let missing: Vec<String> = passes
+        .iter()
+        .scan(0u64, |end, &n| {
+            *end += u64::from(n);
+            Some(*end)
+        })
+        .enumerate()
+        .take(passes.len().saturating_sub(1))
+        .filter(|(_, end)| !cuts.contains(end))
+        .map(|(i, end)| format!("第 {} 笔末（帧组 {end}）", i + 1))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let shown = missing
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("、");
+    let more = if missing.len() > 3 {
+        format!(" 等 {} 处", missing.len())
+    } else {
+        String::new()
+    };
+    Err(format!("段不能跨笔：{shown}{more}必须是段边界"))
+}
+
 pub fn apply_capture_review(
     w: &mut Workspace,
     round: &CaptureRoundV2,
@@ -351,15 +388,48 @@ pub fn save_template_round(
     if segments.is_empty() {
         return Err("段配方至少需要一段，不能改成拍照点配方".into());
     }
+    super::pass_align::require_confirmed(w)?;
+    require_pass_ends(w, &cuts, round.group_count)?;
     let mut next = w.clone();
     match super::segment_remap::remap(w, &round.round_id, &segments, &cuts) {
         Some(remapped) => replace_doc(&mut next, remapped.doc, Some(remapped.teaching))?,
-        None => burst::update_segments(&mut next, segments)?,
+        None => {
+            burst::update_segments(&mut next, segments)?;
+            settle_teaching_frames(&mut next, &round.round_id, &cuts, round.group_count);
+        }
     }
     apply_capture_review(&mut next, round, CaptureReviewEdit::Save(cuts))?;
     apply_capture_review(&mut next, round, CaptureReviewEdit::Confirm)?;
     apply_capture_review(&mut next, round, CaptureReviewEdit::SetTemplate)?;
     Ok(next)
+}
+
+/// 把指向示教件 `round`、却落在所属段帧范围外的示教帧移到该段中间：换示教件后保留的示教帧来自原件，帧组号在新件上可能
+/// 落到别的段（末段被截短、或第一次确认的边界与原件不同）；不移的话下次保存分段按帧组号对应，会把它归到别的段而丢掉走廊。
+pub(super) fn settle_teaching_frames(
+    w: &mut Workspace,
+    round: &str,
+    cuts: &[u64],
+    group_count: u64,
+) {
+    let ends: Vec<u64> = cuts.iter().copied().chain([group_count]).collect();
+    let span = |index: u32| -> Option<(u64, u64)> {
+        let i = w.doc.segments.iter().position(|s| s.index == index)?;
+        let last = *ends.get(i)?;
+        Some((if i == 0 { 1 } else { ends[i - 1] + 1 }, last))
+    };
+    let spans: Vec<Option<(u64, u64)>> = w
+        .camera_teaching
+        .iter()
+        .map(|t| t.segment.and_then(span))
+        .collect();
+    for (t, span) in w.camera_teaching.iter_mut().zip(spans) {
+        if let Some((first, last)) = span.filter(|_| t.round == round) {
+            if !(first..=last).contains(&t.seq) {
+                t.seq = (first + last) / 2;
+            }
+        }
+    }
 }
 
 /// 示教件的轮次：没有示教件时报错。
@@ -391,12 +461,15 @@ pub fn workspace_segment_template_save(
         .map_err(|_| "正在处理采集或设备事务，请稍后保存分段")?;
     crate::camera::check_idle(&cycle)?;
     let round = teaching_round(&app, &id, revision)?;
-    let captured = cycle.camera.recipe_capture().get_burst(&round)?;
+    let capture = cycle.camera.recipe_capture();
+    let captured = capture.get_burst(&round)?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     let current = items.get_mut(&id).ok_or("候选配置不存在")?;
     current.expect(revision)?;
-    let next = save_template_round(current, &captured, segments, cuts)?;
+    let mut base = current.clone();
+    super::pieces::fill_piece_passes(capture, &mut base)?;
+    let next = save_template_round(&base, &captured, segments, cuts)?;
     host.save(&next)?;
     *current = next;
     view(&app, current.clone())
@@ -413,6 +486,7 @@ pub struct SegmentSaveImpact {
     pub untaught: Vec<String>,
     /// 示教件已按当前走廊测量、保存后失效（胶偏参考与起涂收尾建议要重新测量）
     pub measurement_cleared: bool,
+    pub coverage: Option<crate::segmentation::InspectionCoverage>,
 }
 
 pub(super) fn save_impact(before: &Workspace, after: &Workspace) -> SegmentSaveImpact {
@@ -475,6 +549,24 @@ pub(super) fn save_impact(before: &Workspace, after: &Workspace) -> SegmentSaveI
         untaught,
         measurement_cleared: super::pieces::teaching_measured(before)
             && !super::pieces::teaching_measured(after),
+        coverage: after
+            .teaching_piece
+            .as_ref()
+            .and_then(|piece| after.capture_review.rounds.get(&piece.round_id))
+            .map(|review| {
+                crate::segmentation::proportional_coverage(
+                    &after.doc.segments,
+                    &cameras,
+                    review.group_count,
+                    after.doc.boundary_guard,
+                    &review
+                        .excluded_groups
+                        .iter()
+                        .map(|group| group.seq)
+                        .collect::<Vec<_>>(),
+                    super::pieces::piece_pass_rules(after),
+                )
+            }),
     }
 }
 
@@ -488,16 +580,16 @@ pub fn workspace_segment_template_preview(
     cuts: Vec<u64>,
 ) -> Result<SegmentSaveImpact, String> {
     let round = teaching_round(&app, &id, revision)?;
-    let captured = app
-        .state::<CycleHost>()
-        .camera
-        .recipe_capture()
-        .get_burst(&round)?;
+    let cycle = app.state::<CycleHost>();
+    let capture = cycle.camera.recipe_capture();
+    let captured = capture.get_burst(&round)?;
     let host = app.state::<WorkspaceHost>();
     let items = host.items.lock().unwrap();
     let current = items.get(&id).ok_or("候选配置不存在")?;
     current.expect(revision)?;
-    let next = save_template_round(current, &captured, segments, cuts)?;
+    let mut base = current.clone();
+    super::pieces::fill_piece_passes(capture, &mut base)?;
+    let next = save_template_round(&base, &captured, segments, cuts)?;
     Ok(save_impact(current, &next))
 }
 

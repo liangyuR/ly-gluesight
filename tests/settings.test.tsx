@@ -10,13 +10,15 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true })
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 
 let saved: CycleSettings;
+let disks: string[];
+const disksReply = () => ({ reserveBytes: 5 * 1024 ** 3, disks: disks.map((path, i) => ({ path, freeBytes: 100 * 1024 ** 3, writable: true, error: null, current: i === 0 })) });
 
 beforeEach(() => {
+  disks = ["C:\\gs_logs", "D:\\gs_logs"];
   saved = {
     productSource: "plc", manualRecipeId: null, historyDays: 180,
     timeouts: { motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
     record: "failed", recordKeep: 100, recordMaxGb: 20,
-    offlineRecordKeep: 300, offlineRecordMaxGb: 10,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
@@ -27,6 +29,8 @@ beforeEach(() => {
       case "storage_status": return { environment: "development", root: "C:/ProgramData/ly/GlueSight-dev",
         logRoot: "C:/test/gs_logs", runtimeLogDir: "C:/test/gs_logs/runtime/development/instance", visionLogDir: "C:/test/gs_logs/vision/development/instance/project" };
       case "storage_open_directory": return;
+      case "storage_recording_disks": return disksReply();
+      case "storage_recording_disks_save": disks = (args as { paths: string[] }).paths; return disksReply();
       case "app_info": return { name: "GlueSight", version: "test" };
       default: throw new Error(`Unexpected command: ${command}`);
     }
@@ -37,24 +41,46 @@ function recordSaveButton() {
   return within(screen.getByRole("region", { name: "lyFlow 与帧录制" })).getByRole("button", { name: "保存" });
 }
 
-describe("离线原图保留设置", () => {
+describe("原图保留设置", () => {
 
-  it("修改离线保留上限并保存 → 重新打开显示新值且保留其他分区设置", async () => {
+  it("修改录制保留上限并保存 → 重新打开显示新值且保留其他分区设置", async () => {
     const page = render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
-    const keep = await screen.findByRole("spinbutton", { name: "离线原图最多保留（件）" });
+    const keep = await screen.findByRole("spinbutton", { name: "真机录制最多保留（件）" });
     fireEvent.change(keep, { target: { value: "450" } });
-    fireEvent.change(screen.getByRole("spinbutton", { name: "离线原图总大小上限（GB）" }), { target: { value: "12.5" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "真机录制总大小上限（GB）" }), { target: { value: "12.5" } });
     saved.historyDays = 90;
     await userEvent.click(recordSaveButton());
-    await waitFor(() => expect(saved.offlineRecordKeep).toBe(450));
+    await waitFor(() => expect(saved.recordKeep).toBe(450));
     page.unmount();
     render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
-    expect(await screen.findByRole("spinbutton", { name: "离线原图最多保留（件）" })).toHaveValue(450);
-    expect(screen.getByRole("spinbutton", { name: "离线原图总大小上限（GB）" })).toHaveValue(12.5);
+    expect(await screen.findByRole("spinbutton", { name: "真机录制最多保留（件）" })).toHaveValue(450);
+    expect(screen.getByRole("spinbutton", { name: "真机录制总大小上限（GB）" })).toHaveValue(12.5);
     expect(screen.getByRole("spinbutton", { name: "记录保留（天）" })).toHaveValue(90);
-    expect(screen.getByRole("spinbutton", { name: "真机录制最多保留（件）" })).toHaveValue(100);
-    expect(screen.getByRole("spinbutton", { name: "真机录制总大小上限（GB）" })).toHaveValue(20);
     expect(screen.getByRole("combobox", { name: "真机帧录制" }).closest(".qs-select")!.querySelector("select")!).toHaveValue("failed");
   });
 
+  it("勾选不限并保存 → 后端收到空值（不清理），重新打开仍显示不限", async () => {
+    const page = render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
+    await userEvent.click(await screen.findByRole("checkbox", { name: "件数不限" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "大小不限" }));
+    await userEvent.click(recordSaveButton());
+    await waitFor(() => expect(saved.recordKeep).toBeNull());
+    expect(saved.recordMaxGb).toBeNull();
+    page.unmount();
+    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
+    expect(await screen.findByRole("checkbox", { name: "件数不限" })).toBeChecked();
+    expect(screen.getByRole("spinbutton", { name: "真机录制最多保留（件）" })).toBeDisabled();
+  });
+
+});
+
+describe("录制盘", () => {
+  it("把第二块盘上移后保存 → 按界面顺序提交，新件先写这块盘", async () => {
+    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
+    const panel = await screen.findByRole("region", { name: "录制盘" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "上移 D:\\gs_logs" }));
+    await userEvent.click(within(panel).getByRole("button", { name: "保存录制盘" }));
+    await waitFor(() => expect(disks).toEqual(["D:\\gs_logs", "C:\\gs_logs"]));
+    expect(within(panel).getAllByRole("listitem")[0].textContent).toContain("D:\\gs_logs");
+  });
 });

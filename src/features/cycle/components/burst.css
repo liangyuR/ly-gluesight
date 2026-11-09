@@ -16,6 +16,11 @@
 .fg-seq-button { background: transparent; }
 .fg-cell-button[aria-pressed="true"] { outline: 2px solid var(--on-surface); outline-offset: -3px; }
 .fg-seq-button:focus-visible, .fg-cell-button:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+/* 段条：同一区域的色带跨列相连（列间距 4px，两侧各伸 2px），区域首尾收圆角 */
+.fg-strip.banded .fg-cams { padding-top: 32px; }
+.fg-band { display: block; height: 5px; margin: 0 -2px 3px; }
+.fg-band[data-start] { margin-left: 0; border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
+.fg-band[data-end] { margin-right: 0; border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
 
 /* 选中帧组的三台相机原图 */
 .wp-burst-cams { display: grid; gap: 8px; flex: 1; min-height: 0; }

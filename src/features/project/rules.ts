@@ -39,6 +39,13 @@ export function importedProjectName(sourceName: string, entries: ProjectEntry[],
 
 export const projectLabel = (entry: ProjectEntry) => entry.meta?.name ?? entry.id;
 
+/** 检测记录所属项目的显示名：本机项目列表里找不到即已删除；列表没读到（null）时只显示编号，不判定删除。 */
+export function recordProject(id: string, entries: ProjectEntry[] | null): { label: string; deleted: boolean } {
+  const entry = entries?.find(e => e.id === id);
+  if (entry) return { label: projectLabel(entry), deleted: false };
+  return { label: id, deleted: entries !== null };
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];

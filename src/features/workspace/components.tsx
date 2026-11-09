@@ -1,17 +1,26 @@
 import type { BrushGuide, ImagePoint } from "./teachingPath";
-import { createContext, useContext, useEffect, useId, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { cloneElement, createContext, useContext, useEffect, useId, useRef, useState, type PointerEvent, type ReactElement, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Camera, Minus, Plus, RotateCcw } from "lucide-react";
-import { Alert, Button, Card, Chip, EmptyState, IconButton, NumberField as SteelNumberField, Select, StatusBadge } from "qing-steel";
+import { Alert, Button, Card, Chip, EmptyState, IconButton, NumberField as SteelNumberField, StatusBadge, Tooltip } from "qing-steel";
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import type { GrayImage, GrayPixels } from "./types";
+import type { FrameImage, FramePixels } from "./types";
+import { fillRgba } from "../../lib/frame";
 import { errorText } from "../../lib/errors";
 import { PlanSteps } from "./PlanSteps";
 import { searchBand } from "./searchBand";
+import { useRecipeHref } from "./recipeRoutes";
 import { fanRadii, guideRadii, HEADING_MARK, rayEnd, wedgePath, type HeadingGuide, type HeadingPart } from "./headingOverlay";
 import ContextHelp from "../cycle/components/ContextHelp";
+
+/** 禁用控件不发指针事件：Tooltip 挂在外包的可聚焦 span 上，原因同时作为控件的无障碍描述。 */
+export function WithReason({ reason, block = false, children }: { reason: string; block?: boolean; children: ReactElement<{ "aria-describedby"?: string }> }) {
+  const id = useId();
+  if (!reason) return children;
+  return <Tooltip content={reason}><span tabIndex={0} className={"wp-tip-anchor" + (block ? " block" : "")}>{cloneElement(children, { "aria-describedby": id })}<span id={id} className="qs-sr-only">{reason}</span></span></Tooltip>;
+}
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
   return <StatusBadge tone={tone}>{children}</StatusBadge>;
@@ -34,18 +43,21 @@ export function NumberField({ label, value, unit, onChange, min, max, step = 1, 
   return <SteelNumberField label={label} className="num" value={value != null && Number.isFinite(value) ? value : ""} min={min} max={max} step={step} disabled={disabled} unit={unit} clamp={false} onValueChange={value => onChange(value === "" ? NaN : value)} />;
 }
 export function WorkspaceEmpty() {
-  const { error } = useWorkspace();
-  return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库选择或新建配方，再开始规划段与示教走廊。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Button asChild><Link to="/recipe">打开配方库</Link></Button>} /></div></div>;
+  const { error, selectedId, select } = useWorkspace();
+  if (desktopAvailable() && selectedId && !error) return <div className="wp-page"><p className="muted">正在读取配方 {selectedId}…</p></div>;
+  // 读取失败（如临时读不到文件）时可以就地重试，不必先打开别的配方
+  return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}{selectedId && desktopAvailable() && <Button size="sm" onClick={() => void select(selectedId)}>重试读取 {selectedId}</Button>}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "没有打开配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库打开或新建配方，再开始规划段与示教走廊。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Button asChild><Link to="/recipe">打开配方库</Link></Button>} /></div></div>;
 }
 export function WorkspaceBar({ showNavigation = true }: { showNavigation?: boolean } = {}) {
-  const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, navigationDirty, busy, previewError, error, saveState, retrySave, setError } = useWorkspace();
+  const { data, doc, navigationDirty, segmentDirty, previewError, error, saveState, retrySave, setError } = useWorkspace();
   const { pathname } = useLocation();
+  const href = useRecipeHref();
   useEffect(() => () => setError(""), [pathname, setError]);
-  const choices = [...list.map(r => ({ id:r.id, name:r.name })), ...drafts.filter(w => !list.some(r => r.id === w.doc.id)).map(w => ({ id:w.doc.id, name:w.doc.name }))];
   const publish = data?.workspace.publish;
-  return <>{showNavigation && <><div className="wp-workbench-bar"><div className="wp-recipe-picker"><Select aria-label="当前配方" title="当前配方" value={selectedId ?? ""} disabled={busy || dirty || frameDirty || navigationDirty} onValueChange={value => void select(value)} placeholder="选择配方" options={choices.map(r => ({ value: r.id, label: `${r.id} · ${r.name}` }))} /></div>{data && <Badge tone={data.productionVersion ? "ok" : "warn"}>{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge>}{data && publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}<span className="wp-save-state" title={data ? `候选 v${doc?.version} · 修订 ${data.workspace.revision}` : undefined}><Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge></span>{saveState === "failed" && <Button size="sm" onClick={retrySave}>重试保存</Button>}<Button asChild variant="outlined"><Link to="/recipe">配方库</Link></Button></div><Steps /></>}
+  return <>{showNavigation && <><div className="wp-workbench-bar"><nav className="wp-recipe-picker" aria-label="配方位置"><Link to="/recipe">配方库</Link><span aria-hidden="true">/</span><strong title={doc ? `${doc.id} · ${doc.name}` : undefined}>{doc ? `${doc.id} · ${doc.name}` : "…"}</strong></nav>{data && <Badge tone={data.productionVersion ? "ok" : "warn"}>{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge>}{data && publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}<Steps /><span className="wp-save-state" title={data ? `候选 v${doc?.version} · 修订 ${data.workspace.revision}` : undefined}><Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge></span>{saveState === "failed" && <Button size="sm" onClick={retrySave}>重试保存</Button>}</div></>}
     {!showNavigation && saveState === "failed" && <Notice title="候选保存失败" tone="warn"><Button size="sm" onClick={retrySave}>重试保存</Button></Notice>}
-    {navigationDirty && <Notice title="工件导航图尚未保存" tone="warn">修改已保留，请在地图中保存或撤销；标注可到<Link to="/recipe/segments">分段页</Link>继续编辑。保存后再发布或切换配方。</Notice>}
+    {segmentDirty && <Notice title="分段尚未保存" tone="warn">修改已保留，请回到<Link to={href("/recipe/teach")}>分段与示教</Link>页完成保存或撤销，再发布或切换配方。</Notice>}
+    {navigationDirty && <Notice title="工件导航图尚未保存" tone="warn">修改已保留，请在地图中保存或撤销；标注可到<Link to={href("/recipe/teach")}>分段与示教</Link>页继续编辑。保存后再发布或切换配方。</Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
     {publish?.state === "waiting" && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效失败可在发布页重试同一版本。</Notice>}
@@ -59,9 +71,9 @@ export function Steps() {
   return data ? <PlanSteps /> : null;
 }
 
-export function useGrayImage(id: string | null, imageId: string | null) {
+export function useFrameImage(id: string | null, imageId: string | null) {
   const key=JSON.stringify([id,imageId]);
-  const [state, setState] = useState<{key:string;image:GrayImage|null;error:string;loading:boolean}>({key,image:null,error:"",loading:false});
+  const [state, setState] = useState<{key:string;image:FrameImage|null;error:string;loading:boolean}>({key,image:null,error:"",loading:false});
   useEffect(() => {
     let alive = true;
     setState({key,image:null,error:"",loading:!!id&&!!imageId});
@@ -79,8 +91,11 @@ export interface ImageOverlay {
   searchHalfPx?: number;
   /** 测量横线（试测页逐帧查看：各站两侧边缘）；`station` 为测站号（0 起，供悬停联动），`width` 为屏幕线宽（默认 2） */
   segments?: { from: [number, number]; to: [number, number]; color: string; width?: number; station?: number }[];
+  clipped?: { station: number; loEdge?: [number, number]; hiEdge?: [number, number]; normal?: [number, number]; position?: [number, number]; loClipped?: boolean; hiClipped?: boolean; label: string }[];
   /** 鼠标移到某条带测站号的测量横线上（移开为 null） */
   onSegmentHover?: (station: number | null) => void;
+  /** 胶边距线（ToEdge）：找到零件边的站，胶中心 → 零件边；带“胶边距”开关 */
+  partEdges?: [[number, number], [number, number]][];
   /** 选中的中线点 */
   selected?: number | null;
   /** 逐帧定向叠加（走廊示教页，开启定向的段） */
@@ -94,6 +109,11 @@ function HeadingLayer({ guide, size, screenPx, turnable, turning, hinted }: { gu
   const fan = fanRadii(guide, size);
   const [nx, ny] = c;
   const arm = screenPx(12);
+  const cross = <>
+    <line x1={nx - arm} y1={ny} x2={nx + arm} y2={ny} vectorEffect="non-scaling-stroke" />
+    <line x1={nx} y1={ny - arm} x2={nx} y2={ny + arm} vectorEffect="non-scaling-stroke" />
+    <circle cx={nx} cy={ny} r={screenPx(6)} vectorEffect="non-scaling-stroke" />
+  </>;
   const base = guide.sector ? (guide.sector[0] + guide.sector[1]) / 2 : 90;
   const dim = (part: HeadingPart) => guide.focus && guide.focus !== part ? .15 : 1;
   const mark = (part: HeadingPart, r: number, deg: number) => {
@@ -104,10 +124,10 @@ function HeadingLayer({ guide, size, screenPx, turnable, turning, hinted }: { gu
     </g>;
   };
   return <g aria-label="逐帧定向叠加" pointerEvents="none" fill="none" vectorEffect="non-scaling-stroke">
-    {guide.zone && guide.zone[0] > 0 && <path aria-label="跳过段" opacity={dim("skip")} d={wedgePath(c, [0, guide.zone[0]], [0, 360])} fill="var(--on-surface-variant)" fillOpacity={.18} stroke="var(--on-surface-variant)" strokeOpacity={.5} strokeWidth={1} vectorEffect="non-scaling-stroke" />}
-    {guide.zone && <path aria-label="测量区间环带" opacity={dim("zone")} d={wedgePath(c, guide.zone, [0, 360])} fill="var(--primary)" fillOpacity={.06} fillRule="evenodd" stroke="var(--primary)" strokeOpacity={.6} strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />}
-    {guide.sector && <path aria-label="搜索扇区" opacity={dim("sector")} d={wedgePath(c, fan, guide.sector)} fill="var(--warn)" fillOpacity={turning ? .3 : .16} stroke="var(--warn)" strokeWidth={turning ? 2.5 : 1.5} vectorEffect="non-scaling-stroke" />}
-    {guide.measured != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.measured); return <line aria-label="实测方向" opacity={dim("reading")} x1={nx} y1={ny} x2={x} y2={y} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />; })()}
+    {guide.zone && guide.zone[0] > 0 && <path aria-label="跳过段" opacity={dim("skip")} d={wedgePath(c, [0, guide.zone[0]], [0, 360])} fill="var(--ov-halo)" fillOpacity={.35} stroke="var(--ov-muted)" strokeOpacity={.7} strokeWidth={1} vectorEffect="non-scaling-stroke" />}
+    {guide.zone && <path aria-label="测量区间环带" opacity={dim("zone")} d={wedgePath(c, guide.zone, [0, 360])} fill="var(--ov-line)" fillOpacity={.06} fillRule="evenodd" stroke="var(--ov-line)" strokeOpacity={.8} strokeWidth={1} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />}
+    {guide.sector && <path aria-label="搜索扇区" opacity={dim("sector")} d={wedgePath(c, fan, guide.sector)} fill="var(--ov-warn)" fillOpacity={turning ? .3 : .16} stroke="var(--ov-warn)" strokeWidth={turning ? 2.5 : 1.5} vectorEffect="non-scaling-stroke" />}
+    {guide.measured != null && (() => { const [x, y] = rayEnd(c, radii[1], guide.measured); return <g aria-label="实测方向" opacity={dim("reading")}><line x1={nx} y1={ny} x2={x} y2={y} stroke="var(--ov-halo)" strokeWidth={4} vectorEffect="non-scaling-stroke" /><line x1={nx} y1={ny} x2={x} y2={y} stroke="var(--ov-line)" strokeWidth={2} vectorEffect="non-scaling-stroke" /></g>; })()}
     {guide.zone && guide.zone[0] > 0 && mark("skip", guide.zone[0] / 2, base)}
     {guide.zone && mark("zone", (guide.zone[0] + guide.zone[1]) / 2, base + 60)}
     {guide.sector && (turnable ? (() => {
@@ -127,32 +147,30 @@ function HeadingLayer({ guide, size, screenPx, turnable, turning, hinted }: { gu
         <circle cx={hx} cy={hy} r={r * 2.4} fill="transparent" />
         <path className="wp-sector-arrows" d={arrow(1) + arrow(-1)} />
         <circle className="wp-sector-knob" cx={hx} cy={hy} r={r} />
-        <text x={hx} y={hy} textAnchor="middle" dominantBaseline="central" fontSize={screenPx(12)} fontWeight="bold" fill="var(--surface-lowest)">{HEADING_MARK.sector}</text>
-        {turning && <text x={hx} y={hy} dy={-r * 2} textAnchor="middle" fontSize={screenPx(13)} fill="var(--warn)" stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke">{Math.round(((base % 360) + 540) % 360 - 180)}°</text>}
+        <text x={hx} y={hy} textAnchor="middle" dominantBaseline="central" fontSize={screenPx(12)} fontWeight="bold" fill="var(--ov-ink)">{HEADING_MARK.sector}</text>
+        {turning && <text x={hx} y={hy} dy={-r * 2} textAnchor="middle" fontSize={screenPx(13)} fill="var(--ov-warn)" stroke="var(--ov-halo)" strokeWidth={3} paintOrder="stroke">{Math.round(((base % 360) + 540) % 360 - 180)}°</text>}
       </g>;
     })() : mark("sector", fan[1], base))}
     {guide.measured != null && mark("reading", radii[1] * .8, guide.measured)}
-    <g aria-label={guide.calibrated ? "出胶点（已标定）" : "出胶点（走廊推算）"} stroke={guide.calibrated ? "var(--ok)" : "var(--warn)"} strokeWidth={2}>
-      <line x1={nx - arm} y1={ny} x2={nx + arm} y2={ny} vectorEffect="non-scaling-stroke" />
-      <line x1={nx} y1={ny - arm} x2={nx} y2={ny + arm} vectorEffect="non-scaling-stroke" />
-      <circle cx={nx} cy={ny} r={screenPx(6)} vectorEffect="non-scaling-stroke" />
-      <text x={nx} y={ny} dx={screenPx(14)} dy={screenPx(-10)} fontSize={screenPx(13)} fill={guide.calibrated ? "var(--ok)" : "var(--warn)"} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke">{HEADING_MARK.nozzle} {guide.calibrated ? "出胶点" : "出胶点（推算）"}</text>
+    <g aria-label={guide.calibrated ? "出胶点（已标定）" : "出胶点（走廊推算）"} stroke={guide.calibrated ? "var(--ov-ok)" : "var(--ov-warn)"} strokeWidth={2}>
+      <g stroke="var(--ov-halo)" strokeWidth={4}>{cross}</g>
+      {cross}
+      <text x={nx} y={ny} dx={screenPx(14)} dy={screenPx(-10)} fontSize={screenPx(13)} fill={guide.calibrated ? "var(--ov-ok)" : "var(--ov-warn)"} stroke="var(--ov-halo)" strokeWidth={3} paintOrder="stroke">{HEADING_MARK.nozzle} {guide.calibrated ? "出胶点" : "出胶点（推算）"}</text>
     </g>
   </g>;
 }
-/** 灰度像素直接画进同一块 canvas：换帧只重画，不产生新的图片资源。 */
-function GrayCanvas({ image, pixels }: { image: GrayImage; pixels: GrayPixels }) {
+/** 像素直接画进同一块 canvas：换帧只重画，不产生新的图片资源。 */
+function FrameCanvas({ image, pixels }: { image: FrameImage; pixels: FramePixels }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const rgba = useRef<ImageData | null>(null);
   useEffect(() => {
     const element = canvas.current;
     const context = element?.getContext("2d");
     if (!element || !context) return;
-    const { data, width, height } = pixels;
+    const { width, height } = pixels;
     if (element.width !== width || element.height !== height) { element.width = width; element.height = height; }
     if (rgba.current?.width !== width || rgba.current.height !== height) rgba.current = new ImageData(width, height);
-    const out = new Uint32Array(rgba.current.data.buffer);
-    for (let i = 0; i < data.length; i++) out[i] = 0xff000000 | data[i] * 0x010101;
+    fillRgba(pixels, rgba.current.data);
     context.putImageData(rgba.current, 0, 0);
   }, [pixels]);
   return <foreignObject width={image.width} height={image.height} pointerEvents="none"><canvas ref={canvas} className="wp-gray-canvas" /></foreignObject>;
@@ -169,11 +187,15 @@ export interface PathEditing {
  * controlsAt="footer"（仅走廊示教页）：缩放与显示开关下沉到底部信息行，左侧放 summary，
  * 开关文案为“中线 / 搜索带 / 点柄”，操作提示由页面自己给；默认 "header" 的外观与行为不变。
  */
-export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, brush, onBrush, onPoint, onSectorTurn, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
-  image: GrayImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
+export function FrameViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, marks, onEdit, editDisabled = false, region, onRegion, brush, onBrush, onPoint, onSectorTurn, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary, notice }: {
+  image: FrameImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay;
+  /** 图像上的点标记（标定页：棋盘内角点），带“角点”开关 */
+  marks?: { at: [number, number]; color: string }[] | null; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
   brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; onPoint?: (p: [number, number]) => void;
   /** 拖动定向叠加上的扇区把手：给出出胶点指向指针的方向（度，取整） */
   onSectorTurn?: (deg: number) => void; extractionFailure?: { point: ImagePoint; message: string } | null; emptyTitle?: string; emptyHint?: string; controlsAt?: "header" | "footer"; summary?: ReactNode;
+  /** 浮在图像左下角的操作提示（仅 footer 布局），不占画布高度 */
+  notice?: ReactNode;
 }) {
   const [viewport, setViewport] = useState({ zoom: 1, x: 0, y: 0 });
   const { zoom, x, y } = viewport;
@@ -207,8 +229,10 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
   const brushStroke = useRef<{ points: ImagePoint[]; inverse: DOMMatrix; pointerId: number } | null>(null);
   const regionStart = useRef<[number, number] | null>(null);
   const [shown, setShown] = useState(true);
+  const [marksShown, setMarksShown] = useState(true);
   const [bandShown, setBandShown] = useState(true);
   const [headingShown, setHeadingShown] = useState(true);
+  const [partEdgesShown, setPartEdgesShown] = useState(true);
   const bandClip = useId();
   const [allHandles, setAllHandles] = useState(false);
   const group = useRef<SVGGElement>(null);
@@ -255,9 +279,9 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
   const band = searchBand(path, overlay?.searchHalfPx);
   const hint = error || emptyHint;
   const footer = controlsAt === "footer";
-  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
+  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{!!marks?.length && <Chip selected={marksShown} onClick={() => setMarksShown(v => !v)}>角点</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{!!overlay?.partEdges?.length && <Chip selected={partEdgesShown} onClick={() => setPartEdgesShown(v => !v)}>胶边距</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
   return <div className={"wp-viewport" + (footer ? " wp-viewport-footer" : "")}>{footer ? tools && <div className="wp-image-tools">{tools}</div> : <div className="wp-image-tools">{tools ?? <span>{caption ?? label}</span>}{controls}</div>}{subtools}
-    {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "暂无图像"}</strong>{hint && <span>{hint}</span>}</div> :
+    <div className={footer ? "wp-image-stage" : "wp-image-stage-plain"}>{!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "暂无图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} style={{ aspectRatio: `${image.width} / ${image.height}` }} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
         if (e.altKey || e.metaKey || drag.current || regionStart.current || brushStroke.current || pan.current) return;
         if (["+", "=", "-", "0"].includes(e.key)) {
@@ -327,29 +351,50 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
         const p = point(e, current.inverse);
         if (p) onEdit.move(current.index, p);
       }} onPointerUp={() => { if (turning.current && turnDeg != null) onSectorTurn?.(turnDeg); stopGesture(); }} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
-        <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <GrayCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}
-          {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--primary)" opacity={.45}>
+        <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <FrameCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}
+          {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--ov-line)" opacity={.75}>
             <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
             {[band.left, band.right].map((edge, i) => <polyline key={i} points={edge.map(p => p.join(",")).join(" ")} strokeWidth={1} strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />)}
             {band.bars.map(i => <line key={i} x1={band.left[i][0]} y1={band.left[i][1]} x2={band.right[i][0]} y2={band.right[i][1]} strokeWidth={1} strokeDasharray="2 6" vectorEffect="non-scaling-stroke" />)}
           </g>}
           {brush && brush.points.length > 0 && <g aria-label="刷选胶路区域" pointerEvents="none">
-            <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeOpacity={.22} strokeWidth={brush.radiusPx * 2} strokeLinecap="round" strokeLinejoin="round" />
-            <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={1} strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
-            {[brush.points[0], brush.points[brush.points.length - 1]].map(([px, py], i) => <g key={i}><circle cx={px} cy={py} r={handle} fill={i === 0 ? "var(--ok)" : "var(--primary)"} /><text x={px} y={py} dx={screenPx(10)} dy={screenPx(-8)} fontSize={screenPx(13)} fill="var(--primary)" stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{i === 0 ? "起点" : "终点"}</text></g>)}
+            <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--ov-line)" strokeOpacity={.25} strokeWidth={brush.radiusPx * 2} strokeLinecap="round" strokeLinejoin="round" />
+            <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--ov-line)" strokeWidth={1} strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
+            {[brush.points[0], brush.points[brush.points.length - 1]].map(([px, py], i) => <g key={i}><circle cx={px} cy={py} r={handle} fill={i === 0 ? "var(--ov-ok)" : "var(--ov-line)"} stroke="var(--ov-halo)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" /><text x={px} y={py} dx={screenPx(10)} dy={screenPx(-8)} fontSize={screenPx(13)} fill="var(--ov-line)" stroke="var(--ov-halo)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{i === 0 ? "起点" : "终点"}</text></g>)}
           </g>}
           {extractionFailure && <g aria-label="中线提取失败位置" pointerEvents="none" transform={`translate(${extractionFailure.point[0]} ${extractionFailure.point[1]})`}>
             <title>{extractionFailure.message}</title>
-            <circle r={screenPx(13)} fill="var(--surface-lowest)" fillOpacity={.8} stroke="var(--ng)" strokeWidth={3} vectorEffect="non-scaling-stroke" />
-            <text textAnchor="middle" dy={screenPx(5.5)} fontSize={screenPx(16)} fontWeight="bold" fill="var(--ng)">!</text>
+            <circle r={screenPx(13)} fill="var(--ov-halo)" stroke="var(--ov-ng)" strokeWidth={3} vectorEffect="non-scaling-stroke" />
+            <text textAnchor="middle" dy={screenPx(5.5)} fontSize={screenPx(16)} fontWeight="bold" fill="var(--ov-ng)">!</text>
           </g>}
           {overlay?.heading && headingShown && <HeadingLayer guide={turnDeg != null ? { ...overlay.heading, sector: [turnDeg - 90, turnDeg + 90] } : overlay.heading} size={[image.width, image.height]} screenPx={screenPx} turnable={turnable} turning={turningNow} hinted={!turnedHere && !overlay.heading.turned} />}
-          {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
+          {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--ov-line)" fillOpacity={.12} stroke="var(--ov-line)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
+          {!!marks?.length && marksShown && <g aria-label="标定角点" pointerEvents="none">
+            {marks.map((mark, i) => <circle key={i} cx={mark.at[0]} cy={mark.at[1]} r={screenPx(3)} fill={mark.color} stroke="var(--ov-halo)" strokeWidth={1} vectorEffect="non-scaling-stroke" />)}
+          </g>}
+          {!!overlay?.partEdges?.length && partEdgesShown && <g aria-label="胶边距" pointerEvents="none" fill="none">
+            {overlay.partEdges.map(([from, to], i) => <line key={i} x1={from[0]} y1={from[1]} x2={to[0]} y2={to[1]} stroke="var(--ov-ok)" strokeWidth={1.5} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />)}
+            {([["var(--ov-halo)", 4], ["var(--ov-ok)", 2]] as const).map(([stroke, width]) => <polyline key={stroke} aria-label={stroke === "var(--ov-ok)" ? "零件边" : undefined} points={overlay.partEdges!.map(([, to]) => to.join(",")).join(" ")} stroke={stroke} strokeWidth={width} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
+          </g>}
           {overlay && shown && <g aria-label="中线叠加">
-            {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
-            {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            {path.length >= 2 && ([["var(--ov-halo)", 4], ["var(--ov-line)", 2]] as const).map(([stroke, width]) => <polyline key={stroke} points={path.map(p => p.join(",")).join(" ")} fill="none" stroke={stroke} strokeWidth={width} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
+            {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--ov-line)" : "var(--ov-halo)"} fillOpacity={.85} stroke={i === 0 ? "var(--ov-ok)" : "var(--ov-line)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
             {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
               {overlay.segments.map((segment, i) => <line key={i} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={segment.width ?? 2} vectorEffect="non-scaling-stroke" />)}
+            </g>}
+            {overlay.clipped && <g aria-label="截断测站" fill="none" stroke="var(--ov-warn)" strokeWidth={2} vectorEffect="non-scaling-stroke">
+              {overlay.clipped.map(station => <g key={station.station} aria-label={`第 ${station.station + 1} 站：${station.label}`} onPointerEnter={() => overlay.onSegmentHover?.(station.station)} onPointerLeave={() => overlay.onSegmentHover?.(null)}>
+                <title>{`第 ${station.station + 1} 站：${station.label}`}</title>
+                {[station.loEdge, station.hiEdge].map((edge, i) => edge && <circle key={i} cx={edge[0]} cy={edge[1]} r={screenPx(3)} />)}
+                {([-1, 1] as const).map(direction => {
+                  if (!(direction < 0 ? station.loClipped : station.hiClipped) || !station.normal) return null;
+                  const anchor = (direction < 0 ? station.hiEdge : station.loEdge) ?? station.position;
+                  if (!anchor) return null;
+                  const [nx, ny] = station.normal, length = screenPx(20), wing = screenPx(5);
+                  const end = [anchor[0] + direction * nx * length, anchor[1] + direction * ny * length];
+                  return <path key={direction} d={`M ${anchor[0]} ${anchor[1]} L ${end[0]} ${end[1]} M ${end[0] - direction * nx * wing - ny * wing} ${end[1] - direction * ny * wing + nx * wing} L ${end[0]} ${end[1]} L ${end[0] - direction * nx * wing + ny * wing} ${end[1] - direction * ny * wing - nx * wing}`} />;
+                })}
+              </g>)}
             </g>}
             {overlay.segments && overlay.onSegmentHover && <g aria-label="测站悬停区" onPointerLeave={() => overlay.onSegmentHover?.(null)}>
               {overlay.segments.map((segment, i) => segment.station != null && <line key={i} data-station={segment.station} x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke="transparent" strokeWidth={10} vectorEffect="non-scaling-stroke" pointerEvents="stroke"
@@ -357,6 +402,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
             </g>}
           </g>}
         </g></svg>}
-    {footer ? <div className="wp-image-footer">{summary}{controls}</div> : image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onBrush ? "按住左键沿胶路刷过；每一笔重画选区，中键拖动视图" : onRegion ? "拖动框选一段连续胶路区域" : onEdit ? (path.length > 24 && !allHandles ? "密集中线仅显示端点；打开“编辑点”可调整全部点" : "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整") : "原始灰度图像"}</span></div>}
+    {footer && image && notice}</div>
+    {footer ? <div className="wp-image-footer">{summary}{controls}</div> : image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onBrush ? "按住左键沿胶路刷过；每一笔重画选区，中键拖动视图" : onRegion ? "拖动框选一段连续胶路区域" : onEdit ? (path.length > 24 && !allHandles ? "密集中线仅显示端点；打开“编辑点”可调整全部点" : "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整") : image.channels === 3 ? "原始彩色图像" : image.channels === 1 ? "原始灰度图像" : "原始图像"}</span></div>}
   </div>;
 }

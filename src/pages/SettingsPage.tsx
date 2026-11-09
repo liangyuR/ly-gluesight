@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Grid, Heading, NumberField, Select, Stack } from "qing-steel";
-import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
+import { Alert, Button, Card, Checkbox, Grid, Heading, NumberField, Select, Stack } from "qing-steel";
+import { getAgentMcpStatus, getAppInfo, getEngineStatus, type AgentMcpStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
+import RecordingDisksPanel from "./RecordingDisksPanel";
 import { errorText } from "../lib/errors";
 import { useSnackbar } from "qing-steel";
 import "./SettingsPage.css";
@@ -82,13 +83,15 @@ function timingError(settings: CycleSettings) {
   return null;
 }
 
+/** 取消“不限”时填入的上限 */
+const RECORD_KEEP_LIMIT = 100;
+const RECORD_GB_LIMIT = 100;
+
 function measureError(settings: CycleSettings) {
-  if (!integerIn(settings.recordKeep, 1, 100000)) return "帧录制保留件数需为 1–100000 之间的整数";
-  if (!Number.isFinite(settings.recordMaxGb) || settings.recordMaxGb < 0.5 || settings.recordMaxGb > 10000)
-    return "帧录制总大小需在 0.5–10000 GB 之间";
-  if (!integerIn(settings.offlineRecordKeep, 1, 100000)) return "离线原图保留件数需为 1–100000 之间的整数";
-  if (!Number.isFinite(settings.offlineRecordMaxGb) || settings.offlineRecordMaxGb < 0.5 || settings.offlineRecordMaxGb > 10000)
-    return "离线原图总大小需在 0.5–10000 GB 之间";
+  const { recordKeep, recordMaxGb } = settings;
+  if (recordKeep != null && !integerIn(recordKeep, 1, 100000)) return "帧录制保留件数需为不限或 1–100000 之间的整数";
+  if (recordMaxGb != null && (!Number.isFinite(recordMaxGb) || recordMaxGb < 0.5 || recordMaxGb > 10000))
+    return "帧录制总大小需为不限或 0.5–10000 GB 之间";
   return null;
 }
 
@@ -150,7 +153,7 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
           )}
           <NumberField
             label="记录保留（天）"
-            description="超过天数的检测记录每天自动删除"
+            description="本机所有项目共用；超过天数的检测记录每天自动删除"
             id="history-days"
             min={1}
             max={3650}
@@ -198,8 +201,8 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
     setSaving(true);
     setSaveError("");
     try {
-      const { record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb } = settings;
-      const saved = await savePart({ record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb });
+      const { record, recordKeep, recordMaxGb } = settings;
+      const saved = await savePart({ record, recordKeep, recordMaxGb });
       if (saved && mounted.current) {
         snack("lyFlow 与帧录制设置已保存");
         refresh();
@@ -223,41 +226,33 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
         <Grid minWidth={220} gap={14}>
           <Select id="record-mode" label="真机帧录制" value={settings.record} onValueChange={(value) => update({ ...settings, record: value as CycleSettings["record"] })}
             options={[{ value: "off", label: "关闭" }, { value: "failed", label: "只留 NG / ERR 件" }, { value: "all", label: "全部" }]} />
-          <NumberField
-            id="record-keep"
-            label="真机录制最多保留（件）"
-            min={1}
-            max={100000}
-            value={numberInput(settings.recordKeep)}
-            onValueChange={(value) => update({ ...settings, recordKeep: numberValue(value) })}
-          />
-          <NumberField
-            id="record-max-gb"
-            label="真机录制总大小上限（GB）"
-            min={0.5}
-            max={10000}
-            step={0.5}
-            value={numberInput(settings.recordMaxGb)}
-            onValueChange={(value) => update({ ...settings, recordMaxGb: numberValue(value) })}
-          />
-          <NumberField
-            id="offline-record-keep"
-            label="离线原图最多保留（件）"
-            min={1}
-            max={100000}
-            step={1}
-            value={numberInput(settings.offlineRecordKeep)}
-            onValueChange={(value) => update({ ...settings, offlineRecordKeep: numberValue(value) })}
-          />
-          <NumberField
-            id="offline-record-max-gb"
-            label="离线原图总大小上限（GB）"
-            min={0.5}
-            max={10000}
-            step={0.5}
-            value={numberInput(settings.offlineRecordMaxGb)}
-            onValueChange={(value) => update({ ...settings, offlineRecordMaxGb: numberValue(value) })}
-          />
+          <Stack direction="column" align="stretch" gap={4} wrap={false}>
+            <NumberField
+              id="record-keep"
+              label="真机录制最多保留（件）"
+              min={1}
+              max={100000}
+              disabled={settings.recordKeep == null}
+              value={settings.recordKeep == null ? "" : numberInput(settings.recordKeep)}
+              onValueChange={(value) => update({ ...settings, recordKeep: numberValue(value) })}
+            />
+            <Checkbox label="件数不限" checked={settings.recordKeep == null}
+              onCheckedChange={(on) => update({ ...settings, recordKeep: on ? null : RECORD_KEEP_LIMIT })} />
+          </Stack>
+          <Stack direction="column" align="stretch" gap={4} wrap={false}>
+            <NumberField
+              id="record-max-gb"
+              label="真机录制总大小上限（GB）"
+              min={0.5}
+              max={10000}
+              step={0.5}
+              disabled={settings.recordMaxGb == null}
+              value={settings.recordMaxGb == null ? "" : numberInput(settings.recordMaxGb)}
+              onValueChange={(value) => update({ ...settings, recordMaxGb: numberValue(value) })}
+            />
+            <Checkbox label="大小不限" checked={settings.recordMaxGb == null}
+              onCheckedChange={(on) => update({ ...settings, recordMaxGb: on ? null : RECORD_GB_LIMIT })} />
+          </Stack>
         </Grid>
       </fieldset>
       {invalid && <Alert tone="ng">{invalid}</Alert>}
@@ -297,7 +292,7 @@ function StoragePanel() {
         <dt>资料目录</dt><dd className="mono"><Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("data")} aria-label={`打开资料目录：${displayPath(data.root)}`}>{displayPath(data.root)}</Button></dd>
         <dt>日志根目录</dt><dd className="mono">{data.logRoot ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("logs")} aria-label={`打开日志根目录：${displayPath(data.logRoot)}`}>{displayPath(data.logRoot)}</Button> : "—"}</dd>
         <dt>运行日志</dt><dd className="mono">{data.runtimeLogDir ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("runtime")} aria-label={`打开运行日志：${displayPath(data.runtimeLogDir)}`}>{displayPath(data.runtimeLogDir)}</Button> : "—"}</dd>
-        <dt>当前项目视觉原图</dt><dd className="mono">{data.visionLogDir ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("vision")} aria-label={`打开视觉原图：${displayPath(data.visionLogDir)}`}>{displayPath(data.visionLogDir)}</Button> : "—"}</dd>
+        <dt>当前项目原图（第一块录制盘）</dt><dd className="mono">{data.visionLogDir ? <Button variant="text" size="sm" className="settings-path-link" onClick={() => openDirectory("vision")} aria-label={`打开视觉原图：${displayPath(data.visionLogDir)}`}>{displayPath(data.visionLogDir)}</Button> : "—"}</dd>
       </dl>
     </>}
     {openError && <Alert tone="ng">打开目录失败：{openError}</Alert>}
@@ -305,13 +300,22 @@ function StoragePanel() {
   </Card>;
 }
 
+function mcpText(status: AgentMcpStatus | null) {
+  if (!status) return "--";
+  if (status.state === "listening") return status.url ?? "已启用";
+  if (status.state === "failed") return `启动失败：${status.message ?? "原因不明"}`;
+  return "未启用（启动前设置环境变量 GLUESIGHT_MCP_TOKEN）";
+}
+
 export default function SettingsPage() {
   const { data: info, error, loading, reload } = useResource<AppInfo>(getAppInfo);
+  const { data: mcp } = useResource<AgentMcpStatus>(getAgentMcpStatus);
   const savePart = useSavePart();
 
   return (
     <Stack direction="column" align="stretch" gap={16} wrap={false}>
       <StoragePanel />
+      <RecordingDisksPanel />
       <CycleSettingsPanel savePart={savePart} />
       <MeasurePanel savePart={savePart} />
       <Card role="region" aria-label="关于" title={<Heading level={3}>关于</Heading>}>
@@ -325,6 +329,8 @@ export default function SettingsPage() {
           <dd>{info?.version ?? "--"}</dd>
           <dt>构建</dt>
           <dd className="mono">{info?.gitSha ? `${info.gitSha}${info.buildTime ? ` · ${info.buildTime}` : ""}` : "--"}</dd>
+          <dt>示教 MCP</dt>
+          <dd className={mcp?.state === "listening" ? "mono" : undefined}>{mcpText(mcp)}</dd>
         </dl>
         </Stack>
       </Card>

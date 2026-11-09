@@ -1,0 +1,342 @@
+{
+  "schemaVersion": 1,
+  "id": "01GLUESIGHTCORRIDORCOLOR0",
+  "nodes": [
+    {
+      "id": "n_load",
+      "op": "io.load_image",
+      "params": {
+        "source": "inputs"
+      }
+    },
+    {
+      "id": "n_map",
+      "op": "glue.color_map",
+      "params": {}
+    },
+    {
+      "id": "n_line",
+      "op": "glue.polyline",
+      "params": {
+        "zone": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "n_runs",
+      "op": "glue.color_runs",
+      "params": {
+        "split": "half_max"
+      }
+    },
+    {
+      "id": "n_split",
+      "op": "glue.color_runs",
+      "params": {
+        "split": "half_max",
+        "mergeGap": 0.0
+      }
+    },
+    {
+      "id": "n_edge",
+      "op": "glue.part_edges",
+      "params": {
+        "sides": "both",
+        "start": 0.0
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_map",
+      "from": {
+        "node": "n_load",
+        "port": "image"
+      },
+      "to": {
+        "node": "n_map",
+        "port": "image"
+      }
+    },
+    {
+      "id": "e_r_resp",
+      "from": {
+        "node": "n_map",
+        "port": "maps"
+      },
+      "to": {
+        "node": "n_runs",
+        "port": "maps"
+      }
+    },
+    {
+      "id": "e_r_line",
+      "from": {
+        "node": "n_line",
+        "port": "line"
+      },
+      "to": {
+        "node": "n_runs",
+        "port": "line"
+      }
+    },
+    {
+      "id": "e_s_resp",
+      "from": {
+        "node": "n_map",
+        "port": "maps"
+      },
+      "to": {
+        "node": "n_split",
+        "port": "maps"
+      }
+    },
+    {
+      "id": "e_s_line",
+      "from": {
+        "node": "n_line",
+        "port": "line"
+      },
+      "to": {
+        "node": "n_split",
+        "port": "line"
+      }
+    },
+    {
+      "id": "e_e_image",
+      "from": {
+        "node": "n_load",
+        "port": "image"
+      },
+      "to": {
+        "node": "n_edge",
+        "port": "image"
+      }
+    },
+    {
+      "id": "e_e_line",
+      "from": {
+        "node": "n_line",
+        "port": "line"
+      },
+      "to": {
+        "node": "n_edge",
+        "port": "line"
+      }
+    }
+  ],
+  "outputs": {
+    "runs": {
+      "node": "n_runs",
+      "port": "runs"
+    },
+    "split": {
+      "node": "n_split",
+      "port": "runs"
+    },
+    "edges": {
+      "node": "n_edge",
+      "port": "edges"
+    }
+  },
+  "params": {
+    "points": {
+      "default": "[[0,0],[100,0]]",
+      "binds": [
+        "n_line.points"
+      ],
+      "doc": "示教走廊（JSON 点列，px）"
+    },
+    "roi": {
+      "default": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "binds": [
+        "n_map.roi"
+      ],
+      "doc": "胶色得分图只算的块 [x, y, w, h]（px）：走廊包围盒外扩卡尺半长 + 4"
+    },
+    "stationStep": {
+      "default": 4.0,
+      "binds": [
+        "n_runs.stationStep",
+        "n_split.stationStep",
+        "n_edge.stationStep"
+      ],
+      "doc": "站距（px）"
+    },
+    "searchHalf": {
+      "default": 32.0,
+      "binds": [
+        "n_runs.searchHalf",
+        "n_split.searchHalf"
+      ],
+      "doc": "有限观察半宽（px），独立于胶宽参考上限"
+    },
+    "widthMax": {
+      "default": 24.0,
+      "binds": [
+        "n_runs.mergeWidthMax",
+        "n_split.mergeWidthMax"
+      ],
+      "doc": "胶宽参考上限（px）；extent策略不据此排除或截窄胶条"
+    },
+    "edgeLength": {
+      "default": 200.0,
+      "binds": [
+        "n_edge.searchLength"
+      ],
+      "doc": "找边剖面长度（px，从胶路起）：盖住卡尺半长外的整个找边窗口"
+    },
+    "edgePolarity": {
+      "default": "bright_to_dark",
+      "binds": [
+        "n_edge.polarity"
+      ]
+    },
+    "edgeContrastMin": {
+      "default": 40.0,
+      "binds": [
+        "n_edge.contrastMin"
+      ],
+      "doc": "找边对比度下限"
+    },
+    "edgeFarRun": {
+      "default": 12.0,
+      "binds": [
+        "n_edge.farRun"
+      ],
+      "doc": "找边远侧持续长度（px）"
+    },
+    "colorModel": {
+      "default": "",
+      "doc": "颜色模型（glue.ColorModel 的 JSON 原文）：示教时沿走廊取色得出，存进配方",
+      "binds": [
+        "n_map.model"
+      ]
+    },
+    "colorSegmentMin": {
+      "type": "float",
+      "label": "胶色分段门限",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "default": 0.3,
+      "advanced": true,
+      "group": "量胶宽",
+      "doc": "卡尺上胶色得分高于它的相邻采样连成一段",
+      "binds": [
+        "n_runs.segmentMin",
+        "n_split.segmentMin"
+      ]
+    },
+    "colorPeakMin": {
+      "type": "float",
+      "label": "胶色峰值下限",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.05,
+      "default": 0.6,
+      "advanced": true,
+      "group": "量胶宽",
+      "doc": "一段的胶色得分峰值至少这么高才算胶",
+      "binds": [
+        "n_runs.peakMin",
+        "n_split.peakMin"
+      ]
+    },
+    "colorMergeGap": {
+      "type": "float",
+      "label": "胶色合并缝",
+      "unit": "px",
+      "min": 0.0,
+      "max": 100.0,
+      "step": 1.0,
+      "default": 8.0,
+      "advanced": true,
+      "group": "量胶宽",
+      "doc": "胶色段之间的缝不超过它且有反光证据时合并；真实背景阻断合并，总宽度受有限搜索窗口限制",
+      "binds": [
+        "n_runs.mergeGap"
+      ]
+    },
+    "colorMergeUnknownGap": {
+      "type": "float",
+      "label": "高光合并缝",
+      "unit": "px",
+      "min": 0.0,
+      "max": 200.0,
+      "step": 1.0,
+      "default": 16.0,
+      "advanced": true,
+      "group": "量胶宽",
+      "doc": "两段之间全是高光或暗区、缝不超过它就合并（湿胶被高光劈开）",
+      "binds": [
+        "n_runs.mergeUnknownGap"
+      ]
+    },
+    "widthPolicy": {
+      "default": "extent",
+      "binds": [
+        "n_runs.widthPolicy",
+        "n_split.widthPolicy"
+      ],
+      "doc": "有限观察窗内保留宽胶；宽度参考不排除候选"
+    }
+  },
+  "x": {
+    "gluesight": {
+      "judge": {
+        "trackSharpMin": {
+          "type": "float",
+          "label": "示教线陡度下限",
+          "min": 0.0,
+          "max": 5.0,
+          "step": 0.05,
+          "default": 0.4,
+          "advanced": true,
+          "group": "定胶路",
+          "doc": "示教线上暗带边缘陡度 P25 低于它，整条判没有胶（像压痕或阴影）"
+        },
+        "presentRatio": {
+          "type": "float",
+          "label": "有胶宽度比",
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "default": 0.5,
+          "advanced": true,
+          "group": "量胶宽",
+          "doc": "灰度测量：宽度不小于参考宽的这一比例才算有胶；胶色测量不使用此门限"
+        },
+        "centerRatio": {
+          "type": "float",
+          "label": "中心偏离比",
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "default": 0.3,
+          "advanced": true,
+          "group": "量胶宽",
+          "doc": "中心偏离胶路不超过 max(6, 它 × 参考宽)"
+        },
+        "contrastRatio": {
+          "type": "float",
+          "label": "对比度比",
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.05,
+          "default": 0.3,
+          "advanced": true,
+          "group": "量胶宽",
+          "doc": "灰度测量：峰值（示教走廊用峰值 / 局部亮度）不低于参考值的这一比例才算有胶；胶色测量不使用此门限"
+        }
+      }
+    }
+  }
+}

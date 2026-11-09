@@ -29,7 +29,7 @@ function Check({ title, enabled, disabled, onToggle, children }: { title: string
 }
 
 export interface KindChecksEditorProps<T extends Value> {
-  /** 配方默认参数（KindDefault，带容差）或某一段的检测项（SegmentChecks） */
+  /** 配方默认参数（KindDefault）或某一段的检测项（SegmentChecks） */
   value: T;
   kind: SegmentKind;
   onChange: (next: T) => void;
@@ -39,7 +39,7 @@ export interface KindChecksEditorProps<T extends Value> {
 /**
  * 一种段类型（或一段）的检测项与允差：胶宽、断胶、溢胶每帧独立判，两类段都有；
  * 胶宽均匀性与胶偏只在直线段。弯道段不显示这两项，且发出的值 offset 恒为 null（规格 §4 弯道不检胶偏）。
- * 给 KindDefault 时另有帧数容差（默认 1）。只编辑数值，不做校验：越界由后端校验报出。
+ * 只编辑数值，不做校验：越界由后端校验报出。
  */
 export function KindChecksEditor<T extends Value>({ value, kind, onChange, disabled }: KindChecksEditorProps<T>) {
   const checks: SegmentChecks = isKindDefault(value) ? value.checks : value as SegmentChecks;
@@ -54,15 +54,14 @@ export function KindChecksEditor<T extends Value>({ value, kind, onChange, disab
   const setOverflow = (patch: Partial<SegmentChecks["overflow"]>) => emit({ ...checks, overflow: { ...overflow, ...patch } });
   const setOffset = (patch: Partial<OffsetCheck>) => emit({ ...checks, offset: { ...(offset ?? defaultOffset), ...patch } });
   return <div className="plan-checks" role="group" aria-label={`${segmentKindLabel[kind]}段检测项`}>
-    {isKindDefault(value) && <div className="plan-check-fields">
-      <Num label="帧数容差" unit="帧" step={1} min={0} max={1000} disabled={disabled} value={value.tolerance}
-        onChange={tolerance => onChange({ ...value, tolerance } as T)} />
-    </div>}
     <Check title="胶宽" enabled={width.enabled} disabled={disabled} onToggle={enabled => setWidth({ enabled })}>
       <Num label="胶宽名义值" unit="mm" disabled={disabled || !width.enabled} value={width.nominalMm} onChange={nominalMm => setWidth({ nominalMm })} />
       <Num label="胶宽上公差" unit="mm" disabled={disabled || !width.enabled} value={width.tolUpper} onChange={tolUpper => setWidth({ tolUpper })} />
       <Num label="胶宽下公差" unit="mm" disabled={disabled || !width.enabled} value={width.tolLower} onChange={tolLower => setWidth({ tolLower })} />
       <Num label="帧内允许超差长度" unit="mm" disabled={disabled || !width.enabled} value={width.maxExcursionMm} onChange={maxExcursionMm => setWidth({ maxExcursionMm })} />
+      <Switch label="偏宽只预警" checked={!!width.wideWarnOnly} disabled={disabled || !width.enabled}
+        onCheckedChange={wideWarnOnly => setWidth({ wideWarnOnly })} />
+      {width.wideWarnOnly && <p className="plan-check-note muted">超出上限与溢胶上限只预警、不判 NG，PLC 收到合格；偏窄照常按允许超差长度判 NG。</p>}
       {straight && <>
         <Switch label="检胶宽均匀性" checked={width.maxRangeMm != null} disabled={disabled || !width.enabled}
           onCheckedChange={on => setWidth({ maxRangeMm: on ? defaultMaxRangeMm : null })} />

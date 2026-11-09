@@ -1,4 +1,4 @@
-import type { FrameView, Judgement, SampleLabel, Verdict } from "../cycle/types";
+import type { FrameView, Judgement, Verdict } from "../cycle/types";
 import type { Flags, PartDetailBurst } from "../plan/types";
 
 /** 段模型（分段连拍飞拍）的历史记录类型，定义在 plan/types.ts；这里转出供历史页面使用。 */
@@ -17,12 +17,12 @@ export interface RecordingEvidence {
   errors: string[];
 }
 
-/** 记录来源：真机件与离线件分开统计。 */
-export type RecordSource = "real" | "offlineSynthetic" | "offlineSample" | "offlineCandidate";
-export type HistoryScope = "real" | "offline" | "debug";
+export type RecordSource = "real";
+export type HistoryScope = "real";
 
 /** 进入历史详情时的路由 state：历史列表带筛选（前后件按它导航）；其他页面（如试测）带返回目标，返回按钮回到那里。 */
-export type HistoryDetailState = { query?: HistoryQuery; returnTo?: { path: string; label: string } };
+/** 历史详情的地址状态：列表筛选、返回目标；从分段与示教页返回时带回离开时的滚动位置。 */
+export type HistoryDetailState = { query?: HistoryQuery; returnTo?: { path: string; label: string }; scrollTop?: number };
 
 export interface HistoryQuery {
   scope?: HistoryScope;
@@ -30,7 +30,10 @@ export interface HistoryQuery {
   to?: number | null;
   verdicts?: Verdict[];
   sn?: string;
+  tag?: string;
   recipeId?: string | null;
+  /** 记录所属项目编号；为空看本机全部项目。配方编号只在项目内唯一，带 recipeId 查询时要同时给项目 */
+  project?: string | null;
   /** 为空不按模式筛选 */
   modes?: PartMode[];
   offset?: number;
@@ -39,6 +42,8 @@ export interface HistoryQuery {
 
 /** 从别的页面跳到历史页时带的初始筛选（如在线检测页“复核试判”） */
 export interface HistoryFilter {
+  /** 只看当前项目（带配方编号的筛选要带上） */
+  currentProject?: boolean;
   recipeId?: string;
   modes?: PartMode[];
   groups?: string[];
@@ -46,8 +51,11 @@ export interface HistoryFilter {
 
 export interface PartSummary {
   id: number;
+  tags?: string[];
   ts: number;
   sn: string;
+  /** 记录所属项目编号（记录库本机共用） */
+  projectId: string;
   recipeId: string | null;
   recipeVersion: number | null;
   recipeRevision: string | null;
@@ -64,12 +72,16 @@ export interface PartSummary {
   bundleId: string | null;
   delivery: PlcDelivery;
   source: RecordSource;
-  sample: { setId: string; partId: string; sn: string; label: SampleLabel } | null;
-  /** 段配方记录的整件标记（疑似提前终止等单独显示）；没有帧记录的为 null。
+  /** 段配方记录的整件标记（检测不完整、笔数异常等单独显示）；没有帧记录的为 null。
    * framesExpected = expectedTotal（待标定为 0），framesReceived = 帧组数 */
   flags: Flags | null;
   /** 维护采集件 verdict 为 ERR、未判定；试判件为真实判定。两者 plcCode 都是 0 */
   mode?: PartMode;
+}
+
+export interface HistoryDeleted {
+  deleted: number;
+  warnings: string[];
 }
 
 export type PartMode = "production" | "maintenanceCollect" | "maintenanceShadow";
@@ -127,6 +139,9 @@ export interface RejudgeRequest {
   overrides: Overrides;
 }
 
+/** 重判跳过一条记录的原因种类（后端 history::SkipKind）；界面显示 reason */
+export type SkipKind = "errResult" | "noTable" | "noRevision" | "snapshotMissing" | "layoutMismatch" | "noCandidate" | "layoutChanged" | "otherProject";
+
 export interface RejudgeResult {
   total: number;
   skipped: number;
@@ -134,5 +149,35 @@ export interface RejudgeResult {
   matrix: { from: Verdict; to: Verdict; count: number }[];
   /** flags：重判后的整件标记（检测不完整等与阈值无关，照常带出） */
   changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string; flags: Flags | null }[];
-  skipReasons: { id: number; sn: string; ts: number; reason: string }[];
+  skipReasons: { id: number; sn: string; ts: number; kind: SkipKind; reason: string }[];
+}
+
+/** 历史件导出包：导出结果 */
+export interface HistoryPackageExported {
+  path: string;
+  bytes: number;
+  parts: number;
+  withImages: number;
+  notes: string[];
+}
+
+/** 历史件导出包：导入前读到的清单；duplicates 为本机已有同一 cycleId、导入时跳过的件数 */
+export interface HistoryPackagePreview {
+  path: string;
+  bytes: number;
+  sourceProject: string;
+  sourceProjectName: string;
+  exportedAt: number;
+  appVersion: string;
+  parts: number;
+  withImages: number;
+  duplicates: number;
+  notes: string[];
+}
+
+export interface HistoryPackageImported {
+  imported: number;
+  ids: number[];
+  skipped: { sn: string; ts: number; cycleId: string }[];
+  notes: string[];
 }

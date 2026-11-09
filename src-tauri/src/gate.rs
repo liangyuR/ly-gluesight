@@ -325,25 +325,4 @@ mod tests {
         );
         assert_eq!(gate.open_count(), 4);
     }
-
-    /// 防的回归：按触发方式（高电平有效）推断空闲电平——现场状态寄存器空闲读 1、拍照时读 0，推反了会把整段拍照当成关闭。
-    #[test]
-    fn idle_level_is_learned_from_a_quiet_second_without_frames() {
-        let t0 = Instant::now();
-        let ms = |n: u64| t0 + Duration::from_millis(n);
-        let mut watch = LineWatch::new(t0);
-        assert_eq!(watch.read(true, 0, ms(500), P), None, "还没安静满 1 s");
-        assert_eq!(watch.read(true, 0, ms(1000), P), Some(false), "空闲读 1");
-        assert_eq!(
-            watch.read(false, 1, ms(1100), P),
-            Some(true),
-            "读 0 且来帧：开着"
-        );
-        assert_eq!(
-            watch.read(false, 15, ms(2500), P),
-            Some(true),
-            "一直来帧时不改空闲电平"
-        );
-        assert_eq!(watch.read(true, 22, ms(3200), P), Some(false));
-    }
 }

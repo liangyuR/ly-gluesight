@@ -12,9 +12,10 @@ use crate::frame::FrameImage;
 use crate::judge::{self, Verdict};
 use crate::recipe::{Recipe, RecipeDoc, RecipeStage};
 use crate::release::ValidationSite;
-use crate::store::{self, Store};
+use crate::store::Store;
 use crate::vision;
 
+pub(crate) mod agent;
 mod burst;
 mod burst_history;
 mod burst_release;
@@ -26,14 +27,13 @@ mod burst_tests;
 mod capture_review;
 pub(crate) mod centerline;
 mod collect_release;
-#[cfg(test)]
-mod collect_release_tests;
 mod comparisons;
 mod history_import;
-mod history_samples;
 mod navigation;
+pub(crate) mod package;
+mod pass_align;
 #[cfg(test)]
-mod navigation_tests;
+mod pass_align_tests;
 mod pieces;
 #[cfg(test)]
 mod pieces_tests;
@@ -43,6 +43,9 @@ mod reproduce;
 #[cfg(test)]
 mod segment_corridor_tests;
 mod segment_remap;
+mod snap;
+#[cfg(test)]
+mod teaching_transaction_tests;
 mod workflow;
 pub use burst::*;
 pub use burst_history::*;
@@ -52,6 +55,7 @@ pub use capture_review::*;
 pub use collect_release::*;
 pub use history_import::*;
 pub use navigation::*;
+pub use pass_align::*;
 pub use pieces::*;
 pub use workflow::*;
 
@@ -106,46 +110,13 @@ pub struct FrozenImage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Sample {
-    pub history_id: Option<i64>,
-    #[serde(default)]
-    pub sample_id: Option<String>,
-    pub expected: Verdict,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BankSample {
-    pub id: String,
-    pub name: String,
-    pub geometry_tag: Value,
-    pub expected: Verdict,
-    pub created_at: i64,
-    #[serde(default)]
-    pub capture_id: Option<String>,
-    #[serde(default)]
-    pub camera_state: Value,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Check {
     pub name: String,
     pub passed: bool,
     pub detail: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SampleResult {
-    pub history_id: Option<i64>,
-    pub sample_id: Option<String>,
-    pub name: String,
-    pub sn: String,
-    pub expected: Verdict,
-    pub actual: Option<Verdict>,
-    pub passed: bool,
-    pub reason: String,
+    /// 只提醒、不拦发布：没满足时照样能发布（如有段在示教帧上没测成，D-SB-59）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub advisory: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -155,12 +126,11 @@ pub struct Validation {
     pub passed: bool,
     pub checked_at: i64,
     pub checks: Vec<Check>,
-    pub samples: Vec<SampleResult>,
     pub environment_tag: Value,
 }
 
-/// 旧拍照点模型写进候选文件的键（`frames`、`overview`、`lastPosition`）：读入时丢弃，不再写出。
-#[derive(Clone, Debug, Default)]
+/// 已停用的键：读入时丢弃，不再写出（`#[serde(default, rename = "…", skip_serializing)]`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Discarded;
 
 impl<'de> Deserialize<'de> for Discarded {
@@ -174,7 +144,6 @@ impl<'de> Deserialize<'de> for Discarded {
 pub struct Release {
     pub doc: RecipeDoc,
     pub bundle_id: String,
-    pub base_revision: Option<String>,
     pub revision: u64,
     pub validation: Validation,
     pub validation_site: ValidationSite,
@@ -188,6 +157,8 @@ pub struct Release {
     pub _frames: Discarded,
     #[serde(default, rename = "overview", skip_serializing)]
     pub _overview: Discarded,
+    #[serde(default, rename = "baseRevision", skip_serializing)]
+    pub _base_revision: Discarded,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -196,11 +167,7 @@ pub struct Workspace {
     pub doc: RecipeDoc,
     #[serde(default)]
     pub instance_id: u64,
-    pub base_revision: Option<String>,
     pub revision: u64,
-    pub samples: Vec<Sample>,
-    pub sample_bank: Vec<BankSample>,
-    pub validation: Option<Validation>,
     pub pending: Option<Box<Release>>,
     pub publish: PublishState,
     pub updated_at: i64,
@@ -224,6 +191,9 @@ pub struct Workspace {
     pub navigation_id: Option<String>,
     #[serde(default)]
     pub navigation_structure_revision: u64,
+    /// 换示教件的逐笔对照（RB-11）：发布时清空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass_alignment: Option<pass_align::PassAlignment>,
     #[serde(default, rename = "frames", skip_serializing)]
     pub _frames: Discarded,
     #[serde(default, rename = "overview", skip_serializing)]
@@ -232,22 +202,23 @@ pub struct Workspace {
     pub _last_position: Discarded,
     #[serde(default, rename = "unboundImaging", skip_serializing)]
     pub _unbound_imaging: Discarded,
+    #[serde(default, rename = "baseRevision", skip_serializing)]
+    pub _base_revision: Discarded,
+    #[serde(default, rename = "samples", skip_serializing)]
+    pub _samples: Discarded,
+    #[serde(default, rename = "sampleBank", skip_serializing)]
+    pub _sample_bank: Discarded,
+    #[serde(default, rename = "validation", skip_serializing)]
+    pub _validation: Discarded,
 }
 
 impl Workspace {
-    fn new(mut doc: RecipeDoc, base_revision: Option<String>) -> Self {
-        if base_revision.is_some() {
-            doc.version = doc.version.saturating_add(1);
-        }
+    fn new(mut doc: RecipeDoc) -> Self {
         doc.teaching_piece = None;
         Self {
             doc,
             instance_id: 0,
-            base_revision,
             revision: 1,
-            samples: Vec::new(),
-            sample_bank: Vec::new(),
-            validation: None,
             pending: None,
             publish: PublishState::Draft,
             updated_at: ly_plc::now_ms(),
@@ -259,26 +230,21 @@ impl Workspace {
             teaching_piece: None,
             navigation_id: None,
             navigation_structure_revision: 0,
+            pass_alignment: None,
             _frames: Discarded,
             _overview: Discarded,
             _last_position: Discarded,
             _unbound_imaging: Discarded,
+            _base_revision: Discarded,
+            _samples: Discarded,
+            _sample_bank: Discarded,
+            _validation: Discarded,
         }
     }
 
     fn ensure_instance(&mut self, store: &Store) -> Result<(), String> {
         self.instance_id = store.workspace_instance(&self.doc.id, self.instance_id)?;
         Ok(())
-    }
-
-    fn debug_revision(&self) -> Result<String, String> {
-        if self.instance_id == 0 {
-            return Err("候选尚未分配持久实例 ID".into());
-        }
-        Ok(format!(
-            "candidate-{}-i{}-r{}",
-            self.doc.id, self.instance_id, self.revision
-        ))
     }
 
     /// 旧流程候选（RB-5）：只能在配方库删除。
@@ -303,7 +269,6 @@ impl Workspace {
         capture_review::refresh(self);
         burst::calibrate_from_teaching(self);
         self.revision += 1;
-        self.validation = None;
         self.updated_at = ly_plc::now_ms();
     }
 
@@ -383,10 +348,6 @@ pub struct WorkspaceView {
     pub production_version: Option<u32>,
     /// 生产配方是采集版还是正式版；未发布为空
     pub production_stage: Option<RecipeStage>,
-    /// 生产配方的 PLC 计划版本
-    pub production_plan_version: Option<u32>,
-    /// 候选的计划身份与生产配方不同（或还没发布过）
-    pub plan_changed: bool,
     /// 段配方的计划部分（决策记录 5.1）
     pub plan: burst::WorkspacePlanView,
     pub navigation: NavigationView,
@@ -397,21 +358,24 @@ pub struct WorkspaceHost {
     items: Mutex<HashMap<String, Workspace>>,
     pub notes: Vec<String>,
     /// 段配方在途件的实时原图，按 (计划相机下标, seq)
-    live_burst: Mutex<LiveFrames<(usize, u64)>>,
+    live_burst: Mutex<LiveFrames>,
     /// 段配方在途件各帧测到的叠图，按 (计划相机下标, seq)
     live_views: Mutex<LiveViews>,
     station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
     capture_seq: std::sync::atomic::AtomicU64,
     comparisons: comparisons::Comparisons,
+    /// 历史叠图最近用的发布包及其项目（不在生产预热里时另加载，只留一个，不占生产预热）
+    history_bundle: Mutex<Option<(String, Arc<crate::production::Prepared>)>>,
 }
 
-/// 在途件的实时原图：按工件与配方修订成组，换件即清空；总量超过上限时丢最早的。
-/// 键为 (计划相机下标, seq)。
+/// 在途件的原图：按工件与配方修订成组，换件即清空。内存里只留最近的帧（总量超过上限时丢最早的），
+/// 更早的帧按本件的录制原图读回。键为 (计划相机下标, seq)。
 #[derive(Default)]
-struct LiveFrames<K> {
+struct LiveFrames {
     key: Option<(String, String)>,
-    frames: VecDeque<(K, Arc<FrameImage>)>,
+    frames: VecDeque<((usize, u64), Arc<FrameImage>)>,
     bytes: usize,
+    recorded: HashMap<(usize, u64), crate::recorder::PendingFrame>,
 }
 
 /// 在途件各帧测到的叠图：按工件与配方修订成组，换件即清空；同一帧重测（收尾补测）时以后测的为准。
@@ -421,8 +385,15 @@ struct LiveViews {
     views: HashMap<(usize, u64), CalibrationFrameView>,
 }
 
-impl<K: PartialEq + Default> LiveFrames<K> {
-    fn insert(&mut self, cycle_id: &str, revision_id: &str, k: K, image: Arc<FrameImage>) {
+impl LiveFrames {
+    fn insert(
+        &mut self,
+        cycle_id: &str,
+        revision_id: &str,
+        k: (usize, u64),
+        image: Option<Arc<FrameImage>>,
+        recorded: Option<crate::recorder::PendingFrame>,
+    ) {
         if self
             .key
             .as_ref()
@@ -433,6 +404,12 @@ impl<K: PartialEq + Default> LiveFrames<K> {
                 ..Self::default()
             };
         }
+        if let Some(recorded) = recorded {
+            self.recorded.entry(k).or_insert(recorded);
+        }
+        let Some(image) = image else {
+            return;
+        };
         if self.frames.iter().any(|(index, _)| *index == k) {
             return;
         }
@@ -452,6 +429,21 @@ impl<K: PartialEq + Default> LiveFrames<K> {
 }
 
 impl WorkspaceHost {
+    pub(crate) fn comparison_snapshot(
+        &self,
+        id: &str,
+        revision: u64,
+        instance_id: Option<u64>,
+    ) -> Result<Workspace, String> {
+        let items = self.items.lock().unwrap();
+        let w = items.get(id).ok_or("候选配置不存在")?;
+        if instance_id.is_some_and(|instance| instance != w.instance_id) {
+            return Err("候选已删除或重建，请重新读取后复测".into());
+        }
+        w.expect(revision)?;
+        Ok(w.clone())
+    }
+
     /// 候选与已提交的发布快照都保留相机引用，删除相机前核对。
     pub fn camera_users(&self, camera: &str) -> Vec<String> {
         let uses = |doc: &RecipeDoc| doc.plan_cameras().iter().any(|c| c == camera);
@@ -519,6 +511,7 @@ impl WorkspaceHost {
             station: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
             comparisons: comparisons::Comparisons::default(),
+            history_bundle: Mutex::new(None),
         })
     }
 
@@ -538,31 +531,30 @@ impl WorkspaceHost {
     }
 }
 
-fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
+fn view(app: &AppHandle, mut w: Workspace) -> Result<WorkspaceView, String> {
+    // 旧候选的示教件还没记笔结构：显示时按轮次补上，分段页才能按笔分段（RB-12）；读不到就按没有笔
+    let _ = pieces::fill_piece_passes(app.state::<CycleHost>().camera.recipe_capture(), &mut w);
     let layout = w.doc.build()?;
     let production_recipe = app.state::<CycleHost>().recipe(&w.doc.id);
     let production_version = production_recipe.as_ref().map(|r| r.version);
     let production_stage = production_recipe.as_ref().map(|r| r.stage);
-    let production = app.state::<CycleHost>().recipes.doc(&w.doc.id);
-    let plan_changed = production
-        .as_ref()
-        .is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
     let plan = burst::plan_view(
         app,
         &w,
         &layout,
         production_recipe.as_deref(),
-        production.as_ref(),
         production_version,
     );
     Ok(WorkspaceView {
-        navigation: navigation::navigation_view(&crate::storage::project(app), &w),
+        navigation: navigation::navigation_view(
+            &crate::storage::project(app),
+            &w,
+            production_recipe.as_ref().map(|r| r.revision_id.as_str()),
+        ),
         workspace: w,
         layout,
         production_version,
         production_stage,
-        production_plan_version: production.map(|p| p.plan_version),
-        plan_changed,
         plan,
     })
 }
@@ -579,13 +571,13 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
             .config();
         values.push(json!(config));
     }
-    // 各检测相机的工位标定（缺省为设备标定 device/{device}）
+    // 各检测相机的设备标定 device/{device}
     for inspect in &recipe.inspect {
         values.push(calibration_state(&vision::camera_calib_path(
             app, inspect,
         )?)?);
     }
-    values.push(json!([crate::site::image_measurement(app)]));
+    values.push(json!([true]));
     values.push(json!(app
         .state::<vision::VisionHost>()
         .engine()
@@ -642,16 +634,15 @@ fn get(app: AppHandle, id: String) -> Result<WorkspaceView, String> {
         ensure_workspace_can_be_created(&host.dir(&id).join("workspace.json"))?;
         let cycle = app.state::<CycleHost>();
         let mut doc = cycle.recipes.doc(&id).ok_or("配方不存在")?;
-        let base = cycle.recipe(&id).map(|r| r.revision_id.clone());
+        let production = cycle.recipe(&id).map(|r| r.revision_id.clone());
         doc.version = cycle.recipes.next_version(&id)?;
-        if base.is_some() {
-            doc.version -= 1;
-        }
-        let mut w = Workspace::new(doc, base);
+        let mut w = Workspace::new(doc);
         w.ensure_instance(&app.state::<Store>())?;
-        if let Some(message) =
-            navigation::inherit_navigation(&crate::storage::project(&app), &mut w)
-        {
+        if let Some(message) = navigation::inherit_navigation(
+            &crate::storage::project(&app),
+            &mut w,
+            production.as_deref(),
+        ) {
             cycle::log(&app, "warn", "导航资料", message);
         }
         host.save(&w)?;
@@ -687,7 +678,7 @@ pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceV
         .recipes
         .next_version(&doc.id)?
         .max(doc.version.max(1));
-    let mut w = Workspace::new(doc, None);
+    let mut w = Workspace::new(doc);
     w.ensure_instance(&app.state::<Store>())?;
     host.save(&w)?;
     items.insert(w.doc.id.clone(), w.clone());
@@ -711,50 +702,37 @@ fn check_new_identity<'a>(
     existing: impl Iterator<Item = (&'a str, u16)>,
 ) -> Result<(), String> {
     check_product_code(doc)?;
+    check_identity(&doc.id, doc.product_code, existing)
+}
+
+fn check_identity<'a>(
+    recipe_id: &str,
+    product_code: u16,
+    existing: impl Iterator<Item = (&'a str, u16)>,
+) -> Result<(), String> {
     for (id, code) in existing {
-        if id.eq_ignore_ascii_case(&doc.id) {
+        if id.eq_ignore_ascii_case(recipe_id) {
             return Err("配方编号已经存在（不区分大小写）".into());
         }
-        if code == doc.product_code {
+        if code == product_code {
             return Err(format!("产品代码 {} 已被配方 {} 使用", code, id));
         }
     }
     Ok(())
 }
 
-/// 项目整包导入时整理候选：回到草稿，不带待生效版本与验证结论；计划版本按本机新号改写；
-/// 没带检测记录时去掉来自来源机检测历史的验证样本。
-pub(crate) fn reset_for_project_import(
-    path: &Path,
-    plans: &BTreeMap<u32, u32>,
-    keep_history: bool,
-) -> Result<Vec<String>, String> {
+/// 项目整包导入时整理候选：回到草稿，不带待生效版本。
+pub(crate) fn reset_for_project_import(path: &Path) -> Result<(), String> {
     let text = crate::fsio::read_text(path).map_err(|e| e.to_string())?;
     let mut w: Workspace = serde_json::from_str(&text)
         .map_err(|e| format!("候选 {} 无法读取：{e}", path.display()))?;
-    let mut notes = Vec::new();
-    if let Some(plan) = plans.get(&w.doc.plan_version) {
-        w.doc.plan_version = *plan;
-    }
     w.pending = None;
     w.publish = PublishState::Draft;
-    if !keep_history {
-        let before = w.samples.len();
-        w.samples.retain(|s| s.history_id.is_none());
-        if w.samples.len() < before {
-            notes.push(format!(
-                "候选 {} 的 {} 个来自检测历史的验证样本未导入",
-                w.doc.id,
-                before - w.samples.len()
-            ));
-        }
-    }
     w.changed();
     crate::fsio::write_atomic(
         path,
         &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?,
-    )?;
-    Ok(notes)
+    )
 }
 
 #[tauri::command]
@@ -811,17 +789,30 @@ fn save_doc(
     revision: u64,
     doc: RecipeDoc,
 ) -> Result<WorkspaceView, String> {
-    if doc.id != id {
-        return Err("编辑候选配置时不能改变配方编号；请在配方库复制".into());
-    }
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
-    w.expect(revision)?;
-    update_doc(&mut w, doc)?;
-    host.save(&w)?;
-    items.insert(id, w.clone());
+    let w = app.state::<WorkspaceHost>().save_doc(&id, revision, doc)?;
     view(&app, w)
+}
+
+impl WorkspaceHost {
+    /// 整份保存候选配方（`workspace_save_doc`）。
+    pub(crate) fn save_doc(
+        &self,
+        id: &str,
+        revision: u64,
+        mut doc: RecipeDoc,
+    ) -> Result<Workspace, String> {
+        if doc.id != id {
+            return Err("编辑候选配置时不能改变配方编号；请在配方库复制".into());
+        }
+        let mut items = self.items.lock().unwrap();
+        let mut w = items.get(id).ok_or("候选配置不存在")?.clone();
+        w.expect(revision)?;
+        burst::keep_color_measure(&w, &mut doc);
+        update_doc(&mut w, doc)?;
+        self.save(&w)?;
+        items.insert(id.to_string(), w.clone());
+        Ok(w)
+    }
 }
 
 fn update_doc(w: &mut Workspace, doc: RecipeDoc) -> Result<(), String> {
@@ -838,6 +829,10 @@ fn replace_doc(
     check_product_code(&doc)?;
     // 示教件来源只在发布时写入，候选里恒为空
     doc.teaching_piece = None;
+    inherit_segment_ids(&w.doc.segments, &mut doc.segments);
+    if doc.segments != w.doc.segments {
+        pass_align::require_confirmed(w)?;
+    }
     // N_exp、标定统计、整件标定与 x_ref 只能由示教件得出，段序列或类型变化时清空
     burst::guard_calibration(&w.doc, &mut doc);
     let teaching = remapped.as_deref().unwrap_or(&w.camera_teaching);
@@ -864,6 +859,30 @@ fn replace_doc(
     Ok(())
 }
 
+/// 候选已用段 ID（按笔换过示教件，RB-11）时，回传的段没带段 ID（前端新建的段）：段数与类型序列没变就按位置沿用原来的
+/// 段 ID，其余补新 ID。没用过段 ID 的候选不加。
+fn inherit_segment_ids(
+    before: &[crate::plan::PathSegment],
+    segments: &mut [crate::plan::PathSegment],
+) {
+    if before.iter().all(|s| s.id.is_none()) {
+        return;
+    }
+    if before.len() == segments.len()
+        && before
+            .iter()
+            .zip(segments.iter())
+            .all(|(a, b)| a.kind == b.kind)
+    {
+        for (a, b) in before.iter().zip(segments.iter_mut()) {
+            if b.id.is_none() {
+                b.id = a.id.clone();
+            }
+        }
+    }
+    crate::plan::ensure_segment_ids(segments);
+}
+
 fn image_file(host: &WorkspaceHost, id: &str, image_id: &str) -> Result<PathBuf, String> {
     if image_id.is_empty()
         || !image_id
@@ -875,9 +894,18 @@ fn image_file(host: &WorkspaceHost, id: &str, image_id: &str) -> Result<PathBuf,
     Ok(host.dir(id).join("images").join(format!("{image_id}.pgm")))
 }
 
-fn decode_imported_image(bytes: Vec<u8>) -> Result<FrameImage, String> {
+/// 导入的标定原图：PNM 按 `image_file::decode` 的规则读（带 Bayer 注释的读成 RGB）；其他格式彩色相机保留颜色读成 RGB，
+/// 灰度相机读成灰度。
+fn decode_imported_image(bytes: Vec<u8>, color: bool) -> Result<FrameImage, String> {
     if bytes.is_empty() || bytes.len() > 15_000_000 {
         return Err("原图不得为空，单图不得超过 15 MB".into());
+    }
+    let too_many = |w: u32, h: u32| u64::from(w) * u64::from(h) > 40_000_000;
+    if let Some(info) = crate::image_file::pnm_info(&bytes) {
+        if too_many(info.width, info.height) {
+            return Err("单图像素数量超过 4000 万".into());
+        }
+        return crate::image_file::decode(&bytes).map_err(|e| format!("原图无法读取：{e}"));
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -885,120 +913,40 @@ fn decode_imported_image(bytes: Vec<u8>) -> Result<FrameImage, String> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(128_000_000);
     reader.limits(limits);
-    let image = reader
-        .decode()
-        .map_err(|e| format!("原图无法读取：{e}"))?
-        .into_luma8();
-    if image.width() as u64 * image.height() as u64 > 40_000_000 {
+    let image = reader.decode().map_err(|e| format!("原图无法读取：{e}"))?;
+    if too_many(image.width(), image.height()) {
         return Err("单图像素数量超过 4000 万".into());
     }
-    Ok(FrameImage::new(
-        image.width(),
-        image.height(),
-        image.into_raw(),
-    ))
+    let (width, height) = (image.width(), image.height());
+    Ok(if color {
+        FrameImage::rgb(width, height, image.into_rgb8().into_raw())
+    } else {
+        FrameImage::new(width, height, image.into_luma8().into_raw())
+    })
 }
 
+/// 读图命令的响应，字节格式见 `frame::preview_bytes`（20 字节头 + 灰度或 RGB）。
 fn preview_response(image: &FrameImage) -> tauri::ipc::Response {
-    let scale = (image.width as f32 / 900.0)
-        .max(image.height as f32 / 650.0)
-        .max(1.0);
-    let w = (image.width as f32 / scale).max(1.0) as u32;
-    let h = (image.height as f32 / scale).max(1.0) as u32;
-    let mut bytes = Vec::with_capacity(16 + (w * h) as usize);
-    for n in [w, h, image.width, image.height] {
-        bytes.extend(n.to_le_bytes());
-    }
-    for y in 0..h {
-        for x in 0..w {
-            let iy = ((y as f32 * scale) as u32).min(image.height - 1);
-            let ix = ((x as f32 * scale) as u32).min(image.width - 1);
-            bytes.push(image.pixels[(iy * image.width + ix) as usize]);
-        }
-    }
-    tauri::ipc::Response::new(bytes)
+    tauri::ipc::Response::new(crate::frame::preview_bytes(image))
 }
 
 #[tauri::command]
-pub fn workspace_image(
-    host: State<'_, WorkspaceHost>,
+pub async fn workspace_image(
+    app: AppHandle,
     id: String,
     image_id: String,
 ) -> Result<tauri::ipc::Response, String> {
-    safe_id(&id)?;
-    let image = crate::image_file::load(&image_file(&host, &id, &image_id)?)?;
-    Ok(preview_response(&image))
-}
-
-impl SampleResult {
-    /// 按候选判定结果对照人工期望：期望合格时 OK 与 OK_WITH_EXCURSION 都算符合，其余结论须完全一致。
-    pub fn judged(sample: &Sample, name: String, sn: String, judgement: judge::Judgement) -> Self {
-        let qualified = |v| matches!(v, Verdict::Ok | Verdict::OkWithExcursion);
-        let actual = judgement.verdict;
-        let passed = if qualified(sample.expected) {
-            qualified(actual)
-        } else {
-            sample.expected == actual
-        };
-        Self {
-            history_id: sample.history_id,
-            sample_id: sample.sample_id.clone(),
-            name,
-            sn,
-            expected: sample.expected,
-            actual: Some(actual),
-            passed,
-            reason: judgement.reason,
-        }
-    }
-}
-
-fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
-    burst_release::validation(app, w)
-}
-
-#[tauri::command]
-pub async fn workspace_validate(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    samples: Vec<Sample>,
-    source_confirmed: Option<bool>,
-) -> Result<WorkspaceView, String> {
-    if source_confirmed != Some(true) {
-        return Err("请确认验证样本与示教的轨迹、触发顺序及拍摄条件一致".into());
-    }
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<WorkspaceHost>();
-        let mut w = {
-            let items = host.items.lock().unwrap();
-            let w = items.get(&id).ok_or("候选配置不存在")?;
-            w.expect(revision)?;
-            w.clone()
-        };
-        let mut unique = std::collections::HashSet::new();
-        if samples.len() > 100
-            || samples
-                .iter()
-                .any(|s| !unique.insert((s.history_id, s.sample_id.clone())))
-        {
-            return Err("最多验证 100 件，不能重复添加相同样本".into());
-        }
-        w.samples = samples;
-        let checked = validation(&app, &w)?;
-        let mut items = host.items.lock().unwrap();
-        let current = items.get_mut(&id).ok_or("候选配置不存在")?;
-        current.expect(revision)?;
-        current.samples = w.samples;
-        current.validation = Some(checked);
-        host.save(current)?;
-        view(&app, current.clone())
+        safe_id(&id)?;
+        let image = crate::image_file::load(&image_file(&host, &id, &image_id)?)?;
+        Ok(preview_response(&image))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|error| error.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn workspace_publish(
     app: AppHandle,
     id: String,
@@ -1014,14 +962,13 @@ pub fn workspace_publish(
     if !w.doc.is_burst() {
         return Err("旧拍照点配方已停用，请创建段配方".into());
     }
-    // D-SB-46：发布不再要求独立样本验证，发布时当场核对发布前检查
+    // D-SB-46：发布时当场核对发布前检查
     let validated = burst_release::publish_checks(&app, w)?;
-    if let Some(failed) = validated.checks.iter().find(|c| !c.passed) {
+    if let Some(failed) = burst_release::publish_blocker(&validated.checks) {
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
     }
     let recipes = &app.state::<CycleHost>().recipes;
-    let mut release_doc = formal_release_doc(w, recipes.release_version(&w.doc)?)?;
-    release_doc.plan_version = recipes.plan_version_for(&release_doc)?;
+    let release_doc = formal_release_doc(w, recipes.release_version(&w.doc)?)?;
     let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?;
     let navigation = navigation::prepare_navigation_release(
         &crate::storage::project(&app),
@@ -1032,16 +979,17 @@ pub fn workspace_publish(
     let mut next = w.clone();
     next.doc = release_doc.clone();
     next.doc.teaching_piece = None;
+    next.pass_alignment = None;
     next.pending = Some(Box::new(Release {
         doc: release_doc,
         bundle_id: bundle.id,
-        base_revision: w.base_revision.clone(),
         revision,
         validation: validated.clone(),
         validation_site: bundle.manifest.validation_site,
         navigation: Some(navigation),
         _frames: Discarded,
         _overview: Discarded,
+        _base_revision: Discarded,
     }));
     next.publish = PublishState::Waiting;
     host.save(&next)?;
@@ -1050,11 +998,14 @@ pub fn workspace_publish(
     view(&app, w.clone())
 }
 
-/// 正式版的配方文档：带示教件来源（RB-7），版本取调用方按配方库分配的 `version`，计划版本也由调用方分配。
+/// 正式版的配方文档：带示教件来源（RB-7），版本取调用方按配方库分配的 `version`。
 fn formal_release_doc(w: &Workspace, version: u32) -> Result<RecipeDoc, String> {
     let mut doc = w.doc.clone();
     doc.version = version;
     doc.stage = RecipeStage::Formal;
+    for segment in &mut doc.segments {
+        segment.id = None;
+    }
     doc.teaching_id = Some(vision::unique_run_id(&format!(
         "teaching-{}-v{}",
         doc.id, doc.version
@@ -1082,12 +1033,7 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
         .as_ref()
         .is_some_and(|saved| saved.revision_id == recipe.revision_id)
     {
-        return cycle
-            .recipes
-            .save_published(release.doc.clone(), release.base_revision.as_deref());
-    }
-    if current.as_ref().map(|r| r.revision_id.clone()) != release.base_revision {
-        return Err("待生效版本与当前生产配方冲突".into());
+        return cycle.recipes.save_published(release.doc.clone());
     }
     let archive = host.dir(&recipe.id).join("published");
     std::fs::create_dir_all(&archive).map_err(|e| e.to_string())?;
@@ -1095,9 +1041,7 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
         &archive.join(format!("{}.json", recipe.revision_id)),
         &serde_json::to_string(release).map_err(|e| e.to_string())?,
     )?;
-    cycle
-        .recipes
-        .save_published(release.doc.clone(), release.base_revision.as_deref())
+    cycle.recipes.save_published(release.doc.clone())
 }
 
 pub fn releases_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1144,6 +1088,17 @@ fn load_bundle(
     bundle_id: &str,
 ) -> Result<crate::release::ReleaseBundle, String> {
     crate::release::load(&releases_root(app)?, recipe_id, bundle_id)
+}
+
+/// 历史记录的发布包：在记录所属项目的 `vision/releases/` 里找；项目已删除时报原因。
+fn record_bundle(
+    app: &AppHandle,
+    project: &str,
+    recipe_id: &str,
+    bundle_id: &str,
+) -> Result<crate::release::ReleaseBundle, String> {
+    let root = crate::project::records::releases_root(&crate::storage::root(app), project)?;
+    crate::release::load(&root, recipe_id, bundle_id)
 }
 
 pub fn published_bundle(
@@ -1224,14 +1179,14 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                     &release,
                 )
                 .err();
-                w.base_revision = Some(saved.revision_id.clone());
                 if w.revision == release.revision {
                     w.doc = app.state::<CycleHost>().recipes.doc(&id).unwrap();
                     w.doc.teaching_piece = None;
+                    // 生产配方不带段 ID：按位置接回候选原来的段 ID，逐笔对照的沿用状态不丢（采集版生效后还要继续示教）
+                    inherit_segment_ids(&before.doc.segments, &mut w.doc.segments);
                 }
                 let next_version = app.state::<CycleHost>().recipes.next_version(&saved.id);
                 w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);
-                w.validation = None;
                 w.revision += 1;
                 w.publish = PublishState::Active {
                     version: saved.version,
@@ -1312,49 +1267,74 @@ pub async fn workspace_compare(
     revision: u64,
     history_id: i64,
     raw: bool,
+    task_id: Option<String>,
 ) -> Result<Comparison, String> {
+    compare_at(app, id, revision, None, history_id, raw, task_id).await
+}
+
+pub(crate) async fn workspace_compare_at(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    instance_id: u64,
+    history_id: i64,
+    raw: bool,
+) -> Result<Comparison, String> {
+    compare_at(app, id, revision, Some(instance_id), history_id, raw, None).await
+}
+
+async fn compare_at(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    instance_id: Option<u64>,
+    history_id: i64,
+    raw: bool,
+    task_id: Option<String>,
+) -> Result<Comparison, String> {
+    let operation = crate::operation::Operation::start(&app, task_id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let w = {
-            let host = app.state::<WorkspaceHost>();
-            let items = host.items.lock().unwrap();
-            let w = items.get(&id).ok_or("候选配置不存在")?;
-            w.expect(revision)?;
-            w.clone()
-        };
-        let recipe = w.doc.build()?;
-        let store = app.state::<Store>();
-        let detail = store.detail(history_id)?;
-        let original = detail
-            .summary
-            .recipe_revision
-            .as_deref()
-            .map(|h| store.recipe_snapshot(h))
-            .transpose()?
-            .flatten()
-            .ok_or("历史配方快照缺失")?;
-        let (judgement, burst) =
-            burst_history::compare(&app, &w, &recipe, &detail, &original, raw)?;
-        let comparison = Comparison {
-            id: comparison_id(&app, history_id),
-            history_id,
-            source: if raw { "raw".into() } else { "rules".into() },
-            cycle_id: detail
-                .summary
-                .cycle_id
-                .clone()
-                .ok_or("历史记录没有工件身份")?,
-            bundle_id: detail.summary.bundle_id.clone(),
-            candidate_id: id.clone(),
-            candidate_revision: revision,
-            candidate_recipe: recipe,
-            original_verdict: detail.summary.verdict,
-            judgement,
-            measurements: Vec::new(),
-            created_at: ly_plc::now_ms(),
-            burst: Some(burst),
-        };
-        save_comparison(&app, &comparison)?;
-        Ok(comparison)
+        operation.run(|operation| {
+            let w = app
+                .state::<WorkspaceHost>()
+                .comparison_snapshot(&id, revision, instance_id)?;
+            let recipe = w.doc.build()?;
+            let store = app.state::<Store>();
+            let detail = store.detail(history_id)?;
+            // 任意候选都能复测任意记录（不看型号、配方编号与所属项目）；按规则重判仍需记录的配方快照
+            let original = store.record_recipe(&detail.summary)?;
+            let (judgement, burst) = burst_history::compare(
+                &app,
+                &w,
+                &recipe,
+                &detail,
+                original.as_ref(),
+                raw,
+                operation,
+            )?;
+            let comparison = Comparison {
+                id: comparison_id(&app, history_id),
+                history_id,
+                source: if raw { "raw".into() } else { "rules".into() },
+                cycle_id: detail
+                    .summary
+                    .cycle_id
+                    .clone()
+                    .ok_or("历史记录没有工件身份")?,
+                bundle_id: detail.summary.bundle_id.clone(),
+                candidate_id: id.clone(),
+                candidate_revision: revision,
+                candidate_recipe: recipe,
+                original_verdict: detail.summary.verdict,
+                judgement,
+                measurements: Vec::new(),
+                created_at: ly_plc::now_ms(),
+                burst: Some(burst),
+            };
+            operation.saving()?;
+            save_comparison(&app, &comparison)?;
+            Ok(comparison)
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1374,67 +1354,152 @@ fn save_comparison(app: &AppHandle, comparison: &Comparison) -> Result<(), Strin
         .save(&host.root, &app.state::<Store>(), comparison)
 }
 
+/// 按天清理：被示教件、标定件引用的历史件（记录与录制）保留，引用核对不了时本次不清理。调用方持
+/// `recipe_capture::REFERENCES`（先于追溯 spool 锁取得）。
 pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<String>), String> {
     let host = app.state::<WorkspaceHost>();
-    host.comparisons
-        .purge(&host.root, &app.state::<Store>(), before)
+    let data = crate::storage::root(app);
+    let keep = crate::project::records::referenced_cycles(&data)
+        .map_err(|e| format!("无法核对示教件引用的历史件，本次不清理：{e}"))?;
+    let (count, mut warnings, orphaned) =
+        host.comparisons
+            .purge(&host.root, &app.state::<Store>(), before, &keep)?;
+    for (project, source, directory) in orphaned {
+        if let Err(error) = crate::project::records::remove_recording(
+            &data,
+            &project,
+            source,
+            Path::new(&directory),
+        ) {
+            warnings.push(format!(
+                "项目 {project} 的过期原图 {directory} 未删除：{error}"
+            ));
+        }
+    }
+    Ok((count, warnings))
+}
+
+/// 删除历史记录；示教件、标定件引用的记录拒绝删除。调用方持 `recipe_capture::REFERENCES`（先于追溯 spool 锁取得）。
+pub(crate) fn delete_history(app: &AppHandle, ids: &[i64]) -> Result<Vec<String>, String> {
+    let host = app.state::<WorkspaceHost>();
+    let store = app.state::<Store>();
+    let data = crate::storage::root(app);
+    let referenced = crate::project::records::referenced_cycles(&data)?;
+    for &id in ids {
+        if store
+            .comparison_cycle(id)?
+            .is_some_and(|cycle| referenced.contains(&cycle))
+        {
+            return Err(format!(
+                "记录 #{id} 是候选的示教件或标定件，不能删除；先换示教件或删除引用它的候选"
+            ));
+        }
+    }
+    host.comparisons.delete_history(&data, &store, ids)
 }
 
 #[tauri::command]
 pub async fn workspace_compare_original(
     app: AppHandle,
     history_id: i64,
+    task_id: Option<String>,
 ) -> Result<Comparison, String> {
+    let operation = crate::operation::Operation::start(&app, task_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        operation.run(|operation| {
+            let store = app.state::<Store>();
+            let detail = store.detail(history_id)?;
+            if !detail.recording.available {
+                return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into());
+            }
+            let cycle_id = detail
+                .summary
+                .cycle_id
+                .clone()
+                .ok_or("历史记录缺少 cycleId")?;
+            let bundle_id = detail
+                .summary
+                .bundle_id
+                .as_deref()
+                .ok_or("本件没有不可变发布包，不能按原版本重现")?;
+            if detail.summary.recipe_revision.is_none() {
+                return Err("历史记录缺少配方快照身份".into());
+            }
+            let original = store
+                .record_recipe(&detail.summary)?
+                .ok_or("原始配方快照缺失；不能使用当前配方替代")?;
+            let bundle = record_bundle(&app, &detail.summary.project_id, &original.id, bundle_id)?;
+            let engine = app
+                .state::<vision::VisionHost>()
+                .engine()
+                .ok_or("原版本兼容引擎未加载")?;
+            let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
+            prepared.verify()?;
+            let (judgement, burst) =
+                burst_history::reproduce_original(&app, &detail, &prepared, &cycle_id, operation)?;
+            let comparison = Comparison {
+                id: comparison_id(&app, history_id),
+                history_id,
+                source: "original".into(),
+                cycle_id,
+                bundle_id: Some(bundle_id.into()),
+                candidate_id: original.id.clone(),
+                candidate_revision: 0,
+                candidate_recipe: original,
+                original_verdict: detail.summary.verdict,
+                judgement,
+                measurements: Vec::new(),
+                created_at: ly_plc::now_ms(),
+                burst: Some(burst),
+            };
+            operation.saving()?;
+            save_comparison(&app, &comparison)?;
+            Ok(comparison)
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// 一条历史记录能做哪几种复测（历史详情的按钮与原因）：用 `candidate` 指定的本机候选（不给时用记录所属配方的候选），
+/// 任意候选都能选，不看型号、配方编号与所属项目；不新建候选、不看工作台当前打开的配方。`choices` 列出可选的候选。
+#[tauri::command]
+pub async fn workspace_history_compare_options(
+    app: AppHandle,
+    history_id: i64,
+    candidate: Option<String>,
+) -> Result<burst_history::CompareOptions, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
         let detail = store.detail(history_id)?;
-        if !detail.recording.available {
-            return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into());
-        }
-        let cycle_id = detail
-            .summary
-            .cycle_id
-            .clone()
-            .ok_or("历史记录缺少 cycleId")?;
-        let bundle_id = detail
-            .summary
-            .bundle_id
-            .as_deref()
-            .ok_or("本件没有不可变发布包，不能按原版本重现")?;
-        let recipe_revision = detail
-            .summary
-            .recipe_revision
-            .as_deref()
-            .ok_or("历史记录缺少配方快照身份")?;
-        let original = store
-            .recipe_snapshot(recipe_revision)?
-            .ok_or("原始配方快照缺失；不能使用当前配方替代")?;
-        let bundle = load_bundle(&app, &original.id, bundle_id)?;
-        let engine = app
-            .state::<vision::VisionHost>()
-            .engine()
-            .ok_or("原版本兼容引擎未加载")?;
-        let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
-        prepared.verify()?;
-        let (judgement, burst) =
-            burst_history::reproduce_original(&app, &detail, &prepared, &cycle_id)?;
-        let comparison = Comparison {
-            id: comparison_id(&app, history_id),
-            history_id,
-            source: "original".into(),
-            cycle_id,
-            bundle_id: Some(bundle_id.into()),
-            candidate_id: original.id.clone(),
-            candidate_revision: 0,
-            candidate_recipe: original,
-            original_verdict: detail.summary.verdict,
-            judgement,
-            measurements: Vec::new(),
-            created_at: ly_plc::now_ms(),
-            burst: Some(burst),
+        let original = store.record_recipe(&detail.summary)?;
+        let (chosen, choices) = {
+            let host = app.state::<WorkspaceHost>();
+            let items = host.items.lock().unwrap();
+            let mut choices: Vec<&Workspace> = items.values().filter(|w| !w.legacy()).collect();
+            choices.sort_by(|a, b| a.doc.id.cmp(&b.doc.id));
+            let wanted = candidate.as_deref().or(detail.summary.recipe_id.as_deref());
+            let chosen = wanted
+                .and_then(|id| items.get(id))
+                .filter(|w| !w.legacy())
+                .cloned();
+            (
+                chosen,
+                choices
+                    .into_iter()
+                    .map(burst_history::CompareCandidate::of)
+                    .collect(),
+            )
         };
-        save_comparison(&app, &comparison)?;
-        Ok(comparison)
+        let releases = crate::project::records::releases_root(
+            &crate::storage::root(&app),
+            &detail.summary.project_id,
+        )
+        .err();
+        let mut options =
+            burst_history::compare_options(&detail, original.as_ref(), chosen.as_ref(), releases);
+        options.choices = choices;
+        Ok(options)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1447,8 +1512,42 @@ pub fn workspace_comparisons(
     id: String,
     history_id: i64,
 ) -> Result<Vec<Comparison>, String> {
+    // 历史详情列出这件记录所有候选的对照（任意配方都能验证任意记录）；id 只核对格式
     safe_id(&id)?;
-    host.comparisons.list(&host.root, &store, &id, history_id)
+    host.comparisons.list(&host.root, &store, None, history_id)
+}
+
+#[tauri::command]
+pub async fn workspace_comparison_summaries(
+    app: AppHandle,
+    history_id: i64,
+) -> Result<Vec<comparisons::ComparisonSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<WorkspaceHost>();
+        host.comparisons
+            .summaries(&host.root, &app.state::<Store>(), None, history_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn workspace_comparison_get(
+    app: AppHandle,
+    history_id: i64,
+    comparison_id: String,
+) -> Result<Comparison, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<WorkspaceHost>();
+        host.comparisons.get(
+            &host.root,
+            &app.state::<Store>(),
+            history_id,
+            &comparison_id,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 pub fn clear_live(app: &AppHandle) {
@@ -1456,6 +1555,138 @@ pub fn clear_live(app: &AppHandle) {
         *host.live_burst.lock().unwrap() = LiveFrames::default();
         *host.live_views.lock().unwrap() = LiveViews::default();
     }
+}
+
+/// 一帧测量轨迹转成叠图（第 `segment` 段走廊、搜索带与胶边）：在线与历史按原发布包重算共用，保证两边画出的线一致。
+fn trace_view(
+    recipe: &Recipe,
+    segment: u32,
+    trace: crate::measure::FrameTrace,
+    metrics: &crate::burst_judge::FrameMetrics,
+) -> CalibrationFrameView {
+    let (corridor, search_half_px) = burst::corridor_overlay(recipe, metrics.camera, segment);
+    CalibrationFrameView {
+        segment: Some(segment),
+        corridor: if trace.line.is_empty() {
+            corridor
+        } else {
+            trace.line
+        },
+        search_half_px,
+        edges: trace.edges,
+        part_edges: trace.part_edges,
+        metrics: metrics.clone(),
+    }
+}
+
+/// 记录的发布包：生产预热里有就复用，否则加载并留作历史叠图的唯一缓存。
+fn history_prepared(
+    app: &AppHandle,
+    project: &str,
+    original: &Recipe,
+    bundle_id: &str,
+) -> Result<Arc<crate::production::Prepared>, String> {
+    let current = project == crate::project::current_id(app);
+    if let Some(prepared) = app
+        .state::<crate::production::ProductionHost>()
+        .ready_bundle(bundle_id)
+        .filter(|_| current)
+    {
+        return Ok(prepared);
+    }
+    let host = app.state::<WorkspaceHost>();
+    let mut cached = host.history_bundle.lock().unwrap();
+    if let Some(prepared) = cached
+        .as_ref()
+        .filter(|(owner, p)| owner == project && p.bundle.id == bundle_id)
+    {
+        return Ok(prepared.1.clone());
+    }
+    let bundle = record_bundle(app, project, &original.id, bundle_id)?;
+    let engine = app
+        .state::<vision::VisionHost>()
+        .engine()
+        .ok_or("图像核心库未加载")?;
+    let prepared = Arc::new(crate::production::Prepared::load(bundle, engine, original)?);
+    prepared.verify()?;
+    *cached = Some((project.to_string(), prepared.clone()));
+    Ok(prepared)
+}
+
+/// 历史件一帧按原发布包重算的叠图（历史详情看原始记录时显示，只读、不落盘）：用记录的发布包、这一帧当时所用走廊段，
+/// 从录制原图走与在线检测同一测量入口（`Prepared::measure_frame`），给出走廊、搜索带与胶边。缺帧、本段不检测、
+/// 没记走廊的帧只给记录的指标、不画线。指标一律取记录里存的。
+#[tauri::command]
+pub async fn workspace_history_frame_view(
+    app: AppHandle,
+    history_id: i64,
+    camera: usize,
+    seq: u64,
+) -> Result<CalibrationFrameView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        let detail = store.detail_frame(history_id, camera, seq)?;
+        let burst = detail
+            .burst
+            .as_ref()
+            .ok_or("这条历史是旧拍照点记录，没有按帧的叠图")?;
+        let frame = burst
+            .frames
+            .iter()
+            .find(|f| f.camera == camera && f.seq == seq)
+            .ok_or("没有这一帧的记录")?;
+        let metrics = frame
+            .metrics
+            .clone()
+            .ok_or("这台相机本帧组缺帧，没有原图")?;
+        let Some(segment) = metrics.corridor.filter(|_| {
+            !matches!(
+                metrics.state,
+                crate::burst_judge::FrameState::Missing
+                    | crate::burst_judge::FrameState::NotInspected
+            )
+        }) else {
+            return Ok(CalibrationFrameView {
+                segment: None,
+                corridor: Vec::new(),
+                search_half_px: None,
+                edges: Vec::new(),
+                part_edges: Vec::new(),
+                metrics,
+            });
+        };
+        if frame.raw_file.is_none() {
+            return Err("这一帧原图未保存或已按保留策略清理，画不了辅助线".into());
+        }
+        let bundle_id = detail
+            .summary
+            .bundle_id
+            .as_deref()
+            .ok_or("本件没有发布包（维护采集件或未匹配到可用配方），画不了辅助线")?;
+        if detail.summary.recipe_revision.is_none() {
+            return Err("历史记录缺少配方快照身份".into());
+        }
+        let original = store
+            .record_recipe(&detail.summary)?
+            .ok_or("原始配方快照缺失")?;
+        let prepared = history_prepared(&app, &detail.summary.project_id, &original, bundle_id)?;
+        let image = burst_history::frame_image(&app, &detail, camera, seq)?;
+        let measured = prepared.measure_frame(
+            camera,
+            segment,
+            seq,
+            &image,
+            &format!("history-view-{history_id}-c{camera}-{seq}"),
+        )?;
+        let trace = crate::measure::FrameTrace {
+            edges: measured.edges,
+            part_edges: measured.part_edges,
+            line: measured.line,
+        };
+        Ok(trace_view(&prepared.recipe, segment, trace, &metrics))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// 段配方在途件一帧测到的叠图（第 `segment` 段走廊、搜索带与胶边），供 `workspace_live_frame_view` 读。
@@ -1470,18 +1701,7 @@ pub fn retain_live_view(
     let Some(host) = app.try_state::<WorkspaceHost>() else {
         return;
     };
-    let (corridor, search_half_px) = burst::corridor_overlay(recipe, metrics.camera, segment);
-    let view = CalibrationFrameView {
-        segment: Some(segment),
-        corridor: if trace.line.is_empty() {
-            corridor
-        } else {
-            trace.line
-        },
-        search_half_px,
-        edges: trace.edges,
-        metrics: metrics.clone(),
-    };
+    let view = trace_view(recipe, segment, trace, metrics);
     let mut live = host.live_views.lock().unwrap();
     let key = (cycle_id.to_owned(), recipe.revision_id.clone());
     if live.key.as_ref() != Some(&key) {
@@ -1509,7 +1729,7 @@ pub fn workspace_live_frame_view(
         .and_then(|_| live.views.get(&(camera, seq)).cloned())
 }
 
-/// 段配方在途件一帧的原图（计划相机 camera 的第 seq 帧），供 `workspace_live_frame_image` 读。
+/// 段配方在途件一帧的原图（计划相机 camera 的第 seq 帧）与它排进写盘的录制原图，供 `workspace_live_frame_image` 读。
 pub fn retain_live_frame(
     app: &AppHandle,
     cycle_id: &str,
@@ -1517,26 +1737,54 @@ pub fn retain_live_frame(
     camera: usize,
     seq: u64,
     image: &Option<Arc<FrameImage>>,
+    recorded: Option<crate::recorder::PendingFrame>,
 ) {
-    if let (Some(host), Some(image)) = (app.try_state::<WorkspaceHost>(), image) {
-        host.live_burst
-            .lock()
-            .unwrap()
-            .insert(cycle_id, revision_id, (camera, seq), image.clone());
+    if let Some(host) = app.try_state::<WorkspaceHost>() {
+        host.live_burst.lock().unwrap().insert(
+            cycle_id,
+            revision_id,
+            (camera, seq),
+            image.clone(),
+            recorded,
+        );
     }
 }
 
-/// 段配方在途件某台相机第 seq 帧的实时原图（决策记录 5.4，camera 为计划相机下标）；未到、缺帧或已超出预览缓存时报错。
+/// 段配方在途件某台相机第 seq 帧的原图（决策记录 5.4，camera 为计划相机下标）：先取内存里的最近帧，不在时读本件的
+/// 录制原图（收尾前在录制目录里，收尾后按本件的历史记录）；没到、缺帧或没有录制原图时报错。
 #[tauri::command]
-pub fn workspace_live_frame_image(
-    host: State<'_, WorkspaceHost>,
+pub async fn workspace_live_frame_image(
+    app: AppHandle,
     cycle_id: String,
     revision_id: String,
     camera: usize,
     seq: u64,
 ) -> Result<tauri::ipc::Response, String> {
-    let image = {
-        let live = host.live_burst.lock().unwrap();
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = app.state::<WorkspaceHost>();
+        let image = live_frame_image(
+            &host.live_burst,
+            &cycle_id,
+            &revision_id,
+            (camera, seq),
+            || recorded_part_frame(&app, &cycle_id, &revision_id, camera, seq),
+        )?;
+        Ok(preview_response(&image))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// `workspace_live_frame_image` 的读图：内存里的最近帧 → 收尾前录制目录里已写盘的这一帧 → `recorded_part`（按历史记录读）。
+fn live_frame_image(
+    live: &Mutex<LiveFrames>,
+    cycle_id: &str,
+    revision_id: &str,
+    k: (usize, u64),
+    recorded_part: impl FnOnce() -> Result<FrameImage, String>,
+) -> Result<Arc<FrameImage>, String> {
+    let recorded = {
+        let live = live.lock().unwrap();
         if live
             .key
             .as_ref()
@@ -1544,13 +1792,40 @@ pub fn workspace_live_frame_image(
         {
             return Err("本件尚未收到整帧图像".into());
         }
-        live.frames
-            .iter()
-            .find(|(key, _)| *key == (camera, seq))
-            .map(|(_, image)| image.clone())
-            .ok_or("这一帧原图未到达（缺帧）或已超出预览缓存；请开启图像测量或帧录制")?
+        if let Some((_, image)) = live.frames.iter().find(|(key, _)| *key == k) {
+            return Ok(image.clone());
+        }
+        live.recorded.get(&k).cloned()
     };
-    Ok(preview_response(&image))
+    let image = match recorded.map(|frame| frame.state()) {
+        Some(crate::recorder::RecordedFrame::Ready(path)) if path.is_file() => {
+            crate::image_file::load(&path).map_err(|e| format!("读回录制原图失败：{e}"))?
+        }
+        Some(crate::recorder::RecordedFrame::Writing) => {
+            return Err("这一帧原图还在写盘，稍后再看".into())
+        }
+        _ => recorded_part()?,
+    };
+    Ok(Arc::new(image))
+}
+
+/// 已收尾的本件按历史记录读录制原图。
+fn recorded_part_frame(
+    app: &AppHandle,
+    cycle_id: &str,
+    revision_id: &str,
+    camera: usize,
+    seq: u64,
+) -> Result<FrameImage, String> {
+    let store = app.state::<Store>();
+    let id = store
+        .id_by_cycle(cycle_id)?
+        .ok_or("这一帧原图已不在内存里，本件也没有录到它（录制关闭、录制盘都不足或录制队满）")?;
+    let detail = store.detail_frame(id, camera, seq)?;
+    if detail.summary.recipe_revision.as_deref() != Some(revision_id) {
+        return Err("本件的历史记录与所看的配方修订不一致".into());
+    }
+    burst_history::frame_image(app, &detail, camera, seq)
 }
 
 pub fn station_image_ref(
@@ -1665,7 +1940,7 @@ pub async fn workspace_station_import(
         if !(1..=config.view_count).contains(&view.unwrap_or(1)) {
             return Err("图编号超出设备范围".into());
         }
-        let image = Arc::new(decode_imported_image(bytes)?);
+        let image = Arc::new(decode_imported_image(bytes, config.image_mode.color())?);
         if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
             return Err("导入期间设备或节拍状态变化，原图已丢弃".into());
         }
@@ -1697,6 +1972,58 @@ pub async fn workspace_station_import(
     .map_err(|e| e.to_string())?
 }
 
+/// 标定页进入时载入当前标定所用的原图作冻结样本（编号沿用标定记的样本编号，重新标定复用同一原图）；没有可载入的原图为 None。
+#[tauri::command]
+pub async fn workspace_station_restore(
+    app: AppHandle,
+    cam: u8,
+    view: Option<u8>,
+) -> Result<Option<FrozenImage>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cycle = app.state::<CycleHost>();
+        if cycle.busy() {
+            return Err("工件正在检测，结束后再读取标定原图".into());
+        }
+        let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
+        let config = slot.config();
+        let selected = view.unwrap_or(1);
+        if !(1..=config.view_count).contains(&selected) {
+            return Err("图编号超出设备范围".into());
+        }
+        let keys = vision::camera_calib_keys(&app, cam, Some(selected))?;
+        let calib = vision::calib_key_path(&app, &keys[0])?;
+        let Some((id, image, ts)) = vision::calib_sample(&crate::storage::project(&app), &calib)?
+        else {
+            return Ok(None);
+        };
+        if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
+            return Err("读取期间设备或节拍状态变化，原图已丢弃".into());
+        }
+        let meta = FrozenImage {
+            view: selected,
+            id,
+            source: "calib".into(),
+            captured_at: ts.unwrap_or(0),
+            size: [image.width, image.height],
+            camera: config.id.clone(),
+            camera_tag: state_value(&config),
+            calib_tag: Value::Null,
+            geometry_tag: Value::Null,
+            exposure_us: None,
+            gain_db: None,
+            history_id: None,
+        };
+        app.state::<WorkspaceHost>()
+            .station
+            .lock()
+            .unwrap()
+            .insert(cam, (meta.clone(), Arc::new(image)));
+        Ok(Some(meta))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1720,69 +2047,49 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-}
 
-/// 候选试运行冻结的配方：过 `Recipe::ready_burst`（三台相机走廊与当量、整件 ΣN_exp）。修订号为候选调试修订，计划版本至少为 1。
-fn debug_recipe(w: &Workspace) -> Result<Recipe, String> {
-    let mut recipe = w.doc.build()?;
-    recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
-    recipe.revision_id = w.debug_revision()?;
-    if recipe.plan_version == 0 {
-        recipe.plan_version = 1;
-    }
-    Ok(recipe)
-}
-
-#[tauri::command]
-pub async fn workspace_debug_run(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    part_id: Option<String>,
-) -> Result<(), String> {
-    if !crate::offline::enabled(&app) || crate::offline::sample_set(&app).is_none() {
-        return Err("候选试运行仅支持离线样本集模式".into());
-    }
-    let set = crate::offline::sample_set(&app).ok_or("离线样本集缺失")?;
-    let current = burst_release::current_camera_tags(&app);
-    let (recipe, sizes) = {
-        let host = app.state::<WorkspaceHost>();
-        let items = host.items.lock().unwrap();
-        let w = items.get(&id).ok_or("候选配方不存在")?;
-        if w.revision != revision {
-            return Err("候选已修改，请刷新后重试".into());
+    /// 第 1 帧带着录制文件 `file` 进内存预览，再来两帧大图把它挤出去。
+    fn evicted_first_frame(file: PathBuf) -> Mutex<LiveFrames> {
+        let big = || Some(Arc::new(FrameImage::new(8192, 6144, vec![0; 8192 * 6144])));
+        let mut live = LiveFrames::default();
+        live.insert(
+            "c1",
+            "r1",
+            (0, 1),
+            big(),
+            Some(crate::recorder::PendingFrame::written(file)),
+        );
+        for seq in 2..=3 {
+            live.insert("c1", "r1", (0, seq), big(), None);
         }
-        if w.pending.is_some() {
-            return Err("候选正在等待发布，请先完成或取消发布".into());
-        }
-        let recipe = debug_recipe(w)?;
-        // 每台计划相机按示教帧尺寸建走廊测量图，结果只量不判（D3 的候选调试记录按样本集读原图）
-        let sizes = burst_release::debug_sizes(w, &current)?;
-        (recipe, sizes)
-    };
-    let engine = app
-        .state::<vision::VisionHost>()
-        .engine()
-        .ok_or("lyFlow 核心库未加载")?;
-    let candidate = crate::candidate::Candidate::new_burst(recipe, revision, engine, &sizes)?;
-    crate::offline::run_candidate(app, Arc::new(candidate), set, part_id).await
-}
-
-pub(crate) fn recheck_debug_candidate(
-    app: &AppHandle,
-    candidate: &crate::candidate::Candidate,
-) -> Result<(), String> {
-    let current = burst_release::current_camera_tags(app);
-    let host = app.state::<WorkspaceHost>();
-    let items = host.items.lock().unwrap();
-    let w = items.get(&candidate.info.recipe_id).ok_or("候选已删除")?;
-    if w.revision != candidate.info.revision
-        || w.pending.is_some()
-        || w.debug_revision()? != candidate.recipe.revision_id
-    {
-        return Err("候选已修改、重建或正在发布，请重新试运行".into());
+        Mutex::new(live)
     }
-    // 修订号不变即示教帧与走廊没变，只需再核对示教后设备标签没变
-    burst_release::debug_sizes(w, &current)?;
-    Ok(())
+
+    /// 防的回归：一件帧多时，内存预览挤掉的早期帧在线检测页看不了（只能看最后二十来帧）。
+    #[test]
+    fn frame_pushed_out_of_memory_preview_reads_its_pending_recording() {
+        let dir = ImportTestDir::new();
+        let file = dir.0.join("cam1_s000001.pgm");
+        let recorded = FrameImage::new(4, 2, (0..8).collect());
+        crate::image_file::save_pgm(&file, &recorded).unwrap();
+        let live = evicted_first_frame(file);
+        let image = live_frame_image(&live, "c1", "r1", (0, 1), || {
+            Err("收尾前不该按历史记录读".into())
+        })
+        .unwrap();
+        assert_eq!((image.width, image.height), (4, 2));
+        assert_eq!(&image.pixels[..], &recorded.pixels[..]);
+    }
+
+    /// 防的回归：收尾后录制目录移走，挤出内存的帧按旧路径读不到就报错，不再按历史记录读。
+    #[test]
+    fn frame_pushed_out_after_its_recording_moved_reads_the_part_history() {
+        let dir = ImportTestDir::new();
+        let live = evicted_first_frame(dir.0.join("moved").join("cam1_s000001.pgm"));
+        let image = live_frame_image(&live, "c1", "r1", (0, 1), || {
+            Ok(FrameImage::new(2, 2, vec![7; 4]))
+        })
+        .unwrap();
+        assert_eq!(&image.pixels[..], &[7; 4]);
+    }
 }

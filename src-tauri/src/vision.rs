@@ -18,13 +18,18 @@ pub use crate::frame::FrameImage;
 use crate::measure::FrameJob;
 use crate::recipe::{CameraInspect, Recipe};
 
+mod color_model;
 mod heading;
 mod judge;
 mod taught;
 pub mod template;
+pub(crate) use color_model::color_model_status;
 #[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
 pub use taught::measure_frame_with;
-pub use taught::{corridor_inside, measure_frame, CorridorSet, FrameMeasurement};
+pub use taught::{
+    corridor_inside, measure_frame, plan_corridor, CorridorSet, FrameMeasurement,
+    UnavailableCorridor,
+};
 
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
 
@@ -134,15 +139,44 @@ pub(crate) const REQUIRED_OPERATORS: &str = env!("GLUESIGHT_REQUIRED_OPERATORS")
 fn check_operators(manifest: &Value) -> Result<(), String> {
     let ops = manifest["operators"].as_array().ok_or("核心库没有算子清单")?;
     let missing: Vec<_> = REQUIRED_OPERATORS.split(',').filter(|id| !ops.iter().any(|op| op["id"].as_str() == Some(id))).collect();
-    if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少必需算子：{}。请使用本版本锁定系列的 lyFlow 运行库。", missing.join("、"))) }
+    if !missing.is_empty() {
+        return Err(format!(
+            "核心库缺少必需算子：{}。请使用本版本锁定系列的 lyFlow 运行库。",
+            missing.join("、")
+        ));
+    }
+    for id in ["glue.color_track", "glue.color_runs"] {
+        let supported = ops
+            .iter()
+            .find(|op| op["id"] == id)
+            .and_then(|op| op["params"].as_array())
+            .and_then(|params| params.iter().find(|p| p["name"] == "widthPolicy"))
+            .and_then(|p| p["options"].as_array())
+            .is_some_and(|options| options.iter().any(|o| o["value"] == "extent"));
+        if !supported {
+            return Err(format!(
+                "核心库 {id} 不支持宽胶观测策略 extent，请更新到 lyFlow 1.3.2 或同系列兼容版本"
+            ));
+        }
+    }
+    Ok(())
 }
 
+/// 整帧注入 lyFlow：灰度 1 通道，彩色 3 通道 RGB 交错（glue 算子入口按 BT.601 转灰，彩色帧在灰度模板下也能测）。
 pub(crate) fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
-    let count = (image.width as usize).checked_mul(image.height as usize).filter(|&n| n > 0)
-        .ok_or("图像尺寸无效")?;
-    if image.pixels.len() != count { return Err("图像像素缓冲与尺寸不一致".into()); }
-    Ok(RunImageInput { node_id: "n_load".into(), port: "image".into(), width: image.width, height: image.height,
-        channels: 1, depth: 1, pixels: image.pixels.clone() })
+    image.expected_len().ok_or("图像尺寸无效")?;
+    if !image.consistent() {
+        return Err("图像像素缓冲与尺寸不一致".into());
+    }
+    Ok(RunImageInput {
+        node_id: "n_load".into(),
+        port: "image".into(),
+        width: image.width,
+        height: image.height,
+        channels: u32::from(image.channels),
+        depth: 1,
+        pixels: image.pixels.clone(),
+    })
 }
 
 pub struct RunResult {
@@ -156,7 +190,6 @@ pub struct LyFlowMeasurer;
 impl LyFlowMeasurer {
     /// 段配方一台相机一帧：候选试运行用候选的走廊测量图，生产用已核验并预热的发布包。
     pub fn measure_frame(&self, job: &FrameJob, image: &FrameImage) -> Result<FrameMeasurement, String> {
-        if let Some(candidate) = &job.candidate { return candidate.measure_frame(job, image); }
         let prepared = job.production.as_ref().ok_or("图像检测没有已核验并预热的发布包")?;
         if job.bundle_id.as_deref() != Some(prepared.bundle.id.as_str()) || job.recipe.revision_id != prepared.recipe.revision_id {
             return Err("测量任务与已冻结发布包不一致".into());
@@ -377,12 +410,12 @@ impl VisionHost {
 const DEVICE_CALIB_DIR: &str = "device";
 
 /// 工位标定的键。
-/// - `Station`：旧拍照点配方的 `{device}-v{view}` 与显式标定引用，文件 `calib/plane_calib_{键}.json`；
-/// - `Device`：段配方缺省的设备标定（D-SB-30），文件在单独子目录 `calib/device/plane_calib_{device}.json`。
+/// - `Station`：标定页按图编号写的 `{device}-v{view}`，文件 `calib/plane_calib_{键}.json`；
+/// - `Device`：段配方用的设备标定（D-SB-30），文件在单独子目录 `calib/device/plane_calib_{device}.json`。
 ///
 /// 两者不能共用扁平文件名：相机编号允许 '-'，相机 "cam1-v1" 的设备键会等于相机 "cam1" 图 1 的旧键，一方标定就覆盖另一方；
 /// 加前缀也不够（相机 "dev_cam1" 的图 1 = "dev_cam1-v1" = 相机 "cam1-v1" 加前缀 "dev_"）。分目录后永不同名：
-/// Station 键是相机编号或标定引用，只含字母、数字、- 和 _，不带路径分隔符。
+/// Station 键由相机编号加图编号组成，只含字母、数字、- 和 _，不带路径分隔符。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CalibKey {
     Station(String),
@@ -444,14 +477,9 @@ pub fn station_key(device: &str) -> Result<CalibKey, String> {
     Ok(CalibKey::Device(device.to_string()))
 }
 
-/// 段配方一台检测相机的工位标定键：它的标定引用（`Station`），缺省为设备标定 `Device(device)`。
-pub fn camera_calib_key(inspect: &CameraInspect) -> Result<CalibKey, String> {
-    match &inspect.calib { Some(reference) => Ok(CalibKey::Station(reference.clone())), None => station_key(&inspect.camera) }
-}
-
-/// 段配方一台检测相机的标定文件：按它的标定引用（缺省为设备标定）找工位标定。
+/// 段配方一台检测相机的标定文件：这台相机的设备标定 `device/{device}`。
 pub fn camera_calib_path(app: &AppHandle, inspect: &CameraInspect) -> Result<PathBuf, String> {
-    calib_key_path(app, &camera_calib_key(inspect)?)
+    calib_key_path(app, &station_key(&inspect.camera)?)
 }
 
 fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {
@@ -477,8 +505,19 @@ fn calib_keys(config: &crate::camera::CameraConfig, view: Option<u8>) -> Result<
     }
 }
 
-fn camera_calib_keys(app: &AppHandle, cam: u8, view: Option<u8>) -> Result<Vec<CalibKey>, String> {
-    calib_keys(&app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config(), view)
+pub(crate) fn camera_calib_keys(
+    app: &AppHandle,
+    cam: u8,
+    view: Option<u8>,
+) -> Result<Vec<CalibKey>, String> {
+    calib_keys(
+        &app.state::<CycleHost>()
+            .camera
+            .slot(cam as usize)
+            .ok_or("相机不存在")?
+            .config(),
+        view,
+    )
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -491,6 +530,9 @@ pub struct CalibInfo {
     pub pattern: Option<Vec<f64>>,
     pub square: Option<f64>,
     pub ts: Option<i64>,
+    /// 标定所用原图的样本编号与找到的内角点（图像像素，按行排，首点为原点）
+    pub sample_id: Option<String>,
+    pub corners: Option<Vec<[f64; 2]>>,
 }
 
 pub fn calib_info(path: &Path) -> Option<CalibInfo> {
@@ -505,7 +547,61 @@ pub fn calib_info(path: &Path) -> Option<CalibInfo> {
         pattern: d.get("pattern").and_then(|v| serde_json::from_value(v.clone()).ok()),
         square: f("square"),
         ts: doc.get("ts").and_then(|v| v.as_i64()),
+        sample_id: doc
+            .get("sampleId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        corners: doc
+            .get("corners")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
     })
+}
+
+fn valid_sample_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+/// 标定文件记的原图：`calib/images/<sampleId>.pgm`（路径按编号拼，不信任文件里的 samplePath）。
+/// 没有标定文件、没记样本或原图已不在时为 None。
+pub fn calib_sample(
+    project: &Path,
+    calib_path: &Path,
+) -> Result<Option<(String, FrameImage, Option<i64>)>, String> {
+    let Some(info) = calib_info(calib_path) else {
+        return Ok(None);
+    };
+    let Some(id) = info.sample_id else {
+        return Ok(None);
+    };
+    if !valid_sample_id(&id) {
+        return Err("标定样本编号无效".into());
+    }
+    let path = project
+        .join("calib")
+        .join("images")
+        .join(format!("{id}.pgm"));
+    if !path.is_file() {
+        return Ok(None);
+    }
+    Ok(Some((id, crate::image_file::load(&path)?, info.ts)))
+}
+
+/// board_calib 的叠画里 role 为 part 的点即全部内角点。
+fn overlay_corners(overlay: Option<&Value>) -> Vec<[f64; 2]> {
+    overlay
+        .and_then(|o| o.get("items"))
+        .and_then(|items| items.as_array())
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("kind").and_then(|k| k.as_str()) == Some("points")
+                    && item.get("role").and_then(|r| r.as_str()) == Some("part")
+            })
+        })
+        .and_then(|item| serde_json::from_value(item.get("points")?.clone()).ok())
+        .unwrap_or_default()
 }
 
 /// `view` 给了读旧配方的 `{device}-v{view}`，没给读段配方的设备标定 `device/{device}`（见 `calib_keys`，单视角相机的图 1 两份同时写）。
@@ -519,6 +615,7 @@ fn save_calibration(
     project: &Path,
     paths: &[PathBuf],
     data: Value,
+    corners: &[[f64; 2]],
     image: &FrameImage,
     image_id: Option<&str>,
     camera_id: &str,
@@ -532,11 +629,7 @@ fn save_calibration(
         NEXT_IMAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
     let sample_id = image_id.unwrap_or(&generated);
-    if sample_id.is_empty()
-        || !sample_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-    {
+    if !valid_sample_id(sample_id) {
         return Err("标定样本编号无效".into());
     }
     let relative = format!("calib/images/{sample_id}.pgm");
@@ -548,7 +641,7 @@ fn save_calibration(
         .map_err(|e| format!("创建标定图目录失败：{e}"))?;
     crate::image_file::checked_source_path(image_path.parent().unwrap())?;
     crate::image_file::save_pgm_new(&image_path, image)?;
-    let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId": sample_id, "samplePath": relative, "cameraId": camera_id, "view": view});
+    let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId": sample_id, "samplePath": relative, "cameraId": camera_id, "view": view, "corners": corners});
     let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     paths
         .iter()
@@ -584,10 +677,12 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
                 {"id": "n_calib", "op": "image.board_calib", "params": {"pattern": pattern, "square": square}}
             ],
             "edges": [{"id": "e0", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_calib", "port": "image"}}],
-            "outputs": {"calib": {"node": "n_calib", "port": "calib"}}
+            "outputs": {"calib": {"node": "n_calib", "port": "calib"}, "overlay": {"node": "n_calib", "port": "overlay"}}
         });
         let run_id = format!("calib-{}", ly_plc::now_ms());
-        let r = engine.run(&graph.to_string(), &run_id, "", &image, &json!({}))?;
+        // 棋盘格按灰度找角点：彩色帧换算成亮度再标定，标定原图仍存彩色
+        let gray = image.is_color().then(|| image.to_luma());
+        let r = engine.run(&graph.to_string(), &run_id, "", gray.as_ref().unwrap_or(&*image), &json!({}))?;
         if r.status() == "failed" {
             let why = r.failure();
             return Err(if why.contains("no_board") {
@@ -597,6 +692,7 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
             });
         }
         let data = r.record("calib").cloned().ok_or("标定没有输出")?;
+        let corners = overlay_corners(r.record("overlay"));
         let paths = keys.iter().map(|key| calib_key_path(&app, key)).collect::<Result<Vec<_>, _>>()?;
         for dir in paths.iter().filter_map(|path| path.parent()) {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -605,7 +701,7 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
             if crate::workspace::station_image_view(&app, cam.unwrap_or(0), id)? != view { return Err("标定过程中样本视图已改变".into()); }
             crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)?;
         }
-        let written = save_calibration(&crate::storage::project(&app), &paths, data, &image, image_id.as_deref(), &camera_id(&app,cam.unwrap_or(0))?, view);
+        let written = save_calibration(&crate::storage::project(&app), &paths, data, &corners, &image, image_id.as_deref(), &camera_id(&app,cam.unwrap_or(0))?, view);
         let _ = app.emit("calibration://changed", ());
         written?;
         calib_info(&paths[0]).ok_or_else(|| "标定文件写入后读不回来".into())

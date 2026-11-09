@@ -59,7 +59,7 @@ export function DetectEditor({ value, changed, disabled, onChange }: { value: De
       <Field label="极性" changed={changed.has("polarity")}>
         <Select aria-label="极性" disabled={disabled} value={value.polarity} options={(Object.keys(polarityLabel) as Polarity[]).map((p) => ({ value: p, label: polarityLabel[p] }))} onValueChange={(polarity) => onChange({ ...value, polarity: polarity as Polarity })} />
       </Field>
-      <Field id={loId} label="胶宽范围" wide changed={changed.has("widthRange")} hint="范围外的不当作胶；上限要小于搜索宽度（搜索半宽的两倍）">
+      <Field id={loId} label="预期胶宽范围" wide changed={changed.has("widthRange")} hint="下限用于过滤细小噪声；颜色测量的上限只作选路参考，完整宽胶超出上限仍测量。灰度测量仍按此范围筛选。产品胶宽公差在段检测项设置；搜索半宽限制可测范围。">
         <span className="rcp-range"><Num id={loId} aria="胶宽下限（mm）" value={lo} onChange={(v) => onChange({ ...value, widthRange: [v, hi] })} /><small>–</small><Num id={hiId} aria="胶宽上限（mm）" unit="mm" value={hi} onChange={(v) => onChange({ ...value, widthRange: [lo, v] })} /></span>
       </Field>
     </div>
@@ -102,7 +102,7 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
           </Field>
         </div>
       </Section>
-      {doc.segmentDefaults && <Section title="按段类型的默认检测项" extra="新建段时取用；每帧独立检测，弯道段不判胶偏，帧数容差默认 2">
+      {doc.segmentDefaults && <Section title="按段类型的默认检测项" extra="新建段时取用；每帧独立检测，弯道段不判胶偏">
         {segmentKinds.map(([kind, label]) => <section key={kind} className="rcp-kind" aria-label={`${label}段默认检测项`}>
           <h5 className="sub-title">{label}段{changed.has("segmentDefaults") && !same(doc.segmentDefaults?.[kind], production?.segmentDefaults?.[kind]) && <i className="rcp-changed" title="与生产配方不同" />}</h5>
           <KindChecksEditor value={doc.segmentDefaults![kind]} kind={kind} disabled={disabled} onChange={(next: KindDefault) => set("segmentDefaults", { ...doc.segmentDefaults!, [kind]: next })} />

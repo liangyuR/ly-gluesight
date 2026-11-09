@@ -1,11 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
 import { Accordion, Button, SegmentedControl, Select, Switch } from "qing-steel";
 import { DetectEditor } from "../recipe";
-import { recipeApi } from "../cycle/api";
 import type { DetectParams } from "../cycle/types";
-import type { CameraInspect, EdgeParams, EdgePolarity, ExpertParams, ExpertSpec, InspectWindow, OffsetMeasure, PathSegment } from "../plan/types";
+import type { CameraInspect, EdgeParams, EdgePolarity, InspectWindow, MeasureMode, OffsetMeasure, PathSegment } from "../plan/types";
 import { KindChecksEditor } from "../plan/KindChecksEditor";
 import { segmentKindLabel } from "../plan/vis";
 import { Badge, NumberField } from "./components";
@@ -13,10 +12,10 @@ import { HeadingDiagram } from "./HeadingDiagram";
 import { FAN_LENGTH_PX, HEADING_MARK, type HeadingPart } from "./headingOverlay";
 import { returnState } from "./returnNavigation";
 import { applyToKind, DEFAULT_EDGE, DEFAULT_HEADING, segmentIssues } from "./segmentEdit";
-import { MAX_WINDOW_END_MM, windowError } from "./teach";
+import { DEFAULT_WINDOW, detectError, headingWindow, MAX_WINDOW_END_MM, segmentDetect, windowError, windowTravelHint } from "./teach";
 import { segmentCameras } from "./workbenchDraft";
 
-export type CameraParams = Pick<CameraInspect, "mmPerPx" | "detect" | "window" | "nozzle" | "expert">;
+export type CameraParams = Pick<CameraInspect, "mmPerPx" | "window" | "nozzle">;
 type Tone = "ok" | "info" | "warn" | "neutral";
 
 const polarity = { dark: "暗胶", light: "亮胶" };
@@ -35,12 +34,11 @@ function SettingsCard({ title, badge, tone = "neutral", summary, open, children 
 const Scope = ({ children }: { children: ReactNode }) => <span className="wp-scope">{children}</span>;
 
 /**
- * 相机视图“测量”（D-SB-45）：像素当量、检测参数与配方站距。检测参数取配方默认时，这里改的就是配方默认值，
- * 同时作用于 `sharing` 里的其他相机；切到本相机自定义时从配方默认复制一份。
- * 站距先经 `spacingError` 检查（已保存的走廊要够三站），不通过时只提示、不写配方。
+ * 相机视图“测量”（D-SB-45）：这台相机的像素当量，配方的检测参数默认值与站距（`sharing` 里的其他相机共用；段可在段视图单独设
+ * 搜索半宽与胶宽范围）。站距先经 `spacingError` 检查（已保存的走廊要够三站），不通过时只提示、不写配方。
  */
-export function MeasureCard({ camera, params, calibMmPerPx, defaults, spacing, sharing, disabled, spacingError, onParams, onDefaults, onSpacing }: {
-  camera: string; params: CameraParams; calibMmPerPx: number | null; defaults: DetectParams; spacing: number; sharing: string[]; disabled: boolean;
+export function MeasureCard({ params, calibMmPerPx, defaults, spacing, sharing, disabled, spacingError, onParams, onDefaults, onSpacing }: {
+  params: CameraParams; calibMmPerPx: number | null; defaults: DetectParams; spacing: number; sharing: string[]; disabled: boolean;
   spacingError: (value: number) => string; onParams: (next: CameraParams) => void; onDefaults: (next: DetectParams) => void; onSpacing: (value: number) => void;
 }) {
   const location = useLocation();
@@ -50,24 +48,19 @@ export function MeasureCard({ camera, params, calibMmPerPx, defaults, spacing, s
     setSpacingDraft(value);
     if (!spacingError(value)) onSpacing(value);
   };
-  const custom = params.detect != null;
-  const detect = params.detect ?? defaults;
   const scale = scaleOf(params.mmPerPx);
   const calib = scaleOf(calibMmPerPx);
   const stale = calib != null && calib !== scale;
   return <SettingsCard title="测量" badge={!scale ? "缺当量" : stale ? "与标定不同" : "当量已设"} tone={scale && !stale ? "ok" : "warn"} open
-    summary={`${scale ? `${scale} mm/px` : "缺像素当量"} · ${custom ? "本相机自定义" : "配方默认"} · ${polarity[detect.polarity]} ${detect.widthRange[0]}–${detect.widthRange[1]} mm`}>
+    summary={`${scale ? `${scale} mm/px` : "缺像素当量"} · ${polarity[defaults.polarity]} ${defaults.widthRange[0]}–${defaults.widthRange[1]} mm`}>
     <fieldset className="wp-plain-fieldset wp-settings-fields" disabled={disabled}>
       <div className="wp-scale-field"><NumberField label="像素当量" value={params.mmPerPx} unit="mm/px" min={.0001} max={10} step={.0005} onChange={v => onParams({ ...params, mmPerPx: Number.isFinite(v) ? v : null })} disabled={disabled}/>
         <Link className="wp-calibration-link" to="/camera/calibration" state={returnState(location, "走廊示教")}>标定<ArrowUpRight size={13} aria-hidden="true"/></Link>
       </div>
       {stale && <p className="wp-settings-hint">{scale ? `与设备标定 ${calib} mm/px 不同` : `设备标定为 ${calib} mm/px`}
         <Button variant="text" size="sm" disabled={disabled} onClick={() => onParams({ ...params, mmPerPx: calibMmPerPx })}>采用标定当量</Button></p>}
-      <SegmentedControl size="sm" label="检测参数来源" value={custom ? "camera" : "recipe"} disabled={disabled}
-        options={[{ value: "recipe", label: "配方默认" }, { value: "camera", label: "本相机自定义" }]}
-        onValueChange={value => onParams({ ...params, detect: value === "camera" ? structuredClone(defaults) : null })}/>
-      <DetectEditor value={detect} changed={noChanges} disabled={disabled} onChange={custom ? next => onParams({ ...params, detect: next }) : onDefaults}/>
-      <p className="wp-settings-hint">{custom ? `只用于 ${camera}；切回配方默认会丢掉这里的值。` : `改的是配方默认值${sharing.length ? `，${sharing.join("、")} 也在用` : ""}。`}</p>
+      <DetectEditor value={defaults} changed={noChanges} disabled={disabled} onChange={onDefaults}/>
+      <p className="wp-settings-hint"><Scope>配方默认</Scope> {sharing.length ? `${sharing.join("、")} 也在用；` : ""}段可在段视图单独设搜索半宽与胶宽范围，极性只在这里设。</p>
       <NumberField label="站距" unit="mm" value={spacingDraft} min={.1} max={10} step={.5} onChange={changeSpacing} disabled={disabled}/>
       {spacingIssue && <p className="c-warn" role="alert">{spacingIssue}{spacingDraft === spacing ? "" : "，未保存"}</p>}
       <p className="wp-settings-hint"><Scope>配方共用</Scope> 沿走廊每隔多少 mm 量一站；当量换算走廊长度与搜索带宽度。改动只影响此后的测量。</p>
@@ -75,93 +68,26 @@ export function MeasureCard({ camera, params, calibMmPerPx, defaults, spacing, s
   </SettingsCard>;
 }
 
-let expertSpecs: Promise<Record<string, ExpertSpec>> | null = null;
-function useExpertSpecs() {
-  const [specs, setSpecs] = useState<Record<string, ExpertSpec>>({});
-  useEffect(() => {
-    let alive = true;
-    void (expertSpecs ??= recipeApi.expertSpecs()).then(value => alive && setSpecs(value), () => { expertSpecs = null; });
-    return () => { alive = false; };
-  }, []);
-  return specs;
-}
-
-const without = (params: ExpertParams, name: string) => Object.fromEntries(Object.entries(params).filter(([key]) => key !== name));
-
-/** 逐帧定向面板里的专家参数组；其余组在“专家参数”卡片。 */
-const HEADING_EXPERT_GROUPS = ["定胶路"];
-
-/** 专家参数表单：`groups` 判断哪些组放在这里。改“本相机”只作用于这台相机，改“配方默认”作用于所有没有覆盖这一项的相机；越界或空值只提示，不写候选配方。 */
-function ExpertFields({ camera, own, defaults, disabled, groups, hint, onCamera, onDefaults }: {
-  camera: string; own: ExpertParams; defaults: ExpertParams; disabled: boolean; groups: (group: string) => boolean; hint: ReactNode;
-  onCamera: (next: ExpertParams) => void; onDefaults: (next: ExpertParams) => void;
-}) {
-  const specs = useExpertSpecs();
-  const [scope, setScope] = useState<"camera" | "recipe">("camera");
-  const [error, setError] = useState("");
-  const target = scope === "camera" ? own : defaults;
-  const write = scope === "camera" ? onCamera : onDefaults;
-  const grouped = Object.entries(specs).filter(([, spec]) => groups(spec.group)).reduce<Record<string, [string, ExpertSpec][]>>((out, entry) => ({ ...out, [entry[1].group]: [...(out[entry[1].group] ?? []), entry] }), {});
-  const set = (name: string, spec: ExpertSpec, value: number) => {
-    if (!Number.isFinite(value) || value < spec.min || value > spec.max) { setError(`${spec.label}需在 ${spec.min}–${spec.max} 之间，未保存`); return; }
-    setError("");
-    write({ ...target, [name]: value });
-  };
-  return <fieldset className="wp-plain-fieldset wp-settings-fields" disabled={disabled}>
-    <SegmentedControl size="sm" label="修改范围" value={scope} disabled={disabled}
-      options={[{ value: "camera", label: `仅 ${camera}` }, { value: "recipe", label: "配方默认" }]} onValueChange={value => setScope(value as "camera" | "recipe")}/>
-    {Object.entries(grouped).map(([group, items]) => <div key={group} className="wp-settings-group" role="group" aria-label={group}>
-      <span className="wp-settings-label">{group}</span>
-      {items.map(([name, spec]) => {
-        const value = own[name] ?? defaults[name] ?? spec.default;
-        const source = name in own ? camera : name in defaults ? "配方默认" : "";
-        return <div key={name} className="wp-expert-row" title={spec.doc}>
-          <NumberField label={spec.label} unit={spec.unit} value={target[name] ?? value} min={spec.min} max={spec.max} step={spec.step} disabled={disabled} onChange={v => set(name, spec, v)}/>
-          {source && <Scope>{source}</Scope>}
-          {name in target && <Button variant="text" size="sm" disabled={disabled} onClick={() => write(without(target, name))}>恢复</Button>}
-        </div>;
-      })}
-    </div>)}
-    {error && <p className="c-warn" role="alert">{error}</p>}
-    <p className="wp-settings-hint">{hint}</p>
-  </fieldset>;
-}
-
-/**
- * 相机视图“专家参数”（LF-5）：测量图模板里开放的算子门限，按 lyFlow 原始单位填。“定胶路”组在“逐帧定向”面板里。
- */
-export function ExpertCard({ camera, own, defaults, disabled, onCamera, onDefaults }: {
-  camera: string; own: ExpertParams; defaults: ExpertParams; disabled: boolean;
-  onCamera: (next: ExpertParams) => void; onDefaults: (next: ExpertParams) => void;
-}) {
-  const specs = useExpertSpecs();
-  const here = (params: ExpertParams) => Object.keys(params).filter(name => !HEADING_EXPERT_GROUPS.includes(specs[name]?.group ?? "")).length;
-  const changed = here({ ...defaults, ...own });
-  return <SettingsCard title="专家参数" badge={changed ? `${changed} 项已改` : "默认"} tone={changed ? "info" : "neutral"}
-    summary={changed ? `本相机 ${here(own)} 项 · 配方默认 ${here(defaults)} 项` : "门限均为模板默认值"}>
-    <ExpertFields camera={camera} own={own} defaults={defaults} disabled={disabled} groups={group => !HEADING_EXPERT_GROUPS.includes(group)} onCamera={onCamera} onDefaults={onDefaults}
-      hint="作用于 lyFlow 算子或 GlueSight 判定（px 等原始单位）；悬停看说明。改动后请重新试测，发布前跑样本验证。"/>
-  </SettingsCard>;
-}
-
-/** 段参数的本地草稿：有空值或越界时只留在卡片里提示，不写候选配方（自动保存会被后端校验拒绝）。 */
-function useSegmentDraft(segments: PathSegment[], index: number, onChange: (segments: PathSegment[]) => void) {
+/** 段参数的本地草稿：有空值或越界时只留在卡片里提示，不写候选配方（自动保存会被后端校验拒绝）；`extra` 是卡片自己的附加检查。 */
+function useSegmentDraft(segments: PathSegment[], index: number, onChange: (segments: PathSegment[]) => void, extra: (segment: PathSegment) => string[] = () => []) {
   const saved = segments.find(item => item.index === index);
   const [draft, setDraft] = useState<PathSegment | null>(null);
   const current = draft?.index === index ? draft : saved;
-  const issues = draft?.index === index ? segmentIssues([draft]) : [];
+  const check = (segment: PathSegment) => [...segmentIssues([segment]), ...extra(segment)];
+  const issues = draft?.index === index ? check(draft) : [];
   const patch = (change: Partial<PathSegment>) => {
     if (!current) return;
     const next = { ...current, ...change };
-    if (segmentIssues([next]).length) { setDraft(next); return; }
+    if (check(next).length) { setDraft(next); return; }
     setDraft(null);
     onChange(segments.map(item => item.index === index ? next : item));
   };
   return { saved, current, issues, patch, dirty: !!draft };
 }
 
-const headingSummary = (params: CameraParams, derived: [number, number] | null) =>
-  `${params.window ? `跳过前 ${params.window.startMm} mm，测到 ${params.window.startMm + params.window.lengthMm} mm` : "测量区间未设置"} · ${params.nozzle ? "出胶点已标定" : derived ? "出胶点按走廊推算" : "出胶点未标定"}`;
+const mm = (value: number) => Number(value.toFixed(3));
+const windowText = (window: InspectWindow) => `跳过前 ${mm(window.startMm)} mm，测到 ${mm(window.startMm + window.lengthMm)} mm`;
+const nozzleText = (params: CameraParams, derived: [number, number] | null) => params.nozzle ? "出胶点已标定" : derived ? "出胶点按走廊推算" : "出胶点未标定";
 
 const deg = (value: number) => `${Math.round(value)}°`;
 
@@ -174,48 +100,74 @@ function PartRow({ part, title, hint, onFocus, children }: { part: HeadingPart; 
   </div>;
 }
 
+const windowSource = { segment: "本段覆盖", camera: "相机", default: "默认" } as const;
+
 /**
- * “逐帧定向”面板（D-SB-47）：出胶点、测量区间、方向与“什么算找到胶”的门限都在这里，配一张编号示意图；
- * 每行编号与示意图、示教帧上的叠加一致。相机视图（`index` 为 null）设这台相机各段共用的部分并列出开启的段；
- * 段视图另设本段开关（直线段另有细化分段边界用的方向容差），显示本段的搜索扇区（`sector`：示教页按出胶点与本段拖过的方向算的范围，
- * `turned` 为本段拖过，`onReset` 恢复自动）。`sharedLocked` 非空时共用参数只读并说明原因。
+ * “逐帧定向”面板（D-SB-47）：出胶点、测量区间与方向都在这里，配一张编号示意图；每行编号与示意图、示教帧上的叠加一致。
+ * 相机视图（`index` 为 null）设这台相机各段共用的出胶点与测量区间（没设时用默认值），列出开启的段及其测量区间；
+ * 段视图另设本段开关与本段的测量区间覆盖（本段各检测相机共用，没设时用相机的），显示本段的搜索扇区（`sector`：示教页按出胶点与本段拖过的方向算的范围，
+ * `turned` 为本段拖过，`onReset` 恢复自动）。`sharedLocked` 非空时相机共用参数只读并说明原因。
  */
-export function HeadingCard({ camera, params, derivedNozzle, segments, index, headingSegments, sector, expertDefaults, disabled, sharedLocked, onFocus, onSegments, onParams, onExpertDefaults }: {
-  camera: string; params: CameraParams; derivedNozzle: [number, number] | null; segments: PathSegment[]; index: number | null; headingSegments: PathSegment[];
-  sector: { range: [number, number] | null; turned: boolean; onReset: () => void } | null; expertDefaults: ExpertParams; disabled: boolean; sharedLocked: string;
-  onFocus: (part: HeadingPart | null) => void; onSegments: (segments: PathSegment[]) => void; onParams: (next: CameraParams) => void; onExpertDefaults: (next: ExpertParams) => void;
+export function HeadingCard({ camera, params, derivedNozzle, nozzleWarning, segments, index, headingSegments, sector, disabled, sharedLocked, onFocus, onSegments, onParams }: {
+  camera: string; params: CameraParams; derivedNozzle: [number, number] | null; nozzleWarning: string | null; segments: PathSegment[]; index: number | null; headingSegments: PathSegment[];
+  sector: { range: [number, number] | null; turned: boolean; onReset: () => void } | null; disabled: boolean; sharedLocked: string;
+  onFocus: (part: HeadingPart | null) => void; onSegments: (segments: PathSegment[]) => void; onParams: (next: CameraParams) => void;
 }) {
   const { saved, current, issues, patch } = useSegmentDraft(segments, index ?? -1, onSegments);
   const [focus, setFocus] = useState<HeadingPart | null>(null);
+  // 输入框只在“改用相机的测量区间”时重挂：区间来源随第一次输入变化时不重挂，免得失去焦点、打断多位数输入
+  const [cleared, setCleared] = useState(0);
   const point = (part: HeadingPart | null) => { setFocus(part); onFocus(part); };
   if (index != null && (!saved || !current)) return null;
   const heading = current?.heading ?? null;
   const needed = index != null ? !!heading : headingSegments.length > 0;
-  const missing = needed && !params.window;
+  const resolved = headingWindow(index != null ? current : undefined, params);
   const sharedDisabled = disabled || !!sharedLocked;
   const scale = scaleOf(params.mmPerPx);
-  const zonePx = params.window && scale ? params.window.lengthMm / scale : null;
+  const zonePx = scale ? resolved.window.lengthMm / scale : null;
   const fanPx = zonePx != null ? Math.min(FAN_LENGTH_PX, zonePx) : FAN_LENGTH_PX;
+  const others = index != null ? segments.filter(item => item.heading && item.index !== index) : [];
   const [badge, tone]: [string, Tone] = index != null ? [saved!.heading ? "开" : "关", saved!.heading ? "info" : "neutral"]
-    : missing ? ["测量区间需设置", "warn"] : needed ? [`段 ${headingSegments.map(item => item.index).join("、")} 开启`, "neutral"] : ["未使用", "neutral"];
+    : needed ? [`段 ${headingSegments.map(item => item.index).join("、")} 开启`, "neutral"] : ["未使用", "neutral"];
   const absoluteX = current?.checks.offset?.enabled && (current.offsetRef?.measure ?? "absoluteX") === "absoluteX";
-  return <SettingsCard title="逐帧定向" badge={badge} tone={tone} open={index != null || missing}
-    summary={index != null && !saved!.heading ? "关闭：按示教走廊测量" : headingSummary(params, derivedNozzle)}>
-    {index != null && <Switch label="本段逐帧定向" aria-label={`段 ${index} 逐帧定向`} checked={!!heading} disabled={disabled} onCheckedChange={on => patch({ heading: on ? { ...DEFAULT_HEADING } : null })}/>}
+  const summary = index != null && !saved!.heading ? "关闭：按示教走廊测量"
+    : `${windowText(resolved.window)}（${windowSource[resolved.source]}） · ${nozzleText(params, derivedNozzle)}`;
+  const setWindow = (window: InspectWindow | null) => heading && patch({ heading: { ...heading, window } });
+  const applyWindow = () => heading?.window && onSegments(segments.map(item => item.heading && item.index !== index ? { ...item, heading: { ...item.heading, window: { ...heading.window! } } } : item));
+  return <SettingsCard title="逐帧定向" badge={badge} tone={tone} open={index != null || needed} summary={summary}>
+    {index != null && <Switch label="本段逐帧定向" aria-label={`段 ${index} 逐帧定向`} checked={!!heading} disabled={disabled} onCheckedChange={on => patch({ heading: on ? structuredClone(DEFAULT_HEADING) : null })}/>}
     {index != null && !heading ? <p className="wp-settings-hint">开启后每帧按图像找胶条从出胶点出去的方向，只测测量区间内的一段，不再依赖按帧号选走廊。</p> : <>
       <HeadingDiagram focus={focus}/>
-      <div className="wp-settings-group" role="group" aria-label="出胶点与测量区间">
-        <span className="wp-settings-label">出胶点与测量区间<Scope>{camera} 各段共用</Scope>{missing && <Badge tone="warn">需设置</Badge>}</span>
+      <div className="wp-settings-group" role="group" aria-label="出胶点">
+        <span className="wp-settings-label">出胶点<Scope>{camera} 各段共用</Scope></span>
         {sharedLocked && <p className="wp-settings-hint">{sharedLocked}</p>}
-        <PartRow part="nozzle" title="出胶点" onFocus={point} hint="胶嘴出胶处，下面的距离和方向都从这里量。在开启定向的段的示教帧上选“标出胶点”点选；未标定时取这些段走廊起点的平均，相差超过 1 mm 报“出胶点不一致”。">
+        <PartRow part="nozzle" title="出胶点" onFocus={point} hint="胶嘴出胶处，下面的距离和方向都从这里量。在开启定向的段的示教帧上选“标出胶点”点选；未标定时取这些段走廊起点的中位数，有起点偏离超过 1 mm 只提示，不影响试测与发布。">
           <NozzleStatus value={params.nozzle ?? null} derived={derivedNozzle} needed={needed} disabled={sharedDisabled} onClear={() => onParams({ ...params, nozzle: null })}/>
         </PartRow>
-        <WindowFields value={params.window ?? null} disabled={sharedDisabled} onFocus={point} onChange={window => onParams({ ...params, window })}/>
+        {nozzleWarning && <p className="c-warn" role="note">{nozzleWarning}</p>}
       </div>
+      {index != null && heading ? <div className="wp-settings-group" role="group" aria-label={`段 ${index} 测量区间`}>
+        <span className="wp-settings-label">测量区间<Scope>段 {index} 各检测相机共用</Scope></span>
+        <WindowFields key={`${index}-${cleared}`} value={resolved.window} own={resolved.source === "segment"} disabled={disabled} onFocus={point} onChange={setWindow}/>
+        {resolved.source === "segment"
+          ? <p className="wp-settings-hint">本段单独设置，覆盖 {camera} 的测量区间。<Button variant="text" size="sm" disabled={disabled} onClick={() => { setWindow(null); setCleared(value => value + 1); }}>改用相机的测量区间</Button></p>
+          : <p className="wp-settings-hint">用 {camera} 的测量区间{resolved.source === "default" ? "（相机未设置，取默认值）" : ""}；在这里改动只写本段。</p>}
+        {windowTravelHint(resolved.window, current!) && <p className="c-warn" role="note">{windowTravelHint(resolved.window, current!)}</p>}
+        {heading.window && others.length > 0 && <Button size="sm" disabled={disabled} onClick={applyWindow}
+          title={`段 ${others.map(item => item.index).join("、")} 的测量区间改成${windowText(heading.window)}`}>测量区间套用到其余 {others.length} 个开启定向的段</Button>}
+      </div> : <div className="wp-settings-group" role="group" aria-label={`${camera} 测量区间`}>
+        <span className="wp-settings-label">测量区间<Scope>{camera} 各段默认</Scope></span>
+        <WindowFields key={`camera-${camera}`} value={resolved.window} own={!!params.window} disabled={sharedDisabled} onFocus={point} onChange={window => onParams({ ...params, window })}/>
+        <p className="wp-settings-hint">{params.window ? `${camera} 开启定向的段都用它，段可单独覆盖。` : `未设置，取默认值（${windowText(DEFAULT_WINDOW)}）；填写后 ${camera} 开启定向的段都用它，段可单独覆盖。`}</p>
+        {headingSegments.length > 0 ? <ul className="wp-settings-hint">{headingSegments.map(item => {
+          const own = headingWindow(item, params);
+          return <li key={item.index}>段 {item.index}：{windowText(own.window)}（{windowSource[own.source]}）</li>;
+        })}</ul> : <p className="wp-settings-hint">没有段开启逐帧定向。</p>}
+      </div>}
       {index != null && heading ? <div className="wp-settings-group" role="group" aria-label={`段 ${index} 方向`}>
         <span className="wp-settings-label">方向<Scope>段 {index}</Scope></span>
         <PartRow part="sector" title="搜索扇区" onFocus={point}
-          hint={`以出胶点为圆心的半圈，弯道转多少度都在里面；默认背离离出胶点最近的画面边（胶嘴在画面边上，胶条往画面里走），在本段示教帧上拖动 ${HEADING_MARK.sector} 号把手可以转动，只改本段，这台相机其他段不变。只在测量区间里离出胶点最近的 ${Math.round(fanPx)} px${scale ? `（约 ${(fanPx * scale).toFixed(1)} mm）` : ""} 内找胶条往哪个方向出去（图上黄色扇形），取最像胶的方向；找不到时这一帧按无胶判，试测结果里写明原因（门限在下方“什么算找到胶”）。`}>
+          hint={`以出胶点为圆心的半圈，弯道转多少度都在里面；默认背离离出胶点最近的画面边（胶嘴在画面边上，胶条往画面里走），在本段示教帧上拖动 ${HEADING_MARK.sector} 号把手可以转动，只改本段，这台相机其他段不变。只在测量区间里离出胶点最近的 ${Math.round(fanPx)} px${scale ? `（约 ${(fanPx * scale).toFixed(1)} mm）` : ""} 内找胶条往哪个方向出去（图上黄色扇形），取最像胶的方向；找不到时这一帧按无胶判，试测结果里写明原因。`}>
           <span className="plan-mono">{sector?.range ? `${deg(sector.range[0])} … ${deg(sector.range[1])}（${sector.turned ? "已拖动" : "自动"}）` : "有出胶点后显示"}</span>
           {sector?.turned && <Button variant="text" size="sm" disabled={disabled} onClick={sector.onReset}>恢复自动</Button>}
         </PartRow>
@@ -226,28 +178,49 @@ export function HeadingCard({ camera, params, derivedNozzle, segments, index, he
         {absoluteX && <p className="c-warn">定向测量时胶路由图像拟合，绝对 x 恒为 0：本段胶偏请在“检测项”里改用“胶条到边缘距离”。</p>}
       </div> : <div className="wp-settings-group" role="group" aria-label="各段方向">
         <span className="wp-settings-label">方向<Scope>按段设置</Scope></span>
-        <p className="wp-settings-hint">{needed ? `已开启：${headingSegments.map(item => `段 ${item.index}`).join("、")}。` : "没有段开启逐帧定向，上面的参数可不填。"}开关在左侧选段后设置；搜索扇区选段后在示教帧上显示，可拖动转动，每段各自设置。</p>
+        <p className="wp-settings-hint">{needed ? `已开启：${headingSegments.map(item => `段 ${item.index}`).join("、")}。` : "没有段开启逐帧定向，上面的参数可不填。"}开关与测量区间覆盖在左侧选段后设置；搜索扇区选段后在示教帧上显示，可拖动转动，每段各自设置。</p>
       </div>}
-      <div className="wp-settings-group" role="group" aria-label="什么算找到胶">
-        <span className="wp-settings-label">什么算找到胶<Scope>高级</Scope></span>
-        <ExpertFields camera={camera} own={params.expert ?? {}} defaults={expertDefaults} disabled={sharedDisabled} groups={group => HEADING_EXPERT_GROUPS.includes(group)}
-          onCamera={expert => onParams({ ...params, expert })} onDefaults={onExpertDefaults}
-          hint="选中方向不满足这些门限就算没找到胶条，这一帧按无胶判；悬停看说明。改动后请重新试测。"/>
-      </div>
     </>}
   </SettingsCard>;
 }
 
-/** 测量区间：配方存起点与长度，这里按“跳过前多少、测到多少”填；两项都空为未设置，不合法时只提示、不写入配方。 */
-function WindowFields({ value, disabled, onFocus, onChange }: { value: InspectWindow | null; disabled: boolean; onFocus: (part: HeadingPart | null) => void; onChange: (next: InspectWindow | null) => void }) {
-  const [skip, setSkip] = useState(value?.startMm ?? NaN);
-  const [end, setEnd] = useState(value ? value.startMm + value.lengthMm : NaN);
+/** 段视图“检测参数”：本段的搜索半宽与胶宽范围覆盖，本段各检测相机共用；不设时用配方默认（相机视图“测量”），极性只在配方默认里设。 */
+export function SegmentDetectCard({ segments, index, defaults, disabled, onChange }: { segments: PathSegment[]; index: number; defaults: DetectParams; disabled: boolean; onChange: (segments: PathSegment[]) => void }) {
+  const merged = (segment: PathSegment) => { const error = detectError(segmentDetect(defaults, segment)); return error ? [error] : []; };
+  const { saved, current, issues, patch } = useSegmentDraft(segments, index, onChange, merged);
+  if (!saved || !current) return null;
+  const value = segmentDetect(defaults, current);
+  const [lo, hi] = value.widthRange;
+  const own = saved.searchMm != null || saved.widthRange != null;
+  const shown = segmentDetect(defaults, saved);
+  return <SettingsCard title="检测参数" badge={own ? "本段覆盖" : "配方默认"} tone={own ? "info" : "neutral"} open={own}
+    summary={`搜索半宽 ${shown.searchMm} mm · 胶宽 ${shown.widthRange[0]}–${shown.widthRange[1]} mm · ${polarity[defaults.polarity]}`}>
+    <fieldset className="wp-plain-fieldset wp-settings-fields" disabled={disabled}>
+      <NumberField label="搜索半宽" unit="mm" value={value.searchMm} min={.1} step={.5} disabled={disabled} onChange={v => patch({ searchMm: v })}/>
+      <p className="wp-settings-hint">沿中线法向找胶的半宽，要盖住机器人与工件带来的偏差。{current.searchMm != null && <Button variant="text" size="sm" disabled={disabled} onClick={() => patch({ searchMm: null })}>恢复配方默认 {defaults.searchMm} mm</Button>}</p>
+      <div className="wp-settings-group" role="group" aria-label={`段 ${index} 预期胶宽范围`}>
+        <span className="wp-settings-label">预期胶宽范围</span>
+        <NumberField label="胶宽下限" unit="mm" value={lo} min={.1} step={.1} disabled={disabled} onChange={v => patch({ widthRange: [v, hi] })}/>
+        <NumberField label="胶宽上限" unit="mm" value={hi} min={.1} step={.1} disabled={disabled} onChange={v => patch({ widthRange: [lo, v] })}/>
+        <p className="wp-settings-hint">下限用于过滤细小噪声，上限要小于搜索宽度（2 × 搜索半宽）；产品胶宽公差在“检测项”里设置。{current.widthRange != null && <Button variant="text" size="sm" disabled={disabled} onClick={() => patch({ widthRange: null })}>恢复配方默认 {defaults.widthRange[0]}–{defaults.widthRange[1]} mm</Button>}</p>
+      </div>
+      {issues.length > 0 && <p className="c-warn" role="alert">{issues.join("；")}，未保存</p>}
+      <p className="wp-settings-hint"><Scope>段 {index} 各检测相机共用</Scope> 改动只写本段；没改的项用配方默认（相机视图“测量”）。改动后示教件测量需要重新测。</p>
+    </fieldset>
+  </SettingsCard>;
+}
+
+/** 测量区间：配方存起点与长度，这里按“跳过前多少、测到多少”填，初值为正在用的区间；`own` 为这一级自己设了区间。
+ * 两项都清空为不设（段用相机的，相机用默认值），不合法时只提示、不写入配方。 */
+function WindowFields({ value, own, disabled, onFocus, onChange }: { value: InspectWindow; own: boolean; disabled: boolean; onFocus: (part: HeadingPart | null) => void; onChange: (next: InspectWindow | null) => void }) {
+  const [skip, setSkip] = useState(value.startMm);
+  const [end, setEnd] = useState(value.startMm + value.lengthMm);
   const of = (s: number, e: number) => ({ startMm: s, lengthMm: Math.round((e - s) * 1000) / 1000 });
   const empty = Number.isNaN(skip) && Number.isNaN(end);
   const error = empty ? "" : windowError(of(skip, end));
   const update = (nextSkip: number, nextEnd: number) => {
     setSkip(nextSkip); setEnd(nextEnd);
-    if (Number.isNaN(nextSkip) && Number.isNaN(nextEnd)) { if (value) onChange(null); return; }
+    if (Number.isNaN(nextSkip) && Number.isNaN(nextEnd)) { if (own) onChange(null); return; }
     const next = of(nextSkip, nextEnd);
     if (!windowError(next)) onChange(next);
   };
@@ -255,7 +228,7 @@ function WindowFields({ value, disabled, onFocus, onChange }: { value: InspectWi
     <PartRow part="skip" title="跳过胶嘴附近" onFocus={onFocus} hint="胶嘴会挡住胶条，各方向在出胶点附近也挤在一起分不开，这一段不测；一般取 5 mm 左右。">
       <NumberField label="跳过前" value={skip} unit="mm" min={0} max={MAX_WINDOW_END_MM} step={.5} onChange={v => update(v, end)} disabled={disabled}/>
     </PartRow>
-    <PartRow part="zone" title="测量到" onFocus={onFocus} hint="每帧只测距出胶点从跳过处到这里的一段（图上环带）。这一段不要短于每帧胶条后移量（20 fps 约 20 mm），否则相邻帧之间有胶测不到。两项都清空即未设置。">
+    <PartRow part="zone" title="测量到" onFocus={onFocus} hint="每帧只测距出胶点从跳过处到这里的一段（图上环带）。这一段不要短于每帧胶条后移量（20 fps 约 20 mm），否则相邻帧之间有胶测不到；也不要长过本段胶条。两项都清空即不单独设置。">
       <NumberField label="测到距出胶点" value={end} unit="mm" min={0} max={MAX_WINDOW_END_MM} step={.5} onChange={v => update(skip, v)} disabled={disabled}/>
     </PartRow>
     {error && <p className="c-warn" role="alert">{error}，未保存</p>}
@@ -340,4 +313,73 @@ function OffsetReference({ segment, cameras, disabled, onPatch }: { segment: Pat
         ? `x_ref ${offsetRef.xRef} ± ${offsetRef.spread ?? "—"} mm（示教件测量）`
         : measure === "toEdge" ? "x_ref 待测量：在试测页测量示教件得出胶边距；或填图纸胶边距" : "x_ref 待测量：在试测页测量示教件得出，不能手填"}</p>
   </div>;
+}
+
+interface ColorPart { mean: [number, number]; intensity: number; weight?: number }
+interface ColorView { glue: ColorPart; background: ColorPart[]; quality: { separation?: number; glueCount?: number; bgCount?: number; saturatedFraction?: number; usable?: boolean } }
+
+/** 胶色模型 JSON 原文里用于显示的部分；解析不了为 null。 */
+function readColorModel(json: string): ColorView | null {
+  try {
+    const value = JSON.parse(json) as Partial<ColorView>;
+    return value.glue?.mean ? { glue: value.glue, background: value.background ?? [], quality: value.quality ?? {} } : null;
+  } catch { return null; }
+}
+
+/** 对数色度 [ln R/G, ln B/G] 与 R+G+B 近似还原成 RGB 色块。 */
+function colorOf({ mean: [c1, c2], intensity }: ColorPart) {
+  const g = intensity / (1 + Math.exp(c1) + Math.exp(c2));
+  const channel = (v: number) => Math.round(Math.min(255, Math.max(0, v)));
+  return `rgb(${channel(g * Math.exp(c1))}, ${channel(g)}, ${channel(g * Math.exp(c2))})`;
+}
+
+const percent = (value: number | undefined) => value != null && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+
+/** 分离度低于它时胶与背景颜色接近，按胶色测量可能不稳。 */
+const LOW_SEPARATION = 3;
+
+/**
+ * 段视图“测量方式”（color CL-3）：示教帧是彩色时这一段这台相机可选按灰度或按胶色测量，按胶色时沿已保存的走廊取色；
+ * `color` 为 null 表示示教帧还在读取。`measureLocked` 非空时不能切换；`blocked` 非空时取色按钮禁用并说明原因；
+ * `edited` 为走廊有未保存的修改（保存后旧模型作废）。
+ */
+export function ColorCard({ camera, segment, colorModel, color, measure, measureLocked, blocked, edited, working, onMeasure, onFit }: {
+  camera: string; segment: number; colorModel: string | undefined; color: boolean | null; measure: MeasureMode; measureLocked: string;
+  blocked: string; edited: boolean; working: boolean; onMeasure: (measure: MeasureMode) => void; onFit: () => void;
+}) {
+  const model = colorModel ? readColorModel(colorModel) : null;
+  const separation = model?.quality.separation;
+  const low = separation != null && separation < LOW_SEPARATION;
+  const gray = color === false || measure === "gray";
+  const [badge, tone]: [string, Tone] = gray ? ["按灰度测量", "neutral"] : !colorModel ? ["待取色", "warn"]
+    : !model || model.quality.usable === false ? ["不可用", "warn"] : low ? ["分离度低", "warn"] : ["按胶色测量", "ok"];
+  const summary = color === false ? "示教帧是灰度图，按灰度测量" : gray ? "按灰度测量" : !colorModel ? "按胶色测量，还没取色"
+    : model ? `按胶色 · 分离度 ${separation != null ? separation.toFixed(1) : "—"} · 高光 ${percent(model.quality.saturatedFraction)}` : "胶色模型无法读取";
+  return <SettingsCard title="测量方式" badge={badge} tone={tone} summary={summary} open={color === true || !!colorModel}>
+    {color === false ? <p className="wp-settings-hint">示教帧是灰度图，只能按灰度测量：相机图像模式改为彩色后重新选示教帧，才能按胶色测量</p> : <>
+      {color != null && <SegmentedControl size="sm" label="测量方式" value={measure} disabled={!!measureLocked}
+        options={[{ value: "color", label: "按胶色" }, { value: "gray", label: "按灰度" }]} onValueChange={value => onMeasure(value as MeasureMode)}/>}
+      {measureLocked && <p className="wp-settings-hint">{measureLocked}</p>}
+      {gray ? <p className="wp-settings-hint">按亮度找胶条，用相机检测参数里的胶色明暗；刷选按两侧胶边提取。改回按胶色后要重新取色。</p> : <>
+      {colorModel && (model ? <div className="wp-settings-group wp-color-model" role="group" aria-label="胶色模型">
+        <p className="wp-settings-hint">这一段按胶色测量：{camera} 在段 {segment} 按示教帧取得的胶色与背景色区分胶条。</p>
+        <div className="wp-color-row"><span className="wp-settings-label">胶</span><span className="wp-color-swatch" style={{ background: colorOf(model.glue) }} title={colorOf(model.glue)}/></div>
+        {model.background.length > 0 && <div className="wp-color-row"><span className="wp-settings-label">背景</span>
+          <span className="wp-color-bar">{model.background.map((part, i) => <span key={i} style={{ background: colorOf(part), flexGrow: Math.max(part.weight ?? 0, 0.01) }} title={`${colorOf(part)} · 占 ${percent(part.weight)}`}/>)}</span></div>}
+        <dl className="wp-color-stats">
+          <dt>分离度</dt><dd className={low ? "c-warn" : undefined}>{separation != null ? separation.toFixed(1) : "—"}</dd>
+          <dt>高光占比</dt><dd>{percent(model.quality.saturatedFraction)}</dd>
+          <dt>样本</dt><dd>胶 {model.quality.glueCount ?? "—"} · 背景 {model.quality.bgCount ?? "—"} px</dd>
+        </dl>
+        {low && <p className="c-warn" role="note">胶与背景颜色接近，测量可能不稳</p>}
+        {model.quality.usable === false && <p className="c-warn" role="note">取色结果不可用：换一帧示教帧或调整走廊后重新取色</p>}
+      </div> : <p className="c-warn">胶色模型无法读取，请重新取色</p>)}
+      {color == null ? <p className="wp-settings-hint">正在读取示教帧…</p> : <>
+        <Button size="sm" variant={colorModel ? "tonal" : "filled"} disabled={!!blocked || working} onClick={onFit}>{working ? "取色中…" : colorModel ? "重新取色" : "取色"}</Button>
+        {blocked && <p className="wp-settings-hint">{blocked}</p>}
+      </>}
+      {colorModel && edited && <p className="wp-settings-hint">走廊改动保存后，这里的胶色模型作废，需要重新取色。</p>}
+      {!colorModel && <p className="wp-settings-hint">沿已保存的走廊取胶色与背景色后才能按胶色测量；没取色时试测与发布都会提示待取色。</p>}
+    </>}</>}
+  </SettingsCard>;
 }

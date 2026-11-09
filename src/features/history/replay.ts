@@ -1,4 +1,4 @@
-import type { BurstJudgement, FrameMetrics, PathSegment, RegionResult } from "../plan/types";
+import type { BurstJudgement, FrameMetrics, FrameVerdict, PathSegment, RegionResult } from "../plan/types";
 import { regionKindLabel, regionSegments } from "../plan/vis";
 import type { PartDetailBurst } from "./types";
 
@@ -16,24 +16,30 @@ export const burstSideOf = (burst: PartDetailBurst): BurstSide => ({ segments: b
 
 /**
  * 把一次对照的结果套到原记录上，供帧组条、段布置与区域结论按对照显示：段、相机、预期与判定取对照，
- * 每帧状态与指标取对照的逐帧指标，帧号、触发计数与原图引用沿用原记录；没有逐帧指标的旧对照返回 null。
+ * 每帧状态、指标与单帧结论取对照的，帧号、触发计数与原图引用沿用原记录；没有逐帧指标的旧对照返回 null。
  */
-export function comparisonBurst(burst: PartDetailBurst, side: BurstSide & { frames: FrameMetrics[] }): PartDetailBurst | null {
+export function comparisonBurst(burst: PartDetailBurst, side: BurstSide & { frames: FrameMetrics[]; frameVerdicts?: FrameVerdict[] }): PartDetailBurst | null {
   if (!side.frames.length) return null;
   const regionOf = (seq: number) => { const i = side.judgement.regions.findIndex(r => r.region.firstSeq <= seq && seq <= r.region.lastSeq); return i < 0 ? null : i; };
+  // 对照按它的计划相机编下标（任意配方复测时可能与记录不同，D-SB-58）：按相机编号对应记录的帧，记录里没有的相机没有原图
+  const recordCameras = side.cameras.map(id => { const i = burst.cameras.indexOf(id); return i < 0 ? null : i; });
   // 先按 (相机, seq) 建索引：长件可达数万帧，逐帧在整个数组里找会卡住界面
   const byFrame = new Map(side.frames.map(m => [`${m.camera}:${m.seq}`, m]));
-  const frames = burst.frames.map(frame => {
-    const metrics = byFrame.get(`${frame.camera}:${frame.seq}`) ?? null;
-    return { ...frame, status: metrics?.state ?? frame.status, metrics, region: regionOf(frame.seq) };
-  });
+  const recorded = new Map(burst.frames.map(f => [`${f.camera}:${f.seq}`, f]));
+  const seqs = [...new Set(burst.frames.map(f => f.seq))].sort((a, b) => a - b);
+  const frames = side.cameras.flatMap((_, camera) => seqs.map(seq => {
+    const record = recordCameras[camera] == null ? undefined : recorded.get(`${recordCameras[camera]}:${seq}`);
+    const metrics = byFrame.get(`${camera}:${seq}`) ?? null;
+    return { camera, seq, status: metrics?.state ?? record?.status ?? "missing", frameCounter: record?.frameCounter ?? null, triggerCounter: record?.triggerCounter ?? null,
+      metrics, rawFile: record?.rawFile ?? null, region: regionOf(seq) };
+  }));
   return { ...burst, segments: side.segments, cameras: side.cameras, expectedTotal: side.expectedTotal,
-    toleranceTotal: side.segments.reduce((sum, s) => sum + s.tolerance, 0), judgement: side.judgement, frames };
+    judgement: side.judgement, frames, frameVerdicts: side.frameVerdicts ?? [], recordCameras };
 }
 
 /**
  * 两侧的计划身份是否相同（与后端 plan_identity 同口径）：各段的序号、类型、N_exp，有序相机，整件预期总数。
- * 限值、容差、x_ref、检测区间、段长不参与——它们变了计划号不变，区域仍一一对应，可以比较。
+ * 限值、x_ref、检测区间、段长不参与——它们变了区域仍一一对应，可以比较。
  */
 export function samePlanIdentity(a: BurstSide, b: BurstSide) {
   return a.expectedTotal === b.expectedTotal && sameList(a.cameras, b.cameras) && a.segments.length === b.segments.length
@@ -54,13 +60,25 @@ export interface RegionDiff {
   differs: boolean;
 }
 
-const regionKey = (r: RegionResult) => { const [first, last] = regionSegments(r.region.kind); return `${r.region.kind.type}:${first}-${last}`; };
+const regionKey = (r: RegionResult) => {
+  const [first, last] = regionSegments(r.region.kind);
+  return `${r.region.kind.type}:${first}-${last}${r.region.kind.type === "skipped" && r.region.kind.pass != null ? `:p${r.region.kind.pass}` : ""}`;
+};
+/** 同键的区域（如同一笔的首、尾跳过）按出现顺序编号，两侧按序对应 */
+function keyed(regions: RegionResult[]): [string, RegionResult][] {
+  const seen = new Map<string, number>();
+  return regions.map(r => {
+    const base = regionKey(r), n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return [n ? `${base}#${n}` : base, r];
+  });
+}
 const near = (a: number | null | undefined, b: number | null | undefined) => a == null || b == null ? a == b : Math.abs(a - b) <= REPLAY_TOLERANCE_MM;
 
 function regionChanges(a: RegionResult, b: RegionResult): RegionChange[] {
   const changes: RegionChange[] = [];
   if (a.verdict !== b.verdict) changes.push("verdict");
-  if (a.frameCount !== b.frameCount || a.countStatus !== b.countStatus) changes.push("frameCount");
+  if (a.frameCount !== b.frameCount) changes.push("frameCount");
   if (!sameList(a.incompleteGroups, b.incompleteGroups)) changes.push("incomplete");
   if (!!a.width !== !!b.width || (a.width && b.width && !(near(a.width.min, b.width.min) && near(a.width.max, b.width.max) && near(a.width.mean, b.width.mean)))) changes.push("width");
   if (!!a.offset !== !!b.offset || (a.offset && b.offset && !(near(a.offset.meanShift, b.offset.meanShift) && near(a.offset.maxDev, b.offset.maxDev)))) changes.push("offset");
@@ -71,14 +89,14 @@ function regionChanges(a: RegionResult, b: RegionResult): RegionChange[] {
 /** 逐区域比较原结果与重判 / 复测结果；计划身份不同（段序列、类型、N_exp、相机或预期总数变了）时区域无法对应，返回 null，只比较整件结论。 */
 export function regionDiffs(original: BurstSide, replay: BurstSide): RegionDiff[] | null {
   if (!samePlanIdentity(original, replay)) return null;
-  const after = new Map(replay.judgement.regions.map(r => [regionKey(r), r]));
+  const after = new Map(keyed(replay.judgement.regions));
   const seen = new Set<string>();
-  const diffs: RegionDiff[] = original.judgement.regions.map(r => {
-    const key = regionKey(r), other = after.get(key) ?? null;
+  const diffs: RegionDiff[] = keyed(original.judgement.regions).map(([key, r]) => {
+    const other = after.get(key) ?? null;
     seen.add(key);
     const changes = other ? regionChanges(r, other) : [];
     return { key, label: regionKindLabel(r.region.kind), original: r, replay: other, changes, differs: !other || changes.length > 0 };
   });
-  for (const r of replay.judgement.regions) if (!seen.has(regionKey(r))) diffs.push({ key: regionKey(r), label: regionKindLabel(r.region.kind), original: null, replay: r, changes: [], differs: true });
+  for (const [key, r] of after) if (!seen.has(key)) diffs.push({ key, label: regionKindLabel(r.region.kind), original: null, replay: r, changes: [], differs: true });
   return diffs;
 }

@@ -72,10 +72,20 @@ pub(super) fn check_new_id(data: &Path, id: &str) -> Result<(), String> {
         ));
     }
     let project = super::dir(data, id);
-    let recording = crate::log_storage::recording_project(&project)?;
-    if recording != project && recording.exists() {
+    if crate::log_storage::recording_projects(&project)?
+        .iter()
+        .any(|recording| *recording != project && recording.exists())
+    {
         return Err(format!(
             "项目编号 {id} 的原图目录仍存在，请先处理残留资料或换一个编号"
+        ));
+    }
+    if crate::store::recorded_projects(&super::records::database(data))?
+        .iter()
+        .any(|recorded| recorded.eq_ignore_ascii_case(id))
+    {
+        return Err(format!(
+            "本机检测历史里有编号 {id} 的已删除项目的记录，请换一个编号"
         ));
     }
     Ok(())
@@ -159,13 +169,6 @@ pub fn move_to_trash(data: &Path, current: Option<&str>, id: &str) -> Result<Pat
     let trash = super::trash_root(data);
     std::fs::create_dir_all(&trash).map_err(|e| format!("创建 .trash 失败：{e}"))?;
     let target = trash.join(format!("{id}.{}", ly_plc::now_ms()));
-    let recording = crate::log_storage::recording_project(&dir)?;
-    if recording != dir {
-        crate::fsio::write_atomic(
-            &dir.join(EXTERNAL_CLEANUP),
-            &serde_json::json!({"projectId": id}).to_string(),
-        )?;
-    }
     std::fs::rename(&dir, &target)
         .map_err(|e| format!("删除项目 {id} 失败（文件可能被占用）：{e}"))?;
     Ok(target)
@@ -190,6 +193,7 @@ pub fn delete(data: &Path, current: Option<&str>, id: &str) -> Result<(), String
     Ok(())
 }
 
+/// 旧版本删除项目时写的外部原图清理标记：现在删除项目保留检测历史与原图，不再写；`.trash` 里已有的照旧清理。
 const EXTERNAL_CLEANUP: &str = ".external-recording-cleanup.json";
 
 fn purge_project(data: &Path, trashed: &Path) -> Result<(), String> {
@@ -212,13 +216,14 @@ fn purge_project(data: &Path, trashed: &Path) -> Result<(), String> {
             return Err("删除项目的原图清理标记与项目编号不符".into());
         }
         let project = super::dir(data, id);
-        let recording = crate::log_storage::recording_project(&project)?;
-        if recording == project {
+        let recordings = crate::log_storage::recording_projects(&project)?;
+        if recordings.contains(&project) {
             return Err("删除项目的外部原图配置缺失，保留待清理资料".into());
         }
-        if recording.exists() {
-            crate::image_file::checked_source_path(&recording)?;
-            std::fs::remove_dir_all(&recording)
+        // 离线的录制盘上的原图这次清不到，留作残留；同编号新建项目时会提示先处理
+        for recording in recordings.iter().filter(|recording| recording.exists()) {
+            crate::image_file::checked_source_path(recording)?;
+            std::fs::remove_dir_all(recording)
                 .map_err(|e| format!("清理项目 {id} 的原图失败：{e}"))?;
         }
     }
@@ -292,35 +297,12 @@ fn dir_bytes(root: &Path) -> u64 {
         .sum()
 }
 
-fn records(db: &Path) -> Result<(u64, Option<i64>, Option<i64>), String> {
-    if !db.is_file() {
-        return Ok((0, None, None));
-    }
-    let fail = |e: rusqlite::Error| format!("读取检测记录库失败：{e}");
-    let conn = rusqlite::Connection::open_with_flags(
-        db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(fail)?;
-    conn.busy_timeout(std::time::Duration::from_secs(2))
-        .map_err(fail)?;
-    let has_parts: bool = conn
-        .query_row(
-            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='parts')",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(fail)?;
-    if !has_parts {
-        return Ok((0, None, None));
-    }
-    conn.query_row("SELECT COUNT(*), MIN(ts), MAX(ts) FROM parts", [], |r| {
-        Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?))
-    })
-    .map_err(fail)
-}
-
-pub fn usage(data: &Path, id: &str) -> Result<ProjectUsage, String> {
+/// 项目的占用与统计；`records` 是本机记录库里该项目的（件数, 最早, 最晚）。
+pub fn usage(
+    data: &Path,
+    id: &str,
+    records: (u64, Option<i64>, Option<i64>),
+) -> Result<ProjectUsage, String> {
     if !super::valid_id(id) {
         return Err(format!("项目编号 {id} 不合法"));
     }
@@ -328,14 +310,13 @@ pub fn usage(data: &Path, id: &str) -> Result<ProjectUsage, String> {
     if !root.is_dir() {
         return Err(format!("项目 {id} 不存在"));
     }
-    let (records, first_record_at, last_record_at) = records(&root.join("inspection.db"))?;
-    let recording = crate::log_storage::recording_project(&root)?;
+    let (records, first_record_at, last_record_at) = records;
     let project_bytes = dir_bytes(&root);
-    let vision_bytes = if recording == root {
-        0
-    } else {
-        dir_bytes(&recording)
-    };
+    let vision_bytes = crate::log_storage::recording_projects(&root)?
+        .iter()
+        .filter(|recording| **recording != root)
+        .map(|recording| dir_bytes(recording))
+        .fold(0u64, u64::saturating_add);
     Ok(ProjectUsage {
         recipes: count_recipes(&root.join("recipes")),
         workspaces: count_dirs(&root.join("workspaces"), |p| {
@@ -388,7 +369,14 @@ pub async fn project_delete(app: AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn project_usage(app: AppHandle, id: String) -> Result<ProjectUsage, String> {
     let data = crate::storage::root(&app);
-    tauri::async_runtime::spawn_blocking(move || usage(&data, &id))
+    tauri::async_runtime::spawn_blocking(move || {
+        let records = app
+            .state::<crate::store::Store>()
+            .project_records()?
+            .remove(&id)
+            .unwrap_or_default();
+        usage(&data, &id, records)
+    })
         .await
         .map_err(|e| e.to_string())?
 }

@@ -61,10 +61,11 @@ pub struct FixtureSite {
 }
 
 impl FixtureSite {
-    /// `db` 为项目已有的记录库（不新建、版本须一致），`records` 为真机录制根；`configs` 按计划相机顺序给出设备配置
-    /// （与软件核对历史件时同一口径：`CameraConfig` 的序列化）。
+    /// `db` 为本机已有的记录库（不新建、版本须一致），记录归项目 `project`；`records` 为该项目的真机录制根；`configs` 按
+    /// 计划相机顺序给出设备配置（与软件核对历史件时同一口径：`CameraConfig` 的序列化）。
     pub fn open(
         db: &Path,
+        project: &str,
         records: &Path,
         recipe: Recipe,
         configs: Vec<Value>,
@@ -88,8 +89,8 @@ impl FixtureSite {
             return Err(format!("真机录制根 {} 不存在", records.display()));
         }
         check_database(db)?;
-        let store = Store::open_deferred_recovery(db)?;
-        if let Some(previous) = store.recipe_snapshot(&recipe.revision_id)? {
+        let store = Store::open_deferred_recovery(db, project)?;
+        if let Some(previous) = store.recipe_snapshot(project, &recipe.revision_id)? {
             let same = serde_json::to_value(&previous).map_err(|e| e.to_string())?
                 == serde_json::to_value(&recipe).map_err(|e| e.to_string())?;
             if !same {
@@ -120,7 +121,7 @@ impl FixtureSite {
             release: Arc::new(|_| Err("手动配置数据不清理录制".into())),
         };
         let recorder = Recorder::guarded(
-            records.to_path_buf(),
+            Arc::new(std::sync::RwLock::new(vec![records.to_path_buf()])),
             Some(Arc::new(move |outcome| {
                 let _ = tx.send(outcome);
             })),
@@ -194,7 +195,6 @@ impl FixtureSite {
             .collect();
         let burst = BurstRecord {
             expected_total: self.recipe.expected_total(),
-            tolerance_total: self.recipe.tolerance_total(),
             device_triggers: u32::try_from(groups).ok(),
             camera_frames: camera_frames.clone(),
             judgement: BurstJudgement {
@@ -228,7 +228,6 @@ impl FixtureSite {
             },
             shots: &[],
             source: RecordSource::Real,
-            sample: None,
             burst: Some(&burst),
         })?;
         let outcome = self.record(sn, &cycle_id, ts, &reason, part);
@@ -293,10 +292,14 @@ impl FixtureSite {
                 .recv_timeout(RECORDING_TIMEOUT)
                 .map_err(|_| "等待录制收尾超时".to_string())
         };
-        let Some(mut rec) =
-            self.recorder
-                .begin(RecordMode::All, sn, self.recipe.clone(), cycle_id, None)
-        else {
+        let Some(mut rec) = self.recorder.begin(
+            RecordMode::All,
+            Some(&self.recorder.roots()[0]),
+            sn,
+            self.recipe.clone(),
+            cycle_id,
+            None,
+        ) else {
             let outcome = receive()?;
             return Err(outcome.errors.join("；"));
         };
@@ -316,6 +319,7 @@ impl FixtureSite {
                     dev_ts: Some((COUNTER_BASE + seq) * crate::frame_clock::SYNTH_PERIOD_NS),
                     manual: false,
                     images: vec![Arc::new(image)],
+                    bayer: None,
                 };
                 self.recorder.burst_frame(&mut rec, &frame, camera, seq);
             }

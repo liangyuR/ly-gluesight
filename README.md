@@ -8,7 +8,7 @@
 - Node.js ≥ 24.15，pnpm 12（版本见 `package.json` 的 `engines` 与 `packageManager`）
 - Rust 1.99.1（`rust-toolchain.toml` 锁定，rustup 会自动安装）与 MSVC 生成工具、WebView2
 - PowerShell 7（`pwsh`），用于依赖与打包脚本
-- 可选：海康 MVS SDK。未安装时只能使用模拟相机
+- 可选：海康 MVS SDK。未安装时可使用独立生产模拟器的 TCP 相机
 
 ## 开发运行
 
@@ -21,6 +21,10 @@ pnpm dev               # tauri dev：启动 Vite 并编译运行 debug 版；编
 `pnpm deps:lyflow:dev` 从 `liangyuR/lyFlow` 的 GitHub Release 取 `packaging/runtime.json` 锁定系列的最新运行库，复制到 `src-tauri/target/debug/runtime/lyflow/`。不执行也能启动，但没有图像测量引擎，引擎状态会显示原因。
 
 只调试前端界面时可用 `pnpm dev:web` 单独启动 Vite（端口 1420），不含后端。
+
+`pnpm dev` 默认启用示教 MCP；未配置令牌时会在终端显示本次启动的临时令牌。客户端连接与其他启动入口的启用方式见 [Agent 示教接口（MCP）](docs/integration/agent-teaching.md#启用与连接)。
+
+开发版切换项目后会保存下次启动的项目并提示等待手动重启。停止当前开发命令，再用相同入口和参数启动，核对当前项目后继续操作；正式版仍自动重启。
 
 同时改 lyFlow 引擎或客户端时使用 `pnpm dev:joint`，参数见 [lyFlow 运行库依赖](docs/architecture/lyflow-dependency.md#联合开发)。
 
@@ -54,19 +58,13 @@ pnpm test                                   # 前端单元测试
 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
 
-Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 Rust 默认库回归（`cargo test --locked --lib`）。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、样本转换、打包与长稳脚本检查及桌面 E2E 均不在普通 PR CI 中执行。
+Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）、独立生产模拟器测试和生产录制输入转换测试。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、旧样本集转换、打包及桌面验收均不在普通 PR CI 中执行。
 
 按 [测试说明](docs/testing/TESTING.md) 选择受影响文件或模块运行。Rust 默认集合包含少量 S7 回环、SQLite 与原图落盘集成测试，不需要现场硬件或 lyFlow DLL。算法评测通过独立 example 手动运行。
 
-桌面 E2E 保留手动入口，使用 Playwright Test 连接应用 WebView2，无需下载 Playwright 浏览器。合成图段配方生产验证需要 lyFlow，无需现场样本集：
+正常生产模拟使用[独立生产模拟器](docs/testing/production-simulator.md)：工具作为单独进程提供 S7 PLC 和 TCP 相机图像，GlueSight 按正式配方走生产检测、结果回写与记录落盘，不切换应用模式。使用现场原图和匹配的正式配方验证正常生产；自动生成的条图只用于连通性检查。
 
-```powershell
-pnpm test:ui:production -Suite burst -ResetData
-```
-
-生产落盘入口保留原命令并支持 `-Grep` 筛选，默认构建一次，再由夹具管理实例和失败证据。单独准备构建使用 `pnpm test:desktop:build -Profile flow`；测试加 `-SkipBuild` 可复用该 profile 的产物，但不会检查源码是否更新。HTML、JUnit 和失败截图、trace 位于 `output/playwright/<profile>-regression/runner/`；原业务 JSON 位置保持不变。
-
-长稳与故障注入见[长稳运行说明](docs/testing/soak-report.md)。参数、隔离实例、现场验收与证据边界见[测试说明](docs/testing/TESTING.md)。
+需要隔离桌面实例时使用 `pnpm test:desktop:build -Profile flow`，再运行 `scripts/Start-UiTestInstance.ps1 -Profile flow -SkipBuild`。参数、现场验收与证据边界见[测试说明](docs/testing/TESTING.md)。
 
 ## 打包
 

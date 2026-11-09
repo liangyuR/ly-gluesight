@@ -66,16 +66,6 @@ pub struct Manifest {
     pub parts: Vec<SamplePart>,
 }
 
-/// 历史记录与离线运行记下的样本件引用。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SampleRef {
-    pub set_id: String,
-    pub part_id: String,
-    pub sn: String,
-    pub label: SampleLabel,
-}
-
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PartSummary { pub part_id: String, pub sn: String, pub label: SampleLabel }
@@ -262,10 +252,6 @@ impl SampleSet {
         self.manifest.parts.iter().find(|p| p.part_id == part_id)
     }
 
-    pub fn reference(&self, part_id: &str) -> Option<SampleRef> {
-        self.part(part_id).map(|p| SampleRef { set_id: self.manifest.id.clone(), part_id: p.part_id.clone(), sn: p.sn.clone(), label: p.label })
-    }
-
     pub fn has_camera(&self, camera_id: &str) -> bool {
         self.manifest.cameras.iter().any(|c| c.id == camera_id)
     }
@@ -275,9 +261,17 @@ impl SampleSet {
             .map(PathBuf::as_path).ok_or_else(|| format!("样本集缺图或图片无效：{part_id}/{shot_id}_{camera_id}_v{view}"))
     }
 
-    pub fn load_view(&self, part_id: &str, shot_id: &str, camera_id: &str, view: u8) -> Result<FrameImage, String> {
+    /// `color`：彩色模式的相机按 RGB 读（见 `image_file::load_as`）。
+    pub fn load_view(
+        &self,
+        part_id: &str,
+        shot_id: &str,
+        camera_id: &str,
+        view: u8,
+        color: bool,
+    ) -> Result<FrameImage, String> {
         let path = self.image_path(part_id, shot_id, camera_id, view)?;
-        let image = crate::image_file::load(path)?;
+        let image = crate::image_file::load_as(path, color)?;
         if let Some(size) = self.manifest.image_size.filter(|size| *size != [image.width, image.height]) {
             return Err(format!("样本图 {} 尺寸 {}×{} 与样本集 imageSize {}×{} 不符", path.display(), image.width, image.height, size[0], size[1]));
         }
@@ -285,10 +279,20 @@ impl SampleSet {
     }
 
     /// 某件某点某相机的 1..=view_count 视角；任何一幅缺失、解码失败或尺寸不符都按本帧缺失处理，不拿别的图顶替。
-    pub fn load_views(&self, part_id: &str, shot_id: &str, camera_id: &str, view_count: u8) -> Result<Vec<Arc<FrameImage>>, String> {
-        (1..=view_count).map(|view| {
-            self.load_view(part_id, shot_id, camera_id, view).map(Arc::new)
-        }).collect()
+    pub fn load_views(
+        &self,
+        part_id: &str,
+        shot_id: &str,
+        camera_id: &str,
+        view_count: u8,
+        color: bool,
+    ) -> Result<Vec<Arc<FrameImage>>, String> {
+        (1..=view_count)
+            .map(|view| {
+                self.load_view(part_id, shot_id, camera_id, view, color)
+                    .map(Arc::new)
+            })
+            .collect()
     }
 
     pub fn summary(&self) -> SampleSetSummary {

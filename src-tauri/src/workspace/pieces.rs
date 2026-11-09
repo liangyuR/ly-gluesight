@@ -1,5 +1,5 @@
 //! 示教件（docs/decisions/recipe-build-flow.md RB-1～RB-8）：候选从历史件选一件示教件，它是分段边界、全部走廊示教帧、
-//! 各段 N_exp 与胶偏参考 x_ref 的唯一来源，换件即清空图像派生内容；选件即导入为轮次。
+//! 各段 N_exp 与胶偏参考 x_ref 的唯一来源，换件即清空图像派生内容；选件即导入为轮次（只引用这件历史件的录制原图）。
 //! 轮次只作存储格式，界面面对历史件。旧流程候选（`flow` 缺省）停用，只能删除。
 
 use std::collections::BTreeSet;
@@ -25,6 +25,37 @@ pub struct TeachingPiece {
     pub cycle_id: String,
     pub sn: String,
     pub ts: i64,
+    /// 示教件的笔结构（各笔帧组数，D-SB-62），按轮次帧记录的时间戳算出；旧候选没有，保存分段时补上
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passes: Vec<u32>,
+}
+
+/// 示教件还没记笔结构（选示教件早于 D-SB-62）时按轮次帧记录补上。
+pub(super) fn fill_piece_passes(
+    capture: &RecipeCaptureHost,
+    w: &mut Workspace,
+) -> Result<(), String> {
+    if let Some(piece) = w
+        .teaching_piece
+        .as_mut()
+        .filter(|piece| piece.passes.is_empty())
+    {
+        piece.passes = capture.burst_passes(&piece.round_id)?;
+    }
+    Ok(())
+}
+
+/// 示教件自己按笔判定的规则：本件与示教件都是示教件的笔结构（预演覆盖范围、诊断用）。
+pub(super) fn piece_pass_rules(w: &Workspace) -> crate::passes::PassRules<'_> {
+    let passes = w
+        .teaching_piece
+        .as_ref()
+        .map_or(&[][..], |piece| piece.passes.as_slice());
+    crate::passes::PassRules {
+        part: passes,
+        taught: Some(passes).filter(|p| !p.is_empty()),
+        skip: w.doc.pass_skip,
+    }
 }
 
 impl TeachingPiece {
@@ -80,12 +111,19 @@ pub(super) fn teaching_measured(w: &Workspace) -> bool {
     })
 }
 
-/// 设定（更换）示教件（RB-2、RB-8）：由示教件图像得出的内容全部清空——全部轮次的边界复核与模板、走廊与示教帧、
-/// 示教件测量与派生结果（N_exp、标定统计、partCalib、x_ref）；段列表结构与配方级参数保留。轮次目录与测量特征由调用方删除。
+/// 设定（更换）示教件（RB-2、RB-8）：保留走廊与示教帧、段列表结构与配方级参数，不做任何等比例换算。
+/// - 新件沿用原来的分段帧数：边界取原示教件的边界帧号（没有时按各段原 N_exp 累加），落在新件帧组数以内的保留；
+///   帧数不够时放不下的后面几段整段裁掉（连同它们的走廊与示教帧），最后保留的那段截到新件末尾。返回预填的边界，
+///   由调用方作为新件的边界草稿保存，分段页确认即可。
+/// - 保留的示教帧改指向新示教件（旧轮次随后删除），帧组号不变；落到所属段范围外（末段被截短）的移到该段中间。
+///   冻结的示教图不变，走廊照旧在它上面编辑。
+/// - 清空跟着原示教件走的边界复核与模板、示教件测量与派生结果（N_exp、标定统计、partCalib、x_ref），确认分段、重新测量即可得出。
+/// 轮次目录与测量特征由调用方删除。
 pub(super) fn replace_teaching_piece(
     w: &mut Workspace,
     piece: TeachingPiece,
-) -> Result<(), String> {
+    piece_groups: u64,
+) -> Result<Option<Vec<u64>>, String> {
     burst::require_burst(&w.doc)?;
     if w.teaching_piece
         .as_ref()
@@ -93,30 +131,130 @@ pub(super) fn replace_teaching_piece(
     {
         return Err("这一件已是示教件".into());
     }
-    w.camera_teaching.clear();
+    let carried = original_cuts(w).map(|cuts| {
+        cuts.into_iter()
+            .filter(|&c| c < piece_groups)
+            .collect::<Vec<u64>>()
+    });
+    if let Some(cuts) = &carried {
+        // 帧数不够：只留得下 cuts.len() + 1 段，后面的段连同走廊与示教帧裁掉
+        let keep = cuts.len() + 1;
+        if keep < w.doc.segments.len() {
+            let kept: BTreeSet<u32> = w.doc.segments[..keep].iter().map(|s| s.index).collect();
+            w.doc.segments.truncate(keep);
+            for inspect in &mut w.doc.inspect {
+                inspect.segments.retain(|c| kept.contains(&c.segment));
+            }
+            w.camera_teaching
+                .retain(|t| t.segment.is_some_and(|s| kept.contains(&s)));
+        }
+    }
+    for t in &mut w.camera_teaching {
+        t.round = piece.round_id.clone();
+    }
+    match &carried {
+        Some(cuts) => {
+            capture_review::settle_teaching_frames(w, &piece.round_id, cuts, piece_groups)
+        }
+        // 不知道原分段：只把帧组号夹在新件范围内
+        None => w
+            .camera_teaching
+            .iter_mut()
+            .for_each(|t| t.seq = t.seq.clamp(1, piece_groups.max(1))),
+    }
     w.capture_review = capture_review::CaptureReview::default();
     w.calibration = burst::Calibration::default();
     burst::clear_calibration(&mut w.doc);
-    w.doc.inspect.iter_mut().for_each(|i| i.segments.clear());
     w.teaching_piece = Some(piece);
+    w.pass_alignment = None;
     w.changed();
-    Ok(())
+    Ok(carried)
 }
 
-/// 本候选导入的轮次：属于本配方、已完整的轮次，不含验证样本库用到的轮次；示教件在前，其余（旧流程留下的标定件）按创建时间。
+/// 按笔对照换示教件所需（RB-11）：原示教件与新件都有笔结构、原边界对得上原件的笔结构时，读两件原图算逐笔图像距离。
+/// 原示教件还没记笔结构时按它的轮次补上。条件不满足为 None，按 RB-2 处理。
+fn alignment_input(
+    capture: &RecipeCaptureHost,
+    w: &Workspace,
+    new_round: &str,
+    new_passes: &[u32],
+) -> Option<super::pass_align::AlignInput> {
+    let mut old = w.teaching_piece.clone()?;
+    if new_passes.is_empty() || w.doc.segments.is_empty() {
+        return None;
+    }
+    if old.passes.is_empty() {
+        old.passes = capture.burst_passes(&old.round_id).ok()?;
+    }
+    let cuts = original_cuts(w)?;
+    if cuts.len() + 1 != w.doc.segments.len() || !super::pass_align::cuts_fit(&cuts, &old.passes) {
+        return None;
+    }
+    let cameras = w.doc.plan_cameras();
+    let before = capture.burst_frame_index(&old.round_id).ok()?;
+    let after = capture.burst_frame_index(new_round).ok()?;
+    let a = super::pass_align::pass_features(
+        &|camera, seq| before.path(camera, seq).ok(),
+        &cameras,
+        &old.passes,
+    );
+    let b = super::pass_align::pass_features(
+        &|camera, seq| after.path(camera, seq).ok(),
+        &cameras,
+        new_passes,
+    );
+    let distances = a
+        .iter()
+        .map(|x| {
+            b.iter()
+                .map(|y| super::pass_align::distance(x, y))
+                .collect()
+        })
+        .collect();
+    Some(super::pass_align::AlignInput {
+        old_piece: old,
+        cuts,
+        distances,
+    })
+}
+
+/// 原来的分段帧数（每段最后一个帧组）：原示教件的边界帧号；没有时按各段 N_exp 累加；都没有为 None。
+fn original_cuts(w: &Workspace) -> Option<Vec<u64>> {
+    let segments = w.doc.segments.len();
+    let reviewed = w
+        .teaching_piece
+        .as_ref()
+        .and_then(|t| w.capture_review.rounds.get(&t.round_id))
+        .filter(|r| r.cuts.len() + 1 == segments)
+        .map(|r| r.cuts.clone());
+    reviewed.or_else(|| {
+        let frames: Option<Vec<u64>> = w
+            .doc
+            .segments
+            .iter()
+            .map(|s| s.expected_frames.map(u64::from))
+            .collect();
+        frames.map(|frames| {
+            frames[..frames.len().saturating_sub(1)]
+                .iter()
+                .scan(0, |sum, n| {
+                    *sum += n;
+                    Some(*sum)
+                })
+                .collect()
+        })
+    })
+}
+
+/// 本候选导入的轮次：属于本配方、已完整的轮次；示教件在前，其余（旧流程留下的轮次）按创建时间。
 pub(super) fn piece_rounds(
     capture: &RecipeCaptureHost,
     w: &Workspace,
 ) -> Result<Vec<CaptureSummary>, String> {
-    let bank: BTreeSet<&str> = w
-        .sample_bank
-        .iter()
-        .flat_map(|b| std::iter::once(b.id.as_str()).chain(b.capture_id.as_deref()))
-        .collect();
     let mut rounds: Vec<_> = capture
         .list(&w.doc.id)?
         .into_iter()
-        .filter(|r| r.state == CaptureState::Complete && !bank.contains(r.round_id.as_str()))
+        .filter(|r| r.state == CaptureState::Complete)
         .collect();
     rounds.sort_by_key(|r| (!is_teaching(w, &r.round_id), r.created_at));
     Ok(rounds)
@@ -146,6 +284,8 @@ pub struct PieceView {
     /// 已按当前走廊测量
     pub measured: bool,
     pub excluded_groups: u32,
+    /// 原图读不到的原因（来源历史件的录制已清理、检测记录不在本机等）；读得到为 None
+    pub images_unavailable: Option<String>,
 }
 
 /// 示教件的视图；还没选示教件，或它的轮次已不在本配方完整的轮次里时为空。
@@ -185,14 +325,23 @@ pub(super) fn piece_views(w: &Workspace, rounds: &[CaptureSummary]) -> Vec<Piece
         excluded_groups: review.map_or(0, |v| {
             u32::try_from(v.excluded_groups.len()).unwrap_or(u32::MAX)
         }),
+        images_unavailable: None,
     }]
 }
 
 /// 候选视图里的示教件。
 pub(super) fn plan_pieces(app: &AppHandle, w: &Workspace) -> Vec<PieceView> {
-    piece_rounds(app.state::<CycleHost>().camera.recipe_capture(), w)
+    let cycle = app.state::<CycleHost>();
+    let capture = cycle.camera.recipe_capture();
+    let mut pieces = piece_rounds(capture, w)
         .map(|rounds| piece_views(w, &rounds))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for piece in &mut pieces {
+        piece.images_unavailable = capture
+            .images_unavailable(&piece.round_id)
+            .unwrap_or_else(|e| Some(e));
+    }
+    pieces
 }
 
 /// 删除旧流程候选的目录内容（RB-5）：保留 `published/` 发布归档，生产配方照常运行；目录空了一并删除。
@@ -226,7 +375,7 @@ pub(super) fn remove_legacy_dir(dir: &Path) -> Result<(), String> {
 
 // ───────────── 示教件 ─────────────
 
-/// 设定（更换）示教件：按历史件的可用条件核对并导入为轮次，再按 RB-2 清空候选里由原示教件图像得出的内容，删除本候选
+/// 设定（更换）示教件：按历史件的可用条件核对并导入为轮次，再按 RB-2 清空跟着原示教件帧组走的内容（保留走廊与示教帧），删除本候选
 /// 原有的全部轮次目录及测量特征。同一件不能重复设置。
 #[tauri::command]
 pub async fn workspace_set_teaching_piece(
@@ -278,7 +427,9 @@ fn set_teaching_piece(
             cycle_id: part.cycle_id.clone().ok_or("记录没有 cycleId")?,
             sn: part.sn.clone(),
             ts: part.ts,
+            passes: capture.burst_passes(&round_id)?,
         };
+        let aligned = alignment_input(capture, &w, &round_id, &piece.passes);
         let mut items = host.items.lock().unwrap();
         let current = items.get_mut(id).ok_or("候选配置不存在")?;
         current
@@ -290,7 +441,21 @@ fn set_teaching_piece(
             .filter(|r| *r != round_id)
             .collect();
         let mut next = current.clone();
-        replace_teaching_piece(&mut next, piece)?;
+        // RB-11：两件都有笔结构时按笔对照迁移；否则按 RB-2 沿用原来的分段帧数。预填边界作为新件的边界草稿，分段页确认即可
+        let cuts = match aligned {
+            Some(input) => Some(super::pass_align::replace_by_passes(
+                &mut next, piece, input,
+            )?),
+            None => replace_teaching_piece(&mut next, piece, part.group_count)?,
+        };
+        if let Some(cuts) = cuts {
+            let round = capture.get_burst(&round_id)?;
+            capture_review::apply_capture_review(
+                &mut next,
+                &round,
+                capture_review::CaptureReviewEdit::Save(cuts),
+            )?;
+        }
         host.save(&next)?;
         *current = next;
         Ok::<_, String>((current.clone(), stale))
@@ -336,7 +501,6 @@ pub(super) fn measured_with_current_corridors(doc: &RecipeDoc, entry: &Calibrati
 pub(super) fn measure_teaching(
     w: &Workspace,
     round: &CaptureRoundV2,
-    current: &BTreeMap<String, Value>,
     measure: impl FnOnce(&Workspace, &CaptureRoundV2) -> Result<Vec<FrameMetrics>, String>,
 ) -> Result<MeasureOutcome, String> {
     if !w
@@ -352,7 +516,7 @@ pub(super) fn measure_teaching(
     if !corridor_ready(w) {
         return Err("走廊示教未完成：每段的检测相机都要有走廊，每台相机都要有像素当量".into());
     }
-    burst::check_round(&w.doc, round, current)?;
+    burst::check_round(&w.doc, round)?;
     let metrics = measure(w, round)?;
     let segmented = burst::segment_round(
         &w.doc.segments,
@@ -377,17 +541,26 @@ pub async fn workspace_measure_teaching(
     app: AppHandle,
     id: String,
     revision: u64,
+    task_id: Option<String>,
 ) -> Result<WorkspaceView, String> {
+    let operation = crate::operation::Operation::start(&app, task_id)?;
     let cycle = app.state::<CycleHost>();
     let _config = cycle.config_gate.lock().await;
     let task = app.clone();
-    tauri::async_runtime::spawn_blocking(move || measure(&task, &id, revision))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        operation.run(|operation| measure(&task, &id, revision, operation))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 测量在候选锁外；写入前核对修订号，测量期间候选被改过时不写入。调用方持配置门。
-fn measure(app: &AppHandle, id: &str, revision: u64) -> Result<WorkspaceView, String> {
+fn measure(
+    app: &AppHandle,
+    id: &str,
+    revision: u64,
+    operation: &crate::operation::Operation,
+) -> Result<WorkspaceView, String> {
     let cycle = app.state::<CycleHost>();
     crate::camera::check_idle(&cycle)?;
     let host = app.state::<WorkspaceHost>();
@@ -400,13 +573,8 @@ fn measure(app: &AppHandle, id: &str, revision: u64) -> Result<WorkspaceView, St
     burst::require_burst(&w.doc)?;
     let piece = w.teaching_piece.as_ref().ok_or("先选示教件")?;
     let capture = cycle.camera.recipe_capture();
-    let round = capture.get_burst(&piece.round_id)?;
-    let current: BTreeMap<String, Value> = cycle
-        .camera
-        .configs()
-        .iter()
-        .map(|c| (c.id.clone(), state_value(c)))
-        .collect();
+    let frame_index = capture.burst_frame_index(&piece.round_id)?;
+    let round = frame_index.round();
     let engine = app.state::<vision::VisionHost>().engine();
     let run = vision::unique_run_id(&format!("teaching-{id}"));
     let measure = |w: &Workspace, round: &CaptureRoundV2| -> Result<Vec<FrameMetrics>, String> {
@@ -415,10 +583,11 @@ fn measure(app: &AppHandle, id: &str, revision: u64) -> Result<WorkspaceView, St
         let graphs = vision::CorridorSet::build(&recipe, &burst::teaching_sizes(w)?)?;
         let choice = burst::calibration_corridors(w, &round.round_id, round.group_count)?;
         let round_id = &round.round_id;
-        Ok(capture_review::measure_calibration_round(
-            w,
+        burst::measure_round_with_operation(
+            &w.doc.plan_cameras(),
             round,
             |camera, camera_id, seq| {
+                capture_review::require_available(w, &round.round_id, seq)?;
                 let Some(segment) = choice[camera][(seq - 1) as usize] else {
                     return Ok(burst::frame_without_metrics(
                         camera,
@@ -430,8 +599,7 @@ fn measure(app: &AppHandle, id: &str, revision: u64) -> Result<WorkspaceView, St
                 let graph = graphs
                     .get(camera, segment)
                     .ok_or_else(|| format!("第 {segment} 段相机 {camera_id} 还没有示教走廊"))?;
-                let image =
-                    crate::image_file::load(&capture.burst_frame_path(round_id, camera_id, seq)?)?;
+                let image = crate::image_file::load(&frame_index.path(camera_id, seq)?)?;
                 vision::measure_frame(
                     engine,
                     graph,
@@ -441,23 +609,109 @@ fn measure(app: &AppHandle, id: &str, revision: u64) -> Result<WorkspaceView, St
                 )
                 .map(|m| m.metrics)
             },
-        ))
+            Some(operation),
+        )
     };
-    let outcome = measure_teaching(&w, &round, &current, measure)?;
-    let mut items = host.items.lock().unwrap();
-    let current = items.get_mut(id).ok_or("候选配置不存在")?;
-    current
-        .expect(revision)
-        .map_err(|_| "测量期间候选已被修改，本次没有写入，请重试".to_string())?;
-    let dir = host.dir(id).join(CALIBRATION_DIR);
-    let _ = std::fs::remove_dir_all(&dir);
-    burst::write_features(
-        &dir.join(&round.round_id),
-        &outcome.next.doc.plan_cameras(),
-        &outcome.metrics,
-        &outcome.segmented,
-    )?;
-    host.save(&outcome.next)?;
-    *current = outcome.next;
-    view(app, current.clone())
+    let prepared = PreparedTeachingMeasurement::stage(&host, &w, round, |w, round| {
+        let metrics = measure(w, round)?;
+        operation.stage("summarizing")?;
+        Ok(metrics)
+    })?;
+    let result = view(app, prepared.workspace.clone())?;
+    operation.saving()?;
+    prepared.commit(&host)?;
+    Ok(result)
+}
+
+pub struct PreparedTeachingMeasurement {
+    pub workspace: Workspace,
+    staging: CalibrationStaging,
+    revision: u64,
+    instance_id: u64,
+}
+
+impl PreparedTeachingMeasurement {
+    pub fn stage(
+        host: &WorkspaceHost,
+        workspace: &Workspace,
+        round: &CaptureRoundV2,
+        measure: impl FnOnce(&Workspace, &CaptureRoundV2) -> Result<Vec<FrameMetrics>, String>,
+    ) -> Result<Self, String> {
+        workspace.expect(workspace.revision)?;
+        let outcome = measure_teaching(workspace, round, measure)?;
+        let staging = CalibrationStaging(
+            host.dir(&workspace.doc.id)
+                .join(vision::unique_run_id("calibration-staging")),
+        );
+        burst::write_features(
+            &staging.0.join(&round.round_id),
+            &outcome.next.doc.plan_cameras(),
+            &outcome.metrics,
+            &outcome.segmented,
+        )?;
+        Ok(Self {
+            workspace: outcome.next,
+            staging,
+            revision: workspace.revision,
+            instance_id: workspace.instance_id,
+        })
+    }
+
+    pub fn commit(self, host: &WorkspaceHost) -> Result<Workspace, String> {
+        let id = &self.workspace.doc.id;
+        let mut items = host.items.lock().unwrap();
+        let current = items.get_mut(id).ok_or("候选配置不存在")?;
+        current
+            .expect(self.revision)
+            .map_err(|_| "测量期间候选已被修改，本次没有写入，请重试".to_string())?;
+        if current.instance_id != self.instance_id {
+            return Err("候选已重建，请重新加载后测量".into());
+        }
+        commit_calibration(&self.staging.0, &host.dir(id).join(CALIBRATION_DIR), || {
+            host.save(&self.workspace)
+        })?;
+        *current = self.workspace.clone();
+        Ok(self.workspace)
+    }
+}
+
+struct CalibrationStaging(PathBuf);
+
+impl Drop for CalibrationStaging {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn commit_calibration(
+    staging: &Path,
+    target: &Path,
+    save: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let backup = target.with_file_name(vision::unique_run_id("calibration-backup"));
+    let had_previous = target.exists();
+    if had_previous {
+        std::fs::rename(target, &backup).map_err(|error| format!("保留原测量结果失败：{error}"))?;
+    }
+    if let Err(error) = std::fs::rename(staging, target) {
+        if had_previous {
+            std::fs::rename(&backup, target).map_err(|rollback| {
+                format!("更新测量结果失败：{error}；恢复原结果失败：{rollback}")
+            })?;
+        }
+        return Err(format!("更新测量结果失败：{error}"));
+    }
+    if let Err(error) = save() {
+        std::fs::rename(target, staging)
+            .map_err(|rollback| format!("{error}；撤回测量结果失败：{rollback}"))?;
+        if had_previous {
+            std::fs::rename(&backup, target)
+                .map_err(|rollback| format!("{error}；恢复原结果失败：{rollback}"))?;
+        }
+        return Err(error);
+    }
+    if had_previous {
+        let _ = std::fs::remove_dir_all(backup);
+    }
+    Ok(())
 }

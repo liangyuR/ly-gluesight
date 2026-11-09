@@ -1,6 +1,6 @@
 [package]
 name = "gluesight"
-version = "0.1.5"
+version = "0.2.2"
 description = "GlueSight · 胶路智检"
 edition = "2021"
 default-run = "GlueSight"
@@ -27,7 +27,11 @@ tauri = { version = "2.12.5", features = [] }
 rfd = "0.16"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
-tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "net"] }
+# 示教 MCP 服务（docs/integration/agent-teaching.md）：只监听本机的 HTTP JSON-RPC
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 libloading = "0.8"
 # 诊断包 ZIP：与 png 解码共用已锁定的版本
 flate2 = "1"
@@ -38,7 +42,7 @@ sha2 = "0.10"
 rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # tag 必须属于 packaging/runtime.json 的 lyflow.series；升级用 pnpm deps:lyflow:update。
-lyflow-client = { git = "https://github.com/liangyuR/lyFlow.git", tag = "v1.2.0" }
+lyflow-client = { git = "https://github.com/liangyuR/lyFlow.git", tag = "v1.3.2" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm", "bmp", "tiff"] }
 ly-plc = { git = "https://github.com/liangyuR/ly-plc.git", rev = "fe6c2105209ba87d6b4abfe58a1fe0dad290f6e0", version = "0.4.0" }
 

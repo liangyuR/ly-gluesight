@@ -1,20 +1,21 @@
 import { desktopCall } from "../../lib/desktop";
-import { decodeGray, liveGray } from "./api";
+import { decodeFrameImage, liveFrame } from "./api";
 import type { CalibrationFrameView } from "../plan/types";
-import type { GrayImage } from "./types";
+import type { FrameImage } from "./types";
+import { loadPreview } from "./previewCache";
 
 /**
  * 段配方的原图：按 (相机, seq) 读，camera 是计划相机下标（与 FrameGroupView.cells、FrameRecord.camera 同一口径）。
  * 命令见决策记录 5.4（workspace_live_frame_image、workspace_record_frame_image）；未到、缺帧或录制没保存时后端报错，页面按读图失败显示。
  */
 export const burstImageApi = {
-  /** 在途件某台相机第 seq 帧的实时原图；revisionId 是本件开工时的配方修订 */
-  live: (cycleId: string, revisionId: string, camera: number, seq: number): Promise<GrayImage> =>
-    desktopCall<ArrayBuffer>("workspace_live_frame_image", { cycleId, revisionId, camera, seq }).then(liveGray),
+  /** 在途件某台相机第 seq 帧的原图（内存里没有时后端读本件的录制原图）；revisionId 是本件开工时的配方修订 */
+  live: (cycleId: string, revisionId: string, camera: number, seq: number): Promise<FrameImage> =>
+    desktopCall<ArrayBuffer>("workspace_live_frame_image", { cycleId, revisionId, camera, seq }).then(liveFrame),
   /** 在途件某台相机第 seq 帧测到的叠图（走廊、搜索带与胶边）；还没测完或没测成时为 null */
   liveView: (cycleId: string, revisionId: string, camera: number, seq: number): Promise<CalibrationFrameView | null> =>
     desktopCall<CalibrationFrameView | null>("workspace_live_frame_view", { cycleId, revisionId, camera, seq }),
   /** 历史件某台相机第 seq 帧的录制原图；录制没保存时后端报错 */
-  record: (historyId: number, camera: number, seq: number): Promise<GrayImage> =>
-    desktopCall<ArrayBuffer>("workspace_record_frame_image", { historyId, camera, seq }).then(decodeGray),
+  record: (historyId: number, camera: number, seq: number, signal?: AbortSignal): Promise<FrameImage> =>
+    loadPreview(JSON.stringify(["history", historyId, camera, seq]), () => desktopCall<ArrayBuffer>("workspace_record_frame_image", { historyId, camera, seq }).then(decodeFrameImage), signal),
 };

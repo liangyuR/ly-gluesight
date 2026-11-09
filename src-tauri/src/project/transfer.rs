@@ -1,24 +1,27 @@
-//! 项目整包导出导入：把一个项目目录（硬件配置、标定、配方与发布包、候选与采集轮次，可选检测记录与原图）打成 ZIP，
+//! 项目整包导出导入：把一个项目目录（硬件配置、标定、配方与发布包、候选与采集轮次记录，可选示教件原图、检测记录与原图）打成 ZIP，
 //! 在本机或另一台机器上导入为新项目。
 //!
 //! - 包内 `manifest.json` 记格式版本、来源项目、来源项目目录、导出时间、来源软件版本、是否含检测记录与每个文件的字节数和 SHA-256；
 //! - 导入先完整解到暂存目录，只接受清单内、路径在白名单结构里的文件并逐个核对，任何不符整包拒绝，不留下半个项目；
-//! - 指向来源项目目录的绝对路径改写到新项目目录；生产配方保持可生产，计划版本按本机计数重新分配；候选回到草稿。
+//! - 指向来源项目目录的绝对路径改写到新项目目录；生产配方保持可生产；候选回到草稿。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use super::{manage, ProjectMeta};
+use crate::store::Store;
 
-pub const FORMAT: u32 = 1;
+/// 2：检测记录库是本机记录库按项目导出的子集（记录库版本 10）；1 的包（项目自己的 9 版记录库）照常导入。
+pub const FORMAT: u32 = 2;
+const FORMATS: [u32; 2] = [1, 2];
 const MANIFEST: &str = "manifest.json";
 const MANIFEST_MAX_BYTES: u64 = 64 << 20;
 const PREFIX: &str = "project/";
@@ -32,8 +35,11 @@ const CONTENT: [&str; 8] = [
     "recipe-capture",
     "recipe-support",
 ];
-const RECORDS: [&str; 3] = ["inspection.db", "records", "records-offline"];
+const RECORDS: [&str; 2] = ["inspection.db", "records"];
 const PENDING_RECORDINGS: &str = ".project-install-pending.json";
+/// 包里放别的项目被示教件引用的录制的子目录：与历史件导出包导入的件同放 `records/imported/`，滚动清理不扫，
+/// 记录过期（不再被引用）时随记录一起删。
+const LINKED: &str = crate::history_package::IMPORTED;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -88,7 +94,10 @@ pub struct ProjectImported {
     pub notes: Vec<String>,
 }
 
-fn copy_hashed(mut from: impl Read, mut to: impl Write) -> std::io::Result<(u64, String)> {
+pub(crate) fn copy_hashed(
+    mut from: impl Read,
+    mut to: impl Write,
+) -> std::io::Result<(u64, String)> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1 << 20];
     let mut total = 0u64;
@@ -120,10 +129,17 @@ fn allowed(path: &str, records: bool) -> bool {
     let single = matches!(top, "project.json" | "inspection.db");
     named
         && single == (parts.len() == 1)
-        && (CONTENT.contains(&top) || records && RECORDS.contains(&top))
+        && (CONTENT.contains(&top)
+            || records && (RECORDS.contains(&top) || top == "records-offline"))
 }
 
-fn walk(
+/// 旧采集轮次目录里的原图：新轮次只引用检测记录的录制、没有原图；旧轮次（格式 3 及更早）的原图可能是唯一一份
+/// （来源录制已清理），随项目导出与复制。
+fn capture_image(path: &str) -> bool {
+    path.starts_with("project/recipe-capture/") && path.ends_with(".pgm")
+}
+
+pub(crate) fn walk(
     dir: &Path,
     relative: &str,
     out: &mut Vec<(String, PathBuf)>,
@@ -161,128 +177,226 @@ fn walk(
     Ok(())
 }
 
-/// 待写进包的文件：（包内路径，磁盘路径）。检测记录库用 `VACUUM INTO` 做含 WAL 的一致性快照，快照放在 `scratch`。
-fn collect(
+fn walk_tops(
     root: &Path,
-    include_records: bool,
-    scratch: &Path,
+    tops: &[&str],
     notes: &mut Vec<String>,
 ) -> Result<Vec<(String, PathBuf)>, String> {
     let mut out = Vec::new();
-    let recording_root = crate::log_storage::recording_project(root)?;
-    for top in CONTENT
-        .iter()
-        .chain(if include_records { &RECORDS[1..] } else { &[] })
-    {
-        let path = if RECORDS[1..].contains(top) {
-            recording_root.join(top)
+    let recordings = crate::log_storage::recording_projects(root)?;
+    for top in tops {
+        // 录制分在几块录制盘上，包里合成一个 records/（件的录制目录名带时间戳与 cycleId，不会重名）
+        let paths: Vec<PathBuf> = if RECORDS[1..].contains(top) {
+            recordings
+                .iter()
+                .map(|recording| recording.join(top))
+                .collect()
         } else {
-            root.join(top)
+            vec![root.join(top)]
         };
         let relative = format!("{PREFIX}{top}");
-        if path.is_dir() {
-            crate::image_file::checked_source_path(&path)?;
-            walk(&path, &relative, &mut out, notes)?;
-        } else if path.is_file() {
-            out.push((relative, path));
+        for path in paths {
+            if path.is_dir() {
+                crate::image_file::checked_source_path(&path)?;
+                walk(&path, &relative, &mut out, notes)?;
+            } else if path.is_file() {
+                out.push((relative.clone(), path));
+            }
         }
     }
-    let db = root.join("inspection.db");
-    if include_records && db.is_file() {
+    Ok(out)
+}
+
+/// 待写进包的文件：（包内路径，磁盘路径）。新采集轮次只有 `round.json` 与 `frames.jsonl`，示教件原图引用检测记录的录制，
+/// 只随检测记录带出；旧轮次目录里的原图照带。`records` 有值时带上该项目的检测记录与录制：从本机记录库导出本项目记录的子集，
+/// 放在 `scratch`。
+fn collect(
+    root: &Path,
+    records: Option<&Store>,
+    scratch: &Path,
+    notes: &mut Vec<String>,
+) -> Result<Vec<(String, PathBuf)>, String> {
+    let tops: Vec<&str> = CONTENT
+        .iter()
+        .chain(if records.is_some() {
+            &RECORDS[1..]
+        } else {
+            &[]
+        })
+        .copied()
+        .collect();
+    let mut out = walk_tops(root, &tops, notes)?;
+    let recordings = crate::log_storage::recording_projects(root)?;
+    if let Some(store) = records {
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
         let snapshot = scratch.join("inspection.db");
-        let conn =
-            rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .map_err(|e| format!("打开检测记录库失败：{e}"))?;
-        conn.busy_timeout(std::time::Duration::from_secs(10))
-            .map_err(|e| e.to_string())?;
-        conn.execute("VACUUM INTO ?1", [snapshot.to_string_lossy()])
-            .map_err(|e| format!("检测记录库快照失败：{e}"))?;
-        drop(conn);
-        if recording_root != root {
-            crate::storage::relocate::database(&snapshot, &recording_root, root)?;
+        let project = super::read_meta(root)?.id;
+        let linked = crate::recipe_capture::history_cycles(&root.join("recipe-capture"))?;
+        let (_, foreign) = store
+            .export_project(&project, &snapshot, &linked)
+            .map_err(|e| format!("导出检测记录失败：{e}"))?;
+        out.extend(link_recordings(&snapshot, &recordings[0], &foreign, notes)?);
+        for recording in recordings.iter().filter(|recording| *recording != root) {
+            crate::storage::relocate::database(&snapshot, recording, root)?;
         }
         out.push((format!("{PREFIX}inspection.db"), snapshot));
     }
     Ok(out)
 }
 
-fn write_package<W: Write + Seek>(
-    out: W,
-    mut manifest: Manifest,
-    entries: Vec<(String, PathBuf)>,
-) -> Result<(W, Manifest), String> {
-    let mut zip = ZipWriter::new(out);
-    for (name, path) in entries {
-        if !allowed(&name, manifest.includes_records) {
-            return Err(format!("导出路径无效：{name}"));
-        }
-        let file = File::open(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-        let length = file.metadata().map_err(|e| e.to_string())?.len();
-        let level = if name.ends_with(".pgm") || name.ends_with(".png") {
-            1
-        } else {
-            6
-        };
-        let options = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .compression_level(Some(level))
-            .large_file(length >= u32::MAX as u64);
-        zip.start_file(name.as_str(), options)
-            .map_err(|e| e.to_string())?;
-        let (bytes, sha256) = copy_hashed(BufReader::new(file), &mut zip)
-            .map_err(|e| format!("写入 {name} 失败：{e}"))?;
-        manifest.files.push(PackageFile {
-            path: name,
-            bytes,
-            sha256,
-        });
+/// 本项目示教件引用的别的项目的历史件：录制原图放进包里的 `records/imported/<录制目录名>/`，导出记录库子集里这些记录的
+/// 录制目录与帧原图引用改到那里（之后随本项目录制根一起改写）。录制已不在的只改记录、不带原图，并记一条说明。
+fn link_recordings(
+    snapshot: &Path,
+    recording_root: &Path,
+    foreign: &[(i64, Option<String>)],
+    notes: &mut Vec<String>,
+) -> Result<Vec<(String, PathBuf)>, String> {
+    if foreign.is_empty() {
+        return Ok(Vec::new());
     }
-    zip.start_file(
-        MANIFEST,
-        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
-    )
-    .map_err(|e| e.to_string())?;
-    zip.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
+    let mut conn = rusqlite::Connection::open(snapshot).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for (id, directory) in foreign {
+        let Some(directory) = directory else { continue };
+        let source = Path::new(directory);
+        let name = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty() && *n != ".." && !n.contains(['/', '\\', ':']))
+            .ok_or_else(|| format!("示教件引用的录制目录无效：{directory}"))?;
+        let linked = recording_root.join("records").join(LINKED).join(name);
+        tx.execute(
+            "UPDATE parts SET recording_directory = ?1 WHERE id = ?2",
+            rusqlite::params![linked.to_string_lossy(), id],
+        )
         .map_err(|e| e.to_string())?;
-    let out = zip.finish().map_err(|e| e.to_string())?;
-    Ok((out, manifest))
+        let frames: Vec<(i64, i64, String)> = {
+            let mut stmt = tx
+                .prepare("SELECT camera, seq, raw_file FROM part_frames WHERE part_id = ?1 AND raw_file IS NOT NULL")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+        };
+        for (camera, seq, raw) in frames {
+            let file = raw.rsplit(['/', '\\']).next().unwrap_or(&raw);
+            tx.execute(
+                "UPDATE part_frames SET raw_file = ?1 WHERE part_id = ?2 AND camera = ?3 AND seq = ?4",
+                rusqlite::params![format!("{LINKED}/{name}/{file}"), id, camera, seq],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !source.is_dir() {
+            notes.push(format!(
+                "示教件引用的历史件录制 {directory} 已不在，只导出了记录"
+            ));
+            continue;
+        }
+        crate::image_file::checked_source_path(source)?;
+        walk(
+            source,
+            &format!("{PREFIX}records/{LINKED}/{name}"),
+            &mut entries,
+            notes,
+        )?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(entries)
 }
 
-/// 把项目目录 `root` 导出到 `target`（先写 `.tmp` 再改名）。
-pub fn export_to(
-    root: &Path,
-    include_records: bool,
-    scratch: &Path,
-    target: &Path,
-) -> Result<Manifest, String> {
-    let project = super::read_meta(root)?;
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferSize {
+    pub content: u64,
+    pub records: u64,
+}
+
+/// 导出或复制要带的字节数（压缩前），按是否带检测记录分开给；`records_db` 是本项目记录在本机记录库里的估算字节数。
+pub fn transfer_size(root: &Path, records_db: u64) -> Result<TransferSize, String> {
+    let bytes = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut notes = Vec::new();
-    let entries = collect(root, include_records, scratch, &mut notes)?;
-    let manifest = Manifest {
-        format: FORMAT,
-        project,
-        source_root: root.to_string_lossy().into_owned(),
-        exported_at: ly_plc::now_ms(),
-        app_version: env!("CARGO_PKG_VERSION").into(),
-        includes_records: include_records,
-        notes,
-        files: Vec::new(),
-    };
+    let mut size = TransferSize::default();
+    for (_, path) in walk_tops(root, &CONTENT, &mut notes)? {
+        size.content += bytes(&path);
+    }
+    for (_, path) in walk_tops(root, &RECORDS[1..], &mut notes)? {
+        size.records += bytes(&path);
+    }
+    size.records += records_db;
+    Ok(size)
+}
+
+/// 把 `entries`（包内路径，磁盘路径）写成 ZIP：先写 `target.tmp` 再改名；写完文件后由 `manifest` 按各文件的字节数与校验和生成清单，写在包尾。
+pub(crate) fn write_zip<M: Serialize>(
+    target: &Path,
+    entries: Vec<(String, PathBuf)>,
+    manifest: impl FnOnce(Vec<PackageFile>) -> M,
+) -> Result<M, String> {
+    write_zip_with(target, entries, manifest, || Ok(()), || Ok(()))
+}
+
+/// 同 [`write_zip`]，每写完一个文件调一次 `progress`；它报错（如任务取消）时停止并删掉未完成的包。
+/// 包写完、替换目标文件前调一次 `commit`（如进入不可取消的保存阶段），它报错时同样删掉包、不动目标文件。
+pub(crate) fn write_zip_with<M: Serialize>(
+    target: &Path,
+    entries: Vec<(String, PathBuf)>,
+    manifest: impl FnOnce(Vec<PackageFile>) -> M,
+    mut progress: impl FnMut() -> Result<(), String>,
+    commit: impl FnOnce() -> Result<(), String>,
+) -> Result<M, String> {
     let mut temporary = target.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = PathBuf::from(temporary);
     let written = File::create(&temporary)
         .map_err(|e| format!("创建导出文件失败：{e}"))
         .and_then(|file| {
-            let (out, manifest) = write_package(BufWriter::new(file), manifest, entries)?;
-            out.into_inner()
+            let mut zip = ZipWriter::new(BufWriter::new(file));
+            let mut files = Vec::with_capacity(entries.len());
+            for (name, path) in entries {
+                let file =
+                    File::open(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+                let length = file.metadata().map_err(|e| e.to_string())?.len();
+                let level = if name.ends_with(".pgm") || name.ends_with(".png") {
+                    1
+                } else {
+                    6
+                };
+                let options = SimpleFileOptions::default()
+                    .compression_method(CompressionMethod::Deflated)
+                    .compression_level(Some(level))
+                    .large_file(length >= u32::MAX as u64);
+                zip.start_file(name.as_str(), options)
+                    .map_err(|e| e.to_string())?;
+                let (bytes, sha256) = copy_hashed(BufReader::new(file), &mut zip)
+                    .map_err(|e| format!("写入 {name} 失败：{e}"))?;
+                files.push(PackageFile {
+                    path: name,
+                    bytes,
+                    sha256,
+                });
+                progress()?;
+            }
+            let manifest = manifest(files);
+            zip.start_file(
+                MANIFEST,
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .map_err(|e| e.to_string())?;
+            zip.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            zip.finish()
+                .map_err(|e| e.to_string())?
+                .into_inner()
                 .map_err(|e| e.to_string())?
                 .sync_all()
                 .map_err(|e| e.to_string())?;
             Ok(manifest)
         });
     let manifest = written.and_then(|manifest| {
+        commit()?;
         if target.exists() {
             std::fs::remove_file(target).map_err(|e| format!("覆盖导出文件失败：{e}"))?;
         }
@@ -295,25 +409,83 @@ pub fn export_to(
     manifest
 }
 
-fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest, String> {
+/// 把项目目录 `root` 导出到 `target`（先写 `.tmp` 再改名）；`records` 有值时带上本项目的检测记录与历史原图。
+pub fn export_to(
+    root: &Path,
+    records: Option<&Store>,
+    scratch: &Path,
+    target: &Path,
+) -> Result<Manifest, String> {
+    let project = super::read_meta(root)?;
+    let include_records = records.is_some();
+    let mut notes = Vec::new();
+    let entries = collect(root, records, scratch, &mut notes)?;
+    let manifest = Manifest {
+        format: FORMAT,
+        project,
+        source_root: root.to_string_lossy().into_owned(),
+        exported_at: ly_plc::now_ms(),
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        includes_records: include_records,
+        notes,
+        files: Vec::new(),
+    };
+    if let Some((name, _)) = entries
+        .iter()
+        .find(|(name, _)| !allowed(name, include_records))
+    {
+        return Err(format!("导出路径无效：{name}"));
+    }
+    write_zip(target, entries, |files| Manifest { files, ..manifest })
+}
+
+/// 读包内 `manifest.json` 为 JSON；`label` 是报错里的包名（如“项目导出包”）。
+pub(crate) fn manifest_value<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    label: &str,
+) -> Result<Value, String> {
     let mut entry = zip
         .by_name(MANIFEST)
-        .map_err(|_| "不是项目导出包：缺少 manifest.json".to_string())?;
+        .map_err(|_| format!("不是{label}：缺少 manifest.json"))?;
     if entry.size() > MANIFEST_MAX_BYTES {
-        return Err("项目导出包清单过大".into());
+        return Err(format!("{label}清单过大"));
     }
     let mut text = String::new();
     entry
         .by_ref()
         .take(MANIFEST_MAX_BYTES + 1)
         .read_to_string(&mut text)
-        .map_err(|e| format!("项目导出包清单无法读取：{e}"))?;
-    let value: Value =
-        serde_json::from_str(&text).map_err(|e| format!("项目导出包清单格式无效：{e}"))?;
+        .map_err(|e| format!("{label}清单无法读取：{e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("{label}清单格式无效：{e}"))
+}
+
+/// 清单里的文件条目：不重复（不区分大小写）、校验和格式有效、路径都通过 `allowed`。
+pub(crate) fn check_listed(
+    files: &[PackageFile],
+    allowed: impl Fn(&str) -> bool,
+    label: &str,
+) -> Result<HashSet<String>, String> {
+    let mut seen = HashSet::new();
+    for file in files {
+        if !allowed(&file.path) {
+            return Err(format!("{label}含不允许的路径：{}", file.path));
+        }
+        if !seen.insert(file.path.to_ascii_lowercase()) {
+            return Err(format!("{label}清单重复列出 {}", file.path));
+        }
+        if file.sha256.len() != 64 || !file.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("{label}清单的校验和无效：{}", file.path));
+        }
+    }
+    Ok(seen)
+}
+
+fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest, String> {
+    let value = manifest_value(zip, "项目导出包")?;
     let format = value.get("format").and_then(Value::as_u64);
-    if format != Some(FORMAT as u64) {
+    if !format.is_some_and(|f| FORMATS.iter().any(|known| u64::from(*known) == f)) {
         return Err(format!(
-            "项目导出包格式 {} 不受本机软件支持（支持 {FORMAT}）",
+            "项目导出包格式 {} 不受本机软件支持（支持 1、{FORMAT}）",
             format.map_or("未知".into(), |f| f.to_string())
         ));
     }
@@ -322,27 +494,24 @@ fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest, St
     if !super::valid_id(&manifest.project.id) {
         return Err("项目导出包的来源项目编号无效".into());
     }
-    let mut seen = HashSet::new();
-    for file in &manifest.files {
-        if !allowed(&file.path, manifest.includes_records) {
-            return Err(format!("项目导出包含不允许的路径：{}", file.path));
-        }
-        if !seen.insert(file.path.to_ascii_lowercase()) {
-            return Err(format!("项目导出包清单重复列出 {}", file.path));
-        }
-        if file.sha256.len() != 64 || !file.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(format!("项目导出包清单的校验和无效：{}", file.path));
-        }
-    }
+    let seen = check_listed(
+        &manifest.files,
+        |path| allowed(path, manifest.includes_records),
+        "项目导出包",
+    )?;
     if !seen.contains("project/project.json") {
         return Err("项目导出包缺少 project.json".into());
     }
     Ok(manifest)
 }
 
+pub(crate) fn open_zip(path: &Path, label: &str) -> Result<ZipArchive<BufReader<File>>, String> {
+    let file = File::open(path).map_err(|e| format!("打开{label}失败：{e}"))?;
+    ZipArchive::new(BufReader::new(file)).map_err(|e| format!("{label}不是有效的 ZIP 文件：{e}"))
+}
+
 fn open_archive(path: &Path) -> Result<ZipArchive<BufReader<File>>, String> {
-    let file = File::open(path).map_err(|e| format!("打开项目导出包失败：{e}"))?;
-    ZipArchive::new(BufReader::new(file)).map_err(|e| format!("项目导出包不是有效的 ZIP 文件：{e}"))
+    open_zip(path, "项目导出包")
 }
 
 pub fn inspect(path: &Path) -> Result<Manifest, String> {
@@ -353,34 +522,66 @@ pub fn inspect(path: &Path) -> Result<Manifest, String> {
 fn extract(path: &Path, staging: &Path) -> Result<Manifest, String> {
     let mut zip = open_archive(path)?;
     let manifest = read_manifest(&mut zip)?;
-    let listed: BTreeMap<&str, &PackageFile> = manifest
-        .files
-        .iter()
-        .map(|f| (f.path.as_str(), f))
-        .collect();
+    extract_listed(
+        &mut zip,
+        &manifest.files,
+        staging,
+        |name| allowed(name, manifest.includes_records),
+        "项目导出包",
+    )?;
+    Ok(manifest)
+}
+
+/// 把包内除清单外的条目解到 `staging`：每个条目都须在清单 `files` 里、通过 `allowed`、是普通文件，
+/// 字节数与 SHA-256 与清单一致；清单之外、重复或缺少的条目都整包拒绝。
+pub(crate) fn extract_listed<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    files: &[PackageFile],
+    staging: &Path,
+    allowed: impl Fn(&str) -> bool,
+    label: &str,
+) -> Result<(), String> {
+    extract_listed_with(zip, files, staging, allowed, label, |_| true, || Ok(()))
+}
+
+/// 同 [`extract_listed`]，但只写出 `wanted` 的条目（其余仍须在清单里、通过 `allowed`，不解出）；
+/// 每处理一个条目调一次 `progress`，它报错（如任务取消）时停止。
+pub(crate) fn extract_listed_with<R: Read + Seek>(
+    zip: &mut ZipArchive<R>,
+    files: &[PackageFile],
+    staging: &Path,
+    allowed: impl Fn(&str) -> bool,
+    label: &str,
+    wanted: impl Fn(&str) -> bool,
+    mut progress: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    let listed: BTreeMap<&str, &PackageFile> = files.iter().map(|f| (f.path.as_str(), f)).collect();
     let mut seen = HashSet::new();
     for index in 0..zip.len() {
         let entry = zip
             .by_index(index)
-            .map_err(|e| format!("项目导出包条目无法读取：{e}"))?;
+            .map_err(|e| format!("{label}条目无法读取：{e}"))?;
         let name = entry
             .name()
-            .map_err(|e| format!("项目导出包条目名称无效：{e}"))?
+            .map_err(|e| format!("{label}条目名称无效：{e}"))?
             .into_owned();
         if !seen.insert(name.to_ascii_lowercase()) {
-            return Err(format!("项目导出包含重复条目：{name}"));
+            return Err(format!("{label}含重复条目：{name}"));
         }
         if name == MANIFEST {
             continue;
         }
         let expected = listed
             .get(name.as_str())
-            .filter(|_| allowed(&name, manifest.includes_records))
-            .ok_or_else(|| format!("项目导出包含清单之外或不允许的条目：{name}"))?;
+            .filter(|_| allowed(&name))
+            .ok_or_else(|| format!("{label}含清单之外或不允许的条目：{name}"))?;
         if !entry.is_file() || entry.encrypted() || entry.size() != expected.bytes {
-            return Err(format!(
-                "项目导出包条目 {name} 不是普通文件或大小与清单不符"
-            ));
+            return Err(format!("{label}条目 {name} 不是普通文件或大小与清单不符"));
+        }
+        if !wanted(&name) {
+            drop(entry);
+            progress()?;
+            continue;
         }
         let target = name
             .split('/')
@@ -394,33 +595,14 @@ fn extract(path: &Path, staging: &Path) -> Result<Manifest, String> {
             .map_err(|e| format!("解出 {name} 失败：{e}"))?;
         out.flush().map_err(|e| e.to_string())?;
         if bytes != expected.bytes || sha256 != expected.sha256.to_ascii_lowercase() {
-            return Err(format!(
-                "项目导出包文件 {name} 校验和不符，文件已损坏或被改动"
-            ));
+            return Err(format!("{label}文件 {name} 校验和不符，文件已损坏或被改动"));
         }
+        progress()?;
     }
-    if seen.len() != manifest.files.len() + 1 {
-        return Err("项目导出包缺少清单列出的文件".into());
+    if seen.len() != files.len() + 1 {
+        return Err(format!("{label}缺少清单列出的文件"));
     }
-    Ok(manifest)
-}
-
-fn plan_of(value: &Value) -> Option<u32> {
-    value
-        .get("planVersion")
-        .and_then(Value::as_u64)
-        .and_then(|p| u32::try_from(p).ok())
-        .filter(|p| *p != 0)
-}
-
-fn set_plan(value: &mut Value, plans: &BTreeMap<u32, u32>) -> bool {
-    match plan_of(value).and_then(|p| plans.get(&p)) {
-        Some(new) => {
-            value["planVersion"] = (*new).into();
-            true
-        }
-        None => false,
-    }
+    Ok(())
 }
 
 fn read_value(path: &Path) -> Result<Value, String> {
@@ -428,89 +610,7 @@ fn read_value(path: &Path) -> Result<Value, String> {
         .map_err(|e| format!("{} 无法解析：{e}", path.display()))
 }
 
-/// 生产配方、修订来源与检测记录里的配方快照：计划版本按本机计数整体换成新号（同一旧号换成同一新号），
-/// 修订来源与配方文件同步改，加载时仍能证明修订号属于它，不会被当成手改文件而升版本。
-fn remap_plans(root: &Path, plan_file: &Path) -> Result<BTreeMap<u32, u32>, String> {
-    let recipes = root.join("recipes");
-    let docs: Vec<PathBuf> = std::fs::read_dir(&recipes)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json"))
-        .filter(|p| {
-            !p.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .starts_with('.')
-        })
-        .collect();
-    let sources_path = recipes.join(".revision-sources");
-    let mut sources = if sources_path.is_file() {
-        Some(read_value(&sources_path)?)
-    } else {
-        None
-    };
-    let mut used = BTreeSet::new();
-    for doc in &docs {
-        used.extend(plan_of(&read_value(doc)?));
-    }
-    if let Some(map) = sources.as_ref().and_then(Value::as_object) {
-        used.extend(map.values().filter_map(plan_of));
-    }
-    if used.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let first = crate::recipe::reserve_plan_versions(plan_file, used.len() as u32)?;
-    let plans: BTreeMap<u32, u32> = used.into_iter().zip(first..).collect();
-    for doc in &docs {
-        let mut value = read_value(doc)?;
-        if set_plan(&mut value, &plans) {
-            crate::fsio::write_atomic(
-                doc,
-                &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
-            )?;
-        }
-    }
-    if let Some(Value::Object(map)) = sources.as_mut() {
-        map.values_mut().for_each(|value| {
-            set_plan(value, &plans);
-        });
-        crate::fsio::write_atomic(
-            &sources_path,
-            &serde_json::to_string(&map).map_err(|e| e.to_string())?,
-        )?;
-    }
-    let db = root.join("inspection.db");
-    if db.is_file() {
-        let mut conn = rusqlite::Connection::open(&db).map_err(|e| e.to_string())?;
-        let has: bool = conn
-            .query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='recipe_snapshots')", [], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
-        if has {
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
-            let rows: Vec<(String, String)> = tx
-                .prepare("SELECT revision_id, json FROM recipe_snapshots")
-                .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
-                .map_err(|e| e.to_string())?;
-            for (revision, json) in rows {
-                let mut value: Value = serde_json::from_str(&json)
-                    .map_err(|e| format!("配方快照 {revision} 无法解析：{e}"))?;
-                if set_plan(&mut value, &plans) {
-                    tx.execute(
-                        "UPDATE recipe_snapshots SET json=?1 WHERE revision_id=?2",
-                        rusqlite::params![value.to_string(), revision],
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-            }
-            tx.commit().map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(plans)
-}
-
-fn staging_dir(parent: &Path, kind: &str) -> Result<PathBuf, String> {
+pub(crate) fn staging_dir(parent: &Path, kind: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let stamp = ly_plc::now_ms();
     for suffix in 0..1000 {
@@ -524,17 +624,18 @@ fn staging_dir(parent: &Path, kind: &str) -> Result<PathBuf, String> {
     Err("无法创建暂存目录".into())
 }
 
-/// 把导出包导入为资料目录 `data` 下的新项目 `id`；`plan_file` 是本机计划版本记录，`cache` 放暂存目录（用后删除）。
+/// 把导出包导入为资料目录 `data` 下的新项目 `id`；`cache` 放暂存目录（用后删除）。
+/// 包里的检测记录并入本机记录库 `store`，归新项目。
 pub fn import_from(
     data: &Path,
     package: &Path,
     id: &str,
     name: &str,
-    plan_file: &Path,
     cache: &Path,
+    store: &Store,
 ) -> Result<ProjectImported, String> {
     let staging = staging_dir(cache, "import")?;
-    let result = install(data, package, id, name, plan_file, &staging);
+    let result = install(data, package, id, name, &staging, store);
     let _ = std::fs::remove_dir_all(&staging);
     result
 }
@@ -544,8 +645,8 @@ fn install(
     package: &Path,
     id: &str,
     name: &str,
-    plan_file: &Path,
     staging: &Path,
+    store: &Store,
 ) -> Result<ProjectImported, String> {
     let manifest = extract(package, staging)?;
     let mut imported = finish(
@@ -554,14 +655,15 @@ fn install(
         &Source {
             id: &manifest.project.id,
             root: Path::new(&manifest.source_root),
-            includes_records: manifest.includes_records,
+            capture_images: manifest.files.iter().any(|f| capture_image(&f.path)),
+            records: manifest.includes_records,
         },
         &New {
             id,
             name,
             description: &manifest.project.description,
         },
-        plan_file,
+        Some(store),
     )?;
     imported
         .notes
@@ -572,7 +674,10 @@ fn install(
 struct Source<'a> {
     id: &'a str,
     root: &'a Path,
-    includes_records: bool,
+    /// 以前带示教件原图导出的包：采集轮次目录里有原图
+    capture_images: bool,
+    /// 示教件那一件的检测记录与录制在本机：导入带了记录，或复制（记录本机共用）
+    records: bool,
 }
 
 pub struct New<'a> {
@@ -581,13 +686,14 @@ pub struct New<'a> {
     pub description: &'a str,
 }
 
-/// 暂存目录 `root` 里的项目内容落成新项目：改写来源目录路径、重新分配计划版本、候选回到草稿，再原子移入 `projects/<id>`。
+/// 暂存目录 `root` 里的项目内容落成新项目：改写来源目录路径、候选回到草稿，暂存的检测记录库并入本机
+/// 记录库 `store`（重新编号并改写候选与轮次里的记录引用），再原子移入 `projects/<id>`。
 fn finish(
     data: &Path,
     root: &Path,
     source: &Source,
     new: &New,
-    plan_file: &Path,
+    store: Option<&Store>,
 ) -> Result<ProjectImported, String> {
     let _guard = manage::LOCK.lock().unwrap_or_else(|e| e.into_inner());
     manage::check_new_id(data, new.id)?;
@@ -601,8 +707,13 @@ fn finish(
     );
     super::write_meta(root, &meta)?;
     crate::storage::relocate::tree_references(root, source.root, &target)?;
-    let mut notes = crate::storage::relocate::validate_references(root, source.root, &target)?;
-    let plans = remap_plans(root, plan_file)?;
+    let mut notes = crate::storage::relocate::validate_references(
+        root,
+        source.root,
+        &target,
+        source.capture_images,
+    )?;
+    let mut without_records = Vec::new();
     for entry in std::fs::read_dir(root.join("workspaces"))
         .into_iter()
         .flatten()
@@ -610,27 +721,87 @@ fn finish(
     {
         let candidate = entry.path().join("workspace.json");
         if candidate.is_file() {
-            notes.extend(crate::workspace::reset_for_project_import(
-                &candidate,
-                &plans,
-                source.includes_records,
-            )?);
+            crate::workspace::reset_for_project_import(&candidate)?;
+            if !source.records
+                && teaching_round(&candidate)
+                    .is_some_and(|round| root.join("recipe-capture").join(round).is_dir())
+            {
+                without_records.push(entry.file_name().to_string_lossy().into_owned());
+            }
         }
     }
-    notes.extend(crate::workspace::navigation_import_notes(root));
-    if !plans.is_empty() {
+    if !without_records.is_empty() {
+        without_records.sort();
         notes.push(format!(
-            "{} 个计划版本已按本机重新分配，生产配方的拍照计划不变",
-            plans.len()
+            "候选 {} 的示教件引用检测记录的录制原图，导出时没带检测记录：已发布的配方照常检测；本机有示教件那一件的记录与录制时可直接看图、示教走廊、测量示教件与试测，否则需重新选用示教件",
+            without_records.join("、")
         ));
     }
+    notes.extend(crate::workspace::navigation_import_notes(root));
     std::fs::create_dir_all(super::projects_root(data)).map_err(|e| e.to_string())?;
     let external = install_recordings(root, &target)?;
-    if let Err(error) = std::fs::rename(root, &target) {
-        if let Some(external) = external {
-            let _ = remove_owned_tree(&external);
+    let undo = |forget: bool| {
+        if forget {
+            if let Some(store) = store {
+                let _ = store.forget_project(new.id);
+            }
         }
+        if let Some(external) = &external {
+            let _ = remove_owned_tree(external);
+        }
+    };
+    let db = root.join("inspection.db");
+    let merged = db.is_file();
+    let mut adoptable = Vec::new();
+    if merged {
+        let result = store
+            .ok_or_else(|| "本机记录库未打开，不能并入检测记录".to_string())
+            .and_then(|store| store.merge_project(&db, new.id, false, true))
+            .and_then(|merged| {
+                super::records::finish_refs(store.ok_or("本机记录库未打开")?, root, new.id)?;
+                adoptable = merged.adoptable;
+                if merged.duplicates > 0 {
+                    notes.push(format!(
+                        "{} 件检测记录与本机已有记录是同一工件，沿用已有记录",
+                        merged.duplicates
+                    ));
+                }
+                for suffix in ["", "-wal", "-shm"] {
+                    let mut name = db.as_os_str().to_os_string();
+                    name.push(suffix);
+                    let path = PathBuf::from(name);
+                    if path.exists() {
+                        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+                    }
+                }
+                Ok(())
+            });
+        if let Err(error) = result {
+            undo(store.is_some_and(|s| s.merged(new.id).unwrap_or(false)));
+            return Err(format!("检测记录并入本机记录库失败：{error}"));
+        }
+    }
+    if let Err(error) = std::fs::rename(root, &target) {
+        undo(merged);
         return Err(format!("移入项目目录失败：{error}"));
+    }
+    if merged {
+        // 失败时下次启动由 records::recover_installs 按项目目录已在补记
+        if let Err(error) = store.map_or(Ok(()), |s| s.finish_install(new.id)) {
+            crate::applog::write(
+                "warn",
+                "项目导入记录待补记",
+                &format!("{}：{error}", new.id),
+            );
+        }
+        // 项目装好后再改用包里的录制：中途失败撤回这次并入时不会带走本机已有的记录
+        match store.map_or(Ok(0), |s| s.adopt_recordings(new.id, &adoptable)) {
+            Ok(0) => {}
+            Ok(n) => notes.push(format!(
+                "{n} 件本机已有、录制已被清理的检测记录改用包里的录制，改归本项目"
+            )),
+            Err(error) => notes.push(format!("改用包里的录制失败：{error}")),
+        }
     }
     if let Some(external) = external {
         if let Err(error) = std::fs::remove_file(external.join(PENDING_RECORDINGS)) {
@@ -644,22 +815,38 @@ fn finish(
     Ok(ProjectImported { meta, notes })
 }
 
+fn teaching_round(workspace: &Path) -> Option<String> {
+    let value = read_value(workspace).ok()?;
+    value
+        .pointer("/teachingPiece/roundId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && !id.contains(['/', '\\']) && *id != "..")
+        .map(str::to_owned)
+}
+
 fn remove_owned_tree(path: &Path) -> Result<(), String> {
     crate::image_file::checked_source_path(path)?;
     std::fs::remove_dir_all(path).map_err(|e| format!("清理暂存原图 {} 失败：{e}", path.display()))
 }
 
 fn install_recordings(root: &Path, project: &Path) -> Result<Option<PathBuf>, String> {
-    let external = crate::log_storage::recording_project(project)?;
-    if external == project {
+    let retired = root.join("records-offline");
+    if retired.exists() {
+        remove_owned_tree(&retired)?;
+    }
+    let recordings = crate::log_storage::recording_projects(project)?;
+    if recordings.iter().any(|recording| recording == project) {
         return Ok(None);
     }
-    if external.exists() {
+    if let Some(existing) = recordings.iter().find(|recording| recording.exists()) {
         return Err(format!(
             "项目原图目录已存在，拒绝覆盖：{}",
-            external.display()
+            existing.display()
         ));
     }
+    // 导入的原图整体装到第一块剩余不少于余量的录制盘；都不足时装第一块
+    let external = crate::disk_guard::first_with_reserve(&recordings)
+        .map_or_else(|| recordings[0].clone(), |i| recordings[i].clone());
     let db = root.join("inspection.db");
     let has_recordings = RECORDS[1..].iter().any(|top| root.join(top).exists());
     if !has_recordings {
@@ -754,14 +941,25 @@ pub(crate) fn recover_pending_recordings(data: &Path) -> Result<(), String> {
     let Some(config) = crate::log_storage::read(data)? else {
         return Ok(());
     };
-    let namespace = config
-        .vision("_")
-        .parent()
-        .ok_or("视觉日志命名空间无效")?
-        .to_path_buf();
-    if !namespace.exists() {
-        return Ok(());
+    for (disk, placeholder) in config.visions("_").iter().enumerate() {
+        let namespace = placeholder
+            .parent()
+            .ok_or("视觉日志命名空间无效")?
+            .to_path_buf();
+        if namespace.exists() {
+            recover_namespace(data, &config, disk, &namespace)?;
+        }
     }
+    Ok(())
+}
+
+/// 一块录制盘的命名空间里中断的项目原图导入：装好了的去掉提交标记，项目没装上的连同暂存删掉。
+fn recover_namespace(
+    data: &Path,
+    config: &crate::log_storage::Config,
+    disk: usize,
+    namespace: &Path,
+) -> Result<(), String> {
     crate::image_file::checked_source_path(&namespace)?;
     for entry in std::fs::read_dir(&namespace).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
@@ -777,7 +975,7 @@ pub(crate) fn recover_pending_recordings(data: &Path) -> Result<(), String> {
             .as_str()
             .filter(|id| super::valid_id(id))
             .ok_or("项目原图提交标记的项目编号无效")?;
-        let expected = config.vision(id);
+        let expected = config.visions(id).swap_remove(disk);
         if path == expected {
             if super::dir(data, id).is_dir() {
                 std::fs::remove_file(&marker).map_err(|e| e.to_string())?;
@@ -808,17 +1006,16 @@ pub(crate) fn recover_pending_recordings(data: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 把本机项目 `source_id` 复制为新项目：按导出的取舍收集文件（记录库做一致性快照），拷进暂存目录后按导入规则落成新项目。
+/// 把本机项目 `source_id` 复制为新项目：按导出的取舍收集文件，拷进暂存目录后按导入规则落成新项目。检测记录与录制本机共用，
+/// 不复制：仍归来源项目，新项目的候选与示教件照常引用。
 pub fn copy_from(
     data: &Path,
     source_id: &str,
-    include_records: bool,
     new: &New,
-    plan_file: &Path,
     cache: &Path,
 ) -> Result<ProjectImported, String> {
     let staging = staging_dir(cache, "copy")?;
-    let result = copy_into(data, source_id, include_records, new, plan_file, &staging);
+    let result = copy_into(data, source_id, new, &staging);
     let _ = std::fs::remove_dir_all(&staging);
     result
 }
@@ -826,19 +1023,12 @@ pub fn copy_from(
 fn copy_into(
     data: &Path,
     source_id: &str,
-    include_records: bool,
     new: &New,
-    plan_file: &Path,
     staging: &Path,
 ) -> Result<ProjectImported, String> {
     let source_root = super::dir(data, source_id);
     let mut notes = Vec::new();
-    let entries = collect(
-        &source_root,
-        include_records,
-        &staging.join("snapshot"),
-        &mut notes,
-    )?;
+    let entries = collect(&source_root, None, &staging.join("snapshot"), &mut notes)?;
     for (name, path) in entries {
         let target = name
             .split('/')
@@ -853,10 +1043,11 @@ fn copy_into(
         &Source {
             id: source_id,
             root: &source_root,
-            includes_records: include_records,
+            capture_images: true,
+            records: true,
         },
         new,
-        plan_file,
+        None,
     )?;
     notes.append(&mut copied.notes);
     copied.notes = notes;
@@ -891,7 +1082,7 @@ pub async fn project_export(
     let data = crate::storage::root(&app);
     let meta = super::open_target(&data, &id)?;
     if id == super::current_id(&app) {
-        crate::site::check_project_switch(&super::switch_state(&app)?)
+        crate::project::check_project_switch(&super::switch_state(&app)?)
             .map_err(|e| e.replace("切换项目", "导出当前项目"))?;
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -908,7 +1099,13 @@ pub async fn project_export(
             return Ok(None);
         };
         let scratch = staging_dir(&data.join("cache"), "export")?;
-        let exported = export_to(&super::dir(&data, &id), include_records, &scratch, &path);
+        let store = app.state::<Store>();
+        let exported = export_to(
+            &super::dir(&data, &id),
+            include_records.then_some(&*store),
+            &scratch,
+            &path,
+        );
         let _ = std::fs::remove_dir_all(&scratch);
         let manifest = exported?;
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -977,15 +1174,14 @@ pub async fn project_import(
     name: String,
 ) -> Result<ProjectImported, String> {
     let data = crate::storage::root(&app);
-    let plan_file = crate::storage::state(&app).join("plan-version");
     tauri::async_runtime::spawn_blocking(move || {
         let imported = import_from(
             &data,
             Path::new(&path),
             &id,
             &name,
-            &plan_file,
             &data.join("cache"),
+            &app.state::<Store>(),
         )?;
         crate::applog::write(
             "info",
@@ -1009,8 +1205,6 @@ pub struct CopyProject {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default)]
-    pub include_records: bool,
 }
 
 #[tauri::command]
@@ -1018,39 +1212,52 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
     let data = crate::storage::root(&app);
     super::open_target(&data, &request.source_id)?;
     if request.source_id == super::current_id(&app) {
-        crate::site::check_project_switch(&super::switch_state(&app)?)
+        crate::project::check_project_switch(&super::switch_state(&app)?)
             .map_err(|e| e.replace("切换项目", "复制当前项目"))?;
     }
-    let plan_file = crate::storage::state(&app).join("plan-version");
     tauri::async_runtime::spawn_blocking(move || {
         let copied = copy_from(
             &data,
             &request.source_id,
-            request.include_records,
             &New {
                 id: &request.id,
                 name: &request.name,
                 description: &request.description,
             },
-            &plan_file,
             &data.join("cache"),
         )?;
         crate::applog::write(
             "info",
             "项目复制",
             &format!(
-                "已把项目 {} 复制为 {}（{}）{}",
-                request.source_id,
-                copied.meta.id,
-                copied.meta.name,
-                if request.include_records {
-                    "，含检测记录"
-                } else {
-                    ""
-                }
+                "已把项目 {} 复制为 {}（{}）",
+                request.source_id, copied.meta.id, copied.meta.name,
             ),
         );
         Ok(copied)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn project_transfer_size(app: AppHandle, id: String) -> Result<TransferSize, String> {
+    let data = crate::storage::root(&app);
+    super::open_target(&data, &id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let projects = app.state::<Store>().project_records()?;
+        let total: u64 = projects.values().map(|(count, ..)| count).sum();
+        let own = projects.get(&id).map_or(0, |(count, ..)| *count);
+        let database = super::records::database(&data);
+        let bytes = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let mut wal = database.as_os_str().to_os_string();
+        wal.push("-wal");
+        let records_db = if total == 0 {
+            0
+        } else {
+            ((bytes(&database) + bytes(Path::new(&wal))) as f64 * own as f64 / total as f64) as u64
+        };
+        transfer_size(&super::dir(&data, &id), records_db)
     })
     .await
     .map_err(|e| e.to_string())?

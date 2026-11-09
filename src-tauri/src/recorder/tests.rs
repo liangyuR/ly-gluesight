@@ -41,6 +41,7 @@ fn frame(seed: u8) -> Frame {
         ts: 777,
         manual: false,
         images: vec![Arc::new(FrameImage::new(1, 1, vec![seed]))],
+        bayer: None,
     }
 }
 
@@ -65,32 +66,70 @@ fn old_recording(root: &Path, i: u32, bytes: u64) -> PathBuf {
     path
 }
 
+/// 防的回归：彩色帧的主文件是带 `# bayer BG` 注释的原始马赛克，写盘核对按固定的 `P5\n宽 高\n255\n` 头算长度时
+/// 每帧都判写入失败、整件录制不可用；主文件写成 RGB 或另写 `_bayer.pgm` 时与读者约定不符，读回不是同一幅彩色图。
 #[test]
-fn offline_retention_prunes_only_offline_recordings_and_never_real_raw_images() {
+fn color_frame_records_bayer_mosaic_as_main_file_and_reads_back_rgb() {
+    use crate::frame::{BayerMosaic, BayerPattern};
     let dir = TestDir::new();
-    let offline_root = dir.0.join("records-offline");
-    let (offline_callback, offline_outcomes) = callback();
-    let recorders = Recorders::new(Recorder::new(dir.root(), None), Recorder::new(offline_root.clone(), Some(offline_callback)));
-    // 真机 3 件：离线清理若误用到真机目录，无论按真机还是离线的保留数都会删掉最旧的
-    let real: Vec<_> = (0..3).map(|i| old_recording(&dir.root(), i, 10)).collect();
-    let offline: Vec<_> = (0..3).map(|i| old_recording(&offline_root, i, 10)).collect();
-    let settings = CycleSettings { record_keep: 1, offline_record_keep: 2, ..CycleSettings::default() };
-    let mut rec = recorders.begin(RecordSource::OfflineSynthetic, RecordMode::All, "SN-2", recipe(), "offline-new", None).unwrap();
-    recorders.burst_frame(&mut rec, &frame(10), 0, 1);
-    recorders.finish(rec, Verdict::Ok, "离线件", &settings);
-    assert!(wait(&offline_outcomes).directory.unwrap().starts_with(&offline_root));
-    assert_eq!(offline.iter().map(|d| d.is_dir()).collect::<Vec<_>>(), [false, false, true], "离线按离线保留数 2 清理");
-    assert!(real.iter().all(|d| d.is_dir()), "离线录制超过保留数后真机原图被清理");
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(vec![dir.root()], Some(callback));
+    let mut rec = recorder
+        .begin(
+            RecordMode::All,
+            Some(&dir.root()),
+            "SN-COLOR",
+            recipe(),
+            "color",
+            None,
+        )
+        .unwrap();
+    // BG 相位纯色马赛克：R=200 G=100 B=50
+    let mosaic = vec![50, 100, 100, 200];
+    let frame = Frame {
+        images: vec![Arc::new(FrameImage::rgb(2, 2, [200, 100, 50].repeat(4)))],
+        bayer: Some(BayerMosaic {
+            pattern: BayerPattern::Bg,
+            image: Arc::new(FrameImage::new(2, 2, mosaic.clone())),
+        }),
+        ..frame(0)
+    };
+    recorder.burst_frame(&mut rec, &frame, 0, 1);
+    recorder.finish(rec, Verdict::Ok, "彩色", 100, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert_eq!(
+        (outcome.state, outcome.available),
+        (RecordingState::Complete, true),
+        "{:?}",
+        outcome.errors
+    );
+    let directory = outcome.directory.clone().unwrap();
+    let main = directory.join(outcome.files[0].file.rsplit('/').next().unwrap());
+    let mut expected = b"P5\n# bayer BG\n2 2\n255\n".to_vec();
+    expected.extend_from_slice(&mosaic);
+    assert_eq!(std::fs::read(&main).unwrap(), expected);
+    let meta = metadata(&outcome);
+    let entry = &meta["frames"][0];
+    assert_eq!(entry["imageMode"], "color");
+    assert!(entry.get("bayer").is_none());
+    assert!(!std::fs::read_dir(&directory).unwrap().any(|e| e
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with("_bayer.pgm")));
+    let image = crate::image_file::load(&main).unwrap();
+    assert_eq!(
+        (image.channels, image.pixels.clone()),
+        (3, [200, 100, 50].repeat(4))
+    );
 }
-
-/// 段配方录制：录制队列已有 `queued` 帧时依次录 `frames`（(计划相机下标, seq)），写盘后收尾。
 
 /// 维护采集件是示教与标定的样本：自动清理跳过带保留标记的目录，也不让它们挤掉保留件数。
 #[test]
 fn maintenance_collect_recordings_survive_retention() {
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
-    let recorder = Recorder::new(dir.root(), Some(callback));
+    let recorder = Recorder::new(vec![dir.root()], Some(callback));
     let kept: Vec<_> = (0..2)
         .map(|i| {
             let path = old_recording(&dir.root(), i, 10);
@@ -101,7 +140,14 @@ fn maintenance_collect_recordings_survive_retention() {
     let pruned = old_recording(&dir.root(), 5, 10);
     let newest = old_recording(&dir.root(), 6, 10);
     let mut rec = recorder
-        .begin(RecordMode::All, "SN-M", recipe(), "collect-new", None)
+        .begin(
+            RecordMode::All,
+            Some(&dir.root()),
+            "SN-M",
+            recipe(),
+            "collect-new",
+            None,
+        )
         .unwrap();
     rec.annotate("partMode", serde_json::json!("maintenanceCollect"));
     recorder.burst_frame(&mut rec, &frame(10), 0, 1);
@@ -132,4 +178,161 @@ fn maintenance_collect_recordings_survive_retention() {
         newest.is_dir() && !pruned.is_dir(),
         "普通旧录制照常按保留数清理，维护采集样本不占保留件数"
     );
+}
+
+/// D-SB-60：录制关闭时要测图的件写临时录制。防的回归：收尾补测读不到原图（只能记检测不完整）；或录制关闭了，
+/// 临时原图却留在盘上（NG 件按“只留 NG”被留下），录制结果也不再报“录制关闭”。
+#[test]
+fn scratch_recording_is_readable_during_the_part_and_never_kept() {
+    for verdict in [Verdict::Ok, Verdict::NgGap] {
+        let dir = TestDir::new();
+        let (callback, outcomes) = callback();
+        let recorder = Recorder::new(vec![dir.root()], Some(callback));
+        let mut rec = recorder
+            .scratch(Some(&dir.root()), "SN-S", recipe(), "scratch", None)
+            .unwrap();
+        recorder.burst_frame(&mut rec, &frame(42), 0, 1);
+        // 写完之前报“还在写”，写完才给可读的原图文件：补测按它等，不会读到半截文件
+        let deadline = std::time::Instant::now() + WRITER_HANG;
+        let file = loop {
+            match rec.burst_frame_file(0, 1) {
+                RecordedFrame::Ready(file) => break file,
+                RecordedFrame::Writing => {}
+                RecordedFrame::Missing => panic!("{verdict:?}：排队写盘的帧不能报没录"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{verdict:?}：临时原图写不出来"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let image = crate::image_file::load(&file).expect("报已写完的原图必须读得出来");
+        assert_eq!(image.pixels, vec![42], "{verdict:?}");
+        assert_eq!(
+            rec.burst_frame_file(0, 2),
+            RecordedFrame::Missing,
+            "没录的帧"
+        );
+        recorder.finish(rec, verdict, "", 10, u64::MAX, Vec::new());
+        let outcome = wait(&outcomes);
+        assert_eq!(
+            (outcome.state, outcome.directory),
+            (RecordingState::Off, None),
+            "{verdict:?}"
+        );
+        let left: Vec<_> = walk(&dir.root());
+        assert!(
+            left.is_empty(),
+            "{verdict:?}：录制关闭却留下了原图 {left:?}"
+        );
+    }
+    // 防的回归：临时录制写盘失败（盘满、无权限）时文件不留，录制结果却报健康，盘故障报警被清掉而补测一直读不到原图
+    let dir = TestDir::new();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(vec![dir.root()], Some(callback));
+    let mut rec = recorder
+        .scratch(Some(&dir.root()), "SN-F", recipe(), "scratch-fail", None)
+        .unwrap();
+    std::fs::create_dir_all(rec.dir.parent().unwrap()).unwrap();
+    std::fs::write(&rec.dir, b"").unwrap();
+    recorder.burst_frame(&mut rec, &frame(7), 0, 1);
+    let deadline = std::time::Instant::now() + WRITER_HANG;
+    while rec.burst_frame_file(0, 1) == RecordedFrame::Writing {
+        assert!(std::time::Instant::now() < deadline, "写盘结果没回来");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        rec.burst_frame_file(0, 1),
+        RecordedFrame::Missing,
+        "写盘失败的帧补测不能读"
+    );
+    std::fs::remove_file(&rec.dir).unwrap();
+    recorder.finish(rec, Verdict::Ok, "", 10, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert_eq!(outcome.state, RecordingState::Off);
+    assert!(
+        outcome.errors.iter().any(|e| is_write_error(e)),
+        "写盘失败没报出来：{:?}",
+        outcome.errors
+    );
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .flat_map(|e| {
+                    if e.path().is_dir() {
+                        walk(&e.path())
+                    } else {
+                        vec![e.path()]
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 录制上限默认不限：防的回归是新项目仍按旧默认（100 件 / 100 GB）滚动删掉历史件，示教件可选的录制被清理。
+#[test]
+fn default_retention_is_unlimited_and_prunes_nothing() {
+    let dir = TestDir::new();
+    // 多于旧默认的 100 件：恢复有限默认时最旧的会被删
+    let old: Vec<_> = (0..102)
+        .map(|i| old_recording(&dir.root(), i, 10))
+        .collect();
+    let (keep, max_bytes) = retention(HistoryScope::Real, &CycleSettings::default());
+    assert!(prune(&[dir.root()], keep as usize, max_bytes, &[], None).is_empty());
+    assert!(old.iter().all(|d| d.is_dir()));
+}
+
+/// 一件只写开录时选定的那块盘：防的回归是收尾目录落回第一块盘，或帧原图引用仍相对第一块盘，读图时按记录的盘找不到原图。
+#[test]
+fn part_started_on_second_disk_finishes_there_with_raw_paths_relative_to_it() {
+    let (first, second) = (TestDir::new(), TestDir::new());
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(vec![first.root(), second.root()], Some(callback));
+    let mut rec = recorder
+        .begin(
+            RecordMode::All,
+            Some(&second.root()),
+            "SN-D",
+            recipe(),
+            "second-disk",
+            None,
+        )
+        .unwrap();
+    recorder.burst_frame(&mut rec, &frame(10), 0, 1);
+    recorder.finish(rec, Verdict::Ok, "", u32::MAX, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert_eq!(
+        outcome.state,
+        RecordingState::Complete,
+        "{:?}",
+        outcome.errors
+    );
+    assert!(outcome
+        .directory
+        .as_ref()
+        .unwrap()
+        .starts_with(second.root()));
+    assert!(second.root().join(&outcome.files[0].file).is_file());
+    assert!(
+        walk(&first.root()).is_empty(),
+        "第一块盘上不该有这件的任何文件"
+    );
+}
+
+/// 清理跨所有录制盘按件的时间从旧到新：防的回归是每块盘各自按上限清理（两块盘合计超限也不删），或先删某块盘上较新的件。
+#[test]
+fn prune_across_disks_removes_oldest_parts_whichever_disk_they_are_on() {
+    let (first, second) = (TestDir::new(), TestDir::new());
+    let oldest = old_recording(&first.root(), 1, 10);
+    let older = old_recording(&second.root(), 2, 10);
+    let newer = old_recording(&first.root(), 3, 10);
+    let newest = old_recording(&second.root(), 4, 10);
+    assert!(prune(&[first.root(), second.root()], 2, u64::MAX, &[], None).is_empty());
+    assert!(!oldest.exists() && !older.exists());
+    assert!(newer.is_dir() && newest.is_dir());
 }

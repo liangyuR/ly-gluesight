@@ -6,18 +6,17 @@
 //! `Machine` 负责。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::RangeInclusive;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
-use crate::frame::{CounterSource, Frame, FrameImage};
+use crate::frame::{CounterSource, Frame};
 use crate::frame_clock::{ClockStart, FrameClock, Stamp};
 use crate::frame_group::{loss_alarms, Grouper, Offer, MAX_SEQ};
 use crate::judge::{fault, Judgement};
 use crate::measure::{FrameMeasured, MeasureError};
 use crate::plan::{wider_checks, PathSegment, SegmentChecks};
 use crate::recipe::Recipe;
+use crate::recorder::RecordedFrame;
 use crate::segmentation::{
     frame_corridors, resolve_regions, segment_part, Region, SegInput, SegOutcome,
 };
@@ -26,11 +25,11 @@ use crate::store::{BurstRecord, FrameRecord};
 
 use super::{FrameCellStatus, FrameCellView, FrameGroupView, Part, PartViewBurst};
 
-/// 分段边界的最低置信度：比例分段器在帧数容差内给 1、之外给 0（D-SB-40）。
+/// 分段边界的最低置信度：可信边界为 1；笔数与示教件不同、或按笔换算放不下的边界为 0（D-SB-40、D-SB-62）。
 const MIN_CONFIDENCE: f32 = 0.5;
 
-/// 生产的 seq 上限在 ΣN_exp + Σtol 之上留的余量：超出即帧号异常，按 OutOfRange 丢弃并告警（防异常帧号生成海量帧组）。
-const SEQ_MARGIN: u64 = 64;
+/// 生产的 seq 上限在 ΣN_exp 之上留的余量：超出即帧号异常，按 OutOfRange 丢弃并告警（防异常帧号生成海量帧组）。
+const SEQ_MARGIN: u64 = 128;
 
 /// 同一相机同一类异常每件只告警一次。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -57,8 +56,11 @@ struct BurstFrame {
     corridor: Option<u32>,
 }
 
-/// 收尾补测的一帧：计划相机下标、seq、用第几段走廊、原图（模拟测量时为空）。
-pub(super) type PostJob = (usize, u64, u32, Option<Arc<FrameImage>>);
+/// 收尾补测等录制原图写完的上限：写盘一般毫秒级，盘卡住时不能无限拖住收尾。
+const RAW_WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 收尾补测的一帧：计划相机下标、seq、用第几段走廊、本件录制的原图文件（模拟测量不读图，为空）。
+pub(super) type PostJob = (usize, u64, u32, Option<std::path::PathBuf>);
 
 /// 段配方一件的帧归属与测量状态。相机下标与计划相机顺序（`Recipe.inspect`）一致。
 pub(super) struct BurstPart {
@@ -71,7 +73,7 @@ pub(super) struct BurstPart {
     /// 已送测、还没有结果的帧数
     pending: usize,
     trusted: Vec<CounterSource>,
-    /// 每帧单独结论用的允差：未分段区域覆盖全部段，取各段中较宽一档（与 burst_judge 的区域允差相同）
+    /// 判定前临时帧格结论的兜底允差（帧没记所测走廊时）：各段中较宽一档
     checks: SegmentChecks,
     /// 判定后存下，落库与结果显示用
     pub(super) judgement: Option<BurstJudgement>,
@@ -82,39 +84,15 @@ pub(super) struct BurstPart {
     /// 各（计划相机下标, 段）拖过的搜索扇区方向（度）；没拖过的段用自动方向，不在表里
     sectors: BTreeMap<(usize, u32), f64>,
     boundary_guard: u32,
-    boundary_refine: bool,
-    /// 预测边界附近的帧组：这些帧（全部计划相机）的原图留到判定，供收尾补测
-    bands: Vec<RangeInclusive<u64>>,
-    /// 留着的原图；模拟测量没有原图，记 None 也算留着
-    retained: BTreeMap<(usize, u64), Option<Arc<FrameImage>>>,
+    pass_skip: crate::passes::PassSkip,
+    /// 示教件的笔结构（D-SB-62）
+    pass_frames: Option<Vec<u32>>,
+    /// 本件采集期间因图像内存预算满被丢弃、没收进来的帧数（D-SB-60）
+    pub(super) budget_dropped: u64,
+    /// 收尾补测开始等录制原图写完的时刻（D-SB-60）
+    post_wait: Option<Instant>,
     /// 收尾补测已经排过（每件只排一次）
     post_started: bool,
-}
-
-/// 预测边界附近要留原图的帧组（D-SB-45）：第 k 个预测边界 C_k 两侧各 `boundary_guard` + m_k 帧，
-/// m_k = ⌈Σtol × C_k / ΣN_exp⌉ + 1 是总帧组数在 ΣN_exp ± Σtol 内时比例边界偏离预测边界的最大帧数。单段或未逐段标定时为空。
-fn retention_bands(segments: &[PathSegment], guard: u32) -> Vec<RangeInclusive<u64>> {
-    let Some(counts) = segments
-        .iter()
-        .map(|s| s.expected_frames.map(u64::from))
-        .collect::<Option<Vec<u64>>>()
-    else {
-        return Vec::new();
-    };
-    let total: u64 = counts.iter().sum();
-    if counts.len() < 2 || total == 0 {
-        return Vec::new();
-    }
-    let tolerance = u64::from(crate::plan::tolerance_total(segments));
-    let mut cumulative = 0u64;
-    counts[..counts.len() - 1]
-        .iter()
-        .map(|n| {
-            cumulative += n;
-            let reach = u64::from(guard) + (tolerance * cumulative).div_ceil(total) + 1;
-            cumulative.saturating_sub(reach)..=cumulative + reach + 1
-        })
-        .collect()
 }
 
 /// 一帧到达后的去向。
@@ -146,15 +124,23 @@ impl BurstPart {
     }
 
     /// 接件：cams 是 `shot_router::arm_frames` 按计划相机顺序给出的相机身份（帧计数基线只留作手动帧判断与下一件下限），
-    /// starts 是各计划相机的帧编号起点（接件时的相机时钟与帧周期，D-SB-55）。seq 上限 = ΣN_exp + Σtol + 余量。
+    /// starts 是各计划相机的帧编号起点（接件时的相机时钟与帧周期，D-SB-55）。seq 上限 = ΣN_exp + 余量。
     pub(super) fn arm(
         recipe: &Recipe,
         cams: Vec<FrameBaseline>,
         trusted: Vec<CounterSource>,
         starts: &[ClockStart],
     ) -> Self {
-        let limit = recipe.expected_total().map_or(MAX_SEQ, |n| u64::from(n) + u64::from(recipe.tolerance_total()) + SEQ_MARGIN);
-        let checks = wider_checks(&recipe.path_segments.iter().map(|s| &s.checks).collect::<Vec<_>>());
+        let limit = recipe
+            .expected_total()
+            .map_or(MAX_SEQ, |n| u64::from(n) + SEQ_MARGIN);
+        let checks = wider_checks(
+            &recipe
+                .path_segments
+                .iter()
+                .map(|s| &s.checks)
+                .collect::<Vec<_>>(),
+        );
         let sectors = recipe
             .inspect
             .iter()
@@ -178,12 +164,13 @@ impl BurstPart {
             judgement: None,
             warned: BTreeSet::new(),
             collect: false,
-            bands: retention_bands(&recipe.path_segments, recipe.boundary_guard),
             segments: recipe.path_segments.clone(),
             sectors,
             boundary_guard: recipe.boundary_guard,
-            boundary_refine: recipe.boundary_refine,
-            retained: BTreeMap::new(),
+            pass_skip: recipe.pass_skip,
+            pass_frames: recipe.pass_frames.clone(),
+            budget_dropped: 0,
+            post_wait: None,
             post_started: false,
         }
     }
@@ -196,31 +183,50 @@ impl BurstPart {
             .and_then(|f| f.corridor)
     }
 
-    /// 预测边界附近的帧留下原图，供收尾补测。
-    pub(super) fn retain_image(&mut self, camera: usize, seq: u64, image: Option<Arc<FrameImage>>) {
-        if !self.collect && self.bands.iter().any(|band| band.contains(&seq)) {
-            self.retained.insert((camera, seq), image);
+    /// 到达时按笔预测段（D-SB-62）：这一帧在本件第 j 笔第 i 帧，换成示教件第 j 笔的第 i 帧（超出示教件这一笔取它的末帧）
+    /// 再按累计 N_exp 预测；配方没有笔结构或本件笔数已超过示教件时照旧用 seq。
+    fn taught_seq(&self, seq: u64) -> u64 {
+        let Some(taught) = self.pass_frames.as_deref() else {
+            return seq;
+        };
+        let slots: Vec<u32> = self
+            .clock
+            .gate_slots()
+            .iter()
+            .map(|&n| u32::try_from(n).unwrap_or(u32::MAX))
+            .collect();
+        crate::passes::locate(&slots, seq)
+            .and_then(|(j, offset)| {
+                let n = *taught.get(j)?;
+                Some(crate::passes::first_seq(taught, j) + u64::from(offset.min(n)) - 1)
+            })
+            .unwrap_or(seq)
+    }
+
+    /// 本件的笔结构（D-SB-62）：帧编号器的门控槽数，截到本件帧组数。
+    fn pass_layout(&self) -> Vec<u32> {
+        crate::passes::from_slots(self.clock.gate_slots(), self.grouper.group_count())
+    }
+
+    fn pass_rules<'a>(&'a self, layout: &'a [u32]) -> crate::passes::PassRules<'a> {
+        crate::passes::PassRules {
+            part: layout,
+            taught: self.pass_frames.as_deref(),
+            skip: self.pass_skip,
         }
     }
 
-    /// 本件的分段结果与区域（比例分段，D-SB-40；配方开了方向细化时按已测帧的胶条方向细化，D-SB-47）。
+    /// 本件的分段结果与区域（按笔或按比例分段，D-SB-62、D-SB-40）。
     fn regions(&self) -> (SegOutcome, Vec<Region>) {
+        let layout = self.pass_layout();
+        let passes = self.pass_rules(&layout);
         let groups = self.grouper.groups();
-        let metrics: Vec<FrameMetrics> = if self.boundary_refine {
-            self.frames
-                .values()
-                .filter_map(|frame| frame.metrics.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
         let outcome = segment_part(
             &SegInput {
                 groups: &groups,
                 segments: &self.segments,
             },
-            &metrics,
-            self.boundary_refine,
+            passes,
         );
         let regions = resolve_regions(
             &self.segments,
@@ -228,6 +234,7 @@ impl BurstPart {
             self.grouper.group_count(),
             MIN_CONFIDENCE,
             self.boundary_guard,
+            passes,
         );
         (outcome, regions)
     }
@@ -258,18 +265,25 @@ impl BurstPart {
             .collect()
     }
 
-    /// 两段在这台相机上都开了逐帧定向、找边参数与搜索扇区方向也相同（D-SB-47）：测量不依赖帧归哪一段（扇区已含相邻段），
-    /// 用到达时那段的定向图测过就不必补测。扇区方向按段存，两段拖成不同方向时测量图不同，照常补测。
+    /// 两段在这台相机上都开了逐帧定向、找边参数、搜索扇区方向、测量区间覆盖与检测参数覆盖也相同（D-SB-47）：测量不依赖帧归哪一段
+    /// （扇区已含相邻段），用到达时那段的定向图测过就不必补测。这些按段存，两段不同时测量图不同，照常补测。
     fn same_heading_graph(&self, camera: usize, a: u32, b: u32) -> bool {
         let key = |index: u32| {
             let segment = self.segments.iter().find(|s| s.index == index)?;
-            segment.heading.as_ref()?;
+            // 段覆盖不同测量图就不同；都没设时同用相机的测量区间与配方的检测参数
+            let window = segment.heading.as_ref()?.window.clone();
+            let detect = (segment.search_mm, segment.width_range);
             let edge = segment
                 .offset_ref
                 .as_ref()
                 .filter(|o| self.cameras.get(camera) == Some(&o.camera))
                 .and_then(|o| o.edge.clone());
-            Some((edge, self.sectors.get(&(camera, index)).copied()))
+            Some((
+                edge,
+                self.sectors.get(&(camera, index)).copied(),
+                window,
+                detect,
+            ))
         };
         key(a).is_some() && key(a) == key(b)
     }
@@ -353,6 +367,7 @@ fn unmeasured(camera: usize, seq: u64, state: FrameState, error: String) -> Fram
         width_min: None,
         width_max: None,
         width_mean: None,
+        measurement_evidence: None,
         widths: Vec::new(),
         spacing_mm: 0.0,
         gap_max_mm: 0.0,
@@ -379,6 +394,10 @@ fn checked(metrics: FrameMetrics, camera: usize, seq: u64) -> FrameMetrics {
         && metrics.spacing_mm.is_finite()
         && metrics.gap_max_mm.is_finite()
         && metrics.present_ratio.is_finite()
+        && metrics
+            .measurement_evidence
+            .as_ref()
+            .is_none_or(|e| e.valid())
         && metrics.widths.iter().flatten().all(|w| w.is_finite());
     if valid { metrics } else { unmeasured(camera, seq, FrameState::Error, "测量输出与送测帧不一致或含无效数值".into()) }
 }
@@ -406,15 +425,20 @@ fn from_summary(judgement: &Judgement) -> BurstJudgement {
     }
 }
 
+/// plc_code 是回写 PLC 的码（维护件为 0，MM-2），不属于结论，不参与比较。
 fn same_conclusion(burst: &BurstJudgement, judgement: &Judgement) -> bool {
-    (burst.verdict, burst.plc_code, burst.fault_code, burst.reason.as_str()) == (judgement.verdict, judgement.plc_code, judgement.fault_code, judgement.reason.as_str())
+    (burst.verdict, burst.fault_code, burst.reason.as_str())
+        == (
+            judgement.verdict,
+            judgement.fault_code,
+            judgement.reason.as_str(),
+        )
 }
 
-/// 没有帧的记录（接件时就不能检测、进程中断补记录）：预期帧组数与容差取配方，各相机帧数为 0，判定与摘要相同。
+/// 没有帧的记录（接件时就不能检测、进程中断补记录）：预期帧组数取配方，各相机帧数为 0，判定与摘要相同。
 pub(super) fn empty_record(recipe: &Recipe, judgement: &Judgement) -> BurstRecord {
     BurstRecord {
         expected_total: recipe.expected_total(),
-        tolerance_total: recipe.tolerance_total(),
         device_triggers: None,
         camera_frames: vec![0; recipe.plan_cameras().len()],
         judgement: from_summary(judgement),
@@ -494,8 +518,12 @@ impl Part {
                     CounterSource::ChunkTrigger | CounterSource::Synthetic
                 )
                 .then_some(frame.trigger_counter);
-                let corridor =
-                    crate::plan::arrival_corridor(&burst.segments, &burst.cameras, camera, seq);
+                let corridor = crate::plan::arrival_corridor(
+                    &burst.segments,
+                    &burst.cameras,
+                    camera,
+                    burst.taught_seq(seq),
+                );
                 let measuring = !burst.collect && corridor.is_some();
                 let metrics = (!burst.collect && corridor.is_none()).then(|| {
                     unmeasured(
@@ -571,40 +599,69 @@ impl Part {
     }
 
     /// 收尾补测（D-SB-45）：收尾窗口到期、到达时送测的帧都测完后排一次。按比例分段得出区域，找出判定需要、但到达时
-    /// 没用对应走廊测过的（帧, 相机），用留着的原图补测（返回给 `Machine` 送测）；原图没留住的记没测（检测不完整）。
-    /// 已有故障（整件 ERR）时不补测。留着的原图随之释放。
+    /// 没用对应走廊测过的（帧, 相机），从本件录制的原图读回补测（返回给 `Machine` 送测；内存里不为补测留图，D-SB-60）；
+    /// 要用的原图还在写盘时先等，最多等 `RAW_WRITE_WAIT`；没录到、写盘失败或到时没写完的记没测（检测不完整）。
+    /// 已有故障（整件 ERR）时不补测。
     pub(super) fn start_post_measure(&mut self, now: Instant) -> Vec<PostJob> {
         if self.end_at.is_none() || !self.burst_deadline(now) {
             return Vec::new();
         }
         let faulted = self.fault.is_some();
+        let recording = self.recording.as_ref();
         let burst = &mut self.burst;
         if burst.collect || burst.post_started || burst.pending > 0 {
             return Vec::new();
         }
-        burst.post_started = true;
-        let retained = std::mem::take(&mut burst.retained);
         if faulted {
+            burst.post_started = true;
             return Vec::new();
         }
+        let sources: Vec<_> = burst
+            .post_targets()
+            .into_iter()
+            .map(|((camera, seq), segment)| {
+                let source = match recording {
+                    None => Err(RecordedFrame::Missing),
+                    Some(r) => match r.burst_frame_file(camera, seq) {
+                        RecordedFrame::Ready(file) => Ok(Some(file)),
+                        other => Err(other),
+                    },
+                };
+                (camera, seq, segment, source)
+            })
+            .collect();
+        let writing = sources
+            .iter()
+            .any(|(.., s)| *s == Err(RecordedFrame::Writing));
+        if writing
+            && now.saturating_duration_since(*burst.post_wait.get_or_insert(now)) < RAW_WRITE_WAIT
+        {
+            return Vec::new();
+        }
+        burst.post_started = true;
         let mut jobs = Vec::new();
-        for ((camera, seq), segment) in burst.post_targets() {
+        for (camera, seq, segment, source) in sources {
             let Some(frame) = burst.frames.get_mut(&(camera, seq)) else {
                 continue;
             };
             frame.corridor = Some(segment);
-            match retained.get(&(camera, seq)) {
-                Some(image) => {
+            match source {
+                Ok(file) => {
                     frame.measuring_since = Some(now);
                     frame.metrics = None;
-                    jobs.push((camera, seq, segment, image.clone()));
+                    jobs.push((camera, seq, segment, file));
                 }
-                None => {
+                Err(missing) => {
+                    let why = if missing == RecordedFrame::Writing {
+                        format!("录制原图 {} s 内没写完", RAW_WRITE_WAIT.as_secs())
+                    } else {
+                        "没有录到原图".to_owned()
+                    };
                     frame.metrics = Some(unmeasured(
                         camera,
                         seq,
                         FrameState::Unmeasured,
-                        format!("收尾补测要用第 {segment} 段走廊，但这一帧原图没有留住"),
+                        format!("收尾补测要用第 {segment} 段走廊，但这一帧{why}"),
                     ));
                 }
             }
@@ -630,7 +687,8 @@ impl Part {
         let metrics: Vec<FrameMetrics> = burst.frames.values().filter_map(|frame| frame.metrics.clone()).collect();
         let segments = &burst.segments;
         let (_, regions) = burst.regions();
-        burst_judge::judge(
+        let layout = burst.pass_layout();
+        let mut judgement = burst_judge::judge(
             segments,
             self.recipe.expected_total(),
             &regions,
@@ -638,15 +696,33 @@ impl Part {
             &metrics,
             &burst.cameras,
             &loss,
-        )
+            burst.pass_rules(&layout),
+        );
+        // 预算满丢的帧没收进来，帧组里看不出缺：整件记检测不完整并写明，免得被当成“提前终止”的正常件
+        if burst.budget_dropped > 0 {
+            judgement.flags.incomplete = true;
+            judgement.reason = format!(
+                "{}；图像内存预算满，{} 帧没收进来，检测不完整",
+                judgement.reason, burst.budget_dropped
+            );
+        }
+        judgement
     }
 
-    /// 落库用的段配方记录：1..=帧组数内每台相机每一帧一条，缺帧也有。判定取本件的区域判定；结论摘要与它不同
+    /// 落库用的段配方记录：1..=帧组数内每台相机每一帧一条，缺帧也有。判定取本件的区域判定，回写码取摘要的；结论摘要与它不同
     /// （在途中断记 ERR 98 等）时按摘要给出。
     pub(super) fn burst_record(&self, judgement: &Judgement) -> BurstRecord {
         let burst = &self.burst;
         let group_count = burst.grouper.group_count();
-        let decided = burst.judgement.clone().filter(|decided| same_conclusion(decided, judgement)).unwrap_or_else(|| BurstJudgement {
+        let decided = burst
+            .judgement
+            .clone()
+            .filter(|decided| same_conclusion(decided, judgement))
+            .map(|decided| BurstJudgement {
+                plc_code: judgement.plc_code,
+                ..decided
+            })
+            .unwrap_or_else(|| BurstJudgement {
             group_count: u32::try_from(group_count).unwrap_or(u32::MAX),
             alarms: loss_alarms(&burst.grouper.camera_counts()),
             ..from_summary(judgement)
@@ -665,7 +741,6 @@ impl Part {
             .collect();
         BurstRecord {
             expected_total: self.recipe.expected_total(),
-            tolerance_total: self.recipe.tolerance_total(),
             device_triggers: self.device_triggers.map(u32::from),
             camera_frames: burst.grouper.camera_counts(),
             judgement: decided,
@@ -677,6 +752,28 @@ impl Part {
     pub(super) fn burst_view(&self) -> PartViewBurst {
         let burst = &self.burst;
         let settled = burst.judgement.is_some() || self.burst_deadline(Instant::now());
+        // 判定后帧格按所在区域判（与历史同一口径）；判定前按这一帧所测走廊的段临时判
+        let decided: Option<BTreeMap<(usize, u64), crate::judge::Verdict>> =
+            burst.judgement.as_ref().map(|judgement| {
+                let regions: Vec<Region> =
+                    judgement.regions.iter().map(|r| r.region.clone()).collect();
+                let metrics: Vec<FrameMetrics> = burst
+                    .frames
+                    .values()
+                    .filter_map(|frame| frame.metrics.clone())
+                    .collect();
+                burst_judge::frame_verdicts(&burst.segments, &regions, &metrics, &burst.cameras)
+                    .into_iter()
+                    .map(|v| ((v.camera, v.seq), v.verdict))
+                    .collect()
+            });
+        let provisional = |m: &FrameMetrics| {
+            let checks = m
+                .corridor
+                .and_then(|c| burst.segments.iter().find(|s| s.index == c))
+                .map_or(&burst.checks, |s| &s.checks);
+            burst_judge::frame_verdict(m, checks)
+        };
         let groups = burst
             .grouper
             .groups()
@@ -688,14 +785,22 @@ impl Part {
                             let (status, verdict) = match &frame.metrics {
                                 Some(m) => (
                                     FrameCellStatus::from(m.state),
-                                    (m.state == FrameState::Measured)
-                                        .then(|| burst_judge::frame_verdict(m, &burst.checks)),
+                                    match &decided {
+                                        Some(verdicts) => {
+                                            verdicts.get(&(camera, group.seq)).copied()
+                                        }
+                                        None => (m.state == FrameState::Measured)
+                                            .then(|| provisional(m)),
+                                    },
                                 ),
                                 None => (FrameCellStatus::Measuring, None),
                             };
                             FrameCellView {
                                 status,
                                 verdict,
+                                unjudged: decided.is_some()
+                                    && status == FrameCellStatus::Measured
+                                    && verdict.is_none(),
                                 frame_counter: Some(frame.frame_counter),
                                 segment: frame.metrics.as_ref().and_then(|m| m.corridor),
                             }
@@ -707,6 +812,7 @@ impl Part {
                                 FrameCellStatus::Waiting
                             },
                             verdict: None,
+                            unjudged: false,
                             frame_counter: None,
                             segment: None,
                         },
@@ -731,7 +837,6 @@ impl Part {
         PartViewBurst {
             cameras: burst.cameras.clone(),
             expected_total: self.recipe.expected_total(),
-            tolerance_total: self.recipe.tolerance_total(),
             device_triggers: self.device_triggers.map(u32::from),
             group_count: burst.grouper.group_count(),
             camera_frames: burst.grouper.camera_counts(),

@@ -47,15 +47,6 @@ pub struct FrameGroup {
     pub incomplete: bool,
 }
 
-/// 帧数相对 N_exp ± tol 的位置；越界只告警（帧数异常），不改结论。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum CountStatus {
-    Normal,
-    Low,
-    High,
-}
-
 /// 丢帧告警的依据。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -148,17 +139,6 @@ pub fn loss_alarms(counts: &[u32]) -> Vec<LossAlarm> {
             reason.map(|reason| LossAlarm { camera, count, reason })
         })
         .collect()
-}
-
-/// actual ∈ [expected − tol, expected + tol] 为 Normal。
-pub fn count_status(actual: u32, expected: u32, tol: u32) -> CountStatus {
-    if actual < expected.saturating_sub(tol) {
-        CountStatus::Low
-    } else if actual > expected.saturating_add(tol) {
-        CountStatus::High
-    } else {
-        CountStatus::Normal
-    }
 }
 
 #[cfg(test)]

@@ -83,12 +83,6 @@ pub fn recipe_preview(doc: RecipeDoc) -> Result<Recipe, String> {
     doc.build()
 }
 
-/// 测量图模板的专家参数规格（LF-5，参数名 → 标签、单位、范围、默认值、说明），供配方按相机覆盖。
-#[tauri::command]
-pub fn recipe_expert_specs() -> std::collections::BTreeMap<String, serde_json::Value> {
-    crate::vision::template::expert_specs()
-}
-
 /// 新建配方的起点：段配方（D-SB-24），相机取相机组前三台，一个待标定的直线段。
 #[tauri::command]
 pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
@@ -101,10 +95,17 @@ pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
 fn template(used_codes: &[u16], rig_cameras: &[String]) -> RecipeDoc {
     let product_code = (1..=i16::MAX as u16).find(|c| !used_codes.contains(c)).unwrap_or(0);
     let cameras = &rig_cameras[..rig_cameras.len().min(plan::PLAN_CAMERAS)];
-    recipe::burst_template(format!("NEW-{product_code}"), "新配方".into(), product_code, cameras)
+    let mut doc = recipe::burst_template(
+        format!("NEW-{product_code}"),
+        "新配方".into(),
+        product_code,
+        cameras,
+    );
+    doc.pass_skip.head = crate::passes::DEFAULT_SKIP_HEAD;
+    doc
 }
 
-/// 段配方的计划导出 JSON（规格 §1）：段序列、各段 N_exp、容差、ΣN_exp，给 PLC / 机器人工程师核对使能点位；
+/// 段配方的计划导出 JSON（规格 §1）：段序列、各段 N_exp、ΣN_exp，给 PLC / 机器人工程师核对使能点位；
 /// PLC 的 shotCount 与 deviceShots 都填 expectedTotal。未标定时 expectedTotal 为 null。
 #[tauri::command]
 pub fn recipe_plan_export(cycle: State<'_, CycleHost>, id: String) -> Result<String, String> {

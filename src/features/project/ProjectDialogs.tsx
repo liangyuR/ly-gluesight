@@ -46,20 +46,20 @@ export function CreateProjectDialog({ entries, onClose }: { entries: ProjectEntr
       if (alive.current) setWorking(false);
     }
   };
-  const label = switching.restarting ? "正在重启…" : working ? "创建中…" : created ? "重试切换" : form.switchAfter ? "创建并切换" : "创建";
+  const label = switching.restartMessage ? "等待手动重启" : switching.restarting ? "正在重启…" : working ? "创建中…" : created ? "重试切换" : form.switchAfter ? "创建并切换" : "创建";
   return <Dialog open title="新建项目" initialFocus="first-field" size="md" closeDisabled={busy} onOpenChange={open => { if (!open && !busy) onClose(); }}
-    footer={<><Button disabled={busy} onClick={onClose}>{created ? "关闭" : "取消"}</Button><Button variant="filled" loading={busy} disabled={busy || !!idError || !!nameError || !!blockedBySwitch} onClick={() => void submit()}>{label}</Button></>}>
+    footer={<><Button disabled={busy} onClick={onClose}>{created ? "关闭" : "取消"}</Button><Button variant="filled" loading={busy && !switching.restartMessage} disabled={busy || !!idError || !!nameError || !!blockedBySwitch} onClick={() => void submit()}>{label}</Button></>}>
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
       <TextField label="名称" required disabled={locked} value={form.name} error={nameTouched ? nameError : undefined} onBlur={() => setNameTouched(true)} onChange={e => { setNameTouched(true); setForm({ ...form, name: e.target.value }); }} />
       <TextField label="编号" className="mono" disabled={locked} maxLength={64} value={form.id} description="创建后不可修改，同时作为项目目录名" error={idError || undefined} onChange={e => setForm({ ...form, id: e.target.value })} />
       <TextArea label="描述" disabled={locked} rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
       <RadioGroup label="初始内容" direction="column" disabled={locked} value={form.copyHardware ? "hardware" : "empty"} options={contentOptions} onValueChange={value => setForm({ ...form, copyHardware: value === "hardware" })} />
-      <Checkbox label="创建后切换到该项目（会重启软件）" disabled={locked} checked={form.switchAfter} onCheckedChange={checked => setForm({ ...form, switchAfter: checked })} />
+      <Checkbox label="创建后切换到该项目（需重启软件）" disabled={locked} checked={form.switchAfter} onCheckedChange={checked => setForm({ ...form, switchAfter: checked })} />
       {blockedBySwitch && !created && <Alert tone="warn" title="创建后无法立即切换">{blockedBySwitch}</Alert>}
       {error && <Alert tone="ng" title="创建未完成">{error}</Alert>}
       {created && switching.error && <Alert tone="ng" title="项目已创建，切换未完成">{switching.error}</Alert>}
       {created && blockedBySwitch && <Alert tone="ng" title="项目已创建，暂不能切换">{blockedBySwitch}</Alert>}
-      {switching.restarting && <Alert tone="info" role="status">正在重启…</Alert>}
+      {switching.restarting && <Alert tone="info" role="status">{switching.restartMessage || "正在重启…"}</Alert>}
     </Stack>
   </Dialog>;
 }
@@ -131,16 +131,16 @@ export function DeleteProjectDialog({ entry, usage, onClose }: { entry: ProjectE
   return <Dialog open title="删除项目" initialFocus="first-field" closeDisabled={working} onOpenChange={open => { if (!open && !working) onClose(); }}
     footer={<><Button disabled={working} onClick={onClose}>取消</Button><Button danger variant="filled" loading={working} disabled={working || !confirmed} onClick={() => void submit()}>{working ? "删除中…" : "删除"}</Button></>}>
     <Stack direction="column" align="stretch" gap={14} wrap={false}>
-      <Alert tone="ng" title="将永久删除以下内容，不可恢复">
-        <p>包括本项目在日志目录中的视觉原图。</p>
+      <Alert tone="ng" title="将永久删除项目资产，不可恢复">
+        <p>删除配方、候选、采集轮次、标定与发布包。检测记录与历史原图保留在本机历史中；这些记录的“按原发布包重现”和辅助线随发布包一起不可用。</p>
         <dl className="kv pj-delete-list">
           <dt>项目</dt><dd>{entry.meta ? <>{expected} <span className="mono">{entry.id}</span></> : <span className="mono">{entry.id}</span>}</dd>
           {usage?.status === "ok" ? <>
             <dt>配方</dt><dd>{usage.usage.recipes} 个</dd>
             <dt>候选</dt><dd>{usage.usage.workspaces} 个</dd>
             <dt>采集轮次</dt><dd>{usage.usage.captureRounds} 轮</dd>
-            <dt>检测记录</dt><dd>{recordsText(usage.usage)}</dd>
-            <dt>占用空间</dt><dd>{formatBytes(usage.usage.bytes)}</dd>
+            <dt>检测记录</dt><dd>{recordsText(usage.usage)}，保留在本机历史中</dd>
+            <dt>项目占用</dt><dd>{formatBytes(usage.usage.projectBytes ?? usage.usage.bytes)}</dd>
           </> : <><dt>内容</dt><dd>{usage?.status === "error" ? `统计失败：${usage.error}` : "统计计算中"}</dd></>}
         </dl>
       </Alert>

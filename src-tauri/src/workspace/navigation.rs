@@ -414,16 +414,8 @@ pub(super) fn structure_changed(before: &RecipeDoc, after: &RecipeDoc) -> bool {
 }
 
 fn auxiliary_changed(w: &mut Workspace) {
-    let previous_revision = w.revision;
     w.revision += 1;
     w.updated_at = ly_plc::now_ms();
-    if let Some(validation) = w
-        .validation
-        .as_mut()
-        .filter(|v| v.revision == previous_revision)
-    {
-        validation.revision = w.revision;
-    }
 }
 
 pub(super) enum NavigationEdit {
@@ -778,33 +770,31 @@ pub(super) fn activate_navigation_release(project: &Path, release: &Release) -> 
     std::fs::rename(pending, dir).map_err(|e| format!("辅助资料未归档：{e}"))
 }
 
-fn archived_navigation(project: &Path, w: &Workspace) -> Option<NavigationArchiveStatus> {
-    let release = match &w.pending {
+/// 待生效版本的辅助资料，没有待生效版本时取当前生产版本 `production`（修订号）的发布归档。
+fn archived_navigation(
+    project: &Path,
+    w: &Workspace,
+    production: Option<&str>,
+) -> Option<NavigationArchiveStatus> {
+    let revision = match &w.pending {
         Some(release) => return release.navigation.clone(),
-        None => {
-            let revision = w.base_revision.as_deref()?;
-            component(revision).ok()?;
-            read_release(
-                &project
-                    .join("workspaces")
-                    .join(&w.doc.id)
-                    .join("published")
-                    .join(format!("{revision}.json")),
-            )
-            .ok()?
-        }
+        None => production?,
     };
+    component(revision).ok()?;
+    let release = read_release(
+        &project
+            .join("workspaces")
+            .join(&w.doc.id)
+            .join("published")
+            .join(format!("{revision}.json")),
+    )
+    .ok()?;
     let record = release.navigation?;
     if record.state != "ready" {
         return Some(record);
     }
     let result = release_dir(project, &w.doc.id, &release.bundle_id, false).and_then(|dir| {
-        let snapshot = verified_snapshot(
-            &dir,
-            &w.doc.id,
-            &release.bundle_id,
-            w.base_revision.as_deref().unwrap_or(""),
-        )?;
+        let snapshot = verified_snapshot(&dir, &w.doc.id, &release.bundle_id, revision)?;
         verify_snapshot_doc(&snapshot, &release.doc)
     });
     Some(match result {
@@ -821,13 +811,18 @@ fn archived_navigation(project: &Path, w: &Workspace) -> Option<NavigationArchiv
     })
 }
 
-pub(super) fn navigation_view(project: &Path, w: &Workspace) -> NavigationView {
+/// `production` 是同编号当前生产配方的修订号。
+pub(super) fn navigation_view(
+    project: &Path,
+    w: &Workspace,
+    production: Option<&str>,
+) -> NavigationView {
     let mut result = NavigationView {
         map: None,
         error: None,
         image_available: false,
         structure_revision: w.navigation_structure_revision,
-        published: archived_navigation(project, w),
+        published: archived_navigation(project, w, production),
     };
     match read_map(project, w) {
         Ok(Some(map)) => {
@@ -844,9 +839,14 @@ pub(super) fn navigation_view(project: &Path, w: &Workspace) -> NavigationView {
     result
 }
 
-pub(super) fn inherit_navigation(project: &Path, w: &mut Workspace) -> Option<String> {
+/// 新候选继承当前生产版本（修订号 `production`）发布时冻结的导航辅助资料。
+pub(super) fn inherit_navigation(
+    project: &Path,
+    w: &mut Workspace,
+    production: Option<&str>,
+) -> Option<String> {
     let result = (|| -> Result<(), String> {
-        let Some(revision) = &w.base_revision else {
+        let Some(revision) = production else {
             return Ok(());
         };
         component(revision)?;
@@ -929,7 +929,7 @@ pub(crate) fn navigation_import_notes(project: &Path) -> Vec<String> {
         for entry in workspaces.flatten() {
             if let Ok(bytes) = std::fs::read(entry.path().join("workspace.json")) {
                 if let Ok(w) = serde_json::from_slice::<Workspace>(&bytes) {
-                    if let Some(e) = navigation_view(project, &w).error {
+                    if let Some(e) = navigation_view(project, &w, None).error {
                         notes.push(format!("候选 {} 的{e}；生产配方不受影响", w.doc.id));
                     }
                 }

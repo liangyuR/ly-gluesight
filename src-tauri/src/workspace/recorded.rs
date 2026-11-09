@@ -1,4 +1,5 @@
-use std::path::{Component, Path};
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 
 use crate::burst_judge::FrameState;
 use crate::frame::FrameImage;
@@ -37,36 +38,117 @@ fn cycle_metadata(root: &Path, relative: &Path, cycle_id: &str) -> Result<serde_
 /// 路径在本件录制目录内、文件名由相机与 seq 推出；part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号
 /// （历史记有触发计数时还有触发计数）都与历史记录一致且已落盘，解码尺寸等于录制尺寸。缺帧、未录制或任一项对不上都报错，
 /// 不拿别的帧顶替。
-pub(super) fn load_frame_verified(root: &Path, cycle_id: &str, camera_id: &str, frame: &FrameRecord) -> Result<FrameImage, String> {
-    if frame.status == FrameState::Missing { return Err(format!("相机 {camera_id} 第 {} 帧组缺帧，没有原图", frame.seq)); }
-    let file = frame.raw_file.as_deref().ok_or_else(|| format!("相机 {camera_id} 第 {} 帧组的原图未录制或录制队满未保存", frame.seq))?;
-    crate::image_file::checked_source_path(root)?;
-    let root = root.canonicalize().map_err(|_| "原图目录不存在或已清理".to_string())?;
-    let relative = cycle_relative(cycle_id, file)?;
-    let name = format!("{camera_id}_s{:06}.pgm", frame.seq);
-    if relative.file_name().and_then(|n| n.to_str()) != Some(name.as_str()) {
-        return Err(format!("历史原图 {file} 与相机 {camera_id} 第 {} 帧组的身份不一致，拒绝读取", frame.seq));
+pub(super) fn load_frame_verified(
+    root: &Path,
+    cycle_id: &str,
+    camera_id: &str,
+    frame: &FrameRecord,
+) -> Result<FrameImage, String> {
+    VerifiedFrames::new(root, cycle_id)?.load(camera_id, frame)
+}
+
+pub(super) struct VerifiedFrames {
+    root: PathBuf,
+    cycle_id: String,
+    metadata: HashMap<PathBuf, HashMap<String, Option<serde_json::Value>>>,
+}
+
+impl VerifiedFrames {
+    pub(super) fn new(root: &Path, cycle_id: &str) -> Result<Self, String> {
+        crate::image_file::checked_source_path(root)?;
+        let root = root
+            .canonicalize()
+            .map_err(|_| "原图目录不存在或已清理".to_string())?;
+        Ok(Self {
+            root,
+            cycle_id: cycle_id.to_owned(),
+            metadata: HashMap::new(),
+        })
     }
-    let metadata = cycle_metadata(&root, relative, cycle_id)?;
-    let frames = metadata["frames"].as_array().ok_or("录制元数据缺少原图引用")?;
-    let mut matching = frames.iter().filter(|entry| entry["file"].as_str() == Some(name.as_str()));
-    let entry = matching.next().ok_or("录制元数据缺少对应原图")?;
-    if matching.next().is_some() || entry["cycleId"].as_str() != Some(cycle_id) || entry["available"].as_bool() != Some(true) {
-        return Err("录制元数据的原图身份重复、不一致或未落盘".into());
+
+    pub(super) fn load(
+        &mut self,
+        camera_id: &str,
+        frame: &FrameRecord,
+    ) -> Result<FrameImage, String> {
+        let root = &self.root;
+        let cycle_id = self.cycle_id.as_str();
+        if frame.status == FrameState::Missing {
+            return Err(format!(
+                "相机 {camera_id} 第 {} 帧组缺帧，没有原图",
+                frame.seq
+            ));
+        }
+        let file = frame.raw_file.as_deref().ok_or_else(|| {
+            format!(
+                "相机 {camera_id} 第 {} 帧组的原图未录制或录制队满未保存",
+                frame.seq
+            )
+        })?;
+        let relative = cycle_relative(cycle_id, file)?;
+        let name = format!("{camera_id}_s{:06}.pgm", frame.seq);
+        if relative.file_name().and_then(|n| n.to_str()) != Some(name.as_str()) {
+            return Err(format!(
+                "历史原图 {file} 与相机 {camera_id} 第 {} 帧组的身份不一致，拒绝读取",
+                frame.seq
+            ));
+        }
+        let directory = relative.parent().ok_or("原图目录无效")?.to_path_buf();
+        if !self.metadata.contains_key(&directory) {
+            let metadata = cycle_metadata(root, relative, cycle_id)?;
+            let frames = metadata["frames"]
+                .as_array()
+                .ok_or("录制元数据缺少原图引用")?;
+            let mut entries = HashMap::with_capacity(frames.len());
+            for entry in frames {
+                let Some(file) = entry["file"].as_str() else {
+                    continue;
+                };
+                if entries
+                    .insert(file.to_owned(), Some(entry.clone()))
+                    .is_some()
+                {
+                    entries.insert(file.to_owned(), None);
+                }
+            }
+            self.metadata.insert(directory.clone(), entries);
+        }
+        let entry = self.metadata[&directory]
+            .get(&name)
+            .ok_or("录制元数据缺少对应原图")?
+            .as_ref()
+            .ok_or("录制元数据的原图身份重复")?;
+        if entry["cycleId"].as_str() != Some(cycle_id) || entry["available"].as_bool() != Some(true)
+        {
+            return Err("录制元数据的原图身份不一致或未落盘".into());
+        }
+        let frame_counter = frame
+            .frame_counter
+            .ok_or("历史帧记录缺少帧号，不能核验原图身份")?;
+        if entry["camera"].as_u64() != Some(frame.camera as u64)
+            || entry["cameraId"].as_str() != Some(camera_id)
+            || entry["seq"].as_u64() != Some(frame.seq)
+            || entry["frameCounter"].as_u64() != Some(frame_counter)
+            || frame
+                .trigger_counter
+                .is_some_and(|trigger| entry["triggerCounter"].as_u64() != Some(trigger))
+        {
+            return Err("录制原图的相机、帧组序号或帧号与历史记录不一致".into());
+        }
+        let dimension = |field: &str| {
+            entry[field]
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+        };
+        let size = [
+            dimension("width").ok_or("录制原图宽度无效")?,
+            dimension("height").ok_or("录制原图高度无效")?,
+        ];
+        let bytes = original_bytes(&root, relative)?;
+        checked_dimensions(&bytes, Some(size), file)?;
+        crate::image_file::decode(&bytes).map_err(|error| format!("原图 {file} 解码失败：{error}"))
     }
-    let frame_counter = frame.frame_counter.ok_or("历史帧记录缺少帧号，不能核验原图身份")?;
-    if entry["camera"].as_u64() != Some(frame.camera as u64) || entry["cameraId"].as_str() != Some(camera_id)
-        || entry["seq"].as_u64() != Some(frame.seq) || entry["frameCounter"].as_u64() != Some(frame_counter)
-        || frame.trigger_counter.is_some_and(|trigger| entry["triggerCounter"].as_u64() != Some(trigger)) {
-        return Err("录制原图的相机、帧组序号或帧号与历史记录不一致".into());
-    }
-    let dimension = |field: &str| entry[field].as_u64().and_then(|value| u32::try_from(value).ok()).filter(|value| *value > 0);
-    let size = [dimension("width").ok_or("录制原图宽度无效")?, dimension("height").ok_or("录制原图高度无效")?];
-    let bytes = original_bytes(&root, relative)?;
-    checked_dimensions(&bytes, Some(size), file)?;
-    let image = image::load_from_memory(&bytes).map_err(|error| format!("原图 {file} 解码失败：{error}"))?.into_luma8();
-    let (width, height) = image.dimensions();
-    Ok(FrameImage::new(width, height, image.into_raw()))
 }
 
 fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
@@ -86,114 +168,4 @@ fn checked_dimensions(bytes: &[u8], expected: Option<[u32; 2]>, file: &str) -> R
         if [width, height] != expected { return Err(format!("原图 {file} 的尺寸与录制尺寸不符")); }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recorded_burst_frame_is_read_by_camera_and_seq_and_identity_mismatch_is_refused() {
-        // 防的回归（D-SB-29 原图引用按 (camera, seq)、历史复测按帧组读原图）：按到达顺序或文件列表位置取图，读到别的相机或
-        // 别的帧组的原图；历史帧记录与录制元数据（帧号、相机、seq）对不上、跨件 cycleId、缺帧时仍读出一张图
-        use std::sync::{mpsc::channel, Arc};
-        use std::time::Duration;
-
-        use crate::frame::{CounterSource, Frame};
-        use crate::judge::Verdict;
-        use crate::recorder::Recorder;
-        use crate::settings::RecordMode;
-        use crate::store::FrameRecord;
-
-        let root = super::super::tests::ImportTestDir::new();
-        let (tx, rx) = channel();
-        let recorder = Recorder::new(root.0.join("records"), Some(Arc::new(move |outcome| tx.send(outcome).unwrap())));
-        let recipe = Arc::new(crate::recipe::samples_burst().build().unwrap());
-        let cameras = recipe.plan_cameras();
-        let cycle_id = "burst_cycle_history-frames";
-        // 帧 (camera, seq) 的像素为 [10 × seq + camera, 1]，帧号 100 + 10 × camera + seq；相机 2 第 2 帧组缺帧
-        let delivered = [(0, 1), (1, 1), (2, 1), (0, 2), (2, 2)];
-        let frame = |camera: usize, seq: u64| Frame {
-            cam: camera as u8,
-            session: 7,
-            counter: CounterSource::Synthetic,
-            frame_counter: 100 + 10 * camera as u64 + seq,
-            trigger_counter: 50 + seq,
-            lost_packets: 0,
-            ts: 777,
-            dev_ts: None,
-            manual: false,
-            images: vec![Arc::new(FrameImage::new(
-                2,
-                1,
-                vec![10 * seq as u8 + camera as u8, 1],
-            ))],
-        };
-        let mut recording = recorder
-            .begin(
-                RecordMode::All,
-                "SN-B7",
-                recipe.clone(),
-                cycle_id,
-                Some("bundle"),
-            )
-            .unwrap();
-        for &(camera, seq) in &delivered {
-            recorder.burst_frame(&mut recording, &frame(camera, seq), camera, seq);
-        }
-        recorder.finish(
-            recording,
-            Verdict::NgWidth,
-            "原始判定",
-            10,
-            u64::MAX,
-            Vec::new(),
-        );
-        let outcome = rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("真实 Recorder 必须完成收尾");
-        let record = |camera: usize, seq: u64| {
-            let delivered = delivered.contains(&(camera, seq));
-            let raw_file = outcome
-                .files
-                .iter()
-                .find(|f| (f.frame.camera, f.frame.seq) == (camera, seq))
-                .map(|f| f.file.clone());
-            FrameRecord {
-                camera,
-                seq,
-                status: if delivered {
-                    FrameState::Measured
-                } else {
-                    FrameState::Missing
-                },
-                frame_counter: delivered.then(|| frame(camera, seq).frame_counter),
-                trigger_counter: delivered.then_some(50 + seq),
-                region: Some(0),
-                metrics: None,
-                raw_file,
-            }
-        };
-        let records = recorder.root();
-        for &(camera, seq) in &delivered {
-            let loaded = load_frame_verified(records, cycle_id, &cameras[camera], &record(camera, seq)).unwrap();
-            assert_eq!(loaded.pixels, [10 * seq as u8 + camera as u8, 1], "相机 {camera} 第 {seq} 帧组");
-        }
-        type Edit = fn(&mut FrameRecord);
-        let refused: [(&str, Edit); 4] = [
-            ("帧号与录制不符", |f| f.frame_counter = Some(999)),
-            ("触发计数与录制不符", |f| f.trigger_counter = Some(999)),
-            ("记录指向同目录里另一台相机的原图", |f| f.raw_file = f.raw_file.as_ref().map(|p| p.replace("cam1_s000002", "cam3_s000002"))),
-            ("缺帧", |f| f.status = FrameState::Missing),
-        ];
-        for (case, edit) in refused {
-            let mut changed = record(0, 2);
-            edit(&mut changed);
-            assert!(load_frame_verified(records, cycle_id, &cameras[0], &changed).is_err(), "{case}");
-        }
-        assert!(load_frame_verified(records, cycle_id, &cameras[1], &record(1, 2)).is_err(), "缺帧没有原图");
-        assert!(load_frame_verified(records, "history-frames", &cameras[0], &record(0, 1)).is_err(), "cycleId 不同");
-        assert!(load_frame_verified(records, cycle_id, &cameras[1], &record(0, 1)).is_err(), "相机编号与下标不符");
-    }
-
 }

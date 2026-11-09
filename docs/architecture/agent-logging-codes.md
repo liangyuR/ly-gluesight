@@ -12,8 +12,8 @@
 | `app.config` | 配置摘要 | info | PLC 与相机组初始化完成后；保存 PLC 配置、相机配置、检测设置后 | `project`（当前项目 `id`、`name`）、`offline`、`plc`（连接配置：协议、地址、端口、机架、插槽等）、`cameras`（相机组配置）、`settings`（检测设置） |
 | `app.panic` | 程序异常 | error | 任一线程 panic | 无；线程名与 panic 信息在 `msg` |
 | `app.log_write_failed` | 日志写入失败 | warn | 日志写不进去后首次恢复写入 | `count`（未写入的行数）、`firstTs`、`lastTs` |
-| `s7.fault_output` | S7 故障输出 | warn | PC 撤下输出：故障时置 pcState=90、faultCode=101，待复位时置 pcState=0；或因无法确认而断开通讯 | `cause`：startup / new_connection / reset_operator / reset_timeout（软件复位 10 s 内 PLC 未回空闲）/ fault / observation_failed，`reason`，`phase`，`ok`，`error` |
-| `s7.reset.request` | S7 复位请求 | info | 收到复位：操作员软件复位，或 PLC 置复位请求（plcState=99）后 PC 开始完成复位 | `source`：operator / plc，`phase`：收到时的会话阶段 |
+| `s7.fault_output` | S7 故障输出 | warn | PC 撤下输出：故障时置 pcState=90、faultCode=101，待复位时置 pcState=0；或因无法确认而断开通讯 | `cause`：startup / new_connection / reset_operator / reset_signal（PLC 复位信号）/ reset_timeout（软件复位 10 s 内 PLC 未回空闲）/ fault / observation_failed，`reason`，`phase`，`ok`，`error` |
+| `s7.reset.request` | S7 复位请求 | info | 收到复位：操作员软件复位、PLC 复位信号上升沿、待复位或故障后的自动复位，或 PLC 置复位请求（plcState=99）后 PC 开始完成复位；PLC 复位信号被拒也记一条 | `source`：operator / plc_signal / auto / plc，`phase`：收到时的会话阶段；被拒时 `ok`=false、`error` |
 | `s7.reset.done` | S7 复位完成 | info | 复位完成、视觉就绪 | 无 |
 | `s7.ack` | S7 结果确认 | info | PLC 确认本件结果 | `requestSeq`、`resultCode`、`faultCode` |
 | `s7.reconnect.forced` | S7 主动断开 | error | 无法确认撤下 pcState，PC 断开通讯以停止心跳 | `error` |
@@ -24,9 +24,9 @@
 | `op.capture.import` | 操作：历史件导入为采集轮次 | info | 设示教件时导入历史件 | `recipeId`、`records`（记录 ID）、`rounds`（新轮次）、`ok`、`error` |
 | `op.camera` | 操作：相机 | info | 相机释放、重连、保存配置、增删、保存曝光与增益、软触发 | `action`：release / reconnect / save_config / add / remove / set_imaging / soft_trigger，`cam`、`ok`、`error` |
 | `op.plc` | 操作：PLC | info | PLC 连接、断开、保存配置、手动写点 | `action`：connect / disconnect / save_config / write_point，`point`（写点时，只记点位不记值），`ok`、`error` |
-| `op.site` | 操作：站点模式 | info | 进入或退出离线 | `action`：enter_offline / leave_offline，`ok`、`error` |
 | `op.maintenance` | 操作：维护模式 | warn | 开启或退出维护模式（从下一件起生效：pcMode=1，结果码 0，PLC 按未检放行） | `action`：enter / exit，`reason`，`collectOnly`（退出时仍只有采集版的配方），`ok`、`error` |
 | `op.recipe.delete` | 操作：删除配方 | info | 删除生产配方或不可用配方 | `id`、`ok`、`error` |
+| `op.recipe.package` | 操作：配方回传包 | info | 导出或导入配方回传包 | `action`：export / import，`recipeId`、`path`、`ok`、`error`；导出另有 `teachingImages` |
 | `alarm.raised` | 报警 | error | 节拍界面新增一条报警；同一报警文案 10 分钟内只照写首次，之后（每件开工、复位后重新出现）计入摘要 | `alarm`（报警文案） |
 | `alarm.raised.summary` | 报警汇总 | error | `alarm.raised` 的聚合摘要：10 分钟窗口到期且窗口内有计数 | `alarm`、`count`、`firstTs`、`lastTs` |
 | `frame.stray` | 游离帧 | warn | 节拍不在采集 / 收尾阶段时收到触发帧；按相机聚合，窗口内首次照写 | `frameCounter`、`phase`（当时节拍阶段）；相机在顶层 `camera` |
@@ -41,6 +41,8 @@
 | `frame.route_fault.summary` | 帧归属故障汇总 | error | `frame.route_fault` 的聚合摘要：10 s 窗口到期 | `reason`、`count`、`firstTs`、`lastTs`、`frameCounterMin`、`frameCounterMax` |
 | `frame.dropped` | 丢帧 | warn | 帧通道满、相机回调丢弃了帧（节拍发现累计丢弃数增加）；窗口内首次照写 | `dropped`（这次新增的丢弃数）、`total`（进程内累计） |
 | `frame.dropped.summary` | 丢帧汇总 | warn | `frame.dropped` 的聚合摘要：10 s 窗口到期 | `count`（发现增加的次数）、`firstTs`、`lastTs`、`dropped`（计入的新增丢弃合计）、`total` |
+| `frame.budget_dropped` | 图像内存满丢帧 | error | 图像内存预算满、相机回调没拷图就丢了帧（节拍发现累计数增加，D-SB-60）；在途件记检测不完整；窗口内首次照写 | `dropped`（这次新增的丢弃数）、`total`（进程内累计） |
+| `frame.budget_dropped.summary` | 图像内存满丢帧汇总 | error | `frame.budget_dropped` 的聚合摘要：10 s 窗口到期 | `count`（发现增加的次数）、`firstTs`、`lastTs`、`dropped`（计入的新增丢弃合计）、`total` |
 | `camera.reconnect_failed` | 相机重连失败 | warn | 监督线程重开海康相机失败（约每 2 s 一次，含掉线后的重连）；按相机聚合，窗口 60 s | `error`、`lost`（本次是否因掉线而重连）；相机在顶层 `camera` |
 | `camera.reconnect_failed.summary` | 相机重连失败汇总 | warn | `camera.reconnect_failed` 的聚合摘要：60 s 窗口到期，或重连成功、相机移出相机组 | `count`、`firstTs`、`lastTs`、`error`（最后一次）、`lost`（最后一次） |
 | `plc.engine.warn` | PLC 引擎告警 | warn | ly_plc 引擎写出 warn 级日志；按 category 聚合 | `category`、`message` |

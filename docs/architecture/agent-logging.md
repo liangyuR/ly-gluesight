@@ -79,7 +79,7 @@
 
 ### 4.3 拆分的同名事件
 
-只拆分了带编码的事件：`故障`（S7、追溯、接件都记成同一事件）改为 `fault.enter`，用 `source` 区分（5.3）；`PLC {category}`（ev 动态拼接）改为 `plc.engine.warn` / `plc.engine.error`，`data.category`；相机断线重试改为 `camera.reconnect_failed`。其余同名事件（`相机`、`站点模式`、`接件阶段`、`接件校验` 等）没有 `code`，按 `ev` 与 `msg` 理解；`接件阶段` 的 `msg` 是 JSON：`cycleId`、`sn`、`status`（`admitted` / `deferred` / `fault`）、`elapsedMs`。
+只拆分了带编码的事件：`故障`（S7、追溯、接件都记成同一事件）改为 `fault.enter`，用 `source` 区分（5.3）；`PLC {category}`（ev 动态拼接）改为 `plc.engine.warn` / `plc.engine.error`，`data.category`；相机断线重试改为 `camera.reconnect_failed`。其余同名事件（`相机`、`接件阶段`、`接件校验` 等）没有 `code`，按 `ev` 与 `msg` 理解；`接件阶段` 的 `msg` 是 JSON：`cycleId`、`sn`、`status`（`admitted` / `deferred` / `fault`）、`elapsedMs`。
 
 ## 5. 补齐关键证据
 
@@ -87,8 +87,8 @@
 
 | code | 触发 | data |
 |---|---|---|
-| `s7.fault_output` | PC 撤下输出（故障时置 pcState=90、faultCode=101，待复位时置 pcState=0），或因无法确认而断开通讯 | `cause`（触发路径，含 `reset_operator`、`reset_timeout`）、`reason`、`phase` |
-| `s7.reset.request` | 收到复位：操作员软件复位，或 PLC 置复位请求（plcState=99） | `source: operator / plc`、收到时的 `phase` |
+| `s7.fault_output` | PC 撤下输出（故障时置 pcState=90、faultCode=101，待复位时置 pcState=0），或因无法确认而断开通讯 | `cause`（触发路径，含 `reset_operator`、`reset_signal`、`reset_timeout`）、`reason`、`phase` |
+| `s7.reset.request` | 收到复位：操作员软件复位、PLC 复位信号上升沿、待复位或故障后的自动复位，或 PLC 置复位请求（plcState=99）；PLC 复位信号被拒也记 | `source: operator / plc_signal / auto / plc`、收到时的 `phase`；被拒时 `ok: false`、`error` |
 | `s7.reset.done` | 复位完成、视觉就绪 | 无 |
 | `s7.ack` | 收到结果确认 | `requestSeq`、`resultCode`、`faultCode` |
 | `s7.reconnect.forced` | 无法确认撤下 pcState，主动断开重连 | `error` |
@@ -97,13 +97,13 @@
 
 ### 5.2 操作员命令
 
-改变设备或握手状态的 IPC 命令写 `op.*`，记参数摘要与结果（`ok` / `err` + 错误原文），命令入口处统一包装：`op.reset`、`op.capture.import`、`op.camera`、`op.plc`、`op.site`（按对象合并，用 `data.action` 区分动作）、`op.maintenance`、`op.recipe.delete`。手动写点只记点位与结果，不记写入值。
+改变设备或握手状态的 IPC 命令写 `op.*`，记参数摘要与结果（`ok` / `err` + 错误原文），命令入口处统一包装：`op.reset`、`op.capture.import`、`op.camera`、`op.plc`、`op.site`（按对象合并，用 `data.action` 区分动作）、`op.maintenance`、`op.recipe.delete`、`op.recipe.package`。手动写点只记点位与结果，不记写入值。
 
 被拒绝的操作也要记（例如复位被拒、闸门超时），这类信息现场最难口述。
 
 ### 5.3 故障事件与来源
 
-- `fault.enter`：节拍进入故障，或故障原因变化。`source` 取 `s7 / audit / intake / motion / device / storage / operator`（`motion` 为等工件结束超时），`data` 带 `reason`、`s7Phase`、在途 `cycleId`。
+- `fault.enter`：节拍进入故障，或故障原因变化。`source` 取 `s7 / intake / motion`（`motion` 为等工件结束超时）；追溯、磁盘与设备问题只告警或记本件检测错误，不进故障，`data` 带 `reason`、`s7Phase`、在途 `cycleId`。
 - `fault.repeat`：同一来源、同一原因重复上报时不再逐条写，按聚合规则（第 6 节）定期输出 `{count, firstTs, lastTs}`。
 - `fault.cleared`：复位完成、故障解除，带持续时长。
 
@@ -177,7 +177,7 @@
 
 为便于断言，`applog` 提供测试用的内存 sink（只在 `cfg(test)` 下替换文件 sink），测试断言 `code` 与 `data`，不断言 `msg` 文案。
 
-端到端核对：跑一次 `pnpm test:ui:production`，检查生成的日志里有 `app.start`、`app.config`、完整的 `part.*` 链，且无逐帧 warn 刷屏；离线模式注入一次故障与复位，检查 `fault.enter` / `s7.fault_output` / `s7.reset.*` 顺序。
+端到端核对：按[独立生产模拟器](../testing/production-simulator.md)运行正常生产，检查日志里有 `app.start`、`app.config`、完整的 `part.*` 链，且无逐帧 warn 刷屏。故障与复位需要独立专项验收，核对 `fault.enter` / `s7.fault_output` / `s7.reset.*` 顺序。
 
 ## 10. 风险与待定
 

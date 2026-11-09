@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::burst_judge::{self, BurstJudgement, Flags, FrameState};
 use crate::cycle::CycleHost;
@@ -34,8 +34,72 @@ pub async fn history_query(app: AppHandle, query: HistoryQuery) -> Result<Histor
 }
 
 #[tauri::command]
+pub async fn history_set_tags(
+    app: AppHandle,
+    ids: Vec<i64>,
+    tags: Vec<String>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let tags = app.state::<Store>().set_history_tags(&ids, &tags)?;
+        let _ = app.emit("history://changed", &ids);
+        Ok(tags)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[derive(Serialize)]
+pub struct HistoryDeleted {
+    pub deleted: usize,
+    pub warnings: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn history_delete(app: AppHandle, ids: Vec<i64>) -> Result<HistoryDeleted, String> {
+    let cycle = app.state::<CycleHost>();
+    let _gate = cycle.config_gate.lock().await;
+    if cycle.busy() {
+        return Err("有在途工件或未结 PLC 事务，不能删除历史记录".into());
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // 引用锁先于追溯 spool 锁取得，与录制滚动清理同一顺序
+        let _references = crate::recipe_capture::lock_references();
+        app.state::<CycleHost>().audit.with_ready(|| {
+            let warnings = crate::workspace::delete_history(&app, &ids)?;
+            let _ = app.emit("history://changed", &ids);
+            Ok(HistoryDeleted {
+                deleted: ids.len(),
+                warnings,
+            })
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub async fn history_detail(app: AppHandle, id: i64) -> Result<PartDetail, String> {
     tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail(id)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn history_overview(app: AppHandle, id: i64) -> Result<PartDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail_overview(id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn history_frame_detail(
+    app: AppHandle,
+    id: i64,
+    camera: usize,
+    seq: u64,
+) -> Result<PartDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail_frame(id, camera, seq))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[derive(Serialize)]
@@ -130,7 +194,7 @@ pub struct Change {
     pub from: Verdict,
     pub to: Verdict,
     pub reason: String,
-    /// 重判后的整件标记（检测不完整、疑似提前终止等与阈值无关，照常带出）
+    /// 重判后的整件标记（检测不完整、笔数异常等与阈值无关，照常带出）
     pub flags: Option<Flags>,
 }
 
@@ -145,6 +209,7 @@ pub enum SkipKind {
     LayoutMismatch,
     NoCandidate,
     LayoutChanged,
+    OtherProject,
 }
 
 impl SkipKind {
@@ -158,6 +223,9 @@ impl SkipKind {
             Self::NoCandidate => "当前候选配方不存在",
             Self::LayoutChanged => {
                 "当前候选的段序列 / 类型 / 预期帧数、相机或走廊已改变，需要使用原图复测"
+            }
+            Self::OtherProject => {
+                "记录属于其他项目，配方编号只在项目内唯一，不能用当前项目的配方重判"
             }
         }
     }
@@ -192,7 +260,18 @@ pub async fn history_rejudge(app: AppHandle, request: RejudgeRequest) -> Result<
         let store = app.state::<Store>();
         let cycle = app.state::<CycleHost>();
         let rows = store.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
-        rejudge_rows(rows, &request, |revision_id| store.recipe_snapshot(revision_id).map(|r| r.map(Arc::new)), |id| cycle.recipe(id), |id| store.burst_frames(id))
+        rejudge_rows(
+            rows,
+            &request,
+            store.project(),
+            |project, revision_id| {
+                store
+                    .recipe_snapshot(project, revision_id)
+                    .map(|r| r.map(Arc::new))
+            },
+            |id| cycle.recipe(id),
+            |id| store.burst_frames(id),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -241,7 +320,7 @@ fn burst_layout_matches(recipe: &Recipe, judgement: &BurstJudgement, frames: &[F
                 last_segment,
                 ..
             } => inside(first_segment, last_segment),
-            RegionKind::Skipped { segment } => inside(segment, segment),
+            RegionKind::Skipped { segment, .. } => inside(segment, segment),
         })
         && frames.iter().all(|frame| frame.camera < cameras)
 }
@@ -252,13 +331,23 @@ fn rejudge_burst(recipe: &Recipe, overrides: &Overrides, judgement: &BurstJudgem
     let segments = overrides.apply_segments(&recipe.path_segments);
     let regions: Vec<_> = judgement.regions.iter().map(|result| result.region.clone()).collect();
     let metrics: Vec<_> = frames.iter().filter_map(|frame| frame.metrics.clone()).collect();
-    burst_judge::judge(&segments, recipe.expected_total(), &regions, &frame_groups(frames, cameras.len()), &metrics, &cameras, &judgement.alarms)
+    burst_judge::judge(
+        &segments,
+        recipe.expected_total(),
+        &regions,
+        &frame_groups(frames, cameras.len()),
+        &metrics,
+        &cameras,
+        &judgement.alarms,
+        recipe.pass_rules(&judgement.passes),
+    )
 }
 
 fn rejudge_rows(
     rows: Vec<StoredMeasurement>,
     request: &RejudgeRequest,
-    mut snapshot: impl FnMut(&str) -> Result<Option<Arc<Recipe>>, String>,
+    current_project: &str,
+    mut snapshot: impl FnMut(&str, &str) -> Result<Option<Arc<Recipe>>, String>,
     mut current: impl FnMut(&str) -> Option<Arc<Recipe>>,
     mut burst_frames: impl FnMut(i64) -> Result<Vec<FrameRecord>, String>,
 ) -> Result<RejudgeResult, String> {
@@ -288,7 +377,11 @@ fn rejudge_rows(
             skip(SkipKind::NoRevision);
             continue;
         };
-        let Some(original) = cached_recipe(&mut originals, revision_id, || snapshot(revision_id))? else {
+        let key = format!("{}/{revision_id}", row.project_id);
+        let Some(original) = cached_recipe(&mut originals, &key, || {
+            snapshot(&row.project_id, revision_id)
+        })?
+        else {
             skip(SkipKind::SnapshotMissing);
             continue;
         };
@@ -305,6 +398,10 @@ fn rejudge_rows(
             continue;
         }
         let recipe = if request.use_current_recipe {
+            if row.project_id != current_project {
+                skip(SkipKind::OtherProject);
+                continue;
+            }
             let Some(candidate) =
                 cached_recipe(&mut candidates, &original.id, || Ok(current(&original.id)))?
             else {
@@ -365,12 +462,13 @@ pub(crate) fn csv_row(p: &PartSummary) -> String {
         delivery,
         format_ts(p.delivery.updated_at),
         esc(p.delivery.message.as_deref().unwrap_or("")),
-        // 段配方：ΣN_exp、Σtol、各相机帧数（按计划相机顺序，/ 分隔）、PLC deviceTriggers（只作参考）、整件标记；旧记录留空
+        // 段配方：ΣN_exp、各相机帧数（按计划相机顺序，/ 分隔）、PLC deviceTriggers（只作参考）、整件标记；旧记录留空
         burst.and_then(|b| b.expected_total).map(|n| n.to_string()).unwrap_or_default(),
-        burst.map(|b| b.tolerance_total.to_string()).unwrap_or_default(),
         burst.map(|b| b.camera_frames.iter().map(u32::to_string).collect::<Vec<_>>().join("/")).unwrap_or_default(),
         burst.and_then(|b| b.device_triggers).map(|n| n.to_string()).unwrap_or_default(),
         esc(&p.flags.as_ref().map(flag_labels).unwrap_or_default().join("、")),
+        esc(&p.project_id),
+        esc(&p.tags.join("、")),
     ];
     format!("{}\r\n", cells.join(","))
 }
@@ -378,17 +476,17 @@ pub(crate) fn csv_row(p: &PartSummary) -> String {
 fn flag_labels(flags: &Flags) -> Vec<&'static str> {
     [
         (flags.incomplete, "检测不完整"),
-        (flags.frame_count_anomaly, "帧数异常"),
         (flags.offset_unjudged, "胶偏未判"),
         (flags.unsegmented, "含未分段区域"),
-        (flags.short_part, "疑似提前终止"),
+        (flags.wide_warning, "胶宽偏宽"),
+        (flags.overflow_warning, "溢胶预警"),
     ]
     .into_iter()
     .filter_map(|(set, label)| set.then_some(label))
     .collect()
 }
 
-pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明,预期帧组数(ΣN_exp),帧组容差(Σtol),各相机帧数,deviceTriggers,标记\r\n";
+pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明,预期帧组数(ΣN_exp),各相机帧数,deviceTriggers,标记,项目,人工 Tag\r\n";
 
 /// 按筛选条件导出 CSV（带 BOM，Excel 可直接打开），返回文件路径。
 #[tauri::command]

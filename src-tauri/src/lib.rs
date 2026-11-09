@@ -1,9 +1,9 @@
+mod agent_mcp;
 mod applog;
 mod audit;
 mod burst_judge;
 mod calibration;
 mod camera;
-mod candidate;
 mod commands;
 mod cycle;
 mod cycle_ids;
@@ -20,16 +20,18 @@ mod handshake;
 mod handshake_audit;
 mod history;
 mod history_fixture;
+mod history_package;
 mod image_file;
 mod inspection;
 mod instance;
 mod judge;
 mod log_storage;
-mod managed_samples;
 mod measure;
 mod mvs;
 mod offline;
+mod operation;
 mod packaging;
+mod passes;
 mod plan;
 mod plc;
 mod plc_plan;
@@ -46,7 +48,6 @@ mod segmentation;
 mod settings;
 mod shot_router;
 mod simimage;
-mod site;
 mod storage;
 mod storage_startup;
 mod store;
@@ -70,7 +71,7 @@ pub mod probe_api {
     pub use crate::calibration::{calibrate_counts, unformed_lead, GroupForm, ONSET_RUN};
     pub use crate::camera::{configure_for_probe, BurstRender, CameraConfig};
     pub use crate::frame_align::{
-        align_cuts, downsample, ReviewReason, Sequence, ALIGN_FACTOR, ALIGN_SHARPNESS,
+        align_cuts, downsample, thumb_strip, ReviewReason, Sequence, ALIGN_FACTOR, ALIGN_SHARPNESS,
     };
     pub use crate::frame_group::{loss_alarms, FrameGroup};
     pub use crate::history_fixture::{FixtureFrames, FixturePart, FixtureSite, SN_PREFIX};
@@ -86,6 +87,7 @@ pub mod probe_api {
     pub use crate::recipe::{
         burst_template, DetectParams, HeadingWindow, Polarity, Recipe, RecipeDoc, SegmentCorridor,
     };
+    pub use crate::recipe_capture::RecipeCaptureHost;
     pub use crate::release::{
         load as load_release, publish_burst, BurstPublishInput, CameraInput, CorridorInput,
         ResourceSource, ValidationSite, Versions,
@@ -94,14 +96,87 @@ pub mod probe_api {
     pub use crate::simimage::{render_burst, render_burst_span};
     pub use crate::vision::{Engine, FrameImage};
 
-    /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。
-    pub fn warm(prepared: &Prepared) -> Result<(), String> {
-        prepared.warm()
+    /// 评估工具按（相机, 帧组）找原图的路径。
+    pub type FramePaths = Box<dyn Fn(&str, u64) -> std::path::PathBuf + Send + Sync>;
+
+    /// 项目目录 `project` 里采集轮次 `round` 的原图路径：引用录制的轮次（format 4）按来源 cycleId 在资料目录的本机记录库
+    /// （只读）查录制目录，旧轮次在本轮目录。评估工具（heading_eval、segment_eval）用，不做帧记录核对。
+    pub fn capture_frame_paths(
+        project: &std::path::Path,
+        round: &str,
+    ) -> Result<FramePaths, String> {
+        let dir = project.join("recipe-capture").join(round);
+        let text =
+            crate::fsio::read_text(&dir.join("round.json")).map_err(|e| format!("{round}：{e}"))?;
+        let value: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("{round}：{e}"))?;
+        if value["format"].as_u64() != Some(u64::from(crate::recipe_capture::FORMAT)) {
+            return Ok(Box::new(move |camera, seq| {
+                dir.join(camera).join(format!("{seq:06}.pgm"))
+            }));
+        }
+        let cycle = value
+            .pointer("/origin/cycleId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("轮次没有来源 cycleId")?;
+        let data = project
+            .parent()
+            .and_then(std::path::Path::parent)
+            .ok_or("项目目录不在资料目录的 projects 下")?;
+        let conn = rusqlite::Connection::open_with_flags(
+            crate::project::records::database(data),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| e.to_string())?;
+        let recording: std::path::PathBuf = conn
+            .query_row(
+                "SELECT recording_directory FROM parts WHERE cycle_id = ?1",
+                [cycle],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .map_err(|e| format!("记录库里找不到 {cycle}：{e}"))?
+            .ok_or(format!("{cycle} 没有录制目录"))?
+            .into();
+        Ok(Box::new(move |camera, seq| {
+            recording.join(format!("{camera}_s{seq:06}.pgm"))
+        }))
+    }
+
+    /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见），每一段都须测成。
+    pub fn warm(prepared: &mut Prepared) -> Result<(), String> {
+        prepared.warm()?;
+        match prepared.untested_reasons() {
+            reasons if reasons.is_empty() => Ok(()),
+            reasons => Err(reasons.join("；")),
+        }
     }
 }
 
 fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
-    store::Store::open_deferred_recovery(&storage::project(app).join("inspection.db"))
+    let data = storage::root(app);
+    let current = project::current_id(app);
+    let store = store::Store::open_deferred_recovery(&project::records::database(&data), &current)?;
+    for (level, message) in project::records::recover_installs(&data, &store)
+        .into_iter()
+        .chain(project::records::migrate(&data, &store, &current))
+    {
+        applog::write(level, "检测记录合并", &message);
+    }
+    match project::records::record_roots(&data, &current) {
+        Ok(roots) => {
+            for warning in roots
+                .iter()
+                .flat_map(|root| history_package::recover(&store, root))
+            {
+                applog::write("warn", "历史件导入中断清理", &warning);
+            }
+        }
+        Err(error) => applog::write("warn", "历史件导入中断清理", &error),
+    }
+    for warning in store.cleanup_retired_recordings(&data) {
+        applog::write("warn", "清理停用离线记录", &warning);
+    }
+    Ok(store)
 }
 
 fn open_project(app: &tauri::AppHandle, root: &std::path::Path) -> Result<(), String> {
@@ -124,22 +199,10 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(storage_startup::Startup::default());
-            let mut prepared = storage::selected_root().and_then(|root| {
+            let prepared = storage::selected_root().and_then(|root| {
                 storage::prepare(app.handle(), &root)?;
                 Ok(root)
             });
-            if let Ok(root) = &prepared {
-                if storage::initialized(root) {
-                    let loaded = storage::initialize(app.handle(), root.clone()).and_then(|_| {
-                        start_services(app.handle(), root.clone())
-                            .map_err(|error| error.to_string())
-                    });
-                    match loaded {
-                        Ok(()) => return Ok(()),
-                        Err(error) => prepared = Err(error),
-                    }
-                }
-            }
             if let Err(error) = &prepared {
                 eprintln!(
                     "{}",
@@ -149,57 +212,58 @@ pub fn run() {
                     std::process::exit(1);
                 }
             }
+            // 已初始化的资料目录与主窗口共用 WebView 配置，只起一个浏览器进程
             let profile = match &prepared {
+                Ok(root) if storage::initialized(root) => storage::webview(root)?,
                 Ok(root) => storage::webview(&storage::bootstrap_root(root))?,
                 Err(_) => std::env::temp_dir()
                     .join(format!("GlueSight-startup-error-{}", std::process::id())),
             };
             tauri::WebviewWindowBuilder::new(
                 app,
-                "storage-startup",
+                storage_startup::WINDOW,
                 tauri::WebviewUrl::App("storage-startup.html".into()),
             )
-            .title("GlueSight · 资料准备")
-            .inner_size(720.0, 480.0)
+            .title("GlueSight")
+            .inner_size(560.0, 340.0)
             .center()
             .resizable(false)
+            .decorations(false)
+            .background_color(tauri::window::Color(15, 20, 23, 255))
             .visible(!headless(app.handle()))
             .data_directory(profile)
             .build()?;
-            if let Err(error) = prepared {
-                storage_startup::report(app.handle(), error);
-                return Ok(());
-            }
+            let root = match prepared {
+                Ok(root) => root,
+                Err(error) => {
+                    storage_startup::report(app.handle(), error);
+                    return Ok(());
+                }
+            };
+            // 初始化放到后台线程，主线程照常处理启动画面的进度查询
             let app = app.handle().clone();
             std::thread::spawn(move || {
-                let initialized = storage::selected_root().and_then(|root| {
-                    storage::initialize(&app, root.clone())?;
-                    Ok(root)
-                });
-                match initialized {
-                    Ok(root) => {
-                        let ready_app = app.clone();
-                        if let Err(error) = app.run_on_main_thread(move || {
-                            if let Err(error) = start_services(&ready_app, root) {
-                                startup_failed(ready_app, error.to_string());
-                            }
-                        }) {
-                            startup_failed(app, error.to_string());
-                        }
-                    }
-                    Err(error) => startup_failed(app, error),
+                let started = storage::initialize(&app, root.clone())
+                    .and_then(|_| start_services(&app, root).map_err(|error| error.to_string()));
+                if let Err(error) = started {
+                    startup_failed(app, error);
                 }
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            operation::operation_cancel,
+            operation::operation_status,
             storage_startup::storage_startup_status,
             storage_startup::storage_startup_answer,
+            storage_startup::startup_ready,
             storage_startup::storage_startup_projects,
             storage_startup::storage_startup_open_project,
             storage_startup::storage_startup_create_project,
             storage::storage_status,
             storage::storage_open_directory,
+            storage::storage_recording_disks,
+            storage::storage_recording_disks_save,
             project::project_current,
             project::project_list,
             project::manage::project_usage,
@@ -211,9 +275,11 @@ pub fn run() {
             project::transfer::project_import_pick,
             project::transfer::project_import,
             project::transfer::project_copy,
+            project::transfer::project_transfer_size,
             storage::storage_preferences_get,
             storage::storage_preferences_update,
             commands::app_info,
+            agent_mcp::agent_mcp_status,
             commands::app_open_log_dir,
             applog::applog_query,
             applog::applog_usage,
@@ -259,38 +325,33 @@ pub fn run() {
             recipe_api::recipe_doc,
             recipe_api::recipe_preview,
             recipe_api::recipe_template,
-            recipe_api::recipe_expert_specs,
             recipe_api::recipe_delete,
             recipe_api::recipe_delete_unavailable,
             recipe_api::recipe_plan_export,
             teach::records_list,
             history::history_query,
+            history::history_set_tags,
+            history::history_delete,
             history::history_detail,
+            history::history_overview,
+            history::history_frame_detail,
             history::history_neighbors,
             history::history_rejudge,
             history::history_export,
+            history_package::history_package_target,
+            history_package::history_package_export,
+            history_package::history_package_pick,
+            history_package::history_package_import,
             history::reveal_path,
             vision::vision_calib_info,
             vision::vision_calibrate,
-            site::site_status,
-            site::site_enter_offline,
-            site::site_leave_offline,
-            site::site_preview_sample_set,
-            site::site_pick_dir,
-            offline::offline_run,
-            offline::offline_stop,
-            offline::offline_inject,
             workspace::workspace_list,
-            offline::offline_pace,
-            offline::offline_fault_reset,
             recipe_capture::recipe_capture_get,
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_frame_image,
             recipe_capture::recipe_capture_round_thumbs,
-            workspace::workspace_debug_run,
             workspace::workspace_retry_publish,
             workspace::workspace_abandon_publish,
-            workspace::workspace_capture_sample,
             workspace::workspace_get,
             workspace::workspace_navigation_import,
             workspace::workspace_navigation_save,
@@ -300,24 +361,29 @@ pub fn run() {
             workspace::workspace_delete,
             workspace::workspace_save_doc,
             workspace::workspace_image,
-            workspace::workspace_validate,
             workspace::workspace_publish,
             workspace::workspace_collect_checks,
             workspace::workspace_publish_collect,
             workspace::workspace_compare,
             workspace::workspace_compare_original,
             workspace::workspace_comparisons,
+            workspace::workspace_comparison_summaries,
+            workspace::workspace_comparison_get,
             workspace::workspace_live_frame_image,
             workspace::workspace_live_frame_view,
             workspace::workspace_station_capture,
             workspace::workspace_station_import,
             workspace::workspace_station_image,
+            workspace::workspace_station_restore,
             workspace::workspace_update_segments,
             workspace::workspace_teach_segment_corridor,
             workspace::workspace_clear_segment_corridor,
             workspace::workspace_extract_corridor,
+            workspace::workspace_snap_corridor,
+            workspace::workspace_fit_color_model,
             workspace::workspace_measure_teaching,
             workspace::workspace_calibration_round_features,
+            workspace::workspace_calibration_round_overview,
             workspace::workspace_calibration_frame,
             workspace::workspace_teach_preview_frame,
             workspace::workspace_teach_preview_segment,
@@ -327,11 +393,20 @@ pub fn run() {
             workspace::workspace_capture_review_exclude,
             workspace::workspace_history_candidates,
             workspace::workspace_set_teaching_piece,
-            workspace::workspace_confirm_tolerance,
+            workspace::workspace_pass_alignment_save,
+            workspace::workspace_pass_carry_accept,
+            workspace::package::workspace_package_target,
+            workspace::package::workspace_package_export,
+            workspace::package::workspace_package_pick,
+            workspace::package::workspace_package_import,
             workspace::workspace_confirm_skip,
             workspace::workspace_calibration_skip_suggest,
+            workspace::workspace_pass_skip_suggest,
+            workspace::workspace_confirm_pass_skip,
             workspace::workspace_record_frame_image,
             workspace::workspace_record_frame_view,
+            workspace::workspace_history_frame_view,
+            workspace::workspace_history_compare_options,
             flow_debug::flow_open,
             flow_debug::flow_manifest,
             flow_debug::flow_core_info,
@@ -370,6 +445,7 @@ fn start_services(
     app: &tauri::AppHandle,
     root: std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    storage_startup::stage(app, 1);
     log_storage::initialize(app)?;
     if let Err(error) = applog::init(app) {
         eprintln!("{error}");
@@ -392,30 +468,42 @@ fn start_services(
     }
     app.manage(open_store(app)?);
     app.manage(vision::VisionHost::default());
+    app.manage(operation::Operations::default());
     app.manage(flow_debug::FlowDebugHost::default());
     app.manage(production::ProductionHost::default());
-    app.manage(offline::OfflineHost::default());
-    let site_note = site::restore_choice(app);
+    storage_startup::stage(app, 2);
     app.manage(cycle::CycleHost::init(app)?);
-    if let Some(note) = site_note {
-        cycle::log(app, "warn", "站点模式", note);
-    }
+    storage_startup::stage(app, 3);
     app.manage(workspace::WorkspaceHost::init(app)?);
+    storage_startup::stage(app, 4);
     app.manage(plc::PlcHost::init(app)?);
     commands::log_config(app);
+    storage_startup::stage(app, 5);
+    // 主窗口先隐藏，前端首屏渲染完调 startup_ready 再显示，免得先露出空白窗口
     for config in &app.config().app.windows {
         tauri::WebviewWindowBuilder::from_config(app, config)?
             .data_directory(storage::webview(&root)?)
+            .visible(false)
             .build()?;
     }
-    if let Some(window) = app.get_webview_window("storage-startup") {
-        window.close()?;
+    if headless(app) {
+        storage_startup::ready(app);
+    } else {
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(15));
+            storage_startup::ready(&handle);
+        });
     }
     plc::PlcHost::start_if_configured(app);
     cycle::CycleHost::start(app);
     camera::CameraRig::start(app);
+    agent_mcp::start(app);
     measure::apply_settings(app);
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || cycle::purge_history(&handle));
+    tauri::async_runtime::spawn_blocking(move || {
+        cycle::purge_history(&handle);
+        cycle::repair_history(&handle);
+    });
     Ok(())
 }

@@ -80,9 +80,9 @@
     "gluesight": {
       "judge": {
         "minCoverage": {"type": "float", "label": "定向覆盖率下限", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.3, "advanced": true, "group": "定胶路", "doc": "选中方向粗找到胶的步数占比低于它就算没找到胶条"},
-        "presentRatio": {"type": "float", "label": "有胶宽度比", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.5, "advanced": true, "group": "量胶宽", "doc": "宽度不小于参考宽的这一比例才算有胶"},
+        "presentRatio": {"type": "float", "label": "有胶宽度比", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.5, "advanced": true, "group": "量胶宽", "doc": "灰度测量：宽度不小于参考宽的这一比例才算有胶；胶色测量不使用此门限"},
         "centerRatio": {"type": "float", "label": "中心偏离比", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.3, "advanced": true, "group": "量胶宽", "doc": "中心偏离胶路不超过 max(6, 它 × 参考宽)"},
-        "contrastRatio": {"type": "float", "label": "对比度比", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.3, "advanced": true, "group": "量胶宽", "doc": "峰值（示教走廊用峰值 / 局部亮度）不低于参考值的这一比例才算有胶"}
+        "contrastRatio": {"type": "float", "label": "对比度比", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.3, "advanced": true, "group": "量胶宽", "doc": "灰度测量：峰值（示教走廊用峰值 / 局部亮度）不低于参考值的这一比例才算有胶；胶色测量不使用此门限"}
       }
     }
   }

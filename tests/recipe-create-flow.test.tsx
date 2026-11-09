@@ -3,11 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
 import LibraryPage from "../src/features/workspace/LibraryPage";
 import ProgressPage from "../src/features/workspace/ProgressPage";
 import TeachingPiecePage from "../src/features/workspace/TeachingPiecePage";
 import { SnackbarProvider } from "qing-steel";
 import { WorkspaceProvider } from "../src/features/workspace/context";
+import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import type { RecipeDoc } from "../src/features/cycle/types";
 import type { WorkspaceView } from "../src/features/workspace/types";
 import { burstCameras, burstRecipe, burstWorkspaceView, pathSegment, progressV2 } from "./fixtures";
@@ -17,8 +19,8 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }))
 /** 后端新建模板（schema 8）：三台相机、一个待标定的直线段，走廊都还没示教。 */
 const template = (): RecipeDoc => ({
   ...burstRecipe({
-    id: "NEW", name: "新配方", version: 1, productCode: 1, planVersion: 0, segments: [pathSegment(1, "straight")], partCalib: null,
-    inspect: burstCameras.map(camera => ({ camera, mmPerPx: null, calib: null, detect: null })),
+    id: "NEW", name: "新配方", version: 1, productCode: 1, segments: [pathSegment(1, "straight")], partCalib: null,
+    inspect: burstCameras.map(camera => ({ camera, mmPerPx: null })),
   }),
 });
 
@@ -62,8 +64,8 @@ describe("创建配方流程", () => {
           throw new Error("候选不存在");
         case "camera_rig_config":
         case "camera_rig_status":
-        case "workspace_history_candidates":
         case "cycle_logs": return [];
+        case "workspace_history_candidates": return { total: 0, items: [] };
         case "cycle_snapshot": return null;
         case "plc_get_status": return { state: "disconnected", message: "PLC 未连接" };
         default: throw new Error(`未声明的桌面调用：${command}`);
@@ -73,8 +75,8 @@ describe("创建配方流程", () => {
     const user = userEvent.setup();
     render(<MemoryRouter initialEntries={["/recipe"]}><SnackbarProvider><WorkspaceProvider><Routes>
       <Route path="/recipe" element={<LibraryPage />} />
-      <Route path="/recipe/progress" element={<ProgressPage />} />
-      <Route path="/recipe/capture" element={<TeachingPiecePage />} />
+      <Route path="/recipe/:recipeId/progress" element={createElement(inRecipe(ProgressPage))} />
+      <Route path="/recipe/:recipeId/capture" element={createElement(inRecipe(TeachingPiecePage))} />
     </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "新建配方" }));
@@ -92,18 +94,16 @@ describe("创建配方流程", () => {
       doc: { ...template(), id: "SHELL-2026", name: "新壳体配方", productCode: 27, teachingId: null },
     });
     expect(invoke).toHaveBeenCalledWith("workspace_get", { id: "SHELL-2026" });
-    expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveTextContent("SHELL-2026");
-    // 新建的段配方按段模型的步骤显示：示教件 → 段列表 → 走廊示教 → 试测 → 验证与发布
+    expect(screen.getByRole("navigation", { name: "配方位置" })).toHaveTextContent("SHELL-2026");
+    // 新建的段配方按段模型的步骤显示：示教件 → 分段与示教 → 试测 → 发布
     expect(within(screen.getByRole("region", { name: "示教件进度" })).getByText("还没有示教件")).toBeVisible();
     const steps = within(screen.getByRole("navigation", { name: "配方配置步骤" }));
-    for (const name of [/段列表/, /走廊示教/, /试测/]) expect(steps.getByRole("link", { name })).toBeVisible();
+    for (const name of [/分段与示教/, /试测/]) expect(steps.getByRole("link", { name })).toBeVisible();
     expect(steps.queryByRole("link", { name: /单帧示教/ })).not.toBeInTheDocument();
-    await waitFor(() => expect(preferences.lastWorkspace).toBe("SHELL-2026"));
 
     await user.click(screen.getByRole("link", { name: "选示教件" }));
     expect(await screen.findByRole("heading", { name: "选示教件" })).toBeVisible();
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("workspace_history_candidates", { id: "SHELL-2026" }));
-    expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveTextContent("SHELL-2026");
-    expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveTextContent("SHELL-2026 · 新壳体配方");
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("workspace_history_candidates", { id: "SHELL-2026", query: expect.objectContaining({ offset: 0 }) }));
+    expect(screen.getByRole("navigation", { name: "配方位置" })).toHaveTextContent("SHELL-2026 · 新壳体配方");
   }, 20_000);
 });

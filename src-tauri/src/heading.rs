@@ -4,7 +4,7 @@
 use serde::Serialize;
 
 use crate::plan::{segment_cameras, PathSegment};
-use crate::recipe::CameraInspect;
+use crate::recipe::{CameraInspect, HeadingWindow};
 
 /// 同一台相机开启定向的各段走廊起点（即出胶点）之间允许的最大距离（mm）。
 pub const NOZZLE_TOLERANCE_MM: f64 = 1.0;
@@ -12,22 +12,12 @@ pub const NOZZLE_TOLERANCE_MM: f64 = 1.0;
 /// `glue.track_path` 要求检测窗口至少 8 px 长。
 const MIN_WINDOW_PX: f64 = 8.0;
 
-/// 定向配置上的问题：`segment` 为 None 是相机级（检测窗口、出胶点）。
+/// 定向配置上的问题（按相机与段）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Issue {
     pub camera: String,
     pub segment: Option<u32>,
     pub message: String,
-}
-
-/// 把角度差折到 (−180, 180]。
-pub fn wrap(d: f64) -> f64 {
-    let r = (d + 180.0).rem_euclid(360.0) - 180.0;
-    if r == -180.0 {
-        180.0
-    } else {
-        r
-    }
 }
 
 fn taught(inspect: &CameraInspect, segment: u32) -> Option<&[[f32; 2]]> {
@@ -52,26 +42,39 @@ fn heading_segments<'a>(
     })
 }
 
-/// 出胶点（px）与来源：`calibrated` 为真是相机上标定的出胶点，否则由走廊起点推出。
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+/// 出胶点（px）与来源：`calibrated` 为真是相机上标定的出胶点，否则由走廊起点推出；`warning` 是推算时起点相差过大的提示。
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Nozzle {
     pub point: [f64; 2],
     pub calibrated: bool,
+    pub warning: Option<String>,
 }
 
-/// 出胶点：相机标定了就用标定值；否则取这台相机开启定向的各段走廊起点的平均（D-SB-42 走廊从出胶点一侧起画），
-/// 没有开启定向的段时为 None，各起点离平均点超过 `NOZZLE_TOLERANCE_MM` 时报错（还没有像素当量时不核对距离）。
+fn median(mut values: Vec<f64>) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[mid - 1] + values[mid]) / 2.0
+    } else {
+        values[mid]
+    }
+}
+
+/// 出胶点：相机标定了就用标定值；否则取这台相机开启定向的各段走廊起点的中位数（D-SB-42 走廊从出胶点一侧起画，
+/// 中位数不被个别画偏的起点拉走），没有开启定向的段时为 None。手画起点总有偏差，不阻断：有起点离推算点超过
+/// `NOZZLE_TOLERANCE_MM` 时只在 `warning` 里提示离得最远的那段（还没有像素当量时不核对距离）。
 pub fn nozzle(
     segments: &[PathSegment],
     cameras: &[String],
     inspect: &CameraInspect,
-) -> Result<Option<Nozzle>, String> {
+) -> Option<Nozzle> {
     if let Some(point) = inspect.nozzle {
-        return Ok(Some(Nozzle {
+        return Some(Nozzle {
             point,
             calibrated: true,
-        }));
+            warning: None,
+        });
     }
     let starts: Vec<(u32, [f64; 2])> = heading_segments(segments, cameras, inspect)
         .filter_map(|s| {
@@ -79,28 +82,25 @@ pub fn nozzle(
         })
         .collect();
     if starts.is_empty() {
-        return Ok(None);
+        return None;
     }
-    let n = starts.len() as f64;
-    let mean = [
-        starts.iter().map(|(_, p)| p[0]).sum::<f64>() / n,
-        starts.iter().map(|(_, p)| p[1]).sum::<f64>() / n,
-    ];
-    if let Some(scale) = inspect.mm_per_px {
-        if let Some((segment, p)) = starts
+    let point = [0, 1].map(|axis| median(starts.iter().map(|(_, p)| p[axis]).collect()));
+    let warning = inspect.mm_per_px.and_then(|scale| {
+        let off = |p: &[f64; 2]| (p[0] - point[0]).hypot(p[1] - point[1]) * scale;
+        starts
             .iter()
-            .find(|(_, p)| (p[0] - mean[0]).hypot(p[1] - mean[1]) * scale > NOZZLE_TOLERANCE_MM)
-        {
-            return Err(format!(
-                "相机 {}：开启逐帧定向的各段走廊起点（出胶点）不一致，第 {segment} 段起点 ({:.0}, {:.0}) 离其余各段超过 {NOZZLE_TOLERANCE_MM} mm，请在示教帧上标定出胶点，或从同一出胶点重画走廊",
-                inspect.camera, p[0], p[1]
-            ));
-        }
-    }
-    Ok(Some(Nozzle {
-        point: mean,
+            .max_by(|a, b| off(&a.1).total_cmp(&off(&b.1)))
+            .filter(|(_, p)| off(p) > NOZZLE_TOLERANCE_MM)
+            .map(|(segment, p)| format!(
+                "相机 {}：第 {segment} 段走廊起点 ({:.0}, {:.0}) 离推算的出胶点 {:.1} mm，超过 {NOZZLE_TOLERANCE_MM} mm；只提示，不影响试测与发布，确认这段走廊是从出胶点起画的，或在示教帧上标定出胶点",
+                inspect.camera, p[0], p[1], off(p)
+            ))
+    });
+    Some(Nozzle {
+        point,
         calibrated: false,
-    }))
+        warning,
+    })
 }
 
 /// 扇形搜索范围（度，lo < hi，跨 180°）：以出胶点为圆心的半圈，中线取相机上拖出的方向 `turned`；没拖过时背离离出胶点
@@ -124,40 +124,52 @@ pub fn search_sector(nozzle: [f64; 2], size: [u32; 2], turned: Option<f64>) -> [
     [mid - 90.0, mid + 90.0]
 }
 
-/// 定向配置是否齐全（D-SB-47）：开启定向的段，它的每台检测相机要有检测窗口（换算后不短于 8 px）、出胶点一致。
+/// 测量区间从哪来：本段的覆盖、这台相机的测量区间，或默认值。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowSource {
+    Segment,
+    Camera,
+    Default,
+}
+
+/// 这台相机在这一段用的测量区间（D-SB-47）：本段设了覆盖就用本段的（本段各检测相机共用），否则用这台相机的，
+/// 相机也没设时用 `HeadingWindow::DEFAULT`。不看本段是否开启定向。
+pub fn window<'a>(
+    segment: &'a PathSegment,
+    inspect: &'a CameraInspect,
+) -> (&'a HeadingWindow, WindowSource) {
+    if let Some(w) = segment.heading.as_ref().and_then(|h| h.window.as_ref()) {
+        (w, WindowSource::Segment)
+    } else if let Some(w) = &inspect.window {
+        (w, WindowSource::Camera)
+    } else {
+        (&HeadingWindow::DEFAULT, WindowSource::Default)
+    }
+}
+
+/// 定向配置是否齐全（D-SB-47）：开启定向的段，它的每台检测相机的测量区间换算后不短于 8 px。出胶点起点相差过大只提示，见 `nozzle`。
 /// 走廊与当量缺失由 `untaught_corridors` 报，这里不重复。
 pub fn issues(segments: &[PathSegment], inspect: &[CameraInspect]) -> Vec<Issue> {
     let cameras: Vec<String> = inspect.iter().map(|i| i.camera.clone()).collect();
     let mut out = Vec::new();
     for i in inspect {
-        let used: Vec<u32> = segments
+        for s in segments
             .iter()
             .filter(|s| s.heading.is_some() && detected(s, i, &cameras))
-            .map(|s| s.index)
-            .collect();
-        if used.is_empty() {
-            continue;
-        }
-        let camera_issue = |message: String| Issue {
-            camera: i.camera.clone(),
-            segment: None,
-            message,
-        };
-        match (&i.window, i.mm_per_px) {
-            (None, _) => out.push(camera_issue(format!(
-                "相机 {}：第 {used:?} 段开启了逐帧定向，需要设置测量区间（跳过胶嘴附近与测量到的距离）",
-                i.camera
-            ))),
-            (Some(w), Some(scale)) if w.length_mm / scale < MIN_WINDOW_PX => {
-                out.push(camera_issue(format!(
-                    "相机 {}：测量区间长 {} mm 换算后不足 {MIN_WINDOW_PX} px",
-                    i.camera, w.length_mm
-                )))
-            }
-            _ => {}
-        }
-        if let Err(message) = nozzle(segments, &cameras, i) {
-            out.push(camera_issue(message));
+        {
+            let message = match (window(s, i).0, i.mm_per_px) {
+                (w, Some(scale)) if w.length_mm / scale < MIN_WINDOW_PX => format!(
+                    "第 {} 段相机 {}：测量区间长 {} mm 换算后不足 {MIN_WINDOW_PX} px",
+                    s.index, i.camera, w.length_mm
+                ),
+                _ => continue,
+            };
+            out.push(Issue {
+                camera: i.camera.clone(),
+                segment: Some(s.index),
+                message,
+            });
         }
     }
     out
@@ -166,30 +178,56 @@ pub fn issues(segments: &[PathSegment], inspect: &[CameraInspect]) -> Vec<Issue>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::{new_segment, KindDefaults, SegmentKind};
 
     #[test]
-    fn search_sector_is_the_half_facing_away_from_the_nearest_image_edge() {
-        // 防的回归（D-SB-47）：扇区朝向胶嘴本体所在的画面边，或随出胶点偏离画面中线而斜过去，贴着画面边走的胶条落到扇区外
-        let inside = |s: [f64; 2], deg: f64| {
-            s[0] <= deg && deg <= s[1] || s[0] <= deg - 360.0 || deg + 360.0 <= s[1]
+    fn measuring_window_prefers_segment_then_camera_then_default() {
+        // 防的回归（D-SB-47）：测量区间取值顺序错了——段覆盖被相机的区间盖掉，或相机没设区间时开启定向的段没有区间可用
+        let w = |start_mm: f64| HeadingWindow {
+            start_mm,
+            length_mm: 10.0,
         };
-        for (nozzle, toward, away) in [
-            ([548.0, 888.0], -175.0, 90.0),
-            ([618.0, 34.0], 90.0, -90.0),
-            ([20.0, 512.0], 0.0, 180.0),
-        ] {
-            let s = search_sector(nozzle, [1280, 1024], None);
-            assert!((s[1] - s[0] - 180.0).abs() < 1e-9, "{nozzle:?}");
-            assert!(inside(s, toward) && !inside(s, away), "{nozzle:?} → {s:?}");
+        let mut segment = new_segment(1, SegmentKind::Straight, &KindDefaults::default());
+        let mut inspect: CameraInspect =
+            serde_json::from_value(serde_json::json!({ "camera": "cam1" })).unwrap();
+        let cases = [
+            (Some(w(1.0)), Some(w(2.0)), (w(1.0), WindowSource::Segment)),
+            (None, Some(w(2.0)), (w(2.0), WindowSource::Camera)),
+            (None, None, (HeadingWindow::DEFAULT, WindowSource::Default)),
+        ];
+        for (own, camera, expected) in cases {
+            segment.heading.as_mut().unwrap().window = own;
+            inspect.window = camera;
+            let (got, source) = window(&segment, &inspect);
+            assert_eq!((got.clone(), source), expected);
         }
     }
 
     #[test]
-    fn turned_sector_overrides_the_automatic_half() {
-        // 防的回归（D-SB-47）：示教帧上拖过的扇区方向没写进测量图，测量仍按自动的半圈找胶条
-        assert_eq!(
-            search_sector([629.0, 890.0], [1280, 1024], Some(-150.0)),
-            [-240.0, -60.0]
-        );
+    fn one_far_corridor_start_warns_without_blocking_or_pulling_the_nozzle() {
+        let starts = [
+            (4, [570.0, 980.0]),
+            (5, [570.0, 980.0]),
+            (11, [581.0, 990.0]),
+            (61, [619.0, 937.0]),
+        ];
+        let segments: Vec<PathSegment> = starts
+            .iter()
+            .map(|&(index, _)| new_segment(index, SegmentKind::Straight, &KindDefaults::default()))
+            .collect();
+        let inspect: CameraInspect = serde_json::from_value(serde_json::json!({
+            "camera": "cam3",
+            "mmPerPx": 0.0757,
+            "window": { "startMm": 5.0, "lengthMm": 25.0 },
+            "segments": starts.iter().map(|&(segment, p)| serde_json::json!({
+                "segment": segment,
+                "corridor": [p, [p[0] + 200.0, p[1] - 200.0]],
+            })).collect::<Vec<_>>(),
+        }))
+        .unwrap();
+        let nozzle = nozzle(&segments, &["cam3".into()], &inspect).unwrap();
+        assert_eq!(nozzle.point, [575.5, 980.0]);
+        assert!(nozzle.warning.unwrap().contains("第 61 段"));
+        assert!(issues(&segments, std::slice::from_ref(&inspect)).is_empty());
     }
 }

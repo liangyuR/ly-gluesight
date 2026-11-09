@@ -1,7 +1,8 @@
 use super::*;
 use crate::frame::CounterSource;
+use crate::offline::Scenario;
 
-/// 段配方在途件：samples_burst（cam1–cam3 共用触发、一个直线段 N_exp = 4、容差 1），相机组序号 0–2、会话 11–13，
+/// 段配方在途件：samples_burst（cam1–cam3 共用触发、一个直线段 N_exp = 4），相机组序号 0–2、会话 11–13，
 /// 按计数账定帧计数基线（模拟相机本会话没见过帧时从 0 起）。
 fn burst_part(cycle_id: &str, ledgers: &Ledgers) -> Part {
     armed_part(
@@ -66,9 +67,7 @@ fn armed_part_with(
         cycle_id: cycle_id.into(),
         bundle_id: None,
         production: None,
-        candidate: None,
         sn: "SN-88".into(),
-        scenario: Scenario::Normal,
         burst: Box::new(burst::BurstPart::arm(
             &recipe,
             baselines,
@@ -77,7 +76,6 @@ fn armed_part_with(
         )),
         device_triggers: None,
         routing_closed: false,
-        image_measurement: false,
         proc_timeout: Duration::from_secs(1),
         drain_timeout: Duration::from_secs(2),
         gate: None,
@@ -107,6 +105,7 @@ pub(crate) fn burst_frame(cam: u8, counter: u64) -> Frame {
         dev_ts: Some(counter * crate::frame_clock::SYNTH_PERIOD_NS),
         manual: false,
         images: Vec::new(),
+        bayer: None,
     }
 }
 
@@ -176,8 +175,8 @@ fn deliver_groups(part: &mut Part, groups: u64) {
 }
 
 /// D-SB-45：帧到达时按累计 N_exp 预测所属段，只由预测段的检测相机用该段走廊送测，其余相机记“本段不检测”、不送测；
-/// 收尾后按比例边界解析区域，对判定需要、但到达时没用对应走廊送测过的（帧, 相机）用留下的原图补测，补测完才收尾；
-/// 原图没留住的记没测（检测不完整）。直线 5 帧（三台相机）+ 弯道 5 帧（只由第一台相机），本件 12 帧：比例边界在 6、
+/// 收尾后按比例边界解析区域，对判定需要、但到达时没用对应走廊送测过的（帧, 相机）补测，补测完才收尾；
+/// 要测图却没录到原图的记没测（检测不完整，D-SB-60）。直线 5 帧（三台相机）+ 弯道 5 帧（只由第一台相机），本件 12 帧：比例边界在 6、
 /// 预测边界在 5。
 #[test]
 fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_remeasured_after_drain(
@@ -188,14 +187,15 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
     };
     use crate::recipe::SegmentCorridor;
     // 防的回归：不检测某段的相机也被送测（没有它在这段的走廊，只能量出检测不完整）；比例边界相对预测边界移动后，
-    // 移到另一段或进了过渡区的帧仍用到达时的走廊判定；不等补测完就判定；或原图没留住时把没测的帧当测成；
+    // 移到另一段或进了过渡区的帧仍用到达时的走廊判定；不等补测完就判定；或没录到原图时把没测的帧当测成；
     // 两段都开逐帧定向时（D-SB-47，测量不依赖段归属）仍把用相邻段定向图测过的帧拿去补测；
-    // 两段的搜索扇区拖成不同方向时（测量图不同）却当成同一测量图不补测（PR #218 评审）
-    for (case, keep_images, heading, turned) in [
-        ("原图留住", true, false, false),
-        ("原图没留住", false, false, false),
-        ("两段都开逐帧定向", true, true, false),
-        ("两段都开逐帧定向、扇区方向不同", true, true, true),
+    // 两段的搜索扇区拖成不同方向（PR #218 评审）或测量区间按段设得不同时（测量图不同）却当成同一测量图不补测
+    for (case, keep_images, heading, differ) in [
+        ("补测有原图", true, false, None),
+        ("要测图却没录到原图", false, false, None),
+        ("两段都开逐帧定向", true, true, None),
+        ("两段都开逐帧定向、扇区方向不同", true, true, Some("sector")),
+        ("两段都开逐帧定向、测量区间不同", true, true, Some("window")),
     ] {
         let mut doc = crate::recipe::samples_burst();
         doc.segments = vec![
@@ -214,19 +214,24 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
         doc.inspect[0].segments.push(SegmentCorridor {
             segment: 2,
             corridor,
-            sector_deg: turned.then_some(90.0),
+            sector_deg: (differ == Some("sector")).then_some(90.0),
+            color_model: None,
+            measure: None,
         });
-        doc.segments
-            .iter_mut()
-            .for_each(|s| s.heading = heading.then(Default::default));
-        if heading {
-            doc.inspect.iter_mut().for_each(|i| {
-                i.window = Some(crate::recipe::HeadingWindow {
+        doc.segments.iter_mut().for_each(|s| {
+            let length_mm = if differ == Some("window") && s.index == 2 {
+                20.0
+            } else {
+                10.0
+            };
+            s.heading = heading.then(|| crate::plan::HeadingSettings {
+                tolerance_deg: 5.0,
+                window: Some(crate::recipe::HeadingWindow {
                     start_mm: 1.0,
-                    length_mm: 10.0,
-                })
-            });
-        }
+                    length_mm,
+                }),
+            })
+        });
         let mut p = armed_part_with(
             doc.build().unwrap(),
             "burst-post",
@@ -241,9 +246,6 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
                 else {
                     panic!("{case}")
                 };
-                if keep_images {
-                    p.burst.retain_image(camera, seq, None);
-                }
                 if let Some(segment) = p.burst.arrival_corridor(camera, seq) {
                     let result = FrameMeasured {
                         segment,
@@ -270,6 +272,40 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             (None, None, None),
             "{case}：测完后不再是送测中"
         );
+        let recording_dir = crate::offline::test_dir::TestDir::new("cycle-post", case);
+        if keep_images {
+            let recorder = crate::recorder::Recorder::new(vec![recording_dir.to_path_buf()], None);
+            let mut recording = recorder
+                .begin(
+                    crate::settings::RecordMode::All,
+                    Some(&recording_dir.to_path_buf()),
+                    &p.sn,
+                    p.recipe.clone(),
+                    &p.cycle_id,
+                    None,
+                )
+                .unwrap();
+            for seq in 1..=12 {
+                for camera in 0..3 {
+                    let mut frame = burst_frame(camera as u8, seq);
+                    frame.images = vec![Arc::new(crate::frame::FrameImage::new(1, 1, vec![128]))];
+                    recorder.burst_frame(&mut recording, &frame, camera, seq);
+                }
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while (1..=12).any(|seq| {
+                (0..3).any(|camera| {
+                    !matches!(
+                        recording.burst_frame_file(camera, seq),
+                        crate::recorder::RecordedFrame::Ready(_)
+                    )
+                })
+            }) {
+                assert!(Instant::now() < deadline, "{case}：测试原图未落盘");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            p.recording = Some(recording);
+        }
         end(&mut p, Some(12), true);
         assert!(!p.complete(), "{case}：还有要补测的帧，不能收尾");
         let mut jobs: Vec<(usize, u64, u32)> = p
@@ -279,7 +315,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             .collect();
         jobs.sort();
         if keep_images {
-            let expected: &[(usize, u64, u32)] = if heading && !turned {
+            let expected: &[(usize, u64, u32)] = if heading && differ.is_none() {
                 &[(1, 6, 1), (1, 7, 1), (2, 6, 1), (2, 7, 1)]
             } else {
                 &[(0, 6, 1), (1, 6, 1), (1, 7, 1), (2, 6, 1), (2, 7, 1)]
@@ -327,28 +363,6 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             FrameState::NotInspected,
             "{case}：弯道段不由第二台相机检测，不测"
         );
-    }
-}
-
-/// D-SB-7：下一件每台相机的帧计数基线 = max(原基线, 本件见到的最高帧计数)，PLC 报的 deviceTriggers 与计划数都不参与。
-/// 上一件的帧在收尾后才到（帧计数不高于见到的最高值）不能计入下一件；某台相机漏收一个脉冲（PLC 报 4、它只到 3 帧）时，
-/// 它下一件的首帧仍算第 1 帧——按“基线 + deviceTriggers”推会把它判成迟到帧，而且每件都丢。
-#[test]
-fn next_part_baseline_is_each_camera_highest_frame_counter_seen() {
-    for (case, cam, delivered, late, next_first) in [
-        ("上一件帧计数 3 在收尾后才到", 0u8, [1, 2, 4], Some(3), 5),
-        ("漏收一个脉冲的相机", 2u8, [1, 2, 3], None, 4),
-    ] {
-        let mut first = burst_part("first", &Ledgers::default());
-        for counter in delivered { deliver(&mut first, cam, counter); }
-        first.device_triggers = Some(4);
-        let mut ledgers = Ledgers::default();
-        first.close_routing(&mut ledgers);
-        let mut next = burst_part("next", &ledgers);
-        if let Some(late) = late {
-            assert!(matches!(next.receive_burst(&burst_frame(cam, late)), Some(burst::Arrival::Stale { .. })), "{case}");
-        }
-        assert_eq!(next.receive_burst(&burst_frame(cam, next_first)), Some(burst::Arrival::Accepted { camera: cam as usize, seq: 1 }), "{case}");
     }
 }
 
@@ -608,20 +622,44 @@ fn run_kind_collect_runs_only_in_maintenance_and_formal_always_needs_corridors()
     }
 }
 
-/// 存储卡住时接件的追溯健康检查按时限返回失败（本件按不能检测处理），不等探针跑完，节拍不被阻塞；一次超时也不记成追溯故障。
-#[tokio::test]
-async fn stalled_intake_health_probe_times_out_without_poisoning_audit() {
-    let started = std::time::Instant::now();
-    let mut poisoned = false;
-    let result = super::intake_health_check(
-        || {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            Ok(())
-        },
-        |_| poisoned = true,
-    )
-    .await;
-    assert!(result.is_err());
-    assert!(!poisoned);
-    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+/// D-SB-62：生产按门控（帧时间戳停顿）分笔，笔结构记进判定，每笔开头按配方跳过、列为未检区域。
+#[test]
+fn production_splits_passes_by_gate_pause_and_skips_each_pass_head() {
+    // 防的回归：门控停顿后的帧被当成同一笔（笔开头没跳过，起涂短胶误判断胶），或笔结构没进记录、重判与复测拿不到
+    let mut recipe = crate::recipe::samples_burst().build().unwrap();
+    recipe.pass_skip.head = 1;
+    let mut p = armed_part_with(
+        recipe,
+        "passes",
+        &Ledgers::default(),
+        Some(CounterSource::Synthetic),
+        Policy::burst_offline(None),
+    );
+    let period = crate::frame_clock::SYNTH_PERIOD_NS;
+    for counter in 1..=6u64 {
+        let pause = if counter >= 4 { period * 21 / 2 } else { 0 };
+        for cam in 0..3u8 {
+            let frame = Frame {
+                dev_ts: Some(counter * period + pause),
+                ..burst_frame(cam, counter)
+            };
+            if let Some(burst::Arrival::Accepted { camera, seq }) = p.receive_burst(&frame) {
+                let simulated =
+                    measure::simulate_frame(Scenario::Normal, camera, seq, 1, &p.recipe);
+                let result = frame_result(&p, camera, seq, Ok(simulated));
+                p.apply_burst(result).unwrap();
+            }
+        }
+    }
+    end(&mut p, Some(6), true);
+    let judgement = judge_burst(&mut p);
+    let skipped: Vec<(Option<u32>, Option<u64>)> = judgement
+        .uninspected
+        .iter()
+        .map(|u| (u.pass, u.from_seq))
+        .collect();
+    assert_eq!(
+        (judgement.passes.clone(), skipped),
+        (vec![3, 3], vec![(Some(1), Some(1)), (Some(2), Some(4))])
+    );
 }

@@ -100,6 +100,16 @@ pub const FRAME_DROPPED_SUMMARY: Event = Event {
     ev: "丢帧汇总",
     level: Level::Warn,
 };
+pub const FRAME_BUDGET_DROPPED: Event = Event {
+    code: "frame.budget_dropped",
+    ev: "图像内存满丢帧",
+    level: Level::Error,
+};
+pub const FRAME_BUDGET_DROPPED_SUMMARY: Event = Event {
+    code: "frame.budget_dropped.summary",
+    ev: "图像内存满丢帧汇总",
+    level: Level::Error,
+};
 pub const CAMERA_RECONNECT_FAILED: Event = Event {
     code: "camera.reconnect_failed",
     ev: "相机重连失败",
@@ -191,11 +201,6 @@ pub const OP_PLC: Event = Event {
     ev: "操作：PLC",
     level: Level::Info,
 };
-pub const OP_SITE: Event = Event {
-    code: "op.site",
-    ev: "操作：站点模式",
-    level: Level::Info,
-};
 pub const OP_MAINTENANCE: Event = Event {
     code: "op.maintenance",
     ev: "操作：维护模式",
@@ -204,5 +209,10 @@ pub const OP_MAINTENANCE: Event = Event {
 pub const OP_RECIPE_DELETE: Event = Event {
     code: "op.recipe.delete",
     ev: "操作：删除配方",
+    level: Level::Info,
+};
+pub const OP_RECIPE_PACKAGE: Event = Event {
+    code: "op.recipe.package",
+    ev: "操作：配方回传包",
     level: Level::Info,
 };

@@ -38,6 +38,12 @@ export interface CreateProject {
 
 export const PROJECT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+export interface ProjectSwitchResult {
+  currentProject: string;
+  nextProject: string;
+  restartRequired: boolean;
+}
+
 export const projectApi = {
   current: () => invoke<ProjectMeta>("project_current"),
   list: () => invoke<ProjectEntry[]>("project_list"),
@@ -45,7 +51,7 @@ export const projectApi = {
   create: (request: CreateProject) => invoke<ProjectMeta>("project_create", { request }),
   rename: (id: string, name: string, description: string) => invoke<ProjectMeta>("project_rename", { id, name, description }),
   remove: (id: string) => invoke<void>("project_delete", { id }),
-  switchTo: (id: string) => invoke<void>("project_switch", { id }),
+  switchTo: (id: string) => invoke<ProjectSwitchResult>("project_switch", { id }),
 };
 
 export interface ProjectExported {
@@ -79,11 +85,16 @@ export interface CopyProject {
   id: string;
   name: string;
   description: string;
-  includeRecords: boolean;
+}
+
+export interface TransferSize {
+  content: number;
+  records: number;
 }
 
 export const projectTransferApi = {
   exportProject: (id: string, includeRecords: boolean) => invoke<ProjectExported | null>("project_export", { id, includeRecords }),
+  transferSize: (id: string) => invoke<TransferSize>("project_transfer_size", { id }),
   pickImport: () => invoke<ProjectImportPreview | null>("project_import_pick"),
   importProject: (path: string, id: string, name: string) => invoke<ProjectImported>("project_import", { path, id, name }),
   copyProject: (request: CopyProject) => invoke<ProjectImported>("project_copy", { request }),

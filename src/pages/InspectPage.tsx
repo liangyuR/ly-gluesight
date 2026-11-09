@@ -1,4 +1,3 @@
-import CandidateDebugControls from "../features/cycle/components/CandidateDebugControls";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { Alert, Button, Card, Chip, Dialog, EmptyState, Progress as ProgressBar, SegmentedControl, Select } from "qing-steel";
@@ -11,19 +10,17 @@ import { displayReason, triggerModeLabel, verdictLabel, verdictTone } from "../f
 import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
 import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/components/InspectionDiagnostics";
 import ContextHelp from "../features/cycle/components/ContextHelp";
-import { CollectionProgressPanel, MaintenanceBanner, MaintenanceToggle, TrialProgressPanel } from "../features/cycle/components/MaintenanceMode";
+import { MaintenanceToggle, TrialProgressPanel } from "../features/cycle/components/MaintenanceMode";
 import { errorText } from "../lib/errors";
 import {
   cycleApi,
   FrameGroupStrip,
   RegionResultPanel,
-  OfflineControls,
   useBurstSegments,
   useCycle,
   useLayout,
   useReadiness,
   useRecipes,
-  useSiteStatus,
   type PartView,
   type ResultView,
   type Snapshot,
@@ -43,12 +40,10 @@ const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label
 export default function InspectPage() {
   const { snapshot, logs } = useCycle();
   const recipes = useRecipes();
-  const site = useSiteStatus();
   const { handshake } = usePlcOperationState();
   // 真机任何阶段都可软件复位（协议 8：PC 在任何状态都可置 99），沿用后端的复位前置检查：string 为阻塞原因，null 为可复位，undefined 为尚未核对。
-  const realReset = !!site && site.mode !== "offline";
-  const s7Reset = realReset ? handshake : null;
-  const resetBlockedReason = realReset && !handshake ? "正在核对 PLC 会话状态" : s7Reset?.resetBlockedReason || "";
+  const s7Reset = handshake;
+  const resetBlockedReason = !handshake ? "正在核对 PLC 会话状态" : s7Reset?.resetBlockedReason || "";
   const resetPendingCheck = !!s7Reset && s7Reset.resetBlockedReason === undefined;
   const resetInFlight = handshake?.requestSeq != null;
   const [confirmReset, setConfirmReset] = useState(false);
@@ -68,7 +63,7 @@ export default function InspectPage() {
   const summary = recipes.find((r) => r.id === layoutId);
   const layout = useLayout(layoutId, part ? part.recipeRevision : summary?.revisionId);
   const phase = snapshot?.phase ?? "IDLE";
-  const showReset = phase === "FAULT" || realReset;
+  const showReset = true;
   const settled = phase === "REPORT" || phase === "RELEASE" || phase === "IDLE" || phase === "FAULT";
   const candidateResult = settled ? (snapshot?.result ?? null) : null;
   const result = candidateResult && (!part || (candidateResult.cycleId === part.cycleId && candidateResult.recipeId === part.recipeId)) ? candidateResult : null;
@@ -81,7 +76,7 @@ export default function InspectPage() {
   const burstManual = seqSelection?.scope === burstScope && !!burst?.groups.some(group => group.seq === seqSelection.seq);
   const burstSeq = burstManual ? seqSelection!.seq : latestSeq;
   const operationScope = `${part?.cycleId ?? "idle"}:${snapshot?.since}:${snapshot?.fault ?? ""}`;
-  const { readiness, status: readinessStatus, error: readinessError, refresh: refreshReadiness } = useReadiness(`${phase}:${snapshot?.fault ?? ""}:${snapshot?.activeRecipeId ?? ""}:${snapshot?.productSource ?? ""}:${snapshot?.alarms.length ?? 0}`);
+  const { readiness, status: readinessStatus, error: readinessError } = useReadiness(`${phase}:${snapshot?.fault ?? ""}:${snapshot?.activeRecipeId ?? ""}:${snapshot?.productSource ?? ""}:${snapshot?.alarms.length ?? 0}`);
   const currentOperation = useRef({ phase, scope: operationScope });
   currentOperation.current = { phase, scope: operationScope };
 
@@ -141,19 +136,12 @@ export default function InspectPage() {
     }
   };
 
-  const offlineSample = site?.mode === "offline" && site.source === "sampleSet";
-  const activeDebug = snapshot?.candidateDebug;
-  const debug = activeDebug ?? part?.candidateDebug ?? result?.candidateDebug;
   const busy = !!snapshot && phase !== "IDLE" && phase !== "FAULT";
   return (
     <div className="prod">
-      <MaintenanceBanner maintenance={snapshot?.maintenance} />
-      {debug && <div className="qs-banner tertiary" role="status"><span><strong>候选配方调试结果</strong> · {debug.recipeId} · 修订 {debug.revision} · 未发布，仅用于离线测试，不作为生产验收。</span></div>}
-      <CandidateDebugControls site={site} snapshot={snapshot} />
       <div className="prod-bar">
         <Chip>{triggerModeLabel(trigger)}</Chip>
-        <Chip className={site?.mode === "offline" ? "tertiary" : undefined}>{site?.mode === "offline" ? "离线" : site ? "真机" : "模式确认中"}</Chip>
-        {!activeDebug && snapshot?.productSource === "manual" ? (
+        {snapshot?.productSource === "manual" ? (
           <Select
             id="manual-recipe"
             aria-label="当前检测配方"
@@ -166,7 +154,7 @@ export default function InspectPage() {
           />
         ) : (
           <Chip className="prod-recipe" title="按 PLC 下发的型号匹配配方">
-            {debug ? `${debug.recipeId} · 候选修订 ${debug.revision}` : layout ? `${layout.id} · v${layout.version}` : "等待 PLC 下发型号"}
+            {layout ? `${layout.id} · v${layout.version}` : "等待 PLC 下发型号"}
           </Chip>
         )}
         <Chip className="prod-sn" title={part?.sn || result?.sn || undefined}>
@@ -176,10 +164,9 @@ export default function InspectPage() {
         <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
         {snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} />}
         <Button onClick={() => setDiagnostics("readiness")}>诊断</Button>
-        <OfflineControls readiness={readiness} refresh={refreshReadiness} publishedSection={offlineSample} candidateRunning={!!snapshot?.candidateDebug} />
         {showReset && (
           <>
-            <ContextHelp label="复位条件">{site?.mode === "offline" ? "离线产线自动复位。" : "软件复位请求 PLC 在 10 秒内返回空闲；未响应可重新发起，也可在现场由 PLC 复位。"}</ContextHelp>
+            <ContextHelp label="复位条件">软件复位请求 PLC 在 10 秒内返回空闲；未响应可重新发起，也可在现场由 PLC 复位。</ContextHelp>
             <Button onClick={() => setConfirmReset(true)} disabled={action !== null || !!resetBlockedReason} title={resetBlockedReason || undefined} loading={action === "reset"} leadingIcon={<RotateCcw size={15} />}>
               {action === "reset" ? "复位中…" : "软件复位"}
             </Button>
@@ -192,11 +179,10 @@ export default function InspectPage() {
         {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，新到的工件无法检测。"}
       </Alert>}
       {snapshot?.recordingAlarm && <Alert tone="warn">
-        原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查资料盘空间与录制目录写权限，下一件完整保存后自动消除。
+        原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查录制盘空间与录制目录写权限，下一件完整保存后自动消除。
       </Alert>}
-      <CollectionProgressPanel collection={snapshot?.collection} recipes={recipes} />
       <TrialProgressPanel trial={snapshot?.trial} recipes={recipes} />
-      <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} resetBlockedReason={showReset ? resetBlockedReason : ""} resetPendingCheck={showReset && resetPendingCheck} />
+      <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} resetBlockedReason={showReset ? resetBlockedReason : ""} resetPendingCheck={showReset && resetPendingCheck} />
 
       <div className="prod-body">
         <div className="prod-main burst">
@@ -210,17 +196,18 @@ export default function InspectPage() {
             </div>
             {view === "part"
               ? <CameraSegmentOverview cameras={burst?.cameras ?? summary?.cameras ?? []} segments={burstSegments} regions={burstJudgement?.regions} />
-              : <BurstRuntimeFrame part={part} seq={burstSeq} />}
+              : <BurstRuntimeFrame part={part} seq={burstSeq} regions={partResult?.burst?.regions} />}
           </Card>
 
           <Card className="prod-shots">
             <div className="panel-head">
               <h3 className="panel-title">帧组</h3>
-              <ContextHelp label="帧组说明">同一触发序号（相机 SDK 帧号）的三台相机各出一帧，配成一个帧组；每格是一台相机的一帧。绿色为合格，黄色为允许范围内的局部超差，红色为 NG，紫色为测量失败，蓝色为测量中；灰色为缺帧、未测或走出走廊，只算检测不完整，不影响 OK/NG。</ContextHelp>
+              <ContextHelp label="帧组说明">同一触发序号（相机 SDK 帧号）的三台相机各出一帧，配成一个帧组；每格是一台相机的一帧，颜色只表示本帧：绿色为合格，黄色为允许范围内的局部超差，红色为 NG，紫色为测量失败，蓝色为测量中；灰色为缺帧、未测或走出走廊，只算检测不完整，不影响 OK/NG。本件判完后上方色带是各段结论，胶宽不均、整段胶偏等整段性问题看色带。</ContextHelp>
               <span className="spacer" />
-              <span className="muted mono">{burst ? `收到 ${burst.groupCount} 帧组 / 预期 ${expectedText(burst.expectedTotal, burst.toleranceTotal)}` : "—"}</span>
+              <span className="muted mono">{burst ? `收到 ${burst.groupCount} 帧组 / 预期 ${expectedText(burst.expectedTotal)}` : "—"}</span>
             </div>
-            {burst ? <FrameGroupStrip groups={burst.groups} cameras={burst.cameras} selected={burstSeq} onSelect={selectGroup} /> : <EmptyState title="等待工件" description="新工件开始后按帧组显示三台相机的帧。" />}
+            {burst ? <FrameGroupStrip groups={burst.groups} cameras={burst.cameras} regions={partResult?.burst?.regions} selected={burstSeq} onSelect={selectGroup} /> : <EmptyState title="等待工件" description="新工件开始后按帧组显示三台相机的帧。" />}
+            {burst && !partResult?.burst && <p className="muted" role="note">当前为临时测量状态；本件判定完成后标出生产跳过帧，跳过帧不参与判定。</p>}
           </Card>
         </div>
 
@@ -231,15 +218,15 @@ export default function InspectPage() {
           <Card className="prod-segments" role="region" aria-label="检测区域结果">
             <div className="panel-head">
               <h3 className="panel-title">检测区域结果</h3>
-              <ContextHelp label="区域结果说明">整件按区域（直线、弯道、未分段）分别判；每个区域写帧数是否在预期容差内、胶宽范围、胶偏或未判原因。未分段区域只跑每帧独立检测、不判胶偏。缺帧只标检测不完整，帧数异常只告警，都不改 OK/NG。</ContextHelp>
+              <ContextHelp label="区域结果说明">整件按区域（直线、弯道、未分段）分别判；每个区域写帧数、胶宽范围、胶偏或未判原因。未分段区域只跑每帧独立检测、不判胶偏。缺帧只标检测不完整，不改 OK/NG。</ContextHelp>
             </div>
             <RegionResultPanel judgement={burstJudgement} segments={burstSegments} cameras={burst?.cameras ?? summary?.cameras}
-              expectedTotal={burst ? burst.expectedTotal : undefined} toleranceTotal={burst?.toleranceTotal} onSelectGroup={burst ? selectGroup : undefined} />
+              expectedTotal={burst ? burst.expectedTotal : undefined} onSelectGroup={burst ? selectGroup : undefined} />
           </Card>
         </aside>
       </div>
 
-      {diagnostics && <InspectionDiagnostics offlineSample={offlineSample} group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} selectedSeq={burstSeq} logs={logs} />}
+      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} selectedSeq={burstSeq} logs={logs} />}
       {confirmReset && showReset && (
         <Dialog
           open
@@ -295,7 +282,7 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
   const parts = result ? (result.mode === "maintenanceCollect" ? { code: "未判定", detail: "维护采集，只录图" }
     : { ...verdictParts(result.verdict), ...(result.mode === "maintenanceShadow" ? { detail: `试判 · ${verdictParts(result.verdict).detail}` } : {}) }) : null;
   const reason = result ? displayReason(result.reason) : "";
-  // 整件标记：检测不完整、帧数异常、胶偏未判、含未分段、疑似提前终止。只告警，不改上面的结论
+  // 整件标记：检测不完整、胶偏未判、含未分段、笔数异常等。只告警，不改上面的结论
   const flags = flagBadges(result?.burst?.flags);
   const progress = part ? burstProgressText(part.burst) : "—";
   return (
@@ -328,9 +315,9 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
   );
 }
 
-/** 在途件的进度：帧组数 / 预期总数 ± 容差；预期待标定时只写已收到的帧组数。 */
+/** 在途件的进度：帧组数 / 预期总数；预期待标定时只写已收到的帧组数。 */
 function burstProgressText(burst: PartViewBurst) {
-  return burst.expectedTotal == null ? String(burst.groupCount) : `${burst.groupCount} / ${expectedText(burst.expectedTotal, burst.toleranceTotal)}`;
+  return burst.expectedTotal == null ? String(burst.groupCount) : `${burst.groupCount} / ${expectedText(burst.expectedTotal)}`;
 }
 
 /** 本件进度：帧组数对预期总数，已测帧数对已收帧数，各台相机收到的帧数分别列出（缺帧的相机一眼可见）。 */
@@ -370,11 +357,10 @@ function Progress({ snapshot, result, onDiagnostics }: { snapshot: Snapshot | nu
 
 function Stats({ snapshot }: { snapshot: Snapshot | null }) {
   const s = snapshot?.stats ?? { total: 0, ok: 0, ng: 0, err: 0 };
-  const debug = snapshot?.statsScope === "debug";
   return (
-    <section className="qs-stats prod-stats" aria-label={debug ? "今日调试统计" : "今日统计"}>
-      <div className="qs-stat wide"><small>{debug ? "今日调试" : "今日"}</small><b>{s.total}</b></div>
-      <div className="qs-stat wide"><small>{debug ? "调试符合率" : "良率"}</small><b>{s.total ? <>{((s.ok / s.total) * 100).toFixed(1)}<small>%</small></> : "--"}</b></div>
+    <section className="qs-stats prod-stats" aria-label="今日统计">
+      <div className="qs-stat wide"><small>今日</small><b>{s.total}</b></div>
+      <div className="qs-stat wide"><small>良率</small><b>{s.total ? <>{((s.ok / s.total) * 100).toFixed(1)}<small>%</small></> : "--"}</b></div>
       <div className="qs-stat ok"><small>OK</small><b>{s.ok}</b></div>
       <div className="qs-stat ng"><small>NG</small><b>{s.ng}</b></div>
       <div className="qs-stat fault"><small>ERR</small><b>{s.err}</b></div>

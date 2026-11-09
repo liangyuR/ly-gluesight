@@ -4,7 +4,7 @@ import { Bug, Camera, Cable, ChevronRight, FlaskConical, GitBranch, Play, Refres
 import { Alert, Card, Chip, Heading, IconButton, Stack, StatusBadge } from "qing-steel";
 import { cameraApi } from "../features/camera";
 import { linkStateLabels, plcApi, subscribe } from "../features/plc";
-import { recipeApi, siteApi } from "../features/cycle";
+import { recipeApi } from "../features/cycle";
 import { workspaceApi } from "../features/workspace/api";
 import { desktopAvailable } from "../lib/desktop";
 import { errorText } from "../lib/errors";
@@ -50,8 +50,8 @@ function ReadError({ state }: { state: Resource<unknown> }) {
 const journeys: { title: string; detail: string; icon: LucideIcon; action: string; path: string; links: [string, string][]; production?: boolean }[] = [
   { title: "首次建站", detail: "接入设备，完成采集示教与验证发布", icon: Wrench, action: "配置采集设备", path: "/camera", links: [["相机接入", "/camera"], ["PLC 通讯", "/plc"], ["标定", "/camera/calibration"], ["建立配方", "/recipe"]] },
   { title: "日常生产", detail: "核对开工条件，监看工件检测结果", icon: ScanEye, action: "进入在线检测", path: "/inspect", production: true, links: [["核对开工条件", "/inspect"], ["监看检测", "/inspect"], ["查看历史", "/history"]] },
-  { title: "缺陷排查", detail: "查看异常工件原图，选择候选配方复测", icon: Bug, action: "打开历史记录", path: "/history", links: [["定位工件与帧组", "/history"], ["选择候选", "/recipe"], ["调整示教", "/recipe/teach"]] },
-  { title: "配置变更", detail: "调整候选配方，完成示教、标定与发布", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["选示教件", "/recipe/capture"], ["验证与发布", "/recipe/validation"], ["核对 PLC 型号", "/recipe"]] },
+  { title: "缺陷排查", detail: "查看异常工件原图，选择候选配方复测", icon: Bug, action: "打开历史记录", path: "/history", links: [["定位工件与帧组", "/history"], ["选择候选", "/recipe"], ["调整示教", "/recipe"]] },
+  { title: "配置变更", detail: "调整候选配方，完成示教、标定与发布", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["选示教件", "/recipe"], ["发布", "/recipe"], ["核对 PLC 型号", "/recipe"]] },
 ];
 
 export default function OperationGuidePage() {
@@ -61,32 +61,21 @@ export default function OperationGuidePage() {
   const plc = useOverviewResource(plcApi.getStatus, refresh, 5000);
   const recipes = useOverviewResource(recipeApi.list, refresh);
   const drafts = useOverviewResource(workspaceApi.list, refresh);
-  const site = useOverviewResource(siteApi.status, refresh, 5000);
   const ready = cameras.data?.filter(camera => camera.ready).length;
   const cameraLabel = cameras.data ? cameras.data.length ? `${ready}/${cameras.data.length} 设备就绪` : "未配置相机" : unavailable(cameras);
   const pending = drafts.data?.filter(draft => draft.publish.state === "waiting").length;
   const failed = drafts.data?.filter(draft => ["failed", "uncertain"].includes(draft.publish.state)).length;
-  const offline = site.data?.mode === "offline";
-  const sampleMode = offline && site.data?.source === "sampleSet";
   const plcMessage = plc.data?.message?.trim();
-  const workflows = offline ? [
-    { title: "离线准备", detail: "使用临时相机组和本机 S7 服务，不代表真实设备验收", icon: Wrench, action: "查看离线来源", path: "/offline", links: [["选择样本集", "/offline"], ["选择候选", "/recipe"], ["选示教件", "/recipe/capture"]] as [string, string][] },
-    { title: sampleMode ? "候选离线试运行" : "合成流程演练", detail: sampleMode ? "无需发布，用已保存候选跑整圈；结果标记为调试，不计入生产统计" : "合成图用于协议与流程演练；候选图像调试需先切换离线样本集", icon: ScanEye, action: sampleMode ? "打开候选试运行" : "打开离线演练", path: sampleMode ? "/inspect" : "/offline", production: true, links: [[sampleMode ? "候选试运行" : "离线演练", sampleMode ? "/inspect" : "/offline"], ["查看整圈流程", "/inspect"], ["查看历史", "/history"]] as [string, string][] },
-    { ...journeys[2], detail: "核对离线 / 调试来源，再检查原图与候选测量结果" },
-    { title: "离线配方调整", detail: "保存候选后可继续调试；离线验证与发布不等同真机验收", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["调整示教", "/recipe/teach"], ["试运行 / 验证", "/recipe/validation"]] as [string, string][] },
-  ] : site.data ? journeys : journeys.filter(journey => !journey.production).concat({ title: "检测运行", detail: "站点模式尚未确认，请先核对运行范围和开工条件", icon: ScanEye, action: "查看检测状态", path: "/inspect", links: [["核对站点模式", "/offline"], ["查看检测状态", "/inspect"]] });
+  const workflows = journeys;
   return <div className="guide-page">
     <div className="guide-toolbar"><div><IconButton variant="text" aria-label="刷新总览状态" disabled={!desktopAvailable()} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={17} /></IconButton></div></div>
-    <ReadError state={site} />
     <div className="guide-status-grid">
       <StatusCard title="采集设备" icon={Camera} status={<StatusBadge tone={cameras.data?.length && ready === cameras.data.length ? "ok" : "off"}>{cameraLabel}</StatusBadge>} links={[["相机", "/camera"], ["查看标定", "/camera/calibration"]]}>
         <div className="guide-camera-list">{cameras.data?.map(camera => <div className="guide-value" key={camera.id}><span>{camera.name}</span><strong>{camera.ready ? "设备就绪" : camera.released ? "已释放" : "未就绪"}</strong></div>)}</div>
-        {offline && <p className="muted">当前为离线临时相机组，设备状态仅针对离线采集。</p>}
         <ReadError state={cameras} />
       </StatusCard>
       <StatusCard title="PLC 通讯" icon={Cable} status={<StatusBadge tone={plc.data?.state === "connected" ? "ok" : "off"}>{plc.data ? linkStateLabels[plc.data.state] : unavailable(plc)}</StatusBadge>} links={[["PLC 通讯", "/plc"], ["通讯日志", "/plc-logs"]]}>
         <div className="guide-value"><span>通讯协议</span><strong>Siemens S7</strong></div>
-        {offline && <p className="muted">当前连接本机离线 S7 服务，非真实 PLC。</p>}
         {plc.data && plcMessage && plcMessage !== linkStateLabels[plc.data.state] && <p className="guide-plc-message">{plcMessage}</p>}
         <ReadError state={plc} />
       </StatusCard>

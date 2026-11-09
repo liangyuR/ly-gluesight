@@ -10,7 +10,7 @@ use crate::frame::FrameImage;
 
 mod burst;
 
-pub use burst::{CaptureRoundV2, HistoryFrame, HistoryRound, RoundOrigin};
+pub use burst::{CaptureRoundV2, HistoryFrame, HistoryRound, RoundOrigin, FORMAT};
 
 /// 三目拼接图的拆分布局。旧拍照点模型：段配方只用单视角相机，不经过这里（D-SB-11）。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -33,6 +33,9 @@ pub struct ViewRect {
 impl CompositeLayout {
     pub fn split(&self, image: &FrameImage) -> Result<Vec<Arc<FrameImage>>, String> {
         let (w, h) = (image.width, image.height);
+        if image.is_color() {
+            return Err("三目拼接只支持灰度图，彩色帧不能拆分".into());
+        }
         if w == 0 || h == 0 || (w as usize).checked_mul(h as usize) != Some(image.pixels.len()) {
             return Err("拼接原图的尺寸或像素长度无效".into());
         }
@@ -82,8 +85,12 @@ pub struct CaptureCamera {
     pub received_count: u32,
 }
 
+/// 按历史件 cycleId 查它的录制目录（检测记录库里记的目录，可在任意盘）；记录不在本机或没有录制目录为 None。
+pub type RecordingLookup = Arc<dyn Fn(&str) -> Result<Option<PathBuf>, String> + Send + Sync>;
+
 pub struct RecipeCaptureHost {
     root: PathBuf,
+    recordings: RecordingLookup,
 }
 
 /// 一轮段配方采集轮次（序列化为 CaptureRoundV2 的形状）。
@@ -119,8 +126,8 @@ impl RecipeCaptureHost {
         Ok(path)
     }
 
-    /// 打开采集目录：启动时仍在进行中的轮次判为中断，读不了的记录改名备份。
-    pub fn open(root: PathBuf) -> Result<Arc<Self>, String> {
+    /// 打开采集目录：启动时仍在进行中的轮次判为中断，读不了的记录改名备份。`recordings` 用来找历史件导入轮次的录制原图。
+    pub fn open(root: PathBuf, recordings: RecordingLookup) -> Result<Arc<Self>, String> {
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let canonical_root = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
         let backup_broken = |path: &Path| -> Result<(), String> {
@@ -142,7 +149,7 @@ impl RecipeCaptureHost {
                 Err(_) => backup_broken(&path)?,
             }
         }
-        Ok(Arc::new(Self { root }))
+        Ok(Arc::new(Self { root, recordings }))
     }
 
     /// 按轮次 ID 读一轮，经记录核对；旧拍照点配方的采集轮次已停用，按无效记录报错。
@@ -206,7 +213,7 @@ impl RecipeCaptureHost {
         Ok(rounds)
     }
 
-    /// 删除一轮的目录（原图是硬链接时只删链接，录制目录不受影响）。
+    /// 删除一轮的目录（只删本轮目录：引用的录制原图不动，旧轮次的硬链接只删链接）。
     pub fn delete_round(&self, round_id: &str) -> Result<(), String> {
         let dir = self.safe_round_path(round_id)?;
         std::fs::remove_dir_all(&dir).map_err(|e| format!("删除采集轮次 {round_id} 失败：{e}"))
@@ -229,6 +236,47 @@ impl RecipeCaptureHost {
     }
 }
 
+/// 登记历史件引用（导入示教件）与清理录制、记录（滚动清理、按天清理）互斥：清理从查引用到删除持有它，导入从核对到写好轮次
+/// 持有它，免得清理按旧的引用快照删掉刚被引用的件。
+pub static REFERENCES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn lock_references() -> std::sync::MutexGuard<'static, ()> {
+    REFERENCES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 采集目录 `root` 里历史件导入轮次引用的来源 cycleId：这些录制不参与滚动清理与按天清理。目录不在为空；记录读不了的轮次跳过。
+pub fn history_cycles(root: &Path) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut cycles = std::collections::BTreeSet::new();
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(cycles),
+        Err(e) => return Err(format!("读取采集目录 {} 失败：{e}", root.display())),
+    };
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path().join("round.json");
+        if !path.is_file() {
+            continue;
+        }
+        let text = crate::fsio::read_text(&path).map_err(|e| format!("{}：{e}", path.display()))?;
+        let Ok(round) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if round
+            .pointer("/origin/kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("history")
+        {
+            if let Some(cycle) = round
+                .pointer("/origin/cycleId")
+                .and_then(serde_json::Value::as_str)
+            {
+                cycles.insert(cycle.to_string());
+            }
+        }
+    }
+    Ok(cycles)
+}
+
 #[tauri::command]
 pub fn recipe_capture_get(app: AppHandle, round_id: Option<String>) -> Result<Option<AnyRound>, String> {
     let cycle = app.state::<CycleHost>();
@@ -244,58 +292,55 @@ pub fn recipe_capture_list(app: AppHandle, recipe_id: String) -> Result<Vec<Capt
     app.state::<CycleHost>().camera.recipe_capture().list(&recipe_id)
 }
 
-/// 某台相机第 seq 帧（帧组序号，从 1 起）的原图，格式见 `preview_bytes`；这台相机缺这一帧时报错。
+/// 某台相机第 seq 帧（帧组序号，从 1 起）的原图，格式见 `frame::preview_bytes`；这台相机缺这一帧时报错。
 #[tauri::command]
-pub fn recipe_capture_frame_image(app: AppHandle, round_id: String, camera_id: String, seq: u64) -> Result<tauri::ipc::Response, String> {
-    let path = app.state::<CycleHost>().camera.recipe_capture().burst_frame_path(&round_id, &camera_id, seq)?;
-    let image = crate::image_file::load(&path)?;
-    Ok(tauri::ipc::Response::new(preview_bytes(&image)))
-}
-
-/// 缩略图下采样倍数：1280×1024 → 160×128。
-const THUMB_FACTOR: u32 = 8;
-
-/// 新轮次一台相机全部帧组的缩略图条带（格式见 `frame_align::thumb_strip`），分段标定工作台的时间轴用。
-/// 进行中的轮次没有完整帧记录，按 `load_burst` 的核对报错；读不了的帧按缺帧给出。
-#[tauri::command]
-pub async fn recipe_capture_round_thumbs(
+pub async fn recipe_capture_frame_image(
     app: AppHandle,
     round_id: String,
     camera_id: String,
+    seq: u64,
 ) -> Result<tauri::ipc::Response, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let paths = app
+        let path = app
             .state::<CycleHost>()
             .camera
             .recipe_capture()
-            .burst_frame_paths(&round_id, &camera_id)?;
-        let frames: Vec<Option<FrameImage>> = paths
-            .iter()
-            .map(|path| {
-                path.as_ref()
-                    .and_then(|path| crate::image_file::load(path).ok())
-                    .map(|image| crate::frame_align::downsample(&image, THUMB_FACTOR))
-            })
-            .collect();
-        Ok(tauri::ipc::Response::new(crate::frame_align::thumb_strip(
-            &frames,
+            .burst_frame_path(&round_id, &camera_id, seq)?;
+        let image = crate::image_file::load(&path)?;
+        Ok(tauri::ipc::Response::new(crate::frame::preview_bytes(
+            &image,
         )))
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// 读图命令的原始字节：前 16 字节依次是预览宽、高、原图宽、高（u32 小端），其后是最近邻缩到 900×650 以内的 8 位灰度。
-fn preview_bytes(image: &FrameImage) -> Vec<u8> {
-    let scale = (image.width as f32 / 900.0).max(image.height as f32 / 650.0).max(1.0);
-    let w = (image.width as f32 / scale).max(1.0) as u32;
-    let h = (image.height as f32 / scale).max(1.0) as u32;
-    let mut bytes = Vec::with_capacity(16 + (w * h) as usize);
-    for n in [w, h, image.width, image.height] { bytes.extend(n.to_le_bytes()); }
-    for y in 0..h { for x in 0..w {
-        let iy = ((y as f32 * scale) as u32).min(image.height - 1);
-        let ix = ((x as f32 * scale) as u32).min(image.width - 1);
-        bytes.push(image.pixels[(iy * image.width + ix) as usize]);
-    } }
-    bytes
+/// 缩略图下采样倍数：1280×1024 → 160×128。
+const THUMB_FACTOR: u32 = 8;
+
+/// 一台相机指定帧组范围的缩略图条带，每批最多 32 组。
+#[tauri::command]
+pub async fn recipe_capture_round_thumbs(
+    app: AppHandle,
+    round_id: String,
+    camera_id: String,
+    start_seq: u64,
+    count: u32,
+) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = app
+            .state::<CycleHost>()
+            .camera
+            .recipe_capture()
+            .burst_frame_thumbs(
+                &round_id,
+                &camera_id,
+                start_seq,
+                count,
+                crate::image_file::load,
+            )?;
+        Ok(tauri::ipc::Response::new(bytes))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

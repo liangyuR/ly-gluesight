@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "id": "01GLUESIGHTCOLORTEACH0000",
+  "nodes": [
+    {
+      "id": "n_load",
+      "op": "io.load_image",
+      "params": {
+        "source": "inputs"
+      }
+    },
+    {
+      "id": "n_line",
+      "op": "glue.polyline",
+      "params": {
+        "zone": [
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "n_model",
+      "op": "glue.color_model",
+      "params": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_image",
+      "from": {
+        "node": "n_load",
+        "port": "image"
+      },
+      "to": {
+        "node": "n_model",
+        "port": "image"
+      }
+    },
+    {
+      "id": "e_line",
+      "from": {
+        "node": "n_line",
+        "port": "line"
+      },
+      "to": {
+        "node": "n_model",
+        "port": "line"
+      }
+    }
+  ],
+  "outputs": {
+    "model": {
+      "node": "n_model",
+      "port": "model"
+    },
+    "overlay": {
+      "node": "n_model",
+      "port": "overlay"
+    }
+  },
+  "params": {
+    "points": {
+      "default": "[[0,0],[100,0]]",
+      "binds": [
+        "n_line.points"
+      ],
+      "doc": "示教走廊（JSON 点列，px）"
+    },
+    "glueHalf": {
+      "default": 4.0,
+      "binds": [
+        "n_model.glueHalf"
+      ],
+      "doc": "胶样本：中心 ± 它（px），取示教胶宽下限的一半"
+    },
+    "bgBand": {
+      "default": [
+        20.0,
+        40.0
+      ],
+      "binds": [
+        "n_model.bgBand"
+      ],
+      "doc": "背景样本：离中心 [内, 外]（px），从胶宽上限的一半外起"
+    },
+    "shiftMax": {
+      "default": 20.0,
+      "binds": [
+        "n_model.shiftMax"
+      ],
+      "doc": "重新居中的偏移上限（px）；按粗笔划吸附走廊时取笔划半径"
+    }
+  }
+}

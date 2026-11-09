@@ -1,5 +1,5 @@
 //! 进程在 S7 事务中退出：握手日志留着在途工件，历史却没有它。启动时按握手日志里的身份与开工场景补一条 ERR 记录，
-//! 配方取本件的运行日志（运行日志不落盘同步，缺失时本件不带配方）。补记录带预期帧组数 ΣN_exp 与容差、没有帧，
+//! 配方取本件的运行日志（运行日志不落盘同步，缺失时本件不带配方）。补记录带预期帧组数 ΣN_exp、没有帧，
 //! 区域判定同为 ERR 98。
 
 use std::sync::Arc;
@@ -60,7 +60,6 @@ pub(super) fn part(interrupted: &Interrupted, records: &[Record], recipe: impl F
         bundle_id: None,
         delivery: PlcDelivery { state: PlcDeliveryState::Failed, updated_at: now, message: Some("检测进程中断，结果未回写 PLC".into()) },
         source: interrupted.site.source,
-        sample: None,
         burst,
     }
 }

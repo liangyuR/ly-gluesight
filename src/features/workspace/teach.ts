@@ -1,5 +1,5 @@
-import type { RecipeDoc } from "../cycle/types";
-import type { CameraTeachDraft, InspectWindow, SegmentCorridor } from "../plan/types";
+import type { DetectParams, RecipeDoc } from "../cycle/types";
+import type { CameraInspect, CameraTeachDraft, InspectWindow, MeasureMode, PathSegment, SegmentCorridor } from "../plan/types";
 import { pathLength } from "./teachingPath";
 
 const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical)
@@ -23,14 +23,39 @@ export function windowError(window: InspectWindow) {
   return "";
 }
 
-/** 相机参数是否可用：像素当量为正且不超过 10 mm/px，自定义检测参数要合法，设了测量区间时区间要合法。返回错误说明，空串表示可以。 */
-export function cameraParamsError(t: Pick<CameraTeachDraft, "mmPerPx" | "detect"> & { window?: InspectWindow | null }) {
+/** 段与相机都没设测量区间时用它：跳过前 5 mm，测到 20 mm（与后端 HeadingWindow::DEFAULT 一致）。 */
+export const DEFAULT_WINDOW: InspectWindow = { startMm: 5, lengthMm: 15 };
+
+/** 一台相机在一段用的测量区间（与后端 heading::window 一致）：本段覆盖、这台相机的、默认值依次取。 */
+export function headingWindow(segment: Pick<PathSegment, "heading"> | undefined, inspect: Pick<CameraInspect, "window"> | undefined): { window: InspectWindow; source: "segment" | "camera" | "default" } {
+  if (segment?.heading?.window) return { window: segment.heading.window, source: "segment" };
+  return inspect?.window ? { window: inspect.window, source: "camera" } : { window: DEFAULT_WINDOW, source: "default" };
+}
+
+/** 一段的检测参数（与后端 PathSegment::detect 一致）：本段设了搜索半宽、胶宽范围用本段的，否则用配方默认；极性只在配方级。 */
+export function segmentDetect(defaults: DetectParams, segment: Pick<PathSegment, "searchMm" | "widthRange"> | undefined): DetectParams {
+  return { ...defaults, searchMm: segment?.searchMm ?? defaults.searchMm, widthRange: segment?.widthRange ?? defaults.widthRange };
+}
+
+/** 检测参数是否可用（与后端 DetectParams::validate 一致）。返回错误说明，空串表示可以。 */
+export function detectError({ searchMm, widthRange: [lo, hi] }: DetectParams) {
+  if (!(Number.isFinite(searchMm) && searchMm > 0 && Number.isFinite(lo) && Number.isFinite(hi) && lo > 0 && lo < hi)) return "搜索半宽需为正，胶宽范围需满足 0 < 下限 < 上限";
+  if (hi >= 2 * searchMm) return `胶宽上限要小于搜索宽度 ${(2 * searchMm).toFixed(1)} mm`;
+  return "";
+}
+
+/** 测量区间与每帧胶条后移量（段长 ÷ N_exp）的核对，与试测页提示同一口径；段长或 N_exp 未知时不判，返回空串。 */
+export function windowTravelHint(window: InspectWindow, segment: Pick<PathSegment, "lengthMm" | "expectedFrames">) {
+  if (segment.lengthMm == null || !segment.expectedFrames) return "";
+  const travel = segment.lengthMm / segment.expectedFrames;
+  if (window.lengthMm < travel) return `测量区间长 ${fixed(window.lengthMm)} mm，短于每帧后移量约 ${fixed(travel)} mm：相邻帧之间有胶测不到`;
+  if (window.lengthMm > 3 * travel) return `测量区间长 ${fixed(window.lengthMm)} mm，超过每帧后移量约 ${fixed(travel)} mm 的 3 倍：同一处胶会被测多次`;
+  return "";
+}
+
+/** 相机参数是否可用：像素当量为正且不超过 10 mm/px，设了测量区间时区间要合法。返回错误说明，空串表示可以。 */
+export function cameraParamsError(t: Pick<CameraTeachDraft, "mmPerPx"> & { window?: InspectWindow | null }) {
   if (!(t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 && t.mmPerPx <= 10)) return "像素当量需在 0–10 mm/px 之间";
-  if (t.detect) {
-    const { searchMm, widthRange: [lo, hi] } = t.detect;
-    if (!(Number.isFinite(searchMm) && searchMm > 0 && Number.isFinite(lo) && Number.isFinite(hi) && lo > 0 && lo < hi)) return "搜索半宽需为正，胶宽范围需满足 0 < 下限 < 上限";
-    if (hi >= 2 * searchMm) return `胶宽上限要小于搜索宽度 ${(2 * searchMm).toFixed(1)} mm`;
-  }
   if (t.window) return windowError(t.window);
   return "";
 }
@@ -104,7 +129,7 @@ export function parseDraftKey(key: string): { camera: string; segment: number } 
   return at < 0 || !Number.isInteger(segment) ? null : { camera: key.slice(0, at), segment };
 }
 
-/** 候选里已保存的段走廊草稿：走廊取这一段的，像素当量与检测参数取这台相机的。 */
+/** 候选里已保存的段走廊草稿：走廊取这一段的，像素当量与测量区间取这台相机的。 */
 export function savedDraft(doc: RecipeDoc | undefined, key: string): CameraTeachDraft {
   const target = parseDraftKey(key);
   const inspect = target ? doc?.inspect?.find(item => item.camera === target.camera) : undefined;
@@ -112,12 +137,11 @@ export function savedDraft(doc: RecipeDoc | undefined, key: string): CameraTeach
   return {
     corridor: corridor.map(([x, y]) => [x, y] as [number, number]),
     mmPerPx: inspect?.mmPerPx ?? null,
-    detect: inspect?.detect ? structuredClone(inspect.detect) : null,
     window: inspect?.window ? { ...inspect.window } : null,
   };
 }
 
-/** 改配方副本里一台相机在一段的走廊项；配方里没有这台相机的项时原样返回。不动相机的像素当量、检测参数与其他段；
+/** 改配方副本里一台相机在一段的走廊项；配方里没有这台相机的项时原样返回。不动相机的像素当量、测量区间与其他段；
  *  走廊为空且没拖过扇区的项从配方里去掉（示教帧仍在，这一段回到待画走廊）。 */
 function withSegmentCorridor(doc: RecipeDoc, camera: string, segment: number, patch: Partial<SegmentCorridor>): RecipeDoc {
   const inspect = doc.inspect ?? [];
@@ -125,17 +149,32 @@ function withSegmentCorridor(doc: RecipeDoc, camera: string, segment: number, pa
   return { ...doc, inspect: inspect.map(item => {
     if (item.camera !== camera) return item;
     const others = (item.segments ?? []).filter(s => s.segment !== segment);
-    const { sectorDeg, ...rest }: SegmentCorridor = { segment, corridor: [], ...item.segments?.find(s => s.segment === segment), ...patch };
-    const next = sectorDeg != null ? { ...rest, sectorDeg } : rest;
-    const segments = next.corridor.length || sectorDeg != null ? [...others, next].sort((a, b) => a.segment - b.segment) : others;
+    const { sectorDeg, colorModel, ...rest }: SegmentCorridor = { segment, corridor: [], ...item.segments?.find(s => s.segment === segment), ...patch };
+    const next: SegmentCorridor = { ...rest, ...(sectorDeg != null ? { sectorDeg } : {}), ...(colorModel != null ? { colorModel } : {}) };
+    const segments = next.corridor.length || sectorDeg != null || next.measure != null ? [...others, next].sort((a, b) => a.segment - b.segment) : others;
     return { ...item, segments };
   }) };
 }
 
-/** 把一条段走廊草稿写进配方副本（整份配方经 workspace_save_doc 提交）：只写这一段的走廊，保留这一段拖过的扇区方向。 */
+/** 把一条段走廊草稿写进配方副本（整份配方经 workspace_save_doc 提交）：只写这一段的走廊，保留这一段拖过的扇区方向；
+ *  走廊点（按 f32）变了时去掉胶色模型——它按旧走廊取样，已失效，需重新取色。 */
 export function withCorridor(doc: RecipeDoc, key: string, draft: CameraTeachDraft): RecipeDoc {
   const target = parseDraftKey(key);
-  return target ? withSegmentCorridor(doc, target.camera, target.segment, { corridor: draft.corridor }) : doc;
+  if (!target) return doc;
+  const before = doc.inspect?.find(item => item.camera === target.camera)?.segments?.find(item => item.segment === target.segment);
+  const moved = JSON.stringify(canonical(before?.corridor ?? [])) !== JSON.stringify(canonical(draft.corridor));
+  return withSegmentCorridor(doc, target.camera, target.segment, { corridor: draft.corridor, ...(moved ? { colorModel: undefined } : {}) });
+}
+
+/** 一台相机在一段实际的测量方式：选过就按选的；有胶色模型按胶色；还没画走廊的彩色示教帧默认按胶色；其余按灰度（color CL-3）。 */
+export function measureMode(item: SegmentCorridor | undefined, colorFrame: boolean): MeasureMode {
+  if (!colorFrame) return "gray";
+  return item?.measure ?? (item?.colorModel ? "color" : item?.corridor.length ? "gray" : "color");
+}
+
+/** 把一台相机在一段选的测量方式写进配方副本；改按灰度时去掉胶色模型，改回胶色要重新取色。 */
+export function withMeasure(doc: RecipeDoc, camera: string, segment: number, measure: MeasureMode): RecipeDoc {
+  return withSegmentCorridor(doc, camera, segment, { measure, ...(measure === "gray" ? { colorModel: undefined } : {}) });
 }
 
 /** 把一台相机在一段的搜索扇区方向（D-SB-47）写进配方副本；null 为恢复自动。 */

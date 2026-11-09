@@ -1,10 +1,10 @@
 
 import type { PartMode } from "../history/types";
-import type { BurstJudgement, CameraInspect, KindDefaults, PartCalib, PartViewBurst, PathSegment, RecipeDocSegmentFields } from "../plan/types";
+import type { BurstJudgement, CameraInspect, KindDefaults, PartCalib, PartViewBurst, PassSkip, PathSegment, RecipeDocSegmentFields } from "../plan/types";
 
 /** 段模型（分段连拍飞拍）的契约类型，定义在 plan/types.ts；这里转出供 cycle 相关页面使用。 */
 export type {
-  BurstJudgement, CameraInspect, CountStatus, Flags, FrameCellStatus, FrameCellView, FrameGroupView, FrameMetrics, FrameState,
+  BurstJudgement, CameraInspect, Flags, FrameCellStatus, FrameCellView, FrameGroupView, FrameMetrics, FrameState,
   KindDefault, KindDefaults, LossAlarm, PartCalib, PartViewBurst, PathSegment, PlanExport, Region, RegionKind, RegionResult,
   RecipeDocSegmentFields, RecipeSummaryV2, SegmentChecks, SegmentKind, Uninspected,
 } from "../plan/types";
@@ -14,10 +14,6 @@ export type FrameStatus = "waiting" | "measuring" | "done" | "error" | "missing"
 export type Verdict = "OK" | "OK_WITH_EXCURSION" | "NG_POSITION" | "NG_WIDTH" | "NG_ABSOLUTE" | "NG_GAP" | "ERR_INSPECT";
 export type TriggerMode = "fly" | "stop";
 export type ProductSource = "plc" | "manual";
-/** 离线工况，与后端 offline::scenario::Scenario（camelCase）同名。 */
-export type Scenario = "normal" | "excursion" | "gap" | "lostFrame" | "motionTimeout" | "ackMismatch" | "random"
-  | "cameraLost" | "pulseJitter" | "cornerSlowdown" | "notInspected" | "earlyEnd";
-export type OfflineFault = "disconnect" | "heartbeatStop" | "heartbeatResume" | "rejectWrite" | "rejectRead" | "delay" | "clear";
 export type RecordMode = "off" | "failed" | "all";
 
 export interface JudgeParams {
@@ -56,8 +52,6 @@ export interface Recipe {
   id: string;
   name: string;
   version: number;
-  /** PLC 计划版本（见 RecipeDoc.planVersion） */
-  planVersion: number;
   revisionId: string;
   teachingId?: string | null;
   productCode: number;
@@ -77,18 +71,17 @@ export interface Recipe {
   inspect: CameraInspect[];
   segmentDefaults: KindDefaults;
   boundaryGuard: number;
-  boundaryRefine?: boolean;
+  passSkip?: PassSkip;
+  passFrames?: number[];
   partCalib: PartCalib | null;
 }
 
 /** 配方文件内容，配方页编辑它。
- * 段模型字段（segments、inspect、segmentDefaults、boundaryGuard、boundaryRefine、partCalib）后端总是输出；前端提交时可缺省（后端按默认值补齐）。 */
+ * 段模型字段（segments、inspect、segmentDefaults、boundaryGuard、partCalib）后端总是输出；前端提交时可缺省（后端按默认值补齐）。 */
 export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   id: string;
   name: string;
   version: number;
-  /** PLC 拍照计划版本：配方库分配，只在计划身份（产品代码、各段序号 / 类型 / N_exp、相机顺序与 ΣN_exp）变化时换新号；0 或缺省为未分配 */
-  planVersion?: number;
   teachingId?: string | null;
   /** 示教件来源（RB-7）：发布时从候选写入；候选里恒为 null，旧流程发布的配方没有 */
   teachingPiece?: TeachingPieceSource | null;
@@ -120,14 +113,11 @@ export interface RecipeSummary {
   triggerMode: TriggerMode;
   cameras: string[];
   length: number;
-  /** PLC 计划版本 */
-  planVersion: number;
   /** PLC 触发次数 ΣN_exp；未标定为 null */
   triggerCount: number | null;
   segmentCount: number;
   /** ΣN_exp；待标定为 null */
   expectedTotal: number | null;
-  toleranceTotal: number;
   /** expectedTotal 非空 */
   calibrated: boolean;
   /** 只有配方库列表（recipe_list）给出 */
@@ -156,10 +146,8 @@ export interface FrameView {
   ms: number | null;
 }
 
-export interface CandidateDebug { recipeId: string; revision: number }
 
 export interface PartView {
-  candidateDebug?: CandidateDebug | null;
   cycleId: string;
   bundleId: string | null;
   sn: string;
@@ -207,7 +195,6 @@ export interface Judgement {
 export interface ResultView extends Judgement {
   /** 段配方的判定；没有配方时为 null。有值时 verdict / plcCode / faultCode / reason 与它相同 */
   burst: BurstJudgement | null;
-  candidateDebug?: CandidateDebug | null;
   cycleId: string | null;
   sn: string;
   recipeId: string | null;
@@ -217,9 +204,8 @@ export interface ResultView extends Judgement {
 }
 
 export interface Snapshot {
-  statsScope?: "real" | "offline" | "debug";
+  statsScope?: "real";
   plcLocked?: boolean;
-  candidateDebug?: CandidateDebug | null;
   measurementWorkers: { capacity: number; running: number; timedOut: number; availableCapacity: number };
   phase: Phase;
   since: number;
@@ -292,80 +278,18 @@ export interface CycleSettings {
   timeouts: Timeouts;
   historyDays: number;
   record: RecordMode;
-  recordKeep: number;
-  recordMaxGb: number;
-  offlineRecordKeep: number;
-  offlineRecordMaxGb: number;
+  /** 帧录制最多保留件数、总大小（GB）；null 为不限（默认），被示教件引用的录制不删 */
+  recordKeep: number | null;
+  recordMaxGb: number | null;
   /** 只由 cycle_set_maintenance 改写；保存设置时后端沿用当前值 */
   maintenance?: Maintenance | null;
 }
 
-export type SiteMode = "real" | "offline";
-export type SiteSourceKind = "sampleSet" | "synthetic";
-export type OfflineSource = { kind: "sampleSet"; dir: string } | { kind: "synthetic" };
 
-export interface OfflineChoice {
-  kind: SiteSourceKind;
-  sampleSetDir: string | null;
-}
-
-export interface SiteStatus {
-  mode: SiteMode;
-  source: SiteSourceKind | null;
-  last: OfflineChoice | null;
-  measurement: "lyFlow" | "simulated";
-  port: number | null;
-  running: boolean;
-  continuous: boolean;
-  parts: number;
-  message: string;
-  heartbeatStopped: boolean;
-  sampleSet: SampleSetSummary | null;
-  nextPart: string | null;
-  recent: SampleRun[];
-}
-
-export type SampleLabel = "ok" | "ng" | "unknown";
-
-export interface SamplePart {
-  partId: string;
-  sn: string;
-  label: SampleLabel;
-}
-
-export interface SampleSetSummary {
-  managedDir?: string | null;
-  id: string;
-  name: string;
-  source: string;
-  dir: string;
-  shotCount: number;
-  /** 清单里的相机；views 段配方不使用。后端摘要不带每台相机的帧数 */
-  cameras: { id: string; views: number[] }[];
-  mmPerPx: number | null;
-  parts: SamplePart[];
-  missing: string[];
-  missingCount: number;
-}
-
-export interface SampleRun {
-  ts: number;
-  partSn: string;
-  partId: string;
-  sampleSn: string;
-  label: SampleLabel;
-  purpose: "production" | "candidateDebug";
-  cycleId: string | null;
-  resultCode: number | null;
-  faultCode: number | null;
-  verdict: Verdict | null;
-  message: string | null;
-}
-
-export type ReadinessKey = "plc" | "camera" | "recipe" | "engine" | "audit" | "site";
+export type ReadinessKey = "plc" | "camera" | "recipe" | "engine" | "audit";
 export type ReadinessState = "ok" | "waiting" | "blocked";
 /** 处理该项要去的页面 */
-export type ReadinessTarget = "plc" | "camera" | "workspace" | "settings" | "offline";
+export type ReadinessTarget = "plc" | "camera" | "workspace" | "settings";
 
 export interface ReadinessItem {
   key: ReadinessKey;
@@ -389,10 +313,11 @@ export interface RecipeOption {
   target: ReadinessTarget | null;
   /** 可运行但仍需等待的原因（如生产预热中） */
   waiting: string | null;
+  /** 可运行但部分段不测的说明（发布包有段预热没测成） */
+  note: string | null;
 }
 
 export interface Readiness {
-  candidateDebug?: CandidateDebug | null;
   ready: boolean;
   items: ReadinessItem[];
   recipes: RecipeOption[];

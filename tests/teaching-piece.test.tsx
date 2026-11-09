@@ -15,7 +15,7 @@ vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { recor
 let ws: ReturnType<typeof workspaceState>;
 const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
 const row = (recordId: number, sn: string, reasons: string[] = [], usage: HistoryCandidate["usage"] = null): HistoryCandidate => ({
-  recordId, cycleId: `c-${recordId}`, ts: 1, sn, mode: "maintenanceCollect", groupCount: 12,
+  recordId, cycleId: `c-${recordId}`, ts: 1, sn, mode: "maintenanceCollect", verdict: "ERR_INSPECT", groupCount: 12, recipeId: "A", projectId: "line-a",
   cameras: ["CAM-1", "CAM-2", "CAM-3"].map(cameraId => ({ cameraId, frames: 12 })), complete: !reasons.length, reasons, warnings: [],
   durationMs: null, measuredFps: null, setFps: null, importedRound: null, usage, fixture: null,
 });
@@ -31,14 +31,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);
   vi.mocked(burstImageApi.record).mockResolvedValue(picture);
-  vi.mocked(workspaceApi.historyCandidates).mockResolvedValue([row(7, "SN-7")]);
+  vi.mocked(workspaceApi.historyCandidates).mockResolvedValue({ total: 1, items: [row(7, "SN-7")] });
 });
 
-// 防的回归（RB-2、RB-8）：换示教件或改版候选首次设示教件时不提示就清空走廊、边界与标定；取消后仍提交
+// 防的回归（RB-11、RB-2、RB-8）：换示教件或改版候选首次设示教件时不提示就清空边界与标定；取消后仍提交；走廊与示教帧被列进清空项
 it.each<[string, (view: WorkspaceView) => void, string[], string[]]>([
-  ["已有示教件，换一件", () => {}, ["示教件的分段边界", "全部走廊与示教帧", "示教件得出的结果"], []],
-  ["改版候选还没有示教件，继承了走廊与示教件得出的结果", view => { view.workspace.teachingPiece = null; view.plan.pieces = []; }, ["全部走廊与示教帧", "示教件得出的结果"], ["示教件的分段边界"]],
-])("%s → 先列出将清空的内容，取消不提交，确认后才按所选记录设为示教件", async (_, edit, listed, absent) => {
+  ["已有示教件，换一件", () => {}, ["示教件的分段边界", "示教件得出的结果"], ["走廊"]],
+  ["改版候选还没有示教件，继承了走廊与示教件得出的结果", view => { view.workspace.teachingPiece = null; view.plan.pieces = []; }, ["示教件得出的结果"], ["示教件的分段边界", "走廊"]],
+])("%s → 先列出将清空的内容（走廊与示教帧保留），取消不提交，确认后才按所选记录设为示教件", async (_, edit, listed, absent) => {
   show(edit);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("checkbox", { name: "选用 SN SN-7" }));
@@ -46,6 +46,7 @@ it.each<[string, (view: WorkspaceView) => void, string[], string[]]>([
   const items = within(screen.getByRole("list", { name: "将清空的内容" }));
   for (const text of listed) expect(items.getByText(new RegExp(text))).toBeVisible();
   for (const text of absent) expect(items.queryByText(new RegExp(text))).toBeNull();
+  expect(screen.getByText(/不变的笔沿用走廊、示教帧（现有走廊与示教帧 \d+ 条）/)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "取消" }));
   expect(workspaceApi.setTeachingPiece).not.toHaveBeenCalled();
 
@@ -56,7 +57,7 @@ it.each<[string, (view: WorkspaceView) => void, string[], string[]]>([
 
 // 防的回归（HI-1～HI-8、RB-6）：不可用或已被本候选使用的历史件也能选；预览读图传错相机下标或帧组从 0 起，后端读到别的相机或报缺帧
 it("不可用或已使用的历史件不能勾选并写明原因；看图按记录号、相机下标、从 1 起的帧组读录制原图", async () => {
-  vi.mocked(workspaceApi.historyCandidates).mockResolvedValue([row(1, "SN-1", [], "teaching"), row(2, "SN-2", ["缺帧 1 帧"]), row(3, "SN-3")]);
+  vi.mocked(workspaceApi.historyCandidates).mockResolvedValue({ total: 3, items: [row(1, "SN-1", [], "teaching"), row(2, "SN-2", ["缺帧 1 帧"]), row(3, "SN-3")] });
   show();
   const user = userEvent.setup();
   expect(await screen.findByText("已使用（示教件）")).toBeVisible();
@@ -67,7 +68,33 @@ it("不可用或已使用的历史件不能勾选并写明原因；看图按记�
 
   await user.click(screen.getByRole("button", { name: "预览 SN SN-3" }));
   const preview = within(screen.getByRole("complementary", { name: "历史件原图预览" }));
-  expect(burstImageApi.record).toHaveBeenLastCalledWith(3, 0, 1);
+  expect(burstImageApi.record).toHaveBeenLastCalledWith(3, 0, 1, expect.any(AbortSignal));
   await user.click(preview.getByRole("button", { name: "帧组 2 · CAM-2" }));
-  expect(burstImageApi.record).toHaveBeenLastCalledWith(3, 1, 2);
+  expect(burstImageApi.record).toHaveBeenLastCalledWith(3, 1, 2, expect.any(AbortSignal));
+});
+
+// 防的回归：选择器只列本配方或最近 200 件，别的项目、别的配方或更早的历史件选不到；筛选后仍停在后面的页，查不到符合条件的件
+it("默认不限项目与配方；按配方、SN、判定筛选的条件传给后端，并回到第一页", async () => {
+  vi.mocked(workspaceApi.historyCandidates).mockResolvedValue({ total: 120, items: [row(7, "SN-7")] });
+  show();
+  const user = userEvent.setup();
+  await screen.findByRole("checkbox", { name: "选用 SN SN-7" });
+  expect(workspaceApi.historyCandidates).toHaveBeenLastCalledWith("A", expect.objectContaining({ project: null, recipeId: null, offset: 0 }));
+  await user.click(screen.getByRole("button", { name: "第 2 页" }));
+  expect(workspaceApi.historyCandidates).toHaveBeenLastCalledWith("A", expect.objectContaining({ offset: 50 }));
+  await user.type(screen.getByRole("textbox", { name: "历史件 SN" }), "X1");
+  await user.click(screen.getByRole("button", { name: /^NG$/ }));
+  expect(workspaceApi.historyCandidates).toHaveBeenLastCalledWith("A", expect.objectContaining({
+    sn: "X1", offset: 0, verdicts: ["NG_POSITION", "NG_WIDTH", "NG_ABSOLUTE", "NG_GAP"],
+  }));
+});
+
+// 防的回归：勾选一件后换筛选或翻页，那件已不在列表里，“设为示教件”仍提交它
+it("勾选后换筛选，选择清空，不能提交已不在列表里的件", async () => {
+  show();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("checkbox", { name: "选用 SN SN-7" }));
+  expect(screen.getByRole("button", { name: "设为示教件" })).toBeEnabled();
+  await user.type(screen.getByRole("textbox", { name: "历史件 SN" }), "Z");
+  expect(screen.getByRole("button", { name: "设为示教件" })).toBeDisabled();
 });

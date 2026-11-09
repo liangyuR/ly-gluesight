@@ -13,7 +13,6 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::plan::{self, KindDefaults, PartCalib, PathSegment, SegmentKind};
-use crate::vision::template::{validate_expert, ExpertParams};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,7 +136,15 @@ pub struct DetectParams {
 }
 
 impl DetectParams {
-    fn validate(&self, what: &str) -> Result<(), String> {
+    /// 第 `segment` 段的检测参数：段设了搜索半宽、胶宽范围就用段的，否则用这份配方默认；段不存在时就是配方默认。
+    pub fn for_segment(&self, segments: &[PathSegment], segment: u32) -> DetectParams {
+        segments
+            .iter()
+            .find(|s| s.index == segment)
+            .map_or_else(|| self.clone(), |s| s.detect(self))
+    }
+
+    pub(crate) fn validate(&self, what: &str) -> Result<(), String> {
         let [lo, hi] = self.width_range;
         if !(self.search_mm.is_finite()
             && self.search_mm > 0.0
@@ -204,10 +211,9 @@ impl RecipeStage {
     }
 }
 
-/// 段配方里一台检测相机的参数（D-SB-45）：像素当量、标定引用、检测参数，以及它在各段的走廊。
+/// 段配方里一台检测相机的参数（D-SB-45）：像素当量、它在各段的走廊、逐帧定向的测量区间与出胶点。标定一律用设备标定。
 /// `RecipeDoc.inspect` 的顺序就是计划相机顺序（PLC 一个触发同时触发这三台）。
-/// 不拒绝未知字段：旧版的相机走廊 `corridor` 已放弃，读入时丢弃（D-SB-45 不迁移）；相机级的扇区方向 `sectorDeg` 改为按段存在
-/// `SegmentCorridor` 上，读入时同样丢弃。
+/// 不拒绝未知字段：已停用的 `corridor`、`sectorDeg`、`calib`、`detect`、`expert` 读入时丢弃。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CameraInspect {
@@ -215,32 +221,48 @@ pub struct CameraInspect {
     /// 像素当量（mm/px）；为空为尚未设置
     #[serde(default)]
     pub mm_per_px: Option<f64>,
-    /// 标定引用；为空时用这台相机的工位标定
-    #[serde(default)]
-    pub calib: Option<String>,
-    /// 为空时用配方的检测参数
-    #[serde(default)]
-    pub detect: Option<DetectParams>,
     /// 这台相机在它检测的各段的走廊（D-SB-42/45）：落在该段的帧用它测量，没有相机级的默认走廊
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segments: Vec<SegmentCorridor>,
-    /// 逐帧定向的检测窗口（D-SB-47）：只测沿胶路距出胶点 [start, start + length] mm 的一段
+    /// 逐帧定向的测量区间（D-SB-47）：这台相机各段的默认值，段可在 `HeadingSettings.window` 单独覆盖；为空时用
+    /// `HeadingWindow::DEFAULT`，见 `heading::window`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<HeadingWindow>,
     /// 标定的出胶点（图像像素，D-SB-47）；为空时由开启定向的各段走廊起点推出
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nozzle: Option<[f64; 2]>,
-    /// 这台相机覆盖的专家参数（LF-5，测量图模板参数名 → 值），叠在配方默认之上
-    #[serde(default, skip_serializing_if = "ExpertParams::is_empty")]
-    pub expert: ExpertParams,
 }
 
-/// 逐帧定向的检测窗口（mm，沿胶路从出胶点量起）。
+/// 逐帧定向的测量区间（mm，沿胶路从出胶点量起）：只测 [start, start + length]。界面填“跳过前 start”和“测到 start + length”。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HeadingWindow {
     pub start_mm: f64,
     pub length_mm: f64,
+}
+
+impl HeadingWindow {
+    /// 段与相机都没设测量区间时用它：跳过前 5 mm，测到 20 mm。
+    pub const DEFAULT: Self = Self {
+        start_mm: 5.0,
+        length_mm: 15.0,
+    };
+
+    /// 起点 ≥ 0、长度 > 0、终点不超过 500 mm。`what` 是报错主语。
+    pub fn validate(&self, what: &str) -> Result<(), String> {
+        if self.start_mm.is_finite()
+            && self.length_mm.is_finite()
+            && self.start_mm >= 0.0
+            && self.length_mm > 0.0
+            && self.start_mm + self.length_mm <= 500.0
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "{what}的测量区间需满足 跳过距离 ≥ 0、测量到的距离大于跳过距离且不超过 500 mm"
+            ))
+        }
+    }
 }
 
 /// 一台相机在某一段（`PathSegment.index`）的走廊（图像像素，只决定 ROI 和测站）；少于 2 点为尚未示教。
@@ -254,6 +276,40 @@ pub struct SegmentCorridor {
     /// 为空时取背离离出胶点最近的画面边
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sector_deg: Option<f64>,
+    /// 这台相机在这一段的颜色模型（`glue.ColorModel` 的 JSON 原文）：彩色示教帧上沿走廊取色得出，按胶色测量时用
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_model: Option<String>,
+    /// 操作员选的测量方式；没选时有颜色模型按胶色、否则按灰度（[`SegmentCorridor::measure_mode`]）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measure: Option<MeasureMode>,
+}
+
+/// 一台相机在一段按什么测胶条（color CL-3）：灰度图找暗 / 亮段，或按示教取得的胶色。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MeasureMode {
+    Gray,
+    Color,
+}
+
+impl SegmentCorridor {
+    pub fn measure_mode(&self) -> MeasureMode {
+        self.measure.unwrap_or(if self.color_model.is_some() {
+            MeasureMode::Color
+        } else {
+            MeasureMode::Gray
+        })
+    }
+
+    /// 测量用的颜色模型：按灰度测为 None；选了按胶色测却还没取色时报错。
+    pub fn measuring_color_model(&self) -> Result<Option<&str>, String> {
+        match self.measure_mode() {
+            MeasureMode::Gray => Ok(None),
+            MeasureMode::Color => self.color_model.as_deref().map(Some).ok_or_else(|| {
+                "选了按胶色测量，还没取色：在走廊示教页取色，或改按灰度测量".to_string()
+            }),
+        }
+    }
 }
 
 impl CameraInspect {
@@ -306,23 +362,8 @@ impl CameraInspect {
         {
             return Err(format!("相机 {id} 的像素当量 {m} 需在 0–10 mm/px 之间"));
         }
-        if self.calib.as_deref().is_some_and(|c| !valid_camera_id(c)) {
-            return Err(format!("相机 {id} 的标定引用只能用字母、数字、- 和 _"));
-        }
-        if let Some(d) = &self.detect {
-            d.validate(&format!("相机 {id} 检测参数"))?;
-        }
         if let Some(w) = &self.window {
-            if !(w.start_mm.is_finite()
-                && w.length_mm.is_finite()
-                && w.start_mm >= 0.0
-                && w.length_mm > 0.0
-                && w.start_mm + w.length_mm <= 500.0)
-            {
-                return Err(format!(
-                    "相机 {id} 的测量区间需满足 跳过距离 ≥ 0、测量到的距离大于跳过距离且不超过 500 mm"
-                ));
-            }
+            w.validate(&format!("相机 {id} "))?;
         }
         if self.nozzle.is_some_and(|p| {
             p.iter()
@@ -330,7 +371,7 @@ impl CameraInspect {
         }) {
             return Err(format!("相机 {id} 的出胶点坐标需为 0–100000 px 的有限数"));
         }
-        validate_expert(&self.expert, &format!("相机 {id}"))
+        Ok(())
     }
 }
 
@@ -352,6 +393,13 @@ pub fn untaught_corridors(segments: &[PathSegment], inspect: &[CameraInspect]) -
                     "第 {} 段的相机 {camera} 尚未示教走廊",
                     segment.index
                 ));
+            } else if let Some(Err(reason)) = inspect
+                .iter()
+                .find(|i| i.camera == camera)
+                .and_then(|i| i.segment_corridor(segment.index))
+                .map(|c| c.measuring_color_model())
+            {
+                reasons.push(format!("第 {} 段的相机 {camera}{reason}", segment.index));
             }
         }
     }
@@ -365,8 +413,6 @@ pub struct Recipe {
     pub id: String,
     pub name: String,
     pub version: u32,
-    /// PLC 拍照计划版本（见 RecipeDoc::plan_version）
-    pub plan_version: u32,
     pub revision_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_id: Option<String>,
@@ -378,7 +424,7 @@ pub struct Recipe {
     /// 站距（mm）
     pub spacing: f32,
     pub filter_window: usize,
-    /// 拍照点没单独设时用的检测参数与限值
+    /// 检测参数的配方默认（段可覆盖搜索半宽与胶宽范围，见 `DetectParams::for_segment`）与限值
     pub detect: DetectParams,
     pub limits: ShotLimits,
     /// 段配方的段列表（RecipeDoc.segments）；为空即旧拍照点配方
@@ -387,15 +433,28 @@ pub struct Recipe {
     pub inspect: Vec<CameraInspect>,
     pub segment_defaults: KindDefaults,
     pub boundary_guard: u32,
-    pub boundary_refine: bool,
+    pub pass_skip: crate::passes::PassSkip,
+    pub pass_frames: Option<Vec<u32>>,
     pub part_calib: Option<PartCalib>,
-    pub expert: ExpertParams,
+    /// 快照里已停用的测量覆盖（配方级 `expert`、各相机的 `detect` 与 `expert`，都为空时为 null）：这些值不再生效，
+    /// 按它们测的已存指标与当前口径不同，进测量布局（`store::measurement_layout`），与没有它们的配方比较时要原图复测
+    #[serde(skip)]
+    pub retired_overrides: serde_json::Value,
 }
 
 impl Recipe {
     /// 段配方（分段连拍）：段列表非空。否则是旧拍照点配方。
     pub fn is_burst(&self) -> bool {
         !self.path_segments.is_empty()
+    }
+
+    /// 一件按笔判定的规则（D-SB-62）：`part` 是本件的笔结构（不知道为空）。
+    pub fn pass_rules<'a>(&'a self, part: &'a [u32]) -> crate::passes::PassRules<'a> {
+        crate::passes::PassRules {
+            part,
+            taught: self.pass_frames.as_deref(),
+            skip: self.pass_skip,
+        }
     }
 
     /// 段配方的计划相机（按 inspect 顺序）：PLC 一个触发同时触发它们。旧拍照点配方为空。
@@ -411,11 +470,6 @@ impl Recipe {
     /// 整件预期帧组数 ΣN_exp（各段都已标定取其和，否则取整件标定）；未标定为 None。
     pub fn expected_total(&self) -> Option<u32> {
         plan::expected_total(&self.path_segments, self.part_calib.as_ref())
-    }
-
-    /// 整件帧数容差 Σtolerance。
-    pub fn tolerance_total(&self) -> u32 {
-        plan::tolerance_total(&self.path_segments)
     }
 
     /// 段配方能不能发布生产（D-SB-20）：每段每台检测相机都示教了走廊、相机有像素当量，且已标定——单段配方凭整件
@@ -490,9 +544,9 @@ impl Recipe {
         self.plan_cameras()
     }
 
-    /// 一台相机的专家参数层，按叠加顺序：配方默认、相机覆盖。
-    pub fn expert_layers<'a>(&'a self, inspect: &'a CameraInspect) -> [&'a ExpertParams; 2] {
-        [&self.expert, &inspect.expert]
+    /// 第 `segment` 段的检测参数（见 `DetectParams::for_segment`）。
+    pub fn segment_detect(&self, segment: u32) -> DetectParams {
+        self.detect.for_segment(&self.path_segments, segment)
     }
 }
 
@@ -504,11 +558,6 @@ pub struct RecipeDoc {
     pub name: String,
     #[serde(default)]
     pub version: u32,
-    /// PLC 拍照计划版本：由配方库分配、全局唯一，只在计划身份变了时换新号（见 `same_plan`）：旧拍照点配方是产品代码或
-    /// 拍照点的顺序、编号、Pose、相机；段配方是产品代码、各段序号 / 类型 / N_exp、相机顺序与 ΣN_exp。
-    /// 只改限值、检测参数、示教中线、容差、x_ref 或"不检"时不变，PLC 侧不用跟着改。0 表示还没分配（不能接件）。
-    #[serde(default)]
-    pub plan_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_id: Option<String>,
     pub product_code: u16,
@@ -522,6 +571,7 @@ pub struct RecipeDoc {
     pub schema_version: u32,
     pub spacing: f32,
     pub filter_window: usize,
+    /// 检测参数的配方默认：极性只在这里设，搜索半宽与胶宽范围段可覆盖（`PathSegment.search_mm` / `width_range`）
     pub detect: DetectParams,
     pub limits: ShotLimits,
     /// 沿胶路的段列表（规格 §1）；为空即旧拍照点配方，下面几项段模型字段不允许设置
@@ -530,24 +580,24 @@ pub struct RecipeDoc {
     /// 三台检测相机（有序，计划相机顺序取它）
     #[serde(default)]
     pub inspect: Vec<CameraInspect>,
-    /// 新建段时取用的直线 / 弯道默认容差与检测项
+    /// 新建段时取用的直线 / 弯道默认检测项
     #[serde(default)]
     pub segment_defaults: KindDefaults,
     /// 比例分段边界两侧的过渡帧数，0..=5（D-SB-40）；不进计划身份
     #[serde(default = "default_boundary_guard")]
     pub boundary_guard: u32,
-    /// 按逐帧定向的胶条方向序列细化比例边界（D-SB-47）；只作用于开启定向的段，不进计划身份
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub boundary_refine: bool,
+    /// 每笔开头、结尾跳过的帧组数（D-SB-62）；不进计划身份
+    #[serde(default, skip_serializing_if = "crate::passes::PassSkip::is_zero")]
+    pub pass_skip: crate::passes::PassSkip,
+    /// 示教件的笔结构（各笔帧组数，D-SB-62）：随 N_exp 由示教件得出，保存时不采用传入值；None = 不按笔分段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass_frames: Option<Vec<u32>>,
     /// 整件帧组数标定：各段 N_exp 待分段算法时凭它得到 expected_total 并发布（决策补充第二节）；只由标定写入
     #[serde(default)]
     pub part_calib: Option<PartCalib>,
     /// 示教件来源（RB-7）：正式发布时从候选写入；候选里恒为空，没有它的生产配方即旧流程发布。不进计划身份
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_piece: Option<TeachingPieceRef>,
-    /// 专家参数的配方默认（LF-5，测量图模板参数名 → 值）；没写的用模板默认值
-    #[serde(default, skip_serializing_if = "ExpertParams::is_empty")]
-    pub expert: ExpertParams,
 }
 
 /// 配方文档记下的示教件来源：历史件的工件身份、记录、SN 与时间。
@@ -571,24 +621,18 @@ impl RecipeDoc {
         self.inspect.iter().map(|i| i.camera.clone()).collect()
     }
 
+    /// 一件按笔判定的规则（D-SB-62）：`part` 是这一件的笔结构（不知道为空）。
+    pub fn pass_rules<'a>(&'a self, part: &'a [u32]) -> crate::passes::PassRules<'a> {
+        crate::passes::PassRules {
+            part,
+            taught: self.pass_frames.as_deref(),
+            skip: self.pass_skip,
+        }
+    }
+
     /// 整件预期帧组数 ΣN_exp（见 `plan::expected_total`）。
     pub fn expected_total(&self) -> Option<u32> {
         plan::expected_total(&self.segments, self.part_calib.as_ref())
-    }
-
-    /// 段计划身份（`plan::plan_identity`）；旧拍照点配方没有段和检测相机，身份恒等。
-    pub fn plan_identity(&self) -> plan::PlanIdentity {
-        plan::plan_identity(
-            self.product_code,
-            &self.segments,
-            &self.plan_cameras(),
-            self.expected_total(),
-        )
-    }
-
-    /// 两份配方的段计划身份相同，就是同一份计划（D-SB-19）。
-    pub fn same_plan(&self, other: &RecipeDoc) -> bool {
-        self.plan_identity() == other.plan_identity()
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -612,7 +656,6 @@ impl RecipeDoc {
         }
         self.detect.validate("检测参数")?;
         self.limits.validate("限值")?;
-        validate_expert(&self.expert, "配方")?;
         if !self.is_burst() {
             return Err(LEGACY_RECIPE.into());
         }
@@ -634,6 +677,21 @@ impl RecipeDoc {
                 BOUNDARY_GUARD.end()
             ));
         }
+        if self.pass_skip.head > crate::passes::MAX_SKIP
+            || self.pass_skip.tail > crate::passes::MAX_SKIP
+        {
+            return Err(format!(
+                "每笔首尾跳过的帧组数需在 0–{} 之间",
+                crate::passes::MAX_SKIP
+            ));
+        }
+        if self
+            .pass_frames
+            .as_ref()
+            .is_some_and(|frames| frames.is_empty() || frames.contains(&0))
+        {
+            return Err("示教件的笔结构无效：每笔至少一个帧组".into());
+        }
         for inspect in &self.inspect {
             inspect.validate()?;
             let cameras = self.plan_cameras();
@@ -650,6 +708,11 @@ impl RecipeDoc {
             }
         }
         plan::validate_segments(&self.segments, &self.plan_cameras())?;
+        for segment in &self.segments {
+            segment
+                .detect(&self.detect)
+                .validate(&format!("第 {} 段检测参数", segment.index))?;
+        }
         plan::validate_defaults(&self.segment_defaults)?;
         if let Some(part) = &self.part_calib {
             if !(1..=plan::MAX_EXPECTED_TOTAL).contains(&part.expected_total) {
@@ -669,7 +732,6 @@ impl RecipeDoc {
             id: self.id.clone(),
             name: self.name.trim().to_string(),
             version: self.version.max(1),
-            plan_version: self.plan_version,
             revision_id: format!("{}-v{}", self.id, self.version.max(1)),
             teaching_id: self.teaching_id.clone(),
             product_code: self.product_code,
@@ -684,9 +746,10 @@ impl RecipeDoc {
             inspect: self.inspect.clone(),
             segment_defaults: self.segment_defaults.clone(),
             boundary_guard: self.boundary_guard,
-            boundary_refine: self.boundary_refine,
+            pass_skip: self.pass_skip,
+            pass_frames: self.pass_frames.clone(),
             part_calib: self.part_calib.clone(),
-            expert: self.expert.clone(),
+            retired_overrides: serde_json::Value::Null,
         };
         Ok(recipe)
     }
@@ -703,14 +766,35 @@ impl TryFrom<serde_json::Value> for Recipe {
     type Error = String;
     /// Recipe 的 JSON 还原成 RecipeDoc 再 build：段列表在 `pathSegments`，换回 RecipeDoc 的 `segments` 再解析。
     fn try_from(mut value: serde_json::Value) -> Result<Self, Self::Error> {
+        let filled = |v: &serde_json::Value| {
+            (!v.is_null() && v.as_object().is_none_or(|o| !o.is_empty())).then(|| v.clone())
+        };
+        let cameras: Vec<_> = value["inspect"]
+            .as_array()
+            .map(|cameras| {
+                cameras
+                    .iter()
+                    .map(|i| (filled(&i["detect"]), filled(&i["expert"])))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let expert = filled(&value["expert"]);
+        let retired_overrides =
+            if expert.is_none() && cameras.iter().all(|(d, e)| d.is_none() && e.is_none()) {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!([expert, cameras])
+            };
         let object = value.as_object_mut().ok_or("配方快照不是 JSON 对象")?;
         let path_segments = object
             .remove("pathSegments")
             .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
         object.insert("segments".into(), path_segments);
-        serde_json::from_value::<RecipeDoc>(value)
+        let mut recipe = serde_json::from_value::<RecipeDoc>(value)
             .map_err(|e| e.to_string())?
-            .build()
+            .build()?;
+        recipe.retired_overrides = retired_overrides;
+        Ok(recipe)
     }
 }
 
@@ -760,8 +844,8 @@ fn sample_path(k: usize) -> Vec<[f32; 2]> {
     }
 }
 
-/// 段配方的起点（D-SB-24）：飞拍、一个直线段（待标定，容差与检测项取配方默认）、按给定顺序的检测相机（走廊待示教）、
-/// 计划版本未分配。相机不足 3 台时照样返回，但过不了段配方校验。
+/// 段配方的起点（D-SB-24）：飞拍、一个直线段（待标定，检测项取配方默认）、按给定顺序的检测相机（走廊待示教）、
+/// 相机不足 3 台时照样返回，但过不了段配方校验。
 pub fn burst_template(
     id: String,
     name: String,
@@ -773,7 +857,6 @@ pub fn burst_template(
         id,
         name,
         version: 1,
-        plan_version: 0,
         teaching_id: None,
         product_code,
         stage: RecipeStage::Formal,
@@ -793,47 +876,32 @@ pub fn burst_template(
             .map(|camera| CameraInspect {
                 camera: camera.clone(),
                 mm_per_px: None,
-                calib: None,
-                detect: None,
                 segments: Vec::new(),
                 window: None,
                 nozzle: None,
-                expert: ExpertParams::new(),
             })
             .collect(),
         segment_defaults,
         boundary_guard: DEFAULT_BOUNDARY_GUARD,
-        boundary_refine: false,
+        pass_skip: crate::passes::PassSkip::default(),
+        pass_frames: None,
         part_calib: None,
         teaching_piece: None,
-        expert: ExpertParams::new(),
     }
 }
 
-/// 一次预留 `count` 个计划版本号并返回第一个（项目导入用）；与配方库发号共用本机同一份记录。
-pub fn reserve_plan_versions(plan_file: &std::path::Path, count: u32) -> Result<u32, String> {
-    let issued: u32 = match crate::fsio::read_text(plan_file) {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|e| format!("计划版本记录损坏，拒绝分配计划版本：{e}"))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-        Err(e) => return Err(format!("读取计划版本记录失败：{e}")),
-    };
-    let last = issued.checked_add(count).ok_or("计划版本已达上限")?;
-    crate::fsio::write_atomic(plan_file, &last.to_string())?;
-    Ok(issued + 1)
-}
-
-/// 测试用的段配方：模拟相机 cam1–cam3 共用触发、走廊已示教、一个直线段 N_exp = 4（ΣN_exp = 4）、不开逐帧定向，计划版本已分配。
+/// 测试用的段配方：模拟相机 cam1–cam3 共用触发、走廊已示教、一个直线段 N_exp = 4（ΣN_exp = 4）、不开逐帧定向。
 #[cfg(test)]
 pub fn samples_burst() -> RecipeDoc {
     let cameras: Vec<String> = (1..=3).map(|k| format!("cam{k}")).collect();
     let mut doc = burst_template("SEAM-BURST".into(), "分段连拍样例".into(), 14, &cameras);
-    doc.plan_version = 14;
     for inspect in &mut doc.inspect {
         inspect.segments = vec![SegmentCorridor {
             segment: 1,
             corridor: sample_path(0),
             sector_deg: None,
+            color_model: None,
+            measure: None,
         }];
         inspect.mm_per_px = Some(f64::from(SIM_MM_PER_PX));
     }
@@ -893,7 +961,6 @@ pub const COLLECT_AFTER_FORMAL: &str =
 /// 磁盘上的配方库：每个配方一个 `<id>.json`。
 pub struct RecipeStore {
     dir: PathBuf,
-    plan_file: PathBuf,
     inner: RwLock<Vec<(RecipeDoc, Arc<Recipe>)>>,
     errors: RwLock<Vec<String>>,
     unavailable: RwLock<Vec<UnavailableRecipe>>,
@@ -902,23 +969,13 @@ pub struct RecipeStore {
 impl RecipeStore {
     #[cfg(test)]
     pub fn open(root: PathBuf) -> Result<Self, String> {
-        Self::open_with_floors(
-            root.join("recipes"),
-            root.join("state").join("plan-version"),
-            &BTreeMap::new(),
-        )
+        Self::open_with_floors(root.join("recipes"), &BTreeMap::new())
     }
 
-    /// `plan_file` 是本机共用的计划版本记录：PLC 是同一台，换项目也不能发出用过的计划版本。
-    pub fn open_with_floors(
-        dir: PathBuf,
-        plan_file: PathBuf,
-        floors: &BTreeMap<String, u32>,
-    ) -> Result<Self, String> {
+    pub fn open_with_floors(dir: PathBuf, floors: &BTreeMap<String, u32>) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建配方目录失败：{e}"))?;
         let store = Self {
             dir,
-            plan_file,
             inner: RwLock::new(Vec::new()),
             errors: RwLock::new(Vec::new()),
             unavailable: RwLock::new(Vec::new()),
@@ -961,7 +1018,7 @@ impl RecipeStore {
         Ok(sources)
     }
 
-    /// 旧格式的修订来源无法再证明配方内容（D-0）：原文件备份后移除，其修订号与计划版本并入版本记录，仍不复用。
+    /// 旧格式的修订来源无法再证明配方内容（D-0）：原文件备份后移除，其修订号并入版本记录，仍不复用。
     fn retire_outdated_sources(&self) -> Result<(), String> {
         let path = self.dir.join(".revision-sources");
         let text = match crate::fsio::read_text(&path) {
@@ -987,13 +1044,6 @@ impl RecipeStore {
             )),
         )
         .map_err(|e| format!("备份旧格式配方修订来源记录失败：{e}"))?;
-        let plan = outdated
-            .iter()
-            .map(|d| d.plan_version)
-            .max()
-            .unwrap_or(0)
-            .max(self.issued_plan_version()?);
-        crate::fsio::write_atomic(&self.plan_file, &plan.to_string())?;
         for doc in &outdated {
             self.retire_version(&doc.id, doc.version)?;
             sources.remove(&doc.id.to_ascii_lowercase());
@@ -1030,54 +1080,6 @@ impl RecipeStore {
             &self.dir.join(".revision-versions"),
             &serde_json::to_string(&versions).map_err(|e| e.to_string())?,
         )
-    }
-
-    /// 已发出的最大计划版本。文件丢了就从现有配方里取最大值，不回退到已用过的号。
-    fn issued_plan_version(&self) -> Result<u32, String> {
-        match crate::fsio::read_text(&self.plan_file) {
-            Ok(text) => serde_json::from_str(&text)
-                .map_err(|e| format!("计划版本记录损坏，拒绝分配计划版本：{e}")),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-            Err(e) => Err(format!("读取计划版本记录失败：{e}")),
-        }
-    }
-
-    /// 发一个新的计划版本号：比已发出的、现有配方和修订来源里用过的都大。
-    fn issue_plan_version(&self, list: &[(RecipeDoc, Arc<Recipe>)]) -> Result<u32, String> {
-        let used = list
-            .iter()
-            .map(|(d, _)| d.plan_version)
-            .chain(self.revision_sources()?.values().map(|d| d.plan_version))
-            .max()
-            .unwrap_or(0);
-        let next = self
-            .issued_plan_version()?
-            .max(used)
-            .checked_add(1)
-            .ok_or("计划版本已达上限")?;
-        crate::fsio::write_atomic(&self.plan_file, &next.to_string())?;
-        Ok(next)
-    }
-
-    /// 同一配方拍照计划没变就沿用原号，否则（新配方、改了拍照点或产品代码）发新号。
-    fn plan_version_in(
-        &self,
-        list: &[(RecipeDoc, Arc<Recipe>)],
-        doc: &RecipeDoc,
-        current_id: &str,
-    ) -> Result<u32, String> {
-        match list.iter().find(|(d, _)| d.id == current_id) {
-            Some((current, _)) if current.plan_version != 0 && current.same_plan(doc) => {
-                Ok(current.plan_version)
-            }
-            _ => self.issue_plan_version(list),
-        }
-    }
-
-    /// 发布前冻结配方时调用：拍照计划没变沿用生产配方的计划版本，变了就发新号（没生效的号作废即可）。
-    pub fn plan_version_for(&self, doc: &RecipeDoc) -> Result<u32, String> {
-        let inner = self.inner.write().unwrap();
-        self.plan_version_in(&inner, doc, &doc.id)
     }
 
     fn version_after(&self, id: &str, active: Option<u32>) -> Result<u32, String> {
@@ -1206,40 +1208,6 @@ impl RecipeStore {
                 .filter(|p| p.extension().is_some_and(|x| x == "json"))
                 .collect();
             paths.sort();
-            // 计划版本重复（多半是复制了配方文件）：只留修订来源能证明这个号属于它的那一份，与文件名先后无关
-            let mut plan_users: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-            for p in &paths {
-                if let Some(d) = Self::read_regular_file(p)
-                    .ok()
-                    .and_then(|s| serde_json::from_str::<RecipeDoc>(&s).ok())
-                    .filter(|d| d.plan_version != 0)
-                {
-                    plan_users
-                        .entry(d.plan_version)
-                        .or_default()
-                        .push(d.id.to_ascii_lowercase());
-                }
-            }
-            let plan_owned = |d: &RecipeDoc| -> Result<(), String> {
-                let Some(users) = plan_users
-                    .get(&d.plan_version)
-                    .filter(|users| users.len() > 1)
-                else {
-                    return Ok(());
-                };
-                let owners: Vec<&String> = users
-                    .iter()
-                    .filter(|id| {
-                        sources
-                            .get(*id)
-                            .is_some_and(|s| s.plan_version == d.plan_version)
-                    })
-                    .collect();
-                if owners.len() == 1 && *owners[0] == d.id.to_ascii_lowercase() {
-                    return Ok(());
-                }
-                Err(format!("计划版本 {} 与别的配方文件重复（复制过的配方文件？），没有加载：删掉复制件或在配方页新建", d.plan_version))
-            };
             for p in paths {
                 let name = p
                     .file_name()
@@ -1263,7 +1231,6 @@ impl RecipeStore {
                     if !d.id.eq_ignore_ascii_case(&stem) {
                         return Err(format!("文件名与配方编号 {} 不一致，没有加载", d.id));
                     }
-                    plan_owned(&d)?;
                     match list.iter().find(|(o, _): &&(RecipeDoc, Arc<Recipe>)| {
                         o.id.eq_ignore_ascii_case(&d.id) || o.product_code == d.product_code
                     }) {
@@ -1306,16 +1273,6 @@ impl RecipeStore {
                         }
                     }
                 }
-            }
-        }
-        // 手工放进来的配方可能带着比记录还大的计划版本：记录跟上，以后发的号不和它撞
-        let max_plan = list.iter().map(|(d, _)| d.plan_version).max().unwrap_or(0);
-        if self
-            .issued_plan_version()
-            .is_ok_and(|issued| issued < max_plan)
-        {
-            if let Err(error) = crate::fsio::write_atomic(&self.plan_file, &max_plan.to_string()) {
-                errors.push(format!("计划版本记录未能更新：{error}"));
             }
         }
         *inner = list;
@@ -1395,14 +1352,6 @@ impl RecipeStore {
                         self.retire_version(id, version)?;
                     }
                 }
-                if let Some(plan) = value
-                    .get("planVersion")
-                    .and_then(|v| v.as_u64())
-                    .and_then(|v| u32::try_from(v).ok())
-                {
-                    let plan = plan.max(self.issued_plan_version()?);
-                    crate::fsio::write_atomic(&self.plan_file, &plan.to_string())?;
-                }
             }
             std::fs::remove_file(&path).map_err(|e| format!("删除不可用配方失败：{e}"))?;
         }
@@ -1481,7 +1430,6 @@ impl RecipeStore {
         } else {
             1
         });
-        doc.plan_version = self.plan_version_in(&inner, &doc, &replacing)?;
         if !replacing.eq_ignore_ascii_case(&doc.id) {
             if let Some(version) = old {
                 self.retire_version(&replacing, version)?;
@@ -1519,11 +1467,7 @@ impl RecipeStore {
         })
     }
 
-    pub fn save_published(
-        &self,
-        mut doc: RecipeDoc,
-        expected_base: Option<&str>,
-    ) -> Result<Arc<Recipe>, String> {
+    pub fn save_published(&self, mut doc: RecipeDoc) -> Result<Arc<Recipe>, String> {
         doc.name = doc.name.trim().to_string();
         let built = doc.build()?;
         let mut inner = self.inner.write().unwrap();
@@ -1536,9 +1480,6 @@ impl RecipeStore {
             }
             return Err("同一发布修订的实际配方不同，不能覆盖".into());
         }
-        if current.map(|(_, recipe)| recipe.revision_id.as_str()) != expected_base {
-            return Err("待发布版本与当前生产配方冲突".into());
-        }
         if doc.stage == RecipeStage::Collect
             && current.is_some_and(|(previous, _)| previous.stage.is_formal())
         {
@@ -1548,20 +1489,6 @@ impl RecipeStore {
             self.expected_version(&doc, current.map(|(previous, _)| previous.version))?;
         if doc.version != expected_version {
             return Err("发布版本必须是明确分配的下一版本".into());
-        }
-        let kept = current
-            .is_some_and(|(previous, _)| previous.plan_version != 0 && previous.same_plan(&doc));
-        let plan_ok = if kept {
-            current.is_some_and(|(previous, _)| previous.plan_version == doc.plan_version)
-        } else {
-            doc.plan_version != 0
-                && doc.plan_version <= self.issued_plan_version()?
-                && !inner
-                    .iter()
-                    .any(|(previous, _)| previous.plan_version == doc.plan_version)
-        };
-        if !plan_ok {
-            return Err("发布的拍照计划版本必须由配方库分配：计划没变沿用原号，变了用新号".into());
         }
         if inner.iter().any(|(previous, _)| {
             previous.id != doc.id
@@ -1614,54 +1541,61 @@ mod tests {
         doc.id = "EXPLICIT-PUBLISHED".into();
         doc.product_code = 60000;
         doc.version = 7;
-        assert!(store
-            .save_published(doc.clone(), None)
-            .unwrap_err()
-            .contains("计划版本"));
-        doc.plan_version = store.plan_version_for(&doc).unwrap();
-        let first = store.save_published(doc.clone(), None).unwrap();
+        let first = store.save_published(doc.clone()).unwrap();
         assert_eq!(first.revision_id, "EXPLICIT-PUBLISHED-v7");
-        assert_eq!(store.save_published(doc.clone(), None).unwrap().version, 7);
+        assert_eq!(store.save_published(doc.clone()).unwrap().version, 7);
         let mut different = doc.clone();
         different.inspect[0].segments[0].corridor[0][0] -= 1.0;
-        assert!(store.save_published(different, None).is_err());
-        doc.version = 8;
-        let second = store
-            .save_published(doc.clone(), Some(&first.revision_id))
-            .unwrap();
-        assert_eq!(second.revision_id, "EXPLICIT-PUBLISHED-v8");
+        assert!(store.save_published(different).is_err());
         doc.version = 9;
-        assert!(store
-            .save_published(doc.clone(), Some(&first.revision_id))
-            .is_err());
-        assert_eq!(store.get(&doc.id).unwrap().version, 8);
+        assert!(store.save_published(doc.clone()).is_err());
+        doc.version = 8;
+        let second = store.save_published(doc.clone()).unwrap();
+        assert_eq!(second.revision_id, "EXPLICIT-PUBLISHED-v8");
         assert_eq!(store.save(doc, None).unwrap().version, 9);
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// 候选建好后历史记录抬高了版本下限（启动时按历史件版本补下限）：发布按 `release_version` 重新分配就能生效，
-    /// 沿用候选里过时的版本号生效时被拒（现场报“发布版本必须是明确分配的下一版本”）。
+    /// 防的回归：现场已有的配方文件与修订来源都带已停用的键（`planVersion`、每段与默认参数的 `tolerance`、`boundaryRefine`、
+    /// 配方级 `expert`、相机级 `calib` / `detect` / `expert`），读入时不能报错，也不能因与来源记录不一致而被当成手改文件升版本。
     #[test]
-    fn release_version_follows_history_floor_raised_after_the_candidate_was_created() {
+    fn recipe_and_revision_source_with_retired_keys_load_at_their_revision() {
         let dir = std::env::temp_dir().join(format!(
-            "gluesight-release-floor-{}-{}",
+            "gluesight-legacy-plan-version-{}-{}",
             std::process::id(),
             ly_plc::now_ms()
         ));
-        let mut doc = samples_burst();
-        doc.version = 1;
-        let floors = BTreeMap::from([(doc.id.clone(), 3)]);
-        let store = RecipeStore::open_with_floors(
-            dir.join("recipes"),
-            dir.join("state").join("plan-version"),
-            &floors,
-        )
-        .unwrap();
-        doc.plan_version = store.plan_version_for(&doc).unwrap();
-        assert!(store.save_published(doc.clone(), None).is_err());
-        doc.version = store.release_version(&doc).unwrap();
-        assert_eq!(doc.version, 4);
-        assert_eq!(store.save_published(doc, None).unwrap().version, 4);
+        let recipes = dir.join("recipes");
+        std::fs::create_dir_all(&recipes).unwrap();
+        let doc = samples_burst();
+        let mut legacy = serde_json::to_value(&doc).unwrap();
+        legacy["planVersion"] = 14.into();
+        legacy["boundaryRefine"] = true.into();
+        legacy["segmentDefaults"]["straight"]["tolerance"] = 2.into();
+        legacy["segmentDefaults"]["corner"]["tolerance"] = 2.into();
+        for segment in legacy["segments"].as_array_mut().unwrap() {
+            segment["tolerance"] = 1.into();
+        }
+        legacy["expert"] = serde_json::json!({ "presentRatio": 0.4 });
+        for (k, inspect) in legacy["inspect"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            inspect["calib"] = format!("cam{}-v1", k + 1).into();
+            inspect["detect"] = serde_json::json!({ "searchMm": 6.0, "polarity": "dark", "widthRange": [1.0, 5.0] });
+            inspect["expert"] = serde_json::json!({ "trackSharpMin": 0.6 });
+        }
+        std::fs::write(recipes.join(format!("{}.json", doc.id)), legacy.to_string()).unwrap();
+        let sources = serde_json::json!({ doc.id.to_ascii_lowercase(): legacy });
+        std::fs::write(recipes.join(".revision-sources"), sources.to_string()).unwrap();
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        assert!(store.errors().is_empty(), "{:?}", store.errors());
+        assert_eq!(
+            store.get(&doc.id).unwrap().revision_id,
+            format!("{}-v1", doc.id)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1674,19 +1608,18 @@ mod tests {
             ly_plc::now_ms()
         ));
         let store = RecipeStore::open(dir.clone()).unwrap();
-        let publish = |stage: RecipeStage, base: Option<&str>| {
+        let publish = |stage: RecipeStage| {
             let mut doc = samples_burst();
             doc.stage = stage;
             doc.version = store.next_version(&doc.id).unwrap();
-            doc.plan_version = store.plan_version_for(&doc).unwrap();
-            store.save_published(doc, base)
+            store.save_published(doc)
         };
-        let collect = publish(RecipeStage::Collect, None).unwrap();
+        let collect = publish(RecipeStage::Collect).unwrap();
         assert!(collect.is_collect());
-        let formal = publish(RecipeStage::Formal, Some(&collect.revision_id)).unwrap();
+        let formal = publish(RecipeStage::Formal).unwrap();
         assert!(!formal.is_collect());
         assert_eq!(
-            publish(RecipeStage::Collect, Some(&formal.revision_id)).unwrap_err(),
+            publish(RecipeStage::Collect).unwrap_err(),
             COLLECT_AFTER_FORMAL
         );
         assert!(!store.get(&formal.id).unwrap().is_collect());

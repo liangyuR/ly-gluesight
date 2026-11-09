@@ -14,6 +14,8 @@ fn burst_doc() -> RecipeDoc {
             segment: 1,
             corridor: vec![[40.0, 80.0], [200.0, 80.0]],
             sector_deg: None,
+            color_model: None,
+            measure: None,
         }];
         inspect.mm_per_px = Some(0.25);
     }
@@ -84,6 +86,334 @@ fn measure(
 ) -> Result<FrameMeasurement, String> {
     let image = FrameImage::new(size[0], size[1], vec![0; (size[0] * size[1]) as usize]);
     measure_frame_with(c, &image, 7, |_, _| Ok(output))
+}
+
+#[test]
+fn frame_whose_color_mode_differs_from_the_taught_frame_fails_before_measuring() {
+    // 防的回归：相机图像模式改了（灰度示教、彩色生产或反过来），lyFlow 照样能把 RGB 转灰度量，结果却与示教口径不可比，
+    // 却不报错地给出判定
+    let doc = burst_doc();
+    let recipe = doc.build().unwrap();
+    let gray_taught = CorridorSet::build(&recipe, &[FRAME; 3])
+        .unwrap()
+        .with_channels(&[1, 1, 1]);
+    let FrameGraph::Corridor(c) = gray_taught.get(0, 1).unwrap() else {
+        panic!("应是示教走廊")
+    };
+    let n = (FRAME[0] * FRAME[1]) as usize;
+    let color = FrameImage::rgb(FRAME[0], FRAME[1], vec![0; n * 3]);
+    let ran = std::cell::Cell::new(false);
+    let result = measure_frame_with(c, &color, 7, |_, _| {
+        ran.set(true);
+        Ok(corridor_output(&beads(&[], &[])))
+    });
+    assert!(result.is_err() && !ran.get(), "彩色帧量了灰度示教的走廊");
+    let gray = FrameImage::new(FRAME[0], FRAME[1], vec![0; n]);
+    assert!(measure_frame_with(c, &gray, 7, |_, _| Ok(corridor_output(&beads(&[], &[])))).is_ok());
+}
+
+/// 胶色卡尺一站的内容：胶（法向 −6..10 px）、被高光盖住、或什么都没有。
+#[derive(Clone, Copy)]
+enum ColorStation {
+    Bead,
+    Highlight,
+    Bare,
+}
+
+/// 41 站、站距 4 px 的胶色卡尺输出（合并前后同一份）。
+fn color_output(at: impl Fn(usize) -> ColorStation) -> RunResult {
+    let bead = json!({"lo": -6.0, "hi": 10.0, "width": 16.0, "mid": 2.0, "peak": 0.95, "parts": 1, "loComplete": true,
+        "hiComplete": true, "loCause": "edge", "hiCause": "edge", "meanScore": 0.9, "unknownWidth": 0.0,
+        "edgeLo": null, "edgeHi": null, "depth": null, "sharpness": null, "level": 1.0});
+    let stations: Vec<Value> = (0..41)
+        .map(|i| {
+            let (runs, unknown, info) = match at(i) {
+                ColorStation::Bead => (json!([bead]), json!([]), 1.0),
+                ColorStation::Highlight => (json!([]), json!([{"lo": -9.0, "hi": 13.0, "cause": "highlight"}]), 0.3),
+                ColorStation::Bare => (json!([]), json!([]), 1.0),
+            };
+            json!({"s": i as f64 * 4.0, "center": [40.0 + 4.0 * i as f64, 80.0], "normal": [0.0, 1.0],
+                "validFraction": 1.0, "infoFraction": info, "unknownSpans": unknown, "runs": runs})
+        })
+        .collect();
+    let runs = json!({"count": 41, "stationStep": 4.0, "searchHalf": 32.0, "split": "half_max", "source": "color", "stations": stations});
+    RunResult {
+        summary: json!({"status": "ok"}),
+        outputs: json!({"runs": record(runs.clone()), "split": record(runs)}),
+    }
+}
+
+/// burst_doc 第 1 段 cam1 取了色之后的示教走廊。
+fn color_corridor() -> CorridorGraph {
+    let mut doc = burst_doc();
+    doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+    let recipe = doc.build().unwrap();
+    let set = CorridorSet::build(&recipe, &[FRAME; 3]).unwrap();
+    let Some(FrameGraph::Corridor(c)) = set.get(0, 1) else {
+        panic!("应是示教走廊")
+    };
+    c.clone()
+}
+
+#[test]
+fn segment_with_color_model_measures_score_runs_with_color_graph_and_rejects_gray_frames() {
+    // 防的回归：取了色的段仍按灰度响应图量（粉胶在铸件和铝面上明暗相反，灰度测不全）；胶色卡尺的段
+    // （没有陡度，对比度按得分、局部亮度恒为 1）被灰度门限判成无胶；或灰度帧被当成胶色量
+    let mut doc = burst_doc();
+    doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+    let recipe = doc.build().unwrap();
+    let set = CorridorSet::build(&recipe, &[FRAME; 3]).unwrap();
+    let (FrameGraph::Corridor(c), FrameGraph::Corridor(gray_graph)) =
+        (set.get(0, 1).unwrap(), set.get(1, 1).unwrap())
+    else {
+        panic!("应是示教走廊")
+    };
+    assert_eq!(
+        (c.template.id, gray_graph.template.id),
+        ("corridor_color", "corridor")
+    );
+    assert_eq!(c.params["colorModel"], json!(r#"{"version":1}"#));
+    let output = || color_output(|_| ColorStation::Bead);
+    let n = (FRAME[0] * FRAME[1]) as usize;
+    let color = FrameImage::rgb(FRAME[0], FRAME[1], vec![0; n * 3]);
+    let m = measure_frame_with(c, &color, 7, |run, _| {
+        assert_eq!(run.template.id, "corridor_color");
+        Ok(output())
+    })
+    .unwrap()
+    .metrics;
+    assert_eq!(
+        (m.present_ratio, m.gap_max_mm),
+        (1.0, 0.0),
+        "胶色卡尺每站都有胶"
+    );
+    assert!((m.width_mean.unwrap() - 4.0).abs() < 1e-6);
+    let gray = FrameImage::new(FRAME[0], FRAME[1], vec![0; n]);
+    assert!(measure_frame_with(c, &gray, 7, |_, _| Ok(output())).is_err());
+}
+
+#[test]
+fn color_corridor_station_under_highlight_is_unknown_but_a_bare_hole_stays_a_gap() {
+    // 防的回归：示教走廊段里被高光盖住的站当成缺胶，连成断口误报断胶、拉低有胶比例；
+    // 或反过来把没有高光的真断口也当无信息放过
+    let c = color_corridor();
+    let n = (FRAME[0] * FRAME[1]) as usize;
+    let color = FrameImage::rgb(FRAME[0], FRAME[1], vec![0; n * 3]);
+    let at = |i| match i {
+        10..=14 => ColorStation::Highlight,
+        30..=32 => ColorStation::Bare,
+        _ => ColorStation::Bead,
+    };
+    let m = measure_frame_with(&c, &color, 7, |_, _| Ok(color_output(at)))
+        .unwrap()
+        .metrics;
+    assert!(
+        (m.gap_max_mm - 3.0 * m.spacing_mm).abs() < 1e-9,
+        "断口应只有真空的 3 站：{}",
+        m.gap_max_mm
+    );
+    assert!(
+        (m.present_ratio - 33.0 / 36.0).abs() < 1e-9,
+        "有胶比例的分母应去掉 5 个高光站：{}",
+        m.present_ratio
+    );
+}
+
+#[test]
+fn wide_color_beads_keep_exact_widths_while_clipping_and_occlusion_do_not_erase_real_gaps() {
+    let c = color_corridor();
+    let image = FrameImage::rgb(
+        FRAME[0],
+        FRAME[1],
+        vec![0; (FRAME[0] * FRAME[1] * 3) as usize],
+    );
+    let mut output = color_output(|i| match i {
+        33 => ColorStation::Highlight,
+        34..=39 => ColorStation::Bare,
+        _ => ColorStation::Bead,
+    });
+    let stations = output.outputs["runs"]["value"]["data"]["stations"]
+        .as_array_mut()
+        .unwrap();
+    for station in &mut stations[..30] {
+        let r = &mut station["runs"][0];
+        r["lo"] = json!(-18.0);
+        r["hi"] = json!(22.0);
+        r["width"] = json!(40.0);
+    }
+    let clipped = &mut stations[32]["runs"][0];
+    clipped["hi"] = json!(32.0);
+    clipped["width"] = json!(38.0);
+    clipped["mid"] = json!(13.0);
+    clipped["hiComplete"] = json!(false);
+    clipped["hiCause"] = json!("caliper");
+    let m = measure_frame_with(&c, &image, 7, |_, _| Ok(output)).unwrap();
+    assert_eq!(
+        (m.metrics.width_max, m.metrics.width_min),
+        (Some(10.0), Some(4.0))
+    );
+    assert_eq!(
+        (
+            m.metrics.widths[30],
+            m.metrics.widths[32],
+            m.metrics.gap_max_mm
+        ),
+        (Some(4.0), None, 6.0)
+    );
+    let evidence = m.metrics.measurement_evidence.unwrap();
+    assert_eq!(
+        (
+            evidence.exact_stations,
+            evidence.clipped_stations,
+            evidence.unknown_stations,
+            evidence.absent_stations
+        ),
+        (33, 1, 1, 6)
+    );
+    assert_eq!(evidence.stations[32].width_lower_bound_mm, Some(9.5));
+    assert_eq!(evidence.stations[32].lo_edge, Some([168.0, 74.0]));
+    assert!(evidence.stations[32].hi_edge.is_none() && m.edges[32].is_none());
+}
+
+#[test]
+fn similarly_near_parallel_color_beads_are_unknown_instead_of_arbitrarily_chosen() {
+    let image = FrameImage::rgb(
+        FRAME[0],
+        FRAME[1],
+        vec![0; (FRAME[0] * FRAME[1] * 3) as usize],
+    );
+    for heading in [false, true] {
+        let mut raw = lateral(&vec![Some((0.0, 16.0)); if heading { 11 } else { 41 }]);
+        for station in raw["stations"].as_array_mut().unwrap() {
+            station["runs"] = json!([dark_run(-9.0, 16.0), dark_run(9.0, 16.0)]);
+        }
+        let measurement = if heading {
+            let mut doc = burst_doc();
+            doc.segments[0].heading = heading_1_11();
+            doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+            let recipe = doc.build().unwrap();
+            let graph = plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap();
+            measure_heading_with(&graph, &image, 7, |run, frame| {
+                let mut result = fake_heading_run(8)(run, frame)?;
+                result.outputs["runs0"] = record(raw);
+                Ok(result)
+            })
+        } else {
+            measure_frame_with(&color_corridor(), &image, 7, |_, _| {
+                Ok(RunResult {
+                    summary: json!({"status": "ok"}),
+                    outputs: json!({"runs": record(raw.clone()), "split": record(raw)}),
+                })
+            })
+        }
+        .unwrap();
+        let metrics = measurement.metrics;
+        let evidence = metrics.measurement_evidence.unwrap();
+        assert!(!evidence.stations.is_empty());
+        assert!(evidence
+            .stations
+            .iter()
+            .all(|station| station.state == StationEvidenceState::Unknown));
+        assert!(metrics.widths.iter().all(Option::is_none));
+        assert_eq!((metrics.width_max, metrics.gap_max_mm), (None, 0.0));
+    }
+}
+
+#[test]
+fn color_corridor_exit_marks_only_proven_end_stations_unknown_and_preserves_width_and_gaps() {
+    let c = color_corridor();
+    let image = FrameImage::rgb(
+        FRAME[0],
+        FRAME[1],
+        vec![0; (FRAME[0] * FRAME[1] * 3) as usize],
+    );
+    let mut checks = burst_doc().segments[0].checks.clone();
+    checks.width.enabled = true;
+    checks.width.nominal_mm = 4.0;
+    checks.width.tol_upper = 1.0;
+    checks.width.tol_lower = 1.0;
+    checks.width.max_excursion_mm = 0.0;
+    checks.width.wide_warn_only = false;
+    checks.gap.enabled = true;
+    checks.gap.max_gap_mm = 6.0;
+    checks.gap.min_present = 0.0;
+    checks.overflow.enabled = false;
+    for (absent, exits, clipped, expected_gap, expected_unknown) in [
+        (vec![30..=40], vec![(29, 18.0)], false, 0.0, 11),
+        (vec![30..=40], vec![], false, 11.0, 0),
+        (vec![10..=16, 30..=40], vec![(29, 18.0)], false, 7.0, 11),
+        (vec![30..=40], vec![(29, 18.0)], true, 11.0, 0),
+    ] {
+        let mut values = beads(&absent, &exits);
+        values[20] = Some((2.0, 40.0));
+        let mut output = corridor_output(&values);
+        if clipped {
+            let r = &mut output.outputs["runs"]["value"]["data"]["stations"][29]["runs"][0];
+            r["hi"] = json!(32.0);
+            r["width"] = json!(22.0);
+            r["mid"] = json!(21.0);
+            r["hiComplete"] = json!(false);
+            r["hiCause"] = json!("caliper");
+        }
+        let m = measure_frame_with(&c, &image, 7, |_, _| Ok(output))
+            .unwrap()
+            .metrics;
+        assert_eq!(
+            (m.state, m.width_max, m.gap_max_mm),
+            (FrameState::Measured, Some(10.0), expected_gap)
+        );
+        let evidence = m.measurement_evidence.as_ref().unwrap();
+        assert_eq!(evidence.unknown_stations, expected_unknown);
+        assert!(evidence
+            .stations
+            .iter()
+            .filter(|s| s.state == StationEvidenceState::Unknown)
+            .all(|s| s.reason.as_deref() == Some("out_of_corridor")));
+        assert_eq!(
+            crate::burst_judge::frame_verdict(&m, &checks),
+            if expected_gap > 6.0 {
+                crate::judge::Verdict::NgGap
+            } else {
+                crate::judge::Verdict::NgWidth
+            }
+        );
+    }
+}
+
+#[test]
+fn part_edge_distance_and_overlay_follow_the_majority_side_from_bead_center() {
+    // 防的回归：胶边距线画到另一侧、或终点不在测得的胶边距上（叠图与 edgeMm 对不上，现场按图调极性、对比度会被误导）
+    let mut doc = burst_doc();
+    doc.segments[0].offset_ref = Some(crate::plan::OffsetRef {
+        measure: OffsetMeasure::ToEdge,
+        camera: "cam1".into(),
+        x_ref: None,
+        spread: None,
+        edge: Some(crate::plan::EdgeParams {
+            polarity: EdgePolarity::BrightToDark,
+            search_mm: 8.0,
+            contrast_min: 40.0,
+            nominal_mm: None,
+        }),
+    });
+    let c = corridor_of(doc, 0);
+    // 胶两边 (−6, 10)、胶中心 +2：右侧 t = 24 与左侧 t = 20 离胶中心都是 22 px（5.5 mm）
+    for (right, left, end_y) in [(Some(24.0), None, 104.0), (None, Some(20.0), 60.0)] {
+        let side = |t: Option<f64>| json!({"length": 100, "edges": t.map(|t| vec![json!({"t": t})]).unwrap_or_default()});
+        let mut output = corridor_output(&beads(&[], &[]));
+        output.outputs["edges"] = record(json!({"start": 0.0, "searchLength": 100.0,
+            "stations": (0..41).map(|i| {
+                let (r, l) = if i == 40 { (left, right) } else { (right, left) };
+                json!({"right": side(r), "left": side(l)})
+            }).collect::<Vec<_>>()}));
+        let m = measure(&c, FRAME, output).unwrap();
+        assert!((m.metrics.edge_mm.unwrap() - 5.5).abs() < 1e-6);
+        assert_eq!(m.part_edges.len(), 40);
+        for (i, line) in m.part_edges.iter().enumerate() {
+            let x = 40.0 + 4.0 * i as f32;
+            assert_eq!(*line, [[x, 82.0], [x, end_y]], "第 {} 站", i + 1);
+        }
+    }
 }
 
 #[test]
@@ -205,24 +535,18 @@ fn bead_leaving_through_a_corridor_end_is_out_of_corridor_but_breaks_and_centred
 }
 
 #[test]
-fn camera_override_of_a_judge_threshold_reaches_station_presence() {
-    // 防的回归（LF-5）：x.gluesight.judge 里的判定门限按相机覆盖后没进到判定（专家参数卡改了不生效）。
-    // 胶宽 20 px，第 20 站只有 9 px：有胶宽度比默认 0.5（10 px）判无胶，本相机改成 0.4（8 px）判有胶
-    let narrow: Vec<_> = (0..41)
-        .map(|i| Some((2.0, if i == 20 { 9.0 } else { 20.0 })))
+fn segment_width_range_override_reaches_measurement() {
+    // 防的回归：段上覆盖的胶宽范围没进测量（仍按配方默认），段视图改了检测参数不生效。
+    // 第 20 站胶宽 28 px（7 mm）：配方默认 2–6 mm 不当作胶；第 1 段覆盖为 2–8 mm 后当作胶
+    let wide: Vec<_> = (0..41)
+        .map(|i| Some((2.0, if i == 20 { 28.0 } else { 16.0 })))
         .collect();
     let mut doc = burst_doc();
-    let default = measure(
-        &corridor_of(doc.clone(), 0),
-        FRAME,
-        corridor_output(&narrow),
-    )
-    .unwrap()
-    .metrics;
-    doc.inspect[0].expert = [("presentRatio".to_string(), json!(0.4))]
-        .into_iter()
-        .collect();
-    let tuned = measure(&corridor_of(doc, 0), FRAME, corridor_output(&narrow))
+    let default = measure(&corridor_of(doc.clone(), 0), FRAME, corridor_output(&wide))
+        .unwrap()
+        .metrics;
+    doc.segments[0].width_range = Some([2.0, 8.0]);
+    let tuned = measure(&corridor_of(doc, 0), FRAME, corridor_output(&wide))
         .unwrap()
         .metrics;
     assert_eq!(
@@ -231,16 +555,21 @@ fn camera_override_of_a_judge_threshold_reaches_station_presence() {
     );
 }
 
-/// 第 1 段开逐帧定向：检测窗口距出胶点 1–11 mm（4–44 px），出胶点由走廊起点推出。
-fn heading_graph() -> HeadingGraph {
-    let mut doc = burst_doc();
-    doc.segments[0].heading = Some(Default::default());
-    for inspect in &mut doc.inspect {
-        inspect.window = Some(HeadingWindow {
+/// 逐帧定向开启，本段测量区间距出胶点 1–11 mm。
+fn heading_1_11() -> Option<crate::plan::HeadingSettings> {
+    Some(crate::plan::HeadingSettings {
+        tolerance_deg: 5.0,
+        window: Some(HeadingWindow {
             start_mm: 1.0,
             length_mm: 10.0,
-        });
-    }
+        }),
+    })
+}
+
+/// 第 1 段开逐帧定向：测量区间距出胶点 1–11 mm（4–44 px），出胶点由走廊起点推出。
+fn heading_graph() -> HeadingGraph {
+    let mut doc = burst_doc();
+    doc.segments[0].heading = heading_1_11();
     let recipe = doc.build().unwrap();
     plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap()
 }
@@ -253,21 +582,19 @@ fn sector_turned_on_one_segment_leaves_other_segments_of_the_camera_automatic() 
     doc.segments = (1..=2)
         .map(|index| crate::plan::PathSegment {
             index,
-            heading: Some(Default::default()),
+            heading: heading_1_11(),
             ..first.clone()
         })
         .collect();
     for inspect in &mut doc.inspect {
-        inspect.window = Some(HeadingWindow {
-            start_mm: 1.0,
-            length_mm: 10.0,
-        });
         let corridor = inspect.segments[0].clone();
         inspect.segments = vec![
             corridor.clone(),
             crate::recipe::SegmentCorridor {
                 segment: 2,
                 sector_deg: Some(90.0),
+                color_model: None,
+                measure: None,
                 ..corridor
             },
         ];
@@ -283,6 +610,56 @@ fn sector_turned_on_one_segment_leaves_other_segments_of_the_camera_automatic() 
         (sector(1), sector(2)),
         (json!([-90.0, 90.0]), json!([0.0, 180.0]))
     );
+}
+
+#[test]
+fn segment_window_is_measured_and_old_segments_without_one_keep_the_camera_window() {
+    // 防的回归（D-SB-47）：测量区间改按段设置后，段上设的区间没进测量图（仍按相机级测）；
+    // 或旧配方的段（定向只有 toleranceDeg）丢了相机级区间，建不出测量图或换了测量范围
+    let mut doc = burst_doc();
+    let first = doc.segments[0].clone();
+    let old_heading = serde_json::from_value(json!({ "toleranceDeg": 5.0 })).unwrap();
+    doc.segments = vec![
+        crate::plan::PathSegment {
+            index: 1,
+            heading: heading_1_11(),
+            ..first.clone()
+        },
+        crate::plan::PathSegment {
+            index: 2,
+            heading: Some(old_heading),
+            ..first
+        },
+    ];
+    for inspect in &mut doc.inspect {
+        inspect.window = Some(HeadingWindow {
+            start_mm: 2.0,
+            length_mm: 20.0,
+        });
+        let corridor = inspect.segments[0].clone();
+        inspect.segments = vec![
+            corridor.clone(),
+            crate::recipe::SegmentCorridor {
+                segment: 2,
+                ..corridor
+            },
+        ];
+    }
+    let recipe = doc.build().unwrap();
+    let scale = recipe.inspect[0].mm_per_px.unwrap();
+    for (segment, [start, end]) in [(1, [1.0, 11.0]), (2, [2.0, 22.0])] {
+        let graph = plan_heading(&recipe.inspect[0], segment, &recipe, FRAME).unwrap();
+        let zone: Vec<f64> = graph.params["zone"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap() * scale)
+            .collect();
+        assert!(
+            (zone[0] - start).abs() < 1e-6 && (zone[1] - end).abs() < 1e-6,
+            "第 {segment} 段：{zone:?}"
+        );
+    }
 }
 
 /// 假的定向图运行：只有第 0 个峰，粗找到 `found` 个胶点（10 步），卡尺量到 16 px 宽的胶。
@@ -326,7 +703,7 @@ fn fake_heading_run(
 }
 
 #[test]
-fn heading_without_bead_found_marks_whole_window_absent_with_reason() {
+fn heading_result_uses_fitted_direction_when_found_and_marks_window_absent_otherwise() {
     // 防的回归（D-SB-47）：选中的方向没找到胶条时仍按它的卡尺量出“有胶”（阴影、纹理被当成胶），或不标、不记原因
     let g = heading_graph();
     let image = FrameImage::new(FRAME[0], FRAME[1], vec![0; (FRAME[0] * FRAME[1]) as usize]);
@@ -335,8 +712,18 @@ fn heading_without_bead_found_marks_whole_window_absent_with_reason() {
             .unwrap()
             .metrics;
         assert_eq!(
-            (m.heading_fallback, m.width_mean, m.present_ratio),
-            (missed, width_mm, present),
+            (
+                m.heading_fallback,
+                m.width_mean,
+                m.present_ratio,
+                m.heading_deg
+            ),
+            (
+                missed,
+                width_mm,
+                present,
+                Some(if missed { -80.0 } else { -90.0 })
+            ),
             "找到 {found} 个胶点"
         );
         assert_eq!(
@@ -348,12 +735,90 @@ fn heading_without_bead_found_marks_whole_window_absent_with_reason() {
 }
 
 #[test]
-fn heading_reads_the_fitted_path_not_the_start_direction() {
-    // 防的回归（D-SB-47）：方向记成候选的起跑方向，同一条胶因起跑方向不同读数跳动，分段边界细化被带偏
-    let g = heading_graph();
-    let image = FrameImage::new(FRAME[0], FRAME[1], vec![0; (FRAME[0] * FRAME[1]) as usize]);
-    let m = measure_heading_with(&g, &image, 7, fake_heading_run(8))
+fn color_heading_preserves_wide_beads_and_distinguishes_untrusted_paths_from_background() {
+    let mut doc = burst_doc();
+    doc.segments[0].heading = heading_1_11();
+    doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+    let recipe = doc.build().unwrap();
+    let g = plan_heading(&recipe.inspect[0], 1, &recipe, FRAME).unwrap();
+    let image = FrameImage::rgb(
+        FRAME[0],
+        FRAME[1],
+        vec![0; (FRAME[0] * FRAME[1] * 3) as usize],
+    );
+    for (found, unknown, state) in [
+        (8, 0, StationEvidenceState::Exact),
+        (0, 5, StationEvidenceState::Unknown),
+        (0, 0, StationEvidenceState::Absent),
+    ] {
+        let m = measure_heading_with(&g, &image, 7, |run, frame| {
+            assert_eq!(run.params["widthPolicy"], "extent");
+            let mut result = fake_heading_run(found)(run, frame)?;
+            result.outputs["track0"]["value"]["data"]["unknownSteps"] = json!(unknown);
+            result.outputs["runs0"] = record(lateral(&[Some((0.0, 40.0)); 11]));
+            Ok(result)
+        })
         .unwrap()
         .metrics;
-    assert_eq!(m.heading_deg, Some(-90.0));
+        assert!(m
+            .measurement_evidence
+            .as_ref()
+            .unwrap()
+            .stations
+            .iter()
+            .all(|s| s.state == state));
+        assert_eq!(m.width_max, (found > 0).then_some(10.0));
+        assert_eq!(
+            m.gap_max_mm,
+            if state == StationEvidenceState::Absent {
+                11.0
+            } else {
+                0.0
+            }
+        );
+    }
+}
+
+#[test]
+fn build_available_keeps_usable_pairs_while_build_still_rejects_broken_ones() {
+    // 防的回归（D-SB-57）：改段后有段没示教或建不成时，历史复测整件都不能做；发布、预热用的 build 也不能因此放宽
+    let mut doc = burst_doc();
+    doc.inspect[1].segments.clear();
+    let recipe = doc.clone().build().unwrap();
+    let pairs = |u: &[UnavailableCorridor]| {
+        u.iter()
+            .map(|u| (u.camera_idx, u.untaught))
+            .collect::<Vec<_>>()
+    };
+    let (set, unavailable) = CorridorSet::build_available(&recipe, &[FRAME; 3]);
+    assert!(set.get(0, 1).is_some() && set.get(1, 1).is_none() && set.get(2, 1).is_some());
+    assert_eq!(pairs(&unavailable), vec![(1, true)]);
+    assert!(
+        CorridorSet::build(&recipe, &[FRAME; 3]).is_ok(),
+        "没示教的组合照旧跳过"
+    );
+    doc.inspect[2].mm_per_px = None;
+    let recipe = doc.build().unwrap();
+    assert!(
+        CorridorSet::build(&recipe, &[FRAME; 3]).is_err(),
+        "建不成的组合照旧报错"
+    );
+    let (set, unavailable) = CorridorSet::build_available(&recipe, &[FRAME; 3]);
+    assert!(set.get(0, 1).is_some() && set.get(2, 1).is_none());
+    assert_eq!(pairs(&unavailable), vec![(1, true), (2, false)]);
+}
+
+#[test]
+fn chosen_measure_mode_overrides_color_model_presence_and_color_without_model_blocks_release() {
+    // 防的回归：操作员选了按灰度，留下的胶色模型仍让这一段按胶色测；选了按胶色却还没取色时悄悄按灰度测、照样能发布
+    use crate::recipe::MeasureMode;
+    let mut doc = burst_doc();
+    doc.inspect[0].segments[0].color_model = Some(r#"{"version":1}"#.into());
+    doc.inspect[0].segments[0].measure = Some(MeasureMode::Gray);
+    doc.inspect[1].segments[0].measure = Some(MeasureMode::Color);
+    let recipe = doc.build().unwrap();
+    assert_eq!(corridor_of(doc.clone(), 0).template.id, "corridor");
+    assert!(plan_corridor(&recipe.inspect[1], 1, &recipe, FRAME).is_err());
+    let reasons = recipe.ready_burst().unwrap_err();
+    assert_eq!(reasons.iter().filter(|r| r.contains("还没取色")).count(), 1);
 }

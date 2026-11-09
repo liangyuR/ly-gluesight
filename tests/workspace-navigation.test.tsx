@@ -1,14 +1,15 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { createElement } from "react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { SnackbarProvider } from "qing-steel";
 import { WorkspaceProvider } from "../src/features/workspace/context";
-import SegmentsPage from "../src/features/workspace/SegmentsPage";
+import { inRecipe } from "../src/features/workspace/RecipeRoute";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
-import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, siteStatus, snapshot } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, snapshot } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
@@ -33,14 +34,13 @@ beforeEach(() => {
       case "workspace_navigation_image": return [1, 2, 3];
       case "camera_rig_config": case "camera_rig_status": case "cycle_logs": return [];
       case "cycle_snapshot": return snapshot();
-      case "site_status": return siteStatus();
       case "vision_calib_info": return null;
       case "plc_get_status": return { state: "connected" };
       case "workspace_publish_checks": return [{ name: "示教", passed: true, detail: "已完成" }];
       case "history_query": return { items: [], total: 0 };
       case "recipe_capture_get": return captureRoundV2({ recipeId: "A" });
       case "recipe_capture_round_thumbs": {
-        const bytes = new Uint8Array(24); new DataView(bytes.buffer).setUint32(0, 12, true); return Array.from(bytes);
+        const bytes = new Uint8Array(28), header = new DataView(bytes.buffer); header.setUint32(0, 12, true); header.setUint32(12, 1, true); return Array.from(bytes);
       }
       case "workspace_image": case "recipe_capture_frame_image": throw new Error("原图不可用");
       case "workspace_navigation_save": {
@@ -57,37 +57,38 @@ beforeEach(() => {
 
 function show(path: string) {
   render(<MemoryRouter initialEntries={[path]}><SnackbarProvider><WorkspaceProvider><Routes>
-    <Route path="/recipe/segments" element={<SegmentsPage />} />
-    <Route path="/recipe/teach" element={<TeachingPage />} />
-    <Route path="/recipe/validation" element={<ValidationPage />} />
+    <Route path="/recipe/:recipeId/teach" element={createElement(inRecipe(TeachingPage))} />
+    <Route path="/recipe/:recipeId/validation" element={createElement(inRecipe(ValidationPage))} />
   </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>);
   return userEvent.setup();
 }
 
 it("地图跨段点击 → 浏览点击对应的原始帧组，未确认选帧前不写入示教数据", async () => {
-  const user = show("/recipe/teach?camera=CAM-1&segment=1");
+  const user = show("/recipe/A/teach?camera=CAM-1&segment=1");
   const canvas = await screen.findByRole("img", { name: "工件图与有向胶路" });
   await waitFor(() => expect(canvas.querySelector("image")).toHaveAttribute("href", "blob:navigation"));
   vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ width: 400, height: 400, x: 0, y: 0, left: 0, top: 0, right: 400, bottom: 400, toJSON() {} });
   await user.click(within(screen.getByRole("group", { name: "地图段选择" })).getByRole("button", { name: "段 2 · 弯道" }));
   fireEvent.pointerDown(canvas, { clientX: 164, clientY: 200, button: 0 });
-  await waitFor(() => expect(screen.getByRole("button", { name: "帧组 5 · CAM-1" })).toHaveAttribute("aria-pressed", "true"));
-  expect(screen.getByRole("button", { name: /用此帧示教 CAM-1 · 段 2/ })).toBeVisible();
+  await waitFor(() => expect(screen.getByRole("button", { name: "CAM-1 帧组 5" })).toHaveAttribute("aria-pressed", "true"));
+  expect(screen.getByRole("button", { name: "用此帧示教 1-2 CAM-1" })).toBeVisible();
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "workspace_teach_segment_corridor" || command === "workspace_save_doc")).toBe(false);
 });
 
-it("编辑地图后离页 → 草稿保留并阻止发布，回到分段保存后恢复可发布状态", async () => {
-  const user = show("/recipe/segments");
+it("编辑地图后离页 → 草稿保留并阻止发布，回到分段与示教页保存后恢复可发布状态", async () => {
+  const user = show("/recipe/A/teach");
+  await user.click(await screen.findByText("工件导航图"));
   await user.click(await screen.findByRole("button", { name: "编辑地图" }));
   await user.click(screen.getByText("精确调整与更多操作", { exact: true }));
   fireEvent.change(screen.getByLabelText("段 1 后分界（路径 %）"), { target: { value: "45" } });
-  const boundarySummary = await screen.findByRole("status", { name: "分段草稿" });
-  fireEvent.keyDown(screen.getByLabelText("帧组 1 三台相机原图"), { key: "B" });
-  expect(boundarySummary).toHaveTextContent("边界 4 / 8");
-  expect(boundarySummary).not.toHaveTextContent("边界 1 /");
+  // 导航图有未保存的修改时分段不能改：按 B 不插边界
+  fireEvent.keyDown(await screen.findByRole("button", { name: "CAM-1 帧组 2" }), { key: "B" });
+  expect(screen.getByRole("button", { name: /^1-1（.+，帧组 1–4）/ })).toBeVisible();
+  expect(screen.getByRole("button", { name: /^1-2（.+，帧组 5–8）/ })).toBeVisible();
   await user.click(within(screen.getByRole("navigation", { name: "配方配置步骤" })).getByRole("link", { name: /发布/ }));
   expect(await screen.findByRole("button", { name: "发布生产配方" })).toBeDisabled();
-  await user.click(within(screen.getByRole("navigation", { name: "配方配置步骤" })).getByRole("link", { name: /段列表/ }));
+  await user.click(within(screen.getByRole("navigation", { name: "配方配置步骤" })).getByRole("link", { name: /分段与示教/ }));
+  await user.click(await screen.findByText("工件导航图"));
   expect(await screen.findByLabelText("段 1 后分界（路径 %）")).toHaveValue(45);
   await user.click(screen.getByRole("button", { name: "确认空间对应并保存" }));
   await waitFor(() => expect(screen.queryByLabelText("段 1 后分界（路径 %）")).toBeNull());
@@ -97,23 +98,47 @@ it("编辑地图后离页 → 草稿保留并阻止发布，回到分段保存�
   await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
 });
 
-it("示教页修改视图并保存 → 重开恢复朝向和底色，空间确认及胶路保持不变", async () => {
-  const user = show("/recipe/teach?camera=CAM-1&segment=1");
-  await screen.findByRole("img", { name: "工件图与有向胶路" });
-  const before = structuredClone(view.navigation!.map!);
-  await user.click(screen.getByText("视图设置", { exact: true }));
-  await user.click(screen.getByRole("button", { name: "向右旋转90度" }));
-  await user.click(screen.getByRole("button", { name: "水平翻转" }));
-  fireEvent.change(document.querySelector('select[aria-label="透明图片底色"]')!, { target: { value: "light" } });
-  expect(screen.getByRole("button", { name: "保存视图" })).toBeEnabled();
-  await user.click(screen.getByRole("button", { name: "保存视图" }));
-  await waitFor(() => expect(screen.queryByRole("button", { name: "保存视图" })).toBeNull());
-  expect(view.navigation!.map).toEqual({ ...before, view: { rotation: 90, flipX: true, flipY: false, background: "light" } });
-  cleanup();
-  show("/recipe/segments");
-  await user.click(await screen.findByText("视图设置", { exact: true }));
-  expect(screen.getByLabelText("工件视图旋转角度")).toHaveValue(90);
-  expect(screen.getByRole("button", { name: "水平翻转" })).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("combobox", { name: "透明图片底色" })).toHaveTextContent("浅色");
-  expect(screen.queryByRole("button", { name: "保存视图" })).toBeNull();
+it("分段后在防抖前离页 → 草稿跨页保留并阻止发布，返回撤销后恢复发布", async () => {
+  const user = show("/recipe/A/teach?camera=CAM-1&segment=1");
+  const boundary = await screen.findByRole("button", { name: "在帧组 2 之后插入边界" });
+  fireEvent.click(boundary);
+  fireEvent.click(within(screen.getByRole("navigation", { name: "配方配置步骤" })).getByRole("link", { name: /发布/ }));
+  expect(await screen.findByText("分段尚未保存")).toBeVisible();
+  expect(await screen.findByRole("button", { name: "发布生产配方" })).toBeDisabled();
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "workspace_segment_template_save")).toBe(false);
+  await user.click(within(screen.getByRole("navigation", { name: "配方配置步骤" })).getByRole("link", { name: /分段与示教/ }));
+  expect(await screen.findByRole("button", { name: "删除帧组 2 之后的边界" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "撤销改动" }));
+  expect(screen.queryByText("分段尚未保存")).toBeNull();
+  await user.click(within(screen.getByRole("navigation", { name: "配方配置步骤" })).getByRole("link", { name: /发布/ }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
+});
+
+
+it("分段保存响应未返回 → 禁止回退边界和撤销，保存完成后恢复编辑", async () => {
+  const pending = deferred<ReturnType<typeof burstWorkspaceView>>();
+  const originalInvoke = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "workspace_segment_template_preview") return { restructured: true, dropped: [], untaught: [], measurementCleared: false, coverage: null };
+    if (command === "workspace_segment_template_save") {
+      const input = args as { segments: typeof view.plan.segments; cuts: number[] };
+      view.plan.segments = input.segments;
+      view.workspace.doc.segments = input.segments;
+      view.workspace.captureReview!.rounds["round-1"].cuts = input.cuts;
+      view.workspace.revision++;
+      return pending.promise;
+    }
+    return originalInvoke(command, args);
+  });
+  const user = show("/recipe/A/teach?camera=CAM-1&segment=1");
+  await user.click(await screen.findByRole("button", { name: "在帧组 2 之后插入边界" }));
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "workspace_segment_template_save")).toBe(true));
+  const boundary = screen.getByRole("button", { name: "删除帧组 2 之后的边界" });
+  expect(boundary).toBeDisabled();
+  expect(screen.getByRole("button", { name: "撤销改动" })).toBeDisabled();
+  await user.click(boundary);
+  await act(async () => pending.resolve(structuredClone(view)));
+  await waitFor(() => expect(screen.getByRole("status", { name: "分段保存状态" })).toHaveTextContent("分段已保存"));
+  expect(screen.getByRole("button", { name: "删除帧组 2 之后的边界" })).toBeEnabled();
+  expect(view.workspace.captureReview!.rounds["round-1"].cuts).toEqual([2, 4, 8]);
 });

@@ -167,8 +167,8 @@ importers:
   .:
     dependencies:
       '@lyflow/editor':
-        specifier: https://github.com/liangyuR/lyFlow/releases/download/v1.2.0/lyflow-editor-v1.2.0.tgz
-        version: https://github.com/liangyuR/lyFlow/releases/download/v1.2.0/lyflow-editor-v1.2.0.tgz(@tauri-apps/api@2.12.4)(@xyflow/react@12.12.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@11.2.9)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(three@0.169.0)(zustand@5.0.16(@types/react@19.3.0)(immer@11.2.9)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0)))
+        specifier: https://github.com/liangyuR/lyFlow/releases/download/v1.3.2/lyflow-editor-v1.3.2.tgz
+        version: https://github.com/liangyuR/lyFlow/releases/download/v1.3.2/lyflow-editor-v1.3.2.tgz(@tauri-apps/api@2.12.4)(@xyflow/react@12.12.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@11.2.9)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(three@0.169.0)(zustand@5.0.16(@types/react@19.3.0)(immer@11.2.9)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0)))
       '@tauri-apps/api':
         specifier: ^2.12.4
         version: 2.12.4
@@ -372,9 +372,9 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@lyflow/editor@https://github.com/liangyuR/lyFlow/releases/download/v1.2.0/lyflow-editor-v1.2.0.tgz':
-    resolution: {integrity: sha512-DpmLy1uTW8BwSbcM7ZJFCcwr7sdsVxh302tMuQ0kP7Nmo1rvLt7IoJsSBAUkXfGTb3qJbAsVgJDOVLHzrIIC9g==, tarball: https://github.com/liangyuR/lyFlow/releases/download/v1.2.0/lyflow-editor-v1.2.0.tgz}
-    version: 1.2.0
+  '@lyflow/editor@https://github.com/liangyuR/lyFlow/releases/download/v1.3.2/lyflow-editor-v1.3.2.tgz':
+    resolution: {integrity: sha512-QnBG0noW4SXbZ7dFG3Z+70/hfwKc6rHJjIohgzOQNYoeFHGTNtZifBYPwSrca6Q2+tDkiMhpcFYw5d0AOWZP6Q==, tarball: https://github.com/liangyuR/lyFlow/releases/download/v1.3.2/lyflow-editor-v1.3.2.tgz}
+    version: 1.3.2
     peerDependencies:
       '@tauri-apps/api': ^2
       '@xyflow/react': ^12.11.6
@@ -2320,7 +2320,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@lyflow/editor@https://github.com/liangyuR/lyFlow/releases/download/v1.2.0/lyflow-editor-v1.2.0.tgz(@tauri-apps/api@2.12.4)(@xyflow/react@12.12.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@11.2.9)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(three@0.169.0)(zustand@5.0.16(@types/react@19.3.0)(immer@11.2.9)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0)))':
+  '@lyflow/editor@https://github.com/liangyuR/lyFlow/releases/download/v1.3.2/lyflow-editor-v1.3.2.tgz(@tauri-apps/api@2.12.4)(@xyflow/react@12.12.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@11.2.9)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(three@0.169.0)(zustand@5.0.16(@types/react@19.3.0)(immer@11.2.9)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0)))':
     dependencies:
       '@dagrejs/dagre': 3.1.3
       '@xyflow/react': 12.12.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@11.2.9)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)

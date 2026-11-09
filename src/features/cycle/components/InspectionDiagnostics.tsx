@@ -19,8 +19,7 @@ const burstColumns: TableColumn<BurstCell>[] = [
   { key: "counter", header: "设备帧计数", render: cell => cell.frameCounter ?? "—" },
 ];
 
-export default function InspectionDiagnostics({ group, onGroup, onClose, snapshot, readiness, readinessError, layout, part, selectedSeq = null, logs, offlineSample = false }: {
-  offlineSample?: boolean;
+export default function InspectionDiagnostics({ group, onGroup, onClose, snapshot, readiness, readinessError, layout, part, selectedSeq = null, logs }: {
   group: DiagnosticGroup; onGroup: (group: DiagnosticGroup) => void; onClose: () => void;
   snapshot: Snapshot | null; readiness: Readiness | null; readinessError?: string | null;
   layout: Recipe | null; part: PartView | null; logs: LogLine[];
@@ -37,7 +36,6 @@ export default function InspectionDiagnostics({ group, onGroup, onClose, snapsho
     <SegmentedControl size="sm" label="诊断分组" value={group} onValueChange={key => onGroup(key as DiagnosticGroup)} options={groupOptions} />
     <section className="diagnostic-content" aria-label={groups.find(([key]) => key === group)?.[1]}>
       {group === "readiness" && <>
-        {offlineSample && <Alert tone="info">{readiness?.candidateDebug ? `下方检查候选 ${readiness.candidateDebug.recipeId} · 修订 ${readiness.candidateDebug.revision}；通过不代表生产发布。` : "下方为已发布配方的开工报告；候选离线试运行不要求生产发布，启动时另行检查。"}</Alert>}
         {readinessError && <Alert tone="warn">开工条件更新失败，旧报告仅供参考：{readinessError}</Alert>}
         {readiness ? <ReadinessChecklist readiness={readiness} /> : <p className="muted">尚未取得开工报告</p>}
         {snapshot?.fault && <Alert tone="fault">{snapshot.fault}</Alert>}
@@ -49,7 +47,7 @@ export default function InspectionDiagnostics({ group, onGroup, onClose, snapsho
       {group === "capture" && burst && <>
         <h3>帧组 {selectedSeq ?? "—"}</h3>
         <dl className="diagnostic-kv">
-          <dt>帧组 / 预期</dt><dd>{burst.groupCount} / {expectedText(burst.expectedTotal, burst.toleranceTotal)}</dd>
+          <dt>帧组 / 预期</dt><dd>{burst.groupCount} / {expectedText(burst.expectedTotal)}</dd>
           <dt>各相机帧数</dt><dd>{burst.cameras.map((camera, c) => `${camera} ${burst.cameraFrames[c] ?? 0}`).join(" · ")}</dd>
           <dt>触发计数（参考）</dt><dd>{burst.deviceTriggers ?? "—"}</dd>
           <dt>已测 / 待测</dt><dd>{burst.measuredFrames} / {burst.pendingMeasure}</dd>

@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use crate::burst_judge::{BurstJudgement, Flags, FrameMetrics, FrameState};
 use crate::cycle::{FrameStatus, FrameView};
 use crate::judge::{Judgement, PointState, Verdict};
-use crate::offline::sample_set::SampleRef;
 use crate::plan::PathSegment;
 use crate::recipe::Recipe;
 
@@ -37,7 +36,6 @@ pub struct PartRecord<'a> {
     pub delivery: &'a PlcDelivery,
     pub shots: &'a [PartShot],
     pub source: RecordSource,
-    pub sample: Option<&'a SampleRef>,
     /// 段配方的帧与区域记录；没有原配方的记录为 None
     pub burst: Option<&'a BurstRecord>,
 }
@@ -48,7 +46,6 @@ pub struct PartRecord<'a> {
 pub struct BurstRecord {
     /// ΣN_exp；未标定为 None
     pub expected_total: Option<u32>,
-    pub tolerance_total: u32,
     /// PLC partEnd 时的 deviceTriggers，只作参考；没有收到 partEnd 为 None
     pub device_triggers: Option<u32>,
     /// 各相机已接受的帧数，按计划相机顺序
@@ -93,19 +90,19 @@ pub struct PartDetailBurst {
     /// 本件配方快照的计划相机
     pub cameras: Vec<String>,
     pub expected_total: Option<u32>,
-    pub tolerance_total: u32,
     pub device_triggers: Option<u32>,
     pub camera_frames: Vec<u32>,
     pub judgement: BurstJudgement,
     /// 按 (camera, seq) 排序
     pub frames: Vec<FrameRecord>,
+    /// 逐帧结论（帧格颜色）：读取时按配方快照的段、记录的区域与已存指标算出（`burst_judge::frame_verdicts`），不落库
+    pub frame_verdicts: Vec<crate::burst_judge::FrameVerdict>,
 }
 
 /// 历史列表里段配方记录的帧数（只供 CSV 导出，不进 IPC：界面契约只有 `PartSummary.flags`）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BurstSummary {
     pub expected_total: Option<u32>,
-    pub tolerance_total: u32,
     pub device_triggers: Option<u32>,
     pub camera_frames: Vec<u32>,
 }
@@ -120,53 +117,30 @@ pub enum PartMode {
     MaintenanceShadow,
 }
 
-/// 记录来源：按写库时的站点模式与离线来源决定。真机件与离线件分开统计、分开保存原图。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RecordSource {
     #[default]
     Real,
-    OfflineSynthetic,
-    OfflineSample,
-    OfflineCandidate,
 }
-
 impl RecordSource {
-    pub fn offline(self) -> bool {
-        self != Self::Real
-    }
-
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Real => "真机",
-            Self::OfflineSynthetic => "离线·合成图",
-            Self::OfflineSample => "离线·样本集",
-            Self::OfflineCandidate => "候选离线调试",
-        }
+        "生产"
     }
 }
 
-/// 历史查询范围：真机件或离线件，两者不混在一起统计。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HistoryScope {
     #[default]
     Real,
-    Offline,
-    Debug,
 }
-
 impl HistoryScope {
-    pub fn of(source: RecordSource) -> Self {
-        if source == RecordSource::OfflineCandidate { Self::Debug } else if source.offline() { Self::Offline } else { Self::Real }
+    pub fn of(_: RecordSource) -> Self {
+        Self::Real
     }
-
     fn clause(self, prefix: &str) -> String {
-        match self {
-            Self::Real => format!("{prefix}source = 'real'"),
-            Self::Debug => format!("{prefix}source = 'offlineCandidate'"),
-            Self::Offline => format!("{prefix}source IN ('offlineSynthetic','offlineSample')"),
-        }
+        format!("{prefix}source = 'real'")
     }
 }
 
@@ -242,8 +216,11 @@ pub struct PartShot {
 /// 7：帧状态去掉 locateFailed、帧加 referenceFailed、测量点 BLOB 格式 3。
 /// 8：帧的各视图结果加特征定位位姿（viewResults[].pose）。
 /// 9：段配方按每相机每帧落库（表 part_frames；parts 加 expected_total、tolerance_total、device_triggers、camera_frames、flags、burst_judgement）。
-/// 旧库按版本不符备份后重建（D-0）。
-pub const DB_VERSION: i64 = 9;
+/// 10：本机一份记录库，记录带项目（parts.project_id）；配方快照与候选实例按项目区分；各项目的 9 版旧库启动时并入（`merge`）。
+/// 11：10 版原地删除停用离线记录并登记墓碑与原图清理队列，保留生产记录；其他不兼容版本备份后重建。
+pub const DB_VERSION: i64 = 11;
+/// 项目旧记录库的版本：启动时并入本机库。
+pub const PROJECT_DB_VERSION: i64 = 9;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -252,7 +229,10 @@ pub struct HistoryQuery {
     pub to: Option<i64>,
     pub verdicts: Vec<Verdict>,
     pub sn: Option<String>,
+    pub tag: Option<String>,
     pub recipe_id: Option<String>,
+    /// 只看这个项目的记录；为空看本机全部项目
+    pub project: Option<String>,
     pub scope: HistoryScope,
     /// 为空不按模式筛选
     pub modes: Vec<PartMode>,
@@ -264,8 +244,11 @@ pub struct HistoryQuery {
 #[serde(rename_all = "camelCase")]
 pub struct PartSummary {
     pub id: i64,
+    /// 记录所属项目的编号
+    pub project_id: String,
     pub ts: i64,
     pub sn: String,
+    pub tags: Vec<String>,
     pub recipe_id: Option<String>,
     pub recipe_version: Option<u32>,
     pub recipe_revision: Option<String>,
@@ -282,9 +265,7 @@ pub struct PartSummary {
     pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
     pub source: RecordSource,
-    /// 离线样本集运行的样本件引用，用于追溯和读取对应原图。
-    pub sample: Option<SampleRef>,
-    /// 段配方记录的整件标记（疑似提前终止等单独显示）；旧记录为 None
+    /// 段配方记录的整件标记（检测不完整、笔数异常等单独显示）；旧记录为 None
     pub flags: Option<Flags>,
     /// 段配方记录的帧数；旧记录为 None。只供 CSV 导出
     #[serde(skip)]
@@ -374,6 +355,7 @@ pub struct PartDetail {
 /// 重判用：一件工件的判定输入。
 pub struct StoredMeasurement {
     pub id: i64,
+    pub project_id: String,
     pub ts: i64,
     pub sn: String,
     pub recipe_id: Option<String>,
@@ -386,6 +368,8 @@ pub struct StoredMeasurement {
 pub struct Store {
     conn: Mutex<Connection>,
     backup_path: Option<PathBuf>,
+    /// 当前项目：新记录归它，统计与候选实例按它
+    project: String,
 }
 
 fn verdict_str(v: Verdict) -> String {
@@ -399,9 +383,9 @@ fn parse_verdict(s: &str) -> Verdict {
 const SUMMARY_COLS: &str = "id, ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
                             reason, drain_ms, frames_expected, frames_received, retest_of, cycle_id, bundle_id, \
                             delivery_state, delivery_updated_at, delivery_message, sample, source, \
-                            flags, expected_total, tolerance_total, device_triggers, camera_frames, mode";
+                            flags, expected_total, device_triggers, camera_frames, mode, project_id, tags";
 /// SUMMARY_COLS 的列数；detail 在其后追加的列从这里起算。
-const SUMMARY_LEN: usize = 28;
+const SUMMARY_LEN: usize = 29;
 
 fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
     let flags: Option<Flags> = row.get::<_, Option<String>>(22)?.map(|text| serde_json::from_str(&text)
@@ -409,9 +393,8 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
     let burst = match flags {
         Some(_) => Some(BurstSummary {
             expected_total: row.get(23)?,
-            tolerance_total: row.get(24)?,
-            device_triggers: row.get(25)?,
-            camera_frames: json_column(row, 26)?,
+            device_triggers: row.get(24)?,
+            camera_frames: json_column(row, 25)?,
         }),
         None => None,
     };
@@ -434,12 +417,12 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
         cycle_id: row.get(15)?,
         bundle_id: row.get(16)?,
         delivery: delivery_row(row, 17)?,
-        sample: row.get::<_, Option<String>>(20)?.map(|text| serde_json::from_str(&text)
-            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(20, rusqlite::types::Type::Text, Box::new(e)))).transpose()?,
         source: enum_column(row, 21)?,
         flags,
         burst,
-        mode: enum_column(row, 27)?,
+        mode: enum_column(row, 26)?,
+        project_id: row.get(27)?,
+        tags: json_column(row, 28)?,
     })
 }
 
@@ -481,8 +464,9 @@ fn delivery_row(row: &rusqlite::Row, first: usize) -> rusqlite::Result<PlcDelive
     Ok(PlcDelivery { state: enum_column(row, first)?, updated_at: row.get(first + 1)?, message: row.get(first + 2)? })
 }
 
-/// 各相机的走廊、检测窗口、当量、标定、检测参数，以及各段的逐帧定向与找边参数决定每帧指标（计划身份另见 burst_plan_identity）；
-/// 限值、容差、x_ref、图纸胶边距、检测区间不在这里，改了可以直接用已存指标重判。
+/// 各相机的走廊、测量区间、当量，配方检测参数，以及各段的检测参数覆盖、逐帧定向与找边参数决定每帧指标（计划身份另见 burst_plan_identity）；
+/// 快照带已停用的测量覆盖时（`Recipe::retired_overrides`）与没有它们的配方不同，要原图复测。
+/// 限值、x_ref、图纸胶边距、检测区间不在这里，改了可以直接用已存指标重判。
 fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
     let measure: Vec<serde_json::Value> = recipe
         .path_segments
@@ -493,11 +477,11 @@ fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
                     .as_ref()
                     .map(|e| (o.camera.as_str(), e.polarity, e.search_mm, e.contrast_min))
             });
-            serde_json::json!([s.index, s.heading, edge])
+            serde_json::json!([s.index, s.heading, edge, s.search_mm, s.width_range])
         })
         .collect();
     serde_json::json!({"unit":"mm", "schema":recipe.schema_version, "spacing":recipe.spacing, "detect":recipe.detect,
-        "inspect": serde_json::to_value(&recipe.inspect).unwrap_or_default(), "measure": measure})
+        "inspect": serde_json::to_value(&recipe.inspect).unwrap_or_default(), "measure": measure, "retired": recipe.retired_overrides})
 }
 
 /// 段配方的计划身份（规格 §1：段序列 / 类型 / N_exp、相机、ΣN_exp、产品代码）。
@@ -508,6 +492,11 @@ fn burst_plan_identity(recipe: &Recipe) -> crate::plan::PlanIdentity {
         &recipe.plan_cameras(),
         recipe.expected_total(),
     )
+}
+
+/// 段的计划身份（段序列、类型、N_exp、检测相机、ΣN_exp、产品代码）相同。
+pub fn same_burst_plan(original: &Recipe, candidate: &Recipe) -> bool {
+    burst_plan_identity(original) == burst_plan_identity(candidate)
 }
 
 /// 已存的每帧指标能否在候选上复用：测量布局与计划身份都相同（计划身份变了，区域与预期帧数的口径就变了，需要原图复测）。
@@ -538,6 +527,7 @@ fn finite_metrics(m: &FrameMetrics) -> bool {
         && m.spacing_mm.is_finite()
         && m.gap_max_mm.is_finite()
         && m.present_ratio.is_finite()
+        && m.measurement_evidence.as_ref().is_none_or(|e| e.valid())
         && m.widths.iter().flatten().all(|w| w.is_finite())
 }
 
@@ -551,9 +541,10 @@ fn validate_burst(r: &PartRecord, recipe: &Recipe, burst: &BurstRecord) -> Resul
     if (r.judgement.verdict, r.judgement.plc_code, r.judgement.fault_code, r.judgement.reason.as_str()) != (j.verdict, j.plc_code, j.fault_code, j.reason.as_str()) {
         return Err("段配方记录的结论摘要与区域判定不一致".into());
     }
-    if burst.expected_total != recipe.expected_total() || burst.tolerance_total != recipe.tolerance_total()
-        || r.frames_expected != burst.expected_total.unwrap_or(0) as usize {
-        return Err("段配方记录的预期帧组数或容差与原配方不一致".into());
+    if burst.expected_total != recipe.expected_total()
+        || r.frames_expected != burst.expected_total.unwrap_or(0) as usize
+    {
+        return Err("段配方记录的预期帧组数与原配方不一致".into());
     }
     let cameras = recipe.plan_cameras().len();
     if burst.camera_frames.len() != cameras {
@@ -598,40 +589,79 @@ fn same_burst(actual: Option<&PartDetailBurst>, expected: Option<&BurstRecord>) 
         frames.sort_by_key(|frame| (frame.camera, frame.seq));
         serde_json::to_value(frames).map_err(|error| error.to_string())
     };
-    let judgement = |judgement: &BurstJudgement| serde_json::to_value(judgement).map_err(|error| error.to_string());
-    Ok((actual.expected_total, actual.tolerance_total, actual.device_triggers, &actual.camera_frames)
-        == (expected.expected_total, expected.tolerance_total, expected.device_triggers, &expected.camera_frames)
-        && judgement(&actual.judgement)? == judgement(&expected.judgement)?
+    let judgement = |judgement: &BurstJudgement| {
+        serde_json::to_value(judgement).map_err(|error| error.to_string())
+    };
+    Ok((
+        actual.expected_total,
+        actual.device_triggers,
+        &actual.camera_frames,
+    ) == (
+        expected.expected_total,
+        expected.device_triggers,
+        &expected.camera_frames,
+    ) && judgement(&actual.judgement)? == judgement(&expected.judgement)?
         && content(&actual.frames)? == content(&expected.frames)?)
 }
 
-fn frame_rows(conn: &Connection, id: i64) -> Result<Vec<FrameRecord>, String> {
-    let mut stmt = conn
-        .prepare("SELECT camera,seq,status,frame_counter,trigger_counter,region,metrics,raw_file FROM part_frames WHERE part_id=?1 ORDER BY camera, seq")
-        .map_err(db_err)?;
+type RawFrameRow = (FrameRecord, Option<String>);
+
+fn frame_rows_raw(
+    conn: &Connection,
+    id: i64,
+    selected: Option<(usize, u64)>,
+) -> Result<Vec<RawFrameRow>, String> {
+    let (query, values) = match selected {
+        Some((camera, seq)) => ("SELECT camera,seq,status,frame_counter,trigger_counter,region,metrics,raw_file FROM part_frames WHERE part_id=?1 AND camera=?2 AND seq=?3", vec![id, camera as i64, seq as i64]),
+        None => ("SELECT camera,seq,status,frame_counter,trigger_counter,region,metrics,raw_file FROM part_frames WHERE part_id=?1 ORDER BY camera, seq", vec![id]),
+    };
+    let mut stmt = conn.prepare(query).map_err(db_err)?;
     let rows = stmt
-        .query_map([id], |row| {
-            Ok(FrameRecord {
-                camera: row.get::<_, i64>(0)? as usize,
-                seq: row.get::<_, i64>(1)? as u64,
-                status: enum_column(row, 2)?,
-                frame_counter: count_column(row, 3)?,
-                trigger_counter: count_column(row, 4)?,
-                region: row.get::<_, Option<i64>>(5)?.map(|n| n as usize),
-                metrics: row.get::<_, Option<String>>(6)?.map(|text| serde_json::from_str(&text)
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e)))).transpose()?,
-                raw_file: row.get(7)?,
-            })
+        .query_map(params_from_iter(values), |row| {
+            Ok((
+                FrameRecord {
+                    camera: row.get::<_, i64>(0)? as usize,
+                    seq: row.get::<_, i64>(1)? as u64,
+                    status: enum_column(row, 2)?,
+                    frame_counter: count_column(row, 3)?,
+                    trigger_counter: count_column(row, 4)?,
+                    region: row.get::<_, Option<i64>>(5)?.map(|n| n as usize),
+                    metrics: None,
+                    raw_file: row.get(7)?,
+                },
+                row.get(6)?,
+            ))
         })
         .map_err(db_err)?;
     rows.collect::<Result<_, _>>().map_err(db_err)
 }
 
-fn snapshot_in(conn: &Connection, revision_id: &str) -> Result<Option<Recipe>, String> {
-    let snapshot: Option<(String, u32, String)> = conn.query_row(
-        "SELECT recipe_id,version,json FROM recipe_snapshots WHERE revision_id = ?1", [revision_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    ).optional().map_err(db_err)?;
+fn decode_frame_rows(rows: Vec<RawFrameRow>) -> Result<Vec<FrameRecord>, String> {
+    rows.into_iter()
+        .map(|(mut frame, text)| {
+            frame.metrics = text
+                .map(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+                .transpose()?;
+            Ok(frame)
+        })
+        .collect()
+}
+
+type RawSnapshot = (String, u32, String);
+
+fn snapshot_raw(
+    conn: &Connection,
+    project: &str,
+    revision_id: &str,
+) -> Result<Option<RawSnapshot>, String> {
+    conn.query_row("SELECT recipe_id,version,json FROM recipe_snapshots WHERE project_id = ?1 AND revision_id = ?2", [project, revision_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(db_err)
+}
+
+fn decode_snapshot(
+    snapshot: Option<RawSnapshot>,
+    revision_id: &str,
+) -> Result<Option<Recipe>, String> {
     snapshot.map(|(id, version, json)| {
         let recipe = Recipe::from_snapshot(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
         if recipe.revision_id != revision_id || recipe.id != id || recipe.version != version {
@@ -691,29 +721,6 @@ fn fail_interrupted_recordings(conn: &mut Connection) -> Result<usize, String> {
     Ok(interrupted)
 }
 
-fn extend_candidate_source(conn: &Connection, path: &Path) -> Result<(), String> {
-    let sql: Option<String> = conn.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='parts'", [], |r| r.get(0)).optional().map_err(db_err)?;
-    let Some(sql) = sql else { return Ok(()); };
-    const OLD: &str = "CHECK(source IN ('real','offlineSynthetic','offlineSample'))";
-    if !sql.contains(OLD) { return Ok(()); }
-    let indexes = conn.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='parts' AND sql IS NOT NULL").map_err(db_err)?
-        .query_map([], |r| r.get::<_, String>(0)).map_err(db_err)?.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
-    let backup = path.with_extension(format!("before-candidate-{}.sqlite3", ly_plc::now_ms()));
-    conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()]).map_err(|e| format!("调试记录格式升级前备份失败：{e}"))?;
-    let definition = sql[sql.find('(').ok_or("记录表定义无效")?..].replace(OLD, "CHECK(source IN ('real','offlineSynthetic','offlineSample','offlineCandidate'))");
-    conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;").map_err(db_err)?;
-    let migrated = conn.execute_batch(&format!("CREATE TABLE parts_candidate_upgrade {definition}; INSERT INTO parts_candidate_upgrade SELECT * FROM parts; DROP TABLE parts; ALTER TABLE parts_candidate_upgrade RENAME TO parts;"))
-        .and_then(|_| {
-            for index in &indexes { conn.execute_batch(index)?; }
-            let violations: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
-            if violations != 0 { return Err(rusqlite::Error::InvalidQuery); }
-            conn.execute_batch("COMMIT;")
-        });
-    if migrated.is_err() { let _ = conn.execute_batch("ROLLBACK;"); }
-    conn.execute_batch("PRAGMA foreign_keys=ON;").map_err(db_err)?;
-    migrated.map_err(|e| format!("调试记录格式升级失败，旧记录保持原样，备份 {}：{e}", backup.display()))
-}
-
 /// 记录库 9 版原地加 `mode` 列（维护模式），旧记录都是正式检测件，不重建、不丢记录。
 fn add_part_mode(conn: &Connection) -> Result<(), String> {
     let sql: Option<String> = conn
@@ -731,17 +738,41 @@ fn add_part_mode(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("记录库加维护模式列失败：{e}"))
 }
 
+fn add_part_tags(conn: &Connection) -> Result<(), String> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM pragma_table_info('parts') WHERE name = 'tags')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_err)?;
+    if !exists {
+        conn.execute_batch("ALTER TABLE parts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+            .map_err(db_err)?;
+    }
+    Ok(())
+}
+
 impl Store {
     #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, String> {
-        Self::open_inner(path, false)
+        Self::open_inner(path, crate::project::DEFAULT_ID, false)
     }
 
-    pub fn open_deferred_recovery(path: &Path) -> Result<Self, String> {
-        Self::open_inner(path, true)
+    #[cfg(test)]
+    pub fn open_for(path: &Path, project: &str) -> Result<Self, String> {
+        Self::open_inner(path, project, false)
     }
 
-    fn open_inner(path: &Path, defer_recovery: bool) -> Result<Self, String> {
+    /// 打开本机记录库，`project` 是当前项目。
+    pub fn open_deferred_recovery(path: &Path, project: &str) -> Result<Self, String> {
+        Self::open_inner(path, project, true)
+    }
+
+    fn open_inner(path: &Path, project: &str, defer_recovery: bool) -> Result<Self, String> {
+        if !crate::project::valid_id(project) {
+            return Err(format!("项目编号 {project} 不合法"));
+        }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
@@ -749,7 +780,7 @@ impl Store {
         let mut conn = Connection::open(path).map_err(db_err)?;
         conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(db_err)?;
-        let backup_path = if existing && version != DB_VERSION {
+        let backup_path = if existing && version != 10 && version != DB_VERSION {
             let backup = backup_old_database(conn, path, version)?;
             conn = Connection::open(path).map_err(|e| format!("旧记录库已备份到 {}；新库打开失败：{e}", backup.display()))?;
             conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
@@ -757,8 +788,6 @@ impl Store {
         } else {
             None
         };
-        extend_candidate_source(&conn, path)?;
-        add_part_mode(&conn)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
@@ -767,12 +796,34 @@ impl Store {
                  id TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(16)))),
                  created_at INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS history_deletions (
+                 id INTEGER PRIMARY KEY,
+                 cycle_id TEXT
+             );
+             CREATE INDEX IF NOT EXISTS history_deletions_cycle ON history_deletions(cycle_id);
              CREATE TABLE IF NOT EXISTS workspace_instances (
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 recipe_id TEXT NOT NULL
+                 project_id TEXT NOT NULL,
+                 id INTEGER NOT NULL CHECK(id > 0),
+                 recipe_id TEXT NOT NULL,
+                 PRIMARY KEY (project_id, id)
+             );
+             CREATE TABLE IF NOT EXISTS project_merges (
+                 project_id TEXT PRIMARY KEY NOT NULL,
+                 merged_at INTEGER NOT NULL,
+                 inserted INTEGER NOT NULL,
+                 duplicates INTEGER NOT NULL,
+                 refs_done INTEGER NOT NULL DEFAULT 0,
+                 installed INTEGER NOT NULL DEFAULT 1
+             );
+             CREATE TABLE IF NOT EXISTS project_merge_ids (
+                 project_id TEXT NOT NULL,
+                 old INTEGER NOT NULL,
+                 new INTEGER NOT NULL,
+                 PRIMARY KEY (project_id, old)
              );
              CREATE TABLE IF NOT EXISTS parts (
                  id INTEGER PRIMARY KEY,
+                 project_id TEXT NOT NULL,
                  ts INTEGER NOT NULL,
                  sn TEXT NOT NULL,
                  recipe_id TEXT,
@@ -801,17 +852,19 @@ impl Store {
                  recording_directory TEXT,
                  recording_errors TEXT NOT NULL DEFAULT '[]',
                  sample TEXT,
-                 source TEXT NOT NULL CHECK(source IN ('real','offlineSynthetic','offlineSample','offlineCandidate')),
+                 source TEXT NOT NULL CHECK(source = 'real'),
                  expected_total INTEGER,
                  tolerance_total INTEGER,
                  device_triggers INTEGER,
                  camera_frames TEXT,
                  flags TEXT,
                  burst_judgement TEXT,
-                 mode TEXT NOT NULL DEFAULT 'production' CHECK(mode IN ('production','maintenanceCollect','maintenanceShadow'))
+                 mode TEXT NOT NULL DEFAULT 'production' CHECK(mode IN ('production','maintenanceCollect','maintenanceShadow')),
+                 tags TEXT NOT NULL DEFAULT '[]'
              );
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
              CREATE INDEX IF NOT EXISTS parts_source_ts ON parts(source, ts);
+             CREATE INDEX IF NOT EXISTS parts_project_ts ON parts(project_id, ts);
              CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
              CREATE INDEX IF NOT EXISTS parts_recording_directory ON parts(recording_directory);
              CREATE UNIQUE INDEX IF NOT EXISTS parts_cycle ON parts(cycle_id) WHERE cycle_id IS NOT NULL;
@@ -823,10 +876,12 @@ impl Store {
                  data BLOB NOT NULL
              );
              CREATE TABLE IF NOT EXISTS recipe_snapshots (
-                 revision_id TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL,
+                 revision_id TEXT NOT NULL,
                  recipe_id TEXT NOT NULL,
                  version INTEGER NOT NULL,
-                 json TEXT NOT NULL
+                 json TEXT NOT NULL,
+                 PRIMARY KEY (project_id, revision_id)
              );
              CREATE TABLE IF NOT EXISTS part_shots (
                  part_id INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
@@ -858,12 +913,25 @@ impl Store {
                  raw_file TEXT,
                  PRIMARY KEY (part_id, camera, seq)
              );
-             PRAGMA user_version = 9;
+             PRAGMA user_version = 11;
              COMMIT;",
         )
         .map_err(db_err)?;
-        if !defer_recovery { fail_interrupted_recordings(&mut conn)?; }
-        Ok(Self { conn: Mutex::new(conn), backup_path })
+        add_part_tags(&conn)?;
+        retired::migrate(&mut conn)?;
+        if !defer_recovery {
+            fail_interrupted_recordings(&mut conn)?;
+        }
+        Ok(Self {
+            conn: Mutex::new(conn),
+            backup_path,
+            project: project.into(),
+        })
+    }
+
+    /// 当前项目编号。
+    pub fn project(&self) -> &str {
+        &self.project
     }
 
     pub fn finish_interrupted_recordings(&self) -> Result<usize, String> {
@@ -877,24 +945,38 @@ impl Store {
     pub fn recipe_version_floors(&self) -> Result<std::collections::BTreeMap<String, u32>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT recipe_id,MAX(version) FROM (
-            SELECT recipe_id,recipe_version AS version FROM parts WHERE recipe_id IS NOT NULL AND recipe_version IS NOT NULL AND source != 'offlineCandidate'
-            UNION ALL SELECT recipe_id,version FROM recipe_snapshots s WHERE revision_id = recipe_id || '-v' || version
-                AND (NOT EXISTS (SELECT 1 FROM parts p WHERE p.recipe_revision=s.revision_id AND p.source='offlineCandidate')
-                    OR EXISTS (SELECT 1 FROM parts p WHERE p.recipe_revision=s.revision_id AND p.source!='offlineCandidate'))) GROUP BY recipe_id").map_err(db_err)?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))).map_err(db_err)?;
-        rows.collect::<Result<std::collections::BTreeMap<_, _>, _>>().map_err(db_err)
+            SELECT recipe_id,recipe_version AS version FROM parts WHERE project_id=?1 AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL
+            UNION ALL SELECT recipe_id,version FROM recipe_snapshots WHERE project_id=?1 AND revision_id = recipe_id || '-v' || version) GROUP BY recipe_id").map_err(db_err)?;
+        let rows = stmt
+            .query_map([&self.project], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+            })
+            .map_err(db_err)?;
+        rows.collect::<Result<std::collections::BTreeMap<_, _>, _>>()
+            .map_err(db_err)
     }
 
     pub(crate) fn workspace_instance(&self, recipe_id: &str, instance_id: u64) -> Result<u64, String> {
         let conn = self.conn.lock().unwrap();
         if instance_id == 0 {
-            let allocated: i64 = conn.query_row("INSERT INTO workspace_instances (recipe_id) VALUES (?1) RETURNING id", [recipe_id], |row| row.get(0)).map_err(db_err)?;
+            let allocated: i64 = conn.query_row(
+                "INSERT INTO workspace_instances (project_id, id, recipe_id) \
+                 SELECT ?1, COALESCE(MAX(id), 0) + 1, ?2 FROM workspace_instances WHERE project_id = ?1 RETURNING id",
+                params![self.project, recipe_id], |row| row.get(0)).map_err(db_err)?;
             return u64::try_from(allocated).map_err(|_| "候选实例 ID 无效".into());
         }
         let stored = i64::try_from(instance_id).map_err(|_| "候选实例 ID 超出范围")?;
-        conn.execute("INSERT OR IGNORE INTO workspace_instances (id, recipe_id) VALUES (?1, ?2)", params![stored, recipe_id]).map_err(db_err)?;
-        let original: String = conn.query_row("SELECT recipe_id FROM workspace_instances WHERE id = ?1", [stored], |row| row.get(0)).map_err(db_err)?;
-        if original != recipe_id { return Err("候选实例 ID 已属于其他配方".into()); }
+        conn.execute("INSERT OR IGNORE INTO workspace_instances (project_id, id, recipe_id) VALUES (?1, ?2, ?3)", params![self.project, stored, recipe_id]).map_err(db_err)?;
+        let original: String = conn
+            .query_row(
+                "SELECT recipe_id FROM workspace_instances WHERE project_id = ?1 AND id = ?2",
+                params![self.project, stored],
+                |row| row.get(0),
+            )
+            .map_err(db_err)?;
+        if original != recipe_id {
+            return Err("候选实例 ID 已属于其他配方".into());
+        }
         Ok(instance_id)
     }
 
@@ -915,8 +997,7 @@ impl Store {
             return Err("检测记录的 cycleId 或发布包 ID 为空".into());
         }
         if let Some(recipe) = r.recipe {
-            let valid_revision = if r.source == RecordSource::OfflineCandidate { recipe.candidate_revision().is_some() }
-                else { recipe.revision_id == format!("{}-v{}", recipe.id, recipe.version) };
+            let valid_revision = recipe.revision_id == format!("{}-v{}", recipe.id, recipe.version);
             if !valid_revision || recipe.version == 0 {
                 return Err("配方修订号与实际 ID、版本不一致".into());
             }
@@ -933,15 +1014,24 @@ impl Store {
         if !r.shots.is_empty() || r.table.is_some() {
             return Err(crate::recipe::LEGACY_RECIPE.into());
         }
-        if r.sample.is_some() && !matches!(r.source, RecordSource::OfflineSample | RecordSource::OfflineCandidate) {
-            return Err("只有离线·样本集的记录可以关联样本件".into());
-        }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(db_err)?;
+        if let Some(cycle) = r.cycle_id {
+            let deleted: bool = tx
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM history_deletions WHERE cycle_id = ?1)",
+                    [cycle],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)?;
+            if deleted {
+                return Err("该历史工件已人工删除，不能自动补回".into());
+            }
+        }
         if let Some(recipe) = r.recipe {
             let json = serde_json::to_string(recipe).map_err(|e| e.to_string())?;
             let previous: Option<(String, u32, String)> = tx.query_row(
-                "SELECT recipe_id,version,json FROM recipe_snapshots WHERE revision_id = ?1", [&recipe.revision_id],
+                "SELECT recipe_id,version,json FROM recipe_snapshots WHERE project_id = ?1 AND revision_id = ?2", params![self.project, recipe.revision_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             ).optional().map_err(db_err)?;
             if let Some((id, version, previous)) = previous {
@@ -954,22 +1044,22 @@ impl Store {
                 }
             }
             tx.execute(
-                "INSERT OR IGNORE INTO recipe_snapshots (revision_id, recipe_id, version, json) VALUES (?1, ?2, ?3, ?4)",
-                params![recipe.revision_id, recipe.id, recipe.version, json],
+                "INSERT OR IGNORE INTO recipe_snapshots (project_id, revision_id, recipe_id, version, json) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![self.project, recipe.revision_id, recipe.id, recipe.version, json],
             )
             .map_err(db_err)?;
         }
         let retest_of: Option<i64> = if r.sn.is_empty() {
             None
         } else {
-            tx.query_row("SELECT id FROM parts WHERE sn = ?1 ORDER BY id DESC LIMIT 1", [r.sn], |row| row.get(0)).optional().map_err(db_err)?
+            tx.query_row("SELECT id FROM parts WHERE project_id = ?1 AND sn = ?2 ORDER BY ts DESC, id DESC LIMIT 1", [self.project.as_str(), r.sn], |row| row.get(0)).optional().map_err(db_err)?
         };
         let j = r.judgement;
         let text = |value: Result<String, serde_json::Error>| value.map_err(|e| e.to_string());
         let burst_columns = match r.burst {
             Some(burst) => (
                 burst.expected_total,
-                Some(burst.tolerance_total),
+                None::<u32>,
                 burst.device_triggers,
                 Some(text(serde_json::to_string(&burst.camera_frames))?),
                 Some(text(serde_json::to_string(&burst.judgement.flags))?),
@@ -981,9 +1071,10 @@ impl Store {
             "INSERT INTO parts (ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code,
                  reason, drain_ms, frames_expected, frames_received, triggers, retest_of, software_version, judgement, frames,
                  cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message, sample, source,
-                 expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement, mode)
+                 expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement, mode, project_id, id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
+                 ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
+                 (SELECT MAX(COALESCE((SELECT MAX(id) FROM parts), 0), COALESCE((SELECT MAX(id) FROM history_deletions), 0)) + 1))",
             params![
                 r.ts,
                 r.sn,
@@ -1008,7 +1099,7 @@ impl Store {
                 enum_name(r.delivery.state),
                 r.delivery.updated_at,
                 r.delivery.message,
-                r.sample.map(serde_json::to_string).transpose().map_err(|e| e.to_string())?,
+                None::<String>,
                 enum_name(r.source),
                 burst_columns.0,
                 burst_columns.1,
@@ -1017,6 +1108,7 @@ impl Store {
                 burst_columns.4,
                 burst_columns.5,
                 enum_name(r.mode),
+                self.project,
             ],
         )
         .map_err(db_err)?;
@@ -1049,16 +1141,19 @@ impl Store {
         let Some(existing) = self.detail_by_cycle(cycle)? else { return Ok(false); };
         let summary = &existing.summary;
         let actual_recipe = match summary.recipe_revision.as_deref() {
-            Some(revision) => self.recipe_snapshot(revision)?,
+            Some(revision) => self.recipe_snapshot(&summary.project_id, revision)?,
             None => None,
         };
-        let consistent = summary.ts == record.ts && summary.sn == record.sn
-            && summary.cycle_id.as_deref() == record.cycle_id && summary.bundle_id.as_deref() == record.bundle_id
+        let consistent = summary.project_id == self.project
+            && summary.ts == record.ts
+            && summary.sn == record.sn
+            && summary.cycle_id.as_deref() == record.cycle_id
+            && summary.bundle_id.as_deref() == record.bundle_id
             && summary.recipe_id.as_deref() == record.recipe.map(|recipe| recipe.id.as_str())
             && summary.recipe_version == record.recipe.map(|recipe| recipe.version)
             && summary.recipe_revision.as_deref() == record.recipe.map(|recipe| recipe.revision_id.as_str())
             && summary.frames_expected == record.frames_expected && summary.frames_received == record.frames_received
-            && summary.sample.as_ref() == record.sample && summary.source == record.source
+            && summary.source == record.source
             && existing.triggers == record.triggers && existing.software_version == record.software_version
             && serde_json::to_value(&existing.judgement).map_err(|error| error.to_string())? == serde_json::to_value(record.judgement).map_err(|error| error.to_string())?
             && serde_json::to_value(&existing.frames).map_err(|error| error.to_string())? == serde_json::to_value(record.frames).map_err(|error| error.to_string())?
@@ -1230,9 +1325,19 @@ impl Store {
             clauses.push(format!("{prefix}sn LIKE ? ESCAPE '\\'"));
             args.push(SqlValue::Text(format!("%{}%", sn.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))));
         }
+        if let Some(tag) = q.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            clauses.push(format!(
+                "EXISTS (SELECT 1 FROM json_each({prefix}tags) WHERE value = ?)"
+            ));
+            args.push(SqlValue::Text(tag.to_string()));
+        }
         if let Some(id) = q.recipe_id.as_deref().filter(|s| !s.is_empty()) {
             clauses.push(format!("{prefix}recipe_id = ?"));
             args.push(SqlValue::Text(id.to_string()));
+        }
+        if let Some(project) = q.project.as_deref().filter(|s| !s.is_empty()) {
+            clauses.push(format!("{prefix}project_id = ?"));
+            args.push(SqlValue::Text(project.to_string()));
         }
         if !q.modes.is_empty() {
             clauses.push(format!(
@@ -1244,39 +1349,87 @@ impl Store {
         (format!(" WHERE {}", clauses.join(" AND ")), args)
     }
 
-    /// 某个录制根目录下仍被历史引用的 _pending 目录；只看同一范围的记录，真机与离线各管各的根目录。
-    pub fn pending_recording_directories(&self, root: &Path, scope: HistoryScope) -> Result<Vec<PathBuf>, String> {
-        let root_text = root.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string();
-        let prefix = format!("{root_text}/");
+    /// 各录制盘的录制根下仍被生产历史引用的 _pending 目录；相对引用（帧原图）不知道在哪块盘，每块盘都保护。
+    pub fn pending_recording_directories(
+        &self,
+        roots: &[PathBuf],
+        scope: HistoryScope,
+    ) -> Result<Vec<PathBuf>, String> {
+        let prefixes: Vec<(&PathBuf, String)> = roots
+            .iter()
+            .map(|root| {
+                (
+                    root,
+                    format!(
+                        "{}/",
+                        root.to_string_lossy()
+                            .replace('\\', "/")
+                            .trim_end_matches('/')
+                    ),
+                )
+            })
+            .collect();
         let mut paths = Vec::new();
         let mut protect = |value: &str| -> Result<(), String> {
             let normalized = value.replace('\\', "/");
-            let relative = if normalized.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(&prefix)) {
-                &normalized[prefix.len()..]
+            let (targets, relative): (Vec<&PathBuf>, &str) = if let Some((root, prefix)) =
+                prefixes.iter().find(|(_, prefix)| {
+                    normalized
+                        .get(..prefix.len())
+                        .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+                }) {
+                (vec![*root], &normalized[prefix.len()..])
             } else if !Path::new(value).is_absolute() && !normalized.contains(':') {
-                normalized.as_str()
+                (roots.iter().collect(), normalized.as_str())
             } else {
                 if normalized.to_ascii_lowercase().contains("/_pending/") {
-                    return Err("历史 pending 引用不在当前 records 根目录，暂停清理".into());
+                    return Err("历史 pending 引用不在任何录制盘的 records 根目录，暂停清理".into());
                 }
                 return Ok(());
             };
             let components: Vec<_> = relative.split('/').collect();
-            if !components.first().is_some_and(|p| p.eq_ignore_ascii_case("_pending")) { return Ok(()); }
-            if components.len() < 2 || components.iter().any(|p| p.is_empty() || *p == "." || *p == ".." || p.contains(':')) {
+            if !components
+                .first()
+                .is_some_and(|p| p.eq_ignore_ascii_case("_pending"))
+            {
+                return Ok(());
+            }
+            if components.len() < 2
+                || components
+                    .iter()
+                    .any(|p| p.is_empty() || *p == "." || *p == ".." || p.contains(':'))
+            {
                 return Err("历史 pending 录制引用路径无效，暂停清理".into());
             }
-            paths.push(root.join("_pending").join(components[1]));
+            paths.extend(
+                targets
+                    .into_iter()
+                    .map(|root| root.join("_pending").join(components[1])),
+            );
             Ok(())
         };
-        let conn = self.conn.lock().map_err(|_| "数据库锁异常，暂停孤立录制清理".to_string())?;
-        let mut stmt = conn.prepare(&format!("SELECT recording_directory FROM parts WHERE instr(lower(recording_directory),'_pending')>0 AND {}", scope.clause(""))).map_err(db_err)?;
-        for row in stmt.query_map([], |row| row.get::<_, String>(0)).map_err(db_err)? {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "数据库锁异常，暂停孤立录制清理".to_string())?;
+        let mut stmt = conn.prepare(&format!("SELECT recording_directory FROM parts WHERE project_id=?1 AND instr(lower(recording_directory),'_pending')>0 AND {}", scope.clause(""))).map_err(db_err)?;
+        for row in stmt
+            .query_map([&self.project], |row| row.get::<_, String>(0))
+            .map_err(db_err)?
+        {
             protect(&row.map_err(db_err)?)?;
         }
-        let mut stmt = conn.prepare(&format!("SELECT f.raw_file FROM part_frames f JOIN parts p ON p.id=f.part_id \
-            WHERE instr(lower(f.raw_file),'_pending')>0 AND {}", scope.clause("p."))).map_err(db_err)?;
-        for row in stmt.query_map([], |row| row.get::<_, String>(0)).map_err(db_err)? {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT f.raw_file FROM part_frames f JOIN parts p ON p.id=f.part_id \
+            WHERE p.project_id=?1 AND instr(lower(f.raw_file),'_pending')>0 AND {}",
+                scope.clause("p.")
+            ))
+            .map_err(db_err)?;
+        for row in stmt
+            .query_map([&self.project], |row| row.get::<_, String>(0))
+            .map_err(db_err)?
+        {
             let file = row.map_err(db_err)?;
             validate_raw_path(&file)?;
             protect(&file)?;
@@ -1311,26 +1464,88 @@ impl Store {
             total += n;
         }
         let limit = if q.limit == 0 { 50 } else { q.limit.min(500) };
-        let sql = format!("SELECT {SUMMARY_COLS} FROM parts{filter} ORDER BY id DESC LIMIT {limit} OFFSET {}", q.offset);
+        let sql = format!("SELECT {SUMMARY_COLS} FROM parts{filter} ORDER BY ts DESC, id DESC LIMIT {limit} OFFSET {}", q.offset);
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let items = stmt.query_map(params_from_iter(args.iter()), summary).map_err(db_err)?.collect::<Result<_, _>>().map_err(db_err)?;
         Ok(HistoryPage { total, counts, items })
     }
 
-    /// 同一筛选条件下与 id 相邻的记录：(较早一件, 较晚一件)。
+    /// 同一筛选条件下与 id 相邻的记录：(较早一件, 较晚一件)，按（时间, 编号）排序，与历史列表同序。
     pub fn neighbors(&self, q: &HistoryQuery, id: i64) -> Result<(Option<i64>, Option<i64>), String> {
         let conn = self.conn.lock().unwrap();
+        let Some(ts) = conn
+            .query_row("SELECT ts FROM parts WHERE id = ?1", [id], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()
+            .map_err(db_err)?
+        else {
+            return Ok((None, None));
+        };
         let (filter, args) = Self::filter(q, "");
         let one = |cmp: &str, order: &str| -> Result<Option<i64>, String> {
             let mut values = args.clone();
-            values.push(SqlValue::Integer(id));
-            conn.query_row(&format!("SELECT id FROM parts{filter} AND id {cmp} ? ORDER BY id {order} LIMIT 1"),
+            values.extend([
+                SqlValue::Integer(ts),
+                SqlValue::Integer(ts),
+                SqlValue::Integer(id),
+            ]);
+            conn.query_row(&format!("SELECT id FROM parts{filter} AND (ts {cmp} ? OR (ts = ? AND id {cmp} ?)) ORDER BY ts {order}, id {order} LIMIT 1"),
                 params_from_iter(values.iter()), |row| row.get(0)).optional().map_err(db_err)
         };
         Ok((one("<", "DESC")?, one(">", "ASC")?))
     }
 
+    pub fn summary(&self, id: i64) -> Result<PartSummary, String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                &format!("SELECT {SUMMARY_COLS} FROM parts WHERE id=?1"),
+                [id],
+                summary,
+            )
+            .optional()
+            .map_err(db_err)?
+            .ok_or_else(|| format!("记录 {id} 不存在或已过期清理"))
+    }
+
     pub fn detail(&self, id: i64) -> Result<PartDetail, String> {
+        self.detail_selected(id, None)
+    }
+
+    pub fn detail_frame(&self, id: i64, camera: usize, seq: u64) -> Result<PartDetail, String> {
+        let detail = self.detail_selected(id, Some((camera, seq)))?;
+        if detail
+            .burst
+            .as_ref()
+            .is_none_or(|burst| burst.frames.is_empty())
+        {
+            return Err("没有这一帧的记录".into());
+        }
+        Ok(detail)
+    }
+
+    pub fn detail_overview(&self, id: i64) -> Result<PartDetail, String> {
+        let mut detail = self.detail(id)?;
+        if let Some(burst) = detail.burst.as_mut() {
+            for frame in &mut burst.frames {
+                if let Some(metrics) = frame.metrics.as_mut() {
+                    metrics.widths.clear();
+                    if let Some(evidence) = &mut metrics.measurement_evidence {
+                        evidence.stations.clear();
+                    }
+                }
+            }
+        }
+        Ok(detail)
+    }
+
+    fn detail_selected(
+        &self,
+        id: i64,
+        selected: Option<(usize, u64)>,
+    ) -> Result<PartDetail, String> {
         let conn = self.conn.lock().unwrap();
         const N: usize = SUMMARY_LEN;
         let (summary, judgement, frames, triggers, software_version, recording, burst_judgement) = conn
@@ -1343,26 +1558,68 @@ impl Store {
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| format!("记录 {id} 不存在或已过期清理"))?;
+        let raw_snapshot = match summary.recipe_revision.as_deref() {
+            Some(revision) if summary.burst.is_some() => {
+                snapshot_raw(&conn, &summary.project_id, revision)?
+            }
+            _ => None,
+        };
+        let raw_frames = if summary.burst.is_some() {
+            frame_rows_raw(&conn, id, selected)?
+        } else {
+            Vec::new()
+        };
+        let retests = {
+            let mut stmt = conn
+                .prepare("SELECT id FROM parts WHERE retest_of = ?1 ORDER BY id")
+                .map_err(db_err)?;
+            let values = stmt
+                .query_map([id], |row| row.get(0))
+                .map_err(db_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            values
+        };
+        drop(conn);
         let burst = match (burst_judgement, &summary.burst) {
             (Some(judgement), Some(counts)) => {
-                let revision = summary.recipe_revision.as_deref().ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
-                let recipe = snapshot_in(&conn, revision)?.ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
+                let revision = summary
+                    .recipe_revision
+                    .as_deref()
+                    .ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
+                let recipe = decode_snapshot(raw_snapshot, revision)?
+                    .ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
+                let judgement: BurstJudgement = serde_json::from_str(&judgement)
+                    .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
+                let frames = decode_frame_rows(raw_frames)?;
+                let cameras = recipe.plan_cameras();
+                let regions: Vec<_> = judgement.regions.iter().map(|r| r.region.clone()).collect();
+                let metrics: Vec<FrameMetrics> =
+                    frames.iter().filter_map(|f| f.metrics.clone()).collect();
+                let frame_verdicts = if selected.is_none() {
+                    crate::burst_judge::frame_verdicts(
+                        &recipe.path_segments,
+                        &regions,
+                        &metrics,
+                        &cameras,
+                    )
+                } else {
+                    Vec::new()
+                };
                 Some(PartDetailBurst {
                     segments: recipe.path_segments.clone(),
-                    cameras: recipe.plan_cameras(),
+                    cameras,
                     expected_total: counts.expected_total,
-                    tolerance_total: counts.tolerance_total,
                     device_triggers: counts.device_triggers,
                     camera_frames: counts.camera_frames.clone(),
-                    judgement: serde_json::from_str(&judgement).map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?,
-                    frames: frame_rows(&conn, id)?,
+                    judgement,
+                    frames,
+                    frame_verdicts,
                 })
             }
             (None, None) => None,
             _ => return Err(format!("记录 {id} 的段配方字段不完整")),
         };
-        let mut stmt = conn.prepare("SELECT id FROM parts WHERE retest_of = ?1 ORDER BY id").map_err(db_err)?;
-        let retests = stmt.query_map([id], |row| row.get(0)).map_err(db_err)?.collect::<Result<_, _>>().map_err(db_err)?;
         Ok(PartDetail {
             summary,
             judgement: serde_json::from_str(&judgement).map_err(|e| e.to_string())?,
@@ -1377,19 +1634,106 @@ impl Store {
         })
     }
 
-    pub fn detail_by_cycle(&self, cycle_id: &str) -> Result<Option<PartDetail>, String> {
-        let id =
-            self.conn.lock().unwrap().query_row("SELECT id FROM parts WHERE cycle_id=?1", [cycle_id], |row| row.get::<_, i64>(0)).optional().map_err(db_err)?;
-        id.map(|id| self.detail(id)).transpose()
+    pub fn id_by_cycle(&self, cycle_id: &str) -> Result<Option<i64>, String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM parts WHERE cycle_id=?1",
+                [cycle_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(db_err)
     }
 
-    pub fn recipe_snapshot(&self, revision_id: &str) -> Result<Option<Recipe>, String> {
-        snapshot_in(&self.conn.lock().unwrap(), revision_id)
+    pub fn detail_by_cycle(&self, cycle_id: &str) -> Result<Option<PartDetail>, String> {
+        self.id_by_cycle(cycle_id)?
+            .map(|id| self.detail(id))
+            .transpose()
+    }
+
+    /// 记录所属项目 `project` 的配方快照：配方编号与修订号只在项目内唯一。
+    pub fn recipe_snapshot(
+        &self,
+        project: &str,
+        revision_id: &str,
+    ) -> Result<Option<Recipe>, String> {
+        let raw = snapshot_raw(&self.conn.lock().unwrap(), project, revision_id)?;
+        decode_snapshot(raw, revision_id)
+    }
+
+    /// 一条记录的原配方快照；记录没有配方修订号时为 None。
+    pub fn record_recipe(&self, summary: &PartSummary) -> Result<Option<Recipe>, String> {
+        match summary.recipe_revision.as_deref() {
+            Some(revision) => self.recipe_snapshot(&summary.project_id, revision),
+            None => Ok(None),
+        }
     }
 
     /// 段配方记录的逐帧记录，按 (camera, seq) 排序；旧记录为空。
     pub fn burst_frames(&self, id: i64) -> Result<Vec<FrameRecord>, String> {
-        frame_rows(&self.conn.lock().unwrap(), id)
+        let rows = frame_rows_raw(&self.conn.lock().unwrap(), id, None)?;
+        decode_frame_rows(rows)
+    }
+
+    /// 区域判定为空、但有测过的帧的维护试判件：回写码 0 与区域判定不同，落库时退回了没有区域的摘要。
+    pub fn shadow_parts_without_regions(&self) -> Result<Vec<i64>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.id FROM parts p WHERE p.mode='maintenanceShadow' AND p.burst_judgement IS NOT NULL \
+                 AND json_array_length(p.burst_judgement,'$.regions')=0 \
+                 AND EXISTS(SELECT 1 FROM part_frames f WHERE f.part_id=p.id AND f.status='measured') ORDER BY p.id",
+            )
+            .map_err(db_err)?;
+        let ids = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(db_err)?
+            .collect::<Result<_, _>>()
+            .map_err(db_err)?;
+        Ok(ids)
+    }
+
+    /// 补回维护试判件的区域判定：结论摘要（verdict / plc_code / fault_code / reason）须与新判定相同，只换区域判定、整件标记
+    /// 与每帧所属区域；记录已有区域或结论不同时不动，返回 false。
+    pub fn repair_burst_regions(
+        &self,
+        id: i64,
+        judgement: &BurstJudgement,
+        regions: &[(usize, u64, Option<usize>)],
+    ) -> Result<bool, String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(db_err)?;
+        let text = |value: Result<String, serde_json::Error>| value.map_err(|e| e.to_string());
+        let changed = tx
+            .execute(
+                "UPDATE parts SET burst_judgement=?2, flags=?3 WHERE id=?1 AND mode='maintenanceShadow' \
+                 AND verdict=?4 AND plc_code=?5 AND fault_code=?6 AND reason=?7 AND json_array_length(burst_judgement,'$.regions')=0",
+                params![
+                    id,
+                    text(serde_json::to_string(judgement))?,
+                    text(serde_json::to_string(&judgement.flags))?,
+                    verdict_str(judgement.verdict),
+                    judgement.plc_code,
+                    judgement.fault_code,
+                    judgement.reason,
+                ],
+            )
+            .map_err(db_err)?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        for &(camera, seq, region) in regions {
+            let seq = i64::try_from(seq).map_err(|_| "帧组序号超出存储范围")?;
+            tx.execute(
+                "UPDATE part_frames SET region=?4 WHERE part_id=?1 AND camera=?2 AND seq=?3",
+                params![id, camera as i64, seq, region.map(|n| n as i64)],
+            )
+            .map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(true)
     }
 
     /// 取出重判候选；ids 为空时按筛选条件。
@@ -1401,13 +1745,14 @@ impl Store {
             (format!(" WHERE p.id IN ({})", vec!["?"; ids.len()].join(",")), ids.iter().map(|&i| SqlValue::Integer(i)).collect())
         };
         let sql = format!(
-            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, p.burst_judgement FROM parts p{filter} ORDER BY p.id DESC LIMIT {limit}"
+            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, p.burst_judgement, p.project_id FROM parts p{filter} ORDER BY p.ts DESC, p.id DESC LIMIT {limit}"
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let rows = stmt
             .query_map(params_from_iter(args.iter()), |row| {
                 Ok(StoredMeasurement {
                     id: row.get(0)?,
+                    project_id: row.get(7)?,
                     ts: row.get(1)?,
                     sn: row.get(2)?,
                     recipe_id: row.get(3)?,
@@ -1436,11 +1781,11 @@ impl Store {
         scope: HistoryScope,
     ) -> Result<Vec<CollectionProgress>, String> {
         let conn = self.conn.lock().unwrap();
-        let sql = format!("SELECT recipe_id, recording_available, camera_frames FROM parts WHERE {} AND mode = 'maintenanceCollect' \
+        let sql = format!("SELECT recipe_id, recording_available, camera_frames FROM parts WHERE project_id = ?1 AND {} AND mode = 'maintenanceCollect' \
             AND recipe_id IS NOT NULL AND recording_directory IS NOT NULL ORDER BY recipe_id", scope.clause(""));
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map([&self.project], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, bool>(1)?,
@@ -1477,12 +1822,14 @@ impl Store {
     pub fn trial_progress(&self, scope: HistoryScope) -> Result<Vec<TrialProgress>, String> {
         let conn = self.conn.lock().unwrap();
         let sql = format!(
-            "SELECT recipe_id, recipe_version, verdict, COUNT(*) FROM parts WHERE {} AND mode = 'maintenanceShadow'             AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL GROUP BY recipe_id, recipe_version, verdict             ORDER BY recipe_id, recipe_version DESC",
+            "SELECT recipe_id, recipe_version, verdict, COUNT(*) FROM parts WHERE project_id = ?1 AND {} AND mode = 'maintenanceShadow' \
+             AND recipe_id IS NOT NULL AND recipe_version IS NOT NULL GROUP BY recipe_id, recipe_version, verdict \
+             ORDER BY recipe_id, recipe_version DESC",
             scope.clause("")
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map([&self.project], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, u32>(1)?,
@@ -1522,31 +1869,77 @@ impl Store {
         Ok(progress)
     }
 
-    /// 某配方有录制目录的真机记录（最新在前，最多 limit 件），历史件导入为采集轮次时据此逐件核对。
+    /// 按筛选条件分页取有录制目录的真机记录（最新在前）与符合条件的总件数，历史件选用与试测据此逐件核对。`q.scope` 不看，只取真机记录。
     pub fn recorded_parts(
         &self,
-        recipe_id: &str,
-        limit: u32,
-    ) -> Result<Vec<(PartSummary, RecordingEvidence)>, String> {
+        q: &HistoryQuery,
+    ) -> Result<(u64, Vec<(PartSummary, RecordingEvidence)>), String> {
+        let q = HistoryQuery {
+            scope: HistoryScope::Real,
+            ..q.clone()
+        };
+        let (filter, args) = Self::filter(&q, "");
+        let filter = format!("{filter} AND recording_directory IS NOT NULL");
         let conn = self.conn.lock().unwrap();
+        let total: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM parts{filter}"),
+                params_from_iter(args.iter()),
+                |row| row.get(0),
+            )
+            .map_err(db_err)?;
         let sql = format!(
-            "SELECT {SUMMARY_COLS}, recording_state, recording_available, recording_directory, recording_errors FROM parts \
-            WHERE {} AND recipe_id = ?1 AND recording_directory IS NOT NULL ORDER BY id DESC LIMIT {}",
-            HistoryScope::Real.clause(""),
-            limit.clamp(1, 500)
+            "SELECT {SUMMARY_COLS}, recording_state, recording_available, recording_directory, recording_errors FROM parts{filter}              ORDER BY ts DESC, id DESC LIMIT {} OFFSET {}",
+            q.limit.clamp(1, 500),
+            q.offset
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let rows = stmt
-            .query_map([recipe_id], |row| {
+            .query_map(params_from_iter(args.iter()), |row| {
                 Ok((summary(row)?, recording_row(row, SUMMARY_LEN)?))
             })
             .map_err(db_err)?;
-        rows.collect::<Result<_, _>>().map_err(db_err)
+        Ok((
+            total as u64,
+            rows.collect::<Result<_, _>>().map_err(db_err)?,
+        ))
     }
 
+    /// 某件历史件（按 cycleId）的录制目录；没有这条记录或记录没有录制目录为 None。示教件轮次据此找录制原图。
+    pub fn recording_directory(&self, cycle_id: &str) -> Result<Option<PathBuf>, String> {
+        let directory: Option<Option<String>> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT recording_directory FROM parts WHERE cycle_id = ?1",
+                [cycle_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        Ok(directory.flatten().map(PathBuf::from))
+    }
+
+    /// 这些历史件（按 cycleId）的录制目录，供滚动清理保护。
+    pub fn recording_directories(&self, cycles: &BTreeSet<String>) -> Result<Vec<PathBuf>, String> {
+        let cycles = serde_json::to_string(cycles).map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT recording_directory FROM parts WHERE cycle_id IN (SELECT value FROM json_each(?1)) AND recording_directory IS NOT NULL")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([cycles], |row| row.get::<_, String>(0))
+            .map_err(db_err)?;
+        rows.map(|row| row.map(PathBuf::from).map_err(db_err))
+            .collect()
+    }
+
+    /// 当前项目自 since 起的正式检测件结论计数。
     pub fn counts_since(&self, since: i64, scope: HistoryScope) -> Result<VerdictCounts, String> {
         self.query(&HistoryQuery {
             from: Some(since),
+            project: Some(self.project.clone()),
             scope,
             modes: vec![PartMode::Production],
             limit: 1,
@@ -1561,11 +1954,101 @@ impl Store {
         ).optional().map_err(db_err)
     }
 
-    pub fn purge_before(&self, ts: i64) -> Result<usize, String> {
+    /// 删除本机全部项目里早于 ts 的记录，`keep` 里的历史件（被示教件引用，按 cycleId）不删；返回删除件数与其中非当前项目记录、
+    /// 导入件的录制目录（项目、来源、目录），这些原图没有在运行的录制滚动清理，由调用方随记录一起删。
+    pub fn purge_before(
+        &self,
+        ts: i64,
+        keep: &BTreeSet<String>,
+    ) -> Result<(usize, Vec<(String, RecordSource, String)>), String> {
+        let keep = serde_json::to_string(keep).map_err(|e| e.to_string())?;
+        let kept = "(cycle_id IS NULL OR cycle_id NOT IN (SELECT value FROM json_each(?2)))";
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(db_err)?;
+        let orphaned = {
+            let mut stmt = tx
+                .prepare(&format!("SELECT project_id, source, recording_directory FROM parts WHERE ts < ?1 AND {kept} AND recording_directory IS NOT NULL"))
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map(params![ts, keep], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        enum_column::<RecordSource>(row, 1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(db_err)?;
+            let rows = rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+            rows.into_iter()
+                .filter(|(project, _, directory)| {
+                    *project != self.project
+                        || crate::history_package::imported_recording(Path::new(directory))
+                })
+                .collect()
+        };
+        let count = tx
+            .execute(
+                &format!("DELETE FROM parts WHERE ts < ?1 AND {kept}"),
+                params![ts, keep],
+            )
+            .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok((count, orphaned))
+    }
+
+    /// 各项目的记录数与时间范围：项目编号 → (件数, 最早, 最晚)。
+    pub fn project_records(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, (u64, Option<i64>, Option<i64>)>, String> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM parts WHERE ts < ?1", [ts]).map_err(db_err)
+        let mut stmt = conn
+            .prepare("SELECT project_id, COUNT(*), MIN(ts), MAX(ts) FROM parts GROUP BY project_id")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (row.get::<_, i64>(1)? as u64, row.get(2)?, row.get(3)?),
+                ))
+            })
+            .map_err(db_err)?;
+        rows.collect::<Result<_, _>>().map_err(db_err)
     }
 }
+
+/// 本机记录库里出现过的项目编号（只读打开；库还不存在时为空）。新建、导入、复制项目时编号不能与它们重复，
+/// 否则已删除项目的历史会被算到新项目名下。
+pub fn recorded_projects(path: &Path) -> Result<BTreeSet<String>, String> {
+    if !path.is_file() {
+        return Ok(BTreeSet::new());
+    }
+    let conn = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(db_err)?;
+    conn.busy_timeout(Duration::from_secs(2)).map_err(db_err)?;
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(db_err)?;
+    if version != 10 && version != DB_VERSION {
+        return Ok(BTreeSet::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT project_id FROM parts UNION SELECT project_id FROM project_merges",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(db_err)?;
+    rows.collect::<Result<_, _>>().map_err(db_err)
+}
+
+mod history_edit;
+mod merge;
+mod package;
+mod retired;
 
 #[cfg(test)]
 #[path = "store/tests.rs"]

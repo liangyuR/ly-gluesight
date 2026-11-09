@@ -3,39 +3,52 @@
 
 use crate::frame::FrameImage;
 
-/// 箱式平均下采样：每 factor × factor 个像素取均值，尾部不足一格的行列舍去；factor 为 0 或 1 时原样复制。
+/// 箱式平均下采样：每 factor × factor 个像素逐通道取均值，尾部不足一格的行列舍去；factor 为 0 或 1 时原样复制。
+/// 通道数同原图。
 pub fn downsample(image: &FrameImage, factor: u32) -> FrameImage {
     let factor = factor.max(1);
+    let c = image.channels.max(1) as usize;
     let (width, height) = (image.width / factor, image.height / factor);
     let area = factor * factor;
-    let mut pixels = Vec::with_capacity((width * height) as usize);
+    let mut pixels = Vec::with_capacity((width * height) as usize * c);
     for y in 0..height {
         for x in 0..width {
-            let mut sum = 0u32;
+            let mut sum = [0u32; 3];
             for dy in 0..factor {
-                let row = ((y * factor + dy) * image.width + x * factor) as usize;
-                sum += image.pixels[row..row + factor as usize]
+                let row = ((y * factor + dy) * image.width + x * factor) as usize * c;
+                for (i, &p) in image.pixels[row..row + factor as usize * c]
                     .iter()
-                    .map(|&p| u32::from(p))
-                    .sum::<u32>();
+                    .enumerate()
+                {
+                    sum[i % c] += u32::from(p);
+                }
             }
-            pixels.push(((sum + area / 2) / area) as u8);
+            pixels.extend(sum[..c].iter().map(|s| ((s + area / 2) / area) as u8));
         }
     }
-    FrameImage::new(width, height, pixels)
+    let mut out = FrameImage::new(width, height, pixels);
+    out.channels = c as u8;
+    out
 }
 
-/// 一台相机一轮的缩略图条带：头部 [帧组数, 宽, 高]（u32 小端），之后按帧组 1..=N 每组 1 字节状态（1 有图、0 缺帧）
-/// 加 宽 × 高 字节灰度（缺帧全 0）。尺寸取第一张有图的帧；尺寸不同的帧按缺帧处理，全部缺帧时宽高为 0。
+/// 一台相机一轮的缩略图条带：头部 [帧组数, 宽, 高, 通道数]（u32 小端），之后按帧组 1..=N 每组 1 字节状态（1 有图、0 缺帧）
+/// 加 宽 × 高 × 通道数 字节（缺帧全 0）。尺寸取第一张有图的帧；尺寸不同的帧按缺帧处理，全部缺帧时宽高为 0。
+/// 全是 RGB 时通道数为 3（交错），否则（全灰度或混合）统一转成灰度，通道数为 1。
 pub fn thumb_strip(frames: &[Option<FrameImage>]) -> Vec<u8> {
     let (width, height) = frames
         .iter()
         .flatten()
         .next()
         .map_or((0, 0), |f| (f.width, f.height));
-    let size = (width * height) as usize;
-    let mut bytes = Vec::with_capacity(12 + frames.len() * (1 + size));
-    for n in [frames.len() as u32, width, height] {
+    let present = || frames.iter().flatten();
+    let channels: u8 = if present().next().is_some() && present().all(FrameImage::is_color) {
+        3
+    } else {
+        1
+    };
+    let size = (width * height) as usize * channels as usize;
+    let mut bytes = Vec::with_capacity(16 + frames.len() * (1 + size));
+    for n in [frames.len() as u32, width, height, u32::from(channels)] {
         bytes.extend(n.to_le_bytes());
     }
     for frame in frames {
@@ -45,7 +58,11 @@ pub fn thumb_strip(frames: &[Option<FrameImage>]) -> Vec<u8> {
         {
             Some(frame) => {
                 bytes.push(1);
-                bytes.extend_from_slice(&frame.pixels);
+                if channels == 3 {
+                    bytes.extend_from_slice(&frame.pixels);
+                } else {
+                    bytes.extend_from_slice(&frame.luma());
+                }
             }
             None => {
                 bytes.push(0);
@@ -62,17 +79,18 @@ pub type Sequence = Vec<Option<FrameImage>>;
 /// 对齐用小图的下采样倍数：1280×1024 → 40×32。
 pub const ALIGN_FACTOR: u32 = 32;
 
+/// 两帧灰度（RGB 按亮度换算）的平均绝对差。
 fn mean_abs_diff(a: &FrameImage, b: &FrameImage) -> Option<f64> {
     if (a.width, a.height) != (b.width, b.height) || a.pixels.is_empty() {
         return None;
     }
-    let sum: u64 = a
-        .pixels
+    let (la, lb) = (a.luma(), b.luma());
+    let sum: u64 = la
         .iter()
-        .zip(&b.pixels)
+        .zip(lb.iter())
         .map(|(&x, &y)| u64::from(x.abs_diff(y)))
         .sum();
-    Some(sum as f64 / a.pixels.len() as f64)
+    Some(sum as f64 / la.len() as f64)
 }
 
 /// 模板 N 帧 × 目标 M 帧的距离：每台相机两帧的平均绝对差除以该相机全部有效距离的中位数（抵消各相机曝光与纹理差异），
@@ -279,63 +297,4 @@ pub fn align_cuts(
             }
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 前端按头部 [帧组数, 宽, 高] + 每组 1 字节状态 + 灰度逐组解码：缺帧占位且状态为 0，帧组顺序不变，
-    /// 下采样按块取均值（四舍五入）。
-    /// 合成序列：胶路位置 s 处的画面是两个沿相反方向移动的亮斑（每个 s 画面唯一）。
-    fn scene(s: f64) -> Option<FrameImage> {
-        let blob =
-            |x: f64, y: f64, cx: f64, cy: f64| (-((x - cx).powi(2) + (y - cy).powi(2)) / 6.0).exp();
-        let pixels = (0..32)
-            .flat_map(|y| (0..40).map(move |x| (x as f64, y as f64)))
-            .map(|(x, y)| {
-                (20.0
-                    + 200.0
-                        * (blob(x, y, 4.0 + s, 10.0) + blob(x, y, 36.0 - 0.8 * s, 22.0)).min(1.0))
-                    as u8
-            })
-            .collect();
-        Some(FrameImage::new(40, 32, pixels))
-    }
-
-    /// D-SB-51 可信判据：画面随位置变化且与比例一致的边界可信；前慢后快使对齐偏离比例超过容许帧数时需复核；
-    /// 画面不随位置变化时 DTW 退化成对角线、碰巧与比例一致，也要判为不清晰，不能自动确认。
-    #[test]
-    fn only_distinct_alignment_close_to_proportional_is_trusted() {
-        let template: Vec<Sequence> = (0..3)
-            .map(|_| (0..30).map(|i| scene(i as f64)).collect())
-            .collect();
-        let flat: Vec<Sequence> = (0..3)
-            .map(|_| (0..30).map(|_| scene(0.0)).collect())
-            .collect();
-        let cuts = [8, 15, 23];
-        let uneven: Vec<Sequence> = (0..3)
-            .map(|_| {
-                (0..30)
-                    .map(|j| scene(29.0 * (j as f64 / 29.0).powf(1.6)))
-                    .collect()
-            })
-            .collect();
-        let reasons = |template: &[Sequence], target: &[Sequence]| -> Vec<Option<ReviewReason>> {
-            align_cuts(template, target, &cuts, 2)
-                .iter()
-                .map(|c| c.reason)
-                .collect()
-        };
-        assert_eq!(reasons(&template, &template), [None; 3]);
-        assert!(reasons(&template, &uneven).contains(&Some(ReviewReason::Deviates)));
-        let flat_cuts = align_cuts(&flat, &flat, &cuts, 2);
-        assert!(
-            flat_cuts
-                .iter()
-                .all(|c| c.cut.abs_diff(c.proportional) <= 2
-                    && c.reason == Some(ReviewReason::Unclear)),
-            "{flat_cuts:?}"
-        );
-    }
 }

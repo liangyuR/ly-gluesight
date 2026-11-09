@@ -1,18 +1,20 @@
 //! 逐帧定向测量（D-SB-47）：开启定向的（段, 检测相机）在出胶点周围的扇区里定向、拟合胶路，只量距出胶点 [s₀, s₀ + L] 的一段。
 //! 测量图是 `template::heading`：一张响应图，在扇区（出胶点背离最近画面边的半圈，见 `heading::search_sector`）里扇形扫描，
-//! 取 3 个候选方向各粗跟踪、量卡尺，按 `judge::fit` 选方向；没找到胶条就照常按缺胶判，不记检测不完整。
+//! 取 3 个候选方向各粗跟踪、量卡尺，按 `judge::fit` 选方向；彩色路径区分背景无胶与路径不可信，灰度保留原判定。
 
 use serde_json::{json, Value};
 
 use super::judge::edge::EdgeWindow;
 use super::judge::fit::{choose_path, judge_stations, PathChoice, PathGate, StationGate};
+use super::judge::taught::{judge_color_stations, ColorStation};
 use super::taught::{
-    bead_metrics, bead_params, bead_params_into, edge_graph, edge_mm, edge_points,
-    response_params_into, FrameMeasurement, GraphRun,
+    apply_color_evidence, bead_metrics, bead_params, bead_params_into, check_color,
+    color_params_into, edge_graph, edge_measure, edge_points, lateral_runs, response_params_into,
+    FrameMeasurement, GraphRun,
 };
-use super::template::{self, number};
+use super::template::{self, number, Template};
 use super::{FrameImage, RunResult};
-use crate::heading::{nozzle, search_sector};
+use crate::heading::{nozzle, search_sector, window};
 use crate::recipe::{CameraInspect, Recipe};
 
 /// 扇形扫描在检测区前段最多看这么远（px，同 1.1）。
@@ -30,7 +32,11 @@ pub struct HeadingGraph {
     pub camera_idx: usize,
     pub segment: u32,
     pub size: [u32; 2],
-    /// `template::heading` 的全部有效参数与判定门限（发布包 graph.json 冻结它们）
+    /// 示教帧通道数（1 灰度、3 彩色）；未知时不核对（见 `CorridorSet::with_channels`）
+    pub channels: Option<u8>,
+    /// 测量图模板：灰度 `template::heading`，这一段有颜色模型时 `template::heading_color`
+    pub template: &'static Template,
+    /// 模板的全部有效参数与判定门限（发布包 graph.json 冻结它们）
     pub params: Value,
     pub judge: Value,
     path_gate: PathGate,
@@ -57,7 +63,7 @@ fn run_targets(edge: bool) -> Vec<String> {
 }
 
 /// 第 `segment` 段、一台检测相机的定向测量图：出胶点见 `heading::nozzle`（标定值或走廊起点推出），扇区见 `heading::search_sector`，
-/// 检测窗口按相机当量换成像素；出胶点须在示教帧内。响应图只算出胶点 ± 检测区外沿 + max(胶宽上限 + 8, 卡尺半长 + 5) 的一块，
+/// 测量区间（见 `heading::window`：段覆盖、相机、默认值依次取）按相机当量换成像素；出胶点须在示教帧内。响应图只算出胶点 ± 检测区外沿 + max(胶宽上限 + 8, 卡尺半长 + 5) 的一块，
 /// 盖住粗跟踪与卡尺够得着的地方。
 pub fn plan_heading(
     inspect: &CameraInspect,
@@ -81,11 +87,8 @@ pub fn plan_heading(
         return Err(fail("本段没有开启逐帧定向"));
     }
     let scale = inspect.mm_per_px.ok_or_else(|| fail("缺少像素当量"))?;
-    let window = inspect
-        .window
-        .as_ref()
-        .ok_or_else(|| fail("缺少测量区间"))?;
-    let anchor = nozzle(segments, &cameras, inspect)?
+    let (window, _) = window(&segments[k], inspect);
+    let anchor = nozzle(segments, &cameras, inspect)
         .ok_or_else(|| fail("尚未标定出胶点或示教走廊，推不出出胶点"))?
         .point;
     if !(anchor[0] >= 0.0
@@ -102,7 +105,7 @@ pub fn plan_heading(
         window.start_mm / scale,
         (window.start_mm + window.length_mm) / scale,
     ];
-    let detect = inspect.detect.as_ref().unwrap_or(&recipe.detect);
+    let detect = &segments[k].detect(&recipe.detect);
     let params = bead_params(
         scale,
         f64::from(recipe.spacing) / scale,
@@ -121,22 +124,36 @@ pub fn plan_heading(
         "nozzle": anchor, "zone": zone, "radial": [z0, z0 + FAN_LENGTH_PX.min(z1 - z0)],
         "sector": search_sector(anchor, size, turned), "pathWidthMax": path_width_max,
     });
-    response_params_into(&mut business, detect, &params, roi);
+    let color_model =
+        super::taught::measuring_color_model(inspect, segment).map_err(|e| fail(&e))?;
+    let template = match color_model {
+        Some(model) => {
+            color_params_into(&mut business, model, roi);
+            template::heading_color()
+        }
+        None => {
+            response_params_into(&mut business, detect, &params, roi);
+            template::heading()
+        }
+    };
     bead_params_into(&mut business, &params, params.half, edge.as_ref()).map_err(|e| fail(&e))?;
-    let expert = recipe.expert_layers(inspect);
-    let effective = template::heading()
-        .params(business, &expert)
-        .map_err(|e| fail(&e))?;
-    let judge = template::heading().judge(&expert);
+    let effective = template.params(business).map_err(|e| fail(&e))?;
+    let judge = template.judge();
     let gate = |values: &Value, name: &str| number(values, name).map_err(|e| fail(&e));
     Ok(HeadingGraph {
         camera: inspect.camera.clone(),
         camera_idx,
         segment,
         size,
+        channels: None,
+        template,
         path_gate: PathGate {
             min_coverage: gate(&judge, "minCoverage")?,
-            sharp_min: gate(&effective, "pathSharpMin")?,
+            // 胶色跟踪没有边缘陡度：像不像胶由得分本身决定
+            sharp_min: match color_model {
+                Some(_) => None,
+                None => Some(gate(&effective, "pathSharpMin")?),
+            },
         },
         station_gate: StationGate {
             width_range: [params.lo, params.hi],
@@ -167,18 +184,11 @@ pub fn measure_heading_with(
     seq: u64,
     run: impl FnOnce(GraphRun<'_>, &FrameImage) -> Result<RunResult, String>,
 ) -> Result<FrameMeasurement, String> {
-    if [image.width, image.height] != g.size {
-        return Err(format!(
-            "相机 {} 这一帧图像 {}×{} 与示教帧 {}×{} 尺寸不一致",
-            g.camera, image.width, image.height, g.size[0], g.size[1]
-        ));
-    }
-    if image.pixels.len() != image.width as usize * image.height as usize {
-        return Err("图像像素缓冲与尺寸不一致".into());
-    }
+    super::taught::check_frame(&g.camera, g.size, g.channels, image)?;
+    check_color(&g.camera, g.template, image)?;
     let result = run(
         GraphRun {
-            template: template::heading(),
+            template: g.template,
             params: &g.params,
             targets: &g.targets,
         },
@@ -192,6 +202,31 @@ pub fn measure_heading_with(
         return measure_chosen(g, &result, &choice, seq);
     }
     let mut measured = no_bead(g, &choice, seq);
+    if g.params["widthPolicy"] == "extent" {
+        use crate::burst_judge::StationEvidenceState::{Absent, Unknown};
+        let tracks: Vec<_> = (0..3)
+            .filter_map(|k| result.record(&format!("track{k}")))
+            .filter(|t| t["valid"] == true)
+            .collect();
+        let background = !tracks.is_empty()
+            && tracks
+                .iter()
+                .all(|t| t["found"].as_u64() == Some(0) && t["unknownSteps"].as_u64() == Some(0));
+        let stations = vec![
+            ColorStation::empty(
+                if background { Absent } else { Unknown },
+                (!background).then_some("path_untrusted")
+            );
+            measured.metrics.widths.len()
+        ];
+        let poses = vec![(g.nozzle, [0.0, 0.0]); stations.len()];
+        apply_color_evidence(&mut measured.metrics, &stations, &poses, g.scale);
+        if !background {
+            measured.metrics.gap_max_mm = 0.0;
+        }
+        measured.metrics.heading_deg = None;
+        measured.line.clear();
+    }
     measured.metrics.heading_fallback = true;
     measured.metrics.fallback_reason = Some(choice.reason).filter(|reason| !reason.is_empty());
     Ok(measured)
@@ -222,7 +257,29 @@ fn measure_chosen(
     let runs = result
         .record(&format!("runs{k}"))
         .ok_or("算法缺少横向卡尺结果")?;
-    let calls = judge_stations(runs, g.station_gate, true)?;
+    let color = g.params["widthPolicy"] == "extent";
+    let mut calls = judge_stations(runs, g.station_gate, !color)?;
+    let evidence = if color {
+        let parsed = lateral_runs(runs, "胶色卡尺")?;
+        let evidence = judge_color_stations(
+            &parsed,
+            g.station_gate.width_range[0],
+            g.station_gate.width_range[1],
+            g.station_gate.center_ratio,
+            None,
+        );
+        for (call, station) in calls.iter_mut().zip(&evidence) {
+            call.bead = station.bead;
+            call.unknown = matches!(
+                station.state,
+                crate::burst_judge::StationEvidenceState::Clipped
+                    | crate::burst_judge::StationEvidenceState::Unknown
+            );
+        }
+        Some(evidence)
+    } else {
+        None
+    };
     if calls.is_empty() {
         return Err("定向测量没有测站".into());
     }
@@ -231,10 +288,33 @@ fn measure_chosen(
         .iter()
         .map(|b| b.map(|(lo, hi)| (hi - lo, 0.5 * (lo + hi))))
         .collect();
-    let mut metrics = bead_metrics(g.camera_idx, g.segment, seq, g.scale, g.spacing_mm, &beads);
+    let unknown: Vec<bool> = calls.iter().map(|c| c.unknown).collect();
+    let mut metrics = bead_metrics(
+        g.camera_idx,
+        g.segment,
+        seq,
+        g.scale,
+        g.spacing_mm,
+        &beads,
+        &unknown,
+    );
     metrics.x_mm = None;
+    if let Some(stations) = &evidence {
+        let poses: Vec<_> = calls.iter().map(|c| (c.center, c.normal)).collect();
+        apply_color_evidence(&mut metrics, stations, &poses, g.scale);
+    }
+    let mut part_edges = Vec::new();
     if let Some(window) = &g.edge {
-        metrics.edge_mm = edge_mm(result.record(&format!("edges{k}")), &lohi, window, g.scale)?;
+        let poses: Vec<([f64; 2], [f64; 2])> = calls.iter().map(|c| (c.center, c.normal)).collect();
+        let edge = edge_measure(
+            result.record(&format!("edges{k}")),
+            &lohi,
+            &poses,
+            window,
+            g.scale,
+        )?;
+        metrics.edge_mm = edge.mm;
+        part_edges = edge.lines;
     }
     let line: Vec<[f32; 2]> = result
         .record(&format!("line{k}"))
@@ -250,6 +330,7 @@ fn measure_chosen(
             .iter()
             .map(|c| c.bead.map(|b| edge_points(c.center, c.normal, b)))
             .collect(),
+        part_edges,
         line,
         ms: 0,
     })
@@ -278,12 +359,14 @@ fn no_bead(g: &HeadingGraph, choice: &PathChoice, seq: u64) -> FrameMeasurement 
         g.scale,
         g.spacing_mm,
         &vec![None; n],
+        &[],
     );
     metrics.x_mm = None;
     metrics.heading_deg = choice.heading;
     FrameMeasurement {
         metrics,
         edges: vec![None; n],
+        part_edges: Vec::new(),
         line: choice
             .heading
             .map(|h| straight_line(g.nozzle, h, g.zone))

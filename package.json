@@ -1,7 +1,7 @@
 {
   "name": "gluesight",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.2.2",
   "type": "module",
   "packageManager": "pnpm@12.15.0",
   "engines": {
@@ -25,16 +25,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "samples:test": "python -m unittest discover -s scripts/sample-set/tests -v",
-    "test:ui:production": "pwsh -NoProfile -File scripts/Test-UiProductionFlow.ps1",
-    "test:soak": "pwsh -NoProfile -File scripts/Test-Soak.ps1",
-    "test:soak:throughput": "pwsh -NoProfile -File scripts/Test-Soak.ps1 -Stages throughput",
     "typecheck": "tsc -b && tsc --noEmit -p tsconfig.test.json",
     "preview": "vite preview --config vite.config.ts",
     "tauri": "tauri",
     "test:desktop:build": "pwsh -NoProfile -File scripts/Build-UiTestInstance.ps1"
   },
   "dependencies": {
-    "@lyflow/editor": "https://github.com/liangyuR/lyFlow/releases/download/v1.2.0/lyflow-editor-v1.2.0.tgz",
+    "@lyflow/editor": "https://github.com/liangyuR/lyFlow/releases/download/v1.3.2/lyflow-editor-v1.3.2.tgz",
     "@tauri-apps/api": "^2.12.4",
     "@xyflow/react": "^12.12.0",
     "echarts": "6.1.0",

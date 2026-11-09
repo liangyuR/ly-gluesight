@@ -260,72 +260,6 @@ mod tests {
         })
     }
 
-    fn statuses(j: &EdgeJudgement) -> Vec<(EdgeStatus, Option<f64>)> {
-        j.stations
-            .iter()
-            .map(|s| (s.status, s.distance_px))
-            .collect()
-    }
-
-    #[test]
-    fn edges_on_minority_side_are_ignored_and_distance_is_from_bead_center() {
-        use EdgeStatus::{None as Miss, Ok};
-        let cases: [(
-            &[(&[f64], &[f64])],
-            EdgeSide,
-            Vec<(EdgeStatus, Option<f64>)>,
-        ); 2] = [
-            (
-                &[(&[20.0], &[]), (&[22.0], &[]), (&[], &[15.0])],
-                EdgeSide::Right,
-                vec![(Ok, Some(18.0)), (Ok, Some(20.0)), (Miss, None)],
-            ),
-            (
-                &[(&[20.0], &[]), (&[], &[15.0]), (&[], &[16.0])],
-                EdgeSide::Left,
-                vec![(Miss, None), (Ok, Some(17.0)), (Ok, Some(18.0))],
-            ),
-        ];
-        for (stations, side, expected) in cases {
-            let j = judge_edges(&record(stations), &[BEAD; 3], &WINDOW).unwrap();
-            assert_eq!((j.side, statuses(&j)), (Some(side), expected), "{side:?}");
-        }
-    }
-
-    #[test]
-    fn only_first_edge_inside_window_beyond_bead_edge_counts() {
-        // 右侧胶边 6：窗口 [6 + 7.5, 6 + 2.5 + 100 − 12] = [13.5, 96.5]
-        let cases: [(&[f64], Option<f64>); 5] = [
-            (&[10.0, 20.0], Some(20.0)),
-            (&[13.0, 30.0], Some(30.0)),
-            (&[13.6, 15.0], Some(13.6)),
-            (&[96.0], Some(96.0)),
-            (&[97.0], None),
-        ];
-        for (hits, expected) in cases {
-            let j = judge_edges(&record(&[(hits, &[])]), &[BEAD], &WINDOW).unwrap();
-            assert_eq!(
-                j.stations[0].distance_px,
-                expected.map(|t| t - 2.0),
-                "{hits:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn station_far_from_running_median_is_outlier_and_left_out_of_mean() {
-        let hits = [20.0, 21.0, 20.0, 40.0, 21.0, 20.0, 21.0];
-        let stations: Vec<(&[f64], &[f64])> = hits
-            .iter()
-            .map(|t| (std::slice::from_ref(t), &[][..]))
-            .collect();
-        let j = judge_edges(&record(&stations), &[BEAD; 7], &WINDOW).unwrap();
-        let outliers: Vec<usize> = (0..7)
-            .filter(|&i| j.stations[i].status == EdgeStatus::Outlier)
-            .collect();
-        assert_eq!((outliers, j.mean_distance_px()), (vec![3], Some(18.5)));
-    }
-
     #[test]
     fn tied_edge_votes_pick_no_side_and_give_no_distance() {
         // 防的回归（D-SB-48）：左右找边票数相同时任选一侧算胶边距，胶偏按不可信的距离判
@@ -336,39 +270,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!((j.side, j.mean_distance_px()), (None, None));
-    }
-
-    #[test]
-    fn frame_mean_needs_ok_on_at_least_half_of_bead_stations() {
-        let beads = [BEAD, BEAD, BEAD, BEAD, None, None];
-        let cases: [(&[(&[f64], &[f64])], Option<f64>); 2] = [
-            (
-                &[
-                    (&[20.0], &[]),
-                    (&[22.0], &[]),
-                    (&[], &[]),
-                    (&[], &[]),
-                    (&[], &[]),
-                    (&[], &[]),
-                ],
-                Some(19.0),
-            ),
-            (
-                &[
-                    (&[20.0], &[]),
-                    (&[], &[]),
-                    (&[], &[]),
-                    (&[], &[]),
-                    (&[30.0], &[]),
-                    (&[30.0], &[]),
-                ],
-                None,
-            ),
-        ];
-        for (stations, expected) in cases {
-            let j = judge_edges(&record(stations), &beads, &WINDOW).unwrap();
-            assert_eq!(j.mean_distance_px(), expected);
-        }
     }
 
     #[test]

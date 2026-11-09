@@ -1,24 +1,24 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { GrayViewer, useGrayImage } from "../src/features/workspace/components";
+import { FrameViewer, useFrameImage } from "../src/features/workspace/components";
 import { workspaceApi } from "../src/features/workspace/api";
-import type { GrayImage } from "../src/features/workspace/types";
+import type { FrameImage } from "../src/features/workspace/types";
 import { deferred } from "./fixtures";
 import { stubScreenCTM, withDOMPoint } from "./svg-pointer";
 
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn() } }));
-const image: GrayImage = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
+const image: FrameImage = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
 beforeEach(() => {
   vi.mocked(workspaceApi.image).mockReset().mockResolvedValue(image);
 });
 
 describe("图像查看与加载", () => {
   it("切换到另一张示教帧后，迟到的上一张图不能覆盖当前图", async () => {
-    const old = deferred<GrayImage>();
+    const old = deferred<FrameImage>();
     const current = { ...image, url: "data:,current" };
     vi.mocked(workspaceApi.image).mockReturnValueOnce(old.promise).mockResolvedValueOnce(current);
-    const { result, rerender } = renderHook(({ imageId }) => useGrayImage("A", imageId), { initialProps: { imageId: "frame-1" } });
+    const { result, rerender } = renderHook(({ imageId }) => useFrameImage("A", imageId), { initialProps: { imageId: "frame-1" } });
     expect(result.current.loading).toBe(true);
     rerender({ imageId: "frame-2" });
     await waitFor(() => expect(result.current.image).toEqual(current));
@@ -31,7 +31,7 @@ describe("图像查看与加载", () => {
     let offset = 20;
     const onBrush = vi.fn(), edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
     withDOMPoint<{ offset: number }>((x, y, matrix) => [x, y - matrix.offset], () => {
-      render(<GrayViewer image={image} label="刷选图像" overlay={{ path: [[50, 30]] }} onEdit={edit} onBrush={onBrush} />);
+      render(<FrameViewer image={image} label="刷选图像" overlay={{ path: [[50, 30]] }} onEdit={edit} onBrush={onBrush} />);
       const svg = screen.getByRole("img", { name: "刷选图像" });
       stubScreenCTM(svg.querySelector("g")!, () => ({ offset }));
       stubScreenCTM(svg, () => ({ offset }));

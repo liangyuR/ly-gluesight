@@ -2,43 +2,32 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useSiteStatus } from "../src/features/cycle/api";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
-import { historyApi } from "../src/features/history/api";
-import { burstRecipe, burstWorkspaceView, siteStatus, workspaceState } from "./fixtures";
-vi.mock("../src/features/cycle/api", () => ({ useSiteStatus: vi.fn() }));
+import type { Validation } from "../src/features/workspace/types";
+import { burstRecipe, burstWorkspaceView, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn(), collectChecks: vi.fn(), publishCollect: vi.fn(), publishChecks: vi.fn() } }));
-vi.mock("../src/features/history/api", () => ({ historyApi: { query: vi.fn() } }));
+const archived: Validation = { revision: 7, passed: true, checkedAt: 1, environmentTag: {}, checks: [] };
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><ValidationPage /></MemoryRouter>);
 beforeEach(() => {
-  vi.mocked(useSiteStatus).mockReturnValue(siteStatus());
   const view = burstWorkspaceView(burstRecipe({ id: "A" }));
   view.workspace.revision = 7;
   view.plan!.segments.forEach(segment => { segment.expectedFrames = 4; });
-  view.workspace.validation = { revision: 7, passed: true, checkedAt: 1, environmentTag: {}, checks: [], samples: [] };
-  view.workspace.sampleBank = [{ id: "good", name: "良品组", geometryTag: null, expected: "OK", createdAt: 1 }];
-  view.workspace.samples = [{ historyId: null, sampleId: "good", expected: "OK" }];
   ws = workspaceState(view); vi.mocked(useWorkspace).mockImplementation(() => ws);
-  vi.mocked(historyApi.query).mockResolvedValue({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } });
   vi.mocked(workspaceApi.publish).mockResolvedValue(ws.data!);
   vi.mocked(workspaceApi.publishChecks).mockResolvedValue([{ name: "相机配置", passed: true, detail: "三台计划相机已配置" }]);
   vi.mocked(workspaceApi.retryPublish).mockResolvedValue(ws.data!);
 });
 
-describe("验证与发布页面", () => {
+describe("发布页面", () => {
 
-  it("发布失败后冻结样本配置并重试同一待生效版本", async () => {
-    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", validation: ws.data!.workspace.validation!, validationSite: "real" };
+  it("发布失败后重试同一待生效版本，不能另发新版", async () => {
+    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, validation: archived, validationSite: "real" };
     ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
     show();
-    expect(screen.getByRole("checkbox", { name: "选用样本 良品组" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "良品组期望结论" })).toBeDisabled();
-    expect(screen.getByRole("checkbox", { name: "已确认所选样本的拍摄条件、轨迹和触发顺序适用于当前候选" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "运行整套图像验证" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "重试发布 / 切换" }));
     expect(workspaceApi.retryPublish).toHaveBeenCalledWith("A", 7);
@@ -47,7 +36,7 @@ describe("验证与发布页面", () => {
 
   it("生效失败 → 确认后放弃同一修订的待生效版本；状态不确定时不能放弃", async () => {
     vi.mocked(workspaceApi.abandonPublish).mockResolvedValue(ws.data!);
-    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", validation: ws.data!.workspace.validation!, validationSite: "real" };
+    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, validation: archived, validationSite: "real" };
     ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
     const page = show();
     await userEvent.click(screen.getByRole("button", { name: "放弃待生效版本" }));
@@ -84,10 +73,8 @@ describe("验证与发布页面", () => {
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 
-  // 防的回归（D-SB-46）：发布仍要求先通过独立样本验证；或发布前检查有未满足项（如走廊未示教）时仍能发布
-  it("没有样本验证结果、发布前检查全部满足 → 可以发布；检查有未满足项 → 发布不可用并说明原因", async () => {
-    ws.data!.workspace.validation = null;
-    ws.data!.workspace.samples = [];
+  // 防的回归（D-SB-46）：发布前检查有未满足项（如走廊未示教）时仍能发布
+  it("发布前检查全部满足 → 可以发布；检查有未满足项 → 发布不可用并说明原因", async () => {
     const page = show();
     await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
     page.unmount();
@@ -95,6 +82,15 @@ describe("验证与发布页面", () => {
     show();
     await waitFor(() => expect(screen.getAllByRole("note").some(note => note.textContent?.includes("走廊示教：第 2 段相机 cam2 走廊未示教"))).toBe(true));
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
+  });
+
+  // 防的回归（D-SB-59）：示教帧上部分段没测成只是提醒，却把发布拦住；或发布确认时不再提醒这些段生产不测
+  it("发布前检查只有提醒项未满足 → 仍可发布，确认框列出不测的段", async () => {
+    vi.mocked(workspaceApi.publishChecks).mockResolvedValue([{ name: "示教帧试测", passed: false, advisory: true, detail: "第 2 段相机 cam1：runs：n_map（bad_param）" }]);
+    show();
+    await waitFor(() => expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("第 2 段相机 cam1：runs：n_map（bad_param）");
   });
 
   it("确认期间候选修订变更必须重新核对发布前检查和确认",async()=>{

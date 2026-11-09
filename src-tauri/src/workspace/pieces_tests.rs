@@ -1,5 +1,5 @@
 use super::burst::{calibration_round, measure_round, CameraTeaching};
-use super::burst_tests::{burst_workspace, capture_round, configs, measured, DEVICE};
+use super::burst_tests::{burst_workspace, capture_round, measured, DEVICE};
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::pieces::{measure_teaching, replace_teaching_piece, teaching_measured, TeachingPiece};
 use super::*;
@@ -19,6 +19,7 @@ pub(super) fn piece(round: &str, record: i64) -> TeachingPiece {
         cycle_id: format!("cycle-{record}"),
         sn: format!("SN-{record}"),
         ts: record,
+        passes: Vec::new(),
     }
 }
 
@@ -52,6 +53,8 @@ fn with_teaching(kinds: &[SegmentKind], taught: bool) -> (Workspace, CaptureRoun
                     segment,
                     corridor: corridor.clone(),
                     sector_deg: None,
+                    color_model: None,
+                    measure: None,
                 })
                 .collect();
         }
@@ -67,7 +70,7 @@ pub(super) fn measured_teaching(kinds: &[SegmentKind], x: f64) -> Workspace {
 }
 
 fn measure_with(w: &Workspace, teach: &CaptureRoundV2, x: f64) -> Result<Workspace, String> {
-    measure_teaching(w, teach, &configs(&w.doc, DEVICE), |w, round| {
+    measure_teaching(w, teach, |w, round| {
         Ok(measure_round(&w.doc.plan_cameras(), round, |_, _, _| {
             Ok(measured(x))
         }))
@@ -76,10 +79,10 @@ fn measure_with(w: &Workspace, teach: &CaptureRoundV2, x: f64) -> Result<Workspa
 }
 
 #[test]
-fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_structure() {
-    // 防的回归（RB-2、RB-8）：换示教件后原示教件的边界、其余件的已确认边界、走廊与示教帧、示教件测量或 N_exp / 标定统计 /
-    // partCalib / x_ref 还留着（新示教件图像与旧走廊、旧测量混用）；或把段的数量、类型、检测相机、容差等结构与配方级参数也清掉；
-    // 同一件重复设置时照样清空
+fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts() {
+    // 防的回归（RB-2、RB-8）：换示教件把走廊与示教帧全部清空，示教要从头重做；或原示教件的边界、其余件的已确认边界、
+    // 示教件测量、N_exp / 标定统计 / partCalib / x_ref 还留着（新示教件的帧组与旧边界、旧测量混用）；或把段的数量、类型、
+    // 检测相机、容差等结构与配方级参数也清掉；同一件重复设置时照样改动
     let (mut w, _) = with_teaching(&[Straight, Corner], true);
     let other = capture_round("other", &w.doc, GROUPS, DEVICE, &[]);
     apply_capture_review(&mut w, &other, CaptureReviewEdit::Save(vec![14])).unwrap();
@@ -99,8 +102,7 @@ fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_struc
         calib: calib.clone(),
     });
     for segment in &mut w.doc.segments {
-        (segment.expected_frames, segment.calib, segment.tolerance) =
-            (Some(15), Some(calib.clone()), 3);
+        (segment.expected_frames, segment.calib) = (Some(15), Some(calib.clone()));
     }
     w.doc.segments[0].offset_ref = Some(OffsetRef {
         measure: OffsetMeasure::AbsoluteX,
@@ -113,7 +115,7 @@ fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_struc
 
     let before = w.clone();
     assert!(
-        replace_teaching_piece(&mut w, piece("teach-again", 1)).is_err(),
+        replace_teaching_piece(&mut w, piece("teach-again", 1), GROUPS).is_err(),
         "同一件"
     );
     assert_eq!(
@@ -122,11 +124,43 @@ fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_struc
         "同一件被拒时候选不变"
     );
 
-    replace_teaching_piece(&mut w, piece("new", 2)).unwrap();
+    // 新件 60 个帧组：不按帧组数换算，沿用原示教件的边界帧号（15）作为新件的边界草稿
+    let carried = replace_teaching_piece(&mut w, piece("new", 2), 2 * GROUPS).unwrap();
+    assert_eq!(carried, Some(vec![15]), "沿用原来的分段帧数");
     assert_eq!(w.teaching_piece, Some(piece("new", 2)));
-    assert!(
-        w.camera_teaching.is_empty() && w.doc.inspect.iter().all(|i| i.segments.is_empty()),
-        "走廊与示教帧"
+    assert!(!before.camera_teaching.is_empty(), "前提：换件前已示教走廊");
+    assert_eq!(
+        w.camera_teaching.len(),
+        before.camera_teaching.len(),
+        "示教帧保留"
+    );
+    for (after, old) in w.camera_teaching.iter().zip(&before.camera_teaching) {
+        assert_eq!(
+            (
+                state_value(&after.frame),
+                &after.camera,
+                after.segment,
+                after.seq
+            ),
+            (state_value(&old.frame), &old.camera, old.segment, old.seq),
+            "冻结的示教图、所属段与帧组号不变"
+        );
+        // 改指向新示教件：导出工件配方、走廊试测与分段对应都按新件的轮次，旧轮次随后删除
+        assert_eq!(after.round, "new");
+    }
+    assert_eq!(
+        w.doc
+            .inspect
+            .iter()
+            .map(|i| state_value(&i.segments))
+            .collect::<Vec<_>>(),
+        before
+            .doc
+            .inspect
+            .iter()
+            .map(|i| state_value(&i.segments))
+            .collect::<Vec<_>>(),
+        "走廊保留"
     );
     assert!(
         w.capture_review.rounds.is_empty() && w.capture_review.template.is_none(),
@@ -158,7 +192,6 @@ fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_struc
                 (
                     s.index,
                     s.kind,
-                    s.tolerance,
                     s.cameras.clone(),
                     state_value(&s.checks),
                 )
@@ -177,7 +210,7 @@ fn replacing_teaching_piece_clears_image_derived_content_and_keeps_segment_struc
 #[test]
 fn measuring_teaching_writes_x_ref_and_a_corridor_change_invalidates_it() {
     // 防的回归（RB-3，示教件兼作标准件；PR #205 评审）：测量示教件后单段配方的 x_ref 没写进配方；分段未确认或走廊没示教完也能测；
-    // 测量后改了当量、走廊或检测参数，旧测量与 x_ref 还当作有效（发布时按过期的参考判胶偏）
+    // 测量后改了当量、走廊或检测参数（含段上的搜索半宽 / 胶宽范围覆盖），旧测量与 x_ref 还当作有效（发布时按过期的参考判胶偏）
     let (untaught, teach) = with_teaching(&[Straight], false);
     assert!(
         measure_with(&untaught, &teach, 0.5).is_err(),
@@ -192,22 +225,37 @@ fn measuring_teaching_writes_x_ref_and_a_corridor_change_invalidates_it() {
     assert_eq!(reference, Some((Some(0.5), Some(0.0))));
     assert_eq!(w.doc.segments[0].expected_frames, Some(15));
 
-    let mut changed = w.clone();
-    let mut doc = changed.doc.clone();
-    let scale = doc.inspect[0].mm_per_px.unwrap_or(0.1);
-    doc.inspect[0].mm_per_px = Some(scale * 2.0);
-    update_doc(&mut changed, doc).unwrap();
-    assert!(!teaching_measured(&changed));
-    assert_eq!(
-        changed.doc.segments[0]
-            .offset_ref
-            .as_ref()
-            .and_then(|r| r.x_ref),
-        None
-    );
-    assert_eq!(
-        changed.doc.segments[0].expected_frames,
-        Some(15),
-        "N_exp 不受走廊影响"
-    );
+    type Edit = fn(&mut crate::recipe::RecipeDoc);
+    let edits: [(&str, Edit); 3] = [
+        ("改当量", |d| {
+            let scale = d.inspect[0].mm_per_px.unwrap_or(0.1);
+            d.inspect[0].mm_per_px = Some(scale * 2.0);
+        }),
+        ("本段覆盖搜索半宽", |d| {
+            d.segments[0].search_mm = Some(12.0)
+        }),
+        ("本段覆盖胶宽范围", |d| {
+            d.segments[0].width_range = Some([2.0, 8.0])
+        }),
+    ];
+    for (what, edit) in edits {
+        let mut changed = w.clone();
+        let mut doc = changed.doc.clone();
+        edit(&mut doc);
+        update_doc(&mut changed, doc).unwrap();
+        assert!(!teaching_measured(&changed), "{what}");
+        assert_eq!(
+            changed.doc.segments[0]
+                .offset_ref
+                .as_ref()
+                .and_then(|r| r.x_ref),
+            None,
+            "{what}"
+        );
+        assert_eq!(
+            changed.doc.segments[0].expected_frames,
+            Some(15),
+            "{what}：N_exp 不受走廊影响"
+        );
+    }
 }

@@ -5,11 +5,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::heading::{measure_heading_with, plan_heading, HeadingGraph};
-use super::judge::edge::{judge_edges, EdgeWindow};
-use super::judge::taught::{judge_taught, LateralRuns, TaughtParams};
+use super::judge::edge::{judge_edges, EdgeSide, EdgeStatus, EdgeWindow};
+use super::judge::taught::{
+    judge_color_stations, judge_taught, ColorStation, LateralRuns, TaughtParams,
+};
 use super::template::{self, number, Template};
 use super::{Engine, FrameImage, RunResult};
-use crate::burst_judge::{FrameMetrics, FrameState};
+use crate::burst_judge::{
+    FrameMetrics, FrameState, MeasurementEvidence, StationEvidence, StationEvidenceState,
+};
 use crate::plan::{EdgePolarity, OffsetMeasure};
 use crate::recipe::{CameraInspect, DetectParams, Polarity, Recipe};
 
@@ -95,13 +99,14 @@ fn too_few_stations(n: usize, length_mm: f64, spacing_mm: f32) -> String {
     format!("按站距 {spacing_mm} mm，检测走廊（{length_mm:.1} mm）只有 {n} 站，至少要 {MIN_STATIONS} 站：{shrink}把走廊画到不短于 {need} mm")
 }
 
-/// 示教走廊测量图（`template::corridor`）的业务参数：示教中线、响应图、量胶宽，有找边时再加找边参数。
-/// 卡尺半长取 max(搜索半宽, 容差 + 胶宽上限 / 2)，与 1.1 示教胶路同一条式子。
+/// 示教走廊测量图（`template::corridor`，有颜色模型时 `template::corridor_color`）的业务参数：示教中线、响应图（或胶色得分图）、
+/// 量胶宽，有找边时再加找边参数。卡尺半长取 max(搜索半宽, 容差 + 胶宽上限 / 2)，与 1.1 示教胶路同一条式子。
 fn corridor_params(
     path: &[[f32; 2]],
     detect: &DetectParams,
     p: &GraphParams,
     edge: Option<&EdgeGraph>,
+    color_model: Option<&str>,
 ) -> Result<(Value, f64), String> {
     let points = serde_json::to_string(path).map_err(|e| e.to_string())?;
     let parsed: Vec<[f64; 2]> = serde_json::from_str(&points).map_err(|e| e.to_string())?;
@@ -115,9 +120,29 @@ fn corridor_params(
         (y1 - y0 + 2.0 * pad).ceil() + 1.0,
     ];
     let mut params = json!({"points": points});
-    response_params_into(&mut params, detect, p, roi);
+    match color_model {
+        Some(model) => color_params_into(&mut params, model, roi),
+        None => response_params_into(&mut params, detect, p, roi),
+    }
     bead_params_into(&mut params, p, half, edge)?;
     Ok((params, half))
+}
+
+/// 这台相机这一段测量用的颜色模型（按选的测量方式，见 `SegmentCorridor::measuring_color_model`）。
+pub(super) fn measuring_color_model<'a>(
+    inspect: &'a CameraInspect,
+    segment: u32,
+) -> Result<Option<&'a str>, String> {
+    match inspect.segment_corridor(segment) {
+        Some(s) => s.measuring_color_model(),
+        None => Ok(None),
+    }
+}
+
+/// 胶色得分图（`glue.color_map`）的业务参数：颜色模型原文，只算 roi 那一块。
+pub(super) fn color_params_into(params: &mut Value, model: &str, roi: [f64; 4]) {
+    params["colorModel"] = json!(model);
+    params["roi"] = json!(roi.map(|v| v as i64));
 }
 
 /// 1.1 示教胶路（`glue.polyline` 同一套重采样）的点：从起点每 2 px 一点、末端一点，坐标舍入到 3 位小数；返回包围盒。
@@ -284,18 +309,51 @@ pub(super) fn edge_graph(
 /// 找边的远侧持续长度（px，模板 `edgeFarRun` 的默认值）。
 const EDGE_FAR_RUN_PX: f64 = 12.0;
 
-/// 找边记录（`glue.part_edges`）按 1.1 口径判 → 胶中心到零件边距离的均值（mm）。`beads` 是逐站选中的胶边 (lo, hi)（px）；
-/// 有胶测站里找到边的不到一半时为 None（这一帧胶偏记未测）。
-pub(super) fn edge_mm(
+/// 一帧找边的结果：胶中心到零件边距离的均值（mm，有胶测站里找到边的不到一半时为 None，这一帧胶偏记未测），
+/// 与叠图用的胶边距线（找边判为 ok 的站，胶中心 → 零件边）。
+pub(super) struct EdgeMeasure {
+    pub mm: Option<f64>,
+    pub lines: Vec<[[f32; 2]; 2]>,
+}
+
+/// 找边记录（`glue.part_edges`）按 1.1 口径判。`beads` 是逐站选中的胶边 (lo, hi)（px），`poses` 是逐站站点与单位法向。
+pub(super) fn edge_measure(
     edges: Option<&Value>,
     beads: &[Option<(f64, f64)>],
+    poses: &[([f64; 2], [f64; 2])],
     window: &EdgeWindow,
     scale: f64,
-) -> Result<Option<f64>, String> {
+) -> Result<EdgeMeasure, String> {
     let edges = edges.ok_or("算法缺少找边结果")?;
-    Ok(judge_edges(edges, beads, window)?
-        .mean_distance_px()
-        .map(|d| d * scale))
+    let judged = judge_edges(edges, beads, window)?;
+    // 距离从胶中心沿零件边一侧量：右侧沿 +n，左侧沿 −n
+    let sign = match judged.side {
+        Some(EdgeSide::Right) => 1.0,
+        Some(EdgeSide::Left) => -1.0,
+        None => 0.0,
+    };
+    let lines = judged
+        .stations
+        .iter()
+        .zip(beads)
+        .zip(poses)
+        .filter(|((station, _), _)| station.status == EdgeStatus::Ok)
+        .filter_map(|((station, bead), &(center, normal))| {
+            let (lo, hi) = (*bead)?;
+            let mid = 0.5 * (lo + hi);
+            let at = |t: f64| {
+                [
+                    (center[0] + normal[0] * t) as f32,
+                    (center[1] + normal[1] * t) as f32,
+                ]
+            };
+            Some([at(mid), at(mid + sign * station.distance_px?)])
+        })
+        .collect();
+    Ok(EdgeMeasure {
+        mm: judged.mean_distance_px().map(|d| d * scale),
+        lines,
+    })
 }
 
 /// 一站卡尺的位置：站点与单位法向（px）。
@@ -347,7 +405,11 @@ pub struct CorridorGraph {
     pub segment: u32,
     /// 示教帧尺寸；每帧必须与它相同
     pub size: [u32; 2],
-    /// `template::corridor` 的全部有效参数与判定门限（发布包冻结它们）
+    /// 示教帧通道数（1 灰度、3 彩色）；未知时不核对（见 `CorridorSet::with_channels`）
+    pub channels: Option<u8>,
+    /// 测量图模板：灰度 `template::corridor`，这一段有颜色模型时 `template::corridor_color`
+    pub template: &'static Template,
+    /// 模板的全部有效参数与判定门限（发布包冻结它们）
     pub params: Value,
     pub judge: Value,
     targets: Vec<String>,
@@ -367,6 +429,9 @@ pub struct CorridorGraph {
 pub struct FrameMeasurement {
     pub metrics: FrameMetrics,
     pub edges: Vec<Option<[[f32; 2]; 2]>>,
+    /// 胶边距线（ToEdge）：找到零件边的站，胶中心 → 零件边；不找边时为空
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub part_edges: Vec<[[f32; 2]; 2]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub line: Vec<[f32; 2]>,
     pub ms: u32,
@@ -422,7 +487,7 @@ pub fn plan_corridor(
     let Some(scale) = inspect.mm_per_px else {
         return Err(fail("缺少像素当量"));
     };
-    let detect = inspect.detect.as_ref().unwrap_or(&recipe.detect);
+    let detect = &recipe.segment_detect(segment);
     let params =
         graph_params(corridor, scale, recipe.spacing as f64 / scale, detect).map_err(fail)?;
     if !corridor_inside(corridor, size) {
@@ -446,16 +511,23 @@ pub fn plan_corridor(
         .map(|i| polyline_at(corridor, i as f64 * params.step))
         .collect();
     let edge = edge_graph(recipe, segment, &inspect.camera, scale)?;
-    let (business, _) =
-        corridor_params(corridor, detect, &params, edge.as_ref()).map_err(|e| fail(&e))?;
-    let expert = recipe.expert_layers(inspect);
-    let effective = template::corridor()
-        .params(business, &expert)
+    let color_model = measuring_color_model(inspect, segment).map_err(|e| fail(&e))?;
+    let template = if color_model.is_some() {
+        template::corridor_color()
+    } else {
+        template::corridor()
+    };
+    let (business, _) = corridor_params(corridor, detect, &params, edge.as_ref(), color_model)
         .map_err(|e| fail(&e))?;
-    let judge = template::corridor().judge(&expert);
+    let effective = template.params(business).map_err(|e| fail(&e))?;
+    let judge = template.judge();
     let gate = |name: &str| number(&judge, name).map_err(|e| fail(&e));
     let taught = TaughtParams {
-        tolerance: params.tolerance,
+        tolerance: if color_model.is_some() {
+            params.half
+        } else {
+            params.tolerance
+        },
         sharp_min: gate("trackSharpMin")?,
         width_range: [params.lo, params.hi],
         present_ratio: gate("presentRatio")?,
@@ -475,6 +547,8 @@ pub fn plan_corridor(
         camera_idx,
         segment,
         size,
+        channels: None,
+        template,
         params: effective,
         judge,
         targets,
@@ -512,11 +586,36 @@ impl FrameGraph<'_> {
     }
 }
 
+/// 建不成测量图的一（相机, 段）：没示教走廊，或走廊、当量、定向参数有问题。
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnavailableCorridor {
+    pub camera_idx: usize,
+    pub camera: String,
+    pub segment: u32,
+    pub reason: String,
+    /// 只是还没示教走廊（`build` 跳过这类，不报错）
+    pub untaught: bool,
+}
+
 impl CorridorSet {
+    /// 全部建成：没示教的组合跳过，其余任一组合建不成即报错（发布、预热、验证用）。
     pub fn build(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Self, String> {
+        let (set, unavailable) = Self::build_available(recipe, sizes);
+        match unavailable.into_iter().find(|u| !u.untaught) {
+            Some(u) => Err(u.reason),
+            None => Ok(set),
+        }
+    }
+
+    /// 能建的都建，建不成的（含没示教的）连同原因列出，按段、计划相机顺序（历史件按段部分复测用）。
+    pub fn build_available(
+        recipe: &Recipe,
+        sizes: &[[u32; 2]],
+    ) -> (Self, Vec<UnavailableCorridor>) {
         let cameras = recipe.plan_cameras();
         let mut graphs = BTreeMap::new();
         let mut headings = BTreeMap::new();
+        let mut unavailable = Vec::new();
         for segment in &recipe.path_segments {
             for camera in crate::plan::segment_cameras(segment, &cameras) {
                 let Some((idx, inspect)) = recipe
@@ -527,25 +626,55 @@ impl CorridorSet {
                 else {
                     continue;
                 };
+                let skip = |reason: String, untaught: bool| UnavailableCorridor {
+                    camera_idx: idx,
+                    camera: camera.clone(),
+                    segment: segment.index,
+                    reason,
+                    untaught,
+                };
                 if !inspect.segment_taught(segment.index) {
+                    unavailable.push(skip(
+                        format!("第 {} 段相机 {camera}：尚未示教检测走廊", segment.index),
+                        true,
+                    ));
                     continue;
                 }
-                let size = *sizes
+                let built = sizes
                     .get(idx)
-                    .ok_or_else(|| format!("相机 {camera} 没有示教帧尺寸"))?;
-                graphs.insert(
-                    (idx, segment.index),
-                    plan_corridor(inspect, segment.index, recipe, size)?,
-                );
-                if segment.heading.is_some() {
-                    headings.insert(
-                        (idx, segment.index),
-                        plan_heading(inspect, segment.index, recipe, size)?,
-                    );
+                    .copied()
+                    .ok_or_else(|| format!("相机 {camera} 没有示教帧尺寸"))
+                    .and_then(|size| {
+                        let corridor = plan_corridor(inspect, segment.index, recipe, size)?;
+                        let heading = match segment.heading {
+                            Some(_) => Some(plan_heading(inspect, segment.index, recipe, size)?),
+                            None => None,
+                        };
+                        Ok((corridor, heading))
+                    });
+                match built {
+                    Ok((corridor, heading)) => {
+                        graphs.insert((idx, segment.index), corridor);
+                        if let Some(heading) = heading {
+                            headings.insert((idx, segment.index), heading);
+                        }
+                    }
+                    Err(reason) => unavailable.push(skip(reason, false)),
                 }
             }
         }
-        Ok(Self { graphs, headings })
+        (Self { graphs, headings }, unavailable)
+    }
+
+    /// 记下各计划相机示教帧的通道数（计划相机顺序），量帧时彩色 / 灰度与示教帧不一致即报错。
+    pub fn with_channels(mut self, channels: &[u8]) -> Self {
+        for g in self.graphs.values_mut() {
+            g.channels = channels.get(g.camera_idx).copied();
+        }
+        for h in self.headings.values_mut() {
+            h.channels = channels.get(h.camera_idx).copied();
+        }
+        self
     }
 
     pub fn get(&self, camera: usize, segment: u32) -> Option<FrameGraph<'_>> {
@@ -596,21 +725,61 @@ pub struct GraphRun<'a> {
     pub targets: &'a [String],
 }
 
+/// 一帧与示教帧的尺寸、像素缓冲核对；示教帧通道数已知时，彩色 / 灰度不一致也报错（lyFlow 能把 RGB 转灰度量，
+/// 但示教与生产的成像口径不同，结果不可比）。
+pub(super) fn check_frame(
+    camera: &str,
+    size: [u32; 2],
+    channels: Option<u8>,
+    image: &FrameImage,
+) -> Result<(), String> {
+    if [image.width, image.height] != size {
+        return Err(format!(
+            "相机 {camera} 这一帧图像 {}×{} 与示教帧 {}×{} 尺寸不一致",
+            image.width, image.height, size[0], size[1]
+        ));
+    }
+    if !image.consistent() {
+        return Err("图像像素缓冲与尺寸不一致".into());
+    }
+    if let Some(taught) = channels.filter(|&c| c != image.channels) {
+        let label = |c: u8| if c == 3 { "彩色" } else { "灰度" };
+        return Err(format!(
+            "相机 {camera} 示教帧为{}，当前帧为{}：相机图像模式与示教时不一致，请恢复图像模式或重新示教",
+            label(taught),
+            label(image.channels)
+        ));
+    }
+    Ok(())
+}
+
+/// 胶色测量图只量彩色帧：灰度帧没有颜色可比（示教帧通道未知时也在这里拦下）。
+pub(super) fn check_color(
+    camera: &str,
+    template: &Template,
+    image: &FrameImage,
+) -> Result<(), String> {
+    let color = std::ptr::eq(template, template::corridor_color())
+        || std::ptr::eq(template, template::heading_color());
+    if color && !image.is_color() {
+        return Err(format!(
+            "相机 {camera} 这一段按胶色测量，当前帧却是灰度：请把相机图像模式改回彩色，或把这一段改按灰度测量"
+        ));
+    }
+    Ok(())
+}
+
 /// 量一帧：`run` 按模板与参数跑这张图。图像尺寸与示教帧不同、算法失败或输出不合契约时返回 Err，
 /// 只影响这一帧（调用方记为 Error 帧，规格 §0）；胶条从走廊一侧走出时这一帧为 OutOfCorridor（默认做法 4），都不 panic。
 pub fn measure_frame_with(
     corridor: &CorridorGraph, image: &FrameImage, seq: u64,
     run: impl FnOnce(GraphRun<'_>, &FrameImage) -> Result<RunResult, String>,
 ) -> Result<FrameMeasurement, String> {
-    if [image.width, image.height] != corridor.size {
-        return Err(format!("相机 {} 这一帧图像 {}×{} 与示教帧 {}×{} 尺寸不一致", corridor.camera, image.width, image.height, corridor.size[0], corridor.size[1]));
-    }
-    if image.pixels.len() != image.width as usize * image.height as usize {
-        return Err("图像像素缓冲与尺寸不一致".into());
-    }
+    check_frame(&corridor.camera, corridor.size, corridor.channels, image)?;
+    check_color(&corridor.camera, corridor.template, image)?;
     let result = run(
         GraphRun {
-            template: template::corridor(),
+            template: corridor.template,
             params: &corridor.params,
             targets: &corridor.targets,
         },
@@ -649,7 +818,34 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
         }
         poses.push((center, normal));
     }
-    let judged = judge_taught(&runs, Some(&split), &c.taught)?;
+    let evidence = (c.params["widthPolicy"] == "extent").then(|| {
+        let mut stations = judge_color_stations(
+            &runs,
+            c.taught.width_range[0],
+            c.taught.width_range[1],
+            c.taught.center_ratio,
+            Some(c.taught.tolerance),
+        );
+        color_corridor_exits(&mut stations, c.taught.tolerance);
+        stations
+    });
+    let judged = match &evidence {
+        Some(stations) => super::judge::taught::TaughtJudgement {
+            beads: stations.iter().map(|s| s.bead).collect(),
+            unknown: stations
+                .iter()
+                .map(|s| {
+                    matches!(
+                        s.state,
+                        StationEvidenceState::Clipped | StationEvidenceState::Unknown
+                    )
+                })
+                .collect(),
+            expect: Vec::new(),
+            no_bead: None,
+        },
+        None => judge_taught(&runs, Some(&split), &c.taught)?,
+    };
     // 有胶站的胶宽（px）与胶中心相对走廊的法向偏移（px，沿算法法向为正）
     let beads: Vec<Option<(f64, f64)>> = judged
         .beads
@@ -662,17 +858,42 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
         .zip(&poses)
         .map(|(b, &(center, normal))| b.map(|b| edge_points(center, normal, b)))
         .collect();
-    let mut metrics = bead_metrics(c.camera_idx, c.segment, seq, c.scale, c.spacing_mm, &beads);
-    if let Some(window) = &c.edge {
-        metrics.edge_mm = edge_mm(result.record("edges"), &judged.beads, window, c.scale)?;
+    let mut metrics = bead_metrics(
+        c.camera_idx,
+        c.segment,
+        seq,
+        c.scale,
+        c.spacing_mm,
+        &beads,
+        &judged.unknown,
+    );
+    let mut part_edges = Vec::new();
+    if let Some(stations) = &evidence {
+        apply_color_evidence(&mut metrics, stations, &poses, c.scale);
     }
-    if let Some(why) = corridor_exit(&beads, c.taught.tolerance, c.scale) {
+    if let Some(window) = &c.edge {
+        let edge = edge_measure(
+            result.record("edges"),
+            &judged.beads,
+            &poses,
+            window,
+            c.scale,
+        )?;
+        metrics.edge_mm = edge.mm;
+        part_edges = edge.lines;
+    }
+    if let Some(why) = evidence
+        .is_none()
+        .then(|| corridor_exit(&beads, c.taught.tolerance, c.scale))
+        .flatten()
+    {
         metrics.state = FrameState::OutOfCorridor;
         metrics.error = Some(why);
     }
     Ok(FrameMeasurement {
         metrics,
         edges,
+        part_edges,
         line: Vec::new(),
         ms: 0,
     })
@@ -681,6 +902,38 @@ fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<Fra
 /// `glue.LateralRuns` 记录里判定用到的字段；`what` 是出错时的主语。
 pub(super) fn lateral_runs(record: &Value, what: &str) -> Result<LateralRuns, String> {
     LateralRuns::deserialize(record).map_err(|e| format!("算法{what}结果不合契约：{e}"))
+}
+
+fn color_corridor_exits(stations: &mut [ColorStation], tolerance: f64) {
+    let exits = |station: &ColorStation| {
+        station.state == StationEvidenceState::Exact
+            && station
+                .bead
+                .is_some_and(|(lo, hi)| (0.5 * (lo + hi)).abs() >= EXIT_OFFSET_RATIO * tolerance)
+    };
+    let head = stations
+        .iter()
+        .take_while(|s| s.state == StationEvidenceState::Absent)
+        .count();
+    let tail = stations
+        .iter()
+        .rev()
+        .take_while(|s| s.state == StationEvidenceState::Absent)
+        .count();
+    let head_exits = head > 0 && stations.get(head).is_some_and(exits);
+    let tail_exits = tail > 0
+        && stations
+            .len()
+            .checked_sub(tail + 1)
+            .and_then(|i| stations.get(i))
+            .is_some_and(exits);
+    let end = stations.len().saturating_sub(tail);
+    for (i, station) in stations.iter_mut().enumerate() {
+        if (head_exits && i < head) || (tail_exits && i >= end) {
+            station.state = StationEvidenceState::Unknown;
+            station.reason = Some("out_of_corridor".into());
+        }
+    }
 }
 
 /// 帧内汇总（规格 §4）：逐站胶宽（mm）、胶宽极值与均值、最长连续缺胶（缺胶站数 × 站距）、
@@ -692,12 +945,21 @@ pub(super) fn bead_metrics(
     scale: f64,
     spacing_mm: f64,
     beads: &[Option<(f64, f64)>],
+    unknown: &[bool],
 ) -> FrameMetrics {
     let widths: Vec<Option<f64>> = beads.iter().map(|b| b.map(|(w, _)| w * scale)).collect();
     let present: Vec<f64> = widths.iter().flatten().copied().collect();
     let offsets: Vec<f64> = beads.iter().flatten().map(|&(_, x)| x * scale).collect();
     let mean = |v: &[f64]| (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64);
-    let longest_gap = beads.split(Option::is_some).map(<[_]>::len).max().unwrap_or(0);
+    // 无信息的站（高光、暗区盖住了胶）既不算有胶也不算缺胶：不进有胶比例的分母，也不连成断口
+    let hidden = |i: usize| unknown.get(i).copied().unwrap_or(false);
+    let missing: Vec<bool> = beads
+        .iter()
+        .enumerate()
+        .map(|(i, b)| b.is_none() && !hidden(i))
+        .collect();
+    let longest_gap = missing.split(|m| !m).map(<[_]>::len).max().unwrap_or(0);
+    let informative = beads.len() - (0..beads.len()).filter(|&i| hidden(i)).count();
     FrameMetrics {
         camera,
         seq,
@@ -710,13 +972,57 @@ pub(super) fn bead_metrics(
         spacing_mm,
         gap_max_mm: longest_gap as f64 * spacing_mm,
         corridor: Some(segment),
-        present_ratio: present.len() as f64 / beads.len().max(1) as f64,
+        present_ratio: present.len() as f64 / informative.max(1) as f64,
         x_mm: mean(&offsets),
         heading_deg: None,
         heading_fallback: false,
         fallback_reason: None,
         edge_mm: None,
+        measurement_evidence: None,
     }
+}
+
+pub(super) fn apply_color_evidence(
+    metrics: &mut FrameMetrics,
+    stations: &[ColorStation],
+    poses: &[([f64; 2], [f64; 2])],
+    scale: f64,
+) {
+    let mut evidence = MeasurementEvidence {
+        version: 1,
+        ..Default::default()
+    };
+    for (s, &(center, normal)) in stations.iter().zip(poses) {
+        match s.state {
+            StationEvidenceState::Exact => evidence.exact_stations += 1,
+            StationEvidenceState::Clipped => evidence.clipped_stations += 1,
+            StationEvidenceState::Absent => evidence.absent_stations += 1,
+            StationEvidenceState::Unknown => evidence.unknown_stations += 1,
+        }
+        let point = |t: f64| [center[0] + normal[0] * t, center[1] + normal[1] * t];
+        evidence.stations.push(StationEvidence {
+            state: s.state,
+            width_lower_bound_mm: s.lower_bound.map(|w| w * scale),
+            reason: s.reason.clone(),
+            lo_edge: s.lo.map(point),
+            hi_edge: s.hi.map(point),
+            lo_clipped: s.lo_clipped,
+            hi_clipped: s.hi_clipped,
+            normal: (normal[0].hypot(normal[1]) > 0.0).then_some(normal),
+            position: (normal[0].hypot(normal[1]) > 0.0).then_some(center),
+            ..Default::default()
+        });
+    }
+    evidence.max_width_lower_bound_mm = evidence
+        .stations
+        .iter()
+        .filter_map(|s| s.width_lower_bound_mm)
+        .reduce(f64::max);
+    let present = evidence.exact_stations + evidence.clipped_stations;
+    let informative = present + evidence.absent_stations;
+    evidence.present_ratio = (informative > 0).then(|| f64::from(present) / f64::from(informative));
+    metrics.present_ratio = evidence.present_ratio.unwrap_or(0.0);
+    metrics.measurement_evidence = Some(evidence);
 }
 
 /// 胶条从走廊端点一侧走出（默认做法 4：弯道帧常见，记检测不完整、不判 NG）：缺胶只在连到走廊端点的一段或两段上，

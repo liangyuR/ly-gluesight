@@ -1,16 +1,22 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useHorizontalWindow } from "../../lib/useHorizontalWindow";
 import { Button } from "qing-steel";
 import { errorText } from "../../lib/errors";
 import type { CalibrationFrameView, FrameMetrics, FrameState, WorkspacePlanView } from "../plan/types";
 import { groupCellColor, groupCellText, segmentLabel, type GroupCellState } from "../plan/vis";
+import { MeasurementEvidenceSummary, measurementIssue, presentRatioText, stationStateText, evidenceOverlay } from "../plan/measurementEvidence";
 import { workspaceApi } from "./api";
-import { Badge, GrayViewer, KV, Panel } from "./components";
-import type { GrayImage, WorkspaceView } from "./types";
+import { Badge, FrameViewer, KV, Panel } from "./components";
+import type { FrameImage, WorkspaceView } from "./types";
 
 const cellState: Record<FrameState, GroupCellState> = {
   measured: "ok", missing: "missing", error: "error", unmeasured: "unmeasured", outOfCorridor: "outOfCorridor", notInspected: "notInspected",
 };
 const mm = (value: number | null | undefined, digits = 2) => value == null ? "—" : `${value.toFixed(digits)} mm`;
+const metricLabel = (m: FrameMetrics) => {
+  const issue = measurementIssue(m.measurementEvidence);
+  return issue ? stationStateText[issue] : groupCellText[cellState[m.state]];
+};
 
 /**
  * 试测页的逐帧查看：按帧组 × 计划相机列出测量示教件时测得的每帧状态（帧组上方标出按已确认边界所属的段）；
@@ -24,7 +30,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
   const round = roundId && piece ? { roundId, groupCount: piece.groupCount } : null;
   const [features, setFeatures] = useState<{ round: string; frames: FrameMetrics[]; error: string }>({ round: "", frames: [], error: "" });
   const [selected, setSelected] = useState<{ camera: number; seq: number } | null>(null);
-  const [detail, setDetail] = useState<{ key: string; image: GrayImage | null; view: CalibrationFrameView | null; error: string; loading: boolean }>({ key: "", image: null, view: null, error: "", loading: false });
+  const [detail, setDetail] = useState<{ key: string; image: FrameImage | null; view: CalibrationFrameView | null; error: string; loading: boolean }>({ key: "", image: null, view: null, error: "", loading: false });
 
   useEffect(() => { setSelected(null); }, [id, roundId]);
   // 重新测量示教件不换轮次：测量失效再测好时重读每帧特征（只在走廊改过后才需要重测）
@@ -32,7 +38,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
   useEffect(() => {
     if (!round) return;
     let alive = true;
-    workspaceApi.calibrationRoundFeatures(id, round.roundId)
+    workspaceApi.calibrationRoundOverview(id, round.roundId)
       .then(frames => alive && setFeatures({ round: round.roundId, frames, error: "" }))
       .catch(e => alive && setFeatures({ round: round.roundId, frames: [], error: errorText(e) }));
     return () => { alive = false; };
@@ -43,27 +49,36 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
   useEffect(() => {
     if (!round || !selected || !camera) return;
     let alive = true;
+    const request = new AbortController();
     setDetail({ key, image: null, view: null, error: "", loading: true });
-    Promise.allSettled([workspaceApi.captureFrameImage(round.roundId, camera, selected.seq), workspaceApi.calibrationFrame(id, round.roundId, camera, selected.seq)])
+    Promise.allSettled([workspaceApi.captureFrameImage(round.roundId, camera, selected.seq, request.signal), workspaceApi.calibrationFrame(id, round.roundId, camera, selected.seq, request.signal)])
       .then(([image, view]) => alive && setDetail({ key, loading: false,
         image: image.status === "fulfilled" ? image.value : null,
         view: view.status === "fulfilled" ? view.value : null,
         error: [image, view].flatMap(r => r.status === "rejected" ? [errorText(r.reason)] : []).join("；") }));
-    return () => { alive = false; };
+    return () => { alive = false; request.abort(); };
   }, [key]);
 
+  const indexed = useMemo(() => new Map(features.frames.map(frame => [`${frame.camera}:${frame.seq}`, frame])), [features.frames]);
+  const window = useHorizontalWindow<HTMLDivElement>(round?.groupCount ?? 0, 16, selected ? selected.seq - 1 : null, 58);
+  const restoreFocus = useRef(false);
+  useEffect(() => {
+    const cell = window.ref.current?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (restoreFocus.current && cell) { cell.focus({ preventScroll: true }); restoreFocus.current = false; }
+  }, [selected?.camera, selected?.seq, window.start, window.end]);
   if (!round) return null;
   const groups = round.groupCount;
   const cuts = reviews[round.roundId]?.status === "confirmed" ? reviews[round.roundId].cuts : null;
   const segmentOf = (seq: number) => cuts ? plan.segments[cuts.filter(cut => cut < seq).length] : plan.segments.length === 1 ? plan.segments[0] : undefined;
   const loaded = features.round === round.roundId;
-  const stored = (cam: number, seq: number) => loaded ? features.frames.find(f => f.camera === cam && f.seq === seq) : undefined;
+  const stored = (cam: number, seq: number) => loaded ? indexed.get(`${cam}:${seq}`) : undefined;
   const move = (event: KeyboardEvent) => {
     if (!selected) return;
-    const delta: Record<string, [number, number]> = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] };
+    const delta: Record<string, [number, number]> = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0], Home: [0, -Infinity], End: [0, Infinity] };
     const step = delta[event.key];
     if (!step) return;
     event.preventDefault();
+    restoreFocus.current = true;
     setSelected({ camera: Math.min(plan.cameras.length - 1, Math.max(0, selected.camera + step[0])), seq: Math.min(groups, Math.max(1, selected.seq + step[1])) });
   };
 
@@ -71,48 +86,53 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
   const view = shown.view;
   const before = selected ? stored(selected.camera, selected.seq) : undefined;
   const segment = selected ? segmentOf(selected.seq) : undefined;
-  const edges = (view?.edges ?? []).flatMap(edge => edge ? [{ from: edge[0], to: edge[1], color: "var(--primary)" }] : []);
+  const edges = (view?.edges ?? []).flatMap(edge => edge ? [{ from: edge[0], to: edge[1], color: "var(--ov-line)" }] : []);
   const metrics = view?.metrics;
 
   return <Panel title="逐帧查看" help="测量示教件时测得的每帧状态；点一帧看原图，并用当前段走廊重测（只读，不改测量结果）。方向键切换帧组、相机">
     <div className="wp-calib-frames">
       {features.error && loaded && <p className="c-warn" role="alert">{features.error}</p>}
       {!cuts && plan.segments.length > 1 && <p className="muted hint">示教件的边界已不是确认状态：帧组上方不标段。</p>}
-      <div className="wp-calib-grid" role="grid" aria-label="逐帧状态" tabIndex={0} onKeyDown={move} style={{ gridTemplateColumns: `56px repeat(${groups}, minmax(14px, 1fr))` }}>
+      <div className="wp-calib-viewport" ref={window.ref} onScroll={window.onScroll}>
+      <div className="wp-calib-grid" role="grid" aria-label="逐帧状态" tabIndex={0} onKeyDown={move} style={{ width: 58 + groups * 16, gridTemplateColumns: `56px repeat(${groups}, 14px)` }}>
         <span className="wp-calib-grid-corner">段</span>
-        {Array.from({ length: groups }, (_, i) => {
+        {Array.from({ length: window.end - window.start }, (_, k) => {
+          const i = window.start + k;
           const s = segmentOf(i + 1), first = s && (i === 0 || segmentOf(i)?.index !== s.index);
-          return <span key={i} className={"wp-calib-grid-seg" + (s && s.index % 2 === 0 ? " even" : "")} title={s ? `第 ${s.index} 段（${segmentLabel(s)}）· 帧组 ${i + 1}` : `帧组 ${i + 1}`}>{first ? s.index : ""}</span>;
+          return <span key={i} style={{ gridColumn: i + 2, gridRow: 1 }} className={"wp-calib-grid-seg" + (s && s.index % 2 === 0 ? " even" : "")} title={s ? `第 ${s.index} 段（${segmentLabel(s)}）· 帧组 ${i + 1}` : `帧组 ${i + 1}`}>{first ? s.index : ""}</span>;
         })}
         {plan.cameras.map((cameraId, cam) => <div key={cameraId} role="row" className="wp-calib-grid-row">
-          <span className="wp-calib-grid-camera" role="rowheader">{cameraId}</span>
-          {Array.from({ length: groups }, (_, i) => {
+          <span className="wp-calib-grid-camera" role="rowheader" style={{ gridColumn: 1, gridRow: cam + 2 }}>{cameraId}</span>
+          {Array.from({ length: window.end - window.start }, (_, k) => {
+            const i = window.start + k;
             const seq = i + 1, m = stored(cam, seq), state = m ? cellState[m.state] : "waiting";
             const active = selected?.camera === cam && selected.seq === seq;
             return <Button variant="text" key={seq} role="gridcell" aria-selected={active} className={"wp-calib-cell" + (active ? " selected" : "")}
-              style={{ background: m ? groupCellColor[state] : "var(--surface-high)" }} aria-label={`${cameraId} 帧组 ${seq}：${m ? groupCellText[state] : "无记录"}`}
-              title={`${cameraId} · 帧组 ${seq} · ${m ? groupCellText[state] : "无记录"}${m?.error ? `：${m.error}` : ""}`} onClick={() => setSelected({ camera: cam, seq })} />;
+              style={{ gridColumn: i + 2, gridRow: cam + 2, background: measurementIssue(m?.measurementEvidence) ? "var(--warn)" : m ? groupCellColor[state] : "var(--surface-high)" }} aria-label={`${cameraId} 帧组 ${seq}：${m ? metricLabel(m) : "无记录"}`}
+              title={`${cameraId} · 帧组 ${seq} · ${m ? metricLabel(m) : "无记录"}${m?.error ? `：${m.error}` : ""}`} onClick={() => setSelected({ camera: cam, seq })} />;
           })}
         </div>)}
       </div>
+      </div>
       {selected && camera && <div className="wp-calib-frame">
-        <GrayViewer image={shown.image} loading={shown.loading} error={shown.error} label={`${camera} · 帧组 ${selected.seq}`}
-          overlay={view && view.corridor.length >= 2 ? { path: view.corridor, searchHalfPx: view.searchHalfPx ?? undefined, segments: edges } : undefined}
+        <FrameViewer image={shown.image} loading={shown.loading} error={shown.error} label={`${camera} · 帧组 ${selected.seq}`}
+          overlay={view && view.corridor.length >= 2 ? { path: view.corridor, searchHalfPx: view.searchHalfPx ?? undefined, segments: edges, clipped: evidenceOverlay(view?.metrics), partEdges: view.partEdges } : undefined}
           emptyTitle="读取中" emptyHint="正在读这一帧的原图并重测。" />
         <div className="wp-calib-frame-info" aria-label="这一帧的指标">
           <KV label="所在段">{segment ? `第 ${segment.index} 段 · ${segmentLabel(segment)}` : "—"}</KV>
-          <KV label="测量时">{before ? <Badge tone={before.state === "measured" ? "ok" : "neutral"}>{groupCellText[cellState[before.state]]}</Badge> : "—"}</KV>
+          <KV label="测量时">{before ? <Badge tone={measurementIssue(before.measurementEvidence) ? "warn" : before.state === "measured" ? "ok" : "neutral"}>{metricLabel(before)}</Badge> : "—"}</KV>
           {view && <>
             <KV label="重测走廊">{view.segment == null ? "本段不由这台相机检测，不测" : `第 ${view.segment} 段走廊`}</KV>
             {metrics && view.segment != null && <>
-              <KV label="重测状态"><Badge tone={metrics.state === "measured" ? "ok" : "warn"}>{groupCellText[cellState[metrics.state]]}</Badge></KV>
+              <KV label="重测状态"><Badge tone={metrics.state === "measured" && !measurementIssue(metrics.measurementEvidence) ? "ok" : "warn"}>{metricLabel(metrics)}</Badge></KV>
               <KV label="胶宽 最小 / 均值 / 最大">{`${mm(metrics.widthMin)} / ${mm(metrics.widthMean)} / ${mm(metrics.widthMax)}`}</KV>
               <KV label="胶中心偏移 x">{mm(metrics.xMm)}</KV>
               {metrics.headingDeg != null && <KV label="胶条方向">{`${metrics.headingDeg.toFixed(1)}°`}</KV>}
-              {metrics.headingFallback && <KV label="定向"><Badge tone="warn">没找到胶条</Badge>{metrics.fallbackReason && <span className="muted"> {metrics.fallbackReason}</span>}</KV>}
+              {metrics.headingFallback && <KV label="定向"><Badge tone="warn">{metrics.measurementEvidence ? "方向未确定" : "没找到胶条"}</Badge>{metrics.fallbackReason && <span className="muted"> {metrics.fallbackReason}</span>}</KV>}
               {metrics.edgeMm != null && <KV label="胶边距">{mm(metrics.edgeMm)}</KV>}
               <KV label="最长断胶">{mm(metrics.gapMaxMm, 1)}</KV>
-              <KV label="有胶站">{`${Math.round(metrics.presentRatio * 100)}%（${metrics.widths.filter(w => w != null).length} / ${metrics.widths.length} 站，站距 ${metrics.spacingMm} mm）`}</KV>
+              <KV label="有胶站">{presentRatioText(metrics)}（站距 {metrics.spacingMm} mm）</KV>
+              {metrics.measurementEvidence && <KV label="量测证据"><MeasurementEvidenceSummary evidence={metrics.measurementEvidence} /></KV>}
               {metrics.error && <p className="muted hint">{metrics.error}</p>}
               {before && before.state !== metrics.state && <p className="muted hint">与测量时的状态不同：走廊或参数在测量后改过。</p>}
             </>}

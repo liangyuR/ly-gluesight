@@ -1,4 +1,4 @@
-//! 逐帧测量。测量后端只量不判：模拟或 lyFlow（飞拍流程），由系统设置选择；判定在 burst_judge。
+//! 逐帧测量。lyFlow 只量不判，判定在 burst_judge。
 //!
 //! 段配方的 `FrameJob`：每台相机每一帧独立测，输出 `FrameMetrics`（D-SB-12）；排队、并发、超时与异常回收见 `dispatch_tasks`。
 
@@ -15,7 +15,7 @@ use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::cycle::CycleHost;
 use crate::frame::FrameImage;
 use crate::recipe::Recipe;
-use crate::settings::RecordMode;
+#[cfg(test)]
 use crate::offline::Scenario;
 use crate::vision;
 
@@ -29,8 +29,8 @@ pub const MEASURE_TIMEOUT: &str = "单帧测量超时";
 /// 需要整帧图像的场合：图像测量或帧录制。设置变了之后调一次。
 pub fn apply_settings(app: &AppHandle) {
     app.state::<crate::production::ProductionHost>().clear();
-    let record = crate::site::record_mode(app) != RecordMode::Off;
-    app.state::<CycleHost>().camera.set_capture(crate::site::image_measurement(app) || record);
+    let host = app.state::<CycleHost>();
+    host.camera.set_capture(true);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -237,7 +237,6 @@ pub struct FrameJob {
     pub cycle_id: String,
     pub bundle_id: Option<String>,
     pub production: Option<Arc<crate::production::Prepared>>,
-    pub candidate: Option<Arc<crate::candidate::Candidate>>,
     /// 计划相机下标（`Recipe.inspect` 的顺序）
     pub camera_idx: usize,
     pub camera: String,
@@ -246,9 +245,9 @@ pub struct FrameJob {
     /// 用第几段（`PathSegment.index`）的走廊测（D-SB-45）
     pub segment: u32,
     pub image: Option<Arc<FrameImage>>,
-    pub image_measurement: bool,
+    /// 没带图像时从这个原图文件读（收尾补测读回本件录制的原图，D-SB-60）
+    pub image_file: Option<std::path::PathBuf>,
     pub recipe: Arc<Recipe>,
-    pub scenario: Scenario,
     pub submitted_at: Instant,
     pub timeout: Duration,
 }
@@ -262,13 +261,17 @@ pub enum MeasureError {
     Timeout,
     /// 测量失败：lyFlow 运行失败、输出不合契约、没有图像、发布包不一致等
     Failed(String),
+    /// 发布包这一（相机, 段）预热没测成，生产不测（D-SB-59）
+    Untested(String),
 }
 
 impl MeasureError {
-    /// 写进帧指标的状态：队满、超时是没测（Unmeasured），其余是测量失败（Error）。
+    /// 写进帧指标的状态：队满、超时、预热没测成的段是没测（Unmeasured），其余是测量失败（Error）。
     pub fn state(&self) -> FrameState {
         match self {
-            MeasureError::QueueFull | MeasureError::Timeout => FrameState::Unmeasured,
+            MeasureError::QueueFull | MeasureError::Timeout | MeasureError::Untested(_) => {
+                FrameState::Unmeasured
+            }
             MeasureError::Failed(_) => FrameState::Error,
         }
     }
@@ -278,6 +281,7 @@ impl MeasureError {
             MeasureError::QueueFull => "测量队列已满：测量跟不上帧率".into(),
             MeasureError::Timeout => format!("{MEASURE_TIMEOUT}（含排队时间）"),
             MeasureError::Failed(why) => why.clone(),
+            MeasureError::Untested(why) => format!("预热没测成的段不测：{why}"),
         }
     }
 }
@@ -299,10 +303,12 @@ pub struct FrameMeasured {
     pub trace: Option<FrameTrace>,
 }
 
-/// 一帧测到的叠图几何（px）：逐站两侧胶边（无胶站为 None）与逐帧定向拟合出的胶路（示教走廊为空），在线检测视图叠图用。
+/// 一帧测到的叠图几何（px）：逐站两侧胶边（无胶站为 None）、胶边距线（ToEdge，胶中心 → 零件边）与逐帧定向拟合出的胶路
+/// （示教走廊为空），在线检测视图叠图用。
 #[derive(Clone, Debug, Default)]
 pub struct FrameTrace {
     pub edges: Vec<Option<[[f32; 2]; 2]>>,
+    pub part_edges: Vec<[[f32; 2]; 2]>,
     pub line: Vec<[f32; 2]>,
 }
 
@@ -333,6 +339,7 @@ impl FrameMeasured {
                 width_min: None,
                 width_max: None,
                 width_mean: None,
+                measurement_evidence: None,
                 widths: Vec::new(),
                 spacing_mm: 0.0,
                 gap_max_mm: 0.0,
@@ -406,33 +413,46 @@ pub fn spawn_frame_worker(sink: FrameSink) -> FramePool {
 }
 
 fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), MeasureError> {
-    match (job.image.as_deref(), job.image_measurement) {
-        (Some(image), true) => vision::LyFlowMeasurer
+    if let Some(why) = job
+        .production
+        .as_ref()
+        .and_then(|p| p.untested(job.camera_idx, job.segment))
+    {
+        return Err(MeasureError::Untested(why.to_owned()));
+    }
+    match job.image.as_deref() {
+        Some(image) => vision::LyFlowMeasurer
             .measure_frame(job, image)
             .map(|m| {
                 (
                     m.metrics,
                     Some(FrameTrace {
                         edges: m.edges,
+                        part_edges: m.part_edges,
                         line: m.line,
                     }),
                 )
             })
             .map_err(MeasureError::Failed),
-        (None, true) => Err(MeasureError::Failed("这一帧没有图像：相机未拷贝整帧".into())),
-        (_, false) => {
-            std::thread::sleep(Duration::from_millis(5 + job.seq % 5));
-            Ok((
-                simulate_frame(
-                    job.scenario,
-                    job.camera_idx,
-                    job.seq,
-                    job.segment,
-                    &job.recipe,
-                ),
-                None,
-            ))
-        }
+        None => match &job.image_file {
+            Some(path) => crate::image_file::load(path)
+                .map_err(|e| format!("读回录制原图失败：{e}"))
+                .and_then(|image| vision::LyFlowMeasurer.measure_frame(job, &image))
+                .map(|m| {
+                    (
+                        m.metrics,
+                        Some(FrameTrace {
+                            edges: m.edges,
+                            part_edges: m.part_edges,
+                            line: m.line,
+                        }),
+                    )
+                })
+                .map_err(MeasureError::Failed),
+            None => Err(MeasureError::Failed(
+                "这一帧没有图像：相机未拷贝整帧".into(),
+            )),
+        },
     }
 }
 
@@ -441,6 +461,7 @@ fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), Measu
 /// 弯道帧胶宽略宽、胶中心 x 随段内进度拱形偏出（峰值 1.5 mm），与合成图里弯道胶条绕胶嘴转动一致；PC 判定照常按未分段。
 /// 断胶工况让第 1 台相机第 2 帧中部缺一段（比该段允许的断口长 2 mm），超差工况让同一帧 3 站胶宽超上限 1 mm
 /// （超差长度在默认允许范围内）。脉冲串类工况（缺帧、波动、提前终止等）不改指标。
+#[cfg(test)]
 pub(crate) fn simulate_frame(
     scenario: Scenario,
     camera_idx: usize,
@@ -508,6 +529,7 @@ pub(crate) fn simulate_frame(
         width_min: present.iter().copied().reduce(f64::min),
         width_max: present.iter().copied().reduce(f64::max),
         width_mean: (!present.is_empty()).then(|| present.iter().sum::<f64>() / present.len() as f64),
+        measurement_evidence: None,
         widths: widths.iter().map(|w| w.map(|w| w as f32)).collect(),
         spacing_mm: spacing,
         gap_max_mm: gap as f64 * spacing,
@@ -572,15 +594,13 @@ mod tests {
             cycle_id: "cycle-7".into(),
             bundle_id: None,
             production: None,
-            candidate: None,
             camera_idx: 0,
             camera: "cam1".into(),
             segment: 1,
             seq,
             image: None,
-            image_measurement: false,
+            image_file: None,
             recipe: recipe.clone(),
-            scenario: Scenario::Normal,
             submitted_at: clock(),
             timeout,
         }
@@ -618,7 +638,7 @@ mod tests {
             FrameMeasured::new(
                 job,
                 Ok(simulate_frame(
-                    job.scenario,
+                    Scenario::Normal,
                     job.camera_idx,
                     job.seq,
                     job.segment,
@@ -703,7 +723,7 @@ mod tests {
             FrameMeasured::new(
                 job,
                 Ok(simulate_frame(
-                    job.scenario,
+                    Scenario::Normal,
                     job.camera_idx,
                     job.seq,
                     job.segment,

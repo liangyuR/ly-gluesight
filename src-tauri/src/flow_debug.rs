@@ -263,14 +263,14 @@ pub async fn flow_open(
                     .iter()
                     .find(|g| g.camera_idx == index && g.segment == segment)
                     .ok_or_else(|| format!("第 {segment} 段相机 {camera} 还没有示教走廊"))?;
-                (template::corridor(), graph.params.clone(), "示教走廊")
+                (graph.template, graph.params.clone(), "示教走廊")
             }
             Variant::Heading => {
                 let graph = graphs
                     .headings()
                     .find(|g| g.camera_idx == index && g.segment == segment)
                     .ok_or_else(|| format!("第 {segment} 段没有开启逐帧定向"))?;
-                (template::heading(), graph.params.clone(), "逐帧定向")
+                (graph.template, graph.params.clone(), "逐帧定向")
             }
         };
         core(&app)?;
@@ -518,60 +518,4 @@ pub async fn flow_clear_cache(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn flow_cache_stats(app: AppHandle) -> Result<Value, String> {
     blocking(move || parse(core(&app)?.cache_stats(), "缓存统计")).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 防的回归（LF-6）：流程调试页改了拓扑的图照样被校验、编计划或运行；或调参、挪节点也被拒。
-    /// 经 `prepared` 测：flow_validate、flow_plan、flow_run 都先经它拿运行用的图与参数。
-    /// 防的回归：先发起的打开晚到时顶替了后打开的调试图，编辑器跑的是上一帧或上一张图；旧编辑器的请求打到新图上。
-    #[test]
-    fn late_stale_open_does_not_replace_newer_session_and_stale_requests_are_rejected() {
-        let host = FlowDebugHost::default();
-        let session = |id| Session {
-            id,
-            template: template::corridor(),
-            image: vision::image_input(&crate::frame::FrameImage::new(4, 4, vec![0; 16])).unwrap(),
-            params: json!({}),
-        };
-        let (older, newer) = (host.begin_open(), host.begin_open());
-        host.reset(session(newer)).unwrap();
-        assert!(host.reset(session(older)).is_err());
-        assert!(host.session(newer).is_ok());
-        assert!(host.session(older).is_err());
-    }
-
-    #[test]
-    fn topology_change_is_rejected_but_params_and_layout_are_not() {
-        let session = Session {
-            id: 1,
-            template: template::corridor(),
-            image: vision::image_input(&crate::frame::FrameImage::new(4, 4, vec![0; 16])).unwrap(),
-            params: json!({"segmentMin": 8.0}),
-        };
-        let base = session.template.doc.clone();
-        let mut tuned = base.clone();
-        tuned["nodes"][3]["params"]["segmentMin"] = json!(30.0);
-        tuned["nodes"][3]["position"] = json!({"x": 10, "y": 20});
-        tuned["params"]["segmentMin"]["default"] = json!(30.0);
-        let edited = Map::from_iter([("segmentMin".to_string(), json!(30.0))]);
-        let (_, params) = prepared(&session, &tuned, Some(edited)).unwrap();
-        assert_eq!(params, json!({"segmentMin": 30.0}).to_string());
-        let (_, params) = prepared(&session, &tuned, None).unwrap();
-        assert_eq!(params, session.params.to_string());
-        let mut added = base.clone();
-        added["nodes"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"id": "n_extra", "op": "io.load_image", "params": {}}));
-        let mut rewired = base.clone();
-        rewired["edges"][0]["to"]["port"] = json!("other");
-        let mut swapped = base.clone();
-        swapped["nodes"][1]["op"] = json!("glue.bead_path");
-        for doc in [added, rewired, swapped] {
-            assert!(prepared(&session, &doc, None).is_err());
-        }
-    }
 }

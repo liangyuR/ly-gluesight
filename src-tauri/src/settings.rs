@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// 帧录制：把一件工件的整帧图像与元数据落盘，供历史复测。离线期间临时为保留全部。
+/// 帧录制：把一件工件的整帧图像与元数据落盘，供历史复测。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RecordMode {
-    #[default]
     Off,
     /// 只留 NG / ERR 件
     Failed,
+    #[default]
     All,
 }
 
@@ -35,7 +35,7 @@ pub struct Timeouts {
 impl Default for Timeouts {
     fn default() -> Self {
         Self {
-            motion_ms: 30_000,
+            motion_ms: 1_200_000,
             drain_ms: 1000,
             proc_ms: 3000,
             ack_ms: 5000,
@@ -79,11 +79,9 @@ pub struct CycleSettings {
     pub timeouts: Timeouts,
     pub history_days: u32,
     pub record: RecordMode,
-    /// 帧录制最多保留多少件、总共多少 GB，超出删最旧的
-    pub record_keep: u32,
-    pub record_max_gb: f32,
-    pub offline_record_keep: u32,
-    pub offline_record_max_gb: f32,
+    /// 帧录制最多保留多少件、总共多少 GB，超出删最旧的；为空不限（默认）。被示教件引用的录制不删
+    pub record_keep: Option<u32>,
+    pub record_max_gb: Option<f32>,
     /// 只由维护模式命令改写，保存检测设置时沿用当前值
     pub maintenance: Option<Maintenance>,
 }
@@ -95,11 +93,9 @@ impl Default for CycleSettings {
             manual_recipe_id: None,
             timeouts: Timeouts::default(),
             history_days: 180,
-            record: RecordMode::Off,
-            record_keep: 100,
-            record_max_gb: 20.0,
-            offline_record_keep: 300,
-            offline_record_max_gb: 10.0,
+            record: RecordMode::All,
+            record_keep: None,
+            record_max_gb: None,
             maintenance: None,
         }
     }
@@ -129,8 +125,16 @@ impl CycleSettings {
         format!("{} 的检测设置不符合当前取值范围（{why}），{done}", path.display())
     }
 
+    /// 写项目的 `cycle.json`；历史保留天数是本机设置（`save_history_days`），不写进项目。
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        crate::fsio::write_atomic(path, &serde_json::to_string_pretty(self).map_err(|e| e.to_string())?)
+        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        if let Some(object) = value.as_object_mut() {
+            object.remove("historyDays");
+        }
+        crate::fsio::write_atomic(
+            path,
+            &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+        )
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -147,18 +151,58 @@ impl CycleSettings {
         if t.motion_ms < 1000 || t.proc_ms < 200 || t.ack_ms < 500 {
             return Err("超时参数过小".into());
         }
-        if !(1..=100_000).contains(&self.record_keep) {
-            return Err("帧录制保留件数需在 1–100000 之间".into());
+        if self
+            .record_keep
+            .is_some_and(|keep| !(1..=100_000).contains(&keep))
+        {
+            return Err("帧录制保留件数需为不限或 1–100000 之间".into());
         }
-        if !(self.record_max_gb >= 0.5 && self.record_max_gb <= 10_000.0) {
-            return Err("帧录制总大小需在 0.5–10000 GB 之间".into());
-        }
-        if !(1..=100_000).contains(&self.offline_record_keep) {
-            return Err("离线原图保留件数需在 1–100000 之间".into());
-        }
-        if !(self.offline_record_max_gb >= 0.5 && self.offline_record_max_gb <= 10_000.0) {
-            return Err("离线原图总大小需在 0.5–10000 GB 之间".into());
+        if self
+            .record_max_gb
+            .is_some_and(|gb| !(0.5..=10_000.0).contains(&gb))
+        {
+            return Err("帧录制总大小需为不限或 0.5–10000 GB 之间".into());
         }
         Ok(())
     }
+}
+
+/// 本机检测历史设置（资料目录 `config/history.json`）：历史保留天数，所有项目共用。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryFile {
+    history_days: u32,
+}
+
+/// 读本机历史保留天数；文件还没有时用 `seed`（当前项目旧 `cycle.json` 里的值）建立。读不了或越界时用 `seed` 并给出说明。
+pub fn load_history_days(path: &Path, seed: u32) -> (u32, Option<String>) {
+    match crate::fsio::read_json::<HistoryFile>(path) {
+        Ok(Some(file)) if (1..=3650).contains(&file.history_days) => (file.history_days, None),
+        Ok(Some(file)) => (
+            seed,
+            Some(format!(
+                "{} 的历史保留天数 {} 越界，先按 {seed} 天运行",
+                path.display(),
+                file.history_days
+            )),
+        ),
+        Ok(None) => match save_history_days(path, seed) {
+            Ok(()) => (seed, None),
+            Err(error) => (
+                seed,
+                Some(format!(
+                    "本机历史保留天数写入失败（{error}），先按 {seed} 天运行"
+                )),
+            ),
+        },
+        Err(note) => (seed, Some(note)),
+    }
+}
+
+pub fn save_history_days(path: &Path, days: u32) -> Result<(), String> {
+    crate::fsio::write_atomic(
+        path,
+        &serde_json::to_string_pretty(&HistoryFile { history_days: days })
+            .map_err(|e| e.to_string())?,
+    )
 }

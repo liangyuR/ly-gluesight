@@ -10,9 +10,8 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
 use crate::applog;
-use crate::cycle::CycleHost;
 use crate::judge::Verdict;
-use crate::store::{HistoryQuery, HistoryScope, PartDetail, RecordSource, Store};
+use crate::store::{HistoryQuery, HistoryScope, PartDetail, Store};
 use crate::ziparchive::ZipWriter;
 
 const MAX_RANGE_MS: i64 = 31 * 86_400_000;
@@ -282,7 +281,9 @@ fn collect_parts(store: &Store, request: &ExportRequest, notes: &mut Vec<String>
         }
         return Ok(parts);
     }
-    let scopes = request.scope.map_or_else(|| vec![HistoryScope::Real, HistoryScope::Offline, HistoryScope::Debug], |s| vec![s]);
+    let scopes = request
+        .scope
+        .map_or_else(|| vec![HistoryScope::Real], |s| vec![s]);
     let mut ids = Vec::new();
     for scope in scopes {
         let mut query = HistoryQuery { from: Some(request.from), to: Some(request.to + 1), scope, limit: 500, ..HistoryQuery::default() };
@@ -329,15 +330,23 @@ fn plc_logs(app: &AppHandle, from: i64, to: i64, notes: &mut Vec<String>) -> Vec
 
 fn part_images<W: std::io::Write>(app: &AppHandle, package: &mut Package<W>, detail: &PartDetail, budget: &mut u64) -> Result<usize, String> {
     let id = detail.summary.id;
-    if detail.summary.source == RecordSource::OfflineCandidate {
-        package.notes.push(format!("记录 #{id} 为候选调试件，原图在受管样本 samples/ 中，未重复打包"));
-        return Ok(0);
-    }
     let Some(cycle_id) = detail.summary.cycle_id.as_deref() else {
         package.notes.push(format!("记录 #{id} 没有 cycleId，无法确定原图"));
         return Ok(0);
     };
-    let root = app.state::<CycleHost>().recorders.root(detail.summary.source).to_path_buf();
+    let root = match crate::project::records::record_root_of(
+        &crate::storage::root(app),
+        &detail.summary.project_id,
+        detail.recording.directory.as_deref(),
+    ) {
+        Ok(root) => root,
+        Err(error) => {
+            package
+                .notes
+                .push(format!("记录 #{id} 的原图未打包：{error}"));
+            return Ok(0);
+        }
+    };
     let folder = format!("records/{id}_{cycle_id}");
     let mut count = 0;
     let mut directory = None;
@@ -454,13 +463,18 @@ fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &
         csv.extend_from_slice(crate::history::csv_row(&detail.summary).as_bytes());
         details.extend_from_slice(&serde_json::to_vec(detail).map_err(|e| e.to_string())?);
         details.push(b'\n');
-        if let Some(revision) = &detail.summary.recipe_revision { revisions.insert(revision.clone()); }
+        if let Some(revision) = &detail.summary.recipe_revision {
+            revisions.insert((detail.summary.project_id.clone(), revision.clone()));
+        }
     }
     package.add("records/parts.csv", &csv)?;
     package.add("records/parts.jsonl", &details)?;
-    for revision in &revisions {
-        match store.recipe_snapshot(revision) {
-            Ok(Some(recipe)) => package.add(&format!("recipes/{revision}.json"), &serde_json::to_vec_pretty(&recipe).map_err(|e| e.to_string())?)?,
+    for (project, revision) in &revisions {
+        match store.recipe_snapshot(project, revision) {
+            Ok(Some(recipe)) => package.add(
+                &format!("recipes/{project}/{revision}.json"),
+                &serde_json::to_vec_pretty(&recipe).map_err(|e| e.to_string())?,
+            )?,
             Ok(None) => package.notes.push(format!("配方快照 {revision} 缺失")),
             Err(error) => package.notes.push(format!("配方快照 {revision} 读取失败：{error}")),
         }

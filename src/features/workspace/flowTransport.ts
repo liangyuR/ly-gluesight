@@ -42,7 +42,7 @@ export class FlowTransport implements Transport {
     if (path !== this.path) throw new Error("流程调试页只能打开当前选中的测量图");
     return structuredClone(this.loaded);
   }
-  saveGraph() { return unsupported("保存图：专家参数请用“保存为本相机专家参数”写进候选"); }
+  saveGraph() { return unsupported("流程调试只能试跑，改动不写配方"); }
   validateGraph(doc: GraphDoc, _graphPath: string | null, params?: Record<string, unknown>) {
     return desktopCall<GraphDiagnostic[]>("flow_validate", { session: this.loaded.session, doc, params: params ?? null });
   }

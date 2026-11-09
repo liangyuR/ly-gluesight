@@ -4,6 +4,7 @@ use super::{BurstRecord, FrameRecord};
 use crate::burst_judge::{self, FrameMetrics, FrameState};
 use crate::frame_group::{loss_alarms, FrameGroup};
 use crate::judge::Judgement;
+use crate::passes::PassRules;
 use crate::recipe::Recipe;
 use crate::segmentation::{resolve_regions, Region, SegOutcome};
 
@@ -22,6 +23,7 @@ pub(crate) fn measured(camera: usize, seq: u64, width: f64) -> FrameMetrics {
         width_min: Some(width),
         width_max: Some(width),
         width_mean: Some(width),
+        measurement_evidence: None,
         widths: vec![Some(width as f32); 10],
         spacing_mm: 1.0,
         gap_max_mm: 0.0,
@@ -75,6 +77,7 @@ pub(crate) fn record(recipe: &Recipe, mut frames: Vec<FrameRecord>, regions: Opt
             total,
             0.5,
             recipe.boundary_guard,
+            PassRules::NONE,
         )
     });
     let camera_frames: Vec<u32> = (0..cameras.len())
@@ -82,7 +85,16 @@ pub(crate) fn record(recipe: &Recipe, mut frames: Vec<FrameRecord>, regions: Opt
         .collect();
     let metrics: Vec<FrameMetrics> = frames.iter().filter_map(|frame| frame.metrics.clone()).collect();
     let alarms = loss_alarms(&camera_frames);
-    let judgement = burst_judge::judge(&recipe.path_segments, recipe.expected_total(), &regions, &groups, &metrics, &cameras, &alarms);
+    let judgement = burst_judge::judge(
+        &recipe.path_segments,
+        recipe.expected_total(),
+        &regions,
+        &groups,
+        &metrics,
+        &cameras,
+        &alarms,
+        PassRules::NONE,
+    );
     for frame in &mut frames {
         frame.region = regions.iter().position(|region| (region.first_seq..=region.last_seq).contains(&frame.seq));
     }
@@ -96,7 +108,6 @@ pub(crate) fn record(recipe: &Recipe, mut frames: Vec<FrameRecord>, regions: Opt
     };
     let record = BurstRecord {
         expected_total: recipe.expected_total(),
-        tolerance_total: recipe.tolerance_total(),
         device_triggers,
         camera_frames,
         judgement,

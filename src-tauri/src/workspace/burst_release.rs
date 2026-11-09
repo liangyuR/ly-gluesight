@@ -1,33 +1,22 @@
-//! 段配方的发布前验证、验证样本与发布（D3）。
+//! 段配方的发布前检查与发布（D3）。
 //!
-//! 只服务段配方（`RecipeDoc.segments` 非空）。旧拍照点配方的验证（组选图、胶路示教中线、示教与标定、完整采集拍照点数、
-//! 特征定位统计）、验证样本（`workflow::capture_sample`、导入单帧图片）与发布（`freeze_bundle` → schema 3）仍在 workspace.rs
-//! 与 workflow.rs，行为不变。
+//! 只服务段配方（`RecipeDoc.segments` 非空）。
 //!
 //! 验证项（决策记录第九节第 13 条）：
 //! - 相机配置：计划相机解析、三台单视角独立设备（`check_burst_cameras`）；相机是否在线就绪不在发布时核对，接件时再查（D-SB-46）；
 //! - 走廊示教：恰好 3 台计划相机，每台都选了示教帧、走廊完整落在帧内、有像素当量，且示教帧采集后设备配置没变；
 //! - 段帧数：各段 N_exp 取自示教件已确认的分段（RB-3），逐段列出 N_exp 或待定原因；
 //! - 胶偏参考 x_ref：只在有启用胶偏检查的直线段时列出参考值或不判的原因，不阻断（运行时只有按比例分段可信的多段配方
-//!   判胶偏，单段配方整条胶路按未分段处理）；
-//! - 独立正常样本：样本轮次与示教件不同，相机配置与段结构一致；用当前候选的走廊逐帧重测、
-//!   burst_judge 得出结论，帧组数超出 ΣN_exp ± Σtol 只告警；
-//! - 生产版本：候选基于当前生产版本。
+//!   判胶偏，单段配方整条胶路按未分段处理）。
+//!
+//! 结果验证不在这里：在历史页用任意配方重算历史记录。
 
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
-use super::burst::{
-    offset_reference, round_frames, segment_corridor_saved, untaught_pairs, CameraTeaching,
-};
-use super::burst_history::{judge_frames, remeasure, CandidateMeasurer};
+use super::burst::{offset_reference, segment_corridor_saved, untaught_pairs, CameraTeaching};
 use super::*;
-use crate::burst_judge::{BurstJudgement, FrameMetrics};
-use crate::frame_group::{loss_alarms, LossAlarm};
 use crate::plan::{OffsetMeasure, PathSegment, SegmentKind, PLAN_CAMERAS};
-use crate::recipe_capture::{CaptureRoundV2, CaptureState};
-
-/// 样本库里一组样本最多保留的数量（与旧拍照点配方相同）。
-const SAMPLE_BANK_LIMIT: usize = 100;
 
 fn kind_label(kind: SegmentKind) -> &'static str {
     match kind {
@@ -36,45 +25,20 @@ fn kind_label(kind: SegmentKind) -> &'static str {
     }
 }
 
-/// 验证样本的段结构身份：产品代码、有序计划相机、各段 (序号, 类型)。N_exp / ΣN_exp 不在内——标定前采的样本标定后仍可用；
-/// 发布时的计划版本另按 D-SB-19 分配。
-fn sample_tag(product_code: u16, cameras: &[String], segments: &[PathSegment]) -> Value {
-    json!([
-        product_code,
-        cameras,
-        segments
-            .iter()
-            .map(|s| (s.index, s.kind))
-            .collect::<Vec<_>>()
-    ])
-}
-
-fn doc_sample_tag(doc: &RecipeDoc) -> Value {
-    sample_tag(doc.product_code, &doc.plan_cameras(), &doc.segments)
-}
-
-/// 段配方发布前检查的输入：设备检查由调用方（访问设备）给出，其余只读候选。
-pub(super) struct BurstInputs<'a> {
-    /// 计划相机解析、三台单视角独立设备（`cycle::usable_cams`）；不含在线就绪
-    pub device: Result<(), String>,
-    /// 当前设备的相机标签（`camera_state`，与示教帧冻结时同一口径），按相机编号
-    pub cameras: &'a BTreeMap<String, Value>,
-    /// 候选基于当前生产版本
-    pub base_matches: bool,
-}
-
-/// 段配方的全部验证项，按页面展示顺序。
-pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
+/// 段配方的全部验证项，按页面展示顺序。`device` 是调用方（访问设备）核对的计划相机解析、
+/// 三台单视角独立设备（`cycle::usable_cams`），不含在线就绪；其余只读候选。
+pub(super) fn burst_checks(w: &Workspace, device: Result<(), String>) -> Vec<Check> {
     let mut checks = vec![Check {
+        advisory: false,
         name: "相机配置".into(),
-        passed: inputs.device.is_ok(),
-        detail: inputs
-            .device
+        passed: device.is_ok(),
+        detail: device
             .err()
             .unwrap_or_else(|| "三台计划相机已配置；是否在线就绪在接件时核对".into()),
     }];
     // RB-8：没有示教件之前候选不能发布
     checks.push(Check {
+        advisory: false,
         name: "示教件".into(),
         passed: w.teaching_piece.is_some(),
         detail: w.teaching_piece.as_ref().map_or_else(
@@ -82,33 +46,16 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
             |p| format!("示教件 SN {}", p.sn),
         ),
     });
-    checks.push(corridor_check(w, inputs.cameras));
+    checks.push(corridor_check(w));
     checks.push(segment_check(w));
-    let calibration_devices =
-        super::burst::check_calibration_devices(&w.calibration.rounds, inputs.cameras);
-    checks.push(Check {
-        name: "示教件采集参数".into(),
-        passed: calibration_devices.is_ok(),
-        detail: calibration_devices
-            .err()
-            .unwrap_or_else(|| "示教件测量时的相机采集参数与当前一致".into()),
-    });
+    checks.extend(super::pass_align::alignment_check(w));
     checks.extend(x_ref_check(&w.doc));
-    checks.push(Check {
-        name: "生产版本".into(),
-        passed: inputs.base_matches,
-        detail: if inputs.base_matches {
-            "候选基于当前生产版本".into()
-        } else {
-            "生产配方已被其他操作更新，请重新建立候选".into()
-        },
-    });
     checks
 }
 
 /// 走廊示教（规格 §1 Plan.cameras = 3、§4 检测走廊、D-SB-45）：每段每台检测相机都有示教帧、走廊完整落在帧内，
-/// 每台相机有像素当量，各示教帧采集后这台相机的设备配置没变（`current` 是当前设备的相机标签）。
-fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
+/// 每台相机有像素当量。示教后改了相机参数不拦发布。
+fn corridor_check(w: &Workspace) -> Check {
     let doc = &w.doc;
     let mut problems = Vec::new();
     if doc.inspect.len() != PLAN_CAMERAS {
@@ -133,21 +80,13 @@ fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
             .into_iter()
             .map(|i| i.message),
     );
-    for teaching in w.camera_teaching.iter().filter(|t| t.segment.is_some()) {
-        if current.get(&teaching.camera) != Some(&teaching.frame.camera_tag) {
-            problems.push(format!(
-                "第 {} 段相机 {}：示教帧采集后设备参数或样本集已改变，请重新采集并重选示教帧",
-                teaching.segment.unwrap_or_default(),
-                teaching.camera
-            ));
-        }
-    }
     let pairs: usize = doc
         .segments
         .iter()
         .map(|s| crate::plan::segment_cameras(s, &doc.plan_cameras()).len())
         .sum();
     Check {
+        advisory: false,
         name: "走廊示教".into(),
         passed: problems.is_empty(),
         detail: if problems.is_empty() {
@@ -161,67 +100,51 @@ fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
     }
 }
 
-/// 当前设备的相机标签（`camera_state`，与示教帧冻结时同一口径：样本集相机带样本集编号），按相机编号。
-pub(super) fn current_camera_tags(app: &AppHandle) -> BTreeMap<String, Value> {
-    let sample_set = crate::offline::sample_set(app).map(|set| set.manifest().id.clone());
-    app.state::<CycleHost>()
-        .camera
-        .configs()
-        .iter()
-        .map(|c| (c.id.clone(), camera_state(c, sample_set.as_deref())))
-        .collect()
-}
-
-/// 段配方候选试运行（`workspace_debug_run`）用的各计划相机示教帧尺寸（计划相机顺序，交给 `Candidate::new_burst`）：
-/// 每段每台检测相机都示教了走廊，且各示教帧采集后这台相机的设备标签（`current`）没变——与走廊示教验证项同一口径。
-/// 开跑前 `recheck_debug_candidate` 再核对一次。
-pub(super) fn debug_sizes(
-    w: &Workspace,
-    current: &BTreeMap<String, Value>,
-) -> Result<Vec<[u32; 2]>, String> {
-    if let Some((camera, segment)) = untaught_pairs(w).into_iter().next() {
-        return Err(format!(
-            "第 {segment} 段相机 {camera} 还没有示教走廊：先完成走廊示教"
-        ));
-    }
-    if let Some(t) = w
-        .camera_teaching
-        .iter()
-        .find(|t| t.segment.is_some() && current.get(&t.camera) != Some(&t.frame.camera_tag))
-    {
-        return Err(format!(
-            "相机 {}：示教帧采集后设备参数或样本集已改变，请重新采集并重选示教帧",
-            t.camera
-        ));
-    }
-    super::burst::teaching_sizes(w)
-}
-
 /// 段帧数（规格 §1 没有 N_exp 不能发布）：各段 N_exp 取示教件已确认分段的帧组数（RB-3；D-SB-45：生产按累计 N_exp 预测
 /// 每帧所属段来选走廊）。逐段列出 N_exp 或待定原因。
 fn segment_check(w: &Workspace) -> Check {
     let doc = &w.doc;
     let total = doc.expected_total();
-    let tolerance_total = crate::plan::tolerance_total(&doc.segments);
     let head = match total {
-        Some(total) => {
-            format!("整件预期 {total} ± {tolerance_total} 个帧组（PLC shotCount = {total}）")
-        }
+        Some(total) => format!("整件预期 {total} 个帧组（PLC shotCount = {total}）"),
         None => "整件预期帧组数待示教件分段：先在分段步骤确认示教件边界".into(),
     };
-    let core_min = 2 * doc.boundary_guard + 1;
     let multi = doc.segments.len() > 1;
+    let last = doc.segments.len().saturating_sub(1);
+    // 按示教件的笔结构（D-SB-62）：去掉过渡区、段与每笔首尾跳过的帧后一帧不剩的段，生产整段不检
+    let empty: BTreeSet<u32> = match (total, w.teaching_piece.as_ref()) {
+        (Some(total), Some(piece)) if !piece.passes.is_empty() => {
+            crate::segmentation::proportional_coverage(
+                &doc.segments,
+                &doc.plan_cameras(),
+                u64::from(total),
+                doc.boundary_guard,
+                &[],
+                super::pieces::piece_pass_rules(w),
+            )
+            .zero_coverage_segments
+            .into_iter()
+            .collect()
+        }
+        _ => BTreeSet::new(),
+    };
     let segments: Vec<String> = doc
         .segments
         .iter()
-        .map(|s| {
+        .enumerate()
+        .map(|(k, s)| {
             let kind = if s.skip { "不检测" } else { kind_label(s.kind) };
+            let offset_min = offset_frames_min(s, k > 0, k < last, doc.boundary_guard);
             match (s.expected_frames, total) {
-                (Some(n), _) if multi && !s.skip && s.kind == SegmentKind::Straight && n < core_min => format!(
-                    "第 {} 段（{kind}）N_exp {n} ± {}：短于 {core_min} 帧，两侧过渡区取空后不判胶偏，建议并入相邻弯道段",
-                    s.index, s.tolerance
+                (Some(n), _) if !s.skip && empty.contains(&s.index) => format!(
+                    "第 {} 段（{kind}）N_exp {n}：去掉过渡区与跳过帧后示教件上没有可判的帧，生产整段不检",
+                    s.index
                 ),
-                (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n} ± {}", s.index, s.tolerance),
+                (Some(n), _) if multi && !s.skip && s.kind == SegmentKind::Straight && n < offset_min => format!(
+                    "第 {} 段（{kind}）N_exp {n}：短于 {offset_min} 帧，去掉过渡区、跳过帧与首尾各一帧后没有帧判胶偏，建议并入相邻弯道段",
+                    s.index
+                ),
+                (Some(n), _) => format!("第 {} 段（{kind}）N_exp {n}", s.index),
                 (None, _) => format!("第 {} 段（{kind}）待示教件分段", s.index),
             }
         })
@@ -232,11 +155,20 @@ fn segment_check(w: &Workspace) -> Check {
         }))
         .collect();
     Check {
+        advisory: false,
         name: "段帧数".into(),
         passed: total.is_some()
             && (!multi || doc.segments.iter().all(|s| s.expected_frames.is_some())),
         detail: format!("{head}；{}", segments.join("；")),
     }
+}
+
+/// 直线段至少要多少帧，运行时才剩帧判胶偏（D-SB-40）：每一头去掉过渡区与本段跳过帧中较多的那一截（两者从同一端数起、
+/// 互相重叠，`resolve_regions`），胶偏判定再去掉区域首尾各一帧（`burst_judge::region_offset`），至少留 1 帧。
+fn offset_frames_min(s: &PathSegment, before: bool, after: bool, guard: u32) -> u32 {
+    let head = s.skip_head.max(if before { guard } else { 0 });
+    let tail = s.skip_tail.max(if after { guard } else { 0 });
+    head + tail + 3
 }
 
 /// 胶偏参考 x_ref（规格 §0/§1、D-SB-18；示教件兼作标准件，RB-3）：只在有启用胶偏检查的直线段时列出，只作说明、不阻断发布——
@@ -264,300 +196,183 @@ fn x_ref_check(doc: &RecipeDoc) -> Option<Check> {
         })
         .collect();
     (!items.is_empty()).then(|| Check {
+        advisory: false,
         name: "胶偏参考 x_ref".into(),
         passed: true,
         detail: items.join("；"),
     })
 }
 
-/// 段配方验证样本的采集轮次（规格 §0 独立验证、D-SB-35）：属于本候选、已完整完成；不是示教件、没用于走廊示教；
-/// 相机集合等于计划相机，各相机采集时的设备配置与当前设备相同（`current` 按相机编号，`state_value` 口径）。
-pub(super) fn check_sample_round(
-    w: &Workspace,
-    round: &CaptureRoundV2,
-    current: &BTreeMap<String, Value>,
-) -> Result<(), String> {
-    let id = &round.round_id;
-    if round.recipe_id != w.doc.id
-        || round.state != CaptureState::Complete
-        || round.group_count == 0
-    {
-        return Err(format!(
-            "采集轮次 {id} 不属于当前候选、尚未完整完成或没有帧组，不能作为验证样本"
-        ));
-    }
-    if w.camera_teaching.iter().any(|t| &t.round == id) {
-        return Err(format!(
-            "采集轮次 {id} 已用于走廊示教：示教与验证样本必须来自不同的采集轮次，请重新采集"
-        ));
-    }
-    if w.calibration.rounds.iter().any(|r| &r.round_id == id) {
-        return Err(format!(
-            "采集轮次 {id} 是示教件：示教件与验证样本必须来自不同的采集轮次，请重新采集"
-        ));
-    }
-    let cameras = w.doc.plan_cameras();
-    let ids: BTreeSet<&str> = round.cameras.iter().map(|c| c.camera_id.as_str()).collect();
-    if round.cameras.len() != cameras.len() || ids != cameras.iter().map(String::as_str).collect() {
-        return Err(format!(
-            "采集轮次 {id} 的相机 {:?} 与计划相机 {cameras:?} 不同",
-            round.camera_ids()
-        ));
-    }
-    for camera in &round.cameras {
-        if current.get(&camera.camera_id) != Some(&camera.camera_config) {
-            return Err(format!(
-                "采集后相机 {} 的参数已改变，请重新采集验证样本",
-                camera.camera_id
-            ));
-        }
-    }
-    Ok(())
+/// 一（段, 相机）用候选走廊在自己的示教帧上试测的结果：测成为 Ok，没测成为原因。
+#[derive(Clone)]
+pub(super) struct TeachTrial {
+    pub segment: u32,
+    pub camera: String,
+    pub outcome: Result<(), String>,
+    pub incomplete: bool,
 }
 
-/// 丢帧告警按计划相机下标重算（轮次里的告警按本轮相机顺序，与计划相机顺序可能不同）。
-fn round_loss(cameras: &[String], round: &CaptureRoundV2) -> Vec<LossAlarm> {
-    let counts: Vec<u32> = cameras
+/// “示教帧试测”（D-SB-59）：与生产预热同一口径。部分没测成只提醒——发布后这些段不测、帧记未测，结论只覆盖其余段；
+/// 一段都没测成时拦发布（来件只能录原图、回检测错误）。没有可试测的组合（走廊没示教完由“走廊示教”拦）时不出这一项。
+pub(super) fn teach_trial_check(trials: &[TeachTrial]) -> Option<Check> {
+    if trials.is_empty() {
+        return None;
+    }
+    let failed: Vec<String> = trials
         .iter()
-        .map(|c| {
-            round
-                .cameras
-                .iter()
-                .position(|r| &r.camera_id == c)
-                .and_then(|j| round.camera_frames.get(j).copied())
-                .unwrap_or(0)
+        .filter_map(|t| {
+            t.outcome
+                .as_ref()
+                .err()
+                .map(|e| format!("第 {} 段相机 {}：{e}", t.segment, t.camera))
         })
         .collect();
-    loss_alarms(&counts)
+    let all = failed.len() == trials.len();
+    let incomplete: Vec<String> = trials
+        .iter()
+        .filter(|t| t.incomplete)
+        .map(|t| format!("第 {} 段相机 {}", t.segment, t.camera))
+        .collect();
+    Some(Check {
+        advisory: (!failed.is_empty() || !incomplete.is_empty()) && !all,
+        name: "示教帧试测".into(),
+        passed: failed.is_empty() && incomplete.is_empty(),
+        detail: if failed.is_empty() && !incomplete.is_empty() {
+            format!(
+                "存在可用测量，但部分测站未完整量测，请复核截断/未知证据：{}",
+                incomplete.join("；")
+            )
+        } else if failed.is_empty() {
+            format!("{} 组（段, 相机）在各自示教帧上都测成", trials.len())
+        } else if all {
+            format!(
+                "每一段在示教帧上都没测成，发布后来件只能录原图、回检测错误：{}",
+                failed.join("；")
+            )
+        } else {
+            format!(
+                "{} / {} 组在示教帧上没测成；可以发布，但生产时这些段不测（帧记未测，结论只覆盖其余段），建议在示教页重新取色或调整走廊后再发布：{}",
+                failed.len(),
+                trials.len(),
+                failed.join("；")
+            )
+        },
+    })
 }
 
-/// 用当前候选判一轮验证样本：每帧指标（`measure_round` 的结果，按计划相机）→ 比例分段区域 → 丢帧告警 → burst_judge。
-pub(super) fn judge_round(
-    doc: &RecipeDoc,
-    round: &CaptureRoundV2,
-    metrics: &[FrameMetrics],
-) -> BurstJudgement {
-    let cameras = doc.plan_cameras();
-    judge_frames(
-        &doc.segments,
-        doc.boundary_guard,
-        doc.boundary_refine,
-        doc.expected_total(),
-        &cameras,
-        metrics,
-        &round_loss(&cameras, round),
-    )
+/// 每段每台检测相机用候选走廊在自己的示教帧上量一次（与 `Prepared::warm` 同一口径：Measured 才算测成）。
+/// 同一候选实例、修订与核心库下复用上次结果；核心库没加载时不试测也不缓存（冻结发布包要求核心库，发布照样被拦），
+/// 走廊建不成时不试测（由“走廊示教”拦）。
+fn teach_trials(app: &AppHandle, w: &Workspace) -> Vec<TeachTrial> {
+    type Key = (u64, u64, String);
+    static CACHE: LazyLock<Mutex<HashMap<String, (Key, Arc<Vec<TeachTrial>>)>>> =
+        LazyLock::new(Default::default);
+    let Some(engine) = app.state::<vision::VisionHost>().engine() else {
+        return Vec::new();
+    };
+    let key: Key = (w.instance_id, w.revision, engine.identity.clone());
+    let cached = CACHE
+        .lock()
+        .unwrap()
+        .get(&w.doc.id)
+        .filter(|(k, _)| *k == key)
+        .map(|(_, v)| v.clone());
+    let trials = cached.unwrap_or_else(|| {
+        let trials = Arc::new(measure_teach_frames(app, w, &engine));
+        CACHE
+            .lock()
+            .unwrap()
+            .insert(w.doc.id.clone(), (key, trials.clone()));
+        trials
+    });
+    trials.to_vec()
 }
 
-/// 段配方样本的结论：按 burst_judge 的整件结论对照人工期望（规则同 `SampleResult::judged`）。帧组数超出 ΣN_exp ± Σtol
-/// 与检测不完整只在原因里告警，不改是否符合（规格 §2、§0）。
-pub(super) fn sample_result(
-    sample: &Sample,
-    name: String,
-    sn: String,
-    judgement: &BurstJudgement,
-    expected_total: Option<u32>,
-    tolerance_total: u32,
-) -> SampleResult {
-    let mut result = SampleResult::judged(sample, name, sn, burst_history::summary(judgement));
-    let mut warnings = Vec::new();
-    if judgement.flags.frame_count_anomaly {
-        let expected = expected_total.map_or("预期".to_string(), |n| {
-            format!("预期 {n} ± {tolerance_total}")
-        });
-        warnings.push(format!(
-            "帧组数 {} 超出{expected}（只告警，不影响结论）",
-            judgement.group_count
-        ));
-    }
-    if judgement.flags.incomplete {
-        warnings.push("检测不完整：有帧组缺帧或有帧没测成（只告警，不影响结论）".to_string());
-    }
-    if !warnings.is_empty() {
-        result.reason = format!("{}；{}", result.reason, warnings.join("；"));
-    }
-    result
-}
-
-fn failed_sample(sample: &Sample, reason: String) -> SampleResult {
-    SampleResult {
-        history_id: sample.history_id,
-        sample_id: sample.sample_id.clone(),
-        name: sample
-            .sample_id
-            .clone()
-            .unwrap_or_else(|| format!("记录 #{}", sample.history_id.unwrap_or(0))),
-        sn: String::new(),
-        expected: sample.expected,
-        actual: None,
-        passed: false,
-        reason,
-    }
-}
-
-/// 一件验证样本：独立采集轮次（样本库）或生产历史记录（原图齐全），都用当前候选的走廊逐帧重测后判定。
-fn validate_sample(
+fn measure_teach_frames(
     app: &AppHandle,
     w: &Workspace,
-    recipe: &Recipe,
-    measurer: Result<&CandidateMeasurer, &String>,
-    sample: &Sample,
-    current: &BTreeMap<String, Value>,
-) -> Result<SampleResult, String> {
-    let tolerance_total = recipe.tolerance_total();
-    if let Some(sample_id) = &sample.sample_id {
-        let bank = w
-            .sample_bank
+    engine: &vision::Engine,
+) -> Vec<TeachTrial> {
+    let Ok(recipe) = w.doc.build() else {
+        return Vec::new();
+    };
+    let Ok(graphs) = vision::CorridorSet::build(&recipe, &super::burst::taught_sizes(w)) else {
+        return Vec::new();
+    };
+    let graphs = graphs.with_channels(&super::burst::teaching_channels(w));
+    let host = app.state::<WorkspaceHost>();
+    let cameras = recipe.plan_cameras();
+    let run = vision::unique_run_id(&format!("publish-trial-{}-{}", recipe.id, w.revision));
+    let mut out = Vec::new();
+    for (idx, inspect) in recipe.inspect.iter().enumerate() {
+        for segment in recipe
+            .path_segments
             .iter()
-            .find(|b| &b.id == sample_id)
-            .ok_or("样本组不存在")?;
-        let round_id = bank
-            .capture_id
-            .as_deref()
-            .ok_or("段配方的验证样本须来自独立采集轮次，导入的单帧图片不能用于段配方")?;
-        if bank.geometry_tag != doc_sample_tag(&w.doc) {
-            return Err("样本来自另一版段序列、计划相机或产品代码，请重新采集".into());
+            .filter(|s| crate::plan::segment_cameras(s, &cameras).contains(&inspect.camera))
+        {
+            let (Some(graph), Some(teaching)) = (
+                graphs.get(idx, segment.index),
+                w.camera_teaching
+                    .iter()
+                    .find(|t| t.camera == inspect.camera && t.segment == Some(segment.index)),
+            ) else {
+                continue;
+            };
+            let mut incomplete = false;
+            let outcome = image_file(&host, &recipe.id, &teaching.frame.id)
+                .and_then(|path| crate::image_file::load(&path))
+                .and_then(|image| {
+                    vision::measure_frame(
+                        engine,
+                        graph,
+                        &image,
+                        0,
+                        &format!("{run}-c{idx}-s{}", segment.index),
+                    )
+                })
+                .and_then(|m| {
+                    incomplete = m.metrics.measurement_incomplete();
+                    if m.metrics.has_usable_evidence() {
+                        Ok(())
+                    } else {
+                        Err(m.metrics.error.unwrap_or_else(|| "没有可用测量证据".into()))
+                    }
+                });
+            out.push(TeachTrial {
+                segment: segment.index,
+                camera: inspect.camera.clone(),
+                outcome,
+                incomplete,
+            });
         }
-        let cycle = app.state::<CycleHost>();
-        let capture = cycle.camera.recipe_capture();
-        let round = capture.get_burst(round_id)?;
-        check_sample_round(w, &round, current)?;
-        let measurer = measurer.map_err(|e| e.clone())?;
-        let cameras = w.doc.plan_cameras();
-        let metrics = burst_history::remeasure_by_rule(
-            &recipe.path_segments,
-            recipe.boundary_guard,
-            &cameras,
-            &round_frames(&cameras, &round),
-            |camera, seq, segment| {
-                let image = crate::image_file::load(&capture.burst_frame_path(
-                    round_id,
-                    &cameras[camera],
-                    seq,
-                )?)?;
-                measurer.measure(camera, segment, seq, &image)
-            },
-        );
-        let judgement = judge_round(&w.doc, &round, &metrics);
-        return Ok(sample_result(
-            sample,
-            bank.name.clone(),
-            String::new(),
-            &judgement,
-            recipe.expected_total(),
-            tolerance_total,
-        ));
     }
-    let history_id = sample.history_id.ok_or("样本来源未指定")?;
-    let store = app.state::<Store>();
-    let detail = store.detail(history_id)?;
-    if detail.summary.source == store::RecordSource::OfflineCandidate {
-        return Err("候选调试记录不能作为独立发布验证样本".into());
-    }
-    let origins =
-        history_import::round_origins(app.state::<CycleHost>().camera.recipe_capture(), &w.doc.id)?;
-    let devices = history_import::recorded_devices(app, &detail.recording);
-    history_import::check_history_sample(
-        w,
-        detail.summary.cycle_id.as_deref(),
-        &origins,
-        devices.as_ref(),
-        current,
-    )?;
-    let burst = detail
-        .burst
-        .as_ref()
-        .ok_or("旧拍照点记录不能作为段配方的验证样本")?;
-    let original = detail
-        .summary
-        .recipe_revision
-        .as_deref()
-        .map(|h| store.recipe_snapshot(h))
-        .transpose()?
-        .flatten()
-        .ok_or("原始配方快照缺失")?;
-    if !original.is_burst()
-        || sample_tag(
-            original.product_code,
-            &original.plan_cameras(),
-            &original.path_segments,
-        ) != doc_sample_tag(&w.doc)
-    {
-        return Err("历史样本的段序列、计划相机或产品代码与候选不同".into());
-    }
-    if !burst_history::raw_complete(&detail, burst) {
-        return Err("历史样本的原图不完整，不能整件复测".into());
-    }
-    let measurer = measurer.map_err(|e| e.clone())?;
-    let metrics = remeasure(recipe, &burst.frames, |frame, segment| {
-        measurer.measure(
-            frame.camera,
-            segment,
-            frame.seq,
-            &burst_history::frame_image(app, &detail, frame.camera, frame.seq)?,
-        )
-    });
-    let judgement = judge_frames(
-        &recipe.path_segments,
-        recipe.boundary_guard,
-        recipe.boundary_refine,
-        recipe.expected_total(),
-        &recipe.plan_cameras(),
-        &metrics,
-        &burst.judgement.alarms,
-    );
-    Ok(sample_result(
-        sample,
-        format!("SN {}", detail.summary.sn),
-        detail.summary.sn.clone(),
-        &judgement,
-        recipe.expected_total(),
-        tolerance_total,
-    ))
+    out
 }
 
-/// 可选的独立样本验证结论（D-SB-46：不再是发布前提）：至少一套独立正常整圈样本，所选正常样本均须符合预期。
-fn sample_check(samples: &[SampleResult]) -> Check {
-    let normals: Vec<_> = samples
-        .iter()
-        .filter(|r| matches!(r.expected, Verdict::Ok | Verdict::OkWithExcursion))
-        .collect();
-    Check {
-        name: "独立正常样本".into(),
-        passed: !normals.is_empty() && normals.iter().all(|r| r.passed),
-        detail: "至少一套独立正常整圈样本（采集轮次独立于示教件），所选正常样本均须符合预期；帧组数超出预期只告警；缺陷样本验证结果单独保留".into(),
-    }
+/// 拦发布的第一项：没满足且不是只提醒的项（D-SB-59）。`workspace_publish` 按它决定能否发布。
+pub(super) fn publish_blocker(checks: &[Check]) -> Option<&Check> {
+    checks.iter().find(|c| !c.passed && !c.advisory)
 }
 
-/// 发布前检查（D-SB-46，发布时当场核对，不跑样本，不要求相机在线）：相机配置、走廊示教、段标定、标定采集参数、x_ref、生产版本。
-/// 结果随待生效版本存档（`Release.validation`，样本为空）。
+/// 发布前检查（D-SB-46，发布时当场核对，不要求相机在线）：相机配置、走廊示教、段标定、x_ref，
+/// 以及示教帧试测（D-SB-59，部分没测成只提醒）。结果随待生效版本存档（`Release.validation`）。
 pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let recipe = w.doc.build()?;
     let environment_tag = environment(app, &recipe)?;
-    let cycle = app.state::<CycleHost>();
     let device = cycle::usable_cams(app, &recipe).map(|_| ());
-    let tags = current_camera_tags(app);
-    let base = cycle.recipe(&recipe.id).map(|r| r.revision_id.clone());
-    let checks = burst_checks(
-        w,
-        BurstInputs {
-            device,
-            cameras: &tags,
-            base_matches: base == w.base_revision,
-        },
-    );
+    let mut checks = burst_checks(w, device);
+    checks.extend(teach_trial_check(&teach_trials(app, w)));
     Ok(Validation {
         revision: w.revision,
-        passed: checks.iter().all(|c| c.passed),
+        passed: publish_blocker(&checks).is_none(),
         checked_at: ly_plc::now_ms(),
         checks,
-        samples: Vec::new(),
         environment_tag,
     })
 }
 
-/// 发布前检查的结果（验证与发布页展示，不改候选）。
-#[tauri::command]
+/// 发布前检查的结果（验证与发布页展示，不改候选）。示教帧试测要跑图像引擎，不占主线程。
+#[tauri::command(async)]
 pub fn workspace_publish_checks(
     app: AppHandle,
     id: String,
@@ -574,124 +389,6 @@ pub fn workspace_publish_checks(
         return Err("旧拍照点配方已停用，请创建段配方".into());
     }
     publish_checks(&app, &w).map(|v| v.checks)
-}
-
-/// 段配方的独立样本验证（`workspace_validate` 对段配方调用；D-SB-46 起为可选，不是发布前提）。
-pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
-    let recipe = w.doc.build()?;
-    let initial_environment = environment(app, &recipe)?;
-    let cycle = app.state::<CycleHost>();
-    let device = cycle::usable_cams(app, &recipe).map(|_| ());
-    let configs = cycle.camera.configs();
-    let tags = current_camera_tags(app);
-    let current: BTreeMap<String, Value> = configs
-        .iter()
-        .map(|c| (c.id.clone(), state_value(c)))
-        .collect();
-    let measurer = CandidateMeasurer::new(app, w, &recipe);
-    let samples: Vec<SampleResult> = w
-        .samples
-        .iter()
-        .map(|sample| {
-            validate_sample(app, w, &recipe, measurer.as_ref(), sample, &current)
-                .unwrap_or_else(|reason| failed_sample(sample, reason))
-        })
-        .collect();
-    let base = cycle.recipe(&recipe.id).map(|r| r.revision_id.clone());
-    let mut checks = burst_checks(
-        w,
-        BurstInputs {
-            device,
-            cameras: &tags,
-            base_matches: base == w.base_revision,
-        },
-    );
-    checks.push(sample_check(&samples));
-    if environment(app, &recipe)? != initial_environment {
-        return Err("验证期间设备、标定或引擎发生变化，请重新验证".into());
-    }
-    Ok(Validation {
-        revision: w.revision,
-        passed: checks.iter().all(|c| c.passed),
-        checked_at: ly_plc::now_ms(),
-        checks,
-        samples,
-        environment_tag: initial_environment,
-    })
-}
-
-/// 把一轮新采集记进样本库并选为验证样本（同一轮不重复加入由调用方先查）。
-pub(super) fn bank_round(
-    w: &mut Workspace,
-    round: &CaptureRoundV2,
-    current: &BTreeMap<String, Value>,
-    expected: Verdict,
-) -> Result<(), String> {
-    check_sample_round(w, round, current)?;
-    if w.sample_bank.len() >= SAMPLE_BANK_LIMIT {
-        return Err(format!("最多保留 {SAMPLE_BANK_LIMIT} 组验证样本"));
-    }
-    let configs: Vec<Option<&Value>> = w
-        .doc
-        .plan_cameras()
-        .iter()
-        .map(|c| {
-            round
-                .cameras
-                .iter()
-                .find(|r| &r.camera_id == c)
-                .map(|r| &r.camera_config)
-        })
-        .collect();
-    w.sample_bank.push(BankSample {
-        id: round.round_id.clone(),
-        name: format!("独立采集 {}", round.created_at),
-        geometry_tag: doc_sample_tag(&w.doc),
-        expected,
-        created_at: round.created_at,
-        capture_id: Some(round.round_id.clone()),
-        camera_state: state_value(&configs),
-    });
-    w.samples.push(Sample {
-        history_id: None,
-        sample_id: Some(round.round_id.clone()),
-        expected,
-    });
-    w.changed();
-    Ok(())
-}
-
-/// 段配方的“保存为独立验证样本”（`workspace_capture_sample` 对段配方调用）：样本是新采集轮次（CaptureRoundV2），
-/// 帧留在采集轮次目录里，验证时按 (相机, seq) 读。
-pub(super) fn capture_sample(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    round_id: String,
-    expected: Verdict,
-) -> Result<WorkspaceView, String> {
-    let cycle = app.state::<CycleHost>();
-    let Some(_gate) = workflow::wait_idle_config_gate(&cycle, "加入验证样本")? else {
-        return Err("请等待当前工件和 PLC 事务结束后加入验证样本".into());
-    };
-    let round = cycle.camera.recipe_capture().get_burst(&round_id)?;
-    let current: BTreeMap<String, Value> = cycle
-        .camera
-        .configs()
-        .iter()
-        .map(|c| (c.id.clone(), state_value(c)))
-        .collect();
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let mut w = items.get(&id).ok_or("候选不存在")?.clone();
-    w.expect(revision)?;
-    if w.sample_bank.iter().any(|b| b.id == round_id) {
-        return view(&app, w);
-    }
-    bank_round(&mut w, &round, &current, expected)?;
-    host.save(&w)?;
-    items.insert(id, w.clone());
-    view(&app, w)
 }
 
 /// 段配方发布前冻结（schema 4，D-SB-30）：每台计划相机的示教帧、标定（当量等于示教当量）与走廊，测量图按配方与各相机
@@ -741,14 +438,10 @@ pub(super) fn freeze_bundle(
         } else {
             None
         };
-        let reference = vision::camera_calib_key(inspect)?.reference();
+        let reference = vision::station_key(&inspect.camera)?.reference();
         let calibration = json!({"schemaVersion": 1, "camera": inspect.camera, "reference": reference, "mmPerPx": inspect.mm_per_px, "source": source, "acquisition": crate::production::acquisition_tag(&app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == inspect.camera).ok_or("发布相机不存在")?)});
-        sizes.push(
-            taught
-                .first()
-                .map(|t| t.frame.size)
-                .ok_or_else(|| format!("相机 {} 不检测任何一段", inspect.camera))?,
-        );
+        // 不检测任何一段的相机没有示教帧，尺寸记 [0, 0]
+        sizes.push(taught.first().map_or([0, 0], |t| t.frame.size));
         cameras.push(crate::release::CameraInput {
             camera: inspect.camera.clone(),
             calibration: crate::release::ResourceSource::Bytes(
@@ -778,11 +471,7 @@ pub(super) fn freeze_bundle(
                 engine: engine.identity.clone(),
                 graph: crate::production::GRAPH_VERSION_BURST.into(),
             },
-            validation_site: if crate::offline::enabled(app) {
-                ValidationSite::Offline
-            } else {
-                ValidationSite::Real
-            },
+            validation_site: ValidationSite::Real,
             graph: crate::release::ResourceSource::Bytes(
                 serde_json::to_vec(&crate::production::burst_graphs(&recipe, &sizes)?)
                     .map_err(|e| e.to_string())?,

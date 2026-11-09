@@ -1,9 +1,8 @@
 //! 测量图模板（LF-4）：GraphDoc 加顶层图参数，随程序版本发布。每次运行由 GlueSight 合成全部有效参数，经 params_json 传给 lyFlow；
-//! 顶层图参数只放绑定到算子参数的项：标 `advanced` 的是专家参数（LF-5），其余由 GlueSight 按业务参数换算，不对外开放。
-//! GlueSight 判定用的门限不绑定算子，放在模板扩展位 `x.gluesight.judge`（同一套规格字段，都是专家参数）。
-//! 两类专家参数都由配方默认、相机覆盖逐层叠加。
+//! 顶层图参数只放绑定到算子参数的项：标 `advanced` 的是算子门限，取模板默认值（流程调试页可临时改了试跑），其余由 GlueSight
+//! 按业务参数换算。GlueSight 判定用的门限不绑定算子，放在模板扩展位 `x.gluesight.judge`（同一套规格字段，都标 `advanced`）。
+//! 配方不存这些门限。
 
-use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
@@ -17,8 +16,11 @@ pub struct Template {
     judge: Map<String, Value>,
 }
 
-/// 配方里的专家参数（模板参数名 → 值）。
-pub type ExpertParams = BTreeMap<String, Value>;
+impl std::fmt::Debug for Template {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Template({})", self.id)
+    }
+}
 
 fn load(id: &'static str, text: &'static str) -> Template {
     let doc: Value =
@@ -44,8 +46,8 @@ fn load(id: &'static str, text: &'static str) -> Template {
     }
 }
 
-fn templates() -> &'static [Template; 2] {
-    static ALL: OnceLock<[Template; 2]> = OnceLock::new();
+fn templates() -> &'static [Template; 5] {
+    static ALL: OnceLock<[Template; 5]> = OnceLock::new();
     ALL.get_or_init(|| {
         [
             load(
@@ -53,6 +55,18 @@ fn templates() -> &'static [Template; 2] {
                 include_str!("../../graphs/corridor.lyflow.json"),
             ),
             load("heading", include_str!("../../graphs/heading.lyflow.json")),
+            load(
+                "corridor_color",
+                include_str!("../../graphs/corridor_color.lyflow.json"),
+            ),
+            load(
+                "heading_color",
+                include_str!("../../graphs/heading_color.lyflow.json"),
+            ),
+            load(
+                "color_teach",
+                include_str!("../../graphs/color_teach.lyflow.json"),
+            ),
         ]
     })
 }
@@ -68,66 +82,29 @@ pub fn heading() -> &'static Template {
     &templates()[1]
 }
 
-pub fn all() -> impl Iterator<Item = &'static Template> {
-    templates().iter()
+/// 胶色测量的示教走廊图：`glue.color_map`（颜色模型）+ `glue.polyline` → 两份 `glue.color_runs`，可接 `glue.part_edges`。
+pub fn corridor_color() -> &'static Template {
+    &templates()[2]
+}
+
+/// 胶色测量的逐帧定向图：`glue.color_map` 之后 `glue.color_fan`，3 个候选方向各有 `glue.color_track` →
+/// `glue.color_runs` 与 `glue.part_edges`。
+pub fn heading_color() -> &'static Template {
+    &templates()[3]
+}
+
+/// 示教取色图：示教走廊（`glue.polyline`）→ `glue.color_model`，输出颜色模型。
+pub fn color_teach() -> &'static Template {
+    &templates()[4]
 }
 
 fn is_expert(spec: &Value) -> bool {
     spec["advanced"] == true
 }
 
-/// 各模板的专家参数规格（顶层图参数里的专家参数与判定门限）；同名参数在不同模板里绑定不同节点，
-/// 但规格（范围、默认值、说明）必须一致。
-pub fn expert_specs() -> BTreeMap<String, Value> {
-    let mut out = BTreeMap::new();
-    for t in all() {
-        for (name, spec) in t.specs.iter().chain(&t.judge) {
-            if !is_expert(spec) {
-                continue;
-            }
-            let mut spec = spec.clone();
-            spec.as_object_mut().map(|s| s.remove("binds"));
-            if let Some(other) = out.get(name) {
-                assert_eq!(
-                    other, &spec,
-                    "测量图模板的专家参数 {name} 在各模板里规格不一致"
-                );
-            }
-            out.insert(name.clone(), spec);
-        }
-    }
-    out
-}
-
-/// 专家参数合法：名字是模板里的专家参数，值的类型与范围符合规格。`what` 是出错时的主语。
-pub fn validate_expert(params: &ExpertParams, what: &str) -> Result<(), String> {
-    let specs = expert_specs();
-    for (name, value) in params {
-        let spec = specs
-            .get(name)
-            .ok_or_else(|| format!("{what}：没有名为 {name} 的专家参数"))?;
-        let label = spec["label"].as_str().unwrap_or(name);
-        let number = value
-            .as_f64()
-            .filter(|v| v.is_finite())
-            .ok_or_else(|| format!("{what}：专家参数「{label}」需为有限数"))?;
-        let (lo, hi) = (
-            spec["min"].as_f64().unwrap_or(f64::NEG_INFINITY),
-            spec["max"].as_f64().unwrap_or(f64::INFINITY),
-        );
-        if !(lo..=hi).contains(&number) {
-            return Err(format!(
-                "{what}：专家参数「{label}」{number} 需在 {lo}–{hi} 之间"
-            ));
-        }
-    }
-    Ok(())
-}
-
 impl Template {
-    /// 这次运行的全部有效参数：模板默认值，叠上 GlueSight 换算的业务参数（`business`，必须是非专家参数），
-    /// 再按顺序叠上各层专家参数（配方默认、相机覆盖；只取本模板有的专家参数）。
-    pub fn params(&self, business: Value, expert: &[&ExpertParams]) -> Result<Value, String> {
+    /// 这次运行的全部有效参数：模板默认值，叠上 GlueSight 换算的业务参数（`business`，不能是标 `advanced` 的门限）。
+    pub fn params(&self, business: Value) -> Result<Value, String> {
         let mut out: Map<String, Value> = self
             .specs
             .iter()
@@ -139,29 +116,17 @@ impl Template {
                 _ => return Err(format!("测量图模板 {} 没有业务参数 {name}", self.id)),
             };
         }
-        overlay(&mut out, &self.specs, expert);
         Ok(Value::Object(out))
     }
 
-    /// 这次运行的判定门限：`x.gluesight.judge` 的默认值，按顺序叠上各层专家参数（只取本模板有的门限）。
-    pub fn judge(&self, expert: &[&ExpertParams]) -> Value {
-        let mut out: Map<String, Value> = self
-            .judge
-            .iter()
-            .map(|(k, s)| (k.clone(), s["default"].clone()))
-            .collect();
-        overlay(&mut out, &self.judge, expert);
-        Value::Object(out)
-    }
-}
-
-fn overlay(out: &mut Map<String, Value>, specs: &Map<String, Value>, expert: &[&ExpertParams]) {
-    for layer in expert {
-        for (name, value) in *layer {
-            if specs.get(name).is_some_and(is_expert) {
-                out.insert(name.clone(), value.clone());
-            }
-        }
+    /// 这次运行的判定门限：`x.gluesight.judge` 的默认值。
+    pub fn judge(&self) -> Value {
+        Value::Object(
+            self.judge
+                .iter()
+                .map(|(k, s)| (k.clone(), s["default"].clone()))
+                .collect(),
+        )
     }
 }
 
@@ -171,74 +136,4 @@ pub fn number(params: &Value, name: &str) -> Result<f64, String> {
         .as_f64()
         .filter(|v| v.is_finite())
         .ok_or_else(|| format!("测量图参数 {name} 不是有限数"))
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    fn expert(pairs: &[(&str, f64)]) -> ExpertParams {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), json!(v)))
-            .collect()
-    }
-
-    #[test]
-    fn camera_override_beats_recipe_default_for_graph_params_and_judge_thresholds() {
-        let recipe = expert(&[
-            ("segmentMin", 12.0),
-            ("mergeGap", 4.0),
-            ("presentRatio", 0.4),
-            ("centerRatio", 0.5),
-        ]);
-        let camera = expert(&[("segmentMin", 16.0), ("presentRatio", 0.6)]);
-        let p = corridor().params(json!({}), &[&recipe, &camera]).unwrap();
-        assert_eq!(
-            (
-                p["segmentMin"].as_f64(),
-                p["mergeGap"].as_f64(),
-                p["peakMin"].as_f64()
-            ),
-            (Some(16.0), Some(4.0), Some(16.0))
-        );
-        let j = corridor().judge(&[&recipe, &camera]);
-        assert_eq!(
-            (
-                j["presentRatio"].as_f64(),
-                j["centerRatio"].as_f64(),
-                j["contrastRatio"].as_f64()
-            ),
-            (Some(0.6), Some(0.5), Some(0.3))
-        );
-        assert!(
-            p.get("presentRatio").is_none() && j.get("segmentMin").is_none(),
-            "判定门限不进图参数，图参数不进判定门限"
-        );
-    }
-
-    #[test]
-    fn invalid_or_retired_expert_params_are_rejected() {
-        // contrastMin、pathMinCoverage、window 是 1.1 测量图的专家参数名，不迁移
-        for (name, value) in [
-            ("contrastMin", json!(16.0)),
-            ("pathMinCoverage", json!(0.3)),
-            ("window", json!(30.0)),
-            ("peakMin", json!(-1.0)),
-            ("presentRatio", json!(1.5)),
-            ("mergeGap", json!("8")),
-        ] {
-            let params: ExpertParams = [(name.to_string(), value)].into_iter().collect();
-            assert!(validate_expert(&params, "配方").is_err(), "{name} 应被拒绝");
-        }
-        let judge: ExpertParams = [
-            ("minCoverage".to_string(), json!(0.5)),
-            ("trackSharpMin".to_string(), json!(0.6)),
-        ]
-        .into_iter()
-        .collect();
-        assert!(validate_expert(&judge, "配方").is_ok());
-    }
 }

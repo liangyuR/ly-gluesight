@@ -1,8 +1,9 @@
 import type { Judgement, Recipe, RecipeDoc, RecipeStage, Verdict } from "../cycle/types";
 import type { CameraImaging } from "../camera/types";
-import type { BurstJudgement, CalibrationRound, CameraTeaching, FrameMetrics, PathSegment, WorkspacePlanView } from "../plan/types";
+import type { BurstJudgement, CalibrationRound, CameraTeaching, FrameMetrics, FrameVerdict, InspectionCoverage, PathSegment, SegmentKind, WorkspacePlanView } from "../plan/types";
 import type { PartMode } from "../history/types";
 import type { NavigationMapData } from "./navigation/types";
+import type { FramePixels } from "../../lib/frame";
 
 export interface NavigationArchiveStatus {
   state: "none" | "ready" | "unconfirmed" | "frozen" | "error";
@@ -28,25 +29,22 @@ export interface FrozenImage {
   camera: string; view: number; cameraTag: unknown; calibTag: unknown; geometryTag: unknown;
   exposureUs: number | null; gainDb: number | null; historyId: number | null;
 }
-export interface Sample { historyId: number | null; sampleId?: string | null; expected: Verdict }
-export interface BankSample { id:string; name:string; geometryTag: unknown; expected:Verdict; createdAt:number; captureId?: string | null }
-export interface Check { name: string; passed: boolean; detail: string }
+/** 发布前检查的一项；advisory 为只提醒、不拦发布的项（如有段在示教帧上没测成）。 */
+export interface Check { name: string; passed: boolean; detail: string; advisory?: boolean }
 export interface Validation {
   revision: number; passed: boolean; checkedAt: number; environmentTag: unknown;
   checks: Check[];
-  samples: { historyId: number | null; sampleId:string | null; name:string; sn: string; expected: Verdict; actual: Verdict | null; passed: boolean; reason: string }[];
 }
 /** 发布时所在站点：离线验证发布的版本只能在离线运行。 */
 export type ValidationSite = "real" | "offline";
 export interface Release {
-  doc: RecipeDoc; bundleId: string; baseRevision: string | null; revision: number; validation: Validation;
+  doc: RecipeDoc; bundleId: string; revision: number; validation: Validation;
   validationSite: ValidationSite;
   navigation?: NavigationArchiveStatus | null;
 }
 export interface Workspace {
-  doc: RecipeDoc; baseRevision: string | null; revision: number;
-  samples: Sample[]; validation: Validation | null; pending: Release | null;
-  sampleBank: BankSample[];
+  doc: RecipeDoc; revision: number;
+  pending: Release | null;
   captureId?: string | null;
   publish: PublishState; updatedAt: number;
   /** 每台计划相机的走廊示教帧；界面读 plan.cameraTeaching */
@@ -60,8 +58,50 @@ export interface Workspace {
   teachingPiece: TeachingPiece | null;
   navigationId?: string | null;
   navigationStructureRevision?: number;
+  /** 换示教件的逐笔对照（RB-11）；没有对照时缺省，发布时清空 */
+  passAlignment?: PassAlignment;
 }
-export interface TeachingPiece { roundId: string; recordId: number; cycleId: string; sn: string; ts: number }
+/** 逐笔对照里一笔的变化：对上的两笔为不变或改动，没对上的旧笔为删除、新笔为新增。 */
+export type PassChange = "same" | "changed" | "added" | "removed";
+/** 逐笔对照的一行；笔下标从 0 起。distance 为两笔的图像距离（0 最像），人改出来的对应没有。 */
+export interface PassPair { old?: number; new?: number; change: PassChange; distance?: number }
+/** 回传的一对对应：只列对上的笔，新旧两边都严格递增。 */
+export interface PassLink { old: number; new: number; changed: boolean }
+/** 迁移后一段的沿用状态；retaught 为迁移后在新件上重新选过示教帧的检测相机。 */
+export interface SegmentCarry { change?: "same" | "changed" | "added"; retaught?: string[]; accepted?: boolean }
+export interface PassAlignment {
+  /** 原示教件；passes 为各笔帧组数 */
+  oldPiece: { recordId: number; sn: string; ts: number; passes: number[] };
+  newPasses: number[];
+  suggested: PassPair[];
+  rows: PassPair[];
+  confirmed: boolean;
+  source?: unknown;
+  /** 按段 ID */
+  carry: Record<string, SegmentCarry>;
+  /** 迁移时去掉的旧段（旧段号） */
+  removed?: { index: number; kind: SegmentKind }[];
+}
+export interface TeachingPiece {
+  roundId: string; recordId: number; cycleId: string; sn: string; ts: number;
+  /** 示教件各笔帧组数（D-SB-62）；旧候选保存分段前缺省 */
+  passes?: number[];
+}
+
+/** 工件配方（回传包：候选与示教件轮次记录，不带示教件原图）的导出结果、导入预览与导入结果 */
+export interface PackageExported { path: string; bytes: number; files: number }
+export interface PackagePreview {
+  path: string; bytes: number; recipeId: string; name: string; productCode: number; sourceProjectName: string;
+  exportedAt: number; appVersion: string; teachingPiece: TeachingPiece | null;
+  /** 包里带示教件原图（以前导出的包） */
+  teachingImages: boolean;
+  productionVersion: number | null; candidate: { revision: number; updatedAt: number; pending: boolean } | null;
+  /** 不拦导入的提示（如相机设备配置与示教件采集时不一致） */
+  warnings: string[];
+  blocker: string | null;
+}
+/** teachingImages：导入后示教件原图读得到（本机有示教件那一件的录制，或随以前的包带入） */
+export interface PackageImported { id: string; teachingImages: boolean; notes: string[] }
 /** 新流程候选（RB-5）：flow 不是 2 的候选只能在配方库删除。 */
 export const isCurrentFlow = (workspace: Pick<Workspace, "flow">) => workspace.flow === 2;
 export interface CaptureRoundReview {
@@ -89,12 +129,9 @@ export interface WorkspaceView {
   workspace: Workspace; layout: Recipe; productionVersion: number | null;
   /** 生产配方是采集版还是正式版；未发布为 null */
   productionStage?: RecipeStage | null;
-  /** 生产配方的计划版本 */
-  productionPlanVersion: number | null;
-  /** 候选的计划身份与生产不同（或还没发布过）：发布时分配新的计划版本 */
-  planChanged: boolean;
   plan: WorkspacePlanView;
 }
+export type ComparisonSummary = Pick<Comparison, "id" | "historyId" | "source" | "cycleId" | "candidateId" | "candidateRevision" | "createdAt" | "originalVerdict" | "judgement">;
 export interface Comparison {
   id: string; historyId: number; source: "rules" | "raw" | "original"; cycleId: string; bundleId: string | null; candidateId: string; candidateRevision: number;
   candidateRecipe: Recipe;
@@ -105,7 +142,27 @@ export interface Comparison {
     /** 这次对照用的每帧指标；之前保存的对照为空 */
     frames: FrameMetrics[];
     /** 建测量图用的各计划相机示教帧尺寸 [宽, 高]，叠图按它重建；原包重现与之前保存的对照为空 */
-    sizes?: [number, number][] } | null;
+    sizes?: [number, number][];
+    /** 逐帧结论（帧格颜色），后端读出时按这次对照的区域与逐帧指标算出 */
+    frameVerdicts?: FrameVerdict[];
+    /** 从原图复测时没有可用走廊、没测的段；结论只覆盖其余段 */
+    unmeasured?: UnmeasuredSegment[] } | null;
+}
+/** 一种复测能不能做（后端 burst_history::CompareOption）：不能做时 reason 写明原因。 */
+export interface CompareOption { available: boolean; reason: string | null;
+  /** 能做但只覆盖一部分时的说明（如有段没有可用走廊、不测） */
+  note?: string | null }
+/** 从原图复测时没有可用走廊、没测的一段一台相机（后端 burst_history::UnmeasuredSegment）。 */
+export interface UnmeasuredSegment { segment: number; camera: string; reason: string }
+/** 可选来复测的一个本机候选。 */
+export interface CompareCandidate { id: string; revision: number; version: number; name: string }
+/** 一条历史记录能做哪几种复测（后端 burst_history::CompareOptions）：任意本机候选都能复测任意记录（不看型号、配方编号与项目）。 */
+export interface CompareOptions {
+  /** 选来复测的候选：指定的，或缺省为记录所属配方的候选；本机没有时为 null */
+  candidate: CompareCandidate | null;
+  original: CompareOption; rules: CompareOption; raw: CompareOption;
+  /** 本机全部可选的候选 */
+  choices: CompareCandidate[];
 }
 /** 分段保存的影响（后端 capture_review::SegmentSaveImpact，保存前确认用）。 */
 export interface SegmentSaveImpact {
@@ -115,11 +172,11 @@ export interface SegmentSaveImpact {
   /** 保存后还没有走廊的（段, 检测相机） */
   untaught: string[];
   measurementCleared: boolean;
+  coverage: InspectionCoverage | null;
 }
-/** 预览像素（8 位灰度，可能是降采样后的尺寸）。 */
-export interface GrayPixels { data: Uint8Array; width: number; height: number }
-/** width / height 为原图尺寸；带 pixels 时直接画到 canvas，url 只作为这张图的标识。 */
-export interface GrayImage { url: string; width: number; height: number; pixels?: GrayPixels }
+export type { FramePixels };
+/** width / height 为原图尺寸；channels 为 1（灰度）或 3（RGB）；带 pixels 时直接画到 canvas，url 只作为这张图的标识。 */
+export interface FrameImage { url: string; width: number; height: number; channels?: 1 | 3; pixels?: FramePixels }
 
 export interface CaptureCamera { cameraId: string; deviceSession: number; receivedCount: number; imaging?: CameraImaging }
 
@@ -130,6 +187,7 @@ export interface HistoryCandidate {
   ts: number;
   sn: string;
   mode: PartMode;
+  verdict: Verdict;
   groupCount: number;
   /** 按录制的计划相机顺序 */
   cameras: { cameraId: string; frames: number }[];
@@ -146,4 +204,22 @@ export interface HistoryCandidate {
   usage: "teaching" | "calibration" | null;
   /** 手动配置数据（capture_fixture 写的仿历史件）的标签；真机件为 null */
   fixture: string | null;
+  /** 记录所属的配方与项目（选择器与试测列本机全部历史件，可能是别的配方、别的项目） */
+  recipeId: string | null;
+  projectId: string;
 }
+
+/** 历史件选择器的筛选与分页；ownRecipe 只看当前项目本配方的（试测默认） */
+export interface HistoryCandidateQuery {
+  ownRecipe?: boolean;
+  project?: string | null;
+  recipeId?: string | null;
+  sn?: string;
+  from?: number | null;
+  to?: number | null;
+  verdicts?: Verdict[];
+  offset?: number;
+  limit?: number;
+}
+
+export interface HistoryCandidatePage { total: number; items: HistoryCandidate[] }

@@ -1,20 +1,33 @@
 .hist-page { display: flex; flex-direction: column; gap: var(--space-12); height: 100%; min-height: 480px; }
 .hist-filters { flex-shrink: 0; }
-.hist-filter-options { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
-.hist-filter-options .hist-sn-input { width:220px; flex:0 1 220px; }
-.hist-filter-options .hist-recipe { min-width:160px; }
-.hist-toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+.hist-filter-row { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; }
+.hist-filter-row .hist-sn-input, .hist-filter-row .hist-tag-input { flex:1 1 160px; min-width:140px; max-width:220px; }
+.hist-filter-row .hist-recipe { min-width:150px; }
+.hist-filter-row .hist-project-select { min-width:170px; }
+.hist-project { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.hist-toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px 16px; padding-top:10px; border-top:1px solid var(--outline-variant); }
+.hist-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.hist-actions-divider { width:1px; height:24px; background:var(--outline-variant); }
+.hist-result-filters { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+.hist-result-filters .hist-chip b { margin-left:6px; font:600 14px/1 var(--font-mono); font-variant-numeric:tabular-nums; transition: opacity var(--dur-short) var(--ease-standard); }
+.hist-chip.g-ok b { color: var(--ok); }
+.hist-chip.g-excursion b { color: var(--warn); }
+.hist-chip.g-ng b { color: var(--ng); }
+.hist-chip.g-err b { color: var(--fault); }
+.hist-selection-bar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:6px 10px; border-radius:var(--r-sm); border:1px dashed var(--outline-variant); transition: background var(--dur-short) var(--ease-standard), border-color var(--dur-short) var(--ease-standard); }
+.hist-selection-bar[data-active] { border-style:solid; border-color:color-mix(in srgb, var(--primary) 55%, transparent); background:color-mix(in srgb, var(--primary) 14%, transparent); }
+.hist-selection-bar[data-active] > :first-child { color:var(--primary); font-weight:600; }
+.hist-tags, .hist-tag-options { display:flex; flex-wrap:wrap; gap:6px; }
+.hist-record-actions { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.hist-record-actions > .qs-stack { flex-wrap:wrap; }
+.detail-head .hist-record-actions { margin-top:10px; padding-top:10px; border-top:1px solid var(--outline-variant); }
 .hist-dot { width: 8px; height: 8px; border-radius: var(--r-full); background: var(--outline); }
 .hist-chip.g-ok .hist-dot { background: var(--ok); }
 .hist-chip.g-excursion .hist-dot { background: var(--warn); }
 .hist-chip.g-ng .hist-dot { background: var(--ng); }
 .hist-chip.g-err .hist-dot { background: var(--fault); }
-.hist-counts { display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap; font-size: 13px; color: var(--on-surface-variant); }
-.hist-counts b { margin-left: 6px; font: 600 20px/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--on-surface); transition: opacity var(--dur-short) var(--ease-standard); }
-.hist-counts b.c-ok { color: var(--ok); }
-.hist-counts b.c-warn { color: var(--warn); }
-.hist-counts b.c-ng { color: var(--ng); }
-.hist-counts b.c-err { color: var(--fault); }
+.hist-counts { display: flex; align-items: center; gap: 10px 20px; flex-wrap: wrap; font-size: 13px; color: var(--on-surface-variant); }
+.hist-counts > span b { margin-left: 6px; font: 600 20px/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--on-surface); transition: opacity var(--dur-short) var(--ease-standard); }
 .hist-counts.is-loading b { opacity: .6; }
 
 .qs-surface.hist-results { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0; overflow: hidden; }
@@ -30,8 +43,10 @@
 .hist-table tbody tr:has([data-tone="ng"]):hover { background: color-mix(in srgb, var(--ng-container) 88%, var(--on-ng-container)); }
 .hist-table tbody tr:has([data-tone="ng"]) td:first-child { box-shadow: inset 3px 0 0 var(--ng); }
 .hist-table tbody tr:has([data-tone="ng"]) :is(.hist-reason, .muted) { color: inherit; }
-.hist-table tbody tr:has([data-tone="ng"]) .hist-open { --btn-fg: var(--on-ng-container); }
-.hist-reason { display: block; max-width: 520px; color: var(--on-surface-variant); font-size: 12.5px; }
+.hist-table tbody tr:has([data-tone="ng"]) :is(.hist-open, .hist-reason-toggle) { --btn-fg: var(--on-ng-container); }
+.hist-reason { display: flex; flex-direction: column; align-items: flex-start; max-width: 520px; color: var(--on-surface-variant); font-size: 12.5px; }
+.hist-reason-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.hist-reason .hist-reason-toggle { margin-left: -6px; min-height: 0; padding-block: 0; --btn-fg: var(--primary); }
 .hist-sn .sn { display: inline-block; margin-right: 8px; white-space: nowrap; }
 .hist-sn > :not(.sn) { margin: 2px 6px 2px 0; }
 @media (max-width: 1599px) { .hist-sn .sn { white-space: normal; } }
@@ -46,7 +61,7 @@
 /* 段配方：没有曲线面板，判定栏只占第一行 */
 .detail-grid.burst { grid-template-rows: auto auto; }
 .detail-grid.burst .side { grid-row: 1; }
-/* 三台相机同一帧组的原图并排；画布高度跟格子宽度走（GrayViewer 已按图像宽高设 aspect-ratio），选中的相机描边 */
+/* 三台相机同一帧组的原图并排；画布高度跟格子宽度走（FrameViewer 已按图像宽高设 aspect-ratio），选中的相机描边 */
 .hist-frame-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 8px; align-items: start; }
 .hist-frame-tile { display: flex; flex-direction: column; gap: 4px; min-width: 0; border: 1px solid transparent; border-radius: var(--r-sm); }
 .hist-frame-tile.selected { border-color: var(--primary); }
@@ -69,3 +84,10 @@
 .rj-cell.changed { color: var(--warn); font-weight: 600; }
 .rj-cell.release { color: var(--on-ng-container); font-weight: 700; background: var(--ng-container); }
 .rj-changes { max-height: 220px; overflow: auto; }
+/* 复测按钮不能用的原因 */
+.compare-reasons { margin: 0; padding-left: 1.2em; font-size: 12px; color: var(--on-surface-variant); }
+.compare-reasons li + li { margin-top: 2px; }
+.hist-package-list { margin: 0; padding-left: 1.2em; font-size: 12.5px; color: var(--on-surface-variant); }
+.hist-package-list li + li { margin-top: 2px; }
+.hist-package-skipped { max-height: 200px; overflow: auto; }
+.hist-package-path { word-break: break-all; }

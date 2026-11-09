@@ -99,12 +99,13 @@ select.input { padding-right: 6px; }
 .plc-signal-details { display: grid; gap: 4px; }
 .plc-values-row { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 .plc-values-side { flex: none; width: 32px; font: var(--text-label); color: var(--on-surface-variant); }
-.plc-values { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 0; min-width: 0; }
+/* 固定列宽：状态字频繁跳变时文字长短不改变换行和卡片高度 */
+.plc-values { display: grid; grid-template-columns: repeat(auto-fill, minmax(13em, 1fr)); flex: 1; gap: 6px 24px; margin: 0; min-width: 0; }
 .plc-values > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; border-radius: var(--r-xs); }
 .plc-values dt { font: var(--text-label); color: var(--on-surface-variant); }
 .plc-values dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .plc-values > div.violation dt, .plc-values > div.violation dd, .plc-violation { color: var(--fault); }
-.plc-handshake-message { overflow-wrap: anywhere; }
+.plc-handshake-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plc-monitor-meta:focus-visible, .plc-values > div:focus-visible, .plc-summary-item:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
 
 /* C 连接配置摘要 */

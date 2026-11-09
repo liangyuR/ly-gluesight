@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Wrench } from "lucide-react";
+import { Alert, Button, Popover } from "qing-steel";
 import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { desktopAvailable } from "../lib/desktop";
 import { linkStateLabels, usePlcStatus } from "../features/plc";
-import { useMaintenance, useSiteStatus } from "../features/cycle/api";
-import { siteModeText } from "../features/cycle/offline";
+import { useMaintenance } from "../features/cycle/api";
 import { devLyflowHint } from "../features/cycle/readiness";
 import { formatTime } from "../features/history/meta";
 
@@ -22,12 +22,15 @@ export function WindowVersion() {
 }
 
 export function WindowModeBadges() {
-  const site = useSiteStatus();
   const maintenance = useMaintenance();
   if (!desktopAvailable()) return null;
   return <div className="window-badges">
-    {site && <Link to="/offline" className={"window-badge" + (site.mode === "offline" ? " offline" : "")} title="查看站点模式">{siteModeText(site)}</Link>}
-    {maintenance && <Link to="/inspect" className="window-badge maintenance" title={`开启于 ${formatTime(maintenance.since)} · 原因：${maintenance.reason}`}><Wrench size={12} aria-hidden="true" />维护模式</Link>}
+    {maintenance && <Popover side="bottom" align="start" label="维护模式详情" title="维护模式" trigger={<button type="button" className="window-badge maintenance"><Wrench size={12} aria-hidden="true" />维护模式</button>}>
+      <Alert tone="warn" title="不向 PLC 输出 NG">每件向 PLC 回结果码 0，按未检放行。</Alert>
+      <p>开启于 {formatTime(maintenance.since)}</p>
+      <p>原因：{maintenance.reason}</p>
+      <Button asChild><Link to="/inspect">前往在线检测</Link></Button>
+    </Popover>}
   </div>;
 }
 

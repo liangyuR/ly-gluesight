@@ -1,10 +1,10 @@
 /**
  * 段模型结果的显示映射：在线检测、历史、工作台共用。只把契约类型（plan/types.ts）映射成文字、色调和格子状态，
- * 不做判定——结论、标记、帧数状态都以后端给出的为准。
+ * 不做判定——结论、标记都以后端给出的为准。
  */
 import type { Verdict } from "../cycle/types";
 import type {
-  CountStatus, Flags, FrameGroupView, OffsetUnjudged, RegionKind, RegionResult, SegmentKind, UncheckedItem, Uninspected, UnsegReason,
+  Flags, FrameGroupView, OffsetUnjudged, RegionKind, RegionResult, SegmentKind, UncheckedItem, Uninspected, UnsegReason, WidthWarning,
 } from "./types";
 
 export type PlanTone = "info" | "ok" | "warn" | "ng" | "neutral";
@@ -24,26 +24,26 @@ export const segmentKindLabel: Record<SegmentKind, string> = { straight: "直线
 /** 段的类型名：不检测的段（D-SB-53）显示“不检测”。 */
 export const segmentLabel = (segment: { kind: SegmentKind; skip?: boolean }) => segment.skip ? "不检测" : segmentKindLabel[segment.kind];
 
-/** 预期帧数与容差：“20 ± 1”；N_exp 为 null 时“待标定”。整件用 expectedTotal / toleranceTotal。 */
-export function expectedText(expected: number | null | undefined, tolerance: number): string {
-  return expected == null ? "待标定" : `${expected} ± ${tolerance}`;
+/** 本件笔数：“3 笔”，示教件笔数不同时“2 笔（示教件 3 笔）”；没有笔结构为 null。 */
+export function passCountText(judgement: { passes?: number[]; expectedPasses?: number } | null | undefined): string | null {
+  const n = judgement?.passes?.length;
+  if (!n) return null;
+  return judgement!.expectedPasses != null && judgement!.expectedPasses !== n ? `${n} 笔（示教件 ${judgement!.expectedPasses} 笔）` : `${n} 笔`;
 }
 
-export const countStatusText: Record<CountStatus, string> = { normal: "帧数正常", low: "帧数偏少", high: "帧数偏多" };
-
-/** 帧数状态；null 表示无从比较（N_exp 待标定），不核对。 */
-export function countStatusLabel(status: CountStatus | null | undefined): string {
-  return status ? countStatusText[status] : "未核对帧数";
+/** 示教帧数：N_exp 为 null 时“待标定”。整件用 expectedTotal。 */
+export function expectedText(expected: number | null | undefined): string {
+  return expected == null ? "待标定" : String(expected);
 }
 
 export const unsegReasonText: Record<UnsegReason, string> = { algorithmPending: "分段算法未就绪", lowConfidence: "分段不确定", transition: "边界过渡区" };
 
-/** 区域名：“段 1 · 直线”“段 2 · 弯道”“段 1–3 · 未分段”“段 1–2 · 边界过渡”。 */
+/** 区域名：“段 1 · 直线”“段 2 · 弯道”“段 1–3 · 未分段”“段 1–2 · 边界过渡”；每笔首尾跳过为“第 2 笔 · 首尾跳过”“第 3 笔 · 太短不检”。 */
 export function regionKindLabel(kind: RegionKind): string {
   switch (kind.type) {
     case "straight": return `段 ${kind.segment} · 直线`;
     case "corner": return `段 ${kind.segment} · 弯道`;
-    case "skipped": return `段 ${kind.segment} · 跳过`;
+    case "skipped": return kind.pass != null ? `第 ${kind.pass} 笔 · ${kind.short ? "太短不检" : "首尾跳过"}` : `段 ${kind.segment} · 跳过`;
     case "unsegmented": return `${kind.firstSegment === kind.lastSegment ? `段 ${kind.firstSegment}` : `段 ${kind.firstSegment}–${kind.lastSegment}`} · ${kind.reason === "transition" ? "边界过渡" : "未分段"}`;
   }
 }
@@ -63,30 +63,32 @@ export const offsetUnjudgedText: Record<OffsetUnjudged, string> = {
 
 export const uncheckedText: Record<UncheckedItem, string> = { bubble: "气泡", stringing: "拉丝" };
 
-/** 未检区域：“段 1 · 帧组 1–2（跳过）”；旧记录按毫米：“段 1 · 0–5 mm”，段长未知时“段 3 · 75 mm 之后”。 */
+/** 未检区域：“段 1 · 帧组 1–2（跳过）”，每笔首尾跳过写明第几笔；旧记录按毫米：“段 1 · 0–5 mm”，段长未知时“段 3 · 75 mm 之后”。 */
 export function uninspectedText(u: Uninspected): string {
+  if (u.fromSeq != null && u.pass != null) return `第 ${u.pass} 笔 · 帧组 ${u.fromSeq === u.toSeq ? u.fromSeq : `${u.fromSeq}–${u.toSeq}`}（${u.short ? "太短不检" : "首尾跳过"}）`;
   if (u.fromSeq != null) return `段 ${u.segment} · 帧组 ${u.fromSeq === u.toSeq ? u.fromSeq : `${u.fromSeq}–${u.toSeq}`}（跳过）`;
   return `段 ${u.segment} · ${u.toMm == null ? `${u.fromMm} mm 之后` : `${u.fromMm}–${u.toMm} mm`}`;
 }
 
-/** 整件标记徽标（都只告警，不改 OK/NG），顺序固定：检测不完整、帧数异常、胶偏未判、含未分段、疑似提前终止。 */
+export const widthWarningText: Record<WidthWarning, string> = { wide: "胶宽偏宽", overflow: "溢胶预警" };
+
+/** 整件标记徽标（都只告警，不改 OK/NG），顺序固定：检测不完整、胶偏未判、含未分段、胶宽偏宽、溢胶预警、笔数异常。 */
 export function flagBadges(flags: Flags | null | undefined): PlanBadge[] {
   if (!flags) return [];
   const all: [boolean, PlanBadge][] = [
     [flags.incomplete, { key: "incomplete", label: "检测不完整", tone: "warn" }],
-    [flags.frameCountAnomaly, { key: "frameCountAnomaly", label: "帧数异常", tone: "warn" }],
     [flags.offsetUnjudged, { key: "offsetUnjudged", label: "胶偏未判", tone: "neutral" }],
     [flags.unsegmented, { key: "unsegmented", label: "含未分段", tone: "neutral" }],
-    [flags.shortPart, { key: "shortPart", label: "疑似提前终止", tone: "warn" }],
+    [!!flags.wideWarning, { key: "wideWarning", label: widthWarningText.wide, tone: "warn" }],
+    [!!flags.overflowWarning, { key: "overflowWarning", label: widthWarningText.overflow, tone: "warn" }],
+    [!!flags.passCountAnomaly, { key: "passCountAnomaly", label: "笔数异常", tone: "warn" }],
   ];
   return all.filter(([on]) => on).map(([, badge]) => badge);
 }
 
-/** 一个区域的徽标：帧数越界、不完整组个数、胶偏未判原因、未分段原因。帧数正常与未核对不出徽标。 */
+/** 一个区域的徽标：偏宽只预警下的预警、不完整组个数、胶偏未判原因、未分段原因。 */
 export function regionBadges(result: RegionResult): PlanBadge[] {
-  const out: PlanBadge[] = [];
-  if (result.countStatus === "low" || result.countStatus === "high")
-    out.push({ key: "count", label: `${countStatusText[result.countStatus]}（${result.frameCount} / ${expectedText(result.expected, result.tolerance)}）`, tone: "warn" });
+  const out: PlanBadge[] = (result.warnings ?? []).map(w => ({ key: `warning-${w}`, label: widthWarningText[w], tone: "warn" }));
   if (result.incompleteGroups.length) out.push({ key: "incomplete", label: `不完整组 ${result.incompleteGroups.length}`, tone: "warn" });
   if (result.offsetUnjudged) out.push({ key: "offsetUnjudged", label: offsetUnjudgedText[result.offsetUnjudged], tone: "neutral" });
   if (result.region.kind.type === "unsegmented") out.push({ key: "unsegmented", label: unsegReasonText[result.region.kind.reason], tone: "neutral" });
@@ -99,15 +101,20 @@ export function verdictPlanTone(verdict: Verdict): PlanTone {
 }
 
 /** 帧组格子（一台相机一帧）的显示状态：到达前 waiting，测量中 measuring，测完按该帧结论，其余为缺帧类状态（都只算检测不完整）；
- * notInspected 是这一帧所在段不由这台相机检测，按设计不测，不算检测不完整。 */
-export type GroupCellState = "waiting" | "measuring" | "ok" | "excursion" | "ng" | "error" | "missing" | "unmeasured" | "outOfCorridor" | "notInspected";
+ * notInspected 是这一帧所在段不由这台相机检测；productionSkipped 仅来自本件最终跳过区域，不参与判定。 */
+export type GroupCellState = "waiting" | "measuring" | "ok" | "excursion" | "ng" | "error" | "missing" | "unmeasured" | "outOfCorridor" | "notInspected" | "unjudged" | "productionSkipped";
 
-export function groupCellState(group: FrameGroupView, cam: number): GroupCellState {
+export function productionSkippedRegion(regions: RegionResult[] | null | undefined, seq: number) {
+  return regions?.find(r => r.region.kind.type === "skipped" && r.region.firstSeq <= seq && seq <= r.region.lastSeq);
+}
+
+export function groupCellState(group: FrameGroupView, cam: number, regions?: RegionResult[] | null): GroupCellState {
+  if (productionSkippedRegion(regions, group.seq)) return "productionSkipped";
   const cell = group.cells[cam];
   if (!cell) return "missing";
   if (cell.status !== "measured") return cell.status;
   switch (cell.verdict) {
-    case null: return "measuring";
+    case null: return cell.unjudged ? "unjudged" : "measuring";
     case "OK": return "ok";
     case "OK_WITH_EXCURSION": return "excursion";
     case "ERR_INSPECT": return "error";
@@ -117,11 +124,14 @@ export function groupCellState(group: FrameGroupView, cam: number): GroupCellSta
 
 export const groupCellText: Record<GroupCellState, string> = {
   waiting: "等待", measuring: "测量中", ok: "OK", excursion: "局部超差", ng: "NG", error: "测量失败",
-  missing: "缺帧", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测",
+  missing: "缺帧", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测", unjudged: "未判定",
+  productionSkipped: "生产跳过",
 };
 
 /** 格子颜色：缺帧、未测、出走廊为灰色（只算检测不完整，不是 NG）；本段不检测为浅灰。 */
 export const groupCellColor: Record<GroupCellState, string> = {
   waiting: "var(--surface-high)", measuring: "var(--primary)", ok: "var(--ok)", excursion: "var(--warn)", ng: "var(--ng)", error: "var(--fault)",
   missing: "var(--on-surface-disabled)", unmeasured: "var(--on-surface-disabled)", outOfCorridor: "var(--on-surface-disabled)", notInspected: "var(--outline-variant)",
+  unjudged: "var(--outline-variant)",
+  productionSkipped: "var(--outline-variant)",
 };

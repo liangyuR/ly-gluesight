@@ -5,8 +5,8 @@
 //!
 //! `--doc` 是录制这些件时生效的生产配方（通常是先发布的采集版，`recipe_doc`）：记录引用它的修订号 `{编号}-v{版本}`，
 //! 必须是软件已分配过的版本，否则以后同修订号的真实记录会因快照不同被拒；记录库已有该修订号的另一份快照时拒绝写入。
-//! `--db` 须是软件已建好的记录库（`<资料根目录>/projects/<项目编号>/inspection.db`），`--records` 是真机录制根（`records_list`
-//! 的 root）。每台计划相机的设备配置取自本机 `camera_rig_config` 的输出，经 `CameraConfig` 重新序列化，与软件核对历史件时
+//! `--db` 须是软件已建好的本机记录库（`<资料根目录>/history/inspection.db`），记录归 `--project` 项目（`project_current` 的编号），
+//! `--records` 是该项目的真机录制根（`records_list` 的 root）。每台计划相机的设备配置取自本机 `camera_rig_config` 的输出，经 `CameraConfig` 重新序列化，与软件核对历史件时
 //! 的口径一致；曝光、增益记默认值。来源标记：`part.json` 带 `fixture: {label}`，SN 以 `FIXTURE-` 开头，记录原因注明手动配置数据。
 //!
 //! - 合成图（默认）：按配方名义剖面出脉冲（首尾 ±1、弯道 ±2，第 i 件种子为 seed + i），每个脉冲用
@@ -23,7 +23,7 @@
 //! ```powershell
 //! cargo run --manifest-path src-tauri/Cargo.toml --offline --locked --example capture_fixture -- `
 //!   --doc output/capture-fixture/doc.json --cameras output/capture-fixture/cameras.json `
-//!   --db <资料根目录>/projects/<项目编号>/inspection.db --records <真机录制根> --parts 13 [--seed 0] [--label <标签>]
+//!   --db <资料根目录>/history/inspection.db --project <项目编号> --records <真机录制根> --parts 13 [--seed 0] [--label <标签>]
 //!   [--sample-set <目录> --part p01] [--onset 4 --onset-jitter 2 --tail 2 --tail-jitter 0]
 //! ```
 //!
@@ -41,7 +41,7 @@ use gluesight_lib::probe_api::{
 };
 use serde_json::{json, Value};
 
-const USAGE: &str = "用法：capture_fixture --doc <录制时生效的生产配方.json> --cameras <camera_rig_config.json> --db <项目目录>/inspection.db --records <真机录制根> --parts <件数> [--seed <种子>] [--label <标签>] [--sample-set <样本集目录> --part <样本件>] [--onset <帧组数> --onset-jitter <帧组数> --tail <帧组数> --tail-jitter <帧组数>]";
+const USAGE: &str = "用法：capture_fixture --doc <录制时生效的生产配方.json> --cameras <camera_rig_config.json> --db <资料根目录>/history/inspection.db --project <项目编号> --records <真机录制根> --parts <件数> [--seed <种子>] [--label <标签>] [--sample-set <样本集目录> --part <样本件>] [--onset <帧组数> --onset-jitter <帧组数> --tail <帧组数> --tail-jitter <帧组数>]";
 const MAX_PARTS: usize = 200;
 const SAMPLE_HZ: f64 = 10.0;
 
@@ -49,6 +49,7 @@ struct Args {
     doc: PathBuf,
     cameras: PathBuf,
     db: PathBuf,
+    project: String,
     records: PathBuf,
     parts: usize,
     seed: u64,
@@ -116,6 +117,7 @@ fn parse_args() -> Result<Args, String> {
     let doc = PathBuf::from(required(take("doc"), "doc")?);
     let cameras = PathBuf::from(required(take("cameras"), "cameras")?);
     let db = PathBuf::from(required(take("db"), "db")?);
+    let project = required(take("project"), "project")?;
     let records = PathBuf::from(required(take("records"), "records")?);
     let parts: usize = required(take("parts"), "parts")?
         .parse()
@@ -163,6 +165,7 @@ fn parse_args() -> Result<Args, String> {
         doc,
         cameras,
         db,
+        project,
         records,
         parts,
         seed,
@@ -271,7 +274,7 @@ impl Source {
                             .zip(&shots)
                             .map(|(camera, shots)| match shots.get(k) {
                                 Some(shot) if set.image_path(part, shot, camera, 1).is_ok() => {
-                                    set.load_view(part, shot, camera, 1).map(Some)
+                                    set.load_view(part, shot, camera, 1, false).map(Some)
                                 }
                                 _ => Ok(None),
                             })
@@ -325,6 +328,7 @@ fn run(args: Args) -> Result<Value, String> {
         .collect::<Result<Vec<_>, _>>()?;
     let site = FixtureSite::open(
         &args.db,
+        &args.project,
         &args.records,
         (*recipe).clone(),
         configs,

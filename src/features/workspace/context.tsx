@@ -1,6 +1,5 @@
-import { storageApi } from "../../lib/storage";
 import { errorText } from "../../lib/errors";
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from "react";
 import { cameraApi, type CameraConfig } from "../camera";
 import { recipeApi, type UnavailableRecipe } from "../cycle/api";
 import type { Recipe, RecipeDoc, RecipeSummary } from "../cycle/types";
@@ -9,10 +8,13 @@ import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import type { CameraTeachDraft } from "../plan/types";
 import type { NavigationMapData } from "./navigation/types";
-import { isCurrentFlow, type Workspace, type WorkspaceView } from "./types";
+import type { Workspace, WorkspaceView } from "./types";
 import { corridorStationError, draftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
 import { useSnackbar, type SnackbarMessage } from "qing-steel";
+import type { WorkbenchDraft } from "./workbenchDraft";
 import "./workspace.css";
+
+export interface SegmentDraftEdit { roundId: string; draft: WorkbenchDraft }
 
 export type SnackMessage = string | SnackbarMessage;
 export interface NavigationDraft { map: NavigationMapData; revision: number }
@@ -26,6 +28,8 @@ interface WorkspaceContextValue {
   pendingSave: boolean; unsavable: boolean;
   /** 跳过防抖，马上保存待存的改动 */
   saveNow: () => void;
+  segmentDraft: SegmentDraftEdit | null; segmentDirty: boolean;
+  setSegmentDraft: Dispatch<SetStateAction<SegmentDraftEdit | null>>;
   navigationDraft: NavigationDraft | null; navigationDirty: boolean;
   setNavigationDraft: (draft: NavigationDraft | null) => void;
   /** 走廊示教里尚未保存的段走廊草稿，按“相机#段号”；像素当量与检测参数随相机，只读 */
@@ -55,9 +59,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [preview, setPreview] = useState<Recipe | null>(null);
   const [previewError, setPreviewError] = useState("");
   const [corridorDrafts, setCorridorDrafts] = useState<Record<string, CameraTeachDraft>>({});
+  const [segmentDraft, setSegmentDraft] = useState<SegmentDraftEdit | null>(null);
+  const segmentDirty = segmentDraft != null;
   const [navigationDraft, setNavigationDraft] = useState<NavigationDraft | null>(null);
   const [error, setError] = useState("");
-  const [preferenceError, setPreferenceError] = useState("");
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
@@ -70,6 +75,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const selected = useRef<string | null>(null);
   const dirtyRef = useRef(false);
   const navigationDirtyRef = useRef(false);
+  const segmentDirtyRef = useRef(false);
   const pendingRefresh = useRef<string | null>(null);
   const [refreshRevision, setRefreshRevision] = useState(0);
   const { show: snack, clear: clearSnack } = useSnackbar();
@@ -87,13 +93,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const unsavable = !!doc && changedDrafts.some(([, draft]) => !!corridorStationError(draft, doc.spacing));
   const pendingSave = dirty || saving || !!pendingCorridor;
   navigationDirtyRef.current = navigationDirty;
-  dirtyRef.current = dirty || frameDirty || navigationDirty;
+  segmentDirtyRef.current = segmentDirty;
+  dirtyRef.current = dirty || frameDirty || navigationDirty || segmentDirty;
   useEffect(() => {
-    if (!navigationDirty) return;
+    if (!navigationDirty && !segmentDirty) return;
     const preventClose = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
     window.addEventListener("beforeunload", preventClose);
     return () => window.removeEventListener("beforeunload", preventClose);
-  }, [navigationDirty]);
+  }, [navigationDirty, segmentDirty]);
 
   /** keepDoc：自动保存期间本地又改了配置，只换上新修订与计划，本地配置留给下一次保存 */
   const accept = useCallback((next: WorkspaceView, keepDoc = false) => {
@@ -102,10 +109,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const cameraKey=JSON.stringify([next.workspace.doc.id,inspect.map(item=>item.camera)]);
     const camerasChanged=cameraKey!==cameraList.current;cameraList.current=cameraKey;
     const previousCameraSources=cameraSources.current;
-    // 某段走廊换了示教帧或相机换了标定：旧草稿是在旧帧上画的，丢弃
+    // 某段走廊换了示教帧：旧草稿是在旧帧上画的，丢弃
     const cameraSourceKeys=Object.fromEntries(inspect.flatMap(item=>{
       const teaching=next.plan.cameraTeaching.find(t=>t.camera===item.camera);
-      return (teaching?.segments??[]).map(s=>[draftKey(item.camera,s.segment),JSON.stringify([item.calib,s.frame.id])]);
+      return (teaching?.segments??[]).map(s=>[draftKey(item.camera,s.segment),s.frame.id]);
     }));
     cameraSources.current=cameraSourceKeys;
     setData(next);
@@ -120,8 +127,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       for (const [key, draft] of Object.entries(previous)) {
         if(previousCameraSources[key]!==cameraSourceKeys[key])continue;
         const saved = savedDraft(next.workspace.doc, key);
-        // 像素当量、检测参数与检测窗口跟着相机（含选帧后后端补上的设备标定当量）
-        const merged = { ...draft, mmPerPx: saved.mmPerPx, detect: saved.detect, window: saved.window };
+        // 像素当量与测量区间跟着相机（含选帧后后端补上的设备标定当量）
+        const merged = { ...draft, mmPerPx: saved.mmPerPx, window: saved.window };
         if (!sameCorridor(merged, saved)) kept[key] = merged;
       }
       return kept;
@@ -137,18 +144,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const select = useCallback(async (id: string) => {
-    if (dirtyRef.current && (selected.current !== id || navigationDirtyRef.current)) { setError("当前草稿尚未保存，请先保存或撤销修改后再选择配方"); return null; }
+    if (dirtyRef.current && (selected.current !== id || navigationDirtyRef.current || segmentDirtyRef.current)) { setError("当前草稿尚未保存，请先保存或撤销修改后再选择配方"); return null; }
     pendingRefresh.current = null;
     const serial = ++requestSerial.current;
     selected.current = id;
-    setSelectedId(id); setNavigationDraft(null);
+    setSelectedId(id); setNavigationDraft(null); setSegmentDraft(null);
     setError(""); clearSnack(); setData(null); setDoc(null); setPreview(null); setCorridorDrafts({});
     try {
       const next = await workspaceApi.get(id);
       if (serial === requestSerial.current) {
         if(next.workspace.doc.id!==id)throw new Error("候选响应与所选配方不一致，请重试选择");
         accept(next);
-        void storageApi.updatePreferences({ lastWorkspace: id }).then(() => { if (serial === requestSerial.current) setPreferenceError(""); }).catch(e => { if (serial === requestSerial.current) setPreferenceError(`工作区偏好未保存：${errorText(e)}`); });
         return next;
       }
     } catch (e) { if (serial === requestSerial.current) setError(errorText(e)); }
@@ -158,17 +164,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!desktopAvailable()) return;
     let alive = true;
-    reloadList().then(async () => {
-      const records = await recipeApi.list();
-      const drafts = await workspaceApi.list();
-      let preferred: string | null = null;
-      try { preferred = (await storageApi.preferences()).lastWorkspace ?? null; }
-      catch (e) { if (alive) setPreferenceError(`工作区偏好读取失败：${errorText(e)}`); }
-      // 旧流程候选不能打开（RB-5），不自动选它
-      const stale = new Set(drafts.filter(w => !isCurrentFlow(w)).map(w => w.doc.id));
-      const ids = [...records.recipes.map(r => r.id), ...drafts.map(w => w.doc.id)].filter(id => !stale.has(id));
-      if (alive && !selected.current && ids.length) await select(preferred && ids.includes(preferred) ? preferred : ids[0]);
-    }).catch(e => setError(errorText(e)));
+    // 不自动打开任何配方：打开哪个由配方页的地址决定（/recipe/<编号>/…）
+    reloadList().catch(e => { if (alive) setError(errorText(e)); });
     const refresh = (id: string) => {
       void reloadList().catch(e => setError(errorText(e)));
       if (id && id === selected.current) {
@@ -185,7 +182,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const id = pendingRefresh.current;
-    if (!id || id !== selectedId || dirty || frameDirty || navigationDirty || busy || saving || !desktopAvailable()) return;
+    if (!id || id !== selectedId || dirty || frameDirty || navigationDirty || segmentDirty || busy || saving || !desktopAvailable()) return;
     let alive = true;
     const serial = ++requestSerial.current;
     const current = () => alive && serial === requestSerial.current && id === selected.current && !dirtyRef.current && !acting.current && !savingRef.current;
@@ -196,7 +193,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       accept(next);
     }).catch(e => { if (current()) setError(errorText(e)); });
     return () => { alive = false; };
-  }, [refreshRevision, selectedId, dirty, frameDirty, navigationDirty, busy, saving, accept]);
+  }, [refreshRevision, selectedId, dirty, frameDirty, navigationDirty, segmentDirty, busy, saving, accept]);
 
   useEffect(() => {
     if (!doc || !desktopAvailable() || equal(doc, data?.workspace.doc)) return;
@@ -267,9 +264,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(timer);
   }, [doc, data, corridorDrafts, dirty, frameDirty, busy, saving, saveRetry, urgent, accept]);
 
-  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || preferenceError || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft,
-    clearSelection:()=>{if(dirtyRef.current){setError("当前草稿尚未保存，请先保存或撤销修改");return;}pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setNavigationDraft(null);setError("");clearSnack();},
-    discardDrafts:()=>{if(acting.current||savingRef.current)return false;dirtyRef.current=false;navigationDirtyRef.current=false;failedSave.current="";setDoc(data?.workspace.doc??null);setPreview(data?.layout??null);setPreviewError("");setCorridorDrafts({});setNavigationDraft(null);setError("");return true;},
+  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft, segmentDraft, segmentDirty, setSegmentDraft,
+    clearSelection:()=>{if(dirtyRef.current){setError("当前草稿尚未保存，请先保存或撤销修改");return;}pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setNavigationDraft(null);setSegmentDraft(null);setError("");clearSnack();},
+    discardDrafts:()=>{if(acting.current||savingRef.current)return false;dirtyRef.current=false;navigationDirtyRef.current=false;segmentDirtyRef.current=false;failedSave.current="";setDoc(data?.workspace.doc??null);setPreview(data?.layout??null);setPreviewError("");setCorridorDrafts({});setNavigationDraft(null);setSegmentDraft(null);setError("");return true;},
     corridorDrafts, select, reloadList, setDoc,
     setCorridorDraft:(key, draft) => setCorridorDrafts(previous => ({ ...previous, [key]:draft })),
     act, saveDoc, saveState, retrySave: () => setSaveRetry(v => v + 1), setError }}>{children}</Context.Provider>;

@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { BookOpen, Cable, Camera, Crosshair, FileClock, FlaskConical, FolderKanban, History, LayoutDashboard, ScanEye, ScrollText, Settings, type LucideIcon } from "lucide-react";
+import { BookOpen, Cable, Camera, Crosshair, FileClock, FolderKanban, History, LayoutDashboard, ScanEye, ScrollText, Settings, type LucideIcon } from "lucide-react";
 import InspectPage from "../pages/InspectPage";
 import CameraPage from "../pages/CameraPage";
 import FlyshotCalibrationPage from "../pages/FlyshotCalibrationPage";
@@ -7,7 +7,6 @@ import { PlcLogsPage, PlcSettingsPage } from "../pages/PlcPages";
 import HistoryPage from "../pages/HistoryPage";
 import SettingsPage from "../pages/SettingsPage";
 import OperationGuidePage from "../pages/OperationGuidePage";
-import OfflinePage from "../pages/OfflinePage";
 import ProjectsPage from "../pages/ProjectsPage";
 import LibraryPage from "../features/workspace/LibraryPage";
 import ProgressPage from "../features/workspace/ProgressPage";
@@ -15,9 +14,9 @@ import TeachingPiecePage from "../features/workspace/TeachingPiecePage";
 import TeachingPage from "../features/workspace/TeachingPage";
 import FlowDebugPage from "../features/workspace/FlowDebugPage";
 import ValidationPage from "../features/workspace/ValidationPage";
-import SegmentsPage from "../features/workspace/SegmentsPage";
 import CalibrationPage from "../features/workspace/CalibrationPage";
 import { AppLogPage } from "../features/logs";
+import { inRecipe, SegmentsRedirect } from "../features/workspace/RecipeRoute";
 
 export interface PageRoute {
   path: string;
@@ -55,7 +54,6 @@ export const navEntries: NavEntry[] = [
   ] },
   { label:"工艺",children:[
     recipe,
-    { path:"/offline",label:"离线模式",icon:FlaskConical,element:OfflinePage },
   ] },
   { label:"设备",children:[
     { path:"/camera",label:"相机",icon:Camera,element:CameraPage },
@@ -67,17 +65,17 @@ export const navEntries: NavEntry[] = [
 
 export const navItems: NavItem[] = navEntries.flatMap((entry) => (isNavGroup(entry) ? entry.children : [entry]));
 
-/** 配方工作台各步骤的页面（段配方，StepIdV2）：capture 走 /recipe/capture，segments 走 /recipe/segments，corridor 走 /recipe/teach，
- * calibration 走 /recipe/calibration，validation / publish 走 /recipe/validation。 */
+/** 配方工作台各步骤的页面（段配方，StepIdV2），地址带配方编号：capture 走 /recipe/<编号>/capture，segments 与 corridor
+ * 合在 …/teach（分段与示教，原 …/segments 转到这里），calibration 走 …/calibration，publish 走 …/validation。打开哪个配方只由地址决定。 */
 const recipeSteps: PageRoute[] = [
-  { path:"/recipe/progress",label:"进度总览",element:ProgressPage },
-  { path:"/recipe/capture",label:"示教件",element:TeachingPiecePage },
-  { path:"/recipe/segments",label:"段列表",element:SegmentsPage },
-  { path:"/recipe/teach",label:"走廊示教",element:TeachingPage },
-  { path:"/recipe/flow",label:"流程调试",element:FlowDebugPage },
-  { path:"/recipe/calibration",label:"试测",element:CalibrationPage },
-  { path:"/recipe/validation",label:"发布",element:ValidationPage },
-].map(step => ({ ...step, label:`${recipe.label} · ${step.label}` }));
+  { path:"/recipe/:recipeId/progress",label:"进度总览",element:ProgressPage },
+  { path:"/recipe/:recipeId/capture",label:"示教件",element:TeachingPiecePage },
+  { path:"/recipe/:recipeId/teach",label:"分段与示教",element:TeachingPage },
+  { path:"/recipe/:recipeId/flow",label:"流程调试",element:FlowDebugPage },
+  { path:"/recipe/:recipeId/calibration",label:"试测",element:CalibrationPage },
+  { path:"/recipe/:recipeId/validation",label:"发布",element:ValidationPage },
+].map(step => ({ ...step, element:inRecipe(step.element), label:`${recipe.label} · ${step.label}` }))
+  .concat({ path:"/recipe/:recipeId/segments",label:`${recipe.label} · 分段与示教`,element:SegmentsRedirect });
 
 export const pageRoutes: PageRoute[] = [...navItems, ...recipeSteps, projectsItem, settingsItem];
 

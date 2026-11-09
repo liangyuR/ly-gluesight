@@ -9,15 +9,14 @@ export const stageStatusTone: Record<StageStatus, "info" | "ok" | "warn" | "neut
 export interface StageV2 { path: string; label: string; hint: string; ids: StepIdV2[]; optional: boolean; needsCapture: boolean }
 
 /**
- * 工作台步骤（段配方，RB）：示教件 → 段列表 → 走廊示教 → 试测 → 发布（StepIdV2；验证可选，D-SB-46）。
- * 原“默认参数”页已拆分：测量默认参数在走廊示教，边界过渡帧数在段列表，名称与型号在工件总览。
+ * 工作台步骤（段配方，RB）：示教件 → 分段与示教 → 试测 → 发布（StepIdV2）。分段（segments）与走廊示教（corridor）合在一页。
+ * 测量默认参数、边界过渡帧数与每笔首尾跳过在分段与示教页，名称与型号在工件总览。
  */
 export const stagesV2: StageV2[] = [
   { path: "/recipe/capture", label: "示教件", hint: "从本配方的历史件里选一件设为示教件，分段与各段走廊都在它的图像上示教", ids: ["capture"], optional: false, needsCapture: false },
-  { path: "/recipe/segments", label: "段列表", hint: "沿胶路划分直线段与弯道段，设各段检测项与帧数容差", ids: ["segments"], optional: false, needsCapture: false },
-  { path: "/recipe/teach", label: "走廊示教", hint: "每段的每台检测相机各示教一条走廊；相机只设像素当量与检测参数", ids: ["corridor"], optional: false, needsCapture: true },
-  { path: "/recipe/calibration", label: "试测", hint: "测量示教件得出胶偏参考，确认各段帧数容差，用历史件试测", ids: ["calibration"], optional: false, needsCapture: true },
-  { path: "/recipe/validation", label: "发布", hint: "发布前检查满足即可发布，在工件边界生效；独立样本验证可选", ids: ["validation", "publish"], optional: false, needsCapture: true },
+  { path: "/recipe/teach", label: "分段与示教", hint: "在示教件上按笔分段（段不跨笔），每段的每台检测相机各示教一条走廊；相机只设像素当量与检测参数", ids: ["segments", "corridor"], optional: false, needsCapture: true },
+  { path: "/recipe/calibration", label: "试测", hint: "测量示教件得出胶偏参考，用历史件试测", ids: ["calibration"], optional: false, needsCapture: true },
+  { path: "/recipe/validation", label: "发布", hint: "发布前检查满足即可发布，在工件边界生效", ids: ["publish"], optional: false, needsCapture: true },
 ];
 
 export const stageOfV2 = (id: StepIdV2) => stagesV2.find(stage => stage.ids.includes(id));

@@ -1,6 +1,6 @@
-//! 历史件导入为采集轮次（docs/architecture/online-commissioning.md 5.2、5.3）：历史件选择器列出本配方的真机录制件
-//! 并逐件给出能否选用的原因；选为示教件时按 `RecipeCaptureHost::import_history` 物化成采集轮次（见 `pieces`）。
-//! 已导入并用作示教件的历史件不能再作独立验证样本（[`check_history_sample`]）。
+//! 历史件导入为采集轮次（docs/architecture/online-commissioning.md 5.2、5.3）：历史件选择器按筛选条件分页列出本机全部真机
+//! 录制件（不限项目、配方）并逐件给出能否选用的原因；选为示教件时按 `RecipeCaptureHost::import_history` 登记成引用录制原图的
+//! 采集轮次（见 `pieces`）。
 
 use std::collections::BTreeSet;
 
@@ -9,15 +9,18 @@ use crate::camera::CameraImaging;
 use crate::recipe_capture::{
     CaptureCamera, HistoryFrame, HistoryRound, RecipeCaptureHost, RoundOrigin,
 };
-use crate::store::{PartMode, PartSummary, RecordSource, RecordingEvidence, RecordingState};
+use crate::store::{
+    HistoryQuery, PartMode, PartSummary, RecordSource, RecordingEvidence, RecordingState,
+};
 
-/// 列表最多核对的历史件数（最新在前）。
-const LIST_LIMIT: u32 = 200;
+/// 每页最多核对的历史件数（最新在前）：逐件要读录制的 part.json。
+const PAGE_LIMIT: u32 = 200;
 /// 一次最多导入的件数。
 const IMPORT_LIMIT: usize = 50;
 /// 帧组数低于本批可导入件中位数的这个倍数时提示疑似提前结束；可导入件少于 SHORT_MIN_PARTS 件不比较。
 const SHORT_RATIO: f64 = 0.9;
 const SHORT_MIN_PARTS: usize = 3;
+const ALREADY_IMPORTED: &str = "本候选已选用这一件";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +38,7 @@ pub struct HistoryCandidate {
     pub ts: i64,
     pub sn: String,
     pub mode: PartMode,
+    pub verdict: Verdict,
     pub group_count: u64,
     /// 按录制的计划相机顺序
     pub cameras: Vec<HistoryCameraFrames>,
@@ -56,6 +60,9 @@ pub struct HistoryCandidate {
     pub usage: Option<PieceUsage>,
     /// 手动配置数据（`capture_fixture` 写的仿历史件）的标签；真机件为 None
     pub fixture: Option<String>,
+    /// 记录所属的配方与项目（选择器与试测列本机全部历史件，可能是别的配方、别的项目）
+    pub recipe_id: Option<String>,
+    pub project_id: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -73,7 +80,7 @@ pub struct HistoryPick {
 
 pub(super) struct Assessed {
     pub view: HistoryCandidate,
-    /// 能导入时要物化的轮次
+    /// 要登记的轮次：除“本候选已选用这一件”外没有不可用原因时才有
     pub round: Option<HistoryRound>,
 }
 
@@ -116,8 +123,9 @@ fn frame_count(n: usize) -> u32 {
 }
 
 /// 逐条核对一件历史件能否导入为本候选的采集轮次（5.2 可用条件）：维护模式或生产的真机件、属于本候选的型号、
-/// 有一期录制元数据（相机设备与 PLC 请求）、计划相机齐全且设备配置与当前一致（`current` 按相机编号，`state_value` 口径）、
-/// 没有提前结束、原图完整（无缺帧、无 rawDropped、每帧已落盘）、帧号与帧组序号一致；`imported` 为已导入的 cycleId → 轮次。
+/// 有一期录制元数据（相机设备与 PLC 请求）、计划相机齐全、没有提前结束、原图完整（无缺帧、无 rawDropped、每帧已落盘）、
+/// 帧号与帧组序号一致；`imported` 为已导入的 cycleId → 轮次。录制时设备配置与当前（`current` 按相机编号，`state_value` 口径）
+/// 不同只提示，不拦截：示教件常在别的机器上选用与示教。
 pub(super) fn assess(
     doc: &RecipeDoc,
     current: &BTreeMap<String, Value>,
@@ -133,6 +141,7 @@ pub(super) fn assess(
         ts: summary.ts,
         sn: summary.sn.clone(),
         mode: summary.mode,
+        verdict: summary.verdict,
         group_count: 0,
         cameras: Vec::new(),
         complete: false,
@@ -148,15 +157,14 @@ pub(super) fn assess(
             .cloned(),
         usage: None,
         fixture: None,
+        recipe_id: summary.recipe_id.clone(),
+        project_id: summary.project_id.clone(),
     };
     if summary.source != RecordSource::Real {
         reasons.push(format!("{}记录不能导入", summary.source.label()));
     }
     if view.imported_round.is_some() {
-        reasons.push("本候选已选用这一件".into());
-    }
-    if summary.flags.as_ref().is_some_and(|f| f.short_part) {
-        reasons.push("PLC 提前结束运动（疑似提前终止）".into());
+        reasons.push(ALREADY_IMPORTED.into());
     }
     let recorded = recording.state == RecordingState::Complete && recording.available;
     if !recorded {
@@ -329,7 +337,7 @@ pub(super) fn assess(
                 reasons.push("PLC 提前结束运动".into());
             }
         }
-        _ => reasons.push("旧录制没有相机设备与 PLC 请求元数据，只能作验证样本".into()),
+        _ => reasons.push("旧录制没有相机设备与 PLC 请求元数据，不能选作示教件".into()),
     }
     let mut planned = doc.plan_cameras();
     planned.sort();
@@ -352,8 +360,9 @@ pub(super) fn assess(
             continue;
         };
         let config = &device["cameraConfig"];
-        if config.is_null() || current.get(camera_id) != Some(config) {
-            reasons.push(format!("相机 {camera_id} 的设备配置与当前不一致"));
+        if !config.is_null() && current.get(camera_id) != Some(config) {
+            view.warnings
+                .push(format!("录制时相机 {camera_id} 的设备配置与当前不同"));
         }
         let imaging = serde_json::from_value::<CameraImaging>(device["imaging"].clone()).ok();
         let session = device["deviceSession"].as_u64().filter(|&s| s > 0);
@@ -368,7 +377,8 @@ pub(super) fn assess(
             _ => reasons.push(format!("相机 {camera_id} 缺曝光增益或设备会话记录")),
         }
     }
-    let round = reasons.is_empty().then(|| HistoryRound {
+    let blocked = reasons.len() > usize::from(view.imported_round.is_some());
+    let round = (!blocked).then(|| HistoryRound {
         recipe_id: doc.id.clone(),
         origin: RoundOrigin::History {
             cycle_id: cycle_id.to_string(),
@@ -424,7 +434,62 @@ fn current_configs(cycle: &CycleHost) -> BTreeMap<String, Value> {
         .collect()
 }
 
-fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
+/// 历史件选择器与试测的查询：`own_recipe` 为真时只看当前项目本配方的（试测默认），否则按项目、配方、SN、时间、判定筛选本机全部。
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CandidateQuery {
+    pub own_recipe: bool,
+    pub project: Option<String>,
+    pub recipe_id: Option<String>,
+    pub sn: Option<String>,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+    pub verdicts: Vec<Verdict>,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+/// 选择器的一页：符合筛选条件的总件数与本页逐件核对结果。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidatePage {
+    pub total: u64,
+    pub items: Vec<HistoryCandidate>,
+}
+
+fn history_query(app: &AppHandle, doc: &RecipeDoc, q: &CandidateQuery) -> HistoryQuery {
+    let own = q.own_recipe;
+    HistoryQuery {
+        from: q.from,
+        to: q.to,
+        verdicts: q.verdicts.clone(),
+        sn: q.sn.clone(),
+        recipe_id: if own {
+            Some(doc.id.clone())
+        } else {
+            q.recipe_id.clone()
+        },
+        project: if own {
+            Some(crate::project::current_id(app))
+        } else {
+            q.project.clone()
+        },
+        offset: q.offset,
+        limit: if q.limit == 0 {
+            PAGE_LIMIT
+        } else {
+            q.limit.min(PAGE_LIMIT)
+        },
+        ..Default::default()
+    }
+}
+
+/// 逐件核对一批记录能否导入为候选 `w` 的轮次，并标出本候选已把哪件用作示教件或标定件。
+fn assess_parts(
+    app: &AppHandle,
+    w: &Workspace,
+    parts: &[(PartSummary, RecordingEvidence)],
+) -> Result<Vec<Assessed>, String> {
     let doc = &w.doc;
     if !doc.is_burst() {
         return Err("旧拍照点配方已停用，请创建段配方".into());
@@ -432,8 +497,7 @@ fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
     let cycle = app.state::<CycleHost>();
     let current = current_configs(&cycle);
     let imported = imported_cycles(cycle.camera.recipe_capture(), &doc.id)?;
-    let root = cycle.recorders.root(RecordSource::Real).to_path_buf();
-    let parts = app.state::<Store>().recorded_parts(&doc.id, LIST_LIMIT)?;
+    let data = crate::storage::root(app);
     let mut assessed: Vec<Assessed> = parts
         .iter()
         .map(|(summary, recording)| {
@@ -443,11 +507,15 @@ fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
                 &imported,
                 summary,
                 recording,
-                read_part(&root, recording),
+                crate::project::records::record_root_of(
+                    &data,
+                    &summary.project_id,
+                    recording.directory.as_deref(),
+                )
+                .and_then(|root| read_part(&root, recording)),
             )
         })
         .collect();
-    flag_short_parts(&mut assessed);
     let teaching = w.teaching_piece.as_ref().map(|t| t.round_id.as_str());
     for a in &mut assessed {
         a.view.usage = a.view.imported_round.as_deref().map(|round| {
@@ -461,12 +529,13 @@ fn assess_all(app: &AppHandle, w: &Workspace) -> Result<Vec<Assessed>, String> {
     Ok(assessed)
 }
 
-/// 历史件选择器：本配方最近的真机录制件与能否选用（只读）。
+/// 历史件选择器与试测：按筛选条件分页列出真机录制件与能否选用（只读）。
 #[tauri::command]
 pub async fn workspace_history_candidates(
     app: AppHandle,
     id: String,
-) -> Result<Vec<HistoryCandidate>, String> {
+    query: CandidateQuery,
+) -> Result<CandidatePage, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let w = app
             .state::<WorkspaceHost>()
@@ -476,14 +545,23 @@ pub async fn workspace_history_candidates(
             .get(&id)
             .ok_or("候选配置不存在")?
             .clone();
-        Ok(assess_all(&app, &w)?.into_iter().map(|a| a.view).collect())
+        let (total, parts) = app
+            .state::<Store>()
+            .recorded_parts(&history_query(&app, &w.doc, &query))?;
+        let mut assessed = assess_parts(&app, &w, &parts)?;
+        flag_short_parts(&mut assessed);
+        Ok(CandidatePage {
+            total,
+            items: assessed.into_iter().map(|a| a.view).collect(),
+        })
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
 /// 把选中的历史件逐件导入为候选 `w` 的采集轮次，返回新轮次 ID 与这件的核对结果（按选择顺序），记 `op.capture.import`。
-/// 导入前重新核对每一件，任一件不能导入时一件也不导；导入只建硬链接与轮次记录，不占用设备。调用方持配置门。
+/// 导入前按记录编号重新核对每一件（不受选择器分页限制），任一件不能导入时一件也不导；导入只写轮次记录、引用录制原图，
+/// 不占用设备。调用方持配置门。
 pub(super) fn import_records(
     app: &AppHandle,
     w: &Workspace,
@@ -515,23 +593,31 @@ fn import(
     if picks.iter().any(|p| !unique.insert(p.record_id)) {
         return Err("不能重复选择同一件".into());
     }
-    let mut assessed: BTreeMap<i64, Assessed> = assess_all(app, w)?
-        .into_iter()
-        .map(|a| (a.view.record_id, a))
-        .collect();
+    // 从核对到写好轮次与清理互斥（见 `recipe_capture::REFERENCES`）
+    let _references = crate::recipe_capture::lock_references();
+    let store = app.state::<Store>();
+    let parts = picks
+        .iter()
+        .map(|pick| {
+            let detail = store
+                .detail(pick.record_id)
+                .map_err(|_| format!("记录 {} 不存在", pick.record_id))?;
+            Ok((detail.summary, detail.recording))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let mut rounds = Vec::with_capacity(picks.len());
-    for pick in picks {
-        let entry = assessed
-            .remove(&pick.record_id)
-            .ok_or_else(|| format!("记录 {} 不在本配方最近的录制件里", pick.record_id))?;
-        let round = entry.round.ok_or_else(|| {
-            format!(
-                "记录 {}（SN {}）不能选用：{}",
-                pick.record_id,
-                entry.view.sn,
-                entry.view.reasons.join("；")
-            )
-        })?;
+    for (pick, entry) in picks.iter().zip(assess_parts(app, w, &parts)?) {
+        let round = entry
+            .round
+            .filter(|_| entry.view.reasons.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "记录 {}（SN {}）不能选用：{}",
+                    pick.record_id,
+                    entry.view.sn,
+                    entry.view.reasons.join("；")
+                )
+            })?;
         rounds.push((round, entry.view));
     }
     let cycle = app.state::<CycleHost>();
@@ -551,66 +637,6 @@ fn import(
         }
     }
     Ok(imported)
-}
-
-/// 历史记录作独立验证样本前的核对（5.3）：这件已导入为本候选的轮次且该轮用于走廊示教或示教件测量时拒绝（`origins` 为本候选
-/// 各轮次的来源）；录制有相机设备记录时，各计划相机的设备配置须与当前一致（`current` 按相机编号，`state_value` 口径）。
-pub(super) fn check_history_sample(
-    w: &Workspace,
-    cycle_id: Option<&str>,
-    origins: &BTreeMap<String, RoundOrigin>,
-    devices: Option<&Value>,
-    current: &BTreeMap<String, Value>,
-) -> Result<(), String> {
-    if let Some(cycle_id) = cycle_id {
-        let trained = origins.iter().find(|(round, origin)| {
-            origin.cycle_id() == cycle_id
-                && (w.camera_teaching.iter().any(|t| &t.round == *round)
-                    || w.calibration.rounds.iter().any(|r| &r.round_id == *round))
-        });
-        if let Some((round, _)) = trained {
-            return Err(format!(
-                "这件已导入为轮次 {round} 并用作示教件：训练数据不能再作独立验证样本"
-            ));
-        }
-    }
-    for device in devices.and_then(Value::as_array).into_iter().flatten() {
-        let camera = device["cameraId"].as_str().unwrap_or_default();
-        if w.doc.plan_cameras().iter().any(|c| c == camera)
-            && !device["cameraConfig"].is_null()
-            && current.get(camera) != Some(&device["cameraConfig"])
-        {
-            return Err(format!(
-                "录制时相机 {camera} 的设备配置与当前不同，不能作验证样本"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// 本候选各轮次的来源（历史件导入的轮次），轮次 → 来源。
-pub(super) fn round_origins(
-    capture: &RecipeCaptureHost,
-    recipe_id: &str,
-) -> Result<BTreeMap<String, RoundOrigin>, String> {
-    Ok(capture
-        .list(recipe_id)?
-        .into_iter()
-        .filter_map(|r| r.origin.map(|o| (r.round_id, o)))
-        .collect())
-}
-
-/// 历史记录录制时的相机设备记录（part.json 的 devices）；没有录制或旧录制为 None。
-pub(super) fn recorded_devices(app: &AppHandle, recording: &RecordingEvidence) -> Option<Value> {
-    let root = app
-        .state::<CycleHost>()
-        .recorders
-        .root(RecordSource::Real)
-        .to_path_buf();
-    read_part(&root, recording)
-        .ok()
-        .map(|(_, part)| part["devices"].clone())
-        .filter(|d| !d.is_null())
 }
 
 #[cfg(test)]

@@ -1,7 +1,8 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
-import type { BandwidthEstimate, CameraConfig, CameraImaging, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
+import { decodeFrame, FRAME_HEADER_BYTES, frameImageData } from "../../lib/frame";
+import type { BandwidthEstimate, CameraConfig, CameraConfigSaved, CameraImaging, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_release","camera_reconnect","camera_set_imaging"].includes(cmd))
@@ -24,29 +25,22 @@ export const defaultCameraConfig: CameraConfig = {
   strobe: true,
   chunk: true,
   counterAfterOpen: null,
+  imageMode: "color",
 };
 
-/** 解析 camera_preview 的二进制：16 字节头（缩略图宽高、原图宽高）+ 灰度像素。 */
+/** 解析 camera_preview 的二进制（格式见 decodeFrame）；浏览器查看模式下为空数据，返回 null。 */
 function decodePreview(buf: ArrayBuffer): PreviewImage | null {
-  if (buf.byteLength < 16) return null;
-  const v = new DataView(buf);
-  const [width, height, fullWidth, fullHeight] = [0, 4, 8, 12].map((o) => v.getUint32(o, true));
-  const px = new Uint8Array(buf, 16);
-  const data = new ImageData(width, height);
-  for (let i = 0; i < width * height; i++) {
-    const g = px[i];
-    data.data[i * 4] = data.data[i * 4 + 1] = data.data[i * 4 + 2] = g;
-    data.data[i * 4 + 3] = 255;
-  }
-  return { width, height, fullWidth, fullHeight, data };
+  if (buf.byteLength < FRAME_HEADER_BYTES) return null;
+  const { fullWidth, fullHeight, pixels } = decodeFrame(buf);
+  return { width: pixels.width, height: pixels.height, fullWidth, fullHeight, data: frameImageData(pixels) };
 }
 
 export const cameraApi = {
   rigStatus: () => call<CameraStatus[]>("camera_rig_status", undefined, () => []),
-  rigConfig: () => call<CameraConfig[]>("camera_rig_config", undefined, () => []),
+  rigConfig: () => call<CameraConfig[]>("camera_rig_config", undefined, () => []).then(configs => configs.map(c => ({ ...c, imageMode: c.imageMode ?? "gray" }))),
   bandwidth: (hz: number) => call<BandwidthEstimate | null>("camera_bandwidth", { hz }, () => null),
   calibInfo: (cam: number, view: number) => call<{ mmPerPx: number | null } | null>("vision_calib_info", { cam, view }, () => null),
-  saveConfig: (cam: number, config: CameraConfig) => call<string[]>("camera_save_config", { cam, config }, () => []),
+  saveConfig: (cam: number, config: CameraConfig) => call<CameraConfigSaved>("camera_save_config", { cam, config }, () => ({ saved: true, applied: false, warnings: [], applyError: "需要桌面后端" })),
   add: (config: CameraConfig) => call<number>("camera_add", { config }, () => 0),
   remove: (cam: number) => call<void>("camera_remove", { cam }, () => undefined),
   listDevices: () => call<DeviceSummary[]>("camera_list_devices", undefined, () => []),

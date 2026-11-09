@@ -1,14 +1,12 @@
 import { useRef, useState } from "react";
 import { Alert, Button, Chip, Dialog, NumberField, Select, Stack, Text } from "qing-steel";
 import { fromLocalInput, toLocalInput } from "../plc/time";
-import type { HistoryScope } from "../history/types";
 import { errorText } from "../../lib/errors";
 import { formatBytes, logsApi } from "./api";
 import DateTimeField from "./DateTimeField";
 import type { DiagnosticsResult, ImageMode } from "./types";
 
 const presets = [["1 小时", 3_600_000], ["24 小时", 86_400_000], ["7 天", 7 * 86_400_000]] as const;
-const scopes: [HistoryScope | "all", string][] = [["all", "全部记录"], ["real", "真机件"], ["offline", "离线件"], ["debug", "候选调试"]];
 const imageModes: [ImageMode, string][] = [["abnormal", "仅异常件（NG / ERR）"], ["all", "全部工件"], ["none", "不含原图"]];
 
 export default function DiagnosticsDialog({ from, to, historyIds, title = "导出诊断包", onClose }: {
@@ -17,7 +15,6 @@ export default function DiagnosticsDialog({ from, to, historyIds, title = "导�
   const now = Date.now();
   const [start, setStart] = useState(() => toLocalInput(from ?? now - 3_600_000));
   const [end, setEnd] = useState(() => toLocalInput(to ?? now));
-  const [scope, setScope] = useState<HistoryScope | "all">("all");
   const [images, setImages] = useState<ImageMode>(historyIds?.length ? "all" : "abnormal");
   const [maxParts, setMaxParts] = useState<number | "">(20);
   const [busy, setBusy] = useState(false);
@@ -31,7 +28,7 @@ export default function DiagnosticsDialog({ from, to, historyIds, title = "导�
     if (typeof maxParts !== "number" || !Number.isInteger(maxParts) || maxParts < 1 || maxParts > 200) { setError("附原图件数需为 1–200 的整数"); return; }
     setBusy(true); setError(""); setResult(null);
     try {
-      const done = await logsApi.exportDiagnostics({ from: a, to: b, scope: scope === "all" ? null : scope, historyIds: historyIds ?? [], images, maxImageParts: maxParts });
+      const done = await logsApi.exportDiagnostics({ from: a, to: b, historyIds: historyIds ?? [], images, maxImageParts: maxParts });
       if (alive.current) setResult(done);
     } catch (e) { if (alive.current) setError(errorText(e)); }
     finally { if (alive.current) setBusy(false); }
@@ -51,8 +48,7 @@ export default function DiagnosticsDialog({ from, to, historyIds, title = "导�
         <DateTimeField label="诊断包结束" value={end} disabled={busy} onChange={setEnd} />
       </Stack>
       {!named && <Stack gap={8}><Text variant="label" muted>最近</Text>{presets.map(([label, ms]) => <Chip key={label} disabled={busy} onClick={() => { const t = Date.now(); setStart(toLocalInput(t - ms)); setEnd(toLocalInput(t)); }}>{label}</Chip>)}</Stack>}
-      {named ? <Text as="p" muted>记录：{historyIds!.map(id => "#" + id).join("、")}</Text> :
-        <Select label="检测记录" aria-label="诊断包记录范围" value={scope} disabled={busy} onValueChange={value => setScope(value as HistoryScope | "all")} options={scopes.map(([value, label]) => ({ value, label }))} />}
+      {named && <Text as="p" muted>记录：{historyIds!.map(id => "#" + id).join("、")}</Text>}
       <Select label="原图" aria-label="诊断包原图" value={images} disabled={busy} onValueChange={value => setImages(value as ImageMode)}
         options={imageModes.filter(([key]) => !named || key !== "abnormal").map(([value, label]) => ({ value, label: named && value === "all" ? "所选记录的原图" : label }))} />
       {!named && images !== "none" && <NumberField label="最多附原图件数（新的优先，原图总量上限 2 GB）" aria-label="最多附原图件数" min={1} max={200} value={maxParts} disabled={busy} onValueChange={setMaxParts} />}

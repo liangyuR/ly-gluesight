@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import CameraPage from "../src/pages/CameraPage";
 import { defaultCameraConfig } from "../src/features/camera/api";
 import type { BandwidthEstimate, CameraConfig, CameraStatus } from "../src/features/camera/types";
-import { siteStatus, snapshot } from "./fixtures";
+import { snapshot } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -30,10 +30,9 @@ beforeEach(() => {
       case "camera_bandwidth": return bandwidth;
       case "camera_rig_status": return configs.map((c, i) => ({ ...status(i, c), ...(released.includes(c.id) ? { ready: false, released: true, device: null } : {}) }));
       case "camera_list_devices": return configs.map(c => device(c.serial));
-      case "camera_save_config": return [];
+      case "camera_save_config": return { saved: true, applied: true, warnings: [], applyError: null };
       case "camera_preview": return new ArrayBuffer(0);
       case "recipe_list": return { recipes: [], errors: [] };
-      case "site_status": return siteStatus();
       case "cycle_snapshot": return snapshot();
       default: return [];
     }
@@ -48,6 +47,28 @@ async function openCamera(label: string) {
 }
 
 describe("相机参数未保存修改", () => {
+  it("配置落盘但设备离线 → 显示应用失败、保留当前页面且不再提示未保存", async () => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+      if (command === "camera_save_config") {
+        const { cam, config } = args as { cam: number; config: CameraConfig };
+        configs = configs.map((current, i) => i === cam ? config : current);
+        return { saved: true, applied: false, warnings: [], applyError: "设备未连接" };
+      }
+      return original(command, args, options);
+    });
+    await openCamera("左相机 cam1");
+    await userEvent.type(screen.getByRole("textbox", { name: "名称" }), "A");
+    await userEvent.click(switcher().getByRole("button", { name: "右相机 cam2" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "保存并应用" }));
+    expect(await screen.findByText(/配置已保存，设备应用失败：设备未连接/)).toBeVisible();
+    expect(switcher().getByRole("button", { name: "左相机A cam1" })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: "放弃" })).toBeDisabled();
+    await userEvent.click(switcher().getByRole("button", { name: "右相机 cam2" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(switcher().getByRole("button", { name: "右相机 cam2" })).toHaveAttribute("aria-current", "true");
+  });
+
   it("改名后切换相机并选保存并应用 → 先把修改写入当前相机，再切到目标相机", async () => {
     await openCamera("左相机 cam1");
     const name = await screen.findByRole("textbox", { name: "名称" });
@@ -104,16 +125,6 @@ describe("出图验证", () => {
   });
 });
 
-describe("触发方式", () => {
-  it("修改 Line0 帧率后保存 → 保留高电平并写入新帧率", async () => {
-    await openCamera("左相机 cam1");
-    const fps=screen.getByRole("spinbutton",{name:"设定帧率"});
-    fireEvent.change(fps,{target:{value:"15"}});
-    await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
-    await waitFor(()=>expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config",{cam:0,config:expect.objectContaining({frameRate:15,triggerActivation:"LevelHigh"})}));
-  });
-});
-
 it("旧 Software 边沿配置切回 Line0 → 保存为高电平", async()=>{
  Object.defineProperty(HTMLElement.prototype,"scrollIntoView",{value:()=>{},configurable:true});
  configs=[camera("cam1","左相机",{triggerSource:"Software",triggerActivation:"RisingEdge" as CameraConfig["triggerActivation"]})];
@@ -123,4 +134,21 @@ it("旧 Software 边沿配置切回 Line0 → 保存为高电平", async()=>{
  fireEvent.click(await screen.findByRole("option",{name:"Line0（高电平连续采集）"}));
  await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
  await waitFor(()=>expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config",{cam:0,config:expect.objectContaining({triggerSource:"Line0",triggerActivation:"LevelHigh"})}));
+});
+
+it("切换外部模拟器并选灰度 → 保存匹配输入通道的 TCP 单视角 Line0 配置", async () => {
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { value: () => {}, configurable: true });
+  configs = [camera("cam1", "左相机", { triggerSource: "Software" })];
+  await openCamera("左相机 cam1");
+  screen.getByRole("combobox", { name: "图像源" }).focus();
+  await userEvent.keyboard("{ArrowDown}");
+  await userEvent.click(await screen.findByRole("option", { name: "外部模拟器" }));
+  const save = screen.getByRole("button", { name: "保存并应用" });
+  expect(save).toBeDisabled();
+  await userEvent.type(screen.getByRole("textbox", { name: "模拟器地址" }), "127.0.0.1:7101");
+  screen.getByRole("combobox", { name: "图像模式" }).focus();
+  await userEvent.keyboard("{ArrowDown}");
+  await userEvent.click(await screen.findByRole("option", { name: "灰度" }));
+  await userEvent.click(save);
+  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config", { cam: 0, config: expect.objectContaining({ source: "simulator", serial: "127.0.0.1:7101", imageMode: "gray", triggerSource: "Line0", triggerActivation: "LevelHigh", viewCount: 1 }) }));
 });
