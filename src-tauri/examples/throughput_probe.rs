@@ -93,7 +93,6 @@ fn probe_scene() -> FrameImage {
 fn probe_document() -> RecipeDoc {
     let cameras: Vec<String> = PROBE_CAMERAS.iter().map(|c| c.to_string()).collect();
     let mut doc = burst_template("PROBE".into(), "吞吐探针".into(), 1, &cameras);
-    doc.plan_version = 1;
     doc.spacing = 1.0;
     doc.segments[0].expected_frames = Some(4);
     for inspect in &mut doc.inspect {

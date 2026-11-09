@@ -76,7 +76,7 @@ pub fn workspace_collect_checks(
     Ok(current_checks(&app, w))
 }
 
-/// 把候选冻结成待生效的采集版：检查全部通过才发布，计划版本照常由配方库分配，在工件边界生效（`apply_pending`）。
+/// 把候选冻结成待生效的采集版：检查全部通过才发布，在工件边界生效（`apply_pending`）。
 #[tauri::command]
 pub fn workspace_publish_collect(
     app: AppHandle,
@@ -99,7 +99,6 @@ pub fn workspace_publish_collect(
     doc.version = recipes.release_version(&w.doc)?;
     doc.stage = RecipeStage::Collect;
     doc.teaching_id = None;
-    doc.plan_version = recipes.plan_version_for(&doc)?;
     doc.build()?;
     // 段 ID 留在候选里（逐笔对照的沿用状态按它记），只从发布的配方去掉（RB-11）
     let mut released = doc.clone();

@@ -52,8 +52,6 @@ export interface Recipe {
   id: string;
   name: string;
   version: number;
-  /** PLC 计划版本（见 RecipeDoc.planVersion） */
-  planVersion: number;
   revisionId: string;
   teachingId?: string | null;
   productCode: number;
@@ -85,8 +83,6 @@ export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   id: string;
   name: string;
   version: number;
-  /** PLC 拍照计划版本：配方库分配，只在计划身份（产品代码、各段序号 / 类型 / N_exp、相机顺序与 ΣN_exp）变化时换新号；0 或缺省为未分配 */
-  planVersion?: number;
   teachingId?: string | null;
   /** 示教件来源（RB-7）：发布时从候选写入；候选里恒为 null，旧流程发布的配方没有 */
   teachingPiece?: TeachingPieceSource | null;
@@ -118,8 +114,6 @@ export interface RecipeSummary {
   triggerMode: TriggerMode;
   cameras: string[];
   length: number;
-  /** PLC 计划版本 */
-  planVersion: number;
   /** PLC 触发次数 ΣN_exp；未标定为 null */
   triggerCount: number | null;
   segmentCount: number;

@@ -236,8 +236,6 @@ pub struct CalibrationView {
     pub segments: Vec<SegmentCalibView>,
     pub expected_total: Option<u32>,
     pub tolerance_total: u32,
-    /// 已有 N_exp 且计划身份与生产不同：发布时分配新计划版本
-    pub plan_version_change: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1920,7 +1918,7 @@ pub(super) fn apply_reference(doc: &mut RecipeDoc, rounds: &[CalibrationRound]) 
 }
 
 /// 示教件基准的视图：各段 N_exp、容差、x_ref 与定向提示。
-pub(super) fn calibration_view(w: &Workspace, production: Option<&RecipeDoc>) -> CalibrationView {
+pub(super) fn calibration_view(w: &Workspace) -> CalibrationView {
     let doc = &w.doc;
     let cameras = doc.plan_cameras();
     let single = doc.segments.len() == 1;
@@ -1978,8 +1976,6 @@ pub(super) fn calibration_view(w: &Workspace, production: Option<&RecipeDoc>) ->
         segments,
         expected_total,
         tolerance_total: crate::plan::tolerance_total(&doc.segments),
-        plan_version_change: expected_total.is_some()
-            && production.is_none_or(|p| p.plan_version == 0 || !p.same_plan(doc)),
     }
 }
 
@@ -3077,7 +3073,6 @@ pub(super) fn plan_view(
     w: &Workspace,
     layout: &Recipe,
     production: Option<&Recipe>,
-    production_doc: Option<&RecipeDoc>,
     production_version: Option<u32>,
 ) -> WorkspacePlanView {
     let doc = &w.doc;
@@ -3105,7 +3100,7 @@ pub(super) fn plan_view(
         expected_total,
         tolerance_total: crate::plan::tolerance_total(&doc.segments),
         calibrated: expected_total.is_some(),
-        calibration: Some(calibration_view(w, production_doc)),
+        calibration: Some(calibration_view(w)),
         shot_count_changed: production_export.as_ref().and_then(|e| e.expected_total)
             != expected_total,
         production_export,

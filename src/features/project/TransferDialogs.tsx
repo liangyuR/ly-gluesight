@@ -123,7 +123,7 @@ export function ImportProjectDialog({ preview, entries, onClose, onSwitch }: { p
         <dt>项目</dt><dd>{imported.meta.name}</dd>
         <dt>编号</dt><dd className="mono">{imported.meta.id}</dd>
       </dl>
-      <Alert tone="warn" title="切换前请先核对">相机组、PLC 配置与标定来自来源机，切换到该项目前请先核对；生产配方的计划号已按本机重新分配，候选已回到草稿。</Alert>
+      <Alert tone="warn" title="切换前请先核对">相机组、PLC 配置与标定来自来源机，切换到该项目前请先核对；候选已回到草稿。</Alert>
       <Notes notes={imported.notes} />
     </Stack>
   </Dialog>;
@@ -142,7 +142,7 @@ export function ImportProjectDialog({ preview, entries, onClose, onSwitch }: { p
       <Notes notes={preview.notes} />
       <TextField label="新项目编号" className="mono" disabled={working} maxLength={64} value={form.id} description="导入后不可修改，同时作为项目目录名" error={idError || undefined} onChange={e => setForm({ ...form, id: e.target.value })} />
       <TextField label="新项目名称" required disabled={working} value={form.name} error={nameError || undefined} onChange={e => setForm({ ...form, name: e.target.value })} />
-      <Alert tone="warn" title="导入后不会自动切换">导入后请先核对相机组、PLC 配置与标定再切换到该项目；生产配方的计划号会按本机重新分配，候选回到草稿。</Alert>
+      <Alert tone="warn" title="导入后不会自动切换">导入后请先核对相机组、PLC 配置与标定再切换到该项目；候选回到草稿。</Alert>
       {error && <Alert tone="ng" title="导入未完成">{error}</Alert>}
       {working && <Alert tone="info" role="status">正在导入，包较大时需要几分钟，请勿关闭软件。</Alert>}
     </Stack>
@@ -197,7 +197,7 @@ export function CopyProjectDialog({ project, entries, onClose, onSwitch }: { pro
       <TextField label="新项目编号" className="mono" disabled={working} maxLength={64} value={form.id} description="创建后不可修改，同时作为项目目录名" error={idError || undefined} onChange={e => setForm({ ...form, id: e.target.value })} />
       <TextArea label="描述" disabled={working} rows={2} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
       <Checkbox label="包含示教件原图" disabled={working} checked={form.captureImages} onCheckedChange={captureImages => setForm({ ...form, captureImages })} />
-      <Text muted>复制相机组与 PLC 配置、标定、生产配方与发布包、候选。生产配方的计划号按本机重新分配，候选回到草稿；复制后不会自动切换。检测记录与历史原图本机共用、不复制：仍归来源项目，新项目的候选照常引用。{!form.captureImages && COPY_CAPTURE_IMAGES_HINT}</Text>
+      <Text muted>复制相机组与 PLC 配置、标定、生产配方与发布包、候选。候选回到草稿；复制后不会自动切换。检测记录与历史原图本机共用、不复制：仍归来源项目，新项目的候选照常引用。{!form.captureImages && COPY_CAPTURE_IMAGES_HINT}</Text>
       {error && <Alert tone="ng" title="复制未完成">{error}</Alert>}
       {working && <Alert tone="info" role="status">正在复制，项目较大时需要几分钟，请勿关闭软件。</Alert>}
     </Stack>

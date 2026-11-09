@@ -383,8 +383,6 @@ pub struct Recipe {
     pub id: String,
     pub name: String,
     pub version: u32,
-    /// PLC 拍照计划版本（见 RecipeDoc::plan_version）
-    pub plan_version: u32,
     pub revision_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_id: Option<String>,
@@ -533,11 +531,6 @@ pub struct RecipeDoc {
     pub name: String,
     #[serde(default)]
     pub version: u32,
-    /// PLC 拍照计划版本：由配方库分配、全局唯一，只在计划身份变了时换新号（见 `same_plan`）：旧拍照点配方是产品代码或
-    /// 拍照点的顺序、编号、Pose、相机；段配方是产品代码、各段序号 / 类型 / N_exp、相机顺序与 ΣN_exp。
-    /// 只改限值、检测参数、示教中线、容差、x_ref 或"不检"时不变，PLC 侧不用跟着改。0 表示还没分配（不能接件）。
-    #[serde(default)]
-    pub plan_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_id: Option<String>,
     pub product_code: u16,
@@ -618,21 +611,6 @@ impl RecipeDoc {
     /// 整件预期帧组数 ΣN_exp（见 `plan::expected_total`）。
     pub fn expected_total(&self) -> Option<u32> {
         plan::expected_total(&self.segments, self.part_calib.as_ref())
-    }
-
-    /// 段计划身份（`plan::plan_identity`）；旧拍照点配方没有段和检测相机，身份恒等。
-    pub fn plan_identity(&self) -> plan::PlanIdentity {
-        plan::plan_identity(
-            self.product_code,
-            &self.segments,
-            &self.plan_cameras(),
-            self.expected_total(),
-        )
-    }
-
-    /// 两份配方的段计划身份相同，就是同一份计划（D-SB-19）。
-    pub fn same_plan(&self, other: &RecipeDoc) -> bool {
-        self.plan_identity() == other.plan_identity()
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -728,7 +706,6 @@ impl RecipeDoc {
             id: self.id.clone(),
             name: self.name.trim().to_string(),
             version: self.version.max(1),
-            plan_version: self.plan_version,
             revision_id: format!("{}-v{}", self.id, self.version.max(1)),
             teaching_id: self.teaching_id.clone(),
             product_code: self.product_code,
@@ -822,7 +799,7 @@ fn sample_path(k: usize) -> Vec<[f32; 2]> {
 }
 
 /// 段配方的起点（D-SB-24）：飞拍、一个直线段（待标定，容差与检测项取配方默认）、按给定顺序的检测相机（走廊待示教）、
-/// 计划版本未分配。相机不足 3 台时照样返回，但过不了段配方校验。
+/// 相机不足 3 台时照样返回，但过不了段配方校验。
 pub fn burst_template(
     id: String,
     name: String,
@@ -834,7 +811,6 @@ pub fn burst_template(
         id,
         name,
         version: 1,
-        plan_version: 0,
         teaching_id: None,
         product_code,
         stage: RecipeStage::Formal,
@@ -873,25 +849,11 @@ pub fn burst_template(
     }
 }
 
-/// 一次预留 `count` 个计划版本号并返回第一个（项目导入用）；与配方库发号共用本机同一份记录。
-pub fn reserve_plan_versions(plan_file: &std::path::Path, count: u32) -> Result<u32, String> {
-    let issued: u32 = match crate::fsio::read_text(plan_file) {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|e| format!("计划版本记录损坏，拒绝分配计划版本：{e}"))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-        Err(e) => return Err(format!("读取计划版本记录失败：{e}")),
-    };
-    let last = issued.checked_add(count).ok_or("计划版本已达上限")?;
-    crate::fsio::write_atomic(plan_file, &last.to_string())?;
-    Ok(issued + 1)
-}
-
-/// 测试用的段配方：模拟相机 cam1–cam3 共用触发、走廊已示教、一个直线段 N_exp = 4（ΣN_exp = 4）、不开逐帧定向，计划版本已分配。
+/// 测试用的段配方：模拟相机 cam1–cam3 共用触发、走廊已示教、一个直线段 N_exp = 4（ΣN_exp = 4）、不开逐帧定向。
 #[cfg(test)]
 pub fn samples_burst() -> RecipeDoc {
     let cameras: Vec<String> = (1..=3).map(|k| format!("cam{k}")).collect();
     let mut doc = burst_template("SEAM-BURST".into(), "分段连拍样例".into(), 14, &cameras);
-    doc.plan_version = 14;
     for inspect in &mut doc.inspect {
         inspect.segments = vec![SegmentCorridor {
             segment: 1,
@@ -957,7 +919,6 @@ pub const COLLECT_AFTER_FORMAL: &str =
 /// 磁盘上的配方库：每个配方一个 `<id>.json`。
 pub struct RecipeStore {
     dir: PathBuf,
-    plan_file: PathBuf,
     inner: RwLock<Vec<(RecipeDoc, Arc<Recipe>)>>,
     errors: RwLock<Vec<String>>,
     unavailable: RwLock<Vec<UnavailableRecipe>>,
@@ -966,23 +927,13 @@ pub struct RecipeStore {
 impl RecipeStore {
     #[cfg(test)]
     pub fn open(root: PathBuf) -> Result<Self, String> {
-        Self::open_with_floors(
-            root.join("recipes"),
-            root.join("state").join("plan-version"),
-            &BTreeMap::new(),
-        )
+        Self::open_with_floors(root.join("recipes"), &BTreeMap::new())
     }
 
-    /// `plan_file` 是本机共用的计划版本记录：PLC 是同一台，换项目也不能发出用过的计划版本。
-    pub fn open_with_floors(
-        dir: PathBuf,
-        plan_file: PathBuf,
-        floors: &BTreeMap<String, u32>,
-    ) -> Result<Self, String> {
+    pub fn open_with_floors(dir: PathBuf, floors: &BTreeMap<String, u32>) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建配方目录失败：{e}"))?;
         let store = Self {
             dir,
-            plan_file,
             inner: RwLock::new(Vec::new()),
             errors: RwLock::new(Vec::new()),
             unavailable: RwLock::new(Vec::new()),
@@ -1025,7 +976,7 @@ impl RecipeStore {
         Ok(sources)
     }
 
-    /// 旧格式的修订来源无法再证明配方内容（D-0）：原文件备份后移除，其修订号与计划版本并入版本记录，仍不复用。
+    /// 旧格式的修订来源无法再证明配方内容（D-0）：原文件备份后移除，其修订号并入版本记录，仍不复用。
     fn retire_outdated_sources(&self) -> Result<(), String> {
         let path = self.dir.join(".revision-sources");
         let text = match crate::fsio::read_text(&path) {
@@ -1051,13 +1002,6 @@ impl RecipeStore {
             )),
         )
         .map_err(|e| format!("备份旧格式配方修订来源记录失败：{e}"))?;
-        let plan = outdated
-            .iter()
-            .map(|d| d.plan_version)
-            .max()
-            .unwrap_or(0)
-            .max(self.issued_plan_version()?);
-        crate::fsio::write_atomic(&self.plan_file, &plan.to_string())?;
         for doc in &outdated {
             self.retire_version(&doc.id, doc.version)?;
             sources.remove(&doc.id.to_ascii_lowercase());
@@ -1094,54 +1038,6 @@ impl RecipeStore {
             &self.dir.join(".revision-versions"),
             &serde_json::to_string(&versions).map_err(|e| e.to_string())?,
         )
-    }
-
-    /// 已发出的最大计划版本。文件丢了就从现有配方里取最大值，不回退到已用过的号。
-    fn issued_plan_version(&self) -> Result<u32, String> {
-        match crate::fsio::read_text(&self.plan_file) {
-            Ok(text) => serde_json::from_str(&text)
-                .map_err(|e| format!("计划版本记录损坏，拒绝分配计划版本：{e}")),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-            Err(e) => Err(format!("读取计划版本记录失败：{e}")),
-        }
-    }
-
-    /// 发一个新的计划版本号：比已发出的、现有配方和修订来源里用过的都大。
-    fn issue_plan_version(&self, list: &[(RecipeDoc, Arc<Recipe>)]) -> Result<u32, String> {
-        let used = list
-            .iter()
-            .map(|(d, _)| d.plan_version)
-            .chain(self.revision_sources()?.values().map(|d| d.plan_version))
-            .max()
-            .unwrap_or(0);
-        let next = self
-            .issued_plan_version()?
-            .max(used)
-            .checked_add(1)
-            .ok_or("计划版本已达上限")?;
-        crate::fsio::write_atomic(&self.plan_file, &next.to_string())?;
-        Ok(next)
-    }
-
-    /// 同一配方拍照计划没变就沿用原号，否则（新配方、改了拍照点或产品代码）发新号。
-    fn plan_version_in(
-        &self,
-        list: &[(RecipeDoc, Arc<Recipe>)],
-        doc: &RecipeDoc,
-        current_id: &str,
-    ) -> Result<u32, String> {
-        match list.iter().find(|(d, _)| d.id == current_id) {
-            Some((current, _)) if current.plan_version != 0 && current.same_plan(doc) => {
-                Ok(current.plan_version)
-            }
-            _ => self.issue_plan_version(list),
-        }
-    }
-
-    /// 发布前冻结配方时调用：拍照计划没变沿用生产配方的计划版本，变了就发新号（没生效的号作废即可）。
-    pub fn plan_version_for(&self, doc: &RecipeDoc) -> Result<u32, String> {
-        let inner = self.inner.write().unwrap();
-        self.plan_version_in(&inner, doc, &doc.id)
     }
 
     fn version_after(&self, id: &str, active: Option<u32>) -> Result<u32, String> {
@@ -1270,40 +1166,6 @@ impl RecipeStore {
                 .filter(|p| p.extension().is_some_and(|x| x == "json"))
                 .collect();
             paths.sort();
-            // 计划版本重复（多半是复制了配方文件）：只留修订来源能证明这个号属于它的那一份，与文件名先后无关
-            let mut plan_users: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-            for p in &paths {
-                if let Some(d) = Self::read_regular_file(p)
-                    .ok()
-                    .and_then(|s| serde_json::from_str::<RecipeDoc>(&s).ok())
-                    .filter(|d| d.plan_version != 0)
-                {
-                    plan_users
-                        .entry(d.plan_version)
-                        .or_default()
-                        .push(d.id.to_ascii_lowercase());
-                }
-            }
-            let plan_owned = |d: &RecipeDoc| -> Result<(), String> {
-                let Some(users) = plan_users
-                    .get(&d.plan_version)
-                    .filter(|users| users.len() > 1)
-                else {
-                    return Ok(());
-                };
-                let owners: Vec<&String> = users
-                    .iter()
-                    .filter(|id| {
-                        sources
-                            .get(*id)
-                            .is_some_and(|s| s.plan_version == d.plan_version)
-                    })
-                    .collect();
-                if owners.len() == 1 && *owners[0] == d.id.to_ascii_lowercase() {
-                    return Ok(());
-                }
-                Err(format!("计划版本 {} 与别的配方文件重复（复制过的配方文件？），没有加载：删掉复制件或在配方页新建", d.plan_version))
-            };
             for p in paths {
                 let name = p
                     .file_name()
@@ -1327,7 +1189,6 @@ impl RecipeStore {
                     if !d.id.eq_ignore_ascii_case(&stem) {
                         return Err(format!("文件名与配方编号 {} 不一致，没有加载", d.id));
                     }
-                    plan_owned(&d)?;
                     match list.iter().find(|(o, _): &&(RecipeDoc, Arc<Recipe>)| {
                         o.id.eq_ignore_ascii_case(&d.id) || o.product_code == d.product_code
                     }) {
@@ -1370,16 +1231,6 @@ impl RecipeStore {
                         }
                     }
                 }
-            }
-        }
-        // 手工放进来的配方可能带着比记录还大的计划版本：记录跟上，以后发的号不和它撞
-        let max_plan = list.iter().map(|(d, _)| d.plan_version).max().unwrap_or(0);
-        if self
-            .issued_plan_version()
-            .is_ok_and(|issued| issued < max_plan)
-        {
-            if let Err(error) = crate::fsio::write_atomic(&self.plan_file, &max_plan.to_string()) {
-                errors.push(format!("计划版本记录未能更新：{error}"));
             }
         }
         *inner = list;
@@ -1459,14 +1310,6 @@ impl RecipeStore {
                         self.retire_version(id, version)?;
                     }
                 }
-                if let Some(plan) = value
-                    .get("planVersion")
-                    .and_then(|v| v.as_u64())
-                    .and_then(|v| u32::try_from(v).ok())
-                {
-                    let plan = plan.max(self.issued_plan_version()?);
-                    crate::fsio::write_atomic(&self.plan_file, &plan.to_string())?;
-                }
             }
             std::fs::remove_file(&path).map_err(|e| format!("删除不可用配方失败：{e}"))?;
         }
@@ -1545,7 +1388,6 @@ impl RecipeStore {
         } else {
             1
         });
-        doc.plan_version = self.plan_version_in(&inner, &doc, &replacing)?;
         if !replacing.eq_ignore_ascii_case(&doc.id) {
             if let Some(version) = old {
                 self.retire_version(&replacing, version)?;
@@ -1606,20 +1448,6 @@ impl RecipeStore {
         if doc.version != expected_version {
             return Err("发布版本必须是明确分配的下一版本".into());
         }
-        let kept = current
-            .is_some_and(|(previous, _)| previous.plan_version != 0 && previous.same_plan(&doc));
-        let plan_ok = if kept {
-            current.is_some_and(|(previous, _)| previous.plan_version == doc.plan_version)
-        } else {
-            doc.plan_version != 0
-                && doc.plan_version <= self.issued_plan_version()?
-                && !inner
-                    .iter()
-                    .any(|(previous, _)| previous.plan_version == doc.plan_version)
-        };
-        if !plan_ok {
-            return Err("发布的拍照计划版本必须由配方库分配：计划没变沿用原号，变了用新号".into());
-        }
         if inner.iter().any(|(previous, _)| {
             previous.id != doc.id
                 && (previous.id.eq_ignore_ascii_case(&doc.id)
@@ -1671,11 +1499,6 @@ mod tests {
         doc.id = "EXPLICIT-PUBLISHED".into();
         doc.product_code = 60000;
         doc.version = 7;
-        assert!(store
-            .save_published(doc.clone())
-            .unwrap_err()
-            .contains("计划版本"));
-        doc.plan_version = store.plan_version_for(&doc).unwrap();
         let first = store.save_published(doc.clone()).unwrap();
         assert_eq!(first.revision_id, "EXPLICIT-PUBLISHED-v7");
         assert_eq!(store.save_published(doc.clone()).unwrap().version, 7);
@@ -1688,6 +1511,31 @@ mod tests {
         let second = store.save_published(doc.clone()).unwrap();
         assert_eq!(second.revision_id, "EXPLICIT-PUBLISHED-v8");
         assert_eq!(store.save(doc, None).unwrap().version, 9);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 防的回归：现场已有的配方文件与修订来源都带 `planVersion`，读入时不能报错，也不能因与来源记录不一致而被当成手改文件升版本。
+    #[test]
+    fn recipe_and_revision_source_with_plan_version_load_at_their_revision() {
+        let dir = std::env::temp_dir().join(format!(
+            "gluesight-legacy-plan-version-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms()
+        ));
+        let recipes = dir.join("recipes");
+        std::fs::create_dir_all(&recipes).unwrap();
+        let doc = samples_burst();
+        let mut legacy = serde_json::to_value(&doc).unwrap();
+        legacy["planVersion"] = 14.into();
+        std::fs::write(recipes.join(format!("{}.json", doc.id)), legacy.to_string()).unwrap();
+        let sources = serde_json::json!({ doc.id.to_ascii_lowercase(): legacy });
+        std::fs::write(recipes.join(".revision-sources"), sources.to_string()).unwrap();
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        assert!(store.errors().is_empty(), "{:?}", store.errors());
+        assert_eq!(
+            store.get(&doc.id).unwrap().revision_id,
+            format!("{}-v1", doc.id)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1704,7 +1552,6 @@ mod tests {
             let mut doc = samples_burst();
             doc.stage = stage;
             doc.version = store.next_version(&doc.id).unwrap();
-            doc.plan_version = store.plan_version_for(&doc).unwrap();
             store.save_published(doc)
         };
         let collect = publish(RecipeStage::Collect).unwrap();

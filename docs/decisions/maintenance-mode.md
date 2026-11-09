@@ -36,7 +36,7 @@
 ## 二期实现取舍（历史件导入为采集轮次）
 
 - **HI-1 硬链接物化**：`RecipeCaptureHost::import_history` 在 `recipe-capture/<新轮次>/{相机}/{seq:06}.pgm` 为每帧建硬链接指向录制原图（先核对是普通文件、长度等于录制尺寸的 PGM），写 `frames.jsonl`，最后写 `round.json`；任一步失败删掉本轮目录（只删链接）。建不了硬链接（跨卷）报错，不退回复制：单件 1～2 GB，复制会悄悄占满资料盘。
-- **HI-2 轮次格式 3**：新轮次写 `format: 3`，`format: 2` 照常读取。历史件轮次的 `origin` 为 `{kind: "history", cycleId, recordId, standard}`，已有的手动配置数据轮次 `{kind: "prepared", label}` 照常读取（`capture_fixture` 现在生成仿历史录制件，经导入成为 `history` 轮次，[recipe-build-flow](recipe-build-flow.md)）：两者状态只能是完成，不记 PLC 计划版本、shotCount 与 deviceTriggers；历史件轮次`frames.jsonl` 的帧号取录制帧号（同一相机“帧号 − 帧组序号”须一致才能导入），触发计数不记；`createdAt` 是导入时间。
+- **HI-2 轮次格式 3**：新轮次写 `format: 3`，`format: 2` 照常读取。历史件轮次的 `origin` 为 `{kind: "history", cycleId, recordId, standard}`，已有的手动配置数据轮次 `{kind: "prepared", label}` 照常读取（`capture_fixture` 现在生成仿历史录制件，经导入成为 `history` 轮次，[recipe-build-flow](recipe-build-flow.md)）：两者状态只能是完成，不记 shotCount 与 deviceTriggers；历史件轮次`frames.jsonl` 的帧号取录制帧号（同一相机“帧号 − 帧组序号”须一致才能导入），触发计数不记；`createdAt` 是导入时间。
 - **HI-3 可用条件的取法**：只列本配方（记录的 `recipeId` 等于候选编号）最近 200 件有录制目录的真机记录，逐件读 `part.json`；型号按 `plc.productCode` 核对；相机按 `devices[].cameraConfig` 与当前设备配置（`state_value` 口径）逐台比较；另把“含手动触发帧”“帧号与帧组序号对不上”“录制目录不在真机录制根下”算作不可导入。
 - **HI-4 不要求空闲**：导入不占相机与 PLC，只等配置门（不要求节拍空闲，生产进行中也能导入）；在配置门内按候选修订号重新核对所选的每一件，任一件不可用就一件也不导；同一件对同一候选只导一次（按各轮 `origin.cycleId` 去重，重启后仍有效）。逐件物化中途失败时，已导入的轮次保留，错误里列出。
 - **HI-5 标准件**：不另标记标准件，示教件兼作标准件（[recipe-build-flow](recipe-build-flow.md) RB-3）。导入写的 `origin.standard` 恒为 false，旧轮次里的标记读入时忽略。

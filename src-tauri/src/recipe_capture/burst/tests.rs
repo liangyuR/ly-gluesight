@@ -60,7 +60,7 @@ fn complete_round(root: &Path) -> Value {
         cameras,
         state: CaptureState::Complete,
         plc_shot_count: None,
-        plc_plan_version: None,
+        _plc_plan_version: crate::workspace::Discarded,
         teaching_round_id: None,
         device_triggers: None,
         group_count: 0,

@@ -84,12 +84,7 @@ fn source_project(data: &Path) -> (PathBuf, Arc<Recipe>, Store) {
         |_| Ok(()),
     )
     .unwrap();
-    let store = RecipeStore::open_with_floors(
-        root.join("recipes"),
-        data.join("state").join("plan-version"),
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let store = RecipeStore::open_with_floors(root.join("recipes"), &BTreeMap::new()).unwrap();
     let recipe = store.save(crate::recipe::samples_burst(), None).unwrap();
     let round = root.join("recipe-capture").join("capture-1");
     std::fs::create_dir_all(&round).unwrap();
@@ -179,7 +174,6 @@ fn damaged_or_tampered_package_is_refused_without_leaving_a_project_behind() {
             &package,
             "line-b",
             "B 线",
-            &to.0.join("state").join("plan-version"),
             &to.0.join("cache"),
             &local,
         )
@@ -216,15 +210,14 @@ fn copy(data: &Path, capture_images: bool) -> Result<ProjectImported, String> {
             name: "A 线副本",
             description: "",
         },
-        &data.join("state").join("plan-version"),
         &data.join("cache"),
     )
 }
 
-/// 防的回归：复制项目改写不到自己的目录、复用来源的计划版本、改动来源项目，或把本机共用的检测记录再复制一份
+/// 防的回归：复制项目改写不到自己的目录、生产配方在副本里不能按原修订加载、改动来源项目，或把本机共用的检测记录再复制一份
 /// （同一工件出现两次）。
 #[test]
-fn copied_project_gets_its_own_paths_and_plan_versions_and_leaves_the_source_untouched() {
+fn copied_project_gets_its_own_paths_and_leaves_the_source_untouched() {
     let data = TempDir::new("copy");
     let (source, recipe, store) = source_project(&data.0);
     let before = snapshot_files(&source);
@@ -252,12 +245,10 @@ fn copied_project_gets_its_own_paths_and_plan_versions_and_leaves_the_source_unt
             .collect::<Vec<_>>(),
         [("line-a".to_string(), 1)]
     );
-    let plan_file = data.0.join("state").join("plan-version");
-    let loaded = RecipeStore::open_with_floors(target.join("recipes"), plan_file, &BTreeMap::new())
+    let loaded = RecipeStore::open_with_floors(target.join("recipes"), &BTreeMap::new())
         .unwrap()
         .get(&recipe.id)
         .unwrap();
-    assert!(loaded.plan_version > recipe.plan_version);
     assert_eq!(loaded.revision_id, recipe.revision_id);
     assert_eq!(snapshot_files(&source), before, "来源项目不应被改动");
     assert_eq!(std::fs::read_dir(data.0.join("cache")).unwrap().count(), 0);
@@ -292,7 +283,6 @@ fn external_recording_conflict_refuses_import_without_overwriting_existing_files
         &package,
         "blocked",
         "冲突",
-        &to.0.join("state/plan-version"),
         &to.0.join("cache"),
         &local,
     )
@@ -384,7 +374,6 @@ fn exported_records_are_only_this_projects_and_import_renumbers_them_into_the_lo
 
     let local = local_store(&to.0, "default");
     let existing = record(&local, &recipe, "d1", &to.0.join("d1"));
-    let plan_file = to.0.join("state/plan-version");
     let origin = |id: &str| {
         read_value(&super::super::dir(&to.0, id).join("recipe-capture/capture-1/round.json"))
             .unwrap()["origin"]["recordId"]
@@ -396,7 +385,6 @@ fn exported_records_are_only_this_projects_and_import_renumbers_them_into_the_lo
         &package,
         "line-b",
         "B 线",
-        &plan_file,
         &to.0.join("cache"),
         &local,
     )
@@ -428,7 +416,6 @@ fn exported_records_are_only_this_projects_and_import_renumbers_them_into_the_lo
         &package,
         "line-c",
         "C 线",
-        &plan_file,
         &to.0.join("cache"),
         &local,
     )
@@ -522,7 +509,6 @@ fn old_package_with_offline_images_installs_only_production_images_without_chang
             &legacy,
             "line-b",
             "B 线",
-            &to.0.join("state/plan-version"),
             &to.0.join("cache"),
             &local,
         )

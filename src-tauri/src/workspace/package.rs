@@ -413,13 +413,13 @@ pub(crate) fn stage(
     Ok((manifest, w))
 }
 
-/// 本机这一配方的现状：生产配方的计划版本（没有生产配方时为空）与下一版本号。
+/// 本机这一配方的现状：有没有生产配方与下一版本号。
 pub(crate) struct Local {
-    pub production: Option<u32>,
+    pub has_production: bool,
     pub next_version: u32,
 }
 
-/// 改到本机：版本号与计划版本按本机配方库取，候选回到草稿；
+/// 改到本机：版本号按本机配方库取，候选回到草稿；
 /// 去掉验证样本（它们指向来源机的检测记录与采集轮次）；指向来源项目目录的绝对路径改到本机项目目录。
 pub(crate) fn rebase(
     w: &mut Workspace,
@@ -431,11 +431,11 @@ pub(crate) fn rebase(
     let mut value = serde_json::to_value(&*w).map_err(|e| e.to_string())?;
     crate::storage::relocate::all_strings(&mut value, source_root, project);
     *w = serde_json::from_value(value).map_err(|e| e.to_string())?;
-    w.doc.version = match &local.production {
-        Some(_) => local.next_version,
-        None => local.next_version.max(w.doc.version.max(1)),
+    w.doc.version = if local.has_production {
+        local.next_version
+    } else {
+        local.next_version.max(w.doc.version.max(1))
     };
-    w.doc.plan_version = local.production.unwrap_or(0);
     w.doc.teaching_piece = None;
     w.pending = None;
     w.publish = PublishState::Draft;
@@ -817,7 +817,7 @@ fn import(
             return Err(reason);
         }
         let local = Local {
-            production: cycle.recipe(&id).map(|r| r.plan_version),
+            has_production: cycle.recipe(&id).is_some(),
             next_version: cycle.recipes.next_version(&id)?,
         };
         notes.extend(rebase(

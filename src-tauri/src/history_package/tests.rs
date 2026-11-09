@@ -49,11 +49,7 @@ fn machine(dir: &Path, project: &'static str) -> Machine {
 }
 
 fn saved_recipe(dir: &Path) -> Arc<Recipe> {
-    RecipeStore::open_with_floors(
-        dir.join("recipes"),
-        dir.join("plan-version"),
-        &BTreeMap::new(),
-    )
+    RecipeStore::open_with_floors(dir.join("recipes"), &BTreeMap::new())
     .unwrap()
     .save(crate::recipe::samples_burst(), None)
     .unwrap()
@@ -342,6 +338,38 @@ fn broken_or_conflicting_package_is_rejected_without_leaving_records_or_images()
         assert!(error.contains(expected), "{label}：{error}");
         assert_eq!((count(&b), imported_entries(&b)), before, "{label}");
     }
+}
+
+/// 防的回归：本机同一修订的配方快照是升级前写的（带已退役的 `planVersion`），与包里的快照只差这个字段，导入却被当成
+/// 快照冲突整包拒绝。
+#[test]
+fn snapshot_differing_only_by_retired_plan_version_is_not_a_conflict() {
+    let temp = TempDir::new("legacy-snapshot");
+    let a = machine(&temp.0.join("a"), "line-a");
+    let recipe = saved_recipe(&temp.0.join("a"));
+    let id = recorded(&a, &recipe, "c-one", "SN-1");
+    let package = temp.0.join("parts.zip");
+    export(&a, &[id], &temp.0.join("scratch"), &package);
+    let b = machine(&temp.0.join("b"), "line-b");
+    recorded(&b, &recipe, "c-local", "SN-L");
+    let db = rusqlite::Connection::open(temp.0.join("b").join("inspection.db")).unwrap();
+    let json: String = db
+        .query_row(
+            "SELECT json FROM recipe_snapshots WHERE revision_id = ?1",
+            [&recipe.revision_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut legacy: Value = serde_json::from_str(&json).unwrap();
+    legacy["planVersion"] = 14.into();
+    db.execute(
+        "UPDATE recipe_snapshots SET json = ?1 WHERE revision_id = ?2",
+        rusqlite::params![legacy.to_string(), recipe.revision_id],
+    )
+    .unwrap();
+    drop(db);
+    let imported = import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
+    assert_eq!(imported.imported, 1);
 }
 
 #[test]

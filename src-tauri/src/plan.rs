@@ -323,10 +323,9 @@ impl Default for KindDefaults {
     }
 }
 
-/// 计划身份：相等即沿用 plan_version，不等则配方库分配新版本。
+/// 计划身份：相等时两份配方的区域一一对应，历史件可以按新配方复判。
 /// 组成：产品代码 + 各段 (index, kind, expected_frames, 检测相机) + 有序相机 + expected_total（段检测相机按 D-SB-41 进入身份；
-/// 不检测的段没有检测相机，设为不检测或取消即换计划版本，D-SB-53）。
-/// 限值、容差、x_ref、inspect_range、length_mm 不参与（规格 §1）；N_exp / expected_total 参与（默认做法 6）。
+/// 不检测的段没有检测相机，D-SB-53）。限值、容差、x_ref、inspect_range、length_mm 不参与。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanIdentity {
     product_code: u16,
@@ -360,7 +359,6 @@ pub struct PlanExport {
     pub protocol_version: u16,
     pub recipe_id: String,
     pub product_code: u16,
-    pub plan_version: u32,
     pub cameras: Vec<String>,
     pub segments: Vec<ExportSegment>,
     /// ΣN_exp；未标定为 None
@@ -670,7 +668,6 @@ pub fn ensure_segment_ids(segments: &mut [PathSegment]) {
 pub fn export(
     recipe_id: &str,
     product_code: u16,
-    plan_version: u32,
     segments: &[PathSegment],
     cameras: &[String],
     part: Option<&PartCalib>,
@@ -679,7 +676,6 @@ pub fn export(
         protocol_version: crate::handshake::PROTOCOL_VERSION,
         recipe_id: recipe_id.to_owned(),
         product_code,
-        plan_version,
         cameras: cameras.to_vec(),
         segments: segments
             .iter()

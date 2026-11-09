@@ -48,7 +48,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 
 | 职责 | 文件 |
 | --- | --- |
-| 配方文档、校验、计划身份 | `recipe.rs`（`RecipeDoc` schema 8、`is_burst`、`same_plan`、阶段 `stage`）、`plan.rs`（`PathSegment`、`PartCalib`、`KindDefaults`、`plan_identity`、`PlanExport`）、`recipe_api.rs` |
+| 配方文档、校验、计划身份 | `recipe.rs`（`RecipeDoc` schema 8、`is_burst`、阶段 `stage`）、`plan.rs`（`PathSegment`、`PartCalib`、`KindDefaults`、`plan_identity`、`PlanExport`）、`recipe_api.rs` |
 | 握手与接件 | `handshake.rs`（`PROTOCOL_VERSION = 8`）、`plc_session.rs`、`inspection.rs`（S7 点表模板）、`cycle/admission.rs` |
 | 生产节拍 | `cycle.rs` 接件登记与维护模式、`cycle/burst.rs`（在途件、收尾与判定）、`shot_router.rs` 的 `arm_frames` |
 | 帧配组、分段、判定、标定 | `frame_group.rs`、`segmentation.rs`（`Proportional`、`resolve_regions` 过渡区）、`burst_judge.rs`、`calibration.rs`；离线评估 `examples/segment_eval.rs`；逐帧定向与找边评估 `examples/heading_eval.rs` |
