@@ -20,8 +20,8 @@ export function segmentLocateOf(location: Pick<Location, "state">): SegmentLocat
 const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
 
 /**
- * 历史件的帧组在示教件上的对应帧组（从 1 起）：两件笔数相同时按所在笔的笔内进度对应（与生产按笔换算段边界同一口径），
- * 否则按整件进度对应（与比例分段同一口径）。只是定位，不代表这两帧拍的是同一处。
+ * 历史件的帧组在示教件上的对应帧组（从 1 起）：两件笔数相同时按离所在笔起点的帧数对应，超出示教件这一笔的笔尾帧对到这一笔
+ * 末帧（与生产按笔换算段边界同一口径），否则按整件进度对应（与比例分段同一口径）。只是定位，不代表这两帧拍的是同一处。
  */
 export function teachingSeqFor(locate: Pick<SegmentLocate, "seq" | "groupCount" | "passes">, teachingCount: number, teachingPasses?: number[]): { seq: number; byPass: boolean } {
   const clamp = (seq: number) => Math.min(teachingCount, Math.max(1, seq));
@@ -32,7 +32,7 @@ export function teachingSeqFor(locate: Pick<SegmentLocate, "seq" | "groupCount" 
     for (let p = 0; p < passes.length; p++) {
       if (offset < start + passes[p]) {
         const teachingStart = sum(teachingPasses.slice(0, p));
-        return { seq: clamp(teachingStart + Math.floor((offset - start) * teachingPasses[p] / passes[p]) + 1), byPass: true };
+        return { seq: clamp(teachingStart + Math.min(offset - start, teachingPasses[p] - 1) + 1), byPass: true };
       }
       start += passes[p];
     }
