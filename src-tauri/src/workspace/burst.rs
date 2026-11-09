@@ -1398,10 +1398,7 @@ pub async fn workspace_extract_corridor(
             if !w.doc.inspect.iter().any(|i| i.camera == camera) {
                 return Err(format!("相机 {camera} 不是段配方的计划相机"));
             }
-            (
-                image_file(&host, &id, &image_id)?,
-                w.doc.detect.polarity,
-            )
+            (image_file(&host, &id, &image_id)?, w.doc.detect.polarity)
         };
         let image = crate::image_file::load(&path)?;
         let result = super::centerline::extract(
@@ -2196,9 +2193,9 @@ pub(super) fn corridor_overlay(
         .segment_corridor(segment)
         .map(|s| s.corridor.clone())
         .unwrap_or_default();
-    let search_half_px = inspect.mm_per_px.map(|scale| {
-        f64::from(recipe.segment_detect(segment).search_mm) / scale
-    });
+    let search_half_px = inspect
+        .mm_per_px
+        .map(|scale| f64::from(recipe.segment_detect(segment).search_mm) / scale);
     (corridor, search_half_px)
 }
 

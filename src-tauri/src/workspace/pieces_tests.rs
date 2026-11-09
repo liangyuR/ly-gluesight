@@ -231,8 +231,12 @@ fn measuring_teaching_writes_x_ref_and_a_corridor_change_invalidates_it() {
             let scale = d.inspect[0].mm_per_px.unwrap_or(0.1);
             d.inspect[0].mm_per_px = Some(scale * 2.0);
         }),
-        ("本段覆盖搜索半宽", |d| d.segments[0].search_mm = Some(12.0)),
-        ("本段覆盖胶宽范围", |d| d.segments[0].width_range = Some([2.0, 8.0])),
+        ("本段覆盖搜索半宽", |d| {
+            d.segments[0].search_mm = Some(12.0)
+        }),
+        ("本段覆盖胶宽范围", |d| {
+            d.segments[0].width_range = Some([2.0, 8.0])
+        }),
     ];
     for (what, edit) in edits {
         let mut changed = w.clone();

@@ -278,7 +278,12 @@ impl BurstPart {
                 .as_ref()
                 .filter(|o| self.cameras.get(camera) == Some(&o.camera))
                 .and_then(|o| o.edge.clone());
-            Some((edge, self.sectors.get(&(camera, index)).copied(), window, detect))
+            Some((
+                edge,
+                self.sectors.get(&(camera, index)).copied(),
+                window,
+                detect,
+            ))
         };
         key(a).is_some() && key(a) == key(b)
     }

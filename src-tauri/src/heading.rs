@@ -181,25 +181,29 @@ mod tests {
     use crate::plan::{new_segment, KindDefaults, SegmentKind};
 
     #[test]
-fn measuring_window_prefers_segment_then_camera_then_default() {
-    // 防的回归（D-SB-47）：测量区间取值顺序错了——段覆盖被相机的区间盖掉，或相机没设区间时开启定向的段没有区间可用
-    let w = |start_mm: f64| HeadingWindow { start_mm, length_mm: 10.0 };
-    let mut segment = new_segment(1, SegmentKind::Straight, &KindDefaults::default());
-    let mut inspect: CameraInspect = serde_json::from_value(serde_json::json!({ "camera": "cam1" })).unwrap();
-    let cases = [
-        (Some(w(1.0)), Some(w(2.0)), (w(1.0), WindowSource::Segment)),
-        (None, Some(w(2.0)), (w(2.0), WindowSource::Camera)),
-        (None, None, (HeadingWindow::DEFAULT, WindowSource::Default)),
-    ];
-    for (own, camera, expected) in cases {
-        segment.heading.as_mut().unwrap().window = own;
-        inspect.window = camera;
-        let (got, source) = window(&segment, &inspect);
-        assert_eq!((got.clone(), source), expected);
+    fn measuring_window_prefers_segment_then_camera_then_default() {
+        // 防的回归（D-SB-47）：测量区间取值顺序错了——段覆盖被相机的区间盖掉，或相机没设区间时开启定向的段没有区间可用
+        let w = |start_mm: f64| HeadingWindow {
+            start_mm,
+            length_mm: 10.0,
+        };
+        let mut segment = new_segment(1, SegmentKind::Straight, &KindDefaults::default());
+        let mut inspect: CameraInspect =
+            serde_json::from_value(serde_json::json!({ "camera": "cam1" })).unwrap();
+        let cases = [
+            (Some(w(1.0)), Some(w(2.0)), (w(1.0), WindowSource::Segment)),
+            (None, Some(w(2.0)), (w(2.0), WindowSource::Camera)),
+            (None, None, (HeadingWindow::DEFAULT, WindowSource::Default)),
+        ];
+        for (own, camera, expected) in cases {
+            segment.heading.as_mut().unwrap().window = own;
+            inspect.window = camera;
+            let (got, source) = window(&segment, &inspect);
+            assert_eq!((got.clone(), source), expected);
+        }
     }
-}
 
-#[test]
+    #[test]
     fn one_far_corridor_start_warns_without_blocking_or_pulling_the_nozzle() {
         let starts = [
             (4, [570.0, 980.0]),

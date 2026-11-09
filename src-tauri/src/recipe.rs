@@ -436,6 +436,10 @@ pub struct Recipe {
     pub pass_skip: crate::passes::PassSkip,
     pub pass_frames: Option<Vec<u32>>,
     pub part_calib: Option<PartCalib>,
+    /// 快照里已停用的测量覆盖（配方级 `expert`、各相机的 `detect` 与 `expert`，都为空时为 null）：这些值不再生效，
+    /// 按它们测的已存指标与当前口径不同，进测量布局（`store::measurement_layout`），与没有它们的配方比较时要原图复测
+    #[serde(skip)]
+    pub retired_overrides: serde_json::Value,
 }
 
 impl Recipe {
@@ -745,6 +749,7 @@ impl RecipeDoc {
             pass_skip: self.pass_skip,
             pass_frames: self.pass_frames.clone(),
             part_calib: self.part_calib.clone(),
+            retired_overrides: serde_json::Value::Null,
         };
         Ok(recipe)
     }
@@ -761,14 +766,35 @@ impl TryFrom<serde_json::Value> for Recipe {
     type Error = String;
     /// Recipe 的 JSON 还原成 RecipeDoc 再 build：段列表在 `pathSegments`，换回 RecipeDoc 的 `segments` 再解析。
     fn try_from(mut value: serde_json::Value) -> Result<Self, Self::Error> {
+        let filled = |v: &serde_json::Value| {
+            (!v.is_null() && v.as_object().is_none_or(|o| !o.is_empty())).then(|| v.clone())
+        };
+        let cameras: Vec<_> = value["inspect"]
+            .as_array()
+            .map(|cameras| {
+                cameras
+                    .iter()
+                    .map(|i| (filled(&i["detect"]), filled(&i["expert"])))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let expert = filled(&value["expert"]);
+        let retired_overrides =
+            if expert.is_none() && cameras.iter().all(|(d, e)| d.is_none() && e.is_none()) {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!([expert, cameras])
+            };
         let object = value.as_object_mut().ok_or("配方快照不是 JSON 对象")?;
         let path_segments = object
             .remove("pathSegments")
             .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
         object.insert("segments".into(), path_segments);
-        serde_json::from_value::<RecipeDoc>(value)
+        let mut recipe = serde_json::from_value::<RecipeDoc>(value)
             .map_err(|e| e.to_string())?
-            .build()
+            .build()?;
+        recipe.retired_overrides = retired_overrides;
+        Ok(recipe)
     }
 }
 
@@ -1551,7 +1577,12 @@ mod tests {
             segment["tolerance"] = 1.into();
         }
         legacy["expert"] = serde_json::json!({ "presentRatio": 0.4 });
-        for (k, inspect) in legacy["inspect"].as_array_mut().unwrap().iter_mut().enumerate() {
+        for (k, inspect) in legacy["inspect"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
             inspect["calib"] = format!("cam{}-v1", k + 1).into();
             inspect["detect"] = serde_json::json!({ "searchMm": 6.0, "polarity": "dark", "widthRange": [1.0, 5.0] });
             inspect["expert"] = serde_json::json!({ "trackSharpMin": 0.6 });
