@@ -1742,64 +1742,53 @@ pub async fn workspace_live_frame_image(
     camera: usize,
     seq: u64,
 ) -> Result<tauri::ipc::Response, String> {
-    let found = app
-        .state::<WorkspaceHost>()
-        .live_burst
-        .lock()
-        .unwrap()
-        .lookup(&cycle_id, &revision_id, (camera, seq))?;
-    let recorded = match found {
-        LiveFrame::Memory(image) => return Ok(preview_response(&image)),
-        LiveFrame::Recorded(recorded) => recorded,
-    };
     tauri::async_runtime::spawn_blocking(move || {
-        let image = match pending_image(recorded) {
-            Some(image) => image?,
-            None => recorded_part_frame(&app, &cycle_id, &revision_id, camera, seq)?,
-        };
+        let host = app.state::<WorkspaceHost>();
+        let image = live_frame_image(
+            &host.live_burst,
+            &cycle_id,
+            &revision_id,
+            (camera, seq),
+            || recorded_part_frame(&app, &cycle_id, &revision_id, camera, seq),
+        )?;
         Ok(preview_response(&image))
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
-enum LiveFrame {
-    Memory(Arc<FrameImage>),
-    Recorded(Option<crate::recorder::PendingFrame>),
-}
-
-impl LiveFrames {
-    fn lookup(
-        &self,
-        cycle_id: &str,
-        revision_id: &str,
-        k: (usize, u64),
-    ) -> Result<LiveFrame, String> {
-        if self
+/// `workspace_live_frame_image` 的读图：内存里的最近帧 → 收尾前录制目录里已写盘的这一帧 → `recorded_part`（按历史记录读）。
+fn live_frame_image(
+    live: &Mutex<LiveFrames>,
+    cycle_id: &str,
+    revision_id: &str,
+    k: (usize, u64),
+    recorded_part: impl FnOnce() -> Result<FrameImage, String>,
+) -> Result<Arc<FrameImage>, String> {
+    let recorded = {
+        let live = live.lock().unwrap();
+        if live
             .key
             .as_ref()
             .is_none_or(|key| key.0 != cycle_id || key.1 != revision_id)
         {
             return Err("本件尚未收到整帧图像".into());
         }
-        Ok(match self.frames.iter().find(|(key, _)| *key == k) {
-            Some((_, image)) => LiveFrame::Memory(image.clone()),
-            None => LiveFrame::Recorded(self.recorded.get(&k).cloned()),
-        })
-    }
-}
-
-/// 收尾前录制目录里的这一帧原图；没录、写盘失败或目录已在收尾时移走为 None（再按历史记录读）。
-fn pending_image(
-    recorded: Option<crate::recorder::PendingFrame>,
-) -> Option<Result<FrameImage, String>> {
-    match recorded?.state() {
-        crate::recorder::RecordedFrame::Ready(path) if path.is_file() => {
-            Some(crate::image_file::load(&path).map_err(|e| format!("读回录制原图失败：{e}")))
+        if let Some((_, image)) = live.frames.iter().find(|(key, _)| *key == k) {
+            return Ok(image.clone());
         }
-        crate::recorder::RecordedFrame::Writing => Some(Err("这一帧原图还在写盘，稍后再看".into())),
-        _ => None,
-    }
+        live.recorded.get(&k).cloned()
+    };
+    let image = match recorded.map(|frame| frame.state()) {
+        Some(crate::recorder::RecordedFrame::Ready(path)) if path.is_file() => {
+            crate::image_file::load(&path).map_err(|e| format!("读回录制原图失败：{e}"))?
+        }
+        Some(crate::recorder::RecordedFrame::Writing) => {
+            return Err("这一帧原图还在写盘，稍后再看".into())
+        }
+        _ => recorded_part()?,
+    };
+    Ok(Arc::new(image))
 }
 
 /// 已收尾的本件按历史记录读录制原图。
@@ -2041,13 +2030,8 @@ mod tests {
         }
     }
 
-    /// 防的回归：一件帧多时，内存预览挤掉的早期帧在线检测页看不了（只能看最后二十来帧）。
-    #[test]
-    fn frame_pushed_out_of_memory_preview_is_read_back_from_its_recording() {
-        let dir = ImportTestDir::new();
-        let file = dir.0.join("cam1_s000001.pgm");
-        let recorded = FrameImage::new(4, 2, (0..8).collect());
-        crate::image_file::save_pgm(&file, &recorded).unwrap();
+    /// 第 1 帧带着录制文件 `file` 进内存预览，再来两帧大图把它挤出去。
+    fn evicted_first_frame(file: PathBuf) -> Mutex<LiveFrames> {
         let big = || Some(Arc::new(FrameImage::new(8192, 6144, vec![0; 8192 * 6144])));
         let mut live = LiveFrames::default();
         live.insert(
@@ -2060,11 +2044,34 @@ mod tests {
         for seq in 2..=3 {
             live.insert("c1", "r1", (0, seq), big(), None);
         }
-        let LiveFrame::Recorded(pending) = live.lookup("c1", "r1", (0, 1)).unwrap() else {
-            panic!("第 1 帧应已挤出内存预览");
-        };
-        let image = pending_image(pending).unwrap().unwrap();
+        Mutex::new(live)
+    }
+
+    /// 防的回归：一件帧多时，内存预览挤掉的早期帧在线检测页看不了（只能看最后二十来帧）。
+    #[test]
+    fn frame_pushed_out_of_memory_preview_reads_its_pending_recording() {
+        let dir = ImportTestDir::new();
+        let file = dir.0.join("cam1_s000001.pgm");
+        let recorded = FrameImage::new(4, 2, (0..8).collect());
+        crate::image_file::save_pgm(&file, &recorded).unwrap();
+        let live = evicted_first_frame(file);
+        let image = live_frame_image(&live, "c1", "r1", (0, 1), || {
+            Err("收尾前不该按历史记录读".into())
+        })
+        .unwrap();
         assert_eq!((image.width, image.height), (4, 2));
         assert_eq!(&image.pixels[..], &recorded.pixels[..]);
+    }
+
+    /// 防的回归：收尾后录制目录移走，挤出内存的帧按旧路径读不到就报错，不再按历史记录读。
+    #[test]
+    fn frame_pushed_out_after_its_recording_moved_reads_the_part_history() {
+        let dir = ImportTestDir::new();
+        let live = evicted_first_frame(dir.0.join("moved").join("cam1_s000001.pgm"));
+        let image = live_frame_image(&live, "c1", "r1", (0, 1), || {
+            Ok(FrameImage::new(2, 2, vec![7; 4]))
+        })
+        .unwrap();
+        assert_eq!(&image.pixels[..], &[7; 4]);
     }
 }
