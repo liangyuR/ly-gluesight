@@ -29,6 +29,20 @@ const modeOptions: { value: string; label: string; modes: PartMode[] }[] = [
   { value: "maintenanceCollect", label: "维护采集", modes: ["maintenanceCollect"] },
 ];
 
+const LONG_REASON = 80;
+
+function ReasonCell({ reason }: { reason: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const text = displayReason(reason);
+  const long = text.length > LONG_REASON;
+  return (
+    <div className="hist-reason">
+      <span className={expanded ? undefined : "hist-reason-text"} title={expanded ? undefined : text}>{text}</span>
+      {long && <Button variant="text" size="sm" className="hist-reason-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : "展开"}</Button>}
+    </div>
+  );
+}
+
 function rangeStart(days: number | null) {
   if (days === null) return null;
   const d = new Date();
@@ -248,7 +262,7 @@ export default function HistoryPage() {
     },
     { key: "verdict", header: "结果", render: (p) => { const v = partVerdict(p); return <StatusBadge tone={v.tone}>{v.label}</StatusBadge>; } },
     { key: "plc", header: "PLC 码", render: (p) => <span className="mono">{p.plcCode}{p.faultCode ? ` / ${p.faultCode}` : ""}</span> },
-    { key: "reason", header: "原因", render: (p) => <span className="hist-reason">{displayReason(p.reason)}</span> },
+    { key: "reason", header: "原因", render: (p) => <ReasonCell reason={p.reason} /> },
     {
       key: "frames",
       header: "帧",
