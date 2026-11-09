@@ -34,6 +34,19 @@ pub struct Merged {
     pub ids: BTreeMap<i64, i64>,
     pub inserted: usize,
     pub duplicates: usize,
+    /// 本机已有、录制已不在的同一工件，导入包里这件的录制信息（只有装好原图的调用方才改用）
+    pub adoptable: Vec<Adoption>,
+}
+
+/// 见 `adoptable`。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Adoption {
+    local: i64,
+    directory: String,
+    state: String,
+    available: bool,
+    errors: String,
+    frames: Vec<(i64, i64, Option<String>)>,
 }
 
 /// 打开来源库做合并前的准备：核对版本，9 版补齐旧格式升级（调试来源、维护模式列），合并 WAL。
@@ -335,36 +348,72 @@ fn merge_attached(
     Ok(merged)
 }
 
-/// 本机已有同一工件（按 cycleId 去重、不再存一份）但它的录制目录已不在（如被滚动清理）时，改用附加库这件已装好的录制：
-/// 示教件按 cycleId 读录制原图，否则导入包里带的原图用不上。录制在导入的项目 `project` 的录制根下，记录随之改归该项目，
-/// 帧原图引用取附加库的（相对该项目录制根），配方快照已在上面并入该项目。
-fn adopt_recordings(conn: &Connection, project: &str) -> Result<(), String> {
-    let pairs: Vec<(i64, Option<String>, i64)> = conn
+/// 本机已有同一工件（按 cycleId 去重、不再存一份）但它的录制目录已不在（如被滚动清理）时，附加库这件的录制信息：
+/// 只收集、不改本机记录。项目导入在项目目录装好后用 [`Store::adopt_recordings`] 改用它（示教件按 cycleId 读录制原图）。
+fn adoptable(conn: &Connection) -> Result<Vec<Adoption>, String> {
+    let pairs: Vec<(i64, Option<String>, i64, String, String, bool, String)> = conn
         .prepare(
-            "SELECT p.id, p.recording_directory, s.id FROM temp.merge_ids m JOIN main.parts p ON p.id = m.new JOIN src.parts s ON s.id = m.old WHERE m.fresh = 0 AND s.recording_directory IS NOT NULL",
+            "SELECT p.id, p.recording_directory, s.id, s.recording_directory, s.recording_state, s.recording_available, s.recording_errors \
+             FROM temp.merge_ids m JOIN main.parts p ON p.id = m.new JOIN src.parts s ON s.id = m.old \
+             WHERE m.fresh = 0 AND s.recording_directory IS NOT NULL",
         )
         .and_then(|mut stmt| {
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-                .collect()
+            stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            })?
+            .collect()
         })
         .map_err(db_err)?;
-    // 附加库的录制目录此时可能还在暂存目录里（项目目录最后才移入），不看它在不在：本机的已不在，换过去不会更差
-    for (local, local_dir, source) in pairs {
+    let mut out = Vec::new();
+    for (local, local_dir, source, directory, state, available, errors) in pairs {
         if local_dir.is_some_and(|dir| Path::new(&dir).is_dir()) {
             continue;
         }
-        conn.execute(
-            "UPDATE main.parts SET (project_id, recording_directory, recording_state, recording_available, recording_errors) = \n             (SELECT ?3, recording_directory, recording_state, recording_available, recording_errors FROM src.parts WHERE id = ?2) WHERE id = ?1",
-            params![local, source, project],
-        )
-        .map_err(db_err)?;
-        conn.execute(
-            "UPDATE main.part_frames SET raw_file = (SELECT f.raw_file FROM src.part_frames f WHERE f.part_id = ?2 AND f.camera = main.part_frames.camera AND f.seq = main.part_frames.seq) WHERE part_id = ?1",
-            params![local, source],
-        )
-        .map_err(db_err)?;
+        let frames = conn
+            .prepare("SELECT camera, seq, raw_file FROM src.part_frames WHERE part_id = ?1")
+            .and_then(|mut stmt| {
+                stmt.query_map([source], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect()
+            })
+            .map_err(db_err)?;
+        out.push(Adoption { local, directory, state, available, errors, frames });
     }
-    Ok(())
+    Ok(out)
+}
+
+impl Store {
+    /// 项目 `project` 装好后改用导入包里同一工件的录制（见 [`adoptable`]）：录制目录在、本机这件的录制仍不在时，记录改归
+    /// `project`（录制在它的录制根下），录制状态与帧原图引用取包里的；配方快照合并时已并入该项目。返回改用的件数。
+    pub fn adopt_recordings(&self, project: &str, adoptions: &[Adoption]) -> Result<usize, String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(db_err)?;
+        let mut adopted = 0;
+        for a in adoptions {
+            let current: Option<Option<String>> = tx
+                .query_row("SELECT recording_directory FROM parts WHERE id = ?1", [a.local], |r| r.get(0))
+                .optional()
+                .map_err(db_err)?;
+            let Some(current) = current else { continue };
+            if current.is_some_and(|dir| Path::new(&dir).is_dir()) || !Path::new(&a.directory).is_dir() {
+                continue;
+            }
+            tx.execute(
+                "UPDATE parts SET project_id = ?2, recording_directory = ?3, recording_state = ?4, recording_available = ?5, recording_errors = ?6 WHERE id = ?1",
+                params![a.local, project, a.directory, a.state, a.available, a.errors],
+            )
+            .map_err(db_err)?;
+            for (camera, seq, raw) in &a.frames {
+                tx.execute(
+                    "UPDATE part_frames SET raw_file = ?4 WHERE part_id = ?1 AND camera = ?2 AND seq = ?3",
+                    params![a.local, camera, seq, raw],
+                )
+                .map_err(db_err)?;
+            }
+            adopted += 1;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(adopted)
+    }
 }
 
 /// 在调用方已开的事务里把附加库 `src` 的记录并入项目 `project`：按 cycleId 去重、分配本机编号（编号对照留在
@@ -484,7 +533,7 @@ pub(super) fn merge_rows(
     if has_table(conn, "cycle_ids")? {
         conn.execute_batch("INSERT OR IGNORE INTO cycle_ids (id, created_at) SELECT id, created_at FROM src.cycle_ids;").map_err(db_err)?;
     }
-    adopt_recordings(conn, project)?;
+    let adoptable = adoptable(conn)?;
     let source_columns = PART_COLUMNS
         .split(", ")
         .map(|c| format!("s.{}", c.trim()))
@@ -512,5 +561,6 @@ pub(super) fn merge_rows(
              FROM src.{table} f JOIN temp.merge_ids m ON m.old = f.part_id WHERE m.fresh = 1;"
         )).map_err(db_err)?;
     }
+    merged.adoptable = adoptable;
     Ok(merged)
 }
