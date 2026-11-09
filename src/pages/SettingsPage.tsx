@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Grid, Heading, NumberField, Select, Stack } from "qing-steel";
+import { Alert, Button, Card, Checkbox, Grid, Heading, NumberField, Select, Stack } from "qing-steel";
 import { getAgentMcpStatus, getAppInfo, getEngineStatus, type AgentMcpStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
@@ -82,10 +82,15 @@ function timingError(settings: CycleSettings) {
   return null;
 }
 
+/** 取消“不限”时填入的上限 */
+const RECORD_KEEP_LIMIT = 100;
+const RECORD_GB_LIMIT = 100;
+
 function measureError(settings: CycleSettings) {
-  if (!integerIn(settings.recordKeep, 1, 100000)) return "帧录制保留件数需为 1–100000 之间的整数";
-  if (!Number.isFinite(settings.recordMaxGb) || settings.recordMaxGb < 0.5 || settings.recordMaxGb > 10000)
-    return "帧录制总大小需在 0.5–10000 GB 之间";
+  const { recordKeep, recordMaxGb } = settings;
+  if (recordKeep != null && !integerIn(recordKeep, 1, 100000)) return "帧录制保留件数需为不限或 1–100000 之间的整数";
+  if (recordMaxGb != null && (!Number.isFinite(recordMaxGb) || recordMaxGb < 0.5 || recordMaxGb > 10000))
+    return "帧录制总大小需为不限或 0.5–10000 GB 之间";
   return null;
 }
 
@@ -220,23 +225,33 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
         <Grid minWidth={220} gap={14}>
           <Select id="record-mode" label="真机帧录制" value={settings.record} onValueChange={(value) => update({ ...settings, record: value as CycleSettings["record"] })}
             options={[{ value: "off", label: "关闭" }, { value: "failed", label: "只留 NG / ERR 件" }, { value: "all", label: "全部" }]} />
-          <NumberField
-            id="record-keep"
-            label="真机录制最多保留（件）"
-            min={1}
-            max={100000}
-            value={numberInput(settings.recordKeep)}
-            onValueChange={(value) => update({ ...settings, recordKeep: numberValue(value) })}
-          />
-          <NumberField
-            id="record-max-gb"
-            label="真机录制总大小上限（GB）"
-            min={0.5}
-            max={10000}
-            step={0.5}
-            value={numberInput(settings.recordMaxGb)}
-            onValueChange={(value) => update({ ...settings, recordMaxGb: numberValue(value) })}
-          />
+          <Stack direction="column" align="stretch" gap={4} wrap={false}>
+            <NumberField
+              id="record-keep"
+              label="真机录制最多保留（件）"
+              min={1}
+              max={100000}
+              disabled={settings.recordKeep == null}
+              value={settings.recordKeep == null ? "" : numberInput(settings.recordKeep)}
+              onValueChange={(value) => update({ ...settings, recordKeep: numberValue(value) })}
+            />
+            <Checkbox label="件数不限" checked={settings.recordKeep == null}
+              onCheckedChange={(on) => update({ ...settings, recordKeep: on ? null : RECORD_KEEP_LIMIT })} />
+          </Stack>
+          <Stack direction="column" align="stretch" gap={4} wrap={false}>
+            <NumberField
+              id="record-max-gb"
+              label="真机录制总大小上限（GB）"
+              min={0.5}
+              max={10000}
+              step={0.5}
+              disabled={settings.recordMaxGb == null}
+              value={settings.recordMaxGb == null ? "" : numberInput(settings.recordMaxGb)}
+              onValueChange={(value) => update({ ...settings, recordMaxGb: numberValue(value) })}
+            />
+            <Checkbox label="大小不限" checked={settings.recordMaxGb == null}
+              onCheckedChange={(on) => update({ ...settings, recordMaxGb: on ? null : RECORD_GB_LIMIT })} />
+          </Stack>
         </Grid>
       </fieldset>
       {invalid && <Alert tone="ng">{invalid}</Alert>}

@@ -31,6 +31,20 @@ pub fn record_root(data: &Path, project: &str, _source: RecordSource) -> Result<
     Ok(base.join("records"))
 }
 
+/// 本机各项目采集轮次（示教件、标定件）引用的历史件 cycleId：这些记录与录制不参与按天清理与录制滚动清理，也不能手动删除；
+/// 换示教件或删除候选会删掉轮次，保护随之解除。
+pub fn referenced_cycles(data: &Path) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut cycles = std::collections::BTreeSet::new();
+    for entry in super::list(data)? {
+        if super::valid_id(&entry.id) {
+            cycles.extend(crate::recipe_capture::history_cycles(
+                &super::dir(data, &entry.id).join("recipe-capture"),
+            )?);
+        }
+    }
+    Ok(cycles)
+}
+
 /// 项目还在本机（目录与 `project.json` 可读）；删除后的项目只剩历史记录与原图。
 pub fn project_available(data: &Path, project: &str) -> bool {
     super::valid_id(project) && super::read_meta(&super::dir(data, project)).is_ok()

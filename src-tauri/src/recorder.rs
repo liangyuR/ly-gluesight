@@ -273,11 +273,15 @@ impl Recorders {
     }
 }
 
+/// 保留件数与字节上限；设置为不限时取最大值，滚动清理不删任何录制。
 fn retention(scope: HistoryScope, settings: &CycleSettings) -> (u32, u64) {
     let (keep, max_gb) = match scope {
         HistoryScope::Real => (settings.record_keep, settings.record_max_gb),
     };
-    (keep, (max_gb as f64 * 1e9) as u64)
+    (
+        keep.unwrap_or(u32::MAX),
+        max_gb.map_or(u64::MAX, |gb| (gb as f64 * 1e9) as u64),
+    )
 }
 
 impl Recorder {

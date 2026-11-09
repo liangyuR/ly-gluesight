@@ -5,7 +5,7 @@ import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PassSkipSuggestView, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidate, PackageExported, PackageImported, PackagePreview, PassLink, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
+import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidatePage, HistoryCandidateQuery, PackageExported, PackageImported, PackagePreview, PassLink, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
 
 let liveSeq = 0;
 
@@ -36,9 +36,8 @@ export const workspaceApi = {
   abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
   /** 导入件（轮次）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；缺帧时后端报错。 */
   captureFrameImage: (roundId: string, cameraId: string, seq: number, signal?: AbortSignal) => loadPreview(JSON.stringify(["capture", roundId, cameraId, seq]), () => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeFrameImage), signal),
-  /** 历史件选择器：本配方最近的真机录制件、能否选用与是否已被本候选使用（只读） */
-  /** all：列本机全部历史件（试测用），否则只列本配方的（选示教件用） */
-  historyCandidates: (id: string, all = false) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id, all }),
+  /** 历史件选择器与试测：按筛选条件分页列出真机录制件、能否选用与是否已被本候选使用（只读）；ownRecipe 只看当前项目本配方的 */
+  historyCandidates: (id: string, query: HistoryCandidateQuery) => desktopCall<HistoryCandidatePage>("workspace_history_candidates", { id, query }),
   /** 导入这件并设为示教件：两件都有笔结构时按笔自动对照并迁移示教（RB-11，对照待分段页确认），否则沿用原分段帧数（RB-2）；清空示教件测量结果 */
   setTeachingPiece: (id: string, revision: number, recordId: number) => desktopCall<WorkspaceView>("workspace_set_teaching_piece", { id, revision, recordId }),
   /** 改换示教件的逐笔对照（RB-11）：links 只列对上的笔；对照变了后端从迁移起点重新迁移并更新边界草稿；confirm 时同时确认，之后不能再改 */
@@ -47,13 +46,11 @@ export const workspaceApi = {
   /** 确认（或撤销）沿用第 segment 段（PathSegment.index），只对沿用的段 */
   passCarryAccept: (id: string, revision: number, segment: number, accepted: boolean) =>
     desktopCall<WorkspaceView>("workspace_pass_carry_accept", { id, revision, segment, accepted }),
-  /** 从示教件那一件历史记录补回导出或复制时没带的原图；候选内容不变 */
-  refillTeachingImages: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_refill_teaching_images", { id, revision }),
   /** 回传包保存位置；取消为 null */
   packageTarget: (id: string) => desktopCall<string | null>("workspace_package_target", { id }),
-  /** includeImages：带示教件轮次的原图，导入方不用再从历史记录补回 */
-  packageExport: (id: string, includeImages: boolean, path: string, taskId: string) =>
-    desktopCall<PackageExported>("workspace_package_export", { id, includeImages, path, taskId }),
+  /** 示教件轮次只带记录，不带原图：导入方按示教件那一件的检测记录读本机录制 */
+  packageExport: (id: string, path: string, taskId: string) =>
+    desktopCall<PackageExported>("workspace_package_export", { id, path, taskId }),
   packagePick: () => desktopCall<PackagePreview | null>("workspace_package_pick"),
   packageImport: (path: string, taskId: string) => desktopCall<PackageImported>("workspace_package_import", { path, taskId }),
   /** 导入件一台相机指定范围的缩略图，startSeq 从 1 起，count 不超过 32。 */

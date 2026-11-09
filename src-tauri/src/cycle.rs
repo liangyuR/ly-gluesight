@@ -421,11 +421,14 @@ impl CycleHost {
             );
             let (health, alarm_app) = (recording_health.clone(), app.clone());
             let protection = Arc::new(move || {
-                let mut paths = guard_app
+                let store = guard_app
                     .try_state::<Store>()
-                    .ok_or("检测记录数据库尚未初始化")?
-                    .pending_recording_directories(&guarded_root, scope)?;
+                    .ok_or("检测记录数据库尚未初始化")?;
+                let mut paths = store.pending_recording_directories(&guarded_root, scope)?;
                 paths.extend(protection_audit.protected_recording_directories(&guarded_root)?);
+                // 示教件、标定件引用的录制不滚动清理
+                let referenced = crate::project::records::referenced_cycles(&crate::storage::root(&guard_app))?;
+                paths.extend(store.recording_directories(&referenced)?);
                 Ok(paths)
             });
             let warning = Arc::new(move |errors: &[String]| {

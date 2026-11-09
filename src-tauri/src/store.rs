@@ -1818,32 +1818,51 @@ impl Store {
         Ok(progress)
     }
 
-    /// 当前项目某配方有录制目录的真机记录（最新在前，最多 limit 件），历史件导入为采集轮次时据此逐件核对。
-    /// 最近的真机录制件：给了配方编号时只取当前项目这个配方的，否则取本机全部（任意项目、任意配方，试测“全部历史件”用）。
+    /// 按筛选条件分页取有录制目录的真机记录（最新在前）与符合条件的总件数，历史件选用与试测据此逐件核对。`q.scope` 不看，只取真机记录。
     pub fn recorded_parts(
         &self,
-        recipe_id: Option<&str>,
-        limit: u32,
-    ) -> Result<Vec<(PartSummary, RecordingEvidence)>, String> {
+        q: &HistoryQuery,
+    ) -> Result<(u64, Vec<(PartSummary, RecordingEvidence)>), String> {
+        let q = HistoryQuery { scope: HistoryScope::Real, ..q.clone() };
+        let (filter, args) = Self::filter(&q, "");
+        let filter = format!("{filter} AND recording_directory IS NOT NULL");
         let conn = self.conn.lock().unwrap();
-        let filter = if recipe_id.is_some() {
-            "AND project_id = ?2 AND recipe_id = ?1"
-        } else {
-            ""
-        };
+        let total: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM parts{filter}"), params_from_iter(args.iter()), |row| row.get(0))
+            .map_err(db_err)?;
         let sql = format!(
-            "SELECT {SUMMARY_COLS}, recording_state, recording_available, recording_directory, recording_errors FROM parts             WHERE {} {filter} AND recording_directory IS NOT NULL ORDER BY ts DESC, id DESC LIMIT {}",
-            HistoryScope::Real.clause(""),
-            limit.clamp(1, 500)
+            "SELECT {SUMMARY_COLS}, recording_state, recording_available, recording_directory, recording_errors FROM parts{filter}              ORDER BY ts DESC, id DESC LIMIT {} OFFSET {}",
+            q.limit.clamp(1, 500),
+            q.offset
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let read = |row: &rusqlite::Row| Ok((summary(row)?, recording_row(row, SUMMARY_LEN)?));
-        let rows = match recipe_id {
-            Some(id) => stmt.query_map([id, self.project.as_str()], read),
-            None => stmt.query_map([], read),
-        }
-        .map_err(db_err)?;
-        rows.collect::<Result<_, _>>().map_err(db_err)
+        let rows = stmt
+            .query_map(params_from_iter(args.iter()), |row| Ok((summary(row)?, recording_row(row, SUMMARY_LEN)?)))
+            .map_err(db_err)?;
+        Ok((total as u64, rows.collect::<Result<_, _>>().map_err(db_err)?))
+    }
+
+    /// 某件历史件（按 cycleId）的录制目录；没有这条记录或记录没有录制目录为 None。示教件轮次据此找录制原图。
+    pub fn recording_directory(&self, cycle_id: &str) -> Result<Option<PathBuf>, String> {
+        let directory: Option<Option<String>> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT recording_directory FROM parts WHERE cycle_id = ?1", [cycle_id], |row| row.get(0))
+            .optional()
+            .map_err(db_err)?;
+        Ok(directory.flatten().map(PathBuf::from))
+    }
+
+    /// 这些历史件（按 cycleId）的录制目录，供滚动清理保护。
+    pub fn recording_directories(&self, cycles: &BTreeSet<String>) -> Result<Vec<PathBuf>, String> {
+        let cycles = serde_json::to_string(cycles).map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT recording_directory FROM parts WHERE cycle_id IN (SELECT value FROM json_each(?1)) AND recording_directory IS NOT NULL")
+            .map_err(db_err)?;
+        let rows = stmt.query_map([cycles], |row| row.get::<_, String>(0)).map_err(db_err)?;
+        rows.map(|row| row.map(PathBuf::from).map_err(db_err)).collect()
     }
 
     /// 当前项目自 since 起的正式检测件结论计数。
@@ -1865,20 +1884,23 @@ impl Store {
         ).optional().map_err(db_err)
     }
 
-    /// 删除本机全部项目里早于 ts 的记录；返回删除件数与其中非当前项目记录、导入件的录制目录（项目、来源、目录），
-    /// 这些原图没有在运行的录制滚动清理，由调用方随记录一起删。
+    /// 删除本机全部项目里早于 ts 的记录，`keep` 里的历史件（被示教件引用，按 cycleId）不删；返回删除件数与其中非当前项目记录、
+    /// 导入件的录制目录（项目、来源、目录），这些原图没有在运行的录制滚动清理，由调用方随记录一起删。
     pub fn purge_before(
         &self,
         ts: i64,
+        keep: &BTreeSet<String>,
     ) -> Result<(usize, Vec<(String, RecordSource, String)>), String> {
+        let keep = serde_json::to_string(keep).map_err(|e| e.to_string())?;
+        let kept = "(cycle_id IS NULL OR cycle_id NOT IN (SELECT value FROM json_each(?2)))";
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(db_err)?;
         let orphaned = {
             let mut stmt = tx
-                .prepare("SELECT project_id, source, recording_directory FROM parts WHERE ts < ?1 AND recording_directory IS NOT NULL")
+                .prepare(&format!("SELECT project_id, source, recording_directory FROM parts WHERE ts < ?1 AND {kept} AND recording_directory IS NOT NULL"))
                 .map_err(db_err)?;
             let rows = stmt
-                .query_map(params![ts], |row| {
+                .query_map(params![ts, keep], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         enum_column::<RecordSource>(row, 1)?,
@@ -1895,7 +1917,7 @@ impl Store {
                 .collect()
         };
         let count = tx
-            .execute("DELETE FROM parts WHERE ts < ?1", [ts])
+            .execute(&format!("DELETE FROM parts WHERE ts < ?1 AND {kept}"), params![ts, keep])
             .map_err(db_err)?;
         tx.commit().map_err(db_err)?;
         Ok((count, orphaned))

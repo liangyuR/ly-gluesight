@@ -188,12 +188,13 @@ impl Comparisons {
         Ok(saved)
     }
 
-    /// 删除早于 before 的记录并清理失效的对照；另返回被删记录里非当前项目的录制目录（项目、来源、目录）。
+    /// 删除早于 before 的记录（`keep` 里被示教件引用的历史件除外）并清理失效的对照；另返回被删记录里非当前项目的录制目录（项目、来源、目录）。
     pub(super) fn purge(
         &self,
         root: &Path,
         store: &Store,
         before: i64,
+        keep: &std::collections::BTreeSet<String>,
     ) -> Result<
         (
             usize,
@@ -203,7 +204,7 @@ impl Comparisons {
         String,
     > {
         let mut cache = self.0.lock().unwrap();
-        let (count, orphaned) = store.purge_before(before)?;
+        let (count, orphaned) = store.purge_before(before, keep)?;
         let mut warnings = Vec::new();
         let comparisons = root.join("comparisons");
         let scan = (|| {

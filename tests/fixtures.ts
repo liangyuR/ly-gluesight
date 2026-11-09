@@ -168,7 +168,7 @@ export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
       { camera: "CAM-3", mmPerPx: .1, calibMmPerPx: null, ready: false, nozzle: null, segments: [] },
     ],
     calibration: calibrationView(), productionExport: null, candidateExport: planExport(doc), candidateExportError: null, shotCountChanged: false, progress: progressV2(),
-    pieces: [{ roundId: "round-1", recordId: 1, cycleId: "cycle-1", sn: "SN-1", ts: 1, groupCount: burstGroups, review: "confirmed", confirmedBy: "manual", measured: true, excludedGroups: 0, imagesMissing: false }],
+    pieces: [{ roundId: "round-1", recordId: 1, cycleId: "cycle-1", sn: "SN-1", ts: 1, groupCount: burstGroups, review: "confirmed", confirmedBy: "manual", measured: true, excludedGroups: 0, imagesUnavailable: null }],
   };
   const layout: Recipe = { ...structuredClone(doc), revisionId: `revisionId-${doc.id}`, pathSegments: structuredClone(doc.segments) };
   const cameraTeaching = plan.cameraTeaching.flatMap(({ camera, segments }) => segments.map(({ segment, frame, round, seq }) => ({ camera, frame, round, seq, segment })));

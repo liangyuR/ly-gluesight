@@ -125,20 +125,16 @@ fn quiet() -> Operation {
     Operation::with_events(crate::operation::Operations::default(), None, |_| {}).unwrap()
 }
 
-fn export(dirs: &Dirs, w: &Workspace, images: bool) -> Result<PackageManifest, String> {
+fn export(dirs: &Dirs, w: &Workspace) -> Result<PackageManifest, String> {
     let meta = ProjectMeta::new("dev", "开发", "", None);
-    export_candidate(&dirs.source, &meta, w, images, &dirs.package, &quiet())
-}
-
-fn exported_with(dirs: &Dirs, images: bool) -> Workspace {
-    let w = source_candidate(&dirs.source);
-    export(dirs, &w, images).unwrap();
-    target_project(&dirs.target, &w.doc.id);
-    w
+    export_candidate(&dirs.source, &meta, w, &dirs.package, &quiet())
 }
 
 fn exported(dirs: &Dirs) -> Workspace {
-    exported_with(dirs, false)
+    let w = source_candidate(&dirs.source);
+    export(dirs, &w).unwrap();
+    target_project(&dirs.target, &w.doc.id);
+    w
 }
 
 fn staged(dirs: &Dirs) -> (Workspace, Vec<String>) {
@@ -233,12 +229,34 @@ fn failed_install_restores_previous_candidate_and_rounds() {
     assert!(!capture.join(ROUND).exists());
 }
 
-/// 选“包含示教件原图”导出：示教件轮次的原图随包走，导入后原样落在本机示教件轮次里，不用再从历史记录补回。
+/// 以前选“包含示教件原图”导出的包（清单 teachingImages 为真、带轮次原图）照样能导入，原图原样落在本机示教件轮次里。
 #[test]
-fn package_with_teaching_images_restores_round_images() {
+fn older_package_with_teaching_images_restores_round_images() {
     let dirs = Dirs::new("images");
-    exported_with(&dirs, true);
-    assert!(inspect(&dirs.package).unwrap().teaching_images);
+    exported(&dirs);
+    let manifest = inspect(&dirs.package).unwrap();
+    assert!(!manifest.teaching_images, "现在导出不带示教件原图");
+    let unzip = dirs.base.join("unzip");
+    let mut zip = transfer::open_zip(&dirs.package, LABEL).unwrap();
+    transfer::extract_listed(&mut zip, &manifest.files, &unzip, |_| true, LABEL).unwrap();
+    let mut entries: Vec<(String, PathBuf)> = manifest
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), unzip.join(&f.path)))
+        .collect();
+    let round = dirs.source.join("recipe-capture").join(ROUND);
+    for frame in frame_paths(&round).unwrap() {
+        entries.push((format!("rounds/{ROUND}/{frame}"), round.join(&frame)));
+    }
+    let mut value = serde_json::to_value(&manifest).unwrap();
+    value["teachingImages"] = json!(true);
+    let old = dirs.base.join("old-images.zip");
+    transfer::write_zip(&old, entries, |files| {
+        value["files"] = serde_json::to_value(files).unwrap();
+        value
+    })
+    .unwrap();
+    std::fs::rename(&old, &dirs.package).unwrap();
 
     let (w, _) = staged(&dirs);
     install(&dirs.target, &dirs.staging, &w).unwrap();
@@ -248,25 +266,6 @@ fn package_with_teaching_images_restores_round_images() {
         std::fs::read(dirs.target.join("recipe-capture").join(&frame)).unwrap(),
         std::fs::read(dirs.source.join("recipe-capture").join(&frame)).unwrap()
     );
-}
-
-/// 示教件轮次缺原图（例如它本身是从不带原图的包导入的）时，不能导出一个自称带原图、导入后却不能试测的包；不带原图照常导出。
-#[test]
-fn export_with_images_rejects_round_missing_a_frame() {
-    let dirs = Dirs::new("missing-frame");
-    let w = source_candidate(&dirs.source);
-    std::fs::remove_file(
-        dirs.source
-            .join("recipe-capture")
-            .join(ROUND)
-            .join("cam1")
-            .join("000001.pgm"),
-    )
-    .unwrap();
-
-    assert!(export(&dirs, &w, true).is_err());
-    assert!(!dirs.package.exists());
-    assert!(export(&dirs, &w, false).is_ok());
 }
 
 /// 把 `dirs.package` 重写成格式 1（清单没有 teachingImages），`extra` 为额外塞进包里的条目。
@@ -376,7 +375,7 @@ fn package_carries_teaching_frames_of_an_unconfirmed_pass_alignment() {
         &serde_json::to_string_pretty(&w).unwrap(),
     );
     write(&dir.join("images").join("pending-1.pgm"), "P5 1 1 255 x");
-    export(&dirs, &w, false).unwrap();
+    export(&dirs, &w).unwrap();
     target_project(&dirs.target, &w.doc.id);
     staged(&dirs);
     assert!(dirs

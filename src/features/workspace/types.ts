@@ -92,19 +92,19 @@ export interface TeachingPiece {
   passes?: number[];
 }
 
-/** 工件配方（回传包：候选与示教件轮次记录，可选带示教件原图）的导出结果、导入预览与导入结果 */
-export interface PackageExported { path: string; bytes: number; files: number; teachingImages: boolean }
+/** 工件配方（回传包：候选与示教件轮次记录，不带示教件原图）的导出结果、导入预览与导入结果 */
+export interface PackageExported { path: string; bytes: number; files: number }
 export interface PackagePreview {
   path: string; bytes: number; recipeId: string; name: string; productCode: number; sourceProjectName: string;
   exportedAt: number; appVersion: string; teachingPiece: TeachingPiece | null;
-  /** 包里带示教件原图 */
+  /** 包里带示教件原图（以前导出的包） */
   teachingImages: boolean;
   productionVersion: number | null; candidate: { revision: number; updatedAt: number; pending: boolean } | null;
   /** 不拦导入的提示（如相机设备配置与示教件采集时不一致） */
   warnings: string[];
   blocker: string | null;
 }
-/** teachingImages：导入后示教件原图齐全（随包带入或从本机历史记录补回） */
+/** teachingImages：导入后示教件原图读得到（本机有示教件那一件的录制，或随以前的包带入） */
 export interface PackageImported { id: string; teachingImages: boolean; notes: string[] }
 /** 新流程候选（RB-5）：flow 不是 2 的候选只能在配方库删除。 */
 export const isCurrentFlow = (workspace: Pick<Workspace, "flow">) => workspace.flow === 2;
@@ -191,6 +191,7 @@ export interface HistoryCandidate {
   ts: number;
   sn: string;
   mode: PartMode;
+  verdict: Verdict;
   groupCount: number;
   /** 按录制的计划相机顺序 */
   cameras: { cameraId: string; frames: number }[];
@@ -207,7 +208,22 @@ export interface HistoryCandidate {
   usage: "teaching" | "calibration" | null;
   /** 手动配置数据（capture_fixture 写的仿历史件）的标签；真机件为 null */
   fixture: string | null;
-  /** 记录所属的配方与项目（试测“全部历史件”里可能是别的配方、别的项目） */
-  recipeId?: string | null;
-  projectId?: string;
+  /** 记录所属的配方与项目（选择器与试测列本机全部历史件，可能是别的配方、别的项目） */
+  recipeId: string | null;
+  projectId: string;
 }
+
+/** 历史件选择器的筛选与分页；ownRecipe 只看当前项目本配方的（试测默认） */
+export interface HistoryCandidateQuery {
+  ownRecipe?: boolean;
+  project?: string | null;
+  recipeId?: string | null;
+  sn?: string;
+  from?: number | null;
+  to?: number | null;
+  verdicts?: Verdict[];
+  offset?: number;
+  limit?: number;
+}
+
+export interface HistoryCandidatePage { total: number; items: HistoryCandidate[] }

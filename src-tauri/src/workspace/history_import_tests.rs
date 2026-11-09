@@ -47,9 +47,10 @@ fn recording(directory: Option<&Path>) -> RecordingEvidence {
 /// 一期录制的 part.json 里导入要看的字段：三台计划相机各 GROUPS 帧，帧号 100 + seq，设备配置为 DEVICE。
 
 #[test]
-fn imported_round_frames_stay_readable_after_history_recording_is_deleted() {
-    // 防的回归（在线投运 5.2 物化方式）：轮次直接引用历史目录或复制出错，历史记录被保留策略清理后示教帧与标定原图失效；
-    // 物化的轮次（round.json 3、origin）下游读不了；重启后认不出这件已导入
+fn imported_round_references_recording_images_without_copying_them() {
+    // 防的回归（在线投运 5.2）：选示教件又把录制原图复制或硬链接进 recipe-capture（多占一份盘、项目占用重复计入）；
+    // 引用的轮次（round.json 4、origin）按 cycleId 找不到录制、读出的不是录制里那一帧；录制没了却不提示原图不可用；
+    // 重启后认不出这件已导入
     use std::sync::{mpsc::channel, Arc};
     use std::time::Duration;
 
@@ -127,14 +128,23 @@ fn imported_round_frames_stay_readable_after_history_recording_is_deleted() {
         .round
         .unwrap_or_else(|| panic!("录制件应能导入：{:?}", assessed.view.reasons));
 
-    let capture = RecipeCaptureHost::open(root.0.join("recipe-capture")).unwrap();
+    let found = directory.clone();
+    let lookup: crate::recipe_capture::RecordingLookup =
+        Arc::new(move |cycle| Ok((cycle == CYCLE).then(|| found.clone())));
+    let capture_root = root.0.join("recipe-capture");
+    let capture = RecipeCaptureHost::open(capture_root.clone(), lookup.clone()).unwrap();
     let round_id = capture.import_history(round).unwrap().round_id;
-    std::fs::remove_dir_all(&directory).unwrap();
+    let mut files: Vec<String> = std::fs::read_dir(capture_root.join(&round_id))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    assert_eq!(files, ["frames.jsonl", "round.json"], "轮次目录不应有原图");
 
     let loaded = capture.get_burst(&round_id).unwrap();
     assert_eq!(
         (loaded.format, loaded.group_count, loaded.state),
-        (3, GROUPS, crate::recipe_capture::CaptureState::Complete)
+        (4, GROUPS, crate::recipe_capture::CaptureState::Complete)
     );
     assert_eq!(
         loaded.origin.as_ref().map(RoundOrigin::cycle_id),
@@ -152,8 +162,12 @@ fn imported_round_frames_stay_readable_after_history_recording_is_deleted() {
             );
         }
     }
+    assert_eq!(capture.images_unavailable(&round_id).unwrap(), None);
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert!(capture.images_unavailable(&round_id).unwrap().is_some());
+    assert!(capture.burst_frame_path(&round_id, &cameras[0], 1).is_err());
     drop(capture);
-    let reopened = RecipeCaptureHost::open(root.0.join("recipe-capture")).unwrap();
+    let reopened = RecipeCaptureHost::open(capture_root, lookup).unwrap();
     assert_eq!(
         imported_cycles(&reopened, &doc.id).unwrap().get(CYCLE),
         Some(&round_id),

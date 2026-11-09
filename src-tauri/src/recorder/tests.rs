@@ -257,3 +257,13 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
         })
         .unwrap_or_default()
 }
+
+/// 录制上限默认不限：防的回归是新项目仍按旧默认（100 件 / 100 GB）滚动删掉历史件，示教件可选的录制被清理。
+#[test]
+fn default_retention_is_unlimited_and_prunes_nothing() {
+    let dir = TestDir::new();
+    let old: Vec<_> = (0..3).map(|i| old_recording(&dir.root(), i, 10)).collect();
+    let (keep, max_bytes) = retention(HistoryScope::Real, &CycleSettings::default());
+    assert!(prune(&dir.root(), keep as usize, max_bytes, &[], None).is_empty());
+    assert!(old.iter().all(|d| d.is_dir()));
+}

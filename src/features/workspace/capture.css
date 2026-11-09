@@ -9,6 +9,8 @@
 .wp-review-mask { flex-wrap:wrap; align-items:end; }
 .wp-review-mask > .wp-field { max-width:180px; }
 .wp-review-excluded { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+.wp-picker-filters { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:8px; }
+.wp-picker-filters > [role="group"] { display:flex; flex-wrap:wrap; gap:6px; }
 .wp-picker-table { max-height:300px; min-width:0; overflow:auto; }
 .wp-picker-preview { min-width:0; }
 .wp-frame-browser { display:flex; flex-direction:column; gap:8px; min-width:0; }

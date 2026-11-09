@@ -113,7 +113,6 @@ fn export(data: &Path, root: &Path, store: &Store) -> PathBuf {
     export_to(
         root,
         Some(store),
-        true,
         &data.join("cache").join("export"),
         &package,
     )
@@ -200,11 +199,10 @@ fn snapshot_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         .collect()
 }
 
-fn copy(data: &Path, capture_images: bool) -> Result<ProjectImported, String> {
+fn copy(data: &Path) -> Result<ProjectImported, String> {
     copy_from(
         data,
         "line-a",
-        capture_images,
         &New {
             id: "line-a2",
             name: "A 线副本",
@@ -221,7 +219,7 @@ fn copied_project_gets_its_own_paths_and_leaves_the_source_untouched() {
     let data = TempDir::new("copy");
     let (source, recipe, store) = source_project(&data.0);
     let before = snapshot_files(&source);
-    let copied = copy(&data.0, true).unwrap();
+    let copied = copy(&data.0).unwrap();
     assert_eq!(copied.meta.copied_from.as_deref(), Some("line-a"));
     let target = super::super::dir(&data.0, "line-a2");
     let round = read_value(

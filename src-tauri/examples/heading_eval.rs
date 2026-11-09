@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gluesight_lib::probe_api::{
-    calibrate_counts, downsample, load_image, unformed_lead, Engine, FrameImage, GroupForm,
+    calibrate_counts, capture_frame_paths, downsample, load_image, unformed_lead, Engine, FrameImage, FramePaths, GroupForm,
     RecipeDoc, SegmentKind, ONSET_RUN,
 };
 use serde_json::{json, Value};
@@ -544,7 +544,7 @@ fn draw_edges(canvas: &mut Canvas, stations: &Value, c: [u8; 3]) {
 #[allow(clippy::too_many_arguments)]
 fn dump_overlays(
     engine: &Engine,
-    capture: &Path,
+    paths: &FramePaths,
     out: &Path,
     truth: &Truth,
     segs: &[Seg],
@@ -562,12 +562,7 @@ fn dump_overlays(
             .iter()
             .filter(|c| seg.cameras.contains(&c.id) && c.corridors.contains_key(&seg.index))
         {
-            let image = load_image(
-                &capture
-                    .join(&truth.round)
-                    .join(&cam.id)
-                    .join(format!("{seq:06}.pgm")),
-            )?;
+            let image = load_image(&paths(&cam.id, seq))?;
             let mut canvas = Canvas::new(&image);
             let corridor = &cam.corridors[&seg.index];
             canvas.polyline(corridor, 1, GREEN);
@@ -822,7 +817,7 @@ fn main() -> Result<(), String> {
         let dir = out_dir.join("overlays").join(&round.round);
         let n = dump_overlays(
             &engine,
-            &project.join("recipe-capture"),
+            &capture_frame_paths(&project, &round.round)?,
             &dir,
             round,
             &segs,
@@ -933,7 +928,10 @@ fn main() -> Result<(), String> {
         jobs.len()
     );
 
-    let capture = project.join("recipe-capture");
+    let frame_paths: Vec<FramePaths> = truths
+        .iter()
+        .map(|t| capture_frame_paths(&project, &t.round))
+        .collect::<Result<_, _>>()?;
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Measured>> = Mutex::new(Vec::new());
     let started = Instant::now();
@@ -945,10 +943,7 @@ fn main() -> Result<(), String> {
             scope.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(job) = jobs.get(i) else { break };
-                let path = capture
-                    .join(&truths[job.round].round)
-                    .join(&cams[job.camera].id)
-                    .join(format!("{:06}.pgm", job.seq));
+                let path = frame_paths[job.round](&cams[job.camera].id, job.seq);
                 let outcomes = match load_image(&path) {
                     Ok(image) => job
                         .variants
@@ -1356,7 +1351,7 @@ fn main() -> Result<(), String> {
 
     println!("\n五、每帧后移量（相邻两帧图像位移，{SHIFT_FACTOR}× 下采样整像素搜索 ±{} px；同一段内、该段检测相机）", SHIFT_MAX * SHIFT_FACTOR as i32);
     let mut shifts: BTreeMap<u32, Vec<f64>> = BTreeMap::new();
-    for truth in &truths {
+    for (truth, paths) in truths.iter().zip(&frame_paths) {
         for seq in 1..truth.total {
             let s = truth.segment_at(seq);
             if truth.segment_at(seq + 1) != s {
@@ -1365,14 +1360,7 @@ fn main() -> Result<(), String> {
             let Some(cam) = segs[s].cameras.first().map(|id| &cams[cam_idx(id)]) else {
                 continue;
             };
-            let load = |q: u64| {
-                load_image(
-                    &capture
-                        .join(&truth.round)
-                        .join(&cam.id)
-                        .join(format!("{q:06}.pgm")),
-                )
-            };
+            let load = |q: u64| load_image(&paths(&cam.id, q));
             if let (Ok(a), Ok(b)) = (load(seq), load(seq + 1)) {
                 shifts
                     .entry(segs[s].index)

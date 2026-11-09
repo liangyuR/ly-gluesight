@@ -54,4 +54,17 @@ describe("原图保留设置", () => {
     expect(screen.getByRole("combobox", { name: "真机帧录制" }).closest(".qs-select")!.querySelector("select")!).toHaveValue("failed");
   });
 
+  it("勾选不限并保存 → 后端收到空值（不清理），重新打开仍显示不限", async () => {
+    const page = render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
+    await userEvent.click(await screen.findByRole("checkbox", { name: "件数不限" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "大小不限" }));
+    await userEvent.click(recordSaveButton());
+    await waitFor(() => expect(saved.recordKeep).toBeNull());
+    expect(saved.recordMaxGb).toBeNull();
+    page.unmount();
+    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
+    expect(await screen.findByRole("checkbox", { name: "件数不限" })).toBeChecked();
+    expect(screen.getByRole("spinbutton", { name: "真机录制最多保留（件）" })).toBeDisabled();
+  });
+
 });

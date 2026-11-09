@@ -1,13 +1,12 @@
-//! 历史件导入为采集轮次（docs/architecture/online-commissioning.md 5.2）：维护模式或生产录制的完整件物化成一轮已完成的
-//! 采集，目录结构与示教实拍的轮次相同；同卷使用硬链接，跨卷复制并校验。之后录制被清理，轮次原图仍可读。
+//! 历史件导入为采集轮次（docs/architecture/online-commissioning.md 5.2）：维护模式或生产录制的完整件登记成一轮已完成的
+//! 采集（format 4）。轮次只写 `round.json` 与 `frames.jsonl`，每帧指向来源历史件录制目录里的原图，不复制也不链接；
+//! 录制目录按 cycleId 经检测记录库查（录制可在任意盘），被轮次引用的录制不参与滚动清理与按天清理。
 
-use sha2::{Digest, Sha256};
-use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use super::*;
 
-/// 一帧历史原图：本件相机下标、帧组序号与录制时的帧号、尺寸，`source` 是录制目录里的原图。
+/// 一帧历史原图：本件相机下标、帧组序号与录制时的帧号、尺寸，`source` 是录制目录里的原图（文件名须为 `{相机}_s{seq:06}.pgm`）。
 pub struct HistoryFrame {
     pub camera: usize,
     pub seq: u64,
@@ -18,7 +17,7 @@ pub struct HistoryFrame {
     pub source: PathBuf,
 }
 
-/// 要物化的一件历史件：相机按录制的计划相机顺序，每台相机 1..=group_count 的帧都要齐。
+/// 要登记的一件历史件：相机按录制的计划相机顺序，每台相机 1..=group_count 的帧都要齐，原图都在同一个录制目录里。
 pub struct HistoryRound {
     pub recipe_id: String,
     pub origin: RoundOrigin,
@@ -53,71 +52,20 @@ fn check_source(path: &Path, width: u32, height: u32) -> Result<(), String> {
     Ok(())
 }
 
-fn materialize_image_with(
-    source: &Path,
-    target: &Path,
-    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
-) -> Result<(), String> {
-    match link(source, target) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
-            let copy = || -> std::io::Result<()> {
-                let mut input = std::fs::File::open(source)?;
-                let mut output = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(target)?;
-                let mut source_hash = Sha256::new();
-                let mut buf = [0u8; 64 * 1024];
-                loop {
-                    let count = input.read(&mut buf)?;
-                    if count == 0 {
-                        break;
-                    }
-                    source_hash.update(&buf[..count]);
-                    output.write_all(&buf[..count])?;
-                }
-                output.sync_all()?;
-                drop(output);
-                let mut copied = std::fs::File::open(target)?;
-                let mut target_hash = Sha256::new();
-                loop {
-                    let count = copied.read(&mut buf)?;
-                    if count == 0 {
-                        break;
-                    }
-                    target_hash.update(&buf[..count]);
-                }
-                if source_hash.finalize() != target_hash.finalize() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "复制后的原图校验失败",
-                    ));
-                }
-                Ok(())
-            };
-            copy().map_err(|e| format!("复制历史原图 {} 失败：{e}", source.display()))
-        }
-        Err(error) => Err(format!(
-            "为历史原图 {} 建硬链接失败：{error}",
-            source.display()
-        )),
-    }
-}
-
 impl RecipeCaptureHost {
-    /// 历史件物化成一轮：逐帧链接或复制、写 frames.jsonl，round.json 最后写；任一步失败删掉本轮目录。
+    /// 历史件登记成一轮：逐帧核对录制原图、写 frames.jsonl，round.json 最后写；任一步失败删掉本轮目录。按来源 cycleId 查到的
+    /// 录制目录须就是这些原图所在的目录，以后读帧按同一查法找到它们。
     pub fn import_history(&self, input: HistoryRound) -> Result<CaptureRoundV2, String> {
         let (round_id, created_at) = self.new_round_dir()?;
         let dir = self.root.join(&round_id);
-        let result = self.materialize(round_id, &dir, created_at, input);
+        let result = self.register(round_id, &dir, created_at, input);
         if result.is_err() {
             let _ = std::fs::remove_dir_all(&dir);
         }
         result
     }
 
-    fn materialize(
+    fn register(
         &self,
         round_id: String,
         dir: &Path,
@@ -134,12 +82,13 @@ impl RecipeCaptureHost {
         if !(1..=MAX_SEQ).contains(&group_count) {
             return Err("历史件没有帧组或帧组数超出上限".into());
         }
-        for camera in &cameras {
-            if !crate::recipe::valid_camera_id(&camera.camera_id) {
-                return Err(format!("相机编号 {:?} 无效", camera.camera_id));
-            }
-            std::fs::create_dir(dir.join(&camera.camera_id)).map_err(|e| e.to_string())?;
+        if let Some(camera) = cameras.iter().find(|c| !crate::recipe::valid_camera_id(&c.camera_id)) {
+            return Err(format!("相机编号 {:?} 无效", camera.camera_id));
         }
+        let RoundOrigin::History { cycle_id, .. } = &origin else {
+            return Err("只有历史件能登记为引用录制的轮次".into());
+        };
+        let recording = super::resolve_recording(&self.recordings, cycle_id)?;
         let mut saved = vec![BTreeSet::new(); cameras.len()];
         let mut lines = Vec::with_capacity(frames.len());
         for frame in frames {
@@ -149,18 +98,22 @@ impl RecipeCaptureHost {
             if !(1..=group_count).contains(&frame.seq) || !saved[frame.camera].insert(frame.seq) {
                 return Err("历史帧的帧组序号越界或重复".into());
             }
+            let file = super::recording_file(&camera.camera_id, frame.seq);
             check_source(&frame.source, frame.width, frame.height)?;
-            materialize_image_with(
-                &frame.source,
-                &dir.join(&camera.camera_id).join(frame_file(frame.seq)),
-                |source, target| std::fs::hard_link(source, target),
-            )?;
+            let source = frame.source.canonicalize().map_err(|e| e.to_string())?;
+            if source != recording.join(&file) {
+                return Err(format!(
+                    "历史原图 {} 不在这件记录的录制目录 {} 里",
+                    frame.source.display(),
+                    recording.display()
+                ));
+            }
             lines.push(FrameLine {
                 camera: frame.camera,
                 seq: frame.seq,
                 frame_counter: frame.frame_counter,
                 trigger_counter: None,
-                path: frame_rel_path(&camera.camera_id, frame.seq),
+                path: file,
                 width: frame.width,
                 height: frame.height,
                 ts: frame.ts,
