@@ -1,6 +1,6 @@
 import type { Judgement, Recipe, RecipeDoc, RecipeStage, Verdict } from "../cycle/types";
 import type { CameraImaging } from "../camera/types";
-import type { BurstJudgement, CalibrationRound, CameraTeaching, FrameMetrics, FrameVerdict, InspectionCoverage, PathSegment, WorkspacePlanView } from "../plan/types";
+import type { BurstJudgement, CalibrationRound, CameraTeaching, FrameMetrics, FrameVerdict, InspectionCoverage, PathSegment, SegmentKind, WorkspacePlanView } from "../plan/types";
 import type { PartMode } from "../history/types";
 import type { NavigationMapData } from "./navigation/types";
 import type { FramePixels } from "../../lib/frame";
@@ -62,6 +62,29 @@ export interface Workspace {
   teachingPiece: TeachingPiece | null;
   navigationId?: string | null;
   navigationStructureRevision?: number;
+  /** 换示教件的逐笔对照（RB-11）；没有对照时缺省，发布时清空 */
+  passAlignment?: PassAlignment;
+}
+/** 逐笔对照里一笔的变化：对上的两笔为不变或改动，没对上的旧笔为删除、新笔为新增。 */
+export type PassChange = "same" | "changed" | "added" | "removed";
+/** 逐笔对照的一行；笔下标从 0 起。distance 为两笔的图像距离（0 最像），人改出来的对应没有。 */
+export interface PassPair { old?: number; new?: number; change: PassChange; distance?: number }
+/** 回传的一对对应：只列对上的笔，新旧两边都严格递增。 */
+export interface PassLink { old: number; new: number; changed: boolean }
+/** 迁移后一段的沿用状态；retaught 为迁移后在新件上重新选过示教帧的检测相机。 */
+export interface SegmentCarry { change?: "same" | "changed" | "added"; retaught?: string[]; accepted?: boolean }
+export interface PassAlignment {
+  /** 原示教件；passes 为各笔帧组数 */
+  oldPiece: { recordId: number; sn: string; ts: number; passes: number[] };
+  newPasses: number[];
+  suggested: PassPair[];
+  rows: PassPair[];
+  confirmed: boolean;
+  source?: unknown;
+  /** 按段 ID */
+  carry: Record<string, SegmentCarry>;
+  /** 迁移时去掉的旧段（旧段号） */
+  removed?: { index: number; kind: SegmentKind }[];
 }
 export interface TeachingPiece {
   roundId: string; recordId: number; cycleId: string; sn: string; ts: number;

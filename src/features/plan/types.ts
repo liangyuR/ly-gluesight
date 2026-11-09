@@ -131,6 +131,8 @@ export interface PathSegment {
   heading?: HeadingSettings | null;
   /** 不检测（D-SB-53）：照常计入帧数与分段，没有检测相机、不测不判；类型、检测相机与检测项保留，取消后恢复。缺省 = 检测 */
   skip?: boolean;
+  /** 段 ID（RB-11）：只在候选里，由后端生成；前端新建段时不填 */
+  id?: string;
 }
 
 /** 整件标定：旧配方的整件帧组数统计，只为读入保留；新配方恒为 null。 */

@@ -351,6 +351,7 @@ pub fn save_template_round(
     if segments.is_empty() {
         return Err("段配方至少需要一段，不能改成拍照点配方".into());
     }
+    super::pass_align::require_confirmed(w)?;
     let mut next = w.clone();
     match super::segment_remap::remap(w, &round.round_id, &segments, &cuts) {
         Some(remapped) => replace_doc(&mut next, remapped.doc, Some(remapped.teaching))?,

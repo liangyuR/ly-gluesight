@@ -139,9 +139,7 @@ pub(crate) fn export_candidate(
         return Err("候选文件与界面上的候选不一致，请重新加载后导出".into());
     }
     let mut entries = vec![(format!("{CANDIDATE}/workspace.json"), file)];
-    let frozen: BTreeSet<&str> = w
-        .camera_teaching
-        .iter()
+    let frozen: BTreeSet<&str> = super::pass_align::frozen_teaching(w)
         .map(|t| t.frame.id.as_str())
         .collect();
     for id in frozen {
@@ -398,7 +396,7 @@ pub(crate) fn stage(
             }
         }
     }
-    for t in &w.camera_teaching {
+    for t in super::pass_align::frozen_teaching(&w) {
         if !staging
             .join(CANDIDATE)
             .join("images")

@@ -5,7 +5,7 @@ import type { NavigationMapData } from "./navigation/types";
 import type { RecipeDoc } from "../cycle/types";
 import type { CalibrationFrameView, CaptureRoundV2, FrameMetrics, PassSkipSuggestView, PathSegment, SkipEnd, SkipSuggestView, TeachPreviewSegment } from "../plan/types";
 import { decodeThumbStrip } from "./workbenchDraft";
-import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidate, PackageExported, PackageImported, PackagePreview, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
+import type { Check, CompareOptions, Comparison, ComparisonSummary, FrozenImage, FrameImage, HistoryCandidate, PackageExported, PackageImported, PackagePreview, PassLink, Sample, SegmentSaveImpact, Workspace, WorkspaceView } from "./types";
 
 let liveSeq = 0;
 
@@ -39,8 +39,14 @@ export const workspaceApi = {
   /** 历史件选择器：本配方最近的真机录制件、能否选用与是否已被本候选使用（只读） */
   /** all：列本机全部历史件（试测用），否则只列本配方的（选示教件用） */
   historyCandidates: (id: string, all = false) => desktopCall<HistoryCandidate[]>("workspace_history_candidates", { id, all }),
-  /** 导入这件并设为示教件；按 RB-2 / RB-8 保留走廊、示教帧与段列表结构，沿用原分段帧数预填边界草稿，清空示教件测量结果 */
+  /** 导入这件并设为示教件：两件都有笔结构时按笔自动对照并迁移示教（RB-11，对照待分段页确认），否则沿用原分段帧数（RB-2）；清空示教件测量结果 */
   setTeachingPiece: (id: string, revision: number, recordId: number) => desktopCall<WorkspaceView>("workspace_set_teaching_piece", { id, revision, recordId }),
+  /** 改换示教件的逐笔对照（RB-11）：links 只列对上的笔；对照变了后端从迁移起点重新迁移并更新边界草稿；confirm 时同时确认，之后不能再改 */
+  passAlignmentSave: (id: string, revision: number, links: PassLink[], confirm: boolean) =>
+    desktopCall<WorkspaceView>("workspace_pass_alignment_save", { id, revision, links, confirm }),
+  /** 确认（或撤销）沿用第 segment 段（PathSegment.index），只对沿用的段 */
+  passCarryAccept: (id: string, revision: number, segment: number, accepted: boolean) =>
+    desktopCall<WorkspaceView>("workspace_pass_carry_accept", { id, revision, segment, accepted }),
   /** 从示教件那一件历史记录补回导出或复制时没带的原图；候选内容不变 */
   refillTeachingImages: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_refill_teaching_images", { id, revision }),
   /** 回传包保存位置；取消为 null */

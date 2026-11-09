@@ -841,6 +841,7 @@ fn stage_segment_teaching(
     w.camera_teaching
         .retain(|t| !(t.camera == camera && t.segment == Some(segment)));
     w.camera_teaching.push(teaching);
+    super::pass_align::mark_retaught(w, segment, &camera);
     Ok(())
 }
 

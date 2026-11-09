@@ -11,6 +11,7 @@ import { errorText } from "../../lib/errors";
 import { patchSegment, segmentIssues } from "./segmentEdit";
 import { BoundaryGuardField, BoundaryRefineField, PassSkipFields } from "./DocParams";
 import SegmentWorkbench from "./SegmentWorkbench";
+import PassAlignmentPanel from "./PassAlignmentPanel";
 import { segmentCameras } from "./workbenchDraft";
 import "../plan/plan.css";
 import "./segments.css";
@@ -100,13 +101,18 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
   const current = Math.min(tab, Math.max(0, segments.length - 1));
   // 工作台与参数表都会写段列表：一边有未保存的改动时另一边不能提交，避免修订号冲突
   const paramsPending = edits ? "段参数还没保存完，保存后再保存分段" : "";
-  const cardsLocked = frozen || workbenchDirty || navigationDirty;
+  const alignment = data?.workspace.passAlignment;
+  // 换示教件的逐笔对照确认前，后端拒绝保存分段与改段列表（RB-11）
+  const alignmentPending = alignment && !alignment.confirmed ? "换示教件的逐笔对照还没确认：先在上方确认对照" : "";
+  const cardsLocked = frozen || workbenchDirty || navigationDirty || !!alignmentPending;
   const pending = segments.filter(segment => segment.expectedFrames == null).map(segment => segment.index);
   const docLocked = edits || workbenchDirty || navigationDirty ? "段列表有未保存的改动，保存后再改" : "";
 
   return <div className="wp-page"><WorkspaceBar />
     <ReturnButton disabled={workbenchDirty} hint={workbenchDirty ? "分段有未保存的改动：先保存或撤销，再返回。" : locate ? "保存分段后返回，在历史件上重新复测。" : undefined} />
-    <SegmentWorkbench plan={plan} locked={paramsPending} onDirty={setWorkbenchDirty} />
+    {alignment && <PassAlignmentPanel alignment={alignment} plan={plan}
+      locked={edits || workbenchDirty ? "段列表或分段有未保存的改动：保存或撤销后再改对照" : ""} />}
+    <SegmentWorkbench plan={plan} locked={paramsPending} saveLocked={alignmentPending} onDirty={setWorkbenchDirty} />
     <Panel title="段列表" help="各段帧数容差、长度与跳过帧数；段的数量、顺序与类型在上方分段标定里按图像划分，预期帧数取自示教件分段，这里只读"
       actions={<>
         <BoundaryGuardField locked={docLocked && `${docLocked}边界过渡帧数`} />
@@ -114,6 +120,7 @@ function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected:
         <PassSkipFields locked={docLocked && `${docLocked}每笔首尾跳过`} />
       </>}>
       {frozen && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效或放弃后再修改段列表。</Notice>}
+      {alignmentPending && <Notice title="逐笔对照还没确认">先在上方确认按笔对照，再改段参数。</Notice>}
       {workbenchDirty && <Notice title="分段有未保存的改动">先保存或撤销上方的分段改动，再编辑段参数。</Notice>}
       <div className="seg-savebar" role="status" aria-label="段列表保存状态">
         {blocked ? <span className="warn">{issues.join("；")}（修正后自动保存）</span> : <span className={shown === "failed" ? "warn" : undefined}>{saveText[shown]}</span>}

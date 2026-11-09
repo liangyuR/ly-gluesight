@@ -34,7 +34,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.historyCandidates).mockResolvedValue([row(7, "SN-7")]);
 });
 
-// 防的回归（RB-2、RB-8）：换示教件或改版候选首次设示教件时不提示就清空边界与标定；取消后仍提交；走廊与示教帧被列进清空项
+// 防的回归（RB-11、RB-2、RB-8）：换示教件或改版候选首次设示教件时不提示就清空边界与标定；取消后仍提交；走廊与示教帧被列进清空项
 it.each<[string, (view: WorkspaceView) => void, string[], string[]]>([
   ["已有示教件，换一件", () => {}, ["示教件的分段边界", "示教件得出的结果"], ["走廊"]],
   ["改版候选还没有示教件，继承了走廊与示教件得出的结果", view => { view.workspace.teachingPiece = null; view.plan.pieces = []; }, ["示教件得出的结果"], ["示教件的分段边界", "走廊"]],
@@ -46,7 +46,7 @@ it.each<[string, (view: WorkspaceView) => void, string[], string[]]>([
   const items = within(screen.getByRole("list", { name: "将清空的内容" }));
   for (const text of listed) expect(items.getByText(new RegExp(text))).toBeVisible();
   for (const text of absent) expect(items.queryByText(new RegExp(text))).toBeNull();
-  expect(screen.getByText(/保留全部走廊与示教帧（\d+ 条）/)).toBeVisible();
+  expect(screen.getByText(/不变的笔沿用走廊、示教帧（现有走廊与示教帧 \d+ 条）/)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "取消" }));
   expect(workspaceApi.setTeachingPiece).not.toHaveBeenCalled();
 

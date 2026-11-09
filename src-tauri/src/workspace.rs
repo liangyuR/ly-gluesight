@@ -31,6 +31,9 @@ mod comparisons;
 mod history_import;
 mod navigation;
 pub(crate) mod package;
+mod pass_align;
+#[cfg(test)]
+mod pass_align_tests;
 mod pieces;
 #[cfg(test)]
 mod pieces_tests;
@@ -52,6 +55,7 @@ pub use capture_review::*;
 pub use collect_release::*;
 pub use history_import::*;
 pub use navigation::*;
+pub use pass_align::*;
 pub use pieces::*;
 pub use workflow::*;
 
@@ -227,6 +231,9 @@ pub struct Workspace {
     pub navigation_id: Option<String>,
     #[serde(default)]
     pub navigation_structure_revision: u64,
+    /// 换示教件的逐笔对照（RB-11）：发布时清空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass_alignment: Option<pass_align::PassAlignment>,
     #[serde(default, rename = "frames", skip_serializing)]
     pub _frames: Discarded,
     #[serde(default, rename = "overview", skip_serializing)]
@@ -262,6 +269,7 @@ impl Workspace {
             teaching_piece: None,
             navigation_id: None,
             navigation_structure_revision: 0,
+            pass_alignment: None,
             _frames: Discarded,
             _overview: Discarded,
             _last_position: Discarded,
@@ -857,6 +865,10 @@ fn replace_doc(
     check_product_code(&doc)?;
     // 示教件来源只在发布时写入，候选里恒为空
     doc.teaching_piece = None;
+    inherit_segment_ids(&w.doc.segments, &mut doc.segments);
+    if doc.segments != w.doc.segments {
+        pass_align::require_confirmed(w)?;
+    }
     // N_exp、标定统计、整件标定与 x_ref 只能由示教件得出，段序列或类型变化时清空
     burst::guard_calibration(&w.doc, &mut doc);
     let teaching = remapped.as_deref().unwrap_or(&w.camera_teaching);
@@ -881,6 +893,30 @@ fn replace_doc(
     });
     w.changed();
     Ok(())
+}
+
+/// 候选已用段 ID（按笔换过示教件，RB-11）时，回传的段没带段 ID（前端新建的段）：段数与类型序列没变就按位置沿用原来的
+/// 段 ID，其余补新 ID。没用过段 ID 的候选不加。
+fn inherit_segment_ids(
+    before: &[crate::plan::PathSegment],
+    segments: &mut [crate::plan::PathSegment],
+) {
+    if before.iter().all(|s| s.id.is_none()) {
+        return;
+    }
+    if before.len() == segments.len()
+        && before
+            .iter()
+            .zip(segments.iter())
+            .all(|(a, b)| a.kind == b.kind)
+    {
+        for (a, b) in before.iter().zip(segments.iter_mut()) {
+            if b.id.is_none() {
+                b.id = a.id.clone();
+            }
+        }
+    }
+    crate::plan::ensure_segment_ids(segments);
 }
 
 fn image_file(host: &WorkspaceHost, id: &str, image_id: &str) -> Result<PathBuf, String> {
@@ -1048,6 +1084,7 @@ pub fn workspace_publish(
     let mut next = w.clone();
     next.doc = release_doc.clone();
     next.doc.teaching_piece = None;
+    next.pass_alignment = None;
     next.pending = Some(Box::new(Release {
         doc: release_doc,
         bundle_id: bundle.id,
@@ -1071,6 +1108,9 @@ fn formal_release_doc(w: &Workspace, version: u32) -> Result<RecipeDoc, String> 
     let mut doc = w.doc.clone();
     doc.version = version;
     doc.stage = RecipeStage::Formal;
+    for segment in &mut doc.segments {
+        segment.id = None;
+    }
     doc.teaching_id = Some(vision::unique_run_id(&format!(
         "teaching-{}-v{}",
         doc.id, doc.version
@@ -1255,6 +1295,8 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 if w.revision == release.revision {
                     w.doc = app.state::<CycleHost>().recipes.doc(&id).unwrap();
                     w.doc.teaching_piece = None;
+                    // 生产配方不带段 ID：按位置接回候选原来的段 ID，逐笔对照的沿用状态不丢（采集版生效后还要继续示教）
+                    inherit_segment_ids(&before.doc.segments, &mut w.doc.segments);
                 }
                 let next_version = app.state::<CycleHost>().recipes.next_version(&saved.id);
                 w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);
