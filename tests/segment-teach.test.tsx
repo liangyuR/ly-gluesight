@@ -134,3 +134,27 @@ it("已保存长度在分段重映射后被清空 → 再改跳过帧数不恢�
   fireEvent.change(screen.getByRole("spinbutton", { name: "1-2 段尾跳过帧数" }), { target: { value: "1" } });
   expect(vi.mocked(ws.setDoc).mock.lastCall![0].segments![1]).toMatchObject({ lengthMm: null, skipHead: 0, skipTail: 1 });
 });
+
+it("换件逐笔对照未确认 → 分段和示教参数只读，确认后恢复编辑", async () => {
+  const view = twoPasses();
+  view.workspace.passAlignment = {
+    oldPiece: { recordId: 1, sn: "old", ts: 1, passes: [8, 4] }, newPasses: [8, 4],
+    suggested: [], rows: [], confirmed: false, carry: {},
+  };
+  ws = workspaceState(view);
+  const renderPage = () => <MemoryRouter initialEntries={["/recipe/teach?camera=CAM-1&segment=2"]}><TeachingPage /></MemoryRouter>;
+  const { rerender } = render(renderPage());
+  await userEvent.setup().click(screen.getByText("检测参数", { exact: true }));
+  const names = ["1-2 长度", "1-2 段首跳过帧数", "1-2 段尾跳过帧数", "每笔开头跳过", "每笔结尾跳过", "边界过渡帧数", "搜索半宽"];
+  for (const name of names) expect(await screen.findByRole("spinbutton", { name })).toBeDisabled();
+  expect(screen.getByRole("switch", { name: "段 2 逐帧定向" })).toBeDisabled();
+
+  const confirmed = structuredClone(view);
+  confirmed.workspace.passAlignment!.confirmed = true;
+  ws = workspaceState(confirmed);
+  rerender(renderPage());
+  for (const name of names) expect(screen.getByRole("spinbutton", { name })).toBeEnabled();
+  expect(screen.getByRole("switch", { name: "段 2 逐帧定向" })).toBeEnabled();
+  fireEvent.change(screen.getByRole("spinbutton", { name: "1-2 长度" }), { target: { value: "125" } });
+  expect(vi.mocked(ws.setDoc).mock.lastCall![0].segments![1].lengthMm).toBe(125);
+});

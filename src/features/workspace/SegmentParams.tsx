@@ -25,7 +25,7 @@ export default function SegmentParams({ seg, pos, label, segments, cameras, disa
   const kind = draft.skips[pos] ? "skip" : draft.kinds[pos];
   const chosen = draft.cameras[pos] ?? [];
   const draftLocked = seg.locked || disabled;
-  const paramsLocked = disabled ? "当前不能修改" : !segment ? "段结构的改动还没保存：保存后再改段参数" : "";
+  const paramsLocked = seg.locked || (disabled ? "当前不能修改" : !segment ? "段结构的改动还没保存：保存后再改段参数" : "");
   const shown = segment ? { ...segment, ...values } as PathSegment : undefined;
   const issues = shown ? segmentIssues([shown]) : [];
   const edit = (field: Field, value: number | null) => {
