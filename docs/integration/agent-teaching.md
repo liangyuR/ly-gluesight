@@ -50,8 +50,8 @@ MCP Streamable HTTP 的无状态子集：
 |---|---|---|
 | `teach_status` | 读 | 不给 `recipe` 时列出当前项目的候选；给了时返回示教现状：下一步、示教件、各段的帧组范围与检测相机、各相机各段的走廊 / 颜色模型 / 示教帧、发布前未通过的检查 |
 | `teach_view` | 读 | 示教件一帧的 PNG：叠加原图坐标网格；给 `segment` 时按已保存走廊测这一帧，叠加走廊、胶两侧边与胶边距线，并附这一帧的指标 |
-| `teach_corridor` | 写 | 由笔划提取并校验最终走廊、完成彩色取色，再一次提交示教帧、走廊和模型。返回提交状态、长度、质量与叠图 |
-| `teach_fit_color` | 写 | 沿已保存的走廊取色，写入这一段的颜色模型（只对彩色示教帧）；返回胶色、背景色与分离度 |
+| `teach_corridor` | 写 | 由笔划提取并校验最终走廊，按胶色测量的段完成取色，再一次提交示教帧、走廊和模型。返回提交状态、长度、质量与叠图 |
+| `teach_fit_color` | 写 | 沿已保存的走廊取色，写入这一段的颜色模型（只对彩色示教帧、没选按灰度的段）；返回胶色、背景色与分离度 |
 | `teach_trial` | 读 | 用已保存走廊量测指定区间，返回实际范围、全部未测成帧、边距有效率、分布和阈值诊断 |
 | `teach_segment` | 写 | 按补丁改一段的检测项（`checks`）、零件边参考（`offsetRef`）与逐帧定向的测量区间（`headingWindow`） |
 | `teach_replay` | 读 | 按候选现在的配置从原图复测历史件并整件判定；不给记录时列出最近的历史件 |
@@ -65,7 +65,7 @@ MCP Streamable HTTP 的无状态子集：
 - `project`、`recipe`、`revision`、`snapshot`、`next`，以及 `teachingPiece`（`roundId`、`recordId`、`groupCount`；没选为 null）。
 - `segments[]`：段号、类型、检测相机、帧组范围或不能确定的原因、`checks`、`offsetRef`、`heading`、`skip`、`skipHead`、`skipTail`、`parameterWarnings`。
 - `cameras[]`：彩色模式、`mmPerPx`、`calibMmPerPx`、`ready`、`cameraWindow`（旧配方的相机级测量区间 `startMm`、`lengthMm`，段没设区间时沿用；没有为 null）、`nozzle`（点、`calibrated`、`source: calibrated | corridorStarts`、`warning`）与 `headingIssues`（`segment`、`message`）。`warning` 是推算出胶点时有走廊起点偏离超过 1 mm 的提示，不阻断；`headingIssues` 按段指出测量区间缺失、区间不足 8 px 等前置问题。
-- 每台相机的 `segments[]`：`segment`、`window`（开启逐帧定向的段实际用的测量区间：`startMm`、`lengthMm`、`endMm` 即界面“测量到”、`source: segment | camera`；没开定向或没有区间为 null）、`seq`、`corridorPoints`、`saved`、`modelPresent`、`modelUsable`、`quality`、`modelIssues`。`colorModel` 仍表示字段存在，不能用它判断可用。`quality` 保留引擎的 `glueCount`、`bgCount`、`centerShift`、`separation`、高光占比等；非法 JSON、缺少质量证据、胶样本不足、背景样本或分量缺失分别给出原因。`modelUsable=true` 也不证明走廊位于新胶上。
+- 每台相机的 `segments[]`：`segment`、`window`（开启逐帧定向的段实际用的测量区间：`startMm`、`lengthMm`、`endMm` 即界面“测量到”、`source: segment | camera`；没开定向或没有区间为 null）、`seq`、`corridorPoints`、`saved`、`measure`（实际测量方式 `gray` / `color`，[color](../decisions/color.md) CL-3；还没有走廊项为 null）、`modelPresent`、`modelUsable`、`quality`、`modelIssues`。`colorModel` 仍表示字段存在，不能用它判断可用。`quality` 保留引擎的 `glueCount`、`bgCount`、`centerShift`、`separation`、高光占比等；非法 JSON、缺少质量证据、胶样本不足、背景样本或分量缺失分别给出原因。`modelUsable=true` 也不证明走廊位于新胶上。
 - `engine`：加载状态、版本、运行库目录、`overridden`、`source`（`bundledRuntime` / `developmentOverride`）、`requiredSeries`、`requiredOperators` 与失败原因。`loaded=true` 包含必需算子校验；为 false 时从 `message` 核对缺失算子或运行库问题，解决后再逐段量测。
 - `passes`：示教件的笔结构（D-SB-62）。`count`、`frames`（各笔帧组数）、`skip`（配方每笔开头 `head`、结尾 `tail` 跳过帧组数）、`inRecipe`（笔结构已随 N_exp 写进配方，生产按笔分段）、`skipped`（示教件上被跳过的帧组：`pass`、`frames: [first, last]`、`short` 为整笔不检）与 `suggestion`（每笔起涂建议：`current`、`suggested`、逐笔 `passes[]` 的起涂帧组数或不参与原因、`pending`）。没有示教件为 null。每笔首尾跳过只能由人在界面设置。
 - `coverage`：按示教件总帧数预览 guard、段与每笔首尾跳过后的真实检测范围，有笔结构时按笔分段，否则按比例边界；`coverageSource=teachingPieceProportional`。包括逐段逐相机应测/可用帧数、被屏蔽帧、零覆盖段和胶偏首尾剔除后的窗口。没有示教件或无法读取时为 null；没有可信边界时相关范围/计数为 null，不能当作完整覆盖。
@@ -81,17 +81,17 @@ MCP Streamable HTTP 的无状态子集：
 
 参数：`recipe`、`camera`、`segment`、`seq`（须在这一段的帧组范围内）、`stroke: [[x, y], ...]`（至少 2 点，原图像素，从起胶端排到收胶端）、可选 `expectedRevision`、`radiusPx`（缺省 30）、`extract`（`auto` / `color` / `edges` / `none`，缺省 `auto`）。
 
-- `color`（彩色帧的 `auto`）：按胶色吸附。笔划插点后作示教线跑 `glue.color_model`（取色图 `color_teach`，`shiftMax` = `radiusPx`），每站在卡尺上找胶色段重新居中、五站中值；取它输出的胶中心线（overlay 的 `center`，站距 4 px）平滑（±20 px 滑动平均）后，以偏移上限 10 px 再居中一遍、再平滑，每 5 点留 1 点；两端沿切线补到笔划首尾在切线上的投影。吸附只校正横向位置，走廊沿胶路的起止就是笔划的首尾。彩色段的颜色模型沿走廊取样，走廊应覆盖这一段整条胶（从出胶处起）；出胶点未标定时，开启逐帧定向的段还由走廊起点推出出胶点。笔划须压在胶条上（取色以笔划处为胶样本），离胶中心不超过 `radiusPx`。示教页在彩色示教帧上刷选时走同一吸附与提交（`workspace_snap_corridor`，偏移上限为笔刷半径），实现在 `workspace::snap`。
-- `edges`（灰度帧的 `auto`）：同示教页灰度帧的刷选提取，提取范围为笔划外接框外扩 `radiusPx` 加 40 px。提取靠灰度上的胶两侧边，胶比背景暗还是亮自动判断（[r2-algorithm](../decisions/r2-algorithm.md) RA-6）；拉丝、高反光底材上常报边缘不连续。
+- `color`（彩色帧、这一段没选按灰度时的 `auto`；选了按灰度的段报错）：按胶色吸附。笔划插点后作示教线跑 `glue.color_model`（取色图 `color_teach`，`shiftMax` = `radiusPx`），每站在卡尺上找胶色段重新居中、五站中值；取它输出的胶中心线（overlay 的 `center`，站距 4 px）平滑（±20 px 滑动平均）后，以偏移上限 10 px 再居中一遍、再平滑，每 5 点留 1 点；两端沿切线补到笔划首尾在切线上的投影。吸附只校正横向位置，走廊沿胶路的起止就是笔划的首尾。彩色段的颜色模型沿走廊取样，走廊应覆盖这一段整条胶（从出胶处起）；出胶点未标定时，开启逐帧定向的段还由走廊起点推出出胶点。笔划须压在胶条上（取色以笔划处为胶样本），离胶中心不超过 `radiusPx`。示教页在彩色示教帧上刷选时走同一吸附与提交（`workspace_snap_corridor`，偏移上限为笔刷半径），实现在 `workspace::snap`。
+- `edges`（灰度帧或选了按灰度的段的 `auto`）：同示教页灰度帧的刷选提取，提取范围为笔划外接框外扩 `radiusPx` 加 40 px。提取靠灰度上的胶两侧边，胶比背景暗还是亮自动判断（[r2-algorithm](../decisions/r2-algorithm.md) RA-6）；拉丝、高反光底材上常报边缘不连续。
 - `none`：同示教页“笔划直接生成走廊”，笔划按 20 px 插点直接作走廊。走廊只决定 ROI 与测站，测量在搜索带内找胶，笔划贴着胶条中心即可。
 
 最终走廊必须全部位于像素中心范围内、按站距至少 3 站，不静默裁剪吸附后的越界点。提取、几何检查、彩色模型拟合和叠图均在提交前完成；取色失败或 `quality.usable=false` 拒绝整次提交，保留原来的示教帧、走廊、模型与修订号。
 
-成功只推进一次修订，返回 `commit: {frameUpdated: true, corridorSaved: true, colorFitted: <是否彩色>}`、`baseRevision`、新 `revision`、`snapshot`、走廊长度/站数及 `colorModel` 质量摘要。提交后视图刷新失败时，错误明确指出已保存的修订号，应重新调用 `teach_status` 核对，不能把它当作准备阶段失败后盲目重试。
+成功只推进一次修订，返回 `commit: {frameUpdated: true, corridorSaved: true, colorFitted: <是否取了色>}`、`baseRevision`、新 `revision`、`snapshot`、走廊长度/站数及 `colorModel` 质量摘要。提交后视图刷新失败时，错误明确指出已保存的修订号，应重新调用 `teach_status` 核对，不能把它当作准备阶段失败后盲目重试。
 
 ### `teach_fit_color`
 
-参数：`recipe`、`camera`、`segment`，可选 `expectedRevision`。前置：这一段已保存走廊，示教帧是彩色。返回胶色、背景色、质量、`modelPresent`、`modelUsable`、`modelIssues` 与提交身份。这个独立取色入口保持与界面相同的保存行为：引擎成功输出但质量不可用的模型也可保存用于诊断，调用成功不能视为模型可用；`teach_corridor` 的一次提交则要求新模型可用。
+参数：`recipe`、`camera`、`segment`，可选 `expectedRevision`。前置：这一段已保存走廊，示教帧是彩色，且没选按灰度测量（操作员在示教页“测量方式”卡片切换）。返回胶色、背景色、质量、`modelPresent`、`modelUsable`、`modelIssues` 与提交身份。这个独立取色入口保持与界面相同的保存行为：引擎成功输出但质量不可用的模型也可保存用于诊断，调用成功不能视为模型可用；`teach_corridor` 的一次提交则要求新模型可用。
 
 ### `teach_trial`
 

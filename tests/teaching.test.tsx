@@ -203,11 +203,12 @@ describe("示教帧选择", () => {
   });
 });
 
-describe("胶色取色", () => {
+describe("测量方式与取色", () => {
 
   // 防的回归：彩色示教帧上找不到取色入口，或取色发错相机、段、修订，这一段一直按灰度测；取色后看不到分离度，无法判断模型能不能用
-  it("彩色示教帧、这一段已保存走廊 → 点“取色”按相机与段调用取色命令，显示分离度", async () => {
+  it("彩色示教帧、按胶色测量、这一段已保存走廊 → 点“取色”按相机与段调用取色命令，显示分离度", async () => {
     vi.mocked(workspaceApi.image).mockResolvedValue({ ...picture, channels: 3 });
+    ws.data!.workspace.doc.inspect![0].segments![0].measure = "color";
     const model = { glue: { mean: [0.37, -0.08], intensity: 391.7 }, background: [{ weight: 1, mean: [-0.08, 0], intensity: 394.9 }],
       quality: { separation: 4.8, glueCount: 2652, bgCount: 9552, saturatedFraction: 0.156, usable: true } };
     vi.mocked(workspaceApi.fitColorModel).mockImplementation(async () => {
@@ -224,5 +225,18 @@ describe("胶色取色", () => {
     const stats = await screen.findByRole("group", { name: "胶色模型" });
     expect(within(stats).getByText("分离度").nextElementSibling).toHaveTextContent("4.8");
     expect(screen.getByRole("button", { name: "重新取色" })).toBeEnabled();
+  });
+
+  // 防的回归：彩色相机的段只能按胶色测，操作员改按灰度的选择没写进这台相机这一段，或留着胶色模型继续按胶色测
+  it("彩色示教帧上选“按灰度” → 这一段这台相机记为按灰度并去掉胶色模型", async () => {
+    vi.mocked(workspaceApi.image).mockResolvedValue({ ...picture, channels: 3 });
+    ws.data!.workspace.doc.inspect![0].segments![0].colorModel = "{\"glue\":{}}";
+    show("/recipe/teach?camera=CAM-1&segment=1");
+    fireEvent.click(await screen.findByRole("button", { name: "按灰度" }));
+    const next = vi.mocked(ws.setDoc).mock.calls.at(-1)![0] as typeof ws.doc;
+    const segments = next!.inspect!.map(item => item.segments?.find(s => s.segment === 1));
+    expect(segments[0]).toMatchObject({ measure: "gray" });
+    expect(segments[0]).not.toHaveProperty("colorModel");
+    expect(segments.slice(1).every(s => s?.measure == null)).toBe(true);
   });
 });

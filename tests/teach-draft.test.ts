@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RecipeDoc } from "../src/features/cycle/types";
 import type { CameraTeachDraft } from "../src/features/plan/types";
-import { draftKey, sameCorridor, savedDraft, withCorridor, withSectorDeg } from "../src/features/workspace/teach";
+import { draftKey, measureMode, sameCorridor, savedDraft, withCorridor, withMeasure, withSectorDeg } from "../src/features/workspace/teach";
 const draft = (over: Partial<CameraTeachDraft> = {}): CameraTeachDraft => ({ corridor: [[10, 30], [90, 30]], mmPerPx: 0.1, detect: null, window: null, ...over });
 
 describe("走廊示教草稿", () => {
@@ -28,6 +28,28 @@ describe("走廊示教草稿", () => {
     expect(segment(moved, 2).colorModel).toBe("{\"other\":1}");
     expect(segment(withCorridor(doc, draftKey("cam1", 1), draft({ corridor: [[10.1 + 1e-9, 30], [90, 30]] })), 1).colorModel).toBe("{\"glue\":{}}");
     expect(segment(withSectorDeg(doc, "cam1", 1, 45), 1)).toMatchObject({ sectorDeg: 45, colorModel: "{\"glue\":{}}" });
+  });
+
+  // 防的回归：灰度帧被当成可按胶色测；旧配方没取色的走廊被显示成按胶色（与生产实际按灰度测不符）；彩色帧上还没画走廊的段默认不是按胶色
+  it.each([
+    ["灰度帧即使选过按胶色", { segment: 1, corridor: [], measure: "color" as const }, false, "gray"],
+    ["彩色帧、旧走廊没取色也没选", { segment: 1, corridor: [[0, 0], [9, 0]] as [number, number][] }, true, "gray"],
+    ["彩色帧、有胶色模型", { segment: 1, corridor: [[0, 0], [9, 0]] as [number, number][], colorModel: "{}" }, true, "color"],
+    ["彩色帧、还没画走廊", undefined, true, "color"],
+    ["彩色帧、选了按灰度", { segment: 1, corridor: [], measure: "gray" as const }, true, "gray"],
+  ])("%s → 按%s测量", (_, item, colorFrame, expected) => {
+    expect(measureMode(item, colorFrame)).toBe(expected);
+  });
+
+  // 防的回归：还没画走廊时选的测量方式因空走廊项被清掉而丢失；改按灰度后留着的胶色模型让这一段继续按胶色测
+  it("改按灰度 → 去掉胶色模型；还没画走廊的段也留下这条选择", () => {
+    const doc = { inspect: [{ camera: "cam1", mmPerPx: 0.1, calib: null, detect: null, segments: [
+      { segment: 1, corridor: [[10, 30], [90, 30]], colorModel: "{\"glue\":{}}" },
+    ] }] } as unknown as RecipeDoc;
+    const segments = (next: RecipeDoc) => next.inspect!.find(item => item.camera === "cam1")!.segments!;
+    const gray = withMeasure(doc, "cam1", 1, "gray");
+    expect(segments(gray)[0]).toEqual({ segment: 1, corridor: [[10, 30], [90, 30]], measure: "gray" });
+    expect(segments(withMeasure(doc, "cam1", 2, "gray"))).toContainEqual({ segment: 2, corridor: [], measure: "gray" });
   });
 
 });

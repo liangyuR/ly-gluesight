@@ -825,17 +825,30 @@ fn save_doc(
     revision: u64,
     doc: RecipeDoc,
 ) -> Result<WorkspaceView, String> {
-    if doc.id != id {
-        return Err("编辑候选配置时不能改变配方编号；请在配方库复制".into());
-    }
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
-    w.expect(revision)?;
-    update_doc(&mut w, doc)?;
-    host.save(&w)?;
-    items.insert(id, w.clone());
+    let w = app.state::<WorkspaceHost>().save_doc(&id, revision, doc)?;
     view(&app, w)
+}
+
+impl WorkspaceHost {
+    /// 整份保存候选配方（`workspace_save_doc`）。
+    pub(crate) fn save_doc(
+        &self,
+        id: &str,
+        revision: u64,
+        mut doc: RecipeDoc,
+    ) -> Result<Workspace, String> {
+        if doc.id != id {
+            return Err("编辑候选配置时不能改变配方编号；请在配方库复制".into());
+        }
+        let mut items = self.items.lock().unwrap();
+        let mut w = items.get(id).ok_or("候选配置不存在")?.clone();
+        w.expect(revision)?;
+        burst::keep_color_measure(&w, &mut doc);
+        update_doc(&mut w, doc)?;
+        self.save(&w)?;
+        items.insert(id.to_string(), w.clone());
+        Ok(w)
+    }
 }
 
 fn update_doc(w: &mut Workspace, doc: RecipeDoc) -> Result<(), String> {
