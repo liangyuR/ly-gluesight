@@ -82,10 +82,10 @@ it("编辑地图后离页 → 草稿保留并阻止发布，回到分段保存�
   await user.click(await screen.findByRole("button", { name: "编辑地图" }));
   await user.click(screen.getByText("精确调整与更多操作", { exact: true }));
   fireEvent.change(screen.getByLabelText("段 1 后分界（路径 %）"), { target: { value: "45" } });
-  const boundarySummary = await screen.findByRole("status", { name: "分段草稿" });
+  await screen.findByRole("status", { name: "分段草稿" });
   fireEvent.keyDown(screen.getByLabelText("帧组 1 三台相机原图"), { key: "B" });
-  expect(boundarySummary).toHaveTextContent("边界 4 / 8");
-  expect(boundarySummary).not.toHaveTextContent("边界 1 /");
+  expect(screen.getByRole("button", { name: /^段 1（.+，帧组 1–4）/ })).toBeVisible();
+  expect(screen.getByRole("button", { name: /^段 2（.+，帧组 5–8）/ })).toBeVisible();
   await user.click(within(screen.getByRole("navigation", { name: "配方配置步骤" })).getByRole("link", { name: /发布/ }));
   expect(await screen.findByRole("button", { name: "发布生产配方" })).toBeDisabled();
   await user.click(within(screen.getByRole("navigation", { name: "配方配置步骤" })).getByRole("link", { name: /段列表/ }));
