@@ -59,10 +59,10 @@ impl Store {
                     Err(error) => return Err(error.to_string()),
                 };
                 crate::image_file::checked_source_path(directory)?;
-                let root = crate::project::records::record_root(
+                let root = crate::project::records::record_root_of(
                     data,
                     &recording.project,
-                    recording.source,
+                    Some(&recording.directory),
                 )?
                 .canonicalize()
                 .map_err(|error| format!("无法确认项目录制根：{error}"))?;

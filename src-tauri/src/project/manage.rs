@@ -72,8 +72,10 @@ pub(super) fn check_new_id(data: &Path, id: &str) -> Result<(), String> {
         ));
     }
     let project = super::dir(data, id);
-    let recording = crate::log_storage::recording_project(&project)?;
-    if recording != project && recording.exists() {
+    if crate::log_storage::recording_projects(&project)?
+        .iter()
+        .any(|recording| *recording != project && recording.exists())
+    {
         return Err(format!(
             "项目编号 {id} 的原图目录仍存在，请先处理残留资料或换一个编号"
         ));
@@ -214,13 +216,14 @@ fn purge_project(data: &Path, trashed: &Path) -> Result<(), String> {
             return Err("删除项目的原图清理标记与项目编号不符".into());
         }
         let project = super::dir(data, id);
-        let recording = crate::log_storage::recording_project(&project)?;
-        if recording == project {
+        let recordings = crate::log_storage::recording_projects(&project)?;
+        if recordings.contains(&project) {
             return Err("删除项目的外部原图配置缺失，保留待清理资料".into());
         }
-        if recording.exists() {
-            crate::image_file::checked_source_path(&recording)?;
-            std::fs::remove_dir_all(&recording)
+        // 离线的录制盘上的原图这次清不到，留作残留；同编号新建项目时会提示先处理
+        for recording in recordings.iter().filter(|recording| recording.exists()) {
+            crate::image_file::checked_source_path(recording)?;
+            std::fs::remove_dir_all(recording)
                 .map_err(|e| format!("清理项目 {id} 的原图失败：{e}"))?;
         }
     }
@@ -308,13 +311,12 @@ pub fn usage(
         return Err(format!("项目 {id} 不存在"));
     }
     let (records, first_record_at, last_record_at) = records;
-    let recording = crate::log_storage::recording_project(&root)?;
     let project_bytes = dir_bytes(&root);
-    let vision_bytes = if recording == root {
-        0
-    } else {
-        dir_bytes(&recording)
-    };
+    let vision_bytes = crate::log_storage::recording_projects(&root)?
+        .iter()
+        .filter(|recording| **recording != root)
+        .map(|recording| dir_bytes(recording))
+        .fold(0u64, u64::saturating_add);
     Ok(ProjectUsage {
         recipes: count_recipes(&root.join("recipes")),
         workspaces: count_dirs(&root.join("workspaces"), |p| {

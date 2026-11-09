@@ -507,10 +507,10 @@ fn assess_parts(
                 &imported,
                 summary,
                 recording,
-                crate::project::records::record_root(
+                crate::project::records::record_root_of(
                     &data,
                     &summary.project_id,
-                    RecordSource::Real,
+                    recording.directory.as_deref(),
                 )
                 .and_then(|root| read_part(&root, recording)),
             )

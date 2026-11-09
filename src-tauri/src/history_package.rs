@@ -176,11 +176,11 @@ pub fn inspect(path: &Path) -> Result<PackageManifest, String> {
     read_manifest(&mut transfer::open_zip(path, LABEL)?)
 }
 
-/// 导出的来源：记录所属项目的真机录制根与项目名称。
+/// 导出的来源：记录所属项目在各录制盘上的真机录制根与项目名称。
 pub struct ExportSource<'a> {
     pub project: &'a str,
     pub project_name: &'a str,
-    pub root: &'a Path,
+    pub roots: &'a [PathBuf],
 }
 
 /// 把记录 `ids`（同一项目的真机段配方记录，带 cycleId）导出为 `target`；`include_images` 时带上原图完整的件的录制目录，
@@ -225,7 +225,11 @@ pub fn export_package(
     std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
     let database = scratch.join(DATABASE);
     store.export_parts(ids, &database)?;
-    let root = source.root.canonicalize().ok();
+    let roots: Vec<PathBuf> = source
+        .roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .collect();
     let mut notes = Vec::new();
     let mut entries = vec![(DATABASE.to_string(), database.clone())];
     let mut parts = Vec::with_capacity(candidates.len());
@@ -234,7 +238,7 @@ pub fn export_package(
         let s = &c.summary;
         let cycle = s.cycle_id.clone().unwrap_or_default();
         let directory = if include_images {
-            match recording_directory(root.as_deref(), &c.recording, &cycle) {
+            match recording_directory(&roots, &c.recording, &cycle) {
                 Ok((name, path)) => {
                     let mut walked = Vec::new();
                     let mut links = Vec::new();
@@ -292,21 +296,23 @@ pub fn export_package(
     )
 }
 
-/// 记录的原图目录（名称，规范化路径）：录制完整、目录在来源录制根下、目录名与 cycleId 一致；否则给出原因。
+/// 记录的原图目录（名称，规范化路径）：录制完整、目录在来源的某个录制根下、目录名与 cycleId 一致；否则给出原因。
 fn recording_directory(
-    root: Option<&Path>,
+    roots: &[PathBuf],
     recording: &crate::store::RecordingEvidence,
     cycle: &str,
 ) -> Result<(String, PathBuf), String> {
     if recording.state != RecordingState::Complete || !recording.available {
         return Err("录制不完整或原图已清理".into());
     }
-    let root = root.ok_or("录制根目录不存在")?;
     let path = Path::new(recording.directory.as_deref().ok_or("记录没有录制目录")?)
         .canonicalize()
-        .map_err(|_| "录制目录不存在或已清理".to_string())?;
-    if !path.starts_with(root) || path == root {
-        return Err("录制目录不在项目的真机录制根下".into());
+        .map_err(|_| "录制目录不存在、已清理或所在盘不可用".to_string())?;
+    if !roots
+        .iter()
+        .any(|root| path.starts_with(root) && path != *root)
+    {
+        return Err("录制目录不在项目的真机录制盘上".into());
     }
     crate::image_file::checked_source_path(&path)?;
     let name = path
@@ -777,7 +783,7 @@ pub async fn history_package_export(
             let name = crate::project::read_meta(&crate::project::dir(&data, &project))
                 .map(|meta| meta.name)
                 .unwrap_or_else(|_| project.clone());
-            let root = crate::project::records::record_root(&data, &project, RecordSource::Real)?;
+            let roots = crate::project::records::record_roots(&data, &project)?;
             let scratch = transfer::staging_dir(&data.join("cache"), "history-export")?;
             let target = PathBuf::from(&path);
             let manifest = export_package(
@@ -787,7 +793,7 @@ pub async fn history_package_export(
                 &ExportSource {
                     project: &project,
                     project_name: &name,
-                    root: &root,
+                    roots: &roots,
                 },
                 &scratch,
                 &target,
@@ -878,7 +884,10 @@ pub async fn history_package_import(
             let store = app.state::<Store>();
             let data = crate::storage::root(&app);
             let project = store.project().to_string();
-            let root = crate::project::records::record_root(&data, &project, RecordSource::Real)?;
+            // 导入的原图写到第一块剩余不少于余量的录制盘；都不足时写第一块
+            let roots = crate::project::records::record_roots(&data, &project)?;
+            let root = crate::disk_guard::first_with_reserve(&roots)
+                .map_or_else(|| roots[0].clone(), |i| roots[i].clone());
             let mut imported = import_package(&store, &project, &root, Path::new(&path), operation)?;
             let days = app.state::<crate::cycle::CycleHost>().settings().history_days.max(1) as i64;
             let cutoff = ly_plc::now_ms() - days * 86_400_000;

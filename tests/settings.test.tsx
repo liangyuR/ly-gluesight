@@ -10,8 +10,11 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true })
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 
 let saved: CycleSettings;
+let disks: string[];
+const disksReply = () => ({ reserveBytes: 5 * 1024 ** 3, disks: disks.map((path, i) => ({ path, freeBytes: 100 * 1024 ** 3, writable: true, error: null, current: i === 0 })) });
 
 beforeEach(() => {
+  disks = ["C:\\gs_logs", "D:\\gs_logs"];
   saved = {
     productSource: "plc", manualRecipeId: null, historyDays: 180,
     timeouts: { motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
@@ -26,6 +29,8 @@ beforeEach(() => {
       case "storage_status": return { environment: "development", root: "C:/ProgramData/ly/GlueSight-dev",
         logRoot: "C:/test/gs_logs", runtimeLogDir: "C:/test/gs_logs/runtime/development/instance", visionLogDir: "C:/test/gs_logs/vision/development/instance/project" };
       case "storage_open_directory": return;
+      case "storage_recording_disks": return disksReply();
+      case "storage_recording_disks_save": disks = (args as { paths: string[] }).paths; return disksReply();
       case "app_info": return { name: "GlueSight", version: "test" };
       default: throw new Error(`Unexpected command: ${command}`);
     }
@@ -67,4 +72,15 @@ describe("原图保留设置", () => {
     expect(screen.getByRole("spinbutton", { name: "真机录制最多保留（件）" })).toBeDisabled();
   });
 
+});
+
+describe("录制盘", () => {
+  it("把第二块盘上移后保存 → 按界面顺序提交，新件先写这块盘", async () => {
+    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
+    const panel = await screen.findByRole("region", { name: "录制盘" });
+    await userEvent.click(await within(panel).findByRole("button", { name: "上移 D:\\gs_logs" }));
+    await userEvent.click(within(panel).getByRole("button", { name: "保存录制盘" }));
+    await waitFor(() => expect(disks).toEqual(["D:\\gs_logs", "C:\\gs_logs"]));
+    expect(within(panel).getAllByRole("listitem")[0].textContent).toContain("D:\\gs_logs");
+  });
 });

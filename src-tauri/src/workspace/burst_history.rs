@@ -374,10 +374,10 @@ impl<'a> FrameReader<'a> {
             .cycle_id
             .as_deref()
             .ok_or("历史记录没有 cycleId")?;
-        let root = crate::project::records::record_root(
+        let root = crate::project::records::record_root_of(
             &crate::storage::root(app),
             &detail.summary.project_id,
-            detail.summary.source,
+            detail.recording.directory.as_deref(),
         )?;
         recorded::VerifiedFrames::new(&root, cycle_id).map(FrameSource::Recorded)
     }
@@ -426,10 +426,10 @@ pub(super) fn frame_image(
         .cycle_id
         .as_deref()
         .ok_or("历史记录没有 cycleId，不能确定对应原图")?;
-    let root = crate::project::records::record_root(
+    let root = crate::project::records::record_root_of(
         &crate::storage::root(app),
         &detail.summary.project_id,
-        detail.summary.source,
+        detail.recording.directory.as_deref(),
     )?;
     recorded::load_frame_verified(&root, cycle_id, camera_id, frame)
 }

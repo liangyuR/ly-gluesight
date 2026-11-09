@@ -1349,32 +1349,69 @@ impl Store {
         (format!(" WHERE {}", clauses.join(" AND ")), args)
     }
 
-    /// 某个录制根目录下仍被生产历史引用的 _pending 目录。
-    pub fn pending_recording_directories(&self, root: &Path, scope: HistoryScope) -> Result<Vec<PathBuf>, String> {
-        let root_text = root.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string();
-        let prefix = format!("{root_text}/");
+    /// 各录制盘的录制根下仍被生产历史引用的 _pending 目录；相对引用（帧原图）不知道在哪块盘，每块盘都保护。
+    pub fn pending_recording_directories(
+        &self,
+        roots: &[PathBuf],
+        scope: HistoryScope,
+    ) -> Result<Vec<PathBuf>, String> {
+        let prefixes: Vec<(&PathBuf, String)> = roots
+            .iter()
+            .map(|root| {
+                (
+                    root,
+                    format!(
+                        "{}/",
+                        root.to_string_lossy()
+                            .replace('\\', "/")
+                            .trim_end_matches('/')
+                    ),
+                )
+            })
+            .collect();
         let mut paths = Vec::new();
         let mut protect = |value: &str| -> Result<(), String> {
             let normalized = value.replace('\\', "/");
-            let relative = if normalized.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(&prefix)) {
-                &normalized[prefix.len()..]
+            let (targets, relative): (Vec<&PathBuf>, &str) = if let Some((root, prefix)) =
+                prefixes.iter().find(|(_, prefix)| {
+                    normalized
+                        .get(..prefix.len())
+                        .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+                }) {
+                (vec![*root], &normalized[prefix.len()..])
             } else if !Path::new(value).is_absolute() && !normalized.contains(':') {
-                normalized.as_str()
+                (roots.iter().collect(), normalized.as_str())
             } else {
                 if normalized.to_ascii_lowercase().contains("/_pending/") {
-                    return Err("历史 pending 引用不在当前 records 根目录，暂停清理".into());
+                    return Err("历史 pending 引用不在任何录制盘的 records 根目录，暂停清理".into());
                 }
                 return Ok(());
             };
             let components: Vec<_> = relative.split('/').collect();
-            if !components.first().is_some_and(|p| p.eq_ignore_ascii_case("_pending")) { return Ok(()); }
-            if components.len() < 2 || components.iter().any(|p| p.is_empty() || *p == "." || *p == ".." || p.contains(':')) {
+            if !components
+                .first()
+                .is_some_and(|p| p.eq_ignore_ascii_case("_pending"))
+            {
+                return Ok(());
+            }
+            if components.len() < 2
+                || components
+                    .iter()
+                    .any(|p| p.is_empty() || *p == "." || *p == ".." || p.contains(':'))
+            {
                 return Err("历史 pending 录制引用路径无效，暂停清理".into());
             }
-            paths.push(root.join("_pending").join(components[1]));
+            paths.extend(
+                targets
+                    .into_iter()
+                    .map(|root| root.join("_pending").join(components[1])),
+            );
             Ok(())
         };
-        let conn = self.conn.lock().map_err(|_| "数据库锁异常，暂停孤立录制清理".to_string())?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "数据库锁异常，暂停孤立录制清理".to_string())?;
         let mut stmt = conn.prepare(&format!("SELECT recording_directory FROM parts WHERE project_id=?1 AND instr(lower(recording_directory),'_pending')>0 AND {}", scope.clause(""))).map_err(db_err)?;
         for row in stmt
             .query_map([&self.project], |row| row.get::<_, String>(0))

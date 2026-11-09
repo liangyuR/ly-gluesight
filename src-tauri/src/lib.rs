@@ -162,9 +162,12 @@ fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
     {
         applog::write(level, "检测记录合并", &message);
     }
-    match project::records::record_root(&data, &current, store::RecordSource::Real) {
-        Ok(root) => {
-            for warning in history_package::recover(&store, &root) {
+    match project::records::record_roots(&data, &current) {
+        Ok(roots) => {
+            for warning in roots
+                .iter()
+                .flat_map(|root| history_package::recover(&store, root))
+            {
                 applog::write("warn", "历史件导入中断清理", &warning);
             }
         }
@@ -259,6 +262,8 @@ pub fn run() {
             storage_startup::storage_startup_create_project,
             storage::storage_status,
             storage::storage_open_directory,
+            storage::storage_recording_disks,
+            storage::storage_recording_disks_save,
             project::project_current,
             project::project_list,
             project::manage::project_usage,
