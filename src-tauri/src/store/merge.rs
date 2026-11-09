@@ -376,7 +376,14 @@ fn adoptable(conn: &Connection) -> Result<Vec<Adoption>, String> {
                     .collect()
             })
             .map_err(db_err)?;
-        out.push(Adoption { local, directory, state, available, errors, frames });
+        out.push(Adoption {
+            local,
+            directory,
+            state,
+            available,
+            errors,
+            frames,
+        });
     }
     Ok(out)
 }
@@ -390,11 +397,17 @@ impl Store {
         let mut adopted = 0;
         for a in adoptions {
             let current: Option<Option<String>> = tx
-                .query_row("SELECT recording_directory FROM parts WHERE id = ?1", [a.local], |r| r.get(0))
+                .query_row(
+                    "SELECT recording_directory FROM parts WHERE id = ?1",
+                    [a.local],
+                    |r| r.get(0),
+                )
                 .optional()
                 .map_err(db_err)?;
             let Some(current) = current else { continue };
-            if current.is_some_and(|dir| Path::new(&dir).is_dir()) || !Path::new(&a.directory).is_dir() {
+            if current.is_some_and(|dir| Path::new(&dir).is_dir())
+                || !Path::new(&a.directory).is_dir()
+            {
                 continue;
             }
             tx.execute(
