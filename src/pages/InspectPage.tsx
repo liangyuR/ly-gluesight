@@ -6,11 +6,11 @@ import { BurstRuntimeFrame } from "../features/workspace/RuntimeFrame";
 import { CameraSegmentOverview } from "../features/plan/CameraSegmentOverview";
 import { expectedText, flagBadges } from "../features/plan/vis";
 import type { PartViewBurst } from "../features/plan/types";
-import { displayReason, triggerModeLabel, verdictLabel, verdictTone } from "../features/history";
+import { displayReason, verdictLabel, verdictTone } from "../features/history";
 import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
 import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/components/InspectionDiagnostics";
 import ContextHelp from "../features/cycle/components/ContextHelp";
-import { MaintenanceToggle, TrialProgressPanel } from "../features/cycle/components/MaintenanceMode";
+import { MaintenanceToggle } from "../features/cycle/components/MaintenanceMode";
 import { errorText } from "../lib/errors";
 import {
   cycleApi,
@@ -27,6 +27,7 @@ import {
   type Verdict,
 } from "../features/cycle";
 import { usePlcOperationState } from "../features/plc/api";
+import { TitlebarContent } from "../layout/TitlebarContent";
 
 function verdictParts(v: Verdict) {
   const [code, detail] = verdictLabel[v].split(" · ");
@@ -92,7 +93,6 @@ export default function InspectPage() {
     setSeqSelection({ scope: burstScope, seq });
     setView("image");
   };
-  const trigger = snapshot?.triggerMode ?? layout?.triggerMode;
   const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
   const switchProblem = !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
 
@@ -139,8 +139,7 @@ export default function InspectPage() {
   const busy = !!snapshot && phase !== "IDLE" && phase !== "FAULT";
   return (
     <div className="prod">
-      <div className="prod-bar">
-        <Chip>{triggerModeLabel(trigger)}</Chip>
+      <TitlebarContent slot="details"><div className="inspect-title-details" role="group" aria-label="当前检测信息">
         {snapshot?.productSource === "manual" ? (
           <Select
             id="manual-recipe"
@@ -160,19 +159,20 @@ export default function InspectPage() {
         <Chip className="prod-sn" title={part?.sn || result?.sn || undefined}>
           SN <b className="sn">{part?.sn || result?.sn || "—"}</b>
         </Chip>
-        <span className="spacer" />
+      </div></TitlebarContent>
+      <TitlebarContent slot="actions"><div className="inspect-title-actions" role="group" aria-label="在线检测操作">
         <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
-        {snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} />}
-        <Button onClick={() => setDiagnostics("readiness")}>诊断</Button>
+        {snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} compact />}
+        <Button size="sm" variant="text" onClick={() => setDiagnostics("readiness")}>诊断</Button>
         {showReset && (
           <>
             <ContextHelp label="复位条件">软件复位请求 PLC 在 10 秒内返回空闲；未响应可重新发起，也可在现场由 PLC 复位。</ContextHelp>
-            <Button onClick={() => setConfirmReset(true)} disabled={action !== null || !!resetBlockedReason} title={resetBlockedReason || undefined} loading={action === "reset"} leadingIcon={<RotateCcw size={15} />}>
+            <Button size="sm" variant="text" onClick={() => setConfirmReset(true)} disabled={action !== null || !!resetBlockedReason} title={resetBlockedReason || undefined} loading={action === "reset"} leadingIcon={<RotateCcw size={13} />}>
               {action === "reset" ? "复位中…" : "软件复位"}
             </Button>
           </>
         )}
-      </div>
+      </div></TitlebarContent>
       {resetError && <Alert tone="ng">{resetError}</Alert>}
       {!!snapshot?.measurementWorkers.timedOut && <Alert tone="ng">
         测量线程超时未返回：{snapshot.measurementWorkers.timedOut} / {snapshot.measurementWorkers.capacity}，当前可用容量 {snapshot.measurementWorkers.availableCapacity}。
@@ -181,7 +181,6 @@ export default function InspectPage() {
       {snapshot?.recordingAlarm && <Alert tone="warn">
         原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查录制盘空间与录制目录写权限，下一件完整保存后自动消除。
       </Alert>}
-      <TrialProgressPanel trial={snapshot?.trial} recipes={recipes} />
       <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} resetBlockedReason={showReset ? resetBlockedReason : ""} resetPendingCheck={showReset && resetPendingCheck} />
 
       <div className="prod-body">

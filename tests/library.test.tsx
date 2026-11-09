@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,4 +35,16 @@ describe("配方库操作", () => {
     await userEvent.click(screen.getByRole("button",{name:"打开已创建候选"}));expect(workspaceApi.create).toHaveBeenCalledTimes(1);
     await waitFor(()=>expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/NEW/progress"));
   });
+});
+
+it("更多菜单删除指定配方 → 确认前保留配方，确认后只删除所选编号", async () => {
+  ws.drafts = [view("A").workspace, view("B").workspace];
+  show();
+  await userEvent.click(screen.getByRole("button", { name: "更多操作 B" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "删除配方" }));
+  const dialog = await screen.findByRole("dialog", { name: "删除配方" });
+  expect(workspaceApi.remove).not.toHaveBeenCalled();
+  await userEvent.click(within(dialog).getByRole("button", { name: "删除 B" }));
+  await waitFor(() => expect(workspaceApi.remove).toHaveBeenCalledWith("B"));
+  expect(workspaceApi.remove).toHaveBeenCalledTimes(1);
 });

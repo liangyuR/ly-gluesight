@@ -2,12 +2,17 @@ import { useEffect, useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { useSnackbar } from "qing-steel";
+import { useLocation } from "react-router-dom";
+import { TitlebarSlotsContext } from "./TitlebarContent";
 import { desktopAvailable } from "../lib/desktop";
 import { errorText } from "../lib/errors";
 import { WindowConnections, WindowModeBadges, WindowVersion } from "./WindowStatus";
 import "./window-frame.css";
 
 export default function WindowFrame({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation();
+  const [details, setDetails] = useState<HTMLDivElement | null>(null);
+  const [actions, setActions] = useState<HTMLDivElement | null>(null);
   const [nativeWindow] = useState(() => desktopAvailable() ? getCurrentWindow() : null);
   const [maximized, setMaximized] = useState(false);
   const [focused, setFocused] = useState(true);
@@ -52,11 +57,11 @@ export default function WindowFrame({ children }: { children: ReactNode }) {
   const maximizeLabel = maximized ? "还原窗口" : "最大化窗口";
 
   return (
-    <div className={`app-frame${maximized ? " is-maximized" : ""}${focused ? "" : " is-unfocused"}`}>
+    <TitlebarSlotsContext.Provider value={{ details, actions }}><div className={`app-frame${maximized ? " is-maximized" : ""}${focused ? "" : " is-unfocused"}`}>
       <header className="window-titlebar" aria-label="应用标题栏">
         <div className="window-drag-region"
           onMouseDown={event => {
-            if (!nativeWindow || event.button !== 0 || (event.target as Element).closest("a, button")) return;
+            if (!nativeWindow || event.button !== 0 || (event.target as Element).closest("a, button, input, select, textarea, [role='combobox'], [data-titlebar-content]")) return;
             if (event.detail === 2) run(() => nativeWindow.toggleMaximize());
             else run(() => nativeWindow.startDragging());
           }}>
@@ -65,7 +70,10 @@ export default function WindowFrame({ children }: { children: ReactNode }) {
             <strong>GlueSight</strong>
             <WindowVersion />
           </div>
-          <WindowModeBadges />
+          {pathname !== "/inspect" && <WindowModeBadges />}
+          <div ref={setDetails} className="window-page-details" data-titlebar-content />
+          <div className="window-drag-space" />
+          <div ref={setActions} className="window-page-actions" data-titlebar-content />
           <WindowConnections />
         </div>
         {nativeWindow ? <div className="window-controls" role="group" aria-label="窗口控制">
@@ -75,6 +83,6 @@ export default function WindowFrame({ children }: { children: ReactNode }) {
         </div> : <span className="window-browser-label">浏览器预览</span>}
       </header>
       {children}
-    </div>
+    </div></TitlebarSlotsContext.Provider>
   );
 }
