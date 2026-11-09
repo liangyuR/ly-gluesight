@@ -447,15 +447,28 @@ fn merging_a_duplicate_with_pruned_recording_leaves_the_local_record_until_insta
     std::fs::remove_dir_all(&original).unwrap();
     let packaged = data.0.join("packaged.db");
     std::io::copy(
-        &mut open_archive(&package).unwrap().by_name("project/inspection.db").unwrap(),
+        &mut open_archive(&package)
+            .unwrap()
+            .by_name("project/inspection.db")
+            .unwrap(),
         &mut File::create(&packaged).unwrap(),
     )
     .unwrap();
-    let merged = store.merge_project(&packaged, "line-b", false, true).unwrap();
+    let merged = store
+        .merge_project(&packaged, "line-b", false, true)
+        .unwrap();
     assert_eq!((merged.duplicates, merged.adoptable.len()), (1, 1));
-    let owner = || store.detail_by_cycle("c1").unwrap().map(|d| d.summary.project_id);
+    let owner = || {
+        store
+            .detail_by_cycle("c1")
+            .unwrap()
+            .map(|d| d.summary.project_id)
+    };
     assert_eq!(owner().as_deref(), Some("line-a"), "合并时不改本机记录");
-    assert_eq!(store.recording_directory("c1").unwrap(), Some(original.clone()));
+    assert_eq!(
+        store.recording_directory("c1").unwrap(),
+        Some(original.clone())
+    );
     store.forget_project("line-b").unwrap();
     assert_eq!(owner().as_deref(), Some("line-a"), "撤回导入不带走本机记录");
 }
