@@ -367,7 +367,7 @@ fn exported_records_carry_teaching_pieces_from_other_projects_with_their_recordi
     let package = export(&from.0, &source, &store);
     assert!(open_archive(&package)
         .unwrap()
-        .by_name("project/records/linked/20261107_cycle_x1/cam1_s000001.pgm")
+        .by_name("project/records/imported/20261107_cycle_x1/cam1_s000001.pgm")
         .is_ok());
 
     let local = local_store(&to.0, "default");
@@ -390,6 +390,10 @@ fn exported_records_carry_teaching_pieces_from_other_projects_with_their_recordi
         directory.display()
     );
     assert!(directory.join("cam1_s000001.pgm").is_file());
+    assert!(
+        crate::history_package::imported_recording(&directory),
+        "放在 imported/ 下：滚动清理不扫，记录过期时随记录删除"
+    );
     assert_eq!(
         local.project_records().unwrap().get("line-b").map(|r| r.0),
         Some(2)

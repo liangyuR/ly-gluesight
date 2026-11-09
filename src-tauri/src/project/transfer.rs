@@ -37,8 +37,9 @@ const CONTENT: [&str; 8] = [
 ];
 const RECORDS: [&str; 2] = ["inspection.db", "records"];
 const PENDING_RECORDINGS: &str = ".project-install-pending.json";
-/// 包里放别的项目被示教件引用的录制的子目录（录制根 `records/` 下，滚动清理不扫）。
-const LINKED: &str = "linked";
+/// 包里放别的项目被示教件引用的录制的子目录：与历史件导出包导入的件同放 `records/imported/`，滚动清理不扫，
+/// 记录过期（不再被引用）时随记录一起删。
+const LINKED: &str = crate::history_package::IMPORTED;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -241,7 +242,7 @@ fn collect(
     Ok(out)
 }
 
-/// 本项目示教件引用的别的项目的历史件：录制原图放进包里的 `records/linked/<录制目录名>/`，导出记录库子集里这些记录的
+/// 本项目示教件引用的别的项目的历史件：录制原图放进包里的 `records/imported/<录制目录名>/`，导出记录库子集里这些记录的
 /// 录制目录与帧原图引用改到那里（之后随本项目录制根一起改写）。录制已不在的只改记录、不带原图，并记一条说明。
 fn link_recordings(
     snapshot: &Path,
