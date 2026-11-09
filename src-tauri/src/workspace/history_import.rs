@@ -591,6 +591,8 @@ fn import(
     if picks.iter().any(|p| !unique.insert(p.record_id)) {
         return Err("不能重复选择同一件".into());
     }
+    // 从核对到写好轮次与清理互斥（见 `recipe_capture::REFERENCES`）
+    let _references = crate::recipe_capture::lock_references();
     let store = app.state::<Store>();
     let parts = picks
         .iter()

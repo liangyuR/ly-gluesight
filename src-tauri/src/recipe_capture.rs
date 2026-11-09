@@ -236,6 +236,14 @@ impl RecipeCaptureHost {
     }
 }
 
+/// 登记历史件引用（导入示教件）与清理录制、记录（滚动清理、按天清理）互斥：清理从查引用到删除持有它，导入从核对到写好轮次
+/// 持有它，免得清理按旧的引用快照删掉刚被引用的件。
+pub static REFERENCES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn lock_references() -> std::sync::MutexGuard<'static, ()> {
+    REFERENCES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// 采集目录 `root` 里历史件导入轮次引用的来源 cycleId：这些录制不参与滚动清理与按天清理。目录不在为空；记录读不了的轮次跳过。
 pub fn history_cycles(root: &Path) -> Result<std::collections::BTreeSet<String>, String> {
     let mut cycles = std::collections::BTreeSet::new();

@@ -1459,7 +1459,8 @@ fn save_comparison(app: &AppHandle, comparison: &Comparison) -> Result<(), Strin
         .save(&host.root, &app.state::<Store>(), comparison)
 }
 
-/// 按天清理：被示教件、标定件引用的历史件（记录与录制）保留，引用核对不了时本次不清理。
+/// 按天清理：被示教件、标定件引用的历史件（记录与录制）保留，引用核对不了时本次不清理。调用方持
+/// `recipe_capture::REFERENCES`（先于追溯 spool 锁取得）。
 pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<String>), String> {
     let host = app.state::<WorkspaceHost>();
     let data = crate::storage::root(app);
@@ -1483,6 +1484,7 @@ pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<
     Ok((count, warnings))
 }
 
+/// 删除历史记录；示教件、标定件引用的记录拒绝删除。调用方持 `recipe_capture::REFERENCES`（先于追溯 spool 锁取得）。
 pub(crate) fn delete_history(app: &AppHandle, ids: &[i64]) -> Result<Vec<String>, String> {
     let host = app.state::<WorkspaceHost>();
     let store = app.state::<Store>();

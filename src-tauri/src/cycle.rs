@@ -649,10 +649,13 @@ impl CycleHost {
 /// 删除超过保留天数的检测记录（本机全部项目）；非当前项目的记录连同原图一起删，当前项目的原图由录制滚动清理。
 pub fn purge_history(app: &AppHandle) {
     let days = host(app).settings().history_days.max(1) as i64;
-    match host(app)
+    // 引用锁先于追溯 spool 锁：录制滚动清理持引用锁时会取 spool 锁查待入库目录
+    let references = crate::recipe_capture::lock_references();
+    let purged = host(app)
         .audit
-        .with_ready(|| crate::workspace::purge_history(app, now_ms() - days * 86_400_000))
-    {
+        .with_ready(|| crate::workspace::purge_history(app, now_ms() - days * 86_400_000));
+    drop(references);
+    match purged {
         Ok((n, warnings)) => {
             if n > 0 {
                 log(

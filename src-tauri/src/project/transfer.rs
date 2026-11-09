@@ -133,7 +133,8 @@ fn allowed(path: &str, records: bool) -> bool {
             || records && (RECORDS.contains(&top) || top == "records-offline"))
 }
 
-/// 旧采集轮次目录里的原图（示教件原图现在只引用检测记录的录制，不随项目导出或复制）。
+/// 旧采集轮次目录里的原图：新轮次只引用检测记录的录制、没有原图；旧轮次（格式 3 及更早）的原图可能是唯一一份
+/// （来源录制已清理），随项目导出与复制。
 fn capture_image(path: &str) -> bool {
     path.starts_with("project/recipe-capture/") && path.ends_with(".pgm")
 }
@@ -200,8 +201,9 @@ fn walk_tops(
     Ok(out)
 }
 
-/// 待写进包的文件：（包内路径，磁盘路径）。采集轮次只带 `round.json` 与 `frames.jsonl`：示教件原图引用检测记录的录制，
-/// 只随检测记录带出。`records` 有值时带上该项目的检测记录与录制：从本机记录库导出本项目记录的子集，放在 `scratch`。
+/// 待写进包的文件：（包内路径，磁盘路径）。新采集轮次只有 `round.json` 与 `frames.jsonl`，示教件原图引用检测记录的录制，
+/// 只随检测记录带出；旧轮次目录里的原图照带。`records` 有值时带上该项目的检测记录与录制：从本机记录库导出本项目记录的子集，
+/// 放在 `scratch`。
 fn collect(
     root: &Path,
     records: Option<&Store>,
@@ -218,7 +220,6 @@ fn collect(
         .copied()
         .collect();
     let mut out = walk_tops(root, &tops, notes)?;
-    out.retain(|(name, _)| !capture_image(name));
     let recording_root = crate::log_storage::recording_project(root)?;
     if let Some(store) = records {
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
@@ -317,10 +318,8 @@ pub fn transfer_size(root: &Path, records_db: u64) -> Result<TransferSize, Strin
     let bytes = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut notes = Vec::new();
     let mut size = TransferSize::default();
-    for (name, path) in walk_tops(root, &CONTENT, &mut notes)? {
-        if !capture_image(&name) {
-            size.content += bytes(&path);
-        }
+    for (_, path) in walk_tops(root, &CONTENT, &mut notes)? {
+        size.content += bytes(&path);
     }
     for (_, path) in walk_tops(root, &RECORDS[1..], &mut notes)? {
         size.records += bytes(&path);
@@ -1026,7 +1025,7 @@ fn copy_into(
             id: source_id,
             root: &source_root,
             keep_history: true,
-            capture_images: false,
+            capture_images: true,
             records: true,
         },
         new,

@@ -233,6 +233,10 @@ fn copied_project_gets_its_own_paths_and_leaves_the_source_untouched() {
         .as_str()
         .unwrap();
     assert!(Path::new(original).starts_with(&target), "{original}");
+    assert!(
+        target.join("recipe-capture/capture-1/a.pgm").is_file(),
+        "旧轮次的原图可能是唯一一份，随复制带走"
+    );
     assert!(!target.join("inspection.db").exists());
     assert_eq!(
         store
