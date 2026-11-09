@@ -811,7 +811,11 @@ fn import(
             &project,
         )?);
         w.ensure_instance(&app.state::<Store>())?;
-        install(&project, staging, &w)?;
+        {
+            // 替换轮次时旧轮次先移出、新轮次后移入，中间不让清理按缺了引用的快照删掉示教件的来源历史件
+            let _references = crate::recipe_capture::lock_references();
+            install(&project, staging, &w)?;
+        }
         items.insert(id.clone(), w.clone());
         w
     };
