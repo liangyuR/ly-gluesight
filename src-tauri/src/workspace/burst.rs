@@ -138,7 +138,7 @@ pub struct CalibrationRound {
     pub created_at: i64,
     /// 测量时的计划相机顺序；下面几项按它排列
     pub cameras: Vec<String>,
-    /// 各相机采集时的设备配置：发布时要与当前设备相同
+    /// 各相机采集时的设备配置，只作记录，不与当前设备比较
     pub camera_config: Vec<Value>,
     /// 帧组数 = 各相机最大 seq 的最大值
     pub group_count: u64,
@@ -694,7 +694,6 @@ fn teaching_source<'a>(
     recipe_id: &str,
     camera: &str,
     seq: u64,
-    current_config: &Value,
 ) -> Result<&'a CaptureCamera, String> {
     if round.recipe_id != recipe_id || round.state != CaptureState::Complete {
         return Err(format!(
@@ -720,9 +719,6 @@ fn teaching_source<'a>(
         .any(|m| m.camera == index && m.seq == seq)
     {
         return Err(format!("相机 {camera} 缺第 {seq} 帧组的图像，请换一帧"));
-    }
-    if &source.camera_config != current_config {
-        return Err(format!("采集后相机 {camera} 的参数已改变，请重新采集"));
     }
     Ok(source)
 }
@@ -1054,7 +1050,7 @@ pub(super) async fn prepare_segment_teaching(
             .into_iter()
             .find(|c| c.id == camera)
             .ok_or_else(|| format!("相机 {camera} 已不在设备配置里"))?;
-        let imaging = teaching_source(&captured, &id, &camera, seq, &state_value(&config))?.imaging;
+        let imaging = teaching_source(&captured, &id, &camera, seq)?.imaging;
         let source = capture.burst_frame_path(&round, &camera, seq)?;
         crate::image_file::checked_source_path(&source)?;
         let bytes =
@@ -1627,12 +1623,8 @@ pub async fn workspace_snap_corridor(
 
 // ───────────── 示教件测量 ─────────────
 
-/// 示教件能不能测量：属于本候选、已完整完成；相机集合等于计划相机；每台相机采集时的设备配置与当前设备相同。
-pub(super) fn check_round(
-    doc: &RecipeDoc,
-    round: &CaptureRoundV2,
-    current: &BTreeMap<String, Value>,
-) -> Result<(), String> {
+/// 示教件能不能测量：属于本候选、已完整完成；相机集合等于计划相机。不比较采集时与当前的相机设备配置：示教件常在别的机器上示教。
+pub(super) fn check_round(doc: &RecipeDoc, round: &CaptureRoundV2) -> Result<(), String> {
     require_burst(doc)?;
     let id = &round.round_id;
     if round.recipe_id != doc.id {
@@ -1654,12 +1646,6 @@ pub(super) fn check_round(
     }
     if round.group_count == 0 {
         return Err(format!("采集轮次 {id} 没有帧组"));
-    }
-    for camera in &round.cameras {
-        let camera_id = &camera.camera_id;
-        if current.get(camera_id) != Some(&camera.camera_config) {
-            return Err(format!("采集后相机 {camera_id} 的参数已改变，请重新采集"));
-        }
     }
     Ok(())
 }

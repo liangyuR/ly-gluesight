@@ -2,7 +2,7 @@
 //! 各段 N_exp 与胶偏参考 x_ref 的唯一来源，换件即清空图像派生内容；选件即导入为轮次（只引用这件历史件的录制原图）。
 //! 轮次只作存储格式，界面面对历史件。旧流程候选（`flow` 缺省）停用，只能删除。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use super::burst::{self, CalibrationRound, CALIBRATION_DIR};
 use super::capture_review::{self, ConfirmedBy, ReviewStatus};
@@ -501,7 +501,6 @@ pub(super) fn measured_with_current_corridors(doc: &RecipeDoc, entry: &Calibrati
 pub(super) fn measure_teaching(
     w: &Workspace,
     round: &CaptureRoundV2,
-    current: &BTreeMap<String, Value>,
     measure: impl FnOnce(&Workspace, &CaptureRoundV2) -> Result<Vec<FrameMetrics>, String>,
 ) -> Result<MeasureOutcome, String> {
     if !w
@@ -517,7 +516,7 @@ pub(super) fn measure_teaching(
     if !corridor_ready(w) {
         return Err("走廊示教未完成：每段的检测相机都要有走廊，每台相机都要有像素当量".into());
     }
-    burst::check_round(&w.doc, round, current)?;
+    burst::check_round(&w.doc, round)?;
     let metrics = measure(w, round)?;
     let segmented = burst::segment_round(
         &w.doc.segments,
@@ -576,12 +575,6 @@ fn measure(
     let capture = cycle.camera.recipe_capture();
     let frame_index = capture.burst_frame_index(&piece.round_id)?;
     let round = frame_index.round();
-    let current: BTreeMap<String, Value> = cycle
-        .camera
-        .configs()
-        .iter()
-        .map(|c| (c.id.clone(), state_value(c)))
-        .collect();
     let engine = app.state::<vision::VisionHost>().engine();
     let run = vision::unique_run_id(&format!("teaching-{id}"));
     let measure = |w: &Workspace, round: &CaptureRoundV2| -> Result<Vec<FrameMetrics>, String> {
@@ -619,7 +612,7 @@ fn measure(
             Some(operation),
         )
     };
-    let prepared = PreparedTeachingMeasurement::stage(&host, &w, round, &current, |w, round| {
+    let prepared = PreparedTeachingMeasurement::stage(&host, &w, round, |w, round| {
         let metrics = measure(w, round)?;
         operation.stage("summarizing")?;
         Ok(metrics)
@@ -642,11 +635,10 @@ impl PreparedTeachingMeasurement {
         host: &WorkspaceHost,
         workspace: &Workspace,
         round: &CaptureRoundV2,
-        current: &BTreeMap<String, Value>,
         measure: impl FnOnce(&Workspace, &CaptureRoundV2) -> Result<Vec<FrameMetrics>, String>,
     ) -> Result<Self, String> {
         workspace.expect(workspace.revision)?;
-        let outcome = measure_teaching(workspace, round, current, measure)?;
+        let outcome = measure_teaching(workspace, round, measure)?;
         let staging = CalibrationStaging(
             host.dir(&workspace.doc.id)
                 .join(vision::unique_run_id("calibration-staging")),

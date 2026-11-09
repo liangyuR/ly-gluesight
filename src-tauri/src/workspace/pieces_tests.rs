@@ -1,5 +1,5 @@
 use super::burst::{calibration_round, measure_round, CameraTeaching};
-use super::burst_tests::{burst_workspace, capture_round, configs, measured, DEVICE};
+use super::burst_tests::{burst_workspace, capture_round, measured, DEVICE};
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::pieces::{measure_teaching, replace_teaching_piece, teaching_measured, TeachingPiece};
 use super::*;
@@ -70,7 +70,7 @@ pub(super) fn measured_teaching(kinds: &[SegmentKind], x: f64) -> Workspace {
 }
 
 fn measure_with(w: &Workspace, teach: &CaptureRoundV2, x: f64) -> Result<Workspace, String> {
-    measure_teaching(w, teach, &configs(&w.doc, DEVICE), |w, round| {
+    measure_teaching(w, teach, |w, round| {
         Ok(measure_round(&w.doc.plan_cameras(), round, |_, _, _| {
             Ok(measured(x))
         }))
