@@ -724,7 +724,9 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         Extract::Auto if color => Extract::Color,
         Extract::Auto => Extract::Edges,
         Extract::Color if gray_chosen => {
-            return Err("这一段选了按灰度测量，不按胶色吸附：用 extract: \"edges\" 或 \"none\"".into())
+            return Err(
+                "这一段选了按灰度测量，不按胶色吸附：用 extract: \"edges\" 或 \"none\"".into(),
+            )
         }
         Extract::Color if !color => {
             return Err("示教帧是灰度图，不能按胶色吸附：用 extract: \"edges\" 或 \"none\"".into())

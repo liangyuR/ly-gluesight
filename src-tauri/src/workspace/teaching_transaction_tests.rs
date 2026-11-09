@@ -418,9 +418,17 @@ fn reteaching_on_a_gray_frame_drops_a_pending_color_choice() {
     let fixture = Fixture::new();
     let mut w = fixture.workspace.clone();
     w.doc.inspect[0].segments[0].measure = Some(crate::recipe::MeasureMode::Color);
-    fixture.host.items.lock().unwrap().insert(w.doc.id.clone(), w.clone());
+    fixture
+        .host
+        .items
+        .lock()
+        .unwrap()
+        .insert(w.doc.id.clone(), w.clone());
     let saved = Fixture::prepare(&w, "replacement", 2, false)
         .commit(&fixture.host, path(), None)
         .unwrap();
-    assert_eq!(saved.doc.inspect[0].segment_corridor(1).unwrap().measure, None);
+    assert_eq!(
+        saved.doc.inspect[0].segment_corridor(1).unwrap().measure,
+        None
+    );
 }

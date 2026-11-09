@@ -272,6 +272,14 @@ fn saving_corridor_without_color_model_keeps_color_segments_pending_fit_and_lega
         measure: None,
     });
     super::burst::keep_color_measure(&w, &mut doc);
-    let measure = |camera: usize, segment: u32| doc.inspect[camera].segment_corridor(segment).unwrap().measure;
-    assert_eq!((measure(0, 1), measure(1, 1), measure(0, 3)), (None, Some(Color), Some(Color)));
+    let measure = |camera: usize, segment: u32| {
+        doc.inspect[camera]
+            .segment_corridor(segment)
+            .unwrap()
+            .measure
+    };
+    assert_eq!(
+        (measure(0, 1), measure(1, 1), measure(0, 3)),
+        (None, Some(Color), Some(Color))
+    );
 }
