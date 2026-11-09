@@ -280,9 +280,10 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   const invalid = corridorError(t, doc.spacing);
   // ready：没有显式操作在进行，按钮据此可点；自动保存不算，期间界面不变灰。
   // 提交后端的操作要等改动都存好（unlocked）：点下去时有待存的改动就先立即保存，存好再执行（deferAction）
-  const ready = !acting && !working && !data.workspace.pending && !navigationDirty;
+  const alignmentPending = data.workspace.passAlignment && !data.workspace.passAlignment.confirmed ? "换示教件的逐笔对照还没确认：先在上方确认对照" : "";
+  const ready = !alignmentPending && !acting && !working && !data.workspace.pending && !navigationDirty;
   const unlocked = ready && !busy && !dirty;
-  const editable = (!busy || saving) && !working && !data.workspace.pending && !navigationDirty;
+  const editable = !alignmentPending && (!busy || saving) && !working && !data.workspace.pending && !navigationDirty;
   const productionBusy = isProductionBusy(snapshot);
   const update = (next: typeof t) => { if (editable && segment != null) setCorridorDraft(key, next); };
   const setPath = (corridor: [number, number][]) => update({ ...t, corridor });
@@ -426,7 +427,7 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
 
   // 能自动保存的草稿切走后照常保存，不拦；按站距不足三站的草稿存不了，切走会以为丢了，先拦住
   const groupsLocked = !ready || unsavable;
-  const groupLockReason = navigationDirty ? "请先保存或撤销导航图修改" : unsavable ? "走廊有未保存的修改（按站距不足三站，不会自动保存），先改好或清空后再切换" : data.workspace.pending ? "候选版本正在等待生效" : "正在处理，请稍候";
+  const groupLockReason = alignmentPending || (navigationDirty ? "请先保存或撤销导航图修改" : unsavable ? "走廊有未保存的修改（按站距不足三站，不会自动保存），先改好或清空后再切换" : data.workspace.pending ? "候选版本正在等待生效" : "正在处理，请稍候");
   const segmentOfSeq = (s: number) => seg.spans.findIndex(([first, last]) => s >= first && s <= last);
   const focusPos = (target: number, cam?: string) => {
     const item = seg.restructured ? undefined : plan.segments[target];
@@ -536,8 +537,8 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
     <p className="muted hint">走廊保存进候选配方，已发布版本不变。用于生产前仍需试测与发布。</p>
   </Popover>;
   const frameTitle = <h2 className="wp-trial-title" title={frame ? `${frame.source} · ${frame.id}` : undefined}>{targetLabel}<small>示教帧{teachSeq != null ? ` · 帧组 ${teachSeq}` : ""}</small></h2>;
-  const pickReason = !teachingPiece ? "还没有示教件：先选示教件" : !picked ? "正在读取示教件" : seg.dirty ? "分段还没保存：保存后再选示教帧" : !range ? "示教件的分段边界还没确认"
-    : !inSegment ? `${label} 在示教件为帧组 ${range.start}–${range.end}` : !arrived ? "该相机本帧组缺帧，请换一个帧组" : !ready ? "正在处理，请稍候" : "";
+  const pickReason = alignmentPending || (!teachingPiece ? "还没有示教件：先选示教件" : !picked ? "正在读取示教件" : seg.dirty ? "分段还没保存：保存后再选示教帧" : !range ? "示教件的分段边界还没确认"
+    : !inSegment ? `${label} 在示教件为帧组 ${range.start}–${range.end}` : !arrived ? "该相机本帧组缺帧，请换一个帧组" : !ready ? "正在处理，请稍候" : "");
   const pickBar = <Surface role="region" className="wp-picker wp-corridor-picker" aria-label="示教帧选择">
     <h2>{targetLabel}<small>候选示教帧 · 帧组 {seq}</small></h2>
     <div className="wp-corridor-pick">{range && <span className="muted">{label} 在示教件为帧组 {range.start}–{range.end}</span>}</div>
@@ -656,13 +657,13 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
     return item ? tasks.filter(task => task.segment === item.index).map(task => ({ camera: task.camera, status: task.status })) : null;
   };
   const alignment = data.workspace.passAlignment;
-  const alignmentPanel = alignment && <PassAlignmentPanel alignment={alignment} plan={plan} locked={seg.edited ? "分段有未保存的改动：保存或撤销后再改对照" : ""} />;
+  const alignmentPanel = alignment && <PassAlignmentPanel alignment={alignment} plan={plan} locked={seg.edited || dirty || frameDirty || navigationDirty ? "有未保存的改动：保存或撤销后再改对照" : ""} />;
   const segmentFailed = seg.status === "failed";
   const topBar = <Surface role="group" className="st-topbar" aria-label="示教件与分段">
     <span className="st-piece">{teachingPiece ? <>示教件 · {pieceLabel(teachingPiece)}</> : <>还没有示教件，<Link className="wp-text-link" to={href("/recipe/capture")}>选示教件</Link></>}</span>
     {seg.draft && <span className="muted" aria-label="笔、帧组与段数">{seg.passes.length} 笔 · {seg.groupCount} 帧组 · {seg.spans.length} 段</span>}
-    <PassSkipFields />
-    <BoundaryGuardField />
+    <PassSkipFields locked={alignmentPending} />
+    <BoundaryGuardField locked={alignmentPending} />
     <span className="st-save" role="status" aria-label="分段保存状态"><Badge tone={segmentFailed || seg.status === "confirm" || seg.status === "invalid" ? "warn" : "neutral"}>{segmentSaveText[seg.status]}</Badge>
       {seg.status === "invalid" && <span className="c-warn">至少要有一段检测</span>}
       {segmentFailed && <Button size="sm" onClick={seg.retry}>重试保存分段</Button>}</span>
