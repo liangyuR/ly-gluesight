@@ -35,6 +35,7 @@ http-body-util = "0.1"
 libloading = "0.8"
 # 诊断包 ZIP：与 png 解码共用已锁定的版本
 flate2 = "1"
+zstd = { version = "0.13", default-features = false }
 crc32fast = "1"
 # 项目导出导入包：读写需 ZIP64（多轮原图可超过 4 GB）与 SHA-256 清单校验
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
@@ -65,4 +66,13 @@ opt-level = 2
 opt-level = 3
 
 [profile.dev.package.zune-jpeg]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.zstd-sys]
 opt-level = 3

@@ -85,12 +85,14 @@ fn color_frame_records_bayer_mosaic_as_main_file_and_reads_back_rgb() {
         )
         .unwrap();
     // BG 相位纯色马赛克：R=200 G=100 B=50
-    let mosaic = vec![50, 100, 100, 200];
+    let mosaic: Vec<u8> = (0..64).flat_map(|y| (0..64).map(move |x| match (y % 2, x % 2) {
+        (0, 0) => 50, (1, 1) => 200, _ => 100,
+    })).collect();
     let frame = Frame {
-        images: vec![Arc::new(FrameImage::rgb(2, 2, [200, 100, 50].repeat(4)))],
+        images: vec![Arc::new(FrameImage::rgb(64, 64, [200, 100, 50].repeat(64 * 64)))],
         bayer: Some(BayerMosaic {
             pattern: BayerPattern::Bg,
-            image: Arc::new(FrameImage::new(2, 2, mosaic.clone())),
+            image: Arc::new(FrameImage::new(64, 64, mosaic.clone())),
         }),
         ..frame(0)
     };
@@ -105,10 +107,13 @@ fn color_frame_records_bayer_mosaic_as_main_file_and_reads_back_rgb() {
     );
     let directory = outcome.directory.clone().unwrap();
     let main = directory.join(outcome.files[0].file.rsplit('/').next().unwrap());
-    let mut expected = b"P5\n# bayer BG\n2 2\n255\n".to_vec();
+    let mut expected = b"P5\n# bayer BG\n64 64\n255\n".to_vec();
     expected.extend_from_slice(&mosaic);
-    assert_eq!(std::fs::read(&main).unwrap(), expected);
+    let stored = std::fs::read(&main).unwrap();
+    assert!(stored.len() < expected.len());
+    assert_eq!(crate::image_file::uncompressed_bytes(&stored).unwrap().as_ref(), expected);
     let meta = metadata(&outcome);
+    assert_eq!(meta["rawEncoding"], "pnm-or-zstd");
     let entry = &meta["frames"][0];
     assert_eq!(entry["imageMode"], "color");
     assert!(entry.get("bayer").is_none());
@@ -120,8 +125,38 @@ fn color_frame_records_bayer_mosaic_as_main_file_and_reads_back_rgb() {
     let image = crate::image_file::load(&main).unwrap();
     assert_eq!(
         (image.channels, image.pixels.clone()),
-        (3, [200, 100, 50].repeat(4))
+        (3, [200, 100, 50].repeat(64 * 64))
     );
+}
+
+#[test]
+fn corrupted_compressed_frame_before_finish_is_not_reported_available() {
+    let dir = TestDir::new();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(vec![dir.root()], Some(callback));
+    let mut rec = recorder.begin(RecordMode::All, Some(&dir.root()), "SN-BAD", recipe(), "bad-compressed", None).unwrap();
+    let image = Frame { images: vec![Arc::new(FrameImage::new(64, 64, vec![10; 64 * 64]))], ..frame(0) };
+    recorder.burst_frame(&mut rec, &image, 0, 1);
+    let deadline = std::time::Instant::now() + WRITER_HANG;
+    let path = loop {
+        if let RecordedFrame::Ready(path) = rec.burst_frame_file(0, 1) { break path; }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let mut bytes = std::fs::read(&path).unwrap();
+    assert!(bytes.len() < 64 * 64);
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(path, bytes).unwrap();
+    recorder.finish(rec, Verdict::Ok, "", 100, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert!(!outcome.available);
+    assert!(outcome.files.is_empty());
+    assert_eq!(metadata(&outcome)["frames"][0]["available"], false);
+    let health = crate::recording_health::RecordingHealth::default();
+    assert!(matches!(
+        health.observe(crate::store::HistoryScope::Real, &outcome, 1),
+        Some(crate::recording_health::AlarmChange::Raised(_))
+    ));
 }
 
 /// 维护采集件是示教与标定的样本：自动清理跳过带保留标记的目录，也不让它们挤掉保留件数。

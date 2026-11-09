@@ -1,6 +1,6 @@
 //! 段配方的采集轮次（CaptureRoundV2，D1）：只读取与核对盘上的轮次，新轮次只由历史件导入或手动配置数据（合成轮次直接写入 recipe-capture/）产生。
 //!
-//! - 目录结构：`round.json` 记统计，`frames.jsonl` 每行一帧，图像为无压缩 PGM，一帧一个文件 `{相机}/{seq:06}.pgm`；
+//! - 目录结构：`round.json` 记统计，`frames.jsonl` 每行一帧，图像为 PNM 或保留原字节的 gzip，一帧一个文件 `{相机}/{seq:06}.pgm`；
 //! - 帧组数 = 各相机最大 seq 的最大值；缺帧只记在 missingFrames 并给丢帧告警（[`loss_alarms`]），整轮不判失败；
 //! - 以前示教握手实拍的轮次（format 2，带 `teachingRoundId`、PLC 字段）照常读取；启动时仍在进行中的轮次按 `frames.jsonl`
 //!   恢复统计并判中断；

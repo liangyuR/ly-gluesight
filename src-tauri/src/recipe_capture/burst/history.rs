@@ -34,22 +34,9 @@ pub(super) fn valid_cycle_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
-/// 录制原图是普通文件（不是链接或 reparse point），PNM 头（可含 Bayer 注释）的尺寸是这一尺寸、长度等于头 + 像素。
+/// 核对普通文件、压缩完整性及 PNM 原图的尺寸和长度。
 fn check_source(path: &Path, width: u32, height: u32) -> Result<(), String> {
-    crate::image_file::checked_source_path(path)?;
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|e| format!("历史原图 {} 不可用：{e}", path.display()))?;
-    let matches = meta.is_file()
-        && crate::image_file::read_pnm_info(path)?.is_some_and(|info| {
-            (info.width, info.height) == (width, height) && info.file_len() == meta.len()
-        });
-    if !matches {
-        return Err(format!(
-            "历史原图 {} 不是普通文件或长度与录制尺寸不符",
-            path.display()
-        ));
-    }
-    Ok(())
+    crate::image_file::verify_pnm(path, width, height)
 }
 
 impl RecipeCaptureHost {

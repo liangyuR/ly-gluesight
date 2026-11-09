@@ -2,12 +2,14 @@ import contextlib
 import importlib.util
 import io
 import json
+import gzip
 from pathlib import Path
 import tempfile
 import unittest
 
 import cv2
 import numpy as np
+import zstandard
 
 spec = importlib.util.spec_from_file_location("prepare", Path(__file__).parents[2] / "scripts/Prepare-ProductionSimulation.py")
 prepare = importlib.util.module_from_spec(spec)
@@ -39,12 +41,12 @@ class ProductionInputTests(unittest.TestCase):
                                 "GR": [[100,200],[20,100]], "GB": [[100,20],[200,100]]}.items():
                 mosaic = np.tile(np.array(tile, dtype=np.uint8), (4, 4))
                 raw = f"P5\n# bayer {phase}\n8 8\n255\n".encode() + mosaic.tobytes()
-                images[phase] = [raw, raw]
+                images[phase] = [gzip.compress(raw), zstandard.ZstdCompressor(write_checksum=True).compress(raw)]
             gray = np.arange(64, dtype=np.uint8).reshape(8, 8)
             gray.flat[:11] = np.frombuffer(b"# bayer RG\n", dtype=np.uint8)
-            images["gray"] = [b"P5\n8 8\n255\n" + gray.tobytes(), b"P5\n8 8\n255\n" + (gray // 2).tobytes()]
+            images["gray"] = [b"P5\n8 8\n255\n" + gray.tobytes(), gzip.compress(b"P5\n8 8\n255\n" + (gray // 2).tobytes())]
             rgb = np.full((8, 8, 3), [200,100,20], dtype=np.uint8)
-            images["rgb"] = [b"P6\n8 8\n255\n" + rgb.tobytes()] * 2
+            images["rgb"] = [b"P6\n8 8\n255\n" + rgb.tobytes(), zstandard.ZstdCompressor(write_checksum=True).compress(b"P6\n8 8\n255\n" + rgb.tobytes())]
             self.write_record(base / "record", images)
             self.run_prepare(base / "record", base / "out")
             config = json.loads((base / "out/simulator.json").read_text())

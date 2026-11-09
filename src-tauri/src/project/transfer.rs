@@ -19,9 +19,12 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use super::{manage, ProjectMeta};
 use crate::store::Store;
 
-/// 2：检测记录库是本机记录库按项目导出的子集（记录库版本 10）；1 的包（项目自己的 9 版记录库）照常导入。
-pub const FORMAT: u32 = 2;
-const FORMATS: [u32; 2] = [1, 2];
+#[path = "transfer_selection.rs"]
+mod selection;
+
+/// 3 支持压缩示教原图与共享发布资源；1、2 的包照常导入。
+pub const FORMAT: u32 = 3;
+const FORMATS: [u32; 3] = [1, 2, 3];
 const MANIFEST: &str = "manifest.json";
 const MANIFEST_MAX_BYTES: u64 = 64 << 20;
 const PREFIX: &str = "project/";
@@ -208,9 +211,9 @@ fn walk_tops(
 }
 
 /// 待写进包的文件：（包内路径，磁盘路径）。新采集轮次只有 `round.json` 与 `frames.jsonl`，示教件原图引用检测记录的录制，
-/// 只随检测记录带出；旧轮次目录里的原图照带。`records` 有值时带上该项目的检测记录与录制：从本机记录库导出本项目记录的子集，
+/// 在暂存区补齐为独立示教资产；旧轮次目录里的原图照带。`records` 有值时另带该项目的检测记录与录制：从本机记录库导出本项目记录的子集，
 /// 放在 `scratch`。
-fn collect(
+pub(super) fn collect(
     root: &Path,
     records: Option<&Store>,
     scratch: &Path,
@@ -225,7 +228,7 @@ fn collect(
         })
         .copied()
         .collect();
-    let mut out = walk_tops(root, &tops, notes)?;
+    let mut out = selection::select(root, walk_tops(root, &tops, notes)?, records.is_some(), notes)?;
     let recordings = crate::log_storage::recording_projects(root)?;
     if let Some(store) = records {
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
@@ -241,7 +244,8 @@ fn collect(
         }
         out.push((format!("{PREFIX}inspection.db"), snapshot));
     }
-    Ok(out)
+    selection::materialize(root, &mut out, scratch)?;
+    super::compact::prepare(out, scratch)
 }
 
 /// 本项目示教件引用的别的项目的历史件：录制原图放进包里的 `records/imported/<录制目录名>/`，导出记录库子集里这些记录的
@@ -319,9 +323,21 @@ pub fn transfer_size(root: &Path, records_db: u64) -> Result<TransferSize, Strin
     let bytes = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut notes = Vec::new();
     let mut size = TransferSize::default();
-    for (_, path) in walk_tops(root, &CONTENT, &mut notes)? {
-        size.content += bytes(&path);
+    let content = walk_tops(root, &CONTENT, &mut notes)?;
+    let mut entries = selection::select(root, content.clone(), false, &mut notes)?;
+    let selected: HashSet<_> = entries.iter().map(|(name, _)| name.as_str()).collect();
+    size.records = selection::select(root, content, true, &mut notes)?
+        .iter()
+        .filter(|(name, _)| !selected.contains(name.as_str()))
+        .map(|(_, path)| bytes(path))
+        .sum();
+    let scratch = staging_dir(&std::env::temp_dir(), "size")?;
+    let materialized = selection::materialize(root, &mut entries, &scratch);
+    if materialized.is_ok() {
+        size.content = entries.iter().map(|(_, path)| bytes(path)).sum();
     }
+    let _ = std::fs::remove_dir_all(&scratch);
+    materialized?;
     for (_, path) in walk_tops(root, &RECORDS[1..], &mut notes)? {
         size.records += bytes(&path);
     }
@@ -485,7 +501,7 @@ fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest, St
     let format = value.get("format").and_then(Value::as_u64);
     if !format.is_some_and(|f| FORMATS.iter().any(|known| u64::from(*known) == f)) {
         return Err(format!(
-            "项目导出包格式 {} 不受本机软件支持（支持 1、{FORMAT}）",
+            "项目导出包格式 {} 不受本机软件支持（支持 1–{FORMAT}）",
             format.map_or("未知".into(), |f| f.to_string())
         ));
     }
@@ -724,7 +740,8 @@ fn finish(
             crate::workspace::reset_for_project_import(&candidate)?;
             if !source.records
                 && teaching_round(&candidate)
-                    .is_some_and(|round| root.join("recipe-capture").join(round).is_dir())
+                    .is_some_and(|round| read_value(&root.join("recipe-capture").join(round).join("round.json"))
+                        .is_ok_and(|value| value["format"] == 4))
             {
                 without_records.push(entry.file_name().to_string_lossy().into_owned());
             }
@@ -738,6 +755,7 @@ fn finish(
         ));
     }
     notes.extend(crate::workspace::navigation_import_notes(root));
+    super::compact::deduplicate(root)?;
     std::fs::create_dir_all(super::projects_root(data)).map_err(|e| e.to_string())?;
     let external = install_recordings(root, &target)?;
     let undo = |forget: bool| {

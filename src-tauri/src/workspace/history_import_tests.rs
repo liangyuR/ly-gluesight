@@ -84,7 +84,7 @@ fn imported_round_references_recording_images_without_copying_them() {
                 lost_packets: 0,
                 ts: 1,
                 manual: false,
-                images: vec![Arc::new(FrameImage::new(2, 1, vec![pixel(camera, seq), 1]))],
+                images: vec![Arc::new(FrameImage::new(64, 64, vec![pixel(camera, seq); 64 * 64]))],
                 bayer: None,
             };
             recorder.burst_frame(&mut rec, &frame, camera, seq);
@@ -115,6 +115,15 @@ fn imported_round_references_recording_images_without_copying_them() {
         .recv_timeout(Duration::from_secs(10))
         .expect("录制应完成收尾");
     let directory = outcome.directory.clone().expect("录制目录");
+    assert!(std::fs::metadata(directory.join(format!("{}_s000001.pgm", cameras[0]))).unwrap().len() < 64 * 64);
+    let first = outcome.files.iter().find(|file| file.frame.camera == 0 && file.frame.seq == 1).unwrap();
+    let stored = crate::store::FrameRecord {
+        camera: 0, seq: 1, status: crate::burst_judge::FrameState::Measured,
+        frame_counter: Some(101), trigger_counter: Some(1), region: None, metrics: None,
+        raw_file: Some(first.file.clone()),
+    };
+    let preview = crate::workspace::recorded::load_frame_verified(&records, CYCLE, &cameras[0], &stored).unwrap();
+    assert_eq!(preview.pixels, vec![pixel(0, 1); 64 * 64]);
     let evidence = recording(Some(&directory));
     let assessed = assess(
         &doc,
@@ -157,7 +166,7 @@ fn imported_round_references_recording_images_without_copying_them() {
                     .unwrap();
             assert_eq!(
                 image.pixels,
-                [pixel(camera, seq), 1],
+                vec![pixel(camera, seq); 64 * 64],
                 "相机 {id} 第 {seq} 帧组"
             );
         }

@@ -1,6 +1,7 @@
 pub mod manage;
 pub mod records;
 pub mod transfer;
+pub(crate) mod compact;
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

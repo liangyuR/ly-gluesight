@@ -655,3 +655,105 @@ fn old_package_with_offline_images_installs_only_production_images_without_chang
     assert_eq!(std::fs::read(&legacy).unwrap(), original);
     assert_eq!(std::fs::read(&retired).unwrap(), b"retired-image");
 }
+
+
+#[test]
+fn export_keeps_current_and_migration_teaching_but_omits_unreferenced_images_and_rounds() {
+    let data = TempDir::new("references");
+    let (root, _, _) = source_project(&data.0);
+    let write = |name: &str, value: Value| {
+        let path = root.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    };
+    write("workspaces/demo/workspace.json", serde_json::json!({
+        "cameraTeaching": [{"round": "capture-1", "frame": {"id": "current"}}],
+        "passAlignment": {"source": {"teaching": [{"round": "capture-1", "frame": {"id": "migration"}}]}},
+        "navigationId": null,
+        "calibration": {"rounds": [{"roundId": "capture-calib"}]}
+    }));
+    write("recipe-capture/capture-calib/round.json", serde_json::json!({}));
+    write("workspaces/demo/calibration/capture-calib/features.jsonl", serde_json::json!({"camera": 0}));
+    for id in ["current", "migration", "unused"] {
+        let path = root.join(format!("workspaces/demo/images/{id}.pgm"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        crate::image_file::save_pgm(&path, &crate::frame::FrameImage::new(2, 1, vec![10, 20])).unwrap();
+    }
+    write("recipe-capture/capture-unused/round.json", serde_json::json!({}));
+    let package = data.0.join("references.zip");
+    let manifest = export_to(&root, None, &data.0.join("scratch"), &package).unwrap();
+    let paths: std::collections::BTreeSet<_> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains("project/workspaces/demo/images/current.pgm"));
+    assert!(paths.contains("project/workspaces/demo/images/migration.pgm"));
+    assert!(paths.contains("project/recipe-capture/capture-1/a.pgm"));
+    assert!(paths.contains("project/recipe-capture/capture-calib/round.json"));
+    assert!(paths.contains("project/workspaces/demo/calibration/capture-calib/features.jsonl"));
+    assert!(!paths.contains("project/workspaces/demo/images/unused.pgm"));
+    assert!(!paths.contains("project/recipe-capture/capture-unused/round.json"));
+}
+
+#[test]
+fn export_without_history_materializes_referenced_recording_frames_for_reteaching() {
+    let data = TempDir::new("portable-teaching");
+    let (root, _, _) = source_project(&data.0);
+    let round = root.join("recipe-capture/capture-1");
+    std::fs::write(round.join("round.json"), serde_json::json!({
+        "format": 4, "cameras": [{"cameraId": "cam1"}],
+        "origin": {"kind": "history", "cycleId": "c1", "recordId": 1}
+    }).to_string()).unwrap();
+    std::fs::write(round.join("frames.jsonl"), serde_json::json!({
+        "camera": 0, "seq": 1, "path": "cam1_s000001.pgm"
+    }).to_string()).unwrap();
+    let image = crate::frame::FrameImage::new(64, 64, vec![10; 64 * 64]);
+    crate::image_file::save_pgm(&root.join("records/c1/cam1_s000001.pgm"), &image).unwrap();
+    let package = data.0.join("portable.zip");
+    let manifest = export_to(&root, None, &data.0.join("scratch"), &package).unwrap();
+    assert!(!manifest.includes_records);
+    assert!(!manifest.files.iter().any(|f| f.path.contains("inspection.db")));
+    let mut zip = open_archive(&package).unwrap();
+    let mut bytes = Vec::new();
+    zip.by_name("project/recipe-capture/capture-1/cam1/000001.pgm").unwrap().read_to_end(&mut bytes).unwrap();
+    assert!(!crate::image_file::compressed_suffix(&bytes).is_empty());
+    assert_eq!(crate::image_file::decode(&bytes).unwrap().pixels, image.pixels);
+    let mut text = String::new();
+    zip.by_name("project/recipe-capture/capture-1/round.json").unwrap().read_to_string(&mut text).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["format"], 3);
+    assert_eq!(read_value(&round.join("round.json")).unwrap()["format"], 4);
+}
+
+
+#[test]
+fn transfer_size_adds_history_only_release_resources_to_the_records_option() {
+    let data = TempDir::new("history-size");
+    let (root, _, _) = source_project(&data.0);
+    let before = transfer_size(&root, 123).unwrap();
+    let files = [
+        ("vision/releases/retired/release-old/image.pgm", b"old image".as_slice()),
+        ("recipe-support/retired/release-old/snapshot.json", b"old navigation".as_slice()),
+        ("workspaces/retired/published/retired-v1.json", b"old archive".as_slice()),
+    ];
+    for (relative, bytes) in &files {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    let after = transfer_size(&root, 123).unwrap();
+    assert_eq!(after.content, before.content);
+    assert_eq!(after.records - before.records, files.iter().map(|(_, bytes)| bytes.len() as u64).sum::<u64>());
+}
+
+#[test]
+fn exporting_candidate_with_missing_navigation_image_is_rejected() {
+    let data = TempDir::new("missing-navigation");
+    let (root, _, _) = source_project(&data.0);
+    let map = "a".repeat(64);
+    let candidate = root.join("workspaces/demo");
+    std::fs::create_dir_all(candidate.join("navigation/maps")).unwrap();
+    std::fs::write(candidate.join("workspace.json"), serde_json::json!({"navigationId": map}).to_string()).unwrap();
+    std::fs::write(candidate.join(format!("navigation/maps/{map}.json")), serde_json::json!({
+        "image": {"id": "b".repeat(64)}
+    }).to_string()).unwrap();
+    let target = data.0.join("incomplete.zip");
+    assert!(export_to(&root, None, &data.0.join("scratch"), &target).is_err());
+    assert!(!target.exists());
+}

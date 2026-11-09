@@ -38,7 +38,7 @@ python scripts/Prepare-ProductionSimulation.py `
   --product-code 1 --frame-rate 10 --pass-frames 30,20,40
 ```
 
-参数中的型号、帧率和每笔帧数需填写实际值；每笔帧数合计必须等于该件帧组数。只有单笔时可不传 `--pass-frames`。脚本只读取源资料，在新目录中生成 PNG；带 Bayer 注释的原图转为彩色 PNG，并输出每台相机需要的 `imageMode`。依赖 Python、numpy 和 OpenCV（`opencv-python-headless`）。相机地址、帧序列、笔间隔等保存在 `simulator.json`，路径相对于该文件。
+参数中的型号、帧率和每笔帧数需填写实际值；每笔帧数合计必须等于该件帧组数。只有单笔时可不传 `--pass-frames`。脚本只读取源资料，在新目录中生成 PNG；带 Bayer 注释的原图转为彩色 PNG，并输出每台相机需要的 `imageMode`。支持普通 PNM、gzip 和带校验和的 zstd 原图，保留 Bayer 相位并拒绝损坏或超过 128 MiB 的输入。依赖 Python、numpy、OpenCV（`opencv-python-headless`）；zstd 依赖通过 `python -m pip install -r scripts/requirements-images.txt` 安装。相机地址、帧序列、笔间隔等保存在 `simulator.json`，路径相对于该文件。
 
 多笔之间按 `passGapMs` 拉低门控；`captureLeadMs` 不小于 2000 ms，模拟机械臂通知到拍照开始的间隔。`frameRate` 是工具发图频率，需与隔离实例相机设置一致。建议使用 release 工具；大图解码或接收端背压会影响实际节拍，应在应用中核对实测帧率和缺帧提示。
 

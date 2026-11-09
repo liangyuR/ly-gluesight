@@ -1,10 +1,14 @@
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from image_bytes import read_image_bytes
 
 
 def bayer_pattern(raw):
@@ -74,7 +78,7 @@ def prepare(record, output, product_code, frame_rate, pass_frames):
         mode = None
         shape = None
         for seq, source in sorted(frames.items()):
-            raw = np.fromfile(source, dtype=np.uint8)
+            raw = np.frombuffer(read_image_bytes(source), dtype=np.uint8)
             image = cv2.imdecode(raw, cv2.IMREAD_UNCHANGED)
             if image is None or image.dtype != np.uint8:
                 raise ValueError(f"无法读取 8 位图像：{source}")
