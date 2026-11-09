@@ -412,9 +412,21 @@ fn reimported_duplicate_adopts_packaged_recording_when_local_one_is_gone() {
     let original = source.join("records").join("c1");
     let package = export(&data.0, &source, &store);
     std::fs::remove_dir_all(&original).unwrap();
-    import_from(&data.0, &package, "line-b", "B 线", &data.0.join("cache"), &store).unwrap();
+    import_from(
+        &data.0,
+        &package,
+        "line-b",
+        "B 线",
+        &data.0.join("cache"),
+        &store,
+    )
+    .unwrap();
     let directory = store.recording_directory("c1").unwrap().unwrap();
-    assert!(directory.starts_with(super::super::dir(&data.0, "line-b")), "{}", directory.display());
+    assert!(
+        directory.starts_with(super::super::dir(&data.0, "line-b")),
+        "{}",
+        directory.display()
+    );
     assert!(directory.join("part.json").is_file());
 }
 
