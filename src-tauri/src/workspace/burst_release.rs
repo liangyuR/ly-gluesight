@@ -36,8 +36,7 @@ fn kind_label(kind: SegmentKind) -> &'static str {
     }
 }
 
-/// 验证样本的段结构身份：产品代码、有序计划相机、各段 (序号, 类型)。N_exp / ΣN_exp 不在内——标定前采的样本标定后仍可用；
-/// 发布时的计划版本另按 D-SB-19 分配。
+/// 验证样本的段结构身份：产品代码、有序计划相机、各段 (序号, 类型)。N_exp / ΣN_exp 不在内——标定前采的样本标定后仍可用。
 fn sample_tag(product_code: u16, cameras: &[String], segments: &[PathSegment]) -> Value {
     json!([
         product_code,

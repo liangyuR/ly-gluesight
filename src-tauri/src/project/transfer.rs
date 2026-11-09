@@ -3,12 +3,12 @@
 //!
 //! - 包内 `manifest.json` 记格式版本、来源项目、来源项目目录、导出时间、来源软件版本、是否含检测记录与每个文件的字节数和 SHA-256；
 //! - 导入先完整解到暂存目录，只接受清单内、路径在白名单结构里的文件并逐个核对，任何不符整包拒绝，不留下半个项目；
-//! - 指向来源项目目录的绝对路径改写到新项目目录；生产配方保持可生产，计划版本按本机计数重新分配；候选回到草稿。
+//! - 指向来源项目目录的绝对路径改写到新项目目录；生产配方保持可生产；候选回到草稿。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -542,109 +542,9 @@ pub(crate) fn extract_listed_with<R: Read + Seek>(
     Ok(())
 }
 
-fn plan_of(value: &Value) -> Option<u32> {
-    value
-        .get("planVersion")
-        .and_then(Value::as_u64)
-        .and_then(|p| u32::try_from(p).ok())
-        .filter(|p| *p != 0)
-}
-
-fn set_plan(value: &mut Value, plans: &BTreeMap<u32, u32>) -> bool {
-    match plan_of(value).and_then(|p| plans.get(&p)) {
-        Some(new) => {
-            value["planVersion"] = (*new).into();
-            true
-        }
-        None => false,
-    }
-}
-
 fn read_value(path: &Path) -> Result<Value, String> {
     serde_json::from_str(&crate::fsio::read_text(path).map_err(|e| e.to_string())?)
         .map_err(|e| format!("{} 无法解析：{e}", path.display()))
-}
-
-/// 生产配方、修订来源与检测记录里的配方快照：计划版本按本机计数整体换成新号（同一旧号换成同一新号），
-/// 修订来源与配方文件同步改，加载时仍能证明修订号属于它，不会被当成手改文件而升版本。
-fn remap_plans(root: &Path, plan_file: &Path) -> Result<BTreeMap<u32, u32>, String> {
-    let recipes = root.join("recipes");
-    let docs: Vec<PathBuf> = std::fs::read_dir(&recipes)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json"))
-        .filter(|p| {
-            !p.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .starts_with('.')
-        })
-        .collect();
-    let sources_path = recipes.join(".revision-sources");
-    let mut sources = if sources_path.is_file() {
-        Some(read_value(&sources_path)?)
-    } else {
-        None
-    };
-    let mut used = BTreeSet::new();
-    for doc in &docs {
-        used.extend(plan_of(&read_value(doc)?));
-    }
-    if let Some(map) = sources.as_ref().and_then(Value::as_object) {
-        used.extend(map.values().filter_map(plan_of));
-    }
-    if used.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let first = crate::recipe::reserve_plan_versions(plan_file, used.len() as u32)?;
-    let plans: BTreeMap<u32, u32> = used.into_iter().zip(first..).collect();
-    for doc in &docs {
-        let mut value = read_value(doc)?;
-        if set_plan(&mut value, &plans) {
-            crate::fsio::write_atomic(
-                doc,
-                &serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
-            )?;
-        }
-    }
-    if let Some(Value::Object(map)) = sources.as_mut() {
-        map.values_mut().for_each(|value| {
-            set_plan(value, &plans);
-        });
-        crate::fsio::write_atomic(
-            &sources_path,
-            &serde_json::to_string(&map).map_err(|e| e.to_string())?,
-        )?;
-    }
-    let db = root.join("inspection.db");
-    if db.is_file() {
-        let mut conn = rusqlite::Connection::open(&db).map_err(|e| e.to_string())?;
-        let has: bool = conn
-            .query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='recipe_snapshots')", [], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
-        if has {
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
-            let rows: Vec<(String, String)> = tx
-                .prepare("SELECT revision_id, json FROM recipe_snapshots")
-                .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
-                .map_err(|e| e.to_string())?;
-            for (revision, json) in rows {
-                let mut value: Value = serde_json::from_str(&json)
-                    .map_err(|e| format!("配方快照 {revision} 无法解析：{e}"))?;
-                if set_plan(&mut value, &plans) {
-                    tx.execute(
-                        "UPDATE recipe_snapshots SET json=?1 WHERE revision_id=?2",
-                        rusqlite::params![value.to_string(), revision],
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-            }
-            tx.commit().map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(plans)
 }
 
 pub(crate) fn staging_dir(parent: &Path, kind: &str) -> Result<PathBuf, String> {
@@ -661,19 +561,18 @@ pub(crate) fn staging_dir(parent: &Path, kind: &str) -> Result<PathBuf, String> 
     Err("无法创建暂存目录".into())
 }
 
-/// 把导出包导入为资料目录 `data` 下的新项目 `id`；`plan_file` 是本机计划版本记录，`cache` 放暂存目录（用后删除）。
+/// 把导出包导入为资料目录 `data` 下的新项目 `id`；`cache` 放暂存目录（用后删除）。
 /// 包里的检测记录并入本机记录库 `store`，归新项目。
 pub fn import_from(
     data: &Path,
     package: &Path,
     id: &str,
     name: &str,
-    plan_file: &Path,
     cache: &Path,
     store: &Store,
 ) -> Result<ProjectImported, String> {
     let staging = staging_dir(cache, "import")?;
-    let result = install(data, package, id, name, plan_file, &staging, store);
+    let result = install(data, package, id, name, &staging, store);
     let _ = std::fs::remove_dir_all(&staging);
     result
 }
@@ -683,7 +582,6 @@ fn install(
     package: &Path,
     id: &str,
     name: &str,
-    plan_file: &Path,
     staging: &Path,
     store: &Store,
 ) -> Result<ProjectImported, String> {
@@ -702,7 +600,6 @@ fn install(
             name,
             description: &manifest.project.description,
         },
-        plan_file,
         Some(store),
     )?;
     imported
@@ -725,14 +622,13 @@ pub struct New<'a> {
     pub description: &'a str,
 }
 
-/// 暂存目录 `root` 里的项目内容落成新项目：改写来源目录路径、重新分配计划版本、候选回到草稿，暂存的检测记录库并入本机
+/// 暂存目录 `root` 里的项目内容落成新项目：改写来源目录路径、候选回到草稿，暂存的检测记录库并入本机
 /// 记录库 `store`（重新编号并改写候选与轮次里的记录引用），再原子移入 `projects/<id>`。
 fn finish(
     data: &Path,
     root: &Path,
     source: &Source,
     new: &New,
-    plan_file: &Path,
     store: Option<&Store>,
 ) -> Result<ProjectImported, String> {
     let _guard = manage::LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -753,7 +649,6 @@ fn finish(
         &target,
         source.capture_images,
     )?;
-    let plans = remap_plans(root, plan_file)?;
     let mut without_images = Vec::new();
     for entry in std::fs::read_dir(root.join("workspaces"))
         .into_iter()
@@ -764,7 +659,6 @@ fn finish(
         if candidate.is_file() {
             notes.extend(crate::workspace::reset_for_project_import(
                 &candidate,
-                &plans,
                 source.keep_history,
             )?);
             if !source.capture_images
@@ -783,12 +677,6 @@ fn finish(
         ));
     }
     notes.extend(crate::workspace::navigation_import_notes(root));
-    if !plans.is_empty() {
-        notes.push(format!(
-            "{} 个计划版本已按本机重新分配，生产配方的拍照计划不变",
-            plans.len()
-        ));
-    }
     std::fs::create_dir_all(super::projects_root(data)).map_err(|e| e.to_string())?;
     let external = install_recordings(root, &target)?;
     let undo = |forget: bool| {
@@ -1040,11 +928,10 @@ pub fn copy_from(
     source_id: &str,
     capture_images: bool,
     new: &New,
-    plan_file: &Path,
     cache: &Path,
 ) -> Result<ProjectImported, String> {
     let staging = staging_dir(cache, "copy")?;
-    let result = copy_into(data, source_id, capture_images, new, plan_file, &staging);
+    let result = copy_into(data, source_id, capture_images, new, &staging);
     let _ = std::fs::remove_dir_all(&staging);
     result
 }
@@ -1054,7 +941,6 @@ fn copy_into(
     source_id: &str,
     capture_images: bool,
     new: &New,
-    plan_file: &Path,
     staging: &Path,
 ) -> Result<ProjectImported, String> {
     let source_root = super::dir(data, source_id);
@@ -1084,7 +970,6 @@ fn copy_into(
             capture_images,
         },
         new,
-        plan_file,
         None,
     )?;
     notes.append(&mut copied.notes);
@@ -1214,14 +1099,12 @@ pub async fn project_import(
     name: String,
 ) -> Result<ProjectImported, String> {
     let data = crate::storage::root(&app);
-    let plan_file = crate::storage::state(&app).join("plan-version");
     tauri::async_runtime::spawn_blocking(move || {
         let imported = import_from(
             &data,
             Path::new(&path),
             &id,
             &name,
-            &plan_file,
             &data.join("cache"),
             &app.state::<Store>(),
         )?;
@@ -1259,7 +1142,6 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
         crate::project::check_project_switch(&super::switch_state(&app)?)
             .map_err(|e| e.replace("切换项目", "复制当前项目"))?;
     }
-    let plan_file = crate::storage::state(&app).join("plan-version");
     tauri::async_runtime::spawn_blocking(move || {
         let copied = copy_from(
             &data,
@@ -1270,7 +1152,6 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
                 name: &request.name,
                 description: &request.description,
             },
-            &plan_file,
             &data.join("cache"),
         )?;
         crate::applog::write(

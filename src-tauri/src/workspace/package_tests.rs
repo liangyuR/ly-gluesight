@@ -144,7 +144,7 @@ fn exported(dirs: &Dirs) -> Workspace {
 fn staged(dirs: &Dirs) -> (Workspace, Vec<String>) {
     let (manifest, mut w) = stage(&dirs.package, &dirs.staging, &quiet()).unwrap();
     let local = Local {
-        production: Some((format!("{}-v3", w.doc.id), 7)),
+        production: Some(format!("{}-v3", w.doc.id)),
         next_version: 4,
     };
     let notes = rebase(
@@ -186,7 +186,7 @@ fn package_skips_raw_images_and_import_rebases_onto_local_recipe() {
         installed.base_revision,
         Some(format!("{}-v3", source.doc.id))
     );
-    assert_eq!((installed.doc.version, installed.doc.plan_version), (4, 7));
+    assert_eq!(installed.doc.version, 4);
     assert!(matches!(installed.publish, PublishState::Draft));
     assert!(installed.samples.is_empty() && notes.len() == 1);
     assert_eq!(

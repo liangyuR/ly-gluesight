@@ -410,13 +410,13 @@ pub(crate) fn stage(
     Ok((manifest, w))
 }
 
-/// 本机这一配方的现状：生产配方（修订号、计划版本）与下一版本号。
+/// 本机这一配方的现状：生产配方的修订号与下一版本号。
 pub(crate) struct Local {
-    pub production: Option<(String, u32)>,
+    pub production: Option<String>,
     pub next_version: u32,
 }
 
-/// 改基到本机：基础修订换成本机生产配方的修订，计划版本取本机的，候选回到草稿；
+/// 改基到本机：基础修订换成本机生产配方的修订，候选回到草稿；
 /// 去掉验证样本（它们指向来源机的检测记录与采集轮次）；指向来源项目目录的绝对路径改到本机项目目录。
 pub(crate) fn rebase(
     w: &mut Workspace,
@@ -432,11 +432,7 @@ pub(crate) fn rebase(
         Some(_) => local.next_version,
         None => local.next_version.max(w.doc.version.max(1)),
     };
-    w.base_revision = local
-        .production
-        .as_ref()
-        .map(|(revision, _)| revision.clone());
-    w.doc.plan_version = local.production.as_ref().map_or(0, |(_, plan)| *plan);
+    w.base_revision = local.production.clone();
     w.doc.teaching_piece = None;
     w.pending = None;
     w.publish = PublishState::Draft;
@@ -818,9 +814,7 @@ fn import(
             return Err(reason);
         }
         let local = Local {
-            production: cycle
-                .recipe(&id)
-                .map(|r| (r.revision_id.clone(), r.plan_version)),
+            production: cycle.recipe(&id).map(|r| r.revision_id.clone()),
             next_version: cycle.recipes.next_version(&id)?,
         };
         notes.extend(rebase(

@@ -22,7 +22,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 | `history/inspection.db` | 本机检测记录库（版本 11），本机全部项目的记录都在这里，`parts.project_id` 记所属项目，记录编号本机唯一。`parts.mode` 记件的检测模式（`production` / `maintenanceCollect` / `maintenanceShadow`）。每台相机每一帧写 `part_frames` 表，`parts` 另存整份区域判定与整件标记。配方快照 `recipe_snapshots` 按（项目, 修订号）、候选实例 `workspace_instances` 按（项目, 实例号）保存；`project_merges` 记已并入的项目旧库。10 版库原地升级到 11，保留生产记录，删除旧离线与候选调试记录并写删除墓碑；旧原图按[项目设计](project.md)的归属检查清理，不合规路径保留并告警。其他不支持的库版本（含更高版本）先备份为 `.v<版本>.*.bak` 再新建空库。项目目录里遗留的旧记录库 `projects/<项目编号>/inspection.db`（版本 9）启动时仅将生产记录并入，并完改名为 `inspection.db.merged-<毫秒>.bak`，不删（[项目设计](project.md)第五节） |
 | `history/audit-spool/` | 待入库的件证据与审计，尽力而为、不挡生产（[soak S-8](../decisions/soak.md)）。审计 spool 格式为 4（帧引用 `files[].frame`）。启动时入不了库的件、崩溃残留的 `.tmp`、旧格式、解析不了或超容量的文件、内容不对的 `.interrupted-preinsert` 都原样移到 `.unrecovered/` 并写错误日志，残留的探测文件删除，照常启动和接件，由人工核对；隔离事件引用的原图目录继续受保护。运行中多次重试仍存不下或身份冲突的件也移到 `.unrecovered/`。切换项目前必须写完 |
 | `projects/<项目编号>/` | 各项目的资料，见下表；`projects/.trash/` 是删除中的项目，启动时清理 |
-| `state/` | PLC 握手状态与审计，以及所有项目共用的计划版本计数 `plan-version`（换项目不回退）。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
+| `state/` | PLC 握手状态与审计。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
 | 日志根外置 | `~/gs_logs/runtime/<环境>/<实例>/` 保存运行与 PLC 日志，`vision/<环境>/<实例>/<项目>/` 保存生产历史原图 |
 | `cache/` | 可重建缓存 |
 | `webview/<SID>/` | 按 Windows 用户隔离的浏览器资料 |
@@ -53,7 +53,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 ## 项目导出包
 
-项目管理页的“导出 / 导入项目”把项目资产和所选外部历史原图打成 ZIP（`src-tauri/src/project/transfer.rs`，格式版本 2：所含检测记录库是本机记录库按项目导出的子集，版本 11；格式 1 的包及旧 10 版项目库仍可导入，只接收生产记录），规则见[项目设计](project.md#导出与导入)。导出默认保存在 `exports/`；导入暂存在 `cache/project-import-*`，校验通过、路径与计划版本改写完成后才原子移入 `projects/<新编号>/`。“复制”不经 ZIP，把除检测记录与历史原图外的同样内容拷进 `cache/project-copy-*` 后走相同的落地流程；记录本机共用，仍归来源项目。
+项目管理页的“导出 / 导入项目”把项目资产和所选外部历史原图打成 ZIP（`src-tauri/src/project/transfer.rs`，格式版本 2：所含检测记录库是本机记录库按项目导出的子集，版本 11；格式 1 的包及旧 10 版项目库仍可导入，只接收生产记录），规则见[项目设计](project.md#导出与导入)。导出默认保存在 `exports/`；导入暂存在 `cache/project-import-*`，校验通过、路径改写完成后才原子移入 `projects/<新编号>/`。“复制”不经 ZIP，把除检测记录与历史原图外的同样内容拷进 `cache/project-copy-*` 后走相同的落地流程；记录本机共用，仍归来源项目。
 
 配方库的“导出 / 导入工件配方”（回传包）只打一个候选（`workspace/package.rs`，`kind: "recipe"`，格式版本 2，兼容读格式 1）：`candidate/` 下是 `workspace.json`、被引用的冻结示教帧、示教件测量与导航图，`rounds/` 下是示教件轮次的 `round.json` 与 `frames.jsonl`；导出时勾选“包含示教件原图”才再带 `rounds/<轮次>/<相机>/<seq>.pgm`，清单 `teachingImages` 记是否带。不带发布快照。导入暂存在 `cache/project-recipe-import-*`，本机同编号的旧候选与轮次先移入暂存目录再放入新的，失败撤回；规则见 [RB-10](../decisions/recipe-build-flow.md#rb-10-配方回传包)。
 

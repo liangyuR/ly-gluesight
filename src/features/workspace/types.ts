@@ -133,10 +133,6 @@ export interface WorkspaceView {
   workspace: Workspace; layout: Recipe; productionVersion: number | null;
   /** 生产配方是采集版还是正式版；未发布为 null */
   productionStage?: RecipeStage | null;
-  /** 生产配方的计划版本 */
-  productionPlanVersion: number | null;
-  /** 候选的计划身份与生产不同（或还没发布过）：发布时分配新的计划版本 */
-  planChanged: boolean;
   plan: WorkspacePlanView;
 }
 export type ComparisonSummary = Pick<Comparison, "id" | "historyId" | "source" | "cycleId" | "candidateId" | "candidateRevision" | "createdAt" | "originalVerdict" | "judgement">;

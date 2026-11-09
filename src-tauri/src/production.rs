@@ -87,7 +87,6 @@ impl Prepared {
             || recipe.detect != expected.detect
             || recipe.filter_window != expected.filter_window
             || recipe.teaching_id != expected.teaching_id
-            || recipe.plan_version != expected.plan_version
             || recipe.path_segments != expected.path_segments
             || recipe.inspect != expected.inspect
             || recipe.part_calib != expected.part_calib

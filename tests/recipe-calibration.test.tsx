@@ -17,7 +17,7 @@ const show = () => render(<MemoryRouter initialEntries={["/recipe/calibration"]}
 function singleSegment(): WorkspaceView {
   const view = burstWorkspaceView(burstRecipe({ id: "A", partCalib: null, segments: [pathSegment(1, "straight", { lengthMm: 120, expectedFrames: 12 })] }));
   view.plan.cameraTeaching = view.plan.cameraTeaching.map(item => ({ ...item, ready: true }));
-  view.plan.calibration = { roundId: null, measured: false, expectedTotal: 12, toleranceTotal: 1, planVersionChange: false,
+  view.plan.calibration = { roundId: null, measured: false, expectedTotal: 12, toleranceTotal: 1,
     segments: [{ index: 1, kind: "straight", nExp: 12, tolerance: 1, xRef: null, xRefPending: "还没测量示教件", hints: [] }] };
   return view;
 }

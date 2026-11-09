@@ -49,11 +49,7 @@ fn machine(dir: &Path, project: &'static str) -> Machine {
 }
 
 fn saved_recipe(dir: &Path) -> Arc<Recipe> {
-    RecipeStore::open_with_floors(
-        dir.join("recipes"),
-        dir.join("plan-version"),
-        &BTreeMap::new(),
-    )
+    RecipeStore::open_with_floors(dir.join("recipes"), &BTreeMap::new())
     .unwrap()
     .save(crate::recipe::samples_burst(), None)
     .unwrap()

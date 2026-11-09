@@ -87,7 +87,7 @@ export function burstTotals(doc: Pick<RecipeDocSegmentFields, "segments" | "part
 export function burstRecipe(over: Partial<BurstRecipeDoc> = {}): BurstRecipeDoc {
   const detect: DetectParams = { searchMm: 4, polarity: "dark", widthRange: [1, 6] };
   return {
-    id: "S", name: "段配方 S", version: 1, planVersion: 3, productCode: 2, triggerMode: "fly", schemaVersion: 8,
+    id: "S", name: "段配方 S", version: 1, productCode: 2, triggerMode: "fly", schemaVersion: 8,
     spacing: 1, filterWindow: 3, detect, limits: { position: null, width: null, maxGapLen: 6, minPresent: .8 },
     segments: [
       pathSegment(1, "straight", { lengthMm: 120, inspectRange: { aMm: 5, bMm: 115 }, offsetRef: { measure: "absoluteX", camera: "CAM-1", xRef: null, spread: null } }),
@@ -104,12 +104,12 @@ export function burstRecipe(over: Partial<BurstRecipeDoc> = {}): BurstRecipeDoc 
 export function burstSummary(doc = burstRecipe()): RecipeSummaryV2 {
   const { expectedTotal, toleranceTotal } = burstTotals(doc);
   return { id: doc.id, name: doc.name, version: doc.version, revisionId: `revisionId-${doc.id}`, productCode: doc.productCode, triggerMode: "fly",
-    cameras: doc.inspect.map(i => i.camera), length: doc.segments.reduce((sum, s) => sum + (s.lengthMm ?? 0), 0), planVersion: doc.planVersion ?? 0, triggerCount: expectedTotal,
+    cameras: doc.inspect.map(i => i.camera), length: doc.segments.reduce((sum, s) => sum + (s.lengthMm ?? 0), 0), triggerCount: expectedTotal,
     segmentCount: doc.segments.length, expectedTotal, toleranceTotal, calibrated: expectedTotal != null };
 }
 
 export function planExport(doc = burstRecipe()): PlanExport {
-  return { protocolVersion: 8, recipeId: doc.id, productCode: doc.productCode, planVersion: doc.planVersion ?? 0, cameras: doc.inspect.map(i => i.camera),
+  return { protocolVersion: 8, recipeId: doc.id, productCode: doc.productCode, cameras: doc.inspect.map(i => i.camera),
     segments: doc.segments.map(({ index, kind, lengthMm, expectedFrames, tolerance, inspectRange }) => ({ index, kind, lengthMm, expectedFrames, tolerance, inspectRange })),
     ...burstTotals(doc) };
 }
@@ -135,7 +135,7 @@ export function calibrationView(): CalibrationView {
   return {
     roundId: "round-1", measured: true,
     segments: burstRecipe().segments.map(s => ({ index: s.index, kind: s.kind, nExp: s.expectedFrames, tolerance: s.tolerance, xRef: null, xRefPending: s.kind === "straight" ? "多段配方暂不计算 x_ref" : null, hints: [] })),
-    expectedTotal: 12, toleranceTotal: 3, planVersionChange: false,
+    expectedTotal: 12, toleranceTotal: 3,
   };
 }
 
@@ -145,7 +145,7 @@ export function captureRoundV2(over: Partial<CaptureRoundV2> = {}): CaptureRound
   return {
     format: 2, roundId: "round-1", recipeId: "S", state: "complete", simulated: false,
     cameras: burstCameras.map((cameraId, c) => ({ cameraId, deviceSession: 1, receivedCount: cameraFrames[c] })),
-    plcShotCount: 12, plcPlanVersion: 3, deviceTriggers: 12, groupCount: burstGroups, cameraFrames,
+    plcShotCount: 12, deviceTriggers: 12, groupCount: burstGroups, cameraFrames,
     incompleteGroups: [burstMissing.seq], missingFrames: [{ ...burstMissing }], lossAlarms: [], alarms: [],
     createdAt: 1, endedAt: 2, error: null, failure: null, ...over,
   };
@@ -170,12 +170,12 @@ export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
     calibration: calibrationView(), productionExport: null, candidateExport: planExport(doc), candidateExportError: null, shotCountChanged: false, progress: progressV2(),
     pieces: [{ roundId: "round-1", recordId: 1, cycleId: "cycle-1", sn: "SN-1", ts: 1, groupCount: burstGroups, review: "confirmed", confirmedBy: "manual", measured: true, excludedGroups: 0, imagesMissing: false }],
   };
-  const layout: Recipe = { ...structuredClone(doc), planVersion: doc.planVersion ?? 0, revisionId: `revisionId-${doc.id}`, pathSegments: structuredClone(doc.segments) };
+  const layout: Recipe = { ...structuredClone(doc), revisionId: `revisionId-${doc.id}`, pathSegments: structuredClone(doc.segments) };
   const cameraTeaching = plan.cameraTeaching.flatMap(({ camera, segments }) => segments.map(({ segment, frame, round, seq }) => ({ camera, frame, round, seq, segment })));
   const rounds = [{ roundId: "round-1", createdAt: 1, cameras: plan.cameras, cameraConfig: plan.cameras.map(() => null),
     groupCount: burstGroups, cameraFrames: plan.cameras.map(() => burstGroups), incompleteGroups: 0, lossAlarms: 0, corridors: plan.cameras.map(() => null), xMeans: plan.cameras.map(() => null) }];
   return {
-    layout, productionVersion: null, productionPlanVersion: null, planChanged: false, plan,
+    layout, productionVersion: null, plan,
     workspace: { doc, baseRevision: null, revision: 3, updatedAt: 1, publish: { state: "draft" }, pending: null,
       samples: [], sampleBank: [], validation: null, cameraTeaching, calibration: { rounds },
       flow: 2, teachingPiece: { roundId: "round-1", recordId: 1, cycleId: "cycle-1", sn: "SN-1", ts: 1 } },

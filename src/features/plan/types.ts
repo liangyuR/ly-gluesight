@@ -168,7 +168,6 @@ export interface PlanExport {
   protocolVersion: number;
   recipeId: string;
   productCode: number;
-  planVersion: number;
   cameras: string[];
   segments: ExportSegment[];
   expectedTotal: number | null;
@@ -610,7 +609,6 @@ export interface CaptureRoundV2 {
   state: CaptureState;
   /** PLC 写来的 shotCount（示教轮次可为估算值，不核对） */
   plcShotCount: number | null;
-  plcPlanVersion: number | null;
   /** partEnd 时的 deviceTriggers，只作参考 */
   deviceTriggers: number | null;
   /** 整轮帧组数（标定统计用） */
@@ -684,8 +682,6 @@ export interface CalibrationView {
   /** ΣN_exp */
   expectedTotal: number | null;
   toleranceTotal: number;
-  /** 已有 N_exp 且计划身份与生产不同：发布时分配新计划版本 */
-  planVersionChange: boolean;
 }
 
 export interface CameraTeachingView {

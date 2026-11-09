@@ -101,7 +101,9 @@ pub struct CaptureRoundV2 {
     pub state: CaptureState,
     /// PLC 写来的 shotCount：示教轮次可为估算值，只记录不核对
     pub plc_shot_count: Option<u16>,
-    pub plc_plan_version: Option<u32>,
+    /// 旧轮次记过 PLC 计划版本：读入时丢弃，不再写出
+    #[serde(default, rename = "plcPlanVersion", skip_serializing)]
+    pub _plc_plan_version: crate::workspace::Discarded,
     #[serde(default)]
     pub teaching_round_id: Option<u16>,
     /// partEnd 时的 deviceTriggers，只作参考
@@ -444,7 +446,6 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
         .teaching_round_id
         .is_some_and(|id| (1..=32767).contains(&id))
         && round.plc_shot_count.is_none()
-        && round.plc_plan_version.is_none()
         && round.device_triggers.is_none();
     if round.teaching_round_id.is_some() && !teaching {
         return Err("示教 V1 轮次编号或元数据不一致".into());
@@ -453,7 +454,6 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
     if history
         && (round.teaching_round_id.is_some()
             || round.plc_shot_count.is_some()
-            || round.plc_plan_version.is_some()
             || round.device_triggers.is_some()
             || round.state != CaptureState::Complete
             || round.origin.as_ref().is_some_and(|o| match o {
@@ -465,12 +465,11 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
     }
     let started = teaching
         || history
-        || (round.plc_plan_version.is_some_and(|v| v > 0) && round.plc_shot_count.is_some());
+        || round.plc_shot_count.is_some();
     let terminal_ok = match round.state {
         CaptureState::WaitingStart => {
             round.teaching_round_id.is_none()
                 && round.plc_shot_count.is_none()
-                && round.plc_plan_version.is_none()
                 && round.device_triggers.is_none()
                 && round.group_count == 0
                 && round.ended_at.is_none()

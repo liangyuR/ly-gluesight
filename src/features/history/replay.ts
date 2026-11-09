@@ -39,7 +39,7 @@ export function comparisonBurst(burst: PartDetailBurst, side: BurstSide & { fram
 
 /**
  * 两侧的计划身份是否相同（与后端 plan_identity 同口径）：各段的序号、类型、N_exp，有序相机，整件预期总数。
- * 限值、容差、x_ref、检测区间、段长不参与——它们变了计划号不变，区域仍一一对应，可以比较。
+ * 限值、容差、x_ref、检测区间、段长不参与——它们变了区域仍一一对应，可以比较。
  */
 export function samePlanIdentity(a: BurstSide, b: BurstSide) {
   return a.expectedTotal === b.expectedTotal && sameList(a.cameras, b.cameras) && a.segments.length === b.segments.length

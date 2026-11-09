@@ -194,7 +194,7 @@ pub(super) fn skip_suggestions(
         .collect()
 }
 
-/// 操作员确认第 `segment` 段一头的跳过帧组数（不进计划身份，不换计划版本）。
+/// 操作员确认第 `segment` 段一头的跳过帧组数（不进计划身份）。
 pub(super) fn confirm_skip(
     w: &mut Workspace,
     segment: u32,
@@ -425,7 +425,7 @@ pub async fn workspace_pass_skip_suggest(
     .map_err(|e| e.to_string())
 }
 
-/// 操作员确认每笔开头、结尾跳过的帧组数（不进计划身份，不换计划版本）。
+/// 操作员确认每笔开头、结尾跳过的帧组数（不进计划身份）。
 #[tauri::command]
 pub fn workspace_confirm_pass_skip(
     app: AppHandle,

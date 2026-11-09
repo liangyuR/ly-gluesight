@@ -304,8 +304,6 @@ pub struct RecipeSummary {
     pub trigger_mode: TriggerMode,
     pub cameras: Vec<String>,
     pub length: f32,
-    /// PLC 计划版本
-    pub plan_version: u32,
     /// PLC 触发次数 ΣN_exp（未标定为空）
     pub trigger_count: Option<usize>,
     pub segment_count: usize,
@@ -346,7 +344,6 @@ impl From<&Recipe> for RecipeSummary {
                 .iter()
                 .map(|s| s.length_mm.unwrap_or(0.0) as f32)
                 .sum(),
-            plan_version: r.plan_version,
             trigger_count: expected_total.map(|n| n as usize),
             segment_count: r.path_segments.len(),
             expected_total,
@@ -476,7 +473,6 @@ impl CycleHost {
             config_gate: tokio::sync::Mutex::new(()),
             recipes: RecipeStore::open_with_floors(
                 data.join("recipes"),
-                crate::storage::state(app).join("plan-version"),
                 &app.state::<crate::store::Store>().recipe_version_floors()?,
             )?,
             recorders,

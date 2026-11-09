@@ -384,10 +384,6 @@ pub struct WorkspaceView {
     pub production_version: Option<u32>,
     /// 生产配方是采集版还是正式版；未发布为空
     pub production_stage: Option<RecipeStage>,
-    /// 生产配方的 PLC 计划版本
-    pub production_plan_version: Option<u32>,
-    /// 候选的计划身份与生产配方不同（或还没发布过）
-    pub plan_changed: bool,
     /// 段配方的计划部分（决策记录 5.1）
     pub plan: burst::WorkspacePlanView,
     pub navigation: NavigationView,
@@ -562,16 +558,11 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
     let production_recipe = app.state::<CycleHost>().recipe(&w.doc.id);
     let production_version = production_recipe.as_ref().map(|r| r.version);
     let production_stage = production_recipe.as_ref().map(|r| r.stage);
-    let production = app.state::<CycleHost>().recipes.doc(&w.doc.id);
-    let plan_changed = production
-        .as_ref()
-        .is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
     let plan = burst::plan_view(
         app,
         &w,
         &layout,
         production_recipe.as_deref(),
-        production.as_ref(),
         production_version,
     );
     Ok(WorkspaceView {
@@ -580,8 +571,6 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         layout,
         production_version,
         production_stage,
-        production_plan_version: production.map(|p| p.plan_version),
-        plan_changed,
         plan,
     })
 }
@@ -749,20 +738,16 @@ fn check_identity<'a>(
     Ok(())
 }
 
-/// 项目整包导入时整理候选：回到草稿，不带待生效版本与验证结论；计划版本按本机新号改写；
+/// 项目整包导入时整理候选：回到草稿，不带待生效版本与验证结论；
 /// 没带检测记录时去掉来自来源机检测历史的验证样本。
 pub(crate) fn reset_for_project_import(
     path: &Path,
-    plans: &BTreeMap<u32, u32>,
     keep_history: bool,
 ) -> Result<Vec<String>, String> {
     let text = crate::fsio::read_text(path).map_err(|e| e.to_string())?;
     let mut w: Workspace = serde_json::from_str(&text)
         .map_err(|e| format!("候选 {} 无法读取：{e}", path.display()))?;
     let mut notes = Vec::new();
-    if let Some(plan) = plans.get(&w.doc.plan_version) {
-        w.doc.plan_version = *plan;
-    }
     w.pending = None;
     w.publish = PublishState::Draft;
     if !keep_history {
@@ -1072,8 +1057,7 @@ pub fn workspace_publish(
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
     }
     let recipes = &app.state::<CycleHost>().recipes;
-    let mut release_doc = formal_release_doc(w, recipes.release_version(&w.doc)?)?;
-    release_doc.plan_version = recipes.plan_version_for(&release_doc)?;
+    let release_doc = formal_release_doc(w, recipes.release_version(&w.doc)?)?;
     let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?;
     let navigation = navigation::prepare_navigation_release(
         &crate::storage::project(&app),
@@ -1103,7 +1087,7 @@ pub fn workspace_publish(
     view(&app, w.clone())
 }
 
-/// 正式版的配方文档：带示教件来源（RB-7），版本取调用方按配方库分配的 `version`，计划版本也由调用方分配。
+/// 正式版的配方文档：带示教件来源（RB-7），版本取调用方按配方库分配的 `version`。
 fn formal_release_doc(w: &Workspace, version: u32) -> Result<RecipeDoc, String> {
     let mut doc = w.doc.clone();
     doc.version = version;

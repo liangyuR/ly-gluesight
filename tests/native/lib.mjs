@@ -278,7 +278,7 @@ export async function measureTeaching(ws, teaching, { log = () => {} } = {}) {
   log(`示教件已测量：${piece.sn}，${piece.groupCount} 个帧组；${plan.calibration.segments.map(s => `段 ${s.index} N_exp ${s.nExp} ± ${s.tolerance}${s.xRef ? `，x_ref ${s.xRef.xRef.toFixed(3)}` : ""}`).join("；")}`);
   return {
     piece, expectedTotal: plan.expectedTotal, toleranceTotal: plan.toleranceTotal,
-    segments: plan.calibration.segments, planVersionChange: plan.calibration.planVersionChange, calibration: plan.calibration,
+    segments: plan.calibration.segments, calibration: plan.calibration,
   };
 }
 
