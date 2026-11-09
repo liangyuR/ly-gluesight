@@ -79,6 +79,39 @@ pub(super) fn teaching_sizes(w: &Workspace) -> Result<Vec<[u32; 2]>, String> {
         .collect()
 }
 
+/// 示教件 `round`（轮次编号, 采集时间）里相机 `camera` 第 `seq` 帧冻结成示教帧。相机标签的图像模式按录制原图本身
+/// （彩色或灰度），不按本机当前配置：示教件常在别的机器上示教。
+pub(super) fn teaching_frame(
+    id: String,
+    (round, captured_at): (&str, i64),
+    (camera, seq): (&str, u64),
+    imaging: &crate::camera::CameraImaging,
+    config: &crate::camera::CameraConfig,
+    image: &FrameImage,
+    calib_tag: Value,
+) -> FrozenImage {
+    let mut recorded = config.clone();
+    recorded.image_mode = if image.is_color() {
+        crate::camera::ImageMode::Color
+    } else {
+        crate::camera::ImageMode::Gray
+    };
+    FrozenImage {
+        id,
+        view: 1,
+        source: format!("capture:{round}#{seq}"),
+        captured_at,
+        size: [image.width, image.height],
+        camera: camera.to_owned(),
+        camera_tag: camera_state(&recorded, None),
+        calib_tag,
+        geometry_tag: json!({"round": round, "camera": camera, "seq": seq}),
+        exposure_us: Some(imaging.exposure_us),
+        gain_db: Some(imaging.gain_db),
+        history_id: None,
+    }
+}
+
 /// 各计划相机示教帧的通道数（计划相机顺序）：示教帧冻结时的相机标签是彩色模式为 3，否则为 1。
 pub(super) fn teaching_channels(w: &Workspace) -> Vec<u8> {
     w.doc
@@ -138,7 +171,7 @@ pub struct CalibrationRound {
     pub created_at: i64,
     /// 测量时的计划相机顺序；下面几项按它排列
     pub cameras: Vec<String>,
-    /// 各相机采集时的设备配置：发布时要与当前设备相同
+    /// 各相机采集时的设备配置，只作记录，不与当前设备比较
     pub camera_config: Vec<Value>,
     /// 帧组数 = 各相机最大 seq 的最大值
     pub group_count: u64,
@@ -694,7 +727,6 @@ fn teaching_source<'a>(
     recipe_id: &str,
     camera: &str,
     seq: u64,
-    current_config: &Value,
 ) -> Result<&'a CaptureCamera, String> {
     if round.recipe_id != recipe_id || round.state != CaptureState::Complete {
         return Err(format!(
@@ -720,9 +752,6 @@ fn teaching_source<'a>(
         .any(|m| m.camera == index && m.seq == seq)
     {
         return Err(format!("相机 {camera} 缺第 {seq} 帧组的图像，请换一帧"));
-    }
-    if &source.camera_config != current_config {
-        return Err(format!("采集后相机 {camera} 的参数已改变，请重新采集"));
     }
     Ok(source)
 }
@@ -1054,7 +1083,7 @@ pub(super) async fn prepare_segment_teaching(
             .into_iter()
             .find(|c| c.id == camera)
             .ok_or_else(|| format!("相机 {camera} 已不在设备配置里"))?;
-        let imaging = teaching_source(&captured, &id, &camera, seq, &state_value(&config))?.imaging;
+        let imaging = teaching_source(&captured, &id, &camera, seq)?.imaging;
         let source = capture.burst_frame_path(&round, &camera, seq)?;
         crate::image_file::checked_source_path(&source)?;
         let bytes =
@@ -1065,25 +1094,19 @@ pub(super) async fn prepare_segment_teaching(
         );
         let calib = vision::camera_calib_path(&app, inspect)?;
         let default_scale = calib_scale(&app, inspect, config.source)?;
-        let sample_set = None::<String>;
-        let frame = FrozenImage {
-            id: format!(
+        let frame = teaching_frame(
+            format!(
                 "corridor-{}-{revision}-{seq}-{}",
                 ly_plc::now_ms(),
                 host.capture_seq.fetch_add(1, Ordering::Relaxed)
             ),
-            view: 1,
-            source: format!("capture:{round}#{seq}"),
-            captured_at: captured.created_at,
-            size: [image.width, image.height],
-            camera: camera.clone(),
-            camera_tag: camera_state(&config, sample_set.as_deref()),
-            calib_tag: calibration_state(&calib)?,
-            geometry_tag: json!({"round": round, "camera": camera, "seq": seq}),
-            exposure_us: Some(imaging.exposure_us),
-            gain_db: Some(imaging.gain_db),
-            history_id: None,
-        };
+            (&round, captured.created_at),
+            (&camera, seq),
+            &imaging,
+            &config,
+            &image,
+            calibration_state(&calib)?,
+        );
         PreparedSegmentTeaching::stage(
             &workspace,
             CameraTeaching {
@@ -1627,12 +1650,8 @@ pub async fn workspace_snap_corridor(
 
 // ───────────── 示教件测量 ─────────────
 
-/// 示教件能不能测量：属于本候选、已完整完成；相机集合等于计划相机；每台相机采集时的设备配置与当前设备相同。
-pub(super) fn check_round(
-    doc: &RecipeDoc,
-    round: &CaptureRoundV2,
-    current: &BTreeMap<String, Value>,
-) -> Result<(), String> {
+/// 示教件能不能测量：属于本候选、已完整完成；相机集合等于计划相机。不比较采集时与当前的相机设备配置：示教件常在别的机器上示教。
+pub(super) fn check_round(doc: &RecipeDoc, round: &CaptureRoundV2) -> Result<(), String> {
     require_burst(doc)?;
     let id = &round.round_id;
     if round.recipe_id != doc.id {
@@ -1654,12 +1673,6 @@ pub(super) fn check_round(
     }
     if round.group_count == 0 {
         return Err(format!("采集轮次 {id} 没有帧组"));
-    }
-    for camera in &round.cameras {
-        let camera_id = &camera.camera_id;
-        if current.get(camera_id) != Some(&camera.camera_config) {
-            return Err(format!("采集后相机 {camera_id} 的参数已改变，请重新采集"));
-        }
     }
     Ok(())
 }

@@ -123,8 +123,9 @@ fn frame_count(n: usize) -> u32 {
 }
 
 /// 逐条核对一件历史件能否导入为本候选的采集轮次（5.2 可用条件）：维护模式或生产的真机件、属于本候选的型号、
-/// 有一期录制元数据（相机设备与 PLC 请求）、计划相机齐全且设备配置与当前一致（`current` 按相机编号，`state_value` 口径）、
-/// 没有提前结束、原图完整（无缺帧、无 rawDropped、每帧已落盘）、帧号与帧组序号一致；`imported` 为已导入的 cycleId → 轮次。
+/// 有一期录制元数据（相机设备与 PLC 请求）、计划相机齐全、没有提前结束、原图完整（无缺帧、无 rawDropped、每帧已落盘）、
+/// 帧号与帧组序号一致；`imported` 为已导入的 cycleId → 轮次。录制时设备配置与当前（`current` 按相机编号，`state_value` 口径）
+/// 不同只提示，不拦截：示教件常在别的机器上选用与示教。
 pub(super) fn assess(
     doc: &RecipeDoc,
     current: &BTreeMap<String, Value>,
@@ -359,8 +360,9 @@ pub(super) fn assess(
             continue;
         };
         let config = &device["cameraConfig"];
-        if config.is_null() || current.get(camera_id) != Some(config) {
-            reasons.push(format!("相机 {camera_id} 的设备配置与当前不一致"));
+        if !config.is_null() && current.get(camera_id) != Some(config) {
+            view.warnings
+                .push(format!("录制时相机 {camera_id} 的设备配置与当前不同"));
         }
         let imaging = serde_json::from_value::<CameraImaging>(device["imaging"].clone()).ok();
         let session = device["deviceSession"].as_u64().filter(|&s| s > 0);

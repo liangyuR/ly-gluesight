@@ -84,7 +84,7 @@ export default function TeachingPiecePage() {
       confirmLabel="设为示教件" onConfirm={choose}
       help={<ContextHelp label="选示教件说明">
         <p>列出本机全部真机录制件（不限项目、配方），可按项目、配方、SN、时间与判定筛选。选为示教件后只引用这件的录制原图，不复制（不停线）；被示教件引用的录制不参与滚动清理与按天清理，换示教件或删除候选后解除。</p>
-        <p>可选用：原图完整（无缺帧、无录制队满未录）、三台计划相机齐全且设备配置与当前一致、没有提前结束、型号属于本候选；已选作示教件的标“已使用”。</p>
+        <p>可选用：原图完整（无缺帧、无录制队满未录）、三台计划相机齐全、没有提前结束、型号属于本候选；录制时相机设备配置与当前不同只提示，不拦；已选作示教件的标“已使用”。</p>
         <p>选好后看一遍各相机的帧组，确认胶路完整、图像清晰再设为示教件。</p>
       </ContextHelp>} />
     {confirming && <Dialog open title={piece ? "更换示教件" : "设为示教件"} onOpenChange={open => { if (!open) close(false); }}

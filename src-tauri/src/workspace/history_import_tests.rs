@@ -174,3 +174,41 @@ fn imported_round_references_recording_images_without_copying_them() {
         "重启后仍认得已导入的件"
     );
 }
+
+#[test]
+fn camera_config_differs_from_recording_then_piece_still_usable_with_warning() {
+    // 防的回归：项目与示教件导到另一台机器后相机设备配置与录制时不同，选示教件被拦下
+    let doc = crate::recipe::samples_burst();
+    let cameras = doc.plan_cameras();
+    let frames: Vec<Value> = (1..=GROUPS)
+        .flat_map(|seq| {
+            cameras.iter().enumerate().map(move |(camera, id)| {
+                json!({"camera": camera, "cameraId": id, "seq": seq, "frameCounter": 100 + seq,
+                    "available": true, "file": format!("{id}_s{seq:06}.pgm"), "width": 2, "height": 1, "ts": 1})
+            })
+        })
+        .collect();
+    let part = json!({
+        "cycleId": CYCLE,
+        "cameras": cameras,
+        "groupCount": GROUPS,
+        "frames": frames,
+        "devices": cameras.iter().map(|id| json!({"cameraId": id, "cameraConfig": DEVICE,
+            "imaging": {"exposureUs": 60.0, "gainDb": 6.0}, "deviceSession": 3})).collect::<Vec<_>>(),
+        "plc": {"requestSeq": 1, "productCode": doc.product_code},
+    });
+    let assessed = assess(
+        &doc,
+        &configs(&doc, "device-on-another-pc"),
+        &BTreeMap::new(),
+        &summary(CYCLE),
+        &recording(Some(Path::new("recorded"))),
+        Ok((PathBuf::from("recorded"), part)),
+    );
+    assert!(
+        assessed.round.is_some() && assessed.view.reasons.is_empty(),
+        "{:?}",
+        assessed.view.reasons
+    );
+    assert_eq!(assessed.view.warnings.len(), cameras.len());
+}

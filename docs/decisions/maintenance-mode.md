@@ -37,7 +37,7 @@
 
 - **HI-1 只引用录制原图**：`RecipeCaptureHost::import_history` 逐帧核对录制原图（普通文件、长度等于录制尺寸的 PGM），核对按 `origin.cycleId` 在检测记录库查到的录制目录就是这些原图所在的目录，然后只写 `frames.jsonl`（帧的 `path` 为录制目录里的文件名 `{相机}_s{seq:06}.pgm`），最后写 `round.json`；任一步失败删掉本轮目录。不复制也不链接：单件 1～2 GB，复制多占一份盘，硬链接要求同卷，而录制根以后可能在多块盘上。读帧时按 cycleId 查记录库里的录制目录（记录里的绝对路径，录制迁移或随记录导入时由记录库改写），只接受该目录里的文件。
 - **HI-2 轮次格式 4**：新轮次写 `format: 4`（帧路径指向录制）；`format: 3`（原图在本轮目录，以前的硬链接或复制）与 `format: 2` 照常读取，不迁移，本轮目录缺图时按来源 cycleId 读录制原图。历史件轮次的 `origin` 为 `{kind: "history", cycleId, recordId, standard}`，已有的手动配置数据轮次 `{kind: "prepared", label}` 照常读取（`capture_fixture` 现在生成仿历史录制件，经导入成为 `history` 轮次，[recipe-build-flow](recipe-build-flow.md)）：两者状态只能是完成，不记 shotCount 与 deviceTriggers；历史件轮次`frames.jsonl` 的帧号取录制帧号（同一相机“帧号 − 帧组序号”须一致才能导入），触发计数不记；`createdAt` 是导入时间。
-- **HI-3 可用条件的取法**：列本机全部有录制目录的真机记录（不限项目、配方），按项目、配方、SN、记录日期、判定筛选，每页 50 件，逐件读 `part.json`；导入时按所选记录编号重新取记录核对，不受分页影响；型号按 `plc.productCode` 核对；相机按 `devices[].cameraConfig` 与当前设备配置（`state_value` 口径）逐台比较；另把“含手动触发帧”“帧号与帧组序号对不上”“录制目录不在真机录制根下”算作不可导入。
+- **HI-3 可用条件的取法**：列本机全部有录制目录的真机记录（不限项目、配方），按项目、配方、SN、记录日期、判定筛选，每页 50 件，逐件读 `part.json`；导入时按所选记录编号重新取记录核对，不受分页影响；型号按 `plc.productCode` 核对；相机按 `devices[].cameraConfig` 与当前设备配置（`state_value` 口径）逐台比较，不同只提示、不算不可导入；另把“含手动触发帧”“帧号与帧组序号对不上”“录制目录不在真机录制根下”算作不可导入。
 - **HI-4 不要求空闲**：导入不占相机与 PLC，只等配置门（不要求节拍空闲，生产进行中也能导入）；在配置门内按候选修订号重新核对所选的每一件，任一件不可用就一件也不导；同一件对同一候选只导一次（按各轮 `origin.cycleId` 去重，重启后仍有效）。逐件导入中途失败时，已导入的轮次保留，错误里列出。
 - **HI-5 标准件**：不另标记标准件，示教件兼作标准件（[recipe-build-flow](recipe-build-flow.md) RB-3）。导入写的 `origin.standard` 恒为 false，旧轮次里的标记读入时忽略。
 - **HI-6 不与验证样本去重**：候选没有验证样本（[segment-burst](segment-burst.md) D-SB-46），导入的历史件不用与样本去重；检测结果在历史页用任意配方复测核对，示教件本身也能复测。
