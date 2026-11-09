@@ -86,7 +86,7 @@ fn calibrate(w: &mut Workspace, total: u32) {
     }
 }
 
-/// 设备就绪，没有任何验证样本（D-SB-46 发布不要求）：只剩候选自身的检查项决定能否发布。
+/// 设备就绪：只剩候选自身的检查项决定能否发布。
 fn checks(w: &Workspace) -> Vec<Check> {
     burst_checks(w, Ok(()))
 }
@@ -101,7 +101,7 @@ fn check<'a>(checks: &'a [Check], name: &str) -> &'a Check {
 #[test]
 fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
     // 防的回归（规格 §1 Plan.cameras = 3；§4 每台相机的检测走廊；D-SB-46）：少一台计划相机、某台没选示教帧、走廊超出示教帧、
-    // 缺像素当量，仍能通过发布前检查；或都满足了却因为没有验证样本而不能发布
+    // 缺像素当量，仍能通过发布前检查；或都满足了却不能发布
     type Edit = fn(&mut Workspace);
     let cases: [(&str, Edit, bool); 5] = [
         ("三台相机都示教好", |_| {}, true),

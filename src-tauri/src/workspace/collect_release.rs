@@ -1,7 +1,7 @@
 //! 采集版发布（在线投运）：新产线还没有可用配方时，先把未完成的候选发布成采集版，维护模式按它的型号与三台计划相机
 //! 跟着生产采图（曝光增益取相机页的设定）；攒够历史件再示教、标定、验证，发布正式版（`workspace_publish`）。
 //!
-//! 采集版只检查计划相机、段与生产版本，不要求走廊示教、ΣN_exp 标定与独立验证，也不生成发布包；相机组与型号在
+//! 采集版只检查计划相机、段与生产版本，不要求走廊示教、ΣN_exp 标定，也不生成发布包；相机组与型号在
 //! 接件和写入配方库时照常核对。版本号照常递增，同样在工件边界生效。已有正式版时不能发布采集版
 //! （正式版不降级，`RecipeStore::save_published` 同样拒绝）。
 
@@ -120,7 +120,6 @@ pub fn workspace_publish_collect(
             passed: true,
             checked_at: ly_plc::now_ms(),
             checks,
-            samples: Vec::new(),
             environment_tag: Value::Null,
         },
         validation_site: ValidationSite::Real,

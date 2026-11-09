@@ -1,6 +1,6 @@
 # 维护模式、采集版配方、历史件导入与试判（在线投运一期至三期）
 
-依据：[在线投运方案](../architecture/online-commissioning.md)（2026-10-25 定案）与[生产通讯协议 8](../integration/plc-communication-protocol.md) 第八、九节。一期做维护模式采集、采集版配方与录制元数据；二期做历史件导入为采集轮次与验证样本去重；三期做试判统计、历史按模式筛选与复核入口。
+依据：[在线投运方案](../architecture/online-commissioning.md)（2026-10-25 定案）与[生产通讯协议 8](../integration/plc-communication-protocol.md) 第八、九节。一期做维护模式采集、采集版配方与录制元数据；二期做历史件导入为采集轮次；三期做试判统计、历史按模式筛选与复核入口。
 
 ## 已定（用户确认）
 
@@ -40,7 +40,7 @@
 - **HI-3 可用条件的取法**：只列本配方（记录的 `recipeId` 等于候选编号）最近 200 件有录制目录的真机记录，逐件读 `part.json`；型号按 `plc.productCode` 核对；相机按 `devices[].cameraConfig` 与当前设备配置（`state_value` 口径）逐台比较；另把“含手动触发帧”“帧号与帧组序号对不上”“录制目录不在真机录制根下”算作不可导入。
 - **HI-4 不要求空闲**：导入不占相机与 PLC，只等配置门（不要求节拍空闲，生产进行中也能导入）；在配置门内按候选修订号重新核对所选的每一件，任一件不可用就一件也不导；同一件对同一候选只导一次（按各轮 `origin.cycleId` 去重，重启后仍有效）。逐件物化中途失败时，已导入的轮次保留，错误里列出。
 - **HI-5 标准件**：不另标记标准件，示教件兼作标准件（[recipe-build-flow](recipe-build-flow.md) RB-3）。导入写的 `origin.standard` 恒为 false，旧轮次里的标记读入时忽略。
-- **HI-6 验证样本去重**：运行验证时核对（D-SB-46 后验证可选）：历史样本的 cycleId 已导入为本候选的轮次、且该轮是本候选的示教件，这个样本记不符合并写明原因；只导入未用的件仍可验证。录制有 `devices` 时，计划相机的 `cameraConfig` 须与当前一致。
+- **HI-6 不与验证样本去重**：候选没有验证样本（[segment-burst](segment-burst.md) D-SB-46），导入的历史件不用与样本去重；检测结果在历史页用任意配方复测核对，示教件本身也能复测。
 - **HI-7 日志**：导入记 `op.capture.import`（`recipeId`、所选记录、新轮次）。
 - **HI-8 帧率列与提前结束提示**：列表的“时长 / 实测帧率（设定）”按 `part.json` 的 `frames[].ts` 计算：时长取各相机首末帧时间差的最大值，实测帧率取各相机（帧数 − 1）/ 时间差的中位数，设定帧率取 `devices[].cameraConfig.frameRate`；实测偏离设定超过 10% 时标黄。本批可比较的件（没有不可用原因，或只因已导入为本候选轮次）不少于 3 件时取其帧组数中位数 M，帧组数 N < 0.9·M 的件加提示“帧组数 N，明显少于本批中位数 M（疑似提前结束）”。提示不阻断导入。DTO `HistoryCandidate` 带 `warnings`、`durationMs`、`measuredFps`、`setFps`。
 

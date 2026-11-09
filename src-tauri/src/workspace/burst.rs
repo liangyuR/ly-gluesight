@@ -293,7 +293,6 @@ pub enum StepIdV2 {
     Segments,
     Corridor,
     Calibration,
-    Validation,
     Publish,
 }
 
@@ -532,26 +531,6 @@ pub(super) fn calibration_corridors(
                 .collect()
         })
         .collect())
-}
-
-/// 一轮里每台计划相机每个 seq 到没到（缺帧为 false），按计划相机、seq 排列，复测用（见 `burst_history::remeasure_by_rule`）。
-pub(super) fn round_frames(cameras: &[String], round: &CaptureRoundV2) -> Vec<(usize, u64, bool)> {
-    cameras
-        .iter()
-        .enumerate()
-        .flat_map(|(index, camera)| {
-            let source = round.cameras.iter().position(|c| &c.camera_id == camera);
-            (1..=round.group_count).map(move |seq| {
-                let missing = source.is_none_or(|j| {
-                    round
-                        .missing_frames
-                        .iter()
-                        .any(|m| m.camera == j && m.seq == seq)
-                });
-                (index, seq, !missing)
-            })
-        })
-        .collect()
 }
 
 /// 没有测量值的一帧（缺帧、测量失败）。
@@ -2937,32 +2916,6 @@ pub(super) fn progress_v2(
         } if *revision == w.revision => Some(*version),
         _ => None,
     };
-    // D-SB-46：独立样本验证可选，不是发布前提；发布只要示教件、分段、走廊示教完成（设备与生产版本在发布时当场核对）
-    let validation = {
-        let current = w.validation.as_ref().filter(|v| v.revision == w.revision);
-        let (status, detail) = match current {
-            Some(v) if v.passed => (
-                StepStatus::Done,
-                format!("当前修订验证通过（{} 件样本）", v.samples.len()),
-            ),
-            Some(_) => (
-                StepStatus::NotStarted,
-                "可选：上次验证未通过，不影响发布".to_string(),
-            ),
-            None => (
-                StepStatus::NotStarted,
-                "可选：用独立整圈样本试验证，不影响发布".to_string(),
-            ),
-        };
-        StepV2 {
-            id: StepIdV2::Validation,
-            label: "验证（可选）",
-            optional: true,
-            status,
-            detail,
-            blockers: Vec::new(),
-        }
-    };
     let publish = {
         let production =
             production_version.map_or("未发布".to_string(), |v| format!("生产 v{v}"));
@@ -3082,7 +3035,6 @@ pub(super) fn progress_v2(
             segments,
             corridor,
             calibration,
-            validation,
             publish,
         ],
         next,

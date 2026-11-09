@@ -29,14 +29,11 @@ export interface FrozenImage {
   camera: string; view: number; cameraTag: unknown; calibTag: unknown; geometryTag: unknown;
   exposureUs: number | null; gainDb: number | null; historyId: number | null;
 }
-export interface Sample { historyId: number | null; sampleId?: string | null; expected: Verdict }
-export interface BankSample { id:string; name:string; geometryTag: unknown; expected:Verdict; createdAt:number; captureId?: string | null }
 /** 发布前检查的一项；advisory 为只提醒、不拦发布的项（如有段在示教帧上没测成）。 */
 export interface Check { name: string; passed: boolean; detail: string; advisory?: boolean }
 export interface Validation {
   revision: number; passed: boolean; checkedAt: number; environmentTag: unknown;
   checks: Check[];
-  samples: { historyId: number | null; sampleId:string | null; name:string; sn: string; expected: Verdict; actual: Verdict | null; passed: boolean; reason: string }[];
 }
 /** 发布时所在站点：离线验证发布的版本只能在离线运行。 */
 export type ValidationSite = "real" | "offline";
@@ -47,8 +44,7 @@ export interface Release {
 }
 export interface Workspace {
   doc: RecipeDoc; revision: number;
-  samples: Sample[]; validation: Validation | null; pending: Release | null;
-  sampleBank: BankSample[];
+  pending: Release | null;
   captureId?: string | null;
   publish: PublishState; updatedAt: number;
   /** 每台计划相机的走廊示教帧；界面读 plan.cameraTeaching */

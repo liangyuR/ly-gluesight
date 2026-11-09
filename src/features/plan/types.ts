@@ -775,8 +775,8 @@ export interface RecipeSummaryV2 extends RecipeSummary {
 }
 
 /** 段配方的进度步骤；路由：capture→/recipe/<编号>/capture，segments→/recipe/<编号>/segments，corridor→/recipe/<编号>/teach，
- * calibration→/recipe/<编号>/calibration，validation / publish→/recipe/<编号>/validation。 */
-export type StepIdV2 = "capture" | "segments" | "corridor" | "calibration" | "validation" | "publish";
+ * calibration→/recipe/<编号>/calibration，publish→/recipe/<编号>/validation。 */
+export type StepIdV2 = "capture" | "segments" | "corridor" | "calibration" | "publish";
 
 export type ProgressTargetV2 =
   | { page: "capture" }

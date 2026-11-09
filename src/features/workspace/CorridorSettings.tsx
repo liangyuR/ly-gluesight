@@ -140,7 +140,7 @@ export function ExpertCard({ camera, own, defaults, disabled, onCamera, onDefaul
   return <SettingsCard title="专家参数" badge={changed ? `${changed} 项已改` : "默认"} tone={changed ? "info" : "neutral"}
     summary={changed ? `本相机 ${here(own)} 项 · 配方默认 ${here(defaults)} 项` : "门限均为模板默认值"}>
     <ExpertFields camera={camera} own={own} defaults={defaults} disabled={disabled} groups={group => !HEADING_EXPERT_GROUPS.includes(group)} onCamera={onCamera} onDefaults={onDefaults}
-      hint="作用于 lyFlow 算子或 GlueSight 判定（px 等原始单位）；悬停看说明。改动后请重新试测，发布前跑样本验证。"/>
+      hint="作用于 lyFlow 算子或 GlueSight 判定（px 等原始单位）；悬停看说明。改动后请重新试测，发布前在历史页用候选重算历史记录核对。"/>
   </SettingsCard>;
 }
 

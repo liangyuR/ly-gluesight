@@ -57,13 +57,13 @@ lyFlow 本身的设计是节点图平台：GraphDoc 是统一的图文档，支�
 - 专家参数分两类，规格（标签、范围、默认值、说明）都写在测量图模板里，配方默认与相机覆盖逐层叠加，两张模板里同名的规格必须一致：
   - 绑定算子参数的放顶层图参数（`advanced: true`）：横向卡尺的 `segmentMin`、`peakMin`、`mergeGap`，粗跟踪的 `pathSegmentMin`、`pathPeakMin`、`pathMaxGap`、`pathSharpMin`（`pathSharpMin` 同时是选方向的陡度门限）；
   - GlueSight 判定用、不绑定算子的放模板扩展位 `x.gluesight.judge`：`trackSharpMin`、`minCoverage`、`presentRatio`、`centerRatio`、`contrastRatio`。
-- 专家参数改动后，发布前检查要求重新试测或跑独立样本验证，并在发布记录里列出改了哪些。
+- 专家参数改动后，发布前要重新试测或在历史页复测核对，并在发布记录里列出改了哪些。
 - 默认值与现在写死的值一致，不改变已有配方的结果。
 
 ## LF-6 流程调试页
 
 - 候选工作区增加“流程调试”页：选示教件里的一帧，在本段、本相机的测量图上运行，显示每个节点的输出，并叠加 GlueSight 的判定结果。
-- 页面嵌入 lyFlow 的 `@lyflow/editor`。拓扑锁定，只调参数：图模板随 GlueSight 版本发布，页面里的改动存为候选的专家参数，发布前要重新试测或跑样本验证。改拓扑只在开发时进行，现场不开放。
+- 页面嵌入 lyFlow 的 `@lyflow/editor`。拓扑锁定，只调参数：图模板随 GlueSight 版本发布，页面里的改动存为候选的专家参数，发布前要重新试测或在历史页复测核对。改拓扑只在开发时进行，现场不开放。
 - 编辑器通过 GlueSight 自己实现的 Transport 接到现有 `lyflow-client` 运行库，不引入 lyFlow 的 Rust 宿主（它要从源码编译核心，会把 OpenCV 与 vcpkg 带进 GlueSight 的构建）。
 - 锁定拓扑需要编辑器提供只读拓扑的开关，由 lyFlow 侧补上。
 - 一个页面只能挂一个编辑器，切换帧、段或相机时卸载后重挂。
@@ -86,7 +86,7 @@ lyFlow 本身的设计是节点图平台：GraphDoc 是统一的图文档，支�
 ## 代价与风险
 
 - 判定逻辑从 lyFlow 搬到 GlueSight，GlueSight 的代码量和验证责任都会增加；lyFlow 现有的 glue 评估工具不能直接复用。
-- 专家参数开放后，现场可能调出偏差大的配方；靠发布前的样本验证和改动记录约束。
+- 专家参数开放后，现场可能调出偏差大的配方；靠发布前的试测、历史页复测和改动记录约束。
 - 拆分后单帧耗时约为 1.1 的两倍（见“分期”P3）；lyFlow 改掉响应图输出的开销之前，现场吞吐要按新耗时复核。
 - P3 依赖 lyFlow 发新系列，两边要约定算子契约和发版节奏。
 

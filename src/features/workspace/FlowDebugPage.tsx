@@ -105,7 +105,7 @@ function FlowDebug({ data, doc }: { data: WorkspaceView; doc: RecipeDoc }) {
     setDoc({ ...doc, inspect: (doc.inspect ?? []).map(item => item.camera === camera ? { ...item, expert: { ...item.expert, ...expert } } : item) });
     baseline.current = { ...base, params: Object.fromEntries(Object.entries(base.params ?? {}).map(([name, spec]) => [name, name in expert ? { ...spec, default: expert[name] } : spec])) };
     setChanges(flowChanges(baseline.current, now));
-    snack(`已把 ${Object.keys(expert).length} 项专家参数存为 ${camera} 的本相机覆盖；发布前请重新试测或跑样本验证` + (ignored.length ? `。${ignored.join("、")} 不是专家参数，未保存` : ""));
+    snack(`已把 ${Object.keys(expert).length} 项专家参数存为 ${camera} 的本相机覆盖；发布前请重新试测，或在历史页用候选重算历史记录核对` + (ignored.length ? `。${ignored.join("、")} 不是专家参数，未保存` : ""));
   };
 
   if (!entries.length) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Workflow size={32} aria-hidden="true" />} title="还没有可调试的测量图" description="先在走廊示教里为至少一段保存走廊，再回来逐节点调试。"

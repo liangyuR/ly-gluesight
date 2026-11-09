@@ -110,29 +110,6 @@ pub struct FrozenImage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Sample {
-    pub history_id: Option<i64>,
-    #[serde(default)]
-    pub sample_id: Option<String>,
-    pub expected: Verdict,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BankSample {
-    pub id: String,
-    pub name: String,
-    pub geometry_tag: Value,
-    pub expected: Verdict,
-    pub created_at: i64,
-    #[serde(default)]
-    pub capture_id: Option<String>,
-    #[serde(default)]
-    pub camera_state: Value,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Check {
     pub name: String,
     pub passed: bool,
@@ -144,25 +121,11 @@ pub struct Check {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SampleResult {
-    pub history_id: Option<i64>,
-    pub sample_id: Option<String>,
-    pub name: String,
-    pub sn: String,
-    pub expected: Verdict,
-    pub actual: Option<Verdict>,
-    pub passed: bool,
-    pub reason: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Validation {
     pub revision: u64,
     pub passed: bool,
     pub checked_at: i64,
     pub checks: Vec<Check>,
-    pub samples: Vec<SampleResult>,
     pub environment_tag: Value,
 }
 
@@ -205,9 +168,6 @@ pub struct Workspace {
     #[serde(default)]
     pub instance_id: u64,
     pub revision: u64,
-    pub samples: Vec<Sample>,
-    pub sample_bank: Vec<BankSample>,
-    pub validation: Option<Validation>,
     pub pending: Option<Box<Release>>,
     pub publish: PublishState,
     pub updated_at: i64,
@@ -244,6 +204,12 @@ pub struct Workspace {
     pub _unbound_imaging: Discarded,
     #[serde(default, rename = "baseRevision", skip_serializing)]
     pub _base_revision: Discarded,
+    #[serde(default, rename = "samples", skip_serializing)]
+    pub _samples: Discarded,
+    #[serde(default, rename = "sampleBank", skip_serializing)]
+    pub _sample_bank: Discarded,
+    #[serde(default, rename = "validation", skip_serializing)]
+    pub _validation: Discarded,
 }
 
 impl Workspace {
@@ -253,9 +219,6 @@ impl Workspace {
             doc,
             instance_id: 0,
             revision: 1,
-            samples: Vec::new(),
-            sample_bank: Vec::new(),
-            validation: None,
             pending: None,
             publish: PublishState::Draft,
             updated_at: ly_plc::now_ms(),
@@ -273,6 +236,9 @@ impl Workspace {
             _last_position: Discarded,
             _unbound_imaging: Discarded,
             _base_revision: Discarded,
+            _samples: Discarded,
+            _sample_bank: Discarded,
+            _validation: Discarded,
         }
     }
 
@@ -303,7 +269,6 @@ impl Workspace {
         capture_review::refresh(self);
         burst::calibrate_from_teaching(self);
         self.revision += 1;
-        self.validation = None;
         self.updated_at = ly_plc::now_ms();
     }
 
@@ -740,35 +705,18 @@ fn check_identity<'a>(
     Ok(())
 }
 
-/// 项目整包导入时整理候选：回到草稿，不带待生效版本与验证结论；
-/// 没带检测记录时去掉来自来源机检测历史的验证样本。
-pub(crate) fn reset_for_project_import(
-    path: &Path,
-    keep_history: bool,
-) -> Result<Vec<String>, String> {
+/// 项目整包导入时整理候选：回到草稿，不带待生效版本。
+pub(crate) fn reset_for_project_import(path: &Path) -> Result<(), String> {
     let text = crate::fsio::read_text(path).map_err(|e| e.to_string())?;
     let mut w: Workspace = serde_json::from_str(&text)
         .map_err(|e| format!("候选 {} 无法读取：{e}", path.display()))?;
-    let mut notes = Vec::new();
     w.pending = None;
     w.publish = PublishState::Draft;
-    if !keep_history {
-        let before = w.samples.len();
-        w.samples.retain(|s| s.history_id.is_none());
-        if w.samples.len() < before {
-            notes.push(format!(
-                "候选 {} 的 {} 个来自检测历史的验证样本未导入",
-                w.doc.id,
-                before - w.samples.len()
-            ));
-        }
-    }
     w.changed();
     crate::fsio::write_atomic(
         path,
         &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?,
-    )?;
-    Ok(notes)
+    )
 }
 
 #[tauri::command]
@@ -982,74 +930,6 @@ pub async fn workspace_image(
     .map_err(|error| error.to_string())?
 }
 
-impl SampleResult {
-    /// 按候选判定结果对照人工期望：期望合格时 OK 与 OK_WITH_EXCURSION 都算符合，其余结论须完全一致。
-    pub fn judged(sample: &Sample, name: String, sn: String, judgement: judge::Judgement) -> Self {
-        let qualified = |v| matches!(v, Verdict::Ok | Verdict::OkWithExcursion);
-        let actual = judgement.verdict;
-        let passed = if qualified(sample.expected) {
-            qualified(actual)
-        } else {
-            sample.expected == actual
-        };
-        Self {
-            history_id: sample.history_id,
-            sample_id: sample.sample_id.clone(),
-            name,
-            sn,
-            expected: sample.expected,
-            actual: Some(actual),
-            passed,
-            reason: judgement.reason,
-        }
-    }
-}
-
-fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
-    burst_release::validation(app, w)
-}
-
-#[tauri::command]
-pub async fn workspace_validate(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    samples: Vec<Sample>,
-    source_confirmed: Option<bool>,
-) -> Result<WorkspaceView, String> {
-    if source_confirmed != Some(true) {
-        return Err("请确认验证样本与示教的轨迹、触发顺序及拍摄条件一致".into());
-    }
-    tauri::async_runtime::spawn_blocking(move || {
-        let host = app.state::<WorkspaceHost>();
-        let mut w = {
-            let items = host.items.lock().unwrap();
-            let w = items.get(&id).ok_or("候选配置不存在")?;
-            w.expect(revision)?;
-            w.clone()
-        };
-        let mut unique = std::collections::HashSet::new();
-        if samples.len() > 100
-            || samples
-                .iter()
-                .any(|s| !unique.insert((s.history_id, s.sample_id.clone())))
-        {
-            return Err("最多验证 100 件，不能重复添加相同样本".into());
-        }
-        w.samples = samples;
-        let checked = validation(&app, &w)?;
-        let mut items = host.items.lock().unwrap();
-        let current = items.get_mut(&id).ok_or("候选配置不存在")?;
-        current.expect(revision)?;
-        current.samples = w.samples;
-        current.validation = Some(checked);
-        host.save(current)?;
-        view(&app, current.clone())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
 #[tauri::command(async)]
 pub fn workspace_publish(
     app: AppHandle,
@@ -1066,7 +946,7 @@ pub fn workspace_publish(
     if !w.doc.is_burst() {
         return Err("旧拍照点配方已停用，请创建段配方".into());
     }
-    // D-SB-46：发布不再要求独立样本验证，发布时当场核对发布前检查
+    // D-SB-46：发布时当场核对发布前检查
     let validated = burst_release::publish_checks(&app, w)?;
     if let Some(failed) = burst_release::publish_blocker(&validated.checks) {
         return Err(format!("不能发布：{}：{}", failed.name, failed.detail));
@@ -1291,7 +1171,6 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 }
                 let next_version = app.state::<CycleHost>().recipes.next_version(&saved.id);
                 w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);
-                w.validation = None;
                 w.revision += 1;
                 w.publish = PublishState::Active {
                     version: saved.version,
