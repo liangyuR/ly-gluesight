@@ -766,7 +766,7 @@
 | `recipe_capture_round_thumbs` | `roundId, cameraId: String` | `Result<tauri::ipc::Response, String>`（头部 [帧组数, 宽, 高, 通道数] u32 小端，之后每组 1 字节状态 + 宽 × 高 × 通道数字节，通道数 1 为灰度、3 为 RGB，见 `frame_align::thumb_strip`；D-SB-44、[color](color.md) CL-1） |
 | `workspace_segment_template_save` | `id, revision, segments: PathSegment[], cuts: u64[]` | WorkspaceView（段列表 + 示教件边界确认，原子写入，D-SB-44） |
 | `recipe_capture_frame_image` | `roundId, cameraId: String, seq`（帧组序号，从 1 起） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `recipe_capture_image`）；该相机缺这一帧时报错 |
-| `workspace_live_frame_image` | `cycleId, revisionId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_live_image`）；未到或缺帧时报错 |
+| `workspace_live_frame_image` | `cycleId, revisionId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_live_image`）；内存里没有时读本件的录制原图；未到、缺帧或没录到原图时报错 |
 | `workspace_live_frame_view` | `cycleId, revisionId, camera: usize, seq`（camera 为计划相机下标） | `CalibrationFrameView \| null`（这一帧测量时所用段的走廊或逐帧定向拟合的胶路、搜索半宽、逐站胶边与帧指标）；还没测完、没测成或不是本件时为 null |
 | `workspace_record_frame_image` | `historyId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_record_image`）；未录制、录制队满丢弃或缺帧时报错 |
 
@@ -876,7 +876,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 - **测量**：每帧经 `FramePool` 送测，结果经 `cycle::Input::FrameMeasured` 回节拍；QueueFull / Timeout 记 Unmeasured，Failed 记 Error；超过 T_proc 或到收尾截止仍没结果记 Unmeasured；测量输出的帧身份与送测帧不符或含非有限数改记 Error。都只记检测不完整，不判 99。
 - **收尾与判定**：工件结束（plcState=20）后到收尾截止（等满收尾窗口，或按 D-SB-54 看到门控关闭满余量提前）、已接受的帧都测完，有收尾补测目标时再等补测完（D-SB-45）即判。故障（98、97）优先；否则按笔或按比例分段（D-SB-62、D-SB-40）→ `resolve_regions` → `loss_alarms(各相机帧数)` → `burst_judge::judge`。丢帧、笔数异常写运行日志（warn），结论不变。
 - **结果与记录**：`ResultView.burst` 带区域判定，`PartView.burst` 按 5.2 输出（帧格的 verdict 按 D-SB-56：判定后按所在区域，判定前按所测走廊的段）。`BurstRecord.frames` 在 1..=帧组数内每台相机每帧一条、缺帧也有，`rawFile` 入库时为空（录制结果事后补）；`frames_expected` = ΣN_exp，`frames_received` = 帧组数。接件时不能检测、在途中断、进程中断补记录的件也带 `BurstRecord`。诊断包按帧记录的 `rawFile` 打包原图。
-- **在线读图**：`workspace_live_frame_image`（预览缓存 128 MB）；叠图读 `workspace_live_frame_view`，取生产测量时测到的胶边与胶路（不重测，同一帧收尾补测后以后测的为准），换件即清空。检测视图按历史详情的画法叠走廊、搜索带与逐站胶边。
+- **在线读图**：`workspace_live_frame_image`。内存里只留本件最近的帧（预览缓存 128 MB），更早的帧读本件的录制原图：收尾前读录制目录里已写盘的那一帧，收尾后按本件的历史记录读。录制关闭、资料盘不足暂停录制或录制队满没录到的帧，挤出内存后就看不了；“只留 NG / ERR 件”时 OK 件收尾后录制删除，同样看不了。叠图读 `workspace_live_frame_view`，取生产测量时测到的胶边与胶路（不重测，同一帧收尾补测后以后测的为准），换件即清空。检测视图按历史详情的画法叠走廊、搜索带与逐站胶边。
 - **胶偏未判**：直线区域去掉首尾各一帧后参考相机没有可用 x 时标 `OffsetUnjudged::NoFrames`（“胶偏未判：参考相机没有可用帧”）。
 - **带宽估算**：`camera::aggregate_bandwidth` 计入 GigE 协议开销（不开巨帧约 1.05 倍），三台 130 万像素 25 Hz 约 826 Mbps，超过单口 80% 预算。
 

@@ -1597,10 +1597,23 @@ impl Store {
         })
     }
 
+    pub fn id_by_cycle(&self, cycle_id: &str) -> Result<Option<i64>, String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM parts WHERE cycle_id=?1",
+                [cycle_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
     pub fn detail_by_cycle(&self, cycle_id: &str) -> Result<Option<PartDetail>, String> {
-        let id =
-            self.conn.lock().unwrap().query_row("SELECT id FROM parts WHERE cycle_id=?1", [cycle_id], |row| row.get::<_, i64>(0)).optional().map_err(db_err)?;
-        id.map(|id| self.detail(id)).transpose()
+        self.id_by_cycle(cycle_id)?
+            .map(|id| self.detail(id))
+            .transpose()
     }
 
     /// 记录所属项目 `project` 的配方快照：配方编号与修订号只在项目内唯一。
