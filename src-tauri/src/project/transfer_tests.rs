@@ -429,7 +429,10 @@ fn reimported_duplicate_adopts_packaged_recording_when_local_one_is_gone() {
     );
     assert!(directory.join("part.json").is_file());
     let detail = store.detail_by_cycle("c1").unwrap().unwrap();
-    assert_eq!(detail.summary.project_id, "line-b", "录制在哪个项目的录制根下，记录就归哪个项目");
+    assert_eq!(
+        detail.summary.project_id, "line-b",
+        "录制在哪个项目的录制根下，记录就归哪个项目"
+    );
     assert!(store.record_recipe(&detail.summary).unwrap().is_some());
 }
 
