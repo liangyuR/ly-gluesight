@@ -409,9 +409,32 @@ fn expired_imported_parts_hand_their_images_to_cleanup_but_local_recordings_stay
     recorded(&b, &saved_recipe(&temp.0.join("b")), "c-local", "SN-L");
     import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
 
-    let (deleted, orphaned) = b.store.purge_before(ly_plc::now_ms() + 1).unwrap();
+    let (deleted, orphaned) = b
+        .store
+        .purge_before(ly_plc::now_ms() + 1, &Default::default())
+        .unwrap();
     assert_eq!(deleted, 2);
     let directories: Vec<&str> = orphaned.iter().map(|(_, _, d)| d.as_str()).collect();
     assert_eq!(directories.len(), 1, "{directories:?}");
     assert!(imported_recording(Path::new(directories[0])));
+}
+
+/// 按天清理跳过被示教件引用的历史件：防的回归是过期的示教件那一件连记录带录制被删，示教件从此读不了原图。
+#[test]
+fn expired_parts_referenced_by_teaching_rounds_keep_their_record_and_recording() {
+    let temp = TempDir::new("purge-keep");
+    let a = machine(&temp.0.join("a"), "line-a");
+    let recipe = saved_recipe(&temp.0.join("a"));
+    let id = recorded(&a, &recipe, "c-imported", "SN-I");
+    let package = temp.0.join("parts.zip");
+    export(&a, &[id], &temp.0.join("scratch"), &package);
+    let b = machine(&temp.0.join("b"), "line-b");
+    recorded(&b, &saved_recipe(&temp.0.join("b")), "c-local", "SN-L");
+    import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
+
+    let keep = std::collections::BTreeSet::from(["c-imported".to_string()]);
+    let (deleted, orphaned) = b.store.purge_before(ly_plc::now_ms() + 1, &keep).unwrap();
+    assert_eq!((deleted, orphaned.len()), (1, 0), "{orphaned:?}");
+    assert!(b.store.detail_by_cycle("c-imported").unwrap().is_some());
+    assert!(b.store.detail_by_cycle("c-local").unwrap().is_none());
 }

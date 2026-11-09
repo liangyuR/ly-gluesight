@@ -273,11 +273,15 @@ impl Recorders {
     }
 }
 
+/// 保留件数与字节上限；设置为不限时取最大值，滚动清理不删任何录制。
 fn retention(scope: HistoryScope, settings: &CycleSettings) -> (u32, u64) {
     let (keep, max_gb) = match scope {
         HistoryScope::Real => (settings.record_keep, settings.record_max_gb),
     };
-    (keep, (max_gb as f64 * 1e9) as u64)
+    (
+        keep.unwrap_or(u32::MAX),
+        max_gb.map_or(u64::MAX, |gb| (gb as f64 * 1e9) as u64),
+    )
 }
 
 impl Recorder {
@@ -583,13 +587,22 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
                 if let Some(cleanup) = &cleanup {
                     state.retention_errors = cleaner.sweep(&root, &active, &cleanup.protection, &job.in_use);
                 }
-                protect_retention(&mut job, &mut state, cleanup.as_ref().map(|c| &c.protection));
                 let pending = job.recording.dir.clone();
-                let outcome = finish_recording(&root, job, state, cleanup.as_ref().map(|c| &c.release));
+                // 查保护目录到滚动清理删除之间不让示教件登记新引用；通知回调前放开
+                let outcome = {
+                    let _references = crate::recipe_capture::lock_references();
+                    protect_retention(
+                        &mut job,
+                        &mut state,
+                        cleanup.as_ref().map(|c| &c.protection),
+                    );
+                    finish_recording(&root, job, state, cleanup.as_ref().map(|c| &c.release))
+                };
                 if !pending.exists() { active.lock().unwrap().remove(&pending); }
                 notify(&callback, outcome);
             }
             Msg::Prune { keep, max_bytes } => {
+                let _references = crate::recipe_capture::lock_references();
                 let errors = match cleanup.as_ref().map(|c| (c.protection)()).transpose() {
                     Ok(protected) => prune(&root, keep as usize, max_bytes, &protected.unwrap_or_default(), cleanup.as_ref().map(|c| &c.release)),
                     Err(error) => vec![format!("无法确认待入库原图保护，跳过滚动清理：{error}")],

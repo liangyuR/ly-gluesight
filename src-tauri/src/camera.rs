@@ -1919,6 +1919,14 @@ impl CameraRig {
             capture: AtomicBool::new(false),
             recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(
                 crate::storage::project(app).join("recipe-capture"),
+                {
+                    let app = app.clone();
+                    Arc::new(move |cycle: &str| {
+                        app.try_state::<crate::store::Store>()
+                            .ok_or("检测记录数据库尚未初始化")?
+                            .recording_directory(cycle)
+                    })
+                },
             )?,
             imaging: Mutex::new(std::mem::take(&mut file.imaging)),
             gate: Arc::default(),

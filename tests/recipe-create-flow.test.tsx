@@ -64,8 +64,8 @@ describe("创建配方流程", () => {
           throw new Error("候选不存在");
         case "camera_rig_config":
         case "camera_rig_status":
-        case "workspace_history_candidates":
         case "cycle_logs": return [];
+        case "workspace_history_candidates": return { total: 0, items: [] };
         case "cycle_snapshot": return null;
         case "plc_get_status": return { state: "disconnected", message: "PLC 未连接" };
         default: throw new Error(`未声明的桌面调用：${command}`);
@@ -103,7 +103,7 @@ describe("创建配方流程", () => {
 
     await user.click(screen.getByRole("link", { name: "选示教件" }));
     expect(await screen.findByRole("heading", { name: "选示教件" })).toBeVisible();
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("workspace_history_candidates", { id: "SHELL-2026", all: false }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("workspace_history_candidates", { id: "SHELL-2026", query: expect.objectContaining({ offset: 0 }) }));
     expect(screen.getByRole("navigation", { name: "配方位置" })).toHaveTextContent("SHELL-2026 · 新壳体配方");
   }, 20_000);
 });

@@ -11,14 +11,14 @@ import { burstWorkspaceView, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { historyCandidates: vi.fn(), compare: vi.fn() } }));
 
-const row: HistoryCandidate = { recordId: 7, cycleId: "cycle-7", ts: 1, sn: "SN-7", mode: "production", groupCount: 12, cameras: [], complete: true, recipeId: "S", projectId: "line-a",
+const row: HistoryCandidate = { recordId: 7, cycleId: "cycle-7", ts: 1, sn: "SN-7", mode: "production", verdict: "OK", groupCount: 12, cameras: [], complete: true, recipeId: "S", projectId: "line-a",
   reasons: [], warnings: [], durationMs: null, measuredFps: null, setFps: null, importedRound: null, usage: null, fixture: null };
 
 let ws: ReturnType<typeof workspaceState>;
 beforeEach(() => {
   ws = workspaceState(burstWorkspaceView());
   vi.mocked(useWorkspace).mockImplementation(() => ws);
-  vi.mocked(workspaceApi.historyCandidates).mockResolvedValue([row]);
+  vi.mocked(workspaceApi.historyCandidates).mockResolvedValue({ total: 1, items: [row] });
 });
 
 describe("历史件试测", () => {
@@ -36,13 +36,13 @@ describe("历史件试测", () => {
 
   // 防的回归（D-SB-58）：试测只列本配方的历史件，型号对不上或别的项目的件不能用当前配方验证；原图不全的件整件不让测
   it("显示全部历史件后列出别的配方、别的项目的件，原图不全的件也能测", async () => {
-    vi.mocked(workspaceApi.historyCandidates).mockImplementation(async (_, all) => all
-      ? [row, { ...row, recordId: 8, sn: "SN-8", recipeId: "OTHER", projectId: "line-b", complete: false }]
-      : [row]);
+    vi.mocked(workspaceApi.historyCandidates).mockImplementation(async (_, query) => query.ownRecipe
+      ? { total: 1, items: [row] }
+      : { total: 2, items: [row, { ...row, recordId: 8, sn: "SN-8", recipeId: "OTHER", projectId: "line-b", complete: false }] });
     render(<MemoryRouter><HistoryTrials recipeId="S" /></MemoryRouter>);
     await screen.findByRole("button", { name: /^触发测试/ });
     await userEvent.click(screen.getByRole("checkbox", { name: /显示全部历史件/ }));
-    await waitFor(() => expect(workspaceApi.historyCandidates).toHaveBeenLastCalledWith("S", true));
+    await waitFor(() => expect(workspaceApi.historyCandidates).toHaveBeenLastCalledWith("S", { ownRecipe: false, limit: 200 }));
     const other = await screen.findByRole("listitem", { name: /SN-8/ });
     expect(other).toHaveTextContent("OTHER · line-b");
     expect(other).toHaveTextContent("原图不全");

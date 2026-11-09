@@ -1,6 +1,6 @@
 //! 配方回传包：把一个候选（分段、走廊、颜色模型、示教件测量、导航图与示教件轮次记录）打成 ZIP，
-//! 导入到本机或另一台机器的当前项目，替换同编号候选。导出时可选带不带示教件原图：不带时导入后按示教件那一件的
-//! 检测记录从本机录制补回；带上时导入后直接可用。生产配方与发布包不动，候选回到草稿，在本机发布。
+//! 导入到本机或另一台机器的当前项目，替换同编号候选。示教件轮次只引用历史件的录制原图，包里不带原图：导入后按示教件那一件
+//! 的检测记录读本机录制；以前带原图导出的包照常导入。生产配方与发布包不动，候选回到草稿，在本机发布。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -45,7 +45,7 @@ pub struct PackageManifest {
     pub teaching_piece: Option<pieces::TeachingPiece>,
     pub exported_at: i64,
     pub app_version: String,
-    /// 带示教件轮次的原图
+    /// 带示教件轮次的原图（以前的导出才有，现在导出恒为 false）
     #[serde(default)]
     pub teaching_images: bool,
     pub files: Vec<PackageFile>,
@@ -116,12 +116,11 @@ fn round_id_ok(id: &str) -> bool {
 }
 
 /// 把项目 `project` 里的候选 `w` 导出为回传包 `target`：带走廊示教帧、示教件测量与导航资料、示教件轮次的
-/// `round.json` 与 `frames.jsonl`；`images` 时再带示教件轮次的全部原图（缺一帧就拒绝）。不带未被引用的旧示教帧与发布快照。
+/// `round.json` 与 `frames.jsonl`，不带示教件原图、未被引用的旧示教帧与发布快照。
 pub(crate) fn export_candidate(
     project: &Path,
     project_meta: &crate::project::ProjectMeta,
     w: &Workspace,
-    images: bool,
     target: &Path,
     operation: &Operation,
 ) -> Result<PackageManifest, String> {
@@ -184,19 +183,8 @@ pub(crate) fn export_candidate(
             }
             entries.push((format!("{ROUNDS}/{round}/{name}"), path));
         }
-        if images {
-            for frame in frame_paths(&capture.join(round))? {
-                let path = capture.join(round).join(&frame);
-                if !path.is_file() {
-                    return Err(format!(
-                        "示教件轮次 {round} 缺原图 {frame}（可能导入时没带原图），先在示教件页补回原图，或改为不带示教件原图导出"
-                    ));
-                }
-                entries.push((format!("{ROUNDS}/{round}/{frame}"), path));
-            }
-        }
     }
-    if let Some((name, _)) = entries.iter().find(|(name, _)| !allowed(name, images)) {
+    if let Some((name, _)) = entries.iter().find(|(name, _)| !allowed(name, false)) {
         return Err(format!("导出路径无效：{name}"));
     }
     if !notes.is_empty() {
@@ -215,7 +203,7 @@ pub(crate) fn export_candidate(
         teaching_piece: w.teaching_piece.clone(),
         exported_at: ly_plc::now_ms(),
         app_version: env!("CARGO_PKG_VERSION").into(),
-        teaching_images: images,
+        teaching_images: false,
         files: Vec::new(),
     };
     operation.measuring(entries.len())?;
@@ -534,7 +522,6 @@ pub struct PackageExported {
     pub path: String,
     pub bytes: u64,
     pub files: usize,
-    pub teaching_images: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -557,7 +544,7 @@ pub struct PackagePreview {
     pub exported_at: i64,
     pub app_version: String,
     pub teaching_piece: Option<pieces::TeachingPiece>,
-    /// 包里带示教件原图
+    /// 包里带示教件原图（以前导出的包）
     pub teaching_images: bool,
     /// 本机生产配方的版本；没有为空
     pub production_version: Option<u32>,
@@ -573,7 +560,7 @@ pub struct PackagePreview {
 #[serde(rename_all = "camelCase")]
 pub struct PackageImported {
     pub id: String,
-    /// 导入后示教件原图齐全（随包带入或从本机历史记录补回），能直接试测
+    /// 导入后示教件原图读得到（本机有示教件那一件的录制，或随以前的包带入），能直接试测
     pub teaching_images: bool,
     pub notes: Vec<String>,
 }
@@ -657,7 +644,6 @@ pub async fn workspace_package_target(
 pub async fn workspace_package_export(
     app: AppHandle,
     id: String,
-    include_images: bool,
     path: String,
     task_id: Option<String>,
 ) -> Result<PackageExported, String> {
@@ -672,13 +658,12 @@ pub async fn workspace_package_export(
     tauri::async_runtime::spawn_blocking(move || {
         operation.run(|operation| {
             let target = PathBuf::from(&path);
-            let result = crate::project::read_meta(&project).and_then(|meta| {
-                export_candidate(&project, &meta, &w, include_images, &target, operation)
-            });
+            let result = crate::project::read_meta(&project)
+                .and_then(|meta| export_candidate(&project, &meta, &w, &target, operation));
             crate::cycle::log_op(
                 &app,
                 &crate::applog::codes::OP_RECIPE_PACKAGE,
-                json!({"action": "export", "recipeId": id, "path": path, "teachingImages": include_images}),
+                json!({"action": "export", "recipeId": id, "path": path}),
                 &result,
             );
             let manifest = result?;
@@ -686,7 +671,6 @@ pub async fn workspace_package_export(
                 bytes: std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0),
                 path,
                 files: manifest.files.len(),
-                teaching_images: manifest.teaching_images,
             })
         })
     })
@@ -812,25 +796,23 @@ fn import(
         };
         rebase(&mut w, &local, Path::new(&manifest.source_root), &project)?;
         w.ensure_instance(&app.state::<Store>())?;
-        install(&project, staging, &w)?;
+        {
+            // 替换轮次时旧轮次先移出、新轮次后移入，中间不让清理按缺了引用的快照删掉示教件的来源历史件
+            let _references = crate::recipe_capture::lock_references();
+            install(&project, staging, &w)?;
+        }
         items.insert(id.clone(), w.clone());
         w
     };
     let mut teaching_images = false;
     if let Some(piece) = &installed.teaching_piece {
-        if manifest.teaching_images {
-            teaching_images = true;
-            notes.push("示教件原图随包导入，可直接看示教图、示教走廊、测量示教件与试测".into());
-        } else {
-            match super::history_import::refill_teaching_images(app, &installed) {
-                Ok(()) => {
-                    teaching_images = true;
-                    notes.push(format!("示教件原图已从本机历史记录补回（SN {}）", piece.sn));
-                }
-                Err(error) => notes.push(format!(
-                    "包里没带示教件原图，也没能从本机历史记录补回：{error}。分段、走廊、取色与示教件测量结果都已导入，候选仍可发布；看示教图、示教走廊、测量示教件或试测前，需在示教件页补回原图或重新选用示教件"
-                )),
-            }
+        let cycle = app.state::<CycleHost>();
+        match cycle.camera.recipe_capture().images_unavailable(&piece.round_id) {
+            Ok(None) => teaching_images = true,
+            Ok(Some(reason)) | Err(reason) => notes.push(format!(
+                "示教件（SN {}）的原图读不到：{reason}。分段、走廊、取色与示教件测量结果都已导入，候选仍可发布；看示教图、示教走廊、测量示教件或试测需要本机有这件历史件的检测记录与录制，否则重新选用示教件",
+                piece.sn
+            )),
         }
     }
     Ok(PackageImported {

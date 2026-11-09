@@ -421,11 +421,15 @@ impl CycleHost {
             );
             let (health, alarm_app) = (recording_health.clone(), app.clone());
             let protection = Arc::new(move || {
-                let mut paths = guard_app
+                let store = guard_app
                     .try_state::<Store>()
-                    .ok_or("检测记录数据库尚未初始化")?
-                    .pending_recording_directories(&guarded_root, scope)?;
+                    .ok_or("检测记录数据库尚未初始化")?;
+                let mut paths = store.pending_recording_directories(&guarded_root, scope)?;
                 paths.extend(protection_audit.protected_recording_directories(&guarded_root)?);
+                // 示教件、标定件引用的录制不滚动清理
+                let referenced =
+                    crate::project::records::referenced_cycles(&crate::storage::root(&guard_app))?;
+                paths.extend(store.recording_directories(&referenced)?);
                 Ok(paths)
             });
             let warning = Arc::new(move |errors: &[String]| {
@@ -645,10 +649,13 @@ impl CycleHost {
 /// 删除超过保留天数的检测记录（本机全部项目）；非当前项目的记录连同原图一起删，当前项目的原图由录制滚动清理。
 pub fn purge_history(app: &AppHandle) {
     let days = host(app).settings().history_days.max(1) as i64;
-    match host(app)
+    // 引用锁先于追溯 spool 锁：录制滚动清理持引用锁时会取 spool 锁查待入库目录
+    let references = crate::recipe_capture::lock_references();
+    let purged = host(app)
         .audit
-        .with_ready(|| crate::workspace::purge_history(app, now_ms() - days * 86_400_000))
-    {
+        .with_ready(|| crate::workspace::purge_history(app, now_ms() - days * 86_400_000));
+    drop(references);
+    match purged {
         Ok((n, warnings)) => {
             if n > 0 {
                 log(

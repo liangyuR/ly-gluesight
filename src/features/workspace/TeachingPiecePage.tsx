@@ -53,7 +53,6 @@ export default function TeachingPiecePage() {
   const nameOf = (id: string) => cameras.find(camera => camera.id === id)?.name ?? id;
   const cleared = clearedByTeachingPiece(data);
   const kept = keptCorridors(data);
-  const refill = () => act(() => workspaceApi.refillTeachingImages(doc.id, workspace.revision), "已补回示教件原图");
   const apply = async (recordId: number) => !!await act(() => workspaceApi.setTeachingPiece(doc.id, workspace.revision, recordId),
     next => next.workspace.passAlignment && !next.workspace.passAlignment.confirmed ? "已设为示教件并按笔迁移示教，请到分段页确认逐笔对照" : "已设为示教件，请到分段确认边界");
   const choose = async (recordId: number) => {
@@ -74,9 +73,8 @@ export default function TeachingPiecePage() {
           <span className="wp-capture-chip"><small>帧组</small><strong>{groupCount} 个</strong></span>
           <Link className="wp-text-link" to={href("/recipe/segments")}>前往分段<ArrowRight size={12} aria-hidden="true" /></Link>
         </div>
-        {pieceView?.imagesMissing
-          ? <Notice tone="warn" title="示教件原图不在本项目">导出、复制项目或导入不带原图的工件配方时没带示教件原图。分段、走廊与测量结果都还在；要看图、示教走廊、测量示教件或试测，先从这一件的历史记录补回原图（需要它的检测记录与历史原图仍在本项目）。
-            <div className="wp-actions"><Button variant="filled" disabled={locked} onClick={() => void refill()}>补回原图</Button></div></Notice>
+        {pieceView?.imagesUnavailable
+          ? <Notice tone="warn" title="原图不可用">{pieceView.imagesUnavailable}。示教件只引用这件历史件的录制原图：分段、走廊与测量结果都还在，已发布的配方照常检测；要看图、示教走廊、测量示教件或试测，需要本机有这件的检测记录与录制，否则从下方重新选用示教件。</Notice>
           : <FrameBrowser key={piece.roundId} source={piece.roundId} label="示教件" groupCount={groupCount}
             cameras={plan.cameras.map(id => ({ id, name: nameOf(id) }))}
             read={(camera, seq, signal) => workspaceApi.captureFrameImage(piece.roundId, plan.cameras[camera], seq, signal)} />}
@@ -85,7 +83,7 @@ export default function TeachingPiecePage() {
     <HistoryPicker recipeId={doc.id} title="选示教件" disabled={locked} nameOf={nameOf} onError={setError}
       confirmLabel="设为示教件" onConfirm={choose}
       help={<ContextHelp label="选示教件说明">
-        <p>维护模式或生产录制的完整件，导入后作为本候选的示教件（原图硬链接，不停线）。</p>
+        <p>列出本机全部真机录制件（不限项目、配方），可按项目、配方、SN、时间与判定筛选。选为示教件后只引用这件的录制原图，不复制（不停线）；被示教件引用的录制不参与滚动清理与按天清理，换示教件或删除候选后解除。</p>
         <p>可选用：原图完整（无缺帧、无录制队满未录）、三台计划相机齐全且设备配置与当前一致、没有提前结束、型号属于本候选；已选作示教件的标“已使用”。</p>
         <p>选好后看一遍各相机的帧组，确认胶路完整、图像清晰再设为示教件。</p>
       </ContextHelp>} />

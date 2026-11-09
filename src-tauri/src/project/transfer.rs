@@ -37,6 +37,9 @@ const CONTENT: [&str; 8] = [
 ];
 const RECORDS: [&str; 2] = ["inspection.db", "records"];
 const PENDING_RECORDINGS: &str = ".project-install-pending.json";
+/// 包里放别的项目被示教件引用的录制的子目录：与历史件导出包导入的件同放 `records/imported/`，滚动清理不扫，
+/// 记录过期（不再被引用）时随记录一起删。
+const LINKED: &str = crate::history_package::IMPORTED;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -130,6 +133,8 @@ fn allowed(path: &str, records: bool) -> bool {
             || records && (RECORDS.contains(&top) || top == "records-offline"))
 }
 
+/// 旧采集轮次目录里的原图：新轮次只引用检测记录的录制、没有原图；旧轮次（格式 3 及更早）的原图可能是唯一一份
+/// （来源录制已清理），随项目导出与复制。
 fn capture_image(path: &str) -> bool {
     path.starts_with("project/recipe-capture/") && path.ends_with(".pgm")
 }
@@ -196,12 +201,12 @@ fn walk_tops(
     Ok(out)
 }
 
-/// 待写进包的文件：（包内路径，磁盘路径）。不带示教件原图时只留采集轮次的 `round.json` 与 `frames.jsonl`。
-/// `records` 有值时带上该项目的检测记录：从本机记录库导出本项目记录的子集，放在 `scratch`。
+/// 待写进包的文件：（包内路径，磁盘路径）。新采集轮次只有 `round.json` 与 `frames.jsonl`，示教件原图引用检测记录的录制，
+/// 只随检测记录带出；旧轮次目录里的原图照带。`records` 有值时带上该项目的检测记录与录制：从本机记录库导出本项目记录的子集，
+/// 放在 `scratch`。
 fn collect(
     root: &Path,
     records: Option<&Store>,
-    capture_images: bool,
     scratch: &Path,
     notes: &mut Vec<String>,
 ) -> Result<Vec<(String, PathBuf)>, String> {
@@ -215,21 +220,21 @@ fn collect(
         .copied()
         .collect();
     let mut out = walk_tops(root, &tops, notes)?;
-    if !capture_images {
-        let before = out.len();
-        out.retain(|(name, _)| !capture_image(name));
-        if out.len() < before {
-            notes.push(format!("示教件原图未包含（{} 帧）", before - out.len()));
-        }
-    }
     let recording_root = crate::log_storage::recording_project(root)?;
     if let Some(store) = records {
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
         let snapshot = scratch.join("inspection.db");
         let project = super::read_meta(root)?.id;
-        store
-            .export_project(&project, &snapshot)
+        let linked = crate::recipe_capture::history_cycles(&root.join("recipe-capture"))?;
+        let (_, foreign) = store
+            .export_project(&project, &snapshot, &linked)
             .map_err(|e| format!("导出检测记录失败：{e}"))?;
+        out.extend(link_recordings(
+            &snapshot,
+            &recording_root,
+            &foreign,
+            notes,
+        )?);
         if recording_root != root {
             crate::storage::relocate::database(&snapshot, &recording_root, root)?;
         }
@@ -238,25 +243,83 @@ fn collect(
     Ok(out)
 }
 
+/// 本项目示教件引用的别的项目的历史件：录制原图放进包里的 `records/imported/<录制目录名>/`，导出记录库子集里这些记录的
+/// 录制目录与帧原图引用改到那里（之后随本项目录制根一起改写）。录制已不在的只改记录、不带原图，并记一条说明。
+fn link_recordings(
+    snapshot: &Path,
+    recording_root: &Path,
+    foreign: &[(i64, Option<String>)],
+    notes: &mut Vec<String>,
+) -> Result<Vec<(String, PathBuf)>, String> {
+    if foreign.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut conn = rusqlite::Connection::open(snapshot).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for (id, directory) in foreign {
+        let Some(directory) = directory else { continue };
+        let source = Path::new(directory);
+        let name = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty() && *n != ".." && !n.contains(['/', '\\', ':']))
+            .ok_or_else(|| format!("示教件引用的录制目录无效：{directory}"))?;
+        let linked = recording_root.join("records").join(LINKED).join(name);
+        tx.execute(
+            "UPDATE parts SET recording_directory = ?1 WHERE id = ?2",
+            rusqlite::params![linked.to_string_lossy(), id],
+        )
+        .map_err(|e| e.to_string())?;
+        let frames: Vec<(i64, i64, String)> = {
+            let mut stmt = tx
+                .prepare("SELECT camera, seq, raw_file FROM part_frames WHERE part_id = ?1 AND raw_file IS NOT NULL")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+        };
+        for (camera, seq, raw) in frames {
+            let file = raw.rsplit(['/', '\\']).next().unwrap_or(&raw);
+            tx.execute(
+                "UPDATE part_frames SET raw_file = ?1 WHERE part_id = ?2 AND camera = ?3 AND seq = ?4",
+                rusqlite::params![format!("{LINKED}/{name}/{file}"), id, camera, seq],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !source.is_dir() {
+            notes.push(format!(
+                "示教件引用的历史件录制 {directory} 已不在，只导出了记录"
+            ));
+            continue;
+        }
+        crate::image_file::checked_source_path(source)?;
+        walk(
+            source,
+            &format!("{PREFIX}records/{LINKED}/{name}"),
+            &mut entries,
+            notes,
+        )?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(entries)
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferSize {
     pub content: u64,
-    pub capture_images: u64,
     pub records: u64,
 }
 
-/// 导出或复制要带的字节数（压缩前），按是否带示教件原图、是否带检测记录分开给；`records_db` 是本项目记录在本机记录库里的估算字节数。
+/// 导出或复制要带的字节数（压缩前），按是否带检测记录分开给；`records_db` 是本项目记录在本机记录库里的估算字节数。
 pub fn transfer_size(root: &Path, records_db: u64) -> Result<TransferSize, String> {
     let bytes = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let mut notes = Vec::new();
     let mut size = TransferSize::default();
-    for (name, path) in walk_tops(root, &CONTENT, &mut notes)? {
-        if capture_image(&name) {
-            size.capture_images += bytes(&path);
-        } else {
-            size.content += bytes(&path);
-        }
+    for (_, path) in walk_tops(root, &CONTENT, &mut notes)? {
+        size.content += bytes(&path);
     }
     for (_, path) in walk_tops(root, &RECORDS[1..], &mut notes)? {
         size.records += bytes(&path);
@@ -349,14 +412,13 @@ pub(crate) fn write_zip_with<M: Serialize>(
 pub fn export_to(
     root: &Path,
     records: Option<&Store>,
-    capture_images: bool,
     scratch: &Path,
     target: &Path,
 ) -> Result<Manifest, String> {
     let project = super::read_meta(root)?;
     let include_records = records.is_some();
     let mut notes = Vec::new();
-    let entries = collect(root, records, capture_images, scratch, &mut notes)?;
+    let entries = collect(root, records, scratch, &mut notes)?;
     let manifest = Manifest {
         format: FORMAT,
         project,
@@ -593,6 +655,7 @@ fn install(
             id: &manifest.project.id,
             root: Path::new(&manifest.source_root),
             capture_images: manifest.files.iter().any(|f| capture_image(&f.path)),
+            records: manifest.includes_records,
         },
         &New {
             id,
@@ -610,7 +673,10 @@ fn install(
 struct Source<'a> {
     id: &'a str,
     root: &'a Path,
+    /// 以前带示教件原图导出的包：采集轮次目录里有原图
     capture_images: bool,
+    /// 示教件那一件的检测记录与录制在本机：导入带了记录，或复制（记录本机共用）
+    records: bool,
 }
 
 pub struct New<'a> {
@@ -646,7 +712,7 @@ fn finish(
         &target,
         source.capture_images,
     )?;
-    let mut without_images = Vec::new();
+    let mut without_records = Vec::new();
     for entry in std::fs::read_dir(root.join("workspaces"))
         .into_iter()
         .flatten()
@@ -655,19 +721,19 @@ fn finish(
         let candidate = entry.path().join("workspace.json");
         if candidate.is_file() {
             crate::workspace::reset_for_project_import(&candidate)?;
-            if !source.capture_images
+            if !source.records
                 && teaching_round(&candidate)
                     .is_some_and(|round| root.join("recipe-capture").join(round).is_dir())
             {
-                without_images.push(entry.file_name().to_string_lossy().into_owned());
+                without_records.push(entry.file_name().to_string_lossy().into_owned());
             }
         }
     }
-    if !without_images.is_empty() {
-        without_images.sort();
+    if !without_records.is_empty() {
+        without_records.sort();
         notes.push(format!(
-            "候选 {} 的示教件原图未带入：已发布的配方照常检测；要看图、示教走廊、测量示教件或试测，需在示教件页补回原图（要求示教件那一件的检测记录与历史原图在本机：复制的项目沿用来源项目的记录，导入的项目须在导出时带上检测记录），否则重新选用示教件",
-            without_images.join("、")
+            "候选 {} 的示教件引用检测记录的录制原图，导出时没带检测记录：已发布的配方照常检测；本机有示教件那一件的记录与录制时可直接看图、示教走廊、测量示教件与试测，否则需重新选用示教件",
+            without_records.join("、")
         ));
     }
     notes.extend(crate::workspace::navigation_import_notes(root));
@@ -915,17 +981,16 @@ pub(crate) fn recover_pending_recordings(data: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 把本机项目 `source_id` 复制为新项目：按导出的取舍收集文件，拷进暂存目录后按导入规则落成新项目。检测记录本机共用，
-/// 不复制：仍归来源项目，新项目的候选照常引用。
+/// 把本机项目 `source_id` 复制为新项目：按导出的取舍收集文件，拷进暂存目录后按导入规则落成新项目。检测记录与录制本机共用，
+/// 不复制：仍归来源项目，新项目的候选与示教件照常引用。
 pub fn copy_from(
     data: &Path,
     source_id: &str,
-    capture_images: bool,
     new: &New,
     cache: &Path,
 ) -> Result<ProjectImported, String> {
     let staging = staging_dir(cache, "copy")?;
-    let result = copy_into(data, source_id, capture_images, new, &staging);
+    let result = copy_into(data, source_id, new, &staging);
     let _ = std::fs::remove_dir_all(&staging);
     result
 }
@@ -933,19 +998,12 @@ pub fn copy_from(
 fn copy_into(
     data: &Path,
     source_id: &str,
-    capture_images: bool,
     new: &New,
     staging: &Path,
 ) -> Result<ProjectImported, String> {
     let source_root = super::dir(data, source_id);
     let mut notes = Vec::new();
-    let entries = collect(
-        &source_root,
-        None,
-        capture_images,
-        &staging.join("snapshot"),
-        &mut notes,
-    )?;
+    let entries = collect(&source_root, None, &staging.join("snapshot"), &mut notes)?;
     for (name, path) in entries {
         let target = name
             .split('/')
@@ -960,7 +1018,8 @@ fn copy_into(
         &Source {
             id: source_id,
             root: &source_root,
-            capture_images,
+            capture_images: true,
+            records: true,
         },
         new,
         None,
@@ -994,7 +1053,6 @@ pub async fn project_export(
     app: AppHandle,
     id: String,
     include_records: bool,
-    capture_images: bool,
 ) -> Result<Option<ProjectExported>, String> {
     let data = crate::storage::root(&app);
     let meta = super::open_target(&data, &id)?;
@@ -1020,7 +1078,6 @@ pub async fn project_export(
         let exported = export_to(
             &super::dir(&data, &id),
             include_records.then_some(&*store),
-            capture_images,
             &scratch,
             &path,
         );
@@ -1123,8 +1180,6 @@ pub struct CopyProject {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default)]
-    pub capture_images: bool,
 }
 
 #[tauri::command]
@@ -1139,7 +1194,6 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
         let copied = copy_from(
             &data,
             &request.source_id,
-            request.capture_images,
             &New {
                 id: &request.id,
                 name: &request.name,

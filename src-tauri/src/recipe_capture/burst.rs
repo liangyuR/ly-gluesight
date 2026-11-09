@@ -4,15 +4,19 @@
 //! - 帧组数 = 各相机最大 seq 的最大值；缺帧只记在 missingFrames 并给丢帧告警（[`loss_alarms`]），整轮不判失败；
 //! - 以前示教握手实拍的轮次（format 2，带 `teachingRoundId`、PLC 字段）照常读取；启动时仍在进行中的轮次按 `frames.jsonl`
 //!   恢复统计并判中断；
-//! - 历史件导入（[`history`]）：维护模式或生产录制的完整件按同一目录结构物化成已完成的轮次，原图为硬链接，`origin` 记来源。
+//! - 历史件导入（[`history`]）：维护模式或生产录制的完整件登记成已完成的轮次（format 4），轮次目录只有 `round.json` 与
+//!   `frames.jsonl`，帧原图不复制也不链接，按 `origin` 的 cycleId 经检测记录库查到录制目录再读（[`RecordingLookup`]），
+//!   录制可在任意盘；format 3 的旧轮次原图在本轮目录（硬链接或复制），本轮目录缺图时同样按来源历史件读录制原图。
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::frame_group::{loss_alarms, LossAlarm};
 
-/// 新轮次记录的格式号。3 加 `origin`（历史件导入、手动配置数据）；2 没有 `origin`，照常读取。
-pub const FORMAT: u8 = 3;
+/// 新轮次记录的格式号。4：历史件导入的轮次只引用录制原图（帧路径为录制目录里的文件名）；3 加 `origin`、原图在本轮目录；
+/// 2 没有 `origin`。3 与 2 照常读取。
+pub const FORMAT: u8 = 4;
+const FORMAT_V3: u8 = 3;
 const FORMAT_V2: u8 = 2;
 /// 一轮的帧组序号上限：ΣN_exp 不超过 PLC Int，防止异常记录生成海量帧组。
 pub const MAX_SEQ: u64 = crate::plan::MAX_EXPECTED_TOTAL as u64;
@@ -133,6 +137,19 @@ impl CaptureRoundV2 {
     pub fn camera_ids(&self) -> Vec<String> {
         self.cameras.iter().map(|c| c.camera_id.clone()).collect()
     }
+
+    /// 帧原图在来源历史件的录制目录里（format 4），不在本轮目录。
+    pub fn references_recording(&self) -> bool {
+        self.format == FORMAT
+    }
+
+    /// 来源历史件的 cycleId；不是历史件导入的轮次为 None。
+    fn history_cycle(&self) -> Option<&str> {
+        match &self.origin {
+            Some(RoundOrigin::History { cycle_id, .. }) => Some(cycle_id),
+            _ => None,
+        }
+    }
 }
 
 /// `frames.jsonl` 的一行：一台相机已写盘的一帧。
@@ -145,7 +162,7 @@ pub struct FrameLine {
     pub frame_counter: u64,
     /// 触发计数可信（Chunk 触发计数、模拟计数）时记下，只作诊断
     pub trigger_counter: Option<u64>,
-    /// 轮次目录内的相对路径，必须是 `{相机}/{seq:06}.pgm`
+    /// format 4 为录制目录里的文件名 `{相机}_s{seq:06}.pgm`；更早的格式为轮次目录内的相对路径 `{相机}/{seq:06}.pgm`
     pub path: String,
     pub width: u32,
     pub height: u32,
@@ -160,12 +177,41 @@ fn frame_rel_path(camera_id: &str, seq: u64) -> String {
     format!("{camera_id}/{}", frame_file(seq))
 }
 
-/// round.json 文本是不是段配方轮次（format 2 或 3）。
+/// 录制目录里一帧原图的文件名（与录制的 part.json 一致）。
+pub(crate) fn recording_file(camera_id: &str, seq: u64) -> String {
+    format!("{camera_id}_s{seq:06}.pgm")
+}
+
+fn line_path(round: &CaptureRoundV2, camera_id: &str, seq: u64) -> String {
+    if round.references_recording() {
+        recording_file(camera_id, seq)
+    } else {
+        frame_rel_path(camera_id, seq)
+    }
+}
+
+/// 按来源历史件的 cycleId 查录制目录：记录不在本机、没有录制目录或目录已不在时报原图不可用的原因。
+fn resolve_recording(lookup: &RecordingLookup, cycle_id: &str) -> Result<PathBuf, String> {
+    let dir = lookup(cycle_id)?.ok_or("来源历史件的检测记录不在本机，或记录没有录制目录")?;
+    let checked = dir
+        .canonicalize()
+        .map_err(|_| format!("来源历史件的录制 {} 已清理或不在本机", dir.display()))?;
+    if !checked.is_dir() {
+        return Err(format!("来源历史件的录制 {} 不是目录", dir.display()));
+    }
+    Ok(checked)
+}
+
+/// round.json 文本是不是段配方轮次（format 2、3 或 4）。
 pub(super) fn is_v2(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
         .and_then(|v| v.get("format").and_then(serde_json::Value::as_u64))
-        .is_some_and(|format| format == FORMAT as u64 || format == FORMAT_V2 as u64)
+        .is_some_and(|format| {
+            [FORMAT, FORMAT_V3, FORMAT_V2]
+                .iter()
+                .any(|&f| u64::from(f) == format)
+        })
 }
 
 /// 由帧组数与各相机已写盘的 seq 得出的统计。
@@ -209,6 +255,9 @@ pub struct BurstFrameIndex {
     dir: PathBuf,
     round: CaptureRoundV2,
     saved: BTreeMap<String, BTreeSet<u64>>,
+    lookup: RecordingLookup,
+    /// 来源历史件的录制目录，第一次要读录制原图时解析
+    recording: std::sync::OnceLock<Result<PathBuf, String>>,
 }
 
 impl BurstFrameIndex {
@@ -216,7 +265,18 @@ impl BurstFrameIndex {
         &self.round
     }
 
-    pub fn path(&self, camera_id: &str, seq: u64) -> Result<PathBuf, String> {
+    fn recording(&self) -> Result<&Path, String> {
+        let cycle = self
+            .round
+            .history_cycle()
+            .ok_or("示教件原图不在本轮目录，轮次也没有来源历史件")?;
+        self.recording
+            .get_or_init(|| resolve_recording(&self.lookup, cycle))
+            .as_deref()
+            .map_err(|e| format!("示教件原图不可用：{e}"))
+    }
+
+    fn check_saved(&self, camera_id: &str, seq: u64) -> Result<(), String> {
         let saved = self
             .saved
             .get(camera_id)
@@ -224,15 +284,61 @@ impl BurstFrameIndex {
         if !saved.contains(&seq) {
             return Err(format!("相机 {camera_id} 缺第 {seq} 帧组的图像"));
         }
+        Ok(())
+    }
+
+    /// 本轮目录里的原图（旧轮次）；不在时为 None。
+    fn local(&self, camera_id: &str, seq: u64) -> Option<PathBuf> {
         let path = self.dir.join(camera_id).join(frame_file(seq));
-        crate::image_file::checked_source_path(&path)?;
+        (!self.round.references_recording() && path.is_file()).then_some(path)
+    }
+
+    /// 某台相机第 seq 帧原图的路径：format 4 在来源历史件的录制目录里；旧轮次在本轮目录，本轮目录缺图时改读录制原图。
+    pub fn path(&self, camera_id: &str, seq: u64) -> Result<PathBuf, String> {
+        self.check_saved(camera_id, seq)?;
+        if let Some(local) = self.local(camera_id, seq) {
+            crate::image_file::checked_source_path(&local)?;
+            let local = local
+                .canonicalize()
+                .map_err(|e| format!("示教件原图无法读取：{e}"))?;
+            if !local.starts_with(&self.dir) {
+                return Err("示教件原图不在本轮目录内".into());
+            }
+            return Ok(local);
+        }
+        let dir = self.recording()?;
+        let path = dir.join(recording_file(camera_id, seq));
+        crate::image_file::checked_source_path(&path).map_err(|_| {
+            format!("示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图")
+        })?;
         let path = path
             .canonicalize()
-            .map_err(|_| "示教件原图不在本项目，请在示教件页补回原图".to_string())?;
-        if !path.starts_with(&self.dir) || !path.is_file() {
-            return Err("示教件原图不在本轮目录内".into());
+            .map_err(|e| format!("示教件原图无法读取：{e}"))?;
+        if !path.starts_with(dir) || !path.is_file() {
+            return Err("示教件原图不在来源历史件的录制目录内".into());
         }
         Ok(path)
+    }
+
+    /// 有帧的原图读不到时给出原因（录制已清理、记录不在本机等）；只查文件在不在，不读图。
+    pub fn unavailable(&self) -> Option<String> {
+        for (camera_id, seqs) in &self.saved {
+            for &seq in seqs {
+                if self.local(camera_id, seq).is_some() {
+                    continue;
+                }
+                let dir = match self.recording() {
+                    Ok(dir) => dir,
+                    Err(error) => return Some(error),
+                };
+                if !dir.join(recording_file(camera_id, seq)).is_file() {
+                    return Some(format!(
+                        "示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图"
+                    ));
+                }
+            }
+        }
+        None
     }
 }
 
@@ -296,46 +402,18 @@ impl RecipeCaptureHost {
                 .unwrap()
                 .insert(line.seq);
         }
-        Ok(BurstFrameIndex { dir, round, saved })
+        Ok(BurstFrameIndex {
+            dir,
+            round,
+            saved,
+            lookup: self.recordings.clone(),
+            recording: std::sync::OnceLock::new(),
+        })
     }
 
-    /// 帧记录里有原图不在盘上（导出或复制项目时没带示教件原图）。
-    pub fn images_missing(&self, round_id: &str) -> Result<bool, String> {
-        let dir = self.safe_round_path(round_id)?;
-        let (_, lines) = self.load_burst(round_id, true)?;
-        Ok(lines
-            .unwrap_or_default()
-            .iter()
-            .any(|line| !dir.join(&line.path).is_file()))
-    }
-
-    /// 用同一件历史记录新物化的轮次 `source` 补回 `target` 缺的原图：两轮相机与帧记录须逐行相同，只移入缺的文件；
-    /// 无论成败都删除 `source`。
-    pub fn refill_images(&self, target: &str, source: &str) -> Result<(), String> {
-        let result = (|| {
-            let target_dir = self.safe_round_path(target)?;
-            let source_dir = self.safe_round_path(source)?;
-            let (target_round, target_lines) = self.load_burst(target, true)?;
-            let (source_round, source_lines) = self.load_burst(source, true)?;
-            if target_round.camera_ids() != source_round.camera_ids()
-                || target_lines != source_lines
-            {
-                return Err("历史记录的帧与示教件轮次对不上，不能补回原图".into());
-            }
-            for line in target_lines.unwrap_or_default() {
-                let to = target_dir.join(&line.path);
-                if to.is_file() {
-                    continue;
-                }
-                std::fs::create_dir_all(to.parent().ok_or("原图路径无效")?)
-                    .map_err(|e| e.to_string())?;
-                std::fs::rename(source_dir.join(&line.path), &to)
-                    .map_err(|e| format!("补回原图 {} 失败：{e}", line.path))?;
-            }
-            Ok(())
-        })();
-        let _ = self.delete_round(source);
-        result
+    /// 示教件原图读不到的原因（来源历史件的录制已清理或不在本机等）；都读得到为 None。
+    pub fn images_unavailable(&self, round_id: &str) -> Result<Option<String>, String> {
+        Ok(self.burst_frame_index(round_id)?.unavailable())
     }
 
     pub fn burst_frame_thumbs(
@@ -397,7 +475,9 @@ impl RecipeCaptureHost {
 fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[FrameLine]>) -> Result<(), String> {
     let cameras = &round.cameras;
     let n = cameras.len();
-    let format_ok = round.format == FORMAT || (round.format == FORMAT_V2 && round.origin.is_none());
+    let format_ok = (round.format == FORMAT && round.history_cycle().is_some())
+        || round.format == FORMAT_V3
+        || (round.format == FORMAT_V2 && round.origin.is_none());
     if !format_ok
         || round.round_id != expected_id
         || round.recipe_id.is_empty()
@@ -491,12 +571,28 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
     let mut saved = vec![BTreeSet::new(); n];
     let mut baselines: BTreeMap<usize, u64> = BTreeMap::new();
     for line in lines {
-        let camera = cameras.get(line.camera).ok_or("采集帧记录引用了本轮之外的相机")?;
-        if !(1..=MAX_SEQ).contains(&line.seq) || line.width == 0 || line.height == 0 { return Err("采集帧记录的帧组序号或尺寸无效".into()); }
-        if line.path != frame_rel_path(&camera.camera_id, line.seq) { return Err("采集帧记录的图像路径与轮次目录不一致".into()); }
-        if !saved[line.camera].insert(line.seq) { return Err("采集帧记录重复".into()); }
-        let baseline = line.frame_counter.checked_sub(line.seq).ok_or("采集帧记录的帧计数小于帧组序号")?;
-        if *baselines.entry(line.camera).or_insert(baseline) != baseline { return Err(format!("相机 {} 的帧计数与帧组序号对不上", camera.camera_id)); }
+        let camera = cameras
+            .get(line.camera)
+            .ok_or("采集帧记录引用了本轮之外的相机")?;
+        if !(1..=MAX_SEQ).contains(&line.seq) || line.width == 0 || line.height == 0 {
+            return Err("采集帧记录的帧组序号或尺寸无效".into());
+        }
+        if line.path != line_path(round, &camera.camera_id, line.seq) {
+            return Err("采集帧记录的图像路径与轮次目录不一致".into());
+        }
+        if !saved[line.camera].insert(line.seq) {
+            return Err("采集帧记录重复".into());
+        }
+        let baseline = line
+            .frame_counter
+            .checked_sub(line.seq)
+            .ok_or("采集帧记录的帧计数小于帧组序号")?;
+        if *baselines.entry(line.camera).or_insert(baseline) != baseline {
+            return Err(format!(
+                "相机 {} 的帧计数与帧组序号对不上",
+                camera.camera_id
+            ));
+        }
     }
     if round.state == CaptureState::Complete {
         let expected = summarize(round.group_count, &saved);
@@ -513,9 +609,18 @@ pub(super) fn restore(path: &Path, mut round: CaptureRoundV2) -> Result<CaptureR
     if !round.state.active() { return Ok(round); }
     let text = path.parent().map(|dir| crate::fsio::read_text(&dir.join(FRAMES_FILE)).unwrap_or_default()).unwrap_or_default();
     let mut saved = vec![BTreeSet::new(); round.cameras.len()];
-    for line in text.lines().filter_map(|line| serde_json::from_str::<FrameLine>(line).ok()) {
-        let valid = round.cameras.get(line.camera).is_some_and(|c| line.path == frame_rel_path(&c.camera_id, line.seq)) && (1..=MAX_SEQ).contains(&line.seq);
-        if valid { saved[line.camera].insert(line.seq); }
+    for line in text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<FrameLine>(line).ok())
+    {
+        let valid = round
+            .cameras
+            .get(line.camera)
+            .is_some_and(|c| line.path == line_path(&round, &c.camera_id, line.seq))
+            && (1..=MAX_SEQ).contains(&line.seq);
+        if valid {
+            saved[line.camera].insert(line.seq);
+        }
     }
     let group_count = saved.iter().filter_map(|s| s.last().copied()).max().unwrap_or(0);
     let summary = summarize(group_count, &saved);

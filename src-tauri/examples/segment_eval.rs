@@ -20,9 +20,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use gluesight_lib::probe_api::{
-    align_cuts, calibrate_counts, downsample, load_image, FrameGroup, Proportional, RecipeDoc,
-    ReviewReason, SegInput, SegOutcome, SegmentKind, Segmenter, Sequence, ALIGN_FACTOR,
-    ALIGN_SHARPNESS,
+    align_cuts, calibrate_counts, capture_frame_paths, downsample, load_image, FrameGroup,
+    Proportional, RecipeDoc, ReviewReason, SegInput, SegOutcome, SegmentKind, Segmenter, Sequence,
+    ALIGN_FACTOR, ALIGN_SHARPNESS,
 };
 use serde_json::Value;
 
@@ -239,19 +239,20 @@ fn main() -> Result<(), String> {
     };
     let template_cuts: Vec<u64> = template_cuts.iter().filter_map(Value::as_u64).collect();
     let cameras = doc.plan_cameras();
-    let capture = PathBuf::from(project).join("recipe-capture");
+    let project = PathBuf::from(project);
     let sequences = |round: &str, groups: u64| -> Vec<Sequence> {
+        let Ok(paths) = capture_frame_paths(&project, round) else {
+            return cameras
+                .iter()
+                .map(|_| (0..groups).map(|_| None).collect())
+                .collect();
+        };
         cameras
             .iter()
             .map(|camera| {
                 (1..=groups)
                     .map(|seq| {
-                        load_image(
-                            &capture
-                                .join(round)
-                                .join(camera)
-                                .join(format!("{seq:06}.pgm")),
-                        )
+                        load_image(&paths(camera, seq))
                         .ok()
                         .map(|image| downsample(&image, ALIGN_FACTOR))
                     })

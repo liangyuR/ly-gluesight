@@ -25,7 +25,7 @@ function singleSegment(): WorkspaceView {
 beforeEach(() => {
   ws = workspaceState(singleSegment());
   vi.mocked(useWorkspace).mockImplementation(() => ws);
-  vi.mocked(workspaceApi.historyCandidates).mockResolvedValue([]);
+  vi.mocked(workspaceApi.historyCandidates).mockResolvedValue({ total: 0, items: [] });
   vi.mocked(workspaceApi.calibrationSkipSuggest).mockResolvedValue([]);
   vi.mocked(workspaceApi.passSkipSuggest).mockResolvedValue({ current: 0, suggested: null, passes: [], pending: "示教件还没有测量" });
   vi.mocked(workspaceApi.calibrationRoundOverview).mockResolvedValue([]);

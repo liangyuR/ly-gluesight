@@ -35,7 +35,7 @@ export function HistoryTrials({ recipeId }: { recipeId: string }) {
   useEffect(() => {
     let alive = true;
     setRows(null); setResults({});
-    workspaceApi.historyCandidates(recipeId, all).then(r => { if (alive) setRows(r); }).catch(e => { if (alive) { setRows([]); setError(errorText(e)); } });
+    workspaceApi.historyCandidates(recipeId, { ownRecipe: !all, limit: 200 }).then(r => { if (alive) setRows(r.items); }).catch(e => { if (alive) { setRows([]); setError(errorText(e)); } });
     return () => { alive = false; };
   }, [recipeId, all]);
   // 至少有一段示教了走廊就能试测（D-SB-57）：没示教的段不测、只算检测不完整

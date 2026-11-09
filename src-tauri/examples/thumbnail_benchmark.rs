@@ -161,7 +161,8 @@ fn main() -> Result<(), String> {
         return Err("capture directory does not exist".into());
     }
     let port = option("--port").unwrap_or_else(|| "18777".into());
-    let host = RecipeCaptureHost::open(root)?;
+    // 隔离的轮次副本自带原图，不查检测记录
+    let host = RecipeCaptureHost::open(root, Arc::new(|_: &str| Ok(None)))?;
     let listener = TcpListener::bind(format!("127.0.0.1:{port}")).map_err(|e| e.to_string())?;
     println!(
         "{}",

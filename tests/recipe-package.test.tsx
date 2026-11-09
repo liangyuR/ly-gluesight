@@ -4,7 +4,6 @@ import { MemoryRouter } from "react-router-dom";
 import { SnackbarProvider } from "qing-steel";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LibraryPage from "../src/features/workspace/LibraryPage";
-import { PackageExportDialog } from "../src/features/workspace/PackageDialogs";
 import { WorkspaceProvider, useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
@@ -60,18 +59,5 @@ describe("工件配方导入", () => {
     await userEvent.click(screen.getByRole("button", { name: "导入工件配方" }));
     await userEvent.click(await screen.findByRole("button", { name: "导入并替换候选" }));
     await waitFor(() => expect(screen.getByLabelText("当前候选")).toHaveTextContent("回传候选 r4"));
-  });
-});
-
-describe("工件配方导出", () => {
-  it("勾选包含示教件原图 → 后端按带原图导出，结果页说明可直接试测", async () => {
-    vi.mocked(workspaceApi.packageTarget).mockResolvedValue("C:/out.zip");
-    vi.mocked(workspaceApi.packageExport).mockResolvedValue({ path: "C:/out.zip", bytes: 4096, files: 9, teachingImages: true });
-    render(<SnackbarProvider><PackageExportDialog id="A" onClose={() => {}} /></SnackbarProvider>);
-    await userEvent.click(screen.getByRole("checkbox", { name: "包含示教件原图" }));
-    await userEvent.click(screen.getByRole("button", { name: "选择位置并导出" }));
-    await screen.findByText("已导出工件配方");
-    expect(vi.mocked(workspaceApi.packageExport).mock.calls[0].slice(0, 3)).toEqual(["A", true, "C:/out.zip"]);
-    expect(screen.getByText(/导入后可直接看示教图与试测/)).toBeInTheDocument();
   });
 });

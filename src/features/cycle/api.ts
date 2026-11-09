@@ -16,8 +16,8 @@ const defaultSettings: CycleSettings = {
   timeouts: { motionMs: 1_200_000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
   historyDays: 180,
   record: "all",
-  recordKeep: 100,
-  recordMaxGb: 100,
+  recordKeep: null,
+  recordMaxGb: null,
 };
 
 export const cycleApi = {

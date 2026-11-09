@@ -1,5 +1,5 @@
 //! 示教件（docs/decisions/recipe-build-flow.md RB-1～RB-8）：候选从历史件选一件示教件，它是分段边界、全部走廊示教帧、
-//! 各段 N_exp 与胶偏参考 x_ref 的唯一来源，换件即清空图像派生内容；选件即导入为轮次。
+//! 各段 N_exp 与胶偏参考 x_ref 的唯一来源，换件即清空图像派生内容；选件即导入为轮次（只引用这件历史件的录制原图）。
 //! 轮次只作存储格式，界面面对历史件。旧流程候选（`flow` 缺省）停用，只能删除。
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -284,8 +284,8 @@ pub struct PieceView {
     /// 已按当前走廊测量
     pub measured: bool,
     pub excluded_groups: u32,
-    /// 原图不在本项目（导出或复制项目时没带），可从同一件历史记录补回
-    pub images_missing: bool,
+    /// 原图读不到的原因（来源历史件的录制已清理、检测记录不在本机等）；读得到为 None
+    pub images_unavailable: Option<String>,
 }
 
 /// 示教件的视图；还没选示教件，或它的轮次已不在本配方完整的轮次里时为空。
@@ -325,7 +325,7 @@ pub(super) fn piece_views(w: &Workspace, rounds: &[CaptureSummary]) -> Vec<Piece
         excluded_groups: review.map_or(0, |v| {
             u32::try_from(v.excluded_groups.len()).unwrap_or(u32::MAX)
         }),
-        images_missing: false,
+        images_unavailable: None,
     }]
 }
 
@@ -337,7 +337,9 @@ pub(super) fn plan_pieces(app: &AppHandle, w: &Workspace) -> Vec<PieceView> {
         .map(|rounds| piece_views(w, &rounds))
         .unwrap_or_default();
     for piece in &mut pieces {
-        piece.images_missing = capture.images_missing(&piece.round_id).unwrap_or(false);
+        piece.images_unavailable = capture
+            .images_unavailable(&piece.round_id)
+            .unwrap_or_else(|e| Some(e));
     }
     pieces
 }
@@ -472,31 +474,6 @@ fn set_teaching_piece(
         }
     }
     view(app, next)
-}
-
-/// 补回示教件原图（导出或复制项目时没带）：从同一件历史记录重新物化，候选内容与修订不变。
-#[tauri::command]
-pub async fn workspace_refill_teaching_images(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-) -> Result<WorkspaceView, String> {
-    let cycle = app.state::<CycleHost>();
-    let _config = cycle.config_gate.lock().await;
-    let task = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let w = {
-            let host = task.state::<WorkspaceHost>();
-            let items = host.items.lock().unwrap();
-            let w = items.get(&id).ok_or("候选配置不存在")?;
-            w.expect(revision)?;
-            w.clone()
-        };
-        history_import::refill_teaching_images(&task, &w)?;
-        view(&task, w)
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 // ───────────── 示教件测量 ─────────────

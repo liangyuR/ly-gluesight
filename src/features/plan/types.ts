@@ -564,7 +564,7 @@ export interface CaptureAlarm {
   seq: number;
 }
 
-/** 历史件导入的轮次的来源（round.json 3，代替示教握手编号）；standard 只为读入旧流程导入的轮次，界面不用 */
+/** 历史件导入的轮次的来源（round.json 3 起，代替示教握手编号）；standard 只为读入旧流程导入的轮次，界面不用 */
 export interface RoundOrigin { kind: "history"; cycleId: string; recordId: number; standard: boolean }
 
 /** 段配方采集轮次（D1）：按帧号配组，不核对计数；帧元数据在 frames.jsonl，这里只给统计。format 3 加 origin。 */
@@ -742,8 +742,8 @@ export interface PieceView {
   /** 已按当前走廊测量 */
   measured: boolean;
   excludedGroups: number;
-  /** 原图不在本项目（导出或复制项目时没带），可从同一件历史记录补回 */
-  imagesMissing: boolean;
+  /** 原图读不到的原因（来源历史件的录制已清理、检测记录不在本机等）；读得到为 null */
+  imagesUnavailable: string | null;
 }
 
 /** 配方库摘要的段模型字段。 */

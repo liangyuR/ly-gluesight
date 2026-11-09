@@ -113,7 +113,6 @@ fn export(data: &Path, root: &Path, store: &Store) -> PathBuf {
     export_to(
         root,
         Some(store),
-        true,
         &data.join("cache").join("export"),
         &package,
     )
@@ -200,11 +199,10 @@ fn snapshot_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         .collect()
 }
 
-fn copy(data: &Path, capture_images: bool) -> Result<ProjectImported, String> {
+fn copy(data: &Path) -> Result<ProjectImported, String> {
     copy_from(
         data,
         "line-a",
-        capture_images,
         &New {
             id: "line-a2",
             name: "A 线副本",
@@ -221,7 +219,7 @@ fn copied_project_gets_its_own_paths_and_leaves_the_source_untouched() {
     let data = TempDir::new("copy");
     let (source, recipe, store) = source_project(&data.0);
     let before = snapshot_files(&source);
-    let copied = copy(&data.0, true).unwrap();
+    let copied = copy(&data.0).unwrap();
     assert_eq!(copied.meta.copied_from.as_deref(), Some("line-a"));
     let target = super::super::dir(&data.0, "line-a2");
     let round = read_value(
@@ -235,6 +233,10 @@ fn copied_project_gets_its_own_paths_and_leaves_the_source_untouched() {
         .as_str()
         .unwrap();
     assert!(Path::new(original).starts_with(&target), "{original}");
+    assert!(
+        target.join("recipe-capture/capture-1/a.pgm").is_file(),
+        "旧轮次的原图可能是唯一一份，随复制带走"
+    );
     assert!(!target.join("inspection.db").exists());
     assert_eq!(
         store
@@ -342,6 +344,96 @@ fn interrupted_recording_install_is_removed_before_commit_and_preserved_after_pr
     );
     assert!(committed_project.join("project.json").is_file());
     assert!(!committed.join(PENDING_RECORDINGS).exists());
+}
+
+/// 防的回归：示教件选的是别的项目的历史件（复制出的项目最常见），导出“含检测记录”时那件记录与录制不随包走，导入方示教件读不到原图。
+#[test]
+fn exported_records_carry_teaching_pieces_from_other_projects_with_their_recordings() {
+    let (from, to) = (TempDir::new("linked-from"), TempDir::new("linked-to"));
+    let (source, recipe, store) = source_project(&from.0);
+    let other = local_store(&from.0, "line-x");
+    let recording = from
+        .0
+        .join("x-records")
+        .join("20261107")
+        .join("20261107_cycle_x1");
+    std::fs::create_dir_all(&recording).unwrap();
+    std::fs::write(recording.join("cam1_s000001.pgm"), b"P5 x1").unwrap();
+    record(&other, &recipe, "x1", &recording);
+    let round = source.join("recipe-capture").join("capture-2");
+    std::fs::create_dir_all(&round).unwrap();
+    std::fs::write(
+        round.join("round.json"),
+        serde_json::json!({"origin": {"kind": "history", "cycleId": "x1", "recordId": 9}})
+            .to_string(),
+    )
+    .unwrap();
+    let package = export(&from.0, &source, &store);
+    assert!(open_archive(&package)
+        .unwrap()
+        .by_name("project/records/imported/20261107_cycle_x1/cam1_s000001.pgm")
+        .is_ok());
+
+    let local = local_store(&to.0, "default");
+    import_from(
+        &to.0,
+        &package,
+        "line-b",
+        "B 线",
+        &to.0.join("cache"),
+        &local,
+    )
+    .unwrap();
+    let directory = local
+        .recording_directory("x1")
+        .unwrap()
+        .expect("示教件那一件的记录随包导入");
+    assert!(
+        directory.starts_with(super::super::dir(&to.0, "line-b")),
+        "{}",
+        directory.display()
+    );
+    assert!(directory.join("cam1_s000001.pgm").is_file());
+    assert!(
+        crate::history_package::imported_recording(&directory),
+        "放在 imported/ 下：滚动清理不扫，记录过期时随记录删除"
+    );
+    assert_eq!(
+        local.project_records().unwrap().get("line-b").map(|r| r.0),
+        Some(2)
+    );
+}
+
+/// 防的回归：本机已有同一工件的记录（导入时按 cycleId 去重）但它的录制已被清理，导入包里带的录制却没被采用，示教件仍读不到原图。
+#[test]
+fn reimported_duplicate_adopts_packaged_recording_when_local_one_is_gone() {
+    let data = TempDir::new("adopt");
+    let (source, _, store) = source_project(&data.0);
+    let original = source.join("records").join("c1");
+    let package = export(&data.0, &source, &store);
+    std::fs::remove_dir_all(&original).unwrap();
+    import_from(
+        &data.0,
+        &package,
+        "line-b",
+        "B 线",
+        &data.0.join("cache"),
+        &store,
+    )
+    .unwrap();
+    let directory = store.recording_directory("c1").unwrap().unwrap();
+    assert!(
+        directory.starts_with(super::super::dir(&data.0, "line-b")),
+        "{}",
+        directory.display()
+    );
+    assert!(directory.join("part.json").is_file());
+    let detail = store.detail_by_cycle("c1").unwrap().unwrap();
+    assert_eq!(
+        detail.summary.project_id, "line-b",
+        "录制在哪个项目的录制根下，记录就归哪个项目"
+    );
+    assert!(store.record_recipe(&detail.summary).unwrap().is_some());
 }
 
 /// 防的回归：导出“含检测记录”把本机别的项目的记录也带走；导入时记录编号与本机已有的冲突却不重新编号、采集轮次里的来源
