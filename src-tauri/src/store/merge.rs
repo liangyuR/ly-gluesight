@@ -335,6 +335,32 @@ fn merge_attached(
     Ok(merged)
 }
 
+/// 本机已有同一工件（按 cycleId 去重、不再存一份）但它的录制目录已不在（如被滚动清理）时，改用附加库这件已装好的录制：
+/// 示教件按 cycleId 读录制原图，否则导入包里带的原图用不上。
+fn adopt_recordings(conn: &Connection) -> Result<(), String> {
+    let pairs: Vec<(i64, Option<String>, i64)> = conn
+        .prepare(
+            "SELECT p.id, p.recording_directory, s.id FROM temp.merge_ids m JOIN main.parts p ON p.id = m.new JOIN src.parts s ON s.id = m.old WHERE m.fresh = 0 AND s.recording_directory IS NOT NULL",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect()
+        })
+        .map_err(db_err)?;
+    // 附加库的录制目录此时可能还在暂存目录里（项目目录最后才移入），不看它在不在：本机的已不在，换过去不会更差
+    for (local, local_dir, source) in pairs {
+        if local_dir.is_some_and(|dir| Path::new(&dir).is_dir()) {
+            continue;
+        }
+        conn.execute(
+            "UPDATE main.parts SET (recording_directory, recording_state, recording_available, recording_errors) =              (SELECT recording_directory, recording_state, recording_available, recording_errors FROM src.parts WHERE id = ?2) WHERE id = ?1",
+            params![local, source],
+        )
+        .map_err(db_err)?;
+    }
+    Ok(())
+}
+
 /// 在调用方已开的事务里把附加库 `src` 的记录并入项目 `project`：按 cycleId 去重、分配本机编号（编号对照留在
 /// `temp.merge_ids`，调用方用完删除），带入配方快照（同修订号内容不同则拒绝）、候选实例与帧记录。
 pub(super) fn merge_rows(
@@ -452,6 +478,7 @@ pub(super) fn merge_rows(
     if has_table(conn, "cycle_ids")? {
         conn.execute_batch("INSERT OR IGNORE INTO cycle_ids (id, created_at) SELECT id, created_at FROM src.cycle_ids;").map_err(db_err)?;
     }
+    adopt_recordings(conn)?;
     let source_columns = PART_COLUMNS
         .split(", ")
         .map(|c| format!("s.{}", c.trim()))

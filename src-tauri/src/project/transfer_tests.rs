@@ -404,6 +404,20 @@ fn exported_records_carry_teaching_pieces_from_other_projects_with_their_recordi
     );
 }
 
+/// 防的回归：本机已有同一工件的记录（导入时按 cycleId 去重）但它的录制已被清理，导入包里带的录制却没被采用，示教件仍读不到原图。
+#[test]
+fn reimported_duplicate_adopts_packaged_recording_when_local_one_is_gone() {
+    let data = TempDir::new("adopt");
+    let (source, _, store) = source_project(&data.0);
+    let original = source.join("records").join("c1");
+    let package = export(&data.0, &source, &store);
+    std::fs::remove_dir_all(&original).unwrap();
+    import_from(&data.0, &package, "line-b", "B 线", &data.0.join("cache"), &store).unwrap();
+    let directory = store.recording_directory("c1").unwrap().unwrap();
+    assert!(directory.starts_with(super::super::dir(&data.0, "line-b")), "{}", directory.display());
+    assert!(directory.join("part.json").is_file());
+}
+
 /// 防的回归：导出“含检测记录”把本机别的项目的记录也带走；导入时记录编号与本机已有的冲突却不重新编号、采集轮次里的来源
 /// 记录编号没跟着改，或本机已有的同一工件（同一 cycleId）被再存一份。
 #[test]
