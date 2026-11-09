@@ -101,26 +101,45 @@ pub mod probe_api {
 
     /// 项目目录 `project` 里采集轮次 `round` 的原图路径：引用录制的轮次（format 4）按来源 cycleId 在资料目录的本机记录库
     /// （只读）查录制目录，旧轮次在本轮目录。评估工具（heading_eval、segment_eval）用，不做帧记录核对。
-    pub fn capture_frame_paths(project: &std::path::Path, round: &str) -> Result<FramePaths, String> {
+    pub fn capture_frame_paths(
+        project: &std::path::Path,
+        round: &str,
+    ) -> Result<FramePaths, String> {
         let dir = project.join("recipe-capture").join(round);
-        let text = crate::fsio::read_text(&dir.join("round.json")).map_err(|e| format!("{round}：{e}"))?;
-        let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{round}：{e}"))?;
+        let text =
+            crate::fsio::read_text(&dir.join("round.json")).map_err(|e| format!("{round}：{e}"))?;
+        let value: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("{round}：{e}"))?;
         if value["format"].as_u64() != Some(u64::from(crate::recipe_capture::FORMAT)) {
-            return Ok(Box::new(move |camera, seq| dir.join(camera).join(format!("{seq:06}.pgm"))));
+            return Ok(Box::new(move |camera, seq| {
+                dir.join(camera).join(format!("{seq:06}.pgm"))
+            }));
         }
-        let cycle = value.pointer("/origin/cycleId").and_then(serde_json::Value::as_str).ok_or("轮次没有来源 cycleId")?;
-        let data = project.parent().and_then(std::path::Path::parent).ok_or("项目目录不在资料目录的 projects 下")?;
+        let cycle = value
+            .pointer("/origin/cycleId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("轮次没有来源 cycleId")?;
+        let data = project
+            .parent()
+            .and_then(std::path::Path::parent)
+            .ok_or("项目目录不在资料目录的 projects 下")?;
         let conn = rusqlite::Connection::open_with_flags(
             crate::project::records::database(data),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|e| e.to_string())?;
         let recording: std::path::PathBuf = conn
-            .query_row("SELECT recording_directory FROM parts WHERE cycle_id = ?1", [cycle], |row| row.get::<_, Option<String>>(0))
+            .query_row(
+                "SELECT recording_directory FROM parts WHERE cycle_id = ?1",
+                [cycle],
+                |row| row.get::<_, Option<String>>(0),
+            )
             .map_err(|e| format!("记录库里找不到 {cycle}：{e}"))?
             .ok_or(format!("{cycle} 没有录制目录"))?
             .into();
-        Ok(Box::new(move |camera, seq| recording.join(format!("{camera}_s{seq:06}.pgm"))))
+        Ok(Box::new(move |camera, seq| {
+            recording.join(format!("{camera}_s{seq:06}.pgm"))
+        }))
     }
 
     /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见），每一段都须测成。

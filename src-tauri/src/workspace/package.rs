@@ -668,9 +668,8 @@ pub async fn workspace_package_export(
     tauri::async_runtime::spawn_blocking(move || {
         operation.run(|operation| {
             let target = PathBuf::from(&path);
-            let result = crate::project::read_meta(&project).and_then(|meta| {
-                export_candidate(&project, &meta, &w, &target, operation)
-            });
+            let result = crate::project::read_meta(&project)
+                .and_then(|meta| export_candidate(&project, &meta, &w, &target, operation));
             crate::cycle::log_op(
                 &app,
                 &crate::applog::codes::OP_RECIPE_PACKAGE,

@@ -82,7 +82,10 @@ impl RecipeCaptureHost {
         if !(1..=MAX_SEQ).contains(&group_count) {
             return Err("历史件没有帧组或帧组数超出上限".into());
         }
-        if let Some(camera) = cameras.iter().find(|c| !crate::recipe::valid_camera_id(&c.camera_id)) {
+        if let Some(camera) = cameras
+            .iter()
+            .find(|c| !crate::recipe::valid_camera_id(&c.camera_id))
+        {
             return Err(format!("相机编号 {:?} 无效", camera.camera_id));
         }
         let RoundOrigin::History { cycle_id, .. } = &origin else {

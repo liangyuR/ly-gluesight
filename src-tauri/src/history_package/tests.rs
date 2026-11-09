@@ -409,7 +409,10 @@ fn expired_imported_parts_hand_their_images_to_cleanup_but_local_recordings_stay
     recorded(&b, &saved_recipe(&temp.0.join("b")), "c-local", "SN-L");
     import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
 
-    let (deleted, orphaned) = b.store.purge_before(ly_plc::now_ms() + 1, &Default::default()).unwrap();
+    let (deleted, orphaned) = b
+        .store
+        .purge_before(ly_plc::now_ms() + 1, &Default::default())
+        .unwrap();
     assert_eq!(deleted, 2);
     let directories: Vec<&str> = orphaned.iter().map(|(_, _, d)| d.as_str()).collect();
     assert_eq!(directories.len(), 1, "{directories:?}");

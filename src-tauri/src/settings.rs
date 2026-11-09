@@ -151,10 +151,16 @@ impl CycleSettings {
         if t.motion_ms < 1000 || t.proc_ms < 200 || t.ack_ms < 500 {
             return Err("超时参数过小".into());
         }
-        if self.record_keep.is_some_and(|keep| !(1..=100_000).contains(&keep)) {
+        if self
+            .record_keep
+            .is_some_and(|keep| !(1..=100_000).contains(&keep))
+        {
             return Err("帧录制保留件数需为不限或 1–100000 之间".into());
         }
-        if self.record_max_gb.is_some_and(|gb| !(0.5..=10_000.0).contains(&gb)) {
+        if self
+            .record_max_gb
+            .is_some_and(|gb| !(0.5..=10_000.0).contains(&gb))
+        {
             return Err("帧录制总大小需为不限或 0.5–10000 GB 之间".into());
         }
         Ok(())

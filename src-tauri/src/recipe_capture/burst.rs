@@ -192,8 +192,7 @@ fn line_path(round: &CaptureRoundV2, camera_id: &str, seq: u64) -> String {
 
 /// 按来源历史件的 cycleId 查录制目录：记录不在本机、没有录制目录或目录已不在时报原图不可用的原因。
 fn resolve_recording(lookup: &RecordingLookup, cycle_id: &str) -> Result<PathBuf, String> {
-    let dir = lookup(cycle_id)?
-        .ok_or("来源历史件的检测记录不在本机，或记录没有录制目录")?;
+    let dir = lookup(cycle_id)?.ok_or("来源历史件的检测记录不在本机，或记录没有录制目录")?;
     let checked = dir
         .canonicalize()
         .map_err(|_| format!("来源历史件的录制 {} 已清理或不在本机", dir.display()))?;
@@ -208,7 +207,11 @@ pub(super) fn is_v2(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
         .and_then(|v| v.get("format").and_then(serde_json::Value::as_u64))
-        .is_some_and(|format| [FORMAT, FORMAT_V3, FORMAT_V2].iter().any(|&f| u64::from(f) == format))
+        .is_some_and(|format| {
+            [FORMAT, FORMAT_V3, FORMAT_V2]
+                .iter()
+                .any(|&f| u64::from(f) == format)
+        })
 }
 
 /// 由帧组数与各相机已写盘的 seq 得出的统计。
@@ -568,12 +571,28 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
     let mut saved = vec![BTreeSet::new(); n];
     let mut baselines: BTreeMap<usize, u64> = BTreeMap::new();
     for line in lines {
-        let camera = cameras.get(line.camera).ok_or("采集帧记录引用了本轮之外的相机")?;
-        if !(1..=MAX_SEQ).contains(&line.seq) || line.width == 0 || line.height == 0 { return Err("采集帧记录的帧组序号或尺寸无效".into()); }
-        if line.path != line_path(round, &camera.camera_id, line.seq) { return Err("采集帧记录的图像路径与轮次目录不一致".into()); }
-        if !saved[line.camera].insert(line.seq) { return Err("采集帧记录重复".into()); }
-        let baseline = line.frame_counter.checked_sub(line.seq).ok_or("采集帧记录的帧计数小于帧组序号")?;
-        if *baselines.entry(line.camera).or_insert(baseline) != baseline { return Err(format!("相机 {} 的帧计数与帧组序号对不上", camera.camera_id)); }
+        let camera = cameras
+            .get(line.camera)
+            .ok_or("采集帧记录引用了本轮之外的相机")?;
+        if !(1..=MAX_SEQ).contains(&line.seq) || line.width == 0 || line.height == 0 {
+            return Err("采集帧记录的帧组序号或尺寸无效".into());
+        }
+        if line.path != line_path(round, &camera.camera_id, line.seq) {
+            return Err("采集帧记录的图像路径与轮次目录不一致".into());
+        }
+        if !saved[line.camera].insert(line.seq) {
+            return Err("采集帧记录重复".into());
+        }
+        let baseline = line
+            .frame_counter
+            .checked_sub(line.seq)
+            .ok_or("采集帧记录的帧计数小于帧组序号")?;
+        if *baselines.entry(line.camera).or_insert(baseline) != baseline {
+            return Err(format!(
+                "相机 {} 的帧计数与帧组序号对不上",
+                camera.camera_id
+            ));
+        }
     }
     if round.state == CaptureState::Complete {
         let expected = summarize(round.group_count, &saved);
@@ -590,9 +609,18 @@ pub(super) fn restore(path: &Path, mut round: CaptureRoundV2) -> Result<CaptureR
     if !round.state.active() { return Ok(round); }
     let text = path.parent().map(|dir| crate::fsio::read_text(&dir.join(FRAMES_FILE)).unwrap_or_default()).unwrap_or_default();
     let mut saved = vec![BTreeSet::new(); round.cameras.len()];
-    for line in text.lines().filter_map(|line| serde_json::from_str::<FrameLine>(line).ok()) {
-        let valid = round.cameras.get(line.camera).is_some_and(|c| line.path == line_path(&round, &c.camera_id, line.seq)) && (1..=MAX_SEQ).contains(&line.seq);
-        if valid { saved[line.camera].insert(line.seq); }
+    for line in text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<FrameLine>(line).ok())
+    {
+        let valid = round
+            .cameras
+            .get(line.camera)
+            .is_some_and(|c| line.path == line_path(&round, &c.camera_id, line.seq))
+            && (1..=MAX_SEQ).contains(&line.seq);
+        if valid {
+            saved[line.camera].insert(line.seq);
+        }
     }
     let group_count = saved.iter().filter_map(|s| s.last().copied()).max().unwrap_or(0);
     let summary = summarize(group_count, &saved);

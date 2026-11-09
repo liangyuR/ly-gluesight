@@ -28,8 +28,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gluesight_lib::probe_api::{
-    calibrate_counts, capture_frame_paths, downsample, load_image, unformed_lead, Engine, FrameImage, FramePaths, GroupForm,
-    RecipeDoc, SegmentKind, ONSET_RUN,
+    calibrate_counts, capture_frame_paths, downsample, load_image, unformed_lead, Engine,
+    FrameImage, FramePaths, GroupForm, RecipeDoc, SegmentKind, ONSET_RUN,
 };
 use serde_json::{json, Value};
 

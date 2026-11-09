@@ -427,7 +427,8 @@ impl CycleHost {
                 let mut paths = store.pending_recording_directories(&guarded_root, scope)?;
                 paths.extend(protection_audit.protected_recording_directories(&guarded_root)?);
                 // 示教件、标定件引用的录制不滚动清理
-                let referenced = crate::project::records::referenced_cycles(&crate::storage::root(&guard_app))?;
+                let referenced =
+                    crate::project::records::referenced_cycles(&crate::storage::root(&guard_app))?;
                 paths.extend(store.recording_directories(&referenced)?);
                 Ok(paths)
             });

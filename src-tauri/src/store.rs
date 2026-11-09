@@ -1823,12 +1823,19 @@ impl Store {
         &self,
         q: &HistoryQuery,
     ) -> Result<(u64, Vec<(PartSummary, RecordingEvidence)>), String> {
-        let q = HistoryQuery { scope: HistoryScope::Real, ..q.clone() };
+        let q = HistoryQuery {
+            scope: HistoryScope::Real,
+            ..q.clone()
+        };
         let (filter, args) = Self::filter(&q, "");
         let filter = format!("{filter} AND recording_directory IS NOT NULL");
         let conn = self.conn.lock().unwrap();
         let total: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM parts{filter}"), params_from_iter(args.iter()), |row| row.get(0))
+            .query_row(
+                &format!("SELECT COUNT(*) FROM parts{filter}"),
+                params_from_iter(args.iter()),
+                |row| row.get(0),
+            )
             .map_err(db_err)?;
         let sql = format!(
             "SELECT {SUMMARY_COLS}, recording_state, recording_available, recording_directory, recording_errors FROM parts{filter}              ORDER BY ts DESC, id DESC LIMIT {} OFFSET {}",
@@ -1837,9 +1844,14 @@ impl Store {
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let rows = stmt
-            .query_map(params_from_iter(args.iter()), |row| Ok((summary(row)?, recording_row(row, SUMMARY_LEN)?)))
+            .query_map(params_from_iter(args.iter()), |row| {
+                Ok((summary(row)?, recording_row(row, SUMMARY_LEN)?))
+            })
             .map_err(db_err)?;
-        Ok((total as u64, rows.collect::<Result<_, _>>().map_err(db_err)?))
+        Ok((
+            total as u64,
+            rows.collect::<Result<_, _>>().map_err(db_err)?,
+        ))
     }
 
     /// 某件历史件（按 cycleId）的录制目录；没有这条记录或记录没有录制目录为 None。示教件轮次据此找录制原图。
@@ -1848,7 +1860,11 @@ impl Store {
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT recording_directory FROM parts WHERE cycle_id = ?1", [cycle_id], |row| row.get(0))
+            .query_row(
+                "SELECT recording_directory FROM parts WHERE cycle_id = ?1",
+                [cycle_id],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(db_err)?;
         Ok(directory.flatten().map(PathBuf::from))
@@ -1861,8 +1877,11 @@ impl Store {
         let mut stmt = conn
             .prepare("SELECT recording_directory FROM parts WHERE cycle_id IN (SELECT value FROM json_each(?1)) AND recording_directory IS NOT NULL")
             .map_err(db_err)?;
-        let rows = stmt.query_map([cycles], |row| row.get::<_, String>(0)).map_err(db_err)?;
-        rows.map(|row| row.map(PathBuf::from).map_err(db_err)).collect()
+        let rows = stmt
+            .query_map([cycles], |row| row.get::<_, String>(0))
+            .map_err(db_err)?;
+        rows.map(|row| row.map(PathBuf::from).map_err(db_err))
+            .collect()
     }
 
     /// 当前项目自 since 起的正式检测件结论计数。
@@ -1917,7 +1936,10 @@ impl Store {
                 .collect()
         };
         let count = tx
-            .execute(&format!("DELETE FROM parts WHERE ts < ?1 AND {kept}"), params![ts, keep])
+            .execute(
+                &format!("DELETE FROM parts WHERE ts < ?1 AND {kept}"),
+                params![ts, keep],
+            )
             .map_err(db_err)?;
         tx.commit().map_err(db_err)?;
         Ok((count, orphaned))

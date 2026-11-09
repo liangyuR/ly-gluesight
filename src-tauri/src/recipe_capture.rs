@@ -253,8 +253,15 @@ pub fn history_cycles(root: &Path) -> Result<std::collections::BTreeSet<String>,
         let Ok(round) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue;
         };
-        if round.pointer("/origin/kind").and_then(serde_json::Value::as_str) == Some("history") {
-            if let Some(cycle) = round.pointer("/origin/cycleId").and_then(serde_json::Value::as_str) {
+        if round
+            .pointer("/origin/kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("history")
+        {
+            if let Some(cycle) = round
+                .pointer("/origin/cycleId")
+                .and_then(serde_json::Value::as_str)
+            {
                 cycles.insert(cycle.to_string());
             }
         }

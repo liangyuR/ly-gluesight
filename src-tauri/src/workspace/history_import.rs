@@ -9,7 +9,6 @@ use crate::camera::CameraImaging;
 use crate::recipe_capture::{
     CaptureCamera, HistoryFrame, HistoryRound, RecipeCaptureHost, RoundOrigin,
 };
-use crate::judge::Verdict;
 use crate::store::{
     HistoryQuery, PartMode, PartSummary, RecordSource, RecordingEvidence, RecordingState,
 };
@@ -463,14 +462,22 @@ fn history_query(app: &AppHandle, doc: &RecipeDoc, q: &CandidateQuery) -> Histor
         to: q.to,
         verdicts: q.verdicts.clone(),
         sn: q.sn.clone(),
-        recipe_id: if own { Some(doc.id.clone()) } else { q.recipe_id.clone() },
+        recipe_id: if own {
+            Some(doc.id.clone())
+        } else {
+            q.recipe_id.clone()
+        },
         project: if own {
             Some(crate::project::current_id(app))
         } else {
             q.project.clone()
         },
         offset: q.offset,
-        limit: if q.limit == 0 { PAGE_LIMIT } else { q.limit.min(PAGE_LIMIT) },
+        limit: if q.limit == 0 {
+            PAGE_LIMIT
+        } else {
+            q.limit.min(PAGE_LIMIT)
+        },
         ..Default::default()
     }
 }
