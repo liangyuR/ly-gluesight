@@ -487,7 +487,7 @@ pub fn plan_corridor(
     let Some(scale) = inspect.mm_per_px else {
         return Err(fail("缺少像素当量"));
     };
-    let detect = inspect.detect.as_ref().unwrap_or(&recipe.detect);
+    let detect = &recipe.segment_detect(segment);
     let params =
         graph_params(corridor, scale, recipe.spacing as f64 / scale, detect).map_err(fail)?;
     if !corridor_inside(corridor, size) {
@@ -519,9 +519,8 @@ pub fn plan_corridor(
     };
     let (business, _) = corridor_params(corridor, detect, &params, edge.as_ref(), color_model)
         .map_err(|e| fail(&e))?;
-    let expert = recipe.expert_layers(inspect);
-    let effective = template.params(business, &expert).map_err(|e| fail(&e))?;
-    let judge = template.judge(&expert);
+    let effective = template.params(business).map_err(|e| fail(&e))?;
+    let judge = template.judge();
     let gate = |name: &str| number(&judge, name).map_err(|e| fail(&e));
     let taught = TaughtParams {
         tolerance: if color_model.is_some() {

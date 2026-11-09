@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }))
 const template = (): RecipeDoc => ({
   ...burstRecipe({
     id: "NEW", name: "新配方", version: 1, productCode: 1, segments: [pathSegment(1, "straight")], partCalib: null,
-    inspect: burstCameras.map(camera => ({ camera, mmPerPx: null, calib: null, detect: null })),
+    inspect: burstCameras.map(camera => ({ camera, mmPerPx: null })),
   }),
 });
 

@@ -555,7 +555,7 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
             .config();
         values.push(json!(config));
     }
-    // 各检测相机的工位标定（缺省为设备标定 device/{device}）
+    // 各检测相机的设备标定 device/{device}
     for inspect in &recipe.inspect {
         values.push(calibration_state(&vision::camera_calib_path(
             app, inspect,

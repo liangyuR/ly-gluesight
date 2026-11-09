@@ -94,7 +94,7 @@ export function burstRecipe(over: Partial<BurstRecipeDoc> = {}): BurstRecipeDoc 
       pathSegment(2, "corner", { lengthMm: 30 }),
       pathSegment(3, "straight", { lengthMm: 80 }),
     ],
-    inspect: burstCameras.map(camera => ({ camera, mmPerPx: .1, calib: null, detect: null, segments: camera === "CAM-1" ? [1, 2, 3].map(segment => ({ segment, corridor: [[10, 30], [90, 30]] as [number, number][] })) : [] })),
+    inspect: burstCameras.map(camera => ({ camera, mmPerPx: .1, segments: camera === "CAM-1" ? [1, 2, 3].map(segment => ({ segment, corridor: [[10, 30], [90, 30]] as [number, number][] })) : [] })),
     segmentDefaults: kindDefaults(), boundaryGuard: 2,
     partCalib: { expectedTotal: 12, calib: { ...partStats } },
     ...over,

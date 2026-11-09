@@ -8,7 +8,7 @@ import { useCycle } from "../src/features/cycle/api";
 import { burstRecipe, burstWorkspaceView, captureRoundV2, frameMetrics, pathSegment, snapshot, workspaceState } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn(), recipeApi: { expertSpecs: vi.fn(async () => ({})) } }));
+vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), teachPreviewFrame: vi.fn(), teachPreviewSegment: vi.fn(), fitColorModel: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
@@ -65,7 +65,7 @@ describe("走廊示教", () => {
     ["按站距不足三站、不会自动保存 → 其他段与相机参数不能切换并说明原因", { unsavable: true, pendingSave: false }, true],
     ["等着自动保存 → 其他段与相机参数照常可切换，不随保存变灰", { unsavable: false, pendingSave: true }, false],
   ])("段走廊草稿%s", async (_, state, locked) => {
-    Object.assign(ws, state, { corridorDrafts: { "CAM-2#1": { corridor: [[10, 10], [30, 10]], mmPerPx: .1, detect: null, window: null } }, frameDirty: true });
+    Object.assign(ws, state, { corridorDrafts: { "CAM-2#1": { corridor: [[10, 10], [30, 10]], mmPerPx: .1, window: null } }, frameDirty: true });
     show();
     for (const name of ["选择 CAM-1 段 1 走廊", "选择相机 CAM-2"]) {
       const other = screen.getByRole("button", { name });
@@ -184,6 +184,37 @@ describe("测量区间", () => {
     expect(ws.doc.segments![0].heading!.window).toEqual({ startMm: 3, lengthMm: 22 });
     rerender(<MemoryRouter initialEntries={["/recipe/teach?camera=CAM-2&segment=1"]}><TeachingPage /></MemoryRouter>);
     expect(within(screen.getByRole("group", { name: "段 1 测量区间" })).getByRole("spinbutton", { name: "跳过前" })).toBe(input);
+  });
+});
+
+describe("相机测量区间与段检测参数", () => {
+
+  // 防的回归（D-SB-47）：相机的测量区间是这台相机各段的默认值，相机视图改了却写到段上或没写进相机，开启定向的段仍按默认 5–20 mm 测
+  it("相机视图 CAM-2 测到 30 mm → CAM-2 存起点 5、长度 25，段 1 不写覆盖", async () => {
+    ws.data!.workspace.doc.segments![0].heading = { toleranceDeg: 5 };
+    show("/recipe/teach?camera=CAM-2");
+    fireEvent.click(await screen.findByRole("button", { name: "选择相机 CAM-2" }));
+    const zone = await screen.findByRole("group", { name: "CAM-2 测量区间" });
+    fireEvent.change(within(zone).getByRole("spinbutton", { name: "测到距出胶点" }), { target: { value: "30" } });
+    const doc = vi.mocked(ws.setDoc).mock.lastCall![0];
+    expect(doc.inspect!.find(item => item.camera === "CAM-2")!.window).toEqual({ startMm: 5, lengthMm: 25 });
+    expect(doc.segments![0].heading!.window).toBeUndefined();
+  });
+
+  // 防的回归：段视图改搜索半宽写到配方默认或别的段上；与配方默认合并后胶宽上限不小于搜索宽度仍写进配方（后端拒存，自动保存反复失败）
+  it("段 2 搜索半宽改 8 mm → 只写段 2 的覆盖；再把胶宽上限改到 16 mm → 提示且不写配方", async () => {
+    const path = "/recipe/teach?camera=CAM-1&segment=2";
+    const { rerender } = show(path);
+    fireEvent.click(await screen.findByRole("button", { name: /^检测参数/ }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "搜索半宽" }), { target: { value: "8" } });
+    ws.doc = vi.mocked(ws.setDoc).mock.lastCall![0];
+    expect(ws.doc.segments!.map(item => item.searchMm)).toEqual([undefined, 8, undefined]);
+    expect(ws.doc.detect.searchMm).toBe(4);
+    rerender(<MemoryRouter initialEntries={[path]}><TeachingPage /></MemoryRouter>);
+    const calls = vi.mocked(ws.setDoc).mock.calls.length;
+    fireEvent.change(screen.getByRole("spinbutton", { name: "胶宽上限" }), { target: { value: "16" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("胶宽上限要小于搜索宽度 16.0 mm");
+    expect(ws.setDoc).toHaveBeenCalledTimes(calls);
   });
 });
 

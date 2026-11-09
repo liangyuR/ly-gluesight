@@ -535,24 +535,18 @@ fn bead_leaving_through_a_corridor_end_is_out_of_corridor_but_breaks_and_centred
 }
 
 #[test]
-fn camera_override_of_a_judge_threshold_reaches_station_presence() {
-    // 防的回归（LF-5）：x.gluesight.judge 里的判定门限按相机覆盖后没进到判定（专家参数卡改了不生效）。
-    // 胶宽 20 px，第 20 站只有 9 px：有胶宽度比默认 0.5（10 px）判无胶，本相机改成 0.4（8 px）判有胶
-    let narrow: Vec<_> = (0..41)
-        .map(|i| Some((2.0, if i == 20 { 9.0 } else { 20.0 })))
+fn segment_width_range_override_reaches_measurement() {
+    // 防的回归：段上覆盖的胶宽范围没进测量（仍按配方默认），段视图改了检测参数不生效。
+    // 第 20 站胶宽 28 px（7 mm）：配方默认 2–6 mm 不当作胶；第 1 段覆盖为 2–8 mm 后当作胶
+    let wide: Vec<_> = (0..41)
+        .map(|i| Some((2.0, if i == 20 { 28.0 } else { 16.0 })))
         .collect();
     let mut doc = burst_doc();
-    let default = measure(
-        &corridor_of(doc.clone(), 0),
-        FRAME,
-        corridor_output(&narrow),
-    )
-    .unwrap()
-    .metrics;
-    doc.inspect[0].expert = [("presentRatio".to_string(), json!(0.4))]
-        .into_iter()
-        .collect();
-    let tuned = measure(&corridor_of(doc, 0), FRAME, corridor_output(&narrow))
+    let default = measure(&corridor_of(doc.clone(), 0), FRAME, corridor_output(&wide))
+        .unwrap()
+        .metrics;
+    doc.segments[0].width_range = Some([2.0, 8.0]);
+    let tuned = measure(&corridor_of(doc, 0), FRAME, corridor_output(&wide))
         .unwrap()
         .metrics;
     assert_eq!(

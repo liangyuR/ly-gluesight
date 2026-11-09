@@ -5,7 +5,7 @@
  * （serde camelCase，Option 一律序列化为 null）；后半部分是各 IPC 新增的 DTO（cycle.rs、store.rs、recipe_capture/burst.rs、
  * workspace/burst.rs、workspace/burst_history.rs），字段与 Rust serde 输出逐一对应。字段口径与命令清单见 docs/decisions/segment-burst.md。
  */
-import type { DetectParams, RecipeSummary, Verdict } from "../cycle/types";
+import type { RecipeSummary, Verdict } from "../cycle/types";
 import type { PartSummary } from "../history/types";
 import type { CaptureCamera, FrozenImage, StepStatus } from "../workspace/types";
 
@@ -89,7 +89,7 @@ export interface OffsetRef {
 /** 逐帧定向（D-SB-47）：toleranceDeg（0–45°）不参与计算，保留以免走廊身份变化。 */
 export interface HeadingSettings {
   toleranceDeg: number;
-  /** 本段的测量区间，本段各检测相机共用；null / 缺省 = 沿用旧配方的相机级区间（CameraInspect.window） */
+  /** 本段的测量区间覆盖，本段各检测相机共用；null / 缺省 = 用相机的测量区间（CameraInspect.window），相机也没设时用默认值 */
   window?: InspectWindow | null;
 }
 
@@ -127,6 +127,10 @@ export interface PathSegment {
   skipTail: number;
   /** 逐帧定向（D-SB-47）；null / 缺省 = 关闭，照旧用示教走廊 */
   heading?: HeadingSettings | null;
+  /** 本段的搜索半宽覆盖（mm），本段各检测相机共用；null / 缺省 = 配方默认（RecipeDoc.detect） */
+  searchMm?: number | null;
+  /** 本段的胶宽范围覆盖（mm），同 searchMm */
+  widthRange?: [number, number] | null;
   /** 不检测（D-SB-53）：照常计入帧数与分段，没有检测相机、不测不判；类型、检测相机与检测项保留，取消后恢复。缺省 = 检测 */
   skip?: boolean;
   /** 段 ID（RB-11）：只在候选里，由后端生成；前端新建段时不填 */
@@ -399,37 +403,16 @@ export interface BurstJudgement {
 
 // ───────────── 配方新增字段（C1，RecipeDoc schema 8）─────────────
 
-/** 一台相机的参数（D-SB-45）：像素当量、标定引用与检测参数；走廊只按“段 × 检测相机”示教，存在 segments。 */
+/** 一台相机的参数（D-SB-45）：像素当量、逐帧定向的测量区间与出胶点；走廊只按“段 × 检测相机”示教，存在 segments。标定一律用设备标定。 */
 export interface CameraInspect {
   camera: string;
   mmPerPx: number | null;
-  calib: string | null;
-  detect: DetectParams | null;
   /** 这台相机在它检测的各段的走廊（图像像素） */
   segments?: SegmentCorridor[];
-  /** 旧配方的相机级测量区间（D-SB-47）：段没设 heading.window 时沿用；界面不再编辑 */
+  /** 逐帧定向的测量区间（D-SB-47），这台相机各段的默认值，段可在 heading.window 覆盖；null / 缺省 = 默认值（跳过前 5 mm，测到 20 mm） */
   window?: InspectWindow | null;
   /** 标定的出胶点（图像像素，D-SB-47）；null / 缺省 = 由开启定向的各段走廊起点推出 */
   nozzle?: [number, number] | null;
-  /** 这台相机覆盖的专家参数（LF-5，测量图模板参数名 → 值），叠在配方默认之上 */
-  expert?: ExpertParams;
-}
-
-/** 专家参数：测量图模板参数名 → 值（LF-5）。 */
-export type ExpertParams = Record<string, number>;
-
-/** 专家参数规格，取自测量图模板的顶层图参数。 */
-export interface ExpertSpec {
-  type: "float";
-  label: string;
-  unit?: string;
-  min: number;
-  max: number;
-  step: number;
-  default: number;
-  group: string;
-  doc: string;
-  advanced: true;
 }
 
 /** 测量区间：沿胶路距出胶点 [startMm, startMm + lengthMm]（mm）。 */
@@ -466,8 +449,6 @@ export interface RecipeDocSegmentFields {
   /** 示教件各笔帧组数，随 N_exp 由示教件得出，只读：保存时后端不采用传入值；缺省 = 不按笔分段 */
   passFrames?: number[];
   partCalib: PartCalib | null;
-  /** 专家参数的配方默认（LF-5）；没写的用模板默认值 */
-  expert?: ExpertParams;
 }
 
 // ───────────── IPC DTO ─────────────
@@ -718,13 +699,11 @@ export interface CalibrationRound {
   xMeans: (number | null)[];
 }
 
-/** 走廊示教页里一条段走廊的草稿：走廊（图像像素）按段，像素当量与检测参数随相机（只读，用于校验与换算）。 */
+/** 走廊示教页里一条段走廊的草稿：走廊（图像像素）按段，像素当量与测量区间随相机（只读，用于校验与换算）。 */
 export interface CameraTeachDraft {
   corridor: [number, number][];
   mmPerPx: number | null;
-  /** null = 用配方的检测参数 */
-  detect: DetectParams | null;
-  /** 这台相机的检测窗口 */
+  /** 这台相机的测量区间 */
   window: InspectWindow | null;
 }
 
