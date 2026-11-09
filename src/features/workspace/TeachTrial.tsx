@@ -29,6 +29,7 @@ function trialState(m: FrameMetrics): TrialState {
 }
 const mm = (value: number | null | undefined, digits = 2) => value == null ? "—" : `${value.toFixed(digits)} mm`;
 const skipColor = "var(--outline-variant)";
+const cellStep = 32;
 
 /**
  * 示教页同段试测（只读）：用候选已保存的走廊与定向参数，测示教轮次里本段的帧。“全段试测”给出逐帧状态条；
@@ -95,7 +96,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
       return { seq: span.start + i, skipReason: skipReasons.get(span.start + i), state: frame ? trialState(frame) : null, note: frame?.error ?? frame?.fallbackReason ?? null };
     }) : [];
   }, [batch.result, span?.start, span?.end, skipReasons]);
-  const window = useHorizontalWindow<HTMLDivElement>(cells.length, 10, seq != null && span ? seq - span.start : null);
+  const window = useHorizontalWindow<HTMLDivElement>(cells.length, cellStep, seq != null && span ? seq - span.start : null);
   const restoreFocus = useRef(false);
   useEffect(() => {
     const cell = window.ref.current?.querySelector<HTMLElement>('[aria-pressed="true"]');
@@ -149,7 +150,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
         <Button size="sm" variant="tonal" disabled={!!locked || seq === teachSeq} title={locked || "只测示教帧"} onClick={() => onSeq(teachSeq)}>试测当前帧</Button>
         {span
           ? <div ref={window.ref} onScroll={window.onScroll} className={"wp-trial-strip" + (stale ? " stale" : "")} role="group" aria-label="逐帧试测状态" title={batch.result ? undefined : "点格子试测那一帧；“全段试测”给每一格标上状态"}>
-            {window.start > 0 && <span aria-hidden="true" style={{ flex: `0 0 ${window.start * 10 - 2}px` }} />}
+            {window.start > 0 && <span aria-hidden="true" style={{ flex: `0 0 ${window.start * cellStep - 2}px` }} />}
             {cells.slice(window.start, window.end).map(cell => {
               const text = `帧组 ${cell.seq}：${cell.skipReason ? "生产跳过" : cell.state ? trialText[cell.state] : "未试测"}${cell.seq === teachSeq ? "（示教帧）" : ""}`;
               const hint = [text, cell.skipReason, cell.skipReason && cell.state ? `仅供诊断：${trialText[cell.state]}` : null, cell.note].filter(Boolean).join("；");
@@ -157,7 +158,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
                 className={"wp-trial-cell" + (cell.seq === seq ? " selected" : "") + (cell.seq === teachSeq ? " teach" : "")}
                 style={{ background: cell.skipReason ? skipColor : cell.state ? trialColor[cell.state] : "var(--surface-high)" }} onClick={() => onSeq(cell.seq)} />;
             })}
-            {window.end < cells.length && <span aria-hidden="true" style={{ flex: `0 0 ${(cells.length - window.end) * 10 - 2}px` }} />}
+            {window.end < cells.length && <span aria-hidden="true" style={{ flex: `0 0 ${(cells.length - window.end) * cellStep - 2}px` }} />}
           </div>
           : <span className="muted wp-trial-fill" title="“试测当前帧”只测示教帧；“全段试测”测本段全部帧，得到逐帧状态条，之后可点任一帧看原图与测量叠加。">{batch.running ? "正在逐帧试测本段…" : "全段试测后显示逐帧状态"}</span>}
         {span && <span className="muted wp-trial-span" title="示教件里本段的帧组范围">帧组 {span.start}–{span.end}</span>}
