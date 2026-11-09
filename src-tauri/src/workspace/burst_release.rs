@@ -321,7 +321,10 @@ pub(super) fn sample_result(
 ) -> SampleResult {
     let mut result = SampleResult::judged(sample, name, sn, burst_history::summary(judgement));
     if judgement.flags.incomplete {
-        result.reason = format!("{}；检测不完整：有帧组缺帧或有帧没测成（只告警，不影响结论）", result.reason);
+        result.reason = format!(
+            "{}；检测不完整：有帧组缺帧或有帧没测成（只告警，不影响结论）",
+            result.reason
+        );
     }
     result
 }

@@ -540,7 +540,9 @@ fn validate_burst(r: &PartRecord, recipe: &Recipe, burst: &BurstRecord) -> Resul
     if (r.judgement.verdict, r.judgement.plc_code, r.judgement.fault_code, r.judgement.reason.as_str()) != (j.verdict, j.plc_code, j.fault_code, j.reason.as_str()) {
         return Err("段配方记录的结论摘要与区域判定不一致".into());
     }
-    if burst.expected_total != recipe.expected_total() || r.frames_expected != burst.expected_total.unwrap_or(0) as usize {
+    if burst.expected_total != recipe.expected_total()
+        || r.frames_expected != burst.expected_total.unwrap_or(0) as usize
+    {
         return Err("段配方记录的预期帧组数与原配方不一致".into());
     }
     let cameras = recipe.plan_cameras().len();
@@ -586,10 +588,18 @@ fn same_burst(actual: Option<&PartDetailBurst>, expected: Option<&BurstRecord>) 
         frames.sort_by_key(|frame| (frame.camera, frame.seq));
         serde_json::to_value(frames).map_err(|error| error.to_string())
     };
-    let judgement = |judgement: &BurstJudgement| serde_json::to_value(judgement).map_err(|error| error.to_string());
-    Ok((actual.expected_total, actual.device_triggers, &actual.camera_frames)
-        == (expected.expected_total, expected.device_triggers, &expected.camera_frames)
-        && judgement(&actual.judgement)? == judgement(&expected.judgement)?
+    let judgement = |judgement: &BurstJudgement| {
+        serde_json::to_value(judgement).map_err(|error| error.to_string())
+    };
+    Ok((
+        actual.expected_total,
+        actual.device_triggers,
+        &actual.camera_frames,
+    ) == (
+        expected.expected_total,
+        expected.device_triggers,
+        &expected.camera_frames,
+    ) && judgement(&actual.judgement)? == judgement(&expected.judgement)?
         && content(&actual.frames)? == content(&expected.frames)?)
 }
 

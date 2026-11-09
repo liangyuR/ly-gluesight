@@ -414,7 +414,11 @@ fn validate_checks(checks: &SegmentChecks, what: &str) -> Result<(), String> {
 }
 
 /// 一段或一种段类型默认参数共用的约束：Corner 不得带 offset 检测；启用的检测项限值合法。
-fn validate_kind_settings(kind: SegmentKind, checks: &SegmentChecks, what: &str) -> Result<(), String> {
+fn validate_kind_settings(
+    kind: SegmentKind,
+    checks: &SegmentChecks,
+    what: &str,
+) -> Result<(), String> {
     if kind == SegmentKind::Corner && checks.offset.is_some() {
         return Err(format!("{what}：弯道段不判胶偏，不能配置胶偏检测"));
     }
@@ -423,8 +427,16 @@ fn validate_kind_settings(kind: SegmentKind, checks: &SegmentChecks, what: &str)
 
 /// 配方的直线 / 弯道默认参数：`new_segment` 从这里取值，默认非法就会生成非法段，按段的同一套约束校验。
 pub fn validate_defaults(defaults: &KindDefaults) -> Result<(), String> {
-    validate_kind_settings(SegmentKind::Straight, &defaults.straight.checks, "直线段默认参数")?;
-    validate_kind_settings(SegmentKind::Corner, &defaults.corner.checks, "弯道段默认参数")
+    validate_kind_settings(
+        SegmentKind::Straight,
+        &defaults.straight.checks,
+        "直线段默认参数",
+    )?;
+    validate_kind_settings(
+        SegmentKind::Corner,
+        &defaults.corner.checks,
+        "弯道段默认参数",
+    )
 }
 
 /// 段列表的模型约束（规格 §1/§5）：至少一段（空段列表是旧拍照点配方，不经过本函数）；index 从 1 连续；cameras 恰好 3 个且不重复；Corner 段不得带 offset / offset_ref；

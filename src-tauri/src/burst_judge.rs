@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::frame_group::{FrameGroup, LossAlarm};
 use crate::judge::{fault, Verdict};
 use crate::passes::PassRules;
-use crate::plan::{wider_checks, OffsetCheck, OffsetMeasure, PathSegment, SegmentChecks, SegmentKind};
+use crate::plan::{
+    wider_checks, OffsetCheck, OffsetMeasure, PathSegment, SegmentChecks, SegmentKind,
+};
 use crate::segmentation::{Region, RegionKind, UnsegReason};
 
 /// 一帧的测量状态。除 Measured 外都只记“检测不完整”，不影响 OK/NG。
@@ -413,7 +415,10 @@ fn judge_regions(
         let reason = if frames.values().all(|m| m.state == FrameState::Missing) { "三台相机整件没有收到帧" } else { "三台相机整件没有一帧测成" };
         return BurstJudgement {
             group_count,
-            flags: Flags { incomplete: true, ..Flags::default() },
+            flags: Flags {
+                incomplete: true,
+                ..Flags::default()
+            },
             alarms: loss.to_vec(),
             ..BurstJudgement::error(fault::MISSING_FRAME, reason)
         };
@@ -1628,6 +1633,9 @@ mod tests {
         old["flags"]["shortPart"] = true.into();
         old["regions"][0]["tolerance"] = 2.into();
         old["regions"][0]["countStatus"] = serde_json::Value::Null;
-        assert_eq!(serde_json::from_value::<BurstJudgement>(old).unwrap(), judgement);
+        assert_eq!(
+            serde_json::from_value::<BurstJudgement>(old).unwrap(),
+            judgement
+        );
     }
 }

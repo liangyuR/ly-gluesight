@@ -131,8 +131,16 @@ impl BurstPart {
         trusted: Vec<CounterSource>,
         starts: &[ClockStart],
     ) -> Self {
-        let limit = recipe.expected_total().map_or(MAX_SEQ, |n| u64::from(n) + SEQ_MARGIN);
-        let checks = wider_checks(&recipe.path_segments.iter().map(|s| &s.checks).collect::<Vec<_>>());
+        let limit = recipe
+            .expected_total()
+            .map_or(MAX_SEQ, |n| u64::from(n) + SEQ_MARGIN);
+        let checks = wider_checks(
+            &recipe
+                .path_segments
+                .iter()
+                .map(|s| &s.checks)
+                .collect::<Vec<_>>(),
+        );
         let sectors = recipe
             .inspect
             .iter()
