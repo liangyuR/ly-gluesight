@@ -342,6 +342,40 @@ fn interrupted_recording_install_is_removed_before_commit_and_preserved_after_pr
     assert!(!committed.join(PENDING_RECORDINGS).exists());
 }
 
+/// 防的回归：示教件选的是别的项目的历史件（复制出的项目最常见），导出“含检测记录”时那件记录与录制不随包走，导入方示教件读不到原图。
+#[test]
+fn exported_records_carry_teaching_pieces_from_other_projects_with_their_recordings() {
+    let (from, to) = (TempDir::new("linked-from"), TempDir::new("linked-to"));
+    let (source, recipe, store) = source_project(&from.0);
+    let other = local_store(&from.0, "line-x");
+    let recording = from.0.join("x-records").join("20261107").join("20261107_cycle_x1");
+    std::fs::create_dir_all(&recording).unwrap();
+    std::fs::write(recording.join("cam1_s000001.pgm"), b"P5 x1").unwrap();
+    record(&other, &recipe, "x1", &recording);
+    let round = source.join("recipe-capture").join("capture-2");
+    std::fs::create_dir_all(&round).unwrap();
+    std::fs::write(
+        round.join("round.json"),
+        serde_json::json!({"origin": {"kind": "history", "cycleId": "x1", "recordId": 9}}).to_string(),
+    )
+    .unwrap();
+    let package = export(&from.0, &source, &store);
+    assert!(open_archive(&package)
+        .unwrap()
+        .by_name("project/records/linked/20261107_cycle_x1/cam1_s000001.pgm")
+        .is_ok());
+
+    let local = local_store(&to.0, "default");
+    import_from(&to.0, &package, "line-b", "B 线", &to.0.join("cache"), &local).unwrap();
+    let directory = local
+        .recording_directory("x1")
+        .unwrap()
+        .expect("示教件那一件的记录随包导入");
+    assert!(directory.starts_with(super::super::dir(&to.0, "line-b")), "{}", directory.display());
+    assert!(directory.join("cam1_s000001.pgm").is_file());
+    assert_eq!(local.project_records().unwrap().get("line-b").map(|r| r.0), Some(2));
+}
+
 /// 防的回归：导出“含检测记录”把本机别的项目的记录也带走；导入时记录编号与本机已有的冲突却不重新编号、采集轮次里的来源
 /// 记录编号没跟着改，或本机已有的同一工件（同一 cycleId）被再存一份。
 #[test]

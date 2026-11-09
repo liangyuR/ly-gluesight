@@ -207,7 +207,15 @@ impl Store {
     }
 
     /// 把项目 `project` 的记录、配方快照与候选实例写成独立的记录库 `target`（10 版，导出项目用）。
-    pub fn export_project(&self, project: &str, target: &Path) -> Result<usize, String> {
+    /// 把项目 `project` 的记录导出成记录库子集 `target`；`linked` 里别的项目的真机记录（本项目示教件引用的历史件，按 cycleId）
+    /// 一并导出、改归本项目，配方快照随之带上（与本项目同修订号内容不同则拒绝）。返回件数与这些外来记录（编号, 录制目录）。
+    pub fn export_project(
+        &self,
+        project: &str,
+        target: &Path,
+        linked: &std::collections::BTreeSet<String>,
+    ) -> Result<(usize, Vec<(i64, Option<String>)>), String> {
+        let linked = serde_json::to_string(linked).map_err(|e| e.to_string())?;
         if target.exists() {
             return Err(format!("导出记录库 {} 已存在", target.display()));
         }
@@ -219,23 +227,59 @@ impl Store {
             conn.execute_batch("BEGIN;").map_err(db_err)?;
             let count = conn
                 .execute(
-                    "INSERT INTO dst.parts SELECT * FROM main.parts WHERE project_id = ?1",
-                    [project],
+                    "INSERT INTO dst.parts SELECT * FROM main.parts WHERE project_id = ?1 \
+                     OR (source = 'real' AND cycle_id IN (SELECT value FROM json_each(?2)))",
+                    params![project, linked],
                 )
                 .map_err(db_err)?;
             for sql in [
-                "INSERT INTO dst.part_frames SELECT f.* FROM main.part_frames f JOIN main.parts p ON p.id = f.part_id WHERE p.project_id = ?1",
-                "INSERT INTO dst.part_points SELECT f.* FROM main.part_points f JOIN main.parts p ON p.id = f.part_id WHERE p.project_id = ?1",
-                "INSERT INTO dst.part_shots SELECT f.* FROM main.part_shots f JOIN main.parts p ON p.id = f.part_id WHERE p.project_id = ?1",
+                "INSERT INTO dst.part_frames SELECT f.* FROM main.part_frames f WHERE f.part_id IN (SELECT id FROM dst.parts)",
+                "INSERT INTO dst.part_points SELECT f.* FROM main.part_points f WHERE f.part_id IN (SELECT id FROM dst.parts)",
+                "INSERT INTO dst.part_shots SELECT f.* FROM main.part_shots f WHERE f.part_id IN (SELECT id FROM dst.parts)",
+            ] {
+                conn.execute(sql, []).map_err(db_err)?;
+            }
+            for sql in [
                 "INSERT INTO dst.recipe_snapshots SELECT * FROM main.recipe_snapshots WHERE project_id = ?1",
                 "INSERT INTO dst.workspace_instances SELECT * FROM main.workspace_instances WHERE project_id = ?1",
             ] {
                 conn.execute(sql, [project]).map_err(db_err)?;
             }
+            let foreign_snapshots = "FROM main.recipe_snapshots s JOIN dst.parts p ON p.project_id = s.project_id AND p.recipe_revision = s.revision_id WHERE p.project_id != ?1";
+            conn.execute(
+                &format!("INSERT INTO dst.recipe_snapshots (project_id, revision_id, recipe_id, version, json) SELECT DISTINCT ?1, s.revision_id, s.recipe_id, s.version, s.json {foreign_snapshots} ON CONFLICT (project_id, revision_id) DO NOTHING"),
+                [project],
+            )
+            .map_err(db_err)?;
+            let conflict: Option<String> = conn
+                .query_row(
+                    &format!("SELECT s.revision_id {foreign_snapshots} AND EXISTS (SELECT 1 FROM dst.recipe_snapshots d WHERE d.project_id = ?1 AND d.revision_id = s.revision_id AND (d.json != s.json OR d.recipe_id != s.recipe_id OR d.version != s.version)) LIMIT 1"),
+                    [project],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db_err)?;
+            if let Some(revision) = conflict {
+                return Err(format!(
+                    "示教件引用的别的项目的历史件，其配方快照 {revision} 与本项目同修订号的快照不同，不能随本项目导出"
+                ));
+            }
+            let foreign = {
+                let mut stmt = conn
+                    .prepare("SELECT id, recording_directory FROM dst.parts WHERE project_id != ?1 ORDER BY id")
+                    .map_err(db_err)?;
+                let rows = stmt
+                    .query_map([project], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(db_err)?;
+                rows.collect::<Result<Vec<(i64, Option<String>)>, _>>()
+                    .map_err(db_err)?
+            };
+            conn.execute("UPDATE dst.parts SET project_id = ?1 WHERE project_id != ?1", [project])
+                .map_err(db_err)?;
             // 导出子集里的跨项目复测引用没有目标，置空
             conn.execute("UPDATE dst.parts SET retest_of = NULL WHERE retest_of NOT IN (SELECT id FROM dst.parts)", []).map_err(db_err)?;
             conn.execute_batch("COMMIT;").map_err(db_err)?;
-            Ok::<usize, String>(count)
+            Ok::<_, String>((count, foreign))
         })();
         if result.is_err() {
             let _ = conn.execute_batch("ROLLBACK;");

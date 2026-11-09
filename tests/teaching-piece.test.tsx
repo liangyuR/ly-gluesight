@@ -88,3 +88,13 @@ it("默认不限项目与配方；按配方、SN、判定筛选的条件传给�
     sn: "X1", offset: 0, verdicts: ["NG_POSITION", "NG_WIDTH", "NG_ABSOLUTE", "NG_GAP"],
   }));
 });
+
+// 防的回归：勾选一件后换筛选或翻页，那件已不在列表里，“设为示教件”仍提交它
+it("勾选后换筛选，选择清空，不能提交已不在列表里的件", async () => {
+  show();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("checkbox", { name: "选用 SN SN-7" }));
+  expect(screen.getByRole("button", { name: "设为示教件" })).toBeEnabled();
+  await user.type(screen.getByRole("textbox", { name: "历史件 SN" }), "Z");
+  expect(screen.getByRole("button", { name: "设为示教件" })).toBeDisabled();
+});

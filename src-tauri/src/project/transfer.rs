@@ -37,6 +37,8 @@ const CONTENT: [&str; 8] = [
 ];
 const RECORDS: [&str; 2] = ["inspection.db", "records"];
 const PENDING_RECORDINGS: &str = ".project-install-pending.json";
+/// 包里放别的项目被示教件引用的录制的子目录（录制根 `records/` 下，滚动清理不扫）。
+const LINKED: &str = "linked";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -221,15 +223,73 @@ fn collect(
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
         let snapshot = scratch.join("inspection.db");
         let project = super::read_meta(root)?.id;
-        store
-            .export_project(&project, &snapshot)
+        let linked = crate::recipe_capture::history_cycles(&root.join("recipe-capture"))?;
+        let (_, foreign) = store
+            .export_project(&project, &snapshot, &linked)
             .map_err(|e| format!("导出检测记录失败：{e}"))?;
+        out.extend(link_recordings(&snapshot, &recording_root, &foreign, notes)?);
         if recording_root != root {
             crate::storage::relocate::database(&snapshot, &recording_root, root)?;
         }
         out.push((format!("{PREFIX}inspection.db"), snapshot));
     }
     Ok(out)
+}
+
+/// 本项目示教件引用的别的项目的历史件：录制原图放进包里的 `records/linked/<录制目录名>/`，导出记录库子集里这些记录的
+/// 录制目录与帧原图引用改到那里（之后随本项目录制根一起改写）。录制已不在的只改记录、不带原图，并记一条说明。
+fn link_recordings(
+    snapshot: &Path,
+    recording_root: &Path,
+    foreign: &[(i64, Option<String>)],
+    notes: &mut Vec<String>,
+) -> Result<Vec<(String, PathBuf)>, String> {
+    if foreign.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut conn = rusqlite::Connection::open(snapshot).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for (id, directory) in foreign {
+        let Some(directory) = directory else { continue };
+        let source = Path::new(directory);
+        let name = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty() && *n != ".." && !n.contains(['/', '\\', ':']))
+            .ok_or_else(|| format!("示教件引用的录制目录无效：{directory}"))?;
+        let linked = recording_root.join("records").join(LINKED).join(name);
+        tx.execute(
+            "UPDATE parts SET recording_directory = ?1 WHERE id = ?2",
+            rusqlite::params![linked.to_string_lossy(), id],
+        )
+        .map_err(|e| e.to_string())?;
+        let frames: Vec<(i64, i64, String)> = {
+            let mut stmt = tx
+                .prepare("SELECT camera, seq, raw_file FROM part_frames WHERE part_id = ?1 AND raw_file IS NOT NULL")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+        };
+        for (camera, seq, raw) in frames {
+            let file = raw.rsplit(['/', '\\']).next().unwrap_or(&raw);
+            tx.execute(
+                "UPDATE part_frames SET raw_file = ?1 WHERE part_id = ?2 AND camera = ?3 AND seq = ?4",
+                rusqlite::params![format!("{LINKED}/{name}/{file}"), id, camera, seq],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !source.is_dir() {
+            notes.push(format!("示教件引用的历史件录制 {directory} 已不在，只导出了记录"));
+            continue;
+        }
+        crate::image_file::checked_source_path(source)?;
+        walk(source, &format!("{PREFIX}records/{LINKED}/{name}"), &mut entries, notes)?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(entries)
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

@@ -75,15 +75,16 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
   const [groups, setGroups] = useState<string[]>([]);
   const [offset, setOffset] = useState(0);
   const currentId = projects.current?.id ?? null;
+  const projectFilter = project === CURRENT_PROJECT ? currentId : project || null;
   const query = useMemo<HistoryCandidateQuery>(() => ({
-    project: project === CURRENT_PROJECT ? currentId : project || null,
+    project: projectFilter,
     recipeId: recipe || null,
     sn,
     from: rangeStart(ranges.find(r => r.value === range)!.days),
     verdicts: verdictGroups.filter(g => groups.includes(g.key)).flatMap(g => g.verdicts),
     offset,
     limit: PAGE,
-  }), [project, currentId, recipe, sn, range, groups, offset]);
+  }), [projectFilter, recipe, sn, range, groups, offset]);
   // 选“当前项目”但当前项目还没读到时不查，免得把全部项目的记录当成当前项目的
   const blocked = project === CURRENT_PROJECT && !currentId;
   useEffect(() => {
@@ -98,6 +99,8 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
     return () => { alive = false; };
   }, [recipeId, query, blocked, reload]);
   useEffect(() => { setPicked(null); setPreviewId(null); }, [recipeId]);
+  // 换筛选或翻页后所选的件可能不在列表里：清掉选择，确认只能提交看得见的件
+  useEffect(() => { setPicked(null); }, [query]);
   const rows = page?.items ?? null;
   const filter = (apply: () => void) => { apply(); setOffset(0); };
   const hasFilters = range !== "all" || !!project || !!recipe || !!sn || groups.length > 0;
