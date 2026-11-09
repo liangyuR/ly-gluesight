@@ -8,8 +8,8 @@ import { windowError } from "./teach";
 /** 段首尾跳过帧组数的上限，与后端 plan::MAX_SKIP_FRAMES 一致。 */
 export const MAX_SKIP_FRAMES = 1000;
 
-/** 新开启逐帧定向的段：方向容差 5°，测量区间跳过前 5 mm、测到 20 mm（与后端 HeadingSettings::default 一致）。 */
-export const DEFAULT_HEADING: HeadingSettings = { toleranceDeg: 5, window: { startMm: 5, lengthMm: 15 } };
+/** 新开启逐帧定向的段：方向容差 5°，不设测量区间覆盖（用相机的，与后端 HeadingSettings::default 一致）。 */
+export const DEFAULT_HEADING: HeadingSettings = { toleranceDeg: 5 };
 /** 胶偏改为 toEdge 时的默认找边参数（D-SB-48）。 */
 export const DEFAULT_EDGE: EdgeParams = { polarity: "brightToDark", searchMm: 20, contrastMin: 40, nominalMm: null };
 
@@ -54,6 +54,8 @@ export function segmentIssues(segments: PathSegment[]): string[] {
       if (!Number.isInteger(value) || value < 0 || value > MAX_SKIP_FRAMES) issues.push(`${name} ${label}帧数需为 0–${MAX_SKIP_FRAMES} 的整数`);
     if (containsNaN(segment.checks)) issues.push(`${name} 检测项有未填写的数值`);
     if (segment.heading && !(segment.heading.toleranceDeg > 0 && segment.heading.toleranceDeg <= 45)) issues.push(`${name} 方向容差需在 0–45° 之间`);
+    if (segment.searchMm != null && !(Number.isFinite(segment.searchMm) && segment.searchMm > 0)) issues.push(`${name} 搜索半宽需为正`);
+    if (segment.widthRange && !segment.widthRange.every(Number.isFinite)) issues.push(`${name} 胶宽范围有未填写的数值`);
     const windowIssue = segment.heading?.window ? windowError(segment.heading.window) : "";
     if (windowIssue) issues.push(`${name} ${windowIssue}`);
     const edge = segment.offsetRef?.measure === "toEdge" ? segment.offsetRef.edge : null;

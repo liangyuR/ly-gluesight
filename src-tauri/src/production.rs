@@ -90,7 +90,6 @@ impl Prepared {
             || recipe.path_segments != expected.path_segments
             || recipe.inspect != expected.inspect
             || recipe.part_calib != expected.part_calib
-            || recipe.expert != expected.expert
         {
             return Err("发布包配方与所选生产版本不一致，请重新发布".into());
         }

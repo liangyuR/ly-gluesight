@@ -31,7 +31,7 @@
 - 可选项：A 把颜色压成一个通道（如 Lab a*）再喂灰度测量图；B 按示教取得的颜色模型算“像胶的概率”，在得分图上测（lyFlow 1.3 彩色算子）；C 每个配方固定胶色阈值。
 - 采用：B。
   - 示教取色：走廊示教页“测量方式”卡片选“按胶色”后（CL-3），点“取色”（`workspace_fit_color_model`）在这一段冻结的彩色示教帧上，沿已保存的走廊取胶色、两侧取背景色，拟合颜色模型（`glue.color_model`），原文存进 `inspect[].segments[].colorModel`。示教帧须是彩色；改走廊点后颜色模型作废、要重新取色，只改扇区、出胶点时保留。
-  - 按胶色测量的（相机, 段）用颜色模型测：示教走廊用 `corridor_color`（`glue.color_map` → `glue.color_runs`，找边仍是 `glue.part_edges` 量亮度），逐帧定向用 `heading_color`（`glue.color_fan` → `glue.color_track` → `glue.color_runs`）；按灰度测量的段照旧用灰度测量图。发布包 graph.json 的胶色图记模板 id，模板原文一并冻结。胶色图的专家参数单独命名（`colorSegmentMin`、`colorPeakMin`、`colorMergeGap`、`colorMergeUnknownGap`、`colorPathSegmentMin`、`colorPathPeakMin`、`colorPathMaxGap`、`colorInfoMin`），单位是得分（0–1），不与灰度图的同名参数混用。
+  - 按胶色测量的（相机, 段）用颜色模型测：示教走廊用 `corridor_color`（`glue.color_map` → `glue.color_runs`，找边仍是 `glue.part_edges` 量亮度），逐帧定向用 `heading_color`（`glue.color_fan` → `glue.color_track` → `glue.color_runs`）；按灰度测量的段照旧用灰度测量图。发布包 graph.json 的胶色图记模板 id，模板原文一并冻结。胶色图的模板门限单独命名（`colorSegmentMin`、`colorPeakMin`、`colorMergeGap`、`colorMergeUnknownGap`、`colorPathSegmentMin`、`colorPathPeakMin`、`colorPathMaxGap`、`colorInfoMin`），单位是得分（0–1），不与灰度图的同名参数混用。
   - 判定（LF-3 仍在 GlueSight）：新彩色图采用 `widthPolicy=extent`，完整宽胶不因超过预期胶宽上限被删除；搜索受 `searchMm` 限定，真实背景阻断反光合并。固定走廊和逐帧定向共享 `exact/clipped/absent/unknown` 证据：精确值只来自完整边，观察边界截断可报告可靠宽度下界，遮挡/歧义记未知。未知不计在位率分母、不连接断口；全未知为检测错误，部分未知或截断明确标不完整。产品公差、允许超差长度和偏宽只预警仍由 GlueSight 决定。字段、发布版本与回退契约见[宽胶测量](../architecture/wide-bead-measurement-plan.md)。
   - 量胶帧须是彩色；胶色段遇到灰度帧报错，要求把相机图像模式改回彩色。
 - 理由：现场件 f2d30b6d 上，以颜色掩膜参考（人工复核过 151 帧）为准，胶色测量的结果为：
@@ -72,10 +72,10 @@
   - 灰度示教帧只能按灰度测：换成灰度示教帧时这一段的测量方式与颜色模型一并去掉，回到按灰度。彩色示教帧两种都能选：还没画走廊的段默认按胶色；改按灰度时去掉颜色模型，刷选按两侧胶边提取（亮度），测量用灰度测量图；改回按胶色要重新取色。
   - 按胶色测量却没有颜色模型时为“待取色”：建测量图报错（试测、历史复测这一段列为不能测并写明原因），发布就绪检查（D-SB-45）列出“还没取色”。保存候选时，彩色示教帧上新画的走廊、原来按胶色测量的段改了走廊点（旧模型作废）都补记为按胶色，不悄悄回到灰度；旧配方里没选也没取色的走廊保持按灰度。
   - 测量方式随 `inspect` 进入测量布局，改了以后已存指标不能按规则重判，要用原图复测；不进 PLC 计划身份。
-  - 按灰度测量的段明暗极性用这台相机的检测参数（暗胶 / 亮胶），不按段设置。
+  - 按灰度测量的段明暗极性用配方的检测极性（暗胶 / 亮胶），不按相机或段设置。
   - 示教 MCP 遵守已选的方式：选了按灰度的段，`teach_corridor` 的 `auto` 按两侧胶边提取、不取色，`color` 报错；`teach_fit_color` 拒绝。
 - 理由：现场相机都用彩色（CL-1），按灰度测只是换测量图，不用改相机图像模式和录制；与颜色模型、示教帧、扇区方向同一粒度，存放在同一走廊项上，灰度相机与彩色相机可以同段并存。
 - 边界：
   - 彩色相机即使所有段都按灰度测，图像模式也要保持彩色：示教帧与生产帧通道数不一致时测量报错（CL-1）。
-  - 同一台相机不同段底材不同、胶在一段偏暗在另一段偏亮时，按灰度测会受相机级极性限制，这类段宜按胶色测。
+  - 同一台相机不同段底材不同、胶在一段偏暗在另一段偏亮时，按灰度测会受配方级极性限制，这类段宜按胶色测。
 - 回退：把段改回“按胶色”并重新取色；完全撤回时回滚该提交，没有 `measure` 的配方与之前完全相同。

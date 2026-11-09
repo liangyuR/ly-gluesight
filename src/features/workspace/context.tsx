@@ -100,10 +100,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const cameraKey=JSON.stringify([next.workspace.doc.id,inspect.map(item=>item.camera)]);
     const camerasChanged=cameraKey!==cameraList.current;cameraList.current=cameraKey;
     const previousCameraSources=cameraSources.current;
-    // 某段走廊换了示教帧或相机换了标定：旧草稿是在旧帧上画的，丢弃
+    // 某段走廊换了示教帧：旧草稿是在旧帧上画的，丢弃
     const cameraSourceKeys=Object.fromEntries(inspect.flatMap(item=>{
       const teaching=next.plan.cameraTeaching.find(t=>t.camera===item.camera);
-      return (teaching?.segments??[]).map(s=>[draftKey(item.camera,s.segment),JSON.stringify([item.calib,s.frame.id])]);
+      return (teaching?.segments??[]).map(s=>[draftKey(item.camera,s.segment),s.frame.id]);
     }));
     cameraSources.current=cameraSourceKeys;
     setData(next);
@@ -118,8 +118,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       for (const [key, draft] of Object.entries(previous)) {
         if(previousCameraSources[key]!==cameraSourceKeys[key])continue;
         const saved = savedDraft(next.workspace.doc, key);
-        // 像素当量、检测参数与检测窗口跟着相机（含选帧后后端补上的设备标定当量）
-        const merged = { ...draft, mmPerPx: saved.mmPerPx, detect: saved.detect, window: saved.window };
+        // 像素当量与测量区间跟着相机（含选帧后后端补上的设备标定当量）
+        const merged = { ...draft, mmPerPx: saved.mmPerPx, window: saved.window };
         if (!sameCorridor(merged, saved)) kept[key] = merged;
       }
       return kept;

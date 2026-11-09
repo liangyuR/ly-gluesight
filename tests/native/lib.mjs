@@ -170,8 +170,6 @@ function strokeRoi(points, [width, height], margin = 40) {
 //   独立样本验证（另一件历史件）→ 发布 → 投产。
 // 运行时整条胶路按“未分段”处理（分段算法未做）：只跑每帧独立检测，只记录整件帧组数与 ΣN_exp，不核对。
 
-const FRAME_NARROW = { searchMm: 3, polarity: "dark", widthRange: [1, 5] };
-
 /** 合成图缺省胶条：三台相机从不同方位看胶嘴，胶条在画面里上下错开（与 src-tauri/src/simimage.rs 的 burst_default_path 同口径），按相机下标给刷选笔划。 */
 function syntheticBead(index) {
   const dy = 80 * (Math.min(index, 2) - 1);
@@ -200,7 +198,7 @@ export const CAMERA_FIXTURES = {
       return {
         cam1: { seq: 3, guide: [[40, 472], [65, 470], [90, 467], [115, 458], [140, 450], [165, 442], [190, 429], [215, 420], [240, 401], [265, 397], [290, 383], [315, 370], [340, 349], [365, 336], [390, 329], [415, 316], [440, 303], [465, 284], [490, 278], [515, 265], [540, 258]] },
         cam2: { seq: 1, guide: [[745, 60], [740, 85], [735, 110], [734, 135], [740, 160], [746, 185], [743, 210], [736, 235], [735, 260], [734, 285], [740, 310], [739, 335], [738, 360], [731, 385], [724, 410], [723, 435]] },
-        cam3: { seq: 4, guide: [[715, 380], [722, 405], [723, 430], [732, 455], [738, 480], [749, 505], [746, 530], [743, 555], [739, 580], [739, 605], [738, 630], [735, 655], [733, 680]], detect: FRAME_NARROW },
+        cam3: { seq: 4, guide: [[715, 380], [722, 405], [723, 430], [732, 455], [738, 480], [749, 505], [746, 530], [743, 555], [739, 580], [739, 605], [738, 630], [735, 655], [733, 680]] },
       }[camera];
     },
   },
@@ -252,7 +250,6 @@ export async function teachCorridors(ws, teaching, fixture) {
       const inspect = doc.inspect.map(item => item.camera !== camera ? item : {
         ...item,
         ...(fixture.mmPerPx != null ? { mmPerPx: fixture.mmPerPx } : {}),
-        ...(choice.detect ? { detect: choice.detect } : {}),
         segments: [...(item.segments ?? []).filter(s => s.segment !== segment), { segment, corridor: extracted.path }].sort((a, b) => a.segment - b.segment),
       });
       const saved = planOf(await ws.edit("workspace_save_doc", { doc: { ...doc, inspect } })).cameraTeaching.find(t => t.camera === camera);

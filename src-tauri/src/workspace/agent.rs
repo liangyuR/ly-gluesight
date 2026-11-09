@@ -116,7 +116,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "teach_segment",
-            "description": "改一段的检测项（checks）、零件边参考（offsetRef）与逐帧定向的测量区间（headingWindow），按补丁深合并：只给要改的字段。offsetRef 给 null 即关掉胶偏参考。headingWindow 只用于开启逐帧定向的段，本段各检测相机共用，给 null 即沿用相机级旧区间。检测项开关、公差、测量区间与图纸标称值（offsetRef.edge.nominalMm）须用人给的值。",
+            "description": "改一段的检测项（checks）、零件边参考（offsetRef）、搜索半宽与胶宽范围覆盖（searchMm、widthRange）与逐帧定向的测量区间覆盖（headingWindow），按补丁深合并：只给要改的字段。offsetRef 给 null 即关掉胶偏参考。searchMm、widthRange 本段各检测相机共用，给 null 即用配方默认。headingWindow 只用于开启逐帧定向的段，本段各检测相机共用，给 null 即用相机的测量区间（相机也没设时跳过 5 mm、测到 20 mm）。检测项开关、公差、测量区间与图纸标称值（offsetRef.edge.nominalMm）须用人给的值。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -124,6 +124,8 @@ pub fn tools() -> Value {
                     "expectedRevision": expected_revision,
                     "checks": { "type": "object", "description": "如 {\"width\": {\"nominalMm\": 4, \"tolUpper\": 1.5}, \"break\": {\"maxGapMm\": 6}}" },
                     "offsetRef": { "type": ["object", "null"], "description": "如 {\"measure\": \"toEdge\", \"camera\": \"cam1\", \"edge\": {\"polarity\": \"brightToDark\", \"searchMm\": 18, \"contrastMin\": 70, \"nominalMm\": 10}}" },
+                    "searchMm": { "type": ["number", "null"], "description": "本段卡尺沿法向的搜索半宽（mm），要盖住机器人与工件带来的偏差" },
+                    "widthRange": { "type": ["array", "null"], "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "本段胶宽范围 [下限, 上限]（mm），比它窄或宽的不当作胶；上限要小于 2 × 搜索半宽" },
                     "headingWindow": { "type": ["object", "null"], "description": "距出胶点只测 [startMm, startMm + lengthMm]：startMm 即界面“跳过胶嘴附近”，startMm + lengthMm 即“测量到”。如跳过 5、测到 20 给 {\"startMm\": 5, \"lengthMm\": 15}" },
                 },
                 "required": ["recipe", "segment"],
@@ -342,6 +344,8 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                 "checks": value["checks"],
                 "offsetRef": value["offsetRef"],
                 "heading": value["heading"],
+                "detect": s.detect(&w.doc.detect),
+                "detectOverride": { "searchMm": s.search_mm, "widthRange": s.width_range },
                 "skip": s.skip,
                 "skipHead": s.skip_head,
                 "skipTail": s.skip_tail,
@@ -365,7 +369,7 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
                     let taught = t.segments.iter().find(|x| x.segment == s.index);
                     let corridor = inspect.and_then(|i| i.segment_corridor(s.index));
                     let model = diagnostics::color_model_status(corridor.and_then(|c| c.color_model.as_deref()));
-                    let window = s.heading.as_ref().and(inspect).and_then(|i| crate::heading::window(s, i)).map(|(w, source)| json!({
+                    let window = s.heading.as_ref().and(inspect).map(|i| crate::heading::window(s, i)).map(|(w, source)| json!({
                         "startMm": w.start_mm, "lengthMm": w.length_mm, "endMm": w.start_mm + w.length_mm, "source": source,
                     }));
                     json!({
@@ -658,6 +662,7 @@ async fn snap_color(
     app: &AppHandle,
     w: &Workspace,
     camera: &str,
+    segment: u32,
     image: std::sync::Arc<crate::frame::FrameImage>,
     stroke: &[[f32; 2]],
     shift: f32,
@@ -670,13 +675,13 @@ async fn snap_color(
             .iter()
             .find(|i| i.camera == camera)
             .ok_or_else(|| format!("相机 {camera} 不是段配方的计划相机"))?;
-        let detect = inspect.detect.as_ref().unwrap_or(&w.doc.detect);
+        let detect = w.doc.detect.for_segment(&w.doc.segments, segment);
         let scale = inspect.mm_per_px.ok_or("先填像素当量再按胶色吸附")?;
         super::snap::snap_color(
             &*burst::lyflow(&app)?,
             &w.doc.id,
             &camera,
-            detect,
+            &detect,
             scale,
             &image,
             &stroke,
@@ -752,6 +757,7 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
                 app,
                 &prepared.workspace,
                 &args.camera,
+                args.segment,
                 image.clone(),
                 &args.stroke,
                 radius,
@@ -763,15 +769,7 @@ async fn corridor(app: &AppHandle, args: CorridorArgs) -> Result<Vec<Content>, T
         Extract::Edges => {
             let roi = canvas::bounds(&stroke, f64::from(radius) + EXTRACT_MARGIN, frame.size)
                 .ok_or("笔划不在示教帧内")?;
-            let polarity = prepared
-                .workspace
-                .doc
-                .inspect
-                .iter()
-                .find(|i| i.camera == args.camera)
-                .and_then(|i| i.detect.as_ref())
-                .unwrap_or(&prepared.workspace.doc.detect)
-                .polarity;
+            let polarity = prepared.workspace.doc.detect.polarity;
             let (image, guide) = (
                 image.clone(),
                 super::centerline::BrushGuide {
@@ -1215,6 +1213,15 @@ fn patch_segment(
         Some(offset) => merge(&mut value["offsetRef"], offset),
         None => {}
     }
+    for key in ["searchMm", "widthRange"] {
+        match patch.get(key) {
+            Some(Value::Null) => {
+                value.as_object_mut().map(|o| o.remove(key));
+            }
+            Some(v) => value[key] = v.clone(),
+            None => {}
+        }
+    }
     if let Some(window) = patch.get("headingWindow") {
         let heading = value
             .get_mut("heading")
@@ -1236,6 +1243,8 @@ async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content
             "segment",
             "checks",
             "offsetRef",
+            "searchMm",
+            "widthRange",
             "headingWindow",
             "expectedRevision",
         ]
@@ -1291,6 +1300,8 @@ async fn segment_config(app: &AppHandle, arguments: Value) -> Result<Vec<Content
         "segment": index,
         "checks": saved["checks"],
         "offsetRef": saved["offsetRef"],
+        "searchMm": saved["searchMm"],
+        "widthRange": saved["widthRange"],
         "heading": saved["heading"],
     }))])
 }

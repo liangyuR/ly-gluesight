@@ -410,12 +410,12 @@ impl VisionHost {
 const DEVICE_CALIB_DIR: &str = "device";
 
 /// 工位标定的键。
-/// - `Station`：旧拍照点配方的 `{device}-v{view}` 与显式标定引用，文件 `calib/plane_calib_{键}.json`；
-/// - `Device`：段配方缺省的设备标定（D-SB-30），文件在单独子目录 `calib/device/plane_calib_{device}.json`。
+/// - `Station`：标定页按图编号写的 `{device}-v{view}`，文件 `calib/plane_calib_{键}.json`；
+/// - `Device`：段配方用的设备标定（D-SB-30），文件在单独子目录 `calib/device/plane_calib_{device}.json`。
 ///
 /// 两者不能共用扁平文件名：相机编号允许 '-'，相机 "cam1-v1" 的设备键会等于相机 "cam1" 图 1 的旧键，一方标定就覆盖另一方；
 /// 加前缀也不够（相机 "dev_cam1" 的图 1 = "dev_cam1-v1" = 相机 "cam1-v1" 加前缀 "dev_"）。分目录后永不同名：
-/// Station 键是相机编号或标定引用，只含字母、数字、- 和 _，不带路径分隔符。
+/// Station 键由相机编号加图编号组成，只含字母、数字、- 和 _，不带路径分隔符。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CalibKey {
     Station(String),
@@ -477,14 +477,9 @@ pub fn station_key(device: &str) -> Result<CalibKey, String> {
     Ok(CalibKey::Device(device.to_string()))
 }
 
-/// 段配方一台检测相机的工位标定键：它的标定引用（`Station`），缺省为设备标定 `Device(device)`。
-pub fn camera_calib_key(inspect: &CameraInspect) -> Result<CalibKey, String> {
-    match &inspect.calib { Some(reference) => Ok(CalibKey::Station(reference.clone())), None => station_key(&inspect.camera) }
-}
-
-/// 段配方一台检测相机的标定文件：按它的标定引用（缺省为设备标定）找工位标定。
+/// 段配方一台检测相机的标定文件：这台相机的设备标定 `device/{device}`。
 pub fn camera_calib_path(app: &AppHandle, inspect: &CameraInspect) -> Result<PathBuf, String> {
-    calib_key_path(app, &camera_calib_key(inspect)?)
+    calib_key_path(app, &station_key(&inspect.camera)?)
 }
 
 fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {

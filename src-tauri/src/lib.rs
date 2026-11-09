@@ -274,7 +274,6 @@ pub fn run() {
             recipe_api::recipe_doc,
             recipe_api::recipe_preview,
             recipe_api::recipe_template,
-            recipe_api::recipe_expert_specs,
             recipe_api::recipe_delete,
             recipe_api::recipe_delete_unavailable,
             recipe_api::recipe_plan_export,
