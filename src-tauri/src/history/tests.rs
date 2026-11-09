@@ -41,7 +41,7 @@ fn burst_row(recipe: &Recipe) -> (StoredMeasurement, Vec<FrameRecord>) {
 }
 
 /// 规格 §1 计划身份：段序列 / 类型 / 预期帧数、相机绑定变了，已存指标的区域口径就变了，用当前候选重判时跳过并记 LayoutChanged；
-/// 走廊变了每帧指标要原图复测，同样跳过。容差、限值变化沿用计划身份，可以直接重判。
+/// 走廊变了每帧指标要原图复测，同样跳过。限值变化沿用计划身份，可以直接重判。
 #[test]
 fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
     type Edit = fn(&mut RecipeDoc);

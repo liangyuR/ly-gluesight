@@ -111,7 +111,7 @@ fn template(used_codes: &[u16], rig_cameras: &[String]) -> RecipeDoc {
     doc
 }
 
-/// 段配方的计划导出 JSON（规格 §1）：段序列、各段 N_exp、容差、ΣN_exp，给 PLC / 机器人工程师核对使能点位；
+/// 段配方的计划导出 JSON（规格 §1）：段序列、各段 N_exp、ΣN_exp，给 PLC / 机器人工程师核对使能点位；
 /// PLC 的 shotCount 与 deviceShots 都填 expectedTotal。未标定时 expectedTotal 为 null。
 #[tauri::command]
 pub fn recipe_plan_export(cycle: State<'_, CycleHost>, id: String) -> Result<String, String> {

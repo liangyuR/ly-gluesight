@@ -465,7 +465,7 @@ fn delivery_row(row: &rusqlite::Row, first: usize) -> rusqlite::Result<PlcDelive
 }
 
 /// 各相机的走廊、检测窗口、当量、标定、检测参数，以及各段的逐帧定向与找边参数决定每帧指标（计划身份另见 burst_plan_identity）；
-/// 限值、容差、x_ref、图纸胶边距、检测区间不在这里，改了可以直接用已存指标重判。
+/// 限值、x_ref、图纸胶边距、检测区间不在这里，改了可以直接用已存指标重判。
 fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
     let measure: Vec<serde_json::Value> = recipe
         .path_segments

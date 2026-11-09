@@ -2,7 +2,7 @@ use super::*;
 use crate::frame::CounterSource;
 use crate::offline::Scenario;
 
-/// 段配方在途件：samples_burst（cam1–cam3 共用触发、一个直线段 N_exp = 4、容差 1），相机组序号 0–2、会话 11–13，
+/// 段配方在途件：samples_burst（cam1–cam3 共用触发、一个直线段 N_exp = 4），相机组序号 0–2、会话 11–13，
 /// 按计数账定帧计数基线（模拟相机本会话没见过帧时从 0 起）。
 fn burst_part(cycle_id: &str, ledgers: &Ledgers) -> Part {
     armed_part(

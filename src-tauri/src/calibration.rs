@@ -1,4 +1,4 @@
-//! 帧数与参考值统计：多件帧组数取均值四舍五入作 N_exp、按 min / max 给容差建议（离线评估 examples 用；配方的 N_exp 取示教件
+//! 帧数与参考值统计：多件帧组数取均值四舍五入作 N_exp、按 min / max 给帧数波动建议（离线评估 examples 用；配方的 N_exp 取示教件
 //! 已确认分段的帧组数，见 workspace/burst.rs）；示教件测量值给出胶偏参考 x_ref；按每帧是否成形数出起涂、收尾帧组数（D-SB-50）。
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ pub struct CalibOutcome {
     /// 各轮帧组数均值四舍五入（.5 进位）
     pub n_exp: u32,
     pub calib: SegmentCalib,
-    /// 建议容差；操作员确认后才写进配方
+    /// 帧数波动建议，只供离线评估参考，不写进配方
     pub suggested_tolerance: u32,
 }
 
