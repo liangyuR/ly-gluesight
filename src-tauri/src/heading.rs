@@ -124,27 +124,31 @@ pub fn search_sector(nozzle: [f64; 2], size: [u32; 2], turned: Option<f64>) -> [
     [mid - 90.0, mid + 90.0]
 }
 
-/// 测量区间从哪来：本段设的，或旧配方这台相机的相机级区间。
+/// 测量区间从哪来：本段的覆盖、这台相机的测量区间，或默认值。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WindowSource {
     Segment,
     Camera,
+    Default,
 }
 
-/// 这台相机在这一段用的测量区间（D-SB-47）：本段设了就用本段的（本段各检测相机共用），否则沿用旧配方的相机级区间；
-/// 都没有为 None。不看本段是否开启定向。
+/// 这台相机在这一段用的测量区间（D-SB-47）：本段设了覆盖就用本段的（本段各检测相机共用），否则用这台相机的，
+/// 相机也没设时用 `HeadingWindow::DEFAULT`。不看本段是否开启定向。
 pub fn window<'a>(
     segment: &'a PathSegment,
     inspect: &'a CameraInspect,
-) -> Option<(&'a HeadingWindow, WindowSource)> {
-    match segment.heading.as_ref().and_then(|h| h.window.as_ref()) {
-        Some(w) => Some((w, WindowSource::Segment)),
-        None => inspect.window.as_ref().map(|w| (w, WindowSource::Camera)),
+) -> (&'a HeadingWindow, WindowSource) {
+    if let Some(w) = segment.heading.as_ref().and_then(|h| h.window.as_ref()) {
+        (w, WindowSource::Segment)
+    } else if let Some(w) = &inspect.window {
+        (w, WindowSource::Camera)
+    } else {
+        (&HeadingWindow::DEFAULT, WindowSource::Default)
     }
 }
 
-/// 定向配置是否齐全（D-SB-47）：开启定向的段，它的每台检测相机要有测量区间（换算后不短于 8 px）。出胶点起点相差过大只提示，见 `nozzle`。
+/// 定向配置是否齐全（D-SB-47）：开启定向的段，它的每台检测相机的测量区间换算后不短于 8 px。出胶点起点相差过大只提示，见 `nozzle`。
 /// 走廊与当量缺失由 `untaught_corridors` 报，这里不重复。
 pub fn issues(segments: &[PathSegment], inspect: &[CameraInspect]) -> Vec<Issue> {
     let cameras: Vec<String> = inspect.iter().map(|i| i.camera.clone()).collect();
@@ -154,12 +158,8 @@ pub fn issues(segments: &[PathSegment], inspect: &[CameraInspect]) -> Vec<Issue>
             .iter()
             .filter(|s| s.heading.is_some() && detected(s, i, &cameras))
         {
-            let message = match (window(s, i), i.mm_per_px) {
-                (None, _) => format!(
-                    "第 {} 段相机 {}：开启了逐帧定向，需要设置本段的测量区间（跳过胶嘴附近与测量到的距离）",
-                    s.index, i.camera
-                ),
-                (Some((w, _)), Some(scale)) if w.length_mm / scale < MIN_WINDOW_PX => format!(
+            let message = match (window(s, i).0, i.mm_per_px) {
+                (w, Some(scale)) if w.length_mm / scale < MIN_WINDOW_PX => format!(
                     "第 {} 段相机 {}：测量区间长 {} mm 换算后不足 {MIN_WINDOW_PX} px",
                     s.index, i.camera, w.length_mm
                 ),
@@ -179,6 +179,29 @@ pub fn issues(segments: &[PathSegment], inspect: &[CameraInspect]) -> Vec<Issue>
 mod tests {
     use super::*;
     use crate::plan::{new_segment, KindDefaults, SegmentKind};
+
+    #[test]
+    fn measuring_window_prefers_segment_then_camera_then_default() {
+        // 防的回归（D-SB-47）：测量区间取值顺序错了——段覆盖被相机的区间盖掉，或相机没设区间时开启定向的段没有区间可用
+        let w = |start_mm: f64| HeadingWindow {
+            start_mm,
+            length_mm: 10.0,
+        };
+        let mut segment = new_segment(1, SegmentKind::Straight, &KindDefaults::default());
+        let mut inspect: CameraInspect =
+            serde_json::from_value(serde_json::json!({ "camera": "cam1" })).unwrap();
+        let cases = [
+            (Some(w(1.0)), Some(w(2.0)), (w(1.0), WindowSource::Segment)),
+            (None, Some(w(2.0)), (w(2.0), WindowSource::Camera)),
+            (None, None, (HeadingWindow::DEFAULT, WindowSource::Default)),
+        ];
+        for (own, camera, expected) in cases {
+            segment.heading.as_mut().unwrap().window = own;
+            inspect.window = camera;
+            let (got, source) = window(&segment, &inspect);
+            assert_eq!((got.clone(), source), expected);
+        }
+    }
 
     #[test]
     fn one_far_corridor_start_warns_without_blocking_or_pulling_the_nozzle() {

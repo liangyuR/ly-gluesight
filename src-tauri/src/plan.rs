@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::recipe::HeadingWindow;
+use crate::recipe::{DetectParams, HeadingWindow};
 
 /// 段类型：直线段判胶偏，弯道段不判。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -124,7 +124,7 @@ pub struct EdgeParams {
 
 /// 逐帧定向（D-SB-47）：开启的段在出胶点周围扇形搜索定向、拟合胶路后测量，扇区按相机（出胶点背离最近画面边的半圈）。
 /// `tolerance_deg` 不参与计算；它随 `heading` 进走廊身份（`corridor_tag`），删掉会让已有示教件测量过期，所以保留。
-/// `window` 是本段的测量区间，本段各检测相机共用；为空时沿用旧配方的相机级区间（`CameraInspect.window`），见 `heading::window`。
+/// `window` 是本段的测量区间覆盖，本段各检测相机共用；为空时用相机的测量区间（`CameraInspect.window`），见 `heading::window`。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HeadingSettings {
@@ -137,7 +137,7 @@ impl Default for HeadingSettings {
     fn default() -> Self {
         Self {
             tolerance_deg: 5.0,
-            window: Some(HeadingWindow::DEFAULT),
+            window: None,
         }
     }
 }
@@ -196,6 +196,12 @@ pub struct PathSegment {
     /// 逐帧定向（D-SB-47）；None = 关闭，照旧用示教走廊
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heading: Option<HeadingSettings>,
+    /// 本段的搜索半宽覆盖（mm），本段各检测相机共用；为空用配方默认（`RecipeDoc.detect`），见 `PathSegment::detect`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_mm: Option<f32>,
+    /// 本段的胶宽范围覆盖（mm），同 `search_mm`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width_range: Option<[f32; 2]>,
     /// 不检测（D-SB-53）：照常计入帧数与分段，没有检测相机、不测不判，结果列为未检区域；类型、检测相机与检测项保留，
     /// 取消后恢复
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -203,6 +209,17 @@ pub struct PathSegment {
     /// 段 ID（RB-11）：只在候选里，换示教件按笔迁移时用它关联沿用状态；建段时生成，改边界、改类型、迁移都不变，发布时去掉
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+}
+
+impl PathSegment {
+    /// 本段的检测参数：搜索半宽、胶宽范围本段设了用本段的，否则用配方默认 `base`；极性只在配方级。
+    pub fn detect(&self, base: &DetectParams) -> DetectParams {
+        DetectParams {
+            search_mm: self.search_mm.unwrap_or(base.search_mm),
+            polarity: base.polarity,
+            width_range: self.width_range.unwrap_or(base.width_range),
+        }
+    }
 }
 
 /// 一段实际参与判定的相机（按计划相机顺序）：段没指定时为全部计划相机；不检测的段没有。
@@ -641,6 +658,8 @@ pub fn new_segment(index: u32, kind: SegmentKind, defaults: &KindDefaults) -> Pa
         skip_head: 0,
         skip_tail: 0,
         heading: Some(HeadingSettings::default()),
+        search_mm: None,
+        width_range: None,
         skip: false,
         id: None,
     }

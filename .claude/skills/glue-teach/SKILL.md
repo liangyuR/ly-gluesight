@@ -5,7 +5,7 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 
 # 胶型检测示教
 
-接口契约见 `docs/integration/agent-teaching.md`，判定规则见 `docs/decisions/segment-burst.md`（笔与每笔跳过 D-SB-62，偏宽只预警 D-SB-61）。工具只改候选。示教件、分段、像素当量、每笔首尾跳过和发布由人在界面上做；检测项开关、公差与图纸标称值能用 `teach_segment` 写，但取值只用人在对话里给出的，不自行决定。
+接口契约见 `docs/integration/agent-teaching.md`，判定规则见 `docs/decisions/segment-burst.md`（笔与每笔跳过 D-SB-62，偏宽只预警 D-SB-61）。工具只改候选。示教件、分段、像素当量、每笔首尾跳过和发布由人在界面上做；检测项开关、公差、本段搜索半宽与胶宽范围、测量区间与图纸标称值能用 `teach_segment` 写，但取值只用人在对话里给出的，不自行决定。
 
 ## 0. 基本概念
 
@@ -22,7 +22,7 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 - 某段 `frames` 是原因文字而不是 `[start, end]`（分段没确认）；
 - 要示教的相机 `mmPerPx` 为空；
 - `engine.loaded=false`，先按返回的运行库来源和错误恢复引擎；
-- 开启逐帧定向的相机有 `headingIssues`，先处理测量区间、出胶点等前提；测量区间按段设置（各相机 `segments[].window`，`source=camera` 为沿用相机级旧值），取值由人给出后用 `teach_segment` 的 `headingWindow` 写入，胶条短的笔“测量到”不要超过胶条长度；
+- 开启逐帧定向的相机有 `headingIssues`，先处理测量区间、出胶点等前提；测量区间取本段覆盖、相机的测量区间或默认 5 → 20 mm（各相机 `segments[].window` 的 `source` 为 `segment` / `camera` / `default`），某段要单独设时取值由人给出后用 `teach_segment` 的 `headingWindow` 写入，胶条短的笔“测量到”不要超过胶条长度；
 - `coverage` 未知、边界不可信、出现 `zeroCoverageSegments` 或直线段没有有效胶偏窗口，先核对真实覆盖，不用单段试测替代生产覆盖检查；
 - 分段已确认但 `passes.inRecipe=false`（示教件笔结构与分段对不上，生产会退回按比例分段），请人重新保存分段。
 
@@ -48,6 +48,7 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 ## 3. 检测项与零件边参考（只在人给了值时）
 
 - **胶宽与断胶**：现场最关注断胶和胶宽偏窄。人给了胶宽规格、断胶长度等时，用带 `expectedRevision` 的 `teach_segment` 补丁写入，检查返回 `impact` 和新 revision；没给就保持现状。示教件中位数不能自动变成图纸标称，也不自动放宽溢胶或断胶规则。
+- **搜索半宽与胶宽范围**：段默认用配方的检测参数。人给了某段的搜索半宽或胶宽范围时，用 `teach_segment` 的 `searchMm`、`widthRange` 写本段覆盖（本段各检测相机共用，胶宽上限要小于 2 × 搜索半宽），给 null 回到配方默认；改了示教件测量失效，要重新测量。
 - **偏宽只预警**：`checks.width.wideWarnOnly` 新建段默认为真。人没说偏宽要判 NG 时保持开启；人要求偏宽也判 NG 时才关。开启时溢胶上限也只预警，`parameterWarnings` 里标称或公差带高于溢胶上限的矛盾照样提给人。
 - **零件边**：人给了图纸胶边距、要开胶偏检测时，`teach_segment` 写 `offsetRef`，如 `{"measure": "toEdge", "camera": "cam1", "edge": {"polarity": "brightToDark", "searchMm": 18, "contrastMin": 70, "nominalMm": <人给的值>}}`，`checks.offset.enabled` 设真。弯道不开胶偏。
 - 找边参数（`polarity`、`searchMm`、`contrastMin`）可以自己试：改一项后看 `measurement.edge` 的有效帧数、有效率、缺失帧号，再看 `edgeMm` 分布，并用 `teach_view` 带 `segment` 核对代表帧、缺失帧与最差帧的绿线确实落在零件边。稳定中位数或降低门限后有数值都不足以确认边参考；无法确认真实边时保留失败证据，不把相邻胶/高光边当作标称。

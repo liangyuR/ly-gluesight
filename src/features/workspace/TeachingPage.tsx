@@ -15,13 +15,13 @@ import { workspaceApi } from "./api";
 import { useWorkspace, type SnackMessage } from "./context";
 import { Badge, FrameViewer, KV, Notice, useFrameImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { CaptureRoundV2, FrozenImage, FrameImage, WorkspaceView } from "./types";
-import { cameraParamsError, confirmedSegmentRange, CORNER_CORRIDOR_MM, corridorError, spacingError, draftKey, headingWindow, parseDraftKey, measureMode, sameCorridor, savedDraft, withCorridor, withMeasure, withSectorDeg } from "./teach";
+import { cameraParamsError, confirmedSegmentRange, CORNER_CORRIDOR_MM, corridorError, spacingError, draftKey, headingWindow, parseDraftKey, measureMode, sameCorridor, savedDraft, segmentDetect, withCorridor, withMeasure, withSectorDeg } from "./teach";
 import { cameraParamsTasks, corridorTasks, type CameraParamsTask, type CorridorTask } from "./cameraTasks";
 import { frameArrived, readRoundFrame, roundView, type RoundView } from "./captureRound";
 import { SegmentTrial } from "./TeachTrial";
 import { FrameGrid } from "./FrameGrid";
 import { pieceLabel } from "./pieces";
-import { ColorCard, ExpertCard, HeadingCard, MeasureCard, SegmentChecksCard, type CameraParams } from "./CorridorSettings";
+import { ColorCard, HeadingCard, MeasureCard, SegmentChecksCard, SegmentDetectCard, type CameraParams } from "./CorridorSettings";
 import { searchSector, type HeadingGuide, type HeadingPart } from "./headingOverlay";
 import "./corridor.css";
 import WorkspaceNavigation from "./WorkspaceNavigation";
@@ -358,7 +358,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const clearSegment = () => { if (unlocked && segment != null && !editing) void perform(() => workspaceApi.clearSegmentCorridor(doc.id, data.workspace.revision, camera, segment), `${targetLabel} 的走廊与示教帧已清除`); };
   const changeSegments = (segments: PathSegment[]) => setDoc({ ...doc, segments });
   const inspect = doc.inspect?.find(item => item.camera === camera);
-  const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, detect: inspect?.detect ?? null, window: inspect?.window ?? null, nozzle: inspect?.nozzle ?? null, expert: inspect?.expert ?? {} };
+  const params: CameraParams = { mmPerPx: inspect?.mmPerPx ?? null, window: inspect?.window ?? null, nozzle: inspect?.nozzle ?? null };
   const setParams = (next: CameraParams) => setDoc({ ...doc, inspect: (doc.inspect ?? []).map(item => item.camera === camera ? { ...item, ...next } : item) });
   // 搜索扇区方向按（相机, 段）存在这一段的走廊项上，拖动只改本段
   const sectorDeg = segment == null ? null : inspect?.segments?.find(item => item.segment === segment)?.sectorDeg ?? null;
@@ -375,7 +375,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const nozzleWarning = !params.nozzle && savedNozzle && !savedNozzle.calibrated ? savedNozzle.warning : null;
   const segmentDoc = segment == null ? undefined : doc.segments?.find(item => item.index === segment);
   const headingOn = !!segmentDoc?.heading;
-  const zoneWindow = headingWindow(segmentDoc, params)?.window;
+  const zoneWindow = headingWindow(segmentDoc, params).window;
   const cameraScale = params.mmPerPx != null && Number.isFinite(params.mmPerPx) && params.mmPerPx > 0 ? params.mmPerPx : null;
   const nozzlePoint = params.nozzle ?? derivedNozzle;
   const headingGuide: HeadingGuide | null = headingOn && nozzlePoint ? {
@@ -391,9 +391,8 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const nextTask = tasks.find(item => order.indexOf(taskKey(item)) > order.indexOf(key));
   const allDone = cameraItems.every(item => item.ready);
   const doneCount = tasks.filter(item => item.status === "done").length;
-  const defaults = data.workspace.doc.detect;
   const scaled = t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0;
-  const searchHalfPx = scaled ? (t.detect ?? defaults).searchMm / t.mmPerPx! : undefined;
+  const searchHalfPx = scaled ? segmentDetect(doc.detect, segmentDoc).searchMm / t.mmPerPx! : undefined;
   const hasPath = t.corridor.length >= 2;
   const [lengthValue, lengthUnit] = scaled ? [(lengthPx * t.mmPerPx!).toFixed(1), "mm"] : [lengthPx.toFixed(0), "px"];
   const cornerLong = segmentItem?.kind === "corner" && scaled && lengthPx * t.mmPerPx! > CORNER_CORRIDOR_MM;
@@ -520,7 +519,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const middle = segment == null
     ? <Surface role="region" className="wp-seg-corridor-note" aria-label="相机参数">
       <h3>{camera} · 相机参数</h3>
-      <p className="muted">像素当量与检测参数按相机设置，{camera} 检测的各段走廊都按它们测量；改动自动保存到候选配方。走廊在左侧按段逐条示教。</p>
+      <p className="muted">像素当量、出胶点与测量区间按相机设置，{camera} 检测的各段都按它们测量；检测参数取配方默认，段可单独设搜索半宽与胶宽范围。改动自动保存到候选配方。走廊在左侧按段逐条示教。</p>
       {paramsError && <p className="c-warn" role="alert">{paramsError}</p>}
       {cameraTasks.length ? <ul className="wp-camera-segments" aria-label={`${camera} 检测的段`}>{cameraTasks.map(item => <li key={item.segment}><span>段 {item.segment} · {segmentKindLabel[item.kind]}</span><Badge tone={item.status === "done" ? "ok" : item.frame ? "warn" : "neutral"}>{item.label}</Badge></li>)}</ul>
         : <p className="muted">没有段把 {camera} 选为检测相机。</p>}
@@ -551,7 +550,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
           onEdit={frame && !regionMode && pointing ? { add: p => setPath([...t.corridor, p]), move: (i, p) => setPath(t.corridor.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />}
     </>;
   const checksDisabled = !editable;
-  const sharing = plan.cameras.filter(item => item !== camera && !doc.inspect?.find(i => i.camera === item)?.detect);
+  const sharing = plan.cameras.filter(item => item !== camera);
   const cameraScaleText = cameraScale != null ? `${Number(cameraScale.toPrecision(6))} mm/px` : "缺像素当量";
   const navigation = <WorkspaceNavigation segments={plan.segments} ranges={navigationRanges} seq={choosingNow ? pickSeqSafe : trialSeq ?? segmentTeaching?.seq ?? 1}
     currentSegment={segment ?? undefined} frameStatus={navigationRanges ? "confirmed" : "unavailable"}
@@ -559,15 +558,13 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const rail = segment == null
     ? <div className="wp-stack wp-teach-settings">
       {navigation}
-      <MeasureCard key={camera} camera={camera} params={params} calibMmPerPx={plan.cameraTeaching.find(item => item.camera === camera)?.calibMmPerPx ?? null} defaults={doc.detect} spacing={doc.spacing} sharing={sharing} disabled={paramsDisabled || frameDirty} spacingError={value => spacingError(doc, value)}
+      <MeasureCard key={camera} params={params} calibMmPerPx={plan.cameraTeaching.find(item => item.camera === camera)?.calibMmPerPx ?? null} defaults={doc.detect} spacing={doc.spacing} sharing={sharing} disabled={paramsDisabled || frameDirty} spacingError={value => spacingError(doc, value)}
         onParams={setParams} onDefaults={detect => setDoc({ ...doc, detect })} onSpacing={spacing => setDoc({ ...doc, spacing })} />
       <HeadingCard key={`heading-${camera}`} camera={camera} params={params} derivedNozzle={derivedNozzle} nozzleWarning={nozzleWarning} segments={doc.segments ?? []} index={null} sector={null}
         headingSegments={(doc.segments ?? []).filter(item => item.heading && cameraTasks.some(task => task.segment === item.index))}
-        expertDefaults={doc.expert ?? {}} disabled={paramsDisabled || frameDirty} sharedLocked="" onFocus={setHeadingFocus}
-        onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />
-      <ExpertCard key={`expert-${camera}`} camera={camera} own={params.expert ?? {}} defaults={doc.expert ?? {}} disabled={paramsDisabled || frameDirty}
-        onCamera={expert => setParams({ ...params, expert })} onDefaults={expert => setDoc({ ...doc, expert })} />
-      <p className="wp-settings-hint wp-rail-note">段的逐帧定向与检测项：在左侧选段后设置。</p></div>
+        disabled={paramsDisabled || frameDirty} sharedLocked="" onFocus={setHeadingFocus}
+        onSegments={changeSegments} onParams={setParams} />
+      <p className="wp-settings-hint wp-rail-note">段的逐帧定向、检测参数覆盖与检测项：在左侧选段后设置。</p></div>
     : <div className="wp-stack wp-teach-settings">
       {navigation}
       <Surface role="region" className="wp-seg-corridor-note" aria-label="段走廊说明">
@@ -578,14 +575,15 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
           onClick={() => navigate(href(`/recipe/flow?camera=${encodeURIComponent(camera)}&segment=${segment}&seq=${trialSeq ?? segmentTeaching?.seq ?? ""}`))}>流程调试</Button></WithReason>
       </Surface>
       {segmentItem && <HeadingCard key={`heading-${camera}-${segment}`} camera={camera} params={params} derivedNozzle={derivedNozzle} nozzleWarning={nozzleWarning} segments={doc.segments ?? []} index={segment} headingSegments={[]}
-        sector={{ range: headingGuide?.sector ?? null, turned: sectorDeg != null, onReset: () => setSectorDeg(null) }} expertDefaults={doc.expert ?? {}} disabled={checksDisabled}
+        sector={{ range: headingGuide?.sector ?? null, turned: sectorDeg != null, onReset: () => setSectorDeg(null) }} disabled={checksDisabled}
         sharedLocked={editing || frameDirty ? "走廊有未保存的修改：保存后再改出胶点与测量区间。" : ""} onFocus={setHeadingFocus}
-        onSegments={changeSegments} onParams={setParams} onExpertDefaults={expert => setDoc({ ...doc, expert })} />}
+        onSegments={changeSegments} onParams={setParams} />}
       {segmentItem && frame && <ColorCard key={`color-${camera}-${segment}-${image?.channels ?? "-"}`} camera={camera} segment={segment} colorModel={colorModel} color={image ? image.channels === 3 : null}
         measure={measure} measureLocked={checksDisabled ? "当前不能修改" : editing ? "走廊有未保存的修改：保存后再改测量方式" : ""} blocked={colorBlocked} edited={editing} working={operation === "color"} onMeasure={changeMeasure} onFit={() => deferAction("color")} />}
+      {segmentItem && <SegmentDetectCard key={`detect-${segment}`} segments={doc.segments ?? []} index={segment} defaults={doc.detect} disabled={checksDisabled} onChange={changeSegments} />}
       {segmentItem && <SegmentChecksCard key={`checks-${segment}`} segments={doc.segments ?? []} index={segment} cameras={plan.cameras} disabled={checksDisabled} onChange={changeSegments} />}
       <WithReason block reason={groupsLocked ? groupLockReason : ""}><Button variant="outlined" className="wp-rail-link" disabled={groupsLocked} onClick={() => setSelected(camera)}>
-        <strong>测量</strong><span>{cameraScaleText} · {params.detect ? "本相机自定义" : "配方默认"}</span><span className="wp-rail-link-go">去 {camera} 改<ArrowRight size={13} aria-hidden="true" /></span>
+        <strong>测量</strong><span>{cameraScaleText}</span><span className="wp-rail-link-go">去 {camera} 改<ArrowRight size={13} aria-hidden="true" /></span>
       </Button></WithReason></div>;
   const slot = (itemKey: string, button: ReactElement<{ "aria-describedby"?: string }>) => groupsLocked && itemKey !== key ? <WithReason key={itemKey} block reason={groupLockReason}>{button}</WithReason> : <span key={itemKey} className="wp-group-slot">{button}</span>;
   const groupPanel = <Surface role="region" className="wp-group-panel" aria-label="走廊示教目标">

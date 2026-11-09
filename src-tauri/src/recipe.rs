@@ -13,7 +13,6 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::plan::{self, KindDefaults, PartCalib, PathSegment, SegmentKind};
-use crate::vision::template::{validate_expert, ExpertParams};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,7 +136,15 @@ pub struct DetectParams {
 }
 
 impl DetectParams {
-    fn validate(&self, what: &str) -> Result<(), String> {
+    /// 第 `segment` 段的检测参数：段设了搜索半宽、胶宽范围就用段的，否则用这份配方默认；段不存在时就是配方默认。
+    pub fn for_segment(&self, segments: &[PathSegment], segment: u32) -> DetectParams {
+        segments
+            .iter()
+            .find(|s| s.index == segment)
+            .map_or_else(|| self.clone(), |s| s.detect(self))
+    }
+
+    pub(crate) fn validate(&self, what: &str) -> Result<(), String> {
         let [lo, hi] = self.width_range;
         if !(self.search_mm.is_finite()
             && self.search_mm > 0.0
@@ -204,10 +211,9 @@ impl RecipeStage {
     }
 }
 
-/// 段配方里一台检测相机的参数（D-SB-45）：像素当量、标定引用、检测参数，以及它在各段的走廊。
+/// 段配方里一台检测相机的参数（D-SB-45）：像素当量、它在各段的走廊、逐帧定向的测量区间与出胶点。标定一律用设备标定。
 /// `RecipeDoc.inspect` 的顺序就是计划相机顺序（PLC 一个触发同时触发这三台）。
-/// 不拒绝未知字段：旧版的相机走廊 `corridor` 已放弃，读入时丢弃（D-SB-45 不迁移）；相机级的扇区方向 `sectorDeg` 改为按段存在
-/// `SegmentCorridor` 上，读入时同样丢弃。
+/// 不拒绝未知字段：已停用的 `corridor`、`sectorDeg`、`calib`、`detect`、`expert` 读入时丢弃。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CameraInspect {
@@ -215,24 +221,16 @@ pub struct CameraInspect {
     /// 像素当量（mm/px）；为空为尚未设置
     #[serde(default)]
     pub mm_per_px: Option<f64>,
-    /// 标定引用；为空时用这台相机的工位标定
-    #[serde(default)]
-    pub calib: Option<String>,
-    /// 为空时用配方的检测参数
-    #[serde(default)]
-    pub detect: Option<DetectParams>,
     /// 这台相机在它检测的各段的走廊（D-SB-42/45）：落在该段的帧用它测量，没有相机级的默认走廊
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segments: Vec<SegmentCorridor>,
-    /// 旧配方的相机级测量区间（D-SB-47）：测量区间按段设在 `HeadingSettings.window`，段没设时沿用这里；界面不再编辑
+    /// 逐帧定向的测量区间（D-SB-47）：这台相机各段的默认值，段可在 `HeadingSettings.window` 单独覆盖；为空时用
+    /// `HeadingWindow::DEFAULT`，见 `heading::window`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<HeadingWindow>,
     /// 标定的出胶点（图像像素，D-SB-47）；为空时由开启定向的各段走廊起点推出
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nozzle: Option<[f64; 2]>,
-    /// 这台相机覆盖的专家参数（LF-5，测量图模板参数名 → 值），叠在配方默认之上
-    #[serde(default, skip_serializing_if = "ExpertParams::is_empty")]
-    pub expert: ExpertParams,
 }
 
 /// 逐帧定向的测量区间（mm，沿胶路从出胶点量起）：只测 [start, start + length]。界面填“跳过前 start”和“测到 start + length”。
@@ -244,7 +242,7 @@ pub struct HeadingWindow {
 }
 
 impl HeadingWindow {
-    /// 新开启逐帧定向的段的测量区间：跳过前 5 mm，测到 20 mm。
+    /// 段与相机都没设测量区间时用它：跳过前 5 mm，测到 20 mm。
     pub const DEFAULT: Self = Self {
         start_mm: 5.0,
         length_mm: 15.0,
@@ -364,12 +362,6 @@ impl CameraInspect {
         {
             return Err(format!("相机 {id} 的像素当量 {m} 需在 0–10 mm/px 之间"));
         }
-        if self.calib.as_deref().is_some_and(|c| !valid_camera_id(c)) {
-            return Err(format!("相机 {id} 的标定引用只能用字母、数字、- 和 _"));
-        }
-        if let Some(d) = &self.detect {
-            d.validate(&format!("相机 {id} 检测参数"))?;
-        }
         if let Some(w) = &self.window {
             w.validate(&format!("相机 {id} "))?;
         }
@@ -379,7 +371,7 @@ impl CameraInspect {
         }) {
             return Err(format!("相机 {id} 的出胶点坐标需为 0–100000 px 的有限数"));
         }
-        validate_expert(&self.expert, &format!("相机 {id}"))
+        Ok(())
     }
 }
 
@@ -432,7 +424,7 @@ pub struct Recipe {
     /// 站距（mm）
     pub spacing: f32,
     pub filter_window: usize,
-    /// 拍照点没单独设时用的检测参数与限值
+    /// 检测参数的配方默认（段可覆盖搜索半宽与胶宽范围，见 `DetectParams::for_segment`）与限值
     pub detect: DetectParams,
     pub limits: ShotLimits,
     /// 段配方的段列表（RecipeDoc.segments）；为空即旧拍照点配方
@@ -444,7 +436,10 @@ pub struct Recipe {
     pub pass_skip: crate::passes::PassSkip,
     pub pass_frames: Option<Vec<u32>>,
     pub part_calib: Option<PartCalib>,
-    pub expert: ExpertParams,
+    /// 快照里已停用的测量覆盖（配方级 `expert`、各相机的 `detect` 与 `expert`，都为空时为 null）：这些值不再生效，
+    /// 按它们测的已存指标与当前口径不同，进测量布局（`store::measurement_layout`），与没有它们的配方比较时要原图复测
+    #[serde(skip)]
+    pub retired_overrides: serde_json::Value,
 }
 
 impl Recipe {
@@ -549,9 +544,9 @@ impl Recipe {
         self.plan_cameras()
     }
 
-    /// 一台相机的专家参数层，按叠加顺序：配方默认、相机覆盖。
-    pub fn expert_layers<'a>(&'a self, inspect: &'a CameraInspect) -> [&'a ExpertParams; 2] {
-        [&self.expert, &inspect.expert]
+    /// 第 `segment` 段的检测参数（见 `DetectParams::for_segment`）。
+    pub fn segment_detect(&self, segment: u32) -> DetectParams {
+        self.detect.for_segment(&self.path_segments, segment)
     }
 }
 
@@ -576,6 +571,7 @@ pub struct RecipeDoc {
     pub schema_version: u32,
     pub spacing: f32,
     pub filter_window: usize,
+    /// 检测参数的配方默认：极性只在这里设，搜索半宽与胶宽范围段可覆盖（`PathSegment.search_mm` / `width_range`）
     pub detect: DetectParams,
     pub limits: ShotLimits,
     /// 沿胶路的段列表（规格 §1）；为空即旧拍照点配方，下面几项段模型字段不允许设置
@@ -602,9 +598,6 @@ pub struct RecipeDoc {
     /// 示教件来源（RB-7）：正式发布时从候选写入；候选里恒为空，没有它的生产配方即旧流程发布。不进计划身份
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_piece: Option<TeachingPieceRef>,
-    /// 专家参数的配方默认（LF-5，测量图模板参数名 → 值）；没写的用模板默认值
-    #[serde(default, skip_serializing_if = "ExpertParams::is_empty")]
-    pub expert: ExpertParams,
 }
 
 /// 配方文档记下的示教件来源：历史件的工件身份、记录、SN 与时间。
@@ -663,7 +656,6 @@ impl RecipeDoc {
         }
         self.detect.validate("检测参数")?;
         self.limits.validate("限值")?;
-        validate_expert(&self.expert, "配方")?;
         if !self.is_burst() {
             return Err(LEGACY_RECIPE.into());
         }
@@ -716,6 +708,11 @@ impl RecipeDoc {
             }
         }
         plan::validate_segments(&self.segments, &self.plan_cameras())?;
+        for segment in &self.segments {
+            segment
+                .detect(&self.detect)
+                .validate(&format!("第 {} 段检测参数", segment.index))?;
+        }
         plan::validate_defaults(&self.segment_defaults)?;
         if let Some(part) = &self.part_calib {
             if !(1..=plan::MAX_EXPECTED_TOTAL).contains(&part.expected_total) {
@@ -752,7 +749,7 @@ impl RecipeDoc {
             pass_skip: self.pass_skip,
             pass_frames: self.pass_frames.clone(),
             part_calib: self.part_calib.clone(),
-            expert: self.expert.clone(),
+            retired_overrides: serde_json::Value::Null,
         };
         Ok(recipe)
     }
@@ -769,14 +766,35 @@ impl TryFrom<serde_json::Value> for Recipe {
     type Error = String;
     /// Recipe 的 JSON 还原成 RecipeDoc 再 build：段列表在 `pathSegments`，换回 RecipeDoc 的 `segments` 再解析。
     fn try_from(mut value: serde_json::Value) -> Result<Self, Self::Error> {
+        let filled = |v: &serde_json::Value| {
+            (!v.is_null() && v.as_object().is_none_or(|o| !o.is_empty())).then(|| v.clone())
+        };
+        let cameras: Vec<_> = value["inspect"]
+            .as_array()
+            .map(|cameras| {
+                cameras
+                    .iter()
+                    .map(|i| (filled(&i["detect"]), filled(&i["expert"])))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let expert = filled(&value["expert"]);
+        let retired_overrides =
+            if expert.is_none() && cameras.iter().all(|(d, e)| d.is_none() && e.is_none()) {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!([expert, cameras])
+            };
         let object = value.as_object_mut().ok_or("配方快照不是 JSON 对象")?;
         let path_segments = object
             .remove("pathSegments")
             .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
         object.insert("segments".into(), path_segments);
-        serde_json::from_value::<RecipeDoc>(value)
+        let mut recipe = serde_json::from_value::<RecipeDoc>(value)
             .map_err(|e| e.to_string())?
-            .build()
+            .build()?;
+        recipe.retired_overrides = retired_overrides;
+        Ok(recipe)
     }
 }
 
@@ -858,12 +876,9 @@ pub fn burst_template(
             .map(|camera| CameraInspect {
                 camera: camera.clone(),
                 mm_per_px: None,
-                calib: None,
-                detect: None,
                 segments: Vec::new(),
                 window: None,
                 nozzle: None,
-                expert: ExpertParams::new(),
             })
             .collect(),
         segment_defaults,
@@ -872,7 +887,6 @@ pub fn burst_template(
         pass_frames: None,
         part_calib: None,
         teaching_piece: None,
-        expert: ExpertParams::new(),
     }
 }
 
@@ -1542,8 +1556,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// 防的回归：现场已有的配方文件与修订来源都带已停用的键（`planVersion`、每段与默认参数的 `tolerance`、`boundaryRefine`），
-    /// 读入时不能报错，也不能因与来源记录不一致而被当成手改文件升版本。
+    /// 防的回归：现场已有的配方文件与修订来源都带已停用的键（`planVersion`、每段与默认参数的 `tolerance`、`boundaryRefine`、
+    /// 配方级 `expert`、相机级 `calib` / `detect` / `expert`），读入时不能报错，也不能因与来源记录不一致而被当成手改文件升版本。
     #[test]
     fn recipe_and_revision_source_with_retired_keys_load_at_their_revision() {
         let dir = std::env::temp_dir().join(format!(
@@ -1561,6 +1575,17 @@ mod tests {
         legacy["segmentDefaults"]["corner"]["tolerance"] = 2.into();
         for segment in legacy["segments"].as_array_mut().unwrap() {
             segment["tolerance"] = 1.into();
+        }
+        legacy["expert"] = serde_json::json!({ "presentRatio": 0.4 });
+        for (k, inspect) in legacy["inspect"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            inspect["calib"] = format!("cam{}-v1", k + 1).into();
+            inspect["detect"] = serde_json::json!({ "searchMm": 6.0, "polarity": "dark", "widthRange": [1.0, 5.0] });
+            inspect["expert"] = serde_json::json!({ "trackSharpMin": 0.6 });
         }
         std::fs::write(recipes.join(format!("{}.json", doc.id)), legacy.to_string()).unwrap();
         let sources = serde_json::json!({ doc.id.to_ascii_lowercase(): legacy });

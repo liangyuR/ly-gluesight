@@ -210,7 +210,7 @@ fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts
 #[test]
 fn measuring_teaching_writes_x_ref_and_a_corridor_change_invalidates_it() {
     // 防的回归（RB-3，示教件兼作标准件；PR #205 评审）：测量示教件后单段配方的 x_ref 没写进配方；分段未确认或走廊没示教完也能测；
-    // 测量后改了当量、走廊或检测参数，旧测量与 x_ref 还当作有效（发布时按过期的参考判胶偏）
+    // 测量后改了当量、走廊或检测参数（含段上的搜索半宽 / 胶宽范围覆盖），旧测量与 x_ref 还当作有效（发布时按过期的参考判胶偏）
     let (untaught, teach) = with_teaching(&[Straight], false);
     assert!(
         measure_with(&untaught, &teach, 0.5).is_err(),
@@ -225,22 +225,37 @@ fn measuring_teaching_writes_x_ref_and_a_corridor_change_invalidates_it() {
     assert_eq!(reference, Some((Some(0.5), Some(0.0))));
     assert_eq!(w.doc.segments[0].expected_frames, Some(15));
 
-    let mut changed = w.clone();
-    let mut doc = changed.doc.clone();
-    let scale = doc.inspect[0].mm_per_px.unwrap_or(0.1);
-    doc.inspect[0].mm_per_px = Some(scale * 2.0);
-    update_doc(&mut changed, doc).unwrap();
-    assert!(!teaching_measured(&changed));
-    assert_eq!(
-        changed.doc.segments[0]
-            .offset_ref
-            .as_ref()
-            .and_then(|r| r.x_ref),
-        None
-    );
-    assert_eq!(
-        changed.doc.segments[0].expected_frames,
-        Some(15),
-        "N_exp 不受走廊影响"
-    );
+    type Edit = fn(&mut crate::recipe::RecipeDoc);
+    let edits: [(&str, Edit); 3] = [
+        ("改当量", |d| {
+            let scale = d.inspect[0].mm_per_px.unwrap_or(0.1);
+            d.inspect[0].mm_per_px = Some(scale * 2.0);
+        }),
+        ("本段覆盖搜索半宽", |d| {
+            d.segments[0].search_mm = Some(12.0)
+        }),
+        ("本段覆盖胶宽范围", |d| {
+            d.segments[0].width_range = Some([2.0, 8.0])
+        }),
+    ];
+    for (what, edit) in edits {
+        let mut changed = w.clone();
+        let mut doc = changed.doc.clone();
+        edit(&mut doc);
+        update_doc(&mut changed, doc).unwrap();
+        assert!(!teaching_measured(&changed), "{what}");
+        assert_eq!(
+            changed.doc.segments[0]
+                .offset_ref
+                .as_ref()
+                .and_then(|r| r.x_ref),
+            None,
+            "{what}"
+        );
+        assert_eq!(
+            changed.doc.segments[0].expected_frames,
+            Some(15),
+            "{what}：N_exp 不受走廊影响"
+        );
+    }
 }
