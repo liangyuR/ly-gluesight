@@ -274,8 +274,11 @@ impl Store {
                 rows.collect::<Result<Vec<(i64, Option<String>)>, _>>()
                     .map_err(db_err)?
             };
-            conn.execute("UPDATE dst.parts SET project_id = ?1 WHERE project_id != ?1", [project])
-                .map_err(db_err)?;
+            conn.execute(
+                "UPDATE dst.parts SET project_id = ?1 WHERE project_id != ?1",
+                [project],
+            )
+            .map_err(db_err)?;
             // 导出子集里的跨项目复测引用没有目标，置空
             conn.execute("UPDATE dst.parts SET retest_of = NULL WHERE retest_of NOT IN (SELECT id FROM dst.parts)", []).map_err(db_err)?;
             conn.execute_batch("COMMIT;").map_err(db_err)?;

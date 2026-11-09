@@ -227,7 +227,12 @@ fn collect(
         let (_, foreign) = store
             .export_project(&project, &snapshot, &linked)
             .map_err(|e| format!("导出检测记录失败：{e}"))?;
-        out.extend(link_recordings(&snapshot, &recording_root, &foreign, notes)?);
+        out.extend(link_recordings(
+            &snapshot,
+            &recording_root,
+            &foreign,
+            notes,
+        )?);
         if recording_root != root {
             crate::storage::relocate::database(&snapshot, &recording_root, root)?;
         }
@@ -282,11 +287,18 @@ fn link_recordings(
             .map_err(|e| e.to_string())?;
         }
         if !source.is_dir() {
-            notes.push(format!("示教件引用的历史件录制 {directory} 已不在，只导出了记录"));
+            notes.push(format!(
+                "示教件引用的历史件录制 {directory} 已不在，只导出了记录"
+            ));
             continue;
         }
         crate::image_file::checked_source_path(source)?;
-        walk(source, &format!("{PREFIX}records/{LINKED}/{name}"), &mut entries, notes)?;
+        walk(
+            source,
+            &format!("{PREFIX}records/{LINKED}/{name}"),
+            &mut entries,
+            notes,
+        )?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(entries)
