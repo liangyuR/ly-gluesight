@@ -17,8 +17,6 @@ pub(super) struct CollectInputs<'a> {
     pub production: Option<&'a Recipe>,
     /// 用了同一型号的其他生产配方
     pub conflict: Option<String>,
-    /// 候选基于当前生产版本
-    pub base_matches: bool,
 }
 
 /// 采集版的全部检查项，按页面展示顺序。
@@ -83,10 +81,9 @@ pub(super) fn collect_checks(doc: &RecipeDoc, inputs: CollectInputs) -> Vec<Chec
     checks.push(Check {
         advisory: false,
         name: "生产版本".into(),
-        passed: formal.is_none() && inputs.base_matches,
+        passed: formal.is_none(),
         detail: match (formal, inputs.production) {
             (Some(r), _) => format!("已有正式版 v{}。{COLLECT_AFTER_FORMAL}", r.version),
-            _ if !inputs.base_matches => "生产配方已被其他操作更新，请重新建立候选".into(),
             (None, Some(r)) => format!("替换当前采集版 v{}", r.version),
             (None, None) => "尚无生产版本".into(),
         },
@@ -103,14 +100,12 @@ fn current_checks(app: &AppHandle, w: &Workspace) -> Vec<Check> {
         .iter()
         .find(|r| !r.id.eq_ignore_ascii_case(&w.doc.id) && r.product_code == w.doc.product_code)
         .map(|r| r.id.clone());
-    let base = production.as_ref().map(|r| r.revision_id.clone());
     collect_checks(
         &w.doc,
         CollectInputs {
             rig: &cycle.camera.configs(),
             production: production.as_deref(),
             conflict,
-            base_matches: base == w.base_revision,
         },
     )
 }

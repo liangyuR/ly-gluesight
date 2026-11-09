@@ -92,7 +92,6 @@ fn checks(w: &Workspace, cameras: &BTreeMap<String, Value>) -> Vec<Check> {
         BurstInputs {
             device: Ok(()),
             cameras,
-            base_matches: true,
         },
     )
 }
