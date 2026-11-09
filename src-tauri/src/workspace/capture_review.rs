@@ -197,6 +197,43 @@ fn validate_cuts(cuts: &[u64], groups: u64, segments: usize) -> Result<(), Strin
     Ok(())
 }
 
+/// 段只在笔内（RB-12）：示教件每笔的最后一个帧组必须是段边界。笔结构与本件帧组数对不上时不校验。
+fn require_pass_ends(w: &Workspace, cuts: &[u64], groups: u64) -> Result<(), String> {
+    let passes = w
+        .teaching_piece
+        .as_ref()
+        .map_or(&[][..], |piece| piece.passes.as_slice());
+    if passes.iter().map(|&n| u64::from(n)).sum::<u64>() != groups {
+        return Ok(());
+    }
+    let missing: Vec<String> = passes
+        .iter()
+        .scan(0u64, |end, &n| {
+            *end += u64::from(n);
+            Some(*end)
+        })
+        .enumerate()
+        .take(passes.len().saturating_sub(1))
+        .filter(|(_, end)| !cuts.contains(end))
+        .map(|(i, end)| format!("第 {} 笔末（帧组 {end}）", i + 1))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let shown = missing
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("、");
+    let more = if missing.len() > 3 {
+        format!(" 等 {} 处", missing.len())
+    } else {
+        String::new()
+    };
+    Err(format!("段不能跨笔：{shown}{more}必须是段边界"))
+}
+
 pub fn apply_capture_review(
     w: &mut Workspace,
     round: &CaptureRoundV2,
@@ -352,6 +389,7 @@ pub fn save_template_round(
         return Err("段配方至少需要一段，不能改成拍照点配方".into());
     }
     super::pass_align::require_confirmed(w)?;
+    require_pass_ends(w, &cuts, round.group_count)?;
     let mut next = w.clone();
     match super::segment_remap::remap(w, &round.round_id, &segments, &cuts) {
         Some(remapped) => replace_doc(&mut next, remapped.doc, Some(remapped.teaching))?,

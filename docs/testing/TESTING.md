@@ -73,12 +73,10 @@ gh run view $runId --log
 
 长件浏览与复算的读取、进度和取消契约见[长件浏览与复算](../architecture/frame-browsing.md)。定向验证：
 
-- `pnpm exec vitest run tests/frame-navigation.test.tsx tests/frame-inspection-navigation.test.tsx tests/history-detail.test.tsx tests/operation.test.tsx tests/preview-cache.test.ts tests/segment-workbench.test.tsx`：保护千帧跨窗口导航与分页选择、全局帧号、迟到对照不覆盖新结果、进度任务隔离及保存边界、离页取消、快速切帧淘汰旧请求。
+- `pnpm exec vitest run tests/frame-navigation.test.tsx tests/frame-inspection-navigation.test.tsx tests/history-detail.test.tsx tests/operation.test.tsx tests/preview-cache.test.ts tests/segment-teach.test.tsx`：保护千帧跨窗口导航与分页选择、全局帧号、迟到对照不覆盖新结果、进度任务隔离及保存边界、离页取消、快速切帧淘汰旧请求。
 - `cargo test --locked --lib --manifest-path src-tauri/Cargo.toml -- operation:: workspace:: store:: recipe_capture:: history::`：覆盖概览与单帧读取契约、公开示教读取接口的身份及缺图拒绝、任务生命周期取消与提交边界、终态事件与查询计数一致及受影响业务回归。真实历史批量读取、对照摘要缓存、实际测量循环取消与测量产物保存失败回滚尚无公开命令集成覆盖。
 
-真实 3882 张原图的前后性能对照与复现入口见[分段时间轴性能验证](segment-timeline-performance.md)。
-
-分段按需缩略图定向验证：`pnpm exec vitest run tests/thumbPages.test.ts tests/segment-workbench.test.tsx tests/segments-page.test.tsx tests/segments-page-leave.test.tsx tests/workspace-navigation.test.tsx`。保护未加载图像时可编辑段落、千帧窗口与全局边界保存、按需页调度和缓存上限。后端 `thumbnail_range_reads_only_requested_frames_and_rejects_unbounded_requests` 验证只读请求范围、尾页截断与非法范围拒绝。
+分段按需缩略图定向验证：`pnpm exec vitest run tests/thumbPages.test.ts tests/segment-teach.test.tsx tests/workbench-draft.test.ts tests/workspace-navigation.test.tsx`。保护未加载图像时可编辑段落、笔末边界固定与跨笔段拆分、千帧件全局边界保存、会丢走廊时先确认再保存、按需页调度和缓存上限。后端 `thumbnail_range_reads_only_requested_frames_and_rejects_unbounded_requests` 验证只读请求范围、尾页截断与非法范围拒绝。
 
 浏览器布局验证使用合成的 1000 帧组、三台相机检查末帧跳转、跨窗口方向键、焦点及 DOM 规模；真实图像解码、整件复测耗时和生产并行负载仍需现场性能验收。
 
@@ -125,7 +123,7 @@ $env:LYFLOW_CORE_DLL = "<运行库目录>\lyflow_core.dll"
 cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval -- <项目目录> <候选编号> <输出目录>
 ```
 
-分段标定工作台（D-SB-44）的默认回归保留 `workspace::capture_review` 的计划修改后复核失效、屏蔽不压缩序号及恢复后重新测量；分段保存按帧范围逐段对应（D-SB-52）由 `segment_corridor_tests::saving_the_segmentation_keeps_corridors_and_params_of_segments_that_did_not_change` 覆盖（加边界、改类型、挪边界时哪些走廊与段参数保留，以及预演列出的清除项）。段不检测（D-SB-53）由 `segmentation::skipped_segment_and_its_guard_frames_are_not_measured_by_any_camera`（整段连同两侧过渡帧划为跳过、任何相机都不量）、`plan::tests::invalid_segment_plans_are_rejected`（全部不检测、单段不检测报错）和上面的分段保存用例（设为不检测清掉它的走廊、不列为待示教）覆盖。按相机时间戳编号（D-SB-55）由 `frame_clock::tests`（跨门控连续编号、丢帧跳号、时钟回退、没有边沿时按帧间隔判及漏记边沿后的多相机对齐）、`cycle::tests::camera_reopen_during_part_keeps_numbering_by_timestamp` 与 `cycle::tests::drain_ends_at_gate_close_once_every_camera_has_its_last_frame` 覆盖。前端 `tests/workbench-draft.test.ts` 和 `tests/segment-workbench.test.tsx` 验证边界编辑、点段名的三态循环、按预演列出影响并确认后一次提交。图像对齐（D-SB-51）只用于离线评估，不在默认回归范围；无区分度画面、比例容差、伸缩、丢帧和重复帧下的可信度与现场精度需专项验证。
+分段标定（D-SB-44）的默认回归保留 `workspace::capture_review` 的计划修改后复核失效、屏蔽不压缩序号及恢复后重新测量；段只在笔内（RB-12）由 `segment_corridor_tests::saving_a_segmentation_whose_segment_spans_a_pass_end_is_rejected` 覆盖；分段保存按帧范围逐段对应（D-SB-52）由 `segment_corridor_tests::saving_the_segmentation_keeps_corridors_and_params_of_segments_that_did_not_change` 覆盖（加边界、改类型、挪边界时哪些走廊与段参数保留，以及预演列出的清除项）。段不检测（D-SB-53）由 `segmentation::skipped_segment_and_its_guard_frames_are_not_measured_by_any_camera`（整段连同两侧过渡帧划为跳过、任何相机都不量）、`plan::tests::invalid_segment_plans_are_rejected`（全部不检测、单段不检测报错）和上面的分段保存用例（设为不检测清掉它的走廊、不列为待示教）覆盖。按相机时间戳编号（D-SB-55）由 `frame_clock::tests`（跨门控连续编号、丢帧跳号、时钟回退、没有边沿时按帧间隔判及漏记边沿后的多相机对齐）、`cycle::tests::camera_reopen_during_part_keeps_numbering_by_timestamp` 与 `cycle::tests::drain_ends_at_gate_close_once_every_camera_has_its_last_frame` 覆盖。前端 `tests/workbench-draft.test.ts` 和 `tests/segment-teach.test.tsx` 验证边界编辑、点段名的三态循环、按预演列出影响并确认后一次提交。图像对齐（D-SB-51）只用于离线评估，不在默认回归范围；无区分度画面、比例容差、伸缩、丢帧和重复帧下的可信度与现场精度需专项验证。
 
 读该候选 `workspace.json` 的段列表、`boundaryGuard` 与各轮已确认的手动分段（需要有多轮已确认分段的项目数据，如旧流程候选或手工整理的评估项目），逐轮用其余轮次的帧组数均值（`calibrate_counts`）得出各段 N_exp，再比较比例边界与手动边界，并给出“按原帧号”的对照；比例评估不读图像，模板图像对齐评估读取采集原图，均不需要 lyFlow。至少要 2 段、2 个已确认轮次。评估结论需附对应数据版本与运行输出，本仓库不保存现场数据与临时验收证据。
 

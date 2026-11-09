@@ -1,5 +1,5 @@
 import { errorText } from "../../lib/errors";
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from "react";
 import { cameraApi, type CameraConfig } from "../camera";
 import { recipeApi, type UnavailableRecipe } from "../cycle/api";
 import type { Recipe, RecipeDoc, RecipeSummary } from "../cycle/types";
@@ -11,7 +11,10 @@ import type { NavigationMapData } from "./navigation/types";
 import type { Workspace, WorkspaceView } from "./types";
 import { corridorStationError, draftKey, sameCorridor, savedDraft, withCorridor } from "./teach";
 import { useSnackbar, type SnackbarMessage } from "qing-steel";
+import type { WorkbenchDraft } from "./workbenchDraft";
 import "./workspace.css";
+
+export interface SegmentDraftEdit { roundId: string; draft: WorkbenchDraft }
 
 export type SnackMessage = string | SnackbarMessage;
 export interface NavigationDraft { map: NavigationMapData; revision: number }
@@ -25,6 +28,8 @@ interface WorkspaceContextValue {
   pendingSave: boolean; unsavable: boolean;
   /** 跳过防抖，马上保存待存的改动 */
   saveNow: () => void;
+  segmentDraft: SegmentDraftEdit | null; segmentDirty: boolean;
+  setSegmentDraft: Dispatch<SetStateAction<SegmentDraftEdit | null>>;
   navigationDraft: NavigationDraft | null; navigationDirty: boolean;
   setNavigationDraft: (draft: NavigationDraft | null) => void;
   /** 走廊示教里尚未保存的段走廊草稿，按“相机#段号”；像素当量与检测参数随相机，只读 */
@@ -54,6 +59,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [preview, setPreview] = useState<Recipe | null>(null);
   const [previewError, setPreviewError] = useState("");
   const [corridorDrafts, setCorridorDrafts] = useState<Record<string, CameraTeachDraft>>({});
+  const [segmentDraft, setSegmentDraft] = useState<SegmentDraftEdit | null>(null);
+  const segmentDirty = segmentDraft != null;
   const [navigationDraft, setNavigationDraft] = useState<NavigationDraft | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -68,6 +75,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const selected = useRef<string | null>(null);
   const dirtyRef = useRef(false);
   const navigationDirtyRef = useRef(false);
+  const segmentDirtyRef = useRef(false);
   const pendingRefresh = useRef<string | null>(null);
   const [refreshRevision, setRefreshRevision] = useState(0);
   const { show: snack, clear: clearSnack } = useSnackbar();
@@ -85,13 +93,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const unsavable = !!doc && changedDrafts.some(([, draft]) => !!corridorStationError(draft, doc.spacing));
   const pendingSave = dirty || saving || !!pendingCorridor;
   navigationDirtyRef.current = navigationDirty;
-  dirtyRef.current = dirty || frameDirty || navigationDirty;
+  segmentDirtyRef.current = segmentDirty;
+  dirtyRef.current = dirty || frameDirty || navigationDirty || segmentDirty;
   useEffect(() => {
-    if (!navigationDirty) return;
+    if (!navigationDirty && !segmentDirty) return;
     const preventClose = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
     window.addEventListener("beforeunload", preventClose);
     return () => window.removeEventListener("beforeunload", preventClose);
-  }, [navigationDirty]);
+  }, [navigationDirty, segmentDirty]);
 
   /** keepDoc：自动保存期间本地又改了配置，只换上新修订与计划，本地配置留给下一次保存 */
   const accept = useCallback((next: WorkspaceView, keepDoc = false) => {
@@ -135,11 +144,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const select = useCallback(async (id: string) => {
-    if (dirtyRef.current && (selected.current !== id || navigationDirtyRef.current)) { setError("当前草稿尚未保存，请先保存或撤销修改后再选择配方"); return null; }
+    if (dirtyRef.current && (selected.current !== id || navigationDirtyRef.current || segmentDirtyRef.current)) { setError("当前草稿尚未保存，请先保存或撤销修改后再选择配方"); return null; }
     pendingRefresh.current = null;
     const serial = ++requestSerial.current;
     selected.current = id;
-    setSelectedId(id); setNavigationDraft(null);
+    setSelectedId(id); setNavigationDraft(null); setSegmentDraft(null);
     setError(""); clearSnack(); setData(null); setDoc(null); setPreview(null); setCorridorDrafts({});
     try {
       const next = await workspaceApi.get(id);
@@ -173,7 +182,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const id = pendingRefresh.current;
-    if (!id || id !== selectedId || dirty || frameDirty || navigationDirty || busy || saving || !desktopAvailable()) return;
+    if (!id || id !== selectedId || dirty || frameDirty || navigationDirty || segmentDirty || busy || saving || !desktopAvailable()) return;
     let alive = true;
     const serial = ++requestSerial.current;
     const current = () => alive && serial === requestSerial.current && id === selected.current && !dirtyRef.current && !acting.current && !savingRef.current;
@@ -184,7 +193,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       accept(next);
     }).catch(e => { if (current()) setError(errorText(e)); });
     return () => { alive = false; };
-  }, [refreshRevision, selectedId, dirty, frameDirty, navigationDirty, busy, saving, accept]);
+  }, [refreshRevision, selectedId, dirty, frameDirty, navigationDirty, segmentDirty, busy, saving, accept]);
 
   useEffect(() => {
     if (!doc || !desktopAvailable() || equal(doc, data?.workspace.doc)) return;
@@ -255,9 +264,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(timer);
   }, [doc, data, corridorDrafts, dirty, frameDirty, busy, saving, saveRetry, urgent, accept]);
 
-  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft,
-    clearSelection:()=>{if(dirtyRef.current){setError("当前草稿尚未保存，请先保存或撤销修改");return;}pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setNavigationDraft(null);setError("");clearSnack();},
-    discardDrafts:()=>{if(acting.current||savingRef.current)return false;dirtyRef.current=false;navigationDirtyRef.current=false;failedSave.current="";setDoc(data?.workspace.doc??null);setPreview(data?.layout??null);setPreviewError("");setCorridorDrafts({});setNavigationDraft(null);setError("");return true;},
+  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || recipeErrors, busy: busy || saving, saving, acting: busy, pendingSave, unsavable, saveNow: () => setUrgent(true), dirty, frameDirty, navigationDraft, navigationDirty, setNavigationDraft, segmentDraft, segmentDirty, setSegmentDraft,
+    clearSelection:()=>{if(dirtyRef.current){setError("当前草稿尚未保存，请先保存或撤销修改");return;}pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setCorridorDrafts({});setNavigationDraft(null);setSegmentDraft(null);setError("");clearSnack();},
+    discardDrafts:()=>{if(acting.current||savingRef.current)return false;dirtyRef.current=false;navigationDirtyRef.current=false;segmentDirtyRef.current=false;failedSave.current="";setDoc(data?.workspace.doc??null);setPreview(data?.layout??null);setPreviewError("");setCorridorDrafts({});setNavigationDraft(null);setSegmentDraft(null);setError("");return true;},
     corridorDrafts, select, reloadList, setDoc,
     setCorridorDraft:(key, draft) => setCorridorDrafts(previous => ({ ...previous, [key]:draft })),
     act, saveDoc, saveState, retrySave: () => setSaveRetry(v => v + 1), setError }}>{children}</Context.Provider>;

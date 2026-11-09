@@ -531,7 +531,9 @@ impl WorkspaceHost {
     }
 }
 
-fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
+fn view(app: &AppHandle, mut w: Workspace) -> Result<WorkspaceView, String> {
+    // 旧候选的示教件还没记笔结构：显示时按轮次补上，分段页才能按笔分段（RB-12）；读不到就按没有笔
+    let _ = pieces::fill_piece_passes(app.state::<CycleHost>().camera.recipe_capture(), &mut w);
     let layout = w.doc.build()?;
     let production_recipe = app.state::<CycleHost>().recipe(&w.doc.id);
     let production_version = production_recipe.as_ref().map(|r| r.version);

@@ -19,7 +19,7 @@ const kindText = { straight: "直线", corner: "弯道" } as const;
 const range = ([a, b]: [number, number]) => a === b ? `${a + 1}` : `${a + 1}–${b + 1}`;
 
 /**
- * 按笔对照（RB-11，分段页工作台上方）：换示教件后列出旧件的笔与新件的笔的对照，确认前可改，每改一次后端从换件前的示教重新迁移；
+ * 按笔对照（RB-11，分段与示教页顶部）：换示教件后列出旧件的笔与新件的笔的对照，确认前可改，每改一次后端从换件前的示教重新迁移；
  * 确认后列出各段的沿用状态。locked 非空时不能改（段列表或分段有未保存的改动）。
  */
 export default function PassAlignmentPanel({ alignment, plan, locked }: { alignment: PassAlignment; plan: WorkspacePlanView; locked: string }) {
@@ -83,7 +83,7 @@ export default function PassAlignmentPanel({ alignment, plan, locked }: { alignm
       footer={<><Button disabled={busy} onClick={() => setConfirming(false)}>取消</Button><Button variant="filled" disabled={busy} onClick={() => void save(linksOf(rows), true)}>确认对照</Button></>}>
       <div className="wp-stack">
         <p>按当前对照确认：沿用 {counts.same} 笔、改动 {counts.changed} 笔、新增 {counts.added} 笔、删除 {counts.removed} 笔。</p>
-        <p><strong>确认后对照不能再改。</strong>之后到分段页确认边界；改动与新增的段要在新件上重新示教，沿用的段要在新件上重新选示教帧或确认沿用。</p>
+        <p><strong>确认后对照不能再改。</strong>之后到分段与示教页确认边界；改动与新增的段要在新件上重新示教，沿用的段要在新件上重新选示教帧或确认沿用。</p>
       </div>
     </Dialog>}
   </Panel>;

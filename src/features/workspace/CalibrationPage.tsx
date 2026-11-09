@@ -27,15 +27,15 @@ import { OperationStatus, useOperation } from "./operation";
 export default function CalibrationPage() {
   const href = useRecipeHref();
   const operation = useOperation();
-  const { data, doc, busy, dirty, frameDirty, act } = useWorkspace();
+  const { data, doc, busy, dirty, frameDirty, segmentDirty, act } = useWorkspace();
   const [masking, setMasking] = useState(false);
   const plan = data?.plan ?? null;
   const calibration = plan?.calibration ?? null;
   if (!data || !doc || !plan) return <WorkspaceEmpty />;
 
   const piece = plan.pieces[0] ?? null;
-  const locked = busy || dirty || frameDirty || !!data.workspace.pending;
-  const lockedReason = data.workspace.pending ? "候选版本正在等待生效" : busy ? "正在处理，请稍候" : dirty || frameDirty ? "有未保存的改动，保存后再测量" : "";
+  const locked = busy || dirty || frameDirty || segmentDirty || !!data.workspace.pending;
+  const lockedReason = data.workspace.pending ? "候选版本正在等待生效" : busy ? "正在处理，请稍候" : dirty || frameDirty || segmentDirty ? "有未保存的改动，保存后再测量" : "";
   const taught = plan.cameraTeaching.length > 0 && plan.cameraTeaching.every(item => item.ready);
   const segmented = !!calibration && calibration.segments.length > 0 && calibration.segments.every(segment => segment.nExp != null);
   const measureReason = !piece ? "还没有示教件" : !segmented ? "示教件分段未确认：先在分段步骤确认" : !taught ? "走廊示教未完成：各相机要有像素当量、检测的每一段都要有走廊" : lockedReason;
@@ -59,7 +59,7 @@ export default function CalibrationPage() {
         <Badge tone={measured ? "ok" : stale ? "warn" : "neutral"}>{measured ? "已按当前走廊测量" : stale ? "走廊或检测参数改过，需重新测量" : "还没测量"}</Badge>
         <Button variant={measured ? "tonal" : "filled"} disabled={!!measureReason} title={measureReason || "按当前走廊测量示教件的每一帧，得出胶偏参考"} onClick={measure}>测量示教件</Button>
         {measureReason && <span className="muted" role="note">{measureReason}</span>}
-        <Link className="wp-text-link" to={href("/recipe/segments")}>段列表</Link>
+        <Link className="wp-text-link" to={href("/recipe/teach")}>分段与示教</Link>
       </div>
       {calibration && calibration.segments.length > 0 && <Table className="wp-calib-table" caption="逐段基准" columns={columns} rows={calibration.segments} rowKey={row => String(row.index)} />}
       <OperationStatus operation={operation} label="测量示教件" />

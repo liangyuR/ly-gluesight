@@ -19,8 +19,6 @@
 .wp-group-panel > h2 ~ h2 { margin-top:12px; }
 .wp-group-cameras { display:grid; grid-template-columns:repeat(auto-fill, minmax(70px, 1fr)); gap:2px; }
 .wp-group-camera.qs-btn { gap:6px; padding:0 8px; }
-.wp-group-seg > em { color:var(--on-surface-variant); font-size:12px; font-style:normal; }
-.wp-group-seg > span { color:var(--on-surface-variant); }
 .wp-seg-corridor-note { display:flex; flex-direction:column; gap:8px; padding:12px; }
 .wp-seg-corridor-note h3 { margin:0; font-size:13px; }
 .wp-seg-corridor-note p { margin:0; font-size:12px; }

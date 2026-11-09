@@ -21,7 +21,7 @@ export type RecordSource = "real";
 export type HistoryScope = "real";
 
 /** 进入历史详情时的路由 state：历史列表带筛选（前后件按它导航）；其他页面（如试测）带返回目标，返回按钮回到那里。 */
-/** 历史详情的地址状态：列表筛选、返回目标；从分段页返回时带回离开时的滚动位置。 */
+/** 历史详情的地址状态：列表筛选、返回目标；从分段与示教页返回时带回离开时的滚动位置。 */
 export type HistoryDetailState = { query?: HistoryQuery; returnTo?: { path: string; label: string }; scrollTop?: number };
 
 export interface HistoryQuery {

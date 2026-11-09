@@ -13,11 +13,11 @@ import "./segments.css";
 import { useRecipeHref } from "./recipeRoutes";
 
 const actions: Record<string, string> = {
-  "/recipe/capture": "查看示教件", "/recipe/segments": "编辑段列表", "/recipe/teach": "查看走廊示教",
+  "/recipe/capture": "查看示教件", "/recipe/teach": "分段与示教",
   "/recipe/calibration": "查看试测", "/recipe/validation": "查看发布",
 };
 
-/** 配方进度（段配方）：示教件 → 段列表 → 走廊示教 → 试测 → 发布。 */
+/** 配方进度（段配方）：示教件 → 分段与示教 → 试测 → 发布。 */
 export default function PlanProgressPage() {
   const href = useRecipeHref();
   const { data } = useWorkspace();
@@ -61,7 +61,7 @@ export default function PlanProgressPage() {
         <span className={"wp-progress-number" + (optional ? " optional" : "")} aria-hidden="true">{index + 1}</span>
         <div className="wp-progress-row-body">
           <h3>{stage.label}{optional && <small>可选</small>}</h3>
-          <p>{waiting ? "选好示教件后可继续" : isCorridor ? "为各段检测相机示教走廊" : main?.detail || stage.hint}</p>
+          <p>{waiting ? "选好示教件后可继续" : isCorridor ? "按笔分段，为各段检测相机示教走廊" : main?.detail || stage.hint}</p>
           {!waiting && subs.map(step => <p key={step.id} className="wp-progress-sub"><span>{step.id === "publish" ? "发布" : step.label}</span><Badge tone={stepStatusTone[step.status]}>{stepStatusText[step.status]}</Badge>{step.detail}</p>)}
         </div>
         <div className="wp-progress-meter">

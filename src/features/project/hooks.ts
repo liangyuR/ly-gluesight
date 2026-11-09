@@ -75,8 +75,9 @@ export function useProjectUsage(ids: string[], version = 0): Record<string, Usag
 }
 
 export function useUnsavedCandidate(): string {
-  const { dirty, frameDirty, navigationDirty, saveState } = useWorkspace();
-  if (navigationDirty) return "工件导航图有未保存修改，请回到分段页保存或撤销后再切换项目。";
+  const { dirty, frameDirty, navigationDirty, segmentDirty, saveState } = useWorkspace();
+  if (segmentDirty) return "分段有未保存修改，请回到分段与示教页保存或撤销后再切换项目。";
+  if (navigationDirty) return "工件导航图有未保存修改，请回到分段与示教页保存或撤销后再切换项目。";
   if (saveState === "failed") return "候选配置保存失败。请回到配方页重试保存后再切换项目。";
   if (dirty || frameDirty || saveState !== "saved") return "候选配置有尚未保存的编辑。请等待保存完成后再切换项目。";
   return "";

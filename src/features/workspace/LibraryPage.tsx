@@ -29,7 +29,7 @@ function burstScale(draft: RecipeDoc | undefined, production: RecipeSummary | un
 }
 
 export default function LibraryPage() {
-  const {list,drafts,unavailable,selectedId,data,dirty,frameDirty,navigationDirty,select,clearSelection,discardDrafts,reloadList,busy,setError} = useWorkspace();
+  const {list,drafts,unavailable,selectedId,data,dirty,frameDirty,navigationDirty,segmentDirty,select,clearSelection,discardDrafts,reloadList,busy,setError} = useWorkspace();
   const navigate = useNavigate();
   const [search,setSearch] = useState("");
   const [creating,setCreating] = useState<RecipeDoc | null>(null);
@@ -48,10 +48,10 @@ export default function LibraryPage() {
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
   const available=desktopAvailable();
   const blocked=!available||busy||working;
-  const unsaved=dirty||frameDirty||navigationDirty;
-  // 未保存的修改在哪一页：导航图在分段页撤销或保存，走廊草稿在走廊示教页
-  const resumePath=navigationDirty?"/recipe/segments":frameDirty?"/recipe/teach":"/recipe/progress";
-  const unsavedParts=[navigationDirty&&"工件导航图",frameDirty&&"走廊示教草稿",dirty&&"候选配置"].filter(Boolean).join("、");
+  const unsaved=dirty||frameDirty||navigationDirty || segmentDirty;
+  // 未保存的修改在哪一页：导航图与走廊草稿都在分段与示教页
+  const resumePath=navigationDirty||segmentDirty||frameDirty?"/recipe/teach":"/recipe/progress";
+  const unsavedParts=[segmentDirty&&"分段草稿",navigationDirty&&"工件导航图",frameDirty&&"走廊示教草稿",dirty&&"候选配置"].filter(Boolean).join("、");
   const guard=(label:string,run:()=>void)=>{if(unsaved)setLeaving({label,run});else run();};
   const ids = Array.from(new Set([...list.map(r => r.id),...drafts.map(w => w.doc.id)]));
   const duplicateId=(id:string)=>[...ids,...unavailable.map(r=>r.fileName.replace(/\.json$/i,""))].some(existing=>existing.toLowerCase()===id.toLowerCase());

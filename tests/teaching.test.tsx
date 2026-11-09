@@ -9,15 +9,20 @@ import { burstRecipe, burstWorkspaceView, captureRoundV2, frameMetrics, pathSegm
 import { stubSvgPointer } from "./svg-pointer";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), teachPreviewFrame: vi.fn(), teachPreviewSegment: vi.fn(), fitColorModel: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveDoc: vi.fn(), teachSegmentCorridor: vi.fn(), captureGet: vi.fn(), captureFrameImage: vi.fn(), captureRoundThumbs: vi.fn(() => new Promise(() => {})), teachPreviewFrame: vi.fn(), teachPreviewSegment: vi.fn(), fitColorModel: vi.fn(), segmentTemplatePreview: vi.fn(), segmentTemplateSave: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
 const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
 function show(path = "/recipe/teach", page = <TeachingPage />) {
   return render(<MemoryRouter initialEntries={[path]}>{page}</MemoryRouter>);
 }
+/** 三段已确认边界：帧组 1–4、5–8、9–12 */
+const confirmedReview = () => ({ rounds: { "round-1": { groupCount: 12, cuts: [4, 8], status: "confirmed" as const, excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null } } });
 beforeEach(() => {
   ws = workspaceState(burstWorkspaceView(burstRecipe({ id: "A" }))); vi.mocked(useWorkspace).mockImplementation(() => ws);
+  ws.data!.workspace.captureReview = confirmedReview();
+  vi.mocked(workspaceApi.segmentTemplatePreview).mockResolvedValue({ restructured: false, dropped: [], untaught: [], measurementCleared: false, coverage: null });
+  vi.mocked(workspaceApi.segmentTemplateSave).mockImplementation(async () => ws.data!);
   vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot(), logs: [] });
   vi.mocked(workspaceApi.image).mockResolvedValue(picture);
   vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);
@@ -48,7 +53,6 @@ describe("走廊示教", () => {
     doc.boundaryGuard = 1;
     doc.passSkip = { head: 1, tail: 0 };
     ws.data!.workspace.teachingPiece!.passes = [4, 4, 4];
-    ws.data!.workspace.captureReview = { rounds: { "round-1": { groupCount: 12, cuts: [4, 8], status: "confirmed", excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null } } };
     vi.mocked(workspaceApi.teachPreviewSegment).mockResolvedValue({ round: "round-1", start: 5, end: 8, frames: Array.from({ length: 4 }, (_, i) => frameMetrics(0, i + 5, { presentRatio: 0 })) });
     show("/recipe/teach?camera=CAM-1&segment=2");
     expect(await screen.findByRole("button", { name: "帧组 5：生产跳过" })).toHaveAttribute("title", expect.stringContaining("段 1 不检测的边界保护"));
@@ -67,15 +71,15 @@ describe("走廊示教", () => {
   ])("段走廊草稿%s", async (_, state, locked) => {
     Object.assign(ws, state, { corridorDrafts: { "CAM-2#1": { corridor: [[10, 10], [30, 10]], mmPerPx: .1, window: null } }, frameDirty: true });
     show();
-    for (const name of ["选择 CAM-1 段 1 走廊", "选择相机 CAM-2"]) {
+    for (const name of ["选择 CAM-1 1-1 走廊", "选择相机 CAM-2"]) {
       const other = screen.getByRole("button", { name });
       if (locked) {
         expect(other).toBeDisabled();
         expect(other).toHaveAccessibleDescription(expect.stringContaining("不会自动保存"));
       } else expect(other).toBeEnabled();
     }
-    expect(screen.getByRole("button", { name: "选择 CAM-2 段 1 走廊" })).toBeEnabled();
-    await screen.findByRole("img", { name: "CAM-2 · 段 1 · 示教帧" });
+    expect(screen.getByRole("button", { name: "选择 CAM-2 1-1 走廊" })).toBeEnabled();
+    await screen.findByRole("img", { name: "CAM-2 · 1-1 · 示教帧" });
   });
 
 });
@@ -101,7 +105,7 @@ describe("出胶点标定", () => {
     ws.data!.workspace.doc.inspect![1].window = { startMm: 2, lengthMm: 4 };
     stubSvgPointer();
     show("/recipe/teach?camera=CAM-2&segment=1");
-    const image = await screen.findByRole("img", { name: "CAM-2 · 段 1 · 示教帧" });
+    const image = await screen.findByRole("img", { name: "CAM-2 · 1-1 · 示教帧" });
     fireEvent.click(screen.getByLabelText("标出胶点"));
     fireEvent.pointerDown(image, { button: 0, clientX: 40, clientY: 30, pointerId: 1 });
     const doc = vi.mocked(ws.setDoc).mock.lastCall![0];
@@ -120,7 +124,7 @@ describe("画布模式", () => {
   it("打开示教帧默认只看 → 点图不加走廊点；选“编辑点”后点图才加点", async () => {
     stubSvgPointer();
     show("/recipe/teach?camera=CAM-2&segment=1");
-    const image = await screen.findByRole("img", { name: "CAM-2 · 段 1 · 示教帧" });
+    const image = await screen.findByRole("img", { name: "CAM-2 · 1-1 · 示教帧" });
     expect(screen.getByRole("button", { name: "只看" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.pointerDown(image, { button: 0, clientX: 40, clientY: 30, pointerId: 1 });
     expect(ws.setCorridorDraft).not.toHaveBeenCalled();
@@ -143,7 +147,7 @@ describe("搜索扇区", () => {
     cam1.segments![1].sectorDeg = 0;
     stubSvgPointer();
     show("/recipe/teach?camera=CAM-1&segment=1");
-    const image = await screen.findByRole("img", { name: "CAM-1 · 段 1 · 示教帧" });
+    const image = await screen.findByRole("img", { name: "CAM-1 · 1-1 · 示教帧" });
     fireEvent.pointerDown(await screen.findByRole("button", { name: "搜索扇区把手" }), { button: 0, clientX: 80, clientY: 30, pointerId: 1 });
     fireEvent.pointerMove(image, { clientX: 40, clientY: 50, pointerId: 1 });
     expect(ws.setDoc).not.toHaveBeenCalled();
@@ -221,12 +225,11 @@ describe("相机测量区间与段检测参数", () => {
 describe("示教帧选择", () => {
 
   // 防的回归：选了缺帧的帧组仍能提交，后端冻结不到图（规格 §3：缺帧只告警，但这一帧没有图可示教）；进度链接带的段没定位到，选帧落到别的段
-  it("链接指定相机与段、所选帧组这台相机缺帧 → 打开即选这一段的帧，不读图、用此帧示教禁用并说明缺帧", async () => {
-    ws.data!.workspace.captureReview = { rounds: { "round-1": { groupCount: 12, cuts: [4, 8], status: "confirmed", excludedGroups: [], segmentSignature: null, captureSignature: null, templateVersion: null } } };
+  it("链接指定相机与段、帧条上点这台相机缺帧的帧组 → 不读图、用此帧示教禁用并说明缺帧", async () => {
     show("/recipe/teach?camera=CAM-2&segment=2");
-    await screen.findByText("第 2 段在示教件为帧组 5–8");
-    fireEvent.click(await screen.findByRole("button", { name: "帧组 5 · CAM-2 · 缺帧" }));
-    const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-2 · 段 2" });
+    await screen.findByText("1-2 在示教件为帧组 5–8");
+    fireEvent.click(await screen.findByRole("button", { name: "CAM-2 帧组 5" }));
+    const choose = await screen.findByRole("button", { name: "用此帧示教 1-2 CAM-2" });
     await vi.waitFor(() => expect(choose).toBeDisabled());
     expect(choose).toHaveAccessibleDescription(expect.stringContaining("缺帧"));
     expect(vi.mocked(workspaceApi.captureFrameImage).mock.calls.map(args => args.slice(0, 3))).not.toContainEqual(["round-1", "CAM-2", 5]);

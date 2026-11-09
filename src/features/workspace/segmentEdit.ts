@@ -1,5 +1,5 @@
 /**
- * 段列表的编辑规则（纯函数，SegmentsPage 与分段标定工作台用）：与后端 plan::new_segment / validate_segments 与 D-SB-20 对应。
+ * 段列表的编辑规则（纯函数，分段与示教页用）：与后端 plan::new_segment / validate_segments 与 D-SB-20 对应。
  * N_exp 取自示教件分段、x_ref 由测量示教件得出：段序列或类型变化时清空（见 workbenchDraft.segmentsForSave），不在这里手填。
  */
 import type { EdgeParams, HeadingSettings, KindDefaults, PathSegment, SegmentKind } from "../plan/types";

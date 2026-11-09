@@ -1,7 +1,7 @@
 import type { Location } from "react-router-dom";
 import type { ReturnNavigationState } from "./returnNavigation";
 
-/** 从历史详情跳到分段页时带的定位：历史件选中的帧组、所在段与历史件的帧组数、各笔帧组数。 */
+/** 从历史详情跳到分段与示教页时带的定位：历史件选中的帧组、所在段与历史件的帧组数、各笔帧组数。 */
 export interface SegmentLocate {
   sn: string;
   historyId: number;

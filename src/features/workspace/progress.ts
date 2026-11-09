@@ -9,7 +9,7 @@ export const stepStatusTone: Record<StepStatus, "info" | "ok" | "warn" | "neutra
 export function targetPathV2(target: ProgressTargetV2) {
   switch (target.page) {
     case "capture": return "/recipe/capture";
-    case "segments": return "/recipe/segments";
+    case "segments": return "/recipe/teach";
     case "corridor": return corridorPath(target.camera, target.segment);
     case "calibration": return "/recipe/calibration";
     case "validation": return "/recipe/validation";
