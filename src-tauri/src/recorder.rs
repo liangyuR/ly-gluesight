@@ -591,7 +591,11 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
                 // 查保护目录到滚动清理删除之间不让示教件登记新引用；通知回调前放开
                 let outcome = {
                     let _references = crate::recipe_capture::lock_references();
-                    protect_retention(&mut job, &mut state, cleanup.as_ref().map(|c| &c.protection));
+                    protect_retention(
+                        &mut job,
+                        &mut state,
+                        cleanup.as_ref().map(|c| &c.protection),
+                    );
                     finish_recording(&root, job, state, cleanup.as_ref().map(|c| &c.release))
                 };
                 if !pending.exists() { active.lock().unwrap().remove(&pending); }
