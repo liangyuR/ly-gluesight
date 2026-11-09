@@ -574,14 +574,26 @@ pub fn resolve_regions(
         }
     }
 
-    // 不检测的段（D-SB-53）：分段可信时整段划为跳过，并向两侧各延伸 guard 帧——边界有 ±guard 帧的不确定，邻段贴着边界的帧
-    // 可能其实属于这一段，照常测会误报。分段不可信时定位不到这一段，只是没有相机量它的帧（`segment_cameras` 为空）
+    // 不检测的段（D-SB-53）：分段可信时整段划为跳过，并向两侧各延伸 guard 帧——笔中间的边界有 ±guard 帧的不确定，邻段贴着
+    // 边界的帧可能其实属于这一段，照常测会误报；两笔之间的硬边界位置确定，不越过。分段不可信时定位不到这一段，只是没有相机
+    // 量它的帧（`segment_cameras` 为空）
     for (region, a, b) in &regions {
         if a != b || !segments[*a].skip {
             continue;
         }
-        let from = region.first_seq.saturating_sub(u64::from(guard)).max(1);
-        let to = (region.last_seq + u64::from(guard)).min(total_seq);
+        let floor = hard
+            .range(..region.first_seq)
+            .next_back()
+            .map_or(1, |&h| h + 1);
+        let ceiling = hard
+            .range(region.last_seq..)
+            .next()
+            .copied()
+            .unwrap_or(total_seq);
+        let from = region.first_seq.saturating_sub(u64::from(guard)).max(floor);
+        let to = (region.last_seq + u64::from(guard))
+            .min(total_seq)
+            .min(ceiling);
         for label in &mut labels[from as usize - 1..to as usize] {
             *label = Label::Skipped(*a);
         }
@@ -1255,6 +1267,44 @@ mod tests {
         assert!((9..=16).all(|seq| column(seq) == [None; 3]));
         assert_eq!(column(8), [Some(1), None, None]);
         assert_eq!(column(17), [None, None, Some(3)]);
+    }
+
+    /// 防的回归：不检测的段从两笔之间开始时，向外延伸的 guard 帧不能越过这条硬边界，把上一笔末尾确定属于上一段的帧也跳过；
+    /// 笔中间那一头照常延伸。
+    #[test]
+    fn skipped_segment_does_not_extend_across_a_pass_boundary() {
+        let mut segments = calibrated(&[S, C, S], &[10, 4, 10]);
+        segments[1].skip = true;
+        let outcome = SegOutcome::Boundaries(vec![
+            Boundary {
+                after_segment: 1,
+                frame_seq: 10,
+                confidence: 1.0,
+                hard: true,
+            },
+            Boundary {
+                after_segment: 2,
+                frame_seq: 14,
+                confidence: 1.0,
+                hard: false,
+            },
+        ]);
+        assert_eq!(
+            resolve_regions(&segments, &outcome, 24, 0.5, 2, PassRules::NONE),
+            vec![
+                region(RegionKind::Straight { segment: 1 }, 1, 10),
+                region(
+                    RegionKind::Skipped {
+                        segment: 2,
+                        pass: None,
+                        short: false
+                    },
+                    11,
+                    16
+                ),
+                region(RegionKind::Straight { segment: 3 }, 17, 24),
+            ]
+        );
     }
 
     /// 段首尾跳过的帧划为 Skipped 区域且优先于过渡区：分段可信时按各段首尾定位；未分段时只有整件首尾能定位
