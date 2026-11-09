@@ -37,6 +37,8 @@ pnpm package
 
 本地先执行 `tauri build --no-bundle`，应用自检通过后执行 `tauri bundle` 生成 NSIS 安装包，不重复构建前端。打包脚本通过 Node 直接调用项目本地 Tauri CLI，保留 `-- --locked` 参数分隔符，将 `--locked` 传给 Cargo，避免 PowerShell 的 `pnpm.ps1` 入口吞掉分隔符。
 
+NSIS 安装包用 lzma 固实压缩（`src-tauri/tauri.windows.conf.json` 的 `compression`），优先减小安装包体积，代价是压缩耗时增加；实际体积和耗时随打包内容与机器而变。
+
 厂商运行库变更时增加 `bundleVersion`、tag 和资产名，并从明确路径导出、验证和发布，禁止覆盖旧资产：
 
 ```powershell
