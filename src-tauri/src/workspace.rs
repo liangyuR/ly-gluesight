@@ -358,7 +358,7 @@ pub struct WorkspaceHost {
     items: Mutex<HashMap<String, Workspace>>,
     pub notes: Vec<String>,
     /// 段配方在途件的实时原图，按 (计划相机下标, seq)
-    live_burst: Mutex<LiveFrames<(usize, u64)>>,
+    live_burst: Mutex<LiveFrames>,
     /// 段配方在途件各帧测到的叠图，按 (计划相机下标, seq)
     live_views: Mutex<LiveViews>,
     station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
@@ -368,13 +368,14 @@ pub struct WorkspaceHost {
     history_bundle: Mutex<Option<(String, Arc<crate::production::Prepared>)>>,
 }
 
-/// 在途件的实时原图：按工件与配方修订成组，换件即清空；总量超过上限时丢最早的。
-/// 键为 (计划相机下标, seq)。
+/// 在途件的原图：按工件与配方修订成组，换件即清空。内存里只留最近的帧（总量超过上限时丢最早的），
+/// 更早的帧按本件的录制原图读回。键为 (计划相机下标, seq)。
 #[derive(Default)]
-struct LiveFrames<K> {
+struct LiveFrames {
     key: Option<(String, String)>,
-    frames: VecDeque<(K, Arc<FrameImage>)>,
+    frames: VecDeque<((usize, u64), Arc<FrameImage>)>,
     bytes: usize,
+    recorded: HashMap<(usize, u64), crate::recorder::PendingFrame>,
 }
 
 /// 在途件各帧测到的叠图：按工件与配方修订成组，换件即清空；同一帧重测（收尾补测）时以后测的为准。
@@ -384,8 +385,15 @@ struct LiveViews {
     views: HashMap<(usize, u64), CalibrationFrameView>,
 }
 
-impl<K: PartialEq + Default> LiveFrames<K> {
-    fn insert(&mut self, cycle_id: &str, revision_id: &str, k: K, image: Arc<FrameImage>) {
+impl LiveFrames {
+    fn insert(
+        &mut self,
+        cycle_id: &str,
+        revision_id: &str,
+        k: (usize, u64),
+        image: Option<Arc<FrameImage>>,
+        recorded: Option<crate::recorder::PendingFrame>,
+    ) {
         if self
             .key
             .as_ref()
@@ -396,6 +404,12 @@ impl<K: PartialEq + Default> LiveFrames<K> {
                 ..Self::default()
             };
         }
+        if let Some(recorded) = recorded {
+            self.recorded.entry(k).or_insert(recorded);
+        }
+        let Some(image) = image else {
+            return;
+        };
         if self.frames.iter().any(|(index, _)| *index == k) {
             return;
         }
@@ -1697,7 +1711,7 @@ pub fn workspace_live_frame_view(
         .and_then(|_| live.views.get(&(camera, seq)).cloned())
 }
 
-/// 段配方在途件一帧的原图（计划相机 camera 的第 seq 帧），供 `workspace_live_frame_image` 读。
+/// 段配方在途件一帧的原图（计划相机 camera 的第 seq 帧）与它排进写盘的录制原图，供 `workspace_live_frame_image` 读。
 pub fn retain_live_frame(
     app: &AppHandle,
     cycle_id: &str,
@@ -1705,40 +1719,106 @@ pub fn retain_live_frame(
     camera: usize,
     seq: u64,
     image: &Option<Arc<FrameImage>>,
+    recorded: Option<crate::recorder::PendingFrame>,
 ) {
-    if let (Some(host), Some(image)) = (app.try_state::<WorkspaceHost>(), image) {
-        host.live_burst
-            .lock()
-            .unwrap()
-            .insert(cycle_id, revision_id, (camera, seq), image.clone());
+    if let Some(host) = app.try_state::<WorkspaceHost>() {
+        host.live_burst.lock().unwrap().insert(
+            cycle_id,
+            revision_id,
+            (camera, seq),
+            image.clone(),
+            recorded,
+        );
     }
 }
 
-/// 段配方在途件某台相机第 seq 帧的实时原图（决策记录 5.4，camera 为计划相机下标）；未到、缺帧或已超出预览缓存时报错。
+/// 段配方在途件某台相机第 seq 帧的原图（决策记录 5.4，camera 为计划相机下标）：先取内存里的最近帧，不在时读本件的
+/// 录制原图（收尾前在录制目录里，收尾后按本件的历史记录）；没到、缺帧或没有录制原图时报错。
 #[tauri::command]
-pub fn workspace_live_frame_image(
-    host: State<'_, WorkspaceHost>,
+pub async fn workspace_live_frame_image(
+    app: AppHandle,
     cycle_id: String,
     revision_id: String,
     camera: usize,
     seq: u64,
 ) -> Result<tauri::ipc::Response, String> {
-    let image = {
-        let live = host.live_burst.lock().unwrap();
-        if live
+    let found = app
+        .state::<WorkspaceHost>()
+        .live_burst
+        .lock()
+        .unwrap()
+        .lookup(&cycle_id, &revision_id, (camera, seq))?;
+    let recorded = match found {
+        LiveFrame::Memory(image) => return Ok(preview_response(&image)),
+        LiveFrame::Recorded(recorded) => recorded,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let image = match pending_image(recorded) {
+            Some(image) => image?,
+            None => recorded_part_frame(&app, &cycle_id, &revision_id, camera, seq)?,
+        };
+        Ok(preview_response(&image))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+enum LiveFrame {
+    Memory(Arc<FrameImage>),
+    Recorded(Option<crate::recorder::PendingFrame>),
+}
+
+impl LiveFrames {
+    fn lookup(
+        &self,
+        cycle_id: &str,
+        revision_id: &str,
+        k: (usize, u64),
+    ) -> Result<LiveFrame, String> {
+        if self
             .key
             .as_ref()
             .is_none_or(|key| key.0 != cycle_id || key.1 != revision_id)
         {
             return Err("本件尚未收到整帧图像".into());
         }
-        live.frames
-            .iter()
-            .find(|(key, _)| *key == (camera, seq))
-            .map(|(_, image)| image.clone())
-            .ok_or("这一帧原图未到达（缺帧）或已超出预览缓存；请开启图像测量或帧录制")?
-    };
-    Ok(preview_response(&image))
+        Ok(match self.frames.iter().find(|(key, _)| *key == k) {
+            Some((_, image)) => LiveFrame::Memory(image.clone()),
+            None => LiveFrame::Recorded(self.recorded.get(&k).cloned()),
+        })
+    }
+}
+
+/// 收尾前录制目录里的这一帧原图；没录、写盘失败或目录已在收尾时移走为 None（再按历史记录读）。
+fn pending_image(
+    recorded: Option<crate::recorder::PendingFrame>,
+) -> Option<Result<FrameImage, String>> {
+    match recorded?.state() {
+        crate::recorder::RecordedFrame::Ready(path) if path.is_file() => {
+            Some(crate::image_file::load(&path).map_err(|e| format!("读回录制原图失败：{e}")))
+        }
+        crate::recorder::RecordedFrame::Writing => Some(Err("这一帧原图还在写盘，稍后再看".into())),
+        _ => None,
+    }
+}
+
+/// 已收尾的本件按历史记录读录制原图。
+fn recorded_part_frame(
+    app: &AppHandle,
+    cycle_id: &str,
+    revision_id: &str,
+    camera: usize,
+    seq: u64,
+) -> Result<FrameImage, String> {
+    let store = app.state::<Store>();
+    let id = store
+        .id_by_cycle(cycle_id)?
+        .ok_or("这一帧原图已不在内存里，本件也没有录到它（录制关闭、资料盘不足或录制队满）")?;
+    let detail = store.detail_frame(id, camera, seq)?;
+    if detail.summary.recipe_revision.as_deref() != Some(revision_id) {
+        return Err("本件的历史记录与所看的配方修订不一致".into());
+    }
+    burst_history::frame_image(app, &detail, camera, seq)
 }
 
 pub fn station_image_ref(
@@ -1959,5 +2039,32 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// 防的回归：一件帧多时，内存预览挤掉的早期帧在线检测页看不了（只能看最后二十来帧）。
+    #[test]
+    fn frame_pushed_out_of_memory_preview_is_read_back_from_its_recording() {
+        let dir = ImportTestDir::new();
+        let file = dir.0.join("cam1_s000001.pgm");
+        let recorded = FrameImage::new(4, 2, (0..8).collect());
+        crate::image_file::save_pgm(&file, &recorded).unwrap();
+        let big = || Some(Arc::new(FrameImage::new(8192, 6144, vec![0; 8192 * 6144])));
+        let mut live = LiveFrames::default();
+        live.insert(
+            "c1",
+            "r1",
+            (0, 1),
+            big(),
+            Some(crate::recorder::PendingFrame::written(file)),
+        );
+        for seq in 2..=3 {
+            live.insert("c1", "r1", (0, seq), big(), None);
+        }
+        let LiveFrame::Recorded(pending) = live.lookup("c1", "r1", (0, 1)).unwrap() else {
+            panic!("第 1 帧应已挤出内存预览");
+        };
+        let image = pending_image(pending).unwrap().unwrap();
+        assert_eq!((image.width, image.height), (4, 2));
+        assert_eq!(&image.pixels[..], &recorded.pixels[..]);
     }
 }

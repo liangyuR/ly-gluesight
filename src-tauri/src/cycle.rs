@@ -2134,9 +2134,10 @@ impl Machine {
         match arrival {
             burst::Arrival::Accepted { camera, seq } => {
                 let camera_id = burst.camera_name(camera).to_owned();
-                if let Some(rec) = part.recording.as_mut() {
+                let recorded = part.recording.as_mut().and_then(|rec| {
                     host(&app).recorders.burst_frame(rec, &f, camera, seq);
-                }
+                    rec.pending_frame(camera, seq)
+                });
                 let image = f.single_image().cloned();
                 crate::workspace::retain_live_frame(
                     &app,
@@ -2145,6 +2146,7 @@ impl Machine {
                     camera,
                     seq,
                     &image,
+                    recorded,
                 );
                 trace(&app, "帧到达", format!("cycle={cycle_id} · {camera_id} 第 {seq} 帧 · 帧计数 {}", f.frame_counter),
                     fields(&camera_id, Some(seq)).with_stage("frame")

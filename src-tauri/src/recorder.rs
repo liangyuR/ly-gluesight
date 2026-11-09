@@ -171,27 +171,49 @@ pub struct Recording {
 /// 维护采集件的录制目录里放这个标记：示教与标定的样本，不参与按件数与大小的自动清理，由现场清理。
 pub const KEEP_MARKER: &str = "maintenance-collect";
 
-impl Recording {
-    /// 本件计划相机 `camera` 第 `seq` 帧已排进写盘的原图文件（还在本件的录制目录里，收尾前可读回）；没录或排队失败为 None。
-    pub fn burst_frame_file(&self, camera: usize, seq: u64) -> RecordedFrame {
-        let Some(frame) = self
-            .burst
-            .frames
-            .iter()
-            .find(|f| f.camera == camera && f.seq == seq && f.queued)
-        else {
-            return RecordedFrame::Missing;
-        };
-        match self
-            .burst
-            .written
-            .get(&FrameKey { camera, seq })
-            .and_then(|w| w.get())
-        {
-            Some(true) => RecordedFrame::Ready(self.dir.join(&frame.file)),
+/// 本件一帧已排进写盘的录制原图：文件在本件收尾前的录制目录里，收尾后目录移走、这个路径不再可读。
+#[derive(Clone, Debug)]
+pub struct PendingFrame {
+    path: PathBuf,
+    written: Arc<OnceLock<bool>>,
+}
+
+impl PendingFrame {
+    #[cfg(test)]
+    pub fn written(path: PathBuf) -> Self {
+        let written = Arc::new(OnceLock::new());
+        let _ = written.set(true);
+        Self { path, written }
+    }
+
+    pub fn state(&self) -> RecordedFrame {
+        match self.written.get() {
+            Some(true) => RecordedFrame::Ready(self.path.clone()),
             Some(false) => RecordedFrame::Missing,
             None => RecordedFrame::Writing,
         }
+    }
+}
+
+impl Recording {
+    /// 本件计划相机 `camera` 第 `seq` 帧排进写盘的原图；没录或排队失败为 None。
+    pub fn pending_frame(&self, camera: usize, seq: u64) -> Option<PendingFrame> {
+        let frame = self
+            .burst
+            .frames
+            .iter()
+            .find(|f| f.camera == camera && f.seq == seq && f.queued)?;
+        let written = self.burst.written.get(&FrameKey { camera, seq })?;
+        Some(PendingFrame {
+            path: self.dir.join(&frame.file),
+            written: written.clone(),
+        })
+    }
+
+    /// 本件计划相机 `camera` 第 `seq` 帧的录制原图状态（还在本件的录制目录里，收尾前可读回）。
+    pub fn burst_frame_file(&self, camera: usize, seq: u64) -> RecordedFrame {
+        self.pending_frame(camera, seq)
+            .map_or(RecordedFrame::Missing, |frame| frame.state())
     }
 
     pub fn annotate(&mut self, key: &str, value: serde_json::Value) {
