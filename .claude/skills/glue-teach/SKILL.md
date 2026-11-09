@@ -74,7 +74,7 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 
 ## 6. 整件复测
 
-所有段都过了第 5 步后，`teach_replay` 不带 `records` 列出历史件，使用人已确认的好件与缺陷件；未说明时请人指出。逐件保存 `comparisonId`、`snapshot`，先核对 `measurement.cameras[].segments[]` 的应测/实测、全部未测帧、`coverage` 和 `flags`；再核对最终 `regions[].offsetUnjudged`、`offsetEvidence` 的参考相机、首尾剔除后窗口及缺失帧。方向细化后的判定区域可能与量测计划不同，以最终区域的胶偏证据为准。
+所有段都过了第 5 步后，`teach_replay` 不带 `records` 列出历史件，使用人已确认的好件与缺陷件；未说明时请人指出。逐件保存 `comparisonId`、`snapshot`，先核对 `measurement.cameras[].segments[]` 的应测/实测、全部未测帧、`coverage` 和 `flags`；再核对最终 `regions[].offsetUnjudged`、`offsetEvidence` 的参考相机、首尾剔除后窗口及缺失帧。
 
 - `flags.passCountAnomaly`（笔数异常）：这件的笔数与示教件不同，整件按未分段判、不判胶偏。现场同一程序每件笔数相同、整件帧组数只有 ±1 的波动；出现笔数异常说明这件的程序或机械不同，不能拿它做验收件，报给人。
 - `uninspected` 里带 `pass` 的是每笔首尾跳过的帧，`short` 为整笔不检；这些区域里的缺陷不会报出，验收缺陷件时确认缺陷不在其中。

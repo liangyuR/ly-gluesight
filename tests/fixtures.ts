@@ -46,7 +46,7 @@ export function readiness(over: Partial<Readiness> = {}): Readiness {
 
 // ───────────── 段模型（分段连拍飞拍）共用夹具 ─────────────
 // 场景：三台相机共用一个触发；段 直线 120 mm → 弯道 30 mm → 直线 80 mm，各段 N_exp 未写入，
-// 整件 ΣN_exp = 12 取配方的 partCalib、Σtol = 3；示教件 round-1 有 12 个帧组，CAM-2 在 seq 5 缺帧。
+// 整件 ΣN_exp = 12 取配方的 partCalib；示教件 round-1 有 12 个帧组，CAM-2 在 seq 5 缺帧。
 
 export type BurstRecipeDoc = RecipeDoc & RecipeDocSegmentFields;
 
@@ -59,7 +59,7 @@ const partStats: SegmentCalib = { rounds: 10, min: 11, max: 13, mean: 11.9 };
 /** 各相机帧数：缺帧的相机少一帧 */
 export const burstCameraFrames = () => burstCameras.map((_, c) => burstGroups - (c === burstMissing.camera ? 1 : 0));
 
-/** 检测项同后端 KindDefaults::default，容差取 1（后端默认 2）：胶宽 4 ± 1.5 mm、帧内允许超差 5 mm、断胶 6 mm、有胶比例 0.8、溢胶 8 mm；直线段胶偏 ±2 mm。 */
+/** 检测项同后端 KindDefaults::default：胶宽 4 ± 1.5 mm、帧内允许超差 5 mm、断胶 6 mm、有胶比例 0.8、溢胶 8 mm；直线段胶偏 ±2 mm。 */
 export function kindDefaults(): KindDefaults {
   const checks = (straight: boolean) => ({
     width: { enabled: true, nominalMm: 4, tolUpper: 1.5, tolLower: 1.5, maxExcursionMm: 5, maxRangeMm: null },
@@ -67,20 +67,20 @@ export function kindDefaults(): KindDefaults {
     overflow: { enabled: true, maxWidthMm: 8 },
     offset: straight ? { enabled: true, maxMeanShiftMm: 2, maxLocalDevMm: 2 } : null,
   });
-  return { straight: { tolerance: 1, checks: checks(true) }, corner: { tolerance: 1, checks: checks(false) } };
+  return { straight: { checks: checks(true) }, corner: { checks: checks(false) } };
 }
 
-/** 新建一段（同后端 new_segment）：容差与检测项取该类型默认值，N_exp、标定、胶偏参考为空。 */
+/** 新建一段（同后端 new_segment）：检测项取该类型默认值，N_exp、标定、胶偏参考为空。 */
 export function pathSegment(index: number, kind: SegmentKind, over: Partial<PathSegment> = {}): PathSegment {
   const d = kindDefaults()[kind];
-  return { index, kind, lengthMm: null, expectedFrames: null, tolerance: d.tolerance, calib: null, checks: d.checks, offsetRef: null, inspectRange: null, cameras: [], skipHead: 0, skipTail: 0, ...over };
+  return { index, kind, lengthMm: null, expectedFrames: null, calib: null, checks: d.checks, offsetRef: null, inspectRange: null, cameras: [], skipHead: 0, skipTail: 0, ...over };
 }
 
-/** 后端口径：各段 N_exp 都有时为其和，否则取整件标定；容差为各段之和。 */
+/** 后端口径：各段 N_exp 都有时为其和，否则取整件标定。 */
 export function burstTotals(doc: Pick<RecipeDocSegmentFields, "segments" | "partCalib">) {
   const frames = doc.segments.map(s => s.expectedFrames);
   const expectedTotal = frames.length && frames.every(n => n != null) ? frames.reduce<number>((sum, n) => sum + n!, 0) : doc.partCalib?.expectedTotal ?? null;
-  return { expectedTotal, toleranceTotal: doc.segments.reduce((sum, s) => sum + s.tolerance, 0) };
+  return { expectedTotal };
 }
 
 /** 三台相机、三段的段配方（schema 8）：CAM-1 各段走廊已示教，各段 N_exp 未写入，整件有 ΣN_exp（可发布）。没有 ΣN_exp 的配方传 { partCalib: null }。 */
@@ -102,15 +102,15 @@ export function burstRecipe(over: Partial<BurstRecipeDoc> = {}): BurstRecipeDoc 
 }
 
 export function burstSummary(doc = burstRecipe()): RecipeSummaryV2 {
-  const { expectedTotal, toleranceTotal } = burstTotals(doc);
+  const { expectedTotal } = burstTotals(doc);
   return { id: doc.id, name: doc.name, version: doc.version, revisionId: `revisionId-${doc.id}`, productCode: doc.productCode, triggerMode: "fly",
     cameras: doc.inspect.map(i => i.camera), length: doc.segments.reduce((sum, s) => sum + (s.lengthMm ?? 0), 0), triggerCount: expectedTotal,
-    segmentCount: doc.segments.length, expectedTotal, toleranceTotal, calibrated: expectedTotal != null };
+    segmentCount: doc.segments.length, expectedTotal, calibrated: expectedTotal != null };
 }
 
 export function planExport(doc = burstRecipe()): PlanExport {
   return { protocolVersion: 8, recipeId: doc.id, productCode: doc.productCode, cameras: doc.inspect.map(i => i.camera),
-    segments: doc.segments.map(({ index, kind, lengthMm, expectedFrames, tolerance, inspectRange }) => ({ index, kind, lengthMm, expectedFrames, tolerance, inspectRange })),
+    segments: doc.segments.map(({ index, kind, lengthMm, expectedFrames, inspectRange }) => ({ index, kind, lengthMm, expectedFrames, inspectRange })),
     ...burstTotals(doc) };
 }
 
@@ -134,8 +134,8 @@ export function progressV2(): ProgressV2 {
 export function calibrationView(): CalibrationView {
   return {
     roundId: "round-1", measured: true,
-    segments: burstRecipe().segments.map(s => ({ index: s.index, kind: s.kind, nExp: s.expectedFrames, tolerance: s.tolerance, xRef: null, xRefPending: s.kind === "straight" ? "多段配方暂不计算 x_ref" : null, hints: [] })),
-    expectedTotal: 12, toleranceTotal: 3,
+    segments: burstRecipe().segments.map(s => ({ index: s.index, kind: s.kind, nExp: s.expectedFrames, xRef: null, xRefPending: s.kind === "straight" ? "多段配方暂不计算 x_ref" : null, hints: [] })),
+    expectedTotal: 12,
   };
 }
 
@@ -190,13 +190,13 @@ export function frameMetrics(camera: number, seq: number, over: Partial<FrameMet
 /** 段配方一件的判定：整条胶路一个未分段区域，OK；CAM-2 缺一帧 → 检测不完整，胶偏未判，气泡、拉丝未检。 */
 export function burstJudgement(over: Partial<BurstJudgement> = {}): BurstJudgement {
   return {
-    verdict: "OK", plcCode: 1, faultCode: 0, reason: "合格", groupCount: burstGroups, countStatus: "normal",
+    verdict: "OK", plcCode: 1, faultCode: 0, reason: "合格", groupCount: burstGroups,
     regions: [{
       region: { kind: { type: "unsegmented", firstSegment: 1, lastSegment: 3, reason: "algorithmPending" }, firstSeq: 1, lastSeq: burstGroups },
-      verdict: "OK", reason: "", frameCount: burstGroups, expected: 12, tolerance: 3, countStatus: "normal", cameraFrames: burstCameraFrames(),
+      verdict: "OK", reason: "", frameCount: burstGroups, expected: 12, cameraFrames: burstCameraFrames(),
       width: { min: 3.8, max: 4.2, mean: 4 }, offset: null, offsetUnjudged: "unsegmented", incompleteGroups: [burstMissing.seq],
     }],
-    flags: { incomplete: true, frameCountAnomaly: false, offsetUnjudged: true, unsegmented: true, shortPart: false },
+    flags: { incomplete: true, offsetUnjudged: true, unsegmented: true },
     alarms: [], uninspected: [{ segment: 1, fromMm: 0, toMm: 5 }, { segment: 1, fromMm: 115, toMm: 120 }], unchecked: ["bubble", "stringing"],
     ...over,
   };
@@ -222,7 +222,7 @@ export function burstPartDetail(): PartDetail {
     summary: burstPartSummary(), judgement: { verdict: judgement.verdict, plcCode: judgement.plcCode, faultCode: judgement.faultCode, reason: judgement.reason, segments: [], gaps: [] },
     frames: [], shots: [], points: null, triggers: 12, softwareVersion: "test", retests: [],
     recording: { state: "complete", available: true, directory: "recorded", errors: [] },
-    burst: { segments: burstRecipe().segments, cameras: burstCameras, expectedTotal: 12, toleranceTotal: 3, deviceTriggers: 12, cameraFrames: burstCameraFrames(), judgement, frames,
+    burst: { segments: burstRecipe().segments, cameras: burstCameras, expectedTotal: 12, deviceTriggers: 12, cameraFrames: burstCameraFrames(), judgement, frames,
       frameVerdicts: frames.filter(f => f.status === "measured").map(f => ({ camera: f.camera, seq: f.seq, verdict: "OK" as const })) },
   };
 }

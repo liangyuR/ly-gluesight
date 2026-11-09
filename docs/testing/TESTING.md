@@ -112,7 +112,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_
 
 段模型的测试按 AGENTS.md 准入编写：每个用例对应一条业务规则、对外契约或易错边界，名称写成“条件 → 预期结果”。Line0 高电平门控，帧率由软件设置、默认 10 fps；记录中的 `deviceTriggers` 为预留字段，不参与采集计数、告警或排空判断。规则取舍见 [分段连拍决策记录](../decisions/segment-burst.md)。
 
-**分段：比例分段（D-SB-40）。** `segmentation::Proportional` 按各段 N_exp 比例与本件帧组数推算边界，单段或有段没有 N_exp 时返回未分段结果；`resolve_regions` 在可信边界两侧切出 `boundaryGuard` 帧过渡区。图像运动细化（D-SB-43）未实现。单元与生产节拍测试只验证比例公式、可信度、过渡区与判定规则，**不证明现场边界准确**；边界准确性用现场已确认手动分段做留一离线评估，它不是测试、不进 `cargo test`：
+**分段：比例分段（D-SB-40）。** `segmentation::Proportional` 按各段 N_exp 比例与本件帧组数推算边界，单段或有段没有 N_exp 时返回未分段结果；`resolve_regions` 在可信边界两侧切出 `boundaryGuard` 帧过渡区。图像运动细化（D-SB-43）未实现。单元与生产节拍测试只验证比例公式、过渡区与判定规则，**不证明现场边界准确**；边界准确性用现场已确认手动分段做留一离线评估，它不是测试、不进 `cargo test`：
 
 ```powershell
 cargo run --manifest-path src-tauri/Cargo.toml --example segment_eval -- <项目目录> <候选编号>

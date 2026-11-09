@@ -423,7 +423,6 @@ async fn status(app: &AppHandle, args: StatusArgs) -> Result<Vec<Content>, ToolE
             &cameras,
             total,
             w.doc.boundary_guard,
-            w.doc.boundary_refine,
             &excluded,
             super::pieces::piece_pass_rules(&w),
         )
@@ -1367,8 +1366,6 @@ async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolE
                             "incompleteGroups": r["incompleteGroups"],
                             "frameCount": r["frameCount"],
                             "expected": r["expected"],
-                            "tolerance": r["tolerance"],
-                            "countStatus": r["countStatus"],
                             "cameraFrames": r["cameraFrames"],
                             "offsetEvidence": diagnostics::offset_evidence(b, result),
                         })
@@ -1387,7 +1384,7 @@ async fn replay(app: &AppHandle, args: ReplayArgs) -> Result<Vec<Content>, ToolE
                     "uninspected": c.burst.as_ref().map(|b| &b.judgement.uninspected),
                     "unchecked": c.burst.as_ref().map(|b| &b.judgement.unchecked),
                     "unmeasuredSegments": c.burst.as_ref().map(|b| &b.unmeasured),
-                    "measurement": c.burst.as_ref().map(|b| diagnostics::replay_measurements(b, c.candidate_recipe.boundary_guard, c.candidate_recipe.boundary_refine, c.candidate_recipe.pass_rules(&b.judgement.passes))),
+                    "measurement": c.burst.as_ref().map(|b| diagnostics::replay_measurements(b, c.candidate_recipe.boundary_guard, c.candidate_recipe.pass_rules(&b.judgement.passes))),
                     "parameterWarnings": c.candidate_recipe.path_segments.iter().map(|s| json!({
                         "segment": s.index, "warnings": diagnostics::parameter_warnings(s),
                     })).collect::<Vec<_>>(),

@@ -64,9 +64,9 @@ impl Scenario {
         }
     }
 
-    /// 提前终止前 PLC 发出的脉冲数——约一半，且少于 ΣN_exp − Σtol（帧组数低于正常下限才算疑似提前终止）。
-    pub fn early_end_after(self, total: u64, tolerance_total: u32) -> Option<u64> {
-        (self == Scenario::EarlyEnd).then(|| (total / 2).min(total.saturating_sub(u64::from(tolerance_total) + 1)).max(1))
+    /// 提前终止前 PLC 发出的脉冲数：约一半。
+    pub fn early_end_after(self, total: u64) -> Option<u64> {
+        (self == Scenario::EarlyEnd).then(|| (total / 2).max(1))
     }
 
     /// 连续运行用的随机工况只在不打断握手的几种之间选。

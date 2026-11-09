@@ -1,10 +1,10 @@
 /**
  * 段模型结果的显示映射：在线检测、历史、工作台共用。只把契约类型（plan/types.ts）映射成文字、色调和格子状态，
- * 不做判定——结论、标记、帧数状态都以后端给出的为准。
+ * 不做判定——结论、标记都以后端给出的为准。
  */
 import type { Verdict } from "../cycle/types";
 import type {
-  CountStatus, Flags, FrameGroupView, OffsetUnjudged, RegionKind, RegionResult, SegmentKind, UncheckedItem, Uninspected, UnsegReason, WidthWarning,
+  Flags, FrameGroupView, OffsetUnjudged, RegionKind, RegionResult, SegmentKind, UncheckedItem, Uninspected, UnsegReason, WidthWarning,
 } from "./types";
 
 export type PlanTone = "info" | "ok" | "warn" | "ng" | "neutral";
@@ -31,16 +31,9 @@ export function passCountText(judgement: { passes?: number[]; expectedPasses?: n
   return judgement!.expectedPasses != null && judgement!.expectedPasses !== n ? `${n} 笔（示教件 ${judgement!.expectedPasses} 笔）` : `${n} 笔`;
 }
 
-/** 预期帧数与容差：“20 ± 1”；N_exp 为 null 时“待标定”。整件用 expectedTotal / toleranceTotal。 */
-export function expectedText(expected: number | null | undefined, tolerance: number): string {
-  return expected == null ? "待标定" : `${expected} ± ${tolerance}`;
-}
-
-export const countStatusText: Record<CountStatus, string> = { normal: "帧数正常", low: "帧数偏少", high: "帧数偏多" };
-
-/** 帧数状态；null 表示无从比较（N_exp 待标定），不核对。 */
-export function countStatusLabel(status: CountStatus | null | undefined): string {
-  return status ? countStatusText[status] : "未核对帧数";
+/** 示教帧数：N_exp 为 null 时“待标定”。整件用 expectedTotal。 */
+export function expectedText(expected: number | null | undefined): string {
+  return expected == null ? "待标定" : String(expected);
 }
 
 export const unsegReasonText: Record<UnsegReason, string> = { algorithmPending: "分段算法未就绪", lowConfidence: "分段不确定", transition: "边界过渡区" };
@@ -79,15 +72,13 @@ export function uninspectedText(u: Uninspected): string {
 
 export const widthWarningText: Record<WidthWarning, string> = { wide: "胶宽偏宽", overflow: "溢胶预警" };
 
-/** 整件标记徽标（都只告警，不改 OK/NG），顺序固定：检测不完整、帧数异常、胶偏未判、含未分段、疑似提前终止、胶宽偏宽、溢胶预警、笔数异常。 */
+/** 整件标记徽标（都只告警，不改 OK/NG），顺序固定：检测不完整、胶偏未判、含未分段、胶宽偏宽、溢胶预警、笔数异常。 */
 export function flagBadges(flags: Flags | null | undefined): PlanBadge[] {
   if (!flags) return [];
   const all: [boolean, PlanBadge][] = [
     [flags.incomplete, { key: "incomplete", label: "检测不完整", tone: "warn" }],
-    [flags.frameCountAnomaly, { key: "frameCountAnomaly", label: "帧数异常", tone: "warn" }],
     [flags.offsetUnjudged, { key: "offsetUnjudged", label: "胶偏未判", tone: "neutral" }],
     [flags.unsegmented, { key: "unsegmented", label: "含未分段", tone: "neutral" }],
-    [flags.shortPart, { key: "shortPart", label: "疑似提前终止", tone: "warn" }],
     [!!flags.wideWarning, { key: "wideWarning", label: widthWarningText.wide, tone: "warn" }],
     [!!flags.overflowWarning, { key: "overflowWarning", label: widthWarningText.overflow, tone: "warn" }],
     [!!flags.passCountAnomaly, { key: "passCountAnomaly", label: "笔数异常", tone: "warn" }],
@@ -95,11 +86,9 @@ export function flagBadges(flags: Flags | null | undefined): PlanBadge[] {
   return all.filter(([on]) => on).map(([, badge]) => badge);
 }
 
-/** 一个区域的徽标：偏宽只预警下的预警、帧数越界、不完整组个数、胶偏未判原因、未分段原因。帧数正常与未核对不出徽标。 */
+/** 一个区域的徽标：偏宽只预警下的预警、不完整组个数、胶偏未判原因、未分段原因。 */
 export function regionBadges(result: RegionResult): PlanBadge[] {
   const out: PlanBadge[] = (result.warnings ?? []).map(w => ({ key: `warning-${w}`, label: widthWarningText[w], tone: "warn" }));
-  if (result.countStatus === "low" || result.countStatus === "high")
-    out.push({ key: "count", label: `${countStatusText[result.countStatus]}（${result.frameCount} / ${expectedText(result.expected, result.tolerance)}）`, tone: "warn" });
   if (result.incompleteGroups.length) out.push({ key: "incomplete", label: `不完整组 ${result.incompleteGroups.length}`, tone: "warn" });
   if (result.offsetUnjudged) out.push({ key: "offsetUnjudged", label: offsetUnjudgedText[result.offsetUnjudged], tone: "neutral" });
   if (result.region.kind.type === "unsegmented") out.push({ key: "unsegmented", label: unsegReasonText[result.region.kind.reason], tone: "neutral" });

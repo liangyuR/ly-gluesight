@@ -118,9 +118,6 @@ export const workspaceApi = {
   calibrationFrame: (id: string, round: string, camera: string, seq: number, signal?: AbortSignal) => scheduleFrameRead(() => desktopCall<CalibrationFrameView>("workspace_calibration_frame", { id, round, camera, seq }), signal),
   teachPreviewFrame: (id: string, camera: string, segment: number, round: string, seq: number, signal?: AbortSignal) => scheduleFrameRead(() => desktopCall<CalibrationFrameView>("workspace_teach_preview_frame", { id, camera, segment, round, seq }), signal),
   teachPreviewSegment: (id: string, camera: string, segment: number, round: string, taskId?: string) => desktopCall<TeachPreviewSegment>("workspace_teach_preview_segment", { id, camera, segment, round, taskId }),
-  /** 操作员确认第 segment 段（PathSegment.index）的帧数容差 */
-  confirmTolerance: (id: string, revision: number, segment: number, tolerance: number) =>
-    desktopCall<WorkspaceView>("workspace_confirm_tolerance", { id, revision, segment, tolerance }),
   /** 第 1 段起涂、末段收尾跳过帧的建议（D-SB-50），由示教件测量的每帧特征算出，只读 */
   calibrationSkipSuggest: (id: string) => desktopCall<SkipSuggestView[]>("workspace_calibration_skip_suggest", { id }),
   /** 操作员确认第 segment 段一头的跳过帧组数 */

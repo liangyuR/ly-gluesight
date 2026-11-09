@@ -41,11 +41,11 @@ fn burst_row(recipe: &Recipe) -> (StoredMeasurement, Vec<FrameRecord>) {
 }
 
 /// 规格 §1 计划身份：段序列 / 类型 / 预期帧数、相机绑定变了，已存指标的区域口径就变了，用当前候选重判时跳过并记 LayoutChanged；
-/// 走廊变了每帧指标要原图复测，同样跳过。容差、限值变化沿用计划身份，可以直接重判。
+/// 走廊变了每帧指标要原图复测，同样跳过。限值变化沿用计划身份，可以直接重判。
 #[test]
-fn rejudge_skips_when_plan_identity_changed_but_allows_tolerance_only_change() {
+fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
     type Edit = fn(&mut RecipeDoc);
-    let cases: [(&str, Edit, Option<Verdict>); 6] = [
+    let cases: [(&str, Edit, Option<Verdict>); 5] = [
         ("弯道段改为直线段", |doc| doc.segments[1] = crate::plan::new_segment(2, SegmentKind::Straight, &doc.segment_defaults.clone()), None),
         ("相机顺序", |doc| doc.inspect.swap(0, 1), None),
         (
@@ -57,11 +57,6 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_tolerance_only_change() {
             "相机 1 第 1 段的走廊",
             |doc| doc.inspect[0].segments[0].corridor[0][0] += 5.0,
             None,
-        ),
-        (
-            "弯道段帧数容差",
-            |doc| doc.segments[1].tolerance = 3,
-            Some(Verdict::NgWidth),
         ),
         (
             "弯道段胶宽下允差",

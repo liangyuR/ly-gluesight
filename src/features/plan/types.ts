@@ -86,7 +86,7 @@ export interface OffsetRef {
   edge?: EdgeParams | null;
 }
 
-/** 逐帧定向（D-SB-47）：toleranceDeg（0–45°）只用于细化分段边界，直线段方向偏离超过它算离开直线段。 */
+/** 逐帧定向（D-SB-47）：toleranceDeg（0–45°）不参与计算，保留以免走廊身份变化。 */
 export interface HeadingSettings {
   toleranceDeg: number;
   /** 本段的测量区间，本段各检测相机共用；null / 缺省 = 沿用旧配方的相机级区间（CameraInspect.window） */
@@ -115,8 +115,6 @@ export interface PathSegment {
   lengthMm: number | null;
   /** N_exp：取示教件已确认分段的帧组数，由后端写入；null = 待标定 */
   expectedFrames: number | null;
-  /** 帧数容差，默认 2 */
-  tolerance: number;
   calib: SegmentCalib | null;
   checks: SegmentChecks;
   offsetRef: OffsetRef | null;
@@ -142,11 +140,10 @@ export interface PartCalib {
 }
 
 export interface KindDefault {
-  tolerance: number;
   checks: SegmentChecks;
 }
 
-/** 配方默认参数：直线段与弯道段各一套，容差默认 1。 */
+/** 配方默认参数：直线段与弯道段各一套。 */
 export interface KindDefaults {
   straight: KindDefault;
   corner: KindDefault;
@@ -157,7 +154,6 @@ export interface ExportSegment {
   kind: SegmentKind;
   lengthMm: number | null;
   expectedFrames: number | null;
-  tolerance: number;
   inspectRange: InspectRange | null;
   skipHead?: number;
   skipTail?: number;
@@ -171,12 +167,9 @@ export interface PlanExport {
   cameras: string[];
   segments: ExportSegment[];
   expectedTotal: number | null;
-  toleranceTotal: number;
 }
 
 // ───────────── frame_group.rs ─────────────
-
-export type CountStatus = "normal" | "low" | "high";
 
 export type LossReason =
   | { type: "triggers"; deviceTriggers: number }
@@ -237,7 +230,6 @@ export interface InspectionCoverage {
   groupCount: number;
   boundaryGuard: number;
   boundariesTrusted: boolean;
-  boundaryRefinementPending: boolean;
   regions: Region[];
   excludedGroups: number[];
   expectedCameraFrames: number | null;
@@ -347,8 +339,6 @@ export interface RegionResult {
   frameCount: number;
   /** 单段区域为该段 N_exp，覆盖全部段的未分段区域为 expectedTotal；无从比较为 null */
   expected: number | null;
-  tolerance: number;
-  countStatus: CountStatus | null;
   cameraFrames: number[];
   width: WidthStats | null;
   offset: OffsetStat | null;
@@ -363,11 +353,8 @@ export type WidthWarning = "wide" | "overflow";
 /** 整件标记：都只告警，不改 OK/NG。 */
 export interface Flags {
   incomplete: boolean;
-  frameCountAnomaly: boolean;
   offsetUnjudged: boolean;
   unsegmented: boolean;
-  /** 疑似提前终止：整件帧组数 < expectedTotal − toleranceTotal */
-  shortPart: boolean;
   /** 偏宽只预警下出现胶宽偏宽；旧记录没有该字段 */
   wideWarning?: boolean;
   /** 偏宽只预警下出现溢胶；旧记录没有该字段 */
@@ -399,7 +386,6 @@ export interface BurstJudgement {
   faultCode: number;
   reason: string;
   groupCount: number;
-  countStatus: CountStatus | null;
   regions: RegionResult[];
   flags: Flags;
   alarms: LossAlarm[];
@@ -475,8 +461,6 @@ export interface RecipeDocSegmentFields {
   segmentDefaults: KindDefaults;
   /** 比例分段边界两侧各留的过渡帧数，默认 2，范围 0..=5（D-SB-40） */
   boundaryGuard: number;
-  /** 按逐帧定向的胶条方向序列细化比例边界（D-SB-47），默认 false；只作用于开启定向的段 */
-  boundaryRefine?: boolean;
   /** 每笔开头、结尾跳过的帧组数，0–50（D-SB-62）；缺省为都不跳 */
   passSkip?: PassSkip;
   /** 示教件各笔帧组数，随 N_exp 由示教件得出，只读：保存时后端不采用传入值；缺省 = 不按笔分段 */
@@ -513,7 +497,6 @@ export interface FrameGroupView {
 export interface PartViewBurst {
   cameras: string[];
   expectedTotal: number | null;
-  toleranceTotal: number;
   /** PLC partEnd 时的 deviceTriggers，只作参考；partEnd 前为 null */
   deviceTriggers: number | null;
   /** 已见帧组数 = 各相机最大 seq 的最大值 */
@@ -554,7 +537,6 @@ export interface PartDetailBurst {
   segments: PathSegment[];
   cameras: string[];
   expectedTotal: number | null;
-  toleranceTotal: number;
   deviceTriggers: number | null;
   cameraFrames: number[];
   judgement: BurstJudgement;
@@ -566,7 +548,7 @@ export interface PartDetailBurst {
   recordCameras?: (number | null)[];
 }
 
-/** 历史列表：段配方记录带标记（疑似提前终止等单独显示）；没有帧记录的为 null。 */
+/** 历史列表：段配方记录带标记（检测不完整、笔数异常等单独显示）；没有帧记录的为 null。 */
 export interface PartSummaryV2 extends PartSummary {
   flags: Flags | null;
 }
@@ -637,8 +619,6 @@ export interface SegmentCalibView {
   kind: SegmentKind;
   /** 示教件这一段的帧组数；示教件分段未确认时为 null */
   nExp: number | null;
-  /** 配方里当前的容差 */
-  tolerance: number;
   xRef: { xRef: number; spread: number } | null;
   /** x_ref 待定的原因，如“还没测量示教件”“多段配方暂不计算” */
   xRefPending: string | null;
@@ -685,7 +665,6 @@ export interface CalibrationView {
   segments: SegmentCalibView[];
   /** ΣN_exp */
   expectedTotal: number | null;
-  toleranceTotal: number;
 }
 
 export interface CameraTeachingView {
@@ -756,7 +735,6 @@ export interface WorkspacePlanView {
   segmentDefaults: KindDefaults;
   partCalib: PartCalib | null;
   expectedTotal: number | null;
-  toleranceTotal: number;
   /** expectedTotal 非空：满足发布的帧数门槛 */
   calibrated: boolean;
   cameraTeaching: CameraTeachingView[];
@@ -793,7 +771,6 @@ export interface PieceView {
 export interface RecipeSummaryV2 extends RecipeSummary {
   segmentCount: number;
   expectedTotal: number | null;
-  toleranceTotal: number;
   calibrated: boolean;
 }
 

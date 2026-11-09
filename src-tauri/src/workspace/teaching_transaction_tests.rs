@@ -255,7 +255,7 @@ fn changed_revision_or_instance_rejects_prepared_teaching_without_writing() {
             )
             .is_err());
         let mut segments = fixture.workspace.doc.segments.clone();
-        segments[0].tolerance += 1;
+        segments[0].checks.width.tol_upper += 0.5;
         assert!(fixture
             .host
             .update_segments(

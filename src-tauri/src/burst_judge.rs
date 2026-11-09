@@ -1,5 +1,5 @@
 //! 段模型判胶（规格 §4）：按区域类型分流。每帧独立指标（有胶 / 断胶、胶宽、溢胶）三类区域都跑；
-//! 胶偏只在直线段；结果标“检测不完整”“未检区域”“胶偏未判”“帧数异常”“疑似提前终止”。
+//! 胶偏只在直线段；结果标“检测不完整”“未检区域”“胶偏未判”“笔数异常”。
 //!
 //! 与旧拍照点模型的 `judge::Judgement` 并存：旧配方仍用 `judge`，段配方用这里的 `BurstJudgement`。
 
@@ -7,10 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::frame_group::{count_status, CountStatus, FrameGroup, LossAlarm};
+use crate::frame_group::{FrameGroup, LossAlarm};
 use crate::judge::{fault, Verdict};
 use crate::passes::PassRules;
-use crate::plan::{tolerance_total, wider_checks, OffsetCheck, OffsetMeasure, PathSegment, SegmentChecks, SegmentKind};
+use crate::plan::{
+    wider_checks, OffsetCheck, OffsetMeasure, PathSegment, SegmentChecks, SegmentKind,
+};
 use crate::segmentation::{Region, RegionKind, UnsegReason};
 
 /// 一帧的测量状态。除 Measured 外都只记“检测不完整”，不影响 OK/NG。
@@ -219,11 +221,13 @@ pub struct RegionResult {
     pub reason: String,
     /// 区域帧组数 = `Region::frame_count()`
     pub frame_count: u32,
-    /// 比较用的预期帧组数：单段区域取该段 N_exp，覆盖全部段的未分段区域取 expected_total；无从比较为 None
+    /// 参考帧组数：单段区域取该段 N_exp，覆盖全部段的未分段区域取 expected_total，其余为 None；只供展示
     pub expected: Option<u32>,
-    pub tolerance: u32,
-    /// expected 为 None 时为 None
-    pub count_status: Option<CountStatus>,
+    /// 旧记录的帧数容差与帧数核对：读入时丢弃
+    #[serde(default, rename = "tolerance", skip_serializing)]
+    pub _tolerance: crate::workspace::Discarded,
+    #[serde(default, rename = "countStatus", skip_serializing)]
+    pub _count_status: crate::workspace::Discarded,
     /// 区域内各相机帧数，按计划相机顺序
     pub camera_frames: Vec<u32>,
     pub width: Option<WidthStats>,
@@ -261,13 +265,14 @@ impl WidthWarning {
 pub struct Flags {
     /// 检测不完整：有帧组缺帧或有帧没测成
     pub incomplete: bool,
-    /// 帧数异常：有区域帧组数超出 N_exp ± tol
-    pub frame_count_anomaly: bool,
+    /// 旧记录的“帧数异常”“疑似提前终止”：读入时丢弃
+    #[serde(default, rename = "frameCountAnomaly", skip_serializing)]
+    pub _frame_count_anomaly: crate::workspace::Discarded,
+    #[serde(default, rename = "shortPart", skip_serializing)]
+    pub _short_part: crate::workspace::Discarded,
     pub offset_unjudged: bool,
     /// 含未分段区域
     pub unsegmented: bool,
-    /// 疑似提前终止：整件帧组数 < expected_total − tolerance_total（默认做法 3）
-    pub short_part: bool,
     /// 胶宽偏宽（偏宽只预警的段超出胶宽上限，D-SB-61）
     #[serde(default)]
     pub wide_warning: bool,
@@ -317,8 +322,9 @@ pub struct BurstJudgement {
     pub reason: String,
     /// 整件帧组数
     pub group_count: u32,
-    /// 整件帧组数相对 expected_total ± tolerance_total；未标定为 None
-    pub count_status: Option<CountStatus>,
+    /// 旧记录的整件帧数核对：读入时丢弃
+    #[serde(default, rename = "countStatus", skip_serializing)]
+    pub _count_status: crate::workspace::Discarded,
     pub regions: Vec<RegionResult>,
     pub flags: Flags,
     /// 丢帧告警，原样带出
@@ -342,7 +348,7 @@ impl BurstJudgement {
             fault_code,
             reason: reason.into(),
             group_count: 0,
-            count_status: None,
+            _count_status: crate::workspace::Discarded,
             regions: Vec::new(),
             flags: Flags::default(),
             alarms: Vec::new(),
@@ -362,7 +368,7 @@ impl BurstJudgement {
 /// - 区域允差：直线 / 弯道区域用该段 checks，未分段区域用所覆盖各段的 [`wider_checks`]。
 /// - 胶宽均匀性与胶偏只在直线区域判；未分段区域覆盖的直线段要判胶偏时记胶偏未判，弯道区域不判也不标。
 /// - 过渡区（D-SB-40）按未分段区域判每帧指标，不判也不标胶偏，不算“含未分段”。
-/// - 帧数越界、缺帧、疑似提前终止只进 flags，不改 OK/NG；帧数只核对整件与未分段区域，直线 / 弯道区域不逐段核对。
+/// - 缺帧只进 flags，不改 OK/NG；帧数不与 N_exp 核对。
 /// - 三台相机整件没有一帧测成时判 ERR 91；区域引用了配方里没有的段时判 ERR 93。
 /// - 笔结构（D-SB-62）原样记进结果；本件笔数与示教件不同只记笔数异常，不改结论。
 #[allow(clippy::too_many_arguments)]
@@ -401,9 +407,6 @@ fn judge_regions(
     loss: &[LossAlarm],
 ) -> BurstJudgement {
     let group_count = u32::try_from(groups.iter().map(|g| g.seq).max().unwrap_or(0)).unwrap_or(u32::MAX);
-    let tol_total = tolerance_total(segments);
-    let part_status = expected_total.map(|expected| count_status(group_count, expected, tol_total));
-    let short_part = part_status == Some(CountStatus::Low);
     // 每个 (seq, 相机) 一帧；不是计划相机的帧不参与
     let frames: BTreeMap<(u64, usize), &FrameMetrics> =
         metrics.iter().filter(|m| m.camera < cameras.len()).map(|m| ((m.seq, m.camera), m)).collect();
@@ -412,8 +415,10 @@ fn judge_regions(
         let reason = if frames.values().all(|m| m.state == FrameState::Missing) { "三台相机整件没有收到帧" } else { "三台相机整件没有一帧测成" };
         return BurstJudgement {
             group_count,
-            count_status: part_status,
-            flags: Flags { incomplete: true, short_part, ..Flags::default() },
+            flags: Flags {
+                incomplete: true,
+                ..Flags::default()
+            },
             alarms: loss.to_vec(),
             ..BurstJudgement::error(fault::MISSING_FRAME, reason)
         };
@@ -430,7 +435,6 @@ fn judge_regions(
     let part = PartInput {
         segments,
         expected_total,
-        tol_total,
         incomplete_seqs,
         frames: &frames,
         cameras,
@@ -476,14 +480,13 @@ fn judge_regions(
     if !warnings.is_empty() {
         reason = format!("{reason}；预警：{}", warnings.join("；"));
     }
-    let anomalous = |status: Option<CountStatus>| matches!(status, Some(CountStatus::Low | CountStatus::High));
     let flags = Flags {
         // 区域首尾相接覆盖全部帧组，各区域只看自己的检测相机（D-SB-41）：没选中的相机缺帧、没测成不算检测不完整
         incomplete: results.iter().any(|r| !r.incomplete_groups.is_empty()),
-        frame_count_anomaly: anomalous(part_status) || results.iter().any(|r| anomalous(r.count_status)),
+        _frame_count_anomaly: crate::workspace::Discarded,
         offset_unjudged: results.iter().any(|r| r.offset_unjudged.is_some()),
         unsegmented: results.iter().any(|r| matches!(r.region.kind, RegionKind::Unsegmented { reason, .. } if reason != UnsegReason::Transition)),
-        short_part,
+        _short_part: crate::workspace::Discarded,
         wide_warning: warned(WidthWarning::Wide),
         overflow_warning: warned(WidthWarning::Overflow),
         pass_count_anomaly: false,
@@ -501,7 +504,7 @@ fn judge_regions(
         fault_code: if unavailable { fault::MISSING_FRAME } else { 0 },
         reason,
         group_count,
-        count_status: part_status,
+        _count_status: crate::workspace::Discarded,
         regions: results,
         flags,
         alarms: loss.to_vec(),
@@ -677,7 +680,7 @@ pub struct FrameVerdict {
 }
 
 /// 区域划定后的逐帧结论（在线、历史与复测对照共用）：每帧按所在区域的检测相机与检查项判独立指标，与区域判定同一口径；
-/// 直线区域的局部跑偏落到偏离均值超限的帧。胶宽不均、整段胶偏、帧数异常只属于区域，不落到帧上。
+/// 直线区域的局部跑偏落到偏离均值超限的帧。胶宽不均、整段胶偏只属于区域，不落到帧上。
 /// 不在区域检测相机里、没测成或不在任何区域的帧没有结论。按 (camera, seq) 排序。
 pub fn frame_verdicts(
     segments: &[PathSegment],
@@ -693,7 +696,6 @@ pub fn frame_verdicts(
     let part = PartInput {
         segments,
         expected_total: None,
-        tol_total: 0,
         incomplete_seqs: BTreeSet::new(),
         frames: &frames,
         cameras,
@@ -750,7 +752,6 @@ fn straight_offset(xs: &[f64], x_ref: f64, check: &OffsetCheck) -> (OffsetStat, 
 struct PartInput<'a> {
     segments: &'a [PathSegment],
     expected_total: Option<u32>,
-    tol_total: u32,
     /// 配组标了 incomplete 的 seq
     incomplete_seqs: BTreeSet<u64>,
     frames: &'a BTreeMap<(u64, usize), &'a FrameMetrics>,
@@ -893,11 +894,10 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
     let frame_count = region.frame_count();
     let covers_all = part.segments.first().map(|s| s.index) == covered.first().map(|s| s.index)
         && part.segments.last().map(|s| s.index) == covered.last().map(|s| s.index);
-    let (expected, tolerance) = match region.kind {
-        RegionKind::Straight { .. } | RegionKind::Corner { .. } => (covered[0].expected_frames, covered[0].tolerance),
-        RegionKind::Unsegmented { .. } if covers_all => (part.expected_total, part.tol_total),
-        RegionKind::Unsegmented { .. } => (None, covered.iter().fold(0u32, |sum, s| sum.saturating_add(s.tolerance))),
-        RegionKind::Skipped { .. } => (None, 0),
+    let expected = match region.kind {
+        RegionKind::Straight { .. } | RegionKind::Corner { .. } => covered[0].expected_frames,
+        RegionKind::Unsegmented { .. } if covers_all => part.expected_total,
+        RegionKind::Unsegmented { .. } | RegionKind::Skipped { .. } => None,
     };
 
     let cams = part.cameras.len();
@@ -934,16 +934,8 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         reason,
         frame_count,
         expected,
-        tolerance,
-        // 直线 / 弯道区域的帧数由比例边界推算并扣掉过渡区，不与本段 N_exp 核对（D-SB-40）
-        count_status: match region.kind {
-            RegionKind::Straight { .. }
-            | RegionKind::Corner { .. }
-            | RegionKind::Skipped { .. } => None,
-            RegionKind::Unsegmented { .. } => {
-                expected.map(|expected| count_status(frame_count, expected, tolerance))
-            }
-        },
+        _tolerance: crate::workspace::Discarded,
+        _count_status: crate::workspace::Discarded,
         camera_frames,
         width: width_stats(&measured),
         offset,
@@ -1626,6 +1618,24 @@ mod tests {
         assert_eq!(
             judge_with(Some(edge(Some(5.0))), &frames).1,
             Some(OffsetUnjudged::NoFrames)
+        );
+    }
+
+    /// 防的回归：旧记录的区域判定带已删除的帧数核对（整件与区域的 `countStatus`、区域 `tolerance`、`frameCountAnomaly`、
+    /// `shortPart`），读入时不能因 deny_unknown_fields 报区域判定损坏，其余内容照旧。
+    #[test]
+    fn old_judgement_with_frame_count_checks_still_loads() {
+        let regions = [region(RegionKind::Corner { segment: 1 }, 1, 3)];
+        let judgement = run(&plan(&[Corner]), Some(3), &regions, &frames(3));
+        let mut old = serde_json::to_value(&judgement).unwrap();
+        old["countStatus"] = "low".into();
+        old["flags"]["frameCountAnomaly"] = true.into();
+        old["flags"]["shortPart"] = true.into();
+        old["regions"][0]["tolerance"] = 2.into();
+        old["regions"][0]["countStatus"] = serde_json::Value::Null;
+        assert_eq!(
+            serde_json::from_value::<BurstJudgement>(old).unwrap(),
+            judgement
         );
     }
 }

@@ -123,7 +123,7 @@ pub struct EdgeParams {
 }
 
 /// 逐帧定向（D-SB-47）：开启的段在出胶点周围扇形搜索定向、拟合胶路后测量，扇区按相机（出胶点背离最近画面边的半圈）。
-/// `tolerance_deg` 只用于细化分段边界：直线段的方向偏离它在核心帧上的方向超过它，算离开直线段。
+/// `tolerance_deg` 不参与计算；它随 `heading` 进走廊身份（`corridor_tag`），删掉会让已有示教件测量过期，所以保留。
 /// `window` 是本段的测量区间，本段各检测相机共用；为空时沿用旧配方的相机级区间（`CameraInspect.window`），见 `heading::window`。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -174,8 +174,9 @@ pub struct PathSegment {
     /// N_exp：取示教件已确认分段的帧组数，None = 示教件分段未确认
     #[serde(default)]
     pub expected_frames: Option<u32>,
-    /// 帧数容差，默认 1
-    pub tolerance: u32,
+    /// 旧配方的每段帧数容差：读入时丢弃
+    #[serde(default, rename = "tolerance", skip_serializing)]
+    pub _tolerance: crate::workspace::Discarded,
     #[serde(default)]
     pub calib: Option<SegmentCalib>,
     pub checks: SegmentChecks,
@@ -269,11 +270,12 @@ pub struct PartCalib {
     pub calib: SegmentCalib,
 }
 
-/// 一种段类型的默认容差与检测项；新建段时取用。
+/// 一种段类型的默认检测项；新建段时取用。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KindDefault {
-    pub tolerance: u32,
+    #[serde(default, rename = "tolerance", skip_serializing)]
+    pub _tolerance: crate::workspace::Discarded,
     pub checks: SegmentChecks,
 }
 
@@ -286,7 +288,7 @@ pub struct KindDefaults {
 }
 
 impl Default for KindDefaults {
-    /// 容差默认 1（默认做法 7）；限值沿用旧模型 `recipe::default_limits` 的胶宽 4.0 ± 1.5 mm、
+    /// 限值沿用旧模型 `recipe::default_limits` 的胶宽 4.0 ± 1.5 mm、
     /// 允许超差 5 mm、断胶 6 mm、有胶比例 0.8，溢胶上限取旧胶宽绝对上限 8 mm，胶偏 ±2 mm；新建的段偏宽只预警（D-SB-61）。
     fn default() -> Self {
         let checks = |offset: Option<OffsetCheck>| SegmentChecks {
@@ -312,11 +314,11 @@ impl Default for KindDefaults {
         };
         Self {
             straight: KindDefault {
-                tolerance: 2,
+                _tolerance: crate::workspace::Discarded,
                 checks: checks(Some(OffsetCheck { enabled: true, max_mean_shift_mm: 2.0, max_local_dev_mm: 2.0 })),
             },
             corner: KindDefault {
-                tolerance: 2,
+                _tolerance: crate::workspace::Discarded,
                 checks: checks(None),
             },
         }
@@ -325,7 +327,7 @@ impl Default for KindDefaults {
 
 /// 计划身份：相等时两份配方的区域一一对应，历史件可以按新配方复判。
 /// 组成：产品代码 + 各段 (index, kind, expected_frames, 检测相机) + 有序相机 + expected_total（段检测相机按 D-SB-41 进入身份；
-/// 不检测的段没有检测相机，D-SB-53）。限值、容差、x_ref、inspect_range、length_mm 不参与。
+/// 不检测的段没有检测相机，D-SB-53）。限值、x_ref、inspect_range、length_mm 不参与。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanIdentity {
     product_code: u16,
@@ -343,7 +345,6 @@ pub struct ExportSegment {
     pub length_mm: Option<f64>,
     /// None = 待标定（本轮多段配方常见）
     pub expected_frames: Option<u32>,
-    pub tolerance: u32,
     pub inspect_range: Option<InspectRange>,
     #[serde(default)]
     pub skip_head: u32,
@@ -363,13 +364,12 @@ pub struct PlanExport {
     pub segments: Vec<ExportSegment>,
     /// ΣN_exp；未标定为 None
     pub expected_total: Option<u32>,
-    pub tolerance_total: u32,
 }
 
 /// 段计划的相机数：三台独立相机共用一个触发（规格 §0/§1）。
 pub const PLAN_CAMERAS: usize = 3;
-/// 单段帧数容差上限（D-SB-31）。
-pub const MAX_TOLERANCE: u32 = 1000;
+/// 段首、段尾跳过的帧组数上限。
+pub const MAX_SKIP_FRAMES: u32 = 1000;
 /// ΣN_exp 上限：PLC shotCount 为 Int（D-SB-31）。
 pub const MAX_EXPECTED_TOTAL: u32 = i16::MAX as u32;
 
@@ -413,11 +413,12 @@ fn validate_checks(checks: &SegmentChecks, what: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 一段或一种段类型默认参数共用的约束：tolerance ≤ 1000；Corner 不得带 offset 检测；启用的检测项限值合法。
-fn validate_kind_settings(kind: SegmentKind, tolerance: u32, checks: &SegmentChecks, what: &str) -> Result<(), String> {
-    if tolerance > MAX_TOLERANCE {
-        return Err(format!("{what}的帧数容差 {tolerance} 超过上限 {MAX_TOLERANCE}"));
-    }
+/// 一段或一种段类型默认参数共用的约束：Corner 不得带 offset 检测；启用的检测项限值合法。
+fn validate_kind_settings(
+    kind: SegmentKind,
+    checks: &SegmentChecks,
+    what: &str,
+) -> Result<(), String> {
     if kind == SegmentKind::Corner && checks.offset.is_some() {
         return Err(format!("{what}：弯道段不判胶偏，不能配置胶偏检测"));
     }
@@ -426,13 +427,21 @@ fn validate_kind_settings(kind: SegmentKind, tolerance: u32, checks: &SegmentChe
 
 /// 配方的直线 / 弯道默认参数：`new_segment` 从这里取值，默认非法就会生成非法段，按段的同一套约束校验。
 pub fn validate_defaults(defaults: &KindDefaults) -> Result<(), String> {
-    validate_kind_settings(SegmentKind::Straight, defaults.straight.tolerance, &defaults.straight.checks, "直线段默认参数")?;
-    validate_kind_settings(SegmentKind::Corner, defaults.corner.tolerance, &defaults.corner.checks, "弯道段默认参数")
+    validate_kind_settings(
+        SegmentKind::Straight,
+        &defaults.straight.checks,
+        "直线段默认参数",
+    )?;
+    validate_kind_settings(
+        SegmentKind::Corner,
+        &defaults.corner.checks,
+        "弯道段默认参数",
+    )
 }
 
 /// 段列表的模型约束（规格 §1/§5）：至少一段（空段列表是旧拍照点配方，不经过本函数）；index 从 1 连续；cameras 恰好 3 个且不重复；Corner 段不得带 offset / offset_ref；
 /// 段检测相机是计划相机的子集且不重复（空为全部）；offset_ref.camera 属于该段的检测相机（不检测的段不查）；至少一段检测；启用的检测项限值合法（见 `validate_checks`）；length_mm 有值时 > 0；
-/// inspect_range 满足 0 ≤ a < b，有段长时 b ≤ length_mm；tolerance ≤ 1000；ΣN_exp ≤ 32767。
+/// inspect_range 满足 0 ≤ a < b，有段长时 b ≤ length_mm；段首尾跳过 ≤ 1000 帧组；ΣN_exp ≤ 32767。
 pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result<(), String> {
     if cameras.len() != PLAN_CAMERAS {
         return Err(format!("段配方需要恰好 {PLAN_CAMERAS} 台相机共用一个触发，当前 {} 台", cameras.len()));
@@ -454,7 +463,6 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
         }
         validate_kind_settings(
             segment.kind,
-            segment.tolerance,
             &segment.checks,
             &format!("第 {index} 段"),
         )?;
@@ -516,9 +524,9 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
                 window.validate(&format!("第 {index} 段"))?;
             }
         }
-        if segment.skip_head > MAX_TOLERANCE || segment.skip_tail > MAX_TOLERANCE {
+        if segment.skip_head > MAX_SKIP_FRAMES || segment.skip_tail > MAX_SKIP_FRAMES {
             return Err(format!(
-                "第 {index} 段跳过的帧组数需在 0–{MAX_TOLERANCE} 之间"
+                "第 {index} 段跳过的帧组数需在 0–{MAX_SKIP_FRAMES} 之间"
             ));
         }
         if let Some(length) = segment.length_mm {
@@ -555,11 +563,6 @@ pub fn expected_total(segments: &[PathSegment], part: Option<&PartCalib>) -> Opt
         .then(|| segments.iter().try_fold(0u32, |sum, segment| segment.expected_frames.map(|n| sum.saturating_add(n))))
         .flatten();
     summed.or_else(|| part.map(|part| part.expected_total))
-}
-
-/// 整件容差 = Σ各段 tolerance。
-pub fn tolerance_total(segments: &[PathSegment]) -> u32 {
-    segments.iter().fold(0u32, |sum, segment| sum.saturating_add(segment.tolerance))
 }
 
 /// `expected_total` 由调用方先用 [`expected_total`] 算好传入。
@@ -618,7 +621,7 @@ pub fn wider_checks(checks: &[&SegmentChecks]) -> SegmentChecks {
     }
 }
 
-/// 新建一段：tolerance 与 checks 取对应 kind 的默认值，逐帧定向默认开启，expected_frames / calib / offset_ref 为 None。
+/// 新建一段：checks 取对应 kind 的默认值，逐帧定向默认开启，expected_frames / calib / offset_ref 为 None。
 pub fn new_segment(index: u32, kind: SegmentKind, defaults: &KindDefaults) -> PathSegment {
     let default = match kind {
         SegmentKind::Straight => &defaults.straight,
@@ -629,7 +632,7 @@ pub fn new_segment(index: u32, kind: SegmentKind, defaults: &KindDefaults) -> Pa
         kind,
         length_mm: None,
         expected_frames: None,
-        tolerance: default.tolerance,
+        _tolerance: crate::workspace::Discarded,
         calib: None,
         checks: default.checks.clone(),
         offset_ref: None,
@@ -684,14 +687,12 @@ pub fn export(
                 kind: segment.kind,
                 length_mm: segment.length_mm,
                 expected_frames: segment.expected_frames,
-                tolerance: segment.tolerance,
                 inspect_range: segment.inspect_range.clone(),
                 skip_head: segment.skip_head,
                 skip_tail: segment.skip_tail,
             })
             .collect(),
         expected_total: expected_total(segments, part),
-        tolerance_total: tolerance_total(segments),
     }
 }
 
@@ -750,8 +751,7 @@ mod tests {
                     p.segments[0].cameras = vec!["camB".into()];
                 },
             ),
-            ("容差 1000、ΣN_exp 32767 恰在上限", |p| {
-                p.segments[0].tolerance = MAX_TOLERANCE;
+            ("ΣN_exp 32767 恰在上限", |p| {
                 p.segments[0].expected_frames = Some(MAX_EXPECTED_TOTAL - 4 - 9);
             }),
             ("检测区间终点恰为段长", |p| {
@@ -788,7 +788,7 @@ mod tests {
         for (case, edit) in accepted {
             assert_eq!(check(&edited(edit)), Ok(()), "{case}");
         }
-        let cases: [(&str, Edit); 35] = [
+        let cases: [(&str, Edit); 34] = [
             ("没有段", |p| p.segments.clear()),
             ("全部段不检测", |p| {
                 p.segments.iter_mut().for_each(|s| s.skip = true)
@@ -841,9 +841,6 @@ mod tests {
                     b_mm: f64::NAN,
                 })
             }),
-            ("容差超过 1000", |p| {
-                p.segments[1].tolerance = MAX_TOLERANCE + 1
-            }),
             ("ΣN_exp 超过 32767", |p| {
                 p.segments[0].expected_frames = Some(MAX_EXPECTED_TOTAL - 4 - 9 + 1)
             }),
@@ -895,7 +892,7 @@ mod tests {
             }),
             ("段长为 0", |p| p.segments[2].length_mm = Some(0.0)),
             ("段首跳过帧超过上限", |p| {
-                p.segments[0].skip_head = MAX_TOLERANCE + 1
+                p.segments[0].skip_head = MAX_SKIP_FRAMES + 1
             }),
             ("检测区间终点超出段长", |p| {
                 p.segments[2].length_mm = Some(100.0);

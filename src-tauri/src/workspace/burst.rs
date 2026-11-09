@@ -1,10 +1,9 @@
 //! 段配方的候选工作区（D2）：每台计划相机的走廊示教、示教件基准（各段 N_exp 取示教件已确认分段的帧组数，示教件兼作标准件
-//! 得出胶偏参考 x_ref）、容差确认、段列表编辑，以及 `WorkspaceView.plan`。
+//! 得出胶偏参考 x_ref）、段列表编辑，以及 `WorkspaceView.plan`。
 //!
 //! 只服务段配方（`RecipeDoc.segments` 非空）。旧拍照点配方的单帧示教、采用整圈采集、组选图仍走 workflow.rs，行为不变。
 //! 规则见 docs/decisions/recipe-build-flow.md（RB-3）与 docs/decisions/segment-burst.md：
 //! - N_exp、标定统计、整件标定只由示教件已确认的分段写入（分段保存时）；x_ref 只由测量示教件写入；段的序列或类型变化时一并清空；
-//! - 容差取段类型默认值，操作员可逐段确认（workspace_confirm_tolerance）；
 //! - x_ref 只给单段配方的直线段：示教件去掉首尾各一帧（再去掉起涂、收尾帧）取胶中心 x（或胶边距）均值。
 
 use std::collections::BTreeSet;
@@ -179,8 +178,6 @@ pub struct SegmentCalibView {
     pub kind: SegmentKind,
     /// 示教件这一段的帧组数；示教件分段未确认时为 None
     pub n_exp: Option<u32>,
-    /// 配方里当前的容差
-    pub tolerance: u32,
     pub x_ref: Option<XRefView>,
     pub x_ref_pending: Option<String>,
     /// 逐帧定向的提示（D-SB-47）：检测窗口能否覆盖每帧后移量、没找到胶条的比例
@@ -261,7 +258,6 @@ pub struct CalibrationView {
     pub measured: bool,
     pub segments: Vec<SegmentCalibView>,
     pub expected_total: Option<u32>,
-    pub tolerance_total: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -361,7 +357,6 @@ pub struct WorkspacePlanView {
     pub segment_defaults: crate::plan::KindDefaults,
     pub part_calib: Option<PartCalib>,
     pub expected_total: Option<u32>,
-    pub tolerance_total: u32,
     /// expected_total 非空：满足发布的帧数门槛
     pub calibrated: bool,
     pub camera_teaching: Vec<CameraTeachingView>,
@@ -697,35 +692,6 @@ pub(super) fn update_segments(w: &mut Workspace, segments: Vec<PathSegment>) -> 
     let mut doc = w.doc.clone();
     doc.segments = segments;
     update_doc(w, doc)
-}
-
-/// 操作员确认第 `segment` 段（PathSegment.index）的帧数容差。
-pub(super) fn confirm_tolerance(
-    w: &mut Workspace,
-    segment: u32,
-    tolerance: u32,
-) -> Result<(), String> {
-    require_burst(&w.doc)?;
-    if tolerance > crate::plan::MAX_TOLERANCE {
-        return Err(format!(
-            "帧数容差 {tolerance} 超过上限 {}",
-            crate::plan::MAX_TOLERANCE
-        ));
-    }
-    let mut doc = w.doc.clone();
-    let target = doc
-        .segments
-        .iter_mut()
-        .find(|s| s.index == segment)
-        .ok_or_else(|| format!("没有第 {segment} 段"))?;
-    if target.tolerance == tolerance {
-        return Ok(());
-    }
-    target.tolerance = tolerance;
-    doc.build()?;
-    w.doc = doc;
-    w.changed();
-    Ok(())
 }
 
 // ───────────── 走廊示教 ─────────────
@@ -2035,7 +2001,6 @@ pub(super) fn calibration_view(w: &Workspace) -> CalibrationView {
                 index: segment.index,
                 kind: segment.kind,
                 n_exp: segment.expected_frames,
-                tolerance: segment.tolerance,
                 x_ref,
                 x_ref_pending,
                 hints: heading_hints(doc, segment, if measured { rounds } else { &[] }),
@@ -2052,7 +2017,6 @@ pub(super) fn calibration_view(w: &Workspace) -> CalibrationView {
         measured,
         segments,
         expected_total,
-        tolerance_total: crate::plan::tolerance_total(&doc.segments),
     }
 }
 
@@ -2725,24 +2689,6 @@ async fn preview_range_operation(
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-pub fn workspace_confirm_tolerance(
-    app: AppHandle,
-    id: String,
-    revision: u64,
-    segment: u32,
-    tolerance: u32,
-) -> Result<WorkspaceView, String> {
-    let host = app.state::<WorkspaceHost>();
-    let mut items = host.items.lock().unwrap();
-    let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
-    w.expect(revision)?;
-    confirm_tolerance(&mut w, segment, tolerance)?;
-    host.save(&w)?;
-    items.insert(id, w.clone());
-    view(&app, w)
-}
-
 // 整体替换候选的段列表；拒绝直接改 N_exp、标定统计与 x_ref，N_exp 随后按示教件分段重算。
 #[tauri::command]
 pub fn workspace_update_segments(
@@ -2892,10 +2838,9 @@ pub(super) fn progress_v2(
             StepStatus::NotStarted
         },
         detail: format!(
-            "{} 段（直线 {straight}、弯道 {}），帧数容差合计 ±{}",
+            "{} 段（直线 {straight}、弯道 {}）",
             doc.segments.len(),
             doc.segments.len() - straight,
-            crate::plan::tolerance_total(&doc.segments)
         ),
         blockers: match (piece, segmented) {
             (None, _) => capture.blockers.clone(),
@@ -3175,7 +3120,6 @@ pub(super) fn plan_view(
         segment_defaults: doc.segment_defaults.clone(),
         part_calib: doc.part_calib.clone(),
         expected_total,
-        tolerance_total: crate::plan::tolerance_total(&doc.segments),
         calibrated: expected_total.is_some(),
         calibration: Some(calibration_view(w)),
         shot_count_changed: production_export.as_ref().and_then(|e| e.expected_total)

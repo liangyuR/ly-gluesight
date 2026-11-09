@@ -4,7 +4,7 @@ use crate::plan::{self, ExportSegment, PlanExport};
 use crate::recipe::Recipe;
 
 /// PLC 计划：生产接件与 S7 会话按它核对开始请求。段计划 `shot_count = device_shots = ΣN_exp`，
-/// 另带段序列与整件容差（规格 §1/§5）。
+/// 另带段序列（规格 §1/§5）。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlcPlan {
@@ -16,17 +16,13 @@ pub struct PlcPlan {
     pub device_ids: Vec<String>,
     /// 每台相机的计划触发数，同为 ΣN_exp
     pub device_shots: u16,
-    /// 整件帧数容差 Σtolerance
-    #[serde(default)]
-    pub tolerance_total: u32,
     /// 段序列
     #[serde(default)]
     pub segments: Vec<ExportSegment>,
 }
 
 impl PlcPlan {
-    /// 段计划（规格 §5）：PLC 的 shotCount 与 deviceShots 都等于 ΣN_exp（1–32767）；三台不重复的相机共用一个触发；
-    /// 整件容差取各段容差之和。
+    /// 段计划（规格 §5）：PLC 的 shotCount 与 deviceShots 都等于 ΣN_exp（1–32767）；三台不重复的相机共用一个触发。
     pub fn compile_burst(
         recipe_id: String,
         device_ids: Vec<String>,
@@ -53,16 +49,12 @@ impl PlcPlan {
                 plan::PLAN_CAMERAS
             ));
         }
-        let tolerance_total = segments
-            .iter()
-            .fold(0u32, |sum, segment| sum.saturating_add(segment.tolerance));
         Ok(Self {
             protocol_version: crate::handshake::PROTOCOL_VERSION,
             recipe_id,
             shot_count: expected_total as u16,
             device_ids,
             device_shots: expected_total as u16,
-            tolerance_total,
             segments,
         })
     }

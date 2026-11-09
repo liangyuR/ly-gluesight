@@ -23,7 +23,7 @@ function RegionBand({ regions, seq }: { regions: RegionResult[]; seq: number }) 
  * 帧组条（段模型）：每个 seq 一列，列里每台计划相机一格，同一触发序号的三台相机各一帧。
  * 缺帧、未测、走出走廊的格子是灰色（只算“检测不完整”，不是 NG）；整组有缺格的列号标黄。
  * 格子颜色只表示该帧单独的结论（判定后按所在区域的检查项判，在线与历史同一口径）；给了区域时上方画段条，
- * 胶宽不均、整段胶偏、帧数异常等整段性问题只体现在段条上。颜色只是显示，结论以后端为准。
+ * 胶宽不均、整段胶偏等整段性问题只体现在段条上。颜色只是显示，结论以后端为准。
  */
 export default memo(function FrameGroupStrip({ groups, cameras, regions, selected, onSelect, selectedCamera, onSelectCell, label = "帧组" }: {
   groups: FrameGroupView[];

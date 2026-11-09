@@ -197,7 +197,6 @@ pub(crate) fn parameter_warnings(segment: &PathSegment) -> Vec<Diagnostic> {
 pub(crate) fn replay_measurements(
     burst: &super::super::burst_history::ComparisonBurst,
     guard: u32,
-    refine: bool,
     passes: crate::passes::PassRules,
 ) -> Value {
     use crate::segmentation::{frame_corridors, resolve_regions, segment_part, SegInput};
@@ -208,8 +207,6 @@ pub(crate) fn replay_measurements(
             groups: &groups,
             segments: &burst.segments,
         },
-        &[],
-        false,
         passes,
     );
     let regions = resolve_regions(&burst.segments, &outcome, total, 0.5, guard, passes);
@@ -219,7 +216,6 @@ pub(crate) fn replay_measurements(
         &burst.cameras,
         total,
         guard,
-        refine,
         &[],
         passes,
     );

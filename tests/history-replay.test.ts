@@ -6,7 +6,7 @@ import { burstJudgement, burstPartDetail, frameMetrics } from "./fixtures";
 describe("段配方按区域比对", () => {
   // 原结果：直线段 1（帧组 1–6，带胶偏统计）与弯道段 2（帧组 7–12）两个区域，其余由默认判定带出
   const region = (kind: RegionKind, firstSeq: number, lastSeq: number, over: Partial<RegionResult> = {}): RegionResult => ({
-    ...burstJudgement().regions[0], region: { kind, firstSeq, lastSeq }, frameCount: lastSeq - firstSeq + 1, expected: null, countStatus: null, offsetUnjudged: null, incompleteGroups: [], ...over,
+    ...burstJudgement().regions[0], region: { kind, firstSeq, lastSeq }, frameCount: lastSeq - firstSeq + 1, expected: null, offsetUnjudged: null, incompleteGroups: [], ...over,
   });
   const regions = (straight: Partial<RegionResult> = {}, corner: Partial<RegionResult> = {}) => [
     region({ type: "straight", segment: 1 }, 1, 6, { offset: { meanShift: .3, maxDev: .6 }, ...straight }),
@@ -27,8 +27,8 @@ describe("段配方按区域比对", () => {
     expect(regionDiffs(side(), side(over))).toBeNull();
   });
 
-  it("只改限值、容差、胶偏参考与检测区间 → 计划身份不变，仍可逐区域比对", () => {
-    const tuned = segments().map(s => ({ ...s, tolerance: s.tolerance + 2, inspectRange: { aMm: 8, bMm: 100 }, checks: { ...s.checks, width: { ...s.checks.width, nominalMm: 5 } },
+  it("只改限值、胶偏参考与检测区间 → 计划身份不变，仍可逐区域比对", () => {
+    const tuned = segments().map(s => ({ ...s, inspectRange: { aMm: 8, bMm: 100 }, checks: { ...s.checks, width: { ...s.checks.width, nominalMm: 5 } },
       offsetRef: s.offsetRef && { ...s.offsetRef, xRef: .2, spread: .1 } }));
     expect(regionDiffs(side(), side({ segments: tuned }))!.some(d => d.differs)).toBe(false);
   });

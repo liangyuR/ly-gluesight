@@ -521,7 +521,6 @@ pub(super) fn save_impact(before: &Workspace, after: &Workspace) -> SegmentSaveI
                     &cameras,
                     review.group_count,
                     after.doc.boundary_guard,
-                    after.doc.boundary_refine,
                     &review
                         .excluded_groups
                         .iter()

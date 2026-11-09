@@ -14,9 +14,9 @@ export interface StageV2 { path: string; label: string; hint: string; ids: StepI
  */
 export const stagesV2: StageV2[] = [
   { path: "/recipe/capture", label: "示教件", hint: "从本配方的历史件里选一件设为示教件，分段与各段走廊都在它的图像上示教", ids: ["capture"], optional: false, needsCapture: false },
-  { path: "/recipe/segments", label: "段列表", hint: "沿胶路划分直线段与弯道段，设各段检测项与帧数容差", ids: ["segments"], optional: false, needsCapture: false },
+  { path: "/recipe/segments", label: "段列表", hint: "沿胶路划分直线段与弯道段，设各段检测项与跳过帧数", ids: ["segments"], optional: false, needsCapture: false },
   { path: "/recipe/teach", label: "走廊示教", hint: "每段的每台检测相机各示教一条走廊；相机只设像素当量与检测参数", ids: ["corridor"], optional: false, needsCapture: true },
-  { path: "/recipe/calibration", label: "试测", hint: "测量示教件得出胶偏参考，确认各段帧数容差，用历史件试测", ids: ["calibration"], optional: false, needsCapture: true },
+  { path: "/recipe/calibration", label: "试测", hint: "测量示教件得出胶偏参考，用历史件试测", ids: ["calibration"], optional: false, needsCapture: true },
   { path: "/recipe/validation", label: "发布", hint: "发布前检查满足即可发布，在工件边界生效；独立样本验证可选", ids: ["validation", "publish"], optional: false, needsCapture: true },
 ];
 

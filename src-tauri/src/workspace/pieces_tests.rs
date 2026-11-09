@@ -102,8 +102,7 @@ fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts
         calib: calib.clone(),
     });
     for segment in &mut w.doc.segments {
-        (segment.expected_frames, segment.calib, segment.tolerance) =
-            (Some(15), Some(calib.clone()), 3);
+        (segment.expected_frames, segment.calib) = (Some(15), Some(calib.clone()));
     }
     w.doc.segments[0].offset_ref = Some(OffsetRef {
         measure: OffsetMeasure::AbsoluteX,
@@ -193,7 +192,6 @@ fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts
                 (
                     s.index,
                     s.kind,
-                    s.tolerance,
                     s.cameras.clone(),
                     state_value(&s.checks),
                 )

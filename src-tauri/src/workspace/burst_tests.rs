@@ -182,9 +182,9 @@ fn saving_expected_frames_or_x_ref_is_ignored_and_kind_change_clears_them() {
             After::Cleared,
         ),
         (
-            "只改帧数容差",
+            "只改胶宽上允差",
             segments,
-            |d| d.segments[0].tolerance = 3,
+            |d| d.segments[0].checks.width.tol_upper = 2.0,
             After::Kept,
         ),
         (

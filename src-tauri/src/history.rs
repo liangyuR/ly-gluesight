@@ -192,7 +192,7 @@ pub struct Change {
     pub from: Verdict,
     pub to: Verdict,
     pub reason: String,
-    /// 重判后的整件标记（检测不完整、疑似提前终止等与阈值无关，照常带出）
+    /// 重判后的整件标记（检测不完整、笔数异常等与阈值无关，照常带出）
     pub flags: Option<Flags>,
 }
 
@@ -460,9 +460,8 @@ pub(crate) fn csv_row(p: &PartSummary) -> String {
         delivery,
         format_ts(p.delivery.updated_at),
         esc(p.delivery.message.as_deref().unwrap_or("")),
-        // 段配方：ΣN_exp、Σtol、各相机帧数（按计划相机顺序，/ 分隔）、PLC deviceTriggers（只作参考）、整件标记；旧记录留空
+        // 段配方：ΣN_exp、各相机帧数（按计划相机顺序，/ 分隔）、PLC deviceTriggers（只作参考）、整件标记；旧记录留空
         burst.and_then(|b| b.expected_total).map(|n| n.to_string()).unwrap_or_default(),
-        burst.map(|b| b.tolerance_total.to_string()).unwrap_or_default(),
         burst.map(|b| b.camera_frames.iter().map(u32::to_string).collect::<Vec<_>>().join("/")).unwrap_or_default(),
         burst.and_then(|b| b.device_triggers).map(|n| n.to_string()).unwrap_or_default(),
         esc(&p.flags.as_ref().map(flag_labels).unwrap_or_default().join("、")),
@@ -475,10 +474,8 @@ pub(crate) fn csv_row(p: &PartSummary) -> String {
 fn flag_labels(flags: &Flags) -> Vec<&'static str> {
     [
         (flags.incomplete, "检测不完整"),
-        (flags.frame_count_anomaly, "帧数异常"),
         (flags.offset_unjudged, "胶偏未判"),
         (flags.unsegmented, "含未分段区域"),
-        (flags.short_part, "疑似提前终止"),
         (flags.wide_warning, "胶宽偏宽"),
         (flags.overflow_warning, "溢胶预警"),
     ]
@@ -487,7 +484,7 @@ fn flag_labels(flags: &Flags) -> Vec<&'static str> {
     .collect()
 }
 
-pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明,预期帧组数(ΣN_exp),帧组容差(Σtol),各相机帧数,deviceTriggers,标记,项目,人工 Tag\r\n";
+pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明,预期帧组数(ΣN_exp),各相机帧数,deviceTriggers,标记,项目,人工 Tag\r\n";
 
 /// 按筛选条件导出 CSV（带 BOM，Excel 可直接打开），返回文件路径。
 #[tauri::command]

@@ -113,7 +113,6 @@ pub(super) fn frame_groups(metrics: &[FrameMetrics], cameras: usize) -> Vec<Fram
 pub(super) fn judge_frames(
     segments: &[PathSegment],
     boundary_guard: u32,
-    boundary_refine: bool,
     expected_total: Option<u32>,
     cameras: &[String],
     metrics: &[FrameMetrics],
@@ -126,8 +125,6 @@ pub(super) fn judge_frames(
             groups: &groups,
             segments,
         },
-        metrics,
-        boundary_refine,
         passes,
     );
     let regions = resolve_regions(
@@ -178,7 +175,6 @@ pub(crate) fn repair_shadow_regions(store: &Store) -> Result<(usize, Vec<String>
         let judged = judge_frames(
             &recipe.path_segments,
             recipe.boundary_guard,
-            recipe.boundary_refine,
             recipe.expected_total(),
             &burst.cameras,
             &metrics,
@@ -276,8 +272,6 @@ fn remeasure_by_rule_operation(
             groups: &groups,
             segments,
         },
-        &[],
-        false,
         passes,
     );
     let regions = resolve_regions(
@@ -1137,7 +1131,6 @@ pub(super) fn compare(
         let judgement = judge_frames(
             &recipe.path_segments,
             recipe.boundary_guard,
-            recipe.boundary_refine,
             recipe.expected_total(),
             &cameras,
             &metrics,

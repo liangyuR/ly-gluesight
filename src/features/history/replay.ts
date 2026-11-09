@@ -34,12 +34,12 @@ export function comparisonBurst(burst: PartDetailBurst, side: BurstSide & { fram
       metrics, rawFile: record?.rawFile ?? null, region: regionOf(seq) };
   }));
   return { ...burst, segments: side.segments, cameras: side.cameras, expectedTotal: side.expectedTotal,
-    toleranceTotal: side.segments.reduce((sum, s) => sum + s.tolerance, 0), judgement: side.judgement, frames, frameVerdicts: side.frameVerdicts ?? [], recordCameras };
+    judgement: side.judgement, frames, frameVerdicts: side.frameVerdicts ?? [], recordCameras };
 }
 
 /**
  * 两侧的计划身份是否相同（与后端 plan_identity 同口径）：各段的序号、类型、N_exp，有序相机，整件预期总数。
- * 限值、容差、x_ref、检测区间、段长不参与——它们变了区域仍一一对应，可以比较。
+ * 限值、x_ref、检测区间、段长不参与——它们变了区域仍一一对应，可以比较。
  */
 export function samePlanIdentity(a: BurstSide, b: BurstSide) {
   return a.expectedTotal === b.expectedTotal && sameList(a.cameras, b.cameras) && a.segments.length === b.segments.length
@@ -78,7 +78,7 @@ const near = (a: number | null | undefined, b: number | null | undefined) => a =
 function regionChanges(a: RegionResult, b: RegionResult): RegionChange[] {
   const changes: RegionChange[] = [];
   if (a.verdict !== b.verdict) changes.push("verdict");
-  if (a.frameCount !== b.frameCount || a.countStatus !== b.countStatus) changes.push("frameCount");
+  if (a.frameCount !== b.frameCount) changes.push("frameCount");
   if (!sameList(a.incompleteGroups, b.incompleteGroups)) changes.push("incomplete");
   if (!!a.width !== !!b.width || (a.width && b.width && !(near(a.width.min, b.width.min) && near(a.width.max, b.width.max) && near(a.width.mean, b.width.mean)))) changes.push("width");
   if (!!a.offset !== !!b.offset || (a.offset && b.offset && !(near(a.offset.meanShift, b.offset.meanShift) && near(a.offset.maxDev, b.offset.maxDev)))) changes.push("offset");

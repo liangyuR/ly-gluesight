@@ -46,7 +46,6 @@ pub struct PartRecord<'a> {
 pub struct BurstRecord {
     /// ΣN_exp；未标定为 None
     pub expected_total: Option<u32>,
-    pub tolerance_total: u32,
     /// PLC partEnd 时的 deviceTriggers，只作参考；没有收到 partEnd 为 None
     pub device_triggers: Option<u32>,
     /// 各相机已接受的帧数，按计划相机顺序
@@ -91,7 +90,6 @@ pub struct PartDetailBurst {
     /// 本件配方快照的计划相机
     pub cameras: Vec<String>,
     pub expected_total: Option<u32>,
-    pub tolerance_total: u32,
     pub device_triggers: Option<u32>,
     pub camera_frames: Vec<u32>,
     pub judgement: BurstJudgement,
@@ -105,7 +103,6 @@ pub struct PartDetailBurst {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BurstSummary {
     pub expected_total: Option<u32>,
-    pub tolerance_total: u32,
     pub device_triggers: Option<u32>,
     pub camera_frames: Vec<u32>,
 }
@@ -268,7 +265,7 @@ pub struct PartSummary {
     pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
     pub source: RecordSource,
-    /// 段配方记录的整件标记（疑似提前终止等单独显示）；旧记录为 None
+    /// 段配方记录的整件标记（检测不完整、笔数异常等单独显示）；旧记录为 None
     pub flags: Option<Flags>,
     /// 段配方记录的帧数；旧记录为 None。只供 CSV 导出
     #[serde(skip)]
@@ -386,9 +383,9 @@ fn parse_verdict(s: &str) -> Verdict {
 const SUMMARY_COLS: &str = "id, ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
                             reason, drain_ms, frames_expected, frames_received, retest_of, cycle_id, bundle_id, \
                             delivery_state, delivery_updated_at, delivery_message, sample, source, \
-                            flags, expected_total, tolerance_total, device_triggers, camera_frames, mode, project_id, tags";
+                            flags, expected_total, device_triggers, camera_frames, mode, project_id, tags";
 /// SUMMARY_COLS 的列数；detail 在其后追加的列从这里起算。
-const SUMMARY_LEN: usize = 30;
+const SUMMARY_LEN: usize = 29;
 
 fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
     let flags: Option<Flags> = row.get::<_, Option<String>>(22)?.map(|text| serde_json::from_str(&text)
@@ -396,9 +393,8 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
     let burst = match flags {
         Some(_) => Some(BurstSummary {
             expected_total: row.get(23)?,
-            tolerance_total: row.get(24)?,
-            device_triggers: row.get(25)?,
-            camera_frames: json_column(row, 26)?,
+            device_triggers: row.get(24)?,
+            camera_frames: json_column(row, 25)?,
         }),
         None => None,
     };
@@ -424,9 +420,9 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
         source: enum_column(row, 21)?,
         flags,
         burst,
-        mode: enum_column(row, 27)?,
-        project_id: row.get(28)?,
-        tags: json_column(row, 29)?,
+        mode: enum_column(row, 26)?,
+        project_id: row.get(27)?,
+        tags: json_column(row, 28)?,
     })
 }
 
@@ -469,7 +465,7 @@ fn delivery_row(row: &rusqlite::Row, first: usize) -> rusqlite::Result<PlcDelive
 }
 
 /// 各相机的走廊、检测窗口、当量、标定、检测参数，以及各段的逐帧定向与找边参数决定每帧指标（计划身份另见 burst_plan_identity）；
-/// 限值、容差、x_ref、图纸胶边距、检测区间不在这里，改了可以直接用已存指标重判。
+/// 限值、x_ref、图纸胶边距、检测区间不在这里，改了可以直接用已存指标重判。
 fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
     let measure: Vec<serde_json::Value> = recipe
         .path_segments
@@ -544,9 +540,10 @@ fn validate_burst(r: &PartRecord, recipe: &Recipe, burst: &BurstRecord) -> Resul
     if (r.judgement.verdict, r.judgement.plc_code, r.judgement.fault_code, r.judgement.reason.as_str()) != (j.verdict, j.plc_code, j.fault_code, j.reason.as_str()) {
         return Err("段配方记录的结论摘要与区域判定不一致".into());
     }
-    if burst.expected_total != recipe.expected_total() || burst.tolerance_total != recipe.tolerance_total()
-        || r.frames_expected != burst.expected_total.unwrap_or(0) as usize {
-        return Err("段配方记录的预期帧组数或容差与原配方不一致".into());
+    if burst.expected_total != recipe.expected_total()
+        || r.frames_expected != burst.expected_total.unwrap_or(0) as usize
+    {
+        return Err("段配方记录的预期帧组数与原配方不一致".into());
     }
     let cameras = recipe.plan_cameras().len();
     if burst.camera_frames.len() != cameras {
@@ -591,10 +588,18 @@ fn same_burst(actual: Option<&PartDetailBurst>, expected: Option<&BurstRecord>) 
         frames.sort_by_key(|frame| (frame.camera, frame.seq));
         serde_json::to_value(frames).map_err(|error| error.to_string())
     };
-    let judgement = |judgement: &BurstJudgement| serde_json::to_value(judgement).map_err(|error| error.to_string());
-    Ok((actual.expected_total, actual.tolerance_total, actual.device_triggers, &actual.camera_frames)
-        == (expected.expected_total, expected.tolerance_total, expected.device_triggers, &expected.camera_frames)
-        && judgement(&actual.judgement)? == judgement(&expected.judgement)?
+    let judgement = |judgement: &BurstJudgement| {
+        serde_json::to_value(judgement).map_err(|error| error.to_string())
+    };
+    Ok((
+        actual.expected_total,
+        actual.device_triggers,
+        &actual.camera_frames,
+    ) == (
+        expected.expected_total,
+        expected.device_triggers,
+        &expected.camera_frames,
+    ) && judgement(&actual.judgement)? == judgement(&expected.judgement)?
         && content(&actual.frames)? == content(&expected.frames)?)
 }
 
@@ -1053,7 +1058,7 @@ impl Store {
         let burst_columns = match r.burst {
             Some(burst) => (
                 burst.expected_total,
-                Some(burst.tolerance_total),
+                None::<u32>,
                 burst.device_triggers,
                 Some(text(serde_json::to_string(&burst.camera_frames))?),
                 Some(text(serde_json::to_string(&burst.judgement.flags))?),
@@ -1567,7 +1572,6 @@ impl Store {
                     segments: recipe.path_segments.clone(),
                     cameras,
                     expected_total: counts.expected_total,
-                    tolerance_total: counts.tolerance_total,
                     device_triggers: counts.device_triggers,
                     camera_frames: counts.camera_frames.clone(),
                     judgement,

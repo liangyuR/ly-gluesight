@@ -195,7 +195,6 @@ impl FixtureSite {
             .collect();
         let burst = BurstRecord {
             expected_total: self.recipe.expected_total(),
-            tolerance_total: self.recipe.tolerance_total(),
             device_triggers: u32::try_from(groups).ok(),
             camera_frames: camera_frames.clone(),
             judgement: BurstJudgement {

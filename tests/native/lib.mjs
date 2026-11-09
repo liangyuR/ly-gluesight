@@ -168,7 +168,7 @@ function strokeRoi(points, [width, height], margin = 40) {
 //   建候选、发布采集版并写入手动配置数据（recipe_template 即段配方：三台相机、一个直线段，待标定；仿历史录制件，示教件与验证件）→
 //   选示教件并确认分段（各段 N_exp 取示教件分段的帧组数）→ 示教件上每台相机一条走廊 → 测量示教件（兼作标准件，得出 x_ref）→
 //   独立样本验证（另一件历史件）→ 发布 → 投产。
-// 运行时整条胶路按“未分段”处理（分段算法未做）：只跑每帧独立检测，核对整件帧组数 ∈ ΣN_exp ± Σtol。
+// 运行时整条胶路按“未分段”处理（分段算法未做）：只跑每帧独立检测，只记录整件帧组数与 ΣN_exp，不核对。
 
 const FRAME_NARROW = { searchMm: 3, polarity: "dark", widthRange: [1, 5] };
 
@@ -268,16 +268,16 @@ export async function teachCorridors(ws, teaching, fixture) {
 /**
  * 测量示教件（RB-3）：示教件是唯一的基准件，兼作标准件。各段 N_exp 已在示教件分段确认时写入（ΣN_exp 为各段之和）；
  * 走廊示教完成后按当前走廊测量示教件（workspace_measure_teaching），单段配方的直线段由这次测量得出胶偏参考 x_ref。
- * 容差沿用段类型默认值，不另确认。返回示教件帧组数、ΣN_exp ± Σtol 与各段基准。
+ * 返回示教件帧组数、ΣN_exp 与各段基准。
  */
 export async function measureTeaching(ws, teaching, { log = () => {} } = {}) {
   const plan = planOf(await ws.edit("workspace_measure_teaching", {}));
   assert(plan.calibration?.measured, `测量示教件后应为已测量：${JSON.stringify(plan.calibration)}`);
   assert(plan.calibrated && plan.expectedTotal > 0, `示教件分段后应有 ΣN_exp：${JSON.stringify(plan.calibration)}`);
   const piece = { recordId: teaching.recordId, sn: teaching.sn, groupCount: teaching.groupCount, cameraFrames: teaching.cameras.map(c => c.frames) };
-  log(`示教件已测量：${piece.sn}，${piece.groupCount} 个帧组；${plan.calibration.segments.map(s => `段 ${s.index} N_exp ${s.nExp} ± ${s.tolerance}${s.xRef ? `，x_ref ${s.xRef.xRef.toFixed(3)}` : ""}`).join("；")}`);
+  log(`示教件已测量：${piece.sn}，${piece.groupCount} 个帧组；${plan.calibration.segments.map(s => `段 ${s.index} N_exp ${s.nExp}${s.xRef ? `，x_ref ${s.xRef.xRef.toFixed(3)}` : ""}`).join("；")}`);
   return {
-    piece, expectedTotal: plan.expectedTotal, toleranceTotal: plan.toleranceTotal,
+    piece, expectedTotal: plan.expectedTotal,
     segments: plan.calibration.segments, calibration: plan.calibration,
   };
 }
@@ -324,7 +324,7 @@ export async function buildBurstRecipe(call, { sourceId, sampleSet = null, partI
     await ws.edit("workspace_update_segments", { segments: patchSegments(planOf(await ws.get()).segments) });
   }
   const calibration = await measureTeaching(ws, teachPiece, { log });
-  log(`示教件基准：ΣN_exp=${calibration.expectedTotal} ± ${calibration.toleranceTotal}`);
+  log(`示教件基准：ΣN_exp=${calibration.expectedTotal}`);
   const { validation } = await validateCandidate(ws, samplePiece);
   log(`验证${validation.passed ? "通过" : "未通过"}：${validation.checks.map(c => `${c.name}${c.passed ? "√" : "×"}`).join(" ")}`);
   const active = validation.passed ? await publishCandidate(call, ws, id) : null;
@@ -338,9 +338,9 @@ export function burstFacts(detail) {
   const j = burst.judgement;
   return {
     verdict: detail.summary.verdict, plcCode: detail.summary.plcCode, faultCode: detail.summary.faultCode, reason: detail.summary.reason,
-    expectedTotal: burst.expectedTotal, toleranceTotal: burst.toleranceTotal, deviceTriggers: burst.deviceTriggers,
-    groupCount: j.groupCount, countStatus: j.countStatus, cameraFrames: burst.cameraFrames, flags: j.flags,
-    regions: j.regions.map(r => ({ kind: r.region.kind.type, verdict: r.verdict, frameCount: r.frameCount, expected: r.expected, countStatus: r.countStatus, offsetUnjudged: r.offsetUnjudged })),
+    expectedTotal: burst.expectedTotal, deviceTriggers: burst.deviceTriggers,
+    groupCount: j.groupCount, cameraFrames: burst.cameraFrames, flags: j.flags,
+    regions: j.regions.map(r => ({ kind: r.region.kind.type, verdict: r.verdict, frameCount: r.frameCount, expected: r.expected, offsetUnjudged: r.offsetUnjudged })),
     incompleteGroups: [...new Set(j.regions.flatMap(r => r.incompleteGroups))].sort((a, b) => a - b),
     alarms: j.alarms.length, uninspected: j.uninspected.length, unchecked: j.unchecked,
     frameStates: burst.frames.reduce((counts, f) => ({ ...counts, [f.status]: (counts[f.status] ?? 0) + 1 }), {}),

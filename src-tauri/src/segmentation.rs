@@ -5,12 +5,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::burst_judge::FrameMetrics;
 use crate::frame_group::FrameGroup;
 use crate::passes::{self, PassRules};
 use crate::plan::{PathSegment, SegmentKind};
 
-/// 分段输入：三路帧组和计划（段类型序列、N_exp、tol）。
+/// 分段输入：三路帧组和计划（段类型序列、N_exp）。
 pub struct SegInput<'a> {
     pub groups: &'a [FrameGroup],
     pub segments: &'a [PathSegment],
@@ -25,7 +24,7 @@ pub struct Boundary {
     pub frame_seq: u64,
     /// 0–1
     pub confidence: f32,
-    /// 边界正好在两笔之间（D-SB-62）：位置确定，不留过渡区、不按方向细化
+    /// 边界正好在两笔之间（D-SB-62）：位置确定，不留过渡区
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hard: bool,
 }
@@ -44,8 +43,7 @@ pub trait Segmenter {
 }
 
 /// 比例分段（D-SB-40）：本件帧组数 total 已知时，第 k 个边界 = round(total × 前 k 段 N_exp 之和 / ΣN_exp)，
-/// 每段至少留 1 帧。total ∈ ΣN_exp ± Σtol 时各边界置信度 1，否则 0（由 [`resolve_regions`] 整体合并为置信度不足）。
-/// 单段配方没有边界可定位，任一段 N_exp 未标定时没有比例可用，都返回 Unsegmented（与没有分段算法时相同）。
+/// 每段至少留 1 帧，边界置信度 1。只作没有笔结构时的兜底。单段配方没有边界可定位，任一段 N_exp 未标定时没有比例可用，都返回 Unsegmented（与没有分段算法时相同）。
 pub struct Proportional;
 
 impl Segmenter for Proportional {
@@ -69,12 +67,6 @@ fn proportional_for_count(segments: &[PathSegment], total: u64) -> SegOutcome {
     if counts.len() < 2 || expected == 0 || total == 0 {
         return SegOutcome::Unsegmented;
     }
-    let tolerance: u64 = segments.iter().map(|s| u64::from(s.tolerance)).sum();
-    let confidence = if total.abs_diff(expected) <= tolerance {
-        1.0
-    } else {
-        0.0
-    };
     let (mut cumulative, mut previous) = (0, 0);
     let last = counts.len() - 1;
     let boundaries = counts[..last]
@@ -90,7 +82,7 @@ fn proportional_for_count(segments: &[PathSegment], total: u64) -> SegOutcome {
             Boundary {
                 after_segment: segments[k].index,
                 frame_seq,
-                confidence,
+                confidence: 1.0,
                 hard: false,
             }
         })
@@ -134,155 +126,15 @@ fn by_passes(segments: &[PathSegment], passes: PassRules) -> Option<SegOutcome> 
 }
 
 /// 本件的分段（生产、复测与历史重判共用）：本件笔数与示教件一致时按笔换算边界（D-SB-62），笔数不一致时比例边界一律不可信
-/// （整件按未分段判），没有笔结构时按 [`Proportional`]；配方开了 `boundary_refine` 时再用 [`refine_by_heading`] 细化
-/// （要每帧特征）。
-pub fn segment_part(
-    input: &SegInput,
-    features: &[FrameMetrics],
-    refine: bool,
-    passes: PassRules,
-) -> SegOutcome {
-    let outcome = by_passes(input.segments, passes).unwrap_or_else(|| {
+/// （整件按未分段判），没有笔结构时按 [`Proportional`]。
+pub fn segment_part(input: &SegInput, passes: PassRules) -> SegOutcome {
+    by_passes(input.segments, passes).unwrap_or_else(|| {
         let mut outcome = Proportional.segment(input);
         if let (true, SegOutcome::Boundaries(boundaries)) = (passes.mismatch(), &mut outcome) {
             boundaries.iter_mut().for_each(|b| b.confidence = 0.0);
         }
         outcome
-    });
-    if refine {
-        refine_by_heading(input, features, outcome, passes.part)
-    } else {
-        outcome
-    }
-}
-
-/// 方向细化（D-SB-47）：直线段与弯道之间、直线段开了逐帧定向的边界，在给定边界 ± (两段容差之和 + 1)
-/// 帧内对准直线段检测相机的胶条方向开始偏离（或回到）该段方向的帧。直线段方向取每台相机在该段核心帧（离两端边界都超出窗口）
-/// 上测得方向的中位数，偏离阈值为该段的方向容差；某帧多数相机偏离即算离开直线段。窗口内没有方向数据时保留原边界，
-/// 置信度不变。只用找到了胶条的帧。`features` 是本件各相机的每帧指标。两笔之间的硬边界不动；知道笔结构（`layout`）时
-/// 笔中间的边界只在本笔内移动（D-SB-62）。
-pub fn refine_by_heading(
-    input: &SegInput,
-    features: &[FrameMetrics],
-    outcome: SegOutcome,
-    layout: &[u32],
-) -> SegOutcome {
-    let SegOutcome::Boundaries(mut boundaries) = outcome else {
-        return outcome;
-    };
-    let total = input.groups.iter().map(|g| g.seq).max().unwrap_or(0);
-    let cuts: Vec<u64> = boundaries.iter().map(|b| b.frame_seq).collect();
-    let last = cuts.len();
-    for k in 0..last {
-        let (a, c) = (&input.segments[k], &input.segments[k + 1]);
-        let (s, straight_first) = match (a.kind, c.kind) {
-            (SegmentKind::Straight, SegmentKind::Corner) => (k, true),
-            (SegmentKind::Corner, SegmentKind::Straight) => (k + 1, false),
-            _ => continue,
-        };
-        let straight = &input.segments[s];
-        let Some(settings) = &straight.heading else {
-            continue;
-        };
-        let window = u64::from(a.tolerance + c.tolerance) + 1;
-        let (begin, end) = (
-            if s == 0 { 1 } else { cuts[s - 1] + 1 },
-            if s == last { total } else { cuts[s] },
-        );
-        let core = (if s == 0 { begin } else { begin + window })..=(if s == last {
-            end
-        } else {
-            end.saturating_sub(window)
-        });
-        if boundaries[k].hard {
-            continue;
-        }
-        let pass = passes::locate(layout, cuts[k])
-            .map(|(j, _)| {
-                let first = passes::first_seq(layout, j);
-                (first, first + u64::from(layout[j]).saturating_sub(2))
-            })
-            .unwrap_or((1, u64::MAX));
-        let lo = cuts[k]
-            .saturating_sub(window)
-            .max(if k == 0 {
-                1
-            } else {
-                boundaries[k - 1].frame_seq + 1
-            })
-            .max(pass.0);
-        let hi = (cuts[k] + window)
-            .min(if k + 1 < last {
-                cuts[k + 1] - 1
-            } else {
-                total.saturating_sub(1)
-            })
-            .min(pass.1);
-        if lo > hi {
-            continue;
-        }
-        let theta = |m: &&FrameMetrics| {
-            m.heading_deg.filter(|_| {
-                !m.heading_fallback && m.state == crate::burst_judge::FrameState::Measured
-            })
-        };
-        let cameras: std::collections::BTreeSet<usize> = features
-            .iter()
-            .filter(|m| m.corridor == Some(straight.index) && theta(m).is_some())
-            .map(|m| m.camera)
-            .collect();
-        let reference: Vec<(usize, f64)> = cameras
-            .iter()
-            .filter_map(|&camera| {
-                let mut core_theta: Vec<f64> = features
-                    .iter()
-                    .filter(|m| m.camera == camera && core.contains(&m.seq))
-                    .filter_map(|m| theta(&m))
-                    .collect();
-                let base = *core_theta.first()?;
-                core_theta
-                    .iter_mut()
-                    .for_each(|t| *t = base + crate::heading::wrap(*t - base));
-                core_theta.sort_by(f64::total_cmp);
-                Some((camera, core_theta[core_theta.len() / 2]))
-            })
-            .collect();
-        let in_straight = |seq: u64| -> Option<bool> {
-            let votes: Vec<bool> = reference
-                .iter()
-                .filter_map(|&(camera, r)| {
-                    let m = features
-                        .iter()
-                        .find(|m| m.camera == camera && m.seq == seq)?;
-                    theta(&m).map(|t| crate::heading::wrap(t - r).abs() <= settings.tolerance_deg)
-                })
-                .collect();
-            (!votes.is_empty()).then(|| votes.iter().filter(|&&v| v).count() * 2 > votes.len())
-        };
-        let observed: Vec<(u64, bool)> = (lo..=hi + 1)
-            .filter_map(|seq| in_straight(seq).map(|v| (seq, v)))
-            .collect();
-        if observed.is_empty() {
-            continue;
-        }
-        let score = |cut: u64| -> i64 {
-            observed
-                .iter()
-                .map(|&(seq, v)| {
-                    if v == ((seq <= cut) == straight_first) {
-                        1
-                    } else {
-                        -1
-                    }
-                })
-                .sum()
-        };
-        let best = (lo..=hi)
-            .max_by_key(|&cut| (score(cut), std::cmp::Reverse(cut.abs_diff(cuts[k]))))
-            .unwrap_or(cuts[k]);
-        boundaries[k].frame_seq = best;
-    }
-    SegOutcome::Boundaries(boundaries)
+    })
 }
 
 /// 未分段的原因。
@@ -733,7 +585,6 @@ pub struct InspectionCoverage {
     pub group_count: u64,
     pub boundary_guard: u32,
     pub boundaries_trusted: bool,
-    pub boundary_refinement_pending: bool,
     pub regions: Vec<Region>,
     pub excluded_groups: Vec<u64>,
     pub expected_camera_frames: Option<u64>,
@@ -840,7 +691,6 @@ pub fn proportional_coverage(
     cameras: &[String],
     total_seq: u64,
     guard: u32,
-    refine: bool,
     excluded_groups: &[u64],
     passes: PassRules,
 ) -> InspectionCoverage {
@@ -930,7 +780,6 @@ pub fn proportional_coverage(
         group_count: total_seq,
         boundary_guard: guard,
         boundaries_trusted,
-        boundary_refinement_pending: refine,
         regions,
         excluded_groups: excluded.into_iter().collect(),
         expected_camera_frames: boundaries_trusted.then(|| {
@@ -1072,7 +921,7 @@ mod tests {
         let cameras = vec!["camA".into(), "camB".into(), "camC".into()];
         for (guard, expected) in [(1, 0), (0, 2)] {
             let coverage =
-                proportional_coverage(&segments, &cameras, 10, guard, false, &[], PassRules::NONE);
+                proportional_coverage(&segments, &cameras, 10, guard, &[], PassRules::NONE);
             assert!(coverage.boundaries_trusted);
             assert_eq!(coverage.expected_camera_frames, Some(expected));
             assert_eq!(coverage.segments[1].expected_camera_frames, Some(expected));
@@ -1099,13 +948,9 @@ mod tests {
         let mut missing = calibrated(&[S, C], &[4, 4]);
         missing[1].expected_frames = None;
         let cameras = vec!["camA".into(), "camB".into(), "camC".into()];
-        for (segments, total) in [
-            (missing, 8),
-            (calibrated(&[S], &[8]), 8),
-            (calibrated(&[S, C], &[4, 4]), 16),
-        ] {
+        for (segments, total) in [(missing, 8), (calibrated(&[S], &[8]), 8)] {
             let coverage =
-                proportional_coverage(&segments, &cameras, total, 1, false, &[], PassRules::NONE);
+                proportional_coverage(&segments, &cameras, total, 1, &[], PassRules::NONE);
             assert!(!coverage.boundaries_trusted);
             assert_eq!(coverage.expected_camera_frames, None);
             assert!(coverage.zero_coverage_segments.is_empty());
@@ -1136,13 +981,12 @@ mod tests {
             spread: None,
             edge: None,
         });
-        let clear = proportional_coverage(&segments, &cameras, 12, 1, false, &[], PassRules::NONE);
+        let clear = proportional_coverage(&segments, &cameras, 12, 1, &[], PassRules::NONE);
         let masked = proportional_coverage(
             &segments,
             &cameras,
             12,
             1,
-            false,
             &[3, 4, 5, 6],
             PassRules::NONE,
         );
@@ -1165,34 +1009,6 @@ mod tests {
             offset.unjudged_reasons,
             vec![OffsetCoverageReason::ExcludedGroups]
         );
-    }
-
-    /// D-SB-40：本件帧组数超出 ΣN_exp ± Σtol 时比例边界不可信，整件合并为一个“分段不确定”区域，不回退计划边界。
-    #[test]
-    fn proportional_boundaries_outside_total_tolerance_merge_into_low_confidence_region() {
-        let segments = calibrated(&[S, C, S], &[10, 4, 10]);
-        for total in [17, 31] {
-            let outcome = proportional(&segments, total);
-            assert!(
-                cuts(&outcome)
-                    .iter()
-                    .all(|&(_, confidence)| confidence == 0.0),
-                "{total} 帧"
-            );
-            assert_eq!(
-                resolve_regions(&segments, &outcome, total, 0.5, 2, PassRules::NONE),
-                vec![region(
-                    RegionKind::Unsegmented {
-                        first_segment: 1,
-                        last_segment: 3,
-                        reason: UnsegReason::LowConfidence
-                    },
-                    1,
-                    total
-                )],
-                "{total} 帧"
-            );
-        }
     }
 
     /// 短段使相邻过渡区合并成一个（第 1–4 段边界过渡）时，每帧仍按所在段与最近边界另一侧的段选走廊：
@@ -1397,8 +1213,6 @@ mod tests {
                 groups: &groups,
                 segments,
             },
-            &[],
-            false,
             passes,
         );
         resolve_regions(segments, &outcome, total, 0.5, 2, passes)
