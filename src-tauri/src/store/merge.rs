@@ -11,6 +11,17 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{add_part_mode, add_part_tags, db_err, Store, DB_VERSION, PROJECT_DB_VERSION};
 
+/// 两份配方快照按当前格式读入后相同：旧快照里已退役的字段（如 `planVersion`）不算差异。
+fn same_snapshot(a: &str, b: &str) -> bool {
+    let normalize = |json: &str| {
+        serde_json::from_str(json)
+            .ok()
+            .and_then(|value| crate::recipe::Recipe::from_snapshot(value).ok())
+            .and_then(|recipe| serde_json::to_value(recipe).ok())
+    };
+    matches!((normalize(a), normalize(b)), (Some(a), Some(b)) if a == b)
+}
+
 /// parts 中除 id、project_id、retest_of 外的列；9 版与 10 版相同。
 const PART_COLUMNS: &str = "ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
     reason, drain_ms, frames_expected, frames_received, triggers, software_version, judgement, frames, cycle_id, bundle_id, \
@@ -359,11 +370,18 @@ pub(super) fn merge_rows(
         [project],
     )
     .map_err(db_err)?;
-    let conflict: Option<String> = conn.query_row(
-        "SELECT s.revision_id FROM src.recipe_snapshots s JOIN main.recipe_snapshots m ON m.project_id = ?1 AND m.revision_id = s.revision_id \
-         WHERE (m.json != s.json OR m.recipe_id != s.recipe_id OR m.version != s.version) AND (NOT EXISTS (SELECT 1 FROM src.parts p WHERE p.source != 'real' AND p.recipe_revision = s.revision_id) OR EXISTS (SELECT 1 FROM src.parts p WHERE p.source = 'real' AND p.recipe_revision = s.revision_id)) LIMIT 1",
-        [project], |r| r.get(0),
-    ).optional().map_err(db_err)?;
+    let differing: Vec<(String, bool, String, String)> = conn
+        .prepare(
+            "SELECT s.revision_id, m.recipe_id = s.recipe_id AND m.version = s.version, m.json, s.json \
+             FROM src.recipe_snapshots s JOIN main.recipe_snapshots m ON m.project_id = ?1 AND m.revision_id = s.revision_id \
+             WHERE (m.json != s.json OR m.recipe_id != s.recipe_id OR m.version != s.version) AND (NOT EXISTS (SELECT 1 FROM src.parts p WHERE p.source != 'real' AND p.recipe_revision = s.revision_id) OR EXISTS (SELECT 1 FROM src.parts p WHERE p.source = 'real' AND p.recipe_revision = s.revision_id))",
+        )
+        .and_then(|mut s| s.query_map([project], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect())
+        .map_err(db_err)?;
+    let conflict = differing
+        .into_iter()
+        .find(|(_, same_identity, ours, theirs)| !same_identity || !same_snapshot(ours, theirs))
+        .map(|(revision, ..)| revision);
     if let Some(revision) = conflict {
         return Err(format!(
             "项目 {project} 的配方快照 {revision} 与本机已有的不同，拒绝合并"

@@ -37,7 +37,7 @@ export default function ValidationPage() {
   const [historyScope,setHistoryScope] = useState<"current"|"all">("current");
   const projects = useProjectDirectory();
   const projectId = projects.current?.id ?? null;
-  const candidate = data ? JSON.stringify([data.workspace.doc.id,data.workspace.doc.version,data.workspace.baseRevision]) : null;
+  const candidate = data ? JSON.stringify([data.workspace.doc.id,data.workspace.doc.version]) : null;
   const [selection,setSelection] = useState<{candidate:string|null;samples:Sample[]}>(()=>({candidate,samples:data?.workspace.samples??[]}));
   const selectedSamples = selection.candidate===candidate?selection.samples:data?.workspace.samples??[];
   const availableSamples = new Set(data?.workspace.sampleBank.map(sample=>sample.id));
@@ -62,8 +62,8 @@ export default function ValidationPage() {
   useEffect(()=>{pending.current=null;setOperating(false);setConfirm(false);setAbandoning(false);setCollect(null);},[scope]);
   useEffect(()=>{
     setSourceConfirmed(false);
-    setHistoryScope(data?.workspace.baseRevision?"current":"all");
-  },[data?.workspace.doc.id,data?.workspace.baseRevision]);
+    setHistoryScope(data?.productionVersion!=null?"current":"all");
+  },[data?.workspace.doc.id,data?.productionVersion]);
   // 发布前检查（D-SB-46）：每次候选修订或待生效状态变化时当场核对一次
   const checksKey=JSON.stringify([data?.workspace.doc.id??null,data?.workspace.revision??null,!!data?.workspace.pending]);
   useEffect(()=>{

@@ -1,6 +1,6 @@
 use super::burst::CameraTeaching;
-use super::burst_release::{burst_checks, BurstInputs};
-use super::burst_tests::{burst_workspace, capture_round, configs, DEVICE};
+use super::burst_release::burst_checks;
+use super::burst_tests::{burst_workspace, DEVICE};
 use super::*;
 use crate::plan::{
     PartCalib, SegmentCalib,
@@ -85,15 +85,9 @@ fn calibrate(w: &mut Workspace, total: u32) {
     }
 }
 
-/// 设备就绪、基于当前生产版本，当前设备标签都是 DEVICE，没有任何验证样本（D-SB-46 发布不要求）：只剩候选自身的检查项决定能否发布。
-fn checks(w: &Workspace, cameras: &BTreeMap<String, Value>) -> Vec<Check> {
-    burst_checks(
-        w,
-        BurstInputs {
-            device: Ok(()),
-            cameras,
-        },
-    )
+/// 设备就绪，没有任何验证样本（D-SB-46 发布不要求）：只剩候选自身的检查项决定能否发布。
+fn checks(w: &Workspace) -> Vec<Check> {
+    burst_checks(w, Ok(()))
 }
 
 fn check<'a>(checks: &'a [Check], name: &str) -> &'a Check {
@@ -106,13 +100,13 @@ fn check<'a>(checks: &'a [Check], name: &str) -> &'a Check {
 #[test]
 fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
     // 防的回归（规格 §1 Plan.cameras = 3；§4 每台相机的检测走廊；D-SB-46）：少一台计划相机、某台没选示教帧、走廊超出示教帧、
-    // 缺像素当量，或示教帧采集后设备参数变了，仍能通过发布前检查；或都满足了却因为没有验证样本而不能发布
-    type Edit = fn(&mut Workspace, &mut BTreeMap<String, Value>);
-    let cases: [(&str, Edit, bool); 6] = [
-        ("三台相机都示教好", |_, _| {}, true),
+    // 缺像素当量，仍能通过发布前检查；或都满足了却因为没有验证样本而不能发布
+    type Edit = fn(&mut Workspace);
+    let cases: [(&str, Edit, bool); 5] = [
+        ("三台相机都示教好", |_| {}, true),
         (
             "计划相机只有 2 台",
-            |w, _| {
+            |w| {
                 w.doc.inspect.truncate(2);
                 w.camera_teaching.retain(|t| t.camera != "cam3");
             },
@@ -120,33 +114,21 @@ fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
         ),
         (
             "一台相机没选示教帧",
-            |w, _| w.camera_teaching.retain(|t| t.camera != "cam2"),
+            |w| w.camera_teaching.retain(|t| t.camera != "cam2"),
             false,
         ),
         (
             "走廊超出示教帧",
-            |w, _| w.doc.inspect[0].segments[1].corridor[0] = [1200.0, 480.0],
+            |w| w.doc.inspect[0].segments[1].corridor[0] = [1200.0, 480.0],
             false,
         ),
-        (
-            "缺像素当量",
-            |w, _| w.doc.inspect[1].mm_per_px = None,
-            false,
-        ),
-        (
-            "示教帧采集后设备参数改变",
-            |_, current| {
-                current.insert("cam3".into(), json!("device-b"));
-            },
-            false,
-        ),
+        ("缺像素当量", |w| w.doc.inspect[1].mm_per_px = None, false),
     ];
     for (name, edit, passed) in cases {
         let mut w = taught(&[Straight, Corner], DEVICE);
         calibrate(&mut w, 30);
-        let mut current = configs(&w.doc, DEVICE);
-        edit(&mut w, &mut current);
-        let checks = checks(&w, &current);
+        edit(&mut w);
+        let checks = checks(&w);
         assert_eq!(
             (
                 check(&checks, "走廊示教").passed,
@@ -156,29 +138,4 @@ fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
             "{name}：{checks:?}"
         );
     }
-}
-
-
-#[test]
-fn changed_frame_rate_blocks_publish_until_teaching_measurement_configuration_restored() {
-    let mut w = taught(&[Straight, Corner], DEVICE);
-    calibrate(&mut w, 20);
-    let mut round = capture_round("rate-teaching", &w.doc, 20, DEVICE, &[]);
-    for camera in &mut round.cameras {
-        camera.camera_config =
-            json!({"triggerSource": "Line0", "triggerActivation": "LevelHigh", "frameRate": 10.0});
-    }
-    w.calibration
-        .rounds
-        .push(super::burst::calibration_round(&w.doc, &round, &[]));
-    let mut current: BTreeMap<String, Value> = round
-        .cameras
-        .iter()
-        .map(|c| (c.camera_id.clone(), c.camera_config.clone()))
-        .collect();
-    assert!(check(&checks(&w, &current), "示教件采集参数").passed);
-    current.get_mut("cam1").unwrap()["frameRate"] = json!(20.0);
-    assert!(!check(&checks(&w, &current), "示教件采集参数").passed);
-    current.get_mut("cam1").unwrap()["frameRate"] = json!(10.0);
-    assert!(check(&checks(&w, &current), "示教件采集参数").passed);
 }

@@ -1600,28 +1600,6 @@ pub async fn workspace_snap_corridor(
 
 // ───────────── 示教件测量 ─────────────
 
-/// 示教件测量时各相机的设备配置要与当前设备相同（发布前核对）。`current` 为当前设备配置（按相机编号）。
-pub(super) fn check_calibration_devices(
-    rounds: &[CalibrationRound],
-    current: &BTreeMap<String, Value>,
-) -> Result<(), String> {
-    for round in rounds {
-        for (index, camera) in round.cameras.iter().enumerate() {
-            let mut config = current.get(camera).cloned().unwrap_or(Value::Null);
-            if let Some(object) = config.as_object_mut() {
-                object.remove("sampleSet");
-            }
-            if config.is_null() || Some(&config) != round.camera_config.get(index) {
-                return Err(format!(
-                    "相机 {camera} 的参数与示教件测量时（{}）不一致，请恢复采集参数或重新测量示教件",
-                    round.round_id
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// 示教件能不能测量：属于本候选、已完整完成；相机集合等于计划相机；每台相机采集时的设备配置与当前设备相同。
 pub(super) fn check_round(
     doc: &RecipeDoc,
