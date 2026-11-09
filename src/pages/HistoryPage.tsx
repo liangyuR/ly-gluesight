@@ -50,7 +50,7 @@ export default function HistoryPage() {
   const [recipeId, setRecipeId] = useState(initial?.recipeId ?? "");
   const [project, setProject] = useState(initial?.currentProject ? CURRENT_PROJECT : "");
   const [offset, setOffset] = useState(0);
-  const [result, setResult] = useState<{ page: Page; query: HistoryQuery; offset: number } | null>(null);
+  const [result, setResult] = useState<{ page: Page; counts: Page["counts"]; query: HistoryQuery; offset: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [operationError, setOperationError] = useState("");
@@ -92,6 +92,8 @@ export default function HistoryPage() {
   currentQuery.current = query;
   const stale = result?.query !== query || result.offset !== offset;
   const page = result && !(stale && (error || projectBlocked)) ? result.page : null;
+  const counts = page ? result!.counts : null;
+  const countedTotal = counts ? counts.ok + counts.excursion + counts.ng + counts.err : 0;
   const pending = stale && !!page;
   const hasFilters = range !== "today" || groups.length > 0 || mode !== "all" || !!sn || !!tag || !!recipeId || !!project;
   const resetFilters = () => {
@@ -118,12 +120,14 @@ export default function HistoryPage() {
     if (projectBlocked) { setLoading(false); return; }
     setLoading(true);
     setError("");
-    historyApi
-      .query({ ...query, offset, limit: PAGE })
-      .then((p) => {
+    Promise.all([
+      historyApi.query({ ...query, offset, limit: PAGE }),
+      query.verdicts?.length ? historyApi.query({ ...query, verdicts: [], offset: 0, limit: 1 }) : null,
+    ])
+      .then(([p, all]) => {
         if (serial !== requestSerial.current) return;
         if (offset > 0 && offset >= p.total) { setOffset(Math.max(0, Math.ceil(p.total / PAGE) - 1) * PAGE); return; }
-        setResult({ page: p, query, offset });
+        setResult({ page: p, counts: (all ?? p).counts, query, offset });
         setSelected(previous => previous.filter(key => p.items.some(item => String(item.id) === key)));
         setError("");
       })
@@ -265,13 +269,38 @@ export default function HistoryPage() {
     <div className="hist-page">
       <Card className="hist-filters">
         <Stack direction="column" align="stretch" gap={10}>
-          <Stack gap={12}>
-              <SegmentedControl label="记录日期" options={rangeOptions} value={range} onValueChange={(value) => { setRange(value); setOffset(0); }} />
-              <SegmentedControl label="检测模式" options={modeOptions} value={mode} onValueChange={(value) => { setMode(value); setOffset(0); }} />
-          </Stack>
-          <div className="hist-filter-options">
-              <Stack gap={8} className="hist-result-filters">
-                <Text variant="label" muted>结果</Text>
+          <div className="hist-filter-row">
+            <SegmentedControl label="记录日期" options={rangeOptions} value={range} onValueChange={(value) => { setRange(value); setOffset(0); }} />
+            <SegmentedControl label="检测模式" options={modeOptions} value={mode} onValueChange={(value) => { setMode(value); setOffset(0); }} />
+            <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="筛选 SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} />
+            <TextField id="history-tag" className="hist-tag-input" aria-label="历史 Tag" list="history-common-tags" placeholder="按 Tag 精确筛选" value={tag} onChange={(e) => { setTag(e.target.value); setOffset(0); }} />
+            <datalist id="history-common-tags">{commonHistoryTags.map(value => <option key={value} value={value} />)}</datalist>
+            <Select
+              id="history-project"
+              aria-label="历史项目"
+              className="hist-project-select"
+              value={project}
+              options={[
+                { value: "", label: "全部项目" },
+                { value: CURRENT_PROJECT, label: projects.current ? `当前项目（${projects.current.name}）` : "当前项目" },
+                ...(projects.entries ?? []).filter((e) => e.id !== currentId).map((e) => ({ value: e.id, label: `${projectLabel(e)} · ${e.id}` })),
+              ]}
+              onValueChange={(value) => { setProject(value); setOffset(0); }}
+            />
+            <Select
+              id="history-recipe"
+              aria-label="历史配方"
+              className="hist-recipe"
+              value={recipeId}
+              options={[{ value: "", label: "全部配方" }, ...recipes.map((r) => ({ value: r.id, label: r.id }))]}
+              onValueChange={(value) => { setRecipeId(value); setOffset(0); }}
+            />
+            {hasFilters && <Button variant="text" size="sm" onClick={resetFilters}>重置筛选</Button>}
+          </div>
+          <div className="hist-toolbar">
+            <div className={`hist-counts${pending ? " is-loading" : ""}`} aria-busy={pending}>
+              <span>共 <b>{page?.total ?? 0}</b> 件</span>
+              <div className="hist-result-filters" role="group" aria-label="按结果筛选">
                 {verdictGroups.map((g) => (
                   <Chip
                     key={g.key}
@@ -281,58 +310,29 @@ export default function HistoryPage() {
                   >
                     <span className="hist-dot" aria-hidden="true" />
                     {g.label}
+                    <b>{counts?.[g.key as keyof Page["counts"]] ?? 0}</b>
                   </Chip>
                 ))}
-              </Stack>
-              <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="筛选 SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} />
-              <TextField id="history-tag" className="hist-tag-input" aria-label="历史 Tag" list="history-common-tags" placeholder="按 Tag 精确筛选" value={tag} onChange={(e) => { setTag(e.target.value); setOffset(0); }} />
-              <datalist id="history-common-tags">{commonHistoryTags.map(value => <option key={value} value={value} />)}</datalist>
-              <Select
-                id="history-project"
-                aria-label="历史项目"
-                className="hist-project-select"
-                value={project}
-                options={[
-                  { value: "", label: "全部项目" },
-                  { value: CURRENT_PROJECT, label: projects.current ? `当前项目（${projects.current.name}）` : "当前项目" },
-                  ...(projects.entries ?? []).filter((e) => e.id !== currentId).map((e) => ({ value: e.id, label: `${projectLabel(e)} · ${e.id}` })),
-                ]}
-                onValueChange={(value) => { setProject(value); setOffset(0); }}
-              />
-              <Select
-                id="history-recipe"
-                aria-label="历史配方"
-                className="hist-recipe"
-                value={recipeId}
-                options={[{ value: "", label: "全部配方" }, ...recipes.map((r) => ({ value: r.id, label: r.id }))]}
-                onValueChange={(value) => { setRecipeId(value); setOffset(0); }}
-              />
-              {hasFilters && <Button variant="text" size="sm" onClick={resetFilters}>重置筛选</Button>}
-          </div>
-          <div className="hist-toolbar">
-            <div className={`hist-counts${pending ? " is-loading" : ""}`} aria-busy={pending}>
-              <span>共 <b>{page?.total ?? 0}</b> 件</span>
-              <span>OK <b className="c-ok">{page?.counts.ok ?? 0}</b></span>
-              <span>局部超差 <b className="c-warn">{page?.counts.excursion ?? 0}</b></span>
-              <span>NG <b className="c-ng">{page?.counts.ng ?? 0}</b></span>
-              <span>ERR <b className="c-err">{page?.counts.err ?? 0}</b></span>
-              {page && page.total > 0 && <span>良率 <b>{(((page.counts.ok + page.counts.excursion) / page.total) * 100).toFixed(1)}%</b></span>}
+              </div>
+              {countedTotal > 0 && <span>良率 <b>{(((counts!.ok + counts!.excursion) / countedTotal) * 100).toFixed(1)}%</b></span>}
             </div>
-            <Stack gap={8}>
-              <IconButton aria-label="刷新" title="刷新" onClick={load} disabled={loading}><RefreshCw size={16} /></IconButton>
+            <div className="hist-actions">
               <Button leadingIcon={<Scale size={15} />} onClick={() => page && setRejudge({ query, total: page.total })} disabled={loading || stale || !page?.total}>批量重判</Button>
               <Button leadingIcon={<Download size={15} />} onClick={() => void exportCsv()} disabled={exporting || loading || stale || !page?.total}>
                 {exporting ? "导出中…" : "导出 CSV"}
               </Button>
-              <Button leadingIcon={<Package size={15} />} onClick={() => setPackageIds(selected.map(Number))} disabled={!selected.length || !canExportSelected || loading || stale}>导出历史件（{selected.length}）</Button>
+              <span className="hist-actions-divider" aria-hidden="true" />
               <Button leadingIcon={<PackageOpen size={15} />} onClick={() => void pickPackage()} disabled={picking}>{picking ? "正在读取…" : "导入历史件"}</Button>
-            </Stack>
+              <IconButton aria-label="刷新" title="刷新" onClick={load} disabled={loading}><RefreshCw size={16} /></IconButton>
+            </div>
           </div>
-          <Stack gap={8}>
-            <Text variant="label" muted>已选 {selected.length} 件</Text>
-            <Button leadingIcon={<Tag size={15} />} disabled={!selected.length || loading || stale} onClick={() => setRecordAction("tags")}>编辑 Tag（{selected.length}）</Button>
-            <Button leadingIcon={<Trash2 size={15} />} disabled={!selected.length || loading || stale} onClick={() => setRecordAction("delete")}>删除历史件（{selected.length}）</Button>
-          </Stack>
+          <div className="hist-selection-bar" data-active={selected.length > 0 || undefined} role="toolbar" aria-label="已选历史件操作">
+            <Text variant="label" muted={!selected.length}>已选 {selected.length} 件</Text>
+            <Button size="sm" leadingIcon={<Package size={15} />} onClick={() => setPackageIds(selected.map(Number))} disabled={!selected.length || !canExportSelected || loading || stale}>导出历史件（{selected.length}）</Button>
+            <Button size="sm" leadingIcon={<Tag size={15} />} disabled={!selected.length || loading || stale} onClick={() => setRecordAction("tags")}>编辑 Tag（{selected.length}）</Button>
+            <Button size="sm" leadingIcon={<Trash2 size={15} />} disabled={!selected.length || loading || stale} onClick={() => setRecordAction("delete")}>删除历史件（{selected.length}）</Button>
+            {selected.length > 0 && <Button variant="text" size="sm" onClick={() => setSelected([])}>取消选择</Button>}
+          </div>
           {notice && <Alert tone={notice.warnings.length ? "warn" : "ok"}>{notice.message}{notice.warnings.length > 0 && <ul className="hist-package-list">{notice.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}</Alert>}
           {loading && stale && <Text variant="label" muted role="status">正在加载历史记录…</Text>}
           {exported && (

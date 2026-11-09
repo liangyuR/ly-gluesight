@@ -126,3 +126,27 @@ it("确认删除已选历史件 → 记录与统计刷新，取消确认则保�
   expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 0 件");
   expect(screen.getByRole("button", { name: "删除历史件（0）" })).toBeDisabled();
 });
+
+// 防的回归：结果芯片兼作计数，选中 NG 后其他芯片跟着筛选变成 0，看不出各结果的分布
+it("按结果筛选 → 列表只剩该结果，各结果芯片仍显示筛选前的件数", async () => {
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_query") {
+      const verdicts = (args as { query: { verdicts: string[] } }).query.verdicts;
+      return verdicts.length
+        ? { total: 1, counts: { ok: 0, excursion: 0, ng: 1, err: 0 }, items: [burstPartSummary(2)] }
+        : { total: 4, counts: { ok: 3, excursion: 0, ng: 1, err: 0 }, items: [1, 2, 3, 4].map(burstPartSummary) };
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(4);
+  const filters = within(screen.getByRole("group", { name: "按结果筛选" }));
+  await userEvent.click(filters.getByRole("button", { name: /NG/ }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "查看 SN SN-104 的记录" })).not.toBeInTheDocument());
+  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 1 件");
+  expect(filters.getByRole("button", { name: /OK/ })).toHaveTextContent("OK3");
+  expect(filters.getByRole("button", { name: /NG/ })).toHaveTextContent("NG1");
+});
