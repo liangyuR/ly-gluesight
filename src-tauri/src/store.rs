@@ -1905,6 +1905,32 @@ impl Store {
         ))
     }
 
+    /// 空闲压缩的候选：录制完整、原图可用、有录制目录的真机件（本机全部项目），按记录编号从 `after` 之后取一页。
+    pub fn compressible_recordings(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, String, PathBuf)>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, cycle_id, recording_directory FROM parts \
+                 WHERE id > ?1 AND source = 'real' AND recording_state = 'complete' AND recording_available = 1 \
+                 AND recording_directory IS NOT NULL AND cycle_id IS NOT NULL ORDER BY id LIMIT ?2",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(rusqlite::params![after, limit as i64], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    PathBuf::from(row.get::<_, String>(2)?),
+                ))
+            })
+            .map_err(db_err)?;
+        rows.collect::<Result<_, _>>().map_err(db_err)
+    }
+
     /// 某件历史件（按 cycleId）的录制目录；没有这条记录或记录没有录制目录为 None。示教件轮次据此找录制原图。
     pub fn recording_directory(&self, cycle_id: &str) -> Result<Option<PathBuf>, String> {
         let directory: Option<Option<String>> = self

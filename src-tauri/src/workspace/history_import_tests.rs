@@ -50,7 +50,13 @@ fn recording(directory: Option<&Path>) -> RecordingEvidence {
 fn imported_round_references_recording_images_without_copying_them() {
     // 防的回归（在线投运 5.2）：选示教件又把录制原图复制或硬链接进 recipe-capture（多占一份盘、项目占用重复计入）；
     // 引用的轮次（round.json 4、origin）按 cycleId 找不到录制、读出的不是录制里那一帧；录制没了却不提示原图不可用；
-    // 重启后认不出这件已导入
+    // 重启后认不出这件已导入。原图空闲压缩过的件（盘上是 .gsr，IS-2）选作示教件时结果相同
+    for compressed in [false, true] {
+        imported_round_references_recording(compressed);
+    }
+}
+
+fn imported_round_references_recording(compressed: bool) {
     use std::sync::{mpsc::channel, Arc};
     use std::time::Duration;
 
@@ -115,6 +121,12 @@ fn imported_round_references_recording_images_without_copying_them() {
         .recv_timeout(Duration::from_secs(10))
         .expect("录制应完成收尾");
     let directory = outcome.directory.clone().expect("录制目录");
+    if compressed {
+        assert_eq!(
+            crate::raw_compress::compress_all(&directory) as u64,
+            GROUPS * cameras.len() as u64
+        );
+    }
     let evidence = recording(Some(&directory));
     let assessed = assess(
         &doc,

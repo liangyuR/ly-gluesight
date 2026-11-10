@@ -373,7 +373,7 @@ pub struct CycleHost {
     pub disk: crate::disk_guard::DiskGuard,
     pub recording_health: Arc<RecordingHealth>,
     settings_path: PathBuf,
-    /// 本机历史保留天数（`config/history.json`）
+    /// 本机历史保留天数与空闲压缩开关（`config/history.json`）
     history_path: PathBuf,
     shared: Mutex<Shared>,
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
@@ -406,9 +406,11 @@ impl CycleHost {
         let (frame_tx, frame_rx) = channel(FRAME_QUEUE);
         let (mut settings, project_note) = CycleSettings::load(&settings_path);
         let history_path = crate::storage::config(app).join("history.json");
-        let (history_days, history_note) =
-            crate::settings::load_history_days(&history_path, settings.history_days);
-        settings.history_days = history_days;
+        let (history, history_note) =
+            crate::settings::load_history(&history_path, settings.history_days);
+        settings.history_days = history.history_days;
+        settings.idle_compress = history.idle_compress;
+        crate::raw_compress::set_enabled(history.idle_compress);
         let settings_note = match (project_note, history_note) {
             (Some(a), Some(b)) => Some(format!("{a}；{b}")),
             (a, b) => a.or(b),
@@ -590,6 +592,9 @@ impl CycleHost {
 
     fn store_busy(&self, phase: Phase, s7: &PlcSession) {
         let in_flight = !matches!(phase, Phase::Idle | Phase::Fault);
+        if in_flight || s7.pending() {
+            crate::raw_compress::activity().touch();
+        }
         self.in_flight.store(in_flight, Ordering::SeqCst);
         self.busy.store(in_flight || s7.pending(), Ordering::SeqCst);
         *self.switch_block.lock().unwrap() = if in_flight {
@@ -645,10 +650,20 @@ impl CycleHost {
             return Err("在途事务结束或故障复位后才能修改检测设置".into());
         }
         settings.validate()?;
-        if settings.history_days != self.settings().history_days {
-            crate::settings::save_history_days(&self.history_path, settings.history_days)?;
+        let current = self.settings();
+        if (settings.history_days, settings.idle_compress)
+            != (current.history_days, current.idle_compress)
+        {
+            crate::settings::save_history(
+                &self.history_path,
+                &crate::settings::HistorySettings {
+                    history_days: settings.history_days,
+                    idle_compress: settings.idle_compress,
+                },
+            )?;
         }
         settings.save(&self.settings_path)?;
+        crate::raw_compress::set_enabled(settings.idle_compress);
         self.recorders.apply_retention(&settings);
         self.shared.lock().unwrap().settings = settings;
         let _ = self.tx.send(Input::Refresh);
@@ -658,6 +673,7 @@ impl CycleHost {
 
 /// 删除超过保留天数的检测记录（本机全部项目）；非当前项目的记录连同原图一起删，当前项目的原图由录制滚动清理。
 pub fn purge_history(app: &AppHandle) {
+    let _busy = crate::raw_compress::activity().busy();
     let days = host(app).settings().history_days.max(1) as i64;
     // 引用锁先于追溯 spool 锁：录制滚动清理持引用锁时会取 spool 锁查待入库目录
     let references = crate::recipe_capture::lock_references();

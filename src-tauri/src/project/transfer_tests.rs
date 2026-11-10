@@ -707,6 +707,13 @@ fn export_keeps_current_and_migration_teaching_but_omits_unreferenced_images_and
 
 #[test]
 fn export_without_history_materializes_referenced_recording_frames_for_reteaching() {
+    // 原图空闲压缩过的录制（盘上是 .gsr，IS-2）补进包里的也是原始 PGM 字节
+    for compressed in [false, true] {
+        materialized_recording_frame(compressed);
+    }
+}
+
+fn materialized_recording_frame(compressed: bool) {
     let data = TempDir::new("portable-teaching");
     let (root, _, _) = source_project(&data.0);
     let round = root.join("recipe-capture/capture-1");
@@ -729,6 +736,10 @@ fn export_without_history_materializes_referenced_recording_frames_for_reteachin
     .unwrap();
     let image = crate::frame::FrameImage::new(64, 64, vec![10; 64 * 64]);
     crate::image_file::save_pgm(&root.join("records/c1/cam1_s000001.pgm"), &image).unwrap();
+    let original = std::fs::read(root.join("records/c1/cam1_s000001.pgm")).unwrap();
+    if compressed {
+        assert_eq!(crate::raw_compress::compress_all(&root.join("records/c1")), 1);
+    }
     let package = data.0.join("portable.zip");
     let manifest = export_to(&root, None, &data.0.join("scratch"), &package).unwrap();
     assert!(!manifest.includes_records);
@@ -742,10 +753,7 @@ fn export_without_history_materializes_referenced_recording_frames_for_reteachin
         .unwrap()
         .read_to_end(&mut bytes)
         .unwrap();
-    assert_eq!(
-        bytes,
-        std::fs::read(root.join("records/c1/cam1_s000001.pgm")).unwrap()
-    );
+    assert_eq!(bytes, original);
     let mut text = String::new();
     zip.by_name("project/recipe-capture/capture-1/round.json")
         .unwrap()

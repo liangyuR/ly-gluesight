@@ -288,10 +288,10 @@ pub(super) fn materialize(
                     .as_ref()
                     .unwrap()
                     .join(format!("{id}_s{seq:06}.pgm"));
+                // 空闲压缩过的原图在盘上是同名的 .gsr，写包或复制时还原
+                let source = crate::image_file::stored_path(&source)
+                    .ok_or_else(|| format!("示教原图 {} 缺失", source.display()))?;
                 crate::image_file::checked_source_path(&source)?;
-                if !source.is_file() {
-                    return Err(format!("示教原图 {} 缺失", source.display()));
-                }
                 additions.push((
                     name.trim_end_matches("round.json").to_owned() + &relative,
                     source,

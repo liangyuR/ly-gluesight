@@ -363,13 +363,14 @@ fn part_images<W: std::io::Write>(app: &AppHandle, package: &mut Package<W>, det
         };
         let source = root.join(path);
         directory.get_or_insert_with(|| source.parent().map(Path::to_path_buf));
-        let size = fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
+        // 空闲压缩过的原图（同名 .gsr）按原始字节数计、还原成原始 PGM 打包
+        let size = crate::image_file::read_original_info(&source).map_or(0, |(_, length)| length);
         if size > *budget {
             package.notes.push(format!("原图总量超过 {} GB，记录 #{id} 起的其余原图未打包", MAX_IMAGE_BYTES >> 30));
             *budget = 0;
             return Ok(count);
         }
-        match fs::read(&source) {
+        match crate::image_file::read_original(&source) {
             Ok(bytes) => {
                 *budget -= bytes.len() as u64;
                 package.add(&format!("{folder}/{}", file_name(path)), &bytes)?;
@@ -495,5 +496,10 @@ fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &
 
 #[tauri::command]
 pub async fn diagnostics_export(app: AppHandle, request: ExportRequest) -> Result<ExportResult, String> {
-    tauri::async_runtime::spawn_blocking(move || export(&app, request)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _busy = crate::raw_compress::activity().busy();
+        export(&app, request)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

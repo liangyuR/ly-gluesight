@@ -35,13 +35,17 @@ pub(super) fn valid_cycle_id(id: &str) -> bool {
 }
 
 /// 录制原图是普通文件（不是链接或 reparse point），PNM 头（可含 Bayer 注释）的尺寸是这一尺寸、长度等于头 + 像素。
+/// 空闲压缩过的原图（同名 `.gsr`）按它记下的原文件头与原始长度核对。
 fn check_source(path: &Path, width: u32, height: u32) -> Result<(), String> {
-    crate::image_file::checked_source_path(path)?;
-    let meta = std::fs::symlink_metadata(path)
+    let stored = crate::image_file::stored_path(path)
+        .ok_or_else(|| format!("历史原图 {} 不可用：文件不存在", path.display()))?;
+    crate::image_file::checked_source_path(&stored)?;
+    let meta = std::fs::symlink_metadata(&stored)
         .map_err(|e| format!("历史原图 {} 不可用：{e}", path.display()))?;
+    let (info, length) = crate::image_file::read_original_info(&stored)?;
     let matches = meta.is_file()
-        && crate::image_file::read_pnm_info(path)?.is_some_and(|info| {
-            (info.width, info.height) == (width, height) && info.file_len() == meta.len()
+        && info.is_some_and(|info| {
+            (info.width, info.height) == (width, height) && info.file_len() == length
         });
     if !matches {
         return Err(format!(
@@ -103,8 +107,15 @@ impl RecipeCaptureHost {
             }
             let file = super::recording_file(&camera.camera_id, frame.seq);
             check_source(&frame.source, frame.width, frame.height)?;
-            let source = frame.source.canonicalize().map_err(|e| e.to_string())?;
-            if source != recording.join(&file) {
+            let directory = frame
+                .source
+                .parent()
+                .ok_or("历史原图路径无效")?
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            if frame.source.file_name().map(|name| directory.join(name))
+                != Some(recording.join(&file))
+            {
                 return Err(format!(
                     "历史原图 {} 不在这件记录的录制目录 {} 里",
                     frame.source.display(),

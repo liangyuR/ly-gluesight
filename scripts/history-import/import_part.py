@@ -15,6 +15,9 @@ import sys
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import gsr_raw  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_ROOT = Path("C:/ProgramData/ly/GlueSight-dev")
 VISION_ROOT = Path.home() / "gs_logs" / "vision"
@@ -58,8 +61,14 @@ def build_sample_set(part_dir: Path, part: dict, out: Path) -> dict[str, int]:
             shot = f"S{n:03}"
             name = f"{camera}_s{seq:06}.pgm"
             shots.append({"shotId": shot, "cameraId": camera, "views": [1], "origin": name})
-            if (part_dir / name).is_file():
-                shutil.copyfile(part_dir / name, images / f"{shot}_{camera}_v1.pgm")
+            # 空闲压缩过的原图在盘上是同名的 .gsr，还原成原始 PGM 放进样本集
+            stored = gsr_raw.stored_path(part_dir / name)
+            if stored is not None:
+                target = images / f"{shot}_{camera}_v1.pgm"
+                if stored.suffix.lower() == gsr_raw.SUFFIX:
+                    target.write_bytes(gsr_raw.read_original(stored))
+                else:
+                    shutil.copyfile(stored, target)
                 counts[camera] += 1
     if n > 999:
         raise ImportFailure(f"帧数 {n} 超过样本集 S001–S999 的上限")

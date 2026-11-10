@@ -16,7 +16,7 @@
 | --- | --- |
 | `manifest.json` | `kind`、`format`、来源项目编号与名称、导出时间、来源软件版本、各件身份（`cycleId`、SN、时间、原图目录名或 null）、`notes`，以及每个文件的字节数与 SHA-256 |
 | `records.db` | 记录库子集（版本 11）：所选记录、帧记录、记录所用的配方快照；指向子集外的复测引用置空 |
-| `parts/<录制目录名>/` | 带原图的件的录制目录原样拷贝（`part.json` 与 `{相机}_s{seq:06}.pgm` 等） |
+| `parts/<录制目录名>/` | 带原图的件的录制目录里的文件（`part.json` 与 `{相机}_s{seq:06}.pgm` 等）；空闲压缩过的原图（`.gsr`）还原成原始 `.pgm` 字节写入，包里没有 `.gsr`，导入落地的是普通 `.pgm`（[image-storage](../decisions/image-storage.md) IS-2） |
 
 包里不含本机绝对路径。`records.db` 里带原图的件，录制目录记为 `parts/<目录名>`，帧原图记为 `<目录名>/<文件>`。不带原图的件没有录制目录和帧原图引用，`recording_available = 0`，录制错误里注明“导出包未带原图”。
 

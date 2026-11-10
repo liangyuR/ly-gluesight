@@ -38,6 +38,7 @@ mod plc_plan;
 mod plc_session;
 mod production;
 mod project;
+mod raw_compress;
 mod recipe;
 mod recipe_api;
 mod recipe_capture;
@@ -501,6 +502,7 @@ fn start_services(
     camera::CameraRig::start(app);
     agent_mcp::start(app);
     measure::apply_settings(app);
+    raw_compress::start(app);
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         cycle::purge_history(&handle);

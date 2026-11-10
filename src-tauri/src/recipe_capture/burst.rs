@@ -308,13 +308,15 @@ impl BurstFrameIndex {
         }
         let dir = self.recording()?;
         let path = dir.join(recording_file(camera_id, seq));
-        crate::image_file::checked_source_path(&path).map_err(|_| {
-            format!("示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图")
-        })?;
-        let path = path
+        let missing =
+            || format!("示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图");
+        // 空闲压缩过的原图在盘上是同名的 .gsr：核对实际文件，返回的仍是记录里的 .pgm 路径，由统一读图入口还原
+        let stored = crate::image_file::stored_path(&path).ok_or_else(missing)?;
+        crate::image_file::checked_source_path(&stored).map_err(|_| missing())?;
+        let stored = stored
             .canonicalize()
             .map_err(|e| format!("示教件原图无法读取：{e}"))?;
-        if !path.starts_with(dir) || !path.is_file() {
+        if !stored.starts_with(dir) || !stored.is_file() {
             return Err("示教件原图不在来源历史件的录制目录内".into());
         }
         Ok(path)
@@ -331,7 +333,7 @@ impl BurstFrameIndex {
                     Ok(dir) => dir,
                     Err(error) => return Some(error),
                 };
-                if !dir.join(recording_file(camera_id, seq)).is_file() {
+                if !crate::image_file::exists(&dir.join(recording_file(camera_id, seq))) {
                     return Some(format!(
                         "示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图"
                     ));

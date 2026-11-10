@@ -28,7 +28,7 @@ pub fn records_list(cycle: State<'_, CycleHost>) -> RecordListing {
     for days in roots.iter().filter_map(|root| std::fs::read_dir(root).ok()) {
         for day in days.flatten().map(|d| d.path()).filter(|p| p.is_dir() && !p.ends_with("_pending")) {
             for part in std::fs::read_dir(&day).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
-                let frames = std::fs::read_dir(&part).map(|rd| rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "pgm")).count()).unwrap_or(0);
+                let frames = std::fs::read_dir(&part).map(|rd| rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "pgm" || x == crate::image_file::gsr::EXTENSION)).count()).unwrap_or(0);
                 let name = part.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
                 items.push(RecordEntry { path: part.display().to_string(), name, frames });
             }
