@@ -24,8 +24,6 @@ pub const QUIET: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_secs(1);
 /// 一轮扫完、其间没有新的业务活动时，隔多久再扫一轮（重试上一轮失败的帧）。
 const REST: Duration = Duration::from_secs(30 * 60);
-/// 业务登记时等压缩线程做完手上一帧的上限。
-const FRAME_WAIT: Duration = Duration::from_secs(5);
 /// 一件里失败这么多帧就停下这一轮（盘满、无权限等不会逐帧好转）。
 const PART_FAILURES: u32 = 3;
 const PAGE: usize = 256;
@@ -69,12 +67,12 @@ impl Activity {
         self.last.store(self.now(), Ordering::SeqCst);
     }
 
-    /// 登记一项业务，返回的守卫存在期间不压缩。压缩线程正处理一帧时等它做完（最多 [`FRAME_WAIT`]）。
+    /// 登记一项业务，返回的守卫存在期间不压缩。压缩线程正处理一个文件时等它做完才返回：拿到守卫就不会再有
+    /// 压缩线程在动录制目录。一次许可只处理一个文件（一帧的压缩，或一个残留文件的收拾），等待以它的读写为限。
     pub fn busy(&self) -> Busy<'_> {
         self.busy.fetch_add(1, Ordering::SeqCst);
         self.touch();
-        let started = Instant::now();
-        while self.in_frame.load(Ordering::SeqCst) && started.elapsed() < FRAME_WAIT {
+        while self.in_frame.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(1));
         }
         Busy(self)
@@ -227,21 +225,25 @@ fn has_extension(path: &Path, extension: &str) -> bool {
 }
 
 /// 收拾中断留下的文件：`.gsr.tmp` 直接删；`X.pgm` 与 `X.gsr` 并存时，`X.gsr` 能还原出与 `X.pgm` 相同的字节就删 `X.pgm`，
-/// 否则删 `X.gsr`。只有 `X.gsr` 的不动。返回告警。
-pub(crate) fn recover(dir: &Path) -> Vec<String> {
+/// 否则删 `X.gsr`。只有 `X.gsr` 的不动。每个要收拾的文件之前取一次 `permit`，取不到就停下。
+/// 返回告警，以及是否因取不到许可停在半路。
+pub(crate) fn recover<P>(dir: &Path, permit: impl Fn() -> Option<P>) -> (Vec<String>, bool) {
     let mut warnings = Vec::new();
     for path in entries(dir).unwrap_or_default() {
-        if path
+        let temporary = path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with(&format!(".{TEMPORARY}")))
-        {
+            .is_some_and(|name| name.ends_with(&format!(".{TEMPORARY}")));
+        if !temporary && !has_extension(&path, gsr::EXTENSION) {
+            continue;
+        }
+        let Some(_permit) = permit() else {
+            return (warnings, true);
+        };
+        if temporary {
             if matches!(plain_file(&path), Ok(true)) {
                 let _ = std::fs::remove_file(&path);
             }
-            continue;
-        }
-        if !has_extension(&path, gsr::EXTENSION) {
             continue;
         }
         let pgm = path.with_extension("pgm");
@@ -265,7 +267,7 @@ pub(crate) fn recover(dir: &Path) -> Vec<String> {
             Err(error) => warnings.push(format!("清理 {} 失败：{error}", stale.display())),
         }
     }
-    warnings
+    (warnings, false)
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -338,13 +340,11 @@ pub(crate) fn compress_part(
         }
         activity.frame(quiet)
     };
-    let warnings = {
-        let Some(_permit) = permit() else {
-            stats.interrupted = true;
-            return (stats, Vec::new());
-        };
-        recover(dir)
-    };
+    let (warnings, interrupted) = recover(dir, &permit);
+    if interrupted {
+        stats.interrupted = true;
+        return (stats, warnings);
+    }
     let frames: Vec<PathBuf> = entries(dir)
         .unwrap_or_default()
         .into_iter()

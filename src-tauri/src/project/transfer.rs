@@ -374,7 +374,7 @@ fn original_len(path: &Path) -> u64 {
 }
 
 /// 把 [`walk`] 列出的文件复制到 `target`：空闲压缩过的录制原图还原成原始 PGM 字节。
-fn copy_original(source: &Path, target: &Path) -> Result<(), String> {
+pub(super) fn copy_original(source: &Path, target: &Path) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("复制 {} 失败：{e}", source.display());
     if compressed(source) {
         std::fs::write(target, crate::image_file::read_original(source)?).map_err(fail)

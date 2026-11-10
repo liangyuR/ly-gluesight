@@ -764,6 +764,13 @@ fn materialized_recording_frame(compressed: bool) {
         .unwrap();
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["format"], 3);
     assert_eq!(read_value(&round.join("round.json")).unwrap()["format"], 4);
+    // 精简副本里的示教原图同样是原始 PGM 字节，不是改了扩展名的压缩文件
+    let copy = data.0.join("snapshot");
+    crate::project::compact::snapshot(&root, &copy).unwrap();
+    assert_eq!(
+        std::fs::read(copy.join("recipe-capture/capture-1/cam1/000001.pgm")).unwrap(),
+        original
+    );
 }
 
 #[test]

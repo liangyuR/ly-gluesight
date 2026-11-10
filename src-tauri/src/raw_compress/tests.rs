@@ -119,7 +119,7 @@ fn leftovers_of_interrupted_compression_never_cost_the_only_readable_original() 
         if temporary_left {
             std::fs::write(&tmp, &good[..good.len() / 2]).unwrap();
         }
-        recover(&temp.0);
+        recover(&temp.0, || Some(()));
         assert_eq!(
             (pgm.exists(), compressed.exists(), tmp.exists()),
             (keeps_plain, keeps_stored, false),
