@@ -330,11 +330,14 @@ fn part_started_on_second_disk_finishes_there_with_raw_paths_relative_to_it() {
 fn prune_over_limit_removes_passed_parts_before_older_failed_parts() {
     let dir = TestDir::new();
     let part = |i: u32, tag: &str| {
-        let path = dir
-            .root()
-            .join(format!("20000101/20000101_00000{i}_000_{tag}_cycle_old-{i}"));
+        let path = dir.root().join(format!(
+            "20000101/20000101_00000{i}_000_{tag}_cycle_old-{i}"
+        ));
         std::fs::create_dir_all(&path).unwrap();
-        std::fs::File::create(path.join("image.pgm")).unwrap().set_len(10).unwrap();
+        std::fs::File::create(path.join("image.pgm"))
+            .unwrap()
+            .set_len(10)
+            .unwrap();
         path
     };
     let oldest_ng = part(1, "NG_GAP");
