@@ -40,7 +40,7 @@ pub const IMAGE_BUDGET_PER_CAMERA: usize = 256 * 1024 * 1024;
 /// 彩色模式下预算里给按需生成的 RGB 留的份数：测量线程各一份、池里保留的最近几份，另加取图与读图两份。
 const RGB_WORKING_FRAMES: usize = crate::measure::MEASURE_WORKERS + RGB_KEEP + 2;
 
-/// 取图回调收一帧彩色原始马赛克时不动用的预算（见 [`RGB_WORKING_FRAMES`]）。
+/// 取图回调收一帧彩色原始马赛克时不动用的预算（见 [`RGB_WORKING_FRAMES`]）；池最多留预算的一半，大图不会因此收不进帧。
 fn rgb_headroom(w: u32, h: u32) -> usize {
     (w as usize)
         .saturating_mul(h as usize)

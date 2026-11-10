@@ -177,8 +177,10 @@ impl PoolInner {
         }
     }
 
-    /// 预算里给按需生成的图留出 `headroom` 字节；它们实际占的超过这个数时按实际占的扣。
+    /// 预算里给按需生成的图留出 `headroom` 字节，最多留预算的一半（大图的余量不能把原始帧的额度占光）；
+    /// 它们实际占的超过留出的数时按实际占的扣。
     fn reserve(&self, need: usize, headroom: usize) -> Result<(), BudgetExceeded> {
+        let headroom = self.max_bytes.map_or(headroom, |max| headroom.min(max / 2));
         let derived = self.derived.load(Ordering::SeqCst).max(headroom);
         let Some(max) = self.max_bytes.map(|max| max.saturating_sub(derived)) else {
             self.in_flight.fetch_add(need, Ordering::SeqCst);
@@ -748,15 +750,27 @@ mod tests {
         let previewed = frames[0].clone().rgb().unwrap();
         assert!(Arc::ptr_eq(&measured, &previewed));
         drop((measured, previewed));
-        for frame in &frames[1..] {
-            frame.rgb().unwrap();
-        }
-        assert_eq!(pool.0.derived.load(Ordering::SeqCst), RGB_KEEP * 48);
-        assert_eq!(
-            pool.0.in_flight.load(Ordering::SeqCst),
-            frames.len() * 16,
-            "在途的原始帧不受影响"
-        );
+        let generated: Vec<Weak<FrameImage>> = frames
+            .iter()
+            .map(|frame| Arc::downgrade(&frame.rgb().unwrap()))
+            .collect();
+        let alive: Vec<bool> = generated
+            .iter()
+            .map(|rgb| rgb.upgrade().is_some())
+            .collect();
+        assert_eq!(alive, [false, false, true, true]);
+    }
+
+    /// 保护的规则：给 RGB 留的余量最多占预算的一半。防的回归是大图（如 4096×3072，8 份 RGB 超过整个 256 MiB 预算）
+    /// 的余量把原始帧的额度扣到零，池空着也拒收每一帧，相机没有预览、生产帧全部按预算不足丢弃。
+    #[test]
+    fn headroom_larger_than_the_budget_still_leaves_half_for_raw_frames() {
+        let pool = FramePool::with_budget(4, 4 * 16);
+        let first = pool.copy_within(4, 4, &[1; 16], 1000).unwrap();
+        let _second = pool.copy_within(4, 4, &[2; 16], 1000).unwrap();
+        assert!(pool.copy_within(4, 4, &[3; 16], 1000).is_err());
+        drop(first);
+        assert!(pool.copy_within(4, 4, &[3; 16], 1000).is_ok());
     }
 
     /// 保护的规则：预算满 → 回调拒收新帧（记缺帧），但已收下的帧仍能生成 RGB 去测量；
