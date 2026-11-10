@@ -82,6 +82,8 @@ pub struct CycleSettings {
     /// 帧录制最多保留多少件、总共多少 GB，超出删最旧的；为空不限（默认）。被示教件引用的录制不删
     pub record_keep: Option<u32>,
     pub record_max_gb: Option<f32>,
+    /// 空闲时无损压缩历史件原图（IS-2）；本机设置，默认关闭
+    pub idle_compress: bool,
     /// 只由维护模式命令改写，保存检测设置时沿用当前值
     pub maintenance: Option<Maintenance>,
 }
@@ -96,6 +98,7 @@ impl Default for CycleSettings {
             record: RecordMode::All,
             record_keep: None,
             record_max_gb: None,
+            idle_compress: false,
             maintenance: None,
         }
     }
@@ -125,11 +128,12 @@ impl CycleSettings {
         format!("{} 的检测设置不符合当前取值范围（{why}），{done}", path.display())
     }
 
-    /// 写项目的 `cycle.json`；历史保留天数是本机设置（`save_history_days`），不写进项目。
+    /// 写项目的 `cycle.json`；历史保留天数与空闲压缩开关是本机设置（`save_history`），不写进项目。
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
         if let Some(object) = value.as_object_mut() {
             object.remove("historyDays");
+            object.remove("idleCompress");
         }
         crate::fsio::write_atomic(
             path,
@@ -167,42 +171,51 @@ impl CycleSettings {
     }
 }
 
-/// 本机检测历史设置（资料目录 `config/history.json`）：历史保留天数，所有项目共用。
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// 本机检测历史设置（资料目录 `config/history.json`）：历史保留天数与空闲压缩历史原图的开关，所有项目共用。
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct HistoryFile {
-    history_days: u32,
+pub struct HistorySettings {
+    pub history_days: u32,
+    #[serde(default)]
+    pub idle_compress: bool,
 }
 
-/// 读本机历史保留天数；文件还没有时用 `seed`（当前项目旧 `cycle.json` 里的值）建立。读不了或越界时用 `seed` 并给出说明。
-pub fn load_history_days(path: &Path, seed: u32) -> (u32, Option<String>) {
-    match crate::fsio::read_json::<HistoryFile>(path) {
-        Ok(Some(file)) if (1..=3650).contains(&file.history_days) => (file.history_days, None),
+/// 读本机历史设置；文件还没有时用 `seed`（当前项目旧 `cycle.json` 里的保留天数）建立，空闲压缩关闭。
+/// 读不了或保留天数越界时用 `seed` 并给出说明。
+pub fn load_history(path: &Path, seed: u32) -> (HistorySettings, Option<String>) {
+    let seeded = HistorySettings {
+        history_days: seed,
+        idle_compress: false,
+    };
+    match crate::fsio::read_json::<HistorySettings>(path) {
+        Ok(Some(file)) if (1..=3650).contains(&file.history_days) => (file, None),
         Ok(Some(file)) => (
-            seed,
+            HistorySettings {
+                history_days: seed,
+                ..file
+            },
             Some(format!(
                 "{} 的历史保留天数 {} 越界，先按 {seed} 天运行",
                 path.display(),
                 file.history_days
             )),
         ),
-        Ok(None) => match save_history_days(path, seed) {
-            Ok(()) => (seed, None),
+        Ok(None) => match save_history(path, &seeded) {
+            Ok(()) => (seeded, None),
             Err(error) => (
-                seed,
+                seeded,
                 Some(format!(
                     "本机历史保留天数写入失败（{error}），先按 {seed} 天运行"
                 )),
             ),
         },
-        Err(note) => (seed, Some(note)),
+        Err(note) => (seeded, Some(note)),
     }
 }
 
-pub fn save_history_days(path: &Path, days: u32) -> Result<(), String> {
+pub fn save_history(path: &Path, settings: &HistorySettings) -> Result<(), String> {
     crate::fsio::write_atomic(
         path,
-        &serde_json::to_string_pretty(&HistoryFile { history_days: days })
-            .map_err(|e| e.to_string())?,
+        &serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?,
     )
 }

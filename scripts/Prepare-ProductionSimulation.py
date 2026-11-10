@@ -1,10 +1,14 @@
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import gsr_raw  # noqa: E402
 
 
 def bayer_pattern(raw):
@@ -49,7 +53,11 @@ def prepare(record, output, product_code, frame_rate, pass_frames):
         relative_source = Path(frame["file"])
         if relative_source.is_absolute() or relative_source.drive:
             raise ValueError("原图路径必须相对于录制目录")
-        source = (root / relative_source).resolve(strict=True)
+        # 空闲压缩过的原图在盘上是同名的 .gsr
+        stored = gsr_raw.stored_path(root / relative_source)
+        if stored is None:
+            raise FileNotFoundError(str(root / relative_source))
+        source = stored.resolve(strict=True)
         if not source.is_relative_to(root):
             raise ValueError("原图路径越过录制目录")
         groups[camera][seq] = source
@@ -74,7 +82,7 @@ def prepare(record, output, product_code, frame_rate, pass_frames):
         mode = None
         shape = None
         for seq, source in sorted(frames.items()):
-            raw = np.fromfile(source, dtype=np.uint8)
+            raw = np.frombuffer(gsr_raw.read_original(source), dtype=np.uint8)
             image = cv2.imdecode(raw, cv2.IMREAD_UNCHANGED)
             if image is None or image.dtype != np.uint8:
                 raise ValueError(f"无法读取 8 位图像：{source}")

@@ -153,6 +153,10 @@ pub(crate) fn walk(
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
     entries.sort_by_key(|e| e.file_name());
+    let names: HashSet<String> = entries
+        .iter()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path();
@@ -174,7 +178,12 @@ pub(crate) fn walk(
             walk(&path, &child, out, notes)?;
         } else if kind.is_file() && !name.ends_with(".tmp") {
             crate::image_file::checked_source_path(&path)?;
-            out.push((child, path));
+            // 空闲压缩过的录制原图按原文件名 X.pgm 列出，写包或复制时还原；与 X.pgm 并存（压缩中断）时只带 X.pgm
+            match name.strip_suffix(".gsr") {
+                Some(stem) if names.contains(&format!("{stem}.pgm")) => {}
+                Some(stem) => out.push((format!("{relative}/{stem}.pgm"), path)),
+                None => out.push((child, path)),
+            }
         }
     }
     Ok(())
@@ -325,7 +334,7 @@ pub struct TransferSize {
 
 /// 导出或复制要带的字节数（压缩前），按是否带检测记录分开给；`records_db` 是本项目记录在本机记录库里的估算字节数。
 pub fn transfer_size(root: &Path, records_db: u64) -> Result<TransferSize, String> {
-    let bytes = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let bytes = |path: &Path| original_len(path);
     let mut notes = Vec::new();
     let mut size = TransferSize::default();
     let content = walk_tops(root, &CONTENT, &mut notes)?;
@@ -348,6 +357,30 @@ pub fn transfer_size(root: &Path, records_db: u64) -> Result<TransferSize, Strin
     }
     size.records += records_db;
     Ok(size)
+}
+
+fn compressed(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e == crate::image_file::gsr::EXTENSION)
+}
+
+/// 文件带进包或复制后的字节数：空闲压缩过的录制原图（`.gsr`）按还原后的原始长度计。
+fn original_len(path: &Path) -> u64 {
+    if compressed(path) {
+        crate::image_file::read_original_info(path).map_or(0, |(_, length)| length)
+    } else {
+        std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+    }
+}
+
+/// 把 [`walk`] 列出的文件复制到 `target`：空闲压缩过的录制原图还原成原始 PGM 字节。
+pub(super) fn copy_original(source: &Path, target: &Path) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("复制 {} 失败：{e}", source.display());
+    if compressed(source) {
+        std::fs::write(target, crate::image_file::read_original(source)?).map_err(fail)
+    } else {
+        std::fs::copy(source, target).map(|_| ()).map_err(fail)
+    }
 }
 
 /// 把 `entries`（包内路径，磁盘路径）写成 ZIP：先写 `target.tmp` 再改名；写完文件后由 `manifest` 按各文件的字节数与校验和生成清单，写在包尾。
@@ -377,9 +410,16 @@ pub(crate) fn write_zip_with<M: Serialize>(
             let mut zip = ZipWriter::new(BufWriter::new(file));
             let mut files = Vec::with_capacity(entries.len());
             for (name, path) in entries {
+                // 空闲压缩过的录制原图还原成原始 PGM 字节写进包，包里没有 .gsr
+                let restored = compressed(&path)
+                    .then(|| crate::image_file::read_original(&path))
+                    .transpose()?;
                 let file =
                     File::open(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-                let length = file.metadata().map_err(|e| e.to_string())?.len();
+                let length = match &restored {
+                    Some(bytes) => bytes.len() as u64,
+                    None => file.metadata().map_err(|e| e.to_string())?.len(),
+                };
                 let level = if name.ends_with(".pgm") || name.ends_with(".png") {
                     1
                 } else {
@@ -391,8 +431,11 @@ pub(crate) fn write_zip_with<M: Serialize>(
                     .large_file(length >= u32::MAX as u64);
                 zip.start_file(name.as_str(), options)
                     .map_err(|e| e.to_string())?;
-                let (bytes, sha256) = copy_hashed(BufReader::new(file), &mut zip)
-                    .map_err(|e| format!("写入 {name} 失败：{e}"))?;
+                let (bytes, sha256) = match &restored {
+                    Some(bytes) => copy_hashed(bytes.as_slice(), &mut zip),
+                    None => copy_hashed(BufReader::new(file), &mut zip),
+                }
+                .map_err(|e| format!("写入 {name} 失败：{e}"))?;
                 files.push(PackageFile {
                     path: name,
                     bytes,
@@ -1059,7 +1102,7 @@ fn copy_into(
             .fold(staging.to_path_buf(), |path, part| path.join(part));
         std::fs::create_dir_all(target.parent().ok_or("暂存路径无效")?)
             .map_err(|e| e.to_string())?;
-        std::fs::copy(&path, &target).map_err(|e| format!("复制 {} 失败：{e}", path.display()))?;
+        copy_original(&path, &target)?;
     }
     let mut copied = finish(
         data,
@@ -1110,6 +1153,7 @@ pub async fn project_export(
             .map_err(|e| e.replace("切换项目", "导出当前项目"))?;
     }
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = crate::raw_compress::activity().busy();
         let exports = data.join("exports");
         std::fs::create_dir_all(&exports).map_err(|e| e.to_string())?;
         let Some(path) = rfd::FileDialog::new()
@@ -1199,6 +1243,7 @@ pub async fn project_import(
 ) -> Result<ProjectImported, String> {
     let data = crate::storage::root(&app);
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = crate::raw_compress::activity().busy();
         let imported = import_from(
             &data,
             Path::new(&path),
@@ -1240,6 +1285,7 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
             .map_err(|e| e.replace("切换项目", "复制当前项目"))?;
     }
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = crate::raw_compress::activity().busy();
         let copied = copy_from(
             &data,
             &request.source_id,

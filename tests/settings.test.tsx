@@ -18,7 +18,7 @@ beforeEach(() => {
   saved = {
     productSource: "plc", manualRecipeId: null, historyDays: 180,
     timeouts: { motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
-    record: "failed", recordKeep: 100, recordMaxGb: 20,
+    record: "failed", recordKeep: 100, recordMaxGb: 20, idleCompress: false,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
@@ -48,6 +48,7 @@ describe("原图保留设置", () => {
     const keep = await screen.findByRole("spinbutton", { name: "真机录制最多保留（件）" });
     fireEvent.change(keep, { target: { value: "450" } });
     fireEvent.change(screen.getByRole("spinbutton", { name: "真机录制总大小上限（GB）" }), { target: { value: "12.5" } });
+    await userEvent.click(screen.getByRole("checkbox", { name: "空闲时压缩历史原图" }));
     saved.historyDays = 90;
     await userEvent.click(recordSaveButton());
     await waitFor(() => expect(saved.recordKeep).toBe(450));
@@ -55,6 +56,7 @@ describe("原图保留设置", () => {
     render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
     expect(await screen.findByRole("spinbutton", { name: "真机录制最多保留（件）" })).toHaveValue(450);
     expect(screen.getByRole("spinbutton", { name: "真机录制总大小上限（GB）" })).toHaveValue(12.5);
+    expect(screen.getByRole("checkbox", { name: "空闲时压缩历史原图" })).toBeChecked();
     expect(screen.getByRole("spinbutton", { name: "记录保留（天）" })).toHaveValue(90);
     expect(screen.getByRole("combobox", { name: "真机帧录制" }).closest(".qs-select")!.querySelector("select")!).toHaveValue("failed");
   });

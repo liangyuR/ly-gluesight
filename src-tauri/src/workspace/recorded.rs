@@ -153,11 +153,17 @@ impl VerifiedFrames {
 
 fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
     let source = root.join(relative);
-    crate::image_file::checked_source_path(&source)?;
-    let path = source.canonicalize().map_err(|_| "原图未保留或已按保留策略清理".to_string())?;
+    // 核对实际文件到读完之间不让空闲压缩把 .pgm 换成 .gsr
+    let _busy = crate::raw_compress::activity().busy();
+    // 空闲压缩过的原图在盘上是同名的 .gsr，读出的仍是原始 PGM 字节
+    let stored = crate::image_file::stored_path(&source)
+        .ok_or_else(|| "原图未保留或已按保留策略清理".to_string())?;
+    crate::image_file::checked_source_path(&stored)?;
+    let path = stored
+        .canonicalize()
+        .map_err(|_| "原图未保留或已按保留策略清理".to_string())?;
     if !path.starts_with(root) || !path.is_file() { return Err("原图路径越过录制目录或不是文件".into()); }
-    let bytes = std::fs::read(path).map_err(|error| format!("原图读取失败：{error}"))?;
-    Ok(bytes)
+    crate::image_file::read_original(&source).map_err(|error| format!("原图读取失败：{error}"))
 }
 
 fn checked_dimensions(bytes: &[u8], expected: Option<[u32; 2]>, file: &str) -> Result<(), String> {

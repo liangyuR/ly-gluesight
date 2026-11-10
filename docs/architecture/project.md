@@ -43,7 +43,7 @@
   config/
     current-project.json        { "schema": 1, "current": "<projectId>" }
     log-storage.json            日志根、录制盘列表、环境、资料实例及所属资料目录绑定
-    history.json                { "historyDays": 180 } 历史保留天数
+    history.json                { "historyDays": 180, "idleCompress": false } 历史保留天数、空闲压缩历史原图
     preferences-<SID>.json
   history/
     inspection.db               本机检测记录库，记录带所属项目
@@ -181,7 +181,7 @@ PLC 握手只关心工件，不记录、不核对项目，握手状态与协议�
 | 新增 `project/manage.rs` | 新建（空 / 复制硬件配置）、重命名、删除（`.trash` 改名与后台清理，保留检测历史与外部原图）、项目统计（记录数取本机记录库按项目的统计、统计目录大小）、新编号核对（含本机历史里的项目编号） |
 | 新增 `project/records.rs` | 本机记录库与审计 spool 路径；记录所属项目的录制根与发布包；记录不属于当前项目时的阻止原因；启动时合并各项目旧记录库并改写记录引用；过期记录的录制目录删除 |
 | `store.rs`、`store/merge.rs` | 记录库版本 11：`parts.project_id`、按项目的配方快照与候选实例、`project_merges`；按项目筛选与统计；清理覆盖全部项目；合并来源库与按项目导出子集 |
-| `settings.rs` | 历史保留天数读写本机 `config/history.json`，`cycle.json` 不再写 |
+| `settings.rs` | 历史保留天数与空闲压缩开关读写本机 `config/history.json`，`cycle.json` 不写 |
 | `lib.rs` | `ActiveProject` 在记录库之前解析，`open_store` 打开本机记录库并以当前项目为新记录归属，随后合并各项目旧库；无效时只启动选择项目所需的命令 |
 | 路径调用方 | `camera.rs`（`cameras.json`、`recipe-capture`）、`plc.rs`（`plc.json`）、`cycle.rs`（`cycle.json`、`recipes`、`records`；审计 spool 与历史保留天数取本机路径）、`vision.rs`（`calib`）、`workspace.rs` 与 `workspace/transfer.rs`（`workspaces`、`vision/releases`、`recipe-capture`）、`diagnostics.rs`、`storage.rs` 的飞拍估算参数 |
 | 前端 | 侧栏当前项目与切换菜单；项目管理页；启动时的“选择项目”状态 |

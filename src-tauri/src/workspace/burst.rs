@@ -1085,9 +1085,7 @@ pub(super) async fn prepare_segment_teaching(
             .ok_or_else(|| format!("相机 {camera} 已不在设备配置里"))?;
         let imaging = teaching_source(&captured, &id, &camera, seq)?.imaging;
         let source = capture.burst_frame_path(&round, &camera, seq)?;
-        crate::image_file::checked_source_path(&source)?;
-        let bytes =
-            std::fs::read(&source).map_err(|e| format!("读取 {} 失败：{e}", source.display()))?;
+        let bytes = crate::image_file::read_original(&source)?;
         let image = Arc::new(
             crate::image_file::decode(&bytes)
                 .map_err(|e| format!("解码 {} 失败：{e}", source.display()))?,

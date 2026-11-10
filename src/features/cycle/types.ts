@@ -281,6 +281,8 @@ export interface CycleSettings {
   /** 帧录制最多保留件数、总大小（GB）；null 为不限（默认），被示教件引用的录制不删 */
   recordKeep: number | null;
   recordMaxGb: number | null;
+  /** 空闲时无损压缩历史件原图；本机设置，默认关闭 */
+  idleCompress: boolean;
   /** 只由 cycle_set_maintenance 改写；保存设置时后端沿用当前值 */
   maintenance?: Maintenance | null;
 }

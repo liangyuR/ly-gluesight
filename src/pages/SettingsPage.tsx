@@ -201,8 +201,8 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
     setSaving(true);
     setSaveError("");
     try {
-      const { record, recordKeep, recordMaxGb } = settings;
-      const saved = await savePart({ record, recordKeep, recordMaxGb });
+      const { record, recordKeep, recordMaxGb, idleCompress } = settings;
+      const saved = await savePart({ record, recordKeep, recordMaxGb, idleCompress });
       if (saved && mounted.current) {
         snack("lyFlow 与帧录制设置已保存");
         refresh();
@@ -252,6 +252,11 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
             />
             <Checkbox label="大小不限" checked={settings.recordMaxGb == null}
               onCheckedChange={(on) => update({ ...settings, recordMaxGb: on ? null : RECORD_GB_LIMIT })} />
+          </Stack>
+          <Stack direction="column" align="stretch" gap={4} wrap={false}>
+            <Checkbox label="空闲时压缩历史原图" checked={settings.idleCompress}
+              onCheckedChange={(on) => update({ ...settings, idleCompress: on })} />
+            <span className="muted">本机所有项目共用。没有在途工件与任务、连续空闲满一分钟后逐帧无损压缩已收尾的历史件原图，约省三到四成空间；查看、复测、示教与导出不受影响。</span>
           </Stack>
         </Grid>
       </fieldset>

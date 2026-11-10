@@ -61,6 +61,7 @@ gh run view $runId --log
 | `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib` | 默认后端回归，依赖需已缓存 |
 | `pnpm test:desktop:build -Profile flow` | 只构建隔离桌面实例，不启动；profile 可选 ui（默认）、p0、flow、e2e、soak |
 | `python tests/native/prepare-production-simulation_test.py` | 录制件转模拟输入回归，需 Python、numpy、opencv-python-headless；保护 Bayer 颜色、帧/笔结构与非法输入拒绝 |
+| `python tests/native/gsr-raw_test.py` | 读录制目录的 Python 脚本共用的原图读取（`scripts/gsr_raw.py`）回归，需 Python、numpy、zstandard；保护空闲压缩过的原图（`.gsr`）读出与原 `.pgm` 相同的字节与像素、损坏文件被拒绝 |
 | `cargo test --locked --manifest-path tools/production-simulator/Cargo.toml` | 独立生产模拟器协议与图片输入回归 |
 | `pnpm samples:test` | 样本集转换脚本（`scripts/sample-set/convert.py`）测试，只需 Python 3 标准库 |
 | `pwsh -NoProfile -File tests/packaging/Test-RuntimeBundle.ps1` | 打包版本、ABI、源码修订及运行库依赖契约 |
@@ -132,6 +133,8 @@ cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval 
 起涂与收尾跳过建议（D-SB-50）属于专项验证范围：改动时应核对连续成形识别、成形前无法判断时不给建议、没测量示教件时提示先测量，以及界面采用建议只更新对应一头。现有轮次都是空跑，建议值只用合成数据验证过。
 
 **合成图采集与示教。** 合成图由 `src-tauri/examples/capture_fixture.rs` 生成仿历史录制件（[示教件决策](../decisions/recipe-build-flow.md)“手动配置数据”）：按录制时生效的生产配方（采集版：型号、段、计划相机）用 `simimage::render_burst` 生成 N 件，每件在真机录制根下写一个与真机同格式的录制目录（原图 `{相机}_s{seq:06}.pgm`、`part.json` 带 `partMode: maintenanceCollect`、`devices`、`plc` 与来源标记 `fixture: {label}`，以及维护采集保留标记），并在本机记录库写一行归 `--project` 项目的维护采集记录（SN 前缀 `FIXTURE-`）。生成的件出现在历史件选择器里，标“手动配置”，与真机件走同一选件、导入路径。记录引用采集版的修订号：先建候选并发布采集版，再生成数据（候选的版本号留给之后的正式版，用它写快照会让正式版投产时同修订号的真实记录因快照不同被拒）。本机记录库须已由软件建好且版本与软件一致（现为 10）；该项目已有同修订号的不同快照时写入前即拒绝。命令为 `cargo run --manifest-path src-tauri/Cargo.toml --offline --locked --example capture_fixture -- --doc <采集版文档.json> --cameras <camera_rig_config.json> --db <资料根目录>/history/inspection.db --project <项目编号> --records <该项目的真机录制根> --parts N [--seed S] [--label L] [--sample-set <目录> --part <件>] [--onset H --onset-jitter J --tail T --tail-jitter J]`，输出每件的 `recordId`、`cycleId`、SN 等 JSON：默认按名义剖面出合成图（首尾 ±1、弯道 ±2 帧，种子 seed+i）；给出样本集时每件都取该件的样本集原图，供示教流程手动复现。选示教件、走廊示教、测量示教件和发布仍走正常工作台，并使用真实 lyFlow。样本集按“每台相机的帧序列”解释（见[离线样本集格式 v1](../integration/sample-set-format.md)），现有的 2026-10-17 单圈样本集是停稳拍数据，没有弯道、帧数没有波动，只作冒烟，不作分段或标定的验收依据。
+
+读录制目录的 Python 脚本（`scripts/Prepare-ProductionSimulation.py`、`scripts/history-import/import_part.py`、`scripts/color-eval/glue_color_eval.py`）经 `scripts/gsr_raw.py` 读原图：录制目录里有空闲压缩过的原图（`.gsr`，[image-storage](../decisions/image-storage.md) IS-2）时需要 `zstandard` 与 numpy（`pip install zstandard`），按 `part.json` 里的 `.pgm` 文件名读出原始字节；没有 `.gsr` 时不需要 `zstandard`。
 
 **导入现场录制件。** 现场导出的一件录制（真机录制根下的 `*_cycle_<cycleId>` 目录，或把它整个打成的 zip）可用 `scripts/history-import/import_part.py` 导入开发项目的历史记录，在示教件页的历史件选择器里选用，或在试测页的历史件试测里直接复测：
 

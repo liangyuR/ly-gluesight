@@ -362,6 +362,7 @@ pub fn project_rename(
 
 #[tauri::command]
 pub async fn project_delete(app: AppHandle, id: String) -> Result<(), String> {
+    let _busy = crate::raw_compress::activity().busy();
     let active = current(&app).map(|a| a.id.clone());
     delete(&crate::storage::root(&app), active.as_deref(), &id)
 }

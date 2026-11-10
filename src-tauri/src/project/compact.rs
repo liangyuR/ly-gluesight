@@ -17,7 +17,7 @@ pub fn snapshot(root: &Path, target: &Path) -> Result<(), String> {
             let destination = target.join(relative);
             std::fs::create_dir_all(destination.parent().ok_or("副本路径无效")?)
                 .map_err(|e| e.to_string())?;
-            std::fs::copy(source, destination).map_err(|e| e.to_string())?;
+            super::transfer::copy_original(&source, &destination)?;
         }
         std::fs::remove_dir_all(&scratch).map_err(|e| e.to_string())?;
         deduplicate(target)

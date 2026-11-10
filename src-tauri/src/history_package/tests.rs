@@ -267,6 +267,71 @@ fn exported_parts_import_on_another_machine_with_same_measurements_and_images_un
 }
 
 #[test]
+fn idle_compressed_part_exports_original_pgm_bytes_and_imports_as_plain_pgm() {
+    // 防的回归（IS-2）：原图空闲压缩过的件导出时把 .gsr 带进包里（旧软件导入后读不了图），或包里的 .pgm 不是录制时的原字节；
+    // 压缩只该找录制完整、原图可用的入库件，原图被清理（引用已释放）的件不再是候选
+    let temp = TempDir::new("compressed");
+    let a = machine(&temp.0.join("a"), "line-a");
+    let recipe = saved_recipe(&temp.0.join("a"));
+    let id = recorded(&a, &recipe, "c-zip", "SN-9");
+    let directory = "20261107_120000_001_OK_cycle_c-zip";
+    let recording = a.root.join("20261107").join(directory);
+    let mut originals = BTreeMap::new();
+    for (index, entry) in std::fs::read_dir(&recording).unwrap().enumerate() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "pgm") {
+            let mut bytes = b"P5\n# bayer RG\n8 6\n255\n".to_vec();
+            bytes.extend((0..48u8).map(|i| i.wrapping_mul(3) ^ index as u8));
+            std::fs::write(&path, &bytes).unwrap();
+            originals.insert(
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                bytes,
+            );
+        }
+    }
+    assert_eq!(
+        a.store.compressible_recordings(0, 8).unwrap(),
+        [(id, "c-zip".to_string(), recording.clone())]
+    );
+    assert_eq!(
+        crate::raw_compress::compress_all(&recording),
+        originals.len()
+    );
+
+    let package = temp.0.join("parts.zip");
+    let manifest = export(&a, &[id], &temp.0.join("scratch"), &package);
+    assert!(
+        manifest.files.iter().all(|f| !f.path.ends_with(".gsr")),
+        "{:?}",
+        manifest.files
+    );
+    let mut zip = transfer::open_zip(&package, LABEL).unwrap();
+    for (name, original) in &originals {
+        let mut bytes = Vec::new();
+        zip.by_name(&format!("{PARTS}/{directory}/{name}"))
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(&bytes, original, "{name}");
+    }
+
+    let b = machine(&temp.0.join("b"), "line-b");
+    let result = import_package(&b.store, b.project, &b.root, &package, &operation()).unwrap();
+    assert_eq!(result.imported, 1);
+    for (name, original) in &originals {
+        assert_eq!(
+            &std::fs::read(b.root.join(IMPORTED).join(directory).join(name)).unwrap(),
+            original,
+            "{name}"
+        );
+    }
+    a.store
+        .release_recordings(std::slice::from_ref(&recording))
+        .unwrap();
+    assert!(a.store.compressible_recordings(0, 8).unwrap().is_empty());
+}
+
+#[test]
 fn importing_known_parts_skips_them_and_adds_only_new_ones() {
     let temp = TempDir::new("duplicates");
     let a = machine(&temp.0.join("a"), "line-a");

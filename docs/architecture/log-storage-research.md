@@ -36,7 +36,7 @@
 | 发布资源 | 项目内 `vision/releases/` | 不可变发布资源，包含冻结示教图和标定引用，不属于视觉日志 |
 | 恢复状态及审计 | 本机 `state/`、`history/audit-spool/` | 维持现有恢复契约，不归入普通日志清理 |
 
-录制原图内部结构保持日期目录、`*_cycle_<cycleId>/`、`{相机}_s{seq:06}.pgm` 和 `part.json`，不改变相机与帧组身份。
+录制原图内部结构保持日期目录、`*_cycle_<cycleId>/`、`{相机}_s{seq:06}.pgm` 和 `part.json`，不改变相机与帧组身份。空闲压缩过的帧在盘上是同主名的 `.gsr`，文件名里的相机与帧组序号不变（[image-storage](../decisions/image-storage.md) IS-2）。
 
 ## 录制盘
 

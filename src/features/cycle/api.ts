@@ -18,6 +18,7 @@ const defaultSettings: CycleSettings = {
   record: "all",
   recordKeep: null,
   recordMaxGb: null,
+  idleCompress: false,
 };
 
 export const cycleApi = {

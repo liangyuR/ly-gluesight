@@ -39,6 +39,8 @@ crc32fast = "1"
 # 项目导出导入包：读写需 ZIP64（多轮原图可超过 4 GB）与 SHA-256 清单校验
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 sha2 = "0.10"
+# 录制原图空闲压缩（docs/decisions/image-storage.md IS-2）
+zstd = { version = "0.13", default-features = false }
 rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # tag 必须属于 packaging/runtime.json 的 lyflow.series；升级用 pnpm deps:lyflow:update。

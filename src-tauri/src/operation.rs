@@ -41,6 +41,11 @@ impl Operations {
         Ok(state)
     }
 
+    /// 进行中的带编号任务数。
+    pub fn active(&self) -> usize {
+        self.0.lock().unwrap().active.len()
+    }
+
     pub fn cancel(&self, task_id: &str) -> bool {
         self.0
             .lock()
@@ -103,6 +108,8 @@ pub struct Operation {
     state: Arc<AtomicU8>,
     started: Instant,
     progress: Mutex<(Progress, Instant)>,
+    /// 任务进行期间不做原图空闲压缩
+    _busy: crate::raw_compress::Busy<'static>,
 }
 
 impl Operation {
@@ -142,6 +149,7 @@ impl Operation {
                 started,
             )),
             task_id,
+            _busy: crate::raw_compress::activity().busy(),
         };
         operation.emit(true);
         Ok(operation)

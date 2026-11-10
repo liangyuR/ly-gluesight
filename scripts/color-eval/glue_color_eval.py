@@ -25,6 +25,9 @@ plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Noto Sans CJK S
 plt.rcParams["axes.unicode_minus"] = False
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "scripts"))
+import gsr_raw  # noqa: E402
+
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".raw"}
 # 早期录制件在灰度原图旁另存的原始 Bayer；同目录的灰度 .pgm 没有颜色，不收
 BAYER_PGM = "_bayer.pgm"
@@ -83,11 +86,18 @@ CHANNELS = {
 
 
 def pgm_bayer_pattern(path: Path) -> str | None:
-    """彩色模式录制的原图：P5 头里有注释 `# bayer {相位}` 时返回相位，否则为 None。"""
-    if path.suffix.lower() != ".pgm":
+    """彩色模式录制的原图：P5 头里有注释 `# bayer {相位}` 时返回相位，否则为 None。空闲压缩过的原图（`.gsr`，或标注里写的
+    `.pgm` 已压缩成同名 `.gsr`）读它还原出的原文件。"""
+    if path.suffix.lower() not in (".pgm", gsr_raw.SUFFIX):
         return None
-    with open(path, "rb") as f:
-        lines = f.read(64).split(b"\n")
+    stored = gsr_raw.stored_path(path)
+    if stored is None:
+        return None
+    if stored.suffix.lower() == gsr_raw.SUFFIX:
+        lines = gsr_raw.read_original(stored)[:64].split(b"\n")
+    else:
+        with open(stored, "rb") as f:
+            lines = f.read(64).split(b"\n")
     if lines[0].strip() != b"P5":
         return None
     for line in lines[1:]:
@@ -113,7 +123,7 @@ def load_image(path: Path, bayer: dict | None) -> tuple[np.ndarray, np.ndarray |
         if pattern not in BAYER_TO_CV:
             raise EvalError(f"bayer.pattern 只能是 {'/'.join(BAYER_TO_CV)}，实际 {pattern!r}")
         if is_bayer_pgm:
-            raw = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+            raw = cv2.imdecode(np.frombuffer(gsr_raw.read_original(path), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
             if raw is None or raw.ndim != 2 or raw.dtype != np.uint8:
                 raise EvalError(f"读不出 8 位单通道的原始 Bayer {path}")
         else:

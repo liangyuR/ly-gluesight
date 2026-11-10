@@ -28,7 +28,7 @@ const DATABASE: &str = "records.db";
 const PARTS: &str = "parts";
 /// 导入件原图所在的子目录（录制根下）；录制的滚动清理只扫日期目录，不会动它。
 pub const IMPORTED: &str = "imported";
-const PENDING: &str = ".history-import-pending";
+pub(crate) const PENDING: &str = ".history-import-pending";
 const STAGING_PREFIX: &str = ".staging-";
 /// 一次最多导出的件数：每件约四千个帧文件，清单要在导入方的清单大小上限（64 MB）以内。
 pub const EXPORT_LIMIT: usize = 20;

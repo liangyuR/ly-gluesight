@@ -63,6 +63,7 @@ pub async fn history_delete(app: AppHandle, ids: Vec<i64>) -> Result<HistoryDele
     }
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = crate::raw_compress::activity().busy();
         // 引用锁先于追溯 spool 锁取得，与录制滚动清理同一顺序
         let _references = crate::recipe_capture::lock_references();
         app.state::<CycleHost>().audit.with_ready(|| {
