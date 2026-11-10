@@ -897,7 +897,6 @@ fn image_file(host: &WorkspaceHost, id: &str, image_id: &str) -> Result<PathBuf,
 /// 导入的标定原图：PNM 按 `image_file::decode` 的规则读（带 Bayer 注释的读成 RGB）；其他格式彩色相机保留颜色读成 RGB，
 /// 灰度相机读成灰度。
 fn decode_imported_image(bytes: Vec<u8>, color: bool) -> Result<FrameImage, String> {
-    let bytes = crate::image_file::uncompressed_bytes(&bytes)?.into_owned();
     if bytes.is_empty() || bytes.len() > 15_000_000 {
         return Err("原图不得为空，单图不得超过 15 MB".into());
     }

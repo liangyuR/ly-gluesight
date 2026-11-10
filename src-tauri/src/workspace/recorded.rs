@@ -162,8 +162,7 @@ fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
 
 fn checked_dimensions(bytes: &[u8], expected: Option<[u32; 2]>, file: &str) -> Result<(), String> {
     if let Some(expected) = expected {
-        let raw = crate::image_file::uncompressed_bytes(bytes)?;
-        let reader = image::ImageReader::new(std::io::Cursor::new(raw.as_ref())).with_guessed_format()
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()
             .map_err(|error| format!("原图 {file} 解码失败：{error}"))?;
         let (width, height) = reader.into_dimensions().map_err(|error| format!("原图 {file} 解码失败：{error}"))?;
         if [width, height] != expected { return Err(format!("原图 {file} 的尺寸与录制尺寸不符")); }

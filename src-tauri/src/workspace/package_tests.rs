@@ -245,7 +245,6 @@ fn older_package_with_teaching_images_restores_round_images() {
         entries.push((format!("rounds/{ROUND}/{frame}"), round.join(&frame)));
     }
     let mut value = serde_json::to_value(&manifest).unwrap();
-    value["format"] = json!(2);
     value["teachingImages"] = json!(true);
     let old = dirs.base.join("old-images.zip");
     transfer::write_zip(&old, entries, |files| {

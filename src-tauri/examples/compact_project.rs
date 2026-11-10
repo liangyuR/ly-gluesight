@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use gluesight_lib::probe_api::{compact_project_snapshot, uncompressed_image_bytes, load_release, Engine, Prepared};
+use gluesight_lib::probe_api::{compact_project_snapshot, load_release, Engine, Prepared};
 
 fn files(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut out = Vec::new();
@@ -28,9 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if path.extension().is_some_and(|e| e == "pgm") {
             let original = source.join(path.strip_prefix(target)?);
             if original.is_file() {
-                let a = std::fs::read(&original)?;
-                let b = std::fs::read(path)?;
-                if uncompressed_image_bytes(&a)? != uncompressed_image_bytes(&b)? {
+                if std::fs::read(&original)? != std::fs::read(path)? {
                     return Err(format!("image changed: {}", path.display()).into());
                 }
                 verified += 1;

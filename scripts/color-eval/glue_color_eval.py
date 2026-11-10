@@ -25,8 +25,6 @@ plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Noto Sans CJK S
 plt.rcParams["axes.unicode_minus"] = False
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "scripts"))
-from image_bytes import MAX_IMAGE_BYTES, read_image_bytes
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".raw"}
 # 早期录制件在灰度原图旁另存的原始 Bayer；同目录的灰度 .pgm 没有颜色，不收
 BAYER_PGM = "_bayer.pgm"
@@ -88,7 +86,8 @@ def pgm_bayer_pattern(path: Path) -> str | None:
     """彩色模式录制的原图：P5 头里有注释 `# bayer {相位}` 时返回相位，否则为 None。"""
     if path.suffix.lower() != ".pgm":
         return None
-    lines = read_image_bytes(path)[:512].split(b"\n")
+    with open(path, "rb") as f:
+        lines = f.read(64).split(b"\n")
     if lines[0].strip() != b"P5":
         return None
     for line in lines[1:]:
@@ -114,19 +113,17 @@ def load_image(path: Path, bayer: dict | None) -> tuple[np.ndarray, np.ndarray |
         if pattern not in BAYER_TO_CV:
             raise EvalError(f"bayer.pattern 只能是 {'/'.join(BAYER_TO_CV)}，实际 {pattern!r}")
         if is_bayer_pgm:
-            raw = cv2.imdecode(np.frombuffer(read_image_bytes(path), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+            raw = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
             if raw is None or raw.ndim != 2 or raw.dtype != np.uint8:
                 raise EvalError(f"读不出 8 位单通道的原始 Bayer {path}")
         else:
             w, h = int(bayer["width"]), int(bayer["height"])
-            if w <= 0 or h <= 0 or w * h > MAX_IMAGE_BYTES:
-                raise EvalError("Bayer 尺寸无效或超过 128 MiB")
-            data = np.frombuffer(read_image_bytes(path), dtype=np.uint8)
+            data = np.fromfile(path, dtype=np.uint8)
             if data.size < w * h:
                 raise EvalError(f"{path.name} 只有 {data.size} 字节，{w}×{h} 需要 {w * h}")
             raw = data[: w * h].reshape(h, w)
         return cv2.cvtColor(raw, BAYER_TO_CV[pattern]).astype(np.float32), raw
-    img = cv2.imdecode(np.frombuffer(read_image_bytes(path), dtype=np.uint8), cv2.IMREAD_COLOR)
+    img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise EvalError(f"读不出图像 {path}")
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32), None
@@ -433,7 +430,7 @@ def main(argv: list[str]) -> int:
         if args.init:
             return init_spec(args.init, args.spec)
         return run(args.spec, args.out)
-    except (EvalError, ValueError) as e:
+    except EvalError as e:
         print(f"错误：{e}", file=sys.stderr)
         return 2
 

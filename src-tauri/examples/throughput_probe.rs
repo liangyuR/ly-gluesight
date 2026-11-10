@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gluesight_lib::probe_api::{
-    burst_graphs, burst_template, load_release, publish_burst, save_pgm, save_recording_raw, warm, BurstPublishInput,
+    burst_graphs, burst_template, load_release, publish_burst, save_pgm, warm, BurstPublishInput,
     CameraInput, CorridorInput, DetectParams, Engine, FrameImage, FrameState, HeadingWindow,
     Polarity, Prepared, RecipeDoc, ResourceSource, SegmentCorridor, ValidationSite, Versions,
     GRAPH_VERSION_BURST,
@@ -269,7 +269,7 @@ fn normal(state: FrameState, widths: &[Option<f32>]) -> bool {
         && widths.iter().filter(|w| w.is_some()).count() as f64 > 0.95 * widths.len() as f64
 }
 
-/// 对比未压缩基线与真实录制压缩、同步写盘路径，返回每张耗时（ms）。
+/// 生产录制用的 image_file::save_pgm 连续写 count 张（文件名从 first 起），返回每张耗时（ms）。
 /// 每张改首行 8 个字节（在胶条之外），免得各张内容完全相同。
 fn probe_write(
     dir: &Path,
@@ -278,6 +278,7 @@ fn probe_write(
     count: usize,
     synced: bool,
 ) -> Vec<f64> {
+    use std::io::Write;
     let mut image = copy(base);
     (first..first + count)
         .map(|i| {
@@ -285,7 +286,11 @@ fn probe_write(
             let path = dir.join(format!("{i:05}.pgm"));
             let start = Instant::now();
             if synced {
-                save_recording_raw(&path, &image, None).unwrap();
+                let mut file = std::fs::File::create(&path).unwrap();
+                file.write_all(format!("P5\n{} {}\n255\n", image.width, image.height).as_bytes())
+                    .unwrap();
+                file.write_all(&image.pixels).unwrap();
+                file.sync_data().unwrap();
             } else {
                 save_pgm(&path, &image).unwrap();
             }
@@ -347,12 +352,12 @@ fn main() {
         return;
     }
 
-    // 二、未压缩基线与真实录制压缩写盘
+    // 二、PGM 写盘：生产录制的 save_pgm
     let bytes_per_file =
         (teach.pixels.len() + format!("P5\n{PROBE_W} {PROBE_H}\n255\n").len()) as f64;
     let report = |label: &str, ms: Vec<f64>, wall: f64| {
         let files = ms.len();
-        println!("[probe] 写盘 {label}：{files} 张 × 原始 {:.2} MB，{wall:.2} s，原始吞吐 {:.1} MB/s（{:.1} 张/s）；单张 {}",
+        println!("[probe] 写盘 {label}：{files} 张 × {:.2} MB，{wall:.2} s，{:.1} MB/s（{:.1} 张/s）；单张 {}",
             bytes_per_file / 1e6, files as f64 * bytes_per_file / 1e6 / wall, files as f64 / wall, Dist::of(ms).line());
     };
     {
@@ -396,7 +401,7 @@ fn main() {
         let start = Instant::now();
         let ms = probe_write(&dir.0, &teach, 0, PROBE_SYNCED_PGMS, true);
         report(
-            "串行（生产无损压缩 + 每张 sync_all）",
+            "串行（每张 sync_data，不经系统缓存）",
             ms,
             start.elapsed().as_secs_f64(),
         );

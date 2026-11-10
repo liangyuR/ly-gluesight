@@ -44,7 +44,7 @@ gh run view $runId --log
 
 默认回归不加载 lyFlow DLL，不替代真实设备或现场节拍验收。
 
-项目精简专项使用 `cargo run --manifest-path src-tauri/Cargo.toml --example compact_project -- <来源项目目录> <不存在的副本目录> <lyflow_core.dll>`。工具只生成独立副本，逐字节比较保留原图解压后的完整 PNM（包含像素、尺寸和 Bayer 元信息），并在真实运行库上比较原发布包与紧凑发布包的逐段预热结果；已有预热失败必须保持相同，不能把结果一致解释成全部段可检测。输出字节数是逻辑文件大小；硬链接的实际占用需按文件身份另计。该副本不改写本机绝对路径，不代替项目导入流程的异机验证。
+项目精简专项使用 `cargo run --manifest-path src-tauri/Cargo.toml --example compact_project -- <来源项目目录> <不存在的副本目录> <lyflow_core.dll>`。工具只生成独立副本，逐字节比较保留的原图，并在真实运行库上比较来源与副本发布包的逐段预热结果；已有预热失败必须保持相同，不能把结果一致解释成全部段可检测。输出字节数是逻辑文件大小；硬链接的实际占用需按文件身份另计。该副本不改写本机绝对路径，不代替项目导入流程的异机验证。
 
 显式设置 `GLUESIGHT_DATA_DIR` 的隔离实例将日志写入 `<隔离资料目录>/gs_logs/`，不使用当前账号的 `~/gs_logs`。隔离实例驱动通过 `storage_status` 和 `config/log-storage.json` 核对资料归属、环境及命名空间，再访问运行日志和视觉原图；不能从原图目录推断项目数据库位置。隔离路径检查可单独运行 `node --test tests/native/storage-paths.test.mjs`。
 
@@ -60,8 +60,7 @@ gh run view $runId --log
 | `pnpm build` | 生产前端构建 |
 | `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib` | 默认后端回归，依赖需已缓存 |
 | `pnpm test:desktop:build -Profile flow` | 只构建隔离桌面实例，不启动；profile 可选 ui（默认）、p0、flow、e2e、soak |
-| `python tests/native/compressed-image-tools_test.py` | 保护历史转样本恢复普通 PGM、颜色评估保留 Bayer，以及损坏、无校验和、尾随数据和超限压缩拒绝；需 numpy、OpenCV、matplotlib、zstandard |
-| `python tests/native/prepare-production-simulation_test.py` | 录制件转模拟输入回归，需 Python、numpy、opencv-python-headless、zstandard；保护普通/gzip/zstd 原图的 Bayer 颜色、帧/笔结构与非法输入拒绝 |
+| `python tests/native/prepare-production-simulation_test.py` | 录制件转模拟输入回归，需 Python、numpy、opencv-python-headless；保护 Bayer 颜色、帧/笔结构与非法输入拒绝 |
 | `cargo test --locked --manifest-path tools/production-simulator/Cargo.toml` | 独立生产模拟器协议与图片输入回归 |
 | `pnpm samples:test` | 样本集转换脚本（`scripts/sample-set/convert.py`）测试，只需 Python 3 标准库 |
 | `pwsh -NoProfile -File tests/packaging/Test-RuntimeBundle.ps1` | 打包版本、ABI、源码修订及运行库依赖契约 |
@@ -134,8 +133,6 @@ cargo run --manifest-path src-tauri/Cargo.toml --release --example heading_eval 
 
 **合成图采集与示教。** 合成图由 `src-tauri/examples/capture_fixture.rs` 生成仿历史录制件（[示教件决策](../decisions/recipe-build-flow.md)“手动配置数据”）：按录制时生效的生产配方（采集版：型号、段、计划相机）用 `simimage::render_burst` 生成 N 件，每件在真机录制根下写一个与真机同格式的录制目录（原图 `{相机}_s{seq:06}.pgm`、`part.json` 带 `partMode: maintenanceCollect`、`devices`、`plc` 与来源标记 `fixture: {label}`，以及维护采集保留标记），并在本机记录库写一行归 `--project` 项目的维护采集记录（SN 前缀 `FIXTURE-`）。生成的件出现在历史件选择器里，标“手动配置”，与真机件走同一选件、导入路径。记录引用采集版的修订号：先建候选并发布采集版，再生成数据（候选的版本号留给之后的正式版，用它写快照会让正式版投产时同修订号的真实记录因快照不同被拒）。本机记录库须已由软件建好且版本与软件一致（现为 10）；该项目已有同修订号的不同快照时写入前即拒绝。命令为 `cargo run --manifest-path src-tauri/Cargo.toml --offline --locked --example capture_fixture -- --doc <采集版文档.json> --cameras <camera_rig_config.json> --db <资料根目录>/history/inspection.db --project <项目编号> --records <该项目的真机录制根> --parts N [--seed S] [--label L] [--sample-set <目录> --part <件>] [--onset H --onset-jitter J --tail T --tail-jitter J]`，输出每件的 `recordId`、`cycleId`、SN 等 JSON：默认按名义剖面出合成图（首尾 ±1、弯道 ±2 帧，种子 seed+i）；给出样本集时每件都取该件的样本集原图，供示教流程手动复现。选示教件、走廊示教、测量示教件和发布仍走正常工作台，并使用真实 lyFlow。样本集按“每台相机的帧序列”解释（见[离线样本集格式 v1](../integration/sample-set-format.md)），现有的 2026-10-17 单圈样本集是停稳拍数据，没有弯道、帧数没有波动，只作冒烟，不作分段或标定的验收依据。
 
-**压缩原图的 Python 工具依赖。** `Prepare-ProductionSimulation.py`、`history-import/import_part.py` 与 `color-eval/glue_color_eval.py` 共用 `scripts/image_bytes.py`，按文件魔数接受普通 PNM、gzip 或带校验和的标准 zstd 帧，不依赖扩展名。解码拒绝损坏、尾随数据及超过 128 MiB 的原图，保留 PNM 头与 Bayer 相位；历史转样本集输出普通 PGM，模拟器输入仍为 PNG。zstd 依赖由 `scripts/requirements-images.txt` 固定：`python -m pip install -r scripts/requirements-images.txt`。已安装的 numpy、OpenCV 和 matplotlib 不需重复安装。
-
 **导入现场录制件。** 现场导出的一件录制（真机录制根下的 `*_cycle_<cycleId>` 目录，或把它整个打成的 zip）可用 `scripts/history-import/import_part.py` 导入开发项目的历史记录，在示教件页的历史件选择器里选用，或在试测页的历史件试测里直接复测：
 
 ```powershell
@@ -144,7 +141,7 @@ python scripts/history-import/import_part.py <录制目录或 zip> --project <�
 
 脚本把原图按“每台相机 seq 1..groupCount”转成单件样本集（缺的帧按缺帧处理，不错位），连同配方文档与项目当前相机配置写到 `output/history-import/<录制目录名>/`，再调用 `capture_fixture` 的样本集模式写一件仿历史录制件。导入的是原图，不是现场记录本身：SN、cycleId、时间戳与帧号重新生成（SN 前缀 `FIXTURE-`，选择器标“手动配置”），设备配置记为项目当前值（与现场不同时脚本逐项打印），型号取配方。记录归属 `--recipe`（缺省取现场 `part.json` 的配方编号），配方文档优先用项目已发布的同编号配方；没有已发布配方时用同编号候选的文档，版本、阶段取现场配方（如 `NEW-1-v2` 采集版）。之后改了候选再导入、或候选发布到同一版本时，同修订号快照不同会被拒，用 `--version` 换一个不会发布到的版本。项目须用软件打开过（本机记录库 `<资料根目录>/history/inspection.db` 与该项目的录制根已建好），记录归 `--project` 项目；软件运行中也可以导入，选择器每次重新查库。
 
-**胶条颜色通道评估。** 相机在灰度模式下，取图把 8 位 Bayer 按 (R + 2G + B) / 4 转灰度，录图也是灰度（彩色模式见 [color](../decisions/color.md) CL-1）。有色胶（例如粉色）涂在两种材质拼焊的板上时，胶在两侧的明暗方向可能相反，D16 的单一极性测不全。`scripts/color-eval/glue_color_eval.py` 读彩色样图或相机原始 Bayer（`.raw`），比较现行灰度、G、R−G、Lab a*、饱和度五种单通道。指标都在人工标注的探针上量：胶对比度 d'（|胶 − 背景| / 背景噪声）、极性是否一致、材质间顶帽响应比（低于 D16 的 0.3 时，一帧跨两种材质，弱的一侧会被判无胶），以及焊缝、高光等干扰物响应与胶响应之比。需要 Python、numpy、OpenCV、matplotlib；读取 zstd 原图另需 zstandard，不需要 lyFlow。
+**胶条颜色通道评估。** 相机在灰度模式下，取图把 8 位 Bayer 按 (R + 2G + B) / 4 转灰度，录图也是灰度（彩色模式见 [color](../decisions/color.md) CL-1）。有色胶（例如粉色）涂在两种材质拼焊的板上时，胶在两侧的明暗方向可能相反，D16 的单一极性测不全。`scripts/color-eval/glue_color_eval.py` 读彩色样图或相机原始 Bayer（`.raw`），比较现行灰度、G、R−G、Lab a*、饱和度五种单通道。指标都在人工标注的探针上量：胶对比度 d'（|胶 − 背景| / 背景噪声）、极性是否一致、材质间顶帽响应比（低于 D16 的 0.3 时，一帧跨两种材质，弱的一侧会被判无胶），以及焊缝、高光等干扰物响应与胶响应之比。只需要 Python、numpy、OpenCV、matplotlib，不读项目数据，不需要 lyFlow。
 
 ```powershell
 python scripts/color-eval/glue_color_eval.py <标注.json> --init <图像目录>   # 生成标注模板
@@ -223,5 +220,3 @@ pwsh -NoProfile -File scripts/Stop-UiTestInstance.ps1 -Profile flow
 [独立生产模拟器](production-simulator.md)提供本机 S7 PLC 和三路 TCP 相机发图，应用按正常生产链路处理。工具运行在独立进程中，不修改 GlueSight 的运行模式。配置、原图准备、单件/连续生产与验收步骤见该文档。
 
 模拟生产记录按正常来源写入，必须使用独立资料目录和测试项目，不修改现场 PLC、相机与正式项目配置。连续生产可用于观察稳定性，但目前没有自动故障注入和持续吞吐达标判定脚本。
-
-历史录制压缩专项：`cargo run --manifest-path src-tauri/Cargo.toml --example history_compression_probe -- <历史件录制目录> <不存在的输出目录>`，最多均匀选取 512 帧；调用与录制相同的编码及同步写入函数，报告原始等效吞吐、写入 p95、体积变化，并逐帧验证原始像素与 Bayer 相位一致。此探针不替代多相机持续采集的队列与丢帧验收。

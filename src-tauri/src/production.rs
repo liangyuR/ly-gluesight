@@ -73,7 +73,7 @@ impl Prepared {
         expected: &Recipe,
     ) -> Result<Self, String> {
         bundle.verify()?;
-        if !crate::release::is_burst_schema(bundle.manifest.schema_version) {
+        if bundle.manifest.schema_version != RELEASE_SCHEMA_BURST {
             return Err(format!("段配方需要按段与相机组织的发布包（格式版本 {RELEASE_SCHEMA_BURST}），请重新示教、验证并发布"));
         }
         let recipe = Arc::new(bundle.recipe.build()?);

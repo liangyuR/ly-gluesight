@@ -779,8 +779,8 @@ fn writer(
     }
 }
 
-/// 写一张无损压缩原图，保留 PNM 原字节与 Bayer 相位；压缩无收益时保留原 PNM。
-pub(crate) fn save_raw(path: &Path, image: &FrameImage, pattern: Option<BayerPattern>) -> Result<(), String> {
+/// 写一张原图：灰度 P5、RGB P6；`pattern` 给了是原始马赛克，写成带 `# bayer XX` 注释的 P5。
+fn save_raw(path: &Path, image: &FrameImage, pattern: Option<BayerPattern>) -> Result<(), String> {
     let expected = image.expected_len().ok_or("图像尺寸无效")?;
     if image.pixels.len() != expected || (pattern.is_some() && image.channels != 1) {
         return Err("原图像素缓冲长度与尺寸不一致".into());
@@ -788,11 +788,9 @@ pub(crate) fn save_raw(path: &Path, image: &FrameImage, pattern: Option<BayerPat
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("创建录制目录失败：{e}"))?;
     }
-    let mut bytes = crate::image_file::pnm_header(image.width, image.height, image.channels, pattern).into_bytes();
-    bytes.extend_from_slice(&image.pixels);
-    let bytes = crate::image_file::compress_lossless(&bytes).map_err(|e| format!("写入原图失败：{e}"))?;
     let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| format!("创建原图失败：{e}"))?;
-    file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|e| format!("写入原图失败：{e}"))?;
+    let header = crate::image_file::pnm_header(image.width, image.height, image.channels, pattern);
+    file.write_all(header.as_bytes()).and_then(|_| file.write_all(&image.pixels)).and_then(|_| file.sync_all()).map_err(|e| format!("写入原图失败：{e}"))?;
     Ok(())
 }
 
@@ -805,10 +803,32 @@ fn write_metadata(path: &Path, meta: &serde_json::Value) -> Result<(), String> {
     std::fs::rename(temp, path).map_err(|e| format!("提交 part.json 失败：{e}"))
 }
 
-/// 写盘后核对路径、压缩完整性及原始 PNM 的尺寸和精确长度。
+/// 写盘后核对一张原图：是普通文件（不是 reparse point）、PNM 头（可含注释）的尺寸与录制尺寸相符、文件长度等于头 + 像素、
+/// 能解码且解码尺寸一致。
 fn verify_raw(path: &Path, width: u32, height: u32) -> Result<(), String> {
-    crate::image_file::verify_pnm(path, width, height)
-        .map_err(|e| format!("已写入原图不可用：{e}"))
+    std::fs::symlink_metadata(path).map_err(|e| format!("已写入原图不可用：{e}"))
+        .and_then(|meta| {
+            #[cfg(windows)]
+            { use std::os::windows::fs::MetadataExt;
+              if meta.file_attributes() & 0x400 != 0 { return Err("原图路径不能是 reparse point".into()); } }
+            let info = if meta.is_file() && !meta.file_type().is_symlink() {
+                crate::image_file::read_pnm_info(path)
+                    .map_err(|e| format!("已写入原图不可用：{e}"))?
+            } else {
+                None
+            };
+            if !info.is_some_and(|info| {
+                (info.width, info.height) == (width, height) && info.file_len() == meta.len()
+            }) {
+                Err("原图路径不是普通文件或文件长度与录制尺寸不符".into())
+            } else {
+                let image = image::open(path).map_err(|error| format!("原图解码失败：{error}"))?;
+                if image.width() != width || image.height() != height {
+                    return Err("原图解码尺寸与录制尺寸不符".into());
+                }
+                Ok(())
+            }
+        })
 }
 
 /// 段配方的 part.json：缺帧（1..=最大 seq 内某台相机没到的帧，即相机没出图）列进 missingFrames，只供追溯、不算录制错误；
@@ -823,7 +843,6 @@ fn burst_metadata(rec: &mut Recording, burst: &BurstFrames, verdict: Verdict, re
         rec.errors.push(format!("{drop_reason}：{} 帧原图未录，见 part.json 的 rawDropped", burst.dropped.len()));
     }
     json!({
-        "rawEncoding": "pnm-or-zstd",
         "cycleId": rec.cycle_id, "bundleId": rec.bundle_id, "recipeRevision": rec.recipe.revision_id,
         "startedTs": rec.started, "sn": rec.sn, "mode": rec.mode, "verdict": verdict, "reason": reason,
         "recipe": &*rec.recipe, "cameras": burst.cameras, "groupCount": groups,

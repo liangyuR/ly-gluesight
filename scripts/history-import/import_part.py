@@ -16,8 +16,6 @@ import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "scripts"))
-from image_bytes import read_image_bytes
 DEFAULT_DATA_ROOT = Path("C:/ProgramData/ly/GlueSight-dev")
 VISION_ROOT = Path.home() / "gs_logs" / "vision"
 
@@ -61,7 +59,7 @@ def build_sample_set(part_dir: Path, part: dict, out: Path) -> dict[str, int]:
             name = f"{camera}_s{seq:06}.pgm"
             shots.append({"shotId": shot, "cameraId": camera, "views": [1], "origin": name})
             if (part_dir / name).is_file():
-                (images / f"{shot}_{camera}_v1.pgm").write_bytes(read_image_bytes(part_dir / name))
+                shutil.copyfile(part_dir / name, images / f"{shot}_{camera}_v1.pgm")
                 counts[camera] += 1
     if n > 999:
         raise ImportFailure(f"帧数 {n} 超过样本集 S001–S999 的上限")
@@ -181,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ImportFailure("\n".join(detail) or "capture_fixture 失败")
         print(result.stdout.strip())
         return 0
-    except (ImportFailure, ValueError) as error:
+    except ImportFailure as error:
         print(f"导入失败：{error}", file=sys.stderr)
         return 1
 

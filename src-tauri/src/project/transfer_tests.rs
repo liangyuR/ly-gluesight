@@ -713,8 +713,7 @@ fn export_without_history_materializes_referenced_recording_frames_for_reteachin
     let mut zip = open_archive(&package).unwrap();
     let mut bytes = Vec::new();
     zip.by_name("project/recipe-capture/capture-1/cam1/000001.pgm").unwrap().read_to_end(&mut bytes).unwrap();
-    assert!(!crate::image_file::compressed_suffix(&bytes).is_empty());
-    assert_eq!(crate::image_file::decode(&bytes).unwrap().pixels, image.pixels);
+    assert_eq!(bytes, std::fs::read(root.join("records/c1/cam1_s000001.pgm")).unwrap());
     let mut text = String::new();
     zip.by_name("project/recipe-capture/capture-1/round.json").unwrap().read_to_string(&mut text).unwrap();
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["format"], 3);

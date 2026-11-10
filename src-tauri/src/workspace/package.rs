@@ -20,9 +20,9 @@ use crate::project::transfer::{self, PackageFile};
 use crate::recipe::Recipe;
 use crate::store::Store;
 
-/// 格式 3 支持压缩冻结示教图；格式 2 支持 `teachingImages`，格式 1 按不带示教件原图读入。
-pub const FORMAT: u32 = 3;
-const FORMATS: [u32; 3] = [1, 2, 3];
+/// 格式 2 加了 `teachingImages`；格式 1 的包按不带示教件原图读入。
+pub const FORMAT: u32 = 2;
+const FORMATS: [u32; 2] = [1, 2];
 const KIND: &str = "recipe";
 const LABEL: &str = "配方回传包";
 const CANDIDATE: &str = "candidate";

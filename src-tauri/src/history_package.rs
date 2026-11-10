@@ -20,8 +20,8 @@ use crate::operation::Operation;
 use crate::project::transfer::{self, PackageFile};
 use crate::store::{RecordSource, RecordingState, Store, DB_VERSION};
 
-pub const FORMAT: u32 = 2;
-const FORMATS: [u32; 2] = [1, 2];
+pub const FORMAT: u32 = 1;
+const FORMATS: [u32; 1] = [1];
 const KIND: &str = "history";
 const LABEL: &str = "历史件导出包";
 const DATABASE: &str = "records.db";
@@ -133,7 +133,7 @@ fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<PackageManif
     let format = value.get("format").and_then(Value::as_u64);
     if !format.is_some_and(|f| FORMATS.iter().any(|known| u64::from(*known) == f)) {
         return Err(format!(
-            "{LABEL}格式 {} 不受本机软件支持（支持 1–{FORMAT}），请升级软件后再导入",
+            "{LABEL}格式 {} 不受本机软件支持（支持 {FORMAT}），请升级软件后再导入",
             format.map_or("未知".into(), |f| f.to_string())
         ));
     }

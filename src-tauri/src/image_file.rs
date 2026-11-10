@@ -1,7 +1,5 @@
 //! 原图文件读写：样本集、示教资料、录制原图共用。读取前拒绝符号链接与 reparse point。
 
-use std::borrow::Cow;
-use std::io::{Read, Write};
 use std::path::Path;
 
 use crate::frame::BayerPattern;
@@ -115,115 +113,17 @@ pub fn pnm_info(bytes: &[u8]) -> Option<PnmInfo> {
     })
 }
 
-const MAX_COMPRESSED_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
-
-pub fn compressed_suffix(bytes: &[u8]) -> &'static str {
-    if bytes.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-        ".zst"
-    } else if bytes.starts_with(&[0x1f, 0x8b]) {
-        ".gz"
-    } else {
-        ""
-    }
-}
-
-fn read_bounded(reader: &mut impl Read) -> Result<Vec<u8>, String> {
-    let mut raw = Vec::new();
-    reader
-        .take(MAX_COMPRESSED_IMAGE_BYTES + 1)
-        .read_to_end(&mut raw)
-        .map_err(|e| format!("压缩原图解码失败：{e}"))?;
-    if raw.len() as u64 > MAX_COMPRESSED_IMAGE_BYTES {
-        return Err("压缩原图解压后超过 128 MiB".into());
-    }
-    Ok(raw)
-}
-
-pub fn uncompressed_bytes(bytes: &[u8]) -> Result<Cow<'_, [u8]>, String> {
-    let (raw, remaining) = match compressed_suffix(bytes) {
-        ".zst" => {
-            if bytes.get(4).is_none_or(|descriptor| descriptor & 4 == 0) {
-                return Err("压缩原图缺少校验和".into());
-            }
-            let mut decoder = zstd::stream::read::Decoder::with_buffer(bytes)
-                .map_err(|e| format!("压缩原图解码失败：{e}"))?
-                .single_frame();
-            decoder.window_log_max(27).map_err(|e| e.to_string())?;
-            let raw = read_bounded(&mut decoder)?;
-            (raw, decoder.finish())
-        }
-        ".gz" => {
-            let mut decoder = flate2::bufread::GzDecoder::new(bytes);
-            let raw = read_bounded(&mut decoder)?;
-            (raw, decoder.into_inner())
-        }
-        _ => return Ok(Cow::Borrowed(bytes)),
-    };
-    if !remaining.is_empty() {
-        return Err("压缩原图包含多余数据".into());
-    }
-    let info = pnm_info(&raw).ok_or("压缩原图不是有效 PNM")?;
-    if info.file_len() != raw.len() as u64 {
-        return Err("压缩原图像素长度不符".into());
-    }
-    Ok(Cow::Owned(raw))
-}
-
-pub fn verify_pnm(path: &Path, width: u32, height: u32) -> Result<(), String> {
-    checked_source_path(path)?;
-    if !path.is_file() {
-        return Err("原图路径不是普通文件".into());
-    }
-    let bytes = read_checked(path)?;
-    let raw = uncompressed_bytes(&bytes)?;
-    let info = pnm_info(&raw).ok_or("原图不是有效 PNM")?;
-    if (info.width, info.height) != (width, height) || info.file_len() != raw.len() as u64 {
-        return Err("原图尺寸或像素长度不符".into());
-    }
-    Ok(())
-}
-
-pub fn compress_lossless(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let raw = uncompressed_bytes(bytes)?;
-    let Some(info) = pnm_info(&raw) else {
-        return Ok(raw.into_owned());
-    };
-    if info.file_len() != raw.len() as u64 {
-        return Err("原图像素长度不符，不能压缩".into());
-    }
-    if raw.len() as u64 > MAX_COMPRESSED_IMAGE_BYTES {
-        return Err("原图超过 128 MiB，不能压缩".into());
-    }
-    let mut encoder =
-        zstd::stream::write::Encoder::new(Vec::new(), 1).map_err(|e| e.to_string())?;
-    encoder.include_checksum(true).map_err(|e| e.to_string())?;
-    encoder
-        .set_pledged_src_size(Some(raw.len() as u64))
-        .map_err(|e| e.to_string())?;
-    encoder.write_all(&raw).map_err(|e| e.to_string())?;
-    let compressed = encoder.finish().map_err(|e| e.to_string())?;
-    Ok(if compressed.len() < raw.len() {
-        compressed
-    } else {
-        raw.into_owned()
-    })
-}
-
-/// 读取 PNM 头；压缩原图先完整校验并解压。
+/// 读文件开头解析 PNM 头（见 [`pnm_info`]）。
 pub fn read_pnm_info(path: &Path) -> Result<Option<PnmInfo>, String> {
     use std::io::Read;
     let mut head = Vec::with_capacity(512);
     std::fs::File::open(path)
         .and_then(|f| f.take(512).read_to_end(&mut head))
         .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-    if !compressed_suffix(&head).is_empty() {
-        let bytes = read_checked(path)?;
-        return Ok(pnm_info(&uncompressed_bytes(&bytes)?));
-    }
     Ok(pnm_info(&head))
 }
 
-/// [`load`] 读回这张图的通道数：带 Bayer 注释的 P5 与 P6 为 3，其余为 1。
+/// [`load`] 读回这张图的通道数（只读文件头）：带 Bayer 注释的 P5 与 P6 为 3，其余为 1。
 pub fn load_channels(path: &Path) -> Result<u8, String> {
     checked_source_path(path)?;
     Ok(read_pnm_info(path)?.map_or(1, |info| info.channels()))
@@ -271,7 +171,7 @@ fn read_checked(path: &Path) -> Result<Vec<u8>, String> {
 }
 
 /// 读原图（统一入口）：带 `# bayer` 注释的 P5（彩色录制）去马赛克成 RGB，P6 读成 RGB，普通 P5 是灰度；
-/// 支持 zstd / gzip 无损封装的 PNM；其他格式（PNG、JPG 等）读成 8 位灰度，彩色 / 16 位图按亮度换算。
+/// 其他格式（PNG、JPG 等）读成 8 位灰度，彩色 / 16 位图按亮度换算。
 pub fn load(path: &Path) -> Result<FrameImage, String> {
     let bytes = read_checked(path)?;
     decode(&bytes).map_err(|e| format!("解码 {} 失败：{e}", path.display()))
@@ -294,8 +194,6 @@ pub fn load_as(path: &Path, color: bool) -> Result<FrameImage, String> {
 
 /// 按内容识别格式解码，规则同 [`load`]。
 pub fn decode(bytes: &[u8]) -> Result<FrameImage, String> {
-    let raw = uncompressed_bytes(bytes)?;
-    let bytes = raw.as_ref();
     if let Some(info) = pnm_info(bytes) {
         return decode_pnm(bytes, info);
     }
@@ -306,8 +204,6 @@ pub fn decode(bytes: &[u8]) -> Result<FrameImage, String> {
 
 /// 按内容识别格式解码，规则同 [`load_color`]。
 pub fn decode_color(bytes: &[u8]) -> Result<FrameImage, String> {
-    let raw = uncompressed_bytes(bytes)?;
-    let bytes = raw.as_ref();
     if let Some(info) = pnm_info(bytes) {
         return decode_pnm(bytes, info);
     }
@@ -352,7 +248,7 @@ pub fn save_bytes_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
             checked_source_path(path)?;
             let existing = std::fs::read(path)
                 .map_err(|e| format!("读取已有示教原图 {} 失败：{e}", path.display()))?;
-            if uncompressed_bytes(&existing)? == uncompressed_bytes(bytes)? {
+            if existing == bytes {
                 Ok(())
             } else {
                 Err(format!(
@@ -368,101 +264,6 @@ pub fn save_bytes_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn gzip(raw: &[u8]) -> Vec<u8> {
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(raw).unwrap();
-        encoder.finish().unwrap()
-    }
-
-    #[test]
-    fn compressed_teaching_images_preserve_pixels_channels_and_frozen_identity() {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "gluesight-image-codec-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        for (index, (channels, bayer)) in [
-            (1, None),
-            (3, None),
-            (1, Some("RG")),
-            (1, Some("BG")),
-            (1, Some("GR")),
-            (1, Some("GB")),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let pattern = bayer.map(|name| BayerPattern::from_name(name).unwrap());
-            let mut raw = pnm_header(32, 32, channels, pattern).into_bytes();
-            raw.extend((0..32 * 32 * channels as usize).map(|i| ((i % 32) * 7) as u8));
-            let encoded = compress_lossless(&raw).unwrap();
-            assert_eq!(compressed_suffix(&encoded), ".zst");
-            assert!(encoded.len() < raw.len());
-            let expected = decode(&raw).unwrap();
-            for (codec, bytes) in [
-                ("zstd", encoded),
-                ("gzip", gzip(&raw)),
-                ("raw", raw.clone()),
-            ] {
-                assert_eq!(uncompressed_bytes(&bytes).unwrap().as_ref(), raw);
-                let path = root.join(format!("{index}-{codec}.pgm"));
-                save_bytes_new(&path, &bytes).unwrap();
-                save_bytes_new(&path, &raw).unwrap();
-                for actual in [load(&path).unwrap(), decode_color(&bytes).unwrap()] {
-                    assert_eq!(
-                        (actual.width, actual.height, actual.channels),
-                        (32, 32, expected.channels)
-                    );
-                    assert_eq!(actual.pixels, expected.pixels);
-                }
-                assert_eq!(load_channels(&path).unwrap(), expected.channels);
-                assert_eq!(read_pnm_info(&path).unwrap(), pnm_info(&raw));
-                verify_pnm(&path, 32, 32).unwrap();
-                assert!(verify_pnm(&path, 16, 64).is_err());
-                let mut changed = raw.clone();
-                let last = changed.len() - 1;
-                changed[last] ^= 1;
-                assert!(save_bytes_new(&path, &changed).is_err());
-                let mut invalid = bytes;
-                invalid.push(0);
-                std::fs::write(&path, invalid).unwrap();
-                assert!(verify_pnm(&path, 32, 32).is_err());
-            }
-        }
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn damaged_compressed_teaching_image_is_rejected_before_measurement() {
-        let mut raw = pnm_header(32, 32, 1, None).into_bytes();
-        raw.extend([42; 32 * 32]);
-        let without_checksum = zstd::stream::encode_all(raw.as_slice(), 1).unwrap();
-        assert!(decode(&without_checksum).is_err());
-        for encoded in [compress_lossless(&raw).unwrap(), gzip(&raw)] {
-            let mut bad_checksum = encoded.clone();
-            let checksum = bad_checksum.len()
-                - if compressed_suffix(&encoded) == ".gz" {
-                    8
-                } else {
-                    4
-                };
-            bad_checksum[checksum] ^= 1;
-            let truncated = encoded[..encoded.len() - 1].to_vec();
-            let mut trailing = encoded.clone();
-            trailing.push(0);
-            let mut concatenated = encoded.clone();
-            concatenated.extend_from_slice(&encoded);
-            for invalid in [bad_checksum, truncated, trailing, concatenated] {
-                assert!(decode(&invalid).is_err());
-                assert!(compress_lossless(&invalid).is_err());
-            }
-        }
-    }
 
     #[test]
     fn frozen_image_id_rewritten_with_different_pixels_is_rejected_and_same_pixels_pass() {

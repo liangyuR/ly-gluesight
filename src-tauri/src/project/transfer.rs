@@ -22,9 +22,9 @@ use crate::store::Store;
 #[path = "transfer_selection.rs"]
 mod selection;
 
-/// 3 支持压缩示教原图与共享发布资源；1、2 的包照常导入。
-pub const FORMAT: u32 = 3;
-const FORMATS: [u32; 3] = [1, 2, 3];
+/// 2：检测记录库是本机记录库按项目导出的子集（记录库版本 10）；1 的包（项目自己的 9 版记录库）照常导入。
+pub const FORMAT: u32 = 2;
+const FORMATS: [u32; 2] = [1, 2];
 const MANIFEST: &str = "manifest.json";
 const MANIFEST_MAX_BYTES: u64 = 64 << 20;
 const PREFIX: &str = "project/";
@@ -245,7 +245,7 @@ pub(super) fn collect(
         out.push((format!("{PREFIX}inspection.db"), snapshot));
     }
     selection::materialize(root, &mut out, scratch)?;
-    super::compact::prepare(out, scratch)
+    Ok(out)
 }
 
 /// 本项目示教件引用的别的项目的历史件：录制原图放进包里的 `records/imported/<录制目录名>/`，导出记录库子集里这些记录的
@@ -501,7 +501,7 @@ fn read_manifest<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Manifest, St
     let format = value.get("format").and_then(Value::as_u64);
     if !format.is_some_and(|f| FORMATS.iter().any(|known| u64::from(*known) == f)) {
         return Err(format!(
-            "项目导出包格式 {} 不受本机软件支持（支持 1–{FORMAT}）",
+            "项目导出包格式 {} 不受本机软件支持（支持 1、{FORMAT}）",
             format.map_or("未知".into(), |f| f.to_string())
         ));
     }

@@ -1022,7 +1022,6 @@ impl PreparedSegmentTeaching {
             bytes.extend_from_slice(&self.image.pixels);
             bytes
         };
-        let bytes = crate::image_file::compress_lossless(&bytes)?;
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .write(true)

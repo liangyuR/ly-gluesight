@@ -67,10 +67,6 @@ pub use packaging::check_packaged_runtime;
 /// 不是稳定 API，应用本身不用。
 #[doc(hidden)]
 pub mod probe_api {
-    pub use crate::frame::BayerPattern;
-    pub fn save_recording_raw(path: &std::path::Path, image: &crate::frame::FrameImage, pattern: Option<BayerPattern>) -> Result<(), String> {
-        crate::recorder::save_raw(path, image, pattern)
-    }
     pub use crate::project::compact::snapshot as compact_project_snapshot;
     pub use crate::burst_judge::{frame_verdict, FrameState};
     pub use crate::calibration::{calibrate_counts, unformed_lead, GroupForm, ONSET_RUN};
@@ -81,8 +77,6 @@ pub mod probe_api {
     pub use crate::frame_group::{loss_alarms, FrameGroup};
     pub use crate::history_fixture::{FixtureFrames, FixturePart, FixtureSite, SN_PREFIX};
     pub use crate::image_file::{load as load_image, save_pgm};
-    pub use crate::image_file::uncompressed_bytes as uncompressed_image_bytes;
-    pub use crate::image_file::{compress_lossless as compress_image_lossless, pnm_info as image_pnm_info};
     pub use crate::mvs::{
         Device as MvsDevice, EventInfo as MvsEventInfo, FrameInfo as MvsFrameInfo,
     };

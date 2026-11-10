@@ -184,11 +184,7 @@ fn exported_parts_import_on_another_machine_with_same_measurements_and_images_un
         .set_history_tags(&[ids[0]], &["故障件".into(), "参考件".into()])
         .unwrap();
     let package = temp.0.join("parts.zip");
-    let first = a.store.detail(ids[0]).unwrap().burst.unwrap().frames[0].raw_file.clone().unwrap();
-    let image = crate::frame::FrameImage::new(64, 64, vec![23; 64 * 64]);
-    std::fs::remove_file(a.root.join(&first)).unwrap();
-    crate::recorder::save_raw(&a.root.join(&first), &image, None).unwrap();
-    assert_eq!(export(&a, &ids, &temp.0.join("scratch"), &package).format, 2);
+    export(&a, &ids, &temp.0.join("scratch"), &package);
 
     let db = temp.0.join("packaged.db");
     let mut zip = transfer::open_zip(&package, LABEL).unwrap();
@@ -255,9 +251,6 @@ fn exported_parts_import_on_another_machine_with_same_measurements_and_images_un
                 std::fs::read(b.root.join(file)).unwrap(),
                 std::fs::read(a.root.join(f.raw_file.as_deref().unwrap())).unwrap()
             );
-            if f.raw_file.as_deref() == Some(first.as_str()) {
-                assert_eq!(crate::image_file::load(&b.root.join(file)).unwrap().pixels, image.pixels);
-            }
         }
         let revision = copy.summary.recipe_revision.as_deref().unwrap();
         assert!(b
@@ -283,16 +276,9 @@ fn importing_known_parts_skips_them_and_adds_only_new_ones() {
     let (first, both) = (temp.0.join("first.zip"), temp.0.join("both.zip"));
     export(&a, &[one], &temp.0.join("s1"), &first);
     export(&a, &[one, two], &temp.0.join("s2"), &both);
-    let legacy = temp.0.join("legacy-first.zip");
-    rewrite(&first, &legacy, |name, bytes| {
-        if name != "manifest.json" { return bytes; }
-        let mut manifest: Value = serde_json::from_slice(&bytes).unwrap();
-        manifest["format"] = 1.into();
-        serde_json::to_vec(&manifest).unwrap()
-    });
     let b = machine(&temp.0.join("b"), "line-b");
 
-    import_package(&b.store, b.project, &b.root, &legacy, &operation()).unwrap();
+    import_package(&b.store, b.project, &b.root, &first, &operation()).unwrap();
     let partial = import_package(&b.store, b.project, &b.root, &both, &operation()).unwrap();
     assert_eq!(partial.imported, 1);
     assert_eq!(
