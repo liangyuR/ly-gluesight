@@ -309,7 +309,7 @@ function mcpText(status: AgentMcpStatus | null) {
   if (!status) return "--";
   if (status.state === "listening") return status.url ?? "已启用";
   if (status.state === "failed") return `启动失败：${status.message ?? "原因不明"}`;
-  return "未启用（启动前设置环境变量 GLUESIGHT_MCP_TOKEN）";
+  return "未运行（仅桌面应用提供 MCP）";
 }
 
 export default function SettingsPage() {

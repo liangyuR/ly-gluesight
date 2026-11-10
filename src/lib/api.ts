@@ -32,7 +32,7 @@ export async function getEngineStatus(): Promise<EngineStatus> {
   return invoke<EngineStatus>("engine_status");
 }
 
-/** 示教 MCP 服务（docs/integration/agent-teaching.md）：off 未设令牌未启用，listening 在监听，failed 启动失败 */
+/** 示教 MCP 服务（docs/integration/agent-teaching.md）：off 尚未运行或浏览器预览，listening 在监听，failed 启动失败 */
 export interface AgentMcpStatus {
   state: "off" | "listening" | "failed";
   url?: string | null;

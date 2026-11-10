@@ -15,13 +15,6 @@ if ($IsWindows) {
     }
 }
 
-if ([string]::IsNullOrEmpty($env:GLUESIGHT_MCP_TOKEN)) {
-    $tokenBytes = [byte[]]::new(32)
-    [Security.Cryptography.RandomNumberGenerator]::Fill($tokenBytes)
-    $env:GLUESIGHT_MCP_TOKEN = [Convert]::ToBase64String($tokenBytes)
-    Write-Host "MCP 开发访问令牌（仅本次启动）：$env:GLUESIGHT_MCP_TOKEN"
-}
-
 Push-Location -LiteralPath $root
 try {
     # 默认 watch 模式下编译失败后 tauri dev 会继续等文件变化：窗口已消失，vite 仍占着 1420。

@@ -6,7 +6,6 @@ $fixture = Join-Path $root "output/dev-startup-$([Guid]::NewGuid().ToString('N')
 $name = 'GLUESIGHT_LYFLOW_RUNTIME'
 $saved = [Environment]::GetEnvironmentVariable($name, 'User')
 $inherited = [Environment]::GetEnvironmentVariable($name, 'Process')
-$inheritedToken = $env:GLUESIGHT_MCP_TOKEN
 
 try {
     $scripts = Join-Path $fixture 'scripts'
@@ -18,7 +17,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-Dev.ps1') -Destination $scripts
     Set-Content -LiteralPath (Join-Path $runtime 'lyflow_core.dll') -Value ''
     @'
-console.log(JSON.stringify({ runtime: process.env.GLUESIGHT_LYFLOW_RUNTIME ?? null, token: process.env.GLUESIGHT_MCP_TOKEN ?? null, args: process.argv.slice(2) }));
+console.log(JSON.stringify({ runtime: process.env.GLUESIGHT_LYFLOW_RUNTIME ?? null, args: process.argv.slice(2) }));
 process.exit(17);
 '@ | Set-Content -LiteralPath (Join-Path $cli 'tauri.js')
 
@@ -39,22 +38,7 @@ process.exit(17);
     }
     Write-Host 'PASS: 旧终端在设置或清除配置后启动 → 子进程使用最新保存值，参数与退出码保持不变。'
 
-    foreach ($token in @($null, 'dev-startup-test-token')) {
-        $env:GLUESIGHT_MCP_TOKEN = $token
-        $output = @(& pwsh -NoProfile -File (Join-Path $scripts 'Start-Dev.ps1'))
-        if ($LASTEXITCODE -ne 17) { throw '启动器没有保留子进程退出码。' }
-        $result = $output[-1] | ConvertFrom-Json
-        if ($null -eq $token) {
-            if ([string]::IsNullOrEmpty($result.token) -or [Convert]::FromBase64String($result.token).Length -ne 32) {
-                throw '未配置 MCP 令牌时，没有向子进程传递自动生成的开发令牌。'
-            }
-        } elseif ($result.token -cne $token) {
-            throw '已配置的 MCP 令牌被覆盖。'
-        }
-    }
-    Write-Host 'PASS: 开发启动 → 未配置 MCP 令牌时自动生成，已配置时原样传递。'
 } finally {
-    $env:GLUESIGHT_MCP_TOKEN = $inheritedToken
     $restoreSaved = if ($null -eq $saved) { [NullString]::Value } else { $saved }
     [Environment]::SetEnvironmentVariable($name, $restoreSaved, 'User')
     $restoreInherited = if ($null -eq $inherited) { [NullString]::Value } else { $inherited }

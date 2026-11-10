@@ -11,7 +11,6 @@ use std::convert::Infallible;
 use tauri::AppHandle;
 
 const DEFAULT_PORT: u16 = 47821;
-const MIN_TOKEN: usize = 16;
 const MAX_BODY: usize = 4 << 20;
 /// 支持的协议版本，新的在前；客户端要的不在其中时回最新的
 const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -27,7 +26,7 @@ pub enum Content {
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpStatus {
-    /// off：没设令牌，未启用；listening：在监听；failed：启动失败
+    /// off：尚未启动；listening：在监听；failed：启动失败
     pub state: &'static str,
     pub url: Option<String>,
     pub message: Option<String>,
@@ -57,16 +56,8 @@ pub fn agent_mcp_status() -> McpStatus {
     STATUS.lock().unwrap().clone()
 }
 
-/// 按环境变量启动服务；没设令牌时不启动。
+/// 随应用启动本机 MCP 服务。
 pub fn start(app: &AppHandle) {
-    let Ok(token) = std::env::var("GLUESIGHT_MCP_TOKEN") else {
-        return;
-    };
-    if token.chars().count() < MIN_TOKEN {
-        return fail(format!(
-            "GLUESIGHT_MCP_TOKEN 少于 {MIN_TOKEN} 个字符，服务未启动"
-        ));
-    }
     let port = match std::env::var("GLUESIGHT_MCP_PORT") {
         Ok(text) => match text.parse::<u16>() {
             Ok(port) => port,
@@ -87,11 +78,10 @@ pub fn start(app: &AppHandle) {
             let Ok((stream, _)) = listener.accept().await else {
                 continue;
             };
-            let (app, token) = (app.clone(), token.clone());
+            let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                let service = hyper::service::service_fn(move |request| {
-                    handle(app.clone(), token.clone(), request)
-                });
+                let service =
+                    hyper::service::service_fn(move |request| handle(app.clone(), request));
                 let _ = hyper::server::conn::http1::Builder::new()
                     .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
                     .await;
@@ -114,29 +104,23 @@ fn reply(status: StatusCode, body: Option<Value>) -> Response<Full<Bytes>> {
 
 async fn handle(
     app: AppHandle,
-    token: String,
     request: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    Ok(respond(&token, request, |method, params| async move {
+    Ok(respond(request, |method, params| async move {
         dispatch(&app, &method, &params).await
     })
     .await)
 }
 
 /// 一次 HTTP 请求：先准入，再解析 JSON-RPC，把方法交给 `dispatch`
-async fn respond<B, F, Fut>(token: &str, request: Request<B>, dispatch: F) -> Response<Full<Bytes>>
+async fn respond<B, F, Fut>(request: Request<B>, dispatch: F) -> Response<Full<Bytes>>
 where
     B: hyper::body::Body,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     F: FnOnce(String, Value) -> Fut,
     Fut: std::future::Future<Output = Result<Value, (i64, String)>>,
 {
-    if let Err(status) = admit(
-        request.uri().path(),
-        request.method(),
-        request.headers(),
-        token,
-    ) {
+    if let Err(status) = admit(request.uri().path(), request.method(), request.headers()) {
         return reply(status, None);
     }
     let body = match Limited::new(request.into_body(), MAX_BODY).collect().await {
@@ -183,27 +167,14 @@ async fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value
     }
 }
 
-/// 准入：路径、浏览器来源、令牌、方法依次检查
-fn admit(
-    path: &str,
-    method: &Method,
-    headers: &hyper::HeaderMap,
-    token: &str,
-) -> Result<(), StatusCode> {
+/// 准入：路径、浏览器来源、方法依次检查
+fn admit(path: &str, method: &Method, headers: &hyper::HeaderMap) -> Result<(), StatusCode> {
     if path != "/mcp" {
         return Err(StatusCode::NOT_FOUND);
     }
-    // 浏览器发出的请求都带 Origin：拒绝，免得网页借本机地址调用
+    // 拒绝带网页来源的请求
     if headers.contains_key(hyper::header::ORIGIN) {
         return Err(StatusCode::FORBIDDEN);
-    }
-    let authorized = headers
-        .get(hyper::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .is_some_and(|v| v == token);
-    if !authorized {
-        return Err(StatusCode::UNAUTHORIZED);
     }
     if method != Method::POST {
         return Err(StatusCode::METHOD_NOT_ALLOWED);
@@ -264,56 +235,41 @@ async fn call(app: &AppHandle, params: &Value) -> Result<Value, (i64, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     #[test]
-    fn requests_without_the_token_or_from_a_browser_never_reach_the_tools() {
-        let token = "0123456789abcdef";
-        let bearer = format!("Bearer {token}");
-        let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
-        let cases: [(Method, Vec<(&str, &str)>, StatusCode); 5] = [
+    fn tokenless_initialize_succeeds_but_browser_and_non_post_requests_are_rejected() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
+        let cases = [
+            (Method::POST, None, StatusCode::OK),
             (
                 Method::POST,
-                vec![("authorization", &bearer)],
-                StatusCode::OK,
-            ),
-            (Method::POST, vec![], StatusCode::UNAUTHORIZED),
-            (
-                Method::POST,
-                vec![("authorization", "Bearer 0123456789abcdeX")],
-                StatusCode::UNAUTHORIZED,
-            ),
-            (
-                Method::POST,
-                vec![
-                    ("authorization", &bearer),
-                    ("origin", "http://evil.example"),
-                ],
+                Some("http://example.com"),
                 StatusCode::FORBIDDEN,
             ),
-            (
-                Method::GET,
-                vec![("authorization", &bearer)],
-                StatusCode::METHOD_NOT_ALLOWED,
-            ),
+            (Method::GET, None, StatusCode::METHOD_NOT_ALLOWED),
         ];
-        for (method, headers, expected) in cases {
+        for (method, origin, expected) in cases {
             let mut request = Request::builder().method(method.clone()).uri("/mcp");
-            for (name, value) in &headers {
-                request = request.header(*name, *value);
+            if let Some(origin) = origin {
+                request = request.header("origin", origin);
             }
-            let request = request.body(Full::new(Bytes::from(ping))).unwrap();
-            let reached = AtomicUsize::new(0);
-            let response = tauri::async_runtime::block_on(respond(token, request, |_, _| {
-                reached.fetch_add(1, Ordering::SeqCst);
-                async { Ok(json!({})) }
-            }));
-            assert_eq!(response.status(), expected, "{method} {headers:?}");
-            assert_eq!(
-                reached.load(Ordering::SeqCst),
-                usize::from(expected == StatusCode::OK),
-                "{method} {headers:?}"
-            );
+            let request = request.body(Full::new(Bytes::from(body))).unwrap();
+            tauri::async_runtime::block_on(async {
+                let response = respond(request, |method, params| async move {
+                    assert_eq!(method, "initialize");
+                    Ok(initialize(&params))
+                })
+                .await;
+                assert_eq!(response.status(), expected, "{method} {origin:?}");
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                if expected == StatusCode::OK {
+                    let body: Value = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(body["id"], 1);
+                    assert_eq!(body["result"]["protocolVersion"], "2025-06-18");
+                    assert_eq!(body["result"]["serverInfo"]["name"], "gluesight");
+                } else {
+                    assert!(bytes.is_empty());
+                }
+            });
         }
     }
 }
