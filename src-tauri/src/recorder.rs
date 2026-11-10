@@ -1153,7 +1153,21 @@ fn dir_bytes(dir: &Path) -> Result<u64, String> {
     Ok(size)
 }
 
-/// 跨所有录制盘按件的时间（目录名的时间戳）从新到旧累计，最新一件总是保留；超出件数或字节上限的旧件删除，
+/// 录制目录名 `{时间戳}_{结论}_cycle_{cycleId}` 里的结论是合格（OK、OK_WITH_EXCURSION）；认不出的按不合格算。
+fn passed(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.split_once("_cycle_"))
+        .and_then(|(head, _)| head.get(20..))
+        .is_some_and(|tag| {
+            [Verdict::Ok, Verdict::OkWithExcursion]
+                .iter()
+                .any(|verdict| serde_json::to_value(verdict).is_ok_and(|v| v == tag))
+        })
+}
+
+/// 跨所有录制盘累计件数与字节数，最新一件总是保留；其余先算不合格件、再算合格件，各自按件的时间（目录名的时间戳）
+/// 从新到旧，超出件数或字节上限的删除：先删最旧的合格件，合格件删完才轮到最旧的不合格件。
 /// `in_use`（待入库、示教件引用）与带 `KEEP_MARKER` 的跳过。离线的盘不扫。
 fn prune(
     roots: &[PathBuf],
@@ -1221,6 +1235,9 @@ fn prune(
         }
     }
     parts.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    if parts.len() > 1 {
+        parts[1..].sort_by_key(|path| passed(path));
+    }
     let mut total = 0u64;
     let mut victims = Vec::new();
     for (i, path) in parts.iter().enumerate() {
