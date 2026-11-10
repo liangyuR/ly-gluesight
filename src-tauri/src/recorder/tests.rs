@@ -324,6 +324,32 @@ fn part_started_on_second_disk_finishes_there_with_raw_paths_relative_to_it() {
     );
 }
 
+/// 超出上限时先删合格件：防的回归是按时间一刀切，磁盘不足时较旧的 NG 件先于较新的合格件被删，追溯要用的原图没了；
+/// 合格件删完仍超限时才删最旧的不合格件，最新一件不论结论都保留。
+#[test]
+fn prune_over_limit_removes_passed_parts_before_older_failed_parts() {
+    let dir = TestDir::new();
+    let part = |i: u32, tag: &str| {
+        let path = dir
+            .root()
+            .join(format!("20000101/20000101_00000{i}_000_{tag}_cycle_old-{i}"));
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::File::create(path.join("image.pgm")).unwrap().set_len(10).unwrap();
+        path
+    };
+    let oldest_ng = part(1, "NG_GAP");
+    let old_err = part(2, "ERR_INSPECT");
+    let old_ok = part(3, "OK");
+    let excursion = part(4, "OK_WITH_EXCURSION");
+    let newest = part(5, "OK");
+    assert!(prune(&[dir.root()], 3, u64::MAX, &[], None).is_empty());
+    assert!(!old_ok.exists() && !excursion.exists());
+    assert!(oldest_ng.is_dir() && old_err.is_dir() && newest.is_dir());
+    assert!(prune(&[dir.root()], 2, u64::MAX, &[], None).is_empty());
+    assert!(!oldest_ng.exists());
+    assert!(old_err.is_dir() && newest.is_dir());
+}
+
 /// 清理跨所有录制盘按件的时间从旧到新：防的回归是每块盘各自按上限清理（两块盘合计超限也不删），或先删某块盘上较新的件。
 #[test]
 fn prune_across_disks_removes_oldest_parts_whichever_disk_they_are_on() {
