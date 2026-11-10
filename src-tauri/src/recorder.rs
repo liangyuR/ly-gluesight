@@ -731,8 +731,8 @@ fn writer(
     let mut cycles: HashMap<String, WriteState> = HashMap::new();
     while let Ok(msg) = rx.recv() {
         // 收尾与滚动清理（会删旧录制目录）期间不做原图空闲压缩；逐帧写盘不经过这里的登记
-        let _busy = (!matches!(msg, Msg::BurstFrame(_)))
-            .then(|| crate::raw_compress::activity().busy());
+        let _busy =
+            (!matches!(msg, Msg::BurstFrame(_))).then(|| crate::raw_compress::activity().busy());
         match msg {
             Msg::BurstFrame(job) => {
                 let state = cycles.entry(job.cycle_id).or_default();

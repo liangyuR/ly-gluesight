@@ -738,7 +738,10 @@ fn materialized_recording_frame(compressed: bool) {
     crate::image_file::save_pgm(&root.join("records/c1/cam1_s000001.pgm"), &image).unwrap();
     let original = std::fs::read(root.join("records/c1/cam1_s000001.pgm")).unwrap();
     if compressed {
-        assert_eq!(crate::raw_compress::compress_all(&root.join("records/c1")), 1);
+        assert_eq!(
+            crate::raw_compress::compress_all(&root.join("records/c1")),
+            1
+        );
     }
     let package = data.0.join("portable.zip");
     let manifest = export_to(&root, None, &data.0.join("scratch"), &package).unwrap();

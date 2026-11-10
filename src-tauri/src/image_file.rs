@@ -370,8 +370,12 @@ mod tests {
     fn compressed_recording_reads_as_the_same_image_and_plain_pgm_wins_when_both_exist() {
         // 防的回归：原图空闲压缩成 .gsr 后，按记录里的 .pgm 文件名读不到图或读出别的像素；压缩文件损坏时返回了错图；
         // 压缩中断留下两个文件时没用未压缩的那份
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let root = std::env::temp_dir().join(format!("gluesight-gsr-read-{}-{nanos}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("gluesight-gsr-read-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("cam1_s000001.pgm");
         let raw = |seed: u8| {
@@ -391,7 +395,12 @@ mod tests {
         assert_eq!(read_original_info(&path).unwrap(), info);
         let restored = load(&path).unwrap();
         assert_eq!(
-            (restored.width, restored.height, restored.channels, &restored.pixels),
+            (
+                restored.width,
+                restored.height,
+                restored.channels,
+                &restored.pixels
+            ),
             (plain.width, plain.height, plain.channels, &plain.pixels)
         );
         assert_eq!(load_channels(&path).unwrap(), 3);
