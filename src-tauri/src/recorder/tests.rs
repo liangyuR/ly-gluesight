@@ -344,13 +344,31 @@ fn prune_over_limit_removes_passed_parts_before_older_failed_parts() {
     let old_err = part(2, "ERR_INSPECT");
     let old_ok = part(3, "OK");
     let excursion = part(4, "OK_WITH_EXCURSION");
-    let newest = part(5, "OK");
-    assert!(prune(&[dir.root()], 3, u64::MAX, &[], None).is_empty());
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(vec![dir.root()], Some(callback));
+    let finish = |cycle: &str, keep: u32| {
+        let mut rec = recorder
+            .begin(
+                RecordMode::All,
+                Some(&dir.root()),
+                "SN-P",
+                recipe(),
+                cycle,
+                None,
+            )
+            .unwrap();
+        recorder.burst_frame(&mut rec, &frame(10), 0, 1);
+        recorder.finish(rec, Verdict::Ok, "", keep, u64::MAX, Vec::new());
+        let outcome = wait(&outcomes);
+        assert!(outcome.retention_errors.is_empty(), "{outcome:?}");
+        outcome.directory.unwrap()
+    };
+    let first = finish("prune-first", 3);
     assert!(!old_ok.exists() && !excursion.exists());
-    assert!(oldest_ng.is_dir() && old_err.is_dir() && newest.is_dir());
-    assert!(prune(&[dir.root()], 2, u64::MAX, &[], None).is_empty());
-    assert!(!oldest_ng.exists());
-    assert!(old_err.is_dir() && newest.is_dir());
+    assert!(oldest_ng.is_dir() && old_err.is_dir() && first.is_dir());
+    let second = finish("prune-second", 2);
+    assert!(!oldest_ng.exists() && !first.exists());
+    assert!(old_err.is_dir() && second.is_dir());
 }
 
 /// 清理跨所有录制盘按件的时间从旧到新：防的回归是每块盘各自按上限清理（两块盘合计超限也不删），或先删某块盘上较新的件。
