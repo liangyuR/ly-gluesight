@@ -67,7 +67,6 @@ pub use packaging::check_packaged_runtime;
 /// 不是稳定 API，应用本身不用。
 #[doc(hidden)]
 pub mod probe_api {
-    pub use crate::project::compact::snapshot as compact_project_snapshot;
     pub use crate::burst_judge::{frame_verdict, FrameState};
     pub use crate::calibration::{calibrate_counts, unformed_lead, GroupForm, ONSET_RUN};
     pub use crate::camera::{configure_for_probe, BurstRender, CameraConfig};
@@ -85,6 +84,7 @@ pub mod probe_api {
     pub use crate::offline::Scenario;
     pub use crate::plan::SegmentKind;
     pub use crate::production::{burst_graphs, Prepared, GRAPH_VERSION_BURST};
+    pub use crate::project::compact::snapshot as compact_project_snapshot;
     pub use crate::recipe::{
         burst_template, DetectParams, HeadingWindow, Polarity, Recipe, RecipeDoc, SegmentCorridor,
     };

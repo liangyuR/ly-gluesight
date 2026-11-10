@@ -11,9 +11,12 @@ pub fn snapshot(root: &Path, target: &Path) -> Result<(), String> {
     let result = (|| {
         let entries = super::transfer::collect(root, None, &scratch, &mut Vec::new())?;
         for (relative, source) in entries {
-            let relative = relative.strip_prefix("project/").ok_or("副本资源路径无效")?;
+            let relative = relative
+                .strip_prefix("project/")
+                .ok_or("副本资源路径无效")?;
             let destination = target.join(relative);
-            std::fs::create_dir_all(destination.parent().ok_or("副本路径无效")?).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(destination.parent().ok_or("副本路径无效")?)
+                .map_err(|e| e.to_string())?;
             std::fs::copy(source, destination).map_err(|e| e.to_string())?;
         }
         std::fs::remove_dir_all(&scratch).map_err(|e| e.to_string())?;

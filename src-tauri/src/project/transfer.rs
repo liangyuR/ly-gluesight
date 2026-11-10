@@ -228,7 +228,12 @@ pub(super) fn collect(
         })
         .copied()
         .collect();
-    let mut out = selection::select(root, walk_tops(root, &tops, notes)?, records.is_some(), notes)?;
+    let mut out = selection::select(
+        root,
+        walk_tops(root, &tops, notes)?,
+        records.is_some(),
+        notes,
+    )?;
     let recordings = crate::log_storage::recording_projects(root)?;
     if let Some(store) = records {
         std::fs::create_dir_all(scratch).map_err(|e| e.to_string())?;
@@ -739,9 +744,10 @@ fn finish(
         if candidate.is_file() {
             crate::workspace::reset_for_project_import(&candidate)?;
             if !source.records
-                && teaching_round(&candidate)
-                    .is_some_and(|round| read_value(&root.join("recipe-capture").join(round).join("round.json"))
-                        .is_ok_and(|value| value["format"] == 4))
+                && teaching_round(&candidate).is_some_and(|round| {
+                    read_value(&root.join("recipe-capture").join(round).join("round.json"))
+                        .is_ok_and(|value| value["format"] == 4)
+                })
             {
                 without_records.push(entry.file_name().to_string_lossy().into_owned());
             }
