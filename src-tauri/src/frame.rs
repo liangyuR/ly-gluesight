@@ -245,7 +245,15 @@ impl FramePool {
         bytes: usize,
         headroom: usize,
     ) -> Result<FrameImage, BudgetExceeded> {
-        self.0.reserve(bytes, headroom)?;
+        if let Err(full) = self.0.reserve(bytes, headroom) {
+            // 额度不够：先放掉池里留着的最近几份 RGB（没人在用的随之释放）再试一次
+            let kept = std::mem::take(&mut *self.0.recent_rgb.lock().unwrap());
+            if kept.is_empty() {
+                return Err(full);
+            }
+            drop(kept);
+            self.0.reserve(bytes, headroom)?;
+        }
         Ok(FrameImage {
             width,
             height,
@@ -759,6 +767,21 @@ mod tests {
             .map(|rgb| rgb.upgrade().is_some())
             .collect();
         assert_eq!(alive, [false, false, true, true]);
+    }
+
+    /// 保护的规则：池里留着的最近几份 RGB 不能挡住收帧。防的回归是大图的两份 RGB 就超过整个预算，
+    /// 使用方都放手后它们仍留在池里，之后每一帧都按预算不足拒收，只有再生成一份 RGB 才会淘汰，采集停住。
+    #[test]
+    fn kept_rgb_nobody_uses_gives_way_when_a_raw_frame_needs_the_budget() {
+        // 一帧 4×4：原始 16 字节、RGB 48 字节；预算放不下两份 RGB
+        let pool = FramePool::with_budget(4, 64);
+        for value in 0..RGB_KEEP as u8 {
+            let raw = pool.copy(4, 4, &[value; 16]).unwrap();
+            BayerMosaic::new(BayerPattern::Bg, Arc::new(raw))
+                .rgb()
+                .unwrap();
+        }
+        assert!(pool.copy(4, 4, &[9; 16]).is_ok());
     }
 
     /// 保护的规则：给 RGB 留的余量最多占预算的一半。防的回归是大图（如 4096×3072，8 份 RGB 超过整个 256 MiB 预算）
