@@ -1,3 +1,4 @@
+pub(crate) mod compact;
 pub mod manage;
 pub mod records;
 pub mod transfer;

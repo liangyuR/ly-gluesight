@@ -95,19 +95,20 @@ fn probe_document() -> RecipeDoc {
     let mut doc = burst_template("PROBE".into(), "吞吐探针".into(), 1, &cameras);
     doc.spacing = 1.0;
     doc.segments[0].expected_frames = Some(4);
+    doc.detect = DetectParams {
+        search_mm: 3.0,
+        polarity: Polarity::Dark,
+        width_range: [0.8, 2.4],
+    };
     for inspect in &mut doc.inspect {
         inspect.segments = vec![SegmentCorridor {
             segment: 1,
             corridor: PROBE_PATH.to_vec(),
             sector_deg: None,
             color_model: None,
+            measure: None,
         }];
         inspect.mm_per_px = Some(f64::from(PROBE_MM_PER_PX));
-        inspect.detect = Some(DetectParams {
-            search_mm: 3.0,
-            polarity: Polarity::Dark,
-            width_range: [0.8, 2.4],
-        });
         if heading() {
             inspect.window = Some(HeadingWindow {
                 start_mm: 1.0,

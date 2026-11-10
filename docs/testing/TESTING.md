@@ -44,6 +44,8 @@ gh run view $runId --log
 
 默认回归不加载 lyFlow DLL，不替代真实设备或现场节拍验收。
 
+项目精简专项使用 `cargo run --manifest-path src-tauri/Cargo.toml --example compact_project -- <来源项目目录> <不存在的副本目录> <lyflow_core.dll>`。工具只生成独立副本，逐字节比较保留的原图，并在真实运行库上比较来源与副本发布包的逐段预热结果；已有预热失败必须保持相同，不能把结果一致解释成全部段可检测。输出字节数是逻辑文件大小；硬链接的实际占用需按文件身份另计。该副本不改写本机绝对路径，不代替项目导入流程的异机验证。
+
 显式设置 `GLUESIGHT_DATA_DIR` 的隔离实例将日志写入 `<隔离资料目录>/gs_logs/`，不使用当前账号的 `~/gs_logs`。隔离实例驱动通过 `storage_status` 和 `config/log-storage.json` 核对资料归属、环境及命名空间，再访问运行日志和视觉原图；不能从原图目录推断项目数据库位置。隔离路径检查可单独运行 `node --test tests/native/storage-paths.test.mjs`。
 
 ## 运行

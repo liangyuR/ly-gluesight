@@ -84,6 +84,7 @@ pub mod probe_api {
     pub use crate::offline::Scenario;
     pub use crate::plan::SegmentKind;
     pub use crate::production::{burst_graphs, Prepared, GRAPH_VERSION_BURST};
+    pub use crate::project::compact::snapshot as compact_project_snapshot;
     pub use crate::recipe::{
         burst_template, DetectParams, HeadingWindow, Polarity, Recipe, RecipeDoc, SegmentCorridor,
     };
