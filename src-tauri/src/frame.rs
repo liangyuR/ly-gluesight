@@ -1,8 +1,10 @@
 //! 相机帧与整帧像素缓冲池。海康相机每帧都新分配 1–5 MB 会让内存抖动，
 //! 取图回调拷出来的缓冲用完（最后一个 Arc 释放）就回到池里给下一帧用。
 //! 带预算的池（[`FramePool::with_budget`]）按字节封顶在途图像：检测积压时不随队列条数无限占内存（D-SB-32）。
+//! 彩色帧在途只有原始马赛克（[`BayerMosaic`]），RGB 在要用时才去马赛克，使用期间各方共享同一份（IS-5）。
 
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -18,6 +20,8 @@ pub struct FrameImage {
     pool: Option<Weak<PoolInner>>,
     /// 记在池在途字节上的数目，释放时归还
     charged: usize,
+    /// 由在途帧按需生成的图（记在池的 `derived` 上）
+    derived: bool,
 }
 
 impl FrameImage {
@@ -29,6 +33,7 @@ impl FrameImage {
             pixels,
             pool: None,
             charged: 0,
+            derived: false,
         }
     }
 
@@ -40,6 +45,7 @@ impl FrameImage {
             pixels,
             pool: None,
             charged: 0,
+            derived: false,
         }
     }
 
@@ -118,31 +124,65 @@ pub fn preview_bytes(image: &FrameImage) -> Vec<u8> {
 impl Drop for FrameImage {
     fn drop(&mut self) {
         if let Some(pool) = self.pool.take().and_then(|p| p.upgrade()) {
-            pool.in_flight.fetch_sub(self.charged, Ordering::SeqCst);
+            pool.counter(self.derived)
+                .fetch_sub(self.charged, Ordering::SeqCst);
             pool.put(std::mem::take(&mut self.pixels));
         }
     }
 }
 
+/// 每个池保留的最近几份按需生成的 RGB：测量、预览、读图先后要同一帧时不必重算；更早的随使用方放手而释放。
+pub const RGB_KEEP: usize = 2;
+
 struct PoolInner {
+    /// 空闲缓冲：马赛克与 RGB 大小不同，按容量分开留，每种最多 `keep` 块
     free: Mutex<Vec<Vec<u8>>>,
     keep: usize,
     /// 在途图像字节上限；None 不限
     max_bytes: Option<usize>,
     /// 已交出、还没释放（最后一个 Arc 没放掉）的图像字节数；空闲缓冲不算
     in_flight: AtomicUsize,
+    /// 由在途帧按需生成、还没释放的图（RGB、缩略图）字节数
+    derived: AtomicUsize,
+    /// 最近生成的 RGB（最多 [`RGB_KEEP`] 份）
+    recent_rgb: Mutex<VecDeque<Arc<FrameImage>>>,
 }
 
 impl PoolInner {
     fn put(&self, buf: Vec<u8>) {
         let mut free = self.free.lock().unwrap();
-        if free.len() < self.keep {
+        let same = free
+            .iter()
+            .filter(|b| b.capacity() == buf.capacity())
+            .count();
+        if same < self.keep && free.len() < self.keep * 2 {
             free.push(buf);
         }
     }
 
-    fn reserve(&self, need: usize) -> Result<(), BudgetExceeded> {
-        let Some(max) = self.max_bytes else {
+    /// 容量正好 `bytes` 的空闲缓冲，没有就新分配：马赛克不占用 RGB 大小的缓冲。
+    fn buffer(&self, bytes: usize) -> Vec<u8> {
+        let mut free = self.free.lock().unwrap();
+        match free.iter().position(|b| b.capacity() == bytes) {
+            Some(at) => free.swap_remove(at),
+            None => Vec::with_capacity(bytes),
+        }
+    }
+
+    fn counter(&self, derived: bool) -> &AtomicUsize {
+        if derived {
+            &self.derived
+        } else {
+            &self.in_flight
+        }
+    }
+
+    /// 预算里给按需生成的图留出 `headroom` 字节，最多留预算的一半（大图的余量不能把原始帧的额度占光）；
+    /// 它们实际占的超过留出的数时按实际占的扣。
+    fn reserve(&self, need: usize, headroom: usize) -> Result<(), BudgetExceeded> {
+        let headroom = self.max_bytes.map_or(headroom, |max| headroom.min(max / 2));
+        let derived = self.derived.load(Ordering::SeqCst).max(headroom);
+        let Some(max) = self.max_bytes.map(|max| max.saturating_sub(derived)) else {
             self.in_flight.fetch_add(need, Ordering::SeqCst);
             return Ok(());
         };
@@ -187,26 +227,59 @@ impl FramePool {
     }
 
     fn build(keep: usize, max_bytes: Option<usize>) -> Self {
-        Self(Arc::new(PoolInner { free: Mutex::new(Vec::new()), keep, max_bytes, in_flight: AtomicUsize::new(0) }))
+        Self(Arc::new(PoolInner {
+            free: Mutex::new(Vec::new()),
+            keep,
+            max_bytes,
+            in_flight: AtomicUsize::new(0),
+            derived: AtomicUsize::new(0),
+            recent_rgb: Mutex::new(VecDeque::new()),
+        }))
     }
 
     /// 先记账再取缓冲：后续填充失败时图像随即释放，记的账一并归还。
-    fn take(&self, width: u32, height: u32, bytes: usize) -> Result<FrameImage, BudgetExceeded> {
-        self.0.reserve(bytes)?;
-        let pixels = self.0.free.lock().unwrap().pop().unwrap_or_default();
+    fn take(
+        &self,
+        width: u32,
+        height: u32,
+        bytes: usize,
+        headroom: usize,
+    ) -> Result<FrameImage, BudgetExceeded> {
+        if let Err(full) = self.0.reserve(bytes, headroom) {
+            // 额度不够：先放掉池里留着的最近几份 RGB（没人在用的随之释放）再试一次
+            let kept = std::mem::take(&mut *self.0.recent_rgb.lock().unwrap());
+            if kept.is_empty() {
+                return Err(full);
+            }
+            drop(kept);
+            self.0.reserve(bytes, headroom)?;
+        }
         Ok(FrameImage {
             width,
             height,
             channels: 1,
-            pixels,
+            pixels: self.0.buffer(bytes),
             pool: Some(Arc::downgrade(&self.0)),
             charged: bytes,
+            derived: false,
         })
     }
 
     /// 拷一份像素到池里的缓冲。
     pub fn copy(&self, width: u32, height: u32, src: &[u8]) -> Result<FrameImage, BudgetExceeded> {
-        let mut image = self.take(width, height, src.len())?;
+        self.copy_within(width, height, src, 0)
+    }
+
+    /// 拷一份像素到池里的缓冲，预算里留出 `headroom` 字节不用：取图回调收彩色帧的原始马赛克时，
+    /// 给之后按需生成的 RGB 留地方。
+    pub fn copy_within(
+        &self,
+        width: u32,
+        height: u32,
+        src: &[u8],
+        headroom: usize,
+    ) -> Result<FrameImage, BudgetExceeded> {
+        let mut image = self.take(width, height, src.len(), headroom)?;
         image.pixels.clear();
         image.pixels.extend_from_slice(src);
         Ok(image)
@@ -215,35 +288,36 @@ impl FramePool {
     /// 8 位 Bayer 转成灰度写进池里的缓冲（见 [`bayer8_gray_into`]）。
     pub fn bayer8_to_gray(&self, width: u32, height: u32, src: &[u8]) -> Result<FrameImage, GrayError> {
         let bytes = (width as usize).saturating_mul(height as usize);
-        let mut image = self.take(width, height, bytes).map_err(GrayError::BudgetExceeded)?;
+        let mut image = self
+            .take(width, height, bytes, 0)
+            .map_err(GrayError::BudgetExceeded)?;
         bayer8_gray_into(width as usize, height as usize, src, &mut image.pixels).map_err(GrayError::Invalid)?;
         Ok(image)
     }
 
-    /// 8 位 Bayer 去马赛克成 RGB 写进池里的缓冲（见 [`bayer8_rgb_into`]），按 宽 × 高 × 3 记预算。
-    pub fn bayer8_to_rgb(
-        &self,
-        pattern: BayerPattern,
-        width: u32,
-        height: u32,
-        src: &[u8],
-    ) -> Result<FrameImage, GrayError> {
-        let bytes = (width as usize)
-            .saturating_mul(height as usize)
-            .saturating_mul(3);
-        let mut image = self
-            .take(width, height, bytes)
-            .map_err(GrayError::BudgetExceeded)?;
-        image.channels = 3;
-        bayer8_rgb_into(
-            pattern,
-            width as usize,
-            height as usize,
-            src,
-            &mut image.pixels,
-        )
-        .map_err(GrayError::Invalid)?;
-        Ok(image)
+    /// 给由在途帧按需生成的图（RGB、缩略图）记账：记进同一预算但不拒绝——拒绝会让已收下的帧测不了、
+    /// 积压的原始帧永远放不掉。这类图的份数由使用方封顶（测量线程数、[`RGB_KEEP`]、取图与读图），
+    /// 回调收原始帧时已为它们留出余量（[`copy_within`](Self::copy_within)），超出余量的部分由回调少收新帧补回。
+    pub fn charge(&self, bytes: usize) -> PoolCharge {
+        self.0.derived.fetch_add(bytes, Ordering::SeqCst);
+        PoolCharge {
+            pool: Arc::downgrade(&self.0),
+            bytes,
+        }
+    }
+}
+
+/// 记在池预算上的一笔字节数，放掉时归还。
+pub struct PoolCharge {
+    pool: Weak<PoolInner>,
+    bytes: usize,
+}
+
+impl Drop for PoolCharge {
+    fn drop(&mut self) {
+        if let Some(pool) = self.pool.upgrade() {
+            pool.derived.fetch_sub(self.bytes, Ordering::SeqCst);
+        }
     }
 }
 
@@ -396,11 +470,101 @@ impl BayerPattern {
     }
 }
 
-/// 相机原样输出的 8 位 Bayer 马赛克：彩色模式下每帧都带，作为录制原图；不参与测量。
+/// 相机原样输出的 8 位 Bayer 马赛克：彩色模式下每帧在途的就是它，也是录制原图。测量、预览、读图用的 RGB
+/// 由 [`rgb`](Self::rgb) 按需去马赛克，同一帧的各份克隆共享一个结果。
 #[derive(Clone, Debug)]
 pub struct BayerMosaic {
     pub pattern: BayerPattern,
     pub image: Arc<FrameImage>,
+    rgb: Arc<Mutex<Weak<FrameImage>>>,
+}
+
+impl BayerMosaic {
+    pub fn new(pattern: BayerPattern, image: Arc<FrameImage>) -> Self {
+        Self {
+            pattern,
+            image,
+            rgb: Arc::default(),
+        }
+    }
+
+    /// 这一帧的 RGB（双线性去马赛克，见 [`bayer8_rgb_into`]）。还有人拿着时直接共享那一份，否则在调用线程里算一次；
+    /// 同时要的各方等同一次计算。马赛克来自带预算的池时，RGB 记在同一个池上（不拒绝，见 [`FramePool::charge`]），
+    /// 池另留最近 [`RGB_KEEP`] 份，更早的随最后一个使用方放手而释放。
+    pub fn rgb(&self) -> Result<Arc<FrameImage>, String> {
+        let mut shared = self.rgb.lock().unwrap();
+        if let Some(rgb) = shared.upgrade() {
+            return Ok(rgb);
+        }
+        let (width, height) = (self.image.width, self.image.height);
+        let bytes = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(3);
+        let pool = self.image.pool.as_ref().and_then(Weak::upgrade);
+        let mut rgb = match &pool {
+            Some(pool) => {
+                pool.derived.fetch_add(bytes, Ordering::SeqCst);
+                FrameImage {
+                    width,
+                    height,
+                    channels: 3,
+                    pixels: pool.buffer(bytes),
+                    pool: Some(Arc::downgrade(pool)),
+                    charged: bytes,
+                    derived: true,
+                }
+            }
+            None => FrameImage::rgb(width, height, Vec::new()),
+        };
+        bayer8_rgb_into(
+            self.pattern,
+            width as usize,
+            height as usize,
+            &self.image.pixels,
+            &mut rgb.pixels,
+        )?;
+        let rgb = Arc::new(rgb);
+        *shared = Arc::downgrade(&rgb);
+        if let Some(pool) = pool {
+            let mut recent = pool.recent_rgb.lock().unwrap();
+            recent.push_back(rgb.clone());
+            while recent.len() > RGB_KEEP {
+                recent.pop_front();
+            }
+        }
+        Ok(rgb)
+    }
+}
+
+/// 一帧交给测量、预览的图：现成的图（灰度，或离线来源给的 RGB），或要用时才去马赛克的彩色帧。
+#[derive(Clone, Debug)]
+pub enum FrameView {
+    Image(Arc<FrameImage>),
+    Mosaic(BayerMosaic),
+}
+
+impl FrameView {
+    /// 测量、显示用的图；彩色帧在这里去马赛克（[`BayerMosaic::rgb`]）。
+    pub fn image(&self) -> Result<Arc<FrameImage>, String> {
+        match self {
+            FrameView::Image(image) => Ok(image.clone()),
+            FrameView::Mosaic(mosaic) => mosaic.rgb(),
+        }
+    }
+
+    /// 留着这一帧占的字节数：现成的图按图算，彩色帧按原始马赛克算。
+    pub fn held_bytes(&self) -> usize {
+        match self {
+            FrameView::Image(image) => image.pixels.len(),
+            FrameView::Mosaic(mosaic) => mosaic.image.pixels.len(),
+        }
+    }
+}
+
+impl From<Arc<FrameImage>> for FrameView {
+    fn from(image: Arc<FrameImage>) -> Self {
+        FrameView::Image(image)
+    }
 }
 
 /// 帧的触发计数从哪来。只有触发计数能把帧认到拍照点上：帧计数、SDK 帧号只数相机发出或主机收到的帧，
@@ -451,10 +615,11 @@ pub struct Frame {
     /// 软触发（示教取图、样本集"下一张"）出来的帧
     #[serde(skip)]
     pub manual: bool,
-    /// 按视角 1–3 排列的整帧图（灰度或 RGB）；三目必须整组交付。单视角模拟测量可只交元数据。
+    /// 按视角 1–3 排列的整帧图（灰度，或离线来源给的 RGB）；三目必须整组交付。单视角模拟测量可只交元数据。
+    /// 海康彩色帧这里为空，图在 `bayer` 里
     #[serde(skip)]
     pub images: Vec<Arc<FrameImage>>,
-    /// 单视角彩色相机的原始马赛克：彩色模式每帧都带，灰度模式没有
+    /// 海康单视角彩色相机的原始马赛克：彩色模式留了整帧的每帧都带，灰度模式没有
     #[serde(skip)]
     pub bayer: Option<BayerMosaic>,
 }
@@ -468,6 +633,13 @@ impl Frame {
         }
     }
 
+    /// 单视角独立相机这一帧的图：彩色帧是原始马赛克（要用时去马赛克），其余是现成的那幅；没留整帧时没有。
+    pub fn view(&self) -> Option<FrameView> {
+        match &self.bayer {
+            Some(mosaic) => Some(FrameView::Mosaic(mosaic.clone())),
+            None => self.single_image().cloned().map(FrameView::Image),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -496,5 +668,155 @@ mod tests {
             drop(held_elsewhere);
             assert!(alloc(&pool).is_ok(), "{name}：最后一个引用释放后预算归还");
         }
+    }
+
+    /// 按文档逐像素算的去马赛克：本像素的颜色取原值，缺的两色取 3×3 邻域（图内部分）同色像素的均值，四舍五入。
+    fn reference_rgb(layout: [usize; 4], w: usize, h: usize, src: &[u8]) -> Vec<u8> {
+        let color = |x: usize, y: usize| layout[(y & 1) * 2 + (x & 1)];
+        let mut out = Vec::with_capacity(w * h * 3);
+        for y in 0..h {
+            for x in 0..w {
+                for c in 0..3 {
+                    if color(x, y) == c {
+                        out.push(src[y * w + x]);
+                        continue;
+                    }
+                    let (mut sum, mut count) = (0u32, 0u32);
+                    for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+                        for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                            if color(nx, ny) == c {
+                                sum += u32::from(src[ny * w + nx]);
+                                count += 1;
+                            }
+                        }
+                    }
+                    out.push(((sum + count / 2) / count) as u8);
+                }
+            }
+        }
+        out
+    }
+
+    /// 保护的规则：彩色帧改为回调只收原始马赛克、测量线程按需去马赛克后，交给测量引擎的 RGB 仍是
+    /// 相机马赛克按相位双线性去马赛克的逐字节结果（IS-5：算法输入不变）。
+    #[test]
+    fn color_frame_view_gives_the_bilinear_demosaic_of_the_callback_bytes() {
+        // 0 = R、1 = G、2 = B，按 GenICam 相位名排 2×2
+        let layouts = [
+            (BayerPattern::Bg, [2, 1, 1, 0]),
+            (BayerPattern::Rg, [0, 1, 1, 2]),
+            (BayerPattern::Gb, [1, 2, 0, 1]),
+            (BayerPattern::Gr, [1, 0, 2, 1]),
+        ];
+        for (pattern, layout) in layouts {
+            for (w, h) in [(7usize, 6usize), (2, 2), (6, 5)] {
+                let sdk: Vec<u8> = (0..w * h)
+                    .map(|i| ((i * 2_654_435_761) >> 7) as u8)
+                    .collect();
+                let pool = FramePool::with_budget(4, 1 << 20);
+                let raw = pool.copy_within(w as u32, h as u32, &sdk, 0).unwrap();
+                let frame = Frame {
+                    cam: 0,
+                    session: 1,
+                    counter: CounterSource::SdkFrame,
+                    frame_counter: 1,
+                    trigger_counter: 1,
+                    lost_packets: 0,
+                    ts: 0,
+                    dev_ts: None,
+                    manual: false,
+                    images: Vec::new(),
+                    bayer: Some(BayerMosaic::new(pattern, Arc::new(raw))),
+                };
+                let image = frame.view().unwrap().image().unwrap();
+                assert_eq!(
+                    (image.width, image.height, image.channels),
+                    (w as u32, h as u32, 3)
+                );
+                assert_eq!(
+                    image.pixels,
+                    reference_rgb(layout, w, h, &sdk),
+                    "{} {w}×{h}",
+                    pattern.name()
+                );
+            }
+        }
+    }
+
+    /// 保护的规则：同一帧的 RGB 各使用方共享同一份、不各自去马赛克；池只留最近 RGB_KEEP 份，
+    /// 更早的随使用方放手而释放，不随在途帧数增长。
+    #[test]
+    fn frame_rgb_is_shared_between_consumers_and_only_recent_ones_stay_alive() {
+        let pool = FramePool::with_budget(4, 1 << 20);
+        let frames: Vec<BayerMosaic> = (0..RGB_KEEP + 2)
+            .map(|i| {
+                let raw = pool.copy(4, 4, &[i as u8; 16]).unwrap();
+                BayerMosaic::new(BayerPattern::Bg, Arc::new(raw))
+            })
+            .collect();
+        let measured = frames[0].rgb().unwrap();
+        let previewed = frames[0].clone().rgb().unwrap();
+        assert!(Arc::ptr_eq(&measured, &previewed));
+        drop((measured, previewed));
+        let generated: Vec<Weak<FrameImage>> = frames
+            .iter()
+            .map(|frame| Arc::downgrade(&frame.rgb().unwrap()))
+            .collect();
+        let alive: Vec<bool> = generated
+            .iter()
+            .map(|rgb| rgb.upgrade().is_some())
+            .collect();
+        assert_eq!(alive, [false, false, true, true]);
+    }
+
+    /// 保护的规则：池里留着的最近几份 RGB 不能挡住收帧。防的回归是大图的两份 RGB 就超过整个预算，
+    /// 使用方都放手后它们仍留在池里，之后每一帧都按预算不足拒收，只有再生成一份 RGB 才会淘汰，采集停住。
+    #[test]
+    fn kept_rgb_nobody_uses_gives_way_when_a_raw_frame_needs_the_budget() {
+        // 一帧 4×4：原始 16 字节、RGB 48 字节；预算放不下两份 RGB
+        let pool = FramePool::with_budget(4, 64);
+        for value in 0..RGB_KEEP as u8 {
+            let raw = pool.copy(4, 4, &[value; 16]).unwrap();
+            BayerMosaic::new(BayerPattern::Bg, Arc::new(raw))
+                .rgb()
+                .unwrap();
+        }
+        assert!(pool.copy(4, 4, &[9; 16]).is_ok());
+    }
+
+    /// 保护的规则：给 RGB 留的余量最多占预算的一半。防的回归是大图（如 4096×3072，8 份 RGB 超过整个 256 MiB 预算）
+    /// 的余量把原始帧的额度扣到零，池空着也拒收每一帧，相机没有预览、生产帧全部按预算不足丢弃。
+    #[test]
+    fn headroom_larger_than_the_budget_still_leaves_half_for_raw_frames() {
+        let pool = FramePool::with_budget(4, 4 * 16);
+        let first = pool.copy_within(4, 4, &[1; 16], 1000).unwrap();
+        let _second = pool.copy_within(4, 4, &[2; 16], 1000).unwrap();
+        assert!(pool.copy_within(4, 4, &[3; 16], 1000).is_err());
+        drop(first);
+        assert!(pool.copy_within(4, 4, &[3; 16], 1000).is_ok());
+    }
+
+    /// 保护的规则：预算满 → 回调拒收新帧（记缺帧），但已收下的帧仍能生成 RGB 去测量；
+    /// 按需生成的图在留出的余量之内时不挤占原始帧的额度。
+    #[test]
+    fn raw_frames_stop_at_the_budget_headroom_while_received_frames_still_get_rgb() {
+        // 一帧 4×4：原始 16 字节、RGB 48 字节；预算放 4 帧原始 + 1 份 RGB
+        let pool = FramePool::with_budget(4, 4 * 16 + 48);
+        let receive = || {
+            pool.copy_within(4, 4, &[9; 16], 48)
+                .map(|raw| BayerMosaic::new(BayerPattern::Bg, Arc::new(raw)))
+        };
+        let mut backlog: Vec<BayerMosaic> = (0..4).map(|_| receive().unwrap()).collect();
+        let full = BudgetExceeded {
+            in_flight: 64,
+            need: 16,
+            max: 64,
+        };
+        assert_eq!(receive().err(), Some(full));
+        let rgb = backlog[0].rgb().unwrap();
+        assert_eq!(rgb.pixels.len(), 48);
+        assert_eq!(receive().err(), Some(full), "RGB 不让出原始帧的额度");
+        backlog.pop();
+        assert!(receive().is_ok(), "一帧放掉后回调又能收下一帧");
     }
 }

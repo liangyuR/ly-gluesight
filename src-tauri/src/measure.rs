@@ -13,7 +13,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::cycle::CycleHost;
-use crate::frame::FrameImage;
+use crate::frame::FrameView;
 use crate::recipe::Recipe;
 #[cfg(test)]
 use crate::offline::Scenario;
@@ -244,7 +244,8 @@ pub struct FrameJob {
     pub seq: u64,
     /// 用第几段（`PathSegment.index`）的走廊测（D-SB-45）
     pub segment: u32,
-    pub image: Option<Arc<FrameImage>>,
+    /// 这一帧的图；彩色帧带的是原始马赛克，在测量线程里去马赛克（与预览、读图共享同一份 RGB，IS-5）
+    pub image: Option<FrameView>,
     /// 没带图像时从这个原图文件读（收尾补测读回本件录制的原图，D-SB-60）
     pub image_file: Option<std::path::PathBuf>,
     pub recipe: Arc<Recipe>,
@@ -420,40 +421,26 @@ fn run_frame(job: &FrameJob) -> Result<(FrameMetrics, Option<FrameTrace>), Measu
     {
         return Err(MeasureError::Untested(why.to_owned()));
     }
-    match job.image.as_deref() {
-        Some(image) => vision::LyFlowMeasurer
-            .measure_frame(job, image)
-            .map(|m| {
-                (
-                    m.metrics,
-                    Some(FrameTrace {
-                        edges: m.edges,
-                        part_edges: m.part_edges,
-                        line: m.line,
-                    }),
-                )
-            })
-            .map_err(MeasureError::Failed),
-        None => match &job.image_file {
-            Some(path) => crate::image_file::load(path)
-                .map_err(|e| format!("读回录制原图失败：{e}"))
-                .and_then(|image| vision::LyFlowMeasurer.measure_frame(job, &image))
-                .map(|m| {
-                    (
-                        m.metrics,
-                        Some(FrameTrace {
-                            edges: m.edges,
-                            part_edges: m.part_edges,
-                            line: m.line,
-                        }),
-                    )
-                })
-                .map_err(MeasureError::Failed),
-            None => Err(MeasureError::Failed(
-                "这一帧没有图像：相机未拷贝整帧".into(),
-            )),
-        },
-    }
+    let image = match (&job.image, &job.image_file) {
+        (Some(view), _) => view.image(),
+        (None, Some(path)) => crate::image_file::load(path)
+            .map(Arc::new)
+            .map_err(|e| format!("读回录制原图失败：{e}")),
+        (None, None) => Err("这一帧没有图像：相机未拷贝整帧".into()),
+    };
+    image
+        .and_then(|image| vision::LyFlowMeasurer.measure_frame(job, &image))
+        .map(|m| {
+            (
+                m.metrics,
+                Some(FrameTrace {
+                    edges: m.edges,
+                    part_edges: m.part_edges,
+                    line: m.line,
+                }),
+            )
+        })
+        .map_err(MeasureError::Failed)
 }
 
 /// 段配方的模拟测量（不看图像）：沿这台相机在第 `corridor` 段的走廊按站距取站（未示教时 40 站），胶宽约 4 mm、x 小幅摆动的合格帧。
