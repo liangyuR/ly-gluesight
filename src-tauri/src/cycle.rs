@@ -1079,7 +1079,7 @@ fn frame_job(
     camera_id: String,
     seq: u64,
     segment: u32,
-    image: Option<Arc<crate::frame::FrameImage>>,
+    image: Option<crate::frame::FrameView>,
 ) -> FrameJob {
     FrameJob {
         cycle_id: part.cycle_id.clone(),
@@ -2157,7 +2157,7 @@ impl Machine {
                     host(&app).recorders.burst_frame(rec, &f, camera, seq);
                     rec.pending_frame(camera, seq)
                 });
-                let image = f.single_image().cloned();
+                let image = f.view();
                 crate::workspace::retain_live_frame(
                     &app,
                     &part.cycle_id,

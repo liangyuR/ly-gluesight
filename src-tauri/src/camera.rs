@@ -18,7 +18,7 @@ use crate::applog::{codes, Fields};
 use crate::cycle::{self, CycleHost};
 use crate::frame::{
     BayerMosaic, BayerPattern, BudgetExceeded, CounterSource, Frame, FrameImage, FramePool,
-    GrayError,
+    GrayError, PoolCharge, RGB_KEEP,
 };
 use crate::mvs::{self, DeviceSummary, FrameInfo};
 use crate::offline::Scenario;
@@ -31,10 +31,21 @@ mod simulator;
 /// 帧通道容量：检测节拍处理不过来时丢新帧并计数。条数只防失控，图像内存由 IMAGE_BUDGET_PER_CAMERA 封顶（D-SB-32）。
 pub const FRAME_QUEUE: usize = 1024;
 
-/// 每台海康相机在途图像的字节上限（FramePool 预算，D-SB-32）：约 190 幅 1.3 MB 图，25 Hz 下 7.6 s 积压；彩色模式每帧
-/// RGB 约 3.9 MB，约 65 幅（原始马赛克另记在 Bayer 池）。
-/// 预算满时取图回调丢弃该帧、按缺帧记账，不中断回调。初值待 P1 实测后回填。合成图、样本集来源不经过这个池。
+/// 每台海康相机在途图像的字节上限（FramePool 预算，D-SB-32）。1280×1024 每帧 1.25 MiB：灰度模式 204 帧；
+/// 彩色模式在途的是原始马赛克，留出 [`RGB_WORKING_FRAMES`] 份 RGB 的余量后 180 帧，按需生成的 RGB 与缩略图
+/// 记在同一个池里（IS-5）。
+/// 预算满时取图回调丢弃该帧、按缺帧记账，不中断回调。合成图、样本集来源不经过这个池。
 pub const IMAGE_BUDGET_PER_CAMERA: usize = 256 * 1024 * 1024;
+
+/// 彩色模式下预算里给按需生成的 RGB 留的份数：测量线程各一份、池里保留的最近几份，另加取图与读图两份。
+const RGB_WORKING_FRAMES: usize = crate::measure::MEASURE_WORKERS + RGB_KEEP + 2;
+
+/// 取图回调收一帧彩色原始马赛克时不动用的预算（见 [`RGB_WORKING_FRAMES`]）。
+fn rgb_headroom(w: u32, h: u32) -> usize {
+    (w as usize)
+        .saturating_mul(h as usize)
+        .saturating_mul(3 * RGB_WORKING_FRAMES)
+}
 
 /// 每台海康相机池里留的空闲缓冲块数。
 const POOL_KEEP_PER_CAMERA: usize = 16;
@@ -377,6 +388,33 @@ struct Preview {
     /// 1 = 灰度，3 = RGB
     channels: u8,
     data: Vec<u8>,
+    /// 由在途彩色帧按需生成的缩略图记在相机池预算上的那一笔
+    charge: Option<PoolCharge>,
+}
+
+/// 一台相机的缩略图：现成的，或海康彩色帧留着原始马赛克、读预览时才生成。
+#[derive(Default)]
+struct Previews {
+    ready: Vec<Preview>,
+    /// 最近一帧彩色马赛克，还没生成缩略图
+    pending: Option<BayerMosaic>,
+}
+
+impl Previews {
+    fn set(&mut self, ready: Vec<Preview>) {
+        *self = Self {
+            ready,
+            pending: None,
+        };
+    }
+
+    /// 最近一帧的原图尺寸。
+    fn full_size(&self) -> Option<(u32, u32)> {
+        match &self.pending {
+            Some(mosaic) => Some((mosaic.image.width, mosaic.image.height)),
+            None => self.ready.first().map(|p| (p.full_width, p.full_height)),
+        }
+    }
 }
 
 /// 降采样到宽度不超过 960 的缩略图，通道数同原图。
@@ -398,6 +436,7 @@ fn make_preview(src: &[u8], w: usize, h: usize, channels: u8) -> Preview {
         full_height: h as u32,
         channels: c as u8,
         data,
+        charge: None,
     }
 }
 
@@ -468,19 +507,23 @@ impl CaptureRequest {
         }
     }
 
-    fn images(self, captured: &CapturedFrame) -> Option<Vec<Arc<FrameImage>>> {
+    fn accepts(self, captured: &CapturedFrame) -> bool {
         match self {
-            Self::Exact(ticket) => captured.images_for(ticket),
-            Self::After { session, frame } => (captured.ticket.session == session
-                && frame.is_none_or(|last| captured.ticket.frame_counter > last))
-            .then(|| captured.images.clone()),
+            Self::Exact(ticket) => captured.ticket == ticket,
+            Self::After { session, frame } => {
+                captured.ticket.session == session
+                    && frame.is_none_or(|last| captured.ticket.frame_counter > last)
+            }
         }
     }
 }
 
+/// 最近一帧整帧：现成的各视角图，或海康彩色帧的原始马赛克。
+#[derive(Clone)]
 struct CapturedFrame {
     ticket: CaptureTicket,
     images: Vec<Arc<FrameImage>>,
+    mosaic: Option<BayerMosaic>,
 }
 
 impl CapturedFrame {
@@ -491,11 +534,16 @@ impl CapturedFrame {
                 frame_counter: frame.frame_counter,
             },
             images: frame.images.clone(),
+            mosaic: frame.bayer.clone(),
         }
     }
 
-    fn images_for(&self, ticket: CaptureTicket) -> Option<Vec<Arc<FrameImage>>> {
-        (self.ticket == ticket).then(|| self.images.clone())
+    /// 各视角的图；彩色帧在调用线程里去马赛克（与测量共享同一份 RGB），不在持有 `last_full` 锁时调用。
+    fn views(&self) -> Vec<Arc<FrameImage>> {
+        match &self.mosaic {
+            Some(mosaic) => mosaic.rgb().into_iter().collect(),
+            None => self.images.clone(),
+        }
     }
 }
 
@@ -515,19 +563,18 @@ struct RigShared {
 struct Shared {
     cam: u8,
     rig: Arc<RigShared>,
-    /// 取图回调的整帧缓冲，按 IMAGE_BUDGET_PER_CAMERA 封顶在途字节
+    /// 取图回调的整帧缓冲，按 IMAGE_BUDGET_PER_CAMERA 封顶在途字节：灰度图、彩色帧的原始马赛克，
+    /// 以及由马赛克按需生成的 RGB 与缩略图
     pool: FramePool,
     frames: AtomicU64,
     lost_packets: AtomicU64,
     dropped: AtomicU64,
     /// 图像内存预算满被丢弃的帧（重新打开时清零）
     budget_dropped: AtomicU64,
-    /// 彩色模式录制用的原始马赛克缓冲，与测量用的 RGB 分开封顶
-    bayer_pool: FramePool,
-    /// 彩色模式（配置的 image_mode）：Bayer 去马赛克成 RGB，每帧附原始马赛克
+    /// 彩色模式（配置的 image_mode）：每帧留原始马赛克，RGB 在测量、预览要用时才去马赛克
     color: AtomicBool,
     recent: Mutex<VecDeque<Instant>>,
-    preview: Mutex<Vec<Preview>>,
+    preview: Mutex<Previews>,
     last_full: Mutex<Option<CapturedFrame>>,
     identity: Mutex<crate::shot_router::Ledgers>,
     /// last_full 每换一次 +1
@@ -563,7 +610,7 @@ impl Shared {
         if session != self.session.load(Ordering::SeqCst) {
             return;
         }
-        *self.preview.lock().unwrap() = images
+        let previews = images
             .iter()
             .filter(|img| img.consistent())
             .map(|img| {
@@ -575,11 +622,41 @@ impl Shared {
                 )
             })
             .collect();
+        self.preview.lock().unwrap().set(previews);
     }
 
-    /// 海康相机的一帧（像素格式已认过）：缩略图与整帧用同一张图（灰度模式为灰度，彩色模式为去马赛克的 RGB）。
+    /// 预览命令的字节（见 `Preview::bytes`）：彩色帧的缩略图在这里（读预览的线程）由共享的 RGB 生成，
+    /// 两次读之间到的帧不生成；记在相机池的预算上。
+    fn preview_bytes(&self, index: usize) -> Vec<u8> {
+        let session = self.session.load(Ordering::SeqCst);
+        let pending = self.preview.lock().unwrap().pending.take();
+        let made = pending.and_then(|mosaic| {
+            let rgb = mosaic.rgb().ok()?;
+            let mut preview = make_preview(
+                &rgb.pixels,
+                rgb.width as usize,
+                rgb.height as usize,
+                rgb.channels,
+            );
+            preview.charge = Some(self.pool.charge(preview.data.len()));
+            Some(preview)
+        });
+        let mut previews = self.preview.lock().unwrap();
+        if let Some(preview) = made {
+            if session == self.session.load(Ordering::SeqCst) {
+                previews.ready = vec![preview];
+            }
+        }
+        previews
+            .ready
+            .get(index)
+            .map(Preview::bytes)
+            .unwrap_or_default()
+    }
+
+    /// 海康相机的一帧（像素格式已认过）。灰度模式：缩略图与整帧用同一张灰度图。彩色模式：只把原始马赛克
+    /// 拷进池里，去马赛克留给测量线程与读预览的线程（IS-5）。
     /// 要留整帧而图像内存预算已满时返回 Err，这一帧按缺帧处理；不留整帧时预算满只是没有缩略图。
-    /// 留了整帧时一并给出原始马赛克：彩色模式必带（Bayer 缓冲满也按预算满处理），灰度模式没有。
     fn frame_image(
         &self,
         kind: PixelKind,
@@ -588,18 +665,21 @@ impl Shared {
         data: &[u8],
     ) -> Result<(Option<Arc<FrameImage>>, Option<BayerMosaic>), BudgetExceeded> {
         let keep = self.capture() | self.grab.swap(false, Ordering::SeqCst);
-        let color = self.color.load(Ordering::Relaxed);
-        let converted = match (color, kind) {
-            (true, PixelKind::Bayer8(pattern)) => self
-                .pool
-                .bayer8_to_rgb(pattern, w, h, data)
-                .map(Converted::Pooled),
-            (true, PixelKind::Mono8) => Err(GrayError::Invalid(
-                "彩色模式需要 8 位 Bayer，相机以 Mono8 出图".into(),
-            )),
-            (false, kind) => to_gray(&self.pool, kind, w, h, data),
-        };
-        let image = match converted {
+        if self.color.load(Ordering::Relaxed) {
+            return match color_mosaic(&self.pool, kind, w, h, data) {
+                Ok(mosaic) => {
+                    self.preview.lock().unwrap().pending = Some(mosaic.clone());
+                    Ok((None, keep.then_some(mosaic)))
+                }
+                Err(GrayError::Invalid(e)) => {
+                    self.unusable(e);
+                    Ok((None, None))
+                }
+                Err(GrayError::BudgetExceeded(full)) if keep => Err(full),
+                Err(GrayError::BudgetExceeded(_)) => Ok((None, None)),
+            };
+        }
+        let image = match to_gray(&self.pool, kind, w, h, data) {
             Ok(g) => g,
             Err(GrayError::Invalid(e)) => {
                 self.unusable(e);
@@ -609,25 +689,13 @@ impl Shared {
                 return if keep { Err(full) } else { Ok((None, None)) }
             }
         };
-        let channels = if color { 3 } else { 1 };
-        *self.preview.lock().unwrap() = vec![make_preview(
-            image.pixels(),
-            w as usize,
-            h as usize,
-            channels,
-        )];
+        let preview = make_preview(image.pixels(), w as usize, h as usize, 1);
+        self.preview.lock().unwrap().set(vec![preview]);
         if !keep {
             return Ok((None, None));
         }
         let image = Arc::new(image.into_image(&self.pool, w, h)?);
-        let bayer = match kind {
-            PixelKind::Bayer8(pattern) if color => Some(BayerMosaic {
-                pattern,
-                image: Arc::new(self.bayer_pool.copy(w, h, data)?),
-            }),
-            _ => None,
-        };
-        Ok((Some(image), bayer))
+        Ok((Some(image), None))
     }
 
     /// 图像内存预算满被丢弃的帧给状态栏的说明。
@@ -663,7 +731,7 @@ impl Shared {
     fn deliver(&self, mut frame: Frame) {
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
         delivery::observe(&self.identity, &self.manual, &mut frame, current_session);
-        if !frame.images.is_empty() && current_session {
+        if (frame.bayer.is_some() || !frame.images.is_empty()) && current_session {
             if frame.counter == CounterSource::Synthetic || frame.images.len() == 3 {
                 self.set_previews(frame.session, &frame.images);
             }
@@ -761,7 +829,32 @@ fn frame_bytes(kind: PixelKind, w: u32, h: u32, frame_len: u32) -> Result<usize,
     Ok(need)
 }
 
-/// 一帧转换后的图：Mono8 直接借 SDK 的缓冲（留整帧时才拷），Bayer 转灰度或去马赛克后的已在缓冲池里。
+/// 彩色模式：取图回调只核对格式与尺寸，把原始马赛克拷进池里，不去马赛克。预算里留出 [`rgb_headroom`]，
+/// 给之后按需生成的 RGB 用。
+fn color_mosaic(
+    pool: &FramePool,
+    kind: PixelKind,
+    w: u32,
+    h: u32,
+    data: &[u8],
+) -> Result<BayerMosaic, GrayError> {
+    let PixelKind::Bayer8(pattern) = kind else {
+        return Err(GrayError::Invalid(
+            "彩色模式需要 8 位 Bayer，相机以 Mono8 出图".into(),
+        ));
+    };
+    if w < 2 || h < 2 {
+        return Err(GrayError::Invalid(format!(
+            "Bayer 图像至少 2×2（实际 {w}×{h}）"
+        )));
+    }
+    let raw = pool
+        .copy_within(w, h, data, rgb_headroom(w, h))
+        .map_err(GrayError::BudgetExceeded)?;
+    Ok(BayerMosaic::new(pattern, Arc::new(raw)))
+}
+
+/// 灰度模式一帧转换后的图：Mono8 直接借 SDK 的缓冲（留整帧时才拷），Bayer 转灰度后的已在缓冲池里。
 enum Converted<'a> {
     Raw(&'a [u8]),
     Pooled(FrameImage),
@@ -997,10 +1090,9 @@ impl CameraSlot {
                 lost_packets: AtomicU64::new(0),
                 dropped: AtomicU64::new(0),
                 budget_dropped: AtomicU64::new(0),
-                bayer_pool: FramePool::with_budget(POOL_KEEP_PER_CAMERA, IMAGE_BUDGET_PER_CAMERA),
                 color: AtomicBool::new(config.image_mode.color()),
                 recent: Mutex::new(VecDeque::new()),
-                preview: Mutex::new(Vec::new()),
+                preview: Mutex::new(Previews::default()),
                 last_full: Mutex::new(None),
                 identity: Mutex::new(crate::shot_router::Ledgers::default()),
                 full_seq: AtomicU64::new(0),
@@ -1148,22 +1240,12 @@ impl CameraSlot {
         if self.config.lock().unwrap().source != CameraSource::Mvs {
             return None;
         }
-        self.shared
-            .preview
-            .lock()
-            .unwrap()
-            .first()
-            .map(|p| (p.full_width, p.full_height))
+        self.shared.preview.lock().unwrap().full_size()
     }
 
     pub fn last_views(&self) -> Vec<Arc<FrameImage>> {
-        self.shared
-            .last_full
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|frame| frame.images.clone())
-            .unwrap_or_default()
+        let captured = self.shared.last_full.lock().unwrap().clone();
+        captured.map(|frame| frame.views()).unwrap_or_default()
     }
 
     pub fn routing_state(
@@ -1211,14 +1293,7 @@ impl CameraSlot {
 
     pub fn last_view(&self, view: u8) -> Option<Arc<FrameImage>> {
         let index = view.checked_sub(1)? as usize;
-        self.shared
-            .last_full
-            .lock()
-            .unwrap()
-            .as_ref()?
-            .images
-            .get(index)
-            .cloned()
+        self.last_views().get(index).cloned()
     }
 
     pub fn grab_views(&self, timeout: Duration) -> Option<Vec<Arc<FrameImage>>> {
@@ -1261,15 +1336,15 @@ impl CameraSlot {
             if self.shared.session.load(Ordering::SeqCst) != request.session() {
                 return Err("取样期间相机会话已变化，本次取样已取消".into());
             }
-            if let Some(images) = self
+            let captured = self
                 .shared
                 .last_full
                 .lock()
                 .unwrap()
-                .as_ref()
-                .and_then(|frame| request.images(frame))
-            {
-                return Ok(Some(images));
+                .clone()
+                .filter(|frame| request.accepts(frame));
+            if let Some(frame) = captured {
+                return Ok(Some(frame.views()));
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1309,7 +1384,7 @@ impl CameraSlot {
         self.shared.session.store(session, Ordering::SeqCst);
         self.shared.manual.store(0, Ordering::SeqCst);
         self.shared.grab.store(false, Ordering::SeqCst);
-        self.shared.preview.lock().unwrap().clear();
+        self.shared.preview.lock().unwrap().set(Vec::new());
         self.shared.last_full.lock().unwrap().take();
         *self.shared.identity.lock().unwrap() = crate::shot_router::Ledgers::default();
     }
@@ -2658,15 +2733,8 @@ pub fn camera_preview(
     view: Option<u8>,
 ) -> tauri::ipc::Response {
     let mut out = Vec::new();
-    if let Some(slot) = cycle.camera.slot(cam) {
-        let previews = slot.shared.preview.lock().unwrap();
-        if let Some(p) = view
-            .unwrap_or(1)
-            .checked_sub(1)
-            .and_then(|i| previews.get(i as usize))
-        {
-            out = p.bytes();
-        }
+    if let (Some(slot), Some(index)) = (cycle.camera.slot(cam), view.unwrap_or(1).checked_sub(1)) {
+        out = slot.shared.preview_bytes(index as usize);
     }
     tauri::ipc::Response::new(out)
 }
