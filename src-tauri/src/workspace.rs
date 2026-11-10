@@ -369,11 +369,11 @@ pub struct WorkspaceHost {
 }
 
 /// 在途件的原图：按工件与配方修订成组，换件即清空。内存里只留最近的帧（总量超过上限时丢最早的），
-/// 更早的帧按本件的录制原图读回。键为 (计划相机下标, seq)。
+/// 更早的帧按本件的录制原图读回。彩色帧留的是原始马赛克，读图时才去马赛克。键为 (计划相机下标, seq)。
 #[derive(Default)]
 struct LiveFrames {
     key: Option<(String, String)>,
-    frames: VecDeque<((usize, u64), Arc<FrameImage>)>,
+    frames: VecDeque<((usize, u64), crate::frame::FrameView)>,
     bytes: usize,
     recorded: HashMap<(usize, u64), crate::recorder::PendingFrame>,
 }
@@ -391,7 +391,7 @@ impl LiveFrames {
         cycle_id: &str,
         revision_id: &str,
         k: (usize, u64),
-        image: Option<Arc<FrameImage>>,
+        image: Option<crate::frame::FrameView>,
         recorded: Option<crate::recorder::PendingFrame>,
     ) {
         if self
@@ -414,16 +414,17 @@ impl LiveFrames {
             return;
         }
         const LIMIT: usize = 128 * 1024 * 1024;
-        if image.pixels.len() > LIMIT {
+        let bytes = image.held_bytes();
+        if bytes > LIMIT {
             return;
         }
-        while self.bytes + image.pixels.len() > LIMIT {
+        while self.bytes + bytes > LIMIT {
             let Some((_, old)) = self.frames.pop_front() else {
                 break;
             };
-            self.bytes -= old.pixels.len();
+            self.bytes -= old.held_bytes();
         }
-        self.bytes += image.pixels.len();
+        self.bytes += bytes;
         self.frames.push_back((k, image));
     }
 }
@@ -1736,7 +1737,7 @@ pub fn retain_live_frame(
     revision_id: &str,
     camera: usize,
     seq: u64,
-    image: &Option<Arc<FrameImage>>,
+    image: &Option<crate::frame::FrameView>,
     recorded: Option<crate::recorder::PendingFrame>,
 ) {
     if let Some(host) = app.try_state::<WorkspaceHost>() {
@@ -1783,7 +1784,7 @@ fn live_frame_image(
     k: (usize, u64),
     recorded_part: impl FnOnce() -> Result<FrameImage, String>,
 ) -> Result<Arc<FrameImage>, String> {
-    let recorded = {
+    let (held, recorded) = {
         let live = live.lock().unwrap();
         if live
             .key
@@ -1792,11 +1793,17 @@ fn live_frame_image(
         {
             return Err("本件尚未收到整帧图像".into());
         }
-        if let Some((_, image)) = live.frames.iter().find(|(key, _)| *key == k) {
-            return Ok(image.clone());
-        }
-        live.recorded.get(&k).cloned()
+        (
+            live.frames
+                .iter()
+                .find(|(key, _)| *key == k)
+                .map(|(_, view)| view.clone()),
+            live.recorded.get(&k).cloned(),
+        )
     };
+    if let Some(view) = held {
+        return view.image();
+    }
     let image = match recorded.map(|frame| frame.state()) {
         Some(crate::recorder::RecordedFrame::Ready(path)) if path.is_file() => {
             crate::image_file::load(&path).map_err(|e| format!("读回录制原图失败：{e}"))?
@@ -2050,7 +2057,7 @@ mod tests {
 
     /// 第 1 帧带着录制文件 `file` 进内存预览，再来两帧大图把它挤出去。
     fn evicted_first_frame(file: PathBuf) -> Mutex<LiveFrames> {
-        let big = || Some(Arc::new(FrameImage::new(8192, 6144, vec![0; 8192 * 6144])));
+        let big = || Some(Arc::new(FrameImage::new(8192, 6144, vec![0; 8192 * 6144])).into());
         let mut live = LiveFrames::default();
         live.insert(
             "c1",

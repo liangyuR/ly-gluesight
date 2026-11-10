@@ -87,11 +87,11 @@ fn color_frame_records_bayer_mosaic_as_main_file_and_reads_back_rgb() {
     // BG 相位纯色马赛克：R=200 G=100 B=50
     let mosaic = vec![50, 100, 100, 200];
     let frame = Frame {
-        images: vec![Arc::new(FrameImage::rgb(2, 2, [200, 100, 50].repeat(4)))],
-        bayer: Some(BayerMosaic {
-            pattern: BayerPattern::Bg,
-            image: Arc::new(FrameImage::new(2, 2, mosaic.clone())),
-        }),
+        images: Vec::new(),
+        bayer: Some(BayerMosaic::new(
+            BayerPattern::Bg,
+            Arc::new(FrameImage::new(2, 2, mosaic.clone())),
+        )),
         ..frame(0)
     };
     recorder.burst_frame(&mut rec, &frame, 0, 1);

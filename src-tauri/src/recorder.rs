@@ -512,16 +512,19 @@ impl Recorder {
             rec.errors.push(format!("相机 {camera_id} 第 {seq} 帧重复录制，拒绝覆盖原图"));
             return;
         }
-        let Some(image) = frame.single_image() else {
-            rec.errors.push(format!("相机 {camera_id} 第 {seq} 帧原图不完整：实际 {} 幅图像", frame.images.len()));
-            return;
-        };
         // 彩色帧的主文件写原始马赛克，灰度帧写灰度；每帧只写这一份
-        let color = image.is_color();
-        let (main, pattern) = match (&frame.bayer, color) {
-            (Some(bayer), true) => (bayer.image.clone(), Some(bayer.pattern)),
-            _ => (image.clone(), None),
+        let (main, pattern) = match (&frame.bayer, frame.single_image()) {
+            (Some(bayer), _) => (bayer.image.clone(), Some(bayer.pattern)),
+            (None, Some(image)) => (image.clone(), None),
+            (None, None) => {
+                rec.errors.push(format!(
+                    "相机 {camera_id} 第 {seq} 帧原图不完整：实际 {} 幅图像",
+                    frame.images.len()
+                ));
+                return;
+            }
         };
+        let color = pattern.is_some() || main.is_color();
         let mut meta = BurstFrameMeta {
             cycle_id: rec.cycle_id.clone(),
             bundle_id: rec.bundle_id.clone(),
@@ -539,8 +542,8 @@ impl Recorder {
             device_ts: frame.dev_ts,
             lost_packets: frame.lost_packets,
             manual: frame.manual,
-            width: image.width,
-            height: image.height,
+            width: main.width,
+            height: main.height,
             queued: true,
             available: false,
             error: None,
