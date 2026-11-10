@@ -309,7 +309,9 @@ impl BurstFrameIndex {
         let dir = self.recording()?;
         let path = dir.join(recording_file(camera_id, seq));
         let missing = || format!("示教件原图不可用：录制里缺相机 {camera_id} 第 {seq} 帧组的原图");
-        // 空闲压缩过的原图在盘上是同名的 .gsr：核对实际文件，返回的仍是记录里的 .pgm 路径，由统一读图入口还原
+        // 空闲压缩过的原图在盘上是同名的 .gsr：核对实际文件，返回的仍是记录里的 .pgm 路径，由统一读图入口还原；
+        // 核对期间不让空闲压缩替换文件
+        let _busy = crate::raw_compress::activity().busy();
         let stored = crate::image_file::stored_path(&path).ok_or_else(missing)?;
         crate::image_file::checked_source_path(&stored).map_err(|_| missing())?;
         let stored = stored

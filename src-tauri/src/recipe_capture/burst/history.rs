@@ -37,6 +37,8 @@ pub(super) fn valid_cycle_id(id: &str) -> bool {
 /// 录制原图是普通文件（不是链接或 reparse point），PNM 头（可含 Bayer 注释）的尺寸是这一尺寸、长度等于头 + 像素。
 /// 空闲压缩过的原图（同名 `.gsr`）按它记下的原文件头与原始长度核对。
 fn check_source(path: &Path, width: u32, height: u32) -> Result<(), String> {
+    // 核对实际文件到读完之间不让空闲压缩把 .pgm 换成 .gsr
+    let _busy = crate::raw_compress::activity().busy();
     let stored = crate::image_file::stored_path(path)
         .ok_or_else(|| format!("历史原图 {} 不可用：文件不存在", path.display()))?;
     crate::image_file::checked_source_path(&stored)?;
