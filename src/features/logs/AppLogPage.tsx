@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { FolderOpen, PackageOpen, Radio, RefreshCw, Search, X } from "lucide-react";
-import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, SegmentedControl, Stack, StatusBadge, Table, Text, TextField, type TableColumn } from "qing-steel";
+import { FolderOpen, Info, PackageOpen, Radio, RefreshCw, Search, X } from "lucide-react";
+import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, Popover, SegmentedControl, Stack, StatusBadge, Table, Text, TextField, type TableColumn } from "qing-steel";
 import { subscribe } from "../plc";
 import { formatTs, fromLocalInput, toLocalInput } from "../plc/time";
 import { openLogDir } from "../../lib/api";
@@ -139,9 +139,9 @@ export default function AppLogPage() {
     },
   ];
 
-  return <Stack direction="column" align="stretch" gap={16}>
+  return <Stack direction="column" align="stretch" wrap={false} gap={16}>
     <Card>
-      <Stack direction="column" align="stretch" gap={12}>
+      <Stack direction="column" align="stretch" wrap={false} gap={12}>
         <Stack gap={8} justify="space-between">
           <Stack gap={8}>
             <SegmentedControl label="日志时间范围" options={rangeOptions} value={rangeKey} onValueChange={value => { setRangeKey(value as RangeKey); reset(); }} />
@@ -157,27 +157,40 @@ export default function AppLogPage() {
             <Button variant="filled" leadingIcon={<PackageOpen size={16} />} onClick={() => setExporting(true)}>导出诊断包</Button>
           </Stack>
         </Stack>
-        <Stack gap={8}>
-          <Text variant="label" muted>级别</Text>
-          {levels.map(l => <Chip key={l} selected={chosen.includes(l)} onClick={() => toggle(l)}>{levelText[l]}</Chip>)}
-          <Text variant="label" muted>SN</Text>
-          <TextField className="log-sn-input" aria-label="按 SN 筛选" placeholder="SN" value={sn} onChange={e => { setSn(e.target.value); reset(); }} />
-          <TextField
-            className="log-search"
-            aria-label="搜索日志"
-            placeholder="搜索事件、内容、cycleId 或拍照点，回车确认"
-            value={keywordInput}
-            leading={<Search size={16} />}
-            trailing={keywordInput ? <IconButton size="sm" variant="text" aria-label="清空搜索" onClick={() => { setKeywordInput(""); setKeyword(""); reset(); }}><X size={14} /></IconButton> : undefined}
-            onChange={e => setKeywordInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") { setKeyword(keywordInput.trim()); reset(); } }}
-          />
-          {cycleId && <Chip onRemove={() => setCycle("")} removeLabel="取消工件筛选">工件 <span className="mono">{cycleId}</span></Chip>}
-        </Stack>
-        <Stack gap={12} className="log-usage">
-          <Text variant="label" muted>{usage ? <>日志占用 {formatBytes(usage.bytes)} / 上限 {formatBytes(usage.maxTotalBytes)} · {usage.files} 个文件 · 保留 {usage.keepDays} 天 · 单文件 {formatBytes(usage.segmentBytes)} 滚动</> : "日志占用读取中…"}</Text>
-          <Button variant="text" size="sm" leadingIcon={<FolderOpen size={13} />} onClick={() => void openLogDir().catch(e => setError(errorText(e)))}>打开日志目录</Button>
-        </Stack>
+        <div className="log-toolbar">
+          <div className="log-levels" role="group" aria-label="日志级别">
+            {levels.map(l => <Chip key={l} selected={chosen.includes(l)} onClick={() => toggle(l)}>{levelText[l]}</Chip>)}
+          </div>
+          <div className="log-sn-input">
+            <TextField aria-label="按 SN 筛选" placeholder="输入 SN" value={sn} onChange={e => { setSn(e.target.value); reset(); }} />
+          </div>
+          <div className="log-search">
+            <TextField
+              aria-label="搜索日志"
+              placeholder="搜索日志，回车确认"
+              title="搜索事件、内容、cycleId 或拍照点，回车确认"
+              value={keywordInput}
+              leading={<Search size={16} />}
+              trailing={keywordInput ? <IconButton size="sm" variant="text" aria-label="清空搜索" onClick={() => { setKeywordInput(""); setKeyword(""); reset(); }}><X size={14} /></IconButton> : undefined}
+              onChange={e => setKeywordInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { setKeyword(keywordInput.trim()); reset(); } }}
+            />
+          </div>
+          <div className="log-usage">
+            <Text variant="label" muted aria-label="日志占用">{usage ? `${formatBytes(usage.bytes)} / ${formatBytes(usage.maxTotalBytes)}` : "日志占用读取中…"}</Text>
+            <Popover side="bottom" align="end" title="日志存储详情" trigger={<IconButton variant="text" size="sm" aria-label="日志存储详情"><Info size={16} /></IconButton>}>
+              {usage ? <dl className="log-storage-details">
+                <dt>日志占用</dt><dd>{formatBytes(usage.bytes)}</dd>
+                <dt>容量上限</dt><dd>{formatBytes(usage.maxTotalBytes)}</dd>
+                <dt>文件数量</dt><dd>{usage.files} 个</dd>
+                <dt>保留时间</dt><dd>{usage.keepDays} 天</dd>
+                <dt>单文件滚动</dt><dd>{formatBytes(usage.segmentBytes)}</dd>
+              </dl> : <Text muted>日志占用读取中…</Text>}
+            </Popover>
+            <Button variant="text" size="sm" aria-label="打开日志目录" leadingIcon={<FolderOpen size={15} />} onClick={() => void openLogDir().catch(e => setError(errorText(e)))}>日志目录</Button>
+          </div>
+        </div>
+        {cycleId && <Stack gap={8}><Chip onRemove={() => setCycle("")} removeLabel="取消工件筛选">工件 <span className="mono">{cycleId}</span></Chip></Stack>}
       </Stack>
     </Card>
     <Card title="运行日志" actions={<Text muted>共 {current?.total ?? 0} 条</Text>}>
