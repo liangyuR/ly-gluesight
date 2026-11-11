@@ -199,7 +199,7 @@
 - 问题：规格 §3/§4/§6 要记录每台相机每一帧、帧组、段、不完整组、未检 / 未分段区域。
 - 采用：`part_frames` 表与 `parts` 的段配方列（ΣN_exp、各相机帧数、整件标记、整份区域判定 `burst_judgement`；`tolerance_total` 列保留，新记录不写、为 NULL，读取时不用），本机记录库版本 10（[history-scope](history-scope.md)；D-0：版本不符时备份后重建）。
 - `part_frames` 主键 (part_id, camera, seq)，入库时帧数不要求等于预期，但 (camera, seq) 唯一、相机属于计划相机、指标身份与帧一致，摘要结论与区域判定相同；原图引用按 (camera, seq) 只增不换。
-- 审计 spool FORMAT 4，原图引用 `files[].frame` 有值即段配方帧。录制文件名 `{相机}_s{seq:06}.pgm`，part.json 有 `missingFrames`（相机没出图，只追溯，录制仍可完整）与 `rawDropped`（录制队满没录，证据 Incomplete）。
+- 原图引用 `files[].frame` 有值即段配方帧。录制文件名 `{相机}_s{seq:06}.pgm`，part.json 有 `missingFrames`（相机没出图，只追溯，录制仍可完整）与 `rawDropped`（录制队满没录，证据 Incomplete）。
 - 历史重判 `Overrides` 有 `straight` / `corner`（按段类型覆盖胶宽上 / 下允差与帧内允许超差长度，`maxGapLen` 作用于每帧）；用当前候选重判时计划身份或走廊、当量、标定、检测参数变化跳过并记 LayoutChanged，重判结果 `changes[].flags` 带出整件标记。CSV 末尾有段配方的帧数与标记列（没有容差列）；时间线 Entry 与运行日志字段有 `seq`。
 
 ### D-SB-30 发布包与标定键

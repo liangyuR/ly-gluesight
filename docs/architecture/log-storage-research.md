@@ -34,7 +34,7 @@
 | 冻结示教图与标定特征 | 项目内 `workspaces/<配方>/images/`、`calibration/<轮次>/` | 随候选和项目保存 |
 | 棋盘格标定结果与原图 | 项目内 `calib/`、`calib/images/` | 成功标定写入原图及项目相对引用，随项目迁移 |
 | 发布资源 | 项目内 `vision/releases/` | 不可变发布资源，包含冻结示教图和标定引用，不属于视觉日志 |
-| 恢复状态及审计 | 本机 `state/`、`history/audit-spool/` | 维持现有恢复契约，不归入普通日志清理 |
+| 恢复状态及审计 | 本机 `state/`、`history/audit-spool/`（旧追溯暂存） | 维持现有恢复契约，不归入普通日志清理 |
 
 录制原图内部结构保持日期目录、`*_cycle_<cycleId>/`、`{相机}_s{seq:06}.pgm` 和 `part.json`，不改变相机与帧组身份。空闲压缩过的帧在盘上是同主名的 `.gsr`，文件名里的相机与帧组序号不变（[image-storage](../decisions/image-storage.md) IS-2）。
 

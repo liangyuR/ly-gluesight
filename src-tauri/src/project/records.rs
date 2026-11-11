@@ -1,4 +1,4 @@
-//! 本机检测历史：一份记录库与审计 spool 放在资料目录 `history/`，记录带所属项目；历史原图仍按项目放在日志根的
+//! 本机检测历史：一份记录库放在资料目录 `history/`，记录带所属项目；历史原图仍按项目放在日志根的
 //! `vision/<环境>/<实例>/<项目>/`。启动时把各项目的旧记录库并入本机库，旧库改名备份。
 
 use std::collections::BTreeMap;
@@ -17,8 +17,8 @@ pub fn database(data: &Path) -> PathBuf {
     history_dir(data).join("inspection.db")
 }
 
-/// 本机审计 spool（待入库的件证据）。
-pub fn spool(data: &Path) -> PathBuf {
+/// 旧版本留下的追溯暂存，启动时补录进记录库。
+pub fn legacy_spool(data: &Path) -> PathBuf {
     history_dir(data).join("audit-spool")
 }
 
@@ -103,7 +103,7 @@ pub fn releases_root(data: &Path, project: &str) -> Result<PathBuf, String> {
 
 /// 启动时把各项目的旧记录库（`projects/<id>/inspection.db`）并入本机库：当前项目先并、尽量沿用原编号，其余项目重新编号；
 /// 并入后按记在本机库里的编号对照改写项目文件里的记录引用（`remap_refs`，中断后下次启动接着做），改写完才把旧库改名为
-/// `inspection.db.merged-<毫秒>.bak`（不删）。当前项目未写完的审计 spool 移到本机 spool。返回 (级别, 说明) 供写日志。
+/// `inspection.db.merged-<毫秒>.bak`（不删）。当前项目遗留的旧追溯暂存移到本机旧暂存目录，随后启动补录。返回 (级别, 说明) 供写日志。
 pub fn migrate(data: &Path, store: &Store, current: &str) -> Vec<(&'static str, String)> {
     let mut notes = Vec::new();
     let mut ids: Vec<String> = super::list(data)
@@ -265,7 +265,7 @@ fn move_spool(data: &Path, project: &Path, current: bool) -> Result<(), String> 
             "还有未入库的件证据，项目不是当前项目，未移入本机 spool；切换到该项目时一并处理".into(),
         );
     }
-    let target = spool(data);
+    let target = legacy_spool(data);
     if non_empty(&target) {
         return Err("本机 spool 也有未入库的件证据，两边都保留，请人工核对".into());
     }

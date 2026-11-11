@@ -280,9 +280,32 @@ fn audit_item(f: &Facts) -> ReadinessItem {
     let record = match f.record { RecordMode::Off => "关闭", RecordMode::Failed => "只留 NG / ERR 件", RecordMode::All => "全部" };
     let scope = "";
     match &f.audit {
-        Check::Ok => item(ItemKey::Audit, TITLE, ItemState::Ok, format!("追溯可写 · 帧录制{scope}：{record}"), None, None),
-        Check::Waiting(reason) => item(ItemKey::Audit, TITLE, ItemState::Waiting, reason.clone(), None, None),
-        Check::Blocked(reason) => item(ItemKey::Audit, TITLE, ItemState::Waiting, reason.clone(), Some("不影响接件与检测；写不进的记录后台重试，仍失败的移到 audit-spool/.unrecovered 待人工核对".into()), Some(Target::Settings)),
+        Check::Ok => item(
+            ItemKey::Audit,
+            TITLE,
+            ItemState::Ok,
+            format!("追溯可写 · 帧录制{scope}：{record}"),
+            None,
+            None,
+        ),
+        Check::Waiting(reason) => item(
+            ItemKey::Audit,
+            TITLE,
+            ItemState::Waiting,
+            reason.clone(),
+            None,
+            None,
+        ),
+        Check::Blocked(reason) => item(
+            ItemKey::Audit,
+            TITLE,
+            ItemState::Waiting,
+            reason.clone(),
+            Some(
+                "不影响接件与检测；写不进的记录后台重试，超过 30 分钟仍写不进的丢弃并记错误".into(),
+            ),
+            Some(Target::Settings),
+        ),
     }
 }
 
