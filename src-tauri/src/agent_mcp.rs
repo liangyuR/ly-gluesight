@@ -14,7 +14,7 @@ const DEFAULT_PORT: u16 = 47821;
 const MAX_BODY: usize = 4 << 20;
 /// 支持的协议版本，新的在前；客户端要的不在其中时回最新的
 const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const INSTRUCTIONS: &str = "GlueSight 段配方的走廊示教工具，只改候选。先 teach_status 看现状与下一步；画走廊前用 teach_view 看帧并按网格读坐标；改完用 teach_trial 试测。发布、检测项、公差与图纸标称值由人在界面确认。";
+const INSTRUCTIONS: &str = "GlueSight 段配方示教工具，只改候选。先 teach_status 核对项目与候选，summary:true 读取紧凑待办；调用携带 expectedProject、expectedInstanceId，写入再带 expectedRevision。画走廊前用 teach_view 看新帧，teach_corridor 可明确测量方式和搜索扇区并原子保存，改完用 teach_trial 试测。走廊就绪后 teach_measure 正式测量保存；measured 不等于证据完整，自测不等于独立验收。发布、检测项、公差与图纸标称值由人在界面确认。";
 
 /// 工具返回的一段内容。
 pub enum Content {

@@ -5,7 +5,7 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 
 # 胶型检测示教
 
-接口契约见 `docs/integration/agent-teaching.md`，判定规则见 `docs/decisions/segment-burst.md`（笔与每笔跳过 D-SB-62，偏宽只预警 D-SB-61）。工具只改候选。示教件、分段、像素当量、每笔首尾跳过和发布由人在界面上做；检测项开关、公差、本段搜索半宽与胶宽范围、测量区间与图纸标称值能用 `teach_segment` 写，但取值只用人在对话里给出的，不自行决定。
+接口契约见 `docs/integration/agent-teaching.md`，判定规则见 `docs/decisions/segment-burst.md`（笔与每笔跳过 D-SB-62，偏宽只预警 D-SB-61）。工具只改候选。示教件、分段确认、像素当量和每笔首尾跳过使用正式界面；用户已授权的界面操作照授权完成，不因工具缺少入口再次索取同一权限。检测项开关、公差、本段搜索半宽与胶宽范围、测量区间与图纸标称值取人给出的值。示教不包含发布，只有明确要求发布时才操作发布入口。
 
 ## 0. 基本概念
 
@@ -16,21 +16,23 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 
 ## 1. 看现状
 
-`teach_status` 不带参数列出候选，再带 `recipe` 取现状。下列任一情况停下来请人在界面处理，不要绕过：
+先用 `teach_status` 核对当前项目编号、名称和候选，再带 `recipe`、`summary: true` 看待办与阻碍；需选帧或诊断时取完整详情。项目归属有歧义时先澄清，不凭配方编号、文件名或录制内模板猜项目。下列前置未满足时先处理，不继续写走廊：
 
 - `teachingPiece` 为 null（没选示教件）；
 - 某段 `frames` 是原因文字而不是 `[start, end]`（分段没确认）；
 - 要示教的相机 `mmPerPx` 为空；
 - `engine.loaded=false`，先按返回的运行库来源和错误恢复引擎；
 - 开启逐帧定向的相机有 `headingIssues`，先处理测量区间、出胶点等前提；测量区间取本段覆盖、相机的测量区间或默认 5 → 20 mm（各相机 `segments[].window` 的 `source` 为 `segment` / `camera` / `default`），某段要单独设时取值由人给出后用 `teach_segment` 的 `headingWindow` 写入，胶条短的笔“测量到”不要超过胶条长度；
-- `coverage` 未知、边界不可信、出现 `zeroCoverageSegments` 或直线段没有有效胶偏窗口，先核对真实覆盖，不用单段试测替代生产覆盖检查；
-- 分段已确认但 `passes.inRecipe=false`（示教件笔结构与分段对不上，生产会退回按比例分段），请人重新保存分段。
+- `coverage` 未知、边界不可信或直线段没有有效胶偏窗口，先核对真实覆盖，不用单段试测替代生产覆盖检查；`zeroCoverageSegments` 须逐段区分已约定的计划不检与意外零覆盖。已约定不检的段单列排除后，其余检测范围可以单独验收，不能声称被跳过段已检；
+- 分段已确认但 `passes.inRecipe=false`：配方笔结构没有与当前示教件逐笔及总帧数一致，需要重新核对并保存分段；若 `passes.history.matchesTeachingPiece=false`，是历史记录与示教件笔来源不一致，重新保存分段不能修复，应先查导入与笔来源。`passes.history=null` 只表示来源未知。
 
-核对段边界：用 `passes.frames` 累加出各笔的帧组范围，对照每段 `frames`。笔中间的边界离笔界不到 3 帧时，提示人把边界挪到笔界上（少一个过渡区，判定更准）；不要自己改分段。
+更换示教件时，先核对原始录制身份、相机、帧组数和逐笔图像对照，再通过界面确认迁移后的分段。录制里的配方 `passFrames` 是当时使用的模板，不代表该件实际笔结构；时间戳推算的笔数也不冒充未保存的生产门控信息。用 `passes.frames` 累加各笔范围，对照每段边界；笔中间的边界离笔界不到 3 帧时提示核对，不自行挪边界来避开失败。
 
-待办 = 每段 `cameras` 里的每台相机，在 `cameras[].segments` 里 `saved` 为假，或 `measure` 为 `color` 而 `modelUsable` 为假的项。`measure` 为 `gray` 是操作员在示教页选了按灰度测量，不取色、不按胶色吸附；要改回按胶色请操作员在示教页切换。`modelPresent` / `colorModel` 只表示字段存在；查看 `quality` 和 `modelIssues`，背景样本为 0、过曝或质量未知不能当作已就绪。配置检查通过也不代表路径正确或实测完成。
+只有 `part.json` 与原图的 ZIP 不是[标准历史件包](../../../docs/architecture/history-package.md)。正式导入入口不支持该来源时，说明缺少什么并保留原始文件；不写数据库或拼造历史包，不用会重建身份与时序的 fixture 导入替代原件。缺测量指标时不能从文件名里的 NG 标签补出原检测证据。缺少 MCP 能力时使用正式界面，不经开发者控制台保存整份候选。
 
-保存本次 `snapshot` 的项目、候选实例、修订号和示教轮次。写工具都带上读到的 `expectedRevision`，冲突后重新读状态并重新应用最小补丁，不取最新 revision 来覆盖旧文档。读测结果 `snapshot.stale=true` 时归档为原快照证据，重测当前快照后才能验收；共享相机参数、整件测量和结构修改由一个执行者协调。
+待办 = 每段检测相机上 `saved=false`、彩色 `modelUsable=false`，或 `teachingSource` 为 `carried` / `unknown` 且 `carryAccepted=false` 的项；摘要 `todo[].reasons` 保留各项原因，来源未知未确认时含 `frameSourceUnknown`。用 `frameSource` 和 `teachingSource` 核对冻结原图来源；`roundId` 是迁移后的映射轮次，不能证明原图来自新件。沿用或来源未知的资料须确认，或在新帧上重教。`todo[].recommendedSeq` 取生产覆盖最长连续区间中点，仅作看图起点；整段计划不检时为 null。`measure=gray` 不取色、不按胶色吸附。模型存在和保存成功不证明颜色可用、走廊正确或实测完整。
+
+保存本次 `snapshot` 的项目、候选实例、修订号和示教轮次。核对身份后的工具调用带 `expectedProject` 和 `expectedInstanceId`，写工具再带 `expectedRevision`，逐次使用成功提交返回的新修订。冲突后重新读状态并重新应用最小补丁，不取最新 revision 来覆盖旧文档。读测结果 `snapshot.stale=true` 时归档为原快照证据，重测当前快照后才能验收。多 agent 可并行看图和给笔划建议，候选写入、共享参数、结构修改与整件测量由一个执行者串行协调；批量调用记录每项失败，不因部分成功漏掉其余项。
 
 ## 2. 每台相机、每段画走廊
 
@@ -38,12 +40,14 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 2. **看图**：`teach_view`（不带 `segment`）看整帧，找到胶条，按网格读出沿胶条的 3–6 个点（弯道多取几个），从起胶端（喷嘴一侧）排到收胶端。
    - **走廊要覆盖整段胶**：吸附只校正横向位置，走廊的起止就是笔划的首尾。彩色段的颜色模型沿走廊取样，走廊缩短一截，模型就少见一段胶；在外移缺陷件上，这样做曾让整件判定从“超宽、跑偏”变成“断续”。所以第一点放大到喷嘴处，点在胶刚出胶嘴的位置；最后一点放在胶条离开画面或这一段结束的地方。
    - **出胶点**：`teach_status` 里这台相机的 `nozzle.calibrated` 为假时，出胶点由各定向段（`heading` 不为 null）的走廊起点推出，检测窗口按距出胶点的毫米数截取；出胶点取这些起点的中位数；有起点偏离超过 1 mm 时 `nozzle.warning` 给出偏得最远的段，只提示不阻断，确认那段走廊是否从出胶点起画。
-3. **画走廊**：`teach_corridor`，带当前 `expectedRevision`，`extract` 用缺省 `auto`。
+3. **画走廊**：`teach_corridor`，带已核对的项目和当前修订，`extract` 用缺省 `auto`。
    - 彩色帧、按胶色测量的段按胶色吸附：点离胶中心在 `radiusPx`（缺省 30）以内就行，整幅图上目测的点就够，不用放大逐点读。胶条旁边有别的同色物（另一条胶、胶丝）时把 `radiusPx` 调小，免得吸到旁边。返回里已含沿新走廊重新取色的结果（`colorModel`），不用再调 `teach_fit_color`。
    - 灰度帧或按灰度测量的段按边缘提取：大图上读的坐标常偏 10–20 px，在胶条上取 4–6 处用 80×160 左右的小 `crop`、`grid: 10` 放大，读上下边取中点。报“边缘不连续”且笔划确实贴着胶条中心时，改 `extract: "none"` 直接用笔划。
-   - 新走廊、示教帧和颜色模型一次提交；提取、最终越界/站数校验、取色失败或模型不可用时保留旧状态。成功读取 `commit` 和新 revision。错误若明确“已保存但刷新视图失败”，先重新读 `teach_status`，不要盲目重试。独立 `teach_fit_color` 可保存不可用模型用于诊断，成功返回仍须检查 `modelUsable`。
+   - 过曝或背景颜色缺失时先换帧；整段没有可用颜色信息而胶边仍清楚时，只有已有自主调整示教方式的授权且全段图像证据充分，才明确传 `measure: "gray"` 与新帧、笔划一次提交，再按灰度试测；授权不足时先询问，已有同一授权不重复索取。取色失败本身既不是授权，也不足以证明应改灰度。需要改回彩色时明确给 `measure: "color"` 并重新建模，不复制别段模型。
+   - 新走廊、示教帧、测量方式、扇区和颜色模型一次提交；提取、最终越界/站数校验、取色失败或模型不可用时保留旧状态。吸附越界时核对端点和新胶，必要时用已核对的笔划 `extract: "none"`，不静默夹紧坐标或放宽检测范围。成功读取 `commit` 和新 revision。错误若明确“已保存但刷新视图失败”，先重新读 `teach_status`，不要盲目重试。独立 `teach_fit_color` 可保存不可用模型用于诊断，成功返回仍须检查 `modelUsable`。
 4. **核对**：看叠图，青线应沿新胶中心走完整段，没有台阶或跳到旧胶/相邻分叉。彩色帧看 `modelUsable`、`quality`、样本数、中心移动和分离度；数值可用不能证明路径正确。背景样本缺失时核对曝光与取样范围，不重复拟合同一张无信息图，也不复制其他段的模型。
 5. **试测**：`teach_trial` 的 `from`/`to` 限制实际量测区间，读取返回的 `requestedWindow`、`window`、`range`。可先用稳态范围诊断，再核对完整段与整件；不能把短胶的末帧通过当作完整工艺验收。
+   - 搜索扇区与真实转向不符时，可在重新示教时用 `sectorDeg` 明确本段本相机的半圈中线（图像角度，0°向右、90°向下；null 恢复自动）。保存前后的完整段都要测，不能只看选中帧；无改善或伤及其他帧时撤回该项调整。扇区不改变图纸公差，也不能弥补出胶点错误、遮挡或缺失图像信息。
 
 ## 3. 检测项与零件边参考（只在人给了值时）
 
@@ -55,7 +59,7 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 
 ## 4. 每笔起涂跳过（测量示教件之后）
 
-读 `passes.suggestion`：`suggested` 是示教件各笔起涂帧组数的最大值，`passes[]` 逐笔给出起涂帧组数或不参与的原因（`note`）。
+走廊就绪后调用 `teach_measure`，带 `recipe`、`expectedRevision` 和已核对的项目，按正式流程测量并保存示教件。读取提交身份和测量完整性，再读 `passes.suggestion`：`suggested` 是示教件各笔起涂帧组数的最大值，`passes[]` 逐笔给出起涂帧组数或不参与的原因（`note`）。工具成功只代表测量已保存，不代表产品合格或可以验收。
 
 - `passes.skip.head` 小于 `suggested`：正常件每笔开头会判断胶，请人在试测页“每笔起涂”点“采用建议”，或在分段与示教页页顶改“每笔开头跳过”。工具不写这个值。
 - 只有一两笔的起涂帧数远大于其余笔：先 `teach_view` 看那几笔开头，确认是起胶慢还是走廊/检测项问题；不要为了个别笔把所有笔都多跳过。
@@ -64,25 +68,27 @@ description: 用 GlueSight 的示教 MCP（gluesight 服务的 teach_* 工具）
 
 ## 5. 验收（稳态范围内）
 
-硬性：快照没有 stale，`measurement.measuredFrames == expectedFrames`，逐项核对所有 `nonMeasuredFrames`；只有 `expected=false` 的计划不测可以排除，Error、Missing、Unmeasured、OutOfCorridor 均不能因 `errors=[]` 被漏掉。`fallbackFrames`、`limits.gapOverLimit`、`limits.presentBelow` 为空（有胶的帧不能按这一段的断胶口径报断）。`limits.passSkipped` 里的帧生产不判，已从这些列表里去掉，不用再看；但它们若占了这一段的大部分，提给人核对每笔跳过设置。窄区间通过只说明该范围。
+单段试测的 `measurementPlan=selectedSegment` 与整件生产计划不同，不直接累加各段试测计数当作整件应测数量。完整生产范围以 `teach_measure`、`teach_replay` 的覆盖和计数为准。
+
+硬性：快照没有 stale，`measurement.measuredFrames == expectedFrames` 且 `completeFrames == expectedFrames`，逐项核对 `incompleteMeasurementFrames`、`noEvidenceFrames` 和所有 `nonMeasuredFrames`；只有 `expected=false` 的计划不测可以排除。产出了 measured 结果但测站全未知、截断或证据不足，仍不算完整量测。`fallbackFrames`、`limits.gapOverLimit`、`limits.presentBelow` 为空（有胶的帧不能按这一段的断胶口径报断）。`limits.passSkipped` 里的帧生产不判，已从这些列表里去掉；占了这一段的大部分或整段时，单独列明不检范围和设置依据。窄区间通过只说明该范围。
 
 参考：
 - `gapFrames` 中小断口要逐个看图，分清胶本身（绕圈、堆胶、收窄）与测偏。
 - 胶宽：`limits.wideWarnOnly` 为真时看 `widthBelow`（偏窄，会判 NG），`widthOutside` 与 `overflowFrames` 里偏宽的帧只记预警；为假时 `widthOutside`、`overflowFrames` 都按 NG 线索看。平均宽度在公差带内也可能因局部超宽或最大宽度报溢胶。
 - ToEdge 须联合核对实际测量范围的有效率、缺失帧、真实边落点及图纸值；首尾剔除后的可判窗口留到整件结果单独核对。
 
-不合格时，对 `worst` 里的帧用 `teach_view` 带 `segment` 看测量叠图（黄线 = 每站测到的胶宽，绿线 = 胶边距），判断是走廊偏、示教帧不典型还是图像本身（高光、遮挡）。前两种换帧或重画；同一段连续两次不合格，或判断是图像或参数问题，停下来把现象和帧号报给人。
+不合格时，对代表失败帧用 `teach_view` 带 `segment` 看测量叠图（黄线 = 每站测到的胶宽，绿线 = 胶边距）。区分主体中间真实断开、胶头/尾尚未铺满参考区、参考落裸金属或孔边、旧胶误入、高光与遮挡；不能只由存在率数值认定制造缺陷。走廊偏或示教帧不典型时换帧或重画；同一段两次未改善后归档失败帧与原因，停止该段盲试，继续不依赖它的工作。修图像或工艺规格所需信息缺失时再向人询问。
 
 ## 6. 整件复测
 
-所有段都过了第 5 步后，`teach_replay` 不带 `records` 列出历史件，使用人已确认的好件与缺陷件；未说明时请人指出。逐件保存 `comparisonId`、`snapshot`，先核对 `measurement.cameras[].segments[]` 的应测/实测、全部未测帧、`coverage` 和 `flags`；再核对最终 `regions[].offsetUnjudged`、`offsetEvidence` 的参考相机、首尾剔除后窗口及缺失帧。
+`teach_replay` 不带 `records` 列出历史件。可以先对示教件整件自测来定位问题，但须标记为诊断；独立验收使用人已确认的好件与缺陷件，未说明时请人指出。逐件保存 `comparisonId`、`snapshot`，先核对整件测量汇总及 `measurement.cameras[].segments[]` 的应测/实测/完整数量、全部证据不足帧、`coverage` 和 `flags`；再核对最终 `regions[].offsetUnjudged`、`offsetEvidence` 的参考相机、首尾剔除后窗口及缺失帧。
 
-- `flags.passCountAnomaly`（笔数异常）：这件的笔数与示教件不同，整件按未分段判、不判胶偏。现场同一程序每件笔数相同、整件帧组数只有 ±1 的波动；出现笔数异常说明这件的程序或机械不同，不能拿它做验收件，报给人。
+- `flags.passCountAnomaly`（笔数异常）：这件的笔数与示教件不同，整件按未分段判、不判胶偏。核对原始门控记录、时间戳推算与导入是否使用同一笔来源，再判断程序或机械差异；不能只凭异常标志归因工艺不同，也不能用不一致件做验收。
 - `uninspected` 里带 `pass` 的是每笔首尾跳过的帧，`short` 为整笔不检；这些区域里的缺陷不会报出，验收缺陷件时确认缺陷不在其中。
 - `flags.wideWarning` / `overflowWarning` 是预警，不是 NG。
 
-好件应判合格；缺陷件应判不合格且报错区域与缺陷位置对应。`verdict=OK` 与检测完整是独立条件，有 `flags.incomplete`、零覆盖段或应测未测帧时不能宣称示教通过。同一示教件自测也不能代替独立好件和缺陷件验收。对不上时带帧号回到第 2–5 步，不通过增加 skip、缩短走廊或放宽门限隐藏问题。
+好件应判合格；缺陷件应判不合格且报错区域与缺陷位置对应。`verdict=OK` 与检测完整是独立条件，约定检测范围内有 `flags.incomplete`、应测证据不足或意外零覆盖时不能宣称通过。已经明确约定的计划不检区域单列，其余范围可按同一范围的好坏件证据验收；不能把局部验收写成整件所有段已检。同一示教件自测不能代替独立好件和缺陷件验收。对不上时带帧号回到第 2–5 步，不通过增加 skip、缩短走廊或放宽门限隐藏问题。
 
 ## 7. 汇报
 
-逐台相机、逐段列出：项目/候选实例/修订、示教帧、走廊长度与站数、模型可用性及原因、实际试测范围、胶宽分布、边距有效率和缺失帧、guard 后覆盖与胶偏窗口。列出示教件笔数、每笔首尾跳过的当前值与建议值、整笔不检的笔、离笔界很近的段边界。整件逐件列出原判定/复测判定、flags（含笔数异常与预警）、全部未测成帧和未判原因。配置检查、局部试测、整件覆盖、测量完整性、生产结论分别说明。再列出未解决问题及需要人确认的规格与设置；不要替人发布。
+完整证据保留逐台相机、逐段的项目/候选实例/修订、示教帧来源、走廊长度与站数、测量方式、模型可用性及原因、实际试测范围、胶宽分布、边距有效率和缺失帧、guard 后覆盖与胶偏窗口。列出每笔跳过的当前值与建议值、整笔不检的笔和零覆盖段。逐件保留原判定来源、复测判定、flags、全部应测未测及证据不完整帧；不把文件名的 NG 或自复测一致当独立真值。给人的摘要先说实际保存了什么，再分别说明配置就绪、测量完整、生产结论与独立验收，附完整证据位置和未解决问题。

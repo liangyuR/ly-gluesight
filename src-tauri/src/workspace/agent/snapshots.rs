@@ -2,6 +2,22 @@ use std::collections::HashMap;
 
 use super::super::Workspace;
 use serde::Serialize;
+use serde_json::{json, Value};
+
+pub(crate) fn pass_layout_status(
+    taught: &[u32],
+    recipe: Option<&[u32]>,
+    groups: u64,
+    recorded: Option<&[u32]>,
+) -> Value {
+    json!({
+        "inRecipe": !taught.is_empty() && recipe == Some(taught)
+            && taught.iter().map(|&n| u64::from(n)).sum::<u64>() == groups,
+        "history": recorded.filter(|frames| !frames.is_empty()).map(|frames| json!({
+            "count": frames.len(), "matchesTeachingPiece": frames == taught,
+        })),
+    })
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +91,19 @@ mod tests {
     use super::super::super::burst_tests::burst_workspace;
     use super::*;
     use crate::plan::SegmentKind::Straight;
+
+    #[test]
+    fn equal_frame_totals_do_not_hide_recipe_or_history_pass_boundary_mismatch() {
+        let taught = [4, 6];
+        let recorded = [2, 2, 6];
+        let different_recipe = [5, 5];
+        let result = pass_layout_status(&taught, Some(&different_recipe), 10, Some(&recorded));
+        assert_eq!(result["inRecipe"], false);
+        assert_eq!(result["history"]["matchesTeachingPiece"], false);
+        let result = pass_layout_status(&taught, Some(&taught), 10, Some(&recorded));
+        assert_eq!(result["inRecipe"], true);
+        assert_eq!(result["history"]["matchesTeachingPiece"], false);
+    }
 
     #[test]
     fn candidate_changes_during_later_measurement_make_earlier_batch_results_stale() {
