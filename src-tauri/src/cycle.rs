@@ -417,7 +417,7 @@ impl CycleHost {
         };
         let audit = Audit::new(
             app,
-            crate::project::records::spool(&crate::storage::root(app)),
+            crate::project::records::legacy_spool(&crate::storage::root(app)),
         )?;
         let interrupted_recordings = app.state::<Store>().finish_interrupted_recordings()?;
         let camera = CameraRig::new(app, frame_tx)?;
@@ -675,7 +675,7 @@ impl CycleHost {
 pub fn purge_history(app: &AppHandle) {
     let _busy = crate::raw_compress::activity().busy();
     let days = host(app).settings().history_days.max(1) as i64;
-    // 引用锁先于追溯 spool 锁：录制滚动清理持引用锁时会取 spool 锁查待入库目录
+    // 引用锁先于追溯状态锁：录制滚动清理持引用锁时会查待入库目录
     let references = crate::recipe_capture::lock_references();
     let purged = host(app)
         .audit
@@ -787,9 +787,9 @@ pub(crate) fn record_interrupted_part(
         .audit
         .evidenced_cycle_ids()
         .map(|ids| ids.contains(cycle_id))
-        .and_then(|spooled| {
+        .and_then(|pending| {
             let store = app.state::<Store>();
-            Ok(spooled
+            Ok(pending
                 || store.detail_by_cycle(cycle_id)?.is_some()
                 || store.history_cycle_deleted(cycle_id)?)
         });
@@ -2443,7 +2443,7 @@ impl Machine {
             let mut _config = None;
             if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7) {
                 match self.current_cycle_id.as_deref() {
-                    Some(cycle_id) => host(&app).audit.delivery_durable(cycle_id, delivery).await,
+                    Some(cycle_id) => host(&app).audit.delivery(cycle_id, delivery),
                     None => log(
                         &app,
                         "err",
@@ -2754,10 +2754,7 @@ impl Machine {
                     Ok(recording) => (recording, Ok(())),
                     Err(error) => (None, Err(error)),
                 };
-                host(&app)
-                    .audit
-                    .insert_durable(part, recording, host(&app).settings().timeouts.proc())
-                    .await;
+                host(&app).audit.insert_with_recording(part, recording);
                 missing
             }
             Err(error) => Err(error),
@@ -2795,12 +2792,7 @@ impl Machine {
                 .map(|error| format!("回写 PLC 失败：{error}")),
         };
         match self.current_cycle_id.as_deref() {
-            Some(id) => {
-                host(&app)
-                    .audit
-                    .submission_durable(id, delivery, drain_ms)
-                    .await
-            }
+            Some(id) => host(&app).audit.submission(id, delivery, drain_ms),
             None => log(&app, "err", "PLC 交付", "缺少工件身份，交付状态未记录"),
         }
         let r = sent.map_err(|error| format!("回写 PLC 失败：{error}"));
