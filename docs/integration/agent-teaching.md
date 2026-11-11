@@ -1,13 +1,13 @@
 # Agent 示教接口（MCP）
 
-GlueSight 内嵌一个 MCP 服务，让 Agent（Claude Code 等）直接完成段配方的示教：看示教件的帧、画走廊、取色、试测、配检测项与零件边参考、用历史件整件复测。Agent 走的是示教页背后同一套后端函数，校验、留痕与界面一致；示教流程与验收口径写在项目 Skill `.claude/skills/glue-teach/SKILL.md`。
+GlueSight 内嵌一个 MCP 服务，让 Agent（Claude Code 等）直接完成段配方的示教：看示教件的帧、画走廊、选择测量方式和搜索方向、取色、试测、测量并保存示教件、配检测项与零件边参考、用历史件整件复测。Agent 走的是示教页背后同一套后端函数，校验、留痕与界面一致；示教流程与验收口径写在项目 Skill `.claude/skills/glue-teach/SKILL.md`。
 
 ## 范围与边界
 
-- 只改**候选**（草稿工作区）：走廊、颜色模型、各段的检测项与零件边参考。发布、生效、切换生产配方、PLC、相机参数、项目切换都不提供工具，仍由人在界面上操作。
-- 示教件、分段确认、像素当量在界面上由人确认，工具只读出现状。检测项开关、公差、本段搜索半宽与胶宽范围、测量区间与 ToEdge 的图纸标称值可以经 `teach_segment` 写入，但取值要由人给出，Agent 不自行决定。
-- 工具与界面共用候选的修订号。三个写工具都接受可选 `expectedRevision`；不匹配时拒绝写入，省略则以工具入口读取的修订号提交。入口读取的候选实例也在实际准备/提交处核对，删除后重建出同编号、同修订号的候选不能接收旧实例的操作。不能拿最新修订号保存旧文档；冲突后重新读取并重新应用补丁。每次成功写入发 `workspace://changed`，界面无未保存改动时随即重新载入，有未保存改动时下一次保存会因过期修订失败。
-- 测量类工具（试测、带测量叠图的看图、带 `records` 的整件复测）与界面试测同一规则：有在途件或正在采集时拒绝。
+- 只改**候选**（草稿工作区）：走廊、测量方式、搜索扇区、颜色模型、示教件测量、各段的检测项与零件边参考。发布、生效、切换生产配方、PLC、相机参数、项目切换都不提供工具。
+- 示教件、分段确认、像素当量和每笔首尾跳过使用正式界面。用户已授权的界面操作可按授权完成；工具缺少某个入口不构成重复索取同一权限的理由。检测项开关、公差、本段搜索半宽与胶宽范围、测量区间与 ToEdge 的图纸标称值可以经 `teach_segment` 写入，但取值要由人给出，Agent 不自行决定。
+- 工具与界面共用候选的修订号。写工具接受 `expectedRevision`；`teach_measure` 必填，其余写工具省略时以入口读取的修订号提交。不匹配时拒绝写入。入口读取的候选实例也在实际准备/提交处核对，删除后重建出同编号、同修订号的候选不能接收旧实例的操作。不能拿最新修订号保存旧文档；冲突后重新读取并重新应用补丁。每次成功写入发 `workspace://changed`，界面无未保存改动时随即重新载入，有未保存改动时下一次保存会因过期修订失败。
+- 测量类工具（试测、带测量叠图的看图、示教件测量、带 `records` 的整件复测）与界面试测同一规则：有在途件或正在采集时拒绝。
 
 ## 启用与连接
 
@@ -38,34 +38,37 @@ MCP Streamable HTTP 的无状态子集：
 
 ## 工具
 
-所有工具都以 `recipe`（候选的配方编号，如 `NEW-1`）指定候选，作用于当前项目；帧以示教件轮次里的帧组号 `seq` 指定，坐标一律是原图像素。
+所有工具都以 `recipe`（候选的配方编号，如 `NEW-1`）指定候选，作用于当前项目；帧以示教件轮次里的帧组号 `seq` 指定，坐标一律是原图像素。所有工具接受可选 `expectedProject`（项目编号）和 `expectedInstanceId`（候选实例编号，须同时指定 `recipe`）；在打开候选或产生副作用前核对，不匹配则拒绝。先读取 `teach_status` 核对项目编号与名称，再将快照里的项目、实例带入后续调用，避免同名配方或候选重建后误操作。
 
 候选详情、看图、试测与成功写入结果携带 `snapshot`：`project`、`recipe`、`instanceId`、`revision`、`roundId` 记录本次所用快照，`current` 是结束时的项目和候选身份，`stale` 表示执行期间候选被修改、重建、删除或项目改变。`stale=true` 的测量只代表原快照，不可当作当前候选的验收结果。写入另返回 `baseRevision` 与提交后的 `revision`。整件复测逐件冻结所用身份，实际取比较快照时同时核对实例与修订号；全部记录完成后一次核对当前状态，所以后续记录执行期间的修改也会使早完成项标记 stale，不会伪装成同一个最新快照。
 
 | 工具 | 读 / 写 | 用途 |
 |---|---|---|
-| `teach_status` | 读 | 不给 `recipe` 时列出当前项目的候选；给了时返回示教现状：下一步、示教件、各段的帧组范围与检测相机、各相机各段的走廊 / 颜色模型 / 示教帧、发布前未通过的检查 |
+| `teach_status` | 读 | 列当前项目和候选，或读取候选详情；`summary: true` 返回紧凑待办与阻碍，完整模式保留逐段配置、颜色质量和覆盖 |
 | `teach_view` | 读 | 示教件一帧的 PNG：叠加原图坐标网格；给 `segment` 时按已保存走廊测这一帧，叠加走廊、胶两侧边与胶边距线，并附这一帧的指标 |
-| `teach_corridor` | 写 | 由笔划提取并校验最终走廊，按胶色测量的段完成取色，再一次提交示教帧、走廊和模型。返回提交状态、长度、质量与叠图 |
+| `teach_corridor` | 写 | 由笔划提取并校验最终走廊，按胶色测量时完成取色，一次提交示教帧、走廊、测量方式、搜索扇区和模型。返回提交状态、长度、质量与叠图 |
 | `teach_fit_color` | 写 | 沿已保存的走廊取色，写入这一段的颜色模型（只对彩色示教帧、没选按灰度的段）；返回胶色、背景色与分离度 |
 | `teach_trial` | 读 | 用已保存走廊量测指定区间，返回实际范围、全部未测成帧、边距有效率、分布和阈值诊断 |
 | `teach_segment` | 写 | 按补丁改一段的检测项（`checks`）、零件边参考（`offsetRef`）、搜索半宽与胶宽范围覆盖（`searchMm`、`widthRange`）与逐帧定向的测量区间覆盖（`headingWindow`） |
+| `teach_measure` | 写 | 以当前走廊正式测量并保存示教件，返回提交身份、测量完整性和每笔起涂建议；不发布、不自动修改 skip |
 | `teach_replay` | 读 | 按候选现在的配置从原图复测历史件并整件判定；不给记录时列出最近的历史件 |
 
 ### `teach_status`
 
-参数：`recipe?: string`。
+参数：`recipe?: string`、`summary?: boolean`（缺省 false），以及通用身份守卫。
 
-返回 JSON 文本。不带候选时返回 `project`、`candidates` 与 `engine`。带候选时返回：
+返回 JSON 文本。不带候选时返回 `project`（编号）、`projectName`、`candidates` 与 `engine`。带候选且 `summary: true` 时返回快照、引擎、示教件、下一步、阻碍、`summary` 计数、`todo` 列表、笔结构简摘要和 `zeroCoverageReasons`，不带完整 `segments`、`cameras` 和覆盖逐帧列表。开始批量示教或核对一次提交时先看摘要，需要选帧和排查时再取完整模式。完整模式返回：
 
-- `project`、`recipe`、`revision`、`snapshot`、`next`，以及 `teachingPiece`（`roundId`、`recordId`、`groupCount`；没选为 null）。
+- `project`、`projectName`、`recipe`、`revision`、`snapshot`、`next`，以及 `teachingPiece`（`roundId`、`recordId`、`groupCount`；没选为 null）。
 - `segments[]`：段号、类型、检测相机、帧组范围或不能确定的原因、`checks`、`offsetRef`、`heading`、`detect`（本段实际用的检测参数：搜索半宽、极性、胶宽范围）、`detectOverride`（本段的 `searchMm`、`widthRange` 覆盖，没设为 null）、`skip`、`skipHead`、`skipTail`、`parameterWarnings`。
 - `cameras[]`：彩色模式、`mmPerPx`、`calibMmPerPx`、`ready`、`cameraWindow`（这台相机各段共用的测量区间 `startMm`、`lengthMm`，段没设覆盖时用它；没设为 null，这时用默认跳过 5 mm、测到 20 mm）、`nozzle`（点、`calibrated`、`source: calibrated | corridorStarts`、`warning`）与 `headingIssues`（`segment`、`message`）。`warning` 是推算出胶点时有走廊起点偏离超过 1 mm 的提示，不阻断；`headingIssues` 按段指出区间换算后不足 8 px 等前置问题。
-- 每台相机的 `segments[]`：`segment`、`window`（开启逐帧定向的段实际用的测量区间：`startMm`、`lengthMm`、`endMm` 即界面“测量到”、`source: segment | camera | default`，即本段覆盖、相机的测量区间或默认值；没开定向为 null）、`seq`、`corridorPoints`、`saved`、`measure`（实际测量方式 `gray` / `color`，[color](../decisions/color.md) CL-3；还没有走廊项为 null）、`modelPresent`、`modelUsable`、`quality`、`modelIssues`。`colorModel` 仍表示字段存在，不能用它判断可用。`quality` 保留引擎的 `glueCount`、`bgCount`、`centerShift`、`separation`、高光占比等；非法 JSON、缺少质量证据、胶样本不足、背景样本或分量缺失分别给出原因。`modelUsable=true` 也不证明走廊位于新胶上。
+- 每台相机的 `segments[]`：`segment`、`window`（开启逐帧定向的段实际用的测量区间：`startMm`、`lengthMm`、`endMm` 即界面“测量到”、`source: segment | camera | default`，即本段覆盖、相机的测量区间或默认值；没开定向为 null）、`seq`、`roundId`、`frameSource`（冻结原图来源）、`teachingSource`（`currentTeachingPiece` / `carried` / `unknown` / null）、`carryAccepted`（是否已确认沿用）、`sectorDeg`（本段扇区覆盖，自动时 null）、`corridorPoints`、`saved`、`measure`（实际测量方式 `gray` / `color`，[color](../decisions/color.md) CL-3；还没有走廊项为 null）、`modelPresent`、`modelUsable`、`quality`、`modelIssues`。`roundId` 是迁移后的映射轮次，不能证明原图来自当前件；`teachingSource` 按冻结图 `frameSource` 的 `capture:<原始轮次>#seq` 判断，无法识别时为 unknown。`colorModel` 仍表示字段存在，不能用它判断可用。`quality` 保留引擎的 `glueCount`、`bgCount`、`centerShift`、`separation`、高光占比等；非法 JSON、缺少质量证据、胶样本不足、背景样本或分量缺失分别给出原因。`modelUsable=true` 也不证明走廊位于新胶上。
 - `engine`：加载状态、版本、运行库目录、`overridden`、`source`（`bundledRuntime` / `developmentOverride`）、`requiredSeries`、`requiredOperators` 与失败原因。`loaded=true` 包含必需算子校验；为 false 时从 `message` 核对缺失算子或运行库问题，解决后再逐段量测。
-- `passes`：示教件的笔结构（D-SB-62）。`count`、`frames`（各笔帧组数）、`skip`（配方每笔开头 `head`、结尾 `tail` 跳过帧组数）、`inRecipe`（笔结构已随 N_exp 写进配方，生产按笔分段）、`skipped`（示教件上被跳过的帧组：`pass`、`frames: [first, last]`、`short` 为整笔不检）与 `suggestion`（每笔起涂建议：`current`、`suggested`、逐笔 `passes[]` 的起涂帧组数或不参与原因、`pending`）。没有示教件为 null。每笔首尾跳过只能由人在界面设置。
+- `passes`：示教件的笔结构（D-SB-62）。`count`、`frames`（各笔帧组数）、`skip`（配方每笔开头 `head`、结尾 `tail` 跳过帧组数）、`inRecipe`（配方笔结构逐项等于当前示教件且总帧数匹配）、`history`（null 表示来源未知；已知时含 `count`、`matchesTeachingPiece`）、`skipped`（示教件上被跳过的帧组：`pass`、`frames: [first, last]`、`short` 为整笔不检）与 `suggestion`（每笔起涂建议：`current`、`suggested`、逐笔 `passes[]` 的起涂帧组数或不参与原因、`pending`）。`history.matchesTeachingPiece=false` 会另加“笔结构来源”阻碍，不能仅重新保存分段来修复来源不一致。没有示教件时 `passes` 为 null。每笔首尾跳过只能由人在界面设置。
 - `coverage`：按示教件总帧数预览 guard、段与每笔首尾跳过后的真实检测范围，有笔结构时按笔分段，否则按比例边界；`coverageSource=teachingPieceProportional`。包括逐段逐相机应测/可用帧数、被屏蔽帧、零覆盖段和胶偏首尾剔除后的窗口。没有示教件或无法读取时为 null；没有可信边界时相关范围/计数为 null，不能当作完整覆盖。
 - `blockers`：未通过的发布配置检查，包含 `advisory`；配置检查不代替实测覆盖和产品验收。
+
+摘要 `todo[]` 对未保存、彩色模型不可用、沿用或来源未知示教未确认的段相机列出 `reasons`，来源未知未确认时含 `frameSourceUnknown`。`recommendedSeq` 是生产覆盖最长连续区间的中点，整段计划跳过时为 null；它只提供看图起点，不替代新旧胶和稳态帧核对。`zeroCoverageReasons` 单列零覆盖原因；已经明确约定为计划不检的段不纳入其余范围的验收，但不得报告该段已检。
 
 ### `teach_view`
 
@@ -75,19 +78,21 @@ MCP Streamable HTTP 的无状态子集：
 
 ### `teach_corridor`
 
-参数：`recipe`、`camera`、`segment`、`seq`（须在这一段的帧组范围内）、`stroke: [[x, y], ...]`（至少 2 点，原图像素，从起胶端排到收胶端）、可选 `expectedRevision`、`radiusPx`（缺省 30）、`extract`（`auto` / `color` / `edges` / `none`，缺省 `auto`）。
+参数：`recipe`、`camera`、`segment`、`seq`（须在这一段的帧组范围内）、`stroke: [[x, y], ...]`（至少 2 点，原图像素，从起胶端排到收胶端）、可选 `expectedRevision`、`radiusPx`（缺省 30）、`extract`（`auto` / `color` / `edges` / `none`，缺省 `auto`）、`measure`（`color` / `gray`）、`sectorDeg`（数值 / null），以及通用身份守卫。
+
+`measure` 不给时保留原选择；给 `gray` 时不拟合颜色模型，给 `color` 时须在这次彩色示教帧上建立可用模型。`sectorDeg` 不给时保留原方向，数值为本段本相机搜索半圈的中线（图像坐标角度：0°向右、90°向下），null 清除本段覆盖、恢复自动方向。它不修改相机出胶点、测量窗口、定向开关或公差。测量方式与方向先在内存中应用，再按该配置提取和校验；新段无需先在界面保存空走廊或示教帧才能切灰度。
 
 - `color`（彩色帧、这一段没选按灰度时的 `auto`；选了按灰度的段报错）：按胶色吸附。笔划插点后作示教线跑 `glue.color_model`（取色图 `color_teach`，`shiftMax` = `radiusPx`），每站在卡尺上找胶色段重新居中、五站中值；取它输出的胶中心线（overlay 的 `center`，站距 4 px）平滑（±20 px 滑动平均）后，以偏移上限 10 px 再居中一遍、再平滑，每 5 点留 1 点；两端沿切线补到笔划首尾在切线上的投影。吸附只校正横向位置，走廊沿胶路的起止就是笔划的首尾。彩色段的颜色模型沿走廊取样，走廊应覆盖这一段整条胶（从出胶处起）；出胶点未标定时，开启逐帧定向的段还由走廊起点推出出胶点。笔划须压在胶条上（取色以笔划处为胶样本），离胶中心不超过 `radiusPx`。示教页在彩色示教帧上刷选时走同一吸附与提交（`workspace_snap_corridor`，偏移上限为笔刷半径），实现在 `workspace::snap`。
 - `edges`（灰度帧或选了按灰度的段的 `auto`）：同示教页灰度帧的刷选提取，提取范围为笔划外接框外扩 `radiusPx` 加 40 px。提取靠灰度上的胶两侧边，胶比背景暗还是亮自动判断（[r2-algorithm](../decisions/r2-algorithm.md) RA-6）；拉丝、高反光底材上常报边缘不连续。
 - `none`：同示教页“笔划直接生成走廊”，笔划按 20 px 插点直接作走廊。走廊只决定 ROI 与测站，测量在搜索带内找胶，笔划贴着胶条中心即可。
 
-最终走廊必须全部位于像素中心范围内、按站距至少 3 站，不静默裁剪吸附后的越界点。提取、几何检查、彩色模型拟合和叠图均在提交前完成；取色失败或 `quality.usable=false` 拒绝整次提交，保留原来的示教帧、走廊、模型与修订号。
+最终走廊必须全部位于像素中心范围内、按站距至少 3 站，不静默裁剪吸附后的越界点。提取、几何检查、彩色模型拟合和叠图均在提交前完成；取色失败或 `quality.usable=false` 拒绝整次提交，保留原来的示教帧、走廊、测量方式、扇区、模型与修订号。不会因颜色模型失败静默退回灰度；背景过曝时先换帧，只有明确选择 `measure: "gray"` 才按灰度处理。边缘提取不连续时，先核对原图胶边和中心，再决定是否用 `extract: "none"`。
 
 成功只推进一次修订，返回 `commit: {frameUpdated: true, corridorSaved: true, colorFitted: <是否取了色>}`、`baseRevision`、新 `revision`、`snapshot`、走廊长度/站数及 `colorModel` 质量摘要。提交后视图刷新失败时，错误明确指出已保存的修订号，应重新调用 `teach_status` 核对，不能把它当作准备阶段失败后盲目重试。
 
 ### `teach_fit_color`
 
-参数：`recipe`、`camera`、`segment`，可选 `expectedRevision`。前置：这一段已保存走廊，示教帧是彩色，且没选按灰度测量（操作员在示教页“测量方式”卡片切换）。返回胶色、背景色、质量、`modelPresent`、`modelUsable`、`modelIssues` 与提交身份。这个独立取色入口保持与界面相同的保存行为：引擎成功输出但质量不可用的模型也可保存用于诊断，调用成功不能视为模型可用；`teach_corridor` 的一次提交则要求新模型可用。
+参数：`recipe`、`camera`、`segment`，可选 `expectedRevision`，以及通用身份守卫。前置：这一段已保存走廊，示教帧是彩色，且没选按灰度测量；切回彩色可经 `teach_corridor` 明确指定 `measure: "color"` 后重新示教。返回胶色、背景色、质量、`modelPresent`、`modelUsable`、`modelIssues` 与提交身份。这个独立取色入口保持与界面相同的保存行为：引擎成功输出但质量不可用的模型也可保存用于诊断，调用成功不能视为模型可用；`teach_corridor` 的一次提交则要求新模型可用。
 
 ### `teach_trial`
 
@@ -107,6 +112,14 @@ MCP Streamable HTTP 的无状态子集：
 
 返回这一段合并后的 `checks`、`offsetRef`、`searchMm`、`widthRange`、`heading`、提交身份和 `impact`（是否结构改变、移除的示教、待示教项、测量是否失效、覆盖预览）。界面的段结构修改仍应先查看影响预览；普通检测项补丁不等于结构修改。
 
+### `teach_measure`
+
+参数：`recipe`、`expectedRevision`（必填）、可选 `taskId`，以及通用身份守卫。调用与界面“测量示教件”相同的正式流程，要求示教件、逐笔对照和分段已确认、走廊已就绪。保存示教件测量及相应标定结果后返回 `committed: true`、`baseRevision`、新 `revision`、`snapshot`、`measurement` 与 `passes`（仅 `count`、`skip`、`suggestion`）；不返回完整 `pass_status` 或整份候选文档，不自动采用起涂建议。
+
+测量摘要分别给出应测、产出结果、完整测量、证据不完整、无可用证据及应测未测数量，并提供逐相机统计。`measuredFrames == expectedFrames` 只表示测量执行完；还须核对 `completeFrames`、无证据帧和生产覆盖，才能判断量测完整。保存成功也不证明工件合格，不替代整件复测或独立好件/缺陷件验收。
+
+测量已提交、但随后无法读取同一快照的摘要时，仍返回 `committed: true`、已保存修订和 `summaryError`，`measurement` 为 null。先重新读取状态核对已保存结果，不把摘要失败当作测量未保存而盲目重试。
+
 ### `teach_replay`
 
 参数：`recipe`；可选 `records`（历史记录编号）。
@@ -114,7 +127,8 @@ MCP Streamable HTTP 的无状态子集：
 - 不给 `records`：返回最近 30 件历史记录（`id`、`ts`、`sn`、`recipeId`、`verdict`、`reason`、`mode`）。
 - 给了：逐件从原图复测并整件判定，对照记录照常保存。每件返回 `comparisonId`、`cycleId`、实际 `snapshot`、`originalVerdict`、`verdict`、`reason`、`flags`、`alarms`、`uninspected`、`unchecked` 和没有可用走廊等原因造成的 `unmeasuredSegments`；失败项带 `error` 与 `attemptedSnapshot`。
 - `regions` 保留 `kind` 和帧组范围；段内为 `{type: "straight" | "corner", segment}`，跳过为 `{type: "skipped", segment}`（每笔首尾跳过另带 `pass`，整笔不检带 `short: true`），未分段为 `{type: "unsegmented", firstSegment, lastSegment, reason}`。每区同时返回判定、宽度、胶偏、`offsetUnjudged`、`incompleteGroups`、帧数比较与相机帧数。直线区 `offsetEvidence` 按最终判定区域和相同的胶偏规则剔除首尾，给出参考相机、有效窗口、应测/有效帧数、缺失帧及未判原因；不与量测全范围的边距有效率混同。
-- `measurement.cameras[]` 和其中 `segments[]` 给出各相机/段的应测、实测、全部非 measured 帧及原因、计划不测帧、ToEdge 有效率。`basis=measurementPlan` 明确它复用实际原图复测的分段（按笔或按比例）、guard、每笔首尾跳过和走廊选择；`coverage` 是相同规则的覆盖预览。
+- `measurement.summary` 给出整件 `expectedFrames`、`measuredFrames`、`completeFrames`、`incompleteMeasurementFrames`、`noEvidenceFrames`、`unmeasuredFrames` 数量与 `complete`。`complete` 要求存在应测帧，且应测帧全部产出完整证据，没有应测未测或无证据帧；整件没有应测帧时为 false。个别段按约定不检可以排除在其余范围的验收之外，但摘要不证明被排除段已检。
+- `measurement.cameras[]` 和其中 `segments[]` 给出各相机/段的应测、实测、全部非 measured 帧及原因、计划不测帧、ToEdge 有效率。`basis=measurementPlan` 明确它复用实际原图复测的分段（按笔或按比例）、guard、每笔首尾跳过和走廊选择；`coverage` 是相同规则的覆盖预览。摘要里的不足计数不截断这里的完整帧清单。
 
 这些信息不改变生产 OK/NG 策略：`flags.incomplete`、`flags.passCountAnomaly`、胶宽偏宽与溢胶预警、`offsetUnjudged` 等仍是告警；`uninspected` 里带 `pass` 的是每笔首尾跳过的帧（D-SB-62）。生产结论为 OK 与测量完整是两个独立结论；任一应测帧未测成时，不可宣称示教验收完成。
 

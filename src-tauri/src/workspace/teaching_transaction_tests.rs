@@ -184,7 +184,9 @@ fn successful_teaching_commits_matching_frame_and_corridor_in_one_revision() {
 fn abandoned_preparation_leaves_candidate_and_frozen_image_unchanged() {
     let fixture = Fixture::new();
     let before = fixture.state();
-    let prepared = Fixture::prepare(&fixture.workspace, "replacement", 2, false);
+    let prepared = Fixture::prepare(&fixture.workspace, "replacement", 2, false)
+        .with_measurement_options(Some(crate::recipe::MeasureMode::Gray), Some(Some(45.0)))
+        .unwrap();
     drop(prepared);
     assert_eq!(fixture.state(), before);
     fixture.assert_no_new_frame();
@@ -220,7 +222,14 @@ fn invalid_final_corridor_or_unusable_color_preserves_the_previous_teaching() {
     ] {
         let fixture = Fixture::new();
         let before = fixture.state();
-        let prepared = Fixture::prepare(&fixture.workspace, "replacement", 2, color);
+        let measure = if color {
+            crate::recipe::MeasureMode::Color
+        } else {
+            crate::recipe::MeasureMode::Gray
+        };
+        let prepared = Fixture::prepare(&fixture.workspace, "replacement", 2, color)
+            .with_measurement_options(Some(measure), Some(Some(45.0)))
+            .unwrap();
         assert!(prepared.commit(&fixture.host, corridor, model).is_err());
         assert_eq!(fixture.state(), before);
         fixture.assert_no_new_frame();
@@ -231,7 +240,9 @@ fn invalid_final_corridor_or_unusable_color_preserves_the_previous_teaching() {
 fn changed_revision_or_instance_rejects_prepared_teaching_without_writing() {
     for recreate in [false, true] {
         let fixture = Fixture::new();
-        let prepared = Fixture::prepare(&fixture.workspace, "replacement", 2, false);
+        let prepared = Fixture::prepare(&fixture.workspace, "replacement", 2, false)
+            .with_measurement_options(Some(crate::recipe::MeasureMode::Gray), Some(Some(45.0)))
+            .unwrap();
         {
             let mut items = fixture.host.items.lock().unwrap();
             let current = items.get_mut(&fixture.workspace.doc.id).unwrap();
@@ -268,6 +279,60 @@ fn changed_revision_or_instance_rejects_prepared_teaching_without_writing() {
         assert_eq!(fixture.state(), before);
         fixture.assert_no_new_frame();
     }
+}
+
+#[test]
+fn measurement_options_and_new_frame_commit_together_without_retaining_the_old_color_model() {
+    use crate::recipe::MeasureMode::{Color, Gray};
+    for (sector, expected) in [
+        (None, Some(45.0)),
+        (Some(None), None),
+        (Some(Some(-90.0)), Some(-90.0)),
+    ] {
+        let fixture = Fixture::new();
+        let mut doc = fixture.workspace.doc.clone();
+        let original = &mut doc.inspect[0].segments[0];
+        original.measure = Some(Color);
+        original.color_model = Some(r#"{"quality":{"usable":true}}"#.into());
+        original.sector_deg = Some(45.0);
+        let id = doc.id.clone();
+        let base = fixture
+            .host
+            .save_doc(&id, fixture.workspace.revision, doc)
+            .unwrap();
+        let saved = Fixture::prepare(&base, "replacement", 2, true)
+            .with_measurement_options(Some(Gray), sector)
+            .unwrap()
+            .commit(&fixture.host, path(), None)
+            .unwrap();
+        assert_eq!(saved.revision, base.revision + 1);
+        let persisted: Workspace = serde_json::from_slice(&fixture.state().0).unwrap();
+        let selected = persisted.doc.inspect[0].segment_corridor(1).unwrap();
+        assert_eq!(persisted.revision, saved.revision);
+        assert_eq!(selected.measure_mode(), Gray);
+        assert_eq!(selected.sector_deg, expected);
+        assert!(selected.color_model.is_none());
+        assert_eq!(selected.corridor, path());
+        assert_eq!(persisted.camera_teaching[0].seq, 2);
+        let image = crate::image_file::load(
+            &image_file(&fixture.host, &saved.doc.id, "replacement").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(image.channels, 3);
+        assert_eq!(image.pixels, vec![2; 30_000]);
+    }
+}
+
+#[test]
+fn explicit_color_choice_without_a_usable_new_model_preserves_the_previous_teaching() {
+    let fixture = Fixture::new();
+    let before = fixture.state();
+    let prepared = Fixture::prepare(&fixture.workspace, "replacement", 2, true)
+        .with_measurement_options(Some(crate::recipe::MeasureMode::Color), Some(None))
+        .unwrap();
+    assert!(prepared.commit(&fixture.host, path(), None).is_err());
+    assert_eq!(fixture.state(), before);
+    fixture.assert_no_new_frame();
 }
 
 #[test]

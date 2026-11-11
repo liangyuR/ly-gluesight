@@ -940,6 +940,7 @@ pub struct PreparedSegmentTeaching {
     bytes: Vec<u8>,
     revision: u64,
     instance_id: u64,
+    require_color_model: bool,
 }
 
 impl PreparedSegmentTeaching {
@@ -966,7 +967,53 @@ impl PreparedSegmentTeaching {
             bytes,
             revision: workspace.revision,
             instance_id: workspace.instance_id,
+            require_color_model: false,
         })
+    }
+
+    pub fn with_measurement_options(
+        mut self,
+        measure: Option<crate::recipe::MeasureMode>,
+        sector_deg: Option<Option<f64>>,
+    ) -> Result<Self, String> {
+        use crate::recipe::MeasureMode;
+        if measure == Some(MeasureMode::Color) && !self.image.is_color() {
+            return Err("示教帧是灰度图，不能按胶色测量".into());
+        }
+        if measure.is_none() && sector_deg.is_none() {
+            return Ok(self);
+        }
+        let inspect = self
+            .workspace
+            .doc
+            .inspect
+            .iter_mut()
+            .find(|i| i.camera == self.camera)
+            .ok_or("示教相机不在候选中")?;
+        if inspect.segment_corridor(self.segment).is_none() {
+            inspect.segments.push(crate::recipe::SegmentCorridor {
+                segment: self.segment,
+                corridor: Vec::new(),
+                sector_deg: None,
+                color_model: None,
+                measure: None,
+            });
+        }
+        let item = inspect
+            .segments
+            .iter_mut()
+            .find(|s| s.segment == self.segment)
+            .unwrap();
+        if let Some(measure) = measure {
+            item.measure = Some(measure);
+            item.color_model = None;
+            self.require_color_model = measure == MeasureMode::Color;
+        }
+        if let Some(sector_deg) = sector_deg {
+            item.sector_deg = sector_deg;
+        }
+        self.workspace.doc.build()?;
+        Ok(self)
     }
 
     fn corridor_workspace(
@@ -995,7 +1042,7 @@ impl PreparedSegmentTeaching {
         corridor: Vec<[f32; 2]>,
         color_model: Option<String>,
     ) -> Result<Workspace, String> {
-        if color_model.is_some() {
+        if self.require_color_model || color_model.is_some() {
             require_usable_color_model(color_model.as_deref())?;
         }
         let next = self.corridor_workspace(corridor, color_model)?;

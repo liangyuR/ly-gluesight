@@ -543,12 +543,22 @@ pub async fn workspace_measure_teaching(
     revision: u64,
     task_id: Option<String>,
 ) -> Result<WorkspaceView, String> {
+    workspace_measure_teaching_at(app, id, revision, None, task_id).await
+}
+
+pub(super) async fn workspace_measure_teaching_at(
+    app: AppHandle,
+    id: String,
+    revision: u64,
+    expected_instance_id: Option<u64>,
+    task_id: Option<String>,
+) -> Result<WorkspaceView, String> {
     let operation = crate::operation::Operation::start(&app, task_id)?;
     let cycle = app.state::<CycleHost>();
     let _config = cycle.config_gate.lock().await;
     let task = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        operation.run(|operation| measure(&task, &id, revision, operation))
+        operation.run(|operation| measure(&task, &id, revision, expected_instance_id, operation))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -559,6 +569,7 @@ fn measure(
     app: &AppHandle,
     id: &str,
     revision: u64,
+    expected_instance_id: Option<u64>,
     operation: &crate::operation::Operation,
 ) -> Result<WorkspaceView, String> {
     let cycle = app.state::<CycleHost>();
@@ -568,6 +579,9 @@ fn measure(
         let items = host.items.lock().unwrap();
         let w = items.get(id).ok_or("候选配置不存在")?;
         w.expect(revision)?;
+        if expected_instance_id.is_some_and(|instance| instance != w.instance_id) {
+            return Err("候选已重建，请重新读取状态后测量".into());
+        }
         w.clone()
     };
     burst::require_burst(&w.doc)?;

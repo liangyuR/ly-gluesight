@@ -237,7 +237,48 @@ pub(crate) fn replay_measurements(
         }).collect();
         json!({ "camera": camera, "measurement": measurement_evidence(&frames, &scope, &expected, false), "segments": segments })
     }).collect();
-    json!({ "basis": "measurementPlan", "coverage": coverage, "cameras": cameras })
+    json!({ "basis": "measurementPlan", "summary": measurement_summary(&cameras), "coverage": coverage, "cameras": cameras })
+}
+
+pub(crate) fn measurement_summary(cameras: &[Value]) -> Value {
+    let mut expected = 0;
+    let mut measured = 0;
+    let mut complete = 0;
+    let mut incomplete = 0;
+    let mut no_evidence = 0;
+    let mut unmeasured = 0;
+    for camera in cameras {
+        let value = &camera["measurement"];
+        let counts = (|| {
+            Some((
+                value["expectedFrames"].as_u64()?,
+                value["measuredFrames"].as_u64()?,
+                value["completeFrames"].as_u64()?,
+                value["incompleteMeasurementFrames"].as_array()?.len(),
+                value["noEvidenceFrames"].as_array()?.len(),
+                value["unmeasuredFrames"].as_array()?.len(),
+            ))
+        })();
+        let Some((e, m, c, i, n, u)) = counts else {
+            return json!({"complete": false, "reason": "测量统计缺少字段，不能确认完整性"});
+        };
+        expected += e;
+        measured += m;
+        complete += c;
+        incomplete += i;
+        no_evidence += n;
+        unmeasured += u;
+    }
+    json!({
+        "expectedFrames": expected,
+        "measuredFrames": measured,
+        "completeFrames": complete,
+        "incompleteMeasurementFrames": incomplete,
+        "noEvidenceFrames": no_evidence,
+        "unmeasuredFrames": unmeasured,
+        "complete": expected > 0 && measured == expected && complete == expected
+            && incomplete == 0 && no_evidence == 0 && unmeasured == 0,
+    })
 }
 
 pub(crate) fn offset_evidence(
