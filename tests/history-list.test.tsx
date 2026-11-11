@@ -67,7 +67,7 @@ it("勾选件后改筛选 → 不跳详情且选择被清空", async () => {
   await userEvent.click(screen.getByRole("checkbox", { name: /SN-101/ }));
   expect(screen.queryByText("详情页")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: /导出历史件（1）/ })).toBeEnabled();
-  await userEvent.click(screen.getByRole("button", { name: "7 天" }));
+  await userEvent.click(screen.getByRole("button", { name: "30 天" }));
   await waitFor(() => expect(screen.getByRole("button", { name: /导出历史件（0）/ })).toBeDisabled());
 });
 
