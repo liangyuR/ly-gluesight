@@ -13,6 +13,7 @@ import { commonHistoryTags, displayReason, formatTime, HistoryExportDialog, Hist
 type Item = Page["items"][number];
 
 const PAGE = 50;
+const DEFAULT_RANGE = "7d";
 const ranges: [string, string, number | null][] = [
   ["today", "今天", 0],
   ["7d", "7 天", 7],
@@ -56,7 +57,7 @@ export default function HistoryPage() {
   const projects = useProjectDirectory();
   const location = useLocation();
   const [initial] = useState(() => (location.state as { filter?: HistoryFilter } | null)?.filter ?? null);
-  const [range, setRange] = useState(initial ? "all" : "today");
+  const [range, setRange] = useState(initial ? "all" : DEFAULT_RANGE);
   const [groups, setGroups] = useState<string[]>(initial?.groups ?? []);
   const [mode, setMode] = useState(modeOptions.find((m) => m.modes.join() === (initial?.modes ?? []).join())?.value ?? "all");
   const [sn, setSn] = useState("");
@@ -109,9 +110,9 @@ export default function HistoryPage() {
   const counts = page ? result!.counts : null;
   const countedTotal = counts ? counts.ok + counts.excursion + counts.ng + counts.err : 0;
   const pending = stale && !!page;
-  const hasFilters = range !== "today" || groups.length > 0 || mode !== "all" || !!sn || !!tag || !!recipeId || !!project;
+  const hasFilters = range !== DEFAULT_RANGE || groups.length > 0 || mode !== "all" || !!sn || !!tag || !!recipeId || !!project;
   const resetFilters = () => {
-    setRange("today"); setGroups([]); setMode("all"); setSn(""); setTag(""); setRecipeId(""); setProject(""); setOffset(0);
+    setRange(DEFAULT_RANGE); setGroups([]); setMode("all"); setSn(""); setTag(""); setRecipeId(""); setProject(""); setOffset(0);
   };
   const navigate = (to: string) => go(to, { state: { query: result?.query ?? query } });
 
@@ -374,7 +375,7 @@ export default function HistoryPage() {
             isRowSelectable={() => !loading && !stale}
             getRowLabel={(p) => `SN ${p.sn || p.id}`}
             loading={!page && (loading || (projectBlocked && projects.loading))}
-            emptyState={page ? <EmptyState icon={<History />} title="没有符合条件的记录" description={hasFilters ? "试试扩大日期范围，或重置筛选。" : "当前来源今天暂无记录，可扩大日期范围查看。"} /> : <></>}
+            emptyState={page ? <EmptyState icon={<History />} title="没有符合条件的记录" description={hasFilters ? "试试扩大日期范围，或重置筛选。" : "当前来源最近 7 天暂无记录，可扩大日期范围查看。"} /> : <></>}
           />
         </div>
         {page && page.total > PAGE && (
