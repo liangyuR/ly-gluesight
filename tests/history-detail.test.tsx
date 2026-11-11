@@ -55,7 +55,8 @@ describe("历史详情（段配方记录）", () => {
       frameVerdicts: burst.frameVerdicts,
     } } as Comparison]);
     show("/history/1?comparison=compare-1");
-    const cell = await screen.findByRole("button", { name: "帧组 1 · CAM-1 · 生产跳过" });
+    // 文件里第一个用例要承担首次渲染的预热，CI 上常超过默认 1 s
+    const cell = await screen.findByRole("button", { name: "帧组 1 · CAM-1 · 生产跳过" }, { timeout: 5000 });
     expect(cell).toHaveStyle({ background: "var(--outline-variant)" });
     expect(screen.getByText("生产跳过 4 帧组 · 不参与判定")).toBeVisible();
     await userEvent.click(cell);
