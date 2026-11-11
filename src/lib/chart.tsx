@@ -1,14 +1,14 @@
 /**
- * 图表（ECharts，按需引入，历史详情、统计等共用）：只注册用到的图表与组件，控制打包体积。
+ * 历史详情的逐站胶宽图：只注册折线与参考线、区间、提示所需的 ECharts 组件。
  * ECharts 画在 canvas 上，主题色要先从 CSS 变量取成实际颜色（`themeColor`）。
  */
 import { useEffect, useRef } from "react";
 import * as echarts from "echarts/core";
-import { BarChart, LineChart, ScatterChart } from "echarts/charts";
-import { DataZoomComponent, GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent } from "echarts/components";
+import { LineChart } from "echarts/charts";
+import { GridComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 
-echarts.use([LineChart, BarChart, ScatterChart, GridComponent, TooltipComponent, LegendComponent, MarkLineComponent, MarkAreaComponent, DataZoomComponent, CanvasRenderer]);
+echarts.use([LineChart, GridComponent, TooltipComponent, MarkLineComponent, MarkAreaComponent, CanvasRenderer]);
 
 export type ChartOption = echarts.EChartsCoreOption;
 export type ChartInstance = echarts.ECharts;

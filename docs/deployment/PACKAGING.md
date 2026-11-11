@@ -20,6 +20,8 @@ MVS SDK `4.8.2.2`（取自 MVS 客户端 V5.1.0 安装包内的 SDK 运行库）
 
 TypeScript 增量缓存与 Vite 配置编译产物集中在已忽略的 `output/.cache/typescript/`；开发、构建与预览入口显式加载 `vite.config.ts`。
 
+桌面端仅启用 Tauri 的 WebView、前端资源压缩和 Windows 公共控件特性；权限由 `src-tauri/capabilities/` 静态声明，不启用运行时动态权限注册。
+
 依赖缓存在 `src-tauri/target/dependency-cache`：lyFlow 按版本放在 `lyflow/<版本>/`，厂商包按 tag/资产身份隔离。下载在临时目录进行，校验通过才移动到正式缓存目录；命中后仍校验描述文件及实际 DLL。查询或下载 lyFlow 因网络失败时，退回系列内最高的已缓存且校验通过的版本并告警。
 
 发包 CI 先解析 lyFlow 系列最新版本，再以版本为键缓存 `dependency-cache/lyflow`；另分别缓存 pnpm、Cargo、厂商依赖和 Tauri NSIS 工具。最终应用、安装包、组装运行库与验收报告不作为缓存复用。手动运行 `Windows package` 时设置 `use_cache=false` 可跳过全部缓存恢复和保存。
@@ -31,13 +33,14 @@ TypeScript 增量缓存与 Vite 配置编译产物集中在已忽略的 `output/
 ```powershell
 pnpm install --frozen-lockfile
 pnpm package
+pnpm package -Compression zlib
 ```
 
 默认恢复 lyFlow 系列最新运行库和厂商包，再完成前端、Rust 与 NSIS 构建（不做安装验证）；实际打包的 lyFlow 版本写入 `runtime/manifest.json` 与 `release-manifest.json`。不搜索相邻 lyFlow 构建目录，也不自动使用系统 MVS。诊断构建可显式提供 `-LyFlowRuntime`、`-MvsRuntime`、`-VcRuntime` 和 `-MvsLicense`，仍执行系列版本及实际组件检查。
 
 本地先执行 `tauri build --no-bundle`，应用自检通过后执行 `tauri bundle` 生成 NSIS 安装包，不重复构建前端。打包脚本通过 Node 直接调用项目本地 Tauri CLI，保留 `-- --locked` 参数分隔符，将 `--locked` 传给 Cargo，避免 PowerShell 的 `pnpm.ps1` 入口吞掉分隔符。
 
-NSIS 安装包用 lzma 固实压缩（`src-tauri/tauri.windows.conf.json` 的 `compression`），优先减小安装包体积，代价是压缩耗时增加；实际体积和耗时随打包内容与机器而变。
+NSIS 安装包默认沿用 `src-tauri/tauri.windows.conf.json` 的 `lzma` 固实压缩，优先减小安装包体积；`pnpm package -Compression zlib` 可缩短压缩等待，但安装包较大。两种方式携带相同运行库，安装后的文件相同；实际体积和耗时随打包内容与机器而变。分步打包时，在准备资源阶段执行 `pwsh -NoProfile -File scripts/Prepare-PackageResources.ps1 -Compression zlib`，后续构建和 `tauri bundle` 均使用生成的 `src-tauri/target/package-runtime/tauri.runtime.json`；未指定参数时不写入压缩覆盖，沿用 Windows 配置。
 
 厂商运行库变更时增加 `bundleVersion`、tag 和资产名，并从明确路径导出、验证和发布，禁止覆盖旧资产：
 

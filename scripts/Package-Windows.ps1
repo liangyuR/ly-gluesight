@@ -5,6 +5,7 @@ param(
     [string]$VcRuntime = $env:VC_RUNTIME_DIR,
     [string]$MvsLicense,
     [string]$VendorBundle,
+    [ValidateSet('zlib', 'lzma')][string]$Compression,
     [switch]$PrepareOnly,
     # 预发布：版本编成 X.Y.Z-pre.N（N 按 dist-installers 里同版本已有的最大序号自动加 1），写进程序、日志与工件记录；源码版本号不变
     [switch]$Pre
@@ -35,7 +36,9 @@ foreach ($name in @('LyFlowRuntime', 'MvsRuntime', 'VcRuntime', 'MvsLicense', 'V
 Complete-Stage 'runtime'
 if ($PrepareOnly) { return }
 $configPath = Join-Path $stageRoot 'tauri.runtime.json'
-& (Join-Path $PSScriptRoot 'Prepare-PackageResources.ps1') -Version $version
+$resourceParameters = @{ Version = $version }
+if ($Compression) { $resourceParameters.Compression = $Compression }
+& (Join-Path $PSScriptRoot 'Prepare-PackageResources.ps1') @resourceParameters
 $savedIncremental = $env:CARGO_PROFILE_RELEASE_INCREMENTAL
 Push-Location -LiteralPath $projectRoot
 try {
