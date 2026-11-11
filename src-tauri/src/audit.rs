@@ -152,8 +152,18 @@ fn admit(barriers: &RecordingBarriers, event: Event, notices: &mut Vec<Notice>) 
     };
     if let Event::Recording(outcome) = &event {
         if let Some(barrier) = pending.get_mut(&cycle).filter(|barrier| !barrier.inserted) {
-            if barrier.terminal.as_ref().is_some_and(|previous| previous != outcome) {
-                log(notices, "err", "持久追溯故障", &cycle, "主记录接受前出现另一份录制结果，保留首次结果");
+            if barrier
+                .terminal
+                .as_ref()
+                .is_some_and(|previous| previous != outcome)
+            {
+                log(
+                    notices,
+                    "err",
+                    "持久追溯故障",
+                    &cycle,
+                    "主记录接受前出现另一份录制结果，保留首次结果",
+                );
             } else {
                 barrier.terminal = Some(outcome.clone());
             }
@@ -178,7 +188,11 @@ fn admit(barriers: &RecordingBarriers, event: Event, notices: &mut Vec<Notice>) 
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AuditReadiness { Ready, WaitingRecording, WaitingStore }
+pub(crate) enum AuditReadiness {
+    Ready,
+    WaitingRecording,
+    WaitingStore,
+}
 
 impl AuditReadiness {
     fn require_ready(self) -> Result<(), String> {
@@ -203,7 +217,7 @@ pub struct Audit {
     queue: Sender<Vec<Event>>,
     /// 已提交、写库线程还没处理完的批次数
     queued: Arc<AtomicUsize>,
-    app: AppHandle,
+    report: Arc<dyn Report>,
     coordinator: Arc<Mutex<Coordinator>>,
     pending: Arc<Mutex<Pending>>,
     /// 旧版追溯暂存里没能补录的件，原图继续保护，待人工核对
@@ -217,16 +231,28 @@ pub struct Audit {
 impl Audit {
     /// `legacy`：旧版本留下的追溯暂存目录，启动时补录一次。
     pub fn new(app: &AppHandle, legacy: PathBuf) -> Result<Self, String> {
-        let (leftovers, notices, summary) = legacy::import(&legacy, &mut AppSink(app), ly_plc::now_ms());
-        publish(app, notices);
+        Self::start(
+            AppSink(app.clone()),
+            Arc::new(AppReport(app.clone())),
+            legacy,
+        )
+    }
+
+    fn start<S: Sink + Send + 'static>(
+        mut sink: S,
+        report: Arc<dyn Report>,
+        legacy: PathBuf,
+    ) -> Result<Self, String> {
+        let (leftovers, notices, summary) = legacy::import(&legacy, &mut sink, ly_plc::now_ms());
+        report.publish(notices);
         if let Some(summary) = summary {
-            app_log(app, "err", "旧追溯暂存未补录", None, summary);
+            report.log("err", "旧追溯暂存未补录", None, summary);
         }
         let (queue, rx) = channel();
         let audit = Self {
             queue,
             queued: Arc::default(),
-            app: app.clone(),
+            report,
             coordinator: Arc::new(Mutex::new(Coordinator::new(PENDING_LIMIT, CACHE_LIMIT))),
             pending: Arc::default(),
             legacy: Arc::new(leftovers),
@@ -237,7 +263,7 @@ impl Audit {
         let worker = audit.clone();
         std::thread::Builder::new()
             .name("inspection-audit".into())
-            .spawn(move || writer(worker, rx))
+            .spawn(move || writer(worker, rx, sink))
             .map_err(|error| format!("追溯线程启动失败：{error}"))?;
         Ok(audit)
     }
@@ -250,10 +276,20 @@ impl Audit {
         if let Some(error) = self.failure.lock().map_err(|_| "追溯状态锁损坏")?.as_ref() {
             return Err(error.clone());
         }
-        if !self.pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?.is_empty() {
+        if !self
+            .pending_recordings
+            .lock()
+            .map_err(|_| "录制收尾状态锁损坏")?
+            .is_empty()
+        {
             return Ok(AuditReadiness::WaitingRecording);
         }
-        let pending = !self.pending.lock().map_err(|_| "追溯状态锁损坏")?.cycles.is_empty();
+        let pending = !self
+            .pending
+            .lock()
+            .map_err(|_| "追溯状态锁损坏")?
+            .cycles
+            .is_empty();
         Ok(if pending || self.queued.load(Ordering::SeqCst) > 0 {
             AuditReadiness::WaitingStore
         } else {
@@ -285,28 +321,39 @@ impl Audit {
             });
         match result {
             Ok(true) => (),
-            Ok(false) => app_log(
-                &self.app,
+            Ok(false) => self.report.log(
                 "warn",
                 "录制追溯屏障",
                 Some(cycle_id),
                 format!("cycleId={cycle_id} 的录制仍未收尾又再次开始，沿用首次屏障"),
             ),
-            Err(error) => app_log(&self.app, "err", "录制追溯屏障", Some(cycle_id), error),
+            Err(error) => self
+                .report
+                .log("err", "录制追溯屏障", Some(cycle_id), error),
         }
     }
 
     /// 还没写进记录库的件和旧追溯暂存里没补录的件，它们的录制目录不滚动清理。
     pub fn protected_recording_directories(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
+        if let Some(error) = &self.legacy.unreadable {
+            return Err(format!("{error}，暂停清理"));
+        }
         let mut pending = self.pending.lock().map_err(|_| "追溯状态锁损坏")?.clone();
         pending.cycles.extend(self.legacy.cycles.iter().cloned());
-        pending.directories.extend(self.legacy.directories.iter().cloned());
+        pending
+            .directories
+            .extend(self.legacy.directories.iter().cloned());
         legacy::protected_directories(root, &pending.cycles, &pending.directories)
     }
 
     /// 还没写进记录库的件。
     pub fn protected_cycle_ids(&self) -> Result<BTreeSet<String>, String> {
-        Ok(self.pending.lock().map_err(|_| "追溯状态锁损坏")?.cycles.clone())
+        Ok(self
+            .pending
+            .lock()
+            .map_err(|_| "追溯状态锁损坏")?
+            .cycles
+            .clone())
     }
 
     /// 已有追溯证据、记录库里却可能没有的件：待写的件，加上旧追溯暂存里没补录的件；后者不阻止接件与切换项目。
@@ -324,7 +371,7 @@ impl Audit {
             .map(|mut failure| failure.replace(error.clone()).as_ref() == Some(&error))
             .unwrap_or(false);
         if !repeated {
-            app_log(&self.app, "err", "持久追溯故障", cycle, error);
+            self.report.log("err", "持久追溯故障", cycle, error);
         }
     }
 
@@ -336,7 +383,12 @@ impl Audit {
             );
         }
         if let Ok(Some(previous)) = self.failure.lock().map(|mut failure| failure.take()) {
-            app_log(&self.app, "info", "持久追溯恢复", None, format!("此前问题已恢复：{previous}"));
+            self.report.log(
+                "info",
+                "持久追溯恢复",
+                None,
+                format!("此前问题已恢复：{previous}"),
+            );
         }
     }
 
@@ -348,7 +400,10 @@ impl Audit {
         self.queued.fetch_add(1, Ordering::SeqCst);
         if self.queue.send(events).is_err() {
             self.queued.fetch_sub(1, Ordering::SeqCst);
-            self.problem(Some(&cycle), format!("cycleId={cycle}：追溯写库线程已停止，本条记录未写入；原检测结论不变"));
+            self.problem(
+                Some(&cycle),
+                format!("cycleId={cycle}：追溯写库线程已停止，本条记录未写入；原检测结论不变"),
+            );
         }
     }
 
@@ -360,7 +415,7 @@ impl Audit {
     pub fn insert_with_recording(&self, part: RecordedPart, recording: Option<RecordingOutcome>) {
         let mut events = vec![Event::Insert(Box::new(part))];
         if let Some(outcome) = recording {
-            log_recording(&self.app, &outcome);
+            self.report.recording(&outcome);
             events.push(Event::Recording(outcome));
         }
         self.persist(events)
@@ -375,7 +430,7 @@ impl Audit {
     }
 
     pub fn recording(&self, outcome: RecordingOutcome) {
-        log_recording(&self.app, &outcome);
+        self.report.recording(&outcome);
         self.persist(vec![Event::Recording(outcome)])
     }
 }
@@ -454,9 +509,9 @@ fn insert_store(store: &Store, part: &RecordedPart) -> Result<InsertResult, Stri
     }
 }
 
-struct AppSink<'a>(&'a AppHandle);
+struct AppSink(AppHandle);
 
-impl Sink for AppSink<'_> {
+impl Sink for AppSink {
     fn deleted(&mut self, cycle: &str) -> Result<bool, String> {
         self.0
             .try_state::<Store>()
@@ -581,13 +636,20 @@ impl Coordinator {
             if entry.record.is_some() || entry.inserted {
                 pending.cycles.insert(cycle.clone());
             }
-            pending.directories.extend(entry.last_recording.as_ref().and_then(|outcome| outcome.directory.clone()));
+            pending.directories.extend(
+                entry
+                    .last_recording
+                    .as_ref()
+                    .and_then(|outcome| outcome.directory.clone()),
+            );
         }
         pending
     }
 
     fn failing(&self) -> bool {
-        self.entries.values().any(|entry| entry.pending() && entry.failures > 0)
+        self.entries
+            .values()
+            .any(|entry| entry.pending() && entry.failures > 0)
     }
 
     fn handle(&mut self, event: Event, sink: &mut impl Sink, now: i64) -> Vec<Notice> {
@@ -605,11 +667,19 @@ impl Coordinator {
                     Ok(Some(existing)) => restore_existing(&cycle, &mut entry, existing, &mut notices),
                     Ok(None) if !matches!(event, Event::Insert(_)) => match sink.deleted(&cycle) {
                         Ok(true) => {
-                            log(&mut notices, "info", "人工删除的历史件", &cycle, "忽略已删除工件的迟到追溯事件，不自动重建历史记录");
+                            log(
+                                &mut notices,
+                                "info",
+                                "人工删除的历史件",
+                                &cycle,
+                                "忽略已删除工件的迟到追溯事件，不自动重建历史记录",
+                            );
                             return notices;
                         }
                         Ok(false) => (),
-                        Err(error) => log(&mut notices, "err", "人工删除记录核对失败", &cycle, error),
+                        Err(error) => {
+                            log(&mut notices, "err", "人工删除记录核对失败", &cycle, error)
+                        }
                     },
                     Ok(None) => (),
                     Err(error) => log(&mut notices, "err", "追溯原记录读取失败", &cycle, error),
@@ -662,8 +732,19 @@ impl Coordinator {
             let cycle = self.order.iter().find(|cycle| self.entries[*cycle].pending()).unwrap().clone();
             self.evict(&cycle, &format!("待写 cycle 数量达到上限 {}", self.pending_limit), notices);
         }
-        while self.entries.values().filter(|entry| !entry.pending()).count() > self.cache_limit {
-            let cycle = self.order.iter().find(|cycle| !self.entries[*cycle].pending()).unwrap().clone();
+        while self
+            .entries
+            .values()
+            .filter(|entry| !entry.pending())
+            .count()
+            > self.cache_limit
+        {
+            let cycle = self
+                .order
+                .iter()
+                .find(|cycle| !self.entries[*cycle].pending())
+                .unwrap()
+                .clone();
             self.evict(&cycle, "追溯缓存达到上限", notices);
         }
     }
@@ -985,6 +1066,29 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
     }
 }
 
+/// 追溯结果的去向：界面通知与日志。
+trait Report: Send + Sync {
+    fn publish(&self, notices: Vec<Notice>);
+    fn log(&self, level: &'static str, event: &'static str, cycle: Option<&str>, message: String);
+    fn recording(&self, outcome: &RecordingOutcome);
+}
+
+struct AppReport(AppHandle);
+
+impl Report for AppReport {
+    fn publish(&self, notices: Vec<Notice>) {
+        publish(&self.0, notices)
+    }
+
+    fn log(&self, level: &'static str, event: &'static str, cycle: Option<&str>, message: String) {
+        app_log(&self.0, level, event, cycle, message)
+    }
+
+    fn recording(&self, outcome: &RecordingOutcome) {
+        log_recording(&self.0, outcome)
+    }
+}
+
 fn publish(app: &AppHandle, notices: Vec<Notice>) {
     for notice in notices {
         match notice {
@@ -1039,12 +1143,23 @@ enum Replay {
 }
 
 /// 一件旧追溯暂存事件补录进记录库。
-fn apply_legacy(events: Vec<Event>, cycle: &str, sink: &mut impl Sink, now: i64) -> (Replay, Vec<Notice>) {
+fn apply_legacy(
+    events: Vec<Event>,
+    cycle: &str,
+    sink: &mut impl Sink,
+    now: i64,
+) -> (Replay, Vec<Notice>) {
     let mut coordinator = Coordinator::new(1, 1);
     let mut notices = Vec::new();
     match sink.deleted(cycle) {
         Ok(true) => {
-            log(&mut notices, "info", "人工删除的历史件", cycle, "忽略已删除工件的迟到追溯事件，不自动重建历史记录");
+            log(
+                &mut notices,
+                "info",
+                "人工删除的历史件",
+                cycle,
+                "忽略已删除工件的迟到追溯事件，不自动重建历史记录",
+            );
             return (Replay::Complete, notices);
         }
         Ok(false) => (),
@@ -1064,7 +1179,13 @@ fn apply_legacy(events: Vec<Event>, cycle: &str, sink: &mut impl Sink, now: i64)
                 }
             };
             if original.as_ref().is_some_and(|previous| *previous != value) {
-                log(&mut notices, "err", "持久检测记录身份冲突", cycle, "同 cycleId 对应不同不可变检测内容");
+                log(
+                    &mut notices,
+                    "err",
+                    "持久检测记录身份冲突",
+                    cycle,
+                    "同 cycleId 对应不同不可变检测内容",
+                );
                 return (Replay::Conflict, notices);
             }
             original = Some(value);
@@ -1072,7 +1193,13 @@ fn apply_legacy(events: Vec<Event>, cycle: &str, sink: &mut impl Sink, now: i64)
                 Ok(Some(_)) => match sink.matches_record(part) {
                     Ok(true) => (),
                     Ok(false) => {
-                        log(&mut notices, "err", "持久检测记录身份冲突", cycle, "数据库原检测内容不同，保留原记录");
+                        log(
+                            &mut notices,
+                            "err",
+                            "持久检测记录身份冲突",
+                            cycle,
+                            "数据库原检测内容不同，保留原记录",
+                        );
                         return (Replay::Conflict, notices);
                     }
                     Err(error) => {
@@ -1096,7 +1223,11 @@ fn apply_legacy(events: Vec<Event>, cycle: &str, sink: &mut impl Sink, now: i64)
     if conflict {
         return (Replay::Conflict, notices);
     }
-    if !coordinator.entries.get(cycle).is_some_and(|entry| entry.inserted && !entry.pending()) {
+    if !coordinator
+        .entries
+        .get(cycle)
+        .is_some_and(|entry| entry.inserted && !entry.pending())
+    {
         return (Replay::Pending, notices);
     }
     let mut replay = Replay::Complete;
@@ -1106,7 +1237,13 @@ fn apply_legacy(events: Vec<Event>, cycle: &str, sink: &mut impl Sink, now: i64)
                 Ok(true) => (),
                 Ok(false) => {
                     replay = Replay::Conflict;
-                    log(&mut notices, "err", "持久检测记录身份冲突", cycle, "入库后实际检测内容不符");
+                    log(
+                        &mut notices,
+                        "err",
+                        "持久检测记录身份冲突",
+                        cycle,
+                        "入库后实际检测内容不符",
+                    );
                 }
                 Err(error) => {
                     if replay == Replay::Complete {
@@ -1120,11 +1257,10 @@ fn apply_legacy(events: Vec<Event>, cycle: &str, sink: &mut impl Sink, now: i64)
     (replay, notices)
 }
 
-fn writer(audit: Audit, rx: Receiver<Vec<Event>>) {
+fn writer(audit: Audit, rx: Receiver<Vec<Event>>, mut sink: impl Sink) {
     struct Running(Arc<AtomicBool>);
     impl Drop for Running { fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); } }
     let _running = Running(audit.running.clone());
-    let mut sink = AppSink(&audit.app);
     let mut last_retry = Instant::now();
     loop {
         let received = rx.recv_timeout(Duration::from_secs(1));
@@ -1133,7 +1269,9 @@ fn writer(audit: Audit, rx: Receiver<Vec<Event>>) {
         let batch = events.is_some();
         let retry = last_retry.elapsed() >= Duration::from_secs(1);
         if !batch && !retry {
-            if disconnected { return; }
+            if disconnected {
+                return;
+            }
             continue;
         }
         let mut notices = Vec::new();
@@ -1159,7 +1297,7 @@ fn writer(audit: Audit, rx: Receiver<Vec<Event>>) {
         if batch {
             audit.queued.fetch_sub(1, Ordering::SeqCst);
         }
-        publish(&audit.app, notices);
+        audit.report.publish(notices);
         audit.settle(failing);
         if disconnected {
             return;

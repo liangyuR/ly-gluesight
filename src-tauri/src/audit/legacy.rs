@@ -16,6 +16,8 @@ const SCAN_LIMIT: usize = 4096;
 pub(super) struct Leftovers {
     pub(super) cycles: BTreeSet<String>,
     pub(super) directories: Vec<PathBuf>,
+    /// 旧暂存目录读不了：不知道哪些原图还没入库，原图清理暂停到修复后重启
+    pub(super) unreadable: Option<String>,
 }
 
 enum Read {
@@ -25,13 +27,21 @@ enum Read {
 
 fn read(path: &Path) -> Result<Read, String> {
     let content = std::fs::read(path).map_err(|error| error.to_string())?;
-    let mut value: serde_json::Value = serde_json::from_slice(&content).map_err(|error| format!("无法解析：{error}"))?;
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&content).map_err(|error| format!("无法解析：{error}"))?;
     match value.get("format").and_then(serde_json::Value::as_u64) {
         Some(FORMAT) => (),
-        format => return Err(format!("格式 {} 不是 {FORMAT}", format.map_or("缺失".into(), |format| format.to_string()))),
+        format => {
+            return Err(format!(
+                "格式 {} 不是 {FORMAT}",
+                format.map_or("缺失".into(), |format| format.to_string())
+            ))
+        }
     }
     if matches!(
-        value.pointer("/event/Insert/source").and_then(serde_json::Value::as_str),
+        value
+            .pointer("/event/Insert/source")
+            .and_then(serde_json::Value::as_str),
         Some("offlineSynthetic" | "offlineSample" | "offlineCandidate")
     ) {
         return Ok(Read::Retired);
@@ -41,34 +51,68 @@ fn read(path: &Path) -> Result<Read, String> {
         .map_err(|error| format!("无法解析：{error}"))
 }
 
-fn files(root: &Path) -> Vec<PathBuf> {
+fn files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
-    for directory in std::iter::once(root.to_path_buf()).chain(SUBDIRECTORIES.iter().map(|name| root.join(name))) {
-        let Ok(items) = std::fs::read_dir(&directory) else { continue };
-        let mut paths = items.flatten().map(|item| item.path()).collect::<Vec<_>>();
+    for directory in
+        std::iter::once(root.to_path_buf()).chain(SUBDIRECTORIES.iter().map(|name| root.join(name)))
+    {
+        let unreadable =
+            |error: std::io::Error| format!("读取旧追溯暂存 {} 失败：{error}", directory.display());
+        let items = match std::fs::read_dir(&directory) {
+            Ok(items) => items,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(unreadable(error)),
+        };
+        let mut paths = items
+            .map(|item| item.map(|item| item.path()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(unreadable)?;
         paths.sort();
         for path in paths {
-            if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
+            if std::fs::symlink_metadata(&path)
+                .map_err(unreadable)?
+                .is_file()
+            {
                 files.push(path);
             }
         }
     }
-    files
+    Ok(files)
 }
 
 /// 返回没补录的件、各件的补录日志，和给人看的未补录汇总。
-pub(super) fn import(root: &Path, sink: &mut impl Sink, now: i64) -> (Leftovers, Vec<Notice>, Option<String>) {
+pub(super) fn import(
+    root: &Path,
+    sink: &mut impl Sink,
+    now: i64,
+) -> (Leftovers, Vec<Notice>, Option<String>) {
     let mut leftovers = Leftovers::default();
     let mut notices = Vec::new();
     let mut unreadable = Vec::new();
     let mut cycles = BTreeMap::<String, Vec<(PathBuf, Event)>>::new();
-    for path in files(root) {
-        if path.parent() == Some(root) && path.file_name().and_then(|name| name.to_str()).is_some_and(|name| PROBES.contains(&name)) {
+    let files = match files(root) {
+        Ok(files) => files,
+        Err(error) => {
+            let summary = format!("{error}；不知道哪些原图还没入库，原图滚动清理暂停，修复后重启");
+            leftovers.unreadable = Some(error);
+            return (leftovers, notices, Some(summary));
+        }
+    };
+    for path in files {
+        if path.parent() == Some(root)
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| PROBES.contains(&name))
+        {
             let _ = std::fs::remove_file(&path);
             continue;
         }
         match read(&path) {
-            Ok(Read::Event(event)) => cycles.entry(event.cycle_id().to_string()).or_default().push((path, *event)),
+            Ok(Read::Event(event)) => cycles
+                .entry(event.cycle_id().to_string())
+                .or_default()
+                .push((path, *event)),
             Ok(Read::Retired) => {
                 let _ = std::fs::remove_file(&path);
             }
@@ -92,32 +136,60 @@ pub(super) fn import(root: &Path, sink: &mut impl Sink, now: i64) -> (Leftovers,
             leftovers.directories.extend(directories);
             continue;
         }
-        let kept = paths.iter().filter(|path| std::fs::remove_file(path).is_err()).count();
+        let kept = paths
+            .iter()
+            .filter(|path| std::fs::remove_file(path).is_err())
+            .count();
         let message = if kept == 0 {
             format!("{} 条旧暂存事件已补录进记录库", paths.len())
         } else {
-            format!("{} 条旧暂存事件已补录进记录库，其中 {kept} 个文件删除失败，下次启动按已入库核对", paths.len())
+            format!(
+                "{} 条旧暂存事件已补录进记录库，其中 {kept} 个文件删除失败，下次启动按已入库核对",
+                paths.len()
+            )
         };
         super::log(&mut notices, "info", "旧追溯暂存补录", &cycle, message);
     }
-    for directory in SUBDIRECTORIES.iter().map(|name| root.join(name)).chain(std::iter::once(root.to_path_buf())) {
+    for directory in SUBDIRECTORIES
+        .iter()
+        .map(|name| root.join(name))
+        .chain(std::iter::once(root.to_path_buf()))
+    {
         let _ = std::fs::remove_dir(directory);
     }
     let mut summary = Vec::new();
     if !leftovers.cycles.is_empty() {
-        let cycles = leftovers.cycles.iter().cloned().collect::<Vec<_>>().join("、");
-        summary.push(format!("{} 件没能补录（cycleId {cycles}），原图继续保护", leftovers.cycles.len()));
+        let cycles = leftovers
+            .cycles
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("、");
+        summary.push(format!(
+            "{} 件没能补录（cycleId {cycles}），原图继续保护",
+            leftovers.cycles.len()
+        ));
     }
     if !unreadable.is_empty() {
-        summary.push(format!("{} 个文件读不了：{}", unreadable.len(), unreadable.join("；")));
+        summary.push(format!(
+            "{} 个文件读不了：{}",
+            unreadable.len(),
+            unreadable.join("；")
+        ));
     }
-    let summary = (!summary.is_empty())
-        .then(|| format!("旧追溯暂存 {}：{}；文件原地保留，待人工核对", root.display(), summary.join("；")));
+    let summary = (!summary.is_empty()).then(|| {
+        format!(
+            "旧追溯暂存 {}：{}；文件原地保留，待人工核对",
+            root.display(),
+            summary.join("；")
+        )
+    });
     (leftovers, notices, summary)
 }
 
 fn plain_directory(path: &Path) -> Result<(), String> {
-    let meta = std::fs::symlink_metadata(path).map_err(|error| format!("录制路径 {} 不可用：{error}", path.display()))?;
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("录制路径 {} 不可用：{error}", path.display()))?;
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -143,12 +215,18 @@ fn ancestors(path: &Path) -> Result<(), String> {
 }
 
 /// 录制根 `root` 下属于 `cycles` 的录制目录（按目录名 `…_cycle_<cycleId>` 认），加上 `directories` 里在根内的目录。
-pub(super) fn protected_directories(root: &Path, cycles: &BTreeSet<String>, directories: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+pub(super) fn protected_directories(
+    root: &Path,
+    cycles: &BTreeSet<String>,
+    directories: &[PathBuf],
+) -> Result<Vec<PathBuf>, String> {
     if cycles.is_empty() && directories.is_empty() {
         return Ok(Vec::new());
     }
     ancestors(root)?;
-    let checked_root = root.canonicalize().map_err(|error| format!("录制根目录不可用，暂停清理：{error}"))?;
+    let checked_root = root
+        .canonicalize()
+        .map_err(|error| format!("录制根目录不可用，暂停清理：{error}"))?;
     let mut paths = BTreeSet::new();
     let mut scanned = 0usize;
     if !cycles.is_empty() {
@@ -158,8 +236,13 @@ pub(super) fn protected_directories(root: &Path, cycles: &BTreeSet<String>, dire
                 return Err("录制保护扫描达到上限，暂停清理".into());
             }
             let path = item.map_err(|error| error.to_string())?.path();
-            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-            if name != "_pending" && !(name.len() == 8 && name.bytes().all(|byte| byte.is_ascii_digit())) {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if name != "_pending"
+                && !(name.len() == 8 && name.bytes().all(|byte| byte.is_ascii_digit()))
+            {
                 continue;
             }
             plain_directory(&path)?;
@@ -169,8 +252,14 @@ pub(super) fn protected_directories(root: &Path, cycles: &BTreeSet<String>, dire
                     return Err("录制保护扫描达到上限，暂停清理".into());
                 }
                 let child = child.map_err(|error| error.to_string())?.path();
-                let name = child.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-                if name.split_once("_cycle_").is_some_and(|(_, cycle)| cycles.contains(cycle)) {
+                let name = child
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                if name
+                    .split_once("_cycle_")
+                    .is_some_and(|(_, cycle)| cycles.contains(cycle))
+                {
                     plain_directory(&child)?;
                     let checked = child.canonicalize().map_err(|error| error.to_string())?;
                     if !checked.starts_with(&checked_root) {
@@ -181,7 +270,10 @@ pub(super) fn protected_directories(root: &Path, cycles: &BTreeSet<String>, dire
             }
         }
     }
-    for directory in directories.iter().filter(|directory| directory.starts_with(root) && directory.exists()) {
+    for directory in directories
+        .iter()
+        .filter(|directory| directory.starts_with(root) && directory.exists())
+    {
         ancestors(directory)?;
         let checked = directory
             .canonicalize()
