@@ -1296,6 +1296,7 @@ async fn compare_at(
     let operation = crate::operation::Operation::start(&app, task_id)?;
     tauri::async_runtime::spawn_blocking(move || {
         operation.run(|operation| {
+            crate::licensing::require_business()?;
             let w = app
                 .state::<WorkspaceHost>()
                 .comparison_snapshot(&id, revision, instance_id)?;
@@ -1408,6 +1409,7 @@ pub async fn workspace_compare_original(
     let operation = crate::operation::Operation::start(&app, task_id)?;
     tauri::async_runtime::spawn_blocking(move || {
         operation.run(|operation| {
+            crate::licensing::require_business()?;
             let store = app.state::<Store>();
             let detail = store.detail(history_id)?;
             if !detail.recording.available {
@@ -1641,6 +1643,9 @@ pub async fn workspace_history_frame_view(
             .clone()
             .ok_or("这台相机本帧组缺帧，没有原图")?;
         let Some(segment) = metrics.corridor.filter(|_| {
+            if crate::licensing::require_business().is_err() {
+                return false;
+            }
             !matches!(
                 metrics.state,
                 crate::burst_judge::FrameState::Missing

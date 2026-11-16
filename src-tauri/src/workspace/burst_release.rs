@@ -357,6 +357,7 @@ pub(super) fn publish_blocker(checks: &[Check]) -> Option<&Check> {
 /// 发布前检查（D-SB-46，发布时当场核对，不要求相机在线）：相机配置、走廊示教、段标定、x_ref，
 /// 以及示教帧试测（D-SB-59，部分没测成只提醒）。结果随待生效版本存档（`Release.validation`）。
 pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
+    crate::licensing::require_business()?;
     let recipe = w.doc.build()?;
     let environment_tag = environment(app, &recipe)?;
     let device = cycle::usable_cams(app, &recipe).map(|_| ());

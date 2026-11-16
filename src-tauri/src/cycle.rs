@@ -1,4 +1,4 @@
-mod admission;
+pub(crate) mod admission;
 mod burst;
 mod interrupted;
 pub mod readiness;
@@ -1710,6 +1710,9 @@ impl Machine {
                     format!("S7 事务无法绑定工件身份：{error}"),
                 )
                 .await;
+        }
+        if let Err((code, reason)) = admission::license() {
+            return self.refuse(sn, None, code, reason).await;
         }
         if crate::workspace::activation_uncertain(&app) {
             return self

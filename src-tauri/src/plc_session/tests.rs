@@ -702,3 +702,27 @@ async fn part_end_before_intake_commit_is_reported_after_commit() {
     rig.ack_release().await;
     rig.finish().await;
 }
+
+#[tokio::test]
+async fn s7_license_rejection_waits_for_motion_end_and_keeps_heartbeat_and_ready_mode() {
+    let _expired = crate::licensing::testing::deny_business();
+    let mut rig = Rig::new("license-expired").await;
+    rig.request(1, "EXPIRED-LICENSE").await;
+    let (fault, _) = crate::cycle::admission::license().unwrap_err();
+    rig.session.commit_intake(&rig.engine).await.unwrap();
+    assert_eq!(rig.plc.pc(), state::PC_READY);
+    assert_eq!(rig.plc.get(tag::PC_MODE), 0);
+    assert!(rig.session.report(&rig.engine, 90, fault).await.is_err());
+    rig.fresh().await;
+    assert!(rig.session.heartbeat.lock().unwrap().is_live(now_ms()));
+    rig.end().await;
+    rig.session.report(&rig.engine, 90, fault).await.unwrap();
+    assert_eq!(rig.plc.get(tag::RESULT_CODE), 90);
+    assert_eq!(
+        rig.plc.get(tag::FAULT_CODE),
+        crate::judge::fault::LICENSE_UNAVAILABLE as u32
+    );
+    rig.ack_release().await;
+    assert_eq!(rig.plc.pc(), state::PC_READY);
+    rig.finish().await;
+}

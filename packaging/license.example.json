@@ -1,0 +1,8 @@
+{
+  "serverUrl": "https://license.example.invalid",
+  "productId": "REPLACE_WITH_GRANTMINT_APPLICATION_UUID",
+  "trustedKeys": {
+    "REPLACE_WITH_SIGNING_KEY_ID": "REPLACE_WITH_BASE64_PUBLIC_KEY"
+  },
+  "emergencyPasswordHash": ""
+}

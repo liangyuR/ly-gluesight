@@ -288,10 +288,10 @@ export interface CycleSettings {
 }
 
 
-export type ReadinessKey = "plc" | "camera" | "recipe" | "engine" | "audit";
+export type ReadinessKey = "plc" | "camera" | "recipe" | "engine" | "audit" | "license";
 export type ReadinessState = "ok" | "waiting" | "blocked";
 /** 处理该项要去的页面 */
-export type ReadinessTarget = "plc" | "camera" | "workspace" | "settings";
+export type ReadinessTarget = "plc" | "camera" | "workspace" | "settings" | "license";
 
 export interface ReadinessItem {
   key: ReadinessKey;

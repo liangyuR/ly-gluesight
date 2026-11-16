@@ -83,6 +83,9 @@ jobs:
       - name: CI routing regression
         if: matrix.shard == 1
         run: node --test scripts/Plan-Ci.test.mjs
+      - name: Licensing release configuration gate
+        if: matrix.shard == 1
+        run: node --test --test-name-pattern='release build refuses missing licensing' tests/packaging/windows-workflow.test.mjs
       - name: Install locked frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Frontend unit tests
@@ -130,6 +133,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Production simulator tests
         run: cargo test --locked --manifest-path tools/production-simulator/Cargo.toml
+      - name: Licensing provisioning contracts
+        run: cargo test --locked --manifest-path tools/license-provision/Cargo.toml
       - name: Rust unit tests
         working-directory: src-tauri
         run: cargo test --locked --lib

@@ -14,6 +14,7 @@ use crate::settings::{ProductSource, RecordMode};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ItemKey {
+    License,
     Plc,
     Camera,
     Recipe,
@@ -29,6 +30,7 @@ pub enum ItemState { Ok, Waiting, Blocked }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Target {
+    License,
     Plc,
     Camera,
     Workspace,
@@ -80,6 +82,7 @@ pub enum Product { Plc, Manual(Option<String>) }
 pub enum Check { Ok, Waiting(String), Blocked(String) }
 
 pub struct Facts {
+    pub license: Result<(), String>,
     pub plc_connected: bool,
     /// 已发布的 S7 会话还没处理当前这次 PLC 连接（刚重连，会话原因仍是断线时的）
     pub session_behind: bool,
@@ -338,6 +341,21 @@ pub fn evaluate(mut f: Facts) -> Readiness {
         }
     }
     let items = vec![
+        ReadinessItem {
+            key: ItemKey::License,
+            title: "软件授权",
+            state: if f.license.is_ok() {
+                ItemState::Ok
+            } else {
+                ItemState::Blocked
+            },
+            detail: f
+                .license
+                .as_ref()
+                .map_or_else(|reason| reason.clone(), |_| "授权检查通过".into()),
+            hint: Some("已准入工件继续收尾；新工件与试测需要有效授权或现场应急解锁".into()),
+            target: Some(Target::License),
+        },
         plc_item(&f),
         camera_item(&f),
         recipe_item(&f),
@@ -514,6 +532,7 @@ pub fn gather(app: &AppHandle) -> Readiness {
     let link = plc(app).status();
     let handshake = snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref());
     evaluate(Facts {
+        license: crate::licensing::require_business(),
         plc_connected: link.state == LinkState::Connected,
         session_behind: link.state == LinkState::Connected && handshake.is_some_and(|v| v.connection != Some(link.since)),
         session: snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref()).map(|v| v.phase),
@@ -530,4 +549,54 @@ pub fn gather(app: &AppHandle) -> Readiness {
         maintenance,
         recipes,
     })
+}
+
+#[cfg(test)]
+mod licensing_tests {
+    use super::*;
+
+    #[test]
+    fn expired_license_blocks_readiness_even_with_cached_recipe_or_maintenance_mode() {
+        let facts = |license, maintenance| Facts {
+            license,
+            plc_connected: true,
+            session_behind: false,
+            session: Some(SessionPhase::Idle),
+            session_message: None,
+            phase: Phase::Idle,
+            fault: None,
+            cameras: Check::Ok,
+            engine: Ok("test-engine".into()),
+            workers: Ok(()),
+            audit: Check::Ok,
+            record: RecordMode::All,
+            product: Product::Plc,
+            activation_uncertain: false,
+            maintenance,
+            recipes: vec![RecipeOption {
+                id: "ready-recipe".into(),
+                name: "已预热配方".into(),
+                version: 1,
+                product_code: 1,
+                published: true,
+                runnable: true,
+                reason: None,
+                target: None,
+                waiting: None,
+                note: None,
+            }],
+        };
+        for maintenance in [false, true] {
+            assert!(evaluate(facts(Ok(()), maintenance)).ready);
+            let blocked = evaluate(facts(Err("授权已到期".into()), maintenance));
+            assert!(!blocked.ready);
+            let item = blocked
+                .items
+                .iter()
+                .find(|item| item.key == ItemKey::License)
+                .unwrap();
+            assert_eq!(item.state, ItemState::Blocked);
+            assert_eq!(item.target, Some(Target::License));
+        }
+    }
 }

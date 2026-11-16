@@ -663,3 +663,30 @@ fn production_splits_passes_by_gate_pause_and_skips_each_pass_head() {
         (vec![3, 3], vec![(Some(1), Some(1)), (Some(2), Some(4))])
     );
 }
+
+#[test]
+fn license_expiring_after_intake_keeps_current_part_and_blocks_next_intake() {
+    let admitted = crate::licensing::testing::allow_business();
+    admission::license().unwrap();
+    let mut part = burst_part("licensed-current-part", &Ledgers::default());
+    drop(admitted);
+    let _expired = crate::licensing::testing::deny_business();
+    deliver_groups(&mut part, 4);
+    end(&mut part, Some(4), true);
+    assert!(part.complete());
+    let judgement = judge_burst(&mut part);
+    assert_ne!(judgement.verdict, Verdict::ErrInspect);
+    let record = part.burst_record(&burst::summary(&judgement));
+    assert_eq!(
+        record
+            .frames
+            .iter()
+            .filter(|frame| frame.status == FrameState::Measured)
+            .count(),
+        12
+    );
+    assert_eq!(
+        admission::license().unwrap_err().0,
+        fault::LICENSE_UNAVAILABLE
+    );
+}

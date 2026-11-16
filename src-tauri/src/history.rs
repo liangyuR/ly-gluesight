@@ -258,6 +258,7 @@ const REJUDGE_LIMIT: usize = 5000;
 #[tauri::command]
 pub async fn history_rejudge(app: AppHandle, request: RejudgeRequest) -> Result<RejudgeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        crate::licensing::require_business()?;
         let store = app.state::<Store>();
         let cycle = app.state::<CycleHost>();
         let rows = store.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;

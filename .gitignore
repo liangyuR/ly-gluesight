@@ -54,3 +54,5 @@ __pycache__/
 /docs/design/theme-verification.json
 
 /tools/production-simulator/target/
+/tools/license-provision/target/
+/packaging/license.local.json

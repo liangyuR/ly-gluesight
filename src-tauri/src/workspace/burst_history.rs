@@ -480,6 +480,9 @@ pub async fn workspace_record_frame_view(
             .find(|m| m.camera == camera && m.seq == seq)
             .ok_or("这次对照没有这一帧的指标：重新触发测试后再看")?;
         let Some(segment) = metrics.corridor.filter(|_| {
+            if crate::licensing::require_business().is_err() {
+                return false;
+            }
             !matches!(
                 metrics.state,
                 FrameState::Missing | FrameState::NotInspected | FrameState::Unmeasured

@@ -48,6 +48,18 @@ function withFixture(change, callback) {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
+test('release build refuses missing licensing configuration before invoking cargo', () => {
+  withFixture(undefined, (directory) => {
+    const scriptPath = join(directory, 'license-gate.ps1');
+    writeFileSync(scriptPath, `$ErrorActionPreference = 'Stop'\n${stepScript('Production Rust build')}`);
+    const result = spawnSync('pwsh', ['-NoProfile', '-File', scriptPath], {
+      cwd: directory, env: { ...process.env, LICENSE_CONFIG_JSON: '' }, encoding: 'utf8',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /GLUESIGHT_LICENSE_CONFIG_JSON/);
+  });
+});
+
 function runVersionGate(change, tag = 'v0.1.0') {
   return withFixture(change, (directory) => spawnSync('pwsh', ['-NoProfile', '-File', gate, '-ProjectRoot', directory, '-Tag', tag], { encoding: 'utf8' }));
 }

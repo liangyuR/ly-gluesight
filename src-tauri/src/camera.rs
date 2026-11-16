@@ -2146,6 +2146,7 @@ impl CameraRig {
     ) -> Result<Vec<Arc<FrameImage>>, String> {
         let cycle = self.rig.app.state::<CycleHost>();
         let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
+        crate::licensing::require_business()?;
         check_idle(&cycle)?;
         let slot = self.slot(cam as usize).ok_or("相机不存在")?;
         let config = slot.config();
@@ -2761,6 +2762,7 @@ pub async fn camera_soft_trigger(app: AppHandle, cam: usize) -> Result<(), Strin
 async fn camera_soft_trigger_inner(cycle: State<'_, CycleHost>, cam: usize) -> Result<(), String> {
     let _gate = camera_gate(&cycle).await?;
     check_idle(&cycle)?;
+    crate::licensing::require_business()?;
     let slot = cycle.camera.slot(cam).ok_or("相机不存在")?;
     slot.soft_trigger(None).map(|_| ())
 }

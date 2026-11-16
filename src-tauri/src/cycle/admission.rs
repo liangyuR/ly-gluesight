@@ -17,3 +17,7 @@ pub(super) fn admit(request: &Request, recipe: &Recipe, plan: Result<PlcPlan, St
     }
     plan.map_err(|reason| (fault::PLAN_MISMATCH, reason))
 }
+
+pub(crate) fn license() -> Result<(), (u16, String)> {
+    crate::licensing::require_business().map_err(|reason| (fault::LICENSE_UNAVAILABLE, reason))
+}
