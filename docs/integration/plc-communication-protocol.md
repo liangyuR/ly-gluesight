@@ -57,7 +57,7 @@
 | 6 | Int | `pcMode` | 0 正常，1 维护 |
 | 8 | DInt | `seqEcho` | 回显 `requestSeq` |
 | 12 | Int | `resultCode` | 见第八节；维护模式下为 0 |
-| 14 | Int | `faultCode` | 正常 0；检测错误 91–100；PC 故障 101 |
+| 14 | Int | `faultCode` | 正常 0；检测错误 91–100（96：软件授权不可用）；PC 故障 101 |
 | 16 | String[50] | `snEcho` | 回显 `sn` |
 
 ## 四、状态
@@ -175,11 +175,15 @@ plcState 不是 10 时收到 `PartDone` 不处理。
 | 11–14 | NG：位置 / 绝对值 / 断胶 / 胶宽 | 不停线，记 NG |
 | 90 | 检测错误，配 faultCode 91–100 | 不停线，记检测错误 |
 
+`faultCode=96` 表示软件授权不可用（未激活、到期、校验或保护存储异常）；属于检测错误，不是 PC 握手故障。正常模式在工件结束后回 `resultCode=90/faultCode=96`，PLC 保持既有检测错误分支，不新增运动或握手状态。PC/PLC 点表仍为协议 8，PLC/HMI 的故障文字表将 96 显示为“软件授权不可用”。
+
 除 90 外 `faultCode` 为 0。`pcMode=1` 时结果码固定为 0，PLC 不看结果码，按未检放行；`pcMode=0` 时结果码为 0 视为非法。
+
+授权在每件接件时检查。已准入工件继续采集、测量、记录与握手收尾；到期后新件仍登记，等待 `plcState=20` 后返回错误，不主动停心跳、不切维护、不冒充 OK。维护模式下授权不可用也不启动采集/测量，但保持协议规定 `resultCode=0/faultCode=0`，本机记录授权原因；软件禁用不等于 PLC 停线。
 
 ## 九、维护模式
 
-- `pcMode=1`：PC 每件照常采图，结果码写 0；PLC 看到 `pcMode=1` 即按未检放行。
+- `pcMode=1`：授权有效时 PC 每件照常采图，授权不可用时只登记并记录未检原因；结果码均写 0，PLC 看到 `pcMode=1` 即按未检放行。
 - 维护期间配方或相机问题只记进本件记录；只有协议故障才置 90。
 - PC 侧行为见 [在线投运方案](../architecture/online-commissioning.md) 与 [维护模式决策](../decisions/maintenance-mode.md)。
 

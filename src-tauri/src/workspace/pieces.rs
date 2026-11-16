@@ -558,7 +558,10 @@ pub(super) async fn workspace_measure_teaching_at(
     let _config = cycle.config_gate.lock().await;
     let task = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        operation.run(|operation| measure(&task, &id, revision, expected_instance_id, operation))
+        operation.run(|operation| {
+            crate::licensing::require_business()?;
+            measure(&task, &id, revision, expected_instance_id, operation)
+        })
     })
     .await
     .map_err(|e| e.to_string())?

@@ -1,4 +1,8 @@
+#[path = "../tools/license-provision/src/config.rs"]
+mod license_configuration;
+
 fn main() {
+    license_config();
     println!("cargo:rerun-if-changed=../packaging/runtime.json");
     let text = std::fs::read_to_string("../packaging/runtime.json").expect("读取 packaging/runtime.json 失败");
     let config: serde_json::Value = serde_json::from_str(&text).expect("packaging/runtime.json 无效");
@@ -12,6 +16,36 @@ fn main() {
     println!("cargo:rustc-env=GLUESIGHT_REQUIRED_OPERATORS={}", operators.join(","));
     build_identity();
     tauri_build::build()
+}
+
+fn license_config() {
+    println!("cargo:rerun-if-env-changed=GLUESIGHT_LICENSE_CONFIG");
+    println!("cargo:rerun-if-changed=../tools/license-provision/src/config.rs");
+    let configured = std::env::var_os("GLUESIGHT_LICENSE_CONFIG");
+    let text = match configured {
+        Some(path) => {
+            let path = std::path::PathBuf::from(path);
+            println!("cargo:rerun-if-changed={}", path.display());
+            std::fs::read_to_string(path).expect("无法读取授权构建配置")
+        }
+        None => {
+            assert!(
+                std::env::var("PROFILE").as_deref() != Ok("release"),
+                "正式构建必须设置 GLUESIGHT_LICENSE_CONFIG，禁止发布未配置授权的安装包"
+            );
+            r#"{"serverUrl":"","productId":"","trustedKeys":{},"emergencyPasswordHash":""}"#.into()
+        }
+    };
+    let value: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .expect("授权构建配置不是有效 JSON");
+    license_configuration::validate(&value, std::env::var("PROFILE").as_deref() != Ok("release"))
+        .unwrap_or_else(|message| panic!("授权构建配置无效：{message}"));
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(
+        output.join("license-config.json"),
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .expect("无法生成内置授权配置");
 }
 
 fn git(args: &[&str]) -> Option<String> {

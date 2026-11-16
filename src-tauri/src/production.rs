@@ -334,6 +334,7 @@ impl ProductionHost {
     }
 
     fn ensure(&self, app: &AppHandle, recipe: Arc<Recipe>) -> Result<Arc<Prepared>, String> {
+        crate::licensing::require_business()?;
         let key = warmup_key(&recipe);
         if let Some(prepared) = self.begin(&key, Instant::now())? { return Ok(prepared); }
         let app = app.clone();
@@ -342,14 +343,17 @@ impl ProductionHost {
             let run_app = app.clone();
             let started = Instant::now();
             let result = run_warmup(slot, Duration::from_secs(30), move || {
+                if let Err(reason) = crate::licensing::require_business() {
+                    return Ok(Err(reason));
+                }
                 let bundle = crate::workspace::published_bundle(&run_app, &recipe)?;
                 let engine = run_app.state::<VisionHost>().engine().ok_or("图像核心库未加载")?;
                 let mut prepared = Prepared::load(bundle, engine, &recipe)?;
                 prepared.warm()?;
-                Ok(Arc::new(prepared))
+                Ok(Ok(Arc::new(prepared)))
             }).await;
             let state = match result {
-                Ok(prepared) => {
+                Ok(Ok(prepared)) => {
                     let elapsed = started.elapsed().as_millis();
                     let untested = prepared.untested_reasons();
                     if untested.is_empty() {
@@ -375,6 +379,10 @@ impl ProductionHost {
                     }
                     Entry::Ready(prepared)
                 }
+                Ok(Err(error)) => Entry::Retryable {
+                    error,
+                    retry_at: Instant::now() + WARMUP_RETRY_DELAY,
+                },
                 Err(error) => {
                     let level = if matches!(&error, WarmupFailure::QueueTimeout(_)) { "warn" } else { "err" };
                     crate::cycle::log(&app, level, "生产预热", error.message().to_owned());

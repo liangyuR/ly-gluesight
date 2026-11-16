@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { BookOpen, Cable, Camera, Crosshair, FileClock, FolderKanban, History, LayoutDashboard, ScanEye, ScrollText, Settings, type LucideIcon } from "lucide-react";
+import { BookOpen, Cable, Camera, Crosshair, FileClock, FolderKanban, History, LayoutDashboard, ScanEye, ScrollText, Settings, ShieldCheck, type LucideIcon } from "lucide-react";
 import InspectPage from "../pages/InspectPage";
 import CameraPage from "../pages/CameraPage";
 import FlyshotCalibrationPage from "../pages/FlyshotCalibrationPage";
@@ -8,6 +8,7 @@ import HistoryPage from "../pages/HistoryPage";
 import SettingsPage from "../pages/SettingsPage";
 import OperationGuidePage from "../pages/OperationGuidePage";
 import ProjectsPage from "../pages/ProjectsPage";
+import LicensePage from "../pages/LicensePage";
 import LibraryPage from "../features/workspace/LibraryPage";
 import ProgressPage from "../features/workspace/ProgressPage";
 import TeachingPiecePage from "../features/workspace/TeachingPiecePage";
@@ -47,6 +48,7 @@ export const settingsItem: NavItem = { path:"/settings",label:"系统设置",ico
 
 export const navEntries: NavEntry[] = [
   { path:"/guide",label:"总览",icon:LayoutDashboard,element:OperationGuidePage },
+  { path:"/license",label:"软件授权",icon:ShieldCheck,element:LicensePage },
   { label:"生产",children:[
     { path:"/inspect",label:"在线检测",icon:ScanEye,element:InspectPage },
     { path:"/history",label:"历史记录",icon:History,element:HistoryPage },

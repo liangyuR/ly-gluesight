@@ -31,6 +31,7 @@ pub mod fault {
     pub const MISSING_FRAME: u16 = 91;
     pub const INVALID_POINTS: u16 = 93;
     pub const NO_RECIPE: u16 = 95;
+    pub const LICENSE_UNAVAILABLE: u16 = 96;
     pub const MOTION_TIMEOUT: u16 = 97;
     pub const DEVICE_LOST: u16 = 98;
     pub const PROCESS_TIMEOUT: u16 = 99;

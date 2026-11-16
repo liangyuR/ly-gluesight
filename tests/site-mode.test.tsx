@@ -30,6 +30,23 @@ beforeEach(() => {
 });
 
 describe("开工就绪报告刷新", () => {
+  it("授权失效但设备仍就绪 → 刷新后显示无法开工并提供授权处理入口", async () => {
+    report = readiness();
+    function Probe() {
+      const { readiness: data, status, refresh } = useReadiness();
+      return <><InspectionReadiness snapshot={snapshot()} readiness={data} status={status} /><button onClick={() => void refresh()}>刷新检查</button></>;
+    }
+    render(<MemoryRouter><Probe /></MemoryRouter>);
+    expect(await screen.findByText("就绪，等待工件")).toBeVisible();
+    report = { ...report, ready: false, items: [...report.items, {
+      key: "license", title: "软件授权", state: "blocked", detail: "授权已到期", hint: null, target: "license",
+    }] };
+    await userEvent.click(screen.getByRole("button", { name: "刷新检查" }));
+    expect(await screen.findByText("无法开工 · 1 项阻塞")).toBeVisible();
+    expect(screen.queryByText("就绪，等待工件")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "去软件授权" })).toHaveAttribute("href", "/license");
+  });
+
   it("就绪报告成功后刷新失败再恢复 → 旧报告仅供参考且成功前不再显示可开工", async () => {
     let failure = false;
     report = readiness();

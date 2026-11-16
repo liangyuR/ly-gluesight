@@ -25,6 +25,7 @@ mod image_file;
 mod inspection;
 mod instance;
 mod judge;
+mod licensing;
 mod log_storage;
 mod measure;
 mod mvs;
@@ -254,6 +255,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            licensing::license_status,
+            licensing::license_activate,
+            licensing::license_sync,
+            licensing::license_emergency_unlock,
             operation::operation_cancel,
             operation::operation_status,
             storage_startup::storage_startup_status,
@@ -451,6 +456,9 @@ fn start_services(
     log_storage::initialize(app)?;
     if let Err(error) = applog::init(app) {
         eprintln!("{error}");
+    }
+    if let Err(error) = licensing::initialize() {
+        applog::write("warn", "授权初始化", &error);
     }
     if let Err(error) = project::manage::purge_trash(&root) {
         applog::write("warn", "项目删除未完成", &error);

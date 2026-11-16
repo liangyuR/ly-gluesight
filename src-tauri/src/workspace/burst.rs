@@ -1107,6 +1107,7 @@ pub(super) async fn prepare_segment_teaching(
     seq: u64,
 ) -> Result<PreparedSegmentTeaching, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        crate::licensing::require_business()?;
         let host = app.state::<WorkspaceHost>();
         let workspace = workspace_clone(&app, &id)?;
         workspace.expect(revision)?;
@@ -1256,6 +1257,7 @@ async fn fit_workspace_color_model(
     segment: u32,
 ) -> Result<WorkspaceView, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        crate::licensing::require_business()?;
         let host = app.state::<WorkspaceHost>();
         let before = {
             let items = host.items.lock().unwrap();
@@ -1428,6 +1430,7 @@ pub async fn workspace_extract_corridor(
     point_spacing_px: Option<f32>,
 ) -> Result<CenterlineResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        crate::licensing::require_business()?;
         let host = app.state::<WorkspaceHost>();
         let frozen = |w: &Workspace| {
             w.camera_teaching
@@ -1590,6 +1593,7 @@ pub async fn workspace_snap_corridor(
     guide: super::centerline::BrushGuide,
 ) -> Result<SnapCorridorResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        crate::licensing::require_business()?;
         let host = app.state::<WorkspaceHost>();
         let frozen = |w: &Workspace| {
             w.camera_teaching.iter().any(|t| {
@@ -2138,6 +2142,7 @@ pub async fn workspace_calibration_frame(
     seq: u64,
 ) -> Result<CalibrationFrameView, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        crate::licensing::require_business()?;
         let w = {
             let host = app.state::<WorkspaceHost>();
             let items = host.items.lock().unwrap();
@@ -2442,6 +2447,7 @@ async fn preview_teaching_frame(
     seq: u64,
 ) -> Result<CalibrationFrameView, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        crate::licensing::require_business()?;
         let w = workspace_clone(&app, &id)?;
         if let Some((revision, instance_id)) = expected {
             w.expect(revision)?;
@@ -2679,6 +2685,7 @@ async fn preview_range_operation(
     let operation = crate::operation::Operation::start(&app, task_id)?;
     tauri::async_runtime::spawn_blocking(move || {
         operation.run(|operation| {
+            crate::licensing::require_business()?;
             let w = workspace_clone(&app, &id)?;
             if let Some(revision) = expected_revision {
                 w.expect(revision)?;

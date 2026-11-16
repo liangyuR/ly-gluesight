@@ -30,6 +30,8 @@ TypeScript 增量缓存与 Vite 配置编译产物集中在已忽略的 `output/
 
 ## 本机打包与厂商包维护
 
+授权配置是正式构建前置条件：本机设置 `GLUESIGHT_LICENSE_CONFIG` 指向受控配置文件；GitHub 发包设置 Actions secret `GLUESIGHT_LICENSE_CONFIG_JSON`。配置包含服务地址、应用 UUID、公钥和可选应急密码 Argon2id 校验值，不能放明文密码。缺少或错误配置会中止正式构建。生成工具与固定密码的保管方式见[授权操作](../operations/software-licensing.md)，配置与密码文件不进入安装包资源或发布附件。
+
 ```powershell
 pnpm install --frozen-lockfile
 pnpm package

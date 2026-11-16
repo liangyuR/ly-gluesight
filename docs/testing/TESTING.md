@@ -50,6 +50,10 @@ gh run view $runId --log
 
 ## 运行
 
+授权定向检查：`pnpm exec vitest run tests/licensing.test.tsx` 验证提醒与临时放行界面；`cargo test --locked --manifest-path src-tauri/Cargo.toml --lib licensing::` 验证 Windows DPAPI、硬件绑定、离线状态和 72 小时应急。`cargo test --locked --manifest-path src-tauri/Cargo.toml --lib license_` 覆盖当前件收尾及 S7 等工件结束才回授权错误 96。密码配置工具用 `cargo test --locked --manifest-path tools/license-provision/Cargo.toml` 验证未知字段/无效公钥/无效 PHC 拒绝和禁止覆盖固定密码；这些配置测试进入 Windows CI。
+
+隔离桌面实例和独立生产模拟也需要授权；`GLUESIGHT_DATA_DIR` 只隔离业务资料，不隔离或重置当前 Windows 用户的授权。真实服务联调使用测试模块创建的临时 DPAPI 存储，不复用客户授权或生产许可目录。浏览器页面布局验收不等同桌面激活验收。
+
 工具版本以 `package.json`、`rust-toolchain.toml` 和锁文件为准。首次安装执行 `pnpm install --frozen-lockfile`。应用 Vite 预构建仅扫描根目录 `index.html`，避免 `output/` 中的验收夹具或组件库示例引入其他 React 副本。
 
 | 命令 | 用途 |
@@ -92,7 +96,7 @@ Windows 受限环境遇到 Node realpath EPERM、回环连接被拒等权限失�
 
 ## Windows CI 与手动验收
 
-Windows PR CI 执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）、独立生产模拟器测试和生产录制输入转换测试。Format 用 rustfmt 解析变更的 Rust 文件并生成格式结果，仅检查与本次新增、修改行相交的格式差异；新文件全检，纯删除文件中的测试时仍解析保留代码，无 Rust 变更则跳过。所有变更文件另用 `git diff --check` 检查空白。PR 比较 base SHA 与当前提交，main 推送比较 before 与当前提交，手动运行比较当前提交与上一提交。存量 Rust 尚未全仓格式化，因此使用增量格式检查，避免无关源码重排；项目尚未配置前端格式化工具。
+Windows PR CI 执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）、独立生产模拟器测试、授权配置工具及发布门禁回归和生产录制输入转换测试。Format 用 rustfmt 解析变更的 Rust 文件并生成格式结果，仅检查与本次新增、修改行相交的格式差异；新文件全检，纯删除文件中的测试时仍解析保留代码，无 Rust 变更则跳过。所有变更文件另用 `git diff --check` 检查空白。PR 比较 base SHA 与当前提交，main 推送比较 before 与当前提交，手动运行比较当前提交与上一提交。存量 Rust 尚未全仓格式化，因此使用增量格式检查，避免无关源码重排；项目尚未配置前端格式化工具。
 
 本地使用 `node scripts/Check-RustFormat.mjs --base main` 检查相对 main 的已跟踪文件变更；加 `--head <commit>` 可检查指定提交快照。脚本只读，需先为项目工具链安装 rustfmt（`rustup component add rustfmt`）。
 

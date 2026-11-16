@@ -131,7 +131,13 @@ jobs:
           } finally { "frontend=$($timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))" | Add-Content -LiteralPath $env:PACKAGE_TIMINGS }
       - name: Production Rust build
         working-directory: src-tauri
+        env:
+          LICENSE_CONFIG_JSON: ${{ secrets.GLUESIGHT_LICENSE_CONFIG_JSON }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:LICENSE_CONFIG_JSON)) { throw 'Configure GLUESIGHT_LICENSE_CONFIG_JSON before building a licensed release.' }
+          $env:GLUESIGHT_LICENSE_CONFIG = Join-Path $env:RUNNER_TEMP 'gluesight-license.json'
+          [IO.File]::WriteAllText($env:GLUESIGHT_LICENSE_CONFIG, $env:LICENSE_CONFIG_JSON)
+          Remove-Item Env:LICENSE_CONFIG_JSON
           $env:TAURI_CONFIG = Get-Content -LiteralPath target/package-runtime/tauri.runtime.json -Raw
           $timer = [Diagnostics.Stopwatch]::StartNew()
           try {

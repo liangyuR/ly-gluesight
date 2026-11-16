@@ -22,6 +22,8 @@ pnpm dev               # tauri dev：启动 Vite 并编译运行 debug 版；编
 
 只调试前端界面时可用 `pnpm dev:web` 单独启动 Vite（端口 1420），不含后端。
 
+检测、采集和复测需要有效授权。开发及正式客户端都通过侧栏“软件授权”激活；构建前使用 `GLUESIGHT_LICENSE_CONFIG` 指定应用、公钥及服务地址配置，未配置的开发版仅可查看页面。Windows DPAPI 授权独立于项目及测试资料目录，不会因切换目录重置。配置、离线续期和 72 小时现场应急流程见[授权操作](docs/operations/software-licensing.md)。
+
 桌面应用启动时默认启用本机示教 MCP，无需访问令牌。客户端连接与端口配置见 [Agent 示教接口（MCP）](docs/integration/agent-teaching.md#启用与连接)。
 
 开发版切换项目后会保存下次启动的项目并提示等待手动重启。停止当前开发命令，再用相同入口和参数启动，核对当前项目后继续操作；正式版仍自动重启。
@@ -58,7 +60,7 @@ pnpm test                                   # 前端单元测试
 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
 
-Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）、独立生产模拟器测试和生产录制输入转换测试。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、旧样本集转换、打包及桌面验收均不在普通 PR CI 中执行。
+Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）、独立生产模拟器测试、授权配置工具及发布门禁回归和生产录制输入转换测试。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、旧样本集转换、打包及桌面验收均不在普通 PR CI 中执行。
 
 按 [测试说明](docs/testing/TESTING.md) 选择受影响文件或模块运行。Rust 默认集合包含少量 S7 回环、SQLite 与原图落盘集成测试，不需要现场硬件或 lyFlow DLL。算法评测通过独立 example 手动运行。
 

@@ -63,7 +63,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 
 ## 二、未完成事项
 
-- **软件授权**：[授权设计](architecture/software-licensing.md)约定一机一授权、联网激活后离线使用、北京时间停用日 0 点失效及提前 7 天提醒；尚未实现，生产接入须先对齐 PLC 授权错误契约。
+- **软件授权**：[授权设计](architecture/software-licensing.md)实现 Windows 单设备离线授权、DPAPI 安全存储、提前 7 天提醒、到期准入限制及 72 小时现场应急；配置和交付见[授权操作](operations/software-licensing.md)，PLC 授权不可用使用错误码 96。
 
 - **宽胶测量与质量判定分离**：[实现契约](architecture/wide-bead-measurement-plan.md)说明有限搜索内的宽胶保留、精确/截断/无胶/未知证据、质量汇总及旧发布包升级要求。
 

@@ -365,6 +365,7 @@ pub async fn flow_run(
     params: Option<Map<String, Value>>,
 ) -> Result<String, String> {
     blocking(move || {
+        crate::licensing::require_business()?;
         crate::camera::check_idle(&app.state::<CycleHost>())?;
         let host = app.state::<FlowDebugHost>();
         let session = host.session(session)?;
