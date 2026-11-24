@@ -63,6 +63,8 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 
 ## 二、未完成事项
 
+- **混胶色差**：[双组分胶混胶色差检测](architecture/mix-uniformity-plan.md)按黄—绿—蓝混合轴量测胶面的偏黄、偏蓝，说明拟议算子、成像前置条件、离线可行性验证与现场验收方法；尚未实现。
+
 - **软件授权**：[授权设计](architecture/software-licensing.md)约定一机一授权、联网激活后离线使用、北京时间停用日 0 点失效及提前 7 天提醒；尚未实现，生产接入须先对齐 PLC 授权错误契约。
 
 - **宽胶测量与质量判定分离**：[实现契约](architecture/wide-bead-measurement-plan.md)说明有限搜索内的宽胶保留、精确/截断/无胶/未知证据、质量汇总及旧发布包升级要求。
