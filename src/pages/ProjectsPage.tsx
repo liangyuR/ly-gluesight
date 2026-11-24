@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowRightLeft, Copy, Download, Ellipsis, FolderKanban, Pencil, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
+import { ArrowRightLeft, ChevronDown, Copy, Download, FolderKanban, Pencil, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
 import { Alert, Button, Card, EmptyState, Heading, IconButton, List, ListItem, Menu, StatusBadge, type MenuEntry } from "qing-steel";
 import { projectApi, projectTransferApi, type ProjectEntry, type ProjectImportPreview, type ProjectMeta } from "../lib/project";
 import { desktopAvailable } from "../lib/desktop";
@@ -31,7 +31,8 @@ function ProjectActions({ entry, onOpen }: { entry: ProjectEntry; onOpen: (open:
   if (entry.current) items.push({ type: "label", id: "delete-hint", label: "请先切换到其他项目" });
   const label = `项目操作：${projectLabel(entry)}`;
   return <Menu label={label} align="end" items={items}
-    trigger={<IconButton size="sm" variant="outlined" aria-label={label} title="项目操作"><Ellipsis size={18} /></IconButton>} />;
+    trigger={<Button size="sm" variant="outlined" className="pj-action-trigger" aria-label={label}
+      trailingIcon={<ChevronDown size={14} aria-hidden="true" />}>项目操作</Button>} />;
 }
 
 function ProjectDetails({ entry, state, onOpen }: { entry: ProjectEntry; state: UsageState | undefined; onOpen: (open: Open) => void }) {

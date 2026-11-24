@@ -46,6 +46,7 @@
 }
 .pj-detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .pj-detail-text { min-width: 0; }
+.pj-action-trigger { flex-shrink: 0; white-space: nowrap; }
 .pj-details .pj-detail-title { font-size: 24px; line-height: 1.25; margin: 0; }
 .pj-detail-description { margin-top: 8px; font-size: 15px; }
 .pj-details > .qs-banner, .pj-usage-status { margin-top: 16px; }
