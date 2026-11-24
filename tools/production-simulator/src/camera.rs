@@ -78,6 +78,7 @@ impl CameraServer {
             gate.clone(),
             counter.clone(),
         );
+        let capture = config.synthetic_capture.clone();
         let task = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 if clients
@@ -93,9 +94,10 @@ impl CameraServer {
                     preview.clone(),
                     tx.subscribe(),
                 );
+                let capture = capture.clone();
                 tokio::spawn(async move {
                     let _ = stream.set_nodelay(true);
-                    let result = serve(stream, rx, &level, &count, epoch, preview).await;
+                    let result = serve(stream, rx, &level, &count, epoch, preview, capture).await;
                     clients.store(0, Ordering::SeqCst);
                     if let Err(e) = result {
                         eprintln!("相机连接结束：{e}");
@@ -174,11 +176,13 @@ async fn serve(
     counter: &AtomicU64,
     epoch: Instant,
     preview: Frame,
+    capture: Option<crate::config::SyntheticCapture>,
 ) -> Result<(), String> {
     let (read, mut write) = stream.into_split();
     let mut read = BufReader::new(read);
     let mut line = Vec::new();
     let mut tick = tokio::time::interval(Duration::from_millis(20));
+    let mut initial = true;
     loop {
         let packet = tokio::select! {
             biased;
@@ -193,7 +197,16 @@ async fn serve(
                 Packet { header: Header { width: preview.width, height: preview.height, frame_number: counter.fetch_add(1, Ordering::SeqCst) + 1, timestamp_ns: epoch.elapsed().as_nanos() as u64, pixel_format: preview.pixel_format, payload_length: preview.pixels.len(), gate_high: false }, pixels: preview.pixels.clone() }
             }
         };
-        let header = serde_json::to_vec(&packet.header).map_err(|e| e.to_string())?;
+        let header = if initial && capture.is_some() {
+            let mut header = serde_json::to_value(&packet.header).map_err(|e| e.to_string())?;
+            header["syntheticCapture"] =
+                serde_json::to_value(&capture).map_err(|e| e.to_string())?;
+            serde_json::to_vec(&header)
+        } else {
+            serde_json::to_vec(&packet.header)
+        }
+        .map_err(|e| e.to_string())?;
+        initial = false;
         tokio::time::timeout(Duration::from_secs(2), async {
             write
                 .write_all(&(header.len() as u32).to_be_bytes())

@@ -14,6 +14,7 @@ fn teaching(w: &Workspace, frame: &str, seq: u64, segment: u32) -> CameraTeachin
     CameraTeaching {
         camera: camera.clone(),
         frame: FrozenImage {
+            mix_capture: None,
             id: frame.into(),
             view: 1,
             source: format!("capture:round#{seq}"),
@@ -66,6 +67,7 @@ impl Fixture {
             capture_seq: AtomicU64::new(0),
             comparisons: comparisons::Comparisons::default(),
             history_bundle: Mutex::new(None),
+            mix_samples: Mutex::default(),
         };
         workspace = Self::prepare(&workspace, "original", 1, false)
             .commit(&host, path(), None)
@@ -396,6 +398,7 @@ fn narrow_trial_reads_only_its_window_and_preserves_frame_numbers_and_segment_co
             segment: 2,
             corridor: path(),
             sector_deg: Some(45.0),
+            mix_check: None,
             color_model: None,
             measure: None,
         });

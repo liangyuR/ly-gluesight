@@ -81,8 +81,24 @@ pub struct CaptureCamera {
     pub camera_id: String,
     pub camera_config: serde_json::Value,
     pub imaging: CameraImaging,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synthetic_capture: Option<crate::frame::MixCapture>,
     pub device_session: u64,
     pub received_count: u32,
+}
+
+impl CaptureCamera {
+    pub fn mix_capture(&self) -> Option<crate::frame::MixCapture> {
+        match self.camera_config["source"].as_str()? {
+            "mvs" => Some(crate::frame::MixCapture {
+                serial: self.camera_config["serial"].as_str()?.to_owned(),
+                white_balance: self.imaging.white_balance?,
+                synthetic: false,
+            }),
+            "simulator" => self.synthetic_capture.clone().filter(|v| v.synthetic),
+            _ => None,
+        }
+    }
 }
 
 /// 按历史件 cycleId 查它的录制目录（检测记录库里记的目录，可在任意盘）；记录不在本机或没有录制目录为 None。

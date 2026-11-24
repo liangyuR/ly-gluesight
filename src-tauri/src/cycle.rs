@@ -889,6 +889,7 @@ fn publish_record(app: &AppHandle, tone: &'static str, record: applog::Record) {
 }
 
 struct Part {
+    mix_captures: Vec<Option<crate::frame::MixCapture>>,
     mode: crate::store::PartMode,
     cycle_id: String,
     bundle_id: Option<String>,
@@ -1049,6 +1050,7 @@ fn frame_job(
     image: Option<crate::frame::FrameView>,
 ) -> FrameJob {
     FrameJob {
+        capture: part.mix_captures.get(camera).cloned().flatten(),
         cycle_id: part.cycle_id.clone(),
         bundle_id: part.bundle_id.clone(),
         production: part.production.clone(),
@@ -1082,15 +1084,28 @@ fn annotate_recording(
     identities: &[ArmCam],
     request: &Request,
 ) {
-    let devices: Vec<serde_json::Value> = cams.iter().zip(recipe.plan_cameras()).map(|(&cam, camera)| {
-        let slot = host.camera.slot(cam as usize);
-        json!({
-            "cameraId": camera,
-            "cameraConfig": slot.as_ref().map(|slot| slot.config()),
-            "imaging": slot.as_ref().map(|slot| slot.recorded_imaging()),
-            "deviceSession": identities.iter().find(|identity| identity.cam == cam).map(|identity| identity.session),
+    let devices: Vec<serde_json::Value> = cams
+        .iter()
+        .zip(recipe.plan_cameras())
+        .map(|(&cam, camera)| {
+            let slot = host.camera.slot(cam as usize);
+            let session = identities
+                .iter()
+                .find(|identity| identity.cam == cam)
+                .map(|identity| identity.session);
+            let mut entry = json!({
+                "cameraId": camera,
+                "cameraConfig": slot.as_ref().map(|slot| slot.config()),
+                "imaging": slot.as_ref().map(|slot| slot.recorded_imaging(session)),
+                "deviceSession": session,
+            });
+            if let Some(capture) = slot.and_then(|slot| slot.synthetic_capture(session)) {
+                entry["syntheticCapture"] =
+                    json!({"serial": capture.serial, "whiteBalance": capture.white_balance});
+            }
+            entry
         })
-    }).collect();
+        .collect();
     rec.annotate("partMode", json!(mode));
     rec.annotate("devices", json!(devices));
     rec.annotate(
@@ -1837,6 +1852,26 @@ impl Machine {
             annotate_recording(rec, host, mode, &recipe, &cams, &identities, &request);
         }
         self.part = Some(Part {
+            mix_captures: cams
+                .iter()
+                .map(|&cam| {
+                    let slot = host.camera.slot(cam as usize)?;
+                    let session = identities
+                        .iter()
+                        .find(|identity| identity.cam == cam)
+                        .map(|identity| identity.session);
+                    let config = slot.config();
+                    match config.source {
+                        crate::camera::CameraSource::Mvs => Some(crate::frame::MixCapture {
+                            serial: config.serial,
+                            white_balance: slot.recorded_imaging(session).white_balance?,
+                            synthetic: false,
+                        }),
+                        crate::camera::CameraSource::Simulator => slot.synthetic_capture(session),
+                        _ => None,
+                    }
+                })
+                .collect(),
             mode,
             cycle_id,
             bundle_id,

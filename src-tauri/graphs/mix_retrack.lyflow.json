@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "id": "01GLUESIGHTMIXRETRACK",
+  "nodes": [
+    {"id": "n_load", "op": "io.load_image", "params": {"source": "inputs"}},
+    {"id": "n_map", "op": "glue.mix_map", "params": {}},
+    {"id": "n_fan", "op": "glue.color_fan", "params": {"includeInvalid": true}},
+    {"id": "n_t0", "op": "glue.color_track", "params": {"peakIndex": 0, "minPoints": 3, "split": "half_max"}},
+    {"id": "n_t1", "op": "glue.color_track", "params": {"peakIndex": 1, "minPoints": 3, "split": "half_max"}},
+    {"id": "n_t2", "op": "glue.color_track", "params": {"peakIndex": 2, "minPoints": 3, "split": "half_max"}}
+  ],
+  "edges": [
+    {"id": "e0", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_map", "port": "image"}},
+    {"id": "e1", "from": {"node": "n_map", "port": "colorMaps"}, "to": {"node": "n_fan", "port": "maps"}},
+    {"id": "e2", "from": {"node": "n_map", "port": "colorMaps"}, "to": {"node": "n_t0", "port": "maps"}},
+    {"id": "e4", "from": {"node": "n_fan", "port": "scan"}, "to": {"node": "n_t0", "port": "fan"}},
+    {"id": "e10", "from": {"node": "n_map", "port": "colorMaps"}, "to": {"node": "n_t1", "port": "maps"}},
+    {"id": "e12", "from": {"node": "n_fan", "port": "scan"}, "to": {"node": "n_t1", "port": "fan"}},
+    {"id": "e18", "from": {"node": "n_map", "port": "colorMaps"}, "to": {"node": "n_t2", "port": "maps"}},
+    {"id": "e20", "from": {"node": "n_fan", "port": "scan"}, "to": {"node": "n_t2", "port": "fan"}}
+  ],
+  "outputs": {
+    "scan": {"node": "n_fan", "port": "scan"},
+    "track0": {"node": "n_t0", "port": "track"},
+    "line0": {"node": "n_t0", "port": "line"},
+    "track1": {"node": "n_t1", "port": "track"},
+    "line1": {"node": "n_t1", "port": "line"},
+    "track2": {"node": "n_t2", "port": "track"},
+    "line2": {"node": "n_t2", "port": "line"}
+  },
+  "params": {
+    "nozzle": {"default": [0.0, 0.0], "binds": ["n_fan.anchor", "n_t0.anchor", "n_t1.anchor", "n_t2.anchor"], "doc": "出胶点（px）"},
+    "zone": {"default": [0.0, 100.0], "binds": ["n_t0.zone", "n_t1.zone", "n_t2.zone"], "doc": "检测区：距出胶点的弧长区间（px）"},
+    "radial": {"default": [0.0, 100.0], "binds": ["n_fan.radial"], "doc": "扇形扫描的径向区间（px）：检测区前段，最长 150 px"},
+    "sector": {"default": [-180.0, 180.0], "binds": ["n_fan.sector", "n_t0.bearingRange", "n_t1.bearingRange", "n_t2.bearingRange"], "doc": "扇形搜索的方向范围（度）"},
+    "roi": {"default": [0, 0, 0, 0], "binds": ["n_map.roi"], "doc": "响应图只算的块 [x, y, w, h]（px）：出胶点 ± 检测区外沿 + max(胶宽上限 + 8, 卡尺半长 + 5)"},
+    "pathWidthMax": {"default": 24.0, "binds": ["n_t0.widthMax", "n_t1.widthMax", "n_t2.widthMax", "n_t0.mergeWidthMax", "n_t1.mergeWidthMax", "n_t2.mergeWidthMax"], "doc": "粗跟踪宽度参考（px），不限制搜索范围"},
+    "searchHalf": {"default": 32.0, "binds": ["n_t0.searchHalf", "n_t1.searchHalf", "n_t2.searchHalf"], "doc": "卡尺半长（px）"},
+    "colorPathSegmentMin": {"type": "float", "label": "定向胶色分段门限", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.3, "advanced": true, "group": "定胶路", "doc": "粗跟踪时卡尺上胶色得分高于它的相邻采样连成一段", "binds": ["n_t0.segmentMin", "n_t1.segmentMin", "n_t2.segmentMin"]},
+    "colorPathPeakMin": {"type": "float", "label": "定向胶色峰值下限", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.6, "advanced": true, "group": "定胶路", "doc": "粗跟踪时一段的胶色得分峰值至少这么高才算胶", "binds": ["n_t0.peakMin", "n_t1.peakMin", "n_t2.peakMin"]},
+    "colorPathMaxGap": {"type": "float", "label": "定向最大断口", "unit": "px", "min": 0.0, "max": 1000.0, "step": 1.0, "default": 120.0, "advanced": true, "group": "定胶路", "doc": "粗跟踪时连续这么长没找到胶（高光、暗区等无信息的步不算）就不再接着往下跟", "binds": ["n_t0.maxGap", "n_t1.maxGap", "n_t2.maxGap"]},
+    "colorInfoMin": {"type": "float", "label": "定向有信息下限", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.5, "advanced": true, "group": "定胶路", "doc": "粗跟踪一步的接受窗里有效采样不到它、又没找到胶，这一步算无信息，不计入断口", "binds": ["n_t0.infoMin", "n_t1.infoMin", "n_t2.infoMin"]},
+    "widthPolicy": {"default": "extent", "binds": ["n_t0.widthPolicy", "n_t1.widthPolicy", "n_t2.widthPolicy"], "doc": "有限观察窗内保留宽胶；宽度参考不排除候选"},
+    "model": {"default": "", "binds": ["n_map.model"], "doc": "冻结的混胶色度模型 JSON"},
+    "offAxisLimit": {"default": 3.5, "binds": ["n_map.offAxisLimit"], "doc": "胶面归一离轴量上限", "advanced": true}
+  },
+  "x": {"gluesight": {"judge": {"minCoverage": {"type": "float", "label": "定向覆盖率下限", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.3, "advanced": true, "group": "定胶路", "doc": "选中方向粗找到胶的步数占比低于它就算没找到胶条"}}}}
+}

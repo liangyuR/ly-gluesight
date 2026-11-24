@@ -234,6 +234,7 @@ async fn dispatch_tasks<T: Task>(mut rx: Receiver<T>, health: Arc<WorkerHealth>,
 
 /// 段配方一台相机的一帧。
 pub struct FrameJob {
+    pub capture: Option<crate::frame::MixCapture>,
     pub cycle_id: String,
     pub bundle_id: Option<String>,
     pub production: Option<Arc<crate::production::Prepared>>,
@@ -340,6 +341,7 @@ impl FrameMeasured {
                 width_min: None,
                 width_max: None,
                 width_mean: None,
+                mix_evidence: None,
                 measurement_evidence: None,
                 widths: Vec::new(),
                 spacing_mm: 0.0,
@@ -516,6 +518,7 @@ pub(crate) fn simulate_frame(
         width_min: present.iter().copied().reduce(f64::min),
         width_max: present.iter().copied().reduce(f64::max),
         width_mean: (!present.is_empty()).then(|| present.iter().sum::<f64>() / present.len() as f64),
+        mix_evidence: None,
         measurement_evidence: None,
         widths: widths.iter().map(|w| w.map(|w| w as f32)).collect(),
         spacing_mm: spacing,
@@ -579,6 +582,7 @@ mod tests {
     fn frame_job_within(recipe: &Arc<Recipe>, seq: u64, timeout: Duration) -> FrameJob {
         FrameJob {
             cycle_id: "cycle-7".into(),
+            capture: None,
             bundle_id: None,
             production: None,
             camera_idx: 0,

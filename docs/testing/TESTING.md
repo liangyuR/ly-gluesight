@@ -160,6 +160,30 @@ python scripts/color-eval/glue_color_eval.py <标注.json> [--out <输出目录>
 
 终端打印各通道的汇总表与不可用原因；输出目录（默认 `output/color-eval/`）里有 `report.json`、逐探针的 `probes.csv`，以及每张图的通道与响应对照图 `<图名>_channels.png`。可用门槛：d' ≥ 3、极性一致、材质间响应比 ≥ 0.3、干扰物 / 胶 ≤ 0.5。其中 0.3 取自 D16 的对比度比，其余是经验值，结论用于选择通道公式，不代替带实际胶路的试测。
 
+### 混胶色差的离线验证
+
+按一台相机的一个段准备一份标注。没有样件时可运行下面两条命令，生成独立的合成 Bayer 录制件，再通过与现场相同的读图入口做验证。示例与报告都标为 `synthetic`。两条命令的输出各使用新目录或空目录。
+
+```powershell
+python scripts/color-eval/mix_fixture.py --out output/mix-fixture
+python scripts/color-eval/mix_eval.py output/mix-fixture/spec.json --out output/mix-eval
+python scripts/color-eval/mix_native_parity.py output/mix-fixture/spec.json --dll <运行库目录>/lyflow_core.dll --report output/mix-parity.json
+```
+
+**录入现场数据。** 以生成的 `spec.json` 为格式示例，另建标注并将 `datasetKind` 设为 `field`。每帧用相对标注文件的 `part` 路径和原始 `seq` 指定；工具从 `part.json` 核对相机、设备序列号和白平衡回读，按 PGM 头的 Bayer 相位去马赛克，也支持同名 GSR 压缩原图。缺少白平衡回读的旧录制不能用于拟合或评估。
+
+- `fit[].samples` 用原图整数矩形 `[x, y, 宽, 高]` 取样。合格件提供绿色胶面及两侧背景，纯黄与纯蓝排胶件各提供对应端点。每种取样可给多个矩形。
+- `cases[]` 中的 `line` 是本帧有向胶路折线（原图像素），`background` 选与拟合时对应的背景位置，可选的 `surface` 标记确认属于胶面的矩形。背景误入胶面的比例与已标注胶面的不可测比例分别统计。测站 `validFraction` 的分母是整个搜索截面，包含底材；胶面不可测率请看 `surfaceCoverage`。`split` 为 `tune` 或 `holdout`，同一工件的帧只属于一个集合。工艺人员可在 `note` 记下临界条纹的位置、尺寸及方向。
+- `measurement` 分别配置搜索半宽、纵向平滑长度、短高光空缺上限（均以 px 计）、离轴有效性门限、局部条纹轴向门限及测站中位数门限。`highlightRadiusPx` 默认将饱和像素的掩膜向外扩 1 px，覆盖 Bayer 双线性插值的相邻像素；拟合和评估使用相同半径。示例数值只用于复现合成场景。现场先用调参集选定并冻结门限，再运行独立验收集。
+
+**查看结果。** `report.json` 列出每帧的工件、帧号、划分及背景色度偏移。`frame-*/original.png` 是去马赛克原图；`axis.png` 用绿色标合格色附近的可测像素，向黄色或蓝色渐变表示轴向偏移，高光为白色；`overlay.png` 在原图叠加区域轮廓及中位数超限的测站。`observation.json` 给出数值及原图坐标，`maps.npz` 含轴向、离轴和有效性数组，可用于复核底材、薄胶膜与高光边缘。背景偏移单独报告，判为成像漂移的现场门限待标定。[设计与现场通过判据](../architecture/mix-uniformity-plan.md)
+
+**核对原生运行库。** 显式指定安装包或本机构建的 DLL。脚本用相同的原始 Bayer 帧和选区运行 Python 参考实现及实际的 GlueSight 示教图，再比对三个原生算子的模型、逐像素状态与色度得分、轮廓、测站曲线和背景偏移。报告记录 DLL 版本与 SHA-256。任一项不一致时命令失败。
+
+```powershell
+python scripts/color-eval/mix_native_parity.py output/mix-fixture/spec.json --dll <运行库目录>/lyflow_core.dll --report output/mix-native/report.json
+```
+
 ### 3 × 25 Hz 吞吐门槛
 
 三台相机各 25 Hz 同时出帧是 75 帧/s，1280 × 1024 单字节灰度每帧 1.31 MB，约 98 MB/s。P1 探针量测量耗时与 PGM 写盘速率；它是 `src-tauri/examples/throughput_probe.rs`，不是测试，不在 `cargo test` 里，写约 4 GB 临时文件、结束后自动删除，约 1 分钟，需要已发布的 lyFlow 运行库：

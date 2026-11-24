@@ -97,6 +97,7 @@ pub(super) fn teaching_frame(
         crate::camera::ImageMode::Gray
     };
     FrozenImage {
+        mix_capture: image.capture.clone(),
         id,
         view: 1,
         source: format!("capture:{round}#{seq}"),
@@ -594,6 +595,7 @@ pub(super) fn frame_without_metrics(
         width_min: None,
         width_max: None,
         width_mean: None,
+        mix_evidence: None,
         measurement_evidence: None,
         widths: Vec::new(),
         spacing_mm: 0.0,
@@ -995,6 +997,7 @@ impl PreparedSegmentTeaching {
                 segment: self.segment,
                 corridor: Vec::new(),
                 sector_deg: None,
+                mix_check: None,
                 color_model: None,
                 measure: None,
             });
@@ -1130,13 +1133,14 @@ pub(super) async fn prepare_segment_teaching(
             .into_iter()
             .find(|c| c.id == camera)
             .ok_or_else(|| format!("相机 {camera} 已不在设备配置里"))?;
-        let imaging = teaching_source(&captured, &id, &camera, seq)?.imaging;
+        let capture_camera = teaching_source(&captured, &id, &camera, seq)?;
+        let imaging = capture_camera.imaging;
         let source = capture.burst_frame_path(&round, &camera, seq)?;
         let bytes = crate::image_file::read_original(&source)?;
-        let image = Arc::new(
-            crate::image_file::decode(&bytes)
-                .map_err(|e| format!("解码 {} 失败：{e}", source.display()))?,
-        );
+        let mut image = crate::image_file::decode(&bytes)
+            .map_err(|e| format!("解码 {} 失败：{e}", source.display()))?;
+        image.capture = capture_camera.mix_capture();
+        let image = Arc::new(image);
         let calib = vision::camera_calib_path(&app, inspect)?;
         let default_scale = calib_scale(&app, inspect, config.source)?;
         let frame = teaching_frame(
@@ -1506,6 +1510,7 @@ fn with_segment_corridor(
         corridor,
         sector_deg: previous.as_ref().and_then(|p| p.sector_deg),
         color_model,
+        mix_check: previous.as_ref().and_then(|p| p.mix_check.clone()),
         measure: previous.and_then(|p| p.measure),
     });
     inspect.segments.sort_by_key(|s| s.segment);
@@ -2087,6 +2092,9 @@ pub async fn workspace_calibration_round_overview(
             if let Some(evidence) = &mut frame.measurement_evidence {
                 evidence.stations.clear();
             }
+            if let Some(evidence) = &mut frame.mix_evidence {
+                evidence.omit_observation();
+            }
         }
         Ok(frames)
     })
@@ -2204,7 +2212,14 @@ fn segment_frame_view(
     let cycle = app.state::<CycleHost>();
     crate::camera::check_idle(&cycle)?;
     let capture = cycle.camera.recipe_capture();
-    let image = crate::image_file::load(&capture.burst_frame_path(round, camera, seq)?)?;
+    let index_data = capture.burst_frame_index(round)?;
+    let mut image = crate::image_file::load(&index_data.path(camera, seq)?)?;
+    image.capture = index_data
+        .round()
+        .cameras
+        .iter()
+        .find(|c| c.camera_id == camera)
+        .and_then(|c| c.mix_capture());
     frame_view(
         app,
         recipe,
@@ -2710,7 +2725,12 @@ async fn preview_range_operation(
                 expected_revision,
                 |seq| {
                     crate::camera::check_idle(&cycle)?;
-                    let image = crate::image_file::load(&index.path(&camera, seq)?)?;
+                    let mut image = crate::image_file::load(&index.path(&camera, seq)?)?;
+                    image.capture = captured
+                        .cameras
+                        .iter()
+                        .find(|c| c.camera_id == camera)
+                        .and_then(|c| c.mix_capture());
                     let graph = graphs.get(scope.index, segment).ok_or("走廊测量图缺失")?;
                     vision::measure_frame(
                         &engine,

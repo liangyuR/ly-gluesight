@@ -279,6 +279,8 @@ pub struct SegmentCorridor {
     /// 这台相机在这一段的颜色模型（`glue.ColorModel` 的 JSON 原文）：彩色示教帧上沿走廊取色得出，按胶色测量时用
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mix_check: Option<MixCheck>,
     /// 操作员选的测量方式；没选时有颜色模型按胶色、否则按灰度（[`SegmentCorridor::measure_mode`]）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measure: Option<MeasureMode>,
@@ -290,6 +292,21 @@ pub struct SegmentCorridor {
 pub enum MeasureMode {
     Gray,
     Color,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MixCheck {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_serial: Option<String>,
+    pub background_rects: Vec<[u32; 4]>,
+    pub max_length_mm: f64,
+    pub max_area_mm2: f64,
+    pub drift_length_mm: f64,
 }
 
 impl SegmentCorridor {
@@ -338,6 +355,29 @@ impl CameraInspect {
             ));
         }
         for (i, s) in self.segments.iter().enumerate() {
+            if let Some(check) = &s.mix_check {
+                if [
+                    check.max_length_mm,
+                    check.max_area_mm2,
+                    check.drift_length_mm,
+                ]
+                .iter()
+                .any(|v| !v.is_finite() || *v <= 0.0)
+                {
+                    return Err(format!(
+                        "相机 {id} 第 {} 段混胶色差的长度与面积门限必须为正数",
+                        s.segment
+                    ));
+                }
+                if check.background_rects.iter().any(|&[x, y, w, h]| {
+                    w == 0 || h == 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none()
+                }) {
+                    return Err(format!(
+                        "相机 {id} 第 {} 段混胶色差的背景取样矩形无效",
+                        s.segment
+                    ));
+                }
+            }
             if s.corridor.len() > 10_000 || s.corridor.iter().flatten().any(|v| !v.is_finite()) {
                 return Err(format!(
                     "相机 {id} 第 {} 段的走廊最多 10000 点，坐标必须是有限数",
@@ -900,6 +940,7 @@ pub fn samples_burst() -> RecipeDoc {
             segment: 1,
             corridor: sample_path(0),
             sector_deg: None,
+            mix_check: None,
             color_model: None,
             measure: None,
         }];

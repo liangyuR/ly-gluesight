@@ -25,6 +25,7 @@ import type { HistoryDetailState, PartDetail } from "../types";
 import { BurstPartTrace } from "./PartTrace";
 import { RegionReplayDiff } from "./ReplayDiff";
 import { historyReturnContext, historyReturnSearch } from "../returnContext";
+import MixSummary from "../../plan/MixSummary";
 import { evidenceOverlay, MeasurementEvidenceSummary } from "../../plan/measurementEvidence";
 
 const comparisonLabel = { rules: "规则重判", raw: "候选原图复测", original: "原发布包重现" };
@@ -101,8 +102,9 @@ function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, 
   // 联动的测站画在最后、加粗换色，免得被相邻测站盖住
   const lines = (traced.view?.edges ?? []).flatMap((edge, i) => edge ? [{ from: edge[0], to: edge[1], station: i,
     color: i === lit ? "var(--ov-warn)" : "var(--ov-line)", width: i === lit ? 4 : 2 }] : []).sort((a, b) => Number(a.station === lit) - Number(b.station === lit));
-  const overlay = traced.view && traced.view.corridor.length >= 2 ? { path: traced.view.corridor, searchHalfPx: traced.view.searchHalfPx ?? undefined,
-    segments: lines, clipped: evidenceOverlay(traced.view?.metrics), partEdges: traced.view.partEdges, onSegmentHover: selected ? onStation : undefined } : undefined;
+  const mixEvidence = frame?.metrics?.mixEvidence;
+  const overlay = traced.view || mixEvidence?.observation ? { path: traced.view?.corridor ?? [], mixEvidence, searchHalfPx: traced.view?.searchHalfPx ?? undefined,
+    segments: lines, clipped: evidenceOverlay(traced.view?.metrics), partEdges: traced.view?.partEdges, onSegmentHover: selected ? onStation : undefined } : undefined;
   const unavailable = recordCamera == null ? "记录里没有这台相机的原图" : !frame ? "没有这一帧的记录"
     : frame.status === "missing" ? "这台相机本帧组缺帧，没有原图（检测不完整，不影响 OK/NG）"
       : frame.rawFile ? "" : `本帧原图未保存或已按保留策略清理；完整指标仍可在下方查看。${detail.recording.state === "complete" ? "" : recordingReason[detail.recording.state]}`;
@@ -385,7 +387,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         <div className="wp-stack">
           <div className="hist-frame-tiles" aria-label={`帧组 ${selection.seq} 各相机原图`}>
             {shown.cameras.map((name, c) => <FrameTile key={c} detail={detail} comparison={viewing ? comparison : null} camera={c} recordCamera={shown.recordCameras ? shown.recordCameras[c] : c} cameraName={name} seq={selection.seq}
-              frame={shown.frames.find(f => f.camera === c && f.seq === selection.seq) ?? null} selected={c === selection.camera} onSelect={() => setSelection(prev => ({ ...prev, camera: c }))}
+              frame={c === selection.camera ? frame : frames.get(`${c}:${selection.seq}`) ?? null} selected={c === selection.camera} onSelect={() => setSelection(prev => ({ ...prev, camera: c }))}
               station={station} onStation={setStation} skipped={!!skipped} />)}
           </div>
           {skipped && <Text as="p" muted role="note">生产跳过 · {regionKindLabel(skipped.region.kind)} · 不参与判定，原图与测量数据仅供诊断。</Text>}
@@ -399,6 +401,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
             <KV label="胶宽 min / max / mean">{metrics && frame?.status === "measured" ? `${mm(metrics.widthMin)} / ${mm(metrics.widthMax)} / ${mm(metrics.widthMean)} mm` : "—"}</KV>
             <KV label="胶中心 x">{metrics && frame?.status === "measured" ? `${mm(metrics.xMm)} mm` : "—"}</KV>
             <KV label="最长断胶">{metrics && frame?.status === "measured" ? `${mm(metrics.gapMaxMm)} mm` : "—"}</KV>
+            {metrics?.mixEvidence && <MixSummary evidence={metrics.mixEvidence} diagnostic={!!skipped}/>}
             {metrics?.measurementEvidence && <KV label={skipped ? "诊断量测证据" : "量测证据"}><MeasurementEvidenceSummary evidence={metrics.measurementEvidence} /></KV>}
             {metrics?.headingFallback && <KV label="定向">{metrics.measurementEvidence ? "方向未确定" : "没找到胶条"}{metrics.fallbackReason ? `：${metrics.fallbackReason}` : ""}</KV>}
             {metrics?.error && <KV label="说明">{metrics.error}</KV>}

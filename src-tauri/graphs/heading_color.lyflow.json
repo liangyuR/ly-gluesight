@@ -31,11 +31,16 @@
       }
     },
     {
-      "id": "n_r0",
-      "op": "glue.color_runs",
+      "id": "n_r0_caliper",
+      "op": "image.color_caliper",
       "params": {
         "split": "half_max"
       }
+    },
+    {
+      "id": "n_r0",
+      "op": "glue.merge_color_runs",
+      "params": {}
     },
     {
       "id": "n_e0",
@@ -55,11 +60,16 @@
       }
     },
     {
-      "id": "n_r1",
-      "op": "glue.color_runs",
+      "id": "n_r1_caliper",
+      "op": "image.color_caliper",
       "params": {
         "split": "half_max"
       }
+    },
+    {
+      "id": "n_r1",
+      "op": "glue.merge_color_runs",
+      "params": {}
     },
     {
       "id": "n_e1",
@@ -79,11 +89,16 @@
       }
     },
     {
-      "id": "n_r2",
-      "op": "glue.color_runs",
+      "id": "n_r2_caliper",
+      "op": "image.color_caliper",
       "params": {
         "split": "half_max"
       }
+    },
+    {
+      "id": "n_r2",
+      "op": "glue.merge_color_runs",
+      "params": {}
     },
     {
       "id": "n_e2",
@@ -146,7 +161,7 @@
         "port": "maps"
       },
       "to": {
-        "node": "n_r0",
+        "node": "n_r0_caliper",
         "port": "maps"
       }
     },
@@ -157,7 +172,7 @@
         "port": "line"
       },
       "to": {
-        "node": "n_r0",
+        "node": "n_r0_caliper",
         "port": "line"
       }
     },
@@ -212,7 +227,7 @@
         "port": "maps"
       },
       "to": {
-        "node": "n_r1",
+        "node": "n_r1_caliper",
         "port": "maps"
       }
     },
@@ -223,7 +238,7 @@
         "port": "line"
       },
       "to": {
-        "node": "n_r1",
+        "node": "n_r1_caliper",
         "port": "line"
       }
     },
@@ -278,7 +293,7 @@
         "port": "maps"
       },
       "to": {
-        "node": "n_r2",
+        "node": "n_r2_caliper",
         "port": "maps"
       }
     },
@@ -289,7 +304,7 @@
         "port": "line"
       },
       "to": {
-        "node": "n_r2",
+        "node": "n_r2_caliper",
         "port": "line"
       }
     },
@@ -313,6 +328,39 @@
       "to": {
         "node": "n_e2",
         "port": "line"
+      }
+    },
+    {
+      "id": "n_r0_observation",
+      "from": {
+        "node": "n_r0_caliper",
+        "port": "observation"
+      },
+      "to": {
+        "node": "n_r0",
+        "port": "observation"
+      }
+    },
+    {
+      "id": "n_r1_observation",
+      "from": {
+        "node": "n_r1_caliper",
+        "port": "observation"
+      },
+      "to": {
+        "node": "n_r1",
+        "port": "observation"
+      }
+    },
+    {
+      "id": "n_r2_observation",
+      "from": {
+        "node": "n_r2_caliper",
+        "port": "observation"
+      },
+      "to": {
+        "node": "n_r2",
+        "port": "observation"
       }
     }
   ],
@@ -446,9 +494,9 @@
     "stationStep": {
       "default": 4.0,
       "binds": [
-        "n_r0.stationStep",
-        "n_r1.stationStep",
-        "n_r2.stationStep",
+        "n_r0_caliper.stationStep",
+        "n_r1_caliper.stationStep",
+        "n_r2_caliper.stationStep",
         "n_e0.stationStep",
         "n_e1.stationStep",
         "n_e2.stationStep"
@@ -458,9 +506,9 @@
     "searchHalf": {
       "default": 32.0,
       "binds": [
-        "n_r0.searchHalf",
-        "n_r1.searchHalf",
-        "n_r2.searchHalf",
+        "n_r0_caliper.searchHalf",
+        "n_r1_caliper.searchHalf",
+        "n_r2_caliper.searchHalf",
         "n_t0.searchHalf",
         "n_t1.searchHalf",
         "n_t2.searchHalf"
@@ -529,9 +577,9 @@
       "group": "量胶宽",
       "doc": "卡尺上胶色得分高于它的相邻采样连成一段",
       "binds": [
-        "n_r0.segmentMin",
-        "n_r1.segmentMin",
-        "n_r2.segmentMin"
+        "n_r0_caliper.segmentMin",
+        "n_r1_caliper.segmentMin",
+        "n_r2_caliper.segmentMin"
       ]
     },
     "colorPeakMin": {
@@ -545,9 +593,9 @@
       "group": "量胶宽",
       "doc": "一段的胶色得分峰值至少这么高才算胶",
       "binds": [
-        "n_r0.peakMin",
-        "n_r1.peakMin",
-        "n_r2.peakMin"
+        "n_r0_caliper.peakMin",
+        "n_r1_caliper.peakMin",
+        "n_r2_caliper.peakMin"
       ]
     },
     "colorMergeGap": {

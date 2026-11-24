@@ -271,7 +271,28 @@ export interface MeasurementEvidence {
   presentRatio: number | null;
 }
 
+export type MixDirection = "yellow" | "blue";
+
+export interface MixEvidence {
+  modelId: string | null;
+  datasetKind?: "synthetic" | "field";
+  mmPerPx: number | null;
+  incomplete: boolean;
+  reason: string | null;
+  directions: MixDirection[];
+  shiftRuns: { direction: MixDirection; startMm: number; endMm: number }[];
+  observation: {
+    regions: { direction: MixDirection; contours: [number, number][][]; startPx: number; endPx: number;
+      confirmedLengthPx: number; spanPx: number; maxWidthPx: number; areaPx2: number }[];
+    stations: { sPx: number; center: [number, number]; medianAxial: number | null; surfacePixels: number;
+      corridorSamples: number; validFraction: number; highlightSamples: number; darkSamples: number;
+      offAxisSamples: number; outsideSamples: number }[];
+    background: { validPixels: number; totalPixels: number; delta: [number, number] | null; normalizedShift: number | null };
+  } | null;
+}
+
 export interface FrameMetrics {
+  mixEvidence?: MixEvidence;
   /** 计划相机下标 */
   camera: number;
   seq: number;
@@ -337,6 +358,7 @@ export interface OffsetStat {
 export type OffsetUnjudged = "unsegmented" | "lowConfidence" | "measureNotImplemented" | "noReference" | "noFrames";
 
 export interface RegionResult {
+  mixAlarmGroups?: number[];
   region: Region;
   verdict: Verdict;
   reason: string;
@@ -356,6 +378,7 @@ export type WidthWarning = "wide" | "overflow";
 
 /** 整件标记：都只告警，不改 OK/NG。 */
 export interface Flags {
+  mixAlarm?: boolean;
   incomplete: boolean;
   offsetUnjudged: boolean;
   unsegmented: boolean;
@@ -430,11 +453,22 @@ export interface SegmentCorridor {
   /** 胶色模型（lyFlow `glue.ColorModel` 的 JSON 原文），由 workspace_fit_color_model 在这一段的彩色示教帧上沿已保存的走廊取色得出；
    *  按胶色测量时用。走廊点改动后旧模型失效，随之去掉。 */
   colorModel?: string;
+  mixCheck?: MixCheck | null;
   /** 操作员选的测量方式（color CL-3）；缺省时有胶色模型按胶色、否则按灰度 */
   measure?: MeasureMode;
 }
 
 export type MeasureMode = "gray" | "color";
+
+export interface MixCheck {
+  model?: Record<string, unknown> | null;
+  modelId?: string | null;
+  cameraSerial?: string | null;
+  backgroundRects: [number, number, number, number][];
+  maxLengthMm: number;
+  maxAreaMm2: number;
+  driftLengthMm: number;
+}
 
 /** RecipeDoc 的段模型字段。 */
 export interface RecipeDocSegmentFields {

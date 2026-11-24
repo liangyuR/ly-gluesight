@@ -84,6 +84,26 @@ describe("相机参数未保存修改", () => {
 
 describe("相机参数校验", () => {
 
+  it("保存彩色相机的白平衡后再改曝光 → 重连设定保留三通道原生刻度", async () => {
+    const wb = { unit: "deviceInteger", red: 1600, green: 1024, blue: 1230 } as const;
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+      if (command === "camera_rig_status") return configs.map((c, i) => ({ ...status(i, c), observedWhiteBalance: wb }));
+      return original(command, args, options);
+    });
+    await openCamera("左相机 cam1");
+    await userEvent.click(screen.getByRole("button", { name: "保存当前白平衡" }));
+    expect(await screen.findByText(/重连设定：红 1600 · 绿 1024 · 蓝 1230/)).toBeVisible();
+    const region = within(screen.getByRole("region", { name: "曝光与增益" }));
+    const exposure = region.getByLabelText("曝光时间（µs）");
+    fireEvent.change(exposure, { target: { value: "80" } });
+    await userEvent.click(region.getByRole("button", { name: "保存曝光与增益" }));
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_set_imaging", {
+      cam: 0, id: "cam1", imaging: { exposureUs: 80, gainDb: 6, whiteBalance: wb },
+    });
+    expect(region.getByText(/重连设定：红 1600 · 绿 1024 · 蓝 1230/)).toBeVisible();
+  });
+
   it("相机已释放给 MVS 时修改参数 → 不能保存并提示先重新连接", async () => {
     released = ["cam1"];
     await openCamera("左相机 cam1");

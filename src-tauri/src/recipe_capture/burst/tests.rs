@@ -53,6 +53,7 @@ fn complete_round(root: &Path) -> Value {
                 camera_id,
                 camera_config: json!({"viewCount": 1}),
                 imaging: crate::camera::DEFAULT_IMAGING,
+                synthetic_capture: None,
                 device_session: 10 + camera as u64,
                 received_count: 0,
             }

@@ -19,6 +19,7 @@ fn taught(kinds: &[SegmentKind], device: &str) -> Workspace {
                 segment,
                 corridor: corridor.clone(),
                 sector_deg: None,
+                mix_check: None,
                 color_model: None,
                 measure: None,
             })
@@ -35,6 +36,7 @@ fn taught(kinds: &[SegmentKind], device: &str) -> Workspace {
             round: "capture-teach".into(),
             seq: 1,
             frame: FrozenImage {
+                mix_capture: None,
                 id: format!("corridor-{camera}-{segment}"),
                 view: 1,
                 source: "capture:capture-teach#1".into(),

@@ -140,6 +140,7 @@ mod tests {
             capture_seq: std::sync::atomic::AtomicU64::new(0),
             comparisons: comparisons::Comparisons::default(),
             history_bundle: Mutex::new(None),
+            mix_samples: Mutex::default(),
         };
         let captured = host
             .comparison_snapshot(

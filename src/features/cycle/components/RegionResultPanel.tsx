@@ -50,6 +50,10 @@ function RegionItem({ result, segments, cameras, onSelectGroup }: { result: Regi
       {result.incompleteGroups.map(seq => <Button key={seq} size="sm" variant="tonal" aria-label={`查看帧组 ${seq}`} disabled={!onSelectGroup} onClick={() => onSelectGroup?.(seq)}>{seq}</Button>)}
     </div>}
     {result.reason && <p className="region-reason">{result.reason}</p>}
+    {!!result.mixAlarmGroups?.length && <div className="region-groups">
+      <StatusBadge tone="ng">PC 混胶色差报警</StatusBadge>
+      {result.mixAlarmGroups.map(seq => <Button key={seq} size="sm" variant="tonal" disabled={!onSelectGroup} onClick={() => onSelectGroup?.(seq)}>帧组 {seq}</Button>)}
+    </div>}
   </li>;
 }
 
@@ -71,6 +75,7 @@ export default function RegionResultPanel({ judgement, segments = [], cameras = 
   return <div className="region-panel" aria-label="检测区域结果">
     <div className="region-sum">
       <span className="mono">帧组 {judgement.groupCount}</span>
+      {judgement.flags.mixAlarm && <StatusBadge tone="ng">PC 混胶色差报警</StatusBadge>}
       {passCountText(judgement) && <span className={`mono${judgement.flags.passCountAnomaly ? " c-warn" : " muted"}`} aria-label="笔数">{passCountText(judgement)}</span>}
       {expectedTotal !== undefined && <span className="mono muted">预期 {expectedText(expectedTotal)}</span>}
     </div>

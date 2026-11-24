@@ -28,6 +28,7 @@ fn vec_param(v: [f64; 2]) -> [f64; 2] {
 /// 一（相机, 段）的逐帧定向测量图。
 #[derive(Clone, Debug)]
 pub struct HeadingGraph {
+    pub(crate) mix: Option<super::mix::MixPlan>,
     pub camera: String,
     pub camera_idx: usize,
     pub segment: u32,
@@ -141,6 +142,11 @@ pub fn plan_heading(
     let judge = template.judge();
     let gate = |values: &Value, name: &str| number(values, name).map_err(|e| fail(&e));
     Ok(HeadingGraph {
+        mix: inspect
+            .segment_corridor(segment)
+            .and_then(|c| c.mix_check.as_ref())
+            .map(|check| super::mix::MixPlan::build(check, scale, &effective, true))
+            .transpose()?,
         camera: inspect.camera.clone(),
         camera_idx,
         segment,

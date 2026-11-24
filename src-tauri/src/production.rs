@@ -48,6 +48,25 @@ pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String
     if !headings.is_empty() {
         doc["headings"] = json!(headings);
     }
+    let mut mixes = Vec::new();
+    for corridor in set.iter() {
+        if let Some(plan) = set
+            .get(corridor.camera_idx, corridor.segment)
+            .and_then(|g| g.mix_plan())
+        {
+            templates["mix"] = vision::template::mix().doc.clone();
+            if plan.retry.is_some() {
+                templates["mix_retrack"] = vision::template::mix_retrack().doc.clone();
+            }
+            let mut entry = plan.frozen();
+            entry["index"] = json!(corridor.camera_idx);
+            entry["segment"] = json!(corridor.segment);
+            mixes.push(entry);
+        }
+    }
+    if !mixes.is_empty() {
+        doc["mix"] = json!(mixes);
+    }
     doc["templates"] = templates;
     Ok(doc)
 }
@@ -109,7 +128,15 @@ impl Prepared {
                 return Err(format!("相机 {} 的发布标定与示教像素当量不一致", inspect.camera));
             }
         }
-        let corridors = vision::CorridorSet::build(&recipe, &sizes)?.with_channels(&channels);
+        let mut corridors = vision::CorridorSet::build(&recipe, &sizes)?.with_channels(&channels);
+        if corridors.iter().any(|c| c.mix.is_some()) {
+            let frozen: Value = serde_json::from_slice(
+                &std::fs::read(bundle.root.join(&bundle.manifest.graph))
+                    .map_err(|e| format!("读取发布包混胶图失败：{e}"))?,
+            )
+            .map_err(|e| format!("发布包混胶图无效：{e}"))?;
+            corridors.restore_mix(&frozen)?;
+        }
         Ok(Self {
             bundle,
             recipe,
@@ -169,13 +196,32 @@ impl Prepared {
         image: &FrameImage,
         run_id: &str,
     ) -> Result<FrameMeasurement, String> {
+        self.measure_with_capture(
+            camera_idx,
+            segment,
+            seq,
+            image,
+            run_id,
+            image.capture.as_ref(),
+        )
+    }
+
+    pub(crate) fn measure_with_capture(
+        &self,
+        camera_idx: usize,
+        segment: u32,
+        seq: u64,
+        image: &FrameImage,
+        run_id: &str,
+        capture: Option<&crate::frame::MixCapture>,
+    ) -> Result<FrameMeasurement, String> {
         let corridor = self.corridors.get(camera_idx, segment).ok_or_else(|| {
             format!(
                 "发布包没有第 {segment} 段、第 {} 台计划相机的走廊测量图",
                 camera_idx + 1
             )
         })?;
-        vision::measure_frame(&self.engine, corridor, image, seq, run_id)
+        vision::measure_with_capture(&self.engine, corridor, image, seq, run_id, capture)
     }
 
     /// 预热：每台相机在它每一段的发布示教帧上用该段走廊量一次——现场证明发布包、走廊与运行库接线正确。
@@ -185,8 +231,27 @@ impl Prepared {
         let mut measurable = 0;
         for idx in 0..self.recipe.inspect.len() {
             let resource = self.bundle.camera(idx)?;
+            let sources: BTreeMap<u32, crate::frame::MixCapture> = if self.recipe.inspect[idx]
+                .segments
+                .iter()
+                .any(|c| c.mix_check.is_some())
+            {
+                let data: Value = serde_json::from_slice(
+                    &std::fs::read(&resource.calibration).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                data.get("mixTeachSources")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|e| format!("发布包混胶示教成像身份无效：{e}"))?
+                    .unwrap_or_default()
+            } else {
+                BTreeMap::new()
+            };
             for corridor in &resource.corridors {
-                let image = crate::image_file::load(&corridor.image)?;
+                let mut image = crate::image_file::load(&corridor.image)?;
+                image.capture = sources.get(&corridor.segment).cloned();
                 let run = format!(
                     "warm-{}-c{idx}-s{}-{}",
                     self.bundle.id,

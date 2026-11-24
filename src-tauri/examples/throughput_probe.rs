@@ -105,6 +105,7 @@ fn probe_document() -> RecipeDoc {
             segment: 1,
             corridor: PROBE_PATH.to_vec(),
             sector_deg: None,
+            mix_check: None,
             color_model: None,
             measure: None,
         }];

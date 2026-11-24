@@ -14,6 +14,7 @@ fn burst_doc() -> RecipeDoc {
             segment: 1,
             corridor: vec![[40.0, 80.0], [200.0, 80.0]],
             sector_deg: None,
+            mix_check: None,
             color_model: None,
             measure: None,
         }];
@@ -25,6 +26,86 @@ fn burst_doc() -> RecipeDoc {
 fn corridor_of(doc: RecipeDoc, camera: usize) -> CorridorGraph {
     let recipe = doc.build().unwrap();
     plan_corridor(&recipe.inspect[camera], 1, &recipe, FRAME).unwrap()
+}
+
+#[test]
+#[ignore = "需要完整 LyFlow DLL、mix_fixture 合成工件和参考模型"]
+fn enabled_mix_run_preserves_base_measurement_and_checks_capture_identity() {
+    use std::path::PathBuf;
+    let dll = PathBuf::from(std::env::var_os("LYFLOW_CORE_DLL").expect("LYFLOW_CORE_DLL"));
+    let fixture =
+        PathBuf::from(std::env::var_os("GLUESIGHT_MIX_FIXTURE").expect("GLUESIGHT_MIX_FIXTURE"));
+    let reference = PathBuf::from(
+        std::env::var_os("GLUESIGHT_MIX_REFERENCE").expect("GLUESIGHT_MIX_REFERENCE"),
+    );
+    let r: Value = serde_json::from_slice(&std::fs::read(reference).unwrap()).unwrap();
+    let mut model = r["model"].clone();
+    model["whiteBalance"] = r["whiteBalance"].clone();
+    model["datasetKind"] = json!("synthetic");
+    let mut doc = burst_doc();
+    let corridor = &mut doc.inspect[0].segments[0];
+    corridor.corridor = vec![[18.0, 40.0], [173.0, 40.0]];
+    corridor.mix_check = Some(crate::recipe::MixCheck {
+        model: Some(model),
+        model_id: Some("synthetic-test".into()),
+        camera_serial: r["serial"].as_str().map(str::to_string),
+        background_rects: vec![[20, 10, 152, 8], [20, 62, 152, 8]],
+        max_length_mm: 2.0,
+        max_area_mm2: 4.0,
+        drift_length_mm: 5.0,
+    });
+    let recipe = doc.build().unwrap();
+    let sizes = [[192, 80], FRAME, FRAME];
+    let mut set = CorridorSet::build(&recipe, &sizes).unwrap();
+    let frozen = crate::production::burst_graphs(&recipe, &sizes).unwrap();
+    set.restore_mix(&frozen).unwrap();
+    let g = set.get(0, 1).unwrap();
+    let engine = Engine::load(&dll).unwrap();
+    let mut image =
+        crate::image_file::load(&fixture.join("parts/mix-tune-edge-pair/cam1_s000001.pgm"))
+            .unwrap();
+    image.capture = Some(crate::frame::MixCapture {
+        serial: r["serial"].as_str().unwrap().into(),
+        white_balance: serde_json::from_value(r["whiteBalance"].clone()).unwrap(),
+        synthetic: true,
+    });
+    let metrics = |image: &FrameImage| {
+        measure_frame(&engine, g, image, 1, "mix-corridor")
+            .unwrap()
+            .metrics
+    };
+    let measured = metrics(&image);
+    let evidence = measured.mix_evidence.unwrap();
+    assert!(evidence.alarm(), "{evidence:?}");
+    image.capture.as_mut().unwrap().white_balance.red *= 2.0;
+    let shifted = metrics(&image);
+    assert_eq!(measured.widths, shifted.widths);
+    let unavailable = shifted.mix_evidence.unwrap();
+    assert!(unavailable.incomplete && !unavailable.alarm());
+    assert!(unavailable
+        .reason
+        .is_some_and(|reason| reason.contains("白平衡")));
+}
+
+#[test]
+fn frozen_mix_graph_with_a_substituted_operator_is_rejected_before_replay() {
+    let mut doc = burst_doc();
+    doc.inspect[0].segments[0].mix_check = Some(crate::recipe::MixCheck {
+        model: None,
+        model_id: None,
+        camera_serial: None,
+        background_rects: vec![],
+        max_length_mm: 2.0,
+        max_area_mm2: 4.0,
+        drift_length_mm: 5.0,
+    });
+    let recipe = doc.build().unwrap();
+    let sizes = [FRAME; 3];
+    let mut set = CorridorSet::build(&recipe, &sizes).unwrap();
+    let mut frozen = crate::production::burst_graphs(&recipe, &sizes).unwrap();
+    set.restore_mix(&frozen).unwrap();
+    frozen["templates"]["mix"]["nodes"][1]["op"] = json!("other.operator");
+    assert!(set.restore_mix(&frozen).is_err());
 }
 
 /// 一个暗段（沿法向的胶中心偏移与胶宽，px）：峰值 60、局部亮度 120、陡度 0.8、两边完整。
@@ -593,6 +674,7 @@ fn sector_turned_on_one_segment_leaves_other_segments_of_the_camera_automatic() 
             crate::recipe::SegmentCorridor {
                 segment: 2,
                 sector_deg: Some(90.0),
+                mix_check: None,
                 color_model: None,
                 measure: None,
                 ..corridor

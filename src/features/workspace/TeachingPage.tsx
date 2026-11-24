@@ -26,6 +26,8 @@ import "./segments.css";
 import "./corridor.css";
 import WorkspaceNavigation from "./WorkspaceNavigation";
 import { useRecipeHref } from "./recipeRoutes";
+import MixTeachingCard from "./MixTeachingCard";
+import { withSegmentCorridor } from "./teach";
 import { ReturnButton } from "./returnNavigation";
 import { segmentLocateOf, teachingSeqFor } from "./segmentLocate";
 import { BoundaryGuardField, PassSkipFields } from "./DocParams";
@@ -645,6 +647,9 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
           onSegments={changeSegments} onParams={setParams} />}
         {segmentItem && frame && <ColorCard key={`color-${camera}-${segment}-${image?.channels ?? "-"}`} camera={camera} segment={segment!} colorModel={colorModel} color={image ? image.channels === 3 : null}
           measure={measure} measureLocked={checksDisabled ? "当前不能修改" : editing ? "走廊有未保存的修改：保存后再改测量方式" : ""} blocked={colorBlocked} edited={editing} working={operation === "color"} onMeasure={changeMeasure} onFit={() => deferAction("color")} />}
+        {segmentItem && frame && <MixTeachingCard key={`mix-${doc.id}-${camera}-${segment}`} id={doc.id} revision={data.workspace.revision}
+          camera={camera} segment={segment!} check={segmentCorridor?.mixCheck} disabled={checksDisabled || editing}
+          pending={dirty || pendingSave} change={mixCheck => setDoc(withSegmentCorridor(doc, camera, segment!, { mixCheck }))} persist={perform} />}
         {segmentItem && <SegmentDetectCard key={`detect-${segment}`} segments={doc.segments ?? []} index={segment!} defaults={doc.detect} disabled={checksDisabled} onChange={changeSegments} />}
         {segmentItem && <SegmentChecksCard key={`checks-${segment}`} segments={doc.segments ?? []} index={segment!} cameras={plan.cameras} disabled={checksDisabled} onChange={changeSegments} />}
         <WithReason block reason={groupsLocked ? groupLockReason : ""}><Button variant="outlined" className="wp-rail-link" disabled={groupsLocked} onClick={() => openParams(camera)}>

@@ -7,6 +7,15 @@ pub struct Camera {
     pub id: String,
     pub port: u16,
     pub frames: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synthetic_capture: Option<SyntheticCapture>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SyntheticCapture {
+    pub serial: String,
+    pub white_balance: serde_json::Value,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -149,6 +158,7 @@ pub fn init_demo(root: &Path) -> Result<(), String> {
             id: format!("cam{n}"),
             port: 12000 + n,
             frames: vec![filename.into(); 30],
+            synthetic_capture: None,
         });
     }
     let config = Config {

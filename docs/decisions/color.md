@@ -31,7 +31,7 @@
 - 可选项：A 把颜色压成一个通道（如 Lab a*）再喂灰度测量图；B 按示教取得的颜色模型算“像胶的概率”，在得分图上测（lyFlow 1.3 彩色算子）；C 每个配方固定胶色阈值。
 - 采用：B。
   - 示教取色：走廊示教页“测量方式”卡片选“按胶色”后（CL-3），点“取色”（`workspace_fit_color_model`）在这一段冻结的彩色示教帧上，沿已保存的走廊取胶色、两侧取背景色，拟合颜色模型（`glue.color_model`），原文存进 `inspect[].segments[].colorModel`。示教帧须是彩色；改走廊点后颜色模型作废、要重新取色，只改扇区、出胶点时保留。
-  - 按胶色测量的（相机, 段）用颜色模型测：示教走廊用 `corridor_color`（`glue.color_map` → `glue.color_runs`，找边仍是 `glue.part_edges` 量亮度），逐帧定向用 `heading_color`（`glue.color_fan` → `glue.color_track` → `glue.color_runs`）；按灰度测量的段照旧用灰度测量图。发布包 graph.json 的胶色图记模板 id，模板原文一并冻结。胶色图的模板门限单独命名（`colorSegmentMin`、`colorPeakMin`、`colorMergeGap`、`colorMergeUnknownGap`、`colorPathSegmentMin`、`colorPathPeakMin`、`colorPathMaxGap`、`colorInfoMin`），单位是得分（0–1），不与灰度图的同名参数混用。
+  - 按胶色测量的（相机, 段）用颜色模型测：示教走廊用 `corridor_color`（`glue.color_map` → `image.color_caliper` → `glue.merge_color_runs`，找边仍是 `glue.part_edges` 量亮度），逐帧定向用 `heading_color`（`glue.color_fan` → `glue.color_track` → `image.color_caliper` → `glue.merge_color_runs`）；按灰度测量的段照旧用灰度测量图。发布包 graph.json 的胶色图记模板 id，模板原文一并冻结。胶色图的模板门限单独命名（`colorSegmentMin`、`colorPeakMin`、`colorMergeGap`、`colorMergeUnknownGap`、`colorPathSegmentMin`、`colorPathPeakMin`、`colorPathMaxGap`、`colorInfoMin`），单位是得分（0–1），不与灰度图的同名参数混用。
   - 判定（LF-3 仍在 GlueSight）：新彩色图采用 `widthPolicy=extent`，完整宽胶不因超过预期胶宽上限被删除；搜索受 `searchMm` 限定，真实背景阻断反光合并。固定走廊和逐帧定向共享 `exact/clipped/absent/unknown` 证据：精确值只来自完整边，观察边界截断可报告可靠宽度下界，遮挡/歧义记未知。未知不计在位率分母、不连接断口；全未知为检测错误，部分未知或截断明确标不完整。产品公差、允许超差长度和偏宽只预警仍由 GlueSight 决定。字段、发布版本与回退契约见[宽胶测量](../architecture/wide-bead-measurement-plan.md)。
   - 量胶帧须是彩色；胶色段遇到灰度帧报错，要求把相机图像模式改回彩色。
 - 理由：现场件 f2d30b6d 上，以颜色掩膜参考（人工复核过 151 帧）为准，胶色测量的结果为：
@@ -60,7 +60,7 @@
   - 胶宽规格要按客户图纸定：模板默认 4 ± 1.5 mm、溢胶 8 mm。现场件第 4 段胶宽中位 4.65 mm、P99 7.4 mm，局部堆胶 7.5 mm 连续约 6 mm、贴着胶条的胶膜最宽 8.8 mm；按默认值整件判 NG_WIDTH。
   - ToEdge 按段内单一标称值判：整段均值偏离标称值超过允差判整段胶偏，单帧偏离段内均值超过允差判局部跑偏。零件边到胶的距离本身沿胶路会变（现场件第 4 段 P5–P95 为 4.7–6.6 mm），比这个变化小的局部外移判不出来。
   - 示教走廊要求每帧整条走廊都有胶，只适合涂完再拍、视角不动的段。边涂边拍、视角跟着走的段用逐帧定向：现场件第 2、4 段改成示教走廊后，起涂后的帧走廊尾部还没涂到、第 4 段后半程胶走出走廊，都按断胶报（第 4 段 87 帧中 59 帧）。
-  - lyFlow 彩色算子自 1.3 系列起提供，GlueSight 锁 1.3 系列（[lyFlow 依赖](../architecture/lyflow-dependency.md)）。
+  - lyFlow 彩色算子自 1.3 系列起提供，GlueSight 锁 2.0 系列（[lyFlow 依赖](../architecture/lyflow-dependency.md)）。
 - 回退：在走廊示教页“测量方式”卡片把这一段改为“按灰度”（CL-3），这一段回到灰度测量。完全撤回时回滚该提交；没有 `colorModel` 的配方与之前完全相同。
 
 ## CL-3 测量方式按（段, 相机）由操作员选择

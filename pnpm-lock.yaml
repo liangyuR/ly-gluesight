@@ -167,8 +167,8 @@ importers:
   .:
     dependencies:
       '@lyflow/editor':
-        specifier: https://github.com/liangyuR/lyFlow/releases/download/v1.3.3/lyflow-editor-v1.3.3.tgz
-        version: https://github.com/liangyuR/lyFlow/releases/download/v1.3.3/lyflow-editor-v1.3.3.tgz(@tauri-apps/api@2.12.4)(@xyflow/react@12.12.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@11.2.9)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.169.0)(zustand@5.1.0(@types/react@19.3.0)(immer@11.2.9)(react@19.3.1)(use-sync-external-store@1.7.0(react@19.3.1)))
+        specifier: https://github.com/liangyuR/lyFlow/releases/download/v2.0.3/lyflow-editor-v2.0.3.tgz
+        version: https://github.com/liangyuR/lyFlow/releases/download/v2.0.3/lyflow-editor-v2.0.3.tgz(@tauri-apps/api@2.12.4)(@xyflow/react@12.12.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@11.2.9)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(qing-steel@https://github.com/liangyuR/qing-steel/releases/download/v0.11.2/qing-steel-0.11.2.tgz(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.169.0)(zustand@5.1.0(@types/react@19.3.0)(immer@11.2.9)(react@19.3.1)(use-sync-external-store@1.7.0(react@19.3.1)))
       '@tauri-apps/api':
         specifier: ^2.12.4
         version: 2.12.4
@@ -351,12 +351,13 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@lyflow/editor@https://github.com/liangyuR/lyFlow/releases/download/v1.3.3/lyflow-editor-v1.3.3.tgz':
-    resolution: {integrity: sha512-HE4sbEFlkDseKWqM3JSW4vxXQ7ZLqmBu1PQKIFKubVO/Kue7l3WyoWiie8vzSmzY9t7/tI3+IgJshko4P4boEg==, tarball: https://github.com/liangyuR/lyFlow/releases/download/v1.3.3/lyflow-editor-v1.3.3.tgz}
-    version: 1.3.3
+  '@lyflow/editor@https://github.com/liangyuR/lyFlow/releases/download/v2.0.3/lyflow-editor-v2.0.3.tgz':
+    resolution: {integrity: sha512-3ZAZEbmpjm+1EC15galjJu9QRfGs7EtkkReGhR8p6+MxepDVmZcPjKZc2JOAQYKcU2UZvWehweing9DErHZZPQ==, tarball: https://github.com/liangyuR/lyFlow/releases/download/v2.0.3/lyflow-editor-v2.0.3.tgz}
+    version: 2.0.3
     peerDependencies:
       '@tauri-apps/api': ^2
       '@xyflow/react': ^12.11.6
+      qing-steel: ^0.11.2
       react: ^18.3.1 || ^19.0.0
       react-dom: ^18.3.1 || ^19.0.0
       three: '>=0.160.0 <1'
@@ -1963,12 +1964,13 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@lyflow/editor@https://github.com/liangyuR/lyFlow/releases/download/v1.3.3/lyflow-editor-v1.3.3.tgz(@tauri-apps/api@2.12.4)(@xyflow/react@12.12.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@11.2.9)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.169.0)(zustand@5.1.0(@types/react@19.3.0)(immer@11.2.9)(react@19.3.1)(use-sync-external-store@1.7.0(react@19.3.1)))':
+  '@lyflow/editor@https://github.com/liangyuR/lyFlow/releases/download/v2.0.3/lyflow-editor-v2.0.3.tgz(@tauri-apps/api@2.12.4)(@xyflow/react@12.12.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@11.2.9)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(qing-steel@https://github.com/liangyuR/qing-steel/releases/download/v0.11.2/qing-steel-0.11.2.tgz(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.169.0)(zustand@5.1.0(@types/react@19.3.0)(immer@11.2.9)(react@19.3.1)(use-sync-external-store@1.7.0(react@19.3.1)))':
     dependencies:
       '@dagrejs/dagre': 3.1.3
       '@xyflow/react': 12.12.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@11.2.9)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       immer: 11.2.9
       motion: 12.43.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      qing-steel: https://github.com/liangyuR/qing-steel/releases/download/v0.11.2/qing-steel-0.11.2.tgz(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
       three: 0.169.0

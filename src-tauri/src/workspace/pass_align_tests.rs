@@ -114,6 +114,7 @@ fn taught(passes: &[u32], cuts: &[u64]) -> Workspace {
                 segment,
                 corridor: corridor.clone(),
                 sector_deg: None,
+                mix_check: None,
                 color_model: Some(format!("m{segment}")),
                 measure: None,
             })

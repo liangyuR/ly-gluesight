@@ -143,7 +143,7 @@ export function savedDraft(doc: RecipeDoc | undefined, key: string): CameraTeach
 
 /** 改配方副本里一台相机在一段的走廊项；配方里没有这台相机的项时原样返回。不动相机的像素当量、测量区间与其他段；
  *  走廊为空且没拖过扇区的项从配方里去掉（示教帧仍在，这一段回到待画走廊）。 */
-function withSegmentCorridor(doc: RecipeDoc, camera: string, segment: number, patch: Partial<SegmentCorridor>): RecipeDoc {
+export function withSegmentCorridor(doc: RecipeDoc, camera: string, segment: number, patch: Partial<SegmentCorridor>): RecipeDoc {
   const inspect = doc.inspect ?? [];
   if (!inspect.some(item => item.camera === camera)) return doc;
   return { ...doc, inspect: inspect.map(item => {
@@ -151,7 +151,7 @@ function withSegmentCorridor(doc: RecipeDoc, camera: string, segment: number, pa
     const others = (item.segments ?? []).filter(s => s.segment !== segment);
     const { sectorDeg, colorModel, ...rest }: SegmentCorridor = { segment, corridor: [], ...item.segments?.find(s => s.segment === segment), ...patch };
     const next: SegmentCorridor = { ...rest, ...(sectorDeg != null ? { sectorDeg } : {}), ...(colorModel != null ? { colorModel } : {}) };
-    const segments = next.corridor.length || sectorDeg != null || next.measure != null ? [...others, next].sort((a, b) => a.segment - b.segment) : others;
+    const segments = next.corridor.length || sectorDeg != null || next.measure != null || next.mixCheck != null ? [...others, next].sort((a, b) => a.segment - b.segment) : others;
     return { ...item, segments };
   }) };
 }

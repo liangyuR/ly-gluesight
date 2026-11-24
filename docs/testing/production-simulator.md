@@ -4,6 +4,28 @@
 
 工具只监听 `127.0.0.1`。PLC 使用现有 S7 客户端和协议，相机新增 `simulator` 来源；海康设备与真实 PLC 的驱动、通讯协议和配置不变。联调必须启动独立资料目录的隔离实例，不能把现场正在运行的实例改成模拟设备。
 
+## 混胶色差联调样例
+
+混胶联调包适用于集成 `glue.mix_*` 的 GlueSight 和 LyFlow 2.0.4 运行库。解压到新目录，打开其中的 PowerShell，先校验 24 张输入图，再启动模拟器。
+
+```powershell
+.\gluesight-production-simulator.exe --config .\simulator.json --check
+.\gluesight-production-simulator.exe --config .\simulator.json
+```
+
+1. 在独立测试项目设置三台彩色单视角相机，编号依次为 `cam1`、`cam2`、`cam3`。来源选“外部模拟器”，地址依次为 `127.0.0.1:14193`、`127.0.0.1:14194`、`127.0.0.1:14195`。触发选 Line0 高电平，帧率均设为 5 fps。
+2. 将 S7 连接设为 `127.0.0.1:14192`，采用协议 9、DB4/DB2、rack 0、slot 1，连接 PLC。配方库点“导入工件配方”，选择压缩包内的 `MIX-E2E-recipe.zip`。确认相机配置后，从候选发布页执行检查并发布。导入提示缺来源示教件原图属预期；包带有冻结走廊、色差模型和示教件测量，新录制的工件可以在本机完整复测。
+3. 确认维护模式关闭、配方选择来源为 PLC、原图保留为“全部”。模拟器控制台输入 `run 1`。型号是 7701，一件有 8 个帧组，三台相机各收 8 帧，混胶检查只在 `cam1` 启用。演示配方关闭了胶宽、断胶、溢胶和胶偏公差，便于单独核对混胶报警。
+4. 在历史页打开 `SIM-` 开头的工件。合格绿胶为第 1、2 帧；第 3 帧有相邻黄蓝纹；第 4 帧整段轻微偏蓝；第 5 帧黄纹中有高光空缺；第 6 帧的胶面和背景一起偏移，标为成像漂移；第 7、8 帧分别为纯黄和纯蓝。预期 PC 在帧组 3、4、5、7、8 报警。选择第 3 帧复核原图轮廓和测站曲线，再按原发布包复测整件。对应的模拟 PLC 输出为 `result=1`、`fault=0`、`maintenance=false`。操作结束后在模拟器输入 `quit`。
+
+**从源码生成相同的输入**。在仓库根目录运行下列命令，生成器以固定随机种子建立合成 Bayer 工件，并使用 Python 参考实现拟合 `model.json`。输出为全新的目录，包含三相机 PNG、模拟器配置及带背景取样框的模型。在候选的 `cam1` 第 1 段选择“混胶色差”可单独导入该模型。配方回传包由软件配方库的“导出工件配方”生成。
+
+```powershell
+python scripts/color-eval/mix_demo.py --out output/mix-demo
+cargo build --release --locked --manifest-path tools/production-simulator/Cargo.toml
+tools/production-simulator/target/release/gluesight-production-simulator.exe --config output/mix-demo/simulator.json --check
+```
+
 ## 构建与启动
 
 在仓库根目录运行（Rust 版本以 `rust-toolchain.toml` 为准）：

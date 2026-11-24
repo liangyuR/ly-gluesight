@@ -22,6 +22,15 @@ struct Header {
     pixel_format: String,
     payload_length: usize,
     gate_high: bool,
+    #[serde(default)]
+    synthetic_capture: Option<SyntheticCapture>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SyntheticCapture {
+    serial: String,
+    white_balance: super::WhiteBalance,
 }
 
 pub(super) fn endpoint(value: &str) -> Result<SocketAddr, String> {
@@ -88,9 +97,23 @@ pub(super) fn open(slot: &CameraSlot, config: &CameraConfig) -> Result<String, S
         .map_err(|e| e.to_string())?;
     stream.set_nodelay(true).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    let (first, channels) = read_packet(&mut stream, &mut bytes)?;
+    let (mut first, channels) = read_packet(&mut stream, &mut bytes)?;
     slot.new_session();
     let session = slot.shared.session.load(Ordering::SeqCst);
+    if let Some(capture) = first.synthetic_capture.take() {
+        if capture.serial.trim().is_empty() {
+            return Err("模拟混胶相机序列号为空".into());
+        }
+        capture.white_balance.validate()?;
+        *slot.synthetic_capture.lock().unwrap() = Some((
+            session,
+            crate::frame::MixCapture {
+                serial: capture.serial,
+                white_balance: capture.white_balance,
+                synthetic: true,
+            },
+        ));
+    }
     slot.shared.disconnected.store(false, Ordering::SeqCst);
     *slot.simulator.lock().unwrap() = Some(stream.try_clone().map_err(|e| e.to_string())?);
     let shared = slot.shared.clone();

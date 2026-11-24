@@ -60,12 +60,21 @@ export interface CameraStatus {
   warnings: string[];
   /** 相机页保存的曝光与增益，打开或重连时写入相机 */
   imaging: CameraImaging;
+  observedWhiteBalance?: WhiteBalance | null;
+}
+
+export interface WhiteBalance {
+  unit: "deviceInteger" | "ratio";
+  red: number;
+  green: number;
+  blue: number;
 }
 
 /** 一台相机的曝光与增益：相机页设定，只记录、不参与配方与轮次的一致性比较 */
 export interface CameraImaging {
   exposureUs: number;
   gainDb: number;
+  whiteBalance?: WhiteBalance;
 }
 
 /** 相机组链路带宽估算（camera_bandwidth）：各海康相机最近一帧的 宽 × 高 × 8 bit（灰度与彩色模式线上都是 8 位一像素）× 触发频率之和，计入 GigE 协议开销（按不开巨帧约 5%） */

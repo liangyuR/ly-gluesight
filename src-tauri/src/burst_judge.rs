@@ -15,6 +15,9 @@ use crate::plan::{
 };
 use crate::segmentation::{Region, RegionKind, UnsegReason};
 
+mod mix;
+pub use mix::{MixEvidence, MIX_STATION_THRESHOLD};
+
 /// 一帧的测量状态。除 Measured 外都只记“检测不完整”，不影响 OK/NG。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,6 +131,8 @@ pub struct FrameMetrics {
     pub widths: Vec<Option<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measurement_evidence: Option<MeasurementEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mix_evidence: Option<MixEvidence>,
     /// 走廊站距（mm）
     #[serde(default)]
     pub spacing_mm: f64,
@@ -165,6 +170,7 @@ impl FrameMetrics {
         self.measurement_evidence
             .as_ref()
             .is_some_and(MeasurementEvidence::incomplete)
+            || self.mix_evidence.as_ref().is_some_and(|e| e.incomplete)
     }
 
     pub fn has_usable_evidence(&self) -> bool {
@@ -235,6 +241,8 @@ pub struct RegionResult {
     pub offset_unjudged: Option<OffsetUnjudged>,
     /// 区域内缺帧（含非 Measured 帧）的帧组 seq
     pub incomplete_groups: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mix_alarm_groups: Vec<u64>,
     /// 只预警、不改结论的胶宽发现（偏宽只预警，D-SB-61）；旧记录没有
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<WidthWarning>,
@@ -276,6 +284,8 @@ pub struct Flags {
     /// 胶宽偏宽（偏宽只预警的段超出胶宽上限，D-SB-61）
     #[serde(default)]
     pub wide_warning: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mix_alarm: bool,
     /// 溢胶预警（偏宽只预警的段超出溢胶上限，D-SB-61）
     #[serde(default)]
     pub overflow_warning: bool,
@@ -413,14 +423,32 @@ fn judge_regions(
 
     if !frames.values().any(|m| m.state == FrameState::Measured) {
         let reason = if frames.values().all(|m| m.state == FrameState::Missing) { "三台相机整件没有收到帧" } else { "三台相机整件没有一帧测成" };
+        let mix_alarm = regions.iter().any(|region| {
+            let scope = covered(segments, region);
+            let allowed = region_cameras_for(cameras, region, &scope);
+            frames
+                .range((region.first_seq, 0)..=(region.last_seq, usize::MAX))
+                .any(|(&(_, camera), m)| {
+                    allowed.contains(&camera)
+                        && m.mix_evidence.as_ref().is_some_and(MixEvidence::alarm)
+                })
+        });
         return BurstJudgement {
             group_count,
             flags: Flags {
                 incomplete: true,
+                mix_alarm,
                 ..Flags::default()
             },
             alarms: loss.to_vec(),
-            ..BurstJudgement::error(fault::MISSING_FRAME, reason)
+            ..BurstJudgement::error(
+                fault::MISSING_FRAME,
+                if mix_alarm {
+                    format!("{reason}；PC 混胶色差报警")
+                } else {
+                    reason.to_owned()
+                },
+            )
         };
     }
     if regions.iter().any(|region| covered(segments, region).is_empty()) {
@@ -488,6 +516,7 @@ fn judge_regions(
         unsegmented: results.iter().any(|r| matches!(r.region.kind, RegionKind::Unsegmented { reason, .. } if reason != UnsegReason::Transition)),
         _short_part: crate::workspace::Discarded,
         wide_warning: warned(WidthWarning::Wide),
+        mix_alarm: results.iter().any(|r| !r.mix_alarm_groups.is_empty()),
         overflow_warning: warned(WidthWarning::Overflow),
         pass_count_anomaly: false,
     };
@@ -497,6 +526,14 @@ fn judge_regions(
             "未发现已确认的不合格；检测不完整",
             1,
         );
+    }
+    if flags.mix_alarm {
+        if verdict == Verdict::Ok {
+            reason = reason
+                .replace(&format!("{group_count} 个帧组全部合格"), "常规检测合格")
+                .replace("未发现已确认的不合格", "常规检测未发现不合格");
+        }
+        reason.push_str("；PC 混胶色差报警");
     }
     BurstJudgement {
         verdict,
@@ -769,13 +806,17 @@ fn covered<'a>(segments: &'a [PathSegment], region: &Region) -> Vec<&'a PathSegm
 }
 
 /// 区域参与判定的相机下标（计划相机顺序）。
-fn region_cameras(part: &PartInput, region: &Region, covered: &[&PathSegment]) -> BTreeSet<usize> {
-    let all = || (0..part.cameras.len()).collect();
+fn region_cameras_for(
+    cameras: &[String],
+    region: &Region,
+    covered: &[&PathSegment],
+) -> BTreeSet<usize> {
+    let all = || (0..cameras.len()).collect();
     let pick = |segments: &[&PathSegment]| {
         segments
             .iter()
-            .flat_map(|segment| crate::plan::segment_cameras(segment, part.cameras))
-            .filter_map(|id| part.cameras.iter().position(|camera| *camera == id))
+            .flat_map(|segment| crate::plan::segment_cameras(segment, cameras))
+            .filter_map(|id| cameras.iter().position(|camera| *camera == id))
             .collect()
     };
     match region.kind {
@@ -801,7 +842,7 @@ struct RegionScope<'a> {
 impl<'a> RegionScope<'a> {
     fn of(part: &PartInput<'a>, region: &Region) -> Self {
         let covered = covered(part.segments, region);
-        let allowed = region_cameras(part, region, &covered);
+        let allowed = region_cameras_for(part.cameras, region, &covered);
         let checks = match region.kind {
             RegionKind::Unsegmented { .. } => wider_checks(
                 &covered
@@ -941,6 +982,13 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
         offset,
         offset_unjudged,
         incomplete_groups,
+        mix_alarm_groups: in_region
+            .iter()
+            .filter(|m| m.mix_evidence.as_ref().is_some_and(MixEvidence::alarm))
+            .map(|m| m.seq)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
         warnings,
     }
 }
@@ -1146,6 +1194,7 @@ mod tests {
             width_min: Some(4.0),
             width_max: Some(4.0),
             width_mean: Some(4.0),
+            mix_evidence: None,
             measurement_evidence: None,
             widths: vec![Some(4.0); 10],
             spacing_mm: 1.0,
@@ -1210,6 +1259,47 @@ mod tests {
             &[],
             PassRules::NONE,
         )
+    }
+
+    #[test]
+    fn mix_shift_is_judged_per_frame_and_reported_only_on_the_pc() {
+        use serde_json::json;
+        let check = crate::recipe::MixCheck {
+            model: Some(json!({"centers":{"green":[0,0],"blue":[0,1]}})),
+            model_id: Some("camA-v1".into()),
+            camera_serial: None,
+            background_rects: vec![],
+            max_length_mm: 10.0,
+            max_area_mm2: 20.0,
+            drift_length_mm: 2.0,
+        };
+        let segments = plan(&[Corner]);
+        let mut frame_list = frames(2);
+        let region = region(RegionKind::Corner { segment: 1 }, 1, 2);
+        for (count, background_shift, alarm) in [(2, 0.0, false), (3, 0.0, true), (3, 5.0, false)] {
+            let stations: Vec<_> = (0..count).map(|i| json!({
+                "sPx": i, "center":[i,0], "medianAxial":0.24, "surfacePixels":1,
+                "corridorSamples":1, "validFraction":1.0,"highlightSamples":0,"darkSamples":0,
+                "offAxisSamples":0,"outsideSamples":0
+            })).collect();
+            let obs = json!({"stations":stations, "regions":[],
+                "background":{"validPixels":5,"totalPixels":5,"delta":[0,background_shift],"normalizedShift":background_shift}});
+            let evidence =
+                MixEvidence::from_observation(obs, &check, 1.0, MIX_STATION_THRESHOLD).unwrap();
+            for seq in 1..=2 {
+                at(&mut frame_list, 0, seq).mix_evidence = Some(evidence.clone());
+            }
+            let result = run(&segments, None, std::slice::from_ref(&region), &frame_list);
+            assert_eq!(
+                (result.flags.mix_alarm, result.flags.incomplete),
+                (alarm, background_shift > 0.0)
+            );
+            assert_eq!(result.plc_code, Verdict::Ok.plc_code());
+            assert_eq!(
+                result.regions[0].mix_alarm_groups.len(),
+                if alarm { 2 } else { 0 }
+            );
+        }
     }
 
     fn verdict_map(
