@@ -21,7 +21,9 @@ use crate::recipe::{CameraInspect, Recipe};
 mod color_model;
 mod heading;
 mod judge;
+mod mix;
 mod taught;
+pub(crate) use taught::measure_with_capture;
 pub mod template;
 pub(crate) use color_model::color_model_status;
 #[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
@@ -88,6 +90,16 @@ impl Engine {
         self.run_spec(graph, run_id, base_dir, image, params, &[])
     }
 
+    pub(crate) fn run_images(
+        &self,
+        graph: &str,
+        run_id: &str,
+        images: &[RunImageInput],
+        params: &Value,
+    ) -> Result<RunResult, String> {
+        self.run_inputs(graph, run_id, "", images, params, &[])
+    }
+
     /// 按顶层图参数跑测量图模板，只跑到 `targets` 这几个节点（空为整张图）。
     pub fn run_targets(
         &self,
@@ -110,12 +122,24 @@ impl Engine {
         targets: &[String],
     ) -> Result<RunResult, String> {
         let images = [image_input(image)?];
+        self.run_inputs(graph, run_id, base_dir, &images, params, targets)
+    }
+
+    fn run_inputs(
+        &self,
+        graph: &str,
+        run_id: &str,
+        base_dir: &str,
+        images: &[RunImageInput],
+        params: &Value,
+        targets: &[String],
+    ) -> Result<RunResult, String> {
         let params_json = params.to_string();
         let run_id = unique_run_id(run_id);
         let mut spec =
             RunSpec::new(graph, &run_id, base_dir, targets).with_params_json(&params_json);
         // 正式测量只注入原始全分辨率像素。core 在 start 内拷贝，images 活到 start 返回。
-        spec.image_inputs = &images;
+        spec.image_inputs = images;
         let handle = unsafe { RunHandle::start(self.core.clone(), spec, ignore_event, Box::new(())) }.map_err(|e| e.to_string())?;
         handle.join();
         let summary_json = self
@@ -145,7 +169,7 @@ fn check_operators(manifest: &Value) -> Result<(), String> {
             missing.join("、")
         ));
     }
-    for id in ["glue.color_track", "glue.color_runs"] {
+    for id in ["glue.color_track", "glue.merge_color_runs"] {
         let supported = ops
             .iter()
             .find(|op| op["id"] == id)
@@ -155,7 +179,7 @@ fn check_operators(manifest: &Value) -> Result<(), String> {
             .is_some_and(|options| options.iter().any(|o| o["value"] == "extent"));
         if !supported {
             return Err(format!(
-                "核心库 {id} 不支持宽胶观测策略 extent，请更新到 lyFlow 1.3.2 或同系列兼容版本"
+                "核心库 {id} 不支持宽胶观测策略 extent，请使用项目锁定系列的完整运行库"
             ));
         }
     }
@@ -197,12 +221,13 @@ impl LyFlowMeasurer {
         if prepared.recipe.inspect.get(job.camera_idx).map(|i| i.camera.as_str()) != Some(job.camera.as_str()) {
             return Err(format!("测量任务的相机 {} 不是发布包的第 {} 台计划相机", job.camera, job.camera_idx + 1));
         }
-        prepared.measure_frame(
+        prepared.measure_with_capture(
             job.camera_idx,
             job.segment,
             job.seq,
             image,
             &format!("frame-{}-{}-{}", job.cycle_id, job.camera_idx, job.seq),
+            job.capture.as_ref(),
         )
     }
 }

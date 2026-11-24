@@ -31,7 +31,7 @@
     "test:desktop:build": "pwsh -NoProfile -File scripts/Build-UiTestInstance.ps1"
   },
   "dependencies": {
-    "@lyflow/editor": "https://github.com/liangyuR/lyFlow/releases/download/v1.3.3/lyflow-editor-v1.3.3.tgz",
+    "@lyflow/editor": "https://github.com/liangyuR/lyFlow/releases/download/v2.0.3/lyflow-editor-v2.0.3.tgz",
     "@tauri-apps/api": "^2.12.4",
     "@xyflow/react": "^12.12.1",
     "echarts": "6.1.0",

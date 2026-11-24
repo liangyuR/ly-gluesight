@@ -46,8 +46,8 @@ fn load(id: &'static str, text: &'static str) -> Template {
     }
 }
 
-fn templates() -> &'static [Template; 5] {
-    static ALL: OnceLock<[Template; 5]> = OnceLock::new();
+fn templates() -> &'static [Template; 7] {
+    static ALL: OnceLock<[Template; 7]> = OnceLock::new();
     ALL.get_or_init(|| {
         [
             load(
@@ -67,6 +67,11 @@ fn templates() -> &'static [Template; 5] {
                 "color_teach",
                 include_str!("../../graphs/color_teach.lyflow.json"),
             ),
+            load("mix", include_str!("../../graphs/mix.lyflow.json")),
+            load(
+                "mix_retrack",
+                include_str!("../../graphs/mix_retrack.lyflow.json"),
+            ),
         ]
     })
 }
@@ -82,13 +87,13 @@ pub fn heading() -> &'static Template {
     &templates()[1]
 }
 
-/// 胶色测量的示教走廊图：`glue.color_map`（颜色模型）+ `glue.polyline` → 两份 `glue.color_runs`，可接 `glue.part_edges`。
+/// 胶色测量的示教走廊图：`glue.color_map`（颜色模型）+ `glue.polyline` → 两份彩色卡尺观测与补缝，可接 `glue.part_edges`。
 pub fn corridor_color() -> &'static Template {
     &templates()[2]
 }
 
 /// 胶色测量的逐帧定向图：`glue.color_map` 之后 `glue.color_fan`，3 个候选方向各有 `glue.color_track` →
-/// `glue.color_runs` 与 `glue.part_edges`。
+/// 彩色卡尺观测、补缝与 `glue.part_edges`。
 pub fn heading_color() -> &'static Template {
     &templates()[3]
 }
@@ -96,6 +101,13 @@ pub fn heading_color() -> &'static Template {
 /// 示教取色图：示教走廊（`glue.polyline`）→ `glue.color_model`，输出颜色模型。
 pub fn color_teach() -> &'static Template {
     &templates()[4]
+}
+
+pub fn mix() -> &'static Template {
+    &templates()[5]
+}
+pub fn mix_retrack() -> &'static Template {
+    &templates()[6]
 }
 
 fn is_expert(spec: &Value) -> bool {

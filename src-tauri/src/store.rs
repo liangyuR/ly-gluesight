@@ -1506,6 +1506,9 @@ impl Store {
                     if let Some(evidence) = &mut metrics.measurement_evidence {
                         evidence.stations.clear();
                     }
+                    if let Some(evidence) = &mut metrics.mix_evidence {
+                        evidence.omit_observation();
+                    }
                 }
             }
         }

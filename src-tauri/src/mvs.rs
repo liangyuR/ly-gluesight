@@ -482,15 +482,19 @@ impl Device {
     }
 
     pub fn has_node(&self, key: &str) -> Result<bool, String> {
+        Ok(self.node_type(key)?.is_some())
+    }
+
+    pub fn node_type(&self, key: &str) -> Result<Option<i32>, String> {
         let mut node_type = 0;
         let code = unsafe {
             (self.api.get_node_type)(self.handle, Self::key(key).as_ptr(), &mut node_type)
         };
         if code as u32 == 0x80000109 {
-            return Ok(false);
+            return Ok(None);
         }
         check(code, &format!("读取 {key} 节点类型"))?;
-        Ok(true)
+        Ok(Some(node_type))
     }
 
     pub fn set_trigger_delay(&self, value: f32) -> Result<(), String> {

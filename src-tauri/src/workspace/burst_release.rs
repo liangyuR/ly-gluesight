@@ -321,7 +321,8 @@ fn measure_teach_frames(
             let mut incomplete = false;
             let outcome = image_file(&host, &recipe.id, &teaching.frame.id)
                 .and_then(|path| crate::image_file::load(&path))
-                .and_then(|image| {
+                .and_then(|mut image| {
+                    image.capture = teaching.frame.mix_capture.clone();
                     vision::measure_frame(
                         engine,
                         graph,
@@ -361,6 +362,10 @@ pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validatio
     let environment_tag = environment(app, &recipe)?;
     let device = cycle::usable_cams(app, &recipe).map(|_| ());
     let mut checks = burst_checks(w, device);
+    checks.extend(super::mix_teaching::publish_checks(
+        w,
+        &app.state::<CycleHost>().camera.configs(),
+    ));
     checks.extend(teach_trial_check(&teach_trials(app, w)));
     Ok(Validation {
         revision: w.revision,
@@ -439,7 +444,18 @@ pub(super) fn freeze_bundle(
             None
         };
         let reference = vision::station_key(&inspect.camera)?.reference();
-        let calibration = json!({"schemaVersion": 1, "camera": inspect.camera, "reference": reference, "mmPerPx": inspect.mm_per_px, "source": source, "acquisition": crate::production::acquisition_tag(&app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == inspect.camera).ok_or("发布相机不存在")?)});
+        let mut calibration = json!({"schemaVersion": 1, "camera": inspect.camera, "reference": reference, "mmPerPx": inspect.mm_per_px, "source": source, "acquisition": crate::production::acquisition_tag(&app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == inspect.camera).ok_or("发布相机不存在")?)});
+        for t in &taught {
+            if let Some(segment) = t.segment.filter(|&s| {
+                inspect
+                    .segment_corridor(s)
+                    .is_some_and(|c| c.mix_check.is_some())
+            }) {
+                if let Some(source) = &t.frame.mix_capture {
+                    calibration["mixTeachSources"][segment.to_string()] = json!(source);
+                }
+            }
+        }
         // 不检测任何一段的相机没有示教帧，尺寸记 [0, 0]
         sizes.push(taught.first().map_or([0, 0], |t| t.frame.size));
         cameras.push(crate::release::CameraInput {

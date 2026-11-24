@@ -5,6 +5,7 @@ import { errorText } from "../../lib/errors";
 import type { CalibrationFrameView, FrameMetrics, FrameState, WorkspacePlanView } from "../plan/types";
 import { groupCellColor, groupCellText, segmentLabel, type GroupCellState } from "../plan/vis";
 import { MeasurementEvidenceSummary, measurementIssue, presentRatioText, stationStateText, evidenceOverlay } from "../plan/measurementEvidence";
+import MixSummary from "../plan/MixSummary";
 import { workspaceApi } from "./api";
 import { Badge, FrameViewer, KV, Panel } from "./components";
 import type { FrameImage, WorkspaceView } from "./types";
@@ -116,7 +117,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
       </div>
       {selected && camera && <div className="wp-calib-frame">
         <FrameViewer image={shown.image} loading={shown.loading} error={shown.error} label={`${camera} · 帧组 ${selected.seq}`}
-          overlay={view && view.corridor.length >= 2 ? { path: view.corridor, searchHalfPx: view.searchHalfPx ?? undefined, segments: edges, clipped: evidenceOverlay(view?.metrics), partEdges: view.partEdges } : undefined}
+          overlay={view && view.corridor.length >= 2 ? { path: view.corridor, searchHalfPx: view.searchHalfPx ?? undefined, segments: edges, mixEvidence: view?.metrics.mixEvidence, clipped: evidenceOverlay(view?.metrics), partEdges: view.partEdges } : undefined}
           emptyTitle="读取中" emptyHint="正在读这一帧的原图并重测。" />
         <div className="wp-calib-frame-info" aria-label="这一帧的指标">
           <KV label="所在段">{segment ? `第 ${segment.index} 段 · ${segmentLabel(segment)}` : "—"}</KV>
@@ -132,6 +133,7 @@ export function CalibrationFrames({ data, plan }: { data: WorkspaceView; plan: W
               {metrics.edgeMm != null && <KV label="胶边距">{mm(metrics.edgeMm)}</KV>}
               <KV label="最长断胶">{mm(metrics.gapMaxMm, 1)}</KV>
               <KV label="有胶站">{presentRatioText(metrics)}（站距 {metrics.spacingMm} mm）</KV>
+              {metrics.mixEvidence && <MixSummary evidence={metrics.mixEvidence}/>}
               {metrics.measurementEvidence && <KV label="量测证据"><MeasurementEvidenceSummary evidence={metrics.measurementEvidence} /></KV>}
               {metrics.error && <p className="muted hint">{metrics.error}</p>}
               {before && before.state !== metrics.state && <p className="muted hint">与测量时的状态不同：走廊或参数在测量后改过。</p>}

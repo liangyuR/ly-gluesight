@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "mix-teach",
+  "name": "混胶色差示教",
+  "params": {
+    "frameHeight": {"type":"int","default":1,"binds":["fit.frameHeight"]},
+    "whiteBalance": {"type":"text","default":"{}","binds":["fit.whiteBalance"]}
+  },
+  "nodes": [
+    {"id":"n_load","op":"io.load_image","params":{"source":"inputs"}},
+    {"id":"n_labels","op":"io.load_image","params":{"source":"inputs"}},
+    {"id":"fit","op":"glue.mix_model","params":{}}
+  ],
+  "edges": [
+    {"id":"rgb","from":{"node":"n_load","port":"image"},"to":{"node":"fit","port":"image"}},
+    {"id":"labels","from":{"node":"n_labels","port":"image"},"to":{"node":"fit","port":"labels"}}
+  ],
+  "outputs": {"model":{"node":"fit","port":"model"}}
+}

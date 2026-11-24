@@ -27,6 +27,8 @@ use crate::simimage;
 
 mod delivery;
 mod simulator;
+mod white_balance;
+pub use white_balance::WhiteBalance;
 
 /// 帧通道容量：检测节拍处理不过来时丢新帧并计数。条数只防失控，图像内存由 IMAGE_BUDGET_PER_CAMERA 封顶（D-SB-32）。
 pub const FRAME_QUEUE: usize = 1024;
@@ -172,11 +174,14 @@ impl ImageMode {
 pub struct CameraImaging {
     pub exposure_us: f32,
     pub gain_db: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub white_balance: Option<WhiteBalance>,
 }
 
 pub const DEFAULT_IMAGING: CameraImaging = CameraImaging {
     exposure_us: 60.0,
     gain_db: 6.0,
+    white_balance: None,
 };
 
 impl CameraImaging {
@@ -186,6 +191,9 @@ impl CameraImaging {
         }
         if !(self.gain_db.is_finite() && self.gain_db >= 0.0) {
             return Err(format!("相机 {camera} 的增益需为不小于 0 的有限数"));
+        }
+        if let Some(wb) = self.white_balance {
+            wb.validate().map_err(|e| format!("相机 {camera}：{e}"))?;
         }
         Ok(())
     }
@@ -378,6 +386,7 @@ pub struct CameraStatus {
     pub warnings: Vec<String>,
     /// 相机页保存的曝光与增益，打开或重连时写入相机
     pub imaging: CameraImaging,
+    pub observed_white_balance: Option<WhiteBalance>,
 }
 
 struct Preview {
@@ -1041,6 +1050,7 @@ struct DeviceState {
 pub struct CameraSlot {
     device: Mutex<Option<mvs::Device>>,
     simulator: Mutex<Option<std::net::TcpStream>>,
+    synthetic_capture: Mutex<Option<(u64, crate::frame::MixCapture)>>,
     shared: Arc<Shared>,
     config: Mutex<CameraConfig>,
     state: Mutex<DeviceState>,
@@ -1050,7 +1060,7 @@ pub struct CameraSlot {
     released: AtomicBool,
     supervision: CameraSupervision,
     /// 本次打开后已写进海康相机的曝光与增益；关闭、重开时清空
-    imaging: Mutex<Option<CameraImaging>>,
+    imaging: Mutex<Option<(u64, CameraImaging)>>,
 }
 
 #[derive(Default)]
@@ -1082,6 +1092,7 @@ impl CameraSlot {
         let slot = Self {
             device: Mutex::new(None),
             simulator: Mutex::new(None),
+            synthetic_capture: Mutex::new(None),
             shared: Arc::new(Shared {
                 cam,
                 rig: rig.clone(),
@@ -1211,6 +1222,9 @@ impl CameraSlot {
             budget_dropped_frames: self.shared.budget_dropped.load(Ordering::Relaxed),
             warnings,
             imaging: self.saved_imaging(),
+            observed_white_balance: self
+                .observed_imaging(Some(self.shared.session.load(Ordering::SeqCst)))
+                .and_then(|v| v.white_balance),
         }
     }
 
@@ -1227,12 +1241,30 @@ impl CameraSlot {
             .unwrap_or(DEFAULT_IMAGING)
     }
 
-    /// 录制件记下的曝光与增益：海康相机取本次打开后实际写入的值，其余来源取保存的值。
-    pub fn recorded_imaging(&self) -> CameraImaging {
-        self.imaging
+    fn observed_imaging(&self, session: Option<u64>) -> Option<CameraImaging> {
+        let applied = self.imaging.lock().unwrap();
+        let (observed_session, imaging) = (*applied)?;
+        (Some(observed_session) == session && !self.shared.disconnected.load(Ordering::SeqCst))
+            .then_some(imaging)
+    }
+
+    pub fn synthetic_capture(&self, session: Option<u64>) -> Option<crate::frame::MixCapture> {
+        self.synthetic_capture
             .lock()
             .unwrap()
-            .unwrap_or_else(|| self.saved_imaging())
+            .as_ref()
+            .filter(|(s, _)| {
+                Some(*s) == session && !self.shared.disconnected.load(Ordering::SeqCst)
+            })
+            .map(|(_, value)| value.clone())
+    }
+
+    pub fn recorded_imaging(&self, session: Option<u64>) -> CameraImaging {
+        self.observed_imaging(session)
+            .unwrap_or_else(|| CameraImaging {
+                white_balance: None,
+                ..self.saved_imaging()
+            })
     }
 
     /// 估算链路带宽用的分辨率：海康相机最近一帧的原图尺寸；离线来源没有物理链路，没出过图时未知。
@@ -1374,6 +1406,7 @@ impl CameraSlot {
     /// 开一个新会话：海康每次打开，模拟 / 样本集每次（重新）加载。模拟 / 样本集的计数从 0 重来，
     /// 与真机重新开流后计数可能清零一样，靠会话号区分前后两段。
     fn new_session(&self) {
+        self.synthetic_capture.lock().unwrap().take();
         let mut seq = self.seq.lock().unwrap();
         let session = NEXT_SESSION.fetch_add(1, Ordering::SeqCst);
         *seq = 0;
@@ -1617,9 +1650,22 @@ impl CameraSlot {
             return Ok(());
         };
         let mut applied = self.imaging.lock().unwrap();
-        *applied = None;
-        write_imaging(d, imaging, &config.name)?;
-        *applied = Some(*imaging);
+        let session = self.shared.session.load(Ordering::SeqCst);
+        let confirmed = applied
+            .take()
+            .filter(|(id, _)| *id == session)
+            .and_then(|(_, v)| v.white_balance);
+        let (actual, warning) =
+            write_imaging(d, imaging, &config, confirmed).inspect_err(|error| {
+                if config.image_mode.color() && imaging.white_balance.is_some() {
+                    self.shared.disconnected.store(true, Ordering::SeqCst);
+                    self.state.lock().unwrap().message = error.clone();
+                }
+            })?;
+        *applied = Some((session, actual));
+        let mut state = self.state.lock().unwrap();
+        state.warnings.retain(|w| !w.starts_with(WB_UNAVAILABLE));
+        state.warnings.extend(warning);
         Ok(())
     }
 
@@ -1640,10 +1686,11 @@ impl CameraSlot {
             return simulator::open(self, &config);
         }
         let device = mvs::Device::open(&config.serial)?;
-        let (warnings, max_fps, configured_frame_rate, format, chunks) = apply(&device, &config)?;
+        let (mut warnings, max_fps, configured_frame_rate, format, chunks) =
+            apply(&device, &config)?;
         let imaging = self.saved_imaging();
-        write_imaging(&device, &imaging, &config.name)?;
-        *self.imaging.lock().unwrap() = Some(imaging);
+        let (actual, warning) = write_imaging(&device, &imaging, &config, None)?;
+        warnings.extend(warning);
         self.shared
             .chunk_trigger
             .store(chunks.trigger, Ordering::Relaxed);
@@ -1674,7 +1721,10 @@ impl CameraSlot {
             "已连接 {} · {} · {format}",
             device.summary.model, device.summary.serial
         );
-        *self.device.lock().unwrap() = Some(device);
+        let mut opened = self.device.lock().unwrap();
+        *self.imaging.lock().unwrap() = Some((self.shared.session.load(Ordering::SeqCst), actual));
+        *opened = Some(device);
+        drop(opened);
         let mut state = self.state.lock().unwrap();
         state.warnings = warnings;
         state.max_fps = max_fps;
@@ -1836,11 +1886,41 @@ fn configure_trigger(d: &mvs::Device, c: &CameraConfig) -> Result<Option<f32>, S
     Ok(rate)
 }
 
-fn write_imaging(d: &mvs::Device, imaging: &CameraImaging, name: &str) -> Result<(), String> {
+const WB_UNAVAILABLE: &str = "白平衡未确认，无法用于混胶取样";
+
+fn write_imaging(
+    d: &mvs::Device,
+    imaging: &CameraImaging,
+    config: &CameraConfig,
+    confirmed: Option<WhiteBalance>,
+) -> Result<(CameraImaging, Option<String>), String> {
+    let name = &config.name;
     d.set_float("ExposureTime", imaging.exposure_us)
         .map_err(|e| format!("{name}写入曝光时间失败：{e}；在相机页修改曝光与增益后重新连接"))?;
     d.set_float("Gain", imaging.gain_db)
-        .map_err(|e| format!("{name}写入增益失败：{e}；在相机页修改曝光与增益后重新连接"))
+        .map_err(|e| format!("{name}写入增益失败：{e}；在相机页修改曝光与增益后重新连接"))?;
+    let (white_balance, warning) = if !config.image_mode.color() {
+        (None, None)
+    } else if confirmed.is_some()
+        && (imaging.white_balance.is_none() || imaging.white_balance == confirmed)
+    {
+        (confirmed, None)
+    } else {
+        match white_balance::lock_and_read(d, imaging.white_balance) {
+            Ok(value) => (Some(value), None),
+            Err(e) if imaging.white_balance.is_none() => {
+                (None, Some(format!("{WB_UNAVAILABLE}：{e}")))
+            }
+            Err(e) => return Err(format!("{name}固定白平衡失败：{e}")),
+        }
+    };
+    Ok((
+        CameraImaging {
+            white_balance,
+            ..*imaging
+        },
+        warning,
+    ))
 }
 
 /// 按生产同一套规则配置一台已打开的相机（触发门控、帧率、像素格式、频闪、Chunk），不写曝光增益、不开流；
@@ -2148,6 +2228,55 @@ impl CameraRig {
         let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
         check_idle(&cycle)?;
         let slot = self.slot(cam as usize).ok_or("相机不存在")?;
+        self.capture_idle(&slot, payload)
+    }
+
+    pub(crate) fn capture_mix_reference(
+        &self,
+        camera: &str,
+    ) -> Result<(Arc<FrameImage>, String, WhiteBalance), String> {
+        let cycle = self.rig.app.state::<CycleHost>();
+        let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
+        check_idle(&cycle)?;
+        let slot = self
+            .slot(self.require(camera)? as usize)
+            .ok_or("相机不存在")?;
+        let config = slot.config();
+        if config.source != CameraSource::Mvs
+            || config.trigger_source != "Software"
+            || !config.image_mode.color()
+            || config.view_count != 1
+        {
+            return Err(
+                "排胶取样需要彩色单视图海康相机，请在相机页切换到 Software 单帧触发".into(),
+            );
+        }
+        let session = slot.shared.session.load(Ordering::SeqCst);
+        let white = slot
+            .observed_imaging(Some(session))
+            .and_then(|v| v.white_balance)
+            .ok_or("当前相机会话没有有效白平衡回读")?;
+        let image = self
+            .capture_idle(&slot, None)?
+            .pop()
+            .ok_or("相机没有返回单帧")?;
+        if !image.is_color()
+            || slot.shared.session.load(Ordering::SeqCst) != session
+            || slot
+                .observed_imaging(Some(session))
+                .and_then(|v| v.white_balance)
+                != Some(white)
+        {
+            return Err("取样期间相机状态变化，请重新采集".into());
+        }
+        Ok((image, config.serial, white))
+    }
+
+    fn capture_idle(
+        &self,
+        slot: &CameraSlot,
+        payload: Option<TriggerPayload>,
+    ) -> Result<Vec<Arc<FrameImage>>, String> {
         let config = slot.config();
         config.validate()?;
         if !slot.is_ready() {

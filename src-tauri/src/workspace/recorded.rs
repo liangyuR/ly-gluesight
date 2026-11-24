@@ -51,6 +51,7 @@ pub(super) struct VerifiedFrames {
     root: PathBuf,
     cycle_id: String,
     metadata: HashMap<PathBuf, HashMap<String, Option<serde_json::Value>>>,
+    devices: HashMap<PathBuf, serde_json::Value>,
 }
 
 impl VerifiedFrames {
@@ -63,6 +64,7 @@ impl VerifiedFrames {
             root,
             cycle_id: cycle_id.to_owned(),
             metadata: HashMap::new(),
+            devices: HashMap::new(),
         })
     }
 
@@ -96,6 +98,8 @@ impl VerifiedFrames {
         let directory = relative.parent().ok_or("原图目录无效")?.to_path_buf();
         if !self.metadata.contains_key(&directory) {
             let metadata = cycle_metadata(root, relative, cycle_id)?;
+            self.devices
+                .insert(directory.clone(), metadata["devices"].clone());
             let frames = metadata["frames"]
                 .as_array()
                 .ok_or("录制元数据缺少原图引用")?;
@@ -147,7 +151,39 @@ impl VerifiedFrames {
         ];
         let bytes = original_bytes(&root, relative)?;
         checked_dimensions(&bytes, Some(size), file)?;
-        crate::image_file::decode(&bytes).map_err(|error| format!("原图 {file} 解码失败：{error}"))
+        let mut image = crate::image_file::decode(&bytes)
+            .map_err(|error| format!("原图 {file} 解码失败：{error}"))?;
+        if image.is_color() && entry["imageMode"] == "color" && entry["session"].as_u64().is_some()
+        {
+            if let Some(devices) = self.devices[&directory].as_array() {
+                let mut matching = devices.iter().filter(|d| d["cameraId"] == camera_id);
+                if let Some(d) = matching
+                    .next()
+                    .filter(|d| entry["session"] == d["deviceSession"])
+                {
+                    if matching.next().is_none() {
+                        image.capture = crate::frame::MixCapture::recorded(d);
+                    }
+                }
+            }
+        }
+        Ok(image)
+    }
+
+    pub(super) fn mix_sample(
+        &mut self,
+        camera: &str,
+        frame: &FrameRecord,
+    ) -> Result<(FrameImage, String, crate::camera::WhiteBalance), String> {
+        let image = self.load(camera, frame)?;
+        let observed = image
+            .capture
+            .as_ref()
+            .filter(|source| !source.synthetic)
+            .ok_or("混胶现场取样需要本次 MVS 会话的彩色原图和已确认的白平衡")?;
+        let (serial, wb) = (observed.serial.clone(), observed.white_balance);
+        wb.validate()?;
+        Ok((image, serial, wb))
     }
 }
 

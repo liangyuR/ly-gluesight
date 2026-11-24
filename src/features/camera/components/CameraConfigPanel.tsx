@@ -2,7 +2,7 @@ import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type 
 import { AlertTriangle, Copy, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { Alert, Button, Card, Checkbox, FormField, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Surface, TextField } from "qing-steel";
 import { cameraApi } from "../api";
-import type { BandwidthEstimate, CameraConfig, CameraImaging, CameraStatus, DeviceSummary, ImageMode } from "../types";
+import type { BandwidthEstimate, CameraConfig, CameraImaging, CameraStatus, DeviceSummary, ImageMode, WhiteBalance } from "../types";
 import { errorText } from "../../../lib/errors";
 import { clock, sourceText } from "./health";
 import ContextHelp from "../../cycle/components/ContextHelp";
@@ -36,6 +36,11 @@ type Wiring = Pick<CameraConfig, "triggerSource" | "triggerActivation" | "frameR
 const wiring = (c: CameraConfig): Wiring => ({ triggerSource: c.triggerSource, triggerActivation: c.triggerActivation, frameRate: c.frameRate, debouncerUs: c.debouncerUs, triggerDelayUs: c.triggerDelayUs, strobe: c.strobe, chunk: c.chunk });
 
 interface BatchItem { id: string; name: string; tone: "ok" | "warn" | "ng" | "off"; text: string; list?: string[] }
+
+const sameBalance = (a?: WhiteBalance | null, b?: WhiteBalance | null) =>
+  a?.unit === b?.unit && a?.red === b?.red && a?.green === b?.green && a?.blue === b?.blue;
+const balanceText = (wb: WhiteBalance) =>
+  `红 ${wb.red} · 绿 ${wb.green} · 蓝 ${wb.blue}（${wb.unit === "ratio" ? "倍率" : "设备整数刻度"}）`;
 
 /** 相机未接受的参数按节点名对到表单字段，方便就地标注；完整列表仍在右侧。 */
 const nodes: [keyof CameraConfig, RegExp][] = [
@@ -190,19 +195,23 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
   const [imagingDraft, setImagingDraft] = useState<{ exposure: string; gain: string } | null>(null);
   const [imagingBusy, setImagingBusy] = useState(false);
   const [imagingError, setImagingError] = useState("");
-  useEffect(() => { if (imagingSaved && status?.imaging && status.imaging.exposureUs === imagingSaved.exposureUs && status.imaging.gainDb === imagingSaved.gainDb) setImagingSaved(null); }, [status?.imaging?.exposureUs, status?.imaging?.gainDb]);
+  useEffect(() => {
+    const current = status?.imaging;
+    if (imagingSaved && current && current.exposureUs === imagingSaved.exposureUs && current.gainDb === imagingSaved.gainDb && sameBalance(current.whiteBalance, imagingSaved.whiteBalance)) setImagingSaved(null);
+  }, [status?.imaging, imagingSaved]);
+  const observedBalance = status?.ready ? status.observedWhiteBalance : null;
   const exposure = imagingDraft?.exposure ?? (savedImaging ? String(savedImaging.exposureUs) : "");
   const gain = imagingDraft?.gain ?? (savedImaging ? String(savedImaging.gainDb) : "");
   const exposureUs = Number(exposure), gainDb = Number(gain);
   const imagingInvalid = exposure === "" || gain === "" ? "填写曝光与增益" : !(exposureUs >= 1 && exposureUs <= 1_000_000) ? "曝光需在 1–1000000 µs 之间" : !(Number.isFinite(gainDb) && gainDb >= 0) ? "增益需为不小于 0 的数" : "";
   const imagingChanged = !!savedImaging && (exposureUs !== savedImaging.exposureUs || gainDb !== savedImaging.gainDb);
   const editImaging = (key: "exposure" | "gain", value: string) => { setImagingError(""); setImagingDraft({ exposure, gain, [key]: value }); };
-  const saveImaging = async () => {
-    if (imagingBusy || imagingInvalid || !imagingChanged || locked) return;
+  const saveImaging = async (next: CameraImaging, resetDraft: boolean) => {
+    if (imagingBusy || locked) return;
     setImagingBusy(true); setImagingError("");
     try {
-      await cameraApi.setImaging(cam, config.id, { exposureUs, gainDb });
-      if (mounted.current) { setImagingSaved({ exposureUs, gainDb, at: Date.now() }); setImagingDraft(null); }
+      await cameraApi.setImaging(cam, config.id, next);
+      if (mounted.current) { setImagingSaved({ ...next, at: Date.now() }); if (resetDraft) setImagingDraft(null); }
     } catch (e) { if (mounted.current) setImagingError(errorText(e)); }
     finally { if (mounted.current) setImagingBusy(false); }
   };
@@ -313,9 +322,17 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
                 <NumberField label="增益" aria-label="增益（dB）" unit="dB" min={0} step={0.1} value={gain===""?"":Number(gain)} onValueChange={v => editImaging("gain", v===""?"":String(v))} />
               </div>
               <div className="cg-adv-sent">
-                <Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => void saveImaging()} disabled={locked || imagingBusy || !!imagingInvalid || !imagingChanged} title={imagingInvalid || undefined}>{imagingBusy ? "保存中…" : "保存曝光与增益"}</Button>
+                <Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => void saveImaging({ exposureUs, gainDb, whiteBalance: savedImaging?.whiteBalance }, true)} disabled={locked || imagingBusy || !!imagingInvalid || !imagingChanged} title={imagingInvalid || undefined}>{imagingBusy ? "保存中…" : "保存曝光与增益"}</Button>
                 {imagingInvalid ? <span>{imagingInvalid}</span> : imagingSaved ? <span>已保存：曝光 <b>{imagingSaved.exposureUs} µs</b> · 增益 <b>{imagingSaved.gainDb} dB</b>（{clock(imagingSaved.at).slice(0, 5)}）</span> : !status?.ready && <span>相机未连接：保存的值在下次连接时写入</span>}
               </div>
+              {initial.source === "mvs" && initial.imageMode === "color" && savedImaging && <>
+                <span>{observedBalance ? `白平衡回读（自动已关闭）：${balanceText(observedBalance)}` : "白平衡尚无设备回读，当前不能用于混胶取样"}</span>
+                {savedImaging.whiteBalance && <span>重连设定：{balanceText(savedImaging.whiteBalance)}</span>}
+                <div className="cg-adv-sent">
+                  <Button size="sm" disabled={locked || imagingBusy || !observedBalance || sameBalance(observedBalance, savedImaging.whiteBalance)} onClick={() => observedBalance && void saveImaging({ exposureUs: savedImaging.exposureUs, gainDb: savedImaging.gainDb, whiteBalance: observedBalance }, false)}>保存当前白平衡</Button>
+                  {savedImaging.whiteBalance && <Button size="sm" disabled={locked || imagingBusy} onClick={() => void saveImaging({ exposureUs: savedImaging.exposureUs, gainDb: savedImaging.gainDb }, false)}>清除重连设定</Button>}
+                </div>
+              </>}
               {imagingError && <Alert tone="ng">{imagingError}</Alert>}
             </Stack>
           </Card> : <Card role="region" aria-label="曝光与增益" title={<Heading level={3}>曝光与增益</Heading>}>

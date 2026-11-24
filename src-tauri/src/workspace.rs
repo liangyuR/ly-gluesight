@@ -29,6 +29,7 @@ pub(crate) mod centerline;
 mod collect_release;
 mod comparisons;
 mod history_import;
+mod mix_teaching;
 mod navigation;
 pub(crate) mod package;
 mod pass_align;
@@ -54,6 +55,7 @@ pub use burst_skip::*;
 pub use capture_review::*;
 pub use collect_release::*;
 pub use history_import::*;
+pub use mix_teaching::*;
 pub use navigation::*;
 pub use pass_align::*;
 pub use pieces::*;
@@ -94,6 +96,8 @@ fn safe_id(id: &str) -> Result<(), String> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrozenImage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mix_capture: Option<crate::frame::MixCapture>,
     pub id: String,
     pub view: u8,
     pub source: String,
@@ -362,6 +366,7 @@ pub struct WorkspaceHost {
     /// 段配方在途件各帧测到的叠图，按 (计划相机下标, seq)
     live_views: Mutex<LiveViews>,
     station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
+    mix_samples: Mutex<HashMap<String, mix_teaching::Sample>>,
     capture_seq: std::sync::atomic::AtomicU64,
     comparisons: comparisons::Comparisons,
     /// 历史叠图最近用的发布包及其项目（不在生产预热里时另加载，只留一个，不占生产预热）
@@ -510,6 +515,7 @@ impl WorkspaceHost {
             live_burst: Mutex::new(LiveFrames::default()),
             live_views: Mutex::new(LiveViews::default()),
             station: Mutex::new(HashMap::new()),
+            mix_samples: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
             comparisons: comparisons::Comparisons::default(),
             history_bundle: Mutex::new(None),
@@ -1907,6 +1913,7 @@ pub async fn workspace_station_capture(
             .capture_seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let meta = FrozenImage {
+            mix_capture: None,
             view: view.unwrap_or(1),
             id: format!("station-{cam}-{}-{seq}", ly_plc::now_ms()),
             source: format!("{:?}", config.source),
@@ -1956,6 +1963,7 @@ pub async fn workspace_station_import(
             .capture_seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let meta = FrozenImage {
+            mix_capture: None,
             view: view.unwrap_or(1),
             id: format!("station-import-{cam}-{}-{seq}", ly_plc::now_ms()),
             source: "import".into(),
@@ -2007,6 +2015,7 @@ pub async fn workspace_station_restore(
             return Err("读取期间设备或节拍状态变化，原图已丢弃".into());
         }
         let meta = FrozenImage {
+            mix_capture: None,
             view: selected,
             id,
             source: "calib".into(),

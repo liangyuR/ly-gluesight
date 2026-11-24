@@ -11,6 +11,7 @@ import type { HeadingGuide } from "./headingOverlay";
 import type { FrameImage } from "./types";
 import { OperationStatus, useOperation } from "./operation";
 import { evidenceOverlay, MeasurementEvidenceSummary, measurementIssue, presentRatioText } from "../plan/measurementEvidence";
+import MixSummary from "../plan/MixSummary";
 
 type TrialState = "ok" | "clipped" | "unknown" | "fallback" | "empty" | "out" | "error" | "missing";
 const trialOrder: TrialState[] = ["ok", "clipped", "unknown", "fallback", "empty", "out", "error", "missing"];
@@ -181,7 +182,7 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
       {details && skippedCount > 0 && <p className="muted hint">生产跳过的帧不参与判定；全段试测仍测量这些帧供诊断查看，不计入其余帧的试测统计。</p>}
     </Surface>
     {seq != null && <FrameViewer controlsAt="footer" image={shown?.image ?? null} loading={!shown} error={shown?.error ?? ""} label={`${camera} · 段 ${segment} · 帧组 ${seq} · 试测`}
-      overlay={{ path: view?.corridor ?? [], searchHalfPx: view?.searchHalfPx ?? undefined, segments: edges, clipped: evidenceOverlay(view?.metrics), partEdges: view?.partEdges, heading: guide && { ...guide, measured: metrics?.headingDeg ?? null } }}
+      overlay={{ path: view?.corridor ?? [], searchHalfPx: view?.searchHalfPx ?? undefined, segments: edges, mixEvidence: metrics?.mixEvidence, clipped: evidenceOverlay(view?.metrics), partEdges: view?.partEdges, heading: guide && { ...guide, measured: metrics?.headingDeg ?? null } }}
       tools={<div className="wp-corridor-seq" role="group" aria-label="试测帧组">
         <IconButton size="sm" aria-label="试测上一帧组" disabled={!span || seq <= span.start} onClick={() => step(-1)}><ChevronLeft size={15}/></IconButton>
         <span>帧组 {seq}{seq === teachSeq ? "（示教帧）" : ""}</span>
@@ -199,5 +200,6 @@ export function SegmentTrial({ id, camera, segment, round, teachSeq, range, skip
         </>}
       </span> : undefined}
       emptyTitle="读取中" emptyHint="正在读这一帧的原图并试测。" />}
+    {seq != null && metrics?.mixEvidence && <MixSummary evidence={metrics.mixEvidence} diagnostic={!!skipReason}/>}
   </>;
 }

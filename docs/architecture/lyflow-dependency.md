@@ -7,7 +7,7 @@
 
 ## 系列锁定
 
-- `packaging/runtime.json` 的 `lyflow` 段只写仓库与系列：`{ "repository": "liangyuR/lyFlow", "series": "1.3" }`。带其他字段（如旧的 NuGet 源、包 ID、最低版本）的配置直接拒绝。
+- `packaging/runtime.json` 的 `lyflow` 段只写仓库与系列：`{ "repository": "liangyuR/lyFlow", "series": "2.0" }`。带其他字段（如旧的 NuGet 源、包 ID、最低版本）的配置直接拒绝。
 - 恢复时取该系列最新的正式 Release：排除 draft 与 prerelease，tag 必须是 `v主.次.补丁` 且属于该系列，必须带上述资产，补丁号按数值取最大。
 - `src-tauri/Cargo.toml` 的 `lyflow-client` 必须是唯一一条 `{ git = "https://github.com/liangyuR/lyFlow.git", tag = "vX.Y.Z" }`，tag 属于同一系列，不允许 `rev` 或 `branch`。Cargo.lock 里的提交记录由 Cargo 维护，不另作校验。
 - 不锁定内容哈希，也不把 Git 提交写进本仓库的锁定或校验。
@@ -24,11 +24,20 @@
 
 任一项失败都不写缓存。
 
-`requiredOperators` 是必需算子的唯一来源：打包脚本按它生成 `runtime/manifest.json` 的算子清单并做上面的校验；`src-tauri/build.rs` 在编译时把它带进程序（`GLUESIGHT_REQUIRED_OPERATORS`），加载核心库时 `check_operators` 按同一份清单核对。测量图与标定图里出现的算子都必须在清单里。应用加载时还要求 `glue.color_track` 与 `glue.color_runs` 的参数清单明确提供 `widthPolicy=extent`（lyFlow 1.3.2 起），防止系列内旧缓存缺少宽胶观测能力却被当作新策略运行。
+`requiredOperators` 是必需算子的唯一来源：打包脚本按它生成 `runtime/manifest.json` 的算子清单并做上面的校验；`src-tauri/build.rs` 在编译时把它带进程序（`GLUESIGHT_REQUIRED_OPERATORS`），加载核心库时 `check_operators` 按同一份清单核对。测量图与标定图里出现的算子都必须在清单里。应用加载时还要求 `glue.color_track` 与 `glue.merge_color_runs` 的参数清单明确提供 `widthPolicy=extent`，防止系列内旧缓存缺少宽胶观测能力却被当作新策略运行。
 
-段配方的每帧测量先用 `glue.response` 算一次响应图。示教走廊用 `glue.polyline` 把示教折线变成胶路，再用 `glue.lateral_runs` 量每站的全部暗段；开启逐帧定向的段（D-SB-47）用 `glue.fan_scan` 与 `glue.track_path` 定向并拟合胶路，再量选中的那条；胶偏按 ToEdge 测的段在参考相机的测量图里接 `glue.part_edges`（D-SB-48）。有无胶、选方向、回退与找边选侧都由 GlueSight 判（[lyflow-operators.md](../decisions/lyflow-operators.md) LF-3）。这些算子自 lyFlow 1.2 起提供。流程调试页嵌入的 `@lyflow/editor` 取同一 Release 的 `lyflow-editor-v1.3.3.tgz`（`package.json` 写 Release 下载地址），版本随运行库一起升。标定用 `io.load_image`、`image.board_calib` 与 `image.load_calib`。按胶色测量的段（[color](../decisions/color.md) CL-3）用 lyFlow 1.3 的彩色算子 `glue.color_model`、`glue.color_map`、`glue.color_fan`、`glue.color_track`、`glue.color_runs`（[color](../decisions/color.md) CL-2）。因此 `lyflow.series` 锁 1.3，`lyflow-client` 锁 tag v1.3.3。
+段配方的每帧测量先用 `glue.response` 算一次响应图。示教走廊用 `glue.polyline` 把示教折线变成胶路，再用 `glue.lateral_runs` 量每站的全部暗段；开启逐帧定向的段（D-SB-47）用 `glue.fan_scan` 与 `glue.track_path` 定向并拟合胶路，再量选中的那条；胶偏按 ToEdge 测的段在参考相机的测量图里接 `glue.part_edges`（D-SB-48）。有无胶、选方向、回退与找边选侧都由 GlueSight 判（[lyflow-operators.md](../decisions/lyflow-operators.md) LF-3）。这些算子自 lyFlow 1.2 起提供。流程调试页嵌入的 `@lyflow/editor` 取同一 Release 的 `lyflow-editor-v2.0.3.tgz`（`package.json` 写 Release 下载地址），版本随运行库一起升。标定用 `io.load_image`、`image.board_calib` 与 `image.load_calib`。按胶色测量的段（[color](../decisions/color.md) CL-3）用彩色算子 `glue.color_model`、`glue.color_map`、`glue.color_fan`、`glue.color_track`、`image.color_caliper`、`glue.merge_color_runs`（[color](../decisions/color.md) CL-2）。系列锁定 2.0，客户端与编辑器使用 v2.0.3。混胶联调运行库还需要 `glue.mix_model`、`glue.mix_map`、`glue.mix_regions`；公开 v2.0.3 资产缺少这三个算子。
 
 联合开发 lyFlow 未发布的改动时用本地构建：`GLUESIGHT_LYFLOW_RUNTIME` 指向本地 `build/core/bin`（只在调试构建生效，跳过 `lyflow-runtime.json` 系列核对）；真引擎测试用 `LYFLOW_CORE_DLL` 指向其中的 `lyflow_core.dll`。
+
+### 进场联调安装包
+
+混胶联调用私有引擎仓从干净源码生成的完整 Windows 运行库。把原生包解压到独立目录，先用同一 DLL 运行合成对照，再显式指定该目录打预发布安装包。脚本会核对实际 DLL、ABI、算子和厂商库；安装包中的应用还会再次加载随包 DLL 自检。未发布的运行库无须写入用户级环境变量。
+
+```powershell
+python scripts/color-eval/mix_native_parity.py output/mix-fixture/spec.json --dll <运行库目录>/lyflow_core.dll --report output/mix-parity.json
+pwsh -File scripts/Package-Windows.ps1 -Pre -LyFlowRuntime <运行库目录>
+```
 
 ## 缓存
 

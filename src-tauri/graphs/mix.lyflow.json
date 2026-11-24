@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "01GLUESIGHTMIXREGIONS",
+  "nodes": [
+    {"id": "n_load", "op": "io.load_image", "params": {"source": "inputs"}},
+    {"id": "n_map", "op": "glue.mix_map", "params": {}},
+    {"id": "n_line", "op": "glue.polyline", "params": {"zone": [0, 0]}},
+    {"id": "n_regions", "op": "glue.mix_regions", "params": {}}
+  ],
+  "edges": [
+    {"id": "e0", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_map", "port": "image"}},
+    {"id": "e1", "from": {"node": "n_map", "port": "maps"}, "to": {"node": "n_regions", "port": "maps"}},
+    {"id": "e2", "from": {"node": "n_line", "port": "line"}, "to": {"node": "n_regions", "port": "line"}}
+  ],
+  "outputs": {
+    "observation": {"node": "n_regions", "port": "observation"}
+  },
+  "params": {
+    "model": {"default": "", "binds": ["n_map.model"], "doc": "冻结的参考模型 JSON"},
+    "backgroundRects": {"default": "[]", "binds": ["n_map.backgroundRects"], "doc": "背景矩形列表 JSON"},
+    "roi": {"default": [0, 0, 0, 0], "binds": ["n_map.roi"], "doc": "原图检测范围"},
+    "points": {"default": "[[0,0],[100,0]]", "binds": ["n_line.points"], "doc": "本帧胶路（px）"},
+    "halfWidthPx": {"default": 14, "binds": ["n_regions.halfWidthPx"], "doc": "搜索半宽（px）"},
+    "smoothPx": {"default": 3, "binds": ["n_regions.smoothPx"], "doc": "沿胶路平滑长度（px）", "advanced": true},
+    "axisThreshold": {"default": 0.45, "binds": ["n_regions.axisThreshold"], "doc": "条纹轴向偏移门限", "advanced": true},
+    "maxHighlightGapPx": {"default": 8, "binds": ["n_regions.maxHighlightGapPx"], "doc": "合并同向高光两侧可见区域的最大跨度（px）", "advanced": true},
+    "offAxisLimit": {"default": 3.5, "binds": ["n_map.offAxisLimit"], "doc": "胶面归一离轴量上限", "advanced": true}
+  }
+}

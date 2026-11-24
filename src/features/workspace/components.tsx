@@ -6,6 +6,7 @@ import { Alert, Button, Card, Chip, EmptyState, IconButton, NumberField as Steel
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
+import type { MixEvidence } from "../plan/types";
 import type { FrameImage, FramePixels } from "./types";
 import { fillRgba } from "../../lib/frame";
 import { errorText } from "../../lib/errors";
@@ -91,6 +92,7 @@ export interface ImageOverlay {
   searchHalfPx?: number;
   /** 测量横线（试测页逐帧查看：各站两侧边缘）；`station` 为测站号（0 起，供悬停联动），`width` 为屏幕线宽（默认 2） */
   segments?: { from: [number, number]; to: [number, number]; color: string; width?: number; station?: number }[];
+  mixEvidence?: MixEvidence;
   clipped?: { station: number; loEdge?: [number, number]; hiEdge?: [number, number]; normal?: [number, number]; position?: [number, number]; loClipped?: boolean; hiClipped?: boolean; label: string }[];
   /** 鼠标移到某条带测站号的测量横线上（移开为 null） */
   onSegmentHover?: (station: number | null) => void;
@@ -232,6 +234,7 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
   const [marksShown, setMarksShown] = useState(true);
   const [bandShown, setBandShown] = useState(true);
   const [headingShown, setHeadingShown] = useState(true);
+  const [mixShown, setMixShown] = useState(true);
   const [partEdgesShown, setPartEdgesShown] = useState(true);
   const bandClip = useId();
   const [allHandles, setAllHandles] = useState(false);
@@ -279,7 +282,7 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
   const band = searchBand(path, overlay?.searchHalfPx);
   const hint = error || emptyHint;
   const footer = controlsAt === "footer";
-  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{!!marks?.length && <Chip selected={marksShown} onClick={() => setMarksShown(v => !v)}>角点</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{!!overlay?.partEdges?.length && <Chip selected={partEdgesShown} onClick={() => setPartEdgesShown(v => !v)}>胶边距</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
+  const controls = <div className="wp-zoom"><IconButton size="sm" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton size="sm" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></IconButton><IconButton size="sm" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></IconButton>{overlay && <Chip selected={shown} onClick={() => setShown(v => !v)}>{footer ? "中线" : "中线叠加"}</Chip>}{!!marks?.length && <Chip selected={marksShown} onClick={() => setMarksShown(v => !v)}>角点</Chip>}{band && <Chip selected={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</Chip>}{overlay?.heading && <Chip selected={headingShown} onClick={() => setHeadingShown(v => !v)}>定向</Chip>}{!!overlay?.partEdges?.length && <Chip selected={partEdgesShown} onClick={() => setPartEdgesShown(v => !v)}>胶边距</Chip>}{overlay?.mixEvidence?.observation && <Chip selected={mixShown} onClick={() => setMixShown(v => !v)}>混胶色差</Chip>}{onEdit && overlay && <Chip selected={allHandles} disabled={!shown || editDisabled} title={footer ? "显示全部点柄" : undefined} onClick={() => setAllHandles(v => !v)}>{footer ? "点柄" : "编辑点"}</Chip>}</div>;
   return <div className={"wp-viewport" + (footer ? " wp-viewport-footer" : "")}>{footer ? tools && <div className="wp-image-tools">{tools}</div> : <div className="wp-image-tools">{tools ?? <span>{caption ?? label}</span>}{controls}</div>}{subtools}
     <div className={footer ? "wp-image-stage" : "wp-image-stage-plain"}>{!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "暂无图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} style={{ aspectRatio: `${image.width} / ${image.height}` }} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
@@ -375,6 +378,14 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
           {!!overlay?.partEdges?.length && partEdgesShown && <g aria-label="胶边距" pointerEvents="none" fill="none">
             {overlay.partEdges.map(([from, to], i) => <line key={i} x1={from[0]} y1={from[1]} x2={to[0]} y2={to[1]} stroke="var(--ov-ok)" strokeWidth={1.5} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />)}
             {([["var(--ov-halo)", 4], ["var(--ov-ok)", 2]] as const).map(([stroke, width]) => <polyline key={stroke} aria-label={stroke === "var(--ov-ok)" ? "零件边" : undefined} points={overlay.partEdges!.map(([, to]) => to.join(",")).join(" ")} stroke={stroke} strokeWidth={width} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
+          </g>}
+          {mixShown && overlay?.mixEvidence?.observation && <g aria-label="混胶色差轮廓" pointerEvents="none" fill="none">
+            {overlay.mixEvidence.observation.regions.map((region, i) => <g key={i} stroke={region.direction === "yellow" ? "#f6cb20" : "#347dfc"}>
+              <title>{region.direction === "yellow" ? "偏黄" : "偏蓝"}</title>
+              {region.contours.map((loop, j) => loop.length === 1
+                ? <circle key={j} cx={loop[0][0]} cy={loop[0][1]} r={screenPx(2)}/>
+                : <polygon key={j} points={loop.map(p => p.join(",")).join(" ")} strokeWidth={2} vectorEffect="non-scaling-stroke"/>)}
+            </g>)}
           </g>}
           {overlay && shown && <g aria-label="中线叠加">
             {path.length >= 2 && ([["var(--ov-halo)", 4], ["var(--ov-line)", 2]] as const).map(([stroke, width]) => <polyline key={stroke} points={path.map(p => p.join(",")).join(" ")} fill="none" stroke={stroke} strokeWidth={width} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}

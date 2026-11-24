@@ -613,7 +613,12 @@ fn measure(
                 let graph = graphs
                     .get(camera, segment)
                     .ok_or_else(|| format!("第 {segment} 段相机 {camera_id} 还没有示教走廊"))?;
-                let image = crate::image_file::load(&frame_index.path(camera_id, seq)?)?;
+                let mut image = crate::image_file::load(&frame_index.path(camera_id, seq)?)?;
+                image.capture = round
+                    .cameras
+                    .iter()
+                    .find(|c| c.camera_id == camera_id)
+                    .and_then(|c| c.mix_capture());
                 vision::measure_frame(
                     engine,
                     graph,

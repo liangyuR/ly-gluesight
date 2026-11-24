@@ -25,17 +25,28 @@
       }
     },
     {
+      "id": "n_runs_caliper",
+      "op": "image.color_caliper",
+      "params": {
+        "split": "half_max"
+      }
+    },
+    {
       "id": "n_runs",
-      "op": "glue.color_runs",
+      "op": "glue.merge_color_runs",
+      "params": {}
+    },
+    {
+      "id": "n_split_caliper",
+      "op": "image.color_caliper",
       "params": {
         "split": "half_max"
       }
     },
     {
       "id": "n_split",
-      "op": "glue.color_runs",
+      "op": "glue.merge_color_runs",
       "params": {
-        "split": "half_max",
         "mergeGap": 0.0
       }
     },
@@ -67,7 +78,7 @@
         "port": "maps"
       },
       "to": {
-        "node": "n_runs",
+        "node": "n_runs_caliper",
         "port": "maps"
       }
     },
@@ -78,7 +89,7 @@
         "port": "line"
       },
       "to": {
-        "node": "n_runs",
+        "node": "n_runs_caliper",
         "port": "line"
       }
     },
@@ -89,7 +100,7 @@
         "port": "maps"
       },
       "to": {
-        "node": "n_split",
+        "node": "n_split_caliper",
         "port": "maps"
       }
     },
@@ -100,7 +111,7 @@
         "port": "line"
       },
       "to": {
-        "node": "n_split",
+        "node": "n_split_caliper",
         "port": "line"
       }
     },
@@ -124,6 +135,28 @@
       "to": {
         "node": "n_edge",
         "port": "line"
+      }
+    },
+    {
+      "id": "n_runs_observation",
+      "from": {
+        "node": "n_runs_caliper",
+        "port": "observation"
+      },
+      "to": {
+        "node": "n_runs",
+        "port": "observation"
+      }
+    },
+    {
+      "id": "n_split_observation",
+      "from": {
+        "node": "n_split_caliper",
+        "port": "observation"
+      },
+      "to": {
+        "node": "n_split",
+        "port": "observation"
       }
     }
   ],
@@ -164,8 +197,8 @@
     "stationStep": {
       "default": 4.0,
       "binds": [
-        "n_runs.stationStep",
-        "n_split.stationStep",
+        "n_runs_caliper.stationStep",
+        "n_split_caliper.stationStep",
         "n_edge.stationStep"
       ],
       "doc": "站距（px）"
@@ -173,8 +206,8 @@
     "searchHalf": {
       "default": 32.0,
       "binds": [
-        "n_runs.searchHalf",
-        "n_split.searchHalf"
+        "n_runs_caliper.searchHalf",
+        "n_split_caliper.searchHalf"
       ],
       "doc": "有限观察半宽（px），独立于胶宽参考上限"
     },
@@ -231,8 +264,8 @@
       "group": "量胶宽",
       "doc": "卡尺上胶色得分高于它的相邻采样连成一段",
       "binds": [
-        "n_runs.segmentMin",
-        "n_split.segmentMin"
+        "n_runs_caliper.segmentMin",
+        "n_split_caliper.segmentMin"
       ]
     },
     "colorPeakMin": {
@@ -246,8 +279,8 @@
       "group": "量胶宽",
       "doc": "一段的胶色得分峰值至少这么高才算胶",
       "binds": [
-        "n_runs.peakMin",
-        "n_split.peakMin"
+        "n_runs_caliper.peakMin",
+        "n_split_caliper.peakMin"
       ]
     },
     "colorMergeGap": {

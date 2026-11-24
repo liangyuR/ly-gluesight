@@ -364,12 +364,24 @@ pub(super) fn assess(
             view.warnings
                 .push(format!("录制时相机 {camera_id} 的设备配置与当前不同"));
         }
-        let imaging = serde_json::from_value::<CameraImaging>(device["imaging"].clone()).ok();
+        let mut imaging = serde_json::from_value::<CameraImaging>(device["imaging"].clone()).ok();
         let session = device["deviceSession"].as_u64().filter(|&s| s > 0);
+        let same_session = session.is_some()
+            && frames
+                .iter()
+                .filter(|f| f["cameraId"].as_str() == Some(camera_id))
+                .all(|f| f["session"].as_u64() == session);
+        if !same_session {
+            if let Some(i) = imaging.as_mut() {
+                i.white_balance = None;
+            }
+        }
         match (imaging, session) {
             (Some(imaging), Some(device_session)) => capture_cameras.push(CaptureCamera {
                 camera_id: camera_id.clone(),
                 camera_config: config.clone(),
+                synthetic_capture: crate::frame::MixCapture::recorded(device)
+                    .filter(|v| v.synthetic && same_session),
                 imaging,
                 device_session,
                 received_count: 0,

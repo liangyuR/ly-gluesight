@@ -8,7 +8,37 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MixCapture {
+    pub serial: String,
+    pub white_balance: crate::camera::WhiteBalance,
+    pub synthetic: bool,
+}
+
+impl MixCapture {
+    pub fn recorded(device: &serde_json::Value) -> Option<Self> {
+        let config = &device["cameraConfig"];
+        let (serial, wb, synthetic) = match config["source"].as_str()? {
+            "mvs" => (&config["serial"], &device["imaging"]["whiteBalance"], false),
+            "simulator" => (
+                &device["syntheticCapture"]["serial"],
+                &device["syntheticCapture"]["whiteBalance"],
+                true,
+            ),
+            _ => return None,
+        };
+        let white_balance: crate::camera::WhiteBalance = serde_json::from_value(wb.clone()).ok()?;
+        white_balance.validate().ok()?;
+        Some(Self {
+            serial: serial.as_str().filter(|s| !s.is_empty())?.to_owned(),
+            white_balance,
+            synthetic,
+        })
+    }
+}
 
 /// 一帧 8 位图，行主序、无行填充：灰度每像素 1 字节，彩色每像素 3 字节（R、G、B 交错）。
 pub struct FrameImage {
@@ -17,6 +47,7 @@ pub struct FrameImage {
     /// 1 = 灰度，3 = RGB
     pub channels: u8,
     pub pixels: Vec<u8>,
+    pub capture: Option<MixCapture>,
     pool: Option<Weak<PoolInner>>,
     /// 记在池在途字节上的数目，释放时归还
     charged: usize,
@@ -31,6 +62,7 @@ impl FrameImage {
             height,
             channels: 1,
             pixels,
+            capture: None,
             pool: None,
             charged: 0,
             derived: false,
@@ -43,6 +75,7 @@ impl FrameImage {
             height,
             channels: 3,
             pixels,
+            capture: None,
             pool: None,
             charged: 0,
             derived: false,
@@ -259,6 +292,7 @@ impl FramePool {
             height,
             channels: 1,
             pixels: self.0.buffer(bytes),
+            capture: None,
             pool: Some(Arc::downgrade(&self.0)),
             charged: bytes,
             derived: false,
@@ -509,6 +543,7 @@ impl BayerMosaic {
                     height,
                     channels: 3,
                     pixels: pool.buffer(bytes),
+                    capture: None,
                     pool: Some(Arc::downgrade(pool)),
                     charged: bytes,
                     derived: true,

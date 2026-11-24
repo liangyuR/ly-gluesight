@@ -35,7 +35,7 @@ def bayer_pattern(raw):
     return pattern
 
 
-def prepare(record, output, product_code, frame_rate, pass_frames):
+def prepare(record, output, product_code, frame_rate, pass_frames, *, plc_port=1102, camera_port=12001):
     root = record.resolve(strict=True)
     metadata = json.loads((root / "part.json").read_text(encoding="utf-8-sig"))
     if not metadata.get("available") or metadata.get("missingFrames") or metadata.get("rawDropped"):
@@ -106,9 +106,15 @@ def prepare(record, output, product_code, frame_rate, pass_frames):
                 raise ValueError(f"图像编码失败：{source}")
             encoded.tofile(output / relative)
             paths.append(relative)
-        cameras.append({"id": camera, "port": 12001 + index, "frames": paths})
+        config_camera = {"id": camera, "port": camera_port + index, "frames": paths}
+        if metadata.get("datasetKind") == "synthetic":
+            device = next((d for d in metadata["devices"] if d["cameraId"] == camera), None)
+            if device and device["imaging"].get("whiteBalance"):
+                config_camera["syntheticCapture"] = {"serial": device["cameraConfig"]["serial"],
+                                                     "whiteBalance": device["imaging"]["whiteBalance"]}
+        cameras.append(config_camera)
         formats[camera] = mode
-    config = {"plcPort": 1102, "plcDb": 4, "pcDb": 2, "productCode": product_code,
+    config = {"plcPort": plc_port, "plcDb": 4, "pcDb": 2, "productCode": product_code,
               "snPrefix": "SIM", "frameRate": frame_rate, "captureLeadMs": 2000,
               "intervalMs": 2000, "resultTimeoutMs": 10000, "passFrames": passes,
               "passGapMs": 500, "cameras": cameras}

@@ -43,6 +43,27 @@ beforeEach(() => {
 });
 
 describe("历史详情（段配方记录）", () => {
+  it("历史混胶报警帧 → 叠加生产记录冻结的轮廓并区分合成来源", async () => {
+    const record = detail.burst!.frames.find(f => f.camera === 0 && f.seq === 1)!;
+    const evidence = {
+      modelId: "model-1", mmPerPx: 0.1, datasetKind: "synthetic" as const,
+      incomplete: false, reason: null, directions: ["yellow" as const], shiftRuns: [],
+      observation: {
+        stations: [], background: { validPixels: 1, totalPixels: 1, delta: [0, 0] as [number, number], normalizedShift: 0 },
+        regions: [{ direction: "yellow" as const, contours: [[[11, 12], [41, 12], [40, 15]] as [number, number][]],
+          startPx: 1, endPx: 31, confirmedLengthPx: 30, spanPx: 30, maxWidthPx: 3, areaPx2: 80 }],
+      },
+    };
+    record.metrics = frameMetrics(0, 1, { mixEvidence: { ...evidence, observation: null } });
+    vi.mocked(historyApi.frameDetail).mockResolvedValue({ ...detail, burst: {
+      ...detail.burst!, frames: [{ ...record, metrics: frameMetrics(0, 1, { mixEvidence: evidence }) }],
+    } });
+    show();
+    const polygons = await screen.findByLabelText("混胶色差轮廓", {}, { timeout: 5000 });
+    expect(polygons.querySelector("polygon")).toHaveAttribute("points", "11,12 41,12 40,15");
+    expect(screen.getAllByText(/合成联调 · PC 混胶报警 · 偏黄/).length).toBeGreaterThan(0);
+  });
+
   it("对照有生产跳过区域 → 帧格、详情和区域显示跳过，切回原始记录恢复真实NG", async () => {
     const burst = detail.burst!;
     burst.frameVerdicts = burst.frameVerdicts.map(v => v.camera === 0 && v.seq === 1 ? { ...v, verdict: "NG_GAP" } : v);

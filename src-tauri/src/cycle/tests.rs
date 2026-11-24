@@ -63,6 +63,7 @@ fn armed_part_with(
         })
         .collect();
     Part {
+        mix_captures: Vec::new(),
         mode: crate::store::PartMode::Production,
         cycle_id: cycle_id.into(),
         bundle_id: None,
@@ -215,6 +216,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             segment: 2,
             corridor,
             sector_deg: (differ == Some("sector")).then_some(90.0),
+            mix_check: None,
             color_model: None,
             measure: None,
         });

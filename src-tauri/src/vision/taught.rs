@@ -398,6 +398,7 @@ const EXIT_OFFSET_RATIO: f64 = 0.5;
 /// 每帧只输出帧内汇总的 `FrameMetrics`（规格 §4 每帧独立指标）。
 #[derive(Clone, Debug)]
 pub struct CorridorGraph {
+    pub(crate) mix: Option<super::mix::MixPlan>,
     pub camera: String,
     /// 计划相机下标（`Recipe.inspect` 的顺序），即 `FrameMetrics.camera`
     pub camera_idx: usize,
@@ -543,6 +544,11 @@ pub fn plan_corridor(
         None => None,
     };
     Ok(CorridorGraph {
+        mix: inspect
+            .segment_corridor(segment)
+            .and_then(|c| c.mix_check.as_ref())
+            .map(|check| super::mix::MixPlan::build(check, scale, &effective, false))
+            .transpose()?,
         camera: inspect.camera.clone(),
         camera_idx,
         segment,
@@ -582,6 +588,15 @@ impl FrameGraph<'_> {
         match self {
             Self::Corridor(c) => &c.camera,
             Self::Heading(h) => &h.camera,
+        }
+    }
+}
+
+impl<'a> FrameGraph<'a> {
+    pub(crate) fn mix_plan(self) -> Option<&'a super::mix::MixPlan> {
+        match self {
+            Self::Corridor(c) => c.mix.as_ref(),
+            Self::Heading(h) => h.mix.as_ref(),
         }
     }
 }
@@ -695,6 +710,28 @@ impl CorridorSet {
     pub fn headings(&self) -> impl Iterator<Item = &HeadingGraph> {
         self.headings.values()
     }
+
+    pub(crate) fn restore_mix(&mut self, frozen: &Value) -> Result<(), String> {
+        for (&key, corridor) in &mut self.graphs {
+            let mix = match self.headings.get_mut(&key) {
+                Some(heading) => &mut heading.mix,
+                None => &mut corridor.mix,
+            };
+            if let Some(mix) = mix {
+                let entry = frozen["mix"]
+                    .as_array()
+                    .and_then(|rows| {
+                        rows.iter().find(|r| {
+                            r["index"].as_u64() == Some(key.0 as u64)
+                                && r["segment"].as_u64() == Some(u64::from(key.1))
+                        })
+                    })
+                    .ok_or("发布包缺少已启用的混胶检测图，请重新发布")?;
+                mix.restore(entry, &frozen["templates"])?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// 用 lyFlow 量一帧（段配方）：示教走廊见 [`measure_frame_with`]，逐帧定向见 [`measure_heading_with`]。
@@ -705,6 +742,17 @@ pub fn measure_frame(
     seq: u64,
     run_id: &str,
 ) -> Result<FrameMeasurement, String> {
+    measure_with_capture(engine, graph, image, seq, run_id, image.capture.as_ref())
+}
+
+pub(crate) fn measure_with_capture(
+    engine: &Engine,
+    graph: FrameGraph<'_>,
+    image: &FrameImage,
+    seq: u64,
+    run_id: &str,
+    capture: Option<&crate::frame::MixCapture>,
+) -> Result<FrameMeasurement, String> {
     let start = Instant::now();
     let run = |g: GraphRun<'_>, image: &FrameImage| {
         engine.run_targets(g.template.text, run_id, image, g.params, g.targets)
@@ -713,6 +761,10 @@ pub fn measure_frame(
         FrameGraph::Corridor(corridor) => measure_frame_with(corridor, image, seq, run)?,
         FrameGraph::Heading(heading) => measure_heading_with(heading, image, seq, run)?,
     };
+    if let Some(mix) = graph.mix_plan() {
+        let line = (!m.metrics.heading_fallback).then_some(m.line.as_slice());
+        m.metrics.mix_evidence = Some(mix.measure(engine, image, capture, line, run_id));
+    }
     m.ms = start.elapsed().as_millis().min(u32::MAX as u128) as u32;
     Ok(m)
 }
@@ -978,6 +1030,7 @@ pub(super) fn bead_metrics(
         heading_fallback: false,
         fallback_reason: None,
         edge_mm: None,
+        mix_evidence: None,
         measurement_evidence: None,
     }
 }

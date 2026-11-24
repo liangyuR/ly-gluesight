@@ -367,6 +367,7 @@ fn unmeasured(camera: usize, seq: u64, state: FrameState, error: String) -> Fram
         width_min: None,
         width_max: None,
         width_mean: None,
+        mix_evidence: None,
         measurement_evidence: None,
         widths: Vec::new(),
         spacing_mm: 0.0,

@@ -58,6 +58,7 @@ fn with_corridor(w: &mut Workspace, camera: &str, segment: u32, corridor: Vec<[f
             segment,
             corridor,
             sector_deg: None,
+            mix_check: None,
             color_model: None,
             measure: None,
         });
