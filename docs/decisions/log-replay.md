@@ -32,14 +32,14 @@
 
 - 问题：日志散落在相机、PLC、测量、录制等模块，逐处传 cycleId 改动面大。
 - 可选项：A 每个调用点显式传入；B 在途工件上下文自动附加；C 只按时间窗口关联。
-- 采用：A + B。partStart 时 `applog::begin_cycle`（cycleId、SN、requestSeq，选定配方后补 recipeId），S7 事务结束或复位完成时 `end_cycle`；在途期间写入的记录自动补齐这些字段。帧到达、测量完成等显式带相机、seq 与耗时数据。显式指明了其他 cycleId 的记录不会被改写。
+- 采用：A + B。partStart 时 `applog::begin_cycle`（cycleId、SN、requestSeq，选定配方后补 recipeId），本件结束（结果回写，或中断、丢弃）时 `end_cycle`；在途期间写入的记录自动补齐这些字段。帧到达、测量完成等显式带相机、seq 与耗时数据。显式指明了其他 cycleId 的记录不会被改写。
 - 说明：在途期间其他模块的记录（相机断线、PLC 告警）也会挂到本件，这是有意的：回看时需要看到本件期间发生的设备事件。不按内容哈希、不按时间猜测关联运行日志。
 - 回退：去掉 `correlate` 中的自动补齐，只保留显式字段。
 
 ## 6. 本件时间线的数据源与阶段耗时
 
-- 采用：运行日志按 cycleId 精确取（只读该件日期前后各一天的文件，最多 3000 条）；PLC 信号取 `logs/plc.db` 中本件首末记录前后 1 s 内的值变化，且不越过上一件的 S7 事务结束、下一件的 partStart（PLC 日志本身没有 cycleId，只能按时间窗口展示；连续生产时相邻两件只隔几百毫秒，不设界会把上一件的结果回写显示到本件）；排除 `plcHeartbeat / pcHeartbeat` 心跳点，最多 400 条。
-- 阶段耗时只由关键事件计算，缺任一端点记为未知，不拿别的事件顶替：接件登记（partStart→admitted）、运动与采集（admitted→partEnd）、收尾与判定（partEnd→检测结果，含持久化与回写）、等待 PLC 确认（检测结果→S7 事务结束）、整件（partStart→S7 事务结束）。partStart、admitted、partEnd 是运行日志的事件名：partStart 对应协议 8 的 plcState=10，admitted 是 PC 接件登记完成（不写 PLC），partEnd 对应 plcState=20。
+- 采用：运行日志按 cycleId 精确取（只读该件日期前后各一天的文件，最多 3000 条）；PLC 信号取 `logs/plc.db` 中本件首末记录前后 1 s 内的值变化，且不越过上一件的结束、下一件的 partStart（PLC 日志本身没有 cycleId，只能按时间窗口展示；连续生产时相邻两件只隔几百毫秒，不设界会把上一件的结果回写显示到本件）；排除 `plcHeartbeat / pcHeartbeat` 心跳点，最多 400 条。
+- 阶段耗时只由关键事件计算，缺任一端点记为未知，不拿别的事件顶替：接件登记（partStart→admitted）、运动与采集（admitted→partEnd）、收尾与判定（partEnd→result，含持久化与回写）、整件（partStart→result）。partStart、admitted、partEnd、result 是运行日志的阶段标记（`stage`）：partStart 是读到新件（事件名“工件到达”），admitted 是 PC 接件登记完成（不写 PLC），partEnd 是 `inspecting` 回 0（事件名“工件结束”），result 是检测结果。
 - 回退：时间线只读日志，不影响生产；删除面板即可。
 
 ## 7. 诊断包格式与范围
@@ -47,7 +47,7 @@
 - 可选项：A 导出目录；B tar；C ZIP（引入 zip crate）；D ZIP（自写最小写入器）。
 - 采用：D。Windows 资源管理器直接打开，不新增依赖（复用已锁定的 `flate2` 与 `crc32fast`）。只写普通 ZIP（无 ZIP64），因此限制：时间范围 ≤ 31 天、记录 ≤ 5000 件、附原图 ≤ 200 件且原图总量 ≤ 2 GB、PLC 日志 ≤ 20 万条；超限部分不打包并写入 `manifest.json` 的 notes。
 - 哈希规则：ZIP 条目的 CRC32 是格式规定的传输校验，由解压工具使用；软件不用它做任何业务匹配、校验或身份关联，不违反“禁止哈希匹配”。
-- 内容：`manifest.json`（导出参数、构建信息 `build`、`utcOffset`、`logSchema`、`configSummary`、`notes`，以及除自身外每个文件的 path、bytes、sha256）、`README.md`（包结构、时间口径、事件编码表与推荐分析顺序）、`logs/gluesight-*.jsonl`（时间段内）、`logs/plc.jsonl`（时间段内，时间正序，每行带本地时间 `t`）、`config/`、`state/`（单文件 ≤ 8 MB；握手审计当前文件只写时间段内的行，已滚动分段取与时间段有交集的）、`records/parts.csv` 与 `records/parts.jsonl`（完整明细）、`recipes/<revisionId>.json`（涉及的配方快照）、`records/<记录号>_<cycleId>/`（原图、`part.json`、对照结果）。不含 WebView 资料与样本原件。
+- 内容：`manifest.json`（导出参数、构建信息 `build`、`utcOffset`、`logSchema`、`configSummary`、`notes`，以及除自身外每个文件的 path、bytes、sha256）、`README.md`（包结构、时间口径、事件编码表与推荐分析顺序）、`logs/gluesight-*.jsonl`（时间段内）、`logs/plc.jsonl`（时间段内，时间正序，每行带本地时间 `t`）、`config/`、`state/`（单文件 ≤ 8 MB）、`records/parts.csv` 与 `records/parts.jsonl`（完整明细）、`recipes/<revisionId>.json`（涉及的配方快照）、`records/<记录号>_<cycleId>/`（原图、`part.json`、对照结果）。不含 WebView 资料与样本原件。
 - 原图默认只附异常件（NG / ERR / 局部超差），新的优先；从历史详情导出“本件诊断包”时附该件全部原图。
 - 回退：删除 `diagnostics_export` 命令与界面入口，不影响其他功能。
 

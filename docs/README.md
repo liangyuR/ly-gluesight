@@ -16,8 +16,8 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 
 ### 段配方的数据流
 
-1. **机械臂**：向 PLC 单向通知工件到达（型号、SN）、拍照信号 `CaptureActive`（需要采集的涂胶运动期间为 1，一件内可多次开关）与工件结束，不等 PLC 或 PC。到达到拍照信号之间留 ≥ 2 s，让 PC 先读到请求。
-2. **PLC**：按 [生产通讯协议 8](integration/plc-communication-protocol.md)，工件到达后提交请求（plcState=10），不等 PC；工件在检且 `CaptureActive`=1 时向相机输出 Line0 高电平，工件结束后拉低并置 plcState=20。PLC 不参与分段，也不报帧数。
+1. **机械臂**：向 PLC 单向通知工件到达（型号、SN）、拍照信号 `CaptureActive`（需要采集的涂胶运动期间为 1，一件内可多次开关）与工件结束，不等 PLC 或 PC。到达到拍照信号之间留 ≥ 2 s，让 PC 先读到新件。
+2. **PLC**：按 [生产通讯协议 9](integration/plc-communication-protocol.md)，工件到达后发布当前件（型号、SN，`partSeq` 加 1，`inspecting`=1），不等 PC；工件在检且 `CaptureActive`=1 时向相机输出 Line0 高电平，工件结束后拉低并把 `inspecting` 置 0，看到 `resultSeq` 等于本件 `partSeq` 就取结果。PLC 不参与分段，也不报帧数。
 3. **三台相机**：高电平期间按内部固定帧率曝光，帧序号取 SDK `frame_num`，不按到达顺序；图像内存按每相机字节预算封顶（`FramePool`，256 MiB），预算满或通道满的帧记缺帧。
 4. **帧配组**：seq = frame_counter − 该相机基线，同一 seq 的三帧为一个帧组；缺帧的组标 incomplete；单台相机帧数只用于丢帧告警（与另外每一台相机相差 > 1）。帧数 = 帧组数。每台相机下一件的基线 = 本件见到的最高帧号。
 5. **分段（按笔或按比例，D-SB-62、D-SB-40）**：段结构由人定，各段 N_exp 取示教件已确认手动分段的各段帧组数。一次门控即一笔，示教件的笔结构随 N_exp 写进配方；本件笔数相同时段边界按笔换算，两笔之间的边界确定、不留过渡区，笔中间的边界两侧各 `boundaryGuard`（默认 2）帧为过渡区（只判每帧指标、不判胶偏）。没有笔结构时 `Proportional` 按各段 N_exp 比例与本件帧组数推算边界，只作兜底，边界一律视为可信。每笔开头、结尾按配方 `passSkip` 跳过，整笔太短的不检。单段配方、有段还没有 N_exp 或笔数不同时整条胶路按未分段区域判：只跑每帧检测、不判胶偏。段没有帧数容差，帧组数不核对；笔数不同只告警。
@@ -29,11 +29,11 @@ Line0 优先使用 `FrameBurstActive` 或 `AcquisitionActive`；Jinghang JHEM131
 
 分段与走廊示教支持可选的[工件胶路导航图](decisions/recipe-build-flow.md#rb-9-工件胶路导航图)：在候选中导入整件图、标注有向胶路及采集范围，按段原始帧组进度浏览位置，不做图像配准或相机偏移。正式发布时冻结独立辅助快照，随项目流转；地图缺失或损坏只关闭导航，不影响检测。现场导航精度尚未验证。
 
-### 协议 8 要点
+### 协议 9 要点
 
-- 双方各一个状态字握手（plcState / pcState），PC 回显 `seqEcho` / `snEcho`；PLC 只报型号、序号与 SN，不下发计划或拍照数量，换示教件、改分段不用改 PLC。
-- PC 读到 plcState=10 只做接件登记（核对配方、发布包、相机，定帧计数基线，开始录制），不回写 PLC；登记前收到的帧不计入本件，按缺帧判定。不能检测的件（找不到配方、相机未就绪等）照常运动采图，PC 等 plcState=20 后回结果码 90 与对应 faultCode；任何结果都在 plcState=20 之后发布。
-- 任何结果都不停线；PC 不在线时 PLC 不等待，本件记未检。复位可由 PLC 现场发起（plcState=99），也可在软件发起（pcState=99，PLC 回空闲后 PC 置就绪）。
+- 没有握手时序：PLC 只发布当前件（在检 `inspecting`、件序号 `partSeq`、型号、SN），PC 只发布最近一件的结果，双方靠件序号对上，互不等待；没有状态字、确认、故障态和复位。PLC 不下发计划或拍照数量，换示教件、改分段不用改 PLC。
+- PC 读到新件（`inspecting`=1 且 `partSeq` 变化）只做接件登记（核对配方、发布包、相机，定帧计数基线，开始录制），不回写 PLC；登记前收到的帧不计入本件，按缺帧判定。不能检测的件（找不到配方、相机未就绪等）照常运动采图，工件结束后回结果码 90 与对应 faultCode；任何结果都在工件结束之后发布，最后写 `resultSeq`，PLC 看到它等于本件 `partSeq` 就取结果。
+- 任何结果都不停线；PC 不在线或没接到的件 PLC 不等待，记未检。PLC 已连接、协议版本为 9、PLC 心跳在变化即通讯就绪，中断后自动恢复，不需要操作。
 - 维护模式 `pcMode=1`：结果码写 0，PLC 按未检放行；切换从下一件生效。
 
 ### 项目
@@ -49,7 +49,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 | 职责 | 文件 |
 | --- | --- |
 | 配方文档、校验、计划身份 | `recipe.rs`（`RecipeDoc` schema 8、`is_burst`、阶段 `stage`）、`plan.rs`（`PathSegment`、`PartCalib`、`KindDefaults`、`plan_identity`、`PlanExport`）、`recipe_api.rs` |
-| 握手与接件 | `handshake.rs`（`PROTOCOL_VERSION = 8`）、`plc_session.rs`、`inspection.rs`（S7 点表模板）、`cycle/admission.rs` |
+| PLC 会话与接件 | `handshake.rs`（`PROTOCOL_VERSION = 9`）、`plc_session.rs`、`inspection.rs`（S7 点表模板）、`cycle/admission.rs` |
 | 生产节拍 | `cycle.rs` 接件登记与维护模式、`cycle/burst.rs`（在途件、收尾与判定）、`shot_router.rs` 的 `arm_frames` |
 | 帧配组、分段、判定、标定 | `frame_group.rs`、`segmentation.rs`（`Proportional`、`resolve_regions` 过渡区）、`burst_judge.rs`、`calibration.rs`；离线评估 `examples/segment_eval.rs`；逐帧定向与找边评估 `examples/heading_eval.rs` |
 | 相机与测量 | `camera.rs`、`frame.rs`、`measure.rs`（`FrameJob`）、`vision.rs` / `vision/taught.rs`（`measure_frame`）、`production.rs`（`burst_graphs`） |
@@ -77,7 +77,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 - **3 × 25 Hz 吞吐门槛**：没有达标，也没有被直接验证。门槛口径不改，等现场工控机用真实相机做持续生产压测（并重跑 `throughput_probe` 探针）后，再决定降帧率还是加测量并发（[segment-burst](decisions/segment-burst.md) 第七节）。
 - **在线投运**：一期至三期（维护模式采集、历史件导入为采集轮次、试判统计与复核）已实施，只有软件回归覆盖，隔离实例端到端与现场都没有跑过（[在线投运方案](architecture/online-commissioning.md)）。
 - **已接受、待确认的取舍**：气泡、拉丝不检；弯道的出胶点短走廊没有真实弯道图验证；提前结束不加标记、不判 ERR。汇总见 [决策索引](decisions/README.md)。
-- **真机验证**：PLC 协议 8、机械臂信号接口、三台相机共用触发、带宽（三路 25 Hz 估算约 826 Mbps）、现场节拍与检测准确率都没有验证。仓库不保存 PLC 程序，PLC 侧按协议 8 规格由现场工程实现。
+- **真机验证**：PLC 协议 9、机械臂信号接口、三台相机共用触发、带宽（三路 25 Hz 估算约 826 Mbps）、现场节拍与检测准确率都没有验证。仓库不保存 PLC 程序，PLC 侧按协议 9 规格由现场工程实现。
 
 长件的按需读取、帧条窗口化、复算进度与取消契约见[长件浏览与复算](architecture/frame-browsing.md)。
 
@@ -87,7 +87,7 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 
 | 目录 | 内容 |
 | --- | --- |
-| [integration/](integration) | [生产通讯协议 8](integration/plc-communication-protocol.md)、[样本夹具格式](integration/sample-set-format.md)、[Agent 示教接口（MCP）](integration/agent-teaching.md)、[示教执行问题与改进项](integration/agent-teaching-findings.md) |
+| [integration/](integration) | [生产通讯协议 9](integration/plc-communication-protocol.md)、[样本夹具格式](integration/sample-set-format.md)、[Agent 示教接口（MCP）](integration/agent-teaching.md)、[示教执行问题与改进项](integration/agent-teaching-findings.md) |
 | [architecture/](architecture) | [配方创建流程](architecture/recipe-creation-workflow.md)、[在线投运方案](architecture/online-commissioning.md)、[项目设计](architecture/project.md)、[存储布局](architecture/storage-layout.md)、[历史件导出包](architecture/history-package.md)、[lyFlow 依赖](architecture/lyflow-dependency.md)、[运行日志](architecture/agent-logging.md)与[事件编码表](architecture/agent-logging-codes.md) |
 | [decisions/](decisions/README.md) | 现行决策：取舍、回退方式与需要用户确认的事项 |
 | [testing/](testing/TESTING.md) | 测试运行与复现、长稳与故障注入运行说明 |

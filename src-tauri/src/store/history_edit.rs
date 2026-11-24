@@ -141,9 +141,9 @@ impl Store {
         if count != ids.len() as i64 {
             return Err("选中的历史记录已不存在，请刷新后重试".into());
         }
-        let pending: Option<i64> = tx.query_row("SELECT id FROM parts WHERE id IN (SELECT value FROM json_each(?1)) AND (delivery_state IN ('pending','submitted','failed') OR recording_state = 'pending') LIMIT 1", [&selection], |row| row.get(0)).optional().map_err(db_err)?;
+        let pending: Option<i64> = tx.query_row("SELECT id FROM parts WHERE id IN (SELECT value FROM json_each(?1)) AND (delivery_state = 'pending' OR recording_state = 'pending') LIMIT 1", [&selection], |row| row.get(0)).optional().map_err(db_err)?;
         if let Some(id) = pending {
-            return Err(format!("记录 #{id} 的 PLC 交付或录制尚未完成，不能删除"));
+            return Err(format!("记录 #{id} 的结果回写或录制尚未完成，不能删除"));
         }
         let recordings = {
             let mut stmt = tx.prepare("SELECT project_id, source, recording_directory, cycle_id FROM parts WHERE id IN (SELECT value FROM json_each(?1)) AND recording_directory IS NOT NULL").map_err(db_err)?;

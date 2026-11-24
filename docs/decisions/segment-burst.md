@@ -1,6 +1,6 @@
 # 分段连拍飞拍决策记录（segment-burst）
 
-段配方（分段连拍飞拍）是唯一的生产模型，本文是它的现行基准：规格与代码冲突时采用的做法（第四节 D-SB-n）、前后端 IPC 契约（第五节）、口径（第六节）、内存与队列（第七节）和实现要点（第九节）。PLC 握手与现场接线以 [生产通讯协议 8](../integration/plc-communication-protocol.md) 为准。
+段配方（分段连拍飞拍）是唯一的生产模型，本文是它的现行基准：规格与代码冲突时采用的做法（第四节 D-SB-n）、前后端 IPC 契约（第五节）、口径（第六节）、内存与队列（第七节）和实现要点（第九节）。PLC 通讯与现场接线以 [生产通讯协议 9](../integration/plc-communication-protocol.md) 为准。
 
 依据：分段连拍飞拍方案第 18 版（2026-10-22，下称“规格”）与实现决策补充（2026-10-22，用户已确认，下称“决策补充”）；两者冲突时以决策补充为准。契约类型在 `src-tauri/src/{plan,frame_group,segmentation,burst_judge,calibration}.rs` 与 `src/features/plan/types.ts`（字段与 Rust serde 输出逐一对应）。
 
@@ -42,8 +42,8 @@
 
 - 三台独立单视角相机（D-SB-11），Line0 高电平期间按软件设定的固定帧率连续采集，默认 10 fps；PLC 按机械臂拍照信号 `CaptureActive` 门控采集使能（一件内可多次开关，段间空走不出帧，各段的帧都计入本件），不产生逐帧脉冲。Software 触发只用于单帧标定与调试。
 - 帧按各相机 SDK 帧号（`frame_counter`）配组（D-SB-10、第六节）；帧数告警只比较相机之间，不代表曝光同步。
-- PC 读到 plcState=10 即接件登记（核对配方、发布包与相机，定帧计数基线，开始录制），不回写 PLC；登记前收到的帧不计入本件，按缺帧判定。
-- PLC 报工件结束（plcState=20）后，PC 等收尾截止（收尾窗口 `drain_ms`，默认 1000 ms；本件相机都看到 Line0 门控已关闭满 `gate_guard_ms`，默认 80 ms，即提前截止，D-SB-54）、已接受的帧都测完（含 D-SB-45 的收尾补测），再判定并回写结果；任何结果都只在 plcState=20 之后回写。下一件须等当前件释放。
+- PC 读到新件（`inspecting`=1 且 `partSeq` 变化）即接件登记（核对配方、发布包与相机，定帧计数基线，开始录制），不回写 PLC；登记前收到的帧不计入本件，按缺帧判定。
+- PLC 报工件结束（`inspecting` 回 0）后，PC 等收尾截止（收尾窗口 `drain_ms`，默认 1000 ms；本件相机都看到 Line0 门控已关闭满 `gate_guard_ms`，默认 80 ms，即提前截止，D-SB-54）、已接受的帧都测完（含 D-SB-45 的收尾补测），再判定并回写结果；任何结果都只在工件结束之后回写。
 - 分段按 D-SB-62 与 D-SB-40：段结构由人定。配方有示教件的笔结构、本件笔数相同时按笔换算边界；没有笔结构时 `Proportional` 按各段 N_exp 比例与本件帧组数推算边界，只作兜底，边界一律视为可信。笔中间的边界两侧各留 `boundary_guard` 帧过渡区，两笔之间的边界不留。单段配方、有段还没有 N_exp 或笔数不同时整条胶路按“未分段”处理，只跑每帧独立检测、不判胶偏。每笔首尾的跳过（D-SB-62）不论分段是否可信都生效。
 
 ## 二、多段配方的发布与运行
@@ -51,7 +51,7 @@
 - **发布门槛**：示教件即基准件（[recipe-build-flow](recipe-build-flow.md) RB-3）：各段 N_exp 都已由示教件分段得出，整件 ΣN_exp（`expected_total`）为各段之和；示教件分段未确认时没有 N_exp，不能发布（D-SB-45）。
 - **N_exp 的来源**：各段 N_exp = 示教件在分段步骤已确认的各段帧组数，候选每次改动后由软件写入（`calibrate_from_teaching`），不能手填；`expected_total` = 各段 N_exp 之和（`plan::expected_total(segments, part_calib)`）。`part_calib` 不再写入，候选里恒为空。
 - **运行时**：多段配方按笔（D-SB-62）或按比例（D-SB-40）分段判定；单段配方或本件笔数与示教件不同时，整条胶路按“未分段”区域判，只跑每帧独立检测、不判胶偏。笔数不同另记笔数异常，不改结论；帧组数不核对。
-- 协议 8 的 PLC 只报型号、序号与 SN，ΣN_exp 只在 PC 侧用于分段与帧组号上限，换示教件、改分段不用改 PLC。
+- PLC 只报型号、件序号与 SN，ΣN_exp 只在 PC 侧用于分段与帧组号上限，换示教件、改分段不用改 PLC。
 
 ## 三、已接受的默认做法
 
@@ -87,7 +87,7 @@
 ### D-SB-7 下一件基线：每台相机各取自己见到的最高 frame_counter
 
 - 问题：规格 §3 帧序号取 SDK 帧号；PLC 不报触发计数。
-- 采用：每台相机下一件的帧计数下限 = max(该相机原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter` → `Ledgers::set_frame_floor`，记在 `Ledger.frame_floor`，接件时由 `shot_router::arm_frames` 与本会话最高帧计数取大）。故障复位（`Ledgers::clear_floors`）清掉下限，之后只按实际见到的计数定基线。
+- 采用：每台相机下一件的帧计数下限 = max(该相机原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter` → `Ledgers::set_frame_floor`，记在 `Ledger.frame_floor`，接件时由 `shot_router::arm_frames` 与本会话最高帧计数取大）。通讯重新就绪时（`Ledgers::clear_floors`）清掉下限，之后只按实际见到的计数定基线。
 - 理由：相机偶发丢末帧（已计数、帧没送到）只会让下一件出现两个不完整帧组，且下一件后自动对齐。
 
 ### D-SB-8 采集轮次帧数与存储
@@ -183,7 +183,7 @@
 ### D-SB-25 计划导出
 
 - 问题：规格 §1 要有给 PLC / 机器人工程师的计划 JSON：段序列、各段 N_exp、容差、ΣN_exp。
-- 采用：`plan::PlanExport`（段序列、各段 N_exp、ΣN_exp，不含容差）与命令 `recipe_plan_export`；工作区视图带 `WorkspaceView.plan.productionExport / candidateExport`，旧字段 `productionPlc / candidatePlc` 为 null。配方总览不设“PLC 对接参数”面板：协议 8 的 PLC 只需型号，已发布配方的型号与 ΣN_exp 看配方库卡片摘要。
+- 采用：`plan::PlanExport`（段序列、各段 N_exp、ΣN_exp，不含容差）与命令 `recipe_plan_export`；工作区视图带 `WorkspaceView.plan.productionExport / candidateExport`，旧字段 `productionPlc / candidatePlc` 为 null。配方总览不设“PLC 对接参数”面板：PLC 只需报型号，已发布配方的型号与 ΣN_exp 看配方库卡片摘要。
 
 ### D-SB-27 独立生产模拟
 
@@ -226,8 +226,8 @@
 
 ### D-SB-34 本件未检与提前结束
 
-- 问题：规格 §0 PLC 不提交请求（或提前终止）时整件按未检处置。
-- 采用（默认做法 3）：PLC 不提交请求时 PC 没有记录，由 PLC 记未检。提前结束由 PLC 提前报工件结束表达，PC 用已收到的帧照常判，不另加标记。在途 PLC 进入故障或复位时，本件按中断记 ERR 98（[core-flow.md](core-flow.md) D-CF-6）。
+- 问题：规格 §0 PLC 没有发布工件（或提前终止）时整件按未检处置。
+- 采用（默认做法 3）：PLC 没有发布的件 PC 没有记录，由 PLC 记未检。提前结束由 PLC 提前报工件结束表达，PC 用已收到的帧照常判，不另加标记。在途时通讯未就绪或 PLC 中途换件，本件按中断记 ERR 98（[r2-plc.md](r2-plc.md) R2P-2、R2P-4）。
 - 残余风险：可能出现 PLC 记了未检、PC 记录却写 OK 的情况。
 
 ### D-SB-35 采集轮次的一致性校验
@@ -482,7 +482,7 @@
 
 - 问题：整圈示教采集靠 PC 发起的 DB6 / DB12 示教握手。现场 PLC 的示教程序一直不合规：不回写握手编号、取消后不确认、停止后仍门控，现场始终跑不通。维护模式采集后从历史导入（HI-1～HI-8）已实现并试过，能提供建配方所需的轮次。
 - 采用：
-  - 删除示教握手：PC 不发起整圈采集，PLC 页没有示教页签，点表没有 DB6 / DB12 点位（`plc.json` 里带示教标签的点位加载时去掉），日志没有 `teach.*` 与 `op.capture.start / stop`，离线不送“一圈”；协议 8 没有生产与示教互斥。
+  - 删除示教握手：PC 不发起整圈采集，PLC 页没有示教页签，点表没有 DB6 / DB12 点位（`plc.json` 里带示教标签的点位加载时去掉），日志没有 `teach.*` 与 `op.capture.start / stop`，离线不送“一圈”；协议 9 没有生产与示教互斥。
   - 轮次只来自历史件：维护模式按采集版采图后，在示教件页选用时导入（[recipe-build-flow](recipe-build-flow.md)）；开发与测试由 `examples/capture_fixture.rs` 生成仿历史录制件，走同一导入路径。
   - 原“整圈采集”页现为“示教件”页。Line0 门控改用维护件的帧数、帧率与时长验收。
   - 读兼容：已有轮次（格式 2 带 `teachingRoundId`，或格式 3）照常读取；`CaptureRoundV2` 的字段与 `CaptureState` / `CaptureFailureV2` 全部变体保留，否则旧轮次会被改名为 `round.broken-*`。这些轮次只属于旧流程候选（RB-5），随候选删除。
@@ -717,7 +717,7 @@
 
 ### 5.2 新 DTO
 
-- **`PartViewBurst`**（在线在途件）：`cameras`、`expectedTotal`、`deviceTriggers`（保留字段，协议 8 不报，为 null）、`groupCount`、`cameraFrames`、`measuredFrames`、`pendingMeasure`、`groups: FrameGroupView[]`。
+- **`PartViewBurst`**（在线在途件）：`cameras`、`expectedTotal`、`deviceTriggers`（保留字段，PLC 不报，为 null）、`groupCount`、`cameraFrames`、`measuredFrames`、`pendingMeasure`、`groups: FrameGroupView[]`。
 - **`FrameGroupView`**：`seq`、`incomplete`、`cells: FrameCellView[]`（按计划相机顺序）。`FrameCellView`：`status`（`waiting | measuring | FrameState`）、`verdict`（该帧单独的结论，D-SB-56；未测完为 null）、`unjudged`（只在历史：测过但整件没有区域判定）、`frameCounter`、`segment`（测量所用走廊的段，未测完时省略；收尾补测换了走廊时随之变，检测视图据此重读叠图）。
 - **`PartDetailBurst`**（历史详情）：`segments`（本件配方快照的段）、`cameras`、`expectedTotal`、`deviceTriggers`（同上）、`cameraFrames`、`judgement: BurstJudgement`、`frames: FrameRecord[]`（按 camera、seq 排序）、`frameVerdicts`（逐帧结论 `{camera, seq, verdict}`，读取时按配方快照、记录的区域与已存指标现算，D-SB-56）。
 - **`FrameRecord`**：`camera`（计划相机下标）、`seq`、`status: FrameState`、`frameCounter`、`triggerCounter`、`region`（`judgement.regions` 下标，不在任何区域为 null）、`metrics: FrameMetrics | null`（missing 时为 null）、`rawFile`（录制根内相对路径，未录制或队满丢弃为 null）。1..=groupCount 内每个 (camera, seq) 都有一条，缺帧也有。
@@ -871,10 +871,10 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 #### 11. 生产节拍
 
-- **接件**：`shot_router::arm_frames` 在接件登记时按 SDK 帧计数定基线（D-SB-7），本会话没见过帧时取开流后计数起点，仍未知时不阻止接件，取本件这台相机首帧计数 − 1（本件没收到帧的相机不记下一件下限）；`Policy::burst_production` 认 ChunkTrigger / ChunkFrame / SdkFrame，`Policy::burst_offline` 另认 Synthetic。会话或计数来源不可信记 98，测量池全部超时未返回、发布包核验超过 1 s 未完成（`INTAKE_CHECK_TIMEOUT`，存储卡住时不阻塞节拍）记 99：本件照常运动，PC 等 plcState=20 后回结果码 90 与该故障码（[core-flow.md](core-flow.md) D-CF-4）。
+- **接件**：`shot_router::arm_frames` 在接件登记时按 SDK 帧计数定基线（D-SB-7），本会话没见过帧时取开流后计数起点，仍未知时不阻止接件，取本件这台相机首帧计数 − 1（本件没收到帧的相机不记下一件下限）；`Policy::burst_production` 认 ChunkTrigger / ChunkFrame / SdkFrame，`Policy::burst_offline` 另认 Synthetic。会话或计数来源不可信记 98，测量池全部超时未返回、发布包核验超过 1 s 未完成（`INTAKE_CHECK_TIMEOUT`，存储卡住时不阻塞节拍）记 99：本件照常运动，工件结束后 PC 回结果码 90 与该故障码（[core-flow.md](core-flow.md) D-CF-4）。
 - **帧**：Grouper 的 seq 上限 = ΣN_exp + 128（固定余量 `SEQ_MARGIN`），超出判 `Offer::OutOfRange`（不计入本件、不抬基线），丢弃并告警。重复帧号丢弃，每台相机每件告警一次；上一件迟到帧记游离帧；接件后的手动帧丢弃并告警（不判 ERR，告警写明该相机此后帧组可能错开一格）；检测中会话变化或计数来源变为不可信判 ERR 98。回调通道满、图像内存预算满的帧不交给节拍，即缺帧。
 - **测量**：每帧经 `FramePool` 送测，结果经 `cycle::Input::FrameMeasured` 回节拍；QueueFull / Timeout 记 Unmeasured，Failed 记 Error；超过 T_proc 或到收尾截止仍没结果记 Unmeasured；测量输出的帧身份与送测帧不符或含非有限数改记 Error。都只记检测不完整，不判 99。
-- **收尾与判定**：工件结束（plcState=20）后到收尾截止（等满收尾窗口，或按 D-SB-54 看到门控关闭满余量提前）、已接受的帧都测完，有收尾补测目标时再等补测完（D-SB-45）即判。故障（98、97）优先；否则按笔或按比例分段（D-SB-62、D-SB-40）→ `resolve_regions` → `loss_alarms(各相机帧数)` → `burst_judge::judge`。丢帧、笔数异常写运行日志（warn），结论不变。
+- **收尾与判定**：工件结束（`inspecting` 回 0）后到收尾截止（等满收尾窗口，或按 D-SB-54 看到门控关闭满余量提前）、已接受的帧都测完，有收尾补测目标时再等补测完（D-SB-45）即判。故障（98、97）优先；否则按笔或按比例分段（D-SB-62、D-SB-40）→ `resolve_regions` → `loss_alarms(各相机帧数)` → `burst_judge::judge`。丢帧、笔数异常写运行日志（warn），结论不变。
 - **结果与记录**：`ResultView.burst` 带区域判定，`PartView.burst` 按 5.2 输出（帧格的 verdict 按 D-SB-56：判定后按所在区域，判定前按所测走廊的段）。`BurstRecord.frames` 在 1..=帧组数内每台相机每帧一条、缺帧也有，`rawFile` 入库时为空（录制结果事后补）；`frames_expected` = ΣN_exp，`frames_received` = 帧组数。接件时不能检测、在途中断、进程中断补记录的件也带 `BurstRecord`。诊断包按帧记录的 `rawFile` 打包原图。
 - **在线读图**：`workspace_live_frame_image`。内存里只留本件最近的帧（预览缓存 128 MB），更早的帧读本件的录制原图：收尾前读录制目录里已写盘的那一帧，收尾后按本件的历史记录读。录制关闭、录制盘都不足暂停录制或录制队满没录到的帧，挤出内存后就看不了；“只留 NG / ERR 件”时 OK 件收尾后录制删除，同样看不了。叠图读 `workspace_live_frame_view`，取生产测量时测到的胶边与胶路（不重测，同一帧收尾补测后以后测的为准），换件即清空。检测视图按历史详情的画法叠走廊、搜索带与逐站胶边。
 - **胶偏未判**：直线区域去掉首尾各一帧后参考相机没有可用 x 时标 `OffsetUnjudged::NoFrames`（“胶偏未判：参考相机没有可用帧”）。

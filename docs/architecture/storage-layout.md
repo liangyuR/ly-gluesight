@@ -22,7 +22,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 | `history/inspection.db` | 本机检测记录库（版本 11），本机全部项目的记录都在这里，`parts.project_id` 记所属项目，记录编号本机唯一。`parts.mode` 记件的检测模式（`production` / `maintenanceCollect` / `maintenanceShadow`）。每台相机每一帧写 `part_frames` 表，`parts` 另存整份区域判定与整件标记。配方快照 `recipe_snapshots` 按（项目, 修订号）、候选实例 `workspace_instances` 按（项目, 实例号）保存；`project_merges` 记已并入的项目旧库。10 版库原地升级到 11，保留生产记录，删除旧离线与候选调试记录并写删除墓碑；旧原图按[项目设计](project.md)的归属检查清理，不合规路径保留并告警。其他不支持的库版本（含更高版本）先备份为 `.v<版本>.*.bak` 再新建空库。项目目录里遗留的旧记录库 `projects/<项目编号>/inspection.db`（版本 9）启动时仅将生产记录并入，并完改名为 `inspection.db.merged-<毫秒>.bak`，不删（[项目设计](project.md)第五节） |
 | `history/audit-spool/` | 旧版本留下的追溯暂存（格式 4），新版本不再写入。启动时按件补录进记录库，补录完的文件与空目录删除；补不进的件和读不了的文件原地保留，写错误日志，它们引用的原图目录继续受保护，由人工核对（[soak S-8](../decisions/soak.md)） |
 | `projects/<项目编号>/` | 各项目的资料，见下表；`projects/.trash/` 是删除中的项目，启动时清理 |
-| `state/` | PLC 握手状态与审计。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
+| `state/` | PLC 握手日志 `plc-handshake.json`：只记在途件（件序号、型号、SN、cycleId、开工场景、开始时间与模式）。进程在检测中途退出后，下次启动据此补一条中断记录（ERR 98），补完即清；版本不认识或损坏的日志改名为 `plc-handshake.corrupt-<毫秒>.json`、其他协议版本留下的在途件改名为 `plc-handshake.v<版本>.bak`、上次没保存完的临时文件改名为 `plc-handshake.pending-<毫秒>.tmp` 保留，以空日志启动（[r2-plc](../decisions/r2-plc.md) R2P-10） |
 | 日志根外置 | `~/gs_logs/runtime/<环境>/<实例>/` 保存运行与 PLC 日志；各录制盘的 `vision/<环境>/<实例>/<项目>/` 保存生产历史原图，录制盘列表在 `config/log-storage.json` 的 `recordingRoots`，设置页可改 |
 | `cache/` | 可重建缓存 |
 | `webview/<SID>/` | 按 Windows 用户隔离的浏览器资料 |

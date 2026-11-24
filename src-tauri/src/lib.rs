@@ -17,7 +17,6 @@ mod frame_group;
 mod fsio;
 mod gate;
 mod handshake;
-mod handshake_audit;
 mod history;
 mod history_fixture;
 mod history_package;
@@ -309,7 +308,6 @@ pub fn run() {
             cycle::cycle_save_settings,
             cycle::cycle_set_maintenance,
             cycle::cycle_select_recipe,
-            cycle::cycle_reset,
             cycle::cycle_readiness,
             camera::camera_rig_status,
             camera::camera_rig_config,

@@ -15,7 +15,7 @@
 - 13380 行是逐帧的“游离帧”，4857 行是每拍重复的同一条“故障”，有效事件不到 30 条；
 - PLC 寄存器值完全不在日志里，PLC 停在哪个状态只能靠故障文案差异和游离帧时间倒推，最后仍要现场截 TIA；
 - 一次 PLC 侧可见的“视觉故障=1”没有任何原因记录；
-- 复位等操作员动作只能从 PLC 写入痕迹倒推；
+- 操作员动作只能从 PLC 写入痕迹倒推；
 - 运行日志用毫秒时间戳、PLC 日志 CSV 用本地时间字符串，对照前要换算；看不出现场运行的是哪个构建。
 
 ## 2. 设计原则
@@ -23,7 +23,7 @@
 1. **证据优先于结论**：状态迁移记下迁移前后的值和双方寄存器，而不仅是最终的故障文字。
 2. **一件事一行**：持续状态只在出现、变化、结束时记录；高频重复聚合成计数摘要，计数不能丢。
 3. **机器读 `code` 与 `data`，人读 `ev` 与 `msg`**：文案可以改，`code` 和 `data` 的键是对 Agent 的契约，改动要走兼容规则。
-4. **凡是 PLC 看得见的，日志里都有原因**：每次写出故障输出、撤销视觉就绪，都对应一条带来源的事件。
+4. **凡是 PLC 看得见的，日志里都有原因**：通讯未就绪、没接到件、清掉旧结果，都对应一条带原因的事件。
 5. **不静默丢日志**：写失败、聚合、节流都要留下计数；宁可同步写慢一点，也不在分析时制造“这段时间什么都没发生”的假象。
 
 ## 3. 行格式（日志 schema 2）
@@ -31,7 +31,7 @@
 在现有 JSONL 上增量扩展，旧行照常可读。
 
 ```json
-{"ts":1792837102059,"level":"warn","t":"2026-10-24T18:18:22.059+08:00","code":"s7.fault_output","ev":"S7 故障输出","msg":"写出故障输出（reset_operator）","data":{"cause":"reset_operator","reason":null,"phase":"AwaitAck","ok":true,"error":null}}
+{"ts":1792837102059,"level":"warn","t":"2026-10-24T18:18:22.059+08:00","code":"s7.part.skipped","ev":"S7 未接件","msg":"件序号 128 到达时 PC 未就绪，本件不检测、不回结果，等待下一件","data":{"partSeq":128,"sn":"SN0128","reason":"到达时 PC 未就绪"}}
 ```
 
 | 字段 | 说明 |
@@ -41,7 +41,7 @@
 | `code` | 新增。稳定事件编码，见第 4 节；旧行没有 |
 | `ev`、`msg` | 不变。中文事件名与说明，面向人，可随文案调整 |
 | `sessionId`、`projectId` | 可选关联字段。运行日志初始化后带启动会话标识，打开项目后带项目编号；旧行缺少时照常读取 |
-| 关联字段 | 现有 `cycleId / sn / requestSeq / recipeId / shotId / k / camera / view / seq / stage`，新增 `captureRound`（采集轮次）、`source`（触发来源，见 5.3）；旧日志里的 `teachId`（已停用的示教握手编号）照常读取 |
+| 关联字段 | 现有 `cycleId / sn / requestSeq / recipeId / shotId / k / camera / view / seq / stage`（`requestSeq` 的值即件序号 `partSeq`），新增 `captureRound`（采集轮次）、`source`（触发来源，见 5.3）；旧日志里的 `teachId`（已停用的示教握手编号）照常读取 |
 | `data` | 结构化数值。每个 `code` 的键在编码表里固定 |
 
 兼容规则：
@@ -64,7 +64,7 @@
 | `alarm` | 节拍界面报警（去重后的写出与汇总） |
 | `op` | 操作员命令（界面或 IPC 调用） |
 | `plc` | PLC 链路：连接、断开、ly_plc 引擎告警 |
-| `s7` | S7 生产握手会话 |
+| `s7` | S7 生产会话 |
 | `part` | 工件生命周期：开始、接件登记、结束、结论 |
 | `frame` | 帧到达与归属：游离、迟到、截止后、配组、丢帧 |
 | `measure` | 测量与判定 |
@@ -75,7 +75,7 @@
 
 ### 4.2 代码组织
 
-- 新增 `src-tauri/src/applog/codes.rs`：每个事件一条常量 `Event { code, ev, level }`，调用方写 `log_event(app, &codes::S7_FAULT_OUTPUT, msg, fields)`，不再手写 `ev` 字符串和级别。
+- 新增 `src-tauri/src/applog/codes.rs`：每个事件一条常量 `Event { code, ev, level }`，调用方写 `log_event(app, &codes::S7_READY, msg, fields)`，不再手写 `ev` 字符串和级别。
 - `cycle::log / log_with / trace` 继续保留，写出的行 `code` 为空。不做全量迁移：只有编码表里的事件带 `code`，没有 `code` 的行按 `ev` 与 `msg` 理解。
 - `docs/architecture/agent-logging-codes.md` 为编码表（code、ev、级别、触发时机、`data` 键）。由测试保证与 `codes.rs` 一致（见第 9 节）。
 
@@ -85,29 +85,27 @@
 
 ## 5. 补齐关键证据
 
-### 5.1 S7 握手与故障输出
+### 5.1 S7 会话
 
 | code | 触发 | data |
 |---|---|---|
-| `s7.fault_output` | PC 撤下输出（故障时置 pcState=90、faultCode=101，待复位时置 pcState=0），或因无法确认而断开通讯 | `cause`（触发路径，含 `reset_operator`、`reset_signal`、`reset_timeout`）、`reason`、`phase` |
-| `s7.reset.request` | 收到复位：操作员软件复位、PLC 复位信号上升沿、待复位或故障后的自动复位，或 PLC 置复位请求（plcState=99）；PLC 复位信号被拒也记 | `source: operator / plc_signal / auto / plc`、收到时的 `phase`；被拒时 `ok: false`、`error` |
-| `s7.reset.done` | 复位完成、视觉就绪 | 无 |
-| `s7.ack` | 收到结果确认 | `requestSeq`、`resultCode`、`faultCode` |
-| `s7.reconnect.forced` | 无法确认撤下 pcState，主动断开重连 | `error` |
+| `s7.ready` | 会话由未就绪变为就绪 | `connection`（PLC 连接时间戳，ms） |
+| `s7.part.skipped` | 就绪时 PLC 已在检的件，或 `partSeq` 为 0、SN 或型号不合法的件：PC 不登记、不回结果 | `partSeq`、`sn`（读得到时）、`reason` |
+| `s7.result.cleared` | 在检件的 `partSeq` 撞上旧 `resultSeq`，PC 把 `resultSeq` 写 0 | `partSeq` |
 
-规则：`s7.fault_output` 是 PLC 可见故障的唯一出口事件，所有撤下输出的路径都经过它，不依赖调用方是否另写 `fault.enter`。
+通讯未就绪的原因记在 `fault.enter`（5.3），恢复就绪记 `s7.ready`。一件的阶段标记（`stage`）依次为 `partStart`（工件到达）→ `admitted`（接件登记完成）→ `partEnd`（工件结束）→ `result`（检测结果）。
 
 ### 5.2 操作员命令
 
-改变设备或握手状态的 IPC 命令写 `op.*`，记参数摘要与结果（`ok` / `err` + 错误原文），命令入口处统一包装：`op.reset`、`op.capture.import`、`op.camera`、`op.plc`、`op.site`（按对象合并，用 `data.action` 区分动作）、`op.maintenance`、`op.recipe.delete`、`op.recipe.package`。手动写点只记点位与结果，不记写入值。
+改变设备或生产状态的 IPC 命令写 `op.*`，记参数摘要与结果（`ok` / `err` + 错误原文），命令入口处统一包装：`op.capture.import`、`op.camera`、`op.plc`、`op.site`（按对象合并，用 `data.action` 区分动作）、`op.maintenance`、`op.recipe.delete`、`op.recipe.package`。手动写点只记点位与结果，不记写入值。
 
-被拒绝的操作也要记（例如复位被拒、闸门超时），这类信息现场最难口述。
+被拒绝的操作也要记（例如闸门超时），这类信息现场最难口述。
 
 ### 5.3 故障事件与来源
 
-- `fault.enter`：节拍进入故障，或故障原因变化。`source` 取 `s7 / intake / motion`（`motion` 为等工件结束超时）；追溯、磁盘与设备问题只告警或记本件检测错误，不进故障，`data` 带 `reason`、`s7Phase`、在途 `cycleId`。
+- `fault.enter`：节拍进入故障，或故障原因变化。`source` 为 `s7`（通讯未就绪）；中途换件、等不到工件结束只把本件记中断，追溯、磁盘与设备问题只告警或记本件检测错误，都不进故障，`data` 带 `reason`、`s7Phase`、在途 `cycleId`。
 - `fault.repeat`：同一来源、同一原因重复上报时不再逐条写，按聚合规则（第 6 节）定期输出 `{count, firstTs, lastTs}`。
-- `fault.cleared`：复位完成、故障解除，带持续时长。
+- `fault.cleared`：通讯恢复就绪、故障解除，带持续时长。
 
 `enter_fault` 按 `(source, reason)` 去重；不同来源各自保留原因，互不覆盖。
 
@@ -151,18 +149,16 @@
 
 ## 8. 诊断包
 
-诊断包包含运行日志（按时间精确筛选）、`logs/plc.jsonl`、`config/`、`state/`、握手审计、检测记录与原图。面向 Agent 的约定：
+诊断包包含运行日志（按时间精确筛选）、`logs/plc.jsonl`、`config/`、`state/`、检测记录与原图。面向 Agent 的约定：
 
 1. `manifest.json` 带 `build {version, gitSha, buildTime}`、`utcOffset`、`logSchema`、`configSummary`（同 `app.config`）、`files[{path, bytes, sha256}]`。
 2. `logs/plc.jsonl` 按时间正序，每行带 `t`，与运行日志同口径。
-3. 包根目录写 `README.md`（固定模板）：包结构、时间口径、编码表版本与链接、推荐分析顺序（先看 `fault.enter` 与 `s7.fault_output`，再按 `cycleId` 串事件）。
-4. 握手审计当前文件按时间段筛选后写出，不整份拷贝。
+3. 包根目录写 `README.md`（固定模板）：包结构、时间口径、编码表版本与链接、推荐分析顺序（先看 `fault.enter` 与 `s7.*`，再按 `cycleId` 串事件）。
 
 实现细节：
 
 - `manifest.json` 的 `schema` 升为 2；`configSummary` 与 `app.config` 共用 `commands::config_summary`；`files` 覆盖除 `manifest.json` 本身外的全部条目（含 `README.md`），按写入顺序排列。
 - `logs/plc.jsonl` 按 `(ts, id)` 升序；超过 20 万条时仍保留最新的部分。`t` 位于每行首个字段，其余字段与 PLC 日志库一致。
-- 握手审计当前文件按每行 `ts` 筛选 `[from, to]`；无法解析 `ts` 的行不打包并记入 `notes`；时间段内无行时不写该文件。已滚动分段仍按滚动时刻整段选取。
 - README 模板在 `diagnostics.rs` 的 `README` 常量中，schema 版本取自 `applog::SCHEMA`。
 
 ## 9. 测试
@@ -175,11 +171,10 @@
 | 旧格式行（无 `t` / `code`）可被查询、时间线和诊断包读出 | 新字段非 Option 时旧行被静默丢弃 |
 | 聚合：窗口内 N 次游离帧 → 1 条原事件 + 1 条摘要，`count = N - 1`、帧计数范围正确 | 降噪丢计数，或退回逐帧刷屏 |
 | 同一 `(source, reason)` 的故障连续上报 → 只有 1 条 `fault.enter`，摘要计数正确；原因变化时再记一条 | 复现 10-24 的每拍重复 |
-| S7：收到复位撤下输出时写出 `s7.fault_output` 且 `cause` 指明复位来源 | PLC 可见故障无记录（10-24 18:18:22） |
 
 为便于断言，`applog` 提供测试用的内存 sink（只在 `cfg(test)` 下替换文件 sink），测试断言 `code` 与 `data`，不断言 `msg` 文案。
 
-端到端核对：按[独立生产模拟器](../testing/production-simulator.md)运行正常生产，检查日志里有 `app.start`、`app.config`、完整的 `part.*` 链，且无逐帧 warn 刷屏。故障与复位需要独立专项验收，核对 `fault.enter` / `s7.fault_output` / `s7.reset.*` 顺序。
+端到端核对：按[独立生产模拟器](../testing/production-simulator.md)运行正常生产，检查日志里有 `app.start`、`app.config`、完整的 `part.*` 链，且无逐帧 warn 刷屏。通讯中断与恢复需要独立专项验收，核对 `fault.enter` / `fault.cleared` / `s7.ready` 顺序。
 
 ## 10. 风险与待定
 

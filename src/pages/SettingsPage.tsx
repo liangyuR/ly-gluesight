@@ -13,9 +13,8 @@ const timeoutFields: [keyof Timeouts, string, string][] = [
   ["drainMs", "收尾等待（ms）", "工件结束后等待剩余帧"],
   ["gateGuardMs", "门控关闭后收尾（ms）", "相机看到拍照信号关闭后再等多久就收尾，不必等满收尾等待；0 = 不提前"],
   ["procMs", "单帧处理（ms）", "单帧入队到测量完成"],
-  ["ackMs", "结果确认（ms）", "等待 PLC 确认结果"],
 ];
-const timeoutMinimums: Record<keyof Timeouts, number> = { motionMs: 1000, drainMs: 200, gateGuardMs: 0, procMs: 200, ackMs: 500 };
+const timeoutMinimums: Record<keyof Timeouts, number> = { motionMs: 1000, drainMs: 200, gateGuardMs: 0, procMs: 200 };
 
 type SavePart = (part: Partial<CycleSettings>) => Promise<boolean>;
 

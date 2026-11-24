@@ -12,34 +12,31 @@ import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, readines
 import { burstPartView, burstResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
 import type { LogLine, Readiness, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
-import type { PlcHandshakeState, PointValue } from "../src/features/plc/types";
+import type { PointValue } from "../src/features/plc/types";
 
 vi.mock("../src/features/cycle/api", () => ({
   useCycle: vi.fn(), useRecipes: () => recipeList, useLayout: vi.fn(),
-  useReadiness: () => ({ readiness: report, refresh: async () => report }), cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), setMaintenance: vi.fn() },
+  useReadiness: () => ({ readiness: report, refresh: async () => report }), cycleApi: { selectRecipe: vi.fn(), setMaintenance: vi.fn() },
   recipeApi: { doc: vi.fn(), list: vi.fn() },
 }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(),  } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), liveView: vi.fn(), record: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
-  usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {},
-  usePlcOperationState: () => ({ blockedReason: "", handshake: plcHandshake }) }));
+  usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {} }));
 
 let state: Snapshot, layout: Recipe | null, logs: LogLine[];
 let recipeList: RecipeSummary[];
 let report: Readiness;
 let values: Record<string, PointValue>;
-let plcHandshake: PlcHandshakeState | null;
 const recipe = (id = "A") => burstRecipe({ id, name: `段配方 ${id}` });
 const candidate = (id = "A") => burstWorkspaceView(recipe(id));
 beforeEach(() => {
-  state = snapshot(); layout = candidate().layout; logs = []; values = {}; plcHandshake = null;
+  state = snapshot(); layout = candidate().layout; logs = []; values = {};
   recipeList = [burstSummary(recipe()), burstSummary(recipe("B"))];
   report = readiness();
   vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, logs }));
   vi.mocked(useLayout).mockImplementation(() => layout);
   vi.mocked(cycleApi.selectRecipe).mockReset().mockResolvedValue(undefined);
-  vi.mocked(cycleApi.reset).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.setMaintenance).mockReset().mockResolvedValue(undefined);
   vi.mocked(recipeApi.list).mockReset().mockResolvedValue({ recipes: recipeList, errors: [], unavailable: [] });
   vi.mocked(burstImageApi.live).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
@@ -62,8 +59,7 @@ function TitlebarHarness({ showPage = true }: { showPage?: boolean }) {
 }
 
 it("在线检测挂到窗口标题栏 → 状态与操作可用，离页后清理标题栏内容", async () => {
-  state = { ...state, phase: "FAULT", part: { ...burstPartView("TITLEBAR-SN"), recipeId: "A" } };
-  plcHandshake = { phase: "fault", requestSeq: 17, resultSeq: null, message: null, resetBlockedReason: null };
+  state = { ...state, part: { ...burstPartView("TITLEBAR-SN"), recipeId: "A" } };
   const user = userEvent.setup();
   const page = render(<TitlebarHarness />);
   const titlebar = within(screen.getByRole("banner", { name: "窗口标题栏" }));
@@ -72,18 +68,11 @@ it("在线检测挂到窗口标题栏 → 状态与操作可用，离页后清�
   expect(titlebar.getByText("TITLEBAR-SN")).toBeVisible();
   expect(titlebar.getByRole("button", { name: "维护模式" })).toBeVisible();
   expect(content.queryByLabelText("当前检测配方", { selector: "select" })).toBeNull();
-  expect(content.queryByRole("button", { name: "软件复位" })).toBeNull();
 
   await user.click(titlebar.getByRole("button", { name: /^诊断$/ }));
   expect(await screen.findByRole("dialog", { name: "检测诊断" })).toBeVisible();
   await user.keyboard("{Escape}");
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "检测诊断" })).toBeNull());
-  await user.click(titlebar.getByRole("button", { name: "软件复位" }));
-  const reset = within(await screen.findByRole("dialog", { name: "软件复位" }));
-  expect(reset.getByText("在途件将记为未检后复位。")).toBeVisible();
-  expect(cycleApi.reset).not.toHaveBeenCalled();
-  await user.click(reset.getByRole("button", { name: "确认复位" }));
-  expect(cycleApi.reset).toHaveBeenCalledTimes(1);
 
   state = { ...state, maintenance: { since: 1, reason: "标题栏维护采图" } };
   page.rerender(<TitlebarHarness />);
@@ -112,7 +101,7 @@ describe("在线检测切型锁定", () => {
       { ...base, region: { firstSeq: 1, lastSeq: 4, kind: { type: "skipped", segment: 1, pass: 1 } }, frameCount: 4 },
       { ...base, region: { ...base.region, firstSeq: 5 } },
     ];
-    state = { ...state, phase: "REPORT", part, result };
+    state = { ...state, part, result };
     const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
     const strip = within(screen.getByRole("group", { name: "帧组" }));
     const first = strip.getByRole("button", { name: "帧组 1" });
@@ -157,49 +146,12 @@ describe("维护模式", () => {
     await userEvent.click(confirm);
     expect(cycleApi.setMaintenance).toHaveBeenCalledWith(true, "新线投运采图");
   });
-
-  it("维护模式下工件采集中 → 软件复位仍可用，确认后请求后端复位", async () => {
-    state = { ...state, phase: "ACQUIRE", maintenance: { since: 1, reason: "新线投运采图" } };
-    plcHandshake = { phase: "acquiring", requestSeq: 21, resultSeq: null, message: null, resetBlockedReason: null };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    await userEvent.click(screen.getByRole("button", { name: "软件复位" }));
-    const dialog = within(screen.getByRole("dialog"));
-    expect(dialog.getByText("在途件将记为未检后复位。")).toBeVisible();
-    await userEvent.click(dialog.getByRole("button", { name: "确认复位" }));
-    expect(cycleApi.reset).toHaveBeenCalledTimes(1);
-  });
-
-});
-
-describe("在线检测离线产线控件", () => {
-  it("真机握手待复位但复位条件未满足 → 复位按钮禁用并显示后端原因", () => {
-    state = { ...state, phase: "FAULT", fault: "PLC 心跳失活" };
-    plcHandshake = { phase: "fault", requestSeq: null, resultSeq: null, message: "PLC 心跳失活", resetBlockedReason: "尚未观察到 PLC 心跳翻转，不能复位" };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(screen.getByRole("button", { name: "软件复位" })).toBeDisabled();
-    const device = within(screen.getByRole("region", { name: "设备状态" }));
-    expect(device.getByRole("alert")).toHaveTextContent("PLC 心跳失活");
-    expect(device.getByRole("alert")).toHaveTextContent("尚未观察到 PLC 心跳翻转，不能复位");
-  });
-
-  it("有在途件时软件复位 → 确认框提示在途件记未检，确认后才请求后端复位", async () => {
-    state = { ...state, phase: "FAULT", fault: "PLC 等工件结束超时" };
-    plcHandshake = { phase: "fault", requestSeq: 17, resultSeq: null, message: "PLC 等工件结束超时", resetBlockedReason: null };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    await userEvent.click(screen.getByRole("button", { name: "软件复位" }));
-    const dialog = within(screen.getByRole("dialog"));
-    expect(dialog.getByText("在途件将记为未检后复位。")).toBeVisible();
-    expect(cycleApi.reset).not.toHaveBeenCalled();
-    await userEvent.click(dialog.getByRole("button", { name: "确认复位" }));
-    expect(cycleApi.reset).toHaveBeenCalledTimes(1);
-  });
-
 });
 
 describe("在线检测段配方", () => {
   const burstState = (over: Partial<ReturnType<typeof burstJudgement>> = {}): Snapshot => {
     const burst = burstJudgement(over);
-    return { ...snapshot("REPORT"), activeRecipeId: "S", part: burstPartView(), result: { ...burstResult(), verdict: burst.verdict, plcCode: burst.plcCode, reason: burst.reason, burst } };
+    return { ...snapshot(), activeRecipeId: "S", part: burstPartView(), result: { ...burstResult(), verdict: burst.verdict, plcCode: burst.plcCode, reason: burst.reason, burst } };
   };
   const live = () => vi.mocked(burstImageApi.live).mock.calls.map(([, , camera, seq]) => [camera, seq]);
   beforeEach(() => {

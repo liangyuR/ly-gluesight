@@ -42,7 +42,7 @@ pub struct ReadinessItem {
     pub title: &'static str,
     pub state: ItemState,
     pub detail: String,
-    /// 操作的前提说明（如复位故障需要满足的条件）
+    /// 操作的前提说明（如通讯就绪需要满足的条件）
     pub hint: Option<String>,
     pub target: Option<Target>,
 }
@@ -111,41 +111,45 @@ fn plc_item(f: &Facts) -> ReadinessItem {
         let detail = "PLC 未连接";
         return item(ItemKey::Plc, TITLE, ItemState::Blocked, detail, None, home);
     }
+    let hint = || {
+        Some(format!(
+            "PLC 已连接、协议版本为 {} 且 PLC 心跳在变化后自动就绪，不需要复位",
+            crate::handshake::PROTOCOL_VERSION
+        ))
+    };
     if f.session_behind {
         return item(
             ItemKey::Plc,
             TITLE,
             ItemState::Blocked,
-            "PLC 已重新连接，S7 会话正在核对新连接（核对后需复位）",
-            Some("复位前提：PLC 已连接且心跳在变化。可在 PLC 现场复位，或点“软件复位”".into()),
+            "PLC 已重新连接，正在核对新连接",
+            hint(),
             home,
         );
     }
-    let pending = f.session == Some(SessionPhase::ResetRequired);
-    if pending || f.session == Some(SessionPhase::Fault) || f.phase == Phase::Fault {
+    if f.session == Some(SessionPhase::NotReady) || f.phase == Phase::Fault {
         let reason = f
             .fault
             .clone()
             .or_else(|| f.session_message.clone())
-            .unwrap_or_else(|| "S7 会话需要明确复位".into());
-        let detail = if pending {
-            format!("待复位：{reason}")
-        } else {
-            reason
-        };
+            .unwrap_or_else(|| "S7 通讯未就绪".into());
         return item(
             ItemKey::Plc,
             TITLE,
             ItemState::Blocked,
-            detail,
-            Some("复位前提：PLC 已连接且心跳在变化。可在 PLC 现场复位，或点“软件复位”".into()),
+            reason,
+            hint(),
             home,
         );
     }
     if let Some(notice) = f.session_message.as_deref().filter(|m| m.starts_with(NOTICE)) {
         return item(ItemKey::Plc, TITLE, ItemState::Waiting, notice.trim_start_matches(NOTICE), None, home);
     }
-    let detail = if f.phase == Phase::Idle { "已连接，会话空闲，视觉就绪" } else { "已连接，检测进行中" };
+    let detail = if f.phase == Phase::Idle {
+        "已连接，通讯就绪"
+    } else {
+        "已连接，检测进行中"
+    };
     item(ItemKey::Plc, TITLE, ItemState::Ok, detail, None, None)
 }
 

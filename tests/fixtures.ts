@@ -204,7 +204,7 @@ export function burstJudgement(over: Partial<BurstJudgement> = {}): BurstJudgeme
 export function burstPartSummary(id = 1): PartSummary {
   return { id, sn: `SN-${100 + id}`, ts: 1, projectId: "line-a", recipeId: "S", recipeVersion: 1, recipeRevision: "revisionId-S", triggerMode: "fly",
     verdict: "OK", plcCode: 1, faultCode: 0, reason: "合格", drainMs: 20, framesExpected: 12, framesReceived: burstGroups,
-    retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-S", delivery: { state: "acknowledged", updatedAt: 1, message: null },
+    retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-S", delivery: { state: "submitted", updatedAt: 1, message: null },
     source: "real", flags: burstJudgement().flags };
 }
 

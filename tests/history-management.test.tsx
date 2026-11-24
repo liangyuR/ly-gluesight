@@ -80,7 +80,7 @@ it("Tag 保存期间交付与录制状态更新 → 补读完整详情且旧请�
   setTags = async ({ tags }) => {
     detail = {
       ...detail,
-      summary: { ...detail.summary, tags, delivery: { state: "acknowledged", updatedAt: 2, message: "结果已接收" } },
+      summary: { ...detail.summary, tags, delivery: { state: "submitted", updatedAt: 2, message: "结果已写入" } },
       recording: { ...detail.recording, state: "complete", available: true },
     };
     emit("history://updated", detail.summary.cycleId);
@@ -90,12 +90,12 @@ it("Tag 保存期间交付与录制状态更新 → 补读完整详情且旧请�
   await userEvent.click(within(screen.getByRole("dialog", { name: "编辑 Tag" })).getByRole("button", { name: "故障件" }));
   await userEvent.click(screen.getByRole("button", { name: "保存 Tag" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  expect(await screen.findByText("PLC 已确认 · 结果已接收")).toBeVisible();
+  expect(await screen.findByText("已回写 PLC · 结果已写入")).toBeVisible();
   expect(screen.getByText("完整落盘 · 已核验落盘")).toBeVisible();
   await act(async () => { late.resolve(old); });
   expect(screen.getByText("故障件")).toBeVisible();
   expect(screen.queryByText("未标记")).not.toBeInTheDocument();
-  expect(screen.getByText("PLC 已确认 · 结果已接收")).toBeVisible();
+  expect(screen.getByText("已回写 PLC · 结果已写入")).toBeVisible();
 });
 
 it("删除失败可重试 → 变更事件先到仍展示原图保留提示，再返回原入口", async () => {

@@ -36,8 +36,8 @@ gh run view $runId --log
 | 测试层 | 保留验证 |
 | --- | --- |
 | 前端 | 默认 Vitest 回归：段配方创建与草稿防丢、采集准入、走廊示教与试测、发布门槛、周期/帧归属隔离、历史区域重判、PLC 操作锁、维护模式、项目管理、单视角标定更新与配置安全 |
-| Rust 默认 | `cargo test --lib`：当前段配方、帧组与采集、示教件分段写 N_exp 与测量示教件、比例分段与区域判定、PLC 握手、调度、发布与恢复、项目导出导入与复制；包含少量真实 S7 TCP 回环、SQLite 和原图录制集成测试，不能把全部库测试称为纯单元测试 |
-| S7 专项 | `plc_session` 的交付、复位、心跳及维护隔离用例（真实生产驱动 + 进程内 S7Server）已进默认 `cargo test`；独立模拟器完整生产需专项验收 |
+| Rust 默认 | `cargo test --lib`：当前段配方、帧组与采集、示教件分段写 N_exp 与测量示教件、比例分段与区域判定、PLC 会话、调度、发布与恢复、项目导出导入与复制；包含少量真实 S7 TCP 回环、SQLite 和原图录制集成测试，不能把全部库测试称为纯单元测试 |
+| S7 专项 | `plc_session` 的就绪、接件、交付、心跳及维护隔离用例（真实生产驱动 + 进程内 S7Server）已进默认 `cargo test`；独立模拟器完整生产需专项验收 |
 | 生产模拟 | 独立进程提供 S7 与 TCP 相机发图，应用走真实 lyFlow、正式配方和正常生产记录链路；步骤见 [独立生产模拟器](production-simulator.md) |
 | 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本 |
 | 手动专项 | 独立模拟器连续生产（需匹配正式配方与原图）；吞吐探针 `throughput_probe`（见“3 × 25 Hz 吞吐门槛”）；相机事件探测 `camera_event_probe`（现场真机：列出 Line0 高电平门控下相机支持的 GenICam 事件，并轮询 Line0 电平记下每次上升 / 下降沿（锁存相机时钟、读 Line0 跳变计数器），打印边沿、事件与帧的时间线，统计首帧、末帧相对边沿的延迟，为判定收尾取代固定收尾窗口定方案；现场 JHEM131GC-XS 没有事件，靠轮询；运行说明见文件头）。按门控提前收尾（D-SB-54）由 `gate::tests`（门控只在新鲜读数都看到关闭时算关、空闲电平按没来帧时学）与 `cycle::tests::closed_gate_ends_the_drain_after_the_guard_but_an_open_gate_waits_for_the_window` 覆盖 |
@@ -99,9 +99,9 @@ Windows PR CI 执行 Format 检测、前端单元测试（`pnpm test`）、Rust 
 类型检查、旧样本集转换、打包与桌面生产验收均不在普通 PR CI 中执行，CI 不恢复 lyFlow 运行库、不构建桌面应用。推送 main 和手动运行 Windows CI 使用同样的轻量验证；Windows 发包工作流仅由手动运行或 `v*` tag 触发，保留发布门禁。
 
 
-## S7 生产握手
+## S7 生产会话
 
-协议与点表见 [PLC 通讯协议](../integration/plc-communication-protocol.md)。旧版本协议的 PLC 写入被拒绝。
+协议与点表见 [PLC 通讯协议](../integration/plc-communication-protocol.md)。PLC 的协议版本不是 9 时通讯不就绪。
 
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_session

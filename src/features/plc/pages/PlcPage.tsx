@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import { isTauri } from "@tauri-apps/api/core";
 import { FileJson, Lock, Pencil, PenLine, Plug, PlugZap, Plus, Save, Trash2, Undo2 } from "lucide-react";
 import { Accordion, Button, Card, Chip, Divider, EmptyState, Heading, IconButton, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
@@ -241,9 +240,8 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
   if (loadError) notices.push({ key: "load", tone: "ng", text: `无法读取 PLC 配置：${loadError}`, action: <Button size="sm" onClick={loadConfig}>重新加载</Button> });
   if (status?.state === "error") notices.push({ key: "link", tone: "ng", text: <>{status.message}{status.lastError && <>；最近错误：{status.lastError.message}</>}</> });
   if (blockedReason) notices.push({ key: "blocked", tone: "warn", text: blockedReason });
-  if (connected && (handshake?.phase === "fault" || handshake?.phase === "resetRequired")) notices.push({
-    key: "reset", tone: "warn", text: `握手待复位${handshake.message ? `：${handshake.message}` : ""}。复位在在线检测页进行`,
-    action: <Button asChild size="sm"><Link to="/inspect">前往在线检测</Link></Button>,
+  if (connected && handshake?.phase === "notReady") notices.push({
+    key: "notReady", tone: "warn", text: `通讯未就绪${handshake.message ? `：${handshake.message}` : ""}。条件恢复后自动就绪`,
   });
   if (dirty && invalid) notices.push({ key: "invalid", tone: "warn", text: invalid });
   if (!tauri) notices.push({ key: "preview", tone: "info", text: "浏览器预览模式：PLC 连接、保存、写入需在桌面端运行" });
@@ -314,7 +312,7 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
               </div>
             </div>
             <Table<PlcPoint> caption="通用点位" rows={commonPoints} columns={handshakeColumns} rowKey={(p) => p.id}
-              emptyState={<EmptyState title="尚未载入通用点位" description="点「重置 S7 通讯配置」生成生产协议 8 点位" action={loadTemplateButton} />} />
+              emptyState={<EmptyState title="尚未载入通用点位" description="点「重置 S7 通讯配置」生成生产协议 9 点位" action={loadTemplateButton} />} />
           </section>
           <div className="plc-group-actions">
             <Button leadingIcon={<Plus size={16} />} disabled={!!lockReason} title={lockReason || undefined}
@@ -345,7 +343,6 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
           tagPresets={tagPresets}
           blockedReason={blockedReason}
           templateLocked={!editing.isNew && isHandshakePoint(editing.point)}
-          addressEditable={editing.point.tags.includes("resetSignal")}
           onSave={upsertPoint}
           onClose={() => setEditing(null)}
         />

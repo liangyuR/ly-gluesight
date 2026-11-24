@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// 离线产线的工况：前几种只影响模拟相机合成图与模拟测量，后几种改变虚拟 PLC / 机器人的握手行为与脉冲串。
+/// 离线产线的工况：前几种只影响模拟相机合成图与模拟测量，后几种改变虚拟 PLC / 机器人的行为与脉冲串。
 /// 名字与前端 `src/features/cycle/types.ts` 的 `Scenario` 联合类型一致（camelCase）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -10,10 +10,8 @@ pub enum Scenario {
     Gap,
     /// 触发已发出并计数，帧在传输中丢失（三台相机同一帧都丢）
     LostFrame,
-    /// 机械臂不报工件结束（PLC 不置 20）
+    /// 机械臂不报工件结束（inspecting 不回 0）
     MotionTimeout,
-    /// PLC 核对 seqEcho / snEcho 不符，置 90（plcReason=5）
-    AckMismatch,
     /// 三台相机之一（第 2 台）第 min(3, 总数) 帧传输丢失，其余相机照常
     CameraLost,
     /// 起头 / 收尾各 ±1 帧的脉冲数波动
@@ -28,14 +26,13 @@ pub enum Scenario {
 }
 
 impl Scenario {
-    /// 只改变虚拟 PLC / 机器人握手与脉冲串、不依赖合成图的工况；现场原图样本集只能用这些。
+    /// 只改变虚拟 PLC / 机器人行为与脉冲串、不依赖合成图的工况；现场原图样本集只能用这些。
     pub fn handshake(self) -> bool {
         matches!(
             self,
             Scenario::Normal
                 | Scenario::LostFrame
                 | Scenario::MotionTimeout
-                | Scenario::AckMismatch
                 | Scenario::CameraLost
                 | Scenario::PulseJitter
                 | Scenario::CornerSlowdown
@@ -69,7 +66,7 @@ impl Scenario {
         (self == Scenario::EarlyEnd).then(|| (total / 2).max(1))
     }
 
-    /// 连续运行用的随机工况只在不打断握手的几种之间选。
+    /// 连续运行用的随机工况只在不打断检测的几种之间选。
     pub fn resolve(self, seed: u32) -> Scenario {
         if self != Scenario::Random {
             return self;

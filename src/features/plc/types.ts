@@ -96,7 +96,7 @@ export interface LogEntry {
   message: string;
   oldValue: string | null;
   newValue: string | null;
-  /** 记录时的关联上下文，如 requestSeq=12 */
+  /** 记录时的关联上下文，如 partSeq=12 */
   context: string | null;
 }
 
@@ -106,7 +106,7 @@ export interface LogQuery {
   levels?: LogLevel[];
   categories?: LogCategory[];
   pointId?: string | null;
-  /** 按关联上下文精确匹配，如 requestSeq=12 */
+  /** 按关联上下文精确匹配，如 partSeq=12 */
   context?: string | null;
   keyword?: string | null;
   limit?: number;
@@ -141,10 +141,9 @@ export interface PlcOperationState {
 }
 
 export interface PlcHandshakeState {
-  phase: "resetRequired" | "idle" | "validating" | "acquiring" | "draining" | "awaitAck" | "releasing" | "fault";
+  phase: "notReady" | "idle" | "validating" | "acquiring" | "draining";
+  /** 本件的件序号（partSeq） */
   requestSeq: number | null;
-  resultSeq: number | null;
   message: string | null;
-  /** null 表示后端复位预检通过；缺失时复位条件未知。 */
-  resetBlockedReason?: string | null;
+  connection?: number | null;
 }

@@ -245,7 +245,7 @@ export default function PlcLogPage() {
               aria-label="事务"
               leading={<Hash size={16} />}
               trailing={contextInput ? <IconButton variant="text" size="sm" aria-label="清空事务" onClick={() => { setContextInput(""); setContext(""); resetPage(); }}><X size={14} /></IconButton> : undefined}
-              placeholder="事务精确匹配，如 requestSeq=12，回车确认"
+              placeholder="事务精确匹配，如 partSeq=12，回车确认"
               value={contextInput}
               onChange={(e) => setContextInput(e.target.value)}
               onKeyDown={(e) => {

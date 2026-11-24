@@ -549,7 +549,7 @@ pub fn query(dir: &Path, query: &Query) -> Page {
 pub struct CycleLog {
     pub records: Vec<Record>,
     pub truncated: bool,
-    /// 本件第一条记录之前，最近一次 S7 事务结束或复位的时间（上一件的收尾）
+    /// 本件第一条记录之前，最近一次别的件出结果的时间（上一件的收尾）
     pub previous_end: Option<i64>,
     /// 本件最后一条记录之后，下一件 partStart 的时间
     pub next_start: Option<i64>,
@@ -572,8 +572,12 @@ impl CycleScan {
         for line in BufReader::new(file).lines().map_while(Result::ok) {
             let own = line.contains(cycle_id);
             let start = line.contains("\"stage\":\"partStart\"");
-            if !own && !start && !line.contains("\"stage\":\"released\"") && !line.contains("\"stage\":\"reset\"") { continue; }
-            let Ok(record) = serde_json::from_str::<Record>(&line) else { continue };
+            if !own && !start && !line.contains("\"stage\":\"result\"") {
+                continue;
+            }
+            let Ok(record) = serde_json::from_str::<Record>(&line) else {
+                continue;
+            };
             if record.fields.cycle_id.as_deref() == Some(cycle_id) {
                 if self.records.len() < cap { self.records.push(record) } else { self.truncated = true }
             } else if !own && start {

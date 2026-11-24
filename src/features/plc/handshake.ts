@@ -3,48 +3,30 @@ import type { PlcHandshakeState } from "./types";
 type Phase = PlcHandshakeState["phase"];
 
 export const handshakePhaseLabels: Record<Phase, string> = {
-  resetRequired: "待复位", idle: "空闲", validating: "接件登记", acquiring: "采集中",
-  draining: "等待帧处理结束", awaitAck: "等待结果确认", releasing: "等待握手释放", fault: "故障",
+  notReady: "通讯未就绪", idle: "空闲", validating: "接件登记", acquiring: "采集中", draining: "收尾并写结果",
 };
 
-/** 协议 8 第五节时序、第六节迁移与第七节复位规则推导出的“现在在等谁”。 */
 const waitingTexts: Record<Phase, string> = {
-  resetRequired: "PC 启动或重连后需复位：在在线检测页点“软件复位”（PC 置 pcState=99，等 PLC 回 plcState=0 后 PC 置 10），或由 PLC 复位信号、PLC 置 plcState=99 发起；复位条件满足时 PC 自动发起软件复位",
-  idle: "PLC：先写 requestSeq、productCode（型号）与 sn，最后置 plcState=10",
-  validating: "PC：读到 plcState=10 后登记本件（核对配方、定帧计数基线），不回写 PLC；不能检测的件照常运动采图，工件结束后回 90 与异常码",
-  acquiring: "PLC：按机械臂 CaptureActive 门控 Line0（一件内可多次开关），相机按设定帧率采集；收到 PartDone 先拉低 Line0，再置 plcState=20",
-  draining: "PC：收尾收帧、等待测量完成，写 resultCode、faultCode 与 snEcho，最后置 pcState=30",
-  awaitAck: "PLC：核对 seqEcho=requestSeq、snEcho=sn 与结果组合，锁存结果后置 plcState=30",
-  releasing: "PC 置 pcState=10，等待 PLC 清本件并回 plcState=0",
-  fault: "按 PLC 原因码处置现场后复位：在线检测页“软件复位”，或由 PLC 置 plcState=99 发起",
+  notReady: "通讯未就绪：检查 PLC 连接、协议版本（须为 9）与 PLC 心跳，恢复后自动就绪",
+  idle: "PLC：工件到达时写 productCode、sn，partSeq 加 1，最后置 inspecting=1",
+  validating: "PC：读到新件后登记本件（核对配方、定帧计数基线），不回写 PLC",
+  acquiring: "PLC：按机械臂 CaptureActive 门控 Line0；收到 PartDone 把 inspecting 置 0",
+  draining: "PC：收尾收帧、判定，写 resultCode、faultCode、snEcho，最后写 resultSeq",
 };
 
 export function handshakeWaiting({ phase, message }: Pick<PlcHandshakeState, "phase" | "message">) {
   if (phase === "idle" && message?.startsWith("S7 空闲：")) return message;
-  if (phase === "fault") return `${waitingTexts.fault}。原因：${message || "未提供"}`;
+  if (phase === "notReady" && message) return `${waitingTexts.notReady}。原因：${message}`;
   return waitingTexts[phase];
 }
 
-/** 协议 8 心跳失活阈值 */
+export const protocolVersion = 9;
 export const heartbeatStaleMs = 3000;
 
-/** 协议 8 第四节双方状态字与 PLC 原因码 */
-export const plcStateNames: Record<number, string> = {
-  0: "空闲", 10: "工件在检", 20: "工件结束", 30: "已确认结果", 90: "故障", 99: "复位请求",
-};
-export const pcStateNames: Record<number, string> = {
-  0: "未就绪", 10: "就绪", 30: "结果有效", 90: "故障", 99: "复位请求",
-};
-export const plcReasonNames: Record<number, string> = {
-  0: "无", 4: "现场互锁不满足", 5: "协议或状态非法", 6: "PC 心跳失活", 7: "等工件结束超时", 8: "等待 PC 结果超时",
-  9: "现场执行故障", 10: "等待 PC 回就绪超时", 12: "序号耗尽", 13: "复位条件不满足，拒绝软件复位",
-  14: "在途中 PC 故障或未就绪",
-};
 export const pcModeNames: Record<number, string> = { 0: "正常", 1: "维护" };
 
 export const codeName = (names: Record<number, string>, value: number) => names[value] ?? `未知（${value}）`;
 
-/** 协议 8 第八节结果码与异常码 */
 const resultCodeNames: Record<number, string> = {
   0: "无结论（维护模式）", 1: "OK", 2: "OK_WITH_EXCURSION", 11: "NG_POSITION", 12: "NG_ABSOLUTE", 13: "NG_GAP", 14: "NG_WIDTH", 90: "ERR_INSPECT",
 };
@@ -52,10 +34,7 @@ const faultCodeNames: Record<number, string> = {
   // 91 / 94 / 96：段配方的含义在前；旧拍照点配方仍按旧含义产生这三个码，括号里保留，避免现场按新含义误判。
   91: "整件无图（旧配方：缺帧）", 92: "定位失败", 93: "无效测量点", 94: "预期总数与计划不符（旧配方：拍照点数不符）", 95: "配方不可用", 96: "保留未用（旧配方：多余帧）",
   97: "等工件结束超时", 98: "设备丢失", 99: "处理异常", 100: "配方无法编出拍照计划",
-  101: "PC 握手故障",
 };
-
-export const faultCodeLabel = (faultCode: number) => `${faultCode} ${faultCodeNames[faultCode] ?? "未知异常码"}`;
 
 export function resultCodeLabel(resultCode: number, faultCode: number | null) {
   const result = `${resultCode} ${resultCodeNames[resultCode] ?? "未知结果码"}`;
