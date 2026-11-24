@@ -44,7 +44,7 @@ function ProjectDetails({ entry, state, onOpen }: { entry: ProjectEntry; state: 
         <Heading level={4} className="pj-detail-title">{projectLabel(entry)}</Heading>
         {meta?.description && <p className="pj-detail-description muted">{meta.description}</p>}
       </div>
-      <ProjectActions key={entry.id} entry={entry} onOpen={onOpen} />
+      <ProjectActions entry={entry} onOpen={onOpen} />
     </div>
     {!meta && <Alert tone="warn" title="项目不可用">{entry.error || "project.json 无法读取"}</Alert>}
     {state?.status === "error" && <Alert tone="ng" title="项目统计失败">{state.error}</Alert>}
@@ -136,7 +136,7 @@ export default function ProjectsPage() {
                 </span>}
                 description={entry.meta && <span className="mono">{entry.id}</span>} />)}
             </List>
-            <ProjectDetails entry={selected} state={usage[selected.id]} onOpen={setOpen} />
+            <ProjectDetails key={selected.id} entry={selected} state={usage[selected.id]} onOpen={setOpen} />
           </div>
         </div>}
         {entries?.length === 0 && <EmptyState title="还没有项目" description="新建一个项目开始配置。" />}

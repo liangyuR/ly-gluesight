@@ -51,18 +51,17 @@ it("刷新时列表重排或移除已选项目 → 优先保留原编号，否�
   vi.mocked(invoke).mockImplementation(async command => command === "project_list" ? entries : projectUsage());
   render(<SnackbarProvider><ProjectsPage /></SnackbarProvider>);
   const list = within(await screen.findByRole("list", { name: "本机项目" }));
-  const details = within(screen.getByRole("region", { name: "项目详情" }));
   const refresh = screen.getByRole("button", { name: "刷新项目列表" });
   await userEvent.click(list.getByRole("button", { name: /二号线/ }));
 
   entries = [active, first, projectEntry("second", "二号线改名")];
   await userEvent.click(refresh);
-  expect(await details.findByRole("heading", { name: "二号线改名" })).toBeVisible();
+  expect(await screen.findByRole("heading", { name: "二号线改名" })).toBeVisible();
   expect(list.getByRole("button", { name: /三号线.*当前/ })).toHaveAttribute("aria-pressed", "false");
 
   entries = [active, first];
   await userEvent.click(refresh);
-  expect(await details.findByRole("heading", { name: "三号线" })).toBeVisible();
+  expect(await screen.findByRole("heading", { name: "三号线" })).toBeVisible();
   expect(list.getByRole("button", { name: /三号线.*当前/ })).toHaveAttribute("aria-pressed", "true");
 });
 
