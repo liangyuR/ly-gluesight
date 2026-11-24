@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { FolderKanban, Plus, RefreshCw, Upload } from "lucide-react";
-import { Alert, Button, Card, EmptyState, Heading, IconButton, StatusBadge, Table, Text, Tooltip, type TableColumn } from "qing-steel";
+import { ArrowRightLeft, Copy, Download, Ellipsis, FolderKanban, Pencil, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
+import { Alert, Button, Card, EmptyState, Heading, IconButton, Menu, StatusBadge, Table, Text, Tooltip, type MenuEntry, type TableColumn } from "qing-steel";
 import { projectApi, projectTransferApi, type ProjectEntry, type ProjectImportPreview, type ProjectMeta, type ProjectUsage } from "../lib/project";
 import { desktopAvailable } from "../lib/desktop";
 import { errorText } from "../lib/errors";
@@ -84,17 +84,23 @@ export default function ProjectsPage() {
       <span>{formatBytes(u.bytes)}</span>
       {u.projectBytes != null && u.visionBytes != null && <small className="muted">项目 {formatBytes(u.projectBytes)} · 视觉 {formatBytes(u.visionBytes)}</small>}
     </span>} /> },
-    { key: "actions", header: "操作", nowrap: true, render: entry => {
+    { key: "actions", header: "操作", align: "center", width: 1, nowrap: true, render: entry => {
       const meta = entry.meta;
-      return <div className="pj-actions">
-        {meta && !entry.current && <Button size="sm" variant="tonal" onClick={() => setOpen({ kind: "switch", project: meta })}>切换</Button>}
-        {meta && <Button size="sm" variant="text" onClick={() => setOpen({ kind: "rename", project: meta })}>重命名</Button>}
-        {meta && <Button size="sm" variant="text" onClick={() => setOpen({ kind: "export", project: meta })}>导出</Button>}
-        {meta && entries && <Button size="sm" variant="text" onClick={() => setOpen({ kind: "copy", project: meta })}>复制</Button>}
-        {entry.current
-          ? <Tooltip content="先切换到其他项目后才能删除"><span tabIndex={0} className="pj-disabled-action" aria-label="删除不可用：先切换到其他项目"><Button size="sm" variant="text" danger disabled aria-label="删除（先切换到其他项目）">删除</Button></span></Tooltip>
-          : <Button size="sm" variant="text" danger onClick={() => setOpen({ kind: "delete", entry })}>删除</Button>}
-      </div>;
+      const items: MenuEntry[] = [];
+      if (meta) {
+        if (!entry.current) items.push({ id: "switch", label: "切换到此项目", icon: <ArrowRightLeft size={16} />, onSelect: () => setOpen({ kind: "switch", project: meta }) });
+        items.push(
+          { id: "rename", label: "重命名", icon: <Pencil size={16} />, onSelect: () => setOpen({ kind: "rename", project: meta }) },
+          { id: "copy", label: "复制项目", icon: <Copy size={16} />, onSelect: () => setOpen({ kind: "copy", project: meta }) },
+          { id: "export", label: "导出项目", icon: <Download size={16} />, onSelect: () => setOpen({ kind: "export", project: meta }) },
+          { type: "separator", id: "delete-divider" },
+        );
+      }
+      items.push({ id: "delete", label: "删除项目", icon: <Trash2 size={16} />, danger: true, disabled: entry.current, onSelect: () => setOpen({ kind: "delete", entry }) });
+      if (entry.current) items.push({ type: "label", id: "delete-hint", label: "请先切换到其他项目" });
+      const label = `项目操作：${projectLabel(entry)}`;
+      return <Menu label={label} align="end" items={items}
+        trigger={<IconButton size="sm" aria-label={label} title="项目操作"><Ellipsis size={18} /></IconButton>} />;
     } },
   ];
 

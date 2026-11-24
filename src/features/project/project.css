@@ -24,10 +24,7 @@
 .pj-records small { font-size: 11px; }
 .pj-storage-usage { display:flex; flex-direction:column; gap:2px; }
 .pj-storage-usage small { font-size:11px; }
-.pj-actions { display: flex; align-items: center; gap: 2px; }
 .pj-delete-list { margin-top: 6px; grid-template-columns: 72px 1fr; gap: 4px 12px; }
 .pj-transfer-list { grid-template-columns: 72px 1fr; gap: 4px 12px; }
 .pj-path { overflow-wrap: anywhere; }
 .pj-notes { margin: 0; padding-left: 18px; color: var(--on-surface-variant); font-size: 13px; }
-
-.pj-disabled-action:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: var(--r-sm); }
