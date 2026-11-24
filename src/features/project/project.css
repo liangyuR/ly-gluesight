@@ -16,18 +16,21 @@
 .sidebar.collapsed .project-card { width: 44px; min-height: 44px; padding: 0; justify-content: center; }
 .sidebar.switching .project-card-text, .sidebar.switching .project-card-chevron { opacity: 0; }
 
+.main-body:has(> .pj-page) { display: flex; flex-direction: column; }
+.pj-page { display: flex; flex: 1 0 0; flex-direction: column; container: project-browser / inline-size; }
 .pj-page-title { display: flex; align-items: center; }
 .pj-page > .qs-card-heading > .qs-card-heading-text { flex-basis: auto; }
-.pj-browser { container: project-browser / inline-size; }
+.pj-browser { display: flex; flex: 1 0 0; min-height: 16rem; }
 .pj-layout {
   display: grid;
+  flex: 1;
+  min-width: 0;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-  min-height: 385px;
+  grid-template-rows: minmax(0, 1fr);
   border-block-start: 1px solid var(--outline-variant);
 }
 .pj-project-list.qs-list {
   align-content: start;
-  max-height: min(60vh, 640px);
   overflow-y: auto;
   scrollbar-width: thin;
   padding: 12px 14px 8px 2px;
@@ -40,12 +43,14 @@
 .pj-project-name { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 16px; }
 .pj-details {
   min-width: 0;
+  overflow-y: auto;
   padding: 22px 12px 16px 26px;
   border-inline-start: 1px solid var(--outline-variant);
   overflow-wrap: anywhere;
 }
 .pj-detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .pj-detail-text { min-width: 0; }
+.pj-action-trigger { flex-shrink: 0; white-space: nowrap; }
 .pj-details .pj-detail-title { font-size: 24px; line-height: 1.25; margin: 0; }
 .pj-detail-description { margin-top: 8px; font-size: 15px; }
 .pj-details > .qs-banner, .pj-usage-status { margin-top: 16px; }
@@ -67,9 +72,10 @@
 }
 
 @container project-browser (max-width: 620px) {
-  .pj-layout { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .pj-browser { flex-basis: auto; min-height: 0; }
+  .pj-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .pj-project-list.qs-list { max-height: min(33vh, 216px); padding-inline: 2px; }
-  .pj-details { border-inline-start: 0; border-block-start: 1px solid var(--outline-variant); padding: 16px 2px 4px; }
+  .pj-details { overflow: visible; border-inline-start: 0; border-block-start: 1px solid var(--outline-variant); padding: 16px 2px 4px; }
   .pj-project-name, .pj-detail-description { font-size: 14px; }
   .pj-details .pj-detail-title { font-size: 20px; }
   .pj-summary > div + div { padding-inline-start: 8px; }
