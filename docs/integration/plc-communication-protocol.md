@@ -56,32 +56,82 @@
 | 14 | Int | `faultCode` | 正常 0；检测错误 91–100 |
 | 16 | String[50] | `snEcho` | 结果对应的 SN，供 HMI 或 MES 核对 |
 
-## 四、一件的过程
+## 四、通讯时序
+
+全程双方心跳每 500 ms 变化一次，PC 持续轮询 DB4。图里实线是信号或写入，虚线是 PC 轮询读到的内容。
+
+### 正常一件
 
 ```mermaid
 sequenceDiagram
-    participant PC as 视觉 PC
+    participant ROB as 机械臂
     participant PLC as PLC
     participant CAM as 相机
-    participant ROB as 机械臂
+    participant PC as 视觉 PC
 
-    ROB->>PLC: partType、sn，PartArrived
-    PLC->>PC: productCode、sn，partSeq+1，inspecting=1
-    Note over PC: 登记本件，定帧计数基线
+    ROB->>PLC: partType、sn，PartArrived 脉冲
+    Note over PLC: 写 productCode、sn，partSeq 加 1<br/>最后置 inspecting=1
+    PLC-->>PC: inspecting=1、partSeq=N、型号、SN
+    Note over PC: 两次轮询一致后登记<br/>定帧计数基线，不回写
+    Note over ROB,PLC: 到达到拍照 ≥ 2 s
     loop 每段采集，一件内可开关多次
         ROB->>PLC: CaptureActive=1
         PLC->>CAM: Line0 高
-        CAM-->>PC: 帧
+        CAM->>PC: 帧（固定帧率）
         ROB->>PLC: CaptureActive=0
         PLC->>CAM: Line0 低
     end
-    ROB->>PLC: PartDone
-    PLC->>PC: inspecting=0
-    PC->>PLC: resultCode、faultCode、snEcho，最后 resultSeq=partSeq
-    Note over PLC: resultSeq 等于 partSeq，取结果
+    ROB->>PLC: PartDone 脉冲
+    Note over PLC: inspecting=0，Line0 保持低
+    PLC-->>PC: inspecting=0
+    Note over PC: 收尾窗口 1000 ms 继续收帧<br/>测量、判定
+    PC->>PLC: resultCode、faultCode、snEcho，最后 resultSeq=N
+    Note over PLC: inspecting=0、resultSeq = partSeq<br/>且 PC 心跳正常，取结果
+    Note over PC: 写完即结束，不等 PLC
 ```
 
-图里只有数据流向，没有互相等待：PLC 的每一步都只由机械臂信号驱动。
+| 步骤 | 谁做 | 做什么 |
+| --- | --- | --- |
+| 工件到达 | PLC | 收到 `PartArrived`：写 `productCode`、`sn`，`partSeq` 加 1，最后置 `inspecting`=1 |
+| 接件 | PC | 读到新件，两次轮询内容一致后登记本件、定帧计数基线；不回写 PLC |
+| 采集 | PLC | `inspecting`=1 期间按 `CaptureActive` 开关 Line0；相机按固定帧率出帧 |
+| 工件结束 | PLC | 收到 `PartDone`：`inspecting` 置 0，Line0 保持低 |
+| 出结果 | PC | 收尾、测量、判定，写 `resultCode`、`faultCode`、`snEcho`，最后写 `resultSeq` |
+| 取结果 | PLC | `inspecting`=0、`resultSeq` 等于 `partSeq` 且 PC 心跳正常时取结果码 |
+
+没有互相等待：PLC 的每一步都只由机械臂信号驱动，PC 写完结果即结束。
+
+### 取不到结果
+
+PLC 侧只有一种处置：下一件到达时上一件还没取到结果，上一件记未检。
+
+```mermaid
+sequenceDiagram
+    participant ROB as 机械臂
+    participant PLC as PLC
+    participant PC as 视觉 PC
+
+    ROB->>PLC: PartDone 脉冲（第 N 件）
+    Note over PLC: inspecting=0，等 resultSeq = N
+    Note over PC: 没有写第 N 件的结果
+    ROB->>PLC: PartArrived 脉冲（第 N+1 件）
+    Note over PLC: resultSeq 仍不等于 N：第 N 件记未检<br/>partSeq 加 1，置 inspecting=1
+    PLC-->>PC: inspecting=1、partSeq=N+1
+    Note over PC: 照常登记第 N+1 件
+```
+
+PC 不写结果的情形如下，规则见第五节。
+
+| 情形 | PC 的处理 |
+| --- | --- |
+| PC 就绪时这一件已经在检，或到达时 PC 不在线 | 不登记 |
+| `partSeq` 为 0，SN 或型号不合法 | 不登记 |
+| 在检期间 `partSeq` 变了，没收到工件结束 | 本件记 ERR 98，接着登记新件 |
+| 超过运动超时仍没等到工件结束 | 本件记 ERR 97，回空闲等下一件 |
+| 结果还没出，下一件已经到达 | 本件记 ERR 98，立即登记新件 |
+| 通讯未就绪（断线、`plcVersion` 不是 9、PLC 心跳停） | 在检件记 ERR 98，条件恢复后自动就绪 |
+
+找不到配方、相机未就绪这类不能检测的件不在此列：照常登记，工件结束后回 `resultCode`=90 与对应 `faultCode`。
 
 ## 五、规则
 
