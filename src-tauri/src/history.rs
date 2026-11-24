@@ -59,7 +59,7 @@ pub async fn history_delete(app: AppHandle, ids: Vec<i64>) -> Result<HistoryDele
     let cycle = app.state::<CycleHost>();
     let _gate = cycle.config_gate.lock().await;
     if cycle.busy() {
-        return Err("有在途工件或未结 PLC 事务，不能删除历史记录".into());
+        return Err("有在途工件，不能删除历史记录".into());
     }
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {

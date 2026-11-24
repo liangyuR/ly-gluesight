@@ -6,14 +6,12 @@ import ReadinessChecklist from "./ReadinessChecklist";
 
 const statusTone = { fault: "fault", busy: "info", waiting: "warn", unknown: "warn", blocked: "ng", ready: "ok" } as const;
 
-export default function InspectionReadiness({ snapshot, readiness, status: loadStatus, error, onDiagnostics, resetBlockedReason, resetPendingCheck }: {
+export default function InspectionReadiness({ snapshot, readiness, status: loadStatus, error, onDiagnostics }: {
   snapshot: Snapshot | null;
   readiness: Readiness | null;
   status?: ReadinessLoadStatus;
   error?: string | null;
   onDiagnostics?: () => void;
-  resetBlockedReason?: string;
-  resetPendingCheck?: boolean;
 }) {
   const busy = productionBusy(snapshot);
   const faulted = snapshot?.phase === "FAULT";
@@ -44,9 +42,7 @@ export default function InspectionReadiness({ snapshot, readiness, status: loadS
       <StatusBadge tone={statusTone[status]}>{label}</StatusBadge>
     </div>
     {faulted && <Alert tone="fault">
-      {snapshot.fault || "设备故障，请检查设备并复位"}
-      {resetBlockedReason && (snapshot.fault?.includes(resetBlockedReason) ? <> · 当前不能复位</> : <> · 不能复位：{resetBlockedReason}</>)}
-      {resetPendingCheck && <> · 复位条件核对中</>}
+      {snapshot.fault || "设备故障，请检查设备"} · 条件恢复后自动就绪
     </Alert>}
     {failed && <Alert tone="warn">
       {busy || faulted ? "开工条件更新失败；" : ""}{readiness ? "下列条件为上次报告，仅供参考" : "暂时无法确认开工条件"}

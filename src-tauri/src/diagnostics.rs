@@ -20,8 +20,6 @@ const MAX_IMAGE_PARTS: usize = 200;
 const MAX_IMAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_PLC_LOGS: i64 = 200_000;
 const MAX_CONFIG_FILE: u64 = 8 * 1024 * 1024;
-const AUDIT_FILE: &str = "plc-handshake.audit.jsonl";
-const AUDIT_ACTIVE: &str = "state/plc-handshake.audit.jsonl";
 
 const README: &str = r#"# 诊断包说明
 
@@ -38,8 +36,7 @@ const README: &str = r#"# 诊断包说明
 | `project.json` | 当前项目的编号、名称与描述 |
 | `config/` | 当前项目的配置文件（PLC、相机、检测设置等） |
 | `machine/site-offline.json` | 本机的站点模式与离线选择（没有时不打包） |
-| `state/` | 运行状态文件（S7 握手事务等）；`state/plc-handshake.audit.jsonl` 只含导出时间段内的握手审计行 |
-| `state/plc-handshake-audit/` | 与导出时间段有交集的已滚动握手审计分段（整段，可能含时间段外的行） |
+| `state/` | 运行状态文件（S7 握手日志等） |
 | `records/parts.csv`、`records/parts.jsonl` | 检测记录摘要与完整明细 |
 | `recipes/<revisionId>.json` | 检测记录所用的配方快照 |
 | `records/<记录号>_<cycleId>/` | 原图、`part.json` 与对照结果（按导出选项附带） |
@@ -58,8 +55,8 @@ const README: &str = r#"# 诊断包说明
 ## 推荐分析顺序
 
 1. 读 `manifest.json`：确认构建版本、时间段与 `notes`，按 `files` 校验文件完整性。
-2. 在运行日志中先找 `fault.enter` 与 `s7.fault_output`，确定故障时刻、来源与原因；没有这些编码时，找 `ev` 为“故障”的行。
-3. 按 `cycleId`（工件）串起同一事务的事件，对照同一时间窗口内 `logs/plc.jsonl` 的信号变化与 `state/plc-handshake.audit.jsonl`。
+2. 在运行日志中先找 `fault.enter`，确定故障时刻、来源与原因；没有这个编码时，找 `ev` 为“故障”的行。
+3. 按 `cycleId`（工件）串起同一件的事件，对照同一时间窗口内 `logs/plc.jsonl` 的信号变化。
 4. 涉及检测结论时，按 `cycleId` 对照 `records/parts.jsonl`、配方快照与原图。
 "#;
 
@@ -193,57 +190,6 @@ impl<W: std::io::Write> Package<W> {
         }
         Ok(())
     }
-
-    fn copy_handshake_audit(&mut self, active: &Path, from: i64, to: i64) -> Result<(), String> {
-        match fs::read(active) {
-            Ok(bytes) => {
-                let (out, untimed) = audit_lines_in_range(&bytes, from, to);
-                if untimed > 0 {
-                    self.notes
-                        .push(format!("{AUDIT_ACTIVE} 有 {untimed} 行无法解析 ts，未打包"));
-                }
-                if !out.is_empty() {
-                    self.add(AUDIT_ACTIVE, &out)?;
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => self.notes.push(format!("{AUDIT_ACTIVE} 读取失败：{error}")),
-        }
-        let (chosen, skipped) = crate::handshake_audit::overlapping(active, from, to);
-        for path in &chosen {
-            self.copy_file(path, &format!("state/plc-handshake-audit/{}", file_name(path)))?;
-        }
-        if skipped > 0 {
-            self.notes.push(format!("握手审计另有 {skipped} 个分段不在导出时间段内，未打包（现场 state/plc-handshake-audit/）"));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Deserialize)]
-struct AuditStamp {
-    ts: i64,
-}
-
-/// 握手审计当前文件里 ts 落在 [from, to] 的行，及无法解析 ts 的行数。
-fn audit_lines_in_range(bytes: &[u8], from: i64, to: i64) -> (Vec<u8>, usize) {
-    let mut out = Vec::new();
-    let mut untimed = 0;
-    for line in bytes
-        .split(|b| *b == b'\n')
-        .map(|l| l.strip_suffix(b"\r").unwrap_or(l))
-        .filter(|l| !l.is_empty())
-    {
-        match serde_json::from_slice::<AuditStamp>(line) {
-            Ok(stamp) if (from..=to).contains(&stamp.ts) => {
-                out.extend_from_slice(line);
-                out.push(b'\n');
-            }
-            Ok(_) => {}
-            Err(_) => untimed += 1,
-        }
-    }
-    (out, untimed)
 }
 
 #[derive(Serialize)]
@@ -453,8 +399,7 @@ fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &
         package.copy_file(&machine, "machine/site-offline.json")?;
     }
     let state = crate::storage::state(app);
-    package.copy_dir(&state, "state", &[AUDIT_FILE])?;
-    package.copy_handshake_audit(&state.join(AUDIT_FILE), request.from, request.to)?;
+    package.copy_dir(&state, "state", &[])?;
     let store = app.state::<Store>();
     let parts = collect_parts(&store, request, &mut package.notes)?;
     let mut csv = crate::history::CSV_HEADER.as_bytes().to_vec();

@@ -1,4 +1,4 @@
-//! 进程在 S7 事务中退出：握手日志留着在途工件，历史却没有它。启动时按握手日志里的身份与开工场景补一条 ERR 记录，
+//! 进程在检测中途退出：握手日志留着在途工件，历史却没有它。启动时按握手日志里的身份与开工场景补一条 ERR 记录，
 //! 配方取本件的运行日志（运行日志不落盘同步，缺失时本件不带配方）。补记录带预期帧组数 ΣN_exp、没有帧，
 //! 区域判定同为 ERR 98。
 
@@ -27,7 +27,10 @@ pub(super) fn part(interrupted: &Interrupted, records: &[Record], recipe: impl F
         .filter(|r| r.fields.cycle_id.as_deref() == Some(interrupted.cycle_id))
         .find_map(|r| r.fields.recipe_id.as_deref())
         .and_then(recipe);
-    let reason = format!("检测进程在事务中中断（请求序号 {}），本件未完成检测，结果未回写 PLC", interrupted.request_seq);
+    let reason = format!(
+        "检测进程在检测中途中断（件序号 {}），本件未完成检测，结果未回写 PLC",
+        interrupted.request_seq
+    );
     let judgement = Judgement::error(fault::DEVICE_LOST, reason);
     let burst = recipe
         .as_deref()
@@ -70,7 +73,11 @@ pub(super) fn recording(cycle_id: &str, record: RecordMode) -> RecordingOutcome 
         cycle_id: cycle_id.into(),
         directory: None,
         files: Vec::new(),
-        errors: if off { Vec::new() } else { vec!["检测进程在事务中中断，本件原图未收尾".into()] },
+        errors: if off {
+            Vec::new()
+        } else {
+            vec!["检测进程在检测中途中断，本件原图未收尾".into()]
+        },
         retention_errors: Vec::new(),
         available: false,
         state: if off { RecordingState::Off } else { RecordingState::Failed },

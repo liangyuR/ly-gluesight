@@ -9,7 +9,7 @@ import DiagnosticsDialog from "./DiagnosticsDialog";
 import type { Timeline } from "./types";
 import ContextHelp from "../cycle/components/ContextHelp";
 
-const markedStages = new Set(["partStart", "admitted", "partEnd", "result", "released", "fault", "reset"]);
+const markedStages = new Set(["partStart", "admitted", "partEnd", "result", "fault"]);
 const levelTone = { error: "ng", warn: "warn", info: "info", debug: "off" } as const;
 
 type Row = [number, Timeline["entries"][number]];
@@ -45,7 +45,7 @@ export default function CycleTimeline({ historyId, cycleId, ts, selected = -1, o
     [timeline, detail, plc, onlyShot, selected, frame?.camera, frame?.seq]);
   const errors = timeline?.entries.filter(e => e.level === "error").length ?? 0;
   const readings: MeasurementItem[] = timeline ? [
-    ...(timeline.requestSeq != null ? [{ id: "requestSeq", label: "PLC 请求序号", value: timeline.requestSeq, precision: 0, size: "md" as const }] : []),
+    ...(timeline.requestSeq != null ? [{ id: "requestSeq", label: "件序号", value: timeline.requestSeq, precision: 0, size: "md" as const }] : []),
     ...timeline.stages.map(s => ({ id: s.key, label: s.label, value: s.ms, unit: "ms", precision: 0, size: "md" as const })),
     ...(errors > 0 ? [{ id: "errors", label: "错误", value: errors, precision: 0, status: "ng" as const, size: "md" as const }] : []),
   ] : [];

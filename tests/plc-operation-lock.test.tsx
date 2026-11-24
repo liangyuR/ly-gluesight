@@ -33,7 +33,7 @@ describe("PLC 操作锁", () => {
   it("最新事务事件优先于迟到的初始空闲响应，FAULT 未结事务仍锁定", async () => {
     const initial = deferred<PlcOperationState>(); vi.mocked(invoke).mockReturnValueOnce(initial.promise);
     const view = render(<Harness />);
-    const handshake = { phase: "awaitAck", requestSeq: 41, resultSeq: 41, message: "结果等待确认" } as const;
+    const handshake = { phase: "draining", requestSeq: 41, message: "收尾并写结果" } as const;
     act(() => onSnapshot({ payload: { phase: "FAULT", plcLocked: true, plcHandshake: handshake } }));
     await act(async () => initial.resolve({ phase: "IDLE", plcLocked: false }));
     expect(screen.getByText(/生产或结果交付尚未结束/)).toBeVisible();

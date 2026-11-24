@@ -2321,7 +2321,7 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
                 next_retry = Instant::now() + Duration::from_secs(2);
                 let attempt = {
                     let cycle = app.state::<CycleHost>();
-                    // 检测途中不排队等闸门，免得重开相机拖住在途工件的握手
+                    // 检测途中不排队等闸门，免得重开相机拖住在途工件
                     let gate = if cycle.in_flight() {
                         cycle.config_gate.try_lock().ok()
                     } else {
@@ -2613,7 +2613,9 @@ impl CameraAccess {
             return Err("检测进行中，工件结束后再操作相机".into());
         }
         if matches!(self, Self::Configuration) && pending {
-            return Err("PLC 仍有未结事务或握手日志故障，请连接 PLC 并复位后再修改相机或采集；可先释放相机给 MVS 排查".into());
+            return Err(
+                "检测仍有在途工件，工件结束后再修改相机或采集；可先释放相机给 MVS 排查".into(),
+            );
         }
         Ok(())
     }

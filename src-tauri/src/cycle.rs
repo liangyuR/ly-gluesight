@@ -26,9 +26,7 @@ use crate::history;
 use crate::judge::{fault, Judgement, Verdict};
 use crate::measure::{self, FrameJob, FrameMeasured, FramePool};
 use crate::plc::PlcHost;
-use crate::plc_session::{
-    Origin, PartSite, PendingKind, PlcSession, SessionEvent, SessionPhase, SessionView,
-};
+use crate::plc_session::{PartSite, PlcSession, SessionEvent, SessionPhase, SessionView};
 use crate::recipe::{Recipe, RecipeStore, TriggerMode};
 use crate::recorder::{Recorder, Recorders, Recording};
 use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
@@ -38,18 +36,9 @@ use crate::store::{
     BurstRecord, HistoryScope, PlcDelivery, PlcDeliveryState, RecordSource, Store, VerdictCounts,
 };
 
-pub(crate) fn s7_ack_delivery(had_ack: bool, session: &PlcSession) -> Option<PlcDelivery> {
-    (!had_ack && session.acknowledged()).then(|| PlcDelivery {
-        state: PlcDeliveryState::Acknowledged,
-        updated_at: now_ms(),
-        message: Some("PLC 结果序号已匹配确认".into()),
-    })
-}
-
 pub enum Input {
     /// 段配方一台相机一帧的测量结果（FramePool 交来）
     FrameMeasured(FrameMeasured),
-    Reset,
     Refresh,
 }
 
@@ -61,8 +50,6 @@ pub enum Phase {
     Acquire,
     Drain,
     Judge,
-    Report,
-    Release,
     Fault,
 }
 
@@ -377,11 +364,11 @@ pub struct CycleHost {
     history_path: PathBuf,
     shared: Mutex<Shared>,
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
-    /// 有在途工件或未结 PLC 事务。
+    /// 有在途工件。
     busy: AtomicBool,
     /// 节拍不在空闲或故障（开工那一刻就置上，比发布的快照早）
     in_flight: AtomicBool,
-    /// 检测侧不允许切换项目的原因：有在途工件，或有只能在真机 PLC 上复位的未结事务
+    /// 检测侧不允许切换项目的原因：有在途工件
     switch_block: Mutex<Option<String>>,
     settings_note: Option<String>,
     interrupted_recordings: usize,
@@ -597,16 +584,8 @@ impl CycleHost {
         }
         self.in_flight.store(in_flight, Ordering::SeqCst);
         self.busy.store(in_flight || s7.pending(), Ordering::SeqCst);
-        *self.switch_block.lock().unwrap() = if in_flight {
-            Some("检测仍有在途工件，完成握手或复位故障后再切换项目".into())
-        } else if s7.pending_kind() == PendingKind::Blocking {
-            Some(format!(
-                "检测仍有未结 S7 事务（{}），需连接真机 PLC 复位后再切换项目",
-                s7.pending_summary().unwrap_or_default()
-            ))
-        } else {
-            None
-        };
+        *self.switch_block.lock().unwrap() =
+            in_flight.then(|| "检测仍有在途工件，工件结束后再切换项目".into());
     }
 
     /// 检测中的配方：人工选型号时选中的，或在途工件用的。
@@ -647,7 +626,7 @@ impl CycleHost {
         _gate: &tokio::sync::MutexGuard<'_, ()>,
     ) -> Result<(), String> {
         if self.busy() {
-            return Err("在途事务结束或故障复位后才能修改检测设置".into());
+            return Err("在途工件结束后才能修改检测设置".into());
         }
         settings.validate()?;
         let current = self.settings();
@@ -697,7 +676,6 @@ pub fn purge_history(app: &AppHandle) {
         }
         Err(e) => log(app, "err", "记录清理", e),
     }
-    purge_handshake_audit(app);
 }
 
 /// 启动时补回维护试判件丢失的区域判定（MM-10），幂等：已补回的记录不再列出。
@@ -724,44 +702,7 @@ pub fn repair_history(app: &AppHandle) {
     }
 }
 
-/// 握手审计分段与检测记录同时清理：未结交付（PLC 尚未确认的件）读不到时整次跳过，不冒险删掉 ACK 恢复要读的记录。
-fn purge_handshake_audit(app: &AppHandle) {
-    let unresolved = match app.state::<Store>().unresolved_delivery_cycles() {
-        Ok(unresolved) => unresolved,
-        Err(error) => {
-            return log(
-                app,
-                "warn",
-                "握手审计清理",
-                format!("读取未结 PLC 交付失败，本次不清理：{error}"),
-            )
-        }
-    };
-    let active = crate::storage::state(app).join("plc-handshake.audit.jsonl");
-    let pruned = crate::handshake_audit::prune(
-        &active,
-        &unresolved,
-        crate::handshake_audit::LIMITS,
-        now_ms(),
-    );
-    if pruned.removed > 0 || pruned.kept_unresolved > 0 {
-        log(
-            app,
-            "info",
-            "握手审计清理",
-            format!(
-                "删除 {} 个过期分段；{} 个分段仍有未结交付，保留",
-                pruned.removed, pruned.kept_unresolved
-            ),
-        );
-    }
-    for error in pruned.errors {
-        log(app, "warn", "握手审计清理", error);
-    }
-}
-
-/// 启动时握手日志里有已绑定工件、尚无结果的在途事务，而历史与追溯暂存里都没有它：进程在事务中退出，补一条 ERR 记录。
-/// 只补记录，不动握手事务；事务仍由 PLC 复位处置。
+/// 启动时握手日志里有已绑定身份的在途件，而历史与追溯暂存里都没有它：进程在检测中途退出，补一条 ERR 记录。
 pub(crate) fn record_interrupted_part(
     app: &AppHandle,
     s7: &PlcSession,
@@ -771,9 +712,6 @@ pub(crate) fn record_interrupted_part(
     let (Some(cycle_id), Some(request)) = (s7.cycle_id(), s7.request()) else {
         return;
     };
-    if s7.result().is_some() {
-        return;
-    }
     let Some(site) = s7.site() else {
         return log(
             app,
@@ -836,8 +774,21 @@ pub(crate) fn record_interrupted_part(
         stats.err += 1;
     }
     host.audit.recording(outcome);
-    log_with(app, "warn", "中断工件补记录", format!("SN={} 请求序号 {}：进程在事务中中断，已按 ERR 补入历史（{label}）；PLC 事务仍需复位处置", request.sn, request.request_seq),
-        Fields { cycle_id: Some(cycle_id.into()), sn: Some(request.sn.clone()), request_seq: Some(request.request_seq), ..Fields::default() });
+    log_with(
+        app,
+        "warn",
+        "中断工件补记录",
+        format!(
+            "SN={} 件序号 {}：进程在检测中途中断，已按 ERR 补入历史（{label}）",
+            request.sn, request.request_seq
+        ),
+        Fields {
+            cycle_id: Some(cycle_id.into()),
+            sn: Some(request.sn.clone()),
+            request_seq: Some(request.request_seq),
+            ..Fields::default()
+        },
+    );
 }
 
 fn plc(app: &AppHandle) -> &PlcEngine {
@@ -1186,8 +1137,6 @@ struct Machine {
     fault_source: Option<&'static str>,
     fault_at: Option<i64>,
     fault_repeat: Option<FaultRepeat>,
-    done_at: Option<Instant>,
-    ack_alarmed: bool,
     result: Option<ResultView>,
     stats: Stats,
     /// 维护采集进度、试判统计与上次从记录库读取的时刻（录制收尾是异步的，定时刷新）
@@ -1217,7 +1166,6 @@ struct Machine {
     /// 报警写日志的去重：alarms 每件开工、复位都会清空，同一报警不再每件重写
     alarm_log: Throttle,
     s7: PlcSession,
-    s7_reset_requested: bool,
     current_cycle_id: Option<String>,
     recording_alarm: Option<RecordingAlarm>,
 }
@@ -1225,79 +1173,12 @@ struct Machine {
 impl Machine {
     fn new(app: AppHandle, frame_pool: FramePool) -> Self {
         let mut stats = today_stats(&app, HistoryScope::Real);
-        let s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
+        let mut s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
         if let Some(notice) = s7.archived() {
             log(&app, "warn", "S7 握手日志归档", notice.to_owned());
         }
-        let recovery = match app.state::<Store>().unresolved_delivery_cycles() {
-            Ok(unresolved) => s7.recover_acknowledgements(&unresolved),
-            Err(error) => crate::plc_session::AckRecovery {
-                receipts: Vec::new(),
-                errors: vec![format!("读取未决 PLC 交付失败，跳过 ACK 恢复：{error}")],
-            },
-        };
-        for error in recovery.errors {
-            log(&app, "err", "PLC 确认恢复", error);
-        }
-        let mut recovered = 0;
-        let mut failed = 0;
-        for receipt in recovery.receipts {
-            match app.state::<Store>().recover_acknowledgement(
-                &receipt.cycle_id,
-                &receipt.sn,
-                receipt.request_seq,
-                receipt.ts,
-            ) {
-                Ok(true) => recovered += 1,
-                Ok(false) => {}
-                Err(error) => {
-                    if failed < 10 {
-                        log(
-                            &app,
-                            "err",
-                            "PLC 确认恢复",
-                            format!("cycleId={}：{error}", receipt.cycle_id),
-                        );
-                    }
-                    failed += 1;
-                }
-            }
-        }
-        if recovered > 0 {
-            log(
-                &app,
-                "ok",
-                "PLC 确认恢复",
-                format!("已从持久握手记录恢复 {recovered} 件 PLC 确认，原检测结论保留"),
-            );
-        }
-        if failed > 10 {
-            log(
-                &app,
-                "err",
-                "PLC 确认恢复",
-                format!(
-                    "另有 {} 条收据未能关联或保存，请核对握手审计与检测记录",
-                    failed - 10
-                ),
-            );
-        }
         record_interrupted_part(&app, &s7, &mut stats, HistoryScope::Real);
-        match (s7.pending_kind(), s7.pending_summary()) {
-            (PendingKind::Offline, Some(summary)) => log(
-                &app,
-                "warn",
-                "S7 未结事务",
-                format!("上次离线运行留下{summary}：连接 PLC 后执行软件复位清除"),
-            ),
-            (PendingKind::Blocking, Some(summary)) => log(
-                &app,
-                "warn",
-                "S7 未结事务",
-                format!("留有{summary}：连接真机 PLC 核对该件后复位；复位前不能切换项目"),
-            ),
-            _ => {}
-        }
+        s7.forget_previous();
         host(&app).store_busy(Phase::Fault, &s7);
         Self {
             app,
@@ -1312,8 +1193,6 @@ impl Machine {
             fault_source: None,
             fault_at: None,
             fault_repeat: None,
-            done_at: None,
-            ack_alarmed: false,
             result: None,
             stats,
             collection: (Vec::new(), Vec::new(), None),
@@ -1334,7 +1213,6 @@ impl Machine {
             noise: Throttle::new(throttle::WINDOW),
             alarm_log: Throttle::new(ALARM_LOG_WINDOW),
             s7,
-            s7_reset_requested: false,
             current_cycle_id: None,
             recording_alarm: None,
         }
@@ -1647,7 +1525,6 @@ impl Machine {
         self.dirty = true;
         match input {
             Input::FrameMeasured(m) => self.on_frame_measured(m),
-            Input::Reset => self.s7_reset_requested = true,
             Input::Refresh => self.required = None,
         }
     }
@@ -1674,7 +1551,6 @@ impl Machine {
             log_event(&self.app, summary.event, summary.msg, summary.fields);
         }
         let app = self.app.clone();
-        let engine = plc(&app);
         let (sn, code) = (request.sn.clone(), request.product_code as u32);
         let host = host(&app);
         let taken = host.cycle_ids.take(&app);
@@ -1688,7 +1564,7 @@ impl Machine {
         log_with(
             &app,
             "info",
-            "plcState=10",
+            "工件到达",
             format!("SN={sn} 型号={code}"),
             Fields::stage("partStart").with_data(json!({"productCode": code})),
         );
@@ -1707,7 +1583,7 @@ impl Machine {
                     sn,
                     None,
                     fault::PROCESS_TIMEOUT,
-                    format!("S7 事务无法绑定工件身份：{error}"),
+                    format!("在途件无法绑定工件身份：{error}"),
                 )
                 .await;
         }
@@ -1983,10 +1859,7 @@ impl Machine {
             recording,
             recipe: recipe.clone(),
         });
-        if let Err(reason) = self.s7.commit_intake(engine).await {
-            log(&app, "err", "接件阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "elapsedMs": millis(started)}).to_string());
-            return self.enter_fault("intake", format!("接件登记失败：{reason}"));
-        }
+        self.s7.admit().await;
         self.part.as_mut().unwrap().admitted_at = Instant::now();
         self.set_phase(Phase::Acquire);
         log_with(
@@ -2046,10 +1919,7 @@ impl Machine {
                 });
             }
         }
-        if let Err(reason) = self.s7.commit_intake(plc(&app)).await {
-            self.uninspected = None;
-            return self.enter_fault("intake", format!("接件登记失败：{reason}"));
-        }
+        self.s7.admit().await;
         if let Some(part) = self.part.as_mut() {
             part.admitted_at = Instant::now();
         }
@@ -2350,7 +2220,6 @@ impl Machine {
         self.flush_noise();
         app.state::<PlcHost>().flush_logs();
         let _link = host(&app).link_gate.lock().await;
-        self.s7.set_origin(Origin::Real);
         let settings = host(&app).settings();
         self.s7.set_maintenance(settings.maintenance.is_some());
         if !host(&app).busy()
@@ -2372,7 +2241,7 @@ impl Machine {
         }
         self.sync_recording_alarm();
         let cameras = match self.phase {
-            // 在途的件只看它自己用的相机；等 PLC 确认结果时相机掉线不打断握手，回到空闲再查
+            // 在途的件只看它自己用的相机
             Phase::Acquire | Phase::Drain => match self.part.as_ref() {
                 Some(p) if p.rig_gen != host(&self.app).camera.generation() => {
                     Err("检测中增删了相机".into())
@@ -2380,7 +2249,6 @@ impl Machine {
                 Some(p) => self.check_part_cams(p),
                 None => Ok(()),
             },
-            Phase::Report | Phase::Release => Ok(()),
             _ => self.check_idle_devices(),
         };
         let dropped = host(&self.app).camera.dropped_total();
@@ -2431,27 +2299,10 @@ impl Machine {
             if let Err(reason) = cameras {
                 self.latch_device_lost(reason);
             }
-            if self.s7.reset_signal(plc(&app)) || self.s7.auto_reset() {
-                self.s7_reset_requested = true;
-            }
-            let reset = std::mem::take(&mut self.s7_reset_requested);
-            let previous = self.s7.phase();
-            let previous_reset_blocked = self.s7.view().reset_blocked_reason;
-            let had_ack = self.s7.acknowledged();
-            let event = self.s7.poll(plc(&app), reset).await;
+            let previous = self.s7.view();
+            let event = self.s7.poll(plc(&app)).await;
             // 接件持有配置门直到下面 store_busy 登记在途，相机与配置操作要么在接件前完成，要么看到在途后拒绝
             let mut _config = None;
-            if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7) {
-                match self.current_cycle_id.as_deref() {
-                    Some(cycle_id) => host(&app).audit.delivery(cycle_id, delivery),
-                    None => log(
-                        &app,
-                        "err",
-                        "PLC 交付",
-                        "PLC 已确认结果，但缺少工件身份，交付状态未记录",
-                    ),
-                }
-            }
             match event {
                 SessionEvent::Ready => {
                     self.ledgers.clear_floors();
@@ -2460,9 +2311,10 @@ impl Machine {
                     self.set_phase(Phase::Idle);
                     log_event(
                         &app,
-                        &applog::codes::S7_RESET_DONE,
-                        "输入基线已核验，视觉就绪",
-                        Fields::stage("reset"),
+                        &applog::codes::S7_READY,
+                        "PLC 已连接、协议版本一致、心跳在变化，通讯就绪",
+                        Fields::default()
+                            .with_data(json!({"connection": self.s7.view().connection})),
                     );
                     applog::end_cycle();
                 }
@@ -2478,35 +2330,15 @@ impl Machine {
                     log_with(
                         &app,
                         "info",
-                        "plcState=20",
-                        "PLC 报运动结束，等待剩余帧",
+                        "工件结束",
+                        "PLC 报工件结束，等待剩余帧",
                         Fields::stage("partEnd"),
                     );
                 }
-                SessionEvent::Released => {
-                    self.close_routing();
-                    self.alarms.retain(|m| !m.starts_with("PLC 未确认"));
-                    self.set_phase(Phase::Idle);
-                    log_with(
-                        &app,
-                        "info",
-                        "S7 事务结束",
-                        "PLC 已锁存结果，视觉已回就绪",
-                        Fields::stage("released"),
-                    );
-                    applog::end_cycle();
-                }
-                SessionEvent::Fault(reason) => self.enter_fault("s7", reason),
-                SessionEvent::Restored(reason) => {
-                    log(&app, "warn", "S7 空闲恢复", reason.clone());
-                    if !self.alarms.contains(&reason) {
-                        self.alarms.push(reason);
-                    }
-                    self.dirty = true;
-                }
+                SessionEvent::Lost(reason) => self.abandon_part("s7", reason).await,
                 SessionEvent::None => {}
             }
-            // 空闲等待提示（PLC 输入未释放、设备未就绪）跟着会话现状走，不进故障
+            // 空闲提示（没接上的在检件等）跟着会话现状走，不进故障
             let notice = self.s7.notice().map(str::to_owned);
             let shown: Vec<String> = self
                 .alarms
@@ -2517,31 +2349,21 @@ impl Machine {
             if shown.as_slice() != notice.as_slice() {
                 self.alarms
                     .retain(|m| !m.starts_with(crate::plc_session::NOTICE));
-                if let Some(notice) = notice {
-                    log(&app, "warn", "S7 握手", notice.clone());
-                    self.alarms.push(notice);
-                }
+                self.alarms.extend(notice);
                 self.dirty = true;
             }
-            if self.s7.phase() == SessionPhase::Releasing && self.phase == Phase::Report {
-                self.set_phase(Phase::Release);
-            }
-            if matches!(
-                self.s7.phase(),
-                SessionPhase::ResetRequired | SessionPhase::Fault
-            ) {
+            if self.s7.phase() == SessionPhase::NotReady {
                 let reason = self
                     .s7
                     .view()
                     .message
-                    .unwrap_or_else(|| "S7 需要明确复位".into());
+                    .unwrap_or_else(|| "S7 通讯未就绪".into());
                 if self.phase != Phase::Fault || self.fault.as_ref() != Some(&reason) {
-                    self.enter_fault("s7", reason);
+                    self.enter_fault("s7", reason).await;
                 }
             }
-            if previous != self.s7.phase()
-                || previous_reset_blocked != self.s7.view().reset_blocked_reason
-            {
+            let current = self.s7.view();
+            if (previous.phase, &previous.message) != (current.phase, &current.message) {
                 self.dirty = true;
             }
             host(&app).store_busy(self.phase, &self.s7);
@@ -2632,23 +2454,14 @@ impl Machine {
                     self.judge_part().await;
                 }
             }
-            Phase::Report => {
-                if !self.ack_alarmed && self.done_at.is_some_and(|t| t.elapsed() > timeouts.ack()) {
-                    self.ack_alarmed = true;
-                    self.alarm(format!(
-                        "PLC 未确认结果（超过 T_ack {} ms），保持 pcState=30",
-                        timeouts.ack_ms
-                    ));
-                }
-            }
             _ => {}
         }
     }
 
-    /// PLC 在 10 不接受结果：等不到工件结束就中断本件（ERR 97、交付失败），置故障让 PLC 按未检处理。
+    /// 等不到工件结束：本件记 ERR 97、不回结果，放下它等下一件。
     async fn part_end_timeout(&mut self, motion_ms: u64) {
         let reason = format!(
-            "接件后 {} s 内未收到工件结束（plcState=20）",
+            "接件后 {} s 内未收到工件结束（inspecting 未回 0）",
             motion_ms / 1000
         );
         log(
@@ -2657,8 +2470,16 @@ impl Machine {
             "等工件结束超时",
             format!("T_motion {motion_ms} ms"),
         );
-        self.s7.fault(plc(&self.app), reason.clone()).await;
-        self.enter_fault("motion", reason);
+        self.abandon_part("motion", reason).await;
+    }
+
+    /// 在途件等不到正常结束（中途换件、等工件结束超时）：按中断记录、不回结果；通讯仍然就绪，回空闲等下一件。
+    async fn abandon_part(&mut self, source: &'static str, reason: String) {
+        self.close_routing();
+        self.interrupt_part(source, &reason).await;
+        self.alarm(reason);
+        applog::end_cycle();
+        self.set_phase(Phase::Idle);
     }
 
     async fn judge_part(&mut self) {
@@ -2773,7 +2594,6 @@ impl Machine {
             (judgement.plc_code, judgement.fault_code)
         };
         let sent = self.s7.report(plc(&app), code, fault_code).await;
-        self.done_at = sent.as_ref().ok().map(|_| Instant::now());
         drain_ms = sent
             .as_ref()
             .ok()
@@ -2796,7 +2616,6 @@ impl Machine {
             None => log(&app, "err", "PLC 交付", "缺少工件身份，交付状态未记录"),
         }
         let r = sent.map_err(|error| format!("回写 PLC 失败：{error}"));
-        self.ack_alarmed = false;
         if mode == crate::store::PartMode::Production {
             self.count(judgement.verdict);
         }
@@ -2811,9 +2630,9 @@ impl Machine {
             String::new()
         };
         let delivery = if r.is_ok() {
-            "done 已提交"
+            "已回写 PLC"
         } else {
-            "交付异常，需人工确认"
+            "结果未回写 PLC"
         };
         log_with(
             &app,
@@ -2839,15 +2658,11 @@ impl Machine {
             burst,
             mode,
         });
-        match r {
-            Ok(()) => self.set_phase(Phase::Report),
-            Err(reason) => {
-                self.s7.fault(plc(&app), reason.clone()).await;
-                self.fault = Some(reason.clone());
-                self.alarm(reason);
-                self.set_phase(Phase::Fault);
-            }
+        if let Err(reason) = r {
+            self.alarm(reason);
         }
+        applog::end_cycle();
+        self.set_phase(Phase::Idle);
     }
 
     fn close_routing(&mut self) {
@@ -3058,28 +2873,6 @@ impl Machine {
         self.record_without_part(sn, judgement)
     }
 
-    fn delivery(&self, state: PlcDeliveryState, message: Option<String>) -> Result<(), String> {
-        let cycle_id = self
-            .current_cycle_id
-            .as_deref()
-            .ok_or("PLC 交付缺少工件身份")?;
-        host(&self.app).audit.delivery(
-            cycle_id,
-            PlcDelivery {
-                state,
-                updated_at: now_ms(),
-                message,
-            },
-        );
-        Ok(())
-    }
-
-    fn fail_delivery(&self, reason: &str) {
-        if let Err(error) = self.delivery(PlcDeliveryState::Failed, Some(reason.to_owned())) {
-            log(&self.app, "err", "故障交付审计持久化失败", error);
-        }
-    }
-
     fn count(&mut self, v: Verdict) {
         let today = history::local_day();
         if today != self.stats_day {
@@ -3142,28 +2935,9 @@ impl Machine {
         self.fault_at = None;
     }
 
-    /// 进入故障。已因同一来源同一原因处于故障时只计数（之前每拍重复写日志、重置故障计时）。
-    fn enter_fault(&mut self, source: &'static str, reason: String) {
-        if self.phase == Phase::Fault
-            && self.fault.as_deref() == Some(reason.as_str())
-            && self.fault_source == Some(source)
-        {
-            let now = now_ms();
-            let repeat = self.fault_repeat.get_or_insert_with(|| FaultRepeat {
-                source,
-                reason,
-                count: 0,
-                first: now,
-                last: now,
-            });
-            repeat.count += 1;
-            repeat.last = now;
-            return;
-        }
-        self.flush_fault_repeat();
-        self.close_routing();
-        let production_pending = self.s7.request().is_some();
-        let in_flight = production_pending
+    /// 在途件中断：记 ERR（等工件结束超时 97，其余 98），不回结果，会话放下这一件。
+    async fn interrupt_part(&mut self, source: &'static str, reason: &str) {
+        let in_flight = self.s7.request().is_some()
             && matches!(
                 self.phase,
                 Phase::Validate | Phase::Acquire | Phase::Drain | Phase::Judge
@@ -3190,7 +2964,7 @@ impl Machine {
                 PlcDelivery {
                     state: PlcDeliveryState::Failed,
                     updated_at: now_ms(),
-                    message: Some(reason.clone()),
+                    message: Some(reason.to_owned()),
                 },
             ) {
                 log(&self.app, "err", "中断工件审计持久化失败", error);
@@ -3200,7 +2974,7 @@ impl Machine {
                 &self.app,
                 "err",
                 "在途件中断",
-                format!("SN {sn} 记 ERR 98，需人工处理该件"),
+                format!("SN {sn} 记 ERR {code}，结果未回写 PLC"),
                 Fields::stage("result"),
             );
             let burst = self
@@ -3218,9 +2992,31 @@ impl Machine {
                 mode,
             });
         }
-        if production_pending && fault_fails_delivery(self.phase) && self.result.is_some() {
-            self.fail_delivery(&reason);
+        self.uninspected = None;
+        self.s7.settle().await;
+    }
+
+    /// 通讯未就绪。已因同一来源同一原因处于故障时只计数；在途件按中断记录。
+    async fn enter_fault(&mut self, source: &'static str, reason: String) {
+        if self.phase == Phase::Fault
+            && self.fault.as_deref() == Some(reason.as_str())
+            && self.fault_source == Some(source)
+        {
+            let now = now_ms();
+            let repeat = self.fault_repeat.get_or_insert_with(|| FaultRepeat {
+                source,
+                reason,
+                count: 0,
+                first: now,
+                last: now,
+            });
+            repeat.count += 1;
+            repeat.last = now;
+            return;
         }
+        self.flush_fault_repeat();
+        self.close_routing();
+        self.interrupt_part(source, &reason).await;
         let fields = Fields {
             source: Some(source.into()),
             ..Fields::stage("fault")
@@ -3288,11 +3084,6 @@ fn burst_warnings(
         }
     }
     out
-}
-
-/// 故障时只有已回写结果、仍在等 PLC 确认的工件改记交付失败；已确认、已释放的工件不再改写，交付失败进入故障的工件已在 report 里自行记失败。
-fn fault_fails_delivery(phase: Phase) -> bool {
-    phase == Phase::Report
 }
 
 /// 今日统计只算当前站点的范围：真机只算真机件，离线只算离线件。
@@ -3440,17 +3231,6 @@ pub fn cycle_select_recipe(cycle: State<'_, CycleHost>, recipe_id: String) -> Re
     shared.settings = settings;
     let _ = cycle.tx.send(Input::Refresh);
     Ok(())
-}
-
-#[tauri::command]
-pub fn cycle_reset(app: AppHandle, cycle: State<'_, CycleHost>) {
-    let sent = cycle.tx.send(Input::Reset).map_err(|e| e.to_string());
-    log_op(
-        &app,
-        &applog::codes::OP_RESET,
-        json!({"phase": format!("{:?}", cycle.phase())}),
-        &sent,
-    );
 }
 
 /// 运行日志 op.*：操作员命令的参数摘要与结果。

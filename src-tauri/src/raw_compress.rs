@@ -1,7 +1,7 @@
 //! 历史件原图的空闲压缩（docs/decisions/image-storage.md IS-2）：件收尾、录制完整并入库后，系统连续空闲时把录制目录里的
 //! `X.pgm` 逐帧压成同名的 `X.gsr`（`image_file::gsr`）。录制线程仍只写未压缩 PGM，读图入口透明还原。
 //!
-//! - 空闲：没有在途工件与未结 PLC 事务、录制队列为空、没有待入库的录制、没有登记的长任务（[`Activity::busy`]：导入导出、
+//! - 空闲：没有在途工件、录制队列为空、没有待入库的录制、没有登记的长任务（[`Activity::busy`]：导入导出、
 //!   清理、复测、示教测量等），且最后一次业务活动（含读原图）之后连续满 [`QUIET`]。每帧之前重新检查。
 //! - 压缩线程不持有任何锁：每帧开始时置“正在处理一帧”的标志再看有没有业务，业务登记时先计数再等这个标志清掉（最多一帧的时间），
 //!   所以一帧的替换不会与登记了的清理、导出同时进行。
@@ -434,20 +434,20 @@ fn megabytes(bytes: u64) -> f64 {
     bytes as f64 / 1_048_576.0
 }
 
-/// 每帧之前看的业务状态（只读原子量，不取锁）：有在途工件或未结 PLC 事务、录制队列没写完。
+/// 每帧之前看的业务状态（只读原子量，不取锁）：有在途工件、录制队列没写完。
 fn in_flight(app: &AppHandle) -> bool {
     app.try_state::<crate::cycle::CycleHost>()
         .is_none_or(|cycle| cycle.busy() || cycle.in_flight() || cycle.recorders.queued() > 0)
 }
 
-/// 压缩线程以外的业务状态：有在途工件或未结 PLC 事务、录制队列没写完、有待入库的录制或追溯、有登记的任务。
+/// 压缩线程以外的业务状态：有在途工件、录制队列没写完、有待入库的录制或追溯、有登记的任务。
 /// 每秒轮询与每件开始前看（要取追溯与任务登记的锁，只读一下就放）；逐帧只看 [`in_flight`] 与 [`Activity`]。
 fn business(app: &AppHandle) -> Option<&'static str> {
     let Some(cycle) = app.try_state::<crate::cycle::CycleHost>() else {
         return Some("检测服务未就绪");
     };
     if cycle.busy() || cycle.in_flight() {
-        return Some("有在途工件或未结 PLC 事务");
+        return Some("有在途工件");
     }
     if cycle.recorders.queued() > 0 {
         return Some("录制队列未写完");

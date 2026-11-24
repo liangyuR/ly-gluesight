@@ -868,8 +868,7 @@ impl Store {
              CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
              CREATE INDEX IF NOT EXISTS parts_recording_directory ON parts(recording_directory);
              CREATE UNIQUE INDEX IF NOT EXISTS parts_cycle ON parts(cycle_id) WHERE cycle_id IS NOT NULL;
-             CREATE INDEX IF NOT EXISTS parts_unresolved_delivery ON parts(cycle_id)
-                 WHERE cycle_id IS NOT NULL AND delivery_state IN ('pending','submitted','failed');
+             DROP INDEX IF EXISTS parts_unresolved_delivery;
              CREATE TABLE IF NOT EXISTS part_points (
                  part_id INTEGER PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
                  format INTEGER NOT NULL,
@@ -1206,34 +1205,6 @@ impl Store {
             params![cycle_id, enum_name(delivery.state), delivery.updated_at, delivery.message],
         )
         .map_err(db_err)?;
-        tx.commit().map_err(db_err)?;
-        Ok(true)
-    }
-
-    pub fn unresolved_delivery_cycles(&self) -> Result<BTreeSet<String>, String> {
-        let conn = self.conn.lock().unwrap();
-        let mut statement = conn.prepare("SELECT cycle_id FROM parts WHERE cycle_id IS NOT NULL AND delivery_state IN ('pending','submitted','failed')").map_err(db_err)?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0)).map_err(db_err)?;
-        rows.collect::<Result<BTreeSet<_>, _>>().map_err(db_err)
-    }
-
-    pub fn recover_acknowledgement(&self, cycle_id: &str, sn: &str, request_seq: u32, acknowledged_at: i64) -> Result<bool, String> {
-        if cycle_id.len() != 32 || !cycle_id.bytes().all(|b| b.is_ascii_hexdigit()) || request_seq == 0 || acknowledged_at < 0 {
-            return Err("PLC 确认收据的身份无效".into());
-        }
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
-        let previous = tx.query_row(
-            "SELECT sn,delivery_state,delivery_updated_at,delivery_message FROM parts WHERE cycle_id=?1",
-            [cycle_id], |r| Ok((r.get::<_, String>(0)?, delivery_row(r, 1)?)),
-        ).optional().map_err(db_err)?;
-        let Some((recorded_sn, previous)) = previous else { return Err("PLC 已确认，但对应 cycleId 的检测记录不存在；保留握手审计供核查".into()) };
-        if recorded_sn != sn { return Err("PLC 确认收据与检测记录的 SN 不一致".into()); }
-        if previous.state == PlcDeliveryState::NotRequired { return Err("检测记录无需 PLC 交付，不能追加确认收据".into()); }
-        if previous.state == PlcDeliveryState::Acknowledged { return Ok(false); }
-        tx.execute("UPDATE parts SET delivery_state='acknowledged',delivery_updated_at=?2,delivery_message=?3 WHERE cycle_id=?1",
-            params![cycle_id, previous.updated_at.max(acknowledged_at), format!("从持久握手记录恢复 PLC 确认：请求序号 {request_seq}，收据时间 {acknowledged_at}")])
-            .map_err(db_err)?;
         tx.commit().map_err(db_err)?;
         Ok(true)
     }

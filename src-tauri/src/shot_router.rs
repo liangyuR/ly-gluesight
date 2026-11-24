@@ -131,7 +131,7 @@ impl Ledgers {
         }
     }
 
-    /// 故障复位后不再用上一件推算的下限，只按见到的计数接件（复位时线上没有在途的触发）。
+    /// 通讯重新就绪后不再用上一件推算的下限，只按见到的计数接件。
     pub fn clear_floors(&mut self) {
         for l in self.cams.values_mut() {
             l.frame_floor = None;

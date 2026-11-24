@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Card, EmptyState, Heading, StatusBadge, Text, Tooltip, type StatusBadgeTone } from "qing-steel";
-import { codeName, handshakePhaseLabels, handshakeWaiting, heartbeatStaleMs, pcModeNames, pcStateNames, plcReasonNames, plcStateNames, faultCodeLabel, resultCodeLabel } from "../handshake";
+import { codeName, handshakePhaseLabels, handshakeWaiting, heartbeatStaleMs, pcModeNames, protocolVersion, resultCodeLabel } from "../handshake";
 import { formatTs } from "../time";
 import type { PlcHandshakeState, PlcValue, PointValue } from "../types";
 
@@ -15,11 +15,10 @@ interface HandshakeMonitorProps {
 
 type LampTone = "off" | "ok" | "pc" | "fault" | "unbound";
 
-const phaseTones: Partial<Record<PlcHandshakeState["phase"], StatusBadgeTone>> = { fault: "fault", resetRequired: "warn", idle: "neutral" };
+const phaseTones: Partial<Record<PlcHandshakeState["phase"], StatusBadgeTone>> = { notReady: "fault", idle: "neutral" };
 const waitingSummary: Record<PlcHandshakeState["phase"], string> = {
-  resetRequired: "完成软件复位", idle: "等待工件到达", validating: "PC 接件登记",
-  acquiring: "机械臂采集中，等待工件结束", draining: "PC 收尾并写结果", awaitAck: "等待 PLC 确认结果",
-  releasing: "等待 PLC 回空闲", fault: "处置现场后复位",
+  notReady: "恢复后自动就绪", idle: "等待工件到达", validating: "PC 接件登记",
+  acquiring: "采集中，等待工件结束", draining: "PC 收尾并写结果",
 };
 
 function useNow(intervalMs: number) {
@@ -109,55 +108,55 @@ function Registers({ side, fields }: { side: "PLC" | "PC"; fields: Field[] }) {
 export default function HandshakeMonitor({ handshake, connected, tagValue }: HandshakeMonitorProps) {
   const title = <Heading level={3}>握手监视</Heading>;
   if (!handshake) return <Card role="region" aria-label="握手监视" title={title}>
-    <EmptyState title="没有 S7 握手会话" description="使用「重置 S7 通讯配置」生成标准点表，保存配置并连接 PLC 后，这里显示双方状态字和当前阶段" />
+    <EmptyState title="没有 S7 生产会话" description="使用「重置 S7 通讯配置」生成标准点表，保存配置并连接 PLC 后，这里显示当前件、最近结果和当前阶段" />
   </Card>;
 
   const r = (tag: string) => read(tagValue, connected, tag);
-  const retained = !connected && (handshake.phase === "fault" || handshake.phase === "resetRequired");
-  const plcState = num(r("plcState"));
-  const plcReason = num(r("plcReason"));
-  const pcState = num(r("pcState"));
+  const notReady = handshake.phase === "notReady";
+  const inspecting = r("inspecting");
+  const partSeq = num(r("partSeq"));
   const pcMode = num(r("pcMode"));
+  const resultSeq = num(r("resultSeq"));
   const resultCode = num(r("resultCode"));
   const faultCode = num(r("faultCode"));
-  const requestSeq = connected ? handshake.requestSeq ?? r("requestSeq") : null;
-  const seqEcho = r("seqEcho");
   const sn = r("sn");
   const snEcho = r("snEcho");
-  const echoing = pcState === 30;
-  const resultText = pcState === 90 ? `PC 故障 ${show(faultCode)}`
-    : pcState !== 30 ? "—"
-    : resultCode === 0 && pcMode === 1 ? "无结论（维护）"
+  const hasResult = !!resultSeq;
+  const matched = hasResult && resultSeq === partSeq;
+  const verdict = resultCode === 0 ? "无结论（维护）"
     : resultCode === 1 ? "OK" : resultCode === 2 ? "合格（需关注）"
     : resultCode !== null && [11, 12, 13, 14].includes(resultCode) ? "NG"
-    : resultCode === 90 ? "检测异常" : resultCode === null ? "—" : "未知结果";
-  const stateText = (names: Record<number, string>, value: number | null) => value === null ? "—" : codeName(names, value);
+    : resultCode === 90 ? "检测错误" : resultCode === null ? "—" : "未知结果";
+  const resultText = !hasResult ? "—" : matched ? verdict : `${verdict}（非本件）`;
   const raw = (value: unknown) => <span>当前值：{show(value)}</span>;
+  const version = (tag: string): Field => {
+    const value = num(r(tag));
+    return { label: "协议版本", tag, value: show(value), details: <span>应为 {protocolVersion}</span>, violation: value !== null && value !== protocolVersion };
+  };
 
   const plcFields: Field[] = [
-    { label: "状态", tag: "plcState", value: stateText(plcStateNames, plcState), details: raw(plcState) },
-    { label: "原因", tag: "plcReason", value: stateText(plcReasonNames, plcReason), details: raw(plcReason), violation: !!plcReason },
-    { label: "请求序号", tag: "requestSeq", value: show(requestSeq) },
+    version("plcVersion"),
+    { label: "心跳", tag: "plcHeartbeat", value: show(r("plcHeartbeat")) },
+    { label: "在检", tag: "inspecting", value: inspecting === null ? "—" : String(Number(inspecting)), details: <span>工件到达置 1，工件结束置 0</span> },
+    { label: "件序号", tag: "partSeq", value: show(partSeq), details: <span>每到一件加 1；0 表示还没有件</span> },
     { label: "型号", tag: "productCode", value: show(r("productCode")) },
     { label: "SN", tag: "sn", value: show(sn) },
   ];
   const pcFields: Field[] = [
-    { label: "状态", tag: "pcState", value: stateText(pcStateNames, pcState), details: raw(pcState) },
-    { label: "模式", tag: "pcMode", value: stateText(pcModeNames, pcMode), details: <>{raw(pcMode)}<span>维护模式下结果码为 0，PLC 按未检放行</span></> },
-    { label: "回显序号", tag: "seqEcho", value: show(seqEcho), violation: echoing && seqEcho !== null && requestSeq !== null && seqEcho !== requestSeq },
+    version("pcVersion"),
+    { label: "心跳", tag: "pcHeartbeat", value: show(r("pcHeartbeat")) },
+    { label: "模式", tag: "pcMode", value: pcMode === null ? "—" : codeName(pcModeNames, pcMode), details: <>{raw(pcMode)}<span>维护模式下结果码为 0，PLC 按未检放行</span></> },
+    { label: "结果件序号", tag: "resultSeq", value: show(resultSeq), details: <span>等于 PLC 件序号时是本件结果；0 表示没有结果</span>, violation: matched && !!inspecting },
     { label: "结果", tag: "resultCode / faultCode", value: resultText, details: <>
       <span>结果码 resultCode：{show(resultCode)}</span><span>异常码 faultCode：{show(faultCode)}</span>
-      {pcState === 30 && resultCode !== null && <span>{resultCodeLabel(resultCode, faultCode)}</span>}
-      {pcState === 90 && faultCode !== null && <span>{faultCodeLabel(faultCode)}</span>}
+      {hasResult && resultCode !== null && <span>{resultCodeLabel(resultCode, faultCode)}</span>}
     </> },
-    { label: "回显 SN", tag: "snEcho", value: show(snEcho), violation: pcState === 30 && snEcho !== null && sn !== null && snEcho !== sn },
+    { label: "结果 SN", tag: "snEcho", value: show(snEcho), violation: matched && snEcho !== null && sn !== null && snEcho !== sn },
   ];
 
-  const actions = connected || retained ? <div className="plc-monitor-head">
+  const actions = connected || notReady ? <div className="plc-monitor-head">
     <Tooltip content={handshake.message || `后端阶段：${handshake.phase}`}>
-      <StatusBadge tone={retained ? "fault" : phaseTones[handshake.phase] ?? "info"} tabIndex={0}>
-        {retained ? "重连后需复位" : handshakePhaseLabels[handshake.phase]}
-      </StatusBadge>
+      <StatusBadge tone={phaseTones[handshake.phase] ?? "info"} tabIndex={0}>{handshakePhaseLabels[handshake.phase]}</StatusBadge>
     </Tooltip>
     {connected && <Tooltip content={handshakeWaiting(handshake)}>
       <Text variant="label" muted className="plc-monitor-meta" tabIndex={0}>{waitingSummary[handshake.phase]}</Text>

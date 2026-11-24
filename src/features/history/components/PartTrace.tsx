@@ -7,7 +7,7 @@ import type { PartDetail } from "../types";
 import "../../cycle/components/burst.css";
 import { MeasurementEvidenceSummary, measurementIssue } from "../../plan/measurementEvidence";
 
-const deliveryLabel = { notRequired: "无需交付", pending: "等待提交", submitted: "已提交，等待 PLC 确认", acknowledged: "PLC 已确认", failed: "交付失败" };
+const deliveryLabel = { notRequired: "无需交付", pending: "等待提交", submitted: "已回写 PLC", acknowledged: "PLC 已确认", failed: "交付失败" };
 const recordingLabel = { pending: "正在落盘", off: "录制关闭", notRetained: "本件按保留策略不存图", complete: "完整落盘", incomplete: "原图不完整", failed: "录制失败" };
 
 const frameStateText: Record<FrameState, string> = { measured: "已测", missing: "缺帧", error: "测量失败", unmeasured: "未测", outOfCorridor: "出走廊", notInspected: "本段不检测" };

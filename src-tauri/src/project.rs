@@ -268,7 +268,7 @@ pub fn open_target(data: &Path, id: &str) -> Result<ProjectMeta, String> {
     read_meta(&dir(data, id)).map_err(|error| format!("项目 {id} 不可用：{error}"))
 }
 
-/// 当前项目此刻能否安全离开（切换或导出）：没有在途件与未结事务、录制与追溯已写完。
+/// 当前项目此刻能否安全离开（切换或导出）：没有在途件、录制与追溯已写完。
 pub fn switch_state(app: &AppHandle) -> Result<ProjectSwitch, String> {
     use crate::cycle::{CycleHost, Phase};
     let cycle = app.state::<CycleHost>();
@@ -332,7 +332,7 @@ mod tests;
 
 /// 切换项目前要满足的条件：比站点模式切换多一条，件记录与追溯必须已写进本项目。
 pub struct ProjectSwitch {
-    /// 在途工件或未结 S7 事务给出的阻止原因
+    /// 在途工件给出的阻止原因
     pub block: Option<String>,
     pub busy: bool,
     pub audit_pending: bool,
@@ -343,7 +343,7 @@ pub fn check_project_switch(pre: &ProjectSwitch) -> Result<(), String> {
         return Err(reason.clone());
     }
     if pre.busy {
-        return Err("检测仍有在途事务，完成握手或复位故障后再切换项目".into());
+        return Err("检测仍有在途工件，工件结束后再切换项目".into());
     }
     if pre.audit_pending {
         return Err("上一件的录制或追溯还没写完，稍后再切换项目".into());

@@ -54,12 +54,11 @@ pub struct Timeline {
     pub notes: Vec<String>,
 }
 
-const STAGES: [(&str, &str, &str, &str); 5] = [
+const STAGES: [(&str, &str, &str, &str); 4] = [
     ("intake", "接件登记", "partStart", "admitted"),
     ("acquire", "运动与采集", "admitted", "partEnd"),
     ("drain", "收尾与判定", "partEnd", "result"),
-    ("ack", "等待 PLC 确认", "result", "released"),
-    ("total", "整件", "partStart", "released"),
+    ("total", "整件", "partStart", "result"),
 ];
 
 /// 各阶段耗时取相邻关键事件的首次出现时间；缺任一端点的阶段记为未知，不拿别的事件顶替。

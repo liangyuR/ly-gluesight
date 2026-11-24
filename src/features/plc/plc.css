@@ -99,7 +99,7 @@ select.input { padding-right: 6px; }
 .plc-signal-details { display: grid; gap: 4px; }
 .plc-values-row { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 .plc-values-side { flex: none; width: 32px; font: var(--text-label); color: var(--on-surface-variant); }
-/* 固定列宽：状态字频繁跳变时文字长短不改变换行和卡片高度 */
+/* 固定列宽：值频繁跳变时文字长短不改变换行和卡片高度 */
 .plc-values { display: grid; grid-template-columns: repeat(auto-fill, minmax(13em, 1fr)); flex: 1; gap: 6px 24px; margin: 0; min-width: 0; }
 .plc-values > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; border-radius: var(--r-xs); }
 .plc-values dt { font: var(--text-label); color: var(--on-surface-variant); }

@@ -4,7 +4,7 @@ import { subscribe } from "../plc";
 import type { CycleSettings, LogLine, Maintenance, Readiness, Recipe, RecipeDoc, RecipeSummary, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["cycle_save_settings","cycle_set_maintenance","cycle_select_recipe","cycle_reset"].includes(cmd))
+  if (!isTauri() && ["cycle_save_settings","cycle_set_maintenance","cycle_select_recipe"].includes(cmd))
     return Promise.reject(new Error("生产配置与检测操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -13,7 +13,7 @@ function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallbac
 const defaultSettings: CycleSettings = {
   productSource: "plc",
   manualRecipeId: null,
-  timeouts: { motionMs: 1_200_000, drainMs: 1000, procMs: 3000, ackMs: 5000, gateGuardMs: 80 },
+  timeouts: { motionMs: 1_200_000, drainMs: 1000, procMs: 3000, gateGuardMs: 80 },
   historyDays: 180,
   record: "all",
   recordKeep: null,
@@ -31,7 +31,6 @@ export const cycleApi = {
   /** 开启须填原因；从下一件起生效 */
   setMaintenance: (enabled: boolean, reason: string) => call<void>("cycle_set_maintenance", { enabled, reason }, () => undefined),
   selectRecipe: (recipeId: string) => call<void>("cycle_select_recipe", { recipeId }, () => undefined),
-  reset: () => call<void>("cycle_reset", undefined, () => undefined),
   readiness: () => call<Readiness | null>("cycle_readiness", undefined, () => null),
 };
 

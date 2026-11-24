@@ -70,7 +70,7 @@ fn recipe_delete_unavailable_inner(
         .try_lock()
         .map_err(|_| "正在接件或处理其他配置操作，请稍后重试配方操作")?;
     if cycle.busy() {
-        return Err("检测结束或故障复位后才能删除不可用配方".into());
+        return Err("在途工件结束后才能删除不可用配方".into());
     }
     cycle.recipes.delete_unavailable(&file_name)?;
     let _ = cycle.tx.send(Input::Refresh);
@@ -144,7 +144,7 @@ fn recipe_delete_inner(
             .protocol
             == ly_plc::ProtocolKind::S7
     {
-        return Err("S7 在途事务结束或故障复位后才能删除生产配方".into());
+        return Err("在途工件结束后才能删除生产配方".into());
     }
     if cycle.recipe_in_use(&id) {
         return Err("该配方正在检测中，工件结束后再删".into());

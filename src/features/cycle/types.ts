@@ -9,7 +9,7 @@ export type {
   RecipeDocSegmentFields, RecipeSummaryV2, SegmentChecks, SegmentKind, Uninspected,
 } from "../plan/types";
 
-export type Phase = "IDLE" | "VALIDATE" | "ACQUIRE" | "DRAIN" | "JUDGE" | "REPORT" | "RELEASE" | "FAULT";
+export type Phase = "IDLE" | "VALIDATE" | "ACQUIRE" | "DRAIN" | "JUDGE" | "FAULT";
 export type FrameStatus = "waiting" | "measuring" | "done" | "error" | "missing";
 export type Verdict = "OK" | "OK_WITH_EXCURSION" | "NG_POSITION" | "NG_WIDTH" | "NG_ABSOLUTE" | "NG_GAP" | "ERR_INSPECT";
 export type TriggerMode = "fly" | "stop";
@@ -267,7 +267,6 @@ export interface Timeouts {
   motionMs: number;
   drainMs: number;
   procMs: number;
-  ackMs: number;
   /** 看到 Line0 门控关闭后再等多久收尾（D-SB-54）；0 = 不提前，固定等满 drainMs */
   gateGuardMs: number;
 }
@@ -298,7 +297,7 @@ export interface ReadinessItem {
   title: string;
   state: ReadinessState;
   detail: string;
-  /** 操作前提（如软件复位需要满足的条件） */
+  /** 操作前提 */
   hint: string | null;
   target: ReadinessTarget | null;
 }

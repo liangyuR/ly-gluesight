@@ -141,30 +141,20 @@ pub const PLC_ENGINE_ERROR_SUMMARY: Event = Event {
     level: Level::Error,
 };
 
-pub const S7_FAULT_OUTPUT: Event = Event {
-    code: "s7.fault_output",
-    ev: "S7 故障输出",
+pub const S7_READY: Event = Event {
+    code: "s7.ready",
+    ev: "S7 通讯就绪",
+    level: Level::Info,
+};
+pub const S7_PART_SKIPPED: Event = Event {
+    code: "s7.part.skipped",
+    ev: "S7 未接件",
     level: Level::Warn,
 };
-pub const S7_RESET_REQUEST: Event = Event {
-    code: "s7.reset.request",
-    ev: "S7 复位请求",
-    level: Level::Info,
-};
-pub const S7_RESET_DONE: Event = Event {
-    code: "s7.reset.done",
-    ev: "S7 复位完成",
-    level: Level::Info,
-};
-pub const S7_ACK: Event = Event {
-    code: "s7.ack",
-    ev: "S7 结果确认",
-    level: Level::Info,
-};
-pub const S7_RECONNECT_FORCED: Event = Event {
-    code: "s7.reconnect.forced",
-    ev: "S7 主动断开",
-    level: Level::Error,
+pub const S7_RESULT_CLEARED: Event = Event {
+    code: "s7.result.cleared",
+    ev: "S7 清除旧结果",
+    level: Level::Warn,
 };
 pub const FAULT_ENTER: Event = Event {
     code: "fault.enter",
@@ -179,11 +169,6 @@ pub const FAULT_REPEAT: Event = Event {
 pub const FAULT_CLEARED: Event = Event {
     code: "fault.cleared",
     ev: "故障解除",
-    level: Level::Info,
-};
-pub const OP_RESET: Event = Event {
-    code: "op.reset",
-    ev: "操作：复位",
     level: Level::Info,
 };
 pub const OP_CAPTURE_IMPORT: Event = Event {

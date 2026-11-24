@@ -1,6 +1,5 @@
 use std::io::Write;
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ly_plc::{now_ms, LinkState, LogContext, PlcEngine};
@@ -8,27 +7,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::applog::{self, codes, Fields};
-use crate::handshake::{self, Contract, HeartbeatWatch, Request, ResultEnvelope, Snapshot, WriteOp};
-use crate::inspection::{state, tag};
+use crate::handshake::{
+    self, Contract, HeartbeatWatch, Request, ResultEnvelope, Snapshot, WriteOp,
+};
+use crate::inspection::tag;
 use crate::plc_plan::PlcPlan;
 use crate::settings::RecordMode;
 use crate::store::RecordSource;
 
-mod recovery;
-pub use recovery::AckRecovery;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum SessionPhase { ResetRequired, Idle, Validating, Acquiring, Draining, AwaitAck, Releasing, Fault }
-
-/// 事务来自哪台 PLC：真机，或离线会话的进程内虚拟 PLC。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Origin { Real, Offline }
-
-/// 未结事务对切换站点模式的影响：离线来源的事务切换后由新连上的 PLC 复位，真机或来源不明的事务必须先处理。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PendingKind { None, Offline, Blocking }
+pub enum SessionPhase {
+    NotReady,
+    Idle,
+    Validating,
+    Acquiring,
+    Draining,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,19 +32,13 @@ pub struct PartSite {
     pub record: RecordMode,
 }
 
+/// 在途件：只用于进程中途退出后，下次启动补一条中断记录。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Pending {
-    /// 旧版本日志没有此字段：来源不明按真机事务处理，只能在真机 PLC 上复位（D-0，不推断来源）。
-    #[serde(default)]
-    origin: Option<Origin>,
     request: Request,
-    result: Option<ResultEnvelope>,
-    phase: SessionPhase,
     #[serde(default)]
     cycle_id: Option<String>,
-    #[serde(default)]
-    acknowledged: bool,
     #[serde(default)]
     started_at: i64,
     #[serde(default)]
@@ -59,51 +48,20 @@ struct Pending {
     mode: u16,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Journal {
     version: u8,
-    last_request_seq: u32,
     pending: Option<Pending>,
-    last_resolution: Option<String>,
 }
+
+const JOURNAL_VERSION: u8 = 2;
 
 fn valid_cycle_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn validate_pending(pending: &Pending, last_request_seq: u32) -> Result<(), String> {
-    pending.request.validate()?;
-    if pending.cycle_id.as_deref().is_some_and(|id| !valid_cycle_id(id)) {
-        return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into());
-    }
-    if pending.request.request_seq != last_request_seq
-        || matches!(
-            pending.phase,
-            SessionPhase::Idle | SessionPhase::ResetRequired
-        )
-        || (matches!(
-            pending.phase,
-            SessionPhase::AwaitAck | SessionPhase::Releasing
-        ) && pending.result.is_none())
-        || (pending.acknowledged
-            && (pending.result.is_none()
-                || !matches!(
-                    pending.phase,
-                    SessionPhase::AwaitAck | SessionPhase::Releasing | SessionPhase::Fault
-                )))
-        || pending.result.as_ref().is_some_and(|result| {
-            result.request_seq != pending.request.request_seq
-                || result.sn != pending.request.sn
-                || !result_allowed(pending.mode, result.result_code, result.fault_code)
-        })
-    {
-        return Err("握手事务日志的身份或阶段不一致，禁止自动恢复".into());
-    }
-    Ok(())
-}
-
-/// 协议 8 第八节：维护模式（pcMode=1）结果码固定 0；正常模式不得为 0，除 90 外 faultCode 为 0。
+/// 第六节结果码：维护模式（pcMode=1）固定 0；正常模式不得为 0，除 90 外 faultCode 为 0。
 fn result_allowed(mode: u16, result_code: u16, fault_code: u16) -> bool {
     match mode {
         MAINTENANCE => result_code == 0 && fault_code == 0,
@@ -114,9 +72,8 @@ fn result_allowed(mode: u16, result_code: u16, fault_code: u16) -> bool {
     }
 }
 
-/// 握手日志里在途事务的协议版本、序号与 SN；与当前协议一致或没有在途事务时为 None。
-fn foreign_request(text: &str) -> Option<(u64, u64, String)> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+/// 握手日志里在途件的协议版本、序号与 SN；与当前协议一致或没有在途件时为 None。
+fn foreign_request(value: &serde_json::Value) -> Option<(u64, u64, String)> {
     let request = value.get("pending")?.get("request")?;
     let version = request.get("protocolVersion")?.as_u64()?;
     (version != u64::from(handshake::PROTOCOL_VERSION)).then(|| {
@@ -135,61 +92,16 @@ fn foreign_request(text: &str) -> Option<(u64, u64, String)> {
     })
 }
 
-/// 握手日志里的在途事务来自别的协议版本（升级前的协议 6）：按 D-0 不迁移、不续做，原文件改名为
-/// `<名>.v{n}.bak` 保留证据，会话以空事务启动；不这样做的话旧请求过不了当前协议的校验，复位会一直被挡住。
-fn archive_foreign_protocol(
-    path: &std::path::Path,
-    (version, seq, sn): &(u64, u64, String),
-) -> String {
-    let backup = path.with_extension(format!("v{version}.bak"));
-    let head = format!(
-        "握手日志中的在途事务来自协议 {version}（requestSeq={seq} SN={sn}），不能在协议 {} 下续做",
-        handshake::PROTOCOL_VERSION
-    );
-    match std::fs::rename(path, &backup) {
-        Ok(()) => format!("{head}，已归档为 {}，以空日志启动", file_name(&backup)),
-        Err(error) => format!(
-            "{head}，归档为 {} 失败（{error}），以空日志启动，原文件将被覆盖",
-            file_name(&backup)
-        ),
-    }
-}
-
-fn file_name(path: &std::path::Path) -> String {
+fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
     )
 }
 
-/// 读出已提交的握手日志；不存在时为 None。只读，不处理未提交的临时文件。
-fn read_journal(path: &std::path::Path) -> Result<Option<Journal>, String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("S7 握手日志无法读取：{error}")),
-    };
-    let journal: Journal = serde_json::from_str(text.trim_start_matches('\u{feff}'))
-        .map_err(|error| format!("S7 握手日志损坏：{error}"))?;
-    if journal.version != 1 {
-        return Err(format!("不支持的 S7 握手日志版本 {}", journal.version));
-    }
-    if let Some(pending) = &journal.pending {
-        validate_pending(pending, journal.last_request_seq)?;
-    }
-    Ok(Some(journal))
-}
-
-/// 把不能用的日志文件 `from` 改名到握手日志旁（`<名>.<label>-<ms>.<ext>`）保留证据，返回运行日志提示。
-fn set_aside(
-    journal: &std::path::Path,
-    from: &std::path::Path,
-    label: &str,
-    ext: &str,
-    reason: &str,
-    then: &str,
-) -> String {
-    let backup = journal.with_extension(format!("{label}-{}.{ext}", now_ms()));
+/// 把不能用的日志文件 `from` 改名到握手日志旁（`<名>.<suffix>`）保留证据，返回运行日志提示。
+fn set_aside(journal: &Path, from: &Path, suffix: &str, reason: &str, then: &str) -> String {
+    let backup = journal.with_extension(suffix);
     match std::fs::rename(from, &backup) {
         Ok(()) => format!("{reason}，已移至 {}，{then}", file_name(&backup)),
         Err(error) => format!(
@@ -199,112 +111,121 @@ fn set_aside(
     }
 }
 
+/// 读出握手日志里的在途件。别的协议版本留下的在途件（D-0 不迁移、不续做）与损坏的日志改名保留，返回提示；
+/// 上一版格式里没有在途件的日志不带可用内容，按空日志处理。
+fn read_pending(path: &Path) -> Result<Option<Pending>, String> {
+    let aside =
+        |suffix: String, reason: String| set_aside(path, path, &suffix, &reason, "以空日志启动");
+    let corrupt = |error: String| {
+        aside(
+            format!("corrupt-{}.json", now_ms()),
+            format!("S7 握手日志不可用（{error}）"),
+        )
+    };
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(corrupt(error.to_string())),
+    };
+    let value: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| corrupt(error.to_string()))?;
+    if let Some((version, seq, sn)) = foreign_request(&value) {
+        return Err(aside(
+            format!("v{version}.bak"),
+            format!(
+                "握手日志中的在途件来自协议 {version}（序号 {seq} SN={sn}），不能在协议 {} 下续做",
+                handshake::PROTOCOL_VERSION
+            ),
+        ));
+    }
+    match value.get("version").and_then(serde_json::Value::as_u64) {
+        Some(1) => Ok(None),
+        Some(version) if version == u64::from(JOURNAL_VERSION) => {
+            let journal: Journal =
+                serde_json::from_value(value).map_err(|error| corrupt(error.to_string()))?;
+            if let Some(pending) = &journal.pending {
+                pending.request.validate().map_err(&corrupt)?;
+                if pending
+                    .cycle_id
+                    .as_deref()
+                    .is_some_and(|id| !valid_cycle_id(id))
+                {
+                    return Err(corrupt("cycleId 必须是 32 位十六进制持久身份".into()));
+                }
+            }
+            Ok(journal.pending)
+        }
+        other => Err(corrupt(format!("不支持的版本 {other:?}"))),
+    }
+}
+
+fn write_journal(path: &Path, text: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let temporary = path.with_extension("pending.tmp");
+    let mut file = std::fs::File::create(&temporary).map_err(|e| e.to_string())?;
+    file.write_all(text)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| e.to_string())?;
+    drop(file);
+    std::fs::rename(&temporary, path).map_err(|e| e.to_string())
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionView {
     pub phase: SessionPhase,
+    /// 在途件的件序号（partSeq）
     pub request_seq: Option<u32>,
-    pub result_seq: Option<u32>,
     pub message: Option<String>,
     /// 会话已核对的 PLC 连接（连接时间戳）
     pub connection: Option<i64>,
-    /// 当前复位前置检查的首个阻塞原因；通过检查仍需显式发起复位。
-    pub reset_blocked_reason: Option<String>,
 }
 
-/// 自动复位退避：连续这么多次后每次至少间隔 [`AUTO_RESET_BACKOFF`]，稳定运行满 [`AUTO_RESET_SETTLE`] 清零。
-const AUTO_RESET_BURST: u32 = 3;
-const AUTO_RESET_BACKOFF: Duration = Duration::from_secs(30);
-const AUTO_RESET_SETTLE: Duration = Duration::from_secs(60);
-/// 空闲提示（等待 PLC 释放输入）的前缀：不是故障，不需要复位，现状恢复后自动消失。
+/// 空闲提示的前缀：不是故障，现状恢复后自动消失。
 pub const NOTICE: &str = "S7 空闲：";
-/// 空闲时视觉输出被外部改写，60 s 内自动重写超过 2 次就判故障（有写入方在持续覆盖 PC 区）。
-const RESTORE_WINDOW: Duration = Duration::from_secs(60);
-const RESTORE_LIMIT: usize = 2;
-/// PLC 回空闲后等待提示再保留的时长：状态字来回跳变时提示不反复出现、消失。
-const NOTICE_HOLD: Duration = Duration::from_secs(2);
-/// pcMode：维护模式下 PLC 按未检放行。
+/// pcMode：维护模式下结果码固定 0，PLC 按未检放行。
 const MAINTENANCE: u16 = 1;
-/// 软件发起复位（pcState=99）后等待 PLC 回空闲的时限，超时 PC 回未就绪。
-const RESET_RESPONSE: Duration = Duration::from_secs(10);
-/// PC 主动断开后多久自动重连：PLC 按 3 s 未翻转判 PC 心跳失活，再留一个 PC 心跳周期（500 ms）余量，保证 PLC 先判失活停线。
-const RECONNECT_AFTER_STOP: Duration = Duration::from_millis(3500);
-const RECONNECT_MANUAL: &str = "自动重连后仍无法确认撤下 pcState，已断开通讯并停止自动重连；检查 PLC 能否写入（写保护、PC 区被覆盖）后手动连接，连上后自动复位";
-
-/// PC 为停止心跳主动断开通讯后的去向
-#[derive(Clone, Copy)]
-enum AfterStop {
-    Reconnect(Instant),
-    /// 自动重连过一次仍确认不了置故障：不再自动重连，等人工连接
-    Manual,
-}
-
-#[derive(Default)]
-struct Reconnect {
-    /// 断开后的连接时间戳与去向；期间被人工重连过或改了配置就作废
-    stopped: Option<(i64, AfterStop)>,
-    /// 已自动重连，还没在新连接上确认撤下 pcState 或置故障
-    spent: bool,
-}
+/// PC 输出被外部改写后重写的日志间隔：有写入方持续覆盖 PC 区时不每拍写一条。
+const REPAIR_LOG_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 pub enum SessionEvent {
-    None, Ready, Start(Request),
-    /// 工件结束（plcState=20，已核对请求身份）
+    None,
+    /// 通讯就绪（PLC 已连接、协议版本一致、PLC 心跳在变化）
+    Ready,
+    /// 新件到达
+    Start(Request),
+    /// 工件结束（inspecting 回 0）
     End(Instant),
-    Fault(String),
-    /// PLC 已锁存结果，PC 已回就绪
-    Released,
-    /// 空闲时视觉输出被改写，已重写空闲输出并继续（附原因）
-    Restored(String),
+    /// 在途件被换件：没等到工件结束，或结果还没出下一件已到；节拍记中断后调用 [`PlcSession::settle`]
+    Lost(String),
 }
 
 pub struct PlcSession {
     path: PathBuf,
-    journal: Journal,
-    /// 启动时归档旧协议在途事务、移开损坏日志或未提交临时文件的提示
+    pending: Option<Pending>,
+    /// 启动时归档旧协议在途件、移开损坏日志或未提交临时文件的提示
     archived: Option<String>,
     phase: SessionPhase,
     contract: Option<Contract>,
     config_key: String,
     connection: Option<i64>,
-    /// 当前连接的是真机还是离线虚拟 PLC：新事务按此记录来源
-    origin: Origin,
-    /// 软件发起复位已写 pcState=99 的时刻，等待 PLC 回空闲
-    reset_exchange: Option<Instant>,
-    heartbeat: Mutex<HeartbeatWatch>,
-    fault_written: bool,
-    fault_attempted: Option<Instant>,
-    /// 本次进入复位或故障的原因类别，写故障输出时记入运行日志
-    fault_cause: &'static str,
+    heartbeat: HeartbeatWatch,
     message: Option<String>,
-    reset_blocked_reason: Option<String>,
-    /// 操作员已请求软件复位、尚未发出 pcState=99 或完成：在途件先按故障中断，追溯落盘后接着复位，不必再点一次
-    reset_carry: bool,
-    /// PLC 复位信号最近一次读到的电平及所在连接：同一连接里先 0 后 1 才算上升沿
-    reset_signal: Option<(i64, bool)>,
-    /// 本拍复位请求的来源：operator（在线检测页）、plc_signal（PLC 复位信号）或 auto（自动复位）
-    reset_source: &'static str,
-    /// 自上次稳定运行以来的自动复位次数与最近一次的时刻，用于退避
-    auto_attempts: u32,
-    auto_last: Option<Instant>,
-    /// 会话离开待复位、故障后持续运行的起点；满 [`AUTO_RESET_SETTLE`] 清零自动复位计数
-    healthy_since: Option<Instant>,
-    /// 空闲时外部改写视觉输出后自动重写的时刻
-    restores: Vec<Instant>,
-    /// 空闲时最近一次读到 PLC 不在空闲的时刻
-    plc_waiting_at: Option<Instant>,
-    /// 当前 pcMode，下一件接件时锁存进事务
+    /// PC 不接的在检件序号：已按中断记录、到达时 PC 未就绪或身份不合法的件，等它结束
+    settled: Option<u32>,
+    /// 当前 pcMode，下一件接件时锁存
     mode: u16,
-    /// 最近一次写出空闲输出时的 pcMode：切换维护模式后的重写不算外部改写
+    /// 最近一次写出的 pcMode：切换维护模式后的重写不算外部改写
     mode_written: u16,
-    /// 本侧为停止 PC 心跳主动断开通讯：到点后自动重连一次，重连后仍确认不了置故障就停在断开等人工处理
-    reconnect: Mutex<Reconnect>,
+    repair_logged: Option<Instant>,
 }
 
 impl PlcSession {
-    /// 打开握手日志，任何日志问题都不挡复位：未提交的临时文件、损坏或不受支持的日志改名到旁边保留，
-    /// 会话按已提交的日志或空日志启动，提示经 [`Self::archived`] 记入运行日志。
+    /// 打开握手日志，任何日志问题都不挡通讯：未提交的临时文件、损坏或别的协议版本的日志改名到旁边保留，
+    /// 会话以空日志启动，提示经 [`Self::archived`] 记入运行日志。
     pub fn open(path: PathBuf) -> Self {
         let mut notices = Vec::new();
         let temporary = path.with_extension("pending.tmp");
@@ -312,126 +233,50 @@ impl PlcSession {
             notices.push(set_aside(
                 &path,
                 &temporary,
-                "pending",
-                "tmp",
-                "发现未提交的握手事务文件（上次保存未完成）",
+                &format!("pending-{}.tmp", now_ms()),
+                "发现未提交的握手日志（上次保存未完成）",
                 "按已提交的握手日志启动",
             ));
         }
-        let foreign = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| foreign_request(text.trim_start_matches('\u{feff}')));
-        let journal = match foreign {
-            Some(foreign) => {
-                notices.push(archive_foreign_protocol(&path, &foreign));
-                None
-            }
-            None => read_journal(&path).unwrap_or_else(|error| {
-                notices.push(set_aside(
-                    &path,
-                    &path,
-                    "corrupt",
-                    "json",
-                    &format!("S7 握手日志不可用（{error}）"),
-                    "以空日志启动",
-                ));
-                None
-            }),
-        }
-        .unwrap_or(Journal {
-            version: 1,
-            ..Journal::default()
+        let pending = read_pending(&path).unwrap_or_else(|notice| {
+            notices.push(notice);
+            None
         });
-        let archived = (!notices.is_empty()).then(|| notices.join("；"));
-        let message = archived
-            .clone()
-            .unwrap_or_else(|| "S7 启动后需复位握手".into());
         Self {
             path,
-            journal,
-            archived,
-            phase: SessionPhase::ResetRequired,
+            pending,
+            archived: (!notices.is_empty()).then(|| notices.join("；")),
+            phase: SessionPhase::NotReady,
             contract: None,
             config_key: String::new(),
             connection: None,
-            reset_exchange: None,
-            heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")),
-            origin: Origin::Real,
-            fault_written: false,
-            fault_attempted: None,
-            fault_cause: "startup",
-            message: Some(message),
-            reset_blocked_reason: Some("正在核对复位条件".into()),
-            reset_carry: false,
-            reset_signal: None,
-            reset_source: "operator",
-            auto_attempts: 0,
-            auto_last: None,
-            healthy_since: None,
-            restores: Vec::new(),
-            plc_waiting_at: None,
+            heartbeat: HeartbeatWatch::new(3000).expect("valid heartbeat timeout"),
+            message: Some("PLC 未连接".into()),
+            settled: None,
             mode: 0,
             mode_written: 0,
-            reconnect: Mutex::default(),
+            repair_logged: None,
         }
     }
 
-    /// 启动时归档旧协议在途事务、移开损坏日志或未提交临时文件后的提示；都没有时为空。
-    pub fn archived(&self) -> Option<&str> { self.archived.as_deref() }
+    /// 启动时归档旧协议在途件、移开损坏日志或未提交临时文件后的提示；都没有时为空。
+    pub fn archived(&self) -> Option<&str> {
+        self.archived.as_deref()
+    }
 
-    /// 维护模式开关：从下一件起按 pcMode=1 回写结果码 0；空闲时随即重写 pcMode。
+    /// 维护模式开关：从下一件起结果码回 0；空闲时随即重写 pcMode。
     pub fn set_maintenance(&mut self, on: bool) {
         self.mode = if on { MAINTENANCE } else { 0 };
     }
 
-    /// 自动复位：待复位或故障时，不论原因、有无在途事务，复位前置检查通过且没有进行中的复位就返回 true，
-    /// 由节拍按软件复位发起（在途件按中断记录后清除）。连续 [`AUTO_RESET_BURST`] 次后每次间隔 [`AUTO_RESET_BACKOFF`]，
-    /// 稳定运行满 [`AUTO_RESET_SETTLE`] 后清零计数。
-    pub fn auto_reset(&mut self) -> bool {
-        if !matches!(
-            self.phase,
-            SessionPhase::ResetRequired | SessionPhase::Fault
-        ) || self.reset_carry
-            || self.reset_exchange.is_some()
-            || self.reset_blocked_reason.is_some()
-            || (self.auto_attempts >= AUTO_RESET_BURST
-                && self
-                    .auto_last
-                    .is_some_and(|at| at.elapsed() < AUTO_RESET_BACKOFF))
-        {
-            return false;
-        }
-        self.auto_attempts = self.auto_attempts.saturating_add(1);
-        self.auto_last = Some(Instant::now());
-        self.reset_source = "auto";
-        true
-    }
-
-    fn track_health(&mut self) {
-        if matches!(
-            self.phase,
-            SessionPhase::ResetRequired | SessionPhase::Fault
-        ) {
-            self.healthy_since = None;
-        } else if self
-            .healthy_since
-            .get_or_insert_with(Instant::now)
-            .elapsed()
-            >= AUTO_RESET_SETTLE
-        {
-            self.auto_attempts = 0;
-        }
-    }
-
-    /// 在途事务是否按维护模式接件（结果码须为 0）。
+    /// 在途件是否按维护模式接件（结果码须为 0）。
     pub fn part_maintenance(&self) -> bool {
-        self.journal
-            .pending
+        self.pending
             .as_ref()
             .is_some_and(|pending| pending.mode == MAINTENANCE)
     }
 
-    /// 空闲时的等待提示（以 [`NOTICE`] 开头）；不是故障。
+    /// 空闲时的提示（以 [`NOTICE`] 开头）；不是故障。
     pub fn notice(&self) -> Option<&str> {
         self.message
             .as_deref()
@@ -439,54 +284,21 @@ impl PlcSession {
     }
 
     pub fn pending(&self) -> bool {
-        self.journal.pending.is_some()
+        self.pending.is_some()
     }
 
-    /// 之后开始的事务记为该来源；由节拍按当前站点模式设置。
-    pub fn set_origin(&mut self, origin: Origin) {
-        self.origin = origin;
-    }
-
-    pub fn pending_kind(&self) -> PendingKind {
-        match &self.journal.pending {
-            None => PendingKind::None,
-            Some(pending) if pending.origin == Some(Origin::Offline) => PendingKind::Offline,
-            Some(_) => PendingKind::Blocking,
-        }
-    }
-
-    /// 未结事务的身份与来源，用于提示处置路径。
-    pub fn pending_summary(&self) -> Option<String> {
-        let pending = self.journal.pending.as_ref()?;
-        let origin = match pending.origin {
-            Some(Origin::Offline) => "离线",
-            Some(Origin::Real) => "真机",
-            None => "来源未记录",
-        };
-        Some(format!(
-            "{origin}事务 requestSeq={} SN={}",
-            pending.request.request_seq, pending.request.sn
-        ))
-    }
-
-    pub fn acknowledged(&self) -> bool {
-        self.journal
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.acknowledged)
+    /// 上次运行留下的在途件已由启动流程补了中断记录，不属于本次运行。
+    pub fn forget_previous(&mut self) {
+        self.pending = None;
     }
 
     pub fn bind_cycle_id(&mut self, id: &str, site: PartSite) -> Result<(), String> {
         if !valid_cycle_id(id) {
-            return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into());
+            return Err("cycleId 必须是 32 位十六进制持久身份".into());
         }
-        let pending = self
-            .journal
-            .pending
-            .as_mut()
-            .ok_or("缺少可关联的 S7 请求事务")?;
+        let pending = self.pending.as_mut().ok_or("缺少可关联的在途件")?;
         match pending.cycle_id.as_deref() {
-            Some(bound) if bound != id => Err("S7 事务已绑定其他 cycleId，禁止更换工件身份".into()),
+            Some(bound) if bound != id => Err("在途件已绑定其他 cycleId，禁止更换工件身份".into()),
             Some(_) => Ok(()),
             None => {
                 pending.cycle_id = Some(id.into());
@@ -497,42 +309,23 @@ impl PlcSession {
     }
 
     pub fn cycle_id(&self) -> Option<&str> {
-        self.journal
-            .pending
+        self.pending
             .as_ref()
             .and_then(|pending| pending.cycle_id.as_deref())
     }
 
     pub fn site(&self) -> Option<PartSite> {
-        self.journal
-            .pending
-            .as_ref()
-            .and_then(|pending| pending.site)
-    }
-
-    pub fn recover_acknowledgements(
-        &self,
-        unresolved: &std::collections::BTreeSet<String>,
-    ) -> AckRecovery {
-        recovery::read(self, unresolved)
+        self.pending.as_ref().and_then(|pending| pending.site)
     }
 
     pub fn request(&self) -> Option<&Request> {
-        self.journal.pending.as_ref().map(|p| &p.request)
-    }
-
-    pub fn result(&self) -> Option<&ResultEnvelope> {
-        self.journal
-            .pending
-            .as_ref()
-            .and_then(|p| p.result.as_ref())
+        self.pending.as_ref().map(|pending| &pending.request)
     }
 
     pub fn started_at(&self) -> Option<i64> {
-        self.journal
-            .pending
+        self.pending
             .as_ref()
-            .map(|p| p.started_at)
+            .map(|pending| pending.started_at)
             .filter(|ts| *ts > 0)
     }
 
@@ -543,96 +336,41 @@ impl PlcSession {
     pub fn view(&self) -> SessionView {
         SessionView {
             phase: self.phase,
-            request_seq: self.request().map(|r| r.request_seq),
-            result_seq: self.result().map(|r| r.request_seq),
+            request_seq: self.request().map(|request| request.request_seq),
             message: self.message.clone(),
             connection: self.connection,
-            reset_blocked_reason: self.reset_blocked_reason.clone(),
         }
     }
 
-    async fn blocking_io<T: Send + 'static>(
-        &self,
-        engine: &PlcEngine,
-        operation: impl FnOnce() -> Result<T, String> + Send + 'static,
-    ) -> Result<T, String> {
-        self.blocking_io_with_monitor(engine, true, operation).await
-    }
-
-    async fn blocking_io_with_monitor<T: Send + 'static>(
-        &self,
-        engine: &PlcEngine,
-        monitor: bool,
-        operation: impl FnOnce() -> Result<T, String> + Send + 'static,
-    ) -> Result<T, String> {
-        let mut task = tokio::task::spawn_blocking(operation);
-        let mut ticker = tokio::time::interval(Duration::from_millis(20));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut observation_error = None;
-        loop {
-            tokio::select! {
-                result = &mut task => {
-                    let value = result.map_err(|error| format!("握手日志保存任务失败：{error}"))??;
-                    return observation_error.map_or(Ok(value), Err);
-                }
-                _ = ticker.tick(), if monitor && observation_error.is_none() => {
-                    let observe = || {
-                        let contract = self.contract.as_ref().ok_or("S7 点表未校验")?;
-                        let snapshot = Snapshot::capture(engine, contract, Self::max_age(engine))?;
-                        if Some(snapshot.connection_since) != self.connection { return Err("握手日志保存期间 PLC 已重连，需复位".into()); }
-                        self.heartbeat.lock().unwrap().observe(snapshot.plc_heartbeat()?, snapshot.heartbeat_changed_at, now_ms())
-                    };
-                    observation_error = observe().err();
-                    if let Some(error) = &observation_error {
-                        let result = self.stop_outputs(engine).await;
-                        log_fault_output("observation_failed", Some(error), self.phase, &result);
-                    }
-                }
-            }
-        }
-    }
-
-    async fn persist(&self, engine: &PlcEngine) -> Result<(), String> {
-        self.persist_journal(engine, &self.journal).await
-    }
-
-    async fn persist_journal(&self, engine: &PlcEngine, journal: &Journal) -> Result<(), String> {
+    /// 握手日志只为补中断记录，保存失败不挡检测。
+    async fn persist(&self) {
+        let journal = Journal {
+            version: JOURNAL_VERSION,
+            pending: self.pending.clone(),
+        };
         let path = self.path.clone();
-        let text = serde_json::to_vec_pretty(journal).map_err(|e| e.to_string())?;
-        let monitor = !(self.phase == SessionPhase::Fault && journal.pending.is_some());
-        self.blocking_io_with_monitor(engine, monitor, move || {
-            if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-            let temporary = path.with_extension("pending.tmp");
-            let mut file = std::fs::File::create(&temporary).map_err(|e| format!("无法保存握手事务：{e}"))?;
-            file.write_all(&text).and_then(|_| file.sync_all()).map_err(|e| format!("握手事务写入失败：{e}"))?;
-            drop(file);
-            std::fs::rename(&temporary, &path).map_err(|e| format!("握手事务提交失败：{e}"))
-        }).await
-    }
-
-    async fn audit(&self, engine: &PlcEngine, action: &str, reason: &str) -> Result<(), String> {
-        let path = self.path.with_extension("audit.jsonl");
-        let mut record = serde_json::to_vec(&json!({
-            "version": 1, "ts": now_ms(), "action": action, "reason": reason,
-            "connectionSince": self.connection, "lastRequestSeq": self.journal.last_request_seq,
-            "pending": self.journal.pending,
-        })).map_err(|e| e.to_string())?;
-        record.push(b'\n');
-        self.blocking_io(engine, move || crate::handshake_audit::append(&path, &record)).await
-    }
-
-    async fn set_pending_phase(&mut self, engine: &PlcEngine, phase: SessionPhase) -> Result<(), String> {
-        let mut next = self.journal.clone();
-        next.pending.as_mut().ok_or("缺少未结 S7 事务")?.phase = phase;
-        self.persist_journal(engine, &next).await?;
-        self.journal = next;
-        self.phase = phase;
-        Ok(())
+        let saved = match serde_json::to_vec_pretty(&journal) {
+            Ok(text) => tokio::task::spawn_blocking(move || write_journal(&path, &text))
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|saved| saved),
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = saved {
+            applog::write(
+                "warn",
+                "S7 握手日志",
+                &format!("保存失败，进程中途退出时本件补不出中断记录：{error}"),
+            );
+        }
     }
 
     fn timeout(engine: &PlcEngine) -> Duration {
         let config = engine.config().connection;
-        Duration::from_millis((config.timeout_ms.saturating_mul(3) + config.poll_interval_ms.saturating_mul(6)).max(1500))
+        Duration::from_millis(
+            (config.timeout_ms.saturating_mul(3) + config.poll_interval_ms.saturating_mul(6))
+                .max(1500),
+        )
     }
 
     fn max_age(engine: &PlcEngine) -> u64 {
@@ -643,720 +381,315 @@ impl PlcSession {
     fn snapshot(&self, engine: &PlcEngine) -> Result<Snapshot, String> {
         Snapshot::capture(
             engine,
-            self.contract.as_ref().ok_or("S7 握手点表尚未校验")?,
+            self.contract.as_ref().ok_or("S7 点表尚未校验")?,
             Self::max_age(engine),
         )
     }
 
     async fn write(&self, engine: &PlcEngine, operations: Vec<WriteOp>) -> Result<(), String> {
-        self.write_timed(engine, operations).await.map(|_| ())
-    }
-
-    async fn write_timed(&self, engine: &PlcEngine, operations: Vec<WriteOp>) -> Result<handshake::WriteTiming, String> {
-        let contract = self.contract.as_ref().ok_or("S7 握手点表尚未校验")?;
+        let contract = self.contract.as_ref().ok_or("S7 点表尚未校验")?;
         if self.connection != Some(engine.status().since) {
-            return Err("PLC 连接已更换，禁止提交握手输出，需复位".into());
+            return Err("PLC 连接已更换".into());
         }
-        handshake::write_confirmed(engine, contract, &operations, Self::timeout(engine), Self::max_age(engine)).await
-    }
-
-    pub async fn fault(&mut self, engine: &PlcEngine, reason: String) {
-        self.reset_exchange = None;
-        self.phase = SessionPhase::Fault;
-        self.fault_cause = "fault";
-        self.reset_blocked_reason = Some(reason.clone());
-        self.message = Some(reason);
-        let _ = self.ensure_fault_output(engine).await;
-        if self.journal.pending.as_ref().is_some_and(|pending| pending.phase != SessionPhase::Fault) {
-            if let Some(pending) = self.journal.pending.as_mut() { pending.phase = SessionPhase::Fault; }
-            if let Err(error) = self.persist(engine).await { self.message = Some(error); }
-        }
-    }
-
-    async fn ensure_fault_output(&mut self, engine: &PlcEngine) -> Result<(), String> {
-        if self.fault_written || self.fault_attempted.is_some_and(|at| at.elapsed() < Duration::from_secs(1)) {
-            return Ok(());
-        }
-        if engine.status().state != LinkState::Connected || self.contract.is_none() { return Ok(()); }
-        let result = self.stop_outputs(engine).await;
-        log_fault_output(self.fault_cause, self.message.as_ref(), self.phase, &result);
-        self.fault_attempted = Some(Instant::now());
-        self.fault_written = result.is_ok();
-        result
-    }
-
-    async fn stop_outputs(&self, engine: &PlcEngine) -> Result<(), String> {
-        let mut errors = Vec::new();
-        let mut stop_confirmed = false;
-        // 复位前只撤到未就绪（0），其余情形置故障（90）；两者都让 PLC 拉低 Line0
-        let plan = if self.phase == SessionPhase::ResetRequired {
-            handshake::not_ready_plan()
-        } else {
-            handshake::fault_plan(handshake::SESSION_FAULT_CODE)
-        };
-        for operation in plan {
-            let tag = operation.tag;
-            let result = match self.contract.as_ref() {
-                Some(contract) => handshake::write_confirmed(engine, contract, &[operation], Self::timeout(engine), Self::max_age(engine)).await.map(|_| ()),
-                None => Err("S7 握手点表尚未校验".into()),
-            };
-            match result {
-                Ok(()) => {
-                    if tag == tag::PC_STATE {
-                        stop_confirmed = true;
-                    }
-                }
-                Err(error) => errors.push(error),
-            }
-        }
-        if stop_confirmed {
-            self.reconnect.lock().unwrap().spent = false;
-        } else {
-            let error = errors.join("；");
-            applog::emit_event(
-                &codes::S7_RECONNECT_FORCED,
-                &error,
-                Fields::default().with_data(json!({"error": error})),
-            );
-            engine.disconnect().await;
-            let since = engine.status().since;
-            let mut reconnect = self.reconnect.lock().unwrap();
-            if reconnect.spent {
-                reconnect.stopped = Some((since, AfterStop::Manual));
-                errors.push(RECONNECT_MANUAL.into());
-            } else {
-                reconnect.stopped = Some((since, AfterStop::Reconnect(Instant::now() + RECONNECT_AFTER_STOP)));
-                errors.push(format!("无法确认撤下 pcState，已断开通讯以停止 PC 心跳；{:.1} s 后自动重连，重连后自动复位", RECONNECT_AFTER_STOP.as_secs_f32()));
-            }
-        }
-        if errors.is_empty() { Ok(()) } else { Err(errors.join("；")) }
-    }
-
-    /// PLC 复位信号的上升沿等同操作员软件复位，返回 true 时由节拍按软件复位发起；连接时已为 1 或保持高电平都不触发，复位前置检查不满足时拒绝并记日志。
-    pub fn reset_signal(&mut self, engine: &PlcEngine) -> bool {
-        let since = engine.status().since;
-        let level = self
-            .contract
-            .as_ref()
-            .and_then(|contract| contract.reset_signal(engine));
-        let previous = std::mem::replace(&mut self.reset_signal, level.map(|level| (since, level)));
-        if level != Some(true) || previous != Some((since, false)) {
-            return false;
-        }
-        let mut data = json!({"source": "plc_signal", "phase": format!("{:?}", self.phase)});
-        if let Some(reason) = &self.reset_blocked_reason {
-            data["ok"] = json!(false);
-            data["error"] = json!(reason);
-            applog::emit_event(
-                &codes::S7_RESET_REQUEST,
-                &format!("PLC 复位信号被拒：{reason}"),
-                Fields::default().with_data(data),
-            );
-            return false;
-        }
-        self.reset_source = "plc_signal";
-        true
-    }
-
-    /// 只按协议推进握手：相机、配方、追溯与磁盘问题由节拍按本件检测错误处理，不在这里撤 pcState 或判故障。
-    pub async fn poll(&mut self, engine: &PlcEngine, reset_requested: bool) -> SessionEvent {
-        let event = match self.poll_inner(engine, reset_requested).await {
-            Ok(event) => event,
-            Err(error) => {
-                let changed = self.phase != SessionPhase::Fault || self.message.as_ref() != Some(&error);
-                self.fault(engine, error.clone()).await;
-                if changed { SessionEvent::Fault(error) } else { SessionEvent::None }
-            }
-        };
-        self.reset_blocked_reason = self.check_reset_ready(engine).err();
-        self.reset_source = "operator";
-        self.track_health();
-        event
-    }
-
-    /// 只读检查：与实际复位共用校验，不改输出、不清事务。
-    fn check_reset_ready(&self, engine: &PlcEngine) -> Result<(), String> {
-        if self.reset_exchange.is_some() {
-            return Err("已发起软件复位，等待 PLC 回空闲".into());
-        }
-        if engine.status().state != LinkState::Connected {
-            return Err("S7 PLC 未连接，请先连接 PLC".into());
-        }
-        if self.connection != Some(engine.status().since) {
-            return Err("正在核对新的 PLC 连接会话".into());
-        }
-        let contract = self.contract.as_ref().ok_or("S7 握手点表尚未校验")?;
-        let snapshot = Snapshot::capture_for_reset(engine, contract, Self::max_age(engine))?;
-        if matches!(
-            self.phase,
-            SessionPhase::ResetRequired | SessionPhase::Fault
-        ) && !self.fault_written
-        {
-            return Err(self
-                .message
-                .clone()
-                .unwrap_or_else(|| "等待故障输出写入并读回确认".into()));
-        }
-        self.heartbeat_live()?;
-        self.reset_allowed(&snapshot)
-    }
-
-    fn heartbeat_live(&self) -> Result<(), String> {
-        if !self.heartbeat.lock().unwrap().is_live(now_ms()) {
-            return Err("尚未观察到 PLC 心跳变化，不能复位".into());
-        }
-        Ok(())
-    }
-
-    fn reset_allowed(&self, snapshot: &Snapshot) -> Result<(), String> {
-        if self.origin == Origin::Offline && self.journal.pending.as_ref().is_some_and(|pending| pending.origin != Some(Origin::Offline)) {
-            return Err(format!("{}不能由离线虚拟 PLC 复位：退出离线，连接真机 PLC 后复位", self.pending_summary().unwrap_or_default()));
-        }
-        let version = snapshot.read_u16(tag::PLC_VERSION)?;
-        if version != handshake::PROTOCOL_VERSION {
-            return Err(format!(
-                "PLC 协议版本 {version} 与 PC {} 不一致，不能复位",
-                handshake::PROTOCOL_VERSION
-            ));
-        }
-        Ok(())
-    }
-
-    async fn poll_inner(
-        &mut self,
-        engine: &PlcEngine,
-        reset_requested: bool,
-    ) -> Result<SessionEvent, String> {
-        let config = engine.config();
-        let key = serde_json::to_string(&config).map_err(|e| e.to_string())?;
-        if key != self.config_key {
-            let contract = Contract::validate(&config)?;
-            // plc.db 每条日志带上当时的 requestSeq，按件追溯握手信号变化
-            engine.set_log_context(Some(LogContext { point_id: contract.point_id(tag::REQUEST_SEQ)?.to_owned(), label: tag::REQUEST_SEQ.into() }));
-            self.contract = Some(contract);
-            self.config_key = key;
-            self.connection = None;
-            *self.reconnect.lock().unwrap() = Reconnect::default();
-        }
-        let status = engine.status();
-        if status.state != LinkState::Connected {
-            self.connection = None;
-            let stopped = self.reconnect.lock().unwrap().stopped;
-            match stopped {
-                Some((since, _))
-                    if status.state != LinkState::Disconnected || status.since != since =>
-                {
-                    self.reconnect.lock().unwrap().stopped = None;
-                }
-                Some((_, AfterStop::Reconnect(at))) if Instant::now() >= at => {
-                    *self.reconnect.lock().unwrap() = Reconnect {
-                        stopped: None,
-                        spent: true,
-                    };
-                    engine.connect().await;
-                    return Err(
-                        "PC 主动断开超过 PLC 心跳失活阈值，已自动重连；连上后自动复位".into(),
-                    );
-                }
-                Some((_, AfterStop::Reconnect(_))) => {
-                    return Err(format!(
-                        "已断开通讯以停止 PC 心跳，{:.1} s 后自动重连；重连后自动复位",
-                        RECONNECT_AFTER_STOP.as_secs_f32()
-                    ));
-                }
-                Some((_, AfterStop::Manual)) => return Err(RECONNECT_MANUAL.into()),
-                None => {}
-            }
-            return Err("S7 PLC 未连接，重连后自动复位".into());
-        }
-        if self.connection != Some(status.since) {
-            self.connection = Some(status.since);
-            self.phase = SessionPhase::ResetRequired;
-            self.reset_exchange = None;
-            self.heartbeat.lock().unwrap().reset();
-            self.fault_written = false;
-            self.fault_attempted = None;
-            self.fault_cause = "new_connection";
-            self.reset_carry = false;
-            self.message = Some("S7 连接会话已更新，需复位握手".into());
-        }
-        if status.poll_count == 0 || status.last_poll.is_none_or(|polled| polled < status.since) {
-            return Ok(SessionEvent::None);
-        }
-        let contract = self.contract.as_ref().unwrap();
-        let snapshot = if matches!(self.phase, SessionPhase::ResetRequired | SessionPhase::Fault) {
-            Snapshot::capture_for_reset(engine, contract, Self::max_age(engine))?
-        } else {
-            Snapshot::capture(engine, contract, Self::max_age(engine))?
-        };
-        let now = now_ms();
-        let heartbeat = snapshot.plc_heartbeat()?;
-        let observation = self.heartbeat.lock().unwrap().observe(heartbeat, snapshot.heartbeat_changed_at, now);
-        if let Err(error) = observation {
-            let mut watch = self.heartbeat.lock().unwrap();
-            watch.reset();
-            watch.observe(heartbeat, snapshot.heartbeat_changed_at, now)?;
-            return Err(error);
-        }
-        if reset_requested {
-            let signal = self.reset_source == "plc_signal";
-            let data = json!({"source": self.reset_source, "phase": format!("{:?}", self.phase)});
-            applog::emit_event(
-                &codes::S7_RESET_REQUEST,
-                &format!("收到复位（{}）", self.reset_source),
-                Fields::default().with_data(data),
-            );
-            match self.phase {
-                SessionPhase::Idle => {
-                    self.phase = SessionPhase::ResetRequired;
-                    self.fault_written = false;
-                    self.fault_attempted = None;
-                    self.fault_cause = if signal {
-                        "reset_signal"
-                    } else {
-                        "reset_operator"
-                    };
-                }
-                SessionPhase::ResetRequired | SessionPhase::Fault => {}
-                _ => {
-                    self.reset_carry = true;
-                    let source = if signal {
-                        "PLC 复位信号"
-                    } else {
-                        "操作员软件复位"
-                    };
-                    return Err(format!("{source}：在途工件中断，记录后继续复位"));
-                }
-            }
-            self.reset_carry = true;
-        }
-        if matches!(
-            self.phase,
-            SessionPhase::ResetRequired | SessionPhase::Fault
-        ) {
-            return self
-                .reset_step(engine, &snapshot, reset_requested || self.reset_carry)
-                .await;
-        }
-        if !self.heartbeat.lock().unwrap().is_live(now) {
-            return Err("PLC 心跳活性尚未确认".into());
-        }
-        let plc = snapshot.plc_state()?;
-        match self.phase {
-            SessionPhase::Idle
-                if plc == state::PLC_REQUEST && snapshot.pc_state()? == state::PC_READY =>
-            {
-                let request = handshake::stable_start(
-                    engine,
-                    self.contract.as_ref().unwrap(),
-                    Self::timeout(engine),
-                    Self::max_age(engine),
-                )
-                .await?;
-                if request.request_seq <= self.journal.last_request_seq {
-                    return Err(format!(
-                        "请求事务序号必须递增（上一件 {}，本次 {}）；PLC 清零或回绕需先执行复位",
-                        self.journal.last_request_seq, request.request_seq
-                    ));
-                }
-                self.journal.pending = Some(Pending {
-                    origin: Some(self.origin),
-                    request: request.clone(),
-                    result: None,
-                    phase: SessionPhase::Validating,
-                    cycle_id: None,
-                    acknowledged: false,
-                    started_at: now_ms(),
-                    site: None,
-                    mode: self.mode,
-                });
-                self.journal.last_request_seq = request.request_seq;
-                self.persist(engine).await?;
-                if self.notice().is_some() {
-                    self.message = None;
-                }
-                self.phase = SessionPhase::Validating;
-                return Ok(SessionEvent::Start(request));
-            }
-            SessionPhase::Idle => return self.idle(engine, &snapshot).await,
-            SessionPhase::Validating
-            | SessionPhase::Acquiring
-            | SessionPhase::Draining
-            | SessionPhase::AwaitAck => {
-                let request = self.request().ok_or("当前 S7 事务丢失")?.clone();
-                if plc == state::PLC_FAULT {
-                    return Err(format!(
-                        "PLC 在途中进入故障（{}），本件中断",
-                        snapshot.plc_reason()?
-                    ));
-                }
-                if snapshot.request()? != request {
-                    return Err("在途工件的请求被修改，禁止继续或切换下一件".into());
-                }
-                let pc = snapshot.pc_state()?;
-                // PLC 来件后不等 PC：接件登记期间工件可能已经结束
-                let legal = match self.phase {
-                    SessionPhase::Validating | SessionPhase::Acquiring => {
-                        matches!(plc, state::PLC_REQUEST | state::PLC_MOTION_END)
-                            && pc == state::PC_READY
-                    }
-                    SessionPhase::Draining => plc == state::PLC_MOTION_END && pc == state::PC_READY,
-                    _ => true,
-                };
-                if !legal {
-                    return Err(format!(
-                        "在途握手状态非法：plcState={plc} pcState={pc}（{:?}）",
-                        self.phase
-                    ));
-                }
-                if self.phase == SessionPhase::Acquiring && plc == state::PLC_MOTION_END {
-                    handshake::verify_part_end(&snapshot, &request)?;
-                    let ended_at = Instant::now();
-                    self.set_pending_phase(engine, SessionPhase::Draining).await?;
-                    return Ok(SessionEvent::End(ended_at));
-                }
-                if self.phase == SessionPhase::AwaitAck {
-                    let result = self.result().ok_or("S7 结果尚未生成")?;
-                    if handshake::matching_ack(&snapshot, result)? {
-                        let data = json!({"requestSeq": result.request_seq, "resultCode": result.result_code, "faultCode": result.fault_code});
-                        applog::emit_event(
-                            &codes::S7_ACK,
-                            &format!("PLC 确认结果，请求序号 {}", result.request_seq),
-                            Fields::default().with_data(data),
-                        );
-                        let mut next = self.journal.clone();
-                        let pending = next.pending.as_mut().unwrap();
-                        pending.acknowledged = true;
-                        pending.phase = SessionPhase::Releasing;
-                        self.persist_journal(engine, &next).await?;
-                        self.journal = next;
-                        self.phase = SessionPhase::Releasing;
-                    }
-                }
-            }
-            SessionPhase::Releasing => {
-                let result = self.result().ok_or("S7 结果丢失")?;
-                if !handshake::matching_ack(&snapshot, result)? {
-                    return Err("PLC 确认结果后撤回了确认".into());
-                }
-                self.audit(engine, "acknowledged", "结果身份已确认，PLC 已锁存结果")
-                    .await?;
-                let mut next = self.journal.clone();
-                next.pending = None;
-                next.last_resolution = Some("结果已匹配确认并释放；原事务已保存至审计日志".into());
-                self.persist_journal(engine, &next).await?;
-                self.journal = next;
-                self.write_idle(engine).await?;
-                self.phase = SessionPhase::Idle;
-                return Ok(SessionEvent::Released);
-            }
-            _ => {}
-        }
-        Ok(SessionEvent::None)
-    }
-
-    /// 复位：PLC 置 99（现场复位）或 PLC 已空闲时直接完成；否则 PC 置 99 请 PLC 清未结事务，等 PLC 回 0 再完成。
-    async fn reset_step(
-        &mut self,
-        engine: &PlcEngine,
-        snapshot: &Snapshot,
-        reset_requested: bool,
-    ) -> Result<SessionEvent, String> {
-        if self.reset_exchange.is_none() {
-            self.ensure_fault_output(engine).await?;
-        }
-        let plc = snapshot.plc_state()?;
-        let plc_reset = plc == state::PLC_RESET;
-        if !(reset_requested || plc_reset || self.reset_exchange.is_some()) {
-            return Ok(SessionEvent::None);
-        }
-        if let Err(error) = self.heartbeat_live() {
-            if reset_requested || self.reset_exchange.is_some() {
-                self.reset_carry = false;
-                return Err(error);
-            }
-            self.message = Some(format!("PLC 请求复位，{error}"));
-            return Ok(SessionEvent::None);
-        }
-        if let Err(error) = self.reset_allowed(snapshot) {
-            self.reset_carry = false;
-            return Err(error);
-        }
-        if let Some(started) = self.reset_exchange {
-            if plc != state::PLC_IDLE {
-                if started.elapsed() <= RESET_RESPONSE {
-                    return Ok(SessionEvent::None);
-                }
-                self.reset_exchange = None;
-                self.phase = SessionPhase::ResetRequired;
-                self.fault_written = false;
-                self.fault_attempted = None;
-                self.fault_cause = "reset_timeout";
-                self.message = Some(format!(
-                    "PLC {} s 内未响应软件复位（plcState={plc}），已回未就绪，可重新发起复位",
-                    RESET_RESPONSE.as_secs()
-                ));
-                self.ensure_fault_output(engine).await?;
-                return Ok(SessionEvent::None);
-            }
-        } else if !matches!(plc, state::PLC_IDLE | state::PLC_RESET) {
-            self.write(engine, handshake::reset_request_plan()).await?;
-            self.reset_exchange = Some(Instant::now());
-            self.reset_carry = false;
-            self.message =
-                Some("已发起软件复位（pcState=99），等待 PLC 清除未结事务并回空闲".into());
-            return Ok(SessionEvent::None);
-        }
-        if plc_reset && !reset_requested {
-            let data = json!({"source": "plc", "phase": format!("{:?}", self.phase)});
-            applog::emit_event(
-                &codes::S7_RESET_REQUEST,
-                "收到复位（plc）",
-                Fields::default().with_data(data),
-            );
-        }
-        self.complete_reset(
+        handshake::write_confirmed(
             engine,
-            snapshot,
-            if plc_reset {
-                "PLC 现场复位"
-            } else {
-                "软件复位"
-            },
+            contract,
+            &operations,
+            Self::timeout(engine),
+            Self::max_age(engine),
         )
         .await
     }
 
-    async fn complete_reset(
-        &mut self,
-        engine: &PlcEngine,
-        snapshot: &Snapshot,
-        source: &str,
-    ) -> Result<SessionEvent, String> {
-        let baseline = handshake::ResetBaseline::capture(snapshot)?;
-        let repair = snapshot.sn_repair_plan();
-        let reason = if repair.is_empty() {
-            format!("明确复位（{source}）；尚未清除未结事务")
-        } else {
-            let tags = repair
-                .iter()
-                .map(|op| op.tag)
-                .collect::<Vec<_>>()
-                .join("、");
-            self.write(engine, repair).await?;
-            baseline.verify(&self.snapshot(engine)?)?;
-            format!("明确复位（{source}）；已把头字节异常的 {tags} 重写为空串；尚未清除未结事务")
-        };
-        self.audit(engine, "resetRequested", &reason).await?;
-        self.write(engine, handshake::reset_clear_plan()).await?;
-        let after = self.snapshot(engine)?;
-        baseline.verify(&after)?;
-        self.audit(
-            engine,
-            "resetCompleted",
-            "明确复位已清除结果输出并确认 PLC 空闲，原事务保留在本审计记录",
-        )
-        .await?;
-        let mut next = self.journal.clone();
-        // 复位已清掉未结事务，PLC 可能稍后才把序号清零或归 1；复位后第一件只要求非零，之后照常递增
-        next.last_request_seq = 0;
-        next.last_resolution = Some("明确复位结束；原请求和结果已保存至审计日志".into());
-        next.pending = None;
-        self.persist_journal(engine, &next).await?;
-        self.journal = next;
-        baseline.verify(&self.snapshot(engine)?)?;
-        self.write_idle(engine).await?;
-        self.phase = SessionPhase::Idle;
-        self.reset_exchange = None;
-        self.message = None;
-        self.fault_written = false;
-        self.fault_attempted = None;
-        self.restores.clear();
-        self.reset_carry = false;
-        Ok(SessionEvent::Ready)
+    /// 按协议读 PLC 的当前件、维持 PC 输出。通讯条件不满足时回到未就绪并给出原因，条件恢复后自动就绪；
+    /// 相机、配方、追溯与磁盘问题由节拍按本件检测错误处理，不影响通讯就绪。
+    pub async fn poll(&mut self, engine: &PlcEngine) -> SessionEvent {
+        match self.poll_inner(engine).await {
+            Ok(event) => event,
+            Err(reason) => {
+                self.phase = SessionPhase::NotReady;
+                self.message = Some(reason);
+                SessionEvent::None
+            }
+        }
     }
 
-    /// 空闲（无在途事务）时核对握手状态，能恢复的不判故障；pcState 始终保持 10：
-    /// - PLC 不在空闲（未检放行中、尚未回 0、故障）：只提示等待，不写输出；
-    /// - 视觉输出偏离空闲状态（PLC 重启或 DB 重新初始化读回 0、调试表误写）：记审计后重写空闲输出，
-    ///   60 s 内反复被改写才判故障。
+    async fn poll_inner(&mut self, engine: &PlcEngine) -> Result<SessionEvent, String> {
+        let config = engine.config();
+        let key = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+        if key != self.config_key {
+            self.contract = None;
+            let contract = Contract::validate(&config)?;
+            // plc.db 每条日志带上当时的 partSeq，按件追溯信号变化
+            engine.set_log_context(Some(LogContext {
+                point_id: contract.point_id(tag::PART_SEQ)?.to_owned(),
+                label: tag::PART_SEQ.into(),
+            }));
+            self.contract = Some(contract);
+            self.config_key = key;
+            self.connection = None;
+        }
+        let status = engine.status();
+        if status.state != LinkState::Connected {
+            self.connection = None;
+            return Err("PLC 未连接".into());
+        }
+        if self.connection != Some(status.since) {
+            self.connection = Some(status.since);
+            self.heartbeat.reset();
+            if self.phase != SessionPhase::NotReady {
+                return Err("PLC 已重新连接，正在核对新连接".into());
+            }
+        }
+        let snapshot = self.snapshot(engine)?;
+        let version = snapshot.read_u16(tag::PLC_VERSION)?;
+        if version != handshake::PROTOCOL_VERSION {
+            return Err(format!(
+                "PLC 协议版本 {version} 与 PC {} 不一致",
+                handshake::PROTOCOL_VERSION
+            ));
+        }
+        let now = now_ms();
+        let heartbeat = snapshot.plc_heartbeat()?;
+        if let Err(error) = self
+            .heartbeat
+            .observe(heartbeat, snapshot.heartbeat_changed_at, now)
+        {
+            self.heartbeat.reset();
+            self.heartbeat
+                .observe(heartbeat, snapshot.heartbeat_changed_at, now)?;
+            return Err(error);
+        }
+        if !self.heartbeat.is_live(now) {
+            return Err("等待 PLC 心跳变化".into());
+        }
+        let inspecting = snapshot.inspecting()?;
+        let seq = snapshot.part_seq()?;
+        let result_seq = snapshot.read_u32(tag::RESULT_SEQ)?;
+        if self.phase == SessionPhase::NotReady {
+            self.write(engine, snapshot.output_repairs(self.mode))
+                .await?;
+            self.mode_written = self.mode;
+            self.phase = SessionPhase::Idle;
+            self.message = None;
+            self.settled = None;
+            if inspecting {
+                self.skip(seq, &snapshot, "到达时 PC 未就绪");
+            }
+            return Ok(SessionEvent::Ready);
+        }
+        // PC 只在工件结束后写结果：在检件的序号等于 resultSeq 时那是别的件留下的旧结果，清掉后 PLC 不会误取
+        if inspecting && seq != 0 && result_seq == seq {
+            self.write(engine, handshake::clear_result_plan()).await?;
+            applog::emit_event(
+                &codes::S7_RESULT_CLEARED,
+                &format!("在检件的序号 {seq} 与旧结果的序号相同，已把 resultSeq 清零"),
+                Fields::default().with_data(json!({"partSeq": seq})),
+            );
+        }
+        match self.phase {
+            SessionPhase::Idle => self.idle(engine, &snapshot, inspecting, seq).await,
+            SessionPhase::Validating | SessionPhase::Acquiring => {
+                let current = self.request().ok_or("在途件丢失")?.request_seq;
+                if seq != current {
+                    return Ok(SessionEvent::Lost(format!(
+                        "在检期间件序号由 {current} 变为 {seq}，没有收到工件结束"
+                    )));
+                }
+                if !inspecting && self.phase == SessionPhase::Acquiring {
+                    self.phase = SessionPhase::Draining;
+                    return Ok(SessionEvent::End(Instant::now()));
+                }
+                Ok(SessionEvent::None)
+            }
+            // PLC 不等 PC：本件结果还没出、下一件已经到达时，这个结果 PLC 不会再取，放下本件去接新件
+            SessionPhase::Draining => {
+                let current = self.request().ok_or("在途件丢失")?.request_seq;
+                if inspecting || seq != current {
+                    return Ok(SessionEvent::Lost(format!(
+                        "件序号 {current} 的结果还没出，PLC 已开始下一件"
+                    )));
+                }
+                Ok(SessionEvent::None)
+            }
+            SessionPhase::NotReady => Ok(SessionEvent::None),
+        }
+    }
+
+    /// 空闲：`inspecting` 由 0 变 1，或在检的序号不是 PC 已放下的那一件，就是新件；连续两次轮询内容一致才登记。
     async fn idle(
         &mut self,
         engine: &PlcEngine,
         snapshot: &Snapshot,
+        inspecting: bool,
+        seq: u32,
     ) -> Result<SessionEvent, String> {
-        if self.journal.pending.is_some() {
-            return Err("空闲阶段仍留有未结 S7 事务，状态矛盾，需复位".into());
-        }
-        let plc = snapshot.plc_state()?;
-        let waiting = match plc {
-            state::PLC_IDLE | state::PLC_RESET => None,
-            state::PLC_REQUEST => {
-                Some("PLC 在视觉未就绪时提交了请求，等待 PLC 按未检处理后回空闲".to_owned())
-            }
-            state::PLC_MOTION_END | state::PLC_CONFIRMED => {
-                Some(format!("PLC 仍处于 plcState={plc}，等待 PLC 回空闲"))
-            }
-            state::PLC_FAULT => Some(format!(
-                "PLC 故障（{}），在 PLC 现场复位或在软件发起复位",
-                snapshot.plc_reason()?
-            )),
-            other => return Err(format!("PLC 状态 plcState={other} 未定义")),
-        };
-        let now = Instant::now();
-        if let Some(text) = waiting {
-            self.plc_waiting_at = Some(now);
-            self.message = Some(format!("{NOTICE}{text}"));
-            return Ok(SessionEvent::None);
-        }
-        // PLC 单独复位时 99 可能一闪而过，PC 看不到；空闲时序号回退即视为 PLC 已复位
-        let seq = snapshot.read_u32(tag::REQUEST_SEQ)?;
-        if seq < self.journal.last_request_seq {
-            let reason = format!(
-                "PC 空闲时 PLC 请求序号从 {} 回退到 {seq}，视为 PLC 已复位，序号下限清零",
-                self.journal.last_request_seq
-            );
-            self.audit(engine, "plcSeqRestarted", &reason).await?;
-            let mut next = self.journal.clone();
-            next.last_request_seq = 0;
-            self.persist_journal(engine, &next).await?;
-            self.journal = next;
-        }
-        let held = self.notice().is_some()
-            && self
-                .plc_waiting_at
-                .is_some_and(|at| now.saturating_duration_since(at) < NOTICE_HOLD);
-        let drifted = snapshot.idle_drift(self.mode)?;
-        if drifted.is_empty() {
-            if self.notice().is_some() && !held {
+        if !inspecting {
+            self.settled = None;
+            if self.notice().is_some() {
                 self.message = None;
             }
+            return self.keep_outputs(engine, snapshot).await;
+        }
+        if self.settled == Some(seq) {
             return Ok(SessionEvent::None);
         }
-        let mode_changed = self.mode != self.mode_written;
-        let own = mode_changed && drifted.iter().all(|d| d.starts_with("pcMode="));
-        let reason = if own {
-            String::new()
-        } else {
-            self.restores.retain(|at| now.saturating_duration_since(*at) < RESTORE_WINDOW);
-            if self.restores.len() >= RESTORE_LIMIT {
-                return Err(format!("空闲时视觉输出 {} s 内第 {} 次被改写（{}），疑似 PLC 程序或其他写入方覆盖 PC 区，需排查写入方",
-                    RESTORE_WINDOW.as_secs(), self.restores.len() + 1, drifted.join("、")));
-            }
-            self.restores.push(now);
-            let reason = format!("空闲时视觉输出 {} 与就绪状态不符（PLC 重启、DB 重新初始化或被其他写入方改写），已重写空闲输出，无需复位",
-                drifted.join("、"));
-            self.audit(engine, "idleOutputsRestored", &reason).await?;
-            reason
+        let contract = self.contract.as_ref().ok_or("S7 点表尚未校验")?;
+        let Some(arrival) = handshake::stable_arrival(
+            engine,
+            contract,
+            snapshot,
+            Self::timeout(engine),
+            Self::max_age(engine),
+        )
+        .await?
+        else {
+            return Ok(SessionEvent::None);
         };
-        self.write_idle(engine).await?;
-        if self.notice().is_some() && !held {
-            self.message = None;
+        match arrival.request() {
+            Ok(request) => {
+                self.pending = Some(Pending {
+                    request: request.clone(),
+                    cycle_id: None,
+                    started_at: now_ms(),
+                    site: None,
+                    mode: self.mode,
+                });
+                self.settled = None;
+                self.message = None;
+                self.phase = SessionPhase::Validating;
+                Ok(SessionEvent::Start(request))
+            }
+            Err(reason) => {
+                self.skip(seq, &arrival, &format!("身份不合法（{reason}）"));
+                Ok(SessionEvent::None)
+            }
         }
-        Ok(if own {
-            SessionEvent::None
-        } else {
-            SessionEvent::Restored(reason)
-        })
     }
 
-    async fn write_idle(&mut self, engine: &PlcEngine) -> Result<(), String> {
-        self.write(engine, handshake::idle_plan(self.mode)).await?;
+    /// 不接这一件：不登记、不回结果，PLC 等不到结果记未检。
+    fn skip(&mut self, seq: u32, snapshot: &Snapshot, reason: &str) {
+        self.settled = Some(seq);
+        let text = format!("件序号 {seq} {reason}，本件不检测、不回结果，等待下一件");
+        applog::emit_event(
+            &codes::S7_PART_SKIPPED,
+            &text,
+            Fields::default().with_data(
+                json!({"partSeq": seq, "sn": snapshot.read_text(tag::SN).ok(), "reason": reason}),
+            ),
+        );
+        self.message = Some(format!("{NOTICE}{text}"));
+    }
+
+    /// 没有在检件时保持 PC 输出：版本、模式被改写（PLC 重启、DB 重新初始化、调试表误写）就重写。
+    async fn keep_outputs(
+        &mut self,
+        engine: &PlcEngine,
+        snapshot: &Snapshot,
+    ) -> Result<SessionEvent, String> {
+        let repairs = snapshot.output_repairs(self.mode);
+        if repairs.is_empty() {
+            return Ok(SessionEvent::None);
+        }
+        let own = self.mode != self.mode_written && repairs.iter().all(|op| op.tag == tag::PC_MODE);
+        let tags = repairs
+            .iter()
+            .map(|op| op.tag)
+            .collect::<Vec<_>>()
+            .join("、");
+        self.write(engine, repairs).await?;
         self.mode_written = self.mode;
-        Ok(())
+        if !own
+            && self
+                .repair_logged
+                .is_none_or(|at| at.elapsed() >= REPAIR_LOG_INTERVAL)
+        {
+            self.repair_logged = Some(Instant::now());
+            applog::write(
+                "warn",
+                "S7 输出恢复",
+                &format!("PC 输出 {tags} 被改写（PLC 重启、DB 重新初始化或其他写入方），已重写"),
+            );
+        }
+        Ok(SessionEvent::None)
     }
 
-    /// 接件时核对软件计划；协议 8 的请求不带计划，不与 PLC 比对。
+    /// 接件时核对软件计划；PLC 的请求不带计划，不与 PLC 比对。
     pub fn validate_plan(&self, plan: &PlcPlan) -> Result<(), String> {
         if self.phase != SessionPhase::Validating {
-            return Err("当前 S7 事务不在接件阶段".into());
+            return Err("当前工件不在接件阶段".into());
         }
         let rebuilt = plan.recompiled()?;
-        if &rebuilt != plan { return Err("软件拍照计划内容与计数不一致".into()); }
+        if &rebuilt != plan {
+            return Err("软件拍照计划内容与计数不一致".into());
+        }
         Ok(())
     }
 
-    /// 接件登记完成：核对请求仍是本件、PC 仍就绪后把事务阶段落盘为采集中，不写 PLC。
-    pub async fn commit_intake(&mut self, engine: &PlcEngine) -> Result<(), String> {
-        if self.phase != SessionPhase::Validating {
-            return Err("当前 S7 事务不在接件阶段".into());
+    /// 接件登记完成：进入采集，在途件落盘；不写 PLC。
+    pub async fn admit(&mut self) {
+        if self.phase == SessionPhase::Validating {
+            self.phase = SessionPhase::Acquiring;
         }
-        let attempt = async {
-            let snapshot = self.snapshot(engine)?;
-            if snapshot.request()? != *self.request().ok_or("缺少 S7 请求")?
-                || !matches!(
-                    snapshot.plc_state()?,
-                    state::PLC_REQUEST | state::PLC_MOTION_END
-                )
-                || snapshot.pc_state()? != state::PC_READY
-            {
-                return Err("接件登记期间请求或握手状态已改变".into());
-            }
-            self.set_pending_phase(engine, SessionPhase::Acquiring)
-                .await
-        }
-        .await;
-        if let Err(error) = &attempt {
-            self.fault(engine, error.clone()).await;
-        }
-        attempt
+        self.persist().await;
     }
 
-    pub async fn report(&mut self, engine: &PlcEngine, result_code: u16, fault_code: u16) -> Result<(), String> {
-        if self.phase != SessionPhase::Draining {
-            return Err("PLC 尚未报工件结束（plcState=20），不能发布结果".into());
+    /// 在途件已由节拍按中断记录（通讯未就绪、中途换件、等不到工件结束、结果没出下一件已到）：放下它，不回结果，
+    /// PLC 换下一件后照常接件。还在检的件记下序号不再重新接；已结束的件之后再在检的就是新件。
+    pub async fn settle(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            let ended = self.phase == SessionPhase::Draining;
+            self.settled = (!ended).then_some(pending.request.request_seq);
+            self.persist().await;
         }
-        let mode = self
-            .journal
-            .pending
-            .as_ref()
-            .map_or(0, |pending| pending.mode);
-        if !result_allowed(mode, result_code, fault_code) {
-            return Err(if mode == MAINTENANCE {
+        if self.phase != SessionPhase::NotReady {
+            self.phase = SessionPhase::Idle;
+        }
+    }
+
+    /// 回写结果：最后写 resultSeq，写完本件即结束，不等 PLC。PLC 已切到下一件时不写。
+    pub async fn report(
+        &mut self,
+        engine: &PlcEngine,
+        result_code: u16,
+        fault_code: u16,
+    ) -> Result<(), String> {
+        let draining = self.phase == SessionPhase::Draining;
+        let pending = self.pending.take().ok_or("缺少在途件")?;
+        if self.phase != SessionPhase::NotReady {
+            self.phase = SessionPhase::Idle;
+        }
+        self.persist().await;
+        if !draining {
+            self.settled = Some(pending.request.request_seq);
+            return Err("工件尚未结束（inspecting 仍为 1），不能回写结果".into());
+        }
+        if !result_allowed(pending.mode, result_code, fault_code) {
+            return Err(if pending.mode == MAINTENANCE {
                 "维护模式下结果码须为 0".into()
             } else {
-                "结果码或异常码与协议 8 不一致".into()
+                format!(
+                    "结果码或异常码与协议 {} 不一致",
+                    handshake::PROTOCOL_VERSION
+                )
             });
         }
-        let request = self.request().ok_or("缺少 S7 请求")?;
-        let envelope = ResultEnvelope { request_seq: request.request_seq, sn: request.sn.clone(), result_code, fault_code };
-        self.journal.pending.as_mut().unwrap().result = Some(envelope.clone());
-        let attempt = async {
-            self.persist(engine).await?;
-            let snapshot = self.snapshot(engine)?;
-            if snapshot.request()? != *self.request().ok_or("缺少 S7 请求")?
-                || snapshot.plc_state()? != state::PLC_MOTION_END
-                || snapshot.pc_state()? != state::PC_READY
-            {
-                return Err("结果发布前请求或握手状态已改变".into());
-            }
-            self.write(engine, handshake::report_plan(&envelope, mode))
-                .await?;
-            self.set_pending_phase(engine, SessionPhase::AwaitAck).await
-        }.await;
-        if let Err(error) = &attempt { self.fault(engine, error.clone()).await; }
-        attempt
+        let envelope = ResultEnvelope {
+            request_seq: pending.request.request_seq,
+            sn: pending.request.sn,
+            result_code,
+            fault_code,
+        };
+        let snapshot = self.snapshot(engine)?;
+        if snapshot.inspecting()? || snapshot.part_seq()? != envelope.request_seq {
+            return Err("PLC 已切到下一件，本件结果不再回写".into());
+        }
+        self.write(engine, handshake::report_plan(&envelope, pending.mode))
+            .await?;
+        self.mode_written = pending.mode;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests;
-
-/// 运行日志 s7.fault_output：PLC 可见的故障输出（或断开通讯）都经过这里，带触发原因。
-fn log_fault_output(
-    cause: &str,
-    reason: Option<&String>,
-    phase: SessionPhase,
-    result: &Result<(), String>,
-) {
-    let data = json!({"cause": cause, "reason": reason, "phase": format!("{phase:?}"), "ok": result.is_ok(), "error": result.as_ref().err()});
-    let msg = format!(
-        "写出故障输出（{cause}）{}",
-        reason.map(|r| format!("：{r}")).unwrap_or_default()
-    );
-    applog::emit_event(
-        &codes::S7_FAULT_OUTPUT,
-        &msg,
-        Fields::default().with_data(data),
-    );
-}

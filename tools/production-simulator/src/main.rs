@@ -14,7 +14,7 @@ use std::{
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-const USAGE: &str = "GlueSight 独立生产模拟器\n  --init <新目录>                    生成三相机灰度通路样本与配置\n  --config <simulator.json>          交互运行：run N / run 0（连续）/ stop（本件后停止）/ reset / quit\n  --config <simulator.json> --cycles N  自动运行N件（0为连续）\n  --config <simulator.json> --check   校验配置与图像，不监听端口\n工具仅监听127.0.0.1。模拟结果由GlueSight真实测量，不保证演示条图判OK。";
+const USAGE: &str = "GlueSight 独立生产模拟器\n  --init <新目录>                    生成三相机灰度通路样本与配置\n  --config <simulator.json>          交互运行：run N / run 0（连续）/ stop（本件后停止）/ quit\n  --config <simulator.json> --cycles N  自动运行N件（0为连续）\n  --config <simulator.json> --check   校验配置与图像，不监听端口\n工具仅监听127.0.0.1。模拟结果由GlueSight真实测量，不保证演示条图判OK。";
 
 #[tokio::main]
 async fn main() {
@@ -92,14 +92,6 @@ async fn run() -> Result<(), String> {
         config.plc_port, config.plc_db, config.pc_db, config.product_code
     );
     let cameras = Arc::new(cameras);
-    let (monitor_plc, monitor_cameras) = (plc.clone(), cameras.clone());
-    let monitor = tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_millis(10));
-        loop {
-            tick.tick().await;
-            monitor_plc.poll(&monitor_cameras);
-        }
-    });
     let stop = Arc::new(AtomicBool::new(false));
     let sequence = Arc::new(AtomicU64::new(0));
     let result = if let Some(cycles) = cycles {
@@ -108,7 +100,7 @@ async fn run() -> Result<(), String> {
             _ = tokio::signal::ctrl_c() => Ok(()),
         }
     } else {
-        println!("命令：run N / run 0（连续）/ stop（本件后停止）/ reset / quit");
+        println!("命令：run N / run 0（连续）/ stop（本件后停止）/ quit");
         let mut lines = BufReader::new(tokio::io::stdin()).lines();
         let mut job: Option<tokio::task::JoinHandle<Result<(), String>>> = None;
         loop {
@@ -149,15 +141,9 @@ async fn run() -> Result<(), String> {
                 ["stop"] => {
                     stop.store(true, Ordering::SeqCst);
                 }
-                ["reset"] => {
-                    for camera in cameras.iter() {
-                        camera.set_gate(false);
-                    }
-                    plc.request_reset();
-                }
                 ["quit"] => break,
                 [] => {}
-                _ => eprintln!("命令：run N / stop / reset / quit"),
+                _ => eprintln!("命令：run N / stop / quit"),
             }
         }
         if let Some(job) = job {
@@ -168,6 +154,5 @@ async fn run() -> Result<(), String> {
     for camera in cameras.iter() {
         camera.set_gate(false);
     }
-    monitor.abort();
     result
 }

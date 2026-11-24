@@ -60,9 +60,9 @@ fn work_in_progress_or_unwritten_records_then_project_switch_is_refused() {
     };
     let cases = [
         (
-            "在途件或未结事务",
+            "在途件",
             ProjectSwitch {
-                block: Some("检测仍有在途工件，完成握手或复位故障后再切换站点模式".into()),
+                block: Some("检测仍有在途工件，工件结束后再切换项目".into()),
                 ..idle()
             },
         ),

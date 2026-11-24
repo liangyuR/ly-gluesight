@@ -1,5 +1,4 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { RotateCcw } from "lucide-react";
 import { Alert, Button, Card, Chip, Dialog, EmptyState, Progress as ProgressBar, SegmentedControl, Select } from "qing-steel";
 import "./inspect.css";
 import { BurstRuntimeFrame } from "../features/workspace/RuntimeFrame";
@@ -26,7 +25,6 @@ import {
   type Snapshot,
   type Verdict,
 } from "../features/cycle";
-import { usePlcOperationState } from "../features/plc/api";
 import { TitlebarContent } from "../layout/TitlebarContent";
 
 function verdictParts(v: Verdict) {
@@ -34,28 +32,20 @@ function verdictParts(v: Verdict) {
   return { code, detail: detail ?? "整件合格" };
 }
 
-const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "接件", ACQUIRE: "采集", DRAIN: "收尾", JUDGE: "判定", REPORT: "回写", RELEASE: "释放", FAULT: "故障" };
+const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "接件", ACQUIRE: "采集", DRAIN: "收尾", JUDGE: "判定", FAULT: "故障" };
 
 const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label: "整件布置" }];
 
 export default function InspectPage() {
   const { snapshot, logs } = useCycle();
   const recipes = useRecipes();
-  const { handshake } = usePlcOperationState();
-  // 真机任何阶段都可软件复位（协议 8：PC 在任何状态都可置 99），沿用后端的复位前置检查：string 为阻塞原因，null 为可复位，undefined 为尚未核对。
-  const s7Reset = handshake;
-  const resetBlockedReason = !handshake ? "正在核对 PLC 会话状态" : s7Reset?.resetBlockedReason || "";
-  const resetPendingCheck = !!s7Reset && s7Reset.resetBlockedReason === undefined;
-  const resetInFlight = handshake?.requestSeq != null;
-  const [confirmReset, setConfirmReset] = useState(false);
   const [view, setView] = useState<"image" | "part">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
   const [seqSelection, setSeqSelection] = useState<{ scope: string; seq: number } | null>(null);
   const [pendingRecipe, setPendingRecipe] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState("");
-  const [action, setAction] = useState<"switch" | "reset" | null>(null);
-  const [resetError, setResetError] = useState("");
-  const activeAction = useRef<"switch" | "reset" | null>(null);
+  const [action, setAction] = useState<"switch" | null>(null);
+  const activeAction = useRef<"switch" | null>(null);
   const mounted = useRef(false);
   const switchRequest = useRef(0);
 
@@ -64,8 +54,7 @@ export default function InspectPage() {
   const summary = recipes.find((r) => r.id === layoutId);
   const layout = useLayout(layoutId, part ? part.recipeRevision : summary?.revisionId);
   const phase = snapshot?.phase ?? "IDLE";
-  const showReset = true;
-  const settled = phase === "REPORT" || phase === "RELEASE" || phase === "IDLE" || phase === "FAULT";
+  const settled = phase === "IDLE" || phase === "FAULT";
   const candidateResult = settled ? (snapshot?.result ?? null) : null;
   const result = candidateResult && (!part || (candidateResult.cycleId === part.cycleId && candidateResult.recipeId === part.recipeId)) ? candidateResult : null;
   const partResult = result && part && result.cycleId === part.cycleId ? result : null;
@@ -76,16 +65,12 @@ export default function InspectPage() {
   const latestSeq = burst?.groups.reduce<number | null>((latest, group) => latest == null || group.seq > latest ? group.seq : latest, null) ?? null;
   const burstManual = seqSelection?.scope === burstScope && !!burst?.groups.some(group => group.seq === seqSelection.seq);
   const burstSeq = burstManual ? seqSelection!.seq : latestSeq;
-  const operationScope = `${part?.cycleId ?? "idle"}:${snapshot?.since}:${snapshot?.fault ?? ""}`;
   const { readiness, status: readinessStatus, error: readinessError } = useReadiness(`${phase}:${snapshot?.fault ?? ""}:${snapshot?.activeRecipeId ?? ""}:${snapshot?.productSource ?? ""}:${snapshot?.alarms.length ?? 0}`);
-  const currentOperation = useRef({ phase, scope: operationScope });
-  currentOperation.current = { phase, scope: operationScope };
 
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; switchRequest.current++; };
   }, []);
-  useEffect(() => setResetError(""), [phase, operationScope]);
 
   const resumeFollowing = () => setSeqSelection(null);
   const selectGroup = (seq: number) => {
@@ -123,18 +108,6 @@ export default function InspectPage() {
       if (mounted.current) setAction(null);
     }
   };
-  const resetFault = async () => {
-    if (activeAction.current || !showReset || resetBlockedReason) return;
-    const scope = operationScope;
-    activeAction.current = "reset"; setAction("reset"); setResetError("");
-    try { await cycleApi.reset(); }
-    catch (error) {
-      if (mounted.current && currentOperation.current.scope === scope) setResetError(errorText(error));
-    } finally {
-      activeAction.current = null;
-      if (mounted.current) setAction(null);
-    }
-  };
 
   const busy = !!snapshot && phase !== "IDLE" && phase !== "FAULT";
   return (
@@ -164,16 +137,7 @@ export default function InspectPage() {
         <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
         {snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} compact />}
         <Button size="sm" variant="text" onClick={() => setDiagnostics("readiness")}>诊断</Button>
-        {showReset && (
-          <>
-            <ContextHelp label="复位条件">软件复位请求 PLC 在 10 秒内返回空闲；未响应可重新发起，也可在现场由 PLC 复位。</ContextHelp>
-            <Button size="sm" variant="text" onClick={() => setConfirmReset(true)} disabled={action !== null || !!resetBlockedReason} title={resetBlockedReason || undefined} loading={action === "reset"} leadingIcon={<RotateCcw size={13} />}>
-              {action === "reset" ? "复位中…" : "软件复位"}
-            </Button>
-          </>
-        )}
       </div></TitlebarContent>
-      {resetError && <Alert tone="ng">{resetError}</Alert>}
       {!!snapshot?.measurementWorkers.timedOut && <Alert tone="ng">
         测量线程超时未返回：{snapshot.measurementWorkers.timedOut} / {snapshot.measurementWorkers.capacity}，当前可用容量 {snapshot.measurementWorkers.availableCapacity}。
         {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，新到的工件无法检测。"}
@@ -181,7 +145,7 @@ export default function InspectPage() {
       {snapshot?.recordingAlarm && <Alert tone="warn">
         原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查录制盘空间与录制目录写权限，下一件完整保存后自动消除。
       </Alert>}
-      <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} resetBlockedReason={showReset ? resetBlockedReason : ""} resetPendingCheck={showReset && resetPendingCheck} />
+      <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="prod-body">
         <div className="prod-main burst">
@@ -226,22 +190,6 @@ export default function InspectPage() {
       </div>
 
       {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} selectedSeq={burstSeq} logs={logs} />}
-      {confirmReset && showReset && (
-        <Dialog
-          open
-          title="软件复位"
-          onOpenChange={open => { if (!open) setConfirmReset(false); }}
-          footer={
-            <>
-              <Button onClick={() => setConfirmReset(false)}>取消</Button>
-              <Button variant="filled" disabled={action !== null || !!resetBlockedReason} onClick={() => { setConfirmReset(false); void resetFault(); }}>确认复位</Button>
-            </>
-          }
-        >
-          <p>软件复位：PC 请求复位，等待 PLC 响应（10 s 内）。</p>
-          {resetInFlight && <p role="note">在途件将记为未检后复位。</p>}
-        </Dialog>
-      )}
       {pendingRecipe && (
         <Dialog
           open
