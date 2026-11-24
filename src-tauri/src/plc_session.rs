@@ -199,7 +199,7 @@ pub enum SessionEvent {
     Start(Request),
     /// 工件结束（inspecting 回 0）
     End(Instant),
-    /// 在途件没等到工件结束就被换件；节拍记中断后调用 [`PlcSession::settle`]
+    /// 在途件被换件：没等到工件结束，或结果还没出下一件已到；节拍记中断后调用 [`PlcSession::settle`]
     Lost(String),
 }
 
@@ -502,7 +502,17 @@ impl PlcSession {
                 }
                 Ok(SessionEvent::None)
             }
-            SessionPhase::Draining | SessionPhase::NotReady => Ok(SessionEvent::None),
+            // PLC 不等 PC：本件结果还没出、下一件已经到达时，这个结果 PLC 不会再取，放下本件去接新件
+            SessionPhase::Draining => {
+                let current = self.request().ok_or("在途件丢失")?.request_seq;
+                if inspecting || seq != current {
+                    return Ok(SessionEvent::Lost(format!(
+                        "件序号 {current} 的结果还没出，PLC 已开始下一件"
+                    )));
+                }
+                Ok(SessionEvent::None)
+            }
+            SessionPhase::NotReady => Ok(SessionEvent::None),
         }
     }
 
@@ -624,10 +634,12 @@ impl PlcSession {
         self.persist().await;
     }
 
-    /// 在途件已由节拍按中断记录（通讯未就绪、中途换件、等不到工件结束）：放下它，不回结果，PLC 换下一件后照常接件。
+    /// 在途件已由节拍按中断记录（通讯未就绪、中途换件、等不到工件结束、结果没出下一件已到）：放下它，不回结果，
+    /// PLC 换下一件后照常接件。还在检的件记下序号不再重新接；已结束的件之后再在检的就是新件。
     pub async fn settle(&mut self) {
         if let Some(pending) = self.pending.take() {
-            self.settled = Some(pending.request.request_seq);
+            let ended = self.phase == SessionPhase::Draining;
+            self.settled = (!ended).then_some(pending.request.request_seq);
             self.persist().await;
         }
         if self.phase != SessionPhase::NotReady {

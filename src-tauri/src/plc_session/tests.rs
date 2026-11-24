@@ -318,7 +318,30 @@ async fn stale_result_with_the_new_parts_sequence_is_cleared_while_it_is_inspect
     rig.finish().await;
 }
 
-/// 结果出得晚、PLC 已切到下一件：本件结果不再回写（交付失败），下一件照常登记。
+/// PLC 不等 PC：上一件结果还没出、下一件已到达时，上一件按中断放下、不回结果，新件马上登记（不等上一件收尾，
+/// 否则新件的帧计数基线建晚了会丢帧）；PLC 重置序号后与上一件同号的新件同样处理。
+#[tokio::test]
+async fn next_part_arriving_before_result_loses_previous_part_and_is_taken_at_once() {
+    for (name, next) in [("next-part-new-seq", 2), ("next-part-same-seq", 1)] {
+        let mut rig = Rig::new(name).await;
+        rig.part(1, "SN-1").await;
+        rig.plc.arrive(next, "SN-NEXT");
+        rig.until("上一件被换下", |event| {
+            matches!(event, SessionEvent::Lost(_)).then_some(())
+        })
+        .await;
+        rig.session.settle().await;
+        let request = rig.started().await;
+        assert_eq!(
+            (request.request_seq, request.sn.as_str()),
+            (next, "SN-NEXT")
+        );
+        assert_eq!(rig.plc.get(tag::RESULT_SEQ), 0, "{name}");
+        rig.finish().await;
+    }
+}
+
+/// 结果写出前的最后一次核对：PLC 已切到下一件时本件结果不再回写（交付失败），下一件照常登记。
 #[tokio::test]
 async fn result_arriving_after_plc_moved_on_is_not_written() {
     let mut rig = Rig::new("late-result").await;
