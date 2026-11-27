@@ -971,6 +971,9 @@ impl Store {
              CREATE INDEX IF NOT EXISTS parts_project_ts ON parts(project_id, ts);
              CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
              CREATE INDEX IF NOT EXISTS parts_recording_directory ON parts(recording_directory);
+             CREATE INDEX IF NOT EXISTS parts_maintenance
+                 ON parts(project_id, source, mode, recipe_id, recipe_version DESC, verdict)
+                 WHERE mode = 'maintenanceCollect' OR mode = 'maintenanceShadow';
              CREATE UNIQUE INDEX IF NOT EXISTS parts_cycle ON parts(cycle_id) WHERE cycle_id IS NOT NULL;
              DROP INDEX IF EXISTS parts_unresolved_delivery;
              CREATE TABLE IF NOT EXISTS part_points (

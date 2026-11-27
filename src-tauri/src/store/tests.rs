@@ -682,7 +682,7 @@ fn upgrading_v10_removes_retired_records_without_losing_production_and_prevents_
     let retained = store.detail(ids[0]).unwrap();
     {
         let conn = store.conn.lock().unwrap();
-        conn.execute_batch("DROP TRIGGER production_source_insert; DROP TRIGGER production_source_update; PRAGMA ignore_check_constraints = ON; PRAGMA user_version = 10;").unwrap();
+        conn.execute_batch("DROP INDEX parts_maintenance; DROP TRIGGER production_source_insert; DROP TRIGGER production_source_update; PRAGMA ignore_check_constraints = ON; PRAGMA user_version = 10;").unwrap();
         for (id, source) in
             ids[1..]
                 .iter()
