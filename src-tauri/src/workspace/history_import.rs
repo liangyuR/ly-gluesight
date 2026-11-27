@@ -3,6 +3,7 @@
 //! 采集轮次（见 `pieces`）。
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use super::*;
 use crate::camera::CameraImaging;
@@ -199,7 +200,8 @@ pub(super) fn assess(
     let mut saved = vec![BTreeSet::new(); cameras.len()];
     let mut history_frames = Vec::new();
     let mut baselines: Vec<Option<u64>> = vec![None; cameras.len()];
-    let mut stamps: Vec<Vec<i64>> = vec![Vec::new(); cameras.len()];
+    let mut stamps: Vec<Option<(usize, i64, i64)>> = vec![None; cameras.len()];
+    let mut expected_file = String::new();
     let (mut unsaved, mut manual, mut misnamed, mut counter_gap) =
         (0usize, false, false, BTreeSet::new());
     for frame in frames {
@@ -216,8 +218,12 @@ pub(super) fn assess(
             misnamed = true;
             continue;
         };
-        if let Some(ts) = frame["ts"].as_i64() {
-            stamps[camera].push(ts);
+        let timestamp = frame["ts"].as_i64();
+        if let Some(ts) = timestamp {
+            let (samples, first, last) = stamps[camera].get_or_insert((0, ts, ts));
+            *samples += 1;
+            *first = (*first).min(ts);
+            *last = (*last).max(ts);
         }
         if frame["available"].as_bool() != Some(true) {
             unsaved += 1;
@@ -225,9 +231,13 @@ pub(super) fn assess(
         }
         manual |= frame["manual"].as_bool() == Some(true);
         let file = frame["file"].as_str().unwrap_or_default();
-        if frame["cameraId"].as_str() != Some(cameras[camera].as_str())
-            || file != format!("{}_s{seq:06}.pgm", cameras[camera])
-        {
+        if frame["cameraId"].as_str() != Some(cameras[camera].as_str()) {
+            misnamed = true;
+            continue;
+        }
+        expected_file.clear();
+        write!(&mut expected_file, "{}_s{seq:06}.pgm", cameras[camera]).unwrap();
+        if file != expected_file {
             misnamed = true;
             continue;
         }
@@ -235,7 +245,7 @@ pub(super) fn assess(
         match counter.checked_sub(seq) {
             Some(base) if *baselines[camera].get_or_insert(base) == base => {}
             _ => {
-                counter_gap.insert(cameras[camera].clone());
+                counter_gap.insert(cameras[camera].as_str());
             }
         }
         if !saved[camera].insert(seq) {
@@ -259,7 +269,7 @@ pub(super) fn assess(
                 frame_counter: counter,
                 width,
                 height,
-                ts: frame["ts"].as_i64().unwrap_or(summary.ts),
+                ts: timestamp.unwrap_or(summary.ts),
                 source: dir.join(file),
             });
         }
@@ -272,20 +282,15 @@ pub(super) fn assess(
             frames: frame_count(seqs.len()),
         })
         .collect();
-    let spans: Vec<(usize, i64)> = stamps
-        .iter()
-        .filter_map(|s| {
-            let span = s.iter().max()? - s.iter().min()?;
-            (span > 0).then_some((s.len(), span))
-        })
-        .collect();
-    view.duration_ms = spans.iter().map(|&(_, span)| span as u64).max();
-    view.measured_fps = median(
-        spans
-            .iter()
-            .map(|&(n, span)| (n - 1) as f64 * 1000.0 / span as f64)
-            .collect(),
-    );
+    let mut rates = Vec::with_capacity(stamps.len());
+    for (samples, first, last) in stamps.into_iter().flatten() {
+        let span = last.abs_diff(first);
+        if span > 0 {
+            view.duration_ms = Some(view.duration_ms.unwrap_or(0).max(span));
+            rates.push((samples - 1) as f64 * 1000.0 / span as f64);
+        }
+    }
+    view.measured_fps = median(rates);
     let missing = part["missingFrames"].as_array().map_or(0, Vec::len);
     let dropped = part["rawDropped"].as_array().map_or(0, Vec::len);
     let absent =

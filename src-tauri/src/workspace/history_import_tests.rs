@@ -245,3 +245,39 @@ fn camera_config_differs_from_recording_then_piece_still_usable_with_warning() {
     );
     assert_eq!(assessed.view.warnings.len(), cameras.len());
 }
+
+#[test]
+fn recording_timing_uses_all_valid_timestamps_including_unsaved_images() {
+    let doc = crate::recipe::samples_burst();
+    let cameras = doc.plan_cameras();
+    let timestamps = [
+        [Some(200), Some(0), Some(100)],
+        [Some(400), Some(0), None],
+        [Some(20), Some(20), None],
+    ];
+    let mut frames = Vec::new();
+    for (camera, (id, times)) in cameras.iter().zip(timestamps).enumerate() {
+        for (index, ts) in times.into_iter().enumerate() {
+            let seq = index + 1;
+            frames.push(json!({
+                "camera": camera, "cameraId": id, "seq": seq, "ts": ts,
+                "available": (camera, seq) != (0, 3), "frameCounter": 100 + seq,
+                "file": format!("{id}_s{seq:06}.pgm"), "width": 2, "height": 1,
+            }));
+        }
+    }
+    let part =
+        json!({"cycleId": CYCLE, "cameras": cameras, "groupCount": GROUPS, "frames": frames});
+    let assessed = assess(
+        &doc,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &summary(CYCLE),
+        &recording(Some(Path::new("recorded"))),
+        Ok((PathBuf::from("recorded"), part)),
+        false,
+    );
+    assert!(!assessed.view.complete);
+    assert_eq!(assessed.view.duration_ms, Some(400));
+    assert_eq!(assessed.view.measured_fps, Some(6.25));
+}
