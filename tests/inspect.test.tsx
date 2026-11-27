@@ -38,7 +38,7 @@ beforeEach(() => {
   state = snapshot(); layout = candidate().layout; values = {};
   recipeList = [burstSummary(recipe()), burstSummary(recipe("B"))];
   report = readiness();
-  vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, snapshotError: null, retrySnapshot: vi.fn() }));
+  vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, snapshotCurrent: true, snapshotError: null, subscriptionError: null, retrySnapshot: vi.fn() }));
   vi.mocked(useLayout).mockImplementation(() => layout);
   vi.mocked(cycleApi.selectRecipe).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.setMaintenance).mockReset().mockResolvedValue(undefined);
@@ -53,10 +53,21 @@ const manual = () => nativeSelect("当前检测配方");
 
 it("在线状态首次读取失败 → 在当前页显示错误并提供重新读取", async () => {
   const retrySnapshot = vi.fn();
-  vi.mocked(useCycle).mockReturnValue({ snapshot: null, snapshotError: "暂时无法读取在线状态", retrySnapshot });
+  vi.mocked(useCycle).mockReturnValue({ snapshot: null, snapshotCurrent: false, snapshotError: "暂时无法读取在线状态", subscriptionError: null, retrySnapshot });
   render(<MemoryRouter><InspectPage /></MemoryRouter>);
   expect(screen.getByText("暂时无法读取在线状态")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "重新读取" }));
+  expect(retrySnapshot).toHaveBeenCalledOnce();
+});
+
+it("在线订阅失败且仍有上次快照 → 允许重连，旧状态不能用于操作", async () => {
+  const retrySnapshot = vi.fn();
+  vi.mocked(useCycle).mockReturnValue({ snapshot: state, snapshotCurrent: false, snapshotError: null, subscriptionError: "无法接收实时状态", retrySnapshot });
+  render(<MemoryRouter><InspectPage /></MemoryRouter>);
+  expect(screen.getByText("无法接收实时状态")).toBeVisible();
+  expect(manual()).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "维护模式" })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "重新连接" }));
   expect(retrySnapshot).toHaveBeenCalledOnce();
 });
 

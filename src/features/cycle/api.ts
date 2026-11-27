@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { errorText } from "../../lib/errors";
 import { subscribe } from "../plc";
@@ -116,25 +117,33 @@ export function useRecipes() {
 
 export function useCycle() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [snapshotCurrent, setSnapshotCurrent] = useState(false);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
   const latest = useRef<Snapshot | null>(null);
   const retry = useRef<(() => void) | null>(null);
   const retrySnapshot = useCallback(() => retry.current?.(), []);
 
   useEffect(() => {
-    let alive = true, receivedSnapshot = false, reading = false;
+    if (!isTauri()) return;
+    let alive = true, receivedSnapshot = false, reading = false, connecting = false;
+    let stopListening: UnlistenFn | undefined;
     const retired = new Set<string>();
     const update = (next: Snapshot) => {
       if (!alive || next.since < (latest.current?.since ?? -Infinity) || (next.part && retired.has(next.part.cycleId))) return;
       const previous = latest.current?.part?.cycleId;
       if (previous && previous !== next.part?.cycleId) retired.add(previous);
       if (retired.size > 128) retired.delete(retired.values().next().value!);
-      if (!latest.current) setSnapshotError(null);
+      if (!receivedSnapshot) {
+        receivedSnapshot = true;
+        setSnapshotError(null);
+        if (stopListening) setSnapshotCurrent(true);
+      }
       latest.current = next;
       setSnapshot(next);
     };
     const read = () => {
-      if (!alive || reading || receivedSnapshot || latest.current) return;
+      if (!alive || !stopListening || reading || receivedSnapshot) return;
       reading = true;
       setSnapshotError(null);
       void cycleApi.snapshot().then(value => {
@@ -143,13 +152,35 @@ export function useCycle() {
         if (alive && !receivedSnapshot) setSnapshotError(errorText(error));
       }).finally(() => { reading = false; });
     };
-    const off = subscribe<Snapshot>("cycle://snapshot", value => { receivedSnapshot = true; update(value); });
-    retry.current = read;
-    read();
-    return () => { alive = false; retry.current = null; off(); };
+    const connect = async () => {
+      if (!alive || connecting || stopListening) return;
+      connecting = true;
+      receivedSnapshot = false;
+      setSnapshotCurrent(false);
+      setSubscriptionError(null);
+      setSnapshotError(null);
+      let acceptEvents = true;
+      let stop: UnlistenFn;
+      try {
+        stop = await listen<Snapshot>("cycle://snapshot", event => { if (acceptEvents) update(event.payload); });
+      } catch (error) {
+        acceptEvents = false;
+        if (alive) setSubscriptionError(errorText(error));
+        return;
+      } finally {
+        connecting = false;
+      }
+      if (!alive) { stop(); return; }
+      stopListening = stop;
+      if (receivedSnapshot) setSnapshotCurrent(true);
+      else read();
+    };
+    retry.current = () => { if (stopListening) read(); else void connect(); };
+    void connect();
+    return () => { alive = false; retry.current = null; stopListening?.(); };
   }, []);
 
-  return { snapshot, snapshotError, retrySnapshot };
+  return { snapshot, snapshotCurrent, snapshotError, subscriptionError, retrySnapshot };
 }
 
 /** 开工就绪报告：定时刷新，配方库变化或 refreshKey 变化时立即重查。 */

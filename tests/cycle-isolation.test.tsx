@@ -1,12 +1,13 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { listen, type Event as TauriEvent } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cycleApi, useCycle } from "../src/features/cycle/api";
-import { subscribe } from "../src/features/plc";
 import type { Snapshot } from "../src/features/cycle/types";
 import { burstPartView } from "./cycle-visual-fixtures";
 import { deferred, snapshot } from "./fixtures";
 
-vi.mock("../src/features/plc", () => ({ subscribe: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 const events = new Map<string, (value: unknown) => void>();
 const emit = (event: string, value: unknown) => act(() => events.get(event)?.(value));
@@ -14,11 +15,11 @@ const state = (cycleId = "cycle-1", since = 1): Snapshot => ({ ...snapshot("ACQU
 
 beforeEach(() => {
   events.clear();
-  vi.mocked(subscribe).mockImplementation((event, listener) => {
-    events.set(event, listener as (value: unknown) => void);
+  vi.mocked(listen).mockClear().mockImplementation(async (event, listener) => {
+    events.set(event, payload => listener({ event, id: 1, payload } as TauriEvent<never>));
     return () => { events.delete(event); };
   });
-  vi.spyOn(cycleApi, "snapshot").mockResolvedValue(state());
+  vi.spyOn(cycleApi, "snapshot").mockClear().mockResolvedValue(state());
 });
 
 describe("在线周期身份与迟到响应隔离", () => {
@@ -33,6 +34,27 @@ describe("在线周期身份与迟到响应隔离", () => {
     if (arrives) emit("cycle://snapshot", state("cycle-2", 2));
     await act(async () => retry.resolve(state()));
     expect(hook.result.current.snapshot?.part?.cycleId).toBe(arrives ? "cycle-2" : "cycle-1");
+    expect(listen).toHaveBeenCalledOnce();
+  });
+
+  it("周期监听注册失败 → 重连后读取状态并接收新周期，旧监听失效", async () => {
+    let oldEvent = (_: Snapshot) => {};
+    vi.mocked(listen).mockImplementationOnce(async (event, listener) => {
+      oldEvent = payload => listener({ event, id: 1, payload } as TauriEvent<never>);
+      throw new Error("无法注册监听");
+    });
+    const hook = renderHook(useCycle);
+    await waitFor(() => expect(hook.result.current.subscriptionError).toBe("无法注册监听"));
+    expect(hook.result.current.snapshotCurrent).toBe(false);
+    expect(cycleApi.snapshot).not.toHaveBeenCalled();
+
+    act(() => hook.result.current.retrySnapshot());
+    await waitFor(() => expect(hook.result.current.snapshotCurrent).toBe(true));
+    expect(hook.result.current.subscriptionError).toBeNull();
+    expect(cycleApi.snapshot).toHaveBeenCalledOnce();
+    emit("cycle://snapshot", state("cycle-2", 2));
+    act(() => oldEvent(state("expired-listener", 3)));
+    expect(hook.result.current.snapshot?.part?.cycleId).toBe("cycle-2");
   });
 
   it("同 SN 新周期已经开始 → 迟到的旧周期快照不能覆盖当前件", async () => {

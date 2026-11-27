@@ -31,7 +31,7 @@ const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label
 const noSegments: PathSegment[] = [];
 
 export default function InspectPage() {
-  const { snapshot, snapshotError, retrySnapshot } = useCycle();
+  const { snapshot, snapshotCurrent, snapshotError, subscriptionError, retrySnapshot } = useCycle();
   const recipes = useRecipes();
   const [view, setView] = useState<"image" | "part">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
@@ -80,8 +80,8 @@ export default function InspectPage() {
     if (!selectGroup(seq, camera) || !partResult || !part) return;
     setLastEvidence({ cycleId: part.cycleId, sn: part.sn, seq, camera, cameraName: camera == null ? undefined : part.burst.cameras[camera] });
   };
-  const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
-  const switchProblem = !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
+  const canSwitch = snapshotCurrent && (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
+  const switchProblem = !snapshotCurrent ? "实时状态未确认，暂时不能切换配方" : !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
 
   const closeSwitch = () => {
     if (activeAction.current === "switch") return;
@@ -111,7 +111,8 @@ export default function InspectPage() {
     }
   };
 
-  const busy = !!snapshot && phase !== "IDLE" && phase !== "FAULT";
+  const busy = snapshotCurrent && phase !== "IDLE" && phase !== "FAULT";
+  const phaseLabel = snapshotCurrent ? phaseLabels[phase] : subscriptionError ? "实时状态连接失败" : snapshotError ? "状态读取失败" : "状态确认中";
   return (
     <div className="prod">
       <TitlebarContent slot="details"><div className="inspect-title-details" role="group" aria-label="当前检测信息">
@@ -136,10 +137,14 @@ export default function InspectPage() {
         </Chip>
       </div></TitlebarContent>
       <TitlebarContent slot="actions"><div className="inspect-title-actions" role="group" aria-label="在线检测操作">
-        <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : snapshotError ? "状态读取失败" : "状态确认中"}</span>
-        {snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} compact />}
+        <span className={`qs-badge prod-phase${snapshotCurrent && phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{phaseLabel}</span>
+        {snapshotCurrent && snapshot && <MaintenanceToggle maintenance={snapshot.maintenance} compact />}
         <Button size="sm" variant="text" onClick={() => setDiagnostics("readiness")}>诊断</Button>
       </div></TitlebarContent>
+      {subscriptionError && <Alert tone="warn" title="在线检测实时订阅失败"
+        action={<Button size="sm" onClick={retrySnapshot}>重新连接</Button>}>
+        <div>{subscriptionError}</div>{snapshot && <div>页面保留的上次状态仅供参考。</div>}
+      </Alert>}
       {snapshotError && <Alert tone="warn" title="在线检测状态读取失败"
         action={<Button size="sm" onClick={retrySnapshot}>重新读取</Button>}>{snapshotError}</Alert>}
       {!!snapshot?.measurementWorkers.timedOut && <Alert tone="ng">
@@ -149,7 +154,7 @@ export default function InspectPage() {
       {snapshot?.recordingAlarm && <Alert tone="warn">
         原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查录制盘空间与录制目录写权限，下一件完整保存后自动消除。
       </Alert>}
-      <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
+      <InspectionReadiness snapshot={snapshotCurrent ? snapshot : null} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="prod-body">
         <div className="prod-main">
