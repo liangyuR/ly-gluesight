@@ -22,11 +22,52 @@ impl TestFiles {
 
 impl Drop for TestFiles {
     fn drop(&mut self) {
-        for file in ["parts.sqlite", "parts.sqlite-wal", "parts.sqlite-shm"] {
-            let _ = fs::remove_file(self.0.join(file));
+        for database in ["parts.sqlite", "plc.sqlite"] {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = fs::remove_file(self.0.join(format!("{database}{suffix}")));
+            }
         }
         let _ = fs::remove_dir(&self.0);
     }
+}
+
+#[test]
+fn invalid_plc_row_keeps_read_logs_in_the_zip_and_records_the_failure() {
+    let files = TestFiles::new();
+    let path = files.0.join("plc.sqlite");
+    let _logbook = ly_plc::Logbook::open(&path, std::sync::Arc::new(|_| {}), 30).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let ts = ly_plc::now_ms();
+    conn.execute(
+        "INSERT INTO plc_log (ts,level,category,message,context) VALUES (?1,'info','part','开工','requestSeq=3'), (?2,'warn','write',x'FF',NULL)",
+        [ts, ts + 1],
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut package = Package::new(Cursor::new(Vec::new()));
+    let count = write_plc_logs(&mut package, &path, ts, ts + 1, MAX_PLC_LOGS).unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(package.notes.len(), 1);
+    assert!(package.notes[0].starts_with("PLC 日志读取失败"));
+    let packed = &package.files[0];
+    let mut archive = zip::ZipArchive::new(package.zip.finish().unwrap()).unwrap();
+    let mut jsonl = String::new();
+    archive
+        .by_name("logs/plc.jsonl")
+        .unwrap()
+        .read_to_string(&mut jsonl)
+        .unwrap();
+    assert_eq!(packed.bytes, jsonl.len() as u64);
+    assert_eq!(
+        packed.sha256,
+        format!("{:x}", Sha256::digest(jsonl.as_bytes()))
+    );
+    let entry: serde_json::Value = serde_json::from_str(&jsonl).unwrap();
+    assert_eq!(entry["message"], "开工");
+    assert_eq!(entry["category"], "part");
+    assert_eq!(entry["context"], "requestSeq=3");
+    assert_eq!(entry["t"], applog::local_time(ts).unwrap());
 }
 
 #[test]

@@ -11,6 +11,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::applog;
 use crate::judge::Verdict;
+use crate::plc::log_snapshot::{self, ScanError};
 use crate::store::{HistoryQuery, HistoryScope, PartDetail, RecordingEvidence, Store};
 use crate::ziparchive::ZipWriter;
 
@@ -18,7 +19,7 @@ const MAX_RANGE_MS: i64 = 31 * 86_400_000;
 const MAX_PARTS: usize = 5000;
 const MAX_IMAGE_PARTS: usize = 200;
 const MAX_IMAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const MAX_PLC_LOGS: i64 = 200_000;
+const MAX_PLC_LOGS: u32 = 200_000;
 const MAX_CONFIG_FILE: u64 = 8 * 1024 * 1024;
 
 const README: &str = r#"# 诊断包说明
@@ -298,20 +299,39 @@ struct PlcLine<'a> {
     entry: &'a ly_plc::LogEntry,
 }
 
-/// PLC 日志按时间正序逐行写出，每行补本地时间 t。
-fn plc_jsonl(mut entries: Vec<ly_plc::LogEntry>) -> Vec<u8> {
-    entries.sort_by_key(|e| (e.ts, e.id));
-    let mut out = Vec::new();
-    for entry in &entries {
-        if let Ok(line) = serde_json::to_string(&PlcLine {
-            t: applog::local_time(entry.ts),
-            entry,
-        }) {
-            out.extend_from_slice(line.as_bytes());
-            out.push(b'\n');
-        }
-    }
-    out
+fn write_plc_logs<W: Write + Seek>(
+    package: &mut Package<W>,
+    path: &Path,
+    from: i64,
+    to: i64,
+    limit: u32,
+) -> Result<u64, String> {
+    let mut count = 0;
+    let mut note = None;
+    package.add_stream("logs/plc.jsonl", |out| {
+        let scan = log_snapshot::visit_recent(path, from, to, limit, |entry| {
+            serde_json::to_writer(
+                &mut *out,
+                &PlcLine {
+                    t: applog::local_time(entry.ts),
+                    entry: &entry,
+                },
+            )
+            .map_err(io::Error::other)?;
+            out.write_all(b"\n")?;
+            count += 1;
+            Ok(())
+        });
+        note = match scan {
+            Ok(true) => Some(format!("PLC 日志超过 {limit} 条，只打包最新的 {limit} 条")),
+            Ok(false) => None,
+            Err(ScanError::Read(error)) => Some(format!("PLC 日志读取失败：{error}")),
+            Err(ScanError::Write(error)) => return Err(error),
+        };
+        Ok(())
+    })?;
+    package.notes.extend(note);
+    Ok(count)
 }
 
 fn collect_part_ids(
@@ -389,46 +409,6 @@ fn write_part_entries<W: Write + Seek>(
         revisions,
         images: candidates.into_iter().map(|(_, part)| part).collect(),
     })
-}
-
-fn plc_logs(app: &AppHandle, from: i64, to: i64, notes: &mut Vec<String>) -> Vec<ly_plc::LogEntry> {
-    let host = app.state::<crate::plc::PlcHost>();
-    let mut offset = 0u32;
-    let mut entries = Vec::new();
-    loop {
-        let query = ly_plc::LogQuery {
-            start: Some(from),
-            end: Some(to),
-            levels: Vec::new(),
-            categories: Vec::new(),
-            point_id: None,
-            context: None,
-            keyword: None,
-            limit: Some(1000),
-            offset: Some(offset),
-        };
-        match host.engine().logbook().query(&query) {
-            Ok(page) => {
-                let full = page.items.len() == 1000;
-                entries.extend(page.items);
-                if !full {
-                    break;
-                }
-                if entries.len() as i64 >= MAX_PLC_LOGS {
-                    notes.push(format!(
-                        "PLC 日志超过 {MAX_PLC_LOGS} 条，只打包最新的 {MAX_PLC_LOGS} 条"
-                    ));
-                    break;
-                }
-                offset += 1000;
-            }
-            Err(error) => {
-                notes.push(format!("PLC 日志读取失败：{error}"));
-                break;
-            }
-        }
-    }
-    entries
 }
 
 fn part_images<W: Write + Seek>(
@@ -597,9 +577,14 @@ fn build<W: Write + Seek>(
                 .push(format!("运行日志 {name} 未打包：{error}")),
         }
     }
-    let entries = plc_logs(app, request.from, request.to, &mut package.notes);
-    let plc_logs = entries.len() as u64;
-    package.add("logs/plc.jsonl", &plc_jsonl(entries))?;
+    let plc = app.state::<crate::plc::PlcHost>();
+    let plc_logs = write_plc_logs(
+        package,
+        plc.log_path(),
+        request.from,
+        request.to,
+        MAX_PLC_LOGS,
+    )?;
     let project = crate::storage::project(app);
     package.copy_file(&project.join("project.json"), "project.json")?;
     package.copy_dir(&crate::storage::project_config(app), "config", &[])?;
