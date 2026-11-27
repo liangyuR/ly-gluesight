@@ -6,12 +6,13 @@ import HistoryDetailPage from "../src/pages/HistoryDetailPage";
 import { historyApi } from "../src/features/history/api";
 import { workspaceApi } from "../src/features/workspace/api";
 import { HistoryTrials } from "../src/features/workspace/HistoryTrials";
+import { subscribe } from "../src/features/plc";
 import { burstImageApi } from "../src/features/workspace/burstImages";
 import { useWorkspace } from "../src/features/workspace/context";
 import { scheduleFrameRead } from "../src/features/workspace/previewCache";
 import * as desktop from "../src/lib/desktop";
 import { burstJudgement, burstPartDetail, burstWorkspaceView, deferred, frameMetrics, workspaceState } from "./fixtures";
-import type { Comparison } from "../src/features/workspace/types";
+import type { CompareOptions, Comparison } from "../src/features/workspace/types";
 import type { HistoryDetailState } from "../src/features/history/types";
 
 vi.mock("../src/features/history/api", () => ({ historyApi: { overview: vi.fn(), frameDetail: vi.fn(), neighbors: vi.fn() } }));
@@ -20,12 +21,21 @@ vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   comparisonSummaries: vi.fn(), comparisonGet: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), recordFrameView: vi.fn(), historyFrameView: vi.fn(), historyCompareOptions: vi.fn(), historyCandidates: vi.fn(),
 } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), record: vi.fn() } }));
+vi.mock("../src/features/plc", async importOriginal => {
+  const actual = await importOriginal<typeof import("../src/features/plc")>();
+  return { ...actual, subscribe: vi.fn(actual.subscribe) };
+});
 let ws: ReturnType<typeof workspaceState>;
 let detail: ReturnType<typeof burstPartDetail>;
 type Entry = string | { pathname: string; state?: HistoryDetailState };
 function element(entry: Entry = "/history/1"){return <MemoryRouter initialEntries={[entry]}><Routes><Route path="/history/:id" element={<HistoryDetailPage />} />
   <Route path="/history" element={<p>历史列表页</p>} /><Route path="/recipe/:recipeId/calibration" element={<HistoryTrials recipeId="S" />} /></Routes></MemoryRouter>;}
 function show(entry?: Entry) { return render(element(entry)); }
+async function emitHistoryUpdate() {
+  const subscription = vi.mocked(subscribe).mock.calls.filter(([event]) => event === "history://updated").at(-1);
+  expect(subscription).toBeDefined();
+  await act(async () => { subscription![1](detail.summary.cycleId); });
+}
 function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleId:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
   originalVerdict:"NG_GAP",judgement:{...detail.judgement,verdict:"OK",reason:"候选合格"},measurements:[],createdAt:1,burst:null};}
 beforeEach(() => {
@@ -455,6 +465,102 @@ describe("历史详情（段配方记录）", () => {
     await waitFor(() => expect(picker).toHaveValue("B"));
     await userEvent.click(screen.getByRole("button", { name: "从原图复测整件" }));
     await waitFor(() => expect(workspaceApi.compare).toHaveBeenCalledWith("B", 4, detail.summary.id, true, expect.any(String)));
+  });
+
+  it("读取所选候选的复测选项失败 → 保留候选列表并可重试恢复重判", async () => {
+    const recorded = { id: "S", revision: 9, version: 2, name: "段配方" };
+    const other = { id: "B", revision: 4, version: 1, name: "别的型号" };
+    const available = { available: true, reason: null };
+    const initial: CompareOptions = { candidate: recorded, choices: [recorded, other], original: available, rules: available, raw: available };
+    const read = vi.mocked(workspaceApi.historyCompareOptions);
+    read.mockResolvedValue(initial);
+    const user = userEvent.setup();
+    show();
+    const picker = await screen.findByLabelText("复测配方", { selector: "select" });
+    const rule = () => screen.getByRole("button", { name: "按候选规则重判" });
+    expect(rule()).toBeEnabled();
+
+    read.mockRejectedValueOnce(new Error("暂时无法读取记录库"));
+    await user.selectOptions(picker, other.id);
+    expect(await screen.findByText("复测选项读取失败")).toBeVisible();
+    expect(rule()).toBeDisabled();
+    expect(picker).toBeEnabled();
+    expect(picker).toHaveTextContent("段配方");
+
+    const retry = deferred<CompareOptions>();
+    read.mockReturnValueOnce(retry.promise);
+    await user.click(screen.getByRole("button", { name: "重试读取复测选项" }));
+    expect(read).toHaveBeenLastCalledWith(detail.summary.id, other.id);
+    expect(rule()).toBeDisabled();
+    expect(screen.getByText("正在读取复测选项…")).toBeVisible();
+    await act(async () => { retry.resolve({ ...initial, candidate: other }); });
+    expect(screen.queryByText("复测选项读取失败")).not.toBeInTheDocument();
+    expect(picker).toHaveValue(other.id);
+    expect(rule()).toBeEnabled();
+  });
+
+  it("同件录制新增首张原图 → 刷新复测选项，随后只更新回写时间时保留选项", async () => {
+    const candidate = { id: "S", revision: 9, version: 2, name: "段配方" };
+    const available = { available: true, reason: null };
+    const options: CompareOptions = { candidate, choices: [candidate], original: available, rules: available,
+      raw: { available: false, reason: "候选相机还没有保存原图" } };
+    const read = vi.mocked(workspaceApi.historyCompareOptions);
+    detail = { ...detail, burst: { ...detail.burst!, frames: detail.burst!.frames.map(frame => ({ ...frame, rawFile: null })) },
+      recording: { ...detail.recording, state: "incomplete", available: false } };
+    vi.mocked(historyApi.overview).mockResolvedValue(detail);
+    read.mockResolvedValue(options);
+    show();
+    expect(await screen.findByText("候选相机还没有保存原图", { exact: false })).toBeVisible();
+    const raw = () => screen.getByRole("button", { name: "从原图复测整件" });
+    expect(raw()).toBeDisabled();
+
+    detail = { ...detail, burst: { ...detail.burst!, frames: detail.burst!.frames.map(frame => frame.camera === 0 && frame.seq === 1
+      ? { ...frame, rawFile: "frames/CAM-1/00001.pgm" } : frame) } };
+    vi.mocked(historyApi.overview).mockResolvedValue(detail);
+    read.mockResolvedValue({ ...options, raw: available });
+    await emitHistoryUpdate();
+    await waitFor(() => expect(raw()).toBeEnabled());
+    expect(read).toHaveBeenCalledTimes(2);
+
+    const previousReads = vi.mocked(historyApi.overview).mock.calls.length;
+    detail = structuredClone(detail);
+    detail.summary.delivery.updatedAt = 37;
+    vi.mocked(historyApi.overview).mockResolvedValue(detail);
+    await emitHistoryUpdate();
+    expect(historyApi.overview).toHaveBeenCalledTimes(previousReads + 1);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(raw()).toBeEnabled();
+  });
+
+  it("对照运行中录制状态触发选项刷新 → 同一候选的已完成对照仍显示", async () => {
+    const candidate = { id: "S", revision: 9, version: 2, name: "段配方" };
+    const available = { available: true, reason: null };
+    const options: CompareOptions = { candidate, choices: [candidate], original: available, rules: available, raw: available };
+    const refreshed = deferred<CompareOptions>();
+    const pending = deferred<Comparison>();
+    const read = vi.mocked(workspaceApi.historyCompareOptions);
+    read.mockResolvedValueOnce(options).mockReturnValue(refreshed.promise);
+    vi.mocked(workspaceApi.compare).mockReturnValueOnce(pending.promise);
+    const result: Comparison = { ...comparison(), candidateId: candidate.id, candidateRevision: candidate.revision,
+      judgement: { ...comparison().judgement, reason: "落盘更新期间完成的规则重判" } };
+    show();
+    const rule = await screen.findByRole("button", { name: "按候选规则重判" });
+    await waitFor(() => expect(rule).toBeEnabled());
+    await userEvent.click(rule);
+    await waitFor(() => expect(workspaceApi.compare).toHaveBeenLastCalledWith(candidate.id, candidate.revision, detail.summary.id, false, expect.any(String)));
+
+    detail = { ...detail, recording: { ...detail.recording, state: "incomplete", available: false } };
+    vi.mocked(historyApi.overview).mockResolvedValue(detail);
+    await emitHistoryUpdate();
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("正在读取复测选项…")).toBeVisible();
+    await act(async () => { pending.resolve(result); });
+    expect(await screen.findByText(result.judgement.reason)).toBeVisible();
+    expect(screen.getByText("正在读取复测选项…")).toBeVisible();
+
+    await act(async () => { refreshed.resolve(options); });
+    expect(screen.getByText(result.judgement.reason)).toBeVisible();
+    expect(screen.getByLabelText("已保存对照结果", { selector: "select" })).toHaveValue(result.id);
   });
 
   // 防的回归（D-SB-57）：有段没测的原图复测被当成整件结论，操作员以为没测的段也合格

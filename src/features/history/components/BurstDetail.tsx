@@ -13,7 +13,7 @@ import { burstImageApi } from "../../workspace/burstImages";
 import { workspaceApi } from "../../workspace/api";
 import { FrameViewer, KV, Panel } from "../../workspace/components";
 import { useWorkspace } from "../../workspace/context";
-import type { CompareCandidate, CompareOptions, Comparison, ComparisonSummary, FrameImage } from "../../workspace/types";
+import type { CompareOptions, Comparison, ComparisonSummary, FrameImage } from "../../workspace/types";
 import { OperationStatus, useOperation } from "../../workspace/operation";
 import { recipeHref } from "../../workspace/recipeRoutes";
 import type { SegmentLocateState } from "../../workspace/segmentLocate";
@@ -168,15 +168,38 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
   const pending = useRef(false), serial = useRef(0), alive = useRef(true);
-  const [options, setOptions] = useState<CompareOptions | null>(null);
   // 选来复测的候选：任意本机候选都行（D-SB-58）；null 为记录所属配方的候选
   const [chosen, setChosen] = useState(entry.candidate);
-  // 可选候选单独留着：换候选时重新查选项，选择框不随之消失
-  const [choices, setChoices] = useState<CompareCandidate[]>([]);
+  const [loadedOptions, setLoadedOptions] = useState<{ request: symbol; candidateScope: string; value: CompareOptions } | null>(null);
+  const [optionError, setOptionError] = useState<{ request: symbol; message: string } | null>(null);
+  const [optionAttempt, setOptionAttempt] = useState(0);
+  const wantedCandidate = chosen ?? s.recipeId;
+  const edited = ws.data?.workspace.doc.id === wantedCandidate ? ws.data.workspace : null;
+  const candidateScope = JSON.stringify([s.id, chosen, wantedCandidate, edited?.revision, edited?.instanceId]);
+  const rawCoverage = useMemo(() => {
+    const cameras = new Set<number>();
+    let complete = true;
+    for (const frame of burst.frames) {
+      if (frame.rawFile != null) cameras.add(frame.camera);
+      else if (frame.status !== "missing") complete = false;
+    }
+    return { cameras: [...cameras].sort((a, b) => a - b), complete };
+  }, [burst.frames]);
+  const optionKey = JSON.stringify([
+    candidateScope, s.projectId, s.bundleId, burst.cameras, burst.frames.length > 0,
+    burst.judgement.verdict, burst.judgement.regions.length > 0, detail.recording.state,
+    detail.recording.available && rawCoverage.complete, rawCoverage.cameras, optionAttempt,
+  ]);
+  const optionRequest = useMemo(() => Symbol(optionKey), [optionKey]);
+  const options = loadedOptions?.request === optionRequest ? loadedOptions.value : null;
+  const failedOptions = optionError?.request === optionRequest ? optionError : null;
+  const choices = loadedOptions?.value.choices ?? [];
   const candidate = options?.candidate ?? null;
-  const scope = `${s.id}:${candidate?.id ?? ""}:${candidate?.revision ?? ""}`;
-  const current = useRef({ scope, historyId: s.id });
-  current.current = { scope, historyId: s.id };
+  const scopedCandidate = loadedOptions?.candidateScope === candidateScope ? loadedOptions.value.candidate : null;
+  const displayedCandidate = chosen ?? scopedCandidate?.id ?? choices.find(choice => choice.id === wantedCandidate)?.id ?? "";
+  const scope = JSON.stringify([candidateScope, scopedCandidate?.id, scopedCandidate?.revision]);
+  const current = useRef({ scope, historyId: s.id, optionRequest });
+  useLayoutEffect(() => { current.current = { scope, historyId: s.id, optionRequest }; }, [scope, s.id, optionRequest]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; serial.current++; }; }, []);
 
   const frames = useMemo(() => new Map(shown.frames.map(frame => [`${frame.camera}:${frame.seq}`, frame])), [shown.frames]);
@@ -272,15 +295,19 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
     return () => { live = false; };
   }, [s.id, s.recipeId, ws.data?.workspace.revision, wanted]);
 
-  // 复测能不能做以记录与所选候选为准（任意候选都行），与工作台打开的配方无关；所选候选改了（修订变化）重新查
-  const wantedCandidate = chosen ?? s.recipeId;
-  const editedRevision = ws.data?.workspace.doc.id === wantedCandidate ? ws.data.workspace.revision : null;
   useEffect(() => {
     let live = true;
-    setOptions(null);
-    void workspaceApi.historyCompareOptions(s.id, chosen).then(v => { if (live) { setOptions(v); setChoices(v.choices); } }).catch(e => live && setError(errorText(e)));
+    const active = () => live && current.current.optionRequest === optionRequest;
+    void workspaceApi.historyCompareOptions(s.id, chosen).then(value => {
+      if (active()) {
+        setLoadedOptions({ request: optionRequest, candidateScope, value });
+        setOptionError(null);
+      }
+    }).catch(cause => {
+      if (active()) setOptionError({ request: optionRequest, message: errorText(cause) });
+    });
     return () => { live = false; };
-  }, [s.id, chosen, editedRevision]);
+  }, [s.id, chosen, candidateScope, optionRequest]);
   // 工作台正在编辑所选候选且有没保存的改动时先保存：对照按候选已保存的修订做
   const editing = !!candidate && ws.data?.workspace.doc.id === candidate.id;
   const unsaved = editing && (ws.dirty || ws.frameDirty) ? "先保存候选配置和走廊示教，再执行对照。" : editing && ws.busy ? "候选正在保存，稍后再对照。" : "";
@@ -348,7 +375,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
 
   // 到分段与示教页调整分段的配方：选着候选对照时是那次对照的候选，否则是选来复测的候选；只有候选能改分段
   const segmentTarget = (comparison && comparison.source !== "original" ? comparison.candidateId : null) ?? candidate?.id ?? null;
-  const segmentBlock = !options ? "正在读取候选…" : !segmentTarget ? (s.recipeId ? `本机没有配方 ${s.recipeId} 的候选，先在“复测配方”里选一个候选` : "本机没有候选")
+  const segmentBlock = !options ? (failedOptions ? "复测选项读取失败，请重试" : "正在读取候选…") : !segmentTarget ? (s.recipeId ? `本机没有配方 ${s.recipeId} 的候选，先在“复测配方”里选一个候选` : "本机没有候选")
     : !choices.some(c => c.id === segmentTarget) ? `对照所用的候选 ${segmentTarget} 已不在本机` : "";
   const openSegments = () => {
     if (!segmentTarget || segmentBlock) return;
@@ -397,14 +424,18 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
     <Panel title="复测与候选对照" help="对照结果另存，原始判定保留">
       <div className="wp-actions">
         <Chip>{"原始发布 v" + (s.recipeVersion ?? "—")}</Chip>
-        {choices.length > 0 ? <Select label="复测配方" aria-label="复测配方" disabled={working || !options} value={chosen ?? candidate?.id ?? ""} onValueChange={id => setChosen(id || null)}
-          options={[...(chosen ?? candidate ? [] : [{ value: "", label: "选择候选" }]), ...choices.map(c => ({ value: c.id, label: `${c.id} · ${c.name} · v${c.version} 修订 ${c.revision}${c.id === s.recipeId ? "（本件配方）" : ""}` }))]} />
-          : <StatusBadge>候选 {!options ? "…" : "本机没有候选"}</StatusBadge>}
+        {choices.length > 0 ? <Select label="复测配方" aria-label="复测配方" disabled={working} value={displayedCandidate} onValueChange={id => setChosen(id || null)}
+          options={[...(displayedCandidate ? [] : [{ value: "", label: "选择候选" }]), ...choices.map(c => ({ value: c.id, label: `${c.id} · ${c.name} · v${c.version} 修订 ${c.revision}${c.id === s.recipeId ? "（本件配方）" : ""}` }))]} />
+          : options && <StatusBadge>本机没有候选</StatusBadge>}
         <span className="spacer" />
         <Button leadingIcon={<ScanEye size={15} />} disabled={working || !options || !!originalReason} title={originalReason || undefined} onClick={runOriginal}>按原发布包重现</Button>
         <Button leadingIcon={<Scale size={15} />} disabled={working || !options || !!rulesReason} title={rulesReason || undefined} onClick={() => runCompare(false)}>按候选规则重判</Button>
         <Button variant="filled" leadingIcon={<ScanEye size={15} />} disabled={working || !options || !!rawReason} title={rawReason || undefined} onClick={() => runCompare(true)}>从原图复测整件</Button>
       </div>
+      {failedOptions ? <Alert tone="warn" title="复测选项读取失败"
+        action={<Button size="sm" onClick={() => setOptionAttempt(attempt => attempt + 1)}>重试读取复测选项</Button>}>
+        {failedOptions.message}
+      </Alert> : !options && <Text muted role="status">正在读取复测选项…</Text>}
       {options && (originalReason || rulesReason || rawReason) && <ul className="compare-reasons" aria-label="不能复测的原因">
         {originalReason && <li><b>按原发布包重现</b>：{originalReason}</li>}
         {rulesReason && rulesReason === rawReason ? <li><b>按候选规则重判、从原图复测</b>：{rulesReason}</li> : <>
