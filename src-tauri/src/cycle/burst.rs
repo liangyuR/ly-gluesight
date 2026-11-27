@@ -72,8 +72,8 @@ pub(super) struct BurstPart {
     clock: FrameClock,
     grouper: Grouper,
     frames: BTreeMap<(usize, u64), BurstFrame>,
-    /// 已送测、还没有结果的帧数
-    pending: usize,
+    /// 已送测、还没有结果的帧，按送测时间排序
+    pending: BTreeSet<(Instant, usize, u64)>,
     trusted: Vec<CounterSource>,
     /// 判定前临时帧格结论的兜底允差（帧没记所测走廊时）：各段中较宽一档
     checks: SegmentChecks,
@@ -161,7 +161,7 @@ impl BurstPart {
             cameras: recipe.plan_cameras(),
             cams,
             frames: BTreeMap::new(),
-            pending: 0,
+            pending: BTreeSet::new(),
             trusted,
             checks,
             judgement: None,
@@ -566,7 +566,7 @@ impl Part {
                     },
                 );
                 if measuring {
-                    burst.pending += 1;
+                    burst.pending.insert((now, camera, seq));
                 }
                 Arrival::Accepted { camera, seq }
             }
@@ -585,14 +585,13 @@ impl Part {
         }
         let burst = &mut self.burst;
         let (camera, seq) = (measured.camera_idx, measured.seq);
-        let frame = burst
-            .frames
-            .get_mut(&(camera, seq))
-            .filter(|f| f.measuring_since.is_some())?;
+        let frame = burst.frames.get_mut(&(camera, seq))?;
+        let since = frame.measuring_since?;
         let metrics = checked(measured.metrics(), camera, seq);
         frame.metrics = Some(metrics.clone());
         frame.measuring_since = None;
-        burst.pending = burst.pending.saturating_sub(1);
+        let removed = burst.pending.remove(&(since, camera, seq));
+        debug_assert!(removed);
         Some(metrics)
     }
 
@@ -600,25 +599,29 @@ impl Part {
     pub(super) fn expire_burst(&mut self, now: Instant, proc: Duration) -> Vec<(usize, u64)> {
         let burst = &mut self.burst;
         let mut expired = Vec::new();
-        for (&(camera, seq), frame) in burst.frames.iter_mut() {
-            let Some(since) = frame.measuring_since else {
-                continue;
-            };
-            if now.saturating_duration_since(since) >= proc {
-                let why = MeasureError::Timeout.message();
-                frame.metrics = Some(unmeasured(camera, seq, FrameState::Unmeasured, why));
-                frame.measuring_since = None;
-                expired.push((camera, seq));
+        while let Some(&(since, camera, seq)) = burst.pending.first() {
+            if now.saturating_duration_since(since) < proc {
+                break;
             }
+            burst.pending.pop_first();
+            let frame = burst
+                .frames
+                .get_mut(&(camera, seq))
+                .expect("在途测量缺少帧");
+            debug_assert_eq!(frame.measuring_since, Some(since));
+            let why = MeasureError::Timeout.message();
+            frame.metrics = Some(unmeasured(camera, seq, FrameState::Unmeasured, why));
+            frame.measuring_since = None;
+            expired.push((camera, seq));
         }
-        burst.pending = burst.pending.saturating_sub(expired.len());
+        expired.sort_unstable();
         expired
     }
 
     /// partEnd 后等待完整收尾窗口，完成所有已接受帧的测量；有要补测的帧时还要等收尾补测完（维护采集、整件故障不补测）。
     pub(super) fn burst_complete(&self, now: Instant) -> bool {
         let burst = &self.burst;
-        if self.end_at.is_none() || burst.pending > 0 || !self.burst_deadline(now) {
+        if self.end_at.is_none() || !burst.pending.is_empty() || !self.burst_deadline(now) {
             return false;
         }
         burst.collect
@@ -638,7 +641,7 @@ impl Part {
         let faulted = self.fault.is_some();
         let recording = self.recording.as_ref();
         let burst = &mut self.burst;
-        if burst.collect || burst.post_started || burst.pending > 0 {
+        if burst.collect || burst.post_started || !burst.pending.is_empty() {
             return Vec::new();
         }
         if faulted {
@@ -679,6 +682,7 @@ impl Part {
                 Ok(file) => {
                     frame.measuring_since = Some(now);
                     frame.metrics = None;
+                    burst.pending.insert((now, camera, seq));
                     jobs.push((camera, seq, segment, file));
                 }
                 Err(missing) => {
@@ -696,7 +700,6 @@ impl Part {
                 }
             }
         }
-        burst.pending += jobs.len();
         jobs
     }
 
@@ -904,7 +907,7 @@ impl Part {
                 .values()
                 .filter(|frame| frame.metrics.is_some())
                 .count(),
-            pending_measure: burst.pending,
+            pending_measure: burst.pending.len(),
             groups,
         }
     }

@@ -513,6 +513,35 @@ fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result(
     );
 }
 
+#[test]
+fn pending_measurement_timeout_allows_finish_and_rejects_late_result() {
+    let mut part = burst_part("measurement-timeout", &Ledgers::default());
+    deliver_groups(&mut part, 3);
+    assert_eq!(
+        part.receive_burst(&burst_frame(0, 4)),
+        Some(burst::Arrival::Accepted { camera: 0, seq: 4 })
+    );
+    deliver(&mut part, 1, 4);
+    deliver(&mut part, 2, 4);
+    end(&mut part, Some(4), true);
+    assert!(!part.complete());
+
+    let expired_at = Instant::now() + part.proc_timeout;
+    assert_eq!(part.expire_burst(expired_at, part.proc_timeout), [(0, 4)]);
+    let measured = measure::simulate_frame(Scenario::Normal, 0, 4, 1, &part.recipe);
+    let late = frame_result(&part, 0, 4, Ok(measured));
+    assert!(part.apply_burst(late).is_none());
+    assert!(part.complete());
+
+    let judgement = judge_burst(&mut part);
+    assert_eq!(judgement.verdict, Verdict::Ok);
+    assert!(judgement.flags.incomplete);
+    let view = part.view();
+    let cells = &view.burst.groups[3].cells;
+    assert_eq!(cells[0].status, FrameCellStatus::Unmeasured);
+    assert_eq!(cells[1].status, FrameCellStatus::Measured);
+}
+
 /// 防的回归（D-SB-54）：PLC 报结束后不管门控已关闭都固定等满收尾窗口；或门控还开着（还有帧要来）就提前收尾、丢掉后面的帧。
 #[test]
 fn closed_gate_ends_the_drain_after_the_guard_but_an_open_gate_waits_for_the_window() {
