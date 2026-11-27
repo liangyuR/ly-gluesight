@@ -149,6 +149,8 @@ pub struct ReleaseBundle {
     pub recipe: RecipeDoc,
 }
 
+pub(crate) struct VerifiedRelease<'a>(&'a ReleaseBundle);
+
 impl ReleaseBundle {
     pub fn verify(&self) -> Result<(), String> {
         valid_bundle_id(&self.id)?;
@@ -177,15 +179,27 @@ impl ReleaseBundle {
         Ok(())
     }
 
+    /// 一轮相机读取共用目录核验，资源仍逐台从磁盘读取。
+    pub(crate) fn verified(&self) -> Result<VerifiedRelease<'_>, String> {
+        self.verify()?;
+        Ok(VerifiedRelease(self))
+    }
+
     /// 段配方第 index 台计划相机的资源（schema 5）。
     pub fn camera(&self, index: usize) -> Result<CameraResources, String> {
-        self.verify()?;
-        let inspect = self
+        self.verified()?.camera(index)
+    }
+}
+
+impl VerifiedRelease<'_> {
+    pub(crate) fn camera(&self, index: usize) -> Result<CameraResources, String> {
+        let bundle = self.0;
+        let inspect = bundle
             .recipe
             .inspect
             .get(index)
             .ok_or("发布包内没有该计划相机")?;
-        let entry = self
+        let entry = bundle
             .manifest
             .cameras
             .get(index)
@@ -195,19 +209,19 @@ impl ReleaseBundle {
             .corridors
             .iter()
             .map(|c| {
-                read_json::<CorridorResource>(&resource_path(&self.root, &c.corridor)?)?;
+                read_json::<CorridorResource>(&resource_path(&bundle.root, &c.corridor)?)?;
                 Ok(CorridorResources {
                     segment: c.segment,
-                    image: resource_path(&self.root, &c.image)?,
+                    image: resource_path(&bundle.root, &c.image)?,
                     image_id: c.image_id.clone(),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(CameraResources {
-            dir: resource_path(&self.root, &camera_prefix(index))?,
+            dir: resource_path(&bundle.root, &camera_prefix(index))?,
             camera: entry.camera.clone(),
             size: entry.size,
-            calibration: resource_path(&self.root, &entry.calibration)?,
+            calibration: resource_path(&bundle.root, &entry.calibration)?,
             corridors,
         })
     }
@@ -1020,6 +1034,24 @@ mod tests {
         let set =
             crate::vision::CorridorSet::build(&bundle.recipe.build().unwrap(), &sizes).unwrap();
         assert!(set.get(0, 1).is_some() && set.get(2, 1).is_none());
+    }
+
+    #[test]
+    fn same_size_corridor_corruption_is_rejected_during_camera_read() {
+        let root =
+            TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
+        let bundle = publish_burst_bundle(&root.0);
+        let verified = bundle.verified().unwrap();
+        verified.camera(0).unwrap();
+
+        let path = bundle
+            .root
+            .join(&bundle.manifest.cameras[1].corridors[0].corridor);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[0] = b'!';
+        fs::write(&path, bytes).unwrap();
+
+        assert!(verified.camera(1).is_err());
     }
 
     #[test]

@@ -96,7 +96,7 @@ impl Prepared {
         engine: Arc<Engine>,
         expected: &Recipe,
     ) -> Result<Self, String> {
-        bundle.verify()?;
+        let verified = bundle.verified()?;
         if bundle.manifest.schema_version != RELEASE_SCHEMA_BURST {
             return Err(format!("段配方需要按段与相机组织的发布包（格式版本 {RELEASE_SCHEMA_BURST}），请重新示教、验证并发布"));
         }
@@ -121,7 +121,7 @@ impl Prepared {
         let mut channels = Vec::with_capacity(recipe.inspect.len());
         let mut acquisition = Vec::with_capacity(recipe.inspect.len());
         for (idx, inspect) in recipe.inspect.iter().enumerate() {
-            let resource = bundle.camera(idx)?;
+            let resource = verified.camera(idx)?;
             sizes.push(resource.size);
             channels.push(match resource.corridors.first() {
                 Some(corridor) => crate::image_file::load_channels(&corridor.image)?,
@@ -682,10 +682,15 @@ fn check_acquisition(
     bundle: &ReleaseBundle,
     configs: &[crate::camera::CameraConfig],
 ) -> Result<(), String> {
+    let mut verified = None;
     for (index, inspect) in bundle.recipe.inspect.iter().enumerate() {
         let config = configured_camera(configs, &inspect.camera)?;
+        let verified = match verified {
+            Some(ref verified) => verified,
+            None => verified.insert(bundle.verified()?),
+        };
         let calibration: Value = serde_json::from_str(
-            &crate::fsio::read_text(&bundle.camera(index)?.calibration)
+            &crate::fsio::read_text(&verified.camera(index)?.calibration)
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
