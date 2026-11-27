@@ -101,9 +101,13 @@ impl FrameClock {
         }
     }
 
-    /// 计划相机 `cam` 时间戳 `ts`（ns）的一帧。`opens` 是这台相机看到的门控开始（锁存的相机时钟，相机组门控序号），升序；
-    /// 轮询读数不新鲜、不能确定有没有漏看边沿时为 None。
-    pub fn stamp(&mut self, cam: usize, ts: u64, opens: Option<&[(u64, u64)]>) -> Stamp {
+    /// 计划相机 `cam` 时间戳 `ts`（ns）的一帧。`lookup` 按条件查找最近登记的开始边沿。
+    pub fn stamp_with_edge(
+        &mut self,
+        cam: usize,
+        ts: u64,
+        lookup: impl FnOnce(&dyn Fn(&(u64, u64)) -> bool) -> Option<(u64, u64)>,
+    ) -> Stamp {
         let Some(track) = self.tracks.get_mut(cam) else {
             return Stamp::Stale;
         };
@@ -126,16 +130,11 @@ impl FrameClock {
         let index =
             |origin: u64| ((ts.saturating_sub(origin)) as f64 / track.period).round() as u64;
         // 门控号取相机组共同的门控开始序号（一台相机漏看一次也与其余相机对齐），从接件时的序号起算
-        let by_edges = opens.and_then(|opens| {
-            opens
-                .iter()
-                .map(|&(o, index)| (o + track.delay, index))
-                .filter(|&(o, index)| {
-                    index >= track.first_gate && o > track.floor && o <= ts + EDGE_SLACK_NS
-                })
-                .last()
-                .map(|(origin, index)| ((index - track.first_gate) as usize, origin))
-        });
+        let by_edges = lookup(&|&(clock, index)| {
+            let origin = clock + track.delay;
+            index >= track.first_gate && origin > track.floor && origin <= ts + EDGE_SLACK_NS
+        })
+        .map(|(clock, index)| ((index - track.first_gate) as usize, clock + track.delay));
         // 按相邻帧间隔推断：间隔是帧周期整数倍为同一门控，否则开新门控
         let infer = |last: Last| {
             let ratio = (ts.saturating_sub(last.ts)) as f64 / track.period;
@@ -192,6 +191,13 @@ impl FrameClock {
         stamp
     }
 
+    #[cfg(test)]
+    fn stamp(&mut self, cam: usize, ts: u64, opens: Option<&[(u64, u64)]>) -> Stamp {
+        self.stamp_with_edge(cam, ts, |eligible| {
+            opens?.iter().rev().copied().find(eligible)
+        })
+    }
+
     /// 本件各门控的槽数（D-SB-62 的笔结构来源）。
     pub fn gate_slots(&self) -> &[u64] {
         &self.slots
@@ -231,6 +237,33 @@ mod tests {
     /// 门控从相机时钟 `open` 开始，第 i 帧的时间戳（曝光比锁存早 1.5 ms）。
     fn at(open: u64, i: u64) -> u64 {
         open - 1_500_000 + i * T
+    }
+
+    #[test]
+    fn delayed_first_arrival_uses_its_previous_gate_edge() {
+        use std::time::{Duration, Instant};
+
+        let delay_ns = 10_000_000;
+        let first_open = 1_010 * T;
+        let first_arrival = first_open + delay_ns + 2 * T;
+        let second_open = first_arrival + EDGE_SLACK_NS - delay_ns / 2;
+        let now = Instant::now();
+        let gate = crate::gate::Gate::default();
+        gate.edge(0, true, first_open, now - Duration::from_millis(200));
+        gate.edge(0, true, second_open, now);
+        gate.observe(0, true, now);
+        let mut clock = FrameClock::new(&[ClockStart {
+            period_ns: T as f64,
+            floor: 1_000 * T,
+            anchored: false,
+            delay_ns,
+            first_gate: 0,
+        }]);
+        let mut stamp =
+            |ts| clock.stamp_with_edge(0, ts, |eligible| gate.latest_open(0, now, eligible));
+
+        assert_eq!(stamp(first_arrival), Stamp::Seq(3));
+        assert_eq!(stamp(second_open + delay_ns), Stamp::Seq(4));
     }
 
     /// 防的回归（D-SB-55）：按 SDK 帧号配组时，相机检测中重开（帧号从 1 重数）只能整件判 ERR；改按时间戳后，

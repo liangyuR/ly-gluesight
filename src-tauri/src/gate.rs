@@ -89,22 +89,31 @@ impl Gate {
         self.opens.lock().unwrap().count
     }
 
-    /// 相机 `cam` 看到的门控开始（相机时钟，相机组门控序号），升序；它最近一次读数不在 `EDGE_FRESH` 内（可能还没看到最新的边沿）时为 None。
-    pub fn opens(&self, cam: u8, now: Instant) -> Option<Vec<(u64, u64)>> {
+    /// 返回相机 `cam` 最近登记且符合条件的开始边沿。读数不新鲜时不用边沿。
+    pub fn latest_open(
+        &self,
+        cam: u8,
+        now: Instant,
+        eligible: impl Fn(&(u64, u64)) -> bool,
+    ) -> Option<(u64, u64)> {
         let fresh = self
             .cams
             .lock()
             .unwrap()
             .get(&cam)
             .is_some_and(|seen| now.saturating_duration_since(seen.read_at) <= EDGE_FRESH);
-        fresh.then(|| {
-            self.clocks
-                .lock()
-                .unwrap()
-                .get(&cam)
-                .map(|c| c.opens.iter().copied().collect())
-                .unwrap_or_default()
-        })
+        if !fresh {
+            return None;
+        }
+        self.clocks
+            .lock()
+            .unwrap()
+            .get(&cam)?
+            .opens
+            .iter()
+            .rev()
+            .copied()
+            .find(eligible)
     }
 
     /// 相机 `cam` 最近一次看到门控开始时锁存的相机时钟（ns）。
@@ -310,17 +319,17 @@ mod tests {
         gate.edge(1, true, 22, ms(1001));
         gate.edge(0, true, 13, ms(1060));
         assert_eq!(
-            gate.opens(0, ms(3000)).unwrap()[..3],
-            [(10, 0), (11, 1), (12, 2)]
+            gate.latest_open(0, ms(3000), |&(_, index)| index < 3),
+            Some((12, 2))
         );
         assert_eq!(
-            gate.opens(1, ms(3000)),
-            Some(vec![(20, 0), (22, 2)]),
+            gate.latest_open(1, ms(3000), |_| true),
+            Some((22, 2)),
             "相机 1 漏了第 2 次，第 3 次仍记序号 2"
         );
         assert_eq!(
-            gate.opens(0, ms(3000)).unwrap().last(),
-            Some(&(13, 3)),
+            gate.latest_open(0, ms(3000), |_| true),
+            Some((13, 3)),
             "同一台相机 60 ms 后又看到一次开始：新的一次"
         );
         assert_eq!(gate.open_count(), 4);

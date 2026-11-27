@@ -505,10 +505,7 @@ impl Part {
         if self.burst_deadline(now) {
             return None;
         }
-        let opens = self
-            .gate
-            .as_ref()
-            .and_then(|gate| gate.opens(frame.cam, now));
+        let gate = self.gate.as_ref();
         let burst = &mut self.burst;
         let Some(camera) = burst.cams.iter().position(|c| c.cam == frame.cam) else {
             return Some(Arrival::Unknown);
@@ -526,7 +523,10 @@ impl Part {
         let Some(ts) = frame.dev_ts else {
             return Some(Arrival::NoClock { camera });
         };
-        let seq = match burst.clock.stamp(camera, ts, opens.as_deref()) {
+        let stamp = burst.clock.stamp_with_edge(camera, ts, |eligible| {
+            gate?.latest_open(frame.cam, now, eligible)
+        });
+        let seq = match stamp {
             Stamp::Seq(seq) => seq,
             Stamp::Stale => return Some(Arrival::Stale { camera }),
             Stamp::Late => return Some(Arrival::Late { camera }),
