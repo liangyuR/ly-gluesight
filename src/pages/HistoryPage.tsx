@@ -65,7 +65,7 @@ export default function HistoryPage() {
   const [recipeId, setRecipeId] = useState(initial?.recipeId ?? "");
   const [project, setProject] = useState(initial?.currentProject ? CURRENT_PROJECT : "");
   const [offset, setOffset] = useState(0);
-  const [result, setResult] = useState<{ page: Page; counts: Page["counts"]; query: HistoryQuery; offset: number } | null>(null);
+  const [result, setResult] = useState<{ page: Page; query: HistoryQuery; offset: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [operationError, setOperationError] = useState("");
@@ -107,7 +107,7 @@ export default function HistoryPage() {
   currentQuery.current = query;
   const stale = result?.query !== query || result.offset !== offset;
   const page = result && !(stale && (error || projectBlocked)) ? result.page : null;
-  const counts = page ? result!.counts : null;
+  const counts = page?.verdictFacets ?? page?.counts ?? null;
   const countedTotal = counts ? counts.ok + counts.excursion + counts.ng + counts.err : 0;
   const pending = stale && !!page;
   const hasFilters = range !== DEFAULT_RANGE || groups.length > 0 || mode !== "all" || !!sn || !!tag || !!recipeId || !!project;
@@ -135,14 +135,11 @@ export default function HistoryPage() {
     if (projectBlocked) { setLoading(false); return; }
     setLoading(true);
     setError("");
-    Promise.all([
-      historyApi.query({ ...query, offset, limit: PAGE }),
-      query.verdicts?.length ? historyApi.query({ ...query, verdicts: [], offset: 0, limit: 1 }) : null,
-    ])
-      .then(([p, all]) => {
+    historyApi.query({ ...query, offset, limit: PAGE, includeVerdictFacets: query.verdicts?.length ? true : undefined })
+      .then((p) => {
         if (serial !== requestSerial.current) return;
         if (offset > 0 && offset >= p.total) { setOffset(Math.max(0, Math.ceil(p.total / PAGE) - 1) * PAGE); return; }
-        setResult({ page: p, counts: (all ?? p).counts, query, offset });
+        setResult({ page: p, query, offset });
         setSelected(previous => previous.filter(key => p.items.some(item => String(item.id) === key)));
         setError("");
       })

@@ -228,6 +228,7 @@ pub struct HistoryQuery {
     pub from: Option<i64>,
     pub to: Option<i64>,
     pub verdicts: Vec<Verdict>,
+    pub include_verdict_facets: bool,
     pub sn: Option<String>,
     pub tag: Option<String>,
     pub recipe_id: Option<String>,
@@ -319,9 +320,12 @@ impl VerdictCounts {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryPage {
     pub total: u64,
     pub counts: VerdictCounts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict_facets: Option<VerdictCounts>,
     pub items: Vec<PartSummary>,
 }
 
@@ -1613,24 +1617,48 @@ impl Store {
 
     pub fn query(&self, q: &HistoryQuery) -> Result<HistoryPage, String> {
         let conn = self.conn.lock().unwrap();
-        let (filter, args) = Self::filter(q, "");
+        let page_filter = Self::filter(q, "");
+        let with_facets = q.include_verdict_facets && !q.verdicts.is_empty();
+        let facets_filter = with_facets.then(|| {
+            Self::filter(
+                &HistoryQuery {
+                    verdicts: Vec::new(),
+                    ..q.clone()
+                },
+                "",
+            )
+        });
+        let (count_filter, count_args) = facets_filter.as_ref().unwrap_or(&page_filter);
+        let selected: Vec<_> = if with_facets {
+            q.verdicts.iter().copied().map(verdict_str).collect()
+        } else {
+            Vec::new()
+        };
+        let mut verdict_facets = with_facets.then(VerdictCounts::default);
         let mut counts = VerdictCounts::default();
         let mut total = 0;
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT verdict, COUNT(*) FROM parts{filter} GROUP BY verdict"
+                "SELECT verdict, COUNT(*) FROM parts{count_filter} GROUP BY verdict"
             ))
             .map_err(db_err)?;
         let rows = stmt
-            .query_map(params_from_iter(args.iter()), |row| {
+            .query_map(params_from_iter(count_args.iter()), |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
             })
             .map_err(db_err)?;
         for row in rows {
-            let (v, n) = row.map_err(db_err)?;
-            counts.add(parse_verdict(&v), n);
-            total += n;
+            let (stored_verdict, n) = row.map_err(db_err)?;
+            let verdict = parse_verdict(&stored_verdict);
+            if let Some(facets) = &mut verdict_facets {
+                facets.add(verdict, n);
+            }
+            if !with_facets || selected.contains(&stored_verdict) {
+                counts.add(verdict, n);
+                total += n;
+            }
         }
+        let (filter, args) = page_filter;
         let limit = if q.limit == 0 { 50 } else { q.limit.min(500) };
         let sql = format!("SELECT {SUMMARY_COLS} FROM parts{filter} ORDER BY ts DESC, id DESC LIMIT {limit} OFFSET {}", q.offset);
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
@@ -1642,6 +1670,7 @@ impl Store {
         Ok(HistoryPage {
             total,
             counts,
+            verdict_facets,
             items,
         })
     }

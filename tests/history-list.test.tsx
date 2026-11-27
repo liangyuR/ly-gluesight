@@ -1,8 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { expect, it, vi } from "vitest";
+import type { HistoryQuery } from "../src/features/history/types";
 import HistoryPage from "../src/pages/HistoryPage";
 import { burstPartSummary } from "./fixtures";
 
@@ -13,7 +15,7 @@ const row = (id: number) => screen.findByRole("button", { name: `查看 SN SN-${
 const meta = (id: string, name: string) => ({ schema: 1, id, name, description: "", createdAt: 0, createdBy: "", copiedFrom: null });
 const projects = [{ id: "line-a", current: true, error: null, meta: meta("line-a", "A 线") }, { id: "line-b", current: false, error: null, meta: meta("line-b", "B 线") }];
 const page = (items: ReturnType<typeof burstPartSummary>[]) => ({ total: items.length, counts: { ok: items.length, excursion: 0, ng: 0, err: 0 }, items });
-const queries = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "history_query").map(([, args]) => (args as { query: { project?: string | null } }).query);
+const queries = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "history_query").map(([, args]) => (args as { query: HistoryQuery }).query);
 
 it("换筛选后查询失败 → 不把上一次条件的记录当成新条件的结果", async () => {
   vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -127,26 +129,41 @@ it("确认删除已选历史件 → 记录与统计刷新，取消确认则保�
   expect(screen.getByRole("button", { name: "删除历史件（0）" })).toBeDisabled();
 });
 
-// 防的回归：结果芯片兼作计数，选中 NG 后其他芯片跟着筛选变成 0，看不出各结果的分布
-it("按结果筛选 → 列表只剩该结果，各结果芯片仍显示筛选前的件数", async () => {
+it("按结果筛选与新件入库 → 每次只查询一次，列表和各结果计数同步更新", async () => {
+  const okItems = [1, 3, 4].map(burstPartSummary);
+  const ngItems = [{ ...burstPartSummary(2), verdict: "NG_GAP" as const }];
+  const ngQuery = expect.objectContaining({ includeVerdictFacets: true, verdicts: expect.arrayContaining(["NG_GAP"]) });
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "recipe_list") return { recipes: [], errors: [] };
     if (command === "project_current") return projects[0].meta;
     if (command === "project_list") return projects;
     if (command === "history_query") {
-      const verdicts = (args as { query: { verdicts: string[] } }).query.verdicts;
-      return verdicts.length
-        ? { total: 1, counts: { ok: 0, excursion: 0, ng: 1, err: 0 }, items: [burstPartSummary(2)] }
-        : { total: 4, counts: { ok: 3, excursion: 0, ng: 1, err: 0 }, items: [1, 2, 3, 4].map(burstPartSummary) };
+      const { verdicts, includeVerdictFacets } = (args as { query: HistoryQuery }).query;
+      const verdictFacets = { ok: okItems.length, excursion: 0, ng: ngItems.length, err: 0 };
+      const items = [...okItems, ...ngItems].filter(item => !verdicts?.length || verdicts.includes(item.verdict));
+      const counts = verdicts?.length ? { ...verdictFacets, ok: 0 } : verdictFacets;
+      return { total: items.length, counts, items, verdictFacets: includeVerdictFacets ? verdictFacets : undefined };
     }
     throw new Error(`Unexpected command: ${command}`);
   });
   render(<MemoryRouter><HistoryPage /></MemoryRouter>);
   await row(4);
   const filters = within(screen.getByRole("group", { name: "按结果筛选" }));
+  const beforeFilter = queries().length;
   await userEvent.click(filters.getByRole("button", { name: /NG/ }));
   await waitFor(() => expect(screen.queryByRole("button", { name: "查看 SN SN-104 的记录" })).not.toBeInTheDocument());
   expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 1 件");
   expect(filters.getByRole("button", { name: /OK/ })).toHaveTextContent("OK3");
   expect(filters.getByRole("button", { name: /NG/ })).toHaveTextContent("NG1");
+  expect(queries().slice(beforeFilter)).toEqual([ngQuery]);
+
+  const beforeInsert = queries().length;
+  ngItems.push({ ...burstPartSummary(5), verdict: "NG_GAP" });
+  const onInserted = vi.mocked(listen).mock.calls.filter(([event]) => event === "history://inserted").at(-1)?.[1];
+  act(() => onInserted?.({ event: "history://inserted", id: 1, payload: 5 }));
+  expect(await row(5)).toBeVisible();
+  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 2 件");
+  expect(filters.getByRole("button", { name: /OK/ })).toHaveTextContent("OK3");
+  expect(filters.getByRole("button", { name: /NG/ })).toHaveTextContent("NG2");
+  expect(queries().slice(beforeInsert)).toEqual([ngQuery]);
 });

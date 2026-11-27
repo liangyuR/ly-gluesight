@@ -95,6 +95,74 @@ fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejud
 }
 
 #[test]
+fn verdict_filter_keeps_page_and_total_exact_with_legacy_verdicts_in_facets() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let ids: Vec<_> = ["err-first", "err-second", "ok", "legacy", "untagged"]
+        .into_iter()
+        .map(|cycle| {
+            store
+                .insert(&burst_part(&recipe, cycle, &judgement, &burst))
+                .unwrap()
+        })
+        .collect();
+    store
+        .set_history_tags(&ids[..4], &["待复核".into()])
+        .unwrap();
+    drop(store);
+    let conn = Connection::open(db.path()).unwrap();
+    for (id, verdict) in ids.iter().zip([
+        "ERR_INSPECT",
+        "ERR_INSPECT",
+        "OK",
+        "LEGACY_ERR",
+        "ERR_INSPECT",
+    ]) {
+        conn.execute(
+            "UPDATE parts SET verdict=?1 WHERE id=?2",
+            params![verdict, id],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let store = Store::open(&db.path()).unwrap();
+    let page = store
+        .query(&HistoryQuery {
+            verdicts: vec![Verdict::ErrInspect],
+            include_verdict_facets: true,
+            tag: Some("待复核".into()),
+            offset: 1,
+            limit: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(page.total, 2);
+    assert_eq!(
+        page.counts,
+        VerdictCounts {
+            err: 2,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        page.items.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [ids[0]]
+    );
+    assert_eq!(
+        page.verdict_facets,
+        Some(VerdictCounts {
+            ok: 1,
+            err: 3,
+            ..Default::default()
+        })
+    );
+}
+
+#[test]
 fn invalid_or_stale_history_tag_selection_leaves_every_selected_record_unchanged() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

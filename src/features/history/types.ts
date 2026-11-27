@@ -29,6 +29,7 @@ export interface HistoryQuery {
   from?: number | null;
   to?: number | null;
   verdicts?: Verdict[];
+  includeVerdictFacets?: boolean;
   sn?: string;
   tag?: string;
   recipeId?: string | null;
@@ -96,6 +97,7 @@ export interface VerdictCounts {
 export interface HistoryPage {
   total: number;
   counts: VerdictCounts;
+  verdictFacets?: VerdictCounts;
   items: PartSummary[];
 }
 
