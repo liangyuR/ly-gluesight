@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Download, History, Package, PackageOpen, RefreshCw, Scale, Tag, Trash2 } from "lucide-react";
 import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, SegmentedControl, Select, Stack, StatusBadge, Table, Text, TextField, type TableColumn } from "qing-steel";
@@ -79,7 +79,6 @@ export default function HistoryPage() {
   const [packageIds, setPackageIds] = useState<number[] | null>(null);
   const [packagePreview, setPackagePreview] = useState<HistoryPackagePreview | null>(null);
   const [picking, setPicking] = useState(false);
-  const requestSerial = useRef(0);
   const exportPending = useRef(false);
   const revealPending = useRef(false);
   const pickPending = useRef(false);
@@ -90,10 +89,11 @@ export default function HistoryPage() {
   const currentId = projects.current?.id ?? null;
   // 选“当前项目”但当前项目还没读到（或读取失败）时不查询，免得把全部项目的记录当成当前项目的
   const projectBlocked = project === CURRENT_PROJECT && !currentId;
+  const projectId = project === CURRENT_PROJECT ? currentId : project || null;
   const query = useMemo<HistoryQuery>(
     () => ({
       scope: "real",
-      project: project === CURRENT_PROJECT ? currentId : project || null,
+      project: projectId,
       from: rangeStart(ranges.find((r) => r[0] === range)![2]),
       verdicts: verdictGroups.filter((g) => groups.includes(g.key)).flatMap((g) => g.verdicts),
       sn,
@@ -101,10 +101,11 @@ export default function HistoryPage() {
       recipeId: recipeId || null,
       modes: modeOptions.find((m) => m.value === mode)!.modes,
     }),
-    [range, groups, sn, tag, recipeId, mode, project, currentId],
+    [range, groups, sn, tag, recipeId, mode, projectId],
   );
-  const currentQuery = useRef(query);
-  currentQuery.current = query;
+  const scope = useMemo(() => ({ query, offset, projectBlocked }), [query, offset, projectBlocked]);
+  const currentScope = useRef(scope);
+  const activeLoad = useRef<{ scope: typeof scope; pending: boolean } | null>(null);
   const stale = result?.query !== query || result.offset !== offset;
   const page = result && !(stale && (error || projectBlocked)) ? result.page : null;
   const counts = page?.verdictFacets ?? page?.counts ?? null;
@@ -116,9 +117,13 @@ export default function HistoryPage() {
   };
   const navigate = (to: string) => go(to, { state: { query: result?.query ?? query } });
 
-  useEffect(() => {
+  useLayoutEffect(() => { currentScope.current = scope; }, [scope]);
+  useLayoutEffect(() => {
     alive.current = true;
-    return () => { alive.current = false; };
+    return () => {
+      alive.current = false;
+      if (activeLoad.current) activeLoad.current.pending = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -130,36 +135,56 @@ export default function HistoryPage() {
   }, [query]);
   useEffect(() => { setSelected([]); setRecordAction(null); }, [offset]);
 
-  const load = useCallback(() => {
-    const serial = ++requestSerial.current;
-    if (projectBlocked) { setLoading(false); return; }
+  const load = useCallback(async function load() {
+    if (!alive.current) return;
+    const scope = currentScope.current;
+    const { query, offset, projectBlocked } = scope;
+    if (projectBlocked) {
+      if (activeLoad.current) activeLoad.current.pending = false;
+      setLoading(false);
+      return;
+    }
+    if (activeLoad.current) {
+      activeLoad.current.pending = true;
+      return;
+    }
+    const request = { scope, pending: false };
+    activeLoad.current = request;
     setLoading(true);
     setError("");
-    historyApi.query({ ...query, offset, limit: PAGE, includeVerdictFacets: query.verdicts?.length ? true : undefined })
-      .then((p) => {
-        if (serial !== requestSerial.current) return;
-        if (offset > 0 && offset >= p.total) { setOffset(Math.max(0, Math.ceil(p.total / PAGE) - 1) * PAGE); return; }
-        setResult({ page: p, query, offset });
-        setSelected(previous => previous.filter(key => p.items.some(item => String(item.id) === key)));
-        setError("");
-      })
-      .catch((e) => { if (serial === requestSerial.current) setError(errorText(e)); })
-      .finally(() => { if (serial === requestSerial.current) setLoading(false); });
-  }, [query, offset, projectBlocked]);
+    try {
+      const p = await historyApi.query({ ...query, offset, limit: PAGE, includeVerdictFacets: query.verdicts?.length ? true : undefined });
+      if (!alive.current || currentScope.current !== scope) return;
+      if (offset > 0 && offset >= p.total) {
+        if (!request.pending) setOffset(Math.max(0, Math.ceil(p.total / PAGE) - 1) * PAGE);
+        return;
+      }
+      setResult({ page: p, query, offset });
+      setSelected(previous => previous.filter(key => p.items.some(item => String(item.id) === key)));
+    } catch (e) {
+      if (alive.current && currentScope.current === scope && !request.pending) setError(errorText(e));
+    } finally {
+      activeLoad.current = null;
+      if (alive.current) {
+        if (request.pending) void load();
+        else if (currentScope.current === scope) setLoading(false);
+      }
+    }
+  }, []);
 
-  useEffect(() => { load(); return () => { requestSerial.current++; }; }, [load]);
-  useEffect(() => subscribe<number>("history://inserted", () => offset === 0 && load()), [load, offset]);
-  useEffect(() => subscribe<number[]>("history://changed", () => { if (!mutationBusy.current) load(); }), [load]);
+  useEffect(() => { if (activeLoad.current?.scope !== scope) void load(); }, [load, scope]);
+  useEffect(() => subscribe<number>("history://inserted", () => { if (currentScope.current.offset === 0) void load(); }), [load]);
+  useEffect(() => subscribe<number[]>("history://changed", () => { if (!mutationBusy.current) void load(); }), [load]);
 
   const selectedItems = page?.items.filter(item => selected.includes(String(item.id))) ?? [];
   const canExportSelected = selectedItems.length === selected.length && selectedItems.every(item => !!item.cycleId && !!item.flags);
   const selectedTags = selectedItems.length === 1 ? selectedItems[0].tags ?? [] : [];
   const savedTags = () => {
-    setRecordAction(null); setSelected([]); setNotice({ message: "人工 Tag 已保存。", warnings: [] }); load();
+    setRecordAction(null); setSelected([]); setNotice({ message: "人工 Tag 已保存。", warnings: [] }); void load();
   };
   const deletedRecords = (result: HistoryDeleted) => {
     setRecordAction(null); setSelected([]); setNotice({ message: `已删除 ${result.deleted} 件历史记录。`, warnings: result.warnings });
-    load();
+    void load();
   };
 
   const exportCsv = async () => {
@@ -169,9 +194,9 @@ export default function HistoryPage() {
     const scope = query;
     try {
       const path = await historyApi.exportCsv(scope);
-      if (alive.current && currentQuery.current === scope) setExported(path);
+      if (alive.current && currentScope.current.query === scope) setExported(path);
     } catch (e) {
-      if (alive.current && currentQuery.current === scope) setOperationError(errorText(e));
+      if (alive.current && currentScope.current.query === scope) setOperationError(errorText(e));
     } finally {
       exportPending.current = false;
       if (alive.current) setExporting(false);
@@ -183,7 +208,7 @@ export default function HistoryPage() {
     revealPending.current = true; setRevealing(true); setOperationError("");
     const scope = query;
     try { await historyApi.reveal(exported); }
-    catch (e) { if (alive.current && currentQuery.current === scope) setOperationError(errorText(e)); }
+    catch (e) { if (alive.current && currentScope.current.query === scope) setOperationError(errorText(e)); }
     finally {
       revealPending.current = false;
       if (alive.current) setRevealing(false);

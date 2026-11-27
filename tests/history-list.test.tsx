@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { expect, it, vi } from "vitest";
 import type { HistoryQuery } from "../src/features/history/types";
 import HistoryPage from "../src/pages/HistoryPage";
-import { burstPartSummary } from "./fixtures";
+import { burstPartSummary, deferred } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
@@ -16,24 +16,116 @@ const meta = (id: string, name: string) => ({ schema: 1, id, name, description: 
 const projects = [{ id: "line-a", current: true, error: null, meta: meta("line-a", "A 线") }, { id: "line-b", current: false, error: null, meta: meta("line-b", "B 线") }];
 const page = (items: ReturnType<typeof burstPartSummary>[]) => ({ total: items.length, counts: { ok: items.length, excursion: 0, ng: 0, err: 0 }, items });
 const queries = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "history_query").map(([, args]) => (args as { query: HistoryQuery }).query);
+const emitHistory = (event: string, payload: number | number[]) => {
+  const handler = vi.mocked(listen).mock.calls.filter(([name]) => name === event).at(-1)?.[1];
+  act(() => handler?.({ event, id: 1, payload }));
+};
 
-it("换筛选后查询失败 → 不把上一次条件的记录当成新条件的结果", async () => {
+it("查询在途时连续换筛选 → 只查最后条件，其失败时隐去旧记录", async () => {
+  const oldRefresh = deferred<ReturnType<typeof page>>();
+  const latestFilter = deferred<ReturnType<typeof page>>();
+  let holdRefresh = false;
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "recipe_list") return { recipes: [], errors: [] };
     if (command === "project_current") return projects[0].meta;
     if (command === "project_list") return projects;
     if (command === "history_query") {
-      if ((args as { query: { project: string } }).query.project === "line-a") throw new Error("记录库忙");
-      return { total: 1, counts: { ok: 0, excursion: 0, ng: 1, err: 0 }, items: [burstPartSummary(1)] };
+      if ((args as { query: HistoryQuery }).query.project === "line-a") return latestFilter.promise;
+      return holdRefresh ? oldRefresh.promise : page([burstPartSummary(1)]);
     }
     throw new Error(`Unexpected command: ${command}`);
   });
   render(<MemoryRouter><HistoryPage /></MemoryRouter>);
   await row(1);
-  await userEvent.selectOptions(screen.getByLabelText("历史项目", { selector: "select" }), "当前项目（A 线）");
+  const projectSelect = screen.getByLabelText("历史项目", { selector: "select" });
+  await waitFor(() => expect(projectSelect).toHaveTextContent("B 线 · line-b"));
+  const refresh = screen.getByRole("button", { name: "刷新" });
+  await waitFor(() => expect(refresh).toBeEnabled());
+  const beforeRefresh = queries().length;
+  holdRefresh = true;
+  await userEvent.click(refresh);
+  await userEvent.selectOptions(projectSelect, "line-b");
+  await userEvent.selectOptions(projectSelect, "当前项目（A 线）");
+  expect(queries().slice(beforeRefresh).map(query => query.project)).toEqual([null]);
+
+  await act(async () => oldRefresh.resolve(page([burstPartSummary(2)])));
+  expect(queries().slice(beforeRefresh).map(query => query.project)).toEqual([null, "line-a"]);
+  expect(screen.queryByRole("button", { name: "查看 SN SN-102 的记录" })).not.toBeInTheDocument();
+  await act(async () => latestFilter.reject(new Error("记录库忙")));
   expect(await screen.findByRole("alert")).toHaveTextContent("记录库忙");
   expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument();
   expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 0 件");
+});
+
+it("首页查询期间连续入库 → 补查一次并显示最新记录", async () => {
+  const firstRefresh = deferred<ReturnType<typeof page>>();
+  const nextRefresh = deferred<ReturnType<typeof page>>();
+  const responses: Promise<ReturnType<typeof page>>[] = [];
+  let records = [burstPartSummary(1)];
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_query") return responses.shift() ?? page(records);
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(1);
+  await waitFor(() => expect(screen.getByRole("button", { name: "刷新" })).toBeEnabled());
+  const beforeRefresh = queries().length;
+  responses.push(firstRefresh.promise, nextRefresh.promise);
+  records = [burstPartSummary(2), ...records];
+  const firstPage = page(records);
+  emitHistory("history://inserted", 2);
+  for (const id of [3, 4, 5]) {
+    records = [burstPartSummary(id), ...records];
+    emitHistory("history://inserted", id);
+  }
+  expect(queries().slice(beforeRefresh)).toHaveLength(1);
+
+  await act(async () => firstRefresh.resolve(firstPage));
+  expect(await row(2)).toBeVisible();
+  expect(queries().slice(beforeRefresh)).toHaveLength(2);
+  await act(async () => nextRefresh.resolve(page(records)));
+  expect(await row(5)).toBeVisible();
+  expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 5 件");
+  expect(queries().slice(beforeRefresh)).toHaveLength(2);
+});
+
+it("后续页刷新期间先收到越界结果 → 最新查询仍有记录时保留页码", async () => {
+  const early = deferred<ReturnType<typeof page>>();
+  const slice = (total: number, ids: number[]) => ({ total, counts: { ok: total, excursion: 0, ng: 0, err: 0 }, items: ids.map(burstPartSummary) });
+  let secondPage = slice(51, [1]);
+  let hold = false;
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_query") {
+      if ((args as { query: HistoryQuery }).query.offset === 0) return slice(51, [51]);
+      if (!hold) return secondPage;
+      hold = false;
+      return early.promise;
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(51);
+  await userEvent.click(screen.getByRole("button", { name: "下一页" }));
+  await row(1);
+  const before = queries().length;
+  emitHistory("history://inserted", 52);
+  expect(queries()).toHaveLength(before);
+
+  hold = true;
+  emitHistory("history://changed", [1]);
+  secondPage = slice(51, [2]);
+  emitHistory("history://changed", [2]);
+  expect(queries().slice(before).map(query => query.offset)).toEqual([50]);
+
+  await act(async () => early.resolve(slice(50, [])));
+  expect(await row(2)).toBeVisible();
+  expect(queries().slice(before).map(query => query.offset)).toEqual([50, 50]);
 });
 
 // 防的回归：历史页默认只看当前项目（看不到其他项目的记录），或选“当前项目”后查询没带项目编号、仍混入其他项目的记录
@@ -159,8 +251,7 @@ it("按结果筛选与新件入库 → 每次只查询一次，列表和各结�
 
   const beforeInsert = queries().length;
   ngItems.push({ ...burstPartSummary(5), verdict: "NG_GAP" });
-  const onInserted = vi.mocked(listen).mock.calls.filter(([event]) => event === "history://inserted").at(-1)?.[1];
-  act(() => onInserted?.({ event: "history://inserted", id: 1, payload: 5 }));
+  emitHistory("history://inserted", 5);
   expect(await row(5)).toBeVisible();
   expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("共 2 件");
   expect(filters.getByRole("button", { name: /OK/ })).toHaveTextContent("OK3");
