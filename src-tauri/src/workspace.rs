@@ -1797,7 +1797,7 @@ fn live_frame_image(
     cycle_id: &str,
     revision_id: &str,
     k: (usize, u64),
-    recorded_part: impl FnOnce() -> Result<FrameImage, String>,
+    recorded_part: impl FnOnce() -> Result<Arc<FrameImage>, String>,
 ) -> Result<Arc<FrameImage>, String> {
     let (held, recorded) = {
         let live = live.lock().unwrap();
@@ -1819,16 +1819,15 @@ fn live_frame_image(
     if let Some(view) = held {
         return view.image();
     }
-    let image = match recorded.map(|frame| frame.state()) {
+    match recorded.map(|frame| frame.state()) {
         Some(crate::recorder::RecordedFrame::Ready(path)) if path.is_file() => {
-            crate::image_file::load(&path).map_err(|e| format!("读回录制原图失败：{e}"))?
+            crate::image_file::load(&path)
+                .map(Arc::new)
+                .map_err(|e| format!("读回录制原图失败：{e}"))
         }
-        Some(crate::recorder::RecordedFrame::Writing) => {
-            return Err("这一帧原图还在写盘，稍后再看".into())
-        }
-        _ => recorded_part()?,
-    };
-    Ok(Arc::new(image))
+        Some(crate::recorder::RecordedFrame::Writing) => Err("这一帧原图还在写盘，稍后再看".into()),
+        _ => recorded_part(),
+    }
 }
 
 /// 已收尾的本件按历史记录读录制原图。
@@ -1838,7 +1837,7 @@ fn recorded_part_frame(
     revision_id: &str,
     camera: usize,
     seq: u64,
-) -> Result<FrameImage, String> {
+) -> Result<Arc<FrameImage>, String> {
     let store = app.state::<Store>();
     let id = store
         .id_by_cycle(cycle_id)?
@@ -2112,7 +2111,7 @@ mod tests {
         let dir = ImportTestDir::new();
         let live = evicted_first_frame(dir.0.join("moved").join("cam1_s000001.pgm"));
         let image = live_frame_image(&live, "c1", "r1", (0, 1), || {
-            Ok(FrameImage::new(2, 2, vec![7; 4]))
+            Ok(Arc::new(FrameImage::new(2, 2, vec![7; 4])))
         })
         .unwrap();
         assert_eq!(&image.pixels[..], &[7; 4]);

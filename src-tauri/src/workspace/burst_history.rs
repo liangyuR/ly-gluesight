@@ -477,7 +477,7 @@ pub(super) fn frame_image(
     detail: &PartDetail,
     camera: usize,
     seq: u64,
-) -> Result<FrameImage, String> {
+) -> Result<Arc<FrameImage>, String> {
     let burst = detail
         .burst
         .as_ref()
@@ -519,7 +519,8 @@ pub async fn workspace_record_frame_image(
 ) -> Result<tauri::ipc::Response, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let detail = app.state::<Store>().detail_frame(history_id, camera, seq)?;
-        Ok(preview_response(&frame_image(&app, &detail, camera, seq)?))
+        let image = frame_image(&app, &detail, camera, seq)?;
+        Ok(preview_response(&image))
     })
     .await
     .map_err(|error| error.to_string())?

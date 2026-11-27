@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -9,6 +9,8 @@ use crate::frame::FrameImage;
 use crate::store::FrameRecord;
 
 const METADATA_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const DECODED_FRAME_LIMIT: usize = 3;
+const DECODED_FRAME_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// 录制根内的相对路径，且所在目录是本件的录制目录（`*_cycle_{cycleId}`）。
 fn cycle_relative<'a>(cycle_id: &str, file: &'a str) -> Result<&'a Path, String> {
@@ -72,6 +74,19 @@ struct CachedRecording {
     cycle_id: String,
     bytes: Vec<u8>,
     index: Arc<RecordingIndex>,
+    images: VecDeque<CachedFrame>,
+}
+
+struct CachedFrame {
+    name: String,
+    original: Vec<u8>,
+    image: Arc<FrameImage>,
+}
+
+impl CachedFrame {
+    fn bytes(&self) -> usize {
+        self.original.capacity() + self.image.pixels.capacity()
+    }
 }
 
 impl FrameMetadataCache {
@@ -85,20 +100,88 @@ impl FrameMetadataCache {
         cycle_id: &str,
         camera_id: &str,
         frame: &FrameRecord,
-    ) -> Result<FrameImage, String> {
+    ) -> Result<Arc<FrameImage>, String> {
         let root = checked_recording_root(root)?;
         let (relative, name) = recorded_frame_path(cycle_id, camera_id, frame)?;
         let path = metadata_path(&root, relative)?;
         let bytes = metadata_bytes(&path)?;
-        let decode = |entry: &Value, devices: &Value| {
-            decode_recorded_frame(&root, relative, cycle_id, camera_id, frame, entry, devices)
-        };
         if bytes.len() > METADATA_CACHE_MAX_BYTES {
             let metadata = decode_metadata(&bytes, cycle_id)?;
-            return decode(find_frame(&metadata, &name)?, &metadata["devices"]);
+            return decode_recorded_frame(
+                &root,
+                relative,
+                cycle_id,
+                camera_id,
+                frame,
+                find_frame(&metadata, &name)?,
+                &metadata["devices"],
+            )
+            .map(Arc::new);
         }
         let index = self.read_index(path, cycle_id, bytes)?;
-        decode(index.entry(&name)?, &index.devices)
+        let entry = index.entry(&name)?;
+        let size = recorded_dimensions(cycle_id, camera_id, frame, entry)?;
+        let original = original_bytes(&root, relative)?;
+        if let Some(image) = self.cached_image(&index, &name, &original) {
+            return Ok(image);
+        }
+        let image = Arc::new(decode_image(
+            relative,
+            camera_id,
+            size,
+            &original,
+            entry,
+            &index.devices,
+        )?);
+        self.cache_image(
+            &index,
+            CachedFrame {
+                name,
+                original,
+                image: Arc::clone(&image),
+            },
+        );
+        Ok(image)
+    }
+
+    fn cached_image(
+        &self,
+        index: &Arc<RecordingIndex>,
+        name: &str,
+        original: &[u8],
+    ) -> Option<Arc<FrameImage>> {
+        let cached = self.0.lock().unwrap();
+        let recording = cached
+            .as_ref()
+            .filter(|item| Arc::ptr_eq(&item.index, index))?;
+        recording
+            .images
+            .iter()
+            .find(|frame| frame.name == name && frame.original == original)
+            .map(|frame| Arc::clone(&frame.image))
+    }
+
+    fn cache_image(&self, index: &Arc<RecordingIndex>, frame: CachedFrame) {
+        let incoming = frame.bytes();
+        if incoming > DECODED_FRAME_CACHE_MAX_BYTES {
+            return;
+        }
+        let mut cached = self.0.lock().unwrap();
+        let Some(recording) = cached
+            .as_mut()
+            .filter(|item| Arc::ptr_eq(&item.index, index))
+        else {
+            return;
+        };
+        let images = &mut recording.images;
+        images.retain(|previous| previous.name != frame.name);
+        let mut bytes: usize = images.iter().map(CachedFrame::bytes).sum();
+        while images.len() >= DECODED_FRAME_LIMIT
+            || bytes + incoming > DECODED_FRAME_CACHE_MAX_BYTES
+        {
+            bytes -= images.pop_front().unwrap().bytes();
+        }
+        images.push_back(frame);
     }
 
     fn read_index(
@@ -119,6 +202,7 @@ impl FrameMetadataCache {
             cycle_id: cycle_id.to_owned(),
             bytes,
             index: Arc::clone(&index),
+            images: VecDeque::new(),
         });
         Ok(index)
     }
@@ -273,6 +357,17 @@ fn decode_recorded_frame(
     entry: &Value,
     devices: &Value,
 ) -> Result<FrameImage, String> {
+    let size = recorded_dimensions(cycle_id, camera_id, frame, entry)?;
+    let bytes = original_bytes(root, relative)?;
+    decode_image(relative, camera_id, size, &bytes, entry, devices)
+}
+
+fn recorded_dimensions(
+    cycle_id: &str,
+    camera_id: &str,
+    frame: &FrameRecord,
+    entry: &Value,
+) -> Result<[u32; 2], String> {
     if entry["cycleId"].as_str() != Some(cycle_id) || entry["available"].as_bool() != Some(true) {
         return Err("录制元数据的原图身份不一致或未落盘".into());
     }
@@ -295,14 +390,23 @@ fn decode_recorded_frame(
             .and_then(|value| u32::try_from(value).ok())
             .filter(|value| *value > 0)
     };
-    let size = [
+    Ok([
         dimension("width").ok_or("录制原图宽度无效")?,
         dimension("height").ok_or("录制原图高度无效")?,
-    ];
+    ])
+}
+
+fn decode_image(
+    relative: &Path,
+    camera_id: &str,
+    size: [u32; 2],
+    bytes: &[u8],
+    entry: &Value,
+    devices: &Value,
+) -> Result<FrameImage, String> {
     let file = relative.to_string_lossy();
-    let bytes = original_bytes(root, relative)?;
-    checked_dimensions(&bytes, Some(size), &file)?;
-    let mut image = crate::image_file::decode(&bytes)
+    checked_dimensions(bytes, Some(size), &file)?;
+    let mut image = crate::image_file::decode(bytes)
         .map_err(|error| format!("原图 {file} 解码失败：{error}"))?;
     if image.is_color() && entry["imageMode"] == "color" && entry["session"].as_u64().is_some() {
         if let Some(devices) = devices.as_array() {
@@ -415,16 +519,24 @@ mod tests {
     fn cached_recording_index_revalidates_changed_manifest_and_reads_current_pixels() {
         let (root, directory, frame, mut entry) = recorded_frame();
         let path = directory.join("part.json");
+        let original_path = directory.join("cam1_s000007.pgm");
         std::fs::write(&path, manifest(vec![entry.clone()])).unwrap();
         let cache = FrameMetadataCache::default();
         let read = |frame: &FrameRecord| cache.load(&root.0, "record-1", "cam1", frame);
         assert_eq!(read(&frame).unwrap().pixels, [0x19, 0x60]);
-        std::fs::write(
-            directory.join("cam1_s000007.pgm"),
-            b"P5\n2 1\n255\n\x31\x60",
-        )
-        .unwrap();
+        let original_stamp = std::fs::metadata(&original_path).unwrap();
+        let updated_pixels = b"P5\n2 1\n255\n\x31\x60";
+        std::fs::write(&original_path, updated_pixels).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&original_path)
+            .unwrap()
+            .set_modified(original_stamp.modified().unwrap())
+            .unwrap();
         assert_eq!(read(&frame).unwrap().pixels, [0x31, 0x60]);
+        std::fs::remove_file(&original_path).unwrap();
+        assert!(read(&frame).is_err());
+        std::fs::write(&original_path, updated_pixels).unwrap();
 
         let stamp = std::fs::metadata(&path).unwrap();
         entry["frameCounter"] = json!(12);
@@ -445,6 +557,41 @@ mod tests {
         assert_eq!(read(&updated_frame).unwrap().pixels, [0x31, 0x60]);
         std::fs::remove_file(path).unwrap();
         assert!(read(&updated_frame).is_err());
+    }
+
+    #[test]
+    fn changed_recorded_white_balance_updates_capture_for_the_same_bayer_image() {
+        let (root, directory, frame, mut entry) = recorded_frame();
+        entry["height"] = json!(2);
+        entry["imageMode"] = json!("color");
+        entry["session"] = json!(3);
+        let mut pixels =
+            crate::image_file::pnm_header(2, 2, 1, Some(crate::frame::BayerPattern::Rg))
+                .into_bytes();
+        pixels.extend([20, 80, 120, 230]);
+        std::fs::write(directory.join("cam1_s000007.pgm"), pixels).unwrap();
+        let manifest = |red| {
+            json!({
+                "cycleId": "record-1", "frames": [entry],
+                "devices": [{
+                    "cameraId": "cam1", "deviceSession": 3,
+                    "cameraConfig": {"source": "mvs", "serial": "test-camera"},
+                    "imaging": {"whiteBalance": {"unit": "ratio", "red": red, "green": 1.0, "blue": 1.0}},
+                }],
+            })
+            .to_string()
+        };
+        let path = directory.join("part.json");
+        let cache = FrameMetadataCache::default();
+        let read = || cache.load(&root.0, "record-1", "cam1", &frame).unwrap();
+        std::fs::write(&path, manifest(1.0)).unwrap();
+        let previous = read();
+        assert_eq!(previous.capture.as_ref().unwrap().white_balance.red, 1.0);
+
+        std::fs::write(&path, manifest(2.0)).unwrap();
+        let updated = read();
+        assert_eq!(updated.pixels, previous.pixels);
+        assert_eq!(updated.capture.as_ref().unwrap().white_balance.red, 2.0);
     }
 
     #[test]
