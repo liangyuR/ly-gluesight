@@ -369,6 +369,7 @@ pub struct WorkspaceHost {
     mix_samples: Mutex<HashMap<String, mix_teaching::Sample>>,
     capture_seq: std::sync::atomic::AtomicU64,
     comparisons: comparisons::Comparisons,
+    frame_metadata: recorded::FrameMetadataCache,
     /// 历史叠图最近用的发布包及其项目（不在生产预热里时另加载，只留一个，不占生产预热）
     history_bundle: Mutex<Option<(String, Arc<crate::production::Prepared>)>>,
 }
@@ -518,6 +519,7 @@ impl WorkspaceHost {
             mix_samples: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
             comparisons: comparisons::Comparisons::default(),
+            frame_metadata: recorded::FrameMetadataCache::default(),
             history_bundle: Mutex::new(None),
         })
     }

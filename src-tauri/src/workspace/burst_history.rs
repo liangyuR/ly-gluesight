@@ -2,7 +2,7 @@
 //!
 //! 只服务段配方记录（`PartDetail.burst` 非空）。旧拍照点记录仍走 workspace.rs 里按 (拍照点, 视角) 的 `history_image`、
 //! `measure_images` 与 `reproduce::measure`，行为不变。
-//! - 原图：生产记录读录制目录（`recorded::load_frame_verified`，核对 part.json 的帧身份）；候选离线调试记录读受管样本集
+//! - 原图：生产记录读录制目录（`recorded::FrameMetadataCache::load`，核对 part.json 的帧身份）；候选离线调试记录读受管样本集
 //!   （`history_samples::BurstSamples`，每台相机按清单顺序的拍照点即帧序列）。
 //! - 复测：缺帧仍是缺帧、不读图；读图或测量失败记测量失败，只算检测不完整（D-SB-13），不判整件 ERR。
 //! - 区域：按候选（或原发布包）的段重新划分，本轮只有 `Unsegmented`；按规则重判沿用记录里的区域（与历史重判同一口径）。
@@ -430,7 +430,9 @@ pub(super) fn frame_image(
         &detail.summary.project_id,
         detail.recording.directory.as_deref(),
     )?;
-    recorded::load_frame_verified(&root, cycle_id, camera_id, frame)
+    app.state::<WorkspaceHost>()
+        .frame_metadata
+        .load(&root, cycle_id, camera_id, frame)
 }
 
 /// 段配方历史件一帧的录制原图（决策记录 5.4，camera 为计划相机下标）；未录制、录制队满丢弃或缺帧时报错。

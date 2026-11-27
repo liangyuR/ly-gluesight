@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
 use crate::burst_judge::FrameState;
 use crate::frame::FrameImage;
 use crate::store::FrameRecord;
+
+const METADATA_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// 录制根内的相对路径，且所在目录是本件的录制目录（`*_cycle_{cycleId}`）。
 fn cycle_relative<'a>(cycle_id: &str, file: &'a str) -> Result<&'a Path, String> {
@@ -33,61 +36,105 @@ fn cycle_relative<'a>(cycle_id: &str, file: &'a str) -> Result<&'a Path, String>
     Ok(relative)
 }
 
-/// 读录制目录里的 part.json，要求它属于本件（cycleId 相同）。
-fn cycle_metadata(root: &Path, relative: &Path, cycle_id: &str) -> Result<Value, String> {
-    let metadata_path = root
+fn metadata_path(root: &Path, relative: &Path) -> Result<PathBuf, String> {
+    Ok(root
         .join(relative)
         .parent()
         .ok_or("原图目录无效")?
-        .join("part.json");
-    match std::fs::symlink_metadata(&metadata_path) {
+        .join("part.json"))
+}
+
+fn metadata_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err("录制元数据缺失，不能核验历史原图完整身份".into())
         }
         Err(error) => return Err(format!("录制元数据无法读取：{error}")),
-        Ok(_) => crate::image_file::checked_source_path(&metadata_path)?,
+        Ok(_) => crate::image_file::checked_source_path(path)?,
     }
-    let metadata: Value = serde_json::from_slice(
-        &std::fs::read(&metadata_path).map_err(|error| format!("录制元数据读取失败：{error}"))?,
-    )
-    .map_err(|error| format!("录制元数据损坏：{error}"))?;
+    std::fs::read(path).map_err(|error| format!("录制元数据读取失败：{error}"))
+}
+
+fn decode_metadata(bytes: &[u8], cycle_id: &str) -> Result<Value, String> {
+    let metadata: Value =
+        serde_json::from_slice(bytes).map_err(|error| format!("录制元数据损坏：{error}"))?;
     if metadata["cycleId"].as_str() != Some(cycle_id) {
         return Err("录制元数据的 cycleId 与历史原图不一致".into());
     }
     Ok(metadata)
 }
 
-/// 段配方一帧的录制原图，按 (计划相机下标, 帧组序号) 读（决策记录 D-SB-29，录制文件名 `{相机}_s{seq:06}.pgm`）：
-/// 路径在本件录制目录内、文件名由相机与 seq 推出；part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号
-/// （历史记有触发计数时还有触发计数）都与历史记录一致且已落盘，解码尺寸等于录制尺寸。缺帧、未录制或任一项对不上都报错，
-/// 不拿别的帧顶替。
-pub(super) fn load_frame_verified(
-    root: &Path,
-    cycle_id: &str,
-    camera_id: &str,
-    frame: &FrameRecord,
-) -> Result<FrameImage, String> {
-    let root = checked_recording_root(root)?;
-    let (relative, name) = recorded_frame_path(cycle_id, camera_id, frame)?;
-    let metadata = cycle_metadata(&root, relative, cycle_id)?;
+#[derive(Default)]
+pub(super) struct FrameMetadataCache(Mutex<Option<CachedRecording>>);
+
+struct CachedRecording {
+    path: PathBuf,
+    cycle_id: String,
+    bytes: Vec<u8>,
+    index: Arc<RecordingIndex>,
+}
+
+impl FrameMetadataCache {
+    /// 段配方一帧的录制原图，按 (计划相机下标, 帧组序号) 读（决策记录 D-SB-29，录制文件名 `{相机}_s{seq:06}.pgm`）：
+    /// 路径在本件录制目录内、文件名由相机与 seq 推出；part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号
+    /// （历史记有触发计数时还有触发计数）都与历史记录一致且已落盘，解码尺寸等于录制尺寸。缺帧、未录制或任一项对不上都报错，
+    /// 不拿别的帧顶替。
+    pub(super) fn load(
+        &self,
+        root: &Path,
+        cycle_id: &str,
+        camera_id: &str,
+        frame: &FrameRecord,
+    ) -> Result<FrameImage, String> {
+        let root = checked_recording_root(root)?;
+        let (relative, name) = recorded_frame_path(cycle_id, camera_id, frame)?;
+        let path = metadata_path(&root, relative)?;
+        let bytes = metadata_bytes(&path)?;
+        let decode = |entry: &Value, devices: &Value| {
+            decode_recorded_frame(&root, relative, cycle_id, camera_id, frame, entry, devices)
+        };
+        if bytes.len() > METADATA_CACHE_MAX_BYTES {
+            let metadata = decode_metadata(&bytes, cycle_id)?;
+            return decode(find_frame(&metadata, &name)?, &metadata["devices"]);
+        }
+        let index = self.read_index(path, cycle_id, bytes)?;
+        decode(index.entry(&name)?, &index.devices)
+    }
+
+    fn read_index(
+        &self,
+        path: PathBuf,
+        cycle_id: &str,
+        bytes: Vec<u8>,
+    ) -> Result<Arc<RecordingIndex>, String> {
+        let mut cached = self.0.lock().unwrap();
+        if let Some(entry) = cached.as_ref().filter(|entry| {
+            entry.path == path && entry.cycle_id == cycle_id && entry.bytes == bytes
+        }) {
+            return Ok(Arc::clone(&entry.index));
+        }
+        let index = Arc::new(RecordingIndex::new(decode_metadata(&bytes, cycle_id)?)?);
+        *cached = Some(CachedRecording {
+            path,
+            cycle_id: cycle_id.to_owned(),
+            bytes,
+            index: Arc::clone(&index),
+        });
+        Ok(index)
+    }
+}
+
+fn find_frame<'a>(metadata: &'a Value, name: &str) -> Result<&'a Value, String> {
     let mut entries = metadata["frames"]
         .as_array()
         .ok_or("录制元数据缺少原图引用")?
         .iter()
-        .filter(|entry| entry["file"].as_str() == Some(name.as_str()));
+        .filter(|entry| entry["file"].as_str() == Some(name));
     let entry = entries.next().ok_or("录制元数据缺少对应原图")?;
     if entries.next().is_some() {
         return Err("录制元数据的原图身份重复".into());
     }
-    decode_recorded_frame(
-        &root,
-        relative,
-        cycle_id,
-        camera_id,
-        frame,
-        entry,
-        &metadata["devices"],
-    )
+    Ok(entry)
 }
 
 pub(super) struct VerifiedFrames {
@@ -99,6 +146,36 @@ pub(super) struct VerifiedFrames {
 struct RecordingIndex {
     entries: HashMap<String, Option<Value>>,
     devices: Value,
+}
+
+impl RecordingIndex {
+    fn new(mut metadata: Value) -> Result<Self, String> {
+        let Value::Array(frames) = metadata["frames"].take() else {
+            return Err("录制元数据缺少原图引用".into());
+        };
+        let mut entries = HashMap::with_capacity(frames.len());
+        for entry in frames {
+            let Some(file) = entry["file"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            entries
+                .entry(file)
+                .and_modify(|existing| *existing = None)
+                .or_insert(Some(entry));
+        }
+        Ok(Self {
+            entries,
+            devices: metadata["devices"].take(),
+        })
+    }
+
+    fn entry(&self, name: &str) -> Result<&Value, String> {
+        self.entries
+            .get(name)
+            .ok_or("录制元数据缺少对应原图")?
+            .as_ref()
+            .ok_or_else(|| "录制元数据的原图身份重复".into())
+    }
 }
 
 impl VerifiedFrames {
@@ -120,42 +197,18 @@ impl VerifiedFrames {
         let (relative, name) = recorded_frame_path(cycle_id, camera_id, frame)?;
         let directory = relative.parent().ok_or("原图目录无效")?;
         if !self.metadata.contains_key(directory) {
-            let mut metadata = cycle_metadata(root, relative, cycle_id)?;
-            let Value::Array(frames) = metadata["frames"].take() else {
-                return Err("录制元数据缺少原图引用".into());
-            };
-            let mut entries = HashMap::with_capacity(frames.len());
-            for entry in frames {
-                let Some(file) = entry["file"].as_str().map(str::to_owned) else {
-                    continue;
-                };
-                entries
-                    .entry(file)
-                    .and_modify(|existing| *existing = None)
-                    .or_insert(Some(entry));
-            }
-            self.metadata.insert(
-                directory.to_path_buf(),
-                RecordingIndex {
-                    entries,
-                    devices: metadata["devices"].take(),
-                },
-            );
+            let bytes = metadata_bytes(&metadata_path(root, relative)?)?;
+            let indexed = RecordingIndex::new(decode_metadata(&bytes, cycle_id)?)?;
+            self.metadata.insert(directory.to_path_buf(), indexed);
         }
         let indexed = &self.metadata[directory];
-        let entry = indexed
-            .entries
-            .get(&name)
-            .ok_or("录制元数据缺少对应原图")?
-            .as_ref()
-            .ok_or("录制元数据的原图身份重复")?;
         decode_recorded_frame(
             root,
             relative,
             cycle_id,
             camera_id,
             frame,
-            entry,
+            indexed.entry(&name)?,
             &indexed.devices,
         )
     }
@@ -302,16 +355,12 @@ fn checked_dimensions(bytes: &[u8], expected: Option<[u32; 2]>, file: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::tests::ImportTestDir;
     use serde_json::json;
 
-    #[test]
-    fn duplicated_file_identity_rejects_single_and_indexed_reads() {
-        let root = std::env::temp_dir().join(format!(
-            "gluesight-recorded-duplicate-{}-{}",
-            std::process::id(),
-            ly_plc::now_ms()
-        ));
-        let directory = root.join("sample_cycle_record-1");
+    fn recorded_frame() -> (ImportTestDir, PathBuf, FrameRecord, Value) {
+        let root = ImportTestDir::new();
+        let directory = root.0.join("sample_cycle_record-1");
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
             directory.join("cam1_s000007.pgm"),
@@ -330,20 +379,25 @@ mod tests {
         };
         let entry = json!({"file":"cam1_s000007.pgm", "cycleId":"record-1", "camera":0, "cameraId":"cam1",
             "seq":7, "frameCounter":11, "triggerCounter":17, "width":2, "height":1, "available":true});
-        let write_manifest = |entries: Vec<Value>| {
-            let manifest = json!({"cycleId":"record-1", "frames":entries});
-            std::fs::write(
-                directory.join("part.json"),
-                serde_json::to_vec(&manifest).unwrap(),
-            )
-            .unwrap();
-        };
+        (root, directory, frame, entry)
+    }
 
+    fn manifest(entries: Vec<Value>) -> Vec<u8> {
+        serde_json::to_vec(&json!({"cycleId":"record-1", "frames":entries})).unwrap()
+    }
+
+    #[test]
+    fn duplicated_file_identity_rejects_single_and_indexed_reads() {
+        let (root, directory, frame, entry) = recorded_frame();
+        let path = directory.join("part.json");
+        let write_manifest = |entries| std::fs::write(&path, manifest(entries)).unwrap();
+        let cache = FrameMetadataCache::default();
+        let read_single = || cache.load(&root.0, "record-1", "cam1", &frame);
         write_manifest(vec![entry.clone()]);
-        let image = load_frame_verified(&root, "record-1", "cam1", &frame).unwrap();
+        let image = read_single().unwrap();
         assert_eq!(image.pixels, [0x19, 0x60]);
         let read_indexed = || {
-            VerifiedFrames::new(&root, "record-1")
+            VerifiedFrames::new(&root.0, "record-1")
                 .unwrap()
                 .load("cam1", &frame)
         };
@@ -353,8 +407,55 @@ mod tests {
             json!({"file":"cam1_s000007.pgm"}),
             entry,
         ]);
-        assert!(load_frame_verified(&root, "record-1", "cam1", &frame).is_err());
+        assert!(read_single().is_err());
         assert!(read_indexed().is_err());
-        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cached_recording_index_revalidates_changed_manifest_and_reads_current_pixels() {
+        let (root, directory, frame, mut entry) = recorded_frame();
+        let path = directory.join("part.json");
+        std::fs::write(&path, manifest(vec![entry.clone()])).unwrap();
+        let cache = FrameMetadataCache::default();
+        let read = |frame: &FrameRecord| cache.load(&root.0, "record-1", "cam1", frame);
+        assert_eq!(read(&frame).unwrap().pixels, [0x19, 0x60]);
+        std::fs::write(
+            directory.join("cam1_s000007.pgm"),
+            b"P5\n2 1\n255\n\x31\x60",
+        )
+        .unwrap();
+        assert_eq!(read(&frame).unwrap().pixels, [0x31, 0x60]);
+
+        let stamp = std::fs::metadata(&path).unwrap();
+        entry["frameCounter"] = json!(12);
+        let updated = manifest(vec![entry]);
+        assert_eq!(updated.len() as u64, stamp.len());
+        std::fs::write(&path, updated).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(stamp.modified().unwrap())
+            .unwrap();
+        assert!(read(&frame).is_err());
+        let updated_frame = FrameRecord {
+            frame_counter: Some(12),
+            ..frame
+        };
+        assert_eq!(read(&updated_frame).unwrap().pixels, [0x31, 0x60]);
+        std::fs::remove_file(path).unwrap();
+        assert!(read(&updated_frame).is_err());
+    }
+
+    #[test]
+    fn oversized_manifest_remains_readable() {
+        let (root, directory, frame, entry) = recorded_frame();
+        let mut bytes = manifest(vec![entry]);
+        bytes.resize(METADATA_CACHE_MAX_BYTES + 1, b' ');
+        std::fs::write(directory.join("part.json"), bytes).unwrap();
+        let image = FrameMetadataCache::default()
+            .load(&root.0, "record-1", "cam1", &frame)
+            .unwrap();
+        assert_eq!(image.pixels, [0x19, 0x60]);
     }
 }

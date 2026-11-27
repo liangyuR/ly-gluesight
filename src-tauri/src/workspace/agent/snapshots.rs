@@ -139,6 +139,7 @@ mod tests {
             station: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
             comparisons: comparisons::Comparisons::default(),
+            frame_metadata: recorded::FrameMetadataCache::default(),
             history_bundle: Mutex::new(None),
             mix_samples: Mutex::default(),
         };
