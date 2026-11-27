@@ -62,10 +62,29 @@ impl From<&Comparison> for ComparisonSummary {
 }
 
 struct CachedSummary {
+    stamp: SummaryStamp,
+    summary: ComparisonSummary,
+}
+
+#[derive(PartialEq, Eq)]
+struct SummaryStamp {
     length: u64,
     modified: std::time::SystemTime,
     created: Option<std::time::SystemTime>,
-    summary: ComparisonSummary,
+}
+
+impl SummaryStamp {
+    fn of(metadata: &Metadata) -> Option<Self> {
+        Some(Self {
+            length: metadata.len(),
+            modified: metadata.modified().ok()?,
+            created: metadata.created().ok(),
+        })
+    }
+
+    fn read(file: &File) -> Option<Self> {
+        Self::of(&file.metadata().ok()?)
+    }
 }
 
 impl Comparisons {
@@ -148,11 +167,11 @@ impl Comparisons {
             .and_then(|()| {
                 let file = writer.get_ref();
                 file.sync_all().map_err(error)?;
-                Ok(file.metadata().ok())
+                Ok(SummaryStamp::read(file))
             });
         drop(writer.into_parts());
-        let metadata = match written {
-            Ok(metadata) => metadata,
+        let stamp = match written {
+            Ok(stamp) => stamp,
             Err(e) => {
                 let _ = fs::remove_file(&temporary);
                 return Err(e);
@@ -164,8 +183,8 @@ impl Comparisons {
         }
         let summary = ComparisonSummary::from(comparison);
         cache.summaries.remove(&file);
-        if let Some(metadata) = metadata {
-            cache_summary(&mut cache.summaries, &file, &metadata, &summary);
+        if let Some(stamp) = stamp {
+            cache_summary(&mut cache.summaries, &file, stamp, summary.clone());
         }
         files.push((file.clone(), summary));
         if let Err(e) = reconcile(files, comparison.history_id, Some(&cycle), &mut cache) {
@@ -262,9 +281,9 @@ impl Comparisons {
             .comparison_cycle(history_id)?
             .ok_or("历史记录已清理")?;
         let path = directory(root, history_id, false)?.join(format!("{id}.json"));
-        let bytes = if let Some(entry) = cache.decoded.as_ref().filter(|entry| entry.path == path) {
-            check_comparison_file(&path)?;
-            let mut file = File::open(&path).map_err(error)?;
+        check_comparison_file(&path)?;
+        let mut file = File::open(&path).map_err(error)?;
+        if let Some(entry) = cache.decoded.as_ref().filter(|entry| entry.path == path) {
             if file_matches(&mut file, &entry.bytes).map_err(error)? {
                 if entry.saved.cycle_id != cycle {
                     return Err("历史工件身份已改变".into());
@@ -272,15 +291,35 @@ impl Comparisons {
                 return Ok(Arc::clone(&entry.saved));
             }
             file.rewind().map_err(error)?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes).map_err(error)?;
-            bytes
-        } else {
-            read_comparison_bytes(&path)?
-        };
+        }
+        cache.summaries.remove(&path);
+        let metadata = file.metadata().ok();
+        let mut bytes = Vec::new();
+        if let Some(length) = metadata
+            .as_ref()
+            .and_then(|m| usize::try_from(m.len()).ok())
+        {
+            bytes.try_reserve_exact(length).map_err(error)?;
+        }
+        file.read_to_end(&mut bytes).map_err(error)?;
+        let stamp = metadata
+            .as_ref()
+            .and_then(SummaryStamp::of)
+            .filter(|stamp| {
+                stamp.length == bytes.len() as u64
+                    && SummaryStamp::read(&file).as_ref() == Some(stamp)
+            });
         let saved = Arc::new(decode_comparison(&path, history_id, &bytes, true)?);
         if saved.cycle_id != cycle {
             return Err("历史工件身份已改变".into());
+        }
+        if let Some(stamp) = stamp {
+            cache_summary(
+                &mut cache.summaries,
+                &path,
+                stamp,
+                ComparisonSummary::from(saved.as_ref()),
+            );
         }
         cache.decoded = (bytes.len() <= DECODED_CACHE_MAX_FILE_BYTES).then(|| CachedComparison {
             path,
@@ -433,17 +472,9 @@ fn read_comparison(
     history_id: i64,
     with_verdicts: bool,
 ) -> Result<Comparison, String> {
-    decode_comparison(
-        path,
-        history_id,
-        &read_comparison_bytes(path)?,
-        with_verdicts,
-    )
-}
-
-fn read_comparison_bytes(path: &Path) -> Result<Vec<u8>, String> {
     check_comparison_file(path)?;
-    fs::read(path).map_err(error)
+    let bytes = fs::read(path).map_err(error)?;
+    decode_comparison(path, history_id, &bytes, with_verdicts)
 }
 
 fn check_comparison_file(path: &Path) -> Result<(), String> {
@@ -522,19 +553,18 @@ fn inventory(
         if !metadata.is_file() || extension != Some("json") {
             return Err(format!("未确认的复测目录项：{}", path.display()));
         }
-        let modified = metadata.modified().ok();
-        let created = metadata.created().ok();
-        let cached = cache.get(&path).filter(|cached| {
-            cached.length == metadata.len()
-                && Some(cached.modified) == modified
-                && cached.created == created
-        });
+        let stamp = SummaryStamp::of(&metadata);
+        let cached = cache
+            .get(&path)
+            .filter(|cached| stamp.as_ref() == Some(&cached.stamp));
         let summary = if let Some(cached) = cached {
             cached.summary.clone()
         } else {
             let saved = read_comparison(&path, history_id, false)?;
             let summary = ComparisonSummary::from(&saved);
-            cache_summary(cache, &path, &metadata, &summary);
+            if let Some(stamp) = stamp {
+                cache_summary(cache, &path, stamp, summary.clone());
+            }
             summary
         };
         files.push((path, summary));
@@ -548,24 +578,13 @@ fn inventory(
 fn cache_summary(
     cache: &mut HashMap<PathBuf, CachedSummary>,
     path: &Path,
-    metadata: &Metadata,
-    summary: &ComparisonSummary,
+    stamp: SummaryStamp,
+    summary: ComparisonSummary,
 ) {
-    let Ok(modified) = metadata.modified() else {
-        return;
-    };
-    if cache.len() >= SUMMARY_CACHE_LIMIT {
+    if cache.len() >= SUMMARY_CACHE_LIMIT && !cache.contains_key(path) {
         cache.clear();
     }
-    cache.insert(
-        path.to_path_buf(),
-        CachedSummary {
-            length: metadata.len(),
-            modified,
-            created: metadata.created().ok(),
-            summary: summary.clone(),
-        },
-    );
+    cache.insert(path.to_path_buf(), CachedSummary { stamp, summary });
 }
 
 fn interrupted_save_id(path: &Path, history_id: i64) -> bool {
@@ -722,6 +741,38 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].id, saved.id);
         assert_eq!(after[0].candidate_revision, 2);
+    }
+
+    #[test]
+    fn opening_an_edited_comparison_refreshes_its_summary_even_with_unchanged_metadata() {
+        let (root, store, _, mut saved) = saved_comparison();
+        let comparisons = Comparisons::default();
+        let history_id = saved.history_id;
+        let summaries = || comparisons.summaries(&root.0, &store, None, history_id);
+        assert_eq!(summaries().unwrap()[0].candidate_revision, 1);
+
+        let path = directory(&root.0, history_id, false)
+            .unwrap()
+            .join(format!("{}.json", saved.id));
+        let before = fs::metadata(&path).unwrap();
+        saved.candidate_revision = 2;
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(before.modified().unwrap())
+            .unwrap();
+        let after = fs::metadata(&path).unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        assert_eq!(before.created().ok(), after.created().ok());
+
+        let opened = comparisons
+            .get(&root.0, &store, history_id, &saved.id)
+            .unwrap();
+        assert_eq!(opened.candidate_revision, 2);
+        assert_eq!(summaries().unwrap()[0].candidate_revision, 2);
     }
 
     #[test]
