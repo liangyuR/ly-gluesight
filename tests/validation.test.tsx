@@ -1,12 +1,12 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
-import type { Validation } from "../src/features/workspace/types";
-import { burstRecipe, burstWorkspaceView, workspaceState } from "./fixtures";
+import type { Check, Validation } from "../src/features/workspace/types";
+import { burstRecipe, burstWorkspaceView, deferred, workspaceState } from "./fixtures";
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn(), collectChecks: vi.fn(), publishCollect: vi.fn(), publishChecks: vi.fn() } }));
 const archived: Validation = { revision: 7, passed: true, checkedAt: 1, environmentTag: {}, checks: [] };
@@ -25,10 +25,14 @@ beforeEach(() => {
 describe("发布页面", () => {
 
   it("发布失败后重试同一待生效版本，不能另发新版", async () => {
-    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, validation: archived, validationSite: "real" };
+    const validation = { ...archived, checks: [{ name: "已核对测量图", passed: true, detail: "本次冻结时的预检" }] };
+    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, validation, validationSite: "real" };
     ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
     show();
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
+    expect(screen.getByText(/已满足.*已核对测量图/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "重新检查" })).not.toBeInTheDocument();
+    expect(workspaceApi.publishChecks).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "重试发布 / 切换" }));
     expect(workspaceApi.retryPublish).toHaveBeenCalledWith("A", 7);
     expect(workspaceApi.publish).not.toHaveBeenCalled();
@@ -82,6 +86,47 @@ describe("发布页面", () => {
     show();
     await waitFor(() => expect(screen.getAllByRole("note").some(note => note.textContent?.includes("走廊示教：第 2 段相机 cam2 走廊未示教"))).toBe(true));
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
+  });
+
+  it("环境修复后重新检查 → 同一修订在新结果通过后恢复发布", async () => {
+    const request = deferred<Check[]>();
+    vi.mocked(workspaceApi.publishChecks)
+      .mockResolvedValueOnce([{ name: "图像核心库", passed: false, detail: "尚未加载兼容运行库" }])
+      .mockReturnValueOnce(request.promise);
+    show();
+    expect(await screen.findByText("尚未加载兼容运行库")).toBeVisible();
+    const publish = screen.getByRole("button", { name: "发布生产配方" });
+    const retry = screen.getByRole("button", { name: "重新检查" });
+    expect(publish).toBeDisabled();
+    await userEvent.click(retry);
+    expect(screen.getByText("检查中")).toBeVisible();
+    expect(publish).toBeDisabled();
+    expect(retry).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发布采集版" })).toBeEnabled();
+    expect(workspaceApi.publishChecks).toHaveBeenLastCalledWith("A", 7);
+
+    await act(async () => request.resolve([{ name: "图像核心库", passed: true, detail: "兼容运行库已加载" }]));
+    expect(publish).toBeEnabled();
+    expect(retry).toBeEnabled();
+  });
+
+  it("重新检查期间换成同编号同修订的候选 → 迟到的旧通过结果不能放行", async () => {
+    const previous = deferred<Check[]>(), replacement = deferred<Check[]>();
+    const page = show();
+    const publish = screen.getByRole("button", { name: "发布生产配方" });
+    await waitFor(() => expect(publish).toBeEnabled());
+    vi.mocked(workspaceApi.publishChecks).mockReturnValueOnce(previous.promise).mockReturnValueOnce(replacement.promise);
+    await userEvent.click(screen.getByRole("button", { name: "重新检查" }));
+    expect(publish).toBeDisabled();
+
+    ws.data!.workspace.instanceId++;
+    page.rerender(<MemoryRouter><ValidationPage /></MemoryRouter>);
+    await waitFor(() => expect(workspaceApi.publishChecks).toHaveBeenCalledTimes(3));
+    await act(async () => replacement.resolve([{ name: "测量图", passed: false, detail: "新候选的测量图构建失败" }]));
+    expect(screen.getByText("新候选的测量图构建失败")).toBeVisible();
+    await act(async () => previous.resolve([{ name: "测量图", passed: true, detail: "旧候选的测量图已构建" }]));
+    expect(screen.getByText("新候选的测量图构建失败")).toBeVisible();
+    expect(publish).toBeDisabled();
   });
 
   // 防的回归（D-SB-59）：示教帧上部分段没测成只是提醒，却把发布拦住；或发布确认时不再提醒这些段生产不测
