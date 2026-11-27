@@ -365,6 +365,12 @@ pub struct PartDetail {
     pub burst: Option<PartDetailBurst>,
 }
 
+enum DetailScope {
+    Full,
+    Frame(usize, u64),
+    Import,
+}
+
 /// 重判用：一件工件的判定输入。
 pub struct StoredMeasurement {
     pub id: i64,
@@ -1820,7 +1826,16 @@ impl Store {
     }
 
     pub fn detail(&self, id: i64) -> Result<PartDetail, String> {
-        self.detail_selected(id, None).map(|(detail, _)| detail)
+        self.read_detail(id, DetailScope::Full)
+            .map(|(detail, _)| detail)
+    }
+
+    pub(crate) fn history_import_record(
+        &self,
+        id: i64,
+    ) -> Result<(PartSummary, RecordingEvidence), String> {
+        self.read_detail(id, DetailScope::Import)
+            .map(|(detail, _)| (detail.summary, detail.recording))
     }
 
     pub fn detail_frame(&self, id: i64, camera: usize, seq: u64) -> Result<PartDetail, String> {
@@ -1834,7 +1849,7 @@ impl Store {
         camera: usize,
         seq: u64,
     ) -> Result<(PartDetail, Arc<Recipe>), String> {
-        let (detail, recipe) = self.detail_selected(id, Some((camera, seq)))?;
+        let (detail, recipe) = self.read_detail(id, DetailScope::Frame(camera, seq))?;
         if detail
             .burst
             .as_ref()
@@ -1865,21 +1880,21 @@ impl Store {
         Ok(detail)
     }
 
-    fn detail_selected(
+    fn read_detail(
         &self,
         id: i64,
-        selected: Option<(usize, u64)>,
+        scope: DetailScope,
     ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
         let mut conn = open_read_only(&self.path)?;
         let snapshot = conn.transaction().map_err(db_err)?;
-        self.detail_from_snapshot(snapshot, id, selected)
+        self.detail_from_snapshot(snapshot, id, scope)
     }
 
     fn detail_from_snapshot(
         &self,
         snapshot: Transaction<'_>,
         id: i64,
-        selected: Option<(usize, u64)>,
+        scope: DetailScope,
     ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
         const N: usize = SUMMARY_LEN;
         let (summary, judgement, frames, triggers, software_version, recording, burst_judgement) = snapshot
@@ -1899,6 +1914,10 @@ impl Store {
             _ => None,
         };
         let raw_frames = if summary.burst.is_some() {
+            let selected = match scope {
+                DetailScope::Frame(camera, seq) => Some((camera, seq)),
+                DetailScope::Full | DetailScope::Import => None,
+            };
             frame_rows_raw(&snapshot, id, selected)?
         } else {
             Vec::new()
@@ -1927,7 +1946,7 @@ impl Store {
                     .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
                 let frames = decode_frame_rows(raw_frames)?;
                 let cameras = recipe.plan_cameras();
-                let frame_verdicts = if selected.is_none() {
+                let frame_verdicts = if matches!(scope, DetailScope::Full) {
                     let regions: Vec<_> =
                         judgement.regions.iter().map(|r| r.region.clone()).collect();
                     crate::burst_judge::frame_verdicts(
@@ -1990,7 +2009,7 @@ impl Store {
         let Some(id) = Self::find_id_by_cycle(&snapshot, cycle_id)? else {
             return Ok(None);
         };
-        self.detail_from_snapshot(snapshot, id, None)
+        self.detail_from_snapshot(snapshot, id, DetailScope::Full)
             .map(|(detail, _)| Some(detail))
     }
 

@@ -1020,7 +1020,12 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
     let id = store
         .insert(&burst_part(&recipe, "overview-part", &judgement, &burst))
         .unwrap();
-    let full = store.detail(id).unwrap().burst.unwrap();
+    let detail = store.detail(id).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.history_import_record(id).unwrap()).unwrap(),
+        serde_json::to_value((&detail.summary, &detail.recording)).unwrap(),
+    );
+    let full = detail.burst.unwrap();
     let overview = store.detail_overview(id).unwrap().burst.unwrap();
     let full_evidence = full.frames[0]
         .metrics
@@ -1067,6 +1072,7 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
     assert!(selected.frame_verdicts.is_empty());
     assert!(store.detail_frame(id, 0, 100).is_err());
     assert!(store.detail(id).is_err());
+    assert!(store.history_import_record(id).is_err());
 }
 
 #[test]

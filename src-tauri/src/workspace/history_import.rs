@@ -619,10 +619,9 @@ fn import(
     let parts = picks
         .iter()
         .map(|pick| {
-            let detail = store
-                .detail(pick.record_id)
-                .map_err(|_| format!("记录 {} 不存在", pick.record_id))?;
-            Ok((detail.summary, detail.recording))
+            store
+                .history_import_record(pick.record_id)
+                .map_err(|_| format!("记录 {} 不存在", pick.record_id))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let mut rounds = Vec::with_capacity(picks.len());
