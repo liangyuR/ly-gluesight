@@ -83,7 +83,6 @@ struct Seg {
     straight: bool,
     cameras: Vec<String>,
     n_exp: Option<u32>,
-    tolerance: u32,
 }
 
 struct Truth {
@@ -716,7 +715,6 @@ fn main() -> Result<(), String> {
                 s.cameras.clone()
             },
             n_exp: s.expected_frames,
-            tolerance: s.tolerance,
         })
         .collect();
     let cams: Vec<Cam> = doc
@@ -1288,7 +1286,7 @@ fn main() -> Result<(), String> {
                 .map(|(_, t)| t.counts()[k])
                 .collect();
             nexp.push(u64::from(
-                calibrate_counts(&counts, 0, segs[k].tolerance)
+                calibrate_counts(&counts, 0, 0)
                     .map_err(|e| format!("{e:?}"))?
                     .n_exp,
             ));

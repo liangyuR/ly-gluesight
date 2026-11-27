@@ -92,7 +92,7 @@ Windows 受限环境遇到 Node realpath EPERM、回环连接被拒等权限失�
 
 ## Windows CI 与手动验收
 
-Windows PR CI 执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）、独立生产模拟器测试和生产录制输入转换测试。Rust 代码全仓遵循 rustfmt 默认格式：有 Rust 文件、`rust-toolchain.toml` 或 `rustfmt.toml` 变更时，Format 对 `src-tauri` 与 `tools/production-simulator` 运行 `cargo fmt --check`，否则跳过。所有变更文件另用 `git diff --check` 检查空白。PR 比较 base SHA 与当前提交，main 推送比较 before 与当前提交，手动运行比较当前提交与上一提交。项目尚未配置前端格式化工具。
+Windows PR CI 执行 Format 检测、前端单元测试（`pnpm test`）、Rust 默认库回归（`cargo test --locked --lib`）、离线评估与探针示例的编译检查（`cargo check --locked --examples`，不运行）、独立生产模拟器测试和生产录制输入转换测试。Rust 代码全仓遵循 rustfmt 默认格式：有 Rust 文件、`rust-toolchain.toml` 或 `rustfmt.toml` 变更时，Format 对 `src-tauri` 与 `tools/production-simulator` 运行 `cargo fmt --check`，否则跳过。所有变更文件另用 `git diff --check` 检查空白。PR 比较 base SHA 与当前提交，main 推送比较 before 与当前提交，手动运行比较当前提交与上一提交。项目尚未配置前端格式化工具。
 
 提交 Rust 改动前在对应 crate 运行 `cargo fmt`（`src-tauri` 或 `tools/production-simulator`），用 `cargo fmt --check` 只检查不改写；需先为项目工具链安装 rustfmt（`rustup component add rustfmt`）。
 
