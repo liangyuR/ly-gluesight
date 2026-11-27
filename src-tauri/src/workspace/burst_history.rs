@@ -608,7 +608,7 @@ pub struct UnmeasuredSegment {
 }
 
 /// 用候选当前的走廊量帧：每段每台检测相机一张走廊测量图，按各相机冻结的示教帧尺寸建（与加入标定同一做法）。
-/// `partial` 建的测量器只量能量的（相机, 段），其余记在 `unavailable` 里，量到时记未测。
+/// 测量器只量前置检查通过的（相机, 段），其余记在 `unavailable` 里，量到时记未测。
 pub(super) struct CandidateMeasurer {
     engine: Arc<vision::Engine>,
     graphs: vision::CorridorSet,
@@ -617,23 +617,17 @@ pub(super) struct CandidateMeasurer {
 }
 
 impl CandidateMeasurer {
-    /// 历史件从原图复测用（D-SB-57）：不要求每一段都示教完，至少要有一段能量；返回没测的段。
-    pub(super) fn partial(
+    fn from_coverage(
         app: &AppHandle,
         w: &Workspace,
         recipe: &Recipe,
+        coverage: RawCoverage,
     ) -> Result<(Self, Vec<UnmeasuredSegment>), String> {
-        let (graphs, unavailable) = candidate_coverage(w, recipe);
-        if usable_pairs(recipe, &graphs, &unavailable) == 0 {
-            return Err(format!(
-                "候选还没有任何一段可用的走廊，不能从原图复测：{}",
-                unavailable
-                    .iter()
-                    .map(|u| u.reason.as_str())
-                    .collect::<Vec<_>>()
-                    .join("；")
-            ));
-        }
+        let RawCoverage {
+            graphs,
+            unavailable,
+            ..
+        } = coverage;
         let engine = app
             .state::<vision::VisionHost>()
             .engine()
@@ -797,15 +791,21 @@ fn rules_blocker(
     None
 }
 
+struct RawCoverage {
+    graphs: vision::CorridorSet,
+    unavailable: Vec<vision::UnavailableCorridor>,
+    note: Option<String>,
+}
+
 /// 从原图复测的前置条件（D-SB-58）：任意候选都能测任意记录，不看型号、配方编号与所属项目。只要求记录有原图、
 /// 候选至少一台计划相机在记录里有原图、候选至少有一段能量（D-SB-57）；其余（记录里没有的相机、没保存原图的帧、
 /// 没有可用走廊的段）都记未测。能做时返回这些不测部分的说明。
-fn raw_blocker(
+fn prepare_raw_coverage(
     detail: &PartDetail,
     burst: &PartDetailBurst,
     recipe: &Recipe,
     w: &Workspace,
-) -> Result<Option<String>, String> {
+) -> Result<RawCoverage, String> {
     if !recipe.is_burst() {
         return Err("旧拍照点配方已停用，不能复测".into());
     }
@@ -867,7 +867,11 @@ fn raw_blocker(
         ));
     }
     notes.extend(coverage_note(&unavailable));
-    Ok((!notes.is_empty()).then(|| notes.join("；")))
+    Ok(RawCoverage {
+        graphs,
+        unavailable,
+        note: (!notes.is_empty()).then(|| notes.join("；")),
+    })
 }
 
 /// 从原图复测的输入：候选计划相机下标 → 记录相机下标的对应，与按候选相机重排的记录帧。
@@ -967,7 +971,9 @@ pub(super) fn compare_options(
             }
             Ok(recipe) => (
                 CompareOption::of(rules_blocker(burst, original, &recipe)),
-                CompareOption::checked(raw_blocker(detail, burst, &recipe, w)),
+                CompareOption::checked(
+                    prepare_raw_coverage(detail, burst, &recipe, w).map(|coverage| coverage.note),
+                ),
             ),
         },
     };
@@ -993,15 +999,18 @@ pub(super) fn compare(
         .burst
         .as_ref()
         .ok_or("这条历史是旧拍照点记录，不能用段配方候选对照")?;
-    if raw {
-        raw_blocker(detail, burst, recipe, w)?;
-    } else if let Some(reason) = rules_blocker(burst, original, recipe) {
-        return Err(reason);
-    }
+    let coverage = if raw {
+        Some(prepare_raw_coverage(detail, burst, recipe, w)?)
+    } else {
+        if let Some(reason) = rules_blocker(burst, original, recipe) {
+            return Err(reason);
+        }
+        None
+    };
     let cameras = recipe.plan_cameras();
     let mut unmeasured = Vec::new();
-    let (judgement, metrics) = if raw {
-        let (measurer, skipped) = CandidateMeasurer::partial(app, w, recipe)?;
+    let (judgement, metrics) = if let Some(coverage) = coverage {
+        let (measurer, skipped) = CandidateMeasurer::from_coverage(app, w, recipe, coverage)?;
         unmeasured = skipped;
         let (map, frames) = candidate_inputs(recipe, burst);
         for id in cameras

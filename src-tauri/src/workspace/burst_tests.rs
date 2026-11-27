@@ -340,6 +340,7 @@ fn raw_comparison_requires_retained_images_from_a_candidate_camera() {
     detail.recording.available = true;
     let mut w = super::pieces_tests::measured_teaching(&[Straight], 0.0);
     w.doc.inspect[1].camera = "camX".into();
+    w.doc.inspect[1].segments.clear();
     w.doc.inspect.reverse();
     let raw = |detail: &crate::store::PartDetail| {
         super::burst_history::compare_options(detail, None, Some(&w), None).raw
@@ -364,7 +365,11 @@ fn raw_comparison_requires_retained_images_from_a_candidate_camera() {
         .find(|f| f.camera == 2)
         .unwrap();
     frame.raw_file = Some("rec/cam3_s000001.pgm".into());
-    assert!(raw(&detail).available);
+    let available = raw(&detail);
+    assert!(available.available);
+    let note = available.note.unwrap();
+    assert!(note.contains("记录里没有相机 camX"));
+    assert!(note.contains("第 1 段相机 camX：尚未示教检测走廊"));
 
     detail.recording.state = RecordingState::NotRetained;
     assert!(!raw(&detail).available);
