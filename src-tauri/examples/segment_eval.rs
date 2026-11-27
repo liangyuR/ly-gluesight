@@ -98,7 +98,6 @@ fn main() -> Result<(), String> {
     }
 
     let guard = u64::from(doc.boundary_guard);
-    let tolerance: u64 = segments.iter().map(|s| u64::from(s.tolerance)).sum();
     let kinds: Vec<&str> = segments
         .iter()
         .map(|s| {
@@ -110,14 +109,14 @@ fn main() -> Result<(), String> {
         })
         .collect();
     println!(
-        "候选 {candidate}：{} 段（{}），Σtol {tolerance}，boundary_guard {guard}，已确认轮次 {}",
+        "候选 {candidate}：{} 段（{}），boundary_guard {guard}，已确认轮次 {}",
         segments.len(),
         kinds.join(" / "),
         truths.len()
     );
     println!(
         "{:<26} {:>4} {:>4} {:>6}  {:<28} {:<28} {:<20} 原帧号误差",
-        "轮次", "帧组", "ΣN", "容差内", "手动边界", "比例边界", "比例误差"
+        "轮次", "帧组", "ΣN", "可信", "手动边界", "比例边界", "比例误差"
     );
 
     let mut proportional_errors: BTreeMap<u64, usize> = BTreeMap::new();
@@ -133,7 +132,7 @@ fn main() -> Result<(), String> {
                 .map(|(_, t)| segment_counts(t)[k])
                 .collect();
             segment.expected_frames = Some(
-                calibrate_counts(&counts, 0, segment.tolerance)
+                calibrate_counts(&counts, 0, 0)
                     .map_err(|e| format!("{e:?}"))?
                     .n_exp,
             );
