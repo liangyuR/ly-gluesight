@@ -320,6 +320,30 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.queryByText("旧对照结果")).toBeNull();
   });
 
+  it("取消历史复测 → 保留已保存对照并允许重跑，只显示取消状态", async () => {
+    const saved = { ...comparison(), judgement: { ...detail.judgement, reason: "上一份已保存的对照" } };
+    const pending = deferred<Comparison>();
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([saved]);
+    vi.mocked(workspaceApi.comparisonGet).mockResolvedValue(saved);
+    show(`/history/1?comparison=${saved.id}`);
+
+    expect(await screen.findByText(saved.judgement.reason)).toBeVisible();
+    const picker = screen.getByRole("combobox", { name: "已保存对照结果" });
+    expect(picker).toHaveTextContent("规则重判 · A 修订 7");
+    const rule = screen.getByRole("button", { name: "按候选规则重判" });
+    await waitFor(() => expect(rule).toBeEnabled());
+    vi.mocked(workspaceApi.compare).mockReturnValueOnce(pending.promise);
+    await userEvent.click(rule);
+    expect(rule).toBeDisabled();
+
+    await act(async () => { pending.reject("OPERATION_CANCELLED: 任务已取消"); });
+    expect(screen.getByRole("status", { name: "历史复算进度" })).toHaveTextContent("已取消，原结果保留");
+    expect(screen.queryByText("操作未完成")).not.toBeInTheDocument();
+    expect(screen.getByText(saved.judgement.reason)).toBeVisible();
+    expect(picker).toHaveTextContent("规则重判 · A 修订 7");
+    expect(rule).toBeEnabled();
+  });
+
   it("从跨项目试测的对照返回 → 只为原候选实例恢复范围和结果", async () => {
     const saved = { ...comparison(), candidateId: "S", candidateRevision: ws.data!.workspace.revision };
     detail.summary = { ...detail.summary, recipeId: "OTHER", projectId: "line-b" };

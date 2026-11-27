@@ -335,7 +335,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, p
     if (pending.current) return;
     pending.current = true; serial.current++; comparisonRequest.current++; setLoadingComparison(""); setWorking(true); setError("");
     try { const result = await operation.run(run); if (guard()) { displayComparison(result); setSaved(v => [comparisonSummary(result), ...v.filter(c => c.id !== result.id)].slice(0, 100)); } }
-    catch (e) { if (guard()) setError(errorText(e)); }
+    catch (e) { if (guard() && operation.snapshot()?.progress.stage !== "cancelled") setError(errorText(e)); }
     finally { pending.current = false; if (alive.current) setWorking(false); }
   };
   const runCompare = (fromRaw: boolean) => {
