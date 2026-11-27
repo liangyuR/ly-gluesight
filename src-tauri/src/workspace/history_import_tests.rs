@@ -65,7 +65,7 @@ fn imported_round_references_recording(compressed: bool) {
     use crate::settings::RecordMode;
 
     let root = super::super::tests::ImportTestDir::new();
-    let records = root.0.join("records");
+    let records = crate::project::dir(&root.0, "default").join("records");
     let (tx, rx) = channel();
     let recorder = Recorder::new(
         vec![records.clone()],
@@ -128,13 +128,33 @@ fn imported_round_references_recording(compressed: bool) {
         );
     }
     let evidence = recording(Some(&directory));
+    let part_summary = summary(CYCLE);
+    let current = configs(&doc, DEVICE);
+    let imported = BTreeMap::new();
+    let mut roots = crate::project::records::RecordRoots::new(&root.0);
+    let listing = assess(
+        &doc,
+        &current,
+        &imported,
+        &part_summary,
+        &evidence,
+        roots
+            .resolve(&part_summary.project_id, evidence.directory.as_deref())
+            .and_then(|root| read_part(root, &evidence)),
+        false,
+    );
     let assessed = assess(
         &doc,
-        &configs(&doc, DEVICE),
-        &BTreeMap::new(),
-        &summary(CYCLE),
+        &current,
+        &imported,
+        &part_summary,
         &evidence,
         read_part(&records, &evidence),
+        true,
+    );
+    assert_eq!(
+        serde_json::to_value(&listing.view).unwrap(),
+        serde_json::to_value(&assessed.view).unwrap(),
     );
     let round = assessed
         .round
@@ -216,6 +236,7 @@ fn camera_config_differs_from_recording_then_piece_still_usable_with_warning() {
         &summary(CYCLE),
         &recording(Some(Path::new("recorded"))),
         Ok((PathBuf::from("recorded"), part)),
+        true,
     );
     assert!(
         assessed.round.is_some() && assessed.view.reasons.is_empty(),
