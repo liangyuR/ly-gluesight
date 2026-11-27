@@ -568,7 +568,10 @@ fn view(app: &AppHandle, mut w: Workspace) -> Result<WorkspaceView, String> {
     })
 }
 
-fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
+fn environment(
+    app: &AppHandle,
+    recipe: &Recipe,
+) -> Result<(Value, Option<Arc<vision::Engine>>), String> {
     let cycle = app.state::<CycleHost>();
     let mut values = Vec::new();
     for id in recipe.cameras() {
@@ -587,11 +590,9 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
         )?)?);
     }
     values.push(json!([true]));
-    values.push(json!(app
-        .state::<vision::VisionHost>()
-        .engine()
-        .map(|engine| engine_state(&engine))));
-    Ok(state_value(&values))
+    let engine = app.state::<vision::VisionHost>().engine();
+    values.push(json!(engine.as_deref().map(engine_state)));
+    Ok((state_value(&values), engine))
 }
 
 /// 相机标签：设备参数；样本集相机另含样本集编号，换同名相机的另一套样本集也算设备变化。

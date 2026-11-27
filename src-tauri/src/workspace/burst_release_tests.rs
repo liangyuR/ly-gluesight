@@ -1,5 +1,5 @@
 use super::burst::CameraTeaching;
-use super::burst_release::burst_checks;
+use super::burst_release::{burst_checks, graph_and_trial_checks, publish_blocker};
 use super::burst_tests::{burst_workspace, DEVICE};
 use super::*;
 use crate::plan::{
@@ -90,7 +90,7 @@ fn calibrate(w: &mut Workspace, total: u32) {
 
 /// 设备就绪：只剩候选自身的检查项决定能否发布。
 fn checks(w: &Workspace) -> Vec<Check> {
-    burst_checks(w, Ok(()))
+    burst_checks(w, Ok(()), Vec::new)
 }
 
 fn check<'a>(checks: &'a [Check], name: &str) -> &'a Check {
@@ -139,6 +139,52 @@ fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
             ),
             (passed, passed),
             "{name}：{checks:?}"
+        );
+    }
+}
+
+#[test]
+fn publish_checks_report_graph_errors_for_each_affected_camera_before_measuring() {
+    let mut w = taught(&[Straight, Corner], DEVICE);
+    calibrate(&mut w, 30);
+    let valid = burst_checks(&w, Ok(()), || {
+        graph_and_trial_checks(&w, &w.doc.build().unwrap(), |_| None)
+    });
+    assert!(check(&valid, "测量图").passed);
+
+    w.doc.segments[0].heading = Some(crate::plan::HeadingSettings::default());
+    w.doc.inspect[0].nozzle = Some([999.000001, 480.0]);
+    w.doc.segments[0].offset_ref = Some(crate::plan::OffsetRef {
+        measure: crate::plan::OffsetMeasure::ToEdge,
+        camera: "cam2".into(),
+        x_ref: None,
+        spread: None,
+        edge: Some(crate::plan::EdgeParams {
+            polarity: crate::plan::EdgePolarity::BrightToDark,
+            search_mm: 1.0,
+            contrast_min: 40.0,
+            nominal_mm: None,
+        }),
+    });
+    w.doc.inspect[2].segments[0].measure = Some(crate::recipe::MeasureMode::Color);
+    let checks = burst_checks(&w, Ok(()), || {
+        graph_and_trial_checks(&w, &w.doc.build().unwrap(), |_| {
+            panic!("建图失败时不应进行试测")
+        })
+    });
+
+    let blocker = publish_blocker(&checks).unwrap();
+    assert_eq!(blocker.name, "测量图");
+    for (camera, reason) in [
+        ("cam1", "出胶点"),
+        ("cam2", "找边搜索长度"),
+        ("cam3", "还没取色"),
+    ] {
+        assert!(
+            blocker.detail.split('；').any(|detail| {
+                detail.starts_with(&format!("第 1 段相机 {camera}：")) && detail.contains(reason)
+            }),
+            "{blocker:?}"
         );
     }
 }

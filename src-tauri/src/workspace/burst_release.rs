@@ -25,9 +25,12 @@ fn kind_label(kind: SegmentKind) -> &'static str {
     }
 }
 
-/// 段配方的全部验证项，按页面展示顺序。`device` 是调用方（访问设备）核对的计划相机解析、
-/// 三台单视角独立设备（`cycle::usable_cams`），不含在线就绪；其余只读候选。
-pub(super) fn burst_checks(w: &Workspace, device: Result<(), String>) -> Vec<Check> {
+/// 段配方的基础验证项。`device` 不含在线就绪。走廊示教合格后才追加建图和试测结果。
+pub(super) fn burst_checks(
+    w: &Workspace,
+    device: Result<(), String>,
+    measurements: impl FnOnce() -> Vec<Check>,
+) -> Vec<Check> {
     let mut checks = vec![Check {
         advisory: false,
         name: "相机配置".into(),
@@ -46,10 +49,15 @@ pub(super) fn burst_checks(w: &Workspace, device: Result<(), String>) -> Vec<Che
             |p| format!("示教件 SN {}", p.sn),
         ),
     });
-    checks.push(corridor_check(w));
+    let corridor = corridor_check(w);
+    let corridors_ready = corridor.passed;
+    checks.push(corridor);
     checks.push(segment_check(w));
     checks.extend(super::pass_align::alignment_check(w));
     checks.extend(x_ref_check(&w.doc));
+    if corridors_ready {
+        checks.extend(measurements());
+    }
     checks
 }
 
@@ -260,46 +268,94 @@ pub(super) fn teach_trial_check(trials: &[TeachTrial]) -> Option<Check> {
     })
 }
 
-/// 每段每台检测相机用候选走廊在自己的示教帧上量一次（与 `Prepared::warm` 同一口径：Measured 才算测成）。
-/// 同一候选实例、修订与核心库下复用上次结果；核心库没加载时不试测也不缓存（冻结发布包要求核心库，发布照样被拦），
-/// 走廊建不成时不试测（由“走廊示教”拦）。
-fn teach_trials(app: &AppHandle, w: &Workspace) -> Vec<TeachTrial> {
-    type Key = (u64, u64, String);
-    static CACHE: LazyLock<Mutex<HashMap<String, (Key, Arc<Vec<TeachTrial>>)>>> =
-        LazyLock::new(Default::default);
-    let Some(engine) = app.state::<vision::VisionHost>().engine() else {
-        return Vec::new();
+pub(super) fn graph_and_trial_checks(
+    w: &Workspace,
+    recipe: &Recipe,
+    measure: impl FnOnce(vision::CorridorSet) -> Option<Check>,
+) -> Vec<Check> {
+    let result = release_teaching_frames(recipe, &w.camera_teaching).and_then(|frames| {
+        let sizes: Vec<_> = frames
+            .iter()
+            .map(|taught| taught.first().map_or([0, 0], |t| t.frame.size))
+            .collect();
+        let (graphs, unavailable) = vision::CorridorSet::build_available(recipe, &sizes);
+        if unavailable.is_empty() {
+            return Ok(graphs);
+        }
+        let problems: Vec<_> = unavailable
+            .into_iter()
+            .map(|issue| {
+                let context = format!("第 {} 段相机 {}：", issue.segment, issue.camera);
+                if issue.reason.starts_with(&context) {
+                    issue.reason
+                } else {
+                    context + &issue.reason
+                }
+            })
+            .collect();
+        Err(problems.join("；"))
+    });
+    let (passed, detail, trial) = match result {
+        Ok(graphs) => (
+            true,
+            format!("{} 组（段, 相机）测量图已构建", graphs.iter().count()),
+            measure(graphs),
+        ),
+        Err(error) => (false, error, None),
     };
-    let key: Key = (w.instance_id, w.revision, engine.identity.clone());
+    let mut checks = vec![Check {
+        name: "测量图".into(),
+        passed,
+        detail,
+        advisory: false,
+    }];
+    checks.extend(trial);
+    checks
+}
+
+/// 同一候选实例、修订与核心库下复用建图和试测结果。只有建图成功才读图试测。
+fn measurement_checks(
+    app: &AppHandle,
+    w: &Workspace,
+    recipe: &Recipe,
+    engine: Option<&vision::Engine>,
+) -> Vec<Check> {
+    type Key = (u64, u64, Option<String>);
+    static CACHE: LazyLock<Mutex<HashMap<String, (Key, Vec<Check>)>>> =
+        LazyLock::new(Default::default);
+    let key: Key = (
+        w.instance_id,
+        w.revision,
+        engine.map(|engine| engine.identity.clone()),
+    );
     let cached = CACHE
         .lock()
         .unwrap()
         .get(&w.doc.id)
         .filter(|(k, _)| *k == key)
         .map(|(_, v)| v.clone());
-    let trials = cached.unwrap_or_else(|| {
-        let trials = Arc::new(measure_teach_frames(app, w, &engine));
-        CACHE
-            .lock()
-            .unwrap()
-            .insert(w.doc.id.clone(), (key, trials.clone()));
-        trials
+    if let Some(checks) = cached {
+        return checks;
+    }
+    let checks = graph_and_trial_checks(w, recipe, |graphs| {
+        let engine = engine?;
+        let graphs = graphs.with_channels(&super::burst::teaching_channels(w));
+        teach_trial_check(&measure_teach_frames(app, w, recipe, &graphs, engine))
     });
-    trials.to_vec()
+    CACHE
+        .lock()
+        .unwrap()
+        .insert(w.doc.id.clone(), (key, checks.clone()));
+    checks
 }
 
 fn measure_teach_frames(
     app: &AppHandle,
     w: &Workspace,
+    recipe: &Recipe,
+    graphs: &vision::CorridorSet,
     engine: &vision::Engine,
 ) -> Vec<TeachTrial> {
-    let Ok(recipe) = w.doc.build() else {
-        return Vec::new();
-    };
-    let Ok(graphs) = vision::CorridorSet::build(&recipe, &super::burst::taught_sizes(w)) else {
-        return Vec::new();
-    };
-    let graphs = graphs.with_channels(&super::burst::teaching_channels(w));
     let host = app.state::<WorkspaceHost>();
     let cameras = recipe.plan_cameras();
     let run = vision::unique_run_id(&format!("publish-trial-{}-{}", recipe.id, w.revision));
@@ -359,14 +415,25 @@ pub(super) fn publish_blocker(checks: &[Check]) -> Option<&Check> {
 /// 以及示教帧试测（D-SB-59，部分没测成只提醒）。结果随待生效版本存档（`Release.validation`）。
 pub(super) fn publish_checks(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let recipe = w.doc.build()?;
-    let environment_tag = environment(app, &recipe)?;
+    let (environment_tag, engine) = environment(app, &recipe)?;
     let device = cycle::usable_cams(app, &recipe).map(|_| ());
-    let mut checks = burst_checks(w, device);
+    let mut checks = burst_checks(w, device, || {
+        measurement_checks(app, w, &recipe, engine.as_deref())
+    });
     checks.extend(super::mix_teaching::publish_checks(
         w,
         &app.state::<CycleHost>().camera.configs(),
     ));
-    checks.extend(teach_trial_check(&teach_trials(app, w)));
+    checks.push(Check {
+        name: "图像核心库".into(),
+        passed: engine.is_some(),
+        detail: if engine.is_some() {
+            "已加载兼容的图像核心库".into()
+        } else {
+            "发布前必须加载兼容的图像核心库".into()
+        },
+        advisory: false,
+    });
     Ok(Validation {
         revision: w.revision,
         passed: publish_blocker(&checks).is_none(),
@@ -396,6 +463,38 @@ pub fn workspace_publish_checks(
     publish_checks(&app, &w).map(|v| v.checks)
 }
 
+fn release_teaching_frames<'a>(
+    recipe: &Recipe,
+    teaching: &'a [CameraTeaching],
+) -> Result<Vec<Vec<&'a CameraTeaching>>, String> {
+    let cameras = recipe.plan_cameras();
+    recipe
+        .inspect
+        .iter()
+        .map(|inspect| {
+            recipe
+                .path_segments
+                .iter()
+                .filter(|segment| {
+                    crate::plan::segment_cameras(segment, &cameras).contains(&inspect.camera)
+                })
+                .map(|s| {
+                    teaching
+                        .iter()
+                        .find(|t| t.camera == inspect.camera && t.segment == Some(s.index))
+                        .filter(|_| segment_corridor_saved(inspect, s.index, teaching))
+                        .ok_or_else(|| {
+                            format!(
+                                "第 {} 段相机 {} 没有示教帧或走廊，不能发布",
+                                s.index, inspect.camera
+                            )
+                        })
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// 段配方发布前冻结（schema 4，D-SB-30）：每台计划相机的示教帧、标定（当量等于示教当量）与走廊，测量图按配方与各相机
 /// 示教帧尺寸生成（`production::burst_graphs`，生产加载时重算比对）。
 pub(super) fn freeze_bundle(
@@ -412,26 +511,11 @@ pub(super) fn freeze_bundle(
         .ok_or("发布前必须加载兼容的图像核心库")?;
     let mut sizes = Vec::with_capacity(recipe.inspect.len());
     let mut cameras = Vec::with_capacity(recipe.inspect.len());
-    for inspect in &recipe.inspect {
-        let taught: Vec<&CameraTeaching> = recipe
-            .path_segments
-            .iter()
-            .filter(|s| {
-                crate::plan::segment_cameras(s, &recipe.plan_cameras()).contains(&inspect.camera)
-            })
-            .map(|s| {
-                teaching
-                    .iter()
-                    .find(|t| t.camera == inspect.camera && t.segment == Some(s.index))
-                    .filter(|_| segment_corridor_saved(inspect, s.index, teaching))
-                    .ok_or_else(|| {
-                        format!(
-                            "第 {} 段相机 {} 没有示教帧或走廊，不能发布",
-                            s.index, inspect.camera
-                        )
-                    })
-            })
-            .collect::<Result<_, String>>()?;
+    for (inspect, taught) in recipe
+        .inspect
+        .iter()
+        .zip(release_teaching_frames(&recipe, teaching)?)
+    {
         let external = vision::camera_calib_path(app, inspect)?;
         let source = if external.exists() {
             Some(
