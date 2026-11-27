@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import HistoryDetailPage from "../src/pages/HistoryDetailPage";
 import { historyApi } from "../src/features/history/api";
 import { workspaceApi } from "../src/features/workspace/api";
+import { HistoryTrials } from "../src/features/workspace/HistoryTrials";
 import { burstImageApi } from "../src/features/workspace/burstImages";
 import { useWorkspace } from "../src/features/workspace/context";
 import { scheduleFrameRead } from "../src/features/workspace/previewCache";
@@ -16,14 +17,14 @@ import type { HistoryDetailState } from "../src/features/history/types";
 vi.mock("../src/features/history/api", () => ({ historyApi: { overview: vi.fn(), frameDetail: vi.fn(), neighbors: vi.fn() } }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
-  comparisonSummaries: vi.fn(), comparisonGet: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), recordFrameView: vi.fn(), historyFrameView: vi.fn(), historyCompareOptions: vi.fn(),
+  comparisonSummaries: vi.fn(), comparisonGet: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), recordFrameView: vi.fn(), historyFrameView: vi.fn(), historyCompareOptions: vi.fn(), historyCandidates: vi.fn(),
 } }));
 vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), record: vi.fn() } }));
 let ws: ReturnType<typeof workspaceState>;
 let detail: ReturnType<typeof burstPartDetail>;
 type Entry = string | { pathname: string; state?: HistoryDetailState };
 function element(entry: Entry = "/history/1"){return <MemoryRouter initialEntries={[entry]}><Routes><Route path="/history/:id" element={<HistoryDetailPage />} />
-  <Route path="/history" element={<p>历史列表页</p>} /><Route path="/recipe/calibration" element={<p>试测页</p>} /></Routes></MemoryRouter>;}
+  <Route path="/history" element={<p>历史列表页</p>} /><Route path="/recipe/:recipeId/calibration" element={<HistoryTrials recipeId="S" />} /></Routes></MemoryRouter>;}
 function show(entry?: Entry) { return render(element(entry)); }
 function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleId:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
   originalVerdict:"NG_GAP",judgement:{...detail.judgement,verdict:"OK",reason:"候选合格"},measurements:[],createdAt:1,burst:null};}
@@ -309,11 +310,41 @@ describe("历史详情（段配方记录）", () => {
     expect(screen.queryByText("旧对照结果")).toBeNull();
   });
 
-  // 防的回归：从试测“看详情”进来，返回按钮写死回历史列表，操作员要重新找到试测页
-  it("从试测进入历史详情 → 返回试测页", async () => {
-    show({ pathname: "/history/1", state: { returnTo: { path: "/recipe/calibration", label: "返回试测" } } });
-    await userEvent.click(await screen.findByRole("button", { name: "返回试测" }));
-    expect(screen.getByText("试测页")).toBeVisible();
+  it("从跨项目试测的对照返回 → 只为原候选实例恢复范围和结果", async () => {
+    const saved = { ...comparison(), candidateId: "S", candidateRevision: ws.data!.workspace.revision };
+    detail.summary = { ...detail.summary, recipeId: "OTHER", projectId: "line-b" };
+    const { id, cycleId, ts, sn, verdict, recipeId, projectId } = detail.summary;
+    const row = { recordId: id, cycleId, ts, sn, verdict, mode: "production" as const, groupCount: 12, cameras: [], complete: true,
+      recipeId, projectId, reasons: [], warnings: [], durationMs: null,
+      measuredFps: null, setFps: null, importedRound: null, usage: null, fixture: null };
+    vi.mocked(workspaceApi.historyCandidates).mockImplementation(async (_, query) => query.ownRecipe
+      ? { total: 0, items: [] } : { total: 1, items: [row] });
+    vi.mocked(workspaceApi.compare).mockClear().mockResolvedValue(saved);
+    vi.mocked(workspaceApi.comparisonSummaries).mockResolvedValue([saved]);
+    const user = userEvent.setup();
+    show("/recipe/S/calibration");
+    await user.click(screen.getByRole("checkbox", { name: /显示全部历史件/ }));
+    await user.click(await screen.findByRole("button", { name: /^触发测试/ }));
+    await user.click(await screen.findByRole("link", { name: "看详情" }));
+    const back = await screen.findByRole("button", { name: "返回试测" });
+    ws.data!.workspace.revision++;
+    await user.click(back);
+
+    expect(screen.getByRole("checkbox", { name: /显示全部历史件/ })).toBeChecked();
+    const resumed = await screen.findByRole("listitem", { name: /SN-101/ });
+    expect(resumed).toHaveTextContent("候选合格");
+    expect(resumed).toHaveTextContent(`试测修订 ${saved.candidateRevision}`);
+    const link = within(resumed).getByRole("link", { name: "看详情" });
+    expect(link).toHaveAttribute("href", "/history/1?comparison=compare-1");
+    expect(link).toHaveFocus();
+
+    await user.click(link);
+    const backAfterRecreate = await screen.findByRole("button", { name: "返回试测" });
+    ws.data!.workspace.instanceId++;
+    await user.click(backAfterRecreate);
+    expect(screen.getByRole("checkbox", { name: /显示全部历史件/ })).not.toBeChecked();
+    expect(await screen.findByText("本配方还没有历史件。")).toBeVisible();
+    expect(workspaceApi.compare).toHaveBeenCalledTimes(1);
   });
 
   // 防的回归：区域 NG 时帧组条把整段的帧都涂红；格子只按本帧结论着色，区域结论放在段条上

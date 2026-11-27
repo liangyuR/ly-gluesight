@@ -44,6 +44,7 @@ export interface Release {
 }
 export interface Workspace {
   doc: RecipeDoc; revision: number;
+  instanceId: number;
   pending: Release | null;
   captureId?: string | null;
   publish: PublishState; updatedAt: number;

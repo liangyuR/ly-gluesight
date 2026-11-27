@@ -19,7 +19,8 @@ export default function HistoryDetailPage() {
   const state = location.state as HistoryDetailState | null;
   const listQuery = state?.query ?? null;
   const returnPath = state?.returnTo?.path ?? "/history";
-  const returnState: HistoryListState | undefined = state?.listView ? { view: state.listView, focusRecordId: state.listRecordId } : undefined;
+  const listState: HistoryListState | undefined = state?.listView ? { view: state.listView, focusRecordId: state.listRecordId } : undefined;
+  const returnState = state?.returnTo?.state ?? listState;
   const partState: HistoryDetailState = { ...state, scrollTop: undefined };
   const back = { onBack: () => navigate(returnPath, { state: returnState }), backLabel: state?.returnTo?.label ?? "返回历史列表" };
   const [neighborResult, setNeighborResult] = useState<NeighborResult | null>(null);

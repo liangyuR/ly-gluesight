@@ -75,6 +75,6 @@ export default function CalibrationPage() {
     {calibration?.roundId != null && <SkipSuggest locked={locked} />}
     {calibration?.roundId != null && <PassSkipSuggest locked={locked} />}
     {calibration?.roundId != null && <CalibrationFrames data={data} plan={plan} />}
-    <HistoryTrials recipeId={doc.id} />
+    <HistoryTrials key={`${doc.id}:${data.workspace.instanceId}`} recipeId={doc.id} />
   </div>;
 }
