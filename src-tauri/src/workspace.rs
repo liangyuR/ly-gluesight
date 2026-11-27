@@ -1632,7 +1632,7 @@ pub async fn workspace_history_frame_view(
 ) -> Result<CalibrationFrameView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
-        let detail = store.detail_frame(history_id, camera, seq)?;
+        let (detail, original) = store.detail_frame_with_recipe(history_id, camera, seq)?;
         let burst = detail
             .burst
             .as_ref()
@@ -1670,12 +1670,6 @@ pub async fn workspace_history_frame_view(
             .bundle_id
             .as_deref()
             .ok_or("本件没有发布包（维护采集件或未匹配到可用配方），画不了辅助线")?;
-        if detail.summary.recipe_revision.is_none() {
-            return Err("历史记录缺少配方快照身份".into());
-        }
-        let original = store
-            .record_recipe(&detail.summary)?
-            .ok_or("原始配方快照缺失")?;
         let prepared = history_prepared(&app, &detail.summary.project_id, &original, bundle_id)?;
         let image = burst_history::frame_image(&app, &detail, camera, seq)?;
         let measured = prepared.measure_frame(

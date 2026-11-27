@@ -495,17 +495,32 @@ fn history_and_maintenance_reads_see_only_committed_project_records_during_an_im
     let recipe = burst_fixture::recipe();
     let (judgement, burst) =
         burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
-    let insert_trial = |store: &Store, cycle| {
+    let insert_trial = |store: &Store, recipe: &Recipe, cycle| {
         store
             .insert(&PartRecord {
                 mode: PartMode::MaintenanceShadow,
-                ..burst_part(&recipe, cycle, &judgement, &burst)
+                ..burst_part(recipe, cycle, &judgement, &burst)
             })
             .unwrap()
     };
-    let committed = insert_trial(&target, "committed-trial");
-    insert_trial(&other, "other-project-trial");
-    let incoming = insert_trial(&source, "incoming-trial");
+    let committed = insert_trial(&target, &recipe, "committed-trial");
+    let other_recipe = Recipe {
+        name: "另一条线的原配方".into(),
+        ..recipe.clone()
+    };
+    let other_id = insert_trial(&other, &other_recipe, "other-project-trial");
+    assert_eq!(
+        Connection::open(db.path())
+            .unwrap()
+            .execute(
+                "UPDATE recipe_snapshots SET json = json_set(json, '$.planVersion', 14)
+         WHERE project_id = ?1 AND revision_id = ?2",
+                params![other.project(), other_recipe.revision_id],
+            )
+            .unwrap(),
+        1
+    );
+    let incoming = insert_trial(&source, &recipe, "incoming-trial");
     let package = db.0.join("trial-package.sqlite");
     source.export_parts(&[incoming], &package).unwrap();
     let query = HistoryQuery {
@@ -519,7 +534,7 @@ fn history_and_maintenance_reads_see_only_committed_project_records_during_an_im
             target.query(&query)?,
             target.neighbors(&query, committed)?,
             target.detail_overview(committed)?,
-            target.detail_frame(committed, 0, 1)?,
+            target.detail_frame_with_recipe(other_id, 0, 1)?,
             target.detail_by_cycle("incoming-trial")?,
         ))
     };
@@ -567,7 +582,13 @@ fn history_and_maintenance_reads_see_only_committed_project_records_during_an_im
         .iter()
         .find(|frame| (frame.camera, frame.seq) == (0, 1))
         .unwrap();
-    for ((stats, page, neighbors, overview, selected, incoming), total, first, newer) in [
+    let expected_snapshot = serde_json::to_value(&other_recipe).unwrap();
+    for (
+        (stats, page, neighbors, overview, (selected, selected_recipe), incoming),
+        total,
+        first,
+        newer,
+    ) in [
         (result_during_import, 1, committed, None),
         (result_after_import, 2, imported_id, Some(imported_id)),
     ] {
@@ -588,7 +609,12 @@ fn history_and_maintenance_reads_see_only_committed_project_records_during_an_im
             frame.seq,
             frame.verdict
         ) == (0, 1, Verdict::Ok)));
-        assert_eq!(selected.summary.id, committed);
+        assert_eq!(selected.summary.id, other_id);
+        assert_eq!(selected.summary.project_id, other.project());
+        assert_eq!(
+            serde_json::to_value(selected_recipe).unwrap(),
+            expected_snapshot
+        );
         assert_eq!(
             selected.burst.unwrap().frames.as_slice(),
             std::slice::from_ref(first_frame)

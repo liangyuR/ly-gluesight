@@ -1819,11 +1819,21 @@ impl Store {
     }
 
     pub fn detail(&self, id: i64) -> Result<PartDetail, String> {
-        self.detail_selected(id, None)
+        self.detail_selected(id, None).map(|(detail, _)| detail)
     }
 
     pub fn detail_frame(&self, id: i64, camera: usize, seq: u64) -> Result<PartDetail, String> {
-        let detail = self.detail_selected(id, Some((camera, seq)))?;
+        self.detail_frame_with_recipe(id, camera, seq)
+            .map(|(detail, _)| detail)
+    }
+
+    pub(crate) fn detail_frame_with_recipe(
+        &self,
+        id: i64,
+        camera: usize,
+        seq: u64,
+    ) -> Result<(PartDetail, Recipe), String> {
+        let (detail, recipe) = self.detail_selected(id, Some((camera, seq)))?;
         if detail
             .burst
             .as_ref()
@@ -1831,7 +1841,8 @@ impl Store {
         {
             return Err("没有这一帧的记录".into());
         }
-        Ok(detail)
+        let recipe = recipe.ok_or("原始配方快照缺失")?;
+        Ok((detail, recipe))
     }
 
     pub fn detail_overview(&self, id: i64) -> Result<PartDetail, String> {
@@ -1857,7 +1868,7 @@ impl Store {
         &self,
         id: i64,
         selected: Option<(usize, u64)>,
-    ) -> Result<PartDetail, String> {
+    ) -> Result<(PartDetail, Option<Recipe>), String> {
         let mut conn = open_read_only(&self.path)?;
         let snapshot = conn.transaction().map_err(db_err)?;
         Self::detail_from_snapshot(snapshot, id, selected)
@@ -1867,7 +1878,7 @@ impl Store {
         snapshot: Transaction<'_>,
         id: i64,
         selected: Option<(usize, u64)>,
-    ) -> Result<PartDetail, String> {
+    ) -> Result<(PartDetail, Option<Recipe>), String> {
         const N: usize = SUMMARY_LEN;
         let (summary, judgement, frames, triggers, software_version, recording, burst_judgement) = snapshot
             .query_row(
@@ -1902,7 +1913,7 @@ impl Store {
             values
         };
         snapshot.commit().map_err(db_err)?;
-        let burst = match (burst_judgement, &summary.burst) {
+        let (burst, recipe) = match (burst_judgement, &summary.burst) {
             (Some(judgement), Some(counts)) => {
                 let revision = summary
                     .recipe_revision
@@ -1926,7 +1937,7 @@ impl Store {
                 } else {
                     Vec::new()
                 };
-                Some(PartDetailBurst {
+                let burst = PartDetailBurst {
                     segments: recipe.path_segments.clone(),
                     cameras,
                     expected_total: counts.expected_total,
@@ -1935,12 +1946,13 @@ impl Store {
                     judgement,
                     frames,
                     frame_verdicts,
-                })
+                };
+                (Some(burst), Some(recipe))
             }
-            (None, None) => None,
+            (None, None) => (None, None),
             _ => return Err(format!("记录 {id} 的段配方字段不完整")),
         };
-        Ok(PartDetail {
+        let detail = PartDetail {
             summary,
             judgement: serde_json::from_str(&judgement).map_err(|e| e.to_string())?,
             frames: serde_json::from_str(&frames)
@@ -1952,7 +1964,8 @@ impl Store {
             shots: Vec::new(),
             recording,
             burst,
-        })
+        };
+        Ok((detail, recipe))
     }
 
     pub fn id_by_cycle(&self, cycle_id: &str) -> Result<Option<i64>, String> {
@@ -1975,7 +1988,7 @@ impl Store {
         let Some(id) = Self::find_id_by_cycle(&snapshot, cycle_id)? else {
             return Ok(None);
         };
-        Self::detail_from_snapshot(snapshot, id, None).map(Some)
+        Self::detail_from_snapshot(snapshot, id, None).map(|(detail, _)| Some(detail))
     }
 
     /// 记录所属项目 `project` 的配方快照：配方编号与修订号只在项目内唯一。
