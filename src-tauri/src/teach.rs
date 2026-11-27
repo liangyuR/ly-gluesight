@@ -37,11 +37,29 @@ pub fn records_list(cycle: State<'_, CycleHost>) -> RecordListing {
     let roots = cycle.recorders.roots(crate::store::RecordSource::Real);
     let mut items = Vec::new();
     for days in roots.iter().filter_map(|root| std::fs::read_dir(root).ok()) {
-        for day in days.flatten().map(|d| d.path()).filter(|p| p.is_dir() && !p.ends_with("_pending")) {
-            for part in std::fs::read_dir(&day).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        for day in days
+            .flatten()
+            .map(|d| d.path())
+            .filter(|p| p.is_dir() && !p.ends_with("_pending"))
+        {
+            for part in std::fs::read_dir(&day)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+            {
                 let frames = frame_count(&part);
-                let name = part.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
-                items.push(RecordEntry { path: part.display().to_string(), name, frames });
+                let name = part
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                items.push(RecordEntry {
+                    path: part.display().to_string(),
+                    name,
+                    frames,
+                });
             }
         }
     }

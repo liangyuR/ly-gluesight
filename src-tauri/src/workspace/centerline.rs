@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet, VecDeque};
 use crate::frame::FrameImage;
 use crate::recipe::Polarity;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,11 +25,15 @@ pub(crate) enum ExtractionError {
 }
 
 impl From<&str> for ExtractionError {
-    fn from(message: &str) -> Self { Self::Invalid(message.into()) }
+    fn from(message: &str) -> Self {
+        Self::Invalid(message.into())
+    }
 }
 
 impl From<String> for ExtractionError {
-    fn from(message: String) -> Self { Self::Invalid(message) }
+    fn from(message: String) -> Self {
+        Self::Invalid(message)
+    }
 }
 
 fn failure(point: [f32; 2], reason: &'static str, message: &str) -> ExtractionError {
@@ -51,12 +55,26 @@ pub(crate) struct Extraction {
 const TRIM_NOTICE_PX: f32 = 10.0;
 
 fn trim_notice(lost: [f32; 2]) -> Option<String> {
-    let parts: Vec<String> = [("起点前", lost[0]), ("终点后", lost[1])].into_iter()
-        .filter(|(_, px)| *px >= TRIM_NOTICE_PX).map(|(end, px)| format!("{end}约 {px:.0} px")).collect();
-    (!parts.is_empty()).then(|| format!("中线已提取，但{} 未能连续找到胶边，已截去。请核对中线是否覆盖整条胶路，再运行试测。", parts.join("、")))
+    let parts: Vec<String> = [("起点前", lost[0]), ("终点后", lost[1])]
+        .into_iter()
+        .filter(|(_, px)| *px >= TRIM_NOTICE_PX)
+        .map(|(end, px)| format!("{end}约 {px:.0} px"))
+        .collect();
+    (!parts.is_empty()).then(|| {
+        format!(
+            "中线已提取，但{} 未能连续找到胶边，已截去。请核对中线是否覆盖整条胶路，再运行试测。",
+            parts.join("、")
+        )
+    })
 }
 
-pub(crate) fn extract(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: Option<&BrushGuide>, point_spacing_px: f32) -> Result<Extraction, ExtractionError> {
+pub(crate) fn extract(
+    image: &FrameImage,
+    roi: [u32; 4],
+    polarity: Polarity,
+    guide: Option<&BrushGuide>,
+    point_spacing_px: f32,
+) -> Result<Extraction, ExtractionError> {
     if !point_spacing_px.is_finite() || !(4.0..=80.0).contains(&point_spacing_px) {
         return Err("中线点间距需为 4–80 像素".into());
     }
@@ -65,26 +83,45 @@ pub(crate) fn extract(image: &FrameImage, roi: [u32; 4], polarity: Polarity, gui
         return extract(&image.to_luma(), roi, polarity, guide, point_spacing_px);
     }
     let [x, y, width, height] = roi;
-    if width < 5 || height < 5 || x.checked_add(width).is_none_or(|v| v > image.width) || y.checked_add(height).is_none_or(|v| v > image.height)
-        || u64::from(width) * u64::from(height) > 4_000_000 || image.pixels.len() as u64 != u64::from(image.width) * u64::from(image.height) {
+    if width < 5
+        || height < 5
+        || x.checked_add(width).is_none_or(|v| v > image.width)
+        || y.checked_add(height).is_none_or(|v| v > image.height)
+        || u64::from(width) * u64::from(height) > 4_000_000
+        || image.pixels.len() as u64 != u64::from(image.width) * u64::from(image.height)
+    {
         return Err("请在原图内框选 5×5 以上、400 万像素以内的胶路区域".into());
     }
     if let Some(guide) = guide {
         let (path, trimmed) = extract_guided(image, roi, polarity, guide, point_spacing_px)?;
-        return Ok(Extraction { path, notice: trim_notice(trimmed) });
+        return Ok(Extraction {
+            path,
+            notice: trim_notice(trimmed),
+        });
     }
     extract_box(image, roi, polarity, point_spacing_px)
 }
 
 fn otsu(histogram: &[usize; 256]) -> Option<usize> {
     let total = histogram.iter().sum::<usize>() as f64;
-    let sum: f64 = histogram.iter().enumerate().map(|(i, n)| i as f64 * *n as f64).sum();
+    let sum: f64 = histogram
+        .iter()
+        .enumerate()
+        .map(|(i, n)| i as f64 * *n as f64)
+        .sum();
     let (mut count, mut partial, mut best, mut threshold) = (0.0, 0.0, 0.0, 0usize);
     for (i, n) in histogram.iter().enumerate() {
-        count += *n as f64; partial += i as f64 * *n as f64;
-        if count == 0.0 || count == total { continue; }
-        let variance = count * (total - count) * (partial / count - (sum - partial) / (total - count)).powi(2);
-        if variance > best { best = variance; threshold = i; }
+        count += *n as f64;
+        partial += i as f64 * *n as f64;
+        if count == 0.0 || count == total {
+            continue;
+        }
+        let variance =
+            count * (total - count) * (partial / count - (sum - partial) / (total - count)).powi(2);
+        if variance > best {
+            best = variance;
+            threshold = i;
+        }
     }
     (best > 0.0).then_some(threshold)
 }
@@ -102,11 +139,21 @@ fn sweep(src: &[u8], w: usize, h: usize, size: usize, max: bool, rows: bool) -> 
         for i in 0..len {
             while next <= (i + r).min(len - 1) {
                 let v = src[at(next)];
-                while queue.back().is_some_and(|&b| if max { src[at(b)] <= v } else { src[at(b)] >= v }) { queue.pop_back(); }
+                while queue.back().is_some_and(|&b| {
+                    if max {
+                        src[at(b)] <= v
+                    } else {
+                        src[at(b)] >= v
+                    }
+                }) {
+                    queue.pop_back();
+                }
                 queue.push_back(next);
                 next += 1;
             }
-            while queue.front().is_some_and(|&f| f + r < i) { queue.pop_front(); }
+            while queue.front().is_some_and(|&f| f + r < i) {
+                queue.pop_front();
+            }
             out[at(i)] = src[at(queue[0])];
         }
     }
@@ -114,16 +161,47 @@ fn sweep(src: &[u8], w: usize, h: usize, size: usize, max: bool, rows: bool) -> 
 }
 
 /// 胶色一侧的顶帽响应（方形结构元开运算后相减），再做 5 点二项式平滑：比结构元宽的成片暗区（亮胶为亮区）响应近 0。
-fn top_hat(image: &FrameImage, polarity: Polarity, [x0, y0, x1, y1]: [usize; 4], size: usize) -> Vec<u8> {
+fn top_hat(
+    image: &FrameImage,
+    polarity: Polarity,
+    [x0, y0, x1, y1]: [usize; 4],
+    size: usize,
+) -> Vec<u8> {
     let (w, h) = (x1 - x0, y1 - y0);
     let stride = image.width as usize;
-    let src: Vec<u8> = (y0..y1).flat_map(|r| (x0..x1).map(move |c| {
-        let v = image.pixels[r * stride + c];
-        if polarity == Polarity::Dark { 255 - v } else { v }
-    })).collect();
-    let eroded = sweep(&sweep(&src, w, h, size, false, true), w, h, size, false, false);
-    let opened = sweep(&sweep(&eroded, w, h, size, true, true), w, h, size, true, false);
-    let top: Vec<u16> = src.iter().zip(&opened).map(|(a, b)| u16::from(a.saturating_sub(*b))).collect();
+    let src: Vec<u8> = (y0..y1)
+        .flat_map(|r| {
+            (x0..x1).map(move |c| {
+                let v = image.pixels[r * stride + c];
+                if polarity == Polarity::Dark {
+                    255 - v
+                } else {
+                    v
+                }
+            })
+        })
+        .collect();
+    let eroded = sweep(
+        &sweep(&src, w, h, size, false, true),
+        w,
+        h,
+        size,
+        false,
+        false,
+    );
+    let opened = sweep(
+        &sweep(&eroded, w, h, size, true, true),
+        w,
+        h,
+        size,
+        true,
+        false,
+    );
+    let top: Vec<u16> = src
+        .iter()
+        .zip(&opened)
+        .map(|(a, b)| u16::from(a.saturating_sub(*b)))
+        .collect();
     let blur = |src: &[u16], rows: bool| -> Vec<u16> {
         let (len, other) = if rows { (w, h) } else { (h, w) };
         let mut out = vec![0u16; src.len()];
@@ -136,41 +214,81 @@ fn top_hat(image: &FrameImage, polarity: Polarity, [x0, y0, x1, y1]: [usize; 4],
         }
         out
     };
-    blur(&blur(&top, true), false).into_iter().map(|v| v.min(255) as u8).collect()
+    blur(&blur(&top, true), false)
+        .into_iter()
+        .map(|v| v.min(255) as u8)
+        .collect()
 }
 
 /// 框选：顶帽（结构元取框的短边）突出比它窄的胶条、压掉框里成片的暗区，Otsu 二值化后取骨架最长的一条，
 /// 去掉两端被框角拉弯的半个胶宽、再顺着端点切向伸出一个胶宽（不出框），当作笔划交给笔刷提取对中（伸出胶外的头尾由它截掉）；笔刷提取断开时从断处分开、留长的一段重试。
 /// 骨架首尾相连（落在笔刷外的一段从两头接回骨架）时报错；笔刷提取截掉的、超出伸出段的胶路写进提示。
-fn extract_box(image: &FrameImage, roi: [u32; 4], polarity: Polarity, spacing: f32) -> Result<Extraction, ExtractionError> {
+fn extract_box(
+    image: &FrameImage,
+    roi: [u32; 4],
+    polarity: Polarity,
+    spacing: f32,
+) -> Result<Extraction, ExtractionError> {
     let [x, y, width, height] = roi;
     let size = (width.min(height).clamp(31, 161) | 1) as usize;
     let pad = [x as usize, y as usize].map(|v| v.saturating_sub(size));
     let far = [(x + width) as usize + size, (y + height) as usize + size];
-    let region = [pad[0], pad[1], far[0].min(image.width as usize), far[1].min(image.height as usize)];
+    let region = [
+        pad[0],
+        pad[1],
+        far[0].min(image.width as usize),
+        far[1].min(image.height as usize),
+    ];
     let response = top_hat(image, polarity, region, size);
     let rw = region[2] - region[0];
-    let at = |row: usize, col: usize| response[(y as usize - region[1] + row) * rw + x as usize - region[0] + col];
+    let at = |row: usize, col: usize| {
+        response[(y as usize - region[1] + row) * rw + x as usize - region[0] + col]
+    };
     let w = width as usize + 2;
     let h = height as usize + 2;
     let mut histogram = [0usize; 256];
-    for row in 0..height as usize { for col in 0..width as usize { histogram[at(row, col) as usize] += 1; } }
+    for row in 0..height as usize {
+        for col in 0..width as usize {
+            histogram[at(row, col) as usize] += 1;
+        }
+    }
     let threshold = otsu(&histogram).ok_or("区域内没有可分辨的胶路，请调整区域或手工绘制")?;
     let total = (width * height) as f64;
     let mut mask = vec![false; w * h];
-    for row in 0..height as usize { for col in 0..width as usize { mask[(row + 1) * w + col + 1] = at(row, col) as usize > threshold; } }
-    let offsets = [-(w as isize), -(w as isize) + 1, 1, w as isize + 1, w as isize, w as isize - 1, -1, -(w as isize) - 1];
+    for row in 0..height as usize {
+        for col in 0..width as usize {
+            mask[(row + 1) * w + col + 1] = at(row, col) as usize > threshold;
+        }
+    }
+    let offsets = [
+        -(w as isize),
+        -(w as isize) + 1,
+        1,
+        w as isize + 1,
+        w as isize,
+        w as isize - 1,
+        -1,
+        -(w as isize) - 1,
+    ];
     let neighbors = |i: usize| offsets.map(|d| (i as isize + d) as usize);
     let mut label = vec![usize::MAX; mask.len()];
     let mut areas = Vec::new();
     for seed in 0..mask.len() {
-        if !mask[seed] || label[seed] != usize::MAX { continue; }
+        if !mask[seed] || label[seed] != usize::MAX {
+            continue;
+        }
         let id = areas.len();
-        let mut queue = VecDeque::from([seed]); label[seed] = id;
+        let mut queue = VecDeque::from([seed]);
+        label[seed] = id;
         let mut area = 0usize;
         while let Some(i) = queue.pop_front() {
             area += 1;
-            for j in neighbors(i) { if mask[j] && label[j] == usize::MAX { label[j] = id; queue.push_back(j); } }
+            for j in neighbors(i) {
+                if mask[j] && label[j] == usize::MAX {
+                    label[j] = id;
+                    queue.push_back(j);
+                }
+            }
         }
         areas.push(area);
     }
@@ -179,36 +297,63 @@ fn extract_box(image: &FrameImage, roi: [u32; 4], polarity: Polarity, spacing: f
         let mut changed = false;
         for second in [false, true] {
             let mut remove = Vec::new();
-            for row in 1..h - 1 { for col in 1..w - 1 {
-                let i = row * w + col;
-                if !mask[i] { continue; }
-                let p = neighbors(i).map(|j| mask[j]);
-                let n = p.iter().filter(|v| **v).count();
-                let changes = (0..8).filter(|j| !p[*j] && p[(*j + 1) % 8]).count();
-                let keep = if second { (p[0] && p[2] && p[6]) || (p[0] && p[4] && p[6]) } else { (p[0] && p[2] && p[4]) || (p[2] && p[4] && p[6]) };
-                if (2..=6).contains(&n) && changes == 1 && !keep { remove.push(i); }
-            } }
+            for row in 1..h - 1 {
+                for col in 1..w - 1 {
+                    let i = row * w + col;
+                    if !mask[i] {
+                        continue;
+                    }
+                    let p = neighbors(i).map(|j| mask[j]);
+                    let n = p.iter().filter(|v| **v).count();
+                    let changes = (0..8).filter(|j| !p[*j] && p[(*j + 1) % 8]).count();
+                    let keep = if second {
+                        (p[0] && p[2] && p[6]) || (p[0] && p[4] && p[6])
+                    } else {
+                        (p[0] && p[2] && p[4]) || (p[2] && p[4] && p[6])
+                    };
+                    if (2..=6).contains(&n) && changes == 1 && !keep {
+                        remove.push(i);
+                    }
+                }
+            }
             changed |= !remove.is_empty();
-            for i in remove { mask[i] = false; }
+            for i in remove {
+                mask[i] = false;
+            }
         }
-        if !changed { converged = true; break; }
+        if !changed {
+            converged = true;
+            break;
+        }
     }
-    if !converged { return Err("胶路区域过宽，无法可靠提取中线，请缩小范围或手工绘制".into()); }
+    if !converged {
+        return Err("胶路区域过宽，无法可靠提取中线，请缩小范围或手工绘制".into());
+    }
     let walk = |start: usize| {
         let mut distance = vec![usize::MAX; mask.len()];
         let mut parent = vec![usize::MAX; mask.len()];
-        let mut queue = VecDeque::from([start]); distance[start] = 0;
+        let mut queue = VecDeque::from([start]);
+        distance[start] = 0;
         let mut last = start;
         while let Some(i) = queue.pop_front() {
             last = i;
-            for j in neighbors(i) { if mask[j] && distance[j] == usize::MAX { distance[j] = distance[i] + 1; parent[j] = i; queue.push_back(j); } }
+            for j in neighbors(i) {
+                if mask[j] && distance[j] == usize::MAX {
+                    distance[j] = distance[i] + 1;
+                    parent[j] = i;
+                    queue.push_back(j);
+                }
+            }
         }
         (last, parent)
     };
     let mut starts: Vec<(usize, usize)> = Vec::new();
     let mut seen = vec![false; areas.len()];
     for (i, on) in mask.iter().enumerate() {
-        if *on && !seen[label[i]] { seen[label[i]] = true; starts.push((i, label[i])); }
+        if *on && !seen[label[i]] {
+            seen[label[i]] = true;
+            starts.push((i, label[i]));
+        }
     }
     starts.sort_by_key(|(_, id)| std::cmp::Reverse(areas[*id]));
     let mut best: Option<(Vec<[f32; 2]>, f32, usize)> = None;
@@ -216,66 +361,145 @@ fn extract_box(image: &FrameImage, roi: [u32; 4], polarity: Polarity, spacing: f
         let (start, _) = walk(seed);
         let (mut end, parent) = walk(start);
         let mut path = vec![end];
-        while end != start { end = parent[end]; path.push(end); }
-        let points: Vec<_> = path.into_iter().map(|i| [(i % w - 1) as f32 + x as f32, (i / w - 1) as f32 + y as f32]).collect();
+        while end != start {
+            end = parent[end];
+            path.push(end);
+        }
+        let points: Vec<_> = path
+            .into_iter()
+            .map(|i| [(i % w - 1) as f32 + x as f32, (i / w - 1) as f32 + y as f32])
+            .collect();
         let length: f32 = points.windows(2).map(|p| distance(p[0], p[1])).sum();
-        if best.as_ref().is_none_or(|b| length > b.1) { best = Some((points, length, id)); }
+        if best.as_ref().is_none_or(|b| length > b.1) {
+            best = Some((points, length, id));
+        }
     }
-    let Some((skeleton, length, id)) = best.filter(|b| b.0.len() >= 8) else { return Err("提取的胶路太短，请手工绘制".into()) };
-    if areas[id] as f64 > total * 0.9 { return Err("未找到清晰的单段胶路，请调整区域或极性".into()); }
+    let Some((skeleton, length, id)) = best.filter(|b| b.0.len() >= 8) else {
+        return Err("提取的胶路太短，请手工绘制".into());
+    };
+    if areas[id] as f64 > total * 0.9 {
+        return Err("未找到清晰的单段胶路，请调整区域或极性".into());
+    }
     // 骨架比胶条短约一个胶宽：面积 ≈ 胶宽 × (骨架长 + 胶宽)
     let bead = (-length + (length * length + 4.0 * areas[id] as f32).sqrt()) * 0.5;
     let mut arc = 0.0;
     let mut kept = Vec::new();
     for (i, p) in skeleton.iter().enumerate() {
-        if i > 0 { arc += distance(skeleton[i - 1], *p); }
-        if arc >= 0.5 * bead && arc <= length - 0.5 * bead { kept.push(*p); }
+        if i > 0 {
+            arc += distance(skeleton[i - 1], *p);
+        }
+        if arc >= 0.5 * bead && arc <= length - 0.5 * bead {
+            kept.push(*p);
+        }
     }
-    if kept.len() < 2 || length - bead < 8.0 { return Err("提取的胶路太短，请手工绘制".into()); }
+    if kept.len() < 2 || length - bead < 8.0 {
+        return Err("提取的胶路太短，请手工绘制".into());
+    }
     let mut stroke = resample(&kept, 6.0);
     let inner = ((bead / 6.0).ceil() as usize).clamp(1, stroke.len() - 1);
     let reach = |from: [f32; 2], to: [f32; 2]| {
         let d = distance(from, to).max(1e-3);
-        let p = [to[0] + (to[0] - from[0]) / d * bead, to[1] + (to[1] - from[1]) / d * bead];
-        [p[0].clamp(x as f32, (x + width - 1) as f32), p[1].clamp(y as f32, (y + height - 1) as f32)]
+        let p = [
+            to[0] + (to[0] - from[0]) / d * bead,
+            to[1] + (to[1] - from[1]) / d * bead,
+        ];
+        [
+            p[0].clamp(x as f32, (x + width - 1) as f32),
+            p[1].clamp(y as f32, (y + height - 1) as f32),
+        ]
     };
-    let (head, tail) = (reach(stroke[inner], stroke[0]), reach(stroke[stroke.len() - 1 - inner], stroke[stroke.len() - 1]));
-    let extension = [distance(head, stroke[0]), distance(tail, stroke[stroke.len() - 1])];
+    let (head, tail) = (
+        reach(stroke[inner], stroke[0]),
+        reach(stroke[stroke.len() - 1 - inner], stroke[stroke.len() - 1]),
+    );
+    let extension = [
+        distance(head, stroke[0]),
+        distance(tail, stroke[stroke.len() - 1]),
+    ];
     stroke.insert(0, head);
     stroke.push(tail);
     stroke = resample(&stroke, 6.0);
     let radius = (1.5 * bead).clamp(3.0, 150.0);
-    let skeleton: Vec<usize> = (0..mask.len()).filter(|&i| mask[i] && label[i] == id).collect();
-    let place: HashMap<usize, (f32, f32)> = skeleton.iter().map(|&i| (i, project([(i % w - 1) as f32 + x as f32, (i / w - 1) as f32 + y as f32], &stroke))).collect();
+    let skeleton: Vec<usize> = (0..mask.len())
+        .filter(|&i| mask[i] && label[i] == id)
+        .collect();
+    let place: HashMap<usize, (f32, f32)> = skeleton
+        .iter()
+        .map(|&i| {
+            (
+                i,
+                project(
+                    [(i % w - 1) as f32 + x as f32, (i / w - 1) as f32 + y as f32],
+                    &stroke,
+                ),
+            )
+        })
+        .collect();
     let mut visited = HashSet::new();
     let closed = skeleton.iter().any(|&seed| {
-        if place[&seed].0 <= radius || !visited.insert(seed) { return false; }
+        if place[&seed].0 <= radius || !visited.insert(seed) {
+            return false;
+        }
         let (mut low, mut high) = (f32::INFINITY, f32::NEG_INFINITY);
         let mut queue = VecDeque::from([seed]);
         while let Some(i) = queue.pop_front() {
             for j in neighbors(i) {
-                let Some(&(gap, arc)) = place.get(&j) else { continue };
-                if gap <= radius { low = low.min(arc); high = high.max(arc); } else if visited.insert(j) { queue.push_back(j); }
+                let Some(&(gap, arc)) = place.get(&j) else {
+                    continue;
+                };
+                if gap <= radius {
+                    low = low.min(arc);
+                    high = high.max(arc);
+                } else if visited.insert(j) {
+                    queue.push_back(j);
+                }
             }
         }
         high - low > 2.0 * radius
     });
-    if closed { return Err("框内胶路首尾相连，一条中线只能覆盖其中一段。请只框选其中一段胶路，或改用笔刷".into()); }
+    if closed {
+        return Err(
+            "框内胶路首尾相连，一条中线只能覆盖其中一段。请只框选其中一段胶路，或改用笔刷".into(),
+        );
+    }
     let span = |s: &[[f32; 2]]| s.windows(2).map(|p| distance(p[0], p[1])).sum::<f32>();
     let full = span(&stroke);
     let mut dropped = [0.0f32; 2];
     let mut retries = 0;
     loop {
-        match extract_guided(image, roi, polarity, &BrushGuide { points: stroke.clone(), radius_px: radius }, spacing) {
+        match extract_guided(
+            image,
+            roi,
+            polarity,
+            &BrushGuide {
+                points: stroke.clone(),
+                radius_px: radius,
+            },
+            spacing,
+        ) {
             Ok((path, trimmed)) => {
-                let lost = [0, 1].map(|end| (dropped[end] + trimmed[end] - extension[end]).max(0.0));
-                return Ok(Extraction { path, notice: trim_notice(lost) });
+                let lost =
+                    [0, 1].map(|end| (dropped[end] + trimmed[end] - extension[end]).max(0.0));
+                return Ok(Extraction {
+                    path,
+                    notice: trim_notice(lost),
+                });
             }
             Err(ExtractionError::Failed(f)) if retries < 2 && f.reason != "reversal" => {
-                let j = (0..stroke.len()).min_by(|a, b| distance(stroke[*a], f.point).total_cmp(&distance(stroke[*b], f.point))).unwrap();
+                let j = (0..stroke.len())
+                    .min_by(|a, b| {
+                        distance(stroke[*a], f.point).total_cmp(&distance(stroke[*b], f.point))
+                    })
+                    .unwrap();
                 let (head_end, tail_start) = (j.saturating_sub(1), (j + 2).min(stroke.len()));
-                let keep = if span(&stroke[..head_end]) >= span(&stroke[tail_start..]) { 0..head_end } else { tail_start..stroke.len() };
-                if keep.len() < 2 || span(&stroke[keep.clone()]) < (0.5 * full).max(8.0) { return Err(box_failure(f)); }
+                let keep = if span(&stroke[..head_end]) >= span(&stroke[tail_start..]) {
+                    0..head_end
+                } else {
+                    tail_start..stroke.len()
+                };
+                if keep.len() < 2 || span(&stroke[keep.clone()]) < (0.5 * full).max(8.0) {
+                    return Err(box_failure(f));
+                }
                 dropped[0] += span(&stroke[..=keep.start]);
                 dropped[1] += span(&stroke[keep.end - 1..]);
                 stroke = stroke[keep].to_vec();
@@ -295,7 +519,10 @@ fn box_failure(f: ExtractionFailure) -> ExtractionError {
         "ambiguous" => "标记处有多条同样可信的胶路候选。请缩小框选范围排除邻近阴影，或改用笔刷沿目标胶路刷选。",
         _ => "标记处胶路折返，无法确定方向。请只框选单向的一段胶路，或改用笔刷沿胶路刷选。",
     };
-    ExtractionError::Failed(ExtractionFailure { message: message.into(), ..f })
+    ExtractionError::Failed(ExtractionFailure {
+        message: message.into(),
+        ..f
+    })
 }
 
 fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
@@ -308,9 +535,16 @@ fn project(p: [f32; 2], line: &[[f32; 2]]) -> (f32, f32) {
     for s in line.windows(2) {
         let d = [s[1][0] - s[0][0], s[1][1] - s[0][1]];
         let length = d[0].hypot(d[1]);
-        let t = if length > 0.0 { (((p[0] - s[0][0]) * d[0] + (p[1] - s[0][1]) * d[1]) / (length * length)).clamp(0.0, 1.0) } else { 0.0 };
+        let t = if length > 0.0 {
+            (((p[0] - s[0][0]) * d[0] + (p[1] - s[0][1]) * d[1]) / (length * length))
+                .clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let gap = distance(p, [s[0][0] + d[0] * t, s[0][1] + d[1] * t]);
-        if gap < best.0 { best = (gap, arc + t * length); }
+        if gap < best.0 {
+            best = (gap, arc + t * length);
+        }
         arc += length;
     }
     best
@@ -322,45 +556,71 @@ fn resample(points: &[[f32; 2]], spacing: f32) -> Vec<[f32; 2]> {
     let mut traversed = 0.0;
     for pair in points.windows(2) {
         let length = distance(pair[0], pair[1]);
-        if length < 0.0001 { continue; }
+        if length < 0.0001 {
+            continue;
+        }
         while next < traversed + length {
             let t = (next - traversed) / length;
-            result.push([pair[0][0] + t * (pair[1][0] - pair[0][0]), pair[0][1] + t * (pair[1][1] - pair[0][1])]);
+            result.push([
+                pair[0][0] + t * (pair[1][0] - pair[0][0]),
+                pair[0][1] + t * (pair[1][1] - pair[0][1]),
+            ]);
             next += spacing;
         }
         traversed += length;
     }
     let end = *points.last().unwrap();
-    if distance(*result.last().unwrap(), end) > 0.01 { result.push(end); }
+    if distance(*result.last().unwrap(), end) > 0.01 {
+        result.push(end);
+    }
     result
 }
 
 fn resample_output(points: &[[f32; 2]], spacing: f32) -> Vec<[f32; 2]> {
     let mut anchors = vec![false; points.len()];
     anchors[0] = true;
-    anchors[points.len()-1] = true;
-    let mut pending = vec![(0, points.len()-1)];
+    anchors[points.len() - 1] = true;
+    let mut pending = vec![(0, points.len() - 1)];
     while let Some((first, last)) = pending.pop() {
         let a = points[first];
         let b = points[last];
-        let delta = [b[0]-a[0], b[1]-a[1]];
-        let squared = delta[0]*delta[0]+delta[1]*delta[1];
+        let delta = [b[0] - a[0], b[1] - a[1]];
+        let squared = delta[0] * delta[0] + delta[1] * delta[1];
         let mut farthest = None;
         let mut maximum = 0.9;
-        for (i, &point) in points.iter().enumerate().take(last).skip(first+1) {
-            let ratio = if squared > 0.0 { (((point[0]-a[0])*delta[0]+(point[1]-a[1])*delta[1])/squared).clamp(0.0,1.0) } else { 0.0 };
-            let error = distance(point,[a[0]+ratio*delta[0],a[1]+ratio*delta[1]]);
-            if error > maximum { maximum=error; farthest=Some(i); }
+        for (i, &point) in points.iter().enumerate().take(last).skip(first + 1) {
+            let ratio = if squared > 0.0 {
+                (((point[0] - a[0]) * delta[0] + (point[1] - a[1]) * delta[1]) / squared)
+                    .clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let error = distance(point, [a[0] + ratio * delta[0], a[1] + ratio * delta[1]]);
+            if error > maximum {
+                maximum = error;
+                farthest = Some(i);
+            }
         }
-        if let Some(i) = farthest { anchors[i]=true; pending.push((first,i)); pending.push((i,last)); }
+        if let Some(i) = farthest {
+            anchors[i] = true;
+            pending.push((first, i));
+            pending.push((i, last));
+        }
     }
-    let indices: Vec<_> = anchors.iter().enumerate().filter_map(|(i, keep)| keep.then_some(i)).collect();
+    let indices: Vec<_> = anchors
+        .iter()
+        .enumerate()
+        .filter_map(|(i, keep)| keep.then_some(i))
+        .collect();
     let mut result = vec![points[0]];
     for pair in indices.windows(2) {
-        let a=points[pair[0]];
-        let b=points[pair[1]];
-        let segments=(distance(a,b)/spacing).ceil().max(1.0) as usize;
-        for i in 1..segments { let t=i as f32/segments as f32; result.push([a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t]); }
+        let a = points[pair[0]];
+        let b = points[pair[1]];
+        let segments = (distance(a, b) / spacing).ceil().max(1.0) as usize;
+        for i in 1..segments {
+            let t = i as f32 / segments as f32;
+            result.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
         result.push(b);
     }
     result
@@ -368,12 +628,20 @@ fn resample_output(points: &[[f32; 2]], spacing: f32) -> Vec<[f32; 2]> {
 
 fn gray(image: &FrameImage, point: [f32; 2]) -> Option<f32> {
     let [x, y] = point;
-    if x < 0.0 || y < 0.0 || x > (image.width - 1) as f32 || y > (image.height - 1) as f32 { return None; }
+    if x < 0.0 || y < 0.0 || x > (image.width - 1) as f32 || y > (image.height - 1) as f32 {
+        return None;
+    }
     let (x0, y0) = (x.floor() as usize, y.floor() as usize);
-    let (x1, y1) = ((x0 + 1).min(image.width as usize - 1), (y0 + 1).min(image.height as usize - 1));
+    let (x1, y1) = (
+        (x0 + 1).min(image.width as usize - 1),
+        (y0 + 1).min(image.height as usize - 1),
+    );
     let (tx, ty) = (x - x0 as f32, y - y0 as f32);
     let pixel = |x, y| image.pixels[y * image.width as usize + x] as f32;
-    Some((pixel(x0,y0) * (1.0-tx) + pixel(x1,y0) * tx) * (1.0-ty) + (pixel(x0,y1) * (1.0-tx) + pixel(x1,y1) * tx) * ty)
+    Some(
+        (pixel(x0, y0) * (1.0 - tx) + pixel(x1, y0) * tx) * (1.0 - ty)
+            + (pixel(x0, y1) * (1.0 - tx) + pixel(x1, y1) * tx) * ty,
+    )
 }
 
 /// 胶面反光会把一条胶劈成两段：缝不宽于较宽一段时并成一条候选，只在逐站连不上时拿来重试，
@@ -490,21 +758,57 @@ fn stations(profiles: &[Profile], polarity: Polarity, reach: i32, radius: i32) -
         found += usize::from(!spans.is_empty());
         let inside = |(a, b): &(f32, f32)| ((a + b) * 0.5 - reach as f32).abs() <= radius as f32;
         let candidate = |(a, b): (f32, f32)| {
-            let offset = (a+b)*0.5-reach as f32;
-            (offset, b-a, [center[0]+normal[0]*offset,center[1]+normal[1]*offset])
+            let offset = (a + b) * 0.5 - reach as f32;
+            (
+                offset,
+                b - a,
+                [
+                    center[0] + normal[0] * offset,
+                    center[1] + normal[1] * offset,
+                ],
+            )
         };
         let candidates: Vec<_> = spans.iter().copied().map(candidate).collect();
-        let fresh = |list: &[(f32, f32)], u: &(f32, f32)| !spans.iter().chain(list).any(|s| (s.0-u.0).abs() < 0.5 && (s.1-u.1).abs() < 0.5);
+        let fresh = |list: &[(f32, f32)], u: &(f32, f32)| {
+            !spans
+                .iter()
+                .chain(list)
+                .any(|s| (s.0 - u.0).abs() < 0.5 && (s.1 - u.1).abs() < 0.5)
+        };
         let mut adjacent: Vec<(f32, f32)> = Vec::new();
-        for u in spans.windows(2).filter_map(|p| highlight_union(p[0], p[1])).filter(inside) {
-            if fresh(&adjacent, &u) { adjacent.push(u); }
+        for u in spans
+            .windows(2)
+            .filter_map(|p| highlight_union(p[0], p[1]))
+            .filter(inside)
+        {
+            if fresh(&adjacent, &u) {
+                adjacent.push(u);
+            }
         }
         let mut wide = adjacent.clone();
-        for u in spans.iter().flat_map(|&p| spans.iter().filter_map(move |&q| highlight_union(p, q))).filter(inside) {
-            if fresh(&wide, &u) { wide.push(u); }
+        for u in spans
+            .iter()
+            .flat_map(|&p| spans.iter().filter_map(move |&q| highlight_union(p, q)))
+            .filter(inside)
+        {
+            if fresh(&wide, &u) {
+                wide.push(u);
+            }
         }
-        relaxed.push(candidates.iter().copied().chain(adjacent.into_iter().map(candidate)).collect::<Vec<_>>());
-        widest.push(candidates.iter().copied().chain(wide.into_iter().map(candidate)).collect::<Vec<_>>());
+        relaxed.push(
+            candidates
+                .iter()
+                .copied()
+                .chain(adjacent.into_iter().map(candidate))
+                .collect::<Vec<_>>(),
+        );
+        widest.push(
+            candidates
+                .iter()
+                .copied()
+                .chain(wide.into_iter().map(candidate))
+                .collect::<Vec<_>>(),
+        );
         all.push(candidates);
     }
     Stations {
@@ -618,15 +922,28 @@ fn solve_stations(
     let mut longest = 0..0;
     let mut start = 0;
     for i in 0..=all.len() {
-        if i < all.len() && !all[i].is_empty() { continue; }
-        if i - start > longest.len() { longest = start..i; }
+        if i < all.len() && !all[i].is_empty() {
+            continue;
+        }
+        if i - start > longest.len() {
+            longest = start..i;
+        }
         start = i + 1;
     }
     let trim = samples.len() / 4;
     if longest.len() < 3 || longest.start > trim || samples.len() - longest.end > trim {
         // 标在挡住最长一段的那个缺口的起点，而不是头尾可截范围里的第一个空站
-        let gap = if longest.start > trim { (0..longest.start).rev().take_while(|&i| all[i].is_empty()).last() } else { (longest.end..all.len()).find(|&i| all[i].is_empty()) };
-        let point = samples[gap.or_else(|| all.iter().position(Vec::is_empty)).unwrap_or(0)];
+        let gap = if longest.start > trim {
+            (0..longest.start)
+                .rev()
+                .take_while(|&i| all[i].is_empty())
+                .last()
+        } else {
+            (longest.end..all.len()).find(|&i| all[i].is_empty())
+        };
+        let point = samples[gap
+            .or_else(|| all.iter().position(Vec::is_empty))
+            .unwrap_or(0)];
         return Err(failure(point, "missing_edges", "标记处未找到完整的两侧胶路边缘。请检查笔刷是否覆盖两侧边缘及少量背景、图像对比度是否足够，或用笔划生成中线后手工修正。"));
     }
     // 并集只在逐站连不上时重试：先只并相邻两段；仍连不上，再并隔着一段（高光里的小暗点）的两段
@@ -697,7 +1014,10 @@ fn solve_stations(
         result => (result?, longest),
     };
     let arc = |s: &[[f32; 2]]| s.windows(2).map(|p| distance(p[0], p[1])).sum::<f32>();
-    Ok((path, [arc(&samples[..=kept.start]), arc(&samples[kept.end - 1..])]))
+    Ok((
+        path,
+        [arc(&samples[..=kept.start]), arc(&samples[kept.end - 1..])],
+    ))
 }
 
 type Candidate = (f32, f32, [f32; 2]);

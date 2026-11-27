@@ -31,7 +31,13 @@ pub struct FrameMeta {
 
 impl From<&Frame> for FrameMeta {
     fn from(f: &Frame) -> Self {
-        Self { cam: f.cam, session: f.session, source: f.counter, trigger: f.trigger_counter, frame: f.frame_counter }
+        Self {
+            cam: f.cam,
+            session: f.session,
+            source: f.counter,
+            trigger: f.trigger_counter,
+            frame: f.frame_counter,
+        }
     }
 }
 
@@ -85,7 +91,10 @@ pub struct Ledgers {
 impl Ledgers {
     /// 每一帧都记：检测中、空闲时、手动取的都算。旧会话迟到的帧不记。触发计数比本会话见过的都大时返回 true。
     pub fn observe(&mut self, f: &FrameMeta) -> bool {
-        let l = self.cams.entry(f.cam).or_insert_with(|| Ledger::new(f.session));
+        let l = self
+            .cams
+            .entry(f.cam)
+            .or_insert_with(|| Ledger::new(f.session));
         if f.session < l.session {
             return false;
         }
@@ -95,7 +104,9 @@ impl Ledgers {
         l.frames += 1;
         l.last_frame = l.last_frame.max(Some(f.frame));
         l.source = Some(f.source);
-        if !l.sources.contains(&f.source) { l.sources.push(f.source); }
+        if !l.sources.contains(&f.source) {
+            l.sources.push(f.source);
+        }
         let advanced = l.last.is_none_or(|last| f.trigger > last);
         if advanced {
             l.last = Some(f.trigger);
@@ -108,21 +119,33 @@ impl Ledgers {
     }
 
     pub fn merge(&mut self, cam: u8, observed: &Ledger) {
-        let current = self.cams.entry(cam).or_insert_with(|| Ledger::new(observed.session));
-        if observed.session < current.session { return; }
-        if observed.session > current.session { *current = Ledger::new(observed.session); }
+        let current = self
+            .cams
+            .entry(cam)
+            .or_insert_with(|| Ledger::new(observed.session));
+        if observed.session < current.session {
+            return;
+        }
+        if observed.session > current.session {
+            *current = Ledger::new(observed.session);
+        }
         current.last = current.last.max(observed.last);
         current.last_frame = current.last_frame.max(observed.last_frame);
         current.source = observed.source.or(current.source);
         for source in observed.sources.iter().copied().chain(observed.source) {
-            if !current.sources.contains(&source) { current.sources.push(source); }
+            if !current.sources.contains(&source) {
+                current.sources.push(source);
+            }
         }
         current.frames = current.frames.max(observed.frames);
     }
 
     /// 收尾：记下下一件的帧计数基线下限（`Floor::baseline` 是帧计数）；账上已是更新的会话时不记。
     pub fn set_frame_floor(&mut self, floor: &Floor) {
-        let l = self.cams.entry(floor.cam).or_insert_with(|| Ledger::new(floor.session));
+        let l = self
+            .cams
+            .entry(floor.cam)
+            .or_insert_with(|| Ledger::new(floor.session));
         if floor.session > l.session {
             *l = Ledger::new(floor.session);
         }
@@ -150,12 +173,27 @@ pub struct Policy {
 impl Policy {
     /// 生产（D-SB-10）：按 SDK 帧计数配组，海康三种来源（Chunk 触发计数、Chunk 帧计数、SDK 帧号）的帧计数都认。
     pub fn burst_production(counter_after_open: Option<u64>) -> Self {
-        Self { trusted: vec![CounterSource::ChunkTrigger, CounterSource::ChunkFrame, CounterSource::SdkFrame], counter_after_open }
+        Self {
+            trusted: vec![
+                CounterSource::ChunkTrigger,
+                CounterSource::ChunkFrame,
+                CounterSource::SdkFrame,
+            ],
+            counter_after_open,
+        }
     }
 
     /// 离线产线：另外认模拟、样本集相机的计数。
     pub fn burst_offline(counter_after_open: Option<u64>) -> Self {
-        Self { trusted: vec![CounterSource::ChunkTrigger, CounterSource::ChunkFrame, CounterSource::SdkFrame, CounterSource::Synthetic], counter_after_open }
+        Self {
+            trusted: vec![
+                CounterSource::ChunkTrigger,
+                CounterSource::ChunkFrame,
+                CounterSource::SdkFrame,
+                CounterSource::Synthetic,
+            ],
+            counter_after_open,
+        }
     }
 
     pub fn trusts(&self, source: CounterSource) -> bool {
@@ -184,7 +222,10 @@ pub enum Refusal {
     NoCamera { camera: String },
     /// 两个相机编号对到同一个相机组序号
     SharedSlot { camera: String, other: String },
-    Untrusted { camera: String, source: CounterSource },
+    Untrusted {
+        camera: String,
+        source: CounterSource,
+    },
 }
 
 impl Refusal {
@@ -242,17 +283,32 @@ pub struct FrameBaseline {
 /// 取开流后的计数起点（模拟 / 样本集为 0，海康按 `counter_after_open`），仍未知时留空，由本件首帧定基线：
 /// Line0 高电平门控下软件取不了帧，而本会话接件前没有帧，接件后这台相机的第一帧必属本件。
 /// 本会话出现过 policy 不信任的计数来源时拒绝。
-pub fn arm_frames(cameras: &[String], ledgers: &Ledgers, policy: &Policy, cams: &[ArmCam]) -> Result<Vec<FrameBaseline>, Refusal> {
+pub fn arm_frames(
+    cameras: &[String],
+    ledgers: &Ledgers,
+    policy: &Policy,
+    cams: &[ArmCam],
+) -> Result<Vec<FrameBaseline>, Refusal> {
     let mut armed: Vec<FrameBaseline> = Vec::with_capacity(cameras.len());
     for id in cameras {
         let camera = id.clone();
-        let Some(now) = cams.iter().find(|c| &c.camera == id) else { return Err(Refusal::NoCamera { camera }) };
+        let Some(now) = cams.iter().find(|c| &c.camera == id) else {
+            return Err(Refusal::NoCamera { camera });
+        };
         if let Some(other) = armed.iter().find(|a| a.cam == now.cam) {
-            return Err(Refusal::SharedSlot { camera, other: other.camera.clone() });
+            return Err(Refusal::SharedSlot {
+                camera,
+                other: other.camera.clone(),
+            });
         }
         let ledger = ledgers.get(now.cam).filter(|l| l.session == now.session);
         let source = ledger.and_then(|l| l.source).or(now.source);
-        if let Some(source) = ledger.into_iter().flat_map(|l| l.sources.iter().copied()).chain(source).find(|s| !policy.trusts(*s)) {
+        if let Some(source) = ledger
+            .into_iter()
+            .flat_map(|l| l.sources.iter().copied())
+            .chain(source)
+            .find(|s| !policy.trusts(*s))
+        {
             return Err(Refusal::Untrusted { camera, source });
         }
         let baseline = match ledger.and_then(|l| l.last_frame.max(l.frame_floor)) {
@@ -260,7 +316,12 @@ pub fn arm_frames(cameras: &[String], ledgers: &Ledgers, policy: &Policy, cams: 
             None if source == Some(CounterSource::Synthetic) => Some(SYNTHETIC_START),
             None => now.counter_after_open.or(policy.counter_after_open),
         };
-        armed.push(FrameBaseline { cam: now.cam, camera, session: now.session, baseline });
+        armed.push(FrameBaseline {
+            cam: now.cam,
+            camera,
+            session: now.session,
+            baseline,
+        });
     }
     Ok(armed)
 }

@@ -1514,15 +1514,15 @@ impl Machine {
         }
         let maintenance = self.s7.part_maintenance();
         let recipe = match settings.product_source {
-                ProductSource::Plc => host
-                    .recipes
-                    .list()
-                    .into_iter()
-                    .find(|r| r.product_code as u32 == code),
-                ProductSource::Manual => settings
-                    .manual_recipe_id
-                    .as_deref()
-                    .and_then(|id| host.recipe(id)),
+            ProductSource::Plc => host
+                .recipes
+                .list()
+                .into_iter()
+                .find(|r| r.product_code as u32 == code),
+            ProductSource::Manual => settings
+                .manual_recipe_id
+                .as_deref()
+                .and_then(|id| host.recipe(id)),
         };
         let Some(recipe) = recipe else {
             let reason = match (
@@ -1725,9 +1725,7 @@ impl Machine {
             settings.record
         };
         // 收尾补测只从录制原图读（D-SB-60）：录制关闭时要测图的件也写临时录制，收尾删除
-        let mut recording = if record == crate::settings::RecordMode::Off
-            && !collect
-        {
+        let mut recording = if record == crate::settings::RecordMode::Off && !collect {
             host.recorders.scratch(
                 source,
                 disk.scratch.as_deref(),
@@ -2149,9 +2147,7 @@ impl Machine {
         let _link = host(&app).link_gate.lock().await;
         let settings = host(&app).settings();
         self.s7.set_maintenance(settings.maintenance.is_some());
-        if !host(&app).busy()
-            && matches!(self.phase, Phase::Idle | Phase::Fault)
-        {
+        if !host(&app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) {
             // 配置操作进行中就留到下一拍，不让空闲节拍排队
             if let Ok(_config) = host(&app).config_gate.try_lock() {
                 if crate::workspace::apply_pending(&self.app) {
@@ -2387,11 +2383,7 @@ impl Machine {
             "接件后 {} s 内未收到工件结束（inspecting 未回 0）",
             motion_ms / 1000
         );
-        log(
-            "err",
-            "等工件结束超时",
-            format!("T_motion {motion_ms} ms"),
-        );
+        log("err", "等工件结束超时", format!("T_motion {motion_ms} ms"));
         self.abandon_part("motion", reason).await;
     }
 
@@ -2997,7 +2989,6 @@ fn burst_warnings(
 }
 
 /// 今日统计只算当前站点的范围：真机只算真机件，离线只算离线件。
-
 
 fn today_stats(app: &AppHandle, scope: HistoryScope) -> Stats {
     app.state::<Store>()

@@ -50,9 +50,9 @@ fn machine(dir: &Path, project: &'static str) -> Machine {
 
 fn saved_recipe(dir: &Path) -> Arc<Recipe> {
     RecipeStore::open_with_floors(dir.join("recipes"), &BTreeMap::new())
-    .unwrap()
-    .save(crate::recipe::samples_burst(), None)
-    .unwrap()
+        .unwrap()
+        .save(crate::recipe::samples_burst(), None)
+        .unwrap()
 }
 
 /// 在当前项目下记一件录制完整的段配方记录：原图在 `<录制根>/20261107/<目录>/`，每帧内容不同。返回记录编号。

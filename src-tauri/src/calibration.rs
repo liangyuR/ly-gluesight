@@ -22,25 +22,41 @@ pub enum CalibError {
 }
 
 /// counts：各轮帧组数。轮数少于 min_rounds 时返回 TooFewRounds；min_rounds 为 0 且没有轮次时返回 Empty。
-pub fn calibrate_counts(counts: &[u32], min_rounds: u32, default_tol: u32) -> Result<CalibOutcome, CalibError> {
+pub fn calibrate_counts(
+    counts: &[u32],
+    min_rounds: u32,
+    default_tol: u32,
+) -> Result<CalibOutcome, CalibError> {
     let rounds = u32::try_from(counts.len()).unwrap_or(u32::MAX);
     if rounds < min_rounds {
-        return Err(CalibError::TooFewRounds { have: rounds, need: min_rounds });
+        return Err(CalibError::TooFewRounds {
+            have: rounds,
+            need: min_rounds,
+        });
     }
-    let (Some(&min), Some(&max)) = (counts.iter().min(), counts.iter().max()) else { return Err(CalibError::Empty) };
+    let (Some(&min), Some(&max)) = (counts.iter().min(), counts.iter().max()) else {
+        return Err(CalibError::Empty);
+    };
     let mean = counts.iter().map(|&n| u64::from(n)).sum::<u64>() as f64 / counts.len() as f64;
     // f64::round 对 .5 远离零取整，帧组数非负即 .5 进位
     let n_exp = mean.round() as u32;
     Ok(CalibOutcome {
         n_exp,
-        calib: SegmentCalib { rounds, min, max, mean },
+        calib: SegmentCalib {
+            rounds,
+            min,
+            max,
+            mean,
+        },
         suggested_tolerance: suggest_tolerance(n_exp, min, max, default_tol),
     })
 }
 
 /// max(default, n − min, max − n)。
 pub fn suggest_tolerance(n: u32, min: u32, max: u32, default: u32) -> u32 {
-    default.max(n.saturating_sub(min)).max(max.saturating_sub(n))
+    default
+        .max(n.saturating_sub(min))
+        .max(max.saturating_sub(n))
 }
 
 /// 标准件各轮 x 均值 → (x_ref = 均值, spread = max − min)；空输入为 None。

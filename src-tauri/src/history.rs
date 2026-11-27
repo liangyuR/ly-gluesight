@@ -13,11 +13,17 @@ use crate::judge::Verdict;
 use crate::plan::{PathSegment, SegmentKind, WidthCheck};
 use crate::recipe::Recipe;
 use crate::segmentation::RegionKind;
-use crate::store::{same_measurement_layout, FrameRecord, HistoryPage, HistoryQuery, HistoryScope, PartDetail, PartSummary, Store, StoredMeasurement};
+use crate::store::{
+    same_measurement_layout, FrameRecord, HistoryPage, HistoryQuery, HistoryScope, PartDetail,
+    PartSummary, Store, StoredMeasurement,
+};
 
 pub fn local_midnight_ms() -> i64 {
     let today = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
-    Local.from_local_datetime(&today).earliest().map_or(0, |t| t.timestamp_millis())
+    Local
+        .from_local_datetime(&today)
+        .earliest()
+        .map_or(0, |t| t.timestamp_millis())
 }
 
 pub fn local_day() -> i64 {
@@ -25,12 +31,17 @@ pub fn local_day() -> i64 {
 }
 
 pub(crate) fn format_ts(ts: i64) -> String {
-    Local.timestamp_millis_opt(ts).single().map_or_else(|| ts.to_string(), |t| t.format("%Y-%m-%d %H:%M:%S%.3f").to_string())
+    Local.timestamp_millis_opt(ts).single().map_or_else(
+        || ts.to_string(),
+        |t| t.format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
+    )
 }
 
 #[tauri::command]
 pub async fn history_query(app: AppHandle, query: HistoryQuery) -> Result<HistoryPage, String> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<Store>().query(&query)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || app.state::<Store>().query(&query))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -81,7 +92,9 @@ pub async fn history_delete(app: AppHandle, ids: Vec<i64>) -> Result<HistoryDele
 
 #[tauri::command]
 pub async fn history_detail(app: AppHandle, id: i64) -> Result<PartDetail, String> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail(id)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail(id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -111,16 +124,25 @@ pub struct Neighbors {
 
 /// 逐件回看：按历史列表当时的筛选找前后一件；没有筛选时只在本件所属的真机 / 离线 / 调试范围内找。
 #[tauri::command]
-pub async fn history_neighbors(app: AppHandle, id: i64, query: Option<HistoryQuery>) -> Result<Neighbors, String> {
+pub async fn history_neighbors(
+    app: AppHandle,
+    id: i64,
+    query: Option<HistoryQuery>,
+) -> Result<Neighbors, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
         let query = match query {
             Some(query) => query,
-            None => HistoryQuery { scope: HistoryScope::of(store.detail(id)?.summary.source), ..HistoryQuery::default() },
+            None => HistoryQuery {
+                scope: HistoryScope::of(store.detail(id)?.summary.source),
+                ..HistoryQuery::default()
+            },
         };
         let (older, newer) = store.neighbors(&query, id)?;
         Ok(Neighbors { older, newer })
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -148,7 +170,9 @@ impl KindOverride {
     fn apply_width(&self, width: &mut WidthCheck) {
         width.tol_upper = self.tol_upper.map_or(width.tol_upper, f64::from);
         width.tol_lower = self.tol_lower.map_or(width.tol_lower, f64::from);
-        width.max_excursion_mm = self.max_excursion_len.map_or(width.max_excursion_mm, f64::from);
+        width.max_excursion_mm = self
+            .max_excursion_len
+            .map_or(width.max_excursion_mm, f64::from);
     }
 }
 
@@ -164,7 +188,9 @@ impl Overrides {
                     SegmentKind::Corner => &self.corner,
                 };
                 kind.apply_width(&mut segment.checks.width);
-                segment.checks.gap.max_gap_mm = self.max_gap_len.map_or(segment.checks.gap.max_gap_mm, f64::from);
+                segment.checks.gap.max_gap_mm = self
+                    .max_gap_len
+                    .map_or(segment.checks.gap.max_gap_mm, f64::from);
                 segment
             })
             .collect()
@@ -256,7 +282,10 @@ const REJUDGE_LIMIT: usize = 5000;
 
 /// 用存储的每帧指标重新判定，不需要重新拍照。ERR 件与缺少帧记录的记录跳过。
 #[tauri::command]
-pub async fn history_rejudge(app: AppHandle, request: RejudgeRequest) -> Result<RejudgeResult, String> {
+pub async fn history_rejudge(
+    app: AppHandle,
+    request: RejudgeRequest,
+) -> Result<RejudgeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
         let cycle = app.state::<CycleHost>();
@@ -297,15 +326,27 @@ fn frame_groups(frames: &[FrameRecord], cameras: usize) -> Vec<FrameGroup> {
     (1..=total)
         .map(|seq| {
             let present: Vec<bool> = (0..cameras)
-                .map(|camera| frames.iter().any(|f| f.camera == camera && f.seq == seq && f.status != FrameState::Missing))
+                .map(|camera| {
+                    frames.iter().any(|f| {
+                        f.camera == camera && f.seq == seq && f.status != FrameState::Missing
+                    })
+                })
                 .collect();
-            FrameGroup { seq, incomplete: present.contains(&false), present }
+            FrameGroup {
+                seq,
+                incomplete: present.contains(&false),
+                present,
+            }
         })
         .collect()
 }
 
 /// 段配方记录的区域都落在原配方的段内、帧都属于原配方的计划相机；否则存储与原配方布局不一致。
-fn burst_layout_matches(recipe: &Recipe, judgement: &BurstJudgement, frames: &[FrameRecord]) -> bool {
+fn burst_layout_matches(
+    recipe: &Recipe,
+    judgement: &BurstJudgement,
+    frames: &[FrameRecord],
+) -> bool {
     let segments = recipe.path_segments.len() as u32;
     let cameras = recipe.plan_cameras().len();
     let inside = |first: u32, last: u32| 1 <= first && first <= last && last <= segments;
@@ -327,11 +368,23 @@ fn burst_layout_matches(recipe: &Recipe, judgement: &BurstJudgement, frames: &[F
 }
 
 /// 段配方记录重判：用已存的每帧指标、记录里的区域和丢帧告警，按（覆盖了允差的）配方段重跑 burst_judge。
-fn rejudge_burst(recipe: &Recipe, overrides: &Overrides, judgement: &BurstJudgement, frames: &[FrameRecord]) -> BurstJudgement {
+fn rejudge_burst(
+    recipe: &Recipe,
+    overrides: &Overrides,
+    judgement: &BurstJudgement,
+    frames: &[FrameRecord],
+) -> BurstJudgement {
     let cameras = recipe.plan_cameras();
     let segments = overrides.apply_segments(&recipe.path_segments);
-    let regions: Vec<_> = judgement.regions.iter().map(|result| result.region.clone()).collect();
-    let metrics: Vec<_> = frames.iter().filter_map(|frame| frame.metrics.clone()).collect();
+    let regions: Vec<_> = judgement
+        .regions
+        .iter()
+        .map(|result| result.region.clone())
+        .collect();
+    let metrics: Vec<_> = frames
+        .iter()
+        .filter_map(|frame| frame.metrics.clone())
+        .collect();
     burst_judge::judge(
         &segments,
         recipe.expected_total(),
@@ -363,7 +416,13 @@ fn rejudge_rows(
         let mut skip = |kind: SkipKind| {
             skipped += 1;
             if skip_reasons.len() < 300 {
-                skip_reasons.push(RejudgeSkip { id: row.id, sn: row.sn.clone(), ts: row.ts, kind, reason: kind.reason().into() });
+                skip_reasons.push(RejudgeSkip {
+                    id: row.id,
+                    sn: row.sn.clone(),
+                    ts: row.ts,
+                    kind,
+                    reason: kind.reason().into(),
+                });
             }
         };
         if row.verdict == Verdict::ErrInspect {
@@ -432,15 +491,31 @@ fn rejudge_rows(
             });
         }
     }
-    let mut matrix: Vec<_> = matrix.into_iter().map(|((from, to), count)| MatrixCell { from, to, count }).collect();
+    let mut matrix: Vec<_> = matrix
+        .into_iter()
+        .map(|((from, to), count)| MatrixCell { from, to, count })
+        .collect();
     matrix.sort_by_key(|c| (c.from, c.to));
-    Ok(RejudgeResult { total, skipped, limit_hit, matrix, changes, skip_reasons })
+    Ok(RejudgeResult {
+        total,
+        skipped,
+        limit_hit,
+        matrix,
+        changes,
+        skip_reasons,
+    })
 }
 
 pub(crate) fn csv_row(p: &PartSummary) -> String {
     let esc = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
-    let verdict = serde_json::to_value(p.verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-    let delivery = serde_json::to_value(p.delivery.state).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+    let verdict = serde_json::to_value(p.verdict)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default();
+    let delivery = serde_json::to_value(p.delivery.state)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default();
     let burst = p.burst.as_ref();
     let cells = [
         format_ts(p.ts),
@@ -449,7 +524,12 @@ pub(crate) fn csv_row(p: &PartSummary) -> String {
         esc(p.recipe_id.as_deref().unwrap_or("")),
         p.recipe_version.map(|v| v.to_string()).unwrap_or_default(),
         esc(p.recipe_revision.as_deref().unwrap_or("")),
-        match p.trigger_mode.as_deref() { Some("fly") => "飞拍", Some("stop") => "停稳拍", _ => "" }.into(),
+        match p.trigger_mode.as_deref() {
+            Some("fly") => "飞拍",
+            Some("stop") => "停稳拍",
+            _ => "",
+        }
+        .into(),
         verdict,
         p.plc_code.to_string(),
         p.fault_code.to_string(),
@@ -464,10 +544,29 @@ pub(crate) fn csv_row(p: &PartSummary) -> String {
         format_ts(p.delivery.updated_at),
         esc(p.delivery.message.as_deref().unwrap_or("")),
         // 段配方：ΣN_exp、各相机帧数（按计划相机顺序，/ 分隔）、PLC deviceTriggers（只作参考）、整件标记；旧记录留空
-        burst.and_then(|b| b.expected_total).map(|n| n.to_string()).unwrap_or_default(),
-        burst.map(|b| b.camera_frames.iter().map(u32::to_string).collect::<Vec<_>>().join("/")).unwrap_or_default(),
-        burst.and_then(|b| b.device_triggers).map(|n| n.to_string()).unwrap_or_default(),
-        esc(&p.flags.as_ref().map(flag_labels).unwrap_or_default().join("、")),
+        burst
+            .and_then(|b| b.expected_total)
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+        burst
+            .map(|b| {
+                b.camera_frames
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_default(),
+        burst
+            .and_then(|b| b.device_triggers)
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+        esc(&p
+            .flags
+            .as_ref()
+            .map(flag_labels)
+            .unwrap_or_default()
+            .join("、")),
         esc(&p.project_id),
         esc(&p.tags.join("、")),
     ];
@@ -495,15 +594,25 @@ pub async fn history_export(app: AppHandle, query: HistoryQuery) -> Result<Strin
     let dir = crate::storage::root(&app).join("exports");
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join(format!("检测记录_{}.csv", Local::now().format("%Y%m%d_%H%M%S")));
-        let mut f = std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
-        f.write_all(CSV_HEADER.as_bytes()).map_err(|e| e.to_string())?;
+        let path = dir.join(format!(
+            "检测记录_{}.csv",
+            Local::now().format("%Y%m%d_%H%M%S")
+        ));
+        let mut f =
+            std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
+        f.write_all(CSV_HEADER.as_bytes())
+            .map_err(|e| e.to_string())?;
         let store = app.state::<Store>();
-        let mut q = HistoryQuery { limit: 500, offset: 0, ..query };
+        let mut q = HistoryQuery {
+            limit: 500,
+            offset: 0,
+            ..query
+        };
         loop {
             let page = store.query(&q)?;
             for p in &page.items {
-                f.write_all(csv_row(p).as_bytes()).map_err(|e| e.to_string())?;
+                f.write_all(csv_row(p).as_bytes())
+                    .map_err(|e| e.to_string())?;
             }
             if page.items.len() < q.limit as usize {
                 break;
@@ -525,7 +634,10 @@ mod tests;
 pub fn reveal_path(path: String) -> Result<(), String> {
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn().map_err(|e| e.to_string())?;
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{path}"))
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
     #[cfg(not(windows))]
     let _ = path;

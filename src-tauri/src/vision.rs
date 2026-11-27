@@ -37,14 +37,22 @@ unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
 
 pub(crate) fn unique_run_id(label: &str) -> String {
     static NEXT_RUN: AtomicU64 = AtomicU64::new(0);
-    format!("{label}-{}-{}", std::process::id(), NEXT_RUN.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{label}-{}-{}",
+        std::process::id(),
+        NEXT_RUN.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// 文件大小与修改时间（毫秒）。
 pub(crate) fn file_identity(path: &Path) -> Result<(u64, u64), String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("读取核心库文件信息失败：{e}"))?;
-    let modified = meta.modified().map_err(|e| format!("读取核心库修改时间失败：{e}"))?;
-    let ms = modified.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis().min(u64::MAX as u128) as u64);
+    let modified = meta
+        .modified()
+        .map_err(|e| format!("读取核心库修改时间失败：{e}"))?;
+    let ms = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u64::MAX as u128) as u64);
     Ok((meta.len(), ms))
 }
 
@@ -61,11 +69,24 @@ pub struct Engine {
 
 impl Engine {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let resolved = std::fs::canonicalize(path).map_err(|e| format!("加载 lyFlow 失败（{}；客户端 ABI {}）：无法解析核心库路径：{e}", path.display(), lyflow_client::ABI_VERSION))?;
-        let core = Core::load_from(&resolved).map_err(|e| format!("加载 lyFlow 失败（{}；客户端 ABI {}）：{e}", path.display(), lyflow_client::ABI_VERSION))?;
+        let resolved = std::fs::canonicalize(path).map_err(|e| {
+            format!(
+                "加载 lyFlow 失败（{}；客户端 ABI {}）：无法解析核心库路径：{e}",
+                path.display(),
+                lyflow_client::ABI_VERSION
+            )
+        })?;
+        let core = Core::load_from(&resolved).map_err(|e| {
+            format!(
+                "加载 lyFlow 失败（{}；客户端 ABI {}）：{e}",
+                path.display(),
+                lyflow_client::ABI_VERSION
+            )
+        })?;
         core.self_check()?;
-        let manifest: Value = serde_json::from_str(&core.manifest_json().map_err(|e| e.to_string())?)
-            .map_err(|e| format!("核心库算子清单无效：{e}"))?;
+        let manifest: Value =
+            serde_json::from_str(&core.manifest_json().map_err(|e| e.to_string())?)
+                .map_err(|e| format!("核心库算子清单无效：{e}"))?;
         check_operators(&manifest)?;
         let version = core.version();
         let (bytes, modified_ms) = file_identity(&resolved)?;
@@ -86,7 +107,14 @@ impl Engine {
     }
 
     /// 跑一次图，返回 run summary 与图级命名输出（都已解析成 JSON）。
-    pub fn run(&self, graph: &str, run_id: &str, base_dir: &str, image: &FrameImage, params: &Value) -> Result<RunResult, String> {
+    pub fn run(
+        &self,
+        graph: &str,
+        run_id: &str,
+        base_dir: &str,
+        image: &FrameImage,
+        params: &Value,
+    ) -> Result<RunResult, String> {
         self.run_spec(graph, run_id, base_dir, image, params, &[])
     }
 
@@ -140,7 +168,9 @@ impl Engine {
             RunSpec::new(graph, &run_id, base_dir, targets).with_params_json(&params_json);
         // 正式测量只注入原始全分辨率像素。core 在 start 内拷贝，images 活到 start 返回。
         spec.image_inputs = images;
-        let handle = unsafe { RunHandle::start(self.core.clone(), spec, ignore_event, Box::new(())) }.map_err(|e| e.to_string())?;
+        let handle =
+            unsafe { RunHandle::start(self.core.clone(), spec, ignore_event, Box::new(())) }
+                .map_err(|e| e.to_string())?;
         handle.join();
         let summary_json = self
             .core
@@ -161,8 +191,13 @@ impl Engine {
 pub(crate) const REQUIRED_OPERATORS: &str = env!("GLUESIGHT_REQUIRED_OPERATORS");
 
 fn check_operators(manifest: &Value) -> Result<(), String> {
-    let ops = manifest["operators"].as_array().ok_or("核心库没有算子清单")?;
-    let missing: Vec<_> = REQUIRED_OPERATORS.split(',').filter(|id| !ops.iter().any(|op| op["id"].as_str() == Some(id))).collect();
+    let ops = manifest["operators"]
+        .as_array()
+        .ok_or("核心库没有算子清单")?;
+    let missing: Vec<_> = REQUIRED_OPERATORS
+        .split(',')
+        .filter(|id| !ops.iter().any(|op| op["id"].as_str() == Some(id)))
+        .collect();
     if !missing.is_empty() {
         return Err(format!(
             "核心库缺少必需算子：{}。请使用本版本锁定系列的 lyFlow 运行库。",
@@ -213,13 +248,32 @@ pub struct LyFlowMeasurer;
 
 impl LyFlowMeasurer {
     /// 段配方一台相机一帧：候选试运行用候选的走廊测量图，生产用已核验并预热的发布包。
-    pub fn measure_frame(&self, job: &FrameJob, image: &FrameImage) -> Result<FrameMeasurement, String> {
-        let prepared = job.production.as_ref().ok_or("图像检测没有已核验并预热的发布包")?;
-        if job.bundle_id.as_deref() != Some(prepared.bundle.id.as_str()) || job.recipe.revision_id != prepared.recipe.revision_id {
+    pub fn measure_frame(
+        &self,
+        job: &FrameJob,
+        image: &FrameImage,
+    ) -> Result<FrameMeasurement, String> {
+        let prepared = job
+            .production
+            .as_ref()
+            .ok_or("图像检测没有已核验并预热的发布包")?;
+        if job.bundle_id.as_deref() != Some(prepared.bundle.id.as_str())
+            || job.recipe.revision_id != prepared.recipe.revision_id
+        {
             return Err("测量任务与已冻结发布包不一致".into());
         }
-        if prepared.recipe.inspect.get(job.camera_idx).map(|i| i.camera.as_str()) != Some(job.camera.as_str()) {
-            return Err(format!("测量任务的相机 {} 不是发布包的第 {} 台计划相机", job.camera, job.camera_idx + 1));
+        if prepared
+            .recipe
+            .inspect
+            .get(job.camera_idx)
+            .map(|i| i.camera.as_str())
+            != Some(job.camera.as_str())
+        {
+            return Err(format!(
+                "测量任务的相机 {} 不是发布包的第 {} 台计划相机",
+                job.camera,
+                job.camera_idx + 1
+            ));
         }
         prepared.measure_with_capture(
             job.camera_idx,
@@ -234,7 +288,10 @@ impl LyFlowMeasurer {
 
 impl RunResult {
     pub fn status(&self) -> &str {
-        self.summary.get("status").and_then(|s| s.as_str()).unwrap_or("failed")
+        self.summary
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("failed")
     }
 
     /// 命名输出里 Record 的 data。
@@ -292,7 +349,11 @@ impl RuntimeDir {
 }
 
 fn override_dir() -> Option<String> {
-    if cfg!(debug_assertions) { std::env::var(RUNTIME_OVERRIDE).ok() } else { None }
+    if cfg!(debug_assertions) {
+        std::env::var(RUNTIME_OVERRIDE).ok()
+    } else {
+        None
+    }
 }
 
 pub(crate) fn runtime_directory() -> Result<PathBuf, String> {
@@ -300,13 +361,25 @@ pub(crate) fn runtime_directory() -> Result<PathBuf, String> {
 }
 
 /// 运行库只在程序同目录的 runtime/lyflow；开发构建可被联合开发覆盖。
-fn runtime_dir(override_dir: Option<String>, executable: impl FnOnce() -> std::io::Result<PathBuf>) -> Result<RuntimeDir, String> {
-    if let Some(dir) = override_dir.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {
-        return Ok(RuntimeDir { dir: PathBuf::from(dir), overridden: true });
+fn runtime_dir(
+    override_dir: Option<String>,
+    executable: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> Result<RuntimeDir, String> {
+    if let Some(dir) = override_dir
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+    {
+        return Ok(RuntimeDir {
+            dir: PathBuf::from(dir),
+            overridden: true,
+        });
     }
     let executable = executable().map_err(|e| format!("无法确定 lyFlow 运行库位置：{e}"))?;
     let dir = executable.parent().ok_or("无法确定程序所在目录")?;
-    Ok(RuntimeDir { dir: dir.join("runtime").join("lyflow"), overridden: false })
+    Ok(RuntimeDir {
+        dir: dir.join("runtime").join("lyflow"),
+        overridden: false,
+    })
 }
 
 #[derive(Deserialize)]
@@ -322,22 +395,34 @@ struct RuntimeDescriptor {
 pub(crate) fn series_of(version: &str) -> Option<String> {
     let mut parts = version.split('.');
     let (major, minor) = (parts.next()?, parts.next()?);
-    (major.parse::<u32>().is_ok() && minor.parse::<u32>().is_ok()).then(|| format!("{major}.{minor}"))
+    (major.parse::<u32>().is_ok() && minor.parse::<u32>().is_ok())
+        .then(|| format!("{major}.{minor}"))
 }
 
 /// 运行库自带的描述文件：引擎与 ABI 版本属于锁定系列、x64、正式构建。只看版本字段，不看文件摘要。
 fn check_runtime(dir: &Path, series: &str) -> Result<(), String> {
     let path = dir.join("lyflow-runtime.json");
-    let text = crate::fsio::read_text(&path).map_err(|e| format!("lyFlow 运行库缺少描述文件 {}（{e}）", path.display()))?;
-    let descriptor: RuntimeDescriptor = serde_json::from_str(&text).map_err(|e| format!("lyFlow 运行库描述文件无效：{e}"))?;
+    let text = crate::fsio::read_text(&path)
+        .map_err(|e| format!("lyFlow 运行库缺少描述文件 {}（{e}）", path.display()))?;
+    let descriptor: RuntimeDescriptor =
+        serde_json::from_str(&text).map_err(|e| format!("lyFlow 运行库描述文件无效：{e}"))?;
     if descriptor.architecture != "x64" {
-        return Err(format!("lyFlow 运行库架构为 {}，需要 x64", descriptor.architecture));
+        return Err(format!(
+            "lyFlow 运行库架构为 {}，需要 x64",
+            descriptor.architecture
+        ));
     }
     if descriptor.local_validation_only {
         return Err("lyFlow 运行库是本地验证构建，不能用于 GlueSight".into());
     }
-    if [&descriptor.engine_version, &descriptor.abi_version].iter().any(|v| series_of(v).as_deref() != Some(series)) {
-        return Err(format!("lyFlow 运行库 {}（ABI {}）不属于本版本锁定的 {series}.x 系列", descriptor.engine_version, descriptor.abi_version));
+    if [&descriptor.engine_version, &descriptor.abi_version]
+        .iter()
+        .any(|v| series_of(v).as_deref() != Some(series))
+    {
+        return Err(format!(
+            "lyFlow 运行库 {}（ABI {}）不属于本版本锁定的 {series}.x 系列",
+            descriptor.engine_version, descriptor.abi_version
+        ));
     }
     Ok(())
 }
@@ -371,7 +456,10 @@ impl VisionHost {
         }
         let loaded = if !path.is_file() {
             Err(if runtime.overridden {
-                format!("联合开发指定的 lyFlow 运行库目录缺少 lyflow_core.dll：{}", runtime.dir.display())
+                format!(
+                    "联合开发指定的 lyFlow 运行库目录缺少 lyflow_core.dll：{}",
+                    runtime.dir.display()
+                )
             } else {
                 format!("缺少 lyFlow 运行库：{}。安装版请重新安装完整安装包；开发请先执行 pnpm deps:lyflow:dev 准备锁定系列的运行库。", runtime.dir.display())
             })
@@ -411,13 +499,36 @@ impl VisionHost {
     fn status_at(&self, override_dir: Option<String>, now: Instant) -> EngineStatus {
         let runtime = match runtime_dir(override_dir, std::env::current_exe) {
             Ok(runtime) => runtime,
-            Err(message) => return EngineStatus { message, ..EngineStatus::default() },
+            Err(message) => {
+                return EngineStatus {
+                    message,
+                    ..EngineStatus::default()
+                }
+            }
         };
         let path = runtime.core();
-        let loaded = self.engine.lock().unwrap().as_ref().filter(|e| e.path == path).cloned();
-        let backing_off = self.failed.lock().unwrap().as_ref()
-            .is_some_and(|(failed, at)| *failed == path && now.saturating_duration_since(*at) < STATUS_RELOAD_BACKOFF);
-        let engine = loaded.or_else(|| if backing_off { None } else { self.engine_at(&runtime) });
+        let loaded = self
+            .engine
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|e| e.path == path)
+            .cloned();
+        let backing_off = self
+            .failed
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(failed, at)| {
+                *failed == path && now.saturating_duration_since(*at) < STATUS_RELOAD_BACKOFF
+            });
+        let engine = loaded.or_else(|| {
+            if backing_off {
+                None
+            } else {
+                self.engine_at(&runtime)
+            }
+        });
         EngineStatus {
             loaded: engine.is_some(),
             path: Some(runtime.dir.display().to_string()),
@@ -426,11 +537,15 @@ impl VisionHost {
             message: match &engine {
                 Some(_) if runtime.overridden => "已加载（联合开发覆盖）".into(),
                 Some(_) => "已加载".into(),
-                None => self.error.lock().unwrap().clone().unwrap_or_else(|| "加载失败".into()),
+                None => self
+                    .error
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| "加载失败".into()),
             },
         }
     }
-
 }
 
 /// 段配方缺省设备标定所在的子目录（相对 `calib/`）。
@@ -454,7 +569,9 @@ impl CalibKey {
     fn file(&self, calib_root: &Path) -> PathBuf {
         match self {
             Self::Station(key) => calib_root.join(format!("plane_calib_{key}.json")),
-            Self::Device(device) => calib_root.join(DEVICE_CALIB_DIR).join(format!("plane_calib_{device}.json")),
+            Self::Device(device) => calib_root
+                .join(DEVICE_CALIB_DIR)
+                .join(format!("plane_calib_{device}.json")),
         }
     }
 
@@ -477,7 +594,11 @@ pub fn recipe_source(app: &AppHandle, recipe: &Recipe) -> Result<CameraSource, S
     let rig = &app.state::<CycleHost>().camera;
     let mut found: Option<(CameraSource, String)> = None;
     for id in recipe.cameras() {
-        let source = rig.slot(rig.require(&id)? as usize).ok_or("相机不存在")?.config().source;
+        let source = rig
+            .slot(rig.require(&id)? as usize)
+            .ok_or("相机不存在")?
+            .config()
+            .source;
         match &found {
             Some((first, first_id)) if first.synthetic() != source.synthetic() => {
                 return Err(format!("配方 {} 的相机来源不一致：{first_id} 是 {first:?}，{id} 是 {source:?}；要么全用模拟相机，要么全用真实原图（海康 / 样本集）相机", recipe.id));
@@ -493,14 +614,18 @@ pub fn recipe_source(app: &AppHandle, recipe: &Recipe) -> Result<CameraSource, S
 
 /// 旧拍照点配方的工位标定键：设备 + 图编号（三目拼接相机每幅图各一份标定）。
 fn station_view_key(device: &str, view: u8) -> Result<String, String> {
-    if !(1..=3).contains(&view) { return Err("标定图编号必须为 1、2 或 3".into()); }
+    if !(1..=3).contains(&view) {
+        return Err("标定图编号必须为 1、2 或 3".into());
+    }
     Ok(format!("{device}-v{view}"))
 }
 
 /// 段配方的设备标定键 `CalibKey::Device`（D-SB-30，三台独立单视角相机，没有图编号）。
 /// 与旧配方的 `{device}-v{view}` 并存、文件在不同目录、永不同名（见 `CalibKey`）；标定页对单视角相机的图 1 同时写两份，见 `calib_keys`。
 pub fn station_key(device: &str) -> Result<CalibKey, String> {
-    if !crate::recipe::valid_camera_id(device) { return Err(format!("相机编号 {device:?} 只能用字母、数字、- 和 _")); }
+    if !crate::recipe::valid_camera_id(device) {
+        return Err(format!("相机编号 {device:?} 只能用字母、数字、- 和 _"));
+    }
     Ok(CalibKey::Device(device.to_string()))
 }
 
@@ -510,19 +635,35 @@ pub fn camera_calib_path(app: &AppHandle, inspect: &CameraInspect) -> Result<Pat
 }
 
 fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {
-    Ok(app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config().id)
+    Ok(app
+        .state::<CycleHost>()
+        .camera
+        .slot(cam as usize)
+        .ok_or("相机不存在")?
+        .config()
+        .id)
 }
 
 /// 标定命令的键：第一个是 `vision_calib_info` 读的键，全部是 `vision_calibrate` 写的键。
 /// - 给了图编号（标定页总会给，单视角相机为 1）：旧配方的 `{device}-v{view}`。单视角相机的图 1 就是这台设备的整幅图，
 ///   同时写段配方读的设备标定 `device/{device}`（D-SB-30），标定页做的标定段配方才用得上；三目拼接相机的各图只写 `{device}-v{view}`。
 /// - 没给：只写段配方的设备标定，这台相机必须是单视角（D-SB-11）。
-fn calib_keys(config: &crate::camera::CameraConfig, view: Option<u8>) -> Result<Vec<CalibKey>, String> {
-    let single_view = || crate::camera::check_burst_cameras(std::slice::from_ref(config), std::slice::from_ref(&config.id));
+fn calib_keys(
+    config: &crate::camera::CameraConfig,
+    view: Option<u8>,
+) -> Result<Vec<CalibKey>, String> {
+    let single_view = || {
+        crate::camera::check_burst_cameras(
+            std::slice::from_ref(config),
+            std::slice::from_ref(&config.id),
+        )
+    };
     match view {
         Some(view) => {
             let mut keys = vec![CalibKey::Station(station_view_key(&config.id, view)?)];
-            if view == 1 && single_view().is_ok() { keys.push(station_key(&config.id)?); }
+            if view == 1 && single_view().is_ok() {
+                keys.push(station_key(&config.id)?);
+            }
             Ok(keys)
         }
         None => {
@@ -571,7 +712,9 @@ pub fn calib_info(path: &Path) -> Option<CalibInfo> {
         rms: f("rms"),
         mm_per_px: f("mmPerPx"),
         max_error: f("maxError"),
-        pattern: d.get("pattern").and_then(|v| serde_json::from_value(v.clone()).ok()),
+        pattern: d
+            .get("pattern")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
         square: f("square"),
         ts: doc.get("ts").and_then(|v| v.as_i64()),
         sample_id: doc
@@ -633,7 +776,11 @@ fn overlay_corners(overlay: Option<&Value>) -> Vec<[f64; 2]> {
 
 /// `view` 给了读旧配方的 `{device}-v{view}`，没给读段配方的设备标定 `device/{device}`（见 `calib_keys`，单视角相机的图 1 两份同时写）。
 #[tauri::command]
-pub fn vision_calib_info(app: AppHandle, cam: Option<u8>, view: Option<u8>) -> Result<Option<CalibInfo>, String> {
+pub fn vision_calib_info(
+    app: AppHandle,
+    cam: Option<u8>,
+    view: Option<u8>,
+) -> Result<Option<CalibInfo>, String> {
     let keys = camera_calib_keys(&app, cam.unwrap_or(0), view)?;
     Ok(calib_info(&calib_key_path(&app, &keys[0])?))
 }
@@ -679,7 +826,14 @@ fn save_calibration(
 /// `view` 给了存旧配方的 `{device}-v{view}`，单视角相机的图 1 还同时存段配方的设备标定 `device/{device}`；没给只存设备标定
 /// （单视角相机，样本与最近一帧都是图 1）。键见 `calib_keys`。
 #[tauri::command]
-pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, cam: Option<u8>, view: Option<u8>, image_id: Option<String>) -> Result<CalibInfo, String> {
+pub async fn vision_calibrate(
+    app: AppHandle,
+    pattern: [f64; 2],
+    square: f64,
+    cam: Option<u8>,
+    view: Option<u8>,
+    image_id: Option<String>,
+) -> Result<CalibInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let cycle = app.state::<CycleHost>();
         let _gate = cycle.config_gate.try_lock().map_err(|_| "正在采集、标定或接件，请稍后重试")?;

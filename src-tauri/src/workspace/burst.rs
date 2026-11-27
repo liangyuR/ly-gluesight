@@ -3113,13 +3113,7 @@ pub(super) fn progress_v2(
         }
     };
     ProgressV2 {
-        steps: vec![
-            capture,
-            segments,
-            corridor,
-            calibration,
-            publish,
-        ],
+        steps: vec![capture, segments, corridor, calibration, publish],
         next,
     }
 }

@@ -23,7 +23,11 @@ pub enum ItemKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum ItemState { Ok, Waiting, Blocked }
+pub enum ItemState {
+    Ok,
+    Waiting,
+    Blocked,
+}
 
 /// 处理该项要去的页面。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -74,10 +78,17 @@ pub struct Readiness {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Product { Plc, Manual(Option<String>) }
+pub enum Product {
+    Plc,
+    Manual(Option<String>),
+}
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Check { Ok, Waiting(String), Blocked(String) }
+pub enum Check {
+    Ok,
+    Waiting(String),
+    Blocked(String),
+}
 
 pub struct Facts {
     pub plc_connected: bool,
@@ -100,8 +111,22 @@ pub struct Facts {
     pub recipes: Vec<RecipeOption>,
 }
 
-fn item(key: ItemKey, title: &'static str, state: ItemState, detail: impl Into<String>, hint: Option<String>, target: Option<Target>) -> ReadinessItem {
-    ReadinessItem { key, title, state, detail: detail.into(), hint, target }
+fn item(
+    key: ItemKey,
+    title: &'static str,
+    state: ItemState,
+    detail: impl Into<String>,
+    hint: Option<String>,
+    target: Option<Target>,
+) -> ReadinessItem {
+    ReadinessItem {
+        key,
+        title,
+        state,
+        detail: detail.into(),
+        hint,
+        target,
+    }
 }
 
 fn plc_item(f: &Facts) -> ReadinessItem {
@@ -142,8 +167,19 @@ fn plc_item(f: &Facts) -> ReadinessItem {
             home,
         );
     }
-    if let Some(notice) = f.session_message.as_deref().filter(|m| m.starts_with(NOTICE)) {
-        return item(ItemKey::Plc, TITLE, ItemState::Waiting, notice.trim_start_matches(NOTICE), None, home);
+    if let Some(notice) = f
+        .session_message
+        .as_deref()
+        .filter(|m| m.starts_with(NOTICE))
+    {
+        return item(
+            ItemKey::Plc,
+            TITLE,
+            ItemState::Waiting,
+            notice.trim_start_matches(NOTICE),
+            None,
+            home,
+        );
     }
     let detail = if f.phase == Phase::Idle {
         "已连接，通讯就绪"
@@ -170,13 +206,30 @@ fn recipe_item(f: &Facts) -> ReadinessItem {
 fn production_recipe_item(f: &Facts) -> ReadinessItem {
     const TITLE: &str = "可开工配方";
     const CREATE: &str = "去配方工作台新建并发布配方";
-    let blocked = |detail: String, hint: Option<String>, target| item(ItemKey::Recipe, TITLE, ItemState::Blocked, detail, hint, target);
+    let blocked = |detail: String, hint: Option<String>, target| {
+        item(
+            ItemKey::Recipe,
+            TITLE,
+            ItemState::Blocked,
+            detail,
+            hint,
+            target,
+        )
+    };
     if f.activation_uncertain {
-        return blocked("生产生效版本尚未确认".into(), Some("在配方工作台核实发布状态后再开工".into()), Some(Target::Workspace));
+        return blocked(
+            "生产生效版本尚未确认".into(),
+            Some("在配方工作台核实发布状态后再开工".into()),
+            Some(Target::Workspace),
+        );
     }
     let runnable: Vec<&RecipeOption> = f.recipes.iter().filter(|r| r.runnable).collect();
     match &f.product {
-        Product::Manual(None) => blocked("人工选型号：尚未选择检测配方".into(), Some("在在线检测页顶部选择一个可开工配方".into()), None),
+        Product::Manual(None) => blocked(
+            "人工选型号：尚未选择检测配方".into(),
+            Some("在在线检测页顶部选择一个可开工配方".into()),
+            None,
+        ),
         Product::Manual(Some(id)) => match f.recipes.iter().find(|r| &r.id == id) {
             None => blocked(
                 format!("选中的配方 {id} 不在配方库中"),
@@ -222,12 +275,30 @@ fn production_recipe_item(f: &Facts) -> ReadinessItem {
             let first = f.recipes.iter().find(|r| !r.runnable);
             let detail = match first {
                 None => "尚无可开工的生产配方：配方库为空".to_string(),
-                Some(r) => format!("尚无可开工的生产配方（{}：{}）", r.id, r.reason.as_deref().unwrap_or("原因未知")),
+                Some(r) => format!(
+                    "尚无可开工的生产配方（{}：{}）",
+                    r.id,
+                    r.reason.as_deref().unwrap_or("原因未知")
+                ),
             };
-            blocked(detail, Some(CREATE.into()), first.and_then(|r| r.target).or(Some(Target::Workspace)))
+            blocked(
+                detail,
+                Some(CREATE.into()),
+                first.and_then(|r| r.target).or(Some(Target::Workspace)),
+            )
         }
-        Product::Plc if runnable.iter().all(|r| r.waiting.is_some()) => item(ItemKey::Recipe, TITLE, ItemState::Waiting,
-            runnable.iter().map(|r| format!("{}：{}", r.id, r.waiting.as_deref().unwrap_or_default())).collect::<Vec<_>>().join("；"), None, None),
+        Product::Plc if runnable.iter().all(|r| r.waiting.is_some()) => item(
+            ItemKey::Recipe,
+            TITLE,
+            ItemState::Waiting,
+            runnable
+                .iter()
+                .map(|r| format!("{}：{}", r.id, r.waiting.as_deref().unwrap_or_default()))
+                .collect::<Vec<_>>()
+                .join("；"),
+            None,
+            None,
+        ),
         Product::Plc => {
             let notes: Vec<String> = runnable
                 .iter()
@@ -257,7 +328,14 @@ fn production_recipe_item(f: &Facts) -> ReadinessItem {
 fn engine_item(f: &Facts) -> ReadinessItem {
     const TITLE: &str = "图像测量";
     if let Err(reason) = &f.workers {
-        return item(ItemKey::Engine, TITLE, ItemState::Blocked, reason.clone(), Some("排查图像引擎或重启检测服务".into()), None);
+        return item(
+            ItemKey::Engine,
+            TITLE,
+            ItemState::Blocked,
+            reason.clone(),
+            Some("排查图像引擎或重启检测服务".into()),
+            None,
+        );
     }
     match &f.engine {
         Ok(version) => item(
@@ -281,7 +359,11 @@ fn engine_item(f: &Facts) -> ReadinessItem {
 
 fn audit_item(f: &Facts) -> ReadinessItem {
     const TITLE: &str = "审计与录制";
-    let record = match f.record { RecordMode::Off => "关闭", RecordMode::Failed => "只留 NG / ERR 件", RecordMode::All => "全部" };
+    let record = match f.record {
+        RecordMode::Off => "关闭",
+        RecordMode::Failed => "只留 NG / ERR 件",
+        RecordMode::All => "全部",
+    };
     let scope = "";
     match &f.audit {
         Check::Ok => item(
@@ -315,25 +397,58 @@ fn audit_item(f: &Facts) -> ReadinessItem {
 
 fn camera_item(f: &Facts) -> ReadinessItem {
     match &f.cameras {
-        Check::Ok => item(ItemKey::Camera, "相机", ItemState::Ok, "相机就绪", None, None),
-        Check::Waiting(reason) => item(ItemKey::Camera, "相机", ItemState::Waiting, reason.clone(), None, Some(Target::Camera)),
-        Check::Blocked(reason) => item(ItemKey::Camera, "相机", ItemState::Blocked, reason.clone(), None, Some(Target::Camera)),
+        Check::Ok => item(
+            ItemKey::Camera,
+            "相机",
+            ItemState::Ok,
+            "相机就绪",
+            None,
+            None,
+        ),
+        Check::Waiting(reason) => item(
+            ItemKey::Camera,
+            "相机",
+            ItemState::Waiting,
+            reason.clone(),
+            None,
+            Some(Target::Camera),
+        ),
+        Check::Blocked(reason) => item(
+            ItemKey::Camera,
+            "相机",
+            ItemState::Blocked,
+            reason.clone(),
+            None,
+            Some(Target::Camera),
+        ),
     }
 }
 
 /// 各可运行配方的相机是否全部就绪：至少一个配方的相机全部就绪即可开工，其余配方掉线只告警。
 pub fn camera_check(groups: &[(String, Result<(), String>)]) -> Check {
-    let down: Vec<(&String, &String)> = groups.iter().filter_map(|(id, r)| r.as_ref().err().map(|e| (id, e))).collect();
+    let down: Vec<(&String, &String)> = groups
+        .iter()
+        .filter_map(|(id, r)| r.as_ref().err().map(|e| (id, e)))
+        .collect();
     match down.first() {
         None => Check::Ok,
         Some((_, reason)) if down.len() == groups.len() => Check::Blocked((*reason).clone()),
-        Some(_) => Check::Waiting(down.iter().map(|(id, e)| format!("配方 {id} 暂时开不了工：{e}")).collect::<Vec<_>>().join("；")),
+        Some(_) => Check::Waiting(
+            down.iter()
+                .map(|(id, e)| format!("配方 {id} 暂时开不了工：{e}"))
+                .collect::<Vec<_>>()
+                .join("；"),
+        ),
     }
 }
 
 pub fn evaluate(mut f: Facts) -> Readiness {
     if let Product::Manual(selected) = &f.product {
-        for r in f.recipes.iter_mut().filter(|r| r.runnable && Some(&r.id) != selected.as_ref()) {
+        for r in f
+            .recipes
+            .iter_mut()
+            .filter(|r| r.runnable && Some(&r.id) != selected.as_ref())
+        {
             r.runnable = false;
             r.reason = Some(MANUAL_ONLY.into());
             r.target = None;
@@ -362,15 +477,26 @@ const FAILED_CHECK_TTL: Duration = Duration::from_secs(5);
 pub struct BundleChecks(Mutex<HashMap<(String, String), (String, Instant)>>);
 
 impl BundleChecks {
-    pub fn check<T>(&self, key: (String, String), now: Instant, run: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    pub fn check<T>(
+        &self,
+        key: (String, String),
+        now: Instant,
+        run: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
         if let Some((error, expires)) = self.0.lock().unwrap().get(&key) {
-            if now < *expires { return Err(error.clone()); }
+            if now < *expires {
+                return Err(error.clone());
+            }
         }
         let result = run();
         let mut failed = self.0.lock().unwrap();
         match &result {
-            Ok(_) => { failed.remove(&key); }
-            Err(error) => { failed.insert(key, (error.clone(), now + FAILED_CHECK_TTL)); }
+            Ok(_) => {
+                failed.remove(&key);
+            }
+            Err(error) => {
+                failed.insert(key, (error.clone(), now + FAILED_CHECK_TTL));
+            }
         }
         result
     }
@@ -386,7 +512,11 @@ fn production_state(
     use crate::production::Warmup;
     let workspace = |e: String| (e, Target::Workspace);
     let key = (recipe.id.clone(), recipe.revision_id.clone());
-    let manifest = BUNDLE_CHECKS.check(key, Instant::now(), || crate::workspace::published_manifest(app, recipe)).map_err(workspace)?;
+    let manifest = BUNDLE_CHECKS
+        .check(key, Instant::now(), || {
+            crate::workspace::published_manifest(app, recipe)
+        })
+        .map_err(workspace)?;
     crate::production::site_admits(manifest.validation_site).map_err(workspace)?;
     match crate::production::warmup(app, recipe) {
         Warmup::Ready => crate::production::coverage(app, recipe)
@@ -461,7 +591,9 @@ pub fn gather(app: &AppHandle) -> Readiness {
     let mut drafts = crate::workspace::draft_summaries(app);
     drafts.sort_by(|a, b| a.id.cmp(&b.id));
     for draft in drafts {
-        if library.iter().any(|r| r.id == draft.id) { continue; }
+        if library.iter().any(|r| r.id == draft.id) {
+            continue;
+        }
         recipes.push(RecipeOption {
             id: draft.id,
             name: draft.name,
@@ -479,13 +611,26 @@ pub fn gather(app: &AppHandle) -> Readiness {
         ProductSource::Plc => Product::Plc,
         ProductSource::Manual => Product::Manual(settings.manual_recipe_id.clone()),
     };
-    let groups: Vec<(String, Result<(), String>)> = checked.iter()
-        .filter(|(o, _)| match &product { Product::Manual(selected) => selected.as_ref() == Some(&o.id), Product::Plc => true })
-        .filter_map(|(o, cams)| cams.as_ref().map(|cams| (o.id.clone(), host.camera.check_ready_at(cams))))
+    let groups: Vec<(String, Result<(), String>)> = checked
+        .iter()
+        .filter(|(o, _)| match &product {
+            Product::Manual(selected) => selected.as_ref() == Some(&o.id),
+            Product::Plc => true,
+        })
+        .filter_map(|(o, cams)| {
+            cams.as_ref()
+                .map(|cams| (o.id.clone(), host.camera.check_ready_at(cams)))
+        })
         .collect();
-    let cameras = if !groups.is_empty() { camera_check(&groups) } else {
+    let cameras = if !groups.is_empty() {
+        camera_check(&groups)
+    } else {
         let all: Vec<u8> = (0..host.camera.slots().len() as u8).collect();
-        let checked = if all.is_empty() { Err("相机组里没有相机".to_string()) } else { host.camera.check_ready_at(&all) };
+        let checked = if all.is_empty() {
+            Err("相机组里没有相机".to_string())
+        } else {
+            host.camera.check_ready_at(&all)
+        };
         match checked {
             Ok(()) => Check::Ok,
             Err(reason) if maintenance => Check::Waiting(reason),
@@ -494,7 +639,11 @@ pub fn gather(app: &AppHandle) -> Readiness {
     };
     let engine = {
         let status = app.state::<crate::vision::VisionHost>().status();
-        if status.loaded { Ok(status.version.unwrap_or_default()) } else { Err(status.message) }
+        if status.loaded {
+            Ok(status.version.unwrap_or_default())
+        } else {
+            Err(status.message)
+        }
     };
     let workers = match snapshot.as_ref().map(|s| &s.measurement_workers) {
         Some(w) if w.capacity > 0 && w.timed_out >= w.capacity => Err(format!(
@@ -519,9 +668,16 @@ pub fn gather(app: &AppHandle) -> Readiness {
     let handshake = snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref());
     evaluate(Facts {
         plc_connected: link.state == LinkState::Connected,
-        session_behind: link.state == LinkState::Connected && handshake.is_some_and(|v| v.connection != Some(link.since)),
-        session: snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref()).map(|v| v.phase),
-        session_message: snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref()).and_then(|v| v.message.clone()),
+        session_behind: link.state == LinkState::Connected
+            && handshake.is_some_and(|v| v.connection != Some(link.since)),
+        session: snapshot
+            .as_ref()
+            .and_then(|s| s.plc_handshake.as_ref())
+            .map(|v| v.phase),
+        session_message: snapshot
+            .as_ref()
+            .and_then(|s| s.plc_handshake.as_ref())
+            .and_then(|v| v.message.clone()),
         phase: snapshot.as_ref().map_or(Phase::Idle, |s| s.phase),
         fault: snapshot.as_ref().and_then(|s| s.fault.clone()),
         cameras,

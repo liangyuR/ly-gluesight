@@ -14,7 +14,12 @@ fn no_recordings() -> RecordingLookup {
 }
 
 fn root() -> PathBuf {
-    let path = std::env::temp_dir().join(format!("gluesight-burst-{}-{}-{}", std::process::id(), ly_plc::now_ms(), NEXT_TEST.fetch_add(1, Ordering::Relaxed)));
+    let path = std::env::temp_dir().join(format!(
+        "gluesight-burst-{}-{}-{}",
+        std::process::id(),
+        ly_plc::now_ms(),
+        NEXT_TEST.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(&path).unwrap();
     path
 }
@@ -153,13 +158,33 @@ fn persisted_record_cannot_redirect_images_or_forge_frames() {
     };
     type Tamper = fn(&mut Value, &mut Vec<Value>, &dyn Fn(&[Value], u64, u64) -> usize);
     let cases: [(&str, Tamper); 7] = [
-        ("图像路径指到轮次目录外", |_, lines, at| { let i = at(lines, 0, 1); lines[i]["path"] = "../../outside.pgm".into(); }),
-        ("帧记录引用本轮之外的相机", |_, lines, at| { let i = at(lines, 0, 2); lines[i]["camera"] = 7.into(); }),
-        ("重复的帧记录", |_, lines, at| { let i = at(lines, 1, 1); lines.push(lines[i].clone()); }),
-        ("删掉一帧但仍称完整", |_, lines, at| { let i = at(lines, 2, 2); lines.remove(i); }),
-        ("帧计数与帧组序号对不上", |_, lines, at| { let i = at(lines, 0, 2); lines[i]["frameCounter"] = 7.into(); }),
-        ("多报一台相机的帧数", |round, _, _| { round["cameraFrames"][0] = 3.into(); round["cameras"][0]["receivedCount"] = 3.into(); }),
-        ("记录换成别的轮次身份", |round, _, _| { round["roundId"] = "capture-other".into(); }),
+        ("图像路径指到轮次目录外", |_, lines, at| {
+            let i = at(lines, 0, 1);
+            lines[i]["path"] = "../../outside.pgm".into();
+        }),
+        ("帧记录引用本轮之外的相机", |_, lines, at| {
+            let i = at(lines, 0, 2);
+            lines[i]["camera"] = 7.into();
+        }),
+        ("重复的帧记录", |_, lines, at| {
+            let i = at(lines, 1, 1);
+            lines.push(lines[i].clone());
+        }),
+        ("删掉一帧但仍称完整", |_, lines, at| {
+            let i = at(lines, 2, 2);
+            lines.remove(i);
+        }),
+        ("帧计数与帧组序号对不上", |_, lines, at| {
+            let i = at(lines, 0, 2);
+            lines[i]["frameCounter"] = 7.into();
+        }),
+        ("多报一台相机的帧数", |round, _, _| {
+            round["cameraFrames"][0] = 3.into();
+            round["cameras"][0]["receivedCount"] = 3.into();
+        }),
+        ("记录换成别的轮次身份", |round, _, _| {
+            round["roundId"] = "capture-other".into();
+        }),
     ];
     for (case, tamper) in cases {
         let mut forged: Value = serde_json::from_str(&original_round).unwrap();
@@ -170,7 +195,10 @@ fn persisted_record_cannot_redirect_images_or_forge_frames() {
         tamper(&mut forged, &mut lines, &at);
         let text = lines.iter().map(|l| format!("{l}\n")).collect::<String>();
         let (got, image) = read(&forged.to_string(), &text);
-        assert!(got.is_err() && image.is_err(), "{case}：{got:?} / {image:?}");
+        assert!(
+            got.is_err() && image.is_err(),
+            "{case}：{got:?} / {image:?}"
+        );
     }
     let host = RecipeCaptureHost::open(root.clone(), no_recordings()).unwrap();
     assert!(host.get_any("capture-../../outside").is_err());

@@ -22,7 +22,9 @@ pub fn app_info(app: AppHandle) -> AppInfo {
         version: pkg.version.to_string(),
         git_sha: identity.git_sha,
         build_time: identity.build_time,
-        log_dir: crate::applog::dir(&app).ok().map(|dir| dir.display().to_string()),
+        log_dir: crate::applog::dir(&app)
+            .ok()
+            .map(|dir| dir.display().to_string()),
     }
 }
 
@@ -66,7 +68,10 @@ pub fn app_open_log_dir(app: AppHandle) -> Result<(), String> {
     let dir = crate::applog::dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     #[cfg(windows)]
-    std::process::Command::new("explorer").arg(&dir).spawn().map_err(|e| e.to_string())?;
+    std::process::Command::new("explorer")
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -85,8 +90,22 @@ pub struct EngineStatus {
 pub async fn engine_status(app: AppHandle) -> EngineStatus {
     tauri::async_runtime::spawn_blocking(move || {
         let s = app.state::<VisionHost>().status();
-        EngineStatus { backend: "LyFlow", ready: s.loaded, message: format!("飞拍：lyFlow {}", s.message), version: s.version, path: s.path, measuring: s.loaded }
+        EngineStatus {
+            backend: "LyFlow",
+            ready: s.loaded,
+            message: format!("飞拍：lyFlow {}", s.message),
+            version: s.version,
+            path: s.path,
+            measuring: s.loaded,
+        }
     })
     .await
-    .unwrap_or(EngineStatus { backend: "LyFlow", ready: false, message: "查询失败".into(), version: None, path: None, measuring: false })
+    .unwrap_or(EngineStatus {
+        backend: "LyFlow",
+        ready: false,
+        message: "查询失败".into(),
+        version: None,
+        path: None,
+        measuring: false,
+    })
 }

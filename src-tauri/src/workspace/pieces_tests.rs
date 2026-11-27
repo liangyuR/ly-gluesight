@@ -189,14 +189,7 @@ fn replacing_teaching_piece_keeps_corridors_and_clears_only_piece_derived_counts
     let structure = |doc: &RecipeDoc| {
         doc.segments
             .iter()
-            .map(|s| {
-                (
-                    s.index,
-                    s.kind,
-                    s.cameras.clone(),
-                    state_value(&s.checks),
-                )
-            })
+            .map(|s| (s.index, s.kind, s.cameras.clone(), state_value(&s.checks)))
             .collect::<Vec<_>>()
     };
     assert_eq!(structure(&w.doc), structure(&before.doc), "段结构保留");

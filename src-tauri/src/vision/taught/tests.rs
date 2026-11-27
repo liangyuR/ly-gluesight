@@ -8,7 +8,11 @@ const FRAME: [u32; 2] = [400, 300];
 fn burst_doc() -> RecipeDoc {
     let mut doc = crate::recipe::samples_burst();
     doc.spacing = 1.0;
-    doc.detect = DetectParams { search_mm: 8.0, polarity: Polarity::Dark, width_range: [2.0, 6.0] };
+    doc.detect = DetectParams {
+        search_mm: 8.0,
+        polarity: Polarity::Dark,
+        width_range: [2.0, 6.0],
+    };
     for inspect in &mut doc.inspect {
         inspect.segments = vec![crate::recipe::SegmentCorridor {
             segment: 1,

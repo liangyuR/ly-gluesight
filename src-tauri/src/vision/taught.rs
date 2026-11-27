@@ -32,13 +32,25 @@ pub(super) struct GraphParams {
 }
 
 /// 按当量、站距与检测参数换算像素参数并核对 lyFlow 的取值范围；出错时返回原因（调用方加上主语）。
-fn graph_params(path: &[[f32; 2]], scale: f64, step: f64, detect: &DetectParams) -> Result<GraphParams, &'static str> {
-    if !scale.is_finite() || scale <= 0.0 || scale > 10.0 { return Err("像素当量必须在 0–10 mm/px 之间"); }
-    if path.iter().flatten().any(|x| !x.is_finite()) { return Err("中线坐标必须为有限数"); }
-    let length: f64 = path.windows(2).map(|p| {
-        (p[1][0] as f64 - p[0][0] as f64).hypot(p[1][1] as f64 - p[0][1] as f64)
-    }).sum();
-    if !length.is_finite() || length < 8.0 { return Err("lyFlow 示教中线至少需要 8 px"); }
+fn graph_params(
+    path: &[[f32; 2]],
+    scale: f64,
+    step: f64,
+    detect: &DetectParams,
+) -> Result<GraphParams, &'static str> {
+    if !scale.is_finite() || scale <= 0.0 || scale > 10.0 {
+        return Err("像素当量必须在 0–10 mm/px 之间");
+    }
+    if path.iter().flatten().any(|x| !x.is_finite()) {
+        return Err("中线坐标必须为有限数");
+    }
+    let length: f64 = path
+        .windows(2)
+        .map(|p| (p[1][0] as f64 - p[0][0] as f64).hypot(p[1][1] as f64 - p[0][1] as f64))
+        .sum();
+    if !length.is_finite() || length < 8.0 {
+        return Err("lyFlow 示教中线至少需要 8 px");
+    }
     bead_params(scale, step, detect, length)
 }
 
@@ -58,11 +70,15 @@ pub(super) fn bead_params(
     let half = detect.search_mm as f64 / scale;
     let lo = detect.width_range[0] as f64 / scale;
     let hi = detect.width_range[1] as f64 / scale;
-    if !half.is_finite() || half < 2.0 { return Err("lyFlow 搜索半宽至少需要 2 px"); }
+    if !half.is_finite() || half < 2.0 {
+        return Err("lyFlow 搜索半宽至少需要 2 px");
+    }
     if !lo.is_finite() || !hi.is_finite() || lo <= 0.0 || hi <= lo || hi >= 2.0 * half {
         return Err("胶宽范围需满足 0 < 下限 < 上限 < 两倍搜索半宽");
     }
-    if !(4.0..=400.0).contains(&hi) { return Err("lyFlow 胶宽搜索上限需在 4–400 px 之间"); }
+    if !(4.0..=400.0).contains(&hi) {
+        return Err("lyFlow 胶宽搜索上限需在 4–400 px 之间");
+    }
     let tolerance = half - 0.5 * hi;
     if !(0.0..=400.0).contains(&tolerance) {
         return Err("lyFlow 中心偏移容差（搜索半宽减去胶宽上限的一半）需在 0–400 px 之间");
@@ -440,9 +456,14 @@ pub struct FrameMeasurement {
 
 /// 走廊各点都在 size 的图像内（像素中心坐标 0..=宽−1、0..=高−1）。
 pub fn corridor_inside(corridor: &[[f32; 2]], size: [u32; 2]) -> bool {
-    size[0] > 0 && size[1] > 0 && corridor.iter().all(|p| {
-        p[0] >= 0.0 && p[1] >= 0.0 && p[0] as f64 <= size[0] as f64 - 1.0 && p[1] as f64 <= size[1] as f64 - 1.0
-    })
+    size[0] > 0
+        && size[1] > 0
+        && corridor.iter().all(|p| {
+            p[0] >= 0.0
+                && p[1] >= 0.0
+                && p[0] as f64 <= size[0] as f64 - 1.0
+                && p[1] as f64 <= size[1] as f64 - 1.0
+        })
 }
 
 /// 折线上弧长 t（px）处的点。
@@ -824,7 +845,9 @@ pub(super) fn check_color(
 /// 量一帧：`run` 按模板与参数跑这张图。图像尺寸与示教帧不同、算法失败或输出不合契约时返回 Err，
 /// 只影响这一帧（调用方记为 Error 帧，规格 §0）；胶条从走廊一侧走出时这一帧为 OutOfCorridor（默认做法 4），都不 panic。
 pub fn measure_frame_with(
-    corridor: &CorridorGraph, image: &FrameImage, seq: u64,
+    corridor: &CorridorGraph,
+    image: &FrameImage,
+    seq: u64,
     run: impl FnOnce(GraphRun<'_>, &FrameImage) -> Result<RunResult, String>,
 ) -> Result<FrameMeasurement, String> {
     check_frame(&corridor.camera, corridor.size, corridor.channels, image)?;
@@ -841,8 +864,14 @@ pub fn measure_frame_with(
 }
 
 /// 横向卡尺记录 → 判定 → 帧内指标。核对站数、弧长、中线与法向，按 1.1 示教直胶的规则判每站有无胶（`judge::taught`）。
-fn parse_corridor(c: &CorridorGraph, result: &RunResult, seq: u64) -> Result<FrameMeasurement, String> {
-    if result.status() != "ok" { return Err(result.failure()); }
+fn parse_corridor(
+    c: &CorridorGraph,
+    result: &RunResult,
+    seq: u64,
+) -> Result<FrameMeasurement, String> {
+    if result.status() != "ok" {
+        return Err(result.failure());
+    }
     let raw = result.record("runs").ok_or("算法缺少横向卡尺结果")?;
     let runs = lateral_runs(raw, "横向卡尺")?;
     let split = lateral_runs(
@@ -1087,15 +1116,28 @@ fn corridor_exit(beads: &[Option<(f64, f64)>], tolerance_px: f64, scale: f64) ->
     if beads[first..=last].iter().any(Option::is_none) {
         return None;
     }
-    let exits = |i: usize| beads[i].is_some_and(|(_, x)| x.abs() >= EXIT_OFFSET_RATIO * tolerance_px);
-    let ends: Vec<(&str, usize)> = [(first > 0).then_some(("起点", first)), (last + 1 < beads.len()).then_some(("终点", last))]
-        .into_iter().flatten().collect();
+    let exits =
+        |i: usize| beads[i].is_some_and(|(_, x)| x.abs() >= EXIT_OFFSET_RATIO * tolerance_px);
+    let ends: Vec<(&str, usize)> = [
+        (first > 0).then_some(("起点", first)),
+        (last + 1 < beads.len()).then_some(("终点", last)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     if ends.is_empty() || !ends.iter().all(|&(_, i)| exits(i)) {
         return None;
     }
-    let detail: Vec<String> = ends.iter().map(|&(end, i)| {
-        format!("{end}一侧第 {} 站胶中心偏离走廊 {:.2} mm", i + 1, beads[i].map_or(0.0, |(_, x)| x * scale))
-    }).collect();
+    let detail: Vec<String> = ends
+        .iter()
+        .map(|&(end, i)| {
+            format!(
+                "{end}一侧第 {} 站胶中心偏离走廊 {:.2} mm",
+                i + 1,
+                beads[i].map_or(0.0, |(_, x)| x * scale)
+            )
+        })
+        .collect();
     Some(format!("胶条从走廊走出：{}，之外无胶", detail.join("；")))
 }
 

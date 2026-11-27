@@ -253,8 +253,8 @@ fn main() -> Result<(), String> {
                 (1..=groups)
                     .map(|seq| {
                         load_image(&paths(camera, seq))
-                        .ok()
-                        .map(|image| downsample(&image, ALIGN_FACTOR))
+                            .ok()
+                            .map(|image| downsample(&image, ALIGN_FACTOR))
                     })
                     .collect()
             })

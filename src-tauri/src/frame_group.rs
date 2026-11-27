@@ -27,13 +27,17 @@ pub const MAX_SEQ: u64 = crate::plan::MAX_EXPECTED_TOTAL as u64;
 /// 收到一帧后的归属。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Offer {
-    Accepted { seq: u64 },
+    Accepted {
+        seq: u64,
+    },
     /// 同一相机同一 seq 已有帧：保留先到的那帧
     Duplicate,
     /// frame_counter 不大于基线：上一件的迟到帧，不计入本件
     Stale,
     /// seq 超过上限（帧号跳变等计数异常）：与 Stale 一样不计入本件、不抬高下一件基线，调用方另记告警
-    OutOfRange { seq: u64 },
+    OutOfRange {
+        seq: u64,
+    },
 }
 
 /// 一个帧组：同一 seq 下三台相机是否都到了。
@@ -49,7 +53,11 @@ pub struct FrameGroup {
 
 /// 丢帧告警的依据。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum LossReason {
     /// 与 PLC deviceTriggers 相差超过 1
     Triggers { device_triggers: u32 },
@@ -72,13 +80,20 @@ impl Grouper {
     /// baselines 按计划相机顺序，取接件时各相机的 frame_counter 基线；seq 超过 `max_seq` 的帧判 OutOfRange（上限不超过 [`MAX_SEQ`]）。
     pub fn with_limit(baselines: Vec<u64>, max_seq: u64) -> Self {
         let cams = baselines.len();
-        Self { max_counters: baselines.clone(), baselines, seqs: vec![BTreeSet::new(); cams], max_seq: max_seq.min(MAX_SEQ) }
+        Self {
+            max_counters: baselines.clone(),
+            baselines,
+            seqs: vec![BTreeSet::new(); cams],
+            max_seq: max_seq.min(MAX_SEQ),
+        }
     }
 
     /// seq = frame_counter − 该相机基线。不大于基线为 Stale；超过上限为 OutOfRange（两者都不改 max_counter）；
     /// 同一相机重复的 seq 为 Duplicate，保留先到的那帧。相机下标越界（不是计划相机）按 Stale 丢弃。
     pub fn offer(&mut self, cam: usize, frame_counter: u64) -> Offer {
-        let Some(&baseline) = self.baselines.get(cam) else { return Offer::Stale };
+        let Some(&baseline) = self.baselines.get(cam) else {
+            return Offer::Stale;
+        };
         if frame_counter <= baseline {
             return Offer::Stale;
         }
@@ -87,12 +102,20 @@ impl Grouper {
             return Offer::OutOfRange { seq };
         }
         self.max_counters[cam] = self.max_counters[cam].max(frame_counter);
-        if self.seqs[cam].insert(seq) { Offer::Accepted { seq } } else { Offer::Duplicate }
+        if self.seqs[cam].insert(seq) {
+            Offer::Accepted { seq }
+        } else {
+            Offer::Duplicate
+        }
     }
 
     /// 帧组数 = 各相机已接受的最大 seq 的最大值。
     pub fn group_count(&self) -> u64 {
-        self.seqs.iter().filter_map(|seqs| seqs.last().copied()).max().unwrap_or(0)
+        self.seqs
+            .iter()
+            .filter_map(|seqs| seqs.last().copied())
+            .max()
+            .unwrap_or(0)
     }
 
     /// seq 取 1..=各相机最大 seq 的最大值；长度即帧组数。末尾缺帧的相机同样标 incomplete。
@@ -101,14 +124,21 @@ impl Grouper {
             .map(|seq| {
                 let present: Vec<bool> = self.seqs.iter().map(|seqs| seqs.contains(&seq)).collect();
                 let incomplete = present.contains(&false);
-                FrameGroup { seq, present, incomplete }
+                FrameGroup {
+                    seq,
+                    present,
+                    incomplete,
+                }
             })
             .collect()
     }
 
     /// 每台相机已接受的帧数。
     pub fn camera_counts(&self) -> Vec<u32> {
-        self.seqs.iter().map(|seqs| u32::try_from(seqs.len()).unwrap_or(u32::MAX)).collect()
+        self.seqs
+            .iter()
+            .map(|seqs| u32::try_from(seqs.len()).unwrap_or(u32::MAX))
+            .collect()
     }
 
     /// 该相机见到的最高 frame_counter，用作下一件基线；没见到帧时返回基线。cam 必须是计划相机下标。
@@ -128,15 +158,31 @@ pub fn loss_alarms(counts: &[u32]) -> Vec<LossAlarm> {
         .copied()
         .enumerate()
         .filter_map(|(camera, count)| {
-            let others = || counts.iter().copied().enumerate().filter(move |&(other, _)| other != camera);
+            let others = || {
+                counts
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter(move |&(other, _)| other != camera)
+            };
             let reason = match () {
                 // 报相差最大的那台，并列取下标小的
-                _ if others().next().is_some() && others().all(|(_, other_count)| off(count, other_count)) => others()
-                    .max_by_key(|&(other, other_count)| (count.abs_diff(other_count), std::cmp::Reverse(other)))
-                    .map(|(other, other_count)| LossReason::Cameras { other, other_count }),
+                _ if others().next().is_some()
+                    && others().all(|(_, other_count)| off(count, other_count)) =>
+                {
+                    others()
+                        .max_by_key(|&(other, other_count)| {
+                            (count.abs_diff(other_count), std::cmp::Reverse(other))
+                        })
+                        .map(|(other, other_count)| LossReason::Cameras { other, other_count })
+                }
                 _ => None,
             };
-            reason.map(|reason| LossAlarm { camera, count, reason })
+            reason.map(|reason| LossAlarm {
+                camera,
+                count,
+                reason,
+            })
         })
         .collect()
 }
@@ -157,6 +203,10 @@ mod tests {
         assert_eq!(grouper.offer(0, 11), Offer::Accepted { seq: 1 });
         assert_eq!(grouper.camera_counts(), vec![2, 0, 0]);
         let mut next = Grouper::with_limit(vec![grouper.max_counter(0), 20, 30], MAX_SEQ);
-        assert_eq!(next.offer(0, 12), Offer::Stale, "上一件最后一帧迟到，不计入下一件");
+        assert_eq!(
+            next.offer(0, 12),
+            Offer::Stale,
+            "上一件最后一帧迟到，不计入下一件"
+        );
     }
 }

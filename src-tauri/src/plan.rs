@@ -332,7 +332,11 @@ impl Default for KindDefaults {
         Self {
             straight: KindDefault {
                 _tolerance: crate::workspace::Discarded,
-                checks: checks(Some(OffsetCheck { enabled: true, max_mean_shift_mm: 2.0, max_local_dev_mm: 2.0 })),
+                checks: checks(Some(OffsetCheck {
+                    enabled: true,
+                    max_mean_shift_mm: 2.0,
+                    max_local_dev_mm: 2.0,
+                })),
             },
             corner: KindDefault {
                 _tolerance: crate::workspace::Discarded,
@@ -404,11 +408,18 @@ fn validate_checks(checks: &SegmentChecks, what: &str) -> Result<(), String> {
     let width = &checks.width;
     if width.enabled {
         if !positive(width.nominal_mm) {
-            return Err(format!("{what}：胶宽名义值 {} mm 需为正数", width.nominal_mm));
+            return Err(format!(
+                "{what}：胶宽名义值 {} mm 需为正数",
+                width.nominal_mm
+            ));
         }
         let tolerances = [width.tol_upper, width.tol_lower, width.max_excursion_mm];
-        if !(tolerances.into_iter().all(non_negative) && width.max_range_mm.is_none_or(non_negative)) {
-            return Err(format!("{what}：胶宽上下允差、允许超差长度与均匀性极差上限需为不小于 0 的有限数"));
+        if !(tolerances.into_iter().all(non_negative)
+            && width.max_range_mm.is_none_or(non_negative))
+        {
+            return Err(format!(
+                "{what}：胶宽上下允差、允许超差长度与均匀性极差上限需为不小于 0 的有限数"
+            ));
         }
     }
     if checks.gap.enabled {
@@ -420,11 +431,16 @@ fn validate_checks(checks: &SegmentChecks, what: &str) -> Result<(), String> {
         }
     }
     if checks.overflow.enabled && !positive(checks.overflow.max_width_mm) {
-        return Err(format!("{what}：溢胶胶宽上限 {} mm 需为正数", checks.overflow.max_width_mm));
+        return Err(format!(
+            "{what}：溢胶胶宽上限 {} mm 需为正数",
+            checks.overflow.max_width_mm
+        ));
     }
     if let Some(offset) = checks.offset.as_ref().filter(|offset| offset.enabled) {
         if !(non_negative(offset.max_mean_shift_mm) && non_negative(offset.max_local_dev_mm)) {
-            return Err(format!("{what}：胶偏整段偏移与局部跑偏限值需为不小于 0 的有限数"));
+            return Err(format!(
+                "{what}：胶偏整段偏移与局部跑偏限值需为不小于 0 的有限数"
+            ));
         }
     }
     Ok(())
@@ -461,10 +477,19 @@ pub fn validate_defaults(defaults: &KindDefaults) -> Result<(), String> {
 /// inspect_range 满足 0 ≤ a < b，有段长时 b ≤ length_mm；段首尾跳过 ≤ 1000 帧组；ΣN_exp ≤ 32767。
 pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result<(), String> {
     if cameras.len() != PLAN_CAMERAS {
-        return Err(format!("段配方需要恰好 {PLAN_CAMERAS} 台相机共用一个触发，当前 {} 台", cameras.len()));
+        return Err(format!(
+            "段配方需要恰好 {PLAN_CAMERAS} 台相机共用一个触发，当前 {} 台",
+            cameras.len()
+        ));
     }
-    if cameras.iter().enumerate().any(|(i, id)| id.trim().is_empty() || cameras[..i].contains(id)) {
-        return Err(format!("段配方的 {PLAN_CAMERAS} 台相机设备 ID 必须非空且互不相同：{cameras:?}"));
+    if cameras
+        .iter()
+        .enumerate()
+        .any(|(i, id)| id.trim().is_empty() || cameras[..i].contains(id))
+    {
+        return Err(format!(
+            "段配方的 {PLAN_CAMERAS} 台相机设备 ID 必须非空且互不相同：{cameras:?}"
+        ));
     }
     if segments.is_empty() {
         return Err("段配方至少需要一段".into());
@@ -473,16 +498,15 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
     for (k, segment) in segments.iter().enumerate() {
         let index = segment.index;
         if index as usize != k + 1 {
-            return Err(format!("第 {} 段的序号为 {index}：段序号必须从 1 起沿胶路连续递增", k + 1));
+            return Err(format!(
+                "第 {} 段的序号为 {index}：段序号必须从 1 起沿胶路连续递增",
+                k + 1
+            ));
         }
         if segment.kind == SegmentKind::Corner && segment.offset_ref.is_some() {
             return Err(format!("第 {index} 段是弯道段，不判胶偏，不能配置胶偏参考"));
         }
-        validate_kind_settings(
-            segment.kind,
-            &segment.checks,
-            &format!("第 {index} 段"),
-        )?;
+        validate_kind_settings(segment.kind, &segment.checks, &format!("第 {index} 段"))?;
         if segment
             .cameras
             .iter()
@@ -552,17 +576,29 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
             }
         }
         if let Some(range) = &segment.inspect_range {
-            if !(range.a_mm.is_finite() && range.b_mm.is_finite() && 0.0 <= range.a_mm && range.a_mm < range.b_mm) {
-                return Err(format!("第 {index} 段检测区间 [{}, {}] mm 无效：要求 0 ≤ a < b", range.a_mm, range.b_mm));
+            if !(range.a_mm.is_finite()
+                && range.b_mm.is_finite()
+                && 0.0 <= range.a_mm
+                && range.a_mm < range.b_mm)
+            {
+                return Err(format!(
+                    "第 {index} 段检测区间 [{}, {}] mm 无效：要求 0 ≤ a < b",
+                    range.a_mm, range.b_mm
+                ));
             }
             if let Some(length) = segment.length_mm.filter(|&length| range.b_mm > length) {
-                return Err(format!("第 {index} 段检测区间终点 {} mm 超出段长 {length} mm", range.b_mm));
+                return Err(format!(
+                    "第 {index} 段检测区间终点 {} mm 超出段长 {length} mm",
+                    range.b_mm
+                ));
             }
         }
         frames += u64::from(segment.expected_frames.unwrap_or(0));
     }
     if frames > MAX_EXPECTED_TOTAL as u64 {
-        return Err(format!("各段预期帧数之和 {frames} 超过 PLC shotCount 上限 {MAX_EXPECTED_TOTAL}"));
+        return Err(format!(
+            "各段预期帧数之和 {frames} 超过 PLC shotCount 上限 {MAX_EXPECTED_TOTAL}"
+        ));
     }
     if segments.iter().all(|s| s.skip) {
         return Err(if segments.len() == 1 {
@@ -577,13 +613,22 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
 /// 整件预期帧组数：各段 N_exp 都已标定时为其和；否则取整件标定（PartCalib）；都没有为 None。
 pub fn expected_total(segments: &[PathSegment], part: Option<&PartCalib>) -> Option<u32> {
     let summed = (!segments.is_empty())
-        .then(|| segments.iter().try_fold(0u32, |sum, segment| segment.expected_frames.map(|n| sum.saturating_add(n))))
+        .then(|| {
+            segments.iter().try_fold(0u32, |sum, segment| {
+                segment.expected_frames.map(|n| sum.saturating_add(n))
+            })
+        })
         .flatten();
     summed.or_else(|| part.map(|part| part.expected_total))
 }
 
 /// `expected_total` 由调用方先用 [`expected_total`] 算好传入。
-pub fn plan_identity(product_code: u16, segments: &[PathSegment], cameras: &[String], expected_total: Option<u32>) -> PlanIdentity {
+pub fn plan_identity(
+    product_code: u16,
+    segments: &[PathSegment],
+    cameras: &[String],
+    expected_total: Option<u32>,
+) -> PlanIdentity {
     PlanIdentity {
         product_code,
         segments: segments
@@ -608,13 +653,19 @@ pub fn plan_identity(product_code: u16, segments: &[PathSegment], cameras: &[Str
 /// 某项只要有一段停用，合并后即停用（停用是最宽的一档：不知道哪些帧属于停用该项的段）。
 /// 胶宽名义值沿用第一段，上下允差按合并后的绝对上下限反推。`checks` 不能为空（未分段区域至少覆盖一段）。
 pub fn wider_checks(checks: &[&SegmentChecks]) -> SegmentChecks {
-    let first = checks.first().expect("wider_checks：未分段区域至少覆盖一段");
+    let first = checks
+        .first()
+        .expect("wider_checks：未分段区域至少覆盖一段");
     let fold = |init: f64, pick: fn(f64, f64) -> f64, value: &dyn Fn(&SegmentChecks) -> f64| {
         checks.iter().map(|c| value(c)).fold(init, pick)
     };
     let nominal = first.width.nominal_mm;
-    let upper = fold(f64::NEG_INFINITY, f64::max, &|c| c.width.nominal_mm + c.width.tol_upper);
-    let lower = fold(f64::INFINITY, f64::min, &|c| c.width.nominal_mm - c.width.tol_lower);
+    let upper = fold(f64::NEG_INFINITY, f64::max, &|c| {
+        c.width.nominal_mm + c.width.tol_upper
+    });
+    let lower = fold(f64::INFINITY, f64::min, &|c| {
+        c.width.nominal_mm - c.width.tol_lower
+    });
     SegmentChecks {
         width: WidthCheck {
             enabled: checks.iter().all(|c| c.width.enabled),
@@ -730,8 +781,11 @@ mod tests {
 
     fn plan() -> Plan {
         let defaults = KindDefaults::default();
-        let mut segments: Vec<_> =
-            [Straight, Corner, Straight].into_iter().enumerate().map(|(i, kind)| new_segment(i as u32 + 1, kind, &defaults)).collect();
+        let mut segments: Vec<_> = [Straight, Corner, Straight]
+            .into_iter()
+            .enumerate()
+            .map(|(i, kind)| new_segment(i as u32 + 1, kind, &defaults))
+            .collect();
         for (segment, n) in segments.iter_mut().zip([12, 4, 9]) {
             segment.expected_frames = Some(n);
         }
@@ -754,8 +808,6 @@ mod tests {
         p
     }
 
-
-
     /// 规格 §1 段模型约束；检测限值按旧 ShotLimits 的范围规则校验（D-SB-1 新路径不丢旧约束），停用的检测项不校验限值。
     #[test]
     fn invalid_segment_plans_are_rejected() {
@@ -775,7 +827,10 @@ mod tests {
             }),
             ("检测区间终点恰为段长", |p| {
                 p.segments[0].length_mm = Some(100.0);
-                p.segments[0].inspect_range = Some(InspectRange { a_mm: 10.0, b_mm: 100.0 });
+                p.segments[0].inspect_range = Some(InspectRange {
+                    a_mm: 10.0,
+                    b_mm: 100.0,
+                });
             }),
             ("停用的检测项不校验限值", |p| {
                 let checks = &mut p.segments[0].checks;
@@ -816,7 +871,9 @@ mod tests {
                 p.segments.truncate(1);
                 p.segments[0].skip = true;
             }),
-            ("序号不从 1 起", |p| p.segments.iter_mut().for_each(|segment| segment.index += 1)),
+            ("序号不从 1 起", |p| {
+                p.segments.iter_mut().for_each(|segment| segment.index += 1)
+            }),
             ("序号跳号", |p| p.segments[2].index = 4),
             ("相机只有 2 台", |p| {
                 p.cameras.pop();
@@ -915,7 +972,10 @@ mod tests {
             }),
             ("检测区间终点超出段长", |p| {
                 p.segments[2].length_mm = Some(100.0);
-                p.segments[2].inspect_range = Some(InspectRange { a_mm: 10.0, b_mm: 100.5 });
+                p.segments[2].inspect_range = Some(InspectRange {
+                    a_mm: 10.0,
+                    b_mm: 100.5,
+                });
             }),
         ];
         for (case, edit) in cases {

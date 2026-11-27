@@ -61,7 +61,11 @@ pub(super) fn part(
         software_version,
         cycle_id: interrupted.cycle_id.into(),
         bundle_id: None,
-        delivery: PlcDelivery { state: PlcDeliveryState::Failed, updated_at: now, message: Some("检测进程中断，结果未回写 PLC".into()) },
+        delivery: PlcDelivery {
+            state: PlcDeliveryState::Failed,
+            updated_at: now,
+            message: Some("检测进程中断，结果未回写 PLC".into()),
+        },
         source: interrupted.site.source,
         burst,
     }
@@ -80,10 +84,19 @@ pub(super) fn recording(cycle_id: &str, record: RecordMode) -> RecordingOutcome 
         },
         retention_errors: Vec::new(),
         available: false,
-        state: if off { RecordingState::Off } else { RecordingState::Failed },
+        state: if off {
+            RecordingState::Off
+        } else {
+            RecordingState::Failed
+        },
     }
 }
 
-pub(super) fn counts_in_stats(source: RecordSource, ts: i64, scope: HistoryScope, midnight: i64) -> bool {
+pub(super) fn counts_in_stats(
+    source: RecordSource,
+    ts: i64,
+    scope: HistoryScope,
+    midnight: i64,
+) -> bool {
     HistoryScope::of(source) == scope && ts >= midnight
 }

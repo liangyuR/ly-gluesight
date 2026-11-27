@@ -20,7 +20,11 @@ pub const GRAPH_VERSION_BURST: &str = "flow-3";
 /// sizes 是各相机示教帧尺寸。
 pub fn burst_graphs(recipe: &Recipe, sizes: &[[u32; 2]]) -> Result<Value, String> {
     if sizes.len() != recipe.inspect.len() {
-        return Err(format!("段配方有 {} 台检测相机，示教帧尺寸却有 {} 份", recipe.inspect.len(), sizes.len()));
+        return Err(format!(
+            "段配方有 {} 台检测相机，示教帧尺寸却有 {} 份",
+            recipe.inspect.len(),
+            sizes.len()
+        ));
     }
     let set = vision::CorridorSet::build(recipe, sizes)?;
     // 灰度图沿用原来的形状（不记模板 id），胶色图记下用的是哪张模板
@@ -121,11 +125,22 @@ impl Prepared {
                 Some(corridor) => crate::image_file::load_channels(&corridor.image)?,
                 None => 1,
             });
-            let calibration: Value = serde_json::from_str(&crate::fsio::read_text(&resource.calibration).map_err(|e| e.to_string())?)
-                .map_err(|e| format!("发布包标定无效：{e}"))?;
-            let scale = calibration["mmPerPx"].as_f64().ok_or("发布包标定没有有效像素当量")?;
-            if !scale.is_finite() || inspect.mm_per_px.is_none_or(|taught| (scale - taught).abs() > 1e-9) {
-                return Err(format!("相机 {} 的发布标定与示教像素当量不一致", inspect.camera));
+            let calibration: Value = serde_json::from_str(
+                &crate::fsio::read_text(&resource.calibration).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("发布包标定无效：{e}"))?;
+            let scale = calibration["mmPerPx"]
+                .as_f64()
+                .ok_or("发布包标定没有有效像素当量")?;
+            if !scale.is_finite()
+                || inspect
+                    .mm_per_px
+                    .is_none_or(|taught| (scale - taught).abs() > 1e-9)
+            {
+                return Err(format!(
+                    "相机 {} 的发布标定与示教像素当量不一致",
+                    inspect.camera
+                ));
             }
         }
         let mut corridors = vision::CorridorSet::build(&recipe, &sizes)?.with_channels(&channels);
@@ -300,36 +315,62 @@ enum WarmupFailure {
 
 impl WarmupFailure {
     fn message(&self) -> &str {
-        match self { Self::QueueTimeout(error) | Self::Failed(error) => error }
+        match self {
+            Self::QueueTimeout(error) | Self::Failed(error) => error,
+        }
     }
 
     fn into_entry(self, now: Instant) -> Entry {
         match self {
-            Self::QueueTimeout(error) => Entry::Retryable { error, retry_at: now + WARMUP_RETRY_DELAY },
+            Self::QueueTimeout(error) => Entry::Retryable {
+                error,
+                retry_at: now + WARMUP_RETRY_DELAY,
+            },
             Self::Failed(error) => Entry::Failed(error),
         }
     }
 }
 
 #[derive(Clone, Copy)]
-enum WarmupPhase { Waiting, Started { execution_deadline: Instant }, Expired }
+enum WarmupPhase {
+    Waiting,
+    Started { execution_deadline: Instant },
+    Expired,
+}
 
-fn clock() -> Instant { tokio::time::Instant::now().into_std() }
+fn clock() -> Instant {
+    tokio::time::Instant::now().into_std()
+}
 
-async fn run_warmup<T, F>(slot: Arc<Semaphore>, timeout: Duration, operation: F) -> Result<T, WarmupFailure>
+async fn run_warmup<T, F>(
+    slot: Arc<Semaphore>,
+    timeout: Duration,
+    operation: F,
+) -> Result<T, WarmupFailure>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
 {
-    let queue_deadline = clock().checked_add(timeout).ok_or_else(|| WarmupFailure::Failed("图像引擎排队截止时间溢出".into()))?;
-    let queued = format!("图像引擎预热排队超过 {} ms；引擎尚未开始，稍后重试", timeout.as_millis());
-    let running = format!("图像引擎预热执行超过 {} ms；尚未返回的引擎继续占用预热线程，请排查核心库或重启", timeout.as_millis());
+    let queue_deadline = clock()
+        .checked_add(timeout)
+        .ok_or_else(|| WarmupFailure::Failed("图像引擎排队截止时间溢出".into()))?;
+    let queued = format!(
+        "图像引擎预热排队超过 {} ms；引擎尚未开始，稍后重试",
+        timeout.as_millis()
+    );
+    let running = format!(
+        "图像引擎预热执行超过 {} ms；尚未返回的引擎继续占用预热线程，请排查核心库或重启",
+        timeout.as_millis()
+    );
     let phase = Arc::new(Mutex::new(WarmupPhase::Waiting));
     let worker_phase = phase.clone();
     let queued_error = queued.clone();
     let running_error = running.clone();
     let task = async move {
-        let permit = slot.acquire_owned().await.map_err(|error| WarmupFailure::Failed(format!("图像引擎预热线程已关闭：{error}")))?;
+        let permit = slot
+            .acquire_owned()
+            .await
+            .map_err(|error| WarmupFailure::Failed(format!("图像引擎预热线程已关闭：{error}")))?;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let execution_deadline = {
@@ -339,29 +380,45 @@ where
                     *phase = WarmupPhase::Expired;
                     return Err(WarmupFailure::QueueTimeout(queued_error));
                 }
-                let execution_deadline = started.checked_add(timeout).ok_or_else(|| WarmupFailure::Failed("图像引擎执行截止时间溢出".into()))?;
+                let execution_deadline = started
+                    .checked_add(timeout)
+                    .ok_or_else(|| WarmupFailure::Failed("图像引擎执行截止时间溢出".into()))?;
                 *phase = WarmupPhase::Started { execution_deadline };
                 execution_deadline
             };
             let result = operation().map_err(WarmupFailure::Failed);
-            if clock() > execution_deadline { Err(WarmupFailure::Failed(running_error)) } else { result }
-        }).await.map_err(|error| WarmupFailure::Failed(format!("图像引擎预热异常：{error}")))?
+            if clock() > execution_deadline {
+                Err(WarmupFailure::Failed(running_error))
+            } else {
+                result
+            }
+        })
+        .await
+        .map_err(|error| WarmupFailure::Failed(format!("图像引擎预热异常：{error}")))?
     };
     tokio::pin!(task);
-    let execution_deadline = match tokio::time::timeout_at(tokio::time::Instant::from_std(queue_deadline), &mut task).await {
-        Ok(result) => return result,
-        Err(_) => {
-            let mut phase = phase.lock().unwrap();
-            match *phase {
-                WarmupPhase::Started { execution_deadline } => execution_deadline,
-                WarmupPhase::Waiting | WarmupPhase::Expired => {
-                    *phase = WarmupPhase::Expired;
-                    return Err(WarmupFailure::QueueTimeout(queued));
+    let execution_deadline =
+        match tokio::time::timeout_at(tokio::time::Instant::from_std(queue_deadline), &mut task)
+            .await
+        {
+            Ok(result) => return result,
+            Err(_) => {
+                let mut phase = phase.lock().unwrap();
+                match *phase {
+                    WarmupPhase::Started { execution_deadline } => execution_deadline,
+                    WarmupPhase::Waiting | WarmupPhase::Expired => {
+                        *phase = WarmupPhase::Expired;
+                        return Err(WarmupFailure::QueueTimeout(queued));
+                    }
                 }
             }
-        }
-    };
-    match tokio::time::timeout_at(tokio::time::Instant::from_std(execution_deadline), &mut task).await {
+        };
+    match tokio::time::timeout_at(
+        tokio::time::Instant::from_std(execution_deadline),
+        &mut task,
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => Err(WarmupFailure::Failed(running)),
     }
@@ -373,12 +430,20 @@ pub struct ProductionHost {
 }
 
 impl Default for ProductionHost {
-    fn default() -> Self { Self { entries: Mutex::new(HashMap::new()), slot: Arc::new(Semaphore::new(1)) } }
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            slot: Arc::new(Semaphore::new(1)),
+        }
+    }
 }
 
 impl ProductionHost {
     pub fn clear(&self) {
-        self.entries.lock().unwrap().retain(|_, entry| matches!(entry, Entry::Preparing));
+        self.entries
+            .lock()
+            .unwrap()
+            .retain(|_, entry| matches!(entry, Entry::Preparing));
     }
 
     fn begin(&self, key: &str, now: Instant) -> Result<Option<Arc<Prepared>>, String> {
@@ -400,7 +465,9 @@ impl ProductionHost {
 
     fn ensure(&self, app: &AppHandle, recipe: Arc<Recipe>) -> Result<Arc<Prepared>, String> {
         let key = warmup_key(&recipe);
-        if let Some(prepared) = self.begin(&key, Instant::now())? { return Ok(prepared); }
+        if let Some(prepared) = self.begin(&key, Instant::now())? {
+            return Ok(prepared);
+        }
         let app = app.clone();
         let slot = self.slot.clone();
         tauri::async_runtime::spawn(async move {
@@ -408,11 +475,15 @@ impl ProductionHost {
             let started = Instant::now();
             let result = run_warmup(slot, Duration::from_secs(30), move || {
                 let bundle = crate::workspace::published_bundle(&run_app, &recipe)?;
-                let engine = run_app.state::<VisionHost>().engine().ok_or("图像核心库未加载")?;
+                let engine = run_app
+                    .state::<VisionHost>()
+                    .engine()
+                    .ok_or("图像核心库未加载")?;
                 let mut prepared = Prepared::load(bundle, engine, &recipe)?;
                 prepared.warm()?;
                 Ok(Arc::new(prepared))
-            }).await;
+            })
+            .await;
             let state = match result {
                 Ok(prepared) => {
                     let elapsed = started.elapsed().as_millis();
@@ -439,14 +510,27 @@ impl ProductionHost {
                     Entry::Ready(prepared)
                 }
                 Err(error) => {
-                    let level = if matches!(&error, WarmupFailure::QueueTimeout(_)) { "warn" } else { "err" };
+                    let level = if matches!(&error, WarmupFailure::QueueTimeout(_)) {
+                        "warn"
+                    } else {
+                        "err"
+                    };
                     crate::cycle::log(level, "生产预热", error.message().to_owned());
                     error.into_entry(Instant::now())
                 }
             };
-            let retry_at = match &state { Entry::Retryable { retry_at, .. } => Some(*retry_at), _ => None };
-            app.state::<ProductionHost>().entries.lock().unwrap().insert(key, state);
-            if let Some(retry_at) = retry_at { tokio::time::sleep_until(tokio::time::Instant::from_std(retry_at)).await; }
+            let retry_at = match &state {
+                Entry::Retryable { retry_at, .. } => Some(*retry_at),
+                _ => None,
+            };
+            app.state::<ProductionHost>()
+                .entries
+                .lock()
+                .unwrap()
+                .insert(key, state);
+            if let Some(retry_at) = retry_at {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(retry_at)).await;
+            }
             let _ = app.state::<CycleHost>().tx.send(Input::Refresh);
         });
         Err("发布资源与图像引擎正在预热，完成前不能接件".into())
@@ -475,14 +559,19 @@ impl ProductionHost {
             None => Warmup::Pending,
             Some(Entry::Preparing) => Warmup::Preparing,
             Some(Entry::Ready(_)) => Warmup::Ready,
-            Some(Entry::Retryable { error, retry_at }) if now < *retry_at => Warmup::Retryable(error.clone()),
+            Some(Entry::Retryable { error, retry_at }) if now < *retry_at => {
+                Warmup::Retryable(error.clone())
+            }
             Some(Entry::Retryable { .. }) => Warmup::Pending,
             Some(Entry::Failed(error)) => Warmup::Failed(error.clone()),
         }
     }
 
     fn prepared(&self, key: &str) -> Option<Arc<Prepared>> {
-        match self.entries.lock().unwrap().get(key) { Some(Entry::Ready(prepared)) => Some(prepared.clone()), _ => None }
+        match self.entries.lock().unwrap().get(key) {
+            Some(Entry::Ready(prepared)) => Some(prepared.clone()),
+            _ => None,
+        }
     }
 
     /// 已预热好的这个发布包（历史叠图复用，不另加载）。
@@ -550,12 +639,25 @@ pub fn acquisition_tag(config: &crate::camera::CameraConfig) -> Value {
     serde_json::json!({ "triggerSource": config.trigger_source, "triggerActivation": config.trigger_activation, "frameRate": config.frame_rate })
 }
 
-fn check_acquisition(bundle: &ReleaseBundle, configs: &[crate::camera::CameraConfig]) -> Result<(), String> {
+fn check_acquisition(
+    bundle: &ReleaseBundle,
+    configs: &[crate::camera::CameraConfig],
+) -> Result<(), String> {
     for (index, inspect) in bundle.recipe.inspect.iter().enumerate() {
-        let config = configs.iter().find(|c| c.id == inspect.camera).ok_or_else(|| format!("相机 {} 不存在", inspect.camera))?;
-        let calibration: Value = serde_json::from_str(&crate::fsio::read_text(&bundle.camera(index)?.calibration).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let config = configs
+            .iter()
+            .find(|c| c.id == inspect.camera)
+            .ok_or_else(|| format!("相机 {} 不存在", inspect.camera))?;
+        let calibration: Value = serde_json::from_str(
+            &crate::fsio::read_text(&bundle.camera(index)?.calibration)
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
         if calibration.get("acquisition") != Some(&acquisition_tag(config)) {
-            return Err(format!("相机 {} 的触发方式或帧率与发布标定不一致，请恢复参数或重新标定、验证并发布", inspect.camera));
+            return Err(format!(
+                "相机 {} 的触发方式或帧率与发布标定不一致，请恢复参数或重新标定、验证并发布",
+                inspect.camera
+            ));
         }
     }
     Ok(())
@@ -570,10 +672,12 @@ pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, 
     };
     site_admits(site)?;
     let prepared = host.ensure(app, Arc::new(recipe.clone()))?;
-    check_acquisition(&prepared.bundle, &app.state::<crate::cycle::CycleHost>().camera.configs())?;
+    check_acquisition(
+        &prepared.bundle,
+        &app.state::<crate::cycle::CycleHost>().camera.configs(),
+    )?;
     Ok(Some(prepared))
 }
-
 
 #[cfg(test)]
 mod warmup_tests;

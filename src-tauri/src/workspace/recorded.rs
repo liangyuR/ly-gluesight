@@ -8,29 +8,54 @@ use crate::store::FrameRecord;
 /// 录制根内的相对路径，且所在目录是本件的录制目录（`*_cycle_{cycleId}`）。
 fn cycle_relative<'a>(cycle_id: &str, file: &'a str) -> Result<&'a Path, String> {
     let relative = Path::new(file);
-    if cycle_id.is_empty() || cycle_id.len() > 128
-        || !cycle_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        || relative.is_absolute() || relative.components().any(|part| !matches!(part, Component::Normal(_)))
-        || file.contains(':') || file.contains('\\')
-        || !relative.parent().and_then(Path::file_name).and_then(|name| name.to_str())
-            .and_then(|name| name.split_once("_cycle_")).is_some_and(|(_, id)| id == cycle_id) {
+    if cycle_id.is_empty()
+        || cycle_id.len() > 128
+        || !cycle_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
+        || file.contains(':')
+        || file.contains('\\')
+        || !relative
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.split_once("_cycle_"))
+            .is_some_and(|(_, id)| id == cycle_id)
+    {
         return Err("历史原图路径与 cycleId 不一致，拒绝读取".into());
     }
     Ok(relative)
 }
 
 /// 读录制目录里的 part.json，要求它属于本件（cycleId 相同）。
-fn cycle_metadata(root: &Path, relative: &Path, cycle_id: &str) -> Result<serde_json::Value, String> {
-    let metadata_path = root.join(relative).parent().ok_or("原图目录无效")?.join("part.json");
+fn cycle_metadata(
+    root: &Path,
+    relative: &Path,
+    cycle_id: &str,
+) -> Result<serde_json::Value, String> {
+    let metadata_path = root
+        .join(relative)
+        .parent()
+        .ok_or("原图目录无效")?
+        .join("part.json");
     match std::fs::symlink_metadata(&metadata_path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err("录制元数据缺失，不能核验历史原图完整身份".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("录制元数据缺失，不能核验历史原图完整身份".into())
+        }
         Err(error) => return Err(format!("录制元数据无法读取：{error}")),
         Ok(_) => crate::image_file::checked_source_path(&metadata_path)?,
     }
-    let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)
-        .map_err(|error| format!("录制元数据读取失败：{error}"))?)
-        .map_err(|error| format!("录制元数据损坏：{error}"))?;
-    if metadata["cycleId"].as_str() != Some(cycle_id) { return Err("录制元数据的 cycleId 与历史原图不一致".into()); }
+    let metadata: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&metadata_path).map_err(|error| format!("录制元数据读取失败：{error}"))?,
+    )
+    .map_err(|error| format!("录制元数据损坏：{error}"))?;
+    if metadata["cycleId"].as_str() != Some(cycle_id) {
+        return Err("录制元数据的 cycleId 与历史原图不一致".into());
+    }
     Ok(metadata)
 }
 
@@ -198,16 +223,23 @@ fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
     let path = stored
         .canonicalize()
         .map_err(|_| "原图未保留或已按保留策略清理".to_string())?;
-    if !path.starts_with(root) || !path.is_file() { return Err("原图路径越过录制目录或不是文件".into()); }
+    if !path.starts_with(root) || !path.is_file() {
+        return Err("原图路径越过录制目录或不是文件".into());
+    }
     crate::image_file::read_original(&source).map_err(|error| format!("原图读取失败：{error}"))
 }
 
 fn checked_dimensions(bytes: &[u8], expected: Option<[u32; 2]>, file: &str) -> Result<(), String> {
     if let Some(expected) = expected {
-        let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
             .map_err(|error| format!("原图 {file} 解码失败：{error}"))?;
-        let (width, height) = reader.into_dimensions().map_err(|error| format!("原图 {file} 解码失败：{error}"))?;
-        if [width, height] != expected { return Err(format!("原图 {file} 的尺寸与录制尺寸不符")); }
+        let (width, height) = reader
+            .into_dimensions()
+            .map_err(|error| format!("原图 {file} 解码失败：{error}"))?;
+        if [width, height] != expected {
+            return Err(format!("原图 {file} 的尺寸与录制尺寸不符"));
+        }
     }
     Ok(())
 }

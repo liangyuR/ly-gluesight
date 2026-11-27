@@ -7,8 +7,12 @@ struct TestDb(PathBuf);
 
 impl TestDb {
     fn new() -> Self {
-        let path =
-            std::env::temp_dir().join(format!("gluesight-store-{}-{}-{}", std::process::id(), ly_plc::now_ms(), NEXT_DIR.fetch_add(1, Ordering::Relaxed)));
+        let path = std::env::temp_dir().join(format!(
+            "gluesight-store-{}-{}-{}",
+            std::process::id(),
+            ly_plc::now_ms(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&path).unwrap();
         Self(path)
     }
@@ -306,7 +310,12 @@ fn manual_history_deletion_only_removes_exclusive_cycle_directories_inside_the_p
     }
 }
 
-fn burst_part<'a>(recipe: &'a Recipe, cycle: &'a str, judgement: &'a Judgement, burst: &'a BurstRecord) -> PartRecord<'a> {
+fn burst_part<'a>(
+    recipe: &'a Recipe,
+    cycle: &'a str,
+    judgement: &'a Judgement,
+    burst: &'a BurstRecord,
+) -> PartRecord<'a> {
     PartRecord {
         mode: PartMode::Production,
         ts: 1234,

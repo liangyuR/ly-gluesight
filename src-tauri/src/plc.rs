@@ -5,16 +5,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ly_plc::{
-    describe_address, ConnectionConfig, DataType, EventSink, HistorySample, LogPage, LogQuery, Logbook, PlcConfig,
-    PlcEngine, PlcEvent, PlcStatus, PointValue, ProtocolKind,
+    describe_address, ConnectionConfig, DataType, EventSink, HistorySample, LogPage, LogQuery,
+    Logbook, PlcConfig, PlcEngine, PlcEvent, PlcStatus, PointValue, ProtocolKind,
 };
 use serde::Deserialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::cycle::{CycleHost, Input};
-use crate::inspection;
 use crate::handshake::Contract;
+use crate::inspection;
 use crate::plc_plan::PlcPlan;
 use crate::recipe::Recipe;
 
@@ -50,8 +50,16 @@ impl PlcHost {
                 let link = (s.state, s.message.clone());
                 let mut last = last_link.lock().unwrap();
                 if last.as_ref() != Some(&link) {
-                    let level = if s.state == ly_plc::LinkState::Error { "err" } else { "info" };
-                    crate::applog::write(level, "PLC 连接", &format!("{:?}：{}", s.state, s.message));
+                    let level = if s.state == ly_plc::LinkState::Error {
+                        "err"
+                    } else {
+                        "info"
+                    };
+                    crate::applog::write(
+                        level,
+                        "PLC 连接",
+                        &format!("{:?}：{}", s.state, s.message),
+                    );
                     *last = Some(link);
                 }
                 drop(last);
@@ -104,7 +112,12 @@ pub fn plc_get_config(plc: State<'_, PlcHost>) -> PlcConfig {
 }
 
 #[tauri::command]
-pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, config: PlcConfig) -> Result<(), String> {
+pub async fn plc_save_config(
+    app: AppHandle,
+    plc: State<'_, PlcHost>,
+    cycle: State<'_, CycleHost>,
+    config: PlcConfig,
+) -> Result<(), String> {
     let result = plc_save_config_inner(app.clone(), plc, cycle, config).await;
     crate::cycle::log_op(
         &crate::applog::events::OP_PLC,
@@ -153,7 +166,9 @@ async fn plc_connect_inner(
     cycle: State<'_, CycleHost>,
 ) -> Result<(), String> {
     let _gate = cycle.link_gate.lock().await;
-    if plc.engine.status().state == ly_plc::LinkState::Connected { return Ok(()); }
+    if plc.engine.status().state == ly_plc::LinkState::Connected {
+        return Ok(());
+    }
     validate_config(&plc.engine.config())?;
     plc.engine.connect().await;
     Ok(())
@@ -229,7 +244,9 @@ fn require_idle(cycle: &CycleHost) -> Result<(), String> {
 }
 
 pub(crate) fn validate_config(config: &PlcConfig) -> Result<(), String> {
-    if config.connection.protocol != ProtocolKind::S7 { return Err("只支持西门子 S7 协议".into()); }
+    if config.connection.protocol != ProtocolKind::S7 {
+        return Err("只支持西门子 S7 协议".into());
+    }
     config.validate()?;
     Contract::validate(config)?;
     Ok(())
@@ -239,9 +256,17 @@ pub fn recipe_plan(cycle: &CycleHost, recipe: &Recipe) -> Result<PlcPlan, String
     let configs = cycle.camera.configs();
     if recipe.is_burst() {
         // 段配方：三台计划相机都在相机组里，且是单视角独立设备（D-SB-11）
-        crate::camera::check_burst_cameras(&configs, &recipe.plan_cameras()).map_err(|error| format!("配方 {}：{error}", recipe.id))?;
-    } else if let Some(missing) = recipe.cameras().into_iter().find(|id| !configs.iter().any(|c| &c.id == id)) {
-        return Err(format!("配方 {} 用到的相机 {missing} 不在设备配置里", recipe.id));
+        crate::camera::check_burst_cameras(&configs, &recipe.plan_cameras())
+            .map_err(|error| format!("配方 {}：{error}", recipe.id))?;
+    } else if let Some(missing) = recipe
+        .cameras()
+        .into_iter()
+        .find(|id| !configs.iter().any(|c| &c.id == id))
+    {
+        return Err(format!(
+            "配方 {} 用到的相机 {missing} 不在设备配置里",
+            recipe.id
+        ));
     }
     PlcPlan::from_recipe(recipe)
 }
@@ -385,6 +410,10 @@ pub async fn plc_point_history(
 }
 
 #[tauri::command]
-pub fn plc_check_address(connection: ConnectionConfig, address: String, data_type: DataType) -> Result<String, String> {
+pub fn plc_check_address(
+    connection: ConnectionConfig,
+    address: String,
+    data_type: DataType,
+) -> Result<String, String> {
     describe_address(&connection, &address, data_type)
 }

@@ -2,7 +2,10 @@
 
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.first().is_some_and(|arg| arg == "--check-packaged-runtime") {
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--check-packaged-runtime")
+    {
         if args.len() != 2 {
             std::process::exit(2);
         }

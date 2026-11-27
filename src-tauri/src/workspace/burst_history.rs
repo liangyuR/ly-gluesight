@@ -329,15 +329,26 @@ pub(super) fn remeasure_with_operation(
 
 /// 记录里存的每帧指标；没存指标的帧按帧状态补一条没有测量值的指标。
 fn stored_metrics(frames: &[FrameRecord]) -> Vec<FrameMetrics> {
-    frames.iter().map(|frame| match &frame.metrics {
-        Some(metrics) => FrameMetrics { camera: frame.camera, seq: frame.seq, ..metrics.clone() },
-        None => burst::frame_without_metrics(frame.camera, frame.seq, frame.status, None),
-    }).collect()
+    frames
+        .iter()
+        .map(|frame| match &frame.metrics {
+            Some(metrics) => FrameMetrics {
+                camera: frame.camera,
+                seq: frame.seq,
+                ..metrics.clone()
+            },
+            None => burst::frame_without_metrics(frame.camera, frame.seq, frame.status, None),
+        })
+        .collect()
 }
 
 /// 录制原图齐：录制证据完整，且除缺帧外每帧都有原图引用（与前端历史详情 `rawComplete` 同一口径）。
 pub(super) fn raw_complete(detail: &PartDetail, burst: &PartDetailBurst) -> bool {
-    detail.recording.available && burst.frames.iter().all(|f| f.status == FrameState::Missing || f.raw_file.is_some())
+    detail.recording.available
+        && burst
+            .frames
+            .iter()
+            .all(|f| f.status == FrameState::Missing || f.raw_file.is_some())
 }
 
 enum FrameSource {
@@ -1094,7 +1105,12 @@ pub(super) fn compare(
         (judgement, metrics)
     } else {
         operation.stage("summarizing")?;
-        let regions: Vec<Region> = burst.judgement.regions.iter().map(|r| r.region.clone()).collect();
+        let regions: Vec<Region> = burst
+            .judgement
+            .regions
+            .iter()
+            .map(|r| r.region.clone())
+            .collect();
         let metrics = stored_metrics(&burst.frames);
         let judgement = burst_judge::judge(
             &recipe.path_segments,

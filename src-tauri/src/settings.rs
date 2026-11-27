@@ -116,11 +116,17 @@ impl CycleSettings {
         let done = match crate::fsio::backup(path, "invalid") {
             Ok(backup) => match Self::default().save(path) {
                 Ok(()) => format!("原文件已备份为 {}，已按默认值重建", backup.display()),
-                Err(e) => format!("原文件已备份为 {}，重建失败（{e}），先按默认值运行", backup.display()),
+                Err(e) => format!(
+                    "原文件已备份为 {}，重建失败（{e}），先按默认值运行",
+                    backup.display()
+                ),
             },
             Err(e) => format!("备份失败（{e}），原文件未改，先按默认值运行"),
         };
-        format!("{} 的检测设置不符合当前取值范围（{why}），{done}", path.display())
+        format!(
+            "{} 的检测设置不符合当前取值范围（{why}），{done}",
+            path.display()
+        )
     }
 
     /// 写项目的 `cycle.json`；历史保留天数与空闲压缩开关是本机设置（`save_history`），不写进项目。
