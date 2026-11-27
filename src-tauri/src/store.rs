@@ -1414,28 +1414,37 @@ impl Store {
         else {
             return Ok(false);
         };
-        for (key, file) in files {
-            let seq = i64::try_from(key.seq).map_err(|_| "帧组序号超出存储范围")?;
-            let previous: Option<Option<String>> = tx
-                .query_row(
+        {
+            let mut lookup = tx
+                .prepare(
                     "SELECT raw_file FROM part_frames WHERE part_id=?1 AND camera=?2 AND seq=?3",
-                    params![id, key.camera as i64, seq],
-                    |row| row.get(0),
                 )
-                .optional()
                 .map_err(db_err)?;
-            match previous {
-                None => return Ok(false),
-                Some(Some(previous)) if previous != *file => {
-                    return Err(format!(
-                        "相机 {} 第 {} 帧的原图身份已保存，不能替换为另一个文件",
-                        key.camera, key.seq
-                    ));
-                }
-                Some(Some(_)) => (),
-                Some(None) => {
-                    tx.execute("UPDATE part_frames SET raw_file=?4 WHERE part_id=?1 AND camera=?2 AND seq=?3", params![id, key.camera as i64, seq, file])
-                        .map_err(db_err)?;
+            let mut update = tx
+                .prepare(
+                    "UPDATE part_frames SET raw_file=?4 WHERE part_id=?1 AND camera=?2 AND seq=?3",
+                )
+                .map_err(db_err)?;
+            for (key, file) in files {
+                let seq = i64::try_from(key.seq).map_err(|_| "帧组序号超出存储范围")?;
+                let previous: Option<Option<String>> = lookup
+                    .query_row(params![id, key.camera as i64, seq], |row| row.get(0))
+                    .optional()
+                    .map_err(db_err)?;
+                match previous {
+                    None => return Ok(false),
+                    Some(Some(previous)) if previous != *file => {
+                        return Err(format!(
+                            "相机 {} 第 {} 帧的原图身份已保存，不能替换为另一个文件",
+                            key.camera, key.seq
+                        ));
+                    }
+                    Some(Some(_)) => (),
+                    Some(None) => {
+                        update
+                            .execute(params![id, key.camera as i64, seq, file])
+                            .map_err(db_err)?;
+                    }
                 }
             }
         }

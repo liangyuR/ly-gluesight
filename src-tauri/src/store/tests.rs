@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
@@ -855,6 +856,62 @@ fn burst_part<'a>(
         source: RecordSource::Real,
         burst: Some(burst),
     }
+}
+
+#[test]
+fn registering_raw_files_keeps_the_batch_atomic_and_allows_the_same_path_on_retry() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let cycle = "register-raw-files";
+    let id = store
+        .insert(&burst_part(&recipe, cycle, &judgement, &burst))
+        .unwrap();
+    let first = FrameKey { camera: 0, seq: 1 };
+    let saved = FrameKey { camera: 0, seq: 2 };
+    let missing = FrameKey { camera: 0, seq: 5 };
+    let original = BTreeMap::from([(saved, "cam1/2.pgm".to_owned())]);
+    assert!(store.update_frame_raw_files(cycle, &original).unwrap());
+
+    let linked = || {
+        store
+            .burst_frames(id)
+            .unwrap()
+            .into_iter()
+            .filter_map(|frame| {
+                frame.raw_file.map(|file| {
+                    (
+                        FrameKey {
+                            camera: frame.camera,
+                            seq: frame.seq,
+                        },
+                        file,
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    for (later, conflict) in [(missing, false), (saved, true)] {
+        let result = store.update_frame_raw_files(
+            cycle,
+            &BTreeMap::from([
+                (first, "cam1/1.pgm".into()),
+                (later, "cam1/different.pgm".into()),
+            ]),
+        );
+        assert!(matches!(
+            (conflict, result),
+            (false, Ok(false)) | (true, Err(_))
+        ));
+        assert_eq!(linked(), original);
+    }
+
+    let mut retry = original;
+    retry.insert(first, "cam1/1.pgm".into());
+    assert!(store.update_frame_raw_files(cycle, &retry).unwrap());
+    assert_eq!(linked(), retry);
 }
 
 #[test]
