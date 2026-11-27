@@ -46,11 +46,9 @@ function ReasonCell({ reason }: { reason: string }) {
   );
 }
 
-function rangeStart(days: number | null) {
-  if (days === null) return null;
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.getTime() - days * 86_400_000;
+function localDayStart(ts: number, offset = 0) {
+  const date = new Date(ts);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset).getTime();
 }
 
 export default function HistoryPage() {
@@ -62,6 +60,7 @@ export default function HistoryPage() {
   const restored = initial?.view;
   const filter = initial?.filter;
   const [range, setRange] = useState(restored?.range ?? (filter ? "all" : DEFAULT_RANGE));
+  const [todayStart, setTodayStart] = useState(() => localDayStart(Date.now()));
   const [groups, setGroups] = useState<string[]>(restored?.groups ?? filter?.groups ?? []);
   const [mode, setMode] = useState(restored?.mode ?? modeOptions.find((m) => m.modes.join() === (filter?.modes ?? []).join())?.value ?? "all");
   const [draft, setDraft] = useState<TextFilters>(() => ({ sn: restored?.sn ?? "", tag: restored?.tag ?? "" }));
@@ -99,18 +98,22 @@ export default function HistoryPage() {
   // 选“当前项目”但当前项目还没读到（或读取失败）时不查询，免得把全部项目的记录当成当前项目的
   const projectBlocked = project === CURRENT_PROJECT && !currentId;
   const projectId = project === CURRENT_PROJECT ? currentId : project || null;
+  const from = useMemo(() => {
+    const days = ranges.find(([value]) => value === range)![2];
+    return days === null ? null : localDayStart(todayStart, -days);
+  }, [range, todayStart]);
   const query = useMemo<HistoryQuery>(
     () => ({
       scope: "real",
       project: projectId,
-      from: rangeStart(ranges.find((r) => r[0] === range)![2]),
+      from,
       verdicts: verdictGroups.filter((g) => groups.includes(g.key)).flatMap((g) => g.verdicts),
       sn,
       tag: tag.trim() || undefined,
       recipeId: recipeId || null,
       modes: modeOptions.find((m) => m.value === mode)!.modes,
     }),
-    [range, groups, sn, tag, recipeId, mode, projectId],
+    [from, groups, sn, tag, recipeId, mode, projectId],
   );
   const view = useMemo<HistoryListView>(() => ({ range, groups, mode, sn, tag, recipeId, project, offset }), [range, groups, mode, sn, tag, recipeId, project, offset]);
   const entryView = useRef(view);
@@ -184,6 +187,28 @@ export default function HistoryPage() {
     return () => {
       alive.current = false;
       if (activeLoad.current) activeLoad.current.pending = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let timer: number | undefined;
+    const syncDay = () => {
+      window.clearTimeout(timer);
+      const now = Date.now();
+      setTodayStart(localDayStart(now));
+      timer = window.setTimeout(syncDay, Math.max(1, localDayStart(now, 1) - now));
+    };
+    const onVisibility = () => {
+      if (document.hidden) window.clearTimeout(timer);
+      else syncDay();
+    };
+    onVisibility();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onVisibility);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onVisibility);
     };
   }, []);
 

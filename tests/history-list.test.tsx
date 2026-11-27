@@ -101,6 +101,59 @@ it("中文 Tag 合成期间暂停或按确认键 → 只在合成结束后查询
   }
 });
 
+it.each([
+  { name: "历史页持续打开跨本机午夜", resumes: false },
+  { name: "历史页隐藏期间跨本机午夜后恢复可见", resumes: true },
+])("$name → 今天筛选切到新日期", async ({ resumes }) => {
+  const midnight = new Date(2026, 10, 28).getTime();
+  const previousMidnight = new Date(2026, 10, 27).getTime();
+  const records = [
+    { ...burstPartSummary(1), ts: previousMidnight },
+    { ...burstPartSummary(2), ts: midnight },
+  ];
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "recipe_list") return { recipes: [], errors: [] };
+    if (command === "project_current") return projects[0].meta;
+    if (command === "project_list") return projects;
+    if (command === "history_query") {
+      const { from } = (args as { query: HistoryQuery }).query;
+      return page(records.filter(record => record.ts <= Date.now() && (from == null || record.ts >= from)));
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+
+  vi.useFakeTimers();
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  try {
+    vi.setSystemTime(midnight - 100);
+    await act(async () => { render(<MemoryRouter><HistoryPage /></MemoryRouter>); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "今天" })); });
+    expect(queries().at(-1)?.from).toBe(previousMidnight);
+    expect(screen.getByRole("button", { name: "查看 SN SN-101 的记录" })).toBeVisible();
+    const before = queries().length;
+
+    if (resumes) {
+      hidden.mockReturnValue(true);
+      await act(async () => { fireEvent(document, new Event("visibilitychange")); });
+      vi.setSystemTime(midnight + 60_000);
+      expect(queries()).toHaveLength(before);
+      hidden.mockReturnValue(false);
+      await act(async () => { fireEvent(document, new Event("visibilitychange")); });
+    } else {
+      await act(() => vi.advanceTimersByTimeAsync(99));
+      expect(queries()).toHaveLength(before);
+      await act(() => vi.advanceTimersByTimeAsync(1));
+    }
+
+    expect(queries().slice(before)).toEqual([expect.objectContaining({ from: midnight })]);
+    expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查看 SN SN-102 的记录" })).toBeVisible();
+  } finally {
+    hidden.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
 it("查询在途时连续换筛选 → 只查最后条件，其失败时隐去旧记录", async () => {
   const oldRefresh = deferred<ReturnType<typeof page>>();
   const latestFilter = deferred<ReturnType<typeof page>>();
