@@ -1,10 +1,12 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render as renderPage, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import type { ReactElement } from "react";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { expect, it, vi } from "vitest";
-import type { HistoryQuery } from "../src/features/history/types";
+import { RejudgeTaskProvider } from "../src/features/history/rejudgeTask";
+import type { HistoryQuery, RejudgeResult } from "../src/features/history/types";
 import HistoryDetailPage from "../src/pages/HistoryDetailPage";
 import HistoryPage from "../src/pages/HistoryPage";
 import { burstPartDetail, burstPartSummary, deferred } from "./fixtures";
@@ -12,6 +14,7 @@ import { burstPartDetail, burstPartSummary, deferred } from "./fixtures";
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
 
+const render = (ui: ReactElement) => renderPage(ui, { wrapper: RejudgeTaskProvider });
 const row = (id: number) => screen.findByRole("button", { name: `查看 SN SN-${100 + id} 的记录` });
 const meta = (id: string, name: string) => ({ schema: 1, id, name, description: "", createdAt: 0, createdBy: "", copiedFrom: null });
 const projects = [{ id: "line-a", current: true, error: null, meta: meta("line-a", "A 线") }, { id: "line-b", current: false, error: null, meta: meta("line-b", "B 线") }];
@@ -22,7 +25,7 @@ const emitHistory = (event: string, payload: number | number[]) => {
   act(() => handler?.({ event, id: 1, payload }));
 };
 
-function mockTextFilteredHistory() {
+function mockTextFilteredHistory(rejudge?: () => Promise<RejudgeResult>) {
   const records = [burstPartSummary(1), { ...burstPartSummary(2), tags: ["待复核"] }];
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "recipe_list") return { recipes: [], errors: [] };
@@ -32,9 +35,97 @@ function mockTextFilteredHistory() {
       const { sn, tag } = (args as { query: HistoryQuery }).query;
       return page(records.filter(item => (!sn || item.sn.includes(sn)) && (!tag || item.tags?.includes(tag))));
     }
+    if (rejudge) {
+      if (command === "history_rejudge") return rejudge();
+      if (command === "history_overview") return { ...burstPartDetail(), summary: records[0], burst: null };
+      if (command === "history_neighbors") return { older: null, newer: null };
+    }
     throw new Error(`Unexpected command: ${command}`);
   });
 }
+
+const rejudgeResult: RejudgeResult = {
+  total: 1, skipped: 0, limitHit: false,
+  matrix: [{ from: "NG_GAP", to: "OK", count: 1 }],
+  changes: [], skipReasons: [],
+};
+
+it("收起重判后离开页面并换筛选 → 重开同一任务，结果按原筛选导航", async () => {
+  const pending = deferred<RejudgeResult>();
+  mockTextFilteredHistory(() => pending.promise);
+  const user = userEvent.setup();
+  const dialog = () => within(screen.getByRole("dialog", { name: "批量重判" }));
+  render(<MemoryRouter initialEntries={["/history"]}><Routes>
+    <Route path="/history" element={<><Link to="/other">其他页面</Link><HistoryPage /></>} />
+    <Route path="/other" element={<Link to="/history">返回历史页</Link>} />
+    <Route path="/history/:id" element={<HistoryDetailPage />} />
+  </Routes></MemoryRouter>);
+
+  await row(1);
+  await user.type(screen.getByLabelText("历史 SN"), "SN-101{Enter}");
+  const open = screen.getByRole("button", { name: "批量重判" });
+  await waitFor(() => expect(open).toBeEnabled());
+  await user.click(open);
+  await user.click(dialog().getByRole("button", { name: "重判当前筛选（1 件）" }));
+  const originalRequest = { request: expect.objectContaining({ query: expect.objectContaining({ sn: "SN-101" }) }) };
+  expect(invoke).toHaveBeenCalledWith("history_rejudge", originalRequest);
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "批量重判" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("link", { name: "其他页面" }));
+  expect(screen.queryByLabelText("历史 SN")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("link", { name: "返回历史页" }));
+  await row(1);
+  await user.type(screen.getByLabelText("历史 SN"), "SN-102{Enter}");
+  await waitFor(() => expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument());
+  expect(await row(2)).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "查看重判进度" }));
+
+  expect(dialog().getByRole("status")).toHaveTextContent("正在重判");
+  expect(dialog().getByText(/此任务使用原筛选范围/)).toBeVisible();
+  expect(dialog().getByRole("button", { name: "重判中…" })).toBeDisabled();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "history_rejudge"))
+    .toEqual([["history_rejudge", originalRequest]]);
+
+  await act(async () => pending.resolve({
+    ...rejudgeResult,
+    changes: [{ id: 1, sn: "SN-101", ts: 0, from: "NG_GAP", to: "OK", reason: "允许长度调整", flags: null }],
+  }));
+  expect(dialog().getByRole("table", { name: "判定变化矩阵" })).toBeVisible();
+  await user.click(dialog().getByRole("button", { name: "使用当前列表" }));
+  expect(dialog().queryByRole("table", { name: "判定变化矩阵" })).not.toBeInTheDocument();
+  expect(dialog().getByRole("button", { name: "重判当前筛选（1 件）" })).toBeEnabled();
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "查看上次重判" }));
+  await user.click(dialog().getByText("SN SN-101"));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("history_neighbors", {
+    id: 1, query: expect.objectContaining({ sn: "SN-101" }),
+  }));
+});
+
+it("第二次重判开始即清除旧矩阵，失败后显示错误并可重试", async () => {
+  const pending = deferred<RejudgeResult>();
+  mockTextFilteredHistory(vi.fn<() => Promise<RejudgeResult>>()
+    .mockResolvedValueOnce(rejudgeResult).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(rejudgeResult));
+  const user = userEvent.setup();
+  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
+  await row(1);
+  await user.click(screen.getByRole("button", { name: "批量重判" }));
+  const dialog = within(screen.getByRole("dialog", { name: "批量重判" }));
+  await user.click(dialog.getByRole("button", { name: /重判当前筛选/ }));
+  expect(await dialog.findByRole("table", { name: "判定变化矩阵" })).toBeVisible();
+
+  const retry = () => dialog.getByRole("button", { name: "再次重判" });
+  await user.click(retry());
+  expect(dialog.getByRole("button", { name: "重判中…" })).toBeDisabled();
+  expect(dialog.queryByRole("table", { name: "判定变化矩阵" })).not.toBeInTheDocument();
+  await act(async () => pending.reject(new Error("记录库忙")));
+  expect(dialog.getByRole("alert")).toHaveTextContent("记录库忙");
+  expect(dialog.queryByRole("table", { name: "判定变化矩阵" })).not.toBeInTheDocument();
+  await user.click(retry());
+  expect(await dialog.findByRole("table", { name: "判定变化矩阵" })).toBeVisible();
+  expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+});
 
 it("文本筛选仅应用最终输入，回车立即查询一次，等待期间禁用旧结果导出", async () => {
   mockTextFilteredHistory();

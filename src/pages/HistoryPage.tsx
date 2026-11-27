@@ -9,6 +9,7 @@ import { projectLabel, recordProject } from "../features/project/rules";
 import { errorText } from "../lib/errors";
 import { flagBadges } from "../features/plan/vis";
 import { commonHistoryTags, displayReason, formatTime, HistoryExportDialog, HistoryImportDialog, HistoryRecordDialog, historyApi, partVerdict, RejudgeDialog, triggerModeLabel, verdictGroups, type HistoryDeleted, type HistoryDetailState, type HistoryListState, type HistoryListView, type HistoryPackagePreview, type HistoryPage as Page, type HistoryQuery, type PartMode } from "../features/history";
+import { useRejudgeTask, type RejudgeScope } from "../features/history/rejudgeTask";
 
 type Item = Page["items"][number];
 type TextFilters = { sn: string; tag: string };
@@ -55,6 +56,7 @@ export default function HistoryPage() {
   const go = useNavigate();
   const recipes = useRecipes();
   const projects = useProjectDirectory();
+  const { task: rejudgeTask } = useRejudgeTask();
   const location = useLocation();
   const [initial] = useState(() => location.state as HistoryListState | null);
   const restored = initial?.view;
@@ -75,7 +77,7 @@ export default function HistoryPage() {
   const [exported, setExported] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [revealing, setRevealing] = useState(false);
-  const [rejudge, setRejudge] = useState<{ query: HistoryQuery; total: number } | null>(null);
+  const [rejudge, setRejudge] = useState<RejudgeScope | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [recordAction, setRecordAction] = useState<"tags" | "delete" | null>(null);
   const [notice, setNotice] = useState(initial?.historyNotice ?? null);
@@ -128,6 +130,12 @@ export default function HistoryPage() {
   const countedTotal = counts ? counts.ok + counts.excursion + counts.ng + counts.err : 0;
   const pending = stale && !!page;
   const hasFilters = range !== DEFAULT_RANGE || groups.length > 0 || mode !== "all" || !!draft.sn || !!draft.tag || !!recipeId || !!project;
+  const currentRejudgeScope = result && page?.total && !loading && !stale
+    ? { query: result.query, view: result.view, total: page.total } : null;
+  const rejudgeTarget = rejudgeTask?.scope ?? currentRejudgeScope;
+  const rejudgeScopeKey = rejudge ? JSON.stringify(rejudge) : undefined;
+  const originalRejudgeScope = !!rejudge && (draftPending || JSON.stringify(rejudge.query) !== JSON.stringify(query));
+  const canUseCurrentRejudgeScope = currentRejudgeScope && JSON.stringify(currentRejudgeScope) !== rejudgeScopeKey;
   const applyText = useCallback((next: TextFilters) => {
     window.clearTimeout(textTimer.current);
     setAppliedText(next);
@@ -163,8 +171,8 @@ export default function HistoryPage() {
     setDraft(empty); applyText(empty);
     setRange(DEFAULT_RANGE); setGroups([]); setMode("all"); setRecipeId(""); setProject("");
   };
-  const openRecord = (id: number) => go(`/history/${id}`, {
-    state: { query: result?.query ?? query, listView: result?.view ?? view, listRecordId: id } satisfies HistoryDetailState,
+  const openRecord = (id: number, source: Pick<RejudgeScope, "query" | "view"> = result ?? scope) => go(`/history/${id}`, {
+    state: { query: source.query, listView: source.view, listRecordId: id } satisfies HistoryDetailState,
   });
 
   useLayoutEffect(() => { currentScope.current = scope; }, [scope]);
@@ -222,7 +230,6 @@ export default function HistoryPage() {
   useEffect(() => {
     setExported(null);
     setOperationError("");
-    setRejudge(null);
     setSelected([]);
     setRecordAction(null);
   }, [query]);
@@ -458,7 +465,9 @@ export default function HistoryPage() {
               {countedTotal > 0 && <span>良率 <b>{(((counts!.ok + counts!.excursion) / countedTotal) * 100).toFixed(1)}%</b></span>}
             </div>
             <div className="hist-actions">
-              <Button leadingIcon={<Scale size={15} />} onClick={() => page && setRejudge({ query, total: page.total })} disabled={loading || stale || !page?.total}>批量重判</Button>
+              <Button leadingIcon={<Scale size={15} />} onClick={() => setRejudge(rejudgeTarget)} disabled={!rejudgeTarget}>
+                {rejudgeTask?.status === "running" ? "查看重判进度" : rejudgeTask ? "查看上次重判" : "批量重判"}
+              </Button>
               <Button leadingIcon={<Download size={15} />} onClick={() => void exportCsv()} disabled={exporting || loading || stale || !page?.total}>
                 {exporting ? "导出中…" : "导出 CSV"}
               </Button>
@@ -516,7 +525,14 @@ export default function HistoryPage() {
           />
         )}
       </Card>
-      {rejudge && <RejudgeDialog query={rejudge.query} total={rejudge.total} onOpenRecord={openRecord} onClose={() => setRejudge(null)} />}
+      {rejudge && <RejudgeDialog
+        key={rejudgeScopeKey}
+        scope={rejudge}
+        originalScope={originalRejudgeScope}
+        onUseCurrentScope={canUseCurrentRejudgeScope ? () => setRejudge(currentRejudgeScope) : undefined}
+        onOpenRecord={(id) => openRecord(id, rejudge)}
+        onClose={() => setRejudge(null)}
+      />}
       {recordAction && <HistoryRecordDialog action={recordAction} ids={selected.map(Number)} initialTags={selectedTags} onClose={() => setRecordAction(null)} onSaved={savedTags} onDeleted={deletedRecords} onBusyChange={setMutationBusy} />}
       {packageIds && <HistoryExportDialog ids={packageIds} onClose={() => setPackageIds(null)} />}
       {packagePreview && <HistoryImportDialog preview={packagePreview} projectName={projects.current?.name} onClose={() => setPackagePreview(null)} onImported={load} />}

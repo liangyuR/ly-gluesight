@@ -1,10 +1,9 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useState } from "react";
 import { Alert, Button, Dialog, List, ListItem, NumberField, SegmentedControl, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
 import type { Verdict } from "../../cycle/types";
-import { historyApi } from "../api";
 import { formatTime, verdictGroups, verdictLabel, verdictTone } from "../meta";
-import type { HistoryQuery, KindOverride, Overrides, RejudgeResult } from "../types";
-import { errorText } from "../../../lib/errors";
+import { useRejudgeTask, type RejudgeOptions, type RejudgeScope } from "../rejudgeTask";
+import type { KindOverride, Overrides } from "../types";
 
 const order: Verdict[] = verdictGroups.flatMap((g) => g.verdicts);
 const kindFields: [keyof KindOverride, string][] = [
@@ -22,39 +21,29 @@ const isOk = (v: Verdict) => v.startsWith("OK");
 const orDefault = (value: number | "") => (value === "" ? undefined : value);
 
 /** 用存储的测量表批量重判：可选当前配方与试算参数，输出判定变化矩阵。 */
-export default function RejudgeDialog({ query, total, onOpenRecord, onClose }: { query: HistoryQuery; total: number; onOpenRecord: (id: number) => void; onClose: () => void }) {
-  const [useCurrent, setUseCurrent] = useState(false);
-  const [overrides, setOverrides] = useState<Overrides>({ straight: {}, corner: {} });
-  const [result, setResult] = useState<RejudgeResult | null>(null);
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState("");
-  const pending = useRef(false);
-  const scope=JSON.stringify(query);
-  const current=useRef({scope,alive:true});
-  current.current.scope=scope;
-  useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
-  useEffect(()=>{setResult(null);setError("");},[scope]);
-  const invalid=Object.values(overrides).some(value=>typeof value==="number"&&!Number.isFinite(value))||
-    [overrides.straight,overrides.corner].some(value=>
-      Object.values(value).some(v=>v!==undefined&&(!Number.isFinite(v)||v<0)))||
-    (overrides.maxGapLen!==undefined&&overrides.maxGapLen<0);
-  const edit=(next:Overrides)=>{setOverrides(next);setResult(null);setError("");};
-
-  const run = async () => {
-    if(pending.current||invalid||total<=0)return;
-    pending.current=true;
-    setRunning(true);
-    setError("");
-    const valid=()=>current.current.alive&&current.current.scope===scope;
-    try {
-      const next=await historyApi.rejudge({ query, ids: [], useCurrentRecipe: useCurrent, overrides });
-      if(valid())setResult(next);
-    } catch (e) {
-      if(valid())setError(errorText(e));
-    } finally {
-      pending.current=false;if(current.current.alive)setRunning(false);
-    }
-  };
+export default function RejudgeDialog({ scope, originalScope, onUseCurrentScope, onOpenRecord, onClose }: {
+  scope: RejudgeScope;
+  originalScope: boolean;
+  onUseCurrentScope?: () => void;
+  onOpenRecord: (id: number) => void;
+  onClose: () => void;
+}) {
+  const { task, run } = useRejudgeTask();
+  const scopedTask = task?.scope === scope ? task : null;
+  const [options, setOptions] = useState<RejudgeOptions>(() => scopedTask?.options
+    ?? { useCurrentRecipe: false, overrides: { straight: {}, corner: {} } });
+  const { useCurrentRecipe, overrides } = options;
+  const matchingTask = scopedTask?.options === options ? scopedTask : null;
+  const running = task?.status === "running";
+  const result = matchingTask?.status === "completed" ? matchingTask.result : null;
+  const error = matchingTask?.status === "failed" ? matchingTask.error : "";
+  const invalid = Object.values(overrides).some(value => typeof value === "number" && !Number.isFinite(value)) ||
+    [overrides.straight, overrides.corner].some(value =>
+      Object.values(value).some(v => v !== undefined && (!Number.isFinite(v) || v < 0))) ||
+    (overrides.maxGapLen !== undefined && overrides.maxGapLen < 0);
+  const edit = (next: Overrides) => setOptions(current => ({ ...current, overrides: next }));
+  const runLabel = originalScope ? "按原筛选重判"
+    : scopedTask ? "再次重判" : `重判当前筛选（${scope.total} 件）`;
 
   const kindName = { straight: "直线段胶宽", corner: "弯道段胶宽" };
   const kind = (k: keyof typeof kindName, f: keyof KindOverride) => (
@@ -94,13 +83,18 @@ export default function RejudgeDialog({ query, total, onOpenRecord, onClose }: {
       description="用已存储的测量表重新判定，不需要重新拍照；ERR 件和缺少测量数据的记录会跳过。试算参数只用于本次重判，不会保存到配方。"
       footer={
         <>
-          <Button onClick={onClose}>关闭</Button>
-          <Button variant="filled" onClick={run} disabled={running||invalid||total<=0}>{running ? "重判中…" : `重判当前筛选（${total} 件）`}</Button>
+          <Button onClick={onClose}>{running ? "收起" : "关闭"}</Button>
+          {!running && onUseCurrentScope && <Button onClick={onUseCurrentScope}>使用当前列表</Button>}
+          <Button variant="filled" onClick={() => void run(scope, options)} disabled={running || invalid || scope.total <= 0}>
+            {running ? "重判中…" : runLabel}
+          </Button>
         </>
       }
     >
       <Stack direction="column" align="stretch" gap={14}>
-        <SegmentedControl label="重判使用的配方" options={recipeOptions} disabled={running} value={useCurrent ? "current" : "recorded"} onValueChange={(value) => { setUseCurrent(value === "current"); setResult(null); }} />
+        {running && <div role="status">正在重判。收起后可从历史页查看进度和结果。</div>}
+        {originalScope && <Text muted>此任务使用原筛选范围，当前历史列表的筛选已变化。</Text>}
+        <SegmentedControl label="重判使用的配方" options={recipeOptions} disabled={running} value={useCurrentRecipe ? "current" : "recorded"} onValueChange={(value) => setOptions(current => ({ ...current, useCurrentRecipe: value === "current" }))} />
         <div className="rj-params">
           <span />
           {kindFields.map(([, label]) => (
