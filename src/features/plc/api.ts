@@ -7,6 +7,9 @@ import type {
   DataType,
   HistorySample,
   LogLabels,
+  LogGroupKey,
+  LogGroupPage,
+  LogGroupQuery,
   LogPage,
   LogQuery,
   PlcConfig,
@@ -62,11 +65,15 @@ export const plcApi = {
   getValues: () => call<Record<string, PointValue>>("plc_get_values", undefined, () => ({})),
   writePoint: (id: string, value: unknown) => call<void>("plc_write_point", { id, value }, () => undefined),
   queryLogs: (query: LogQuery) => call<LogPage>("plc_query_logs", { query }, () => ({ total: 0, items: [] })),
-  exportLogs: (query: LogQuery, labels: LogLabels) =>
-    call<string>("plc_export_logs", { query, labels }, () => { throw new Error("导出 PLC 日志需要桌面后端"); }),
+  queryLogGroups: (query: LogGroupQuery) =>
+    call<LogGroupPage>("plc_query_log_groups", { query }, () => ({ total: 0, items: [] })),
+  queryGroupLogs: (group: LogGroupKey, query: LogQuery) =>
+    call<LogPage>("plc_query_group_logs", { group, query }, () => ({ total: 0, items: [] })),
+  exportLogs: (query: LogQuery, labels: LogLabels, group?: LogGroupKey) =>
+    call<string>("plc_export_logs", { query, labels, group }, () => { throw new Error("导出 PLC 日志需要桌面后端"); }),
   reveal: (path: string) => call<void>("reveal_path", { path }, () => undefined),
-  pointHistory: (pointId: string, start: number, end: number) =>
-    call<HistorySample[]>("plc_point_history", { pointId, start, end }, () => []),
+  pointHistory: (pointId: string, start: number, end: number, group?: LogGroupKey) =>
+    call<HistorySample[]>("plc_point_history", { pointId, start, end, group }, () => []),
   checkAddress: (connection: ConnectionConfig, address: string, dataType: DataType) =>
     call<string>("plc_check_address", { connection, address, dataType }, () => "预览模式不校验"),
   s7Phase1Template: (plcDb: number, pcDb: number) =>

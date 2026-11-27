@@ -31,7 +31,7 @@ const README: &str = r#"# 诊断包说明
 |---|---|
 | `logs/runtime-*.log` | 带本地时间和时区的纯文本运行日志 |
 | `logs/gluesight-*` | 导出时段内仍保留的旧版运行日志，使用原文件名和格式 |
-| `logs/plc.jsonl` | PLC 日志（连接、点位值变化、写入、边沿、错误与配置事件，按 `category` 区分），只含导出时间段内的行，时间正序 |
+| `logs/plc.jsonl` | PLC 通讯日志，含工件通讯事件、连接、点位值变化、写入、边沿、错误与配置事件，按 `category` 区分。仅导出所选时间段内的记录，按时间正序排列 |
 | `project.json` | 当前项目的编号、名称与描述 |
 | `config/` | 当前项目的配置文件（PLC、相机、检测设置等） |
 | `machine/site-offline.json` | 本机的站点模式与离线选择（没有时不打包） |

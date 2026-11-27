@@ -2908,7 +2908,7 @@ impl Machine {
             });
         }
         self.uninspected = None;
-        self.s7.settle().await;
+        self.s7.settle(plc(&self.app), reason).await;
     }
 
     /// 通讯未就绪。已因同一来源同一原因处于故障时只计数；在途件按中断记录。
