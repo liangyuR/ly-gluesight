@@ -11,13 +11,17 @@ import { useProjectDirectory, type ProjectDirectory } from "../features/project/
 import { recordProject } from "../features/project/rules";
 
 type Neighbors = { older: number | null; newer: number | null };
+type NeighborResult = { locationKey: string; neighbors: Neighbors };
+const EMPTY_NEIGHBORS: Neighbors = { older: null, newer: null };
 
 export default function HistoryDetailPage() {
   const { id } = useParams(), navigate = useNavigate(), location = useLocation();
   const state = location.state as HistoryDetailState | null;
   const listQuery = state?.query ?? null;
   const back = { onBack: () => navigate(state?.returnTo?.path ?? "/history"), backLabel: state?.returnTo?.label ?? "返回历史列表" };
-  const [neighbors, setNeighbors] = useState<Neighbors>({ older: null, newer: null });
+  const [neighborResult, setNeighborResult] = useState<NeighborResult | null>(null);
+  const activeNeighborResult = useRef<NeighborResult | null>(null);
+  const neighbors = neighborResult?.locationKey === location.key ? neighborResult.neighbors : EMPTY_NEIGHBORS;
   const [detail, setDetail] = useState<PartDetail | null>(null);
   const [error, setError] = useState("");
   const overviewSerial = useRef(0);
@@ -44,10 +48,40 @@ export default function HistoryDetailPage() {
     return () => { overviewSerial.current++; };
   }, [reload]);
   useEffect(() => {
-    let alive = true; setNeighbors({ older: null, newer: null });
-    void historyApi.neighbors(Number(id), listQuery).then(v => alive && setNeighbors(v)).catch(() => {});
-    return () => { alive = false; };
-  }, [id, JSON.stringify(listQuery)]);
+    let alive = true;
+    let loading = false;
+    let pending = false;
+    const recordId = Number(id);
+    const locationKey = location.key;
+    const refresh = (invalidate = false) => {
+      if (!alive) return;
+      if (invalidate) {
+        activeNeighborResult.current = null;
+        setNeighborResult(null);
+      }
+      if (loading) { pending = true; return; }
+      loading = true;
+      void historyApi.neighbors(recordId, listQuery).then(neighbors => {
+        if (!alive || pending) return;
+        const next = { locationKey, neighbors };
+        activeNeighborResult.current = next;
+        setNeighborResult(next);
+      }).catch(() => {}).finally(() => {
+        loading = false;
+        if (pending) { pending = false; refresh(); }
+      });
+    };
+    const stopInserted = subscribe<number>("history://inserted", () => refresh());
+    const stopChanged = subscribe<number[]>("history://changed", ids => {
+      const current = activeNeighborResult.current;
+      if (!current || current.locationKey !== locationKey || listQuery?.tag?.trim() ||
+          ids.some(id => id === recordId || id === current.neighbors.older || id === current.neighbors.newer)) {
+        refresh(true);
+      }
+    });
+    refresh(true);
+    return () => { alive = false; stopInserted(); stopChanged(); };
+  }, [id, listQuery, location.key]);
   useEffect(() => {
     const stop = subscribe<string>("history://updated", cycleId => {
       if (!detail || cycleId !== detail.summary.cycleId) return;
@@ -62,7 +96,13 @@ export default function HistoryDetailPage() {
     else reload();
   }), [id, reload]);
 
-  const openPart = (target: number | null) => { if (target != null) navigate("/history/" + target, { state: { ...state, scrollTop: undefined } }); };
+  const openPart = (target: number | null) => {
+    const current = activeNeighborResult.current;
+    if (target != null && current?.locationKey === location.key &&
+        (target === current.neighbors.older || target === current.neighbors.newer)) {
+      navigate("/history/" + target, { state: { ...state, scrollTop: undefined } });
+    }
+  };
   if (!detail || detail.summary.id !== Number(id)) return error ? <div className="stack"><IconButton onClick={back.onBack} aria-label={back.backLabel}><ArrowLeft size={18} /></IconButton><Alert tone="ng">{error}</Alert></div> : <Text muted>加载中…</Text>;
   const foreignProject = foreignProjectNote(detail.summary.projectId, projects);
   const actions = <HistoryRecordActions key={detail.summary.id} id={detail.summary.id} tags={detail.summary.tags ?? []}

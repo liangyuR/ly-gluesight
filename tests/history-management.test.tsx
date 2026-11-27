@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type Event as TauriEvent } from "@tauri-apps/api/event";
@@ -8,7 +8,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { WorkspaceProvider } from "../src/features/workspace/context";
 import type { HistoryDetailState, PartDetail } from "../src/features/history/types";
 import HistoryDetailPage from "../src/pages/HistoryDetailPage";
-import { burstPartDetail, deferred } from "./fixtures";
+import { burstPartDetail, burstPartSummary, deferred } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
@@ -16,7 +16,9 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 const listeners = new Map<string, Set<(event: TauriEvent<unknown>) => void>>();
 const project = { schema: 1, id: "line-a", name: "A 线", description: "", createdAt: 0, createdBy: "", copiedFrom: null };
 let detail: PartDetail;
-let overview: () => Promise<PartDetail>;
+type Neighbors = { older: number | null; newer: number | null };
+let overview: (id: number) => Promise<PartDetail>;
+let neighbors: (id: number) => Promise<Neighbors>;
 let setTags: (args: { ids: number[]; tags: string[] }) => Promise<string[]>;
 let deleteRecords: () => Promise<{ deleted: number; warnings: string[] }>;
 
@@ -37,6 +39,7 @@ beforeEach(() => {
   detail = burstPartDetail();
   detail.burst = { ...detail.burst!, frames: [], frameVerdicts: [] };
   overview = async () => detail;
+  neighbors = async () => ({ older: null, newer: null });
   setTags = async ({ tags }) => tags;
   deleteRecords = async () => ({ deleted: 1, warnings: [] });
   vi.mocked(listen).mockImplementation(async (event, handler) => {
@@ -48,8 +51,8 @@ beforeEach(() => {
   });
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
-      case "history_overview": return overview();
-      case "history_neighbors": return { older: null, newer: null };
+      case "history_overview": return overview((args as { id: number }).id);
+      case "history_neighbors": return neighbors((args as { id: number }).id);
       case "history_set_tags": return setTags(args as { ids: number[]; tags: string[] });
       case "history_delete": return deleteRecords();
       case "recipe_list": return { recipes: [], errors: [] };
@@ -63,6 +66,35 @@ beforeEach(() => {
       default: throw new Error(`Unexpected native command: ${command}`);
     }
   });
+});
+
+it("邻件失效且刷新期间有新件入库 → 按钮和快捷键只使用最新邻件", async () => {
+  const stale = deferred<Neighbors>();
+  const latest = deferred<Neighbors>();
+  const readNeighbors = vi.fn(async (id: number): Promise<Neighbors> => ({ older: id === 3 ? 1 : null, newer: null }));
+  readNeighbors.mockResolvedValueOnce({ older: null, newer: 2 }).mockReturnValueOnce(stale.promise).mockReturnValueOnce(latest.promise);
+  neighbors = readNeighbors;
+  overview = async id => ({ ...detail, summary: burstPartSummary(id) });
+  show();
+  const nextButton = () => screen.getByRole("button", { name: "后一件" });
+  await waitFor(() => expect(nextButton()).toBeEnabled());
+
+  act(() => emit("history://changed", [2]));
+  await waitFor(() => expect(readNeighbors).toHaveBeenCalledTimes(2));
+  expect(nextButton()).toBeDisabled();
+  fireEvent.keyDown(window, { key: "]" });
+  expect(screen.getByText("SN SN-101")).toBeVisible();
+
+  act(() => emit("history://inserted", 3));
+  expect(readNeighbors).toHaveBeenCalledTimes(2);
+  await act(async () => { stale.resolve({ older: null, newer: 2 }); });
+  await waitFor(() => expect(readNeighbors).toHaveBeenCalledTimes(3));
+  expect(nextButton()).toBeDisabled();
+
+  await act(async () => { latest.resolve({ older: null, newer: 3 }); });
+  expect(nextButton()).toBeEnabled();
+  fireEvent.keyDown(window, { key: "]" });
+  expect(await screen.findByText("SN SN-103")).toBeVisible();
 });
 
 it("Tag 保存期间交付与录制状态更新 → 补读完整详情且旧请求不能覆盖", async () => {
