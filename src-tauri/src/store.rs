@@ -731,15 +731,46 @@ fn frame_rows_raw(
     rows.collect::<Result<_, _>>().map_err(db_err)
 }
 
+fn decode_frame_metrics(text: Option<String>) -> Result<Option<Arc<FrameMetrics>>, String> {
+    text.map(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+        .transpose()
+}
+
 fn decode_frame_rows(rows: Vec<RawFrameRow>) -> Result<Vec<FrameRecord>, String> {
     rows.into_iter()
         .map(|(mut frame, text)| {
-            frame.metrics = text
-                .map(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
-                .transpose()?;
+            frame.metrics = decode_frame_metrics(text)?;
             Ok(frame)
         })
         .collect()
+}
+
+fn decode_frame_rows_parallel(mut rows: Vec<RawFrameRow>) -> Result<Vec<FrameRecord>, String> {
+    let decode_chunk = |chunk: &mut [RawFrameRow]| -> Result<(), String> {
+        for (frame, text) in chunk {
+            frame.metrics = decode_frame_metrics(text.take())?;
+        }
+        Ok(())
+    };
+    let decoded = std::thread::scope(|scope| -> Result<bool, String> {
+        let middle = rows.len() / 2;
+        let (first, second) = rows.split_at_mut(middle);
+        let Ok(worker) =
+            std::thread::Builder::new().spawn_scoped(scope, move || decode_chunk(second))
+        else {
+            return Ok(false);
+        };
+        let first = decode_chunk(first);
+        let second = worker.join();
+        first?;
+        second.map_err(|_| "历史帧指标解码线程异常退出".to_owned())??;
+        Ok(true)
+    })?;
+    if decoded {
+        Ok(rows.into_iter().map(|(frame, _)| frame).collect())
+    } else {
+        decode_frame_rows(rows)
+    }
 }
 
 type RawSnapshot = (String, u32, String);
@@ -2120,7 +2151,19 @@ impl Store {
     /// 段配方记录的逐帧记录，按 (camera, seq) 排序；旧记录为空。
     pub fn burst_frames(&self, id: i64) -> Result<Vec<FrameRecord>, String> {
         let rows = frame_rows_raw(&self.conn.lock().unwrap(), id, None)?;
-        decode_frame_rows(rows)
+        let metrics_bytes: usize = rows
+            .iter()
+            .filter_map(|(_, text)| text.as_ref())
+            .map(String::len)
+            .sum();
+        if rows.len() > 1
+            && metrics_bytes >= 1024 * 1024
+            && std::thread::available_parallelism().is_ok_and(|threads| threads.get() >= 8)
+        {
+            decode_frame_rows_parallel(rows)
+        } else {
+            decode_frame_rows(rows)
+        }
     }
 
     /// 区域判定为空、但有测过的帧的维护试判件：回写码 0 与区域判定不同，落库时退回了没有区域的摘要。

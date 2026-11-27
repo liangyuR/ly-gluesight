@@ -953,6 +953,37 @@ fn burst_part<'a>(
 }
 
 #[test]
+fn large_history_frame_table_rejects_malformed_metrics_in_the_last_frame() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let mut frames = burst_fixture::frames(4, &[]);
+    for frame in &mut frames {
+        Arc::make_mut(frame.metrics.as_mut().unwrap()).widths = vec![Some(4.0); 25_000];
+    }
+    let (judgement, burst) = burst_fixture::record(&recipe, frames, None, Some(0));
+    let id = store
+        .insert(&burst_part(
+            &recipe,
+            "malformed-history-frame",
+            &judgement,
+            &burst,
+        ))
+        .unwrap();
+    store
+        .conn
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE part_frames SET metrics='{}' WHERE part_id=?1 AND camera=2 AND seq=4",
+            [id],
+        )
+        .unwrap();
+
+    assert!(store.burst_frames(id).is_err());
+}
+
+#[test]
 fn registering_raw_files_keeps_the_batch_atomic_and_allows_the_same_path_on_retry() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
