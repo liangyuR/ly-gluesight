@@ -29,13 +29,13 @@ type TraceProps = {
   detail: PartDetail;
   burst: PartDetailBurst;
   selected: { camera: number; seq: number } | null;
-  onSelect: (camera: number, seq: number) => void;
+  onSelect: (camera: number, seq: number, revealImage?: boolean) => void;
 };
 
 export function BurstPartTrace(props: TraceProps) {
   const select = useRef(props.onSelect);
   select.current = props.onSelect;
-  const onSelect = useCallback((camera: number, seq: number) => select.current(camera, seq), []);
+  const onSelect = useCallback((camera: number, seq: number, revealImage?: boolean) => select.current(camera, seq, revealImage), []);
   return <TraceTable {...props} onSelect={onSelect} />;
 }
 
@@ -89,7 +89,7 @@ const TraceTable = memo(function TraceTable({ detail, burst, selected, onSelect 
       key: "raw",
       header: "原图",
       render: frame => frame.rawFile
-        ? <Button size="sm" aria-label={`查看 ${burst.cameras[frame.camera] ?? `相机 ${frame.camera + 1}`} 帧组 ${frame.seq} 原图`} title={frame.rawFile} variant={selected?.camera === frame.camera && selected.seq === frame.seq ? "filled" : "tonal"} onClick={() => onSelect(frame.camera, frame.seq)}>查看</Button>
+        ? <Button size="sm" aria-label={`查看 ${burst.cameras[frame.camera] ?? `相机 ${frame.camera + 1}`} 帧组 ${frame.seq} 原图`} title={frame.rawFile} variant={selected?.camera === frame.camera && selected.seq === frame.seq ? "filled" : "tonal"} onClick={() => onSelect(frame.camera, frame.seq, true)}>查看</Button>
         : <span className="muted">{frame.status === "missing" ? "缺帧" : "未保留"}</span>,
     },
   ];

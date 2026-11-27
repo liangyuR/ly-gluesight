@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -148,6 +148,34 @@ describe("历史详情（段配方记录）", () => {
     await user.selectOptions(display, "comparison");
     expect(screen.getByText("候选原图复测整件判定")).toBeVisible();
     expect(screen.getByRole("button", { name: /^帧组 6 · CAM-3 ·/, pressed: true })).toBeVisible();
+  });
+
+  it("键盘查看追溯原图 → 等待读图时就定位到目标相机，图像就绪后保留焦点", async () => {
+    const image = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
+    let finishImage!: (value: typeof image) => void;
+    const pending = new Promise<typeof image>(resolve => { finishImage = resolve; });
+    vi.mocked(burstImageApi.record).mockImplementation(async (_, camera, seq) => camera === 1 && seq === 6 ? pending : image);
+    render(<main className="main-body">{element()}</main>);
+    const user = userEvent.setup();
+    const row = await screen.findByRole("button", { name: "追溯 CAM-2 帧组 6" });
+    row.focus();
+    await user.keyboard("{Enter}");
+    expect(row).toHaveFocus();
+
+    const tile = screen.getByRole("group", { name: "CAM-2 · 帧组 6 原图" });
+    const content = screen.getByRole("main");
+    content.scrollTop = 600;
+    vi.spyOn(content, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 54, 1000, 720));
+    vi.spyOn(tile, "getBoundingClientRect").mockReturnValue(new DOMRect(10, -360, 280, 240));
+    screen.getByRole("button", { name: "查看 CAM-2 帧组 6 原图" }).focus();
+    await user.keyboard("{Enter}");
+    expect(tile).toHaveFocus();
+    expect(content.scrollTop).toBeLessThan(600);
+    expect(within(tile).getByText("正在读取原图…")).toBeVisible();
+
+    await act(async () => { finishImage(image); });
+    expect(within(tile).getByRole("img", { name: "原始 SN SN-101 · CAM-2 · 帧组 6" })).toBeVisible();
+    expect(tile).toHaveFocus();
   });
 
   it("加载旧对照期间重新复算 → 迟到的旧对照不能覆盖新结果", async () => {
