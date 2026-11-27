@@ -12,7 +12,7 @@ use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
 use crate::frame_group::{FrameGroup, LossAlarm};
 use crate::passes::PassRules;
 use crate::plan::PathSegment;
-use crate::segmentation::{frame_corridors, resolve_regions, segment_part, Region, SegInput};
+use crate::segmentation::{frame_corridors, resolve_regions, segment_part, Region};
 use crate::store::{FrameRecord, PartDetail, PartDetailBurst};
 
 /// 区域划分的置信度门槛，与在线节拍（cycle/burst.rs）相同：比例分段器在帧数容差内给 1、之外给 0。
@@ -88,7 +88,7 @@ pub(super) fn summary(judgement: &BurstJudgement) -> judge::Judgement {
 }
 
 /// 由每帧指标还原帧组（与在线 Grouper 同一口径）：到了的帧（不论测没测成）算 present，缺帧不算；帧组数 = 最大 seq。
-pub(super) fn frame_groups(metrics: &[FrameMetrics], cameras: usize) -> Vec<FrameGroup> {
+fn frame_groups(metrics: &[FrameMetrics], cameras: usize) -> Vec<FrameGroup> {
     let total = metrics.iter().map(|m| m.seq).max().unwrap_or(0);
     let mut groups: Vec<_> = (1..=total)
         .map(|seq| FrameGroup {
@@ -120,17 +120,12 @@ pub(super) fn judge_frames(
     passes: PassRules,
 ) -> BurstJudgement {
     let groups = frame_groups(metrics, cameras.len());
-    let outcome = segment_part(
-        &SegInput {
-            groups: &groups,
-            segments,
-        },
-        passes,
-    );
+    let total = groups.len() as u64;
+    let outcome = segment_part(segments, total, passes);
     let regions = resolve_regions(
         segments,
         &outcome,
-        groups.len() as u64,
+        total,
         MIN_CONFIDENCE,
         boundary_guard,
         passes,
@@ -245,15 +240,8 @@ fn remeasure_by_rule_operation(
             )
         })
         .collect();
-    let groups = frame_groups(&arrived, cameras.len());
-    let total = groups.len() as u64;
-    let outcome = segment_part(
-        &SegInput {
-            groups: &groups,
-            segments,
-        },
-        passes,
-    );
+    let total = frames.iter().map(|&(_, seq, _)| seq).max().unwrap_or(0);
+    let outcome = segment_part(segments, total, passes);
     let regions = resolve_regions(
         segments,
         &outcome,

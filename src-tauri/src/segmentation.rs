@@ -55,7 +55,7 @@ impl Segmenter for Proportional {
     }
 }
 
-fn proportional_for_count(segments: &[PathSegment], total: u64) -> SegOutcome {
+pub(crate) fn proportional_for_count(segments: &[PathSegment], total: u64) -> SegOutcome {
     let Some(counts) = segments
         .iter()
         .map(|s| s.expected_frames.map(u64::from))
@@ -127,9 +127,9 @@ fn by_passes(segments: &[PathSegment], passes: PassRules) -> Option<SegOutcome> 
 
 /// 本件的分段（生产、复测与历史重判共用）：本件笔数与示教件一致时按笔换算边界（D-SB-62），笔数不一致时比例边界一律不可信
 /// （整件按未分段判），没有笔结构时按 [`Proportional`]。
-pub fn segment_part(input: &SegInput, passes: PassRules) -> SegOutcome {
-    by_passes(input.segments, passes).unwrap_or_else(|| {
-        let mut outcome = Proportional.segment(input);
+pub fn segment_part(segments: &[PathSegment], total: u64, passes: PassRules) -> SegOutcome {
+    by_passes(segments, passes).unwrap_or_else(|| {
+        let mut outcome = proportional_for_count(segments, total);
         if let (true, SegOutcome::Boundaries(boundaries)) = (passes.mismatch(), &mut outcome) {
             boundaries.iter_mut().for_each(|b| b.confidence = 0.0);
         }
@@ -1229,25 +1229,12 @@ mod tests {
 
     fn by_pass(segments: &[PathSegment], part: &[u32], taught: &[u32], head: u32) -> Vec<Region> {
         let total: u64 = part.iter().map(|&n| u64::from(n)).sum();
-        let groups: Vec<FrameGroup> = (1..=total)
-            .map(|seq| FrameGroup {
-                seq,
-                present: vec![true; 3],
-                incomplete: false,
-            })
-            .collect();
         let passes = PassRules {
             part,
             taught: Some(taught),
             skip: crate::passes::PassSkip { head, tail: 0 },
         };
-        let outcome = segment_part(
-            &SegInput {
-                groups: &groups,
-                segments,
-            },
-            passes,
-        );
+        let outcome = segment_part(segments, total, passes);
         resolve_regions(segments, &outcome, total, 0.5, 2, passes)
     }
 

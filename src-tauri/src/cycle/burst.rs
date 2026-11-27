@@ -15,12 +15,11 @@ use crate::frame_clock::{ClockStart, FrameClock, Stamp};
 use crate::frame_group::{loss_alarms, Grouper, Offer, MAX_SEQ};
 use crate::judge::{fault, Judgement, Verdict};
 use crate::measure::{FrameMeasured, MeasureError};
+use crate::passes::{self, PassRules};
 use crate::plan::{wider_checks, ArrivalRouting, PathSegment, SegmentChecks};
 use crate::recipe::Recipe;
 use crate::recorder::RecordedFrame;
-use crate::segmentation::{
-    frame_corridors, resolve_regions, segment_part, Region, SegInput, SegOutcome,
-};
+use crate::segmentation::{frame_corridors, resolve_regions, segment_part, Region, SegOutcome};
 use crate::shot_router::{ArmCam, Floor, FrameBaseline, Ledger, Ledgers};
 use crate::store::{BurstRecord, FrameRecord};
 
@@ -224,12 +223,12 @@ impl BurstPart {
     }
 
     /// 本件的笔结构（D-SB-62）：帧编号器的门控槽数，截到本件帧组数。
-    fn pass_layout(&self) -> Vec<u32> {
-        crate::passes::from_slots(self.clock.gate_slots(), self.grouper.group_count())
+    fn pass_layout(&self, total: u64) -> Vec<u32> {
+        passes::from_slots(self.clock.gate_slots(), total)
     }
 
-    fn pass_rules<'a>(&'a self, layout: &'a [u32]) -> crate::passes::PassRules<'a> {
-        crate::passes::PassRules {
+    fn pass_rules<'a>(&'a self, layout: &'a [u32]) -> PassRules<'a> {
+        PassRules {
             part: layout,
             taught: self.pass_frames.as_deref(),
             skip: self.pass_skip,
@@ -237,21 +236,12 @@ impl BurstPart {
     }
 
     /// 本件的分段结果与区域（按笔或按比例分段，D-SB-62、D-SB-40）。
-    fn regions(&self) -> (SegOutcome, Vec<Region>) {
-        let layout = self.pass_layout();
-        let passes = self.pass_rules(&layout);
-        let groups = self.grouper.groups();
-        let outcome = segment_part(
-            &SegInput {
-                groups: &groups,
-                segments: &self.segments,
-            },
-            passes,
-        );
+    fn regions(&self, total: u64, passes: PassRules<'_>) -> (SegOutcome, Vec<Region>) {
+        let outcome = segment_part(&self.segments, total, passes);
         let regions = resolve_regions(
             &self.segments,
             &outcome,
-            self.grouper.group_count(),
+            total,
             MIN_CONFIDENCE,
             self.boundary_guard,
             passes,
@@ -261,14 +251,10 @@ impl BurstPart {
 
     /// 判定需要、但还没用对应走廊送测过的（帧, 相机）与该用的段号（D-SB-45）。用对应走廊测过但没测成（超时、失败）的不重测。
     fn post_targets(&self) -> Vec<((usize, u64), u32)> {
-        let (outcome, regions) = self.regions();
-        let choice = frame_corridors(
-            &self.segments,
-            &self.cameras,
-            &regions,
-            &outcome,
-            self.grouper.group_count(),
-        );
+        let total = self.grouper.group_count();
+        let layout = self.pass_layout(total);
+        let (outcome, regions) = self.regions(total, self.pass_rules(&layout));
+        let choice = frame_corridors(&self.segments, &self.cameras, &regions, &outcome, total);
         self.frames
             .iter()
             .filter_map(|(&(camera, seq), frame)| {
@@ -715,7 +701,6 @@ impl Part {
     /// → burst_judge。三台相机整件没有一帧测成时 burst_judge 判 ERR 91。
     pub(super) fn burst_judgement(&self) -> BurstJudgement {
         let burst = &self.burst;
-        let groups = burst.grouper.groups();
         let loss = loss_alarms(&burst.grouper.camera_counts());
         if let Some((code, reason)) = &self.fault {
             let group_count = u32::try_from(burst.grouper.group_count()).unwrap_or(u32::MAX);
@@ -725,22 +710,24 @@ impl Part {
                 ..BurstJudgement::error(*code, reason.clone())
             };
         }
+        let groups = burst.grouper.groups();
+        let total = groups.len() as u64;
+        let layout = burst.pass_layout(total);
+        let passes = burst.pass_rules(&layout);
+        let (_, regions) = burst.regions(total, passes);
         let metrics = burst
             .frames
             .values()
             .filter_map(|frame| frame.metrics.as_ref());
-        let segments = &burst.segments;
-        let (_, regions) = burst.regions();
-        let layout = burst.pass_layout();
         let mut judgement = burst_judge::judge(
-            segments,
+            &burst.segments,
             self.recipe.expected_total(),
             &regions,
             &groups,
             metrics,
             &burst.cameras,
             &loss,
-            burst.pass_rules(&layout),
+            passes,
         );
         // 预算满丢的帧没收进来，帧组里看不出缺：整件记检测不完整并写明，免得被当成“提前终止”的正常件
         if burst.budget_dropped > 0 {

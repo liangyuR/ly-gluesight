@@ -12,13 +12,12 @@ use std::sync::atomic::Ordering;
 use super::*;
 use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::calibration;
-use crate::frame_group::FrameGroup;
 use crate::plan::{
     OffsetMeasure, OffsetRef, PartCalib, PathSegment, PlanExport, SegmentCalib, SegmentKind,
 };
 use crate::recipe::CameraInspect;
 use crate::recipe_capture::{CaptureCamera, CaptureRoundV2, CaptureState};
-use crate::segmentation::{Proportional, SegInput, SegOutcome, Segmenter};
+use crate::segmentation::SegOutcome;
 use progress::StepStatus;
 
 /// 每轮标定的每帧特征与分段结果放在候选目录 `calibration/<轮次>/` 下（供分段算法与重新标定使用）。
@@ -1780,28 +1779,6 @@ pub(super) fn measure_round_with_operation(
         }
     }
     Ok(metrics)
-}
-
-/// 用比例分段器分段（D-SB-40；各段 N_exp 未全部标定时为未分段），结果写进 boundaries.json 供追溯。
-pub(super) fn segment_round(
-    segments: &[PathSegment],
-    cameras: usize,
-    group_count: u64,
-    metrics: &[FrameMetrics],
-) -> SegOutcome {
-    let mut groups = super::burst_history::frame_groups(metrics, cameras);
-    groups.resize_with(group_count as usize, || FrameGroup {
-        seq: 0,
-        incomplete: true,
-        present: vec![false; cameras],
-    });
-    for (index, group) in groups.iter_mut().enumerate() {
-        group.seq = index as u64 + 1;
-    }
-    Proportional.segment(&SegInput {
-        groups: &groups,
-        segments,
-    })
 }
 
 /// features.jsonl 读回的一行。

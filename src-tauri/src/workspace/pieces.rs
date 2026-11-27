@@ -518,12 +518,7 @@ pub(super) fn measure_teaching(
     }
     burst::check_round(&w.doc, round)?;
     let metrics = measure(w, round)?;
-    let segmented = burst::segment_round(
-        &w.doc.segments,
-        w.doc.plan_cameras().len(),
-        round.group_count,
-        &metrics,
-    );
+    let segmented = crate::segmentation::proportional_for_count(&w.doc.segments, round.group_count);
     let mut next = w.clone();
     next.calibration.rounds = vec![burst::calibration_round(&next.doc, round, &metrics)];
     burst::apply_reference(&mut next.doc, &next.calibration.rounds);
