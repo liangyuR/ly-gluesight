@@ -630,6 +630,31 @@ fn no_frame_from_any_camera_is_err_91() {
 }
 
 #[test]
+fn frame_group_cells_serialize_in_camera_order_for_each_length() {
+    for count in [0, 1, 2, 3, 4] {
+        let group = FrameGroupView {
+            seq: 1,
+            incomplete: false,
+            cells: FrameGroupCells::from_cells((0..count).map(|camera| FrameCellView {
+                status: FrameCellStatus::Measuring,
+                verdict: None,
+                unjudged: false,
+                frame_counter: Some(100 + camera as u64),
+                segment: None,
+            })),
+        };
+        let json = serde_json::to_value(group).unwrap();
+        let counters: Vec<_> = json["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|cell| cell["frameCounter"].as_u64().unwrap())
+            .collect();
+        assert_eq!(counters, (100..100 + count as u64).collect::<Vec<_>>());
+    }
+}
+
+#[test]
 fn sparse_snapshot_preserves_a_later_frames_camera_and_verdict() {
     let mut part = burst_part("sparse-snapshot", &Ledgers::default());
     for seq in 1..=4 {

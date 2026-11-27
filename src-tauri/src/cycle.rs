@@ -175,13 +175,41 @@ pub struct FrameCellView {
     pub segment: Option<u32>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum FrameGroupCells {
+    Inline([FrameCellView; crate::plan::PLAN_CAMERAS]),
+    Dynamic(Vec<FrameCellView>),
+}
+
+impl FrameGroupCells {
+    fn from_cells(mut cells: impl ExactSizeIterator<Item = FrameCellView>) -> Self {
+        if cells.len() == crate::plan::PLAN_CAMERAS {
+            Self::Inline(std::array::from_fn(|_| cells.next().expect("帧格数已核对")))
+        } else {
+            Self::Dynamic(cells.collect())
+        }
+    }
+}
+
+impl std::ops::Deref for FrameGroupCells {
+    type Target = [FrameCellView];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Inline(cells) => cells,
+            Self::Dynamic(cells) => cells,
+        }
+    }
+}
+
 /// 一个帧组：cells 按计划相机顺序。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameGroupView {
     pub seq: u64,
     pub incomplete: bool,
-    pub cells: Vec<FrameCellView>,
+    pub cells: FrameGroupCells,
 }
 
 /// 段配方在途件（IPC 契约见 docs/decisions/segment-burst.md 5.2）。

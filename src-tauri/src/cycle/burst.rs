@@ -23,7 +23,7 @@ use crate::segmentation::{frame_corridors, resolve_regions, segment_part, Region
 use crate::shot_router::{ArmCam, Floor, FrameBaseline, Ledger, Ledgers};
 use crate::store::{BurstRecord, FrameKey, FrameRecord};
 
-use super::{FrameCellStatus, FrameCellView, FrameGroupView, Part, PartViewBurst};
+use super::{FrameCellStatus, FrameCellView, FrameGroupCells, FrameGroupView, Part, PartViewBurst};
 
 /// 分段边界的最低置信度：可信边界为 1；笔数与示教件不同、或按笔换算放不下的边界为 0（D-SB-40、D-SB-62）。
 const MIN_CONFIDENCE: f32 = 0.5;
@@ -860,9 +860,8 @@ impl Part {
             .collect();
         let groups = (1..=group_count)
             .map(|seq| {
-                let cells: Vec<FrameCellView> = by_camera
-                    .iter_mut()
-                    .map(|(frames, verdicts)| {
+                let cells =
+                    FrameGroupCells::from_cells(by_camera.iter_mut().map(|(frames, verdicts)| {
                         let final_verdict = verdicts.as_mut().and_then(|entries| {
                             entries
                                 .next_if(|(key, _)| key.1 == seq)
@@ -906,8 +905,7 @@ impl Part {
                                 segment: None,
                             },
                         }
-                    })
-                    .collect();
+                    }));
                 let incomplete = cells.iter().any(|cell| {
                     !matches!(
                         cell.status,
