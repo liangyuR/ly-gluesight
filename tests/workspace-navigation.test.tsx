@@ -27,7 +27,6 @@ beforeEach(() => {
   view.navigation = { map: { format: 1, image: { id: "map-image", width: 100, height: 100, mime: "image/png" }, points: [[0, 0.5], [1, 0.5]], closed: false, captureStart: 0, captureEnd: 1, cuts: [0.4, 0.7], confirmed: true, structureRevision: 1 }, imageAvailable: true, error: null, structureRevision: 1, published: null };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
-      case "storage_preferences_get": case "storage_preferences_update": return {};
       case "recipe_list": return { recipes: [burstSummary(view.workspace.doc as ReturnType<typeof burstRecipe>)], errors: [], unavailable: [] };
       case "workspace_list": return [structuredClone(view.workspace)];
       case "workspace_get": return structuredClone(view);

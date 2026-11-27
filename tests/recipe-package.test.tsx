@@ -12,7 +12,6 @@ import { desktopAvailable } from "../src/lib/desktop";
 import { subscribe } from "../src/features/plc/api";
 import type { WorkspaceView } from "../src/features/workspace/types";
 import { burstRecipe, burstSummary, burstWorkspaceView } from "./fixtures";
-vi.mock("../src/lib/storage", () => ({ storageApi: { preferences: async () => ({}), updatePreferences: vi.fn(async () => ({})) } }));
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn(), desktopCall: vi.fn(async () => null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDoc: vi.fn(), packagePick: vi.fn(), packageImport: vi.fn(), packageTarget: vi.fn(), packageExport: vi.fn() } }));

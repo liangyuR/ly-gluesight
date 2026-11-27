@@ -45,14 +45,8 @@ function createdView(doc: RecipeDoc): WorkspaceView {
 describe("创建配方流程", () => {
   it("在配方库填写新候选，选中创建结果并继续进入该候选的示教件", async () => {
     let created: WorkspaceView | null = null;
-    let preferences: Record<string, unknown> = {};
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       switch (command) {
-        case "storage_preferences_get": return { ...preferences };
-        case "storage_preferences_update": {
-          preferences = { ...preferences, ...(args as { patch: Record<string, unknown> }).patch };
-          return { ...preferences };
-        }
         case "recipe_list": return { recipes: [], errors: [] };
         case "recipe_template": return structuredClone(template());
         case "workspace_list": return created ? [structuredClone(created.workspace)] : [];

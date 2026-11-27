@@ -7,7 +7,7 @@ import { defaultProjectId, formatBytes, projectIdError, projectLabel, projectNam
 
 const contentOptions = [
   { value: "empty", label: "空项目" },
-  { value: "hardware", label: "复制当前项目的硬件配置：相机组、PLC、节拍、飞拍估算参数、标定；不含配方和记录" },
+  { value: "hardware", label: "复制当前项目的硬件配置：相机组、PLC、节拍、标定；不含配方和记录" },
 ];
 
 export function CreateProjectDialog({ entries, onClose }: { entries: ProjectEntry[]; onClose: () => void }) {

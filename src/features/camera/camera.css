@@ -32,17 +32,7 @@
   .calib-page .cam-body > .cam-action-area:not(.cam-image-area) { min-height: 0; overflow-y: auto; scrollbar-width: thin; }
 }
 
-.calc-cell { display: flex; flex-direction: column; gap: 6px; min-width: 0; position: relative; }
-.calc-cell .qs-field > label { display: flex; align-items: center; min-height: 26px; padding-right: 32px; }
-.calc-cell > .context-help-trigger { position: absolute; top: 0; right: 0; }
 .calc-title { display: flex; align-items: center; gap: 6px; }
-.calc-src { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.calc-src.changed { color: var(--warn); font-size: 12px; }
-.calc-out { display: grid; gap: 6px; font-size: 13px; }
-.calc-out div { display: grid; grid-template-columns: 150px 1fr auto; gap: 10px; align-items: center; padding: 7px 10px; border-radius: var(--r-sm); background: var(--surface-mid); }
-.calc-out div > span:first-child { color: var(--on-surface-variant); }
-.calc-out b { font-weight: 500; font-size: 12.5px; }
-.calc-out .big { background: var(--primary-container); color: var(--on-primary-container); }
 
 .sub-title { margin: 0; font-size: 13px; font-weight: 600; }
 .cam-action-area { display:flex; flex-direction:column; gap:16px; padding:0; margin:0; border:0; min-width:0; }

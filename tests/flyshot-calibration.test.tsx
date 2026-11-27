@@ -19,18 +19,18 @@ const status=(frames:number):CameraStatus=>({cam:0,id:"CAM-1",name:"相机 1",so
 beforeEach(()=>{
  localStorage.clear();
  desktop.on=false;
- vi.mocked(invoke).mockImplementation(async command=>command==="storage_preferences_get"?{}:null);
+ vi.mocked(invoke).mockResolvedValue(null);
  vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"}]);
  vi.mocked(cameraApi.calibInfo).mockResolvedValue(null);
  vi.mocked(useRigStatus).mockReturnValue({statuses:[status(1)],lastFrame:{}} as ReturnType<typeof useRigStatus>);
  vi.mocked(useCycle).mockReturnValue({snapshot:snapshot()});
 });
 
-it("单视角相机完成标定 → 按冻结图像更新像素当量与飞拍视野，相机条改为已标定并计入标定数",async()=>{
+it("单视角相机完成标定 → 显示新标定结果，相机条改为已标定并计入标定数",async()=>{
  desktop.on=true;
  vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"}]);
  let calibrated=false;
- vi.mocked(invoke).mockImplementation(async command=>{if(command==="storage_preferences_get")return {};if(command!=="vision_calibrate")return null;calibrated=true;return {mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1};});
+ vi.mocked(invoke).mockImplementation(async command=>{if(command!=="vision_calibrate")return null;calibrated=true;return {mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1};});
  vi.mocked(cameraApi.calibInfo).mockImplementation(async()=>calibrated?{mmPerPx:0.05}:null);
  const capture=vi.spyOn(workspaceApi,"stationCapture").mockResolvedValue({id:"calibration-image",source:"live",capturedAt:1,size:[1280,1024],camera:"CAM-1",view:1} as FrozenImage);
  vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
@@ -41,9 +41,7 @@ it("单视角相机完成标定 → 按冻结图像更新像素当量与飞拍�
  const calibrate=await screen.findByRole("button",{name:"标定"});
  await vi.waitFor(()=>expect(calibrate).toBeEnabled());
  await userEvent.click(calibrate);
- await vi.waitFor(()=>expect(screen.getByRole("spinbutton",{name:/^像素当量/})).toHaveValue(0.05));
- expect(screen.getByRole("spinbutton",{name:/视野沿运动方向/})).toHaveValue(64);
- expect(screen.getByText(/^RMS 0.0200 mm · 0.0500 mm\/px/)).toBeVisible();
+ expect(await screen.findByText(/^RMS 0.0200 mm · 0.0500 mm\/px/)).toBeVisible();
  expect(await screen.findByText("已标定 · 0.0500 mm/px")).toBeVisible();
  expect(screen.getByText("标定 1 / 1")).toBeVisible();
  expect(capture).toHaveBeenCalledWith(0,1);
@@ -68,7 +66,7 @@ it("相机未就绪 → 禁止拍照但可导入离线标定图",async()=>{
 it("进入标定页且已有标定原图 → 自动显示原图并叠画角点；重新拍照后角点消失",async()=>{
  desktop.on=true;
  const calibrated={mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1,sampleId:"calib-sample",corners:[[10,10],[20,10],[30,10]]};
- vi.mocked(invoke).mockImplementation(async command=>command==="storage_preferences_get"?{}:command==="vision_calib_info"?calibrated:command==="workspace_station_restore"?{id:"calib-sample",source:"calib",capturedAt:1,size:[1280,1024],camera:"CAM-1",view:1}:null);
+ vi.mocked(invoke).mockImplementation(async command=>command==="vision_calib_info"?calibrated:command==="workspace_station_restore"?{id:"calib-sample",source:"calib",capturedAt:1,size:[1280,1024],camera:"CAM-1",view:1}:null);
  vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
  vi.spyOn(workspaceApi,"stationCapture").mockResolvedValue({id:"new-image",source:"live",capturedAt:2,size:[1280,1024],camera:"CAM-1",view:1} as FrozenImage);
  render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
@@ -83,7 +81,6 @@ it("已显示一台相机的样本时切换相机 → 载入新相机的标定�
  desktop.on=true;
  vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"},{...defaultCameraConfig,id:"CAM-2",name:"相机 2",serial:"SN2"}]);
  vi.mocked(invoke).mockImplementation(async(command,args)=>{
-  if(command==="storage_preferences_get")return {};
   if(command!=="workspace_station_restore")return null;
   const cam=(args as {cam:number}).cam;
   return {id:"calib-"+cam,source:"calib",capturedAt:1,size:[1280,1024],camera:"CAM-"+(cam+1),view:1};
@@ -98,7 +95,7 @@ it("已显示一台相机的样本时切换相机 → 载入新相机的标定�
 it("标定原图载入未完成 → 拍照与导入不可用，载入结束后恢复",async()=>{
  desktop.on=true;
  let finish:(value:null)=>void=()=>{};
- vi.mocked(invoke).mockImplementation(async command=>command==="storage_preferences_get"?{}:command==="workspace_station_restore"?new Promise(resolve=>{finish=resolve;}):null);
+ vi.mocked(invoke).mockImplementation(async command=>command==="workspace_station_restore"?new Promise(resolve=>{finish=resolve;}):null);
  render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
  await screen.findByRole("heading",{name:"标定板参数"});
  await vi.waitFor(()=>expect(invoke).toHaveBeenCalledWith("workspace_station_restore",expect.anything()));

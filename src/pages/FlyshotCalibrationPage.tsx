@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { CalibPanel, cameraApi, FeasibilityCalc, useRigStatus, type CameraConfig, type FeasibilitySources } from "../features/camera";
+import { CalibPanel, cameraApi, useRigStatus, type CameraConfig } from "../features/camera";
 import CameraList, { type CalibrationSummary } from "../features/camera/components/CameraList";
 import type { CalibInfo } from "../features/camera/components/CalibPanel";
 import { useRigConfig } from "../features/camera/useRigConfig";
@@ -57,11 +57,6 @@ export default function FlyshotCalibrationPage() {
   const marks=useMemo(()=>corners?.map((at,i)=>({at,color:i===0?"var(--ov-ok)":"var(--ov-line)"})),[corners]);
   const status=statuses.find(s=>s.cam===cam)??null;
   const busy=productionBusy(snapshot);
-  const feasibility:FeasibilitySources={
-    exposure:status&&config?.source==="mvs"?{value:status.imaging.exposureUs,from:"来自相机页保存的曝光"}:null,
-    fps:status?.configuredFrameRate?{value:status.configuredFrameRate,from:"来自相机设定帧率回读"}:null,
-    mmPerPx:calibMm?{value:calibMm,from:"来自工位标定"}:null,
-  };
   const notice=error?<Notice title="操作未完成" tone="warn">{error}</Notice>:busy?<Notice title="当前工件正在检测">取样与标定在工件结束后可操作。</Notice>:null;
 
   return <div className="cam-page calib-page">
@@ -76,7 +71,6 @@ export default function FlyshotCalibrationPage() {
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area">
           {config.viewCount===3&&<label className="field"><span>标定图像</span><select className="input" aria-label="标定图像" value={calibView} onChange={e=>{setSample(null);setCalibView(Number(e.target.value));}}>{[1,2,3].map(v=><option key={v} value={v}>图 {v}</option>)}</select></label>}
           <CalibPanel key={config.id+":"+calibView} cam={cam} view={calibView} multiView={config.viewCount===3} isSim={config.source==="sim"&&current?.metadata.source!=="import"&&current?.metadata.source!=="calib"} imageId={current?.metadata.id} onMmPerPx={setCalibMm} onCalibration={setCalibInfo}/>
-          <FeasibilityCalc key={"feasibility:"+config.id} sources={feasibility} imageSize={current?.image}/>
         </fieldset>
       </div>
     </main>:<main className="cam-main"><Notice title={loading?"正在读取相机配置":"尚未添加相机"} tone="warn">在<Link to="/camera" state={navigationState}>相机</Link>页添加相机并绑定设备。</Notice></main>}

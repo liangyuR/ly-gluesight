@@ -10,7 +10,6 @@ import { desktopAvailable } from "../src/lib/desktop";
 import { subscribe } from "../src/features/plc/api";
 import type { WorkspaceView } from "../src/features/workspace/types";
 import { burstRecipe, burstSummary, burstWorkspaceView, deferred } from "./fixtures";
-vi.mock("../src/lib/storage", () => ({ storageApi: { preferences: async () => ({}), updatePreferences: vi.fn(async () => ({})) } }));
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDoc: vi.fn() } }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn(), preview: vi.fn() } }));
