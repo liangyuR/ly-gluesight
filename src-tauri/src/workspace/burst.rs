@@ -541,6 +541,46 @@ pub(super) fn teaching_applies(
         })
 }
 
+fn calibration_segment_counts(
+    w: &Workspace,
+    round: &str,
+    group_count: u64,
+) -> Result<Vec<u32>, String> {
+    capture_review::confirmed_segment_counts(&w.doc, &w.capture_review.rounds, round, group_count)
+        .ok_or_else(|| format!("采集轮次 {round} 还没有确认分段：先在分段步骤确认示教件边界"))
+}
+
+pub(super) fn calibration_frame_segment(
+    w: &Workspace,
+    round: &str,
+    group_count: u64,
+    camera: &str,
+    seq: u64,
+) -> Result<(usize, Option<u32>), String> {
+    let cameras = w.doc.plan_cameras();
+    let index = cameras
+        .iter()
+        .position(|c| c == camera)
+        .ok_or_else(|| format!("相机 {camera} 不是计划相机"))?;
+    if !(1..=group_count).contains(&seq) {
+        return Err(format!("这一轮只有 {group_count} 个帧组，没有第 {seq} 个"));
+    }
+
+    let segments = &w.doc.segments;
+    let segment = if let [segment] = segments.as_slice() {
+        segment.index
+    } else {
+        let counts = calibration_segment_counts(w, round, group_count)?;
+        let (position, _) = crate::passes::locate(&counts, seq)
+            .ok_or_else(|| format!("采集轮次 {round} 的第 {seq} 个帧组没有所属段"))?;
+        segments[position].index
+    };
+    Ok((
+        index,
+        crate::plan::detects(segments, segment, camera, &cameras).then_some(segment),
+    ))
+}
+
 /// 测量按段选走廊（D-SB-45）：按本轮已确认的分段，每帧只由所在段的检测相机用该段走廊测量，其余相机不测（None）。
 /// 单段配方所有帧属于第 1 段；多段配方本轮没有确认手动分段时报错。按计划相机、seq（1..=帧组数）给出段号。
 pub(super) fn calibration_corridors(
@@ -552,13 +592,7 @@ pub(super) fn calibration_corridors(
     let owner: Vec<u32> = if segments.len() == 1 {
         vec![segments[0].index; group_count as usize]
     } else {
-        let counts = capture_review::confirmed_segment_counts(
-            &w.doc,
-            &w.capture_review.rounds,
-            round,
-            group_count,
-        )
-        .ok_or_else(|| format!("采集轮次 {round} 还没有确认分段：先在分段步骤确认示教件边界"))?;
+        let counts = calibration_segment_counts(w, round, group_count)?;
         segments
             .iter()
             .zip(counts)
@@ -2135,19 +2169,8 @@ pub async fn workspace_calibration_frame(
             .iter()
             .find(|r| r.round_id == round)
             .ok_or_else(|| format!("采集轮次 {round} 还没有测量"))?;
-        let cameras = w.doc.plan_cameras();
-        let index = cameras
-            .iter()
-            .position(|c| *c == camera)
-            .ok_or_else(|| format!("相机 {camera} 不是计划相机"))?;
-        if !(1..=entry.group_count).contains(&seq) {
-            return Err(format!(
-                "这一轮只有 {} 个帧组，没有第 {seq} 个",
-                entry.group_count
-            ));
-        }
-        let segment =
-            calibration_corridors(&w, &round, entry.group_count)?[index][(seq - 1) as usize];
+        let (index, segment) =
+            calibration_frame_segment(&w, &round, entry.group_count, &camera, seq)?;
         let Some(segment) = segment else {
             return Ok(CalibrationFrameView {
                 segment: None,

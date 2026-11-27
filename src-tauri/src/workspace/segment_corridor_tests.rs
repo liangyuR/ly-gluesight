@@ -1,4 +1,6 @@
-use super::burst::{apply_segment_teaching, preview_graphs, CameraTeaching};
+use super::burst::{
+    apply_segment_teaching, calibration_frame_segment, preview_graphs, CameraTeaching,
+};
 use super::burst_tests::{burst_workspace, capture_round, DEVICE};
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::*;
@@ -31,6 +33,39 @@ fn workspace() -> (Workspace, Vec<String>) {
     let draft = capture_round("draft", &w.doc, GROUPS, DEVICE, &[]);
     apply_capture_review(&mut w, &draft, CaptureReviewEdit::Save(vec![10, 20])).unwrap();
     (w, cameras)
+}
+
+#[test]
+fn calibration_frame_uses_the_confirmed_cut_and_detection_camera() {
+    let (w, cameras) = workspace();
+    for (camera, seq, expected) in [
+        (0, 10, Some(1)),
+        (0, 11, Some(2)),
+        (0, 20, Some(2)),
+        (1, 20, None),
+        (1, 21, Some(3)),
+        (1, GROUPS, Some(3)),
+    ] {
+        assert_eq!(
+            calibration_frame_segment(&w, "confirmed", GROUPS, &cameras[camera], seq).unwrap(),
+            (camera, expected)
+        );
+    }
+}
+
+#[test]
+fn calibration_frame_rejects_unconfirmed_multi_segment_round() {
+    let (w, cameras) = workspace();
+    assert!(calibration_frame_segment(&w, "draft", GROUPS, &cameras[1], 11).is_err());
+}
+
+#[test]
+fn calibration_frame_in_a_single_segment_needs_no_confirmed_cut() {
+    let w = burst_workspace(&[Straight]);
+    assert_eq!(
+        calibration_frame_segment(&w, "round", GROUPS, &w.doc.plan_cameras()[0], GROUPS).unwrap(),
+        (0, Some(1))
+    );
 }
 
 /// 在已确认轮次第 `segment` 段中间选示教帧（100×100）并保存走廊。
