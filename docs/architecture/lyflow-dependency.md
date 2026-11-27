@@ -28,6 +28,8 @@
 
 段配方的每帧测量先用 `glue.response` 算一次响应图。示教走廊用 `glue.polyline` 把示教折线变成胶路，再用 `glue.lateral_runs` 量每站的全部暗段；开启逐帧定向的段（D-SB-47）用 `glue.fan_scan` 与 `glue.track_path` 定向并拟合胶路，再量选中的那条；胶偏按 ToEdge 测的段在参考相机的测量图里接 `glue.part_edges`（D-SB-48）。有无胶、选方向、回退与找边选侧都由 GlueSight 判（[lyflow-operators.md](../decisions/lyflow-operators.md) LF-3）。这些算子自 lyFlow 1.2 起提供。流程调试页嵌入的 `@lyflow/editor` 取同一 Release 的 `lyflow-editor-v2.0.3.tgz`（`package.json` 写 Release 下载地址），版本随运行库一起升。标定用 `io.load_image`、`image.board_calib` 与 `image.load_calib`。按胶色测量的段（[color](../decisions/color.md) CL-3）用彩色算子 `glue.color_model`、`glue.color_map`、`glue.color_fan`、`glue.color_track`、`image.color_caliper`、`glue.merge_color_runs`（[color](../decisions/color.md) CL-2）。系列锁定 2.0，客户端与编辑器使用 v2.0.3。混胶联调运行库还需要 `glue.mix_model`、`glue.mix_map`、`glue.mix_regions`；公开 v2.0.3 资产缺少这三个算子。
 
+构建示教走廊测量图时，GlueSight 按递增弧长遍历一次折线，生成用于核对 lyFlow 输出的预期测站。测站数仍按原站距和长度舍入规则确定，量测使用 lyFlow 返回的站点与法向。
+
 联合开发 lyFlow 未发布的改动时用本地构建：`GLUESIGHT_LYFLOW_RUNTIME` 指向本地 `build/core/bin`（只在调试构建生效，跳过 `lyflow-runtime.json` 系列核对）；真引擎测试用 `LYFLOW_CORE_DLL` 指向其中的 `lyflow_core.dll`。
 
 ### 进场联调安装包

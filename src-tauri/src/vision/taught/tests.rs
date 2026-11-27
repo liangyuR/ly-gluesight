@@ -174,6 +174,39 @@ fn measure(
 }
 
 #[test]
+fn bent_corridor_with_repeated_vertices_accepts_stations_through_the_rounded_endpoint() {
+    let mut doc = burst_doc();
+    let endpoint = 50.9999;
+    doc.inspect[0].segments[0].corridor = vec![
+        [40.0, 80.0],
+        [40.0, 80.0],
+        [47.0, 80.0],
+        [47.0, 80.0],
+        [47.0, 89.0],
+        [endpoint, 89.0],
+        [endpoint, 89.0],
+    ];
+    let centers = [
+        [40.0, 80.0],
+        [44.0, 80.0],
+        [47.0, 81.0],
+        [47.0, 85.0],
+        [47.0, 89.0],
+        [f64::from(endpoint), 89.0],
+    ];
+    let mut output = corridor_output(&[Some((0.0, 16.0)); 6]);
+    for name in ["runs", "split"] {
+        for (i, center) in centers.iter().enumerate() {
+            output.outputs[name]["value"]["data"]["stations"][i]["center"] = json!(center);
+        }
+    }
+
+    let result = measure(&corridor_of(doc, 0), FRAME, output).unwrap();
+    assert_eq!(result.metrics.state, FrameState::Measured);
+    assert_eq!(result.metrics.widths, vec![Some(4.0); centers.len()]);
+}
+
+#[test]
 fn frame_whose_color_mode_differs_from_the_taught_frame_fails_before_measuring() {
     // 防的回归：相机图像模式改了（灰度示教、彩色生产或反过来），lyFlow 照样能把 RGB 转灰度量，结果却与示教口径不可比，
     // 却不报错地给出判定
