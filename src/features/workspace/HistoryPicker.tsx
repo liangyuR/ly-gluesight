@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button, Checkbox, Chip, Pagination, SegmentedControl, Select, Table, TextField, type TableColumn } from "qing-steel";
 import { errorText } from "../../lib/errors";
 import { useRecipes } from "../cycle";
@@ -16,6 +16,7 @@ import type { HistoryCandidate, HistoryCandidatePage, HistoryCandidateQuery } fr
 const modeLabels: Record<PartMode, string> = { production: "生产", maintenanceCollect: "维护采集", maintenanceShadow: "维护试判" };
 const usageLabels = { teaching: "已使用（示教件）", calibration: "已使用（标定件）" } as const;
 const PAGE = 50;
+const SN_SEARCH_DELAY_MS = 250;
 const ranges: { value: string; label: string; days: number | null }[] = [
   { value: "all", label: "全部", days: null },
   { value: "today", label: "今天", days: 0 },
@@ -67,8 +68,21 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
   const [project, setProject] = useState("");
   const [recipe, setRecipe] = useState("");
   const [sn, setSn] = useState("");
+  const [draftSn, setDraftSn] = useState("");
+  const [composingSn, setComposingSn] = useState(false);
   const [groups, setGroups] = useState<string[]>([]);
   const [offset, setOffset] = useState(0);
+  const normalizedSn = draftSn.trim();
+  const snPending = composingSn || normalizedSn !== sn;
+  const applySn = useCallback((value: string) => {
+    setSn(value);
+    setOffset(0);
+  }, []);
+  useEffect(() => {
+    if (composingSn || normalizedSn === sn) return;
+    const timer = window.setTimeout(() => applySn(normalizedSn), SN_SEARCH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [applySn, composingSn, normalizedSn, sn]);
   const currentId = projects.current?.id ?? null;
   const projectFilter = project === CURRENT_PROJECT ? currentId : project || null;
   const filters = useMemo<HistoryCandidateQuery>(() => ({
@@ -94,20 +108,29 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
       .catch(e => { if (alive) setResponse({ request, page: null, error: errorText(e) }); });
     return () => { alive = false; };
   }, [request]);
-  const current = response?.request === request ? response : null;
+  const current = !snPending && response?.request === request ? response : null;
   const page = current?.page;
   const rows = page?.items ?? [];
   const loading = request != null && !current;
   const loadError = blocked ? projects.error : current?.error;
-  const pagingTotal = request && response?.request.recipeId === recipeId && response.request.filters === filters
+  const pagingTotal = !snPending && request && response?.request.recipeId === recipeId && response.request.filters === filters
     ? response.page?.total ?? 0 : 0;
   const pickedId = picked?.request === request ? picked.id : null;
   const previewId = selection?.request === request ? selection.id : null;
   const selected = rows.find(r => r.recordId === pickedId && !blockers(r).length);
   const canConfirm = !disabled && !working && selected != null;
-  const filter = (apply: () => void) => { apply(); setOffset(0); };
-  const hasFilters = range !== "all" || !!project || !!recipe || !!sn || groups.length > 0;
-  const reset = () => filter(() => { setRange("all"); setProject(""); setRecipe(""); setSn(""); setGroups([]); });
+  const filter = (apply: () => void) => { apply(); applySn(composingSn ? sn : normalizedSn); };
+  const hasFilters = range !== "all" || !!project || !!recipe || !!normalizedSn || groups.length > 0;
+  const reset = () => {
+    setRange("all"); setProject(""); setRecipe(""); setGroups([]);
+    setDraftSn(""); setComposingSn(false); applySn("");
+  };
+  const changeSn = (value: string, composing = composingSn) => {
+    const next = value.trim();
+    setDraftSn(value);
+    if (next !== normalizedSn) { setPicked(null); setSelection(null); }
+    if (!composing && !next && sn) applySn("");
+  };
   const usable = rows.filter(r => !blockers(r).length).length;
   const showPreview = (id: number) => setSelection({ request, id });
   const pick = (id: number, on: boolean) => {
@@ -138,6 +161,7 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
   const preview = rows.find(r => r.recordId === previewId);
   const emptyText = blocked
     ? (projects.loading ? "正在读取当前项目…" : "当前项目不可用，请选择其他项目范围。")
+    : snPending ? "输入完成后查询 SN…"
     : loading ? "正在读取历史件…"
     : loadError ? "历史件列表未加载。"
     : hasFilters ? "没有符合筛选条件的录制件，试试放宽筛选。"
@@ -157,7 +181,13 @@ export default function HistoryPicker({ recipeId, title, help, disabled, confirm
           { value: recipeId, label: `本配方 ${recipeId}` },
           ...recipes.filter(r => r.id !== recipeId).map(r => ({ value: r.id, label: r.id })),
         ]} />
-      <TextField id="picker-sn" aria-label="历史件 SN" placeholder="筛选 SN" value={sn} onChange={e => { const value = e.target.value; filter(() => setSn(value)); }} />
+      <TextField id="picker-sn" aria-label="历史件 SN" placeholder="筛选 SN" value={draftSn}
+        onChange={event => changeSn(event.currentTarget.value)}
+        onKeyDown={event => {
+          if (event.key === "Enter" && !event.nativeEvent.isComposing && !composingSn && snPending) applySn(normalizedSn);
+        }}
+        onCompositionStart={() => setComposingSn(true)}
+        onCompositionEnd={event => { setComposingSn(false); changeSn(event.currentTarget.value, false); }} />
       <div role="group" aria-label="按判定筛选">
         {verdictGroups.map(g => <Chip key={g.key} selected={groups.includes(g.key)} onClick={() => filter(() => setGroups(groups.includes(g.key) ? groups.filter(x => x !== g.key) : [...groups, g.key]))}>{g.label}</Chip>)}
       </div>

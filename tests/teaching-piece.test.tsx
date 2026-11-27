@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -97,7 +97,8 @@ it("更换筛选等待新页 → 只能预览和提交新页的记录", async ()
   const user = userEvent.setup();
   await user.click(await screen.findByRole("checkbox", { name: "选用 SN SN-7" }));
   expect(screen.getByRole("button", { name: "设为示教件" })).toBeEnabled();
-  await user.type(screen.getByRole("textbox", { name: "历史件 SN" }), "Z");
+  await user.type(screen.getByRole("textbox", { name: "历史件 SN" }), "Z{Enter}");
+  expect(workspaceApi.historyCandidates).toHaveBeenLastCalledWith("A", expect.objectContaining({ sn: "Z", offset: 0 }));
   const oldChoice = screen.queryByRole("checkbox", { name: "选用 SN SN-7" });
   if (oldChoice) await user.click(oldChoice);
   expect(screen.getByRole("button", { name: "设为示教件" })).toBeDisabled();
@@ -110,4 +111,53 @@ it("更换筛选等待新页 → 只能预览和提交新页的记录", async ()
   await user.click(screen.getByRole("button", { name: "设为示教件" }));
   await user.click(screen.getByRole("button", { name: "清空并设为示教件" }));
   expect(workspaceApi.setTeachingPiece).toHaveBeenCalledExactlyOnceWith("A", 3, 8);
+});
+
+it("连续输入 SN → 合并为一次查询，清空立即查询第一页", async () => {
+  show();
+  const input = screen.getByRole("textbox", { name: "历史件 SN" });
+  await userEvent.click(await screen.findByRole("checkbox", { name: "选用 SN SN-7" }));
+  vi.useFakeTimers();
+  try {
+    fireEvent.change(input, { target: { value: "Z" } });
+    await act(() => vi.advanceTimersByTimeAsync(150));
+    fireEvent.change(input, { target: { value: "Z8" } });
+    await act(() => vi.advanceTimersByTimeAsync(249));
+    expect(workspaceApi.historyCandidates).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "设为示教件" })).toBeDisabled();
+
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(workspaceApi.historyCandidates).toHaveBeenCalledTimes(2);
+    expect(workspaceApi.historyCandidates).toHaveBeenLastCalledWith("A", expect.objectContaining({ sn: "Z8", offset: 0 }));
+
+    fireEvent.change(input, { target: { value: "" } });
+    expect(workspaceApi.historyCandidates).toHaveBeenCalledTimes(3);
+    expect(workspaceApi.historyCandidates).toHaveBeenLastCalledWith("A", expect.objectContaining({ sn: "", offset: 0 }));
+    await act(() => vi.advanceTimersByTimeAsync(250));
+    expect(workspaceApi.historyCandidates).toHaveBeenCalledTimes(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("输入法合成 SN → 确认后的完整文字才发起查询", async () => {
+  show();
+  await screen.findByRole("checkbox", { name: "选用 SN SN-7" });
+  const input = screen.getByRole("textbox", { name: "历史件 SN" });
+  vi.useFakeTimers();
+  try {
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: "gong" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(workspaceApi.historyCandidates).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(input, { target: { value: "工件" } });
+    fireEvent.compositionEnd(input, { data: "工件" });
+    await act(() => vi.advanceTimersByTimeAsync(250));
+    expect(workspaceApi.historyCandidates).toHaveBeenCalledTimes(2);
+    expect(workspaceApi.historyCandidates).toHaveBeenLastCalledWith("A", expect.objectContaining({ sn: "工件", offset: 0 }));
+  } finally {
+    vi.useRealTimers();
+  }
 });
