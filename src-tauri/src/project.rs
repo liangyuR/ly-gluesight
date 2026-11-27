@@ -305,13 +305,10 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<ProjectSwitchR
     check_project_switch(&switch_state(&app)?)?;
     write_pointer(&data, &id)?;
     if tauri::is_dev() {
-        crate::applog::write(
-            "info",
-            "项目切换",
-            &format!(
-                "{from} → {}（{}），已保存下次启动项目，等待重新运行开发入口",
-                target.id, target.name
-            ),
+        tracing::info!(
+            "项目切换：{from} → {}（{}），已保存下次启动项目，等待重新运行开发入口",
+            target.id,
+            target.name
         );
         return Ok(ProjectSwitchResult {
             current_project: from,
@@ -319,10 +316,10 @@ pub async fn project_switch(app: AppHandle, id: String) -> Result<ProjectSwitchR
             restart_required: true,
         });
     }
-    crate::applog::write(
-        "info",
-        "项目切换",
-        &format!("{from} → {}（{}），重启软件", target.id, target.name),
+    tracing::info!(
+        "项目切换：{from} → {}（{}），重启软件",
+        target.id,
+        target.name
     );
     crate::instance::restart(&app)
 }

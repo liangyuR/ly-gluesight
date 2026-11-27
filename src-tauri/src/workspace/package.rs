@@ -444,11 +444,7 @@ impl Moves {
     fn undo(self) {
         for (from, to) in self.0.into_iter().rev() {
             if let Err(error) = std::fs::rename(&to, &from) {
-                crate::applog::write(
-                    "error",
-                    "配方回传包",
-                    &format!("撤回 {} 失败：{error}", to.display()),
-                );
+                tracing::error!("配方回传包：撤回 {} 失败：{error}", to.display());
             }
         }
     }
@@ -661,8 +657,7 @@ pub async fn workspace_package_export(
             let result = crate::project::read_meta(&project)
                 .and_then(|meta| export_candidate(&project, &meta, &w, &target, operation));
             crate::cycle::log_op(
-                &app,
-                &crate::applog::codes::OP_RECIPE_PACKAGE,
+                &crate::applog::events::OP_RECIPE_PACKAGE,
                 json!({"action": "export", "recipeId": id, "path": path}),
                 &result,
             );
@@ -751,8 +746,7 @@ pub async fn workspace_package_import(
             let result = import(&task, Path::new(&path), &staging, operation);
             let _ = std::fs::remove_dir_all(&staging);
             crate::cycle::log_op(
-                &task,
-                &crate::applog::codes::OP_RECIPE_PACKAGE,
+                &crate::applog::events::OP_RECIPE_PACKAGE,
                 json!({"action": "import", "path": path, "recipeId": result.as_ref().ok().map(|r| r.id.clone())}),
                 &result,
             );

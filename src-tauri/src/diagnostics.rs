@@ -23,41 +23,26 @@ const MAX_CONFIG_FILE: u64 = 8 * 1024 * 1024;
 
 const README: &str = r#"# 诊断包说明
 
-本包由 GlueSight 诊断导出生成，供人工或 Agent 离线分析。导出参数、构建信息与配置摘要见 `manifest.json`。
+在 `manifest.json` 查看导出时段、软件版本和配置摘要，在 `notes` 查看缺失或截断的内容。`files` 给出各文件的大小和 SHA-256 校验值。
 
 ## 包结构
 
 | 路径 | 内容 |
 |---|---|
-| `manifest.json` | 导出时间段与参数；`build`（version、gitSha、buildTime）、`utcOffset`、`logSchema`、`configSummary`（与运行日志 `app.config` 的 data 相同）、`logLimits`、`summary`；`notes` 列出未打包或被截断的内容；`files` 列出除 manifest.json 本身外每个文件的 path、bytes、sha256 |
-| `README.md` | 本说明 |
-| `logs/gluesight-*.jsonl` | 运行日志，按天分文件，只含导出时间段内的行 |
+| `logs/runtime-*.log` | 带本地时间和时区的纯文本运行日志 |
+| `logs/gluesight-*` | 导出时段内仍保留的旧版运行日志，使用原文件名和格式 |
 | `logs/plc.jsonl` | PLC 日志（连接、点位值变化、写入、边沿、错误与配置事件，按 `category` 区分），只含导出时间段内的行，时间正序 |
 | `project.json` | 当前项目的编号、名称与描述 |
 | `config/` | 当前项目的配置文件（PLC、相机、检测设置等） |
 | `machine/site-offline.json` | 本机的站点模式与离线选择（没有时不打包） |
 | `state/` | 运行状态文件（S7 握手日志等） |
 | `records/parts.csv`、`records/parts.jsonl` | 检测记录摘要与完整明细 |
-| `recipes/<revisionId>.json` | 检测记录所用的配方快照 |
+| `recipes/<projectId>/<revisionId>.json` | 检测记录所用的配方快照 |
 | `records/<记录号>_<cycleId>/` | 原图、`part.json` 与对照结果（按导出选项附带） |
 
-## 时间口径
+## 排查工件
 
-- `ts`：毫秒 Unix 时间戳，各文件通用；排序与跨文件对齐以它为准。`manifest.json` 的 `createdAt`、`range.from`、`range.to` 同此口径。
-- `t`：本地时间，RFC 3339 带时区偏移、毫秒精度，如 `2026-10-24T18:18:12.059+08:00`；运行日志与 `logs/plc.jsonl` 每行都有。现场时区见 `manifest.json` 的 `utcOffset`。
-
-## 事件编码
-
-- 运行日志 schema 版本：{logSchema}（即 `manifest.json` 的 `logSchema`）。
-- 每行的 `code` 是稳定的事件编码，含义与 `data` 字段见源码仓库 `docs/architecture/agent-logging-codes.md`（与 `src-tauri/src/applog/codes.rs` 逐条一致）；对应源码版本见 `build.gitSha`。
-- 没有 `code` 的行来自未改造的调用点（不做全量迁移），按 `ev` 与 `msg` 理解。
-
-## 推荐分析顺序
-
-1. 读 `manifest.json`：确认构建版本、时间段与 `notes`，按 `files` 校验文件完整性。
-2. 在运行日志中先找 `fault.enter`，确定故障时刻、来源与原因；没有这个编码时，找 `ev` 为“故障”的行。
-3. 按 `cycleId`（工件）串起同一件的事件，对照同一时间窗口内 `logs/plc.jsonl` 的信号变化。
-4. 涉及检测结论时，按 `cycleId` 对照 `records/parts.jsonl`、配方快照与原图。
+在运行日志中搜索 SN 或故障发生时间，对照 `logs/plc.jsonl` 里的信号变化。PLC 日志的 `t` 是带时区的本地时间，`ts` 及清单中的时间范围均为 Unix 毫秒时间戳。需要复核检测结论时，按工件的 `cycleId` 查找检测记录、配方快照和原图。
 "#;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -232,7 +217,13 @@ fn collect_parts(store: &Store, request: &ExportRequest, notes: &mut Vec<String>
         .map_or_else(|| vec![HistoryScope::Real], |s| vec![s]);
     let mut ids = Vec::new();
     for scope in scopes {
-        let mut query = HistoryQuery { from: Some(request.from), to: Some(request.to + 1), scope, limit: 500, ..HistoryQuery::default() };
+        let mut query = HistoryQuery {
+            from: Some(request.from),
+            to: Some(request.to.saturating_add(1)),
+            scope,
+            limit: 500,
+            ..HistoryQuery::default()
+        };
         loop {
             let page = store.query(&query)?;
             ids.extend(page.items.iter().map(|p| p.id));
@@ -340,28 +331,32 @@ fn part_images<W: std::io::Write>(app: &AppHandle, package: &mut Package<W>, det
 }
 
 pub fn export(app: &AppHandle, request: ExportRequest) -> Result<ExportResult, String> {
-    if request.to <= request.from { return Err("结束时间必须晚于开始时间".into()); }
-    if request.to - request.from > MAX_RANGE_MS { return Err("诊断包时间范围最多 31 天，请缩小范围".into()); }
+    if request.to <= request.from {
+        return Err("结束时间必须晚于开始时间".into());
+    }
+    if request.to.saturating_sub(request.from) > MAX_RANGE_MS {
+        return Err("诊断包时间范围最多 31 天，请缩小范围".into());
+    }
     let dir = crate::storage::root(app).join("exports");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stamp = Local::now().format("%Y%m%d_%H%M%S");
+    let stamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
     let path = dir.join(format!("诊断包_{stamp}.zip"));
     let temporary = dir.join(format!("诊断包_{stamp}.zip.tmp"));
-    let file = fs::File::create(&temporary).map_err(|e| e.to_string())?;
+    let file = fs::File::create_new(&temporary).map_err(|e| e.to_string())?;
     let mut package = Package::new(BufWriter::new(file));
     let built = build(app, &request, &mut package);
     let result = built.and_then(|summary| {
-        package.add("README.md", README.replace("{logSchema}", &applog::SCHEMA.to_string()).as_bytes())?;
+        package.add("README.md", README.as_bytes())?;
         let version = app.package_info().version.to_string();
         let identity = applog::build_identity();
         let manifest = json!({
-            "schema": 2, "createdAt": ly_plc::now_ms(), "app": {"name": app.package_info().name, "version": version},
+            "schema": 3, "createdAt": ly_plc::now_ms(), "app": {"name": app.package_info().name, "version": version},
             "build": {"version": version, "gitSha": identity.git_sha, "buildTime": identity.build_time},
-            "utcOffset": Local::now().format("%:z").to_string(), "logSchema": applog::SCHEMA,
+            "utcOffset": Local::now().format("%:z").to_string(),
             "dataRoot": crate::storage::root(app).display().to_string(), "range": {"from": request.from, "to": request.to},
             "scope": request.scope, "historyIds": request.history_ids, "images": request.images, "maxImageParts": request.max_image_parts,
             "configSummary": crate::commands::config_summary(app),
-            "logLimits": applog::usage(&applog::dir(app)?), "summary": summary, "notes": package.notes, "files": package.files,
+            "summary": summary, "notes": package.notes, "files": package.files,
         });
         package.add("manifest.json", &serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)?;
         Ok(summary)
@@ -377,16 +372,31 @@ pub fn export(app: &AppHandle, request: ExportRequest) -> Result<ExportResult, S
     };
     fs::rename(&temporary, &path).map_err(|e| { let _ = fs::remove_file(&temporary); e.to_string() })?;
     let bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    crate::cycle::log(app, "info", "诊断包", format!("已导出 {}（{:.1} MB）", path.display(), bytes as f64 / 1048576.0));
+    tracing::info!(path = %path.display(), bytes, "已导出诊断包");
     Ok(ExportResult { path: path.display().to_string(), bytes, notes, ..summary })
 }
 
 fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &mut Package<W>) -> Result<ExportResult, String> {
     let mut logs = 0;
-    for file in applog::files_in_range(&applog::dir(app)?, request.from, request.to) {
+    let files = applog::files_in_range(&applog::dir(app)?, request.from, request.to)
+        .unwrap_or_else(|error| {
+            package.notes.push(format!("运行日志目录读取失败：{error}"));
+            Vec::new()
+        });
+    for file in files {
+        let name = file_name(&file);
         let mut out = Vec::new();
-        logs += applog::export_file(&file, request.from, request.to, &mut out);
-        if !out.is_empty() { package.add(&format!("logs/{}", file_name(&file)), &out)?; }
+        match applog::export_file(&file, request.from, request.to, &mut out) {
+            Ok(count) => {
+                if !out.is_empty() {
+                    package.add(&format!("logs/{name}"), &out)?;
+                }
+                logs += count;
+            }
+            Err(error) => package
+                .notes
+                .push(format!("运行日志 {name} 未打包：{error}")),
+        }
     }
     let entries = plc_logs(app, request.from, request.to, &mut package.notes);
     let plc_logs = entries.len() as u64;
@@ -440,7 +450,21 @@ fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &
 }
 
 #[tauri::command]
-pub async fn diagnostics_export(app: AppHandle, request: ExportRequest) -> Result<ExportResult, String> {
+pub async fn diagnostics_export(
+    app: AppHandle,
+    request: Option<ExportRequest>,
+) -> Result<ExportResult, String> {
+    let request = request.unwrap_or_else(|| {
+        let to = ly_plc::now_ms();
+        ExportRequest {
+            from: to - 86_400_000,
+            to,
+            scope: None,
+            history_ids: Vec::new(),
+            images: ImageMode::Abnormal,
+            max_image_parts: default_image_parts(),
+        }
+    });
     tauri::async_runtime::spawn_blocking(move || {
         let _busy = crate::raw_compress::activity().busy();
         export(&app, request)

@@ -63,8 +63,7 @@ describe("创建配方流程", () => {
           if (created && (args as { id: string }).id === created.workspace.doc.id) return structuredClone(created);
           throw new Error("候选不存在");
         case "camera_rig_config":
-        case "camera_rig_status":
-        case "cycle_logs": return [];
+        case "camera_rig_status": return [];
         case "workspace_history_candidates": return { total: 0, items: [] };
         case "cycle_snapshot": return null;
         case "plc_get_status": return { state: "disconnected", message: "PLC 未连接" };

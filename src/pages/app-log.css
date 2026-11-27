@@ -1,0 +1,54 @@
+.main-body:has(.runtime-log-page) {
+  display: flex;
+  flex-direction: column;
+}
+
+.runtime-log-page {
+  flex: 1;
+  min-height: 18rem;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.runtime-stream {
+  flex: 1;
+  min-height: 10rem;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.runtime-stream header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+.runtime-stream h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.runtime-stream-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 12px 16px;
+}
+
+.runtime-stream pre {
+  margin: 0;
+  font: 12px/1.65 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}

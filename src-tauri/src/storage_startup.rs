@@ -136,11 +136,7 @@ pub fn storage_startup_open_project(
     let data = crate::storage::selected_root()?;
     let meta = crate::project::open_target(&data, &id)?;
     crate::project::write_pointer(&data, &meta.id)?;
-    crate::applog::write(
-        "info",
-        "项目选择",
-        &format!("启动时选择项目 {}（{}），重启软件", meta.id, meta.name),
-    );
+    tracing::info!("启动时选择项目 {}（{}），重启软件", meta.id, meta.name);
     crate::instance::restart(&app)
 }
 
@@ -160,11 +156,7 @@ pub fn storage_startup_create_project(
     };
     let meta = crate::project::manage::create(&data, None, &request)?;
     crate::project::write_pointer(&data, &meta.id)?;
-    crate::applog::write(
-        "info",
-        "项目选择",
-        &format!("启动时新建项目 {}（{}），重启软件", meta.id, meta.name),
-    );
+    tracing::info!("启动时新建项目 {}（{}），重启软件", meta.id, meta.name);
     crate::instance::restart(&app)
 }
 

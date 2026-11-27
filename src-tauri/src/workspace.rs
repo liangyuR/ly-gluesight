@@ -650,7 +650,7 @@ fn get(app: AppHandle, id: String) -> Result<WorkspaceView, String> {
             &mut w,
             production.as_deref(),
         ) {
-            cycle::log(&app, "warn", "导航资料", message);
+            cycle::log("warn", "导航资料", message);
         }
         host.save(&w)?;
         items.insert(id.clone(), w);
@@ -1219,17 +1219,17 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                         saved.version, saved.product_code
                     )
                 };
-                cycle::log(app, "info", "发布配方", message);
+                cycle::log("info", "发布配方", message);
             }
             Err(e) => {
                 w.pending = Some(Box::new(release));
                 w.publish = PublishState::Failed { message: e.clone() };
-                cycle::log(app, "err", "发布配方", e);
+                cycle::log("err", "发布配方", e);
             }
         }
         if let Err(error) = host.save(w) {
             w.retain_failed_activation(before, &error);
-            cycle::log(app, "err", "保存发布状态", error);
+            cycle::log("err", "保存发布状态", error);
         }
         let _ = app.emit("workspace://changed", &id);
     }

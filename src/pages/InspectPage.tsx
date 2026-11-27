@@ -37,7 +37,7 @@ const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "接件"
 const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label: "整件布置" }];
 
 export default function InspectPage() {
-  const { snapshot, logs } = useCycle();
+  const { snapshot } = useCycle();
   const recipes = useRecipes();
   const [view, setView] = useState<"image" | "part">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
@@ -189,7 +189,7 @@ export default function InspectPage() {
         </aside>
       </div>
 
-      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} selectedSeq={burstSeq} logs={logs} />}
+      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={part} selectedSeq={burstSeq} />}
       {pendingRecipe && (
         <Dialog
           open

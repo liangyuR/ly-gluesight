@@ -37,7 +37,6 @@ function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = 
     vision_calib_info: () => null,
     plc_get_status: () => ({ state: "connected", message: "PLC 已连接" }),
     cycle_snapshot: () => snapshot(),
-    cycle_logs: () => [],
     history_query: () => ({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } }),
     recipe_capture_get: () => null,
     recipe_capture_round_thumbs: () => new Promise(() => {}),

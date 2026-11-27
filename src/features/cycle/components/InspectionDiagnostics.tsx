@@ -1,13 +1,13 @@
 import { Alert, Drawer, SegmentedControl, Table, type TableColumn } from "qing-steel";
 import { verdictLabel } from "../../history";
 import { expectedText, groupCellState, groupCellText, type GroupCellState } from "../../plan/vis";
-import type { LogLine, PartView, Readiness, Recipe, Snapshot, Verdict } from "../types";
+import type { PartView, Readiness, Recipe, Snapshot, Verdict } from "../types";
 import { CycleStepper, SignalLamps } from "./CycleStatus";
 import ReadinessChecklist from "./ReadinessChecklist";
 import ContextHelp from "./ContextHelp";
 
-export type DiagnosticGroup = "readiness" | "capture" | "plc" | "events";
-const groups: [DiagnosticGroup, string][] = [["readiness", "开工检查"], ["capture", "采集与测量"], ["plc", "PLC 信号"], ["events", "事件"]];
+export type DiagnosticGroup = "readiness" | "capture" | "plc";
+const groups: [DiagnosticGroup, string][] = [["readiness", "开工检查"], ["capture", "采集与测量"], ["plc", "PLC 信号"]];
 const groupOptions = groups.map(([value, label]) => ({ value, label }));
 
 /** 选中帧组里每台相机一行 */
@@ -19,10 +19,10 @@ const burstColumns: TableColumn<BurstCell>[] = [
   { key: "counter", header: "设备帧计数", render: cell => cell.frameCounter ?? "—" },
 ];
 
-export default function InspectionDiagnostics({ group, onGroup, onClose, snapshot, readiness, readinessError, layout, part, selectedSeq = null, logs }: {
+export default function InspectionDiagnostics({ group, onGroup, onClose, snapshot, readiness, readinessError, layout, part, selectedSeq = null }: {
   group: DiagnosticGroup; onGroup: (group: DiagnosticGroup) => void; onClose: () => void;
   snapshot: Snapshot | null; readiness: Readiness | null; readinessError?: string | null;
-  layout: Recipe | null; part: PartView | null; logs: LogLine[];
+  layout: Recipe | null; part: PartView | null;
   /** 在线件选中的帧组 seq */
   selectedSeq?: number | null;
 }) {
@@ -58,7 +58,6 @@ export default function InspectionDiagnostics({ group, onGroup, onClose, snapsho
       </>}
       {group === "capture" && !burst && <p className="muted">等待工件</p>}
       {group === "plc" && <><h3>当前件与结果</h3><SignalLamps /><CycleStepper snapshot={snapshot} /><p className="muted">信号来自当前 PLC 点位；虚线框表示地址表未绑定该标签。</p></>}
-      {group === "events" && <div className="event-log">{logs.length ? logs.slice(-200).reverse().map((line, i) => <div key={`${line.ts}-${i}`} className={`l-${line.level}`}><time className="tm">{new Date(line.ts).toLocaleTimeString("zh-CN", { hour12: false })}.{String(line.ts % 1000).padStart(3, "0")}</time><span className="ev">{line.ev}</span>{line.msg}</div>) : <p className="muted">暂无事件</p>}</div>}
     </section>
   </Drawer>;
 }

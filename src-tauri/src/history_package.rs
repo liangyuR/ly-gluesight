@@ -637,11 +637,7 @@ pub fn import_package(
     let _ = std::fs::remove_dir_all(&staging);
     for path in &moved {
         if let Err(error) = std::fs::remove_file(path.join(PENDING)) {
-            crate::applog::write(
-                "warn",
-                "历史件导入标记待清理",
-                &format!("{}：{error}", path.display()),
-            );
+            tracing::warn!(path = %path.display(), %error, "历史件导入标记待清理");
         }
     }
     let skipped: Vec<Skipped> = manifest
@@ -807,16 +803,7 @@ pub async fn history_package_export(
                 .iter()
                 .filter(|p| p.directory.is_some())
                 .count();
-            crate::applog::write(
-                "info",
-                "历史件导出",
-                &format!(
-                    "已导出 {} 件（{with_images} 件带原图）到 {}（{:.1} MB）",
-                    manifest.parts.len(),
-                    target.display(),
-                    bytes as f64 / 1048576.0
-                ),
-            );
+            tracing::info!(path = %target.display(), parts = manifest.parts.len(), with_images, bytes, "已导出历史件");
             Ok(HistoryPackageExported {
                 path: target.display().to_string(),
                 bytes,
@@ -899,15 +886,7 @@ pub async fn history_package_import(
                     "{stale} 件早于历史保留期（{days} 天），会在下次记录清理时连同原图删除；需要保留请先在设置里调大保留天数"
                 ));
             }
-            crate::applog::write(
-                "info",
-                "历史件导入",
-                &format!(
-                    "从 {path} 导入 {} 件到项目 {project}，{} 件本机已有、跳过",
-                    imported.imported,
-                    imported.skipped.len()
-                ),
-            );
+            tracing::info!(%path, %project, imported = imported.imported, skipped = imported.skipped.len(), "已导入历史件");
             Ok(imported)
         })
     })

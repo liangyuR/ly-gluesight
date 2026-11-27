@@ -55,7 +55,7 @@ pub fn log_config(app: &AppHandle) {
     let project_id = data["project"]["id"].as_str().unwrap_or_default();
     let project_name = data["project"]["name"].as_str().unwrap_or("名称读取失败");
     crate::applog::emit_event(
-        &crate::applog::codes::APP_CONFIG,
+        &crate::applog::events::APP_CONFIG,
         &format!("项目 {project_name}（{project_id}），PLC {plc_text}，相机 {cameras} 台"),
         crate::applog::Fields::default().with_data(data),
     );

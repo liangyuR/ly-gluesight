@@ -137,7 +137,7 @@ pub(super) fn open(slot: &CameraSlot, config: &CameraConfig) -> Result<String, S
             shared.disconnected.store(true, Ordering::SeqCst);
             shared.rig.gate.forget(shared.cam);
             if let Err(error) = result {
-                super::cycle::log(&shared.rig.app, "err", "模拟器相机", error);
+                super::cycle::log("err", "模拟器相机", error);
             }
         }
     });

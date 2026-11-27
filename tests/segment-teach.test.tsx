@@ -28,7 +28,7 @@ function twoPasses(segments = burstRecipe().segments): WorkspaceView {
 
 beforeEach(() => {
   vi.mocked(useWorkspace).mockImplementation(() => ws);
-  vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot(), logs: [] });
+  vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot() });
   vi.mocked(workspaceApi.image).mockReturnValue(deferred<never>().promise);
   vi.mocked(workspaceApi.captureGet).mockResolvedValue(null);
   vi.mocked(workspaceApi.captureRoundThumbs).mockReturnValue(deferred<never>().promise);

@@ -782,7 +782,7 @@ fn writer(
                 if !errors.is_empty() {
                     match &cleanup {
                         Some(cleanup) => (cleanup.warning)(&errors),
-                        None => crate::applog::write("warn", "原图滚动清理失败", &errors.join("；")),
+                        None => tracing::warn!("原图滚动清理失败：{}", errors.join("；")),
                     }
                 }
             }

@@ -6,7 +6,6 @@ import { displayReason, formatTime, HistoryRecordActions, historyApi, partVerdic
 import BurstHistoryDetail from "../features/history/components/BurstDetail";
 import { subscribe } from "../features/plc";
 import { Panel } from "../features/workspace/components";
-import { CycleTimeline } from "../features/logs";
 import { errorText } from "../lib/errors";
 import { useProjectDirectory, type ProjectDirectory } from "../features/project/hooks";
 import { recordProject } from "../features/project/rules";
@@ -101,7 +100,7 @@ function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel, fore
       {actions}
     </Card>
     {foreignProject && <Alert title="其他项目的记录">{foreignProject}</Alert>}
-    <Alert>本件没有帧记录，只能查看整件结论与事件。</Alert>
+    <Alert>本件没有帧记录。</Alert>
     <Panel title="原始整件判定">
       <p className="reason-box">{displayReason(detail.judgement.reason)}</p>
       <div className="kv2">
@@ -112,6 +111,5 @@ function PlainHistoryDetail({ detail, neighbors, onOpen, onBack, backLabel, fore
         <span>后续复检</span><b>{detail.retests.length ? detail.retests.map(r => <Link key={r} to={"/history/" + r}>#{r} </Link>) : "—"}</b>
       </div>
     </Panel>
-    <CycleTimeline historyId={s.id} cycleId={s.cycleId} ts={s.ts} />
   </div>;
 }

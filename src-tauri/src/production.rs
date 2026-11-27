@@ -419,16 +419,14 @@ impl ProductionHost {
                     let untested = prepared.untested_reasons();
                     if untested.is_empty() {
                         crate::cycle::log(
-                            &app,
                             "ok",
                             "生产预热",
                             format!("发布包 {} 已就绪，耗时 {elapsed} ms", prepared.bundle.id),
                         );
                     } else if prepared.measurable() {
-                        crate::cycle::log(&app, "warn", "生产预热", format!("发布包 {} 已就绪，耗时 {elapsed} ms；这些段不测（帧记未测，结论只覆盖其余段）：{}", prepared.bundle.id, untested.join("；")));
+                        crate::cycle::log("warn", "生产预热", format!("发布包 {} 已就绪，耗时 {elapsed} ms；这些段不测（帧记未测，结论只覆盖其余段）：{}", prepared.bundle.id, untested.join("；")));
                     } else {
                         crate::cycle::log(
-                            &app,
                             "err",
                             "生产预热",
                             format!(
@@ -442,7 +440,7 @@ impl ProductionHost {
                 }
                 Err(error) => {
                     let level = if matches!(&error, WarmupFailure::QueueTimeout(_)) { "warn" } else { "err" };
-                    crate::cycle::log(&app, level, "生产预热", error.message().to_owned());
+                    crate::cycle::log(level, "生产预热", error.message().to_owned());
                     error.into_entry(Instant::now())
                 }
             };

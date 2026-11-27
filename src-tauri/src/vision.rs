@@ -392,7 +392,9 @@ impl VisionHost {
             Err(msg) => {
                 *guard = None;
                 let mut error = self.error.lock().unwrap();
-                if error.as_deref() != Some(msg.as_str()) { crate::applog::write("err", "lyFlow 加载", &msg); }
+                if error.as_deref() != Some(msg.as_str()) {
+                    tracing::error!("lyFlow 加载：{msg}");
+                }
                 *error = Some(msg);
                 drop(error);
                 *self.failed.lock().unwrap() = Some((path.to_path_buf(), Instant::now()));

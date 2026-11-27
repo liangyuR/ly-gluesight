@@ -17,7 +17,6 @@ import { OperationStatus, useOperation } from "../../workspace/operation";
 import { recipeHref } from "../../workspace/recipeRoutes";
 import type { SegmentLocateState } from "../../workspace/segmentLocate";
 import { historyApi } from "../api";
-import { CycleTimeline } from "../../logs";
 import { errorText } from "../../../lib/errors";
 import { displayReason, formatTime, partVerdict, triggerModeLabel, verdictLabel } from "../meta";
 import { burstSideOf, comparisonBurst, regionDiffs } from "../replay";
@@ -116,7 +115,7 @@ function FrameTile({ detail, comparison, camera, recordCamera, cameraName, seq, 
 }
 
 /**
- * 历史详情：按区域展示——整件的段布置与区域结论、帧组条、按 (相机, seq) 选的原图、每相机帧表与时间线。
+ * 历史详情：按区域展示整件的段布置与区域结论、帧组条、按 (相机, seq) 选的原图与每相机帧表。
  * 只处理 PartDetail.burst 非空的记录。
  */
 export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, onBack, backLabel = "返回历史列表", foreignProject = "", actions }: {
@@ -431,7 +430,6 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         </div>
       </Panel>
       <BurstPartTrace detail={detail} burst={burst} selected={selection} onSelect={selectFrame} />
-      <CycleTimeline historyId={s.id} cycleId={s.cycleId} ts={s.ts} frame={{ camera: cameraName, seq: selection.seq, onSelect: (camera, seq) => setSelection({ camera: Math.max(0, burst.cameras.indexOf(camera)), seq }) }} />
     </div>
   </div>;
 }

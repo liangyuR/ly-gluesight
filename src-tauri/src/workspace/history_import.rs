@@ -589,7 +589,7 @@ pub(super) fn import_records(
         .as_ref()
         .ok()
         .map(|rounds| rounds.iter().map(|(round, _)| round).collect::<Vec<_>>()));
-    crate::cycle::log_op(app, &crate::applog::codes::OP_CAPTURE_IMPORT, data, &result);
+    crate::cycle::log_op(&crate::applog::events::OP_CAPTURE_IMPORT, data, &result);
     result
 }
 

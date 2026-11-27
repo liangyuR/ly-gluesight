@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::Sender;
 
 use crate::applog::throttle::{Tally, Throttle};
-use crate::applog::{codes, Fields};
+use crate::applog::{events, Fields};
 use crate::cycle::{self, CycleHost};
 use crate::frame::{
     BayerMosaic, BayerPattern, BudgetExceeded, CounterSource, Frame, FrameImage, FramePool,
@@ -1485,7 +1485,7 @@ impl CameraSlot {
                             );
                         }
                         Err(e) => {
-                            cycle::log(&shared.rig.app, "err", "模拟取图", e);
+                            cycle::log("err", "模拟取图", e);
                             shared.deliver_in_order(session, n, None);
                         }
                     }
@@ -2493,19 +2493,18 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
                     match result {
                         Ok(Ok(msg)) => {
                             if let Some(summary) =
-                                noise.end(&codes::CAMERA_RECONNECT_FAILED_SUMMARY, &config.id)
+                                noise.end(&events::CAMERA_RECONNECT_FAILED_SUMMARY, &config.id)
                             {
-                                cycle::log_event(&app, summary.event, summary.msg, summary.fields);
+                                cycle::log_event(summary.event, summary.msg, summary.fields);
                             }
                             if lost {
                                 cycle::log(
-                                    &app,
                                     "err",
                                     "相机断线",
                                     format!("{}：尝试重新连接", config.name),
                                 );
                             }
-                            cycle::log(&app, "ok", "相机", format!("{}：{msg}", config.name));
+                            cycle::log("ok", "相机", format!("{}：{msg}", config.name));
                         }
                         Ok(Err(e)) => {
                             let msg = if lost {
@@ -2519,18 +2518,13 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
                             }
                             .with_data(serde_json::json!({"error": e, "lost": lost}));
                             if noise.observe(
-                                &codes::CAMERA_RECONNECT_FAILED_SUMMARY,
+                                &events::CAMERA_RECONNECT_FAILED_SUMMARY,
                                 &config.id,
                                 now_ms(),
                                 Tally::None,
                                 fields.clone(),
                             ) {
-                                cycle::log_event(
-                                    &app,
-                                    &codes::CAMERA_RECONNECT_FAILED,
-                                    msg,
-                                    fields,
-                                );
+                                cycle::log_event(&events::CAMERA_RECONNECT_FAILED, msg, fields);
                             }
                         }
                         Err(e) => s.state.lock().unwrap().message = e.to_string(),
@@ -2539,12 +2533,12 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>) {
             }
             drop(s);
             for summary in noise.flush(now_ms()) {
-                cycle::log_event(&app, summary.event, summary.msg, summary.fields);
+                cycle::log_event(summary.event, summary.msg, summary.fields);
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         for summary in noise.drain() {
-            cycle::log_event(&app, summary.event, summary.msg, summary.fields);
+            cycle::log_event(summary.event, summary.msg, summary.fields);
         }
     });
 }
@@ -2595,8 +2589,7 @@ pub async fn camera_save_config(
 ) -> Result<CameraConfigSaved, String> {
     let result = camera_save_config_inner(app.clone(), cam, config).await;
     crate::cycle::log_op(
-        &app,
-        &crate::applog::codes::OP_CAMERA,
+        &crate::applog::events::OP_CAMERA,
         serde_json::json!({"action": "save_config", "cam": cam, "outcome": result.as_ref().ok()}),
         &result,
     );
@@ -2758,8 +2751,7 @@ fn check_access(cycle: &CycleHost, access: CameraAccess) -> Result<(), String> {
 pub async fn camera_add(app: AppHandle, config: CameraConfig) -> Result<usize, String> {
     let result = camera_add_inner(app.clone(), config).await;
     crate::cycle::log_op(
-        &app,
-        &crate::applog::codes::OP_CAMERA,
+        &crate::applog::events::OP_CAMERA,
         serde_json::json!({"action": "add", "cam": result.as_ref().ok()}),
         &result,
     );
@@ -2800,8 +2792,7 @@ async fn camera_add_inner(app: AppHandle, mut config: CameraConfig) -> Result<us
 pub async fn camera_remove(app: AppHandle, cam: usize) -> Result<(), String> {
     let result = camera_remove_inner(app.clone(), cam).await;
     crate::cycle::log_op(
-        &app,
-        &crate::applog::codes::OP_CAMERA,
+        &crate::applog::events::OP_CAMERA,
         serde_json::json!({"action": "remove", "cam": cam}),
         &result,
     );
@@ -2881,8 +2872,7 @@ async fn camera_gate(cycle: &CycleHost) -> Result<tokio::sync::MutexGuard<'_, ()
 pub async fn camera_soft_trigger(app: AppHandle, cam: usize) -> Result<(), String> {
     let result = camera_soft_trigger_inner(app.state::<CycleHost>(), cam).await;
     crate::cycle::log_op(
-        &app,
-        &crate::applog::codes::OP_CAMERA,
+        &crate::applog::events::OP_CAMERA,
         serde_json::json!({"action": "soft_trigger", "cam": cam}),
         &result,
     );
@@ -2906,8 +2896,7 @@ pub async fn camera_set_imaging(
 ) -> Result<(), String> {
     let result = camera_set_imaging_inner(app.clone(), cam, id, imaging).await;
     crate::cycle::log_op(
-        &app,
-        &crate::applog::codes::OP_CAMERA,
+        &crate::applog::events::OP_CAMERA,
         serde_json::json!({"action": "set_imaging", "cam": cam}),
         &result,
     );
@@ -2953,8 +2942,7 @@ async fn camera_set_imaging_inner(
 pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
     let result = camera_release_inner(app.clone(), cam).await;
     crate::cycle::log_op(
-        &app,
-        &crate::applog::codes::OP_CAMERA,
+        &crate::applog::events::OP_CAMERA,
         serde_json::json!({"action": "release", "cam": cam}),
         &result,
     );
@@ -2976,7 +2964,6 @@ async fn camera_release_inner(app: AppHandle, cam: usize) -> Result<(), String> 
         .await
         .map_err(|e| e.to_string())?;
     cycle::log(
-        &app,
         "ok",
         "相机",
         format!("{}：已释放给海康 MVS 客户端", config.name),
@@ -2991,8 +2978,7 @@ async fn camera_release_inner(app: AppHandle, cam: usize) -> Result<(), String> 
 pub async fn camera_reconnect(app: AppHandle, cam: usize) -> Result<String, String> {
     let result = camera_reconnect_inner(app.clone(), cam).await;
     crate::cycle::log_op(
-        &app,
-        &crate::applog::codes::OP_CAMERA,
+        &crate::applog::events::OP_CAMERA,
         serde_json::json!({"action": "reconnect", "cam": cam}),
         &result,
     );

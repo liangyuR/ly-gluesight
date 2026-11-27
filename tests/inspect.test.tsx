@@ -11,7 +11,7 @@ import { plcApi } from "../src/features/plc/api";
 import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, readiness, snapshot } from "./fixtures";
 import { burstPartView, burstResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
-import type { LogLine, Readiness, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
+import type { Readiness, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
 import type { PointValue } from "../src/features/plc/types";
 
 vi.mock("../src/features/cycle/api", () => ({
@@ -24,17 +24,17 @@ vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live:
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
   usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {} }));
 
-let state: Snapshot, layout: Recipe | null, logs: LogLine[];
+let state: Snapshot, layout: Recipe | null;
 let recipeList: RecipeSummary[];
 let report: Readiness;
 let values: Record<string, PointValue>;
 const recipe = (id = "A") => burstRecipe({ id, name: `段配方 ${id}` });
 const candidate = (id = "A") => burstWorkspaceView(recipe(id));
 beforeEach(() => {
-  state = snapshot(); layout = candidate().layout; logs = []; values = {};
+  state = snapshot(); layout = candidate().layout; values = {};
   recipeList = [burstSummary(recipe()), burstSummary(recipe("B"))];
   report = readiness();
-  vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, logs }));
+  vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state }));
   vi.mocked(useLayout).mockImplementation(() => layout);
   vi.mocked(cycleApi.selectRecipe).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.setMaintenance).mockReset().mockResolvedValue(undefined);

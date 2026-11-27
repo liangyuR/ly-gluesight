@@ -524,27 +524,19 @@ impl Worker {
         }
         let name = dir.file_name().unwrap_or_default().to_string_lossy();
         if stats.failed > 0 {
-            crate::applog::write(
-                "warn",
-                EVENT,
-                &format!(
-                    "{name}：{} 帧压缩失败，原文件保留，首个原因：{}",
-                    stats.failed,
-                    stats.first_error.as_deref().unwrap_or_default()
-                ),
+            tracing::warn!(
+                "原图空闲压缩：{name}：{} 帧压缩失败，原文件保留，首个原因：{}",
+                stats.failed,
+                stats.first_error.as_deref().unwrap_or_default()
             );
         }
         if stats.frames > 0 {
-            crate::applog::write(
-                "info",
-                EVENT,
-                &format!(
-                    "{name}：压缩 {} 帧，{:.1} MB → {:.1} MB（{:.1}%）",
-                    stats.frames,
-                    megabytes(stats.before),
-                    megabytes(stats.after),
-                    stats.after as f64 * 100.0 / stats.before.max(1) as f64
-                ),
+            tracing::info!(
+                "原图空闲压缩：{name}：压缩 {} 帧，{:.1} MB → {:.1} MB（{:.1}%）",
+                stats.frames,
+                megabytes(stats.before),
+                megabytes(stats.after),
+                stats.after as f64 * 100.0 / stats.before.max(1) as f64
             );
         }
     }
@@ -556,7 +548,7 @@ impl Worker {
             let page = match store.compressible_recordings(self.cursor, PAGE) {
                 Ok(page) => page,
                 Err(error) => {
-                    crate::applog::write("warn", EVENT, &format!("读取检测记录失败：{error}"));
+                    tracing::warn!("原图空闲压缩：读取检测记录失败：{error}");
                     return State::Failed;
                 }
             };
@@ -584,7 +576,7 @@ impl Worker {
                     &mut self.memo,
                 );
                 for warning in warnings {
-                    crate::applog::write("warn", EVENT, &warning);
+                    tracing::warn!("原图空闲压缩：{warning}");
                 }
                 let mut total = match self.partial.take() {
                     Some((partial, total)) if partial == dir => total,
@@ -654,7 +646,7 @@ pub fn start(app: &AppHandle) {
             .run()
         });
     if let Err(error) = spawned {
-        crate::applog::write("warn", EVENT, &format!("压缩线程启动失败：{error}"));
+        tracing::warn!("原图空闲压缩：压缩线程启动失败：{error}");
     }
 }
 

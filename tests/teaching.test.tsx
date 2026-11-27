@@ -23,7 +23,7 @@ beforeEach(() => {
   ws.data!.workspace.captureReview = confirmedReview();
   vi.mocked(workspaceApi.segmentTemplatePreview).mockResolvedValue({ restructured: false, dropped: [], untaught: [], measurementCleared: false, coverage: null });
   vi.mocked(workspaceApi.segmentTemplateSave).mockImplementation(async () => ws.data!);
-  vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot(), logs: [] });
+  vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot() });
   vi.mocked(workspaceApi.image).mockResolvedValue(picture);
   vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);
   vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({ recipeId: "A" }));

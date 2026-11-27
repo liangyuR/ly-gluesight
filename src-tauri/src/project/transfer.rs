@@ -855,11 +855,7 @@ fn finish(
     if merged {
         // 失败时下次启动由 records::recover_installs 按项目目录已在补记
         if let Err(error) = store.map_or(Ok(()), |s| s.finish_install(new.id)) {
-            crate::applog::write(
-                "warn",
-                "项目导入记录待补记",
-                &format!("{}：{error}", new.id),
-            );
+            tracing::warn!(project = %new.id, %error, "项目导入记录待补记");
         }
         // 项目装好后再改用包里的录制：中途失败撤回这次并入时不会带走本机已有的记录
         match store.map_or(Ok(0), |s| s.adopt_recordings(new.id, &adoptable)) {
@@ -872,11 +868,7 @@ fn finish(
     }
     if let Some(external) = external {
         if let Err(error) = std::fs::remove_file(external.join(PENDING_RECORDINGS)) {
-            crate::applog::write(
-                "warn",
-                "项目原图提交标记待清理",
-                &format!("{}：{error}", external.display()),
-            );
+            tracing::warn!(path = %external.display(), %error, "项目原图提交标记待清理");
         }
     }
     Ok(ProjectImported { meta, notes })
@@ -1177,15 +1169,11 @@ pub async fn project_export(
         let _ = std::fs::remove_dir_all(&scratch);
         let manifest = exported?;
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        crate::applog::write(
-            "info",
-            "项目导出",
-            &format!(
-                "已导出项目 {id} 到 {}（{} 个文件，{:.1} MB）",
-                path.display(),
-                manifest.files.len(),
-                bytes as f64 / 1048576.0
-            ),
+        tracing::info!(
+            "已导出项目 {id} 到 {}（{} 个文件，{:.1} MB）",
+            path.display(),
+            manifest.files.len(),
+            bytes as f64 / 1048576.0
         );
         Ok(Some(ProjectExported {
             path: path.display().to_string(),
@@ -1252,13 +1240,10 @@ pub async fn project_import(
             &data.join("cache"),
             &app.state::<Store>(),
         )?;
-        crate::applog::write(
-            "info",
-            "项目导入",
-            &format!(
-                "从 {path} 导入项目 {}（{}）",
-                imported.meta.id, imported.meta.name
-            ),
+        tracing::info!(
+            "已从 {path} 导入项目 {}（{}）",
+            imported.meta.id,
+            imported.meta.name
         );
         Ok(imported)
     })
@@ -1296,13 +1281,11 @@ pub async fn project_copy(app: AppHandle, request: CopyProject) -> Result<Projec
             },
             &data.join("cache"),
         )?;
-        crate::applog::write(
-            "info",
-            "项目复制",
-            &format!(
-                "已把项目 {} 复制为 {}（{}）",
-                request.source_id, copied.meta.id, copied.meta.name,
-            ),
+        tracing::info!(
+            "已把项目 {} 复制为 {}（{}）",
+            request.source_id,
+            copied.meta.id,
+            copied.meta.name
         );
         Ok(copied)
     })

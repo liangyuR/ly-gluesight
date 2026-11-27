@@ -23,7 +23,7 @@ beforeEach(()=>{
  vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"}]);
  vi.mocked(cameraApi.calibInfo).mockResolvedValue(null);
  vi.mocked(useRigStatus).mockReturnValue({statuses:[status(1)],lastFrame:{}} as ReturnType<typeof useRigStatus>);
- vi.mocked(useCycle).mockReturnValue({snapshot:snapshot(),logs:[]});
+ vi.mocked(useCycle).mockReturnValue({snapshot:snapshot()});
 });
 
 it("单视角相机完成标定 → 按冻结图像更新像素当量与飞拍视野，相机条改为已标定并计入标定数",async()=>{
