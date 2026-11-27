@@ -112,7 +112,7 @@ pub(crate) fn record(
         &recipe.path_segments,
         recipe.expected_total(),
         &regions,
-        &groups,
+        FrameGroup::coverage(&groups),
         metrics,
         &cameras,
         &alarms,

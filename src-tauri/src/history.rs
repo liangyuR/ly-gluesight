@@ -385,7 +385,7 @@ fn rejudge_burst(
         &segments,
         recipe.expected_total(),
         &regions,
-        &frame_groups(frames, cameras.len()),
+        FrameGroup::coverage(&frame_groups(frames, cameras.len())),
         metrics,
         &cameras,
         &judgement.alarms,

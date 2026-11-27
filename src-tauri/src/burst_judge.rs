@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::frame_group::{FrameGroup, LossAlarm};
+use crate::frame_group::{GroupCoverage, LossAlarm};
 use crate::judge::{fault, Verdict};
 use crate::passes::PassRules;
 use crate::plan::{
@@ -395,11 +395,11 @@ fn index_metrics<'a>(
 /// - 三台相机整件没有一帧测成时判 ERR 91；区域引用了配方里没有的段时判 ERR 93。
 /// - 笔结构（D-SB-62）原样记进结果；本件笔数与示教件不同只记笔数异常，不改结论。
 #[allow(clippy::too_many_arguments)]
-pub fn judge<'a>(
+pub(crate) fn judge<'a>(
     segments: &[PathSegment],
     expected_total: Option<u32>,
     regions: &[Region],
-    groups: &[FrameGroup],
+    coverage: GroupCoverage<impl Iterator<Item = u64>>,
     metrics: impl IntoIterator<Item = &'a FrameMetrics>,
     cameras: &[String],
     loss: &[LossAlarm],
@@ -410,7 +410,7 @@ pub fn judge<'a>(
         segments,
         expected_total,
         regions,
-        groups,
+        coverage,
         &frames,
         cameras,
         loss,
@@ -425,13 +425,12 @@ fn judge_regions(
     segments: &[PathSegment],
     expected_total: Option<u32>,
     regions: &[Region],
-    groups: &[FrameGroup],
+    coverage: GroupCoverage<impl Iterator<Item = u64>>,
     frames: &FrameMetricsIndex<'_>,
     cameras: &[String],
     loss: &[LossAlarm],
 ) -> BurstJudgement {
-    let group_count =
-        u32::try_from(groups.iter().map(|g| g.seq).max().unwrap_or(0)).unwrap_or(u32::MAX);
+    let group_count = u32::try_from(coverage.group_count).unwrap_or(u32::MAX);
     if !frames.values().any(|m| m.state == FrameState::Measured) {
         let reason = if frames.values().all(|m| m.state == FrameState::Missing) {
             "三台相机整件没有收到帧"
@@ -473,15 +472,10 @@ fn judge_regions(
         return BurstJudgement::error(fault::INVALID_POINTS, "分段区域与配方的段不一致");
     }
 
-    let incomplete_seqs = groups
-        .iter()
-        .filter(|g| g.incomplete)
-        .map(|g| g.seq)
-        .collect();
     let part = PartInput {
         segments,
         expected_total,
-        incomplete_seqs,
+        incomplete_seqs: coverage.incomplete_seqs.collect(),
         frames,
         cameras,
     };
@@ -1226,6 +1220,7 @@ fn uninspected(regions: &[Region]) -> Vec<Uninspected> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame_group::FrameGroup;
     use crate::plan::{new_segment, KindDefaults, OffsetRef};
     use SegmentKind::{Corner, Straight};
 
@@ -1336,7 +1331,7 @@ mod tests {
             segments,
             expected_total,
             regions,
-            &groups_of(metrics),
+            FrameGroup::coverage(&groups_of(metrics)),
             metrics,
             &cameras(),
             &[],

@@ -719,8 +719,8 @@ impl Part {
                 ..BurstJudgement::error(*code, reason.clone())
             };
         }
-        let groups = burst.grouper.groups();
-        let total = groups.len() as u64;
+        let coverage = burst.grouper.coverage();
+        let total = coverage.group_count;
         let layout = burst.pass_layout(total);
         let passes = burst.pass_rules(&layout);
         let (_, regions) = burst.regions(total, passes);
@@ -732,7 +732,7 @@ impl Part {
             &burst.segments,
             self.recipe.expected_total(),
             &regions,
-            &groups,
+            coverage,
             metrics,
             &burst.cameras,
             &loss,

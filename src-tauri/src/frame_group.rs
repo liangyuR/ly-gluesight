@@ -51,6 +51,23 @@ pub struct FrameGroup {
     pub incomplete: bool,
 }
 
+pub(crate) struct GroupCoverage<I> {
+    pub group_count: u64,
+    pub incomplete_seqs: I,
+}
+
+impl FrameGroup {
+    pub(crate) fn coverage(groups: &[Self]) -> GroupCoverage<impl Iterator<Item = u64> + '_> {
+        GroupCoverage {
+            group_count: groups.iter().map(|group| group.seq).max().unwrap_or(0),
+            incomplete_seqs: groups
+                .iter()
+                .filter(|group| group.incomplete)
+                .map(|group| group.seq),
+        }
+    }
+}
+
 /// 丢帧告警的依据。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -118,19 +135,30 @@ impl Grouper {
             .unwrap_or(0)
     }
 
-    /// seq 取 1..=各相机最大 seq 的最大值；长度即帧组数。末尾缺帧的相机同样标 incomplete。
-    pub fn groups(&self) -> Vec<FrameGroup> {
-        (1..=self.group_count())
-            .map(|seq| {
-                let present: Vec<bool> = self.seqs.iter().map(|seqs| seqs.contains(&seq)).collect();
-                let incomplete = present.contains(&false);
-                FrameGroup {
-                    seq,
-                    present,
-                    incomplete,
+    /// 缺帧组覆盖整个观察前缀，包含整组缺帧和单相机末尾缺帧。
+    pub(crate) fn coverage(&self) -> GroupCoverage<impl Iterator<Item = u64> + '_> {
+        let group_count = self.group_count();
+        let mut cameras: Vec<_> = self
+            .seqs
+            .iter()
+            .filter(|seqs| seqs.len() as u64 != group_count)
+            .map(|seqs| seqs.iter().copied().peekable())
+            .collect();
+        let incomplete_seqs = (!cameras.is_empty())
+            .then_some(1..=group_count)
+            .into_iter()
+            .flatten()
+            .filter(move |seq| {
+                let mut incomplete = false;
+                for camera in &mut cameras {
+                    incomplete |= camera.next_if_eq(seq).is_none();
                 }
-            })
-            .collect()
+                incomplete
+            });
+        GroupCoverage {
+            group_count,
+            incomplete_seqs,
+        }
     }
 
     /// 每台相机已接受的帧数。
@@ -208,5 +236,24 @@ mod tests {
             Offer::Stale,
             "上一件最后一帧迟到，不计入下一件"
         );
+    }
+
+    #[test]
+    fn out_of_order_arrivals_preserve_gaps_and_complete_groups_within_observed_prefix() {
+        let mut grouper = Grouper::with_limit(vec![10, 20, 30], 6);
+        for (camera, counter) in [
+            (0, 15),
+            (1, 24),
+            (2, 34),
+            (0, 11),
+            (0, 14),
+            (1, 23),
+            (2, 33),
+        ] {
+            grouper.offer(camera, counter);
+        }
+        let coverage = grouper.coverage();
+        assert_eq!(coverage.group_count, 5);
+        assert_eq!(coverage.incomplete_seqs.collect::<Vec<_>>(), [1, 2, 3, 5]);
     }
 }
