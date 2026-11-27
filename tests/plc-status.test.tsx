@@ -1,9 +1,12 @@
 import { act, render, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Profiler } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { usePlcStatus } from "../src/features/plc/api";
 import type { PlcStatus } from "../src/features/plc/types";
+import { WindowConnections } from "../src/layout/WindowStatus";
 import { deferred } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
@@ -16,6 +19,38 @@ function Status({ label }: { label: string }) {
 const status = (state: PlcStatus["state"]): PlcStatus => ({
   state, message: state, since: 1, lastPoll: null, cycleMs: null, pollCount: 0, errorCount: 0,
   dials: 0, outageDials: 0, lastDialError: null, lastError: null,
+});
+
+it("PLC 轮询统计变化 → 完整统计更新、标题栏只响应连接信息", async () => {
+  const connected = status("connected");
+  let emit = (_: PlcStatus) => {};
+  vi.mocked(listen).mockImplementation(async (_event, listener) => {
+    emit = state => (listener as (event: { payload: PlcStatus }) => void)({ payload: state });
+    return () => {};
+  });
+  vi.mocked(invoke).mockImplementation(async command => command === "engine_status"
+    ? { backend: "LyFlow", ready: true, message: "就绪" } : connected);
+  const titlebarRenders = vi.fn();
+  function PollCount() {
+    return <output aria-label="轮询次数">{usePlcStatus()?.pollCount ?? 0}</output>;
+  }
+  await act(async () => {
+    render(<MemoryRouter>
+      <Profiler id="connections" onRender={titlebarRenders}><WindowConnections /></Profiler>
+      <PollCount />
+    </MemoryRouter>);
+  });
+  expect(screen.getByRole("link", { name: "PLC · 已连接" })).toBeVisible();
+  titlebarRenders.mockClear();
+
+  act(() => emit({ ...connected, pollCount: 5, lastPoll: 2 }));
+  expect(screen.getByLabelText("轮询次数")).toHaveTextContent("5");
+  expect(titlebarRenders).not.toHaveBeenCalled();
+
+  act(() => emit({ ...connected, pollCount: 5, message: "连接提示已更新" }));
+  expect(screen.getByRole("link", { name: "PLC · 已连接" })).toHaveAttribute("title", "连接提示已更新");
+  act(() => emit(status("error")));
+  expect(screen.getByRole("link", { name: "PLC · 异常" })).toBeVisible();
 });
 
 it.each(["成功", "失败"])("连接事件先到时，迟到首查%s不覆盖共享状态", async outcome => {

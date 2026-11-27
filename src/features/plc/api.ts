@@ -1,7 +1,7 @@
 import { useCycleControl, type CycleControlState } from "../cycle/control";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createSharedSnapshot } from "../../lib/desktopSnapshot";
 import type {
   ConnectionConfig,
@@ -130,6 +130,18 @@ export function usePlcStatus() {
   const [status, setStatus] = useState<PlcStatus | null>(null);
   useEffect(() => subscribePlcStatus(setStatus), []);
   return status;
+}
+
+export function usePlcLinkStatus() {
+  const [link, setLink] = useState<Pick<PlcStatus, "state" | "message"> | null>(null);
+  const displayed = useRef(link);
+  useEffect(() => subscribePlcStatus(status => {
+    const previous = displayed.current;
+    if (previous?.state === status?.state && previous?.message === status?.message) return;
+    displayed.current = status ? { state: status.state, message: status.message } : null;
+    setLink(displayed.current);
+  }), []);
+  return link;
 }
 
 export function usePlcValues() {

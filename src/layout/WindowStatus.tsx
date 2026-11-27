@@ -4,7 +4,7 @@ import { Wrench } from "lucide-react";
 import { Alert, Button, Popover } from "qing-steel";
 import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
 import { desktopAvailable } from "../lib/desktop";
-import { linkStateLabels, usePlcStatus } from "../features/plc";
+import { linkStateLabels, usePlcLinkStatus } from "../features/plc";
 import { useMaintenance } from "../features/cycle/control";
 import { devLyflowHint } from "../features/cycle/readiness";
 import { formatTime } from "../features/history/meta";
@@ -35,7 +35,7 @@ export function WindowModeBadges() {
 }
 
 export function WindowConnections() {
-  const plc = usePlcStatus();
+  const plc = usePlcLinkStatus();
   const [engine, setEngine] = useState<EngineStatus | null>(null);
   useEffect(() => {
     let alive = true, serial = 0;
