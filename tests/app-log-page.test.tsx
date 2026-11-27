@@ -10,6 +10,16 @@ import { deferred } from "./fixtures";
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
+function expectDiagnosticsRequest(days: number, images: "abnormal" | "none") {
+  const args = vi.mocked(invoke).mock.calls.filter(([command]) => command === "diagnostics_export").at(-1)?.[1];
+  expect(args).toMatchObject({
+    taskId: expect.any(String),
+    request: { from: expect.any(Number), to: expect.any(Number), images },
+  });
+  const { from, to } = (args as { request: { from: number; to: number } }).request;
+  expect(to - from).toBe(days * 24 * 60 * 60 * 1000);
+}
+
 it("直接导出失败后重试 → 显示文件路径与未能打包的资料", async () => {
   let firstExport = true;
   vi.mocked(invoke).mockImplementation(async command => {
@@ -27,10 +37,31 @@ it("直接导出失败后重试 → 显示文件路径与未能打包的资料",
 
   await user.click(screen.getByRole("button", { name: "导出诊断包" }));
   expect(await screen.findByText("导出目录不可写")).toBeVisible();
+  expectDiagnosticsRequest(1, "abnormal");
   await user.click(await screen.findByRole("button", { name: "导出诊断包" }));
   expect(await screen.findByText("exports/diagnostics.zip")).toBeVisible();
   expect(screen.getByText("本件原图已清理")).toBeVisible();
   expect(screen.queryByText("导出目录不可写")).not.toBeInTheDocument();
+});
+
+it("选择最近 7 天并关闭原图 → 按所选范围导出诊断包", async () => {
+  const path = "exports/selected-range.zip";
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "app_log_tail") return { cursor: 0, lines: [], skipped: false };
+    if (command === "operation_status") return null;
+    if (command === "diagnostics_export") return { path, notes: [] };
+    throw new Error("意外调用 " + command);
+  });
+  const user = userEvent.setup();
+  render(<AppLogPage />);
+
+  await user.selectOptions(screen.getByLabelText("诊断包时间范围", { selector: "select" }), "7d");
+  const images = screen.getByRole("switch", { name: "附带异常工件原图" });
+  expect(images).toBeChecked();
+  await user.click(images);
+  await user.click(screen.getByRole("button", { name: "导出诊断包" }));
+  expect(await screen.findByText(path)).toBeVisible();
+  expectDiagnosticsRequest(7, "none");
 });
 
 it("打开诊断包所在文件夹失败 → 保留导出结果并可重试", async () => {
