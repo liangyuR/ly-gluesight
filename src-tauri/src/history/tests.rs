@@ -179,6 +179,47 @@ fn rejudge_counts_arrived_but_uninspected_frame_as_present() {
 }
 
 #[test]
+fn rejudge_skips_reversed_region_and_processes_the_rest_of_the_batch() {
+    let recipe = Arc::new(burst_doc().build().unwrap());
+    let (healthy, frames) = burst_row(&recipe);
+    let healthy_id = healthy.id;
+    let (mut damaged, _) = burst_row(&recipe);
+    damaged.id = healthy.id + 1;
+    let damaged_id = damaged.id;
+    let region = &mut damaged.burst.as_mut().unwrap().regions[0].region;
+    std::mem::swap(&mut region.first_seq, &mut region.last_seq);
+    let mut frame_reads = Vec::new();
+
+    let result = rejudge_rows(
+        vec![damaged, healthy],
+        &RejudgeRequest::default(),
+        "default",
+        |_, _| Ok(Some(recipe.clone())),
+        |_| None,
+        |id| {
+            frame_reads.push(id);
+            Ok(frames.clone())
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!((result.total, result.skipped), (1, 1));
+    assert_eq!(frame_reads, [healthy_id]);
+    let [skip] = result.skip_reasons.as_slice() else {
+        panic!("只应跳过区域倒置的工件");
+    };
+    assert_eq!((skip.id, skip.kind), (damaged_id, SkipKind::LayoutMismatch));
+    let [cell] = result.matrix.as_slice() else {
+        panic!("其余工件应照常完成重判");
+    };
+    assert_eq!(
+        (cell.from, cell.to, cell.count),
+        (Verdict::NgWidth, Verdict::NgWidth, 1)
+    );
+}
+
+#[test]
 fn cancelling_rejudge_during_a_read_counts_finished_and_skipped_records_then_stops() {
     let recipe = Arc::new(burst_doc().build().unwrap());
     let (row, frames) = burst_row(&recipe);

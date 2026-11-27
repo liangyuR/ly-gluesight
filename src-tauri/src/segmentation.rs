@@ -190,6 +190,10 @@ pub struct Region {
 }
 
 impl Region {
+    pub(crate) fn has_ordered_frame_range(&self) -> bool {
+        self.first_seq <= self.last_seq
+    }
+
     /// 区域帧数 = 帧组数 = last_seq − first_seq + 1（与标定同一口径）。
     pub fn frame_count(&self) -> u32 {
         u32::try_from((self.last_seq + 1).saturating_sub(self.first_seq)).unwrap_or(u32::MAX)

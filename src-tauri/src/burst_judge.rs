@@ -431,6 +431,12 @@ fn judge_regions(
     loss: &[LossAlarm],
 ) -> BurstJudgement {
     let group_count = u32::try_from(coverage.group_count).unwrap_or(u32::MAX);
+    if regions
+        .iter()
+        .any(|region| !region.has_ordered_frame_range())
+    {
+        return BurstJudgement::error(fault::INVALID_POINTS, "分段区域的帧组起止序号颠倒");
+    }
     if !frames.values().any(|m| m.state == FrameState::Measured) {
         let reason = if frames.values().all(|m| m.state == FrameState::Missing) {
             "三台相机整件没有收到帧"
@@ -758,7 +764,7 @@ pub fn frame_verdicts<'a>(
     };
     let mut verdicts: BTreeMap<(usize, u64), Verdict> = BTreeMap::new();
     for region in regions {
-        if covered(segments, region).is_empty() {
+        if !region.has_ordered_frame_range() || covered(segments, region).is_empty() {
             continue;
         }
         let scope = RegionScope::of(&part, region);

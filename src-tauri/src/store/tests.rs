@@ -1211,6 +1211,41 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
 }
 
 #[test]
+fn inverted_history_region_returns_a_detail_error_and_preserves_import_read() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(4));
+    let id = store
+        .insert(&burst_part(&recipe, "inverted-region", &judgement, &burst))
+        .unwrap();
+    let original = store.detail(id).unwrap();
+    assert!(!original.burst.as_ref().unwrap().frame_verdicts.is_empty());
+
+    Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "UPDATE parts SET burst_judgement = json_set(burst_judgement,
+               '$.regions[0].region.firstSeq', json_extract(burst_judgement, '$.regions[0].region.lastSeq'),
+               '$.regions[0].region.lastSeq', json_extract(burst_judgement, '$.regions[0].region.firstSeq'))
+             WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+
+    let error = store.detail_overview(id).unwrap_err();
+    assert!(error.contains("帧组起止序号颠倒"), "{error}");
+    let (summary, recording) = store.history_import_record(id).unwrap();
+    assert_eq!(summary.burst, original.summary.burst);
+    assert_eq!(
+        serde_json::to_value(summary).unwrap(),
+        serde_json::to_value(original.summary).unwrap(),
+    );
+    assert_eq!(recording, original.recording);
+}
+
+#[test]
 fn named_frame_uses_the_record_project_camera_order_and_preserves_missing_rows() {
     let db = TestDb::new();
     let store = Store::open_for(&db.path(), "line-a").unwrap();

@@ -449,6 +449,14 @@ fn rejudge_rows(
             skip(SkipKind::NoTable)?;
             continue;
         };
+        if burst
+            .regions
+            .iter()
+            .any(|result| !result.region.has_ordered_frame_range())
+        {
+            skip(SkipKind::LayoutMismatch)?;
+            continue;
+        }
         let Some(revision_id) = row.recipe_revision.as_deref() else {
             skip(SkipKind::NoRevision)?;
             continue;

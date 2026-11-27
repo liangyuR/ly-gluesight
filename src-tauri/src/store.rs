@@ -2035,6 +2035,14 @@ impl Store {
                 };
                 let judgement: BurstJudgement = serde_json::from_str(&judgement)
                     .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
+                if matches!(scope, DetailScope::Full)
+                    && judgement
+                        .regions
+                        .iter()
+                        .any(|result| !result.region.has_ordered_frame_range())
+                {
+                    return Err(format!("记录 {id} 的区域判定损坏：帧组起止序号颠倒"));
+                }
                 let frames = decode_frame_rows(raw_frames)?;
                 let cameras = recipe.plan_cameras();
                 let frame_verdicts = if matches!(scope, DetailScope::Full) {
