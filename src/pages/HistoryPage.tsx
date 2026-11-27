@@ -88,6 +88,7 @@ export default function HistoryPage() {
   const mutationBusy = useRef(false);
   const resultsBody = useRef<HTMLDivElement>(null);
   const restoreRecord = useRef(initial?.focusRecordId);
+  const visibleFocusedRecord = useRef<HTMLButtonElement | null>(null);
   const setMutationBusy = useCallback((busy: boolean) => { mutationBusy.current = busy; }, []);
 
   const currentId = projects.current?.id ?? null;
@@ -127,6 +128,11 @@ export default function HistoryPage() {
 
   useLayoutEffect(() => { currentScope.current = scope; }, [scope]);
   useLayoutEffect(() => {
+    const focused = visibleFocusedRecord.current;
+    visibleFocusedRecord.current = null;
+    if (focused && focused === document.activeElement) {
+      focused.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    }
     if (view !== entryView.current) restoreRecord.current = undefined;
     const id = restoreRecord.current;
     if (id == null || !page || stale) return;
@@ -176,6 +182,16 @@ export default function HistoryPage() {
       if (offset > 0 && offset >= p.total) {
         if (!request.pending) setOffset(Math.max(0, Math.ceil(p.total / PAGE) - 1) * PAGE);
         return;
+      }
+      const focused = document.activeElement;
+      const container = resultsBody.current;
+      if (focused instanceof HTMLButtonElement && focused.dataset.historyId && container?.contains(focused)) {
+        const button = focused.getBoundingClientRect();
+        const bounds = container.getBoundingClientRect();
+        if (button.height > 0 && button.top >= Math.max(0, bounds.top) - 1 &&
+            button.bottom <= Math.min(window.innerHeight, bounds.bottom) + 1) {
+          visibleFocusedRecord.current = focused;
+        }
       }
       setResult({ page: p, query, view });
       setSelected(previous => previous.filter(key => p.items.some(item => String(item.id) === key)));
