@@ -174,6 +174,36 @@ it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保�
   expect(saves[1].revision).toBe(saves[0].revision + 1);
 });
 
+it("已保存的走廊有边缘越界点 → 提示并等待用户修复，再保存并恢复试测", async () => {
+  const candidate = corridorCandidate((inspect, view) => {
+    inspect.segments = [{ segment: 1, corridor: [[10, 10], [99.4, 45], [100, 60]] }];
+    view.plan.cameraTeaching[1].segments[0].saved = false;
+  });
+  const save = savingDoc(candidate);
+  mockSite(candidate, { workspace_save_doc: async args => {
+    const next = await save(args) as WorkspaceView;
+    const path = next.workspace.doc.inspect![1].segments![0].corridor;
+    next.plan.cameraTeaching[1].segments[0].saved = path.every(([x, y]) => x >= 0 && x <= 99 && y >= 0 && y <= 59);
+    return next;
+  } });
+  renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
+  await screen.findByRole("img", { name: CAM2 });
+  expect(screen.getByText(/第 2 个点超出 100 × 60 px 的示教帧/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "全段试测" })).toBeDisabled();
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(calls("workspace_save_doc")).toEqual([]);
+
+  fireEvent.click(screen.getByRole("button", { name: "修正边缘点" }));
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("段走廊已示教")).toBeVisible();
+  expect(screen.getByRole("button", { name: "全段试测" })).toBeEnabled();
+  expect(screen.queryByText("走廊有越界点")).not.toBeInTheDocument();
+  const [saved] = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(calls("workspace_save_doc")).toHaveLength(1);
+  expect(saved.doc.inspect![1].segments).toEqual([{ segment: 1, corridor: [[10, 10], [99, 45], [99, 59]] }]);
+  expect(saved.doc.inspect![0]).toEqual(candidate.workspace.doc.inspect![0]);
+});
+
 it("走廊加点或拖点到图像右下边缘 → 保存最后一个像素中心的坐标", async () => {
   stubSvgPointer({ pointerEvent: true });
   const candidate = corridorCandidate();

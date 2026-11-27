@@ -1,9 +1,9 @@
 import { pathLength, resampleTeachingPath, type ImagePoint } from "./teachingPath";
 import { errorText } from "../../lib/errors";
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowRight, Brush, Camera, Crosshair, Eraser, Hand, Info, Maximize2, Minimize2, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles, Workflow } from "lucide-react";
-import { Button, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Surface } from "qing-steel";
+import { Alert, Button, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Surface } from "qing-steel";
 import { cameraApi } from "../camera/api";
 import type { CameraImaging } from "../camera/types";
 import { useProductionBusy } from "../cycle/control";
@@ -36,6 +36,19 @@ import SegmentTree from "./SegmentTree";
 import SegmentParams from "./SegmentParams";
 import { segmentSaveText, useSegmentDraft } from "./useSegmentDraft";
 import { passTree, segmentCameras } from "./workbenchDraft";
+
+function corridorBoundsIssue(path: ImagePoint[], size: FrozenImage["size"] | undefined) {
+  if (!size || size[0] < 1 || size[1] < 1) return null;
+  const [width, height] = size;
+  let first = -1;
+  for (let i = 0; i < path.length; i++) {
+    const x = Math.fround(path[i][0]), y = Math.fround(path[i][1]);
+    if (x >= 0 && y >= 0 && x <= width - 1 && y <= height - 1) continue;
+    if (first < 0) first = i;
+    if (!(x >= 0 && y >= 0 && x <= width && y <= height)) return { first, edgeOnly: false };
+  }
+  return first < 0 ? null : { first, edgeOnly: true };
+}
 
 function imagingMismatch(image: FrozenImage | null | undefined, current: CameraImaging | undefined) {
   if (!image || !current || image.exposureUs == null || image.gainDb == null) return null;
@@ -275,10 +288,14 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   const previewing = choosingNow || mode === "skip" || mode === "pending";
   const candidate = useRoundFrame(picked?.round ?? null, camera, seq, previewing && arrived);
 
-  const saved = savedDraft(data.workspace.doc, key);
+  const savedDoc = data.workspace.doc;
+  const saved = useMemo(() => savedDraft(savedDoc, key), [savedDoc, key]);
   const t = segment == null ? saved : corridorDrafts[key] ?? saved;
   const editing = segment != null && !sameCorridor(t, saved);
   const invalid = corridorError(t, doc.spacing);
+  const frameSize = frame?.size;
+  const bounds = useMemo(() => corridorBoundsIssue(t.corridor, frameSize), [t.corridor, frameSize]);
+  const boundsReason = bounds && frameSize ? `第 ${bounds.first + 1} 个点超出 ${frameSize[0]} × ${frameSize[1]} px 的示教帧` : "";
   // ready：没有显式操作在进行，按钮据此可点；自动保存不算，期间界面不变灰。
   // 提交后端的操作要等改动都存好（unlocked）：点下去时有待存的改动就先立即保存，存好再执行（deferAction）
   const alignmentPending = data.workspace.passAlignment && !data.workspace.passAlignment.confirmed ? "换示教件的逐笔对照还没确认：先在上方确认对照" : "";
@@ -288,6 +305,12 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   const update = (next: typeof t) => { if (editable && segment != null) setCorridorDraft(key, next); };
   const setPath = (corridor: [number, number][]) => update({ ...t, corridor });
   const canEdit = editable && !!frame && !choosingNow;
+  const repairBounds = () => {
+    if (!canEdit || !frameSize || !bounds?.edgeOnly) return;
+    const [width, height] = frameSize;
+    setVertex(null);
+    setPath(t.corridor.map(([x, y]) => [Math.fround(x) > width - 1 ? width - 1 : x, Math.fround(y) > height - 1 ? height - 1 : y]));
+  };
   const lengthPx = pathLength(t.corridor);
   const strokeValid = brushPoints.length >= 2 && pathLength(brushPoints) >= 8;
   const brushValid = Number.isFinite(brushWidth) && brushWidth >= 6 && brushWidth <= 300 && strokeValid;
@@ -467,7 +490,7 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   const [stateText, stateTone]: [string, "ok" | "warn" | "info" | "neutral"] = mode === "params" ? (cameraItems.find(item => item.camera === camera)?.mmPerPx == null ? ["缺像素当量", "warn"] : ["像素当量已设", "ok"])
     : mode === "skip" ? ["不检测", "neutral"] : mode === "pending" ? ["分段待保存", "warn"]
       : !frame ? ["待选帧", "neutral"] : data.workspace.pending ? ["候选待生效", "warn"]
-        : choosingNow ? ["选帧中", "info"] : editing && invalid ? ["走廊已修改 · 未完成", "warn"] : done ? ["已示教", "ok"] : hasPath ? ["已保存 · 待检查", "info"] : ["待画走廊", "neutral"];
+        : choosingNow ? ["选帧中", "info"] : bounds ? ["走廊越界", "warn"] : editing && invalid ? ["走廊已修改 · 未完成", "warn"] : done ? ["已示教", "ok"] : hasPath ? ["已保存 · 待检查", "info"] : ["待画走廊", "neutral"];
   // 刷选连续两次找不到连续边缘后，笔划直接生成走廊是唯一的主操作
   const strokeAdvised = selectionTool === "brush" && brushFailures >= 2 && !!extractionFailure;
   const primary = segment == null ? "next" : strokeAdvised ? "stroke" : !hasPath ? "extract" : "next";
@@ -523,7 +546,7 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
   const canvasHint = regionMode ? <p className={"wp-canvas-hint" + (extractionFailure ? " warn" : "")} role="status">{extractionFailure && <TriangleAlert size={14} aria-hidden="true"/>}<span>{regionHint}</span></p>
     : <p className="wp-canvas-hint" role="status">{extractionHint && <><span>{extractionHint}</span> </>}<span>{editHint}</span></p>;
   const summary = <span className="wp-trial-inline">
-    <Badge tone={done && !editing ? "ok" : "neutral"}>{editing ? "走廊未保存" : done ? "段走廊已示教" : "待画走廊"}</Badge>
+    <Badge tone={bounds ? "warn" : done && !editing ? "ok" : "neutral"}>{bounds ? "走廊越界" : editing ? "走廊未保存" : done ? "段走廊已示教" : "待画走廊"}</Badge>
     <span className="muted">走廊 <b>{t.corridor.length}</b> 点 · <b>{lengthValue}</b> {lengthUnit}</span>
     {cornerLong && <Badge tone="warn">弯道走廊偏长</Badge>}
   </span>;
@@ -562,7 +585,8 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
     const span = trialRangeFor(item.index);
     return span ? [{ start: Math.max(1, span.start - guard), end: Math.min(trialGroups, span.end + guard), segment: item.index }] : [];
   }) : [];
-  const trialLocked = productionBusy ? "工件正在检测，结束后再试测" : editing && invalid ? `走廊未完成：${invalid}` : !ready ? "正在处理，请稍候" : !hasPath ? "这一段还没有走廊" : "";
+  const trialLocked = productionBusy ? "工件正在检测，结束后再试测" : bounds ? "请先修正走廊的越界点"
+    : editing && invalid ? `走廊未完成：${invalid}` : !ready ? "正在处理，请稍候" : !hasPath ? "这一段还没有走廊" : "";
   const paramsError = cameraParamsError(params);
   const paramsDisabled = !editable;
   const cameraTabs = mode !== "params" && <div className="st-cam-tabs">
@@ -598,6 +622,10 @@ function SegmentTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recipe
           range={trialRange} revision={data.workspace.revision} locked={trialLocked} waiting={pendingSave} onFlush={saveNow} guide={headingGuide} seq={trialSeq} onSeq={setTrialSeq}
           lead={frameTitle} side={imageInfo} />
         : <Surface role="region" className="wp-trial" aria-label="示教帧"><div className="wp-trial-head">{frameTitle}<span className="wp-trial-actions">{imageInfo}</span></div></Surface>)}
+      {!choosingNow && bounds && <Alert tone="warn" title="走廊有越界点"
+        action={bounds.edgeOnly ? <Button size="sm" disabled={!canEdit} onClick={repairBounds}>修正边缘点</Button> : undefined}>
+        {boundsReason}。{bounds.edgeOnly ? "可将越界点移到最后一个像素中心。" : "请编辑越界点或重新绘制走廊。"}
+      </Alert>}
       {choosingNow
         ? previewViewer
         : trialSeq != null ? null : <FrameViewer controlsAt="footer" summary={summary} image={image} loading={loading} error={error} label={frame ? `${targetLabel} · 示教帧` : "等待取样"} tools={tools} notice={canvasHint} emptyTitle="示教帧尚未就绪" emptyHint="选定示教帧后，这里显示这一帧。"

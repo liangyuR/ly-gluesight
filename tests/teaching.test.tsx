@@ -140,6 +140,13 @@ describe("出胶点标定", () => {
 
 describe("画布模式", () => {
 
+  it("走廊点远离示教帧 → 提示手动修复", async () => {
+    ws.data!.workspace.doc.inspect![1].segments = [{ segment: 1, corridor: [[10, 10], [240, 30]] }];
+    show("/recipe/teach?camera=CAM-2&segment=1");
+    expect(await screen.findByText(/请编辑越界点或重新绘制走廊/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "修正边缘点" })).not.toBeInTheDocument();
+  });
+
   // 防的回归：打开示教帧默认就是“编辑点”，看图时随手一点就给走廊加了点
   it("打开示教帧默认只看 → 点图不加走廊点；选“编辑点”后点图才加点", async () => {
     stubSvgPointer();
