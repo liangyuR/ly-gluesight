@@ -630,6 +630,41 @@ fn no_frame_from_any_camera_is_err_91() {
 }
 
 #[test]
+fn sparse_snapshot_preserves_a_later_frames_camera_and_verdict() {
+    let mut part = burst_part("sparse-snapshot", &Ledgers::default());
+    for seq in 1..=4 {
+        for camera in 0..3 {
+            if (camera, seq) != (1, 2) {
+                assert_eq!(
+                    deliver(&mut part, camera, seq),
+                    burst::Arrival::Accepted {
+                        camera: camera as usize,
+                        seq
+                    }
+                );
+            }
+        }
+    }
+    let acquiring = part.burst_view();
+    assert_eq!(acquiring.groups[1].seq, 2);
+    assert!(acquiring.groups[1].incomplete);
+    assert_eq!(
+        acquiring.groups[1].cells[1].status,
+        FrameCellStatus::Waiting
+    );
+    assert_eq!(acquiring.groups[2].cells[1].frame_counter, Some(3));
+    assert_eq!(acquiring.groups[2].cells[1].verdict, Some(Verdict::Ok));
+
+    end(&mut part, Some(4), true);
+    judge_burst(&mut part);
+    let settled = part.burst_view();
+    assert_eq!(settled.groups[1].cells[1].status, FrameCellStatus::Missing);
+    assert_eq!(settled.groups[2].seq, 3);
+    assert_eq!(settled.groups[2].cells[1].frame_counter, Some(3));
+    assert_eq!(settled.groups[2].cells[1].verdict, Some(Verdict::Ok));
+}
+
+#[test]
 fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result() {
     let mut p = burst_part("tail-measurement", &Ledgers::default());
     deliver_groups(&mut p, 4);

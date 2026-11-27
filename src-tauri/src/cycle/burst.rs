@@ -849,46 +849,63 @@ impl Part {
             burst_judge::frame_verdict(m, checks)
         };
         let group_count = burst.grouper.group_count();
+        let mut by_camera: Vec<_> = (0..burst.cams.len())
+            .map(|camera| {
+                let range = (camera, 1)..=(camera, u64::MAX);
+                (
+                    burst.frames.range(range.clone()).peekable(),
+                    decided.map(|verdicts| verdicts.range(range).peekable()),
+                )
+            })
+            .collect();
         let groups = (1..=group_count)
             .map(|seq| {
-                let cells: Vec<FrameCellView> = (0..burst.cams.len())
-                    .map(|camera| match burst.frames.get(&(camera, seq)) {
-                        Some(frame) => {
-                            let (status, verdict) = match &frame.metrics {
-                                Some(m) => (
-                                    FrameCellStatus::from(m.state),
-                                    match decided {
-                                        Some(verdicts) => verdicts.get(&(camera, seq)).copied(),
-                                        None => (m.state == FrameState::Measured).then(|| {
-                                            *frame
-                                                .provisional_verdict
-                                                .get_or_init(|| provisional(m))
-                                        }),
-                                    },
-                                ),
-                                None => (FrameCellStatus::Measuring, None),
-                            };
-                            FrameCellView {
-                                status,
-                                verdict,
-                                unjudged: decided.is_some()
-                                    && status == FrameCellStatus::Measured
-                                    && verdict.is_none(),
-                                frame_counter: Some(frame.frame_counter),
-                                segment: frame.metrics.as_ref().and_then(|m| m.corridor),
+                let cells: Vec<FrameCellView> = by_camera
+                    .iter_mut()
+                    .map(|(frames, verdicts)| {
+                        let final_verdict = verdicts.as_mut().and_then(|entries| {
+                            entries
+                                .next_if(|(key, _)| key.1 == seq)
+                                .map(|(_, verdict)| *verdict)
+                        });
+                        match frames.next_if(|(key, _)| key.1 == seq) {
+                            Some((_, frame)) => {
+                                let (status, verdict) = match &frame.metrics {
+                                    Some(m) => (
+                                        FrameCellStatus::from(m.state),
+                                        match decided {
+                                            Some(_) => final_verdict,
+                                            None => (m.state == FrameState::Measured).then(|| {
+                                                *frame
+                                                    .provisional_verdict
+                                                    .get_or_init(|| provisional(m))
+                                            }),
+                                        },
+                                    ),
+                                    None => (FrameCellStatus::Measuring, None),
+                                };
+                                FrameCellView {
+                                    status,
+                                    verdict,
+                                    unjudged: decided.is_some()
+                                        && status == FrameCellStatus::Measured
+                                        && verdict.is_none(),
+                                    frame_counter: Some(frame.frame_counter),
+                                    segment: frame.metrics.as_ref().and_then(|m| m.corridor),
+                                }
                             }
-                        }
-                        None => FrameCellView {
-                            status: if settled {
-                                FrameCellStatus::Missing
-                            } else {
-                                FrameCellStatus::Waiting
+                            None => FrameCellView {
+                                status: if settled {
+                                    FrameCellStatus::Missing
+                                } else {
+                                    FrameCellStatus::Waiting
+                                },
+                                verdict: None,
+                                unjudged: false,
+                                frame_counter: None,
+                                segment: None,
                             },
-                            verdict: None,
-                            unjudged: false,
-                            frame_counter: None,
-                            segment: None,
-                        },
+                        }
                     })
                     .collect();
                 let incomplete = cells.iter().any(|cell| {
