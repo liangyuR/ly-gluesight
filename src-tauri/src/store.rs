@@ -367,6 +367,8 @@ pub struct PartDetail {
 
 enum DetailScope<'a> {
     Full,
+    Overview,
+    ComparisonOptions,
     Frame(usize, u64),
     FrameByCamera(&'a str, u64),
     WithoutFrameVerdicts,
@@ -389,6 +391,7 @@ pub struct Store {
     conn: Mutex<Connection>,
     checked_recipe_snapshot: Mutex<Option<CheckedRecipeSnapshot>>,
     history_recipe_snapshot: Mutex<Option<HistoryRecipeSnapshot>>,
+    checked_history_frame_metrics: Mutex<Option<Arc<CheckedHistoryFrameMetrics>>>,
     path: PathBuf,
     backup_path: Option<PathBuf>,
     /// 当前项目：新记录归它，统计与候选实例按它
@@ -397,6 +400,13 @@ pub struct Store {
 
 pub(crate) struct RejudgeReader {
     conn: Connection,
+}
+
+const HISTORY_FRAME_METRICS_CACHE_BYTES: usize = 16 * 1024 * 1024;
+
+struct CheckedHistoryFrameMetrics {
+    part_id: i64,
+    texts: Vec<Option<String>>,
 }
 
 struct CheckedRecipeSnapshot {
@@ -735,15 +745,15 @@ fn frame_rows_raw(
     rows.collect::<Result<_, _>>().map_err(db_err)
 }
 
-fn decode_frame_metrics(text: Option<String>) -> Result<Option<Arc<FrameMetrics>>, String> {
-    text.map(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+fn decode_frame_metrics(text: Option<&str>) -> Result<Option<Arc<FrameMetrics>>, String> {
+    text.map(|text| serde_json::from_str(text).map_err(|error| error.to_string()))
         .transpose()
 }
 
 fn decode_frame_rows(rows: Vec<RawFrameRow>) -> Result<Vec<FrameRecord>, String> {
     rows.into_iter()
         .map(|(mut frame, text)| {
-            frame.metrics = decode_frame_metrics(text)?;
+            frame.metrics = decode_frame_metrics(text.as_deref())?;
             Ok(frame)
         })
         .collect()
@@ -752,7 +762,7 @@ fn decode_frame_rows(rows: Vec<RawFrameRow>) -> Result<Vec<FrameRecord>, String>
 fn decode_frame_rows_parallel(mut rows: Vec<RawFrameRow>) -> Result<Vec<FrameRecord>, String> {
     let decode_chunk = |chunk: &mut [RawFrameRow]| -> Result<(), String> {
         for (frame, text) in chunk {
-            frame.metrics = decode_frame_metrics(text.take())?;
+            frame.metrics = decode_frame_metrics(text.take().as_deref())?;
         }
         Ok(())
     };
@@ -1083,6 +1093,7 @@ impl Store {
             conn: Mutex::new(conn),
             checked_recipe_snapshot: Mutex::new(None),
             history_recipe_snapshot: Mutex::new(None),
+            checked_history_frame_metrics: Mutex::new(None),
             path: path.to_path_buf(),
             backup_path,
             project: project.into(),
@@ -1874,11 +1885,12 @@ impl Store {
             .map(|(detail, _)| (detail.summary, detail.recording))
     }
 
+    /// 供历史复测选项查询。逐帧记录只返回元数据，测量指标仍按原格式校验。
     pub(crate) fn history_comparison_record(
         &self,
         id: i64,
     ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
-        let (detail, recipe) = self.read_detail(id, DetailScope::WithoutFrameVerdicts)?;
+        let (detail, recipe) = self.read_detail(id, DetailScope::ComparisonOptions)?;
         let original = match recipe {
             Some(recipe) => Some(recipe),
             None => self.record_recipe(&detail.summary)?.map(Arc::new),
@@ -1923,7 +1935,7 @@ impl Store {
     }
 
     pub fn detail_overview(&self, id: i64) -> Result<PartDetail, String> {
-        let mut detail = self.detail(id)?;
+        let (mut detail, _) = self.read_detail(id, DetailScope::Overview)?;
         if let Some(burst) = detail.burst.as_mut() {
             for frame in &mut burst.frames {
                 if let Some(metrics) = frame.metrics.as_mut() {
@@ -1992,7 +2004,10 @@ impl Store {
                     .ok_or_else(|| format!("记录里没有相机 {camera} 的原图"))?;
                 (Some((index, seq)), Some(recipe))
             }
-            DetailScope::Full | DetailScope::WithoutFrameVerdicts => (None, None),
+            DetailScope::Full
+            | DetailScope::Overview
+            | DetailScope::ComparisonOptions
+            | DetailScope::WithoutFrameVerdicts => (None, None),
         };
         let (judgement, frames, triggers, software_version, recording, burst_judgement) =
             columns.map_err(db_err)?;
@@ -2035,7 +2050,8 @@ impl Store {
                 };
                 let judgement: BurstJudgement = serde_json::from_str(&judgement)
                     .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
-                if matches!(scope, DetailScope::Full)
+                let with_verdicts = matches!(scope, DetailScope::Full | DetailScope::Overview);
+                if with_verdicts
                     && judgement
                         .regions
                         .iter()
@@ -2043,9 +2059,14 @@ impl Store {
                 {
                     return Err(format!("记录 {id} 的区域判定损坏：帧组起止序号颠倒"));
                 }
-                let frames = decode_frame_rows(raw_frames)?;
+                let frames = match scope {
+                    DetailScope::ComparisonOptions | DetailScope::Overview => {
+                        self.history_frames_with_metric_cache(id, raw_frames, with_verdicts)?
+                    }
+                    _ => decode_frame_rows(raw_frames)?,
+                };
                 let cameras = recipe.plan_cameras();
-                let frame_verdicts = if matches!(scope, DetailScope::Full) {
+                let frame_verdicts = if with_verdicts {
                     let regions: Vec<_> =
                         judgement.regions.iter().map(|r| r.region.clone()).collect();
                     crate::burst_judge::frame_verdicts(
@@ -2110,6 +2131,54 @@ impl Store {
         };
         self.detail_from_snapshot(snapshot, id, DetailScope::Full)
             .map(|(detail, _)| Some(detail))
+    }
+
+    fn history_frames_with_metric_cache(
+        &self,
+        id: i64,
+        raw_frames: Vec<RawFrameRow>,
+        with_metrics: bool,
+    ) -> Result<Vec<FrameRecord>, String> {
+        if !with_metrics {
+            let cached = self.checked_history_frame_metrics.lock().unwrap().clone();
+            if cached.is_some_and(|cached| {
+                cached.part_id == id
+                    && cached
+                        .texts
+                        .iter()
+                        .eq(raw_frames.iter().map(|(_, text)| text))
+            }) {
+                return Ok(raw_frames.into_iter().map(|(frame, _)| frame).collect());
+            }
+        }
+        let bytes = raw_frames.len() * std::mem::size_of::<Option<String>>()
+            + raw_frames
+                .iter()
+                .filter_map(|(_, text)| text.as_ref())
+                .map(String::capacity)
+                .sum::<usize>();
+        let mut checked = (bytes <= HISTORY_FRAME_METRICS_CACHE_BYTES)
+            .then(|| Vec::with_capacity(raw_frames.len()));
+        let frames = raw_frames
+            .into_iter()
+            .map(|(mut frame, text)| {
+                let metrics = decode_frame_metrics(text.as_deref())?;
+                if with_metrics {
+                    frame.metrics = metrics;
+                }
+                if let Some(checked) = checked.as_mut() {
+                    checked.push(text);
+                }
+                Ok(frame)
+            })
+            .collect::<Result<_, String>>()?;
+        let next = checked.map(|texts| Arc::new(CheckedHistoryFrameMetrics { part_id: id, texts }));
+        let previous = std::mem::replace(
+            &mut *self.checked_history_frame_metrics.lock().unwrap(),
+            next,
+        );
+        drop(previous);
+        Ok(frames)
     }
 
     fn history_recipe(

@@ -128,6 +128,54 @@ fn history_comparison_checks_recipe_even_without_a_burst_record() {
 }
 
 #[test]
+fn history_comparison_reads_frame_metadata_and_rejects_changed_malformed_metrics() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[(2, 4)]), None, Some(4));
+    let cycle = "history-comparison-metadata";
+    let id = store
+        .insert(&burst_part(&recipe, cycle, &judgement, &burst))
+        .unwrap();
+    let files = BTreeMap::from([(FrameKey { camera: 0, seq: 1 }, "cam1/1.pgm".into())]);
+    assert!(store.update_frame_raw_files(cycle, &files).unwrap());
+
+    let overview = store.detail_overview(id).unwrap();
+    let (options, original) = store.history_comparison_record(id).unwrap();
+    assert_eq!(original.unwrap().revision_id, recipe.revision_id);
+    assert_eq!(options.recording, overview.recording);
+    let mut detail_burst = overview.burst.unwrap();
+    let options_burst = options.burst.unwrap();
+    assert_eq!(options_burst.cameras, detail_burst.cameras);
+    assert_eq!(options_burst.judgement, detail_burst.judgement);
+    for frame in &mut detail_burst.frames {
+        frame.metrics = None;
+    }
+    assert_eq!(options_burst.frames, detail_burst.frames);
+
+    let external = Connection::open(db.path()).unwrap();
+    let previous: String = external
+        .query_row(
+            "SELECT metrics FROM part_frames WHERE part_id=?1 AND camera=1 AND seq=2",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let damaged = format!("{{}}{}", " ".repeat(previous.len() - 2));
+    assert_eq!(
+        external
+            .execute(
+                "UPDATE part_frames SET metrics=?1 WHERE part_id=?2 AND camera=1 AND seq=2",
+                params![damaged, id],
+            )
+            .unwrap(),
+        1
+    );
+    assert!(store.history_comparison_record(id).is_err());
+}
+
+#[test]
 fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejudge_aligned() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
