@@ -18,9 +18,19 @@ use crate::handshake::Contract;
 use crate::plc_plan::PlcPlan;
 use crate::recipe::Recipe;
 
+pub mod grouped_logs;
+use grouped_logs::GroupSelection;
+
 pub struct PlcHost {
     engine: PlcEngine,
     config_path: PathBuf,
+    log_path: PathBuf,
+}
+
+impl<'a, R: tauri::Runtime> tauri::ipc::CommandArg<'a, R> for &'a PlcHost {
+    fn from_command(item: tauri::ipc::CommandItem<'a, R>) -> Result<Self, tauri::ipc::InvokeError> {
+        Ok(State::<PlcHost>::from_command(item)?.inner())
+    }
 }
 
 impl PlcHost {
@@ -65,6 +75,7 @@ impl PlcHost {
         Ok(Self {
             engine: PlcEngine::new(config, logbook, sink),
             config_path,
+            log_path,
         })
     }
 
@@ -321,21 +332,28 @@ pub async fn plc_export_logs(
     app: AppHandle,
     mut query: LogQuery,
     labels: LogLabels,
+    group: Option<GroupSelection>,
 ) -> Result<String, String> {
     let now = ly_plc::now_ms();
     query.end = Some(query.end.map_or(now, |end| end.min(now)));
     let dir = crate::storage::root(&app).join("exports");
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let host = app.state::<PlcHost>();
+        let grouped = group
+            .map(|group| grouped_logs::Reader::open(&host.log_path, group))
+            .transpose()?;
         let path = dir.join(format!(
             "PLC日志_{}.csv",
-            chrono::Local::now().format("%Y%m%d_%H%M%S")
+            chrono::Local::now().format("%Y%m%d_%H%M%S_%3f")
         ));
         let mut f =
-            std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
-        let logbook = app.state::<PlcHost>().engine.logbook().clone();
-        let written = write_log_csv(&mut f, query, &labels, |q| logbook.query(q))
-            .and_then(|_| f.flush().map_err(|e| e.to_string()));
+            std::io::BufWriter::new(std::fs::File::create_new(&path).map_err(|e| e.to_string())?);
+        let written = write_log_csv(&mut f, query, &labels, |q| match &grouped {
+            Some(reader) => reader.logs(q),
+            None => host.engine.logbook().query(q),
+        })
+        .and_then(|_| f.flush().map_err(|e| e.to_string()));
         drop(f);
         if let Err(e) = written {
             let _ = std::fs::remove_file(&path);
@@ -349,11 +367,20 @@ pub async fn plc_export_logs(
 
 #[tauri::command]
 pub async fn plc_point_history(
-    plc: State<'_, PlcHost>,
+    plc: &PlcHost,
     point_id: String,
     start: i64,
     end: i64,
+    group: Option<GroupSelection>,
 ) -> Result<Vec<HistorySample>, String> {
+    if let Some(group) = group {
+        let path = plc.log_path.clone();
+        return tauri::async_runtime::spawn_blocking(move || {
+            grouped_logs::Reader::open(&path, group)?.history(&point_id, start, end)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     plc.engine.logbook().point_history(&point_id, start, end)
 }
 

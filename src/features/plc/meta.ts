@@ -68,6 +68,7 @@ export const levelLabels: Record<LogLevel, string> = {
 };
 
 export const categoryLabels: Record<LogCategory, string> = {
+  part: "工件通讯",
   connection: "连接",
   value: "值变化",
   write: "写入",

@@ -85,7 +85,7 @@ export default function StepChart({ samples, start, end }: StepChartProps) {
 
   if (!chart) {
     return (
-      <div ref={ref}><EmptyState title="所选时间段内无该点位的值变化记录" /></div>
+      <div ref={ref}><EmptyState title="没有可绘制的数值变化" /></div>
     );
   }
 

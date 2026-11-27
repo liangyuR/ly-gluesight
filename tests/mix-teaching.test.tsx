@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { expect, it, vi } from "vitest";
 import MixTeachingCard from "../src/features/workspace/MixTeachingCard";
@@ -39,14 +39,18 @@ it("排胶重新拍照 → 清除旧框，纯色端点只保存新冻结帧上�
     fireEvent.pointerMove(image, { clientX: x + w, clientY: y + h, pointerId: 1 });
     fireEvent.pointerUp(image, { pointerId: 1 });
   };
-  fireEvent.click(photograph);
-  drag(await screen.findByRole("img", { name: "混胶取样原图" }), 3, 4, 8, 9);
+  const takePhoto = async () => {
+    await act(async () => { fireEvent.click(photograph); });
+    return screen.getByRole("img", { name: "混胶取样原图" });
+  };
+  drag(await takePhoto(), 3, 4, 8, 9);
   expect(screen.getByRole("button", { name: "框选为纯黄" })).toBeEnabled();
-  fireEvent.click(photograph);
-  const image = await screen.findByRole("img", { name: "混胶取样原图" });
+  const image = await takePhoto();
   expect(screen.getByRole("button", { name: "框选为纯黄" })).toBeDisabled();
   drag(image, 11, 12, 20, 10);
-  fireEvent.click(screen.getByRole("button", { name: "框选为纯黄" }));
-  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("已保存纯黄端点"));
+  const save = screen.getByRole("button", { name: "框选为纯黄" });
+  expect(save).toBeEnabled();
+  await act(async () => { fireEvent.click(save); });
+  expect(screen.getByRole("status")).toHaveTextContent("已保存纯黄端点");
   expect(saved).toEqual({ camera: "cam2", token: "sample-2", role: "yellow", rect: [11, 12, 20, 10] });
 });

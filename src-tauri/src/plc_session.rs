@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use ly_plc::{now_ms, LinkState, LogContext, PlcEngine};
+use ly_plc::{now_ms, Category, Level, LinkState, LogContext, LogEntry, PlcEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -14,6 +14,8 @@ use crate::inspection::tag;
 use crate::plc_plan::PlcPlan;
 use crate::settings::RecordMode;
 use crate::store::RecordSource;
+mod part_log;
+use part_log::PartEvent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -410,8 +412,23 @@ impl PlcSession {
     /// 相机、配方、追溯与磁盘问题由节拍按本件检测错误处理，不影响通讯就绪。
     pub async fn poll(&mut self, engine: &PlcEngine) -> SessionEvent {
         match self.poll_inner(engine).await {
+            Ok(SessionEvent::Ready) => {
+                engine.logbook().log(LogEntry::new(
+                    Level::Info,
+                    Category::Connection,
+                    "PLC 通讯就绪：协议版本一致、心跳正常",
+                ));
+                SessionEvent::Ready
+            }
             Ok(event) => event,
             Err(reason) => {
+                if self.phase != SessionPhase::NotReady {
+                    engine.logbook().log(LogEntry::new(
+                        Level::Warn,
+                        Category::Connection,
+                        format!("PLC 通讯未就绪：{reason}"),
+                    ));
+                }
                 self.phase = SessionPhase::NotReady;
                 self.message = Some(reason);
                 SessionEvent::None
@@ -479,7 +496,7 @@ impl PlcSession {
             self.message = None;
             self.settled = None;
             if inspecting {
-                self.skip(seq, &snapshot, "到达时 PC 未就绪");
+                self.skip(engine, seq, &snapshot, "到达时 PC 未就绪");
             }
             return Ok(SessionEvent::Ready);
         }
@@ -495,7 +512,8 @@ impl PlcSession {
         match self.phase {
             SessionPhase::Idle => self.idle(engine, &snapshot, inspecting, seq).await,
             SessionPhase::Validating | SessionPhase::Acquiring => {
-                let current = self.request().ok_or("在途件丢失")?.request_seq;
+                let pending = self.pending.as_ref().ok_or("在途件丢失")?;
+                let current = pending.request.request_seq;
                 if seq != current {
                     return Ok(SessionEvent::Lost(format!(
                         "在检期间件序号由 {current} 变为 {seq}，没有收到工件结束"
@@ -503,6 +521,7 @@ impl PlcSession {
                 }
                 if !inspecting && self.phase == SessionPhase::Acquiring {
                     self.phase = SessionPhase::Draining;
+                    PartEvent::Ended.record(engine, pending);
                     return Ok(SessionEvent::End(Instant::now()));
                 }
                 Ok(SessionEvent::None)
@@ -553,29 +572,45 @@ impl PlcSession {
         };
         match arrival.request() {
             Ok(request) => {
-                self.pending = Some(Pending {
+                let pending = Pending {
                     request: request.clone(),
                     cycle_id: None,
                     recipe_id: None,
                     started_at: now_ms(),
                     site: None,
                     mode: self.mode,
-                });
+                };
+                PartEvent::Received {
+                    observed_at: arrival.part_observed_at,
+                }
+                .record(engine, &pending);
+                self.pending = Some(pending);
                 self.settled = None;
                 self.message = None;
                 self.phase = SessionPhase::Validating;
                 Ok(SessionEvent::Start(request))
             }
             Err(reason) => {
-                self.skip(seq, &arrival, &format!("身份不合法（{reason}）"));
+                self.skip(engine, seq, &arrival, &format!("身份不合法（{reason}）"));
                 Ok(SessionEvent::None)
             }
         }
     }
 
     /// 不接这一件：不登记、不回结果，PLC 等不到结果记未检。
-    fn skip(&mut self, seq: u32, snapshot: &Snapshot, reason: &str) {
+    fn skip(&mut self, engine: &PlcEngine, seq: u32, snapshot: &Snapshot, reason: &str) {
         self.settled = Some(seq);
+        PartEvent::Skipped {
+            reason,
+            observed_at: snapshot.part_observed_at,
+        }
+        .log(
+            engine,
+            seq,
+            now_ms(),
+            snapshot.read_text(tag::SN).ok(),
+            snapshot.read_u16(tag::PRODUCT_CODE).ok(),
+        );
         let text = format!("件序号 {seq} {reason}，本件不检测、不回结果，等待下一件");
         applog::emit_event(
             &events::S7_PART_SKIPPED,
@@ -643,8 +678,9 @@ impl PlcSession {
 
     /// 在途件已由节拍按中断记录（通讯未就绪、中途换件、等不到工件结束、结果没出下一件已到）：放下它，不回结果，
     /// PLC 换下一件后照常接件。还在检的件记下序号不再重新接；已结束的件之后再在检的就是新件。
-    pub async fn settle(&mut self) {
+    pub async fn settle(&mut self, engine: &PlcEngine, reason: &str) {
         if let Some(pending) = self.pending.take() {
+            PartEvent::Interrupted { reason }.record(engine, &pending);
             let ended = self.phase == SessionPhase::Draining;
             self.settled = (!ended).then_some(pending.request.request_seq);
             self.persist().await;
@@ -667,6 +703,28 @@ impl PlcSession {
             self.phase = SessionPhase::Idle;
         }
         self.persist().await;
+        let result = self
+            .publish_result(engine, &pending, draining, result_code, fault_code)
+            .await;
+        match &result {
+            Ok(()) => PartEvent::ResultWritten {
+                result_code,
+                fault_code,
+            }
+            .record(engine, &pending),
+            Err(reason) => PartEvent::ResultFailed { reason }.record(engine, &pending),
+        }
+        result
+    }
+
+    async fn publish_result(
+        &mut self,
+        engine: &PlcEngine,
+        pending: &Pending,
+        draining: bool,
+        result_code: u16,
+        fault_code: u16,
+    ) -> Result<(), String> {
         if !draining {
             self.settled = Some(pending.request.request_seq);
             return Err("工件尚未结束（inspecting 仍为 1），不能回写结果".into());
@@ -683,7 +741,7 @@ impl PlcSession {
         }
         let envelope = ResultEnvelope {
             request_seq: pending.request.request_seq,
-            sn: pending.request.sn,
+            sn: pending.request.sn.clone(),
             result_code,
             fault_code,
         };
