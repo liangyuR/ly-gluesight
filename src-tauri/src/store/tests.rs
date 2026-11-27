@@ -428,6 +428,9 @@ fn history_and_maintenance_reads_see_only_committed_project_records_during_an_im
             target.maintenance_statistics(HistoryScope::Real)?,
             target.query(&query)?,
             target.neighbors(&query, committed)?,
+            target.detail_overview(committed)?,
+            target.detail_frame(committed, 0, 1)?,
+            target.detail_by_cycle("incoming-trial")?,
         ))
     };
 
@@ -469,7 +472,12 @@ fn history_and_maintenance_reads_see_only_committed_project_records_during_an_im
         },
         ng: Vec::new(),
     };
-    for ((stats, page, neighbors), total, first, newer) in [
+    let first_frame = burst
+        .frames
+        .iter()
+        .find(|frame| (frame.camera, frame.seq) == (0, 1))
+        .unwrap();
+    for ((stats, page, neighbors, overview, selected, incoming), total, first, newer) in [
         (result_during_import, 1, committed, None),
         (result_after_import, 2, imported_id, Some(imported_id)),
     ] {
@@ -482,6 +490,20 @@ fn history_and_maintenance_reads_see_only_committed_project_records_during_an_im
             [first]
         );
         assert_eq!(neighbors, (None, newer));
+        assert_eq!(overview.summary.id, committed);
+        let overview = overview.burst.unwrap();
+        assert_eq!(overview.frames.len(), burst.frames.len());
+        assert!(overview.frame_verdicts.iter().any(|frame| (
+            frame.camera,
+            frame.seq,
+            frame.verdict
+        ) == (0, 1, Verdict::Ok)));
+        assert_eq!(selected.summary.id, committed);
+        assert_eq!(
+            selected.burst.unwrap().frames.as_slice(),
+            std::slice::from_ref(first_frame)
+        );
+        assert_eq!(incoming.map(|part| part.summary.id), newer);
     }
 }
 

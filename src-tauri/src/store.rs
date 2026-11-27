@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{
-    params, params_from_iter, Connection, OpenFlags, OptionalExtension, TransactionBehavior,
+    params, params_from_iter, Connection, OpenFlags, OptionalExtension, Transaction,
+    TransactionBehavior,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1806,9 +1807,18 @@ impl Store {
         id: i64,
         selected: Option<(usize, u64)>,
     ) -> Result<PartDetail, String> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = open_read_only(&self.path)?;
+        let snapshot = conn.transaction().map_err(db_err)?;
+        Self::detail_from_snapshot(snapshot, id, selected)
+    }
+
+    fn detail_from_snapshot(
+        snapshot: Transaction<'_>,
+        id: i64,
+        selected: Option<(usize, u64)>,
+    ) -> Result<PartDetail, String> {
         const N: usize = SUMMARY_LEN;
-        let (summary, judgement, frames, triggers, software_version, recording, burst_judgement) = conn
+        let (summary, judgement, frames, triggers, software_version, recording, burst_judgement) = snapshot
             .query_row(
                 &format!("SELECT {SUMMARY_COLS}, judgement, frames, triggers, software_version,recording_state,recording_available,recording_directory,recording_errors,burst_judgement FROM parts WHERE id = ?1"),
                 [id],
@@ -1820,17 +1830,17 @@ impl Store {
             .ok_or_else(|| format!("记录 {id} 不存在或已过期清理"))?;
         let raw_snapshot = match summary.recipe_revision.as_deref() {
             Some(revision) if summary.burst.is_some() => {
-                snapshot_raw(&conn, &summary.project_id, revision)?
+                snapshot_raw(&snapshot, &summary.project_id, revision)?
             }
             _ => None,
         };
         let raw_frames = if summary.burst.is_some() {
-            frame_rows_raw(&conn, id, selected)?
+            frame_rows_raw(&snapshot, id, selected)?
         } else {
             Vec::new()
         };
         let retests = {
-            let mut stmt = conn
+            let mut stmt = snapshot
                 .prepare("SELECT id FROM parts WHERE retest_of = ?1 ORDER BY id")
                 .map_err(db_err)?;
             let values = stmt
@@ -1840,7 +1850,7 @@ impl Store {
                 .map_err(db_err)?;
             values
         };
-        drop(conn);
+        snapshot.commit().map_err(db_err)?;
         let burst = match (burst_judgement, &summary.burst) {
             (Some(judgement), Some(counts)) => {
                 let revision = summary
@@ -1853,14 +1863,13 @@ impl Store {
                     .map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?;
                 let frames = decode_frame_rows(raw_frames)?;
                 let cameras = recipe.plan_cameras();
-                let regions: Vec<_> = judgement.regions.iter().map(|r| r.region.clone()).collect();
-                let metrics: Vec<FrameMetrics> =
-                    frames.iter().filter_map(|f| f.metrics.clone()).collect();
                 let frame_verdicts = if selected.is_none() {
+                    let regions: Vec<_> =
+                        judgement.regions.iter().map(|r| r.region.clone()).collect();
                     crate::burst_judge::frame_verdicts(
                         &recipe.path_segments,
                         &regions,
-                        &metrics,
+                        frames.iter().filter_map(|frame| frame.metrics.as_ref()),
                         &cameras,
                     )
                 } else {
@@ -1896,22 +1905,26 @@ impl Store {
     }
 
     pub fn id_by_cycle(&self, cycle_id: &str) -> Result<Option<i64>, String> {
-        self.conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT id FROM parts WHERE cycle_id=?1",
-                [cycle_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()
-            .map_err(db_err)
+        Self::find_id_by_cycle(&open_read_only(&self.path)?, cycle_id)
+    }
+
+    fn find_id_by_cycle(conn: &Connection, cycle_id: &str) -> Result<Option<i64>, String> {
+        conn.query_row(
+            "SELECT id FROM parts WHERE cycle_id=?1",
+            [cycle_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(db_err)
     }
 
     pub fn detail_by_cycle(&self, cycle_id: &str) -> Result<Option<PartDetail>, String> {
-        self.id_by_cycle(cycle_id)?
-            .map(|id| self.detail(id))
-            .transpose()
+        let mut conn = open_read_only(&self.path)?;
+        let snapshot = conn.transaction().map_err(db_err)?;
+        let Some(id) = Self::find_id_by_cycle(&snapshot, cycle_id)? else {
+            return Ok(None);
+        };
+        Self::detail_from_snapshot(snapshot, id, None).map(Some)
     }
 
     /// 记录所属项目 `project` 的配方快照：配方编号与修订号只在项目内唯一。
