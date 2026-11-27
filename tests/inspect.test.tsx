@@ -158,6 +158,21 @@ describe("在线检测段配方", () => {
     layout = burstWorkspaceView().layout; recipeList = [burstSummary()]; state = burstState();
   });
 
+  it("工件仍锁定旧配方修订 → 整件布置与区域结果继续使用该修订的段长", async () => {
+    const active = burstRecipe();
+    active.segments[0].lengthMm = 111;
+    layout = burstWorkspaceView(active).layout;
+    const published = burstRecipe({ version: 2 });
+    published.segments[0].lengthMm = 222;
+    recipeList = [{ ...burstSummary(published), revisionId: "revisionId-S-new" }];
+    vi.mocked(recipeApi.doc).mockResolvedValue(published);
+
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    await userEvent.click(screen.getByText("整件布置", { exact: true }));
+    expect(within(screen.getByRole("region", { name: "相机与段" })).getByText("111 mm")).toBeVisible();
+    expect(screen.getByText(/全长 221 mm/)).toBeVisible();
+  });
+
   it("默认跟随最新帧组；点帧组条 → 按 (相机, seq) 读各相机原图且缺帧的相机不读，返回当前帧组恢复跟随", async () => {
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     await waitFor(() => expect(burstImageApi.live).toHaveBeenCalledTimes(3));

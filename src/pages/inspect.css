@@ -20,9 +20,7 @@
 .prod .readiness-embedded .readiness-item > a { margin: 0; flex-shrink: 0; }
 
 .prod-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: var(--space-8); }
-.prod-main { display: grid; grid-template-rows: minmax(260px, 1fr) 256px clamp(180px, 22vh, 236px); gap: var(--space-8); min-width: 0; min-height: 0; }
-/* 段配方：没有曲线卡，原图区与帧组条两行 */
-.prod-main.burst { grid-template-rows: minmax(260px, 1fr) clamp(140px, 18vh, 190px); }
+.prod-main { display: grid; grid-template-rows: minmax(260px, 1fr) clamp(140px, 18vh, 190px); gap: var(--space-8); min-width: 0; min-height: 0; }
 .prod-segments .region-panel { flex: 1; min-height: 0; overflow: auto; }
 .prod-side { display: flex; flex-direction: column; gap: var(--space-8); min-width: 0; min-height: 0; overflow: auto; }
 .prod-side > .qs-react-card { flex-shrink: 0; }
@@ -40,11 +38,6 @@
 .prod .wp-runtime-strip .wp-kv strong { font-size: 12px; }
 .frame-state.qs-chip { height: 24px; padding: 0 10px; font-size: 12px; }
 .view-mode { color: var(--primary); font-size: 12px; }
-
-.prod-shots .qs-camera-strip { flex: 1; min-height: 0; }
-/* 预览格子的行列按格子定高，中线 SVG 的 height:100% 才有参照；否则 SVG 按宽度撑高、从顶上溢出被裁，竖长的胶路（加上特征定位的留边）整条落在可见区外 */
-.prod-shots .qs-camera-preview { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
-
 
 .prod .prod-part-result, .prod .prod-part-evidence { gap: 0; padding: 0; }
 .prod-part-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 37px; padding: 4px 14px; border-bottom: 1px solid var(--outline-variant); }
@@ -91,7 +84,6 @@ button.prod-part-summary:focus-visible { outline: 2px solid var(--primary); outl
 
 
 @media (max-height: 960px) {
-  .prod-main { grid-template-rows: minmax(200px, 1fr) 232px clamp(150px, 20vh, 196px); }
   .prod-evidence-body { max-height: 240px; }
 }
 @media (max-width: 1600px) {
