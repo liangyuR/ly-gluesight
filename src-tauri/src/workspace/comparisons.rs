@@ -63,7 +63,7 @@ impl From<&Comparison> for ComparisonSummary {
 
 struct CachedSummary {
     length: u64,
-    modified: Option<std::time::SystemTime>,
+    modified: std::time::SystemTime,
     created: Option<std::time::SystemTime>,
     summary: ComparisonSummary,
 }
@@ -145,18 +145,31 @@ impl Comparisons {
         let written = serde_json::to_writer(&mut writer, comparison)
             .map_err(error)
             .and_then(|()| writer.flush().map_err(error))
-            .and_then(|()| writer.get_ref().sync_all().map_err(error));
+            .and_then(|()| {
+                let file = writer.get_ref();
+                file.sync_all().map_err(error)?;
+                Ok(file.metadata().ok())
+            });
         drop(writer.into_parts());
-        if let Err(e) = written {
-            let _ = fs::remove_file(&temporary);
-            return Err(e);
-        }
+        let metadata = match written {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(e);
+            }
+        };
         if let Err(e) = fs::rename(&temporary, &file) {
             let _ = fs::remove_file(&temporary);
             return Err(error(e));
         }
-        files.push((file.clone(), comparison.into()));
+        let summary = ComparisonSummary::from(comparison);
+        cache.summaries.remove(&file);
+        if let Some(metadata) = metadata {
+            cache_summary(&mut cache.summaries, &file, &metadata, &summary);
+        }
+        files.push((file.clone(), summary));
         if let Err(e) = reconcile(files, comparison.history_id, Some(&cycle), &mut cache) {
+            cache.summaries.remove(&file);
             let rollback = remove_checked(&file);
             return Err(format!(
                 "复测记录保留清理失败：{e}；新记录回退：{rollback:?}"
@@ -512,9 +525,8 @@ fn inventory(
         let modified = metadata.modified().ok();
         let created = metadata.created().ok();
         let cached = cache.get(&path).filter(|cached| {
-            modified.is_some()
-                && cached.length == metadata.len()
-                && cached.modified == modified
+            cached.length == metadata.len()
+                && Some(cached.modified) == modified
                 && cached.created == created
         });
         let summary = if let Some(cached) = cached {
@@ -522,18 +534,7 @@ fn inventory(
         } else {
             let saved = read_comparison(&path, history_id, false)?;
             let summary = ComparisonSummary::from(&saved);
-            if cache.len() >= SUMMARY_CACHE_LIMIT {
-                cache.clear();
-            }
-            cache.insert(
-                path.clone(),
-                CachedSummary {
-                    length: metadata.len(),
-                    modified,
-                    created,
-                    summary: summary.clone(),
-                },
-            );
+            cache_summary(cache, &path, &metadata, &summary);
             summary
         };
         files.push((path, summary));
@@ -542,6 +543,29 @@ fn inventory(
         remove_checked(&file)?;
     }
     Ok(files)
+}
+
+fn cache_summary(
+    cache: &mut HashMap<PathBuf, CachedSummary>,
+    path: &Path,
+    metadata: &Metadata,
+    summary: &ComparisonSummary,
+) {
+    let Ok(modified) = metadata.modified() else {
+        return;
+    };
+    if cache.len() >= SUMMARY_CACHE_LIMIT {
+        cache.clear();
+    }
+    cache.insert(
+        path.to_path_buf(),
+        CachedSummary {
+            length: metadata.len(),
+            modified,
+            created: metadata.created().ok(),
+            summary: summary.clone(),
+        },
+    );
 }
 
 fn interrupted_save_id(path: &Path, history_id: i64) -> bool {
@@ -669,6 +693,35 @@ mod tests {
             serde_json::to_value(read().unwrap().as_ref()).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn summaries_report_a_saved_comparison_and_refresh_after_the_file_changes() {
+        let (root, store, comparisons, mut saved) = saved_comparison();
+        let history_id = saved.history_id;
+        let summaries = || comparisons.summaries(&root.0, &store, None, history_id);
+        let before = summaries().unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].id, saved.id);
+        assert_eq!(before[0].candidate_revision, 1);
+
+        let path = directory(&root.0, history_id, false)
+            .unwrap()
+            .join(format!("{}.json", saved.id));
+        let previous_stamp = fs::metadata(&path).unwrap().modified().unwrap();
+        saved.candidate_revision = 2;
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(previous_stamp - std::time::Duration::from_secs(60))
+            .unwrap();
+
+        let after = summaries().unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, saved.id);
+        assert_eq!(after[0].candidate_revision, 2);
     }
 
     #[test]
