@@ -2164,8 +2164,7 @@ pub async fn workspace_calibration_frame(
             });
         };
         let recipe = w.doc.build()?;
-        let graphs = vision::CorridorSet::build(&recipe, &teaching_sizes(&w)?)?
-            .with_channels(&teaching_channels(&w));
+        let graphs = preview_graphs(&w, &recipe, index, segment)?;
         segment_frame_view(
             &app,
             &recipe,
@@ -2387,6 +2386,25 @@ pub(super) fn taught_sizes(w: &Workspace) -> Vec<[u32; 2]> {
         .collect()
 }
 
+pub(super) fn preview_graphs(
+    w: &Workspace,
+    recipe: &Recipe,
+    camera: usize,
+    segment: u32,
+) -> Result<vision::CorridorSet, String> {
+    let inspect = recipe.inspect.get(camera).ok_or("相机下标超出计划相机")?;
+    if camera_frame_size(&w.camera_teaching, &inspect.camera).is_none() {
+        return Err(format!(
+            "相机 {} 还没有示教帧：先完成走廊示教",
+            inspect.camera
+        ));
+    }
+    Ok(
+        vision::CorridorSet::build_for_frame(recipe, &taught_sizes(w), camera, segment)?
+            .with_channels(&teaching_channels(w)),
+    )
+}
+
 fn workspace_clone(app: &AppHandle, id: &str) -> Result<Workspace, String> {
     let host = app.state::<WorkspaceHost>();
     let items = host.items.lock().unwrap();
@@ -2448,8 +2466,7 @@ async fn preview_teaching_frame(
         }
         let index = teach_frame_index(&app, &w, &camera, segment, &round, seq)?;
         let recipe = w.doc.build()?;
-        let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
-            .with_channels(&teaching_channels(&w));
+        let graphs = preview_graphs(&w, &recipe, index, segment)?;
         segment_frame_view(
             &app,
             &recipe,
@@ -2505,8 +2522,7 @@ pub(crate) fn flow_debug_frame(
     let w = workspace_clone(app, id)?;
     let index = teach_frame_index(app, &w, camera, segment, round, seq)?;
     let recipe = w.doc.build()?;
-    let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
-        .with_channels(&teaching_channels(&w));
+    let graphs = preview_graphs(&w, &recipe, index, segment)?;
     let cycle = app.state::<CycleHost>();
     crate::camera::check_idle(&cycle)?;
     let image = crate::image_file::load(
@@ -2687,11 +2703,8 @@ async fn preview_range_operation(
             let scope = teach_preview_scope(&w, &captured, &camera, segment)?;
             preview_window(&scope, from, to)?;
             let recipe = w.doc.build()?;
-            let graphs = vision::CorridorSet::build(&recipe, &taught_sizes(&w))?
-                .with_channels(&teaching_channels(&w));
-            if graphs.get(scope.index, segment).is_none() {
-                return Err(format!("第 {segment} 段相机 {camera} 还没有示教走廊"));
-            }
+            let graphs = preview_graphs(&w, &recipe, scope.index, segment)?;
+            let graph = graphs.get(scope.index, segment).ok_or("走廊测量图缺失")?;
             crate::camera::check_idle(&cycle)?;
             let engine = app
                 .state::<vision::VisionHost>()
@@ -2713,7 +2726,6 @@ async fn preview_range_operation(
                         .iter()
                         .find(|c| c.camera_id == camera)
                         .and_then(|c| c.mix_capture());
-                    let graph = graphs.get(scope.index, segment).ok_or("走廊测量图缺失")?;
                     vision::measure_frame(
                         &engine,
                         graph,

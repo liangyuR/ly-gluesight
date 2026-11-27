@@ -1,4 +1,4 @@
-use super::burst::{apply_segment_teaching, CameraTeaching};
+use super::burst::{apply_segment_teaching, preview_graphs, CameraTeaching};
 use super::burst_tests::{burst_workspace, capture_round, DEVICE};
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
 use super::*;
@@ -63,6 +63,20 @@ fn with_corridor(w: &mut Workspace, camera: &str, segment: u32, corridor: Vec<[f
             measure: None,
         });
     update_doc(w, doc).unwrap();
+}
+
+#[test]
+fn preview_can_build_taught_camera_when_other_combinations_are_unavailable() {
+    let (mut w, cameras) = workspace();
+    with_corridor(&mut w, &cameras[0], 1, vec![[20.0, 50.0], [75.0, 50.0]]);
+    with_corridor(&mut w, &cameras[1], 3, vec![[20.0, 50.0], [75.0, 50.0]]);
+    let mut recipe = w.doc.build().unwrap();
+    recipe.inspect[0].mm_per_px = None;
+
+    let selected = preview_graphs(&w, &recipe, 1, 3).unwrap();
+    assert!(selected.get(1, 3).is_some());
+    assert!(preview_graphs(&w, &recipe, 0, 1).is_err());
+    assert!(preview_graphs(&w, &recipe, 2, 1).is_err());
 }
 
 #[test]
