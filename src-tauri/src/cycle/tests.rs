@@ -166,7 +166,7 @@ fn end(part: &mut Part, device_triggers: Option<u16>, expired: bool) {
 
 fn judge_burst(part: &mut Part) -> BurstJudgement {
     let judgement = part.burst_judgement();
-    part.burst.judgement = Some(judgement.clone());
+    part.burst.set_judgement(judgement.clone());
     judgement
 }
 
@@ -283,6 +283,7 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             (None, None, None),
             "{case}：测完后不再是送测中"
         );
+        assert_eq!(p.view().burst.groups[5].cells[0].verdict, Some(Verdict::Ok));
         let recording_dir = crate::offline::test_dir::TestDir::new("cycle-post", case);
         if keep_images {
             let recorder = crate::recorder::Recorder::new(vec![recording_dir.to_path_buf()], None);
@@ -333,23 +334,33 @@ fn frames_are_measured_with_predicted_segment_corridor_and_shifted_frames_are_re
             };
             assert_eq!(jobs, expected, "{case}");
             assert!(!p.complete(), "{case}：补测完之前不收尾");
+            let remeasures_visible_frame =
+                jobs.iter().any(|&(camera, seq, _)| camera == 0 && seq == 6);
+            if remeasures_visible_frame {
+                let view = p.view();
+                let cell = &view.burst.groups[5].cells[0];
+                assert_eq!(
+                    (cell.status, cell.verdict),
+                    (FrameCellStatus::Measuring, None)
+                );
+            }
             for (camera, seq, segment) in jobs {
+                let mut metrics =
+                    measure::simulate_frame(Scenario::Normal, camera, seq, segment, &p.recipe);
+                if camera == 0 && seq == 6 {
+                    metrics.gap_max_mm = 1_000.0;
+                }
                 let result = FrameMeasured {
                     segment,
-                    ..frame_result(
-                        &p,
-                        camera,
-                        seq,
-                        Ok(measure::simulate_frame(
-                            Scenario::Normal,
-                            camera,
-                            seq,
-                            segment,
-                            &p.recipe,
-                        )),
-                    )
+                    ..frame_result(&p, camera, seq, Ok(metrics))
                 };
                 p.apply_burst(result).unwrap();
+            }
+            if remeasures_visible_frame {
+                assert_eq!(
+                    p.view().burst.groups[5].cells[0].verdict,
+                    Some(Verdict::NgGap)
+                );
             }
         } else {
             assert!(jobs.is_empty(), "{case}");
@@ -676,6 +687,7 @@ fn production_splits_passes_by_gate_pause_and_skips_each_pass_head() {
             }
         }
     }
+    assert_eq!(p.view().burst.groups[0].cells[0].verdict, Some(Verdict::Ok));
     end(&mut p, Some(6), true);
     let judgement = judge_burst(&mut p);
     let skipped: Vec<(Option<u32>, Option<u64>)> = judgement
@@ -687,4 +699,12 @@ fn production_splits_passes_by_gate_pause_and_skips_each_pass_head() {
         (judgement.passes.clone(), skipped),
         (vec![3, 3], vec![(Some(1), Some(1)), (Some(2), Some(4))])
     );
+    let final_view = p.view();
+    for group in [&final_view.burst.groups[0], &final_view.burst.groups[3]] {
+        let cell = &group.cells[0];
+        assert_eq!(
+            (cell.status, cell.verdict, cell.unjudged),
+            (FrameCellStatus::Measured, None, true)
+        );
+    }
 }
