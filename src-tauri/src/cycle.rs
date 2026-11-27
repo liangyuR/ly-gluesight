@@ -2117,9 +2117,13 @@ impl Machine {
         };
         let (ms, queue_ms, engine_ms) = (m.ms, m.queue_ms, m.engine_ms);
         let (segment, overlay) = (m.segment, m.trace.take());
-        let Some(metrics) = part.apply_burst(m) else {
+        let Some(key) = part.apply_burst(m) else {
             return;
         };
+        let metrics = part
+            .burst
+            .frame_metrics(key)
+            .expect("已接收的帧缺少测量指标");
         if let Some(overlay) = overlay {
             crate::workspace::retain_live_view(
                 &self.app,
@@ -2127,7 +2131,7 @@ impl Machine {
                 &part.recipe,
                 segment,
                 overlay,
-                &metrics,
+                metrics,
             );
         }
         self.dirty = true;
@@ -2135,7 +2139,7 @@ impl Machine {
         let seq = metrics.seq;
         let fields = Fields { cycle_id: Some(part.cycle_id.clone()), camera: Some(camera.clone()), seq: Some(seq), ..Fields::default() }.with_stage("measured")
             .with_data(json!({"ms": ms, "queueMs": queue_ms, "engineMs": engine_ms, "state": metrics.state, "error": metrics.error}));
-        let why = metrics.error.clone().unwrap_or_default();
+        let why = metrics.error.as_deref().unwrap_or_default();
         let untested = part
             .production
             .as_ref()

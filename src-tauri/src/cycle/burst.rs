@@ -21,7 +21,7 @@ use crate::recipe::Recipe;
 use crate::recorder::RecordedFrame;
 use crate::segmentation::{frame_corridors, resolve_regions, segment_part, Region, SegOutcome};
 use crate::shot_router::{ArmCam, Floor, FrameBaseline, Ledger, Ledgers};
-use crate::store::{BurstRecord, FrameRecord};
+use crate::store::{BurstRecord, FrameKey, FrameRecord};
 
 use super::{FrameCellStatus, FrameCellView, FrameGroupView, Part, PartViewBurst};
 
@@ -205,6 +205,10 @@ impl BurstPart {
             .get(&(camera, seq))
             .filter(|f| f.measuring_since.is_some())
             .and_then(|f| f.corridor)
+    }
+
+    pub(super) fn frame_metrics(&self, key: FrameKey) -> Option<&FrameMetrics> {
+        self.frames.get(&(key.camera, key.seq))?.metrics.as_ref()
     }
 
     /// 到达时按笔预测段（D-SB-62）：这一帧在本件第 j 笔第 i 帧，换成示教件第 j 笔的第 i 帧（超出示教件这一笔取它的末帧）
@@ -572,7 +576,7 @@ impl Part {
 
     /// 段配方的一帧测量结果。不属于本件（上一件迟到的结果）、或这一帧已不在测量中（超时后才到）时丢弃，返回 None。
     /// 没测成（队满、超时、失败）记为 Unmeasured / Error，只算检测不完整，不判 ERR（D-SB-13）。
-    pub(super) fn apply_burst(&mut self, measured: FrameMeasured) -> Option<FrameMetrics> {
+    pub(super) fn apply_burst(&mut self, measured: FrameMeasured) -> Option<FrameKey> {
         self.expire_burst(Instant::now(), self.proc_timeout);
         if measured.cycle_id != self.cycle_id {
             return None;
@@ -581,12 +585,11 @@ impl Part {
         let (camera, seq) = (measured.camera_idx, measured.seq);
         let frame = burst.frames.get_mut(&(camera, seq))?;
         let since = frame.measuring_since?;
-        let metrics = checked(measured.metrics(), camera, seq);
-        frame.metrics = Some(metrics.clone());
+        frame.metrics = Some(checked(measured.into_metrics(), camera, seq));
         frame.measuring_since = None;
         let removed = burst.pending.remove(&(since, camera, seq));
         debug_assert!(removed);
-        Some(metrics)
+        Some(FrameKey { camera, seq })
     }
 
     /// 测量超过 T_proc 的帧记为没测（Unmeasured），返回这些帧。
