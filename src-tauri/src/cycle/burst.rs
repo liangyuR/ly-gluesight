@@ -725,11 +725,10 @@ impl Part {
                 ..BurstJudgement::error(*code, reason.clone())
             };
         }
-        let metrics: Vec<FrameMetrics> = burst
+        let metrics = burst
             .frames
             .values()
-            .filter_map(|frame| frame.metrics.clone())
-            .collect();
+            .filter_map(|frame| frame.metrics.as_ref());
         let segments = &burst.segments;
         let (_, regions) = burst.regions();
         let layout = burst.pass_layout();
@@ -738,7 +737,7 @@ impl Part {
             self.recipe.expected_total(),
             &regions,
             &groups,
-            &metrics,
+            metrics,
             &burst.cameras,
             &loss,
             burst.pass_rules(&layout),

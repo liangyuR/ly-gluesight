@@ -106,17 +106,14 @@ pub(crate) fn record(
                 .count() as u32
         })
         .collect();
-    let metrics: Vec<FrameMetrics> = frames
-        .iter()
-        .filter_map(|frame| frame.metrics.clone())
-        .collect();
+    let metrics = frames.iter().filter_map(|frame| frame.metrics.as_ref());
     let alarms = loss_alarms(&camera_frames);
     let judgement = burst_judge::judge(
         &recipe.path_segments,
         recipe.expected_total(),
         &regions,
         &groups,
-        &metrics,
+        metrics,
         &cameras,
         &alarms,
         PassRules::NONE,

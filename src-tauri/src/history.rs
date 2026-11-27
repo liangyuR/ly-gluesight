@@ -380,16 +380,13 @@ fn rejudge_burst(
         .iter()
         .map(|result| result.region.clone())
         .collect();
-    let metrics: Vec<_> = frames
-        .iter()
-        .filter_map(|frame| frame.metrics.clone())
-        .collect();
+    let metrics = frames.iter().filter_map(|frame| frame.metrics.as_ref());
     burst_judge::judge(
         &segments,
         recipe.expected_total(),
         &regions,
         &frame_groups(frames, cameras.len()),
-        &metrics,
+        metrics,
         &cameras,
         &judgement.alarms,
         recipe.pass_rules(&judgement.passes),

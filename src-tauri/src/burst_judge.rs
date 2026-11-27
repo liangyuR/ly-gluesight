@@ -370,6 +370,19 @@ impl BurstJudgement {
     }
 }
 
+type FrameMetricsIndex<'a> = BTreeMap<(u64, usize), &'a FrameMetrics>;
+
+fn index_metrics<'a>(
+    metrics: impl IntoIterator<Item = &'a FrameMetrics>,
+    camera_count: usize,
+) -> FrameMetricsIndex<'a> {
+    metrics
+        .into_iter()
+        .filter(|m| m.camera < camera_count)
+        .map(|m| ((m.seq, m.camera), m))
+        .collect()
+}
+
 /// 判一件。cameras 是计划相机（`FrameMetrics.camera` 的下标基准，`OffsetRef.camera` 按它找下标）；
 /// expected_total 由 `plan::expected_total` 算出；区域内检测相机取最差（D-SB-41：直线 / 弯道区域只用本段检测相机，
 /// 过渡区用两侧段检测相机的并集，未分段区域用全部计划相机）。
@@ -382,22 +395,23 @@ impl BurstJudgement {
 /// - 三台相机整件没有一帧测成时判 ERR 91；区域引用了配方里没有的段时判 ERR 93。
 /// - 笔结构（D-SB-62）原样记进结果；本件笔数与示教件不同只记笔数异常，不改结论。
 #[allow(clippy::too_many_arguments)]
-pub fn judge(
+pub fn judge<'a>(
     segments: &[PathSegment],
     expected_total: Option<u32>,
     regions: &[Region],
     groups: &[FrameGroup],
-    metrics: &[FrameMetrics],
+    metrics: impl IntoIterator<Item = &'a FrameMetrics>,
     cameras: &[String],
     loss: &[LossAlarm],
     passes: PassRules,
 ) -> BurstJudgement {
+    let frames = index_metrics(metrics, cameras.len());
     let mut judgement = judge_regions(
         segments,
         expected_total,
         regions,
         groups,
-        metrics,
+        &frames,
         cameras,
         loss,
     );
@@ -412,19 +426,12 @@ fn judge_regions(
     expected_total: Option<u32>,
     regions: &[Region],
     groups: &[FrameGroup],
-    metrics: &[FrameMetrics],
+    frames: &FrameMetricsIndex<'_>,
     cameras: &[String],
     loss: &[LossAlarm],
 ) -> BurstJudgement {
     let group_count =
         u32::try_from(groups.iter().map(|g| g.seq).max().unwrap_or(0)).unwrap_or(u32::MAX);
-    // 每个 (seq, 相机) 一帧；不是计划相机的帧不参与
-    let frames: BTreeMap<(u64, usize), &FrameMetrics> = metrics
-        .iter()
-        .filter(|m| m.camera < cameras.len())
-        .map(|m| ((m.seq, m.camera), m))
-        .collect();
-
     if !frames.values().any(|m| m.state == FrameState::Measured) {
         let reason = if frames.values().all(|m| m.state == FrameState::Missing) {
             "三台相机整件没有收到帧"
@@ -475,7 +482,7 @@ fn judge_regions(
         segments,
         expected_total,
         incomplete_seqs,
-        frames: &frames,
+        frames,
         cameras,
     };
     let inspected: Vec<_> = regions
@@ -747,11 +754,7 @@ pub fn frame_verdicts<'a>(
     metrics: impl IntoIterator<Item = &'a FrameMetrics>,
     cameras: &[String],
 ) -> Vec<FrameVerdict> {
-    let frames: BTreeMap<(u64, usize), &FrameMetrics> = metrics
-        .into_iter()
-        .filter(|m| m.camera < cameras.len())
-        .map(|m| ((m.seq, m.camera), m))
-        .collect();
+    let frames = index_metrics(metrics, cameras.len());
     let part = PartInput {
         segments,
         expected_total: None,
@@ -816,7 +819,7 @@ struct PartInput<'a> {
     expected_total: Option<u32>,
     /// 配组标了 incomplete 的 seq
     incomplete_seqs: BTreeSet<u64>,
-    frames: &'a BTreeMap<(u64, usize), &'a FrameMetrics>,
+    frames: &'a FrameMetricsIndex<'a>,
     cameras: &'a [String],
 }
 
