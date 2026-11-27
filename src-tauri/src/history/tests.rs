@@ -134,3 +134,43 @@ fn rejudge_skips_when_plan_identity_changed_but_allows_limit_only_change() {
         }
     }
 }
+
+#[test]
+fn rejudge_counts_arrived_but_uninspected_frame_as_present() {
+    let recipe = Arc::new(burst_doc().build().unwrap());
+    let (row, mut frames) = burst_row(&recipe);
+    let frame = frames
+        .iter_mut()
+        .find(|frame| (frame.camera, frame.seq) == (2, 2))
+        .unwrap();
+    frame.status = FrameState::NotInspected;
+    frame.frame_counter = Some(2);
+    frame.trigger_counter = Some(2);
+    let mut metrics = burst_fixture::measured(frame.camera, frame.seq, 4.0);
+    metrics.state = frame.status;
+    frame.metrics = Some(Arc::new(metrics));
+    let request = RejudgeRequest {
+        overrides: Overrides {
+            corner: KindOverride {
+                tol_lower: Some(3.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let result = rejudge_rows(
+        vec![row],
+        &request,
+        "default",
+        |_, _| Ok(Some(recipe.clone())),
+        |_| None,
+        |_| Ok(frames.clone()),
+    )
+    .unwrap();
+    let [change] = result.changes.as_slice() else {
+        panic!("弯道允差放宽后应有一件判定变化");
+    };
+    assert_eq!(change.to, Verdict::Ok);
+    assert!(change.flags.as_ref().is_some_and(|flags| !flags.incomplete));
+}

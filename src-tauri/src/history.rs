@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::burst_judge::{self, BurstJudgement, Flags, FrameState};
 use crate::cycle::CycleHost;
-use crate::frame_group::FrameGroup;
+use crate::frame_group::GroupCoverage;
 use crate::judge::Verdict;
 use crate::plan::{PathSegment, SegmentKind, WidthCheck};
 use crate::recipe::Recipe;
@@ -319,25 +319,24 @@ fn cached_recipe(
     Ok(value)
 }
 
-/// 段配方记录的帧组按帧记录还原（与 Grouper 同一口径）：到了的帧（不论测没测成）算 present，缺帧不算。
-fn frame_groups(frames: &[FrameRecord], cameras: usize) -> Vec<FrameGroup> {
-    let total = frames.iter().map(|frame| frame.seq).max().unwrap_or(0);
-    (1..=total)
-        .map(|seq| {
-            let present: Vec<bool> = (0..cameras)
-                .map(|camera| {
-                    frames.iter().any(|f| {
-                        f.camera == camera && f.seq == seq && f.status != FrameState::Missing
-                    })
-                })
-                .collect();
-            FrameGroup {
-                seq,
-                incomplete: present.contains(&false),
-                present,
-            }
-        })
-        .collect()
+/// 帧表主键保证每件内的相机和序号组合唯一。显式缺帧行计入帧组上限，但不计入该组到达数。
+fn stored_frame_coverage(
+    frames: &[FrameRecord],
+    cameras: usize,
+) -> GroupCoverage<impl Iterator<Item = u64>> {
+    let mut group_count = 0;
+    let mut arrived_by_seq = HashMap::new();
+    for frame in frames {
+        group_count = group_count.max(frame.seq);
+        if frame.camera < cameras && frame.status != FrameState::Missing {
+            *arrived_by_seq.entry(frame.seq).or_insert(0) += 1;
+        }
+    }
+    GroupCoverage {
+        group_count,
+        incomplete_seqs: (1..=group_count)
+            .filter(move |seq| arrived_by_seq.get(seq).copied().unwrap_or(0) < cameras),
+    }
 }
 
 /// 段配方记录的区域都落在原配方的段内、帧都属于原配方的计划相机；否则存储与原配方布局不一致。
@@ -385,7 +384,7 @@ fn rejudge_burst(
         &segments,
         recipe.expected_total(),
         &regions,
-        FrameGroup::coverage(&frame_groups(frames, cameras.len())),
+        stored_frame_coverage(frames, cameras.len()),
         metrics,
         &cameras,
         &judgement.alarms,
