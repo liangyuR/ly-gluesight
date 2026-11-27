@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, Metadata, OpenOptions};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -126,17 +126,20 @@ impl Comparisons {
         if fs::symlink_metadata(&file).is_ok() {
             return Err("复测记录文件已存在".into());
         }
-        let bytes = serde_json::to_vec(comparison).map_err(error)?;
-        let mut writer = OpenOptions::new()
+        let output = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temporary)
             .map_err(error)?;
-        let written = writer.write_all(&bytes).and_then(|_| writer.sync_all());
-        drop(writer);
+        let mut writer = BufWriter::with_capacity(64 * 1024, output);
+        let written = serde_json::to_writer(&mut writer, comparison)
+            .map_err(error)
+            .and_then(|()| writer.flush().map_err(error))
+            .and_then(|()| writer.get_ref().sync_all().map_err(error));
+        drop(writer.into_parts());
         if let Err(e) = written {
             let _ = fs::remove_file(&temporary);
-            return Err(error(e));
+            return Err(e);
         }
         if let Err(e) = fs::rename(&temporary, &file) {
             let _ = fs::remove_file(&temporary);
@@ -554,6 +557,33 @@ mod tests {
         let comparisons = Comparisons::default();
         comparisons.save(&root.0, &store, &saved).unwrap();
         (root, store, comparisons, saved)
+    }
+
+    #[test]
+    fn saving_large_comparison_preserves_all_content_when_duplicate_is_rejected() {
+        let (root, store, comparisons, mut saved) = saved_comparison();
+        saved.id = format!("{}-2", saved.history_id);
+        saved.created_at = 2;
+        saved.measurements = (1..=4096)
+            .map(|seq| serde_json::json!({ "camera": 0, "seq": seq, "widths": [4.0, 4.25] }))
+            .collect();
+        assert!(serde_json::to_vec(&saved).unwrap().len() > 64 * 1024);
+        let expected = serde_json::to_value(&saved).unwrap();
+
+        comparisons.save(&root.0, &store, &saved).unwrap();
+        let read = || comparisons.get(&root.0, &store, saved.history_id, &saved.id);
+        assert_eq!(
+            serde_json::to_value(read().unwrap().as_ref()).unwrap(),
+            expected
+        );
+
+        saved.measurements.last_mut().unwrap()["widths"][1] = serde_json::json!(6.5);
+        saved.created_at = 3;
+        assert!(comparisons.save(&root.0, &store, &saved).is_err());
+        assert_eq!(
+            serde_json::to_value(read().unwrap().as_ref()).unwrap(),
+            expected
+        );
     }
 
     #[test]
