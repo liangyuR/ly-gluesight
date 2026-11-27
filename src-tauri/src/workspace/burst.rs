@@ -589,26 +589,25 @@ pub(super) fn calibration_corridors(
     group_count: u64,
 ) -> Result<Vec<Vec<Option<u32>>>, String> {
     let segments = &w.doc.segments;
-    let owner: Vec<u32> = if segments.len() == 1 {
-        vec![segments[0].index; group_count as usize]
+    let counts: Vec<usize> = if segments.len() == 1 {
+        vec![group_count as usize]
     } else {
-        let counts = calibration_segment_counts(w, round, group_count)?;
-        segments
-            .iter()
-            .zip(counts)
-            .flat_map(|(s, n)| std::iter::repeat_n(s.index, n as usize))
+        calibration_segment_counts(w, round, group_count)?
+            .into_iter()
+            .map(|count| count as usize)
             .collect()
     };
     let cameras = w.doc.plan_cameras();
     Ok(cameras
         .iter()
         .map(|camera| {
-            owner
-                .iter()
-                .map(|&segment| {
-                    crate::plan::detects(segments, segment, camera, &cameras).then_some(segment)
-                })
-                .collect()
+            let mut row = Vec::with_capacity(group_count as usize);
+            for (segment, &count) in segments.iter().zip(&counts) {
+                let selection = crate::plan::detects(segments, segment.index, camera, &cameras)
+                    .then_some(segment.index);
+                row.resize(row.len() + count, selection);
+            }
+            row
         })
         .collect())
 }

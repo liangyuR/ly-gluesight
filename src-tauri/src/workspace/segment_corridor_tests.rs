@@ -1,5 +1,6 @@
 use super::burst::{
-    apply_segment_teaching, calibration_frame_segment, preview_graphs, CameraTeaching,
+    apply_segment_teaching, calibration_corridors, calibration_frame_segment, preview_graphs,
+    CameraTeaching,
 };
 use super::burst_tests::{burst_workspace, capture_round, DEVICE};
 use super::capture_review::{apply_capture_review, CaptureReviewEdit};
@@ -65,6 +66,26 @@ fn calibration_frame_in_a_single_segment_needs_no_confirmed_cut() {
     assert_eq!(
         calibration_frame_segment(&w, "round", GROUPS, &w.doc.plan_cameras()[0], GROUPS).unwrap(),
         (0, Some(1))
+    );
+}
+
+#[test]
+fn whole_round_calibration_keeps_original_frame_positions_for_each_camera() {
+    let mut w = burst_workspace(&[Straight, Corner, Straight]);
+    let cameras = w.doc.plan_cameras();
+    let mut doc = w.doc.clone();
+    doc.segments[1].cameras = vec![cameras[1].clone()];
+    doc.segments[2].skip = true;
+    update_doc(&mut w, doc).unwrap();
+    let round = capture_round("confirmed", &w.doc, GROUPS, DEVICE, &[]);
+    apply_capture_review(&mut w, &round, CaptureReviewEdit::Save(vec![6, 14])).unwrap();
+    apply_capture_review(&mut w, &round, CaptureReviewEdit::Confirm).unwrap();
+
+    let first_and_third = [vec![Some(1); 6], vec![None; 24]].concat();
+    let second = [vec![Some(1); 6], vec![Some(2); 8], vec![None; 16]].concat();
+    assert_eq!(
+        calibration_corridors(&w, &round.round_id, GROUPS).unwrap(),
+        [first_and_third.clone(), second, first_and_third]
     );
 }
 
