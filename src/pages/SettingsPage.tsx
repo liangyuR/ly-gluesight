@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Card, Checkbox, Grid, Heading, NumberField, Select, Stack } from "qing-steel";
-import { getAgentMcpStatus, getAppInfo, getEngineStatus, type AgentMcpStatus, type AppInfo, type EngineStatus } from "../lib/api";
+import { getAgentMcpStatus, getAppInfo, type AgentMcpStatus, type AppInfo } from "../lib/api";
+import { useEngineStatus } from "../lib/engineStatus";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
 import RecordingDisksPanel from "./RecordingDisksPanel";
@@ -183,7 +184,7 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
 
 function MeasurePanel({ savePart }: { savePart: SavePart }) {
   const { data: settings, setData: setSettings, error, loading, reload } = useResource(cycleApi.getSettings);
-  const { data: engine, error: engineError, loading: engineLoading, reload: refresh } = useResource<EngineStatus>(getEngineStatus);
+  const { data: engine, error: engineError, loading: engineLoading, refresh } = useEngineStatus();
   const [saveError, setSaveError] = useState("");
   const [openError, setOpenError] = useState("");
   const { show: snack } = useSnackbar();

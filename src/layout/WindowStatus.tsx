@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Wrench } from "lucide-react";
 import { Alert, Button, Popover } from "qing-steel";
-import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
+import { getAppInfo, type AppInfo } from "../lib/api";
+import { useEngineIndicator } from "../lib/engineStatus";
 import { desktopAvailable } from "../lib/desktop";
 import { linkStateLabels, usePlcLinkStatus } from "../features/plc";
 import { useMaintenance } from "../features/cycle/control";
@@ -36,17 +37,7 @@ export function WindowModeBadges() {
 
 export function WindowConnections() {
   const plc = usePlcLinkStatus();
-  const [engine, setEngine] = useState<EngineStatus | null>(null);
-  useEffect(() => {
-    let alive = true, serial = 0;
-    const refresh = () => {
-      const request = ++serial;
-      return getEngineStatus().then(status => { if (alive && request === serial) setEngine(status); }).catch(() => { if (alive && request === serial) setEngine(null); });
-    };
-    void refresh();
-    const timer = setInterval(() => void refresh(), 3000);
-    return () => { alive = false; clearInterval(timer); };
-  }, []);
+  const engine = useEngineIndicator();
   const plcDot = { connected: "ok", connecting: "warn", error: "err", disconnected: "off" }[plc?.state ?? "disconnected"];
   const plcText = "PLC · " + linkStateLabels[plc?.state ?? "disconnected"];
   const engineText = engine ? engine.backend + " · " + (engine.ready ? "就绪" : "未就绪") : "后端未连接";
