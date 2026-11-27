@@ -56,6 +56,7 @@ pub(crate) struct GroupCoverage<I> {
     pub incomplete_seqs: I,
 }
 
+#[cfg(test)]
 impl FrameGroup {
     pub(crate) fn coverage(groups: &[Self]) -> GroupCoverage<impl Iterator<Item = u64> + '_> {
         GroupCoverage {

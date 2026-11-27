@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
-use crate::frame_group::{FrameGroup, LossAlarm};
+use crate::frame_group::{GroupCoverage, LossAlarm};
 use crate::passes::PassRules;
 use crate::plan::PathSegment;
 use crate::segmentation::{frame_corridors, resolve_regions, segment_part, Region};
@@ -87,25 +87,34 @@ pub(super) fn summary(judgement: &BurstJudgement) -> judge::Judgement {
     }
 }
 
-/// 由每帧指标还原帧组（与在线 Grouper 同一口径）：到了的帧（不论测没测成）算 present，缺帧不算；帧组数 = 最大 seq。
-fn frame_groups(metrics: &[FrameMetrics], cameras: usize) -> Vec<FrameGroup> {
-    let total = metrics.iter().map(|m| m.seq).max().unwrap_or(0);
-    let mut groups: Vec<_> = (1..=total)
-        .map(|seq| FrameGroup {
-            seq,
-            incomplete: true,
-            present: vec![false; cameras],
-        })
-        .collect();
+/// 帧组数取最大 seq。每个相机在一组内只占一格，到帧即计入，不要求有测量结果。
+fn metric_group_coverage(
+    metrics: &[FrameMetrics],
+    cameras: usize,
+) -> Result<GroupCoverage<impl Iterator<Item = u64>>, &'static str> {
+    let group_count = metrics.iter().map(|metric| metric.seq).max().unwrap_or(0);
+    let capacity_error = "复测帧组和相机数量超出可处理范围";
+    let slots = usize::try_from(group_count)
+        .ok()
+        .and_then(|count| count.checked_mul(cameras))
+        .ok_or(capacity_error)?;
+    let mut present = Vec::new();
+    present
+        .try_reserve_exact(slots)
+        .map_err(|_| capacity_error)?;
+    present.resize(slots, false);
     for metric in metrics {
         if metric.seq > 0 && metric.camera < cameras && metric.state != FrameState::Missing {
-            groups[(metric.seq - 1) as usize].present[metric.camera] = true;
+            present[(metric.seq as usize - 1) * cameras + metric.camera] = true;
         }
     }
-    for group in &mut groups {
-        group.incomplete = group.present.contains(&false);
-    }
-    groups
+    Ok(GroupCoverage {
+        group_count,
+        incomplete_seqs: (1..=group_count).filter(move |&seq| {
+            let start = (seq as usize - 1) * cameras;
+            present[start..start + cameras].contains(&false)
+        }),
+    })
 }
 
 /// 按生产同一规则（按笔或按比例分段，D-SB-62、D-SB-40）重新划分区域后判一件；丢帧告警原样带出。
@@ -119,8 +128,11 @@ pub(super) fn judge_frames(
     loss: &[LossAlarm],
     passes: PassRules,
 ) -> BurstJudgement {
-    let groups = frame_groups(metrics, cameras.len());
-    let total = groups.len() as u64;
+    let coverage = match metric_group_coverage(metrics, cameras.len()) {
+        Ok(coverage) => coverage,
+        Err(error) => return BurstJudgement::error(judge::fault::INVALID_POINTS, error),
+    };
+    let total = coverage.group_count;
     let outcome = segment_part(segments, total, passes);
     let regions = resolve_regions(
         segments,
@@ -134,7 +146,7 @@ pub(super) fn judge_frames(
         segments,
         expected_total,
         &regions,
-        FrameGroup::coverage(&groups),
+        coverage,
         metrics,
         cameras,
         loss,
@@ -343,16 +355,19 @@ pub(super) fn judge_stored_comparison(
         .map(|result| result.region.clone())
         .collect();
     let metrics = take_stored_metrics(&mut burst.frames);
-    let judgement = burst_judge::judge(
-        &recipe.path_segments,
-        recipe.expected_total(),
-        &regions,
-        FrameGroup::coverage(&frame_groups(&metrics, cameras.len())),
-        &metrics,
-        cameras,
-        &burst.judgement.alarms,
-        recipe.pass_rules(&burst.judgement.passes),
-    );
+    let judgement = match metric_group_coverage(&metrics, cameras.len()) {
+        Ok(coverage) => burst_judge::judge(
+            &recipe.path_segments,
+            recipe.expected_total(),
+            &regions,
+            coverage,
+            &metrics,
+            cameras,
+            &burst.judgement.alarms,
+            recipe.pass_rules(&burst.judgement.passes),
+        ),
+        Err(error) => BurstJudgement::error(judge::fault::INVALID_POINTS, error),
+    };
     (judgement, metrics)
 }
 

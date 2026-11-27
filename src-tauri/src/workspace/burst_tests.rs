@@ -343,6 +343,46 @@ fn rules_comparison_uses_frame_identity_and_keeps_unmeasured_tail_and_station_da
     );
 }
 
+#[test]
+fn remeasurement_keeps_complete_groups_in_unordered_frames_and_reports_empty_groups() {
+    let recipe = crate::store::burst_fixture::recipe();
+    let arrived = |camera, seq| FrameMetrics {
+        camera,
+        seq,
+        ..measured(0.0)
+    };
+    let metrics = [
+        arrived(2, 3),
+        arrived(1, 1),
+        arrived(0, 3),
+        arrived(2, 1),
+        arrived(1, 1),
+        super::burst::frame_without_metrics(0, 4, FrameState::Missing, None),
+        arrived(6, 3),
+        arrived(0, 1),
+        arrived(1, 3),
+    ];
+    let judgement = super::burst_history::judge_frames(
+        &recipe.path_segments,
+        recipe.boundary_guard,
+        recipe.expected_total(),
+        &recipe.plan_cameras(),
+        &metrics,
+        &[],
+        recipe.pass_rules(&[]),
+    );
+
+    assert_eq!(judgement.group_count, 4);
+    assert_eq!(
+        judgement
+            .regions
+            .iter()
+            .flat_map(|region| region.incomplete_groups.iter().copied())
+            .collect::<Vec<_>>(),
+        [2, 4]
+    );
+}
+
 /// 计划相机按 `cameras` 顺序的候选；样例配方里没有的相机编号照 cam1 的参数新建（记录里也就没有它的原图）。
 fn candidate_with(cameras: &[&str]) -> Workspace {
     let mut w = burst_workspace(&[Straight]);
