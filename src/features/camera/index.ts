@@ -2,7 +2,6 @@ import "./camera.css";
 
 export { cameraApi, defaultCameraConfig, usePreview, usePreviewCanvas, useRigStatus } from "./api";
 export { default as CameraConfigPanel } from "./components/CameraConfigPanel";
-export { default as FeasibilityCalc, type FeasibilitySources } from "./components/FeasibilityCalc";
 export { default as FramePreview } from "./components/FramePreview";
 export { default as CalibPanel } from "./components/CalibPanel";
 export type * from "./types";

@@ -21,7 +21,6 @@
 | 相机组 | `config/cameras.json` | 项目 | 相机编号、序列号、触发、帧率；项目之间可用不同的相机组 |
 | PLC 配置 | `config/plc.json` | 项目 | 地址、点表；切换后按新配置重连 |
 | 节拍设置 | `config/cycle.json` | 项目 | 不含历史保留天数 |
-| 飞拍估算参数 | `config/feasibility.json` | 项目 | |
 | 工位标定 | `calib/` | 项目 | 含 `calib/device/` |
 | 生产配方 | `recipes/` | 项目 | |
 | 候选与示教资料 | `workspaces/` | 项目 | 含 `comparisons/` |
@@ -33,7 +32,6 @@
 | 旧追溯暂存 | 资料目录 `history/audit-spool/` | 本机 | 旧版本留下的待入库件证据，启动时补录（[soak S-8](../decisions/soak.md)） |
 | PLC 握手日志 | `state/plc-handshake.json` | 本机 | 只记在途件，绑定物理 PLC，与项目无关，见第四节 |
 | 日志 | 运行日志和 PLC 日志在 `~/gs_logs/runtime/<环境>/<实例>/` | 本机 | 打开项目时记录项目编号 |
-| 界面偏好 | `config/preferences-<SID>.json` | 本机（按账号） | 不记上次打开的配方：配方页按地址打开（[ui-recipe D12](../decisions/ui-recipe.md)） |
 | 缓存、WebView、导出、迁移 | `cache/` 等 | 本机 | |
 
 ## 三、目录结构
@@ -44,14 +42,13 @@
     current-project.json        { "schema": 1, "current": "<projectId>" }
     log-storage.json            日志根、录制盘列表、环境、资料实例及所属资料目录绑定
     history.json                { "historyDays": 180, "idleCompress": false } 历史保留天数、空闲压缩历史原图
-    preferences-<SID>.json
   history/
     inspection.db               本机检测记录库，记录带所属项目
     audit-spool/                旧版本留下的追溯暂存，启动时补录
   projects/
     <projectId>/
       project.json              项目身份与描述
-      config/                   cameras.json  plc.json  cycle.json  feasibility.json
+      config/                   cameras.json  plc.json  cycle.json
       calib/
       recipes/
       workspaces/
@@ -135,7 +132,7 @@ PLC 通讯只关心工件，不记录、不核对项目。正常切换要求没�
 | 名称 | 必填，本机内不重名 |
 | 编号 | 默认按日期生成 `p-YYYYMMDD-NN`，可改；只含 `[A-Za-z0-9_-]`，不与已有目录（含 `.trash`）、仍存在的外部原图目录重名，也不与本机检测历史里出现过的项目编号重复（已删除项目的记录仍在本机，复用编号会把它们算到新项目名下），创建后不可改 |
 | 描述 | 可选 |
-| 初始内容 | “空项目”或“复制当前项目的硬件配置”（`config/` 与 `calib/`：相机组、PLC、节拍、飞拍估算参数、标定）；不复制配方、候选、采集轮次与记录 |
+| 初始内容 | “空项目”或“复制当前项目的硬件配置”（`config/` 与 `calib/`：相机组、PLC、节拍、标定）；不复制配方、候选、采集轮次与记录 |
 | 创建后切换 | 默认不勾；勾选时按切换流程检查并重启 |
 
 ### 重命名
@@ -185,7 +182,7 @@ PLC 通讯只关心工件，不记录、不核对项目。正常切换要求没�
 | `store.rs`、`store/merge.rs` | 记录库版本 11：`parts.project_id`、按项目的配方快照与候选实例、`project_merges`；按项目筛选与统计；清理覆盖全部项目；合并来源库与按项目导出子集 |
 | `settings.rs` | 历史保留天数与空闲压缩开关读写本机 `config/history.json`，`cycle.json` 不写 |
 | `lib.rs` | `ActiveProject` 在记录库之前解析，`open_store` 打开本机记录库并以当前项目为新记录归属，随后合并各项目旧库；无效时只启动选择项目所需的命令 |
-| 路径调用方 | `camera.rs`（`cameras.json`、`recipe-capture`）、`plc.rs`（`plc.json`）、`cycle.rs`（`cycle.json`、`recipes`、`records`；旧追溯暂存与历史保留天数取本机路径）、`vision.rs`（`calib`）、`workspace.rs` 与 `workspace/transfer.rs`（`workspaces`、`vision/releases`、`recipe-capture`）、`diagnostics.rs`、`storage.rs` 的飞拍估算参数 |
+| 路径调用方 | `camera.rs`（`cameras.json`、`recipe-capture`）、`plc.rs`（`plc.json`）、`cycle.rs`（`cycle.json`、`recipes`、`records`；旧追溯暂存与历史保留天数取本机路径）、`vision.rs`（`calib`）、`workspace.rs` 与 `workspace/transfer.rs`（`workspaces`、`vision/releases`、`recipe-capture`）、`diagnostics.rs` |
 | 前端 | 侧栏当前项目与切换菜单；项目管理页；启动时的“选择项目”状态 |
 | 文档、脚本 | `storage-layout.md` 改为项目目录结构；`docs/README.md` 关键模块表 |
 

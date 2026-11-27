@@ -18,7 +18,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 | 位置 | 用途 |
 | --- | --- |
-| `config/` | 本机配置：`current-project.json`（当前项目编号）、`history.json`（历史保留天数 `historyDays` 与空闲压缩历史原图的开关 `idleCompress`，所有项目共用；首次启动用当前项目 `cycle.json` 里原有的保留天数建立，开关默认关闭）、`preferences-<SID>.json`（按账号的界面偏好，最后打开的工作区按项目分别记）、`log-storage.json`（日志根、环境和资料实例绑定） |
+| `config/` | 本机配置：`current-project.json`（当前项目编号）、`history.json`（历史保留天数 `historyDays` 与空闲压缩历史原图的开关 `idleCompress`，所有项目共用；首次启动用当前项目 `cycle.json` 里原有的保留天数建立，开关默认关闭）、`log-storage.json`（日志根、环境和资料实例绑定） |
 | `history/inspection.db` | 本机检测记录库（版本 11），本机全部项目的记录都在这里，`parts.project_id` 记所属项目，记录编号本机唯一。`parts.mode` 记件的检测模式（`production` / `maintenanceCollect` / `maintenanceShadow`）。每台相机每一帧写 `part_frames` 表，`parts` 另存整份区域判定与整件标记。配方快照 `recipe_snapshots` 按（项目, 修订号）、候选实例 `workspace_instances` 按（项目, 实例号）保存；`project_merges` 记已并入的项目旧库。10 版库原地升级到 11，保留生产记录，删除旧离线与候选调试记录并写删除墓碑；旧原图按[项目设计](project.md)的归属检查清理，不合规路径保留并告警。其他不支持的库版本（含更高版本）先备份为 `.v<版本>.*.bak` 再新建空库。项目目录里遗留的旧记录库 `projects/<项目编号>/inspection.db`（版本 9）启动时仅将生产记录并入，并完改名为 `inspection.db.merged-<毫秒>.bak`，不删（[项目设计](project.md)第五节） |
 | `history/audit-spool/` | 旧版本留下的追溯暂存（格式 4），新版本不再写入。启动时按件补录进记录库，补录完的文件与空目录删除；补不进的件和读不了的文件原地保留，写错误日志，它们引用的原图目录继续受保护，由人工核对（[soak S-8](../decisions/soak.md)） |
 | `projects/<项目编号>/` | 各项目的资料，见下表；`projects/.trash/` 是删除中的项目，启动时清理 |
@@ -34,7 +34,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 | 位置 | 用途 |
 | --- | --- |
 | `project.json` | 项目编号、名称、描述、创建时间与来源 |
-| `config/` | 相机组 `cameras.json`（含按相机编号保存的曝光与增益 `imaging`）、PLC `plc.json`、节拍与检测设置 `cycle.json`（`maintenance` 为维护模式的开启时间与原因，未开启时为空）、飞拍估算参数 `feasibility.json` |
+| `config/` | 相机组 `cameras.json`（含按相机编号保存的曝光与增益 `imaging`）、PLC `plc.json`、节拍与检测设置 `cycle.json`（`maintenance` 为维护模式的开启时间与原因，未开启时为空） |
 | `recipes/`、`workspaces/` | 生产配方、候选配方及示教资料。`recipes/<配方>.json` 的 `stage` 为 `"collect"` 时是采集版（只供维护模式采图，没有发布包）；正式版不写这一项，没有该项的文件按正式版读。候选目录 `workspaces/<配方>/` 另有 `calibration/<轮次>/`：每轮标定的 `features.jsonl`（一行一帧 `{camera, seq, metrics}`，1..=帧组数内每台相机每个 seq 一行，缺帧也有）与 `boundaries.json`（分段结果，本轮恒为 `{"kind":"unsegmented"}`，供以后的分段算法和重新标定使用）；各相机的示教帧冻结为 `images/` 下的 PGM |
 | `calib/`、`vision/releases/` | 标定、发布资源。棋盘格标定成功时原图写入 `calib/images/<样本ID>.pgm`，结果 JSON 的 `samplePath` 保存项目相对路径，`corners` 记内角点像素坐标；标定页进入时载入该原图，其余临时冻结样本只在内存。发布包在 `vision/releases/<配方>/<发布 ID>/`（schema 5）：`manifest.json`、`recipe.json`、`graph.json`，每台计划相机一个 `cameras/NN/`（NN 为计划相机下标，从 00 起），内有 `calibration.json`（像素当量与标定引用），它检测的每一段一个 `sMM/`（MM 为段号）子目录，内有 `image.<扩展名>`（示教帧）与 `corridor.json`（走廊）。段配方一律用设备标定 `calib/device/plane_calib_{device}.json`（发布包 `calibration.json` 的 `reference` 记 `device/{device}`） |
 | `workspaces/<配方>/navigation/`、`recipe-support/<配方>/<发布 ID>/` | RB-9 可选导航辅助资料：候选的 `images/<SHA-256>.png` 和 `maps/<SHA-256>.json` 由 `workspace.json.navigationId` 引用；正式辅助快照含 `image.png`、`snapshot.json`、`manifest.json`，独立记录发布身份、空间分段及示教件原始帧范围。发布准备在 `.pending-<发布 ID>`，生效后转为正式目录；临时与未生效目录不导出。地图不加入检测发布包，不进计划身份；缺失或损坏只关闭导航。项目复制和导出导入携带资料，资料不按日志或图像缓存清理 |

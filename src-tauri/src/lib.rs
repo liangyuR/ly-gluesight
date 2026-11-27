@@ -276,8 +276,6 @@ pub fn run() {
             project::transfer::project_import,
             project::transfer::project_copy,
             project::transfer::project_transfer_size,
-            storage::storage_preferences_get,
-            storage::storage_preferences_update,
             commands::app_info,
             agent_mcp::agent_mcp_status,
             commands::app_open_log_dir,

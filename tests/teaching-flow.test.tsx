@@ -26,8 +26,6 @@ let backend: Record<string, Handler> = {};
 /** 本次渲染能用到的全部桌面命令；handlers 覆盖或补充写操作。返回值复制一份，与 IPC 序列化一致。 */
 function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = {}) {
   backend = {
-    storage_preferences_get: () => ({}),
-    storage_preferences_update: ({ patch }) => ({ ...(patch as object) }),
     recipe_list: () => ({ recipes: [burstSummary(candidate.workspace.doc as BurstRecipeDoc)], errors: [], unavailable: [] }),
     workspace_list: () => [candidate.workspace],
     workspace_get: () => candidate,
