@@ -38,8 +38,7 @@ use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
 use crate::settings::{CycleSettings, ProductSource};
 use crate::shot_router::{arm_frames, ArmCam, Floor, FrameMeta, Ledgers, Policy};
 use crate::store::{
-    BurstRecord, HistoryScope, PartMode, PlcDelivery, PlcDeliveryState, RecordSource, Store,
-    VerdictCounts,
+    HistoryScope, PartMode, PlcDelivery, PlcDeliveryState, RecordSource, Store, VerdictCounts,
 };
 use daily_stats::DailyStats;
 use maintenance_progress::MaintenanceProgress;
@@ -2730,7 +2729,12 @@ impl Machine {
         let recipe = part
             .map(|p| p.recipe.clone())
             .or_else(|| recipe_id.and_then(|id| host(&self.app).recipe(id)));
-        let burst = self.burst_outcome(sn, recipe.as_deref(), judgement);
+        let burst = match part {
+            Some(part) => Some(part.burst_record(judgement)),
+            None => recipe
+                .as_deref()
+                .map(|recipe| burst::empty_record(recipe, judgement)),
+        };
         // 预期帧数取 ΣN_exp（待标定为 0），收到的帧数取帧组数，触发数取 PLC 报的 deviceTriggers
         let frames_expected = burst
             .as_ref()
@@ -2762,19 +2766,6 @@ impl Machine {
             burst,
             mode,
         })
-    }
-
-    /// 帧与区域记录：在途件按它的帧组与判定给出；没有在途件（接件时就不能检测）时按配方给出没有帧的记录；没有配方为 None。
-    fn burst_outcome(
-        &self,
-        sn: &str,
-        recipe: Option<&Recipe>,
-        judgement: &Judgement,
-    ) -> Option<BurstRecord> {
-        match self.part.as_ref().filter(|p| p.sn == sn) {
-            Some(part) => Some(part.burst_record(judgement)),
-            None => recipe.map(|recipe| burst::empty_record(recipe, judgement)),
-        }
     }
 
     fn record_without_part(&self, sn: &str, judgement: &Judgement) -> Result<(), String> {
@@ -2955,8 +2946,9 @@ impl Machine {
                 Fields::stage("result"),
             );
             let burst = self
-                .burst_outcome(&sn, self.part.as_ref().map(|p| &*p.recipe), &judgement)
-                .map(|record| record.judgement);
+                .part
+                .as_ref()
+                .map(|part| part.burst_record_judgement(&judgement));
             let mode = self.part_mode(&sn);
             self.result = Some(ResultView {
                 cycle_id: self.current_cycle_id.clone(),

@@ -1,6 +1,6 @@
 //! 测试用的段配方记录：三台相机按 (camera, seq) 的帧记录，判定由 burst_judge 按配方算出（不手写结论）。
 
-use super::{BurstRecord, FrameRecord};
+use super::{Arc, BurstRecord, FrameRecord};
 use crate::burst_judge::{self, FrameMetrics, FrameState};
 use crate::frame_group::{loss_alarms, FrameGroup};
 use crate::judge::Judgement;
@@ -55,7 +55,7 @@ pub(crate) fn frames(groups: u64, missing: &[(usize, u64)]) -> Vec<FrameRecord> 
                 frame_counter: (!lost).then_some(u64::MAX - 100 + seq),
                 trigger_counter: (!lost).then_some(seq),
                 region: None,
-                metrics: (!lost).then(|| measured(camera, seq, 4.0)),
+                metrics: (!lost).then(|| Arc::new(measured(camera, seq, 4.0))),
                 raw_file: None,
             }
         })
@@ -106,7 +106,7 @@ pub(crate) fn record(
                 .count() as u32
         })
         .collect();
-    let metrics = frames.iter().filter_map(|frame| frame.metrics.as_ref());
+    let metrics = frames.iter().filter_map(|frame| frame.metrics.as_deref());
     let alarms = loss_alarms(&camera_frames);
     let judgement = burst_judge::judge(
         &recipe.path_segments,

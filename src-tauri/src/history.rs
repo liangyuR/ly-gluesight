@@ -380,7 +380,7 @@ fn rejudge_burst(
         .iter()
         .map(|result| result.region.clone())
         .collect();
-    let metrics = frames.iter().filter_map(|frame| frame.metrics.as_ref());
+    let metrics = frames.iter().filter_map(|frame| frame.metrics.as_deref());
     burst_judge::judge(
         &segments,
         recipe.expected_total(),

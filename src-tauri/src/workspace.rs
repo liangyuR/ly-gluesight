@@ -1569,7 +1569,7 @@ fn trace_view(
     recipe: &Recipe,
     segment: u32,
     trace: crate::measure::FrameTrace,
-    metrics: &crate::burst_judge::FrameMetrics,
+    metrics: Arc<crate::burst_judge::FrameMetrics>,
 ) -> CalibrationFrameView {
     let (corridor, search_half_px) = burst::corridor_overlay(recipe, metrics.camera, segment);
     CalibrationFrameView {
@@ -1582,7 +1582,7 @@ fn trace_view(
         search_half_px,
         edges: trace.edges,
         part_edges: trace.part_edges,
-        metrics: metrics.clone(),
+        metrics,
     }
 }
 
@@ -1690,7 +1690,7 @@ pub async fn workspace_history_frame_view(
             part_edges: measured.part_edges,
             line: measured.line,
         };
-        Ok(trace_view(&prepared.recipe, segment, trace, &metrics))
+        Ok(trace_view(&prepared.recipe, segment, trace, metrics))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1703,12 +1703,12 @@ pub fn retain_live_view(
     recipe: &Recipe,
     segment: u32,
     trace: crate::measure::FrameTrace,
-    metrics: &crate::burst_judge::FrameMetrics,
+    metrics: &Arc<crate::burst_judge::FrameMetrics>,
 ) {
     let Some(host) = app.try_state::<WorkspaceHost>() else {
         return;
     };
-    let view = trace_view(recipe, segment, trace, metrics);
+    let view = trace_view(recipe, segment, trace, Arc::clone(metrics));
     let mut live = host.live_views.lock().unwrap();
     let key = (cycle_id.to_owned(), recipe.revision_id.clone());
     if live.key.as_ref() != Some(&key) {

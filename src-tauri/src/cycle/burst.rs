@@ -6,7 +6,7 @@
 //! `Machine` 负责。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::burst_judge::{self, BurstJudgement, FrameMetrics, FrameState};
@@ -51,7 +51,7 @@ struct BurstFrame {
     /// 送测时刻；测完（或判为没测）后为空
     measuring_since: Option<Instant>,
     /// 测完后的指标（含没测成的状态与原因）
-    metrics: Option<FrameMetrics>,
+    metrics: Option<Arc<FrameMetrics>>,
     provisional_verdict: OnceLock<Verdict>,
     /// 送测用的走廊（段号）：到达时按预测段，收尾补测后改为补测用的段；这台相机不检测预测段时为空、不送测
     corridor: Option<u32>,
@@ -207,7 +207,7 @@ impl BurstPart {
             .and_then(|f| f.corridor)
     }
 
-    pub(super) fn frame_metrics(&self, key: FrameKey) -> Option<&FrameMetrics> {
+    pub(super) fn frame_metrics(&self, key: FrameKey) -> Option<&Arc<FrameMetrics>> {
         self.frames.get(&(key.camera, key.seq))?.metrics.as_ref()
     }
 
@@ -368,8 +368,8 @@ impl BurstPart {
 }
 
 /// 没测成的一帧的指标：状态与原因，数值为空。
-fn unmeasured(camera: usize, seq: u64, state: FrameState, error: String) -> FrameMetrics {
-    FrameMetrics {
+fn unmeasured(camera: usize, seq: u64, state: FrameState, error: String) -> Arc<FrameMetrics> {
+    Arc::new(FrameMetrics {
         camera,
         seq,
         state,
@@ -389,11 +389,11 @@ fn unmeasured(camera: usize, seq: u64, state: FrameState, error: String) -> Fram
         heading_fallback: false,
         fallback_reason: None,
         edge_mm: None,
-    }
+    })
 }
 
 /// 测量结果写进记录前的核对：帧身份与送测的帧一致、数值都是有限数，否则记为测量失败（不让一帧坏输出拖垮整件落库）。
-fn checked(metrics: FrameMetrics, camera: usize, seq: u64) -> FrameMetrics {
+fn checked(metrics: FrameMetrics, camera: usize, seq: u64) -> Arc<FrameMetrics> {
     let finite = |value: Option<f64>| value.is_none_or(f64::is_finite);
     let valid = (metrics.camera, metrics.seq) == (camera, seq)
         && finite(metrics.width_min)
@@ -411,7 +411,7 @@ fn checked(metrics: FrameMetrics, camera: usize, seq: u64) -> FrameMetrics {
             .is_none_or(|e| e.valid())
         && metrics.widths.iter().flatten().all(|w| w.is_finite());
     if valid {
-        metrics
+        Arc::new(metrics)
     } else {
         unmeasured(
             camera,
@@ -721,7 +721,7 @@ impl Part {
         let metrics = burst
             .frames
             .values()
-            .filter_map(|frame| frame.metrics.as_ref());
+            .filter_map(|frame| frame.metrics.as_deref());
         let mut judgement = burst_judge::judge(
             &burst.segments,
             self.recipe.expected_total(),
@@ -743,24 +743,30 @@ impl Part {
         judgement
     }
 
-    /// 落库用的段配方记录：1..=帧组数内每台相机每一帧一条，缺帧也有。判定取本件的区域判定，回写码取摘要的；结论摘要与它不同
-    /// （在途中断记 ERR 98 等）时按摘要给出。
-    pub(super) fn burst_record(&self, judgement: &Judgement) -> BurstRecord {
+    /// 区域判定与结论摘要一致时复用判定，回写码取摘要的。中断等情况按摘要生成结论。
+    pub(super) fn burst_record_judgement(&self, judgement: &Judgement) -> BurstJudgement {
         let burst = &self.burst;
-        let group_count = burst.grouper.group_count();
-        let decided = burst
+        burst
             .judgement
-            .clone()
+            .as_ref()
             .filter(|decided| same_conclusion(decided, judgement))
+            .cloned()
             .map(|decided| BurstJudgement {
                 plc_code: judgement.plc_code,
                 ..decided
             })
             .unwrap_or_else(|| BurstJudgement {
-                group_count: u32::try_from(group_count).unwrap_or(u32::MAX),
+                group_count: u32::try_from(burst.grouper.group_count()).unwrap_or(u32::MAX),
                 alarms: loss_alarms(&burst.grouper.camera_counts()),
                 ..from_summary(judgement)
-            });
+            })
+    }
+
+    /// 落库用的段配方记录：1..=帧组数内每台相机每一帧一条，缺帧也有。
+    pub(super) fn burst_record(&self, judgement: &Judgement) -> BurstRecord {
+        let burst = &self.burst;
+        let group_count = burst.grouper.group_count();
+        let decided = self.burst_record_judgement(judgement);
         let region = |seq: u64| {
             decided
                 .regions
@@ -768,39 +774,44 @@ impl Part {
                 .position(|r| (r.region.first_seq..=r.region.last_seq).contains(&seq))
         };
         let frames = (1..=group_count)
-            .flat_map(|seq| (0..burst.cams.len()).map(move |camera| (camera, seq)))
-            .map(|(camera, seq)| match burst.frames.get(&(camera, seq)) {
-                Some(frame) => {
-                    let metrics = frame.metrics.clone().unwrap_or_else(|| {
-                        unmeasured(
+            .flat_map(|seq| {
+                let region = region(seq);
+                (0..burst.cams.len()).map(move |camera| (camera, seq, region))
+            })
+            .map(
+                |(camera, seq, region)| match burst.frames.get(&(camera, seq)) {
+                    Some(frame) => {
+                        let metrics = frame.metrics.clone().unwrap_or_else(|| {
+                            unmeasured(
+                                camera,
+                                seq,
+                                FrameState::Unmeasured,
+                                "本件结束时测量仍未完成".into(),
+                            )
+                        });
+                        FrameRecord {
                             camera,
                             seq,
-                            FrameState::Unmeasured,
-                            "本件结束时测量仍未完成".into(),
-                        )
-                    });
-                    FrameRecord {
+                            status: metrics.state,
+                            frame_counter: Some(frame.frame_counter),
+                            trigger_counter: frame.trigger_counter,
+                            region,
+                            metrics: Some(metrics),
+                            raw_file: None,
+                        }
+                    }
+                    None => FrameRecord {
                         camera,
                         seq,
-                        status: metrics.state,
-                        frame_counter: Some(frame.frame_counter),
-                        trigger_counter: frame.trigger_counter,
-                        region: region(seq),
-                        metrics: Some(metrics),
+                        status: FrameState::Missing,
+                        frame_counter: None,
+                        trigger_counter: None,
+                        region,
+                        metrics: None,
                         raw_file: None,
-                    }
-                }
-                None => FrameRecord {
-                    camera,
-                    seq,
-                    status: FrameState::Missing,
-                    frame_counter: None,
-                    trigger_counter: None,
-                    region: region(seq),
-                    metrics: None,
-                    raw_file: None,
+                    },
                 },
-            })
+            )
             .collect();
         BurstRecord {
             expected_total: self.recipe.expected_total(),
@@ -823,7 +834,7 @@ impl Part {
                 let metrics = burst
                     .frames
                     .values()
-                    .filter_map(|frame| frame.metrics.as_ref());
+                    .filter_map(|frame| frame.metrics.as_deref());
                 burst_judge::frame_verdicts(&burst.segments, &regions, metrics, &burst.cameras)
                     .into_iter()
                     .map(|v| ((v.camera, v.seq), v.verdict))

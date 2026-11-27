@@ -32,7 +32,7 @@ fn burst_row(recipe: &Recipe) -> (StoredMeasurement, Vec<FrameRecord>) {
         .iter_mut()
         .find(|frame| (frame.camera, frame.seq) == (0, 5))
         .unwrap()
-        .metrics = Some(burst_fixture::measured(0, 5, 2.0));
+        .metrics = Some(Arc::new(burst_fixture::measured(0, 5, 2.0)));
     let regions = vec![
         Region {
             kind: RegionKind::Straight { segment: 1 },

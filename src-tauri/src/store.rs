@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rusqlite::types::Value as SqlValue;
@@ -71,7 +71,7 @@ pub struct FrameRecord {
     /// `BurstJudgement.regions` 的下标；不在任何区域为 None
     pub region: Option<usize>,
     /// 缺帧时为 None
-    pub metrics: Option<FrameMetrics>,
+    pub metrics: Option<Arc<FrameMetrics>>,
     /// 录制根内相对路径；未录制或录制队满丢弃为 None。入库后只增不换
     pub raw_file: Option<String>,
 }
@@ -1838,6 +1838,7 @@ impl Store {
         if let Some(burst) = detail.burst.as_mut() {
             for frame in &mut burst.frames {
                 if let Some(metrics) = frame.metrics.as_mut() {
+                    let metrics = Arc::make_mut(metrics);
                     metrics.widths.clear();
                     if let Some(evidence) = &mut metrics.measurement_evidence {
                         evidence.stations.clear();
@@ -1918,7 +1919,7 @@ impl Store {
                     crate::burst_judge::frame_verdicts(
                         &recipe.path_segments,
                         &regions,
-                        frames.iter().filter_map(|frame| frame.metrics.as_ref()),
+                        frames.iter().filter_map(|frame| frame.metrics.as_deref()),
                         &cameras,
                     )
                 } else {

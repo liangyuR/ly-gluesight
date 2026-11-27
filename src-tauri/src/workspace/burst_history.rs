@@ -165,7 +165,7 @@ pub(crate) fn repair_shadow_regions(store: &Store) -> Result<(usize, Vec<String>
         let metrics: Vec<FrameMetrics> = burst
             .frames
             .iter()
-            .filter_map(|f| f.metrics.clone())
+            .filter_map(|f| f.metrics.as_deref().cloned())
             .collect();
         let judged = judge_frames(
             &recipe.path_segments,
@@ -319,7 +319,7 @@ pub(super) fn remeasure_with_operation(
 fn stored_metrics(frames: &[FrameRecord]) -> Vec<FrameMetrics> {
     frames
         .iter()
-        .map(|frame| match &frame.metrics {
+        .map(|frame| match frame.metrics.as_deref() {
             Some(metrics) => FrameMetrics {
                 camera: frame.camera,
                 seq: frame.seq,
@@ -490,7 +490,7 @@ pub async fn workspace_record_frame_view(
                 search_half_px: None,
                 edges: Vec::new(),
                 part_edges: Vec::new(),
-                metrics: metrics.clone(),
+                metrics: Arc::new(metrics.clone()),
             });
         };
         if found.source == "original" {
@@ -499,7 +499,7 @@ pub async fn workspace_record_frame_view(
             let image = frame_image(&app, &detail, camera, seq)?;
             let measured = prepared.measure_frame(camera, segment, seq, &image, &format!("record-view-{history_id}-c{camera}-{seq}"))?;
             let trace = crate::measure::FrameTrace { edges: measured.edges, part_edges: measured.part_edges, line: measured.line };
-            return Ok(trace_view(&prepared.recipe, segment, trace, metrics));
+            return Ok(trace_view(&prepared.recipe, segment, trace, Arc::new(metrics.clone())));
         }
         if burst.sizes.is_empty() {
             return Err("这次对照没有保存示教帧尺寸（之前保存的对照或候选当时未示教完）：重新触发测试后再看叠图".into());

@@ -921,9 +921,13 @@ fn overview_keeps_verdicts_and_single_frame_loads_only_selected_metrics() {
     let recipe = burst_fixture::recipe();
     let mut frames = burst_fixture::frames(4, &[]);
     for frame in &mut frames {
-        frame.metrics = Some(burst_fixture::measured(frame.camera, frame.seq, 2.0));
+        frame.metrics = Some(Arc::new(burst_fixture::measured(
+            frame.camera,
+            frame.seq,
+            2.0,
+        )));
     }
-    let metrics = frames[0].metrics.as_mut().unwrap();
+    let metrics = Arc::make_mut(frames[0].metrics.as_mut().unwrap());
     metrics.widths[0] = None;
     metrics.measurement_evidence = Some(crate::burst_judge::MeasurementEvidence {
         version: 1,

@@ -658,6 +658,9 @@ fn tail_frame_received_before_drain_deadline_finishes_measurement_before_result(
     assert!(p.complete());
     let judgement = judge_burst(&mut p);
     let record = p.burst_record(&burst::summary(&judgement));
+    let view = p.burst_view();
+    let tail = view.groups.iter().find(|group| group.seq == 5).unwrap();
+    assert_eq!(tail.cells[0].status, FrameCellStatus::Measured);
     assert_eq!(
         record
             .frames

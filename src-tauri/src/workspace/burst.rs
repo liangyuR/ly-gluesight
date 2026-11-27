@@ -2109,7 +2109,7 @@ pub struct CalibrationFrameView {
     pub edges: Vec<Option<[[f32; 2]; 2]>>,
     /// 胶边距线（ToEdge，找到零件边的站：胶中心 → 零件边）；不找边时为空
     pub part_edges: Vec<[[f32; 2]; 2]>,
-    pub metrics: FrameMetrics,
+    pub metrics: Arc<FrameMetrics>,
 }
 
 /// 用当前段走廊重测示教件里一台相机的一帧（只读，不改候选）：按示教件已确认的分段选走廊，
@@ -2155,7 +2155,12 @@ pub async fn workspace_calibration_frame(
                 search_half_px: None,
                 edges: Vec::new(),
                 part_edges: Vec::new(),
-                metrics: frame_without_metrics(index, seq, FrameState::NotInspected, None),
+                metrics: Arc::new(frame_without_metrics(
+                    index,
+                    seq,
+                    FrameState::NotInspected,
+                    None,
+                )),
             });
         };
         let recipe = w.doc.build()?;
@@ -2259,11 +2264,11 @@ pub(super) fn frame_view(
         search_half_px,
         edges: measured.edges,
         part_edges: measured.part_edges,
-        metrics: FrameMetrics {
+        metrics: Arc::new(FrameMetrics {
             camera: index,
             seq,
             ..measured.metrics
-        },
+        }),
     })
 }
 
