@@ -116,4 +116,17 @@ describe("图像查看与加载", () => {
     fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
     expect(edges()).toEqual(["3,7 5,7 7,7 5,3 3,3 2,3", "3,3 5,3 7,3 5,7 3,7 2,7"]);
   });
+
+  it("框选延伸到图像右下角 → 选区覆盖最后一行和一列", () => {
+    const onRegion = vi.fn();
+    withDOMPoint(null, () => {
+      render(<FrameViewer image={image} label="框选图像" onRegion={onRegion} />);
+      const svg = screen.getByRole("img", { name: "框选图像" });
+      stubScreenCTM(svg.querySelector("g")!);
+      fireEvent.pointerDown(svg, { clientX: 0, clientY: 0 });
+      fireEvent.pointerMove(svg, { clientX: 120, clientY: 80 });
+      fireEvent.pointerUp(svg);
+      expect(onRegion).toHaveBeenLastCalledWith([0, 0, 100, 60]);
+    });
+  });
 });

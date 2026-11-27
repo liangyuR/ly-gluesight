@@ -308,7 +308,7 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
     const round = (v: number, max: number) => Math.round(Math.min(max, Math.max(0, v)) * 10) / 10;
     return [round(p.x, image.width), round(p.y, image.height)];
   };
-  const brushPoint = (e: PointerEvent<SVGSVGElement>, inverse: DOMMatrix): ImagePoint | null => {
+  const pixelPoint = (e: PointerEvent<SVGSVGElement>, inverse?: DOMMatrix): ImagePoint | null => {
     const p = point(e, inverse);
     return p && image ? [Math.min(p[0], image.width - 1), Math.min(p[1], image.height - 1)] : null;
   };
@@ -349,7 +349,7 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
         e.currentTarget.focus({ preventScroll: true });
         if (onBrush && !editDisabled) {
           const inverse = group.current?.getScreenCTM()?.inverse();
-          const p = inverse ? brushPoint(e, inverse) : null;
+          const p = inverse ? pixelPoint(e, inverse) : null;
           if (p && inverse) { brushStroke.current = { points: [p], inverse, pointerId: e.pointerId }; onBrush([p]); e.currentTarget.setPointerCapture?.(e.pointerId); }
           return;
         }
@@ -359,10 +359,10 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
           if (turning.current) { setTurningNow(true); e.currentTarget.setPointerCapture?.(e.pointerId); }
           return;
         }
-        if (onPoint) { if (!editDisabled) { const p = point(e); if (p) onPoint(p); } return; }
+        if (onPoint) { if (!editDisabled) { const p = pixelPoint(e); if (p) onPoint(p); } return; }
         if (!editing || !onEdit) return;
         const inverse = group.current?.getScreenCTM()?.inverse();
-        const p = inverse ? point(e, inverse) : null;
+        const p = inverse ? pixelPoint(e, inverse) : null;
         if (!p || !inverse) return;
         const vertex = (e.target as Element).closest?.("[data-vertex]")?.getAttribute("data-vertex");
         // 整次拖动使用按下时的图像坐标变换，提示文字改变页面布局也不影响
@@ -381,7 +381,7 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
         if (brushStroke.current && onBrush && !editDisabled) {
           const stroke = brushStroke.current;
           if (e.pointerId !== stroke.pointerId) return;
-          const p = brushPoint(e, stroke.inverse), last = stroke.points[stroke.points.length - 1];
+          const p = pixelPoint(e, stroke.inverse), last = stroke.points[stroke.points.length - 1];
           if (p && stroke.points.length < 4096 && Math.hypot(p[0] - last[0], p[1] - last[1]) >= 2) { stroke.points.push(p); onBrush([...stroke.points]); }
           return;
         }
@@ -393,7 +393,7 @@ export function FrameViewer({ image, loading = false, error = "", label, caption
         if (onRegion && regionStart.current) { const p = point(e), a = regionStart.current; if (p) onRegion([Math.min(a[0],p[0]), Math.min(a[1],p[1]), Math.abs(p[0]-a[0]), Math.abs(p[1]-a[1])]); return; }
         const current = drag.current;
         if (!current || !onEdit || editDisabled) return;
-        const p = point(e, current.inverse);
+        const p = pixelPoint(e, current.inverse);
         if (p) onEdit.move(current.index, p);
       }} onPointerUp={() => { if (turning.current && turnDeg != null) onSectorTurn?.(turnDeg); stopGesture(); }} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
         <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <FrameCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}

@@ -174,6 +174,29 @@ it("走廊自动保存期间开启逐帧定向 → 保存结果回来开关保�
   expect(saves[1].revision).toBe(saves[0].revision + 1);
 });
 
+it("走廊加点或拖点到图像右下边缘 → 保存最后一个像素中心的坐标", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate();
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate) });
+  renderWorkspace("/recipe/A/teach?camera=CAM-2&segment=1");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
+  fireEvent.pointerDown(image, { clientX: 10, clientY: 10 });
+  fireEvent.pointerUp(image);
+  fireEvent.pointerDown(image, { clientX: 99.8, clientY: 20 });
+  fireEvent.pointerUp(image);
+  const handle = screen.getByLabelText("中线点 2");
+  expect(handle).toHaveAttribute("cx", "99");
+
+  fireEvent.pointerDown(handle, { clientX: 99, clientY: 20 });
+  fireEvent.pointerMove(image, { clientX: 120, clientY: 80 });
+  fireEvent.pointerUp(image);
+  act(() => { vi.advanceTimersByTime(900); });
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  const saves = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(saves.map(save => save.doc.inspect![1].segments)).toEqual([[{ segment: 1, corridor: [[10, 10], [99, 59]] }]]);
+});
+
 it("按点距重排遇到等距拐点 → 保留先出现的点，并按新的点距保存", async () => {
   const candidate = corridorCandidate(inspect => {
     inspect.segments = [{ segment: 1, corridor: [[10, 10], [30, 11], [34, 11], [70, 10]] }];
