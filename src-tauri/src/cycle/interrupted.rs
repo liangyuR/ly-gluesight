@@ -1,10 +1,9 @@
 //! 进程在检测中途退出：握手日志留着在途工件，历史却没有它。启动时按握手日志里的身份与开工场景补一条 ERR 记录，
-//! 配方取本件的运行日志（运行日志不落盘同步，缺失时本件不带配方）。补记录带预期帧组数 ΣN_exp、没有帧，
+//! 配方取在途件登记的配方编号。补记录带预期帧组数 ΣN_exp、没有帧，
 //! 区域判定同为 ERR 98。
 
 use std::sync::Arc;
 
-use crate::applog::Record;
 use crate::audit::RecordedPart;
 use crate::judge::{fault, Judgement};
 use crate::plc_session::PartSite;
@@ -22,11 +21,12 @@ pub(super) struct Interrupted<'a> {
     pub maintenance: bool,
 }
 
-pub(super) fn part(interrupted: &Interrupted, records: &[Record], recipe: impl Fn(&str) -> Option<Arc<Recipe>>, software_version: String, now: i64) -> RecordedPart {
-    let recipe = records.iter()
-        .filter(|r| r.fields.cycle_id.as_deref() == Some(interrupted.cycle_id))
-        .find_map(|r| r.fields.recipe_id.as_deref())
-        .and_then(recipe);
+pub(super) fn part(
+    interrupted: &Interrupted,
+    recipe: Option<Arc<Recipe>>,
+    software_version: String,
+    now: i64,
+) -> RecordedPart {
     let reason = format!(
         "检测进程在检测中途中断（件序号 {}），本件未完成检测，结果未回写 PLC",
         interrupted.request_seq

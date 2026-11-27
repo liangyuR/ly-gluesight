@@ -14,7 +14,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, UnboundedReceiver, UnboundedSender};
 
-use crate::applog::codes::{self, Event};
+use crate::applog::events::{self, Event};
 use crate::applog::throttle::{self, Tally, Throttle};
 use crate::applog::{self, Fields};
 use crate::audit::{Audit, RecordedPart};
@@ -257,30 +257,6 @@ pub struct Snapshot {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LogLine {
-    pub ts: i64,
-    pub level: &'static str,
-    pub ev: String,
-    pub msg: String,
-    /// 这一行属于哪个工件：取日志记录关联后的 cycleId，上一件迟到的结果仍标上一件，界面据此不混入当前件
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cycle_id: Option<String>,
-}
-
-impl LogLine {
-    pub(crate) fn from_record(record: applog::Record, tone: &'static str) -> Self {
-        LogLine {
-            ts: record.ts,
-            level: tone,
-            ev: record.ev,
-            msg: record.msg,
-            cycle_id: record.fields.cycle_id,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct RecipeSummary {
     pub id: String,
     pub name: String,
@@ -339,7 +315,6 @@ impl From<&Recipe> for RecipeSummary {
 
 struct Shared {
     snapshot: Option<Snapshot>,
-    logs: VecDeque<LogLine>,
     /// 当前（或刚结束的）一件用的配方快照
     part_recipe: Option<Arc<Recipe>>,
     settings: CycleSettings,
@@ -410,14 +385,9 @@ impl CycleHost {
         let camera = CameraRig::new(app, frame_tx)?;
         let recording_health = Arc::new(RecordingHealth::default());
         let recorder = |roots: crate::disk_guard::RecordRoots, scope: HistoryScope| {
-            let (guarded_roots, guard_app, protection_audit, warning_app, record_audit) = (
-                roots.clone(),
-                app.clone(),
-                audit.clone(),
-                app.clone(),
-                audit.clone(),
-            );
-            let (health, alarm_app) = (recording_health.clone(), app.clone());
+            let (guarded_roots, guard_app, protection_audit, record_audit) =
+                (roots.clone(), app.clone(), audit.clone(), audit.clone());
+            let health = recording_health.clone();
             let protection = Arc::new(move || {
                 let store = guard_app
                     .try_state::<Store>()
@@ -435,11 +405,7 @@ impl CycleHost {
                 Ok(paths)
             });
             let warning = Arc::new(move |errors: &[String]| {
-                if warning_app.try_state::<CycleHost>().is_some() {
-                    log(&warning_app, "warn", "录制清理失败", errors.join("；"));
-                } else {
-                    crate::applog::write("warn", "录制清理失败", &errors.join("；"));
-                }
+                log("warn", "录制清理失败", errors.join("；"));
             });
             let release_app = app.clone();
             let release = Arc::new(move |directories: &[PathBuf]| {
@@ -453,7 +419,7 @@ impl CycleHost {
                 Some(Arc::new(
                     move |outcome: crate::recorder::RecordingOutcome| {
                         if let Some(change) = health.observe(scope, &outcome, now_ms()) {
-                            log_recording_alarm(&alarm_app, change);
+                            log_recording_alarm(change);
                         }
                         record_audit.recording(outcome);
                     },
@@ -482,7 +448,6 @@ impl CycleHost {
             recording_health,
             shared: Mutex::new(Shared {
                 snapshot: None,
-                logs: VecDeque::new(),
                 part_recipe: None,
                 settings,
             }),
@@ -508,18 +473,17 @@ impl CycleHost {
         }));
         let mut machine = Machine::new(app.clone(), frame_pool);
         for e in host.recipes.errors() {
-            log(app, "err", "配方", e);
+            log("err", "配方", e);
         }
         for e in host.camera.notes.iter().chain(&host.settings_note) {
-            log(app, "err", "配置", e.clone());
+            log("err", "配置", e.clone());
         }
         for e in &app.state::<crate::workspace::WorkspaceHost>().notes {
-            log(app, "err", "候选加载", e.clone());
+            log("err", "候选加载", e.clone());
         }
         let store = app.state::<Store>();
         if let Some(path) = store.backup_path() {
             log(
-                app,
                 "warn",
                 "记录库重建",
                 format!("旧版数据库已备份至 {}，当前使用新版空库", path.display()),
@@ -527,7 +491,6 @@ impl CycleHost {
         }
         if host.interrupted_recordings > 0 {
             log(
-                app,
                 "err",
                 "录制恢复",
                 format!(
@@ -664,17 +627,16 @@ pub fn purge_history(app: &AppHandle) {
         Ok((n, warnings)) => {
             if n > 0 {
                 log(
-                    app,
                     "info",
                     "记录清理",
                     format!("删除 {days} 天前的 {n} 条检测记录"),
                 );
             }
             for warning in warnings {
-                log(app, "warn", "复测记录清理", warning);
+                log("warn", "复测记录清理", warning);
             }
         }
-        Err(e) => log(app, "err", "记录清理", e),
+        Err(e) => log("err", "记录清理", e),
     }
 }
 
@@ -688,17 +650,16 @@ pub fn repair_history(app: &AppHandle) {
         Ok((n, skipped)) => {
             if n > 0 {
                 log(
-                    app,
                     "info",
                     "记录修复",
                     format!("补回 {n} 条维护试判记录的区域判定"),
                 );
             }
             for reason in skipped {
-                log(app, "warn", "记录修复", reason);
+                log("warn", "记录修复", reason);
             }
         }
-        Err(e) => log(app, "err", "记录修复", e),
+        Err(e) => log("err", "记录修复", e),
     }
 }
 
@@ -714,7 +675,6 @@ pub(crate) fn record_interrupted_part(
     };
     let Some(site) = s7.site() else {
         return log(
-            app,
             "err",
             "中断工件补记录",
             format!("cycleId={cycle_id}：握手日志缺少开工时的场景与录制方式，未补记录"),
@@ -736,7 +696,6 @@ pub(crate) fn record_interrupted_part(
         Ok(false) => {}
         Err(error) => {
             return log(
-                app,
                 "err",
                 "中断工件补记录",
                 format!("cycleId={cycle_id}：核对历史失败，未补记录：{error}"),
@@ -744,11 +703,6 @@ pub(crate) fn record_interrupted_part(
         }
     }
     let started_at = s7.started_at();
-    let records = applog::dir(app)
-        .map(|dir| {
-            applog::cycle_records(&dir, cycle_id, started_at.unwrap_or_else(now_ms), 200).records
-        })
-        .unwrap_or_default();
     let interrupted = interrupted::Interrupted {
         cycle_id,
         sn: &request.sn,
@@ -759,8 +713,7 @@ pub(crate) fn record_interrupted_part(
     };
     let part = interrupted::part(
         &interrupted,
-        &records,
-        |id| host.recipe(id),
+        s7.recipe_id().and_then(|id| host.recipe(id)),
         app.package_info().version.to_string(),
         now_ms(),
     );
@@ -775,7 +728,6 @@ pub(crate) fn record_interrupted_part(
     }
     host.audit.recording(outcome);
     log_with(
-        app,
         "warn",
         "中断工件补记录",
         format!(
@@ -799,7 +751,7 @@ fn host(app: &AppHandle) -> &CycleHost {
     app.state::<CycleHost>().inner()
 }
 
-fn log_recording_alarm(app: &AppHandle, change: AlarmChange) {
+fn log_recording_alarm(change: AlarmChange) {
     let (tone, ev, msg, cycle_id) = match change {
         AlarmChange::Raised(alarm) => {
             ("err", "原图录制失败", alarm.message(), Some(alarm.cycle_id))
@@ -810,82 +762,28 @@ fn log_recording_alarm(app: &AppHandle, change: AlarmChange) {
         cycle_id,
         ..Fields::default()
     };
-    if app.try_state::<CycleHost>().is_some() {
-        log_with(app, tone, ev, msg, fields);
-    } else {
-        applog::emit(applog::Level::from_tone(tone), ev, &msg, fields);
-    }
+    log_with(tone, ev, msg, fields);
 }
 
-pub fn log(app: &AppHandle, level: &'static str, ev: impl Into<String>, msg: impl Into<String>) {
-    log_with(app, level, ev, msg, Fields::default());
+pub fn log(level: &str, ev: impl AsRef<str>, msg: impl AsRef<str>) {
+    applog::write(level, ev.as_ref(), msg.as_ref());
 }
 
-pub fn log_with(
-    app: &AppHandle,
-    level: &'static str,
-    ev: impl Into<String>,
-    msg: impl Into<String>,
-    fields: Fields,
-) {
-    publish_log(
-        app,
-        level,
+fn log_with(level: &str, ev: impl AsRef<str>, msg: impl AsRef<str>, fields: Fields) {
+    applog::emit(
         applog::Level::from_tone(level),
-        ev.into(),
-        msg.into(),
+        ev.as_ref(),
+        msg.as_ref(),
         fields,
     );
 }
 
-/// 逐帧的明细：界面事件流照常显示，日志文件记为 debug。
-pub fn trace(app: &AppHandle, ev: impl Into<String>, msg: impl Into<String>, fields: Fields) {
-    publish_log(
-        app,
-        "info",
-        applog::Level::Debug,
-        ev.into(),
-        msg.into(),
-        fields,
-    );
+fn trace(ev: impl AsRef<str>, msg: impl AsRef<str>, fields: Fields) {
+    applog::emit(applog::Level::Debug, ev.as_ref(), msg.as_ref(), fields);
 }
 
-/// 按事件编码记一条（applog::codes），同时进界面事件流。
-pub fn log_event(
-    app: &AppHandle,
-    event: &applog::codes::Event,
-    msg: impl Into<String>,
-    fields: Fields,
-) {
-    let tone = match event.level {
-        applog::Level::Error => "err",
-        applog::Level::Warn => "warn",
-        applog::Level::Info | applog::Level::Debug => "info",
-    };
-    publish_record(app, tone, applog::emit_event(event, &msg.into(), fields));
-}
-
-fn publish_log(
-    app: &AppHandle,
-    tone: &'static str,
-    level: applog::Level,
-    ev: String,
-    msg: String,
-    fields: Fields,
-) {
-    publish_record(app, tone, applog::emit(level, &ev, &msg, fields));
-}
-
-fn publish_record(app: &AppHandle, tone: &'static str, record: applog::Record) {
-    let line = LogLine::from_record(record, tone);
-    {
-        let mut s = host(app).shared.lock().unwrap();
-        s.logs.push_back(line.clone());
-        if s.logs.len() > 300 {
-            s.logs.pop_front();
-        }
-    }
-    let _ = app.emit("cycle://log", line);
+pub fn log_event(event: &Event, msg: impl AsRef<str>, fields: Fields) {
+    applog::emit_event(event, msg.as_ref(), fields);
 }
 
 struct Part {
@@ -1190,7 +1088,7 @@ impl Machine {
         let mut stats = today_stats(&app, HistoryScope::Real);
         let mut s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
         if let Some(notice) = s7.archived() {
-            log(&app, "warn", "S7 握手日志归档", notice.to_owned());
+            log("warn", "S7 握手日志归档", notice.to_owned());
         }
         record_interrupted_part(&app, &s7, &mut stats, HistoryScope::Real);
         s7.forget_previous();
@@ -1253,13 +1151,13 @@ impl Machine {
         if !self.alarms.contains(&msg) {
             let fields = Fields::default().with_data(json!({"alarm": msg}));
             if self.alarm_log.observe(
-                &codes::ALARM_RAISED_SUMMARY,
+                &events::ALARM_RAISED_SUMMARY,
                 &msg,
                 now_ms(),
                 Tally::None,
                 fields.clone(),
             ) {
-                log_event(&self.app, &codes::ALARM_RAISED, msg.clone(), fields);
+                log_event(&events::ALARM_RAISED, msg.clone(), fields);
             }
             self.alarms.push(msg);
             self.dirty = true;
@@ -1280,7 +1178,7 @@ impl Machine {
             .noise
             .observe(summary, key, now_ms(), tally, fields.clone())
         {
-            log_event(&self.app, event, msg, fields);
+            log_event(event, msg, fields);
         }
     }
 
@@ -1302,9 +1200,12 @@ impl Machine {
         }
         .with_data(data);
         let (event, summary) = if fault {
-            (&codes::FRAME_ROUTE_FAULT, &codes::FRAME_ROUTE_FAULT_SUMMARY)
+            (
+                &events::FRAME_ROUTE_FAULT,
+                &events::FRAME_ROUTE_FAULT_SUMMARY,
+            )
         } else {
-            (&codes::FRAME_UNROUTED, &codes::FRAME_UNROUTED_SUMMARY)
+            (&events::FRAME_UNROUTED, &events::FRAME_UNROUTED_SUMMARY)
         };
         self.noisy(
             event,
@@ -1324,7 +1225,7 @@ impl Machine {
             .into_iter()
             .chain(self.alarm_log.flush(now))
         {
-            log_event(&self.app, summary.event, summary.msg, summary.fields);
+            log_event(summary.event, summary.msg, summary.fields);
         }
     }
 
@@ -1345,7 +1246,7 @@ impl Machine {
                 if shown {
                     self.alarms.retain(|m| !m.starts_with(PREFIX));
                     self.dirty = true;
-                    log(&self.app, "ok", "磁盘空间", "剩余空间已恢复，磁盘告警解除");
+                    log("ok", "磁盘空间", "剩余空间已恢复，磁盘告警解除");
                 }
             }
         }
@@ -1422,7 +1323,7 @@ impl Machine {
                 .iter()
                 .filter(|w| !self.config_warnings.contains(w))
             {
-                log(&self.app, "err", "配方", w.clone());
+                log("err", "配方", w.clone());
             }
             if req.warnings != self.config_warnings {
                 self.config_warnings = req.warnings.clone();
@@ -1457,7 +1358,7 @@ impl Machine {
                     .iter()
                     .filter(|w| !self.camera_warnings.contains(w))
                 {
-                    log(&self.app, "warn", "相机", w.clone());
+                    log("warn", "相机", w.clone());
                 }
                 self.camera_warnings = warnings;
                 self.dirty = true;
@@ -1562,8 +1463,8 @@ impl Machine {
         self.result = None;
         crate::workspace::clear_live(&self.app);
         self.alarms.clear();
-        for summary in self.noise.end_all(&codes::FRAME_STRAY_SUMMARY) {
-            log_event(&self.app, summary.event, summary.msg, summary.fields);
+        for summary in self.noise.end_all(&events::FRAME_STRAY_SUMMARY) {
+            log_event(summary.event, summary.msg, summary.fields);
         }
         let app = self.app.clone();
         let (sn, code) = (request.sn.clone(), request.product_code as u32);
@@ -1577,7 +1478,6 @@ impl Machine {
         };
         applog::begin_cycle(context.clone());
         log_with(
-            &app,
             "info",
             "工件到达",
             format!("SN={sn} 型号={code}"),
@@ -1769,7 +1669,6 @@ impl Machine {
                     let floor = slot.as_ref().and_then(|s| s.clock_now());
                     if floor.is_none() {
                         log(
-                            &app,
                             "warn",
                             "相机时钟",
                             format!(
@@ -1894,11 +1793,10 @@ impl Machine {
             recording,
             recipe: recipe.clone(),
         });
-        self.s7.admit().await;
+        self.s7.admit(Some(&recipe.id)).await;
         self.part.as_mut().unwrap().admitted_at = Instant::now();
         self.set_phase(Phase::Acquire);
         log_with(
-            &app,
             "info",
             "接件登记",
             format!(
@@ -1912,12 +1810,11 @@ impl Machine {
             Fields::stage("admitted")
                 .with_data(json!({"intakeMs": millis(started), "shots": planned})),
         );
-        log(&app, "info", "接件阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "admitted", "elapsedMs": millis(started)}).to_string());
+        log("info", "接件阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "admitted", "elapsedMs": millis(started)}).to_string());
     }
 
     /// 本件不能检测：PLC 不等 PC，工件照常运动采图；登记为未检件，PLC 报工件结束后回 ERR（维护模式回 0），原因记进本件记录。
     async fn refuse(&mut self, sn: String, recipe_id: Option<String>, code: u16, reason: String) {
-        let app = self.app.clone();
         let maintenance = self.s7.part_maintenance();
         let reason = if maintenance {
             format!("维护模式：{reason}；本件未检")
@@ -1925,13 +1822,11 @@ impl Machine {
             reason
         };
         log(
-            &app,
             if maintenance { "warn" } else { "err" },
             "接件校验",
             format!("{reason}；工件结束后回结果"),
         );
         log(
-            &app,
             "warn",
             "接件阶段",
             json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "deferred"}).to_string(),
@@ -1954,7 +1849,12 @@ impl Machine {
                 });
             }
         }
-        self.s7.admit().await;
+        let recipe_id = self
+            .part
+            .as_ref()
+            .map(|part| part.recipe.id.as_str())
+            .or_else(|| self.uninspected.as_ref()?.recipe_id.as_deref());
+        self.s7.admit(recipe_id).await;
         if let Some(part) = self.part.as_mut() {
             part.admitted_at = Instant::now();
         }
@@ -1983,7 +1883,6 @@ impl Machine {
                     {
                         let message = format!("生产接件后收到相机 {} 的手动触发帧（帧计数 {}），已丢弃；该相机此后的帧组可能错开一格", burst.camera_name(camera), f.frame_counter);
                         log_with(
-                            &self.app,
                             "warn",
                             "手动帧",
                             message,
@@ -2020,8 +1919,8 @@ impl Machine {
             }
             .with_data(json!({"frameCounter": f.frame_counter, "phase": self.phase}));
             self.noisy(
-                &codes::FRAME_STRAY,
-                &codes::FRAME_STRAY_SUMMARY,
+                &events::FRAME_STRAY,
+                &events::FRAME_STRAY_SUMMARY,
                 &camera,
                 Tally::Range("frameCounter", f.frame_counter as i64),
                 msg,
@@ -2054,8 +1953,8 @@ impl Machine {
             }
             .with_data(json!({"frameCounter": f.frame_counter}));
             self.noisy(
-                &codes::FRAME_AFTER_DEADLINE,
-                &codes::FRAME_AFTER_DEADLINE_SUMMARY,
+                &events::FRAME_AFTER_DEADLINE,
+                &events::FRAME_AFTER_DEADLINE_SUMMARY,
                 &camera,
                 Tally::Range("frameCounter", f.frame_counter as i64),
                 msg,
@@ -2088,7 +1987,7 @@ impl Machine {
                     &image,
                     recorded,
                 );
-                trace(&app, "帧到达", format!("cycle={cycle_id} · {camera_id} 第 {seq} 帧 · 帧计数 {}", f.frame_counter),
+                trace("帧到达", format!("cycle={cycle_id} · {camera_id} 第 {seq} 帧 · 帧计数 {}", f.frame_counter),
                     fields(&camera_id, Some(seq)).with_stage("frame")
                         .with_data(json!({"frameCounter": f.frame_counter, "triggerCounter": f.trigger_counter, "session": f.session})));
                 if let Some(segment) = burst
@@ -2108,7 +2007,7 @@ impl Machine {
             burst::Arrival::Duplicate { camera, seq } => {
                 if burst.first_warning(camera, burst::Warning::Duplicate) {
                     let camera_id = burst.camera_name(camera).to_owned();
-                    log_with(&app, "warn", "重复帧号", format!("相机 {camera_id} 第 {seq} 帧重复到达，保留先到的那帧、丢弃后到的（本件同类情况不再逐条记录）"), fields(&camera_id, Some(seq)));
+                    log_with("warn", "重复帧号", format!("相机 {camera_id} 第 {seq} 帧重复到达，保留先到的那帧、丢弃后到的（本件同类情况不再逐条记录）"), fields(&camera_id, Some(seq)));
                 }
             }
             burst::Arrival::OutOfRange { camera, seq } => {
@@ -2124,8 +2023,8 @@ impl Machine {
                 let fields =
                     fields(&camera_id, None).with_data(json!({"frameCounter": f.frame_counter}));
                 self.noisy(
-                    &codes::FRAME_LATE,
-                    &codes::FRAME_LATE_SUMMARY,
+                    &events::FRAME_LATE,
+                    &events::FRAME_LATE_SUMMARY,
                     &camera_id,
                     Tally::Range("frameCounter", f.frame_counter as i64),
                     msg,
@@ -2135,7 +2034,7 @@ impl Machine {
             burst::Arrival::Late { camera } => {
                 if burst.first_warning(camera, burst::Warning::Late) {
                     let camera_id = burst.camera_name(camera).to_owned();
-                    log_with(&app, "warn", "迟到帧", format!("相机 {camera_id} 有帧属于已经结束的前一个门控、又超出它的帧组数，已丢弃（本件同类情况不再逐条记录）"), fields(&camera_id, None));
+                    log_with("warn", "迟到帧", format!("相机 {camera_id} 有帧属于已经结束的前一个门控、又超出它的帧组数，已丢弃（本件同类情况不再逐条记录）"), fields(&camera_id, None));
                 }
             }
             burst::Arrival::ClockBack { camera } => {
@@ -2205,7 +2104,6 @@ impl Machine {
             .is_some_and(|p| p.untested(metrics.camera, segment).is_some());
         match metrics.state {
             FrameState::Measured => trace(
-                &self.app,
                 "测量完成",
                 format!(
                     "{camera} 第 {seq} 帧 · 最大胶宽 {} · {ms} ms",
@@ -2216,32 +2114,27 @@ impl Machine {
                 fields,
             ),
             FrameState::OutOfCorridor => trace(
-                &self.app,
                 "走出走廊",
                 format!("{camera} 第 {seq} 帧胶条走出走廊，记检测不完整"),
                 fields,
             ),
             FrameState::NotInspected => trace(
-                &self.app,
                 "本段不检测",
                 format!("{camera} 第 {seq} 帧所在段不由这台相机检测，不测"),
                 fields,
             ),
             FrameState::Unmeasured if untested => trace(
-                &self.app,
                 "本段不测",
                 format!("{camera} 第 {seq} 帧所在段预热没测成，不测，记检测不完整"),
                 fields,
             ),
             FrameState::Unmeasured => log_with(
-                &self.app,
                 "warn",
                 "帧没测",
                 format!("{camera} 第 {seq} 帧没测（{why}），记检测不完整"),
                 fields,
             ),
             FrameState::Error | FrameState::Missing => log_with(
-                &self.app,
                 "warn",
                 "测量出错",
                 format!("{camera} 第 {seq} 帧测量失败（{why}），记检测不完整"),
@@ -2253,7 +2146,6 @@ impl Machine {
     async fn on_tick(&mut self) {
         let app = self.app.clone();
         self.flush_noise();
-        app.state::<PlcHost>().flush_logs();
         let _link = host(&app).link_gate.lock().await;
         let settings = host(&app).settings();
         self.s7.set_maintenance(settings.maintenance.is_some());
@@ -2294,8 +2186,8 @@ impl Machine {
                 format!("帧通道满，新丢弃 {added} 帧（累计 {dropped} 帧）：检测节拍处理不过来");
             let fields = Fields::default().with_data(json!({"dropped": added, "total": dropped}));
             self.noisy(
-                &codes::FRAME_DROPPED,
-                &codes::FRAME_DROPPED_SUMMARY,
+                &events::FRAME_DROPPED,
+                &events::FRAME_DROPPED_SUMMARY,
                 "",
                 Tally::Sum("dropped", added),
                 msg,
@@ -2321,8 +2213,8 @@ impl Machine {
             );
             let fields = Fields::default().with_data(json!({"dropped": added, "total": budget}));
             self.noisy(
-                &codes::FRAME_BUDGET_DROPPED,
-                &codes::FRAME_BUDGET_DROPPED_SUMMARY,
+                &events::FRAME_BUDGET_DROPPED,
+                &events::FRAME_BUDGET_DROPPED_SUMMARY,
                 "",
                 Tally::Sum("dropped", added),
                 msg,
@@ -2345,8 +2237,7 @@ impl Machine {
                     self.alarms.clear();
                     self.set_phase(Phase::Idle);
                     log_event(
-                        &app,
-                        &applog::codes::S7_READY,
+                        &applog::events::S7_READY,
                         "PLC 已连接、协议版本一致、心跳在变化，通讯就绪",
                         Fields::default()
                             .with_data(json!({"connection": self.s7.view().connection})),
@@ -2363,7 +2254,6 @@ impl Machine {
                     }
                     self.set_phase(Phase::Drain);
                     log_with(
-                        &app,
                         "info",
                         "工件结束",
                         "PLC 报工件结束，等待剩余帧",
@@ -2421,7 +2311,6 @@ impl Machine {
                         String::new()
                     };
                     log_with(
-                        &self.app,
                         "warn",
                         "帧测量超时",
                         format!(
@@ -2465,7 +2354,6 @@ impl Machine {
                     for (camera, seq, segment, file) in part.start_post_measure(Instant::now()) {
                         let camera_id = part.burst.camera_name(camera).to_owned();
                         trace(
-                            &self.app,
                             "收尾补测",
                             format!(
                                 "cycle={} · {camera_id} 第 {seq} 帧用第 {segment} 段走廊补测",
@@ -2500,7 +2388,6 @@ impl Machine {
             motion_ms / 1000
         );
         log(
-            &self.app,
             "err",
             "等工件结束超时",
             format!("T_motion {motion_ms} ms"),
@@ -2561,7 +2448,6 @@ impl Machine {
         );
         for (ev, message) in warnings {
             log_with(
-                &self.app,
                 "warn",
                 ev,
                 message,
@@ -2617,7 +2503,6 @@ impl Machine {
         };
         if let Err(error) = recorded {
             log(
-                &app,
                 "err",
                 "检测记录",
                 format!("本件检测记录未生成，结果照常回写 PLC：{error}"),
@@ -2648,7 +2533,7 @@ impl Machine {
         };
         match self.current_cycle_id.as_deref() {
             Some(id) => host(&app).audit.submission(id, delivery, drain_ms),
-            None => log(&app, "err", "PLC 交付", "缺少工件身份，交付状态未记录"),
+            None => log("err", "PLC 交付", "缺少工件身份，交付状态未记录"),
         }
         let r = sent.map_err(|error| format!("回写 PLC 失败：{error}"));
         if mode == crate::store::PartMode::Production {
@@ -2670,7 +2555,6 @@ impl Machine {
             "结果未回写 PLC"
         };
         log_with(
-            &app,
             level,
             "检测结果",
             format!(
@@ -2718,7 +2602,6 @@ impl Machine {
             return;
         }
         log(
-            &self.app,
             "err",
             "相机",
             format!("在途件相机异常，本件记 ERR 98：{reason}"),
@@ -2942,8 +2825,7 @@ impl Machine {
         }
         .with_data(json!({"count": count, "firstTs": first, "lastTs": last, "reason": reason}));
         log_event(
-            &self.app,
-            &applog::codes::FAULT_REPEAT,
+            &applog::events::FAULT_REPEAT,
             format!("同一故障又上报 {count} 次：{reason}"),
             fields,
         );
@@ -2959,8 +2841,7 @@ impl Machine {
             }
             .with_data(json!({"reason": reason, "durationMs": duration}));
             log_event(
-                &self.app,
-                &applog::codes::FAULT_CLEARED,
+                &applog::events::FAULT_CLEARED,
                 format!("故障解除：{reason}"),
                 fields,
             );
@@ -3002,11 +2883,10 @@ impl Machine {
                     message: Some(reason.to_owned()),
                 },
             ) {
-                log(&self.app, "err", "中断工件审计持久化失败", error);
+                log("err", "中断工件审计持久化失败", error);
             }
             self.finish_recording(&sn, &judgement);
             log_with(
-                &self.app,
                 "err",
                 "在途件中断",
                 format!("SN {sn} 记 ERR {code}，结果未回写 PLC"),
@@ -3057,12 +2937,7 @@ impl Machine {
             ..Fields::stage("fault")
         }
         .with_data(json!({"reason": reason, "s7Phase": format!("{:?}", self.s7.phase())}));
-        log_event(
-            &self.app,
-            &applog::codes::FAULT_ENTER,
-            reason.clone(),
-            fields,
-        );
+        log_event(&applog::events::FAULT_ENTER, reason.clone(), fields);
         self.fault = Some(reason);
         self.fault_source = Some(source);
         self.fault_at = Some(now_ms());
@@ -3134,11 +3009,6 @@ fn today_stats(app: &AppHandle, scope: HistoryScope) -> Stats {
 #[tauri::command]
 pub fn cycle_snapshot(cycle: State<'_, CycleHost>) -> Option<Snapshot> {
     cycle.shared.lock().unwrap().snapshot.clone()
-}
-
-#[tauri::command]
-pub fn cycle_logs(cycle: State<'_, CycleHost>) -> Vec<LogLine> {
-    cycle.shared.lock().unwrap().logs.iter().cloned().collect()
 }
 
 #[tauri::command]
@@ -3217,8 +3087,7 @@ pub fn cycle_set_maintenance(
     let result = set_maintenance(&cycle, enabled, reason.trim());
     let action = if enabled { "enter" } else { "exit" };
     log_op(
-        &app,
-        &codes::OP_MAINTENANCE,
+        &events::OP_MAINTENANCE,
         json!({"action": action, "reason": reason.trim(), "collectOnly": collect_only}),
         &result,
     );
@@ -3268,10 +3137,9 @@ pub fn cycle_select_recipe(cycle: State<'_, CycleHost>, recipe_id: String) -> Re
     Ok(())
 }
 
-/// 运行日志 op.*：操作员命令的参数摘要与结果。
+/// 记录操作员命令的参数摘要与结果。
 pub fn log_op<T>(
-    app: &AppHandle,
-    event: &applog::codes::Event,
+    event: &applog::events::Event,
     mut data: serde_json::Value,
     result: &Result<T, String>,
 ) {
@@ -3284,7 +3152,6 @@ pub fn log_op<T>(
         Err(error) => format!("{}：失败，{error}", event.ev),
     };
     log_event(
-        app,
         event,
         msg,
         Fields {

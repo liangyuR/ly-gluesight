@@ -180,13 +180,9 @@ pub fn delete(data: &Path, current: Option<&str>, id: &str) -> Result<(), String
     let data = data.to_path_buf();
     std::thread::spawn(move || {
         if let Err(e) = purge_project(&data, &trashed) {
-            crate::applog::write(
-                "warn",
-                "项目删除未完成",
-                &format!(
-                    "项目 {id} 已移出列表，残留 {} 删除失败：{e}；下次启动继续清理",
-                    trashed.display()
-                ),
+            tracing::warn!(
+                "项目删除未完成：项目 {id} 已移出列表，残留 {} 删除失败：{e}；下次启动继续清理",
+                trashed.display()
             );
         }
     });

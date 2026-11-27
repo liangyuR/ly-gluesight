@@ -6,7 +6,7 @@ use ly_plc::{now_ms, LinkState, LogContext, PlcEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::applog::{self, codes, Fields};
+use crate::applog::{self, events, Fields};
 use crate::handshake::{
     self, Contract, HeartbeatWatch, Request, ResultEnvelope, Snapshot, WriteOp,
 };
@@ -39,6 +39,8 @@ struct Pending {
     request: Request,
     #[serde(default)]
     cycle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recipe_id: Option<String>,
     #[serde(default)]
     started_at: i64,
     #[serde(default)]
@@ -314,6 +316,10 @@ impl PlcSession {
             .and_then(|pending| pending.cycle_id.as_deref())
     }
 
+    pub fn recipe_id(&self) -> Option<&str> {
+        self.pending.as_ref()?.recipe_id.as_deref()
+    }
+
     pub fn site(&self) -> Option<PartSite> {
         self.pending.as_ref().and_then(|pending| pending.site)
     }
@@ -357,10 +363,9 @@ impl PlcSession {
             Err(error) => Err(error.to_string()),
         };
         if let Err(error) = saved {
-            applog::write(
-                "warn",
-                "S7 握手日志",
-                &format!("保存失败，进程中途退出时本件补不出中断记录：{error}"),
+            tracing::warn!(
+                cycle_id = self.cycle_id(), sn = self.request().map(|r| r.sn.as_str()),
+                %error, "保存 S7 在途件失败，进程退出时可能无法补记中断工件"
             );
         }
     }
@@ -482,7 +487,7 @@ impl PlcSession {
         if inspecting && seq != 0 && result_seq == seq {
             self.write(engine, handshake::clear_result_plan()).await?;
             applog::emit_event(
-                &codes::S7_RESULT_CLEARED,
+                &events::S7_RESULT_CLEARED,
                 &format!("在检件的序号 {seq} 与旧结果的序号相同，已把 resultSeq 清零"),
                 Fields::default().with_data(json!({"partSeq": seq})),
             );
@@ -551,6 +556,7 @@ impl PlcSession {
                 self.pending = Some(Pending {
                     request: request.clone(),
                     cycle_id: None,
+                    recipe_id: None,
                     started_at: now_ms(),
                     site: None,
                     mode: self.mode,
@@ -572,7 +578,7 @@ impl PlcSession {
         self.settled = Some(seq);
         let text = format!("件序号 {seq} {reason}，本件不检测、不回结果，等待下一件");
         applog::emit_event(
-            &codes::S7_PART_SKIPPED,
+            &events::S7_PART_SKIPPED,
             &text,
             Fields::default().with_data(
                 json!({"partSeq": seq, "sn": snapshot.read_text(tag::SN).ok(), "reason": reason}),
@@ -605,10 +611,8 @@ impl PlcSession {
                 .is_none_or(|at| at.elapsed() >= REPAIR_LOG_INTERVAL)
         {
             self.repair_logged = Some(Instant::now());
-            applog::write(
-                "warn",
-                "S7 输出恢复",
-                &format!("PC 输出 {tags} 被改写（PLC 重启、DB 重新初始化或其他写入方），已重写"),
+            tracing::warn!(
+                "S7 输出恢复：PC 输出 {tags} 被改写（PLC 重启、DB 重新初始化或其他写入方），已重写"
             );
         }
         Ok(SessionEvent::None)
@@ -627,7 +631,10 @@ impl PlcSession {
     }
 
     /// 接件登记完成：进入采集，在途件落盘；不写 PLC。
-    pub async fn admit(&mut self) {
+    pub async fn admit(&mut self, recipe_id: Option<&str>) {
+        if let Some(pending) = &mut self.pending {
+            pending.recipe_id = recipe_id.map(str::to_owned);
+        }
         if self.phase == SessionPhase::Validating {
             self.phase = SessionPhase::Acquiring;
         }

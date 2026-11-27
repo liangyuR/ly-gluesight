@@ -47,7 +47,7 @@ fn set_status(state: &'static str, url: Option<String>, message: Option<String>)
 }
 
 fn fail(message: String) {
-    crate::applog::write("warn", "示教 MCP", &message);
+    tracing::warn!("示教 MCP：{message}");
     set_status("failed", None, Some(message));
 }
 
@@ -72,7 +72,7 @@ pub fn start(app: &AppHandle) {
             Err(e) => return fail(format!("监听 127.0.0.1:{port} 失败：{e}")),
         };
         let url = format!("http://127.0.0.1:{port}/mcp");
-        crate::applog::write("info", "示教 MCP", &format!("已在 {url} 提供示教工具"));
+        tracing::info!(%url, "已启动示教 MCP 服务");
         set_status("listening", Some(url), None);
         loop {
             let Ok((stream, _)) = listener.accept().await else {

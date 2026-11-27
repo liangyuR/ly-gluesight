@@ -357,18 +357,14 @@ pub async fn storage_recording_disks_save(
                 &config.visions(&id),
             ));
         }
-        crate::applog::write(
-            "info",
-            "录制盘",
-            &format!(
-                "录制盘改为：{}",
-                config
-                    .recording_disks()
-                    .iter()
-                    .map(|disk| disk.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("；")
-            ),
+        tracing::info!(
+            "录制盘已改为 {}",
+            config
+                .recording_disks()
+                .iter()
+                .map(|disk| disk.display().to_string())
+                .collect::<Vec<_>>()
+                .join("；")
         );
         recording_disks(&app)
     })

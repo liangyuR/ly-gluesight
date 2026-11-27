@@ -22,11 +22,6 @@ export async function getAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("app_info");
 }
 
-export async function openLogDir(): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("app_open_log_dir");
-}
-
 export async function getEngineStatus(): Promise<EngineStatus> {
   if (!isTauri()) return { backend: "LyFlow", ready: false, message: "浏览器预览模式" };
   return invoke<EngineStatus>("engine_status");

@@ -470,7 +470,7 @@ fn set_teaching_piece(
     let _ = std::fs::remove_dir_all(host.dir(id).join(CALIBRATION_DIR));
     for round in stale {
         if let Err(error) = capture.delete_round(&round) {
-            cycle::log(app, "warn", "更换示教件", error);
+            cycle::log("warn", "更换示教件", error);
         }
     }
     view(app, next)

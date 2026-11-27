@@ -1,183 +1,19 @@
-# 面向 Agent 分析的运行日志
+# 运行日志与诊断包
 
-运行日志按本文实现，事件编码以 [编码表](agent-logging-codes.md) 为准。
+在侧栏打开“运行日志”。“打开日志目录”打开当前实例的文件夹；“导出诊断包”直接将最近 24 小时的诊断资料打成 ZIP。导出完成后，页面显示文件路径及未能收集的资料。
 
-日志写入 `~/gs_logs/runtime/<环境>/<资料实例>/`，与项目资料分开；PLC 日志库位于同一目录。绑定及隔离规则见 [运行日志与视觉证据存储](log-storage-research.md)。
+下方的只读日志流显示本次启动以来最近的日志。页面可见时约每秒按游标取一次新增行，向上滚动可暂停阅读，滚回底部或点击“回到最新”继续。离开页面或窗口隐藏后停止读取。
 
-运行日志页将级别、SN、关键词搜索与存储摘要放在同一工具栏，窗口较窄时自动换行。关键词支持事件、内容、cycleId 和拍照点，按回车确认。存储摘要显示当前占用与容量上限，点击信息按钮查看文件数量、保留时间和单文件滚动大小；右侧“日志目录”打开存储目录。按工件筛选时，工具栏下方单独显示可取消的工件条件。
+后端为预览缓存最近 64 KiB 的文本，页面最多显示 200 行，每行预览最多 2 KiB。日志突增导致游标落后时，页面跳到最近记录并提示。完整内容保存在日志文件中。
 
-## 1. 目标与依据
+## 文件日志
 
-运行日志的首要读者是排查现场问题的 Agent：拿到一个诊断包，不再向现场追问截图，就能还原“发生了什么、按什么顺序、双方寄存器是什么值、谁触发的”。
+Rust 后端使用 `tracing` 写 UTF-8 文本，文件名为 `runtime-YYYY-MM-DD[.N].log`。每条记录以带时区的本地时间开头，随后是级别、模块和消息。工件事件可带 `cycle_id`、`sn`、`part_seq`、相机编号等字段，可用文本编辑器直接查找。程序启动时记录构建版本，打开项目时记录项目编号。
 
-2026-10-24 京航联调的日志是这套设计的依据。一份 1.8 万行的日志里：
+文件按本地日期和 16 MiB 分段滚动，最多保留 30 天，总量限制为 1 GiB。PLC 点位读写与信号变化保存在同目录的 `plc.db`，可在 PLC 通讯日志页查看。目录位置见[日志与视觉证据存储](log-storage-research.md)。
 
-- 13380 行是逐帧的“游离帧”，4857 行是每拍重复的同一条“故障”，有效事件不到 30 条；
-- PLC 寄存器值完全不在日志里，PLC 停在哪个状态只能靠故障文案差异和游离帧时间倒推，最后仍要现场截 TIA；
-- 一次 PLC 侧可见的“视觉故障=1”没有任何原因记录；
-- 操作员动作只能从 PLC 写入痕迹倒推；
-- 运行日志用毫秒时间戳、PLC 日志 CSV 用本地时间字符串，对照前要换算；看不出现场运行的是哪个构建。
+## 一键导出
 
-## 2. 设计原则
+诊断包保存在资料根的 `exports/`。包中包含时间段内的运行日志、PLC 通讯日志、检测记录、相关配方、当前项目配置和构建信息。默认优先附最近的异常工件原图，最多 20 件，原图总量上限为 2 GiB。资料缺失或超过上限时，查看导出结果和包内 `manifest.json` 的 `notes`。
 
-1. **证据优先于结论**：状态迁移记下迁移前后的值和双方寄存器，而不仅是最终的故障文字。
-2. **一件事一行**：持续状态只在出现、变化、结束时记录；高频重复聚合成计数摘要，计数不能丢。
-3. **机器读 `code` 与 `data`，人读 `ev` 与 `msg`**：文案可以改，`code` 和 `data` 的键是对 Agent 的契约，改动要走兼容规则。
-4. **凡是 PLC 看得见的，日志里都有原因**：通讯未就绪、没接到件、清掉旧结果，都对应一条带原因的事件。
-5. **不静默丢日志**：写失败、聚合、节流都要留下计数；宁可同步写慢一点，也不在分析时制造“这段时间什么都没发生”的假象。
-
-## 3. 行格式（日志 schema 2）
-
-在现有 JSONL 上增量扩展，旧行照常可读。
-
-```json
-{"ts":1792837102059,"level":"warn","t":"2026-10-24T18:18:22.059+08:00","code":"s7.part.skipped","ev":"S7 未接件","msg":"件序号 128 到达时 PC 未就绪，本件不检测、不回结果，等待下一件","data":{"partSeq":128,"sn":"SN0128","reason":"到达时 PC 未就绪"}}
-```
-
-| 字段 | 说明 |
-|---|---|
-| `ts`、`level` | 不变，且必须仍是前两个键：`applog::head()` 靠 `{"ts":…,"level":"…` 开头做快速筛选与分段裁剪 |
-| `t` | 新增。带 UTC 偏移的本地时间（RFC 3339，毫秒），与 PLC 日志、现场叙述直接对照 |
-| `code` | 新增。稳定事件编码，见第 4 节；旧行没有 |
-| `ev`、`msg` | 不变。中文事件名与说明，面向人，可随文案调整 |
-| `sessionId`、`projectId` | 可选关联字段。运行日志初始化后带启动会话标识，打开项目后带项目编号；旧行缺少时照常读取 |
-| 关联字段 | 现有 `cycleId / sn / requestSeq / recipeId / shotId / k / camera / view / seq / stage`（`requestSeq` 的值即件序号 `partSeq`），新增 `captureRound`（采集轮次）、`source`（触发来源，见 5.3）；旧日志里的 `teachId`（已停用的示教握手编号）照常读取 |
-| `data` | 结构化数值。每个 `code` 的键在编码表里固定 |
-
-兼容规则：
-
-- 新字段一律 `Option` + `#[serde(default)]`，否则旧行解析失败会被查询、时间线、诊断包、中断补记录静默跳过。
-- `t`、`code` 作为 `Record` 顶层字段，紧跟 `level` 之后；`cycle/interrupted.rs` 测试里的 `Record` 字面量随之补字段。
-- 序列化保持紧凑无空格：`CycleScan` 用 `"stage":"partStart"` 等子串粗筛。
-- 启动事件的 `data.logSchema = 2`；诊断包清单同步写出。
-- `data` 键只增不改；要改含义时换新 `code`，旧 `code` 在编码表中标“停用”保留一个版本。
-
-## 4. 事件编码
-
-### 4.1 命名
-
-`<域>.<事件>[.<细分>]`，全小写 ASCII，下划线分词。域：
-
-| 域 | 范围 |
-|---|---|
-| `app` | 启动、配置摘要、panic、日志自身（写失败、聚合摘要） |
-| `alarm` | 节拍界面报警（去重后的写出与汇总） |
-| `op` | 操作员命令（界面或 IPC 调用） |
-| `plc` | PLC 链路：连接、断开、ly_plc 引擎告警 |
-| `s7` | S7 生产会话 |
-| `part` | 工件生命周期：开始、接件登记、结束、结论 |
-| `frame` | 帧到达与归属：游离、迟到、截止后、配组、丢帧 |
-| `measure` | 测量与判定 |
-| `camera` | 相机连接、配置下发、取图 |
-| `fault` | 节拍进入 / 维持 / 解除故障 |
-| `recipe`、`capture`、`calib` | 配方发布与迁移、采集轮次、标定 |
-| `storage`、`audit` | 录制、清理、持久追溯 |
-
-### 4.2 代码组织
-
-- 新增 `src-tauri/src/applog/codes.rs`：每个事件一条常量 `Event { code, ev, level }`，调用方写 `log_event(app, &codes::S7_READY, msg, fields)`，不再手写 `ev` 字符串和级别。
-- `cycle::log / log_with / trace` 继续保留，写出的行 `code` 为空。不做全量迁移：只有编码表里的事件带 `code`，没有 `code` 的行按 `ev` 与 `msg` 理解。
-- `docs/architecture/agent-logging-codes.md` 为编码表（code、ev、级别、触发时机、`data` 键）。由测试保证与 `codes.rs` 一致（见第 9 节）。
-
-### 4.3 拆分的同名事件
-
-只拆分了带编码的事件：`故障`（S7、追溯、接件都记成同一事件）改为 `fault.enter`，用 `source` 区分（5.3）；`PLC {category}`（ev 动态拼接）改为 `plc.engine.warn` / `plc.engine.error`，`data.category`；相机断线重试改为 `camera.reconnect_failed`。其余同名事件（`相机`、`接件阶段`、`接件校验` 等）没有 `code`，按 `ev` 与 `msg` 理解；`接件阶段` 的 `msg` 是 JSON：`cycleId`、`sn`、`status`（`admitted` / `deferred` / `fault`）、`elapsedMs`。
-
-## 5. 补齐关键证据
-
-### 5.1 S7 会话
-
-| code | 触发 | data |
-|---|---|---|
-| `s7.ready` | 会话由未就绪变为就绪 | `connection`（PLC 连接时间戳，ms） |
-| `s7.part.skipped` | 就绪时 PLC 已在检的件，或 `partSeq` 为 0、SN 或型号不合法的件：PC 不登记、不回结果 | `partSeq`、`sn`（读得到时）、`reason` |
-| `s7.result.cleared` | 在检件的 `partSeq` 撞上旧 `resultSeq`，PC 把 `resultSeq` 写 0 | `partSeq` |
-
-通讯未就绪的原因记在 `fault.enter`（5.3），恢复就绪记 `s7.ready`。一件的阶段标记（`stage`）依次为 `partStart`（工件到达）→ `admitted`（接件登记完成）→ `partEnd`（工件结束）→ `result`（检测结果）。
-
-### 5.2 操作员命令
-
-改变设备或生产状态的 IPC 命令写 `op.*`，记参数摘要与结果（`ok` / `err` + 错误原文），命令入口处统一包装：`op.capture.import`、`op.camera`、`op.plc`、`op.site`（按对象合并，用 `data.action` 区分动作）、`op.maintenance`、`op.recipe.delete`、`op.recipe.package`。手动写点只记点位与结果，不记写入值。
-
-被拒绝的操作也要记（例如闸门超时），这类信息现场最难口述。
-
-### 5.3 故障事件与来源
-
-- `fault.enter`：节拍进入故障，或故障原因变化。`source` 为 `s7`（通讯未就绪）；中途换件、等不到工件结束只把本件记中断，追溯、磁盘与设备问题只告警或记本件检测错误，都不进故障，`data` 带 `reason`、`s7Phase`、在途 `cycleId`。
-- `fault.repeat`：同一来源、同一原因重复上报时不再逐条写，按聚合规则（第 6 节）定期输出 `{count, firstTs, lastTs}`。
-- `fault.cleared`：通讯恢复就绪、故障解除，带持续时长。
-
-`enter_fault` 按 `(source, reason)` 去重；不同来源各自保留原因，互不覆盖。
-
-### 5.4 启动与配置摘要
-
-- `app.start`：`data` 带 `version`、`gitSha`、`buildTime`、`utcOffset`、`dataRoot`、`logSchema`、`lyflowSeries`。`gitSha` / `buildTime` 由 `build.rs` 输出 `cargo:rustc-env`，CI 打包（`windows-package.yml`）与本地构建都要能取到，取不到写 `unknown`。
-- `app.config`：PlcHost、CycleHost 初始化之后单独写一条（`applog::init` 早于它们，lib.rs 初始化顺序不变）：PLC 协议 / 地址 / 机架 / 插槽，相机 `[id, serial, triggerSource, triggerActivation, frameRate]`，检测设置摘要。配置保存（`op.*.save_config`）后再写一次。
-- 关于页（`commands.rs` 的 `app_info`）同步显示 `gitSha`，现场截图即可确认构建。
-
-## 6. 降噪：聚合与节流
-
-新增 `applog::Throttle`，按 `(code, key)` 聚合：
-
-- 窗口内首次出现立即写原事件；
-- 之后只计数，窗口结束（默认 10 s）或状态结束时写一条 `<code>.summary`：`{count, firstTs, lastTs, 样本范围}`，例如游离帧按相机给出帧计数区间；
-- 计数在进程内存里；退出前不补写未刷新的摘要，进程退出时最多丢一个窗口的计数。
-
-| 来源 | 位置 | key | 摘要内容 |
-|---|---|---|---|
-| 游离帧 | `cycle.rs` `on_frame` | 相机 | 帧数、帧计数最小 / 最大、当时节拍阶段 |
-| 迟到帧、截止后帧、帧归属失败 | `cycle.rs` 同区段 | 相机 + 原因 | 帧数、帧计数范围 |
-| 丢帧（通道满） | `cycle.rs` 丢帧累计 | — | 新增丢弃数 |
-| 相机断线重连失败 | `camera.rs` 监督线程（约 2 s 一次） | 相机 | 失败次数、最后错误 |
-| ly_plc 引擎告警 | `plc.rs` EventSink | category | 次数、最后一条 |
-| 故障重复 | `enter_fault` | source + reason | 见 5.3 |
-| 报警 | `cycle.rs` `alarm` | 报警文案 | 去重不再随每件开工清空 |
-
-“游离帧 ≥ 3/分钟”报警保留，但改由聚合器的计数触发，不再与逐帧日志绑定。
-
-逐帧的 debug 事件（帧到达、测量完成）保留：它们与工件一一对应、总量受件数约束，是复盘单件测量的依据。`data` 去掉与 `msg` 重复的内容。
-
-实现：聚合器为 `applog::throttle::Throttle`，时间由调用方传入，节拍每拍 `flush`。持续出现时每个窗口只出一条摘要，安静一个窗口后再出现才重新照写原事件；摘要的 `count` 不含照写的那条。与上表的差异：相机重连失败窗口 60 s（重连约 2 s 一次，10 s 窗口降噪有限），重连成功或相机移出相机组时立即出摘要；报警去重窗口 10 分钟，编码归新域 `alarm`；游离帧在下一件开工时立即出摘要；“游离帧 ≥ 3/分钟”报警仍由 1 分钟滑动计数触发，与日志写不写无关；帧归属失败按是否判本件 ERR 分为 `frame.unrouted` 与 `frame.route_fault`。
-
-## 7. 写入方式
-
-10-24 的现场样本中约 95% 是可聚合的重复行，降噪后写入量大幅下降，维持同步追加写，保留“崩溃不丢尾部”：
-
-- panic 钩子写日志改用 `try_lock`，拿不到锁就写 stderr，避免 panic 发生在写日志途中时自死锁；
-- 写失败（磁盘满、文件打不开）计数，恢复后补写 `app.log_write_failed {count, firstTs, lastTs}`；
-- 若以后实测同步写阻塞节拍，再改后台线程，队列满时必须记 `app.log_dropped`，不得静默丢弃。
-
-## 8. 诊断包
-
-诊断包包含运行日志（按时间精确筛选）、`logs/plc.jsonl`、`config/`、`state/`、检测记录与原图。面向 Agent 的约定：
-
-1. `manifest.json` 带 `build {version, gitSha, buildTime}`、`utcOffset`、`logSchema`、`configSummary`（同 `app.config`）、`files[{path, bytes, sha256}]`。
-2. `logs/plc.jsonl` 按时间正序，每行带 `t`，与运行日志同口径。
-3. 包根目录写 `README.md`（固定模板）：包结构、时间口径、编码表版本与链接、推荐分析顺序（先看 `fault.enter` 与 `s7.*`，再按 `cycleId` 串事件）。
-
-实现细节：
-
-- `manifest.json` 的 `schema` 升为 2；`configSummary` 与 `app.config` 共用 `commands::config_summary`；`files` 覆盖除 `manifest.json` 本身外的全部条目（含 `README.md`），按写入顺序排列。
-- `logs/plc.jsonl` 按 `(ts, id)` 升序；超过 20 万条时仍保留最新的部分。`t` 位于每行首个字段，其余字段与 PLC 日志库一致。
-- README 模板在 `diagnostics.rs` 的 `README` 常量中，schema 版本取自 `applog::SCHEMA`。
-
-## 9. 测试
-
-遵守项目单元测试准入规则，只写能说清所防回归的测试：
-
-| 测试 | 防止的回归 |
-|---|---|
-| 编码表一致性：`codes.rs` 的每个 code 唯一，且与 `agent-logging-codes.md` 表格一一对应 | code 是对 Agent 的契约，改名或漏登记会让分析脚本悄悄失效 |
-| 旧格式行（无 `t` / `code`）可被查询、时间线和诊断包读出 | 新字段非 Option 时旧行被静默丢弃 |
-| 聚合：窗口内 N 次游离帧 → 1 条原事件 + 1 条摘要，`count = N - 1`、帧计数范围正确 | 降噪丢计数，或退回逐帧刷屏 |
-| 同一 `(source, reason)` 的故障连续上报 → 只有 1 条 `fault.enter`，摘要计数正确；原因变化时再记一条 | 复现 10-24 的每拍重复 |
-
-为便于断言，`applog` 提供测试用的内存 sink（只在 `cfg(test)` 下替换文件 sink），测试断言 `code` 与 `data`，不断言 `msg` 文案。
-
-端到端核对：按[独立生产模拟器](../testing/production-simulator.md)运行正常生产，检查日志里有 `app.start`、`app.config`、完整的 `part.*` 链，且无逐帧 warn 刷屏。通讯中断与恢复需要独立专项验收，核对 `fault.enter` / `fault.cleared` / `s7.ready` 顺序。
-
-## 10. 风险与待定
-
-- **日志体积**：`app.config` 每次保存一行，增量可忽略；`t` 每行约 30 字节，降噪后总量仍远低于改造前。
-- **编码表维护成本**：新增事件必须先登记再使用，由一致性测试约束。
-- **待定**：聚合窗口默认 10 s 是否合适，等现场数据。
+时间段内已有的 `gluesight-*.jsonl` 和 `gluesight-*.log` 也可以随包导出，保留原文件名和内容格式。按 SN 查检测结果可使用“历史记录”；查看设备异常的前后经过可在包中用工件号、SN 或时间对照文本与 PLC 记录。

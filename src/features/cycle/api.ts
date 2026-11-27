@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
-import type { CycleSettings, LogLine, Maintenance, Readiness, Recipe, RecipeDoc, RecipeSummary, Snapshot } from "./types";
+import type { CycleSettings, Maintenance, Readiness, Recipe, RecipeDoc, RecipeSummary, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["cycle_save_settings","cycle_set_maintenance","cycle_select_recipe"].includes(cmd))
@@ -23,7 +23,6 @@ const defaultSettings: CycleSettings = {
 
 export const cycleApi = {
   snapshot: () => call<Snapshot | null>("cycle_snapshot", undefined, () => null),
-  logs: () => call<LogLine[]>("cycle_logs", undefined, () => []),
   recipes: () => call<RecipeSummary[]>("cycle_recipes", undefined, () => []),
   layout: (recipeId: string, revisionId?: string) => call<Recipe | null>("cycle_layout", { recipeId, revisionId: revisionId ?? null }, () => null),
   getSettings: () => call<CycleSettings>("cycle_get_settings", undefined, () => structuredClone(defaultSettings)),
@@ -116,7 +115,6 @@ export function useRecipes() {
 
 export function useCycle() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [logs, setLogs] = useState<LogLine[]>([]);
   const latest = useRef<Snapshot | null>(null);
 
   useEffect(() => {
@@ -130,16 +128,12 @@ export function useCycle() {
       latest.current = next;
       setSnapshot(next);
     };
-    const offs = [
-      subscribe<Snapshot>("cycle://snapshot", value => { receivedSnapshot = true; update(value); }),
-      subscribe<LogLine>("cycle://log", line => { if (alive) setLogs(prev => [...prev.slice(-199), line]); }),
-    ];
+    const off = subscribe<Snapshot>("cycle://snapshot", value => { receivedSnapshot = true; update(value); });
     void cycleApi.snapshot().then(value => { if (value && !receivedSnapshot) update(value); }).catch(() => {});
-    void cycleApi.logs().then(values => { if (alive) setLogs(prev => [...values, ...prev].slice(-200)); }).catch(() => {});
-    return () => { alive = false; offs.forEach(off => off()); };
+    return () => { alive = false; off(); };
   }, []);
 
-  return { snapshot, logs };
+  return { snapshot };
 }
 
 export function useMaintenance() {

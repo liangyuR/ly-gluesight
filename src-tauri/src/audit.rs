@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter, Manager};
 mod legacy;
 
 use crate::applog;
-use crate::cycle::{self, FrameView};
+use crate::cycle::FrameView;
 use crate::judge::{Judgement, PointState};
 use crate::recipe::Recipe;
 use crate::recorder::{RecordedRawFile, RecordingOutcome, RecordingState as RecorderState};
@@ -443,9 +443,9 @@ struct RecordingRecord {
 }
 
 /// 录制结果常在下一件开工后才到，按本件 cycleId 显式记一条带结构化状态的结果，迟到也进本件时间线。
-fn log_recording(app: &AppHandle, outcome: &RecordingOutcome) {
+fn log_recording(outcome: &RecordingOutcome) {
     for record in recording_records(outcome) {
-        app_record(app, record.level, record.event, record.message, record.fields);
+        app_record(record.level, record.event, record.message, record.fields);
     }
 }
 
@@ -1081,11 +1081,11 @@ impl Report for AppReport {
     }
 
     fn log(&self, level: &'static str, event: &'static str, cycle: Option<&str>, message: String) {
-        app_log(&self.0, level, event, cycle, message)
+        app_log(level, event, cycle, message)
     }
 
     fn recording(&self, outcome: &RecordingOutcome) {
-        log_recording(&self.0, outcome)
+        log_recording(outcome)
     }
 }
 
@@ -1094,31 +1094,54 @@ fn publish(app: &AppHandle, notices: Vec<Notice>) {
         match notice {
             Notice::Inserted(id) => {
                 if let Err(error) = app.emit("history://inserted", id) {
-                    app_log(app, "err", "历史通知失败", None, error.to_string());
+                    app_log("err", "历史通知失败", None, error.to_string());
                 }
             }
             Notice::Updated(cycle) => {
                 if let Err(error) = app.emit("history://updated", &cycle) {
-                    app_log(app, "err", "历史通知失败", Some(&cycle), error.to_string());
+                    app_log("err", "历史通知失败", Some(&cycle), error.to_string());
                 }
             }
-            Notice::Log { level, event, cycle, message } => app_log(app, level, event, Some(&cycle), message),
+            Notice::Log {
+                level,
+                event,
+                cycle,
+                message,
+            } => app_log(level, event, Some(&cycle), message),
         }
     }
 }
 
 /// 审计线程常在下一件已开始后才回报上一件的结果，属于某件的记录必须显式带上它的 cycleId，不能按在途工件补齐。
-fn app_log(app: &AppHandle, level: &'static str, event: &'static str, cycle: Option<&str>, message: impl Into<String>) {
-    app_record(app, Some(level), event, message.into(), applog::Fields { cycle_id: cycle.map(Into::into), ..applog::Fields::default() });
+fn app_log(
+    level: &'static str,
+    event: &'static str,
+    cycle: Option<&str>,
+    message: impl Into<String>,
+) {
+    app_record(
+        Some(level),
+        event,
+        message.into(),
+        applog::Fields {
+            cycle_id: cycle.map(Into::into),
+            ..applog::Fields::default()
+        },
+    );
 }
 
-/// level 为 None 时是明细：界面事件流照常显示，日志文件记为 debug。
-fn app_record(app: &AppHandle, level: Option<&'static str>, event: &'static str, message: String, fields: applog::Fields) {
-    match (app.try_state::<cycle::CycleHost>().is_some(), level) {
-        (true, Some(level)) => cycle::log_with(app, level, event, message, fields),
-        (true, None) => cycle::trace(app, event, message, fields),
-        (false, level) => { applog::emit(level.map_or(applog::Level::Debug, applog::Level::from_tone), event, &message, fields); }
-    }
+fn app_record(
+    level: Option<&'static str>,
+    event: &'static str,
+    message: String,
+    fields: applog::Fields,
+) {
+    applog::emit(
+        level.map_or(applog::Level::Debug, applog::Level::from_tone),
+        event,
+        &message,
+        fields,
+    );
 }
 
 fn immutable_record(part: &RecordedPart) -> Result<serde_json::Value, String> {

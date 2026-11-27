@@ -205,7 +205,7 @@ impl Rig {
     /// 接件登记：核对计划后进入采集，不写 PLC。
     async fn admit(&mut self) {
         self.session.validate_plan(&self.plan).unwrap();
-        self.session.admit().await;
+        self.session.admit(None).await;
         assert_eq!(self.session.phase(), SessionPhase::Acquiring);
     }
 
@@ -488,15 +488,16 @@ async fn in_flight_part_survives_restart_until_it_is_reported() {
     };
     rig.arrive(7, "SN-J").await;
     rig.session.bind_cycle_id(cycle_id, site).unwrap();
-    rig.admit().await;
+    rig.session.admit(Some("R-7")).await;
     let reopened = PlcSession::open(rig.session.path.clone());
     assert_eq!(
         (
             reopened.cycle_id(),
             reopened.request().map(|r| r.sn.as_str()),
-            reopened.site()
+            reopened.site(),
+            reopened.recipe_id(),
         ),
-        (Some(cycle_id), Some("SN-J"), Some(site))
+        (Some(cycle_id), Some("SN-J"), Some(site), Some("R-7"))
     );
     rig.end().await;
     rig.session.report(&rig.engine, 1, 0).await.unwrap();

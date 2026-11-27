@@ -19,7 +19,6 @@ beforeEach(() => {
     return () => { events.delete(event); };
   });
   vi.spyOn(cycleApi, "snapshot").mockResolvedValue(state());
-  vi.spyOn(cycleApi, "logs").mockResolvedValue([]);
 });
 
 describe("在线周期身份与迟到响应隔离", () => {

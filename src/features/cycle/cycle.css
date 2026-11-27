@@ -19,14 +19,6 @@
 .kv2 span { color: var(--on-surface-variant); }
 .kv2 b { font: 500 12.5px var(--font-mono); text-align: right; }
 
-.event-log { flex: 1; min-height: 0; overflow: auto; font: 11.5px/1.6 var(--font-mono); color: var(--on-surface); }
-.event-log div { padding-left: 1.2em; text-indent: -1.2em; }
-.event-log .tm { color: var(--on-surface-variant); margin-right: 8px; }
-.event-log .ev { color: var(--on-surface); margin-right: 8px; }
-.event-log .l-err .ev { color: var(--fault); }
-.event-log .l-ng .ev { color: var(--ng); }
-.event-log .l-ok .ev { color: var(--ok); }
-.event-log .l-warn .ev { color: var(--warn); }
 
 /* 逐拍照点视图：每个拍照点一格，显示示教中线与各站状态 */
 
@@ -47,7 +39,6 @@
 .diagnostic-kv dt { color: var(--on-surface-variant); }
 .diagnostic-kv dd { margin: 0; text-align: right; }
 .diagnostic-content .qs-table td { overflow-wrap: anywhere; }
-.diagnostic-content .event-log { max-height: none; overflow: visible; white-space: normal; }
 .diagnostic-alarms { padding-left: 18px; }
 .diagnostic-alarms li + li { margin-top: 8px; }
 .inspection-readiness { flex-shrink: 0; }

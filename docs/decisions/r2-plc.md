@@ -108,9 +108,8 @@
 - 可以按 `LogQuery.context` 精确查询，PLC 日志页和导出有“事务”列。
 - 0.3 建的旧日志库打开时会补上空列，旧记录为空。
 
-检测记录与运行日志里的字段名仍是 `requestSeq`，值即件序号。
+检测记录的 `requestSeq` 与运行日志的 `part_seq` 均表示件序号。
 
-**后续建议**：本件时间线现在按时间窗口取 PLC 信号（[log-replay.md](log-replay.md) §6），可以改为按本件 `partSeq` 精确取。
 
 **回退**：回滚对应提交并把 ly-plc 回到 0.3.x。日志库多出的列不影响旧版本读取。
 
@@ -120,7 +119,7 @@
 
 **采用**：
 
-- `state/plc-handshake.json` 只记在途件：请求（件序号、型号、SN）、cycleId、开工场景、开始时间与模式。只用于下次启动补一条中断记录（ERR 98，[r2-records.md](r2-records.md) R-4），补完即清。
+- `state/plc-handshake.json` 只记在途件：请求（件序号、型号、SN）、cycleId、所用配方编号、开工场景、开始时间与模式。只用于下次启动补一条中断记录（ERR 98，[r2-records.md](r2-records.md) R-4），补完即清。
 - 版本不认识或损坏的日志改名为 `plc-handshake.corrupt-<毫秒>.json` 保留，其他协议版本留下的在途件改名为 `plc-handshake.v<版本>.bak`、不续做；都以空日志启动，提示记入运行日志。
 
 **理由**：会话没有跨件的状态要恢复，日志读不出只是少补一条记录；保留原文件供人工核对，不让它挡住生产。

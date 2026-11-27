@@ -1,4 +1,4 @@
-//! 高频重复事件的聚合（docs/architecture/agent-logging.md 第 6 节）：按 (摘要编码, key) 计数，
+//! 高频重复事件的聚合：按 (摘要名称, key) 计数，
 //! 窗口内首次出现由调用方照写原事件，之后只计数；窗口结束（`flush`）或调用方声明状态结束（`end`）时给出一条摘要。
 //! 时间（毫秒）由调用方传入，节拍每拍调用一次 `flush`。
 
@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
-use super::codes::Event;
+use super::events::Event;
 use super::Fields;
 
 pub const WINDOW: Duration = Duration::from_secs(10);
@@ -108,7 +108,7 @@ impl Throttle {
         tally: Tally,
         fields: Fields,
     ) -> bool {
-        let Some(entry) = self.entries.get_mut(&(summary.code, key.to_owned())) else {
+        let Some(entry) = self.entries.get_mut(&(summary.ev, key.to_owned())) else {
             let entry = Entry {
                 summary,
                 opened: now,
@@ -118,7 +118,7 @@ impl Throttle {
                 acc: None,
                 fields: Fields::default(),
             };
-            self.entries.insert((summary.code, key.to_owned()), entry);
+            self.entries.insert((summary.ev, key.to_owned()), entry);
             return true;
         };
         if entry.count == 0 {
@@ -162,16 +162,16 @@ impl Throttle {
     /// 调用方声明这一路状态结束：立即给出未写的摘要，之后再出现重新照写原事件。
     pub fn end(&mut self, summary: &'static Event, key: &str) -> Option<Summary> {
         self.entries
-            .remove(&(summary.code, key.to_owned()))
+            .remove(&(summary.ev, key.to_owned()))
             .and_then(|mut entry| entry.take(key))
     }
 
-    /// 同一摘要编码下所有 key 的状态结束。
+    /// 同一摘要名称下所有 key 的状态结束。
     pub fn end_all(&mut self, summary: &'static Event) -> Vec<Summary> {
         let keys: Vec<String> = self
             .entries
             .keys()
-            .filter(|(code, _)| *code == summary.code)
+            .filter(|(name, _)| *name == summary.ev)
             .map(|(_, key)| key.clone())
             .collect();
         keys.iter()

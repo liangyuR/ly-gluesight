@@ -32,7 +32,7 @@ beforeEach(() => {
       case "workspace_list": return [structuredClone(view.workspace)];
       case "workspace_get": return structuredClone(view);
       case "workspace_navigation_image": return [1, 2, 3];
-      case "camera_rig_config": case "camera_rig_status": case "cycle_logs": return [];
+      case "camera_rig_config": case "camera_rig_status": return [];
       case "cycle_snapshot": return snapshot();
       case "vision_calib_info": return null;
       case "plc_get_status": return { state: "connected" };

@@ -52,7 +52,6 @@ mod storage;
 mod storage_startup;
 mod store;
 mod teach;
-mod timeline;
 mod vision;
 mod workspace;
 mod ziparchive;
@@ -169,13 +168,13 @@ fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
                 .iter()
                 .flat_map(|root| history_package::recover(&store, root))
             {
-                applog::write("warn", "历史件导入中断清理", &warning);
+                tracing::warn!("历史件导入中断清理：{warning}");
             }
         }
-        Err(error) => applog::write("warn", "历史件导入中断清理", &error),
+        Err(error) => tracing::warn!("历史件导入中断清理：{error}"),
     }
     for warning in store.cleanup_retired_recordings(&data) {
-        applog::write("warn", "清理停用离线记录", &warning);
+        tracing::warn!("清理停用离线记录：{warning}");
     }
     Ok(store)
 }
@@ -282,11 +281,8 @@ pub fn run() {
             commands::app_info,
             agent_mcp::agent_mcp_status,
             commands::app_open_log_dir,
-            applog::applog_query,
-            applog::applog_usage,
+            applog::app_log_tail,
             diagnostics::diagnostics_export,
-            timeline::history_timeline,
-            timeline::history_find_cycle,
             commands::engine_status,
             plc::plc_get_config,
             plc::plc_save_config,
@@ -301,7 +297,6 @@ pub fn run() {
             plc::plc_check_address,
             plc::plc_s7_phase1_template,
             cycle::cycle_snapshot,
-            cycle::cycle_logs,
             cycle::cycle_recipes,
             cycle::cycle_layout,
             cycle::cycle_get_settings,
@@ -457,19 +452,15 @@ fn start_services(
         eprintln!("{error}");
     }
     if let Err(error) = project::manage::purge_trash(&root) {
-        applog::write("warn", "项目删除未完成", &error);
+        tracing::warn!("项目删除未完成：{error}");
     }
     open_project(app, &root)?;
     applog::set_project(&project::current_id(app));
     let leftovers = project::legacy_leftovers(&root);
     if !leftovers.is_empty() {
-        applog::write(
-            "warn",
-            "旧资料未读取",
-            &format!(
-                "资料目录根下仍有项目化之前的资料，软件不再读取，可人工清理：{}",
-                leftovers.join("、")
-            ),
+        tracing::warn!(
+            "旧资料未读取：资料目录根下仍有项目化之前的资料，软件不再读取，可人工清理：{}",
+            leftovers.join("、")
         );
     }
     app.manage(open_store(app)?);

@@ -15,7 +15,7 @@ import TeachingPage from "../features/workspace/TeachingPage";
 import FlowDebugPage from "../features/workspace/FlowDebugPage";
 import ValidationPage from "../features/workspace/ValidationPage";
 import CalibrationPage from "../features/workspace/CalibrationPage";
-import { AppLogPage } from "../features/logs";
+import AppLogPage from "../pages/AppLogPage";
 import { inRecipe, SegmentsRedirect } from "../features/workspace/RecipeRoute";
 
 export interface PageRoute {

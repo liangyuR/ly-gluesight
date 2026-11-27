@@ -60,7 +60,6 @@ beforeEach(() => {
         const unavailable = { available: false, reason: "本件没有可用配方" };
         return { candidate: null, choices: [], original: unavailable, rules: unavailable, raw: unavailable };
       }
-      case "history_timeline": return { cycleId: detail.summary.cycleId, requestSeq: null, start: null, end: null, stages: [], entries: [], truncated: false, notes: [] };
       default: throw new Error(`Unexpected native command: ${command}`);
     }
   });
