@@ -102,6 +102,32 @@ fn reading_history_rechecks_cached_recipe_after_snapshot_content_or_identity_cha
 }
 
 #[test]
+fn history_comparison_checks_recipe_even_without_a_burst_record() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) =
+        burst_fixture::record(&recipe, burst_fixture::frames(4, &[]), None, Some(0));
+    let id = store
+        .insert(&PartRecord {
+            burst: None,
+            frames_expected: 0,
+            ..burst_part(&recipe, "history-without-burst", &judgement, &burst)
+        })
+        .unwrap();
+    let (detail, original) = store.history_comparison_record(id).unwrap();
+    assert!(detail.burst.is_none());
+    assert_eq!(original.unwrap().revision_id, recipe.revision_id);
+
+    Connection::open(db.path()).unwrap().execute(
+        "UPDATE recipe_snapshots SET version = version + 1 WHERE project_id = ?1 AND revision_id = ?2",
+        params![store.project(), recipe.revision_id],
+    ).unwrap();
+    assert!(store.detail(id).is_ok());
+    assert!(store.history_comparison_record(id).is_err());
+}
+
+#[test]
 fn manual_tags_survive_reopen_and_keep_history_filter_counts_neighbors_and_rejudge_aligned() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

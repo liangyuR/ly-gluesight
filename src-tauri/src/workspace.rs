@@ -1478,8 +1478,7 @@ pub async fn workspace_history_compare_options(
 ) -> Result<burst_history::CompareOptions, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<Store>();
-        let detail = store.detail(history_id)?;
-        let original = store.record_recipe(&detail.summary)?;
+        let (detail, original) = store.history_comparison_record(history_id)?;
         let (chosen, choices) = {
             let host = app.state::<WorkspaceHost>();
             let items = host.items.lock().unwrap();
@@ -1504,7 +1503,7 @@ pub async fn workspace_history_compare_options(
         )
         .err();
         let mut options =
-            burst_history::compare_options(&detail, original.as_ref(), chosen.as_ref(), releases);
+            burst_history::compare_options(&detail, original.as_deref(), chosen.as_ref(), releases);
         options.choices = choices;
         Ok(options)
     })

@@ -368,7 +368,7 @@ pub struct PartDetail {
 enum DetailScope {
     Full,
     Frame(usize, u64),
-    Import,
+    WithoutFrameVerdicts,
 }
 
 /// 重判用：一件工件的判定输入。
@@ -1834,8 +1834,20 @@ impl Store {
         &self,
         id: i64,
     ) -> Result<(PartSummary, RecordingEvidence), String> {
-        self.read_detail(id, DetailScope::Import)
+        self.read_detail(id, DetailScope::WithoutFrameVerdicts)
             .map(|(detail, _)| (detail.summary, detail.recording))
+    }
+
+    pub(crate) fn history_comparison_record(
+        &self,
+        id: i64,
+    ) -> Result<(PartDetail, Option<Arc<Recipe>>), String> {
+        let (detail, recipe) = self.read_detail(id, DetailScope::WithoutFrameVerdicts)?;
+        let original = match recipe {
+            Some(recipe) => Some(recipe),
+            None => self.record_recipe(&detail.summary)?.map(Arc::new),
+        };
+        Ok((detail, original))
     }
 
     pub fn detail_frame(&self, id: i64, camera: usize, seq: u64) -> Result<PartDetail, String> {
@@ -1916,7 +1928,7 @@ impl Store {
         let raw_frames = if summary.burst.is_some() {
             let selected = match scope {
                 DetailScope::Frame(camera, seq) => Some((camera, seq)),
-                DetailScope::Full | DetailScope::Import => None,
+                DetailScope::Full | DetailScope::WithoutFrameVerdicts => None,
             };
             frame_rows_raw(&snapshot, id, selected)?
         } else {

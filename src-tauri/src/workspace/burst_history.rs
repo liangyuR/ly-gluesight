@@ -814,9 +814,11 @@ fn raw_blocker(
         return Err("旧拍照点配方已停用，不能复测".into());
     }
     let cameras = recipe.plan_cameras();
+    let map = record_cameras(&cameras, burst);
     let absent: Vec<&String> = cameras
         .iter()
-        .filter(|c| !burst.cameras.contains(c))
+        .zip(&map)
+        .filter_map(|(camera, record)| record.is_none().then_some(camera))
         .collect();
     if absent.len() == cameras.len() {
         return Err(format!(
@@ -826,12 +828,15 @@ fn raw_blocker(
         ));
     }
     // 只看候选用到的相机：记录里别的相机有原图不算；录制已按保留策略清理或录制关闭时，残留的帧引用不算有原图
-    let (_, frames) = candidate_inputs(recipe, burst);
     let cleared = matches!(
         detail.recording.state,
         crate::store::RecordingState::Off | crate::store::RecordingState::NotRetained
     );
-    let recorded = !cleared && frames.iter().any(|f| f.raw_file.is_some());
+    let recorded = !cleared
+        && burst
+            .frames
+            .iter()
+            .any(|f| f.raw_file.is_some() && map.contains(&Some(f.camera)));
     if !recorded {
         let used: Vec<&str> = cameras
             .iter()
@@ -869,20 +874,19 @@ fn raw_blocker(
     Ok((!notes.is_empty()).then(|| notes.join("；")))
 }
 
-/// 从原图复测的输入：候选计划相机下标 → 记录相机下标的对应，与按候选相机重排的记录帧（复测与前置检查共用）。
+/// 从原图复测的输入：候选计划相机下标 → 记录相机下标的对应，与按候选相机重排的记录帧。
 pub(super) fn candidate_inputs(
     recipe: &Recipe,
     burst: &PartDetailBurst,
 ) -> (Vec<Option<usize>>, Vec<FrameRecord>) {
-    let map = record_cameras(recipe, burst);
+    let map = record_cameras(&recipe.plan_cameras(), burst);
     let frames = candidate_frames(&map, &burst.frames);
     (map, frames)
 }
 
 /// 候选计划相机下标 → 记录计划相机下标（按相机编号对应，记录里没有的为 None）。
-fn record_cameras(recipe: &Recipe, burst: &PartDetailBurst) -> Vec<Option<usize>> {
-    recipe
-        .plan_cameras()
+fn record_cameras(cameras: &[String], burst: &PartDetailBurst) -> Vec<Option<usize>> {
+    cameras
         .iter()
         .map(|c| burst.cameras.iter().position(|r| r == c))
         .collect()

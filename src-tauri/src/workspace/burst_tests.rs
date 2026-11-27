@@ -330,6 +330,46 @@ fn candidate_with_other_camera_order_measures_each_camera_from_its_own_record_fr
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn raw_comparison_requires_retained_images_from_a_candidate_camera() {
+    use crate::store::RecordingState;
+
+    let (dir, mut detail) = stored_record(&[1]);
+    let _ = std::fs::remove_dir_all(dir);
+    detail.recording.state = RecordingState::Complete;
+    detail.recording.available = true;
+    let mut w = super::pieces_tests::measured_teaching(&[Straight], 0.0);
+    w.doc.inspect[1].camera = "camX".into();
+    w.doc.inspect.reverse();
+    let raw = |detail: &crate::store::PartDetail| {
+        super::burst_history::compare_options(detail, None, Some(&w), None).raw
+    };
+
+    let unrelated = raw(&detail);
+    assert!(!unrelated.available);
+    assert!(
+        unrelated
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("没有保存原图")),
+        "{unrelated:?}"
+    );
+
+    let frame = detail
+        .burst
+        .as_mut()
+        .unwrap()
+        .frames
+        .iter_mut()
+        .find(|f| f.camera == 2)
+        .unwrap();
+    frame.raw_file = Some("rec/cam3_s000001.pgm".into());
+    assert!(raw(&detail).available);
+
+    detail.recording.state = RecordingState::NotRetained;
+    assert!(!raw(&detail).available);
+}
+
 /// 防的回归：彩色录制拿到相机配成灰度的机器上示教，冻结帧按本机配置记成灰度，试测与发布时按通道数拒掉这张彩色原图。
 #[test]
 fn color_recording_frozen_on_gray_configured_machine_is_tagged_color() {
